@@ -13,13 +13,13 @@ D36의 세부 명세다. 방식은 Bitcoin([08](08-bitcoin.md))과 같다: 받�
 | 받기 | 계정 하나 = 고정 P2PKH 주소 하나(Bitcoin 고정 주소 방식, D29). 기본 키는 니모닉의 `m/44'/133'/0'/0/0`(testnet `m/44'/1'/0'/0/0`, §2.2). 받기 화면에 T-ZEC-RECEIVE "일반(transparent) 주소입니다 — Zashi 등 비공개 주소로 받으려면 그 지갑에서 받으세요." |
 | 보내기 대상 | `t1…`/`t3…`(testnet `tm…`/`t2…`) Base58Check, ZIP 320 TEX(`tex1…`/`textest1…`, P2PKH), ZIP 316 revision 0 통합 주소(`u1…`/`utest1…`)의 일반 수신자(P2PKH 또는 P2SH) |
 | 보내기 거부 | Sapling `zs…`/`ztestsapling…`, Sprout `zc…`/`zt…`, 일반 수신자가 없는 UA, ZIP 316 revision 2 초안 형식(`tu…`, `zu…`), MUST-understand 메타데이터(0xE0–0xFC)가 있는 UA, 다른 네트워크·다른 코인 주소, `zcash:` URI |
-| 키 출처 | (1) 표준 경로(기본) (2) `EVM 계정과 같은 키`(명시적 선택 + 확인, 연결성 경고 T-ZEC-EVM-SHARED) (3) YubiKey OpenPGP secp256k1 슬롯([10](10-yubikey.md) `KeyRole::Zec`) |
+| 키 출처 | (1) 표준 경로(기본) (2) `EVM 계정과 같은 키`(명시적 선택 + 확인, 연결성 경고 T-ZEC-EVM-SHARED) (3) YubiKey OpenPGP secp256k1 슬롯([10](10-yubikey.md) `KeyRole::Zec`, 복구 단어 없이 연결한 카드의 "경로 모름" 슬롯 포함 §7.6) (4) 가져온 개인키(WIF, 2026-11-07, §2.3) |
 | 거래 형태 | v5(ZIP 225) 일반 입력·출력만, 수신자 1명 + 잔돈 0–1개(잔돈은 같은 주소), 보내기 최대, `SIGHASH_ALL`만 |
 | 데이터 원천 | 네트워크마다 `zcash:<net>` 엔드포인트 하나(D13, 현재 QuickNode). UTXO는 `zcash.indexer`로 고른다: `node`(기본, 같은 엔드포인트의 `getaddressutxos`) 또는 `bb-rest`(같은 엔드포인트의 Blockbook REST `/api/v2/utxo/<주소>`) |
 
 ### 1.2 제외 (phase 1)
 
-비공개 거래 전부(Sapling·Orchard 출력·입력, 비공개 주소로 받기), dApp 연결·메시지 서명, 여러 수신자, 메모, ZIP 321 결제 URI 해석, RBF(Zcash에 없음), v6 거래(ZIP 229) 작성, **가져온 개인키(WIF)**. WIF 형식은 확인했지만(§16 #2: Zcash도 `0x80`/`0xEF`, 압축 표시 `0x01`) 저장하려면 vault payload에 새 tag가 필요하고, 새 tag는 이전 버전이 vault를 E-VLT-014로 열지 못하게 만든다([04](04-app-ui.md) §6.6 형식 확장 규칙). phase 1에서는 넣지 않고 §미결 사항에 남긴다.
+비공개 거래 전부(Sapling·Orchard 출력·입력, 비공개 주소로 받기), dApp 연결·메시지 서명, 여러 수신자, 메모, ZIP 321 결제 URI 해석, RBF(Zcash에 없음), v6 거래(ZIP 229) 작성. (가져온 개인키(WIF)는 phase 2로 2026-11-07 넣었다: §2.3.)
 
 ## 2. 네트워크와 키
 
@@ -51,6 +51,15 @@ D36의 세부 명세다. 방식은 Bitcoin([08](08-bitcoin.md))과 같다: 받�
 - YubiKey: vault tag 5의 `KeyRole::Zec { network, index }` 슬롯(OpenPGP secp256k1, [10](10-yubikey.md))의 공개키를 계정으로 쓴다. 카드에 서명을 맡기는 규칙은 §8.2.
 - YubiKey 계정 대조(2026-11-07): 카드 기록(vault tag 5)을 읽을 때마다(잠금 해제 후 meta 적재, 등록·슬롯 바꾸기·비우기 뒤) meta `zcash`의 YubiKey 계정을 대조한다 — 같은 네트워크·index의 `KeyRole::Zec` 슬롯이 같은 공개키로 있어야 한다. 없으면 meta는 그대로 두고 받기 카드를 숨기며 보내기를 막고 위험 띠("…YubiKey 키를 찾을 수 없습니다… 키 출처를 '표준'으로 바꾸세요(다른 주소가 됩니다)")를 보인다. 표준 경로로 바꾸는 것은 사용자가 고를 때만. 카드 기록을 아직 못 읽었으면 받기·보내기는 기다린다. YubiKey 비우기·슬롯 바꾸기 확인 화면은 `App::zec_accounts_using_card(serial, slots)`(그 카드의 그 슬롯만 가진 Zcash 계정)로 쓰기 전에 위험 띠를 보인다(2026-11-07, [10] §15).
 - 진행 중 거래(§12.1)가 있으면 키 출처(YubiKey 슬롯 선택 포함)·네트워크를 바꾸거나 Zcash를 끄지 않는다.
+
+### 2.3 가져온 개인키 (WIF, phase 2, 2026-11-07)
+
+- 입력(W07, Zcash 탭 `개인키 가져오기`, `ImportSpec::Zec(탭의 네트워크)`): **압축 WIF**(`0x80` 메인넷 `K…`/`L…`, `0xEF` 테스트넷 `c…`, 52자, 끝 `0x01`) 또는 **16진수 64자리**(`0x` 선택, 대소문자, 탭의 네트워크로 씀). 압축하지 않은 WIF(`5…`/`9…`)는 받지 않는다(계정은 압축 공개키 하나). WIF 버전이 탭의 네트워크와 다르면 `ZecKeyNetwork`(E-INP-026), 그 밖 형식 오류는 `ZecKeyFormat`(E-INP-025). 주소는 P2PKH 하나(`t1…`/`tm…`).
+- 저장: vault tag 6 `ZecKey`([02] §4.6: secret ‖ network). 체인당 15개(`RecordLimit`), 같은 (secret, network) 거부(`DuplicateKey`), 이 지갑이 이미 Zcash 주소로 쓰는 키도 거부(`DuplicateKey`): YubiKey 슬롯의 공개키, 니모닉의 표준 키 `m/44'/{133|1}'/0'/0/0`(vault), meta `zcash`의 현재 계정 공개키(키 작업자). 같은 secret의 다른 네트워크 키는 다른 계정이라 허용한다. 이전 버전은 tag 6을 모르는 tag로 보고 `UnsupportedPayload`(E-VLT-014)로 멈춘다(손상 아님, `.prev` 제안 없음).
+- 계정: 키 출처 `ZecKeySource::Imported`(저장 코드 4, a = b = 0, 경로 문구 "가져온 개인키 (복구 단어 밖)", 이름 "가져온 키"). 서명은 vault가 tag 6에서 그 네트워크·공개키의 record를 찾아 빌려 준다(`KeyRef::ZecImported`), 나머지(§8.1·§10)는 같다.
+- 화면(계정 카드, §11): 그 네트워크의 가져온 키마다 `[가져온 키] {주소}` 줄과 `이 키 사용`(쓰는 중이면 `사용 중`), 계정이 가져온 키면 백업 도움말과 `개인키 보기`(T-REVEAL-WARN → W03 → W09 압축 WIF, 캡처 제외)·`삭제`(내보내기 먼저 T-REMOVE-IMPORTED → W03), 끝에 `개인키 가져오기`. 가져오면 탭의 네트워크이고 진행 중 거래가 없을 때 그 네트워크의 계정이 된다.
+- 삭제: 그 키의 계정에 종결되지 않은 기록(§12.1)이 있으면 거부한다("진행 중인 Zcash 거래가 이 키를 쓰고 있어…"). 지우면 그 키를 쓰던 네트워크의 meta `zcash` 계정을 비우고 표준 경로로 다시 만든다; 잠금 해제 때 tag 6에 없는 가져온 키 계정도 같은 처리(meta 대조).
+- 시험: `vault::tests::zcash_wif_import_reveal_sign_and_refusals`(secret 1의 압축 WIF·주소를 독립 계산한 벡터 `KwDiBf89…`→`t1UYsZVJkLPeMjxEtACvSxfWuNmddpWfxzs`, `cMahea7z…`→`tmLPctKo9j49rtCSKpwEBpLBeykiTGomGQs`, hex 입력, 다른 네트워크·압축 안 함·체크섬·0·주소 거부, 중복·표준 키 충돌·15개 상한, 재잠금 뒤 목록·서명 키·WIF 보기·삭제, tag 6 바이트), `unknown_path_card_vault_accounts_and_zcash_collision`(카드 키 충돌 거부).
 
 ## 3. 받는 주소 파싱 (`zec::address::parse_recipient`)
 
@@ -222,7 +231,7 @@ v5(ZIP 225), 일반 부분만. 모든 정수는 little-endian:
 
 ### 12.3 meta `zcash` (선택 최상위 키)
 
-`{"mainnet": {"source": 1|2|3, "a": u32, "b": u32, "pubkey": "02…"}, "testnet": {…}}` — 네트워크마다 계정 하나(키 출처 코드 1 표준(a = account, b = index) / 2 EVM 키(a = EVM index) / 3 YubiKey(a = index), 압축 공개키). 비어 있으면 쓰지 않는다. 항목이 잘못되면 그 네트워크 계정만 버리고 잠금 해제 때 표준 경로로 다시 만든다. 이전 버전은 모르는 키로 보존한다. `prefs.tab = "zec"`은 이전 버전에서 `prefs` 전체를 기본값으로 되돌린다(무해). ZEC 활동은 meta `activity`에 넣지 않는다(이전 버전이 `zcash:` 네트워크 키를 거부해 meta 전체를 버리기 때문).
+`{"mainnet": {"source": 1|2|3|4, "a": u32, "b": u32, "pubkey": "02…"}, "testnet": {…}}` — 네트워크마다 계정 하나(키 출처 코드 1 표준(a = account, b = index) / 2 EVM 키(a = EVM index) / 3 YubiKey(a = index; 900–999는 복구 단어 없이 연결한 카드의 경로 모름 슬롯, [10] §7.6) / 4 가져온 키(a = b = 0, 2026-11-07 §2.3), 압축 공개키). 비어 있으면 쓰지 않는다. 항목이 잘못되면 그 네트워크 계정만 버리고 잠금 해제 때 표준 경로로 다시 만든다. 이전 버전은 모르는 키로 보존한다. `prefs.tab = "zec"`은 이전 버전에서 `prefs` 전체를 기본값으로 되돌린다(무해). ZEC 활동은 meta `activity`에 넣지 않는다(이전 버전이 `zcash:` 네트워크 키를 거부해 meta 전체를 버리기 때문).
 
 ## 13. 오류 문구 (고정, 원격 문자열 없음)
 
@@ -258,6 +267,7 @@ v5(ZIP 225), 일반 부분만. 모든 정수는 little-endian:
 9. [최대]: 잔액 − 수수료 전부, 잔돈 출력 없음.
 10. (선택) `EVM 계정과 같은 키`: 경고와 두 번 확인 뒤 주소가 EVM 키의 HASH160 주소로 바뀌고, 진행 중 거래가 있으면 바뀌지 않는다.
 11. (선택, YubiKey) [10](10-yubikey.md)의 Zcash 슬롯 등록 → `YubiKey Zcash 주소 0 사용` → 보내기 때 PIN 1회 + 입력마다 터치, 서명 후 검증 통과.
+12. (선택, 가져온 키 §2.3) 먼저 읽기만: testnet WIF(`c…`)를 `개인키 가져오기`에 넣으면 S19 없이 바로 `[가져온 키] tm…` 줄이 생기고 그 주소가 다른 지갑(zcashd `getaddressesbyaccount`/탐색기)의 그 키 주소와 같다. 메인넷 WIF(`K…`)는 E-INP-026으로 거부, 같은 WIF 두 번은 거부. 그 뒤 소액 받기·보내기, `개인키 보기`가 넣은 WIF와 같음, `삭제`(진행 중 거래가 있으면 거부) 뒤 표준 경로 계정으로 돌아옴.
 
 ## 15. 상수 (`yw_core::zec`)
 
@@ -291,7 +301,7 @@ v5(ZIP 225), 일반 부분만. 모든 정수는 little-endian:
 
 ## 미결 사항
 
-- 가져온 개인키(WIF): vault tag 추가와 형식 호환 정책을 정한 뒤 phase 2.
+- ~~가져온 개인키(WIF): vault tag 추가와 형식 호환 정책을 정한 뒤 phase 2.~~ 2026-11-07 tag 6으로 넣었다(§2.3).
 - 비공개 거래(Orchard 보내기, UA 비공개 수신자 우선): 범위 밖(D36). 하려면 증명 생성 라이브러리가 필요해 의존성 정책([01] §3.4)부터 다시 정해야 한다.
 - ZIP 2009 수수료 인하가 확정되면 `MARGINAL_FEE`를 업그레이드 표처럼 높이별로 바꾼다.
 - 새 네트워크 업그레이드(branch id)가 나오면 §4.2 표를 갱신하는 릴리스가 필요하다(그 전에는 `UnknownBranch`로 보내기를 막는다).

@@ -316,7 +316,7 @@ pub const DEK_LEN: usize = 32;
 pub const WRAPPED_DEK_LEN: usize = 48;       // 32 + tag 16
 pub const PAYLOAD_CT_MIN: u32 = 80;          // 최소 평문 64 + tag 16
 pub const PAYLOAD_CT_MAX: u32 = 4_096;       // 최대 평문 3,170(§4.6) + tag 16 = 3,186이 들어간다
-pub const MAX_RECORDS: usize = 46;           // Bip39 0–1개 + EvmRawKey·SolKey·BtcKey 각 최대 15개
+pub const MAX_RECORDS: usize = 69;           // Bip39 0–1개 + EvmRawKey·SolKey·BtcKey·ZecKey 각 최대 15개 + HwKey 8개 (§4.6)
 ```
 
 ### 4.2 헤더 (176바이트, 모든 정수 big-endian)
@@ -441,6 +441,8 @@ len field                                len field
 - 디코드 거부(`UnsupportedPayload`, 인증된 평문이므로 손상이 아니다 — §4.5 단계 10): magic 불일치, `record_count` 범위 밖, reserved ≠ 0, 알 수 없는 tag, 순서 위반, `record_id` 0 또는 (모든 tag를 통틀어) 중복, `entropy_len` 오류, flags 예약 비트, `passphrase_used = 0`인데 확인값 ≠ 0, `backup_state` ∉ {0,1}, `backup_state = 0`이면서 `passphrase_used = 1`(생성 지갑은 passphrase를 쓰지 않음, §8.1), raw key 범위 밖, 같은 raw key 중복, 체인별 16번째 가져온 키, `SolKey` 공개키 불일치·중복, `BtcKey` 값 규칙 위반·중복, 남는 바이트.
 - 최대 크기: 16 + `Bip39`(24단어) 64 + 15 × (57 + 89 + 60) = 3,170바이트 평문.
 - **tag 5 `HwKey`(2026-11-04, D33):** YubiKey 하나의 슬롯 표(일련번호·펌웨어·마스터 지문·슬롯별 역할·경로 인덱스·정책·공개키, 비밀 없음), 0–8개, tag 4 뒤. 바이트 배치와 검사 규칙은 [10](10-yubikey.md) §8. 이에 따라 `MAX_RECORDS` = 54, `PAYLOAD_CT_MAX` = 16,384(최대 평문 3,170 + 8 × 1,189 = 12,682바이트). tag 5만 있는 payload는 니모닉 없는 **YubiKey 지갑**이다(§8.5와 같이 `has_mnemonic() = false`).
+  - **경로를 모르는 슬롯(2026-11-07, [10] §7.6 "YubiKey 연결하기"):** 슬롯 항목의 예약 3바이트 중 첫 바이트가 flags가 되었다(`01` = 경로 모름). 그런 슬롯의 역할 인덱스는 900–999 대역(계정 번호일 뿐 경로가 아님), 모든 슬롯이 그런 record의 마스터 지문은 `00000000`이고 "한 니모닉" 규칙에서 빠진다. 경로를 아는 슬롯만 있는 record는 바이트가 그대로이고, flags가 있는 record는 이전 버전이 예약 바이트 ≠ 0으로 `UnsupportedPayload`로 멈춘다(손상으로 보지 않음).
+- **tag 6 `ZecKey`(2026-11-07, [12] §2.3):** 가져온 Zcash 일반(transparent) 개인키, 0–15개, tag 5 뒤. 58바이트: `tag = 6` 1 ‖ `record_id` 16 ‖ `created_unix` 8 ‖ `secret` 32(1 ≤ k < n) ‖ `network` 1(1 = mainnet, 2 = testnet, `ZecNetwork::id`). 공개키는 늘 압축(주소 하나, P2PKH). 디코드 거부: secret 범위 밖, network ∉ {1,2}, (secret, network)가 같은 두 record, 16번째. 이에 따라 `MAX_RECORDS` = 69(1 + 15 × 4 + 8), 최대 평문 12,682 + 15 × 58 = 13,552바이트(`PAYLOAD_CT_MAX` 그대로). 이전 버전은 tag 6을 모르는 tag로 보고 `UnsupportedPayload`(E-VLT-014)로 멈춘다. `import_key`는 tag 5 슬롯의 secp256k1 공개키(어떤 역할이든)와 니모닉의 표준 Zcash 키(`m/44'/{133|1}'/0'/0/0`)와 같은 키를 `DuplicateKey`로 거부한다. `reveal_imported_key`는 압축 WIF(`0x80`/`0xEF`), 서명 키는 `KeyRef::ZecImported { network, pubkey }`.
 - 인코더는 `Zeroizing<Vec<u8>>`에 정확한 길이를 먼저 계산해 할당한다.
 
 ## 5. DEK 하위 키와 사이드카 파일
