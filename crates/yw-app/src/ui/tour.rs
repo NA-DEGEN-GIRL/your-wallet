@@ -58,6 +58,10 @@ const TIMER_CLASS: &str = "YourWalletV3TourTimer";
 /// A made-up user token contract (shot 31, hidden like an unwanted airdrop).
 const TOUR_AIRDROP: &str = "0x00000000000000000000000000000000000a1d40";
 const SETTLE_MS: u32 = 450;
+/// The public key at `m/44'/1'/0'/0/0` of the public test mnemonic (`abandon` × 11 + `about`):
+/// the well-known BIP44 testnet vector, shown as the tour's Zcash testnet account (shot 48).
+const TOUR_ZEC_TESTNET_KEY: &str =
+    "02a7451395735369f2ecdfc829c0f774e88ef1303dfe5b2f04dbaab30a535dfdd6";
 
 struct QuitOnTimer;
 
@@ -1267,8 +1271,14 @@ fn screenshot_tour() {
             snapshot.tokens = Vec::new();
         }
         state.evm.show_hidden_tokens = false;
-        state.scroll = 0;
+        // The HyperCore card under the token card (balances not loaded: no network; the tour
+        // has no RPC worker, so its "worker unavailable" note is cleared).
+        state.hypercore.error = None;
+        state.scroll = 1_000;
+        state.refresh();
     }
+    save(main_hwnd(&app), "49-main-evm-hypercore");
+    app.borrow_mut().scroll = 0;
     {
         let mut state = app.borrow_mut();
         state.evm.send.to_text = recipient().to_checksum();
@@ -1449,6 +1459,39 @@ fn screenshot_tour() {
     save(approval_hwnd(&app), "30-approval-btc-message");
     app.borrow_mut().tour_reject_approval();
     {
+        // The Zcash tab while off: what it is and the two `켜기` buttons.
+        let mut state = app.borrow_mut();
+        if let Some(meta) = state.meta.as_mut() {
+            meta.prefs.tab = Tab::Zec;
+        }
+        state.settings.zcash.enabled = false;
+    }
+    set_screen(&app, UNLOCKED, Screen::Main);
+    save(main_hwnd(&app), "47-main-zcash-off");
+    {
+        // On (testnet) with the test mnemonic's public key at m/44'/1'/0'/0/0 (public BIP44
+        // testnet vector) and no `zcash:testnet` URL: the endpoint line with `RPC 설정하기`.
+        let mut state = app.borrow_mut();
+        state.settings.zcash.enabled = true;
+        state.settings.zcash.network = yw_core::zec::ZecNetwork::Testnet;
+        if let Some(meta) = state.meta.as_mut() {
+            meta.zcash.set(yw_core::zec::ZecAccount {
+                network: yw_core::zec::ZecNetwork::Testnet,
+                source: yw_core::zec::ZecKeySource::DEFAULT,
+                pubkey: yw_core::hex::decode_array::<33>(TOUR_ZEC_TESTNET_KEY).unwrap(),
+            });
+        }
+    }
+    set_screen(&app, UNLOCKED, Screen::Main);
+    save(main_hwnd(&app), "48-main-zcash");
+    {
+        let mut state = app.borrow_mut();
+        state.settings.zcash.enabled = false;
+        if let Some(meta) = state.meta.as_mut() {
+            *meta.zcash = crate::zec::meta::ZcashMeta::default();
+        }
+    }
+    {
         let mut state = app.borrow_mut();
         if let Some(meta) = state.meta.as_mut() {
             meta.prefs.tab = Tab::Evm;
@@ -1466,6 +1509,9 @@ fn screenshot_tour() {
     }
     save(main_hwnd(&app), "29-sites-solana-bitcoin");
     app.borrow_mut().scroll = 0;
+    // Settings → 브라우저·진단·정보: the section map line, Chrome 확장, WalletConnect.
+    set_screen(&app, UNLOCKED, Screen::Settings(SettingsSection::Other));
+    save(main_hwnd(&app), "50-settings-browser");
     // S23 Chrome 확장 설치 (from settings → 브라우저·진단·정보).
     set_screen(&app, UNLOCKED, Screen::Settings(SettingsSection::Other));
     app.borrow_mut().open_extension_help();

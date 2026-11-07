@@ -507,7 +507,7 @@ pub const T_YK_PROTECT_MGMT: &str = "PIV 관리 키 자동 보호: 새 관리 �
 pub const T_YK_IMPORT: &str =
     "복구 단어에서 고른 키를 YubiKey에 씁니다. 그 슬롯에 있던 키는 덮어씁니다.";
 /// T-YK-ADOPT (spec/10 §7.5).
-pub const T_YK_ADOPT: &str = "YubiKey에 이미 같은 니모닉의 키가 들어 있을 때 씁니다. 카드에는 아무것도 쓰지 않고, 카드의 공개키가 복구 단어와 맞는지만 확인해 지갑에 연결합니다(재설치·새 PC·지갑 초기화 후).";
+pub const T_YK_ADOPT: &str = "YubiKey에 이미 같은 복구 단어의 키가 들어 있을 때 씁니다. 카드에는 아무것도 쓰지 않고, 카드의 공개키가 복구 단어와 맞는지만 확인해 지갑에 연결합니다(재설치·새 PC·지갑 초기화 후).";
 
 const fn touch_label(touch: TouchPolicy) -> &'static str {
     match touch {
@@ -543,6 +543,15 @@ fn script_label(script: ScriptType) -> String {
 }
 
 /// One slot's lines: label and title, path, address(es), policies.
+/// A slot address in 4-character groups like every other screen (spec/04 §3.3): an EVM address
+/// in its checksum groups, a Bitcoin or Solana address as encoded, every character shown.
+fn grouped_address(address: &str) -> String {
+    yw_core::evm::address::parse_address(address).map_or_else(
+        |_| crate::ui::screens_btc::grouped(address),
+        |parsed| yw_core::evm::display::format_address(&parsed),
+    )
+}
+
 fn slot_items(
     slot: CardSlot,
     role: KeyRole,
@@ -558,7 +567,7 @@ fn slot_items(
     )));
     items.push(Item::Field("경로".to_owned(), role.path_text()));
     for address in addresses {
-        items.push(Item::Mono(address.clone()));
+        items.push(Item::Mono(grouped_address(address)));
     }
     let policy = match pin {
         PinPolicy::NotApplicable => format!("터치: {}", touch_label(touch)),
@@ -1166,7 +1175,7 @@ impl App {
         let ready = wizard.can_continue() && wizard.card.is_some();
         items.push(Item::CardStart(Some("어떻게 등록할까요?".to_owned())));
         items.push(Item::Row(vec![
-            Ctl::primary(ids::IMPORT, "니모닉에서 키를 넣기 (처음 등록)").enabled(ready),
+            Ctl::primary(ids::IMPORT, "복구 단어에서 키를 넣기 (처음 등록)").enabled(ready),
         ]));
         items.push(Item::Help(T_YK_IMPORT.to_owned()));
         items.push(Item::Row(vec![

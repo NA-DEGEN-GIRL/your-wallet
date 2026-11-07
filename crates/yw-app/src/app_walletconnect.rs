@@ -40,6 +40,8 @@ pub struct WcUi {
     pub file_text: String,
     /// The project id edit text (`None`: the saved value).
     pub project_text: Option<String>,
+    /// `Project ID 바꾸기 ▸` is open (a saved id is otherwise one read-only line).
+    pub project_open: bool,
     /// The topic behind each `연결 해제` row button as last drawn.
     pub rows: std::cell::RefCell<Vec<[u8; 32]>>,
 }
@@ -541,6 +543,7 @@ impl App {
         settings.walletconnect_project.clone_from(&text);
         self.save_settings(settings, "walletconnect");
         self.wc.project_text = None;
+        self.wc.project_open = false;
         self.wc.notice = Some(if text.is_empty() {
             "Project ID를 지웠습니다. WalletConnect가 꺼집니다.".to_owned()
         } else {

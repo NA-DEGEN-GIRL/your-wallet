@@ -9,6 +9,7 @@ use yw_core::zec::{ZecNetwork, format_zec, format_zec_and_zats};
 use crate::app::{App, AppMode};
 use crate::app_zec::SourceChoice;
 use crate::settings::ZecIndexer;
+use crate::ui::badge::Badge;
 use crate::ui::main_window::{Ctl, Item, Tone};
 
 /// Command ids of the Zcash tab (8,000–8,099; the map and its checks are `ui::command_ids`).
@@ -220,22 +221,31 @@ impl App {
     }
 
     fn zec_disabled_items(&self, items: &mut Vec<Item>) {
-        items.push(Item::CardStart(Some(
-            "Zcash (일반 주소 보내기 전용)".to_owned(),
-        )));
+        items.push(Item::CardStart(Some("Zcash (일반 주소 전용)".to_owned())));
         items.push(Item::Text(
-            "Zcash 일반(transparent) 주소로 받고 보냅니다. 비공개(shielded) 전송은 지원하지 않습니다 (D36)."
+            "Zcash 일반(transparent) 주소로 받고 보냅니다. 비공개(shielded) 전송은 지원하지 않습니다."
                 .to_owned(),
         ));
         items.push(Item::Help(
-            "켜면 복구 단어에서 m/44'/133'/0'/0/0 (testnet m/44'/1'/0'/0/0) 주소 하나를 씁니다. Zcash 엔드포인트(zcash:<net>)가 필요합니다."
+            "켜면 복구 단어에서 m/44'/133'/0'/0/0 (testnet m/44'/1'/0'/0/0) 주소 하나를 씁니다. 먼저 설정 → 네트워크(RPC)에서 그 네트워크의 Zcash 주소(zcash:mainnet·zcash:testnet)를 넣으세요."
                 .to_owned(),
         ));
         let unlocked = matches!(self.mode, AppMode::Unlocked { .. });
-        items.push(Item::Row(vec![
+        let mut row = vec![
             Ctl::primary(ids::ENABLE_MAINNET, "Zcash mainnet 켜기").enabled(unlocked),
             Ctl::button(ids::ENABLE_TESTNET, "Zcash testnet 켜기 (테스트)").enabled(unlocked),
-        ]));
+        ];
+        if ZecNetwork::ALL.into_iter().all(|network| {
+            self.apikeys
+                .rpc_url(crate::network::NetworkId::Zcash(network))
+                .is_none()
+        }) {
+            row.push(Ctl::link(
+                crate::ui::screens::ids::SECTION_NETWORK,
+                "RPC 설정하기",
+            ));
+        }
+        items.push(Item::Row(row));
         items.push(Item::CardEnd);
     }
 
@@ -247,13 +257,6 @@ impl App {
             return;
         }
         let network = self.zec_network();
-        items.push(Item::Banner(
-            network.banner().to_owned(),
-            match network {
-                ZecNetwork::Mainnet => Tone::BtcMainnet,
-                ZecNetwork::Testnet => Tone::Testnet,
-            },
-        ));
         if self.zec_journal_damaged() {
             items.push(Item::Banner(
                 "거래 저널의 Zcash 기록이 손상되어 Zcash 보내기를 멈췄습니다. (E-VLT-006)"
@@ -261,7 +264,18 @@ impl App {
                 Tone::Blocked,
             ));
         }
-        if let Some(error) = &self.zec.error {
+        let has_endpoint = self
+            .apikeys
+            .rpc_url(crate::network::NetworkId::Zcash(network))
+            .is_some();
+        // A missing URL is already the network card's status line with `RPC 설정하기`; the same
+        // E-KEY-005 is not repeated as a red band above it (review 2026-11-07 F6).
+        if let Some(error) = self
+            .zec
+            .error
+            .as_ref()
+            .filter(|error| has_endpoint || **error != crate::errors::ErrorCode::Key005.text())
+        {
             items.push(Item::Banner(error.clone(), Tone::Danger));
         }
         if let Some(info) = &self.zec.info {
@@ -283,23 +297,28 @@ impl App {
                     "Zcash mainnet",
                     network == ZecNetwork::Mainnet,
                 )
+                .badge(Badge::zcash(ZecNetwork::Mainnet))
                 .enabled(!self.zec.busy),
                 Ctl::tab(
                     ids::ENABLE_TESTNET,
                     "Zcash testnet (테스트)",
                     network == ZecNetwork::Testnet,
                 )
+                .badge(Badge::zcash(ZecNetwork::Testnet))
                 .enabled(!self.zec.busy),
             ],
         ));
-        let rpc = match (
-            self.apikeys
-                .rpc_url(crate::network::NetworkId::Zcash(network))
-                .is_some(),
-            snapshot,
-        ) {
+        // The network band inside the network card, as on the other tabs.
+        items.push(Item::Banner(
+            network.banner().to_owned(),
+            match network {
+                ZecNetwork::Mainnet => Tone::BtcMainnet,
+                ZecNetwork::Testnet => Tone::Testnet,
+            },
+        ));
+        let rpc = match (has_endpoint, snapshot) {
             (false, _) => {
-                "엔드포인트 없음 (E-KEY-005) — 설정 > RPC에서 zcash 엔드포인트를 넣으세요"
+                "엔드포인트 없음 (E-KEY-005) — 설정 → 네트워크(RPC)에서 Zcash 주소를 넣으세요"
                     .to_owned()
             }
             (true, Some(snapshot)) => {
@@ -333,10 +352,18 @@ impl App {
                 ),
             ],
         ));
-        items.push(Item::Row(vec![
+        let mut row = vec![
             Ctl::button(ids::REFRESH, "새로고침").enabled(!self.zec.refreshing),
             Ctl::link(ids::DISABLE, "Zcash 끄기").enabled(!self.zec.busy),
-        ]));
+        ];
+        if !has_endpoint {
+            // The next step of E-KEY-005, as on the other tabs.
+            row.push(Ctl::link(
+                crate::ui::screens::ids::SECTION_NETWORK,
+                "RPC 설정하기",
+            ));
+        }
+        items.push(Item::Row(row));
         items.push(Item::CardEnd);
 
         // Account and balance.

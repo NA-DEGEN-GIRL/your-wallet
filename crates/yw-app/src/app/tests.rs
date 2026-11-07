@@ -1833,6 +1833,152 @@ fn tab_shortcuts_switch_chain_tabs_on_the_main_screen() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// Review 2026-11-07 F2: Ctrl+4 reaches the Zcash tab (the loop observer stopped at Ctrl+3).
+#[test]
+fn ctrl_4_is_the_zcash_tab() {
+    use crate::events::chain_tab_key;
+    assert_eq!(chain_tab_key(0x31), Some(1));
+    assert_eq!(chain_tab_key(0x34), Some(4));
+    assert_eq!(chain_tab_key(0x30), None);
+    assert_eq!(chain_tab_key(0x35), None);
+    let (mut app, dir) = unlocked_app("tab-zec", false);
+    app.tab_shortcut(4);
+    assert_eq!(app.meta.as_ref().map(|meta| meta.prefs.tab), Some(Tab::Zec));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Review 2026-11-07 F1: without a Project ID the `WalletConnect` card is a setup card (the ID
+/// first, no disabled pairing controls); with one, pairing comes first and the ID is one line
+/// behind `Project ID 바꾸기 ▸`.
+#[test]
+fn walletconnect_panel_asks_for_the_project_id_first() {
+    use crate::ui::screens_walletconnect::ids as wc;
+    let (mut app, dir) = unlocked_app("wc-panel", false);
+    app.screen = Screen::Sites;
+    let items = app.items();
+    assert!(ctl(&items, wc::PROJECT_EDIT).is_some());
+    assert!(ctl(&items, wc::URI_EDIT).is_none());
+    assert!(ctl(&items, wc::PAIR).is_none());
+    assert!(has_text(&items, "1단계: Reown Project ID 저장"));
+    unique_ids(&items);
+    "0123456789abcdef0123456789abcdef".clone_into(&mut app.settings.walletconnect_project);
+    let items = app.items();
+    assert!(ctl(&items, wc::PAIR).is_some_and(|pair| pair.enabled));
+    assert!(ctl(&items, wc::PROJECT_EDIT).is_none());
+    app.on_command(wc::PROJECT_TOGGLE);
+    let items = app.items();
+    assert!(ctl(&items, wc::PROJECT_EDIT).is_some());
+    unique_ids(&items);
+    app.on_command(wc::PROJECT_TOGGLE);
+    assert!(ctl(&app.items(), wc::PROJECT_EDIT).is_none());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Review 2026-11-07 (10-31 D3): a wallet's only account is not listed a second time with the
+/// same address and balance under `내 계정`; with two accounts every row has its address.
+#[test]
+fn single_account_row_does_not_repeat_the_hero_card() {
+    use crate::ui::screens::T_SINGLE_ACCOUNT;
+    let (mut app, dir) = unlocked_app("single-account", false);
+    // How often an account address is drawn (token contracts are other Mono lines).
+    let shown = |items: &[Item], address: &str| {
+        items
+            .iter()
+            .filter(|item| {
+                matches!(item, Item::Mono(text)
+                    if text.replace(' ', "").eq_ignore_ascii_case(address))
+            })
+            .count()
+    };
+    let evm = "0x9858effd232b4033e47d90003d41ec34ecaeda94";
+    let sol = yw_core::sol::SolAddress::from_bytes([7; 32]).to_base58();
+    for (tab, address) in [(Tab::Evm, evm), (Tab::Sol, sol.as_str())] {
+        app.meta.as_mut().unwrap().prefs.tab = tab;
+        let items = app.items();
+        assert!(has_text(&items, T_SINGLE_ACCOUNT), "{tab:?}");
+        assert_eq!(shown(&items, address), 1, "{tab:?}: the hero card's only");
+    }
+    app.meta.as_mut().unwrap().prefs.tab = Tab::Evm;
+    app.meta
+        .as_mut()
+        .unwrap()
+        .evm_accounts
+        .push(crate::meta::Account {
+            index: 1,
+            label: "계정 2".to_owned(),
+            address: "0x2222222222222222222222222222222222222222".to_owned(),
+            hidden: false,
+        });
+    let items = app.items();
+    assert!(!has_text(&items, T_SINGLE_ACCOUNT));
+    assert_eq!(shown(&items, evm), 2, "hero card and its row");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Review 2026-11-07 F5: a notice keeps its own tone (a pinned genesis is information, not a red
+/// error band); errors stay red; `알림 닫기` clears both.
+#[test]
+fn notice_banners_keep_their_tone() {
+    let (mut app, dir) = unlocked_app("notice-tone", false);
+    app.notice("고정했습니다".to_owned(), Tone::Info);
+    app.error_banner(crate::errors::ErrorCode::App002);
+    let tones: Vec<Tone> = app
+        .items()
+        .iter()
+        .filter_map(|item| match item {
+            Item::Banner(_, tone) => Some(*tone),
+            _ => None,
+        })
+        .collect();
+    assert!(tones.contains(&Tone::Info));
+    assert!(tones.contains(&Tone::Danger));
+    app.on_command(crate::ui::screens::ids::DISMISS_BANNERS);
+    assert!(app.banners.is_empty());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Review 2026-11-07 F6: a missing Zcash URL is the network card's status line with
+/// `RPC 설정하기`, not also a red E-KEY-005 band; other Zcash errors still show as a band.
+#[test]
+fn zcash_missing_endpoint_is_one_line_with_the_next_step() {
+    let (mut app, dir) = unlocked_app("zec-endpoint", false);
+    app.meta.as_mut().unwrap().prefs.tab = Tab::Zec;
+    app.settings.zcash.enabled = true;
+    let missing = crate::errors::ErrorCode::Key005.text();
+    app.zec.error = Some(missing.clone());
+    let items = app.items();
+    assert!(!texts(&items).contains(&missing));
+    assert!(ctl(&items, ids::SECTION_NETWORK).is_some());
+    app.zec.error = Some("진행 중인 Zcash 거래가 있어 끌 수 없습니다.".to_owned());
+    assert!(has_text(&app.items(), "진행 중인 Zcash 거래가 있어"));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Review 2026-11-07 F3: every settings section opens with its one-line map.
+#[test]
+fn settings_sections_start_with_their_map() {
+    use super::SettingsSection;
+    let (mut app, dir) = unlocked_app("settings-map", false);
+    for section in [
+        SettingsSection::Security,
+        SettingsSection::Network,
+        SettingsSection::Chains,
+        SettingsSection::Solana,
+        SettingsSection::Bitcoin,
+        SettingsSection::Ai,
+        SettingsSection::YubiKey,
+        SettingsSection::Other,
+    ] {
+        app.screen = Screen::Settings(section);
+        let items = app.items();
+        let map = crate::ui::screens::settings_map(section);
+        assert!(map.starts_with("이 구역: "));
+        assert!(has_text(&items, map), "{section:?}");
+        unique_ids(&items);
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 // ---------------------------------------------------------------- token rows (spec/04 §2.6)
 
 const SCAM: &str = "0x1111111111111111111111111111111111111111";
@@ -2623,9 +2769,10 @@ fn all_text(items: &[Item]) -> Vec<String> {
             | Item::Help(text)
             | Item::Subtitle(text)
             | Item::Display(text)
-            | Item::Mono(text)
             | Item::Banner(text, _)
             | Item::Field(_, text) => Some(text.clone()),
+            // Addresses are drawn in 4-character groups; compare them whole.
+            Item::Mono(text) => Some(text.replace(' ', "")),
             _ => None,
         })
         .collect()

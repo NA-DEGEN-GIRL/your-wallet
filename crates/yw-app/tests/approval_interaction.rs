@@ -981,3 +981,29 @@ fn ap5_can_approve_takes_no_ai_state() {
     };
     assert!(!function(&gate, 5));
 }
+
+/// Review 2026-11-07 F7: the status line explains a grey approve button only while the window's
+/// own timing holds it back; a missing acknowledgement or a blocked request is not "waiting".
+#[test]
+fn arm_waiting_is_only_the_window_timing() {
+    let mut s = session(message(RiskLevel::Info, false, 0), 10_000);
+    assert!(s.arm_waiting(10_500));
+    s.event(11_000, InteractionEvent::Tick);
+    assert!(s.approve_ready(11_000));
+    assert!(!s.arm_waiting(11_000));
+    s.set_foreground(11_100, false);
+    assert!(s.arm_waiting(11_100));
+
+    let mut high = session(message(RiskLevel::High, true, 1), 0);
+    high.event(5_000, InteractionEvent::Tick);
+    assert!(!high.arm_waiting(5_000), "the checkbox is the user's step");
+    // Clicking the checkbox is a press: the arm delay restarts there.
+    high.event(5_000, InteractionEvent::OtherPress);
+    high.set_ack(5_000, true);
+    assert!(high.arm_waiting(5_500));
+    high.event(6_100, InteractionEvent::Tick);
+    assert!(!high.arm_waiting(6_100));
+
+    let blocked = session(message(RiskLevel::Blocked, false, 1), 0);
+    assert!(!blocked.arm_waiting(5_000));
+}

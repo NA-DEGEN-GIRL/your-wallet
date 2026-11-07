@@ -931,12 +931,12 @@ impl App {
                 ],
             );
             let name = self.network_name(NetworkId::Eip155(chain_id));
-            self.banner(
-                None,
+            self.notice(
                 format!(
                     "{name}의 제네시스 해시를 첫 연결에서 고정했습니다: {}",
                     hash32_text(&genesis)
                 ),
+                crate::ui::main_window::Tone::Info,
             );
         }
         if let ChainCheck::Mismatch(kind) = check {

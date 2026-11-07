@@ -594,6 +594,17 @@ pub struct ApprovalGate {
 /// Whether approval input may be armed now.
 #[must_use]
 pub fn can_approve(gate: &ApprovalGate, now_ms: u64) -> bool {
+    content_ready(gate)
+        && now_ms >= gate.ready_at_ms.saturating_add(APPROVE_ARM_DELAY_MS)
+        && gate.is_foreground
+        && now_ms < gate.deadline_ms
+        && !gate.submitting
+}
+
+/// Whether everything the user decides is in place — approvable content, the acknowledgement
+/// box when required — so only the window's own timing (arm delay, foreground, press spacing)
+/// can still hold the button back.
+fn content_ready(gate: &ApprovalGate) -> bool {
     let (content_ok, ack_required) = match &gate.prepare {
         PrepareState::Ready(ReadyContent::Signing(request)) => (
             request.display.risk != RiskLevel::Blocked,
@@ -604,12 +615,7 @@ pub fn can_approve(gate: &ApprovalGate, now_ms: u64) -> bool {
         }
         PrepareState::Preparing(_) | PrepareState::Failed { .. } => (false, false),
     };
-    content_ok
-        && (!ack_required || gate.ack_checked)
-        && now_ms >= gate.ready_at_ms.saturating_add(APPROVE_ARM_DELAY_MS)
-        && gate.is_foreground
-        && now_ms < gate.deadline_ms
-        && !gate.submitting
+    content_ok && (!ack_required || gate.ack_checked)
 }
 
 /// A gate plus its interaction: the unit the approval window drives (spec/04 §3.4 "매 이벤트와
@@ -684,6 +690,18 @@ impl ApprovalSession {
         self.interaction.is_armed()
             && can_approve(&self.gate, now_ms)
             && (self.interaction.hold_source().is_some() || self.interaction.press_spaced(now_ms))
+    }
+
+    /// Whether the approve button is grey only because of the window's own timing — the 1 s arm
+    /// delay after it came to the front, the window not being in front, or the spacing after the
+    /// previous press — while the content and the acknowledgement are ready. Display only (the
+    /// status line says the button will turn on); it changes no gate input.
+    #[must_use]
+    pub fn arm_waiting(&self, now_ms: u64) -> bool {
+        content_ready(&self.gate)
+            && now_ms < self.gate.deadline_ms
+            && !self.gate.submitting
+            && !self.approve_ready(now_ms)
     }
 
     /// Toggles the acknowledgement checkbox.

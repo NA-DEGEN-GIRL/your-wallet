@@ -382,6 +382,9 @@ pub struct Banner {
     pub code: Option<ErrorCode>,
     /// Text.
     pub text: String,
+    /// Look: `Tone::Danger` for errors and warnings (the default), lighter for a notice
+    /// (review 2026-11-07 F5: a success notice in a red error band read as a failure).
+    pub tone: crate::ui::main_window::Tone,
 }
 
 /// Paths of the data folder.
@@ -810,7 +813,21 @@ impl App {
         if code.is_some() && self.banners.iter().any(|banner| banner.code == code) {
             return;
         }
-        self.banners.push(Banner { code, text });
+        self.banners.push(Banner {
+            code,
+            text,
+            tone: crate::ui::main_window::Tone::Danger,
+        });
+    }
+
+    /// Adds a codeless notice banner with its own tone (info, warning); dismissed like the
+    /// others with `알림 닫기`.
+    pub fn notice(&mut self, text: String, tone: crate::ui::main_window::Tone) {
+        self.banners.push(Banner {
+            code: None,
+            text,
+            tone,
+        });
     }
 
     pub(crate) fn error_banner(&mut self, code: ErrorCode) {
@@ -1133,7 +1150,7 @@ impl App {
         }
     }
 
-    /// Ctrl+1/2/3 (posted by the loop observer; the main window is in the foreground): the
+    /// Ctrl+1/2/3/4 (posted by the loop observer; the main window is in the foreground): the
     /// chain tab, exactly as clicking it, when S10 shows that tab enabled and no secret window
     /// is open.
     pub(crate) fn tab_shortcut(&mut self, tab: usize) {

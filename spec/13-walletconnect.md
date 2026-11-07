@@ -106,7 +106,7 @@
 
 ## 8. 설정·저장
 
-- `settings.json` `walletconnect: {"projectId": "<32자리 소문자 16진수>"}` — 비밀이 아니다(dApp은 웹 페이지에 넣는다). 기본값 없음(없으면 키를 쓰지 않고 WalletConnect는 꺼짐). **이 지갑에는 기본 Project ID가 없다**: 사용자가 dashboard.reown.com에서 무료 프로젝트를 만들고 ID를 붙여 넣는다. 그 프로젝트의 허용 출처(allowlist)는 비워 둔다(데스크톱 앱은 Origin을 보내지 않는다).
+- `settings.json` `walletconnect: {"projectId": "<32자리 소문자 16진수>"}` — 비밀이 아니다(dApp은 웹 페이지에 넣는다). 기본값 없음(없으면 키를 쓰지 않고 WalletConnect는 꺼짐). **이 지갑에는 기본 Project ID가 없다**: 사용자가 dashboard.reown.com에서 무료 프로젝트를 만들고 ID를 붙여 넣는다. 그 프로젝트의 허용 출처(allowlist)는 비워 둔다(데스크톱 앱은 Origin을 보내지 않는다). 입력 자리는 S13 WalletConnect 카드다([04] §2.9: 없으면 "1단계: Reown Project ID 저장" 준비 카드, 있으면 값 한 줄과 `Project ID 바꾸기 ▸`; 비우고 저장하면 끈다).
 - meta 선택 키 `walletconnect: {"clientSeed": hex, "sessions": [{topic, symKey, peerPublic, peer{name,description,url,icons}, accounts, chains, methods, events, expiry, acknowledged, verify, created}]}`. meta는 vault에서 나온 키로 봉인되므로 세션 키·릴레이 클라이언트 키는 평문으로 디스크에 닿지 않는다. 읽을 때 `topic ≠ SHA-256(symKey)`이거나 형식이 틀린 세션은 버리고, 만료된 세션은 복원하지 않는다. 이전 버전은 이 키를 모르는 키로 보존한다.
 - 수명: 작업 스레드는 Project ID가 있는 상태로 처음 잠금 해제할 때 시작하고 세션을 받는다. 잠그면 세션·연결은 유지하되(키는 메모리에만), 들어오는 서명·연결 요청은 4100으로 거절한다(§5.2, 잠금 해제 창 없음). 앱을 켠 뒤 첫 잠금 해제 전에는 연결하지 않으며, 그동안 온 요청은 릴레이 우편함(TTL 안)에서 기다린다. 잠긴 동안 끝난 세션의 권한은 다음 세션 목록 동기화 때 지운다.
 - 지갑 초기화(S22)는 잠근 뒤 작업 스레드를 멈추고 UI 상태를 비운다(옛 지갑의 세션·릴레이 키·연결이 새 지갑에 남지 않는다; 새 지갑의 첫 잠금 해제 때 새로 시작). 작업 스레드가 이미 받은 meta와 릴레이 클라이언트 키가 다른 `Load`를 받으면 살아 있는 상태(세션·제안·페어링·대기 응답·연결)를 버리고 새로 받는다. UI는 세션 목록 스냅숏의 클라이언트 키가 지금 meta의 키와 다르면 표시도 저장도 하지 않는다.

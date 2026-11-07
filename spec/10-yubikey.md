@@ -236,7 +236,7 @@ Bitcoin 슬롯의 인덱스는 **계정 0의 받기 체인 주소 인덱스**(`�
 3. OpenPGP: VERIFY PW3 → 슬롯마다 속성 `C1`/`C3` → 가져오기 → UIF → 공개키 읽기 = 파생 공개키(`KeyMismatch`).
 4. PIV(OpenPGP 뒤에: 다른 애플릿을 SELECT하면 PW3 확인이 풀린다 [OPC] p52): 관리 키 메타데이터 → ADMIN DATA(PIN으로 보호된 키면 VERIFY PIN → PRINTED, §5.3.3) → 상호 인증 → 슬롯마다 가져오기 → 메타데이터 확인.
 
-구현(2026-11-06): 마법사 자격 정보 단계(d)에 들어갈 때 PIV 슬롯이 있으면 키 작업자가 꽂힌 카드의 관리 키 상태를 읽는다(`YkJob::ProbeManagement`: SELECT·버전·일련번호·GET METADATA `9B`·GET DATA ADMIN DATA, 읽기만). 보호되어 있으면 관리 키 선택 대신 "관리 키: PIN으로 보호됨 — PIV PIN만 입력"을 보이고 `가져오기`는 (OpenPGP 관리자 PIN 뒤에) W12 PIV PIN(6–8)을 묻는다(`EnrolAuth::piv_pin`). 보호되어 있지 않으면 지금처럼 "기본 관리 키 사용 / 관리 키 직접 입력"이며, 읽은 기본값 여부로 처음 선택을 맞춘다. 읽지 못했으면(카드 없음) 그 선택을 그대로 보이고, 보호된 카드면 등록이 `ManagementKeyProtected`로 아무것도 쓰기 전에 멈춘다 — `다시 시도`가 상태를 다시 읽는다. 선택지 이름과 설명([04] §2.19): "니모닉에서 키를 넣기 (처음 등록)" / "이미 넣은 키 연결하기 (가져오기 없이 등록)".
+구현(2026-11-06): 마법사 자격 정보 단계(d)에 들어갈 때 PIV 슬롯이 있으면 키 작업자가 꽂힌 카드의 관리 키 상태를 읽는다(`YkJob::ProbeManagement`: SELECT·버전·일련번호·GET METADATA `9B`·GET DATA ADMIN DATA, 읽기만). 보호되어 있으면 관리 키 선택 대신 "관리 키: PIN으로 보호됨 — PIV PIN만 입력"을 보이고 `가져오기`는 (OpenPGP 관리자 PIN 뒤에) W12 PIV PIN(6–8)을 묻는다(`EnrolAuth::piv_pin`). 보호되어 있지 않으면 지금처럼 "기본 관리 키 사용 / 관리 키 직접 입력"이며, 읽은 기본값 여부로 처음 선택을 맞춘다. 읽지 못했으면(카드 없음) 그 선택을 그대로 보이고, 보호된 카드면 등록이 `ManagementKeyProtected`로 아무것도 쓰기 전에 멈춘다 — `다시 시도`가 상태를 다시 읽는다. 선택지 이름과 설명([04] §2.19): "복구 단어에서 키를 넣기 (처음 등록)" / "이미 넣은 키 연결하기 (가져오기 없이 등록)".
 5. record 완성(일련번호, 펌웨어, 지문, 계획 순서의 슬롯·공개키). 기존 record들과의 일관성(같은 경로 = 같은 공개키) 확인.
 6. vault에 `add_hardware_key`(또는 첫 YubiKey 지갑이면 `create_with_hardware`). 그 뒤 "다시 확인"(`sign::check_key`, 읽기 전용)으로 슬롯마다 공개키를 한 번 더 읽어 보인다.
 

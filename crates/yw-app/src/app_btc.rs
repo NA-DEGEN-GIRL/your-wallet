@@ -90,7 +90,7 @@ pub const T_BTC_MODE_HD: &str = "받을 때마다 새 주소 (HD, 프라이버�
 /// One-line trade-off under the address-mode radios.
 pub const T_BTC_MODE_HELP: &str = "고정 주소는 받기·잔돈이 늘 같은 주소(…/0/0)라 관리와 소유 증명이 쉽지만, 누구나 그 주소의 잔액과 거래를 모두 볼 수 있습니다. 새 주소 방식은 프라이버시가 낫지만 주소가 계속 바뀝니다.";
 /// The receive note of an HD account in fixed-address mode (spec/04 §2.8).
-pub const T_BTC_FIXED_RECEIVE: &str = "이 계정은 주소 하나만 씁니다. 같은 니모닉을 Electrum/Sparrow/UniSat에 넣으면 같은 주소가 나옵니다.";
+pub const T_BTC_FIXED_RECEIVE: &str = "이 계정은 주소 하나만 씁니다. 같은 복구 단어를 Electrum/Sparrow/UniSat에 넣으면 같은 주소가 나옵니다.";
 /// The key-source radio of `계정 추가`: the standard BTC path (default).
 pub const T_BTC_SOURCE_STANDARD: &str = "BTC 표준 경로 (권장, 기본값)";
 /// The key-source radio of `계정 추가`: the key of an EVM account.
@@ -98,7 +98,7 @@ pub const T_BTC_SOURCE_EVM: &str = "EVM 계정과 같은 키";
 /// Help under the standard key source.
 pub const T_BTC_SOURCE_STANDARD_HELP: &str = "m/{44·49·84·86}'/{코인}'/{계정}'/0/0 — 같은 복구 단어를 다른 Bitcoin 지갑에 넣어도 같은 주소가 나옵니다.";
 /// The warning of an account on an EVM account's key (spec/08 §3.5).
-pub const T_BTC_EVM_SHARED: &str = "같은 키를 쓰면 EVM 주소와 BTC 주소의 공개키가 같아져, 누구나 두 주소가 같은 사람 것임을 알 수 있습니다. 다른 BTC 지갑(Electrum·Sparrow)에 니모닉만 넣으면 이 주소가 보이지 않습니다(복구는 이 지갑이나 개인키 내보내기로).";
+pub const T_BTC_EVM_SHARED: &str = "같은 키를 쓰면 EVM 주소와 BTC 주소의 공개키가 같아져, 누구나 두 주소가 같은 사람 것임을 알 수 있습니다. 다른 BTC 지갑(Electrum·Sparrow)에 복구 단어만 넣으면 이 주소가 보이지 않습니다(복구는 이 지갑이나 개인키 내보내기로).";
 
 /// The key source chosen in `계정 추가` (spec/08 §3.5).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

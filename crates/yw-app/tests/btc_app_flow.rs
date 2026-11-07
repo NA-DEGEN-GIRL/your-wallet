@@ -2971,7 +2971,7 @@ fn evm_shared_account_end_to_end() -> TestResult {
         assert!(view.fixed && view.single_key);
         assert!(
             view.note
-                .contains("니모닉만 넣으면 이 주소가 보이지 않습니다")
+                .contains("복구 단어만 넣으면 이 주소가 보이지 않습니다")
         );
         // Fund, refresh, send: change back to the same address.
         let script = account.expected_script(BtcChain::Receive, 0)?;

@@ -47,8 +47,21 @@ pub const WM_YW_ACTIVATE: u32 = 0x8002;
 pub const WM_YW_CHILD_DONE: u32 = 0x8003;
 /// Ctrl+L observed by the message loop (`WM_APP + 4`).
 pub const WM_YW_LOCK_SHORTCUT: u32 = 0x8004;
-/// Ctrl+1/2/3 observed by the message loop (`WM_APP + 5`, wParam = tab 1–3): the chain tabs.
+/// Ctrl+1/2/3/4 observed by the message loop (`WM_APP + 5`, wParam = tab 1–4): the chain tabs.
 pub const WM_YW_TAB_SHORTCUT: u32 = 0x8005;
+
+/// The chain tab (1 EVM, 2 Solana, 3 Bitcoin, 4 Zcash) of a digit key's virtual-key code
+/// (`'1'`–`'4'`, used with Ctrl), or `None`.
+#[must_use]
+pub const fn chain_tab_key(vk: u16) -> Option<usize> {
+    match vk {
+        0x31 => Some(1),
+        0x32 => Some(2),
+        0x33 => Some(3),
+        0x34 => Some(4),
+        _ => None,
+    }
+}
 /// Event queue bound.
 pub const EVENT_QUEUE_CAP: usize = 4_096;
 /// Main window timer.

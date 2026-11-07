@@ -25,6 +25,8 @@ pub mod ids {
     pub const PROJECT_SAVE: u16 = 16_006;
     /// `모든 WalletConnect 세션 끊기`.
     pub const DISCONNECT_ALL: u16 = 16_007;
+    /// `Project ID 바꾸기 ▸` / `접기 ▾` (a saved id).
+    pub const PROJECT_TOGGLE: u16 = 16_008;
     /// Session row buttons (`연결 해제`).
     pub const ROW_BASE: u16 = 16_020;
     /// Row span (the engine keeps at most 64 sessions).
@@ -39,8 +41,14 @@ pub mod ids {
         PROJECT_EDIT,
         PROJECT_SAVE,
         DISCONNECT_ALL,
+        PROJECT_TOGGLE,
     ];
 }
+
+/// The setup card's intro (no Project ID yet).
+pub const T_WC_SETUP_INTRO: &str = "확장 프로그램 대신 WalletConnect로 dApp에 연결합니다(EVM). 처음 한 번 Reown Project ID를 저장하면 dApp의 WalletConnect QR이나 링크로 연결할 수 있습니다. 연결과 서명은 확장과 같은 이 앱의 승인 창에서 확인합니다.";
+/// What `WalletConnect` is for and how a pairing starts (the panel with a Project ID).
+pub const T_WC_INTRO: &str = "확장 프로그램 대신 WalletConnect로 dApp에 연결합니다(EVM). dApp의 'WalletConnect' 창에서 '링크 복사'를 누르고 아래에 붙여 넣거나, QR을 Win+Shift+S로 캡처한 뒤 '클립보드 이미지에서 QR 읽기'를 누르세요. 연결과 서명은 확장과 같은 이 앱의 승인 창에서 확인합니다.";
 
 fn local_time(seconds: u64) -> String {
     let unix_ms = seconds.saturating_mul(1_000);
@@ -55,40 +63,86 @@ fn local_time(seconds: u64) -> String {
 }
 
 impl App {
-    /// The `WalletConnect` panel (drawn first on S13).
+    /// The `WalletConnect` panel (drawn first on S13). Without a Project ID it is a two-step
+    /// setup card (the ID first; the pairing inputs appear once it is saved); with one, the
+    /// pairing inputs come first and the saved ID is one line with `Project ID 바꾸기 ▸`.
     pub(crate) fn wc_panel(&self, items: &mut Vec<Item>) {
-        items.push(Item::CardStart(Some("WalletConnect 연결".to_owned())));
-        items.push(Item::Help(
-            "확장 프로그램 대신 WalletConnect로 dApp에 연결합니다. dApp의 'WalletConnect' 창에서 '링크 복사'를 누르고 아래에 붙여 넣거나, QR을 Win+Shift+S로 캡처한 뒤 '클립보드 이미지에서 QR 읽기'를 누르세요."
-                .to_owned(),
-        ));
         let has_project = !self.settings.walletconnect_project.is_empty();
+        if !has_project {
+            self.wc_setup_card(items);
+            self.wc_session_cards(items);
+            return;
+        }
+        items.push(Item::CardStart(Some("WalletConnect 연결".to_owned())));
+        items.push(Item::Help(T_WC_INTRO.to_owned()));
         items.push(Item::LabeledRow(
             "연결 주소 (wc:…)".to_owned(),
             vec![
                 Ctl::edit(ids::URI_EDIT, &self.wc.uri_text, 420, false, 2_048),
-                Ctl::primary(ids::PAIR, "연결").enabled(has_project),
+                Ctl::primary(ids::PAIR, "연결"),
             ],
         ));
-        items.push(Item::Row(vec![
-            Ctl::button(ids::CLIPBOARD_QR, "클립보드 이미지에서 QR 읽기").enabled(has_project),
-        ]));
+        items.push(Item::Row(vec![Ctl::button(
+            ids::CLIPBOARD_QR,
+            "클립보드 이미지에서 QR 읽기",
+        )]));
         items.push(Item::LabeledRow(
             "이미지 파일 경로".to_owned(),
             vec![
                 Ctl::edit(ids::FILE_EDIT, &self.wc.file_text, 420, false, 1_024),
-                Ctl::button(ids::FILE_QR, "이미지 파일에서 QR 읽기").enabled(has_project),
+                Ctl::button(ids::FILE_QR, "이미지 파일에서 QR 읽기"),
             ],
         ));
         if let Some(notice) = &self.wc.notice {
             items.push(Item::Banner(notice.clone(), Tone::Info));
         }
-        let status = if has_project {
-            self.wc.status.text()
-        } else {
-            crate::walletconnect::worker::RelayStatus::NoProject.text()
-        };
-        items.push(Item::Field("릴레이".to_owned(), status));
+        items.push(Item::Field("릴레이".to_owned(), self.wc.status.text()));
+        let editing = self.wc.project_open || self.wc.project_text.is_some();
+        items.push(Item::Field(
+            "Reown Project ID".to_owned(),
+            self.settings.walletconnect_project.clone(),
+        ));
+        items.push(Item::Row(vec![Ctl::link(
+            ids::PROJECT_TOGGLE,
+            if editing {
+                "Project ID 바꾸기 접기 ▾"
+            } else {
+                "Project ID 바꾸기 ▸"
+            },
+        )]));
+        if editing {
+            self.wc_project_row(items, false);
+        }
+        items.push(Item::CardEnd);
+        self.wc_session_cards(items);
+    }
+
+    /// The setup card shown while no Project ID is saved: step 1 (the ID) with its input, and
+    /// step 2 (pairing) described until the ID is saved.
+    fn wc_setup_card(&self, items: &mut Vec<Item>) {
+        items.push(Item::CardStart(Some(
+            "WalletConnect 연결 — 처음 한 번 준비".to_owned(),
+        )));
+        items.push(Item::Help(T_WC_SETUP_INTRO.to_owned()));
+        items.push(Item::Field(
+            "릴레이".to_owned(),
+            crate::walletconnect::worker::RelayStatus::NoProject.text(),
+        ));
+        items.push(Item::Subtitle("1단계: Reown Project ID 저장".to_owned()));
+        self.wc_project_row(items, true);
+        if let Some(notice) = &self.wc.notice {
+            items.push(Item::Banner(notice.clone(), Tone::Info));
+        }
+        items.push(Item::Subtitle("2단계: dApp에 연결".to_owned()));
+        items.push(Item::Help(
+            "Project ID를 저장하면 여기에 dApp의 연결 주소(wc:…)를 붙여 넣는 칸과 QR 이미지 읽기 버튼이 나타납니다."
+                .to_owned(),
+        ));
+        items.push(Item::CardEnd);
+    }
+
+    /// The Project ID input, `저장`, and where to get the ID.
+    fn wc_project_row(&self, items: &mut Vec<Item>, setup: bool) {
         let project = self
             .wc
             .project_text
@@ -98,15 +152,17 @@ impl App {
             "Reown Project ID".to_owned(),
             vec![
                 Ctl::edit(ids::PROJECT_EDIT, &project, 300, false, 64),
-                Ctl::button(ids::PROJECT_SAVE, "저장"),
+                if setup {
+                    Ctl::primary(ids::PROJECT_SAVE, "저장")
+                } else {
+                    Ctl::button(ids::PROJECT_SAVE, "저장")
+                },
             ],
         ));
         items.push(Item::Help(
-            "WalletConnect 릴레이를 쓰려면 dashboard.reown.com에서 무료 프로젝트를 만들고 그 Project ID(32자리)를 넣어야 합니다. 이 지갑에는 기본 ID가 들어 있지 않습니다. Project ID는 비밀값이 아닙니다. 프로젝트의 허용 출처(allowlist)는 비워 두세요 — 데스크톱 앱은 웹 출처를 보내지 않습니다."
+            "WalletConnect 릴레이를 쓰려면 dashboard.reown.com에서 무료 프로젝트를 만들고 그 Project ID(32자리)를 넣어야 합니다. 이 지갑에는 기본 ID가 들어 있지 않습니다. Project ID는 비밀값이 아닙니다. 프로젝트의 허용 출처(allowlist)는 비워 두세요 — 데스크톱 앱은 웹 출처를 보내지 않습니다. 비우고 저장하면 WalletConnect가 꺼집니다."
                 .to_owned(),
         ));
-        items.push(Item::CardEnd);
-        self.wc_session_cards(items);
     }
 
     fn wc_session_cards(&self, items: &mut Vec<Item>) {
@@ -201,6 +257,11 @@ impl App {
                 self.wc_save_project();
             }
             ids::DISCONNECT_ALL => self.wc_disconnect_all(),
+            ids::PROJECT_TOGGLE => {
+                let open = self.wc.project_open || self.wc.project_text.is_some();
+                self.wc.project_open = !open;
+                self.wc.project_text = None;
+            }
             _ => {
                 let Some(offset) = id
                     .checked_sub(ids::ROW_BASE)

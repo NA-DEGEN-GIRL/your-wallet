@@ -303,6 +303,8 @@ pub const T_DISCARD: &str = "폐기는 이 앱에서 추적만 멈추고 '폐기
 /// T-TOKEN-DELETE: `삭제` of a user-added EVM token (spec/04 §2.6); the label and the full
 /// contract address follow it.
 pub const T_TOKEN_DELETE: &str = "이 토큰을 이 네트워크의 토큰 목록에서 지웁니다. 토큰이나 잔액은 그대로이며 블록체인에는 아무것도 보내지 않습니다. 같은 컨트랙트 주소로 언제든 다시 추가할 수 있습니다. 지운 뒤 이 토큰의 활동 기록은 원시 단위로 보입니다.";
+/// The `내 계정` row of a wallet's only account: its address and balance are on the hero card.
+pub const T_SINGLE_ACCOUNT: &str = "주소와 잔액은 위 카드에 있습니다";
 /// Every chain's `받기` (S12) command.
 pub const RECEIVE_IDS: [u16; 3] = [
     crate::ui::screens_evm::ids::RECEIVE_OPEN,
@@ -369,7 +371,7 @@ fn header(app: &App, items: &mut Vec<Item>) {
         ]));
     }
     for banner in &app.banners {
-        items.push(Item::Banner(banner.text.clone(), Tone::Danger));
+        items.push(Item::Banner(banner.text.clone(), banner.tone));
     }
     app.yk_pin_needed_items(items);
     if let Some(info) = &app.info {
@@ -380,6 +382,36 @@ fn header(app: &App, items: &mut Vec<Item>) {
             ids::DISMISS_BANNERS,
             "알림 닫기",
         )]));
+    }
+}
+
+/// The one-line map under the settings tabs: what the selected section holds, and where the
+/// things that are not in settings live (spec/04 §2.11).
+#[must_use]
+pub const fn settings_map(section: SettingsSection) -> &'static str {
+    match section {
+        SettingsSection::Security => {
+            "이 구역: 자동 잠금 · 복구 단어·개인키 보기와 복사 허용 · 비밀번호 변경 · 지갑 파일 상태 · 지갑 초기화"
+        }
+        SettingsSection::Network => {
+            "이 구역: RPC 공급자(QuickNode·알케미) · 네트워크별 RPC 주소(EVM·Solana·Bitcoin·Zcash) · rpc.json 가져오기(개발용, 파일이 있을 때 맨 아래)"
+        }
+        SettingsSection::Chains => {
+            "이 구역: EVM 체인 목록과 체인 추가·편집 · Hyperliquid HyperCore 카드 켜기 · 수수료 상한(고급). 토큰 추가는 메인의 '토큰' 카드에 있습니다."
+        }
+        SettingsSection::Solana => {
+            "이 구역: Solana 네트워크(mainnet·devnet) · 다른 경로 스캔 · 수수료 상한(고급)"
+        }
+        SettingsSection::Bitcoin => {
+            "이 구역: Bitcoin 사용과 네트워크 · 주소 조회 서버(인덱서) · Esplora URL. Bitcoin 계정·주소 방식은 메인의 Bitcoin 탭에 있습니다."
+        }
+        SettingsSection::Ai => "이 구역: AI 설명(선택 기능) 켜기 · AI 공급자 · AI API 키",
+        SettingsSection::YubiKey => {
+            "이 구역: YubiKey 등록 · PIN 설정 · 슬롯 구성 바꾸기 · YubiKey 비우기 · 계정별 YubiKey. 서명할 때는 승인 뒤 PIN 창이 저절로 열립니다."
+        }
+        SettingsSection::Other => {
+            "이 구역: Chrome 확장 설치 · WalletConnect · 브라우저 연결 · 진단(로그) · 버전·데이터 폴더·단축키. Zcash는 메인의 Zcash 탭에서 켭니다."
+        }
     }
 }
 
@@ -394,7 +426,10 @@ impl App {
                 "Your Wallet".to_owned(),
                 vec![
                     Ctl::button(crate::ui::screens_evm::ids::BOOK_OPEN, "주소록"),
-                    Ctl::button(crate::ui::screens_sites::ids::SITES_OPEN, "연결된 사이트"),
+                    Ctl::button(
+                        crate::ui::screens_sites::ids::SITES_OPEN,
+                        "사이트·WalletConnect",
+                    ),
                     Ctl::button(ids::OPEN_SETTINGS, "설정"),
                     Ctl::button(ids::LOCK, "잠금 (Ctrl+L)"),
                 ],
@@ -858,8 +893,9 @@ impl App {
             T_ACCOUNTS_BACKUP.to_owned()
         }));
         let selected = self.selected_pref();
-        for (row, (pref, label, address, path)) in self
-            .account_rows()
+        let rows = self.account_rows();
+        let single = rows.len() == 1;
+        for (row, (pref, label, address, path)) in rows
             .into_iter()
             .take(usize::from(ids::ACCOUNT_SPAN))
             .enumerate()
@@ -879,14 +915,19 @@ impl App {
                 )
                 .width(420),
             ]));
-            let balance = self.balance_text(&address);
-            let shown = yw_core::evm::address::parse_address(&address)
-                .map_or_else(|_| address.clone(), |parsed| format_address(&parsed));
-            items.push(Item::Mono(shown));
-            items.push(Item::Help(match balance {
-                Some(balance) => format!("{path} · {balance}"),
-                None => path,
-            }));
+            if single && is_selected {
+                // One account: its address and balance are the hero card's (review D3).
+                items.push(Item::Help(format!("{path} · {T_SINGLE_ACCOUNT}")));
+            } else {
+                let balance = self.balance_text(&address);
+                let shown = yw_core::evm::address::parse_address(&address)
+                    .map_or_else(|_| address.clone(), |parsed| format_address(&parsed));
+                items.push(Item::Mono(shown));
+                items.push(Item::Help(match balance {
+                    Some(balance) => format!("{path} · {balance}"),
+                    None => path,
+                }));
+            }
             if is_selected {
                 if self.rename == Some(pref) {
                     items.push(Item::Row(vec![
@@ -983,6 +1024,7 @@ impl App {
                 section == SettingsSection::Other,
             ),
         ]));
+        items.push(Item::Help(settings_map(section).to_owned()));
         match section {
             SettingsSection::Security => self.security_section(items),
             SettingsSection::Network => self.network_section(items),
@@ -1103,7 +1145,10 @@ impl App {
         reason = "the RPC provider form and the URL rows"
     )]
     fn network_section(&self, items: &mut Vec<Item>) {
-        self.rpc_import_section(items);
+        // A pending rpc.json import review stays first (it waits for a decision).
+        if self.rpc_import.plan.is_some() {
+            self.rpc_import_section(items);
+        }
         items.push(Item::CardStart(Some("RPC 공급자".to_owned())));
         items.push(Item::Help(
             "RPC는 지갑이 블록체인에서 잔액을 읽고 거래를 보낼 때 쓰는 연결 주소입니다. QuickNode나 알케미 계정 정보를 한 번 넣으면 아래 모든 네트워크의 주소를 자동으로 만들 수 있습니다."
@@ -1255,6 +1300,10 @@ impl App {
             )]));
             items.push(Item::CardEnd);
         }
+        // The developer import's button last: most owners set RPC with the provider card above.
+        if self.rpc_import.plan.is_none() {
+            self.rpc_import_section(items);
+        }
     }
 
     fn other_section(&self, items: &mut Vec<Item>) {
@@ -1265,9 +1314,27 @@ impl App {
             "Chrome 확장 설치 방법·폴더",
         )]));
         items.push(Item::CardEnd);
+        items.push(Item::CardStart(Some("WalletConnect".to_owned())));
+        items.push(Item::Help(
+            "확장 없이 dApp의 WalletConnect QR·링크로 연결합니다(EVM). 처음 한 번 Reown Project ID가 필요하고, 연결·세션 관리는 '연결된 사이트 · WalletConnect' 화면에서 합니다."
+                .to_owned(),
+        ));
+        items.push(Item::Field(
+            "상태".to_owned(),
+            if self.settings.walletconnect_project.is_empty() {
+                "Project ID 없음 — 꺼져 있음".to_owned()
+            } else {
+                format!("Project ID 설정됨 · 세션 {}개", self.wc.sessions.len())
+            },
+        ));
+        items.push(Item::Row(vec![Ctl::button(
+            crate::ui::screens_sites::ids::SITES_OPEN,
+            "연결된 사이트 · WalletConnect 열기",
+        )]));
+        items.push(Item::CardEnd);
         items.push(Item::CardStart(Some("브라우저 연결".to_owned())));
         items.push(Item::Help(
-            "크롬 확장과 이 앱을 잇는 설정입니다. 사이트의 연결·서명 요청은 언제나 이 앱의 승인 창에서 확인합니다."
+            "Chrome 확장과 이 앱을 잇는 설정입니다. 사이트의 연결·서명 요청은 언제나 이 앱의 승인 창에서 확인합니다."
                 .to_owned(),
         ));
         items.push(Item::Row(vec![Ctl::check(
@@ -1287,10 +1354,6 @@ impl App {
             "dApp을 직접 개발할 때만 켜세요. http://localhost·127.0.0.1 페이지가 연결을 요청할 수 있게 됩니다."
                 .to_owned(),
         ));
-        items.push(Item::Row(vec![Ctl::button(
-            crate::ui::screens_sites::ids::SITES_OPEN,
-            "연결된 사이트 보기",
-        )]));
         items.push(Item::CardEnd);
         items.push(Item::CardStart(Some("진단".to_owned())));
         items.push(Item::Help("로그에는 비밀번호·니모닉·개인키·API 키·RPC 엔드포인트 URL이 없습니다. 주소와 거래 해시는 있을 수 있습니다.".to_owned()));
@@ -1330,7 +1393,8 @@ impl App {
         )]));
         items.push(Item::Field(
             "단축키".to_owned(),
-            "Ctrl+L 잠금 · Ctrl+1 / 2 / 3 체인 탭(EVM·Solana·Bitcoin) · Tab 다음 칸".to_owned(),
+            "Ctrl+L 잠금 · Ctrl+1 / 2 / 3 / 4 체인 탭(EVM·Solana·Bitcoin·Zcash) · Tab 다음 칸"
+                .to_owned(),
         ));
         items.push(Item::CardEnd);
     }

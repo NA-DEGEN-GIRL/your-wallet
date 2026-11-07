@@ -402,7 +402,7 @@ impl App {
             if rpc_json_path().is_some_and(|path| path.is_file()) {
                 items.push(Item::CardStart(Some("rpc.json에서 가져오기".to_owned())));
                 items.push(Item::Help(
-                    "개발용 설정 파일(%USERPROFILE%\\.yw-dev\\rpc.json)에 있는 RPC 주소를 읽어 아래 목록에 넣습니다. 저장하기 전에 가린 목록으로 한 번 더 확인합니다."
+                    "개발용 설정 파일(%USERPROFILE%\\.yw-dev\\rpc.json)에 있는 RPC 주소를 읽어 위 '네트워크별 RPC 주소' 목록에 넣습니다. 저장하기 전에 가린 목록으로 한 번 더 확인합니다."
                         .to_owned(),
                 ));
                 items.push(Item::Row(vec![Ctl::button(

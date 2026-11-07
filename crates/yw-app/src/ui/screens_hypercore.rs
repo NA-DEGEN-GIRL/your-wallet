@@ -108,27 +108,33 @@ fn network_row(network: HcNetwork) -> Item {
     ])
 }
 
+/// The `HyperCore` mainnet band (named, since the EVM tab above may show a testnet).
+pub const T_HC_MAINNET: &str = "HyperCore 메인넷: 실제 자산";
+
+/// The network band of the card and S-HC: testnet, or T-MAINNET like the built-in EVM mainnets
+/// (the card's network is its own, independent of the selected EVM chain).
+fn network_band(network: HcNetwork, items: &mut Vec<Item>) {
+    items.push(match network {
+        HcNetwork::Testnet => {
+            Item::Banner("테스트넷 — 실제 자산이 아닙니다".to_owned(), Tone::Testnet)
+        }
+        HcNetwork::Mainnet => Item::Banner(T_HC_MAINNET.to_owned(), Tone::BtcMainnet),
+    });
+}
+
 impl App {
     /// The S10 `HyperCore` card (balances, actions, session activity).
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the card's sections in display order"
-    )]
     pub fn hc_card(&self, items: &mut Vec<Item>) {
         if !self.hc_visible() {
             return;
         }
         let network = self.hc_network();
-        items.push(Item::CardStart(Some(format!(
-            "Hyperliquid {}",
-            network.label()
-        ))));
-        if network == HcNetwork::Testnet {
-            items.push(Item::Banner(
-                "테스트넷 — 실제 자산이 아닙니다".to_owned(),
-                Tone::Testnet,
-            ));
-        }
+        items.push(Item::CardStart(None));
+        items.push(Item::Badged(
+            crate::ui::badge::Badge::hyperliquid(),
+            Box::new(Item::Subtitle(format!("Hyperliquid {}", network.label()))),
+        ));
+        network_band(network, items);
         items.push(network_row(network));
         items.push(Item::Help(
             "같은 EVM 주소의 HyperCore(Hyperliquid L1) 잔액입니다. 이 지갑은 전송만 하고 거래(주문)는 하지 않습니다."
@@ -233,20 +239,18 @@ impl App {
             HcFormKind::Withdraw => "Arbitrum으로 USDC 출금",
             HcFormKind::ToEvm => "HyperEVM으로 이동",
         };
-        items.push(Item::Title(format!("{title} — {}", network.label())));
-        if network == HcNetwork::Testnet {
-            items.push(Item::Banner(
-                "테스트넷 — 실제 자산이 아닙니다".to_owned(),
-                Tone::Testnet,
-            ));
-        }
+        items.push(Item::Badged(
+            crate::ui::badge::Badge::hyperliquid(),
+            Box::new(Item::Title(format!("{title} — {}", network.label()))),
+        ));
+        network_band(network, items);
         if let Some(info) = &form.info {
             items.push(Item::Banner(info.clone(), Tone::Warn));
         }
         if let Some((account, _, label)) = self.selected_account() {
             items.push(Item::CardStart(Some("서명 계정".to_owned())));
             items.push(Item::Text(label));
-            items.push(Item::Mono(account.to_checksum()));
+            items.push(Item::Mono(yw_core::evm::display::format_address(&account)));
             items.push(Item::CardEnd);
         }
         items.push(Item::CardStart(Some("내용".to_owned())));

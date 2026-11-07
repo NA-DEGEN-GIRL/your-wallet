@@ -873,11 +873,11 @@ impl App {
     pub fn hc_open_from_evm(&mut self) {
         let chain_id = self.hc_network().hyperevm_chain_id();
         if !self.settings.registered_evm().contains(&chain_id) {
-            self.banner(
-                None,
+            self.notice(
                 format!(
                     "HyperEVM(chainId {chain_id})이 등록되어 있지 않습니다. 설정 → EVM 체인에서 추가하세요."
                 ),
+                crate::ui::main_window::Tone::Warn,
             );
             return;
         }

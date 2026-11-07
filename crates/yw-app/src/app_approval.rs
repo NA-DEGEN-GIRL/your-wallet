@@ -245,6 +245,11 @@ struct BarState {
     focus: Option<Focus>,
 }
 
+/// The status-line note while the approve button waits for its 1 s arm delay (spec/04 §3.4-2).
+pub const T_ARM_WAIT: &str = "잠시 뒤 버튼이 켜집니다 (실수 클릭을 막는 1초 대기)";
+/// The same while another window is in front.
+pub const T_ARM_WAIT_BACKGROUND: &str = "이 창을 클릭해 앞으로 가져오면 1초 뒤 버튼이 켜집니다";
+
 fn bar_state(ui: &ApprovalUi, waiting: usize, now: u64) -> BarState {
     let gate = &ui.session.gate;
     let remaining = gate.deadline_ms.saturating_sub(now);
@@ -266,6 +271,17 @@ fn bar_state(ui: &ApprovalUi, waiting: usize, now: u64) -> BarState {
         .map(|left| HIGH_RISK_HOLD_MS.saturating_sub(left));
     if let Some(done) = held_ms {
         let _ = write!(status, "   ·   {}.{}초", done / 1_000, (done % 1_000) / 100);
+    }
+    if held_ms.is_none() && !ui.view.blocked && ui.session.arm_waiting(now) {
+        // Why the button is grey (review 2026-11-07 F7); the arm delay itself is unchanged.
+        if !status.is_empty() {
+            status.push_str("   ·   ");
+        }
+        status.push_str(if gate.is_foreground {
+            T_ARM_WAIT
+        } else {
+            T_ARM_WAIT_BACKGROUND
+        });
     }
     if status.is_empty() && ui.view.high && !ui.view.blocked {
         status.push_str("경고를 확인하고 체크한 뒤 '승인'을 2초 동안 누르고 있으세요.");

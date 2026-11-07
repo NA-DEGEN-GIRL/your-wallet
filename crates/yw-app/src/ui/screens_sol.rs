@@ -401,6 +401,7 @@ impl App {
         }
         let selected = selected.map(|(id, ..)| id);
         let removable = self.can_remove_imported();
+        let single = rows.len() == 1;
         for (row, (id, label, address)) in rows
             .into_iter()
             .take(usize::from(ids::ACCOUNT_SPAN))
@@ -423,18 +424,27 @@ impl App {
                 )
                 .width(420),
             ]));
-            items.push(Item::Mono(grouped(&address)));
-            let balance = self.sol_balance(&address).map_or_else(
-                || "잔액 알 수 없음".to_owned(),
-                |lamports| {
-                    format!(
-                        "잔액 {} ({} lamports, RPC finalized)",
-                        App::sol_text(lamports),
-                        format_raw(lamports)
-                    )
-                },
-            );
-            items.push(Item::Help(format!("{} · {balance}", id.path_text())));
+            if single && is_selected {
+                // One account: its address and balance are the hero card's (review D3).
+                items.push(Item::Help(format!(
+                    "{} · {}",
+                    id.path_text(),
+                    crate::ui::screens::T_SINGLE_ACCOUNT
+                )));
+            } else {
+                items.push(Item::Mono(grouped(&address)));
+                let balance = self.sol_balance(&address).map_or_else(
+                    || "잔액 알 수 없음".to_owned(),
+                    |lamports| {
+                        format!(
+                            "잔액 {} ({} lamports, RPC finalized)",
+                            App::sol_text(lamports),
+                            format_raw(lamports)
+                        )
+                    },
+                );
+                items.push(Item::Help(format!("{} · {balance}", id.path_text())));
+            }
             if is_selected {
                 if self.sol.rename == Some(id) {
                     items.push(Item::Row(vec![
