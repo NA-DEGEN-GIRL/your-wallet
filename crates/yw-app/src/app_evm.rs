@@ -523,6 +523,7 @@ impl App {
                     account.label.clone(),
                 ))
             }
+            EvmAccountPref::Mnemonic(id, index) => self.mnemonic_account(id, index),
         }
     }
 
@@ -1625,6 +1626,7 @@ impl App {
             .iter()
             .find(|raw| raw.address == text)
             .map(|raw| EvmKeySource::Raw(RecordId::from_bytes(raw.record_id)))
+            .or_else(|| self.mnemonic_source(&text))
     }
 
     /// `재전송` of the newest candidate's exact bytes (no re-signing).

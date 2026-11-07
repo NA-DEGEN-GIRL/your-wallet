@@ -291,6 +291,8 @@ pub enum KeyJob {
     HardwareKeys,
     /// A `YubiKey` wizard job (spec/10 §7, §9.3).
     YubiKey(crate::workers::key::yubikey::YkJob),
+    /// A recovery-phrase step (several mnemonics, spec/02 §8.6).
+    Mnemonics(crate::workers::key::mnemonics::MnJob),
     /// [`KeyJob::SignChainMessage`] for a `YubiKey` Solana or Bitcoin account (spec/10 §10):
     /// `sol::msgsign::sign_message_card` / `btc::msgsign::sign_message_card` with the card.
     SignChainMessageCard {
@@ -621,6 +623,7 @@ impl KeyJob {
             Self::EnrolYubiKey { .. } => "EnrolYubiKey",
             Self::HardwareKeys => "HardwareKeys",
             Self::YubiKey(job) => job.name(),
+            Self::Mnemonics(job) => job.name(),
             Self::SignChainMessageCard { .. } => "SignChainMessageCard",
             Self::SignSolCard { .. } => "SignSolCard",
             Self::SignBtcCard { .. } => "SignBtcCard",
@@ -714,6 +717,8 @@ pub struct MetaLoaded {
     pub prefs_reset: bool,
     /// `false` for a key-only wallet (no recovery words, spec/02 §4.6).
     pub has_mnemonic: bool,
+    /// The vault's recovery phrases (backup state, passphrase use) in vault order.
+    pub mnemonics: Vec<yw_core::vault::MnemonicInfo>,
 }
 
 /// What a key job produced.
@@ -783,6 +788,8 @@ pub enum KeyOutcome {
     HardwareKeys(Result<Vec<yw_core::vault::HardwareKey>, VaultError>),
     /// A `YubiKey` wizard job finished.
     YubiKey(crate::workers::key::yubikey::YkOutcome),
+    /// A recovery-phrase step finished.
+    Mnemonics(crate::workers::key::mnemonics::MnOutcome),
     /// A card job stopped at the PIN check, before its approval was used (wrong PIN, another
     /// card, no card; spec/10 §9.2): the unused approval comes back, just before the job's
     /// failure outcome, with the reason, so the app may ask for the PIN again while the card step

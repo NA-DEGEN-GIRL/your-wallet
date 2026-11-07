@@ -315,8 +315,9 @@ pub const HKDF_KEK_INFO: &[u8] = b"your-wallet/v3/kek";
 pub const DEK_LEN: usize = 32;
 pub const WRAPPED_DEK_LEN: usize = 48;       // 32 + tag 16
 pub const PAYLOAD_CT_MIN: u32 = 80;          // 최소 평문 64 + tag 16
-pub const PAYLOAD_CT_MAX: u32 = 4_096;       // 최대 평문 3,170(§4.6) + tag 16 = 3,186이 들어간다
-pub const MAX_RECORDS: usize = 46;           // Bip39 0–1개 + EvmRawKey·SolKey·BtcKey 각 최대 15개
+pub const PAYLOAD_CT_MAX: u32 = 16_384;      // 최대 평문 13,130(§4.6) + tag 16 = 13,146이 들어간다
+pub const MAX_MNEMONICS: usize = 8;          // Bip39 record 상한(2026-11-07, §8.6)
+pub const MAX_RECORDS: usize = 61;           // Bip39 0–8개 + EvmRawKey·SolKey·BtcKey 각 최대 15개 + HwKey 0–8개
 ```
 
 ### 4.2 헤더 (176바이트, 모든 정수 big-endian)
@@ -336,7 +337,7 @@ pub const MAX_RECORDS: usize = 46;           // Bip39 0–1개 + EvmRawKey·SolK
 | 82 | 48 | `wrapped_dek` | DEK 32 + tag 16 |
 | 130 | 8 | `generation` | ≥ 1, 쓰기마다 +1 |
 | 138 | 24 | `payload_nonce` | 쓰기마다 난수 |
-| 162 | 4 | `payload_ct_len` | 평문 길이 + 16, [80, 4096] |
+| 162 | 4 | `payload_ct_len` | 평문 길이 + 16, [80, 16384] |
 | 166 | 4 | `flags` | 0 |
 | 170 | 6 | `reserved` | 0 |
 | 176 | `payload_ct_len` | `payload_ct` | |
@@ -387,7 +388,7 @@ payload_ct  = XChaCha20-Poly1305(key = DEK, nonce = payload_nonce, pt = payload 
 | 3 | `header_len == 176` | `Malformed` |
 | 4 | `vault_id ≠ 0`, `generation ≥ 1` | `Malformed` |
 | 5 | `kdf_id == 1` 이고 `(m_kib, t, p) == KDF_V3` 정확히 일치 | `UnsupportedParams` |
-| 6 | `payload_ct_len` ∈ [80, 4096], 파일 길이 = 176 + `payload_ct_len` | `Malformed` |
+| 6 | `payload_ct_len` ∈ [80, 16384], 파일 길이 = 176 + `payload_ct_len` | `Malformed` |
 | 7 | `flags == 0`, `reserved` 전부 0 | `Malformed` |
 | 8 | Argon2 → KEK → `wrapped_dek` 복호화 | `UnlockFailed`(비밀번호 오류와 키 구간 변조를 구분하지 않음) |
 | 9 | DEK로 payload 복호화(AEAD 인증) | `PayloadCorrupt` |
@@ -402,7 +403,7 @@ payload_ct  = XChaCha20-Poly1305(key = DEK, nonce = payload_nonce, pt = payload 
 ```
 off len
 0   8   payload_magic   "YWPAY003"
-8   2   record_count    u16, 1..=46
+8   2   record_count    u16, 1..=61
 10  6   reserved        0
 16  …   records         record_count개, 정확히 끝까지 소비(남는 바이트 금지)
 ```
@@ -441,6 +442,7 @@ len field                                len field
 - 디코드 거부(`UnsupportedPayload`, 인증된 평문이므로 손상이 아니다 — §4.5 단계 10): magic 불일치, `record_count` 범위 밖, reserved ≠ 0, 알 수 없는 tag, 순서 위반, `record_id` 0 또는 (모든 tag를 통틀어) 중복, `entropy_len` 오류, flags 예약 비트, `passphrase_used = 0`인데 확인값 ≠ 0, `backup_state` ∉ {0,1}, `backup_state = 0`이면서 `passphrase_used = 1`(생성 지갑은 passphrase를 쓰지 않음, §8.1), raw key 범위 밖, 같은 raw key 중복, 체인별 16번째 가져온 키, `SolKey` 공개키 불일치·중복, `BtcKey` 값 규칙 위반·중복, 남는 바이트.
 - 최대 크기: 16 + `Bip39`(24단어) 64 + 15 × (57 + 89 + 60) = 3,170바이트 평문.
 - **tag 5 `HwKey`(2026-11-04, D33):** YubiKey 하나의 슬롯 표(일련번호·펌웨어·마스터 지문·슬롯별 역할·경로 인덱스·정책·공개키, 비밀 없음), 0–8개, tag 4 뒤. 바이트 배치와 검사 규칙은 [10](10-yubikey.md) §8. 이에 따라 `MAX_RECORDS` = 54, `PAYLOAD_CT_MAX` = 16,384(최대 평문 3,170 + 8 × 1,189 = 12,682바이트). tag 5만 있는 payload는 니모닉 없는 **YubiKey 지갑**이다(§8.5와 같이 `has_mnemonic() = false`).
+- **`Bip39` 여러 개(2026-11-07, D37, §8.6):** `tag 1` record는 0–8개이고 맨 앞에 모인다(순서 규칙은 "태그 오름차순, 같은 태그 반복 허용"). 각 record의 바이트 배치·검사 규칙은 위 그대로다. **첫 record가 주 니모닉**이다: `EvmKeySource::Derived`·`KeyRef::Btc`·`KeyRef::Zec`·`SolKeySource` 파생, `evm_addresses`, `btc_account_xpub`, `reveal_mnemonic`, `backup_challenge`가 이것을 쓴다. 다른 record는 record id로 가리킨다(`EvmKeySource::Mnemonic(id, i)`, `evm_addresses_of`). 9번째 `tag 1`은 거부(`UnsupportedPayload`). 같은 엔트로피의 record 두 개는 디코드에서 거부하지 않는다(passphrase가 다르면 다른 지갑이고 passphrase는 vault에 없다; 같은 시드의 추가는 `add_mnemonic`이 거부한다). 최대 평문: 16 + 8 × 64 + 15 × (57 + 89 + 60) + 8 × 1,189 = 13,130바이트(`PAYLOAD_CT_MAX` 16,384 안, 상한 변경 없음). **이전 빌드 호환(확인함):** 2026-11-07 전 빌드의 디코더는 같은 태그 반복을 `tag != 1`일 때만 허용하므로(`format.rs` 순서 검사) 두 번째 `tag 1`에서 `UnsupportedPayload`(E-VLT-014, `.prev` 제안 없음, 파일 보존)로 멈춘다 — `PayloadCorrupt`가 아니다. 니모닉이 하나인 vault(추가한 니모닉을 모두 지운 vault 포함)는 바이트가 이전과 같아 이전 빌드도 그대로 연다(골든 G1 그대로).
 - 인코더는 `Zeroizing<Vec<u8>>`에 정확한 길이를 먼저 계산해 할당한다.
 
 ## 5. DEK 하위 키와 사이드카 파일
@@ -493,6 +495,7 @@ journal_key = HKDF-SHA256(salt = 없음,                   ikm = DEK, info = "yo
 | `sol_raw_selected` | Hex16 \| null | **선택 키**. 선택한 Solana 계정이 가져온 키면 그 `record_id`(`sol_raw_accounts`에 있어야 함), 아니면 `null`(`prefs.sol_account`의 파생 계정) |
 | `security_settings` (선택, 2026-11-01) | object | 평문 `settings.json`의 보안 관련 값을 앱이 마지막으로 쓴 그대로 둔 스냅샷([04](04-app-ui.md) §6.7). 없으면 잠금 해제 뒤 첫 검사가 만든다. 있으면 아래 형식으로 엄격 검증(위반은 문서 거부) |
 | `token_view` (선택, 2026-11-03) | `TokenView` | S10 토큰 카드의 행 숨김([04] §2.6, 표시 전용). 기본값(숨김 없음·`hide_zero` false)이면 쓰지 않는다(이전 버전은 모르는 키로 보존). `hidden`의 키는 `eip155:*`(값 = `EvmAddr`, 레지스트리·사용자 토큰 모두)·`solana:*`(값 = 허용 목록 mint base58)만, 네트워크당 1..=200개(빈 배열 키는 쓰지 않음)·전체 0..=2,000개, 같은 네트워크 안 중복 금지. 사용자 토큰을 `tokens`에서 지우면 그 항목도 지운다. 형식이 틀리면 문서를 거부하지 않고 `prefs`처럼 기본값으로 되돌리고 로그(`meta.prefs_reset`)를 남긴다: 승인·위험 판단·토큰 인식은 이 키를 읽지 않는다 |
+| `mnemonics` (선택, 2026-11-07) | `MnemonicEntry[]` | 지갑의 복구 단어(§8.6): vault `Bip39` record마다 하나, vault 순서, 0..=8개, `record_id` 중복 금지. 주 니모닉의 `evm`은 `[]`이다(그 계정은 `evm_accounts`). 추가한 니모닉의 EVM 계정은 여기에만 있다 — 이전 버전은 `Account`의 모르는 멤버를 보면 문서를 거부하므로 `evm_accounts`에 출처 멤버를 더하지 않는다. 니모닉이 하나이고 라벨이 기본값(`니모닉 1`)이면 쓰지 않는다. 형식이 틀리면 문서 거부(`hw_accounts`와 같음). 잠금 해제 때 vault와 맞춘다: 없는 니모닉은 기본 라벨 `니모닉 N`과 계정 0으로 더하고, 주소 캐시를 `evm_addresses_of`로 다시 계산하며, 지운 니모닉의 항목과 그 계정을 가리키는 선택은 버린다(선택은 `{"index": 0}`). `prefs.evm_account`의 `{"mnemonic": Hex16, "index": i}`가 추가한 니모닉의 계정을 고른다(이전 버전은 prefs를 기본값으로 되돌린다; 어차피 그런 vault를 열지 못한다) |
 | `vault_generation_seen` (선택, 2026-11-01) | u64 | 이 meta와 함께 본 가장 큰 `vault.ywv` `generation`. 0이면 쓰지 않는다. 잠금 해제 때 본 파일의 generation이 이보다 작으면 경고 배너([04] §6.7) |
 
 ```
@@ -502,6 +505,7 @@ SolRawAccount    = { "record_id": Hex16, "label": Label, "address": string(정�
 AddressBookEntry = { "chain": "evm"|"sol"|"btc", "address": string, "label": Label,
                      "verified": bool, "added_at_unix_ms": u64 }     // 정확히 이 5개 멤버
 BookFavorite     = { "chain": "evm"|"sol"|"btc", "address": string }  // address_book 항목을 가리킴
+MnemonicEntry    = { "record_id": Hex16, "label": Label, "evm": Account[0..=100] }  // 정확히 이 3개 멤버, evm은 index 오름차순·첫 항목 index 0
 ConnectedSite    = { "origin": string, "accounts": EvmAddr[1..=16], "chain_id": u64(≥ 1, EVM chainId),
                      "granted_at_unix_ms": u64 }
 TokenEntry       = { "address": EvmAddr, "label": Label, "decimals": u8(0..=36, [03] §2.5) }
@@ -673,7 +677,8 @@ yw-app이 yw-win 파일 함수로 구현한다(출처: 데모 원자적 쓰기, 
 ```rust
 /// 배치: [0..32) DEK, [32] passphrase 존재 0/1, [33..35) passphrase 길이 u16 BE(0..=256),
 ///       [35..291) passphrase 바이트, [291..320) 0
-pub const SLOT_LEN: usize = 320;
+pub const SLOT_LEN: usize = 2_304;  // [0..32) DEK, [32..320) 주 니모닉 passphrase(존재 1 + 길이 2 + 256),
+                                    // [320..2245) 다른 니모닉 7개 × 275(존재 1 + record id 16 + 길이 2 + 256), 나머지 0
 /// yw-app이 yw-win의 VirtualLock 페이지로 구현한다(어댑터 newtype; yw-win은 yw-core에 의존하지 않음).
 pub trait LockedSlot: Send {
     fn bytes(&self) -> &[u8; SLOT_LEN];
@@ -705,6 +710,8 @@ pub trait LockedSlot: Send {
 - `enter_passphrase(pp)`: `pp`가 비면 `KeyError::PassphraseEmpty`(`passphrase_used` vault에서 빈 passphrase는 받지 않음). `addr0 = EVM 계정 0 주소(pp)`, `SHA-256(addr0)[0..4]`를 저장값과 상수 시간 비교한다.
 - 불일치 → `PassphraseMismatch`. UI는 **"passphrase가 다를 수 있습니다"** 대화상자에 [다시 입력]과 [이 passphrase로 계속]을 보여준다. 계속은 "다른 passphrase는 다른(빈) 지갑을 엽니다" 확인 체크를 켠 뒤에만 활성화된다([04](04-app-ui.md) §2.5).
 - `Unlocked { alt_passphrase: true }` 세션: 코어에서는 서명 포함 모든 기능이 동작한다. 그러나 이 passphrase는 오타일 수 있고, 이 지갑으로 받은 자산은 대소문자·공백까지 같은 passphrase로만 다시 꺼낼 수 있다. 그래서 yw-app은 모든 화면에 닫을 수 없는 경고 띠 T-ALT-PASS를 보이고, **받기(S12, 모든 체인)와 브라우저 연결·서명을 막는다**(`App::passphrase_unverified()`, [04] §2.1·§2.5; dApp 연결·서명은 4100 `PassphraseUnverified`, 읽기는 계속, [05] §5). 앱 자신의 보내기는 허용한다(일부러 다른 passphrase 지갑을 쓰는 경우 자산을 옮길 수 있게). meta는 디스크에서 읽지도 쓰지도 않고 메모리 기본 meta(§5.3)로 동작한다. journal은 정상 저장한다(진행 중 거래 보호). 확인값은 바꾸지 않는다.
+
+- **여러 니모닉(2026-11-07, §8.6):** passphrase를 쓰는 니모닉이 여럿이면 잠금 해제 때 payload 순서대로 하나씩 묻는다(`pending_passphrase()` = 묻는 record id와 위치/개수). 맞으면 다음 니모닉으로(`PassphraseRequired` 유지), 모두 끝나면 주 니모닉 백업 상태에 따라 `BackupPending` 또는 `Unlocked`. 불일치·다시 입력·계속은 그 니모닉에만 적용되고, 어느 하나라도 계속을 고르면 세션은 `alt_passphrase: true`다. 각 passphrase는 슬롯의 그 record 칸에 둔다(`SLOT_LEN`).
 
 ## 8. 생성·가져오기·백업 확인
 
@@ -771,8 +778,21 @@ pub fn parse_wif(text: &str) -> Result<WifKey, KeyError>;   // compressed(), net
 - `create_with_key(password, key: ImportKey, slot, now_unix) -> RecordId`: `NoVault`에서만. `Create` 쓰기(§4.4)로 `Bip39` 없이 `key` 하나만 담은 vault를 만들고 `Unlocked { alt: false }`. 백업 확인 단계가 없다(백업은 원래 개인키). 실패 시 `NoVault` 유지, 슬롯 소거.
 - 커밋 전 주소 확인은 vault 없이 `ImportKey::preview()`로 한다([04] §2.18 S19).
 - 키 전용 vault에서 `seed`가 필요한 모든 호출은 `NoMnemonic`: `evm_address(Derived)`, `evm_addresses`(빈 목록은 빈 결과), `btc_account_xpub`, `btc_public_key`, `sol_public_keys`(파생 출처, 빈 목록은 빈 결과), `with_ed25519_seed`, `reveal_mnemonic`, `enter_passphrase`. `backup_challenge`·`confirm_backup`은 상태(`Unlocked`)가 맞지 않아 `InvalidState`.
-- 다른 체인의 키는 `import_key`로 더한다. 니모닉을 나중에 더하는 기능은 없다(복구 단어로 시작하려면 새 vault를 만든다).
+- 다른 체인의 키는 `import_key`로 더한다. 니모닉은 나중에 `add_mnemonic`·`generate_mnemonic`(§8.6)으로 더할 수 있고, 처음 더한 니모닉이 주 니모닉이 된다(그 뒤 `has_mnemonic() = true`).
 - `has_mnemonic()`(`BackupPending`·`Unlocked`)이 false면 yw-app은 파생 기능(계정 추가, 다른 경로 스캔, 복구 단어 보기, 파생 Bitcoin 계정)을 숨긴다([04] §2.18).
+
+### 8.6 복구 단어 여러 개 (2026-11-07, D37)
+
+`Unlocked`에서만(`BackupPending`이면 `BackupNotConfirmed`). 모두 `PayloadRewrite`(§4.4)이며 비밀번호를 다시 받는다(Argon2 1회).
+
+- `mnemonics() -> Vec<MnemonicInfo>`(`BackupPending`·`Unlocked`): record id·생성 시각·단어 수·passphrase 사용·백업 확인·주 니모닉 여부(첫 record), payload 순서.
+- `add_mnemonic(password, phrase, passphrase: Option, now_unix) -> RecordId` ("복구 단어 추가 가져오기"): 엄격 파싱(§2.4), 8개면 `RecordLimit`. 새 시드(단어 + passphrase)를 vault의 각 니모닉 시드(슬롯의 passphrase로)와 **상수 시간**으로 비교해 같으면 `DuplicateKey`(같은 단어라도 passphrase가 다르면 다른 지갑이라 받는다). 백업은 확인된 것으로 친다. passphrase가 있으면 §4.6 확인값을 저장하고 이 세션의 슬롯 칸에 둔다(다음 잠금 해제부터 §7.5 순서로 묻는다). 키 전용·YubiKey vault의 첫 니모닉은 주 니모닉이 된다.
+- `generate_mnemonic(password, now_unix) -> (RecordId, SecretString)` ("새 복구 단어 만들기 (추가)"): 24단어, passphrase 없음, 백업 확인 전. 단어는 W08 첫 표시에만 돌려준다.
+- `backup_challenge_for(id)`·`confirm_backup_for(id, challenge, words)`: §8.3과 같은 4단어 확인을 그 니모닉에 한다(`Unlocked`, 또는 `BackupPending`이면 주 니모닉만). 기존 `backup_challenge`·`confirm_backup`은 주 니모닉의 것이다.
+- **백업 확인 전 니모닉의 키로는 서명하지 않는다**: `with_secp_key`·`with_ed25519_seed`·`reveal_evm_private_key`·`reveal_evm_shared_wif`는 그 키의 니모닉(`Mnemonic(id, _)`은 `id`, `Derived`·BTC·ZEC·Solana 파생은 주 니모닉)이 백업 확인 전이면 `BackupNotConfirmed`. 주소 계산(받기)은 된다. 지갑 단위 `BackupPending`(만든 지갑의 주 니모닉, 잠금 해제 때)은 그대로다.
+- `reveal_mnemonic_of(password, id)`: 그 니모닉의 단어(§9 규칙, W08).
+- `remove_mnemonic(password, id)`: 주 니모닉은 `PrimaryMnemonic`으로 거부(기존 계정 목록·다른 체인 파생이 그것에서 나온다; 없애려면 지갑 초기화). 슬롯의 그 passphrase 칸과 열린 확인 문항도 지운다. 자금 확인은 하지 않는다 — UI가 강한 경고와 "단어 보기"를 먼저 안내한다([04] §2.24).
+- `evm_addresses_of(id, indices)`, `evm_address(EvmKeySource::Mnemonic(id, i))`: 그 니모닉의 EVM 계정. 없는 id는 `RecordNotFound`.
 
 ### 8.3 백업 확인 (아카이브 이식, 변경 포함)
 
@@ -919,6 +939,15 @@ impl Vault {
     pub fn evm_addresses(&self, indices: &[AccountIndex]) -> R<Vec<crate::evm::Address>>; // ≤ 100개
     pub fn raw_keys(&self) -> R<Vec<(RecordId, crate::evm::Address)>>;
     pub fn has_mnemonic(&self) -> R<bool>;                                                         // §8.5
+    pub fn mnemonics(&self) -> R<Vec<MnemonicInfo>>;                                               // §8.6
+    pub fn add_mnemonic(&mut self, password: Pw, phrase: &str, passphrase: Option<Bip39Passphrase>, now_unix: u64) -> R<RecordId>;
+    pub fn generate_mnemonic(&mut self, password: Pw, now_unix: u64) -> R<(RecordId, SecretString)>;
+    pub fn remove_mnemonic(&mut self, password: Pw, id: RecordId) -> R<()>;                        // 주 니모닉은 PrimaryMnemonic
+    pub fn reveal_mnemonic_of(&self, password: Pw, id: RecordId) -> R<SecretString>;
+    pub fn backup_challenge_for(&mut self, id: RecordId) -> R<BackupChallenge>;
+    pub fn confirm_backup_for(&mut self, id: RecordId, challenge: ChallengeId, words: [&str; 4]) -> R<()>;
+    pub fn evm_addresses_of(&self, id: RecordId, indices: &[AccountIndex]) -> R<Vec<crate::evm::Address>>;
+    pub fn pending_passphrase(&self) -> Option<PendingPassphrase>;                                 // §7.5
     pub fn imported_keys(&self) -> R<ImportedKeys>;                                                // §8.4
     pub fn sol_public_keys(&self, srcs: &[SolKeySource]) -> R<Vec<[u8; 32]>>;                    // M7, ≤ 128개, 입력 순서
     pub fn btc_account_xpub(&self, coin: BtcCoin) -> R<AccountXpub>;                              // M8, m/84'/c'/0'
@@ -1071,6 +1100,8 @@ payload_nonce 707172…87   record_id 909192…9f   generation 1, backup_state 0
 - passphrase: 일치 → `Unlocked{alt:false}`, 불일치 → `PassphraseMismatch` → 계속 → `Unlocked{alt:true}`, 다시 입력 → 슬롯의 passphrase 영역이 0.
 - 백업: `ScriptedRandom`으로 위치 고정 후 정답 → Confirmed 커밋 1회; 단어 하나 오답, 빈 단어·영문 소문자 밖 문자, 9자 이상 단어, 대문자 단어, 오래된 `ChallengeId` 각각 실패하고 상태 `BackupPending` 유지; 위치는 항상 서로 다르고 오름차순이며 1..=24.
 - 디버그 출력 가림: 모든 비밀 타입의 `format!("{:?}")`에 입력 문자열·hex가 없다.
+
+- 여러 니모닉(§8.6): ABOUT(주) + Hardhat `test … junk`(계정 0 `0xf39F…2266`, 1 `0x7099…79C8`) + ABOUT·`TREZOR`(`0x9c32…6FA6`)를 더해 파생 주소·`mnemonics()`를 확인하고, 다시 읽은 vault가 세 번째 니모닉의 passphrase만 묻는다(위치 3/3). 같은 시드 추가는 `DuplicateKey`. `generate_mnemonic`의 계정은 주소는 나오고 서명은 `BackupNotConfirmed`, 4단어 확인 뒤 서명된다. 주 니모닉 삭제는 `PrimaryMnemonic`, 추가한 니모닉 삭제 뒤 그 계정은 `RecordNotFound`. 니모닉 하나인 vault의 바이트는 골든 G1 그대로다.
 
 ### 11.9 가져온 개인키·키 전용 vault
 

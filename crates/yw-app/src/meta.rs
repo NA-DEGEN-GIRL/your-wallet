@@ -92,6 +92,101 @@ pub const MAX_HW_ACCOUNTS: usize = 192;
 const MAX_HW_DEFAULTS: usize = 8;
 const HW_KEYS: [&str; 4] = ["evm", "sol", "sol_selected", "defaults"];
 
+/// The optional top-level key of the recovery phrases (spec/02 §5.3, 2026-11-07 "여러 복구
+/// 단어"): `[{"record_id": Hex16, "label": Label, "evm": Account[]}]`, one entry per vault
+/// `Bip39` record in vault order. The primary (first) mnemonic's accounts stay in
+/// `evm_accounts` (its `evm` is `[]`); the others' EVM accounts `m/44'/60'/0'/0/i` live here,
+/// apart from `evm_accounts` because earlier versions reject an `Account` with an extra member.
+/// Not written for a wallet with one mnemonic under its default label. Strict like
+/// `hw_accounts` (an invalid value rejects the document).
+pub const MNEMONICS_KEY: &str = "mnemonics";
+const MNEMONIC_KEYS: [&str; 3] = ["record_id", "label", "evm"];
+/// Default label prefix of a recovery phrase (`니모닉 N`).
+pub const MNEMONIC_LABEL_PREFIX: &str = "니모닉 ";
+
+/// One recovery phrase of meta `mnemonics`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MnemonicEntry {
+    /// The vault `Bip39` record id (the mnemonic id).
+    pub record_id: [u8; 16],
+    /// Label (`니모닉 N` by default).
+    pub label: String,
+    /// EVM accounts of this mnemonic (index ascending, index 0 first; empty for the primary
+    /// mnemonic, whose accounts are `evm_accounts`).
+    pub evm: Vec<Account>,
+}
+
+impl MnemonicEntry {
+    /// The next EVM account index of this mnemonic (`None` at 100 accounts or index 999).
+    #[must_use]
+    pub fn next_index(&self) -> Option<u32> {
+        if self.evm.len() >= MAX_EVM_ACCOUNTS {
+            return None;
+        }
+        let next = self
+            .evm
+            .iter()
+            .map(|account| account.index)
+            .max()
+            .map_or(Some(0), |max| max.checked_add(1))?;
+        (u64::from(next) <= MAX_ACCOUNT_INDEX).then_some(next)
+    }
+}
+
+fn parse_mnemonics(value: Option<&Value>) -> Option<Vec<MnemonicEntry>> {
+    let Some(value) = value else {
+        return Some(Vec::new());
+    };
+    let list = value.as_array()?;
+    if list.len() > yw_core::vault::MAX_MNEMONICS {
+        return None;
+    }
+    let mut out: Vec<MnemonicEntry> = Vec::with_capacity(list.len());
+    for item in list {
+        let object = item.as_object()?;
+        if !exact_keys(object, &MNEMONIC_KEYS) {
+            return None;
+        }
+        let record_id = parse_hex16(object.get("record_id")?.as_str()?)?;
+        let label = object.get("label")?.as_str()?;
+        let evm = HwAccounts::parse_list(object.get("evm")?, true)?;
+        if !is_valid_label(label)
+            || out.iter().any(|entry| entry.record_id == record_id)
+            || evm.len() > MAX_EVM_ACCOUNTS
+            || evm.first().is_some_and(|account| account.index != 0)
+        {
+            return None;
+        }
+        out.push(MnemonicEntry {
+            record_id,
+            label: label.to_owned(),
+            evm,
+        });
+    }
+    Some(out)
+}
+
+fn mnemonics_json(entries: &[MnemonicEntry]) -> Value {
+    Value::Array(
+        entries
+            .iter()
+            .map(|entry| {
+                json_object(vec![
+                    (
+                        "record_id",
+                        json_str(&yw_core::hex::encode(&entry.record_id)),
+                    ),
+                    ("label", json_str(&entry.label)),
+                    (
+                        "evm",
+                        Value::Array(entry.evm.iter().map(account_json).collect()),
+                    ),
+                ])
+            })
+            .collect(),
+    )
+}
+
 /// meta `hw_accounts` (spec/10 §8, §13).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HwAccounts {
@@ -284,6 +379,9 @@ pub enum EvmAccountPref {
     /// `YubiKey` EVM account `i` (`EvmKeySource::Hardware`, meta `hw_accounts.evm`; prefs
     /// `{"hardware": i}` — an older version resets such prefs to the default).
     Hardware(u32),
+    /// EVM account `i` of the added mnemonic `record_id` (`EvmKeySource::Mnemonic`, meta
+    /// `mnemonics`; prefs `{"mnemonic": Hex16, "index": i}`).
+    Mnemonic([u8; 16], u32),
 }
 
 /// The main-window chain tab (spec/04 §6.4 `tab`).
@@ -380,6 +478,9 @@ pub struct Meta {
     /// `hw_accounts` (optional key, spec/10 §13): the `YubiKey` accounts' labels, hidden flags and
     /// selection (vault tag 5 is the truth source).
     pub hw_accounts: HwAccounts,
+    /// `mnemonics` (optional key, 2026-11-07): the recovery phrases' labels and the added
+    /// mnemonics' EVM accounts (vault `Bip39` records are the truth source).
+    pub mnemonics: Vec<MnemonicEntry>,
     /// `zcash` (optional key, spec/12 §12.3): the Zcash account of each network.
     pub zcash: Box<crate::zec::meta::ZcashMeta>,
     /// Top-level keys this version does not know (a newer minor version's), in file order; written
@@ -412,6 +513,7 @@ impl Default for Meta {
             security: Box::default(),
             token_view: Box::default(),
             hw_accounts: HwAccounts::default(),
+            mnemonics: Vec::new(),
             zcash: Box::default(),
             unknown: Vec::new(),
         }
@@ -791,6 +893,18 @@ fn parse_prefs(value: &Value, meta: &Meta) -> Option<Prefs> {
         match key {
             "evm_account" => {
                 let selector = entry.as_object()?;
+                if let Some(id) = selector.get("mnemonic") {
+                    let id = parse_hex16(id.as_str()?)?;
+                    let index = u32::try_from(u64_of(selector.get("index")?)?).ok()?;
+                    (selector.len() == 2
+                        && meta.mnemonics.iter().any(|entry| {
+                            entry.record_id == id
+                                && entry.evm.iter().any(|account| account.index == index)
+                        }))
+                    .then_some(())?;
+                    prefs.evm_account = EvmAccountPref::Mnemonic(id, index);
+                    continue;
+                }
                 if selector.len() != 1 {
                     return None;
                 }
@@ -875,6 +989,7 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
                 && *key != VAULT_SEEN_KEY
                 && *key != TOKEN_VIEW_KEY
                 && *key != HW_ACCOUNTS_KEY
+                && *key != MNEMONICS_KEY
                 && *key != crate::walletconnect::store::META_KEY
                 && *key != crate::zec::meta::ZCASH_KEY
                 && *key != BOOK_FAVORITES_KEY
@@ -989,6 +1104,7 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
         }
     };
     let hw_accounts = HwAccounts::from_json(object.get(HW_ACCOUNTS_KEY)).ok_or(MetaError)?;
+    let mnemonics = parse_mnemonics(object.get(MNEMONICS_KEY)).ok_or(MetaError)?;
     let mut meta = Meta {
         evm_accounts,
         evm_raw_accounts,
@@ -1014,6 +1130,7 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
         }),
         token_view: Box::new(token_view),
         hw_accounts,
+        mnemonics,
         zcash: Box::new(crate::zec::meta::ZcashMeta::from_json(
             object.get(crate::zec::meta::ZCASH_KEY),
         )),
@@ -1070,6 +1187,10 @@ impl Meta {
             EvmAccountPref::Hardware(index) => {
                 json_object(vec![("hardware", json_u64(u64::from(index)))])
             }
+            EvmAccountPref::Mnemonic(id, index) => json_object(vec![
+                ("mnemonic", json_str(&yw_core::hex::encode(&id))),
+                ("index", json_u64(u64::from(index))),
+            ]),
         };
         // spec/08 §12.3b: `btc`/`btc_accounts` hold only what earlier builds decode.
         let btc_values = btc_meta_values(self.btc.as_deref(), &self.btc_accounts);
@@ -1162,6 +1283,10 @@ impl Meta {
         if !self.hw_accounts.is_default() {
             members.push((HW_ACCOUNTS_KEY, self.hw_accounts.to_json()));
         }
+        if !self.mnemonics.is_empty() {
+            members.push((MNEMONICS_KEY, mnemonics_json(&self.mnemonics)));
+        }
+
         if !self.zcash.is_default() {
             members.push((crate::zec::meta::ZCASH_KEY, self.zcash.to_json()));
         }

@@ -406,6 +406,9 @@ pub const fn settings_map(section: SettingsSection) -> &'static str {
             "이 구역: Bitcoin 사용과 네트워크 · 주소 조회 서버(인덱서) · Esplora URL. Bitcoin 계정·주소 방식은 메인의 Bitcoin 탭에 있습니다."
         }
         SettingsSection::Ai => "이 구역: AI 설명(선택 기능) 켜기 · AI 공급자 · AI API 키",
+        SettingsSection::Mnemonics => {
+            "이 구역: 지갑의 복구 단어 목록 · 복구 단어 추가 가져오기 · 새 복구 단어 만들기 · 이름 바꾸기 · 단어 보기 · 백업 확인 · 지우기"
+        }
         SettingsSection::YubiKey => {
             "이 구역: YubiKey 등록 · PIN 설정 · 슬롯 구성 바꾸기 · YubiKey 비우기 · 계정별 YubiKey. 서명할 때는 승인 뒤 PIN 창이 저절로 열립니다."
         }
@@ -792,6 +795,13 @@ impl App {
             yw_core::vault::EvmKeySource::Derived(index) => {
                 format!("m/44'/60'/0'/0/{}", index.get())
             }
+            yw_core::vault::EvmKeySource::Mnemonic(id, index) => {
+                format!(
+                    "{} · m/44'/60'/0'/0/{}",
+                    self.mnemonic_label(id),
+                    index.get()
+                )
+            }
             yw_core::vault::EvmKeySource::Raw(_) => "가져온 개인키".to_owned(),
             yw_core::vault::EvmKeySource::Hardware(index) => {
                 format!("YubiKey · m/44'/60'/0'/0/{}", index.get())
@@ -904,7 +914,18 @@ impl App {
             let shown_label = match pref {
                 EvmAccountPref::Record(_) => format!("{label}  [가져온 키]"),
                 EvmAccountPref::Hardware(_) => format!("{label}  [YubiKey]"),
-                EvmAccountPref::Index(_) => label.clone(),
+                EvmAccountPref::Index(_) => match self
+                    .several_mnemonics()
+                    .then(|| self.primary_mnemonic_label())
+                    .flatten()
+                {
+                    Some(source) => format!("{label}  [{source}]"),
+                    None => label.clone(),
+                },
+                EvmAccountPref::Mnemonic(id, _) => format!(
+                    "{label}  [{}]",
+                    self.mnemonic_label(yw_core::vault::RecordId::from_bytes(id))
+                ),
             };
             items.push(Item::Row(vec![
                 Ctl::radio(
@@ -938,7 +959,7 @@ impl App {
                 } else {
                     let mut row_ctls = vec![Ctl::button(ids::RENAME, "이름 바꾸기")];
                     match pref {
-                        EvmAccountPref::Index(index) => {
+                        EvmAccountPref::Index(index) | EvmAccountPref::Mnemonic(_, index) => {
                             row_ctls.push(Ctl::button(ids::HIDE, "숨기기").enabled(index != 0));
                         }
                         EvmAccountPref::Record(_) => {
@@ -961,20 +982,19 @@ impl App {
         items.push(Item::Rule);
         let mut actions = Vec::new();
         if !self.key_only() {
-            actions.push(
-                Ctl::button(ids::ADD_ACCOUNT, "계정 추가").enabled(
-                    self.meta
-                        .as_ref()
-                        .and_then(crate::meta::Meta::next_index)
-                        .is_some(),
-                ),
-            );
+            actions
+                .push(Ctl::button(ids::ADD_ACCOUNT, "계정 추가").enabled(self.can_add_account()));
         }
         actions.push(
             Ctl::button(ids::IMPORT_KEY, "개인키 가져오기")
                 .enabled(self.can_import(yw_core::keyimport::ImportChain::Evm)),
         );
+        actions.push(Ctl::link(
+            crate::ui::screens_mnemonics::ids::MAIN_LINK,
+            "복구 단어 추가·관리",
+        ));
         items.push(Item::Row(actions));
+        self.mn_pick_row(items);
         items.push(Item::CardEnd);
         self.evm_main_sections(items);
     }
@@ -1014,6 +1034,11 @@ impl App {
                 section == SettingsSection::Ai,
             ),
             Ctl::tab(
+                crate::ui::screens_mnemonics::ids::SECTION_MNEMONICS,
+                "복구 단어",
+                section == SettingsSection::Mnemonics,
+            ),
+            Ctl::tab(
                 crate::ui::screens_yubikey::ids::SECTION_YUBIKEY,
                 "YubiKey",
                 section == SettingsSection::YubiKey,
@@ -1034,6 +1059,7 @@ impl App {
             SettingsSection::Ai => self.llm_settings_section(items),
             SettingsSection::Other => self.other_section(items),
             SettingsSection::YubiKey => self.yk_settings_section(items),
+            SettingsSection::Mnemonics => self.mn_settings_section(items),
         }
     }
 
