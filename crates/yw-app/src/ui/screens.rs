@@ -371,6 +371,7 @@ fn header(app: &App, items: &mut Vec<Item>) {
     for banner in &app.banners {
         items.push(Item::Banner(banner.text.clone(), Tone::Danger));
     }
+    app.yk_pin_needed_items(items);
     if let Some(info) = &app.info {
         items.push(Item::Banner(info.clone(), Tone::Info));
     }

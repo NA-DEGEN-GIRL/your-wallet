@@ -387,6 +387,33 @@ impl MockCard {
         }
     }
 
+    /// CHANGE REFERENCE DATA of PW1 / PW3: as VERIFY, `6982` for a wrong current value (the
+    /// counter in `6E`/`C4`), `6983` once blocked.
+    fn change_pgp(&mut self, admin: bool, data: &[u8]) -> Vec<u8> {
+        let current = if admin {
+            self.pw3.clone()
+        } else {
+            self.pw1.clone()
+        };
+        let counter = usize::from(admin);
+        let left = self.pgp_retries[counter];
+        if left == 0 {
+            return sw(0x6983);
+        }
+        if !data.starts_with(&current) {
+            self.pgp_retries[counter] = left.saturating_sub(1);
+            return sw(0x6982);
+        }
+        self.pgp_retries[counter] = 3;
+        let new = data.get(current.len()..).unwrap_or_default().to_vec();
+        if admin {
+            self.pw3 = new;
+        } else {
+            self.pw1 = new;
+        }
+        ok(Vec::new())
+    }
+
     fn verify_pgp(&mut self, p2: u8, data: &[u8]) -> Vec<u8> {
         let (secret, retries) = match p2 {
             0x81 | 0x82 => (self.pw1.clone(), 0),
@@ -410,8 +437,10 @@ impl MockCard {
             return sw(0x6983);
         }
         if data != secret.as_slice() {
+            // A YubiKey's OpenPGP applet answers a wrong PIN with 6982, not 63Cx (spec/10 §9.1);
+            // the tries left are in GET DATA 6E / C4.
             self.pgp_retries[retries] = left.saturating_sub(1);
-            return sw(0x63C0 | u16::from(left.saturating_sub(1)));
+            return sw(0x6982);
         }
         self.pgp_retries[retries] = 3;
         match p2 {
@@ -574,24 +603,7 @@ impl MockCard {
                 ok(vec![self.pgp_uif[usize::from(tag - 0xD6)], 0x20])
             }
             (0x20, 0x00, _) => self.verify_pgp(p2, data),
-            (0x24, 0x00, 0x81 | 0x83) => {
-                let admin = p2 == 0x83;
-                let current = if admin {
-                    self.pw3.clone()
-                } else {
-                    self.pw1.clone()
-                };
-                if !data.starts_with(&current) {
-                    return sw(0x63C2);
-                }
-                let new = data.get(current.len()..).unwrap_or_default().to_vec();
-                if admin {
-                    self.pw3 = new;
-                } else {
-                    self.pw1 = new;
-                }
-                ok(Vec::new())
-            }
+            (0x24, 0x00, 0x81 | 0x83) => self.change_pgp(p2 == 0x83, data),
             (0xDA, 0x00, tag @ (0xC1..=0xC3)) => {
                 if !self.pw3_ok {
                     return sw(0x6982);

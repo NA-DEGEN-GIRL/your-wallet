@@ -177,6 +177,10 @@ pub mod ids {
     pub const CLEAR_CONFIRM_EDIT: u16 = 13_386;
     /// Clear: `비우기`.
     pub const CLEAR_RUN: u16 = 13_387;
+    /// Wizard (c)/(d): `다시 읽기` of the inserted card.
+    pub const IDENTIFY_AGAIN: u16 = 13_388;
+    /// Main window: `PIN 설정` after a signing refused for factory PINs.
+    pub const PIN_NEEDED_OPEN: u16 = 13_389;
 
     const KINDS: [PgpKind; 4] = [PgpKind::None, PgpKind::Evm, PgpKind::Btc, PgpKind::Shared];
     const ZEC_NETWORKS: [ZecNetwork; 2] = [ZecNetwork::Mainnet, ZecNetwork::Testnet];
@@ -466,8 +470,16 @@ pub mod ids {
         CLEAR_PIV_RESET,
         CLEAR_CONFIRM_EDIT,
         CLEAR_RUN,
+        IDENTIFY_AGAIN,
+        PIN_NEEDED_OPEN,
     ];
 }
+
+/// T-YK-PINS-FIRST: a new `YubiKey` wallet's result screen until "PIN 설정" is done.
+pub const T_YK_PINS_FIRST: &str = "YubiKey 지갑은 PIN 설정을 마쳐야 끝납니다. 공장 기본 PIN(123456 / 12345678)으로는 서명하지 않습니다 — 아래 'PIN 설정하기'로 PIN을 바꾸세요.";
+/// T-YK-PIN-NEEDED: the main-window note after a signing refused for factory PINs.
+pub const T_YK_PIN_NEEDED: &str =
+    "이 YubiKey는 공장 기본 PIN을 쓰고 있어 서명하지 않았습니다. PIN을 설정한 뒤 다시 서명하세요.";
 
 /// The wizard's step labels (S21).
 pub const WIZARD_STEPS: [&str; 4] = ["키·슬롯 고르기", "확인", "자격 정보", "결과"];
@@ -1062,6 +1074,7 @@ impl App {
             };
             items.push(Item::Field("관계".to_owned(), relation));
         }
+        Self::yk_card_items(wizard, items);
         items.push(Item::CardEnd);
         if wizard.applets().1 {
             items.push(Item::Help(T_YK_PIV_FIRMWARE.to_owned()));
@@ -1074,6 +1087,25 @@ impl App {
         ]));
     }
 
+    /// The card the wizard enrols (spec/10 §7.3: one card only, identified read-only).
+    fn yk_card_items(wizard: &YkWizard, items: &mut Vec<Item>) {
+        let text = match (&wizard.card, &wizard.card_error) {
+            (Some(card), _) => format!(
+                "YubiKey #{} (펌웨어 {}) — 이 YubiKey에만 씁니다.",
+                card.serial, card.firmware
+            ),
+            (None, Some(error)) => error.clone(),
+            (None, None) => "연결한 YubiKey를 읽는 중…".to_owned(),
+        };
+        items.push(Item::Field("연결한 YubiKey".to_owned(), text));
+        if wizard.card.is_none() && wizard.card_error.is_some() {
+            items.push(Item::Row(vec![Ctl::button(
+                ids::IDENTIFY_AGAIN,
+                "다시 읽기",
+            )]));
+        }
+    }
+
     fn yk_credentials_items(wizard: &YkWizard, items: &mut Vec<Item>) {
         let (pgp, piv) = wizard.applets();
         items.push(Item::CardStart(Some("YubiKey 자격 정보".to_owned())));
@@ -1081,11 +1113,24 @@ impl App {
             "YubiKey를 하나만 연결하세요. PIN·관리 키는 이 작업에만 쓰고 바로 지웁니다(저장하지 않음)."
                 .to_owned(),
         ));
+        Self::yk_card_items(wizard, items);
         if pgp {
             items.push(Item::Field(
                 "OpenPGP".to_owned(),
                 "관리자 PIN(PW3)을 다음 창에서 입력합니다 (공장 기본값 12345678).".to_owned(),
             ));
+        }
+        if let Some(card) = wizard.card {
+            let mut kinds = Vec::new();
+            if pgp {
+                kinds.push(crate::yubikey::PinKind::OpenPgpAdmin);
+            }
+            if piv && wizard.management_protected() {
+                kinds.push(crate::yubikey::PinKind::PivPin);
+            }
+            for line in card.counters.lines(&kinds) {
+                items.push(Item::Help(line));
+            }
         }
         if piv && wizard.management_protected() {
             items.push(Item::Field(
@@ -1118,7 +1163,7 @@ impl App {
             }
         }
         items.push(Item::CardEnd);
-        let ready = wizard.can_continue();
+        let ready = wizard.can_continue() && wizard.card.is_some();
         items.push(Item::CardStart(Some("어떻게 등록할까요?".to_owned())));
         items.push(Item::Row(vec![
             Ctl::primary(ids::IMPORT, "니모닉에서 키를 넣기 (처음 등록)").enabled(ready),
@@ -1203,11 +1248,31 @@ impl App {
         for note in &wizard.notes {
             items.push(Item::Banner(note.clone(), Tone::Info));
         }
+        // spec/10 §9.3: a new YubiKey wallet ends with its PIN setup (it cannot be skipped).
+        let pins_first = wizard.created && !wizard.pins_done();
+        if pins_first {
+            items.push(Item::Banner(T_YK_PINS_FIRST.to_owned(), Tone::Warn));
+        }
         items.push(Item::Row(vec![
-            Ctl::primary(ids::FINISH, "완료"),
+            Ctl::primary(ids::FINISH, "완료").enabled(!pins_first),
             Ctl::button(ids::ANOTHER, "다른 YubiKey 등록(백업)")
-                .enabled(self.card.records.len() < MAX_CARDS),
+                .enabled(self.card.records.len() < MAX_CARDS && !pins_first),
         ]));
+    }
+
+    /// The main-window note after a card signing refused for factory PINs (spec/10 §9.3), with
+    /// `PIN 설정` (the card's "PIN 설정" card in the `YubiKey` list).
+    pub fn yk_pin_needed_items(&self, items: &mut Vec<Item>) {
+        if let Some(serial) = self.card.pin_needed {
+            items.push(Item::Banner(
+                format!("{T_YK_PIN_NEEDED} (YubiKey #{serial})"),
+                Tone::Warn,
+            ));
+            items.push(Item::Row(vec![Ctl::primary(
+                ids::PIN_NEEDED_OPEN,
+                "PIN 설정",
+            )]));
+        }
     }
 
     /// "기본값 변경 / PIN 설정" of card `serial` (spec/10 §9.3): the defaults still seen, the

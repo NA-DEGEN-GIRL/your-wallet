@@ -953,6 +953,8 @@ impl App {
             self.refresh();
             return;
         }
+        // Leaving a YubiKey flow by any path wipes its held seed (spec/10 §7.4).
+        self.yk_leaving(&screen);
         if matches!(screen, Screen::Confirm(_)) && !matches!(self.screen, Screen::Confirm(_)) {
             self.previous_screen = self.screen.clone();
         }

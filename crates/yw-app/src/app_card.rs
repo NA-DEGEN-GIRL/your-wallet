@@ -91,6 +91,9 @@ pub struct CardStep {
     pub error: Option<String>,
     /// The worker returned the approval for a retry: its failure outcome is not shown.
     pub swallow_failure: bool,
+    /// The tries left of the card holding the key, read when the step began (spec/10 §9.1:
+    /// shown before the PIN is entered).
+    pub counters: Option<crate::yubikey::PinCounters>,
 }
 
 impl core::fmt::Debug for CardStep {
@@ -199,6 +202,16 @@ pub struct CardUi {
     /// The open card action of the `YubiKey` list ("슬롯 구성 바꾸기" / "`YubiKey` 비우기",
     /// spec/10 §15).
     pub manage: Option<crate::app_yubikey::manage::YkManage>,
+    /// The card whose next admin-PIN job may spend the PIN's last try: the user saw
+    /// `AdminLastTry` and submits again (spec/10 §9.1). Used once.
+    pub admin_last_try: Option<u32>,
+    /// A card signing was refused because the card still uses factory PINs: the main window
+    /// shows "PIN 설정" for it (spec/10 §9.3).
+    pub pin_needed: Option<u32>,
+    /// PIN changes made from the `YubiKey` list in this session (card, secret).
+    pub list_changed: Vec<(u32, crate::yubikey::PinTarget)>,
+    /// Cards whose management key was protected from the `YubiKey` list in this session.
+    pub list_protected: Vec<u32>,
 }
 
 impl CardUi {
@@ -216,6 +229,29 @@ impl CardUi {
         self.pins_separate = false;
         self.pending_unhide.clear();
         self.manage = None;
+        self.admin_last_try = None;
+        self.pin_needed = None;
+        self.list_changed.clear();
+        self.list_protected.clear();
+    }
+
+    /// Every secret of card `serial`'s applets was changed from the `YubiKey` list in this
+    /// session ("하나씩 따로"), and its PIV management key protected.
+    #[must_use]
+    pub fn list_pins_done(&self, serial: u32) -> bool {
+        use crate::yubikey::PinTarget;
+        use yw_core::yubikey::plan::Curve;
+        let Some(record) = self.records.iter().find(|record| record.serial == serial) else {
+            return false;
+        };
+        let has = |curve| record.slots.iter().any(|slot| slot.role.curve() == curve);
+        let changed = |target| self.list_changed.contains(&(serial, target));
+        (!has(Curve::Secp256k1)
+            || (changed(PinTarget::OpenPgpUser) && changed(PinTarget::OpenPgpAdmin)))
+            && (!has(Curve::Ed25519)
+                || (changed(PinTarget::PivPin)
+                    && changed(PinTarget::PivPuk)
+                    && self.list_protected.contains(&serial)))
     }
 
     /// Keys whose hidden accounts become visible at the next meta load (after a card change).
@@ -272,14 +308,22 @@ fn job_error_text(error: YubiKeyJobError) -> String {
     }
 }
 
-/// Whether the PIN window may open again after a refused PIN check (a blocked PIN, an internal
-/// error or an enrolment error end the step).
+/// Whether the PIN window may open again after a refused PIN check (a blocked PIN — also a
+/// wrong PIN with no try left —, an internal error or an enrolment error end the step).
 const fn retryable(error: CardJobError) -> bool {
-    !matches!(
-        error,
-        CardJobError::Card(CardError::PinBlocked | CardError::Internal) | CardJobError::Enrol(_)
-    )
+    match error {
+        CardJobError::Card(error) => error.pin_retryable(),
+        CardJobError::NoCard => true,
+        CardJobError::Enrol(_) => false,
+    }
 }
+
+/// The factory value of the `OpenPGP` PIN (PW1) and the PIV PIN: a card still using it does
+/// not sign (spec/10 §9.3).
+const FACTORY_PIN: &[u8] = b"123456";
+
+/// The refusal of a card signing while the card uses factory PINs (spec/10 §9.3).
+pub const T_CARD_FACTORY_PIN: &str = "이 YubiKey는 아직 공장 기본 PIN을 쓰고 있어 서명하지 않았습니다. 먼저 'PIN 설정'으로 PIN을 바꾸세요 (설정 → YubiKey). 아무것도 서명하지 않았습니다.";
 
 fn now_ms() -> u64 {
     yw_win::time::monotonic_ms()
@@ -470,7 +514,7 @@ impl App {
             // One card step at a time: an older one still waiting ends as cancelled.
             self.card_resolve_cancelled(previous);
         }
-        self.card.step = Some(CardStep {
+        let step = CardStep {
             id: self.card.next_id,
             approval_id: approved.id(),
             approved: Some(Box::new(approved)),
@@ -481,10 +525,50 @@ impl App {
             touches,
             error: None,
             swallow_failure: false,
-        });
+            counters: None,
+        };
+        // spec/10 §9.3: a card still on its factory PINs (noted at enrolment, cleared by "PIN
+        // 설정") does not sign; the approval is dropped before any PIN is asked.
+        if let Some(serial) = self.card_on_defaults(role) {
+            logging::info("app", "card.factory_pin_refused", &[]);
+            self.card.pin_needed = Some(serial);
+            self.card_resolve_failed(step, T_CARD_FACTORY_PIN);
+            return Ok(());
+        }
+        self.card.step = Some(step);
         logging::info("app", "card.step", &[]);
         self.card_open_pin();
+        // The tries left, shown before the PIN is entered (spec/10 §9.1; read-only).
+        self.key(KeyJob::YubiKey(
+            crate::workers::key::yubikey::YkJob::Counters(
+                crate::workers::key::yubikey::CounterTarget::Key(role),
+            ),
+        ));
         Ok(())
+    }
+
+    /// A card holding `role` that is still in `hw_accounts.defaults` (factory PINs seen at
+    /// enrolment and not yet changed).
+    fn card_on_defaults(&self, role: KeyRole) -> Option<u32> {
+        let meta = self.meta.as_ref()?;
+        crate::yubikey::holders(&self.card.records, role)
+            .into_iter()
+            .find(|serial| meta.hw_accounts.defaults.contains(serial))
+    }
+
+    /// `Counters` of the card step's key arrived: the open W11 shows them.
+    pub(crate) fn card_counters(&mut self, role: KeyRole, counters: crate::yubikey::PinCounters) {
+        let Some(step) = self.card.step.as_mut().filter(|step| step.role == role) else {
+            return;
+        };
+        step.counters = Some(counters);
+        let id = step.id;
+        if self.secret_purpose() == Some(Purpose::CardSign(id))
+            && let Some(step) = self.card.step.as_ref()
+        {
+            let details = self.card_details(step);
+            self.with_form(|form| form.set_details(details));
+        }
     }
 
     /// The non-secret lines of the PIN window: the cards holding the key, the last error and
@@ -502,14 +586,14 @@ impl App {
             let list: Vec<String> = serials.iter().map(|serial| format!("#{serial}")).collect();
             lines.push(format!("이 키를 가진 YubiKey: {}", list.join(", ")));
         }
-        if let Some(meta) = self.meta.as_ref()
-            && serials
-                .iter()
-                .any(|serial| meta.hw_accounts.defaults.contains(serial))
-        {
-            lines.push(
-                "기본 PIN 사용 중일 수 있습니다 — 등록 뒤 PIN을 바꾸세요(spec/10 §9.3).".to_owned(),
-            );
+        if let Some(counters) = step.counters {
+            let kind = match step.role.curve() {
+                yw_core::yubikey::plan::Curve::Secp256k1 => crate::yubikey::PinKind::OpenPgpUser,
+                yw_core::yubikey::plan::Curve::Ed25519 => crate::yubikey::PinKind::PivPin,
+            };
+            for line in counters.lines(&[kind]) {
+                lines.push(format!("YubiKey #{} {line}", counters.serial));
+            }
         }
         lines
     }
@@ -565,6 +649,19 @@ impl App {
             drop(pin);
             return;
         };
+        if pin.as_slice() == FACTORY_PIN {
+            // spec/10 §9.3: the factory PIN is never sent for a signature.
+            drop(pin);
+            drop(approved);
+            if let Some(step) = self.card.step.take() {
+                self.card.pin_needed = crate::yubikey::holders(&self.card.records, step.role)
+                    .first()
+                    .copied();
+                logging::info("app", "card.factory_pin_refused", &[]);
+                self.card_resolve_failed(step, T_CARD_FACTORY_PIN);
+            }
+            return;
+        }
         if now >= step.deadline_ms {
             drop(pin);
             drop(approved);
@@ -713,14 +810,16 @@ impl App {
         }
         step.approved = Some(approved);
         step.swallow_failure = true;
-        let mut text = error.to_string();
-        if matches!(
-            error,
-            CardJobError::Card(CardError::WrongPin { retries: 1 })
-        ) {
-            text.push_str(" 한 번 더 틀리면 PIN이 잠깁니다.");
+        // A wrong PIN's text carries the tries left ("한 번 더 틀리면 잠깁니다" at one).
+        if let CardJobError::Card(CardError::WrongPin { retries }) = error
+            && let Some(counters) = step.counters.as_mut()
+        {
+            match step.role.curve() {
+                yw_core::yubikey::plan::Curve::Secp256k1 => counters.pw1 = Some(retries),
+                yw_core::yubikey::plan::Curve::Ed25519 => counters.piv_pin = Some(retries),
+            }
         }
-        step.error = Some(text);
+        step.error = Some(error.to_string());
         self.card_open_pin();
     }
 
