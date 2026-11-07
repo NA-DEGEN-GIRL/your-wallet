@@ -37,8 +37,8 @@ use crate::app::{App, AppMode, Confirm, PasswordAction, Purpose, Screen, Setting
 use crate::events::{KeyJob, YubiKeyJobError};
 use crate::logging;
 use crate::ui::secret::{CardSecretKind, DisplaySecret, SecretKind};
-use crate::workers::key::yubikey::{YkJob, YkOutcome, YkPreview};
-use crate::yubikey::{CardJobError, PinTarget};
+use crate::workers::key::yubikey::{CounterTarget, YkJob, YkOutcome, YkPreview};
+use crate::yubikey::{CardJobError, PinCounters, PinKind, PinTarget};
 
 pub mod manage;
 
@@ -227,6 +227,11 @@ pub struct YkWizard {
     pub default_management: bool,
     /// The inserted card's management key state read at step (d) (`None`: not read).
     pub management: Option<ManagementState>,
+    /// The one inserted card, identified at steps (c) and (d) (`YkJob::Identify`): the
+    /// enrolment and the management probe go to this serial only (spec/10 §7.3).
+    pub card: Option<crate::yubikey::CardFacts>,
+    /// Why no card is identified (none, several, reader error); `None` while reading.
+    pub card_error: Option<String>,
     /// The admin PIN between W12 and the job (wiped on drop).
     admin_pin: Option<Zeroizing<Vec<u8>>>,
     /// The words of W05 while W06 asks for the passphrase (wiped on drop).
@@ -243,6 +248,8 @@ pub struct YkWizard {
     pub defaults: DefaultsSeen,
     /// PIN changes done on the result screen.
     pub changed: Vec<PinTarget>,
+    /// "8자리 하나로 통일" finished without a failure for the result card.
+    pub pins_set: bool,
     /// Notes of the result screen (PIN changed, management key set).
     pub notes: Vec<String>,
     /// A wallet was created by this wizard (new `YubiKey` wallet).
@@ -320,6 +327,8 @@ impl YkWizard {
             seed_held: false,
             default_management: true,
             management: None,
+            card: None,
+            card_error: None,
             admin_pin: None,
             phrase: None,
             adopt: false,
@@ -328,6 +337,7 @@ impl YkWizard {
             check: None,
             defaults: DefaultsSeen::default(),
             changed: Vec::new(),
+            pins_set: false,
             notes: Vec::new(),
             created: false,
         }
@@ -484,6 +494,33 @@ impl YkWizard {
         self.management.is_some_and(|state| state.protected)
     }
 
+    /// "PIN 설정" of the result card is done (spec/10 §9.3): "8자리 하나로 통일" finished without
+    /// a failure, or every secret of the enrolled card's applets was changed one at a time (and
+    /// the PIV management key is protected). A new `YubiKey` wallet cannot finish before this.
+    #[must_use]
+    pub fn pins_done(&self) -> bool {
+        if self.pins_set {
+            return true;
+        }
+        let Some(enrolled) = self.enrolled.as_ref() else {
+            return false;
+        };
+        let has = |curve| {
+            enrolled
+                .record
+                .slots
+                .iter()
+                .any(|slot| slot.role.curve() == curve)
+        };
+        let changed = |target| self.changed.contains(&target);
+        (!has(yw_core::yubikey::plan::Curve::Secp256k1)
+            || (changed(PinTarget::OpenPgpUser) && changed(PinTarget::OpenPgpAdmin)))
+            && (!has(yw_core::yubikey::plan::Curve::Ed25519)
+                || (changed(PinTarget::PivPin)
+                    && changed(PinTarget::PivPuk)
+                    && !self.defaults.piv_management))
+    }
+
     /// Whether the confirmation allows going on (no plan error, the same-mnemonic warning
     /// acknowledged).
     #[must_use]
@@ -536,6 +573,39 @@ impl App {
         self.set_screen(Screen::YubiKey);
     }
 
+    /// Called by `set_screen` before the screen changes: leaving the wizard (or the new-wallet
+    /// intro) or the re-slot flow by any path — another screen, a settings section, the main
+    /// window, not only `취소`/`완료` — ends it and the key worker wipes the held 64-byte seed
+    /// (`YkJob::Discard`). A running card job keeps its flow until it ends; a confirmation
+    /// overlay is not leaving.
+    pub(crate) fn yk_leaving(&mut self, next: &Screen) {
+        if matches!(next, Screen::Confirm(_)) || *next == self.screen {
+            return;
+        }
+        let wizard_screen = matches!(
+            next,
+            Screen::YubiKey | Screen::YubiKeyWalletIntro | Screen::Processing(_)
+        );
+        let wizard_idle = self
+            .card
+            .wizard
+            .as_ref()
+            .is_some_and(|wizard| wizard.step != WizardStep::Running);
+        let intro_words = self.card.wizard.is_none() && self.screen == Screen::YubiKeyWalletIntro;
+        if !wizard_screen && (wizard_idle || intro_words) {
+            self.card.wizard = None;
+            self.key(KeyJob::YubiKey(YkJob::Discard));
+        }
+        let reslot_idle = matches!(
+            self.card.manage.as_ref(),
+            Some(manage @ manage::YkManage::Reslot(_)) if !manage.running()
+        );
+        if reslot_idle && *next != Screen::Settings(SettingsSection::YubiKey) {
+            self.card.manage = None;
+            self.key(KeyJob::YubiKey(YkJob::Discard));
+        }
+    }
+
     fn yk_wizard(&mut self) -> Option<&mut YkWizard> {
         self.card.wizard.as_mut()
     }
@@ -577,6 +647,13 @@ impl App {
                 wizard.preview = None;
                 wizard.same_ack = false;
                 wizard.step = WizardStep::Confirm;
+                wizard.card = None;
+                wizard.card_error = None;
+                // Which card (spec/10 §7.3): read-only, shown on the confirmation.
+                self.key(KeyJob::YubiKey(YkJob::Identify));
+                let Some(wizard) = self.card.wizard.as_mut() else {
+                    return;
+                };
                 if wizard.seed_held {
                     self.key(KeyJob::YubiKey(YkJob::Preview {
                         mnemonic: None,
@@ -617,7 +694,7 @@ impl App {
         let Some(wizard) = self.card.wizard.as_mut() else {
             return;
         };
-        if !wizard.can_continue() {
+        if !wizard.can_continue() || wizard.card.is_none() {
             return;
         }
         wizard.adopt = adopt;
@@ -625,6 +702,7 @@ impl App {
         let (pgp, piv) = wizard.applets();
         let protected = piv && wizard.management_protected();
         let custom_key = piv && !protected && !wizard.default_management;
+        let counters = wizard.card.map(|card| card.counters);
         if adopt {
             self.yk_run(Zeroizing::new(Vec::new()), Zeroizing::new(Vec::new()), None);
         } else if pgp {
@@ -633,6 +711,9 @@ impl App {
                 Purpose::YubiKey(YkPurpose::AdminPin),
                 false,
             );
+            if let Some(counters) = counters {
+                self.yk_show_counters(YkPurpose::AdminPin, counters);
+            }
         } else {
             self.yk_piv_credentials(Zeroizing::new(Vec::new()), protected, custom_key, piv);
         }
@@ -661,6 +742,15 @@ impl App {
                 Purpose::YubiKey(purpose),
                 false,
             );
+            if let Some(counters) = self
+                .card
+                .wizard
+                .as_ref()
+                .and_then(|wizard| wizard.card)
+                .map(|card| card.counters)
+            {
+                self.yk_show_counters(purpose, counters);
+            }
         } else {
             self.yk_run(admin_pin, Self::yk_factory_key(piv), None);
         }
@@ -697,17 +787,29 @@ impl App {
         piv_pin: Option<Zeroizing<Vec<u8>>>,
     ) {
         self.close_secret();
+        let Some(serial) = self
+            .card
+            .wizard
+            .as_ref()
+            .and_then(|wizard| wizard.card)
+            .map(|card| card.serial)
+        else {
+            return;
+        };
+        let admin_last_try = self.yk_take_last_try(serial);
         let Some(wizard) = self.card.wizard.as_mut() else {
             return;
         };
         wizard.step = WizardStep::Running;
         wizard.failure = None;
         let job = YkJob::Enrol {
+            serial,
             slots: wizard.slots.clone(),
             admin_pin,
             management_key,
             piv_pin: piv_pin.unwrap_or_default(),
             adopt: wizard.adopt,
+            admin_last_try,
         };
         self.card.enrol = Some(crate::app_card::EnrolState::Running);
         logging::info("app", "yubikey.enrol_start", &[]);
@@ -802,10 +904,14 @@ impl App {
             YkPurpose::SetPins => {
                 let current = next();
                 let new = next();
+                let last_try = self
+                    .yk_pin_serial()
+                    .is_some_and(|serial| self.yk_take_last_try(serial));
                 self.yk_pin_job(|serial| YkJob::SetPins {
                     serial,
                     current,
                     new,
+                    admin_last_try: last_try,
                 });
             }
             YkPurpose::ManagementKey => {
@@ -831,12 +937,15 @@ impl App {
                     self.close_secret();
                     return;
                 };
+                let admin_last_try =
+                    target == PinTarget::OpenPgpAdmin && self.yk_take_last_try(serial);
                 self.with_form(|form| form.set_busy(true));
                 self.key(KeyJob::YubiKey(YkJob::ChangePin {
                     serial,
                     target,
                     old,
                     new,
+                    admin_last_try,
                 }));
             }
             YkPurpose::ShowWords
@@ -930,18 +1039,108 @@ impl App {
         self.key(KeyJob::YubiKey(job(serial)));
     }
 
-    /// The PIN window of a "PIN 설정" action.
+    /// The PIN window of a "PIN 설정" action (the tries left are read meanwhile and shown before
+    /// the PIN is entered, spec/10 §9.1).
     fn yk_open_pin_action(&mut self, kind: CardSecretKind, purpose: YkPurpose) {
-        if self.yk_pin_serial().is_some() {
-            self.open_input(
-                SecretKind::CardSecret(kind),
-                Purpose::YubiKey(purpose),
-                false,
-            );
+        if let Some(serial) = self.yk_pin_serial() {
+            self.yk_open_card_secret(kind, purpose, serial);
         }
     }
 
-    /// Enters step (d): reads the inserted card's management key state when the plan has PIV.
+    /// Opens W12 for card `serial` and reads its PIN counters for the window.
+    pub(crate) fn yk_open_card_secret(
+        &mut self,
+        kind: CardSecretKind,
+        purpose: YkPurpose,
+        serial: u32,
+    ) {
+        self.open_input(
+            SecretKind::CardSecret(kind),
+            Purpose::YubiKey(purpose),
+            false,
+        );
+        if self.secret_purpose() == Some(Purpose::YubiKey(purpose)) {
+            self.key(KeyJob::YubiKey(YkJob::Counters(CounterTarget::Card(
+                serial,
+            ))));
+        }
+    }
+
+    /// The PIN counters a W12 purpose shows.
+    const fn yk_counter_kinds(purpose: YkPurpose) -> &'static [PinKind] {
+        match purpose {
+            YkPurpose::AdminPin
+            | YkPurpose::ReslotAdminPin
+            | YkPurpose::ClearAdminPin
+            | YkPurpose::ChangePin(PinTarget::OpenPgpAdmin) => &[PinKind::OpenPgpAdmin],
+            YkPurpose::ChangePin(PinTarget::OpenPgpUser) => &[PinKind::OpenPgpUser],
+            YkPurpose::PivPin
+            | YkPurpose::ProtectManagement
+            | YkPurpose::ClearPivPin
+            | YkPurpose::ChangePin(PinTarget::PivPin) => &[PinKind::PivPin],
+            YkPurpose::SetPins => &[PinKind::PivPin, PinKind::OpenPgpAdmin, PinKind::OpenPgpUser],
+            YkPurpose::ChangePin(PinTarget::PivPuk)
+            | YkPurpose::Mnemonic
+            | YkPurpose::Passphrase
+            | YkPurpose::NewPassword
+            | YkPurpose::ShowWords
+            | YkPurpose::Backup
+            | YkPurpose::ManagementKey
+            | YkPurpose::ReslotMnemonic
+            | YkPurpose::ReslotPassphrase => &[],
+        }
+    }
+
+    /// Shows the tries left in the open W12 of `purpose` (before the PIN is entered).
+    pub(crate) fn yk_show_counters(&mut self, purpose: YkPurpose, counters: PinCounters) {
+        if self.secret_purpose() != Some(Purpose::YubiKey(purpose)) {
+            return;
+        }
+        let lines = counters.lines(Self::yk_counter_kinds(purpose));
+        if !lines.is_empty() {
+            self.with_form(|form| form.set_details(lines));
+        }
+    }
+
+    /// `Counters` finished: the open W11 or W12 shows the tries left.
+    fn on_yk_counters(&mut self, target: CounterTarget, result: Result<PinCounters, CardJobError>) {
+        let Ok(counters) = result else {
+            return;
+        };
+        match target {
+            CounterTarget::Key(role) => self.card_counters(role, counters),
+            CounterTarget::Card(serial) => {
+                if counters.serial != serial {
+                    return;
+                }
+                if let Some(Purpose::YubiKey(purpose)) = self.secret_purpose() {
+                    self.yk_show_counters(purpose, counters);
+                }
+            }
+        }
+    }
+
+    /// The consent to spend the `OpenPGP` admin PIN's last try on card `serial` (given by
+    /// seeing [`yw_core::yubikey::CardError::AdminLastTry`] and submitting again), used once.
+    pub(crate) fn yk_take_last_try(&mut self, serial: u32) -> bool {
+        if self.card.admin_last_try == Some(serial) {
+            self.card.admin_last_try = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// A card job of card `serial` was refused for the admin PIN's last try: the next
+    /// submission for that card sends it (spec/10 §9.1).
+    pub(crate) fn yk_note_last_try(&mut self, serial: u32, error: CardJobError) {
+        if error.is_admin_last_try() {
+            self.card.admin_last_try = Some(serial);
+        }
+    }
+
+    /// Enters step (d): identifies the one inserted card again (it may have been swapped), then
+    /// reads its management key state when the plan has PIV (`on_yk_identified`).
     fn yk_enter_credentials(&mut self) {
         let Some(wizard) = self.yk_wizard() else {
             return;
@@ -949,9 +1148,62 @@ impl App {
         wizard.step = WizardStep::Credentials;
         wizard.failure = None;
         wizard.management = None;
-        if wizard.applets().1 {
-            self.key(KeyJob::YubiKey(YkJob::ProbeManagement));
+        wizard.card = None;
+        wizard.card_error = None;
+        self.key(KeyJob::YubiKey(YkJob::Identify));
+    }
+
+    /// `Identify` finished: the card the wizard enrols (or why there is none).
+    fn on_yk_identified(&mut self, result: Result<crate::yubikey::CardFacts, CardJobError>) {
+        let Some(wizard) = self.card.wizard.as_mut() else {
+            return;
+        };
+        if !matches!(wizard.step, WizardStep::Confirm | WizardStep::Credentials) {
+            return;
         }
+        match result {
+            Ok(facts) => {
+                wizard.card = Some(facts);
+                wizard.card_error = None;
+                if wizard.step == WizardStep::Credentials && wizard.applets().1 {
+                    self.key(KeyJob::YubiKey(YkJob::ProbeManagement {
+                        serial: facts.serial,
+                    }));
+                }
+            }
+            Err(error) => {
+                wizard.card = None;
+                wizard.card_error = Some(error.to_string());
+            }
+        }
+        self.refresh();
+    }
+
+    /// A new `YubiKey` wallet's result card still needs its PIN setup (spec/10 §9.3: `완료` and
+    /// `다른 YubiKey 등록` wait for it).
+    #[must_use]
+    pub fn yk_pins_first(&self) -> bool {
+        self.card.wizard.as_ref().is_some_and(|wizard| {
+            wizard.step == WizardStep::Result
+                && wizard.enrolled.is_some()
+                && wizard.created
+                && !wizard.pins_done()
+        })
+    }
+
+    /// `다시 읽기` of the confirmation / credentials card line.
+    pub fn yk_identify_again(&mut self) {
+        let Some(wizard) = self.yk_wizard() else {
+            return;
+        };
+        let step = wizard.step;
+        wizard.card = None;
+        wizard.card_error = None;
+        wizard.management = None;
+        if matches!(step, WizardStep::Confirm | WizardStep::Credentials) {
+            self.key(KeyJob::YubiKey(YkJob::Identify));
+        }
+        self.refresh();
     }
 
     fn on_yk_management(&mut self, result: Result<ManagementState, CardJobError>) {
@@ -968,6 +1220,9 @@ impl App {
         match result {
             Ok(()) => {
                 self.close_secret();
+                if !self.card.list_protected.contains(&serial) {
+                    self.card.list_protected.push(serial);
+                }
                 if let Some(wizard) = self.card.wizard.as_mut() {
                     wizard.defaults.piv_management = false;
                     wizard.defaults.piv_management_protected = true;
@@ -997,6 +1252,9 @@ impl App {
             Ok(report) if !report.done.is_empty() || report.failed.is_none() => report,
             Ok(report) => {
                 // The first step failed: nothing changed; the window stays for another try.
+                if let Some((_, error)) = report.failed {
+                    self.yk_note_last_try(serial, CardJobError::Card(error));
+                }
                 let text = report
                     .failed
                     .map(|(_, error)| error.to_string())
@@ -1048,8 +1306,19 @@ impl App {
             if has(DefaultsStep::OpenPgpAdmin) && has(DefaultsStep::OpenPgpUser) {
                 wizard.defaults.openpgp_admin = false;
             }
+            if report.failed.is_none()
+                && wizard
+                    .enrolled
+                    .as_ref()
+                    .is_some_and(|enrolled| enrolled.record.serial == serial)
+            {
+                wizard.pins_set = true;
+            }
         }
         self.yk_note(text);
+        if report.failed.is_none() {
+            self.card.pin_needed = self.card.pin_needed.filter(|other| *other != serial);
+        }
         if report.failed.is_none()
             && let Some(meta) = self.meta.as_mut()
             && meta.hw_accounts.defaults.contains(&serial)
@@ -1140,6 +1409,8 @@ impl App {
             YkOutcome::PinChanged(serial, target, result) => {
                 self.on_yk_pin_changed(serial, target, result);
             }
+            YkOutcome::Identified(result) => self.on_yk_identified(result),
+            YkOutcome::Counters(target, result) => self.on_yk_counters(target, result),
             YkOutcome::Management(result) => self.on_yk_management(result),
             YkOutcome::ManagementProtected(serial, result) => self.on_yk_protected(serial, result),
             YkOutcome::PinsSet(serial, result) => self.on_yk_pins_set(serial, result),
@@ -1239,6 +1510,16 @@ impl App {
                 }
             }
         }
+        if let (Err(YubiKeyJobError::Card(error)), Some(serial)) = (
+            result,
+            self.card
+                .wizard
+                .as_ref()
+                .and_then(|wizard| wizard.card)
+                .map(|card| card.serial),
+        ) {
+            self.yk_note_last_try(serial, *error);
+        }
         let Some(wizard) = self.card.wizard.as_mut() else {
             return;
         };
@@ -1253,6 +1534,7 @@ impl App {
                 wizard.failure = None;
                 wizard.check = None;
                 wizard.changed.clear();
+                wizard.pins_set = false;
                 wizard.notes.clear();
             }
             Err(error) => {
@@ -1313,6 +1595,9 @@ impl App {
         match result {
             Ok(()) => {
                 self.close_secret();
+                if !self.card.list_changed.contains(&(serial, target)) {
+                    self.card.list_changed.push((serial, target));
+                }
                 if let Some(wizard) = self.card.wizard.as_mut() {
                     if !wizard.changed.contains(&target) {
                         wizard.changed.push(target);
@@ -1331,13 +1616,10 @@ impl App {
                 self.yk_defaults_done(serial);
             }
             Err(error) => {
-                let mut text = error.to_string();
-                if matches!(
-                    error,
-                    CardJobError::Card(yw_core::yubikey::CardError::WrongPin { retries: 1 })
-                ) {
-                    text.push_str(" 한 번 더 틀리면 잠깁니다.");
-                }
+                // A wrong PIN's text carries the tries left (one left: "한 번 더 틀리면
+                // 잠깁니다", spec/10 §9.1).
+                let text = error.to_string();
+                self.yk_note_last_try(serial, error);
                 self.with_form(|form| {
                     form.set_busy(false);
                     form.set_error(Some(text));
@@ -1348,11 +1630,19 @@ impl App {
 
     /// Every default of card `serial` was changed: its "기본 PIN 사용 중" note goes.
     fn yk_defaults_done(&mut self, serial: u32) {
-        let done = self.card.wizard.as_ref().is_some_and(|wizard| {
-            !wizard.defaults.openpgp_admin
-                && !wizard.defaults.piv_pin
-                && !wizard.defaults.piv_management
-        });
+        let done = match self.card.wizard.as_ref() {
+            Some(wizard) => {
+                !wizard.defaults.openpgp_admin
+                    && !wizard.defaults.piv_pin
+                    && !wizard.defaults.piv_management
+            }
+            // The `YubiKey` list ("하나씩 따로" outside the wizard): every secret of the card's
+            // applets was changed in this session (and the management key protected).
+            None => self.card.list_pins_done(serial),
+        };
+        if done {
+            self.card.pin_needed = self.card.pin_needed.filter(|other| *other != serial);
+        }
         if done
             && let Some(meta) = self.meta.as_mut()
             && meta.hw_accounts.defaults.contains(&serial)
@@ -1491,7 +1781,15 @@ impl App {
                 self.refresh();
             }
             ids::PLAN_NEXT => self.yk_plan_next(),
+            ids::FINISH | ids::ANOTHER if self.yk_pins_first() => self.refresh(),
             ids::WIZARD_CANCEL | ids::FINISH => self.yk_close_wizard(),
+            ids::IDENTIFY_AGAIN => self.yk_identify_again(),
+            ids::PIN_NEEDED_OPEN => {
+                // The card of the refused signing: its "PIN 설정" card in the YubiKey list.
+                self.card.pin_serial = self.card.pin_needed;
+                self.set_screen(Screen::Settings(SettingsSection::YubiKey));
+                self.key(KeyJob::HardwareKeys);
+            }
             ids::SAME_ACK => {
                 if let Some(wizard) = self.yk_wizard() {
                     wizard.same_ack = !wizard.same_ack;

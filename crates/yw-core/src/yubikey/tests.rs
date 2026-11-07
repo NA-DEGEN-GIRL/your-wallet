@@ -947,3 +947,103 @@ fn pin_protected_management_key() {
         Err(CardError::ManagementKeyUnknown)
     );
 }
+
+/// spec/10 §9.1: a `YubiKey`'s `OpenPGP` applet answers a wrong PIN with `6982`; the session
+/// reads the counters again (`6E`/`C4`) and reports `WrongPin` with the tries left (PW1 and
+/// PW3 separately, `0` = blocked and final), also for CHANGE REFERENCE DATA.
+#[test]
+fn openpgp_wrong_pin_6982_reads_the_counter_again() {
+    use super::openpgp::{OpenPgp, Pw, select, verify};
+    let mut card = MockCard::new(41_000_001);
+    {
+        let mut session = OpenPgp::open(&mut card, ApduMode::Short).unwrap();
+        assert_eq!(session.app.retries, [3, 0, 3]);
+        assert_eq!(
+            session.verify(Pw::Admin, b"87654321"),
+            Err(CardError::WrongPin { retries: 2 })
+        );
+        assert_eq!(session.app.retries, [3, 0, 2]);
+        assert_eq!(
+            session.change_pin(false, b"654321", b"135791"),
+            Err(CardError::WrongPin { retries: 2 })
+        );
+        assert_eq!(
+            session.verify(Pw::UserOther, b"000000"),
+            Err(CardError::WrongPin { retries: 1 })
+        );
+        assert_eq!(
+            session.verify(Pw::UserOther, b"000000"),
+            Err(CardError::WrongPin { retries: 0 })
+        );
+    }
+    assert!(!CardError::WrongPin { retries: 0 }.pin_retryable());
+    assert!(CardError::WrongPin { retries: 1 }.pin_retryable());
+    // The emulator answers like a YubiKey: 6982 for a wrong PIN, 6983 once blocked.
+    let status = |card: &mut MockCard, pin: &[u8]| {
+        super::apdu::exchange(card, &verify(Pw::Admin, pin), ApduMode::Short)
+            .unwrap()
+            .sw
+    };
+    assert_eq!(
+        super::apdu::exchange(&mut card, &select(), ApduMode::Short)
+            .unwrap()
+            .sw,
+        0x9000
+    );
+    assert_eq!(status(&mut card, b"87654321"), 0x6982);
+    assert_eq!(status(&mut card, b"87654321"), 0x6982);
+    assert_eq!(status(&mut card, b"87654321"), 0x6983);
+    let mut session = OpenPgp::open(&mut card, ApduMode::Short).unwrap();
+    assert_eq!(session.app.retries, [0, 0, 0]);
+    assert_eq!(
+        session.verify(Pw::Admin, b"12345678"),
+        Err(CardError::PinBlocked)
+    );
+}
+
+/// spec/10 §5.3.3 recovery: a "PIV 관리 키 자동 보호" that stopped after SET MANAGEMENT KEY and
+/// before the ADMIN DATA flag ("neither default nor protected", key in PRINTED) is finished by
+/// running it again with the PIN, and an enrolment with the PIN authenticates with PRINTED; a
+/// re-protect that stopped after PRINTED and before SET MANAGEMENT KEY still authenticates with
+/// the previous key when it is in memory.
+#[test]
+fn protected_management_key_recovers_from_a_partial_protect() {
+    use super::piv::{ManagementCredential, OBJECT_ADMIN_DATA, OBJECT_PRINTED, Piv};
+    let mut card = MockCard::new(41_000_002);
+    Piv::open(&mut card, ApduMode::Short)
+        .unwrap()
+        .protect_management_key(b"123456", &ToyCipher, &[0x31; 16])
+        .unwrap();
+    card.piv_objects.retain(|(id, _)| *id != OBJECT_ADMIN_DATA);
+    let credential = |key| ManagementCredential {
+        key,
+        pin: b"123456",
+    };
+    {
+        let mut session = Piv::open(&mut card, ApduMode::Short).unwrap();
+        let state = session.management_state().unwrap();
+        assert!(!state.default && !state.protected);
+        session
+            .authenticate_management(credential(b""), &ToyCipher, &[0x32; 16])
+            .unwrap();
+        session
+            .protect_management_key(b"123456", &ToyCipher, &[0x33; 16])
+            .unwrap();
+        assert!(session.management_state().unwrap().protected);
+    }
+    // PRINTED holds a key the card never got: the previous key in memory still opens it.
+    let previous = card.mgmt_key.clone();
+    let mut printed = vec![0x88, 0x1A, 0x89, 0x18];
+    printed.extend_from_slice(&[0x5C; 24]);
+    card.piv_objects.retain(|(id, _)| *id != OBJECT_PRINTED);
+    card.piv_objects.push((OBJECT_PRINTED, printed));
+    let mut session = Piv::open(&mut card, ApduMode::Short).unwrap();
+    assert!(
+        session
+            .authenticate_management(credential(b""), &ToyCipher, &[0x34; 16])
+            .is_err()
+    );
+    session
+        .authenticate_management(credential(&previous), &ToyCipher, &[0x35; 16])
+        .unwrap();
+}

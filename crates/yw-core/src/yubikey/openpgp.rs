@@ -493,13 +493,15 @@ impl<'t> OpenPgp<'t> {
     ///
     /// # Errors
     ///
-    /// [`CardError::PinFormat`], [`CardError::WrongPin`], [`CardError::PinBlocked`].
+    /// [`CardError::PinFormat`], [`CardError::WrongPin`] (also for `6982`, see
+    /// [`OpenPgp::pin_refused`]), [`CardError::PinBlocked`].
     pub fn verify(&mut self, pw: Pw, pin: &[u8]) -> Result<(), CardError> {
         let range = if pw == Pw::Admin { PW3_LEN } else { PW1_LEN };
         if !range.contains(&pin.len()) {
             return Err(CardError::PinFormat);
         }
-        self.run(&verify(pw, pin)).map(drop)
+        let result = self.run(&verify(pw, pin)).map(drop);
+        self.pin_refused(result, pw == Pw::Admin)
     }
 
     /// Changes PW1 or PW3.
@@ -512,7 +514,31 @@ impl<'t> OpenPgp<'t> {
         if !range.contains(&old.len()) || !range.contains(&new.len()) {
             return Err(CardError::PinFormat);
         }
-        self.run(&change_pin(admin, old, new)).map(drop)
+        let result = self.run(&change_pin(admin, old, new)).map(drop);
+        self.pin_refused(result, admin)
+    }
+
+    /// A `YubiKey`'s `OpenPGP` applet answers a wrong PIN with `6982` (security status not
+    /// satisfied), not `63Cx` (spec/10 §9.1). After a refused VERIFY / CHANGE REFERENCE DATA the
+    /// counters are read again (`6E`/`C4`, also into [`OpenPgp::app`]) and the refusal becomes
+    /// [`CardError::WrongPin`] with the tries left of PW1 or PW3 (`0` = now blocked). When the
+    /// counters cannot be read the original error stays.
+    fn pin_refused(&mut self, result: Result<(), CardError>, admin: bool) -> Result<(), CardError> {
+        match result {
+            Err(error @ (CardError::SecurityStatus | CardError::WrongPin { .. })) => {
+                let Ok(app) = exchange_ok(self.transport, &get_data(0x6E), self.mode)
+                    .and_then(|response| parse_app_data(&response))
+                else {
+                    return Err(error);
+                };
+                let [pw1, _, pw3] = app.retries;
+                self.app = app;
+                Err(CardError::WrongPin {
+                    retries: if admin { pw3 } else { pw1 },
+                })
+            }
+            other => other,
+        }
     }
 
     /// Imports a secp256k1 key into `key` (PW3 must be verified): attributes, key, touch policy,

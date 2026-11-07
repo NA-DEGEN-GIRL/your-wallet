@@ -464,9 +464,15 @@ impl KeyWorker {
             admin_pin,
             management_key,
             piv_pin: &[],
+            admin_last_try: false,
         };
-        let enrolled = crate::yubikey::enrol_first_card(
+        // The one inserted card (spec/10 §7.3: several are refused, never guessed).
+        let serial = crate::yubikey::single_card(self.cards.as_mut())
+            .map_err(YubiKeyJobError::Card)?
+            .serial;
+        let enrolled = crate::yubikey::enrol_card_serial(
             self.cards.as_mut(),
+            serial,
             seed.expose(),
             slots,
             &records,
@@ -2552,6 +2558,7 @@ pub(crate) mod tests {
         let enrol = |worker: &mut KeyWorker, admin: &str, adopt: bool| {
             worker
                 .handle(KeyJob::YubiKey(YkJob::Enrol {
+                    serial: 9_900_001,
                     slots: slots.clone(),
                     admin_pin: bytes(admin),
                     management_key: Zeroizing::new(
@@ -2559,6 +2566,7 @@ pub(crate) mod tests {
                     ),
                     piv_pin: Zeroizing::new(Vec::new()),
                     adopt,
+                    admin_last_try: false,
                 }))
                 .pop()
         };
@@ -2618,6 +2626,7 @@ pub(crate) mod tests {
                     target: PinTarget::OpenPgpUser,
                     old: bytes(old),
                     new: bytes("135791"),
+                    admin_last_try: false,
                 }))
                 .pop()
         };
@@ -2643,6 +2652,7 @@ pub(crate) mod tests {
                 serial: 9_900_001,
                 current: Zeroizing::new(Vec::new()),
                 new: bytes("24681357"),
+                admin_last_try: false,
             },
         ) else {
             unreachable!("set pins");
@@ -2668,7 +2678,7 @@ pub(crate) mod tests {
             assert_ne!(card.mgmt_key, yw_core::yubikey::piv::DEFAULT_MANAGEMENT_KEY);
         }
         assert!(matches!(
-            yk(&mut worker, YkJob::ProbeManagement),
+            yk(&mut worker, YkJob::ProbeManagement { serial: 9_900_001 }),
             Some(YkOutcome::Management(Ok(state))) if state.protected && !state.default
         ));
         // Removal: a wrong password keeps the record.
@@ -2743,6 +2753,89 @@ pub(crate) mod tests {
             ),
             Some(YkOutcome::Preview(Err(_)))
         ));
+        drop(worker);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// spec/10 §7.3, §9.1: `Identify` refuses two inserted cards and names the one card with its
+    /// PIN counters; the enrolment goes to that serial only; with one admin-PIN try left nothing
+    /// is sent until the job carries the user's confirmation.
+    #[test]
+    fn yubikey_one_card_and_the_admin_last_try() {
+        use std::sync::{Arc, Mutex};
+
+        use yw_core::secret::Zeroizing;
+        use yw_core::yubikey::CardError;
+        use yw_core::yubikey::mock::MockCard;
+
+        use super::yubikey::{YkJob, YkOutcome};
+        use crate::yubikey::{CardJobError, PinTarget};
+
+        let dir = std::env::temp_dir().join(format!(
+            "yw-app-yk-one-{}-{}",
+            std::process::id(),
+            yw_win::time::monotonic_ms()
+        ));
+        let cards = Arc::new(Mutex::new(vec![
+            MockCard::new(9_900_101),
+            MockCard::new(9_900_102),
+        ]));
+        let mut worker =
+            KeyWorker::new(&dir).with_card_source(Box::new(crate::yubikey::MockSource {
+                cards: Arc::clone(&cards),
+            }));
+        let mut yk = |job: YkJob| match worker.handle(KeyJob::YubiKey(job)).pop() {
+            Some(KeyOutcome::YubiKey(outcome)) => outcome,
+            other => unreachable!("{other:?}"),
+        };
+        assert!(matches!(
+            yk(YkJob::Identify),
+            YkOutcome::Identified(Err(CardJobError::Card(CardError::MultipleCards)))
+        ));
+        cards.lock().unwrap().truncate(1);
+        cards.lock().unwrap()[0].pgp_retries = [3, 1];
+        let YkOutcome::Identified(Ok(facts)) = yk(YkJob::Identify) else {
+            unreachable!("identify");
+        };
+        assert_eq!(facts.serial, 9_900_101);
+        assert_eq!(
+            (
+                facts.counters.pw1,
+                facts.counters.pw3,
+                facts.counters.piv_pin
+            ),
+            (Some(3), Some(1), Some(3))
+        );
+        cards.lock().unwrap()[0].log.clear();
+        let change = |last_try: bool| YkJob::ChangePin {
+            serial: 9_900_101,
+            target: PinTarget::OpenPgpAdmin,
+            old: Zeroizing::new(b"12345678".to_vec()),
+            new: Zeroizing::new(b"87654321".to_vec()),
+            admin_last_try: last_try,
+        };
+        assert!(matches!(
+            yk(change(false)),
+            YkOutcome::PinChanged(_, _, Err(CardJobError::Card(CardError::AdminLastTry)))
+        ));
+        assert!(
+            !cards.lock().unwrap()[0]
+                .log
+                .iter()
+                .any(|header| header[1] == 0x24 || header[1] == 0x20),
+            "nothing was verified or changed"
+        );
+        assert!(matches!(
+            yk(change(true)),
+            YkOutcome::PinChanged(_, _, Ok(()))
+        ));
+        assert_eq!(cards.lock().unwrap()[0].pw3, b"87654321");
+        let YkOutcome::Counters(_, Ok(counters)) = yk(YkJob::Counters(
+            super::yubikey::CounterTarget::Card(9_900_101),
+        )) else {
+            unreachable!("counters");
+        };
+        assert_eq!(counters.pw3, Some(3));
         drop(worker);
         let _ = std::fs::remove_dir_all(&dir);
     }

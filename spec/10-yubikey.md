@@ -126,6 +126,7 @@ Bitcoin 슬롯의 인덱스는 **계정 0의 받기 체인 주소 인덱스**(`�
 | 서명 (AUT) | `00 88 00 00 20 <digest 32> 00` → `r ‖ s`(64) | INTERNAL AUTHENTICATE [OPC] p71 |
 | PIN 변경 | `00 24 00 81`(PW1)/`83`(PW3) `Lc old‖new` | §9.3 |
 
+- **틀린 PIN의 응답(2026-11-07)**: YubiKey의 OpenPGP 애플릿은 틀린 PW1·PW3에 `63Cx`가 아니라 **`6982`**(보안 상태 불충족)를 돌려준다(잠긴 뒤는 `6983`). 그래서 `OpenPgp::verify`·`change_pin`은 `6982`(또는 `63Cx`)를 받으면 `6E`를 다시 읽어 `C4`의 남은 횟수(PW1 = 바이트 4, PW3 = 바이트 6)로 `WrongPin { retries }`를 만들고 `OpenPgp::app`도 갱신한다(읽지 못하면 원래 오류). `retries: 0`은 잠김과 같이 최종이다(`CardError::pin_retryable`, W11 재요청 없음). 에뮬레이터도 `6982`/`6983`으로 답한다. PIV는 표준대로 `63Cx`이므로 그대로다.
 - 입력은 항상 32바이트 digest(EVM keccak256, Bitcoin sighash). 카드는 짧은 입력을 앞쪽 0으로 채운다고 명세에 있으나([OPC] p64) 우리는 항상 정확히 32바이트를 보낸다.
 - 서명 흐름의 순서: SELECT → 일련번호 확인(`WrongCard`) → **공개키 읽기로 슬롯의 키가 기록과 같은지 확인**(`KeyMismatch`, 덮어쓴 슬롯을 PIN 전에 거부) → VERIFY PW1 → 서명 → §6 후처리. 서명 흐름은 쓰기 명령(`DA`·`DB`·`FE`·`FF`·`24`, `47 80`)을 **절대 보내지 않는다**(에뮬레이터 로그로 시험, §12.1).
 
@@ -163,6 +164,10 @@ Bitcoin 슬롯의 인덱스는 **계정 0의 받기 체인 주소 인덱스**(`�
 - 판정(`Piv::management_state`): GET METADATA `9B`(알고리즘·기본값 여부) + ADMIN DATA(보호 여부). 저장된 키의 알고리즘은 메타데이터 `9B`가 알려 준다(PRINTED에는 없다). 키 길이가 그 알고리즘과 다르면 `Malformed`.
 - 인증(`Piv::authenticate_management`): 보호되어 있으면 PIV PIN이 있어야 한다(없으면 `ManagementKeyProtected`, 기본 키를 시도하지 않음) → VERIFY PIN → PRINTED에서 키를 꺼내 `Zeroizing`에 → 상호 인증 → 키를 지움. 보호되어 있지 않으면 사용자가 입력한(또는 공장 기본) 키를 쓴다.
 - 이 지갑의 `--generate --protect`(`Piv::protect_management_key`, §9.3): VERIFY PIN → 현재 키로 인증(보호돼 있으면 PRINTED의 키, 아니면 공장 기본 키; 둘 다 아니면 `ManagementKeyUnknown` — 지갑이 모르는 키) → 이 PC의 OS 난수(`entropy::fill_random`)로 AES-192 키 생성 → **PRINTED를 먼저** `88 { 89 새 키 }`로 쓰고 → SET MANAGEMENT KEY(AES-192) → ADMIN DATA flags에 `02`를 켜고 salt를 지워 바뀌었으면 쓴다. SET이 실패하면 PRINTED를 이전 내용으로 되돌린다(최선 노력) — 그래서 SET 실패가 옛 키를 잃게 하지 않는다(ykman은 SET → ADMIN → PRINTED 순서). 새 키는 화면에 나오지 않고 작업이 끝나면 지워진다.
+- **중간에 멈춘 경우의 복구(2026-11-07)**: 세 쓰기(PRINTED → SET → ADMIN DATA)는 원자적이지 않다.
+  - SET이 오류를 돌려주면(응답만 잃고 카드는 바꿨을 수 있음) 먼저 새 키로 인증해 보고, 되면 그대로 ADMIN DATA까지 끝낸다. 안 되면 아직 메모리에 있는 이전 키로 다시 인증해 PRINTED를 되돌린다(최선 노력).
+  - SET 뒤 ADMIN DATA 전에 멈추면(카드 뽑힘 등) 카드는 "기본값도 보호도 아닌" 관리 키 + PRINTED에 그 키 상태가 된다. 그 상태에서 PIN이 주어지면 `protect_management_key`와 `authenticate_management`는 VERIFY PIN 뒤 PRINTED의 키로 인증해 본다 — `PIV 관리 키 자동 보호`(또는 "8자리 하나로 통일")를 PIV PIN으로 다시 실행하면 flag를 켜 복구된다. PRINTED의 키로도 안 되면 `ManagementKeyUnknown`(문구가 이 복구를 안내한다).
+  - 보호 표시가 있는데 PRINTED의 키로 인증이 안 되면(PRINTED를 쓴 뒤 SET 전에 멈추고 되돌리기도 실패) 메모리에 있는 이전 키(입력한 키), 메타데이터가 기본이라면 공장 키를 한 번 더 시도한다. 그 밖에는 이전 키를 알 길이 없으므로 PIV 애플릿 초기화(§15.3) 뒤 다시 등록한다.
 
 ## 6. 서명 후처리 (`yubikey::sig`)
 
@@ -214,11 +219,15 @@ Bitcoin 슬롯의 인덱스는 **계정 0의 받기 체인 주소 인덱스**(`�
 - 진입점 2·3은 설정 → YubiKey `YubiKey 등록`(키 전용·YubiKey 지갑의 빈 체인 카드에도)이다. 단어는 W05(+ W06)에서 한 번 받아 바로 키 작업자로 옮기고(`YkJob::Preview`), 그 뒤 미리보기·등록·백업 YubiKey 반복은 보관한 시드로 한다. 같은 니모닉 판정은 입력한 시드의 EVM 계정 0 주소 = vault의 계정 0 주소(`enrol::seed_identity`; passphrase가 다르면 다른 시드이므로 경고하지 않음)이고, 경고(T-YK-SAME)를 체크해야 계속한다.
 - "백업 복사본"은 이미 등록한 카드 하나의 슬롯 계획(슬롯·경로·정책)을 그대로 복사하고 모든 슬롯에 `backup_copy`를 켠다. 직접 고른 계획에서 같은 경로는 `PathOnOtherCard`로 확인 화면에서 막힌다.
 
+- **떠나면 지움(2026-11-07)**: 마법사(새 YubiKey 지갑의 S20 포함)나 `슬롯 구성 바꾸기`를 버튼이 아닌 길로 떠나도 — 다른 화면, 다른 설정 탭, 메인 화면(`App::set_screen`이 `yk_leaving`을 부른다) — 흐름을 닫고 키 작업자가 보관한 64바이트 시드를 지운다(`YkJob::Discard`). 카드 작업이 도는 중이면 끝날 때까지 두고, 확인 오버레이는 떠나는 것으로 보지 않는다.
+
 ### 7.2 확인 화면 (카드 통신 전)
 
 슬롯마다: 슬롯 이름(예 "OpenPGP 서명(SIG)", "PIV 82 (보관 1)"), 역할 제목, **전체 경로**, 주소(공유 키는 EVM·Bitcoin 둘 다), 터치·PIN 정책. 다른 YubiKey와의 관계(새 키 / 백업 복사본: 어느 YubiKey의 어느 슬롯과 같은지). §3.5 검사 결과를 여기서 보인다.
 
-구현: 미리보기는 `enrol::preview_seed`(카드 통신 없음), 검사는 일련번호가 필요 없는 규칙 1–5·7–9(`plan::validate_before_card`; 규칙 6 `CardAlreadyEnrolled`는 카드에서 `enrol_card`가 판정)이며 오류면 `다음`·`가져오기`가 꺼진다. 관계는 같은 경로를 가진 등록 카드의 일련번호. PIV 슬롯이 있으면 펌웨어 안내(5.7.4 / 5.7.0–5.7.3 / 5.7.0 미만)를 언제나 보인다 — 이 화면에서는 카드를 읽지 않으므로 실제 펌웨어는 결과 화면(기록의 펌웨어)에서 보인다.
+구현: 미리보기는 `enrol::preview_seed`(카드 통신 없음), 검사는 일련번호가 필요 없는 규칙 1–5·7–9(`plan::validate_before_card`; 규칙 6 `CardAlreadyEnrolled`는 카드에서 `enrol_card`가 판정)이며 오류면 `다음`·`가져오기`가 꺼진다. 관계는 같은 경로를 가진 등록 카드의 일련번호. PIV 슬롯이 있으면 펌웨어 안내(5.7.4 / 5.7.0–5.7.3 / 5.7.0 미만)를 언제나 보인다.
+
+**어느 카드인지(2026-11-07)**: 확인 화면과 자격 정보 화면에 들어갈 때 키 작업자가 꽂힌 카드를 **읽기만** 해서 식별한다(`YkJob::Identify` → `yubikey::single_card`: 카드마다 SELECT·버전·`6E`/일련번호와 PIN 남은 횟수, PIN·쓰기 없음). 둘 이상이면 `MultipleCards` "YubiKey가 둘 이상 연결되어 있습니다. YubiKey를 하나만 연결하세요."를 보이고 `다시 읽기`를 둔다. 하나면 "YubiKey #일련번호 (펌웨어 x.y.z) — 이 YubiKey에만 씁니다."를 보이고, 자격 정보 화면의 `가져오기`·`가져오기 없이 등록`은 그 일련번호가 있어야 켜진다. 관리 키 상태 읽기(`ProbeManagement { serial }`)·등록(`YkJob::Enrol { serial }` → `enrol_card_serial`)·가져오기 없이 등록(`adopt_card_serial`)은 그 일련번호의 카드에만 간다(`on_serial`: 다른 카드면 `WrongCard`, 아무것도 쓰지 않음). 서명은 전처럼 기록의 일련번호로 카드를 고른다. 옛 진입점 `KeyJob::EnrolYubiKey`도 `single_card`로 하나인지 확인한 뒤 그 일련번호로 등록한다.
 
 ### 7.3 카드 절차 (`enrol_card`)
 
@@ -282,7 +291,9 @@ n × 48:
 - PIN·관리자 PIN·PUK·관리 키는 **우리의 비밀 입력 창**(D11: 캡처 제외, 직접 그린 입력, 복사 금지)에서만 받는다. Windows의 스마트카드 PIN 대화상자(minidriver)는 쓰지 않는다(PC/SC로 직접 VERIFY).
 - 입력 버퍼는 `Zeroizing`이고, **한 작업(서명 1건, 등록 1회)이 끝나면 지운다.** 작업 사이에 PIN을 캐시하지 않는다. Bitcoin 다중 입력 거래는 "한 작업"이므로 입력마다 같은 PIN 버퍼로 VERIFY한다(카드가 PSO:CDS 한 번마다 PW1을 요구).
 - 길이 검사: OpenPGP PW1 6–127, PW3 8–127, PIV PIN·PUK 6–8(ASCII, `FF` 금지). 남은 횟수가 1이면 "한 번 더 틀리면 PIN이 잠깁니다"를 입력 전에 보인다(OpenPGP `C4`, PIV 메타데이터 `06`).
-- 구현(2026-11-05): 서명 PIN 창은 **W11 `SecretKind::CardPin { min, max, touches }`**(`ui::secret`): 기존 비밀 입력 창과 같이 캡처 제외 우선·직접 그린 입력·복사 금지·ASCII, 가린 칸 하나, 길이는 키가 있는 애플릿의 범위(OpenPGP 6–127, PIV 6–8)를 넘겨받는다. 제목 "YubiKey PIN", 안내 "YubiKey를 연결하고 PIN 입력 후 터치하세요", 그 아래 서명할 키(역할·경로)·이 키를 가진 YubiKey 일련번호·직전 시도의 오류(남은 횟수, 1회면 잠김 경고), 터치가 여러 번이면 "YubiKey 터치 N회가 필요합니다". 남은 횟수는 카드를 읽지 않고는 모르므로 틀린 PIN 뒤에만 보인다. 제출된 PIN은 `Zeroizing` 버퍼 그대로 카드 작업(`KeyJob::*Card`의 `pin`)으로 옮겨지고 작업과 함께 지워진다(SOL 전송은 blockhash를 받는 동안 `PinBuffer`로 보관, 잠금·취소 때 지움). 작업 사이 캐시는 없다. 등록 마법사의 관리자 PIN·PIV 관리 키와 PIN·PUK 바꾸기는 **W12** `SecretKind::CardSecret`(같은 규칙: 캡처 제외 우선·가림·복사 금지·ASCII; 관리 키는 16진수 정확히 48자리; PIV PIN 6–8; "PIN 하나로 통일"은 현재 값(비우면 공장 기본값, 아니면 8자)·새 8자·새 8자 확인)다. 제출된 값은 `Zeroizing` 버퍼 그대로 키 작업자 작업(`YkJob::Enrol`·`ChangePin`·`ProtectManagementKey`·`SetPins`)으로 옮겨지고 작업과 함께 지워진다(관리자 PIN은 W12 → 관리 키·PIV PIN W12 사이에만 마법사가 보관). 새 관리 키를 보여 주는 창(옛 W13)은 없앴다(2026-11-06): 관리 키는 사용자가 보거나 입력하지 않는다(§9.3).
+- 구현(2026-11-05): 서명 PIN 창은 **W11 `SecretKind::CardPin { min, max, touches }`**(`ui::secret`): 기존 비밀 입력 창과 같이 캡처 제외 우선·직접 그린 입력·복사 금지·ASCII, 가린 칸 하나, 길이는 키가 있는 애플릿의 범위(OpenPGP 6–127, PIV 6–8)를 넘겨받는다. 제목 "YubiKey PIN", 안내 "YubiKey를 연결하고 PIN 입력 후 터치하세요", 그 아래 서명할 키(역할·경로)·이 키를 가진 YubiKey 일련번호·직전 시도의 오류(남은 횟수, 1회면 잠김 경고), 터치가 여러 번이면 "YubiKey 터치 N회가 필요합니다". 남은 횟수는 창이 열릴 때 카드를 읽어 입력 전에 보인다(아래 2026-11-07). 제출된 PIN은 `Zeroizing` 버퍼 그대로 카드 작업(`KeyJob::*Card`의 `pin`)으로 옮겨지고 작업과 함께 지워진다(SOL 전송은 blockhash를 받는 동안 `PinBuffer`로 보관, 잠금·취소 때 지움). 작업 사이 캐시는 없다. 등록 마법사의 관리자 PIN·PIV 관리 키와 PIN·PUK 바꾸기는 **W12** `SecretKind::CardSecret`(같은 규칙: 캡처 제외 우선·가림·복사 금지·ASCII; 관리 키는 16진수 정확히 48자리; PIV PIN 6–8; "PIN 하나로 통일"은 현재 값(비우면 공장 기본값, 아니면 8자)·새 8자·새 8자 확인)다. 제출된 값은 `Zeroizing` 버퍼 그대로 키 작업자 작업(`YkJob::Enrol`·`ChangePin`·`ProtectManagementKey`·`SetPins`)으로 옮겨지고 작업과 함께 지워진다(관리자 PIN은 W12 → 관리 키·PIV PIN W12 사이에만 마법사가 보관). 새 관리 키를 보여 주는 창(옛 W13)은 없앴다(2026-11-06): 관리 키는 사용자가 보거나 입력하지 않는다(§9.3).
+- **남은 횟수를 입력 전에(2026-11-07)**: W11이 열릴 때 `YkJob::Counters(CounterTarget::Key(role))`, W12(관리자 PIN·PIV PIN·PIN 바꾸기·통일·슬롯 구성 바꾸기·비우기)가 열릴 때 `Counters(CounterTarget::Card(serial))`로 카드를 읽기만 해서(OpenPGP `6E`/`C4`의 PW1·PW3, PIV GET METADATA `80`의 PIN) 창 설명에 "OpenPGP PIN: 남은 시도 N회"를 보인다. 1회면 "남은 시도 1회 — 한 번 더 틀리면 잠깁니다.", 0회면 "잠김". 등록 마법사는 자격 정보 화면에서 식별할 때 읽은 값을 바로 보인다. 틀린 PIN의 문구도 남은 횟수를 담는다(1회면 같은 경고).
+- **관리자 PIN 마지막 시도(2026-11-07)**: PW3가 1회 남은 카드에는 사용자 확인 없이 관리자 PIN을 보내지 않는다. 어댑터(`yubikey::admin_guard`, 읽기만)가 등록·슬롯 구성 바꾸기·비우기(우리 슬롯)·관리자 PIN 바꾸기·통일 전에 `C4`를 보고 `AdminLastTry`("…1회 남았습니다. 한 번 더 틀리면 잠깁니다… 정확한 관리자 PIN이 확실하면 다시 입력해 제출하세요")로 멈춘다(아무것도 보내지 않음, 통일은 PIV 단계 전에 멈춤). 이 오류를 본 뒤 **같은 카드에 다시 제출하면** 작업이 `admin_last_try: true`를 실어 마지막 시도를 보낸다(`CardUi::admin_last_try`, 한 번만 쓰임). PIV PIN은 PUK로 풀 수 있으므로 경고만 한다.
 
 ### 9.2 서명 중 표시
 
@@ -294,17 +305,19 @@ n × 48:
 - PIN 제출 → `SignEvmCard`·`SignMessageCard`·`SignChainMessageCard`·`SignBtcCard`(입력마다 같은 PIN으로 카드 서명 1회) 또는 SOL은 blockhash 조회 뒤 `SignSolCard`(SOL 서명 기한 20초는 PIN 제출 시각부터 잰다). 결과는 기존 `SignedEvm`·`SignedMessage`·`SignedChainMessage`·`SignedSol`·`SignedBtc` 처리로 간다(실패 문구는 `CardJobError` 문구).
 - 키 작업자는 승인을 쓰기 **전에** 카드에서 PIN을 확인한다(`yubikey::sign::check_pin`: 일련번호·기록 공개키 확인 뒤 VERIFY 한 번, 쓰기·서명 명령·터치 없음). 틀린 PIN·다른 카드·카드 없음이면 쓰지 않은 승인을 돌려주고(`KeyOutcome::CardUnused`) 실패 결과를 보낸다. 앱은 카드 단계가 상한(승인 뒤 120초) 안이고 PIN이 잠기지 않았으면 그 실패를 보이지 않고 W11을 오류와 함께 다시 연다. 그 밖에는 승인을 버리고 실패를 보인다.
 - W11 취소·닫기·창이 열리지 못함(캡처 제외 거부 등)·120초 초과는 승인을 버린다(아무것도 서명하지 않음). dApp에는 4001(사용자 거부), 120초 초과는 -32603. 잠금은 보관 중인 승인과 PIN을 지우고 dApp에 4001을 보낸다.
+- **공장 기본 PIN으로는 서명하지 않는다(2026-11-07)**: 키를 가진 카드 중 하나라도 `hw_accounts.defaults`에 있으면(등록 때 기본값을 보았고 아직 바꾸지 않음) 카드 단계를 열지 않고 승인을 버린다. 입력한 PIN이 공장 값 `123456`(OpenPGP PW1·PIV PIN)이면 카드에 보내지 않고 같은 처리를 한다. 둘 다 dApp에는 실패, 배너 "이 YubiKey는 아직 공장 기본 PIN을 쓰고 있어 서명하지 않았습니다…", 메인 창 머리에 "PIN 설정" 버튼(`ids::PIN_NEEDED_OPEN` → 설정 → YubiKey의 그 카드 "PIN 설정")이 남는다(PIN 설정을 마치면 사라짐).
 
 ### 9.3 기본값 변경 안내
 
-등록 중 기본값을 발견하면(`DefaultsSeen`: 성공한 관리자 PIN이 `12345678`, PIV PIN 메타데이터 기본, 관리 키 메타데이터 기본; 보호 여부 `piv_management_protected`) 등록 직후 바꾸도록 안내한다. 사용자 결정(2026-11-06): **PIV 관리 키는 자동으로 처리한다** — 이 PC의 OS 난수로 AES-192 키를 만들어 SET MANAGEMENT KEY하고 PIN으로 보호해 카드에 저장한 뒤(PRINTED + ADMIN DATA, `ykman … --generate --protect`와 같음, §5.3.3) 지운다. 사용자는 관리 키를 보지도 입력하지도 않는다. 사용자가 정하는 것은 숫자 PIN뿐이다. 건너뛸 수 있지만 계정 화면에 "기본 PIN 사용 중" 경고가 남는다(정보는 meta `hw_accounts`에).
+등록 중 기본값을 발견하면(`DefaultsSeen`: 성공한 관리자 PIN이 `12345678`, PIV PIN 메타데이터 기본, 관리 키 메타데이터 기본; 보호 여부 `piv_management_protected`) 등록 직후 바꾸도록 안내한다. 사용자 결정(2026-11-06): **PIV 관리 키는 자동으로 처리한다** — 이 PC의 OS 난수로 AES-192 키를 만들어 SET MANAGEMENT KEY하고 PIN으로 보호해 카드에 저장한 뒤(PRINTED + ADMIN DATA, `ykman … --generate --protect`와 같음, §5.3.3) 지운다. 사용자는 관리 키를 보지도 입력하지도 않는다. 사용자가 정하는 것은 숫자 PIN뿐이다. 기본값이 남은 카드는 서명하지 않는다(2026-11-07, §9.2; 정보는 meta `hw_accounts.defaults`에).
 
 구현(2026-11-06): 카드 "기본값 변경 / PIN 설정 — YubiKey #n"(`App::yk_pin_items`)은 등록 결과 화면(`가져오기`와 `가져오기 없이 등록` 둘 다 — 나중에 다시 연결할 때 PIN을 정하려는 경우)과 설정 → YubiKey 목록의 카드별 `PIN 설정 / 기본값 변경 (PIN 안내)`에서 연다. 내용:
 
 - 남은 기본값 경고(결과 화면에서 본 것), **PIN 안내**: OpenPGP PIN — EVM·Bitcoin 서명할 때마다(기본 123456, 6자 이상); OpenPGP 관리자 PIN — 키를 넣을 때·OpenPGP PIN이 잠겼을 때(기본 12345678, 8자 이상); PIV PIN — Solana 서명할 때(기본 123456, 6–8자); PIV PUK — PIV PIN이 잠겼을 때 풀기(기본 12345678, 6–8자); PIV 관리 키 — 앱이 자동으로 만들어 PIN으로 잠가 보관(입력할 필요 없음). 각각 3번 틀리면 따로 잠기고, 하나가 잠겨도 다른 애플릿은 그대로이며, FIDO2·패스키 로그인과는 관계없다. "편하게 쓰려면: 8자리 하나로 통일하세요 (네 개 모두 같은 값). 기본값 그대로 두면 YubiKey를 가진 사람이 서명할 수 있습니다."
 - 방식 라디오, 기본 **"8자리 하나로 통일 (권장)"**: `PIN 설정하기 (8자리 하나)` → W12 `CardSecretKind::SetPins`(현재 값: 비우면 공장 기본값, 전에 통일했다면 그 8자; 새 PIN 정확히 8자 두 번 — PIV 6–8, OpenPGP PIN 6+, 관리자 PIN 8+를 모두 만족하는 길이) → `YkJob::SetPins` → `yubikey::set_pins`. 안전한 순서로 하나씩: **PIV PIN → PIV PUK → PIV 관리 키(새 PIN으로 VERIFY 뒤 `protect_management_key`; 이미 보호돼 있으면 건너뜀) → OpenPGP 관리자 PIN → OpenPGP PIN**. 처음 실패에서 멈추고 `PinReport { done, skipped, failed }`로 바뀐 것·건너뛴 것(카드에 없는 애플릿)·실패한 것을 그대로 보인다("바꾼 것: …. 실패: … — 그 뒤 항목은 바꾸지 않았습니다."). 첫 단계부터 실패하면 아무것도 바뀌지 않았으므로 창이 오류와 함께 남는다. 같은 값을 쓰는 대가(잠기기 전 시도 횟수가 늘고 서명 PIN이 관리자 권한도 준다; 개인용으로는 괜찮다)를 짧게 안내한다.
 - **"하나씩 따로"**: `OpenPGP PIN`·`OpenPGP 관리자 PIN`·`PIV PIN`·`PIV PUK`는 W12(현재·새·새 확인) → `YkJob::ChangePin` → CHANGE REFERENCE DATA(OpenPGP `24 81`/`83`, PIV `24 80`/`81`); `PIV 관리 키 자동 보호`는 W12 PIV PIN → `YkJob::ProtectManagementKey`. 관리 키가 기본값도 보호도 아니면 `ManagementKeyUnknown`("`ykman piv access change-management-key --generate --protect`로 바꾼 뒤 다시").
-- 바꾼 기본값이 모두 없어지면(또는 통일이 실패 없이 끝나면) 그 일련번호를 `hw_accounts.defaults`에서 지운다. 새 PIN은 저장하지 않는다.
+- 바꾼 기본값이 모두 없어지면(또는 통일이 실패 없이 끝나면) 그 일련번호를 `hw_accounts.defaults`에서 지운다. 새 PIN은 저장하지 않는다. YubiKey 목록에서 "하나씩 따로"로 바꾼 경우는 이번 세션에 그 카드 애플릿의 PIN·관리자 PIN(OpenPGP)과 PIN·PUK·관리 키 보호(PIV)를 모두 바꿨을 때 지운다(`CardUi::list_pins_done`).
+- **건너뛸 수 없음(2026-11-07)**: 기본값은 서명을 막는다(§9.2). 새 YubiKey 지갑(`wizard.created`)의 결과 화면은 "PIN 설정"을 마칠 때까지(`YkWizard::pins_done`: 통일 성공, 또는 애플릿별로 모두 바꿈) `완료`·`다른 YubiKey 등록(백업)`이 꺼지고 T-YK-PINS-FIRST를 보인다.
 
 ## 10. 기존 기능과의 상호작용
 
@@ -458,7 +471,8 @@ OpenPGP 카드 3.4에는 **키를 지우는 명령이 없다**(덮어쓰기·생
 
 - 키 작업자는 카드에 쓰기 **전에** 결과 record로 vault를 검사한다(`Vault::check_replace_hardware_key`): 니모닉 없는 지갑의 마지막 YubiKey를 모두 비우면 지갑에 키가 남지 않으므로 `LastKey`로 거부한다(화면도 미리 `비우기`를 끄고 이유를 보인다). 카드 작업 뒤 실제로 성공한 애플릿의 슬롯만 record에서 뺀다(`ClearPlan::remaining`); **슬롯이 하나도 남지 않은 record는 지운다**. `Vault::replace_hardware_key(id, Some(record) | None)`은 비밀이 없으므로 비밀번호를 묻지 않는다(`PayloadRewrite`, §8의 `add_hardware_key`와 같다 — 카드 쪽은 이미 그 카드의 PIN 또는 일부러 PIN을 잠그는 초기화로 바뀌었다). 같은 일련번호, 유효한 record, 다른 카드와의 일관성을 요구한다.
 - 카드가 바뀌었는데 vault 갱신이 실패하면 결과 화면이 그대로 알린다("YubiKey는 바뀌었지만 지갑의 슬롯 표를 고치지 못했습니다"). 이때 그 계정의 서명은 카드의 `KeyMismatch`로 PIN 전에 거부된다(§5.2).
-- 초기화한 애플릿이 있고 record가 남으면 그 일련번호를 `hw_accounts.defaults`에 더한다(공장 PIN 경고, §9.3). record가 지워지면 뺀다.
+- 초기화한 애플릿이 있고 record가 남으면 그 일련번호를 `hw_accounts.defaults`에 더한다(공장 PIN 경고, §9.3; 그 카드는 PIN 설정 전까지 서명하지 않는다). record가 지워지면 뺀다.
+- Zcash(2026-11-07): 비우기 확인의 "쓸 수 없게 되는 계정"과 슬롯 구성 바꾸기의 "빠지는 계정"에는 지갑의 Zcash 계정 중 그 카드의 그 슬롯만 키를 가진 것(`App::zec_accounts_using_card(serial, slots)`, [12])을 위험 띠로 더한다(주소와 "…뒤에는 Zcash 탭에서 이 주소로 보낼 수 없습니다").
 - 시험: `app::tests::yubikey_manage::yubikey_clear_our_slots_and_applet_resets`(에뮬레이터; 두 애플릿 "우리 슬롯만": 입력 단어 검사, 관리자 PIN·PIV PIN, SIG/AUT 키 없음·속성 RSA 2048, `F6` 전송, 초기화 명령 없음, PIN 그대로, 슬롯 0개 → record 삭제·계정 사라짐; 다시 등록 후 PIN을 바꾼 카드에서 PIV 초기화(`FB`, PIN·PUK·관리 키 공장값, OpenPGP 그대로, record에 OpenPGP 슬롯만 남음, `defaults`에 추가) → OpenPGP 초기화(`E6`·`44`, PW1·PW3 공장값, 키 없음, record 삭제)). 에뮬레이터는 `E6`/`44`(TERMINATE 상태에서는 ACTIVATE만), RSA 4096 속성, `2C`·PUK 횟수, `F6`(5.7 미만 `6D00`), `FB`(PIN·PUK가 막히지 않으면 `6985`)를 구현한다.
 
 ### 15.5 확인한 것과 가정한 것

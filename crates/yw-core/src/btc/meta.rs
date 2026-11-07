@@ -1654,6 +1654,26 @@ impl BtcMeta {
     /// earlier versions), version 2 for every other account.
     #[must_use]
     pub fn to_json(&self) -> Value {
+        self.to_json_with(true)
+    }
+
+    /// [`BtcMeta::to_json`] for the placements earlier builds read strictly (meta `btc` and
+    /// `btc_accounts`, spec/08 §12.3b): never `single_address` (the HD-mode flag goes to the
+    /// top-level `btc_accounts_ext.hd_mode` instead).
+    #[must_use]
+    pub fn to_legacy_json(&self) -> Value {
+        self.to_json_with(false)
+    }
+
+    /// Whether builds before 2026-11-05 can decode this account's `key` object (`hd` or
+    /// `imported`); accounts on an EVM key or a `YubiKey` key go to `btc_accounts_ext` (spec/08
+    /// §12.3b).
+    #[must_use]
+    pub const fn is_legacy(&self) -> bool {
+        legacy_key(&self.account)
+    }
+
+    fn to_json_with(&self, mode_flag: bool) -> Value {
         let verified = self
             .verified
             .iter()
@@ -1724,7 +1744,7 @@ impl BtcMeta {
                 ),
             ),
         ]);
-        if !self.account.fixed_address() {
+        if mode_flag && !self.account.fixed_address() {
             // HD mode only: the default (fixed address) keeps the earlier bytes.
             members.push((SINGLE_ADDRESS_KEY, Value::Bool(false)));
         }
@@ -2037,4 +2057,161 @@ impl BtcAccounts {
             .is_none()
         })
     }
+}
+
+// ---- meta `btc_accounts_ext` (spec/08 §12.3b) ----
+
+/// The top-level meta key of what builds before 2026-11-05 cannot decode (spec/08 §12.3b,
+/// spec/04 §6.6): accounts on an EVM key or a `YubiKey` key, their selection, and the HD-mode
+/// flag of HD accounts. Earlier builds keep it unread (an unknown top-level key) and write it
+/// back; they reject a member they do not know inside `btc` or `btc_accounts` (the whole meta).
+pub const BTC_ACCOUNTS_EXT_KEY: &str = "btc_accounts_ext";
+/// `btc_accounts_ext.version`.
+pub const BTC_ACCOUNTS_EXT_VERSION: u64 = 1;
+const EXT_KEYS: [&str; 4] = ["version", "selected", "accounts", "hd_mode"];
+const HD_MODE_KEYS: [&str; 2] = ["network", "account"];
+
+const fn legacy_key(account: &BtcAccountKey) -> bool {
+    matches!(
+        account,
+        BtcAccountKey::Hd { .. } | BtcAccountKey::Single { .. }
+    )
+}
+
+const fn legacy_id(id: &BtcAccountId) -> bool {
+    matches!(id, BtcAccountId::Hd { .. } | BtcAccountId::Imported { .. })
+}
+
+/// The three meta values of the BTC accounts as written ([`btc_meta_values`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BtcMetaValues {
+    /// Meta `btc` (`null` without BIP84 account 0), never with `single_address`.
+    pub btc: Value,
+    /// Meta `btc_accounts` (`None`: nothing to write): HD and imported accounts only, never
+    /// with `single_address`, `selected` only when it is one of them.
+    pub accounts: Option<Value>,
+    /// Meta `btc_accounts_ext` (`None`: nothing to write).
+    pub ext: Option<Value>,
+}
+
+/// Encodes meta `btc`, `btc_accounts` and `btc_accounts_ext` (spec/08 §12.3b): the two keys that
+/// earlier builds decode strictly carry only members those builds know; everything newer goes to
+/// the new top-level key.
+#[must_use]
+pub fn btc_meta_values(primary: Option<&BtcMeta>, accounts: &BtcAccounts) -> BtcMetaValues {
+    let legacy_selected = accounts.selected.filter(legacy_id);
+    let new_selected = accounts.selected.filter(|id| !legacy_id(id));
+    let (old, new): (Vec<&BtcMeta>, Vec<&BtcMeta>) =
+        accounts.accounts.iter().partition(|meta| meta.is_legacy());
+    let hd_mode: Vec<Value> = primary
+        .into_iter()
+        .chain(&accounts.accounts)
+        .filter(|meta| meta.account.is_hd() && !meta.fixed_address())
+        .map(|meta| {
+            object(vec![
+                ("network", string(meta.network().settings_name())),
+                ("account", account_id_json(&meta.id())),
+            ])
+        })
+        .collect();
+    let accounts_value = (!old.is_empty() || legacy_selected.is_some()).then(|| {
+        object(vec![
+            ("version", number(BTC_ACCOUNTS_VERSION)),
+            (
+                "selected",
+                legacy_selected
+                    .as_ref()
+                    .map_or(Value::Null, account_id_json),
+            ),
+            (
+                "accounts",
+                Value::Array(old.iter().map(|meta| meta.to_legacy_json()).collect()),
+            ),
+        ])
+    });
+    let ext = (!new.is_empty() || new_selected.is_some() || !hd_mode.is_empty()).then(|| {
+        object(vec![
+            ("version", number(BTC_ACCOUNTS_EXT_VERSION)),
+            (
+                "selected",
+                new_selected.as_ref().map_or(Value::Null, account_id_json),
+            ),
+            (
+                "accounts",
+                Value::Array(new.iter().map(|meta| meta.to_json()).collect()),
+            ),
+            ("hd_mode", Value::Array(hd_mode)),
+        ])
+    });
+    BtcMetaValues {
+        btc: primary.map_or(Value::Null, BtcMeta::to_legacy_json),
+        accounts: accounts_value,
+        ext,
+    }
+}
+
+/// Decodes meta `btc`, `btc_accounts` and `btc_accounts_ext` (spec/08 §12.3b). The placement of
+/// the builds of 2026-11-05/06 is read too (migration): `single_address` inside an account
+/// object and accounts on an EVM or `YubiKey` key inside `btc_accounts`; the next meta write
+/// moves them to `btc_accounts_ext`. An `hd_mode` entry naming an account that is gone (an
+/// earlier build removed it meanwhile) is dropped.
+///
+/// # Errors
+///
+/// [`BtcMetaError`]: the errors of [`btc_meta_from_json`] and [`BtcAccounts::from_json`]; in
+/// `btc_accounts_ext` unknown or missing keys, `version != 1`, an HD or imported account (they
+/// belong in `btc_accounts`), an account present twice, more than 64 accounts in all.
+pub fn btc_meta_from_values(
+    btc: &Value,
+    accounts: Option<&Value>,
+    ext: Option<&Value>,
+) -> Result<(Option<BtcMeta>, BtcAccounts), BtcMetaError> {
+    const FIELD: &str = "btc_accounts_ext";
+    let mut primary = btc_meta_from_json(btc)?;
+    let mut list = BtcAccounts::from_json(accounts)?;
+    let Some(ext) = ext else {
+        return Ok((primary, list));
+    };
+    let root = object_with(ext, &EXT_KEYS, FIELD)?;
+    if integer(get(root, "version")?, u64::MAX, "btc_accounts_ext.version")?
+        != BTC_ACCOUNTS_EXT_VERSION
+    {
+        return Err(BtcMetaError("btc_accounts_ext.version"));
+    }
+    for value in array(get(root, "accounts")?, MAX_BTC_ACCOUNTS, FIELD)? {
+        let meta = BtcMeta::from_json(value)?;
+        if meta.is_legacy()
+            || list.get(meta.network(), meta.id()).is_some()
+            || list.accounts.len() >= MAX_BTC_ACCOUNTS
+        {
+            return Err(BtcMetaError(FIELD));
+        }
+        list.accounts.push(meta);
+    }
+    match get(root, "selected")? {
+        Value::Null => {}
+        other => list.selected = Some(account_id(other)?),
+    }
+    for entry in array(
+        get(root, "hd_mode")?,
+        MAX_BTC_ACCOUNTS.saturating_add(2),
+        FIELD,
+    )? {
+        let entry = object_with(entry, &HD_MODE_KEYS, FIELD)?;
+        let network = get(entry, "network")?
+            .as_str()
+            .and_then(BtcNetwork::parse_settings_name)
+            .ok_or(BtcMetaError(FIELD))?;
+        let id = account_id(get(entry, "account")?)?;
+        let target = match primary.as_mut() {
+            Some(meta) if id == BtcAccountId::PRIMARY && meta.network() == network => Some(meta),
+            _ => list.get_mut(network, id),
+        };
+        if let Some(meta) = target
+            && meta.account.is_hd()
+        {
+            meta.account = meta.account.with_single_address(false);
+        }
+    }
+    Ok((primary, list))
 }

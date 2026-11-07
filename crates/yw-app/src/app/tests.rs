@@ -2419,21 +2419,55 @@ fn yubikey_accounts_and_the_card_step() {
     h.pump();
     let before = records(&h);
 
+    // spec/10 §9.3: a card noted with factory PINs does not sign — no PIN window, no job, the
+    // main window offers "PIN 설정".
+    h.app.meta.as_mut().unwrap().hw_accounts.defaults = vec![7_700_011];
     let ticket = h.app.push_sign_waiter(SignWaiter::App);
     h.app
         .dispatch_evm_sign(ticket, approve(source, account), info.clone());
-    // No signing job yet: the card step waits for the PIN (W11 bounds: OpenPGP PW1 6–127).
+    assert!(h.app.card.step.is_none());
     assert!(h.app.key_queue.is_empty());
+    assert_eq!(h.app.card.pin_needed, Some(7_700_011));
+    assert!(
+        controls(&h.app.items())
+            .iter()
+            .any(|ctl| ctl.id == crate::ui::screens_yubikey::ids::PIN_NEEDED_OPEN)
+    );
+    h.app.meta.as_mut().unwrap().hw_accounts.defaults.clear();
+    h.app.card.pin_needed = None;
+
+    let ticket = h.app.push_sign_waiter(SignWaiter::App);
+    h.app
+        .dispatch_evm_sign(ticket, approve(source, account), info.clone());
+    // No signing job yet: the card step waits for the PIN (W11 bounds: OpenPGP PW1 6–127); only
+    // the read-only PIN counters are read, shown before the PIN is entered (spec/10 §9.1).
     let id = h.app.card_waiting_id().unwrap();
+    run_named(&mut h, "YkCounters");
+    assert!(h.app.key_queue.is_empty());
     let step = h.app.card.step.as_ref().unwrap();
     assert_eq!(crate::yubikey::pin_bounds(step.role), (6, 127));
     assert_eq!(step.touches, 1);
+    assert_eq!(step.counters.and_then(|counters| counters.pw1), Some(3));
     assert_eq!(
         crate::yubikey::holders(&h.app.card.records, step.role),
         [7_700_011]
     );
+    // The factory PIN is never sent for a signature: the step ends, nothing is queued.
+    h.submit(Purpose::CardSign(id), &[b"123456"]);
+    assert!(h.app.card.step.is_none());
+    assert!(h.app.key_queue.is_empty());
+    assert_eq!(h.app.card.pin_needed, Some(7_700_011));
+    assert_eq!(records(&h), before);
+    h.app.card.pin_needed = None;
+    cards.lock().unwrap()[0].pw1 = b"135790".to_vec();
 
-    // Wrong PIN: the worker checks it before the approval is used; the step asks again.
+    let ticket = h.app.push_sign_waiter(SignWaiter::App);
+    h.app
+        .dispatch_evm_sign(ticket, approve(source, account), info.clone());
+    let id = h.app.card_waiting_id().unwrap();
+    run_named(&mut h, "YkCounters");
+    // Wrong PIN: the worker checks it before the approval is used; the step asks again with
+    // the tries left read again after the card's 6982.
     h.submit(Purpose::CardSign(id), &[b"000000"]);
     assert!(!h.app.card_waiting(id));
     run_named(&mut h, "SignEvmCard");
@@ -2444,11 +2478,11 @@ fn yubikey_accounts_and_the_card_step() {
             .step
             .as_ref()
             .and_then(|step| step.error.clone())
-            .is_some_and(|error| error.contains("PIN이 틀렸습니다"))
+            .is_some_and(|error| error.contains("PIN이 틀렸습니다. 남은 시도 2회"))
     );
     assert_eq!(records(&h), before);
     // The right PIN signs on the card and journals the transaction.
-    h.submit(Purpose::CardSign(id), &[b"123456"]);
+    h.submit(Purpose::CardSign(id), &[b"135790"]);
     run_named(&mut h, "SignEvmCard");
     h.pump();
     assert!(h.app.card.step.is_none());
@@ -2459,6 +2493,7 @@ fn yubikey_accounts_and_the_card_step() {
     h.app
         .dispatch_evm_sign(ticket, approve(source, account), info.clone());
     let id = h.app.card_waiting_id().unwrap();
+    run_named(&mut h, "YkCounters");
     h.app.on_cancel(Purpose::CardSign(id));
     assert!(h.app.card.step.is_none());
     assert!(h.app.key_queue.is_empty());
@@ -2668,11 +2703,23 @@ fn yubikey_wizard_enrols_an_existing_wallet() {
     h.app.yk_set_text(yk::AUT_INDEX_EDIT, "0".to_owned());
     h.app.on_command(yk::PLAN_NEXT);
     assert_eq!(wizard_step(&h), Some(WizardStep::Confirm));
-    // (b) W05 (headless: the submission) → the key worker derives the preview, no card.
+    // (b) W05 (headless: the submission) → the key worker derives the preview; the card is
+    // only identified (read-only, spec/10 §7.3) and its serial shown.
     h.submit(Purpose::YubiKey(YkPurpose::Mnemonic), &[ABOUT.as_bytes()]);
     yk_pump(&mut h, &mut seen);
     assert!(!cards.lock().unwrap()[0].saw_write());
-    assert!(cards.lock().unwrap()[0].log.is_empty(), "no card contact");
+    assert!(
+        cards.lock().unwrap()[0]
+            .log
+            .iter()
+            .all(|header| header[1] != 0x20),
+        "no PIN was sent"
+    );
+    assert!(
+        all_text(&h.app.items())
+            .iter()
+            .any(|text| text == "YubiKey #8800001 (펌웨어 5.7.4) — 이 YubiKey에만 씁니다.")
+    );
     let wizard = h.app.card.wizard.as_ref().unwrap();
     let preview = wizard.preview.as_ref().unwrap();
     assert!(preview.same_as_vault);
@@ -2731,10 +2778,12 @@ fn yubikey_wizard_enrols_an_existing_wallet() {
     let next = |h: &Harness| ctl(&h.app.items(), yk::CONFIRM_NEXT).unwrap().enabled;
     assert!(!next(&h));
     h.app.on_command(yk::CONFIRM_NEXT);
+    yk_pump(&mut h, &mut seen);
     assert_eq!(wizard_step(&h), Some(WizardStep::Confirm));
     h.app.on_command(yk::SAME_ACK);
     assert!(next(&h));
     h.app.on_command(yk::CONFIRM_NEXT);
+    yk_pump(&mut h, &mut seen);
     assert_eq!(wizard_step(&h), Some(WizardStep::Credentials));
     unique_ids(&h.app.items());
     // (d) `가져오기` → W12 admin PIN → the card job (factory management key for PIV).
@@ -2832,6 +2881,44 @@ fn yubikey_wizard_enrols_an_existing_wallet() {
     let _ = std::fs::remove_dir_all(&h.dir);
 }
 
+/// Leaving the wizard by any path (not `취소`/`완료`: here a plain screen change) ends it and the
+/// key worker wipes the held 64-byte seed.
+#[test]
+fn yubikey_leaving_the_wizard_wipes_the_seed() {
+    use crate::app_yubikey::YkPurpose;
+    use crate::events::KeyJob;
+    use crate::ui::screens_yubikey::ids as yk;
+    use crate::workers::key::yubikey::{YkJob, YkOutcome};
+
+    let (mut h, _cards) = card_harness("yk-leave", 8_800_031);
+    let mut seen = YkSeen::default();
+    about_wallet(&mut h);
+    h.app.on_command(yk::SECTION_YUBIKEY);
+    h.pump();
+    h.app.on_command(yk::ENROL_START);
+    h.app.on_command(yk::PLAN_NEXT);
+    h.submit(Purpose::YubiKey(YkPurpose::Mnemonic), &[ABOUT.as_bytes()]);
+    yk_pump(&mut h, &mut seen);
+    assert!(h.app.card.wizard.as_ref().unwrap().seed_held);
+    let held = |h: &mut Harness| {
+        matches!(
+            h.worker
+                .handle(KeyJob::YubiKey(YkJob::Preview {
+                    mnemonic: None,
+                    slots: Vec::new(),
+                }))
+                .pop(),
+            Some(KeyOutcome::YubiKey(YkOutcome::Preview(Ok(_))))
+        )
+    };
+    assert!(held(&mut h));
+    h.app.set_screen(Screen::Main);
+    assert!(h.app.card.wizard.is_none());
+    yk_pump(&mut h, &mut seen);
+    assert!(!held(&mut h), "the seed is wiped");
+    let _ = std::fs::remove_dir_all(&h.dir);
+}
+
 /// spec/10 §3.4, §3.5, §7.1-3: on a second card the same path is refused unless it is a backup
 /// copy; the "백업 복사본" of the first card's plan enrols the second emulator card; the list
 /// shows both holders; removing the first card's record asks the password and keeps the
@@ -2862,6 +2949,7 @@ fn yubikey_backup_copy_removal_and_management_key() {
     yk_pump(&mut h, &mut seen);
     h.app.on_command(yk::SAME_ACK);
     h.app.on_command(yk::CONFIRM_NEXT);
+    yk_pump(&mut h, &mut seen);
     h.app.on_command(yk::IMPORT);
     h.submit(Purpose::YubiKey(YkPurpose::AdminPin), &[b"12345678"]);
     yk_pump(&mut h, &mut seen);
@@ -2908,6 +2996,7 @@ fn yubikey_backup_copy_removal_and_management_key() {
     *cards.lock().unwrap() = vec![MockCard::new(8_800_012)];
     h.app.on_command(yk::SAME_ACK);
     h.app.on_command(yk::CONFIRM_NEXT);
+    yk_pump(&mut h, &mut seen);
     h.app.on_command(yk::IMPORT);
     h.submit(Purpose::YubiKey(YkPurpose::AdminPin), &[b"12345678"]);
     yk_pump(&mut h, &mut seen);
@@ -2923,6 +3012,7 @@ fn yubikey_backup_copy_removal_and_management_key() {
     yk_pump(&mut h, &mut seen);
     h.app.on_command(yk::SAME_ACK);
     h.app.on_command(yk::CONFIRM_NEXT);
+    yk_pump(&mut h, &mut seen);
     h.app.on_command(yk::IMPORT);
     cards.lock().unwrap()[0].log.clear();
     h.submit(Purpose::YubiKey(YkPurpose::AdminPin), &[b"12345678"]);
@@ -2984,12 +3074,17 @@ fn yubikey_backup_copy_removal_and_management_key() {
     yk_pump(&mut h, &mut seen);
     h.app.on_command(yk::SAME_ACK);
     h.app.on_command(yk::CONFIRM_NEXT);
-    // The factory key no longer works on this card: nothing is written, the failure is shown.
+    yk_pump(&mut h, &mut seen);
+    // The probe saw a custom key; picking the factory key anyway fails: nothing is written,
+    // the failure is shown.
+    assert!(!h.app.card.wizard.as_ref().unwrap().default_management);
+    h.app.on_command(yk::MGMT_DEFAULT);
     h.app.on_command(yk::IMPORT);
     yk_pump(&mut h, &mut seen);
     assert!(h.app.card.wizard.as_ref().unwrap().failure.is_some());
     assert_eq!(h.app.card.records.len(), 1);
     h.app.on_command(yk::RETRY);
+    yk_pump(&mut h, &mut seen);
     h.app.on_command(yk::MGMT_CUSTOM);
     h.app.on_command(yk::IMPORT);
     h.submit(
@@ -3058,6 +3153,7 @@ fn yubikey_backup_copy_removal_and_management_key() {
     );
     // The next enrolment of this card asks only the PIV PIN for the management key.
     h.app.on_command(yk::RETRY);
+    yk_pump(&mut h, &mut seen);
     yk_pump(&mut h, &mut seen);
     assert!(h.app.card.wizard.as_ref().unwrap().management_protected());
     assert!(
@@ -3157,6 +3253,7 @@ fn yubikey_only_wallet_from_the_first_run_screen() {
         ["m/44'/60'/0'/0/0", "m/84'/0'/0'/0/0", "m/44'/501'/0'/0'"]
     );
     h.app.on_command(yk::CONFIRM_NEXT);
+    yk_pump(&mut h, &mut seen);
     h.app.on_command(yk::IMPORT);
     h.submit(Purpose::YubiKey(YkPurpose::AdminPin), &[b"12345678"]);
     yk_pump(&mut h, &mut seen);
@@ -3194,6 +3291,20 @@ fn yubikey_only_wallet_from_the_first_run_screen() {
     let items = h.app.items();
     unique_ids(&items);
     assert!(has_text(&items, "YubiKey 지갑을 만들었습니다"));
+    // spec/10 §9.3: the new wallet does not finish before its PIN setup (no skip).
+    assert!(!ctl(&items, yk::FINISH).unwrap().enabled);
+    assert!(!ctl(&items, yk::ANOTHER).unwrap().enabled);
+    h.app.on_command(yk::FINISH);
+    assert!(h.app.card.wizard.is_some());
+    h.app.on_command(yk::SET_PINS);
+    yk_pump(&mut h, &mut seen);
+    h.submit(
+        Purpose::YubiKey(YkPurpose::SetPins),
+        &[b"", b"24681357", b"24681357"],
+    );
+    yk_pump(&mut h, &mut seen);
+    assert!(h.app.card.wizard.as_ref().unwrap().pins_done());
+    assert!(ctl(&h.app.items(), yk::FINISH).unwrap().enabled);
     h.app.on_command(yk::FINISH);
     yk_pump(&mut h, &mut seen);
     assert_eq!(h.app.screen, Screen::Main);

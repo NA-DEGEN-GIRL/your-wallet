@@ -37,6 +37,8 @@ pub enum ManageJob {
         slots: Vec<PlannedSlot>,
         /// `OpenPGP` admin PIN (wiped with the job).
         admin_pin: Zeroizing<Vec<u8>>,
+        /// The user confirmed spending the admin PIN's last try (spec/10 §9.1).
+        admin_last_try: bool,
     },
     /// Clear card `serial`, then update (or remove) its record.
     Clear {
@@ -48,6 +50,8 @@ pub enum ManageJob {
         admin_pin: Zeroizing<Vec<u8>>,
         /// PIV PIN (deleting our slots; empty otherwise).
         piv_pin: Zeroizing<Vec<u8>>,
+        /// The user confirmed spending the admin PIN's last try (spec/10 §9.1).
+        admin_last_try: bool,
     },
 }
 
@@ -122,8 +126,9 @@ impl KeyWorker {
                 serial,
                 slots,
                 admin_pin,
+                admin_last_try,
             } => {
-                let result = self.yk_reslot(serial, &slots, &admin_pin);
+                let result = self.yk_reslot(serial, &slots, (&admin_pin, admin_last_try));
                 logging::info(
                     "key",
                     "yubikey.reslot",
@@ -136,8 +141,9 @@ impl KeyWorker {
                 plan,
                 admin_pin,
                 piv_pin,
+                admin_last_try,
             } => {
-                let result = self.yk_clear(serial, plan, &admin_pin, &piv_pin);
+                let result = self.yk_clear(serial, plan, (&admin_pin, admin_last_try), &piv_pin);
                 logging::info(
                     "key",
                     "yubikey.clear",
@@ -248,7 +254,7 @@ impl KeyWorker {
         &mut self,
         serial: u32,
         slots: &[PlannedSlot],
-        admin_pin: &[u8],
+        admin_pin: (&[u8], bool),
     ) -> Result<HwKeyRecord, YubiKeyJobError> {
         let (id, record, others) = self.yk_card(serial)?;
         let pending = self
@@ -275,7 +281,7 @@ impl KeyWorker {
         &mut self,
         serial: u32,
         plan: ClearPlan,
-        admin_pin: &[u8],
+        admin_pin: (&[u8], bool),
         piv_pin: &[u8],
     ) -> Result<Cleared, YubiKeyJobError> {
         let (id, record, _) = self.yk_card(serial)?;

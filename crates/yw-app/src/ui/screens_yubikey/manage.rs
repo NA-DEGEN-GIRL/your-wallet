@@ -230,6 +230,7 @@ impl App {
         ]));
     }
 
+    #[expect(clippy::too_many_lines, reason = "one screen of the re-slot flow")]
     fn yk_reslot_confirm_items(&self, flow: &ReslotFlow, items: &mut Vec<Item>) {
         let Some(preview) = flow.preview.as_ref() else {
             items.push(Item::CardStart(None));
@@ -304,6 +305,19 @@ impl App {
                     role.title(),
                     role.path_text()
                 )));
+            }
+            if let Some(before) = flow.before.as_ref() {
+                let changed: Vec<CardSlot> = before
+                    .slots
+                    .iter()
+                    .filter(|slot| {
+                        dropped
+                            .iter()
+                            .any(|(role, _)| role.key_identity() == slot.role.key_identity())
+                    })
+                    .map(|slot| slot.slot)
+                    .collect();
+                self.yk_zec_unusable_items(flow.serial, &changed, "바꾼", items);
             }
             items.push(Item::Banner(T_YK_RESLOT_REMOVED.to_owned(), Tone::Warn));
             items.push(Item::Row(vec![Ctl::check(
@@ -435,6 +449,27 @@ impl App {
         ));
     }
 
+    /// The wallet's Zcash accounts whose key only `slots` of card `serial` hold
+    /// (`App::zec_accounts_using_card`): clearing or re-slotting them leaves the Zcash tab
+    /// without a signing key (spec/10 §15, spec/12).
+    fn yk_zec_unusable_items(
+        &self,
+        serial: u32,
+        slots: &[CardSlot],
+        action: &str,
+        items: &mut Vec<Item>,
+    ) {
+        for account in self.zec_accounts_using_card(serial, slots) {
+            items.push(Item::Banner(
+                format!(
+                    "Zcash 계정 {} — 이 YubiKey의 이 슬롯에만 있는 키입니다. {action} 뒤에는 Zcash 탭에서 이 주소로 보낼 수 없습니다(잔액이 있으면 먼저 옮기세요).",
+                    account.address()
+                ),
+                Tone::HighRisk,
+            ));
+        }
+    }
+
     #[expect(clippy::too_many_lines, reason = "one screen of the clear flow")]
     fn yk_clear_items(&self, flow: &ClearFlow, items: &mut Vec<Item>) {
         items.push(Item::Subtitle(format!(
@@ -533,6 +568,13 @@ impl App {
                     items.push(Item::Mono(address));
                 }
             }
+            let cleared: Vec<CardSlot> = before
+                .slots
+                .iter()
+                .filter(|slot| plan.clears(slot.slot))
+                .map(|slot| slot.slot)
+                .collect();
+            self.yk_zec_unusable_items(flow.serial, &cleared, "비운", items);
             items.push(Item::Banner(T_YK_CLEAR_FUNDS.to_owned(), Tone::Warn));
             if plan.remaining(before).is_none() {
                 items.push(Item::Help(

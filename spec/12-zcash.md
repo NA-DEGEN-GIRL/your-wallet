@@ -49,7 +49,7 @@ D36의 세부 명세다. 방식은 Bitcoin([08](08-bitcoin.md))과 같다: 받�
 - 공개키는 압축 33바이트만 쓰고 meta `zcash`(선택 최상위 키, §12.3)에 출처와 함께 캐시한다. 개인키는 서명 때만 `Vault::with_secp_key`로 빌려 쓰고, 빌린 키의 공개키가 캐시와 다르면 서명하지 않는다(`KeyMismatch`).
 - EVM 계정과 같은 키: `m/44'/60'/0'/0/i`. 고르면 경고 T-ZEC-EVM-SHARED("EVM 주소와 이 Zcash 주소가 같은 공개키라 누구나 두 주소를 한 사람의 것으로 묶을 수 있습니다. 같은 복구 단어를 다른 Zcash 지갑에 넣어도 이 주소는 나오지 않습니다…")를 보이고 [정말 EVM 키 사용]을 한 번 더 눌러야 바뀐다. 기본은 표준 경로다.
 - YubiKey: vault tag 5의 `KeyRole::Zec { network, index }` 슬롯(OpenPGP secp256k1, [10](10-yubikey.md))의 공개키를 계정으로 쓴다. 카드에 서명을 맡기는 규칙은 §8.2.
-- YubiKey 계정 대조(2026-11-07): 카드 기록(vault tag 5)을 읽을 때마다(잠금 해제 후 meta 적재, 등록·슬롯 바꾸기·비우기 뒤) meta `zcash`의 YubiKey 계정을 대조한다 — 같은 네트워크·index의 `KeyRole::Zec` 슬롯이 같은 공개키로 있어야 한다. 없으면 meta는 그대로 두고 받기 카드를 숨기며 보내기를 막고 위험 띠("…YubiKey 키를 찾을 수 없습니다… 키 출처를 '표준'으로 바꾸세요(다른 주소가 됩니다)")를 보인다. 표준 경로로 바꾸는 것은 사용자가 고를 때만. 카드 기록을 아직 못 읽었으면 받기·보내기는 기다린다. YubiKey 비우기·슬롯 바꾸기 화면은 `App::zec_accounts_using_card(serial, slots)`(그 카드의 그 슬롯만 가진 Zcash 계정)로 먼저 경고할 수 있다.
+- YubiKey 계정 대조(2026-11-07): 카드 기록(vault tag 5)을 읽을 때마다(잠금 해제 후 meta 적재, 등록·슬롯 바꾸기·비우기 뒤) meta `zcash`의 YubiKey 계정을 대조한다 — 같은 네트워크·index의 `KeyRole::Zec` 슬롯이 같은 공개키로 있어야 한다. 없으면 meta는 그대로 두고 받기 카드를 숨기며 보내기를 막고 위험 띠("…YubiKey 키를 찾을 수 없습니다… 키 출처를 '표준'으로 바꾸세요(다른 주소가 됩니다)")를 보인다. 표준 경로로 바꾸는 것은 사용자가 고를 때만. 카드 기록을 아직 못 읽었으면 받기·보내기는 기다린다. YubiKey 비우기·슬롯 바꾸기 확인 화면은 `App::zec_accounts_using_card(serial, slots)`(그 카드의 그 슬롯만 가진 Zcash 계정)로 쓰기 전에 위험 띠를 보인다(2026-11-07, [10] §15).
 - 진행 중 거래(§12.1)가 있으면 키 출처(YubiKey 슬롯 선택 포함)·네트워크를 바꾸거나 Zcash를 끄지 않는다.
 
 ## 3. 받는 주소 파싱 (`zec::address::parse_recipient`)

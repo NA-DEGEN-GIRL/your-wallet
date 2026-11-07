@@ -646,12 +646,12 @@ impl App {
             .map(|flow| flow.serial)
             .map(|serial| self.yk_other_records(serial))
             .unwrap_or_default();
-        if self.reslot().is_some_and(|flow| flow.can_import(&others)) {
-            self.open_input(
-                SecretKind::CardSecret(CardSecretKind::AdminPin),
-                crate::app::Purpose::YubiKey(YkPurpose::ReslotAdminPin),
-                false,
-            );
+        if let Some(serial) = self
+            .reslot()
+            .filter(|flow| flow.can_import(&others))
+            .map(|flow| flow.serial)
+        {
+            self.yk_open_card_secret(CardSecretKind::AdminPin, YkPurpose::ReslotAdminPin, serial);
         }
     }
 
@@ -736,11 +736,8 @@ impl App {
         flow.error = None;
         flow.admin_pin = None;
         if flow.openpgp == Some(ClearMethod::OurSlots) {
-            self.open_input(
-                SecretKind::CardSecret(CardSecretKind::AdminPin),
-                crate::app::Purpose::YubiKey(YkPurpose::ClearAdminPin),
-                false,
-            );
+            let serial = flow.serial;
+            self.yk_open_card_secret(CardSecretKind::AdminPin, YkPurpose::ClearAdminPin, serial);
         } else {
             self.yk_clear_after_admin(Zeroizing::new(Vec::new()));
         }
@@ -752,11 +749,8 @@ impl App {
         };
         if flow.piv == Some(ClearMethod::OurSlots) {
             flow.admin_pin = Some(admin_pin);
-            self.open_input(
-                SecretKind::CardSecret(CardSecretKind::PivPin),
-                crate::app::Purpose::YubiKey(YkPurpose::ClearPivPin),
-                false,
-            );
+            let serial = flow.serial;
+            self.yk_open_card_secret(CardSecretKind::PivPin, YkPurpose::ClearPivPin, serial);
         } else {
             self.yk_clear_job(admin_pin, Zeroizing::new(Vec::new()));
         }
@@ -764,6 +758,10 @@ impl App {
 
     fn yk_clear_job(&mut self, admin_pin: Zeroizing<Vec<u8>>, piv_pin: Zeroizing<Vec<u8>>) {
         self.close_secret();
+        let Some(serial) = self.clear_flow().map(|flow| flow.serial) else {
+            return;
+        };
+        let admin_last_try = !admin_pin.is_empty() && self.yk_take_last_try(serial);
         let Some(flow) = self.clear_flow() else {
             return;
         };
@@ -774,6 +772,7 @@ impl App {
             plan: flow.plan(),
             admin_pin,
             piv_pin,
+            admin_last_try,
         };
         logging::info("app", "yubikey.clear_start", &[]);
         self.key(KeyJob::YubiKey(YkJob::Manage(job)));
@@ -817,6 +816,10 @@ impl App {
             YkPurpose::ReslotAdminPin => {
                 let admin_pin = next();
                 self.close_secret();
+                let Some(serial) = self.reslot().map(|flow| flow.serial) else {
+                    return;
+                };
+                let admin_last_try = self.yk_take_last_try(serial);
                 let Some(flow) = self.reslot() else {
                     return;
                 };
@@ -826,6 +829,7 @@ impl App {
                     serial: flow.serial,
                     slots: flow.slots.clone(),
                     admin_pin,
+                    admin_last_try,
                 };
                 logging::info("app", "yubikey.reslot_start", &[]);
                 self.key(KeyJob::YubiKey(YkJob::Manage(job)));
@@ -914,6 +918,9 @@ impl App {
     }
 
     fn on_reslotted(&mut self, serial: u32, result: Result<HwKeyRecord, YubiKeyJobError>) {
+        if let Err(YubiKeyJobError::Card(error)) = &result {
+            self.yk_note_last_try(serial, *error);
+        }
         let Some(flow) = self.reslot().filter(|flow| flow.serial == serial) else {
             return;
         };
@@ -952,6 +959,9 @@ impl App {
     }
 
     fn on_cleared(&mut self, serial: u32, result: Result<Cleared, YubiKeyJobError>) {
+        if let Err(YubiKeyJobError::Card(error)) = &result {
+            self.yk_note_last_try(serial, *error);
+        }
         let Some(flow) = self.clear_flow().filter(|flow| flow.serial == serial) else {
             return;
         };

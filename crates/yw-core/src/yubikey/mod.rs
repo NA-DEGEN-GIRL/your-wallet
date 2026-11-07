@@ -82,7 +82,9 @@ pub enum CardError {
     CardRemoved,
     /// The applet is not on this card (`6A82` on SELECT).
     AppletMissing,
-    /// Wrong PIN / admin PIN; `retries` left (`63Cx`).
+    /// Wrong PIN / admin PIN; `retries` left (`63Cx` on PIV; on the `OpenPGP` applet of a
+    /// `YubiKey` the card answers `6982` and the counter is read again from `6E`/`C4`, spec/10
+    /// §9.1). `retries: 0` means the PIN is now blocked (final, like [`CardError::PinBlocked`]).
     WrongPin {
         /// Remaining tries.
         retries: u8,
@@ -130,8 +132,25 @@ pub enum CardError {
     /// The card refused an Ed25519 PIV import on firmware 5.7.0–5.7.3 (Yubico documents the
     /// import from 5.7.4, spec/10 §2).
     Ed25519ImportRefused,
+    /// The `OpenPGP` admin PIN has one try left and the user did not confirm spending it: nothing
+    /// was sent (spec/10 §9.1).
+    AdminLastTry,
+    /// More than one `YubiKey` is inserted where the wallet must know which card it writes to
+    /// (enrolment, adoption, the credentials probe; spec/10 §7.3).
+    MultipleCards,
     /// Internal error (derivation failure, invariant).
     Internal,
+}
+
+impl CardError {
+    /// Whether another try with a new PIN makes sense (not blocked, not final).
+    #[must_use]
+    pub const fn pin_retryable(self) -> bool {
+        !matches!(
+            self,
+            Self::PinBlocked | Self::WrongPin { retries: 0 } | Self::Internal
+        )
+    }
 }
 
 impl CardError {
@@ -184,6 +203,8 @@ impl CardError {
             Self::BadSignature => "bad_signature",
             Self::PinFormat => "pin_format",
             Self::Ed25519ImportRefused => "ed25519_import_refused",
+            Self::AdminLastTry => "admin_last_try",
+            Self::MultipleCards => "multiple_cards",
             Self::Internal => "internal",
         }
     }
@@ -207,10 +228,20 @@ impl fmt::Display for CardError {
             Self::AppletMissing => {
                 formatter.write_str("이 장치에는 필요한 기능(OpenPGP 또는 PIV)이 없습니다.")
             }
-            Self::WrongPin { retries } => {
+            Self::WrongPin { retries: 1 } => formatter
+                .write_str("PIN이 틀렸습니다. 남은 시도 1회 — 한 번 더 틀리면 잠깁니다."),
+            Self::WrongPin {
+                retries: retries @ 2..,
+            } => {
                 write!(formatter, "PIN이 틀렸습니다. 남은 시도 {retries}회.")
             }
-            Self::PinBlocked => formatter.write_str(
+            Self::AdminLastTry => formatter.write_str(
+                "OpenPGP 관리자 PIN 시도가 1회 남았습니다. 한 번 더 틀리면 잠깁니다(잠기면 'YubiKey 비우기'의 OpenPGP 초기화 뒤 다시 등록해야 합니다). 정확한 관리자 PIN이 확실하면 다시 입력해 제출하세요 — 그때는 마지막 시도로 카드에 보냅니다.",
+            ),
+            Self::MultipleCards => formatter.write_str(
+                "YubiKey가 둘 이상 연결되어 있습니다. YubiKey를 하나만 연결하세요.",
+            ),
+            Self::WrongPin { retries: 0 } | Self::PinBlocked => formatter.write_str(
                 "PIN이 잠겼습니다. PUK(또는 관리자 PIN)로 풀거나 복구 단어로 다시 등록하세요.",
             ),
             Self::SecurityStatus | Self::Conditions => formatter.write_str(
@@ -235,7 +266,7 @@ impl fmt::Display for CardError {
                 "이 YubiKey의 PIV 관리 키는 PIN으로 보호되어 있습니다. PIV PIN을 입력해 다시 시도하세요.",
             ),
             Self::ManagementKeyUnknown => formatter.write_str(
-                "PIV 관리 키가 기본값도 PIN 보호도 아닙니다. 'ykman piv access change-management-key --generate --protect'로 PIN 보호로 바꾼 뒤 다시 시도하세요.",
+                "PIV 관리 키가 기본값도 PIN 보호도 아닙니다. 이 지갑의 'PIV 관리 키 자동 보호'가 중간에 멈췄다면 PIV PIN으로 그 작업을 다시 실행하면 복구됩니다. 직접 정한 키라면 'ykman piv access change-management-key --generate --protect'로 PIN 보호로 바꾼 뒤 다시 시도하세요.",
             ),
             Self::WrongData
             | Self::NotFound

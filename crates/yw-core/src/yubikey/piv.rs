@@ -234,6 +234,12 @@ impl MgmtKey {
     }
 }
 
+/// The host challenge of a second mutual authentication in one operation (a recovery try,
+/// spec/10 §5.3.3): never the same bytes as the first.
+fn second_challenge(challenge: &[u8; 16]) -> [u8; 16] {
+    challenge.map(|byte| byte ^ 0xA5)
+}
+
 /// A PIN padded to 8 bytes with `FF`.
 ///
 /// # Errors
@@ -915,11 +921,43 @@ impl<'t> Piv<'t> {
                 return Err(CardError::ManagementKeyProtected);
             }
             self.verify_pin(credential.pin)?;
-            self.protected_management_key(state.algorithm)?
+            let printed = self.protected_management_key(state.algorithm)?;
+            match self.authenticate(&printed, cipher, block) {
+                Ok(()) => return Ok(state),
+                // spec/10 §5.3.3 recovery: a re-protect that stopped after writing PRINTED and
+                // before SET MANAGEMENT KEY left the previous key on the card. The key given in
+                // memory (if any), then the factory key the metadata reports, is tried once.
+                Err(error @ (CardError::ManagementKeyMismatch | CardError::SecurityStatus)) => {
+                    let previous = if credential.key.is_empty() {
+                        if !state.default {
+                            return Err(error);
+                        }
+                        MgmtKey::default_for(state.algorithm)?
+                    } else {
+                        MgmtKey::new(state.algorithm, credential.key)?
+                    };
+                    let second = second_challenge(challenge);
+                    let block = second
+                        .get(..state.algorithm.block_len())
+                        .ok_or(CardError::Internal)?;
+                    return self
+                        .authenticate(&previous, cipher, block)
+                        .map(|()| state)
+                        .map_err(|_| error);
+                }
+                Err(error) => return Err(error),
+            }
         } else if !credential.key.is_empty() {
             MgmtKey::new(state.algorithm, credential.key)?
         } else if state.derived {
             return Err(CardError::NotSupported);
+        } else if !state.default && !credential.pin.is_empty() {
+            // spec/10 §5.3.3 recovery: neither default nor flagged protected — a protect that
+            // stopped after SET MANAGEMENT KEY and before the ADMIN DATA flag. Its key is in
+            // PRINTED (PIN-readable).
+            self.verify_pin(credential.pin)?;
+            self.protected_management_key(state.algorithm)
+                .map_err(|_| CardError::ManagementKeyUnknown)?
         } else {
             return Err(CardError::PinFormat);
         };
@@ -932,13 +970,19 @@ impl<'t> Piv<'t> {
     /// generate a random AES-192 key on this PC, store it in PRINTED, SET MANAGEMENT KEY, then
     /// set the ADMIN DATA flag. Every key buffer is wiped when this returns; nobody sees the key.
     ///
-    /// PRINTED is written before the key is set so that a failure of SET MANAGEMENT KEY leaves
-    /// the old key working; PRINTED is then restored (best effort).
+    /// The three writes are not atomic (spec/10 §5.3.3 recovery):
+    /// - PRINTED is written before the key is set so that a failure of SET MANAGEMENT KEY leaves
+    ///   the old key working. After such a failure the new key is tried first (the card may have
+    ///   applied it and only the answer was lost); otherwise the old key (still in memory) is
+    ///   authenticated again and PRINTED restored (best effort).
+    /// - A stop after SET MANAGEMENT KEY and before the ADMIN DATA flag leaves a key that is
+    ///   "neither default nor protected" with the key in PRINTED: running this again with the
+    ///   PIN reads PRINTED, authenticates with it and finishes (sets the flag).
     ///
     /// # Errors
     ///
-    /// [`CardError::ManagementKeyUnknown`] (a custom key that is not PIN-protected),
-    /// [`CardError::NotSupported`] (a PIN-derived key), PIN and status errors.
+    /// [`CardError::ManagementKeyUnknown`] (a custom key that is not PIN-protected and not the
+    /// key in PRINTED), [`CardError::NotSupported`] (a PIN-derived key), PIN and status errors.
     pub fn protect_management_key(
         &mut self,
         pin: &[u8],
@@ -950,28 +994,44 @@ impl<'t> Piv<'t> {
             return Err(CardError::NotSupported);
         }
         self.verify_pin(pin)?;
+        let block = challenge
+            .get(..state.algorithm.block_len())
+            .ok_or(CardError::Internal)?;
         let current = if state.protected {
             self.protected_management_key(state.algorithm)?
         } else if state.default {
             MgmtKey::default_for(state.algorithm)?
         } else {
-            return Err(CardError::ManagementKeyUnknown);
+            // An earlier run that stopped before the ADMIN DATA flag: its key is in PRINTED.
+            let printed = self
+                .protected_management_key(state.algorithm)
+                .map_err(|_| CardError::ManagementKeyUnknown)?;
+            self.authenticate(&printed, cipher, block)
+                .map_err(|_| CardError::ManagementKeyUnknown)?;
+            printed
         };
-        let block = challenge
-            .get(..state.algorithm.block_len())
-            .ok_or(CardError::Internal)?;
-        self.authenticate(&current, cipher, block)?;
+        if state.protected || state.default {
+            self.authenticate(&current, cipher, block)?;
+        }
         let mut admin = self.admin_data()?;
         let next = MgmtKey::random(MgmtAlgorithm::Aes192)?;
         self.put_object(OBJECT_PRINTED, &encode_protected_key(&next)?)?;
         if let Err(error) = self.set_management_key(&next) {
-            let previous = if state.protected {
-                encode_protected_key(&current)?
-            } else {
-                Zeroizing::new(Vec::new())
-            };
-            let _ = self.put_object(OBJECT_PRINTED, &previous);
-            return Err(error);
+            let second = second_challenge(challenge);
+            if self.authenticate(&next, cipher, &second).is_err() {
+                let previous = if state.protected || !state.default {
+                    encode_protected_key(&current)?
+                } else {
+                    Zeroizing::new(Vec::new())
+                };
+                let block = second
+                    .get(..state.algorithm.block_len())
+                    .ok_or(CardError::Internal)?;
+                let _ = self
+                    .authenticate(&current, cipher, block)
+                    .and_then(|()| self.put_object(OBJECT_PRINTED, &previous));
+                return Err(error);
+            }
         }
         let before = admin.encode()?;
         admin.flags |= ADMIN_FLAG_MGM_PROTECTED;

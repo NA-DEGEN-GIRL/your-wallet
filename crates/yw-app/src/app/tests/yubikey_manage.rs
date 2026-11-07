@@ -27,6 +27,7 @@ fn wizard_import(h: &mut Harness, seen: &mut YkSeen, words: bool) {
     yk_pump(h, seen);
     h.app.on_command(yk::SAME_ACK);
     h.app.on_command(yk::CONFIRM_NEXT);
+    yk_pump(h, seen);
     h.app.on_command(yk::IMPORT);
     h.submit(Purpose::YubiKey(YkPurpose::AdminPin), &[ADMIN]);
     yk_pump(h, seen);
@@ -98,6 +99,7 @@ fn yubikey_reslot_switches_chains_and_applies_it_to_the_backup() {
     assert!(shown.contains(&zec_address));
     h.app.on_command(yk::SAME_ACK);
     h.app.on_command(yk::CONFIRM_NEXT);
+    yk_pump(&mut h, &mut seen);
     h.app.on_command(yk::IMPORT);
     h.submit(Purpose::YubiKey(YkPurpose::AdminPin), &[ADMIN]);
     yk_pump(&mut h, &mut seen);
