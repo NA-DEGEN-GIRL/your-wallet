@@ -537,13 +537,7 @@ impl KeyWorker {
         let (records, same_as_vault) = match self.vault.as_ref() {
             Some(vault) if vault.status() != VaultStatus::NoVault => {
                 let records = Self::hardware_records(vault).map_err(YubiKeyJobError::Vault)?;
-                let same = vault.has_mnemonic().unwrap_or(false)
-                    && vault
-                        .evm_address(yw_core::vault::EvmKeySource::Derived(
-                            yw_core::bip32::path::AccountIndex::ZERO,
-                        ))
-                        .is_ok_and(|address| address == evm0);
-                (records, same)
+                (records, Self::vault_holds_evm0(vault, evm0))
             }
             _ => (Vec::new(), false),
         };
@@ -551,6 +545,26 @@ impl KeyWorker {
             lines,
             same_as_vault,
             plan: yw_core::yubikey::plan::validate_before_card(&records, fingerprint, slots),
+        })
+    }
+
+    /// Whether account 0 (`m/44'/60'/0'/0/0`, with its own passphrase) of ANY recovery phrase of
+    /// the vault — the primary one or an added one — is `evm0`: the entered words are then on
+    /// this PC too (T-YK-SAME).
+    fn vault_holds_evm0(vault: &Vault, evm0: Address) -> bool {
+        use yw_core::bip32::path::AccountIndex;
+        use yw_core::vault::EvmKeySource;
+        vault.mnemonics().is_ok_and(|infos| {
+            infos.iter().any(|info| {
+                let source = if info.primary {
+                    EvmKeySource::Derived(AccountIndex::ZERO)
+                } else {
+                    EvmKeySource::Mnemonic(info.id, AccountIndex::ZERO)
+                };
+                vault
+                    .evm_address(source)
+                    .is_ok_and(|address| address == evm0)
+            })
         })
     }
 

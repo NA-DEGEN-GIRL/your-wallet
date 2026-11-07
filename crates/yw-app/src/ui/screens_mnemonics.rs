@@ -4,6 +4,7 @@
 
 use crate::app::{App, AppMode};
 use crate::app_mnemonics::{T_MN_INTRO, T_MN_REMOVE, T_MN_UNCONFIRMED};
+use crate::app_yubikey::T_YK_SAME;
 use crate::ui::main_window::{Ctl, Item, Tone};
 
 /// Command ids (block 13,600–13,699, `ui::command_ids`).
@@ -30,6 +31,8 @@ pub mod ids {
     pub const REMOVE_CANCEL: u16 = 13_609;
     /// "계정 추가" picker: 취소.
     pub const PICK_CANCEL: u16 = 13_610;
+    /// Address preview: the T-YK-SAME checkbox (the words of an enrolled `YubiKey`).
+    pub const PREVIEW_SAME_ACK: u16 = 13_613;
     /// Main account card: 복구 단어 관리.
     pub const MAIN_LINK: u16 = 13_611;
     /// Rows per indexed range (`MAX_MNEMONICS`).
@@ -68,6 +71,7 @@ pub mod ids {
         PICK_CANCEL,
         MAIN_LINK,
         SOL_PICK_CANCEL,
+        PREVIEW_SAME_ACK,
     ];
 }
 
@@ -149,17 +153,7 @@ impl App {
             items.push(Item::CardEnd);
         }
         if let Some(address) = &self.mn.preview {
-            items.push(Item::CardStart(Some("가져올 복구 단어".to_owned())));
-            items.push(Item::Help(
-                "이 복구 단어의 첫 계정(m/44'/60'/0'/0/0) 주소입니다. 다른 지갑에서 보던 주소와 같은지 확인하세요. 다르면 단어나 passphrase가 틀렸습니다."
-                    .to_owned(),
-            ));
-            items.push(Item::Mono(address.clone()));
-            items.push(Item::Row(vec![
-                Ctl::primary(ids::PREVIEW_CONFIRM, "가져오기"),
-                Ctl::button(ids::PREVIEW_CANCEL, "취소"),
-            ]));
-            items.push(Item::CardEnd);
+            self.mn_preview_items(address, items);
         }
         let room = self.mn.infos.len() < yw_core::vault::MAX_MNEMONICS;
         items.push(Item::Row(vec![
@@ -170,6 +164,41 @@ impl App {
             "추가한 복구 단어에서도 EVM·Solana·Bitcoin·Zcash 계정을 만들 수 있습니다(각 탭의 '계정 추가'에서 복구 단어를 고릅니다). 비밀번호를 다시 입력해야 합니다."
                 .to_owned(),
         ));
+    }
+
+    /// The address preview of "복구 단어 추가 가져오기", with T-YK-SAME when the words are an
+    /// enrolled `YubiKey`'s (spec/10 §7.1).
+    fn mn_preview_items(&self, address: &str, items: &mut Vec<Item>) {
+        items.push(Item::CardStart(Some("가져올 복구 단어".to_owned())));
+        items.push(Item::Help(
+            "이 복구 단어의 첫 계정(m/44'/60'/0'/0/0) 주소입니다. 다른 지갑에서 보던 주소와 같은지 확인하세요. 다르면 단어나 passphrase가 틀렸습니다."
+                .to_owned(),
+        ));
+        items.push(Item::Mono(address.to_owned()));
+        let same = !self.mn.preview_cards.is_empty();
+        if same {
+            let cards: Vec<String> = self
+                .mn
+                .preview_cards
+                .iter()
+                .map(|serial| format!("#{serial}"))
+                .collect();
+            items.push(Item::Text(format!(
+                "이 복구 단어는 이 지갑에 등록된 YubiKey {}의 키를 만든 단어입니다. 가져오면 그 단어가 이 PC의 vault에 저장됩니다.",
+                cards.join(", ")
+            )));
+            items.push(Item::Banner(T_YK_SAME.to_owned(), Tone::HighRisk));
+            items.push(Item::Row(vec![Ctl::check(
+                ids::PREVIEW_SAME_ACK,
+                "이해했습니다: 이 단어를 이 PC에 저장하면 YubiKey의 보안 이득이 없어집니다",
+                self.mn.same_ack,
+            )]));
+        }
+        items.push(Item::Row(vec![
+            Ctl::primary(ids::PREVIEW_CONFIRM, "가져오기").enabled(!same || self.mn.same_ack),
+            Ctl::button(ids::PREVIEW_CANCEL, "취소"),
+        ]));
+        items.push(Item::CardEnd);
     }
 
     /// The "계정 추가" picker under the EVM account list (several mnemonics).

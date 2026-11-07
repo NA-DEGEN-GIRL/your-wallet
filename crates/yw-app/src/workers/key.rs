@@ -2705,6 +2705,30 @@ pub(crate) mod tests {
         ));
         let enrolled = records(&mut worker);
         assert_eq!(enrolled.len(), 1);
+        // "복구 단어 추가 가져오기" of the card's words names the card (T-YK-SAME before saving);
+        // other words name none.
+        let mn_preview = |worker: &mut KeyWorker, phrase: &str| match worker
+            .handle(KeyJob::Mnemonics(
+                crate::workers::key::mnemonics::MnJob::Preview {
+                    phrase: bytes(phrase),
+                    passphrase: None,
+                },
+            ))
+            .pop()
+        {
+            Some(KeyOutcome::Mnemonics(crate::workers::key::mnemonics::MnOutcome::Preview(
+                Ok((_, cards)),
+            ))) => cards,
+            other => unreachable!("{other:?}"),
+        };
+        assert_eq!(mn_preview(&mut worker, &about), vec![9_900_001]);
+        assert!(
+            mn_preview(
+                &mut worker,
+                "legal winner thank year wave sausage worth useful legal winner thank yellow"
+            )
+            .is_empty()
+        );
         let Some(YkOutcome::Checked(9_900_001, Ok(checks))) =
             yk(&mut worker, YkJob::Check { serial: 9_900_001 })
         else {

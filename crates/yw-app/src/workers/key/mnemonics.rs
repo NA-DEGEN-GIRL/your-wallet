@@ -6,8 +6,10 @@
 
 use yw_core::bip32::path::AccountIndex;
 use yw_core::bip32::preview_evm_address;
+use yw_core::bip39::Mnemonic;
 use yw_core::error::{KeyError, VaultError};
 use yw_core::evm::address::Address;
+use yw_core::password::Bip39Passphrase;
 use yw_core::secret::{SecretString, Zeroizing};
 use yw_core::vault::{BackupChallenge, ChallengeId, EvmKeySource, RecordId, Vault};
 
@@ -102,8 +104,8 @@ impl MnJob {
 /// What a recovery-phrase job produced.
 #[derive(Debug)]
 pub enum MnOutcome {
-    /// `Preview`: account 0 of the entered words.
-    Preview(Result<Address, KeyError>),
+    /// `Preview`: account 0 of the entered words and the enrolled `YubiKey`s made from them.
+    Preview(Result<(Address, Vec<u32>), KeyError>),
     /// `Discard` done.
     Discarded,
     /// `CommitImport` (`UnlockFailed` keeps the held words for another password try).
@@ -227,7 +229,7 @@ impl KeyWorker {
         })
     }
 
-    fn mn_preview(&mut self, pending: PendingImport) -> Result<Address, KeyError> {
+    fn mn_preview(&mut self, pending: PendingImport) -> Result<(Address, Vec<u32>), KeyError> {
         let result = (|| {
             let phrase = ascii(&pending.phrase)?;
             let passphrase = pending
@@ -235,10 +237,33 @@ impl KeyWorker {
                 .as_deref()
                 .map(|bytes| passphrase(bytes))
                 .transpose()?;
-            preview_evm_address(phrase, passphrase.as_ref(), AccountIndex::ZERO)
+            let address = preview_evm_address(phrase, passphrase.as_ref(), AccountIndex::ZERO)?;
+            let empty = Bip39Passphrase::empty();
+            let seed = Mnemonic::parse(phrase)?.to_seed(passphrase.as_ref().unwrap_or(&empty))?;
+            Ok((address, self.cards_of_seed(seed.expose())))
         })();
         self.pending_mnemonic = result.is_ok().then_some(pending);
         result
+    }
+
+    /// The enrolled `YubiKey`s whose keys were made from `seed` (the master fingerprint of a
+    /// record with a known path; spec/10 §7.1): adding these words would put the card's words
+    /// on this PC (T-YK-SAME).
+    fn cards_of_seed(&self, seed: &[u8; 64]) -> Vec<u32> {
+        let Some(vault) = self.vault.as_ref() else {
+            return Vec::new();
+        };
+        let (Ok(records), Ok((fingerprint, _))) = (
+            Self::hardware_records(vault),
+            yw_core::yubikey::enrol::seed_identity(seed),
+        ) else {
+            return Vec::new();
+        };
+        records
+            .iter()
+            .filter(|record| record.has_known_path() && record.fingerprint == fingerprint)
+            .map(|record| record.serial)
+            .collect()
     }
 
     fn mn_commit(&mut self, bytes: &[u8]) -> Result<RecordId, VaultError> {

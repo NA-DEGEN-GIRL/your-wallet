@@ -55,6 +55,10 @@ pub struct MnUi {
     pub add_pick: bool,
     /// The address preview of "복구 단어 추가 가져오기" (EIP-55 account 0).
     pub preview: Option<String>,
+    /// The enrolled `YubiKey`s made from the previewed words (T-YK-SAME before saving).
+    pub preview_cards: Vec<u32>,
+    /// The T-YK-SAME checkbox of the preview.
+    pub same_ack: bool,
     /// The passphrase window asks for mnemonic `position` of `count`.
     pub passphrase_for: Option<(usize, usize)>,
     /// The open quiz of an added mnemonic.
@@ -318,13 +322,8 @@ impl App {
             ids::CREATE if self.unlocked() => {
                 self.open_mn_input(SecretKind::ConfirmPassword, MnPurpose::CreatePassword);
             }
-            ids::PREVIEW_CONFIRM if self.mn.preview.is_some() => {
-                self.open_mn_input(SecretKind::ConfirmPassword, MnPurpose::ImportPassword);
-            }
-            ids::PREVIEW_CANCEL => {
-                self.mn.preview = None;
-                self.key(KeyJob::Mnemonics(MnJob::Discard));
-                self.refresh();
+            ids::PREVIEW_CONFIRM | ids::PREVIEW_SAME_ACK | ids::PREVIEW_CANCEL => {
+                self.on_mn_preview_command(id);
             }
             ids::RENAME_SAVE => self.save_mnemonic_label(),
             ids::RENAME_CANCEL => {
@@ -351,6 +350,31 @@ impl App {
             _ => return ids::FIXED.contains(&id),
         }
         true
+    }
+
+    /// The address preview's controls: `가져오기` (after the T-YK-SAME checkbox when the words
+    /// are an enrolled `YubiKey`'s), the checkbox, `취소`.
+    fn on_mn_preview_command(&mut self, id: u16) {
+        match id {
+            ids::PREVIEW_CONFIRM
+                if self.mn.preview.is_some()
+                    && (self.mn.preview_cards.is_empty() || self.mn.same_ack) =>
+            {
+                self.open_mn_input(SecretKind::ConfirmPassword, MnPurpose::ImportPassword);
+            }
+            ids::PREVIEW_SAME_ACK => {
+                self.mn.same_ack = !self.mn.same_ack;
+                self.refresh();
+            }
+            ids::PREVIEW_CANCEL => {
+                self.mn.preview = None;
+                self.mn.preview_cards.clear();
+                self.mn.same_ack = false;
+                self.key(KeyJob::Mnemonics(MnJob::Discard));
+                self.refresh();
+            }
+            _ => {}
+        }
     }
 
     /// `지우기` of a mnemonic card: the warning, unless a transaction of its accounts may still
@@ -562,8 +586,10 @@ impl App {
     #[expect(clippy::too_many_lines, reason = "one arm per outcome")]
     pub(crate) fn on_mn_outcome(&mut self, outcome: MnOutcome, now: u64) {
         match outcome {
-            MnOutcome::Preview(Ok(address)) => {
+            MnOutcome::Preview(Ok((address, cards))) => {
                 self.mn.preview = Some(address.to_checksum());
+                self.mn.preview_cards = cards;
+                self.mn.same_ack = false;
                 self.set_screen(Screen::Settings(SettingsSection::Mnemonics));
             }
             MnOutcome::Preview(Err(error)) => {
