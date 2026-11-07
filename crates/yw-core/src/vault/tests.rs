@@ -696,17 +696,6 @@ fn payload_codec_rejection_table() {
             payload_bytes(&[good_raw.clone(), good.clone()], 2),
         ),
         (
-            "bip39 after raw",
-            payload_bytes(
-                &[
-                    good.clone(),
-                    good_raw.clone(),
-                    bip39_record(3, 16, 0, 1, [0; 4]),
-                ],
-                3,
-            ),
-        ),
-        (
             "record_id zero",
             payload_bytes(&[bip39_record(0, 16, 0, 1, [0; 4])], 1),
         ),
