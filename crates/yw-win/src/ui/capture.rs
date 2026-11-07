@@ -224,6 +224,25 @@ pub fn dev_tour_flush() {
     unsafe { windows_sys::Win32::Graphics::Gdi::GdiFlush() };
 }
 
+/// **DEV ONLY (scroll check).** Posts `WM_MOUSEWHEEL` with `delta` (120 = one notch, positive =
+/// away from the user) to `target`; the next message loop processes it like wheel input (before
+/// any pending `WM_PAINT`).
+pub fn dev_tour_post_wheel(target: Hwnd, delta: i16) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_MOUSEWHEEL};
+    let wparam = usize::from(u16::from_ne_bytes(delta.to_ne_bytes())) << 16;
+    // SAFETY: Posts a plain-value message to our own window (no pointers).
+    unsafe { PostMessageW(target.raw(), WM_MOUSEWHEEL, wparam, 0) };
+}
+
+/// **DEV ONLY (scroll check).** Posts `WM_VSCROLL` with an `SB_*` `code` to `target`, as the
+/// window's scroll bar sends it.
+pub fn dev_tour_post_vscroll(target: Hwnd, code: u16) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_VSCROLL};
+    // SAFETY: Posts a plain-value message to our own window (no pointers; lParam 0 = the
+    // window's own scroll bar).
+    unsafe { PostMessageW(target.raw(), WM_VSCROLL, usize::from(code), 0) };
+}
+
 /// **DEV ONLY (screenshot tour).** Removes `WDA_EXCLUDEFROMCAPTURE` from a window the tour
 /// process created so it can be captured. Returns whether the call succeeded.
 #[must_use]

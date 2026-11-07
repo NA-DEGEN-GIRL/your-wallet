@@ -5,7 +5,10 @@
 //! A scroll never lays the screen out again: the placed rectangles move by the offset change
 //! ([`Placed::shift`](crate::ui::main_window::Placed::shift)), the system copies the pixels that
 //! stay visible and moves the child controls with them (`ScrollWindowEx`), and only the
-//! uncovered strip is painted. Controls that cross the view's edge are shown or hidden.
+//! uncovered strip is painted — synchronously, as soon as the handler that scrolled returns
+//! (`Window::update_now`; a `WM_PAINT` sent while the app is borrowed would be dropped and leave
+//! a stale copy of the content in the strip). Controls that cross the view's edge are shown or
+//! hidden.
 //!
 //! Wheel: the delta accumulates in 1/120 notches (high-resolution touchpads send small deltas),
 //! one notch = `SPI_GETWHEELSCROLLLINES` lines of [`LINE_DIP`] (or a page). A whole-notch wheel

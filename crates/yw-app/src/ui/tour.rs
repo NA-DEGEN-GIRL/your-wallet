@@ -1578,3 +1578,6 @@ fn screenshot_tour() {
     drop(app);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// DEV ONLY: the scroll repaint check reuses the tour's window setup.
+mod scroll;
