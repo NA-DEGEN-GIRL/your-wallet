@@ -6,14 +6,15 @@ mod rules;
 
 pub use rules::*;
 
-use super::abi::AbiValue;
+use super::abi::{AbiValue, SEL_TRANSFER};
 use super::address::Address;
 use super::amount::{Delta, U256};
 use super::chain::ChainInfo;
 use super::decode::DecodedCall;
 use super::eip712::{DecodedTypedData, HlUserAction, KnownSchema, TdNode};
 use super::simulate::{
-    ApprovalKindEvm, AssetChange, AssetId, LogEvent, SimResult, is_verified_asset,
+    ApprovalKindEvm, AssetChange, AssetId, LogEvent, SimResult, SimulationDiff, TransferRow,
+    is_verified_asset,
 };
 use super::tx::Eip1559Tx;
 use crate::approval::{ApprovalOrigin, ChainFacts, CodeKind, RuleId, Warning};
@@ -378,7 +379,121 @@ fn involved_tokens(input: &TxRiskInput<'_>) -> Vec<Address> {
     tokens
 }
 
-/// Transaction rules E12–E33 from interpretation, simulation and facts (spec/03 §10.2).
+/// Calldata length of `transfer(address,uint256)`: selector + two words (R1).
+const ERC20_TRANSFER_LEN: usize = 4 + 2 * 32;
+
+/// A plain transfer request and what its display says leaves the wallet (spec/03 §10.2 E23,
+/// E42). The native value `tx.value` is always shown.
+#[derive(Clone, Copy, Debug)]
+enum TransferIntent {
+    /// Empty calldata: `tx.value` of the native asset to `tx.to`.
+    Native,
+    /// A strictly decoded ERC-20 `transfer(address,uint256)` (`0xa9059cbb`, exactly 68 bytes,
+    /// canonical): `amount` raw units of the token `tx.to` to `recipient`.
+    Token {
+        /// Decoded recipient.
+        recipient: Address,
+        /// Decoded amount (raw units, registry or not).
+        amount: U256,
+    },
+}
+
+/// The transfer intent of a plain native send or ERC-20 `transfer`; `None` for any other call.
+fn transfer_intent(input: &TxRiskInput<'_>) -> Option<TransferIntent> {
+    let tx = input.tx;
+    match input.call {
+        DecodedCall::NativeTransfer if tx.data.is_empty() => Some(TransferIntent::Native),
+        call if call.kind() == Some("erc20_transfer")
+            && tx.data.len() == ERC20_TRANSFER_LEN
+            && tx.data.starts_with(&SEL_TRANSFER) =>
+        {
+            Some(TransferIntent::Token {
+                recipient: arg_address(call, "to")?,
+                amount: arg_uint(call, "amount")?,
+            })
+        }
+        _ => None,
+    }
+}
+
+impl TransferIntent {
+    /// The displayed amount of the change's asset leaving the wallet: `tx.value` for the native
+    /// asset, the decoded amount for the transferred token, zero for anything else.
+    fn shown_out(self, tx: &Eip1559Tx, change: &AssetChange) -> U256 {
+        match (change.asset, change.token_id, self) {
+            (AssetId::Native, _, _) => tx.value,
+            (AssetId::Token(token), None, Self::Token { amount, .. }) if token == tx.to => amount,
+            _ => U256::ZERO,
+        }
+    }
+
+    /// E23 exception: a strictly simple transfer whose simulation matches the display exactly.
+    /// The signer's diff is one outflow — `tx.value > 0` native to `tx.to` with empty calldata,
+    /// or the decoded token amount to the decoded recipient with `tx.value == 0` — and nothing
+    /// else: no other asset row, no approval change, no other transfer of the signer, no omitted
+    /// row. Fees are not part of the diff (spec/03 §6.4).
+    fn matches_simulation(self, input: &TxRiskInput<'_>, diff: &SimulationDiff) -> bool {
+        let tx = input.tx;
+        let (asset, recipient, amount) = match self {
+            Self::Native if !tx.value.is_zero() => (AssetId::Native, tx.to, tx.value),
+            Self::Token { recipient, amount } if tx.value.is_zero() => {
+                (AssetId::Token(tx.to), recipient, amount)
+            }
+            Self::Native | Self::Token { .. } => return false,
+        };
+        let outflow = AssetChange {
+            asset,
+            token_id: None,
+            delta: Some(Delta::Out(amount)),
+        };
+        let row = TransferRow {
+            asset,
+            token_id: None,
+            from: *input.account,
+            to: recipient,
+            amount,
+        };
+        diff.omitted_rows == 0
+            && diff.approvals.is_empty()
+            && diff.changes == [outflow]
+            && diff.transfers == [row]
+    }
+
+    /// E42 cause when the simulation sends more than the display shows: a larger amount of a
+    /// shown asset, or any asset the request does not show (overflowed rows count as sends,
+    /// spec/03 §6.4). `None` when nothing exceeds the display.
+    fn excess_outflow(self, tx: &Eip1559Tx, diff: &SimulationDiff) -> Option<String> {
+        let mut larger = false;
+        let mut unshown = 0_usize;
+        for change in &diff.changes {
+            let shown = self.shown_out(tx, change);
+            let exceeds = match change.delta {
+                Some(Delta::Out(sent)) => sent > shown,
+                None => true,
+                Some(Delta::In(_) | Delta::Zero) => false,
+            };
+            if !exceeds {
+                continue;
+            }
+            if shown.is_zero() {
+                unshown = unshown.saturating_add(1);
+            } else {
+                larger = true;
+            }
+        }
+        match (larger, unshown) {
+            (false, 0) => None,
+            (true, 0) => Some("같은 자산이 표시된 금액보다 많이 나갑니다".to_owned()),
+            (false, count) => Some(format!("표시되지 않은 자산 {count}개가 함께 나갑니다")),
+            (true, count) => Some(format!(
+                "같은 자산이 표시된 금액보다 많이 나가고, 표시되지 않은 자산 {count}개가 함께 나갑니다"
+            )),
+        }
+    }
+}
+
+/// Transaction rules E12–E33, E40 and E42 from interpretation, simulation and facts (spec/03
+/// §10.2).
 #[must_use]
 #[expect(clippy::too_many_lines, reason = "one block per rule of spec/03 §10.2")]
 pub fn tx_rules(input: &TxRiskInput<'_>) -> Vec<Warning> {
@@ -527,8 +642,11 @@ pub fn tx_rules(input: &TxRiskInput<'_>) -> Vec<Warning> {
         warnings.push(warning(E33, None));
     }
     // E23, E40: only the native asset and registry tokens count as received — any contract can
-    // emit a Transfer log naming the user (spec/03 §6.4).
+    // emit a Transfer log naming the user (spec/03 §6.4). E23 is skipped for a strictly simple
+    // transfer whose simulation matches its display exactly; E42 flags a transfer whose
+    // simulation sends more than it shows.
     if let Some(diff) = input.sim.diff() {
+        let intent = transfer_intent(input);
         let verified = |change: &AssetChange| {
             is_verified_asset(chain, &change.asset, change.token_id.as_ref())
         };
@@ -542,12 +660,20 @@ pub fn tx_rules(input: &TxRiskInput<'_>) -> Vec<Warning> {
             .iter()
             .filter(receiving)
             .any(|change| !verified(change));
-        if matches!(input.origin, ApprovalOrigin::Site(_)) && sends && !verified_receipts {
+        let simple_transfer = intent.is_some_and(|intent| intent.matches_simulation(input, diff));
+        if matches!(input.origin, ApprovalOrigin::Site(_))
+            && sends
+            && !verified_receipts
+            && !simple_transfer
+        {
             let cause = unverified_receipts.then_some("받는 자산은 등록되지 않은 토큰·NFT뿐입니다");
             warnings.push(warning(E23, cause));
         }
         if verified_sends && unverified_receipts {
             warnings.push(warning(E40, None));
+        }
+        if let Some(cause) = intent.and_then(|intent| intent.excess_outflow(tx, diff)) {
+            warnings.push(warning(E42, Some(&cause)));
         }
     }
     // E24

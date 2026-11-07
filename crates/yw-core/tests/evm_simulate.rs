@@ -999,11 +999,12 @@ fn transaction_rules_e17_to_e29() {
         )
         .contains(&"E18".to_owned())
     );
-    // E23: a site request that only sends.
+    // No E23 for a site's plain native send whose simulation matches it exactly (spec/03 §10.2;
+    // the E23/E42 cases are in `e23_simple_transfer_exception_and_e42_excess_outflow`).
     let site =
         ApprovalOrigin::Site(yw_core::policy::BrowserOrigin::parse("https://app.example").unwrap());
     assert!(
-        self::labels(
+        !self::labels(
             &try_request(&chain, &pay, &paid, site.clone(), &facts(), Vec::new()).unwrap()
         )
         .contains(&"E23".to_owned())
@@ -1408,6 +1409,162 @@ fn c3_fake_incoming_assets_do_not_offset_a_drain() {
     let labels = self::labels(&draft);
     assert!(labels.contains(&"E23".to_owned()), "{labels:?}");
     assert!(!labels.contains(&"E40".to_owned()), "{labels:?}");
+}
+
+fn site_draft(tx: &Eip1559Tx, logs: Vec<SimLog>) -> Fallible<(Vec<String>, ApprovalDraft)> {
+    let draft = try_request(&sepolia(), tx, &ok(logs), site()?, &facts(), Vec::new())?;
+    Ok((labels(&draft), draft))
+}
+
+fn has(labels: &[String], rule: &str) -> bool {
+    labels.iter().any(|label| label == rule)
+}
+
+fn e42_text(draft: &ApprovalDraft) -> Option<String> {
+    let found = draft
+        .display
+        .warnings
+        .iter()
+        .find(|w| w.rule == risk::E42)?;
+    assert_eq!(found.level, RiskLevel::High);
+    Some(found.text.clone())
+}
+
+fn approval_log(token: Address, owner: Address, spender: Address, amount: u64) -> SimLog {
+    log(
+        token,
+        vec![TOPIC_APPROVAL, pad_address(&owner), pad_address(&spender)],
+        uword(amount).to_vec(),
+    )
+}
+
+/// E23 is skipped only for a strictly simple transfer (empty-calldata native send, or a strict
+/// ERC-20 `transfer` with zero value) whose simulation diff is exactly the displayed outflow;
+/// E42 (high) flags a transfer whose simulation sends more than it shows (spec/03 §10.2).
+#[test]
+#[expect(clippy::too_many_lines, reason = "table-driven test")]
+fn e23_simple_transfer_exception_and_e42_excess_outflow() -> Fallible<()> {
+    let usdc = sepolia_usdc();
+    let amount = U256::from_u64(1_000_000);
+    let send_usdc = tx(
+        usdc,
+        0,
+        yw_core::evm::abi::erc20_transfer_data(&OTHER, &amount),
+    );
+    let sent = transfer(usdc, USER, OTHER, amount);
+    let more = "화면에 보이는 금액보다 더 많은 자산이 빠져나갑니다";
+
+    // Native plain send matching the diff: no E23, no warning at all.
+    let pay = tx(OTHER, 5, vec![]);
+    let (labels, draft) = site_draft(&pay, vec![native(ERC7528_NATIVE, USER, OTHER, 5)])?;
+    assert!(labels.is_empty(), "{labels:?}");
+    assert_eq!(draft.display.risk, RiskLevel::Info);
+    // ERC-20 transfer matching the diff (registry token): no E23.
+    let (labels, _) = site_draft(&send_usdc, vec![sent.clone()])?;
+    assert!(labels.is_empty(), "{labels:?}");
+    // Unregistered token: same logic on raw units (E33 only).
+    let raw = U256::from_u64(7);
+    let send_token = tx(
+        TOKEN,
+        0,
+        yw_core::evm::abi::erc20_transfer_data(&OTHER, &raw),
+    );
+    let (labels, _) = site_draft(&send_token, vec![transfer(TOKEN, USER, OTHER, raw)])?;
+    assert_eq!(labels, ["E33"]);
+
+    // ERC-20 transfer whose diff moves more of the same token: E42 high (E23 kept).
+    let extra = transfer(usdc, USER, SPENDER, U256::from_u64(5));
+    let (labels, draft) = site_draft(&send_usdc, vec![sent.clone(), extra.clone()])?;
+    assert!(has(&labels, "E42") && has(&labels, "E23"), "{labels:?}");
+    assert!(!has(&labels, "E13"), "{labels:?}");
+    assert_eq!(
+        e42_text(&draft).as_deref(),
+        Some(format!("{more}\n같은 자산이 표시된 금액보다 많이 나갑니다").as_str())
+    );
+    assert_eq!(draft.display.risk, RiskLevel::High);
+    assert!(draft.display.ack_required);
+    // An extra asset leaving, and both at once.
+    let other_token = transfer(TOKEN, USER, SPENDER, U256::from_u64(3));
+    let (_, draft) = site_draft(&send_usdc, vec![sent.clone(), other_token.clone()])?;
+    assert_eq!(
+        e42_text(&draft).as_deref(),
+        Some(format!("{more}\n표시되지 않은 자산 1개가 함께 나갑니다").as_str())
+    );
+    let (_, draft) = site_draft(&send_usdc, vec![sent.clone(), extra, other_token])?;
+    assert_eq!(
+        e42_text(&draft).as_deref(),
+        Some(
+            format!(
+                "{more}\n같은 자산이 표시된 금액보다 많이 나가고, 표시되지 않은 자산 1개가 함께 나갑니다"
+            )
+            .as_str()
+        )
+    );
+    // Native send: more native than the value, or a token pulled along (a receive() drain).
+    let (labels, draft) = site_draft(
+        &pay,
+        vec![
+            native(ERC7528_NATIVE, USER, OTHER, 5),
+            native(ERC7528_NATIVE, USER, SPENDER, 2),
+        ],
+    )?;
+    assert!(has(&labels, "E23"), "{labels:?}");
+    assert!(e42_text(&draft).is_some_and(|text| text.ends_with("많이 나갑니다")));
+    let (_, draft) = site_draft(
+        &pay,
+        vec![
+            native(ERC7528_NATIVE, USER, OTHER, 5),
+            transfer(usdc, USER, SPENDER, U256::from_u64(9)),
+        ],
+    )?;
+    assert!(e42_text(&draft).is_some_and(|text| text.ends_with("1개가 함께 나갑니다")));
+    // The wallet's own send gets E42 too (no E23: app origin).
+    let draft = try_request(
+        &sepolia(),
+        &send_usdc,
+        &ok(vec![
+            sent.clone(),
+            transfer(usdc, USER, SPENDER, U256::from_u64(5)),
+        ]),
+        ApprovalOrigin::App,
+        &facts(),
+        Vec::new(),
+    )?;
+    let labels = self::labels(&draft);
+    assert!(has(&labels, "E42") && !has(&labels, "E23"), "{labels:?}");
+
+    // A contract call that only sends assets out (a fake "claim()"): E23 kept, no E42.
+    let claim = tx(OTHER, 5, vec![0x4e, 0x71, 0xd9, 0x2d]);
+    let (labels, _) = site_draft(&claim, vec![native(ERC7528_NATIVE, USER, OTHER, 5)])?;
+    assert!(has(&labels, "E23") && !has(&labels, "E42"), "{labels:?}");
+    let claim_tokens = tx(OTHER, 0, vec![0x4e, 0x71, 0xd9, 0x2d]);
+    let (labels, _) = site_draft(&claim_tokens, vec![sent.clone()])?;
+    assert!(has(&labels, "E23") && !has(&labels, "E42"), "{labels:?}");
+    // A transfer with an extra approval change: E23 kept (the approval rules fire), no E42.
+    let (labels, _) = site_draft(
+        &send_usdc,
+        vec![sent.clone(), approval_log(usdc, USER, SPENDER, 1)],
+    )?;
+    assert!(
+        has(&labels, "E23") && has(&labels, "E20") && !has(&labels, "E42"),
+        "{labels:?}"
+    );
+    // A token transfer that also carries native value is not a simple transfer: E23 kept; the
+    // value is displayed, so no E42.
+    let mut valued = send_usdc.clone();
+    valued.value = U256::from_u64(5);
+    let (labels, _) = site_draft(
+        &valued,
+        vec![native(ERC7528_NATIVE, USER, usdc, 5), sent.clone()],
+    )?;
+    assert!(has(&labels, "E23") && !has(&labels, "E42"), "{labels:?}");
+    // The diff pays someone other than the decoded recipient: E13, E23 kept.
+    let (labels, _) = site_draft(&send_usdc, vec![transfer(usdc, USER, SPENDER, amount)])?;
+    assert!(
+        has(&labels, "E13") && has(&labels, "E23") && !has(&labels, "E42"),
+        "{labels:?}"
+    );
+    Ok(())
 }
 
 /// C3/R5: `multicall([])` and an empty inner call are E12, never a native transfer.
