@@ -21,7 +21,7 @@ use super::apdu::ApduMode;
 use super::enrol::{EnrolError, identify, master_fingerprint};
 use super::openpgp::{OpenPgp, Pw};
 use super::piv::{DEFAULT_MANAGEMENT_KEY, ManagementCredential, MgmtCipher, Piv};
-use super::plan::{CardSlot, KeyPath, PlanError, PlannedSlot, validate_plan};
+use super::plan::{CardSlot, KeyPath, PlanError, PlannedSlot, is_unknown_index, validate_plan};
 use super::record::{HwKeyRecord, HwPublicKey, RecordedSlot, records_consistent};
 use super::{CardError, CardTransport};
 use crate::bip32::XPriv;
@@ -50,7 +50,8 @@ pub fn reslot_plan(record: &HwKeyRecord, openpgp: &[PlannedSlot]) -> Vec<Planned
 /// # Errors
 ///
 /// [`PlanError::WrongApplet`] for a PIV slot in `openpgp`, [`PlanError::SlotCount`] for no
-/// `OpenPGP` slot, [`PlanError::DifferentMnemonic`], the rules of [`validate_plan`].
+/// `OpenPGP` slot, [`PlanError::UnsupportedRole`] for a role index in the unknown-path band
+/// (`900..=999`), [`PlanError::DifferentMnemonic`], the rules of [`validate_plan`].
 pub fn validate_reslot(
     record: &HwKeyRecord,
     fingerprint: [u8; 4],
@@ -64,6 +65,14 @@ pub fn validate_reslot(
         .find(|planned| !matches!(planned.slot, CardSlot::OpenPgp(_)))
     {
         return Err(PlanError::WrongApplet(planned.slot));
+    }
+    // The band of keys connected without recovery words is an account number, never a path
+    // (spec/10 §7.6): a re-slot derives every new key from the words.
+    if let Some(planned) = openpgp
+        .iter()
+        .find(|planned| is_unknown_index(planned.role.index()))
+    {
+        return Err(PlanError::UnsupportedRole(planned.slot));
     }
     validate_plan(&reslot_plan(record, openpgp))?;
     if record.fingerprint != fingerprint {

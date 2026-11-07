@@ -1115,6 +1115,15 @@ fn connect_without_words_and_sign_every_chain() {
         connect_record(&scan, &[(piv_slot, KeyUse::Evm)], &[]),
         Err(EnrolError::Plan(PlanError::WrongApplet(piv_slot)))
     );
+    // A re-slot never plans an index of the unknown-path band (spec/10 §15.1).
+    assert_eq!(
+        super::manage::validate_reslot(
+            &original,
+            original.fingerprint,
+            &[sig(evm(950)), aut(btc(3))]
+        ),
+        Err(PlanError::UnsupportedRole(sig_slot))
+    );
 
     // Record: round trip; the flag sits in the bytes earlier builds require to be zero, so
     // they refuse the payload (UnsupportedPayload) instead of misreading it.

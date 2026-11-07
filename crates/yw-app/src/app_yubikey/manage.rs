@@ -18,10 +18,10 @@ use yw_core::btc::{BtcNetwork, ScriptType};
 use yw_core::secret::Zeroizing;
 use yw_core::yubikey::manage::{ClearMethod, ClearPlan};
 use yw_core::yubikey::plan::{
-    BtcUse, CardSlot, KeyRole, MAX_BTC_INDEX, PgpKey, PinPolicy, PlannedSlot, TouchPolicy,
+    BtcUse, CardSlot, KeyRole, PgpKey, PinPolicy, PlannedSlot, TouchPolicy, UNKNOWN_PATH_FIRST,
     validate_plan,
 };
-use yw_core::yubikey::record::HwKeyRecord;
+use yw_core::yubikey::record::{HwKeyRecord, HwPublicKey, RecordedSlot};
 use yw_core::zec::ZecNetwork;
 
 use super::{YkPurpose, failure_text};
@@ -36,11 +36,20 @@ use crate::workers::key::yubikey::manage::{Cleared, ManageJob, ManageOutcome, Re
 pub const CLEAR_WORD: &str = "비우기";
 /// T-YK-RESLOT-WORDS: what happens to the recovery words.
 pub const T_YK_RESLOT_WORDS: &str = "새 키를 만들려면 복구 단어가 한 번 필요합니다. 비밀 입력 창에서 받아 키를 만드는 데만 쓰고 저장하지 않으며, 이 작업(백업 YubiKey 적용 포함)을 마치거나 취소하거나 지갑이 잠기면 바로 지웁니다.";
-/// T-YK-RESLOT-REMOVED: the accounts this card stops holding.
+/// T-YK-RESLOT-REMOVED: the accounts this card stops holding (shown only when one of them has a
+/// known path, spec/10 §15.1).
 pub const T_YK_RESLOT_REMOVED: &str = "카드에서 빠지는 체인은 바꾼 뒤 이 YubiKey로 서명할 수 없습니다. 자금은 체인에 그대로 있고(복구 단어로 언제든 복구), 나중에 같은 구성으로 다시 바꾸면 같은 주소가 그대로 돌아옵니다.";
+/// T-YK-KEY-LOST: a key connected without recovery words that no other enrolled card holds is
+/// overwritten or cleared (spec/10 §15): it cannot be made again.
+pub const T_YK_KEY_LOST: &str = "이 키는 복구 단어가 없습니다 — 지우면 영구히 사라지고 이 주소의 자산을 다시 쓸 수 없습니다. 잔액이 있으면 먼저 다른 주소로 옮기세요.";
+/// The phrase typed to confirm that such a key is lost for good.
+pub const LOSS_WORD: &str = "영구 삭제";
+/// The checkbox of [`T_YK_KEY_LOST`].
+pub const T_YK_KEY_LOST_ACK: &str =
+    "이해했습니다: 복구 단어가 없는 이 키는 영구히 사라지고 그 주소의 자산을 다시 쓸 수 없습니다";
 /// T-YK-RESLOT-BACKUP: backup cards should get the same change.
 pub const T_YK_RESLOT_BACKUP: &str = "이 YubiKey의 백업 YubiKey가 있으면 같은 구성으로 바꾸세요. 그렇지 않으면 백업 YubiKey에는 예전 키가 남아 같은 계정을 대신 서명할 수 없습니다.";
-/// T-YK-CLEAR-FUNDS.
+/// T-YK-CLEAR-FUNDS (shown only when a cleared slot has a known path).
 pub const T_YK_CLEAR_FUNDS: &str = "비우면 아래 계정은 이 YubiKey로 서명할 수 없습니다. 자금은 체인에 그대로 있고 복구 단어로 언제든 복구할 수 있습니다(같은 키를 다시 넣거나 다른 지갑에서).";
 /// T-YK-CLEAR-PGP-OURS.
 pub const T_YK_CLEAR_PGP_OURS: &str = "OpenPGP에는 '키 삭제' 명령이 없습니다. yubikey-manager의 delete_key와 같이 SIG/AUT 슬롯의 알고리즘 속성을 두 번 바꿔(RSA 4096 → RSA 2048) 그 슬롯의 키를 지웁니다. PIN과 다른 슬롯(DEC)은 그대로이고, '고정' 터치 정책은 남습니다(지우려면 초기화). 관리자 PIN이 필요합니다.";
@@ -125,7 +134,7 @@ impl Chain {
 pub struct SlotForm {
     /// The chain.
     pub chain: Chain,
-    /// Index text (0–999).
+    /// Index text (0–899; the unknown-path band 900–999 is never a path).
     pub index_text: String,
     /// Bitcoin address type (Bitcoin and the shared key).
     pub script: ScriptType,
@@ -178,7 +187,11 @@ pub struct ReslotFlow {
     pub shared_ack: bool,
     /// The removed-chains warning was acknowledged.
     pub removed_ack: bool,
-    /// Input error of the choose step.
+    /// The [`T_YK_KEY_LOST`] checkbox (a key without recovery words is overwritten).
+    pub loss_ack: bool,
+    /// The typed [`LOSS_WORD`] (checked when `YubiKey에 넣기` is pressed).
+    pub loss_typed: String,
+    /// Input error of the choose step (and of the confirmation's typed word).
     pub error: Option<String>,
     /// The new `OpenPGP` slots sent to the preview / the card.
     pub slots: Vec<PlannedSlot>,
@@ -229,6 +242,10 @@ pub struct ClearFlow {
     pub failure: Option<String>,
     /// Input error of the choose step (the word not typed).
     pub error: Option<String>,
+    /// The [`T_YK_KEY_LOST`] checkbox (a key without recovery words is cleared).
+    pub loss_ack: bool,
+    /// The typed [`LOSS_WORD`] (checked when `비우기` is pressed).
+    pub loss_typed: String,
 }
 
 impl ClearFlow {
@@ -282,30 +299,48 @@ impl core::fmt::Debug for ClearFlow {
     }
 }
 
+/// Highest index of a re-slotted key: the band from [`UNKNOWN_PATH_FIRST`] is only an account
+/// number of keys connected without recovery words, never a path (spec/10 §7.6).
+pub const MAX_RESLOT_INDEX: u32 = UNKNOWN_PATH_FIRST - 1;
+
 fn parse_index(text: &str, label: &str) -> Result<u32, String> {
     text.trim()
         .parse::<u32>()
         .ok()
-        .filter(|value| *value <= MAX_BTC_INDEX)
-        .ok_or_else(|| format!("{label}: 0–{MAX_BTC_INDEX} 사이의 숫자를 넣으세요."))
+        .filter(|value| *value <= MAX_RESLOT_INDEX)
+        .ok_or_else(|| format!("{label}: 0–{MAX_RESLOT_INDEX} 사이의 숫자를 넣으세요."))
 }
 
-/// The accounts (key titles) of `before` that `after` no longer holds on this card, with the
-/// other cards still holding each (empty: no card can sign it any more).
+/// The EVM account index of the card's first EVM slot with a known path (the presets' default;
+/// a key connected without recovery words has no path to reuse).
+fn known_evm_index(record: &HwKeyRecord) -> Option<u32> {
+    record.slots.iter().find_map(|slot| match slot.role {
+        KeyRole::Evm { index, .. } if slot.path_known => Some(index.get()),
+        _ => None,
+    })
+}
+
+/// The `OpenPGP` slots of `before` the card no longer holds after the change, with the other
+/// cards still holding each (empty: no card can sign it any more). A slot counts as kept only
+/// when the same slot keeps both its role and its public key (`after`: the new slots with their
+/// derived public keys), so a key connected without recovery words that a derived key replaces
+/// is listed.
 #[must_use]
 pub fn dropped_roles(
     before: &HwKeyRecord,
-    after: &[KeyRole],
+    after: &[(CardSlot, KeyRole, HwPublicKey)],
     others: &[HwKeyRecord],
-) -> Vec<(KeyRole, Vec<u32>)> {
+) -> Vec<(RecordedSlot, Vec<u32>)> {
     before
         .slots
         .iter()
         .filter(|slot| matches!(slot.slot, CardSlot::OpenPgp(_)))
         .filter(|slot| {
-            !after
-                .iter()
-                .any(|role| role.key_identity() == slot.role.key_identity())
+            !after.iter().any(|(card_slot, role, public)| {
+                *card_slot == slot.slot
+                    && role.key_identity() == slot.role.key_identity()
+                    && *public == slot.public
+            })
         })
         .map(|slot| {
             let holders = others
@@ -319,21 +354,25 @@ pub fn dropped_roles(
                 })
                 .map(|other| other.serial)
                 .collect();
-            (slot.role, holders)
+            (*slot, holders)
         })
+        .collect()
+}
+
+/// The slots of `dropped` whose key is lost for good: connected without recovery words and held
+/// by no other enrolled card (spec/10 §15: [`T_YK_KEY_LOST`]).
+#[must_use]
+pub fn lost_slots(dropped: &[(RecordedSlot, Vec<u32>)]) -> Vec<RecordedSlot> {
+    dropped
+        .iter()
+        .filter(|(slot, holders)| !slot.path_known && holders.is_empty())
+        .map(|(slot, _)| *slot)
         .collect()
 }
 
 impl ReslotFlow {
     fn new(record: &HwKeyRecord, network: BtcNetwork) -> Self {
-        let evm = record
-            .slots
-            .iter()
-            .find_map(|slot| match slot.role {
-                KeyRole::Evm { index, .. } => Some(index.get()),
-                _ => None,
-            })
-            .unwrap_or(0);
+        let evm = known_evm_index(record).unwrap_or(0);
         let mut flow = Self {
             serial: record.serial,
             step: ReslotStep::Choose,
@@ -348,6 +387,8 @@ impl ReslotFlow {
             advanced: false,
             shared_ack: false,
             removed_ack: false,
+            loss_ack: false,
+            loss_typed: String::new(),
             error: None,
             slots: Vec::new(),
             preview: None,
@@ -378,27 +419,18 @@ impl ReslotFlow {
         }
     }
 
-    /// Fills both slots from `preset` (indices: the card's EVM index, else 0; EVM+EVM uses
-    /// `i` and `i + 1`).
+    /// Fills both slots from `preset` (indices: the card's EVM index with a known path, else 0;
+    /// EVM+EVM uses `i` and `i + 1`).
     pub fn apply_preset(&mut self, preset: Preset) {
         self.preset = preset;
-        let evm = self
-            .before
-            .as_ref()
-            .and_then(|record| {
-                record.slots.iter().find_map(|slot| match slot.role {
-                    KeyRole::Evm { index, .. } => Some(index.get()),
-                    _ => None,
-                })
-            })
-            .unwrap_or(0);
+        let evm = self.before.as_ref().and_then(known_evm_index).unwrap_or(0);
         let (sig, aut) = match preset {
             Preset::EvmBtc => (SlotForm::new(Chain::Evm, evm), SlotForm::new(Chain::Btc, 0)),
             Preset::EvmZec => (SlotForm::new(Chain::Evm, evm), SlotForm::new(Chain::Zec, 0)),
             Preset::BtcZec => (SlotForm::new(Chain::Btc, 0), SlotForm::new(Chain::Zec, 0)),
             Preset::EvmEvm => (
                 SlotForm::new(Chain::Evm, evm),
-                SlotForm::new(Chain::Evm, evm.saturating_add(1).min(MAX_BTC_INDEX)),
+                SlotForm::new(Chain::Evm, evm.saturating_add(1).min(MAX_RESLOT_INDEX)),
             ),
             Preset::Custom => return,
         };
@@ -483,23 +515,36 @@ impl ReslotFlow {
         Ok(slots)
     }
 
-    /// The accounts this card stops holding with the new plan.
+    /// The slots this card stops holding with the new plan (from the preview's derived public
+    /// keys; empty until the preview is there).
     #[must_use]
-    pub fn dropped(&self, others: &[HwKeyRecord]) -> Vec<(KeyRole, Vec<u32>)> {
-        let after: Vec<KeyRole> = self.slots.iter().map(|slot| slot.role).collect();
-        self.before
-            .as_ref()
-            .map(|before| dropped_roles(before, &after, others))
-            .unwrap_or_default()
+    pub fn dropped(&self, others: &[HwKeyRecord]) -> Vec<(RecordedSlot, Vec<u32>)> {
+        let (Some(before), Some(preview)) = (self.before.as_ref(), self.preview.as_ref()) else {
+            return Vec::new();
+        };
+        let after: Vec<(CardSlot, KeyRole, HwPublicKey)> = preview
+            .lines
+            .iter()
+            .map(|line| (line.planned.slot, line.planned.role, line.public))
+            .collect();
+        dropped_roles(before, &after, others)
     }
 
-    /// Whether the confirmation allows the import.
+    /// Whether the confirmation allows the import (the typed [`LOSS_WORD`] is checked when
+    /// `YubiKey에 넣기` is pressed).
     #[must_use]
     pub fn can_import(&self, others: &[HwKeyRecord]) -> bool {
+        let dropped = self.dropped(others);
         self.preview
             .as_ref()
             .is_some_and(|preview| preview.plan.is_ok())
-            && (self.dropped(others).is_empty() || self.removed_ack)
+            && (dropped.is_empty() || self.removed_ack)
+            && (lost_slots(&dropped).is_empty() || self.loss_ack)
+    }
+
+    /// Whether the typed word of a lost key is right (or no key is lost).
+    fn loss_word_ok(&self, others: &[HwKeyRecord]) -> bool {
+        lost_slots(&self.dropped(others)).is_empty() || self.loss_typed.trim() == LOSS_WORD
     }
 }
 
@@ -547,6 +592,8 @@ impl App {
             result: None,
             failure: None,
             error: None,
+            loss_ack: false,
+            loss_typed: String::new(),
         }));
         self.refresh();
     }
@@ -601,6 +648,8 @@ impl App {
                 flow.slots.clone_from(&slots);
                 flow.preview = None;
                 flow.removed_ack = false;
+                flow.loss_ack = false;
+                flow.loss_typed.clear();
                 flow.step = ReslotStep::Confirm;
                 let serial = flow.serial;
                 if flow.seed_held {
@@ -639,20 +688,27 @@ impl App {
         self.refresh();
     }
 
-    /// Confirm `가져오기`: W12 admin PIN.
+    /// Confirm `가져오기`: the typed [`LOSS_WORD`] when a key without recovery words is
+    /// overwritten, then W12 admin PIN.
     pub fn yk_reslot_import(&mut self) {
         let others = self
             .reslot()
             .map(|flow| flow.serial)
             .map(|serial| self.yk_other_records(serial))
             .unwrap_or_default();
-        if let Some(serial) = self
-            .reslot()
-            .filter(|flow| flow.can_import(&others))
-            .map(|flow| flow.serial)
-        {
-            self.yk_open_card_secret(CardSecretKind::AdminPin, YkPurpose::ReslotAdminPin, serial);
+        let Some(flow) = self.reslot().filter(|flow| flow.can_import(&others)) else {
+            return;
+        };
+        if !flow.loss_word_ok(&others) {
+            flow.error = Some(format!(
+                "확인하려면 입력란에 '{LOSS_WORD}'를 정확히 입력하세요."
+            ));
+            self.refresh();
+            return;
         }
+        flow.error = None;
+        let serial = flow.serial;
+        self.yk_open_card_secret(CardSecretKind::AdminPin, YkPurpose::ReslotAdminPin, serial);
     }
 
     /// "백업 `YubiKey`에도 같은 구성 적용" to the list row `row`: the same new `OpenPGP` plan on that
@@ -674,6 +730,8 @@ impl App {
         flow.failure = None;
         flow.preview = None;
         flow.removed_ack = false;
+        flow.loss_ack = false;
+        flow.loss_typed.clear();
         match flow.plan(network) {
             Ok(slots) => {
                 flow.slots.clone_from(&slots);
@@ -708,17 +766,41 @@ impl App {
             || self.card.records.len() > 1
     }
 
-    /// Whether `비우기` is enabled (the typed word is checked when it is pressed).
+    /// The cleared slots of `flow` whose key is lost for good (connected without recovery words,
+    /// held by no other enrolled card: [`T_YK_KEY_LOST`]).
     #[must_use]
-    pub fn yk_clear_ready(&self, flow: &ClearFlow) -> bool {
-        flow.step == ClearStep::Choose && flow.plan().any() && self.yk_clear_allowed(flow)
+    pub fn yk_clear_lost(&self, flow: &ClearFlow) -> Vec<RecordedSlot> {
+        let Some(before) = flow.before.as_ref() else {
+            return Vec::new();
+        };
+        let plan = flow.plan();
+        let others = self.yk_other_records(flow.serial);
+        let cleared: Vec<(RecordedSlot, Vec<u32>)> = before
+            .slots
+            .iter()
+            .filter(|slot| plan.clears(slot.slot))
+            .map(|slot| (*slot, crate::yubikey::holders(&others, slot.role)))
+            .collect();
+        lost_slots(&cleared)
     }
 
-    /// `비우기`: the typed word, the PIN windows the methods need, then the job.
+    /// Whether `비우기` is enabled (the typed words are checked when it is pressed).
+    #[must_use]
+    pub fn yk_clear_ready(&self, flow: &ClearFlow) -> bool {
+        flow.step == ClearStep::Choose
+            && flow.plan().any()
+            && self.yk_clear_allowed(flow)
+            && (flow.loss_ack || self.yk_clear_lost(flow).is_empty())
+    }
+
+    /// `비우기`: the typed words, the PIN windows the methods need, then the job.
     pub fn yk_clear_run(&mut self) {
-        let ready = match self.card.manage.as_ref() {
-            Some(YkManage::Clear(flow)) => self.yk_clear_ready(flow),
-            _ => false,
+        let (ready, lost) = match self.card.manage.as_ref() {
+            Some(YkManage::Clear(flow)) => (
+                self.yk_clear_ready(flow),
+                !self.yk_clear_lost(flow).is_empty(),
+            ),
+            _ => (false, false),
         };
         let Some(flow) = self.clear_flow() else {
             return;
@@ -729,6 +811,13 @@ impl App {
         if flow.typed.trim() != CLEAR_WORD {
             flow.error = Some(format!(
                 "확인하려면 입력란에 '{CLEAR_WORD}'를 정확히 입력하세요."
+            ));
+            self.refresh();
+            return;
+        }
+        if lost && flow.loss_typed.trim() != LOSS_WORD {
+            flow.error = Some(format!(
+                "복구 단어가 없는 키를 지우려면 입력란에 '{LOSS_WORD}'를 정확히 입력하세요."
             ));
             self.refresh();
             return;
@@ -1075,6 +1164,16 @@ impl App {
                     flow.removed_ack = !flow.removed_ack;
                 }
             }
+            ids::RESLOT_LOSS_ACK => {
+                if let Some(flow) = self.reslot() {
+                    flow.loss_ack = !flow.loss_ack;
+                }
+            }
+            ids::CLEAR_LOSS_ACK => {
+                if let Some(flow) = self.clear_flow() {
+                    flow.loss_ack = !flow.loss_ack;
+                }
+            }
             ids::RESLOT_NEXT => {
                 self.yk_reslot_next();
                 return true;
@@ -1084,6 +1183,7 @@ impl App {
                     flow.step = ReslotStep::Choose;
                     flow.preview = None;
                     flow.failure = None;
+                    flow.error = None;
                 }
             }
             ids::RESLOT_IMPORT | ids::RESLOT_RETRY => {
@@ -1151,6 +1251,8 @@ impl App {
             ids::RESLOT_SIG_INDEX_EDIT,
             ids::RESLOT_AUT_INDEX_EDIT,
             ids::CLEAR_CONFIRM_EDIT,
+            ids::RESLOT_LOSS_EDIT,
+            ids::CLEAR_LOSS_EDIT,
         ]
         .contains(&id)
         {
@@ -1169,6 +1271,17 @@ impl App {
                 // No repaint while typing: `비우기` checks the word when pressed.
                 if let Some(flow) = self.clear_flow() {
                     flow.typed = text;
+                }
+            }
+            ids::CLEAR_LOSS_EDIT => {
+                if let Some(flow) = self.clear_flow() {
+                    flow.loss_typed = text;
+                }
+            }
+            ids::RESLOT_LOSS_EDIT => {
+                // Checked when `YubiKey에 넣기` is pressed.
+                if let Some(flow) = self.reslot() {
+                    flow.loss_typed = text;
                 }
             }
             ids::RESLOT_SIG_INDEX_EDIT | ids::RESLOT_AUT_INDEX_EDIT => {

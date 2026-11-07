@@ -3792,6 +3792,9 @@ fn wallet_reset_from_the_lock_screen_returns_to_first_run() {
 fn yubikey_connect_without_words_from_the_first_run_screen() {
     use crate::app_yubikey::YkPurpose;
     use crate::app_yubikey::connect::{Choice, T_YK_UNKNOWN_PATH};
+    use crate::app_yubikey::manage::{
+        ClearStep, LOSS_WORD, T_YK_CLEAR_FUNDS, T_YK_KEY_LOST, YkManage,
+    };
     use crate::ui::screens_yubikey::ids as yk;
     use yw_core::bip32::path::AccountIndex;
     use yw_core::yubikey::plan::{CardSlot, KeyRole, PgpKey, PivSlot, PlannedSlot, address_texts};
@@ -3937,5 +3940,38 @@ fn yubikey_connect_without_words_from_the_first_run_screen() {
     crate::yubikey::sign_btc_sighash(&mut source, &records, zec, b"123456", [9; 32]).unwrap();
     crate::yubikey::sign_sol_message(&mut source, &records, evm_index, b"123456", b"connected")
         .unwrap();
+    assert!(!cards.lock().unwrap()[0].saw_write());
+
+    // spec/10 §15.2: clearing a key without recovery words is never called recoverable; it
+    // needs T-YK-KEY-LOST's checkbox and the typed word on top of `비우기`.
+    h.app.on_command(yk::SECTION_YUBIKEY);
+    h.pump();
+    h.app.on_command(yk::CLEAR_BASE);
+    h.app.on_command(yk::CLEAR_PIV_TOGGLE);
+    let items = h.app.items();
+    unique_ids(&items);
+    assert!(has_text(&items, T_YK_KEY_LOST));
+    assert!(!has_text(&items, T_YK_CLEAR_FUNDS));
+    assert!(!ctl(&items, yk::CLEAR_RUN).unwrap().enabled);
+    h.app.on_command(yk::CLEAR_LOSS_ACK);
+    assert!(ctl(&h.app.items(), yk::CLEAR_RUN).unwrap().enabled);
+    h.app
+        .yk_manage_set_text(yk::CLEAR_CONFIRM_EDIT, "비우기".to_owned());
+    h.app.on_command(yk::CLEAR_RUN);
+    let clear_state = |h: &Harness| match h.app.card.manage.as_ref() {
+        Some(YkManage::Clear(flow)) => Some((flow.step, flow.error.is_some())),
+        _ => None,
+    };
+    assert_eq!(
+        clear_state(&h),
+        Some((ClearStep::Choose, true)),
+        "the loss word is missing"
+    );
+    assert!(has_text(&h.app.items(), LOSS_WORD));
+    h.app
+        .yk_manage_set_text(yk::CLEAR_LOSS_EDIT, LOSS_WORD.to_owned());
+    h.app.on_command(yk::CLEAR_RUN);
+    // Accepted: the PIV PIN window comes next (nothing is sent to the card before it).
+    assert_eq!(clear_state(&h), Some((ClearStep::Choose, false)));
     assert!(!cards.lock().unwrap()[0].saw_write());
 }

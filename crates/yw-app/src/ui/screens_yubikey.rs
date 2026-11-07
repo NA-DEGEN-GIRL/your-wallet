@@ -183,6 +183,14 @@ pub mod ids {
     pub const IDENTIFY_AGAIN: u16 = 13_388;
     /// Main window: `PIN 설정` after a signing refused for factory PINs.
     pub const PIN_NEEDED_OPEN: u16 = 13_389;
+    /// Re-slot: the T-YK-KEY-LOST checkbox (a key without recovery words is overwritten).
+    pub const RESLOT_LOSS_ACK: u16 = 13_390;
+    /// Re-slot: the typed `영구 삭제`.
+    pub const RESLOT_LOSS_EDIT: u16 = 13_391;
+    /// Clear: the T-YK-KEY-LOST checkbox (a key without recovery words is cleared).
+    pub const CLEAR_LOSS_ACK: u16 = 13_392;
+    /// Clear: the typed `영구 삭제`.
+    pub const CLEAR_LOSS_EDIT: u16 = 13_393;
 
     const KINDS: [PgpKind; 4] = [PgpKind::None, PgpKind::Evm, PgpKind::Btc, PgpKind::Shared];
     const ZEC_NETWORKS: [ZecNetwork; 2] = [ZecNetwork::Mainnet, ZecNetwork::Testnet];
@@ -533,6 +541,10 @@ pub mod ids {
         CLEAR_RUN,
         IDENTIFY_AGAIN,
         PIN_NEEDED_OPEN,
+        RESLOT_LOSS_ACK,
+        RESLOT_LOSS_EDIT,
+        CLEAR_LOSS_ACK,
+        CLEAR_LOSS_EDIT,
         CONNECT_START,
         CONNECT_NEW_WALLET,
         CONNECT_RESCAN,
