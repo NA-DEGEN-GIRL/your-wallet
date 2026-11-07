@@ -1157,14 +1157,17 @@ impl KeyWorker {
     }
 
     /// `삭제` of an imported key (spec/04 §2.18): refused while an imported Bitcoin key's account
-    /// has an in-flight record (`ImportedKeyBusy`); otherwise the password check and the vault
-    /// removal, then — for a Bitcoin key — its account leaves meta `btc_accounts`.
+    /// has an in-flight record, or an imported Zcash key's account has a ZEC record that may
+    /// still confirm or its records cannot be checked (`ImportedKeyBusy`, whatever the UI
+    /// showed); otherwise the password check and the vault removal, then — for a Bitcoin key —
+    /// its account leaves meta `btc_accounts`.
     fn remove_imported(&mut self, password_bytes: &[u8], id: RecordId) -> Vec<KeyOutcome> {
         let alt = self.is_alt();
         if let Some(vault) = self.vault.as_ref()
-            && self
+            && (self
                 .journal
                 .btc_imported_busy(vault, *id.as_bytes(), now_unix())
+                || self.journal.zec_imported_busy(vault, id))
         {
             return vec![KeyOutcome::ImportedKeyBusy(id)];
         }

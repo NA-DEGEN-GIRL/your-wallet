@@ -480,12 +480,20 @@ impl App {
         self.set_screen(Screen::Confirm(Confirm::RemoveImported));
     }
 
-    /// The worker refused `삭제` of an imported Bitcoin key (an in-flight transaction appeared
-    /// meanwhile): the password form shows why, nothing was removed.
-    pub fn on_imported_key_busy(&mut self) {
+    /// The worker refused `삭제` of an imported Bitcoin or Zcash key (an in-flight transaction
+    /// appeared meanwhile, or a Zcash key's records cannot be checked): the password form shows
+    /// why, nothing was removed.
+    pub fn on_imported_key_busy(&mut self, id: RecordId) {
+        let zec = self.keys.zec_keys.iter().any(|(record, _)| *record == id);
+        let text = if zec {
+            self.zec_remove_block(*id.as_bytes())
+                .unwrap_or(crate::app_zec::ZEC_REMOVE_BUSY)
+        } else {
+            crate::app_btc::REMOVE_BUSY_IN_FLIGHT
+        };
         self.with_form(|form| {
             form.set_busy(false);
-            form.set_error(Some(crate::app_btc::REMOVE_BUSY_IN_FLIGHT.to_owned()));
+            form.set_error(Some(text.to_owned()));
         });
     }
 

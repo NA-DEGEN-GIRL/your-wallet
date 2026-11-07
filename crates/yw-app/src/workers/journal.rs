@@ -447,6 +447,31 @@ impl JournalState {
         sol || zec || self.btc_mnemonic_busy(vault, id, now_unix)
     }
 
+    /// Whether the imported Zcash key `id` (vault tag 6) must stay: a ZEC record of its account
+    /// may still confirm, or the records cannot be checked — an unreadable journal or a damaged
+    /// ZEC record counts as busy (the rule of [`Self::mnemonic_busy`]). `false` for a key that
+    /// is not a Zcash key.
+    pub fn zec_imported_busy(&mut self, vault: &Vault, id: yw_core::vault::RecordId) -> bool {
+        let info = match vault.imported_keys() {
+            Ok(keys) => match keys.zec.into_iter().find(|(record, _)| *record == id) {
+                Some((_, info)) => info,
+                None => return false,
+            },
+            // The key list cannot be read: whether it is a Zcash key is unknown.
+            Err(_) => return true,
+        };
+        let Ok(plain) = self.current(vault) else {
+            return true;
+        };
+        let zec = yw_core::journal::zec::ZecEntries::from_plain(&plain);
+        zec.corrupt > 0
+            || zec.records.iter().any(|(_, record)| {
+                record.account.network == info.network
+                    && record.account.pubkey == info.pubkey
+                    && record.may_still_confirm()
+            })
+    }
+
     /// Drops the (final) SOL, BTC and ZEC records of the removed mnemonic `id`'s accounts and
     /// commits: their accounts are gone, and an earlier build would read these record versions
     /// as damaged bodies (spec/04 §6.6). Nothing is written when there is none.

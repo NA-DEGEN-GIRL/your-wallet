@@ -1604,7 +1604,7 @@ impl App {
             KeyOutcome::ImportedKeyRemoved(Ok((id, chain))) => {
                 self.on_imported_key_removed(id, chain);
             }
-            KeyOutcome::ImportedKeyBusy(_) => self.on_imported_key_busy(),
+            KeyOutcome::ImportedKeyBusy(id) => self.on_imported_key_busy(id),
             KeyOutcome::Cancelled("SignEvm" | "SignMessage", _) => self.evm_sign_cancelled(),
             KeyOutcome::Cancelled("SignSol", _) => self.sol_sign_cancelled(),
             KeyOutcome::Zec(outcome) => self.zec_key_outcome(*outcome),

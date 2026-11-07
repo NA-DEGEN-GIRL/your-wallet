@@ -28,6 +28,11 @@ pub const T_ZEC_HW_MISSING: &str = "이 Zcash 계정의 YubiKey 키를 등록된
 
 /// Automatic refresh period while the tab is shown (and while a transaction is in flight).
 const REFRESH_MS: u64 = yw_core::zec::ZEC_POLL_SECS * 1_000;
+/// `삭제` of an imported Zcash key while a transaction of its account may still confirm.
+pub const ZEC_REMOVE_BUSY: &str =
+    "진행 중인 Zcash 거래가 이 키를 쓰고 있어 지울 수 없습니다. 확인되거나 만료된 뒤에 지우세요.";
+/// `삭제` of an imported Zcash key while its transactions cannot be checked.
+pub const ZEC_REMOVE_UNCHECKED: &str = "Zcash 거래 기록을 아직 읽지 못했거나 손상된 Zcash 기록이 있어, 이 키로 보낸 거래가 끝났는지 확인할 수 없습니다. 기록을 읽은 뒤(손상은 복구한 뒤) 다시 지우세요.";
 
 /// The key source the account card offers (spec/12 §2.2).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -441,7 +446,9 @@ impl App {
     }
 
     /// `삭제` of an imported Zcash key is refused while the account on it has a transaction that
-    /// may still confirm (like an imported Bitcoin key, spec/08 §3.5).
+    /// may still confirm (like an imported Bitcoin key, spec/08 §3.5), and while its records
+    /// cannot be checked: the journal is not loaded yet or has a damaged ZEC record (the key
+    /// worker applies the same rule, `JournalWorker::zec_imported_busy`).
     #[must_use]
     pub fn zec_remove_block(&self, id: [u8; 16]) -> Option<&'static str> {
         let (_, info) = self
@@ -449,15 +456,25 @@ impl App {
             .zec_keys
             .iter()
             .find(|(record, _)| *record.as_bytes() == id)?;
-        let busy = self.evm.journal.as_ref().is_some_and(|journal| {
-            journal.zec_records.iter().any(|record| {
-                record.account.network == info.network
-                    && record.account.pubkey == info.pubkey
-                    && !record.is_terminal()
-            })
+        let Some(journal) = self
+            .evm
+            .journal
+            .as_ref()
+            .filter(|journal| journal.zec_corrupt == 0)
+        else {
+            return Some(ZEC_REMOVE_UNCHECKED);
+        };
+        let busy = journal.zec_records.iter().any(|record| {
+            record.account.network == info.network
+                && record.account.pubkey == info.pubkey
+                && !record.is_terminal()
         });
-        (busy || (self.zec.busy && self.zec_selected_imported().is_some_and(|key| *key.as_bytes() == id)))
-            .then_some("진행 중인 Zcash 거래가 이 키를 쓰고 있어 지울 수 없습니다. 확인되거나 만료된 뒤에 지우세요.")
+        (busy
+            || (self.zec.busy
+                && self
+                    .zec_selected_imported()
+                    .is_some_and(|key| *key.as_bytes() == id)))
+        .then_some(ZEC_REMOVE_BUSY)
     }
 
     /// An imported Zcash key left the vault: the list drops it, and an account on it goes back
