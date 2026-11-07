@@ -1646,7 +1646,13 @@ impl App {
             QueuedItem::Site(site) => Some(site.origin.clone()),
             _ => None,
         });
-        self.wc_decorate_draft(site_origin.as_ref(), &mut draft);
+        if !self.wc_decorate_draft(site_origin.as_ref(), &mut draft) {
+            // spec/13 §7: a WalletConnect request is never shown without its label and warning.
+            logging::warn("app", "E-UI-001", &[("wc", Field::Word("label"))]);
+            self.error_banner(ErrorCode::Ui001);
+            self.finish_approval(QueueOutcome::Rejected);
+            return;
+        }
         let Ok(request) = self.evm.store.issue(draft, now, now_unix) else {
             self.show_failure(ErrorCode::App009, false, ErrorCode::App009.text());
             return;
@@ -1717,10 +1723,20 @@ impl App {
             self.rebuild_view();
             return;
         };
-        let replaced = self
-            .evm
-            .store
-            .replace(old.id, old.digest, prepared.draft.clone());
+        // The re-simulated draft is built afresh: a WalletConnect request gets its label and
+        // Verify warning again (spec/13 §7), or is not shown.
+        let mut draft = prepared.draft.clone();
+        let site_origin = self.evm.window.as_ref().and_then(|ui| match &ui.item {
+            QueuedItem::Site(site) => Some(site.origin.clone()),
+            _ => None,
+        });
+        if !self.wc_decorate_draft(site_origin.as_ref(), &mut draft) {
+            logging::warn("app", "E-UI-001", &[("wc", Field::Word("label"))]);
+            self.error_banner(ErrorCode::Ui001);
+            self.finish_approval(QueueOutcome::Rejected);
+            return;
+        }
+        let replaced = self.evm.store.replace(old.id, old.digest, draft);
         let Ok(request) = replaced else {
             self.show_failure(ErrorCode::App009, false, ErrorCode::App009.text());
             return;

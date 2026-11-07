@@ -1593,6 +1593,11 @@ impl BrowserCore {
                 }
             }
             VaultView::Locked | VaultView::Starting => {
+                // A WalletConnect session never pops the password window (spec/13 §5): a remote
+                // dApp could otherwise raise it at will. 4100 until the user unlocks.
+                if crate::walletconnect::is_session_origin(origin) {
+                    return Err(ProviderError::Unauthorized);
+                }
                 if admission.now_ms < state.unlock_cooldown_until_ms
                     && !state.locked_connected.contains(origin)
                 {

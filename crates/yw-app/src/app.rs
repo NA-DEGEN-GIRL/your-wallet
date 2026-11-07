@@ -1197,8 +1197,9 @@ impl App {
     }
 
     /// Whether the idle clock is paused (spec/04 §5.1, LK-1): a W08/W09 display window or an
-    /// approval window (A01, any chain) is open. Each has its own time limit; the count restarts
-    /// when it closes.
+    /// approval window (A01, any chain) is open. Each has its own time limit; closing does not
+    /// restart the count (only input does), so a dApp's unattended requests cannot keep the
+    /// wallet unlocked.
     fn idle_paused(&self) -> bool {
         self.secret
             .as_ref()
@@ -1212,7 +1213,7 @@ impl App {
     /// worker) is discarded after the same idle time.
     fn idle_tick(&mut self, now: u64) {
         let paused = self.idle_paused();
-        self.idle.set_paused(now, paused);
+        self.idle.set_paused(paused);
         if !self.idle.should_lock(now, self.settings.auto_lock_minutes) {
             return;
         }

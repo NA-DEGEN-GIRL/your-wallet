@@ -41,6 +41,9 @@ pub const WALLET_METHODS: [&str; 6] = [
 /// Events the wallet emits.
 pub const WALLET_EVENTS: [&str; 2] = ["chainChanged", "accountsChanged"];
 const RECENT_IDS: usize = 512;
+/// After a proposal was rejected or expired, its pairing may not open another connect window for
+/// this long (a dApp cannot keep a window — and so the paused idle clock — up continuously).
+pub const PROPOSAL_COOLDOWN_S: u64 = 15;
 
 const LIMITS: Limits = Limits {
     max_bytes: 1_048_576,
@@ -382,6 +385,11 @@ pub struct Engine {
     proposals: Vec<Proposal>,
     sessions: Vec<Session>,
     recent: VecDeque<([u8; 32], u64)>,
+    /// Pairings whose last proposal was rejected or expired: (pairing topic, until Unix s). A
+    /// new proposal on them meanwhile is refused without a connect window (spec/13 §7.3).
+    cooldowns: Vec<([u8; 32], u64)>,
+    /// The latest `now` a caller passed (the clock of [`Self::reject`], which takes none).
+    last_now: u64,
     /// The wallet's supported chains (registered EVM chains), set by the worker.
     pub supported_chains: Vec<u64>,
 }
@@ -412,8 +420,27 @@ impl Engine {
             proposals: Vec::new(),
             sessions: Vec::new(),
             recent: VecDeque::new(),
+            cooldowns: Vec::new(),
+            last_now: 0,
             supported_chains: Vec::new(),
         }
+    }
+
+    fn cool_down(&mut self, pairing_topic: [u8; 32]) {
+        let now = self.last_now;
+        self.cooldowns
+            .retain(|(topic, until)| *topic != pairing_topic && *until > now);
+        if self.cooldowns.len() >= MAX_PROPOSALS * 4 {
+            self.cooldowns.remove(0);
+        }
+        self.cooldowns
+            .push((pairing_topic, now.saturating_add(PROPOSAL_COOLDOWN_S)));
+    }
+
+    fn cooling(&self, pairing_topic: &[u8; 32], now: u64) -> bool {
+        self.cooldowns
+            .iter()
+            .any(|(topic, until)| topic == pairing_topic && *until > now)
     }
 
     /// The sessions.
@@ -428,12 +455,14 @@ impl Engine {
         self.sessions.iter().find(|s| s.topic == *topic)
     }
 
-    /// The pending proposal `id`.
+    /// The pending proposal whose approval creates session `session_topic`. Proposals are keyed
+    /// by this wallet-chosen topic, never by the dApp-chosen JSON-RPC id (two pairings may reuse
+    /// an id).
     #[must_use]
-    pub fn proposal(&self, id: u64) -> Option<&ProposalView> {
+    pub fn proposal(&self, session_topic: &[u8; 32]) -> Option<&ProposalView> {
         self.proposals
             .iter()
-            .find(|p| p.view.id == id)
+            .find(|p| p.view.session_topic == *session_topic)
             .map(|p| &p.view)
     }
 
@@ -514,6 +543,7 @@ impl Engine {
         attestation: Option<&str>,
         now: u64,
     ) -> Vec<Out> {
+        self.last_now = self.last_now.max(now);
         let Some(key) = self.key_of(topic) else {
             return Vec::new();
         };
@@ -629,6 +659,9 @@ impl Engine {
                 .into_iter()
                 .collect()
         };
+        if self.cooling(&pairing_topic, now) {
+            return reject(self, 5000, "User rejected.");
+        }
         let Some(object) = params.as_object() else {
             return reject(self, 1006, "Invalid proposal namespaces");
         };
@@ -722,6 +755,12 @@ impl Engine {
         if view.chains.is_empty() {
             return reject(self, 5100, "Unsupported chains");
         }
+        // A JSON-RPC id already pending (on any pairing) is not a second proposal: ids are chosen
+        // by the dApp, so one pairing could otherwise shadow another's. No answer (a redelivery
+        // past the duplicate window must not reject the pending proposal).
+        if self.proposals.iter().any(|p| p.view.id == id) {
+            return Vec::new();
+        }
         if self.proposals.len() >= MAX_PROPOSALS {
             self.proposals.remove(0);
         }
@@ -737,23 +776,38 @@ impl Engine {
         vec![Out::Proposal(Box::new(view), verify)]
     }
 
-    /// Records the Verify result of a proposal.
-    pub fn set_verify(&mut self, id: u64, verify: VerifyStatus) {
-        if let Some(proposal) = self.proposals.iter_mut().find(|p| p.view.id == id) {
+    /// Records the Verify result of the proposal of `session_topic`.
+    pub fn set_verify(&mut self, session_topic: &[u8; 32], verify: VerifyStatus) {
+        if let Some(proposal) = self
+            .proposals
+            .iter_mut()
+            .find(|p| p.view.session_topic == *session_topic)
+        {
             proposal.view.verify = verify;
         }
     }
 
-    /// Approves proposal `id` with `accounts` on its chains: the response on the pairing topic,
-    /// the subscription and `wc_sessionSettle` on the session topic (spec/13 §3.3).
-    pub fn approve(&mut self, id: u64, accounts: Vec<Address>, now: u64) -> Vec<Out> {
-        let Some(index) = self.proposals.iter().position(|p| p.view.id == id) else {
+    /// Approves the proposal of `session_topic` with `accounts` on its chains: the response on
+    /// the pairing topic, the subscription and `wc_sessionSettle` on the session topic
+    /// (spec/13 §3.3).
+    pub fn approve(
+        &mut self,
+        session_topic: &[u8; 32],
+        accounts: Vec<Address>,
+        now: u64,
+    ) -> Vec<Out> {
+        let Some(index) = self
+            .proposals
+            .iter()
+            .position(|p| p.view.session_topic == *session_topic)
+        else {
             return Vec::new();
         };
         if accounts.is_empty() || self.sessions.len() >= MAX_SESSIONS {
-            return self.reject(id, 5000, "User rejected.");
+            return self.reject(session_topic, 5000, "User rejected.");
         }
         let proposal = self.proposals.remove(index);
+        let id = proposal.view.id;
         let session = Session {
             topic: proposal.view.session_topic,
             sym_key: proposal.sym_key.clone(),
@@ -807,15 +861,22 @@ impl Engine {
         out
     }
 
-    /// Rejects proposal `id` (5000 user rejected, 5100 unsupported chains, …).
-    pub fn reject(&mut self, id: u64, code: i64, message: &str) -> Vec<Out> {
-        let Some(index) = self.proposals.iter().position(|p| p.view.id == id) else {
+    /// Rejects the proposal of `session_topic` (5000 user rejected, 5100 unsupported chains, …).
+    pub fn reject(&mut self, session_topic: &[u8; 32], code: i64, message: &str) -> Vec<Out> {
+        let Some(index) = self
+            .proposals
+            .iter()
+            .position(|p| p.view.session_topic == *session_topic)
+        else {
             return Vec::new();
         };
         let proposal = self.proposals.remove(index);
+        if code == 5000 {
+            self.cool_down(proposal.pairing_topic);
+        }
         self.publish(
             proposal.pairing_topic,
-            &rpc_error(id, code, message),
+            &rpc_error(proposal.view.id, code, message),
             1120,
             300,
         )
@@ -1038,7 +1099,18 @@ impl Engine {
         for topic in expired {
             out.extend(self.drop_session(&topic));
         }
+        self.last_now = self.last_now.max(now);
+        let lapsed: Vec<[u8; 32]> = self
+            .proposals
+            .iter()
+            .filter(|p| p.view.expiry <= now)
+            .map(|p| p.pairing_topic)
+            .collect();
+        for pairing in lapsed {
+            self.cool_down(pairing);
+        }
         self.proposals.retain(|p| p.view.expiry > now);
+        self.cooldowns.retain(|(_, until)| *until > now);
         let gone: Vec<[u8; 32]> = self
             .pairings
             .iter()
