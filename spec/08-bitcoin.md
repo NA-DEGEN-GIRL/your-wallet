@@ -742,7 +742,23 @@ meta JSON의 `btc`는 `BtcMeta` 객체 또는 `null`(BTC 데이터 없음)이다
 
 meta `btc`는 언제나 기본 계정(BIP84 계정 0)이고 위 버전 1 형식 그대로다(이전 앱 버전이 읽고 쓰는 바이트가 같다). 다른 계정은 같은 필드에서 `account_pubkey`·`account_chain_code` 대신 `"script_type": "p2pkh"|"p2sh-p2wpkh"|"p2wpkh"|"p2tr"`와 `"key": {"hd": {"account": n, "pubkey": hex66, "chain_code": hex64}}` 또는 `{"imported": {"id": hex32(0 아님), "pubkey": hex66|hex130}}` 또는 `{"evm": {"index": 0–999, "pubkey": hex66}}`(EVM 계정 index의 압축 공개키, §3.5)를 쓰는 `version: 2` 객체다(키 순서: version, network, script_type, key, receive_next, …). 버전 2로 기본 계정을 쓰거나, 가져온 키·EVM 키 객체가 `receive_next ≠ 1`·`change_next ≠ 0`·`(Receive, 0)` 밖의 `verified`를 가지면 검증 실패다.
 
-**주소 방식 `single_address`(선택 키, 2026-11-05).** HD 계정 객체(버전 1·2 모두)의 마지막(`sent_scripts` 뒤)에 올 수 있는 bool이다. **없음 = 고정 주소 모드**(§3.5; 이 키 이전에 쓴 모든 meta와 새 계정이 그렇다)이고, 이 버전은 HD 모드일 때만 `"single_address": false`를 쓴다 — 그래서 기본값의 바이트는 이전과 같다(meta `btc`는 그대로 버전 1 바이트). 읽을 때 `true`도 받아들인다. bool이 아니거나 키 하나 계정 객체에 있으면 검증 실패다. 이전 앱 버전은 이 키가 있는 객체(HD 모드를 고른 계정)를 모르는 키로 거부하므로, HD 모드나 EVM 키 계정을 쓴 뒤 이전 버전으로 되돌리면 그 meta를 읽지 못한다(되돌리기 전에 고정 주소로 돌리고 EVM 키 계정을 쓰지 않는다; 이전 버전 호환은 기본값에만 보장한다).
+**주소 방식 `single_address`(선택 키, 2026-11-05).** HD 계정 객체(버전 1·2 모두)의 마지막(`sent_scripts` 뒤)에 올 수 있는 bool이다. **없음 = 고정 주소 모드**(§3.5; 이 키 이전에 쓴 모든 meta와 새 계정이 그렇다)이고, 이 버전은 HD 모드일 때만 `"single_address": false`를 쓴다 — 그래서 기본값의 바이트는 이전과 같다(meta `btc`는 그대로 버전 1 바이트). 읽을 때 `true`도 받아들인다. bool이 아니거나 키 하나 계정 객체에 있으면 검증 실패다. **2026-11-07부터 이 키는 쓰지 않는다**(읽기만, 이행): 이전 앱 버전(2026-11-05 전)은 알려진 객체 안의 모르는 키를 거부해 meta 전체를 읽지 못하므로, HD 모드 표시는 새 최상위 키 `btc_accounts_ext.hd_mode`(§12.3b)로 옮겼다.
+
+### 12.3b meta `btc_accounts_ext` (선택 최상위 키, 2026-11-07)
+
+2026-11-05/06 빌드는 HD 모드 표시(`"single_address": false`)를 계정 객체 안에, EVM 키 계정(`key.evm`)·YubiKey 키 계정(`key.yubikey`)과 그 선택을 `btc_accounts` 안에 썼다. 그 전 빌드는 `btc`·`btc_accounts`를 엄격하게 읽으므로(모르는 멤버 = 문서 전체 E-VLT-006) 그런 meta를 열지 못했다. 그래서 [04] §6.6 규칙대로 새 내용은 새 최상위 키에만 둔다.
+
+```
+"btc_accounts_ext": { "version": 1,
+                      "selected": null | {"evm": {…}} | {"yubikey": {…}},   // hd·imported 선택은 btc_accounts.selected
+                      "accounts": [ BtcMeta 버전 2 객체(key.evm·key.yubikey만), … ],
+                      "hd_mode": [ {"network": "mainnet"|"testnet4", "account": 계정 식별자(§12.3a selected 형식)}, … ] }
+```
+
+- 쓰기(`btc_meta_values`): `btc`·`btc_accounts`에는 이전 빌드가 아는 것만 — `single_address` 없음, `key.hd`·`key.imported` 계정만, `selected`는 그중 하나일 때만(아니면 `null`). 나머지(EVM·YubiKey 키 계정, 그 선택, HD 모드인 HD 계정 — 기본 계정 포함)는 `btc_accounts_ext`. 넣을 것이 없으면 쓰지 않는다(파일이 이전과 같다).
+- 읽기(`btc_meta_from_values`): 이전 배치(객체 안 `single_address`, `btc_accounts` 안 `key.evm`·`key.yubikey`)도 받아들이고(이행), 다음 meta 저장에서 새 배치로 옮긴다. `btc_accounts_ext` 안의 HD·가져온 키 계정, 두 키에 걸친 같은 계정, 합쳐 64개 초과, 모르는/빠진 키, `version` ≠ 1은 검증 실패. `hd_mode`가 가리키는 계정이 없으면(이전 빌드가 그 사이 지움) 무시하고 다음 쓰기에서 빠진다. `btc_accounts_ext.selected`가 있으면 그것이 선택이다.
+- 계정 순서: 다시 읽으면 `btc_accounts`의 계정 다음에 `btc_accounts_ext`의 계정이 온다.
+- 이전 빌드는 이 키를 모르는 최상위 키로 보존하고 다시 쓴다(그 빌드에서는 EVM·YubiKey 키 계정이 보이지 않고 HD 계정은 그 빌드의 방식으로 동작한다). 2026-11-05/06 빌드가 쓴 meta를 이전 빌드에서 열지 못했다면 [04] §6.6 표의 안내를 따른다.
 
 ### 12.3a meta `btc_accounts` (선택 최상위 키)
 

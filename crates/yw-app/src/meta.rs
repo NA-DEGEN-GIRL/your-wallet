@@ -10,7 +10,8 @@
 //! `token_view` (hidden token rows, `crate::token_view`) is written only when not the default and
 //! falls back to the default when invalid, like `prefs`.
 
-use yw_core::btc::meta::{BtcAccounts, BtcMeta, btc_meta_from_json, btc_meta_to_json};
+pub use yw_core::btc::meta::BTC_ACCOUNTS_EXT_KEY;
+use yw_core::btc::meta::{BtcAccounts, BtcMeta, btc_meta_from_values, btc_meta_values};
 use yw_json::{Limits, Number, Object, Value};
 
 use crate::network::NetworkId;
@@ -867,6 +868,7 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
             !KEYS.contains(key)
                 && !OPTIONAL_KEYS.contains(key)
                 && *key != BTC_ACCOUNTS_KEY
+                && *key != BTC_ACCOUNTS_EXT_KEY
                 && *key != SOL_SITES_KEY
                 && *key != BTC_SITES_KEY
                 && *key != SECURITY_KEY
@@ -918,11 +920,14 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
         return Err(MetaError);
     }
     // Strict BtcMeta decoding: any violation rejects the document like other keys (spec/02 §5.3).
-    let btc = btc_meta_from_json(get("btc")?)
-        .map_err(|_| MetaError)?
-        .map(Box::new);
-    let btc_accounts =
-        BtcAccounts::from_json(object.get(BTC_ACCOUNTS_KEY)).map_err(|_| MetaError)?;
+    // spec/08 §12.3b: also the placement of the 2026-11-05/06 builds (migrated on load).
+    let (btc, btc_accounts) = btc_meta_from_values(
+        get("btc")?,
+        object.get(BTC_ACCOUNTS_KEY),
+        object.get(BTC_ACCOUNTS_EXT_KEY),
+    )
+    .map_err(|_| MetaError)?;
+    let btc = btc.map(Box::new);
     let mut address_book = array("address_book")?.to_vec();
     if address_book.len() > MAX_ADDRESS_BOOK || !address_book.iter().all(valid_book_entry) {
         return Err(MetaError);
@@ -1066,6 +1071,8 @@ impl Meta {
                 json_object(vec![("hardware", json_u64(u64::from(index)))])
             }
         };
+        // spec/08 §12.3b: `btc`/`btc_accounts` hold only what earlier builds decode.
+        let btc_values = btc_meta_values(self.btc.as_deref(), &self.btc_accounts);
         let mut members = vec![
             ("schema", json_str(META_SCHEMA)),
             (
@@ -1091,7 +1098,7 @@ impl Meta {
                 "sol_accounts",
                 Value::Array(self.sol_accounts.iter().map(account_json).collect()),
             ),
-            ("btc", btc_meta_to_json(self.btc.as_deref())),
+            ("btc", btc_values.btc),
             ("address_book", Value::Array(self.address_book.clone())),
             (
                 "connected_sites",
@@ -1128,8 +1135,11 @@ impl Meta {
                     .map_or(Value::Null, |id| json_str(&yw_core::hex::encode(&id))),
             ),
         ];
-        if self.btc_accounts != BtcAccounts::default() {
-            members.push((BTC_ACCOUNTS_KEY, self.btc_accounts.to_json()));
+        if let Some(accounts) = btc_values.accounts {
+            members.push((BTC_ACCOUNTS_KEY, accounts));
+        }
+        if let Some(ext) = btc_values.ext {
+            members.push((BTC_ACCOUNTS_EXT_KEY, ext));
         }
         if !self.chain_sites.sol.is_empty() {
             members.push((SOL_SITES_KEY, Value::Array(self.chain_sites.sol.clone())));
@@ -2209,13 +2219,36 @@ mod tests {
             .unwrap();
         let bytes = hd.to_json();
         let text = String::from_utf8(bytes.clone()).unwrap();
-        assert_eq!(text.matches("\"single_address\":false").count(), 1);
-        assert!(text.contains("\"key\":{\"evm\":{\"index\":2,"));
+        // spec/08 §12.3b: nothing new inside `btc`/`btc_accounts` (earlier builds decode those
+        // strictly); the HD-mode flag and the EVM-key account are in `btc_accounts_ext`.
+        assert!(!text.contains("single_address"));
+        let ext_at = text.find("\"btc_accounts_ext\":").unwrap();
+        assert!(text.find("\"btc_accounts\":").unwrap() < ext_at);
+        assert!(!text[..ext_at].contains("\"evm\":{\"index\""));
+        assert!(text[ext_at..].contains("\"key\":{\"evm\":{\"index\":2,"));
+        assert!(text[ext_at..].contains(
+            "\"hd_mode\":[{\"network\":\"testnet4\",\"account\":{\"hd\":{\"script_type\":\"p2tr\""
+        ));
         let back = parse(&bytes).unwrap().meta;
         assert_eq!(back, hd);
+        assert!(back.unknown.is_empty());
         assert!(back.btc.as_deref().unwrap().fixed_address());
         assert!(!back.btc_accounts.accounts[0].fixed_address());
         assert!(back.btc_accounts.accounts[1].is_single());
+        // The placement of the 2026-11-05/06 builds (flag and EVM key inside `btc_accounts`) is
+        // read too and moved by the next write.
+        let values = super::btc_meta_values(hd.btc.as_deref(), &hd.btc_accounts);
+        let legacy = String::from_utf8(yw_json::to_vec(&values.accounts.unwrap())).unwrap();
+        let ext = String::from_utf8(yw_json::to_vec(&values.ext.unwrap())).unwrap();
+        let full = String::from_utf8(yw_json::to_vec(&hd.btc_accounts.to_json())).unwrap();
+        assert!(full.contains("\"single_address\":false"));
+        let old_placement = text
+            .replacen(&format!(",\"btc_accounts_ext\":{ext}"), "", 1)
+            .replacen(&legacy, &full, 1);
+        assert!(!old_placement.contains("btc_accounts_ext"));
+        let migrated = parse(old_placement.as_bytes()).unwrap().meta;
+        assert_eq!(migrated, hd);
+        assert_eq!(migrated.to_json(), bytes);
     }
 
     #[test]
