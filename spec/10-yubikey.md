@@ -2,7 +2,7 @@
 
 상위 문서: [spec.md](../spec.md)
 
-- 상태: **명세 2026-11-04 · 코어 구현(yw-core `yubikey`, vault tag 5, yw-win PC/SC·CNG) · 앱 연결(계정·PIN 창·카드 서명)·등록 마법사·YubiKey 지갑 2026-11-05 · Zcash 슬롯·슬롯 구성 바꾸기·YubiKey 비우기 2026-11-06(§3.1, §15), 남은 작업은 §13** — 실제 YubiKey 확인은 [docs/acceptance/yubikey-20261104.md](../docs/acceptance/yubikey-20261104.md)(사용자가 수행).
+- 상태: **명세 2026-11-04 · 코어 구현(yw-core `yubikey`, vault tag 5, yw-win PC/SC·CNG) · 앱 연결(계정·PIN 창·카드 서명)·등록 마법사·YubiKey 지갑 2026-11-05 · Zcash 슬롯·슬롯 구성 바꾸기·YubiKey 비우기 2026-11-06(§3.1, §15) · 복구 단어 없이 연결(경로 모름 슬롯) 2026-11-07(§7.6), 남은 작업은 §13** — 실제 YubiKey 확인은 [docs/acceptance/yubikey-20261104.md](../docs/acceptance/yubikey-20261104.md)(사용자가 수행).
 - 범위: 니모닉에서 고른 키를 한 번 파생해 하나 이상의 YubiKey 5(펌웨어 5.7 이상 권장, OpenPGP만 쓰면 5.2.3 이상)에 **가져오기(import)** 하고, 그 뒤로는 PC가 그 계정의 비밀을 전혀 갖지 않은 채(공개키·주소·일련번호·슬롯 표만) YubiKey에서 PIN + 터치로 서명한다. 니모닉 자체가 종이 백업이다. 같은 키를 여러 YubiKey에 넣어 서로의 백업으로 쓸 수 있다.
 - 기존 소프트웨어 vault 경로([02](02-core-keys-vault.md)·[03](03-evm.md)·[07](07-solana.md)·[08](08-bitcoin.md))는 바뀌지 않는다. 이 문서는 **추가**만 한다: vault payload의 새 tag 5(§8), 새 모듈 `yw_core::yubikey`·`yw_win::pcsc`·`yw_win::cng`(§4), 승인 후 서명 단계의 카드 분기(§10).
 - 규범 용어는 spec.md와 같다(MUST/반드시, SHOULD/권고, MAY/선택). 바이트 값의 출처는 §14.
@@ -55,7 +55,7 @@
 - Zcash 역할(2026-11-06): 등록 마법사의 OpenPGP 슬롯 "넣을 키"에 `Zcash 주소`가 있다(Bitcoin 단일 주소처럼 OpenPGP secp256k1 슬롯만). 고르는 것은 주소 인덱스(0–999, 기본 0)와 네트워크(`메인넷 (t1…)` / `테스트넷 (tm…)`, 처음 값은 설정의 Bitcoin 네트워크를 따른다: testnet4면 테스트넷). 가져오기 전 확인 화면에 전체 경로와 `plan::zec_address`로 만든 `t1…`/`tm…` 주소가 나온다. record 코드는 role 4(§8). Zcash 계정의 목록·서명·보내기는 Zcash 앱([12])의 범위이고, 이 문서는 슬롯 계획·등록·record만 다룬다.
 - 주의: 테스트넷 Zcash 경로 `m/44'/1'/0'/0/i`는 **Bitcoin testnet4 P2PKH 주소 i의 경로와 같다**(coin type 1'을 함께 쓴다) — 같은 키다. 그래서 한 YubiKey에 둘을 함께 넣으면 `DuplicatePath`, 다른 YubiKey에 있으면 백업 복사본 규칙(§3.4)이 적용된다. 메인넷(133')은 겹치지 않는다.
 
-- **인덱스는 슬롯마다 사용자가 고른다**(고정값 없음). 마법사는 첫 YubiKey의 기본값으로 SIG = EVM 0, AUT = Bitcoin P2WPKH 0을 채워 두고(공유 키 방식이면 SIG = EVM 0, AUT = EVM 1), 다음 YubiKey에는 아직 쓰지 않은 다음 인덱스(예: 2·3, 4·5 …)를 제안한다. 인덱스 범위: EVM·Solana 0–999(`AccountIndex`), Bitcoin 0–999(`MAX_BTC_INDEX`).
+- **인덱스는 슬롯마다 사용자가 고른다**(고정값 없음). 마법사는 첫 YubiKey의 기본값으로 SIG = EVM 0, AUT = Bitcoin P2WPKH 0을 채워 두고(공유 키 방식이면 SIG = EVM 0, AUT = EVM 1), 다음 YubiKey에는 아직 쓰지 않은 다음 인덱스(예: 2·3, 4·5 …)를 제안한다. 인덱스 범위: EVM·Solana 0–999(`AccountIndex`), Bitcoin 0–999(`MAX_BTC_INDEX`) — 단 900–999는 복구 단어 없이 연결한 키(경로 모름)의 계정 번호 대역이라 복구 단어로 등록하는 마법사는 0–899만 받는다(2026-11-07, §7.6).
 - 니모닉은 오프라인에 안전하게 보관되어 있고 언제든 다시 파생·재등록할 수 있다고 가정한다. 따라서 YubiKey N개(또는 백업 쌍 N개)로 같은 니모닉에서 secp256k1 키 N×2개를 쓸 수 있다.
 - 마법사는 가져오기 **전에** 모든 슬롯의 전체 경로 문자열과 그 키의 주소(EVM 체크섬 주소, Bitcoin 주소, Solana base58; 공유 키는 둘 다)를 보여준다(`enrol::preview`, 카드 통신 없음).
 
@@ -250,9 +250,24 @@ Bitcoin 슬롯의 인덱스는 **계정 0의 받기 체인 주소 인덱스**(`�
 
 - YubiKey를 잃으면: 다른 백업 YubiKey로 계속 서명하거나, 니모닉으로 새 YubiKey에 같은 경로를 다시 등록한다(§7.1-2, "백업 복사본"). 잃은 YubiKey의 record는 설정에서 지운다(비밀번호 재입력).
 - PC·vault를 잃으면: 새 PC에서 "YubiKey 지갑 복구" = §7.1-2와 같은 경로로 니모닉 입력 → 경로 선택 → 카드 쓰기 **없이**(이미 키가 있는 카드) 공개키만 읽어 record를 만드는 "가져오기 없이 등록"(카드의 공개키 = 파생 공개키일 때만). v1에서는 다시 가져오기(덮어쓰기)로 대신해도 결과가 같다.
-- 구현(2026-11-05): `enrol::adopt_card` — 일련번호 읽기 → `validate_against` → 슬롯마다 OpenPGP `00 47 81 00`·UIF 읽기 / PIV GET METADATA(알고리즘 `E0`, 공개키, PIN·터치 정책)만 보내고, 공개키가 파생 공개키와 다르거나 비어 있으면 `KeyMismatch`/`NotFound`. record의 터치·PIN 정책은 카드의 실제 값이다. 마법사 자격 정보 화면의 `이미 넣은 키 연결하기 (가져오기 없이 등록)`(관리자 PIN·관리 키를 묻지 않음; PIV 상태 판정에 GET DATA ADMIN DATA도 읽는다). 결과 화면은 `가져오기`와 같이 "기본값 변경 / PIN 설정"으로 끝난다(§9.3). 복구 단어 없는 새 PC에서 처음부터 하는 "YubiKey 지갑 복구"(vault를 만드는 진입점)는 아직 없다: 지금은 S01 "YubiKey 지갑 만들기"가 새 단어만 만든다(§13).
+- 구현(2026-11-05): `enrol::adopt_card` — 일련번호 읽기 → `validate_against` → 슬롯마다 OpenPGP `00 47 81 00`·UIF 읽기 / PIV GET METADATA(알고리즘 `E0`, 공개키, PIN·터치 정책)만 보내고, 공개키가 파생 공개키와 다르거나 비어 있으면 `KeyMismatch`/`NotFound`. record의 터치·PIN 정책은 카드의 실제 값이다. 마법사 자격 정보 화면의 `이미 넣은 키 연결하기 (가져오기 없이 등록)`(관리자 PIN·관리 키를 묻지 않음; PIV 상태 판정에 GET DATA ADMIN DATA도 읽는다). 결과 화면은 `가져오기`와 같이 "기본값 변경 / PIN 설정"으로 끝난다(§9.3). 복구 단어 없는 새 PC에서 처음부터 하는 복구는 §7.6 "YubiKey 연결하기 (복구 단어 없이)"(2026-11-07)다: 복구 단어 없이 카드의 공개키만으로 YubiKey 지갑을 만든다.
 - 기록 삭제: 설정 → YubiKey `삭제` → 그 카드에만 있는 계정을 보이는 확인 오버레이 → W03 → `remove_hardware_key` → meta 다시 읽기(그 카드에만 있던 계정은 목록에서 빠지고, 백업 카드가 가진 계정은 남는다).
 - 니모닉만 있으면 이 지갑 없이도 다른 표준 지갑으로 복구된다(공유 키 방식의 Bitcoin 주소는 §3.2 예외).
+
+### 7.6 YubiKey 연결하기 (복구 단어 없이) (2026-11-07)
+
+사용자 결정: "어차피 PIN으로만 풀면 주소는 나올 테니" — 이미 키가 든 카드는 복구 단어 없이 연결한다. 서명은 지금처럼 카드가 PIN + 터치로 하므로, PC가 알아야 할 것은 공개키·슬롯·정책뿐이다. 경로는 알 수 없다(카드는 경로를 저장하지 않는다).
+
+- **진입점**: S01 카드 "YubiKey에 키 보관"의 `YubiKey 연결하기 (복구 단어 없이)`(W01 비밀번호 → 키 작업자가 vault가 생길 때까지 보관 `YkJob::HoldConnectPassword`, 마법사 종료·떠남·잠금에 지움 → 아래 흐름 → `create_with_hardware`로 tag 5만 있는 YubiKey 지갑), 설정 → YubiKey와 키 전용·YubiKey 지갑의 빈 체인 카드의 `YubiKey 연결하기 (복구 단어 없이)`(`add_hardware_key`). 화면은 S21 마법사 안의 연결 모드(단계 "YubiKey 읽기·키 고르기" → "주소 확인" → "결과", [04] §2.19).
+- **1. 읽기(PIN 없음, 쓰기 없음)** `yubikey::connect::scan_card`(앱 `YkJob::Scan` → `scan_single`: 카드가 둘 이상이면 `MultipleCards`): OpenPGP SELECT·버전·`6E`(속성 `C1`/`C3`, PW1 남은 횟수)·KDF → SIG·AUT마다 `00 47 81 00`(`6A88`이면 빈 슬롯) + UIF. 속성이 secp256k1 ECDSA(`13 2B8104000A`, 끝에 가져오기 형식 `00`/`FF` 허용)인 키만 쓴다; RSA·OpenPGP Ed25519·다른 곡선은 "쓸 수 없음"으로 보인다. PIV SELECT·버전·일련번호·PIN 메타데이터(남은 횟수·기본값)·관리 키 상태 → `9A 9C 9D 9E 82–95`마다 GET METADATA(`6A88` 빈 슬롯); 알고리즘 `E0` Ed25519이고 정책이 이 지갑이 쓰는 값(PIN 한 번·항상, 터치 없음·항상·15초)인 키만 쓴다. 두 애플릿의 일련번호가 다르면 `SerialMismatch`. 한 애플릿을 못 읽으면(없음·펌웨어·KDF) 그 이유를 보이고 다른 쪽으로 계속한다. 이미 등록된 일련번호면 "먼저 그 기록을 지우세요".
+- **2. 무엇인지 고르기**: 찾은 키마다 라디오 — secp256k1: `EVM 계정` / `Bitcoin 네이티브 세그윗(P2WPKH)` / `호환 세그윗(P2SH-P2WPKH)` / `레거시(P2PKH)`(탭루트 없음, 설정의 Bitcoin 네트워크) / `Zcash 일반 주소`(Zcash가 켜져 있으면 그 네트워크, 아니면 Bitcoin 네트워크에 맞춘 것) / `연결하지 않음`; Ed25519: `Solana 계정` / `연결하지 않음`. 기본값 SIG = EVM, AUT = Bitcoin P2WPKH, PIV = Solana. 고른 용도의 주소를 바로 보인다(형식마다 주소가 다르다는 안내).
+- **3. 주소 확인** `connect_record`(카드 통신 없음): 모든 주소를 전체로, 경로 칸은 "경로를 알 수 없음", 띠 T-YK-UNKNOWN-PATH "경로를 알 수 없음 — 이 키는 카드에서 가져왔습니다. 같은 주소가 맞는지 이전에 쓰던 지갑과 비교하세요." 같은 키를 이미 등록된 카드가 같은 용도로 가지고 있으면 그 계정에 이 카드를 더한다(관계 줄; 역할·경로 상태를 그대로 물려받음 = 백업 보유자). PIV PIN이 공장값이면 "PIN 설정 전에는 서명하지 않음" 경고.
+- **선택: PIN으로 소유 확인** — W12 `CardSecretKind::UserPin`(OpenPGP PIN 6–127, secp256k1 키가 없으면 PIV PIN 6–8) → `YkJob::ConnectVerify` → `connect::verify_pin`: VERIFY 한 번(OpenPGP `00 20 00 82`, PIV `00 20 00 80`), 서명·쓰기·터치 없음. 공장 PIN `123456`은 보내지 않는다(`PinFormat`, 창에 안내). 틀리면 남은 횟수를 보이고 다시, 잠기면 창을 닫고 결과를 보인다. 확인하지 않아도 저장할 수 있다(설명: "확인하지 않아도 연결할 수 있고, 서명할 때는 언제나 PIN과 터치가 필요합니다").
+- **4. 저장** `YkJob::Connect { serial, choices, expected }` → `connect::connect_card`: 그 일련번호 카드를 다시 읽어(읽기만) 같은 선택으로 만든 record가 확인한 record와 정확히 같아야 한다(다르면 `KeyMismatch`, 다른 카드면 `WrongCard`, 아무것도 저장 안 함). 결과 화면은 등록과 같다("다시 확인", "PIN 설정", 결과 띠에 T-YK-UNKNOWN-PATH). 새 지갑이어도 PIN 설정 단계를 강제하지 않는다(이미 쓰던 카드; 공장 PIN은 §9.2대로 서명에서 거부). 기본값이 보였으면(PIV PIN·관리 키 메타데이터) `hw_accounts.defaults`에 더한다.
+- **record**(§8): 경로를 모르는 슬롯은 flags `01`, 역할 인덱스는 종류(EVM·Bitcoin·Zcash·Solana)마다 900부터 빈 번호(`plan::UNKNOWN_PATH_FIRST`, `KeyRole::index`/`with_index`); 경로를 알게 된 것이 아니라 계정 번호일 뿐이다. 그래서 모든 경로 문구(`KeyRole::path_text`, `SolKeySource::path_text`, Bitcoin YubiKey 계정의 `path_text`, `ZecKeySource::path_text`, EVM 계정 줄)는 900–999 대역에서 "경로를 알 수 없음"을 쓰고, 이름은 "YubiKey 카드 키 n"·"EVM 계정 (카드 키 n)"이다. 복구 단어로 등록하는 계획은 이 대역을 쓸 수 없다(`validate_before_card` → `UnsupportedRole`, 마법사 인덱스 0–899).
+- **서명**은 바뀌지 않는다: 계정 → 역할 → `slot_on_card` → 일련번호·슬롯·기록 공개키 확인 → PIN → 터치 → §6 후처리. 공장 기본 PIN 거부(§9.2), 남은 횟수 표시(§9.1), 여러 카드 거부(§7.2)도 그대로다.
+- **경로 맞추기(미구현)**: 나중에 니모닉을 넣으면 표준 경로(EVM 0–19, BIP44/49/84 0–19, SOL 0–19, ZEC 0–19)를 훑어 경로를 찾아 줄 수 있으나, 대역 인덱스가 계정 식별자(meta·저널·승인)이므로 경로를 찾으면 계정이 바뀐다(이름·숨김·선택 이전 필요). 이번에는 넣지 않았다(§13).
+- 시험(에뮬레이터만): `yubikey::tests::connect_without_words_and_sign_every_chain`(다른 단어로 넣은 키를 읽기만 → 경로 모름 record, 주소 = 원래 경로의 주소, flags 바이트 위치, 왕복, 위조 거부, 다시 읽기 일치·다른 카드, PIN 확인(공장 PIN 안 보냄, 남은 횟수), 백업 카드의 같은 키 = 같은 계정, 대역의 니모닉 등록 거부, EVM·Bitcoin·Zcash·Solana 서명과 쓰기 없음), `vault::tests::unknown_path_card_vault_accounts_and_zcash_collision`, 앱 `yubikey_connect_without_words_from_the_first_run_screen`(S01 → W01 → 읽기 → 고르기 → 주소 → 저장 → YubiKey 지갑, 계정 줄 "경로를 알 수 없음", 앱 어댑터 서명).
 
 ## 8. vault 기록: tag 5 `HwKey` (공개 데이터만)
 
@@ -274,8 +289,10 @@ n × 48:
   4 index u32                          1 touch (1 없음, 2 항상, 3 15초, 4 항상 고정, 5 15초 고정)
   1 pin (0 해당 없음, 2 한 번, 3 항상)
   33 공개키 (secp256k1 압축; Ed25519는 00 ‖ 32바이트)
-  3 예약 0
+  1 flags (0; 01 = 경로 모름, §7.6 — 2026-11-07, 그 전에는 예약)   2 예약 0
 ```
+
+- 경로 모름(flags `01`) 슬롯: 역할 인덱스가 900–999여야 한다. 모든 슬롯이 경로 모름인 record의 마스터 지문은 `00000000`이어야 하고, 지문 규칙("같은 니모닉")은 경로를 아는 슬롯이 있는 record끼리만 본다. 같은 역할(경로 식별) = 같은 공개키 규칙은 그대로다. 경로를 아는 슬롯만 있는 record는 바이트가 이전과 같다. 이전 버전은 flags ≠ 0을 예약 바이트 위반으로 보고 payload 전체를 `UnsupportedPayload`(업데이트 안내, `.prev` 제안 없음)로 거부한다 — 손상으로 다루지 않는다.
 
 - 순서: tag 1 → 2 → 3 → 4 → **5**(0–8개). tag 5만 있는 payload = **YubiKey 지갑**(니모닉 없음; [02] §8.5 키 전용 vault와 같이 `has_mnemonic() = false`, 파생 호출은 `NoMnemonic`). 가져온 키와 함께 있을 수 있다.
 - 디코드 거부(`UnsupportedPayload`): 알 수 없는 코드, 예약 바이트 ≠ 0, 슬롯 수 0·25 이상, §3.5 규칙 1–5 위반, 곡선과 공개키 형식 불일치, 곡선 위에 없는 공개키, 같은 일련번호 두 record, record 간 지문 불일치, 같은 경로·다른 공개키, 9번째 record.
@@ -384,7 +401,7 @@ n × 48:
 
 남은 작업:
 
-1. 복구 단어만 있는 새 PC에서 "YubiKey 지갑 복구"(vault가 없을 때 §7.1-2와 같은 입력 → `가져오기 없이 등록`으로 `create_with_hardware`). 지금 S01에서는 새 단어를 만드는 진입점만 있고, 기존 단어로는 니모닉 지갑을 가져온 뒤 등록할 수 있다(그러면 단어가 PC에 남는다).
+1. ~~복구 단어만 있는 새 PC에서 "YubiKey 지갑 복구"~~ → 2026-11-07 §7.6 "YubiKey 연결하기 (복구 단어 없이)"로 대신했다(복구 단어도 필요 없음). 남은 것: 연결한 카드의 경로를 나중에 니모닉으로 맞추기(§7.6 "경로 맞추기").
 2. 확인 화면에서 카드의 실제 펌웨어·현재 키 유무를 읽어 보이는 것(§7.4 "읽을 수 있으면 현재 키가 있는지"; 지금은 결과 화면에서 기록의 펌웨어만, 확인 화면은 일반 안내).
 3. 관리 키가 기본값도 PIN 보호도 아닌 카드(직접 정한 키)의 자동 보호 — 지금은 `ManagementKeyUnknown`과 ykman 안내. PIN에서 파생한 옛 관리 키(ADMIN DATA salt)는 지원하지 않는다(`NotSupported`).
 4. 실제 YubiKey 수동 판정(docs/acceptance/yubikey-20261104.md Y-01–Y-31, 사용자 수행). §15는 docs/acceptance/yubikey-manage-20261106.md YM-01–YM-13.

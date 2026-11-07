@@ -146,6 +146,7 @@ pub fn reslot_card(
             touch: planned.touch,
             pin: planned.pin,
             public: expected,
+            path_known: true,
         });
     }
     recorded.sort_by_key(|slot| slot.slot);
@@ -220,7 +221,14 @@ impl ClearPlan {
             .filter(|slot| !self.clears(slot.slot))
             .copied()
             .collect();
+        // Only keys connected without recovery words left: no mnemonic to name (spec/10 §8).
+        let fingerprint = if slots.iter().any(|slot| slot.path_known) {
+            record.fingerprint
+        } else {
+            [0; 4]
+        };
         (!slots.is_empty()).then(|| HwKeyRecord {
+            fingerprint,
             slots,
             ..record.clone()
         })

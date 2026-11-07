@@ -50,6 +50,9 @@ pub struct KeyWorker {
     pending_key: Option<PendingKeyStart>,
     /// The recovery words of a `YubiKey` enrolment wizard (spec/10 §7; never on disk).
     pending_enrol: Option<yubikey::PendingEnrol>,
+    /// The password of a new `YubiKey` wallet made by `YubiKey 연결하기` (spec/10 §7.6) until the
+    /// vault exists (wiped with the wizard and on lock).
+    connect_password: Option<Zeroizing<Vec<u8>>>,
     /// The words of "복구 단어 추가 가져오기" between the address preview and the commit.
     pending_mnemonic: Option<PendingImport>,
     journal: JournalState,
@@ -93,6 +96,7 @@ const fn format_error(spec: ImportSpec) -> KeyError {
         ImportSpec::Evm => KeyError::InvalidPrivateKey,
         ImportSpec::Sol => KeyError::SolKeyFormat,
         ImportSpec::Btc(_) => KeyError::WifFormat,
+        ImportSpec::Zec(_) => KeyError::ZecKeyFormat,
     }
 }
 
@@ -235,6 +239,17 @@ fn reconcile_imported(document: &mut Meta, keys: &ImportedKeys) -> bool {
 
 /// The default label of a `YubiKey` account (`YubiKey 계정 1`, `YubiKey Solana 1`).
 fn hw_label(evm: bool, index: u32) -> String {
+    // A key connected without recovery words (spec/10 §7.6): its index is an account number.
+    if yw_core::yubikey::plan::is_unknown_index(index) {
+        let number = index
+            .saturating_sub(yw_core::yubikey::plan::UNKNOWN_PATH_FIRST)
+            .saturating_add(1);
+        return if evm {
+            format!("YubiKey 카드 키 {number}")
+        } else {
+            format!("YubiKey Solana 카드 키 {number}")
+        };
+    }
     if evm {
         format!("YubiKey 계정 {}", index.saturating_add(1))
     } else {
@@ -414,6 +429,7 @@ impl KeyWorker {
             pending: None,
             pending_key: None,
             pending_enrol: None,
+            connect_password: None,
             pending_mnemonic: None,
             journal: JournalState::default(),
             cards: Box::new(crate::yubikey::PcscSource),
@@ -1067,6 +1083,7 @@ impl KeyWorker {
             ImportChain::Evm => Tab::Evm,
             ImportChain::Sol => Tab::Sol,
             ImportChain::Btc => Tab::Btc,
+            ImportChain::Zec => Tab::Zec,
         };
         if let Err(error) = vault.save_sidecar(FileKind::Meta, &document.to_json()) {
             logging::warn(
@@ -1099,6 +1116,26 @@ impl KeyWorker {
     ) -> Result<ImportedAccount, VaultError> {
         let key = parse_key(spec, bytes)?;
         let preview = key.preview()?;
+        if let ImportPreview::Zec(info) = &preview {
+            // Its address must not already be this wallet's Zcash account (spec/12 §2.3; the
+            // vault refuses card keys and the standard derived key itself).
+            let vault = self.vault.as_ref().ok_or(VaultError::InvalidState)?;
+            let taken = vault
+                .open_sidecar(FileKind::Meta)
+                .ok()
+                .flatten()
+                .and_then(|(_, plaintext)| meta::parse(plaintext.expose()).ok())
+                .is_some_and(|parsed| {
+                    parsed
+                        .meta
+                        .zcash
+                        .get(info.network)
+                        .is_some_and(|account| account.pubkey == info.pubkey)
+                });
+            if taken {
+                return Err(VaultError::DuplicateKey);
+            }
+        }
         if let ImportPreview::Btc(info) = &preview {
             // Its address must not already belong to an account (an HD address in the scanned
             // range, another imported key): E-VLT-011 (spec/08 §3.5).
@@ -1115,6 +1152,7 @@ impl KeyWorker {
             ImportPreview::Evm(address) => ImportedAccount::Evm(id, address),
             ImportPreview::Sol(address) => ImportedAccount::Sol(id, address),
             ImportPreview::Btc(info) => ImportedAccount::Btc(id, info),
+            ImportPreview::Zec(info) => ImportedAccount::Zec(id, info),
         })
     }
 
@@ -1241,6 +1279,21 @@ impl KeyWorker {
         }
         mismatch |= reconcile_imported(&mut document, &keys);
         mismatch |= reconcile_hardware(&mut document, vault)?;
+        // A Zcash account on an imported key whose record is gone falls back to the default
+        // key (spec/12 §12.3: the network's account is made again).
+        for network in yw_core::zec::ZecNetwork::ALL {
+            let orphan = document.zcash.get(network).is_some_and(|account| {
+                account.source == yw_core::zec::ZecKeySource::Imported
+                    && !keys
+                        .zec
+                        .iter()
+                        .any(|(_, info)| info.network == network && info.pubkey == account.pubkey)
+            });
+            if orphan {
+                document.zcash.clear(network);
+                mismatch = true;
+            }
+        }
         mismatch |= mnemonics::reconcile_mnemonics(&mut document, vault)?;
         let mnemonic_infos = vault.mnemonics()?;
         let sol_sources: Vec<SolKeySource> = document
@@ -1272,6 +1325,7 @@ impl KeyWorker {
             mismatch,
             prefs_reset,
             has_mnemonic: keys.has_mnemonic,
+            zec_keys: keys.zec,
             mnemonics: mnemonic_infos,
         })
     }

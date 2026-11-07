@@ -85,6 +85,14 @@ impl ZcashMeta {
         }
     }
 
+    /// Forgets the account of `network` (it is made again with the default key).
+    pub const fn clear(&mut self, network: ZecNetwork) {
+        match network {
+            ZecNetwork::Mainnet => self.mainnet = None,
+            ZecNetwork::Testnet => self.testnet = None,
+        }
+    }
+
     /// Nothing stored (the key is then not written).
     #[must_use]
     pub const fn is_default(&self) -> bool {

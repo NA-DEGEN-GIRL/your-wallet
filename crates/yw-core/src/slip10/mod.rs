@@ -261,6 +261,9 @@ impl SolKeySource {
             Self::RawSeed => "BIP39 seed[0..32] (파생 없음)".to_owned(),
             Self::SolletLegacy { wallet, account } => format!("m/501'/{wallet}'/0/{account}"),
             Self::Imported => "가져온 개인키 (복구 단어 밖)".to_owned(),
+            Self::Hardware(index) if crate::yubikey::plan::is_unknown_index(index.get()) => {
+                format!("{} (YubiKey PIV)", crate::yubikey::plan::T_UNKNOWN_PATH)
+            }
             Self::Hardware(index) => format!("m/44'/501'/{}'/0' (YubiKey PIV)", index.get()),
         }
     }

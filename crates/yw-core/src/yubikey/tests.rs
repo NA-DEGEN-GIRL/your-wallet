@@ -1047,3 +1047,254 @@ fn protected_management_key_recovers_from_a_partial_protect() {
         .authenticate_management(credential(&previous), &ToyCipher, &[0x35; 16])
         .unwrap();
 }
+
+/// "YubiKey 연결하기 (복구 단어 없이)" (spec/10 §7.6): a card holding keys from words the PC never
+/// sees is scanned read-only, connected with unknown paths, round-trips as a record that earlier
+/// builds refuse, and signs for EVM, Bitcoin, Solana and Zcash through the slot map like an
+/// enrolled card.
+#[test]
+#[allow(clippy::too_many_lines, reason = "one end-to-end scenario")]
+fn connect_without_words_and_sign_every_chain() {
+    use super::connect::{KeyUse, connect_card, connect_record, scan_card, verify_pin};
+    use super::plan::{Curve, T_UNKNOWN_PATH, address_texts};
+    use super::record::{BODY_FIXED_LEN, SLOT_ENTRY_LEN};
+    use crate::zec::ZecNetwork;
+
+    let sig_slot = CardSlot::OpenPgp(PgpKey::Sig);
+    let aut_slot = CardSlot::OpenPgp(PgpKey::Aut);
+    let piv_slot = CardSlot::Piv(PivSlot::new(0x9A).unwrap());
+    // Keys put on the card earlier from OTHER (not known to this wallet).
+    let mut card = MockCard::new(31);
+    let original = enrol(
+        &mut card,
+        OTHER,
+        &[sig(evm(5)), aut(btc(3)), piv(0x9A, sol(2))],
+        &[],
+    )
+    .unwrap()
+    .record;
+    card.log.clear();
+    let scan = scan_card(&mut card, ApduMode::Short).unwrap();
+    assert!(!card.saw_write(), "the scan only reads");
+    assert_eq!((scan.serial, scan.keys.len()), (31, 3));
+    assert_eq!(
+        (scan.pgp_pin_retries, scan.piv_pin_retries),
+        (Some(3), Some(3))
+    );
+    assert!(scan.defaults.piv_pin && scan.unsupported.is_empty());
+    let choices = [
+        (sig_slot, KeyUse::Evm),
+        (
+            aut_slot,
+            KeyUse::Btc {
+                network: BtcNetwork::Mainnet,
+                script: ScriptType::P2wpkh,
+            },
+        ),
+        (piv_slot, KeyUse::Sol),
+    ];
+    let record = connect_record(&scan, &choices, &[]).unwrap();
+    assert_eq!(record.fingerprint, [0; 4]);
+    for (slot, before) in record.slots.iter().zip(&original.slots) {
+        assert!(!slot.path_known);
+        assert_eq!(slot.role.index(), 900);
+        assert_eq!(
+            (slot.public, slot.touch, slot.pin),
+            (before.public, before.touch, before.pin)
+        );
+        // The addresses are those of the keys at their real (unknown here) paths.
+        assert_eq!(
+            address_texts(slot.role, &slot.public),
+            address_texts(before.role, &before.public)
+        );
+        assert_eq!(slot.path_text(), T_UNKNOWN_PATH);
+        assert_eq!(slot.role.path_text(), T_UNKNOWN_PATH);
+    }
+    // A use of the other curve, or a slot the scan did not find, is refused.
+    assert_eq!(
+        connect_record(&scan, &[(piv_slot, KeyUse::Evm)], &[]),
+        Err(EnrolError::Plan(PlanError::WrongApplet(piv_slot)))
+    );
+
+    // Record: round trip; the flag sits in the bytes earlier builds require to be zero, so
+    // they refuse the payload (UnsupportedPayload) instead of misreading it.
+    let mut body = Vec::new();
+    record.encode_into(&mut body).unwrap();
+    let (decoded, rest) = HwKeyRecord::decode(&body).unwrap();
+    assert_eq!((decoded, rest.len()), (record.clone(), 0));
+    let flag_at = |slot: usize| BODY_FIXED_LEN + slot * SLOT_ENTRY_LEN + 45;
+    for slot in 0..3 {
+        assert_eq!(body[flag_at(slot)..flag_at(slot) + 3], [1, 0, 0]);
+    }
+    // An enrolled record is byte-identical to before: the flag byte stays zero.
+    let mut known = Vec::new();
+    original.encode_into(&mut known).unwrap();
+    assert!((0..3).all(|slot| known[flag_at(slot)..flag_at(slot) + 3] == [0, 0, 0]));
+    // An unknown-path flag outside the band, or a fingerprint on an all-unknown record, is refused.
+    let mut forged = original.clone();
+    forged.slots[0].path_known = false;
+    assert!(!forged.is_valid());
+    let mut forged = record.clone();
+    forged.fingerprint = [1, 2, 3, 4];
+    assert!(!forged.is_valid());
+
+    // "저장": a fresh read-only scan of the same card must still hold the confirmed keys.
+    let connected = connect_card(&mut card, ApduMode::Short, 31, &choices, &record, &[]).unwrap();
+    assert_eq!(connected.record, record);
+    assert!(connected.defaults.piv_pin);
+    assert_eq!(
+        connect_card(&mut card, ApduMode::Short, 32, &choices, &record, &[]).err(),
+        Some(EnrolError::Card(CardError::WrongCard))
+    );
+    assert!(!card.saw_write());
+
+    // Optional PIN check: the factory PIN is never sent; a wrong one shows the tries left.
+    assert_eq!(
+        verify_pin(&mut card, ApduMode::Short, 31, Curve::Secp256k1, b"123456"),
+        Err(CardError::PinFormat)
+    );
+    assert_eq!(
+        verify_pin(&mut card, ApduMode::Short, 31, Curve::Secp256k1, b"999999"),
+        Err(CardError::WrongPin { retries: 2 })
+    );
+    card.piv_pin = b"24681357".to_vec();
+    verify_pin(&mut card, ApduMode::Short, 31, Curve::Ed25519, b"24681357").unwrap();
+    card.pgp_retries = [3, 3];
+
+    // A second card: Zcash testnet in SIG, and a backup copy of the EVM key in AUT keeps the
+    // first card's account (same role, two holders).
+    let mut second = MockCard::new(32);
+    let zec_role = KeyRole::Zec {
+        network: ZecNetwork::Testnet,
+        index: 4,
+    };
+    enrol(&mut second, OTHER, &[sig(zec_role), aut(evm(5))], &[]).unwrap();
+    second.log.clear();
+    let second_scan = scan_card(&mut second, ApduMode::Short).unwrap();
+    let second_record = connect_record(
+        &second_scan,
+        &[
+            (
+                sig_slot,
+                KeyUse::Zec {
+                    network: ZecNetwork::Testnet,
+                },
+            ),
+            (aut_slot, KeyUse::Evm),
+        ],
+        std::slice::from_ref(&record),
+    )
+    .unwrap();
+    assert_eq!(
+        second_record.slots[0].role,
+        KeyRole::Zec {
+            network: ZecNetwork::Testnet,
+            index: 900
+        }
+    );
+    assert_eq!(second_record.slots[1].role, record.slots[0].role);
+    let records = vec![record.clone(), second_record.clone()];
+    assert!(records_consistent(&records));
+    assert_eq!(accounts(&records).len(), 4);
+    // A mnemonic enrolment cannot use the band.
+    assert_eq!(
+        super::plan::validate_before_card(&records, [9; 4], &[sig(evm(900))]),
+        Err(PlanError::UnsupportedRole(sig_slot))
+    );
+
+    // Signing goes through the slot map exactly like an enrolled card.
+    let ctx = Secp256k1::new();
+    let key_for = |records: &[HwKeyRecord], role: KeyRole, serial: u32| {
+        let holder = slot_on_card(records, role, serial).unwrap();
+        let public = records
+            .iter()
+            .find(|record| record.serial == serial)
+            .and_then(|record| record.slots.iter().find(|slot| slot.slot == holder.slot))
+            .unwrap()
+            .public;
+        CardKey {
+            serial,
+            slot: holder.slot,
+            public,
+        }
+    };
+    let verify_der = |key: &CardKey, digest: [u8; 32], der: &[u8]| {
+        let HwPublicKey::Secp256k1(public) = key.public else {
+            unreachable!("secp key");
+        };
+        ctx.verify_ecdsa(
+            Message::from_digest(digest),
+            &secp256k1::ecdsa::Signature::from_der(der).unwrap(),
+            &PublicKey::from_slice(&public).unwrap(),
+        )
+        .unwrap();
+    };
+    // EVM (SIG of card 31): the recovered address is the account's.
+    let evm_key = key_for(&records, record.slots[0].role, 31);
+    let digest = [0x42; 32];
+    let (parity, compact) = sign_evm(
+        &ctx,
+        &mut card,
+        ApduMode::Short,
+        &evm_key,
+        b"123456",
+        digest,
+    )
+    .unwrap();
+    assert_eq!(
+        crate::evm::sign::recover_address(digest, parity, &compact),
+        super::plan::evm_address(&evm_key.public).ok()
+    );
+    // The backup holder (AUT of card 32) signs for the same account.
+    let backup = key_for(&records, record.slots[0].role, 32);
+    assert_eq!(backup.slot, aut_slot);
+    let (parity, compact) = sign_evm(
+        &ctx,
+        &mut second,
+        ApduMode::Short,
+        &backup,
+        b"123456",
+        digest,
+    )
+    .unwrap();
+    assert_eq!(
+        crate::evm::sign::recover_address(digest, parity, &compact),
+        super::plan::evm_address(&evm_key.public).ok()
+    );
+    // Bitcoin (AUT of card 31) and Zcash (SIG of card 32): a sighash signed and verified.
+    let btc_key = key_for(&records, record.slots[1].role, 31);
+    let der = sign_btc(
+        &ctx,
+        &mut card,
+        ApduMode::Short,
+        &btc_key,
+        b"123456",
+        [7; 32],
+    )
+    .unwrap();
+    verify_der(&btc_key, [7; 32], &der);
+    let zec_key = key_for(&records, second_record.slots[0].role, 32);
+    let der =
+        super::sign::sign_btc_checked(&mut second, ApduMode::Short, &zec_key, b"123456", [9; 32])
+            .unwrap();
+    verify_der(&zec_key, [9; 32], &der);
+    assert_eq!(
+        address_texts(second_record.slots[0].role, &zec_key.public).unwrap(),
+        vec![super::plan::zec_address(&zec_key.public, ZecNetwork::Testnet).unwrap()]
+    );
+    // Solana (PIV 9A of card 31).
+    let sol_key = key_for(&records, record.slots[2].role, 31);
+    card.piv_pin = super::piv::DEFAULT_PIN.to_vec();
+    let signature = sign_sol(&mut card, ApduMode::Short, &sol_key, b"123456", b"connect").unwrap();
+    let HwPublicKey::Ed25519(public) = sol_key.public else {
+        unreachable!("ed key");
+    };
+    ed25519_dalek::VerifyingKey::from_bytes(&public)
+        .unwrap()
+        .verify_strict(
+            b"connect",
+            &ed25519_dalek::Signature::from_bytes(&signature),
+        )
+        .unwrap();
+    assert!(!card.saw_write() && !second.saw_write());
+}

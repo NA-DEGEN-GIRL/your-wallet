@@ -1064,6 +1064,99 @@ fn on_serial_enrol<T>(
     }
 }
 
+/// "`YubiKey` 연결하기 (복구 단어 없이)" (spec/10 §7.6): the keys of the single inserted card,
+/// read without a PIN (`yubikey::connect::scan_card`). Several cards are refused like the
+/// wizard's identification ([`CardError::MultipleCards`]); nothing is written.
+///
+/// # Errors
+///
+/// [`CardJobError::NoCard`], [`CardJobError::Card`] (`MultipleCards`, reader errors),
+/// [`CardJobError::Enrol`] (the scan failed).
+pub fn scan_single(
+    source: &mut dyn CardSource,
+) -> Result<yw_core::yubikey::connect::CardScan, CardJobError> {
+    let mut found: Vec<Result<yw_core::yubikey::connect::CardScan, EnrolError>> = Vec::new();
+    source
+        .each_card(&mut |transport, _| {
+            if card_identity(transport).is_some() {
+                found.push(yw_core::yubikey::connect::scan_card(transport, MODE));
+            }
+            false
+        })
+        .map_err(CardJobError::Card)?;
+    if found.len() > 1 {
+        return Err(CardJobError::Card(CardError::MultipleCards));
+    }
+    found
+        .pop()
+        .ok_or(CardJobError::NoCard)?
+        .map_err(CardJobError::Enrol)
+}
+
+/// Runs `operation` on the inserted card `serial` (identified by whichever applet answers).
+fn on_serial_connect<T>(
+    source: &mut dyn CardSource,
+    serial: u32,
+    operation: &mut dyn FnMut(&mut dyn CardTransport) -> Result<T, EnrolError>,
+) -> Result<T, CardJobError> {
+    let mut result: Option<Result<T, EnrolError>> = None;
+    let mut seen_other = false;
+    source
+        .each_card(&mut |transport, _| {
+            if card_identity(transport).map(|(found, _)| found) != Some(serial) {
+                seen_other = true;
+                return false;
+            }
+            result = Some(operation(transport));
+            true
+        })
+        .map_err(CardJobError::Card)?;
+    match result {
+        Some(outcome) => outcome.map_err(CardJobError::Enrol),
+        None if seen_other => Err(CardJobError::Card(CardError::WrongCard)),
+        None => Err(CardJobError::NoCard),
+    }
+}
+
+/// "저장" of the connect flow: a fresh read-only scan of card `serial`, which must still hold
+/// the keys of the confirmed `expected` record (`yubikey::connect::connect_card`).
+///
+/// # Errors
+///
+/// [`CardJobError::NoCard`], [`CardJobError::Card`] (`WrongCard`), [`CardJobError::Enrol`].
+pub fn connect_card_serial(
+    source: &mut dyn CardSource,
+    serial: u32,
+    choices: &[(
+        yw_core::yubikey::plan::CardSlot,
+        yw_core::yubikey::connect::KeyUse,
+    )],
+    expected: &HwKeyRecord,
+    records: &[HwKeyRecord],
+) -> Result<Enrolled, CardJobError> {
+    on_serial_connect(source, serial, &mut |transport| {
+        yw_core::yubikey::connect::connect_card(transport, MODE, serial, choices, expected, records)
+    })
+}
+
+/// The optional ownership check of the connect flow (`yubikey::connect::verify_pin`: one
+/// VERIFY of the user PIN of the applet holding `curve` keys on card `serial`).
+///
+/// # Errors
+///
+/// [`CardJobError::NoCard`], [`CardJobError::Card`] (`WrongCard`, wrong PIN with the tries
+/// left, blocked, `PinFormat` for the factory PIN which is never sent).
+pub fn verify_card_pin(
+    source: &mut dyn CardSource,
+    serial: u32,
+    curve: Curve,
+    pin: &[u8],
+) -> Result<(), CardJobError> {
+    on_serial_any(source, serial, &mut |transport, _| {
+        yw_core::yubikey::connect::verify_pin(transport, MODE, serial, curve, pin)
+    })
+}
+
 /// "슬롯 구성 바꾸기" of the inserted card `record.serial` (spec/10 §15.1,
 /// `yubikey::manage::reslot_card`): the new `OpenPGP` keys from `seed`, read back and compared.
 ///

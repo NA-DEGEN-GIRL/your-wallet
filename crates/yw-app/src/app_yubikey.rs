@@ -28,8 +28,8 @@ use yw_core::vault::RecordId;
 use yw_core::yubikey::enrol::{DefaultsSeen, Enrolled};
 use yw_core::yubikey::piv::ManagementState;
 use yw_core::yubikey::plan::{
-    BtcUse, CardSlot, KeyRole, MAX_BTC_INDEX, MAX_CARDS, PgpKey, PinPolicy, PivSlot, PlannedSlot,
-    TouchPolicy, validate_plan,
+    BtcUse, CardSlot, KeyRole, MAX_CARDS, PgpKey, PinPolicy, PivSlot, PlannedSlot, TouchPolicy,
+    validate_plan,
 };
 use yw_core::yubikey::record::HwKeyRecord;
 
@@ -40,12 +40,14 @@ use crate::ui::secret::{CardSecretKind, DisplaySecret, SecretKind};
 use crate::workers::key::yubikey::{CounterTarget, YkJob, YkOutcome, YkPreview};
 use crate::yubikey::{CardJobError, PinCounters, PinKind, PinTarget};
 
+pub mod connect;
 pub mod manage;
 
 /// Most Solana accounts on one card (the 20 retired PIV slots `82`–`95`).
 pub const MAX_PIV_ACCOUNTS: u32 = 20;
-/// Highest EVM / Solana account index (`AccountIndex`).
-const MAX_ACCOUNT_INDEX: u32 = 999;
+/// Highest index the wizard offers for a key from recovery words: `900..=999` is the band of
+/// keys connected without them (spec/10 §7.6, `plan::UNKNOWN_PATH_FIRST`).
+pub const MAX_ACCOUNT_INDEX: u32 = yw_core::yubikey::plan::UNKNOWN_PATH_FIRST - 1;
 
 /// T-YK-SAME (spec/10 §7.1-2, user decision 2026-11-05): the entered words are this vault's.
 pub const T_YK_SAME: &str = "이 복구 단어는 이 PC의 vault에도 저장되어 있습니다. 복구 단어가 이 PC에 남아 있는 동안 YubiKey는 보안 이득이 없습니다(같은 키를 PC에서도 만들 수 있음). 키를 PC 밖에 두려면 'YubiKey 지갑'(복구 단어를 저장하지 않는 지갑)을 새로 만드세요.";
@@ -171,6 +173,10 @@ pub enum YkPurpose {
     ClearAdminPin,
     /// W12: the PIV PIN of "`YubiKey` 비우기" (our slots only).
     ClearPivPin,
+    /// W01 of "`YubiKey` 연결하기" from S01 (spec/10 §7.6).
+    ConnectPassword,
+    /// W12: the optional PIN check of "`YubiKey` 연결하기".
+    ConnectPin,
 }
 
 impl YkPurpose {
@@ -254,6 +260,8 @@ pub struct YkWizard {
     pub notes: Vec<String>,
     /// A wallet was created by this wizard (new `YubiKey` wallet).
     pub created: bool,
+    /// "`YubiKey` 연결하기 (복구 단어 없이)": the wizard runs the connect flow (spec/10 §7.6).
+    pub connect: Option<Box<connect::ConnectForm>>,
 }
 
 impl core::fmt::Debug for YkWizard {
@@ -276,7 +284,12 @@ fn next_indices(
     let mut evm: Vec<u32> = Vec::new();
     let mut btc: Vec<u32> = Vec::new();
     let mut sol: Vec<u32> = Vec::new();
-    for slot in records.iter().flat_map(|record| &record.slots) {
+    // Keys connected without recovery words hold the band 900–999, not paths (spec/10 §7.6).
+    for slot in records
+        .iter()
+        .flat_map(|record| &record.slots)
+        .filter(|slot| !yw_core::yubikey::plan::is_unknown_index(slot.role.index()))
+    {
         match slot.role {
             KeyRole::Evm { index, .. } => evm.push(index.get()),
             KeyRole::Btc {
@@ -340,6 +353,7 @@ impl YkWizard {
             pins_set: false,
             notes: Vec::new(),
             created: false,
+            connect: None,
         }
     }
 
@@ -394,11 +408,11 @@ impl YkWizard {
             PgpKind::Btc => KeyRole::Btc {
                 network,
                 script: form.script,
-                index: parse_index(&form.index_text, MAX_BTC_INDEX, &label)?,
+                index: parse_index(&form.index_text, MAX_ACCOUNT_INDEX, &label)?,
             },
             PgpKind::Zec => KeyRole::Zec {
                 network: form.zec,
-                index: parse_index(&form.index_text, MAX_BTC_INDEX, &label)?,
+                index: parse_index(&form.index_text, MAX_ACCOUNT_INDEX, &label)?,
             },
         };
         Ok(Some(PlannedSlot {
@@ -948,6 +962,8 @@ impl App {
                     admin_last_try,
                 }));
             }
+            YkPurpose::ConnectPassword => self.yk_connect_password(next()),
+            YkPurpose::ConnectPin => self.yk_connect_pin_submit(next()),
             YkPurpose::ShowWords
             | YkPurpose::ReslotMnemonic
             | YkPurpose::ReslotPassphrase
@@ -981,8 +997,15 @@ impl App {
                 }
                 self.refresh();
             }
-            YkPurpose::ChangePin(_) | YkPurpose::ProtectManagement | YkPurpose::SetPins => {
+            YkPurpose::ChangePin(_)
+            | YkPurpose::ProtectManagement
+            | YkPurpose::SetPins
+            | YkPurpose::ConnectPin => {
                 self.refresh();
+            }
+            YkPurpose::ConnectPassword => {
+                self.card.wizard = None;
+                self.set_screen(Screen::FirstRun);
             }
             YkPurpose::ReslotMnemonic
             | YkPurpose::ReslotPassphrase
@@ -1079,7 +1102,9 @@ impl App {
             | YkPurpose::ClearPivPin
             | YkPurpose::ChangePin(PinTarget::PivPin) => &[PinKind::PivPin],
             YkPurpose::SetPins => &[PinKind::PivPin, PinKind::OpenPgpAdmin, PinKind::OpenPgpUser],
+            YkPurpose::ConnectPin => &[PinKind::OpenPgpUser, PinKind::PivPin],
             YkPurpose::ChangePin(PinTarget::PivPuk)
+            | YkPurpose::ConnectPassword
             | YkPurpose::Mnemonic
             | YkPurpose::Passphrase
             | YkPurpose::NewPassword
@@ -1183,10 +1208,13 @@ impl App {
     /// `다른 YubiKey 등록` wait for it).
     #[must_use]
     pub fn yk_pins_first(&self) -> bool {
+        // A card connected without recovery words already has its PINs (factory PINs are
+        // still refused at signing, spec/10 §9.2).
         self.card.wizard.as_ref().is_some_and(|wizard| {
             wizard.step == WizardStep::Result
                 && wizard.enrolled.is_some()
                 && wizard.created
+                && wizard.connect.is_none()
                 && !wizard.pins_done()
         })
     }
@@ -1426,6 +1454,8 @@ impl App {
             }
             YkOutcome::Discarded => {}
             YkOutcome::Manage(outcome) => self.on_yk_manage(outcome),
+            YkOutcome::Scanned(result) => self.on_yk_scanned(result),
+            YkOutcome::ConnectVerified(result) => self.on_yk_connect_verified(result),
         }
     }
 
@@ -1691,7 +1721,37 @@ impl App {
     #[expect(clippy::too_many_lines, reason = "one arm per wizard control")]
     pub fn on_yk_command(&mut self, id: u16) -> bool {
         use crate::ui::screens_yubikey::ids;
-        if self.on_yk_manage_command(id) {
+        if self.on_yk_manage_command(id) || self.on_yk_connect_command(id) {
+            return true;
+        }
+        // The connect flow's result screen: `다시 시도` returns to its confirmation, `다른
+        // YubiKey 등록(백업)` reads the next card.
+        let connecting = self
+            .card
+            .wizard
+            .as_ref()
+            .is_some_and(|wizard| wizard.connect.is_some());
+        if connecting && id == ids::RETRY {
+            if let Some(wizard) = self.yk_wizard() {
+                wizard.step = WizardStep::Confirm;
+                wizard.failure = None;
+            }
+            self.refresh();
+            return true;
+        }
+        if connecting && id == ids::ANOTHER && !self.yk_pins_first() {
+            let origin = self
+                .card
+                .wizard
+                .as_ref()
+                .map_or(WizardOrigin::Vault, |wizard| wizard.origin);
+            if origin == WizardOrigin::Vault && self.card.records.len() < MAX_CARDS {
+                self.yk_open_connect();
+            }
+            return true;
+        }
+        if connecting && id == ids::CONFIRM_BACK {
+            self.yk_connect_back();
             return true;
         }
         if let Some((key, action)) = ids::pgp_action(id) {

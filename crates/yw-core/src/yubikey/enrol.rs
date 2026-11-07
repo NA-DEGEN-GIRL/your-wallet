@@ -258,6 +258,7 @@ pub fn adopt_card(
                 touch,
                 pin: super::plan::PinPolicy::NotApplicable,
                 public: expected,
+                path_known: true,
             });
         }
     }
@@ -297,6 +298,7 @@ pub fn adopt_card(
                 touch,
                 pin,
                 public: expected,
+                path_known: true,
             });
         }
     }
@@ -445,6 +447,7 @@ pub fn enrol_card(
                 touch: planned.touch,
                 pin: planned.pin,
                 public: HwPublicKey::Secp256k1(public),
+                path_known: true,
             });
         }
     }
@@ -479,6 +482,7 @@ pub fn enrol_card(
                 touch: planned.touch,
                 pin: planned.pin,
                 public: HwPublicKey::Ed25519(public),
+                path_known: true,
             });
         }
     }

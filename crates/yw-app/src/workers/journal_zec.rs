@@ -154,6 +154,9 @@ fn public_key(
         ZecKeySource::Hardware { .. } => {
             return Err("YubiKey 키는 등록된 슬롯에서 가져옵니다.".to_owned());
         }
+        ZecKeySource::Imported => {
+            return Err("가져온 키는 그 키의 목록에서 고릅니다.".to_owned());
+        }
     };
     Ok(ZecAccount {
         network,

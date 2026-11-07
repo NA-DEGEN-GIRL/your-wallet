@@ -3781,3 +3781,161 @@ fn wallet_reset_from_the_lock_screen_returns_to_first_run() {
     // S01 creation works again.
     assert!(control_ids(&h.app.items()).contains(&ids::FIRST_CREATE));
 }
+
+/// spec/10 §7.6 at the App level: S01 `YubiKey 연결하기 (복구 단어 없이)` → W01 → the emulator
+/// card (keys put there from other words) is read without a PIN → SIG = EVM, AUT = Zcash,
+/// PIV 82 = Solana → every address with "경로를 알 수 없음" → `저장` creates the `YubiKey` wallet
+/// (no words, no PIN step forced) → the accounts carry the card's addresses, and the app's card
+/// adapter signs for each of them through the slot map.
+#[test]
+#[expect(clippy::too_many_lines, reason = "one connect walk-through")]
+fn yubikey_connect_without_words_from_the_first_run_screen() {
+    use crate::app_yubikey::YkPurpose;
+    use crate::app_yubikey::connect::{Choice, T_YK_UNKNOWN_PATH};
+    use crate::ui::screens_yubikey::ids as yk;
+    use yw_core::bip32::path::AccountIndex;
+    use yw_core::yubikey::plan::{CardSlot, KeyRole, PgpKey, PivSlot, PlannedSlot, address_texts};
+
+    let (mut h, cards) = card_harness("yk-connect", 8_800_061);
+    let mut seen = YkSeen::default();
+    // Keys from words this PC never sees, imported earlier (e.g. on another PC).
+    let other = yw_core::bip39::Mnemonic::parse(
+        "legal winner thank year wave sausage worth useful legal winner thank yellow",
+    )
+    .unwrap()
+    .to_seed(&yw_core::password::Bip39Passphrase::empty())
+    .unwrap();
+    let zec_role = KeyRole::Zec {
+        network: yw_core::zec::ZecNetwork::Mainnet,
+        index: 2,
+    };
+    let original = {
+        let mut cards = cards.lock().unwrap();
+        let plan = [
+            PlannedSlot::recommended(
+                CardSlot::OpenPgp(PgpKey::Sig),
+                KeyRole::Evm {
+                    index: AccountIndex::new(7).unwrap(),
+                    btc: None,
+                },
+            ),
+            PlannedSlot::recommended(CardSlot::OpenPgp(PgpKey::Aut), zec_role),
+            PlannedSlot::recommended(
+                CardSlot::Piv(PivSlot::new(0x82).unwrap()),
+                KeyRole::Sol {
+                    index: AccountIndex::new(4).unwrap(),
+                },
+            ),
+        ];
+        let auth = yw_core::yubikey::enrol::EnrolAuth {
+            admin_pin: b"12345678",
+            management_key: &yw_core::yubikey::piv::DEFAULT_MANAGEMENT_KEY,
+            piv_pin: b"",
+            cipher: Some(&yw_core::yubikey::mock::ToyCipher),
+            challenge: [3; 16],
+        };
+        let record = yw_core::yubikey::enrol::enrol_card(
+            &mut cards[0],
+            yw_core::yubikey::apdu::ApduMode::Short,
+            other.expose(),
+            &plan,
+            &[],
+            &auth,
+        )
+        .unwrap()
+        .record;
+        cards[0].log.clear();
+        record
+    };
+    assert_eq!(h.app.screen, Screen::FirstRun);
+    assert!(ctl(&h.app.items(), yk::CONNECT_NEW_WALLET).unwrap().enabled);
+    h.app.on_command(yk::CONNECT_NEW_WALLET);
+    h.submit(Purpose::YubiKey(YkPurpose::ConnectPassword), &[WALLET_PW]);
+    yk_pump(&mut h, &mut seen);
+    assert_eq!(h.app.screen, Screen::YubiKey);
+    let items = h.app.items();
+    unique_ids(&items);
+    assert!(
+        all_text(&items)
+            .iter()
+            .any(|line| line.starts_with("#8800061"))
+    );
+    // Defaults SIG = EVM, AUT = Bitcoin P2WPKH, PIV = Solana; AUT is the Zcash key here.
+    h.app.on_command(yk::connect_choice_id(1, Choice::Zec));
+    h.app.on_command(yk::CONNECT_NEXT);
+    yk_pump(&mut h, &mut seen);
+    let items = h.app.items();
+    unique_ids(&items);
+    assert!(has_text(&items, T_YK_UNKNOWN_PATH));
+    let text = all_text(&items);
+    for slot in &original.slots {
+        for address in address_texts(slot.role, &slot.public).unwrap() {
+            assert!(text.contains(&address), "{address} shown in full");
+        }
+    }
+    assert!(text.iter().any(|line| line == "경로를 알 수 없음"));
+    assert!(!text.iter().any(|line| line.starts_with("m/44'")));
+    h.app.on_command(yk::CONNECT_SAVE);
+    yk_pump(&mut h, &mut seen);
+    assert!(matches!(h.app.mode, AppMode::Unlocked { .. }));
+    assert!(!h.app.keys.has_mnemonic);
+    let wizard = h.app.card.wizard.as_ref().unwrap();
+    assert!(wizard.created && wizard.failure.is_none());
+    assert!(
+        !h.app.yk_pins_first(),
+        "a connected card is not forced through PIN setup"
+    );
+    let records = h.app.card.records.clone();
+    assert_eq!(records.len(), 1);
+    assert!(records[0].slots.iter().all(|slot| !slot.path_known));
+    assert!(
+        !cards.lock().unwrap()[0].saw_write(),
+        "connecting writes nothing"
+    );
+    // The accounts are the card's keys, shown without a path.
+    let evm = h.app.account_rows();
+    assert_eq!(evm.len(), 1);
+    assert_eq!(
+        evm[0].2,
+        address_texts(original.slots[0].role, &original.slots[0].public).unwrap()[0]
+    );
+    assert!(evm[0].3.starts_with("경로를 알 수 없음"));
+    assert_eq!(h.app.sol_account_rows().len(), 1);
+    h.app.on_command(yk::FINISH);
+    yk_pump(&mut h, &mut seen);
+    assert_eq!(h.app.screen, Screen::Main);
+
+    // Signing goes through the slot map like an enrolled card (the app's card adapter).
+    let mut source = crate::yubikey::MockSource {
+        cards: std::sync::Arc::clone(&cards),
+    };
+    let card_role = |role: KeyRole| {
+        records[0]
+            .slots
+            .iter()
+            .find(|slot| slot.role == role)
+            .map(|slot| slot.public)
+            .unwrap()
+    };
+    let evm_index = AccountIndex::new(900).unwrap();
+    let digest = [0x5A; 32];
+    let (parity, compact) =
+        crate::yubikey::sign_evm_digest(&mut source, &records, evm_index, b"123456", digest)
+            .unwrap();
+    assert_eq!(
+        yw_core::evm::sign::recover_address(digest, parity, &compact),
+        yw_core::yubikey::plan::evm_address(&card_role(KeyRole::Evm {
+            index: evm_index,
+            btc: None
+        }))
+        .ok()
+    );
+    let zec = KeyRole::Zec {
+        network: yw_core::zec::ZecNetwork::Mainnet,
+        index: 900,
+    };
+    crate::yubikey::sign_btc_sighash(&mut source, &records, zec, b"123456", [9; 32]).unwrap();
+    crate::yubikey::sign_sol_message(&mut source, &records, evm_index, b"123456", b"connected")
+        .unwrap();
+    assert!(!cards.lock().unwrap()[0].saw_write());
+}

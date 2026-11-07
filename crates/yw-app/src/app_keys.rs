@@ -72,6 +72,8 @@ impl KeyStartFlow {
             ImportChain::Evm => ImportSpec::Evm,
             ImportChain::Sol => ImportSpec::Sol,
             ImportChain::Btc => ImportSpec::Btc(self.script),
+            // "개인키로 시작하기" offers no Zcash key (the Zcash tab imports them).
+            ImportChain::Zec => ImportSpec::Zec(yw_core::zec::ZecNetwork::Mainnet),
         }
     }
 }
@@ -107,6 +109,11 @@ impl KeyStartView {
                 address: info.address.clone(),
                 btc: Some((info.script, info.network)),
             },
+            ImportPreview::Zec(info) => Self {
+                chain: ImportChain::Zec,
+                address: info.address.clone(),
+                btc: None,
+            },
         }
     }
 }
@@ -128,6 +135,8 @@ pub struct KeysUi {
     pub btc_evm_target: Option<(u32, yw_core::btc::BtcNetwork)>,
     /// S08 follows "개인키로 시작하기".
     pub done_start: bool,
+    /// Imported Zcash keys (vault tag 6, from `MetaLoaded`): the Zcash tab's "[가져온 키]" list.
+    pub zec_keys: Vec<(RecordId, yw_core::keyimport::ZecKeyInfo)>,
 }
 
 impl Default for KeysUi {
@@ -140,6 +149,7 @@ impl Default for KeysUi {
             target: None,
             btc_evm_target: None,
             done_start: false,
+            zec_keys: Vec::new(),
         }
     }
 }
@@ -180,6 +190,7 @@ impl App {
                 .len()
                 .saturating_add(meta.sol_raw_accounts.len())
                 .saturating_add(btc_imported_count(meta))
+                .saturating_add(self.keys.zec_keys.len())
         })
     }
 
@@ -197,6 +208,7 @@ impl App {
             ImportChain::Evm => meta.evm_raw_accounts.len(),
             ImportChain::Sol => meta.sol_raw_accounts.len(),
             ImportChain::Btc => btc_imported_count(meta),
+            ImportChain::Zec => self.keys.zec_keys.len(),
         })
     }
 
@@ -229,6 +241,7 @@ impl App {
             ImportChain::Evm => Purpose::ImportKey,
             ImportChain::Sol => Purpose::ImportChainKey(ImportSpec::Sol),
             ImportChain::Btc => Purpose::ImportChainKey(ImportSpec::Btc(self.keys.btc_script)),
+            ImportChain::Zec => Purpose::ImportChainKey(ImportSpec::Zec(self.zec_network())),
         };
         self.open_input(kind, purpose, false);
     }
@@ -381,7 +394,14 @@ impl App {
                     meta.prefs.tab = Tab::Sol;
                 }
                 ImportedAccount::Btc(..) => meta.prefs.tab = Tab::Btc,
+                ImportedAccount::Zec(..) => meta.prefs.tab = Tab::Zec,
             }
+        }
+        if let ImportedAccount::Zec(id, info) = &account {
+            // The Zcash tab lists it ("[가져온 키]") and uses it for the account of its network
+            // unless a transaction of the current account is still in flight.
+            self.keys.zec_keys.push((*id, info.clone()));
+            self.zec_imported(info);
         }
         if let ImportedAccount::Btc(id, info) = &account {
             // The key worker adds the single-key account (stored and selected) to meta
@@ -408,6 +428,7 @@ impl App {
             ImportedAccount::Evm(..) => "evm",
             ImportedAccount::Sol(..) => "sol",
             ImportedAccount::Btc(..) => "btc",
+            ImportedAccount::Zec(..) => "zec",
         };
         logging::info("app", "key.imported", &[("chain", Field::Word(chain))]);
         self.save_meta();
@@ -439,6 +460,11 @@ impl App {
     /// transaction (tracking and fee bumps need the account), with the reason shown.
     pub fn imported_remove(&mut self, id: [u8; 16]) {
         if !matches!(self.mode, AppMode::Unlocked { .. }) || !self.can_remove_imported() {
+            return;
+        }
+        if let Some(reason) = self.zec_remove_block(id) {
+            self.zec.error = Some(reason.to_owned());
+            self.refresh();
             return;
         }
         let is_btc = self
@@ -533,6 +559,17 @@ impl App {
                     address.as_str().to_owned(),
                 ))
             })
+            .or_else(|| {
+                let (_, info) = self
+                    .keys
+                    .zec_keys
+                    .iter()
+                    .find(|(record, _)| *record.as_bytes() == id)?;
+                Some((
+                    format!("Zcash 가져온 키 ({})", info.network.display_name()),
+                    info.address.clone(),
+                ))
+            })
     }
 
     /// An imported key was removed from the vault: drop it from meta (an imported Bitcoin key's
@@ -557,10 +594,14 @@ impl App {
         if chain == ImportChain::Sol {
             self.sol.rename = None;
         }
+        if chain == ImportChain::Zec {
+            self.zec_imported_removed(id);
+        }
         let word = match chain {
             ImportChain::Evm => "evm",
             ImportChain::Sol => "sol",
             ImportChain::Btc => "btc",
+            ImportChain::Zec => "zec",
         };
         logging::info("app", "key.removed", &[("chain", Field::Word(word))]);
         self.save_meta();

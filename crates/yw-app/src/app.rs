@@ -1794,6 +1794,7 @@ impl App {
                 meta,
                 prefs_reset,
                 has_mnemonic,
+                zec_keys,
                 mnemonics,
                 ..
             })) => {
@@ -1801,6 +1802,7 @@ impl App {
                     logging::warn("app", "meta.prefs_reset", &[]);
                 }
                 self.keys.has_mnemonic = has_mnemonic;
+                self.keys.zec_keys = zec_keys;
                 self.mn.infos = mnemonics;
                 self.meta = Some(*meta);
                 self.wait.meta_since = None;
@@ -3264,7 +3266,11 @@ impl App {
                         EvmAccountPref::Hardware(account.index),
                         account.label.clone(),
                         checksum(&account.address),
-                        format!("m/44'/60'/0'/0/{} (YubiKey)", account.index),
+                        if yw_core::yubikey::plan::is_unknown_index(account.index) {
+                            format!("{} (YubiKey)", yw_core::yubikey::plan::T_UNKNOWN_PATH)
+                        } else {
+                            format!("m/44'/60'/0'/0/{} (YubiKey)", account.index)
+                        },
                     )
                 }),
         );

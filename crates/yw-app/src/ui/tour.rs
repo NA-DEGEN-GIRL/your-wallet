@@ -985,6 +985,7 @@ fn tour_yubikey(app: &Rc<RefCell<App>>) {
                 touch: line.planned.touch,
                 pin: line.planned.pin,
                 public: line.public,
+                path_known: true,
             })
             .collect(),
     };

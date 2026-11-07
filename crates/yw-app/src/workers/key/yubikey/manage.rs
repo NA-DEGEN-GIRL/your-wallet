@@ -201,6 +201,7 @@ fn reslot_record(record: &HwKeyRecord, lines: &[PreviewLine]) -> HwKeyRecord {
             touch: line.planned.touch,
             pin: line.planned.pin,
             public: line.public,
+            path_known: true,
         })
         .collect();
     slots.sort_by_key(|slot| slot.slot);

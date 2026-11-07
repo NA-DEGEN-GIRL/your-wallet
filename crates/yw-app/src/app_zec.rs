@@ -5,6 +5,7 @@
 
 use yw_core::approval::Approved;
 use yw_core::journal::zec::{ZecRecord, ZecTransition, ZecTxState};
+use yw_core::keyimport::ZecKeyInfo;
 use yw_core::zec::address::parse_recipient;
 use yw_core::zec::upgrade::tx_consensus;
 use yw_core::zec::{
@@ -345,6 +346,104 @@ impl App {
             source: ZecKeySource::Hardware { index },
             pubkey,
         });
+    }
+
+    /// Imported Zcash keys of the current network (vault tag 6, spec/12 §2.3), in vault order.
+    #[must_use]
+    pub fn zec_imported_keys(&self) -> Vec<(yw_core::vault::RecordId, ZecKeyInfo)> {
+        let network = self.zec_network();
+        self.keys
+            .zec_keys
+            .iter()
+            .filter(|(_, info)| info.network == network)
+            .cloned()
+            .collect()
+    }
+
+    /// The vault record of the current account when it is an imported key.
+    #[must_use]
+    pub fn zec_selected_imported(&self) -> Option<yw_core::vault::RecordId> {
+        let account = self
+            .zec_account()
+            .filter(|account| account.source == ZecKeySource::Imported)?;
+        self.keys
+            .zec_keys
+            .iter()
+            .find(|(_, info)| info.network == account.network && info.pubkey == account.pubkey)
+            .map(|(id, _)| *id)
+    }
+
+    /// Uses imported key `position` of the current network's list as the account.
+    pub fn zec_use_imported(&mut self, position: usize) {
+        let Some((_, info)) = self.zec_imported_keys().into_iter().nth(position) else {
+            return;
+        };
+        if !self.zec_all_terminal() {
+            self.zec.error =
+                Some("진행 중인 Zcash 거래가 있어 키 출처를 바꿀 수 없습니다.".to_owned());
+            self.refresh();
+            return;
+        }
+        self.zec_set_account(info.account());
+    }
+
+    /// A Zcash key was imported: it becomes the account of its network when that network is the
+    /// tab's and nothing is in flight (otherwise it waits in the list).
+    pub fn zec_imported(&mut self, info: &ZecKeyInfo) {
+        if info.network == self.zec_network() && self.zec_all_terminal() {
+            self.zec_set_account(info.account());
+            self.zec.info = Some("가져온 키를 이 네트워크의 Zcash 계정으로 씁니다.".to_owned());
+        } else {
+            self.zec.info = Some(format!(
+                "가져온 키를 목록에 더했습니다 ({}). 그 네트워크에서 '이 키 사용'으로 고르세요.",
+                info.network.display_name()
+            ));
+        }
+    }
+
+    /// `삭제` of an imported Zcash key is refused while the account on it has a transaction that
+    /// may still confirm (like an imported Bitcoin key, spec/08 §3.5).
+    #[must_use]
+    pub fn zec_remove_block(&self, id: [u8; 16]) -> Option<&'static str> {
+        let (_, info) = self
+            .keys
+            .zec_keys
+            .iter()
+            .find(|(record, _)| *record.as_bytes() == id)?;
+        let busy = self.evm.journal.as_ref().is_some_and(|journal| {
+            journal.zec_records.iter().any(|record| {
+                record.account.network == info.network
+                    && record.account.pubkey == info.pubkey
+                    && !record.is_terminal()
+            })
+        });
+        (busy || (self.zec.busy && self.zec_selected_imported().is_some_and(|key| *key.as_bytes() == id)))
+            .then_some("진행 중인 Zcash 거래가 이 키를 쓰고 있어 지울 수 없습니다. 확인되거나 만료된 뒤에 지우세요.")
+    }
+
+    /// An imported Zcash key left the vault: the list drops it, and an account on it goes back
+    /// to the default key (made again by the key worker).
+    pub fn zec_imported_removed(&mut self, id: [u8; 16]) {
+        let removed = self
+            .keys
+            .zec_keys
+            .iter()
+            .position(|(record, _)| *record.as_bytes() == id)
+            .map(|position| self.keys.zec_keys.remove(position));
+        let Some((_, info)) = removed else {
+            return;
+        };
+        let on_it = self.meta.as_ref().is_some_and(|meta| {
+            meta.zcash.get(info.network).is_some_and(|account| {
+                account.source == ZecKeySource::Imported && account.pubkey == info.pubkey
+            })
+        });
+        if on_it && let Some(meta) = self.meta.as_mut() {
+            meta.zcash.clear(info.network);
+            self.zec.snapshot = None;
+            self.save_meta();
+            self.zec_ensure_account();
+        }
     }
 
     fn zec_set_account(&mut self, account: ZecAccount) {

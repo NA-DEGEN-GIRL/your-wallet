@@ -49,14 +49,15 @@ pub const WRAPPED_DEK_LEN: usize = 48;
 pub const PAYLOAD_CT_MIN: u32 = 80;
 /// Largest payload ciphertext: 16 + 8 × 64 (24-word `Bip39` records, spec/02 §4.6 "여러 복구
 /// 단어") + 15 × (57 + 89 + 60) imported keys plus 8 × (25 + 12 + 24 × 48) hardware key
-/// references (spec/10 §8) plus the 16-byte tag is 13,146 bytes; files written before key import
-/// never exceed 2,048, before hardware keys 4,096.
+/// references (spec/10 §8) plus the 16-byte tag is 13,146 bytes, plus 15 × 58 imported Zcash
+/// keys (tag 6, spec/12 §2.3) = 14,016; files written before key import never exceed 2,048,
+/// before hardware keys 4,096.
 pub const PAYLOAD_CT_MAX: u32 = 16_384;
 /// Recovery phrases (`Bip39` records) in one vault (2026-11-07: several mnemonics).
 pub const MAX_MNEMONICS: usize = 8;
 /// At most 8 `Bip39` records plus at most 15 imported keys of each chain (`EvmRawKey`,
-/// `SolKey`, `BtcKey`) and 8 hardware key references (`HwKey`).
-pub const MAX_RECORDS: usize = 61;
+/// `SolKey`, `BtcKey`, `ZecKey`) and 8 hardware key references (`HwKey`).
+pub const MAX_RECORDS: usize = 76;
 /// Locked slot layout: `[0..32)` DEK; the first (primary) `Bip39` record's passphrase at
 /// `[32]` present, `[33..35)` length (u16 BE, 0..=256), `[35..291)` bytes, `[291..320)` zero;
 /// then 7 entries of 275 bytes for the other records' passphrases from `320`: `[0]` present,
@@ -232,6 +233,14 @@ pub enum KeyRef {
         account: u32,
         /// Receive index (non-hardened).
         index: u32,
+    },
+    /// An imported Zcash transparent key (vault tag 6, spec/12 §2.3): the record of `network`
+    /// whose compressed public key is `pubkey`.
+    ZecImported {
+        /// Network of the record.
+        network: crate::zec::ZecNetwork,
+        /// Compressed public key.
+        pubkey: [u8; 33],
     },
 }
 

@@ -61,6 +61,11 @@ pub enum KeyError {
     WifFormat,
     /// An uncompressed WIF key was paired with a script type other than P2PKH.
     WifUncompressedScript,
+    /// A Zcash private key is neither a compressed WIF (`0x80`/`0xEF`) nor 64 hex digits
+    /// (spec/12 §2.3).
+    ZecKeyFormat,
+    /// A Zcash WIF of the other network (mainnet `0x80`, testnet `0xEF`) than the Zcash tab's.
+    ZecKeyNetwork,
     /// A library returned an unexpected error, or the word list failed to load.
     Internal,
 }
@@ -105,6 +110,12 @@ impl fmt::Display for KeyError {
             ),
             Self::WifUncompressedScript => formatter.write_str(
                 "압축되지 않은 키(5·9로 시작하는 WIF)는 P2PKH(레거시) 주소에만 쓸 수 있습니다.",
+            ),
+            Self::ZecKeyFormat => formatter.write_str(
+                "Zcash 개인키는 압축 WIF(K·L·c로 시작하는 base58 52자) 또는 16진수 64자리여야 합니다. 압축되지 않은 WIF(5·9로 시작)는 받지 않습니다.",
+            ),
+            Self::ZecKeyNetwork => formatter.write_str(
+                "이 WIF는 다른 Zcash 네트워크의 키입니다(K·L = 메인넷, c = 테스트넷). Zcash 탭의 네트워크를 바꾼 뒤 가져오세요.",
             ),
             Self::InvalidEntropyLength
             | Self::InvalidPath

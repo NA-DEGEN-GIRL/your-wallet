@@ -25,7 +25,7 @@ use crate::yubikey::record::{HwKeyRecord, records_consistent};
 
 /// Payload plaintext magic.
 pub(crate) const PAYLOAD_MAGIC: [u8; 8] = *b"YWPAY003";
-/// Imported keys per chain (each of tags 2, 3 and 4).
+/// Imported keys per chain (each of tags 2, 3, 4 and 6).
 pub(crate) const MAX_RAW_KEYS: usize = crate::keyimport::MAX_IMPORTED_PER_CHAIN;
 const TAG_LEN: usize = 16;
 const PAYLOAD_HEADER_LEN: usize = 16;
@@ -33,12 +33,15 @@ const BIP39_RECORD_FIXED_LEN: usize = 32;
 const RAW_RECORD_LEN: usize = 57;
 const SOL_RECORD_LEN: usize = 89;
 const BTC_RECORD_LEN: usize = 60;
+const ZEC_RECORD_LEN: usize = 58;
 const TAG_BIP39: u8 = 1;
 const TAG_RAW_KEY: u8 = 2;
 const TAG_SOL_KEY: u8 = 3;
 const TAG_BTC_KEY: u8 = 4;
 /// Hardware key reference (`YubiKey` slot map, spec/10 §8): no secret.
 const TAG_HW_KEY: u8 = 5;
+/// Imported Zcash transparent key (spec/12 §2.3, spec/02 §4.6).
+const TAG_ZEC_KEY: u8 = 6;
 /// Record header of a tag-5 record: tag, record id, created.
 const HW_RECORD_HEAD_LEN: usize = 25;
 /// Enrolled `YubiKeys` (tag-5 records).
@@ -414,6 +417,32 @@ impl BtcKeyRecord {
     }
 }
 
+/// One imported Zcash transparent key (`tag 6`): the secret and its network; the public key is
+/// used compressed (one P2PKH address).
+pub(crate) struct ZecKeyRecord {
+    pub(crate) record_id: [u8; 16],
+    pub(crate) created_unix: u64,
+    pub(crate) secret: Zeroizing<[u8; 32]>,
+    pub(crate) network: crate::zec::ZecNetwork,
+}
+
+impl Zeroize for ZecKeyRecord {
+    fn zeroize(&mut self) {
+        self.record_id.zeroize();
+        self.created_unix.zeroize();
+        self.secret.zeroize();
+    }
+}
+
+impl ZecKeyRecord {
+    /// 1 when both records hold the same secret on the same network (constant-time secret
+    /// comparison), else 0.
+    pub(crate) fn same_as(&self, secret: &[u8; 32], network: crate::zec::ZecNetwork) -> u8 {
+        self.secret.as_slice().ct_eq(secret.as_slice()).unwrap_u8()
+            & u8::from(self.network == network)
+    }
+}
+
 /// One hardware key reference (`tag 5`): the slot map of one enrolled `YubiKey`. Public data only.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct HwKeyEntry {
@@ -424,7 +453,8 @@ pub(crate) struct HwKeyEntry {
 
 /// Decoded payload: 0–8 BIP39 records (none in a key-only vault; the first is the primary
 /// mnemonic, spec/02 §4.6) followed by 0–15 imported keys of each chain, grouped by tag (2, then
-/// 3, then 4), then 0–8 hardware key references (tag 5, spec/10 §8).
+/// 3, then 4), then 0–8 hardware key references (tag 5, spec/10 §8), then 0–15 imported Zcash
+/// keys (tag 6, spec/12 §2.3).
 ///
 /// Each secret list is allocated with room for its maximum up front, so `push` never reallocates
 /// (a reallocation would free the old buffer with key copies in it). `retain` moves records down
@@ -436,6 +466,7 @@ pub(crate) struct Payload {
     pub(crate) sol_keys: Vec<SolKeyRecord>,
     pub(crate) btc_keys: Vec<BtcKeyRecord>,
     pub(crate) hw_keys: Vec<HwKeyEntry>,
+    pub(crate) zec_keys: Vec<ZecKeyRecord>,
 }
 
 impl Drop for Payload {
@@ -449,6 +480,7 @@ impl Drop for Payload {
         self.raw_keys.zeroize();
         self.sol_keys.zeroize();
         self.btc_keys.zeroize();
+        self.zec_keys.zeroize();
     }
 }
 
@@ -476,6 +508,7 @@ impl Payload {
             sol_keys: Vec::with_capacity(MAX_RAW_KEYS),
             btc_keys: Vec::with_capacity(MAX_RAW_KEYS),
             hw_keys: Vec::with_capacity(MAX_HW_KEYS),
+            zec_keys: Vec::with_capacity(MAX_RAW_KEYS),
         }
     }
 
@@ -497,6 +530,7 @@ impl Payload {
             .saturating_add(self.sol_keys.len())
             .saturating_add(self.btc_keys.len())
             .saturating_add(self.hw_keys.len())
+            .saturating_add(self.zec_keys.len())
     }
 
     /// Whether `id` names any record.
@@ -506,6 +540,7 @@ impl Payload {
             || self.sol_keys.iter().any(|sol| sol.record_id == *id)
             || self.btc_keys.iter().any(|btc| btc.record_id == *id)
             || self.hw_keys.iter().any(|hw| hw.record_id == *id)
+            || self.zec_keys.iter().any(|zec| zec.record_id == *id)
     }
 
     fn encoded_len(&self) -> Option<usize> {
@@ -516,6 +551,7 @@ impl Payload {
         let raws = RAW_RECORD_LEN.checked_mul(self.raw_keys.len())?;
         let sols = SOL_RECORD_LEN.checked_mul(self.sol_keys.len())?;
         let btcs = BTC_RECORD_LEN.checked_mul(self.btc_keys.len())?;
+        let zecs = ZEC_RECORD_LEN.checked_mul(self.zec_keys.len())?;
         let hws = self.hw_keys.iter().try_fold(0_usize, |sum, entry| {
             sum.checked_add(HW_RECORD_HEAD_LEN)?
                 .checked_add(entry.record.body_len())
@@ -525,7 +561,8 @@ impl Payload {
             .checked_add(raws)?
             .checked_add(sols)?
             .checked_add(btcs)?
-            .checked_add(hws)
+            .checked_add(hws)?
+            .checked_add(zecs)
     }
 
     pub(crate) fn encode(&self) -> Result<Zeroizing<Vec<u8>>, VaultError> {
@@ -534,6 +571,7 @@ impl Payload {
             || self.sol_keys.len() > MAX_RAW_KEYS
             || self.btc_keys.len() > MAX_RAW_KEYS
             || self.hw_keys.len() > MAX_HW_KEYS
+            || self.zec_keys.len() > MAX_RAW_KEYS
         {
             return Err(VaultError::RecordLimit);
         }
@@ -593,6 +631,13 @@ impl Payload {
             out.extend_from_slice(&hw.record_id);
             out.extend_from_slice(&hw.created_unix.to_be_bytes());
             hw.record.encode_into(&mut out).map_err(|_| INTERNAL)?;
+        }
+        for zec in &self.zec_keys {
+            out.push(TAG_ZEC_KEY);
+            out.extend_from_slice(&zec.record_id);
+            out.extend_from_slice(&zec.created_unix.to_be_bytes());
+            out.extend_from_slice(zec.secret.as_slice());
+            out.push(zec.network.id());
         }
         if out.len() != len || out.capacity() != len {
             return Err(INTERNAL);
@@ -738,6 +783,26 @@ impl Payload {
         Some(())
     }
 
+    fn decode_zec(&mut self, reader: &mut Reader<'_>, record_id: [u8; 16]) -> Option<()> {
+        let created_unix = reader.u64()?;
+        let secret = Zeroizing::new(reader.array::<32>()?);
+        let network = crate::zec::ZecNetwork::from_id(reader.u8()?)?;
+        let duplicate = self
+            .zec_keys
+            .iter()
+            .fold(0_u8, |seen, other| seen | other.same_as(&secret, network));
+        if !valid_scalar(&secret) || duplicate != 0 || self.zec_keys.len() >= MAX_RAW_KEYS {
+            return None;
+        }
+        self.zec_keys.push(ZecKeyRecord {
+            record_id,
+            created_unix,
+            secret,
+            network,
+        });
+        Some(())
+    }
+
     fn decode_inner(bytes: &[u8]) -> Option<Self> {
         let mut reader = Reader::new(bytes);
         if reader.array::<8>()? != PAYLOAD_MAGIC {
@@ -772,6 +837,7 @@ impl Payload {
                 TAG_SOL_KEY => payload.decode_sol(&mut reader, id)?,
                 TAG_BTC_KEY => payload.decode_btc(&mut reader, id)?,
                 TAG_HW_KEY => payload.decode_hw(&mut reader, id)?,
+                TAG_ZEC_KEY => payload.decode_zec(&mut reader, id)?,
                 _ => return None,
             }
         }
