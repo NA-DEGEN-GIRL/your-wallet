@@ -1915,7 +1915,9 @@ const IMPORTED: [(&str, ScriptType); 4] = [
 fn imported_info(wif: &str, script_type: ScriptType) -> TestResult<yw_core::keyimport::BtcKeyInfo> {
     match yw_core::keyimport::ImportKey::parse(ImportSpec::Btc(script_type), wif)?.preview()? {
         ImportPreview::Btc(info) => Ok(info),
-        ImportPreview::Evm(_) | ImportPreview::Sol(_) => Err("not a Bitcoin key".into()),
+        ImportPreview::Evm(_) | ImportPreview::Sol(_) | ImportPreview::Zec(_) => {
+            Err("not a Bitcoin key".into())
+        }
     }
 }
 

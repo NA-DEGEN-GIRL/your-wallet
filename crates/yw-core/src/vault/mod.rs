@@ -46,11 +46,12 @@ pub const WRAPPED_DEK_LEN: usize = 48;
 pub const PAYLOAD_CT_MIN: u32 = 80;
 /// Largest payload ciphertext: 16 + 64 (24-word `Bip39`) + 15 × (57 + 89 + 60) imported keys
 /// plus 8 × (25 + 12 + 24 × 48) hardware key references (spec/10 §8) plus the 16-byte tag is
-/// 12,698 bytes; files written before key import never exceed 2,048, before hardware keys 4,096.
+/// 12,698 bytes, plus 15 × 58 imported Zcash keys (spec/12 §2.3) = 13,568; files written before
+/// key import never exceed 2,048, before hardware keys 4,096.
 pub const PAYLOAD_CT_MAX: u32 = 16_384;
 /// At most one `Bip39` record plus at most 15 imported keys of each chain (`EvmRawKey`,
-/// `SolKey`, `BtcKey`) and 8 hardware key references (`HwKey`).
-pub const MAX_RECORDS: usize = 54;
+/// `SolKey`, `BtcKey`, `ZecKey`) and 8 hardware key references (`HwKey`).
+pub const MAX_RECORDS: usize = 69;
 /// Locked slot layout: `[0..32)` DEK, `[32]` passphrase present, `[33..35)` passphrase length
 /// (u16 BE, 0..=256), `[35..291)` passphrase bytes, `[291..320)` zero.
 pub const SLOT_LEN: usize = 320;
@@ -219,6 +220,14 @@ pub enum KeyRef {
         account: u32,
         /// Receive index (non-hardened).
         index: u32,
+    },
+    /// An imported Zcash transparent key (vault tag 6, spec/12 §2.3): the record of `network`
+    /// whose compressed public key is `pubkey`.
+    ZecImported {
+        /// Network of the record.
+        network: crate::zec::ZecNetwork,
+        /// Compressed public key.
+        pubkey: [u8; 33],
     },
 }
 

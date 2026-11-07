@@ -54,12 +54,23 @@ pub mod ids {
     pub const HW_BASE: u16 = 8_040;
     /// `YubiKey` button span.
     pub const HW_SPAN: u16 = 8;
+    /// `개인키 가져오기` (spec/12 §2.3).
+    pub const IMPORT: u16 = 8_050;
+    /// `개인키 보기` of the account's imported key.
+    pub const REVEAL: u16 = 8_051;
+    /// `삭제` of the account's imported key.
+    pub const REMOVE: u16 = 8_052;
+    /// `이 키 사용` of the imported keys of the network (position in the list).
+    pub const IMPORTED_BASE: u16 = 8_060;
+    /// Imported-key button span (15 keys per chain).
+    pub const IMPORTED_SPAN: u16 = 16;
 
     const _: () = assert!(SOURCE_EVM_BASE + SOURCE_EVM_SPAN <= HW_BASE);
-    const _: () = assert!(HW_BASE + HW_SPAN <= 8_100);
+    const _: () = assert!(HW_BASE + HW_SPAN <= IMPORT);
+    const _: () = assert!(IMPORTED_BASE + IMPORTED_SPAN <= 8_100);
 
     /// Every fixed id.
-    pub const FIXED: [u16; 16] = [
+    pub const FIXED: [u16; 19] = [
         TAB_ZEC,
         ENABLE_MAINNET,
         ENABLE_TESTNET,
@@ -76,6 +87,9 @@ pub mod ids {
         SOURCE_CANCEL,
         INDEXER_NODE,
         INDEXER_BB,
+        IMPORT,
+        REVEAL,
+        REMOVE,
     ];
 }
 
@@ -199,7 +213,23 @@ impl App {
             }
             ids::INDEXER_NODE => self.zec_set_indexer(ZecIndexer::Node),
             ids::INDEXER_BB => self.zec_set_indexer(ZecIndexer::BbRest),
+            ids::IMPORT => {
+                self.open_key_import(yw_core::keyimport::ImportChain::Zec);
+            }
+            ids::REVEAL | ids::REMOVE => {
+                if let Some(record) = self.zec_selected_imported() {
+                    if id == ids::REVEAL {
+                        self.imported_reveal(*record.as_bytes());
+                    } else {
+                        self.imported_remove(*record.as_bytes());
+                    }
+                }
+            }
             other => {
+                if let Some(position) = offset(other, ids::IMPORTED_BASE, ids::IMPORTED_SPAN) {
+                    self.zec_use_imported(usize::from(position));
+                    return true;
+                }
                 if let Some(position) = offset(other, ids::SOURCE_EVM_BASE, ids::SOURCE_EVM_SPAN) {
                     if let Some(index) = self.zec_evm_indices().get(usize::from(position)) {
                         self.zec.source = SourceChoice::EvmShared(*index);
@@ -218,6 +248,55 @@ impl App {
             }
         }
         true
+    }
+
+    /// The imported keys of the network ("[가져온 키]" rows with `이 키 사용`), `개인키 가져오기`,
+    /// and for an account on an imported key `개인키 보기`·`삭제` (spec/12 §2.3, spec/04 §2.18).
+    fn zec_imported_items(&self, items: &mut Vec<Item>) {
+        let unlocked = matches!(self.mode, AppMode::Unlocked { .. });
+        let current = self.zec_account();
+        let keys = self.zec_imported_keys();
+        items.push(Item::Rule);
+        for (position, (_, info)) in keys.iter().enumerate() {
+            let id = ids::IMPORTED_BASE.saturating_add(u16::try_from(position).unwrap_or(0));
+            let in_use = current.is_some_and(|account| {
+                account.source == yw_core::zec::ZecKeySource::Imported
+                    && account.pubkey == info.pubkey
+            });
+            items.push(Item::LabeledRow(
+                format!("[가져온 키] {}", grouped(&info.address)),
+                vec![
+                    Ctl::button(
+                        id,
+                        if in_use {
+                            "사용 중"
+                        } else {
+                            "이 키 사용"
+                        },
+                    )
+                    .enabled(unlocked && !self.zec.busy && !in_use),
+                ],
+            ));
+        }
+        if self.zec_selected_imported().is_some() {
+            items.push(Item::Help(if self.key_only() {
+                crate::ui::secret::T_KEY_ONLY_BACKUP.to_owned()
+            } else {
+                crate::ui::secret::T_IMPORTED_KEY_BACKUP.to_owned()
+            }));
+            items.push(Item::Row(vec![
+                Ctl::button(ids::REVEAL, "개인키 보기").enabled(unlocked),
+                Ctl::danger(ids::REMOVE, "삭제").enabled(unlocked && self.can_remove_imported()),
+            ]));
+        }
+        items.push(Item::Help(
+            "다른 지갑(zcashd 등)의 Zcash 일반 주소 개인키(압축 WIF 또는 16진수)를 가져와 이 네트워크의 계정으로 쓸 수 있습니다. 가져온 키는 복구 단어로 복구되지 않습니다."
+                .to_owned(),
+        ));
+        items.push(Item::Row(vec![
+            Ctl::button(ids::IMPORT, "개인키 가져오기")
+                .enabled(self.can_import(yw_core::keyimport::ImportChain::Zec)),
+        ]));
     }
 
     fn zec_disabled_items(&self, items: &mut Vec<Item>) {
@@ -454,12 +533,20 @@ impl App {
         }
         for (position, index) in self.zec_hw_slots().iter().enumerate() {
             let id = ids::HW_BASE.saturating_add(u16::try_from(position).unwrap_or(0));
-            row.push(
-                Ctl::button(id, &format!("YubiKey Zcash 주소 {index} 사용"))
-                    .enabled(unlocked && !self.zec.busy),
-            );
+            let label = if yw_core::yubikey::plan::is_unknown_index(*index) {
+                format!(
+                    "YubiKey Zcash 카드 키 {} 사용 (경로 모름)",
+                    index
+                        .saturating_sub(yw_core::yubikey::plan::UNKNOWN_PATH_FIRST)
+                        .saturating_add(1)
+                )
+            } else {
+                format!("YubiKey Zcash 주소 {index} 사용")
+            };
+            row.push(Ctl::button(id, &label).enabled(unlocked && !self.zec.busy));
         }
         items.push(Item::Row(row));
+        self.zec_imported_items(items);
         items.push(Item::CardEnd);
 
         // Receive (hidden while a hardware account's key is missing or not yet checked).

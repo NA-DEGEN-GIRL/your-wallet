@@ -312,6 +312,9 @@ impl SolAccountId {
         match self {
             Self::Derived(index) => format!("m/44'/501'/{index}'/0'"),
             Self::Imported(_) => "가져온 개인키 (복구 단어로 복구되지 않음)".to_owned(),
+            Self::Hardware(index) if yw_core::yubikey::plan::is_unknown_index(index) => {
+                format!("{} (YubiKey PIV)", yw_core::yubikey::plan::T_UNKNOWN_PATH)
+            }
             Self::Hardware(index) => format!("m/44'/501'/{index}'/0' (YubiKey PIV)"),
         }
     }

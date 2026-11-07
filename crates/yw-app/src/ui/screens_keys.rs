@@ -121,6 +121,9 @@ fn chain_help(chain: ImportChain) -> &'static str {
         ImportChain::Btc => {
             "WIF 형식(5·K·L로 시작하면 mainnet, 9·c로 시작하면 testnet4) — Electrum 'Export private key', Bitcoin Core dumpprivkey 값입니다."
         }
+        ImportChain::Zec => {
+            "압축 WIF(K·L로 시작하면 mainnet, c로 시작하면 testnet) 또는 16진수 64자리 — zcashd dumpprivkey 값입니다. 일반(transparent) 주소 하나로 씁니다."
+        }
     }
 }
 
@@ -264,6 +267,7 @@ impl App {
             ImportChain::Evm => crate::ui::screens::ids::IMPORT_KEY,
             ImportChain::Sol => ids::SOL_IMPORT,
             ImportChain::Btc => ids::BTC_IMPORT_NEXT,
+            ImportChain::Zec => crate::ui::screens_zec::ids::IMPORT,
         };
         items.push(Item::CardStart(None));
         items.push(Item::Subtitle(no_accounts_text(chain)));
@@ -284,6 +288,11 @@ impl App {
             Ctl::primary(import_id, "개인키 가져오기").enabled(self.can_import(chain)),
             Ctl::button(crate::ui::screens_yubikey::ids::ENROL_START, "YubiKey 등록")
                 .enabled(unlocked && self.card.records.len() < yw_core::yubikey::plan::MAX_CARDS),
+            Ctl::button(
+                crate::ui::screens_yubikey::ids::CONNECT_START,
+                "YubiKey 연결하기 (복구 단어 없이)",
+            )
+            .enabled(unlocked && self.card.records.len() < yw_core::yubikey::plan::MAX_CARDS),
         ]));
         items.push(Item::CardEnd);
     }

@@ -31,6 +31,7 @@
 use core::fmt;
 
 pub mod apdu;
+pub mod connect;
 pub mod enrol;
 pub mod manage;
 pub mod mock;

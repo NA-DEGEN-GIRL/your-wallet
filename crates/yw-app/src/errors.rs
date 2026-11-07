@@ -80,6 +80,10 @@ pub enum ErrorCode {
     Inp023,
     /// Uncompressed WIF with a segwit/taproot type.
     Inp024,
+    /// Zcash key text (spec/12 §2.3).
+    Inp025,
+    /// Zcash WIF of the other network.
+    Inp026,
     /// Capture exclusion failed on a display window.
     Sec001,
     /// Clipboard unavailable.
@@ -241,6 +245,8 @@ impl ErrorCode {
             Self::Inp022 => "E-INP-022",
             Self::Inp023 => "E-INP-023",
             Self::Inp024 => "E-INP-024",
+            Self::Inp025 => "E-INP-025",
+            Self::Inp026 => "E-INP-026",
             Self::Sec001 => "E-SEC-001",
             Self::Sec002 => "E-SEC-002",
             Self::Key001 => "E-KEY-001",
@@ -375,6 +381,12 @@ impl ErrorCode {
             }
             Self::Inp024 => {
                 "압축되지 않은 키(5·9로 시작하는 WIF)는 P2PKH(레거시) 주소에만 쓸 수 있습니다. 주소 형식을 P2PKH로 고르세요."
+            }
+            Self::Inp025 => {
+                "Zcash 개인키는 압축 WIF(K·L·c로 시작하는 base58 52자) 또는 16진수 64자리여야 합니다. 압축되지 않은 WIF(5·9로 시작)는 받지 않습니다."
+            }
+            Self::Inp026 => {
+                "이 WIF는 다른 Zcash 네트워크의 키입니다(K·L = 메인넷, c = 테스트넷). Zcash 탭의 네트워크를 바꾼 뒤 가져오세요."
             }
             Self::Sec001 => "화면 캡처 제외를 적용하지 못해 표시하지 않습니다.",
             Self::Sec002 => "클립보드를 사용할 수 없습니다. 잠시 후 다시 시도하세요.",
@@ -568,6 +580,8 @@ pub const fn key_code(error: KeyError) -> ErrorCode {
         KeyError::SolKeyMismatch => ErrorCode::Inp022,
         KeyError::WifFormat => ErrorCode::Inp023,
         KeyError::WifUncompressedScript => ErrorCode::Inp024,
+        KeyError::ZecKeyFormat => ErrorCode::Inp025,
+        KeyError::ZecKeyNetwork => ErrorCode::Inp026,
         KeyError::InvalidEntropyLength
         | KeyError::InvalidPath
         | KeyError::InvalidAccountIndex

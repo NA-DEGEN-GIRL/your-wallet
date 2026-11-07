@@ -70,6 +70,8 @@ pub struct ImportedKeys {
     pub sol: Vec<(RecordId, [u8; 32])>,
     /// Bitcoin keys (`tag 4`) and their facts.
     pub btc: Vec<(RecordId, BtcKeyInfo)>,
+    /// Zcash transparent keys (`tag 6`) and their facts.
+    pub zec: Vec<(RecordId, crate::keyimport::ZecKeyInfo)>,
 }
 
 /// A password change that took effect (spec/02 §4.4): the `Rewrap` commit landed, so the new
@@ -352,6 +354,24 @@ fn add_key(
                 script,
             });
         }
+        ImportInner::Zec { secret, network } => {
+            let duplicate = payload
+                .zec_keys
+                .iter()
+                .fold(0_u8, |seen, zec| seen | zec.same_as(&secret, network));
+            if duplicate != 0 {
+                return Err(VaultError::DuplicateKey);
+            }
+            if payload.zec_keys.len() >= MAX_RAW_KEYS {
+                return Err(VaultError::RecordLimit);
+            }
+            payload.zec_keys.push(format::ZecKeyRecord {
+                record_id,
+                created_unix: now_unix,
+                secret,
+                network,
+            });
+        }
     }
     Ok(())
 }
@@ -362,16 +382,20 @@ fn remove_key(payload: &mut Payload, id: &[u8; 16]) -> Option<ImportChain> {
         payload.raw_keys.len(),
         payload.sol_keys.len(),
         payload.btc_keys.len(),
+        payload.zec_keys.len(),
     );
     payload.raw_keys.retain(|raw| raw.record_id != *id);
     payload.sol_keys.retain(|sol| sol.record_id != *id);
     payload.btc_keys.retain(|btc| btc.record_id != *id);
+    payload.zec_keys.retain(|zec| zec.record_id != *id);
     if payload.raw_keys.len() != before.0 {
         Some(ImportChain::Evm)
     } else if payload.sol_keys.len() != before.1 {
         Some(ImportChain::Sol)
     } else if payload.btc_keys.len() != before.2 {
         Some(ImportChain::Btc)
+    } else if payload.zec_keys.len() != before.3 {
+        Some(ImportChain::Zec)
     } else {
         None
     }
@@ -501,6 +525,17 @@ impl Vault {
                 account,
                 index,
             } => crate::bip32::path::zec_path(test, account, index)?,
+            KeyRef::ZecImported { network, pubkey } => {
+                for record in payload.zec_keys.iter().filter(|zec| zec.network == network) {
+                    let mut secret =
+                        SecretKey::from_byte_array(*record.secret).map_err(|_| INTERNAL)?;
+                    if PublicKey::from_secret_key(ctx, &secret).serialize() == pubkey {
+                        return Ok(secret);
+                    }
+                    secret.non_secure_erase();
+                }
+                return Err(VaultError::RecordNotFound);
+            }
         };
         let seed = self.seed(payload)?;
         Ok(secret_key_from_seed(ctx, seed.expose(), &path)?)
@@ -1058,10 +1093,52 @@ impl Vault {
     pub fn import_key(&mut self, key: ImportKey, now_unix: u64) -> Result<RecordId, VaultError> {
         self.require_signing()?;
         let mut payload = self.payload()?;
+        if let ImportInner::Zec { secret, network } = &key.inner {
+            self.check_zec_collision(&payload, secret, *network)?;
+        }
         let record_id = fresh_record_id(&mut OsRandom, &payload)?;
         add_key(&mut payload, key, record_id, now_unix)?;
         self.rewrite_payload(&payload)?;
         Ok(RecordId(record_id))
+    }
+
+    /// An imported Zcash key must not be a key the wallet already has as a Zcash address
+    /// (spec/12 §2.3): a `YubiKey` slot's public key (any role), or the standard derived key
+    /// `m/44'/{coin}'/0'/0/0` of its network. `DuplicateKey` when it is.
+    fn check_zec_collision(
+        &self,
+        payload: &Payload,
+        secret: &[u8; 32],
+        network: crate::zec::ZecNetwork,
+    ) -> Result<(), VaultError> {
+        let info = crate::keyimport::zec_info(secret, network)?;
+        let hardware = payload
+            .hw_keys
+            .iter()
+            .flat_map(|entry| &entry.record.slots)
+            .any(|slot| slot.public == crate::yubikey::record::HwPublicKey::Secp256k1(info.pubkey));
+        if hardware {
+            return Err(VaultError::DuplicateKey);
+        }
+        if payload.bip39.is_some() {
+            let ctx = secp_context(&mut OsRandom)?;
+            let test = network == crate::zec::ZecNetwork::Testnet;
+            let mut derived = self.secret_for(
+                &ctx,
+                payload,
+                KeyRef::Zec {
+                    test,
+                    account: 0,
+                    index: 0,
+                },
+            )?;
+            let same = PublicKey::from_secret_key(&ctx, &derived).serialize() == info.pubkey;
+            derived.non_secure_erase();
+            if same {
+                return Err(VaultError::DuplicateKey);
+            }
+        }
+        Ok(())
     }
 
     /// Removes an imported EVM key after re-entering the password. The BIP39 record cannot be
@@ -1420,16 +1497,23 @@ impl Vault {
             )?;
             btc.push((RecordId(record.record_id), info));
         }
+        let mut zec = Vec::with_capacity(payload.zec_keys.len());
+        for record in &payload.zec_keys {
+            let info = crate::keyimport::zec_info(&record.secret, record.network)?;
+            zec.push((RecordId(record.record_id), info));
+        }
         Ok(ImportedKeys {
             has_mnemonic: payload.bip39.is_some(),
             evm,
             sol,
             btc,
+            zec,
         })
     }
 
     /// The export text of an imported key after re-entering the password (spec/02 §9): EVM 64
-    /// lowercase hex (no `0x`), Solana the base58 64-byte keypair, Bitcoin the WIF.
+    /// lowercase hex (no `0x`), Solana the base58 64-byte keypair, Bitcoin the WIF, Zcash the
+    /// compressed WIF.
     ///
     /// # Errors
     ///
@@ -1457,6 +1541,17 @@ impl Vault {
             return Ok((
                 ImportChain::Btc,
                 crate::codec::wif::encode_wif(&btc.secret, btc.compressed, btc.network),
+            ));
+        }
+        if let Some(zec) = payload.zec_keys.iter().find(|zec| zec.record_id == id.0) {
+            // Zcash uses the Bitcoin WIF versions (0x80 / 0xEF) and the compressed key.
+            let version = match zec.network {
+                crate::zec::ZecNetwork::Mainnet => crate::btc::BtcNetwork::Mainnet,
+                crate::zec::ZecNetwork::Testnet => crate::btc::BtcNetwork::Testnet4,
+            };
+            return Ok((
+                ImportChain::Zec,
+                crate::codec::wif::encode_wif(&zec.secret, true, version),
             ));
         }
         Err(VaultError::RecordNotFound)

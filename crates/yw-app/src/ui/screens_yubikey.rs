@@ -18,9 +18,11 @@ use crate::app_yubikey::{
 };
 use crate::ui::main_window::{Ctl, Item, Tone};
 
+mod connect;
 mod manage;
 
-/// Command ids (block 13,200–13,399, `ui::command_ids`).
+/// Command ids (block 13,200–13,399, and 13,500–13,727 for "`YubiKey` 연결하기";
+/// `ui::command_ids`).
 pub mod ids {
     use yw_core::btc::ScriptType;
     use yw_core::yubikey::plan::{PgpKey, TouchPolicy};
@@ -365,6 +367,65 @@ pub mod ids {
             .map(usize::from)
     }
 
+    /// "`YubiKey` 연결하기 (복구 단어 없이)" in settings and the chain cards (spec/10 §7.6).
+    pub const CONNECT_START: u16 = 13_500;
+    /// The S01 entry of "`YubiKey` 연결하기" (a new `YubiKey` wallet).
+    pub const CONNECT_NEW_WALLET: u16 = 13_501;
+    /// `다시 읽기` of the connect scan.
+    pub const CONNECT_RESCAN: u16 = 13_502;
+    /// `다음` (choices → addresses).
+    pub const CONNECT_NEXT: u16 = 13_503;
+    /// `← 다시 고르기`.
+    pub const CONNECT_BACK: u16 = 13_504;
+    /// `PIN으로 소유 확인 (선택)`.
+    pub const CONNECT_PIN: u16 = 13_505;
+    /// `저장`.
+    pub const CONNECT_SAVE: u16 = 13_506;
+    /// Choice radios: row (found key) × [`CONNECT_CHOICES`] column.
+    pub const CONNECT_CHOICE_BASE: u16 = 13_520;
+    /// Ids per row.
+    pub const CONNECT_CHOICE_STRIDE: u16 = 8;
+    /// Rows: `OpenPGP` SIG + AUT and the 24 PIV slots.
+    pub const CONNECT_CHOICE_ROWS: u16 = 26;
+    /// Span of the choice radios.
+    pub const CONNECT_CHOICE_SPAN: u16 = CONNECT_CHOICE_STRIDE * CONNECT_CHOICE_ROWS;
+    /// The columns of a choice row.
+    pub const CONNECT_CHOICES: [crate::app_yubikey::connect::Choice; 7] = [
+        crate::app_yubikey::connect::Choice::Evm,
+        crate::app_yubikey::connect::Choice::Btc(ScriptType::P2wpkh),
+        crate::app_yubikey::connect::Choice::Btc(ScriptType::P2shP2wpkh),
+        crate::app_yubikey::connect::Choice::Btc(ScriptType::P2pkh),
+        crate::app_yubikey::connect::Choice::Zec,
+        crate::app_yubikey::connect::Choice::Sol,
+        crate::app_yubikey::connect::Choice::Skip,
+    ];
+
+    /// The id of `choice` on row `row`.
+    #[must_use]
+    pub fn connect_choice_id(row: usize, choice: crate::app_yubikey::connect::Choice) -> u16 {
+        let column = CONNECT_CHOICES
+            .iter()
+            .position(|other| *other == choice)
+            .and_then(|column| u16::try_from(column).ok())
+            .unwrap_or(0);
+        let row = u16::try_from(row).unwrap_or(u16::MAX);
+        CONNECT_CHOICE_BASE
+            .saturating_add(row.saturating_mul(CONNECT_CHOICE_STRIDE))
+            .saturating_add(column)
+    }
+
+    /// The row and choice of a choice radio id.
+    #[must_use]
+    pub fn connect_choice(id: u16) -> Option<(usize, crate::app_yubikey::connect::Choice)> {
+        let offset = id
+            .checked_sub(CONNECT_CHOICE_BASE)
+            .filter(|offset| *offset < CONNECT_CHOICE_SPAN)?;
+        let choice = CONNECT_CHOICES
+            .get(usize::from(offset % CONNECT_CHOICE_STRIDE))
+            .copied()?;
+        Some((usize::from(offset / CONNECT_CHOICE_STRIDE), choice))
+    }
+
     /// Every fixed id of this module.
     pub const FIXED: &[u16] = &[
         SECTION_YUBIKEY,
@@ -472,6 +533,13 @@ pub mod ids {
         CLEAR_RUN,
         IDENTIFY_AGAIN,
         PIN_NEEDED_OPEN,
+        CONNECT_START,
+        CONNECT_NEW_WALLET,
+        CONNECT_RESCAN,
+        CONNECT_NEXT,
+        CONNECT_BACK,
+        CONNECT_PIN,
+        CONNECT_SAVE,
     ];
 }
 
@@ -593,6 +661,14 @@ impl App {
             "새 복구 단어 24개를 만들어 종이에만 적고, 그 키를 YubiKey에 넣습니다. 이 PC에는 복구 단어가 남지 않습니다."
                 .to_owned(),
         ));
+        items.push(Item::Row(vec![
+            Ctl::button(ids::CONNECT_NEW_WALLET, "YubiKey 연결하기 (복구 단어 없이)")
+                .enabled(!self.leftover),
+        ]));
+        items.push(Item::Help(
+            "이미 키가 들어 있는 YubiKey(새 PC, 다시 설치)를 복구 단어 없이 연결합니다. 카드의 공개키만 읽고 아무것도 쓰지 않습니다."
+                .to_owned(),
+        ));
         items.push(Item::CardEnd);
     }
 
@@ -644,7 +720,12 @@ impl App {
         items.push(Item::Row(vec![
             Ctl::primary(ids::ENROL_START, "YubiKey 등록")
                 .enabled(unlocked && records.len() < MAX_CARDS),
+            Ctl::button(ids::CONNECT_START, "YubiKey 연결하기 (복구 단어 없이)")
+                .enabled(unlocked && records.len() < MAX_CARDS),
         ]));
+        items.push(Item::Help(
+            crate::app_yubikey::connect::T_YK_CONNECT.to_owned(),
+        ));
         if !unlocked {
             items.push(Item::Help("잠금을 해제하면 쓸 수 있습니다.".to_owned()));
         }
@@ -745,6 +826,10 @@ impl App {
             items.push(crate::ui::screens::back_main());
             return;
         };
+        if let Some(form) = wizard.connect.as_deref() {
+            self.yk_connect_screen(wizard, form, items);
+            return;
+        }
         items.push(Item::Title(match wizard.origin {
             WizardOrigin::NewWallet => "YubiKey 지갑 만들기 — YubiKey 등록".to_owned(),
             WizardOrigin::Vault => "YubiKey 등록".to_owned(),
@@ -817,9 +902,9 @@ impl App {
         };
         items.push(Item::LabeledRow(
             if matches!(form.kind, PgpKind::Btc | PgpKind::Zec) {
-                "주소 인덱스 (0–999)".to_owned()
+                "주소 인덱스 (0–899)".to_owned()
             } else {
-                "계정 인덱스 (0–999)".to_owned()
+                "계정 인덱스 (0–899)".to_owned()
             },
             vec![Ctl::edit(edit, &form.index_text, 80, false, 3)],
         ));
@@ -1220,7 +1305,13 @@ impl App {
             },
             Tone::Success,
         ));
-        if wizard.created {
+        if wizard.created && wizard.connect.is_some() {
+            items.push(Item::Banner(
+                "YubiKey 지갑을 만들었습니다. 복구 단어 없이 카드의 공개키로 연결했으므로 이 PC에는 개인키도 복구 단어도 없습니다 — 카드를 잃었을 때를 대비해 원래 백업(복구 단어 등)이 있는지 확인하세요."
+                    .to_owned(),
+                Tone::Info,
+            ));
+        } else if wizard.created {
             items.push(Item::Banner(
                 "YubiKey 지갑을 만들었습니다. 복구 단어는 이 PC에 저장하지 않았습니다 — 적은 종이를 안전하게 보관하세요. 백업 YubiKey를 지금 더 등록할 수 있습니다."
                     .to_owned(),
@@ -1258,14 +1349,21 @@ impl App {
             items.push(Item::Banner(note.clone(), Tone::Info));
         }
         // spec/10 §9.3: a new YubiKey wallet ends with its PIN setup (it cannot be skipped).
-        let pins_first = wizard.created && !wizard.pins_done();
+        let pins_first = wizard.created && wizard.connect.is_none() && !wizard.pins_done();
         if pins_first {
             items.push(Item::Banner(T_YK_PINS_FIRST.to_owned(), Tone::Warn));
         }
         items.push(Item::Row(vec![
             Ctl::primary(ids::FINISH, "완료").enabled(!pins_first),
-            Ctl::button(ids::ANOTHER, "다른 YubiKey 등록(백업)")
-                .enabled(self.card.records.len() < MAX_CARDS && !pins_first),
+            Ctl::button(
+                ids::ANOTHER,
+                if wizard.connect.is_some() {
+                    "다른 YubiKey 연결"
+                } else {
+                    "다른 YubiKey 등록(백업)"
+                },
+            )
+            .enabled(self.card.records.len() < MAX_CARDS && !pins_first),
         ]));
     }
 

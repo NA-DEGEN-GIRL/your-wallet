@@ -7,6 +7,7 @@
 //! | EVM | optional `0x` + 64 hex (spec/02 §8.2) |
 //! | Solana | base58 64-byte keypair (Phantom/Solflare) or `solana-keygen` JSON array of 64 numbers |
 //! | Bitcoin | WIF (mainnet `0x80` / test `0xef` → testnet4, compressed or not) + a chosen address type |
+//! | Zcash | compressed WIF (`0x80` mainnet / `0xef` testnet, must be the chosen network) or 64 hex with the chosen network; one P2PKH address |
 //!
 //! Every parser ignores surrounding ASCII whitespace, accepts ASCII only, keeps decoded secrets in
 //! `Zeroizing` buffers and never echoes input in errors. A Bitcoin key's address type is the
@@ -33,6 +34,7 @@ use crate::error::KeyError;
 use crate::evm::Address;
 use crate::hex;
 use crate::sol::SolAddress;
+use crate::zec::ZecNetwork;
 
 /// Imported keys per chain (spec/02 §4.6, §5.3).
 pub const MAX_IMPORTED_PER_CHAIN: usize = 15;
@@ -46,6 +48,8 @@ pub enum ImportChain {
     Sol,
     /// Bitcoin (`tag 4`).
     Btc,
+    /// Zcash transparent (`tag 6`, spec/12 §2.3).
+    Zec,
 }
 
 impl ImportChain {
@@ -56,6 +60,7 @@ impl ImportChain {
             Self::Evm => "EVM",
             Self::Sol => "Solana",
             Self::Btc => "Bitcoin",
+            Self::Zec => "Zcash",
         }
     }
 }
@@ -69,6 +74,8 @@ pub enum ImportSpec {
     Sol,
     /// Bitcoin WIF used as this address type.
     Btc(ScriptType),
+    /// Zcash compressed WIF or hex key of this network.
+    Zec(ZecNetwork),
 }
 
 impl ImportSpec {
@@ -79,6 +86,7 @@ impl ImportSpec {
             Self::Evm => ImportChain::Evm,
             Self::Sol => ImportChain::Sol,
             Self::Btc(_) => ImportChain::Btc,
+            Self::Zec(_) => ImportChain::Zec,
         }
     }
 }
@@ -95,6 +103,10 @@ pub(crate) enum ImportInner {
         compressed: bool,
         network: BtcNetwork,
         script: ScriptType,
+    },
+    Zec {
+        secret: Zeroizing<[u8; 32]>,
+        network: ZecNetwork,
     },
 }
 
@@ -140,6 +152,30 @@ impl BtcKeyInfo {
     }
 }
 
+/// Public facts of an imported Zcash transparent key (spec/12 §2.3): one P2PKH address of the
+/// compressed public key.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ZecKeyInfo {
+    /// Network.
+    pub network: ZecNetwork,
+    /// Compressed public key.
+    pub pubkey: [u8; 33],
+    /// `t1…` / `tm…` address.
+    pub address: String,
+}
+
+impl ZecKeyInfo {
+    /// The Zcash account of this key.
+    #[must_use]
+    pub const fn account(&self) -> crate::zec::ZecAccount {
+        crate::zec::ZecAccount {
+            network: self.network,
+            source: crate::zec::ZecKeySource::Imported,
+            pubkey: self.pubkey,
+        }
+    }
+}
+
 /// What the user confirms before an import is stored.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ImportPreview {
@@ -149,6 +185,59 @@ pub enum ImportPreview {
     Sol(SolAddress),
     /// Bitcoin address and its facts.
     Btc(BtcKeyInfo),
+    /// Zcash address and its facts.
+    Zec(ZecKeyInfo),
+}
+
+/// The facts of a Zcash key (compressed public key, P2PKH address on `network`).
+pub(crate) fn zec_info(secret: &[u8; 32], network: ZecNetwork) -> Result<ZecKeyInfo, KeyError> {
+    let ctx = secp_context(&mut OsRandom)?;
+    let mut key = SecretKey::from_byte_array(*secret).map_err(|_| KeyError::InvalidPrivateKey)?;
+    let pubkey = PublicKey::from_secret_key(&ctx, &key).serialize();
+    key.non_secure_erase();
+    let account = crate::zec::ZecAccount {
+        network,
+        source: crate::zec::ZecKeySource::Imported,
+        pubkey,
+    };
+    Ok(ZecKeyInfo {
+        network,
+        pubkey,
+        address: account.address(),
+    })
+}
+
+/// A Zcash private key (spec/12 §2.3, §16 #2): a compressed WIF whose version is `network`'s
+/// (`0x80` mainnet, `0xEF` testnet), or 64 hex digits (optional `0x`) used on `network`.
+/// Uncompressed WIF is refused (the account uses the compressed key).
+fn parse_zec_key(text: &str, network: ZecNetwork) -> Result<Zeroizing<[u8; 32]>, KeyError> {
+    let text = trim_blank(text);
+    if !text.is_ascii() {
+        return Err(KeyError::ZecKeyFormat);
+    }
+    let digits = text.strip_prefix("0x").unwrap_or(text);
+    if digits.len() == 64 {
+        let mut key = Zeroizing::new([0_u8; 32]);
+        hex::decode_into(digits.as_bytes(), key.as_mut(), true)
+            .map_err(|_| KeyError::ZecKeyFormat)?;
+        let mut check = SecretKey::from_byte_array(*key).map_err(|_| KeyError::ZecKeyFormat)?;
+        check.non_secure_erase();
+        return Ok(key);
+    }
+    let wif = parse_wif(text).map_err(|_| KeyError::ZecKeyFormat)?;
+    if !wif.compressed() {
+        return Err(KeyError::ZecKeyFormat);
+    }
+    let wif_network = match wif.network() {
+        BtcNetwork::Mainnet => ZecNetwork::Mainnet,
+        BtcNetwork::Testnet4 => ZecNetwork::Testnet,
+    };
+    if wif_network != network {
+        return Err(KeyError::ZecKeyNetwork);
+    }
+    let mut secret = Zeroizing::new([0_u8; 32]);
+    secret.copy_from_slice(wif.secret().as_slice());
+    Ok(secret)
 }
 
 /// Optional lowercase `0x` + exactly 64 hex digits, value in [1, n−1] (spec/02 §8.2).
@@ -201,7 +290,8 @@ impl ImportKey {
     ///
     /// EVM [`KeyError::InvalidPrivateKey`]; Solana [`KeyError::SolKeyFormat`],
     /// [`KeyError::SolKeyIsAddress`], [`KeyError::SolKeyMismatch`]; Bitcoin
-    /// [`KeyError::WifFormat`], [`KeyError::WifUncompressedScript`].
+    /// [`KeyError::WifFormat`], [`KeyError::WifUncompressedScript`]; Zcash
+    /// [`KeyError::ZecKeyFormat`], [`KeyError::ZecKeyNetwork`].
     pub fn parse(spec: ImportSpec, text: &str) -> Result<Self, KeyError> {
         let inner = match spec {
             ImportSpec::Evm => {
@@ -233,6 +323,10 @@ impl ImportKey {
                     script,
                 }
             }
+            ImportSpec::Zec(network) => ImportInner::Zec {
+                secret: parse_zec_key(text, network)?,
+                network,
+            },
         };
         Ok(Self { inner })
     }
@@ -244,6 +338,7 @@ impl ImportKey {
             ImportInner::Evm(_) => ImportChain::Evm,
             ImportInner::Sol { .. } => ImportChain::Sol,
             ImportInner::Btc { .. } => ImportChain::Btc,
+            ImportInner::Zec { .. } => ImportChain::Zec,
         }
     }
 
@@ -276,6 +371,9 @@ impl ImportKey {
                 *network,
                 *script,
             )?)),
+            ImportInner::Zec { secret, network } => {
+                Ok(ImportPreview::Zec(zec_info(secret, *network)?))
+            }
         }
     }
 }

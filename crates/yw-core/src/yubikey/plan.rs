@@ -34,6 +34,19 @@ pub const MAX_SLOTS_PER_CARD: usize = 24;
 pub const MAX_CARDS: usize = 8;
 /// Highest Bitcoin address index offered (non-hardened; standard wallets scan 20 by default).
 pub const MAX_BTC_INDEX: u32 = 999;
+/// First role index of a key connected without recovery words (spec/10 §7.6): such a key's
+/// derivation path is unknown, so its role index (`900..=999`) is only an account number that
+/// keeps it apart from enrolled keys — never a path. Every hardware path text of an index in this
+/// band says "경로를 알 수 없음" instead of a path (the record marks the slot as well).
+pub const UNKNOWN_PATH_FIRST: u32 = 900;
+/// The path text of a key connected without recovery words.
+pub const T_UNKNOWN_PATH: &str = "경로를 알 수 없음";
+
+/// Whether `index` is in the band of keys connected without recovery words.
+#[must_use]
+pub const fn is_unknown_index(index: u32) -> bool {
+    index >= UNKNOWN_PATH_FIRST && index <= MAX_BTC_INDEX
+}
 
 /// OpenPGP key reference. DEC (decipher only) is never used.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -281,9 +294,45 @@ impl KeyRole {
         }
     }
 
-    /// The path text shown before import (`m/44'/60'/0'/0/3`).
+    /// The role's index (account index or address index).
+    #[must_use]
+    pub const fn index(self) -> u32 {
+        match self {
+            Self::Evm { index, .. } | Self::Sol { index } => index.get(),
+            Self::Btc { index, .. } | Self::Zec { index, .. } => index,
+        }
+    }
+
+    /// The same role with another index (`None` out of range).
+    #[must_use]
+    pub fn with_index(self, index: u32) -> Option<Self> {
+        let role = match self {
+            Self::Evm { btc, .. } => Self::Evm {
+                index: AccountIndex::new(index).ok()?,
+                btc,
+            },
+            Self::Btc {
+                network, script, ..
+            } => Self::Btc {
+                network,
+                script,
+                index,
+            },
+            Self::Sol { .. } => Self::Sol {
+                index: AccountIndex::new(index).ok()?,
+            },
+            Self::Zec { network, .. } => Self::Zec { network, index },
+        };
+        role.validate().ok().map(|()| role)
+    }
+
+    /// The path text shown before import (`m/44'/60'/0'/0/3`); [`T_UNKNOWN_PATH`] for a key
+    /// connected without recovery words (index band [`UNKNOWN_PATH_FIRST`]..).
     #[must_use]
     pub fn path_text(self) -> String {
+        if is_unknown_index(self.index()) {
+            return T_UNKNOWN_PATH.to_owned();
+        }
         self.path()
             .map_or_else(|_| "(지원하지 않는 경로)".to_owned(), |path| path.text())
     }
@@ -304,6 +353,20 @@ impl KeyRole {
     /// Short title for lists (`EVM 계정 3`, `Bitcoin P2WPKH 주소 0`, `Solana 계정 1`).
     #[must_use]
     pub fn title(self) -> String {
+        if is_unknown_index(self.index()) {
+            let number = self
+                .index()
+                .saturating_sub(UNKNOWN_PATH_FIRST)
+                .saturating_add(1);
+            return match self {
+                Self::Evm { .. } => format!("EVM 계정 (카드 키 {number})"),
+                Self::Btc { script, .. } => {
+                    format!("Bitcoin {} 주소 (카드 키 {number})", script_name(script))
+                }
+                Self::Sol { .. } => format!("Solana 계정 (카드 키 {number})"),
+                Self::Zec { .. } => format!("Zcash 일반(transparent) 주소 (카드 키 {number})"),
+            };
+        }
         match self {
             Self::Evm { index, btc: None } => format!("EVM 계정 {}", index.get()),
             Self::Evm {
@@ -616,13 +679,18 @@ pub fn validate_before_card(
     if records.len() >= MAX_CARDS {
         return Err(PlanError::TooManyCards);
     }
+    // A card connected without recovery words has no mnemonic to compare (spec/10 §7.6).
     if records
         .iter()
-        .any(|record| record.fingerprint != fingerprint)
+        .any(|record| record.has_known_path() && record.fingerprint != fingerprint)
     {
         return Err(PlanError::DifferentMnemonic);
     }
     for planned in slots {
+        // The band of keys connected without recovery words is not a path (spec/10 §7.6).
+        if is_unknown_index(planned.role.index()) {
+            return Err(PlanError::UnsupportedRole(planned.slot));
+        }
         let identity = planned.role.key_identity();
         let elsewhere = records.iter().any(|record| {
             record

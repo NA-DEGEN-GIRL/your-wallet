@@ -212,6 +212,10 @@ fn with_account_key<T>(
         ZecKeySource::Hardware { .. } => {
             return Err(ZecSignError::Vault(VaultError::RecordNotFound));
         }
+        ZecKeySource::Imported => KeyRef::ZecImported {
+            network: account.network,
+            pubkey: account.pubkey,
+        },
     };
     vault
         .with_secp_key(key, |ctx, secret| Ok(f(ctx, secret)))

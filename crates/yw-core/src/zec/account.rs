@@ -1,5 +1,5 @@
 //! The Zcash transparent account (spec/12 §2.2): one fixed P2PKH address per network, from one
-//! of three key sources. Only the compressed public key is cached (meta `zcash`); the private
+//! of four key sources. Only the compressed public key is cached (meta `zcash`); the private
 //! key is lent by the vault at signing time (or the `YubiKey` signs, spec/10).
 #![deny(clippy::indexing_slicing)]
 
@@ -30,6 +30,9 @@ pub enum ZecKeySource {
         /// Receive index on account 0.
         index: u32,
     },
+    /// An imported transparent private key (vault tag 6, spec/12 §2.3): the vault record whose
+    /// public key is the account's (no path).
+    Imported,
 }
 
 impl ZecKeySource {
@@ -39,13 +42,14 @@ impl ZecKeySource {
         index: 0,
     };
 
-    /// Stored code: 1 derived, 2 EVM key, 3 `YubiKey`.
+    /// Stored code: 1 derived, 2 EVM key, 3 `YubiKey`, 4 imported key.
     #[must_use]
     pub const fn code(self) -> u8 {
         match self {
             Self::Derived { .. } => 1,
             Self::EvmShared { .. } => 2,
             Self::Hardware { .. } => 3,
+            Self::Imported => 4,
         }
     }
 
@@ -56,6 +60,7 @@ impl ZecKeySource {
             Self::Derived { account, index } => (account, index),
             Self::EvmShared { evm_index } => (evm_index, 0),
             Self::Hardware { index } => (index, 0),
+            Self::Imported => (0, 0),
         }
     }
 
@@ -69,6 +74,7 @@ impl ZecKeySource {
             },
             2 if b == 0 => Self::EvmShared { evm_index: a },
             3 if b == 0 => Self::Hardware { index: a },
+            4 if a == 0 && b == 0 => Self::Imported,
             _ => return None,
         };
         if source.in_range() {
@@ -85,6 +91,7 @@ impl ZecKeySource {
             Self::Derived { account, index } => account <= ZEC_MAX_INDEX && index <= ZEC_MAX_INDEX,
             Self::EvmShared { evm_index } => evm_index <= ZEC_MAX_INDEX,
             Self::Hardware { index } => index <= ZEC_MAX_INDEX,
+            Self::Imported => true,
         }
     }
 
@@ -92,11 +99,15 @@ impl ZecKeySource {
     #[must_use]
     pub fn path_text(self, network: ZecNetwork) -> String {
         match self {
+            Self::Hardware { index } if crate::yubikey::plan::is_unknown_index(index) => {
+                crate::yubikey::plan::T_UNKNOWN_PATH.to_owned()
+            }
             Self::Derived { account, index } => {
                 format!("m/44'/{}'/{account}'/0/{index}", network.coin_type())
             }
             Self::EvmShared { evm_index } => format!("m/44'/60'/0'/0/{evm_index}"),
             Self::Hardware { index } => format!("m/44'/{}'/0'/0/{index}", network.coin_type()),
+            Self::Imported => "가져온 개인키 (복구 단어 밖)".to_owned(),
         }
     }
 
@@ -112,7 +123,14 @@ impl ZecKeySource {
                 format!("Zcash 경로 (계정 {account}, 주소 {index})")
             }
             Self::EvmShared { evm_index } => format!("EVM 계정 {evm_index} 키"),
+            Self::Hardware { index } if crate::yubikey::plan::is_unknown_index(index) => format!(
+                "YubiKey (카드 키 {})",
+                index
+                    .saturating_sub(crate::yubikey::plan::UNKNOWN_PATH_FIRST)
+                    .saturating_add(1)
+            ),
             Self::Hardware { index } => format!("YubiKey (주소 {index})"),
+            Self::Imported => "가져온 키".to_owned(),
         }
     }
 }

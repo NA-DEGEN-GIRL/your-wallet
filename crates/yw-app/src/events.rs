@@ -95,6 +95,8 @@ pub enum ImportedAccount {
     Sol(RecordId, SolAddress),
     /// Bitcoin (`tag 4`).
     Btc(RecordId, BtcKeyInfo),
+    /// Zcash transparent (`tag 6`, spec/12 §2.3).
+    Zec(RecordId, yw_core::keyimport::ZecKeyInfo),
 }
 
 /// A key worker job (spec/04 §1.2). Buffers are moved, never copied.
@@ -714,6 +716,8 @@ pub struct MetaLoaded {
     pub prefs_reset: bool,
     /// `false` for a key-only wallet (no recovery words, spec/02 §4.6).
     pub has_mnemonic: bool,
+    /// Imported Zcash keys (vault tag 6, spec/12 §2.3): the Zcash tab lists them.
+    pub zec_keys: Vec<(RecordId, yw_core::keyimport::ZecKeyInfo)>,
 }
 
 /// What a key job produced.

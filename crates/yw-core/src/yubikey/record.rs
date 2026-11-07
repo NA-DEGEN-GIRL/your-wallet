@@ -13,8 +13,16 @@
 //!   1  curve (1 secp256k1, 2 Ed25519)   1  role (1 EVM, 2 BTC, 3 SOL)
 //!   1  btc_network (0, 1, 2)            1  btc_script (0, 1 P2PKH, 2 P2SH-P2WPKH, 3 P2WPKH)
 //!   4  index u32                        1  touch (TouchPolicy code)   1  pin (PinPolicy code)
-//!   33 public key (secp256k1 compressed; Ed25519: 00 ‖ 32 bytes)      3  reserved 0
+//!   33 public key (secp256k1 compressed; Ed25519: 00 ‖ 32 bytes)
+//!   1  flags (0; 1 = path unknown, spec/10 §7.6)                      2  reserved 0
 //! ```
+//!
+//! A slot connected without recovery words ("YubiKey 연결하기", spec/10 §7.6) has flags `01`: its
+//! derivation path is unknown and its role index lies in the band
+//! [`super::plan::UNKNOWN_PATH_FIRST`]`..=999` (an account number, not a path). A record whose
+//! slots are all such has the master fingerprint `00000000` and takes no part in the "one
+//! mnemonic" rule. Builds before this flag read the byte as reserved and refuse the payload
+//! (`UnsupportedPayload`); records without such slots are byte-identical to before.
 #![deny(clippy::indexing_slicing)]
 
 use super::plan::{
@@ -72,6 +80,9 @@ pub struct RecordedSlot {
     pub pin: PinPolicy,
     /// Public key read back from the card (equal to the mnemonic-derived key at enrolment).
     pub public: HwPublicKey,
+    /// The derivation path is known (enrolled from recovery words); `false` for a key connected
+    /// without them (spec/10 §7.6: the role index is then in the unknown-path band).
+    pub path_known: bool,
 }
 
 impl RecordedSlot {
@@ -84,6 +95,16 @@ impl RecordedSlot {
             touch: self.touch,
             pin: self.pin,
             backup_copy: false,
+        }
+    }
+
+    /// The path text of the slot (`m/…`, or "경로를 알 수 없음").
+    #[must_use]
+    pub fn path_text(&self) -> String {
+        if self.path_known {
+            self.role.path_text()
+        } else {
+            super::plan::T_UNKNOWN_PATH.to_owned()
         }
     }
 }
@@ -150,6 +171,13 @@ fn role_from(kind: u8, network: u8, script: u8, index: u32) -> Option<KeyRole> {
 }
 
 impl HwKeyRecord {
+    /// Whether some slot has a known derivation path (the record then names its mnemonic by the
+    /// master fingerprint).
+    #[must_use]
+    pub fn has_known_path(&self) -> bool {
+        self.slots.iter().any(|slot| slot.path_known)
+    }
+
     /// Encoded body length.
     #[must_use]
     pub fn body_len(&self) -> usize {
@@ -161,12 +189,15 @@ impl HwKeyRecord {
     pub fn is_valid(&self) -> bool {
         let planned: Vec<PlannedSlot> = self.slots.iter().map(RecordedSlot::planned).collect();
         validate_plan(&planned).is_ok()
+            && (self.has_known_path() || self.fingerprint == [0; 4])
             && self.slots.iter().all(|slot| {
-                matches!(
-                    (slot.role.curve(), slot.public),
-                    (Curve::Secp256k1, HwPublicKey::Secp256k1(_))
-                        | (Curve::Ed25519, HwPublicKey::Ed25519(_))
-                ) && public_ok(&slot.public)
+                (slot.path_known || super::plan::is_unknown_index(slot.role.index()))
+                    && matches!(
+                        (slot.role.curve(), slot.public),
+                        (Curve::Secp256k1, HwPublicKey::Secp256k1(_))
+                            | (Curve::Ed25519, HwPublicKey::Ed25519(_))
+                    )
+                    && public_ok(&slot.public)
             })
     }
 
@@ -196,7 +227,7 @@ impl HwKeyRecord {
             out.push(slot.touch.code());
             out.push(slot.pin.code());
             out.extend_from_slice(&slot.public.field());
-            out.extend_from_slice(&[0, 0, 0]);
+            out.extend_from_slice(&[u8::from(!slot.path_known), 0, 0]);
         }
         Ok(())
     }
@@ -241,10 +272,12 @@ fn decode_slot(entry: &[u8; SLOT_ENTRY_LEN]) -> Option<RecordedSlot> {
     let [applet, id, curve, kind, network, script] = *head;
     let (index, rest) = rest.split_first_chunk::<4>()?;
     let ([touch, pin], rest) = rest.split_first_chunk::<2>()?;
-    let (public, reserved) = rest.split_first_chunk::<33>()?;
-    if reserved != [0, 0, 0] {
-        return None;
-    }
+    let (public, tail) = rest.split_first_chunk::<33>()?;
+    let path_known = match tail {
+        [0, 0, 0] => true,
+        [1, 0, 0] => false,
+        _ => return None,
+    };
     let slot = CardSlot::from_codes(applet, id)?;
     let role = role_from(kind, network, script, u32::from_be_bytes(*index))?;
     if role.curve().code() != curve {
@@ -266,19 +299,23 @@ fn decode_slot(entry: &[u8; SLOT_ENTRY_LEN]) -> Option<RecordedSlot> {
         touch: TouchPolicy::from_code(*touch)?,
         pin: PinPolicy::from_code(*pin)?,
         public,
+        path_known,
     })
 }
 
-/// Cross-record rules of the slot map (spec/10 §8): serials distinct, one master fingerprint,
-/// and the same path always with the same public key.
+/// Cross-record rules of the slot map (spec/10 §8): serials distinct, one master fingerprint
+/// (among the records with a known path, §7.6), and the same path (role) always with the same
+/// public key.
 #[must_use]
 pub fn records_consistent(records: &[HwKeyRecord]) -> bool {
     for (position, record) in records.iter().enumerate() {
         let earlier = records.get(..position).unwrap_or(&[]);
-        if earlier
-            .iter()
-            .any(|other| other.serial == record.serial || other.fingerprint != record.fingerprint)
-        {
+        if earlier.iter().any(|other| {
+            other.serial == record.serial
+                || (other.has_known_path()
+                    && record.has_known_path()
+                    && other.fingerprint != record.fingerprint)
+        }) {
             return false;
         }
         for slot in &record.slots {

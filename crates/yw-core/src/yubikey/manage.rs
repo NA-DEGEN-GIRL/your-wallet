@@ -146,6 +146,7 @@ pub fn reslot_card(
             touch: planned.touch,
             pin: planned.pin,
             public: expected,
+            path_known: true,
         });
     }
     recorded.sort_by_key(|slot| slot.slot);

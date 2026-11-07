@@ -44,21 +44,21 @@ fn bytes32(text: &str) -> [u8; 32] {
 fn btc_of(preview: ImportPreview) -> Option<super::BtcKeyInfo> {
     match preview {
         ImportPreview::Btc(info) => Some(info),
-        ImportPreview::Evm(_) | ImportPreview::Sol(_) => None,
+        ImportPreview::Evm(_) | ImportPreview::Sol(_) | ImportPreview::Zec(_) => None,
     }
 }
 
 fn sol_of(preview: &ImportPreview) -> Option<String> {
     match preview {
         ImportPreview::Sol(address) => Some(address.to_base58()),
-        ImportPreview::Evm(_) | ImportPreview::Btc(_) => None,
+        ImportPreview::Evm(_) | ImportPreview::Btc(_) | ImportPreview::Zec(_) => None,
     }
 }
 
 fn evm_of(preview: &ImportPreview) -> Option<String> {
     match preview {
         ImportPreview::Evm(address) => Some(address.to_checksum()),
-        ImportPreview::Sol(_) | ImportPreview::Btc(_) => None,
+        ImportPreview::Sol(_) | ImportPreview::Btc(_) | ImportPreview::Zec(_) => None,
     }
 }
 

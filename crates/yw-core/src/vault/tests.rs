@@ -2377,16 +2377,16 @@ fn tagged_records_codec_and_rejections() {
             ),
         ),
         (
-            "unknown tag 6",
+            "unknown tag 7",
             payload_bytes(&[btc_record_bytes(7, [9; 32], 1, 1, 3)], 1)
                 .into_iter()
                 .enumerate()
-                .map(|(at, byte)| if at == 16 { 6 } else { byte })
+                .map(|(at, byte)| if at == 16 { 7 } else { byte })
                 .collect(),
         ),
         (
-            "count 55",
-            payload_bytes(std::slice::from_ref(&good_sol), 55),
+            "count 70",
+            payload_bytes(std::slice::from_ref(&good_sol), 70),
         ),
     ];
     for (label, bytes) in cases {
@@ -2737,10 +2737,11 @@ fn newer_payload_tag_is_unsupported_not_corrupt_and_never_restored_from_prev() {
             },
         )
         .unwrap();
-    // One more record of a future tag 6 (tag 5 is the hardware key reference, spec/10 §8).
+    // One more record of a future tag 7 (tag 5 is the hardware key reference, spec/10 §8; tag 6
+    // the imported Zcash key, spec/12 §2.3).
     let count = u16::from_be_bytes(at(&plain, 8..10).try_into().unwrap()) + 1;
     put(&mut plain, 8, &count.to_be_bytes());
-    plain.push(6);
+    plain.push(7);
     plain.extend_from_slice(&[0x55; 16]);
     plain.extend_from_slice(&[0; 9]);
     let mut header = at(&main, 0..176).to_vec();
@@ -2969,6 +2970,7 @@ fn hardware_keys_next_to_a_mnemonic_and_the_largest_payload() {
                     touch: TouchPolicy::Always,
                     pin: PinPolicy::Always,
                     public: HwPublicKey::Ed25519(crate::sol::keys::public_key(&seed)),
+                    path_known: true,
                 }
             })
             .collect();
@@ -3031,4 +3033,258 @@ fn evm_shared_public_key_and_wif() {
             .err(),
         Some(VaultError::UnlockFailed)
     );
+}
+
+// ---- Keys connected without recovery words (tag 5 unknown path, spec/10 §7.6) and imported
+// ---- Zcash keys (tag 6, spec/12 §2.3) ----
+
+/// Secret 1 (`G`): compressed WIF and Zcash P2PKH addresses computed independently (Python
+/// base58check over `HASH160(02 79BE…)` = `751e76e8…`, versions `1CB8` / `1D25`).
+const ONE_WIF_MAIN: &str = "KwDiBf89QgGbjEhKnhXJuH7LrciVrZi3qYjgd9M7rFU73sVHnoWn";
+const ONE_WIF_TEST: &str = "cMahea7zqjxrtgAbB7LSGbcQUr1uX1ojuat9jZodMN87JcbXMTcA";
+const ONE_T1: &str = "t1UYsZVJkLPeMjxEtACvSxfWuNmddpWfxzs";
+const ONE_TM: &str = "tmLPctKo9j49rtCSKpwEBpLBeykiTGomGQs";
+const G_COMPRESSED: [u8; 33] = [
+    0x02, 0x79, 0xBE, 0x66, 0x7E, 0xF9, 0xDC, 0xBB, 0xAC, 0x55, 0xA0, 0x62, 0x95, 0xCE, 0x87, 0x0B,
+    0x07, 0x02, 0x9B, 0xFC, 0xDB, 0x2D, 0xCE, 0x28, 0xD9, 0x59, 0xF2, 0x81, 0x5B, 0x16, 0xF8, 0x17,
+    0x98,
+];
+
+fn zec_key(
+    network: crate::zec::ZecNetwork,
+    text: &str,
+) -> Result<crate::keyimport::ImportKey, KeyError> {
+    crate::keyimport::ImportKey::parse(crate::keyimport::ImportSpec::Zec(network), text)
+}
+
+#[test]
+#[allow(
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    reason = "test assertions of one scenario"
+)]
+fn zcash_wif_import_reveal_sign_and_refusals() {
+    use crate::keyimport::{ImportChain, ImportPreview};
+    use crate::zec::ZecNetwork::{Mainnet, Testnet};
+
+    // Parse vectors: compressed WIF of the tab's network, or 64 hex with the network.
+    let preview = |network, text: &str| match zec_key(network, text).unwrap().preview().unwrap() {
+        ImportPreview::Zec(info) => info,
+        other => unreachable!("not a Zcash preview: {other:?}"),
+    };
+    let main = preview(Mainnet, ONE_WIF_MAIN);
+    assert_eq!((main.address.as_str(), main.pubkey), (ONE_T1, G_COMPRESSED));
+    assert_eq!(preview(Testnet, ONE_WIF_TEST).address, ONE_TM);
+    let hex = format!("{:064x}", 1);
+    assert_eq!(preview(Testnet, &format!("0x{hex}")).address, ONE_TM);
+    assert_eq!(preview(Mainnet, &hex.to_uppercase()).address, ONE_T1);
+    assert_eq!(
+        zec_key(Testnet, ONE_WIF_MAIN).err(),
+        Some(KeyError::ZecKeyNetwork)
+    );
+    for bad in [
+        "5HpHagT65TZzG1PH3CSu63k8DbpvD8s5ip4nEB3kEsreAnchuDf", // uncompressed
+        "KwDiBf89QgGbjEhKnhXJuH7LrciVrZi3qYjgd9M7rFU73sVHnoWo", // checksum
+        &"0".repeat(64),                                       // zero scalar
+        "t1UYsZVJkLPeMjxEtACvSxfWuNmddpWfxzs",                 // an address
+    ] {
+        assert_eq!(
+            zec_key(Mainnet, bad).err(),
+            Some(KeyError::ZecKeyFormat),
+            "{bad}"
+        );
+    }
+
+    // Vault: import, duplicate refused, the same secret on the other network is another key.
+    let (storage, mut vault) = imported(None);
+    let id = vault
+        .import_key(zec_key(Mainnet, ONE_WIF_MAIN).unwrap(), 4)
+        .unwrap();
+    assert_eq!(
+        vault.import_key(zec_key(Mainnet, &hex).unwrap(), 5),
+        Err(VaultError::DuplicateKey)
+    );
+    let test_id = vault
+        .import_key(zec_key(Testnet, ONE_WIF_TEST).unwrap(), 6)
+        .unwrap();
+    // The standard derived key of the wallet is refused (it already is a Zcash address).
+    let derived = vault
+        .with_secp_key(
+            KeyRef::Zec {
+                test: false,
+                account: 0,
+                index: 0,
+            },
+            |_, secret| Ok(crate::hex::encode(&secret.secret_bytes())),
+        )
+        .unwrap();
+    assert_eq!(
+        vault.import_key(zec_key(Mainnet, &derived).unwrap(), 7),
+        Err(VaultError::DuplicateKey)
+    );
+    // Cap 15 per chain.
+    for n in 2..=14_u8 {
+        vault
+            .import_key(zec_key(Mainnet, &format!("{n:064x}")).unwrap(), 8)
+            .unwrap();
+    }
+    assert_eq!(
+        vault.import_key(zec_key(Mainnet, &format!("{:064x}", 99)).unwrap(), 9),
+        Err(VaultError::RecordLimit)
+    );
+    // Reload: the records survive; listing, signing key and reveal.
+    vault.lock();
+    let mut vault = reload(&storage);
+    vault.unlock(&pw(PASSWORD), new_slot()).unwrap();
+    let keys = vault.imported_keys().unwrap();
+    assert_eq!(keys.zec.len(), 15);
+    assert_eq!(
+        (keys.zec[0].0, keys.zec[0].1.address.as_str()),
+        (id, ONE_T1)
+    );
+    assert_eq!(keys.zec[1].1.address, ONE_TM);
+    let lent = vault
+        .with_secp_key(
+            KeyRef::ZecImported {
+                network: Mainnet,
+                pubkey: G_COMPRESSED,
+            },
+            |ctx, secret| Ok(secp256k1::PublicKey::from_secret_key(ctx, secret).serialize()),
+        )
+        .unwrap();
+    assert_eq!(lent, G_COMPRESSED);
+    assert!(
+        vault
+            .with_secp_key(
+                KeyRef::ZecImported {
+                    network: Mainnet,
+                    pubkey: [2; 33],
+                },
+                |_, _| Ok(()),
+            )
+            .is_err()
+    );
+    let (chain, wif) = vault.reveal_imported_key(&pw(PASSWORD), id).unwrap();
+    assert_eq!((chain, wif.expose()), (ImportChain::Zec, ONE_WIF_MAIN));
+    let (_, wif) = vault.reveal_imported_key(&pw(PASSWORD), test_id).unwrap();
+    assert_eq!(wif.expose(), ONE_WIF_TEST);
+    assert_eq!(
+        vault.remove_imported_key(&pw(PASSWORD), test_id),
+        Ok(ImportChain::Zec)
+    );
+    // The payload names the record tag 6, which builds before it refuse (unknown tag →
+    // UnsupportedPayload, `newer_payload_tag_is_unsupported_not_corrupt…`).
+    let payload = vault.payload().unwrap();
+    let encoded = payload.encode().unwrap();
+    assert_eq!(payload.zec_keys.len(), 14);
+    let first_zec = encoded.len() - 14 * 58;
+    assert_eq!(encoded[first_zec], 6);
+}
+
+#[test]
+#[allow(clippy::indexing_slicing, reason = "test assertions")]
+fn unknown_path_card_vault_accounts_and_zcash_collision() {
+    use crate::btc::account::{HwBtcKey, ScriptType};
+    use crate::yubikey::plan::{CardSlot, KeyRole, PgpKey, PinPolicy, PivSlot, TouchPolicy};
+    use crate::yubikey::record::{HwKeyRecord, HwPublicKey, RecordedSlot};
+
+    let slot = |slot, role, public| RecordedSlot {
+        slot,
+        role,
+        touch: TouchPolicy::Always,
+        pin: if matches!(slot, CardSlot::Piv(_)) {
+            PinPolicy::Always
+        } else {
+            PinPolicy::NotApplicable
+        },
+        public,
+        path_known: false,
+    };
+    let sol_public = crate::sol::keys::public_key(&[3; 32]);
+    let record = HwKeyRecord {
+        serial: 41,
+        firmware: crate::yubikey::Firmware::new(5, 7, 4),
+        fingerprint: [0; 4],
+        slots: vec![
+            slot(
+                CardSlot::OpenPgp(PgpKey::Sig),
+                KeyRole::Evm {
+                    index: index(900),
+                    btc: None,
+                },
+                HwPublicKey::Secp256k1(G_COMPRESSED),
+            ),
+            slot(
+                CardSlot::OpenPgp(PgpKey::Aut),
+                KeyRole::Btc {
+                    network: crate::btc::BtcNetwork::Testnet4,
+                    script: ScriptType::P2shP2wpkh,
+                    index: 900,
+                },
+                hw_record(1, 0, &[]).slots[0].public,
+            ),
+            slot(
+                CardSlot::Piv(PivSlot::new(0x82).unwrap()),
+                KeyRole::Sol { index: index(900) },
+                HwPublicKey::Ed25519(sol_public),
+            ),
+        ],
+    };
+    let (storage, mut vault) = empty_vault(KDF_TEST);
+    vault
+        .create_with_hardware(&pw(PASSWORD), record.clone(), new_slot(), 1)
+        .unwrap();
+    vault.lock();
+    let mut vault = reload(&storage);
+    vault.unlock(&pw(PASSWORD), new_slot()).unwrap();
+    assert_eq!(vault.hardware_keys().unwrap()[0].record, record);
+    // The accounts answer from the slot map exactly like enrolled ones.
+    assert_eq!(
+        vault.evm_address(EvmKeySource::Hardware(index(900))).ok(),
+        crate::yubikey::plan::evm_address(&record.slots[0].public).ok()
+    );
+    assert_eq!(
+        vault
+            .sol_public_keys(&[crate::slip10::SolKeySource::Hardware(index(900))])
+            .unwrap(),
+        vec![sol_public]
+    );
+    let btc = vault
+        .hardware_btc_account(
+            crate::btc::BtcNetwork::Testnet4,
+            ScriptType::P2shP2wpkh,
+            HwBtcKey::Address(900),
+        )
+        .unwrap();
+    assert!(
+        btc.path_text(
+            crate::btc::BtcNetwork::Testnet4,
+            crate::bip32::path::BtcChain::Receive,
+            0
+        )
+        .starts_with(crate::yubikey::plan::T_UNKNOWN_PATH)
+    );
+    assert!(
+        crate::slip10::SolKeySource::Hardware(index(900))
+            .path_text()
+            .starts_with(crate::yubikey::plan::T_UNKNOWN_PATH)
+    );
+    // A Zcash key that a card holds is refused; another one is imported next to the card.
+    assert_eq!(
+        vault.import_key(
+            zec_key(crate::zec::ZecNetwork::Mainnet, ONE_WIF_MAIN).unwrap(),
+            2
+        ),
+        Err(VaultError::DuplicateKey)
+    );
+    vault
+        .import_key(
+            zec_key(crate::zec::ZecNetwork::Mainnet, &format!("{:064x}", 2)).unwrap(),
+            3,
+        )
+        .unwrap();
+    // A mnemonic card can join later: the unknown-path record takes no part in the fingerprint
+    // rule.
+    let enrolled = hw_record(42, 0, std::slice::from_ref(&record));
+    vault.add_hardware_key(enrolled, 4).unwrap();
 }

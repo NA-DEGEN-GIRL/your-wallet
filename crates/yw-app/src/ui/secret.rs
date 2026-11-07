@@ -49,12 +49,16 @@ pub const T_CARD_PIN: &str = "YubiKey를 연결하고 PIN 입력 후 터치하�
 pub const T_CARD_ADMIN_PIN: &str = "YubiKey를 하나만 연결하고 OpenPGP 관리자 PIN(PW3, 8–127자, 공장 기본값 12345678)을 입력하세요. 키를 가져오는 동안 한 번만 쓰고 바로 지웁니다.";
 /// W12 management key (spec/10 §7.3).
 pub const T_CARD_MANAGEMENT_KEY: &str = "YubiKey의 PIV 관리 키를 16진수 48자리로 입력하세요(ykman이 보여주는 형식). 이 지갑은 관리 키를 저장하지 않으며, 이번 작업에만 쓰고 바로 지웁니다.";
+/// W12 of the optional ownership check of "`YubiKey` 연결하기" (spec/10 §7.6).
+pub const T_CARD_USER_PIN: &str = "선택 사항입니다: 이 YubiKey의 PIN을 한 번 확인해 카드가 내 것인지 봅니다(VERIFY 한 번 — 서명·터치·쓰기 없음). 틀리면 남은 시도가 하나 줄어듭니다. 공장 기본 PIN(123456)은 보내지 않습니다. 확인하지 않아도 연결할 수 있고, 서명할 때는 언제나 PIN과 터치가 필요합니다.";
 /// W12 PIV PIN (spec/10 §7.3, §9.3).
 pub const T_CARD_PIV_PIN: &str = "YubiKey를 하나만 연결하고 PIV PIN(6–8자, 공장 기본값 123456)을 입력하세요. PIN으로 보호된 PIV 관리 키를 꺼내는 데 한 번만 쓰고 바로 지웁니다.";
 /// W12 "PIN 하나로 통일" (spec/10 §9.3).
 pub const T_CARD_SET_PINS: &str = "YubiKey를 하나만 연결하세요. 새 8자 PIN 하나를 OpenPGP PIN·OpenPGP 관리자 PIN·PIV PIN·PIV PUK에 똑같이 넣고, PIV 관리 키는 자동으로 새로 만들어 PIN으로 보호합니다. 현재 값이 공장 기본값이면 '현재 PIN'을 비워 두고, 전에 하나로 통일했다면 그 8자를 넣으세요. 중간에 실패하면 거기서 멈추고 바뀐 것만 알려 드립니다.";
 /// W07 help of a Solana key (spec/04 §2.18).
 pub const T_SOL_KEY_INPUT: &str = "Phantom·Solflare의 '개인키 내보내기'로 받은 base58 문자열(64바이트 keypair) 또는 solana-keygen JSON 파일의 내용([숫자 64개])을 붙여넣으세요. 주소(32바이트)는 개인키가 아닙니다.";
+/// W07 help of a Zcash key (spec/12 §2.3).
+pub const T_ZEC_KEY_INPUT: &str = "Zcash 개인키를 붙여넣으세요: 압축 WIF(K·L로 시작하면 mainnet, c로 시작하면 testnet — Zcash 탭의 네트워크와 같아야 함) 또는 16진수 64자리(지금 Zcash 탭의 네트워크로 씀). 일반(transparent) 주소 하나로 씁니다.";
 /// W07 help of a Bitcoin key (spec/04 §2.18).
 pub const T_BTC_KEY_INPUT: &str = "WIF 형식 개인키(5·K·L로 시작하면 mainnet, 9·c로 시작하면 testnet4)를 붙여넣으세요. 주소 형식은 앞 화면에서 고른 것으로 만듭니다.";
 const VK_TAB: u16 = 0x09;
@@ -133,6 +137,12 @@ pub enum CardSecretKind {
     /// "PIN 하나로 통일" (spec/10 §9.3): the one current value (empty = factory values, else 8
     /// characters), the new value (exactly 8) twice.
     SetPins,
+    /// The optional ownership check of "`YubiKey` 연결하기" (spec/10 §7.6): the user PIN of
+    /// `OpenPGP` (6–127) or, with `piv`, of PIV (6–8), verified once (no signature).
+    UserPin {
+        /// The PIV PIN instead of the `OpenPGP` PIN.
+        piv: bool,
+    },
 }
 
 impl CardSecretKind {
@@ -145,6 +155,7 @@ impl CardSecretKind {
             Self::ChangePin(target) => target.change_title(),
             Self::PivPin => "YubiKey PIV PIN",
             Self::SetPins => "YubiKey PIN 하나로 통일",
+            Self::UserPin { .. } => "YubiKey PIN 확인 (선택)",
         }
     }
 }
@@ -496,6 +507,16 @@ fn slots_for(kind: SecretKind) -> Vec<Slot> {
             chain: ImportChain::Btc,
             ..
         } => vec![slot("Bitcoin 개인키 (WIF)", Charset::Base58, 51, 52, false)],
+        SecretKind::PrivateKey {
+            chain: ImportChain::Zec,
+            ..
+        } => vec![slot(
+            "Zcash 개인키 (압축 WIF 또는 16진수 64자리)",
+            Charset::KeyText,
+            52,
+            66,
+            false,
+        )],
         SecretKind::CardPin { min, max, .. } => vec![slot(
             "YubiKey PIN",
             Charset::Printable,
@@ -529,8 +550,11 @@ fn slots_for(kind: SecretKind) -> Vec<Slot> {
                 ),
             ]
         }
-        SecretKind::CardSecret(CardSecretKind::PivPin) => {
+        SecretKind::CardSecret(CardSecretKind::PivPin | CardSecretKind::UserPin { piv: true }) => {
             vec![slot("PIV PIN", Charset::Printable, 6, 8, true)]
+        }
+        SecretKind::CardSecret(CardSecretKind::UserPin { piv: false }) => {
+            vec![slot("OpenPGP PIN", Charset::Printable, 6, 127, true)]
         }
         SecretKind::CardSecret(CardSecretKind::SetPins) => vec![
             slot(
@@ -590,6 +614,7 @@ fn intro(kind: SecretKind, words: usize) -> Vec<String> {
                 }
                 ImportChain::Sol => T_SOL_KEY_INPUT.to_owned(),
                 ImportChain::Btc => T_BTC_KEY_INPUT.to_owned(),
+                ImportChain::Zec => T_ZEC_KEY_INPUT.to_owned(),
             },
             if no_words {
                 T_KEY_ONLY_BACKUP.to_owned()
@@ -618,6 +643,9 @@ fn intro(kind: SecretKind, words: usize) -> Vec<String> {
         )],
         SecretKind::CardSecret(CardSecretKind::PivPin) => vec![T_CARD_PIV_PIN.to_owned()],
         SecretKind::CardSecret(CardSecretKind::SetPins) => vec![T_CARD_SET_PINS.to_owned()],
+        SecretKind::CardSecret(CardSecretKind::UserPin { .. }) => {
+            vec![T_CARD_USER_PIN.to_owned()]
+        }
         SecretKind::CardPin { touches, .. } => {
             let mut lines = vec![T_CARD_PIN.to_owned()];
             if touches > 1 {
@@ -933,13 +961,22 @@ impl SecretForm {
             {
                 return Err("관리 키는 16진수(0–9, a–f) 48자리입니다.".to_owned());
             }
-            SecretKind::CardSecret(CardSecretKind::PivPin)
+            SecretKind::CardSecret(
+                CardSecretKind::PivPin | CardSecretKind::UserPin { piv: true },
+            ) if self
+                .slots
+                .iter()
+                .any(|slot| !(6..=8).contains(&slot.field.len())) =>
+            {
+                return Err("PIV PIN은 영문·숫자·기호(ASCII) 6–8자입니다.".to_owned());
+            }
+            SecretKind::CardSecret(CardSecretKind::UserPin { piv: false })
                 if self
                     .slots
                     .iter()
-                    .any(|slot| !(6..=8).contains(&slot.field.len())) =>
+                    .any(|slot| !(6..=127).contains(&slot.field.len())) =>
             {
-                return Err("PIV PIN은 영문·숫자·기호(ASCII) 6–8자입니다.".to_owned());
+                return Err("OpenPGP PIN은 영문·숫자·기호(ASCII) 6–127자입니다.".to_owned());
             }
             SecretKind::CardSecret(CardSecretKind::SetPins) => {
                 let current = self.slots.first().map_or(0, |slot| slot.field.len());

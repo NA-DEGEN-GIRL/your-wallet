@@ -17,6 +17,7 @@ use yw_core::yubikey::plan::{PlanError, PlannedSlot};
 
 use super::{KeyWorker, ascii, new_slot, now_unix, passphrase, password, reconcile_hardware};
 
+pub mod connect;
 pub mod manage;
 use crate::events::{KeyOutcome, YubiKeyJobError};
 use crate::logging::{self, Field};
@@ -127,6 +128,37 @@ pub enum YkJob {
     Discard,
     /// A card action of the `YubiKey` list (spec/10 §15).
     Manage(manage::ManageJob),
+    /// "`YubiKey` 연결하기": read the keys of the single inserted card (no PIN, nothing written,
+    /// spec/10 §7.6).
+    Scan,
+    /// "`YubiKey` 연결하기" from S01: hold the new wallet's password (W01) until `Connect` creates
+    /// the vault (wiped by `Discard`, the wizard's end and every lock).
+    HoldConnectPassword {
+        /// Vault password (W01).
+        password: Zeroizing<Vec<u8>>,
+    },
+    /// "저장" of the connect flow: scan card `serial` again, require the confirmed record, then
+    /// add it (or create the `YubiKey` wallet with the held password).
+    Connect {
+        /// The card of the scan.
+        serial: u32,
+        /// What each chosen key is.
+        choices: Vec<(
+            yw_core::yubikey::plan::CardSlot,
+            yw_core::yubikey::connect::KeyUse,
+        )>,
+        /// The record the user confirmed.
+        expected: Box<yw_core::yubikey::record::HwKeyRecord>,
+    },
+    /// The optional ownership check of the connect flow (one VERIFY).
+    ConnectVerify {
+        /// Card.
+        serial: u32,
+        /// The applet: `OpenPGP` (secp256k1) or PIV (Ed25519).
+        curve: yw_core::yubikey::plan::Curve,
+        /// The PIN (moved, wiped with the job).
+        pin: Zeroizing<Vec<u8>>,
+    },
 }
 
 impl core::fmt::Debug for YkJob {
@@ -155,6 +187,10 @@ impl YkJob {
             Self::Remove { .. } => "YkRemove",
             Self::Discard => "YkDiscard",
             Self::Manage(job) => job.name(),
+            Self::Scan => "YkScan",
+            Self::HoldConnectPassword { .. } => "YkHoldConnectPassword",
+            Self::Connect { .. } => "YkConnect",
+            Self::ConnectVerify { .. } => "YkConnectVerify",
         }
     }
 }
@@ -210,6 +246,10 @@ pub enum YkOutcome {
     Discarded,
     /// A card action finished.
     Manage(manage::ManageOutcome),
+    /// `Scan` finished.
+    Scanned(Result<yw_core::yubikey::connect::CardScan, CardJobError>),
+    /// `ConnectVerify` finished.
+    ConnectVerified(Result<(), CardJobError>),
 }
 
 /// The recovery words of an enrolment held between the confirmation and the card.
@@ -370,6 +410,28 @@ impl KeyWorker {
                 KeyOutcome::YubiKey(YkOutcome::Discarded)
             }
             YkJob::Manage(job) => KeyOutcome::YubiKey(YkOutcome::Manage(self.yubikey_manage(job))),
+            YkJob::Scan => KeyOutcome::YubiKey(YkOutcome::Scanned(crate::yubikey::scan_single(
+                self.cards.as_mut(),
+            ))),
+            YkJob::HoldConnectPassword { password } => {
+                self.connect_password = Some(password);
+                KeyOutcome::YubiKey(YkOutcome::Discarded)
+            }
+            YkJob::Connect {
+                serial,
+                choices,
+                expected,
+            } => KeyOutcome::YubiKeyEnrolled(self.yk_connect(serial, &choices, &expected)),
+            YkJob::ConnectVerify { serial, curve, pin } => {
+                let result =
+                    crate::yubikey::verify_card_pin(self.cards.as_mut(), serial, curve, &pin);
+                logging::info(
+                    "key",
+                    "yubikey.connect_pin",
+                    &[("ok", Field::Word(if result.is_ok() { "yes" } else { "no" }))],
+                );
+                KeyOutcome::YubiKey(YkOutcome::ConnectVerified(result))
+            }
         }
     }
 
@@ -397,6 +459,7 @@ impl KeyWorker {
             self.pending_password = None;
         }
         self.pending_enrol = None;
+        self.connect_password = None;
     }
 
     /// `SetPins`: the card is identified with its record's applets (both when unknown).

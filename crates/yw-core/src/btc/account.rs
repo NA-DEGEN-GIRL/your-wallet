@@ -1106,6 +1106,12 @@ impl BtcAccountKey {
 
 /// The path text of a `YubiKey` key: `m/84'/1'/0'/0/3 (YubiKey)` or `m/44'/60'/0'/0/3 (YubiKey)`.
 fn hardware_path_text(key: HwBtcKey, script_type: ScriptType, net: BtcNetwork) -> String {
+    // A key connected without recovery words (spec/10 §7.6): its index is not a path.
+    if let HwBtcKey::Address(index) | HwBtcKey::Evm(index) = key
+        && crate::yubikey::plan::is_unknown_index(index)
+    {
+        return format!("{} (YubiKey)", crate::yubikey::plan::T_UNKNOWN_PATH);
+    }
     match key {
         HwBtcKey::Address(index) => format!(
             "m/{}'/{}'/0'/0/{index} (YubiKey)",
