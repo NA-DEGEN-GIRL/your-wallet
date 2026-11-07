@@ -221,8 +221,15 @@ impl ClearPlan {
             .filter(|slot| !self.clears(slot.slot))
             .copied()
             .collect();
+        // Only keys connected without recovery words left: no mnemonic to name (spec/10 §8).
+        let fingerprint = if slots.iter().any(|slot| slot.path_known) {
+            record.fingerprint
+        } else {
+            [0; 4]
+        };
         (!slots.is_empty()).then(|| HwKeyRecord {
             slots,
+            fingerprint,
             ..record.clone()
         })
     }
