@@ -172,7 +172,7 @@ pub enum SettingsSection {
     Ai,
     /// `YubiKey`: the enrolled cards, their slots and accounts, `YubiKey 등록`, `삭제` (spec/10).
     YubiKey,
-    /// 복구 단어: the wallet's recovery phrases, adding, backup, removal (spec/04 §2.22).
+    /// 복구 단어: the wallet's recovery phrases, adding, backup, removal (spec/04 §2.24).
     Mnemonics,
 }
 
@@ -3239,7 +3239,7 @@ impl App {
                 )
             })
             .collect();
-        // The added mnemonics' accounts (spec/04 §2.22), after the primary one's.
+        // The added mnemonics' accounts (spec/04 §2.24), after the primary one's.
         rows.extend(
             self.mnemonic_account_rows()
                 .into_iter()

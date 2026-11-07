@@ -1,4 +1,4 @@
-//! Several recovery phrases in one wallet (spec/02 §8.6, spec/04 §2.22): the settings section
+//! Several recovery phrases in one wallet (spec/02 §8.6, spec/04 §2.24): the settings section
 //! "복구 단어" (list with label, backup state and actions), "복구 단어 추가 가져오기" (W05 → W06 →
 //! address preview → W03), "새 복구 단어 만들기 (추가)" (W03 → W08 → W10), rename, reveal (W03 →
 //! W08), removal (strong warning → W03), the "계정 추가" mnemonic picker and the EVM accounts of

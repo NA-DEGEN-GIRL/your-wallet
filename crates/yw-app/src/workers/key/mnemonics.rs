@@ -1,5 +1,5 @@
 //! The key worker's recovery-phrase jobs (several mnemonics in one wallet, spec/02 §8.6,
-//! spec/04 §2.22): "복구 단어 추가 가져오기" (the entered words and passphrase are held between the
+//! spec/04 §2.24): "복구 단어 추가 가져오기" (the entered words and passphrase are held between the
 //! address preview and the commit, never on disk, wiped by [`MnJob::Discard`] and every lock),
 //! "새 복구 단어 만들기 (추가)" with its backup quiz, reveal, removal, the accounts of an added
 //! mnemonic, and the meta `mnemonics` reconciliation at meta load.

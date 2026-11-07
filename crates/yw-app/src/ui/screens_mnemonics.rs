@@ -1,4 +1,4 @@
-//! The recovery-phrase screens (spec/04 §2.22): the settings section "복구 단어" (one card per
+//! The recovery-phrase screens (spec/04 §2.24): the settings section "복구 단어" (one card per
 //! mnemonic with its label, words, backup state and actions; the address preview of
 //! "복구 단어 추가 가져오기"; the removal warning) and the "계정 추가" mnemonic picker row.
 
