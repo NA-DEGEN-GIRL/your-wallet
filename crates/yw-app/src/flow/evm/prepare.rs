@@ -14,7 +14,7 @@ use yw_core::approval::{
     RiskLevel, RuleId, SimulationBinding, TokenMeta, Warning, build_evm_tx_request,
 };
 use yw_core::evm::abi::{
-    SEL_DECIMALS, SEL_SYMBOL, balance_of_data, decode_decimals, decode_symbol,
+    AbiValue, SEL_DECIMALS, SEL_SYMBOL, balance_of_data, decode_decimals, decode_symbol,
     decode_uint256_result,
 };
 use yw_core::evm::address::Address;
@@ -321,15 +321,19 @@ fn gas_estimate(outcome: &EstimateOutcome) -> GasEstimate<'_> {
 }
 
 /// What step 9 looks up (spec/03 §2.5, §8.5): token metadata, address classification (the
-/// transaction's `to` first, outside the 16-lookup limit, then the spenders) and the account's
-/// balance of every approved ERC-20 token — of the calldata approvals and of the simulated
-/// diff's approvals alike, since the rules judge the diff's approvals when there is one (E14
-/// "잔액보다 큰 승인", security review L2).
+/// transaction's `to` and an ERC-20 `transfer` recipient first, outside the 16-lookup limit,
+/// then the spenders) and the account's balance of every approved ERC-20 token — of the
+/// calldata approvals and of the simulated diff's approvals alike, since the rules judge the
+/// diff's approvals when there is one (E14 "잔액보다 큰 승인", security review L2).
 struct FactTargets {
     tokens: Vec<Address>,
-    /// `[to, spenders…]`: `to` has its own slot (security review L3), so 16 spenders (the R5
-    /// multicall limit) are all classified.
+    /// `[to, transfer recipient?, spenders…]`: `to` has its own slot (security review L3) and so
+    /// does the decoded recipient of a top-level ERC-20 `transfer` (its "호출 인수 · to" row
+    /// gets the EOA/contract note, spec/03 §10.2a), so 16 spenders (the R5 multicall limit) are
+    /// all classified.
     addresses: Vec<Address>,
+    /// Leading `addresses` outside the lookup limit (`to`, and the transfer recipient if any).
+    reserved: usize,
     balance_tokens: Vec<Address>,
 }
 
@@ -343,6 +347,12 @@ fn fact_targets(decoded: &DecodedTx, sim: &SimResult) -> FactTargets {
             list.push(address);
         }
     };
+    if decoded.call.kind() == Some("erc20_transfer")
+        && let Some(AbiValue::Address(recipient)) = decoded.call.arg("to")
+    {
+        push(&mut addresses, *recipient);
+    }
+    let reserved = addresses.len();
     let call_kinds: Vec<&str> = match &decoded.call {
         DecodedCall::Multicall { inner, .. } => {
             inner.iter().filter_map(DecodedCall::kind).collect()
@@ -379,6 +389,7 @@ fn fact_targets(decoded: &DecodedTx, sim: &SimResult) -> FactTargets {
     FactTargets {
         tokens,
         addresses,
+        reserved,
         balance_tokens,
     }
 }
@@ -450,10 +461,11 @@ fn gather_facts(
     let FactTargets {
         tokens,
         addresses,
+        reserved,
         balance_tokens,
     } = fact_targets(decoded, sim);
-    // `addresses[0]` is `to`, outside the limit.
-    let address_slots = MAX_FACT_LOOKUPS.saturating_add(1);
+    // `addresses[..reserved]` (`to`, the transfer recipient) are outside the limit.
+    let address_slots = MAX_FACT_LOOKUPS.saturating_add(reserved);
     let mut gaps = FactGaps {
         limited: tokens.len() > MAX_FACT_LOOKUPS
             || addresses.len() > address_slots

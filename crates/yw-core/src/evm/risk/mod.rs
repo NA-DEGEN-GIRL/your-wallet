@@ -417,6 +417,15 @@ fn transfer_intent(input: &TxRiskInput<'_>) -> Option<TransferIntent> {
 }
 
 impl TransferIntent {
+    /// The recipient the request names: `tx.to` for the native asset, the decoded `to` for a
+    /// token transfer.
+    const fn recipient(self, tx: &Eip1559Tx) -> Address {
+        match self {
+            Self::Native => tx.to,
+            Self::Token { recipient, .. } => recipient,
+        }
+    }
+
     /// The displayed amount of the change's asset leaving the wallet: `tx.value` for the native
     /// asset, the decoded amount for the transferred token, zero for anything else.
     fn shown_out(self, tx: &Eip1559Tx, change: &AssetChange) -> U256 {
@@ -431,7 +440,9 @@ impl TransferIntent {
     /// The signer's diff is one outflow — `tx.value > 0` native to `tx.to` with empty calldata,
     /// or the decoded token amount to the decoded recipient with `tx.value == 0` — and nothing
     /// else: no other asset row, no approval change, no other transfer of the signer, no omitted
-    /// row. Fees are not part of the diff (spec/03 §6.4).
+    /// row, and no "기타" log (E32): an unclassified log may be a non-standard movement of the
+    /// signer's assets (a non-indexed `Transfer`, an ERC-223 event), so it keeps E23. Fees are
+    /// not part of the diff (spec/03 §6.4).
     fn matches_simulation(self, input: &TxRiskInput<'_>, diff: &SimulationDiff) -> bool {
         let tx = input.tx;
         let (asset, recipient, amount) = match self {
@@ -454,6 +465,7 @@ impl TransferIntent {
             amount,
         };
         diff.omitted_rows == 0
+            && diff.other_events == 0
             && diff.approvals.is_empty()
             && diff.changes == [outflow]
             && diff.transfers == [row]
@@ -483,10 +495,10 @@ impl TransferIntent {
         }
         match (larger, unshown) {
             (false, 0) => None,
-            (true, 0) => Some("같은 자산이 표시된 금액보다 많이 나갑니다".to_owned()),
-            (false, count) => Some(format!("표시되지 않은 자산 {count}개가 함께 나갑니다")),
+            (true, 0) => Some("보내는 자산이 거래 금액보다 많이 나갑니다".to_owned()),
+            (false, count) => Some(format!("거래에 없는 다른 자산 {count}개도 나갑니다")),
             (true, count) => Some(format!(
-                "같은 자산이 표시된 금액보다 많이 나가고, 표시되지 않은 자산 {count}개가 함께 나갑니다"
+                "보내는 자산이 거래 금액보다 많이 나가고, 거래에 없는 다른 자산 {count}개도 나갑니다"
             )),
         }
     }
@@ -643,10 +655,17 @@ pub fn tx_rules(input: &TxRiskInput<'_>) -> Vec<Warning> {
     }
     // E23, E40: only the native asset and registry tokens count as received — any contract can
     // emit a Transfer log naming the user (spec/03 §6.4). E23 is skipped for a strictly simple
-    // transfer whose simulation matches its display exactly; E42 flags a transfer whose
-    // simulation sends more than it shows.
+    // transfer whose simulation matches its display exactly (§10.2a, E28 then names a site's
+    // recipient outside the address book); E42 flags a transfer whose simulation sends more
+    // than it shows.
+    let intent = transfer_intent(input);
+    let simple_transfer = intent.filter(|intent| {
+        input
+            .sim
+            .diff()
+            .is_some_and(|diff| intent.matches_simulation(input, diff))
+    });
     if let Some(diff) = input.sim.diff() {
-        let intent = transfer_intent(input);
         let verified = |change: &AssetChange| {
             is_verified_asset(chain, &change.asset, change.token_id.as_ref())
         };
@@ -660,11 +679,10 @@ pub fn tx_rules(input: &TxRiskInput<'_>) -> Vec<Warning> {
             .iter()
             .filter(receiving)
             .any(|change| !verified(change));
-        let simple_transfer = intent.is_some_and(|intent| intent.matches_simulation(input, diff));
         if matches!(input.origin, ApprovalOrigin::Site(_))
             && sends
             && !verified_receipts
-            && !simple_transfer
+            && simple_transfer.is_none()
         {
             let cause = unverified_receipts.then_some("받는 자산은 등록되지 않은 토큰·NFT뿐입니다");
             warnings.push(warning(E23, cause));
@@ -680,18 +698,26 @@ pub fn tx_rules(input: &TxRiskInput<'_>) -> Vec<Warning> {
     if tx.to == *input.account && !tx.data.is_empty() {
         warnings.push(warning(E24, None));
     }
-    // E28
-    if matches!(input.origin, ApprovalOrigin::App) {
-        let recipient = match input.call {
-            DecodedCall::NativeTransfer => Some(tx.to),
-            call if call.kind() == Some("erc20_transfer") => arg_address(call, "to"),
-            _ => None,
-        };
-        if let Some(recipient) = recipient
-            && facts.book_name(&recipient).is_none()
-        {
-            warnings.push(warning(E28, None));
+    // E28: the wallet's own send, or a site's simple transfer that the E23 exception left
+    // without a line — the site chose that recipient (spec/03 §10.2a).
+    let (recipient, cause) = match input.origin {
+        ApprovalOrigin::App => {
+            let recipient = match input.call {
+                DecodedCall::NativeTransfer => Some(tx.to),
+                call if call.kind() == Some("erc20_transfer") => arg_address(call, "to"),
+                _ => None,
+            };
+            (recipient, None)
         }
+        ApprovalOrigin::Site(_) => (
+            simple_transfer.map(|intent| intent.recipient(tx)),
+            Some("사이트가 정한 주소입니다 — 받는 주소가 맞는지 확인하세요"),
+        ),
+    };
+    if let Some(recipient) = recipient
+        && facts.book_name(&recipient).is_none()
+    {
+        warnings.push(warning(E28, cause));
     }
     // E29
     if matches!(input.call, DecodedCall::NativeTransfer)

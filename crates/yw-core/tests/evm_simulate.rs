@@ -1416,18 +1416,22 @@ fn site_draft(tx: &Eip1559Tx, logs: Vec<SimLog>) -> Fallible<(Vec<String>, Appro
     Ok((labels(&draft), draft))
 }
 
+fn labels_of(draft: &ApprovalDraft) -> Vec<String> {
+    labels(draft)
+}
+
 fn has(labels: &[String], rule: &str) -> bool {
     labels.iter().any(|label| label == rule)
 }
 
-fn e42_text(draft: &ApprovalDraft) -> Option<String> {
-    let found = draft
-        .display
-        .warnings
-        .iter()
-        .find(|w| w.rule == risk::E42)?;
-    assert_eq!(found.level, RiskLevel::High);
+fn rule_text(draft: &ApprovalDraft, rule: yw_core::approval::RuleId) -> Option<String> {
+    let found = draft.display.warnings.iter().find(|w| w.rule == rule)?;
+    assert_eq!(Some(found.level), risk::level_of(rule));
     Some(found.text.clone())
+}
+
+fn e42_text(draft: &ApprovalDraft) -> Option<String> {
+    rule_text(draft, risk::E42)
 }
 
 fn approval_log(token: Address, owner: Address, spender: Address, amount: u64) -> SimLog {
@@ -1439,8 +1443,9 @@ fn approval_log(token: Address, owner: Address, spender: Address, amount: u64) -
 }
 
 /// E23 is skipped only for a strictly simple transfer (empty-calldata native send, or a strict
-/// ERC-20 `transfer` with zero value) whose simulation diff is exactly the displayed outflow;
-/// E42 (high) flags a transfer whose simulation sends more than it shows (spec/03 §10.2).
+/// ERC-20 `transfer` with zero value) whose simulation diff is exactly the displayed outflow,
+/// and E28 (info) then names a site-chosen recipient outside the address book; E42 (high) flags
+/// a transfer whose simulation sends more than it shows (spec/03 §10.2a).
 #[test]
 #[expect(clippy::too_many_lines, reason = "table-driven test")]
 fn e23_simple_transfer_exception_and_e42_excess_outflow() -> Fallible<()> {
@@ -1452,17 +1457,49 @@ fn e23_simple_transfer_exception_and_e42_excess_outflow() -> Fallible<()> {
         yw_core::evm::abi::erc20_transfer_data(&OTHER, &amount),
     );
     let sent = transfer(usdc, USER, OTHER, amount);
-    let more = "화면에 보이는 금액보다 더 많은 자산이 빠져나갑니다";
+    let more = "보내려는 금액보다 많은 자산이 빠져나갑니다 — 자산을 빼가는 거래일 수 있습니다";
+    let site_recipient =
+        "주소록에 없는 받는 주소입니다\n사이트가 정한 주소입니다 — 받는 주소가 맞는지 확인하세요";
+    let booked = ChainFacts {
+        address_book: vec![(OTHER, "친구".to_owned())],
+        ..facts()
+    };
 
-    // Native plain send matching the diff: no E23, no warning at all.
+    // Native plain send matching the diff: no E23; the site-chosen recipient outside the
+    // address book is the one (info) line, none when the recipient is in the book.
     let pay = tx(OTHER, 5, vec![]);
-    let (labels, draft) = site_draft(&pay, vec![native(ERC7528_NATIVE, USER, OTHER, 5)])?;
-    assert!(labels.is_empty(), "{labels:?}");
+    let paid = vec![native(ERC7528_NATIVE, USER, OTHER, 5)];
+    let (labels, draft) = site_draft(&pay, paid.clone())?;
+    assert_eq!(labels, ["E28"]);
+    assert_eq!(
+        rule_text(&draft, risk::E28).as_deref(),
+        Some(site_recipient)
+    );
     assert_eq!(draft.display.risk, RiskLevel::Info);
-    // ERC-20 transfer matching the diff (registry token): no E23.
+    assert!(!draft.display.ack_required);
+    let draft = try_request(
+        &sepolia(),
+        &pay,
+        &ok(paid.clone()),
+        site()?,
+        &booked,
+        Vec::new(),
+    )?;
+    assert!(labels_of(&draft).is_empty(), "{:?}", labels_of(&draft));
+    // ERC-20 transfer matching the diff (registry token): no E23; E28 judges the decoded
+    // recipient, not the token.
     let (labels, _) = site_draft(&send_usdc, vec![sent.clone()])?;
-    assert!(labels.is_empty(), "{labels:?}");
-    // Unregistered token: same logic on raw units (E33 only).
+    assert_eq!(labels, ["E28"]);
+    let draft = try_request(
+        &sepolia(),
+        &send_usdc,
+        &ok(vec![sent.clone()]),
+        site()?,
+        &booked,
+        Vec::new(),
+    )?;
+    assert!(labels_of(&draft).is_empty(), "{:?}", labels_of(&draft));
+    // Unregistered token: same logic on raw units (E28, E33).
     let raw = U256::from_u64(7);
     let send_token = tx(
         TOKEN,
@@ -1470,7 +1507,20 @@ fn e23_simple_transfer_exception_and_e42_excess_outflow() -> Fallible<()> {
         yw_core::evm::abi::erc20_transfer_data(&OTHER, &raw),
     );
     let (labels, _) = site_draft(&send_token, vec![transfer(TOKEN, USER, OTHER, raw)])?;
-    assert_eq!(labels, ["E33"]);
+    assert_eq!(labels, ["E28", "E33"]);
+    // Any other log keeps E23: a non-indexed `Transfer(from, to, tokenId)` (CryptoKitties) is
+    // "기타" (E32), yet it may move the signer's asset (the recipient's receive() pulling an
+    // approved kitty). E23 is then the line, so no site E28.
+    let kitty = log(
+        NFT,
+        vec![TOPIC_TRANSFER],
+        [pad_address(&USER), pad_address(&SPENDER), uword(7)].concat(),
+    );
+    let (labels, _) = site_draft(&pay, vec![native(ERC7528_NATIVE, USER, OTHER, 5), kitty])?;
+    assert!(
+        has(&labels, "E23") && has(&labels, "E32") && !has(&labels, "E28"),
+        "{labels:?}"
+    );
 
     // ERC-20 transfer whose diff moves more of the same token: E42 high (E23 kept).
     let extra = transfer(usdc, USER, SPENDER, U256::from_u64(5));
@@ -1479,7 +1529,7 @@ fn e23_simple_transfer_exception_and_e42_excess_outflow() -> Fallible<()> {
     assert!(!has(&labels, "E13"), "{labels:?}");
     assert_eq!(
         e42_text(&draft).as_deref(),
-        Some(format!("{more}\n같은 자산이 표시된 금액보다 많이 나갑니다").as_str())
+        Some(format!("{more}\n보내는 자산이 거래 금액보다 많이 나갑니다").as_str())
     );
     assert_eq!(draft.display.risk, RiskLevel::High);
     assert!(draft.display.ack_required);
@@ -1488,17 +1538,31 @@ fn e23_simple_transfer_exception_and_e42_excess_outflow() -> Fallible<()> {
     let (_, draft) = site_draft(&send_usdc, vec![sent.clone(), other_token.clone()])?;
     assert_eq!(
         e42_text(&draft).as_deref(),
-        Some(format!("{more}\n표시되지 않은 자산 1개가 함께 나갑니다").as_str())
+        Some(format!("{more}\n거래에 없는 다른 자산 1개도 나갑니다").as_str())
     );
     let (_, draft) = site_draft(&send_usdc, vec![sent.clone(), extra, other_token])?;
     assert_eq!(
         e42_text(&draft).as_deref(),
         Some(
             format!(
-                "{more}\n같은 자산이 표시된 금액보다 많이 나가고, 표시되지 않은 자산 1개가 함께 나갑니다"
+                "{more}\n보내는 자산이 거래 금액보다 많이 나가고, 거래에 없는 다른 자산 1개도 나갑니다"
             )
             .as_str()
         )
+    );
+    // An overflowed row (합산 불가, E09) counts as a send.
+    let (labels, draft) = site_draft(
+        &send_usdc,
+        vec![
+            sent.clone(),
+            transfer(TOKEN, USER, SPENDER, U256::MAX),
+            transfer(TOKEN, USER, SPENDER, U256::MAX),
+        ],
+    )?;
+    assert!(has(&labels, "E09"), "{labels:?}");
+    assert_eq!(
+        e42_text(&draft).as_deref(),
+        Some(format!("{more}\n거래에 없는 다른 자산 1개도 나갑니다").as_str())
     );
     // Native send: more native than the value, or a token pulled along (a receive() drain).
     let (labels, draft) = site_draft(
@@ -1517,7 +1581,7 @@ fn e23_simple_transfer_exception_and_e42_excess_outflow() -> Fallible<()> {
             transfer(usdc, USER, SPENDER, U256::from_u64(9)),
         ],
     )?;
-    assert!(e42_text(&draft).is_some_and(|text| text.ends_with("1개가 함께 나갑니다")));
+    assert!(e42_text(&draft).is_some_and(|text| text.ends_with("1개도 나갑니다")));
     // The wallet's own send gets E42 too (no E23: app origin).
     let draft = try_request(
         &sepolia(),
