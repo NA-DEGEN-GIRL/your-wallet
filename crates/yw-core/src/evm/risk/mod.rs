@@ -800,6 +800,17 @@ pub fn typed_rules(input: &TypedRiskInput<'_>, hidden_characters: bool) -> Vec<W
                 if root.field("hyperliquidChain").and_then(TdNode::string) == Some("Testnet") {
                     warnings.push(warning(H09, None));
                 }
+                // A dApp-requested transfer gets the S-HC recipient and token checks (spec/11
+                // §7); missing facts fail closed.
+                if let HlUserAction::Transfer(kind) = action {
+                    let check = crate::hypercore::display::site_transfer_check(
+                        *kind,
+                        root,
+                        &account,
+                        input.facts.hyperliquid.as_ref(),
+                    );
+                    warnings.extend(check.rules.into_iter().map(|rule| warning(rule, None)));
+                }
             }
             KnownSchema::HyperliquidL1Agent => {
                 warnings.push(warning(H07, None));

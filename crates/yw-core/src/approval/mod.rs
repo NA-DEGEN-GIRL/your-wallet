@@ -548,6 +548,9 @@ pub struct ChainFacts {
     /// The OP-stack L1 data fee of the prepared transaction (spec/03 §3.4a), `None` when the
     /// chain charges none or the lookup failed (E41).
     pub l1_fee: Option<crate::evm::fee::L1FeeQuote>,
+    /// The app's checks for a dApp-requested Hyperliquid transfer (spec/11 §7); `None` fails
+    /// closed (high risk).
+    pub hyperliquid: Option<crate::hypercore::display::HlSiteFacts>,
 }
 
 impl ChainFacts {

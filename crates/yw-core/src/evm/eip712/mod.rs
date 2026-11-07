@@ -60,6 +60,43 @@ pub const HL_APPROVE_AGENT_TYPE: &str = "HyperliquidTransaction:ApproveAgent(str
 /// `encodeType` of `approveBuilderFee` (SDK `sign_approve_builder_fee`).
 pub const HL_APPROVE_BUILDER_FEE_TYPE: &str = "HyperliquidTransaction:ApproveBuilderFee(string hyperliquidChain,string maxFeeRate,address builder,uint64 nonce)";
 
+/// The official Hyperliquid app origins allowed to request an L1 Agent signature, per `source`
+/// (`a` mainnet, `b` testnet; spec/11 §7).
+pub const HL_L1_ORIGINS: [(&str, &str); 2] = [
+    ("a", "https://app.hyperliquid.xyz"),
+    ("b", "https://app.hyperliquid-testnet.xyz"),
+];
+
+/// Who asks for a typed-data signature, as far as the Hyperliquid L1 Agent exception (chainId
+/// 1337, spec/11 §7) is concerned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HlL1Requester<'a> {
+    /// Nobody may use the exception: an L1 Agent document keeps the T01 rejection.
+    Nobody,
+    /// A requesting origin the wallet trusts as such (an extension site origin, or a
+    /// `WalletConnect` claimed origin attested by Verify): the exception applies only when it is
+    /// the official app of the document's `source` network ([`HL_L1_ORIGINS`]).
+    Origin(&'a str),
+    /// Structural check only (the dispatcher's pre-queue check of a request whose origin is
+    /// decided later; the approval flow validates again with the origin).
+    Deferred,
+}
+
+impl HlL1Requester<'_> {
+    fn allows(self, root: &TdNode) -> bool {
+        match self {
+            Self::Nobody => false,
+            Self::Deferred => true,
+            Self::Origin(origin) => {
+                let source = root.field("source").and_then(TdNode::string);
+                HL_L1_ORIGINS
+                    .iter()
+                    .any(|(network, official)| source == Some(*network) && origin == *official)
+            }
+        }
+    }
+}
+
 /// A recognized Hyperliquid user-signed action (`HyperliquidSignTransaction` domain).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HlUserAction {
@@ -280,11 +317,27 @@ pub fn eip712_digest(typed: &DecodedTypedData) -> [u8; 32] {
 ///
 /// # Errors
 ///
-/// [`TypedDataError::ChainIdMismatch`] (T01) or any other variant (T02).
+/// [`TypedDataError::ChainIdMismatch`] (T01) or any other variant (T02). A Hyperliquid L1 Agent
+/// document is always T01 here; see [`validate_typed_data_v4_from`].
 pub fn validate_typed_data_v4(
     src: &[u8],
     value: &yw_json::Value,
     chain_id: u64,
+) -> Result<DecodedTypedData, TypedDataError> {
+    validate_typed_data_v4_from(src, value, chain_id, HlL1Requester::Nobody)
+}
+
+/// [`validate_typed_data_v4`] for a request from `requester`: the Hyperliquid L1 Agent schema
+/// (chainId 1337) is accepted only when [`HlL1Requester`] allows it (spec/11 §7), T01 otherwise.
+///
+/// # Errors
+///
+/// As [`validate_typed_data_v4`].
+pub fn validate_typed_data_v4_from(
+    src: &[u8],
+    value: &yw_json::Value,
+    chain_id: u64,
+    requester: HlL1Requester<'_>,
 ) -> Result<DecodedTypedData, TypedDataError> {
     if src.len() > MAX_TYPED_DATA_SOURCE {
         return Err(TypedDataError::LimitExceeded(LimitKind::SourceBytes));
@@ -312,6 +365,10 @@ pub fn validate_typed_data_v4(
     let domain = types.domain(envelope.domain, domain_tree, expected)?;
     let schema = recognize(&types, envelope.primary_type, &domain, chain_id)?;
     if expected != chain_id && schema != Some(KnownSchema::HyperliquidL1Agent) {
+        return Err(TypedDataError::ChainIdMismatch);
+    }
+    // Only the official Hyperliquid app may borrow the chainId 1337 exception (spec/11 §7).
+    if schema == Some(KnownSchema::HyperliquidL1Agent) && !requester.allows(&root) {
         return Err(TypedDataError::ChainIdMismatch);
     }
     let mut preimage = [0_u8; 66];

@@ -1398,9 +1398,17 @@ impl App {
                 source,
                 value,
             } => {
-                let Ok(typed) =
-                    yw_core::evm::eip712::validate_typed_data_v4(source, value, site.chain_id)
-                else {
+                let l1_origin = self.hl_l1_origin(site);
+                let requester = l1_origin.as_deref().map_or(
+                    yw_core::evm::eip712::HlL1Requester::Nobody,
+                    yw_core::evm::eip712::HlL1Requester::Origin,
+                );
+                let Ok(typed) = yw_core::evm::eip712::validate_typed_data_v4_from(
+                    source,
+                    value,
+                    site.chain_id,
+                    requester,
+                ) else {
                     self.respond(
                         &site.reply,
                         Err(yw_core::policy::ProviderError::InvalidParams),
@@ -1480,6 +1488,10 @@ impl App {
         let SiteKind::TypedData { account, .. } = &site.kind else {
             return;
         };
+        // A Hyperliquid transfer gets the S-HC recipient and spotMeta checks (spec/11 §7).
+        let mut facts = facts.clone();
+        facts.hyperliquid = self.hl_site_facts(&typed, account);
+        let facts = &facts;
         let draft = self.message_chain(site.chain_id).and_then(|chain| {
             let signer = self.account_source(account)?;
             let id = Self::new_approval_id().ok()?;
