@@ -471,7 +471,8 @@ OpenPGP 카드 3.4에는 **키를 지우는 명령이 없다**(덮어쓰기·생
 
 - 키 작업자는 카드에 쓰기 **전에** 결과 record로 vault를 검사한다(`Vault::check_replace_hardware_key`): 니모닉 없는 지갑의 마지막 YubiKey를 모두 비우면 지갑에 키가 남지 않으므로 `LastKey`로 거부한다(화면도 미리 `비우기`를 끄고 이유를 보인다). 카드 작업 뒤 실제로 성공한 애플릿의 슬롯만 record에서 뺀다(`ClearPlan::remaining`); **슬롯이 하나도 남지 않은 record는 지운다**. `Vault::replace_hardware_key(id, Some(record) | None)`은 비밀이 없으므로 비밀번호를 묻지 않는다(`PayloadRewrite`, §8의 `add_hardware_key`와 같다 — 카드 쪽은 이미 그 카드의 PIN 또는 일부러 PIN을 잠그는 초기화로 바뀌었다). 같은 일련번호, 유효한 record, 다른 카드와의 일관성을 요구한다.
 - 카드가 바뀌었는데 vault 갱신이 실패하면 결과 화면이 그대로 알린다("YubiKey는 바뀌었지만 지갑의 슬롯 표를 고치지 못했습니다"). 이때 그 계정의 서명은 카드의 `KeyMismatch`로 PIN 전에 거부된다(§5.2).
-- 초기화한 애플릿이 있고 record가 남으면 그 일련번호를 `hw_accounts.defaults`에 더한다(공장 PIN 경고, §9.3). record가 지워지면 뺀다.
+- 초기화한 애플릿이 있고 record가 남으면 그 일련번호를 `hw_accounts.defaults`에 더한다(공장 PIN 경고, §9.3; 그 카드는 PIN 설정 전까지 서명하지 않는다). record가 지워지면 뺀다.
+- Zcash(2026-11-07): 비우기 확인의 "쓸 수 없게 되는 계정"과 슬롯 구성 바꾸기의 "빠지는 계정"에는 지갑의 Zcash 계정 중 그 카드의 그 슬롯만 키를 가진 것(`App::zec_accounts_using_card(serial, slots)`, [12])을 위험 띠로 더한다(주소와 "…뒤에는 Zcash 탭에서 이 주소로 보낼 수 없습니다").
 - 시험: `app::tests::yubikey_manage::yubikey_clear_our_slots_and_applet_resets`(에뮬레이터; 두 애플릿 "우리 슬롯만": 입력 단어 검사, 관리자 PIN·PIV PIN, SIG/AUT 키 없음·속성 RSA 2048, `F6` 전송, 초기화 명령 없음, PIN 그대로, 슬롯 0개 → record 삭제·계정 사라짐; 다시 등록 후 PIN을 바꾼 카드에서 PIV 초기화(`FB`, PIN·PUK·관리 키 공장값, OpenPGP 그대로, record에 OpenPGP 슬롯만 남음, `defaults`에 추가) → OpenPGP 초기화(`E6`·`44`, PW1·PW3 공장값, 키 없음, record 삭제)). 에뮬레이터는 `E6`/`44`(TERMINATE 상태에서는 ACTIVATE만), RSA 4096 속성, `2C`·PUK 횟수, `F6`(5.7 미만 `6D00`), `FB`(PIN·PUK가 막히지 않으면 `6985`)를 구현한다.
 
 ### 15.5 확인한 것과 가정한 것
