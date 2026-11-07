@@ -18,6 +18,7 @@ pub mod app_extension;
 pub mod app_hypercore;
 pub mod app_keys;
 pub mod app_llm;
+pub mod app_mnemonics;
 pub mod app_reset;
 pub mod app_rpc_import;
 pub mod app_scroll;

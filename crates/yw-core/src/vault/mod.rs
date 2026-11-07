@@ -14,7 +14,10 @@ mod format;
 mod session;
 
 pub use format::{check_vault_header, peek_generation};
-pub use session::{HardwareKey, ImportedKeys, PasswordChange, SidecarContents, Vault};
+pub use session::{
+    HardwareKey, ImportedKeys, MnemonicInfo, PasswordChange, PendingPassphrase, SidecarContents,
+    Vault,
+};
 
 /// `vault.ywv` magic.
 pub const VAULT_MAGIC: [u8; 8] = *b"YWVLT003";
@@ -44,16 +47,22 @@ pub const DEK_LEN: usize = 32;
 pub const WRAPPED_DEK_LEN: usize = 48;
 /// Smallest payload ciphertext (64-byte plaintext + tag).
 pub const PAYLOAD_CT_MIN: u32 = 80;
-/// Largest payload ciphertext: 16 + 64 (24-word `Bip39`) + 15 × (57 + 89 + 60) imported keys
-/// plus 8 × (25 + 12 + 24 × 48) hardware key references (spec/10 §8) plus the 16-byte tag is
-/// 12,698 bytes; files written before key import never exceed 2,048, before hardware keys 4,096.
+/// Largest payload ciphertext: 16 + 8 × 64 (24-word `Bip39` records, spec/02 §4.6 "여러 복구
+/// 단어") + 15 × (57 + 89 + 60) imported keys plus 8 × (25 + 12 + 24 × 48) hardware key
+/// references (spec/10 §8) plus the 16-byte tag is 13,146 bytes; files written before key import
+/// never exceed 2,048, before hardware keys 4,096.
 pub const PAYLOAD_CT_MAX: u32 = 16_384;
-/// At most one `Bip39` record plus at most 15 imported keys of each chain (`EvmRawKey`,
+/// Recovery phrases (`Bip39` records) in one vault (2026-11-07: several mnemonics).
+pub const MAX_MNEMONICS: usize = 8;
+/// At most 8 `Bip39` records plus at most 15 imported keys of each chain (`EvmRawKey`,
 /// `SolKey`, `BtcKey`) and 8 hardware key references (`HwKey`).
-pub const MAX_RECORDS: usize = 54;
-/// Locked slot layout: `[0..32)` DEK, `[32]` passphrase present, `[33..35)` passphrase length
-/// (u16 BE, 0..=256), `[35..291)` passphrase bytes, `[291..320)` zero.
-pub const SLOT_LEN: usize = 320;
+pub const MAX_RECORDS: usize = 61;
+/// Locked slot layout: `[0..32)` DEK; the first (primary) `Bip39` record's passphrase at
+/// `[32]` present, `[33..35)` length (u16 BE, 0..=256), `[35..291)` bytes, `[291..320)` zero;
+/// then 7 entries of 275 bytes for the other records' passphrases from `320`: `[0]` present,
+/// `[1..17)` record id, `[17..19)` length, `[19..275)` bytes; `[2245..2304)` zero. The slot is
+/// one `VirtualLock` page in yw-app (≤ 4,096 bytes).
+pub const SLOT_LEN: usize = 2_304;
 /// `meta.ywm` magic.
 pub const META_MAGIC: [u8; 8] = *b"YWMETA03";
 /// `journal.ywj` magic.
@@ -183,8 +192,12 @@ impl RecordId {
 /// Source of an EVM signing key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EvmKeySource {
-    /// `m/44'/60'/0'/0/i` from the mnemonic.
+    /// `m/44'/60'/0'/0/i` from the primary (first) mnemonic.
     Derived(crate::bip32::path::AccountIndex),
+    /// `m/44'/60'/0'/0/i` from the `Bip39` record `id` (any of the vault's mnemonics; the
+    /// accounts of the second and later mnemonics use this, spec/02 §4.6). Signing needs that
+    /// mnemonic's backup confirmed (`BackupNotConfirmed`).
+    Mnemonic(RecordId, crate::bip32::path::AccountIndex),
     /// An imported raw private key.
     Raw(RecordId),
     /// EVM account `i` (`m/44'/60'/0'/0/i`) held on one or more `YubiKey`s (vault tag 5,

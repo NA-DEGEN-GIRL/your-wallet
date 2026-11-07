@@ -19,12 +19,14 @@
 //! | imported keys (`screens_keys`) | 13,000–13,199 | S18/S19, script radios 13,010–13,013, selected imported Solana/Bitcoin account 13,022–13,025 (Bitcoin keys are rows of `btc.accounts`) |
 //! | `YubiKey` (`screens_yubikey`) | 13,200–13,399 | S20, S21 wizard (`OpenPGP` SIG 13,210–13,221, AUT 13,230–13,241), settings tab; backup sources 13,260–13,267, `삭제` rows 13,270–13,277 |
 //! | reset·extension (`screens_reset`) | 13,400–13,449 | S22 `지갑 초기화`, T-WAIT-STALLED, S23 `Chrome 확장 설치` |
+//! | recovery phrases (`screens_mnemonics`) | 13,600–13,699 | settings 복구 단어; card actions 13,620–13,657 (8 rows each), 계정 추가 picker 13,660–13,667 |
 //! | address book (`screens_book`) | 14,000–15,699 | S14 form 14,000–14,016, favorite chips 14,020–14,027, BTC picker 14,030–14,069, SOL activity `이 주소 저장` 14,080–14,143, S14 rows 14,200–15,699 (★·편집·삭제) |
 //! | `WalletConnect` (`screens_walletconnect`) | 16,000–16,099 | S13 panel, session rows 16,020–16,083 |
 
 use crate::ui::{
     screens, screens_book, screens_btc, screens_evm, screens_hypercore, screens_keys, screens_llm,
-    screens_reset, screens_sites, screens_sol, screens_walletconnect, screens_yubikey,
+    screens_mnemonics, screens_reset, screens_sites, screens_sol, screens_walletconnect,
+    screens_yubikey,
 };
 
 /// Largest number of rows of the Solana recovery scan (spec/07 §3.3: 50 standard + 50 BIP44
@@ -319,6 +321,41 @@ pub fn ranges() -> Vec<IdRange> {
             yw_core::yubikey::plan::MAX_CARDS,
         ),
         range(
+            "mnemonics.rename",
+            screens_mnemonics::ids::RENAME_BASE,
+            screens_mnemonics::ids::ROW_SPAN,
+            1,
+            yw_core::vault::MAX_MNEMONICS,
+        ),
+        range(
+            "mnemonics.reveal",
+            screens_mnemonics::ids::REVEAL_BASE,
+            screens_mnemonics::ids::ROW_SPAN,
+            1,
+            yw_core::vault::MAX_MNEMONICS,
+        ),
+        range(
+            "mnemonics.backup",
+            screens_mnemonics::ids::BACKUP_BASE,
+            screens_mnemonics::ids::ROW_SPAN,
+            1,
+            yw_core::vault::MAX_MNEMONICS,
+        ),
+        range(
+            "mnemonics.remove",
+            screens_mnemonics::ids::REMOVE_BASE,
+            screens_mnemonics::ids::ROW_SPAN,
+            1,
+            yw_core::vault::MAX_MNEMONICS,
+        ),
+        range(
+            "mnemonics.pick",
+            screens_mnemonics::ids::PICK_BASE,
+            screens_mnemonics::ids::ROW_SPAN,
+            1,
+            yw_core::vault::MAX_MNEMONICS,
+        ),
+        range(
             "btc.activity",
             screens_btc::ids::ACTIVITY_BASE,
             screens_btc::ids::ACTIVITY_SPAN,
@@ -342,6 +379,7 @@ pub fn fixed() -> Vec<(&'static str, &'static [u16])> {
         ("llm", screens_llm::ids::FIXED),
         ("keys", screens_keys::ids::FIXED),
         ("yubikey", screens_yubikey::ids::FIXED),
+        ("mnemonics", screens_mnemonics::ids::FIXED),
         ("reset", screens_reset::ids::FIXED),
         ("hypercore", screens_hypercore::ids::FIXED),
         ("walletconnect", screens_walletconnect::ids::FIXED),

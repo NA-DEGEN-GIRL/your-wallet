@@ -27,6 +27,7 @@ use crate::meta::{self, Account, EvmAccountPref, Meta, RawAccount, SolRawAccount
 use crate::store::{FileStorage, LockedSlotBox};
 use crate::workers::journal::{JournalState, SolSignTimes};
 
+pub mod mnemonics;
 pub mod yubikey;
 
 struct PendingImport {
@@ -49,6 +50,8 @@ pub struct KeyWorker {
     pending_key: Option<PendingKeyStart>,
     /// The recovery words of a `YubiKey` enrolment wizard (spec/10 §7; never on disk).
     pending_enrol: Option<yubikey::PendingEnrol>,
+    /// The words of "복구 단어 추가 가져오기" between the address preview and the commit.
+    pending_mnemonic: Option<PendingImport>,
     journal: JournalState,
     /// The inserted `YubiKey`s (PC/SC; the emulator in tests, spec/10 §12.1).
     cards: Box<dyn crate::yubikey::CardSource>,
@@ -411,6 +414,7 @@ impl KeyWorker {
             pending: None,
             pending_key: None,
             pending_enrol: None,
+            pending_mnemonic: None,
             journal: JournalState::default(),
             cards: Box::new(crate::yubikey::PcscSource),
         }
@@ -944,6 +948,7 @@ impl KeyWorker {
         self.pending_key = None;
         self.pending_password = None;
         self.yk_wipe();
+        self.pending_mnemonic = None;
         self.journal.clear();
         if let Some(vault) = self.vault.as_mut() {
             vault.lock();
@@ -1236,6 +1241,8 @@ impl KeyWorker {
         }
         mismatch |= reconcile_imported(&mut document, &keys);
         mismatch |= reconcile_hardware(&mut document, vault)?;
+        mismatch |= mnemonics::reconcile_mnemonics(&mut document, vault)?;
+        let mnemonic_infos = vault.mnemonics()?;
         let sol_sources: Vec<SolKeySource> = document
             .sol_accounts
             .iter()
@@ -1265,6 +1272,7 @@ impl KeyWorker {
             mismatch,
             prefs_reset,
             has_mnemonic: keys.has_mnemonic,
+            mnemonics: mnemonic_infos,
         })
     }
 
@@ -1424,7 +1432,30 @@ impl KeyWorker {
             } => self.sign_chain_message_card(ticket, approved, &pin),
             KeyJob::RemoveImportedKey { password, id } => self.remove_imported(&password, id),
             KeyJob::RecoverFromPrev { password: bytes } => self.recover_from_prev(&bytes),
-            other => vec![self.handle_single(other)],
+            other => {
+                let outcome = self.handle_single(other);
+                // Several mnemonics with a passphrase: say which one the window asks for.
+                let pending = match &outcome {
+                    KeyOutcome::Status(Ok(
+                        VaultStatus::PassphraseRequired | VaultStatus::PassphraseMismatch,
+                    )) => self
+                        .vault
+                        .as_ref()
+                        .and_then(Vault::pending_passphrase)
+                        .filter(|pending| pending.count > 1),
+                    _ => None,
+                };
+                match pending {
+                    Some(pending) => vec![
+                        KeyOutcome::Mnemonics(mnemonics::MnOutcome::PassphraseFor(
+                            pending.position,
+                            pending.count,
+                        )),
+                        outcome,
+                    ],
+                    None => vec![outcome],
+                }
+            }
         }
     }
 
@@ -1595,6 +1626,7 @@ impl KeyWorker {
                 ))
             }
             KeyJob::YubiKey(job) => self.yubikey_job(job),
+            KeyJob::Mnemonics(job) => self.mnemonic_job(job),
             KeyJob::SignChainMessage { ticket, approved } => {
                 KeyOutcome::SignedChainMessage(crate::events::ChainMessageSigned {
                     ticket,

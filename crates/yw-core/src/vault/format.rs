@@ -12,9 +12,9 @@ use zeroize::{Zeroize, Zeroizing};
 
 use super::{
     FileKind, HKDF_KEK_INFO, HKDF_KEK_SALT, JOURNAL_MAGIC, JOURNAL_MAX_PLAINTEXT,
-    KDF_ID_ARGON2ID_V13, KDF_V3, KEY_BLOCK_END, KEY_SECTION_END, KdfParams, MAX_RECORDS,
-    META_MAGIC, META_MAX_PLAINTEXT, PAYLOAD_CT_MAX, PAYLOAD_CT_MIN, SIDECAR_HEADER_LEN,
-    VAULT_HEADER_LEN, VAULT_MAGIC, VAULT_VERSION, WRAPPED_DEK_LEN,
+    KDF_ID_ARGON2ID_V13, KDF_V3, KEY_BLOCK_END, KEY_SECTION_END, KdfParams, MAX_MNEMONICS,
+    MAX_RECORDS, META_MAGIC, META_MAX_PLAINTEXT, PAYLOAD_CT_MAX, PAYLOAD_CT_MIN,
+    SIDECAR_HEADER_LEN, VAULT_HEADER_LEN, VAULT_MAGIC, VAULT_VERSION, WRAPPED_DEK_LEN,
 };
 use crate::bip39::Mnemonic;
 use crate::btc::account::ScriptType;
@@ -422,16 +422,16 @@ pub(crate) struct HwKeyEntry {
     pub(crate) record: HwKeyRecord,
 }
 
-/// Decoded payload: at most one BIP39 record (none in a key-only vault) followed by 0–15 imported
-/// keys of each chain, grouped by tag (2, then 3, then 4), then 0–8 hardware key references
-/// (tag 5, spec/10 §8).
+/// Decoded payload: 0–8 BIP39 records (none in a key-only vault; the first is the primary
+/// mnemonic, spec/02 §4.6) followed by 0–15 imported keys of each chain, grouped by tag (2, then
+/// 3, then 4), then 0–8 hardware key references (tag 5, spec/10 §8).
 ///
-/// Each imported-key list is allocated with room for [`MAX_RAW_KEYS`] records up front, so `push`
-/// never reallocates (a reallocation would free the old buffer with key copies in it). `retain`
-/// moves records down and leaves stale copies past `len`; `Drop` therefore zeroizes the whole
-/// capacity, not only the live records.
+/// Each secret list is allocated with room for its maximum up front, so `push` never reallocates
+/// (a reallocation would free the old buffer with key copies in it). `retain` moves records down
+/// and leaves stale copies past `len`; `Drop` therefore zeroizes the whole capacity, not only the
+/// live records.
 pub(crate) struct Payload {
-    pub(crate) bip39: Option<Bip39Record>,
+    pub(crate) bip39: Vec<Bip39Record>,
     pub(crate) raw_keys: Vec<RawKeyRecord>,
     pub(crate) sol_keys: Vec<SolKeyRecord>,
     pub(crate) btc_keys: Vec<BtcKeyRecord>,
@@ -440,6 +440,12 @@ pub(crate) struct Payload {
 
 impl Drop for Payload {
     fn drop(&mut self) {
+        // Live records wipe their entropy on drop (`Zeroizing`); the spare capacity may still
+        // hold stale copies moved there by `retain`.
+        self.bip39.clear();
+        for stale in self.bip39.spare_capacity_mut() {
+            stale.zeroize();
+        }
         self.raw_keys.zeroize();
         self.sol_keys.zeroize();
         self.btc_keys.zeroize();
@@ -459,10 +465,13 @@ fn valid_scalar(key: &[u8; 32]) -> bool {
 }
 
 impl Payload {
-    /// A payload with the given BIP39 record and no imported keys (every list pre-sized).
+    /// A payload with the given (primary) BIP39 record and no imported keys (every list
+    /// pre-sized).
     pub(crate) fn new(bip39: Option<Bip39Record>) -> Self {
+        let mut records = Vec::with_capacity(MAX_MNEMONICS);
+        records.extend(bip39);
         Self {
-            bip39,
+            bip39: records,
             raw_keys: raw_key_list(),
             sol_keys: Vec::with_capacity(MAX_RAW_KEYS),
             btc_keys: Vec::with_capacity(MAX_RAW_KEYS),
@@ -470,9 +479,20 @@ impl Payload {
         }
     }
 
+    /// The primary (first) BIP39 record.
+    pub(crate) fn primary(&self) -> Option<&Bip39Record> {
+        self.bip39.first()
+    }
+
+    /// The BIP39 record `id`.
+    pub(crate) fn mnemonic(&self, id: &[u8; 16]) -> Option<&Bip39Record> {
+        self.bip39.iter().find(|record| record.record_id == *id)
+    }
+
     /// Number of records.
     pub(crate) fn record_count(&self) -> usize {
-        usize::from(self.bip39.is_some())
+        self.bip39
+            .len()
             .saturating_add(self.raw_keys.len())
             .saturating_add(self.sol_keys.len())
             .saturating_add(self.btc_keys.len())
@@ -481,9 +501,7 @@ impl Payload {
 
     /// Whether `id` names any record.
     pub(crate) fn has_id(&self, id: &[u8; 16]) -> bool {
-        self.bip39
-            .as_ref()
-            .is_some_and(|bip39| bip39.record_id == *id)
+        self.bip39.iter().any(|bip39| bip39.record_id == *id)
             || self.raw_keys.iter().any(|raw| raw.record_id == *id)
             || self.sol_keys.iter().any(|sol| sol.record_id == *id)
             || self.btc_keys.iter().any(|btc| btc.record_id == *id)
@@ -491,10 +509,10 @@ impl Payload {
     }
 
     fn encoded_len(&self) -> Option<usize> {
-        let bip39 = match &self.bip39 {
-            Some(record) => BIP39_RECORD_FIXED_LEN.checked_add(record.mnemonic.entropy().len())?,
-            None => 0,
-        };
+        let bip39 = self.bip39.iter().try_fold(0_usize, |sum, record| {
+            sum.checked_add(BIP39_RECORD_FIXED_LEN)?
+                .checked_add(record.mnemonic.entropy().len())
+        })?;
         let raws = RAW_RECORD_LEN.checked_mul(self.raw_keys.len())?;
         let sols = SOL_RECORD_LEN.checked_mul(self.sol_keys.len())?;
         let btcs = BTC_RECORD_LEN.checked_mul(self.btc_keys.len())?;
@@ -511,7 +529,8 @@ impl Payload {
     }
 
     pub(crate) fn encode(&self) -> Result<Zeroizing<Vec<u8>>, VaultError> {
-        if self.raw_keys.len() > MAX_RAW_KEYS
+        if self.bip39.len() > MAX_MNEMONICS
+            || self.raw_keys.len() > MAX_RAW_KEYS
             || self.sol_keys.len() > MAX_RAW_KEYS
             || self.btc_keys.len() > MAX_RAW_KEYS
             || self.hw_keys.len() > MAX_HW_KEYS
@@ -536,7 +555,7 @@ impl Payload {
         out.extend_from_slice(&PAYLOAD_MAGIC);
         out.extend_from_slice(&count.to_be_bytes());
         out.extend_from_slice(&[0_u8; 6]);
-        if let Some(bip39) = &self.bip39 {
+        for bip39 in &self.bip39 {
             let entropy = bip39.mnemonic.entropy();
             out.push(TAG_BIP39);
             out.extend_from_slice(&bip39.record_id);
@@ -589,7 +608,7 @@ impl Payload {
         Self::decode_inner(bytes).ok_or(VaultError::UnsupportedPayload)
     }
 
-    fn decode_bip39(reader: &mut Reader<'_>, record_id: [u8; 16]) -> Option<Bip39Record> {
+    fn decode_bip39(&mut self, reader: &mut Reader<'_>, record_id: [u8; 16]) -> Option<()> {
         let created_unix = reader.u64()?;
         let entropy_len = usize::from(reader.u8()?);
         let mnemonic = Mnemonic::from_entropy(reader.slice(entropy_len)?).ok()?;
@@ -608,17 +627,19 @@ impl Payload {
         };
         if (!passphrase_used && passphrase_check != [0; 4])
             || (!backup_confirmed && passphrase_used)
+            || self.bip39.len() >= MAX_MNEMONICS
         {
             return None;
         }
-        Some(Bip39Record {
+        self.bip39.push(Bip39Record {
             record_id,
             created_unix,
             mnemonic,
             passphrase_used,
             backup_confirmed,
             passphrase_check,
-        })
+        });
+        Some(())
     }
 
     fn decode_raw(&mut self, reader: &mut Reader<'_>, record_id: [u8; 16]) -> Option<()> {
@@ -731,12 +752,10 @@ impl Payload {
         let mut previous: Option<u8> = None;
         for _ in 0..count {
             let tag = reader.u8()?;
-            // Grouped by tag in ascending order; the BIP39 record, if any, is the first and only
-            // tag-1 record.
-            let in_order = match previous {
-                None => true,
-                Some(last) => tag > last || (tag == last && tag != TAG_BIP39),
-            };
+            // Grouped by tag in ascending order; the BIP39 records (0–8, the first is the
+            // primary) come first. Builds before 2026-11-07 refuse a second tag-1 record here
+            // (`UnsupportedPayload`), so a vault with several mnemonics never opens in them.
+            let in_order = previous.is_none_or(|last| tag >= last);
             if !in_order {
                 return None;
             }
@@ -747,7 +766,8 @@ impl Payload {
             }
             ids.push(id);
             match tag {
-                TAG_BIP39 => payload.bip39 = Some(Self::decode_bip39(&mut reader, id)?),
+                TAG_BIP39 => payload.decode_bip39(&mut reader, id)?,
+
                 TAG_RAW_KEY => payload.decode_raw(&mut reader, id)?,
                 TAG_SOL_KEY => payload.decode_sol(&mut reader, id)?,
                 TAG_BTC_KEY => payload.decode_btc(&mut reader, id)?,
