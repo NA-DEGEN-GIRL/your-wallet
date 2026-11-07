@@ -360,7 +360,7 @@ impl BtcCtx<'_> {
     }
 
     /// Every account of `net`, BIP84 account 0 first.
-    fn accounts_on(&self, net: BtcNetwork) -> Vec<&BtcMeta> {
+    pub(crate) fn accounts_on(&self, net: BtcNetwork) -> Vec<&BtcMeta> {
         let mut out: Vec<&BtcMeta> = self
             .primary_meta()
             .filter(|meta| meta.network() == net)
@@ -510,7 +510,7 @@ impl BtcCtx<'_> {
     /// The records of `meta`'s network touching its account under any identity (spec/08 §12.1
     /// "같은 주소의 다른 계정": an imported key removed and imported again, an alias address);
     /// its own records when its scripts cannot be derived.
-    fn related_of(&self, meta: &BtcMeta) -> Vec<BtcRecord> {
+    pub(crate) fn related_of(&self, meta: &BtcMeta) -> Vec<BtcRecord> {
         let net = meta.network();
         let keys: Vec<BtcAccountKey> = self
             .accounts_on(net)
@@ -1134,6 +1134,9 @@ pub struct BtcUi {
     pub add_source: BtcAddSource,
     /// The EVM account of [`BtcAddSource::EvmShared`].
     pub add_evm_index: u32,
+    /// The mnemonic of a standard-path account added now (`None`: the primary one; several
+    /// mnemonics, spec/02 §8.6). EVM-key accounts are the primary mnemonic's only.
+    pub add_mnemonic: Option<yw_core::vault::RecordId>,
     next_job: u64,
 }
 
@@ -1173,6 +1176,7 @@ impl Default for BtcUi {
             add_account_open: false,
             add_source: BtcAddSource::Standard,
             add_evm_index: 0,
+            add_mnemonic: None,
             next_job: 0,
         }
     }
@@ -2544,17 +2548,29 @@ impl BtcUi {
         self.add_account_open = self.account_message.is_none();
         self.add_source = BtcAddSource::Standard;
         self.add_evm_index = ctx.evm_indices().first().copied().unwrap_or(0);
+        self.add_mnemonic = None;
     }
 
     /// Closes the chooser without adding.
     pub fn close_add_account(&mut self) {
         self.add_account_open = false;
         self.add_source = BtcAddSource::Standard;
+        self.add_mnemonic = None;
     }
 
-    /// The chooser's key source radio.
+    /// The chooser's key source radio (the EVM key is the primary mnemonic's).
     pub fn set_add_source(&mut self, source: BtcAddSource) {
         self.add_source = source;
+        if source == BtcAddSource::EvmShared {
+            self.add_mnemonic = None;
+        }
+    }
+
+    /// The chooser's mnemonic radio (`None`: the primary one): the standard path of that
+    /// mnemonic.
+    pub fn set_add_mnemonic(&mut self, mnemonic: Option<yw_core::vault::RecordId>) {
+        self.add_mnemonic = mnemonic;
+        self.add_source = BtcAddSource::Standard;
     }
 
     /// The chooser's EVM account radio (an index of the wallet's derived EVM accounts).
@@ -2607,8 +2623,37 @@ impl BtcUi {
             op: BtcMetaOp::AddAccount {
                 network: ctx.net(),
                 script_type,
+                mnemonic: self.add_mnemonic,
             },
         })]
+    }
+
+    /// Whether a record of an account of the added mnemonic `id` (any network) may still
+    /// confirm, or a BTC approval of one of them is open (spec/02 §8.6: removal refused).
+    #[must_use]
+    pub fn mnemonic_busy(&self, ctx: &BtcCtx<'_>, id: yw_core::vault::RecordId) -> bool {
+        let of_mnemonic = |account: &BtcAccountId| matches!(account, BtcAccountId::Hd { mnemonic: Some(of), .. } if *of == id);
+        if self.slot && ctx.btc_meta().is_some_and(|meta| of_mnemonic(&meta.id())) {
+            return true;
+        }
+        let now_unix = ctx.now_unix_ms / 1_000;
+        if ctx
+            .all_records()
+            .iter()
+            .any(|record| of_mnemonic(&record.account) && record.may_still_confirm(now_unix))
+        {
+            return true;
+        }
+        BtcNetwork::ALL.into_iter().any(|net| {
+            ctx.accounts_on(net)
+                .into_iter()
+                .filter(|meta| of_mnemonic(&meta.id()))
+                .any(|meta| {
+                    ctx.related_of(meta)
+                        .iter()
+                        .any(|record| record.may_still_confirm(now_unix))
+                })
+        })
     }
 
     /// The address mode of the selected HD account (spec/08 §3.5): fixed address (`true`,
@@ -4002,6 +4047,36 @@ impl crate::app::App {
                 ),
             ],
         );
+        self.refresh();
+    }
+
+    /// The name of a Bitcoin account with the source tag of a derived account (`네이티브 세그윗
+    /// 계정 0  [니모닉 2]`, spec/02 §8.6); other keys keep their names.
+    #[must_use]
+    pub fn btc_account_label(&self, account: &BtcAccountKey) -> String {
+        match account {
+            BtcAccountKey::Hd {
+                mnemonic,
+                script_type,
+                account: number,
+                ..
+            } => self.mnemonic_tagged(
+                &format!("{} 계정 {number}", script_type.name()),
+                mnemonic.map(|id| *id.as_bytes()),
+            ),
+            other => account_label(other),
+        }
+    }
+
+    /// The Bitcoin part of [`App::mnemonic_busy`].
+    #[must_use]
+    pub fn btc_mnemonic_busy(&self, id: yw_core::vault::RecordId) -> bool {
+        self.btc.mnemonic_busy(&self.btc_ctx(), id)
+    }
+
+    /// The Bitcoin "계정 추가" mnemonic radio (several mnemonics, spec/02 §8.6).
+    pub fn btc_pick_mnemonic(&mut self, id: yw_core::vault::RecordId, primary: bool) {
+        self.btc.set_add_mnemonic((!primary).then_some(id));
         self.refresh();
     }
 

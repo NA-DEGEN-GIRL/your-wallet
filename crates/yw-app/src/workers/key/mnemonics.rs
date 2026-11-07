@@ -120,6 +120,9 @@ pub enum MnOutcome {
     Removed(Result<RecordId, VaultError>),
     /// `Derive`.
     Derived(Result<(RecordId, u32, Address), VaultError>),
+    /// `Remove` refused: a Solana, Bitcoin or Zcash transaction of the mnemonic's accounts may
+    /// still confirm (nothing was asked of the vault).
+    Busy(RecordId),
     /// The passphrase window asks for mnemonic `position` of `count` (sent before the
     /// `PassphraseRequired` status when the vault has several mnemonics).
     PassphraseFor(usize, usize),
@@ -135,6 +138,31 @@ fn answers(words: &[Zeroizing<Vec<u8>>; 4]) -> [&str; 4] {
 }
 
 impl KeyWorker {
+    /// `지우기` of an added mnemonic (spec/02 §8.6): refused while a Solana, Bitcoin or Zcash
+    /// journal record of its accounts may still confirm (`Busy`, the imported-key rule); then
+    /// the password check and the vault removal; then the journal records of its accounts —
+    /// all final by now — are dropped, so the journal holds no record of a removed mnemonic
+    /// (an earlier build would read such a record as damaged).
+    pub(super) fn remove_mnemonic(&mut self, bytes: &[u8], id: RecordId) -> Vec<KeyOutcome> {
+        let alt = self.is_alt();
+        if let Some(vault) = self.vault.as_ref()
+            && self.journal.mnemonic_busy(vault, id, now_unix())
+        {
+            return vec![KeyOutcome::Mnemonics(MnOutcome::Busy(id))];
+        }
+        let result = (|| {
+            let password = password(bytes).map_err(|_| VaultError::UnlockFailed)?;
+            self.vault()?.remove_mnemonic(&password, id)?;
+            Ok(id)
+        })();
+        let removed = result.is_ok();
+        let mut out = vec![KeyOutcome::Mnemonics(MnOutcome::Removed(result))];
+        if removed && let Some(vault) = self.vault.as_mut() {
+            out.extend(self.journal.purge_mnemonic(vault, id, alt));
+        }
+        out
+    }
+
     pub(super) fn mnemonic_job(&mut self, job: MnJob) -> KeyOutcome {
         KeyOutcome::Mnemonics(match job {
             MnJob::Preview { phrase, passphrase } => {
@@ -178,11 +206,17 @@ impl KeyWorker {
             MnJob::Remove {
                 password: bytes,
                 id,
-            } => MnOutcome::Removed((|| {
-                let password = password(&bytes).map_err(|_| VaultError::UnlockFailed)?;
-                self.vault()?.remove_mnemonic(&password, id)?;
-                Ok(id)
-            })()),
+            } => {
+                // `KeyWorker::handle` runs `remove_mnemonic` (busy check, journal clean-up);
+                // this keeps the same rules for a direct call.
+                let outcomes = self.remove_mnemonic(&bytes, id);
+                return outcomes
+                    .into_iter()
+                    .find(|outcome| matches!(outcome, KeyOutcome::Mnemonics(_)))
+                    .unwrap_or(KeyOutcome::Mnemonics(MnOutcome::Removed(Err(
+                        VaultError::InvalidState,
+                    ))));
+            }
             MnJob::Derive { id, index } => MnOutcome::Derived((|| {
                 let account = AccountIndex::new(index).map_err(VaultError::Key)?;
                 let address = self
@@ -236,6 +270,160 @@ impl KeyWorker {
 #[must_use]
 pub fn default_label(n: usize) -> String {
     format!("{}{n}", meta::MNEMONIC_LABEL_PREFIX)
+}
+
+/// Reconciles the Solana, Bitcoin and Zcash accounts of added mnemonics with the vault's
+/// `Bip39` records (spec/02 §8.6): accounts of a removed mnemonic and a selection naming one are
+/// dropped (a Zcash account falls back to the default key, made again by the tab); an added
+/// mnemonic gets Solana account 0 when the wallet uses Solana (`sol_accounts` not empty) and
+/// Bitcoin native segwit account 0 on the meta `btc` network when Bitcoin is on (discovery runs
+/// when it is selected); Solana address caches are recomputed. Returns whether anything changed.
+///
+/// # Errors
+///
+/// The vault is locked, or a derivation failed.
+pub(super) fn reconcile_mnemonic_chains(
+    document: &mut Meta,
+    vault: &Vault,
+) -> Result<bool, VaultError> {
+    let added: Vec<RecordId> = vault
+        .mnemonics()?
+        .iter()
+        .filter(|info| !info.primary)
+        .map(|info| info.id)
+        .collect();
+    let mut changed = reconcile_sol(document, vault, &added)?;
+    changed |= reconcile_btc(document, vault, &added)?;
+    // Zcash: an account on a removed mnemonic's key is made again from the default key.
+    for network in yw_core::zec::ZecNetwork::ALL {
+        let orphan = document
+            .zcash
+            .get(network)
+            .and_then(|account| account.source.mnemonic())
+            .is_some_and(|id| !added.contains(&id));
+        if orphan {
+            document.zcash.clear(network);
+            changed = true;
+        }
+    }
+    Ok(changed)
+}
+
+/// The Solana part of [`reconcile_mnemonic_chains`].
+fn reconcile_sol(
+    document: &mut Meta,
+    vault: &Vault,
+    added: &[RecordId],
+) -> Result<bool, VaultError> {
+    use yw_core::slip10::SolKeySource;
+    let mut changed = false;
+    let known: Vec<[u8; 16]> = document
+        .mnemonic_accounts
+        .sol
+        .iter()
+        .map(|(id, _)| *id)
+        .collect();
+    for id in known {
+        if !added.iter().any(|other| *other.as_bytes() == id) {
+            document.mnemonic_accounts.remove_mnemonic(id);
+            changed = true;
+        }
+    }
+    if !document.sol_accounts.is_empty() {
+        for id in added {
+            if document
+                .mnemonic_accounts
+                .sol_of(*id.as_bytes())
+                .next()
+                .is_none()
+            {
+                document.mnemonic_accounts.upsert_sol(
+                    *id.as_bytes(),
+                    Account {
+                        index: 0,
+                        label: "Solana 1".to_owned(),
+                        address: String::new(),
+                        hidden: false,
+                    },
+                );
+                changed = true;
+            }
+        }
+    }
+    let sources: Vec<SolKeySource> = document
+        .mnemonic_accounts
+        .sol
+        .iter()
+        .filter_map(|(id, account)| {
+            Some(SolKeySource::Mnemonic(
+                RecordId::from_bytes(*id),
+                AccountIndex::new(account.index).ok()?,
+            ))
+        })
+        .collect();
+    for chunk in sources.chunks(100) {
+        let keys = vault.sol_public_keys(chunk)?;
+        for (source, key) in chunk.iter().zip(keys) {
+            let SolKeySource::Mnemonic(id, index) = source else {
+                continue;
+            };
+            let text = yw_core::sol::SolAddress::from_bytes(key).to_base58();
+            if let Some((_, account)) = document
+                .mnemonic_accounts
+                .sol
+                .iter_mut()
+                .find(|(of, account)| of == id.as_bytes() && account.index == index.get())
+                && account.address != text
+            {
+                account.address = text;
+                changed = true;
+            }
+        }
+    }
+    Ok(changed)
+}
+
+/// The Bitcoin part of [`reconcile_mnemonic_chains`].
+fn reconcile_btc(
+    document: &mut Meta,
+    vault: &Vault,
+    added: &[RecordId],
+) -> Result<bool, VaultError> {
+    use yw_core::btc::{BtcAccountKey, BtcMeta, ScriptType};
+    let mut changed = false;
+    let stale: Vec<RecordId> = document
+        .btc_accounts
+        .accounts
+        .iter()
+        .filter_map(|meta| meta.account().mnemonic())
+        .filter(|id| !added.contains(id))
+        .collect();
+    for id in stale {
+        changed |= document.btc_accounts.remove_mnemonic(id) > 0;
+    }
+    if let Some(network) = document.btc.as_deref().map(BtcMeta::network) {
+        for id in added {
+            let has_any = document
+                .btc_accounts
+                .of_network(network)
+                .any(|meta| meta.account().mnemonic() == Some(*id));
+            if has_any {
+                continue;
+            }
+            let xpub = vault.btc_account_xpub_of(Some(*id), network.coin_type())?;
+            let Ok(key) = BtcAccountKey::hd(ScriptType::P2wpkh, 0, xpub) else {
+                continue;
+            };
+            if document
+                .btc_accounts
+                .upsert(BtcMeta::with_key(network, key.with_mnemonic(Some(*id))))
+                .is_ok()
+            {
+                changed = true;
+            }
+        }
+    }
+    Ok(changed)
 }
 
 /// Reconciles meta `mnemonics` with the vault's `Bip39` records (like the imported keys): every

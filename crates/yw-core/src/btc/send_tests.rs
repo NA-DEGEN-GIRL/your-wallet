@@ -94,6 +94,11 @@ fn fixture_mode(single_address: bool) -> Fixture {
     let vault = about_vault();
     let account = BtcAccountKey::primary(vault.btc_account_xpub(BtcCoin::Test).unwrap())
         .with_single_address(single_address);
+    fixture_of(vault, account)
+}
+
+/// The [`fixture`] discovery and UTXOs on any account of `vault`.
+fn fixture_of(vault: Vault, account: BtcAccountKey) -> Fixture {
     let mut meta = BtcMeta::with_key(NET, account);
     let mut discovery = Discovery::full();
     while let Some((chain, index)) = discovery.next_request() {
@@ -1669,4 +1674,74 @@ fn yubikey_card_signing_refusals() {
         ),
         Err(CardSignError::Card(CardError::NotSupported))
     );
+}
+
+/// spec/02 §8.6: BIP84 account 0 of an added mnemonic (`abandon`×11 `about` primary, the Hardhat
+/// mnemonic added) in both address modes: its first address is the independent vector, the
+/// payload carries the marker-2 account block with the record id, the vault signs with that
+/// mnemonic's keys (the primary mnemonic's node on the same path does not match), and the journal
+/// record is version 3.
+#[test]
+fn added_mnemonic_send_end_to_end() {
+    use crate::vault::tests::{HARDHAT, HARDHAT_BIP84_TEST, unlocked_with_added};
+    for single_address in [false, true] {
+        let (vault, second) = unlocked_with_added(super::tests::ABOUT, HARDHAT);
+        let xpub = vault
+            .btc_account_xpub_of(Some(second), BtcCoin::Test)
+            .unwrap();
+        let account = BtcAccountKey::hd(ScriptType::P2wpkh, 0, xpub)
+            .unwrap()
+            .with_mnemonic(Some(second))
+            .with_single_address(single_address);
+        assert_eq!(
+            account
+                .address(NET, BtcChain::Receive, 0)
+                .unwrap()
+                .to_string(),
+            HARDHAT_BIP84_TEST
+        );
+        let fixture = fixture_of(vault, account);
+        let plan = two_input_plan(&fixture);
+        let payload = btc_payload(&plan);
+        let block = &payload[payload.len() - 35..];
+        assert_eq!(block[..3], [2, 1, ScriptType::P2wpkh.code()]);
+        assert_eq!(block[3..7], 0_u32.to_be_bytes());
+        assert!(block[7..19].iter().all(|byte| *byte == 0));
+        assert_eq!(&block[19..], second.as_bytes());
+        assert!(super::display::payload_header(&payload).is_some());
+        let signed = sign_plan(
+            &fixture.vault,
+            approve(&fixture, &plan, 3),
+            &plan,
+            &fixture.account,
+        )
+        .unwrap();
+        let verified = verify_signed(&signed.raw, &plan, &fixture.account).unwrap();
+        assert_eq!(verified.txid(), plan.txid());
+        // The same node presented as the primary mnemonic's account is refused (the plan's
+        // account, mnemonic included, is bound; nothing signed).
+        let primary_view = fixture.account.with_mnemonic(None);
+        let mut store = ApprovalStore::new();
+        let draft = build_btc_request(
+            ApprovalId([4; 16]),
+            &plan,
+            &fixture.account,
+            &fixture.meta.send_facts(&plan, TIP, &[]).unwrap(),
+        )
+        .unwrap();
+        let request = store.issue(draft, NOW_MS, EXPIRES - 120_000).unwrap();
+        let approved = store
+            .consume(request.id, request.digest, NOW_MS + 1)
+            .unwrap();
+        assert!(sign_plan(&fixture.vault, approved, &plan, &primary_view).is_err());
+        // Journal: version 3, round trip.
+        let record = BtcRecord::new_signed(&plan, &signed, &verified, NOW_UNIX).unwrap();
+        let body = record.encode().unwrap();
+        assert_eq!(body[0], 3);
+        assert_eq!(BtcRecord::decode(&body).unwrap(), record);
+        let mut journal = JournalPlain::default();
+        push_record(&mut journal, &record).unwrap();
+        let journal = JournalPlain::decode(&journal.encode().unwrap()).unwrap();
+        assert_eq!(BtcEntries::from_plain(&journal).records(), vec![record]);
+    }
 }

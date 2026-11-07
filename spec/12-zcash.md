@@ -13,7 +13,7 @@ D36의 세부 명세다. 방식은 Bitcoin([08](08-bitcoin.md))과 같다: 받�
 | 받기 | 계정 하나 = 고정 P2PKH 주소 하나(Bitcoin 고정 주소 방식, D29). 기본 키는 니모닉의 `m/44'/133'/0'/0/0`(testnet `m/44'/1'/0'/0/0`, §2.2). 받기 화면에 T-ZEC-RECEIVE "일반(transparent) 주소입니다 — Zashi 등 비공개 주소로 받으려면 그 지갑에서 받으세요." |
 | 보내기 대상 | `t1…`/`t3…`(testnet `tm…`/`t2…`) Base58Check, ZIP 320 TEX(`tex1…`/`textest1…`, P2PKH), ZIP 316 revision 0 통합 주소(`u1…`/`utest1…`)의 일반 수신자(P2PKH 또는 P2SH) |
 | 보내기 거부 | Sapling `zs…`/`ztestsapling…`, Sprout `zc…`/`zt…`, 일반 수신자가 없는 UA, ZIP 316 revision 2 초안 형식(`tu…`, `zu…`), MUST-understand 메타데이터(0xE0–0xFC)가 있는 UA, 다른 네트워크·다른 코인 주소, `zcash:` URI |
-| 키 출처 | (1) 표준 경로(기본) (2) `EVM 계정과 같은 키`(명시적 선택 + 확인, 연결성 경고 T-ZEC-EVM-SHARED) (3) YubiKey OpenPGP secp256k1 슬롯([10](10-yubikey.md) `KeyRole::Zec`, 복구 단어 없이 연결한 카드의 "경로 모름" 슬롯 포함 §7.6) (4) 가져온 개인키(WIF, 2026-11-07, §2.3) |
+| 키 출처 | (1) 표준 경로(기본) (2) `EVM 계정과 같은 키`(명시적 선택 + 확인, 연결성 경고 T-ZEC-EVM-SHARED) (3) YubiKey OpenPGP secp256k1 슬롯([10](10-yubikey.md) `KeyRole::Zec`, 복구 단어 없이 연결한 카드의 "경로 모름" 슬롯 포함 §7.6) (4) 가져온 개인키(WIF, 2026-11-07, §2.3) (5) 추가한 복구 단어의 표준 경로(2026-11-08, §2.4) |
 | 거래 형태 | v5(ZIP 225) 일반 입력·출력만, 수신자 1명 + 잔돈 0–1개(잔돈은 같은 주소), 보내기 최대, `SIGHASH_ALL`만 |
 | 데이터 원천 | 네트워크마다 `zcash:<net>` 엔드포인트 하나(D13, 현재 QuickNode). UTXO는 `zcash.indexer`로 고른다: `node`(기본, 같은 엔드포인트의 `getaddressutxos`) 또는 `bb-rest`(같은 엔드포인트의 Blockbook REST `/api/v2/utxo/<주소>`) |
 
@@ -60,6 +60,13 @@ D36의 세부 명세다. 방식은 Bitcoin([08](08-bitcoin.md))과 같다: 받�
 - 화면(계정 카드, §11): 그 네트워크의 가져온 키마다 `[가져온 키] {주소}` 줄과 `이 키 사용`(쓰는 중이면 `사용 중`), 계정이 가져온 키면 백업 도움말과 `개인키 보기`(T-REVEAL-WARN → W03 → W09 압축 WIF, 캡처 제외)·`삭제`(내보내기 먼저 T-REMOVE-IMPORTED → W03), 끝에 `개인키 가져오기`. 가져오면 탭의 네트워크이고 진행 중 거래가 없을 때 그 네트워크의 계정이 된다.
 - 삭제: 그 키의 계정에 종결되지 않은 기록(§12.1)이 있으면 거부한다("진행 중인 Zcash 거래가 이 키를 쓰고 있어…"). 지우면 그 키를 쓰던 네트워크의 meta `zcash` 계정을 비우고 표준 경로로 다시 만든다; 잠금 해제 때 tag 6에 없는 가져온 키 계정도 같은 처리(meta 대조).
 - 시험: `vault::tests::zcash_wif_import_reveal_sign_and_refusals`(secret 1의 압축 WIF·주소를 독립 계산한 벡터 `KwDiBf89…`→`t1UYsZVJkLPeMjxEtACvSxfWuNmddpWfxzs`, `cMahea7z…`→`tmLPctKo9j49rtCSKpwEBpLBeykiTGomGQs`, hex 입력, 다른 네트워크·압축 안 함·체크섬·0·주소 거부, 중복·표준 키 충돌·15개 상한, 재잠금 뒤 목록·서명 키·WIF 보기·삭제, tag 6 바이트), `unknown_path_card_vault_accounts_and_zcash_collision`(카드 키 충돌 거부).
+
+### 2.4 추가한 복구 단어의 표준 경로 (2026-11-08, D37, [02] §8.6)
+
+- 출처 `ZecKeySource::Mnemonic { mnemonic, account, index }`(저장 코드 5, `(a, b) = (account, index)`; 앱은 `0, 0`만 만든다): 추가한 니모닉 `mnemonic`의 `m/44'/{133|1}'/{a}'/0/{b}`. 공개키는 `Vault::zec_public_key_of(Some(id), …)`, 서명 키는 `KeyRef::Zec { mnemonic: Some(id), … }`(그 니모닉의 백업 확인 전이면 `BackupNotConfirmed`).
+- 화면(§11 계정 카드): `추가한 복구 단어` 줄의 `{니모닉 라벨} 표준 경로 사용`. 키 출처 줄 `[니모닉 2] Zcash 표준 경로 · m/44'/133'/0'/0/0`, 승인 창 계정 필드는 `Zcash 표준 경로 (추가한 복구 단어)`. 진행 중 거래가 있으면 바꾸지 않는다(§2.2).
+- 승인 transcript(§9)와 저널(§12.1 버전 2)이 record id를 묶는다. meta는 §12.3(`zcash`가 아닌 `mnemonic_accounts.zec`). 그 니모닉을 지우면(진행 중 기록이 있으면 거부) 그 네트워크 계정은 잠금 해제 맞춤에서 표준 경로로 다시 만든다.
+- 가져온 키 중복 거부(§2.3)는 모든 니모닉의 표준 키 `m/44'/{coin}'/0'/0/0`과 비교한다.
 
 ## 3. 받는 주소 파싱 (`zec::address::parse_recipient`)
 
@@ -160,7 +167,7 @@ v5(ZIP 225), 일반 부분만. 모든 정수는 little-endian:
 
 ## 9. 승인 표시 (`zec::display::build_zec_request`)
 
-`ApprovalKind::ZecSend`(0x50; 0x40은 HyperCore), `ChainRef::Zcash{network, genesis}`(digest `chain_tag` 5; 4는 HyperCore), `AccountRef::Zcash(압축 공개키)`, `Signer::FromPayload`, `SigningPayload::Zec(zec_payload)`(transcript `"your-wallet/v3/zec-send"` v1: 네트워크, 키 출처, 공개키, 받는 사람 형식·스크립트·입력 문자열, 금액, 수수료, 잔돈, 보내기 최대, branch id, 만료 높이, 입력 값들, 서명 전 거래 바이트). 필드(모두 계획에서 만듦, 서버 문자열 없음):
+`ApprovalKind::ZecSend`(0x50; 0x40은 HyperCore), `ChainRef::Zcash{network, genesis}`(digest `chain_tag` 5; 4는 HyperCore), `AccountRef::Zcash(압축 공개키)`, `Signer::FromPayload`, `SigningPayload::Zec(zec_payload)`(transcript `"your-wallet/v3/zec-send"` v1: 네트워크, 키 출처(코드·a·b, 코드 5면 그 뒤 니모닉 record id `push_bytes` 16 — 다른 코드의 바이트는 그대로), 공개키, 받는 사람 형식·스크립트·입력 문자열, 금액, 수수료, 잔돈, 보내기 최대, branch id, 만료 높이, 입력 값들, 서명 전 거래 바이트). 필드(모두 계획에서 만듦, 서버 문자열 없음):
 
 | 키 | 내용 | 표시 |
 |---|---|---|
@@ -221,6 +228,8 @@ v5(ZIP 225), 일반 부분만. 모든 정수는 little-endian:
 
 본문(135바이트 머리 + 서명된 거래): kind 0x04, version 1, 상태, 네트워크, 키 출처(코드·a·b), 공개키 33, 승인 id 16, 승인 digest 32, 서명 시각, `disclosed`, `mined_height`, `not_found`, 금액, 수수료, 입력 합계, 거래 길이, 거래. 읽을 때 모든 scriptSig 끝 공개키가 기록의 키인지, 첫 출력 = 금액, 출력 합 + 수수료 = 입력 합계인지 확인한다(다르면 "저널 손상": ZEC 보내기만 멈추고 바이트는 보존). 종결 기록은 64개까지 두고 오래된 것부터 지운다.
 
+**레코드 버전 2 (추가한 니모닉, 2026-11-08).** 키 출처 코드 5의 기록은 `record_version = 2`이고 135바이트 머리 뒤에 니모닉 record id 16바이트(0 아님)가 온 뒤 거래가 온다(최대 본문 135 + 16 + 32,768). 버전 1에 코드 5, 버전 2에 다른 코드는 거부한다. 다른 출처의 기록은 버전 1 바이트 그대로다. 이전 빌드는 버전 2를 본문 오류로 본다(ZEC 보내기만 멈춤, 바이트 보존, [04] §6.6).
+
 **형식 호환.** 이전 버전의 저널 디코더는 모르는 `kind`를 손상(`SidecarCorrupt(Journal)`)으로 본다. ZEC를 한 번이라도 보낸 뒤 이전 버전으로 되돌리면 저널을 열지 못하므로 새 버전을 다시 설치해야 한다(vault tag 확장과 같은 안내, [04] §6.6 표에 행 추가).
 
 ### 12.2 진행 중 규칙과 공개 거래 규칙
@@ -231,7 +240,7 @@ v5(ZIP 225), 일반 부분만. 모든 정수는 little-endian:
 
 ### 12.3 meta `zcash` (선택 최상위 키)
 
-`{"mainnet": {"source": 1|2|3|4, "a": u32, "b": u32, "pubkey": "02…"}, "testnet": {…}}` — 네트워크마다 계정 하나(키 출처 코드 1 표준(a = account, b = index) / 2 EVM 키(a = EVM index) / 3 YubiKey(a = index; 900–999는 복구 단어 없이 연결한 카드의 경로 모름 슬롯, [10] §7.6) / 4 가져온 키(a = b = 0, 2026-11-07 §2.3), 압축 공개키). 비어 있으면 쓰지 않는다. 항목이 잘못되면 그 네트워크 계정만 버리고 잠금 해제 때 표준 경로로 다시 만든다. 이전 버전은 모르는 키로 보존한다. `prefs.tab = "zec"`은 이전 버전에서 `prefs` 전체를 기본값으로 되돌린다(무해). ZEC 활동은 meta `activity`에 넣지 않는다(이전 버전이 `zcash:` 네트워크 키를 거부해 meta 전체를 버리기 때문).
+`{"mainnet": {"source": 1|2|3|4, "a": u32, "b": u32, "pubkey": "02…"}, "testnet": {…}}` — 네트워크마다 계정 하나(키 출처 코드 1 표준(a = account, b = index) / 2 EVM 키(a = EVM index) / 3 YubiKey(a = index; 900–999는 복구 단어 없이 연결한 카드의 경로 모름 슬롯, [10] §7.6) / 4 가져온 키(a = b = 0, 2026-11-07 §2.3), 압축 공개키). 비어 있으면 쓰지 않는다. 추가한 니모닉의 계정(코드 5, §2.4)은 `zcash`에 쓰지 않고(이전 빌드가 그 항목을 버리고 계정을 다시 만든다) 선택 최상위 키 `mnemonic_accounts.zec` = `{"mainnet"?: {"mnemonic": hex32, "a", "b", "pubkey"}, "testnet"?: …}`(엄격, [02] §5.3)에 쓴다. 읽을 때 그 항목이 같은 네트워크의 `zcash` 항목보다 우선한다. 항목이 잘못되면 그 네트워크 계정만 버리고 잠금 해제 때 표준 경로로 다시 만든다. 이전 버전은 모르는 키로 보존한다. `prefs.tab = "zec"`은 이전 버전에서 `prefs` 전체를 기본값으로 되돌린다(무해). ZEC 활동은 meta `activity`에 넣지 않는다(이전 버전이 `zcash:` 네트워크 키를 거부해 meta 전체를 버리기 때문).
 
 ## 13. 오류 문구 (고정, 원격 문자열 없음)
 

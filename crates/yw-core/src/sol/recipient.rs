@@ -59,6 +59,8 @@ pub enum KnownKind {
     OwnImported,
     /// One of the wallet's `YubiKey` Solana accounts (spec/10 §10).
     OwnHardware,
+    /// A standard account of one of the wallet's added recovery phrases (spec/02 §8.6).
+    OwnMnemonic,
     /// A recipient of an earlier successful send on the same cluster (activity / journal): the
     /// address is known (no `FirstTime`).
     Sent,
@@ -138,6 +140,7 @@ pub fn check_recipient(
                         | KnownKind::Own { .. }
                         | KnownKind::OwnImported
                         | KnownKind::OwnHardware
+                        | KnownKind::OwnMnemonic
                 )
         })
         .cloned();

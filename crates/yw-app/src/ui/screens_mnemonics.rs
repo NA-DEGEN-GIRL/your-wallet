@@ -44,6 +44,14 @@ pub mod ids {
     pub const REMOVE_BASE: u16 = 13_650;
     /// "계정 추가" picker: one button per mnemonic.
     pub const PICK_BASE: u16 = 13_660;
+    /// Solana "계정 추가" picker: one button per mnemonic.
+    pub const SOL_PICK_BASE: u16 = 13_670;
+    /// Bitcoin "계정 추가" key source: one radio per mnemonic.
+    pub const BTC_PICK_BASE: u16 = 13_680;
+    /// Zcash key source: `{니모닉 N} 표준 경로 사용`, one button per mnemonic.
+    pub const ZEC_PICK_BASE: u16 = 13_690;
+    /// Solana "계정 추가" picker: 취소.
+    pub const SOL_PICK_CANCEL: u16 = 13_612;
 
     /// Every fixed id of this module.
     pub const FIXED: &[u16] = &[
@@ -59,6 +67,7 @@ pub mod ids {
         REMOVE_CANCEL,
         PICK_CANCEL,
         MAIN_LINK,
+        SOL_PICK_CANCEL,
     ];
 }
 
@@ -158,7 +167,7 @@ impl App {
             Ctl::button(ids::CREATE, "새 복구 단어 만들기 (추가)").enabled(unlocked && room),
         ]));
         items.push(Item::Help(
-            "추가한 복구 단어에서는 EVM 계정(이더리움·HyperEVM·HyperCore 등)이 생깁니다. Solana·Bitcoin·Zcash 계정은 첫 복구 단어에서만 만듭니다. 비밀번호를 다시 입력해야 합니다."
+            "추가한 복구 단어에서도 EVM·Solana·Bitcoin·Zcash 계정을 만들 수 있습니다(각 탭의 '계정 추가'에서 복구 단어를 고릅니다). 비밀번호를 다시 입력해야 합니다."
                 .to_owned(),
         ));
     }
@@ -190,6 +199,40 @@ impl App {
             })
             .collect();
         buttons.push(Ctl::button(ids::PICK_CANCEL, "취소"));
+        items.push(Item::Row(buttons));
+    }
+
+    /// The Solana "계정 추가" picker (several mnemonics, spec/02 §8.6).
+    pub(crate) fn sol_pick_row(&self, items: &mut Vec<Item>) {
+        if !self.sol.add_pick {
+            return;
+        }
+        items.push(Item::Help(
+            "어느 복구 단어에서 Solana 계정을 만들까요? (m/44'/501'/i'/0')".to_owned(),
+        ));
+        let mut buttons: Vec<Ctl> = self
+            .mn
+            .infos
+            .iter()
+            .enumerate()
+            .map(|(row, info)| {
+                let room = self.meta.as_ref().is_some_and(|meta| {
+                    if info.primary {
+                        meta.next_sol_index().is_some()
+                    } else {
+                        meta.mnemonic_accounts
+                            .next_sol_index(*info.id.as_bytes())
+                            .is_some()
+                    }
+                });
+                Ctl::button(
+                    row_id(ids::SOL_PICK_BASE, row),
+                    &self.mnemonic_label(info.id),
+                )
+                .enabled(room && !self.sol.creating)
+            })
+            .collect();
+        buttons.push(Ctl::button(ids::SOL_PICK_CANCEL, "취소"));
         items.push(Item::Row(buttons));
     }
 }

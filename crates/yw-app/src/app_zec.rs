@@ -373,6 +373,45 @@ impl App {
             .map(|(id, _)| *id)
     }
 
+    /// Uses the standard key `m/44'/{coin}'/0'/0/0` of the added mnemonic `id` as the account
+    /// (spec/02 §8.6; refused while a transaction is in flight, like every source change).
+    pub fn zec_use_mnemonic(&mut self, id: yw_core::vault::RecordId) {
+        if !self.zec_all_terminal() {
+            self.zec.error =
+                Some("진행 중인 Zcash 거래가 있어 키 출처를 바꿀 수 없습니다.".to_owned());
+            self.refresh();
+            return;
+        }
+        self.zec.key_pending = true;
+        self.key(KeyJob::Zec(Box::new(ZecKeyJob::PublicKey {
+            network: self.zec_network(),
+            source: ZecKeySource::Mnemonic {
+                mnemonic: id,
+                account: 0,
+                index: 0,
+            },
+        })));
+        self.refresh();
+    }
+
+    /// The key source's name; an added mnemonic's source names the mnemonic
+    /// (`[니모닉 2] Zcash 표준 경로`).
+    #[must_use]
+    pub fn zec_source_label(&self, source: ZecKeySource) -> String {
+        match source {
+            ZecKeySource::Mnemonic {
+                mnemonic,
+                account,
+                index,
+            } => format!(
+                "[{}] {}",
+                self.mnemonic_label(mnemonic),
+                ZecKeySource::Derived { account, index }.label()
+            ),
+            other => other.label(),
+        }
+    }
+
     /// Uses imported key `position` of the current network's list as the account.
     pub fn zec_use_imported(&mut self, position: usize) {
         let Some((_, info)) = self.zec_imported_keys().into_iter().nth(position) else {

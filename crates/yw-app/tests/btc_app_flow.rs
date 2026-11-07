@@ -1714,6 +1714,7 @@ fn every_address_type_end_to_end() -> TestResult {
         }
         // BIP84 account 0 is meta `btc`: the first added native segwit account is 1.
         let expected_id = BtcAccountId::Hd {
+            mnemonic: None,
             script_type,
             account: number,
         };
@@ -2705,6 +2706,7 @@ fn wif_of_an_hd_address_is_refused() -> TestResult {
     harness.enable();
     harness.run(|ui, ctx| ui.add_account(ctx, ScriptType::P2shP2wpkh));
     let nested = BtcAccountId::Hd {
+        mnemonic: None,
         script_type: ScriptType::P2shP2wpkh,
         account: 0,
     };

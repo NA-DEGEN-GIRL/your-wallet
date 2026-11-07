@@ -43,6 +43,10 @@ pub fn zec_payload(plan: &ZecPlan) -> Vec<u8> {
     transcript.push_u8(plan.account.source.code());
     transcript.push_u32(a);
     transcript.push_u32(b);
+    // Code 5 (an added mnemonic's key) binds its record id; other codes are unchanged.
+    if let Some(id) = plan.account.source.mnemonic() {
+        let _ = transcript.push_bytes(id.as_bytes());
+    }
     let _ = transcript.push_bytes(&plan.account.pubkey);
     transcript.push_u8(plan.recipient.form.code());
     let _ = transcript.push_bytes(&plan.recipient.dest.script_pubkey());
@@ -202,6 +206,17 @@ fn with_account_key<T>(
 ) -> Result<T, ZecSignError> {
     let key = match account.source {
         ZecKeySource::Derived { account: a, index } => KeyRef::Zec {
+            mnemonic: None,
+            test: account.network == super::ZecNetwork::Testnet,
+            account: a,
+            index,
+        },
+        ZecKeySource::Mnemonic {
+            mnemonic,
+            account: a,
+            index,
+        } => KeyRef::Zec {
+            mnemonic: Some(mnemonic),
             test: account.network == super::ZecNetwork::Testnet,
             account: a,
             index,

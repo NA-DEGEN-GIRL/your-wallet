@@ -20,7 +20,7 @@
 //! | `YubiKey` (`screens_yubikey`) | 13,200–13,399 | S20, S21 wizard (`OpenPGP` SIG 13,210–13,221, AUT 13,230–13,241), settings tab; backup sources 13,260–13,267, `삭제` rows 13,270–13,277 |
 //! | reset·extension (`screens_reset`) | 13,400–13,449 | S22 `지갑 초기화`, T-WAIT-STALLED, S23 `Chrome 확장 설치` |
 //! | `YubiKey` connect (`screens_yubikey`) | 13,500–13,506, 13,720–13,927 | `YubiKey 연결하기 (복구 단어 없이)` 13,500–13,506, choice radios 13,720–13,927 (26 keys × 8) |
-//! | recovery phrases (`screens_mnemonics`) | 13,600–13,699 | settings 복구 단어; card actions 13,620–13,657 (8 rows each), 계정 추가 picker 13,660–13,667 |
+//! | recovery phrases (`screens_mnemonics`) | 13,600–13,699 | settings 복구 단어; card actions 13,620–13,657 (8 rows each), 계정 추가 picker 13,660–13,667, Solana picker 13,670–13,677, Bitcoin key source 13,680–13,687, Zcash key source 13,690–13,697 |
 //! | address book (`screens_book`) | 14,000–15,699 | S14 form 14,000–14,016, favorite chips 14,020–14,027, BTC picker 14,030–14,069, SOL activity `이 주소 저장` 14,080–14,143, S14 rows 14,200–15,699 (★·편집·삭제) |
 //! | `WalletConnect` (`screens_walletconnect`) | 16,000–16,099 | S13 panel, session rows 16,020–16,083 |
 
@@ -104,6 +104,27 @@ pub fn ranges() -> Vec<IdRange> {
     // URL rows: every EVM chain, solana:mainnet/devnet, bitcoin:mainnet/testnet4 (spec/04 §2.11.1).
     let url_rows = evm_chains + 2 + 2 + 2;
     vec![
+        range(
+            "mnemonics.sol_pick",
+            screens_mnemonics::ids::SOL_PICK_BASE,
+            screens_mnemonics::ids::ROW_SPAN,
+            1,
+            yw_core::vault::MAX_MNEMONICS,
+        ),
+        range(
+            "mnemonics.btc_pick",
+            screens_mnemonics::ids::BTC_PICK_BASE,
+            screens_mnemonics::ids::ROW_SPAN,
+            1,
+            yw_core::vault::MAX_MNEMONICS,
+        ),
+        range(
+            "mnemonics.zec_pick",
+            screens_mnemonics::ids::ZEC_PICK_BASE,
+            screens_mnemonics::ids::ROW_SPAN,
+            1,
+            yw_core::vault::MAX_MNEMONICS,
+        ),
         range(
             "walletconnect.sessions",
             screens_walletconnect::ids::ROW_BASE,

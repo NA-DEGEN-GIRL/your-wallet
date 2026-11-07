@@ -173,7 +173,7 @@ pub enum VaultStatus {
 }
 
 /// Identifier of a payload record.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct RecordId([u8; 16]);
 
 impl RecordId {
@@ -218,6 +218,9 @@ pub enum KeyRef {
     /// `KeyRef`: the Bitcoin signer gets them from `btc::sign::BtcImportedKeys` together with the
     /// record's network, address type and compression (spec/02 §8.4, spec/08 §11.1).
     Btc {
+        /// The mnemonic (`None`: the primary one; `Some(id)`: the `Bip39` record `id`,
+        /// spec/02 §8.6).
+        mnemonic: Option<RecordId>,
         /// Account node (purpose, coin type, account).
         coin: crate::bip32::path::BtcCoin,
         /// Receive or change chain.
@@ -227,6 +230,8 @@ pub enum KeyRef {
     },
     /// A derived Zcash transparent key `m/44'/{133|1}'/{account}'/0/{index}` (spec/12 §2.2).
     Zec {
+        /// The mnemonic (`None`: the primary one; `Some(id)`: the `Bip39` record `id`).
+        mnemonic: Option<RecordId>,
         /// Coin type `1'` (testnet) instead of `133'`.
         test: bool,
         /// BIP44 account (non-hardened input, hardened in the path).

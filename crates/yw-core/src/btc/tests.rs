@@ -431,6 +431,7 @@ fn sign_inside_with_secp_key() {
     let (item, public) = vault
         .with_secp_key(
             crate::vault::KeyRef::Btc {
+                mnemonic: None,
                 coin: BtcCoin::Test,
                 chain: BtcChain::Receive,
                 index: 3,
@@ -495,6 +496,7 @@ fn signed_p2wpkh_weight_within_estimate() {
         let witness = vault
             .with_secp_key(
                 crate::vault::KeyRef::Btc {
+                    mnemonic: None,
                     coin: BtcCoin::Test,
                     chain: *chain,
                     index: *index,

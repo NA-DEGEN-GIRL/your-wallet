@@ -173,6 +173,10 @@ pub enum SolKeySource {
     /// seed for it (`VaultError::RecordNotFound`) and the signature comes from the card
     /// (`sol::sign::sign_transfer_card`, `sol::msgsign::sign_message_card`). Tag 7.
     Hardware(AccountIndex),
+    /// Standard-path account `m/44'/501'/i'/0'` of an added mnemonic (the vault `Bip39` record
+    /// `id`, spec/02 §8.6). Tag 8; the journal and the approval transcripts carry the record id
+    /// after `(a, b)` (spec/07 §13.2, §14.1). Signing needs that mnemonic's backup confirmed.
+    Mnemonic(crate::vault::RecordId, AccountIndex),
 }
 
 impl SolKeySource {
@@ -187,6 +191,7 @@ impl SolKeySource {
             Self::SolletLegacy { .. } => 5,
             Self::Imported => 6,
             Self::Hardware(_) => 7,
+            Self::Mnemonic(..) => 8,
         }
     }
 
@@ -195,15 +200,44 @@ impl SolKeySource {
     #[must_use]
     pub const fn params(self) -> (u32, u32) {
         match self {
-            Self::Standard(index) | Self::Bip44Account(index) | Self::Hardware(index) => {
-                (index.get(), 0)
-            }
+            Self::Standard(index)
+            | Self::Bip44Account(index)
+            | Self::Hardware(index)
+            | Self::Mnemonic(_, index) => (index.get(), 0),
             Self::SolletLegacy { wallet, account } => (wallet, account),
             Self::Bip44Root | Self::RawSeed | Self::Imported => (0, 0),
         }
     }
 
-    /// Rebuilds a source from its tag and parameters (journal header check).
+    /// The added mnemonic of a tag-8 source (`None` for every other source: the primary
+    /// mnemonic's, an imported key or a `YubiKey`).
+    #[must_use]
+    pub const fn mnemonic(self) -> Option<crate::vault::RecordId> {
+        match self {
+            Self::Mnemonic(id, _) => Some(id),
+            _ => None,
+        }
+    }
+
+    /// Rebuilds a tag-8 source (journal record version 2): a non-zero record id and an account
+    /// index.
+    ///
+    /// # Errors
+    ///
+    /// [`KeyError::InvalidPath`] for a zero id or an index out of range.
+    pub fn from_mnemonic_parts(id: [u8; 16], a: u32, b: u32) -> Result<Self, KeyError> {
+        if id == [0; 16] || b != 0 {
+            return Err(KeyError::InvalidPath);
+        }
+        let index = AccountIndex::new(a).map_err(|_| KeyError::InvalidPath)?;
+        Ok(Self::Mnemonic(
+            crate::vault::RecordId::from_bytes(id),
+            index,
+        ))
+    }
+
+    /// Rebuilds a source from its tag and parameters (journal header check; tag 8 needs the
+    /// record id, [`SolKeySource::from_mnemonic_parts`]).
     ///
     /// # Errors
     ///
@@ -228,7 +262,7 @@ impl SolKeySource {
     /// Whether this is the standard path (new accounts; tags 2–5 are recovery-scan only).
     #[must_use]
     pub const fn is_standard(self) -> bool {
-        matches!(self, Self::Standard(_))
+        matches!(self, Self::Standard(_) | Self::Mnemonic(..))
     }
 
     /// Whether this is an imported key (tag 6).
@@ -248,14 +282,19 @@ impl SolKeySource {
     /// imported and `YubiKey` keys (the standard path on the card) send freely.
     #[must_use]
     pub const fn needs_move_rule(self) -> bool {
-        !matches!(self, Self::Standard(_) | Self::Imported | Self::Hardware(_))
+        !matches!(
+            self,
+            Self::Standard(_) | Self::Imported | Self::Hardware(_) | Self::Mnemonic(..)
+        )
     }
 
     /// The path text shown to the user (`m/44'/501'/0'/0'`, `BIP39 seed[0..32]`, …).
     #[must_use]
     pub fn path_text(self) -> String {
         match self {
-            Self::Standard(index) => format!("m/44'/501'/{}'/0'", index.get()),
+            Self::Standard(index) | Self::Mnemonic(_, index) => {
+                format!("m/44'/501'/{}'/0'", index.get())
+            }
             Self::Bip44Account(index) => format!("m/44'/501'/{}'", index.get()),
             Self::Bip44Root => "m/44'/501'".to_owned(),
             Self::RawSeed => "BIP39 seed[0..32] (파생 없음)".to_owned(),
@@ -271,7 +310,8 @@ impl SolKeySource {
     /// The 32-byte Ed25519 seed for a 64-byte BIP39 seed (spec/02 §3.5 table).
     pub(crate) fn ed25519_seed(self, seed: &[u8; 64]) -> Result<Zeroizing<[u8; 32]>, KeyError> {
         let path = match self {
-            Self::Standard(index) => sol_path(index),
+            // The vault picks the seed of the source's mnemonic (spec/02 §8.6).
+            Self::Standard(index) | Self::Mnemonic(_, index) => sol_path(index),
             Self::Bip44Account(index) => Slip10Path {
                 components: vec![PURPOSE_44H, COIN_501H, index.get() | HARDENED],
             },

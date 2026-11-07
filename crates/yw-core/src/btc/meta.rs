@@ -36,6 +36,7 @@ use super::{
 use crate::bip32::path::BtcChain;
 use crate::bip32::{AccountXpub, HARDENED};
 use crate::error::KeyError;
+use crate::vault::RecordId;
 
 /// `BtcMeta.version`.
 pub const BTC_META_VERSION: u64 = 1;
@@ -1411,7 +1412,11 @@ fn decode_hex_bytes(value: &Value, field: &'static str) -> Result<Vec<u8>, BtcMe
 }
 
 /// The `key` object of a version 2 account.
-fn account_key(value: &Value, script_type: ScriptType) -> Result<BtcAccountKey, BtcMetaError> {
+fn account_key(
+    value: &Value,
+    script_type: ScriptType,
+    mnemonic: Option<RecordId>,
+) -> Result<BtcAccountKey, BtcMetaError> {
     let object = value.as_object().ok_or(BtcMetaError("key"))?;
     if object.len() != 1 {
         return Err(BtcMetaError("key"));
@@ -1422,12 +1427,17 @@ fn account_key(value: &Value, script_type: ScriptType) -> Result<BtcAccountKey, 
         let pubkey = hex_array::<33>(get(hd, "pubkey")?, "key.hd.pubkey")?;
         let chain_code = hex_array::<32>(get(hd, "chain_code")?, "key.hd.chain_code")?;
         let key = BtcAccountKey::hd(script_type, account, AccountXpub { pubkey, chain_code })
-            .map_err(|_| BtcMetaError("key.hd"))?;
+            .map_err(|_| BtcMetaError("key.hd"))?
+            .with_mnemonic(mnemonic);
         if key.id() == BtcAccountId::PRIMARY {
             // BIP84 account 0 lives in meta `btc` (version 1).
             return Err(BtcMetaError("key.hd"));
         }
         return Ok(key);
+    }
+    if mnemonic.is_some() {
+        // Only HD accounts of an added mnemonic exist (meta `btc_accounts_mn`).
+        return Err(BtcMetaError("key"));
     }
     if let Some(evm) = object.get("evm") {
         let evm = object_with(evm, &EVM_KEYS, "key.evm")?;
@@ -1554,6 +1564,12 @@ impl BtcMeta {
     /// `last_used >= next`, bounds (4,096 / 1,024 / 1,024 / 4,096), duplicates, a version 2
     /// object for BIP84 account 0, or a single key whose state is not its one address.
     pub fn from_json(value: &Value) -> Result<Self, BtcMetaError> {
+        Self::from_json_of(value, None)
+    }
+
+    /// [`BtcMeta::from_json`] of an account whose HD node belongs to the added mnemonic
+    /// `mnemonic` (meta `btc_accounts_mn`, version 2 `key.hd` only).
+    fn from_json_of(value: &Value, mnemonic: Option<RecordId>) -> Result<Self, BtcMetaError> {
         let version = value
             .as_object()
             .ok_or(BtcMetaError("btc"))?
@@ -1561,7 +1577,7 @@ impl BtcMeta {
             .ok_or(BtcMetaError("btc"))
             .and_then(|version| integer(version, u64::MAX, "version"))?;
         let (root, account) = match version {
-            BTC_META_VERSION => {
+            BTC_META_VERSION if mnemonic.is_none() => {
                 let root = object_with_optional(value, &KEYS, &[SINGLE_ADDRESS_KEY], "btc")?;
                 let pubkey = hex_array::<33>(get(root, "account_pubkey")?, "account_pubkey")?;
                 if !matches!(pubkey.first(), Some(0x02 | 0x03))
@@ -1582,7 +1598,7 @@ impl BtcMeta {
                     .as_str()
                     .and_then(ScriptType::parse_json_name)
                     .ok_or(BtcMetaError("script_type"))?;
-                (root, account_key(get(root, "key")?, script_type)?)
+                (root, account_key(get(root, "key")?, script_type, mnemonic)?)
             }
             _ => return Err(BtcMetaError("version")),
         };
@@ -1799,11 +1815,25 @@ pub struct BtcAccounts {
 fn account_id_json(id: &BtcAccountId) -> Value {
     match id {
         BtcAccountId::Hd {
+            mnemonic: None,
             script_type,
             account,
         } => object(vec![(
             "hd",
             object(vec![
+                ("script_type", string(script_type.json_name())),
+                ("account", number(u64::from(*account))),
+            ]),
+        )]),
+        // Written only inside `btc_accounts_mn` (earlier builds never read it).
+        BtcAccountId::Hd {
+            mnemonic: Some(id),
+            script_type,
+            account,
+        } => object(vec![(
+            "mnemonic",
+            object(vec![
+                ("id", string(crate::hex::encode(id.as_bytes()))),
                 ("script_type", string(script_type.json_name())),
                 ("account", number(u64::from(*account))),
             ]),
@@ -1839,6 +1869,7 @@ fn account_id(value: &Value) -> Result<BtcAccountId, BtcMetaError> {
     if let Some(hd) = object.get("hd") {
         let hd = object_with(hd, &["script_type", "account"], FIELD)?;
         return Ok(BtcAccountId::Hd {
+            mnemonic: None,
             script_type: get(hd, "script_type")?
                 .as_str()
                 .and_then(ScriptType::parse_json_name)
@@ -2042,20 +2073,51 @@ impl BtcAccounts {
     /// full.
     #[must_use]
     pub fn next_hd_account(&self, network: BtcNetwork, script_type: ScriptType) -> Option<u32> {
+        self.next_hd_account_of(network, None, script_type)
+    }
+
+    /// [`BtcAccounts::next_hd_account`] of mnemonic `mnemonic` (`None`: the primary one). An
+    /// added mnemonic's accounts all live here, so its P2WPKH accounts start at 0.
+    #[must_use]
+    pub fn next_hd_account_of(
+        &self,
+        network: BtcNetwork,
+        mnemonic: Option<RecordId>,
+        script_type: ScriptType,
+    ) -> Option<u32> {
         if self.accounts.len() >= MAX_BTC_ACCOUNTS {
             return None;
         }
-        let first = u32::from(script_type == ScriptType::P2wpkh);
+        let first = u32::from(script_type == ScriptType::P2wpkh && mnemonic.is_none());
         (first..=BTC_MAX_HD_ACCOUNT).find(|candidate| {
             self.get(
                 network,
                 BtcAccountId::Hd {
+                    mnemonic,
                     script_type,
                     account: *candidate,
                 },
             )
             .is_none()
         })
+    }
+
+    /// Removes every account of the added mnemonic `mnemonic` (the mnemonic was removed from the
+    /// vault) and returns how many; the selection falls back when it was one of them.
+    pub fn remove_mnemonic(&mut self, mnemonic: RecordId) -> usize {
+        let before = self.accounts.len();
+        self.accounts
+            .retain(|meta| meta.account.mnemonic() != Some(mnemonic));
+        if matches!(
+            self.selected,
+            Some(BtcAccountId::Hd {
+                mnemonic: Some(id),
+                ..
+            }) if id == mnemonic
+        ) {
+            self.selected = None;
+        }
+        before.saturating_sub(self.accounts.len())
     }
 }
 
@@ -2074,12 +2136,25 @@ const HD_MODE_KEYS: [&str; 2] = ["network", "account"];
 const fn legacy_key(account: &BtcAccountKey) -> bool {
     matches!(
         account,
-        BtcAccountKey::Hd { .. } | BtcAccountKey::Single { .. }
+        BtcAccountKey::Hd { mnemonic: None, .. } | BtcAccountKey::Single { .. }
     )
 }
 
 const fn legacy_id(id: &BtcAccountId) -> bool {
-    matches!(id, BtcAccountId::Hd { .. } | BtcAccountId::Imported { .. })
+    matches!(
+        id,
+        BtcAccountId::Hd { mnemonic: None, .. } | BtcAccountId::Imported { .. }
+    )
+}
+
+const fn mnemonic_id(id: &BtcAccountId) -> bool {
+    matches!(
+        id,
+        BtcAccountId::Hd {
+            mnemonic: Some(_),
+            ..
+        }
+    )
 }
 
 /// The three meta values of the BTC accounts as written ([`btc_meta_values`]).
@@ -2092,6 +2167,9 @@ pub struct BtcMetaValues {
     pub accounts: Option<Value>,
     /// Meta `btc_accounts_ext` (`None`: nothing to write).
     pub ext: Option<Value>,
+    /// Meta `btc_accounts_mn` (`None`: nothing to write): the HD accounts of added mnemonics,
+    /// their HD-mode flag and their selection.
+    pub mnemonic: Option<Value>,
 }
 
 /// Encodes meta `btc`, `btc_accounts` and `btc_accounts_ext` (spec/08 §12.3b): the two keys that
@@ -2100,13 +2178,22 @@ pub struct BtcMetaValues {
 #[must_use]
 pub fn btc_meta_values(primary: Option<&BtcMeta>, accounts: &BtcAccounts) -> BtcMetaValues {
     let legacy_selected = accounts.selected.filter(legacy_id);
-    let new_selected = accounts.selected.filter(|id| !legacy_id(id));
+    let new_selected = accounts
+        .selected
+        .filter(|id| !legacy_id(id) && !mnemonic_id(id));
+    let mn_selected = accounts.selected.filter(mnemonic_id);
+    let (mn, rest): (Vec<&BtcMeta>, Vec<&BtcMeta>) = accounts
+        .accounts
+        .iter()
+        .partition(|meta| meta.account.mnemonic().is_some());
     let (old, new): (Vec<&BtcMeta>, Vec<&BtcMeta>) =
-        accounts.accounts.iter().partition(|meta| meta.is_legacy());
+        rest.into_iter().partition(|meta| meta.is_legacy());
     let hd_mode: Vec<Value> = primary
         .into_iter()
         .chain(&accounts.accounts)
-        .filter(|meta| meta.account.is_hd() && !meta.fixed_address())
+        .filter(|meta| {
+            meta.account.is_hd() && meta.account.mnemonic().is_none() && !meta.fixed_address()
+        })
         .map(|meta| {
             object(vec![
                 ("network", string(meta.network().settings_name())),
@@ -2143,11 +2230,105 @@ pub fn btc_meta_values(primary: Option<&BtcMeta>, accounts: &BtcAccounts) -> Btc
             ("hd_mode", Value::Array(hd_mode)),
         ])
     });
+    let mnemonic = (!mn.is_empty() || mn_selected.is_some()).then(|| {
+        object(vec![
+            ("version", number(BTC_ACCOUNTS_MN_VERSION)),
+            (
+                "selected",
+                mn_selected.as_ref().map_or(Value::Null, account_id_json),
+            ),
+            (
+                "accounts",
+                Value::Array(
+                    mn.iter()
+                        .map(|meta| {
+                            object(vec![
+                                (
+                                    "mnemonic",
+                                    string(crate::hex::encode(
+                                        meta.account
+                                            .mnemonic()
+                                            .map(|id| *id.as_bytes())
+                                            .unwrap_or_default()
+                                            .as_slice(),
+                                    )),
+                                ),
+                                ("meta", meta.to_json()),
+                            ])
+                        })
+                        .collect(),
+                ),
+            ),
+        ])
+    });
     BtcMetaValues {
         btc: primary.map_or(Value::Null, BtcMeta::to_legacy_json),
         accounts: accounts_value,
         ext,
+        mnemonic,
     }
+}
+
+// ---- meta `btc_accounts_mn` (spec/08 §12.3c) ----
+
+/// The top-level meta key of the HD accounts of added mnemonics (spec/02 §8.6, spec/08 §12.3c):
+/// `{"version": 1, "selected": null | {"mnemonic": {"id", "script_type", "account"}},
+/// "accounts": [{"mnemonic": Hex16, "meta": BtcMeta version 2 (key.hd, optional
+/// single_address)}]}`. Builds before it keep it unread (an unknown top-level key); they reject a
+/// member they do not know inside `btc`, `btc_accounts` or `btc_accounts_ext`.
+pub const BTC_ACCOUNTS_MN_KEY: &str = "btc_accounts_mn";
+/// `btc_accounts_mn.version`.
+pub const BTC_ACCOUNTS_MN_VERSION: u64 = 1;
+const MN_KEYS: [&str; 3] = ["version", "selected", "accounts"];
+const MN_ENTRY_KEYS: [&str; 2] = ["mnemonic", "meta"];
+const MN_ID_KEYS: [&str; 3] = ["id", "script_type", "account"];
+
+fn mnemonic_account_id(value: &Value) -> Result<BtcAccountId, BtcMetaError> {
+    const FIELD: &str = "btc_accounts_mn.selected";
+    let object = object_with(value, &["mnemonic"], FIELD)?;
+    let inner = object_with(get(object, "mnemonic")?, &MN_ID_KEYS, FIELD)?;
+    let id = hex_array::<16>(get(inner, "id")?, FIELD)?;
+    if id == [0; 16] {
+        return Err(BtcMetaError(FIELD));
+    }
+    Ok(BtcAccountId::Hd {
+        mnemonic: Some(RecordId::from_bytes(id)),
+        script_type: get(inner, "script_type")?
+            .as_str()
+            .and_then(ScriptType::parse_json_name)
+            .ok_or(BtcMetaError(FIELD))?,
+        account: u32_field(get(inner, "account")?, MAX_NEXT, FIELD)?,
+    })
+}
+
+/// Reads meta `btc_accounts_mn` into `list` (strict: unknown or missing keys, `version != 1`, a
+/// zero or mismatched id, an account present twice or more than 64 accounts in all reject it).
+fn read_mnemonic_accounts(list: &mut BtcAccounts, value: &Value) -> Result<(), BtcMetaError> {
+    const FIELD: &str = "btc_accounts_mn";
+    let root = object_with(value, &MN_KEYS, FIELD)?;
+    if integer(get(root, "version")?, u64::MAX, "btc_accounts_mn.version")?
+        != BTC_ACCOUNTS_MN_VERSION
+    {
+        return Err(BtcMetaError("btc_accounts_mn.version"));
+    }
+    for entry in array(get(root, "accounts")?, MAX_BTC_ACCOUNTS, FIELD)? {
+        let entry = object_with(entry, &MN_ENTRY_KEYS, FIELD)?;
+        let id = hex_array::<16>(get(entry, "mnemonic")?, FIELD)?;
+        if id == [0; 16] {
+            return Err(BtcMetaError(FIELD));
+        }
+        let meta = BtcMeta::from_json_of(get(entry, "meta")?, Some(RecordId::from_bytes(id)))?;
+        if list.get(meta.network(), meta.id()).is_some() || list.accounts.len() >= MAX_BTC_ACCOUNTS
+        {
+            return Err(BtcMetaError(FIELD));
+        }
+        list.accounts.push(meta);
+    }
+    match get(root, "selected")? {
+        Value::Null => {}
+        other => list.selected = Some(mnemonic_account_id(other)?),
+    }
+    Ok(())
 }
 
 /// Decodes meta `btc`, `btc_accounts` and `btc_accounts_ext` (spec/08 §12.3b). The placement of
@@ -2165,10 +2346,14 @@ pub fn btc_meta_from_values(
     btc: &Value,
     accounts: Option<&Value>,
     ext: Option<&Value>,
+    mnemonic: Option<&Value>,
 ) -> Result<(Option<BtcMeta>, BtcAccounts), BtcMetaError> {
     const FIELD: &str = "btc_accounts_ext";
     let mut primary = btc_meta_from_json(btc)?;
     let mut list = BtcAccounts::from_json(accounts)?;
+    if let Some(value) = mnemonic {
+        read_mnemonic_accounts(&mut list, value)?;
+    }
     let Some(ext) = ext else {
         return Ok((primary, list));
     };

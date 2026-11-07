@@ -114,7 +114,7 @@ impl App {
             }
             ids::HIDE => self.sol_hide_selected(),
             ids::ADD_ACCOUNT => {
-                self.sol_add_account();
+                self.sol_add_account_clicked();
                 self.refresh();
             }
             ids::SCAN_OPEN => self.sol_open_scan(),

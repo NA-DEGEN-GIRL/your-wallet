@@ -29,6 +29,7 @@ use crate::bip32::path::{BtcChain, BtcCoin, BtcPurpose};
 use crate::bip32::{AccountXpub, HARDENED, derive_public_child_with};
 use crate::entropy::{OsRandom, secp_context};
 use crate::error::KeyError;
+use crate::vault::RecordId;
 
 /// Largest HD account number a new BTC account may get (`m/{p}'/{c}'/0'` … `/99'`).
 pub const BTC_MAX_HD_ACCOUNT: u32 = 99;
@@ -470,6 +471,9 @@ impl HwBtcKey {
 pub enum BtcAccountId {
     /// HD account `m/{purpose}'/{coin}'/{account}'` of `script_type`.
     Hd {
+        /// The mnemonic (`None`: the primary one; `Some(id)`: the added mnemonic `id`, spec/02
+        /// §8.6 — a different account even with the same type and number).
+        mnemonic: Option<RecordId>,
         /// Address type.
         script_type: ScriptType,
         /// Account number.
@@ -500,6 +504,7 @@ pub enum BtcAccountId {
 impl BtcAccountId {
     /// The BIP84 account 0 (meta `btc`, journal record version 1).
     pub const PRIMARY: Self = Self::Hd {
+        mnemonic: None,
         script_type: ScriptType::P2wpkh,
         account: 0,
     };
@@ -512,9 +517,19 @@ impl BtcAccountId {
         match self {
             _ if *self == Self::PRIMARY => String::new(),
             Self::Hd {
+                mnemonic: None,
                 script_type,
                 account,
             } => format!("{}/{account}", script_type.json_name()),
+            Self::Hd {
+                mnemonic: Some(id),
+                script_type,
+                account,
+            } => format!(
+                "mnemonic/{}/{}/{account}",
+                crate::hex::encode(id.as_bytes()),
+                script_type.json_name()
+            ),
             Self::Imported { id } => format!("imported/{}", crate::hex::encode(id)),
             Self::EvmShared {
                 evm_index,
@@ -537,6 +552,8 @@ impl BtcAccountId {
 pub enum BtcKeySource {
     /// `m/{purpose}'/{coin}'/{account}'/{chain}/{index}` from the mnemonic.
     Derived {
+        /// The mnemonic (`None`: the primary one; `Some(id)`: the added mnemonic `id`).
+        mnemonic: Option<RecordId>,
         /// Address type (selects the purpose).
         script_type: ScriptType,
         /// Account number.
@@ -611,6 +628,9 @@ impl BtcKeySource {
 pub enum BtcAccountKey {
     /// An HD account: receive/change chains under the cached account node.
     Hd {
+        /// The mnemonic of the node (`None`: the primary one; `Some(id)`: the added mnemonic
+        /// `id`, spec/02 §8.6).
+        mnemonic: Option<RecordId>,
         /// Address type.
         script_type: ScriptType,
         /// Account number (`< 2^31`).
@@ -661,6 +681,7 @@ impl BtcAccountKey {
     #[must_use]
     pub const fn primary(xpub: AccountXpub) -> Self {
         Self::Hd {
+            mnemonic: None,
             script_type: ScriptType::P2wpkh,
             account: 0,
             xpub,
@@ -689,11 +710,43 @@ impl BtcAccountKey {
             return Err(AccountKeyError::PublicKey);
         }
         Ok(Self::Hd {
+            mnemonic: None,
             script_type,
             account,
             xpub,
             single_address: true,
         })
+    }
+
+    /// The same HD account node of the added mnemonic `mnemonic` (`None`: the primary one);
+    /// other keys stay unchanged.
+    #[must_use]
+    pub const fn with_mnemonic(self, mnemonic: Option<RecordId>) -> Self {
+        match self {
+            Self::Hd {
+                script_type,
+                account,
+                xpub,
+                single_address,
+                ..
+            } => Self::Hd {
+                mnemonic,
+                script_type,
+                account,
+                xpub,
+                single_address,
+            },
+            other => other,
+        }
+    }
+
+    /// The added mnemonic of an HD account (`None` for the primary mnemonic and other keys).
+    #[must_use]
+    pub const fn mnemonic(&self) -> Option<RecordId> {
+        match self {
+            Self::Hd { mnemonic, .. } => *mnemonic,
+            Self::Single { .. } | Self::EvmShared { .. } | Self::Hardware { .. } => None,
+        }
     }
 
     /// An imported single key.
@@ -779,11 +832,13 @@ impl BtcAccountKey {
     pub const fn with_single_address(self, on: bool) -> Self {
         match self {
             Self::Hd {
+                mnemonic,
                 script_type,
                 account,
                 xpub,
                 ..
             } => Self::Hd {
+                mnemonic,
                 script_type,
                 account,
                 xpub,
@@ -853,10 +908,12 @@ impl BtcAccountKey {
     pub const fn id(&self) -> BtcAccountId {
         match self {
             Self::Hd {
+                mnemonic,
                 script_type,
                 account,
                 ..
             } => BtcAccountId::Hd {
+                mnemonic: *mnemonic,
                 script_type: *script_type,
                 account: *account,
             },
@@ -920,10 +977,12 @@ impl BtcAccountKey {
     pub const fn key_source(&self, chain: BtcChain, index: u32) -> BtcKeySource {
         match self {
             Self::Hd {
+                mnemonic,
                 script_type,
                 account,
                 ..
             } => BtcKeySource::Derived {
+                mnemonic: *mnemonic,
                 script_type: *script_type,
                 account: *account,
                 chain,
@@ -1033,15 +1092,23 @@ impl BtcAccountKey {
     }
 
     /// The display name: `네이티브 세그윗 계정 0`, `탭루트 계정 2`, `가져온 키 · 레거시`,
-    /// `EVM 계정 3 키 · 탭루트`.
+    /// `EVM 계정 3 키 · 탭루트`; an added mnemonic's HD account says so (`… 계정 0 (추가한 복구
+    /// 단어)`; the app shows the mnemonic's label instead where it has it).
     #[must_use]
     pub fn display_name(&self) -> String {
         match self {
             Self::Hd {
+                mnemonic: None,
                 script_type,
                 account,
                 ..
             } => format!("{} 계정 {account}", script_type.name()),
+            Self::Hd {
+                mnemonic: Some(_),
+                script_type,
+                account,
+                ..
+            } => format!("{} 계정 {account} (추가한 복구 단어)", script_type.name()),
             Self::Single { script_type, .. } => format!("가져온 키 · {}", script_type.name()),
             Self::EvmShared {
                 evm_index,

@@ -144,6 +144,19 @@ fn public_key(
         ZecKeySource::Derived { account, index } => vault
             .zec_public_key(network == ZecNetwork::Testnet, account, index)
             .map_err(|error| error.to_string())?,
+        // An added mnemonic's standard key (spec/02 §8.6).
+        ZecKeySource::Mnemonic {
+            mnemonic,
+            account,
+            index,
+        } => vault
+            .zec_public_key_of(
+                Some(mnemonic),
+                network == ZecNetwork::Testnet,
+                account,
+                index,
+            )
+            .map_err(|error| error.to_string())?,
         ZecKeySource::EvmShared { evm_index } => {
             let index = yw_core::bip32::path::AccountIndex::new(evm_index)
                 .map_err(|error| error.to_string())?;

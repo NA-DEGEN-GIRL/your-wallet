@@ -458,7 +458,7 @@ impl App {
                     "키 출처".to_owned(),
                     format!(
                         "{} · {}",
-                        account.source.label(),
+                        self.zec_source_label(account.source),
                         account.source.path_text(network)
                     ),
                 ));
@@ -546,6 +546,35 @@ impl App {
             row.push(Ctl::button(id, &label).enabled(unlocked && !self.zec.busy));
         }
         items.push(Item::Row(row));
+        // The standard path of each added mnemonic (spec/02 §8.6).
+        let added: Vec<Ctl> = self
+            .mn
+            .infos
+            .iter()
+            .enumerate()
+            .filter(|(_, info)| !info.primary)
+            .map(|(row, info)| {
+                let id = crate::ui::screens_mnemonics::ids::ZEC_PICK_BASE
+                    .saturating_add(u16::try_from(row).unwrap_or(0));
+                let in_use = account.is_some_and(|account| {
+                    account.source
+                        == yw_core::zec::ZecKeySource::Mnemonic {
+                            mnemonic: info.id,
+                            account: 0,
+                            index: 0,
+                        }
+                });
+                let label = if in_use {
+                    format!("{} 표준 경로 (사용 중)", self.mnemonic_label(info.id))
+                } else {
+                    format!("{} 표준 경로 사용", self.mnemonic_label(info.id))
+                };
+                Ctl::button(id, &label).enabled(unlocked && !self.zec.busy && !in_use)
+            })
+            .collect();
+        if !added.is_empty() {
+            items.push(Item::LabeledRow("추가한 복구 단어".to_owned(), added));
+        }
         self.zec_imported_items(items);
         items.push(Item::CardEnd);
 

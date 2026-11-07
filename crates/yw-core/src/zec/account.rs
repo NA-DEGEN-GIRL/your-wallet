@@ -6,6 +6,7 @@
 use super::address::ZecDest;
 use super::network::ZecNetwork;
 use crate::btc::address::hash160;
+use crate::vault::RecordId;
 
 /// Largest BIP44 account / address index accepted for a derived key.
 pub const ZEC_MAX_INDEX: u32 = 999;
@@ -33,6 +34,17 @@ pub enum ZecKeySource {
     /// An imported transparent private key (vault tag 6, spec/12 §2.3): the vault record whose
     /// public key is the account's (no path).
     Imported,
+    /// `m/44'/{133|1}'/{account}'/0/{index}` of an added mnemonic (the vault `Bip39` record
+    /// `mnemonic`, spec/02 §8.6). Stored code 5: the journal (record version 2) and the approval
+    /// transcript carry the record id after `(a, b)`; meta keeps it in `mnemonic_accounts`.
+    Mnemonic {
+        /// The added mnemonic.
+        mnemonic: RecordId,
+        /// BIP44 account.
+        account: u32,
+        /// Receive index.
+        index: u32,
+    },
 }
 
 impl ZecKeySource {
@@ -42,7 +54,8 @@ impl ZecKeySource {
         index: 0,
     };
 
-    /// Stored code: 1 derived, 2 EVM key, 3 `YubiKey`, 4 imported key.
+    /// Stored code: 1 derived, 2 EVM key, 3 `YubiKey`, 4 imported key, 5 an added mnemonic's
+    /// derived key.
     #[must_use]
     pub const fn code(self) -> u8 {
         match self {
@@ -50,21 +63,47 @@ impl ZecKeySource {
             Self::EvmShared { .. } => 2,
             Self::Hardware { .. } => 3,
             Self::Imported => 4,
+            Self::Mnemonic { .. } => 5,
         }
+    }
+
+    /// The added mnemonic of a code-5 source (`None` for every other source).
+    #[must_use]
+    pub const fn mnemonic(self) -> Option<RecordId> {
+        match self {
+            Self::Mnemonic { mnemonic, .. } => Some(mnemonic),
+            _ => None,
+        }
+    }
+
+    /// The code-5 source of a stored form (range checked, non-zero record id).
+    #[must_use]
+    pub fn from_mnemonic_parts(id: [u8; 16], a: u32, b: u32) -> Option<Self> {
+        if id == [0; 16] || a > ZEC_MAX_INDEX || b > ZEC_MAX_INDEX {
+            return None;
+        }
+        Some(Self::Mnemonic {
+            mnemonic: RecordId::from_bytes(id),
+            account: a,
+            index: b,
+        })
     }
 
     /// `(a, b)` parameters of the stored form (`account, index` / `evm_index, 0` / `index, 0`).
     #[must_use]
     pub const fn params(self) -> (u32, u32) {
         match self {
-            Self::Derived { account, index } => (account, index),
+            Self::Derived { account, index } | Self::Mnemonic { account, index, .. } => {
+                (account, index)
+            }
             Self::EvmShared { evm_index } => (evm_index, 0),
             Self::Hardware { index } => (index, 0),
             Self::Imported => (0, 0),
         }
     }
 
-    /// The source of a stored form (range checked).
+    /// The source of a stored form (range checked; code 5 needs the record id,
+    /// [`ZecKeySource::from_mnemonic_parts`]).
     #[must_use]
     pub const fn from_parts(code: u8, a: u32, b: u32) -> Option<Self> {
         let source = match code {
@@ -88,7 +127,9 @@ impl ZecKeySource {
     #[must_use]
     pub const fn in_range(self) -> bool {
         match self {
-            Self::Derived { account, index } => account <= ZEC_MAX_INDEX && index <= ZEC_MAX_INDEX,
+            Self::Derived { account, index } | Self::Mnemonic { account, index, .. } => {
+                account <= ZEC_MAX_INDEX && index <= ZEC_MAX_INDEX
+            }
             Self::EvmShared { evm_index } => evm_index <= ZEC_MAX_INDEX,
             Self::Hardware { index } => index <= ZEC_MAX_INDEX,
             Self::Imported => true,
@@ -102,7 +143,7 @@ impl ZecKeySource {
             Self::Hardware { index } if crate::yubikey::plan::is_unknown_index(index) => {
                 crate::yubikey::plan::T_UNKNOWN_PATH.to_owned()
             }
-            Self::Derived { account, index } => {
+            Self::Derived { account, index } | Self::Mnemonic { account, index, .. } => {
                 format!("m/44'/{}'/{account}'/0/{index}", network.coin_type())
             }
             Self::EvmShared { evm_index } => format!("m/44'/60'/0'/0/{evm_index}"),
@@ -121,6 +162,15 @@ impl ZecKeySource {
             } => "Zcash 표준 경로".to_owned(),
             Self::Derived { account, index } => {
                 format!("Zcash 경로 (계정 {account}, 주소 {index})")
+            }
+            // The app names the mnemonic by its label instead ("[니모닉 2] Zcash 표준 경로").
+            Self::Mnemonic {
+                account: 0,
+                index: 0,
+                ..
+            } => "Zcash 표준 경로 (추가한 복구 단어)".to_owned(),
+            Self::Mnemonic { account, index, .. } => {
+                format!("Zcash 경로 (계정 {account}, 주소 {index}, 추가한 복구 단어)")
             }
             Self::EvmShared { evm_index } => format!("EVM 계정 {evm_index} 키"),
             Self::Hardware { index } if crate::yubikey::plan::is_unknown_index(index) => format!(

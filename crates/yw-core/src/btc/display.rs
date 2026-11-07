@@ -54,6 +54,8 @@ fn push_u32(out: &mut Vec<u8>, value: u32) {
 /// ‖ [account block 19, every account but BIP84 account 0:
 ///    0x01 ‖ source u8 (1 HD, 2 imported, 3 EVM key) ‖ script_type u8
 ///    ‖ HD account u32 ‖ 0^12 | record id 16 | EVM account index u32 ‖ 0^12]
+/// ‖ [account block 35 instead, an HD account of an added mnemonic (spec/02 §8.6):
+///    0x02 ‖ 1 ‖ script_type u8 ‖ account u32 ‖ 0^12 ‖ mnemonic record id 16]
 /// ```
 ///
 /// The unsigned transaction carries the fixed P2SH-P2WPKH scriptSigs; the account block binds
@@ -96,7 +98,14 @@ pub fn btc_payload(plan: &SendPlan) -> Vec<u8> {
     }
     out.push(u8::from(plan.fee_override_typed()));
     if let Some(block) = account_block(plan.account()) {
-        out.extend_from_slice(&block);
+        if let Some(mnemonic) = plan.account().mnemonic() {
+            // An added mnemonic's account: marker 2, then its record id.
+            out.push(2);
+            out.extend_from_slice(block.get(1..).unwrap_or_default());
+            out.extend_from_slice(mnemonic.as_bytes());
+        } else {
+            out.extend_from_slice(&block);
+        }
     }
     out
 }
@@ -160,10 +169,15 @@ pub fn payload_header(bytes: &[u8]) -> Option<BtcPayloadHeader> {
     }
     reader.flag()?;
     if reader.at != bytes.len() {
-        // The account block of a non-primary account: marker 1, source, type, 16 bytes.
+        // The account block of a non-primary account: marker 1, source, type, 16 bytes; marker
+        // 2 (an added mnemonic's HD account) adds the 16-byte record id.
         let block = reader.take(ACCOUNT_BLOCK_LEN)?;
-        if block.first() != Some(&1) {
-            return None;
+        match block.first() {
+            Some(1) => {}
+            Some(2) if block.get(1) == Some(&1) => {
+                reader.take(16)?;
+            }
+            _ => return None,
         }
     }
     (reader.at == bytes.len()).then_some(BtcPayloadHeader {

@@ -224,11 +224,14 @@ fn journal_codec_roundtrip_and_truncation() {
     // Specific rejections.
     let body = records[0].encode().unwrap();
     let mut version = body.clone();
-    version[0] = 3;
+    version[0] = 4;
     assert_eq!(BtcRecord::decode(&version), Err(BtcRecordError::Version));
-    // Version 2 needs the 18-byte account block after the header.
-    version[0] = 2;
-    assert_eq!(BtcRecord::decode(&version), Err(BtcRecordError::Length));
+    // Version 2 needs the 18-byte account block after the header, version 3 (an added
+    // mnemonic's account) the block and the 16-byte record id.
+    for later in [2, 3] {
+        version[0] = later;
+        assert_eq!(BtcRecord::decode(&version), Err(BtcRecordError::Length));
+    }
     // bit7: the bytes were handed to the RPC (disclosed). A body written before the bit reads
     // as not disclosed; the bit round-trips.
     assert!(!BtcRecord::decode(&body).unwrap().disclosed);
@@ -274,7 +277,7 @@ fn journal_codec_roundtrip_and_truncation() {
         yw_core::journal::EntryKind::Btc.max_body(),
         BTC_JOURNAL_MAX_BODY
     );
-    assert_eq!(BTC_JOURNAL_MAX_BODY, 238 + 18 + 49 * 100 + 32_768);
+    assert_eq!(BTC_JOURNAL_MAX_BODY, 238 + 18 + 16 + 49 * 100 + 32_768);
 }
 
 /// spec/08 §12.1 transitions (with `Conflicted` from the broadcast states and `Replaced`).
@@ -1319,5 +1322,63 @@ fn yubikey_account_block() {
         };
         assert!(mismatch.encode().is_err());
         assert_eq!(hw.account.activity_tag(), tag);
+    }
+}
+
+/// SHA-256 of `record(&simple_plan(9, 20_000), Submitted, 1)` (BIP84 account 0 of the primary
+/// mnemonic) as encoded by main `0834dfb`: the version 1 bytes are unchanged.
+const PRIMARY_RECORD_SHA256: &str =
+    "4040b30dac7712028e00070825f0a80a516d0e459192bf7d2086d5a9ddd7de49";
+
+/// spec/02 §8.6, spec/08 §12.4: an HD account of an added mnemonic is record version 3 — the
+/// version 2 account block (`source` 1, type, account, zero padding) and the 16-byte mnemonic
+/// record id — and round-trips, its BIP84 account 0 included; a zero id, another source or a
+/// different version is refused; the primary account's record keeps its version 1 bytes.
+#[test]
+fn added_mnemonic_account_block() {
+    use sha2::{Digest, Sha256};
+    use yw_core::btc::account::{BtcAccountId, ScriptType};
+    use yw_core::vault::RecordId;
+    let send = simple_plan(9, 20_000);
+    let primary = record(&send, BtcTxState::Submitted, 1);
+    let primary_body = primary.encode().unwrap();
+    assert_eq!(primary_body[0], 1);
+    assert_eq!(
+        yw_core::hex::encode(&Sha256::digest(&primary_body)),
+        PRIMARY_RECORD_SHA256
+    );
+    let id = RecordId::from_bytes([0x5c; 16]);
+    for number in [0_u32, 4] {
+        let mut added = primary.clone();
+        added.account = BtcAccountId::Hd {
+            mnemonic: Some(id),
+            script_type: ScriptType::P2wpkh,
+            account: number,
+        };
+        let body = added.encode().unwrap();
+        assert_eq!(body[0], 3, "record version 3");
+        assert_eq!(body.len(), primary_body.len() + 18 + 16);
+        let block = &body[BTC_JOURNAL_HEADER_LEN..BTC_JOURNAL_HEADER_LEN + 18];
+        assert_eq!(block[..2], [1, ScriptType::P2wpkh.code()]);
+        assert_eq!(block[2..6], number.to_be_bytes());
+        assert!(block[6..].iter().all(|byte| *byte == 0));
+        assert_eq!(
+            &body[BTC_JOURNAL_HEADER_LEN + 18..BTC_JOURNAL_HEADER_LEN + 34],
+            id.as_bytes()
+        );
+        assert_eq!(BtcRecord::decode(&body).unwrap(), added);
+        for (at, value) in [
+            (0, 2_u8),
+            (BTC_JOURNAL_HEADER_LEN, 2),
+            (BTC_JOURNAL_HEADER_LEN, 3),
+        ] {
+            let mut bad = body.clone();
+            bad[at] = value;
+            assert!(BtcRecord::decode(&bad).is_err(), "byte {at}");
+        }
+        let mut zero = body.clone();
+        zero[BTC_JOURNAL_HEADER_LEN + 18..BTC_JOURNAL_HEADER_LEN + 34].fill(0);
+        assert_eq!(BtcRecord::decode(&zero), Err(BtcRecordError::Value));
+        assert!(added.account.activity_tag().starts_with("mnemonic/5c5c"));
     }
 }

@@ -22,6 +22,7 @@ use yw_core::sol::rent::{AmountError, format_amount, parse_amount};
 use yw_core::sol::template::spl_entries;
 use yw_core::sol::token::TokenHolding;
 use yw_core::sol::{SolAddress, SolAsset, SolCluster, SplAllowEntry};
+use yw_core::vault::RecordId;
 
 use crate::app::{App, AppMode, Screen};
 use crate::app_evm::QueuedItem;
@@ -293,6 +294,9 @@ pub enum SolAccountId {
     Imported([u8; 16]),
     /// `YubiKey` account `i` (`SolKeySource::Hardware`, meta `hw_accounts.sol`, spec/10 §13).
     Hardware(u32),
+    /// Standard account `i` of the added mnemonic `id` (`SolKeySource::Mnemonic`, meta
+    /// `mnemonic_accounts.sol`, spec/02 §8.6).
+    Mnemonic([u8; 16], u32),
 }
 
 impl SolAccountId {
@@ -303,6 +307,9 @@ impl SolAccountId {
             Self::Derived(index) => AccountIndex::new(index).ok().map(SolKeySource::Standard),
             Self::Imported(_) => Some(SolKeySource::Imported),
             Self::Hardware(index) => AccountIndex::new(index).ok().map(SolKeySource::Hardware),
+            Self::Mnemonic(id, index) => AccountIndex::new(index)
+                .ok()
+                .map(|index| SolKeySource::Mnemonic(RecordId::from_bytes(id), index)),
         }
     }
 
@@ -310,7 +317,7 @@ impl SolAccountId {
     #[must_use]
     pub fn path_text(self) -> String {
         match self {
-            Self::Derived(index) => format!("m/44'/501'/{index}'/0'"),
+            Self::Derived(index) | Self::Mnemonic(_, index) => format!("m/44'/501'/{index}'/0'"),
             Self::Imported(_) => "가져온 개인키 (복구 단어로 복구되지 않음)".to_owned(),
             Self::Hardware(index) if yw_core::yubikey::plan::is_unknown_index(index) => {
                 format!("{} (YubiKey PIV)", yw_core::yubikey::plan::T_UNKNOWN_PATH)
@@ -330,6 +337,16 @@ impl SolAccountId {
     pub const fn is_hardware(self) -> bool {
         matches!(self, Self::Hardware(_))
     }
+
+    /// The added mnemonic of the account (`None` for the primary mnemonic, imported and
+    /// `YubiKey` keys).
+    #[must_use]
+    pub const fn mnemonic(self) -> Option<[u8; 16]> {
+        match self {
+            Self::Mnemonic(id, _) => Some(id),
+            _ => None,
+        }
+    }
 }
 
 /// Solana UI state.
@@ -347,6 +364,8 @@ pub struct SolUi {
     pub next_balance_ms: u64,
     /// Account creation in flight.
     pub creating: bool,
+    /// The "계정 추가" mnemonic picker is open (several mnemonics).
+    pub add_pick: bool,
     /// Send form.
     pub send: SolSendForm,
     /// The (cluster, account) between enqueue and the `Pending` record (one in flight).
@@ -384,6 +403,7 @@ impl SolUi {
         self.tokens.clear();
         self.balance_error.clear();
         self.creating = false;
+        self.add_pick = false;
         self.send = SolSendForm::default();
         self.slot = None;
         self.pending_sign = None;
@@ -434,6 +454,21 @@ impl App {
                         )
                     })
                 });
+            // The added mnemonics' standard accounts, after the primary one's (spec/02 §8.6).
+            let added = meta
+                .mnemonic_accounts
+                .sol
+                .iter()
+                .filter(|(_, account)| !account.hidden)
+                .filter_map(|(id, account)| {
+                    SolAddress::parse(&account.address).ok().map(|address| {
+                        (
+                            SolAccountId::Mnemonic(*id, account.index),
+                            account.label.clone(),
+                            address,
+                        )
+                    })
+                });
             let imported = meta.sol_raw_accounts.iter().filter_map(|raw| {
                 SolAddress::parse(&raw.address).ok().map(|address| {
                     (
@@ -457,7 +492,11 @@ impl App {
                         )
                     })
                 });
-            derived.chain(imported).chain(hardware).collect()
+            derived
+                .chain(added)
+                .chain(imported)
+                .chain(hardware)
+                .collect()
         })
     }
 
@@ -467,9 +506,14 @@ impl App {
         let meta = self.meta.as_ref()?;
         let wanted = meta.hw_accounts.sol_selected.map_or_else(
             || {
-                meta.sol_raw_selected.map_or(
-                    SolAccountId::Derived(meta.prefs.sol_account),
-                    SolAccountId::Imported,
+                meta.mnemonic_accounts.sol_selected.map_or_else(
+                    || {
+                        meta.sol_raw_selected.map_or(
+                            SolAccountId::Derived(meta.prefs.sol_account),
+                            SolAccountId::Imported,
+                        )
+                    },
+                    |(id, index)| SolAccountId::Mnemonic(id, index),
                 )
             },
             SolAccountId::Hardware,
@@ -544,6 +588,7 @@ impl App {
                     SolAccountId::Derived(index) => KnownKind::Own { index },
                     SolAccountId::Imported(_) => KnownKind::OwnImported,
                     SolAccountId::Hardware(_) => KnownKind::OwnHardware,
+                    SolAccountId::Mnemonic(..) => KnownKind::OwnMnemonic,
                 },
             });
         }
@@ -611,6 +656,46 @@ impl App {
         }
     }
 
+    /// `계정 추가`: with several mnemonics the mnemonic picker opens first (spec/04 §2.24);
+    /// otherwise the next standard index of the primary mnemonic.
+    pub fn sol_add_account_clicked(&mut self) {
+        if self.several_mnemonics() {
+            self.sol.add_pick = !self.sol.add_pick;
+            self.refresh();
+            return;
+        }
+        self.sol_add_account();
+    }
+
+    /// The picker's choice: the next standard account of mnemonic `id` (the primary one through
+    /// [`App::sol_add_account`]).
+    pub fn sol_add_account_of(&mut self, id: RecordId, primary: bool) {
+        self.sol.add_pick = false;
+        if primary {
+            self.sol_add_account();
+            return;
+        }
+        let Some(index) = self
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.mnemonic_accounts.next_sol_index(*id.as_bytes()))
+        else {
+            self.refresh();
+            return;
+        };
+        let Ok(account) = AccountIndex::new(index) else {
+            return;
+        };
+        self.sol.creating = true;
+        self.key(KeyJob::SolKeys {
+            purpose: SolKeysPurpose::AddMnemonicAccount {
+                mnemonic: *id.as_bytes(),
+                index,
+            },
+            sources: vec![SolKeySource::Mnemonic(id, account)],
+        });
+    }
+
     /// `계정 추가`: the next standard index.
     pub fn sol_add_account(&mut self) {
         let Some(index) = self
@@ -636,6 +721,7 @@ impl App {
         if let Some((id, ..)) = rows.get(row)
             && let Some(meta) = self.meta.as_mut()
         {
+            meta.mnemonic_accounts.sol_selected = None;
             match *id {
                 SolAccountId::Derived(index) => {
                     meta.prefs.sol_account = index;
@@ -649,6 +735,11 @@ impl App {
                 SolAccountId::Hardware(index) => {
                     meta.hw_accounts.sol_selected = Some(index);
                     meta.sol_raw_selected = None;
+                }
+                SolAccountId::Mnemonic(mnemonic, index) => {
+                    meta.mnemonic_accounts.sol_selected = Some((mnemonic, index));
+                    meta.sol_raw_selected = None;
+                    meta.hw_accounts.sol_selected = None;
                 }
             }
             self.sol.rename = None;
@@ -698,6 +789,16 @@ impl App {
                         label.clone_into(&mut account.label);
                     }
                 }
+                SolAccountId::Mnemonic(mnemonic, index) => {
+                    if let Some((_, account)) = meta
+                        .mnemonic_accounts
+                        .sol
+                        .iter_mut()
+                        .find(|(id, account)| *id == mnemonic && account.index == index)
+                    {
+                        label.clone_into(&mut account.label);
+                    }
+                }
             }
         }
         self.sol.rename = None;
@@ -707,6 +808,28 @@ impl App {
 
     /// Hides the selected standard account (not account 0; imported keys are removed instead).
     pub fn sol_hide_selected(&mut self) {
+        if let Some((SolAccountId::Mnemonic(mnemonic, index), ..)) = self.sol_selected() {
+            // An added mnemonic's account 0 stays (like the primary one's).
+            if index == 0 {
+                return;
+            }
+            let mut hidden = None;
+            if let Some(meta) = self.meta.as_mut() {
+                for (id, account) in &mut meta.mnemonic_accounts.sol {
+                    if *id == mnemonic && account.index == index {
+                        account.hidden = true;
+                        hidden = SolAddress::parse(&account.address).ok();
+                    }
+                }
+                meta.mnemonic_accounts.sol_selected = None;
+            }
+            self.save_meta();
+            if let Some(address) = hidden {
+                self.sol_account_removed_from_sites(&address.to_bytes());
+            }
+            self.refresh();
+            return;
+        }
         if let Some((SolAccountId::Hardware(index), ..)) = self.sol_selected() {
             // A hidden YubiKey account comes back when a card with its key is enrolled again.
             let mut hidden = None;
@@ -750,6 +873,41 @@ impl App {
         self.refresh();
     }
 
+    /// `계정 추가` of an added mnemonic finished: the account is stored and selected.
+    fn sol_mnemonic_account_added(
+        &mut self,
+        mnemonic: [u8; 16],
+        index: u32,
+        keys: &[(SolKeySource, SolAddress)],
+    ) {
+        self.sol.creating = false;
+        let Some((_, address)) = keys.first() else {
+            return;
+        };
+        if let Some(meta) = self.meta.as_mut() {
+            meta.mnemonic_accounts.upsert_sol(
+                mnemonic,
+                Account {
+                    index,
+                    label: format!("Solana {}", index.saturating_add(1)),
+                    address: address.to_base58(),
+                    hidden: false,
+                },
+            );
+            meta.mnemonic_accounts.sol_selected = Some((mnemonic, index));
+            meta.sol_raw_selected = None;
+            meta.hw_accounts.sol_selected = None;
+        }
+        logging::info(
+            "app",
+            "sol.mnemonic_account_added",
+            &[("index", Field::Num(u64::from(index)))],
+        );
+        self.save_meta();
+        self.sol.next_balance_ms = 0;
+        self.refresh();
+    }
+
     /// Key worker result of `SolKeys`.
     pub fn on_sol_keys(
         &mut self,
@@ -788,6 +946,9 @@ impl App {
                 self.sol.next_balance_ms = 0;
                 self.refresh();
             }
+            (SolKeysPurpose::AddMnemonicAccount { mnemonic, index }, Ok(keys)) => {
+                self.sol_mnemonic_account_added(mnemonic, index, &keys);
+            }
             (SolKeysPurpose::Scan, Ok(keys)) => {
                 let cluster = self.sol_cluster();
                 // The disclosure was confirmed for one cluster's provider (spec/07 §3.3). A scan
@@ -824,7 +985,10 @@ impl App {
                 self.refresh();
             }
             (purpose, Err(error)) => {
-                if matches!(purpose, SolKeysPurpose::AddAccount { .. }) {
+                if matches!(
+                    purpose,
+                    SolKeysPurpose::AddAccount { .. } | SolKeysPurpose::AddMnemonicAccount { .. }
+                ) {
                     self.sol.creating = false;
                 } else {
                     self.sol.scan.stage = ScanStage::Notice;
@@ -1068,6 +1232,11 @@ impl App {
             return Some((source, from, format!("비표준 경로 {}", source.path_text())));
         }
         let (id, label, address) = self.sol_selected()?;
+        let label = if id.is_imported() || id.is_hardware() {
+            label
+        } else {
+            self.mnemonic_tagged(&label, id.mnemonic())
+        };
         Some((id.source()?, address, label))
     }
 

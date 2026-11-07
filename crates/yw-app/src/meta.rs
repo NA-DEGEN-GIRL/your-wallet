@@ -187,6 +187,188 @@ fn mnemonics_json(entries: &[MnemonicEntry]) -> Value {
     )
 }
 
+/// The optional top-level key of the Solana and Zcash accounts of added mnemonics (spec/02
+/// §5.3, §8.6): `{"version": 1, "sol": [{"mnemonic": Hex16, "index", "label", "address",
+/// "hidden"}], "sol_selected": null | {"mnemonic": Hex16, "index": u32}, "zec": {"mainnet"?:
+/// {"mnemonic": Hex16, "a": u32, "b": u32, "pubkey": hex66}, "testnet"?: …}}`. Kept apart from
+/// `sol_accounts`, `prefs`, `zcash` and `mnemonics` because earlier builds parse those strictly (an
+/// extra member would make them reject the document or drop the entry). Written only when not
+/// empty; strict (an invalid value rejects the document, like `hw_accounts`). Bitcoin accounts
+/// of added mnemonics are `btc_accounts_mn` (spec/08 §12.3c).
+pub const MNEMONIC_ACCOUNTS_KEY: &str = "mnemonic_accounts";
+const MNEMONIC_ACCOUNTS_VERSION: u64 = 1;
+const MN_ACCOUNTS_KEYS: [&str; 4] = ["version", "sol", "sol_selected", "zec"];
+const MN_SOL_KEYS: [&str; 5] = ["mnemonic", "index", "label", "address", "hidden"];
+
+/// meta `mnemonic_accounts` (Solana part; the Zcash part lives in `Meta::zcash` in memory).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MnemonicAccounts {
+    /// Solana standard accounts `m/44'/501'/i'/0'` of added mnemonics: (mnemonic record id,
+    /// account; `address` = base58 display cache), grouped by mnemonic, index ascending.
+    pub sol: Vec<([u8; 16], Account)>,
+    /// The selected Solana account is this one (after `hw_accounts.sol_selected`, before
+    /// `sol_raw_selected` and `prefs.sol_account`).
+    pub sol_selected: Option<([u8; 16], u32)>,
+}
+
+impl MnemonicAccounts {
+    /// The Solana accounts of mnemonic `id`.
+    pub fn sol_of(&self, id: [u8; 16]) -> impl Iterator<Item = &Account> {
+        self.sol
+            .iter()
+            .filter(move |(mnemonic, _)| *mnemonic == id)
+            .map(|(_, account)| account)
+    }
+
+    /// The next Solana index of mnemonic `id` (`None` at 100 accounts or index 999).
+    #[must_use]
+    pub fn next_sol_index(&self, id: [u8; 16]) -> Option<u32> {
+        if self.sol_of(id).count() >= MAX_EVM_ACCOUNTS {
+            return None;
+        }
+        let next = self
+            .sol_of(id)
+            .map(|account| account.index)
+            .max()
+            .map_or(Some(0), |max| max.checked_add(1))?;
+        (u64::from(next) <= MAX_ACCOUNT_INDEX).then_some(next)
+    }
+
+    /// Adds (or replaces) account `account.index` of mnemonic `id`, keeping the order.
+    pub fn upsert_sol(&mut self, id: [u8; 16], account: Account) {
+        if let Some(slot) = self
+            .sol
+            .iter_mut()
+            .find(|(mnemonic, known)| *mnemonic == id && known.index == account.index)
+        {
+            slot.1 = account;
+        } else {
+            self.sol.push((id, account));
+        }
+        let order: Vec<[u8; 16]> = self.sol.iter().fold(Vec::new(), |mut seen, (mnemonic, _)| {
+            if !seen.contains(mnemonic) {
+                seen.push(*mnemonic);
+            }
+            seen
+        });
+        self.sol.sort_by_key(|(mnemonic, known)| {
+            (
+                order.iter().position(|id| id == mnemonic).unwrap_or(0),
+                known.index,
+            )
+        });
+    }
+
+    /// Drops every account of mnemonic `id` and a selection naming one.
+    pub fn remove_mnemonic(&mut self, id: [u8; 16]) {
+        self.sol.retain(|(mnemonic, _)| *mnemonic != id);
+        if self
+            .sol_selected
+            .is_some_and(|(mnemonic, _)| mnemonic == id)
+        {
+            self.sol_selected = None;
+        }
+    }
+
+    fn from_json(value: Option<&Value>, zcash: &mut crate::zec::meta::ZcashMeta) -> Option<Self> {
+        let Some(value) = value else {
+            return Some(Self::default());
+        };
+        let object = value.as_object()?;
+        if !exact_keys(object, &MN_ACCOUNTS_KEYS)
+            || u64_of(object.get("version")?)? != MNEMONIC_ACCOUNTS_VERSION
+        {
+            return None;
+        }
+        let mut out = Self::default();
+        let list = object.get("sol")?.as_array()?;
+        if list.len() > MAX_EVM_ACCOUNTS.saturating_mul(yw_core::vault::MAX_MNEMONICS) {
+            return None;
+        }
+        for item in list {
+            let entry = item.as_object()?;
+            if !exact_keys(entry, &MN_SOL_KEYS) {
+                return None;
+            }
+            let id = parse_hex16(entry.get("mnemonic")?.as_str()?)?;
+            let account = parse_account(
+                &json_object(vec![
+                    ("index", entry.get("index")?.clone()),
+                    ("label", entry.get("label")?.clone()),
+                    ("address", entry.get("address")?.clone()),
+                    ("hidden", entry.get("hidden")?.clone()),
+                ]),
+                false,
+            )?;
+            if id == [0; 16]
+                || out
+                    .sol
+                    .iter()
+                    .any(|(known, other)| *known == id && other.index == account.index)
+            {
+                return None;
+            }
+            out.sol.push((id, account));
+        }
+        out.sol_selected = match object.get("sol_selected")? {
+            Value::Null => None,
+            other => {
+                let selected = other.as_object()?;
+                if !exact_keys(selected, &["mnemonic", "index"]) {
+                    return None;
+                }
+                let id = parse_hex16(selected.get("mnemonic")?.as_str()?)?;
+                let index = u32::try_from(u64_of(selected.get("index")?)?).ok()?;
+                out.sol
+                    .iter()
+                    .any(|(known, account)| *known == id && account.index == index)
+                    .then_some((id, index))
+            }
+        };
+        if !zcash.read_mnemonic_accounts(object.get("zec")?) {
+            return None;
+        }
+        Some(out)
+    }
+
+    fn to_json(&self, zcash: &crate::zec::meta::ZcashMeta) -> Option<Value> {
+        let zec = zcash.mnemonic_accounts_json();
+        if self.sol.is_empty() && self.sol_selected.is_none() && zec.is_none() {
+            return None;
+        }
+        Some(json_object(vec![
+            ("version", json_u64(MNEMONIC_ACCOUNTS_VERSION)),
+            (
+                "sol",
+                Value::Array(
+                    self.sol
+                        .iter()
+                        .map(|(id, account)| {
+                            json_object(vec![
+                                ("mnemonic", json_str(&yw_core::hex::encode(id))),
+                                ("index", json_u64(u64::from(account.index))),
+                                ("label", json_str(&account.label)),
+                                ("address", json_str(&account.address)),
+                                ("hidden", Value::Bool(account.hidden)),
+                            ])
+                        })
+                        .collect(),
+                ),
+            ),
+            (
+                "sol_selected",
+                self.sol_selected.map_or(Value::Null, |(id, index)| {
+                    json_object(vec![
+                        ("mnemonic", json_str(&yw_core::hex::encode(&id))),
+                        ("index", json_u64(u64::from(index))),
+                    ])
+                }),
+            ),
+            ("zec", zec.unwrap_or_else(|| json_object(Vec::new()))),
+        ]))
+    }
+}
+
 /// meta `hw_accounts` (spec/10 §8, §13).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HwAccounts {
@@ -481,8 +663,12 @@ pub struct Meta {
     /// `mnemonics` (optional key, 2026-11-07): the recovery phrases' labels and the added
     /// mnemonics' EVM accounts (vault `Bip39` records are the truth source).
     pub mnemonics: Vec<MnemonicEntry>,
-    /// `zcash` (optional key, spec/12 §12.3): the Zcash account of each network.
+    /// `zcash` (optional key, spec/12 §12.3): the Zcash account of each network (an account on
+    /// an added mnemonic's key is written to `mnemonic_accounts.zec` instead).
     pub zcash: Box<crate::zec::meta::ZcashMeta>,
+    /// `mnemonic_accounts` (optional key, 2026-11-08): the Solana accounts of added mnemonics
+    /// and their selection.
+    pub mnemonic_accounts: Box<MnemonicAccounts>,
     /// Top-level keys this version does not know (a newer minor version's), in file order; written
     /// back after the known keys while the plaintext stays within 8 MiB (spec/04 §6.6).
     pub unknown: Vec<(String, Value)>,
@@ -515,6 +701,7 @@ impl Default for Meta {
             hw_accounts: HwAccounts::default(),
             mnemonics: Vec::new(),
             zcash: Box::default(),
+            mnemonic_accounts: Box::default(),
             unknown: Vec::new(),
         }
     }
@@ -983,6 +1170,8 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
                 && !OPTIONAL_KEYS.contains(key)
                 && *key != BTC_ACCOUNTS_KEY
                 && *key != BTC_ACCOUNTS_EXT_KEY
+                && *key != yw_core::btc::meta::BTC_ACCOUNTS_MN_KEY
+                && *key != MNEMONIC_ACCOUNTS_KEY
                 && *key != SOL_SITES_KEY
                 && *key != BTC_SITES_KEY
                 && *key != SECURITY_KEY
@@ -1040,6 +1229,7 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
         get("btc")?,
         object.get(BTC_ACCOUNTS_KEY),
         object.get(BTC_ACCOUNTS_EXT_KEY),
+        object.get(yw_core::btc::meta::BTC_ACCOUNTS_MN_KEY),
     )
     .map_err(|_| MetaError)?;
     let btc = btc.map(Box::new);
@@ -1105,6 +1295,10 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
     };
     let hw_accounts = HwAccounts::from_json(object.get(HW_ACCOUNTS_KEY)).ok_or(MetaError)?;
     let mnemonics = parse_mnemonics(object.get(MNEMONICS_KEY)).ok_or(MetaError)?;
+    let mut zcash = crate::zec::meta::ZcashMeta::from_json(object.get(crate::zec::meta::ZCASH_KEY));
+    let mnemonic_accounts =
+        MnemonicAccounts::from_json(object.get(MNEMONIC_ACCOUNTS_KEY), &mut zcash)
+            .ok_or(MetaError)?;
     let mut meta = Meta {
         evm_accounts,
         evm_raw_accounts,
@@ -1131,9 +1325,8 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
         token_view: Box::new(token_view),
         hw_accounts,
         mnemonics,
-        zcash: Box::new(crate::zec::meta::ZcashMeta::from_json(
-            object.get(crate::zec::meta::ZCASH_KEY),
-        )),
+        zcash: Box::new(zcash),
+        mnemonic_accounts: Box::new(mnemonic_accounts),
         unknown,
     };
     let prefs = parse_prefs(get("prefs")?, &meta);
@@ -1262,6 +1455,9 @@ impl Meta {
         if let Some(ext) = btc_values.ext {
             members.push((BTC_ACCOUNTS_EXT_KEY, ext));
         }
+        if let Some(mnemonic) = btc_values.mnemonic {
+            members.push((yw_core::btc::meta::BTC_ACCOUNTS_MN_KEY, mnemonic));
+        }
         if !self.chain_sites.sol.is_empty() {
             members.push((SOL_SITES_KEY, Value::Array(self.chain_sites.sol.clone())));
         }
@@ -1289,6 +1485,9 @@ impl Meta {
 
         if !self.zcash.is_default() {
             members.push((crate::zec::meta::ZCASH_KEY, self.zcash.to_json()));
+        }
+        if let Some(accounts) = self.mnemonic_accounts.to_json(&self.zcash) {
+            members.push((MNEMONIC_ACCOUNTS_KEY, accounts));
         }
         if !self.book_favorites.is_empty() {
             members.push((BOOK_FAVORITES_KEY, self.favorites_json()));
@@ -1923,6 +2122,89 @@ mod tests {
         meta
     }
 
+    /// spec/02 §8.6: the Solana, Bitcoin and Zcash accounts of an added mnemonic live only in
+    /// the new top-level keys `mnemonic_accounts` and `btc_accounts_mn` (earlier builds keep them
+    /// unread): `sol_accounts`, `prefs`, `btc`, `btc_accounts`, `btc_accounts_ext` and `zcash`
+    /// carry nothing new, and the document round-trips.
+    #[test]
+    fn added_mnemonic_accounts_stay_in_new_top_level_keys() {
+        use yw_core::bip32::AccountXpub;
+        use yw_core::vault::RecordId;
+        use yw_core::zec::{ZecAccount, ZecKeySource, ZecNetwork};
+        let id = [0x5c; 16];
+        let xpub = AccountXpub {
+            pubkey: yw_core::hex::decode_array::<33>(
+                "0330d54fd0dd420a6e5f8d3624f5f3482cae350f79d5f0753bf5beef9c2d91af3c",
+            )
+            .unwrap(),
+            chain_code: [7; 32],
+        };
+        let mut meta = Meta::default();
+        meta.sol_accounts.push(Account {
+            index: 0,
+            label: "Solana 1".to_owned(),
+            address: "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk".to_owned(),
+            hidden: false,
+        });
+        meta.mnemonic_accounts.upsert_sol(
+            id,
+            Account {
+                index: 0,
+                label: "Solana 1".to_owned(),
+                address: "oeYf6KAJkLYhBuR8CiGc6L4D4Xtfepr85fuDgA9kq96".to_owned(),
+                hidden: false,
+            },
+        );
+        meta.mnemonic_accounts.sol_selected = Some((id, 0));
+        meta.btc = Some(Box::new(BtcMeta::new(BtcNetwork::Mainnet, xpub)));
+        let added = BtcAccountKey::hd(ScriptType::P2wpkh, 0, xpub)
+            .unwrap()
+            .with_mnemonic(Some(RecordId::from_bytes(id)));
+        meta.btc_accounts
+            .upsert(BtcMeta::with_key(BtcNetwork::Mainnet, added))
+            .unwrap();
+        meta.btc_accounts
+            .upsert(BtcMeta::with_key(
+                BtcNetwork::Mainnet,
+                added.with_single_address(false).with_mnemonic(None),
+            ))
+            .unwrap_err();
+        meta.btc_accounts.selected = Some(added.id());
+        meta.zcash.set(ZecAccount {
+            network: ZecNetwork::Mainnet,
+            source: ZecKeySource::Mnemonic {
+                mnemonic: RecordId::from_bytes(id),
+                account: 0,
+                index: 0,
+            },
+            pubkey: xpub.pubkey,
+        });
+        let bytes = meta.to_json();
+        let root = yw_json::parse(&bytes, &LIMITS).unwrap();
+        let object = root.as_object().unwrap();
+        let hex = yw_core::hex::encode(&id);
+        for key in [
+            "sol_accounts",
+            "prefs",
+            "btc",
+            "btc_accounts",
+            "btc_accounts_ext",
+        ] {
+            let text = object
+                .get(key)
+                .map(|value| String::from_utf8(yw_json::to_vec(value)).unwrap())
+                .unwrap_or_default();
+            assert!(!text.contains(&hex), "{key}");
+        }
+        assert!(object.get("zcash").is_none());
+        assert!(object.get("btc_accounts").is_none());
+        for key in ["mnemonic_accounts", "btc_accounts_mn"] {
+            let text = String::from_utf8(yw_json::to_vec(object.get(key).unwrap())).unwrap();
+            assert!(text.contains(&hex), "{key}");
+        }
+        assert_eq!(parse(&bytes).unwrap().meta, meta);
+    }
+
     #[test]
     fn imported_lists_and_key_only_meta_round_trip() {
         let meta = imported_meta();
@@ -2270,6 +2552,7 @@ mod tests {
         assert_eq!(
             parsed.btc_accounts.selected_on(BtcNetwork::Testnet4),
             BtcAccountId::Hd {
+                mnemonic: None,
                 script_type: yw_core::btc::ScriptType::P2tr,
                 account: 0
             }

@@ -73,6 +73,8 @@ impl core::fmt::Debug for MnUi {
 pub const T_MN_INTRO: &str = "지갑에 복구 단어(니모닉)를 여러 개(최대 8개) 둘 수 있습니다. 복구 단어마다 계정이 따로 생기고, 각 복구 단어는 따로 적어 두어야 합니다 — 한 복구 단어로 다른 복구 단어의 계정을 되찾을 수 없습니다.";
 /// T-MN-REMOVE.
 pub const T_MN_REMOVE: &str = "이 복구 단어와 그 계정이 지갑에서 사라집니다. 자금은 체인에 그대로 남지만, 이 복구 단어를 따로 적어 두지 않았다면 다시는 그 계정을 열 수 없습니다. 먼저 '단어 보기'로 적어 둔 단어와 같은지 확인하세요.";
+/// T-MN-BUSY: removal refused while a transaction of the mnemonic's accounts may still confirm.
+pub const T_MN_BUSY: &str = "이 복구 단어의 Solana·Bitcoin·Zcash 계정에서 보낸 거래가 아직 확정될 수 있어(진행 중, 공개된 거래 또는 승인 중) 지울 수 없습니다. 거래가 확정되거나 만료된 뒤에 다시 시도하세요.";
 /// T-MN-UNCONFIRMED.
 pub const T_MN_UNCONFIRMED: &str = "백업 확인 전입니다. 이 복구 단어의 계정은 받기만 되고 서명(보내기·연결 승인)은 백업 확인 뒤에 됩니다.";
 
@@ -107,6 +109,39 @@ impl App {
     #[must_use]
     pub fn several_mnemonics(&self) -> bool {
         self.mn.infos.len() > 1
+    }
+
+    /// `label` with the source tag of a derived account (`계정 1  [니모닉 2]`): the added
+    /// mnemonic `mnemonic`'s label, or for the primary mnemonic's account (`None`) its label when
+    /// the wallet has several (as the EVM rows); `label` unchanged otherwise.
+    #[must_use]
+    pub fn mnemonic_tagged(&self, label: &str, mnemonic: Option<[u8; 16]>) -> String {
+        let tag = match mnemonic {
+            Some(id) => Some(self.mnemonic_label(RecordId::from_bytes(id))),
+            None => self
+                .several_mnemonics()
+                .then(|| self.primary_mnemonic_label())
+                .flatten(),
+        };
+        tag.map_or_else(|| label.to_owned(), |tag| format!("{label}  [{tag}]"))
+    }
+
+    /// Whether a Solana, Bitcoin or Zcash journal record of mnemonic `id`'s accounts may still
+    /// confirm (a SOL `Pending`, a BTC record in flight / replaced / given up or refused inside
+    /// the 30-day window, a ZEC record not final), or a Bitcoin approval of one of its accounts
+    /// is open: the mnemonic is not removed then (like an imported key, spec/04 §2.18).
+    #[must_use]
+    pub fn mnemonic_busy(&self, id: RecordId) -> bool {
+        let sol = self.sol_records().iter().any(|record| {
+            record.state == yw_core::journal::sol::SolTxState::Pending
+                && record.source.mnemonic() == Some(id)
+        });
+        let zec = self.evm.journal.as_ref().is_some_and(|journal| {
+            journal.zec_records.iter().any(|record| {
+                record.account.source.mnemonic() == Some(id) && record.may_still_confirm()
+            })
+        });
+        sol || zec || self.btc_mnemonic_busy(id)
     }
 
     /// The EVM account rows of the added mnemonics `(pref, label, address (lowercase), path)`.
@@ -246,6 +281,9 @@ impl App {
             self.refresh();
             return true;
         }
+        if self.on_chain_pick(id) {
+            return true;
+        }
         if let Some(info) = row(ids::RENAME_BASE).and_then(|row| info_at(self, row)) {
             self.mn.rename = Some(info.id);
             self.refresh();
@@ -266,10 +304,7 @@ impl App {
             return true;
         }
         if let Some(info) = row(ids::REMOVE_BASE).and_then(|row| info_at(self, row)) {
-            if !info.primary {
-                self.mn.confirm_remove = Some(info.id);
-            }
-            self.refresh();
+            self.mn_remove_clicked(info);
             return true;
         }
         match id {
@@ -312,9 +347,53 @@ impl App {
                 self.mn.add_pick = false;
                 self.refresh();
             }
+
             _ => return ids::FIXED.contains(&id),
         }
         true
+    }
+
+    /// `지우기` of a mnemonic card: the warning, unless a transaction of its accounts may still
+    /// confirm (T-MN-BUSY). The primary mnemonic has no `지우기`.
+    fn mn_remove_clicked(&mut self, info: MnemonicInfo) {
+        if !info.primary {
+            if self.mnemonic_busy(info.id) {
+                self.notice(T_MN_BUSY.to_owned(), Tone::Warn);
+            } else {
+                self.mn.confirm_remove = Some(info.id);
+            }
+        }
+        self.refresh();
+    }
+
+    /// The Solana / Bitcoin / Zcash mnemonic choices (spec/02 §8.6); `false` for other ids.
+    fn on_chain_pick(&mut self, id: u16) -> bool {
+        if id == ids::SOL_PICK_CANCEL {
+            self.sol.add_pick = false;
+            self.refresh();
+            return true;
+        }
+        let pick = |base: u16| {
+            id.checked_sub(base)
+                .filter(|row| *row < ids::ROW_SPAN)
+                .and_then(|row| self.mn.infos.get(usize::from(row)).copied())
+        };
+        if let Some(info) = pick(ids::SOL_PICK_BASE) {
+            self.sol_add_account_of(info.id, info.primary);
+            self.refresh();
+            return true;
+        }
+        if let Some(info) = pick(ids::BTC_PICK_BASE) {
+            self.btc_pick_mnemonic(info.id, info.primary);
+            return true;
+        }
+        if let Some(info) = pick(ids::ZEC_PICK_BASE) {
+            if !info.primary {
+                self.zec_use_mnemonic(info.id);
+            }
+            return true;
+        }
+        false
     }
 
     fn open_mn_input(&mut self, kind: SecretKind, purpose: MnPurpose) {
@@ -608,6 +687,23 @@ impl App {
                 for address in &removed {
                     self.account_removed_from_sites(address);
                 }
+                // Its Solana accounts leave every dApp connection too (spec/05 §4.9).
+                let sol_removed: Vec<[u8; 32]> = self
+                    .meta
+                    .as_ref()
+                    .map(|meta| {
+                        meta.mnemonic_accounts
+                            .sol_of(*id.as_bytes())
+                            .filter_map(|account| {
+                                yw_core::sol::SolAddress::parse(&account.address).ok()
+                            })
+                            .map(yw_core::sol::SolAddress::to_bytes)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                for public in &sol_removed {
+                    self.sol_account_removed_from_sites(public);
+                }
                 self.after_change();
             }
             MnOutcome::Derived(Ok((id, index, address))) => {
@@ -629,6 +725,12 @@ impl App {
                     }
                     self.save_meta();
                 }
+                self.refresh();
+            }
+            MnOutcome::Busy(_) => {
+                self.close_secret();
+                self.mn.confirm_remove = None;
+                self.notice(T_MN_BUSY.to_owned(), Tone::Warn);
                 self.refresh();
             }
             MnOutcome::PassphraseFor(position, count) => {

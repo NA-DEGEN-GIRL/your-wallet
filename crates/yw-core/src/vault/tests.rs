@@ -1588,6 +1588,7 @@ fn derived_addresses_signing_key_and_batch_limit() {
     let btc = vault
         .with_secp_key(
             KeyRef::Btc {
+                mnemonic: None,
                 coin: BtcCoin::Mainnet,
                 chain: BtcChain::Receive,
                 index: 0,
@@ -1738,6 +1739,15 @@ pub(crate) fn unlocked_with(phrase: &str) -> Vault {
         .import_mnemonic(&pw(PASSWORD), phrase, None, new_slot(), 1_790_000_000)
         .unwrap();
     vault
+}
+
+/// An unlocked vault of `primary` with `added` as a second mnemonic (backup confirmed).
+pub(crate) fn unlocked_with_added(primary: &str, added: &str) -> (Vault, RecordId) {
+    let mut vault = unlocked_with(primary);
+    let id = vault
+        .add_mnemonic(&pw(PASSWORD), added, None, 1_790_000_001)
+        .unwrap();
+    (vault, id)
 }
 
 fn sol_b58(key: &[u8; 32]) -> String {
@@ -3107,6 +3117,7 @@ fn zcash_wif_import_reveal_sign_and_refusals() {
     let derived = vault
         .with_secp_key(
             KeyRef::Zec {
+                mnemonic: None,
                 test: false,
                 account: 0,
                 index: 0,
@@ -3288,7 +3299,7 @@ fn unknown_path_card_vault_accounts_and_zcash_collision() {
 // ---------------------------------------------------------------- several mnemonics (§8.6)
 
 /// Hardhat/Anvil's published default mnemonic: account 0 `0xf39F…2266`, account 1 `0x7099…79C8`.
-const HARDHAT: &str = "test test test test test test test test test test test junk";
+pub(crate) const HARDHAT: &str = "test test test test test test test test test test test junk";
 
 fn evm_text(vault: &Vault, src: EvmKeySource) -> String {
     vault.evm_address(src).unwrap().to_checksum()
@@ -3416,4 +3427,168 @@ fn added_mnemonic_backup_gates_signing_and_removal_rules() {
         Some(VaultError::RecordNotFound)
     );
     assert_eq!(vault.mnemonics().unwrap().len(), 1);
+}
+
+/// Independently computed (Node.js `crypto`: PBKDF2-HMAC-SHA512, SLIP-0010 / BIP32 by hand,
+/// Ed25519 from PKCS#8, RIPEMD-160, bech32 / base58check by hand; the same script gives the
+/// published Hardhat account 0 key `ac0974be…ff80`) addresses of the Hardhat mnemonic.
+pub(crate) const HARDHAT_SOL_0: &str = "oeYf6KAJkLYhBuR8CiGc6L4D4Xtfepr85fuDgA9kq96";
+pub(crate) const HARDHAT_SOL_1: &str = "AqynRZwvVqUPRwRJXvm6odUb3t93fDjnWe3p6BeuUFxD";
+pub(crate) const HARDHAT_BIP84_MAIN: &str = "bc1q4qw42stdzjqs59xvlrlxr8526e3nunw7mp73te";
+pub(crate) const HARDHAT_BIP84_TEST: &str = "tb1qquv9lg5g2r4jkr0ahun0ddfg5xntxjelvmc7t8";
+pub(crate) const HARDHAT_ZEC_MAIN: &str = "t1UxWM2wcKHaLeLo7rN6ivUp4CtsdqSwQh8";
+pub(crate) const HARDHAT_ZEC_TEST: &str = "tmVCXaxV1ZfbyshJLjD7YqVtZf95rgFWJj7";
+
+#[test]
+fn added_mnemonic_derives_solana_bitcoin_and_zcash_keys() {
+    use crate::bip32::path::BtcPurpose;
+    use crate::btc::{BtcAccountKey, BtcNetwork, ScriptType};
+    use crate::slip10::SolKeySource;
+    let (_, mut vault) = imported(None);
+    let second = vault.add_mnemonic(&pw(PASSWORD), HARDHAT, None, 2).unwrap();
+    // Solana m/44'/501'/i'/0' of the added mnemonic; the primary standard path is unchanged.
+    let keys = vault
+        .sol_public_keys(&[
+            SolKeySource::Mnemonic(second, index(0)),
+            SolKeySource::Mnemonic(second, index(1)),
+            SolKeySource::Standard(index(0)),
+        ])
+        .unwrap();
+    let base58 = |key: &[u8; 32]| crate::sol::SolAddress::from_bytes(*key).to_base58();
+    let [added0, added1, primary0]: [[u8; 32]; 3] = keys.try_into().unwrap();
+    let (added0, added1, primary0) = (&added0, &added1, &primary0);
+    assert_eq!(base58(added0), HARDHAT_SOL_0);
+    assert_eq!(base58(added1), HARDHAT_SOL_1);
+    assert_eq!(
+        vault
+            .sol_public_keys(&[SolKeySource::Standard(index(0))])
+            .unwrap()
+            .as_slice(),
+        [*primary0]
+    );
+    assert_ne!(added0, primary0);
+    // Bitcoin BIP84 first address (mainnet and testnet4) from the account node, and the same
+    // public key by private derivation (the signer's key).
+    for (network, test, expected) in [
+        (BtcNetwork::Mainnet, false, HARDHAT_BIP84_MAIN),
+        (BtcNetwork::Testnet4, true, HARDHAT_BIP84_TEST),
+    ] {
+        let coin = BtcCoin::new(test, BtcPurpose::Bip84, 0).unwrap();
+        let xpub = vault.btc_account_xpub_of(Some(second), coin).unwrap();
+        assert_ne!(xpub, vault.btc_account_xpub(coin).unwrap());
+        let account = BtcAccountKey::hd(ScriptType::P2wpkh, 0, xpub)
+            .unwrap()
+            .with_mnemonic(Some(second));
+        assert_eq!(
+            account
+                .address(network, BtcChain::Receive, 0)
+                .unwrap()
+                .to_string(),
+            expected
+        );
+        let public = vault
+            .with_secp_key(
+                KeyRef::Btc {
+                    mnemonic: Some(second),
+                    coin,
+                    chain: BtcChain::Receive,
+                    index: 0,
+                },
+                |ctx, secret| Ok(secp256k1::PublicKey::from_secret_key(ctx, secret).serialize()),
+            )
+            .unwrap();
+        assert_eq!(
+            crate::btc::address::hash160(&public),
+            crate::btc::address::hash160(
+                &crate::bip32::derive_public_child(
+                    &crate::bip32::derive_public_child(&xpub, 0).unwrap(),
+                    0
+                )
+                .unwrap()
+                .pubkey
+            )
+        );
+    }
+    // Zcash m/44'/{133|1}'/0'/0/0.
+    for (network, expected) in [
+        (crate::zec::ZecNetwork::Mainnet, HARDHAT_ZEC_MAIN),
+        (crate::zec::ZecNetwork::Testnet, HARDHAT_ZEC_TEST),
+    ] {
+        let test = network == crate::zec::ZecNetwork::Testnet;
+        let pubkey = vault.zec_public_key_of(Some(second), test, 0, 0).unwrap();
+        assert_ne!(pubkey, vault.zec_public_key(test, 0, 0).unwrap());
+        let account = crate::zec::ZecAccount {
+            network,
+            source: crate::zec::ZecKeySource::Mnemonic {
+                mnemonic: second,
+                account: 0,
+                index: 0,
+            },
+            pubkey,
+        };
+        assert_eq!(account.address(), expected);
+    }
+    // An unknown mnemonic id is refused.
+    let unknown = RecordId::from_bytes([0x5a; 16]);
+    assert_eq!(
+        vault.sol_public_keys(&[SolKeySource::Mnemonic(unknown, index(0))]),
+        Err(VaultError::RecordNotFound)
+    );
+    assert_eq!(
+        vault.zec_public_key_of(Some(unknown), false, 0, 0),
+        Err(VaultError::RecordNotFound)
+    );
+}
+
+#[test]
+fn added_mnemonic_backup_gates_solana_bitcoin_and_zcash_signing() {
+    use crate::bip32::path::BtcPurpose;
+    use crate::slip10::SolKeySource;
+    let (_, mut vault) = imported(None);
+    let (id, phrase) = vault.generate_mnemonic(&pw(PASSWORD), 2).unwrap();
+    let sol = SolKeySource::Mnemonic(id, index(0));
+    let btc = KeyRef::Btc {
+        mnemonic: Some(id),
+        coin: BtcCoin::new(false, BtcPurpose::Bip86, 3).unwrap(),
+        chain: BtcChain::Change,
+        index: 7,
+    };
+    let zec = KeyRef::Zec {
+        mnemonic: Some(id),
+        test: true,
+        account: 0,
+        index: 0,
+    };
+    // Public keys (receiving) work; every signing path waits for that mnemonic's quiz.
+    assert!(vault.sol_public_keys(&[sol]).is_ok());
+    assert!(vault.zec_public_key_of(Some(id), true, 0, 0).is_ok());
+    assert_eq!(
+        vault.with_ed25519_seed(sol, |_| Ok(())),
+        Err(VaultError::BackupNotConfirmed)
+    );
+    assert_eq!(
+        vault.with_secp_key(btc, |_, _| Ok(())),
+        Err(VaultError::BackupNotConfirmed)
+    );
+    assert_eq!(
+        vault.with_secp_key(zec, |_, _| Ok(())),
+        Err(VaultError::BackupNotConfirmed)
+    );
+    // The primary mnemonic's keys are not gated by it.
+    assert!(
+        vault
+            .with_ed25519_seed(SolKeySource::Standard(index(0)), |_| Ok(()))
+            .is_ok()
+    );
+    let challenge = vault.backup_challenge_for(id).unwrap();
+    vault
+        .confirm_backup_for(
+            id,
+            challenge.id,
+            refs(&answers(phrase.expose(), challenge.positions)),
+        )
+        .unwrap();
+    assert!(vault.with_ed25519_seed(sol, |_| Ok(())).is_ok());
+    assert!(vault.with_secp_key(btc, |_, _| Ok(())).is_ok());
+    assert!(vault.with_secp_key(zec, |_, _| Ok(())).is_ok());
 }

@@ -1472,3 +1472,91 @@ fn yubikey_message_signed_on_the_card() {
         Err(SolMessageCardError::Card(CardError::SecurityStatus))
     );
 }
+
+// ---------------------------------------------------------------- added mnemonics (spec/02 §8.6)
+
+/// SHA-256 of the body of `signed_record(template_core(), 1_790_000_000_000)` as encoded by the
+/// build before added mnemonics had Solana accounts (main `0834dfb`): a record of the primary
+/// mnemonic's (or an imported, or a `YubiKey`) account keeps the version 1 bytes.
+const PRIMARY_RECORD_SHA256: &str =
+    "2f97bd9af1447ce7afeec03b1c501ad8458696afb52331e4b671f00a6913e3e3";
+
+#[test]
+fn primary_record_bytes_are_unchanged() {
+    let body = signed_record(template_core(), 1_790_000_000_000)
+        .encode()
+        .unwrap();
+    assert_eq!(body[1], 1);
+    assert_eq!(hex::encode(&Sha256::digest(&body)), PRIMARY_RECORD_SHA256);
+}
+
+/// A transfer from account 0 of an added mnemonic (tag 8): the key comes from that mnemonic's
+/// seed, the transcript binds its record id, and the journal record is version 2 with the id
+/// after the header (round trip, rejections).
+#[test]
+fn added_mnemonic_transfer_signs_and_journals_as_version_2() {
+    use crate::vault::RecordId;
+    use crate::vault::tests::{HARDHAT, HARDHAT_SOL_0, unlocked_with_added};
+    let (vault, second) = unlocked_with_added(ABOUT, HARDHAT);
+    let source = SolKeySource::Mnemonic(second, AccountIndex::ZERO);
+    let from = SolAddress::from_bytes(vault.sol_public_keys(&[source]).unwrap()[0]);
+    assert_eq!(from.to_base58(), HARDHAT_SOL_0);
+    let core = SolTransferCore {
+        from,
+        ..template_core()
+    };
+    let added = intent(core, source, flags::FIRST_TIME);
+    // The transcript binds the mnemonic: the same intent from another source differs.
+    for other in [
+        SolKeySource::Standard(AccountIndex::ZERO),
+        SolKeySource::Mnemonic(RecordId::from_bytes([9; 16]), AccountIndex::ZERO),
+    ] {
+        let changed = SolTransferIntent {
+            source: other,
+            ..added
+        };
+        assert_ne!(changed.intent_hash(), added.intent_hash());
+    }
+    let (_, approved) = approved_for(&added);
+    let signed = sign_transfer(&vault, approved, 2_000, BLOCKHASH, 22_000).unwrap();
+    let message = encode_message(&core, &BLOCKHASH);
+    assert!(super::keys::verify_strict(
+        from.as_bytes(),
+        &message,
+        &signed.signature
+    ));
+    // The added mnemonic's key never signs for the primary account's address.
+    let (_, wrong) = approved_for(&intent(template_core(), source, flags::FIRST_TIME));
+    assert_eq!(
+        sign_transfer(&vault, wrong, 0, BLOCKHASH, 0),
+        Err(SolSignError::KeyMismatch)
+    );
+    // Journal: version 2, record id after the 89-byte header, the intent hash where it was.
+    let record = SolRecord::new_pending(&added, &signed, 1_790_000_000_000, 1_234);
+    let body = record.encode().unwrap();
+    assert_eq!((body[1], body[4]), (2, 8));
+    assert_eq!(body.len(), SOL_JOURNAL_HEADER_LEN + 16 + T_SOL_TX_LEN);
+    assert_eq!(
+        &body[SOL_JOURNAL_HEADER_LEN..SOL_JOURNAL_HEADER_LEN + 16],
+        second.as_bytes()
+    );
+    assert_eq!(SolRecord::decode(&body), Ok(record.clone()));
+    let mut plain = JournalPlain::default();
+    push_record(&mut plain, &record).unwrap();
+    let plain = JournalPlain::decode(&plain.encode().unwrap()).unwrap();
+    assert_eq!(SolEntries::from_plain(&plain).records(), vec![record]);
+    assert!(has_intent(&plain, &added.intent_hash()));
+    // Version and tag must agree; the id is never zero.
+    let reject = |mutate: &dyn Fn(&mut Vec<u8>), expected: SolRecordError| {
+        let mut bad = body.clone();
+        mutate(&mut bad);
+        assert_eq!(SolRecord::decode(&bad), Err(expected));
+    };
+    reject(&|b| b[1] = 1, SolRecordError::Source);
+    reject(&|b| b[4] = 1, SolRecordError::Header);
+    reject(
+        &|b| b[SOL_JOURNAL_HEADER_LEN..SOL_JOURNAL_HEADER_LEN + 16].fill(0),
+        SolRecordError::Source,
+    );
+    reject(&|b| b.truncate(b.len() - 1), SolRecordError::Length);
+}

@@ -714,9 +714,11 @@ fn accounts_are_stored_selected_and_imported_keys_need_their_record() -> TestRes
         BtcMetaOp::AddAccount {
             network: BtcNetwork::Testnet4,
             script_type: ScriptType::P2shP2wpkh,
+            mnemonic: None,
         },
     )?;
     let nested = BtcAccountId::Hd {
+        mnemonic: None,
         script_type: ScriptType::P2shP2wpkh,
         account: 0,
     };
@@ -738,11 +740,13 @@ fn accounts_are_stored_selected_and_imported_keys_need_their_record() -> TestRes
         BtcMetaOp::AddAccount {
             network: BtcNetwork::Testnet4,
             script_type: ScriptType::P2shP2wpkh,
+            mnemonic: None,
         },
     )?;
     assert_eq!(
         done,
         BtcMetaDone::AccountAdded(BtcAccountId::Hd {
+            mnemonic: None,
             script_type: ScriptType::P2shP2wpkh,
             account: 1,
         })

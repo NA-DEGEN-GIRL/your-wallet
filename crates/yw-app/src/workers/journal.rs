@@ -419,6 +419,86 @@ impl JournalState {
         }
     }
 
+    /// Whether a journal record of an account of the added mnemonic `id` may still confirm: a
+    /// SOL `Pending`, a ZEC record not final, a BTC record in flight / replaced / given up or
+    /// refused inside the 30-day window (spec/02 §8.6). An unreadable journal counts as busy.
+    pub fn mnemonic_busy(
+        &mut self,
+        vault: &Vault,
+        id: yw_core::vault::RecordId,
+        now_unix: u64,
+    ) -> bool {
+        let Ok(plain) = self.current(vault) else {
+            return true;
+        };
+        let sol = yw_core::journal::sol::SolEntries::from_plain(&plain)
+            .records
+            .iter()
+            .any(|(_, record)| {
+                record.state == yw_core::journal::sol::SolTxState::Pending
+                    && record.source.mnemonic() == Some(id)
+            });
+        let zec = yw_core::journal::zec::ZecEntries::from_plain(&plain)
+            .records
+            .iter()
+            .any(|(_, record)| {
+                record.account.source.mnemonic() == Some(id) && record.may_still_confirm()
+            });
+        sol || zec || self.btc_mnemonic_busy(vault, id, now_unix)
+    }
+
+    /// Drops the (final) SOL, BTC and ZEC records of the removed mnemonic `id`'s accounts and
+    /// commits: their accounts are gone, and an earlier build would read these record versions
+    /// as damaged bodies (spec/04 §6.6). Nothing is written when there is none.
+    pub fn purge_mnemonic(
+        &mut self,
+        vault: &mut Vault,
+        id: yw_core::vault::RecordId,
+        alt: bool,
+    ) -> Vec<KeyOutcome> {
+        let Ok(mut next) = self.current(vault) else {
+            return Vec::new();
+        };
+        let before = next.entries.len();
+        next.entries.retain(|entry| match entry.kind {
+            yw_core::journal::EntryKind::Sol => {
+                yw_core::journal::sol::SolRecord::decode(&entry.body)
+                    .map_or(true, |record| record.source.mnemonic() != Some(id))
+            }
+            yw_core::journal::EntryKind::Btc => {
+                yw_core::journal::btc::BtcRecord::decode(&entry.body).map_or(true, |record| {
+                    !matches!(
+                        record.account,
+                        yw_core::btc::BtcAccountId::Hd { mnemonic: Some(of), .. } if of == id
+                    )
+                })
+            }
+            yw_core::journal::EntryKind::Zec => {
+                yw_core::journal::zec::ZecRecord::decode(&entry.body)
+                    .map_or(true, |record| record.account.source.mnemonic() != Some(id))
+            }
+            yw_core::journal::EntryKind::Evm => true,
+        });
+        if next.entries.len() == before {
+            return Vec::new();
+        }
+        let _ = alt;
+        let Ok(bytes) = next.encode() else {
+            return Vec::new();
+        };
+        match vault.save_sidecar(FileKind::Journal, &bytes) {
+            Ok(_) => {
+                let view = view_of(&next);
+                self.plain = Some(next);
+                vec![KeyOutcome::Journal(Ok(view))]
+            }
+            Err(error) => {
+                logging::warn("journal", "journal.write_failed", &[]);
+                vec![KeyOutcome::Journal(Err(error))]
+            }
+        }
+    }
+
     /// Re-applies this session's moved activity rows and the key worker's `BtcMeta` to a meta
     /// document from the UI (imported-key accounts without a vault record are left out).
     pub fn merge_overlay(&self, vault: &Vault, document: &mut Meta) {

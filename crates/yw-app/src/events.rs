@@ -520,6 +520,13 @@ pub enum SolKeysPurpose {
     },
     /// The recovery scan (spec/07 §3.3).
     Scan,
+    /// `계정 추가` of an added mnemonic: its new standard account `index` (spec/02 §8.6).
+    AddMnemonicAccount {
+        /// The mnemonic record id.
+        mnemonic: [u8; 16],
+        /// Index.
+        index: u32,
+    },
 }
 
 /// A signed and journaled SOL transfer ready to broadcast.

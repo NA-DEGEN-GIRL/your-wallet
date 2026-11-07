@@ -683,3 +683,124 @@ fn planning_rules() {
     assert_eq!(plan.excluded_inputs, 10);
     assert!(plan.inputs.iter().all(|input| input.value > 100_010));
 }
+
+// ---------------------------------------------------------------- added mnemonics (spec/02 §8.6)
+
+/// The `mocked_end_to_end_send` flow up to the `Signed` record for any account of `vault`.
+fn signed_send(
+    vault: &crate::vault::Vault,
+    account: ZecAccount,
+) -> (ZecPlan, ZecSignedTx, zj::ZecRecord) {
+    let recipient = parse_recipient(
+        &encode_tex(&[0x42; 20], ZecNetwork::Testnet),
+        ZecNetwork::Testnet,
+    )
+    .unwrap();
+    let consensus = tx_consensus(
+        ZecNetwork::Testnet,
+        &ConsensusObservation {
+            tip: 4_470_000,
+            next_branch: 0x7719_0AD9,
+            upgrades: vec![(0x7719_0AD9, 4_465_026)],
+        },
+    )
+    .unwrap();
+    let request = ZecSendRequest {
+        recipient,
+        amount: ZecAmount::Exact(150_000),
+        utxos: vec![utxo(1, 100_000), utxo(2, 80_000), utxo(3, 5_000)],
+        reserved: Vec::new(),
+        consensus,
+    };
+    let plan = plan_send(&account, &request).unwrap();
+    let draft = display::build_zec_request(crate::approval::ApprovalId([5; 16]), &plan).unwrap();
+    let mut store = ApprovalStore::new();
+    let issued = store.issue(draft, 1_000, 1_700_000_000_000).unwrap();
+    let approved = store.consume(issued.id, issued.digest, 1_001).unwrap();
+    let signed = sign_plan(vault, approved, &plan).unwrap();
+    let record = zj::ZecRecord::new_signed(&plan, &signed, 1_700_000_000_500);
+    (plan, signed, record)
+}
+
+/// SHA-256 of the `Signed` record body of the `mocked_end_to_end_send` flow (primary mnemonic,
+/// `m/44'/1'/0'/0/0`) as encoded by main `0834dfb`: the version 1 bytes are unchanged.
+const PRIMARY_RECORD_SHA256: &str =
+    "d4f8fe883f993b68ac6d3c4305ef76699c196b73969f80c4eaacce21e30221e8";
+
+#[test]
+fn primary_record_bytes_are_unchanged() {
+    let vault = crate::vault::tests::unlocked_with(ABOUT);
+    let account = ZecAccount {
+        network: ZecNetwork::Testnet,
+        source: ZecKeySource::DEFAULT,
+        pubkey: vault.zec_public_key(true, 0, 0).unwrap(),
+    };
+    let body = signed_send(&vault, account).2.encode().unwrap();
+    assert_eq!(body[1], 1);
+    assert_eq!(
+        hex::encode(&<sha2::Sha256 as sha2::Digest>::digest(&body)),
+        PRIMARY_RECORD_SHA256
+    );
+}
+
+/// A send from `m/44'/1'/0'/0/0` of an added mnemonic (source code 5): the vault signs with that
+/// mnemonic's key, the payload binds the record id, the journal record is version 2 with the id
+/// after the 135-byte header (round trip, one-in-flight, rejections).
+#[test]
+fn added_mnemonic_send_signs_and_journals_as_version_2() {
+    use crate::vault::tests::{HARDHAT, HARDHAT_ZEC_TEST, unlocked_with_added};
+    let (vault, second) = unlocked_with_added(ABOUT, HARDHAT);
+    let source = ZecKeySource::Mnemonic {
+        mnemonic: second,
+        account: 0,
+        index: 0,
+    };
+    let account = ZecAccount {
+        network: ZecNetwork::Testnet,
+        source,
+        pubkey: vault.zec_public_key_of(Some(second), true, 0, 0).unwrap(),
+    };
+    assert_eq!(account.address(), HARDHAT_ZEC_TEST);
+    let (plan, signed, record) = signed_send(&vault, account);
+    assert_eq!(
+        verify_signed(&signed.raw, &plan, false).unwrap(),
+        signed.txid
+    );
+    // The payload binds the mnemonic: the same plan under the primary standard source differs.
+    let mut primary_plan = plan.clone();
+    primary_plan.account.source = ZecKeySource::DEFAULT;
+    assert_ne!(sign::zec_payload(&primary_plan), sign::zec_payload(&plan));
+    // The primary mnemonic's key is not this account's key.
+    let mut store = ApprovalStore::new();
+    let draft =
+        display::build_zec_request(crate::approval::ApprovalId([6; 16]), &primary_plan).unwrap();
+    let issued = store.issue(draft, 1_000, 1_700_000_000_000).unwrap();
+    let approved = store.consume(issued.id, issued.digest, 1_001).unwrap();
+    assert_eq!(
+        sign_plan(&vault, approved, &primary_plan).err(),
+        Some(ZecSignError::KeyMismatch)
+    );
+    // Journal: version 2, record id after the header, round trip, in-flight per account.
+    let body = record.encode().unwrap();
+    assert_eq!((body[1], body[4]), (2, 5));
+    assert_eq!(&body[135..151], second.as_bytes());
+    assert_eq!(zj::ZecRecord::decode(&body), Ok(record.clone()));
+    let mut journal = JournalPlain::default();
+    zj::push_record(&mut journal, &record).unwrap();
+    let journal = JournalPlain::decode(&journal.encode().unwrap()).unwrap();
+    let decoded = zj::ZecEntries::from_plain(&journal);
+    assert_eq!((decoded.corrupt, decoded.records.len()), (0, 1));
+    assert_eq!(
+        zj::check_plan_allowed(&journal, &account),
+        Err(zj::ZecJournalBlock::InFlight)
+    );
+    // Version and code must agree; the id is never zero.
+    for (at, value) in [(1, 1_u8), (4, 1)] {
+        let mut bad = body.clone();
+        bad[at] = value;
+        assert!(zj::ZecRecord::decode(&bad).is_err(), "byte {at}");
+    }
+    let mut zero = body.clone();
+    zero[135..151].fill(0);
+    assert_eq!(zj::ZecRecord::decode(&zero), Err(zj::ZecRecordError::Value));
+}
