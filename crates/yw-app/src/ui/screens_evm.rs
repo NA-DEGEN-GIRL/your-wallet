@@ -774,6 +774,12 @@ impl App {
                 "테스트넷 — 실제 자산이 아닙니다".to_owned(),
                 Tone::Testnet,
             ));
+        } else if yw_core::evm::chain::is_builtin_mainnet(chain_id) {
+            // The main tab's mainnet band on S11 too (2026-11-08; Bitcoin shows it everywhere).
+            items.push(Item::Banner(
+                crate::ui::screens::T_MAINNET.to_owned(),
+                Tone::BtcMainnet,
+            ));
         }
         let form = &self.evm.send;
         if let Some(info) = &form.info {
@@ -1088,7 +1094,13 @@ impl App {
     pub fn receive_screen(&self, items: &mut Vec<Item>) {
         let chain_id = self.settings.evm_chain_id;
         items.push(crate::ui::screens::back_main());
-        items.push(Item::Title("받기".to_owned()));
+        items.push(Item::Badged(
+            self.evm_badge(chain_id),
+            Box::new(Item::Title(format!(
+                "받기 — {}",
+                self.network_name(NetworkId::Eip155(chain_id))
+            ))),
+        ));
         if self.mode == AppMode::BackupPending {
             items.push(Item::Banner(
                 "백업 확인 전입니다. 확인을 마치기 전에는 큰 금액을 받지 마세요.".to_owned(),
@@ -1112,6 +1124,11 @@ impl App {
                 "테스트넷 주소입니다.".to_owned(),
                 Tone::Testnet,
             ));
+        } else if yw_core::evm::chain::is_builtin_mainnet(chain_id) {
+            items.push(Item::Banner(
+                crate::ui::screens::T_MAINNET.to_owned(),
+                Tone::BtcMainnet,
+            ));
         }
         if let yw_core::vault::EvmKeySource::Mnemonic(id, _) = source {
             self.mn_receive_banner(Some(id), items);
@@ -1120,6 +1137,17 @@ impl App {
             "보내는 사람에게 아래 주소나 QR을 알려주세요. 이 네트워크의 자산만 보내야 합니다."
                 .to_owned(),
         ));
+        // Address and `주소 복사` first (2026-11-08): both stay in the first view of the
+        // default window; the QR follows.
+        items.push(Item::Mono(format_address(&address)));
+        items.push(Item::Row(vec![Ctl::primary(
+            ids::COPY_ADDRESS,
+            "주소 복사",
+        )]));
+        items.push(Item::Help(
+            "주소를 복사한 뒤 붙여넣은 곳에서 주소 전체를 확인하세요.".to_owned(),
+        ));
+        items.push(Item::Help(RECEIVE_SHARED_ADDRESS_NOTE.to_owned()));
         let kind = self.evm.receive_qr;
         items.push(Item::Row(vec![
             Ctl::radio(
@@ -1144,7 +1172,6 @@ impl App {
         items.push(Item::Qr(crate::ui::qr::evm_receive_payload(
             &address, chain_id, kind,
         )));
-        items.push(Item::Mono(format_address(&address)));
         items.push(Item::Help(match source {
             yw_core::vault::EvmKeySource::Derived(index) => {
                 format!("m/44'/60'/0'/0/{}", index.get())
@@ -1162,14 +1189,6 @@ impl App {
                 yw_core::yubikey::plan::KeyRole::Evm { index, btc: None }.path_text()
             ),
         }));
-        items.push(Item::Row(vec![Ctl::primary(
-            ids::COPY_ADDRESS,
-            "주소 복사",
-        )]));
-        items.push(Item::Help(
-            "주소를 복사한 뒤 붙여넣은 곳에서 주소 전체를 확인하세요.".to_owned(),
-        ));
-        items.push(Item::Help(RECEIVE_SHARED_ADDRESS_NOTE.to_owned()));
         items.push(Item::CardEnd);
     }
 

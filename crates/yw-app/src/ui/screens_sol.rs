@@ -280,6 +280,12 @@ impl App {
                 "Solana devnet (테스트) — 실제 자산이 아닙니다".to_owned(),
                 Tone::Testnet,
             ));
+        } else {
+            // Like the EVM mainnets (2026-11-08): S10, S11 and S12 say real assets move.
+            items.push(Item::Banner(
+                crate::ui::screens::T_MAINNET.to_owned(),
+                Tone::BtcMainnet,
+            ));
         }
     }
 
@@ -993,7 +999,13 @@ impl App {
     /// S12 for Solana: full address, QR = the base58 text, path, cluster.
     pub fn sol_receive_screen(&self, items: &mut Vec<Item>) {
         items.push(crate::ui::screens::back_main());
-        items.push(Item::Title("받기 — Solana".to_owned()));
+        items.push(Item::Badged(
+            Badge::solana(self.sol_cluster()),
+            Box::new(Item::Title(format!(
+                "받기 — {}",
+                self.sol_cluster().display_name()
+            ))),
+        ));
         if self.mode == AppMode::BackupPending {
             items.push(Item::Banner(
                 "백업 확인 전입니다. 확인을 마치기 전에는 큰 금액을 받지 마세요.".to_owned(),
@@ -1017,6 +1029,11 @@ impl App {
                 "devnet(테스트) 주소입니다. 주소 자체는 mainnet과 같습니다.".to_owned(),
                 Tone::Testnet,
             ));
+        } else {
+            items.push(Item::Banner(
+                crate::ui::screens::T_MAINNET.to_owned(),
+                Tone::BtcMainnet,
+            ));
         }
         self.mn_receive_banner(
             index.mnemonic().map(yw_core::vault::RecordId::from_bytes),
@@ -1033,9 +1050,8 @@ impl App {
             "토큰을 보내는 쪽에는 이 지갑 주소를 알려주면 됩니다(토큰 계정 주소는 상대 지갑이 계산합니다)."
                 .to_owned(),
         ));
-        items.push(Item::Qr(address.to_base58()));
+        // Address and `주소 복사` before the QR (2026-11-08, all chains).
         items.push(Item::Mono(grouped(&address)));
-        items.push(Item::Help(index.path_text()));
         items.push(Item::Row(vec![Ctl::primary(
             ids::COPY_ADDRESS,
             "주소 복사",
@@ -1043,6 +1059,8 @@ impl App {
         items.push(Item::Help(
             "주소를 복사한 뒤 붙여넣은 곳에서 주소 전체를 확인하세요.".to_owned(),
         ));
+        items.push(Item::Qr(address.to_base58()));
+        items.push(Item::Help(index.path_text()));
         items.push(Item::CardEnd);
     }
 

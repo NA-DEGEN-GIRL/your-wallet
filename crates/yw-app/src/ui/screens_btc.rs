@@ -1469,15 +1469,16 @@ impl App {
                 Tone::Info,
             ));
         }
-        items.push(Item::Qr(view.qr.clone()));
+        // Address and `주소 복사` before the QR (2026-11-08, all chains).
         items.push(Item::Mono(grouped(&view.address)));
-        items.push(Item::Help(view.path.clone()));
         let mut row = vec![Ctl::primary(ids::COPY_ADDRESS, "주소 복사")];
         if !view.fixed {
             row.push(Ctl::button(ids::NEW_ADDRESS, "새 주소").enabled(ctx.gate().is_ok()));
         }
         items.push(Item::Row(row));
         items.push(Item::Help(view.note.clone()));
+        items.push(Item::Qr(view.qr.clone()));
+        items.push(Item::Help(view.path.clone()));
         items.push(Item::CardEnd);
     }
 
