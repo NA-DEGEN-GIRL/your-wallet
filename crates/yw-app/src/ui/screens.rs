@@ -1020,6 +1020,9 @@ impl App {
                 yw_core::yubikey::plan::KeyRole::Evm { index, btc: None }.path_text()
             ),
         }));
+        if let yw_core::vault::EvmKeySource::Mnemonic(id, _) = source {
+            self.mn_signing_banner(Some(id), items);
+        }
         let balance = self.native_balance(chain_id, &address);
         let state = self.evm.balances.get(&chain_id);
         let endpoint = self.apikeys.has(KeyName::Rpc(NetworkId::Eip155(chain_id)));

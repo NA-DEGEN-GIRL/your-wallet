@@ -16,7 +16,7 @@ use crate::events::KeyJob;
 use crate::logging;
 use crate::meta::{Account, EvmAccountPref};
 use crate::text::is_valid_label;
-use crate::ui::main_window::{Item, Tone};
+use crate::ui::main_window::{Ctl, Item, Tone};
 use crate::ui::screens_mnemonics::ids;
 use crate::ui::secret::{DisplaySecret, SecretKind};
 use crate::workers::key::mnemonics::{MnJob, MnOutcome};
@@ -483,6 +483,49 @@ impl App {
                 format!("{}: {T_MN_RECEIVE_UNCONFIRMED}", self.mnemonic_label(id)),
                 Tone::HighRisk,
             ));
+            self.mn_backup_now(id, items);
+        }
+    }
+
+    /// The selected account's band while its added recovery phrase waits for the backup quiz
+    /// (2026-11-08): the vault refuses its signatures until then (E-VLT-009), so this says it
+    /// before the send form and the approval, with the quiz one press away. Display only; the
+    /// vault's refusal stays the last line of defence.
+    pub(crate) fn mn_signing_banner(&self, mnemonic: Option<RecordId>, items: &mut Vec<Item>) {
+        let Some(id) = mnemonic else {
+            return;
+        };
+        if self
+            .mn
+            .infos
+            .iter()
+            .any(|info| info.id == id && !info.primary && !info.backup_confirmed)
+        {
+            items.push(Item::Banner(
+                format!(
+                    "'{}' 백업 확인 전 — 이 계정은 받기만 되고, 보내기·서명은 백업 확인 뒤에 됩니다.",
+                    self.mnemonic_label(id)
+                ),
+                Tone::Warn,
+            ));
+            self.mn_backup_now(id, items);
+        }
+    }
+
+    /// `지금 백업 확인`: the recovery-phrase list's `백업 확인` of `id` (W03 → W08 → W10).
+    fn mn_backup_now(&self, id: RecordId, items: &mut Vec<Item>) {
+        if let Some(offset) = self
+            .mn
+            .infos
+            .iter()
+            .position(|info| info.id == id && !info.primary)
+            .and_then(|position| u16::try_from(position).ok())
+            .filter(|offset| *offset < ids::ROW_SPAN)
+        {
+            items.push(Item::Row(vec![Ctl::button(
+                ids::BACKUP_BASE.saturating_add(offset),
+                "지금 백업 확인",
+            )]));
         }
     }
 

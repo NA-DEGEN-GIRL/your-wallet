@@ -342,6 +342,10 @@ impl App {
             items.push(Item::CardStart(None));
             items.push(Item::Subtitle(label.clone()));
             items.push(Item::Help(id.path_text()));
+            self.mn_signing_banner(
+                id.mnemonic().map(yw_core::vault::RecordId::from_bytes),
+                items,
+            );
             if let Some(lamports) = self.sol_balance(address) {
                 items.push(Item::Display(App::sol_text(lamports)));
                 items.push(Item::Help(format!(
