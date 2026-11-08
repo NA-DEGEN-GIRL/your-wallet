@@ -877,11 +877,28 @@ impl App {
         if let Some(code) = form.amount_error {
             items.push(Item::Banner(code.text(), Tone::Danger));
         }
-        items.push(Item::Help(format!(
-            "수수료는 지갑이 계산합니다: 기본 5,000 lamports + 우선 수수료(CU 한도 {}), 상한 {} lamports.",
-            format_raw(u64::from(yw_core::sol::fee::template_cu_limit(asset))),
-            format_raw(self.settings.solana.max_fee_lamports)
+        // In SOL first (2026-11-08, like the EVM form's "예상 최대 수수료"); lamports and the CU
+        // limit behind `수수료 계산 보기`. The caps and the approval window are unchanged.
+        items.push(Item::Text(format!(
+            "예상 수수료 약 {} (최대 {}) — 최종 수수료는 승인 창에서 확인합니다.",
+            App::sol_text(5_000),
+            App::sol_text(self.settings.solana.max_fee_lamports)
         )));
+        if self.show_advanced {
+            items.push(Item::Help(format!(
+                "계산: 기본 5,000 lamports + 우선 수수료(CU 한도 {}), 상한 {} lamports.",
+                format_raw(u64::from(yw_core::sol::fee::template_cu_limit(asset))),
+                format_raw(self.settings.solana.max_fee_lamports)
+            )));
+        }
+        items.push(Item::Row(vec![Ctl::link(
+            crate::ui::screens::ids::ADVANCED_TOGGLE,
+            if self.show_advanced {
+                "수수료 계산 숨기기 ▾"
+            } else {
+                "수수료 계산 보기 (lamports·CU) ▸"
+            },
+        )]));
         if let SolAsset::Spl(entry) = asset {
             items.push(Item::Help(format!(
                 "받는 사람에게 {} 토큰 계정이 없으면 이 거래가 만들고, 생성 비용(rent)을 보내는 계정의 SOL로 냅니다. 금액은 승인 창에서 확인하세요. 보낸 뒤에도 SOL이 조금 남아야 합니다.",
