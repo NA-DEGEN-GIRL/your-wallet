@@ -458,6 +458,10 @@ impl App {
         self.quarantined = None;
         self.prev_on_disk = crate::store::prev_exists(&self.paths.data, FileKind::Vault);
         self.done_imported = false;
+        // S08's banner of the old wallet (a YubiKey wallet or a key start that never pressed
+        // `지갑 열기`) must not follow the next first-run path.
+        self.done_yubikey = None;
+        self.keys.done_start = false;
         self.mismatch_checked = false;
     }
 }
