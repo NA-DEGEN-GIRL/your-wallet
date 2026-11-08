@@ -782,6 +782,19 @@ pub fn connect_view(
             "한 사이트에 연결할 수 있는 계정은 16개까지입니다.".to_owned(),
         ));
     }
+    // The account a dApp uses is the first checked one in list order (spec/05 §4.2); say which
+    // (2026-11-08) so the choice is not a guess.
+    if family == Family::Evm
+        && let Some((label, _)) = accounts
+            .iter()
+            .zip(selected)
+            .find(|(_, checked)| **checked)
+            .map(|(account, _)| account)
+    {
+        blocks.push(Block::Muted(format!(
+            "사이트가 기본으로 쓰는 계정: {label} (체크한 계정 중 목록의 첫 계정)"
+        )));
+    }
     blocks.push(Block::Field {
         label: "현재 네트워크".to_owned(),
         value: chain_name.to_owned(),

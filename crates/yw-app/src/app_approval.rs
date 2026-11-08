@@ -1072,12 +1072,18 @@ impl App {
             .map(|grant| grant.accounts)
             .unwrap_or_default();
         let accounts = self.own_accounts();
+        // A new site starts with the account chosen on the main screen (2026-11-08; account 0
+        // before), so the user picks deliberately; the window is still approved explicitly.
+        let current = self.selected_account().map(|(address, ..)| address);
+        let first = current
+            .and_then(|current| accounts.iter().position(|(address, _)| *address == current))
+            .unwrap_or(0);
         let selected = accounts
             .iter()
             .enumerate()
             .map(|(index, (address, _))| {
                 if granted.is_empty() {
-                    index == 0
+                    index == first
                 } else {
                     granted.contains(address)
                 }
