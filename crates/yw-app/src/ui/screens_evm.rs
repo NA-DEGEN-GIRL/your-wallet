@@ -579,15 +579,24 @@ impl App {
                 "아직 보낸 거래가 없습니다. 보낸 거래는 여기에서 진행 상태와 함께 보입니다. {T_ACTIVITY_RECEIVED}"
             )));
         }
-        // The latest rows first; the rest behind a link (this run only).
-        let total = rows.len();
-        let count = if self.activity_all {
-            total
-        } else {
-            total.min(ids::ACTIVITY_FIRST)
-        };
+        // The latest rows first; the rest behind a link (this run only). A row still in flight
+        // (speed-up, cancel, a broadcast that needs a resend) is never folded away; its buttons
+        // keep their row number.
+        let foldable = rows
+            .iter()
+            .skip(ids::ACTIVITY_FIRST)
+            .filter(|row| row.open.is_none())
+            .count();
+        let shown: Vec<(usize, ActivityRowView)> = rows
+            .into_iter()
+            .enumerate()
+            .filter(|(index, row)| {
+                self.activity_all || *index < ids::ACTIVITY_FIRST || row.open.is_some()
+            })
+            .collect();
+        let count = shown.len();
         let mut prompt_drawn = false;
-        for (index, row) in rows.into_iter().take(count).enumerate() {
+        for (position, (index, row)) in shown.into_iter().enumerate() {
             let base = ids::ACTIVITY_BASE.saturating_add(
                 u16::try_from(index)
                     .unwrap_or(0)
@@ -624,17 +633,17 @@ impl App {
                 prompt_drawn =
                     self.prompt_items(PromptPlace::Activity, BookChain::Evm, address, items);
             }
-            if index.saturating_add(1) < count {
+            if position.saturating_add(1) < count {
                 items.push(Item::Rule);
             }
         }
-        if total > ids::ACTIVITY_FIRST {
+        if foldable > 0 {
             items.push(Item::Row(vec![Ctl::link(
                 ids::ACTIVITY_MORE,
                 &if self.activity_all {
                     "이전 활동 접기 ▾".to_owned()
                 } else {
-                    format!("이전 활동 {}건 더 보기 ▸", total - ids::ACTIVITY_FIRST)
+                    format!("이전 활동 {foldable}건 더 보기 ▸")
                 },
             )]));
         }
