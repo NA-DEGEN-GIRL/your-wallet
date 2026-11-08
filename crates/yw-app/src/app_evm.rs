@@ -51,6 +51,8 @@ pub const BALANCE_REFRESH_MS: u64 = 60_000;
 pub const SEND_DEBOUNCE_MS: u64 = 500;
 /// Activity rows shown.
 pub const MAX_ACTIVITY_ROWS: usize = 50;
+/// `가속`·`취소` of a group whose account has no key in this wallet any more (spec/03 §4.6).
+pub const T_REPLACE_NO_KEY: &str = "이 거래를 보낸 계정의 키가 이 지갑에 없어 가속·취소할 수 없습니다. 그 키를 다시 가져오거나 YubiKey를 다시 연결한 뒤 시도하세요.";
 
 /// The asset being sent.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1586,14 +1588,21 @@ impl App {
 
     // ----- activity actions ---------------------------------------------------------------
 
-    /// Speed-up or cancel of an open group (spec/03 §4.6).
+    /// Speed-up or cancel of an open group (spec/03 §4.6). The approval's signer is the group
+    /// account's own key source; an account whose key is gone gets a notice and no approval
+    /// (never another key's signature).
     pub fn replace_group(&mut self, key: GroupKey, mode: ReplaceMode) {
         let Some(group) = self.group(&key) else {
             return;
         };
-        let signer = self
-            .account_source(&key.account)
-            .unwrap_or(EvmKeySource::Derived(AccountIndex::ZERO));
+        let Some(signer) = self.account_source(&key.account) else {
+            self.notice(
+                T_REPLACE_NO_KEY.to_owned(),
+                crate::ui::main_window::Tone::Warn,
+            );
+            self.refresh();
+            return;
+        };
         self.enqueue_app(AppApproval {
             chain_id: key.chain_id,
             account: key.account,
@@ -1610,6 +1619,9 @@ impl App {
         });
     }
 
+    /// The key source of an own EVM account with this address: derived, imported, an added
+    /// mnemonic's, then a `YubiKey` account's (`EvmKeySource::Hardware`, spec/10 §10 — the
+    /// signing step then moves to the card).
     pub(crate) fn account_source(&self, address: &Address) -> Option<EvmKeySource> {
         let meta = self.meta.as_ref()?;
         let text = address.to_lower_hex();
@@ -1627,6 +1639,16 @@ impl App {
             .find(|raw| raw.address == text)
             .map(|raw| EvmKeySource::Raw(RecordId::from_bytes(raw.record_id)))
             .or_else(|| self.mnemonic_source(&text))
+            .or_else(|| {
+                let account = meta
+                    .hw_accounts
+                    .evm
+                    .iter()
+                    .find(|account| account.address == text)?;
+                AccountIndex::new(account.index)
+                    .ok()
+                    .map(EvmKeySource::Hardware)
+            })
     }
 
     /// `재전송` of the newest candidate's exact bytes (no re-signing).
@@ -2427,5 +2449,68 @@ mod tests {
         seed_notes(&mut notes, &[manual.clone(), sent, record(0)]);
         assert_eq!(notes.len(), 1);
         assert_eq!(notes.get(&manual.tx_hash), Some(&BroadcastOutcome::Sent));
+    }
+
+    /// spec/03 §4.6, spec/10 §10: `가속`/`취소` of a `YubiKey` account's open group is signed by
+    /// that account's card key (`EvmKeySource::Hardware`, so the card step follows approval);
+    /// a group whose account has no key any more gets a notice and no approval (never a
+    /// stand-in key).
+    #[test]
+    fn replacing_a_group_uses_the_account_key_or_refuses() {
+        use yw_core::bip32::path::AccountIndex;
+        use yw_core::vault::EvmKeySource;
+
+        use super::{QueuedItem, ReplaceMode, T_REPLACE_NO_KEY};
+        use crate::apikeys::ApiKeys;
+        use crate::app::{App, AppMode, Paths};
+        use crate::events::JournalView;
+        use crate::meta::{Account, Meta};
+        use crate::settings::Settings;
+
+        let dir = std::env::temp_dir().join(format!("yw-app-evm-replace-{}", std::process::id()));
+        let mut app = App::new(
+            Paths {
+                data: dir.clone(),
+                logs: dir.join("logs"),
+            },
+            true,
+            Settings::default(),
+            ApiKeys::default(),
+        );
+        // Locked: the queued approval waits (no window); its signer is what is checked.
+        app.mode = AppMode::Locked;
+        app.meta = Some(Meta::default());
+        let open = record(0);
+        let key = open.key();
+        app.evm.journal = Some(JournalView {
+            records: vec![open],
+            ..JournalView::default()
+        });
+        // No key for the sender: nothing is queued, no slot is held, a notice says why.
+        app.replace_group(key, ReplaceMode::SpeedUp);
+        assert!(app.evm.queue.is_empty());
+        assert!(app.evm.slots.is_empty());
+        assert!(
+            app.banners
+                .iter()
+                .any(|banner| banner.text == T_REPLACE_NO_KEY)
+        );
+        // The sender is YubiKey EVM account 3.
+        app.meta.as_mut().unwrap().hw_accounts.evm = vec![Account {
+            index: 3,
+            label: "YubiKey 계정 4".to_owned(),
+            address: key.account.to_lower_hex(),
+            hidden: false,
+        }];
+        let hardware = EvmKeySource::Hardware(AccountIndex::new(3).unwrap());
+        assert_eq!(app.account_source(&key.account), Some(hardware));
+        app.replace_group(key, ReplaceMode::Cancel);
+        let queued: Vec<_> = app.evm.queue.waiting_payloads().collect();
+        assert!(matches!(
+            queued.as_slice(),
+            [QueuedItem::App(item)]
+                if item.signer == hardware && item.account == key.account && item.replace.is_some()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

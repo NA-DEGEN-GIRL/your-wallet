@@ -497,6 +497,7 @@ dApp에 실패(`BroadcastFailed`)를 알린 거래는 자동으로 보내지 않
   - `tip' = max(⌈old_tip × 11/10⌉, f.tip)`, `max_fee' = max(⌈old_max_fee × 11/10⌉, 2 × f.base_fee_next + tip')`.
 - **취소**: `to = account`, `value = 0`, `data` 빈 값, `access_list` 빈 값, `gas_limit = ⌈estimate × 1.2⌉`, 수수료는 위와 같은 +10% 규칙.
 - 둘 다: 상한 검사(E05), 시뮬레이션(D15, nonce = 같은 nonce), 새 승인 요청(kind `EvmSpeedUp`/`EvmCancel`)과 재승인. 표시에 대체 대상 해시, 기존·새 최대 수수료를 넣는다. 저널에 같은 nonce의 새 레코드(role `SpeedUp`/`Cancel`)를 추가한다.
+- 서명자(2026-11-08): 그 그룹 계정 자신의 키 출처(`App::account_source`: 파생 → 가져온 키 → 추가한 니모닉 → YubiKey `EvmKeySource::Hardware`, YubiKey면 승인 뒤 카드 단계 [10] §9.2). 키가 없는 계정(지운 키·니모닉, 빠진 YubiKey 키)이면 승인을 만들지 않고 알림 "이 거래를 보낸 계정의 키가 이 지갑에 없어 가속·취소할 수 없습니다…"(`T_REPLACE_NO_KEY`)만 띄운다 — 다른 키(계정 0 등)로 대신 서명하지 않는다.
 - 벡터: old tip 1.2 gwei, old maxFee 21.2 gwei, 새 base_next 12 gwei, 새 tip 1 gwei → tip' 1.32 gwei, maxFee' 25.32 gwei.
 
 ## 5. 저널 (journal.ywj, EVM 레코드)
