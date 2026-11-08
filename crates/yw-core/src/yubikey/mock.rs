@@ -2,9 +2,11 @@
 //! nothing outside `cfg(test)` code constructs it (yw-app's `MockSource` is `cfg(test)`). It is
 //! compiled in every build because the dependency check forbids dev-dependencies, so another
 //! crate's tests cannot turn on a feature for it. It implements exactly the commands this wallet
-//! sends, with real secp256k1 ECDSA and Ed25519 signing, PIN counters, single-use PW1 for
-//! PSO:CDS, PIV management-key mutual authentication (through a [`MgmtCipher`]), command
-//! chaining and `61xx` GET RESPONSE for short APDUs. It never touches hardware.
+//! sends, with real secp256k1 ECDSA and Ed25519 signing, PIN counters, PW1 for PSO:CDS valid
+//! after a signature as on a factory YubiKey (single use only with [`MockCard::pw1_single_use`]),
+//! PIV management-key mutual authentication (through a [`MgmtCipher`]), command chaining, `61xx`
+//! GET RESPONSE for short APDUs and the warm reset of the PC/SC release
+//! ([`MockCard::warm_reset`]). It never touches hardware.
 //!
 //! Every received command header is logged in [`MockCard::log`] so tests can assert that a
 //! signing flow sends no write/import/reset instruction.
@@ -123,6 +125,9 @@ pub struct MockCard {
     pub pw3: Vec<u8>,
     /// Retries PW1 / PW3.
     pub pgp_retries: [u8; 2],
+    /// PW1 `81` is valid for one PSO:CDS only (`C4` byte 0 = `00`, "signature PIN forced").
+    /// `false` = the factory YubiKey setting (`01`): it stays valid until a reset.
+    pub pw1_single_use: bool,
     /// OpenPGP keys SIG, DEC, AUT.
     pub pgp_keys: [Option<[u8; 32]>; 3],
     /// Algorithm attributes SIG, DEC, AUT.
@@ -191,6 +196,7 @@ impl MockCard {
             pw1: super::openpgp::DEFAULT_PW1.to_vec(),
             pw3: super::openpgp::DEFAULT_PW3.to_vec(),
             pgp_retries: [3, 3],
+            pw1_single_use: false,
             pgp_keys: [None, None, None],
             pgp_attributes: [
                 RSA2048_ATTRIBUTES.to_vec(),
@@ -310,6 +316,15 @@ impl MockCard {
         out
     }
 
+    /// What `SCARD_RESET_CARD` does to a card: no applet selected, no PIN or management key
+    /// verified, no half-sent chain or pending response (keys, PINs and counters stay).
+    pub fn warm_reset(&mut self) {
+        self.deselect();
+        self.applet = Applet::None;
+        self.chain.clear();
+        self.pending.clear();
+    }
+
     fn deselect(&mut self) {
         self.pw1_sign = false;
         self.pw1_other = false;
@@ -357,7 +372,7 @@ impl MockCard {
             let _ = tlv::push(&mut discretionary, *tag, attributes);
         }
         let status = [
-            0x00,
+            u8::from(!self.pw1_single_use),
             0x7F,
             0x7F,
             0x7F,
@@ -503,7 +518,7 @@ impl MockCard {
         if !authorised {
             return sw(0x6982);
         }
-        if index == 0 {
+        if index == 0 && self.pw1_single_use {
             self.pw1_sign = false; // PW1 valid for one PSO:CDS (C4 byte 0 = 00)
         }
         if self.pgp_uif.get(index).is_some_and(|uif| *uif != 0) {

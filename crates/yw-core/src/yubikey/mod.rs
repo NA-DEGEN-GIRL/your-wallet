@@ -59,6 +59,26 @@ pub trait CardTransport {
     fn transmit(&mut self, command: &[u8]) -> Result<Vec<u8>, CardError>;
 }
 
+/// Whether a job that sends `command` must end with a warm reset of the card (spec/10 §5.1).
+/// Only the read-only instructions this wallet sends are `false`: SELECT (`A4`), GET RESPONSE
+/// (`C0`), GET DATA (`CA`/`CB`), GET VERSION (`F1`/`FD`), GET SERIAL (`F8`), GET METADATA
+/// (`F7`) and the OpenPGP public-key read (`47 81`). Everything else — VERIFY, management-key
+/// authentication, signing, any write, an unknown or too short frame — may leave a PIN verified
+/// (a factory YubiKey keeps PW1 valid after a signature, PW1 `82` and PW3 always) or the card
+/// changed, so the transport resets the card when it releases it and the next PC/SC client
+/// finds nothing verified.
+#[must_use]
+pub fn needs_reset(command: &[u8]) -> bool {
+    let read_only = match command {
+        [_, ins, p1, _, ..] => {
+            matches!(ins, 0xA4 | 0xC0 | 0xCA | 0xCB | 0xF1 | 0xFD | 0xF8 | 0xF7)
+                || (*ins == 0x47 && *p1 == 0x81)
+        }
+        _ => false,
+    };
+    !read_only
+}
+
 /// Reader-side failure classes (the PC/SC code itself is logged by yw-app, not carried here).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TransportFault {
