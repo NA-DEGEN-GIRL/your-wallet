@@ -3784,6 +3784,54 @@ fn backup_pending_after_restart_shows_s04_and_receive() {
     assert!(has_text(&again.app.items(), T_WAIT_STALLED));
 }
 
+/// A failed meta load (here the reconcile write: disk full) puts no default meta in memory, so
+/// no later save seals one over the real meta (labels, address book, sites, the security
+/// snapshot); T-META-FAILED offers the next steps and `다시 불러오기` brings the real meta back.
+#[test]
+fn failed_meta_load_never_saves_a_default_over_the_real_meta() {
+    use crate::ui::screens_reset::{T_META_FAILED, ids as reset_ids};
+    use yw_core::error::{StorageError, VaultError};
+
+    let mut h = Harness::new("meta-fail");
+    h.create_and_confirm();
+    h.app.meta.as_mut().unwrap().evm_accounts[0].label = "저축 계정".to_owned();
+    h.app.save_meta();
+    h.pump();
+
+    let epoch = h.app.lock_epoch;
+    h.app.on_key_result(KeyResult {
+        epoch,
+        outcome: KeyOutcome::Meta(Err(VaultError::Storage(StorageError::Io(112)))),
+    });
+    assert!(
+        h.app.meta.is_none(),
+        "no default meta stands in for the real one"
+    );
+    let items = h.app.items();
+    assert!(has_text(&items, T_META_FAILED), "{:?}", texts(&items));
+    assert!(control_ids(&items).contains(&reset_ids::WAIT_RETRY));
+    // A save and the main timer write nothing and do not ask again on their own.
+    h.app.save_meta();
+    h.app.wait_tick(yw_win::time::monotonic_ms());
+    assert!(h.app.wait.meta_since.is_none(), "no automatic reload loop");
+    h.pump();
+    let Some(KeyOutcome::Meta(Ok(on_disk))) =
+        h.worker.handle(crate::events::KeyJob::LoadMeta).pop()
+    else {
+        unreachable!("the sealed meta still loads");
+    };
+    assert_eq!(on_disk.meta.evm_accounts[0].label, "저축 계정");
+
+    h.app.on_command(reset_ids::WAIT_RETRY);
+    h.pump();
+    assert_eq!(
+        h.app.meta.as_ref().unwrap().evm_accounts[0].label,
+        "저축 계정"
+    );
+    assert!(h.app.wait.meta_failed.is_none());
+    assert!(!has_text(&h.app.items(), T_META_FAILED));
+}
+
 /// S22 `지갑 초기화` from the lock screen without the password: the files move into
 /// `reset-<UTC>`, settings and API keys stay, the app is back at S01 with no T-LEFTOVER.
 #[test]

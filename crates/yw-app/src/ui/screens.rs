@@ -382,6 +382,7 @@ fn header(app: &App, items: &mut Vec<Item>) {
     if app.passphrase_unverified() {
         items.push(Item::Banner(T_ALT_PASS.to_owned(), Tone::HighRisk));
     }
+    app.meta_failed_items(items);
     if app.guard.pending.is_some() && app.screen != Screen::Confirm(Confirm::SettingsFile) {
         // What differs, in plain words with both values (2026-11-08); the safe choice is the
         // primary button and `파일 값 사용…` asks once more (spec/04 §6.7).

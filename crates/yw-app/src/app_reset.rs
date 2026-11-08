@@ -15,6 +15,7 @@
 use yw_core::vault::FileKind;
 
 use crate::app::{App, AppMode, Screen};
+use crate::errors::ErrorCode;
 use crate::events::KeyJob;
 use crate::lock::LockReason;
 use crate::logging::{self, Field};
@@ -35,6 +36,11 @@ pub struct WaitWatch {
     pub meta_since: Option<u64>,
     /// A wait passed [`WAIT_TIMEOUT_MS`] (shown on `Processing` and the account-loading lines).
     pub stalled: bool,
+    /// The last meta load failed (not `SidecarCorrupt`, which has its own overlay): no meta is
+    /// in memory, nothing writes the meta, the main timer does not ask again, and T-META-FAILED
+    /// offers the next steps (`다시 불러오기`, `잠금`, the log folder). The next `request_meta`
+    /// clears it; a meta is in memory again only after a load succeeds.
+    pub meta_failed: Option<ErrorCode>,
 }
 
 impl WaitWatch {
@@ -130,8 +136,10 @@ pub fn reset_failed_text(error: &ResetError) -> String {
 }
 
 impl App {
-    /// Queues `KeyJob::LoadMeta` and starts its wait clock.
+    /// Queues `KeyJob::LoadMeta` and starts its wait clock (a failed load's T-META-FAILED
+    /// gives way to the loading line; no meta is in memory until the answer).
     pub(crate) fn request_meta(&mut self) {
+        self.wait.meta_failed = None;
         self.key(KeyJob::LoadMeta);
         if self.wait.meta_since.is_none() {
             self.wait.meta_since = Some(yw_win::time::monotonic_ms());
@@ -153,7 +161,11 @@ impl App {
 
     /// Main-timer part of the waits.
     pub(crate) fn wait_tick(&mut self, now: u64) {
-        if self.meta.is_none() && self.wait.meta_since.is_none() && self.needs_accounts() {
+        if self.meta.is_none()
+            && self.wait.meta_since.is_none()
+            && self.wait.meta_failed.is_none()
+            && self.needs_accounts()
+        {
             logging::warn("app", "wait.meta_requested", &[]);
             self.request_meta();
         }

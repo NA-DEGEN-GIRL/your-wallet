@@ -1820,6 +1820,7 @@ impl App {
                 self.mn.infos = mnemonics;
                 self.meta = Some(*meta);
                 self.wait.meta_since = None;
+                self.wait.meta_failed = None;
                 // Review M1/L15/L17: compare settings.json with the snapshot in the meta.
                 self.verify_settings();
                 if self.mode == AppMode::BackupPending {
@@ -1863,9 +1864,15 @@ impl App {
                 self.set_screen(Screen::Confirm(Confirm::SidecarCorrupt));
             }
             KeyOutcome::Meta(Err(error)) => {
+                // Fail closed: a read or the reconcile write failed, but the sealed meta (address
+                // book, sites, labels, the security snapshot) may be fine. No default stands in
+                // for it — a later `save_meta` would seal that over the real one — so no meta is
+                // in memory and saving stays off until a load succeeds (T-META-FAILED).
+                let code = vault_code(error);
                 self.wait.meta_since = None;
-                self.error_banner(vault_code(error));
-                self.meta = Some(Meta::default());
+                self.wait.meta_failed = Some(code);
+                self.meta = None;
+                self.error_banner(code);
                 self.set_screen(if self.mode == AppMode::BackupPending {
                     Screen::BackupPending
                 } else {
@@ -2634,6 +2641,11 @@ impl App {
     // ----- meta, settings, apikeys -------------------------------------------------------
 
     pub(crate) fn save_meta(&mut self) {
+        // After a failed meta load nothing in memory may replace the sealed meta.
+        if self.wait.meta_failed.is_some() {
+            logging::warn("app", "meta.save_skipped", &[]);
+            return;
+        }
         // Review L17: remember the newest `vault.ywv` generation with every meta write, so a
         // `vault.ywv` rolled back on its own is noticed at the next unlock.
         if let Some((found, written)) = vault_file_info(&self.paths.data) {

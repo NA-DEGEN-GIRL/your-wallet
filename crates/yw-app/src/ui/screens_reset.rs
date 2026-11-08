@@ -50,6 +50,8 @@ pub mod ids {
 
 /// T-WAIT-STALLED.
 pub const T_WAIT_STALLED: &str = "30초가 지나도 불러오기가 끝나지 않았습니다. '다시 불러오기'를 누르거나, '잠금'을 누른 뒤 다시 잠금 해제해 보세요. 그래도 안 되면 앱을 종료했다가 다시 실행하세요. 계속되면 로그 폴더의 yw-app.log를 확인하고, 복구 단어(또는 원래 개인키)가 있다면 잠금 화면의 '지갑 초기화…'로 처음부터 시작할 수 있습니다.";
+/// T-META-FAILED: a meta load failed (other than a damaged file, E-VLT-006's overlay).
+pub const T_META_FAILED: &str = "계정 이름·주소록·연결한 사이트·보안 설정 기록이 담긴 meta 파일(meta.ywm)을 불러오지 못했습니다. 파일은 그대로 두었고, 불러오기에 성공할 때까지 이 파일에 아무것도 쓰지 않습니다. '다시 불러오기'를 누르거나, '잠금'을 누른 뒤 다시 잠금 해제해 보세요. 계속 실패하면 디스크 공간과 백신의 파일 차단을 확인하고 로그 폴더의 yw-app.log를 보세요. 그래도 안 되면 앱을 종료하고 데이터 폴더를 통째로 백업한 뒤 복구 안내(recovery-guide)를 따르세요.";
 /// T-RESET-INTRO (S22 danger banner).
 pub const T_RESET_INTRO: &str = "이 PC의 지갑 파일을 옮겨 두고 처음 화면으로 돌아갑니다. 자산은 블록체인에 그대로 있지만, 이 지갑을 다시 쓰려면 복구 단어(니모닉) — 여러 개면 각각 — 또는 원래 개인키가 있어야 합니다. YubiKey의 키는 카드에 남아 'YubiKey 연결하기 (복구 단어 없이)'로 다시 연결할 수 있습니다.";
 /// T-RESET-NOUNLOCK.
@@ -75,11 +77,41 @@ impl App {
     /// The `계정을 불러오는 중…` line of S12 (EVM, Solana) — or T-WAIT-STALLED once the wait is
     /// too long.
     pub(crate) fn accounts_loading(&self, items: &mut Vec<Item>) {
-        if self.wait.stalled {
+        if self.wait.meta_failed.is_some() {
+            // T-META-FAILED with its buttons is at the top of the screen.
+            items.push(Item::Muted(
+                "계정 목록을 불러오지 못했습니다. 위 안내를 보세요.".to_owned(),
+            ));
+        } else if self.wait.stalled {
             self.wait_stalled(items);
         } else {
             items.push(Item::Muted("계정을 불러오는 중…".to_owned()));
         }
+    }
+
+    /// T-META-FAILED with its next steps, on every screen of an open session while no meta
+    /// could be loaded.
+    pub(crate) fn meta_failed_items(&self, items: &mut Vec<Item>) {
+        let Some(code) = self.wait.meta_failed else {
+            return;
+        };
+        if !matches!(self.mode, AppMode::BackupPending | AppMode::Unlocked { .. }) {
+            return;
+        }
+        items.push(Item::Banner(
+            format!("{T_META_FAILED} ({})", code.code()),
+            Tone::Danger,
+        ));
+        let mut row = vec![Ctl::primary(ids::WAIT_RETRY, "다시 불러오기")];
+        // S10's toolbar has `잠금` already.
+        if self.screen != crate::app::Screen::Main {
+            row.push(Ctl::button(crate::ui::screens::ids::LOCK, "잠금"));
+        }
+        row.push(Ctl::button(
+            crate::ui::screens::ids::OPEN_LOG_FOLDER,
+            "로그 폴더 열기",
+        ));
+        items.push(Item::Row(row));
     }
 
     /// T-WAIT-STALLED with its next steps.
