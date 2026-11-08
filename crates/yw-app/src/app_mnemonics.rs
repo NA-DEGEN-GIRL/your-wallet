@@ -412,6 +412,29 @@ impl App {
         self.mn.remove_error = None;
     }
 
+    /// Leaving "복구 단어" for another screen (not an overlay over it) ends its open flows: the
+    /// words held between W05 and W06 are wiped, the address preview goes (and with it the key
+    /// worker's previewed words, `MnJob::Discard`), and the rename and removal warning close.
+    /// The list of phrases, the quiz of an open W10 and the "계정 추가" picker stay.
+    pub(crate) fn mn_leaving(&mut self, next: &Screen) {
+        let here = Screen::Settings(SettingsSection::Mnemonics);
+        let on_section = self.screen == here
+            || (matches!(self.screen, Screen::Confirm(_)) && self.previous_screen == here);
+        if !on_section || *next == here || matches!(next, Screen::Confirm(_)) {
+            return;
+        }
+        let held = self.mn.phrase.is_some() || self.mn.preview.is_some();
+        self.mn.phrase = None;
+        self.mn.preview = None;
+        self.mn.preview_cards.clear();
+        self.mn.same_ack = false;
+        self.mn.rename = None;
+        self.mn_remove_reset(None);
+        if held {
+            self.key(KeyJob::Mnemonics(MnJob::Discard));
+        }
+    }
+
     /// Whether the removal target's backup is not confirmed (T-MN-REMOVE-UNCONFIRMED applies).
     #[must_use]
     pub fn mn_remove_unconfirmed(&self) -> bool {

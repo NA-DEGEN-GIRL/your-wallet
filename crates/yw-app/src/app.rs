@@ -995,8 +995,10 @@ impl App {
             self.refresh();
             return;
         }
-        // Leaving a YubiKey flow by any path wipes its held seed (spec/10 §7.4).
+        // Leaving a YubiKey flow by any path wipes its held seed (spec/10 §7.4); leaving
+        // "복구 단어" wipes the words held for "복구 단어 추가 가져오기".
         self.yk_leaving(&screen);
+        self.mn_leaving(&screen);
         if matches!(screen, Screen::Confirm(_)) && !matches!(self.screen, Screen::Confirm(_)) {
             self.previous_screen = self.screen.clone();
         }
@@ -1357,6 +1359,9 @@ impl App {
         self.rename = None;
         self.pending_remove = None;
         self.keys = crate::app_keys::KeysUi::default();
+        // The recovery-phrase flows: words typed for "복구 단어 추가 가져오기" (wiped on drop),
+        // the preview, the quiz, the removal warning.
+        self.mn = crate::app_mnemonics::MnUi::default();
         self.rpc_import = crate::app_rpc_import::RpcImportUi::default();
         self.passphrase_session = false;
         self.recover_return = None;

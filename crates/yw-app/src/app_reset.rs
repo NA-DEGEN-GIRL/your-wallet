@@ -313,6 +313,8 @@ impl App {
     pub(crate) fn on_wallet_reset(&mut self, result: Result<ResetReport, ResetError>) {
         let in_flight = self.reset.warned_in_flight;
         self.reset = ResetUi::default();
+        // Nothing of the old wallet's recovery-phrase flows (held words, preview, list) stays.
+        self.mn = crate::app_mnemonics::MnUi::default();
         match result {
             Ok(report) => {
                 logging::warn(
