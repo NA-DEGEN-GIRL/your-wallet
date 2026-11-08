@@ -461,11 +461,12 @@ APDU(카드 하나, 이 순서):
 | 단계 | APDU | 비고 |
 |---|---|---|
 | 일련번호 | `00 A4 04 00 06 D2 76 00 01 24 01` · `00 F1 00 00` · `00 CA 00 6E` · `00 CA 00 F9` | 읽기만. 일련번호 ≠ record → `WrongCard`, 아무것도 쓰지 않음 |
+| 슬롯 확인(2026-11-08) | 계획의 슬롯마다 `00 47 81 00 02 B6 00`(또는 `A4 00`) | 읽기만, 관리자 PIN 전. 덮어쓸 슬롯은 비어 있거나(`6A88`·값 없는 템플릿) record가 그 슬롯에 적은 공개키이거나 새로 넣을 키(앞 시도가 중간에 멈춘 뒤 `다시 시도`)여야 한다. 그 밖의 키(RSA·다른 곡선·다른 secp256k1 — GPG 등 다른 프로그램이 넣은 키)면 `ForeignKey`("이 슬롯에는 지갑이 기록한 키가 아닌 다른 키가 있습니다…")로 멈추고 아무것도 쓰지 않는다. record에 없는 슬롯도 같다(빈 슬롯이나 새 키만). `9000`·`6A88` 밖의 상태어는 그 오류로 멈춘다 |
 | 관리자 PIN | `00 20 00 83 Lc PW3` | |
-| 바뀌지 않는 슬롯 | `00 47 81 00 02 B6 00`(또는 `A4 00`) | 같은 경로·같은 정책이고 카드 공개키 = record면 쓰지 않는다 |
+| 바뀌지 않는 슬롯 | (위에서 읽은 공개키) | 같은 경로·같은 정책이고 카드 공개키 = record면 쓰지 않는다 |
 | 바뀌는 슬롯 | `00 DA 00 C1`/`C3 13 2B 81 04 00 0A` → `00 DB 3F FF 4D{…}` → (정책이 다르면) `00 DA 00 D6`/`D8` → `00 47 81 00` | §5.2와 같은 가져오기. 다시 읽은 공개키 = 니모닉에서 파생한 공개키(`KeyMismatch`) |
 
-- 실패: 가져오기 도중 실패하면 앞 슬롯은 이미 바뀌었을 수 있고 vault의 record는 **바꾸지 않는다**(화면: "일부 슬롯에 새 키가 이미 들어갔을 수 있습니다… 다시 시도하면 덮어씁니다"). `다시 시도`는 같은 계획으로 관리자 PIN부터 다시 한다. 다른 카드가 꽂혀 있으면 아무것도 쓰기 전에 `WrongCard`.
+- 실패: 가져오기 도중 실패하면 앞 슬롯은 이미 바뀌었을 수 있고 vault의 record는 **바꾸지 않는다**(화면: "일부 슬롯에 새 키가 이미 들어갔을 수 있습니다… 다시 시도하면 덮어씁니다"). `다시 시도`는 같은 계획으로 관리자 PIN부터 다시 한다. 다른 카드가 꽂혀 있으면 아무것도 쓰기 전에 `WrongCard`. 슬롯 확인의 `ForeignKey`도 쓰기 전이므로 "일부 슬롯…" 문구를 붙이지 않는다.
 - 시험: `yubikey::tests::connect_without_words_and_sign_every_chain`(900–999 대역 → `UnsupportedRole`), `app::tests::yubikey_manage::yubikey_reslot_switches_chains_and_applies_it_to_the_backup`(에뮬레이터; 마법사의 Zcash 슬롯 등록·확인 화면의 `m/44'/133'/0'/0/0`·`t1…`, EVM+Zcash → EVM+Bitcoin, 빠지는 Zcash 계정과 다른 보유 카드, 확인 체크 전 꺼짐, 미리보기 카드 통신 없음, 다른 카드 거부·쓰기 없음, 다시 읽기·`check_record`, PIV 그대로, Bitcoin 계정 생김, 백업 카드 적용(단어 재입력 없음), `완료` 뒤 단어 없음).
 
 ### 15.2 YubiKey 비우기 — OpenPGP (SIG/AUT: EVM·Bitcoin·Zcash 키)
@@ -476,14 +477,14 @@ OpenPGP 카드 3.4에는 **키를 지우는 명령이 없다**(덮어쓰기·생
 
 | 방법 | APDU | 결과 |
 |---|---|---|
-| `이 지갑의 슬롯만 지우기`(관리자 PIN) | `00 20 00 83 Lc PW3` → 슬롯마다 `00 DA 00 C1`/`C3 06 01 10 00 00 20 00`(RSA 4096) → `00 DA 00 C1`/`C3 06 01 08 00 00 20 00`(RSA 2048) → `00 47 81 00 02 B6 00`/`A4 00` | yubikit `delete_key`와 같다: 속성을 바꾸면 카드가 그 슬롯의 키를 지운다. 다시 읽기에 공개키(`86`/`81` 값)가 있으면 `KeyMismatch`. PIN·DEC 슬롯·다른 슬롯은 그대로. **UIF(터치 정책)는 바꾸지 않는다** — "고정" 정책은 남는다(지우려면 초기화). 지문·생성 시각 DO(`C7`–`CF`)는 이 지갑이 쓰지 않으므로 건드리지 않는다 |
+| `이 지갑의 슬롯만 지우기`(관리자 PIN) | record의 슬롯마다 `00 47 81 00`(읽기만, PIN 전: 비어 있거나 record의 공개키여야 한다 — 다른 키면 `ForeignKey`로 멈추고 아무것도 지우지 않는다, 2026-11-08) → `00 20 00 83 Lc PW3` → 슬롯마다 `00 DA 00 C1`/`C3 06 01 10 00 00 20 00`(RSA 4096) → `00 DA 00 C1`/`C3 06 01 08 00 00 20 00`(RSA 2048) → `00 47 81 00 02 B6 00`/`A4 00` | yubikit `delete_key`와 같다: 속성을 바꾸면 카드가 그 슬롯의 키를 지운다. 다시 읽기에 공개키(`86`/`81` 값)가 있으면 `KeyMismatch`. PIN·DEC 슬롯·다른 슬롯은 그대로. **UIF(터치 정책)는 바꾸지 않는다** — "고정" 정책은 남는다(지우려면 초기화). 지문·생성 시각 DO(`C7`–`CF`)는 이 지갑이 쓰지 않으므로 건드리지 않는다 |
 | `애플릿 초기화`(PIN 없음) | PW1: `00 20 00 81 08 00×8`을 `6983`(또는 `63C0`)까지, PW3: `00 20 00 83 08 00×8`을 같은 식으로(각각 최대 16회) → `00 E6 00 00`(TERMINATE DF) → `00 44 00 00`(ACTIVATE FILE) → 다시 SELECT 해 record의 공개키가 남지 않았는지 확인 | Yubico 절차(yubikit `reset`). 세 슬롯의 모든 키(GPG 등 다른 용도 포함), 터치 정책(고정 포함), PIN이 공장값(PW1 `123456`, PW3 `12345678`)으로. **PIN도 초기화된다**는 문구를 화면에 보인다(T-YK-CLEAR-PGP-RESET). PIN 없이 누구나 할 수 있는 동작이다 |
 
 ### 15.3 YubiKey 비우기 — PIV (Solana 슬롯)
 
 | 방법 | APDU | 결과 |
 |---|---|---|
-| `이 지갑의 슬롯만 지우기`(PIV PIN) | GET METADATA `9B` + ADMIN DATA(관리 키 상태) → 기본값도 PIN 보호도 아니면 `ManagementKeyUnknown`(초기화를 쓰라고 안내) → `00 20 00 80 08 PIN` → 관리 키 상호 인증(보호돼 있으면 PRINTED, 아니면 공장 키, §5.3.3) → 슬롯마다 `00 F6 FF <slot>`(DELETE KEY = MOVE KEY to `FF`) → `00 F7 00 <slot>`이 `6A88` | yubikit `delete_key`. 이미 빈 슬롯(`6A88`)은 지운 것으로 본다. 이 지갑은 PIV 인증서를 쓰지 않으므로(§11) **지울 인증서가 없다** — 다른 프로그램이 그 슬롯에 넣은 인증서 객체(`5FC10D`… 등)는 건드리지 않는다. 펌웨어가 DELETE를 모르면(`6D00` 등) `NotSupported` → 초기화를 쓰라는 안내 |
+| `이 지갑의 슬롯만 지우기`(PIV PIN) | record의 슬롯마다 GET METADATA(읽기만, PIN 전: `6A88`이거나 record의 Ed25519 공개키여야 한다 — 다른 키면 `ForeignKey`로 멈추고 아무것도 지우지 않는다, 2026-11-08) → GET METADATA `9B` + ADMIN DATA(관리 키 상태) → 기본값도 PIN 보호도 아니면 `ManagementKeyUnknown`(초기화를 쓰라고 안내) → `00 20 00 80 08 PIN` → 관리 키 상호 인증(보호돼 있으면 PRINTED, 아니면 공장 키, §5.3.3) → 슬롯마다 `00 F6 FF <slot>`(DELETE KEY = MOVE KEY to `FF`) → `00 F7 00 <slot>`이 `6A88` | yubikit `delete_key`. 이미 빈 슬롯(`6A88`)은 지운 것으로 본다. 이 지갑은 PIV 인증서를 쓰지 않으므로(§11) **지울 인증서가 없다** — 다른 프로그램이 그 슬롯에 넣은 인증서 객체(`5FC10D`… 등)는 건드리지 않는다. 펌웨어가 DELETE를 모르면(`6D00` 등) `NotSupported` → 초기화를 쓰라는 안내 |
 | `애플릿 초기화`(PIN 없음) | `00 20 00 80 08 FF×8`을 PIN이 막힐 때까지 → `00 2C 00 80 10 FF×16`(RESET RETRY COUNTER, 틀린 PUK)을 PUK가 막힐 때까지(각각 최대 16회) → `00 FB 00 00` → 다시 SELECT 해 record의 슬롯이 `6A88`인지 확인 | Yubico 절차(yubikit `reset`, .NET SDK: 둘 다 막혀야 `9000`, 아니면 `6985`). 모든 PIV 키·인증서·데이터 객체(ADMIN DATA·PRINTED 포함)를 지우고 **PIN `123456`·PUK `12345678`·관리 키 공장값**으로 되돌린다(T-YK-CLEAR-PIV-RESET) |
 
 - 순서: OpenPGP 먼저, 그다음 PIV(PIV SELECT가 PW3 확인을 끝내므로). OpenPGP가 실패하면 PIV는 하지 않는다. 결과는 애플릿마다 따로 보인다(`ClearReport`).
@@ -495,7 +496,7 @@ OpenPGP 카드 3.4에는 **키를 지우는 명령이 없다**(덮어쓰기·생
 - 카드가 바뀌었는데 vault 갱신이 실패하면 결과 화면이 그대로 알린다("YubiKey는 바뀌었지만 지갑의 슬롯 표를 고치지 못했습니다"). 이때 그 계정의 서명은 카드의 `KeyMismatch`로 PIN 전에 거부된다(§5.2).
 - 초기화한 애플릿이 있고 record가 남으면 그 일련번호를 `hw_accounts.defaults`에 더한다(공장 PIN 경고, §9.3; 그 카드는 PIN 설정 전까지 서명하지 않는다). record가 지워지면 뺀다.
 - Zcash(2026-11-07): 비우기 확인의 "쓸 수 없게 되는 계정"과 슬롯 구성 바꾸기의 "빠지는 계정"에는 지갑의 Zcash 계정 중 그 카드의 그 슬롯만 키를 가진 것(`App::zec_accounts_using_card(serial, slots)`, [12])을 위험 띠로 더한다(주소와 "…뒤에는 Zcash 탭에서 이 주소로 보낼 수 없습니다").
-- 시험: `app::tests::yubikey_connect_without_words_from_the_first_run_screen`의 끝(경로 모름 카드의 PIV 비우기: T-YK-KEY-LOST, T-YK-CLEAR-FUNDS 없음, 확인 체크 전 `비우기` 꺼짐, `영구 삭제` 없이 거부, 카드 쓰기 없음), `app::tests::yubikey_manage::yubikey_clear_our_slots_and_applet_resets`(에뮬레이터; 두 애플릿 "우리 슬롯만": 입력 단어 검사, 관리자 PIN·PIV PIN, SIG/AUT 키 없음·속성 RSA 2048, `F6` 전송, 초기화 명령 없음, PIN 그대로, 슬롯 0개 → record 삭제·계정 사라짐; 다시 등록 후 PIN을 바꾼 카드에서 PIV 초기화(`FB`, PIN·PUK·관리 키 공장값, OpenPGP 그대로, record에 OpenPGP 슬롯만 남음, `defaults`에 추가) → OpenPGP 초기화(`E6`·`44`, PW1·PW3 공장값, 키 없음, record 삭제)). 에뮬레이터는 `E6`/`44`(TERMINATE 상태에서는 ACTIVATE만), RSA 4096 속성, `2C`·PUK 횟수, `F6`(5.7 미만 `6D00`), `FB`(PIN·PUK가 막히지 않으면 `6985`)를 구현한다.
+- 시험: `yubikey::tests::clear_and_reslot_keep_a_key_the_record_does_not_list`(에뮬레이터; READ PUBLIC KEY 답 분류(`6A88`·빈 템플릿 = 빈 슬롯, RSA 템플릿 = 다른 키), AUT의 다른 secp256k1 키 → OpenPGP 비우기 `ForeignKey`·PIN 없음·쓰기 없음·PIV 시도 안 함, PIV 슬롯의 다른 Ed25519 키 → `ForeignKey`·PIN 없음, 슬롯 구성 바꾸기도 같은 키에서 `ForeignKey`·쓰기 없음, 빈 AUT는 쓰고, vault를 고치지 못한 뒤의 재시도(새 키가 이미 있음)는 통과, 빈 SIG와 record의 키는 비운다), `app::tests::yubikey_connect_without_words_from_the_first_run_screen`의 끝(경로 모름 카드의 PIV 비우기: T-YK-KEY-LOST, T-YK-CLEAR-FUNDS 없음, 확인 체크 전 `비우기` 꺼짐, `영구 삭제` 없이 거부, 카드 쓰기 없음), `app::tests::yubikey_manage::yubikey_clear_our_slots_and_applet_resets`(에뮬레이터; 두 애플릿 "우리 슬롯만": 입력 단어 검사, 관리자 PIN·PIV PIN, SIG/AUT 키 없음·속성 RSA 2048, `F6` 전송, 초기화 명령 없음, PIN 그대로, 슬롯 0개 → record 삭제·계정 사라짐; 다시 등록 후 PIN을 바꾼 카드에서 PIV 초기화(`FB`, PIN·PUK·관리 키 공장값, OpenPGP 그대로, record에 OpenPGP 슬롯만 남음, `defaults`에 추가) → OpenPGP 초기화(`E6`·`44`, PW1·PW3 공장값, 키 없음, record 삭제)). 에뮬레이터는 `E6`/`44`(TERMINATE 상태에서는 ACTIVATE만), RSA 4096 속성, `2C`·PUK 횟수, `F6`(5.7 미만 `6D00`), `FB`(PIN·PUK가 막히지 않으면 `6985`)를 구현한다.
 
 ### 15.5 확인한 것과 가정한 것
 

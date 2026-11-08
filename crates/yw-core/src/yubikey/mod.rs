@@ -144,6 +144,10 @@ pub enum CardError {
     /// The public key on the card is not the key derived from the mnemonic (or recorded in the
     /// vault): the card is not the enrolled one, or the slot was overwritten.
     KeyMismatch,
+    /// A slot this wallet is about to empty or overwrite holds a key the vault record does not
+    /// list (another program's key, or a card changed outside this wallet): nothing in that
+    /// applet was deleted or written (spec/10 §15).
+    ForeignKey,
     /// The serial of the inserted card is not one that holds this key.
     WrongCard,
     /// The card produced a signature that does not verify for the recorded public key.
@@ -220,6 +224,7 @@ impl CardError {
             Self::FirmwareTooOld => "firmware_too_old",
             Self::KdfEnabled => "kdf_enabled",
             Self::KeyMismatch => "key_mismatch",
+            Self::ForeignKey => "foreign_key",
             Self::WrongCard => "wrong_card",
             Self::BadSignature => "bad_signature",
             Self::PinFormat => "pin_format",
@@ -275,6 +280,9 @@ impl fmt::Display for CardError {
                 .write_str("OpenPGP PIN KDF가 켜진 YubiKey는 지원하지 않습니다(spec/10 §11)."),
             Self::KeyMismatch => formatter
                 .write_str("YubiKey의 공개키가 기록과 다릅니다. 등록한 YubiKey인지 확인하세요."),
+            Self::ForeignKey => formatter.write_str(
+                "이 슬롯에는 지갑이 기록한 키가 아닌 다른 키가 있습니다. 다른 프로그램(GPG 등)이 넣은 키일 수 있어 이 애플릿에서는 아무것도 지우거나 덮어쓰지 않았습니다. 그 키가 필요 없다는 것이 확실하면 그 프로그램으로 지우거나 'YubiKey 비우기'의 애플릿 초기화를 쓰세요.",
+            ),
             Self::WrongCard => formatter
                 .write_str("이 YubiKey에는 이 계정의 키가 없습니다. 등록한 YubiKey를 연결하세요."),
             Self::BadSignature => formatter.write_str("서명 검증 실패(YubiKey 응답 오류)"),

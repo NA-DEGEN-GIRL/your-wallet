@@ -1028,11 +1028,12 @@ impl App {
                 self.request_meta();
             }
             Err(error) => {
+                // A slot holding another key is found before anything is written.
                 let partial = matches!(
                     error,
                     YubiKeyJobError::Card(crate::yubikey::CardJobError::Enrol(
-                        yw_core::yubikey::enrol::EnrolError::Card(_)
-                    ))
+                        yw_core::yubikey::enrol::EnrolError::Card(card)
+                    )) if card != yw_core::yubikey::CardError::ForeignKey
                 );
                 let mut text = failure_text(error);
                 if partial {

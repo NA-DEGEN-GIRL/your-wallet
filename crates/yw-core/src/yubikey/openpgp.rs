@@ -420,6 +420,42 @@ pub fn parse_public_key(response: &[u8]) -> Result<[u8; 33], CardError> {
         .map_err(|_| CardError::KeyMismatch)
 }
 
+/// What an `OpenPGP` key slot holds, as READ PUBLIC KEY (`00 47 81 00`) answers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SlotKey {
+    /// No key: `6A88`, or a template without a public key value.
+    Empty,
+    /// A secp256k1 key (compressed).
+    Secp256k1([u8; 33]),
+    /// Some other key: RSA, another curve, or a point that does not parse.
+    Other,
+}
+
+/// Whether a `7F49` answer carries a key: an RSA modulus `81` or an EC point `86`, present
+/// and non-empty.
+fn holds_public_key(response: &[u8]) -> bool {
+    tlv::unwrap_single(response, 0x7F49).is_ok_and(|inner| {
+        [0x81_u16, 0x86]
+            .into_iter()
+            .any(|tag| tlv::find(inner, tag).is_ok_and(|value| !value.is_empty()))
+    })
+}
+
+/// Classifies the answer (`sw`, data) of READ PUBLIC KEY.
+///
+/// # Errors
+///
+/// Every status word other than `9000` and `6A88` (empty slot).
+pub fn parse_slot_key(sw: u16, response: &[u8]) -> Result<SlotKey, CardError> {
+    match sw {
+        super::apdu::SW_OK if holds_public_key(response) => {
+            Ok(parse_public_key(response).map_or(SlotKey::Other, SlotKey::Secp256k1))
+        }
+        super::apdu::SW_OK | super::apdu::SW_REF_NOT_FOUND => Ok(SlotKey::Empty),
+        other => Err(CardError::from_status(other)),
+    }
+}
+
 /// Parses the 3-byte GET VERSION answer.
 ///
 /// # Errors
@@ -589,6 +625,17 @@ impl<'t> OpenPgp<'t> {
         parse_public_key(&self.run(&read_public_key(key))?)
     }
 
+    /// What `key` holds now (`00 47 81 00`, read-only): nothing, a secp256k1 key, or another
+    /// key.
+    ///
+    /// # Errors
+    ///
+    /// Transport errors; status words other than `9000` / `6A88`.
+    pub fn slot_key(&mut self, key: PgpKey) -> Result<SlotKey, CardError> {
+        let response = exchange(self.transport, &read_public_key(key), self.mode)?;
+        parse_slot_key(response.sw, &response.data)
+    }
+
     /// The touch policy currently set for `key` (`GET DATA D6/D8`).
     ///
     /// # Errors
@@ -631,14 +678,7 @@ impl<'t> OpenPgp<'t> {
         self.run(&put_attributes(key, &RSA4096_ATTRIBUTES))?;
         self.run(&put_attributes(key, &RSA2048_ATTRIBUTES))?;
         let response = exchange(self.transport, &read_public_key(key), self.mode)?;
-        let holds_key = response.sw == super::apdu::SW_OK
-            && tlv::unwrap_single(&response.data, 0x7F49).is_ok_and(|inner| {
-                // RSA modulus `81` or EC point `86`: present and non-empty only with a key.
-                [0x81_u16, 0x86]
-                    .into_iter()
-                    .any(|tag| tlv::find(inner, tag).is_ok_and(|value| !value.is_empty()))
-            });
-        if holds_key {
+        if response.sw == super::apdu::SW_OK && holds_public_key(&response.data) {
             Err(CardError::KeyMismatch)
         } else {
             Ok(())

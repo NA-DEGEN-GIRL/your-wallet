@@ -6,8 +6,8 @@
 //!
 //! | operation | `OpenPGP` | PIV |
 //! |---|---|---|
-//! | re-slot | VERIFY PW3 → per changed slot: attributes, import, UIF, read-back | untouched |
-//! | delete our slots | VERIFY PW3 → per slot: attributes RSA 4096, then RSA 2048 (yubikit `delete_key`) → read-back empty | VERIFY PIN → management key → per slot `00 F6 FF <slot>` → GET METADATA `6A88` |
+//! | re-slot | per slot: read the key (empty, the recorded one or the new one, else `ForeignKey`) → VERIFY PW3 → per changed slot: attributes, import, UIF, read-back | untouched |
+//! | delete our slots | per slot: read the key (empty or the recorded one, else `ForeignKey`) → VERIFY PW3 → per slot: attributes RSA 4096, then RSA 2048 (yubikit `delete_key`) → read-back empty | per slot: GET METADATA (empty or the recorded key) → VERIFY PIN → management key → per slot `00 F6 FF <slot>` → GET METADATA `6A88` |
 //! | reset | wrong VERIFY `81`/`83` until blocked → `00 E6 00 00` → `00 44 00 00` | wrong VERIFY until blocked → wrong `2C` until the PUK is blocked → `00 FB 00 00` |
 //!
 //! Nothing here touches FIDO2, OTP or OATH. Funds never move: a key removed from a card stays
@@ -19,7 +19,7 @@ use zeroize::Zeroizing;
 
 use super::apdu::ApduMode;
 use super::enrol::{EnrolError, identify, master_fingerprint};
-use super::openpgp::{OpenPgp, Pw};
+use super::openpgp::{OpenPgp, Pw, SlotKey};
 use super::piv::{DEFAULT_MANAGEMENT_KEY, ManagementCredential, MgmtCipher, Piv};
 use super::plan::{CardSlot, KeyPath, PlanError, PlannedSlot, is_unknown_index, validate_plan};
 use super::record::{HwKeyRecord, HwPublicKey, RecordedSlot, records_consistent};
@@ -81,6 +81,19 @@ pub fn validate_reslot(
     Ok(())
 }
 
+/// Whether `current` is the secp256k1 key `public`.
+fn holds(current: SlotKey, public: HwPublicKey) -> bool {
+    matches!(current, SlotKey::Secp256k1(key) if HwPublicKey::Secp256k1(key) == public)
+}
+
+/// Whether an `OpenPGP` slot this wallet is about to empty or overwrite is empty or holds one of
+/// `ours` (spec/10 §15). Any other key — RSA, another curve, another secp256k1 key — was put
+/// there by something else (`gpg`, `ykman`, a card changed outside this wallet) and is never
+/// destroyed: [`CardError::ForeignKey`].
+fn ours_or_empty(current: SlotKey, ours: &[HwPublicKey]) -> bool {
+    current == SlotKey::Empty || ours.iter().any(|public| holds(current, *public))
+}
+
 fn secp_scalar(
     ctx: &Secp256k1<All>,
     seed: &[u8; 64],
@@ -102,7 +115,9 @@ fn secp_scalar(
 /// # Errors
 ///
 /// [`EnrolError::Plan`] (before any write), [`CardError::WrongCard`] (another card),
-/// [`CardError::KeyMismatch`], PIN and status errors (earlier slots may have been written).
+/// [`CardError::ForeignKey`] (a slot to be written holds neither nothing, nor the recorded key,
+/// nor the new one; before the admin PIN and any write), [`CardError::KeyMismatch`], PIN and
+/// status errors (earlier slots may have been written).
 pub fn reslot_card(
     transport: &mut dyn CardTransport,
     mode: ApduMode,
@@ -120,32 +135,43 @@ pub fn reslot_card(
         return Err(EnrolError::Card(CardError::WrongCard));
     }
     let mut session = OpenPgp::open(transport, mode)?;
-    session.verify(Pw::Admin, admin_pin)?;
-    let mut recorded = Vec::with_capacity(openpgp.len());
+    // Every slot of the plan is read before the admin PIN and before any write: a slot to be
+    // overwritten must be empty, hold the key the record lists for it, or already hold the new
+    // key (a retry after a partial write). Any other key stops the re-slot with nothing written.
+    let mut steps = Vec::with_capacity(openpgp.len());
     for planned in openpgp {
         let CardSlot::OpenPgp(key) = planned.slot else {
             return Err(EnrolError::Plan(PlanError::WrongApplet(planned.slot)));
         };
-        let kept = record.slots.iter().find(|slot| {
-            slot.slot == planned.slot
-                && slot.role.key_identity() == planned.role.key_identity()
-                && slot.touch == planned.touch
-        });
-        let unchanged = match kept {
-            Some(slot) => session
-                .public_key(key)
-                .is_ok_and(|public| HwPublicKey::Secp256k1(public) == slot.public),
-            None => false,
-        };
-        let public = if unchanged {
-            session.public_key(key)?
-        } else {
-            let scalar = secp_scalar(&ctx, seed, planned)?;
-            let public = session.import_secp256k1(&ctx, key, &scalar, planned.touch)?;
-            drop(scalar);
-            public
-        };
         let expected = super::enrol::derive_public(&ctx, seed, planned.role)?;
+        let current = session.slot_key(key)?;
+        let recorded = record.slots.iter().find(|slot| slot.slot == planned.slot);
+        let unchanged = recorded.is_some_and(|slot| {
+            slot.role.key_identity() == planned.role.key_identity()
+                && slot.touch == planned.touch
+                && holds(current, slot.public)
+        });
+        let ours: Vec<HwPublicKey> = [Some(expected), recorded.map(|slot| slot.public)]
+            .into_iter()
+            .flatten()
+            .collect();
+        if !unchanged && !ours_or_empty(current, &ours) {
+            return Err(EnrolError::Card(CardError::ForeignKey));
+        }
+        steps.push((planned, key, expected, current, unchanged));
+    }
+    session.verify(Pw::Admin, admin_pin)?;
+    let mut recorded = Vec::with_capacity(openpgp.len());
+    for (planned, key, expected, current, unchanged) in steps {
+        let public = match current {
+            SlotKey::Secp256k1(public) if unchanged => public,
+            _ => {
+                let scalar = secp_scalar(&ctx, seed, planned)?;
+                let public = session.import_secp256k1(&ctx, key, &scalar, planned.touch)?;
+                drop(scalar);
+                public
+            }
+        };
         if expected != HwPublicKey::Secp256k1(public) {
             return Err(EnrolError::Card(CardError::KeyMismatch));
         }
@@ -294,6 +320,15 @@ fn clear_openpgp(
     let mut session = OpenPgp::open(transport, mode)?;
     match method {
         ClearMethod::OurSlots => {
+            // Every recorded slot is read first (no PIN, no write): one holding a key the record
+            // does not list stops the clear with nothing deleted.
+            for slot in &record.slots {
+                if let CardSlot::OpenPgp(key) = slot.slot
+                    && !ours_or_empty(session.slot_key(key)?, &[slot.public])
+                {
+                    return Err(CardError::ForeignKey);
+                }
+            }
             session.verify(Pw::Admin, admin_pin)?;
             for slot in &record.slots {
                 if let CardSlot::OpenPgp(key) = slot.slot {
@@ -330,6 +365,19 @@ fn clear_piv(
     let mut session = Piv::open(transport, mode)?;
     match method {
         ClearMethod::OurSlots => {
+            // Every recorded slot is read first (GET METADATA, no PIN): an empty slot or the
+            // recorded Ed25519 key may go; any other key stops the clear with nothing deleted.
+            for slot in &record.slots {
+                if let CardSlot::Piv(piv_slot) = slot.slot {
+                    match session.slot_metadata(piv_slot) {
+                        Err(CardError::NotFound) => {}
+                        Ok(metadata)
+                            if metadata.public.map(HwPublicKey::Ed25519) == Some(slot.public) => {}
+                        Ok(_) => return Err(CardError::ForeignKey),
+                        Err(error) => return Err(error),
+                    }
+                }
+            }
             let state = session.management_state()?;
             if !state.protected && !state.default {
                 return Err(CardError::ManagementKeyUnknown);

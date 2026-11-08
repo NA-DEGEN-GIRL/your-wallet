@@ -1307,3 +1307,110 @@ fn connect_without_words_and_sign_every_chain() {
         .unwrap();
     assert!(!card.saw_write() && !second.saw_write());
 }
+
+/// spec/10 §15: "이 지갑의 슬롯만 지우기" and "슬롯 구성 바꾸기" read every slot they would empty or
+/// overwrite before any PIN or write. A key the record does not list (another program's key)
+/// stops that applet with nothing deleted or written; an empty slot, the recorded key, and for a
+/// re-slot the new key itself (a retry after a partial write) go ahead.
+#[test]
+fn clear_and_reslot_keep_a_key_the_record_does_not_list() {
+    use super::manage::{ClearAuth, ClearMethod, ClearPlan, clear_card, reslot_card};
+    use super::openpgp::{SlotKey, parse_slot_key};
+    use super::tlv;
+
+    // READ PUBLIC KEY answers: empty (6A88 or no key value), an RSA key, a status error.
+    let rsa = {
+        let mut inner = tlv::encode(0x81, &[0xC5; 256]).unwrap();
+        inner.extend(tlv::encode(0x82, &[1, 0, 1]).unwrap());
+        tlv::encode(0x7F49, &inner).unwrap()
+    };
+    let no_point = tlv::encode(0x7F49, &tlv::encode(0x86, &[]).unwrap()).unwrap();
+    assert_eq!(parse_slot_key(0x6A88, &[]), Ok(SlotKey::Empty));
+    assert_eq!(parse_slot_key(0x9000, &no_point), Ok(SlotKey::Empty));
+    assert_eq!(parse_slot_key(0x9000, &rsa), Ok(SlotKey::Other));
+    assert_eq!(parse_slot_key(0x6982, &[]), Err(CardError::SecurityStatus));
+
+    let seed = seed_of(ABOUT);
+    let mut card = MockCard::new(41);
+    let record = enrol(&mut card, ABOUT, &recommended_plan(), &[])
+        .unwrap()
+        .record;
+    let foreign = [0x11; 32];
+    let (our_sig, our_aut) = (card.pgp_keys[0], card.pgp_keys[2]);
+    let auth = ClearAuth {
+        admin_pin: b"12345678",
+        piv_pin: super::piv::DEFAULT_PIN,
+        cipher: Some(&ToyCipher),
+        challenge: [0x5C; 16],
+    };
+    let pin_sent = |card: &MockCard| card.log.iter().any(|[_, ins, _, _]| *ins == 0x20);
+    let both = ClearPlan {
+        openpgp: Some(ClearMethod::OurSlots),
+        piv: Some(ClearMethod::OurSlots),
+    };
+
+    // Another secp256k1 key in AUT: OpenPGP refused before the admin PIN, SIG kept, PIV not tried.
+    card.pgp_keys[2] = Some(foreign);
+    card.log.clear();
+    let report = clear_card(&mut card, ApduMode::Short, &record, both, &auth).unwrap();
+    assert_eq!(report.openpgp, Some(Err(CardError::ForeignKey)));
+    assert_eq!(report.piv, None);
+    assert!(!card.saw_write() && !pin_sent(&card));
+    assert_eq!(
+        (card.pgp_keys[0], card.pgp_keys[2]),
+        (our_sig, Some(foreign))
+    );
+    assert_eq!(card.piv_keys.len(), 2);
+
+    // Another Ed25519 key in one recorded PIV slot: refused before the PIV PIN, both slots kept.
+    card.pgp_keys[2] = our_aut;
+    let our_piv = card.piv_keys[1].1.seed;
+    card.piv_keys[1].1.seed = [0x22; 32];
+    card.log.clear();
+    let piv_only = ClearPlan {
+        openpgp: None,
+        piv: Some(ClearMethod::OurSlots),
+    };
+    let report = clear_card(&mut card, ApduMode::Short, &record, piv_only, &auth).unwrap();
+    assert_eq!(report.piv, Some(Err(CardError::ForeignKey)));
+    assert!(!card.saw_write() && !pin_sent(&card));
+    assert_eq!(card.piv_keys.len(), 2);
+    card.piv_keys[1].1.seed = our_piv;
+
+    // Re-slot to EVM 0 + EVM 1: another key in AUT (recorded: Bitcoin 0) is refused before the
+    // admin PIN, nothing written.
+    let plan = [sig(evm(0)), aut(evm(1))];
+    let reslot = |card: &mut MockCard, record: &HwKeyRecord| {
+        reslot_card(
+            card,
+            ApduMode::Short,
+            &seed,
+            record,
+            &plan,
+            &[],
+            b"12345678",
+        )
+    };
+    card.pgp_keys[2] = Some(foreign);
+    card.log.clear();
+    assert_eq!(
+        reslot(&mut card, &record),
+        Err(EnrolError::Card(CardError::ForeignKey))
+    );
+    assert!(!card.saw_write() && !pin_sent(&card));
+    assert_eq!(card.pgp_keys[2], Some(foreign));
+    // An empty AUT is written; SIG keeps its key.
+    card.pgp_keys[2] = None;
+    let updated = reslot(&mut card, &record).unwrap();
+    assert_eq!(updated.slots[0], record.slots[0]);
+    assert_eq!(updated.slots[1].role, evm(1));
+    assert_eq!(card.pgp_keys[0], our_sig);
+    // A retry with the old record (the vault was not updated): AUT already holds the new key.
+    assert_eq!(reslot(&mut card, &record), Ok(updated.clone()));
+    // The record of the card again: an empty SIG and the recorded keys elsewhere are cleared.
+    card.pgp_keys[0] = None;
+    let report = clear_card(&mut card, ApduMode::Short, &updated, both, &auth).unwrap();
+    assert_eq!((report.openpgp, report.piv), (Some(Ok(())), Some(Ok(()))));
+    assert_eq!(card.pgp_keys, [None, None, None]);
+    assert!(card.piv_keys.is_empty());
+}
