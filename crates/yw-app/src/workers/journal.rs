@@ -421,7 +421,9 @@ impl JournalState {
 
     /// Whether a journal record of an account of the added mnemonic `id` may still confirm: a
     /// SOL `Pending`, a ZEC record not final, a BTC record in flight / replaced / given up or
-    /// refused inside the 30-day window (spec/02 §8.6). An unreadable journal counts as busy.
+    /// refused inside the 30-day window (spec/02 §8.6). The records cannot be checked — an
+    /// unreadable journal, or a damaged SOL, BTC or ZEC record (whose account is unknown) —
+    /// counts as busy (the rule of [`Self::zec_imported_busy`]).
     pub fn mnemonic_busy(
         &mut self,
         vault: &Vault,
@@ -431,19 +433,20 @@ impl JournalState {
         let Ok(plain) = self.current(vault) else {
             return true;
         };
-        let sol = yw_core::journal::sol::SolEntries::from_plain(&plain)
-            .records
-            .iter()
-            .any(|(_, record)| {
-                record.state == yw_core::journal::sol::SolTxState::Pending
-                    && record.source.mnemonic() == Some(id)
-            });
-        let zec = yw_core::journal::zec::ZecEntries::from_plain(&plain)
-            .records
-            .iter()
-            .any(|(_, record)| {
-                record.account.source.mnemonic() == Some(id) && record.may_still_confirm()
-            });
+        let sol = yw_core::journal::sol::SolEntries::from_plain(&plain);
+        let zec = yw_core::journal::zec::ZecEntries::from_plain(&plain);
+        let btc_corrupt = yw_core::journal::btc::BtcEntries::from_plain(&plain).corrupt;
+        if sol.corrupt > 0 || zec.corrupt > 0 || btc_corrupt > 0 {
+            logging::warn("journal", "journal.mnemonic_busy_damaged", &[]);
+            return true;
+        }
+        let sol = sol.records.iter().any(|(_, record)| {
+            record.state == yw_core::journal::sol::SolTxState::Pending
+                && record.source.mnemonic() == Some(id)
+        });
+        let zec = zec.records.iter().any(|(_, record)| {
+            record.account.source.mnemonic() == Some(id) && record.may_still_confirm()
+        });
         sol || zec || self.btc_mnemonic_busy(vault, id, now_unix)
     }
 

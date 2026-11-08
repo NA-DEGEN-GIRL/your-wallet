@@ -85,7 +85,7 @@ pub const T_MN_INTRO: &str = "지갑에 복구 단어(니모닉)를 여러 개(�
 /// T-MN-REMOVE.
 pub const T_MN_REMOVE: &str = "이 복구 단어와 그 계정이 지갑에서 사라집니다. 자금은 체인에 그대로 남지만, 이 복구 단어를 따로 적어 두지 않았다면 다시는 그 계정을 열 수 없습니다. 먼저 '단어 보기'로 적어 둔 단어와 같은지 확인하세요.";
 /// T-MN-BUSY: removal refused while a transaction of the mnemonic's accounts may still confirm.
-pub const T_MN_BUSY: &str = "이 복구 단어의 Solana·Bitcoin·Zcash 계정에서 보낸 거래가 아직 확정될 수 있어(진행 중, 공개된 거래 또는 승인 중) 지울 수 없습니다. 거래가 확정되거나 만료된 뒤에 다시 시도하세요.";
+pub const T_MN_BUSY: &str = "이 복구 단어의 Solana·Bitcoin·Zcash 계정에서 보낸 거래가 아직 확정될 수 있어(진행 중, 공개된 거래 또는 승인 중) 지울 수 없습니다. 거래가 확정되거나 만료된 뒤에 다시 시도하세요. 거래 저널에 손상된 Solana·Bitcoin·Zcash 기록이 있으면 어느 계정의 거래인지 확인할 수 없어 지우지 않습니다.";
 /// T-MN-UNCONFIRMED.
 pub const T_MN_UNCONFIRMED: &str = "백업 확인 전입니다. 이 복구 단어의 계정은 받기만 되고 서명(보내기·연결 승인)은 백업 확인 뒤에 됩니다.";
 /// T-MN-REMOVE-UNCONFIRMED: removal of a phrase whose backup is not confirmed.
@@ -146,9 +146,17 @@ impl App {
     /// Whether a Solana, Bitcoin or Zcash journal record of mnemonic `id`'s accounts may still
     /// confirm (a SOL `Pending`, a BTC record in flight / replaced / given up or refused inside
     /// the 30-day window, a ZEC record not final), or a Bitcoin approval of one of its accounts
-    /// is open: the mnemonic is not removed then (like an imported key, spec/04 §2.18).
+    /// is open: the mnemonic is not removed then (like an imported key, spec/04 §2.18). A
+    /// damaged SOL, BTC or ZEC journal record (its account is unknown) counts as busy, as in the
+    /// key worker's check (`JournalState::mnemonic_busy`).
     #[must_use]
     pub fn mnemonic_busy(&self, id: RecordId) -> bool {
+        let damaged = self.evm.journal.as_ref().is_some_and(|journal| {
+            journal.sol_corrupt > 0 || journal.btc_corrupt > 0 || journal.zec_corrupt > 0
+        });
+        if damaged {
+            return true;
+        }
         let sol = self.sol_records().iter().any(|record| {
             record.state == yw_core::journal::sol::SolTxState::Pending
                 && record.source.mnemonic() == Some(id)
