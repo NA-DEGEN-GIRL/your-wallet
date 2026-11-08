@@ -517,6 +517,52 @@ impl App {
 }
 
 impl App {
+    /// The recovery card of a wallet with recovery words (settings → 보안): the backup status
+    /// when the first phrase is not the only backup (2026-11-08), and the reveal buttons.
+    fn backup_card_rows(&self, unlocked: bool, public: bool, items: &mut Vec<Item>) {
+        let lines = self.backup_status_lines();
+        if lines.is_empty() {
+            items.push(Item::Help(
+                "복구 단어(니모닉)는 지갑 전체의 백업입니다. 보기 전에 비밀번호를 다시 묻고, 화면 캡처에서 제외된 창에 보여줍니다."
+                    .to_owned(),
+            ));
+        } else {
+            // Several backups (2026-11-08): the first recovery phrase is no longer the
+            // whole wallet's backup, so say what each part needs (status only, no values).
+            items.push(Item::Subtitle(
+                "백업 현황 — 이 지갑을 다시 열려면".to_owned(),
+            ));
+            for line in lines {
+                items.push(Item::Text(line));
+            }
+            items.push(Item::Help(
+                "이 PC의 비밀번호는 백업이 아닙니다. 보기 전에 비밀번호를 다시 묻고, 화면 캡처에서 제외된 창에 보여줍니다."
+                    .to_owned(),
+            ));
+        }
+        let several = self.several_mnemonics();
+        let mut row = vec![
+            Ctl::button(
+                ids::REVEAL_MNEMONIC,
+                if several {
+                    "첫 복구 단어 보기"
+                } else {
+                    "복구 단어 보기"
+                },
+            )
+            .enabled(public),
+            Ctl::button(ids::REVEAL_KEY, "개인키 보기")
+                .enabled(unlocked && !self.hardware_selected()),
+        ];
+        if several {
+            row.push(Ctl::link(
+                crate::ui::screens_mnemonics::ids::MAIN_LINK,
+                "복구 단어 관리 ▸",
+            ));
+        }
+        items.push(Item::Row(row));
+    }
+
     /// The backup status of a wallet whose first recovery phrase is not its only backup
     /// (2026-11-08, settings → 보안): one line per recovery phrase (words, passphrase, quiz),
     /// the imported keys, and the `YubiKey` cards. Empty for a wallet with one phrase only.
@@ -1386,47 +1432,7 @@ impl App {
                 ),
             ]));
         } else {
-            let lines = self.backup_status_lines();
-            if lines.is_empty() {
-                items.push(Item::Help(
-                    "복구 단어(니모닉)는 지갑 전체의 백업입니다. 보기 전에 비밀번호를 다시 묻고, 화면 캡처에서 제외된 창에 보여줍니다."
-                        .to_owned(),
-                ));
-            } else {
-                // Several backups (2026-11-08): the first recovery phrase is no longer the
-                // whole wallet's backup, so say what each part needs (status only, no values).
-                items.push(Item::Subtitle(
-                    "백업 현황 — 이 지갑을 다시 열려면".to_owned(),
-                ));
-                for line in lines {
-                    items.push(Item::Text(line));
-                }
-                items.push(Item::Help(
-                    "이 PC의 비밀번호는 백업이 아닙니다. 보기 전에 비밀번호를 다시 묻고, 화면 캡처에서 제외된 창에 보여줍니다."
-                        .to_owned(),
-                ));
-            }
-            let several = self.several_mnemonics();
-            let mut row = vec![
-                Ctl::button(
-                    ids::REVEAL_MNEMONIC,
-                    if several {
-                        "첫 복구 단어 보기"
-                    } else {
-                        "복구 단어 보기"
-                    },
-                )
-                .enabled(public),
-                Ctl::button(ids::REVEAL_KEY, "개인키 보기")
-                    .enabled(unlocked && !self.hardware_selected()),
-            ];
-            if several {
-                row.push(Ctl::link(
-                    crate::ui::screens_mnemonics::ids::MAIN_LINK,
-                    "복구 단어 관리 ▸",
-                ));
-            }
-            items.push(Item::Row(row));
+            self.backup_card_rows(unlocked, public, items);
         }
         items.push(Item::Help(
             "개인키 보기는 메인 화면에서 선택한 EVM 계정의 키를 보여줍니다. Solana·Bitcoin의 가져온 개인키는 각 탭의 계정에서 '개인키 보기'를 누르세요."

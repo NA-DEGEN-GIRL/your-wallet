@@ -333,6 +333,46 @@ fn title_action(title: &str) -> &str {
         .trim()
 }
 
+/// The `personal_sign` summary: a parsed SIWE message says what it is (2026-11-08) — the site
+/// log-in and the domain the message names (a domain other than the requesting site is S01,
+/// blocked); any other message keeps the general sentence.
+fn personal_sign_summary(display: &yw_core::approval::ApprovalDisplay, place: &str) -> String {
+    let siwe_domain = display
+        .fields
+        .iter()
+        .find(|field| field.key.0 == 0x0404 && field.sub_label == "도메인")
+        .map(|field| first_line(&field.value).trim().to_owned())
+        .filter(|_| title_action(&display.title) == "로그인 요청 (SIWE)");
+    siwe_domain.map_or_else(
+        || {
+            format!(
+                "{place}메시지에 서명합니다. 거래를 보내지는 않지만, 서명은 로그인이나 권한 확인에 쓰일 수 있습니다."
+            )
+        },
+        |domain| {
+            format!(
+                "{place}{domain} 사이트 로그인(Sign-In with Ethereum) 메시지에 서명합니다. 거래를 보내지는 않습니다."
+            )
+        },
+    )
+}
+
+/// The typed-data summary: a known schema names its action in the title ('토큰 사용 허가 서명
+/// (permit)', 'Permit2 즉시 이체 서명', 'NFT 마켓 주문 서명') and the summary repeats it
+/// (2026-11-08); an unknown one keeps the general sentence.
+fn typed_data_summary(display: &yw_core::approval::ApprovalDisplay, place: &str) -> String {
+    let action = title_action(&display.title);
+    if action.is_empty() || action == "타입 데이터 서명" {
+        format!(
+            "{place}구조화된 데이터(EIP-712)에 서명합니다. 토큰 사용 권한(permit) 같은 권한을 줄 수 있으니 아래 내용을 확인하세요."
+        )
+    } else {
+        format!(
+            "{place}'{action}'에 서명합니다(EIP-712). 서명만으로 권한이나 자산이 넘어갈 수 있으니 아래 경고와 내용을 확인하세요."
+        )
+    }
+}
+
 /// The one-sentence plain-Korean summary at the top of A01 (spec/04 §3.2 `요약`) and the full
 /// address it refers to. Derived only from the validated display model (the digest is
 /// unchanged); addresses are never shortened (spec/04 §0): the sentence says `아래 주소` and
@@ -385,48 +425,8 @@ pub fn summary(request: &ApprovalRequest) -> (String, Option<String>) {
             format!("{place}아직 확정되지 않은 거래를 취소합니다(같은 nonce로 0을 보내는 거래)."),
             None,
         ),
-        ApprovalKind::EvmPersonalSign => {
-            // A parsed SIWE message says what it is (2026-11-08): the site log-in, and the
-            // domain the message names (a domain other than the requesting site is S01, blocked).
-            let siwe_domain = display
-                .fields
-                .iter()
-                .find(|field| field.key.0 == 0x0404 && field.sub_label == "도메인")
-                .map(|field| first_line(&field.value).trim().to_owned())
-                .filter(|_| title_action(&display.title) == "로그인 요청 (SIWE)");
-            (
-                siwe_domain.map_or_else(
-                    || {
-                        format!(
-                            "{place}메시지에 서명합니다. 거래를 보내지는 않지만, 서명은 로그인이나 권한 확인에 쓰일 수 있습니다."
-                        )
-                    },
-                    |domain| {
-                        format!(
-                            "{place}{domain} 사이트 로그인(Sign-In with Ethereum) 메시지에 서명합니다. 거래를 보내지는 않습니다."
-                        )
-                    },
-                ),
-                None,
-            )
-        }
-        ApprovalKind::EvmTypedData => {
-            // A known schema names its action in the title ('토큰 사용 허가 서명 (permit)',
-            // 'Permit2 즉시 이체 서명', 'NFT 마켓 주문 서명'); the summary repeats it.
-            let action = title_action(&display.title);
-            (
-                if action.is_empty() || action == "타입 데이터 서명" {
-                    format!(
-                        "{place}구조화된 데이터(EIP-712)에 서명합니다. 토큰 사용 권한(permit) 같은 권한을 줄 수 있으니 아래 내용을 확인하세요."
-                    )
-                } else {
-                    format!(
-                        "{place}'{action}'에 서명합니다(EIP-712). 서명만으로 권한이나 자산이 넘어갈 수 있으니 아래 경고와 내용을 확인하세요."
-                    )
-                },
-                None,
-            )
-        }
+        ApprovalKind::EvmPersonalSign => (personal_sign_summary(display, &place), None),
+        ApprovalKind::EvmTypedData => (typed_data_summary(display, &place), None),
         ApprovalKind::SolTransfer => match field_value(display, 0x0502) {
             Some(amount) => send(amount, field_value(display, 0x0501)),
             None => (format!("{place}SOL을 보냅니다."), None),

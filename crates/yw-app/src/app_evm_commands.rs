@@ -202,36 +202,47 @@ impl App {
         true
     }
 
+    /// `{기호} 보내기` of token row `index`: S11 with that token chosen (the form's checks,
+    /// review and approval are the usual ones).
+    fn send_token_row(&mut self, chain_id: u64, index: usize) {
+        if matches!(self.mode, AppMode::Unlocked { .. })
+            && let Some((address, ..)) = self.chain_tokens(chain_id).get(index)
+        {
+            let asset = SendAsset::Token(*address);
+            self.open_send();
+            self.choose_send_asset(asset);
+        }
+    }
+
+    /// The asset of send radio `index` (0 = the native asset, then the chain's tokens).
+    fn send_asset_at(&self, chain_id: u64, index: usize) -> SendAsset {
+        if index == 0 {
+            return SendAsset::Native;
+        }
+        self.chain_tokens(chain_id)
+            .get(index.saturating_sub(1))
+            .map_or(SendAsset::Native, |(address, ..)| {
+                SendAsset::Token(*address)
+            })
+    }
+
+    /// The send form's asset: set, the quote and contract check dropped, the form checked again.
+    fn choose_send_asset(&mut self, asset: SendAsset) {
+        self.evm.send.asset = asset;
+        self.evm.send.quote = None;
+        self.evm.send.contract = None;
+        self.validate_send(true);
+    }
+
     fn on_evm_indexed(&mut self, id: u16) -> bool {
         let chain_id = self.settings.evm_chain_id;
         if let Some(index) = offset(id, ids::SEND_ASSET_BASE, ids::SEND_ASSET_SPAN) {
-            let asset = if index == 0 {
-                SendAsset::Native
-            } else {
-                self.chain_tokens(chain_id)
-                    .get(usize::from(index).saturating_sub(1))
-                    .map_or(SendAsset::Native, |(address, ..)| {
-                        SendAsset::Token(*address)
-                    })
-            };
-            self.evm.send.asset = asset;
-            self.evm.send.quote = None;
-            self.evm.send.contract = None;
-            self.validate_send(true);
+            let asset = self.send_asset_at(chain_id, usize::from(index));
+            self.choose_send_asset(asset);
             return true;
         }
         if let Some(index) = offset(id, ids::TOKEN_SEND_BASE, ids::TOKEN_SEND_SPAN) {
-            // `{기호} 보내기` of a token row: S11 with that token chosen (the form's checks,
-            // review and approval are the usual ones).
-            if matches!(self.mode, AppMode::Unlocked { .. })
-                && let Some((address, ..)) = self.chain_tokens(chain_id).get(usize::from(index))
-            {
-                self.evm.send.asset = SendAsset::Token(*address);
-                self.evm.send.quote = None;
-                self.evm.send.contract = None;
-                self.open_send();
-                self.validate_send(true);
-            }
+            self.send_token_row(chain_id, usize::from(index));
             return true;
         }
         if let Some(action) = ids::token_action(id) {
