@@ -2398,8 +2398,16 @@ impl Vault {
         let payload = self.payload()?;
         // `YubiKey` sources come from the tag-5 slot map; each mnemonic's BIP39 seed is computed
         // once, only when a derived source of it asks for it (a `YubiKey` wallet has no
-        // mnemonic; an added mnemonic's accounts use its own seed, spec/02 §8.6).
-        let mut seeds: Vec<(Option<RecordId>, SecretBytes<64>)> = Vec::new();
+        // mnemonic; an added mnemonic's accounts use its own seed, spec/02 §8.6). The seed list
+        // is sized for every distinct mnemonic up front: a growing `Vec` would move the seeds
+        // and free the old buffer unwiped. `SecretBytes` wipes each seed when the list drops.
+        let mut ids: Vec<Option<RecordId>> = Vec::with_capacity(srcs.len());
+        for src in srcs.iter().filter(|src| !src.is_hardware()) {
+            if !ids.contains(&src.mnemonic()) {
+                ids.push(src.mnemonic());
+            }
+        }
+        let mut seeds: Vec<(Option<RecordId>, SecretBytes<64>)> = Vec::with_capacity(ids.len());
         let mut out = Vec::with_capacity(srcs.len());
         for src in srcs {
             if let SolKeySource::Hardware(index) = src {
@@ -2408,6 +2416,11 @@ impl Vault {
             }
             let id = src.mnemonic();
             if !seeds.iter().any(|(known, _)| *known == id) {
+                // Never reached (one slot per distinct id): a push past the capacity would
+                // reallocate with seeds inside.
+                if seeds.len() == seeds.capacity() {
+                    return Err(INTERNAL);
+                }
                 seeds.push((id, self.seed_for(&payload, id)?));
             }
             let seed = seeds
