@@ -405,6 +405,256 @@ fn proposals_keyed_by_session_topic() {
     assert!(engine.session(&again).is_some());
 }
 
+fn pairing_uri(key: &[u8; 32], expiry: Option<u64>) -> yw_core::walletconnect::PairingUri {
+    let expiry = expiry.map(|at| format!("&expiryTimestamp={at}"));
+    yw_core::walletconnect::parse_pairing_uri(&format!(
+        "wc:{}@2?relay-protocol=irn&symKey={}&methods=wc_sessionPropose{}",
+        yw_core::hex::encode(&topic_of(key)),
+        yw_core::hex::encode(key),
+        expiry.unwrap_or_default()
+    ))
+    .unwrap()
+}
+
+fn propose_on(
+    engine: &mut super::engine::Engine,
+    key: &[u8; 32],
+    id: u64,
+    methods: &str,
+    events: &str,
+    now: u64,
+) -> Vec<super::engine::Out> {
+    let secret = X25519Secret::from_bytes([key[0] ^ 0x5a; 32]);
+    let proposal = format!(
+        r#"{{"id":{id},"jsonrpc":"2.0","method":"wc_sessionPropose","params":{{"relays":[{{"protocol":"irn"}}],"proposer":{{"publicKey":"{}","metadata":{{"name":"d","url":"https://app.example"}}}},"requiredNamespaces":{{"eip155":{{"chains":["eip155:1"],"methods":{methods},"events":{events}}}}}}}}}"#,
+        yw_core::hex::encode(&secret.public())
+    );
+    engine.on_message(&topic_of(key), &Dapp::seal(key, &proposal), None, now)
+}
+
+fn proposed(outs: &[super::engine::Out]) -> Option<super::engine::ProposalView> {
+    outs.iter().find_map(|out| match out {
+        super::engine::Out::Proposal(view, _) => Some((**view).clone()),
+        _ => None,
+    })
+}
+
+/// The JSON-RPC error code of the one reply the engine published, if any.
+fn reply_code(outs: &[super::engine::Out], key: &[u8; 32]) -> Option<i64> {
+    outs.iter().find_map(|out| match out {
+        super::engine::Out::Publish(publish) => {
+            get(&Dapp::open(key, &publish.message), &["error", "code"])
+                .as_number()
+                .and_then(yw_json::Number::as_i64)
+        }
+        _ => None,
+    })
+}
+
+/// A pairing URI lives at most five minutes whatever its `expiryTimestamp`, takes three
+/// proposals, takes none after one made a session and leaves once its proposals are answered;
+/// a full proposal list refuses newcomers instead of pushing a pending one out (spec/13 §5.1).
+#[test]
+fn pairings_are_short_lived_and_bounded() {
+    use super::engine::{
+        Engine, MAX_PROPOSALS, MAX_PROPOSALS_PER_PAIRING, Out, PAIRING_TTL_S, WALLET_METHODS,
+    };
+    let now = 1_700_000_000_u64;
+    let personal = r#"["personal_sign"]"#;
+    let unsubscribed = |outs: &[Out], topic: [u8; 32]| {
+        outs.iter()
+            .any(|out| matches!(out, Out::Unsubscribe(t) if *t == topic))
+    };
+
+    // A far-future expiryTimestamp does not keep a pairing past PAIRING_TTL_S.
+    let mut engine = Engine::new();
+    engine.supported_chains = vec![1];
+    let lingering = [0x31_u8; 32];
+    let _ = engine.pair(&pairing_uri(&lingering, Some(now + 30 * 86_400)), now);
+    assert!(!unsubscribed(
+        &engine.tick(now + PAIRING_TTL_S - 1),
+        topic_of(&lingering)
+    ));
+    assert!(unsubscribed(
+        &engine.tick(now + PAIRING_TTL_S),
+        topic_of(&lingering)
+    ));
+    assert!(!engine.topics().contains(&topic_of(&lingering)));
+
+    // Three proposals per pairing; a fourth is refused without a window.
+    let key = [0x32_u8; 32];
+    let _ = engine.pair(&pairing_uri(&key, None), now);
+    let views: Vec<_> = (1..=MAX_PROPOSALS_PER_PAIRING as u64)
+        .map(|id| proposed(&propose_on(&mut engine, &key, id, personal, "[]", now)).unwrap())
+        .collect();
+    let outs = propose_on(&mut engine, &key, 9, personal, "[]", now);
+    assert!(proposed(&outs).is_none());
+    assert_eq!(reply_code(&outs, &key), Some(5_000));
+
+    // One approved: the pairing takes nothing more and leaves after its other proposals.
+    let account = yw_core::evm::address::Address::from_bytes([3; 20]);
+    let outs = engine.approve(&views[0].session_topic, vec![account], now);
+    assert!(!unsubscribed(&outs, topic_of(&key)), "two still pending");
+    assert!(
+        engine
+            .session(&views[0].session_topic)
+            .unwrap()
+            .methods
+            .len()
+            >= WALLET_METHODS.len()
+    );
+    let _ = engine.reject(&views[1].session_topic, 5_000, "User rejected.");
+    let outs = engine.reject(&views[2].session_topic, 5_000, "User rejected.");
+    assert!(
+        unsubscribed(&outs, topic_of(&key)),
+        "retired after its session"
+    );
+    assert!(!engine.topics().contains(&topic_of(&key)));
+    assert!(engine.topics().contains(&views[0].session_topic));
+
+    // A full list refuses the newcomer; the first pending proposal stays.
+    let mut engine = Engine::new();
+    engine.supported_chains = vec![1];
+    let mut pending = Vec::new();
+    for pairing in 0..3_u8 {
+        let key = [0x40 + pairing; 32];
+        let _ = engine.pair(&pairing_uri(&key, None), now);
+        for id in 0..MAX_PROPOSALS_PER_PAIRING as u64 {
+            let id = u64::from(pairing) * 10 + id;
+            let outs = propose_on(&mut engine, &key, id, personal, "[]", now);
+            if let Some(view) = proposed(&outs) {
+                pending.push(view.session_topic);
+            } else {
+                assert_eq!(pending.len(), MAX_PROPOSALS);
+                assert_eq!(reply_code(&outs, &key), Some(5_000));
+            }
+        }
+    }
+    assert_eq!(pending.len(), MAX_PROPOSALS);
+    assert!(engine.proposal(&pending[0]).is_some());
+}
+
+/// Required method and event names enter the session only when known and plain (the rest are
+/// counted, never shown or stored); stored sessions are filtered the same way on read.
+#[test]
+fn proposal_names_are_allowlisted() {
+    use super::engine::{Engine, WALLET_METHODS};
+    let now = 1_700_000_000_u64;
+    let mut engine = Engine::new();
+    engine.supported_chains = vec![1];
+    let key = [0x61_u8; 32];
+    let _ = engine.pair(&pairing_uri(&key, None), now);
+    let long = "a".repeat(100);
+    // A right-to-left override inside a name (sent as the raw character).
+    let bidi = char::from_u32(0x202e).unwrap();
+    let methods = format!(
+        r#"["personal_sign","eth_sign","wallet_unknownThing","evil{bidi}name","{long}","eth_sign"]"#
+    );
+    let events = r#"["chainChanged","message","bad event","x\ny"]"#;
+    let view = proposed(&propose_on(&mut engine, &key, 1, &methods, events, now)).unwrap();
+    assert_eq!(view.unsupported_methods, vec!["eth_sign".to_owned()]);
+    assert_eq!(view.dropped_names, 5);
+    let account = yw_core::evm::address::Address::from_bytes([3; 20]);
+    let _ = engine.approve(&view.session_topic, vec![account], now);
+    let session = engine.session(&view.session_topic).unwrap().clone();
+    let mut expected: Vec<String> = WALLET_METHODS.iter().map(|m| (*m).to_owned()).collect();
+    expected.push("eth_sign".to_owned());
+    assert_eq!(session.methods, expected);
+    assert_eq!(
+        session.events,
+        vec!["chainChanged", "accountsChanged", "message"]
+    );
+
+    // A session stored with other names keeps only the known ones.
+    let mut stored = session;
+    stored.methods.push("wallet_unknownThing".to_owned());
+    stored.events.push("bad event".to_owned());
+    let store = super::store::WcStore {
+        client_seed: None,
+        sessions: vec![stored.clone()],
+    };
+    let read = super::store::WcStore::from_value(Some(&store.to_value()));
+    assert_eq!(read.sessions[0].methods, expected);
+    assert_eq!(
+        read.sessions[0].events,
+        vec!["chainChanged", "accountsChanged", "message"]
+    );
+}
+
+/// A session request on a chain the wallet no longer has (deleted, or blocked) is refused 5100
+/// instead of running on another chain, and deleted chains leave the session (an update, or the
+/// session ends with none left).
+#[test]
+fn session_chains_follow_the_registry() {
+    use super::engine::{Engine, Out};
+    let now = 1_700_000_000_u64;
+    let key = [0x71_u8; 32];
+    let topic = topic_of(&key);
+    let mut engine = Engine::new();
+    engine.supported_chains = vec![1];
+    let _ = engine.restore(vec![test_session(&key, vec![1, 11_155_111], now)], now);
+    let request = |engine: &mut Engine, id: u64, chain: u64| {
+        let text = format!(
+            r#"{{"id":{id},"jsonrpc":"2.0","method":"wc_sessionRequest","params":{{"request":{{"method":"eth_chainId","params":[]}},"chainId":"eip155:{chain}"}}}}"#
+        );
+        engine.on_message(&topic, &Dapp::seal(&key, &text), None, now)
+    };
+    assert_eq!(
+        reply_code(&request(&mut engine, 1, 11_155_111), &key),
+        Some(5_100)
+    );
+    assert!(
+        request(&mut engine, 2, 1)
+            .iter()
+            .any(|out| matches!(out, Out::Request(r) if r.chain_id == 1))
+    );
+    // Sepolia deleted: the session drops it (wc_sessionUpdate on its topic).
+    let outs = engine.prune_chains(&[1], now);
+    let update = outs
+        .iter()
+        .find_map(|out| match out {
+            Out::Publish(p) if p.tag == 1104 => Some(Dapp::open(&key, &p.message)),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(
+        get(&update, &["params", "namespaces", "eip155", "chains"]),
+        &json(r#"["eip155:1"]"#)
+    );
+    assert_eq!(engine.session(&topic).unwrap().chains, vec![1]);
+    assert!(engine.prune_chains(&[1], now).is_empty());
+    // No chain left: the session ends.
+    let outs = engine.prune_chains(&[5], now);
+    assert!(
+        outs.iter()
+            .any(|out| matches!(out, Out::Ended(t) if *t == topic))
+    );
+    assert!(engine.session(&topic).is_none());
+}
+
+fn test_session(key: &[u8; 32], chains: Vec<u64>, now: u64) -> super::engine::Session {
+    super::engine::Session {
+        topic: topic_of(key),
+        sym_key: yw_core::secret::Zeroizing::new(*key),
+        peer_public: [7; 32],
+        peer: super::Metadata::default(),
+        accounts: vec![yw_core::evm::address::Address::from_bytes([3; 20])],
+        chains,
+        methods: super::engine::WALLET_METHODS
+            .iter()
+            .map(|m| (*m).to_owned())
+            .collect(),
+        events: super::engine::WALLET_EVENTS
+            .iter()
+            .map(|e| (*e).to_owned())
+            .collect(),
+        expiry: now + 86_400,
+        acknowledged: true,
+        verify: super::VerifyStatus::Unknown,
+        created: now,
+    }
+}
+
 /// The ES256 example of RFC 7515 Appendix A.3 verifies with the CNG P-256 check used for Verify
 /// v3 attestations; a flipped bit does not. `check_attestation` then reads the claims.
 #[test]
@@ -906,4 +1156,149 @@ fn mocked_end_to_end_session() {
             .any(|event| matches!(event, WcEvent::Ended(ended) if *ended == origin))
     );
     let _ = Envelope::decode;
+}
+
+/// Sessions restored at unlock follow their grants before making any request (spec/13 §5.3): a
+/// session whose grant is gone ends at `Load`; hiding one of two accounts sends
+/// `wc_sessionUpdate` + `accountsChanged` and `eth_accounts` answers from the grant; removing
+/// the grant (S13 `연결 해제`, `모든 사이트 연결 해제`) sends `wc_sessionDelete`. A chain
+/// deleted from the registry leaves the session and requests on it are refused.
+#[test]
+fn restored_sessions_follow_grants_and_chains() {
+    use super::worker::{Input, WcCommand, WcEvent, Worker};
+    use crate::browser::{BrowserCore, ChainEntry, VaultView, WalletView};
+    use yw_core::evm::address::Address;
+
+    let recorder = Arc::new(Recorder::default());
+    let core = BrowserCore::new(
+        "abcdefghijklmnopabcdefghijklmnop",
+        Arc::clone(&recorder) as Arc<dyn crate::browser::DappSink>,
+        Arc::new(crate::flow::evm::SystemClock),
+    );
+    let chain = |id: u64| ChainEntry {
+        info: yw_core::evm::chain::builtin_chain(id).unwrap(),
+        url: None,
+    };
+    let view = |chains: Vec<ChainEntry>| WalletView {
+        vault: VaultView::Unlocked,
+        chains,
+        evm_chain_id: 1,
+        ..WalletView::default()
+    };
+    core.set_wallet(view(vec![chain(1), chain(yw_core::evm::chain::SEPOLIA)]));
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let (kept, gone) = ([0x81_u8; 32], [0x82_u8; 32]);
+    let (first, second) = (Address::from_bytes([1; 20]), Address::from_bytes([2; 20]));
+    let mut session = test_session(&kept, vec![1, yw_core::evm::chain::SEPOLIA], now);
+    session.accounts = vec![first, second];
+    let origin = super::session_origin(&topic_of(&kept)).unwrap();
+    // Only the first session still has its grant (the other's went while nobody listened).
+    core.upsert_grant(
+        yw_core::policy::ConnectedSite::new(origin.clone(), vec![first, second], 1, 0).unwrap(),
+    );
+
+    let wire = Arc::new(MockWire::default());
+    let (mut worker, _tx, rx) = Worker::new(
+        Arc::clone(&core),
+        Arc::new(WcRecorder(Arc::clone(&recorder))),
+        Box::new(MockConnector(
+            Arc::clone(&wire),
+            Arc::new(Mutex::new(Vec::new())),
+        )),
+        None,
+    );
+    worker.refresh_chains();
+    let pump = |worker: &mut Worker| {
+        for _ in 0..40 {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            while let Ok(input) = rx.try_recv() {
+                worker.handle(input);
+            }
+        }
+    };
+    let sent_on = |key: &[u8; 32], tag: u64| -> Vec<Value> {
+        publishes(&wire)
+            .into_iter()
+            .filter(|(topic, _, t)| *topic == topic_of(key) && *t == tag)
+            .map(|(_, message, _)| Dapp::open(key, &message))
+            .collect()
+    };
+    worker.handle(Input::Command(WcCommand::Configure(Some(
+        "0123456789abcdef0123456789abcdef".to_owned(),
+    ))));
+    worker.handle(Input::Command(WcCommand::Load(Box::new(
+        super::store::WcStore {
+            client_seed: Some(yw_core::secret::Zeroizing::new([9; 32])),
+            sessions: vec![session, test_session(&gone, vec![1], now)],
+        },
+    ))));
+    worker.tick();
+    pump(&mut worker);
+    assert_eq!(sent_on(&gone, 1112).len(), 1, "no grant: wc_sessionDelete");
+    assert!(sent_on(&kept, 1112).is_empty());
+
+    // An account hidden: the dispatcher's accountsChanged reaches the restored session.
+    let _ = core.remove_account(&second);
+    pump(&mut worker);
+    let update = sent_on(&kept, 1104);
+    assert_eq!(
+        get(&update[0], &["params", "namespaces", "eip155", "accounts"])
+            .as_array()
+            .unwrap()
+            .len(),
+        2,
+        "one account on two chains"
+    );
+    let event = sent_on(&kept, 1110);
+    assert_eq!(
+        get(&event[0], &["params", "event", "name"]).as_str(),
+        Some("accountsChanged")
+    );
+    // eth_accounts answers from the grant.
+    let request = r#"{"id":1700000000000011,"jsonrpc":"2.0","method":"wc_sessionRequest","params":{"request":{"method":"eth_accounts","params":[]},"chainId":"eip155:1"}}"#;
+    wire.inbox
+        .lock()
+        .unwrap()
+        .push_back(subscription(&topic_of(&kept), &Dapp::seal(&kept, request)));
+    pump(&mut worker);
+    let answer = sent_on(&kept, 1109);
+    assert_eq!(
+        get(&answer[0], &["result"]),
+        &json(r#"["0x0101010101010101010101010101010101010101"]"#)
+    );
+
+    // Sepolia deleted from the registry: it leaves the session; a request on it is refused.
+    core.set_wallet(view(vec![chain(1)]));
+    worker.refresh_chains();
+    assert_eq!(sent_on(&kept, 1104).len(), 2);
+    let request = r#"{"id":1700000000000012,"jsonrpc":"2.0","method":"wc_sessionRequest","params":{"request":{"method":"personal_sign","params":["0x48","0x0101010101010101010101010101010101010101"]},"chainId":"eip155:11155111"}}"#;
+    wire.inbox
+        .lock()
+        .unwrap()
+        .push_back(subscription(&topic_of(&kept), &Dapp::seal(&kept, request)));
+    pump(&mut worker);
+    let refused = sent_on(&kept, 1109);
+    assert_eq!(
+        get(&refused[1], &["error", "code"])
+            .as_number()
+            .unwrap()
+            .as_i64(),
+        Some(5_100)
+    );
+
+    // The grant removed (S13 `연결 해제`, `모든 사이트 연결 해제`): the session ends.
+    assert!(core.remove_grant(&origin));
+    pump(&mut worker);
+    assert_eq!(sent_on(&kept, 1112).len(), 1);
+    assert!(
+        recorder
+            .wc
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| matches!(event, WcEvent::Ended(ended) if *ended == origin))
+    );
 }

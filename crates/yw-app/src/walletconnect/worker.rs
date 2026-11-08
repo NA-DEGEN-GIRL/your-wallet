@@ -134,6 +134,10 @@ pub enum WcCommand {
     Pair(String),
     /// Disconnect one session.
     Disconnect([u8; 32]),
+    /// The dispatcher's grants changed (the UI wrote them: an account hidden or removed, a site
+    /// disconnected, a connect approved): each session follows its grant — gone → the session
+    /// ends (`wc_sessionDelete`), other accounts → `wc_sessionUpdate` + `accountsChanged`.
+    SyncGrants,
     /// Stop.
     Shutdown,
 }
@@ -377,14 +381,18 @@ impl Worker {
     /// Runs until [`WcCommand::Shutdown`] or the channel closes.
     pub fn run(mut self, rx: &Receiver<Input>) {
         loop {
-            self.refresh_chains();
             match rx.recv_timeout(std::time::Duration::from_millis(500)) {
                 Ok(Input::Command(WcCommand::Shutdown)) | Err(RecvTimeoutError::Disconnected) => {
                     break;
                 }
-                Ok(input) => self.handle(input),
+                Ok(input) => {
+                    // The registry as of this input (a chain deleted while waiting is gone).
+                    self.refresh_chains();
+                    self.handle(input);
+                }
                 Err(RecvTimeoutError::Timeout) => {}
             }
+            self.refresh_chains();
             self.tick();
         }
         if let Some(link) = self.link.take() {
@@ -440,9 +448,18 @@ impl Worker {
                     let now = self.now_s();
                     let outs = self.engine.restore(store.sessions, now);
                     self.apply(outs);
+                    // Restored sessions hear their origin's events (account hidden or removed,
+                    // site disconnected) before they make any request.
+                    let topics: Vec<[u8; 32]> =
+                        self.engine.sessions().iter().map(|s| s.topic).collect();
+                    for topic in topics {
+                        self.attach(topic);
+                    }
                 }
-                // Grants of sessions that no longer exist (deleted while locked) are pruned by
-                // the UI from this snapshot.
+                // A session whose grant went (or whose accounts changed) while this worker could
+                // not hear it follows the grant now; grants of sessions that no longer exist
+                // (deleted while locked) are pruned by the UI from the snapshot below.
+                self.sync_grants(None);
                 self.push_sessions();
             }
             WcCommand::Pair(text) => self.pair(&text),
@@ -451,7 +468,58 @@ impl Worker {
                 let outs = self.engine.disconnect(&topic, now);
                 self.apply(outs);
             }
+            WcCommand::SyncGrants => self.sync_grants(None),
             WcCommand::Shutdown => {}
+        }
+    }
+
+    /// Registers session `topic`'s synthetic origin as a document of the bridge connection.
+    fn attach(&self, topic: [u8; 32]) {
+        if let Some(origin) = session_origin(&topic) {
+            self.core
+                .attach_virtual_document(self.conn, SESSION_ID, Id32(topic), &origin);
+        }
+    }
+
+    /// Each session (or only `only`) follows its dispatcher grant while unlocked (spec/13 §5.3):
+    /// no grant → the session ends (`wc_sessionDelete`); other accounts → `wc_sessionUpdate` +
+    /// `accountsChanged`. Locked (grants not loaded): nothing — the session waits for the unlock.
+    fn sync_grants(&mut self, only: Option<[u8; 32]>) {
+        let Some(grants) = self.core.grants_if_unlocked() else {
+            return;
+        };
+        let now = self.now_s();
+        let sessions: Vec<([u8; 32], Vec<Address>, Option<u64>)> = self
+            .engine
+            .sessions()
+            .iter()
+            .filter(|s| only.is_none_or(|topic| topic == s.topic))
+            .map(|s| (s.topic, s.accounts.clone(), s.chains.first().copied()))
+            .collect();
+        for (topic, accounts, first_chain) in sessions {
+            let Some(origin) = session_origin(&topic) else {
+                continue;
+            };
+            match grants.iter().find(|grant| grant.origin == origin) {
+                None => {
+                    logging::info("walletconnect", "session.grant_gone", &[]);
+                    let outs = self.engine.disconnect(&topic, now);
+                    self.apply(outs);
+                }
+                Some(grant) if grant.accounts != accounts => {
+                    let outs = self
+                        .engine
+                        .update(&topic, Some(grant.accounts.clone()), None, now);
+                    self.apply(outs);
+                    if let Some(chain) = first_chain {
+                        let outs =
+                            self.engine
+                                .emit(&topic, "accountsChanged", chain, self.now_ms());
+                        self.apply(outs);
+                    }
+                }
+                Some(_) => {}
+            }
         }
     }
 
@@ -509,16 +577,6 @@ impl Worker {
         self.sink.push(WcEvent::Notice(
             "dApp의 연결 요청을 기다리는 중입니다…".to_owned(),
         ));
-    }
-
-    fn supported_chains(&self) -> Vec<u64> {
-        let wallet = self.core.wallet();
-        wallet
-            .chains
-            .iter()
-            .map(|entry| entry.info.chain_id)
-            .filter(|id| !wallet.blocked.contains(id))
-            .collect()
     }
 
     // ----- relay connection ------------------------------------------------------------
@@ -822,14 +880,13 @@ impl Worker {
                 .saturating_add(INTERACTIVE_DEADLINE_MS),
         );
         // The session origin starts on the first offered chain.
-        if let Some(first) = view.chains.first() {
-            self.core.set_origin_chain(&origin, *first);
-        }
+        let Some(first) = view.chains.first().copied() else {
+            return;
+        };
         self.submit(
             origin.clone(),
             view.session_topic,
-            Method::RequestAccounts,
-            Value::Array(Vec::new()),
+            (Method::RequestAccounts, Value::Array(Vec::new()), first),
             deadline,
             Waiting::Connect {
                 proposal: view.session_topic,
@@ -838,12 +895,13 @@ impl Worker {
         );
     }
 
+    /// Hands `(method, params, chain)` to the dispatcher as a request of `origin` running on
+    /// `chain` (refused 4901 when that chain is not registered or is blocked by then).
     fn submit(
         &mut self,
         origin: BrowserOrigin,
         activation: [u8; 32],
-        method: Method,
-        params: Value,
+        (method, params, chain_id): (Method, Value, u64),
         deadline_unix_ms: u64,
         waiting: Waiting,
     ) {
@@ -873,7 +931,7 @@ impl Worker {
                 compat_mode: None,
             },
         };
-        self.core.submit(self.conn, &envelope);
+        self.core.submit(self.conn, &envelope, chain_id);
     }
 
     fn cool_down(&mut self, topic: [u8; 32]) {
@@ -905,12 +963,15 @@ impl Worker {
         let unsupported = || (4_200_i64, "Unsupported method.".to_owned());
         match request.method.as_str() {
             "eth_accounts" => {
-                // Locked: no accounts, like a locked extension provider (spec/05 §4.4).
-                let accounts: Vec<[u8; 20]> = if self.core.wallet().vault == VaultView::Unlocked {
-                    session.accounts.iter().map(|a| *a.as_bytes()).collect()
-                } else {
-                    Vec::new()
-                };
+                // The grant's accounts, like the extension's `eth_accounts`: none while locked
+                // (spec/05 §4.4) or once the grant is gone; an account hidden or removed a moment
+                // ago is never answered from the session's older list.
+                let accounts: Vec<[u8; 20]> = self
+                    .core
+                    .grants_if_unlocked()
+                    .and_then(|grants| grants.into_iter().find(|grant| grant.origin == origin))
+                    .map(|grant| grant.accounts.iter().map(|a| *a.as_bytes()).collect())
+                    .unwrap_or_default();
                 let accounts = crate::browser::envelope::accounts_value(&accounts);
                 self.answer(&request.topic, request.id, Ok(accounts));
             }
@@ -936,18 +997,18 @@ impl Worker {
                     self.answer(&request.topic, request.id, Err(unsupported()));
                     return;
                 };
-                self.core.set_origin_chain(&origin, request.chain_id);
                 let now = self.core.clock().now_unix_ms();
                 let deadline = request
                     .expiry
                     .map_or(now.saturating_add(INTERACTIVE_DEADLINE_MS), |expiry| {
                         expiry.saturating_mul(1_000)
                     });
+                // Runs on the request's chain or not at all (the dispatcher moves the origin to
+                // it under its lock, or refuses 4901).
                 self.submit(
                     origin,
                     request.topic,
-                    method,
-                    request.params.clone(),
+                    (method, request.params.clone(), request.chain_id),
                     deadline,
                     Waiting::Request {
                         topic: request.topic,
@@ -1061,8 +1122,11 @@ impl Worker {
             .filter(|list| !list.is_empty() && super::topic_of_origin(origin) == Some(proposal));
         let outs = if let Some(accounts) = accounts {
             let outs = self.engine.approve(&proposal, accounts, now);
-            if outs.is_empty() {
-                // The proposal expired meanwhile: the grant the window stored goes again.
+            if self.engine.session(&proposal).is_some() {
+                self.attach(proposal);
+            } else {
+                // The proposal expired meanwhile (or no session fits): the grant the window
+                // stored goes again.
                 self.core.remove_grant(origin);
                 self.sink.push(WcEvent::Ended(origin.clone()));
             }
@@ -1079,36 +1143,16 @@ impl Worker {
     }
 
     fn dispatcher_event(&mut self, topic: [u8; 32], event: &BrowserEvent) {
-        let Some(session) = self.engine.session(&topic).cloned() else {
+        let Some(chains) = self.engine.session(&topic).map(|s| s.chains.clone()) else {
             return;
         };
-        let now = self.now_s();
         match event {
-            BrowserEvent::AccountsChanged(list) if list.is_empty() => {
-                // Lock empties every grant (the session stays, requests wait for the unlock);
-                // an unlocked wallet without the grant means the user disconnected the site.
-                let unlocked = self.core.wallet().vault == VaultView::Unlocked;
-                let granted = session_origin(&topic)
-                    .is_some_and(|origin| self.core.grants().iter().any(|g| g.origin == origin));
-                if unlocked && !granted {
-                    let outs = self.engine.disconnect(&topic, now);
-                    self.apply(outs);
-                }
-            }
-            BrowserEvent::AccountsChanged(list) => {
-                let accounts: Vec<Address> = list.iter().map(|b| Address::from_bytes(*b)).collect();
-                if accounts != session.accounts {
-                    let outs = self.engine.update(&topic, Some(accounts), None, now);
-                    self.apply(outs);
-                    if let Some(chain) = session.chains.first() {
-                        let outs =
-                            self.engine
-                                .emit(&topic, "accountsChanged", *chain, self.now_ms());
-                        self.apply(outs);
-                    }
-                }
-            }
-            BrowserEvent::ChainChanged(chain) if session.chains.contains(chain) => {
+            // The session follows its grant as it is now (read with the vault state under one
+            // dispatcher lock): lock empties every grant but keeps the session (requests wait
+            // for the unlock); unlocked without the grant, the user disconnected the site; other
+            // accounts, one was hidden or removed.
+            BrowserEvent::AccountsChanged(_) => self.sync_grants(Some(topic)),
+            BrowserEvent::ChainChanged(chain) if chains.contains(chain) => {
                 let outs = self
                     .engine
                     .emit(&topic, "chainChanged", *chain, self.now_ms());
@@ -1118,9 +1162,22 @@ impl Worker {
         }
     }
 
-    /// Refreshes the chains the engine offers (called on every input by the run loop's user).
+    /// Refreshes the chains the engine offers (registered and not blocked; called before every
+    /// input and tick by the run loop) and, while unlocked, drops chains no longer registered
+    /// from the sessions (`wc_sessionUpdate`, or the session ends without a chain left).
     pub fn refresh_chains(&mut self) {
-        self.engine.supported_chains = self.supported_chains();
+        let wallet = self.core.wallet();
+        self.engine.supported_chains = wallet
+            .chains
+            .iter()
+            .map(|entry| entry.info.chain_id)
+            .filter(|id| !wallet.blocked.contains(id))
+            .collect();
+        if wallet.vault == VaultView::Unlocked && !wallet.chains.is_empty() {
+            let registered: Vec<u64> = wallet.chains.iter().map(|e| e.info.chain_id).collect();
+            let outs = self.engine.prune_chains(&registered, self.now_s());
+            self.apply(outs);
+        }
     }
 }
 

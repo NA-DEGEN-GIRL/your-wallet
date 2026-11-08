@@ -35,6 +35,7 @@
 
 - `wc:`(대소문자 무시)로 시작, 토픽 64자리 16진수, `@2` 필수(`@1` = v1은 "v1은 종료되어 지원하지 않습니다"), `symKey` 64자리 16진수, `relay-protocol=irn`만, `expiryTimestamp`(초) 지나면 "만료". 앞뒤 공백, 통째로 퍼센트 인코딩된 URI(`wc%3A…`), 값의 퍼센트 인코딩을 받는다. 같은 키가 두 번이면 거부. 2,048바이트 이하.
 - 붙여넣기(dApp WalletConnect 창의 `링크 복사`)가 기본 입력이다. QR은 §6.
+- 페어링 수명(2026-11-08): 최대 5분(`PAIRING_TTL_S`; `expiryTimestamp`는 줄이기만 하고 최소 1분), 지나면 대기 제안이 없을 때 구독을 끊는다. 한 페어링은 제안을 3개까지 받고(그 뒤는 창 없이 5000), 제안 하나가 세션이 되면 더 받지 않고(5000) 남은 대기 제안이 끝나는 즉시 구독을 끊고 버린다(새 연결은 새 URI, §9). 같은 URI를 다시 붙여 넣으면 처음부터 다시 센다.
 
 ## 3. 암호
 
@@ -70,14 +71,17 @@
 - `requiredNamespaces`·`optionalNamespaces`의 `eip155`(키 `eip155` + `chains`, 또는 키 `eip155:N`)에서 CAIP-2 체인을 읽는다. 필수 체인이 CAIP-2가 아니면 5100, 필수에 다른 네임스페이스(solana 등)가 있으면 5100, 필수 체인 중 이 지갑에 등록되지 않은(또는 RPC 불일치로 막힌) 체인이 있으면 5100.
 - 승인할 체인 = 필수 ∪ (선택 ∩ 등록 체인), 요청 순서. 제안이 비어 있으면 등록된 모든 EVM 체인. 결과가 비면 5100.
 - 세션 메서드 = 이 지갑이 처리하는 6개(`eth_accounts`, `eth_chainId`, `personal_sign`, `eth_signTypedData_v4`, `eth_sendTransaction`, `wallet_switchEthereumChain`) ∪ 필수 메서드(사양상 필수는 모두 넣어야 한다 — 그중 처리하지 않는 것은 요청 때 4200, 연결 창에 "지원하지 않는 요청은 거부됩니다: …"). 이벤트 = `chainChanged`·`accountsChanged` ∪ 필수 이벤트.
-- 제안 만료 = `expiryTimestamp`(없으면 5분, 최대 1시간). 대기 제안 8개, 세션 64개.
+- 이름 허용 목록(2026-11-08): 필수 메서드·이벤트 이름은 1–64자 ASCII `[A-Za-z0-9_:]`이고 알려진 `eip155` 이름(`engine::KNOWN_METHODS` 26개 — `eth_sign`·`eth_signTransaction`·`wallet_addEthereumChain`·`wallet_sendCalls` 등 AppKit이 요구하는 이름, `KNOWN_EVENTS` = `chainChanged`·`accountsChanged`·`connect`·`disconnect`·`message`)일 때만 세션에 들어간다. 나머지는 버리고 개수만 센다(연결 창 "사이트가 요구한 알 수 없는 요청·이벤트 이름 n개는 세션에서 뺐습니다." — 이름 자체는 보이지도 저장하지도 않는다). 그래서 세션의 메서드·이벤트 수는 허용 목록 크기를 넘지 않는다. 네임스페이스 키는 객체마다 16개까지 읽는다(필수가 더 많으면 5100). meta에서 읽은 세션도 같은 목록으로 거른다.
+- 제안 만료 = `expiryTimestamp`(없으면 5분, 최대 1시간). 대기 제안 8개(가득 차면 새 제안을 창 없이 5000으로 거절 — 대기 중인 제안을 밀어내지 않는다), 세션 64개.
 - 대기 제안의 키는 **지갑이 고른 세션 토픽**이다(JSON-RPC id는 dApp이 고르므로 두 페어링이 같은 id를 쓸 수 있다): Verify 기록·승인·거절·UI 목록·`ProposalDone` 모두 세션 토픽으로 찾는다. 다른(또는 같은) 페어링의 대기 제안과 id가 같은 `wc_sessionPropose`는 응답 없이 버린다(중복 창 512개를 넘긴 재전달이 대기 제안을 거절하지 않게).
 - 제안이 거절(5000)되거나 만료되면 그 페어링은 15초 동안 새 제안을 연결 창 없이 5000으로 거절한다(창을 계속 띄워 유휴 잠금을 멈추지 못하게, [04](04-app-ui.md) §5.1).
 
 ### 5.2 세션 요청 → 디스패처
 
-- 세션이 만료 7001, `chainId`가 세션 체인이 아니면 5100, 메서드가 세션 메서드가 아니면 5101, `request.expiry`가 지났으면 8000.
-- `eth_accounts` = 세션 계정(지갑이 잠겨 있으면 빈 목록), `eth_chainId` = 요청의 `chainId`(16진수): 세션에서 바로 답한다.
+- 세션이 만료 7001, `chainId`가 세션 체인이 아니거나 **지금 등록되어 있고 막히지 않은 체인이 아니면** 5100(2026-11-08: 지운 체인의 요청이 출처의 이전 체인이나 기본 체인에서 실행되지 않게), 메서드가 세션 메서드가 아니면 5101, `request.expiry`가 지났으면 8000.
+- 등록 체인 목록이 바뀌면(작업 스레드가 입력·tick마다 다시 읽음, 잠금 해제 중일 때) 더는 등록되지 않은 체인을 세션에서 빼고 `wc_sessionUpdate`를 보낸다. 체인이 하나도 남지 않은 세션은 끊는다(`wc_sessionDelete`). 막힌(RPC 불일치) 체인은 빼지 않고 요청마다 거절한다.
+- 디스패처에는 요청의 체인을 함께 넘긴다(`BrowserCore::submit(conn, envelope, chain)`): 디스패처가 같은 잠금 안에서 그 체인을 확인(등록·막히지 않음, 아니면 4901)하고 출처 체인으로 맞춘 뒤 요청을 처리한다 — 확인과 실행 사이에 체인이 지워져도 다른 체인에서 돌지 않는다.
+- `eth_accounts` = 그 세션 출처의 **권한(grant) 계정**(지갑이 잠겨 있거나 권한이 없으면 빈 목록; 2026-11-08부터 세션에 남은 이전 목록으로 답하지 않는다), `eth_chainId` = 요청의 `chainId`(16진수): 세션에서 바로 답한다.
 - `wallet_switchEthereumChain`: 등록되지 않은 체인 4902, 막힌 체인 4901, 세션에 없는 등록 체인이면 `wc_sessionUpdate`로 추가, `null` 응답 후 `chainChanged`.
 - `personal_sign`·`eth_signTypedData_v4`·`eth_sendTransaction`: 세션의 합성 출처(§7)를 요청 체인으로 맞춘 뒤 디스패처의 **가상 연결**(`BrowserCore::open_virtual_connection`/`submit`, 브라우저 상태 줄 개수에는 세지 않음)로 넣는다. 활성화 nonce = 세션 토픽(세션별 토큰 버킷), 기한 = `request.expiry` 또는 10분. 이후는 확장과 같다: 권한(계정이 그 세션 승인에 있어야 함), 승인 큐, arm 지연, 위험 규칙, 시뮬레이션, 서명·전송. 응답·오류(코드·메시지)는 그대로 1109로 돌려준다. 확장과 다른 점: 지갑이 잠겨 있으면(시작 중 포함) 디스패처가 바로 4100으로 거절하고 **잠금 해제 창을 열지 않는다**(원격 dApp이 비밀번호 창을 마음대로 띄우지 못하게; 사용자가 잠금을 풀고 dApp에서 다시 요청). 서명 요청이 거절(4001)되거나 만료되면 그 세션의 다음 서명 요청은 15초 동안 창 없이 4001로 거절한다.
 - 그 밖의 메서드는 전부 4200 `Unsupported method.`(`eth_sign` 등 확장과 같음).
@@ -85,7 +89,7 @@
 ### 5.3 연결 승인
 
 - 제안은 세션 합성 출처의 `eth_requestAccounts`로 디스패처에 들어가 확장과 같은 연결 창을 연다. 연결 창은 출처(제목·`요청 출처`) 대신 "WalletConnect: {origin} (사이트가 주장한 주소)", 따로 표시한 `사이트 이름 (사이트가 주장)` 칸, 승인할 네트워크 목록("연결할 네트워크 (WalletConnect)"), Verify 경고·배지(§7)를 보인다. 계정을 고르고 `연결`하면 승인(§5 표) — 답한 창의 합성 출처가 그 제안의 세션 토픽과 같을 때만 —, 거절·만료·시간 초과면 5000 `User rejected.`. 권한(grant)은 합성 출처로 저장되어 확장의 같은 사이트 권한과 섞이지 않는다.
-- 계정을 숨기거나 지우면 권한에서 빠지고 세션은 `wc_sessionUpdate` + `accountsChanged`(남은 계정), 모두 빠지면 세션 삭제.
+- 계정을 숨기거나 지우면 권한에서 빠지고 세션은 `wc_sessionUpdate` + `accountsChanged`(남은 계정), 모두 빠지면 세션 삭제. 세션은 언제나 자기 권한을 따른다(2026-11-08, 앱을 다시 켠 뒤 복원된 세션 포함): ① 세션을 복원하거나 승인하면 그 합성 출처를 다리(가상 연결)의 문서로 등록한다(`BrowserCore::attach_virtual_document`) — 요청을 한 번도 하지 않은 세션도 출처의 `accountsChanged`를 받는다. ② UI가 권한을 쓸 때마다(`write_grants`: 계정 숨김·삭제, `연결 해제`, `모든 사이트 연결 해제`, 연결 승인) `WcCommand::SyncGrants`를 보내고, 잠금 해제 때의 `Load`도 같은 맞춤을 한다. 맞춤은 디스패처 상태가 잠금 해제일 때만(`grants_if_unlocked`, 상태와 권한을 한 잠금에서 읽음): 권한이 없으면 세션을 끊고(`wc_sessionDelete`), 계정이 다르면 `wc_sessionUpdate` + `accountsChanged`. 잠겨 있으면 아무것도 하지 않는다(잠금은 권한을 비우지만 세션은 유지).
 
 ## 6. QR 입력
 
@@ -103,7 +107,8 @@
 - 승인 창의 표시(digest에 묶이는 `요청 출처` 값과 C0x 경고)는 처음 표시할 때와 재시뮬레이션으로 바뀔 때마다 붙인다. 경고가 이미 64개면 가장 덜 심각한 것을 빼고 C0x 자리를 만든다. 그래도 붙이지 못하면(세션이 사라짐 등) 주장한 출처만 있는 창을 보이지 않고 E-UI-001로 요청을 거절한다.
 - 승인 digest의 출처(`origin_serialized`)와 SIWE 도메인 검사는 **주장한 출처**를 쓴다(합성 출처로 검사하면 모든 SIWE가 S01로 막힌다). 대신 모든 WalletConnect 요청에 규칙을 붙인다: **C01 주의**(확인되지 않음), **C02 고위험**(Verify 불일치), **C03 고위험**(사기 표시), C04 정보(확인됨). 고위험은 승인 창의 확인 체크·길게 누르기를 요구한다.
 - Verify(제안마다, 결과는 세션에 저장): ① 릴레이 메시지에 `attestation`(v3 JWT)이 있으면 `GET https://verify.walletconnect.org/v3/public-key`(만료까지 캐시)의 P-256 키로 ES256을 CNG(`BCRYPT_ECDSA_P256_ALG_HANDLE`)로 검증하고, `exp` > 지금, `id` = SHA-256(받은 암호문 문자열)일 때만 쓴다(`isVerified` 거짓 = 확인 불가). ② 아니면 `GET https://verify.walletconnect.org/attestation/{SHA-256(복호한 JSON)}?v2Supported=true` 200 `{origin, isScam}`. `isScam` → 사기, 증명된 출처 = 주장한 출처 → 확인됨, 다르면 불일치, 답 없음 → 확인 불가. `metadata.verifyUrl`은 무시하고 공식 서버만 쓴다. HTTP 5초 제한.
-- 연결된 사이트(S13)에는 "WalletConnect 세션" 카드가 따로 나온다(이름, 주장한 주소, Verify, 네트워크, 계정, 연결·만료 시각, `연결 해제`), 확장 사이트 목록에서는 빠진다. `모든 WalletConnect 세션 끊기`(2026-11-08부터 확인 오버레이 뒤, [04] §2.9), 기존 `모든 사이트 연결 해제`도 WalletConnect 세션을 끊는다.
+- Verify `Valid`는 표시(C04·배지)에만 쓰고 권한을 넓히지 않는다: Hyperliquid L1 Agent 예외는 WalletConnect 요청에 열리지 않는다([11] §7, 2026-11-08 — 증명된 출처는 dApp 쪽 환경이 Verify 서버에 알린 값이라 브라우저 밖 dApp이 고를 수 있다).
+- 연결된 사이트(S13)에는 "WalletConnect 세션" 카드가 따로 나온다(이름, 주장한 주소, Verify, 네트워크, 계정, 연결·만료 시각, `연결 해제`), 확장 사이트 목록에서는 빠진다. `모든 WalletConnect 세션 끊기`(2026-11-08부터 확인 오버레이 뒤, [04] §2.9), 기존 `모든 사이트 연결 해제`도 모든 WalletConnect 세션을 끊는다(2026-11-08: 세션마다 바로 `wc_sessionDelete`를 보내고, 확인 문구가 "WalletConnect 세션 n개도 끊습니다"라고 말한다).
 
 ## 8. 설정·저장
 
@@ -120,6 +125,6 @@
 ## 10. 시험
 
 - yw-core: 사양 URI 예시, v1·잘못된 relay·키 길이·중복 키 거부, **JWT 시험 벡터**(바이트 일치), RFC 7748 X25519 + HMAC으로 직접 계산한 HKDF, 봉투 왕복·변조 거부·타입 2 거부.
-- yw-app: QR 6개 시험(§6), CF_DIB 24/32비트, RFC 7515 ES256(CNG), Verify 판정 규칙·공개키 형식, 출처·라벨·CAIP-2(여러 줄 이름·형식이 틀린 URL 주입, 경고 64개일 때 C0x 자리), 제안 키(두 페어링의 같은 id, 세션 토픽으로 승인·거절, 거절 뒤 15초 대기), 그리고 **모의 종단 시험**(모의 릴레이 + 독립적으로 키를 유도하는 모의 dApp): 페어링 → 제안(체인 137은 미등록이라 빠짐, `eth_sign`은 미지원 표시) → 연결 창 요청 → settle의 CAIP-10 계정 → `personal_sign`이 디스패처 큐에 요청 체인으로 도착(더미 값으로 응답, 실제 서명 없음) → `eth_chainId` 0x1 → `eth_sign` 4200 → 세션에 없는 체인 5100 → ping → meta 저장 왕복 → 연결 해제 6000.
+- yw-app: QR 6개 시험(§6), CF_DIB 24/32비트, RFC 7515 ES256(CNG), Verify 판정 규칙·공개키 형식, 출처·라벨·CAIP-2(여러 줄 이름·형식이 틀린 URL 주입, 경고 64개일 때 C0x 자리), 제안 키(두 페어링의 같은 id, 세션 토픽으로 승인·거절, 거절 뒤 15초 대기), 페어링 수명·제안 수·세션 뒤 은퇴·가득 찬 대기 목록(`pairings_are_short_lived_and_bounded`), 이름 허용 목록(`proposal_names_are_allowlisted`), 지운·막힌 체인 거절과 세션 체인 정리(`session_chains_follow_the_registry`), 복원된 세션의 권한 따르기(`restored_sessions_follow_grants_and_chains`: 권한 없는 세션은 `Load`에서 삭제, 계정 숨김 → 업데이트 + `accountsChanged`, `eth_accounts`는 권한에서, 권한 제거 → 삭제, 지운 체인 → 업데이트·5100), 그리고 **모의 종단 시험**(모의 릴레이 + 독립적으로 키를 유도하는 모의 dApp): 페어링 → 제안(체인 137은 미등록이라 빠짐, `eth_sign`은 미지원 표시) → 연결 창 요청 → settle의 CAIP-10 계정 → `personal_sign`이 디스패처 큐에 요청 체인으로 도착(더미 값으로 응답, 실제 서명 없음) → `eth_chainId` 0x1 → `eth_sign` 4200 → 세션에 없는 체인 5100 → ping → meta 저장 왕복 → 연결 해제 6000.
 - 실제 릴레이 확인(`tests/walletconnect_live.rs`, `#[ignore]`): `YW_WC_PROJECT_ID`가 있으면 두 클라이언트로 구독·발행·수신 왕복, 없으면 지어낸 ID로 연결해 403(JWT 통과)인지 본다. 2026-11-06 실행: 403.
 - 수동(사용자): Project ID를 저장하고, 실제 dApp(예: app.uniswap.org → 지갑 연결 → WalletConnect → 링크 복사)에서 연결, 테스트넷에서 메시지 서명·거래 승인 창의 출처 표시·Verify 상태, 잠금 중 요청이 창 없이 거절되는지, 앱 재시작 후 세션 유지, `연결 해제`가 dApp 쪽에서 끊기는지 확인.

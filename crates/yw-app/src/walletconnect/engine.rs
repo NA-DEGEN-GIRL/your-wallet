@@ -40,10 +40,80 @@ pub const WALLET_METHODS: [&str; 6] = [
 ];
 /// Events the wallet emits.
 pub const WALLET_EVENTS: [&str; 2] = ["chainChanged", "accountsChanged"];
+/// The `eip155` method names a proposal may list (the EIP-1193/wallet RPC names `eip155` dApps
+/// and the reference `AppKit` ask for). A required method outside this list is left out of the
+/// session (counted, [`ProposalView::dropped_names`]); one inside it but outside
+/// [`WALLET_METHODS`] is granted and answered 4200.
+pub const KNOWN_METHODS: [&str; 26] = [
+    "eth_accounts",
+    "eth_requestAccounts",
+    "eth_chainId",
+    "eth_sendTransaction",
+    "eth_signTransaction",
+    "eth_sendRawTransaction",
+    "eth_sign",
+    "personal_sign",
+    "eth_signTypedData",
+    "eth_signTypedData_v3",
+    "eth_signTypedData_v4",
+    "wallet_switchEthereumChain",
+    "wallet_addEthereumChain",
+    "wallet_getPermissions",
+    "wallet_requestPermissions",
+    "wallet_revokePermissions",
+    "wallet_registerOnboarding",
+    "wallet_watchAsset",
+    "wallet_scanQRCode",
+    "wallet_sendCalls",
+    "wallet_getCallsStatus",
+    "wallet_showCallsStatus",
+    "wallet_getCapabilities",
+    "wallet_grantPermissions",
+    "wallet_getAssets",
+    "personal_ecRecover",
+];
+/// The `eip155` event names a proposal may list (others are left out, counted).
+pub const KNOWN_EVENTS: [&str; 5] = [
+    "chainChanged",
+    "accountsChanged",
+    "connect",
+    "disconnect",
+    "message",
+];
+/// Namespace keys read per `requiredNamespaces`/`optionalNamespaces` object (more required ones
+/// refuse the proposal; more optional ones are ignored).
+pub const MAX_NAMESPACES: usize = 16;
 const RECENT_IDS: usize = 512;
 /// After a proposal was rejected or expired, its pairing may not open another connect window for
 /// this long (a dApp cannot keep a window — and so the paused idle clock — up continuously).
 pub const PROPOSAL_COOLDOWN_S: u64 = 15;
+/// A pairing URI is good for at most this long (its `expiryTimestamp` can only shorten it, to no
+/// less than a minute); a pairing whose proposal created a session leaves at once.
+pub const PAIRING_TTL_S: u64 = 300;
+/// Proposals one pairing may make (then it is refused without a connect window).
+pub const MAX_PROPOSALS_PER_PAIRING: usize = 3;
+
+/// Whether `name` is a plain RPC name: 1–64 ASCII letters, digits, `_` or `:`.
+#[must_use]
+pub fn plain_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b':')
+}
+
+/// Whether a session may carry method `name` ([`KNOWN_METHODS`]).
+#[must_use]
+pub fn known_method(name: &str) -> bool {
+    plain_name(name) && KNOWN_METHODS.contains(&name)
+}
+
+/// Whether a session may carry event `name` ([`KNOWN_EVENTS`]).
+#[must_use]
+pub fn known_event(name: &str) -> bool {
+    plain_name(name) && KNOWN_EVENTS.contains(&name)
+}
 
 const LIMITS: Limits = Limits {
     max_bytes: 1_048_576,
@@ -84,8 +154,12 @@ pub struct ProposalView {
     pub chains: Vec<u64>,
     /// Required chains this wallet does not have (non-empty: the proposal is refused 5100).
     pub missing_required: Vec<String>,
-    /// Required methods outside [`WALLET_METHODS`] (granted in the namespace but answered 4200).
+    /// Required methods outside [`WALLET_METHODS`] (granted in the namespace but answered 4200);
+    /// [`KNOWN_METHODS`] names only.
     pub unsupported_methods: Vec<String>,
+    /// Required method and event names left out of the session (not in [`KNOWN_METHODS`]/
+    /// [`KNOWN_EVENTS`], or not plain names); only counted, never shown.
+    pub dropped_names: usize,
     /// Verify result.
     pub verify: VerifyStatus,
     /// Proposal expiry (Unix s).
@@ -221,6 +295,11 @@ struct Pairing {
     topic: [u8; 32],
     sym_key: Zeroizing<[u8; 32]>,
     expiry: u64,
+    /// Proposals received (duplicates of a pending id excluded).
+    proposals: usize,
+    /// A proposal of this pairing created a session: no further proposal is taken, and the
+    /// pairing leaves once none of its proposals is pending.
+    settled: bool,
 }
 
 struct Proposal {
@@ -317,7 +396,8 @@ fn push_unique(list: &mut Vec<String>, item: &str) {
 }
 
 /// The parsed proposal namespaces: eip155 chain references (required, optional), the required
-/// non-eip155 chains, and the requested methods and events.
+/// non-eip155 chains, the requested known methods and events, and how many requested names were
+/// left out.
 #[derive(Debug, Default)]
 struct Requested {
     required: Vec<u64>,
@@ -326,13 +406,19 @@ struct Requested {
     bad_required: bool,
     methods: Vec<String>,
     events: Vec<String>,
+    dropped: usize,
 }
 
 fn read_namespaces(value: Option<&Value>, required: bool, into: &mut Requested) {
     let Some(object) = value.and_then(Value::as_object) else {
         return;
     };
-    for (key, namespace) in object.iter() {
+    if required && object.iter().count() > MAX_NAMESPACES {
+        // Requirements this wallet would not even read cannot be met.
+        into.bad_required = true;
+        return;
+    }
+    for (key, namespace) in object.iter().take(MAX_NAMESPACES) {
         let namespace_object = namespace.as_object();
         let mut chains = strings(namespace_object.and_then(|o| o.get("chains")));
         // `eip155:10` as the key stands for that one chain (namespaces spec 1.3).
@@ -369,11 +455,21 @@ fn read_namespaces(value: Option<&Value>, required: bool, into: &mut Requested) 
             }
         }
         if required {
+            // Only known plain names enter the session (and the connect window); the rest are
+            // counted. The lists are bounded by the allowlists.
             for method in strings(namespace_object.and_then(|o| o.get("methods"))) {
-                push_unique(&mut into.methods, &method);
+                if known_method(&method) {
+                    push_unique(&mut into.methods, &method);
+                } else {
+                    into.dropped = into.dropped.saturating_add(1);
+                }
             }
             for event in strings(namespace_object.and_then(|o| o.get("events"))) {
-                push_unique(&mut into.events, &event);
+                if known_event(&event) {
+                    push_unique(&mut into.events, &event);
+                } else {
+                    into.dropped = into.dropped.saturating_add(1);
+                }
             }
         }
     }
@@ -496,18 +592,61 @@ impl Engine {
 
     /// `pair(uri)`: remembers the pairing key and subscribes its topic; the proposal arrives as a
     /// relay message.
+    ///
+    /// The pairing lives at most [`PAIRING_TTL_S`] (the URI's `expiryTimestamp` can only shorten
+    /// it, to no less than a minute) and takes at most [`MAX_PROPOSALS_PER_PAIRING`] proposals.
     pub fn pair(&mut self, uri: &yw_core::walletconnect::PairingUri, now: u64) -> Vec<Out> {
-        self.pairings
-            .retain(|p| p.topic != uri.topic && p.expiry > now);
+        let mut out = Vec::new();
+        // The same URI again starts over; lapsed pairings without a pending proposal go.
+        let gone: Vec<[u8; 32]> = self
+            .pairings
+            .iter()
+            .filter(|p| p.topic == uri.topic || (p.expiry <= now && !self.has_proposal(&p.topic)))
+            .map(|p| p.topic)
+            .collect();
+        self.pairings.retain(|p| !gone.contains(&p.topic));
+        out.extend(
+            gone.into_iter()
+                .filter(|topic| *topic != uri.topic)
+                .map(Out::Unsubscribe),
+        );
         if self.pairings.len() >= MAX_PROPOSALS {
-            self.pairings.remove(0);
+            let oldest = self.pairings.remove(0);
+            out.push(Out::Unsubscribe(oldest.topic));
         }
+        let expiry = uri
+            .expiry
+            .unwrap_or(now + PAIRING_TTL_S)
+            .min(now + PAIRING_TTL_S)
+            .max(now + 60);
         self.pairings.push(Pairing {
             topic: uri.topic,
             sym_key: uri.sym_key.clone(),
-            expiry: uri.expiry.unwrap_or(now + 300).max(now + 60),
+            expiry,
+            proposals: 0,
+            settled: false,
         });
-        vec![Out::Subscribe(uri.topic)]
+        out.push(Out::Subscribe(uri.topic));
+        out
+    }
+
+    fn has_proposal(&self, pairing_topic: &[u8; 32]) -> bool {
+        self.proposals
+            .iter()
+            .any(|q| q.pairing_topic == *pairing_topic)
+    }
+
+    /// Pairings that created a session leave (unsubscribed) once none of their proposals is
+    /// pending: one pairing URI makes one session (spec/13 §9).
+    fn retire_settled(&mut self) -> Vec<Out> {
+        let retired: Vec<[u8; 32]> = self
+            .pairings
+            .iter()
+            .filter(|p| p.settled && !self.has_proposal(&p.topic))
+            .map(|p| p.topic)
+            .collect();
+        self.pairings.retain(|p| !retired.contains(&p.topic));
+        retired.into_iter().map(Out::Unsubscribe).collect()
     }
 
     fn key_of(&self, topic: &[u8; 32]) -> Option<Zeroizing<[u8; 32]>> {
@@ -662,6 +801,20 @@ impl Engine {
         if self.cooling(&pairing_topic, now) {
             return reject(self, 5000, "User rejected.");
         }
+        // A JSON-RPC id already pending (on any pairing) is not a second proposal: ids are chosen
+        // by the dApp, so one pairing could otherwise shadow another's. No answer (a redelivery
+        // past the duplicate window must not reject the pending proposal) and not counted.
+        if self.proposals.iter().any(|p| p.view.id == id) {
+            return Vec::new();
+        }
+        // One pairing, a few proposals, and none after it made a session (spec/13 §5.1).
+        let Some(pairing) = self.pairings.iter_mut().find(|p| p.topic == pairing_topic) else {
+            return Vec::new();
+        };
+        if pairing.settled || pairing.proposals >= MAX_PROPOSALS_PER_PAIRING {
+            return reject(self, 5000, "User rejected.");
+        }
+        pairing.proposals += 1;
         let Some(object) = params.as_object() else {
             return reject(self, 1006, "Invalid proposal namespaces");
         };
@@ -746,6 +899,7 @@ impl Engine {
             chains,
             missing_required: missing,
             unsupported_methods: unsupported,
+            dropped_names: requested.dropped,
             verify: VerifyStatus::Unknown,
             expiry,
         };
@@ -755,14 +909,10 @@ impl Engine {
         if view.chains.is_empty() {
             return reject(self, 5100, "Unsupported chains");
         }
-        // A JSON-RPC id already pending (on any pairing) is not a second proposal: ids are chosen
-        // by the dApp, so one pairing could otherwise shadow another's. No answer (a redelivery
-        // past the duplicate window must not reject the pending proposal).
-        if self.proposals.iter().any(|p| p.view.id == id) {
-            return Vec::new();
-        }
+        // Full: the newcomer is refused (a pending proposal — perhaps the user's own — is never
+        // pushed out by others).
         if self.proposals.len() >= MAX_PROPOSALS {
-            self.proposals.remove(0);
+            return reject(self, 5000, "User rejected.");
         }
         self.proposals.push(Proposal {
             view: view.clone(),
@@ -857,6 +1007,16 @@ impl Engine {
             300,
         ));
         out.extend(self.publish(proposal.pairing_topic, &response, 1101, 300));
+        // The pairing made its session: it takes no more proposals and leaves (unsubscribed)
+        // once its other pending ones, if any, are answered.
+        if let Some(pairing) = self
+            .pairings
+            .iter_mut()
+            .find(|p| p.topic == proposal.pairing_topic)
+        {
+            pairing.settled = true;
+        }
+        out.extend(self.retire_settled());
         out.push(Out::SessionsChanged);
         out
     }
@@ -874,14 +1034,17 @@ impl Engine {
         if code == 5000 {
             self.cool_down(proposal.pairing_topic);
         }
-        self.publish(
-            proposal.pairing_topic,
-            &rpc_error(proposal.view.id, code, message),
-            1120,
-            300,
-        )
-        .into_iter()
-        .collect()
+        let mut out: Vec<Out> = self
+            .publish(
+                proposal.pairing_topic,
+                &rpc_error(proposal.view.id, code, message),
+                1120,
+                300,
+            )
+            .into_iter()
+            .collect();
+        out.extend(self.retire_settled());
+        out
     }
 
     fn on_request(&mut self, topic: [u8; 32], id: u64, params: &Value, now: u64) -> Vec<Out> {
@@ -913,7 +1076,11 @@ impl Engine {
         if session.expiry <= now {
             return error(self, 7001, "No session for topic");
         }
-        let Some(chain_id) = chain.filter(|c| session.chains.contains(c)) else {
+        // The chain must be one of the session's and still registered (and not blocked) now: a
+        // request is never run on another chain (spec/13 §5.2).
+        let Some(chain_id) =
+            chain.filter(|c| session.chains.contains(c) && self.supported_chains.contains(c))
+        else {
             return error(self, 5100, "Unsupported chains");
         };
         if !session.methods.iter().any(|m| m == method) {
@@ -1018,6 +1185,13 @@ impl Engine {
         {
             session.chains.push(chain);
         }
+        self.send_update(topic, now)
+    }
+
+    fn send_update(&self, topic: &[u8; 32], now: u64) -> Vec<Out> {
+        let Some(session) = self.session(topic) else {
+            return Vec::new();
+        };
         let params = json_object(vec![("namespaces", session.namespaces())]);
         let mut out: Vec<Out> = self
             .publish(
@@ -1029,6 +1203,31 @@ impl Engine {
             .into_iter()
             .collect();
         out.push(Out::SessionsChanged);
+        out
+    }
+
+    /// Chains no longer registered leave every session (`wc_sessionUpdate`); a session left
+    /// without a chain is disconnected (spec/13 §5.2). `registered` is the wallet's registered
+    /// EVM chains (blocked ones included: a blocked chain is refused per request, not dropped).
+    pub fn prune_chains(&mut self, registered: &[u64], now: u64) -> Vec<Out> {
+        let mut out = Vec::new();
+        let stale: Vec<[u8; 32]> = self
+            .sessions
+            .iter()
+            .filter(|s| s.chains.iter().any(|c| !registered.contains(c)))
+            .map(|s| s.topic)
+            .collect();
+        for topic in stale {
+            let Some(session) = self.sessions.iter_mut().find(|s| s.topic == topic) else {
+                continue;
+            };
+            session.chains.retain(|c| registered.contains(c));
+            if session.chains.is_empty() {
+                out.extend(self.disconnect(&topic, now));
+            } else {
+                out.extend(self.send_update(&topic, now));
+            }
+        }
         out
     }
 
@@ -1123,6 +1322,7 @@ impl Engine {
             self.pairings.retain(|p| p.topic != topic);
             out.push(Out::Unsubscribe(topic));
         }
+        out.extend(self.retire_settled());
         out
     }
 }

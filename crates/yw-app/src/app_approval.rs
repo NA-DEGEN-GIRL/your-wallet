@@ -1455,7 +1455,7 @@ impl App {
                 source,
                 value,
             } => {
-                let l1_origin = self.hl_l1_origin(site);
+                let l1_origin = Self::hl_l1_origin(site);
                 let requester = l1_origin.as_deref().map_or(
                     yw_core::evm::eip712::HlL1Requester::Nobody,
                     yw_core::evm::eip712::HlL1Requester::Origin,

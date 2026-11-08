@@ -276,16 +276,13 @@ impl App {
     }
 
     /// The origin that may use the Hyperliquid L1 Agent exception for `site` (spec/11 §7): the
-    /// extension site origin, or a `WalletConnect` claimed origin only when Verify attested it.
-    pub(crate) fn hl_l1_origin(&self, site: &SiteRequest) -> Option<String> {
-        if !crate::walletconnect::is_session_origin(&site.origin) {
-            return Some(site.origin.as_str().to_owned());
-        }
-        let (peer, verify) = self.wc_peer_of(&site.origin)?;
-        if verify != crate::walletconnect::VerifyStatus::Valid {
-            return None;
-        }
-        crate::walletconnect::claimed_origin(&peer.url).map(|origin| origin.as_str().to_owned())
+    /// extension site origin only (the browser vouches for it). A `WalletConnect` session never
+    /// does, even with Verify `Valid`: the attested origin is what the dApp's own environment
+    /// reported to the Verify server, which a dApp run outside a browser (the pairing URI shown
+    /// on a phishing page) can choose — so its L1 Agent documents keep the T01 rejection.
+    pub(crate) fn hl_l1_origin(site: &SiteRequest) -> Option<String> {
+        (!crate::walletconnect::is_session_origin(&site.origin))
+            .then(|| site.origin.as_str().to_owned())
     }
 
     /// The card's network.

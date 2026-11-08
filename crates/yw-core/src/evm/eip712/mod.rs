@@ -71,11 +71,12 @@ pub const HL_L1_ORIGINS: [(&str, &str); 2] = [
 /// 1337, spec/11 §7) is concerned.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HlL1Requester<'a> {
-    /// Nobody may use the exception: an L1 Agent document keeps the T01 rejection.
+    /// Nobody may use the exception: an L1 Agent document keeps the T01 rejection (every
+    /// `WalletConnect` request, Verify result notwithstanding).
     Nobody,
-    /// A requesting origin the wallet trusts as such (an extension site origin, or a
-    /// `WalletConnect` claimed origin attested by Verify): the exception applies only when it is
-    /// the official app of the document's `source` network ([`HL_L1_ORIGINS`]).
+    /// A requesting origin the wallet trusts as such (an extension site origin, which the browser
+    /// vouches for): the exception applies only when it is the official app of the document's
+    /// `source` network ([`HL_L1_ORIGINS`]).
     Origin(&'a str),
     /// Structural check only (the dispatcher's pre-queue check of a request whose origin is
     /// decided later; the approval flow validates again with the origin).

@@ -1812,7 +1812,14 @@ impl App {
             ),
             Confirm::DisconnectAll => (
                 "모든 사이트 연결 해제",
-                "연결된 모든 사이트의 연결을 해제합니다. 사이트는 다시 연결을 요청해야 계정을 볼 수 있습니다.".to_owned(),
+                if self.wc.sessions.is_empty() {
+                    "연결된 모든 사이트의 연결을 해제합니다. 사이트는 다시 연결을 요청해야 계정을 볼 수 있습니다.".to_owned()
+                } else {
+                    format!(
+                        "연결된 모든 사이트의 연결을 해제하고 WalletConnect 세션 {}개도 끊습니다(dApp 쪽 연결도 끊깁니다). 사이트는 다시 연결을 요청해야 계정을 볼 수 있습니다.",
+                        self.wc.sessions.len()
+                    )
+                },
                 "모두 해제",
             ),
             Confirm::SettingsFile => (

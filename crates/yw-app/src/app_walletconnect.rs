@@ -251,6 +251,13 @@ impl ConnectPatch {
                 proposal.unsupported_methods.join(", ")
             )));
         }
+        if proposal.dropped_names > 0 {
+            // Only a count: the names themselves are dApp text the wallet does not know.
+            view.blocks.push(Block::Muted(format!(
+                "사이트가 요구한 알 수 없는 요청·이벤트 이름 {}개는 세션에서 뺐습니다.",
+                proposal.dropped_names
+            )));
+        }
         view.badges
             .push(format!("Verify {}", proposal.verify.label()));
     }
@@ -289,6 +296,14 @@ impl App {
         if let Some(handle) = self.wc.handle.as_ref() {
             let _ = handle.send(command);
         }
+    }
+
+    /// The dispatcher's grants were just written (any change): the worker brings every session
+    /// in line with its grant (spec/13 §5.3) — sent after the change on this thread, so the
+    /// worker reads the new grants, and after a connect window's answer, so a just-approved
+    /// session already has its grant.
+    pub(crate) fn wc_grants_changed(&self) {
+        self.wc_send(WcCommand::SyncGrants);
     }
 
     /// The meta state, with a relay client key created (and saved) when a project id is set.

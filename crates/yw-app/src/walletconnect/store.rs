@@ -75,8 +75,16 @@ fn session_from(value: &Value) -> Option<Session> {
         peer: Metadata::from_value(object.get("peer")),
         accounts,
         chains,
-        methods: strings(object.get("methods"))?,
-        events: strings(object.get("events"))?,
+        // Only known plain names (spec/13 §5.1): a session stored before the allowlists keeps
+        // the names it may still carry.
+        methods: strings(object.get("methods"))?
+            .into_iter()
+            .filter(|name| super::engine::known_method(name))
+            .collect(),
+        events: strings(object.get("events"))?
+            .into_iter()
+            .filter(|name| super::engine::known_event(name))
+            .collect(),
         expiry: u64_of(object.get("expiry"))?,
         acknowledged: object.get("acknowledged")?.as_bool()?,
         verify: VerifyStatus::parse(object.get("verify")?.as_str()?)?,

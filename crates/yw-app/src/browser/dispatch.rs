@@ -416,11 +416,44 @@ impl BrowserCore {
 
     /// A request of a virtual connection: the steps of [`BrowserCore::handle_frame`] after
     /// envelope parsing (session, sequence, document, method and route, deadline, rate limits,
-    /// params, execution).
-    pub fn submit(&self, conn: ConnId, request: &RequestEnvelope) {
+    /// params, execution), on `chain_id` — the chain the `WalletConnect` request names. The
+    /// origin moves to that chain under the same lock that runs the request; a chain that is not
+    /// registered or is blocked right then refuses it with 4901 (never the origin's previous or
+    /// the default chain, spec/13 §5.2).
+    pub fn submit(&self, conn: ConnId, request: &RequestEnvelope, chain_id: u64) {
         if self.lock().virtual_conns.contains(&conn) {
-            self.request(conn, request);
+            self.request(conn, request, Some(chain_id));
         }
+    }
+
+    /// Registers `activation` as a document of `origin` on virtual connection `conn` (bound to
+    /// `session`), so the origin's events (`accountsChanged` after an account is hidden or
+    /// removed, a revoke, a chain removal) reach the bridge before the session made any request
+    /// — a `WalletConnect` session restored at unlock (spec/13 §5.3).
+    pub fn attach_virtual_document(
+        &self,
+        conn: ConnId,
+        session: Id32,
+        activation: Id32,
+        origin: &BrowserOrigin,
+    ) {
+        let mut state = self.lock();
+        if !state.virtual_conns.contains(&conn) || !Self::session_matches(&state, conn, session) {
+            return;
+        }
+        if let Some(entry) = state.conns.get_mut(&conn) {
+            entry.last_session = Some(session);
+        }
+        state.note_document(activation, origin, conn);
+    }
+
+    /// The grants while the dispatcher view is unlocked, read under one lock (`None` otherwise:
+    /// while locked, starting or passphrase-unverified the grants are not loaded, so their
+    /// absence means nothing).
+    #[must_use]
+    pub fn grants_if_unlocked(&self) -> Option<Vec<ConnectedSite>> {
+        let state = self.lock();
+        (state.wallet.vault == VaultView::Unlocked).then(|| state.grants.clone())
     }
 
     /// Sets the chain of a `WalletConnect` session origin without events (each session request
@@ -957,7 +990,7 @@ impl BrowserCore {
                 Self::answer_direct(&state, conn, correlation, Err(error));
             }
             Ok(Inbound::Cancel(cancel)) => self.cancel(conn, &cancel),
-            Ok(Inbound::Request(request)) => self.request(conn, &request),
+            Ok(Inbound::Request(request)) => self.request(conn, &request, None),
         }
     }
 
@@ -1026,8 +1059,10 @@ impl BrowserCore {
         }
     }
 
+    /// `chain`: the chain a virtual request runs on ([`BrowserCore::submit`]); `None` for the
+    /// extension (the origin chain).
     #[expect(clippy::too_many_lines, reason = "spec/05 §6.2 steps 3–10 in order")]
-    fn request(&self, conn: ConnId, request: &RequestEnvelope) {
+    fn request(&self, conn: ConnId, request: &RequestEnvelope, chain: Option<u64>) {
         let now = self.clock.now_ms();
         let now_unix = self.clock.now_unix_ms();
         let correlation = request.correlation;
@@ -1138,7 +1173,21 @@ impl BrowserCore {
             }
         };
         // 10. Execute.
-        let chain_id = Self::origin_chain_locked(&mut state, &origin);
+        let chain_id = match chain {
+            // A virtual (`WalletConnect`) request runs on the chain it names or not at all.
+            Some(chain) => {
+                if !state.wallet.registered(chain) || state.wallet.blocked.contains(&chain) {
+                    reject(&state, ProviderError::ChainUnavailable);
+                    return;
+                }
+                state.cache_chain(&origin, chain);
+                if let Some(site) = state.grants.iter_mut().find(|s| s.origin == origin) {
+                    site.chain_id = chain;
+                }
+                chain
+            }
+            None => Self::origin_chain_locked(&mut state, &origin),
+        };
         let vault = state.wallet.vault;
         let grant = state.grants.iter().find(|s| s.origin == origin).cloned();
         // Only grants of accounts dApps may use now count (a hidden or removed account, another
@@ -1488,10 +1537,11 @@ impl BrowserCore {
                 // and only while unlocked — a locked wallet queues the request for the unlock
                 // window and the approval flow validates it then (no parsing work for pages
                 // that cannot be answered yet).
-                // The Hyperliquid L1 Agent exception follows the site origin; a `WalletConnect`
-                // origin is decided by the approval flow (Verify state, spec/11 §7).
+                // The Hyperliquid L1 Agent exception follows the extension site origin only: a
+                // `WalletConnect` origin never gets it, whatever Verify says (spec/11 §7 — an
+                // attestation is not proof against a non-browser dApp).
                 let l1_requester = if crate::walletconnect::is_session_origin(&origin) {
-                    yw_core::evm::eip712::HlL1Requester::Deferred
+                    yw_core::evm::eip712::HlL1Requester::Nobody
                 } else {
                     yw_core::evm::eip712::HlL1Requester::Origin(origin.as_str())
                 };

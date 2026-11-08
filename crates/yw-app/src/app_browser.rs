@@ -423,6 +423,9 @@ impl App {
                 .collect();
             self.save_meta();
         }
+        // Every grant change passes here: `WalletConnect` sessions follow their grants (an
+        // account hidden or removed, a site disconnected — restored sessions included).
+        self.wc_grants_changed();
     }
 
     /// Writes a coalesced chain switch now if one is pending (lock, shutdown paths).
@@ -844,8 +847,10 @@ impl App {
         self.refresh();
     }
 
-    /// S13 `모두 해제`.
+    /// S13 `모든 사이트 연결 해제`: every extension site of the three families and every
+    /// `WalletConnect` session (`wc_sessionDelete`, the dApp side ends too).
     pub fn disconnect_all_sites(&mut self) {
+        self.wc_disconnect_all();
         for site in self.browser_grants() {
             self.disconnect_site(&site.origin);
         }
