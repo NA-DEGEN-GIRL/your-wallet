@@ -117,7 +117,8 @@ impl App {
             }
             facts.push(format!("EVM 계정 {accounts}개"));
             if info.primary {
-                facts.push("첫 복구 단어(Solana·Bitcoin·Zcash 계정도 이 단어에서)".to_owned());
+                // Added phrases make Solana/Bitcoin/Zcash accounts too since 2026-11-08.
+                facts.push("처음 만든(가져온) 복구 단어 · 지울 수 없음".to_owned());
             }
             facts.push(if info.backup_confirmed {
                 "백업 확인됨".to_owned()
@@ -222,7 +223,13 @@ impl App {
             "이 복구 단어의 첫 계정(m/44'/60'/0'/0/0) 주소입니다. 다른 지갑에서 보던 주소와 같은지 확인하세요. 다르면 단어나 passphrase가 틀렸습니다."
                 .to_owned(),
         ));
-        items.push(Item::Mono(address.to_owned()));
+        // Grouped like every other EVM address (§3.3).
+        items.push(Item::Mono(
+            yw_core::evm::address::parse_address(address).map_or_else(
+                |_| address.to_owned(),
+                |parsed| yw_core::evm::display::format_address(&parsed),
+            ),
+        ));
         let same = !self.mn.preview_cards.is_empty();
         if same {
             let cards: Vec<String> = self

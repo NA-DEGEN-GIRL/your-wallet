@@ -776,6 +776,9 @@ impl App {
             }
             let row_id = u16::try_from(row).unwrap_or(u16::MAX);
             let open = self.card.pin_serial == Some(record.serial);
+            // Everyday actions first; the two destructive ones on their own row, named by what
+            // they erase (2026-11-08: `삭제` / `YubiKey 비우기` did not say which one touches
+            // the card).
             items.push(Item::Row(vec![
                 Ctl::button(
                     ids::PINS_BASE.saturating_add(row_id),
@@ -786,15 +789,29 @@ impl App {
                     },
                 )
                 .enabled(unlocked),
-                Ctl::danger(ids::REMOVE_BASE.saturating_add(row_id), "삭제")
-                    .enabled(unlocked && self.yk_can_remove()),
-            ]));
-            items.push(Item::Row(vec![
                 Ctl::button(ids::RESLOT_BASE.saturating_add(row_id), "슬롯 구성 바꾸기")
                     .enabled(unlocked),
-                Ctl::danger(ids::CLEAR_BASE.saturating_add(row_id), "YubiKey 비우기")
-                    .enabled(unlocked),
             ]));
+            items.push(Item::Help("위험한 작업".to_owned()));
+            let removable = self.yk_can_remove();
+            items.push(Item::Row(vec![
+                Ctl::danger(
+                    ids::REMOVE_BASE.saturating_add(row_id),
+                    "지갑에서 기록 지우기 (카드는 그대로)",
+                )
+                .enabled(unlocked && removable),
+                Ctl::danger(
+                    ids::CLEAR_BASE.saturating_add(row_id),
+                    "YubiKey의 키 지우기…",
+                )
+                .enabled(unlocked),
+            ]));
+            if unlocked && !removable {
+                items.push(Item::Help(
+                    "이 지갑의 마지막 키라 기록을 지울 수 없습니다(지갑 초기화로만 가능)."
+                        .to_owned(),
+                ));
+            }
             items.push(Item::CardEnd);
             if open && unlocked {
                 self.yk_pin_items(record.serial, items);
@@ -1461,7 +1478,7 @@ impl App {
             .iter()
             .filter(|other| other.serial != record.serial)
             .collect();
-        let lost: Vec<String> = record
+        let only_here: Vec<_> = record
             .slots
             .iter()
             .filter(|slot| {
@@ -1472,8 +1489,12 @@ impl App {
                         .any(|held| held.role.key_identity() == slot.role.key_identity())
                 })
             })
-            .map(|slot| slot.role.title())
             .collect();
+        let lost: Vec<String> = only_here.iter().map(|slot| slot.role.title()).collect();
+        // A key connected without recovery words cannot be "registered again from the words".
+        let unknown = only_here
+            .iter()
+            .any(|slot| yw_core::yubikey::plan::is_unknown_index(slot.role.index()));
         let mut text = format!(
             "YubiKey #{}의 기록을 이 지갑에서 지웁니다. YubiKey 안의 키는 지우지 않습니다.",
             record.serial
@@ -1483,7 +1504,11 @@ impl App {
         } else {
             text.push_str(" 이 YubiKey에만 있는 계정(");
             text.push_str(&lost.join(", "));
-            text.push_str(")은 목록에서 사라집니다. 같은 복구 단어로 다시 등록하면 돌아옵니다.");
+            text.push_str(if unknown {
+                ")은 목록에서 사라집니다. 복구 단어 없이 연결한 키는 카드를 'YubiKey 연결하기 (복구 단어 없이)'로 다시 연결하면 돌아옵니다 — 이 카드를 잃거나 비우면 영구히 사라집니다."
+            } else {
+                ")은 목록에서 사라집니다. 같은 복구 단어로 다시 등록하면 돌아옵니다."
+            });
         }
         text.push_str(" 잃어버린 YubiKey라면 PIN을 3번 틀리면 잠기지만, 자산을 새 복구 단어로 옮길지는 직접 판단하세요. 계속하려면 비밀번호를 입력하세요.");
         text

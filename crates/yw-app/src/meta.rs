@@ -102,14 +102,27 @@ const HW_KEYS: [&str; 4] = ["evm", "sol", "sol_selected", "defaults"];
 pub const MNEMONICS_KEY: &str = "mnemonics";
 const MNEMONIC_KEYS: [&str; 3] = ["record_id", "label", "evm"];
 /// Default label prefix of a recovery phrase (`니모닉 N`).
-pub const MNEMONIC_LABEL_PREFIX: &str = "니모닉 ";
+pub const MNEMONIC_LABEL_PREFIX: &str = "복구 단어 ";
+/// The default-label prefix before 2026-11-08 (stored labels keep it; both count as default).
+pub const LEGACY_MNEMONIC_LABEL_PREFIX: &str = "니모닉 ";
+
+/// `N` of a default recovery-phrase label (`복구 단어 N`, or `니모닉 N` written by earlier
+/// versions); `None` for a label the user chose.
+#[must_use]
+pub fn default_mnemonic_number(label: &str) -> Option<usize> {
+    label
+        .strip_prefix(MNEMONIC_LABEL_PREFIX)
+        .or_else(|| label.strip_prefix(LEGACY_MNEMONIC_LABEL_PREFIX))?
+        .parse()
+        .ok()
+}
 
 /// One recovery phrase of meta `mnemonics`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MnemonicEntry {
     /// The vault `Bip39` record id (the mnemonic id).
     pub record_id: [u8; 16],
-    /// Label (`니모닉 N` by default).
+    /// Label (`복구 단어 N` by default; `니모닉 N` before 2026-11-08).
     pub label: String,
     /// EVM accounts of this mnemonic (index ascending, index 0 first; empty for the primary
     /// mnemonic, whose accounts are `evm_accounts`).

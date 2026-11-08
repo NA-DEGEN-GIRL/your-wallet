@@ -476,10 +476,14 @@ pub(super) fn reconcile_mnemonics(document: &mut Meta, vault: &Vault) -> Result<
                         .iter()
                         .any(|other| *other.id.as_bytes() == entry.record_id)
                 });
-                meta::next_imported_label(
-                    meta::MNEMONIC_LABEL_PREFIX,
-                    kept.chain(&entries).map(|entry| entry.label.as_str()),
-                )
+                // Numbered after the default labels of both spellings (`니모닉 N` before
+                // 2026-11-08), so a new phrase never repeats a number.
+                let highest = kept
+                    .chain(&entries)
+                    .filter_map(|entry| meta::default_mnemonic_number(&entry.label))
+                    .max()
+                    .unwrap_or(0);
+                default_label(highest.saturating_add(1))
             },
             |entry| entry.label.clone(),
         );
@@ -513,7 +517,7 @@ pub(super) fn reconcile_mnemonics(document: &mut Meta, vault: &Vault) -> Result<
         });
     }
     if let [only] = entries.as_slice()
-        && only.label == default_label(1)
+        && meta::default_mnemonic_number(&only.label) == Some(1)
     {
         entries.clear();
     }
