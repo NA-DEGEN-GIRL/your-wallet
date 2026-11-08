@@ -1,19 +1,22 @@
 #![allow(unsafe_code)]
 //! PC/SC smart-card access (spec/10 §4, §5.1): `SCardEstablishContext` (user scope),
 //! `SCardListReadersW`, `SCardConnectW` (shared, T=1), `SCardBeginTransaction`,
-//! `SCardTransmit`, `SCardEndTransaction` / `SCardDisconnect` with `SCARD_LEAVE_CARD` (never
-//! reset or unpower the card). USB (CCID) and NFC readers use the same path.
+//! `SCardTransmit`, `SCardEndTransaction` / `SCardDisconnect`. The card is released with
+//! `SCARD_LEAVE_CARD`, or with `SCARD_RESET_CARD` (a warm reset that clears every applet's
+//! verified PIN and authenticated management key) once [`Card::reset_on_release`] was called;
+//! it is never unpowered. USB (CCID) and NFC readers use the same path.
 //!
-//! This module only moves bytes. Which APDUs are sent is decided by `yw_core::yubikey`; yw-app
-//! adapts [`Card`] to its `CardTransport` trait. Handles close on drop; no raw handle escapes.
+//! This module only moves bytes. Which APDUs are sent, and which of them need the reset, is
+//! decided by `yw_core::yubikey`; yw-app adapts [`Card`] to its `CardTransport` trait. Handles
+//! close on drop; no raw handle escapes.
 //! Received buffers are wiped after they are copied out (a response never carries a secret, but
 //! a mis-addressed command might echo data).
 
 use core::marker::PhantomData;
 
 use windows_sys::Win32::Security::Credentials::{
-    SCARD_IO_REQUEST, SCARD_LEAVE_CARD, SCARD_PROTOCOL_T1, SCARD_SCOPE_USER, SCARD_SHARE_SHARED,
-    SCardBeginTransaction, SCardConnectW, SCardDisconnect, SCardEndTransaction,
+    SCARD_IO_REQUEST, SCARD_LEAVE_CARD, SCARD_PROTOCOL_T1, SCARD_RESET_CARD, SCARD_SCOPE_USER,
+    SCARD_SHARE_SHARED, SCardBeginTransaction, SCardConnectW, SCardDisconnect, SCardEndTransaction,
     SCardEstablishContext, SCardListReadersW, SCardReleaseContext, SCardTransmit,
 };
 
@@ -205,6 +208,7 @@ impl Context {
             handle,
             protocol,
             transaction: false,
+            reset: false,
             _context: PhantomData,
         })
     }
@@ -217,12 +221,14 @@ impl Drop for Context {
     }
 }
 
-/// A connected card. Ends the transaction and disconnects with `SCARD_LEAVE_CARD` on drop.
+/// A connected card. Ends the transaction and disconnects on drop: with `SCARD_LEAVE_CARD`, or
+/// with `SCARD_RESET_CARD` after [`Card::reset_on_release`].
 #[derive(Debug)]
 pub struct Card<'c> {
     handle: usize,
     protocol: u32,
     transaction: bool,
+    reset: bool,
     _context: PhantomData<&'c Context>,
 }
 
@@ -243,6 +249,14 @@ impl Card<'_> {
         }
         self.transaction = true;
         Ok(())
+    }
+
+    /// Releases the card with a warm reset (`SCARD_RESET_CARD`) instead of leaving it as it is
+    /// (spec/10 §5.1): a job that verified a PIN or authenticated the PIV management key leaves
+    /// nothing verified for the next PC/SC client. The reset is part of ending the transaction,
+    /// so no other program gets the card in between.
+    pub const fn reset_on_release(&mut self) {
+        self.reset = true;
     }
 
     /// Sends one command frame and returns `data ‖ SW1 ‖ SW2`.
@@ -289,13 +303,27 @@ impl Card<'_> {
 
 impl Drop for Card<'_> {
     fn drop(&mut self) {
+        let disposition = if self.reset {
+            SCARD_RESET_CARD
+        } else {
+            SCARD_LEAVE_CARD
+        };
+        let mut reset_done = false;
         if self.transaction {
-            // SAFETY: A transaction begun on this handle is ended once; the card is left as is.
-            unsafe { SCardEndTransaction(self.handle, SCARD_LEAVE_CARD) };
+            // SAFETY: A transaction begun on this handle is ended once; the card is reset (when
+            // asked) before another program can begin its transaction.
+            let status = unsafe { SCardEndTransaction(self.handle, disposition) };
+            reset_done = self.reset && status == SCARD_S_SUCCESS;
         }
-        // SAFETY: `handle` came from `SCardConnectW` and is disconnected exactly once, leaving
-        // the card powered and unreset.
-        unsafe { SCardDisconnect(self.handle, SCARD_LEAVE_CARD) };
+        // A reset that did not happen with the transaction end happens on disconnect.
+        let disposition = if self.reset && !reset_done {
+            SCARD_RESET_CARD
+        } else {
+            SCARD_LEAVE_CARD
+        };
+        // SAFETY: `handle` came from `SCardConnectW` and is disconnected exactly once; the card
+        // stays powered.
+        unsafe { SCardDisconnect(self.handle, disposition) };
     }
 }
 

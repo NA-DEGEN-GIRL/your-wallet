@@ -193,8 +193,10 @@ fn open_piv<'t>(
 /// Checks the PIN before anything is signed (spec/10 §9.2): the same serial and recorded-key
 /// checks as signing, then one VERIFY (PW1 of the slot's operation, or the PIV PIN). Sends no
 /// write instruction and asks for no touch, so a wrong PIN, another card or a missing card is
-/// known before the approved operation is spent. The signing call verifies the PIN again (PW1
-/// `81` is valid for one signature, a PIV "always" PIN policy for one operation).
+/// known before the approved operation is spent. The check is a card job of its own: its
+/// VERIFY makes the transport reset the card when the job releases it ([`super::needs_reset`],
+/// spec/10 §5.1), so nothing stays verified until the signing job, which verifies the PIN again
+/// in the same transaction as the signature.
 ///
 /// # Errors
 ///

@@ -464,8 +464,9 @@ impl TouchPolicy {
     }
 }
 
-/// PIV PIN policy (`AA`). OpenPGP has none per key (PW1 validity is global; this wallet requires
-/// "PW1 valid for one signature" and verifies PW1 before every operation anyway).
+/// PIV PIN policy (`AA`). OpenPGP has none per key (PW1 validity is global, and a factory
+/// YubiKey keeps PW1 `81` valid after a signature; this wallet verifies PW1 before every
+/// operation and resets the card when the job ends, spec/10 §5.1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PinPolicy {
     /// Not applicable (OpenPGP).

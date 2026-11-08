@@ -32,7 +32,10 @@ const fn transport_error(fault: PcscFault) -> CardError {
     }
 }
 
-/// A connected PC/SC card as a [`CardTransport`].
+/// A connected PC/SC card as a [`CardTransport`]. A job that sends anything but a read-only
+/// instruction (`yubikey::needs_reset`: VERIFY, management-key authentication, signing, writes)
+/// releases the card with a warm reset (spec/10 §5.1), so no PIN stays verified for the next
+/// PC/SC client — between the PIN check and the signature, or after any card job.
 #[derive(Debug)]
 pub struct PcscTransport<'c> {
     card: pcsc::Card<'c>,
@@ -40,6 +43,11 @@ pub struct PcscTransport<'c> {
 
 impl CardTransport for PcscTransport<'_> {
     fn transmit(&mut self, command: &[u8]) -> Result<Vec<u8>, CardError> {
+        if yw_core::yubikey::needs_reset(command) {
+            // Marked before the frame leaves: a command that fails half way still ends in a
+            // reset.
+            self.card.reset_on_release();
+        }
         self.card
             .transmit(command)
             .map_err(|error| transport_error(pcsc::fault(&error)))
@@ -1220,6 +1228,24 @@ pub(crate) struct MockSource {
     pub(crate) cards: std::sync::Arc<std::sync::Mutex<Vec<yw_core::yubikey::mock::MockCard>>>,
 }
 
+/// One job on an emulated card: as with [`PcscTransport`], a job that sent an instruction of
+/// `yubikey::needs_reset` ends with a warm reset of the card.
+#[cfg(test)]
+struct MockJob<'c> {
+    card: &'c mut yw_core::yubikey::mock::MockCard,
+    reset: bool,
+}
+
+#[cfg(test)]
+impl CardTransport for MockJob<'_> {
+    fn transmit(&mut self, command: &[u8]) -> Result<Vec<u8>, CardError> {
+        if yw_core::yubikey::needs_reset(command) {
+            self.reset = true;
+        }
+        self.card.transmit(command)
+    }
+}
+
 #[cfg(test)]
 impl CardSource for MockSource {
     fn each_card(&mut self, visit: &mut CardVisit<'_>) -> Result<(), CardError> {
@@ -1228,10 +1254,69 @@ impl CardSource for MockSource {
             return Err(CardError::Transport(TransportFault::NoCard));
         }
         for card in cards.iter_mut() {
-            if visit(card, &yw_core::yubikey::mock::ToyCipher) {
+            let mut job = MockJob { card, reset: false };
+            let stop = visit(&mut job, &yw_core::yubikey::mock::ToyCipher);
+            if job.reset {
+                job.card.warm_reset();
+            }
+            if stop {
                 break;
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use yw_core::yubikey::mock::MockCard;
+    use yw_core::yubikey::openpgp::{self, OpenPgp};
+    use yw_core::yubikey::plan::PgpKey;
+    use yw_core::yubikey::{CardTransport, apdu};
+
+    use super::{CardSource, MODE, MockSource};
+
+    /// spec/10 §5.1: the PIN check is a card job of its own before the signing job. A program
+    /// that gets the reader in between (or after any job) and sends PSO:CDS without SELECT or
+    /// VERIFY gets no signature — also from a factory card, whose PW1 stays valid.
+    #[test]
+    fn a_card_job_that_verified_a_pin_leaves_nothing_verified() {
+        let mut card = MockCard::new(7_700_009);
+        assert!(!card.pw1_single_use);
+        card.pgp_attributes[0] = openpgp::secp256k1_attributes();
+        card.pgp_keys[0] = Some([7; 32]);
+        let cards = Arc::new(Mutex::new(vec![card]));
+        let mut source = MockSource {
+            cards: Arc::clone(&cards),
+        };
+        let other_program_signs = || {
+            let frames = apdu::encode(&openpgp::sign(PgpKey::Sig, &[9; 32]), MODE).unwrap();
+            let answer = cards.lock().unwrap()[0].transmit(&frames[0]).unwrap();
+            answer.ends_with(&[0x90, 0x00])
+        };
+        // The PIN check (`sign::check_pin`): SELECT, reads, VERIFY 81.
+        source
+            .each_card(&mut |transport, _| {
+                let mut session = OpenPgp::open(transport, MODE).unwrap();
+                assert_eq!(session.verify(PgpKey::Sig.pw(), b"123456"), Ok(()));
+                true
+            })
+            .unwrap();
+        assert!(!other_program_signs());
+        // The signing job: VERIFY 81 and PSO:CDS; the factory PW1 would stay valid after it.
+        source
+            .each_card(&mut |transport, _| {
+                let mut session = OpenPgp::open(transport, MODE).unwrap();
+                assert!(
+                    session
+                        .sign_digest(PgpKey::Sig, b"123456", &[1; 32])
+                        .is_ok()
+                );
+                true
+            })
+            .unwrap();
+        assert!(!other_program_signs());
     }
 }

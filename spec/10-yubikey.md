@@ -92,7 +92,7 @@ Bitcoin 슬롯의 인덱스는 **계정 0의 받기 체인 주소 인덱스**(`�
 | `yw_core::yubikey::{plan, record, enrol, sign, sig}` | 슬롯 계획·경로·검사, tag 5 코덱, 등록, 카드 서명, 서명 후처리 | 없음 |
 | `yw_core::yubikey::mock` | 두 애플릿의 APDU 수준 에뮬레이터(실제 secp256k1·Ed25519 서명). 시험 전용이지만 의존성 검사가 dev-dependency·feature 전환을 막으므로 항상 컴파일된다. 시험 밖에서는 아무도 만들지 않는다(yw-app의 `MockSource`는 `cfg(test)`) | 없음 |
 | `yw_core::vault` | tag 5 record, `hardware_keys`·`add_hardware_key`·`remove_hardware_key`·`create_with_hardware` | 없음 |
-| `yw_win::pcsc` | `SCardEstablishContext`(사용자 범위)/`ListReadersW`/`ConnectW`(T=1, 공유)/`BeginTransaction`/`Transmit`/`EndTransaction`·`Disconnect`(`SCARD_LEAVE_CARD`, 재설정 없음) 래퍼. USB·NFC 리더 모두 같은 경로. yw-win은 yw-core에 의존하지 않으므로(D4) `CardTransport` 구현은 yw-app의 얇은 어댑터가 한다 | 있음 |
+| `yw_win::pcsc` | `SCardEstablishContext`(사용자 범위)/`ListReadersW`/`ConnectW`(T=1, 공유)/`BeginTransaction`/`Transmit`/`EndTransaction`·`Disconnect`(`SCARD_LEAVE_CARD`, 또는 `Card::reset_on_release` 뒤 `SCARD_RESET_CARD` — §5.1; 전원 끄기 없음) 래퍼. USB·NFC 리더 모두 같은 경로. yw-win은 yw-core에 의존하지 않으므로(D4) `CardTransport` 구현은 yw-app의 얇은 어댑터가 한다 | 있음 |
 | `yw_win::cng` | PIV 관리 키용 AES-ECB·3DES-ECB 한 블록(`BCRYPT_AES_ECB_ALG_HANDLE`·`BCRYPT_3DES_ECB_ALG_HANDLE` 의사 핸들, `BCryptEncrypt`/`BCryptDecrypt`). `MgmtCipher` 구현은 yw-app 어댑터 | 있음 |
 | `yw-app` (§13) | 등록 마법사, "YubiKey" 계정 종류, 승인 후 카드 서명 단계 | — |
 
@@ -106,7 +106,9 @@ Bitcoin 슬롯의 인덱스는 **계정 0의 받기 체인 주소 인덱스**(`�
 - 전송: `CardTransport::transmit(frame) → data ‖ SW1 SW2`. 기본은 **짧은 APDU + 명령 체이닝**(CLA `10`, 255바이트씩)과 `61xx` GET RESPONSE(`00 C0 00 00 xx`) — USB·NFC 모두 동작한다. 확장 APDU(최대 3,000바이트 데이터)도 지원한다(ykman은 USB에서만 확장을 쓴다 [KIT-SC]).
 - 상태어 매핑(`CardError::from_status`): `9000` 성공, `63Cx` PIN 오류(남은 x회), `6983` 잠김, `6982` 보안 조건(PIN·관리 키·**터치 시간 초과**), `6985` 사용 조건, `6A80` 데이터 오류, `6A82` 애플릿 없음, `6A88` 빈 슬롯, `6A81`/`6A86`/`6D00`/`6E00` 미지원.
 - 응답 최대 16 KiB, GET RESPONSE 80회 상한(고장 난 카드 방어).
-- 한 작업 동안 `SCardBeginTransaction`으로 카드를 잡는다(다른 프로그램이 애플릿을 바꾸지 못하게). 작업이 끝나면 `SCARD_LEAVE_CARD`로 놓는다(재설정 없음).
+- 한 작업 동안 `SCardBeginTransaction`으로 카드를 잡는다(다른 프로그램이 애플릿을 바꾸지 못하게). 작업이 끝나면 놓는다: 읽기 명령만 보낸 작업은 `SCARD_LEAVE_CARD`(그대로), **그 밖의 명령을 하나라도 보낸 작업은 `SCARD_RESET_CARD`**(웜 리셋 — 모든 애플릿의 확인된 PIN·관리 키 인증이 지워진다; 2026-11-08). 읽기 명령은 `yubikey::needs_reset`이 정한다: SELECT `A4`, GET RESPONSE `C0`, GET DATA `CA`/`CB`, 버전 `F1`/`FD`, 일련번호 `F8`, 메타데이터 `F7`, OpenPGP 공개키 읽기 `47 81`. VERIFY·관리 키 인증·서명·쓰기·모르는 명령은 모두 재설정 대상이고, 명령을 보내기 **전에** 표시하므로 중간에 실패해도 재설정된다. 재설정은 `SCardEndTransaction(SCARD_RESET_CARD)`로 트랜잭션을 놓는 순간에 하고(그 사이 다른 프로그램이 카드를 잡을 틈이 없다), 그것이 실패하면 `SCardDisconnect(SCARD_RESET_CARD)`로 한다.
+  - 이유(보안 검토 2026-11-08): PIN 확인(§9.2 `check_pin`)과 서명은 서로 다른 작업이다. 재설정 없이 놓으면 그 사이에, 또는 작업이 끝난 뒤 리더를 기다리던 다른 프로그램(다른 Windows 사용자 세션, 낮은 무결성 프로세스)이 SELECT·VERIFY 없이 `00 2A 9E 9A`/`00 88`/PIV `00 87`을 보내 PIN 없이 서명받을 수 있었다(터치 "없음"·"15초 유지"면 터치도 없이). 공장 YubiKey는 PW1 `81`이 서명 뒤에도 유효하고(C4 첫 바이트 `01`), PW1 `82`·PW3·PIV PIN("한 번" 정책)은 늘 여러 번 유효하다. 카드의 PW1 정책(C4)은 바꾸지 않는다 — 재설정이 정책과 상관없이 지우고, 같은 카드를 GnuPG 등에 쓰는 사용자의 설정을 건드리지 않기 위해서다.
+  - 가정(실제 카드에서 확인): 웜 리셋이 터치 "15초 유지" 캐시는 지우지 않는다. 지운다면 Bitcoin·Zcash 보내기는 입력마다(입력 하나가 작업 하나) 터치가 필요하다 — 보안에는 영향이 없다.
 
 ### 5.2 OpenPGP (secp256k1: SIG·AUT)
 
@@ -121,7 +123,7 @@ Bitcoin 슬롯의 인덱스는 **계정 0의 받기 체인 주소 인덱스**(`�
 | 가져오기 | `00 DB 3F FF Lc 4D { B6 00 \| A4 00, 7F48 { 92 20 }, 5F48 <32바이트 스칼라> }` | 확장 헤더 목록, 공개키(`99`)는 넣지 않음 [OPC] p38–39 |
 | 터치(UIF) | `00 DA 00 D6`(SIG)/`D8`(AUT) `02 <uif> 20` | `00` 끔, `01` 켬, `02` 고정, `03` 15초, `04` 15초 고정; 고정은 이후 변경 불가 [KIT-PGP] |
 | 공개키 읽기 | `00 47 81 00 02 B6 00`(또는 `A4 00`) `00` → `7F49 { 86 41 04‖X‖Y }` | P1 `81` = 기존 키 읽기(생성 아님) |
-| PW1 (서명) | SIG: `00 20 00 81 Lc PIN`, AUT: `00 20 00 82 Lc PIN` | 기본 `123456`, 6–127자. `81`은 PSO:CDS 한 번에만 유효(C4 첫 바이트 `00`) |
+| PW1 (서명) | SIG: `00 20 00 81 Lc PIN`, AUT: `00 20 00 82 Lc PIN` | 기본 `123456`, 6–127자. `81`은 C4 첫 바이트가 `00`일 때만 PSO:CDS 한 번에 유효하다. 공장 YubiKey는 `01`(재설정까지 유효)이므로 작업 끝 재설정(§5.1)이 지운다 |
 | 서명 (SIG) | `00 2A 9E 9A 20 <digest 32> 00` → `r ‖ s`(64) | PSO: COMPUTE DIGITAL SIGNATURE [OPC] p63 |
 | 서명 (AUT) | `00 88 00 00 20 <digest 32> 00` → `r ‖ s`(64) | INTERNAL AUTHENTICATE [OPC] p71 |
 | PIN 변경 | `00 24 00 81`(PW1)/`83`(PW3) `Lc old‖new` | §9.3 |
@@ -366,10 +368,11 @@ n × 48:
 
 ### 12.1 자동 (게이트, 실제 카드 없음)
 
-- `yubikey::mock::MockCard`: OpenPGP(SELECT, F1, 6E, F9, VERIFY 81/82/83, C1–C3(RSA 2048·4096·secp256k1), D6–D8, 3FFF 가져오기, 47 81, PSO:CDS, INTERNAL AUTHENTICATE, CHANGE REFERENCE, TERMINATE E6·ACTIVATE 44)와 PIV(SELECT, FD, F8, F7, VERIFY, 87 관리 키·서명, FE, FF, 24, GET/PUT DATA `CB`/`DB` — ADMIN DATA·PRINTED, PRINTED 읽기는 VERIFY PIN 뒤에만, 쓰기는 관리 키 인증 뒤에만; `protect_management` = ykman `--generate --protect` 상태; RESET RETRY COUNTER 2C·PUK 횟수, DELETE KEY F6, RESET FB), 체이닝·`61xx`, PIN 횟수·잠김, PW1 일회성, PIN 정책 "항상", 터치 거부, high-s, 손상 서명. 관리 키 블록 암호는 테스트용 `ToyCipher`(AES가 아님 — 실제 AES·3DES는 yw-win CNG에서 FIPS-197·SP 800-67 벡터로 시험).
+- `yubikey::mock::MockCard`: OpenPGP(SELECT, F1, 6E, F9, VERIFY 81/82/83, C1–C3(RSA 2048·4096·secp256k1), D6–D8, 3FFF 가져오기, 47 81, PSO:CDS, INTERNAL AUTHENTICATE, CHANGE REFERENCE, TERMINATE E6·ACTIVATE 44)와 PIV(SELECT, FD, F8, F7, VERIFY, 87 관리 키·서명, FE, FF, 24, GET/PUT DATA `CB`/`DB` — ADMIN DATA·PRINTED, PRINTED 읽기는 VERIFY PIN 뒤에만, 쓰기는 관리 키 인증 뒤에만; `protect_management` = ykman `--generate --protect` 상태; RESET RETRY COUNTER 2C·PUK 횟수, DELETE KEY F6, RESET FB), 체이닝·`61xx`, PIN 횟수·잠김, PW1은 공장값처럼 서명 뒤에도 유효(`pw1_single_use`면 일회성), 웜 리셋(`warm_reset`: yw-app `MockSource`가 §5.1의 재설정 작업 끝에 부른다), PIN 정책 "항상", 터치 거부, high-s, 손상 서명. 관리 키 블록 암호는 테스트용 `ToyCipher`(AES가 아님 — 실제 AES·3DES는 yw-win CNG에서 FIPS-197·SP 800-67 벡터로 시험).
 - 벡터: `abandon`×11 `about`로 SIG = EVM 0 → `0x9858EfFD232B4033E47d90003D41EC34EcaEda94`, AUT = BIP84 0 → `bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu`, PIV 82 = Solana 0 → `HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk`, 지문 `73c5da0a`.
 - 서명: high-s 카드에서도 EVM 복구 주소 = 등록 주소, BIP143 P2WPKH sighash 서명 검증(low-s), Solana 1,000바이트 메시지(체이닝) `verify_strict`, 서명 흐름에 쓰기 명령 없음.
 - 오류: 틀린 PIN(남은 횟수), 3회 → 잠김, 터치 없음, 손상 서명, 다른 일련번호(PIN 전 거부), 덮어쓴 슬롯, KDF, 구 펌웨어, 틀린 관리자 PIN·관리 키(쓰기 0), 애플릿 없음.
+- 작업 끝 재설정(§5.1): yw-app `yubikey::tests::a_card_job_that_verified_a_pin_leaves_nothing_verified` — 공장 PW1 카드에서 PIN 확인 작업 뒤에도, 서명 작업 뒤에도 다른 프로그램이 SELECT·VERIFY 없이 보낸 PSO:CDS가 서명을 받지 못한다.
 - 계획: 슬롯별 인덱스 선택·경로 문자열, 한 카드 안 같은 경로 거부(공유 키 변형 포함), 다른 카드와 같은 경로는 백업 표시가 있을 때만, 다른 니모닉 거부, 같은 카드 재등록 거부, 카드 3개가 EVM 0–5를 나눠 갖고 4번째가 #1의 백업인 슬롯 표와 라우팅(`slot_on_card`).
 - record 코덱: 왕복, 코드·예약 바이트·패딩 변조 거부, record 간 일관성. vault: YubiKey 지갑 생성·잠금 해제 후 동일·추가·중복 일련번호·모순 record·삭제(비밀번호·`LastKey`)·최대 크기(24단어 + 가져온 키 45개 + 카드 8 × 24슬롯)가 상한 안·9번째 거부, tag 6이 `UnsupportedPayload`.
 - yw-win: CNG AES-128/192/256·3DES 한 블록 KAT, PC/SC 다중 문자열 파서·오류 매핑(리더 불필요).
