@@ -216,6 +216,20 @@ impl App {
             self.validate_send(true);
             return true;
         }
+        if let Some(index) = offset(id, ids::TOKEN_SEND_BASE, ids::TOKEN_SEND_SPAN) {
+            // `{기호} 보내기` of a token row: S11 with that token chosen (the form's checks,
+            // review and approval are the usual ones).
+            if matches!(self.mode, AppMode::Unlocked { .. })
+                && let Some((address, ..)) = self.chain_tokens(chain_id).get(usize::from(index))
+            {
+                self.evm.send.asset = SendAsset::Token(*address);
+                self.evm.send.quote = None;
+                self.evm.send.contract = None;
+                self.open_send();
+                self.validate_send(true);
+            }
+            return true;
+        }
         if let Some(action) = ids::token_action(id) {
             match action {
                 ids::TokenAction::ToggleHidden(row) => self.toggle_evm_token_hidden(row),

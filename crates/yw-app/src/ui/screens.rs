@@ -301,6 +301,13 @@ pub fn backup_retry_text(positions: [u8; 4], words_again: bool) -> String {
     )
 }
 
+/// The selected-account card of a network without an RPC address (spec/04 §2.6, 2026-11-08):
+/// why there is no balance, in place of "RPC 연결을 확인하고 새로고침하세요".
+#[must_use]
+pub fn no_endpoint_text(network: &str) -> String {
+    format!("이 네트워크({network})의 RPC 주소가 아직 없어 잔액을 읽을 수 없습니다.")
+}
+
 /// T-ALT-PASS (every screen while `App::passphrase_unverified`, spec/04 §2.1): not dismissible.
 pub const T_ALT_PASS: &str = "passphrase 확인값과 맞지 않는 passphrase로 연 지갑입니다. 오타라면 이 지갑은 원래 지갑이 아닌 다른(빈) 지갑이고, 여기로 받은 자산은 지금 입력한 passphrase와 대소문자·공백까지 정확히 같은 값을 다시 넣어야만 꺼낼 수 있습니다. 그래서 받기와 사이트 연결·서명을 막았습니다. 계정 이름·주소록·연결 기록도 저장되지 않습니다. 잘못 입력했다면 잠그고 다시 여세요.";
 /// Shown when `받기` is pressed in that mode.
@@ -839,6 +846,7 @@ impl App {
         }));
         let balance = self.native_balance(chain_id, &address);
         let state = self.evm.balances.get(&chain_id);
+        let endpoint = self.apikeys.has(KeyName::Rpc(NetworkId::Eip155(chain_id)));
         if let Some(value) = balance {
             items.push(Item::Display(self.native_text(chain_id, &value)));
             if let Some(block) = state
@@ -851,22 +859,46 @@ impl App {
                 }
                 items.push(Item::Help(caption));
             }
-        } else {
+        } else if endpoint {
             items.push(Item::Display("잔액 —".to_owned()));
             items.push(Item::Help(
                 "잔액을 아직 읽지 못했습니다. RPC 연결을 확인하고 새로고침하세요.".to_owned(),
             ));
+        } else {
+            items.push(Item::Display("잔액 —".to_owned()));
+            items.push(Item::Help(no_endpoint_text(
+                &self.network_name(NetworkId::Eip155(chain_id)),
+            )));
+        }
+        // The visible tokens with a balance, like the Solana tab's one-line summary.
+        let tokens: Vec<String> = self
+            .evm_token_rows(chain_id)
+            .iter()
+            .filter(|row| row.place == crate::token_view::RowPlace::Shown)
+            .filter_map(|row| {
+                row.balance.filter(|value| !value.is_zero()).map(|value| {
+                    yw_core::evm::amount::format_amount(&value, row.decimals, &row.symbol)
+                })
+            })
+            .take(4)
+            .collect();
+        if !tokens.is_empty() {
+            items.push(Item::Help(format!(
+                "토큰: {} (아래 토큰 카드)",
+                tokens.join(" · ")
+            )));
         }
         items.push(Item::Mono(format_address(&address)));
         let unlocked = matches!(self.mode, AppMode::Unlocked { .. });
-        let endpoint = self.apikeys.has(KeyName::Rpc(NetworkId::Eip155(chain_id)));
         let mut row = vec![
             Ctl::primary(crate::ui::screens_evm::ids::SEND_OPEN, "보내기").enabled(unlocked),
             Ctl::primary(crate::ui::screens_evm::ids::RECEIVE_OPEN, "받기"),
-            Ctl::link(crate::ui::screens_evm::ids::REFRESH, "새로고침"),
         ];
-        if !endpoint {
-            row.push(Ctl::link(ids::SECTION_NETWORK, "RPC 설정하기"));
+        if endpoint {
+            row.push(Ctl::link(crate::ui::screens_evm::ids::REFRESH, "새로고침"));
+        } else {
+            // Nothing to refresh without an address: the next step instead (spec/04 §2.6).
+            row.push(Ctl::button(ids::SECTION_NETWORK, "RPC 설정하기"));
         }
         items.push(Item::Row(row));
         items.push(Item::CardEnd);

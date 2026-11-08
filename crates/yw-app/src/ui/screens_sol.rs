@@ -342,6 +342,11 @@ impl App {
                     "{} lamports · RPC finalized 기준(참고)",
                     format_raw(lamports)
                 )));
+            } else if no_endpoint {
+                items.push(Item::Display("잔액 —".to_owned()));
+                items.push(Item::Help(crate::ui::screens::no_endpoint_text(
+                    &self.network_name(network),
+                )));
             } else {
                 items.push(Item::Display("잔액 —".to_owned()));
                 items.push(Item::Help(
@@ -372,13 +377,15 @@ impl App {
             let mut row = vec![
                 Ctl::primary(ids::SEND_OPEN, "보내기").enabled(unlocked),
                 Ctl::primary(ids::RECEIVE_OPEN, "받기"),
-                Ctl::link(ids::REFRESH, "새로고침"),
             ];
             if no_endpoint {
-                row.push(Ctl::link(
+                // The same next step as every tab (2026-11-08): no refresh without an address.
+                row.push(Ctl::button(
                     crate::ui::screens::ids::SECTION_NETWORK,
-                    "설정에서 URL 입력",
+                    "RPC 설정하기",
                 ));
+            } else {
+                row.push(Ctl::link(ids::REFRESH, "새로고침"));
             }
             items.push(Item::Row(row));
             items.push(Item::CardEnd);

@@ -172,6 +172,10 @@ pub mod ids {
     pub const TOKEN_ROW_STRIDE: u16 = 2;
     /// Token rows span (120 rows × 2).
     pub const TOKEN_ROW_SPAN: u16 = 240;
+    /// Token card `{기호} 보내기` links (one per row, indexed like [`TOKEN_ROW_BASE`]).
+    pub const TOKEN_SEND_BASE: u16 = 3_440;
+    /// Token send links span (120 rows).
+    pub const TOKEN_SEND_SPAN: u16 = 120;
     /// T-CHAIN-REPIN-ACK check.
     pub const REPIN_CHECK: u16 = 6_600;
 
@@ -612,8 +616,12 @@ impl App {
                 "보이는 토큰이 없습니다. 숨긴 토큰은 아래에서 다시 볼 수 있습니다.".to_owned(),
             ));
         }
+        let can_send = matches!(self.mode, AppMode::Unlocked { .. })
+            && self
+                .apikeys
+                .has(crate::apikeys::KeyName::Rpc(NetworkId::Eip155(chain_id)));
         for row in shown {
-            Self::evm_token_row(items, row, false);
+            Self::evm_token_row(items, row, false, can_send);
         }
         if !rows.is_empty() {
             items.push(Item::Row(vec![Ctl::check(
@@ -641,7 +649,7 @@ impl App {
             if open {
                 items.push(Item::Help(T_TOKEN_HIDDEN_NOTE.to_owned()));
                 for row in hidden {
-                    Self::evm_token_row(items, row, true);
+                    Self::evm_token_row(items, row, true, false);
                 }
             }
         }
@@ -650,8 +658,9 @@ impl App {
     }
 
     /// One token row: label and balance (dimmed when hidden), the full contract, and its
-    /// buttons. Registry tokens have no `삭제`.
-    fn evm_token_row(items: &mut Vec<Item>, row: &EvmTokenRow, hidden: bool) {
+    /// buttons: `{기호} 보내기` (a visible row with a balance, like the Solana token card) and
+    /// the hide/delete links. Registry tokens have no `삭제`.
+    fn evm_token_row(items: &mut Vec<Item>, row: &EvmTokenRow, hidden: bool, can_send: bool) {
         use ids::{TokenAction, token_row_id};
         let balance = row.balance.map_or_else(
             || "잔액 알 수 없음".to_owned(),
@@ -669,6 +678,19 @@ impl App {
         }
         items.push(Item::Mono(format_address(&row.address)));
         let mut buttons = Vec::new();
+        if !hidden
+            && let Some(offset) = u16::try_from(row.index)
+                .ok()
+                .filter(|offset| *offset < ids::TOKEN_SEND_SPAN)
+        {
+            buttons.push(
+                Ctl::link(
+                    ids::TOKEN_SEND_BASE.saturating_add(offset),
+                    &format!("{} 보내기", row.symbol),
+                )
+                .enabled(can_send && row.balance.is_some_and(|value| !value.is_zero())),
+            );
+        }
         if let Some(id) = token_row_id(TokenAction::ToggleHidden(row.index)) {
             buttons.push(Ctl::link(
                 id,
@@ -715,11 +737,16 @@ impl App {
             else {
                 continue;
             };
-            let text = if row.registered {
+            let name = if row.registered {
                 row.symbol.clone()
             } else {
                 format!("{} (사용자 추가)", row.symbol)
             };
+            // The holding next to the name (2026-11-08): the form shows what can be sent.
+            let text = row.balance.map_or_else(
+                || format!("{name} · 잔액 모름"),
+                |value| format!("{name} · {}", format_units(&value, row.decimals)),
+            );
             let radio = Ctl::radio(id, &text, asset == SendAsset::Token(row.address), false);
             if row.place == RowPlace::Hidden {
                 hidden.push(radio);
@@ -869,6 +896,28 @@ impl App {
             }
         }
         if let SendAsset::Token(token) = form.asset {
+            if let Some(row) = self
+                .evm_token_rows(chain_id)
+                .into_iter()
+                .find(|row| row.address == token)
+            {
+                let block = self
+                    .evm
+                    .balances
+                    .get(&chain_id)
+                    .and_then(|state| state.snapshot.as_ref())
+                    .map(|snapshot| format!(" (블록 {} 기준)", snapshot.block))
+                    .unwrap_or_default();
+                items.push(Item::Text(row.balance.map_or_else(
+                    || format!("보유 {}: 잔액을 아직 읽지 못했습니다", row.symbol),
+                    |value| {
+                        format!(
+                            "보유 {}{block}",
+                            format_amount(&value, row.decimals, &row.symbol)
+                        )
+                    },
+                )));
+            }
             items.push(Item::Help(format!(
                 "토큰 컨트랙트 {}",
                 format_address(&token)

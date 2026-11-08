@@ -454,7 +454,7 @@ impl App {
                 items.push(Item::Banner(gate.text(), Tone::Danger));
                 items.push(Item::Row(vec![Ctl::button(
                     crate::ui::screens::ids::SECTION_NETWORK,
-                    "설정에서 URL 입력",
+                    "RPC 설정하기",
                 )]));
             }
         }
@@ -1989,7 +1989,7 @@ mod tests {
         assert!(control(&items, ids::SECTION_BTC).is_some());
         assert!(control(&items, ids::SEND_OPEN).is_none());
         assert!(!has_text(&items, "BITCOIN TESTNET4"));
-        // No endpoint: E-KEY-005 and `설정에서 URL 입력`.
+        // No endpoint: E-KEY-005 and `RPC 설정하기`.
         let app_no_url = app(true, BtcNet::Testnet4, Some(BtcNetwork::Testnet4), false);
         let items = app_no_url.items();
         assert!(has_text(&items, &ErrorCode::Key005.text()));

@@ -2247,7 +2247,7 @@ fn send_picker_tucks_hidden_tokens_away() {
     app.on_command(SEND_HIDDEN_TOGGLE);
     let items = app.items();
     let radio = ctl(&items, scam_radio).unwrap();
-    assert_eq!(radio.text, "SCAM (사용자 추가)");
+    assert_eq!(radio.text, "SCAM (사용자 추가) · 잔액 모름");
     assert!(items.iter().any(|item| matches!(
         item,
         Item::LabeledRow(label, ctls) if label == "숨긴 토큰" && ctls.iter().any(|c| c.id == scam_radio)
@@ -3518,6 +3518,11 @@ fn yubikey_only_wallet_from_the_first_run_screen() {
     assert!(ctl(&h.app.items(), yk::FINISH).unwrap().enabled);
     h.app.on_command(yk::FINISH);
     yk_pump(&mut h, &mut seen);
+    // S08 like the other first-run paths (2026-11-08), then the main screen.
+    assert_eq!(h.app.screen, Screen::Done);
+    assert!(has_text(&h.app.items(), "YubiKey 지갑을 만들었습니다"));
+    h.app.on_command(ids::DONE_CONTINUE);
+    yk_pump(&mut h, &mut seen);
     assert_eq!(h.app.screen, Screen::Main);
     // The vault has no recovery words: the worker's meta load says so.
     assert!(matches!(
@@ -3969,6 +3974,11 @@ fn yubikey_connect_without_words_from_the_first_run_screen() {
     assert!(evm[0].3.starts_with("경로를 알 수 없음"));
     assert_eq!(h.app.sol_account_rows().len(), 1);
     h.app.on_command(yk::FINISH);
+    yk_pump(&mut h, &mut seen);
+    // S08 like the other first-run paths (2026-11-08), then the main screen.
+    assert_eq!(h.app.screen, Screen::Done);
+    assert!(has_text(&h.app.items(), "YubiKey를 연결했습니다"));
+    h.app.on_command(ids::DONE_CONTINUE);
     yk_pump(&mut h, &mut seen);
     assert_eq!(h.app.screen, Screen::Main);
 
