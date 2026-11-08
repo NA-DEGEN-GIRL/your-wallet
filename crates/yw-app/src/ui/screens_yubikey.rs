@@ -14,7 +14,7 @@ use yw_core::zec::ZecNetwork;
 use crate::app::{App, AppMode};
 use crate::app_yubikey::{
     CARD_SCRIPTS, PGP_TOUCH, PIV_TOUCH, PgpKind, T_YK_OVERWRITE, T_YK_PIV_FIRMWARE, T_YK_SAME,
-    T_YK_SHARED, T_YK_WALLET, WizardOrigin, WizardStep, YkWizard,
+    T_YK_SHARED, WizardOrigin, WizardStep, YkWizard,
 };
 use crate::ui::main_window::{Ctl, Item, Tone};
 
@@ -658,32 +658,6 @@ fn slot_items(
 }
 
 impl App {
-    /// The S01 card `YubiKey에 키 보관`.
-    pub fn first_run_yubikey_card(&self, items: &mut Vec<Item>) {
-        items.push(Item::CardStart(Some("YubiKey에 키 보관".to_owned())));
-        items.push(Item::Text(T_YK_WALLET.to_owned()));
-        items.push(Item::Help(
-            "YubiKey 5(펌웨어 5.2.3 이상, Solana 계정은 5.7 이상)와 종이·펜이 필요합니다. 복구 단어가 유일한 백업이며 이 PC에는 남지 않습니다."
-                .to_owned(),
-        ));
-        items.push(Item::Row(vec![
-            Ctl::button(ids::NEW_WALLET, "YubiKey 지갑 새로 만들기").enabled(!self.leftover),
-        ]));
-        items.push(Item::Help(
-            "새 복구 단어 24개를 만들어 종이에만 적고, 그 키를 YubiKey에 넣습니다. 이 PC에는 복구 단어가 남지 않습니다."
-                .to_owned(),
-        ));
-        items.push(Item::Row(vec![
-            Ctl::button(ids::CONNECT_NEW_WALLET, "YubiKey 연결하기 (복구 단어 없이)")
-                .enabled(!self.leftover),
-        ]));
-        items.push(Item::Help(
-            "이미 키가 들어 있는 YubiKey(새 PC, 다시 설치)를 복구 단어 없이 연결합니다. 카드의 공개키만 읽고 아무것도 쓰지 않습니다."
-                .to_owned(),
-        ));
-        items.push(Item::CardEnd);
-    }
-
     /// S20: what the new `YubiKey` wallet is, before W01.
     pub fn yk_wallet_intro(items: &mut Vec<Item>) {
         items.push(Item::Title("YubiKey 지갑 만들기".to_owned()));

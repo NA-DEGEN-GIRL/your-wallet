@@ -695,8 +695,10 @@ impl App {
         items.push(Item::Gap(24));
         items.push(Item::Display("Your Wallet".to_owned()));
         items.push(Item::Gap(4));
-        for sentence in T_FIRST {
-            items.push(Item::Text(sentence.to_owned()));
+        // The first two sentences are true for every path; the third (24 words are the only
+        // backup) belongs to the new-wallet card (2026-11-08).
+        for sentence in &T_FIRST[..2] {
+            items.push(Item::Text((*sentence).to_owned()));
         }
         items.push(Item::Gap(8));
         if self.leftover {
@@ -713,26 +715,48 @@ impl App {
                 ),
             ]));
         }
-        items.push(Item::CardStart(Some("처음 사용합니다".to_owned())));
+        // Two groups (2026-11-08): start something new, or bring back a wallet already used;
+        // all five ways are on the first view of the default window.
+        let enabled = !self.leftover;
+        items.push(Item::CardStart(Some("새로 시작합니다".to_owned())));
         items.push(Item::Text(
             "새 지갑을 만들고 복구 단어 24개를 종이에 적습니다. 5분쯤 걸립니다.".to_owned(),
         ));
+        items.push(Item::Help(T_FIRST[2].to_owned()));
         items.push(Item::Row(vec![
-            Ctl::primary(ids::FIRST_CREATE, "새 지갑 만들기").enabled(!self.leftover),
+            Ctl::primary(ids::FIRST_CREATE, "새 지갑 만들기").enabled(enabled),
+            Ctl::button(
+                crate::ui::screens_yubikey::ids::NEW_WALLET,
+                "YubiKey에 보관하는 새 지갑",
+            )
+            .enabled(enabled),
         ]));
+        items.push(Item::Help(format!(
+            "YubiKey에 보관하는 새 지갑: {} YubiKey 5(펌웨어 5.2.3 이상, Solana 계정은 5.7 이상)가 필요합니다.",
+            crate::app_yubikey::T_YK_WALLET
+        )));
         items.push(Item::CardEnd);
         items.push(Item::CardStart(Some(
-            "다른 지갑에서 쓰던 복구 단어가 있습니다".to_owned(),
+            "이미 쓰던 지갑이 있습니다".to_owned(),
         )));
-        items.push(Item::Text(
-            "영어 복구 단어(니모닉) 12·15·18·21·24개로 기존 지갑을 그대로 가져옵니다.".to_owned(),
-        ));
         items.push(Item::Row(vec![
-            Ctl::button(ids::FIRST_IMPORT, "기존 지갑 가져오기").enabled(!self.leftover),
+            Ctl::button(ids::FIRST_IMPORT, "복구 단어로 가져오기").enabled(enabled),
+            Ctl::button(crate::ui::screens_keys::ids::FIRST_KEY, "개인키로 시작하기")
+                .enabled(enabled),
+            Ctl::button(
+                crate::ui::screens_yubikey::ids::CONNECT_NEW_WALLET,
+                "YubiKey 연결하기 (복구 단어 없이)",
+            )
+            .enabled(enabled),
         ]));
+        for line in [
+            "· 복구 단어로 가져오기: 다른 지갑에서 쓰던 영어 복구 단어(니모닉) 12·15·18·21·24개로 그 지갑을 그대로 가져옵니다.".to_owned(),
+            format!("· 개인키로 시작하기: {}", crate::ui::screens_keys::T_KEY_START_CARD),
+            "· YubiKey 연결하기: 이미 키가 들어 있는 YubiKey(새 PC, 다시 설치)를 복구 단어 없이 연결합니다. 카드의 공개키만 읽고 아무것도 쓰지 않습니다.".to_owned(),
+        ] {
+            items.push(Item::Help(line));
+        }
         items.push(Item::CardEnd);
-        self.first_run_key_card(items);
-        self.first_run_yubikey_card(items);
     }
 
     fn create_intro(items: &mut Vec<Item>) {

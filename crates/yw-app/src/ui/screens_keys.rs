@@ -160,20 +160,6 @@ fn script_radios(selected: ScriptType) -> Item {
 }
 
 impl App {
-    /// The S01 card "개인키로 시작하기".
-    pub fn first_run_key_card(&self, items: &mut Vec<Item>) {
-        items.push(Item::CardStart(Some("개인키만 있습니다".to_owned())));
-        items.push(Item::Text(T_KEY_START_CARD.to_owned()));
-        items.push(Item::Help(
-            "EVM·Solana·Bitcoin 중 한 체인의 개인키로 시작하고, 나중에 다른 체인의 개인키를 더할 수 있습니다."
-                .to_owned(),
-        ));
-        items.push(Item::Row(vec![
-            Ctl::button(ids::FIRST_KEY, "개인키로 시작하기").enabled(!self.leftover),
-        ]));
-        items.push(Item::CardEnd);
-    }
-
     /// S18: chain (and Bitcoin script type) before W01.
     pub fn key_start_intro(&self, items: &mut Vec<Item>) {
         let flow = &self.keys.start;
