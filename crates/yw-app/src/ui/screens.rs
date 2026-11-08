@@ -516,13 +516,81 @@ impl App {
     }
 }
 
+impl App {
+    /// The backup status of a wallet whose first recovery phrase is not its only backup
+    /// (2026-11-08, settings → 보안): one line per recovery phrase (words, passphrase, quiz),
+    /// the imported keys, and the `YubiKey` cards. Empty for a wallet with one phrase only.
+    #[must_use]
+    pub fn backup_status_lines(&self) -> Vec<String> {
+        let imported = self.meta.as_ref().map_or(0, |meta| {
+            meta.evm_raw_accounts.len()
+                + meta.sol_raw_accounts.len()
+                + meta
+                    .btc_accounts
+                    .accounts
+                    .iter()
+                    .filter(|account| account.is_imported())
+                    .count()
+        });
+        let cards = self.card.records.len();
+        if !self.several_mnemonics() && imported == 0 && cards == 0 {
+            return Vec::new();
+        }
+        let mut lines = Vec::new();
+        for info in &self.mn.infos {
+            lines.push(format!(
+                "· {} · {}단어{}{} · {}",
+                self.mnemonic_label(info.id),
+                info.words,
+                if info.passphrase_used {
+                    " + passphrase"
+                } else {
+                    ""
+                },
+                if info.primary {
+                    " (첫 복구 단어)"
+                } else {
+                    ""
+                },
+                if info.backup_confirmed {
+                    "백업 확인됨 ✓"
+                } else {
+                    "백업 확인 전 ⚠ — 설정 → 복구 단어에서 '백업 확인'"
+                }
+            ));
+        }
+        if imported > 0 {
+            lines.push(format!(
+                "· 가져온 개인키 {imported}개 — 복구 단어로 되찾을 수 없고, 각각 원래 개인키가 백업입니다"
+            ));
+        }
+        if cards > 0 {
+            let unknown = self.card.records.iter().any(|record| {
+                record
+                    .slots
+                    .iter()
+                    .any(|slot| yw_core::yubikey::plan::is_unknown_index(slot.role.index()))
+            });
+            lines.push(format!(
+                "· YubiKey {cards}개 — {}",
+                if unknown {
+                    "복구 단어 없이 연결한 키는 그 카드(와 같은 키를 가진 백업 카드)가 유일한 사본입니다 ⚠"
+                } else {
+                    "카드의 키는 등록할 때 쓴 복구 단어로 다시 만들 수 있습니다"
+                }
+            ));
+        }
+        lines
+    }
+}
+
 /// The one-line map under the settings tabs: what the selected section holds, and where the
 /// things that are not in settings live (spec/04 §2.11).
 #[must_use]
 pub const fn settings_map(section: SettingsSection) -> &'static str {
     match section {
         SettingsSection::Security => {
-            "이 구역: 자동 잠금 · 복구 단어·개인키 보기와 복사 허용 · 비밀번호 변경 · 지갑 파일 상태 · 지갑 초기화"
+            "이 구역: 자동 잠금 · 백업 현황 · 첫 복구 단어·개인키 보기와 복사 허용 · 비밀번호 변경 · 지갑 파일 상태 · 지갑 초기화. 복구 단어별 보기·백업 확인은 '복구 단어' 탭에 있습니다."
         }
         SettingsSection::Network => {
             "이 구역: RPC 공급자(QuickNode·알케미) · 네트워크별 RPC 주소(EVM·Solana·Bitcoin·Zcash) · rpc.json 가져오기(개발용, 파일이 있을 때 맨 아래)"
@@ -1179,6 +1247,17 @@ impl App {
                 "보안",
                 section == SettingsSection::Security,
             ),
+            // Keys and backups first (2026-11-08), so the nine tabs keep one row at 960 DIP.
+            Ctl::tab(
+                crate::ui::screens_mnemonics::ids::SECTION_MNEMONICS,
+                "복구 단어",
+                section == SettingsSection::Mnemonics,
+            ),
+            Ctl::tab(
+                crate::ui::screens_yubikey::ids::SECTION_YUBIKEY,
+                "YubiKey",
+                section == SettingsSection::YubiKey,
+            ),
             Ctl::tab(
                 ids::SECTION_NETWORK,
                 "네트워크(RPC)",
@@ -1205,18 +1284,8 @@ impl App {
                 section == SettingsSection::Ai,
             ),
             Ctl::tab(
-                crate::ui::screens_mnemonics::ids::SECTION_MNEMONICS,
-                "복구 단어",
-                section == SettingsSection::Mnemonics,
-            ),
-            Ctl::tab(
-                crate::ui::screens_yubikey::ids::SECTION_YUBIKEY,
-                "YubiKey",
-                section == SettingsSection::YubiKey,
-            ),
-            Ctl::tab(
                 ids::SECTION_OTHER,
-                "브라우저·진단·정보",
+                "브라우저·정보",
                 section == SettingsSection::Other,
             ),
         ]));
@@ -1280,15 +1349,47 @@ impl App {
                 ),
             ]));
         } else {
-            items.push(Item::Help(
-                "복구 단어(니모닉)는 지갑 전체의 백업입니다. 보기 전에 비밀번호를 다시 묻고, 화면 캡처에서 제외된 창에 보여줍니다."
-                    .to_owned(),
-            ));
-            items.push(Item::Row(vec![
-                Ctl::button(ids::REVEAL_MNEMONIC, "복구 단어 보기").enabled(public),
+            let lines = self.backup_status_lines();
+            if lines.is_empty() {
+                items.push(Item::Help(
+                    "복구 단어(니모닉)는 지갑 전체의 백업입니다. 보기 전에 비밀번호를 다시 묻고, 화면 캡처에서 제외된 창에 보여줍니다."
+                        .to_owned(),
+                ));
+            } else {
+                // Several backups (2026-11-08): the first recovery phrase is no longer the
+                // whole wallet's backup, so say what each part needs (status only, no values).
+                items.push(Item::Subtitle(
+                    "백업 현황 — 이 지갑을 다시 열려면".to_owned(),
+                ));
+                for line in lines {
+                    items.push(Item::Text(line));
+                }
+                items.push(Item::Help(
+                    "이 PC의 비밀번호는 백업이 아닙니다. 보기 전에 비밀번호를 다시 묻고, 화면 캡처에서 제외된 창에 보여줍니다."
+                        .to_owned(),
+                ));
+            }
+            let several = self.several_mnemonics();
+            let mut row = vec![
+                Ctl::button(
+                    ids::REVEAL_MNEMONIC,
+                    if several {
+                        "첫 복구 단어 보기"
+                    } else {
+                        "복구 단어 보기"
+                    },
+                )
+                .enabled(public),
                 Ctl::button(ids::REVEAL_KEY, "개인키 보기")
                     .enabled(unlocked && !self.hardware_selected()),
-            ]));
+            ];
+            if several {
+                row.push(Ctl::link(
+                    crate::ui::screens_mnemonics::ids::MAIN_LINK,
+                    "복구 단어 관리 ▸",
+                ));
+            }
+            items.push(Item::Row(row));
         }
         items.push(Item::Help(
             "개인키 보기는 메인 화면에서 선택한 EVM 계정의 키를 보여줍니다. Solana·Bitcoin의 가져온 개인키는 각 탭의 계정에서 '개인키 보기'를 누르세요."

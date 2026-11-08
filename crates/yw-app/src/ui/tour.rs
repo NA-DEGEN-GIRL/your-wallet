@@ -1511,10 +1511,10 @@ fn screenshot_tour() {
     }
     save(main_hwnd(&app), "29-sites-solana-bitcoin");
     app.borrow_mut().scroll = 0;
-    // Settings → 브라우저·진단·정보: the section map line, Chrome 확장, WalletConnect.
+    // Settings → 브라우저·정보: the section map line, Chrome 확장, WalletConnect.
     set_screen(&app, UNLOCKED, Screen::Settings(SettingsSection::Other));
     save(main_hwnd(&app), "50-settings-browser");
-    // S23 Chrome 확장 설치 (from settings → 브라우저·진단·정보).
+    // S23 Chrome 확장 설치 (from settings → 브라우저·정보).
     set_screen(&app, UNLOCKED, Screen::Settings(SettingsSection::Other));
     app.borrow_mut().open_extension_help();
     save(main_hwnd(&app), "45-chrome-extension");

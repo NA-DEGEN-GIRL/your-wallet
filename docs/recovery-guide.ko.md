@@ -100,7 +100,7 @@ BIP-39 passphrase는 추가 비밀번호가 아니라 완전히 다른 지갑을
 
 ## 데이터 폴더 백업과 새 PC로 옮기기
 
-지갑 파일은 `%LOCALAPPDATA%\YourWallet\v3` 폴더에 있습니다(설정 → 브라우저·진단·정보 →
+지갑 파일은 `%LOCALAPPDATA%\YourWallet\v3` 폴더에 있습니다(설정 → 브라우저·정보 →
 '폴더 열기').
 
 | 파일 | 내용 |

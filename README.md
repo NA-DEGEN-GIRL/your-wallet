@@ -29,7 +29,7 @@ Rust(rustup)나 Visual Studio C++ 빌드 도구가 없으면 설치 스크립트
    `%LOCALAPPDATA%\Programs\YourWallet`으로 설치한다(관리자 권한 불필요).
 2. Chrome → `chrome://extensions` → 개발자 모드 → 압축해제된 확장 프로그램 로드 →
    `%LOCALAPPDATA%\Programs\YourWallet\extension`(설치가 끝나면 이 경로가 클립보드에 있다). 앱의 설정 →
-   브라우저·진단·정보 → `Chrome 확장 설치 방법·폴더`에도 같은 안내와 `폴더 열기`·`경로 복사`가 있다.
+   브라우저·정보 → `Chrome 확장 설치 방법·폴더`에도 같은 안내와 `폴더 열기`·`경로 복사`가 있다.
 3. 시작 메뉴 → **Your Wallet** → 지갑 만들기(24단어 종이 백업) → 설정 → 네트워크(RPC)
    ([docs/install.ko.md](docs/install.ko.md) "첫 실행").
 

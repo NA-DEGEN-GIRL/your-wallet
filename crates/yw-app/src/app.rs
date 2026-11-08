@@ -160,7 +160,7 @@ pub enum SettingsSection {
     Security,
     /// 네트워크 (RPC 공급자, 네트워크 URL).
     Network,
-    /// 브라우저·진단·정보.
+    /// 브라우저·정보.
     Other,
     /// EVM 체인, 수수료 상한 (M4).
     Chains,
