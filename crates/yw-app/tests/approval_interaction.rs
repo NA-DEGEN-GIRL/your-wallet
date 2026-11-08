@@ -1007,3 +1007,16 @@ fn arm_waiting_is_only_the_window_timing() {
     let blocked = session(message(RiskLevel::Blocked, false, 1), 0);
     assert!(!blocked.arm_waiting(5_000));
 }
+
+/// 2026-11-08: the status line names the user's step on a high-risk window — the unchecked
+/// acknowledgement box — and nothing else changes the gate.
+#[test]
+fn ack_missing_is_the_users_step() {
+    let mut high = session(message(RiskLevel::High, true, 1), 0);
+    assert!(high.ack_missing());
+    assert!(!high.connect_empty());
+    high.set_ack(5_000, true);
+    assert!(!high.ack_missing());
+    assert!(!session(message(RiskLevel::Info, false, 0), 0).ack_missing());
+    assert!(!session(message(RiskLevel::Blocked, false, 1), 0).ack_missing());
+}

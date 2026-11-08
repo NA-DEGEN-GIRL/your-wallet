@@ -249,6 +249,41 @@ struct BarState {
 pub const T_ARM_WAIT: &str = "잠시 뒤 버튼이 켜집니다 (실수 클릭을 막는 1초 대기)";
 /// The same while another window is in front.
 pub const T_ARM_WAIT_BACKGROUND: &str = "이 창을 클릭해 앞으로 가져오면 1초 뒤 버튼이 켜집니다";
+/// The status line of a high-risk window whose acknowledgement box is unchecked (2026-11-08).
+pub const T_ACK_FIRST: &str = "경고를 읽고 아래 '위 경고를 모두 확인했습니다'에 체크하세요";
+/// The same once the high-risk window is armed.
+pub const T_HOLD_NOW: &str = "'승인'을 2초 동안 누르고 있으세요";
+/// The same after a hold was let go before 2 s (until the next press).
+pub const T_HOLD_EARLY: &str = "2초가 되기 전에 놓았습니다 — 다시 2초 동안 누르세요";
+/// The status line of a connect window with no account selected.
+pub const T_CONNECT_PICK: &str = "연결할 계정을 하나 이상 고르세요";
+
+/// The user's next step on the status line (display only; the gate is unchanged): what is still
+/// to do, then why the button waits, then how to approve a high-risk request.
+fn next_step(ui: &ApprovalUi, held: bool, now: u64) -> Option<&'static str> {
+    let gate = &ui.session.gate;
+    if ui.view.blocked || held || gate.submitting || now >= gate.deadline_ms {
+        return None;
+    }
+    if ui.session.connect_empty() {
+        return Some(T_CONNECT_PICK);
+    }
+    if ui.session.ack_missing() {
+        return Some(T_ACK_FIRST);
+    }
+    if ui.early_release {
+        return Some(T_HOLD_EARLY);
+    }
+    if ui.session.arm_waiting(now) {
+        // Why the button is grey (review 2026-11-07 F7); the arm delay itself is unchanged.
+        return Some(if gate.is_foreground {
+            T_ARM_WAIT
+        } else {
+            T_ARM_WAIT_BACKGROUND
+        });
+    }
+    (ui.view.high && ui.session.approve_ready(now)).then_some(T_HOLD_NOW)
+}
 
 fn bar_state(ui: &ApprovalUi, waiting: usize, now: u64) -> BarState {
     let gate = &ui.session.gate;
@@ -272,19 +307,11 @@ fn bar_state(ui: &ApprovalUi, waiting: usize, now: u64) -> BarState {
     if let Some(done) = held_ms {
         let _ = write!(status, "   ·   {}.{}초", done / 1_000, (done % 1_000) / 100);
     }
-    if held_ms.is_none() && !ui.view.blocked && ui.session.arm_waiting(now) {
-        // Why the button is grey (review 2026-11-07 F7); the arm delay itself is unchanged.
+    if let Some(step) = next_step(ui, held_ms.is_some(), now) {
         if !status.is_empty() {
             status.push_str("   ·   ");
         }
-        status.push_str(if gate.is_foreground {
-            T_ARM_WAIT
-        } else {
-            T_ARM_WAIT_BACKGROUND
-        });
-    }
-    if status.is_empty() && ui.view.high && !ui.view.blocked {
-        status.push_str("경고를 확인하고 체크한 뒤 '승인'을 2초 동안 누르고 있으세요.");
+        status.push_str(step);
     }
     let simulating = matches!(
         gate.prepare,
@@ -327,6 +354,8 @@ pub struct ApprovalUi {
     request: Option<ApprovalRequest>,
     failure: Option<String>,
     status: Option<String>,
+    /// A high-risk hold was let go before 2 s (the status line says so until the next press).
+    early_release: bool,
     focus: Focus,
     raw_open: bool,
     scroll: i32,
@@ -1247,6 +1276,7 @@ impl App {
             request: None,
             failure: None,
             status: None,
+            early_release: false,
             focus: Focus::Reject,
             raw_open: false,
             scroll: 0,
@@ -2121,7 +2151,19 @@ impl App {
         ui.session
             .set_foreground(now, window_is_foreground(&ui.window));
         let before = ui.session.interaction().status();
+        let holding = ui.session.interaction().hold_remaining_ms(now).is_some();
         let status = ui.session.event(now, event);
+        if event.is_press() {
+            ui.early_release = false;
+        } else if holding
+            && status == InteractionStatus::Pending
+            && matches!(
+                event,
+                InteractionEvent::PointerReleased { .. } | InteractionEvent::SpaceReleased { .. }
+            )
+        {
+            ui.early_release = true;
+        }
         let deadline = ui.session.gate.deadline_ms;
         match status_action(before, status, now, deadline) {
             StatusAction::Approve => self.approved(),

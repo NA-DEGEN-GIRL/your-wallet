@@ -704,6 +704,30 @@ impl ApprovalSession {
             && !self.approve_ready(now_ms)
     }
 
+    /// Whether the shown request needs the acknowledgement box and it is unchecked (the user's
+    /// next step on a high-risk window). Display only, like [`Self::arm_waiting`].
+    #[must_use]
+    pub fn ack_missing(&self) -> bool {
+        let required = match &self.gate.prepare {
+            PrepareState::Ready(ReadyContent::Signing(request)) => {
+                request.display.risk != RiskLevel::Blocked && ack_needed(request)
+            }
+            PrepareState::Ready(ReadyContent::Connect(_))
+            | PrepareState::Preparing(_)
+            | PrepareState::Failed { .. } => false,
+        };
+        required && !self.gate.ack_checked
+    }
+
+    /// Whether a connect window shows no selected account (display only).
+    #[must_use]
+    pub fn connect_empty(&self) -> bool {
+        matches!(
+            self.gate.prepare,
+            PrepareState::Ready(ReadyContent::Connect(_))
+        ) && self.gate.connect_selected == 0
+    }
+
     /// Toggles the acknowledgement checkbox.
     pub fn set_ack(&mut self, now_ms: u64, checked: bool) {
         self.gate.ack_checked = checked;

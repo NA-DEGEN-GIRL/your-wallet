@@ -385,18 +385,48 @@ pub fn summary(request: &ApprovalRequest) -> (String, Option<String>) {
             format!("{place}아직 확정되지 않은 거래를 취소합니다(같은 nonce로 0을 보내는 거래)."),
             None,
         ),
-        ApprovalKind::EvmPersonalSign => (
-            format!(
-                "{place}메시지에 서명합니다. 거래를 보내지는 않지만, 서명은 로그인이나 권한 확인에 쓰일 수 있습니다."
-            ),
-            None,
-        ),
-        ApprovalKind::EvmTypedData => (
-            format!(
-                "{place}구조화된 데이터(EIP-712)에 서명합니다. 토큰 사용 권한(permit) 같은 권한을 줄 수 있으니 아래 내용을 확인하세요."
-            ),
-            None,
-        ),
+        ApprovalKind::EvmPersonalSign => {
+            // A parsed SIWE message says what it is (2026-11-08): the site log-in, and the
+            // domain the message names (a domain other than the requesting site is S01, blocked).
+            let siwe_domain = display
+                .fields
+                .iter()
+                .find(|field| field.key.0 == 0x0404 && field.sub_label == "도메인")
+                .map(|field| first_line(&field.value).trim().to_owned())
+                .filter(|_| title_action(&display.title) == "로그인 요청 (SIWE)");
+            (
+                siwe_domain.map_or_else(
+                    || {
+                        format!(
+                            "{place}메시지에 서명합니다. 거래를 보내지는 않지만, 서명은 로그인이나 권한 확인에 쓰일 수 있습니다."
+                        )
+                    },
+                    |domain| {
+                        format!(
+                            "{place}{domain} 사이트 로그인(Sign-In with Ethereum) 메시지에 서명합니다. 거래를 보내지는 않습니다."
+                        )
+                    },
+                ),
+                None,
+            )
+        }
+        ApprovalKind::EvmTypedData => {
+            // A known schema names its action in the title ('토큰 사용 허가 서명 (permit)',
+            // 'Permit2 즉시 이체 서명', 'NFT 마켓 주문 서명'); the summary repeats it.
+            let action = title_action(&display.title);
+            (
+                if action.is_empty() || action == "타입 데이터 서명" {
+                    format!(
+                        "{place}구조화된 데이터(EIP-712)에 서명합니다. 토큰 사용 권한(permit) 같은 권한을 줄 수 있으니 아래 내용을 확인하세요."
+                    )
+                } else {
+                    format!(
+                        "{place}'{action}'에 서명합니다(EIP-712). 서명만으로 권한이나 자산이 넘어갈 수 있으니 아래 경고와 내용을 확인하세요."
+                    )
+                },
+                None,
+            )
+        }
         ApprovalKind::SolTransfer => match field_value(display, 0x0502) {
             Some(amount) => send(amount, field_value(display, 0x0501)),
             None => (format!("{place}SOL을 보냅니다."), None),
@@ -560,15 +590,21 @@ pub fn signing_view(
         .map(|(_, warning)| warning)
         .collect();
     let acknowledge = view.high && !view.blocked;
-    if !shown_warnings.is_empty() || acknowledge {
+    // Information lines go to their own "참고" section (2026-11-08): a window whose only lines
+    // restate the summary is not titled "확인할 경고", so that title keeps its weight. Every line
+    // is still shown, in display order within its section; levels and the ack are unchanged.
+    let (attention, notes): (Vec<&Warning>, Vec<&Warning>) = shown_warnings
+        .into_iter()
+        .partition(|warning| warning.level != RiskLevel::Info);
+    if !attention.is_empty() || acknowledge {
         view.blocks.push(Block::Section("확인할 경고"));
     }
-    if shown_warnings.is_empty() && acknowledge {
+    if attention.is_empty() && acknowledge {
         view.blocks.push(Block::Muted(
             "맨 위의 고위험 경고를 읽고, 이해했으면 아래에 체크하세요.".to_owned(),
         ));
     }
-    for warning in shown_warnings {
+    for warning in attention {
         view.blocks.push(Block::Warning {
             text: warning.text.clone(),
             tone: tone_of(warning.level),
@@ -576,6 +612,15 @@ pub fn signing_view(
     }
     if acknowledge {
         view.blocks.push(Block::Ack);
+    }
+    if !notes.is_empty() {
+        view.blocks.push(Block::Section("참고"));
+    }
+    for warning in notes {
+        view.blocks.push(Block::Warning {
+            text: warning.text.clone(),
+            tone: tone_of(warning.level),
+        });
     }
     let shown_above = |field: &DisplayField| {
         is_header(field.key)
