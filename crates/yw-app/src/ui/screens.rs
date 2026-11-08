@@ -655,7 +655,7 @@ pub const fn settings_map(section: SettingsSection) -> &'static str {
             "이 구역: 지갑의 복구 단어 목록 · 복구 단어 추가 가져오기 · 새 복구 단어 만들기 · 이름 바꾸기 · 단어 보기 · 백업 확인 · 지우기"
         }
         SettingsSection::YubiKey => {
-            "이 구역: YubiKey 등록 · PIN 설정 · 슬롯 구성 바꾸기 · YubiKey 비우기 · 계정별 YubiKey. 서명할 때는 승인 뒤 PIN 창이 저절로 열립니다."
+            "이 구역: YubiKey 등록 · PIN 설정 · 슬롯 구성 바꾸기 · YubiKey의 키 지우기 · 계정별 YubiKey. 서명할 때는 승인 뒤 PIN 창이 저절로 열립니다."
         }
         SettingsSection::Other => {
             "이 구역: Chrome 확장 설치 · WalletConnect · 브라우저 연결 · 진단(로그) · 버전·데이터 폴더·단축키. Zcash는 메인의 Zcash 탭에서 켭니다."
