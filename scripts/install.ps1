@@ -14,7 +14,8 @@
 #   -AllowAncestorCargoConfig  저장소 바깥 상위 폴더의 .cargo\config.toml·.cargo\config(아래 cargo 설정 규칙)가 있어도
 #                  목록을 출력한 뒤 그대로 빌드한다. 없으면 그런 폴더에서는 빌드하지 않는다(종료 7).
 #   -AllowUnsafeSourcePath  설치할 파일이 나오는 저장소 폴더·extension\·빌드 폴더(target\release)를 다른 사용자가 바꿀 수
-#                  있어도(아래 소스 폴더 규칙) 목록을 출력한 뒤 그대로 설치한다. 없으면 그런 소스로는 설치하지 않는다(종료 1).
+#                  있어도(아래 소스 폴더 규칙), 또는 소스·빌드·설치 폴더에 낮은 무결성 레이블이 있어도(아래 레이블 규칙) 목록을
+#                  출력한 뒤 그대로 설치한다. 없으면 그런 소스로는 설치하지 않는다(종료 1; 레이블은 대화형이면 '계속' 입력으로 계속).
 #   -NoShortcut   시작 메뉴 바로가기를 만들지 않는다.
 #   -NoNativeHost  HKCU에 Chrome native messaging host를 등록하지 않는다(manifest 파일은 설치 폴더에 쓴다).
 #   -NoBuild       빌드하지 않고 이미 있는 target\release\yw-app.exe·yw-host.exe를 쓴다(빌드 도구 확인도 건너뛴다).
@@ -27,7 +28,7 @@
 # (-AllowUnsafeToolchainPath면 계속). 다른 PATH 항목은 보지 않는다. git(커밋 표시용)은 Program Files 아래이거나 현재
 # 사용자 소유 폴더이고 같은 권한 검사를 통과할 때만 쓰고, 아니면 커밋 표시를 건너뛴다. 빌드는 cargo +1.95.0이고
 # Cargo.toml [profile.release]와 같은 값을 명령줄 --config로 다시 주며, 컴파일러·빌드 설정을 바꾸는 환경 변수를 빌드
-# 동안만 지운다(Invoke-Build). cargo·rustc가 1.95.0이 아니면 종료 7.
+# 동안만 지운다(Invoke-Build). cargo·rustc가 1.95.0이 아니면 종료 7. 빌드 폴더는 명령줄 --target-dir로 준다(아래 빌드 폴더).
 #
 # cargo 설정 규칙(Confirm-CargoConfigs): cargo는 저장소 루트와 그 모든 상위 폴더(D:\#Programming, D:\ 등)의
 # .cargo\config.toml·.cargo\config, 그리고 CARGO_HOME의 config.toml·config를 빌드에 적용한다. 저장소 자신의 .cargo는
@@ -59,6 +60,24 @@
 # AppContainer(S-1-15-2-*·S-1-15-3-*) SID의 ACE는 무시한다 — 로그온 세션에 주어지는 SID가 아니고(샌드박스가 현재 사용자의
 # 제한 토큰에 넣는 제한 SID·AppContainer SID), 그런 토큰은 사용자 SID 권한이 함께 있어야만 접근한다. 위반이면 목록을
 # 출력하고 종료 1(-AllowUnsafeSourcePath면 경고 후 계속).
+#
+# 빌드 폴더(2026-11-08): CARGO_TARGET_DIR(상대 경로면 저장소 기준), 없으면 저장소의 target. cargo에 --target-dir로 그 폴더를
+# 그대로 넘긴다 — 명령줄이 .cargo\config.toml·CARGO_HOME 설정의 build.target-dir과 CARGO_BUILD_TARGET_DIR보다 우선하므로,
+# 설치 프로그램이 복사해 오는 release\ 폴더가 언제나 이번 빌드의 결과다(다른 곳에 빌드되고 옛 exe가 설치되는 일이 없다).
+# cargo는 빌드 폴더의 빌드 스크립트·proc-macro를 실행하므로 빌드 폴더의 권한(소스 폴더 규칙)과 레이블(아래)은 cargo를 실행하기
+# **전에** 본다: 빌드 폴더와 release\·release\build\·release\deps\(있는 것), 빌드 폴더가 아직 없으면 그것을 만들 가장 가까운
+# 상위 폴더(다른 사용자나 낮은 무결성 프로세스가 먼저 만들 수 있으면 안 된다). 빌드 뒤에도 release\·yw-app.exe·yw-host.exe를
+# 다시 본다.
+#
+# 무결성 레이블(2026-11-08, Confirm-IntegrityLabels): 소스(저장소 루트, Cargo.toml·Cargo.lock·rust-toolchain.toml, .cargo\·
+# crates\·scripts\·extension\ 아래 모든 항목), 빌드 폴더(위), 설치 폴더(있으면 그 안 모든 항목, 없으면 만들 상위 폴더)의
+# 무결성 레이블을 GetNamedSecurityInfoW(LABEL_SECURITY_INFORMATION)로 읽는다(Get-Acl은 레이블을 돌려주지 않고 -Audit는 관리자
+# 권한이 필요하다). 레이블 ACE가 Medium보다 낮거나(Low·Untrusted) 쓰기 금지(NW) 정책이 없으면 — 다른 도구가 저장소에 붙이는
+# 일이 있다 — 브라우저 샌드박스 같은 낮은 무결성 프로세스도 현재 사용자 권한으로 그 파일을 바꿀 수 있고, 그 코드가 빌드·설치되어
+# 지갑으로 실행된다. 그러면 목록과 이유, 되돌리는 명령(icacls "<폴더>" /setintegritylevel (OI)(CI)M)을 출력하고, 대화형이면
+# '계속'을 정확히 입력할 때만 계속한다(그 밖의 입력은 종료 3; 소스와 빌드 폴더는 한 번, 설치 폴더는 따로 묻는다). 비대화형이면
+# 종료 1(-AllowUnsafeSourcePath면 경고 후 계속). 설치 프로그램은 레이블을 바꾸지 않는다.
+#
 # 설치 기록(yw-install.json)에는 설치한 파일마다 SHA-256(hashes)을 남기고, 다음 실행에서 설치 폴더의 파일과 비교해 설치 뒤에
 # 바뀐 파일을 경고한다(이번 설치가 소스의 파일로 다시 쓴다). 이전 버전의 기록(hashes 없음)은 비교하지 않는다.
 #
@@ -82,10 +101,11 @@
 #   0  성공(-DryRun 포함)
 #   1  환경·인자 오류(저장소 밖의 사본을 실행, LOCALAPPDATA 없음, 64비트 Windows 아님, 쓸 수 없는 설치 경로,
 #      설치 기록이 없는 비어 있지 않은 폴더, 다른 사용자가 바꿀 수 있는 설치 폴더나 상위 폴더, 다른 사용자가 바꿀 수
-#      있는 소스·빌드 폴더(-AllowUnsafeSourcePath 없음) 등)
+#      있는 소스·빌드 폴더, 비대화형 실행에서 낮은 무결성 레이블(둘 다 -AllowUnsafeSourcePath 없음) 등)
 #   2  소스·빌드 결과 오류(확장 파일 없음·형식 오류, 확장 ID 불일치, rust-toolchain.toml이 1.95.0이 아님,
 #      -NoBuild인데 yw-app.exe·yw-host.exe 없음)
-#   3  취소(사용자가 취소함, 또는 실행 중인 yw-app·yw-host를 닫아 달라고 물을 수 없는 비대화형 실행)
+#   3  취소(사용자가 취소함 — 낮은 무결성 레이블 질문에 '계속' 아닌 입력 포함 — 또는 실행 중인 yw-app·yw-host를 닫아 달라고
+#      물을 수 없는 비대화형 실행)
 #   4  파일 복사·삭제·설치 기록 실패
 #   5  native host manifest 검증 또는 HKCU 등록 실패
 #   6  시작 메뉴 바로가기 생성 실패
@@ -406,6 +426,140 @@ function Confirm-SourcePathsTrusted([string[]]$Paths, [string]$UserSid, [bool]$A
         return
     }
     Stop-Install 1 '이 소스로는 설치하지 않습니다. 다른 사용자가 저장소나 빌드 폴더의 파일을 바꿔 두면 그 코드가 지갑으로 설치됩니다. 저장소를 사용자 프로필 아래(예: %USERPROFILE%\src)에 다시 받아 설치하거나, 폴더 권한을 확인한 뒤 -AllowUnsafeSourcePath로 실행하세요.'
+}
+
+# ---------------------------------------------------------------- 무결성 레이블(머리말의 레이블 규칙)
+
+# 레이블은 SACL의 ML ACE라 Get-Acl이 돌려주지 않고 Get-Acl -Audit는 SeSecurityPrivilege(관리자)가 필요하다. READ_CONTROL만 쓰는
+# GetNamedSecurityInfoW(LABEL_SECURITY_INFORMATION)로 읽는다(메모리에서만 만드는 P/Invoke: Add-Type처럼 %TEMP%에 쓰거나
+# 컴파일러를 실행하지 않는다; scripts/check.ps1과 같은 방식).
+$script:NativeLabel = $null
+function Get-NativeLabel {
+    if ($null -ne $script:NativeLabel) { return $script:NativeLabel }
+    $assembly = [Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly((New-Object Reflection.AssemblyName('YwInstallNative')), [Reflection.Emit.AssemblyBuilderAccess]::Run)
+    $type = $assembly.DefineDynamicModule('YwInstallNative').DefineType('YwInstallNative.Advapi', 'Public, Class')
+    $out = [IntPtr].MakeByRefType()
+    foreach ($m in @(
+        @('advapi32.dll', 'GetNamedSecurityInfoW', [int], @([string], [int], [int], $out, $out, $out, $out, $out)),
+        @('advapi32.dll', 'ConvertSecurityDescriptorToStringSecurityDescriptorW', [bool], @([IntPtr], [int], [int], $out, [IntPtr])),
+        @('kernel32.dll', 'LocalFree', [IntPtr], @([IntPtr])))) {
+        $method = $type.DefinePInvokeMethod($m[1], $m[0], [Reflection.MethodAttributes]'Public, Static, PinvokeImpl',
+            [Reflection.CallingConventions]::Standard, $m[2], [type[]]$m[3],
+            [Runtime.InteropServices.CallingConvention]::Winapi, [Runtime.InteropServices.CharSet]::Unicode)
+        $method.SetImplementationFlags([Reflection.MethodImplAttributes]::PreserveSig)
+    }
+    $script:NativeLabel = $type.CreateType()
+    return $script:NativeLabel
+}
+
+# $Path의 레이블 SDDL(예 'S:AI(ML;OICI;NW;;;LW)'; 레이블이 없으면 빈 문자열). 읽지 못하면 예외.
+function Read-IntegrityLabel([string]$Path) {
+    $native = Get-NativeLabel
+    $owner = [IntPtr]::Zero; $group = [IntPtr]::Zero; $dacl = [IntPtr]::Zero; $sacl = [IntPtr]::Zero; $sd = [IntPtr]::Zero
+    $status = $native::GetNamedSecurityInfoW($Path, 1, 0x10, [ref]$owner, [ref]$group, [ref]$dacl, [ref]$sacl, [ref]$sd)   # SE_FILE_OBJECT, LABEL_SECURITY_INFORMATION
+    if ($status -ne 0) { throw "GetNamedSecurityInfoW 오류 $status" }
+    try {
+        $text = [IntPtr]::Zero
+        if (-not $native::ConvertSecurityDescriptorToStringSecurityDescriptorW($sd, 1, 0x10, [ref]$text, [IntPtr]::Zero)) { throw 'ConvertSecurityDescriptorToStringSecurityDescriptorW 실패' }
+        try { return [Runtime.InteropServices.Marshal]::PtrToStringUni($text) } finally { [void]$native::LocalFree($text) }
+    } finally { [void]$native::LocalFree($sd) }
+}
+
+# 레이블 SDDL이 낮은 무결성 프로세스의 쓰기를 허용하면 이유 문장, 아니면 $null. 레이블이 없으면 Windows는 Medium + 쓰기 금지(NW)로
+# 본다. 레이블 ACE마다(상속 전용 포함: 앞으로 그 안에 만들 항목에 붙는다) 수준이 Medium(S-1-16-8192)보다 낮거나(Low LW,
+# Untrusted S-1-16-0) 정책에 NW가 없으면 문제다.
+function Get-IntegrityLabelProblem([string]$Sddl) {
+    if ([string]::IsNullOrEmpty($Sddl)) { return $null }
+    foreach ($ace in [regex]::Matches($Sddl, '\(ML;([^;]*);([^;]*);[^;]*;[^;]*;([^)]+)\)')) {
+        $flags = $ace.Groups[1].Value
+        $rights = $ace.Groups[2].Value
+        $sid = $ace.Groups[3].Value
+        $level = switch -Regex ($sid) { '^LW$' { 0x1000 } '^ME$' { 0x2000 } '^MP$' { 0x2100 } '^HI$' { 0x3000 } '^SI$' { 0x4000 } '^S-1-16-(\d+)$' { [int64]$Matches[1] } default { -1 } }
+        if ($rights -match '^0[xX]([0-9A-Fa-f]+)$') {
+            $noWriteUp = ([Convert]::ToInt64($Matches[1], 16) -band 1) -ne 0
+        } else {
+            $noWriteUp = @([regex]::Matches($rights, '..') | ForEach-Object { $_.Value }) -contains 'NW'
+        }
+        $scope = ''
+        if (@([regex]::Matches($flags, '..') | ForEach-Object { $_.Value }) -contains 'IO') { $scope = ' (상속 전용: 앞으로 그 안에 만드는 항목에 붙음)' }
+        if ($level -lt 0x2000) {
+            $name = switch ($sid) { 'LW' { 'Low' } 'S-1-16-0' { 'Untrusted' } default { $sid } }
+            return "무결성 레이블 $name(Medium보다 낮음)$scope"
+        }
+        if (-not $noWriteUp) { return "무결성 레이블 $sid 에 쓰기 금지(NW) 정책이 없음$scope" }
+    }
+    return $null
+}
+
+# $Paths(있는 것만)와 $Trees 폴더 안의 모든 항목(재분석 지점은 따라가지 않는다)의 레이블 문제. "경로 : 이유" 목록.
+function Get-IntegrityLabelProblems([string[]]$Paths, [string[]]$Trees) {
+    $all = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($path in @($Paths) + @($Trees)) { if (-not [string]::IsNullOrEmpty($path)) { $all.Add($path) } }
+    foreach ($tree in @($Trees)) {
+        if ([string]::IsNullOrEmpty($tree) -or -not (Test-Path -LiteralPath $tree -PathType Container)) { continue }
+        foreach ($item in @(Get-ChildItem -LiteralPath $tree -Recurse -Force -ErrorAction Stop)) { $all.Add($item.FullName) }
+    }
+    $problems = New-Object 'System.Collections.Generic.List[string]'
+    $seen = @{}
+    foreach ($path in $all) {
+        if ($seen.ContainsKey($path.ToLowerInvariant())) { continue }
+        $seen[$path.ToLowerInvariant()] = $true
+        if (-not (Test-Path -LiteralPath $path)) { continue }
+        try {
+            $problem = Get-IntegrityLabelProblem (Read-IntegrityLabel $path)
+        } catch {
+            $problem = "무결성 레이블을 읽지 못했습니다($((Get-InnerException $_).Message))"
+        }
+        if ($null -ne $problem) { $problems.Add("$path : $problem") }
+    }
+    return , $problems.ToArray()
+}
+
+# 레이블 확인: 문제가 있으면 목록·이유와 되돌리는 명령($Root 기준)을 출력한다(레이블은 바꾸지 않는다). $Allow
+# (-AllowUnsafeSourcePath)면 경고 후 계속, 대화형이면 '계속'을 정확히 입력해야 계속(그 밖의 입력은 종료 3), 비대화형이면 종료 1.
+# 같은 $Key로 이미 '계속'을 받았으면 다시 묻지 않는다(소스와 빌드 폴더는 'build', 설치 폴더는 'install').
+$script:LabelAccepted = @{}
+function Confirm-IntegrityLabels([string]$What, [string]$Key, [string]$Root, [string[]]$Paths, [string[]]$Trees, [bool]$Allow) {
+    $problems = Get-IntegrityLabelProblems $Paths $Trees
+    if ($problems.Count -eq 0) { return }
+    Write-Host "  $What 에 낮은 무결성 레이블이 있습니다:" -ForegroundColor Yellow
+    foreach ($problem in @($problems | Select-Object -First 10)) { Write-Host "    - $problem" }
+    if ($problems.Count -gt 10) { Write-Host "    - 그 밖에 $($problems.Count - 10)개" }
+    Write-Host '  이 레이블은 보통 다른 도구(샌드박스·에디터 확장 등)가 붙인 것입니다. 레이블이 있으면 브라우저 샌드박스 같은 낮은 무결성'
+    Write-Host '  프로세스도 현재 사용자 권한으로 이 파일을 바꿀 수 있고, 바뀐 코드가 빌드·설치되어 지갑(yw-app·yw-host)으로 실행됩니다.'
+    Write-Host '  설치 프로그램은 레이블을 바꾸지 않습니다. 직접 붙인 것이 아니면 다음 명령으로 보통 수준(Medium)으로 되돌린 뒤 다시'
+    Write-Host '  실행하세요(하위 항목에 따로 붙은 레이블이 남으면 끝에 /T를 붙입니다):'
+    Write-Host "    icacls `"$Root`" /setintegritylevel (OI)(CI)M"
+    if ($script:LabelAccepted.ContainsKey($Key)) {
+        Write-Warn '위에서 이미 계속하기로 했습니다.'
+        return
+    }
+    if ($Allow) {
+        Write-Warn '-AllowUnsafeSourcePath: 레이블을 그대로 두고 계속합니다. 낮은 무결성 프로세스가 파일을 바꿔 두었다면 그대로 빌드·설치됩니다.'
+        return
+    }
+    if (-not (Test-Interactive)) {
+        Stop-Install 1 "낮은 무결성 레이블이 있는 $What 로는 설치하지 않습니다(비대화형이라 물을 수 없습니다). 위 명령으로 레이블을 되돌린 뒤 다시 실행하거나, 위험을 이해했으면 -AllowUnsafeSourcePath로 실행하세요."
+    }
+    $answer = "$(Read-Host "  그래도 계속하려면 '계속'을 입력하세요(그 밖의 입력 = 설치 취소)")".Trim()
+    if ($answer -cne '계속') { Stop-Install 3 '설치를 취소했습니다. 레이블을 되돌린 뒤 다시 실행하세요.' }
+    $script:LabelAccepted[$Key] = $true
+    Write-Warn '레이블을 그대로 두고 계속합니다.'
+}
+
+# 가장 가까운 있는 상위 폴더(없으면 $null).
+function Get-ExistingAncestor([string]$Path) {
+    $parent = [IO.Path]::GetDirectoryName($Path)
+    while (-not [string]::IsNullOrEmpty($parent) -and -not (Test-Path -LiteralPath $parent)) { $parent = [IO.Path]::GetDirectoryName($parent) }
+    return $parent
+}
+
+# cargo 실행 전에 볼 빌드 폴더 경로(머리말의 빌드 폴더): 빌드 폴더와 release\·release\build\·release\deps\ 중 있는 것,
+# 빌드 폴더가 아직 없으면 그것을 만들 가장 가까운 상위 폴더.
+function Get-BuildDirPaths([string]$TargetDir) {
+    if (-not (Test-Path -LiteralPath $TargetDir)) { return , [string[]]@(Get-ExistingAncestor $TargetDir | Where-Object { $_ }) }
+    $release = Join-Path $TargetDir 'release'
+    return , [string[]]@($TargetDir, $release, (Join-Path $release 'build'), (Join-Path $release 'deps') | Where-Object { Test-Path -LiteralPath $_ })
 }
 
 # 이미 있는 폴더를 고친다(-FixPermissions, 현재 사용자 소유일 때만 호출): 폴더에 설치 DACL, 안의 항목은 명시 ACE를
@@ -1109,9 +1263,10 @@ function Restore-BuildEnvironment($Saved) {
     foreach ($name in @($Saved.Keys)) { [Environment]::SetEnvironmentVariable($name, $Saved[$name], 'Process') }
 }
 
-# cargo 인자: +툴체인, Cargo.toml [profile.release]를 다시 주는 --config, build 인자. 배열로 넘겨 PowerShell 5.1·7이 같은
-# 명령줄을 만든다(값에 공백·큰따옴표가 없다).
-function Get-CargoBuildArguments {
+# cargo 인자: +툴체인, Cargo.toml [profile.release]를 다시 주는 --config, build 인자, --target-dir $TargetDir(설치 프로그램이
+# 결과를 읽는 바로 그 폴더; 설정 파일의 build.target-dir·CARGO_BUILD_TARGET_DIR보다 우선한다). 배열로 넘겨 PowerShell 5.1·7이
+# 같은 명령줄을 만든다(--config 값에 공백·큰따옴표가 없다; 공백이 있는 폴더 경로는 PowerShell이 따옴표로 감싼다).
+function Get-CargoBuildArguments([string]$TargetDir) {
     $list = New-Object 'System.Collections.Generic.List[string]'
     $list.Add("+$RustToolchain")
     foreach ($setting in $ReleaseProfileOverrides) {
@@ -1123,6 +1278,8 @@ function Get-CargoBuildArguments {
         $list.Add($setting)
     }
     $list.AddRange([string[]]$BuildArgs)
+    $list.Add('--target-dir')
+    $list.Add($TargetDir)
     return , $list.ToArray()
 }
 
@@ -1256,9 +1413,10 @@ function Confirm-CargoConfigs([string]$Root, [string]$CargoHome, [bool]$Allow) {
     }
 }
 
-# Rust $RustToolchain(+툴체인)으로 릴리스 빌드한다. $Tools = Get-RustTools(전체 경로). 컴파일러·빌드 설정을 바꾸는
-# 환경 변수는 이 함수 동안만 지우고 끝나면 되돌린다. 툴체인 버전·대상이 다르면 종료 7, 빌드 실패는 종료 8.
-function Invoke-Build([string]$Root, $Tools) {
+# Rust $RustToolchain(+툴체인)으로 릴리스 빌드한다. $Tools = Get-RustTools(전체 경로), $TargetDir = 빌드 폴더(전체 경로,
+# --target-dir). 컴파일러·빌드 설정을 바꾸는 환경 변수는 이 함수 동안만 지우고 끝나면 되돌린다. 툴체인 버전·대상이 다르면
+# 종료 7, 빌드 실패는 종료 8.
+function Invoke-Build([string]$Root, $Tools, [string]$TargetDir) {
     $saved = Clear-BuildEnvironment
     foreach ($name in @($saved.Keys)) {
         if ($RustflagsVariables -contains $name) {
@@ -1297,7 +1455,7 @@ function Invoke-Build([string]$Root, $Tools) {
         if ($hostLine.Count -ne 1 -or $hostLine[0].Trim() -cne 'host: x86_64-pc-windows-msvc') {
             Stop-Install 7 "Rust 기본 대상이 x86_64-pc-windows-msvc가 아닙니다($(if ($hostLine.Count -eq 1) { $hostLine[0] } else { 'host 없음' })). rustup set default-host x86_64-pc-windows-msvc 실행 후 다시 실행하세요."
         }
-        $argList = Get-CargoBuildArguments
+        $argList = Get-CargoBuildArguments $TargetDir
         Write-Host "  $($Tools.Cargo) $($argList -join ' ')"
         Write-Host '  처음 빌드는 crates.io에서 의존성을 내려받고(Cargo.lock 체크섬으로 고정) 몇 분 걸립니다.'
         $code = Invoke-NativeCommand $Tools.Cargo $argList
@@ -1306,7 +1464,7 @@ function Invoke-Build([string]$Root, $Tools) {
             Write-Host '  빌드가 실패했습니다. 흔한 원인:' -ForegroundColor Yellow
             Write-Host '  - "link.exe not found", "kernel32.lib" 같은 오류: Visual Studio Build Tools의 "C++를 사용한 데스크톱 개발"과 Windows SDK가 필요합니다.'
             Write-Host '  - 내려받기 오류: 처음 빌드는 인터넷 연결이 필요합니다.'
-            Write-Host '  - "Access is denied"(액세스 거부): target\release의 yw-app.exe를 실행 중이면 닫으세요.'
+            Write-Host "  - `"Access is denied`"(액세스 거부): $TargetDir\release의 yw-app.exe를 실행 중이면 닫으세요."
             Stop-Install 8 "cargo build 실패(종료 코드 $code). 위 cargo 출력의 첫 error 줄을 확인하세요."
         }
     } finally {
@@ -1348,7 +1506,9 @@ function Invoke-Install {
         $cargoTarget = $env:CARGO_TARGET_DIR
         if (-not [IO.Path]::IsPathRooted($cargoTarget)) { $cargoTarget = Join-Path $root $cargoTarget }
     }
-    $releaseDir = Join-Path (ConvertTo-FullPath $cargoTarget) 'release'
+    # cargo에는 --target-dir로 이 폴더를 그대로 준다(머리말의 빌드 폴더): 빌드 결과와 설치가 읽는 폴더가 언제나 같다.
+    $cargoTarget = ConvertTo-FullPath $cargoTarget
+    $releaseDir = Join-Path $cargoTarget 'release'
 
     $localAppData = $env:LOCALAPPDATA
     if ([string]::IsNullOrEmpty($localAppData) -or -not [IO.Path]::IsPathRooted($localAppData)) {
@@ -1438,6 +1598,10 @@ function Invoke-Install {
         $sourcePaths.Add($file)
     }
     Confirm-SourcePathsTrusted $sourcePaths.ToArray() $userSid $AllowUnsafeSourcePath.IsPresent
+    # 무결성 레이블(머리말의 레이블 규칙): 빌드 입력과 설치할 파일 전체.
+    $labelPaths = @($root, (Join-Path $root 'Cargo.toml'), (Join-Path $root 'Cargo.lock'), (Join-Path $root 'rust-toolchain.toml'))
+    $labelTrees = @((Join-Path $root '.cargo'), (Join-Path $root 'crates'), (Join-Path $root 'scripts'), $extensionRoot)
+    Confirm-IntegrityLabels '저장소(소스)' 'build' $root $labelPaths $labelTrees $AllowUnsafeSourcePath.IsPresent
 
     # 2. 빌드 도구
     Write-Step '2/8 빌드 도구 확인'
@@ -1468,22 +1632,31 @@ function Invoke-Install {
             }
         }
         Write-Host "  건너뜀(-NoBuild). $releaseDir 의 yw-app.exe·yw-host.exe를 씁니다."
-    } elseif ($DryRun) {
-        Confirm-CargoConfigs $root (Get-CargoHomeDir) $AllowAncestorCargoConfig.IsPresent
-        $cargoExe = 'cargo'
-        if ($null -ne $tools -and $null -ne $tools.Cargo) { $cargoExe = $tools.Cargo }
-        Write-Plan "실행: $cargoExe $((Get-CargoBuildArguments) -join ' ')  (저장소 루트, 결과 $releaseDir)"
-        Write-Plan "빌드 동안만 지울 환경 변수: $((@($ClearedBuildVariableNames) + @($RustflagsVariables)) -join ', '), 이름이 $($ClearedBuildVariablePrefixes -join '·')로 시작하는 것"
     } else {
+        # 빌드 폴더의 권한과 레이블은 cargo가 그 안의 빌드 스크립트·proc-macro를 실행하기 전에 본다(머리말의 빌드 폴더).
+        $buildPaths = Get-BuildDirPaths $cargoTarget
+        Confirm-SourcePathsTrusted $buildPaths $userSid $AllowUnsafeSourcePath.IsPresent
+        $buildLabelRoot = $cargoTarget
+        if (-not (Test-Path -LiteralPath $cargoTarget) -and $buildPaths.Count -gt 0) { $buildLabelRoot = $buildPaths[0] }
+        Confirm-IntegrityLabels '빌드 폴더' 'build' $buildLabelRoot $buildPaths @() $AllowUnsafeSourcePath.IsPresent
         Confirm-CargoConfigs $root (Get-CargoHomeDir) $AllowAncestorCargoConfig.IsPresent
-        Invoke-Build $root $tools
-        foreach ($exe in $sourceApp, $sourceHost) {
-            if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { Stop-Install 8 "빌드가 끝났지만 결과 파일이 없습니다: $exe" }
+        if ($DryRun) {
+            $cargoExe = 'cargo'
+            if ($null -ne $tools -and $null -ne $tools.Cargo) { $cargoExe = $tools.Cargo }
+            Write-Plan "실행: $cargoExe $((Get-CargoBuildArguments $cargoTarget) -join ' ')  (저장소 루트, 결과 $releaseDir)"
+            Write-Plan "빌드 동안만 지울 환경 변수: $((@($ClearedBuildVariableNames) + @($RustflagsVariables)) -join ', '), 이름이 $($ClearedBuildVariablePrefixes -join '·')로 시작하는 것"
+        } else {
+            Invoke-Build $root $tools $cargoTarget
+            foreach ($exe in $sourceApp, $sourceHost) {
+                if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { Stop-Install 8 "빌드가 끝났지만 결과 파일이 없습니다: $exe" }
+            }
+            Write-Host '  빌드 완료.'
         }
-        Write-Host '  빌드 완료.'
     }
-    # 빌드 폴더 권한(머리말의 소스 폴더 규칙): 복사해 올 실행 파일과 그 폴더.
-    Confirm-SourcePathsTrusted @((ConvertTo-FullPath $cargoTarget), $releaseDir, $sourceApp, $sourceHost) $userSid $AllowUnsafeSourcePath.IsPresent
+    # 빌드 폴더 권한·레이블(머리말의 소스 폴더 규칙·레이블 규칙): 복사해 올 실행 파일과 그 폴더.
+    $builtPaths = @($cargoTarget, $releaseDir, $sourceApp, $sourceHost)
+    Confirm-SourcePathsTrusted $builtPaths $userSid $AllowUnsafeSourcePath.IsPresent
+    Confirm-IntegrityLabels '빌드 폴더' 'build' $cargoTarget $builtPaths @() $AllowUnsafeSourcePath.IsPresent
 
     # 4. 설치 폴더 상태와 계획
     Write-Step '4/8 설치 폴더 확인'
@@ -1531,8 +1704,12 @@ function Invoke-Install {
         }
         # 비어 있거나 이전 설치인 폴더: 다른 사용자가 바꿀 수 있으면 설치하지 않는다(-FixPermissions로 고침).
         Confirm-InstallDirPermissions $target $userSid
+        Confirm-IntegrityLabels '설치 폴더' 'install' $target @() @($target) $AllowUnsafeSourcePath.IsPresent
     } else {
         Write-Host '  새로 설치합니다(현재 사용자·SYSTEM·Administrators만 바꿀 수 있는 폴더로 만듭니다).'
+        # 새 폴더는 만들 상위 폴더의 레이블을 물려받는다.
+        $installParent = Get-ExistingAncestor $target
+        Confirm-IntegrityLabels '설치 폴더를 만들 상위 폴더' 'install' $installParent @($installParent) @() $AllowUnsafeSourcePath.IsPresent
     }
 
     $toCopy = New-Object 'System.Collections.Generic.List[object]'

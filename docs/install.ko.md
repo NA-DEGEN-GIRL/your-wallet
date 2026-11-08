@@ -57,7 +57,7 @@ Chrome은 설치 폴더의 확장 사본을 쓰므로 `git pull`만으로는 로
 | `-NoShortcut` | 시작 메뉴 바로가기를 만들지 않는다 |
 | `-NoNativeHost` | HKCU 등록을 하지 않는다(그러면 확장이 앱에 연결되지 않는다) |
 
-종료 코드: 0 성공, 1 환경·경로 오류(상위 폴더 권한 포함), 2 소스·빌드 결과 오류(확장 ID 불일치 등), 3 취소(비대화형이라
+종료 코드: 0 성공, 1 환경·경로 오류(상위 폴더 권한, 비대화형 실행의 낮은 무결성 레이블 포함), 2 소스·빌드 결과 오류(확장 ID 불일치 등), 3 취소(비대화형이라
 물을 수 없음 포함), 4 파일 복사 실패, 5 native host manifest·등록 실패, 6 바로가기 실패, 7 빌드 도구 없음·다른 사용자가 바꿀 수
 있는 위치의 빌드 도구·Rust 1.95.0이 아님·상위 폴더의 cargo 설정 파일, 8 빌드 실패, 9 예상하지 못한 오류.
 사용자 이름에 `&`·`%`·`!` 같은 문자가 있으면 기본 경로를 쓸 수 없다(Chrome이 `cmd.exe`로 host를 실행할 수 있어서다).
@@ -95,7 +95,15 @@ cargo 설정 파일: cargo는 저장소 폴더뿐 아니라 그 **모든 상위 
 프로필 아래)로 옮긴다. 직접 둔 설정이면 `-AllowAncestorCargoConfig`를 붙인다. `CARGO_HOME`의 설정은 내 설정이므로 멈추지 않고,
 빌드를 바꾸는 키(`build.rustc*`·`build.rustflags`, `target.*.linker`·`target.*.rustflags`, `profile.release.*`, `[patch]`·`[source]`·
 `paths`)가 있을 때 그 키를 경고로 보여 준다. 빌드 명령은 또 컴파일러 래퍼를 끄고(`build.rustc-wrapper`·
-`build.rustc-workspace-wrapper`를 빈 값으로) 링커를 기본 `link.exe`로 고정한다.
+`build.rustc-workspace-wrapper`를 빈 값으로) 링커를 기본 `link.exe`로 고정한다. 빌드 폴더(`CARGO_TARGET_DIR`, 없으면
+저장소의 `target`)는 `--target-dir`로 직접 주므로, 설정 파일의 `build.target-dir`이 다른 곳을 가리켜도 설치하는 exe는 언제나
+이번 빌드의 결과다. 빌드 폴더의 권한과 레이블(아래)은 cargo를 실행하기 전에 확인한다.
+
+무결성 레이블: 어떤 도구는 저장소 폴더에 낮은(Low) 무결성 레이블을 붙인다. 그러면 브라우저 샌드박스 같은 낮은 무결성 프로세스도
+내 권한으로 저장소·빌드 폴더·설치 폴더의 파일을 바꿀 수 있고, 그 코드가 지갑으로 빌드·설치된다. 설치 프로그램은 이런 레이블을
+찾으면 목록과 되돌리는 명령(`icacls "<폴더>" /setintegritylevel (OI)(CI)M`)을 보여 주고, 정확히 `계속`을 입력해야만 진행한다
+(비대화형 실행은 종료 1, `-AllowUnsafeSourcePath`면 경고 후 계속). 레이블은 직접 바꾸지 않는다 — 직접 붙인 것이 아니면 위
+명령으로 되돌린 뒤 다시 실행한다.
 
 설치 프로그램을 깨끗한 환경에서 미리 시험해 보고 싶으면 Windows 샌드박스(Windows Sandbox)에서 실행할 수 있다.
 

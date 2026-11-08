@@ -1,6 +1,7 @@
 // scripts/install.test.mjs — install.cmd의 scripts/install.ps1·scripts/uninstall.ps1 (spec/01 §9, spec/09 §5.12 INS-1).
 // install.cmd가 쓰는 Windows PowerShell 5.1로 실제 스크립트를 실행한다. 빌드는 하지 않는다(-NoBuild + 가짜 exe가 든
 // CARGO_TARGET_DIR). LOCALAPPDATA와 설치 폴더는 임시 폴더이고 -NoShortcut -NoNativeHost라 HKCU·시작 메뉴를 바꾸지 않는다.
+// 설치를 끝까지 실행하는 시험은 저장소의 사본(sourceCopy)으로 한다: 체크아웃 자체의 ACL·무결성 레이블이 결과를 바꾸지 않는다.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -99,6 +100,17 @@ async function withTemp(prefix, callback) {
   } finally {
     await rm(temp, { force: true, recursive: true });
   }
+}
+
+// The files install.ps1 reads, copied into temp/repo (a fresh copy inherits the protected temp ACL and no integrity label).
+async function sourceCopy(temp, extra = []) {
+  const root = path.join(temp, "repo");
+  for (const file of ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "scripts/install.ps1", "scripts/uninstall.ps1", ...extra]) {
+    await mkdir(path.dirname(path.join(root, file)), { recursive: true });
+    await cp(path.join(repoRoot, file), path.join(root, file));
+  }
+  await cp(extensionRoot, path.join(root, "extension"), { recursive: true });
+  return root;
 }
 
 // INS-1 표본: validate-manifest.mjs와 install.ps1 Test-NativeManifestFile이 같은 판정을 내려야 한다.
@@ -228,7 +240,9 @@ test("install.ps1 -NoBuild installs, re-installs, upgrades, refuses unsafe folde
     await writeFile(path.join(releaseDir, "yw-app.exe"), "fake yw-app 1\n");
     await writeFile(path.join(releaseDir, "yw-host.exe"), "fake yw-host 1\n");
     const env = childEnv({ LOCALAPPDATA: localAppData, CARGO_TARGET_DIR: cargoTarget });
-    const install = (...args) => runPowerShell(windowsPowerShell, ["-File", installScript, "-NoBuild", "-NoShortcut", "-NoNativeHost", ...args], env);
+    const root = await sourceCopy(temp);
+    const script = path.join(root, "scripts", "install.ps1");
+    const install = (...args) => runPowerShell(windowsPowerShell, ["-File", script, "-NoBuild", "-NoShortcut", "-NoNativeHost", ...args], env);
     const installDir = path.join(temp, "Programs", "YourWallet");
     const { packagedFiles } = await auditExtensionRoot(extensionRoot);
     const programFiles = ["uninstall.ps1", "yw-app.exe", "yw-host.exe", ...packagedFiles.map((file) => `extension/${file}`)].sort();
@@ -309,13 +323,13 @@ test("install.ps1 -NoBuild installs, re-installs, upgrades, refuses unsafe folde
     run = install("-InstallDir", path.join(dataDir, "Programs"));
     assert.equal(run.status, 1, run.out);
     assert.equal(existsSync(path.join(dataDir, "Programs")), false);
-    run = install("-InstallDir", path.join(repoRoot, "target", "yw-install-test"));
+    run = install("-InstallDir", path.join(root, "target", "yw-install-test"));
     assert.equal(run.status, 1, run.out);
-    assert.equal(existsSync(path.join(repoRoot, "target", "yw-install-test")), false);
+    assert.equal(existsSync(path.join(root, "target", "yw-install-test")), false);
     const emptyTarget = path.join(temp, "empty-target");
     await mkdir(emptyTarget);
     const fresh = path.join(temp, "fresh");
-    run = runPowerShell(windowsPowerShell, ["-File", installScript, "-NoBuild", "-NoShortcut", "-NoNativeHost", "-InstallDir", fresh], childEnv({ LOCALAPPDATA: localAppData, CARGO_TARGET_DIR: emptyTarget }));
+    run = runPowerShell(windowsPowerShell, ["-File", script, "-NoBuild", "-NoShortcut", "-NoNativeHost", "-InstallDir", fresh], childEnv({ LOCALAPPDATA: localAppData, CARGO_TARGET_DIR: emptyTarget }));
     assert.equal(run.status, 2, run.out);
     assert.equal(existsSync(fresh), false);
 
@@ -341,12 +355,7 @@ test("install.ps1 -NoBuild installs, re-installs, upgrades, refuses unsafe folde
 
 test("install.ps1 refuses a source tree whose extension is not the reviewed one", { skip: !windows, timeout: 120_000 }, async () => {
   await withTemp("your-wallet-install-source-", async (temp) => {
-    const root = path.join(temp, "repo");
-    for (const file of ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "scripts/install.ps1", "scripts/uninstall.ps1"]) {
-      await mkdir(path.dirname(path.join(root, file)), { recursive: true });
-      await cp(path.join(repoRoot, file), path.join(root, file));
-    }
-    await cp(extensionRoot, path.join(root, "extension"), { recursive: true });
+    const root = await sourceCopy(temp);
     const cargoTarget = path.join(temp, "cargo-target");
     await mkdir(path.join(cargoTarget, "release"), { recursive: true });
     await writeFile(path.join(cargoTarget, "release", "yw-app.exe"), "fake\n");
@@ -392,12 +401,7 @@ test("install.ps1 refuses a source tree whose extension is not the reviewed one"
 // session (S-1-4-*, AppContainer) are ignored.
 test("install.ps1 refuses a source or build folder other users can modify unless -AllowUnsafeSourcePath (Windows PowerShell 5.1)", { skip: !windows, timeout: 300_000 }, async () => {
   await withTemp("your-wallet-install-srcacl-", async (temp) => {
-    const root = path.join(temp, "repo");
-    for (const file of ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "scripts/install.ps1", "scripts/uninstall.ps1"]) {
-      await mkdir(path.dirname(path.join(root, file)), { recursive: true });
-      await cp(path.join(repoRoot, file), path.join(root, file));
-    }
-    await cp(extensionRoot, path.join(root, "extension"), { recursive: true });
+    const root = await sourceCopy(temp);
     const cargoTarget = path.join(temp, "cargo-target");
     const releaseDir = path.join(cargoTarget, "release");
     await mkdir(releaseDir, { recursive: true });
@@ -553,7 +557,8 @@ test("install.ps1 creates a private install folder, refuses one other users can 
     await writeFile(path.join(releaseDir, "yw-app.exe"), "fake yw-app\n");
     await writeFile(path.join(releaseDir, "yw-host.exe"), "fake yw-host\n");
     const env = childEnv({ LOCALAPPDATA: localAppData, CARGO_TARGET_DIR: cargoTarget });
-    const install = (...args) => runPowerShell(windowsPowerShell, ["-File", installScript, "-NoBuild", "-NoShortcut", "-NoNativeHost", ...args], env);
+    const script = path.join(await sourceCopy(temp), "scripts", "install.ps1");
+    const install = (...args) => runPowerShell(windowsPowerShell, ["-File", script, "-NoBuild", "-NoShortcut", "-NoNativeHost", ...args], env);
 
     // A fresh install: protected DACL with exactly the current user, SYSTEM and Administrators
     // (full control, nothing inherited from the temp folder); the files inherit only those.
@@ -622,7 +627,8 @@ test("install.ps1 -InstallDir checks every ancestor: delete-child, inherited Mod
     await writeFile(path.join(cargoTarget, "release", "yw-app.exe"), "fake yw-app\n");
     await writeFile(path.join(cargoTarget, "release", "yw-host.exe"), "fake yw-host\n");
     const env = childEnv({ LOCALAPPDATA: localAppData, CARGO_TARGET_DIR: cargoTarget });
-    const install = (...args) => runPowerShell(windowsPowerShell, ["-File", installScript, "-NoBuild", "-NoShortcut", "-NoNativeHost", ...args], env);
+    const script = path.join(await sourceCopy(temp), "scripts", "install.ps1");
+    const install = (...args) => runPowerShell(windowsPowerShell, ["-File", script, "-NoBuild", "-NoShortcut", "-NoNativeHost", ...args], env);
     const refused = (run, dir) => {
       assert.equal(run.status, 1, run.out);
       assert.ok(run.out.includes(dir), run.out);
@@ -797,17 +803,18 @@ test("install.ps1 resolves rustup/cargo/rustc from CARGO_HOME or USERPROFILE onl
     await mkdir(localAppData);
     const env = childEnv({ LOCALAPPDATA: localAppData, CARGO_HOME: cargoHome, PATH });
     const installDir = path.join(temp, "installed");
-    let run = runPowerShell(windowsPowerShell, ["-File", installScript, "-DryRun", "-NoShortcut", "-NoNativeHost", "-InstallDir", installDir], env);
+    const script = path.join(await sourceCopy(temp), "scripts", "install.ps1");
+    let run = runPowerShell(windowsPowerShell, ["-File", script, "-DryRun", "-NoShortcut", "-NoNativeHost", "-InstallDir", installDir], env);
     assert.equal(run.status, 7, run.out);
     assert.ok(run.out.includes("-AllowUnsafeToolchainPath"), run.out);
     assert.ok(run.out.includes(cargoHomeBin), run.out);
-    // -AllowAncestorCargoConfig: this runs the real checkout, whose ancestors (outside the test's control) are not under test here.
-    run = runPowerShell(windowsPowerShell, ["-File", installScript, "-DryRun", "-AllowUnsafeToolchainPath", "-AllowAncestorCargoConfig", "-NoShortcut", "-NoNativeHost", "-InstallDir", installDir], env);
+    // -AllowAncestorCargoConfig: the copy's ancestors (above the temp root, outside the test's control) are not under test here.
+    run = runPowerShell(windowsPowerShell, ["-File", script, "-DryRun", "-AllowUnsafeToolchainPath", "-AllowAncestorCargoConfig", "-NoShortcut", "-NoNativeHost", "-InstallDir", installDir], env);
     assert.equal(run.status, 0, run.out);
     assert.ok(run.out.includes(path.join(cargoHomeBin, "cargo.exe")), run.out);
     assert.equal(existsSync(installDir), false);
     // Only PATH has cargo: reported as missing (the PATH copy is named but not used); -DryRun still ends with 0.
-    run = runPowerShell(windowsPowerShell, ["-File", installScript, "-DryRun", "-AllowAncestorCargoConfig", "-NoShortcut", "-NoNativeHost", "-InstallDir", installDir], childEnv({ LOCALAPPDATA: localAppData, CARGO_HOME: emptyHome, PATH }));
+    run = runPowerShell(windowsPowerShell, ["-File", script, "-DryRun", "-AllowAncestorCargoConfig", "-NoShortcut", "-NoNativeHost", "-InstallDir", installDir], childEnv({ LOCALAPPDATA: localAppData, CARGO_HOME: emptyHome, PATH }));
     assert.equal(run.status, 0, run.out);
     assert.ok(run.out.includes(path.join(pathDir, "cargo.exe")), run.out);
     assert.ok(!run.out.includes(`${path.join(pathDir, "cargo.exe")} +`), run.out);
@@ -815,14 +822,14 @@ test("install.ps1 resolves rustup/cargo/rustc from CARGO_HOME or USERPROFILE onl
 });
 
 // Invoke-Build with fake rustup/cargo/rustc (.cmd files that log their arguments and environment).
-const BUILD_SCRIPT = `param([string]$Script, [string]$Root, [string]$Bin, [string]$Out, [string]$Names)
+const BUILD_SCRIPT = `param([string]$Script, [string]$Root, [string]$Bin, [string]$Out, [string]$Names, [string]$TargetDir)
 $ErrorActionPreference = 'Stop'
 . $Script
 $tools = [pscustomobject]@{ Bin = $Bin; Rustup = (Join-Path $Bin 'rustup.cmd'); Cargo = (Join-Path $Bin 'cargo.cmd'); Rustc = (Join-Path $Bin 'rustc.cmd') }
-Invoke-Build $Root $tools
+Invoke-Build $Root $tools $TargetDir
 $after = [ordered]@{}
 foreach ($name in $Names.Split(',')) { $after[$name] = [Environment]::GetEnvironmentVariable($name) }
-$result = [ordered]@{ after = $after; args = [string[]](Get-CargoBuildArguments) }
+$result = [ordered]@{ after = $after; args = [string[]](Get-CargoBuildArguments $TargetDir) }
 [IO.File]::WriteAllText($Out, (ConvertTo-Json -InputObject $result -Depth 3 -Compress))
 `;
 
@@ -872,7 +879,7 @@ function releaseProfile(cargoToml) {
 
 const buildShells = windows ? [["Windows PowerShell 5.1", windowsPowerShell], ["PowerShell 7", findOnPath("pwsh.exe")]] : [];
 for (const [label, shell] of buildShells) {
-  test(`install.ps1 Invoke-Build runs cargo +1.95.0 with Cargo.toml's release profile as --config, clears compiler/build env vars only for the build, and stops on a toolchain mismatch (${label})`, { skip: shell === null ? "pwsh.exe not found" : false, timeout: 120_000 }, async () => {
+  test(`install.ps1 Invoke-Build runs cargo +1.95.0 with Cargo.toml's release profile as --config and an explicit --target-dir, clears compiler/build env vars only for the build, and stops on a toolchain mismatch (${label})`, { skip: shell === null ? "pwsh.exe not found" : false, timeout: 120_000 }, async () => {
     await withTemp("your-wallet-install-build-", async (temp) => {
       const bin = path.join(temp, "bin");
       await mkdir(bin);
@@ -881,6 +888,7 @@ for (const [label, shell] of buildShells) {
       await writeFile(path.join(bin, "rustup.cmd"), FAKE_RUSTUP);
       const root = path.join(temp, "root");
       await mkdir(root);
+      const targetDir = path.join(temp, "cargo-target");
       const helper = path.join(temp, "build.ps1");
       await writeFile(helper, BUILD_SCRIPT);
       const out = path.join(temp, "build.json");
@@ -891,7 +899,7 @@ for (const [label, shell] of buildShells) {
         await rm(log, { force: true });
         await rm(envDump, { force: true });
         const env = childEnv({ ...CLEARED, YW_KEEP: "kept", YW_FAKE_LOG: log, YW_FAKE_ENV: envDump, YW_FAKE_CARGO_VERSION: "1.95.0", YW_FAKE_RUSTC_VERSION: "1.95.0", ...versions });
-        const run = runPowerShell(shell, ["-File", helper, "-Script", installScript, "-Root", root, "-Bin", bin, "-Out", out, "-Names", names.join(",")], env);
+        const run = runPowerShell(shell, ["-File", helper, "-Script", installScript, "-Root", root, "-Bin", bin, "-Out", out, "-Names", names.join(","), "-TargetDir", targetDir], env);
         const lines = existsSync(log) ? (await readFile(log, "utf8")).split(/\r?\n/u).map((line) => line.trim()).filter(Boolean) : [];
         return { run, lines };
       };
@@ -917,7 +925,8 @@ for (const [label, shell] of buildShells) {
       assert.deepEqual(configs, expectedProfile);
       // No compiler wrapper (empty string = none) and rustc's default MSVC linker, over any config file or variable.
       assert.deepEqual(others, ["build.rustc-wrapper=''", "build.rustc-workspace-wrapper=''", "target.x86_64-pc-windows-msvc.linker='link.exe'"]);
-      assert.deepEqual(result.args.slice(index), ["build", "--release", "--locked", "-p", "yw-app", "-p", "yw-host"]);
+      // The build folder the installer reads is passed explicitly (a config file's build.target-dir cannot move the output).
+      assert.deepEqual(result.args.slice(index), ["build", "--release", "--locked", "-p", "yw-app", "-p", "yw-host", "--target-dir", targetDir]);
 
       // What the fake tools received.
       assert.deepEqual(lines, ["VERSION +1.95.0 --version", "RUSTC +1.95.0 -vV", `ARGS ${result.args.join(" ")}`]);
@@ -942,6 +951,108 @@ for (const [label, shell] of buildShells) {
     });
   });
 }
+
+// Integrity labels (install.ps1 "무결성 레이블"): a Low or Untrusted label (some tools put one on a checkout) lets low-integrity
+// processes such as browser sandboxes modify the files with the user's rights. Hermetic: every label is set with icacls on
+// folders inside the temp tree (a Medium-integrity process may lower its own files' label and set it back to Medium).
+const LABEL_SCRIPT = `param([string]$Script, [string]$Labelled, [string]$Plain, [string]$Out)
+$ErrorActionPreference = 'Stop'
+. $Script
+$samples = @('', 'S:AI(ML;OICI;NW;;;LW)', 'S:AI(ML;OICIID;NW;;;LW)', 'S:(ML;OICIIO;NW;;;LW)', 'S:(ML;;NW;;;S-1-16-0)', 'S:(ML;;NR;;;ME)',
+    'S:AI(ML;OICIID;NW;;;ME)', 'S:(ML;;NWNR;;;HI)', 'S:(ML;;0x1;;;S-1-16-8192)', 'S:(ML;;0x2;;;S-1-16-8192)')
+$result = [ordered]@{
+    verdicts = @($samples | ForEach-Object { $null -eq (Get-IntegrityLabelProblem $_) })
+    labelled = Read-IntegrityLabel $Labelled
+    plain    = Read-IntegrityLabel $Plain
+    problems = [string[]](Get-IntegrityLabelProblems @($Plain) @($Labelled))
+}
+[IO.File]::WriteAllText($Out, (ConvertTo-Json -InputObject $result -Depth 3 -Compress))
+`;
+
+test("install.ps1 reads integrity labels without admin rights; a Low label on the source, build or install folder stops a non-interactive run unless -AllowUnsafeSourcePath, the build folder before cargo (Windows PowerShell 5.1)", { skip: !windows, timeout: 300_000 }, async () => {
+  await withTemp("your-wallet-install-label-", async (temp) => {
+    const lowered = path.join(temp, "lowered");
+    await mkdir(path.join(lowered, "sub"), { recursive: true });
+    await writeFile(path.join(lowered, "sub", "file.txt"), "x\n");
+    const plain = path.join(temp, "plain");
+    await mkdir(plain);
+    icacls(lowered, "/setintegritylevel", "(OI)(CI)L");
+    const helper = path.join(temp, "label.ps1");
+    await writeFile(helper, LABEL_SCRIPT);
+    const out = path.join(temp, "label.json");
+    let run = runPowerShell(windowsPowerShell, ["-File", helper, "-Script", installScript, "-Labelled", lowered, "-Plain", plain, "-Out", out], childEnv());
+    assert.equal(run.status, 0, run.out);
+    const result = JSON.parse(await readFile(out, "utf8"));
+    // No label, Medium or higher with no-write-up: fine. Low, Untrusted, inherit-only Low, no NW: refused.
+    assert.deepEqual(result.verdicts, [true, false, false, false, false, false, true, true, true, false]);
+    assert.match(result.labelled, /\(ML;OICI;NW;;;LW\)/u);
+    assert.equal(result.plain, "");
+    // The folder and everything under it (inherited), not the unlabelled path.
+    assert.deepEqual(result.problems.map((line) => line.split(" : ")[0]).sort(), [lowered, path.join(lowered, "sub"), path.join(lowered, "sub", "file.txt")].sort());
+
+    // The installer on a copy of the sources.
+    const root = await sourceCopy(temp);
+    const script = path.join(root, "scripts", "install.ps1");
+    const cargoTarget = path.join(temp, "cargo-target");
+    const releaseDir = path.join(cargoTarget, "release");
+    await mkdir(releaseDir, { recursive: true });
+    await writeFile(path.join(releaseDir, "yw-app.exe"), "fake\n");
+    await writeFile(path.join(releaseDir, "yw-host.exe"), "fake\n");
+    const localAppData = path.join(temp, "LocalAppData");
+    await mkdir(localAppData);
+    const env = childEnv({ LOCALAPPDATA: localAppData, CARGO_TARGET_DIR: cargoTarget });
+    const installDir = path.join(temp, "installed");
+    const install = (...extra) => runPowerShell(windowsPowerShell, ["-File", script, "-NoBuild", "-NoShortcut", "-NoNativeHost", "-InstallDir", installDir, ...extra], env);
+    const refused = (what, labelled) => {
+      assert.equal(run.status, 1, run.out);
+      assert.match(run.out, new RegExp(`${what} 에 낮은 무결성 레이블이 있습니다`, "u"));
+      assert.ok(run.out.includes(`icacls "${labelled}" /setintegritylevel (OI)(CI)M`), run.out);
+      assert.match(run.out, /-AllowUnsafeSourcePath/u);
+    };
+
+    for (const [what, labelled] of [["저장소\\(소스\\)", root], ["빌드 폴더", cargoTarget]]) {
+      icacls(labelled, "/setintegritylevel", "(OI)(CI)L");
+      run = install();
+      refused(what, labelled);
+      assert.equal(existsSync(installDir), false, what);
+      run = install("-AllowUnsafeSourcePath");
+      assert.equal(run.status, 0, `${what}: ${run.out}`);
+      assert.match(run.out, /-AllowUnsafeSourcePath: 레이블을 그대로 두고 계속합니다/u);
+      await rm(installDir, { force: true, recursive: true });
+      // The command the installer prints restores the default (it propagates to the inherited labels).
+      icacls(labelled, "/setintegritylevel", "(OI)(CI)M");
+    }
+    run = install();
+    assert.equal(run.status, 0, run.out);
+    assert.doesNotMatch(run.out, /무결성 레이블/u);
+    // An installed folder that got a Low label, and a new one under a Low parent.
+    icacls(installDir, "/setintegritylevel", "(OI)(CI)L");
+    run = install();
+    refused("설치 폴더", installDir);
+    icacls(installDir, "/setintegritylevel", "(OI)(CI)M");
+    const lowParent = path.join(temp, "low-parent");
+    await mkdir(lowParent);
+    icacls(lowParent, "/setintegritylevel", "(OI)(CI)L");
+    run = runPowerShell(windowsPowerShell, ["-File", script, "-NoBuild", "-NoShortcut", "-NoNativeHost", "-InstallDir", path.join(lowParent, "YourWallet")], env);
+    refused("설치 폴더를 만들 상위 폴더", lowParent);
+    assert.equal(existsSync(path.join(lowParent, "YourWallet")), false);
+
+    // Without -NoBuild the build folder is checked before cargo would run (-DryRun: the plan line names cargo), and the
+    // plan passes that folder as --target-dir.
+    const cargoHome = path.join(temp, "cargo-home");
+    await fakeRustBin(path.join(cargoHome, "bin"));
+    const buildEnv = childEnv({ LOCALAPPDATA: localAppData, CARGO_TARGET_DIR: cargoTarget, CARGO_HOME: cargoHome });
+    const dryRun = () => runPowerShell(windowsPowerShell, ["-File", script, "-DryRun", "-AllowAncestorCargoConfig", "-NoShortcut", "-NoNativeHost", "-InstallDir", path.join(temp, "dry")], buildEnv);
+    icacls(cargoTarget, "/setintegritylevel", "(OI)(CI)L");
+    run = dryRun();
+    refused("빌드 폴더", cargoTarget);
+    assert.doesNotMatch(run.out, /\[DryRun\] 실행:/u);
+    icacls(cargoTarget, "/setintegritylevel", "(OI)(CI)M");
+    run = dryRun();
+    assert.equal(run.status, 0, run.out);
+    assert.ok(run.out.includes(`--target-dir ${cargoTarget}`), run.out);
+  });
+});
 
 // cargo config files (install.ps1 "cargo 설정 규칙"): cargo reads .cargo\config.toml and .cargo\config from the repo root and
 // every ancestor, plus CARGO_HOME. Hermetic: every config file is created inside a temp tree; folders above the temp root
