@@ -568,22 +568,31 @@ impl App {
         self.wc_send(WcCommand::Disconnect(topic));
     }
 
-    /// `모든 WalletConnect 세션 끊기`.
     /// `클립보드에서 연결` (2026-11-08): a copied `wc:` link pairs at once; otherwise a copied
     /// image goes to the QR reader. The clipboard is read only on this press, never written, and
-    /// its text is not logged (only the source word, as `qr.decoded`).
+    /// its text is not logged (only the source word, as `qr.decoded`). Only a `wc:` link leaves
+    /// the wiped buffer as a `String`: other clipboard text (it may be a copied secret) is never
+    /// copied out of it.
     pub(crate) fn wc_clipboard_connect(&mut self) {
         let Some(main) = self.main.as_ref() else {
             return;
         };
         let text = yw_win::clipboard::read_text(main, 2_048)
             .ok()
-            .map(|(units, _)| String::from_utf16_lossy(units.as_slice()));
-        if let Some(text) = text.filter(|text| {
-            text.trim_start()
-                .get(..3)
-                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("wc:"))
-        }) {
+            .and_then(|(units, _)| {
+                let units = units.as_slice();
+                let start = units.iter().position(|unit| {
+                    !char::from_u32(u32::from(*unit)).is_some_and(char::is_whitespace)
+                })?;
+                let link = matches!(
+                    units.get(start..start.saturating_add(3)),
+                    Some(&[w, c, colon]) if (w | 0x20) == u16::from(b'w')
+                        && (c | 0x20) == u16::from(b'c')
+                        && colon == u16::from(b':')
+                );
+                link.then(|| String::from_utf16_lossy(units))
+            });
+        if let Some(text) = text {
             logging::info(
                 "walletconnect",
                 "clipboard.link",
@@ -596,6 +605,7 @@ impl App {
         self.wc_clipboard_qr();
     }
 
+    /// `모든 WalletConnect 세션 끊기`.
     pub(crate) fn wc_disconnect_all(&mut self) {
         let topics: Vec<[u8; 32]> = self.wc.sessions.iter().map(|s| s.topic).collect();
         for topic in topics {
