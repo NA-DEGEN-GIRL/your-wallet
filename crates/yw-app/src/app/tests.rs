@@ -1656,12 +1656,19 @@ fn settings_changed_outside_the_app_banner_accept_and_restore() {
         assert_eq!(on_disk().auto_lock_minutes, 60);
         assert!(app.guard.pending.is_some());
         app.set_screen(Screen::Main);
-        assert!(has_text(
-            &app.items(),
-            crate::settings::SETTINGS_TAMPERED_TEXT
-        ));
+        let items = app.items();
+        assert!(has_text(&items, crate::settings::SETTINGS_TAMPERED_TEXT));
+        // 2026-11-08: each difference in plain words with both values.
+        assert!(has_text(&items, "자동 잠금: 지금 10분 → 파일 60분"));
+        assert!(has_text(&items, "EVM 수수료 상한 — "));
+        assert!(has_text(&items, "→ 10000 gwei"));
         if accept {
+            // `파일 값 사용…` asks first; `취소` keeps the app values.
             app.on_command(ids::SETTINGS_ACCEPT_FILE);
+            assert_eq!(app.screen, Screen::Confirm(Confirm::SettingsFile));
+            assert_eq!(app.settings.auto_lock_minutes, 10);
+            app.on_command(ids::CONFIRM_YES);
+            assert_eq!(app.screen, Screen::Main);
             assert_eq!(app.settings.auto_lock_minutes, 60);
             let snapshot = app
                 .meta

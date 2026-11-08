@@ -378,19 +378,22 @@ fn header(app: &App, items: &mut Vec<Item>) {
     if app.passphrase_unverified() {
         items.push(Item::Banner(T_ALT_PASS.to_owned(), Tone::HighRisk));
     }
-    if let Some(pending) = &app.guard.pending {
-        let keys: Vec<&str> = pending.1.iter().map(|differing| differing.key()).collect();
+    if app.guard.pending.is_some() && app.screen != Screen::Confirm(Confirm::SettingsFile) {
+        // What differs, in plain words with both values (2026-11-08); the safe choice is the
+        // primary button and `파일 값 사용…` asks once more (spec/04 §6.7).
         items.push(Item::Banner(
             format!(
-                "{} ({}). 지금은 앱에 저장된 값을 씁니다. 직접 바꾼 것이면 '파일 값 사용'을 누르세요.",
-                crate::settings::SETTINGS_TAMPERED_TEXT,
-                keys.join(", ")
+                "{}. 지금은 앱에 저장된 값을 씁니다. 직접 바꾼 것이 아니라면 '앱에 저장된 값으로 되돌리기'를 누르세요.",
+                crate::settings::SETTINGS_TAMPERED_TEXT
             ),
             Tone::Warn,
         ));
+        for line in app.settings_file_lines() {
+            items.push(Item::Help(line));
+        }
         items.push(Item::Row(vec![
-            Ctl::button(ids::SETTINGS_ACCEPT_FILE, "파일 값 사용"),
-            Ctl::button(ids::SETTINGS_RESTORE, "앱에 저장된 값으로 되돌리기"),
+            Ctl::primary(ids::SETTINGS_RESTORE, "앱에 저장된 값으로 되돌리기"),
+            Ctl::button(ids::SETTINGS_ACCEPT_FILE, "파일 값 사용…"),
         ]));
     }
     for banner in &app.banners {
@@ -405,6 +408,107 @@ fn header(app: &App, items: &mut Vec<Item>) {
             ids::DISMISS_BANNERS,
             "알림 닫기",
         )]));
+    }
+}
+
+fn indexer_name(indexer: crate::settings::BtcIndexer) -> &'static str {
+    match indexer {
+        crate::settings::BtcIndexer::Esplora => "Esplora",
+        crate::settings::BtcIndexer::BbRpc => "Blockbook RPC",
+        crate::settings::BtcIndexer::BbRest => "Blockbook REST",
+    }
+}
+
+fn cap_value(text: &str) -> &str {
+    if text.is_empty() { "기본값" } else { text }
+}
+
+impl App {
+    /// One plain line per value that differs between the settings in use and `settings.json`
+    /// (the settings-file banner and its `파일 값 사용` overlay): the value in use, then the
+    /// value in the file, with the JSON key in brackets. Nothing here is secret (spec/04 §6.7).
+    #[must_use]
+    pub fn settings_file_lines(&self) -> Vec<String> {
+        let Some(pending) = self.guard.pending.as_ref() else {
+            return Vec::new();
+        };
+        let (file, differing) = (&pending.0, &pending.1);
+        let current = &self.settings;
+        let mut lines = Vec::new();
+        for kind in differing {
+            match kind {
+                crate::settings::Differing::AutoLock => lines.push(format!(
+                    "자동 잠금: 지금 {}분 → 파일 {}분 (autoLockMinutes)",
+                    current.auto_lock_minutes, file.auto_lock_minutes
+                )),
+                crate::settings::Differing::FeeCaps => {
+                    let mut chains: Vec<u64> = current
+                        .fee_caps
+                        .iter()
+                        .chain(&file.fee_caps)
+                        .map(|(id, _)| *id)
+                        .collect();
+                    chains.sort_unstable();
+                    chains.dedup();
+                    for id in chains {
+                        let caps_of = |settings: &crate::settings::Settings| {
+                            settings
+                                .fee_caps
+                                .iter()
+                                .find(|(chain, _)| *chain == id)
+                                .map(|(_, caps)| caps.clone())
+                        };
+                        let (now, then) = (caps_of(current), caps_of(file));
+                        if now == then {
+                            continue;
+                        }
+                        let part = |caps: Option<&crate::settings::FeeCapsText>,
+                                    pick: fn(&crate::settings::FeeCapsText) -> &str| {
+                            caps.map_or("기본값", |caps| cap_value(pick(caps))).to_owned()
+                        };
+                        lines.push(format!(
+                            "EVM 수수료 상한 — {}: maxFee {} → {} gwei · 우선 수수료 {} → {} gwei · 총 {} → {} (feeCaps)",
+                            self.network_name(NetworkId::Eip155(id)),
+                            part(now.as_ref(), |caps| &caps.max_fee_per_gas_gwei),
+                            part(then.as_ref(), |caps| &caps.max_fee_per_gas_gwei),
+                            part(now.as_ref(), |caps| &caps.max_priority_fee_per_gas_gwei),
+                            part(then.as_ref(), |caps| &caps.max_priority_fee_per_gas_gwei),
+                            part(now.as_ref(), |caps| &caps.max_total_fee),
+                            part(then.as_ref(), |caps| &caps.max_total_fee),
+                        ));
+                    }
+                }
+                crate::settings::Differing::Indexer => {
+                    let server = |bitcoin: &crate::settings::BitcoinSettings| {
+                        format!(
+                            "{} (mainnet {} · testnet4 {})",
+                            indexer_name(bitcoin.indexer),
+                            cap_value(&bitcoin.esplora_mainnet),
+                            cap_value(&bitcoin.esplora_testnet4)
+                        )
+                    };
+                    lines.push(format!(
+                        "Bitcoin 주소 조회 서버: 지금 {} → 파일 {} (bitcoin.indexer/esploraBaseUrl) — 파일 값을 쓰면 주소 조회가 그 서버로 갑니다",
+                        server(&current.bitcoin),
+                        server(&file.bitcoin)
+                    ));
+                }
+                crate::settings::Differing::NewChains => {
+                    for chain in file.evm_chains.iter().filter(|chain| {
+                        !current
+                            .evm_chains
+                            .iter()
+                            .any(|known| known.chain_id == chain.chain_id)
+                    }) {
+                        lines.push(format!(
+                            "새 사용자 체인: {} (chainId {}) — 앱이 제네시스를 고정한 적 없음 (evmChains)",
+                            chain.name, chain.chain_id
+                        ));
+                    }
+                }
+            }
+        }
+        lines
     }
 }
 
@@ -1562,6 +1666,12 @@ impl App {
                 "연결된 모든 사이트의 연결을 해제합니다. 사이트는 다시 연결을 요청해야 계정을 볼 수 있습니다.".to_owned(),
                 "모두 해제",
             ),
+            Confirm::SettingsFile => (
+                "설정 파일 값 사용",
+                "settings.json의 아래 값을 그대로 씁니다. 이 PC에서 직접 바꾼 경우에만 고르세요. 모르는 변경이면 '취소'를 누른 뒤 '앱에 저장된 값으로 되돌리기'를 누르세요."
+                    .to_owned(),
+                "파일 값 사용",
+            ),
             Confirm::WcDisconnectAll => (
                 "모든 WalletConnect 세션 끊기",
                 format!(
@@ -1605,6 +1715,11 @@ impl App {
         items.push(Item::Text(text));
         if kind == Confirm::RemoveKey {
             self.remove_key_balance(items);
+        }
+        if kind == Confirm::SettingsFile {
+            for line in self.settings_file_lines() {
+                items.push(Item::Text(line));
+            }
         }
         if kind == Confirm::TokenDelete
             && let Some((label, address)) = self.token_delete_target()

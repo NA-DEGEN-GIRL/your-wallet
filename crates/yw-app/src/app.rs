@@ -211,6 +211,8 @@ pub enum Confirm {
     DisconnectAll,
     /// S13 `모든 WalletConnect 세션 끊기` (2026-11-08).
     WcDisconnectAll,
+    /// The settings-file banner's `파일 값 사용…` (2026-11-08).
+    SettingsFile,
     /// A Bitcoin overlay (`BtcUi::confirm` holds which one and its texts).
     Btc,
     /// The AI explanation privacy notice (spec/06 §2.2).
@@ -2982,7 +2984,13 @@ impl App {
                 self.info = None;
                 self.refresh();
             }
-            ids::SETTINGS_ACCEPT_FILE => self.settings_accept_file(),
+            ids::SETTINGS_ACCEPT_FILE => {
+                // Every file value at once (a new chain without a pin, higher caps, another
+                // lookup server): confirmed with the list first (2026-11-08).
+                if self.guard.pending.is_some() {
+                    self.set_screen(Screen::Confirm(Confirm::SettingsFile));
+                }
+            }
             ids::SETTINGS_RESTORE => self.settings_restore(),
             ids::ADD_ACCOUNT => self.add_account_clicked(),
             ids::IMPORT_KEY => {
@@ -3685,6 +3693,10 @@ impl App {
             Confirm::WcDisconnectAll => {
                 self.wc_disconnect_all();
                 self.set_screen(Screen::Sites);
+            }
+            Confirm::SettingsFile => {
+                self.set_screen(previous);
+                self.settings_accept_file();
             }
             Confirm::RevealMnemonic => {
                 self.set_screen(previous);
