@@ -814,10 +814,12 @@ impl App {
                 return;
             }
             let mut hidden = None;
+            let mut label = String::new();
             if let Some(meta) = self.meta.as_mut() {
                 for (id, account) in &mut meta.mnemonic_accounts.sol {
                     if *id == mnemonic && account.index == index {
                         account.hidden = true;
+                        label.clone_from(&account.label);
                         hidden = SolAddress::parse(&account.address).ok();
                     }
                 }
@@ -827,16 +829,22 @@ impl App {
             if let Some(address) = hidden {
                 self.sol_account_removed_from_sites(&address.to_bytes());
             }
+            self.notice(
+                crate::app_hidden::hidden_note(&label),
+                crate::ui::main_window::Tone::Info,
+            );
             self.refresh();
             return;
         }
         if let Some((SolAccountId::Hardware(index), ..)) = self.sol_selected() {
             // A hidden YubiKey account comes back when a card with its key is enrolled again.
             let mut hidden = None;
+            let mut label = String::new();
             if let Some(meta) = self.meta.as_mut() {
                 for account in &mut meta.hw_accounts.sol {
                     if account.index == index {
                         account.hidden = true;
+                        label.clone_from(&account.label);
                         hidden = SolAddress::parse(&account.address).ok();
                     }
                 }
@@ -846,6 +854,10 @@ impl App {
             if let Some(address) = hidden {
                 self.sol_account_removed_from_sites(&address.to_bytes());
             }
+            self.notice(
+                crate::app_hidden::hidden_note(&label),
+                crate::ui::main_window::Tone::Info,
+            );
             self.refresh();
             return;
         }
@@ -856,10 +868,12 @@ impl App {
             return;
         }
         let mut hidden = None;
+        let mut label = String::new();
         if let Some(meta) = self.meta.as_mut() {
             for account in &mut meta.sol_accounts {
                 if account.index == index {
                     account.hidden = true;
+                    label.clone_from(&account.label);
                     hidden = SolAddress::parse(&account.address).ok();
                 }
             }
@@ -870,6 +884,10 @@ impl App {
         if let Some(address) = hidden {
             self.sol_account_removed_from_sites(&address.to_bytes());
         }
+        self.notice(
+            crate::app_hidden::hidden_note(&label),
+            crate::ui::main_window::Tone::Info,
+        );
         self.refresh();
     }
 

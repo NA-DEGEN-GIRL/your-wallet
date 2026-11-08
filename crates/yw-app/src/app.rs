@@ -534,6 +534,8 @@ pub struct App {
     pub(crate) prev_on_disk: bool,
     /// S08 follows an import (no backup check ran) rather than a backup confirmation.
     pub(crate) done_imported: bool,
+    /// `숨긴 계정 n개 보기 ▸` is open (EVM and Solana `내 계정`, this run only).
+    pub(crate) hidden_open: bool,
     /// S08 follows a new `YubiKey` wallet (spec/04 §2.19): what its completion banner says.
     pub(crate) done_yubikey: Option<crate::app_yubikey::YkDone>,
     /// While a `.prev` recovery submitted from W03 is pending or failed: the mode to return to
@@ -780,6 +782,7 @@ impl App {
             prev_on_disk: false,
             done_imported: false,
             done_yubikey: None,
+            hidden_open: false,
             recover_return: None,
             scroll: 0,
             scroll_state: crate::app_scroll::MainScroll::default(),
@@ -3125,6 +3128,7 @@ impl App {
                     && !self.on_mn_command(other)
                     && !self.on_hc_command(other)
                     && !self.on_wc_command(other)
+                    && !self.on_hidden_command(other)
                 {
                     self.on_indexed_command(other);
                 }
@@ -3359,14 +3363,20 @@ impl App {
                 .iter_mut()
                 .find(|account| account.index == index)
         {
-            // A hidden YubiKey account comes back when a card with its key is enrolled again.
+            // A hidden YubiKey account comes back with `다시 보이기` or when a card with its key
+            // is enrolled again.
             account.hidden = true;
+            let label = account.label.clone();
             let hidden = yw_core::evm::address::parse_address(&account.address).ok();
             meta.prefs.evm_account = EvmAccountPref::Index(0);
             self.save_meta();
             if let Some(address) = hidden {
                 self.account_removed_from_sites(&address);
             }
+            self.notice(
+                crate::app_hidden::hidden_note(&label),
+                crate::ui::main_window::Tone::Info,
+            );
             self.refresh();
             return;
         }
@@ -3376,6 +3386,7 @@ impl App {
             && let Some(account) = self.mnemonic_account_mut(id, index)
         {
             account.hidden = true;
+            let label = account.label.clone();
             let hidden = yw_core::evm::address::parse_address(&account.address).ok();
             if let Some(meta) = self.meta.as_mut() {
                 meta.prefs.evm_account = EvmAccountPref::Mnemonic(id, 0);
@@ -3384,6 +3395,10 @@ impl App {
             if let Some(address) = hidden {
                 self.account_removed_from_sites(&address);
             }
+            self.notice(
+                crate::app_hidden::hidden_note(&label),
+                crate::ui::main_window::Tone::Info,
+            );
             self.refresh();
             return;
         }
@@ -3396,12 +3411,17 @@ impl App {
                 .find(|account| account.index == index)
         {
             account.hidden = true;
+            let label = account.label.clone();
             let hidden = yw_core::evm::address::parse_address(&account.address).ok();
             meta.prefs.evm_account = EvmAccountPref::Index(0);
             self.save_meta();
             if let Some(address) = hidden {
                 self.account_removed_from_sites(&address);
             }
+            self.notice(
+                crate::app_hidden::hidden_note(&label),
+                crate::ui::main_window::Tone::Info,
+            );
         }
         self.refresh();
     }

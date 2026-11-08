@@ -1009,6 +1009,7 @@ impl App {
             }
             items.push(Item::Gap(4));
         }
+        self.hidden_items(crate::app_hidden::Family::Evm, items);
         items.push(Item::Rule);
         let mut actions = Vec::new();
         if !self.key_only() {

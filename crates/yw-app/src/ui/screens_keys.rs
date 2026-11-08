@@ -294,6 +294,15 @@ impl App {
             )
             .enabled(unlocked && self.card.records.len() < yw_core::yubikey::plan::MAX_CARDS),
         ]));
+        // Every account of the tab hidden (a `YubiKey` wallet): the way back is here too.
+        let family = match chain {
+            ImportChain::Evm => Some(crate::app_hidden::Family::Evm),
+            ImportChain::Sol => Some(crate::app_hidden::Family::Sol),
+            ImportChain::Btc | ImportChain::Zec => None,
+        };
+        if let Some(family) = family {
+            self.hidden_items(family, items);
+        }
         items.push(Item::CardEnd);
     }
 

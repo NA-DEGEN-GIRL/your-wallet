@@ -482,6 +482,7 @@ impl App {
             }
             items.push(Item::Gap(4));
         }
+        self.hidden_items(crate::app_hidden::Family::Sol, items);
         items.push(Item::Rule);
         let import = Ctl::button(crate::ui::screens_keys::ids::SOL_IMPORT, "개인키 가져오기")
             .enabled(self.can_import(yw_core::keyimport::ImportChain::Sol));

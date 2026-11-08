@@ -4039,3 +4039,46 @@ fn yubikey_connect_without_words_from_the_first_run_screen() {
     assert_eq!(clear_state(&h), Some((ClearStep::Choose, false)));
     assert!(!cards.lock().unwrap()[0].saw_write());
 }
+
+/// 2026-11-08: a hidden account is listed under `숨긴 계정 n개 보기 ▸`, and `다시 보이기` brings
+/// it back (the hide note says where).
+#[test]
+fn hidden_account_comes_back_with_show_again() {
+    use crate::app_hidden::{Family, ids as hidden_ids};
+    let (mut app, dir) = unlocked_app("unhide", false);
+    let meta = app.meta.as_mut().unwrap();
+    meta.evm_accounts.push(crate::meta::Account {
+        index: 1,
+        label: "저축".to_owned(),
+        address: "0x000000000000000000000000000000000000dead".to_owned(),
+        hidden: false,
+    });
+    meta.prefs.evm_account = EvmAccountPref::Index(1);
+    app.on_command(ids::HIDE);
+    let shown = |app: &App| {
+        app.account_rows()
+            .iter()
+            .any(|row| row.0 == EvmAccountPref::Index(1))
+    };
+    assert!(!shown(&app));
+    assert!(
+        app.banners
+            .iter()
+            .any(|banner| banner.text == crate::app_hidden::hidden_note("저축"))
+    );
+    assert!(
+        controls(&app.items())
+            .iter()
+            .any(|ctl| ctl.id == hidden_ids::EVM_TOGGLE)
+    );
+    app.on_command(hidden_ids::EVM_TOGGLE);
+    assert!(
+        controls(&app.items())
+            .iter()
+            .any(|ctl| ctl.id == hidden_ids::EVM_ROW_BASE)
+    );
+    app.on_command(hidden_ids::EVM_ROW_BASE);
+    assert!(shown(&app));
+    assert!(app.hidden_rows(Family::Evm).is_empty());
+    let _ = std::fs::remove_dir_all(dir);
+}

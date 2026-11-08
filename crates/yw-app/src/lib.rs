@@ -15,6 +15,7 @@ pub mod app_chain_sites;
 pub mod app_evm;
 pub mod app_evm_commands;
 pub mod app_extension;
+pub mod app_hidden;
 pub mod app_hypercore;
 pub mod app_keys;
 pub mod app_llm;

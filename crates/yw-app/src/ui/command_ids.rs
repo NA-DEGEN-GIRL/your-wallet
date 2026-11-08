@@ -23,6 +23,7 @@
 //! | recovery phrases (`screens_mnemonics`) | 13,600–13,699 | settings 복구 단어; card actions 13,620–13,657 (8 rows each), 계정 추가 picker 13,660–13,667, Solana picker 13,670–13,677, Bitcoin key source 13,680–13,687, Zcash key source 13,690–13,697 |
 //! | address book (`screens_book`) | 14,000–15,699 | S14 form 14,000–14,016, favorite chips 14,020–14,027, BTC picker 14,030–14,069, SOL activity `이 주소 저장` 14,080–14,143, S14 rows 14,200–15,699 (★·편집·삭제) |
 //! | `WalletConnect` (`screens_walletconnect`) | 16,000–16,099 | S13 panel, session rows 16,020–16,083 |
+//! | hidden accounts (`app_hidden`) | 16,200–16,589 | toggles 16,200–16,201, EVM `다시 보이기` rows 16,210–16,399, Solana rows 16,400–16,589 |
 
 use crate::ui::{
     screens, screens_book, screens_btc, screens_evm, screens_hypercore, screens_keys, screens_llm,
@@ -124,6 +125,20 @@ pub fn ranges() -> Vec<IdRange> {
             screens_mnemonics::ids::ROW_SPAN,
             1,
             yw_core::vault::MAX_MNEMONICS,
+        ),
+        range(
+            "hidden.evm_rows",
+            crate::app_hidden::ids::EVM_ROW_BASE,
+            crate::app_hidden::ids::ROW_SPAN,
+            1,
+            usize::from(crate::app_hidden::ids::ROW_SPAN),
+        ),
+        range(
+            "hidden.sol_rows",
+            crate::app_hidden::ids::SOL_ROW_BASE,
+            crate::app_hidden::ids::ROW_SPAN,
+            1,
+            usize::from(crate::app_hidden::ids::ROW_SPAN),
         ),
         range(
             "walletconnect.sessions",
@@ -412,6 +427,7 @@ pub fn fixed() -> Vec<(&'static str, &'static [u16])> {
         ("reset", screens_reset::ids::FIXED),
         ("hypercore", screens_hypercore::ids::FIXED),
         ("walletconnect", screens_walletconnect::ids::FIXED),
+        ("hidden", crate::app_hidden::ids::FIXED),
     ]
 }
 
