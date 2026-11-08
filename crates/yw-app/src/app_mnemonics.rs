@@ -777,10 +777,10 @@ impl App {
                     self.with_form(|form| {
                         form.reset_backup(
                             challenge.positions,
-                            Some(
-                                "입력한 단어가 맞지 않습니다. 새 위치로 다시 확인합니다."
-                                    .to_owned(),
-                            ),
+                            Some(crate::ui::screens::backup_retry_text(
+                                challenge.positions,
+                                true,
+                            )),
                         );
                     });
                 } else {

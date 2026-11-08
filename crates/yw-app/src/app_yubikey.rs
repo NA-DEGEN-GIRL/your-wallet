@@ -114,6 +114,17 @@ pub fn zec_network_for(network: BtcNetwork) -> yw_core::zec::ZecNetwork {
     }
 }
 
+/// What S08 says after a new `YubiKey` wallet (spec/04 §2.19): the wallet is made from new words
+/// (`YubiKey 지갑 만들기`, the backup is that paper) or connected without words (the card holds
+/// the only copy of its keys).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum YkDone {
+    /// Enrolled from new recovery words; the card's serial.
+    Created(u32),
+    /// Connected without recovery words; the card's serial.
+    Connected(u32),
+}
+
 /// Where the wizard was started.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WizardOrigin {
@@ -632,15 +643,28 @@ impl App {
             Some(wizard) if wizard.origin == WizardOrigin::NewWallet && !wizard.created => {
                 Screen::FirstRun
             }
-            Some(wizard) if wizard.created => Screen::Main,
+            Some(wizard) if wizard.created => {
+                // A new YubiKey wallet ends on S08 like the other first-run paths: the RPC step
+                // and the Chrome extension link (spec/04 §2.19).
+                let serial = wizard
+                    .enrolled
+                    .as_ref()
+                    .map_or(0, |enrolled| enrolled.record.serial);
+                self.done_yubikey = Some(if wizard.connect.is_some() {
+                    YkDone::Connected(serial)
+                } else {
+                    YkDone::Created(serial)
+                });
+                self.done_imported = false;
+                self.keys.done_start = false;
+                Screen::Done
+            }
             _ => Screen::Settings(SettingsSection::YubiKey),
         };
-        if back == Screen::Main && self.meta.is_none() {
+        if back == Screen::Done && self.meta.is_none() {
             self.request_meta();
-            self.set_screen(Screen::Processing("불러오는 중…"));
-        } else {
-            self.set_screen(back);
         }
+        self.set_screen(back);
     }
 
     /// (a) `다음`: the plan, then W05 (or straight to the preview when the words are held).
@@ -1406,10 +1430,7 @@ impl App {
                     self.with_form(|form| {
                         form.reset_backup(
                             positions,
-                            Some(
-                                "입력한 단어가 맞지 않습니다. 새 위치로 다시 확인합니다."
-                                    .to_owned(),
-                            ),
+                            Some(crate::ui::screens::backup_retry_text(positions, false)),
                         );
                     });
                 } else {

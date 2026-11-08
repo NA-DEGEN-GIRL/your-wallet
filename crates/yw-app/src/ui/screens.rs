@@ -285,6 +285,22 @@ pub const T_FIRST: [&str; 3] = [
     "지갑을 만들 때 받는 복구 단어 24개가 유일한 백업입니다. 종이에 적어 안전한 곳에 보관하세요.",
 ];
 
+/// T-BACKUP-FAIL (W10 after a wrong answer, spec/04 §2.3): the same four positions are asked
+/// again, and the paper may be what is wrong. `words_again`: closing W10 leads back to the words
+/// (S04 or the recovery-phrase list); the new `YubiKey` wallet's W10 has no way back to them.
+#[must_use]
+pub fn backup_retry_text(positions: [u8; 4], words_again: bool) -> String {
+    let [a, b, c, d] = positions;
+    let next = if words_again {
+        "종이에 잘못 적었을 수 있으니, 이 창을 닫고 복구 단어를 다시 보면서 이 네 단어를 종이와 대조해 고치세요."
+    } else {
+        "종이의 이 네 단어를 다시 확인하세요. 종이가 틀렸는지 알 수 없다면 이 창을 닫아 만들기를 취소하고(단어는 지워집니다) 처음부터 다시 만드세요."
+    };
+    format!(
+        "입력한 단어 중 종이와 다른 것이 있습니다. 같은 위치({a}·{b}·{c}·{d}번째)를 다시 묻습니다. {next}"
+    )
+}
+
 /// T-ALT-PASS (every screen while `App::passphrase_unverified`, spec/04 §2.1): not dismissible.
 pub const T_ALT_PASS: &str = "passphrase 확인값과 맞지 않는 passphrase로 연 지갑입니다. 오타라면 이 지갑은 원래 지갑이 아닌 다른(빈) 지갑이고, 여기로 받은 자산은 지금 입력한 passphrase와 대소문자·공백까지 정확히 같은 값을 다시 넣어야만 꺼낼 수 있습니다. 그래서 받기와 사이트 연결·서명을 막았습니다. 계정 이름·주소록·연결 기록도 저장되지 않습니다. 잘못 입력했다면 잠그고 다시 여세요.";
 /// Shown when `받기` is pressed in that mode.
@@ -683,7 +699,20 @@ impl App {
 
     fn done(&self, items: &mut Vec<Item>) {
         items.push(Item::Title("준비되었습니다".to_owned()));
-        if self.keys.done_start {
+        if let Some(done) = self.done_yubikey {
+            let (text, backup) = match done {
+                crate::app_yubikey::YkDone::Created(serial) => (
+                    format!("YubiKey 지갑을 만들었습니다 (YubiKey #{serial})."),
+                    "이 지갑의 백업은 방금 적은 복구 단어 24개입니다. 이 PC에는 저장하지 않았으니 종이를 안전하게 보관하세요.",
+                ),
+                crate::app_yubikey::YkDone::Connected(serial) => (
+                    format!("YubiKey를 연결했습니다 (YubiKey #{serial})."),
+                    "복구 단어 없이 카드의 공개키로 연결했습니다. 이 PC에는 개인키도 복구 단어도 없어 카드가 그 키의 유일한 사본일 수 있습니다 — 카드를 잃었을 때를 대비해 원래 백업(복구 단어 등)이 있는지 확인하세요.",
+                ),
+            };
+            items.push(Item::Banner(text, Tone::Success));
+            items.push(Item::Help(backup.to_owned()));
+        } else if self.keys.done_start {
             items.push(Item::Banner(
                 crate::ui::screens_keys::T_KEY_START_OK.to_owned(),
                 Tone::Success,

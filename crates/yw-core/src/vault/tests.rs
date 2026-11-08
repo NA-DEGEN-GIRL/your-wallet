@@ -1400,7 +1400,9 @@ fn backup_confirmation() {
         .unwrap();
     assert_eq!(challenge.positions, [3, 6, 9, 24]);
 
-    // Each failure is BackupMismatch, discards the challenge, and stays in BackupPending.
+    // Each failure is BackupMismatch, discards the challenge, and stays in BackupPending; the
+    // next challenge asks the same positions again (with a new id).
+    let mut asked: Option<[u8; 4]> = None;
     let other_word: fn(&str) -> String = |word| {
         if word == "zoo" {
             "abandon".to_owned()
@@ -1420,6 +1422,10 @@ fn backup_confirmation() {
         ("non-letter", 1, non_letter),
     ] {
         let challenge = vault.backup_challenge().unwrap();
+        if let Some(previous) = asked {
+            assert_eq!(challenge.positions, previous, "{label}: same positions");
+        }
+        asked = Some(challenge.positions);
         let expected = answers(phrase.expose(), challenge.positions);
         let words = altered(expected.clone(), position, change);
         assert_eq!(

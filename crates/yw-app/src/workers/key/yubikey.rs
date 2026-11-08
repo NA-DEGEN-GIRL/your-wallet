@@ -258,6 +258,8 @@ pub(super) struct PendingEnrol {
     /// A new `YubiKey` wallet's words (kept for the backup confirmation).
     fresh: Option<Mnemonic>,
     challenge: Option<[u8; BACKUP_WORDS]>,
+    /// After a wrong W10 answer: the positions asked again (spec/04 §2.3, like the vault's).
+    retry: Option<[u8; BACKUP_WORDS]>,
     /// The new words were confirmed (W10).
     confirmed: bool,
 }
@@ -512,6 +514,7 @@ impl KeyWorker {
             seed,
             fresh: None,
             challenge: None,
+            retry: None,
             confirmed: false,
         });
         Ok(())
@@ -591,6 +594,7 @@ impl KeyWorker {
             seed,
             fresh: Some(mnemonic),
             challenge: None,
+            retry: None,
             confirmed: false,
         });
         logging::info("key", "yubikey.wallet_words", &[]);
@@ -606,7 +610,10 @@ impl KeyWorker {
             .fresh
             .as_ref()
             .ok_or(YubiKeyJobError::Vault(VaultError::InvalidState))?;
-        let positions = mnemonic.backup_positions().map_err(job_key)?;
+        let positions = match pending.retry {
+            Some(positions) => positions,
+            None => mnemonic.backup_positions().map_err(job_key)?,
+        };
         pending.challenge = Some(positions);
         Ok(positions)
     }
@@ -637,6 +644,7 @@ impl KeyWorker {
             .backup_words_match(positions, [text(0), text(1), text(2), text(3)])
             .map_err(job_key)?;
         pending.confirmed |= matched;
+        pending.retry = (!matched).then_some(positions);
         logging::info(
             "key",
             "yubikey.wallet_backup",

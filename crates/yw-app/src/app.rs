@@ -534,6 +534,8 @@ pub struct App {
     pub(crate) prev_on_disk: bool,
     /// S08 follows an import (no backup check ran) rather than a backup confirmation.
     pub(crate) done_imported: bool,
+    /// S08 follows a new `YubiKey` wallet (spec/04 §2.19): what its completion banner says.
+    pub(crate) done_yubikey: Option<crate::app_yubikey::YkDone>,
     /// While a `.prev` recovery submitted from W03 is pending or failed: the mode to return to
     /// when it fails or the window is cancelled.
     recover_return: Option<AppMode>,
@@ -777,6 +779,7 @@ impl App {
             quarantined: None,
             prev_on_disk: false,
             done_imported: false,
+            done_yubikey: None,
             recover_return: None,
             scroll: 0,
             scroll_state: crate::app_scroll::MainScroll::default(),
@@ -1640,10 +1643,10 @@ impl App {
                     self.with_form(|form| {
                         form.reset_backup(
                             challenge.positions,
-                            Some(
-                                "입력한 단어가 맞지 않습니다. 새 위치로 다시 확인합니다."
-                                    .to_owned(),
-                            ),
+                            Some(crate::ui::screens::backup_retry_text(
+                                challenge.positions,
+                                true,
+                            )),
                         );
                     });
                 } else {
@@ -2906,6 +2909,7 @@ impl App {
             ids::DONE_CONTINUE | ids::BACK_MAIN | ids::SWITCH_ACCOUNT => {
                 self.info = None;
                 self.keys.done_start = false;
+                self.done_yubikey = None;
                 if self.mode == AppMode::BackupPending {
                     // `← 메인으로` from S12 during the backup check: S04 is this mode's main
                     // screen (S10, and a `Processing` wait for it, never come in this mode).

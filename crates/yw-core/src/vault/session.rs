@@ -164,6 +164,10 @@ pub struct Vault {
     slot: Option<Slot>,
     /// The open backup quiz: id, word positions and the mnemonic it checks.
     challenge: Option<(ChallengeId, [u8; CHALLENGE_WORDS], [u8; 16])>,
+    /// After a wrong answer: the positions the next quiz of that mnemonic asks again (spec/04
+    /// §2.3: a paper with one wrong word must not pass because a new draw skipped it). Kept
+    /// until the quiz passes or the session ends; the answer is still only "all four match".
+    retry: Option<([u8; CHALLENGE_WORDS], [u8; 16])>,
 
     /// Last known generation of meta / journal.
     sidecar_generations: Cell<[Known; 2]>,
@@ -582,6 +586,7 @@ impl Vault {
             ciphertext: None,
             slot: None,
             challenge: None,
+            retry: None,
             sidecar_generations: Cell::new([Known::Unknown; 2]),
             kdf,
             quarantined_at: None,
@@ -825,6 +830,7 @@ impl Vault {
             wipe_and_drop(old);
         }
         self.challenge = None;
+        self.retry = None;
         self.passphrase_target = None;
         self.alt_passphrase = false;
         self.sidecar_generations.set([Known::Unknown; 2]);
@@ -1159,6 +1165,7 @@ impl Vault {
             wipe_and_drop(slot);
         }
         self.challenge = None;
+        self.retry = None;
         self.ciphertext = None;
         self.passphrase_target = None;
         self.alt_passphrase = false;
@@ -1257,8 +1264,9 @@ impl Vault {
         }
     }
 
-    /// Picks 4 distinct word positions (partial Fisher–Yates over `random_below`). A new
-    /// challenge replaces the previous one.
+    /// Picks 4 distinct word positions (partial Fisher–Yates over `random_below`); after a wrong
+    /// answer, the positions of that quiz again (with a new id). A new challenge replaces the
+    /// previous one.
     ///
     /// # Errors
     ///
@@ -1317,9 +1325,12 @@ impl Vault {
             .mnemonic
             .word_count()
             .words();
-        // The same draw as a mnemonic held in memory (`Mnemonic::backup_positions`).
-        let positions: [u8; CHALLENGE_WORDS] =
-            crate::bip39::backup_positions_with(rng, words).map_err(VaultError::Key)?;
+        // After a wrong answer the same positions again (`retry`); otherwise the same draw as a
+        // mnemonic held in memory (`Mnemonic::backup_positions`).
+        let positions: [u8; CHALLENGE_WORDS] = match self.retry {
+            Some((positions, target)) if target == record => positions,
+            _ => crate::bip39::backup_positions_with(rng, words).map_err(VaultError::Key)?,
+        };
         let id = ChallengeId(random_nonzero_id_with(rng)?);
         self.challenge = Some((id, positions, record));
         Ok(BackupChallenge { id, positions })
@@ -1373,8 +1384,10 @@ impl Vault {
         // Well-formedness, then four constant-time comparisons decided once (shared with the
         // in-memory confirmation of a `YubiKey` wallet, spec/10 §7.1-1).
         if !bip39.mnemonic.backup_words_match(positions, words)? {
+            self.retry = Some((positions, record));
             return Err(VaultError::BackupMismatch);
         }
+        self.retry = None;
         if let Some(bip39) = payload
             .bip39
             .iter_mut()
