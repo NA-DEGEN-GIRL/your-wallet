@@ -1414,6 +1414,51 @@ mod tests {
         )));
     }
 
+    /// spec/10 §10: a site connected to a `YubiKey` EVM account may ask it to sign (the request
+    /// reaches its window, signer `EvmKeySource::Hardware`); an address that is no account of
+    /// this wallet is still refused (4100).
+    #[test]
+    fn a_yubikey_account_signs_for_a_connected_site() {
+        use crate::browser::SiteKind;
+        use crate::ui::approval::QueueOutcome;
+        const ACCOUNT_YK: &str = "0x6fac4d18c912343bf86fa7049364dd4e424ab9c0";
+        let mut app = accounts_app(false);
+        app.meta.as_mut().unwrap().hw_accounts.evm = vec![crate::meta::Account {
+            index: 1,
+            label: "YubiKey 계정 2".to_owned(),
+            address: ACCOUNT_YK.to_owned(),
+            hidden: false,
+        }];
+        app.sync_browser();
+        let core = Arc::clone(&app.browser.as_ref().unwrap().core);
+        let stranger = "0x000000000000000000000000000000000000dead";
+        let request = site(1, SiteKind::RequestAccounts);
+        core.upsert_grant(
+            yw_core::policy::ConnectedSite::new(
+                request.origin,
+                vec![addr(ACCOUNT_YK), addr(stranger)],
+                yw_core::evm::chain::SEPOLIA,
+                0,
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            app.account_source(&addr(ACCOUNT_YK)),
+            Some(yw_core::vault::EvmKeySource::Hardware(
+                yw_core::bip32::path::AccountIndex::new(1).unwrap()
+            ))
+        );
+        let sign = |account: &str| SiteKind::PersonalSign {
+            account: addr(account),
+            message: b"hi".to_vec(),
+        };
+        assert_eq!(app.site_preflight(&site(2, sign(ACCOUNT_YK))), None);
+        assert_eq!(
+            app.site_preflight(&site(3, sign(stranger))),
+            Some(QueueOutcome::Revoked)
+        );
+    }
+
     /// Security review L12: `personal_sign`/`eth_signTypedData_v4` on a chain whose check found
     /// `RpcMismatch` are blocked with E34 (as sends are); an unchecked chain is not blocked.
     #[test]

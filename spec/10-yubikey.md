@@ -341,7 +341,7 @@ n × 48:
 | 기능 | YubiKey 계정에서 |
 |---|---|
 | 승인 창·digest([03] §11) | 변화 없음. 서명자 종류(`Signer`)는 digest에 들어가지 않고 계정 주소가 묶는다. YubiKey EVM 계정은 키 출처 `EvmKeySource::Hardware(i)`(vault는 이 출처에 키를 빌려 주지 않고 `RecordNotFound`, 주소는 tag 5의 공개키에서 계산)로 표시하고, 승인 창에 "YubiKey로 서명" 배지와 이 키를 가진 YubiKey 목록을 더한다. 구현(2026-11-05): 배지 "YubiKey로 서명 · #일련번호… · 터치 N회"(Bitcoin은 입력 수)는 헤더의 앱 배지 줄(사용자 체인·테스트넷 배지와 같은 곳)에 그리며 요청의 `ApprovalDisplay`·display 바이트·digest에는 들어가지 않는다([03] §11.3) |
-| EVM 보내기·dApp(`eth_sendTransaction`·`personal_sign`·`eth_signTypedData_v4`) | 같은 준비·시뮬레이션·위험 규칙. 서명 단계만 카드(§9.2). 서명 결과는 §6.2 후 기존 서명 후 검증 |
+| EVM 보내기·dApp(`eth_sendTransaction`·`personal_sign`·`eth_signTypedData_v4`)·가속·취소 | 같은 준비·시뮬레이션·위험 규칙. 서명 단계만 카드(§9.2). 서명 결과는 §6.2 후 기존 서명 후 검증. 요청 계정 주소의 키 출처(`App::account_source`)는 소프트웨어 계정 다음에 `hw_accounts.evm`도 찾는다(2026-11-08 수정: 전에는 찾지 못해 dApp 요청이 4100으로 끝나고 가속·취소가 계정 0 키로 서명을 시도했다, [03] §4.6) |
 | 승인 만료(D23, 120초) | 승인 클릭까지가 기존 규칙이다. 승인 뒤 카드 단계는 별도 상한 120초(PIN 입력·터치 포함), 넘으면 취소 |
 | Bitcoin 보내기 | 단일 주소 계정(§3.3). 입력마다 카드 서명, 수수료 서명 크기 72+1(§6.3). dApp 메시지 서명도 카드로 한다: BIP137(카드 DER → compact, 복구 id는 기록된 공개키를 복구하는 값, 헤더는 주소 형식), BIP322 simple(P2WPKH: `to_sign`의 BIP143 sighash를 카드로 서명한 witness)·full(P2SH-P2WPKH) — `btc::msgsign::sign_message_card`(vault 경로와 같은 승인 검사, 기존 검증기로 시험) |
 | 계정 목록 | EVM·Solana·Bitcoin 탭에 "[YubiKey]" 배지로 나온다(선택·이름 바꾸기·숨기기는 탭이 지원하는 만큼; Bitcoin 탭은 이름·숨김 없음). 받기 주소·QR은 기록된 공개키의 주소. "개인키 보기"는 없다(설정의 버튼도 YubiKey 계정이 선택되면 꺼짐). dApp 연결 목록(EVM `eth_requestAccounts`, Solana·Bitcoin 연결)에도 들어간다. 숨긴 YubiKey 계정은 그 키를 가진 카드를 다시 등록하면 다시 보인다 |
