@@ -9,7 +9,7 @@
 //! | Block | Ids | Contents |
 //! |---|---|---|
 //! | core (`screens`) | 100–802 | S01–S09, top bar, settings 보안·네트워크·기타, overlays; network chips 210–249, URL rows 540–699 |
-//! | EVM (`screens_evm`) | 900–3,559, 6,600 | send, chain rows 2,210–2,349, caps 2,400–2,439, activity 2,500–2,899, send assets 3,000–3,199, token rows 3,200–3,439, token `보내기` links 3,440–3,559 |
+//! | EVM (`screens_evm`) | 900–3,560, 6,600 | send, chain rows 2,210–2,349, caps 2,400–2,439, activity 2,500–2,899, send assets 3,000–3,199, token rows 3,200–3,439, token `보내기` links 3,440–3,559, `이전 활동` 3,560 |
 //! | sites (`screens_sites`) | 6,700–6,965 | S13 rows 6,710–6,965 |
 //! | Solana (`screens_sol`) | 7,000–7,375 | send assets 7,015–7,018, token cards 7,027–7,029, picker 7,030–7,069, token hide 7,070–7,073, scan rows 7,120–7,375 |
 //! | Bitcoin (`screens_btc`) | 9,000–9,899 | account rows 9,130–9,194, UTXO rows 9,200–9,499, activity 9,500–9,899 |

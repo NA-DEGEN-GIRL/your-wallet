@@ -86,6 +86,10 @@ impl App {
                 self.schedule_tracking(true);
             }
             ids::BOOK_OPEN => self.set_screen(Screen::AddressBook),
+            ids::ACTIVITY_MORE => {
+                self.activity_all = !self.activity_all;
+                self.refresh();
+            }
             ids::TOKEN_OPEN => {
                 self.evm.token = crate::app_evm::TokenForm::default();
                 self.set_screen(Screen::TokenAdd);

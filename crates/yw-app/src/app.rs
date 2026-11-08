@@ -540,6 +540,8 @@ pub struct App {
     pub(crate) done_imported: bool,
     /// `숨긴 계정 n개 보기 ▸` is open (EVM and Solana `내 계정`, this run only).
     pub(crate) hidden_open: bool,
+    /// The EVM activity card shows every row, not only the latest ten (this run only).
+    pub(crate) activity_all: bool,
     /// S08 follows a new `YubiKey` wallet (spec/04 §2.19): what its completion banner says.
     pub(crate) done_yubikey: Option<crate::app_yubikey::YkDone>,
     /// While a `.prev` recovery submitted from W03 is pending or failed: the mode to return to
@@ -787,6 +789,7 @@ impl App {
             done_imported: false,
             done_yubikey: None,
             hidden_open: false,
+            activity_all: false,
             recover_return: None,
             scroll: 0,
             scroll_state: crate::app_scroll::MainScroll::default(),

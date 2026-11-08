@@ -851,7 +851,10 @@ impl App {
         let mut prompt_drawn = false;
         let rows = self.btc.activity_rows(ctx);
         if rows.is_empty() {
-            items.push(Item::Help("아직 보낸 거래가 없습니다.".to_owned()));
+            items.push(Item::Help(format!(
+                "아직 보낸 거래가 없습니다. {}",
+                crate::ui::screens::T_ACTIVITY_RECEIVED
+            )));
         }
         let usable = ctx.gate().is_ok();
         let unlocked = self.btc_unlocked();

@@ -580,10 +580,10 @@ impl App {
             }
         }
         if shown == 0 {
-            items.push(Item::Help(
-                "아직 보낸 거래가 없습니다. 보낸 거래는 여기에서 진행 상태와 함께 보입니다."
-                    .to_owned(),
-            ));
+            items.push(Item::Help(format!(
+                "아직 보낸 거래가 없습니다. 보낸 거래는 여기에서 진행 상태와 함께 보입니다. {}",
+                crate::ui::screens::T_ACTIVITY_RECEIVED
+            )));
         }
         items.push(Item::CardEnd);
     }

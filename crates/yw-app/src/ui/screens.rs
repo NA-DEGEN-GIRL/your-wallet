@@ -308,6 +308,10 @@ pub fn no_endpoint_text(network: &str) -> String {
     format!("이 네트워크({network})의 RPC 주소가 아직 없어 잔액을 읽을 수 없습니다.")
 }
 
+/// The empty activity cards (2026-11-08): received deposits are not listed (spec/04 §2.6).
+pub const T_ACTIVITY_RECEIVED: &str =
+    "받은 입금은 이 목록에 나오지 않습니다. 선택 계정의 잔액(새로고침)으로 확인하세요.";
+
 /// T-ALT-PASS (every screen while `App::passphrase_unverified`, spec/04 §2.1): not dismissible.
 pub const T_ALT_PASS: &str = "passphrase 확인값과 맞지 않는 passphrase로 연 지갑입니다. 오타라면 이 지갑은 원래 지갑이 아닌 다른(빈) 지갑이고, 여기로 받은 자산은 지금 입력한 passphrase와 대소문자·공백까지 정확히 같은 값을 다시 넣어야만 꺼낼 수 있습니다. 그래서 받기와 사이트 연결·서명을 막았습니다. 계정 이름·주소록·연결 기록도 저장되지 않습니다. 잘못 입력했다면 잠그고 다시 여세요.";
 /// Shown when `받기` is pressed in that mode.

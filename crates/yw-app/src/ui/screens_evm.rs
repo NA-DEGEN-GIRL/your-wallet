@@ -25,6 +25,7 @@ use crate::token_view::RowPlace;
 use crate::ui::badge::Badge;
 use crate::ui::main_window::{Ctl, Item, Tone};
 use crate::ui::qr::{EvmQrKind, RECEIVE_SHARED_ADDRESS_NOTE};
+use crate::ui::screens::T_ACTIVITY_RECEIVED;
 
 /// T-TOKEN-HIDDEN: the note above the hidden token rows (spec/04 §2.6).
 pub const T_TOKEN_HIDDEN_NOTE: &str = "숨기기는 이 목록과 보내기 화면의 자산 선택에서만 감춥니다. 잔액 조회, 승인 창의 토큰 확인, 활동 기록은 그대로입니다.";
@@ -176,6 +177,10 @@ pub mod ids {
     pub const TOKEN_SEND_BASE: u16 = 3_440;
     /// Token send links span (120 rows).
     pub const TOKEN_SEND_SPAN: u16 = 120;
+    /// Activity `이전 활동 n건 더 보기 ▸` / `접기 ▾`.
+    pub const ACTIVITY_MORE: u16 = 3_560;
+    /// Activity rows drawn before `이전 활동 n건 더 보기`.
+    pub const ACTIVITY_FIRST: usize = 10;
     /// T-CHAIN-REPIN-ACK check.
     pub const REPIN_CHECK: u16 = 6_600;
 
@@ -259,6 +264,7 @@ pub mod ids {
         CAPS_SAVE,
         CAPS_DEFAULT,
         REPIN_CHECK,
+        ACTIVITY_MORE,
     ];
 }
 
@@ -294,6 +300,30 @@ pub struct ActivityRowView {
 }
 
 impl App {
+    /// The activity line of a recipient (2026-11-08, like Solana and Zcash): the full grouped
+    /// address and, display only, the address-book or own-account name. No copy button: the
+    /// activity list never offers its addresses for reuse (address poisoning).
+    fn recipient_line(&self, address: &Address) -> String {
+        let lower = address.to_lower_hex();
+        let name = self
+            .meta
+            .as_ref()
+            .and_then(|meta| {
+                meta.contacts(BookChain::Evm)
+                    .into_iter()
+                    .find(|contact| contact.address == lower)
+            })
+            .map(|contact| format!(" → 주소록: {}", contact.label))
+            .or_else(|| {
+                self.account_rows()
+                    .into_iter()
+                    .find(|(_, _, shown, _)| shown.eq_ignore_ascii_case(&lower))
+                    .map(|(_, label, _, _)| format!(" → 내 계정: {label}"))
+            })
+            .unwrap_or_default();
+        format!("받는 주소 {}{name}", format_address(address))
+    }
+
     fn account_label(&self, address: &str) -> String {
         self.account_rows()
             .into_iter()
@@ -374,13 +404,18 @@ impl App {
                         )
                     )
             });
+            // The nonce only matters while the group is open (speed-up, cancel).
+            let nonce = if open {
+                format!(" · nonce {}", key.nonce)
+            } else {
+                String::new()
+            };
             rows.push(ActivityRowView {
                 head: format!(
-                    "{} · {} · {} · nonce {}",
+                    "{} · {} · {}{nonce}",
                     format_local(shown.created_unix_ms),
                     self.account_label(&shown.account.to_lower_hex()),
                     shown.label,
-                    key.nonce
                 ),
                 status: self.record_status(shown),
                 hash,
@@ -540,14 +575,19 @@ impl App {
         ));
         let rows = self.activity_rows();
         if rows.is_empty() {
-            items.push(Item::Help(
-                "아직 보낸 거래가 없습니다. 보낸 거래는 여기에서 진행 상태와 함께 보입니다."
-                    .to_owned(),
-            ));
+            items.push(Item::Help(format!(
+                "아직 보낸 거래가 없습니다. 보낸 거래는 여기에서 진행 상태와 함께 보입니다. {T_ACTIVITY_RECEIVED}"
+            )));
         }
-        let count = rows.len();
+        // The latest rows first; the rest behind a link (this run only).
+        let total = rows.len();
+        let count = if self.activity_all {
+            total
+        } else {
+            total.min(ids::ACTIVITY_FIRST)
+        };
         let mut prompt_drawn = false;
-        for (index, row) in rows.into_iter().enumerate() {
+        for (index, row) in rows.into_iter().take(count).enumerate() {
             let base = ids::ACTIVITY_BASE.saturating_add(
                 u16::try_from(index)
                     .unwrap_or(0)
@@ -555,6 +595,9 @@ impl App {
             );
             items.push(Item::Text(row.head));
             items.push(Item::Help(format!("상태: {}", row.status)));
+            if let Some(address) = &row.counterparty {
+                items.push(Item::Help(self.recipient_line(address)));
+            }
             items.push(Item::Mono(row.hash));
             let mut buttons = vec![Ctl::button(base, "해시 복사")];
             if row.open.is_some() {
@@ -584,6 +627,16 @@ impl App {
             if index.saturating_add(1) < count {
                 items.push(Item::Rule);
             }
+        }
+        if total > ids::ACTIVITY_FIRST {
+            items.push(Item::Row(vec![Ctl::link(
+                ids::ACTIVITY_MORE,
+                &if self.activity_all {
+                    "이전 활동 접기 ▾".to_owned()
+                } else {
+                    format!("이전 활동 {}건 더 보기 ▸", total - ids::ACTIVITY_FIRST)
+                },
+            )]));
         }
         items.push(Item::CardEnd);
     }
