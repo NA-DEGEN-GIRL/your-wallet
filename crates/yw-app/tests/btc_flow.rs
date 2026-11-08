@@ -825,6 +825,60 @@ fn refresh_checks_candidates_with_gettxout() -> TestResult {
     Ok(())
 }
 
+/// spec/08 §4.7-3: a crowded address (Esplora HTTP 400, as mempool.space answers above 500
+/// outputs, or a list over 1,000 entries) is skipped and reported; the other addresses refresh.
+#[test]
+fn refresh_skips_crowded_addresses() -> TestResult {
+    let r0 = ours(BtcChain::Receive, 0)?;
+    let r1 = ours(BtcChain::Receive, 1)?;
+    // Receive 2 answers 1,001 entries.
+    let (raw, txid) = prev_tx(&[(r1.script_pubkey(), 20_000)], 21)?;
+    let crowded = format!(
+        "[{}]",
+        (0..1_001)
+            .map(|vout| utxo_entry(&txid, vout, 600, Some(TIP - 2)))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    let listed = format!("[{}]", utxo_entry(&txid, 0, 20_000, Some(TIP - 2)));
+    let raw_hex = yw_core::hex::encode(&raw);
+    let (r0_text, r1_text) = (r0.as_str().to_owned(), r1.as_str().to_owned());
+    let rig = Rig::new(BtcIndexer::Esplora, move |call| match call.verb {
+        Verb::Rpc if call.method == "getrawtransaction" => Reply::Result(format!("\"{raw_hex}\"")),
+        Verb::Get => match path_address(call.path()) {
+            Some(address) if call.path().ends_with("/utxo") => {
+                if address == r0_text {
+                    Reply::status(400)
+                } else if address == r1_text {
+                    Reply::json(&listed)
+                } else {
+                    Reply::json(&crowded)
+                }
+            }
+            Some(address) => Reply::json(&address_json(address, [1, 0, 1], [0, 0, 0])),
+            None => healthy(call),
+        },
+        _ => healthy(call),
+    });
+    let client = BtcClient::new(rig.env(), &rig.endpoint);
+    let mut session = new_session();
+    let result = refresh(&client, &mut session, &refresh_job(3, 0))?;
+    assert_eq!(
+        result.skipped,
+        [(BtcChain::Receive, 0), (BtcChain::Receive, 2)]
+    );
+    assert_eq!(result.skipped_addresses(), 2);
+    let listed: Vec<(Txid, u32)> = result
+        .listed()
+        .iter()
+        .map(|item| (item.outpoint.txid, item.index))
+        .collect();
+    assert_eq!(listed, [(txid, 1)]);
+    assert_eq!(result.verified.len(), 1);
+    assert_eq!(result.history().len(), 3);
+    Ok(())
+}
+
 /// Review fix (spec/08 §12.2): an indexer `Confirmed` of a record with an in-flight replacement
 /// is applied only after Core `getmempoolentry` answered `-5` for that replacement; while Core
 /// still has it the confirmation is `Deferred` (no `Conflicted` replacement on the indexer's

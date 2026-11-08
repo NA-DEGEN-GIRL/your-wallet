@@ -396,12 +396,16 @@ pub struct RefreshResult {
     /// Watch set in request order.
     pub addresses: Vec<AddressState>,
     /// The full current candidate list (verified entries absent from it may be dropped by the
-    /// caller, except outpoints of in-flight journal entries).
+    /// caller, except outpoints of in-flight journal entries and of `skipped` addresses).
     pub candidates: Vec<Candidate>,
     /// Newly verified UTXOs.
     pub verified: Vec<VerifiedUtxo>,
     /// Candidates that failed verification.
     pub failed: Vec<FailedUtxo>,
+    /// Paid addresses whose UTXO list was not usable this round (Esplora HTTP 400 — mempool.space
+    /// refuses more than 500 outputs — or a list over 1,000 entries or 1 MiB): skipped instead of
+    /// failing the refresh; their `verified` entries are kept (`BtcRefreshUpdate::skipped`).
+    pub skipped: Vec<(BtcChain, u32)>,
 }
 
 impl RefreshResult {
@@ -460,6 +464,12 @@ impl RefreshResult {
             .iter()
             .map(|state| (state.chain, state.index, state.summary.tx_count))
             .collect()
+    }
+
+    /// "UTXO가 너무 많아 목록을 받지 못한 주소 n개".
+    #[must_use]
+    pub fn skipped_addresses(&self) -> u32 {
+        u32::try_from(self.skipped.len()).unwrap_or(u32::MAX)
     }
 
     /// Whether any watched address shows "미확정 입금 있음(미검증, 교체될 수 있음)".
@@ -573,7 +583,9 @@ fn core_check(
     Ok(out)
 }
 
-/// Refresh (spec/08 §4.7 steps 1–4).
+/// Refresh (spec/08 §4.7 steps 1–4). One crowded address (its `Utxo` answer is E-BTC-005:
+/// `Rejected` or `TooMany`) is skipped and reported in [`RefreshResult::skipped`]; the other
+/// addresses still refresh.
 ///
 /// # Errors
 ///
@@ -613,8 +625,18 @@ pub fn refresh(
     }
     let mut candidates: Vec<Candidate> = Vec::new();
     let mut seen = HashSet::new();
+    let mut skipped = Vec::new();
     for (chain, index, address) in &paid {
-        for utxo in utxos(client, session, address)? {
+        let list = match utxos(client, session, address) {
+            Ok(list) => list,
+            // The indexer already logged the code; only this address is left out.
+            Err(BtcError::Indexer(IndexerError::Rejected | IndexerError::TooMany)) => {
+                skipped.push((*chain, *index));
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        for utxo in list {
             let Some(height) = utxo.height else {
                 continue;
             };
@@ -639,6 +661,7 @@ pub fn refresh(
         candidates,
         verified,
         failed,
+        skipped,
     })
 }
 

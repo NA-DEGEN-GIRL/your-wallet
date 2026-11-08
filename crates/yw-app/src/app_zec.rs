@@ -575,6 +575,22 @@ impl App {
         let live = || records.iter().filter(|record| record.may_still_confirm());
         let track = live().map(ZecRecord::txid_hex).collect();
         let watch = live().flat_map(ZecRecord::inputs).collect();
+        // What is known (spec/12 §4.3): the largest outputs of the last answer, sent from when
+        // the next address answer is over its limits.
+        let known = self
+            .zec
+            .snapshot
+            .as_ref()
+            .filter(|(network, _)| *network == account.network)
+            .map(|(_, snapshot)| {
+                snapshot
+                    .utxos
+                    .iter()
+                    .take(yw_core::zec::ZEC_MAX_INPUTS)
+                    .copied()
+                    .collect()
+            })
+            .unwrap_or_default();
         self.zec.job = self.zec.job.wrapping_add(1);
         self.zec.refreshing = true;
         self.zec.review_after = review;
@@ -588,6 +604,7 @@ impl App {
             script_hex: yw_core::hex::encode(&account.script_pubkey()),
             track,
             watch,
+            known,
         })));
         if !sent {
             self.zec.refreshing = false;
@@ -655,7 +672,10 @@ impl App {
                     .map_err(|_| "보낼 금액(ZEC)을 올바르게 입력하세요.".to_owned())?,
             )
         };
-        if let Some(error) = snapshot.utxo_error {
+        // Over the limits only part is shown, but that part can still be sent from.
+        if let Some(error) = snapshot.utxo_error
+            && error != ZecRpcError::TooMany
+        {
             return Err(error.text());
         }
         match self.zec_hw_state() {
@@ -935,7 +955,9 @@ impl App {
                 {
                     // "Not found" alone is not proof: Expired (inputs released) only while at
                     // least one input is still unspent; all spent → it may be in the chain.
-                    // Unknown (the UTXO lookup failed) → wait for the next refresh.
+                    // Unknown (the UTXO lookup failed) → wait for the next refresh, unless this
+                    // endpoint can never tell (over the limits, no `gettxout`): then close it
+                    // as InputsSpent (inputs stay reserved) instead of blocking sends forever.
                     if let Some(unspent) = snapshot.unspent_watch.as_ref() {
                         let any_unspent =
                             record.inputs().iter().any(|input| unspent.contains(input));
@@ -947,6 +969,8 @@ impl App {
                                 ZecTransition::InputsSpent
                             },
                         );
+                    } else if snapshot.watch_unknowable {
+                        self.zec_journal(txid, ZecTransition::InputsSpent);
                     }
                 }
                 Some(TxStatus::NotFound) if tip >= record.expiry_height() => {}

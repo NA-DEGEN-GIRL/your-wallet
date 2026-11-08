@@ -149,6 +149,7 @@ fn funded_mode(fixture: &mut Fixture, single_address: bool) -> TestResult<OutPoi
                 history: vec![(BtcChain::Receive, 0, 1)],
                 max_tip_seen: TIP,
                 now_unix: 1_000,
+                skipped: Vec::new(),
             }),
         },
     )?;
@@ -780,6 +781,7 @@ fn accounts_are_stored_selected_and_imported_keys_need_their_record() -> TestRes
                 history: Vec::new(),
                 max_tip_seen: TIP,
                 now_unix: 1_000,
+                skipped: Vec::new(),
             }),
         },
     )?;
@@ -861,6 +863,7 @@ fn accounts_are_stored_selected_and_imported_keys_need_their_record() -> TestRes
                 history: vec![(BtcChain::Receive, 0, 1)],
                 max_tip_seen: TIP,
                 now_unix: 1_000,
+                skipped: Vec::new(),
             }),
         },
     )?;

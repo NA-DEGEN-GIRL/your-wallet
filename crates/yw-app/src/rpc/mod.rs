@@ -265,8 +265,15 @@ impl<'t> RpcClient<'t> {
             max_bytes: max_response,
             ..Limits::RESPONSE
         };
-        let value = yw_json::parse(&reply.body, &limits)
-            .map_err(|_| CallError::from(RpcFailure::Malformed))?;
+        let value = yw_json::parse(&reply.body, &limits).map_err(|error| CallError {
+            over_limit: matches!(
+                error,
+                yw_json::ParseError::TooLarge
+                    | yw_json::ParseError::TooManyNodes
+                    | yw_json::ParseError::TooManyItems
+            ),
+            ..CallError::from(RpcFailure::Malformed)
+        })?;
         let object = value
             .as_object()
             .ok_or_else(|| CallError::from(RpcFailure::Malformed))?;
@@ -297,6 +304,7 @@ impl<'t> RpcClient<'t> {
                 failure: RpcFailure::Rpc(code),
                 data,
                 data_value: error.get("data").cloned(),
+                over_limit: false,
             });
         }
         object
@@ -316,6 +324,9 @@ pub struct CallError {
     /// The raw `error.data` JSON (Solana `sendTransaction` preflight errors carry a structured
     /// `err`; only its structure is classified, never its strings, spec/07 §15.3).
     pub data_value: Option<Value>,
+    /// The answer went past its size bounds: the transport's byte cap or the JSON byte / node /
+    /// item limits (the failure stays `Http(TooLarge)` / `Malformed` for classification).
+    pub over_limit: bool,
 }
 
 impl From<RpcFailure> for CallError {
@@ -324,6 +335,7 @@ impl From<RpcFailure> for CallError {
             failure,
             data: None,
             data_value: None,
+            over_limit: matches!(failure, RpcFailure::Http(HttpError::TooLarge)),
         }
     }
 }

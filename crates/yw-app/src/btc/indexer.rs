@@ -9,9 +9,10 @@
 //!
 //! The parsers are strict (spec/08 §4.1): Esplora integers are JSON integer tokens within the
 //! field bound, Blockbook amounts are decimal strings, txids and hashes are 64 lowercase hex,
-//! status fields must agree, the address is echoed, counts are consistent, at most 1,000 UTXOs
-//! without duplicate outpoints, Esplora `Content-Type` matches the path, text endpoints are exact
-//! bodies. Anything else is `Malformed` (E-BTC-004). Server bodies are never kept.
+//! status fields must agree, the address is echoed, counts are consistent, no duplicate
+//! outpoints, Esplora `Content-Type` matches the path, text endpoints are exact bodies. Anything
+//! else is `Malformed` (E-BTC-004). A `Utxo` list over 1,000 entries or over its 1 MiB cap is
+//! `TooMany` (E-BTC-005, one crowded address: the refresh skips it). Server bodies are never kept.
 
 use std::collections::HashSet;
 
@@ -132,6 +133,9 @@ pub enum IndexerError {
     Malformed,
     /// E-BTC-005: Esplora HTTP 400 on `Utxo` / `Address`.
     Rejected,
+    /// E-BTC-005: a `Utxo` list over [`BTC_INDEXER_MAX_UTXOS`] entries or over [`CAP_UTXO`]
+    /// (too many outputs at one address; the refresh skips that address, spec/08 §4.7-3).
+    TooMany,
     /// E-BTC-007: HTTP 401/403, `bb-*` add-on disabled (`-32601`).
     Auth,
     /// HTTP 404 of `TxRaw` (`NotFound`, spec/08 §4.3): not shown by itself.
@@ -149,7 +153,7 @@ impl IndexerError {
             Self::Unreachable(_) => ErrorCode::Btc001,
             Self::RateLimited => ErrorCode::Btc002,
             Self::Malformed | Self::NotFound => ErrorCode::Btc004,
-            Self::Rejected => ErrorCode::Btc005,
+            Self::Rejected | Self::TooMany => ErrorCode::Btc005,
             Self::Auth => ErrorCode::Btc007,
             Self::Refused => ErrorCode::App009,
         }
@@ -282,6 +286,15 @@ pub const fn transport_error(error: HttpError) -> IndexerError {
     }
 }
 
+/// [`transport_error`], except that a `Utxo` answer over its cap is [`IndexerError::TooMany`]
+/// (the size of one address's list, not a broken indexer).
+fn transport_error_of(request: &BtcIndexerReq, error: HttpError) -> IndexerError {
+    match (request, error) {
+        (BtcIndexerReq::Utxo(_), HttpError::TooLarge) => IndexerError::TooMany,
+        (_, other) => transport_error(other),
+    }
+}
+
 /// `bb-rpc` failure mapping (spec/08 §4.3 "`bb-*` 오류").
 #[must_use]
 pub const fn bb_rpc_error(failure: RpcFailure) -> IndexerError {
@@ -327,7 +340,7 @@ pub fn fetch(
             let result = join(base.strip_suffix('/').unwrap_or(base), &path).and_then(|url| {
                 client
                     .get(&url, cap, tag)
-                    .map_err(transport_error)
+                    .map_err(|error| transport_error_of(request, error))
                     .and_then(|response| parse_esplora(request, &response))
             });
             (result, tag)
@@ -347,7 +360,7 @@ pub fn fetch(
             let result = join(&base, &path).and_then(|url| {
                 client
                     .get(&url, cap, tag)
-                    .map_err(transport_error)
+                    .map_err(|error| transport_error_of(request, error))
                     .and_then(|response| parse_bb_rest(request, &response))
             });
             (result, tag)
@@ -364,7 +377,10 @@ pub fn fetch(
             };
             let result = client
                 .json_rpc(&endpoint.core_url, method, &params, cap, tag)
-                .map_err(bb_rpc_error)
+                .map_err(|failure| match failure {
+                    RpcFailure::Http(error) => transport_error_of(request, error),
+                    other => bb_rpc_error(other),
+                })
                 .and_then(|value| parse_bb(request, &value));
             (result, tag)
         }
@@ -388,6 +404,7 @@ const fn error_word(error: IndexerError) -> &'static str {
         IndexerError::RateLimited => "rate_limited",
         IndexerError::Malformed => "malformed",
         IndexerError::Rejected => "rejected",
+        IndexerError::TooMany => "too_many",
         IndexerError::Auth => "auth",
         IndexerError::NotFound => "not_found",
         IndexerError::Refused => "refused",
@@ -521,7 +538,7 @@ fn esplora_status(value: &Value) -> Result<Option<u32>, IndexerError> {
 fn esplora_utxos(value: &Value) -> Result<Vec<UtxoCandidate>, IndexerError> {
     let items = value.as_array().ok_or(IndexerError::Malformed)?;
     if items.len() > BTC_INDEXER_MAX_UTXOS {
-        return malformed();
+        return Err(IndexerError::TooMany);
     }
     let mut seen = HashSet::with_capacity(items.len());
     let mut out = Vec::with_capacity(items.len());
@@ -694,7 +711,7 @@ fn echo_matches(object: &Object, key: &str, expected: &str) -> bool {
 fn bb_utxos(value: &Value) -> Result<Vec<UtxoCandidate>, IndexerError> {
     let items = value.as_array().ok_or(IndexerError::Malformed)?;
     if items.len() > BTC_INDEXER_MAX_UTXOS {
-        return malformed();
+        return Err(IndexerError::TooMany);
     }
     let mut seen = HashSet::with_capacity(items.len());
     let mut out = Vec::with_capacity(items.len());

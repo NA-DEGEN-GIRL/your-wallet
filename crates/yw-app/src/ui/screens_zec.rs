@@ -11,6 +11,7 @@ use crate::app_zec::SourceChoice;
 use crate::settings::ZecIndexer;
 use crate::ui::badge::Badge;
 use crate::ui::main_window::{Ctl, Item, Tone};
+use crate::zec::rpc::ZecRpcError;
 
 /// Command ids of the Zcash tab (8,000–8,099; the map and its checks are `ui::command_ids`).
 pub mod ids {
@@ -682,7 +683,9 @@ impl App {
         }
         if let Some(snapshot) = snapshot {
             items.push(Item::Subtitle("받은 출력 (UTXO, 서버 기준)".to_owned()));
-            if let Some(error) = snapshot.utxo_error {
+            if snapshot.utxo_error == Some(ZecRpcError::TooMany) {
+                items.push(Item::Help(ZecRpcError::TooMany.text()));
+            } else if let Some(error) = snapshot.utxo_error {
                 items.push(Item::Help(format!(
                     "출력 목록을 불러오지 못했습니다: {}",
                     error.text()

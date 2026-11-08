@@ -195,3 +195,109 @@ fn zec_draft_is_displayable() {
             .unwrap();
     assert!(yw_app::ui::approval::validate_for_display(&draft.display).is_ok());
 }
+
+/// A node whose `getaddressutxos` answer is over the limits; `gettxout` answers from `unspent`
+/// (`None`: the method is missing).
+#[derive(Debug)]
+struct OverLimitNode {
+    unspent: Option<Vec<u32>>,
+}
+
+impl yw_app::rpc::Transport for OverLimitNode {
+    fn post_json(
+        &self,
+        _url: &yw_win::http::HttpsUrl,
+        body: &[u8],
+        _max_response: usize,
+    ) -> Result<yw_app::rpc::HttpReply, yw_win::http::HttpError> {
+        let request = yw_json::parse(body, &Limits::REQUEST)
+            .map_err(|_| yw_win::http::HttpError::InvalidHeader)?;
+        let object = request
+            .as_object()
+            .ok_or(yw_win::http::HttpError::InvalidHeader)?;
+        let id = object
+            .get("id")
+            .and_then(Value::as_number)
+            .and_then(yw_json::Number::as_u64);
+        let params = object.get("params").and_then(Value::as_array);
+        let answer = match object.get("method").and_then(Value::as_str) {
+            Some("getblockhash") => format!(r#""result":"{}""#, ZecNetwork::Testnet.genesis_hex()),
+            Some("getblockchaininfo") => format!(
+                r#""result":{{"chain":"{}","blocks":4469100,"headers":4469100,"consensus":{{"nextblock":"77190ad9"}}}}"#,
+                ZecNetwork::Testnet.chain_name()
+            ),
+            Some("getaddressutxos") => return Err(yw_win::http::HttpError::TooLarge),
+            Some("gettxout") => {
+                let index = params
+                    .and_then(|params| params.get(1))
+                    .and_then(Value::as_number)
+                    .and_then(yw_json::Number::as_u64)
+                    .and_then(|index| u32::try_from(index).ok());
+                match (&self.unspent, index) {
+                    (None, _) => r#""error":{"code":-32601,"message":"x"}"#.to_owned(),
+                    (Some(unspent), Some(index)) if unspent.contains(&index) => {
+                        r#""result":{"value":0.001,"confirmations":5}"#.to_owned()
+                    }
+                    _ => r#""result":null"#.to_owned(),
+                }
+            }
+            _ => r#""error":{"code":-5,"message":"x"}"#.to_owned(),
+        };
+        Ok(yw_app::rpc::HttpReply {
+            status: 200,
+            body: format!(r#"{{"jsonrpc":"2.0","id":{},{answer}}}"#, id.unwrap_or(0)).into_bytes(),
+        })
+    }
+}
+
+/// spec/12 §4.3: a `getaddressutxos` answer over the limits is not a dead end — the outputs
+/// already known that `gettxout` still finds stay sendable and the watched inputs are resolved;
+/// without `gettxout` the known outputs stay as they were and the watch is marked unknowable
+/// (an expired record is then closed instead of blocking sends forever).
+#[test]
+fn over_limit_answer_keeps_what_is_known() {
+    use yw_app::zec::work::{ZecRpcEvent, ZecRpcJob, handle};
+    use yw_core::zec::{ZecOutPoint, ZecUtxo};
+
+    let point = |index: u32| ZecOutPoint {
+        txid: [0x11; 32],
+        index,
+    };
+    let utxo = |index: u32, value: u64| ZecUtxo {
+        outpoint: point(index),
+        value,
+        height: Some(4_469_000),
+        coinbase: false,
+    };
+    let run = |unspent: Option<Vec<u32>>| {
+        let job = ZecRpcJob::Refresh {
+            job: 1,
+            network: ZecNetwork::Testnet,
+            url: yw_win::http::HttpsUrl::parse("https://zec.example/").unwrap(),
+            indexer: ZecIndexer::Node,
+            address: "tmXYZ".to_owned(),
+            script_hex: "76a914000000000000000000000000000000000000000088ac".to_owned(),
+            track: Vec::new(),
+            watch: vec![point(3)],
+            known: vec![utxo(1, 90_000), utxo(2, 80_000)],
+        };
+        let ZecRpcEvent::Refreshed {
+            result: Ok(snapshot),
+            ..
+        } = handle(&OverLimitNode { unspent }, job)
+        else {
+            unreachable!("a refresh snapshot");
+        };
+        snapshot
+    };
+    let checked = run(Some(vec![1, 3]));
+    assert_eq!(checked.utxo_error, Some(ZecRpcError::TooMany));
+    assert_eq!(checked.utxos, vec![utxo(1, 90_000)]);
+    assert_eq!(checked.unspent_watch, Some(vec![point(3)]));
+    assert!(!checked.watch_unknowable);
+    let blind = run(None);
+    assert_eq!(blind.utxo_error, Some(ZecRpcError::TooMany));
+    assert_eq!(blind.utxos, vec![utxo(1, 90_000), utxo(2, 80_000)]);
+    assert_eq!(blind.unspent_watch, None);
+    assert!(blind.watch_unknowable);
+}

@@ -53,6 +53,9 @@ pub struct BtcRefreshUpdate {
     /// Wall clock of the refresh (Unix seconds): the 30-day window of live abandoned records
     /// whose inputs `apply_refresh` keeps.
     pub now_unix: u64,
+    /// `(chain, index)` of paid addresses whose UTXO list was too large this round: their
+    /// `verified` entries are kept as last seen (not listed is not "spent" here).
+    pub skipped: Vec<(BtcChain, u32)>,
 }
 
 /// A `BtcMeta` change made and persisted by the key worker. Every op names the network it was
@@ -1077,10 +1080,18 @@ impl JournalState {
         // Kept outpoints across identities: a re-imported key keeps the inputs of the old
         // identity's live abandoned record (spec/08 §12.1).
         let related = self.related(&all, meta).unwrap_or_else(|_| records.clone());
+        let mut keep = refresh_keep_outpoints(&related, network, update.now_unix);
+        // A skipped (crowded) address was not listed at all: keep what it had.
+        keep.extend(
+            meta.verified()
+                .iter()
+                .filter(|entry| update.skipped.contains(&(entry.chain, entry.index)))
+                .map(|entry| entry.outpoint),
+        );
         meta.apply_refresh(
             &update.listed,
             &update.newly,
-            &refresh_keep_outpoints(&related, network, update.now_unix),
+            &keep,
             &yw_core::journal::btc::own_outputs(&records, network),
         )
     }

@@ -1,14 +1,15 @@
 //! Zcash node and Blockbook calls (spec/12 §4): the chain check (genesis pin, `chain`, tip,
 //! `consensus.nextblock`, `upgrades`), the address UTXOs (`getaddressutxos` or Blockbook
-//! `utxo/<address>`), transaction status (`getrawtransaction <txid> 1`) and
-//! `sendrawtransaction`. Every answer is an untrusted observation: amounts and scripts are bound
-//! by the ZIP 244 signature (a lie makes the transaction invalid), the tip and branch id are
-//! cross-checked against the upgrade table (`yw_core::zec::upgrade`). URLs are never logged.
+//! `utxo/<address>`; when that answer is over its limits, `gettxout` of the outputs already
+//! known), transaction status (`getrawtransaction <txid> 1`) and `sendrawtransaction`. Every
+//! answer is an untrusted observation: amounts and scripts are bound by the ZIP 244 signature (a
+//! lie makes the transaction invalid), the tip and branch id are cross-checked against the
+//! upgrade table (`yw_core::zec::upgrade`). URLs are never logged.
 
 use yw_core::zec::upgrade::ConsensusObservation;
 use yw_core::zec::{ZecNetwork, ZecOutPoint, ZecUtxo};
 use yw_json::{Number, Value};
-use yw_win::http::HttpsUrl;
+use yw_win::http::{HttpError, HttpsUrl};
 
 use crate::errors::ErrorCode;
 use crate::rpc::{RpcClient, RpcFailure, Transport, classify};
@@ -31,6 +32,9 @@ pub enum ZecRpcError {
     Malformed,
     /// The node has no address index (`getaddressutxos` missing, `-32601`).
     NoAddressIndex,
+    /// The address UTXO answer went past the 4 MiB / JSON node limits (usually many dust
+    /// outputs, spec/12 §4.3): only outputs already known are shown.
+    TooMany,
 }
 
 impl ZecRpcError {
@@ -45,6 +49,7 @@ impl ZecRpcError {
             Self::NotSynced => "Zcash 노드가 동기화 중이거나 블록 높이가 올바르지 않습니다.".to_owned(),
             Self::Malformed => "Zcash 노드 응답 형식이 올바르지 않습니다.".to_owned(),
             Self::NoAddressIndex => "이 Zcash 엔드포인트는 주소 조회(getaddressutxos)를 지원하지 않습니다. 설정에서 UTXO 원천을 Blockbook으로 바꾸세요.".to_owned(),
+            Self::TooMany => "UTXO가 너무 많아 일부만 표시합니다 (아주 작은 출력이 많아 응답 한도 4 MiB를 넘었습니다). 이미 알고 있던 출력만 표시하고 보낼 수 있습니다.".to_owned(),
         }
     }
 }
@@ -187,8 +192,43 @@ pub fn utxos_node(
         )])
         .unwrap_or_default(),
     )]);
-    let result = client.call_limited(url, "getaddressutxos", params, MAX_RESPONSE)?;
+    let result = client
+        .call_detailed(url, "getaddressutxos", params, MAX_RESPONSE)
+        .map_err(|error| {
+            if error.over_limit {
+                ZecRpcError::TooMany
+            } else {
+                error.failure.into()
+            }
+        })?;
     parse_node_utxos(&result, address, script_hex)
+}
+
+/// Which of `points` the node still has unspent (`gettxout <txid> <n> true`: an object is
+/// unspent, `null` spent or unknown). Used when the address list is over its limits.
+///
+/// # Errors
+///
+/// [`ZecRpcError`] of the first failed call (`NoAddressIndex` for `-32601`: no `gettxout`).
+pub fn unspent_of(
+    client: &RpcClient<'_>,
+    url: &HttpsUrl,
+    points: &[ZecOutPoint],
+) -> Result<Vec<ZecOutPoint>, ZecRpcError> {
+    let mut out = Vec::new();
+    for point in points {
+        let params = Value::Array(vec![
+            Value::String(yw_core::zec::tx::txid_display(&point.txid)),
+            Value::Number(Number::from_u64(u64::from(point.index))),
+            Value::Bool(true),
+        ]);
+        match client.call(url, "gettxout", params)? {
+            Value::Null => {}
+            Value::Object(_) => out.push(*point),
+            _ => return Err(ZecRpcError::Malformed),
+        }
+    }
+    Ok(out)
 }
 
 /// What a UTXO answer leaves after [`keep_useful`].
@@ -285,7 +325,10 @@ pub fn utxos_blockbook(
     .map_err(|_| ZecRpcError::Rpc(ErrorCode::Key003))?;
     let response = transport
         .http_get(&target, MAX_RESPONSE)
-        .map_err(|error| ZecRpcError::Rpc(classify(RpcFailure::Http(error))))?;
+        .map_err(|error| match error {
+            HttpError::TooLarge => ZecRpcError::TooMany,
+            other => ZecRpcError::Rpc(classify(RpcFailure::Http(other))),
+        })?;
     if !(200..300).contains(&response.status) {
         return Err(ZecRpcError::Rpc(classify(RpcFailure::Status(
             response.status,
@@ -295,7 +338,12 @@ pub fn utxos_blockbook(
         max_bytes: MAX_RESPONSE,
         ..yw_json::Limits::RESPONSE
     };
-    let value = yw_json::parse(&response.body, &limits).map_err(|_| ZecRpcError::Malformed)?;
+    let value = yw_json::parse(&response.body, &limits).map_err(|error| match error {
+        yw_json::ParseError::TooLarge
+        | yw_json::ParseError::TooManyNodes
+        | yw_json::ParseError::TooManyItems => ZecRpcError::TooMany,
+        _ => ZecRpcError::Malformed,
+    })?;
     parse_blockbook_utxos(&value)
 }
 

@@ -2478,6 +2478,7 @@ pub(crate) mod tests {
                         history: vec![(BtcChain::Receive, 0, 2)],
                         max_tip_seen: TIP,
                         now_unix: 1_000,
+                        skipped: Vec::new(),
                     }),
                 },
             })

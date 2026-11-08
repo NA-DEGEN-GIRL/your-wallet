@@ -239,7 +239,7 @@ pub fn conf(height: u32, tip_height: u32) -> u32;   // tip_height >= height ? ti
 
 | 요청 | 응답 형식 | 매핑·검사 |
 |---|---|---|
-| `Utxo` | JSON 배열. 원소 `{txid, vout: u32, value: sats 정수, status: {confirmed: bool, block_height?: u32, block_hash?: hex64, block_time?: 정수}}` | `UtxoCandidate { outpoint: (txid, vout), value_hint: value, height: confirmed ? Some(block_height) : None }`. `confirmed == true`면 `block_height`·`block_hash`·`block_time`이 모두 있어야 하고, `false`면 셋은 없거나(mempool.space 실측) `null`(API.md)이어야 한다. `status` 없음, outpoint 중복, 원소 1000개 초과 → `MalformedResponse`. 배열 순서는 의미가 없다. 멤풀에서 이미 쓰인 출력은 빠져 있다(Esplora 동작; 완전성은 주장하지 않음, §4.6) |
+| `Utxo` | JSON 배열. 원소 `{txid, vout: u32, value: sats 정수, status: {confirmed: bool, block_height?: u32, block_hash?: hex64, block_time?: 정수}}` | `UtxoCandidate { outpoint: (txid, vout), value_hint: value, height: confirmed ? Some(block_height) : None }`. `confirmed == true`면 `block_height`·`block_hash`·`block_time`이 모두 있어야 하고, `false`면 셋은 없거나(mempool.space 실측) `null`(API.md)이어야 한다. `status` 없음, outpoint 중복 → `MalformedResponse`. 원소 1000개 초과나 1 MiB 초과(`bb-*`도 같다) → `TooMany`(E-BTC-005, 한 주소의 UTXO가 너무 많음; 새로고침은 그 주소만 건너뛴다, §4.7-3). 배열 순서는 의미가 없다. 멤풀에서 이미 쓰인 출력은 빠져 있다(Esplora 동작; 완전성은 주장하지 않음, §4.6) |
 | `Address` | JSON 객체 `{address, chain_stats: S, mempool_stats: S}`, `S = {funded_txo_count, spent_txo_count, tx_count, …}`(모두 u32 정수) | `address`는 요청 주소(소문자)와 같아야 한다. `S`마다 `tx_count == 0`이면 `funded_txo_count == spent_txo_count == 0`, `chain_stats.spent_txo_count ≤ chain_stats.funded_txo_count`, `c.spent + m.spent ≤ c.funded + m.funded`(멤풀 거래는 확정 출력도 쓰므로 `mempool_stats`만으로는 비교하지 않는다). 어긋나면 `MalformedResponse`. `tx_count = c.tx_count + m.tx_count`, `confirmed_unspent = c.funded > c.spent`, `unconfirmed_incoming = m.funded > 0`. `*_txo_sum`은 읽지 않는다 |
 | `TxStatus` | JSON 객체 `{confirmed: bool, block_height?, block_hash?, block_time?}`(`Utxo`의 `status`와 같은 규칙) | `true` → `Confirmed { height: block_height }`, `false` → `UnconfirmedOrUnknown`. **없는 txid에도 HTTP 200 `{"confirmed":false}`를 주므로**(2026-10-27 mempool.space·blockstream.info 실측) 멤풀 존재를 뜻하지 않는다(§12.2). 404 → `NotFound`(방어) |
 | `TxRaw` | `text/plain` 본문 = 원본 hex `^([0-9a-f]{2})+$`(앞뒤 공백·줄바꿈 없음), 디코드 후 `<= BTC_MAX_PREV_TX_BYTES` | 바이트 → §5(txid 해시 검증). 404 → `NotFound` |
@@ -317,9 +317,9 @@ BTC 화면을 열 때, 사용자가 누를 때, 진행 중 거래가 있으면 6
 
 1. `check_chain()`(10분 캐시; 캐시가 유효해도 팁 높이를 새로 받기 위해 2단계 `getblockchaininfo`는 매번 한다)과 `getmempoolinfo`.
 2. 감시 집합의 주소마다 인덱서 `Address`(§4.3)를 호출해 `tx_count`로 이력을 판정(§3.2)하고, `unconfirmed_incoming`이면(진행 중 저널 항목의 잔돈 주소는 제외) "미확정 입금 있음(미검증, 교체될 수 있음)"을 표시한다.
-3. `confirmed_unspent`인 주소마다 인덱서 `Utxo`(§4.3)를 호출한다. 후보는 `height`가 있고 `conf(height, tip_height) >= 1`인 원소뿐이다(`esplora`가 주는 미확정 원소는 버린다, §7.4). 후보마다 Core `gettxout [txid, vout, true]`로 노드 자신의 보기를 확인한다: `null`(체인이나 멤풀에서 사용됨·없음), 그 주소의 스크립트가 아님, `confirmations == 0`이면 후보에서 뺀다. 객체면 높이를 Core 기준 `tip_height + 1 - confirmations`로 쓴다. 엔드포인트에 `gettxout`이 없거나(`-32601`, 이후 그 새로고침에서 부르지 않음) 호출이 실패하면 인덱서 높이를 그대로 쓰고 UTXO 목록에 "인덱서만 확인(노드 미확인)"을 표시한다(429 중단은 §4.4).
+3. `confirmed_unspent`인 주소마다 인덱서 `Utxo`(§4.3)를 호출한다. 그 답이 E-BTC-005(`esplora` HTTP 400 — mempool.space는 UTXO 500개 초과 주소에 400을 준다 — 또는 `TooMany`: 1,000개·1 MiB 초과)이면 새로고침 전체를 실패시키지 않고 **그 주소만 건너뛰어** 나머지 주소를 계속 확인하고, "UTXO가 너무 많아 목록을 받지 못한 주소 n개 — 그 주소의 UTXO는 지난번에 확인한 그대로 두며 이미 쓰였을 수 있습니다"를 보인다(2026-11-08, `RefreshResult::skipped`). 먼지 걸러 내기는 하지 않는다: Esplora의 한도는 서버 쪽이라 받기 전에 거를 수 없고, 작은 입금은 자동 동결(§7.6)이 다룬다. 후보는 `height`가 있고 `conf(height, tip_height) >= 1`인 원소뿐이다(`esplora`가 주는 미확정 원소는 버린다, §7.4). 후보마다 Core `gettxout [txid, vout, true]`로 노드 자신의 보기를 확인한다: `null`(체인이나 멤풀에서 사용됨·없음), 그 주소의 스크립트가 아님, `confirmations == 0`이면 후보에서 뺀다. 객체면 높이를 Core 기준 `tip_height + 1 - confirmations`로 쓴다. 엔드포인트에 `gettxout`이 없거나(`-32601`, 이후 그 새로고침에서 부르지 않음) 호출이 실패하면 인덱서 높이를 그대로 쓰고 UTXO 목록에 "인덱서만 확인(노드 미확인)"을 표시한다(429 중단은 §4.4).
 4. 처음 보는 outpoint마다 Core `getrawtransaction`으로 원본을 받아 §5로 검증하고 `BtcMeta.verified`에 넣는다. 3단계 `gettxout`의 `value`·`coinbase`가 검증 값과 다르면 검증 실패로 센다. Core가 원본을 주지 못하면(RPC 오류·전송 실패) 인덱서 `TxRaw`로 1회 받아 같은 §5 검증을 한다(§4.5 C1). 검증에 실패한 outpoint는 "검증 실패 UTXO n개"로만 세고 잔액·선택에서 뺀다.
-5. 최신 목록에 없는 `verified` 항목은 지운다. 단, 진행 중 저널 항목(§12.1)이 쓰는 outpoint·그 잔돈과 살아 있는 `Abandoned`·공개된 `Rejected` 항목(§12.1)의 입력은 남긴다(멤풀에서 쓰인 출력은 인덱서 목록에서 빠지지만 RBF와 포기 뒤 보내기가 그 값을 쓴다, §9·§12.1). 자기 거래의 잔돈은 저널 원본에서 직접 만든다(§12.2).
+5. 최신 목록에 없는 `verified` 항목은 지운다. 단, 3단계에서 건너뛴 주소의 항목(`BtcRefreshUpdate::skipped`, 목록을 받지 못했을 뿐 쓰였다는 뜻이 아니다), 진행 중 저널 항목(§12.1)이 쓰는 outpoint·그 잔돈과 살아 있는 `Abandoned`·공개된 `Rejected` 항목(§12.1)의 입력은 남긴다(멤풀에서 쓰인 출력은 인덱서 목록에서 빠지지만 RBF와 포기 뒤 보내기가 그 값을 쓴다, §9·§12.1). 자기 거래의 잔돈은 저널 원본에서 직접 만든다(§12.2).
 6. 잔액 = 확인 수 1 이상(coinbase는 100 이상)인 검증 UTXO의 합(진행 중 거래가 쓰는 outpoint 제외). 동결분은 따로 표시한다.
 
 ## 5. 이전 거래 검증 (필수)
@@ -1055,8 +1055,10 @@ dApp은 Bitcoin 주소를 **연결**하고 **메시지에 서명**하게 할 수
 - 기본 방식(dApp이 정하지 않을 때): P2TR → `bip322`, 그 밖 → `ecdsa`(sats-connect 기본과 같음). UniSat `signMessage(msg)`의 기본은 `ecdsa`.
 - 응답 `messageHash`: BIP137은 magic hash, BIP322는 message hash(hex).
 
-### 17.3 차단 (`M03`)
+### 17.3 차단 (`M03`, `M06`)
 메시지 바이트가 Bitcoin 거래로 엄격 파싱되거나 PSBT magic `psbt\xff`로 시작하면, 또는 텍스트가 그런 바이트의 hex(`0x` 허용)·base64 표현이면 `M03` 차단. 64 KiB 초과도 `M03`.
+
+**로그인 메시지 도메인(2026-11-08, `M06`).** 첫 줄(앞 공백 무시)에 CAIP-122 표지 ` wants you to sign in with your Bitcoin account:`(ASCII 대소문자 무시)가 있으면 Sign-In-With-Bitcoin 메시지로 보고(`sign_in_domain`), 표지 앞 문자열을 도메인(`host[:port]`)으로 요청 사이트와 SIWS와 같은 규칙([07] §19.4 `domain_matches`: 같은 호스트, 포트는 명시하면 실제 포트와 같고 생략은 기본 포트일 때만, scheme·경로·사용자 정보가 있으면 불일치)으로 대조한다. 다르면 `M06` 차단 "Bitcoin 로그인(Sign-In-With-Bitcoin) 메시지의 도메인이 요청 사이트와 다릅니다"(SIWE `S01`·SIWS `W01`과 같은 역할). 같거나 로그인 메시지가 아니면 `M04` 정보만 남는다.
 
 ### 17.4 표시
 제목 `[Bitcoin 메인넷] 메시지 서명 (소유 증명)`. 필드: 요청 출처, 네트워크, 서명 계정(라벨·경로·**전체 주소**), 서명 방식(`BIP137 ECDSA (Bitcoin Signed Message)` / `BIP322 (simple)` / `BIP322 (full)`), 메시지(텍스트 또는 hex, [07] §19.3과 같은 규칙), 바이트 수. 항상 `M04` 정보. BTC 네트워크 배너(§2)를 그대로 쓴다.

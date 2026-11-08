@@ -106,6 +106,7 @@ rules! {
     M03 = b'M' 3, Blocked, "Bitcoin 거래 또는 PSBT로 해석되는 바이트입니다 — 메시지 서명으로 거래에 서명할 수 없습니다";
     M04 = b'M' 4, Info, "소유 증명용 메시지 서명입니다 — 거래·송금에는 쓰이지 않습니다";
     M05 = b'M' 5, Info, "Solana 오프체인 메시지(v0)입니다";
+    M06 = b'M' 6, Blocked, "Bitcoin 로그인(Sign-In-With-Bitcoin) 메시지의 도메인이 요청 사이트와 다릅니다";
     W01 = b'W' 1, Blocked, "SIWS 도메인이 요청 사이트와 다릅니다";
     W02 = b'W' 2, Blocked, "SIWS 주소가 서명 계정과 다릅니다";
     W03 = b'W' 3, Blocked, "SIWS Chain ID가 현재 Solana 클러스터와 다릅니다";
@@ -127,6 +128,7 @@ rules! {
     H11 = b'H' 11, High, "사이트가 요청한 Arbitrum 출금(withdraw3)의 받는 주소가 서명 계정이 아닙니다 — 다른 사람에게 출금될 수 있습니다";
     H12 = b'H' 12, High, "토큰 이름과 tokenId가 spotMeta와 맞지 않거나 spotMeta를 확인할 수 없습니다 — 다른 토큰일 수 있습니다";
     H13 = b'H' 13, High, "HyperEVM 시스템 주소로 보내지만 이 토큰의 시스템 주소가 아니거나 HyperEVM에 연결되지 않은 토큰입니다 — 자산을 잃을 수 있습니다";
+    H14 = b'H' 14, High, "HyperEVM 시스템 주소로 보내는 sendAsset이 현물(spot)→현물 이동이 아니거나 하위 계정에서 보냅니다 — HyperEVM 이동으로 확인할 수 없어 자산을 잃을 수 있습니다";
     C01 = b'C' 1, Caution, "WalletConnect 요청입니다 — 사이트 주소는 사이트가 스스로 주장한 값이며 확인되지 않았습니다";
     C02 = b'C' 2, High, "WalletConnect Verify 결과 사이트가 주장한 주소와 실제 주소가 다릅니다 — 피싱일 수 있습니다";
     C03 = b'C' 3, High, "WalletConnect Verify가 이 사이트를 알려진 사기 사이트로 표시했습니다";

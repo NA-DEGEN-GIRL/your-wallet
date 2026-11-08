@@ -620,7 +620,7 @@ fn esplora_utxo_status_fields() -> TestResult {
     ));
     assert_eq!(
         parse_esplora(&request, &json(&many(1_001))),
-        Err(IndexerError::Malformed)
+        Err(IndexerError::TooMany)
     );
     // The recorded mempool.space shape passes (also checked in `recorded_esplora_fixtures_parse`).
     let recorded = fixture_body(esplora::TESTNET4_UTXO);

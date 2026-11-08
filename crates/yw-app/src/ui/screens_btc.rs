@@ -764,6 +764,15 @@ impl App {
                 Tone::Warn,
             ));
         }
+        if self.btc.skipped_addresses > 0 {
+            items.push(Item::Banner(
+                format!(
+                    "UTXO가 너무 많아 목록을 받지 못한 주소 {}개 — 그 주소의 UTXO는 지난번에 확인한 그대로 두며 이미 쓰였을 수 있습니다",
+                    self.btc.skipped_addresses
+                ),
+                Tone::Warn,
+            ));
+        }
         if !self.btc.hint_mismatch.is_empty() {
             items.push(Item::Banner(
                 format!(

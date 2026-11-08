@@ -78,8 +78,9 @@ fn dapp_typed_data_gets_the_hyperliquid_display() {
 
 /// dApp-requested transfers get the S-HC checks (spec/11 §7): a destination outside own accounts
 /// and the address book is high risk (H10), a look-alike H03, `withdraw3` elsewhere H11, a token
-/// not matching `spotMeta` H12, a system address without its linked token H13; facts missing
-/// fail closed; the destination never shows the EVM "일반 계정(EOA)" note.
+/// not matching `spotMeta` H12, a system address without its linked token H13, a `sendAsset` to
+/// the linked system address that is not spot → spot from the signing account H14; facts
+/// missing fail closed; the destination never shows the EVM "일반 계정(EOA)" note.
 #[test]
 #[expect(clippy::too_many_lines, reason = "one case per rule of spec/11 §7")]
 fn dapp_transfers_get_the_site_checks() {
@@ -87,7 +88,7 @@ fn dapp_transfers_get_the_site_checks() {
         ApprovalId, ApprovalKind, ApprovalOrigin, ChainFacts, CodeKind, FieldKey, RuleId,
     };
     use crate::evm::display::build_typed_request;
-    use crate::evm::risk::{H03, H04, H10, H11, H12, H13};
+    use crate::evm::risk::{H03, H04, H10, H11, H12, H13, H14};
     use crate::hypercore::display::{HcRecipient, HlSiteFacts};
     use crate::hypercore::{HcEvmLink, HcToken};
     use crate::policy::BrowserOrigin;
@@ -108,10 +109,12 @@ fn dapp_transfers_get_the_site_checks() {
         }),
         full_name: None,
     };
-    let run = |payload: HcPayload, hyperliquid: Option<HlSiteFacts>| {
+    let typed_source = |payload: HcPayload| {
         let mut action = HcAction::new(HcNetwork::Mainnet, SDK_TIME, payload);
         action.signature_chain_id = 42_161;
-        let source = yw_json::to_vec(&action.typed_data_json());
+        yw_json::to_vec(&action.typed_data_json())
+    };
+    let run_source = |source: Vec<u8>, hyperliquid: Option<HlSiteFacts>| {
         let value = yw_json::parse(&source, &yw_json::Limits::REQUEST).unwrap();
         let typed = validate_typed_data_v4(&source, &value, 42_161).unwrap();
         let facts = ChainFacts {
@@ -140,6 +143,9 @@ fn dapp_transfers_get_the_site_checks() {
             .map(|field| field.value.clone())
             .collect();
         (rules, fields)
+    };
+    let run = |payload: HcPayload, hyperliquid: Option<HlSiteFacts>| {
+        run_source(typed_source(payload), hyperliquid)
     };
     let usd = || HcPayload::UsdSend {
         destination,
@@ -225,6 +231,38 @@ fn dapp_transfers_get_the_site_checks() {
         Some(checked(HcRecipient::default())),
     );
     assert!(rules.contains(&H13) && !rules.contains(&H04), "{rules:?}");
+
+    // `sendAsset` to the linked system address: H04 only for spot → spot from the signer itself.
+    let send_asset = |source_dex: &str, destination_dex: &str| HcPayload::SendAsset {
+        destination: system_address(1),
+        source_dex: source_dex.to_owned(),
+        destination_dex: destination_dex.to_owned(),
+        token: purr.wire(),
+        amount: "1".to_owned(),
+    };
+    let (rules, _) = run(
+        send_asset("spot", "spot"),
+        Some(checked(HcRecipient::default())),
+    );
+    assert!(
+        rules.contains(&H04) && !rules.contains(&H14) && !rules.contains(&H13),
+        "{rules:?}"
+    );
+    for (source_dex, destination_dex) in [("", "spot"), ("spot", ""), ("", "")] {
+        let (rules, _) = run(
+            send_asset(source_dex, destination_dex),
+            Some(checked(HcRecipient::default())),
+        );
+        assert!(rules.contains(&H14) && !rules.contains(&H04), "{rules:?}");
+    }
+    let plain = String::from_utf8(typed_source(send_asset("spot", "spot"))).unwrap();
+    let from_sub = plain.replace(
+        "\"fromSubAccount\":\"\"",
+        "\"fromSubAccount\":\"0x2222222222222222222222222222222222222222\"",
+    );
+    assert_ne!(plain, from_sub);
+    let (rules, _) = run_source(from_sub.into_bytes(), Some(checked(HcRecipient::default())));
+    assert!(rules.contains(&H14) && !rules.contains(&H04), "{rules:?}");
 }
 
 fn sign(action: &HcAction) -> [u8; 65] {

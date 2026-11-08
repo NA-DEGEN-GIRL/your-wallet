@@ -704,3 +704,72 @@ fn yubikey_card_signs_bip137_and_bip322() {
         );
     }
 }
+
+/// A Sign-In-With-Bitcoin (CAIP-122) message naming another site is blocked (M06, like SIWE S01
+/// and SIWS W01); the requesting site's own domain, or a plain message, keeps M04 only.
+#[test]
+fn sign_in_message_is_bound_to_the_requesting_site() {
+    use super::{BtcMessageRequest, build_btc_message_request, sign_in_domain};
+    use crate::approval::{ApprovalId, RiskLevel};
+    use crate::evm::risk::{M04, M06};
+    use crate::policy::BrowserOrigin;
+
+    let ctx = secp_context(&mut OsRandom).unwrap();
+    let pubkey = BtcPubKey::of_point(&one().public_key(&ctx), true);
+    let draft = |origin: &str, message: &str| {
+        build_btc_message_request(&BtcMessageRequest {
+            id: ApprovalId([3; 16]),
+            origin: BrowserOrigin::parse(origin).unwrap(),
+            network: BtcNetwork::Mainnet,
+            source: BtcKeySource::Imported {
+                id: [1; 16],
+                script_type: ScriptType::P2wpkh,
+                compressed: true,
+            },
+            pubkey,
+            script_type: ScriptType::P2wpkh,
+            label: "가져온 키".to_owned(),
+            path: "가져온 키".to_owned(),
+            protocol: BtcMessageProtocol::Bip322,
+            message: message.as_bytes().to_vec(),
+        })
+        .unwrap()
+        .display
+    };
+    let sign_in = |domain: &str| {
+        format!(
+            "{domain} wants you to sign in with your Bitcoin account:\n{VECTOR_ADDRESS}\n\nURI: https://{domain}\nVersion: 1\nNonce: 12345678"
+        )
+    };
+    assert_eq!(sign_in_domain(b"Hello World"), None);
+    assert_eq!(
+        sign_in_domain(sign_in("app.example").as_bytes()),
+        Some("app.example")
+    );
+    let rules = |display: &crate::approval::ApprovalDisplay| -> Vec<_> {
+        display
+            .warnings
+            .iter()
+            .map(|warning| warning.rule)
+            .collect()
+    };
+    let same = draft("https://app.example", &sign_in("app.example"));
+    assert_eq!(rules(&same), vec![M04]);
+    for (origin, domain) in [
+        ("https://evil.example", "app.example"),
+        ("https://app.example:8443", "app.example"),
+        ("https://app.example", "https://app.example"),
+    ] {
+        let other = draft(origin, &sign_in(domain));
+        assert!(rules(&other).contains(&M06), "{origin} {domain}");
+        assert_eq!(other.risk, RiskLevel::Blocked);
+    }
+    // The marker is matched without ASCII case and after leading whitespace.
+    let shouted = draft(
+        "https://evil.example",
+        "\n app.example WANTS YOU TO SIGN IN WITH YOUR BITCOIN ACCOUNT:\nbc1q",
+    );
+    assert!(rules(&shouted).contains(&M06));
+    let plain = draft("https://evil.example", "Hello World");
+    assert_eq!(rules(&plain), vec![M04]);
+}

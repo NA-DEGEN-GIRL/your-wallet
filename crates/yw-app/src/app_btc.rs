@@ -1086,6 +1086,9 @@ pub struct BtcUi {
     pub hint_mismatch: Vec<OutPoint>,
     /// Outputs of the last refresh that only the indexer vouched for (no `gettxout` answer).
     pub indexer_only: Vec<OutPoint>,
+    /// Paid addresses the last refresh skipped because their UTXO list was too large (their
+    /// verified outputs are kept as last seen).
+    pub skipped_addresses: u32,
     /// The session is blocked because the Core tip is below `max_tip_seen - 6`: [블록 높이 기록
     /// 초기화] is offered.
     pub tip_regressed: bool,
@@ -1152,6 +1155,7 @@ impl Default for BtcUi {
             verify_failures: 0,
             hint_mismatch: Vec::new(),
             indexer_only: Vec::new(),
+            skipped_addresses: 0,
             tip_regressed: false,
             auto_frozen: 0,
             refresh: BtcJobState::default(),
@@ -2510,6 +2514,7 @@ impl BtcUi {
         self.verify_failures = 0;
         self.hint_mismatch.clear();
         self.indexer_only.clear();
+        self.skipped_addresses = 0;
         self.auto_frozen = 0;
         self.account_message = None;
     }
@@ -3202,6 +3207,7 @@ impl BtcUi {
                             .map(|utxo| utxo.outpoint)
                             .collect();
                         self.indexer_only = refreshed.indexer_only();
+                        self.skipped_addresses = refreshed.skipped_addresses();
                         vec![key_job(KeyJob::BtcMeta {
                             op: BtcMetaOp::Refreshed {
                                 network: net,
@@ -3212,6 +3218,7 @@ impl BtcUi {
                                     history: refreshed.history(),
                                     max_tip_seen: refreshed.chain.max_tip_seen,
                                     now_unix: ctx.now_unix_ms / 1_000,
+                                    skipped: refreshed.skipped.clone(),
                                 }),
                             },
                         })]

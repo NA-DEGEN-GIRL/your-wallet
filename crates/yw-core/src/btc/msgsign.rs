@@ -376,6 +376,24 @@ pub fn bip322_verify_simple(kind: &ScriptKind, message: &[u8], signature: &str) 
     }
 }
 
+/// The first-line marker of a Sign-In-With-Bitcoin message (the CAIP-122 template with the
+/// chain name `Bitcoin`, like SIWE and SIWS).
+pub const SIWB_MARKER: &str = " wants you to sign in with your Bitcoin account:";
+
+/// The domain a Sign-In-With-Bitcoin message names: the text before [`SIWB_MARKER`] on its
+/// first line (leading whitespace skipped, the marker matched without ASCII case). `None`: the
+/// message is not a sign-in message (or not UTF-8 text).
+#[must_use]
+pub fn sign_in_domain(message: &[u8]) -> Option<&str> {
+    let text = core::str::from_utf8(message).ok()?;
+    let line = text.trim_start().split('\n').next()?;
+    // ASCII lowercasing keeps every byte offset, so `at` is a boundary of `line` too.
+    let at = line
+        .to_ascii_lowercase()
+        .find(&SIWB_MARKER.to_ascii_lowercase())?;
+    line.get(..at)
+}
+
 /// Whether the message bytes are (or plainly encode, as hex or base64 text) a Bitcoin
 /// transaction or a PSBT (M03: blocked).
 #[must_use]
@@ -773,7 +791,7 @@ pub fn build_btc_message_request(
         ApprovalDisplay, ApprovalDraft, ApprovalOrigin, BtcMessagePayload, DisplayError,
         DisplayField, FieldKey, Signer, SimulationBinding,
     };
-    use crate::evm::risk::{self, M03, M04};
+    use crate::evm::risk::{self, M03, M04, M06};
 
     if !request.protocol.supports(request.script_type) {
         return Err(DisplayError::InvalidText);
@@ -812,6 +830,12 @@ pub fn build_btc_message_request(
     }
     if looks_like_transaction(&request.message) {
         warnings.push(risk::warning(M03, None));
+    }
+    // A sign-in message is bound to the site it names (SIWE S01, SIWS W01).
+    if let Some(domain) = sign_in_domain(&request.message)
+        && !crate::sol::msgsign::domain_matches(domain, &request.origin)
+    {
+        warnings.push(risk::warning(M06, None));
     }
     push_message_body(&mut fields, &mut warnings, &request.message)?;
     let display = ApprovalDisplay::new(

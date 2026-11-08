@@ -13,7 +13,7 @@ use crate::approval::{
 };
 use crate::evm::address::{Address, parse_address};
 use crate::evm::eip712::TdNode;
-use crate::evm::risk::{H01, H02, H03, H04, H05, H10, H11, H12, H13, sort_warnings, warning};
+use crate::evm::risk::{H01, H02, H03, H04, H05, H10, H11, H12, H13, H14, sort_warnings, warning};
 use crate::vault::EvmKeySource;
 
 /// What the app checked about the recipient (spec/04 §2.15 notes of the send form).
@@ -41,7 +41,7 @@ pub struct HlSiteFacts {
 /// The verdict on a dApp-requested Hyperliquid transfer (spec/11 §7).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HlSiteCheck {
-    /// Rules to add besides H01/H09 (H03, H04, H10–H13).
+    /// Rules to add besides H01/H09 (H03, H04, H10–H14).
     pub rules: Vec<RuleId>,
     /// The parsed `destination`.
     pub destination: Option<Address>,
@@ -51,9 +51,15 @@ pub struct HlSiteCheck {
     pub token: Option<HcToken>,
 }
 
+/// The `sendAsset` dex name of the spot balance (docs: `"spot"` is the spot balance, `""` the
+/// default USDC perp dex). A `HyperEVM` move is spot → spot from the signing account itself
+/// (`fromSubAccount` empty).
+pub const SPOT_DEX: &str = "spot";
+
 /// Checks a dApp-requested Hyperliquid transfer: the destination against own accounts, the
 /// address book and look-alikes (the S-HC check), `withdraw3` to another address, system
-/// addresses without a linked token, and `token` against `spotMeta`.
+/// addresses without a linked token or (`sendAsset`) not spot → spot from the signing account
+/// itself, and `token` against `spotMeta`.
 #[must_use]
 pub fn site_transfer_check(
     kind: HcKind,
@@ -98,11 +104,19 @@ pub fn site_transfer_check(
                 .token
                 .as_ref()
                 .is_some_and(|token| token.evm.is_some() && token.system_address() == destination);
-        if linked {
+        // `sendAsset` carries its own dex and sub-account fields: only spot → spot from the
+        // signing account is the move H04 describes (a missing field fails closed).
+        let spot_to_spot = kind != HcKind::SendAsset
+            || (text("sourceDex") == Some(SPOT_DEX)
+                && text("destinationDex") == Some(SPOT_DEX)
+                && text("fromSubAccount") == Some(""));
+        if !linked {
+            check.rules.push(H13);
+        } else if spot_to_spot {
             check.evm_move = true;
             check.rules.push(H04);
         } else {
-            check.rules.push(H13);
+            check.rules.push(H14);
         }
         return check;
     }
@@ -221,18 +235,28 @@ pub fn build_hypercore_request(
         let mut text = destination.to_checksum();
         match kind {
             // The move note only when the destination is the system address of the spotMeta
-            // token linked to HyperEVM; anything else is high risk (H13).
+            // token linked to HyperEVM and the move is spot → spot; anything else is high risk
+            // (H13, H14).
             HcKind::SendAsset
-                if input.token.is_some_and(|token| {
+                if !input.token.is_some_and(|token| {
                     token.evm.is_some() && token.system_address() == destination
                 }) =>
+            {
+                warnings.push(warning(H13, None));
+            }
+            HcKind::SendAsset
+                if matches!(
+                    &action.payload,
+                    HcPayload::SendAsset { source_dex, destination_dex, .. }
+                        if source_dex == SPOT_DEX && destination_dex == SPOT_DEX
+                ) =>
             {
                 text.push_str(
                     "\nHyperEVM 시스템 주소 — 토큰은 HyperEVM의 같은 주소(서명 계정)로 들어갑니다",
                 );
                 warnings.push(warning(H04, None));
             }
-            HcKind::SendAsset => warnings.push(warning(H13, None)),
+            HcKind::SendAsset => warnings.push(warning(H14, None)),
             HcKind::Withdraw => {
                 text.push_str("\nArbitrum One의 이 주소로 USDC가 들어갑니다");
             }
