@@ -1158,14 +1158,12 @@ fn screenshot_tour() {
     set_screen(&app, AppMode::NoVault, Screen::KeyStartIntro);
     save(main_hwnd(&app), "24-key-start-bitcoin");
     app.borrow_mut().keys.start = crate::app_keys::KeyStartFlow::default();
-    // The YubiKey wallet (spec/10 §7.1-1): the S01 card scrolled into view, then S20.
-    set_screen(&app, AppMode::NoVault, Screen::FirstRun);
-    {
-        let mut state = app.borrow_mut();
-        state.scroll = 600;
-        state.refresh();
-    }
-    save(main_hwnd(&app), "35-welcome-yubikey");
+    // The YubiKey wallet (spec/10 §7.1-1): S01 shows every way on its first view now
+    // (2026-11-08), so scene 35 is where a new YubiKey wallet ends — S08 with the RPC step.
+    app.borrow_mut().done_yubikey = Some(crate::app_yubikey::YkDone::Created(12_345_678));
+    set_screen(&app, AppMode::NoVault, Screen::Done);
+    save(main_hwnd(&app), "35-yubikey-done");
+    app.borrow_mut().done_yubikey = None;
     set_screen(&app, AppMode::NoVault, Screen::YubiKeyWalletIntro);
     save(main_hwnd(&app), "36-yubikey-wallet-start");
 

@@ -1273,48 +1273,58 @@ impl App {
                 ids::SECTION_SECURITY,
                 "보안",
                 section == SettingsSection::Security,
-            ),
-            // Keys and backups first (2026-11-08), so the nine tabs keep one row at 960 DIP.
+            )
+            .width(68),
+            // Keys and backups first and fixed widths (2026-11-08): the nine tabs keep one row
+            // at the default 960 DIP window.
             Ctl::tab(
                 crate::ui::screens_mnemonics::ids::SECTION_MNEMONICS,
                 "복구 단어",
                 section == SettingsSection::Mnemonics,
-            ),
+            )
+            .width(88),
             Ctl::tab(
                 crate::ui::screens_yubikey::ids::SECTION_YUBIKEY,
                 "YubiKey",
                 section == SettingsSection::YubiKey,
-            ),
+            )
+            .width(84),
             Ctl::tab(
                 ids::SECTION_NETWORK,
                 "네트워크(RPC)",
                 section == SettingsSection::Network,
-            ),
+            )
+            .width(120),
             Ctl::tab(
                 crate::ui::screens_evm::ids::SECTION_CHAINS,
                 "EVM 체인",
                 section == SettingsSection::Chains,
-            ),
+            )
+            .width(92),
             Ctl::tab(
                 crate::ui::screens_sol::ids::SECTION_SOL,
                 "Solana",
                 section == SettingsSection::Solana,
-            ),
+            )
+            .width(76),
             Ctl::tab(
                 crate::ui::screens_btc::ids::SECTION_BTC,
                 "Bitcoin",
                 section == SettingsSection::Bitcoin,
-            ),
+            )
+            .width(76),
             Ctl::tab(
                 crate::ui::screens_llm::ids::SECTION_AI,
                 "AI 설명",
                 section == SettingsSection::Ai,
-            ),
+            )
+            .width(80),
             Ctl::tab(
                 ids::SECTION_OTHER,
                 "브라우저·정보",
                 section == SettingsSection::Other,
-            ),
+            )
+            .width(108),
         ]));
         items.push(Item::Help(settings_map(section).to_owned()));
         match section {
