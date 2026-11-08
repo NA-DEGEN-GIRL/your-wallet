@@ -1398,6 +1398,9 @@ impl App {
     fn other_section(&self, items: &mut Vec<Item>) {
         items.push(Item::CardStart(Some("브라우저 확장".to_owned())));
         items.push(Item::Text(self.extension_status().text().to_owned()));
+        items.push(Item::Help(
+            crate::ui::screens_reset::T_EXT_COMPAT_SHORT.to_owned(),
+        ));
         items.push(Item::Row(vec![Ctl::button(
             crate::ui::screens_reset::ids::EXT_OPEN,
             "Chrome 확장 설치 방법·폴더",
@@ -1559,6 +1562,14 @@ impl App {
                 "연결된 모든 사이트의 연결을 해제합니다. 사이트는 다시 연결을 요청해야 계정을 볼 수 있습니다.".to_owned(),
                 "모두 해제",
             ),
+            Confirm::WcDisconnectAll => (
+                "모든 WalletConnect 세션 끊기",
+                format!(
+                    "WalletConnect 세션 {}개를 모두 끊을까요? 다시 쓰려면 dApp마다 QR이나 링크로 새로 연결해야 합니다.",
+                    self.wc.sessions.len()
+                ),
+                "모두 끊기",
+            ),
             Confirm::Discard => ("거래 폐기", T_DISCARD.to_owned(), "폐기"),
             Confirm::LlmOn => (
                 "AI 설명 켜기",
@@ -1582,6 +1593,7 @@ impl App {
                 | Confirm::BookDelete
                 | Confirm::TokenDelete
                 | Confirm::DisconnectAll
+                | Confirm::WcDisconnectAll
                 | Confirm::Discard
                 | Confirm::RemoveKey
                 | Confirm::RemoveImported

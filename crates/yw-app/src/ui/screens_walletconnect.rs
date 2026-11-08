@@ -27,6 +27,10 @@ pub mod ids {
     pub const DISCONNECT_ALL: u16 = 16_007;
     /// `Project ID 바꾸기 ▸` / `접기 ▾` (a saved id).
     pub const PROJECT_TOGGLE: u16 = 16_008;
+    /// `클립보드에서 연결` (a copied `wc:` link, else a copied QR image).
+    pub const CLIPBOARD_CONNECT: u16 = 16_009;
+    /// `다른 방법 (이미지 파일) ▸` / `접기 ▾`.
+    pub const FILE_TOGGLE: u16 = 16_010;
     /// Session row buttons (`연결 해제`).
     pub const ROW_BASE: u16 = 16_020;
     /// Row span (the engine keeps at most 64 sessions).
@@ -42,13 +46,20 @@ pub mod ids {
         PROJECT_SAVE,
         DISCONNECT_ALL,
         PROJECT_TOGGLE,
+        CLIPBOARD_CONNECT,
+        FILE_TOGGLE,
     ];
 }
 
 /// The setup card's intro (no Project ID yet).
 pub const T_WC_SETUP_INTRO: &str = "확장 프로그램 대신 WalletConnect로 dApp에 연결합니다(EVM). 처음 한 번 Reown Project ID를 저장하면 dApp의 WalletConnect QR이나 링크로 연결할 수 있습니다. 연결과 서명은 확장과 같은 이 앱의 승인 창에서 확인합니다.";
 /// What `WalletConnect` is for and how a pairing starts (the panel with a Project ID).
-pub const T_WC_INTRO: &str = "확장 프로그램 대신 WalletConnect로 dApp에 연결합니다(EVM). dApp의 'WalletConnect' 창에서 '링크 복사'를 누르고 아래에 붙여 넣거나, QR을 Win+Shift+S로 캡처한 뒤 '클립보드 이미지에서 QR 읽기'를 누르세요. 연결과 서명은 확장과 같은 이 앱의 승인 창에서 확인합니다.";
+pub const T_WC_INTRO: &str = "확장 프로그램 대신 WalletConnect로 dApp에 연결합니다(EVM). 연결과 서명은 확장과 같은 이 앱의 승인 창에서 확인합니다.";
+/// The two steps above `클립보드에서 연결` (2026-11-08).
+pub const T_WC_STEPS: [&str; 2] = [
+    "1. dApp의 WalletConnect 창에서 '링크 복사'를 누르거나, QR을 Win+Shift+S로 캡처합니다.",
+    "2. '클립보드에서 연결'을 누릅니다. 클립보드는 이 버튼을 누를 때만 읽습니다.",
+];
 
 fn local_time(seconds: u64) -> String {
     let unix_ms = seconds.saturating_mul(1_000);
@@ -75,24 +86,37 @@ impl App {
         }
         items.push(Item::CardStart(Some("WalletConnect 연결".to_owned())));
         items.push(Item::Help(T_WC_INTRO.to_owned()));
-        items.push(Item::LabeledRow(
-            "연결 주소 (wc:…)".to_owned(),
-            vec![
-                Ctl::edit(ids::URI_EDIT, &self.wc.uri_text, 420, false, 2_048),
-                Ctl::primary(ids::PAIR, "연결"),
-            ],
-        ));
-        items.push(Item::Row(vec![Ctl::button(
-            ids::CLIPBOARD_QR,
-            "클립보드 이미지에서 QR 읽기",
+        for step in T_WC_STEPS {
+            items.push(Item::Text(step.to_owned()));
+        }
+        items.push(Item::Row(vec![Ctl::primary(
+            ids::CLIPBOARD_CONNECT,
+            "클립보드에서 연결",
         )]));
         items.push(Item::LabeledRow(
-            "이미지 파일 경로".to_owned(),
+            "또는 연결 주소 (wc:…)".to_owned(),
             vec![
-                Ctl::edit(ids::FILE_EDIT, &self.wc.file_text, 420, false, 1_024),
-                Ctl::button(ids::FILE_QR, "이미지 파일에서 QR 읽기"),
+                Ctl::edit(ids::URI_EDIT, &self.wc.uri_text, 420, false, 2_048),
+                Ctl::button(ids::PAIR, "연결"),
             ],
         ));
+        items.push(Item::Row(vec![Ctl::link(
+            ids::FILE_TOGGLE,
+            if self.wc.file_open {
+                "다른 방법 (이미지 파일) 접기 ▾"
+            } else {
+                "다른 방법 (이미지 파일) ▸"
+            },
+        )]));
+        if self.wc.file_open {
+            items.push(Item::LabeledRow(
+                "이미지 파일 경로".to_owned(),
+                vec![
+                    Ctl::edit(ids::FILE_EDIT, &self.wc.file_text, 420, false, 1_024),
+                    Ctl::button(ids::FILE_QR, "이미지 파일에서 QR 읽기"),
+                ],
+            ));
+        }
         if let Some(notice) = &self.wc.notice {
             items.push(Item::Banner(notice.clone(), Tone::Info));
         }
@@ -244,6 +268,8 @@ impl App {
                 self.wc_pair(&text);
             }
             ids::CLIPBOARD_QR => self.wc_clipboard_qr(),
+            ids::CLIPBOARD_CONNECT => self.wc_clipboard_connect(),
+            ids::FILE_TOGGLE => self.wc.file_open = !self.wc.file_open,
             ids::FILE_QR => {
                 if let Some(text) = self.controls.text(ids::FILE_EDIT, 1_024) {
                     self.wc.file_text = text;
@@ -256,7 +282,15 @@ impl App {
                 }
                 self.wc_save_project();
             }
-            ids::DISCONNECT_ALL => self.wc_disconnect_all(),
+            ids::DISCONNECT_ALL => {
+                // Every session at once: confirmed first, like `모든 사이트 연결 해제`.
+                if !self.wc.sessions.is_empty() {
+                    self.set_screen(crate::app::Screen::Confirm(
+                        crate::app::Confirm::WcDisconnectAll,
+                    ));
+                }
+                return true;
+            }
             ids::PROJECT_TOGGLE => {
                 let open = self.wc.project_open || self.wc.project_text.is_some();
                 self.wc.project_open = !open;

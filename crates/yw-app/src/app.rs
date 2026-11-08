@@ -209,6 +209,8 @@ pub enum Confirm {
     TokenDelete,
     /// S13 `모두 해제`.
     DisconnectAll,
+    /// S13 `모든 WalletConnect 세션 끊기` (2026-11-08).
+    WcDisconnectAll,
     /// A Bitcoin overlay (`BtcUi::confirm` holds which one and its texts).
     Btc,
     /// The AI explanation privacy notice (spec/06 §2.2).
@@ -3678,6 +3680,10 @@ impl App {
             }
             Confirm::DisconnectAll => {
                 self.disconnect_all_sites();
+                self.set_screen(Screen::Sites);
+            }
+            Confirm::WcDisconnectAll => {
+                self.wc_disconnect_all();
                 self.set_screen(Screen::Sites);
             }
             Confirm::RevealMnemonic => {

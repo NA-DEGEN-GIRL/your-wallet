@@ -159,6 +159,9 @@ impl App {
                 "dApp 사이트에서 '지갑 연결'을 누르고 이 앱의 연결 창에서 승인하면 여기에 표시됩니다."
                     .to_owned(),
             ));
+            items.push(Item::Help(
+                crate::ui::screens_reset::T_EXT_COMPAT_SHORT.to_owned(),
+            ));
             self.extension_link(items);
             items.push(Item::CardEnd);
             return;

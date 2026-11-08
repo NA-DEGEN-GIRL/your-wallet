@@ -42,6 +42,8 @@ pub struct WcUi {
     pub project_text: Option<String>,
     /// `Project ID 바꾸기 ▸` is open (a saved id is otherwise one read-only line).
     pub project_open: bool,
+    /// `다른 방법 (이미지 파일) ▸` is open.
+    pub file_open: bool,
     /// The topic behind each `연결 해제` row button as last drawn.
     pub rows: std::cell::RefCell<Vec<[u8; 32]>>,
 }
@@ -567,6 +569,33 @@ impl App {
     }
 
     /// `모든 WalletConnect 세션 끊기`.
+    /// `클립보드에서 연결` (2026-11-08): a copied `wc:` link pairs at once; otherwise a copied
+    /// image goes to the QR reader. The clipboard is read only on this press, never written, and
+    /// its text is not logged (only the source word, as `qr.decoded`).
+    pub(crate) fn wc_clipboard_connect(&mut self) {
+        let Some(main) = self.main.as_ref() else {
+            return;
+        };
+        let text = yw_win::clipboard::read_text(main, 2_048)
+            .ok()
+            .map(|(units, _)| String::from_utf16_lossy(units.as_slice()));
+        if let Some(text) = text.filter(|text| {
+            text.trim_start()
+                .get(..3)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("wc:"))
+        }) {
+            logging::info(
+                "walletconnect",
+                "clipboard.link",
+                &[("source", Field::Word("text"))],
+            );
+            self.wc.notice = Some("클립보드의 연결 주소(wc:)로 연결합니다.".to_owned());
+            self.wc_pair(text.trim());
+            return;
+        }
+        self.wc_clipboard_qr();
+    }
+
     pub(crate) fn wc_disconnect_all(&mut self) {
         let topics: Vec<[u8; 32]> = self.wc.sessions.iter().map(|s| s.topic).collect();
         for topic in topics {
