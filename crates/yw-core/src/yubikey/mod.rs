@@ -285,7 +285,7 @@ impl fmt::Display for CardError {
                 write!(formatter, "PIN이 틀렸습니다. 남은 시도 {retries}회.")
             }
             Self::AdminLastTry => formatter.write_str(
-                "OpenPGP 관리자 PIN 시도가 1회 남았습니다. 한 번 더 틀리면 잠깁니다(잠기면 'YubiKey 비우기'의 OpenPGP 초기화 뒤 다시 등록해야 합니다). 정확한 관리자 PIN이 확실하면 다시 입력해 제출하세요 — 그때는 마지막 시도로 카드에 보냅니다.",
+                "OpenPGP 관리자 PIN 시도가 1회 남았습니다. 한 번 더 틀리면 잠깁니다(잠기면 'YubiKey의 키 지우기'의 OpenPGP 애플릿 초기화 뒤 다시 등록해야 합니다). 정확한 관리자 PIN이 확실하면 다시 입력해 제출하세요 — 그때는 마지막 시도로 카드에 보냅니다.",
             ),
             Self::MultipleCards => formatter.write_str(
                 "YubiKey가 둘 이상 연결되어 있습니다. YubiKey를 하나만 연결하세요.",
@@ -313,7 +313,7 @@ impl fmt::Display for CardError {
             Self::KeyMismatch => formatter
                 .write_str("YubiKey의 공개키가 기록과 다릅니다. 등록한 YubiKey인지 확인하세요."),
             Self::ForeignKey => formatter.write_str(
-                "이 슬롯에는 지갑이 기록한 키가 아닌 다른 키가 있습니다. 다른 프로그램(GPG 등)이 넣은 키일 수 있어 이 애플릿에서는 아무것도 지우거나 덮어쓰지 않았습니다. 그 키가 필요 없다는 것이 확실하면 그 프로그램으로 지우거나 'YubiKey 비우기'의 애플릿 초기화를 쓰세요.",
+                "이 슬롯에는 지갑이 기록한 키가 아닌 다른 키가 있습니다. 다른 프로그램(GPG 등)이 넣은 키일 수 있어 이 애플릿에서는 아무것도 지우거나 덮어쓰지 않았습니다. 그 키가 필요 없다는 것이 확실하면 그 프로그램으로 지우거나 'YubiKey의 키 지우기'의 애플릿 초기화를 쓰세요.",
             ),
             Self::WrongCard => formatter
                 .write_str("이 YubiKey에는 이 계정의 키가 없습니다. 등록한 YubiKey를 연결하세요."),

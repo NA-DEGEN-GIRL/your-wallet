@@ -540,7 +540,7 @@ impl App {
     #[expect(clippy::too_many_lines, reason = "one screen of the clear flow")]
     fn yk_clear_items(&self, flow: &ClearFlow, items: &mut Vec<Item>) {
         items.push(Item::Subtitle(format!(
-            "YubiKey 비우기 — YubiKey #{}",
+            "YubiKey의 키 지우기 — YubiKey #{}",
             flow.serial
         )));
         let Some(before) = flow.before.as_ref() else {

@@ -411,7 +411,7 @@ n × 48:
 1. ~~복구 단어만 있는 새 PC에서 "YubiKey 지갑 복구"~~ → 2026-11-07 §7.6 "YubiKey 연결하기 (복구 단어 없이)"로 대신했다(복구 단어도 필요 없음). 남은 것: 연결한 카드의 경로를 나중에 니모닉으로 맞추기(§7.6 "경로 맞추기").
 2. ~~확인 화면에서 카드의 현재 키 유무~~ → 2026-11-10 자격 정보 단계에서 지울 키를 읽어 보이고 확인을 받는다(§7.3 2a). 남은 것: "이 카드에 이미 이 단어의 키가 모두 있음 — `가져오기 없이 등록`을 쓰세요" 같은 안내.
 3. 관리 키가 기본값도 PIN 보호도 아닌 카드(직접 정한 키)의 자동 보호 — 지금은 `ManagementKeyUnknown`과 ykman 안내. PIN에서 파생한 옛 관리 키(ADMIN DATA salt)는 지원하지 않는다(`NotSupported`).
-4. 실제 YubiKey 수동 판정(docs/acceptance/yubikey-20261104.md Y-01–Y-31, 사용자 수행). §15는 docs/acceptance/yubikey-manage-20261106.md YM-01–YM-13.
+4. 실제 YubiKey 수동 판정(docs/acceptance/yubikey-20261104.md Y-01–Y-31, 사용자 수행). §15는 docs/acceptance/yubikey-manage-20261106.md YM-01–YM-14. 2026-11-10의 등록·PIN 변경(덮어쓸 키 확인, 공장 값 거부, PUK 남은 시도)은 docs/acceptance/wc-zec-phrases-yk-20261110.md YK-01–YK-06.
 
 - PIN으로 보호된 관리 키·PIN 설정(2026-11-06, §5.3.3, §9.3):
   - yw-core: `piv::{get_data, put_data, AdminData, parse_protected_key, encode_protected_key, ManagementState, ManagementCredential, MgmtKey::random}`, `Piv::{get_object, put_object, admin_data, management_state, protected_management_key, authenticate_management, protect_management_key}`, `EnrolAuth::piv_pin`, `DefaultsSeen::piv_management_protected`, `CardError::{ManagementKeyProtected, ManagementKeyUnknown}`, 에뮬레이터 GET/PUT DATA·`protect_management`.
@@ -445,7 +445,7 @@ n × 48:
 
 ## 15. 카드 바꾸기: 슬롯 구성 바꾸기 · YubiKey 비우기 (2026-11-06)
 
-설정 → YubiKey 목록의 카드마다 `슬롯 구성 바꾸기`와 `YubiKey 비우기` 버튼이 있다. 누르면 목록 대신 그 작업 화면이 같은 탭에 열린다(`App::card.manage`, `app_yubikey::manage`, `ui::screens_yubikey::manage`; 키 작업자 `YkJob::Manage(ManageJob)`, 코어 `yubikey::manage`). 둘 다 **자금을 옮기지 않는다**: 카드에서 빠진 키도 니모닉에서 언제든 다시 파생되고, 같은 역할(같은 표준 경로)을 다시 넣으면 같은 주소가 돌아온다. FIDO2·패스키, OTP, OATH는 어떤 경우에도 건드리지 않는다.
+설정 → YubiKey 목록의 카드마다 `슬롯 구성 바꾸기`와 `YubiKey 비우기` 버튼이 있다(화면 이름 2026-11-08: 위험한 작업 줄의 `YubiKey의 키 지우기…`, 흐름 제목 "YubiKey의 키 지우기 — YubiKey #n"(2026-11-10); 흐름 안의 실행 버튼과 입력할 단어는 그대로 `비우기`). 누르면 목록 대신 그 작업 화면이 같은 탭에 열린다(`App::card.manage`, `app_yubikey::manage`, `ui::screens_yubikey::manage`; 키 작업자 `YkJob::Manage(ManageJob)`, 코어 `yubikey::manage`). 둘 다 **자금을 옮기지 않는다**: 카드에서 빠진 키도 니모닉에서 언제든 다시 파생되고, 같은 역할(같은 표준 경로)을 다시 넣으면 같은 주소가 돌아온다. FIDO2·패스키, OTP, OATH는 어떤 경우에도 건드리지 않는다.
 
 **복구 단어 없이 연결한 키(경로 모름, §7.6)는 예외다**(2026-11-08): 그 키는 어디에서도 다시 만들 수 없다. 덮어쓰거나 비울 슬롯 중 `path_known = false`이고 **다른 등록 카드가 같은 키를 갖지 않은 것**(`manage::lost_slots`)이 있으면 "복구 단어로 언제든 복구" 문구(T-YK-RESLOT-REMOVED, T-YK-CLEAR-FUNDS)는 경로를 아는 슬롯이 하나라도 있을 때만 보이고, 대신 T-YK-KEY-LOST(위험 띠: "이 키는 복구 단어가 없습니다 — 지우면 영구히 사라지고 이 주소의 자산을 다시 쓸 수 없습니다. 잔액이 있으면 먼저 다른 주소로 옮기세요.")와 그 키의 주소, 별도 확인 체크(`RESLOT_LOSS_ACK`/`CLEAR_LOSS_ACK`)와 입력란에 정확히 `영구 삭제`(`LOSS_WORD`)가 있어야 `YubiKey에 넣기`/`비우기`가 진행한다(체크 전에는 꺼짐, 단어는 누를 때 검사). 계정 줄은 "복구 단어 없음·다른 YubiKey에도 없음 — 바꾸면/비우면 이 키는 영구히 사라집니다"이고 경로 칸은 "경로를 알 수 없음"이다.
 

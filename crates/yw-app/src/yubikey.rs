@@ -511,10 +511,10 @@ impl PinKind {
     const fn blocked(self) -> &'static str {
         match self {
             Self::OpenPgpUser => {
-                "OpenPGP PIN이 잠겼습니다. 관리자 PIN으로 풀 수 있습니다(ykman openpgp access unblock-pin). 관리자 PIN도 모르면 'YubiKey 비우기'의 OpenPGP 초기화 뒤 다시 등록하세요."
+                "OpenPGP PIN이 잠겼습니다. 관리자 PIN으로 풀 수 있습니다(ykman openpgp access unblock-pin). 관리자 PIN도 모르면 설정 → YubiKey의 'YubiKey의 키 지우기…'에서 OpenPGP 애플릿 초기화 뒤 다시 등록하세요."
             }
             Self::OpenPgpAdmin => {
-                "OpenPGP 관리자 PIN이 잠겼습니다. 'YubiKey 비우기'의 OpenPGP 초기화 뒤 다시 등록해야 합니다(그 애플릿의 키는 지워집니다)."
+                "OpenPGP 관리자 PIN이 잠겼습니다. 설정 → YubiKey의 'YubiKey의 키 지우기…'에서 OpenPGP 애플릿 초기화 뒤 다시 등록해야 합니다(그 애플릿의 키는 지워집니다)."
             }
             Self::PivPin => {
                 "PIV PIN이 잠겼습니다. PUK로 풀 수 있습니다(ykman piv access unblock-pin)."
