@@ -39,6 +39,47 @@ use crate::ui::secret::SecretKind;
 /// switching chains in a loop must not turn into a stream of vault writes).
 pub const GRANT_WRITE_INTERVAL_MS: u64 = 2_000;
 
+/// The `YubiKey` accounts of a meta document a dApp grant may name (hidden ones included): the
+/// EVM addresses, the Solana keys and the stable addresses (receive 0) of the cards' Bitcoin
+/// accounts. Compared across a meta reload by [`App::hardware_accounts_reloaded`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct HardwareSiteAccounts {
+    evm: Vec<Address>,
+    sol: Vec<[u8; 32]>,
+    btc: Vec<String>,
+}
+
+impl HardwareSiteAccounts {
+    fn of(meta: &crate::meta::Meta) -> Self {
+        let evm = meta
+            .hw_accounts
+            .evm
+            .iter()
+            .filter_map(|account| yw_core::evm::address::parse_address(&account.address).ok())
+            .collect();
+        let sol = meta
+            .hw_accounts
+            .sol
+            .iter()
+            .filter_map(|account| yw_core::sol::SolAddress::parse(&account.address).ok())
+            .map(yw_core::sol::SolAddress::to_bytes)
+            .collect();
+        let btc = meta
+            .btc_accounts
+            .accounts
+            .iter()
+            .filter(|account| account.account().is_hardware())
+            .filter_map(|account| {
+                let address = account
+                    .address(yw_core::bip32::path::BtcChain::Receive, 0)
+                    .ok()?;
+                Some(address.as_str().to_owned())
+            })
+            .collect();
+        Self { evm, sol, btc }
+    }
+}
+
 /// What answers a signing job when the key worker finishes it, found by the job's
 /// [`SignTicket`] (never by queue order, spec/04 §1.2).
 #[derive(Clone, Debug)]
@@ -925,6 +966,57 @@ impl App {
         }
     }
 
+    /// The `YubiKey` accounts of the meta in memory while the dispatcher holds the grants (a
+    /// verified, unlocked session with its meta); `None` otherwise. Taken before a meta reload
+    /// replaces the document, for [`Self::hardware_accounts_reloaded`].
+    pub(crate) fn hardware_site_accounts(&self) -> Option<HardwareSiteAccounts> {
+        let loaded = self
+            .browser
+            .as_ref()
+            .is_some_and(|browser| browser.unlocked)
+            && self.vault_view() == VaultView::Unlocked;
+        loaded
+            .then(|| self.meta.as_ref().map(HardwareSiteAccounts::of))
+            .flatten()
+    }
+
+    /// A meta reload replaced the document: the `YubiKey` accounts of `before` that it no longer
+    /// has — the key worker's reconcile dropped them because no enrolled card holds their key
+    /// any more (a card record removed, a card cleared or re-slotted, spec/10 §13) — leave every
+    /// dApp grant like a hidden or removed account (spec/05 §4.1, §4.9): `accountsChanged`,
+    /// `solAccountsChanged([])`, `btcAccountsChanged([])`, waiting signing items `Revoked`, meta
+    /// written. The worker already pruned the stored grants, but the dispatcher keeps its own:
+    /// it would go on answering `eth_accounts` with the gone account, write it back, and use it
+    /// again once the same card is enrolled. An address or key another visible account still
+    /// has (a backup card, the same key imported or derived) stays connected.
+    pub(crate) fn hardware_accounts_reloaded(&mut self, before: Option<HardwareSiteAccounts>) {
+        let Some(before) = before else {
+            return;
+        };
+        let Some(now) = self.hardware_site_accounts() else {
+            return;
+        };
+        let evm: Vec<Address> = before
+            .evm
+            .into_iter()
+            .filter(|account| !now.evm.contains(account))
+            .collect();
+        if !evm.is_empty() {
+            self.evm_key_removed_from_sites(&evm, |_| false);
+        }
+        for public in before.sol.iter().filter(|public| !now.sol.contains(public)) {
+            self.sol_account_removed_from_sites(public);
+        }
+        let btc: Vec<String> = before
+            .btc
+            .into_iter()
+            .filter(|address| !now.btc.contains(address))
+            .collect();
+        if !btc.is_empty() {
+            self.btc_addresses_removed_from_sites(&btc);
+        }
+    }
+
     /// A user chain was deleted (spec/05 §4.3): origins move to `evmChainId`, grants are
     /// rewritten, signing items on that chain end with 4901.
     pub fn chain_removed_from_sites(&mut self, chain_id: u64) {
@@ -1500,6 +1592,68 @@ mod tests {
         // The phrase was C's last source: C leaves.
         app.on_mn_outcome(MnOutcome::Removed(Ok(RecordId::from_bytes(phrase))), 0);
         assert_eq!(granted(), vec![addr(ACCOUNT_A), addr(ACCOUNT_B)]);
+    }
+
+    /// spec/05 §4.1, §4.9, spec/10 §13: a meta reload whose reconcile dropped a `YubiKey`'s
+    /// accounts (its record removed, the card cleared or re-slotted) takes them out of the
+    /// dispatcher's grants and meta — the same card enrolled again does not reconnect — while an
+    /// address another visible account has (derived B, enrolled from the same words) stays.
+    #[test]
+    fn a_reload_without_a_cards_accounts_drops_them_from_the_grants() {
+        use crate::browser::grants::{sites_from_values, sol_sites_from_values};
+        const ACCOUNT_YK: &str = "0x6fac4d18c912343bf86fa7049364dd4e424ab9c0";
+        const SOL_YK: &str = "FVen3X669xLzsi6N2V91DoiyzHzg1uAgqiT8jZ9nS96Z";
+        let card = |index: u32, address: &str| crate::meta::Account {
+            index,
+            label: format!("YubiKey 계정 {}", index + 1),
+            address: address.to_owned(),
+            hidden: false,
+        };
+        let mut app = accounts_app(false);
+        let enrolled = |meta: &mut crate::meta::Meta| {
+            meta.hw_accounts.evm = vec![card(0, ACCOUNT_YK), card(1, ACCOUNT_B)];
+            meta.hw_accounts.sol = vec![card(0, SOL_YK)];
+        };
+        enrolled(app.meta.as_mut().unwrap());
+        app.sync_browser();
+        let core = Arc::clone(&app.browser.as_ref().unwrap().core);
+        let origin = yw_core::policy::BrowserOrigin::parse("https://app.example").unwrap();
+        core.upsert_grant(
+            yw_core::policy::ConnectedSite::new(
+                origin.clone(),
+                vec![addr(ACCOUNT_A), addr(ACCOUNT_YK), addr(ACCOUNT_B)],
+                yw_core::evm::chain::SEPOLIA,
+                0,
+            )
+            .unwrap(),
+        );
+        let public = yw_core::codec::base58::base58_decode_32(SOL_YK).unwrap();
+        assert!(core.upsert_sol_grant(yw_core::policy::SolGrant {
+            origin,
+            public,
+            granted_at_unix_ms: 0,
+        }));
+        let before = app.hardware_site_accounts();
+        assert!(before.is_some());
+        // The reloaded document: no card holds the keys any more.
+        let meta = app.meta.as_mut().unwrap();
+        meta.hw_accounts.evm.clear();
+        meta.hw_accounts.sol.clear();
+        app.hardware_accounts_reloaded(before);
+        let expected = vec![addr(ACCOUNT_A), addr(ACCOUNT_B)];
+        assert_eq!(core.grants()[0].accounts, expected);
+        assert!(core.sol_grants().is_empty());
+        let meta = app.meta.as_ref().unwrap();
+        assert_eq!(
+            sites_from_values(&meta.connected_sites)[0].accounts,
+            expected
+        );
+        assert!(sol_sites_from_values(&meta.chain_sites.sol).is_empty());
+        // The same card enrolled again (the next reload): nothing comes back.
+        enrolled(app.meta.as_mut().unwrap());
+        app.sync_browser();
+        assert_eq!(core.grants()[0].accounts, expected);
+        assert!(core.sol_grants().is_empty());
     }
 
     /// spec/10 §10: a site connected to a `YubiKey` EVM account may ask it to sign (the request

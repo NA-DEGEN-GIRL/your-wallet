@@ -1811,11 +1811,15 @@ impl App {
                 self.keys.has_mnemonic = has_mnemonic;
                 self.keys.zec_keys = zec_keys;
                 self.mn.infos = mnemonics;
+                // The dispatcher's grants follow the reloaded accounts (a YubiKey's accounts
+                // the reconcile dropped leave them, spec/05 §4.1, §4.9).
+                let hardware = self.hardware_site_accounts();
                 self.meta = Some(*meta);
                 self.wait.meta_since = None;
                 self.wait.meta_failed = None;
                 // Review M1/L15/L17: compare settings.json with the snapshot in the meta.
                 self.verify_settings();
+                self.hardware_accounts_reloaded(hardware);
                 if self.mode == AppMode::BackupPending {
                     // S04 (and its S12) only needs the account list. The chain hooks (journal,
                     // balances, card) run after the backup check, which loads the meta again.
