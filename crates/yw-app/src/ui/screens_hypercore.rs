@@ -42,6 +42,8 @@ pub mod ids {
     pub const DIR_TO_SPOT: u16 = 13_466;
     /// Asset radio: perp USDC.
     pub const ASSET_PERP: u16 = 13_467;
+    /// `최대` (the whole available amount).
+    pub const MAX: u16 = 13_468;
     /// Settings: card on/off.
     pub const ENABLED: u16 = 13_490;
     /// Settings: testnet API edit.
@@ -73,6 +75,7 @@ pub mod ids {
         DIR_TO_PERP,
         DIR_TO_SPOT,
         ASSET_PERP,
+        MAX,
         ENABLED,
         API_EDIT,
         API_SAVE,
@@ -194,11 +197,13 @@ impl App {
             Ctl::button(ids::OPEN_FROM_EVM, "HyperEVM에서 Core로 이동"),
             Ctl::button(ids::REFRESH, "새로고침"),
         ]));
+        // The selected account's rows only, like the balances above.
+        let account = self.selected_account().map(|(account, ..)| account);
         let rows: Vec<_> = self
             .hypercore
             .activity
             .iter()
-            .filter(|row| row.network == network)
+            .filter(|row| row.network == network && Some(row.account) == account)
             .collect();
         if !rows.is_empty() {
             items.push(Item::Rule);
@@ -246,6 +251,13 @@ impl App {
         network_band(network, items);
         if let Some(info) = &form.info {
             items.push(Item::Banner(info.clone(), Tone::Warn));
+        }
+        // A failed load is shown and can be retried here (the card is not on this screen).
+        if let Some(error) = &self.hypercore.error {
+            items.push(Item::Banner(error.clone(), Tone::Warn));
+        }
+        if self.hypercore.error.is_some() || self.hc_balances().is_none() {
+            items.push(Item::Row(vec![Ctl::button(ids::REFRESH, "새로고침")]));
         }
         if let Some((account, _, label)) = self.selected_account() {
             items.push(Item::CardStart(Some("서명 계정".to_owned())));
@@ -344,18 +356,38 @@ impl App {
                 ));
             }
         }
+        let available = self.hc_form_available();
         items.push(Item::LabeledRow(
             "금액".to_owned(),
-            vec![Ctl::edit(
-                ids::AMOUNT_EDIT,
-                &form.amount_text,
-                240,
-                false,
-                40,
-            )],
+            vec![
+                Ctl::edit(ids::AMOUNT_EDIT, &form.amount_text, 240, false, 40),
+                Ctl::button(ids::MAX, "최대")
+                    .enabled(available.as_ref().is_some_and(|(amount, _)| amount != "0")),
+            ],
         ));
+        match &available {
+            Some((amount, symbol)) => items.push(Item::Help(match form.kind {
+                HcFormKind::ToEvm => format!(
+                    "옮길 수 있는 양: {amount} {symbol} (HyperEVM 자릿수를 넘는 끝수는 HyperCore에 남깁니다)"
+                ),
+                HcFormKind::Withdraw => {
+                    format!("출금 가능: {amount} {symbol} (수수료는 이 금액에서 빠집니다)")
+                }
+                _ => format!("사용 가능: {amount} {symbol}"),
+            })),
+            None if self.hc_balances().is_none() => items.push(Item::Help(
+                "사용 가능한 양은 잔액을 불러온 뒤 보입니다.".to_owned(),
+            )),
+            None => {}
+        }
         if let Some(error) = &form.error {
-            items.push(Item::Banner(error.clone(), Tone::Danger));
+            // Loading is a status; anything else stops `검토`.
+            let tone = if error == crate::app_hypercore::HC_LOADING_TEXT {
+                Tone::Info
+            } else {
+                Tone::Danger
+            };
+            items.push(Item::Banner(error.clone(), tone));
         }
         items.push(Item::CardEnd);
         items.push(Item::Row(vec![
@@ -372,6 +404,16 @@ impl App {
             vec![Ctl::edit(ids::TO_EDIT, &form.to_text, 430, false, 64)],
         ));
         for note in &form.notes {
+            // Withdrawing to the signing account's own Arbitrum address is the default.
+            if form.kind == HcFormKind::Withdraw
+                && *note == crate::flow::evm::form::AddressNote::SameAsSender
+            {
+                items.push(Item::Banner(
+                    crate::app_hypercore::HC_WITHDRAW_OWN_TEXT.to_owned(),
+                    Tone::Info,
+                ));
+                continue;
+            }
             items.push(Item::Banner(
                 note.text(),
                 if note.needs_ack() {
@@ -437,8 +479,12 @@ impl App {
         match id {
             ids::REFRESH => {
                 self.hc_refresh();
+                if matches!(self.screen, crate::app::Screen::HyperCore) {
+                    self.hc_validate();
+                }
                 self.refresh();
             }
+            ids::MAX => self.hc_fill_max(),
             ids::OPEN_SEND => self.hc_open_form(HcFormKind::Send),
             ids::OPEN_CLASS => self.hc_open_form(HcFormKind::ClassTransfer),
             ids::OPEN_WITHDRAW => self.hc_open_form(HcFormKind::Withdraw),
@@ -459,10 +505,7 @@ impl App {
                     self.hc_refresh();
                 }
             }
-            ids::ACK => {
-                self.hypercore.form.ack = !self.hypercore.form.ack;
-                self.refresh();
-            }
+            ids::ACK => self.hc_toggle_ack(),
             ids::REVIEW => self.hc_review(),
             ids::CANCEL => self.set_screen(crate::app::Screen::Main),
             ids::DIR_TO_PERP | ids::DIR_TO_SPOT => {
