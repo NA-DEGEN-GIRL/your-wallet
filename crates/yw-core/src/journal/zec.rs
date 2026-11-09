@@ -15,10 +15,10 @@ use super::{
 use crate::zec::account::{ZecAccount, ZecKeySource};
 use crate::zec::address::ZecDest;
 use crate::zec::network::ZecNetwork;
-use crate::zec::plan::ZecPlan;
+use crate::zec::plan::{ZecPlan, ZecUtxo};
 use crate::zec::sign::ZecSignedTx;
 use crate::zec::tx::{ZecOutPoint, ZecTx, parse_tx, txid, txid_display};
-use crate::zec::{ZEC_JOURNAL_FINAL_KEEP, ZEC_MAX_JOURNAL_RAW};
+use crate::zec::{ZEC_JOURNAL_FINAL_KEEP, ZEC_MAX_INPUTS, ZEC_MAX_JOURNAL_RAW};
 
 /// `record_kind` (fixed).
 pub const RECORD_KIND: u8 = 0x04;
@@ -266,6 +266,36 @@ impl ZecRecord {
     #[must_use]
     pub const fn reserves_inputs(&self) -> bool {
         self.may_still_confirm() || matches!(self.state, ZecTxState::InputsSpent)
+    }
+
+    /// Whether this record's inputs are not ours to send from: reserved
+    /// ([`ZecRecord::reserves_inputs`]) or spent by this very transaction (`Confirmed`).
+    #[must_use]
+    pub const fn uses_inputs(&self) -> bool {
+        self.reserves_inputs() || matches!(self.state, ZecTxState::Confirmed)
+    }
+
+    /// The change of a mined record as an output of its account (the second output, paying the
+    /// account's own script, at the mined height); `None` before `Confirmed` or without change.
+    #[must_use]
+    pub fn mined_change(&self) -> Option<ZecUtxo> {
+        if self.state != ZecTxState::Confirmed || self.mined_height == 0 {
+            return None;
+        }
+        let tx = self.tx().ok()?;
+        let output = tx.outputs.get(1)?;
+        if output.value == 0 || output.script_pubkey != self.account.script_pubkey() {
+            return None;
+        }
+        Some(ZecUtxo {
+            outpoint: ZecOutPoint {
+                txid: txid(&tx),
+                index: 1,
+            },
+            value: output.value,
+            height: Some(self.mined_height),
+            coinbase: false,
+        })
     }
 
     /// Encodes the body.
@@ -525,6 +555,36 @@ pub fn reserved_inputs(plain: &JournalPlain, network: ZecNetwork) -> Vec<ZecOutP
         .collect()
 }
 
+/// What a refresh still sends from when the address answer is over its limits (spec/12 §4.3):
+/// `known` (the largest outputs of the last answer) plus the change of every mined record of
+/// `records` (the account's records; a change paid while over the limits is never listed),
+/// without any input of a record that spent or holds it ([`ZecRecord::uses_inputs`]: without
+/// `gettxout` nothing else would drop an output our own confirmed send spent), largest first, at
+/// most [`ZEC_MAX_INPUTS`]. `gettxout`, when the node has it, prunes the rest.
+#[must_use]
+pub fn over_limit_known(known: &[ZecUtxo], records: &[ZecRecord]) -> Vec<ZecUtxo> {
+    let used: std::collections::BTreeSet<ZecOutPoint> = records
+        .iter()
+        .filter(|record| record.uses_inputs())
+        .flat_map(ZecRecord::inputs)
+        .collect();
+    let mut out: Vec<ZecUtxo> = known
+        .iter()
+        .filter(|utxo| !used.contains(&utxo.outpoint))
+        .copied()
+        .collect();
+    for change in records.iter().filter_map(ZecRecord::mined_change) {
+        if !used.contains(&change.outpoint)
+            && !out.iter().any(|kept| kept.outpoint == change.outpoint)
+        {
+            out.push(change);
+        }
+    }
+    out.sort_by(|a, b| b.value.cmp(&a.value).then(a.outpoint.cmp(&b.outpoint)));
+    out.truncate(ZEC_MAX_INPUTS);
+    out
+}
+
 fn zec_entries(plain: &JournalPlain) -> usize {
     plain
         .entries
@@ -627,7 +687,9 @@ pub enum ZecTransition {
 }
 
 /// Applies `transition` to the record with `txid` (internal order); returns the new state if a
-/// record changed. Terminal records never change; `Expired` needs a non-terminal record.
+/// record changed. Terminal records never change; `Expired` needs a non-terminal record. A
+/// transition that changes nothing (the same state, `disclosed` and `not_found`, e.g. the node
+/// refusing a re-sent `Rejected` record again) returns `None`: nothing to write.
 pub fn apply(
     plain: &mut JournalPlain,
     id: &[u8; 32],
@@ -643,6 +705,7 @@ pub fn apply(
         if record.txid() != *id || record.is_terminal() {
             continue;
         }
+        let before = record.clone();
         match transition {
             ZecTransition::Disclose => {
                 if record.disclosed {
@@ -674,6 +737,9 @@ pub fn apply(
             ZecTransition::InMempool => record.not_found = 0,
             ZecTransition::Expired => record.state = ZecTxState::Expired,
             ZecTransition::InputsSpent => record.state = ZecTxState::InputsSpent,
+        }
+        if record == before {
+            return None;
         }
         let state = record.state;
         let body = record.encode().ok()?;

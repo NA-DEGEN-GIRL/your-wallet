@@ -117,12 +117,20 @@ pub enum ZecKeyOutcome {
     PublicKey(Result<ZecAccount, String>),
     /// A signing job finished.
     Signed(Result<ZecSignedSummary, ZecSignFailure>),
-    /// A transition was applied (`Some(state)` when a record changed).
+    /// A transition was applied and committed (`Some(state)` when a record changed; `None`:
+    /// nothing to write).
     Journal {
         /// Txid.
         txid: [u8; 32],
         /// New state.
         state: Option<ZecTxState>,
+    },
+    /// A transition changed the record but could not be written: the journal on disk is as
+    /// before, so nothing may be sent on it (a `Disclose` must be committed before
+    /// `sendrawtransaction`, spec/12 §10.1); the next refresh tries again.
+    JournalFailed {
+        /// Txid.
+        txid: [u8; 32],
     },
 }
 
@@ -275,7 +283,10 @@ impl JournalState {
         out
     }
 
-    /// Applies `transition` to `txid` and commits when a record changed.
+    /// Applies `transition` to `txid` and commits when a record changed. The UI hears
+    /// [`ZecKeyOutcome::Journal`] only once the change is on disk (or nothing needed writing);
+    /// a failed write answers [`ZecKeyOutcome::JournalFailed`] instead, so a `Disclose` that
+    /// did not land never leads to a send.
     pub fn apply_zec(
         &mut self,
         vault: &mut Vault,
@@ -287,33 +298,34 @@ impl JournalState {
             Err(error) => return vec![KeyOutcome::Journal(Err(error))],
         };
         let state = apply(&mut next, &txid, transition);
-        let mut out = vec![KeyOutcome::Zec(Box::new(ZecKeyOutcome::Journal {
-            txid,
-            state,
-        }))];
+        let applied = KeyOutcome::Zec(Box::new(ZecKeyOutcome::Journal { txid, state }));
         if state.is_none() {
-            return out;
+            return vec![applied];
         }
-        match next.encode() {
-            Ok(bytes) => match vault.save_sidecar(FileKind::Journal, &bytes) {
-                Ok(_) => {
-                    logging::info(
-                        "journal",
-                        "journal.zec_transition",
-                        &[("state", Field::Word(state.map_or("-", ZecTxState::name)))],
-                    );
-                    out.push(KeyOutcome::Journal(Ok(view_of(&next))));
-                    self.plain = Some(next);
-                }
-                Err(error) => {
-                    logging::warn("journal", "journal.write_failed", &[]);
-                    out.push(KeyOutcome::Journal(Err(error)));
-                }
-            },
-            Err(_) => out.push(KeyOutcome::Journal(Err(
-                yw_core::error::VaultError::Storage(yw_core::error::StorageError::TooLarge),
-            ))),
+        let written = next
+            .encode()
+            .map_err(|_| {
+                yw_core::error::VaultError::Storage(yw_core::error::StorageError::TooLarge)
+            })
+            .and_then(|bytes| vault.save_sidecar(FileKind::Journal, &bytes));
+        match written {
+            Ok(_) => {
+                logging::info(
+                    "journal",
+                    "journal.zec_transition",
+                    &[("state", Field::Word(state.map_or("-", ZecTxState::name)))],
+                );
+                let view = view_of(&next);
+                self.plain = Some(next);
+                vec![applied, KeyOutcome::Journal(Ok(view))]
+            }
+            Err(error) => {
+                logging::warn("journal", "journal.write_failed", &[]);
+                vec![
+                    KeyOutcome::Zec(Box::new(ZecKeyOutcome::JournalFailed { txid })),
+                    KeyOutcome::Journal(Err(error)),
+                ]
+            }
         }
-        out
     }
 }

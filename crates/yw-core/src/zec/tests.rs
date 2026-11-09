@@ -588,12 +588,39 @@ fn mocked_end_to_end_send() {
         None,
         "a disclosed record is never discarded"
     );
+    // A transition that changes nothing writes nothing (the node refusing a re-sent record).
+    assert_eq!(
+        zj::apply(&mut journal, &txid, ZecTransition::Rejected),
+        Some(ZecTxState::Rejected)
+    );
+    assert_eq!(
+        zj::apply(&mut journal, &txid, ZecTransition::Rejected),
+        None
+    );
     assert_eq!(
         zj::apply(&mut journal, &txid, ZecTransition::Mined(4_470_003)),
         Some(ZecTxState::Confirmed)
     );
     zj::check_plan_allowed(&journal, &account).unwrap();
     assert!(zj::reserved_inputs(&journal, ZecNetwork::Testnet).is_empty());
+    // Over the address limits (spec/12 §4.3) what is still sent from keeps the mined change and
+    // drops the inputs it spent (nothing else would when the node has no `gettxout`).
+    let mined = zj::ZecEntries::from_plain(&journal).records();
+    assert_eq!(
+        zj::over_limit_known(
+            &[utxo(1, 100_000), utxo(2, 80_000), utxo(4, 30_000)],
+            &mined
+        ),
+        vec![
+            utxo(4, 30_000),
+            ZecUtxo {
+                outpoint: ZecOutPoint { txid, index: 1 },
+                value: plan.change,
+                height: Some(4_470_003),
+                coinbase: false,
+            },
+        ]
+    );
 
     // Past expiry, unknown to the node, every input spent: "may have been included" — terminal
     // (no resend, sending allowed again) but its inputs stay reserved.

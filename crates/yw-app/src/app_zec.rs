@@ -28,6 +28,10 @@ pub const T_ZEC_HW_MISSING: &str = "이 Zcash 계정의 YubiKey 키를 등록된
 
 /// Automatic refresh period while the tab is shown (and while a transaction is in flight).
 const REFRESH_MS: u64 = yw_core::zec::ZEC_POLL_SECS * 1_000;
+/// A record the node refused (`Rejected`) is handed over again at most once per this many
+/// blocks until it expires (spec/12 §12.2): the same bytes were just refused, and resending on
+/// every 30 s refresh only repeats the answer.
+const REJECTED_RESEND_BLOCKS: u32 = 10;
 /// `삭제` of an imported Zcash key while a transaction of its account may still confirm.
 pub const ZEC_REMOVE_BUSY: &str =
     "진행 중인 Zcash 거래가 이 키를 쓰고 있어 지울 수 없습니다. 확인되거나 만료된 뒤에 지우세요.";
@@ -95,6 +99,9 @@ pub struct ZecUi {
     pub confirm_shared: bool,
     /// Signed and journaled, waiting for the `Disclose` commit before `sendrawtransaction`.
     pending_send: Option<ZecSignedSummary>,
+    /// `(txid, tip)` of the last time a `Rejected` record was handed to the node (the resend
+    /// backoff, [`REJECTED_RESEND_BLOCKS`]).
+    rejected_resend: Option<([u8; 32], u32)>,
     next_refresh_ms: u64,
     /// The card slot maps of this session were read (the hardware account can be checked).
     hw_checked: bool,
@@ -575,22 +582,16 @@ impl App {
         let live = || records.iter().filter(|record| record.may_still_confirm());
         let track = live().map(ZecRecord::txid_hex).collect();
         let watch = live().flat_map(ZecRecord::inputs).collect();
-        // What is known (spec/12 §4.3): the largest outputs of the last answer, sent from when
-        // the next address answer is over its limits.
-        let known = self
+        // What is known (spec/12 §4.3), sent from when the next address answer is over its
+        // limits: the largest outputs of the last answer and the change of our mined sends,
+        // without the outputs our own sends spent or hold.
+        let last: &[yw_core::zec::ZecUtxo] = self
             .zec
             .snapshot
             .as_ref()
             .filter(|(network, _)| *network == account.network)
-            .map(|(_, snapshot)| {
-                snapshot
-                    .utxos
-                    .iter()
-                    .take(yw_core::zec::ZEC_MAX_INPUTS)
-                    .copied()
-                    .collect()
-            })
-            .unwrap_or_default();
+            .map_or(&[], |(_, snapshot)| snapshot.utxos.as_slice());
+        let known = yw_core::journal::zec::over_limit_known(last, &records);
         self.zec.job = self.zec.job.wrapping_add(1);
         self.zec.refreshing = true;
         self.zec.review_after = review;
@@ -824,6 +825,8 @@ impl App {
                 }
             },
             ZecKeyOutcome::Journal { txid, state } => {
+                // Only after the `Disclose` commit (or a record disclosed already) is the
+                // transaction handed to the node (spec/12 §10.1).
                 if self
                     .zec
                     .pending_send
@@ -845,6 +848,22 @@ impl App {
                     self.zec.busy = false;
                 }
             }
+            ZecKeyOutcome::JournalFailed { txid } => {
+                // The disclose mark did not reach the disk: nothing is sent. `pending_send`
+                // stays; the next refresh marks the record again and sends after that commit.
+                if self
+                    .zec
+                    .pending_send
+                    .as_ref()
+                    .is_some_and(|pending| pending.txid == txid)
+                {
+                    self.zec.info = None;
+                    self.zec.error = Some(
+                        "거래 기록을 저장하지 못해 아직 보내지 않았습니다. 다음 새로고침 때 다시 시도합니다."
+                            .to_owned(),
+                    );
+                }
+            }
         }
         self.refresh();
     }
@@ -863,6 +882,19 @@ impl App {
             raw,
             txid,
         })));
+    }
+
+    /// Whether the `Rejected` record `txid` may be handed to the node again at `tip`: the first
+    /// time, or [`REJECTED_RESEND_BLOCKS`] blocks after the last attempt (which is then `tip`).
+    fn zec_resend_due(&mut self, txid: [u8; 32], tip: u32) -> bool {
+        if let Some((last, at)) = self.zec.rejected_resend
+            && last == txid
+            && tip < at.saturating_add(REJECTED_RESEND_BLOCKS)
+        {
+            return false;
+        }
+        self.zec.rejected_resend = Some((txid, tip));
+        true
     }
 
     fn zec_journal(&self, txid: [u8; 32], transition: ZecTransition) {
@@ -916,6 +948,13 @@ impl App {
                     self.zec.error = Some(format!(
                         "Zcash 노드가 거래를 거부했습니다 (코드 {code}). 만료 높이가 지나면 입력이 풀립니다."
                     ));
+                    // The resend backoff starts now (not on the next 30 s refresh).
+                    let tip = self
+                        .zec
+                        .snapshot
+                        .as_ref()
+                        .map_or(0, |(_, snapshot)| snapshot.chain.tip);
+                    self.zec.rejected_resend = Some((txid, tip));
                     self.zec_journal(txid, ZecTransition::Rejected);
                 }
                 SendOutcome::Unknown(code) => {
@@ -984,6 +1023,11 @@ impl App {
                 Some(TxStatus::NotFound) => {
                     if record.state == ZecTxState::Broadcast {
                         self.zec_journal(txid, ZecTransition::NotFound);
+                    }
+                    // A record the node refused goes again only every
+                    // `REJECTED_RESEND_BLOCKS` blocks (each refusal just repeats the answer).
+                    if record.state == ZecTxState::Rejected && !self.zec_resend_due(txid, tip) {
+                        continue;
                     }
                     // Not known to the node and not expired: hand it over again (disclose
                     // first when it never was).
