@@ -32,8 +32,8 @@ use yw_core::btc::{
 };
 use yw_core::journal::btc::{
     AccountScope, BTC_FINAL_CONFIRMATIONS, BtcRecord, BtcTxState, TrackMode, abandoned_conflicts,
-    bump_target, check_can_send, current_record, in_flight, in_flight_outpoints,
-    in_flight_replacements, of_account, related_records, track_mode,
+    bump_target, check_can_send, confirmed_inputs, current_record, in_flight, in_flight_outpoints,
+    in_flight_replacements, of_account, related_records, track_mode, unspendable_outpoints,
 };
 use yw_win::http::HttpsUrl;
 
@@ -2108,7 +2108,8 @@ impl BtcUi {
         // Across identities: a re-imported key inherits the old identity's constraints.
         let related = ctx.related_records();
         let work = PrepareJob {
-            in_flight: in_flight_outpoints(&related, ctx.net()),
+            // In flight, or spent by a confirmed send (until `verified` drops it).
+            in_flight: unspendable_outpoints(&related, ctx.net()),
             conflicts: abandoned_conflicts(&related, ctx.net(), ctx.now_unix_ms / 1_000),
             meta,
             kind,
@@ -2488,7 +2489,7 @@ impl BtcUi {
                     name,
                     kind: account_type_text(meta.account(), net),
                     available: meta
-                        .balance(tip, &in_flight_outpoints(&records, net))
+                        .balance(tip, &unspendable_outpoints(&records, net))
                         .available,
                     selected: meta.id() == active,
                     imported,
@@ -2895,12 +2896,13 @@ impl BtcUi {
             receive_count: meta.receive_next(),
             change_count: meta.change_next(),
             known: meta.verified().iter().map(|utxo| utxo.outpoint).collect(),
-            // Change on the change chain only: change back to the fixed address `(Receive, 0)`
-            // (one-key accounts, fixed-address mode) is not a change-chain index.
+            // The address each in-flight change output pays: `(Change, i)`, or the fixed address
+            // `(Receive, 0)` of a one-key account or of fixed-address mode (our own change is
+            // not an unverified deposit, spec/08 §4.7-2).
             inflight_change: records
                 .iter()
                 .filter(|record| record.state.is_in_flight())
-                .filter_map(|record| record.hd_change_index(meta.account()))
+                .filter_map(|record| record.change_paid_to(meta.account()))
                 .collect(),
             chain: Self::chain_of(ctx, meta),
             trigger,
@@ -3070,6 +3072,9 @@ impl BtcUi {
                 Vec::new()
             }
             Ok(BtcJournalDone::Tracked { changed }) => {
+                let confirmed = changed
+                    .iter()
+                    .any(|(_, state)| *state == BtcTxState::Confirmed);
                 for (txid, state) in changed {
                     logging::info(
                         "app",
@@ -3079,6 +3084,15 @@ impl BtcUi {
                             ("state", Field::Word(state.name())),
                         ],
                     );
+                }
+                // A confirmation spent outputs and paid change: refresh now so the balance and
+                // the UTXO list follow the chain (the 60 s refresh runs only while something is
+                // in flight, spec/08 §4.7).
+                if confirmed
+                    && !self.discovery.running
+                    && ctx.btc_meta().is_some_and(BtcMeta::discovery_done)
+                {
+                    return self.refresh(ctx, Trigger::Automatic);
                 }
                 Vec::new()
             }
@@ -3493,7 +3507,8 @@ impl BtcUi {
 
     // ----- display ----------------------------------------------------------------------------
 
-    /// Verified balance at the known tip (in-flight inputs excluded, frozen and immature apart).
+    /// Verified balance at the known tip (in-flight inputs and inputs of confirmed sends
+    /// excluded, frozen and immature apart).
     #[must_use]
     pub fn balance(&self, ctx: &BtcCtx<'_>) -> Option<BtcBalance> {
         let meta = ctx.btc_meta()?;
@@ -3502,7 +3517,7 @@ impl BtcUi {
         }
         Some(meta.balance(
             self.tip_or_meta(ctx),
-            &in_flight_outpoints(&ctx.records(), ctx.net()),
+            &unspendable_outpoints(&ctx.records(), ctx.net()),
         ))
     }
 
@@ -3519,9 +3534,13 @@ impl BtcUi {
             return Vec::new();
         };
         let tip = self.tip_or_meta(ctx);
-        let in_flight = in_flight_outpoints(&ctx.records(), ctx.net());
+        let records = ctx.records();
+        let in_flight = in_flight_outpoints(&records, ctx.net());
+        // Spent by a confirmed send of the account: not ours any more (like the balance).
+        let spent = confirmed_inputs(&records, ctx.net());
         meta.verified()
             .iter()
+            .filter(|utxo| !spent.contains(&utxo.outpoint))
             .map(|utxo| BtcUtxoView {
                 outpoint: utxo.outpoint,
                 value: utxo.value,

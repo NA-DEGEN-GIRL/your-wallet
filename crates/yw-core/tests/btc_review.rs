@@ -873,3 +873,48 @@ fn reimported_key_inherits_the_abandon_rule() {
     confirmed.confirmed_height = None;
     assert!(confirmed.may_still_confirm(1_000 + 2 * BTC_ABANDON_WINDOW_SECS));
 }
+
+/// Review fix (spec/08 §12.1, §4.7-6): the inputs of a confirmed send are gone for good. A
+/// later send that still spends one of them (a stale `verified` entry) and that the node refuses
+/// after seeing its bytes (disclosed `Rejected`), or that is given up, ends `Conflicted` at once:
+/// never a live conflict that would force every next send onto the spent output for 30 days. A
+/// journal written before this rule is fixed at startup; balances and plans leave the inputs out.
+#[test]
+fn spent_by_a_confirmed_send_is_never_a_live_conflict() {
+    use yw_core::journal::btc::{confirmed_inputs, normalize_on_startup, unspendable_outpoints};
+    let first = simple_plan(1, 20_000);
+    let again = simple_plan(1, 30_000);
+    let confirmed = with_id(record(&first, BtcTxState::Confirmed, 1_000), 6);
+    let alone = [confirmed.clone()];
+    assert_eq!(confirmed_inputs(&alone, NET), vec![op(1)]);
+    assert_eq!(unspendable_outpoints(&alone, NET), vec![op(1)]);
+    assert!(in_flight_outpoints(&alone, NET).is_empty());
+    // Refused by the node that saw the bytes.
+    let mut doomed = with_id(record(&again, BtcTxState::Signed, 2_000), 7);
+    doomed.disclosed = true;
+    let mut journal = legacy_plain(&[confirmed.clone(), doomed]);
+    let change = set_state_entry(&mut journal, NET, &[7; 16], BtcTxState::Rejected, 2_100).unwrap();
+    assert_eq!(
+        change.changed,
+        vec![
+            (again.txid(), BtcTxState::Rejected),
+            (again.txid(), BtcTxState::Conflicted)
+        ]
+    );
+    let records = records_of(&journal);
+    assert!(abandoned_conflicts(&records, NET, 2_100).is_empty());
+    assert!(refresh_keep_outpoints(&records, NET, 2_100).is_empty());
+    // [포기] after 10 not-found rounds: conflicted as well.
+    let mut unknown = with_id(record(&again, BtcTxState::BroadcastUnknown, 2_000), 7);
+    unknown.not_found_count = 10;
+    let mut journal = legacy_plain(&[confirmed.clone(), unknown]);
+    set_state_entry(&mut journal, NET, &[7; 16], BtcTxState::Abandoned, 2_100).unwrap();
+    assert_eq!(records_of(&journal)[1].state, BtcTxState::Conflicted);
+    // Written before this rule: the startup pass conflicts it.
+    let mut stuck = with_id(record(&again, BtcTxState::Rejected, 2_000), 7);
+    stuck.disclosed = true;
+    let mut journal = legacy_plain(&[confirmed, stuck]);
+    let change = normalize_on_startup(&mut journal, 2_200).unwrap();
+    assert_eq!(change.changed, vec![(again.txid(), BtcTxState::Conflicted)]);
+    assert!(abandoned_conflicts(&records_of(&journal), NET, 2_200).is_empty());
+}

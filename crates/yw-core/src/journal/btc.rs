@@ -55,7 +55,7 @@ use crate::btc::select::{BumpSource, PlanError, PlanInput, SendPlan};
 use crate::btc::sign::SignedTx;
 use crate::btc::taproot::{Prevout, check_key_path_witness, sighash_default};
 use crate::btc::tx::{
-    OutPoint, Transaction, TxIn, Txid, parse_transaction, serialize, txid, vsize, wtxid,
+    OutPoint, Transaction, TxIn, TxOut, Txid, parse_transaction, serialize, txid, vsize, wtxid,
 };
 use crate::btc::verify::VerifiedSignedTx;
 use crate::btc::{
@@ -1085,24 +1085,20 @@ impl BtcRecord {
         }
     }
 
-    /// Our change as a verified output once `Confirmed` (spec/08 §12.2-5), from the local bytes.
-    /// `None` unless the output's scriptPubKey is the P2WPKH script of `(Change, index)` derived
-    /// from `account` (a record of another account, e.g. an alt-passphrase session sharing the
-    /// journal, is never inserted into that account's `verified`).
-    #[must_use]
-    pub fn own_change_utxo(&self, account: &BtcAccountKey) -> Option<VerifiedUtxo> {
+    /// The change output with the `(chain, index)` of `account` whose script it pays: the change
+    /// chain or the fixed address `(Receive, 0)`, whichever the output pays (an HD account's mode
+    /// may have been switched since the record was written). `None` without change, for a record
+    /// of another account, or when the output pays neither.
+    fn own_change_output(&self, account: &BtcAccountKey) -> Option<(BtcChain, u32, TxOut)> {
         if self.account != account.id() {
             return None;
         }
-        let height = self.confirmed_height?;
         let change = self.change?;
         let output = self
             .transaction()?
             .outputs
             .into_iter()
             .nth(usize::try_from(change.vout).ok()?)?;
-        // The change chain or the fixed address, whichever the output pays (an HD account's mode
-        // may have been switched since the record was written).
         let (chain, index) =
             account
                 .change_candidates(change.index)
@@ -1112,6 +1108,28 @@ impl BtcRecord {
                         .script(*chain, *index)
                         .is_ok_and(|script| script == output.script_pubkey)
                 })?;
+        Some((chain, index, output))
+    }
+
+    /// The `(chain, index)` of `account`'s address the change output pays, in any state:
+    /// `(Change, i)`, or `(Receive, 0)` for change back to the fixed address of a one-key account
+    /// or of an HD account in fixed-address mode (spec/08 §4.7-2: no "미확정 입금" for our own
+    /// in-flight change there either).
+    #[must_use]
+    pub fn change_paid_to(&self, account: &BtcAccountKey) -> Option<(BtcChain, u32)> {
+        self.own_change_output(account)
+            .map(|(chain, index, _)| (chain, index))
+    }
+
+    /// Our change as a verified output once `Confirmed` (spec/08 §12.2-5), from the local bytes.
+    /// `None` unless the output's scriptPubKey is the P2WPKH script of `(Change, index)` derived
+    /// from `account` (a record of another account, e.g. an alt-passphrase session sharing the
+    /// journal, is never inserted into that account's `verified`).
+    #[must_use]
+    pub fn own_change_utxo(&self, account: &BtcAccountKey) -> Option<VerifiedUtxo> {
+        let height = self.confirmed_height?;
+        let change = self.change?;
+        let (chain, index, output) = self.own_change_output(account)?;
         Some(VerifiedUtxo {
             outpoint: OutPoint {
                 txid: self.txid,
@@ -1395,6 +1413,37 @@ pub fn in_flight_outpoints(records: &[BtcRecord], network: BtcNetwork) -> Vec<Ou
             if !out.contains(&outpoint) {
                 out.push(outpoint);
             }
+        }
+    }
+    out
+}
+
+/// The outpoints spent by `Confirmed` records of `network`: gone for good at one confirmation
+/// (D32), even while `verified` still lists them (until the confirmation's own meta write or the
+/// next refresh removes them; a crowded address is never listed again, spec/08 §4.7-3).
+#[must_use]
+pub fn confirmed_inputs(records: &[BtcRecord], network: BtcNetwork) -> Vec<OutPoint> {
+    let mut out: Vec<OutPoint> = Vec::new();
+    for record in
+        of_network(records, network).filter(|record| record.state == BtcTxState::Confirmed)
+    {
+        for input in &record.inputs {
+            if !out.contains(&input.outpoint) {
+                out.push(input.outpoint);
+            }
+        }
+    }
+    out
+}
+
+/// What a balance or a new plan leaves out of `verified` (spec/08 §4.7-6, §7.4):
+/// [`in_flight_outpoints`] and [`confirmed_inputs`].
+#[must_use]
+pub fn unspendable_outpoints(records: &[BtcRecord], network: BtcNetwork) -> Vec<OutPoint> {
+    let mut out = in_flight_outpoints(records, network);
+    for outpoint in confirmed_inputs(records, network) {
+        if !out.contains(&outpoint) {
+            out.push(outpoint);
         }
     }
     out
@@ -1742,11 +1791,44 @@ impl Working {
         true
     }
 
+    /// Whether another transaction that spends one of `position`'s inputs is `Confirmed` (one
+    /// confirmation is final, D32): then `position` can never confirm.
+    fn spent_by_confirmed(&self, position: usize) -> bool {
+        let Some((_, record)) = self.records.get(position) else {
+            return false;
+        };
+        self.records
+            .iter()
+            .enumerate()
+            .any(|(other, (_, confirmed))| {
+                other != position
+                    && confirmed.network == record.network
+                    && confirmed.txid != record.txid
+                    && confirmed.state == BtcTxState::Confirmed
+                    && confirmed.shares_input(record)
+            })
+    }
+
+    /// A given-up or refused record (`Abandoned`, disclosed `Rejected`) whose input a confirmed
+    /// transaction already spent is `Conflicted` at once: it can never confirm, so it is never a
+    /// live conflict that would force the next send onto a spent output (spec/08 §12.1). (An
+    /// undisclosed `Rejected` record is final and constrains nothing; [`Working::set`] keeps it.)
+    fn conflict_if_spent(&mut self, position: usize, now_unix: u64) {
+        let given_up = self.records.get(position).is_some_and(|(_, record)| {
+            matches!(record.state, BtcTxState::Abandoned | BtcTxState::Rejected)
+        });
+        if given_up && self.spent_by_confirmed(position) {
+            self.set(position, BtcTxState::Conflicted, now_unix);
+        }
+    }
+
     /// Side effects of `position` entering its current state: a replacement that reached the
     /// node replaces its original, and every earlier original of the chain that is still
     /// bumpable (an intermediate replacement may never have reached the node, so its original
-    /// stayed in flight; spec/08 §9); a confirmed record conflicts every replacement of it.
+    /// stayed in flight; spec/08 §9); a confirmed record conflicts every replacement of it; a
+    /// given-up or refused record spending an input a confirmed one spent is conflicted.
     fn cascade(&mut self, position: usize, now_unix: u64) {
+        self.conflict_if_spent(position, now_unix);
         let Some((_, record)) = self.records.get(position) else {
             return;
         };
@@ -1862,7 +1944,9 @@ impl Working {
 /// replacement bookkeeping: a replacement entering `Submitted`/`InMempool`/`Confirmed` turns
 /// its original (and every earlier original of its chain still in a bumpable state) into
 /// `Replaced{by}`; a record entering `Confirmed` turns its replacements into
-/// `Conflicted`. `Confirmed` needs [`apply_observation`] (it carries the height); `Replaced` and
+/// `Conflicted`; a record entering `Abandoned` or (disclosed) `Rejected` while a `Confirmed`
+/// record already spent one of its inputs ends `Conflicted` at once (it can never confirm).
+/// `Confirmed` needs [`apply_observation`] (it carries the height); `Replaced` and
 /// `Conflicted` only result from that bookkeeping. `Abandoned` also needs
 /// [`BtcRecord::can_abandon`] (a `BroadcastUnknown` record only after `not_found_count >= 10`).
 ///
@@ -1929,7 +2013,9 @@ fn transition(
 }
 
 /// Startup normalization (spec/08 §12.1): every `Broadcasting` record becomes
-/// `BroadcastUnknown`. (`Signed` records are offered [전송 계속] / [취소] by the app.)
+/// `BroadcastUnknown`, and a given-up or refused record whose input a `Confirmed` record spent
+/// (written before that rule) becomes `Conflicted`. (`Signed` records are offered [전송 계속] /
+/// [취소] by the app.)
 ///
 /// # Errors
 ///
@@ -1947,6 +2033,7 @@ pub fn normalize_on_startup(
         {
             working.set(position, BtcTxState::BroadcastUnknown, now_unix);
         }
+        working.conflict_if_spent(position, now_unix);
     }
     working.commit(plain)
 }

@@ -24,10 +24,10 @@ use yw_core::journal::JournalPlain;
 use yw_core::journal::btc::{
     AccountScope, BtcActivityRow, BtcEntries, BtcPushError, BtcRecord, BtcRecordError, BtcTxState,
     TrackObservation, TransitionError, apply_observation, change_next_floor,
-    check_abandoned_conflicts, check_plan_allowed, current_record, disclosed_duplicate,
-    finished_rows, make_room, normalize_on_startup, of_account, prune_finished, push_record,
-    recorded_amounts, refresh_keep_outpoints, related_records, set_disclosed,
-    set_last_send_comm_failure, set_state_entry, take_finished_duplicates,
+    check_abandoned_conflicts, check_plan_allowed, confirmed_inputs, current_record,
+    disclosed_duplicate, finished_rows, make_room, normalize_on_startup, of_account,
+    prune_finished, push_record, recorded_amounts, refresh_keep_outpoints, related_records,
+    set_disclosed, set_last_send_comm_failure, set_state_entry, take_finished_duplicates,
 };
 use yw_core::vault::{FileKind, RecordId, Vault};
 
@@ -1081,11 +1081,16 @@ impl JournalState {
         // identity's live abandoned record (spec/08 §12.1).
         let related = self.related(&all, meta).unwrap_or_else(|_| records.clone());
         let mut keep = refresh_keep_outpoints(&related, network, update.now_unix);
-        // A skipped (crowded) address was not listed at all: keep what it had.
+        // A skipped (crowded) address was not listed at all: keep what it had, except what a
+        // confirmed send of ours spent (else it would stay forever: the address is never listed).
+        let spent = confirmed_inputs(&related, network);
         keep.extend(
             meta.verified()
                 .iter()
-                .filter(|entry| update.skipped.contains(&(entry.chain, entry.index)))
+                .filter(|entry| {
+                    update.skipped.contains(&(entry.chain, entry.index))
+                        && !spent.contains(&entry.outpoint)
+                })
                 .map(|entry| entry.outpoint),
         );
         meta.apply_refresh(
@@ -1383,6 +1388,17 @@ impl JournalState {
             check_plan_allowed(&related, plan).map_err(BtcSignFailure::Plan)?;
         }
         check_abandoned_conflicts(&related, plan, now_unix).map_err(BtcSignFailure::Plan)?;
+        // An output a confirmed transaction of the account spent is gone for good (D32), even if
+        // `verified` still lists it: never signed again (the node would refuse it, and the record
+        // would then force every later send onto it, spec/08 §12.1).
+        let spent = confirmed_inputs(&related, network);
+        if plan
+            .inputs()
+            .iter()
+            .any(|input| spent.contains(&input.outpoint))
+        {
+            return Err(BtcSignFailure::Sign(SignError::InputNotRecorded));
+        }
         let mut recorded = meta.recorded_amounts();
         recorded.extend(recorded_amounts(&related, network));
         check_recorded_amounts(plan, &recorded).map_err(BtcSignFailure::Sign)?;
@@ -1740,8 +1756,27 @@ impl JournalState {
                         let Some(record) = find_record(&next, network, txid) else {
                             continue;
                         };
-                        if *state != BtcTxState::Confirmed {
+                        if *state != BtcTxState::Confirmed || record.state != BtcTxState::Confirmed
+                        {
                             continue;
+                        }
+                        // Its inputs are spent for good (one confirmation is final, D32): out of
+                        // every account of the network in the same write as the change, else the
+                        // balance counts them and a send picks them until a refresh (none runs
+                        // once nothing is in flight; a crowded address is never listed again).
+                        let spent: Vec<OutPoint> =
+                            record.inputs.iter().map(|input| input.outpoint).collect();
+                        if let Some(primary) =
+                            meta.as_mut().filter(|primary| primary.network() == network)
+                        {
+                            primary.forget_spent(&spent);
+                        }
+                        for account in accounts
+                            .accounts
+                            .iter_mut()
+                            .filter(|account| account.network() == network)
+                        {
+                            account.forget_spent(&spent);
                         }
                         let target = if record.account == BtcAccountId::PRIMARY {
                             meta.as_mut().filter(|primary| primary.network() == network)

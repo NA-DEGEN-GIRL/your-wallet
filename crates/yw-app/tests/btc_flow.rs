@@ -333,7 +333,7 @@ fn refresh_verifies_candidates_through_core() -> TestResult {
         txid: txid_known,
         vout: 0,
     }];
-    job.inflight_change = vec![0];
+    job.inflight_change = vec![(BtcChain::Change, 0)];
     let result = refresh(&client, &mut session, &job)?;
     assert_eq!(result.chain.tip_height, TIP);
     assert_eq!(result.mempool.mempool_min, 100);

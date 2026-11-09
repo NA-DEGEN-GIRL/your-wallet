@@ -3,8 +3,9 @@
 //! issue indices (§3.2), discovery (§3.4) as a pure state machine driven by indexer `tx_count`
 //! observations, history marking, the verified UTXO set with its update rules (§4.7-4/5/6,
 //! auto-freeze, user freeze), spendable candidates and balance (§7.4), sent-script hashes,
-//! the tip regression rule (§2 step 2), `change_next` reconciliation with the journal (§3.2) and
-//! own change insertion on confirmation (§12.2-5), and the strict JSON codec.
+//! the tip regression rule (§2 step 2), `change_next` reconciliation with the journal (§3.2),
+//! own change insertion and spent-input removal on confirmation (§12.2-5), and the strict JSON
+//! codec.
 //!
 //! The JSON writer emits the §12.3 key order; the reader rejects unknown or missing keys, wrong
 //! types and formats (lowercase hex, sats as decimal strings, outpoints `"<txid>:<vout>"`) and
@@ -736,6 +737,19 @@ impl BtcMeta {
         }
         self.verified.push(utxo);
         Ok(true)
+    }
+
+    /// Drops `outpoints` from `verified` and `frozen`: the inputs of a transaction that just
+    /// confirmed (one confirmation is final, D32; spec/08 §12.2-5). Written with the change in the
+    /// same meta write, so neither the balance nor a new plan counts them until a refresh (which a
+    /// crowded address never gives, §4.7-3). Returns whether meta changed.
+    pub fn forget_spent(&mut self, outpoints: &[OutPoint]) -> bool {
+        let before = (self.verified.len(), self.frozen.len());
+        self.verified
+            .retain(|entry| !outpoints.contains(&entry.outpoint));
+        self.frozen
+            .retain(|(outpoint, _)| !outpoints.contains(outpoint));
+        before != (self.verified.len(), self.frozen.len())
     }
 
     /// The freeze reason of `outpoint`.

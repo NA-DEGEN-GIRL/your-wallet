@@ -296,8 +296,10 @@ pub struct RefreshJob {
     pub change_count: u32,
     /// Outpoints already in `BtcMeta.verified` (not fetched again).
     pub known: Vec<OutPoint>,
-    /// Change indices of in-flight journal entries (no "미확정 입금" for them).
-    pub inflight_change: Vec<u32>,
+    /// `(chain, index)` of the addresses the change of in-flight journal entries pays
+    /// (`BtcRecord::change_paid_to`: `(Change, i)` or the fixed address `(Receive, 0)`); no
+    /// "미확정 입금" for them.
+    pub inflight_change: Vec<(BtcChain, u32)>,
     /// Chain-check inputs.
     pub chain: ChainInput,
     /// Automatic (skipped during the 429 cooldown) or user.
@@ -600,7 +602,7 @@ pub fn refresh(
     let status = ensure_chain(client, session, job.chain, true)?;
     let mempool = rpc::get_mempool_info(client)?;
     let net = session.network();
-    let inflight: HashSet<u32> = job.inflight_change.iter().copied().collect();
+    let inflight: HashSet<(BtcChain, u32)> = job.inflight_change.iter().copied().collect();
     let mut addresses = Vec::new();
     let mut paid: Vec<(BtcChain, u32, BtcAddress)> = Vec::new();
     for (chain, count) in [
@@ -611,7 +613,7 @@ pub fn refresh(
         for index in 0..count.min(BTC_MAX_ADDRESS_INDEX) {
             let address = our_address(&job.account, net, chain, index)?;
             let summary = address_summary(client, session, &address)?;
-            let excluded = chain == BtcChain::Change && inflight.contains(&index);
+            let excluded = inflight.contains(&(chain, index));
             addresses.push(AddressState {
                 chain,
                 index,

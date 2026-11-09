@@ -625,11 +625,12 @@ fn precheck_already_known_is_tracked_not_rejected() -> TestResult {
 
 /// Review fix (spec/08 §12.2-5): a confirmed record's change is inserted into `verified` only
 /// by a session whose account derives the change script (not by an alt-passphrase session
-/// sharing the journal).
+/// sharing the journal); its spent input leaves `verified` in the same meta write (else the
+/// balance counts it and the next send picks it until a refresh).
 #[test]
 fn own_change_inserted_only_for_its_account() -> TestResult {
     let mut fixture = fixture("ownchange")?;
-    funded(&mut fixture)?;
+    let input = funded(&mut fixture)?;
     let (plan, txid) = broadcasting(&mut fixture, 13)?;
     let change = plan.change().ok_or("change")?;
     journal(
@@ -681,6 +682,14 @@ fn own_change_inserted_only_for_its_account() -> TestResult {
     assert_eq!(own.chain, BtcChain::Change);
     assert_eq!(own.index, change.index);
     assert_eq!(own.value, change.value);
+    // The spent input is gone from disk and from the session copy: only the change is left.
+    for meta in [&stored, fixture.state.btc_meta().ok_or("meta")?] {
+        assert!(meta.verified().iter().all(|utxo| utxo.outpoint != input));
+        assert_eq!(
+            meta.balance(TIP, &[]).available.get() + meta.balance(TIP, &[]).pending.get(),
+            change.value.get()
+        );
+    }
     Ok(())
 }
 
