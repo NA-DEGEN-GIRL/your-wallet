@@ -109,6 +109,10 @@ pub mod ids {
     pub const SET_DEVNET: u16 = 7_106;
     /// Scan: confirm and start.
     pub const SCAN_START: u16 = 7_110;
+    /// Scan results: `다시 스캔` (back to the notice).
+    pub const SCAN_AGAIN: u16 = 7_111;
+    /// Send result of a scan move: `스캔 결과로`.
+    pub const SCAN_BACK: u16 = 7_112;
     /// Scan rows ([`SCAN_ROW_STRIDE`] ids per row: 계정 추가, 표준 계정으로 이동). Rows ≤ 107
     /// (spec/07 §3.3: 50 standard + 50 BIP44 + root + seed + 5 Sollet sources).
     pub const SCAN_ROW_BASE: u16 = 7_120;
@@ -151,6 +155,8 @@ pub mod ids {
         SET_MAINNET,
         SET_DEVNET,
         SCAN_START,
+        SCAN_AGAIN,
+        SCAN_BACK,
     ];
 
     /// What a scan-row id does (row index into `sol_scan_rows`).
@@ -763,6 +769,12 @@ impl App {
         if let Some(code) = form.recipient_error {
             items.push(Item::Banner(code.text(), Tone::Danger));
         }
+        if form.check.is_some() && !self.sol_move_target_ok() {
+            items.push(Item::Banner(
+                crate::app_sol::SOL_MOVE_TARGET_TEXT.to_owned(),
+                Tone::Danger,
+            ));
+        }
         if let Some(check) = &form.check {
             items.push(Item::Mono(grouped(&check.to)));
             if let Some(exact) = &check.exact {
@@ -995,6 +1007,15 @@ impl App {
             self.result_save_items(BookTarget::Sol, items);
         }
         let mut row = vec![Ctl::primary(crate::ui::screens::ids::BACK_MAIN, "메인으로")];
+        // A scan move: the kept results, for the account's other assets (spec/07 §3.3).
+        let moved = self
+            .sol
+            .resend
+            .as_ref()
+            .is_some_and(|(form, _)| form.moving.is_some());
+        if moved && self.sol.scan.stage == crate::app_sol::ScanStage::Done {
+            row.push(Ctl::button(ids::SCAN_BACK, "스캔 결과로"));
+        }
         if self.sol_can_resend() {
             row.push(Ctl::button(ids::SEND_AGAIN, "다시 보내기"));
             items.push(Item::Help(
@@ -1210,14 +1231,28 @@ impl App {
                         "잔액이 있는 다른 경로 계정이나 추가할 표준 계정이 없습니다.".to_owned(),
                     ));
                 }
+                // Where `표준 계정으로 이동` sends: only a standard account of the primary phrase
+                // passes the signing check (spec/07 §3.3, §13.1-6).
+                let target = self.sol_scan_target();
+                if rows.iter().any(|row| !row.source.is_standard()) {
+                    match &target {
+                        Some((id, label, _)) => items.push(Item::Field(
+                            "옮겨 받을 계정".to_owned(),
+                            format!("{label} · {}", id.path_text()),
+                        )),
+                        None => items.push(Item::Banner(
+                            crate::app_sol::SOL_SCAN_NO_TARGET_TEXT.to_owned(),
+                            Tone::Warn,
+                        )),
+                    }
+                }
+                let movable = target.is_some() && matches!(self.mode, AppMode::Unlocked { .. });
                 let shown = usize::from(ids::SCAN_ROW_SPAN / ids::SCAN_ROW_STRIDE);
                 for (index, row) in rows.iter().take(shown).enumerate() {
-                    let mut text = format!(
-                        "{} · {}",
-                        row.source.path_text(),
-                        App::sol_text(row.balance)
-                    );
-                    for (entry, holding) in &row.tokens {
+                    let (balance, tokens) = self.sol_scan_balances(row);
+                    let mut text =
+                        format!("{} · {}", row.source.path_text(), App::sol_text(balance));
+                    for (entry, holding) in &tokens {
                         if let Some(raw) = holding.balance().filter(|raw| *raw > 0) {
                             let _ = write!(
                                 text,
@@ -1236,15 +1271,15 @@ impl App {
                         }
                     } else if let Some(id) = ids::scan_row_id(ids::ScanAction::Move(index)) {
                         items.push(Item::Row(vec![
-                            Ctl::button(id, "표준 계정으로 이동")
-                                .enabled(matches!(self.mode, AppMode::Unlocked { .. })),
+                            Ctl::button(id, "표준 계정으로 이동").enabled(movable),
                         ]));
                     }
                 }
                 items.push(Item::Muted(
-                    "비표준 경로 자금은 선택한 표준 계정으로 '보내기 최대'만 할 수 있습니다(승인 창 L07)."
+                    "비표준 경로 자금은 주 복구 단어의 표준 계정으로 '보내기 최대'만 할 수 있습니다(승인 창 L07). 자산마다 한 번씩 옮기며, 이 결과는 클러스터를 바꾸거나 잠글 때까지 남습니다. 다른 표준 계정으로 받으려면 Solana 탭에서 그 계정을 고르세요."
                         .to_owned(),
                 ));
+                items.push(Item::Row(vec![Ctl::button(ids::SCAN_AGAIN, "다시 스캔")]));
             }
         }
     }

@@ -268,6 +268,13 @@ pub enum ScanStage {
 pub const SOL_SCAN_RECONFIRM_TEXT: &str =
     "클러스터가 바뀌었습니다. 이 클러스터의 RPC 공급자에 대한 안내를 다시 확인하세요.";
 
+/// Shown when no standard account of the primary recovery phrase can receive a scan move.
+pub const SOL_SCAN_NO_TARGET_TEXT: &str = "받을 계정이 없습니다. 비표준 경로 자금은 주 복구 단어의 표준 계정(m/44'/501'/i'/0')으로만 옮길 수 있습니다 — Solana 탭에서 그 계정을 추가하거나 숨김을 해제하세요.";
+
+/// Shown in a move form whose recipient is not a standard account of the primary recovery phrase
+/// (signing would refuse it, spec/07 §13.1-6).
+pub const SOL_MOVE_TARGET_TEXT: &str = "비표준 경로 자금은 주 복구 단어의 표준 계정으로만 옮길 수 있습니다. 다른 경로 스캔에서 다시 '표준 계정으로 이동'을 누르세요.";
+
 /// Recovery scan state.
 #[derive(Clone, Debug, Default)]
 pub struct SolScanState {
@@ -281,6 +288,10 @@ pub struct SolScanState {
     pub job: u64,
     /// Message.
     pub message: Option<String>,
+    /// Addresses of the rows a move form was opened for: their balances are refreshed with the
+    /// accounts' (already sent to this cluster's provider by the scan), so the kept results show
+    /// what is left to move.
+    pub moved: Vec<SolAddress>,
 }
 
 /// A Solana account of this wallet: a standard-path account (`m/44'/501'/i'/0'`) or an imported
@@ -1022,13 +1033,21 @@ impl App {
     pub fn sol_refresh_balances(&mut self) {
         self.sol.next_balance_ms = now_ms().saturating_add(SOL_BALANCE_REFRESH_MS);
         let cluster = self.sol_cluster();
-        let accounts: Vec<SolAddress> = self
+        let mut accounts: Vec<SolAddress> = self
             .sol_account_rows()
             .into_iter()
             .map(|(_, _, address)| address)
             .collect();
         if accounts.is_empty() {
             return;
+        }
+        // The scan rows moved from (this cluster's kept results, spec/07 §3.3).
+        if self.sol.scan.cluster == Some(cluster) {
+            for address in &self.sol.scan.moved {
+                if !accounts.contains(address) {
+                    accounts.push(*address);
+                }
+            }
         }
         match self.sol_endpoint(cluster) {
             Ok(endpoint) => {
@@ -1142,6 +1161,7 @@ impl App {
                 match result {
                     Ok(rows) => {
                         self.sol.scan.rows = rows;
+                        self.sol.scan.moved.clear();
                         self.sol.scan.stage = ScanStage::Done;
                         self.sol.scan.message = None;
                     }
@@ -1315,6 +1335,40 @@ impl App {
         self.sol_validate_send();
     }
 
+    /// The receiving account of a recovery-scan move (spec/07 §3.3): the selected account when it
+    /// is a standard account of the primary recovery phrase, else the first visible one. Signing
+    /// accepts no other (`non_standard_rule_ok`: `Standard(0..=999)` of the primary seed), so a
+    /// `YubiKey`, imported or added-phrase account is never offered.
+    #[must_use]
+    pub fn sol_scan_target(&self) -> Option<(SolAccountId, String, SolAddress)> {
+        let primary = |id: &SolAccountId| matches!(id, SolAccountId::Derived(_));
+        self.sol_selected()
+            .filter(|(id, ..)| primary(id))
+            .or_else(|| {
+                self.sol_account_rows()
+                    .into_iter()
+                    .find(|(id, ..)| primary(id))
+            })
+    }
+
+    /// Whether the move form's recipient is a standard account of the primary recovery phrase
+    /// (the rule signing checks again, spec/07 §13.1-6); `true` for an ordinary send.
+    #[must_use]
+    pub fn sol_move_target_ok(&self) -> bool {
+        let form = &self.sol.send;
+        if form.moving.is_none() {
+            return true;
+        }
+        let Some(check) = form.check.as_ref() else {
+            return false;
+        };
+        self.meta.as_ref().is_some_and(|meta| {
+            meta.sol_accounts
+                .iter()
+                .any(|account| SolAddress::parse(&account.address).is_ok_and(|a| a == check.to))
+        })
+    }
+
     /// Whether `검토` is enabled.
     #[must_use]
     pub fn sol_can_review(&self) -> bool {
@@ -1325,6 +1379,7 @@ impl App {
         };
         form.check.is_some()
             && form.recipient_error.is_none()
+            && self.sol_move_target_ok()
             && (form.send_max || (form.amount.is_some() && form.amount_error.is_none()))
             && self.evm.journal.is_some()
             && !self.sol_journal_damaged()
@@ -1948,15 +2003,58 @@ impl App {
         }
     }
 
-    /// Opens the scan screen at its notice.
+    /// Opens the scan screen: a running scan, or this cluster's results (one move per asset needs
+    /// them several times; the rows moved from get fresh balances), else the notice.
     pub fn sol_open_scan(&mut self) {
-        if !matches!(
+        let keep = match self.sol.scan.stage {
+            ScanStage::Deriving | ScanStage::Running => true,
+            ScanStage::Done => self.sol.scan.cluster == Some(self.sol_cluster()),
+            ScanStage::Notice => false,
+        };
+        if !keep {
+            self.sol.scan = SolScanState::default();
+        } else if self.sol.scan.stage == ScanStage::Done {
+            // A refusal shown earlier (no receiving account) is checked again on the next move.
+            self.sol.scan.message = None;
+        }
+        self.set_screen(Screen::SolScan);
+        if self.sol.scan.stage == ScanStage::Done && !self.sol.scan.moved.is_empty() {
+            self.sol_refresh_balances();
+        }
+    }
+
+    /// `다시 스캔`: back to the notice (the disclosure is confirmed again before any query).
+    pub fn sol_scan_again(&mut self) {
+        if matches!(
             self.sol.scan.stage,
             ScanStage::Deriving | ScanStage::Running
         ) {
-            self.sol.scan = SolScanState::default();
+            return;
         }
-        self.set_screen(Screen::SolScan);
+        self.sol.scan = SolScanState::default();
+        self.refresh();
+    }
+
+    /// The balances of a scan row: fresh ones for a row moved from (refreshed with the accounts),
+    /// else the scan's; both are RPC reference values.
+    #[must_use]
+    pub fn sol_scan_balances(
+        &self,
+        row: &ScanRow,
+    ) -> (u64, Vec<(&'static SplAllowEntry, TokenHolding)>) {
+        let fresh = self
+            .sol
+            .scan
+            .cluster
+            .filter(|_| self.sol.scan.moved.contains(&row.address))
+            .and_then(|cluster| {
+                let key = (cluster, row.address);
+                Some((
+                    *self.sol.balances.get(&key)?,
+                    self.sol.tokens.get(&key)?.clone(),
+                ))
+            });
+        fresh.unwrap_or_else(|| (row.balance, row.tokens.clone()))
     }
 
     /// Starts the scan after the disclosure was confirmed (spec/07 §3.3) for the selected
@@ -2037,7 +2135,7 @@ impl App {
     }
 
     /// `표준 계정으로 이동` from a non-standard scan row: the send form with the recipient fixed
-    /// to the selected standard account and "send max" (spec/07 §3.3).
+    /// to [`Self::sol_scan_target`] and "send max" (spec/07 §3.3).
     pub fn sol_scan_move(&mut self, row: usize) {
         let rows = self.sol_scan_rows();
         let Some(row) = rows.get(row).cloned() else {
@@ -2046,23 +2144,25 @@ impl App {
         if row.source.is_standard() {
             return;
         }
-        let Some((_, _, target)) = self.sol_selected() else {
+        let Some((_, _, target)) = self.sol_scan_target() else {
+            self.sol.scan.message = Some(SOL_SCAN_NO_TARGET_TEXT.to_owned());
+            self.refresh();
             return;
         };
+        let (balance, tokens) = self.sol_scan_balances(&row);
         // Tokens first (moving them needs the SOL for fees), then SOL; the asset can be changed.
-        let token = row
-            .tokens
+        let token = tokens
             .iter()
             .find(|(_, holding)| holding.balance().is_some_and(|amount| amount > 0))
             .map(|(entry, _)| *entry);
-        // The scan's reference balances of the non-standard account, for the form.
+        // The reference balances of the non-standard account, for the form; from now on they
+        // are refreshed with the accounts'.
         let cluster = self.sol.scan.cluster.unwrap_or_else(|| self.sol_cluster());
-        self.sol
-            .balances
-            .insert((cluster, row.address), row.balance);
-        self.sol
-            .tokens
-            .insert((cluster, row.address), row.tokens.clone());
+        self.sol.balances.insert((cluster, row.address), balance);
+        self.sol.tokens.insert((cluster, row.address), tokens);
+        if !self.sol.scan.moved.contains(&row.address) {
+            self.sol.scan.moved.push(row.address);
+        }
         self.sol.send = SolSendForm {
             moving: Some((row.source, row.address)),
             token,
@@ -2072,6 +2172,7 @@ impl App {
         };
         self.set_screen(Screen::SolSend);
         self.sol_validate_send();
+        self.sol_refresh_balances();
     }
 
     /// Lamports as `x.xxxxxxxxx SOL`.

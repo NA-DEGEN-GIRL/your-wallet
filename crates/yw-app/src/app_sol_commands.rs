@@ -117,7 +117,8 @@ impl App {
                 self.sol_add_account_clicked();
                 self.refresh();
             }
-            ids::SCAN_OPEN => self.sol_open_scan(),
+            // `스캔 결과로` after a move opens the kept results.
+            ids::SCAN_OPEN | ids::SCAN_BACK => self.sol_open_scan(),
             ids::COPY_ADDRESS => self.sol_copy_address(),
             ids::SEND_MAX => self.sol_fill_max(),
             ids::SEND_REVIEW => self.sol_review(),
@@ -135,6 +136,7 @@ impl App {
             ids::FEE_SAVE => self.sol_save_fees(false),
             ids::FEE_DEFAULT => self.sol_save_fees(true),
             ids::SCAN_START => self.sol_start_scan(),
+            ids::SCAN_AGAIN => self.sol_scan_again(),
             other => return self.on_sol_indexed(other),
         }
         true
@@ -256,9 +258,28 @@ mod tests {
             });
         }
         app.sol.scan.stage = ScanStage::Done;
+        app.sol.scan.cluster = Some(app.sol_cluster());
         app.sol.scan.rows = rows;
         app.screen = Screen::SolScan;
         app
+    }
+
+    /// `scanned_app` with a `YubiKey` Solana account selected (`address(250)`).
+    fn hardware_selected(app: &mut App) -> SolAddress {
+        let hardware = address(250);
+        let meta = app.meta.as_mut().unwrap();
+        meta.hw_accounts.sol.push(Account {
+            index: 0,
+            label: "YubiKey Solana".to_owned(),
+            address: hardware.to_base58(),
+            hidden: false,
+        });
+        meta.hw_accounts.sol_selected = Some(0);
+        assert_eq!(
+            app.sol_selected().map(|(.., address)| address),
+            Some(hardware)
+        );
+        hardware
     }
 
     fn controls(items: &[Item]) -> Vec<Ctl> {
@@ -313,5 +334,63 @@ mod tests {
         // The account radios still select accounts.
         assert!(app.on_sol_command(ids::ACCOUNT_BASE + 1));
         assert_eq!(app.meta.as_ref().unwrap().prefs.sol_account, 1);
+    }
+
+    /// Signing moves non-standard funds only to a standard account of the primary phrase
+    /// (spec/07 §3.3, §13.1-6): with a `YubiKey` account selected the move goes to `Solana 1`,
+    /// named on the scan screen; a form whose recipient is another account cannot be reviewed;
+    /// without such an account the move is refused before the form. The results stay when the
+    /// scan is reopened (one move per asset) until `다시 스캔`.
+    #[test]
+    fn scan_moves_go_to_a_primary_standard_account() {
+        let mut app = scanned_app();
+        app.evm.journal = Some(crate::events::JournalView::default());
+        let hardware = hardware_selected(&mut app);
+        let mut items = Vec::new();
+        app.sol_scan_screen(&mut items);
+        assert!(items.iter().any(|item| matches!(
+            item,
+            Item::Field(label, value) if label == "옮겨 받을 계정" && value.starts_with("Solana 1 ·")
+        )));
+        assert!(app.on_sol_command(scan_row_id(ScanAction::Move(3)).unwrap()));
+        assert_eq!(app.screen, Screen::SolSend);
+        assert_eq!(app.sol.send.to_text, address(200).to_base58());
+        assert!(app.sol_move_target_ok() && app.sol_can_review());
+        // A kept form whose recipient is not a primary standard account (here the YubiKey one).
+        app.sol.send.to_text = hardware.to_base58();
+        app.sol_validate_send();
+        assert!(app.sol.send.check.is_some());
+        assert!(!app.sol_move_target_ok() && !app.sol_can_review());
+        // Reopening keeps this cluster's results and the moved row; `다시 스캔` clears them.
+        app.sol_open_scan();
+        assert_eq!(app.sol.scan.stage, ScanStage::Done);
+        assert_eq!(app.sol.scan.rows.len(), 60);
+        assert_eq!(app.sol.scan.moved, vec![address(4)]);
+        assert!(app.on_sol_command(ids::SCAN_AGAIN));
+        assert_eq!(app.sol.scan.stage, ScanStage::Notice);
+        assert!(app.sol.scan.rows.is_empty() && app.sol.scan.moved.is_empty());
+
+        // No visible standard account of the primary phrase: named, disabled, refused.
+        let mut app = scanned_app();
+        hardware_selected(&mut app);
+        app.meta.as_mut().unwrap().sol_accounts.clear();
+        let mut items = Vec::new();
+        app.sol_scan_screen(&mut items);
+        let text = crate::app_sol::SOL_SCAN_NO_TARGET_TEXT;
+        assert!(
+            items
+                .iter()
+                .any(|item| matches!(item, Item::Banner(shown, _) if shown == text))
+        );
+        let id = scan_row_id(ScanAction::Move(0)).unwrap();
+        assert!(
+            controls(&items)
+                .iter()
+                .any(|ctl| ctl.id == id && !ctl.enabled)
+        );
+        assert!(app.on_sol_command(id));
+        assert_eq!(app.screen, Screen::SolScan);
+        assert_eq!(app.sol.scan.message.as_deref(), Some(text));
+        assert!(app.sol.send.moving.is_none());
     }
 }
