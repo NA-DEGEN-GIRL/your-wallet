@@ -1077,11 +1077,21 @@ fn schema_name(typed: &DecodedTypedData) -> (String, &'static str) {
             ("Seaport OrderComponents".to_owned(), "NFT 마켓 주문 서명")
         }
         Some(KnownSchema::HyperliquidUser(action)) => (
-            format!("Hyperliquid {}", escape_inline(&typed.primary_type).0),
+            format!(
+                "Hyperliquid {}{}",
+                escape_inline(&typed.primary_type).0,
+                if action.interpreted() {
+                    ""
+                } else {
+                    " (해석하지 않은 형식 — 원문 필드 표시)"
+                }
+            ),
             match action {
                 HlUserAction::Transfer(_) => "HyperCore 전송 서명",
                 HlUserAction::ApproveAgent => "Hyperliquid 거래 권한 위임 서명",
                 HlUserAction::ApproveBuilderFee => "Hyperliquid 빌더 수수료 승인 서명",
+                HlUserAction::ConvertToMultiSig => "Hyperliquid 멀티시그 계정 전환 서명",
+                HlUserAction::Unknown => "Hyperliquid 계정 작업 서명 (해석하지 못함)",
             },
         ),
         Some(KnownSchema::HyperliquidL1Agent) => (
@@ -1104,21 +1114,40 @@ fn hyperliquid_fields(
     account: &Address,
 ) -> Result<(), DisplayError> {
     let text = |name: &str| root.field(name).and_then(TdNode::string);
-    let check = match action {
-        HlUserAction::Transfer(kind) => Some(crate::hypercore::display::site_transfer_check(
+    let kind = match action {
+        HlUserAction::Transfer(kind) => Some(kind),
+        _ => None,
+    };
+    let check = kind.map(|kind| {
+        crate::hypercore::display::site_transfer_check(
             kind,
             root,
             account,
             ctx.facts.hyperliquid.as_ref(),
-        )),
-        _ => None,
-    };
+        )
+    });
     let name = match action {
         HlUserAction::Transfer(kind) => kind.korean(),
         HlUserAction::ApproveAgent => "API 지갑(에이전트) 승인 — 거래 권한 위임",
         HlUserAction::ApproveBuilderFee => "빌더 수수료 승인",
+        HlUserAction::ConvertToMultiSig => {
+            "멀티시그 계정으로 전환 — 이후 이 계정의 작업에는 서명자 목록(signers)의 서명이 필요합니다"
+        }
+        HlUserAction::Unknown => {
+            "해석하지 못한 Hyperliquid 계정 작업 — 아래 원문 필드를 모두 확인하세요"
+        }
     };
     fields.push(FieldKey::TD_FIELD, "작업", name.to_owned())?;
+    // Not interpreted: the message follows as the plain field tree (every field, nested ones
+    // included); `convertToMultiSigUser` also gets its `signers` read out.
+    if !action.interpreted() {
+        if action == HlUserAction::ConvertToMultiSig
+            && let Some(signers) = text("signers")
+        {
+            fields.push(FieldKey::TD_FIELD, "서명자 (signers)", hl_signers(signers))?;
+        }
+        return Ok(());
+    }
     let network = match text("hyperliquidChain") {
         Some("Mainnet") => "HyperCore 메인넷 (Mainnet)".to_owned(),
         Some("Testnet") => "HyperCore 테스트넷 (Testnet)".to_owned(),
@@ -1142,7 +1171,7 @@ fn hyperliquid_fields(
         let value = match (key.as_str(), node.value()) {
             ("hyperliquidChain", _) => continue,
             ("destination", Some(TdValue::String(destination))) => {
-                let mut out = hl_destination(destination, account, check.as_ref(), ctx.facts);
+                let mut out = hl_destination(destination, account, kind, check.as_ref(), ctx.facts);
                 if withdraw {
                     out.push_str("\nArbitrum One의 이 주소로 USDC가 들어갑니다");
                 }
@@ -1175,12 +1204,53 @@ fn hyperliquid_fields(
     Ok(())
 }
 
+/// The `signers` of `convertToMultiSigUser` (SDK: the JSON text `{"authorizedUsers": [...],
+/// "threshold": n}`): the threshold and every address, or the escaped text when it is not that.
+fn hl_signers(text: &str) -> String {
+    let parsed = yw_json::parse(text.as_bytes(), &yw_json::Limits::REQUEST)
+        .ok()
+        .and_then(|value| {
+            let object = value.as_object()?;
+            let threshold = object
+                .get("threshold")?
+                .as_number()
+                .and_then(yw_json::Number::as_u64)?;
+            let users = object
+                .get("authorizedUsers")?
+                .as_array()?
+                .iter()
+                .map(|user| {
+                    user.as_str()
+                        .and_then(|user| super::address::parse_address(user).ok())
+                })
+                .collect::<Option<Vec<Address>>>()?;
+            Some((threshold, users))
+        });
+    match parsed {
+        Some((threshold, users)) => {
+            let mut out = format!("{}명 중 {threshold}명의 서명이 필요합니다", users.len());
+            for user in &users {
+                out.push('\n');
+                out.push_str(&format_address(user));
+            }
+            out
+        }
+        None => format!(
+            "{}\n서명자 목록을 해석할 수 없습니다",
+            escape_inline(text).0
+        ),
+    }
+}
+
 /// A Hyperliquid `destination` (spec/11 §7): the full address with the app's `HyperCore` notes —
 /// never this EVM chain's code classification (a `HyperCore` account is not checked by
-/// `eth_getCode`, so no "일반 계정(EOA)" reassurance).
+/// `eth_getCode`, so no "일반 계정(EOA)" reassurance). A system address gets the reason of its
+/// rule: the move (H04), not spot → spot from the signer itself (H14), another token's or an
+/// unconfirmed token's address (H13), or a kind without a token.
 fn hl_destination(
     text: &str,
     account: &Address,
+    kind: Option<crate::hypercore::HcKind>,
     check: Option<&crate::hypercore::display::HlSiteCheck>,
     facts: &ChainFacts,
 ) -> String {
@@ -1197,7 +1267,21 @@ fn hl_destination(
         return out;
     }
     if system {
-        out.push_str("\nHyperEVM 시스템 주소이지만 이 토큰에 연결된 주소가 아닙니다");
+        let token = check.and_then(|check| check.token.as_ref());
+        let with_token = matches!(
+            kind,
+            Some(crate::hypercore::HcKind::SpotSend | crate::hypercore::HcKind::SendAsset)
+        );
+        out.push_str(match token {
+            Some(token) if token.evm.is_some() && token.system_address() == address => {
+                "\n이 토큰의 HyperEVM 시스템 주소이지만 서명 계정 자신의 현물(spot)→현물 이동이 아닙니다 — HyperEVM 이동으로 확인할 수 없습니다"
+            }
+            Some(_) => "\nHyperEVM 시스템 주소이지만 이 토큰에 연결된 주소가 아닙니다",
+            None if with_token => {
+                "\nHyperEVM 시스템 주소이지만 토큰을 spotMeta로 확인하지 못해 이 토큰의 주소인지 알 수 없습니다"
+            }
+            None => "\nHyperEVM 시스템 주소입니다 — 이 작업으로 보내면 자산을 잃을 수 있습니다",
+        });
         return out;
     }
     if address == *account {
@@ -1591,7 +1675,10 @@ pub fn build_typed_request(
         hidden: false,
     };
     match &typed.schema {
+        // Recognized by name only (a Hyperliquid action not interpreted): every field is shown,
+        // as for an unknown schema.
         None => tree.walk(&typed.root, "", 0)?,
+        Some(schema) if schema.is_uninterpreted() => tree.walk(&typed.root, "", 0)?,
         Some(schema) => {
             if matches!(
                 schema,

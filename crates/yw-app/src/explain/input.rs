@@ -1112,7 +1112,8 @@ impl<'a> Builder<'a> {
 
     fn typed_value(&mut self, typed: &DecodedTypedData) -> Value {
         let schema = typed.schema.as_ref();
-        let known = schema.is_some();
+        // A schema recognized by name only keeps the dApp's names untrusted (spec/06 §4.3).
+        let known = schema.is_some_and(|schema| !schema.is_uninterpreted());
         if schema.is_some_and(|schema| {
             schema.is_permit2()
                 || matches!(schema, KnownSchema::Eip2612Permit | KnownSchema::DaiPermit)
@@ -1232,7 +1233,11 @@ impl<'a> Builder<'a> {
         value: &TdValue,
         siblings: Option<&[(String, TdNode)]>,
     ) -> Value {
-        let schema = typed.schema.as_ref();
+        // A schema recognized by name only is treated as unknown here: its paths are dApp text.
+        let schema = typed
+            .schema
+            .as_ref()
+            .filter(|schema| !schema.is_uninterpreted());
         let path_value = if schema.is_some() {
             self.text(path)
         } else {

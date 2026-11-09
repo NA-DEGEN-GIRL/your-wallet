@@ -950,6 +950,8 @@ pub fn typed_rules(input: &TypedRiskInput<'_>, hidden_characters: bool) -> Vec<W
                         HlUserAction::Transfer(_) => H01,
                         HlUserAction::ApproveAgent => H06,
                         HlUserAction::ApproveBuilderFee => H08,
+                        HlUserAction::ConvertToMultiSig => H16,
+                        HlUserAction::Unknown => H15,
                     },
                     None,
                 ));

@@ -825,13 +825,15 @@ primaryType 이름 일치 + primaryType의 typeHash(도달 가능 타입 그래�
 | `Permit2BatchWitnessTransfer` (`permit2-batch-witness-transfer`) | `PermitBatchWitnessTransferFrom` | 동적 | P2, W |
 | `SeaportOrder` (`seaport-order`) | `OrderComponents` | `0xfa445660b7e21515a59617fcd68910b487aa5808b8abda3d78bc85df364b2c2f` | S |
 | `HyperliquidUser(…)` (`hyperliquid-user-action`) | `HyperliquidTransaction:UsdSend`·`SpotSend`·`Withdraw`·`UsdClassTransfer`·`SendAsset`·`ApproveAgent`·`ApproveBuilderFee` | SDK `encodeType`의 keccak([11] §4·§7) | HL |
+| `HyperliquidUser(ConvertToMultiSig)` (`hyperliquid-convert-to-multisig`) | `HyperliquidTransaction:ConvertToMultiSigUser` | 보지 않음(이름만, 필드는 해석하지 않음) | HL, 2026-11-10 |
+| `HyperliquidUser(Unknown)` (`hyperliquid-unknown-action`) | 그 밖의 `HyperliquidTransaction:*`(위 이름이지만 SDK와 다른 형식 포함) | 보지 않음(해석하지 않음) | HL, 2026-11-10 |
 | `HyperliquidL1Agent` (`hyperliquid-l1-agent`) | `Agent` | keccak(`Agent(string source,bytes32 connectionId)`) | HL1 |
 
 보조 typeHash: `PermitDetails 0x65626cad6cb96493bf6f5ebea28756c966f023ab9e8a83a7101849d5573b3678`, `TokenPermissions 0x618358ac3db8dc274f0cd8829da7e234bd48cd73c4a740aede1adec9846d06a1`, 4필드 도메인 `0x8b73c3c69bb8fe3d512ecc4cf759cc79239f7b179b0ffacaa9a75d522b39400f`, Permit2 3필드 도메인 `0x8cad95687ba82c2ce50e74f7b754645e5117c3a5bec8151c0726d5857980a866`.
 
 - **P2**: domain == `{name:"Permit2", chainId, verifyingContract: Permit2}`(version 없음). 스키마가 Permit2 형인데 verifyingContract ≠ Permit2 → 미인식(T04). verifyingContract == Permit2인데 표의 어느 Permit2 스키마도 아님 → 거부(T02).
 - **W**: 처음 네 필드가 `permitted TokenPermissions`(배치는 `TokenPermissions[]`), `spender address`, `nonce uint256`, `deadline uint256`과 정확히 같고, 다섯째 필드가 정확히 하나의 struct 타입(이름 자유). witness 하위 트리는 해석하지 않는다(T06).
-- **HL** (2026-11-06, [11] §7): 4필드 도메인, `name "HyperliquidSignTransaction"`, `version "1"`, verifyingContract 0. chainId는 현재 체인과 같아야 한다(T01). 경고 H01(전송)·H06(ApproveAgent, 고위험)·H08(ApproveBuilderFee, 고위험)·H09(`hyperliquidChain` Testnet), T10은 붙이지 않는다. 표시: `작업`, `hyperliquidChain`, message 필드 순서대로(§8.3 대신 [11] §7). 타입 이름(primaryType·struct)에는 `:`를 허용한다(첫·끝 글자 제외, 필드 이름은 식별자 그대로).
+- **HL** (2026-11-06, [11] §7): 4필드 도메인, `name "HyperliquidSignTransaction"`, `version "1"`, verifyingContract 0. chainId는 현재 체인과 같아야 한다(T01). 경고 H01(전송)·H06(ApproveAgent, 고위험)·H08(ApproveBuilderFee, 고위험)·H16(ConvertToMultiSigUser, 고위험)·H15(그 밖의 `HyperliquidTransaction:*`, 고위험 — T04 대신)·H09(`hyperliquidChain` Testnet), T10은 붙이지 않는다. 표시: `작업`, `hyperliquidChain`, message 필드 순서대로(§8.3 대신 [11] §7). 해석하지 않는 둘(H15·H16)은 `작업`(H16은 `signers`를 읽은 줄도) 뒤에 §8.3의 전체 필드 트리를 보이고, 설명 입력([06] §4.3)에서는 미인식 스키마처럼 이름을 Untrusted로 둔다(2026-11-10). 타입 이름(primaryType·struct)에는 `:`를 허용한다(첫·끝 글자 제외, 필드 이름은 식별자 그대로).
 - **HL1**: domain `{name "Exchange", version "1", chainId 1337, verifyingContract 0}`. 이 스키마와 정확히 같고 요청 출처가 그 `source` 네트워크의 공식 Hyperliquid 앱(확장의 사이트 출처만 — WalletConnect는 Verify와 상관없이 T01)일 때만([11] §7) chainId 1337을 현재 체인 대신 받아들이고(그 밖은 T01), H07(고위험, "주문·거래 서명 — 해시만 보임")을 붙인다. 지갑은 L1 작업을 만들지 않는다(D34).
 - **S**: domain `name:"Seaport"`, (version `"1.6"` ∧ verifyingContract Seaport 1.6) 또는 (version `"1.5"` ∧ Seaport 1.5). verifyingContract가 Seaport 1.5/1.6인데 스키마 불일치 또는 primaryType `BulkOrder` → 거부(T02). Seaport 1.1 등 레지스트리 밖 → 미인식(T04).
 
@@ -1068,7 +1070,7 @@ P01 UTF-8 아님(hex 표시) → 고위험(D18). P02 숨은·방향 제어 문�
 
 **차단 규칙 전체(창을 띄우고 거부만 가능)**: E05 수수료 상한 초과, E06 진행 중 거래·저널 공간 부족, E10 거래 가스 상한 초과, E11 서명 거래 크기 초과, E34 체인 식별 불일치, E35 거래를 준비할 수 없음, T16 typed data 표시 한도 초과, S01–S04 SIWE 도메인·scheme·주소 불일치·만료. 이 밖의 규칙은 차단하지 않는다. 특히 시뮬레이션·가스 추정 관련 규칙(E01–E04, E07–E09, E36, E37)은 고위험이다(D15).
 
-**Hyperliquid 규칙 H01–H09** (2026-11-06, [11] §6·§7): H01 정보 HyperCore 사용자 서명 작업(되돌릴 수 없음), H02 주의 받는 주소가 주소록에 없음, H03 고위험 주소 오염(앞뒤 같은 다른 주소), H04 정보 HyperEVM으로 이동, H05 정보 Arbitrum 출금 고정 수수료 1 USDC, H06 고위험 거래 권한 위임(API 지갑 승인), H07 고위험 주문·거래 서명(L1 Agent, 해시만), H08 고위험 빌더 수수료 승인, H09 주의 `hyperliquidChain` Testnet; (2026-11-07, dApp 전송 — [11] §7) H10 고위험 받는 주소가 내 계정·주소록이 아님, H11 고위험 `withdraw3`가 서명 계정이 아닌 주소로, H12 고위험 `token`이 `spotMeta`와 다르거나 `spotMeta` 없음, H13 고위험 연결되지 않은 시스템 주소; (2026-11-08) H14 고위험 연결된 시스템 주소로 가는 `sendAsset`이 현물→현물(`sourceDex`·`destinationDex` 모두 `"spot"`)이 아니거나 `fromSubAccount`가 비어 있지 않음. 차단 규칙은 없다.
+**Hyperliquid 규칙 H01–H09** (2026-11-06, [11] §6·§7): H01 정보 HyperCore 사용자 서명 작업(되돌릴 수 없음), H02 주의 받는 주소가 주소록에 없음, H03 고위험 주소 오염(앞뒤 같은 다른 주소), H04 정보 HyperEVM으로 이동, H05 정보 Arbitrum 출금 고정 수수료 1 USDC, H06 고위험 거래 권한 위임(API 지갑 승인), H07 고위험 주문·거래 서명(L1 Agent, 해시만), H08 고위험 빌더 수수료 승인, H09 주의 `hyperliquidChain` Testnet; (2026-11-07, dApp 전송 — [11] §7) H10 고위험 받는 주소가 내 계정·주소록이 아님, H11 고위험 `withdraw3`가 서명 계정이 아닌 주소로, H12 고위험 `token`이 `spotMeta`와 다르거나 `spotMeta` 없음, H13 고위험 연결되지 않은 시스템 주소; (2026-11-08) H14 고위험 연결된 시스템 주소로 가는 `sendAsset`이 현물→현물(`sourceDex`·`destinationDex` 모두 `"spot"`)이 아니거나 `fromSubAccount`가 비어 있지 않음; (2026-11-10, [11] §7) H15 고위험 해석하지 못한 Hyperliquid 계정 작업, H16 고위험 멀티시그 계정 전환(`ConvertToMultiSigUser`). 차단 규칙은 없다.
 
 ## 11. 승인 요청 모델 (yw-core `approval`)
 

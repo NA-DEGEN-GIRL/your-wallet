@@ -59,6 +59,11 @@ pub const HL_AGENT_TYPE: &str = "Agent(string source,bytes32 connectionId)";
 pub const HL_APPROVE_AGENT_TYPE: &str = "HyperliquidTransaction:ApproveAgent(string hyperliquidChain,address agentAddress,string agentName,uint64 nonce)";
 /// `encodeType` of `approveBuilderFee` (SDK `sign_approve_builder_fee`).
 pub const HL_APPROVE_BUILDER_FEE_TYPE: &str = "HyperliquidTransaction:ApproveBuilderFee(string hyperliquidChain,string maxFeeRate,address builder,uint64 nonce)";
+/// The primary-type prefix of every Hyperliquid user-signed action (SDK
+/// `sign_user_signed_action`).
+pub const HL_USER_ACTION_PREFIX: &str = "HyperliquidTransaction:";
+/// The primary type of `convertToMultiSigUser` (SDK `sign_convert_to_multi_sig_user_action`).
+pub const HL_CONVERT_TO_MULTI_SIG: &str = "HyperliquidTransaction:ConvertToMultiSigUser";
 
 /// The official Hyperliquid app origins allowed to request an L1 Agent signature, per `source`
 /// (`a` mainnet, `b` testnet; spec/11 §7).
@@ -107,6 +112,21 @@ pub enum HlUserAction {
     ApproveAgent,
     /// `approveBuilderFee`.
     ApproveBuilderFee,
+    /// `convertToMultiSigUser` (recognized by its primary type, any field layout): the account's
+    /// actions then need the `signers`' signatures — whoever controls them controls the account.
+    ConvertToMultiSig,
+    /// Any other `HyperliquidTransaction:*` action, or a known one whose layout is not the SDK's:
+    /// not interpreted (an account action that may move funds or hand over the account).
+    Unknown,
+}
+
+impl HlUserAction {
+    /// Whether the action's fields are interpreted: its `typeHash` fixes every field name and
+    /// type. The others are shown as the plain field tree, their names as dApp text.
+    #[must_use]
+    pub const fn interpreted(self) -> bool {
+        !matches!(self, Self::ConvertToMultiSig | Self::Unknown)
+    }
 }
 
 /// Resource ceiling that was exceeded.
@@ -233,9 +253,20 @@ impl KnownSchema {
             Self::Permit2WitnessTransfer { .. } => "permit2-witness-transfer",
             Self::Permit2BatchWitnessTransfer { .. } => "permit2-batch-witness-transfer",
             Self::SeaportOrder => "seaport-order",
+            Self::HyperliquidUser(HlUserAction::ConvertToMultiSig) => {
+                "hyperliquid-convert-to-multisig"
+            }
+            Self::HyperliquidUser(HlUserAction::Unknown) => "hyperliquid-unknown-action",
             Self::HyperliquidUser(_) => "hyperliquid-user-action",
             Self::HyperliquidL1Agent => "hyperliquid-l1-agent",
         }
+    }
+
+    /// A schema recognized by its primary type name only (a Hyperliquid action that is not
+    /// interpreted): its field names and primary type are dApp text, like an unknown schema's.
+    #[must_use]
+    pub const fn is_uninterpreted(&self) -> bool {
+        matches!(self, Self::HyperliquidUser(action) if !action.interpreted())
     }
 
     /// Whether this is a Permit2 schema.
@@ -469,7 +500,9 @@ fn keccak(bytes: &[u8]) -> [u8; 32] {
 }
 
 /// Hyperliquid schemas (spec/11 §7): the standard 4-field domain with a zero verifying contract,
-/// and a primary type whose `typeHash` equals the SDK's exactly.
+/// and a primary type whose `typeHash` equals the SDK's exactly. In that domain any other
+/// `HyperliquidTransaction:*` primary type is still a Hyperliquid account action: recognized by
+/// name (`ConvertToMultiSigUser`) or as [`HlUserAction::Unknown`], never interpreted.
 fn hyperliquid_schema(
     primary: &str,
     primary_hash: [u8; 32],
@@ -481,12 +514,18 @@ fn hyperliquid_schema(
     }
     match (domain.name.as_deref(), domain.version.as_deref()) {
         (Some(crate::hypercore::DOMAIN_NAME), Some(crate::hypercore::DOMAIN_VERSION)) => {
-            let action = if let Some(kind) = crate::hypercore::HcKind::from_primary_type(primary) {
-                (primary_hash == kind.type_hash()).then_some(HlUserAction::Transfer(kind))?
+            let transfer = crate::hypercore::HcKind::from_primary_type(primary)
+                .filter(|kind| primary_hash == kind.type_hash());
+            let action = if let Some(kind) = transfer {
+                HlUserAction::Transfer(kind)
             } else if primary_hash == keccak(HL_APPROVE_AGENT_TYPE.as_bytes()) {
                 HlUserAction::ApproveAgent
             } else if primary_hash == keccak(HL_APPROVE_BUILDER_FEE_TYPE.as_bytes()) {
                 HlUserAction::ApproveBuilderFee
+            } else if primary == HL_CONVERT_TO_MULTI_SIG {
+                HlUserAction::ConvertToMultiSig
+            } else if primary.starts_with(HL_USER_ACTION_PREFIX) {
+                HlUserAction::Unknown
             } else {
                 return None;
             };

@@ -222,7 +222,7 @@ fn dapp_transfers_get_the_site_checks() {
         Some(checked(HcRecipient::default())),
     );
     assert!(rules.contains(&H12) && rules.contains(&H13), "{rules:?}");
-    let (rules, _) = run(
+    let (rules, fields) = run(
         HcPayload::SpotSend {
             destination: system_address(2),
             token: purr.wire(),
@@ -231,6 +231,26 @@ fn dapp_transfers_get_the_site_checks() {
         Some(checked(HcRecipient::default())),
     );
     assert!(rules.contains(&H13) && !rules.contains(&H04), "{rules:?}");
+    let linked_elsewhere = "이 토큰에 연결된 주소가 아닙니다";
+    assert!(
+        fields.iter().any(|value| value.contains(linked_elsewhere)),
+        "{fields:?}"
+    );
+    // A kind without a token to a system address: H13 with its own reason.
+    let (rules, fields) = run(
+        HcPayload::UsdSend {
+            destination: system_address(1),
+            amount: "1".to_owned(),
+        },
+        Some(checked(HcRecipient::default())),
+    );
+    assert!(rules.contains(&H13), "{rules:?}");
+    assert!(
+        fields
+            .iter()
+            .any(|value| value.contains("이 작업으로 보내면 자산을 잃을 수 있습니다")),
+        "{fields:?}"
+    );
 
     // `sendAsset` to the linked system address: H04 only for spot → spot from the signer itself.
     let send_asset = |source_dex: &str, destination_dex: &str| HcPayload::SendAsset {
@@ -248,12 +268,20 @@ fn dapp_transfers_get_the_site_checks() {
         rules.contains(&H04) && !rules.contains(&H14) && !rules.contains(&H13),
         "{rules:?}"
     );
+    // H14's destination note gives H14's reason, not H13's (the token's own system address).
+    let h14_note = |fields: &[String]| {
+        fields
+            .iter()
+            .any(|value| value.contains("서명 계정 자신의 현물(spot)→현물 이동이 아닙니다"))
+            && !fields.iter().any(|value| value.contains(linked_elsewhere))
+    };
     for (source_dex, destination_dex) in [("", "spot"), ("spot", ""), ("", "")] {
-        let (rules, _) = run(
+        let (rules, fields) = run(
             send_asset(source_dex, destination_dex),
             Some(checked(HcRecipient::default())),
         );
         assert!(rules.contains(&H14) && !rules.contains(&H04), "{rules:?}");
+        assert!(h14_note(&fields), "{fields:?}");
     }
     let plain = String::from_utf8(typed_source(send_asset("spot", "spot"))).unwrap();
     let from_sub = plain.replace(
@@ -261,8 +289,130 @@ fn dapp_transfers_get_the_site_checks() {
         "\"fromSubAccount\":\"0x2222222222222222222222222222222222222222\"",
     );
     assert_ne!(plain, from_sub);
-    let (rules, _) = run_source(from_sub.into_bytes(), Some(checked(HcRecipient::default())));
+    let (rules, fields) = run_source(from_sub.into_bytes(), Some(checked(HcRecipient::default())));
     assert!(rules.contains(&H14) && !rules.contains(&H04), "{rules:?}");
+    assert!(h14_note(&fields), "{fields:?}");
+}
+
+/// Hyperliquid actions this wallet does not interpret (spec/11 §7): `convertToMultiSigUser` gets
+/// H16 with its signers read out, any other `HyperliquidTransaction:*` type (or a known one with
+/// another layout) H15; both show every field, have no T04/T10 and keep their names untrusted.
+/// Outside the prefix the document stays an unknown schema (T04).
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one case per recognition rule of spec/11 §7"
+)]
+fn uninterpreted_hyperliquid_actions_get_their_own_warning() {
+    use crate::approval::{ApprovalId, ApprovalKind, ApprovalOrigin, ChainFacts, FieldKey, RuleId};
+    use crate::evm::display::build_typed_request;
+    use crate::evm::risk::{H15, H16, T04, T10};
+    use crate::policy::BrowserOrigin;
+
+    let chain = crate::evm::chain::builtin_chain(42_161).unwrap();
+    let account = address(SDK_DESTINATION);
+    let document = |primary: &str, fields: &str, message: &str| {
+        format!(
+            r#"{{"types":{{"EIP712Domain":[{{"name":"name","type":"string"}},{{"name":"version","type":"string"}},{{"name":"chainId","type":"uint256"}},{{"name":"verifyingContract","type":"address"}}],"{primary}":[{fields}]}},"primaryType":"{primary}","domain":{{"name":"HyperliquidSignTransaction","version":"1","chainId":42161,"verifyingContract":"0x0000000000000000000000000000000000000000"}},"message":{message}}}"#
+        )
+    };
+    let run = |source: &str| {
+        let value = yw_json::parse(source.as_bytes(), &yw_json::Limits::REQUEST).unwrap();
+        let typed = validate_typed_data_v4(source.as_bytes(), &value, 42_161).unwrap();
+        let draft = build_typed_request(
+            ApprovalId([9; 16]),
+            ApprovalOrigin::Site(BrowserOrigin::parse("https://evil.example").unwrap()),
+            crate::vault::EvmKeySource::Derived(crate::bip32::path::AccountIndex::new(0).unwrap()),
+            account,
+            ApprovalKind::EvmTypedData,
+            &chain,
+            &typed,
+            &ChainFacts::default(),
+            1_790_000_000_000,
+        )
+        .unwrap();
+        let rules: Vec<RuleId> = draft.display.warnings.iter().map(|w| w.rule).collect();
+        let fields: Vec<String> = draft
+            .display
+            .fields
+            .iter()
+            .filter(|field| field.key == FieldKey::TD_FIELD || field.key == FieldKey::TD_TREE)
+            .map(|field| field.value.clone())
+            .collect();
+        (typed.schema, rules, fields)
+    };
+
+    let signers = r#"{\"authorizedUsers\":[\"0x1111111111111111111111111111111111111111\",\"0x2222222222222222222222222222222222222222\"],\"threshold\":2}"#;
+    let multisig = document(
+        "HyperliquidTransaction:ConvertToMultiSigUser",
+        r#"{"name":"hyperliquidChain","type":"string"},{"name":"signers","type":"string"},{"name":"nonce","type":"uint64"}"#,
+        &format!(r#"{{"hyperliquidChain":"Mainnet","signers":"{signers}","nonce":1790000000000}}"#),
+    );
+    let (schema, rules, fields) = run(&multisig);
+    let schema = schema.unwrap();
+    assert_eq!(
+        schema,
+        KnownSchema::HyperliquidUser(HlUserAction::ConvertToMultiSig)
+    );
+    assert!(schema.is_uninterpreted());
+    assert!(
+        rules.contains(&H16) && !rules.contains(&T04) && !rules.contains(&T10),
+        "{rules:?}"
+    );
+    let shown = |hex: &str| crate::evm::display::format_address(&address(hex));
+    assert!(
+        fields.iter().any(|value| value.starts_with("2명 중 2명")
+            && value.contains(&shown("0x1111111111111111111111111111111111111111"))
+            && value.contains(&shown("0x2222222222222222222222222222222222222222"))),
+        "{fields:?}"
+    );
+    // Every field is shown as in the request (the raw `signers` text included).
+    assert!(
+        fields.iter().any(|value| value.contains("authorizedUsers")),
+        "{fields:?}"
+    );
+
+    let unknown = document(
+        "HyperliquidTransaction:SomethingNew",
+        r#"{"name":"hyperliquidChain","type":"string"},{"name":"user","type":"address"},{"name":"nonce","type":"uint64"}"#,
+        r#"{"hyperliquidChain":"Mainnet","user":"0x3333333333333333333333333333333333333333","nonce":1}"#,
+    );
+    let (schema, rules, fields) = run(&unknown);
+    assert_eq!(
+        schema,
+        Some(KnownSchema::HyperliquidUser(HlUserAction::Unknown))
+    );
+    assert!(
+        rules.contains(&H15) && !rules.contains(&T04) && !rules.contains(&T10),
+        "{rules:?}"
+    );
+    assert!(
+        fields
+            .iter()
+            .any(|value| value.contains(&shown("0x3333333333333333333333333333333333333333"))),
+        "{fields:?}"
+    );
+    // A transfer name with a layout that is not the SDK's is not interpreted either.
+    let odd_transfer = document(
+        "HyperliquidTransaction:UsdSend",
+        r#"{"name":"hyperliquidChain","type":"string"},{"name":"destination","type":"string"},{"name":"amount","type":"string"},{"name":"time","type":"uint64"},{"name":"extra","type":"string"}"#,
+        r#"{"hyperliquidChain":"Mainnet","destination":"0x3333333333333333333333333333333333333333","amount":"1","time":1,"extra":"x"}"#,
+    );
+    let (schema, rules, _) = run(&odd_transfer);
+    assert_eq!(
+        schema,
+        Some(KnownSchema::HyperliquidUser(HlUserAction::Unknown))
+    );
+    assert!(rules.contains(&H15), "{rules:?}");
+    // Outside the `HyperliquidTransaction:` prefix: an unknown schema, as before.
+    let other = document(
+        "Mail",
+        r#"{"name":"contents","type":"string"}"#,
+        r#"{"contents":"hi"}"#,
+    );
+    let (schema, rules, _) = run(&other);
+    assert_eq!(schema, None);
+    assert!(rules.contains(&T04) && !rules.contains(&H15), "{rules:?}");
 }
 
 fn sign(action: &HcAction) -> [u8; 65] {
