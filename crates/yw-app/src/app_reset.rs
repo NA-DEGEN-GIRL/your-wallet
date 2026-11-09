@@ -292,6 +292,16 @@ impl App {
         // The lock procedure first: secret and approval windows close, queued dApp items end,
         // buffers are wiped, queued key jobs are cancelled.
         self.lock(LockReason::Manual);
+        // Unlike a lock, nothing waits for the next session: the approvals queued behind the
+        // shown one (sends of any chain, dApp requests) end now, so none of the old wallet's
+        // reappears for the next wallet.
+        let waiting = self
+            .evm
+            .queue
+            .drain_waiting_matching(|_| true, crate::ui::approval::QueueOutcome::Rejected);
+        for (item, outcome) in waiting {
+            self.approval_finished(&item.payload, outcome);
+        }
         // WalletConnect: the old wallet's sessions, relay key and connection end with it (the
         // worker is restarted for the next wallet at its first unlock; spec/13 §8).
         self.wc_shutdown();
@@ -315,6 +325,20 @@ impl App {
         self.reset = ResetUi::default();
         // Nothing of the old wallet's recovery-phrase flows (held words, preview, list) stays.
         self.mn = crate::app_mnemonics::MnUi::default();
+        // `vault.ywv` moves first: once it moved, the next wallet is another one, and the old
+        // one's `HyperCore` activity of this run (amounts, recipients, unanswered posts that
+        // T-RESET-IN-FLIGHT counts) goes with it. The load-job counter stays monotonic.
+        let vault_moved = match &result {
+            Ok(_) => true,
+            Err(ResetError::Move { moved, .. }) => !moved.is_empty(),
+            Err(ResetError::Folder(_)) => false,
+        };
+        if vault_moved {
+            self.hypercore = crate::app_hypercore::HcUi {
+                job: self.hypercore.job,
+                ..crate::app_hypercore::HcUi::default()
+            };
+        }
         match result {
             Ok(report) => {
                 logging::warn(

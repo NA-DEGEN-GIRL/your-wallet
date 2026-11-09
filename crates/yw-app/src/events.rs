@@ -659,6 +659,13 @@ impl KeyJob {
         )
     }
 
+    /// The lock screen's own jobs (W01 `Unlock`, W03 `.prev` recovery): queued after a lock
+    /// whose `Lock` the worker has not reached yet (it was still busy, e.g. waiting for a
+    /// `YubiKey` touch), they belong to the locked session and are not cancelled by that `Lock`.
+    const fn after_lock(&self) -> bool {
+        matches!(self, Self::Unlock { .. } | Self::RecoverFromPrev { .. })
+    }
+
     /// What a job cancelled by `Lock` reports: signing jobs answer their ticket's waiter
     /// ([`SignFailure::Locked`] / [`MessageSignFailure::Locked`]), every other job
     /// [`KeyOutcome::Cancelled`]. The job (and any approval or secret it holds) is dropped here.
@@ -706,6 +713,10 @@ pub enum YubiKeyJobError {
     Vault(VaultError),
     /// The card operation failed (spec/10 §7.4: earlier slots may be written).
     Card(crate::yubikey::CardJobError),
+    /// A card change (clear, re-slot) would take away the last key of an account whose
+    /// transaction may still confirm (spec/10 §15): nothing was changed on the card or in the
+    /// vault.
+    Busy,
 }
 
 /// A job that did not run because the wallet was locked first.
@@ -845,12 +856,15 @@ pub struct KeyResult {
 }
 
 /// UI accepts a key result only from the current epoch (results from before a lock are dropped
-/// and their buffers wiped by drop). `LockDone` is always accepted.
+/// and their buffers wiped by drop). `LockDone` is always accepted, and so is `WalletReset`: the
+/// reset runs after its own lock, and another lock before its result (Windows lock, sleep) must
+/// not leave the app waiting for it (spec/04 §2.20).
 #[must_use]
 pub fn accept_result(result: &KeyResult, current_epoch: u64) -> bool {
     matches!(
         result.outcome,
         KeyOutcome::LockDone
+            | KeyOutcome::WalletReset(_)
             | KeyOutcome::SignedEvm(_)
             | KeyOutcome::SignedMessage(_)
             | KeyOutcome::SignedChainMessage(_)
@@ -892,16 +906,18 @@ impl KeyQueue {
         }
     }
 
-    /// Removes and returns every queued non-control job (processing `Lock`); `Lock`, `Load` and
-    /// `Shutdown` stay queued.
-    pub fn cancel_pending(&self) -> Vec<(u64, KeyJob)> {
+    /// Removes and returns every queued non-control job (processing the `Lock` of
+    /// `lock_epoch`); `Lock`, `Load`, `ResetWallet` and `Shutdown` stay queued, and so do an
+    /// `Unlock` or `.prev` recovery queued after that lock (epoch `lock_epoch` or later): the
+    /// user typed them on the lock screen, and cancelling them would leave W01 waiting.
+    pub fn cancel_pending(&self, lock_epoch: u64) -> Vec<(u64, KeyJob)> {
         let Ok(mut queue) = self.queue.lock() else {
             return Vec::new();
         };
         let mut cancelled = Vec::new();
         let mut kept = VecDeque::new();
         while let Some(entry) = queue.pop_front() {
-            if entry.1.is_control() {
+            if entry.1.is_control() || (entry.0 >= lock_epoch && entry.1.after_lock()) {
                 kept.push_back(entry);
             } else {
                 cancelled.push(entry);
@@ -1447,5 +1463,42 @@ mod tests {
             result: Err(MessageSignFailure::Locked),
         });
         assert!(super::accept_result(&KeyResult { epoch: 0, outcome }, 9));
+        // So is a reset's result: a lock while it moves the files must not strand it.
+        let outcome = KeyOutcome::WalletReset(Ok(crate::store::reset::ResetReport {
+            folder: None,
+            moved: Vec::new(),
+            settings_moved: false,
+        }));
+        assert!(super::accept_result(&KeyResult { epoch: 1, outcome }, 2));
+        // The `Lock` of epoch 2 cancels what was queued before that lock; an unlock typed on
+        // the lock screen after it (the worker was still busy) and the control jobs stay.
+        let password = |text: &[u8]| yw_core::secret::Zeroizing::new(text.to_vec());
+        let queue = super::KeyQueue::default();
+        queue.push(1, KeyJob::LoadMeta);
+        queue.push(
+            1,
+            KeyJob::Unlock {
+                password: password(b"before"),
+            },
+        );
+        queue.push(2, KeyJob::Lock);
+        queue.push(2, KeyJob::Load);
+        queue.push(
+            2,
+            KeyJob::Unlock {
+                password: password(b"after"),
+            },
+        );
+        let cancelled: Vec<(u64, &str)> = queue
+            .cancel_pending(2)
+            .into_iter()
+            .map(|(epoch, job)| (epoch, job.name()))
+            .collect();
+        assert_eq!(cancelled, [(1, "LoadMeta"), (1, "Unlock")]);
+        let mut kept = Vec::new();
+        while !queue.is_empty() {
+            kept.extend(queue.pop().map(|(_, job)| job.name()));
+        }
+        assert_eq!(kept, ["Lock", "Load", "Unlock"]);
     }
 }

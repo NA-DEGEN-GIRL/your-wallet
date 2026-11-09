@@ -1768,7 +1768,7 @@ pub fn step(
         }
         KeyJob::Lock => {
             worker.lock();
-            for (cancelled_epoch, cancelled) in queue.cancel_pending() {
+            for (cancelled_epoch, cancelled) in queue.cancel_pending(epoch) {
                 sink(KeyResult {
                     epoch: cancelled_epoch,
                     outcome: cancelled.cancelled_outcome(),

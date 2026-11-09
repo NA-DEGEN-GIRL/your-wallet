@@ -42,8 +42,8 @@ yw-app(지갑 본체, D3)의 프로세스·스레드 구조, 화면과 흐름, �
 | LLM `yw-llm` (M6) | 별도 `http::Client` | [06] | DEK 접근 |
 
 - 비동기 런타임 크레이트를 쓰지 않는다. `std::thread`, `std::sync::{mpsc, Mutex, Condvar}`만 쓴다.
-- `KeyQueue { q: Mutex<VecDeque<KeyJob>>, cv: Condvar }`. `KeyJob::Lock`만 `push_front`로 넣는다([02] §7.2 "lock 요청은 큐 맨 앞"). 키 작업자는 `Lock`을 처리하면서 큐에 남은 다른 작업을 모두 yw-app 오류 `KeyJobError::Locked`로 끝낸다(yw-core `KeyError`가 아님). 제어 작업 `Lock`·`Load`·`Shutdown`은 취소되지 않는다(§5.3이 `Lock` 뒤에 넣는 `Load`가 살아남아야 잠금 뒤의 vault 상태를 UI가 안다). `Lock`은 진행 중인 작업(최대 Argon2 2회) 뒤에 실행된다.
-- 잠금 세대: UI가 `lock_epoch: u64`를 소유하고 §5.3 1단계에서 1 올린다. 모든 `KeyJob`은 넣을 때의 값을 싣고 `KeyResult`가 그 값을 되돌린다. UI는 값이 현재와 다른 결과를 버린다(실린 비밀 버퍼는 drop으로 소거). 예외: `Sign` 결과는 이미 소비된 승인이므로 epoch와 무관하게 처리한다(성공이면 저널 `Signed`가 커밋된 상태이므로 전송까지 진행하고, 잠긴 동안의 상태 처리는 §5.3 마지막 항목). 소비된 `Signing` 항목의 `Sign`이 `Locked`로 끝나면 dApp 4001 `User rejected the request.`, [03] §3.6 송신 슬롯 해제, 저널 기록 없음, 로그 `sign.aborted reason=locked`.
+- `KeyQueue { q: Mutex<VecDeque<KeyJob>>, cv: Condvar }`. `KeyJob::Lock`만 `push_front`로 넣는다([02] §7.2 "lock 요청은 큐 맨 앞"). 키 작업자는 `Lock`을 처리하면서 큐에 남은 다른 작업을 모두 yw-app 오류 `KeyJobError::Locked`로 끝낸다(yw-core `KeyError`가 아님). 제어 작업 `Lock`·`Load`·`ResetWallet`·`Shutdown`은 취소되지 않는다(§5.3이 `Lock` 뒤에 넣는 `Load`가 살아남아야 잠금 뒤의 vault 상태를 UI가 안다). `Lock`이 취소하는 것은 그 잠금 **전에** 넣은 작업이다: 그 `Lock`의 epoch 이상으로 넣은 `Unlock`·`RecoverFromPrev`(작업자가 YubiKey 터치 등으로 바빠 `Lock`이 늦게 처리되는 동안 잠금 화면에서 입력한 것)는 남겨 `Lock`·`Load` 뒤에 실행한다(2026-11-10 — 이전에는 취소되어 W01이 `확인 중…`에 멈췄다). `Lock`은 진행 중인 작업(최대 Argon2 2회) 뒤에 실행된다.
+- 잠금 세대: UI가 `lock_epoch: u64`를 소유하고 §5.3 1단계에서 1 올린다. 모든 `KeyJob`은 넣을 때의 값을 싣고 `KeyResult`가 그 값을 되돌린다. UI는 값이 현재와 다른 결과를 버린다(실린 비밀 버퍼는 drop으로 소거). 예외: `WalletReset`(§2.20, 초기화 도중의 잠금이 결과를 버리면 앱이 멈춘다)과 `Sign` 결과 — `Sign`은 이미 소비된 승인이므로 epoch와 무관하게 처리한다(성공이면 저널 `Signed`가 커밋된 상태이므로 전송까지 진행하고, 잠긴 동안의 상태 처리는 §5.3 마지막 항목). 소비된 `Signing` 항목의 `Sign`이 `Locked`로 끝나면 dApp 4001 `User rejected the request.`, [03] §3.6 송신 슬롯 해제, 저널 기록 없음, 로그 `sign.aborted reason=locked`.
 - 비밀 버퍼(비밀번호, passphrase, 니모닉, 개인키 입력)는 `Zeroizing<Vec<u8>>`로 채널에 이동한다(복사 금지). 받은 쪽은 쓰고 바로 drop한다.
 
 ### 1.3 이벤트 큐와 메시지 번호
@@ -531,6 +531,7 @@ YubiKey(§2.19, [10]) 문구 — 정본은 `app_yubikey`·`ui::screens_yubikey`�
    - 편집이면 블록 0 해시 ≠ 고정값 → E-CHN-008, 저장하지 않는다(다른 체인을 가리키는 URL).
    - 추가면 이어서 `eth_feeHistory(["0x1","latest",[50]])`에 `baseFeePerGas`가 없을 때 E-CHN-010([03] §1.6-4, EIP-1559 없음), 저장하지 않는다.
 3. 추가면 확인 오버레이 T-CHAIN-PIN: chainId, 이름, RPC(템플릿이면 "QuickNode 서브도메인 {식별자}"·"알케미 라벨 {식별자}", URL이면 §2.11.1 가린 형태), 받은 제네시스 해시 전체(`Consolas`). `고정하고 저장` / `취소`(최초 신뢰, D14).
+   - 2·3단계의 확인 결과(그리고 §2.17.4의 결과)는 `Unlocked`이고 그 화면(저장은 S17, 다시 고정은 S15)에 있을 때만 쓴다(2026-11-10). 잠금(S17 양식·다시 고정·삭제 대기를 지운다)이나 다른 화면으로 떠난 뒤 온 결과는 버린다: 확인 오버레이가 잠금 화면이나 다른 화면을 덮거나, 사용자 없이 체인이 저장되지 않는다. 다시 `저장`하면 된다.
 4. 쓰기: RPC를 넣었으면(URL·식별자 모두) `apikeys.dpapi` `rpc:eip155:<chainId>`에 그 URL을 먼저 쓰고 `settings.json` `evmChains`를 쓴다. 식별자를 넣었으면 그 템플릿 키(`quicknodeSubdomain` 또는 `alchemyLabel`)를 함께 바꾸고, URL을 넣었으면 템플릿 키는 그대로 둔다(나중에 `네트워크 URL 생성`의 `기존 URL 덮어쓰기`에서만 쓰인다). 뒤쪽 쓰기가 실패하면 E-APP-002이고, 추가였으면 남은 URL은 고아 항목으로 다음 읽기에서 무시된다(§6.3). 편집이었으면 URL은 2단계 확인을 통과한 새 값으로 바뀐 채이고 템플릿 키만 이전 값이다. 성공 → 새 `RpcConfig`(§1.9), 그 체인 확인 상태 초기화, "저장했습니다". `feeCaps`는 사용자가 바꿀 때만 쓴다(없으면 기본값, §6.1).
 
 #### 2.17.3 삭제
@@ -590,12 +591,12 @@ YubiKey(§2.19, [10]) 문구 — 정본은 `app_yubikey`·`ui::screens_yubikey`�
 - **진입**(링크·버튼 `지갑 초기화…`): S07(잠금 해제 아래, 도움말 "비밀번호를 잊었거나 더 진행할 수 없다면…"), S09, S04(도움말 "복구 단어를 적지 못했거나 잃어버렸다면, 이 지갑에 자산을 받기 전에…"), S01 T-LEFTOVER 띠(`남은 파일을 reset- 폴더로 옮기기…`), 설정 → 보안 카드 "지갑 초기화"(위험 버튼), T-WAIT-STALLED. **잠금 해제가 필요 없다.** `Starting`·`ShuttingDown`·진행 중에는 열지 않는다.
 - **S22 내용**: 제목 "지갑 초기화", 고위험 띠 T-RESET-INTRO, 잠금 해제 상태에서 추적 중인 거래(EVM·Solana·Bitcoin·Zcash 저널의 끝나지 않은 기록 — Zcash는 모든 네트워크·계정 —, 그리고 응답이 아직 없거나 결과 불명인 HyperCore 전송)가 있으면 주의 띠 T-RESET-IN-FLIGHT(막지 않는다). 카드 "무엇을 하나요": T-RESET-NOUNLOCK, T-RESET-MOVE, "옮길 곳" `<데이터 폴더>\reset-<날짜시각(UTC)>`, "옮길 파일"(지금 폴더에 있는 이름; 열 때와 체크 상자를 바꿀 때 다시 읽음), T-RESET-YUBIKEY(YubiKey가 등록된 지갑이면 정보 띠 추가), T-RESET-SETTINGS, 체크 상자 `설정과 API 키도 함께 옮기기 (앱 설정을 처음 상태로)`(기본 끔). 카드 "확인": "계속하려면 아래 칸에 '초기화'를 입력한 뒤, 빨간 버튼을 2초 동안 누르고 있으세요.", EDIT "확인 문구"(앞뒤 공백 무시, 정확히 `초기화`), 길게 누르기 영역(`Item::Hold`, 아래), `취소`(연 화면으로 돌아감).
 - **길게 누르기 영역** `Item::Hold`: 자식 컨트롤이 아니라 주 창이 그리는 사각형(위험 색, 아래쪽 진행 막대). 확인 문구 전에는 꺼진 색과 "'초기화'를 입력하면 누를 수 있습니다". 주 창 `Msg::MouseDown`이 영역 안이면 `HoldGate`(W08과 같은 2초, 포인터만)를 시작하고 마우스를 잡는다(`SetCapture`). 영역을 벗어나거나 떼거나 화면이 바뀌거나 잠그면 취소. 주 타이머(250 ms)가 진행을 그리고 2초가 차면 실행한다.
-- **실행**: 로그 `reset.start`(설정 이동 여부, 진행 중 거래 여부) → 잠금 절차 그대로(§5.3: 비밀 창·승인 창을 닫고 대기 중 dApp 항목을 끝내고 버퍼를 지우고 대기 키 작업을 취소, `Lock`·`Load` 대기열) → WalletConnect 작업 스레드를 멈추고 UI 상태를 비움(옛 지갑의 세션·릴레이 키가 새 지갑으로 넘어가지 않게, [13] §8) → S03 "지갑 파일을 옮기는 중…" → `ResetWallet`. 키 작업자는 vault를 잠그고 버리고(잠금 해제 없이) `store::reset::move_wallet_files`를 부른다. vault·meta·journal 쓰기는 모두 이 스레드에서만 일어나므로 옮기는 동안·뒤에 그 파일을 쓰는 일이 없다. 초기화가 도는 동안 도착한 `Loaded`는 사실(`leftover`)만 받고 화면을 바꾸지 않는다.
+- **실행**: 로그 `reset.start`(설정 이동 여부, 진행 중 거래 여부) → 잠금 절차 그대로(§5.3: 비밀 창·승인 창을 닫고 대기 중 dApp 항목을 끝내고 버퍼를 지우고 대기 키 작업을 취소, `Lock`·`Load` 대기열) → WalletConnect 작업 스레드를 멈추고 UI 상태를 비움(옛 지갑의 세션·릴레이 키가 새 지갑으로 넘어가지 않게, [13] §8) → S03 "지갑 파일을 옮기는 중…" → `ResetWallet`. 키 작업자는 vault를 잠그고 버리고(잠금 해제 없이) `store::reset::move_wallet_files`를 부른다. vault·meta·journal 쓰기는 모두 이 스레드에서만 일어나므로 옮기는 동안·뒤에 그 파일을 쓰는 일이 없다. 초기화가 도는 동안 도착한 `Loaded`는 사실(`leftover`)만 받고 화면을 바꾸지 않는다. 잠금과 달리 표시 중 승인 뒤에 대기하던 승인(모든 체인의 앱 보내기·HyperCore, dApp 요청)도 이때 `Rejected`로 끝낸다(다음 지갑의 세션에 옛 지갑의 승인이 나오지 않게). 2026-11-10: 초기화 도중의 잠금(Windows 잠금·절전·유휴)은 S03을 S07·S01로 바꾸지 않고, `WalletReset`은 epoch와 무관하게 받는다(§1.2 — 이전에는 그 잠금이 결과를 버려 앱이 잠금 화면에 멈추고 초기화를 다시 열 수 없었다). 도는 동안에는 W02(잠금 해제)를 열지 않는다(주 창 활성화·dApp 요청).
 - **옮기는 파일**(`store::reset`): 데이터 폴더 바로 아래의 파일 중 `vault.ywv`·`meta.ywm`·`journal.ywj`이거나 그 이름 + `.`으로 시작하는 것(`.prev`, `.tmp`, `.prev.tmp`, `.corrupt-<t>`). 체크 상자를 켜면 `settings.json`·`apikeys.dpapi`(+`.tmp`)도. 폴더(`logs`, 이전 `reset-*`)와 그 밖의 파일은 그대로. 순서는 `vault.ywv` 먼저(중간에 실패해도 열리는 지갑이 남지 않고, 남은 sidecar는 S01 T-LEFTOVER로 보인다), 나머지는 이름순. 옮길 것이 없으면 폴더를 만들지 않는다.
 - **새 폴더**: `<데이터 폴더>\reset-<YYYYMMDDTHHMMSSZ>`(UTC; 이미 있으면 `-2`…`-9`). 데이터 폴더 안에 만들어 데이터 폴더의 보호된 DACL(현재 사용자·SYSTEM·Administrators, §1.4-3)을 물려받는다. 데이터 폴더나 새 폴더가 재분석 지점이면 거부. 파일은 `MoveFileExW(WRITE_THROUGH)`(덮어쓰지 않음)로 옮기고 두 폴더를 flush. 끝으로 `README-reset.txt`(옮긴 파일 목록과 되돌리는 방법; 쓰지 못해도 이동은 유효). 다음 시작의 `ensure_private_dir(v3)`는 이 폴더를 항목으로 검사한다(§1.4-3).
-- **끝**: 성공 → `reset.done`(파일 수). 설정을 옮겼으면 메모리의 설정·API 키를 기본값으로. 이전 지갑의 파일 사실(`payload_damaged`·`.prev`·격리 이름·설정 스냅샷 검사·세대 경고)을 지우고 정보 띠 T-RESET-DONE("지갑을 초기화했습니다. 지갑 파일 {n}개를 지우지 않고 {폴더} 폴더로 옮겼습니다…"; 진행 중 거래가 있었으면 "보내던 거래는 블록체인에서 계속 처리됩니다…" 추가) → `KeyJob::Load` → `NoVault` → S01(T-LEFTOVER 없음: 남은 파일 검사는 데이터 폴더 자체만 본다). 실패 → 오류 띠(폴더를 못 만들었으면 아무것도 옮기지 않았다는 문장, 중간 실패면 옮기지 못한 파일 이름과 이미 옮긴 수·폴더) → `Load`로 지금 파일 상태를 다시 읽는다.
+- **끝**: 성공 → `reset.done`(파일 수). 설정을 옮겼으면 메모리의 설정·API 키를 기본값으로. `vault.ywv`가 옮겨졌으면(성공, 또는 중간 실패 전에 옮긴 것이 있으면) 이번 실행의 HyperCore 활동(금액·받는 주소·응답 없는 전송 — T-RESET-IN-FLIGHT가 세는 것)도 지운다(다음 지갑의 카드에 보이지 않게; 작업 번호는 이어 간다). 이전 지갑의 파일 사실(`payload_damaged`·`.prev`·격리 이름·설정 스냅샷 검사·세대 경고)을 지우고 정보 띠 T-RESET-DONE("지갑을 초기화했습니다. 지갑 파일 {n}개를 지우지 않고 {폴더} 폴더로 옮겼습니다…"; 진행 중 거래가 있었으면 "보내던 거래는 블록체인에서 계속 처리됩니다…" 추가) → `KeyJob::Load` → `NoVault` → S01(T-LEFTOVER 없음: 남은 파일 검사는 데이터 폴더 자체만 본다). 실패 → 오류 띠(폴더를 못 만들었으면 아무것도 옮기지 않았다는 문장, 중간 실패면 옮기지 못한 파일 이름과 이미 옮긴 수·폴더) → `Load`로 지금 파일 상태를 다시 읽는다.
 - 되돌리는 방법은 [docs/recovery-guide.ko.md](../docs/recovery-guide.ko.md) "지갑 초기화와 되돌리기". YubiKey 안의 키는 건드리지 않는다([10] §7.5).
-- 시험: `store::reset` 단위 시험(옮기는 이름, 설정 유지·이동, 이름 충돌 `-2`, 빈 폴더, T-LEFTOVER 없음), `app::tests::wallet_reset_from_the_lock_screen_returns_to_first_run`(S07에서 비밀번호 없이, 문구 전에는 꺼짐, 절반 누르기는 무효, S01·파일 위치·설정 유지).
+- 시험: `store::reset` 단위 시험(옮기는 이름, 설정 유지·이동, 이름 충돌 `-2`, 빈 폴더, T-LEFTOVER 없음), `app::tests::wallet_reset_from_the_lock_screen_returns_to_first_run`(S07에서 비밀번호 없이, 문구 전에는 꺼짐, 절반 누르기는 무효, S01·파일 위치·설정 유지), `app::tests::lock_during_wallet_reset_still_reaches_first_run`(초기화 도중 잠금 → S03 유지 → S01).
 
 ### 2.21 Chrome 확장 설치 (S23) — 2026-11-06
 확장을 로드하는 방법과 폴더를 앱 안에서 보인다. 모듈 `app_extension`, 화면 `ui::screens_reset`.
@@ -875,7 +876,7 @@ impl SecretField {
 | `WM_CHAR` ≥ 0x80(서로게이트 포함) | 거부, 칸 아래 E-INP-008 |
 | Backspace(0x08) / Enter(0x0D) | `backspace` / 다음 칸, 마지막 칸이면 확정 |
 | Tab, Shift+Tab(`WM_KEYDOWN`) | 칸 이동(W05에서는 다음 단어 칸) |
-| Esc | 모든 버퍼 소거 후 닫기 |
+| Esc | 모든 버퍼 소거 후 닫기(제출한 작업이 도는 `확인 중…` 동안은 무시, §4.9) |
 | Ctrl+V, Shift+Insert | 붙여넣기(§4.7), 금지 창이면 무시 |
 | Ctrl+C | W08·W09에서만 복사(§4.8) |
 | 그 밖의 Ctrl·Alt 조합, 0x01–0x1F의 나머지, 0x7F | 무시 |
@@ -915,6 +916,7 @@ impl SecretField {
 - 클릭 관통 방지는 §1.8과 같다.
 - `WM_ACTIVATEAPP(0)` 또는 다른 프로세스 창으로 가는 `WM_KILLFOCUS`(이식 `recovery_native.rs:1572-1583`): 평문 창(W05, W07–W10)은 내용 영역을 T-MASKED로 가리고 다시 활성화되면 다시 그린다(버퍼 유지). 가림 칸 창은 `보기`만 끈다.
 - 닫기(X, Esc, 완료, 시간 초과, 잠금): 모든 `SecretField`를 `clear`, 표시 버퍼 drop(zeroize), `WM_NCDESTROY`에서 `GWLP_USERDATA`를 지운 뒤(yw-win) `WM_YW_CHILD_DONE`.
+- 제출 뒤 키 작업자 작업이 도는 동안(`확인 중…`, 보통 1–2초)은 Esc·X(Alt+F4)·`취소`가 창을 닫지 않는다(`취소`는 꺼져 보인다; 2026-11-10). 그 작업(비밀 보기, 키·복구 단어·YubiKey 기록 지우기, `.prev` 복구, 잠금 해제)은 되돌릴 수 없어, 닫기가 취소처럼 보이면 사용자를 속인다(닫은 뒤 W08·W09가 뜨거나 키가 지워지거나 복구 안내가 빠짐). 창은 결과와 함께 닫히거나 오류를 보인다. 잠금과 시간 초과는 그대로 닫는다(잠금은 작업도 취소한다).
 - W08 `다 적었습니다`는 2초 hold(`BACKUP_ACK_HOLD_MS = 2_000`, 이식 `HoldGate` `recovery_native.rs:78-107`). 포인터가 버튼 밖으로 나가거나 포커스를 잃으면 취소.
 
 ### 4.10 시험 (자동)
@@ -939,6 +941,7 @@ impl SecretField {
 
 - **유휴 기준은 앱 기준 입력이다.** `GetLastInputInfo`(시스템 전체)는 쓰지 않는다(다른 프로그램을 쓰는 동안에도 잠겨야 한다). `ui::run_loop` 관찰 콜백이 yw-app 창으로 가는 `WM_KEYDOWN`, `WM_SYSKEYDOWN`, `WM_CHAR`, `WM_LBUTTONDOWN`, `WM_RBUTTONDOWN`, `WM_MBUTTONDOWN`, `WM_MOUSEWHEEL`마다 `last_input = Instant::now()`. 마우스 이동은 세지 않는다.
 - 승인 창이나 W08·W09가 열려 있는 동안 유휴 판정을 멈춘다(각 창에 자체 시간 제한이 있다). 닫혀도 `last_input`은 그대로다: 창 안의 입력(승인·거절 클릭, 스크롤)은 이미 입력으로 셌으므로, 사용자가 만지지 않고 만료되거나 저절로 끝난 창(예: 아무도 보지 않은 dApp·WalletConnect 요청)은 지갑을 열어 두지 못하고 닫히는 즉시 잠길 수 있다. 잠금 해제 직후 `last_input = now`.
+- **멈춤은 입력 한 번에 한 창(2026-11-10)**: 멈추는 창은 정체(W08·W09는 창 번호, 승인은 큐 id)로 구분한다(`IdleTracker::set_window`). 마지막 입력 뒤 처음 열린 창은 멈추고, 그 창이 끝난 뒤 입력 없이 이어 열린 창(앞 창이 만료되자마자 다음 대기 항목이 같은 타이머 틱에 표시되는 경우 포함)은 멈추지 않는다 — 페이지가 연결 요청(EVM·Solana·Bitcoin)을 큐에 쌓아 두고 만료될 때마다 다시 보내도 자동 잠금이 미뤄지는 것은 한 번뿐이다. 창이 떠 있는 동안 입력(스크롤·클릭)이 있으면 그 창은 다시 멈춘다. 잠기면 표시 중인 항목은 `Rejected`(§5.3).
 - vault가 아직 없을 때(`NoVault`, 첫 실행 흐름) 가져오기·생성·개인키로 시작하기 중인 비밀(UI의 비밀번호·복구 단어, 미리보기 뒤 키 작업자가 쥔 비밀번호·니모닉·개인키)이 있으면 같은 유휴 시간 뒤 버린다: 비밀 창을 닫고, UI 버퍼를 지우고, `DiscardImport`·`DiscardKeyStart { keep_password: false }`로 키 작업자 버퍼도 지운 뒤 S01과 정보 띠("오래 입력이 없어 … 지웠습니다").
 - 구현 시 확인(Modern Standby): 대상 PC가 S0ix(`powercfg /a`에 "S0 Low Power Idle")면 시작 메뉴 절전에서 데스크톱 앱이 `PBT_APMSUSPEND`를 받지 못할 수 있다. 이때 UI-M3-08 ③의 합격 로그는 `Suspend` 또는 `SessionLock`이다. 둘 다 없으면 yw-win `session`에 `RegisterSuspendResumeNotification(hwnd, DEVICE_NOTIFY_WINDOW_HANDLE)`을 추가한다([01] §7.6).
 
@@ -960,8 +963,8 @@ impl SecretField {
 - 잠긴 동안 저널 커밋은 없다(DEK 필요, D10). 진행 중이던 `eth_sendRawTransaction`(그리고 [07]·[08]의 전송) 호출은 끝까지 기다리되 결과 상태는 메모리에만 두고, 영수증 폴링은 멈춘다. 잠금 해제 직후 [03] §5.4 reconcile이 상태를 확정한다([03] §4.5와 같음).
 
 ### 5.4 시험
-- LK-1: 모의 시계로 유휴 = 설정 분 − 1초 → 잠기지 않음, + 0초 → 잠김. 다른 앱 입력만 계속 → 잠김. 승인 창(A01, 모든 체인: 표시 중인 승인 항목)이 열린 채 설정 분 경과 → 잠기지 않음; 사용자가 답해 닫으면 그 입력부터 다시 셈, 입력 없이 만료돼 닫히면 바로 잠김.
-- LK-2: `Lock` 전에 큐에 있던 `KeyJob` → `KeyJobError::Locked`. 진행 중 작업 뒤 바로 `Lock` 처리(다른 작업보다 먼저). `Lock` 직전에 끝난 `Unlock`·`Reveal` 결과(이전 `lock_epoch`) → UI가 버리고 `Locked` 유지·버퍼 소거. 소비된 서명 항목의 `Sign`이 `Locked` → dApp 4001, 송신 슬롯 해제, 저널 레코드 없음.
+- LK-1: 모의 시계로 유휴 = 설정 분 − 1초 → 잠기지 않음, + 0초 → 잠김. 다른 앱 입력만 계속 → 잠김. 승인 창(A01, 모든 체인: 표시 중인 승인 항목)이 열린 채 설정 분 경과 → 잠기지 않음; 사용자가 답해 닫으면 그 입력부터 다시 셈, 입력 없이 만료돼 닫히면 바로 잠김. 입력 없이 창이 연달아 열리면 첫 창만 멈추고 다음 창이 열린 채로 잠김, 그 창에 입력하면 다시 멈춤(`lock::tests::lk1_idle_threshold_and_pause`).
+- LK-2: `Lock` 전에 큐에 있던 `KeyJob` → `KeyJobError::Locked`; 그 잠금 뒤에 넣은 `Unlock`·`RecoverFromPrev`와 제어 작업은 남음(`events::tests::lock_cancelled_jobs_and_signing_results_of_old_epochs`). 진행 중 작업 뒤 바로 `Lock` 처리(다른 작업보다 먼저). `Lock` 직전에 끝난 `Unlock`·`Reveal` 결과(이전 `lock_epoch`) → UI가 버리고 `Locked` 유지·버퍼 소거. 소비된 서명 항목의 `Sign`이 `Locked` → dApp 4001, 송신 슬롯 해제, 저널 레코드 없음.
 - LK-3: 주 창 핸들러에 `Msg::SessionDisconnect` → 잠금 `SessionDisconnect`. `Msg::SessionLogoff`·`Msg::EndSession` → §1.5 종료 절차(`LockReason::Shutdown`). `Msg::QueryEndSession` → `Reply::Handled(1)`, 상태 변화 없음.
 
 ## 6. 설정

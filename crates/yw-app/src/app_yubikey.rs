@@ -556,12 +556,17 @@ impl YkWizard {
     }
 }
 
+/// A card record's removal, clear or re-slot refused: it holds the last key of an account whose
+/// transaction may still confirm (spec/10 §15).
+pub const T_YK_BUSY: &str = "이 YubiKey의 키로만 서명하는 계정에서 보낸 거래가 아직 확정될 수 있어(진행 중, 또는 Bitcoin은 포기·거절 뒤 30일 이내) 카드와 지갑의 기록을 바꾸지 않았습니다. 거래가 확정되거나 만료된 뒤에 다시 시도하세요. 거래 저널에 손상된 기록이 있으면 어느 계정의 거래인지 확인할 수 없어 바꾸지 않습니다.";
+
 /// The text of an enrolment failure.
 fn failure_text(error: YubiKeyJobError) -> String {
     match error {
         YubiKeyJobError::Key(error) => crate::errors::key_code(error).text(),
         YubiKeyJobError::Vault(error) => crate::errors::vault_code(error).text(),
         YubiKeyJobError::Card(error) => error.to_string(),
+        YubiKeyJobError::Busy => T_YK_BUSY.to_owned(),
     }
 }
 
@@ -1472,6 +1477,14 @@ impl App {
             }
             YkOutcome::Removed(Err(error)) => {
                 self.password_failure(error, yw_win::time::monotonic_ms());
+            }
+            YkOutcome::RemoveBusy(_) => {
+                // W03 shows why; nothing was removed.
+                self.with_form(|form| {
+                    form.set_busy(false);
+                    form.set_error(Some(T_YK_BUSY.to_owned()));
+                });
+                self.refresh();
             }
             YkOutcome::Discarded => {}
             YkOutcome::Manage(outcome) => self.on_yk_manage(outcome),

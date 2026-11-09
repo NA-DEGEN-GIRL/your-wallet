@@ -475,6 +475,56 @@ impl JournalState {
             })
     }
 
+    /// Whether a journal record of an account in `lost` — the uses of `YubiKey` keys no card
+    /// would hold after a card record is removed, cleared or re-slotted (spec/10 §15) — may
+    /// still confirm: an EVM record not final (its nonce group is open), a SOL `Pending`, a BTC
+    /// record of that card account (`BtcRecord::may_still_confirm`), a ZEC record not final.
+    /// The records cannot be checked — an unreadable journal or a damaged record of any chain,
+    /// whose account is unknown — counts as busy (the rule of [`Self::mnemonic_busy`]).
+    pub fn hardware_busy(
+        &mut self,
+        vault: &Vault,
+        lost: &[crate::workers::key::yubikey::CardUse],
+        now_unix: u64,
+    ) -> bool {
+        use crate::workers::key::yubikey::CardUse;
+        let Ok(plain) = self.current(vault) else {
+            return true;
+        };
+        let evm = EvmEntries::from_plain(&plain);
+        let sol = SolEntries::from_plain(&plain);
+        let btc = yw_core::journal::btc::BtcEntries::from_plain(&plain);
+        let zec = yw_core::journal::zec::ZecEntries::from_plain(&plain);
+        if evm.corrupt > 0 || sol.corrupt > 0 || btc.corrupt > 0 || zec.corrupt > 0 {
+            logging::warn("journal", "journal.hardware_busy_damaged", &[]);
+            return true;
+        }
+        let btc = btc.records();
+        lost.iter().any(|card_use| match *card_use {
+            CardUse::Evm(address) => evm
+                .records
+                .iter()
+                .any(|(_, record)| record.account == address && !record.state.is_terminal()),
+            CardUse::Btc(network, key, script_type) => {
+                let account = yw_core::btc::BtcAccountId::Hardware { key, script_type };
+                btc.iter().any(|record| {
+                    record.network == network
+                        && record.account == account
+                        && record.may_still_confirm(now_unix)
+                })
+            }
+            CardUse::Sol(index) => sol.records.iter().any(|(_, record)| {
+                record.state == yw_core::journal::sol::SolTxState::Pending
+                    && record.source == yw_core::slip10::SolKeySource::Hardware(index)
+            }),
+            CardUse::Zec(network, index) => zec.records.iter().any(|(_, record)| {
+                record.account.network == network
+                    && record.account.source == yw_core::zec::ZecKeySource::Hardware { index }
+                    && record.may_still_confirm()
+            }),
+        })
+    }
+
     /// Drops the (final) SOL, BTC and ZEC records of the removed mnemonic `id`'s accounts and
     /// commits: their accounts are gone, and an earlier build would read these record versions
     /// as damaged bodies (spec/04 §6.6). Nothing is written when there is none.

@@ -207,7 +207,7 @@ v5(ZIP 225), 일반 부분만. 모든 정수는 little-endian:
 탭 행 `EVM · Solana · Bitcoin · Zcash`(Ctrl+4). 꺼져 있으면 소개 카드와 [Zcash mainnet 켜기]·[Zcash testnet 켜기 (테스트)]. 켜져 있으면 한 화면에 차례로:
 
 - 네트워크 배너(§2.1), ZEC 저널 손상 배너(E-VLT-006), 오류·정보 배너.
-- 네트워크 카드: mainnet/testnet 선택, `RPC (zcash:<net>): 연결됨 (genesis 확인) · 블록 n · 업그레이드 NU7` 또는 "엔드포인트 없음 (E-KEY-005)…", UTXO 원천(`노드 getaddressutxos` / `Blockbook (/api/v2)`), [새로고침], [Zcash 끄기].
+- 네트워크 카드: mainnet/testnet 선택, `RPC (zcash:<net>): 연결됨 (genesis 확인) · 블록 n · 업그레이드 NU7` 또는 "엔드포인트 없음 (E-KEY-005)…", UTXO 원천(`노드 getaddressutxos` / `Blockbook (/api/v2)`), [새로고침], [Zcash 끄기]. 새로고침 결과는 작업 번호와 물어본 주소로 맞춘다: 작업 번호는 잠금(·초기화)을 넘어 계속 올라가고(2026-11-10 — 이전에는 잠금마다 0부터 다시 세어, 잠금 전이나 초기화 전 지갑의 늦은 답이 다음 세션의 첫 새로고침으로 받아들여질 수 있었다), 결과의 주소가 지금 계정의 주소가 아니면 그 답은 보이지도, 계획·"이미 아는 출력"에 쓰지도 않고 다음 틱에 다시 묻는다.
 - 계정 카드: 키 출처·경로, 확인된 잔액(진행 중 거래의 입력 제외, 미확인 금액 별도), 키 출처 바꾸기(표준 / `EVM 계정 i과 같은 키` + T-ZEC-EVM-SHARED + 두 번 확인 / `YubiKey Zcash 주소 i 사용` 버튼은 등록된 슬롯이 있을 때).
 - 받기 카드: 주소(4자 묶음), T-ZEC-RECEIVE, [주소 복사], [QR 보기](`zcash:` + 주소). 확인되지 않은 passphrase 세션(T-ALT-PASS)에서는 막는다.
 - 보내기 카드: 받는 주소(t/TEX/UA), 금액(ZEC) 또는 [최대], [검토].

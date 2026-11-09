@@ -626,9 +626,14 @@ impl App {
         }
     }
 
-    /// Lock: forget everything of the session.
+    /// Lock: forget everything of the session but the refresh job counter, which stays
+    /// monotonic: a refresh still queued or slow on the RPC worker from before the lock (or
+    /// from a reset wallet) never matches a job of the next session.
     pub fn zec_lock(&mut self) {
-        self.zec = ZecUi::default();
+        self.zec = ZecUi {
+            job: self.zec.job,
+            ..ZecUi::default()
+        };
     }
 
     /// `검토`: refresh first (fresh tip, branch id and UTXOs), then plan.
@@ -910,6 +915,7 @@ impl App {
             ZecRpcEvent::Refreshed {
                 job,
                 network,
+                address,
                 result,
             } => {
                 if job != self.zec.job {
@@ -917,6 +923,16 @@ impl App {
                 }
                 self.zec.refreshing = false;
                 let review = core::mem::take(&mut self.zec.review_after);
+                if self.zec_account().is_none_or(|account| {
+                    account.network != network || account.address() != address
+                }) {
+                    // Not the current account's answer (it changed meanwhile): nothing of it is
+                    // shown, planned from or sent as known; the next tick asks again.
+                    self.zec.info = None;
+                    self.zec.next_refresh_ms = 0;
+                    self.refresh();
+                    return;
+                }
                 match result {
                     Ok(snapshot) => {
                         self.zec.error = snapshot.utxo_error.map(ZecRpcError::text);

@@ -2700,10 +2700,44 @@ fn yubikey_accounts_and_the_card_step() {
     assert_eq!(records(&h), before);
     // The right PIN signs on the card and journals the transaction.
     h.submit(Purpose::CardSign(id), &[b"135790"]);
+    // Another card approval while this card job runs (PIN in, waiting for the touch) is
+    // refused: the running step keeps its waiter and send slot (never answered as cancelled),
+    // the new approval signs nothing, opens no PIN window and releases only its own slot.
+    let running = ticket;
+    let refused = h.app.push_sign_waiter(SignWaiter::App);
+    h.app
+        .dispatch_evm_sign(refused, approve(source, account), info.clone(), false);
+    assert_eq!(h.app.card.step.as_ref().map(|step| step.id), Some(id));
+    assert!(h.app.card_waiting_id().is_none());
+    assert!(h.app.evm.signing.contains_key(&running));
+    assert!(!h.app.evm.signing.contains_key(&refused));
+    assert_eq!(h.app.key_queue.len(), 1, "only the running SignEvmCard");
     run_named(&mut h, "SignEvmCard");
     h.pump();
     assert!(h.app.card.step.is_none());
     assert_eq!(records(&h), before + 1);
+    // spec/10 §15: this card holds the only key of the account whose transaction may still
+    // confirm, so removing its record is refused before the password; nothing is removed.
+    let card_id = h.app.card.record_ids[h
+        .app
+        .card
+        .records
+        .iter()
+        .position(|record| record.serial == 7_700_011)
+        .unwrap()];
+    h.submit(
+        Purpose::ConfirmPassword(PasswordAction::RemoveHardwareKey(card_id)),
+        &[b"yubikey wallet password"],
+    );
+    let removal = h.run_one();
+    assert!(removal.iter().any(|result| matches!(
+        result.outcome,
+        KeyOutcome::YubiKey(crate::workers::key::yubikey::YkOutcome::RemoveBusy(id))
+            if id == card_id
+    )));
+    h.deliver(removal);
+    h.pump();
+    assert_eq!(h.app.card.records.len(), 2);
 
     // Cancelling the PIN window signs nothing and releases only this approval's send slot: an
     // other open approval keeps its own (spec/03 §3.6, D20).
@@ -3912,6 +3946,27 @@ fn wallet_reset_from_the_lock_screen_returns_to_first_run() {
     );
     // S01 creation works again.
     assert!(control_ids(&h.app.items()).contains(&ids::FIRST_CREATE));
+}
+
+/// A lock while the reset moves the files (Windows lock, sleep) never strands it: the wait
+/// screen stays, the result of the older epoch is taken, and the app reaches S01.
+#[test]
+fn lock_during_wallet_reset_still_reaches_first_run() {
+    let mut h = Harness::new("reset-lock");
+    h.create_and_confirm();
+    h.app.lock(LockReason::Manual);
+    h.pump();
+    h.app.open_reset();
+    h.app.reset_phrase_changed(crate::app_reset::RESET_PHRASE);
+    h.app.reset_execute();
+    assert!(h.app.reset.running);
+    h.app.lock(LockReason::SessionLock);
+    assert!(matches!(h.app.screen, Screen::Processing(_)));
+    h.pump();
+    assert!(!h.app.reset.running);
+    assert_eq!(h.app.mode, AppMode::NoVault);
+    assert_eq!(h.app.screen, Screen::FirstRun);
+    assert!(!h.vault_file().exists());
 }
 
 /// spec/10 §7.6 at the App level: S01 `YubiKey 연결하기 (복구 단어 없이)` → W01 → the emulator

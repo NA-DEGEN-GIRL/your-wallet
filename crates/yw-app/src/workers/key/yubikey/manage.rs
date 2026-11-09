@@ -258,6 +258,19 @@ impl KeyWorker {
         admin_pin: (&[u8], bool),
     ) -> Result<HwKeyRecord, YubiKeyJobError> {
         let (id, record, others) = self.yk_card(serial)?;
+        let lines = {
+            let pending = self
+                .pending_enrol
+                .as_ref()
+                .ok_or(YubiKeyJobError::Vault(VaultError::InvalidState))?;
+            yw_core::yubikey::enrol::preview_seed(pending.seed.expose(), slots)
+                .map_err(card_error)?
+        };
+        // Before the card is written: no account whose transaction may still confirm loses its
+        // last key (spec/10 §15).
+        if self.yk_keys_busy(id, Some(&reslot_record(&record, &lines))) {
+            return Err(YubiKeyJobError::Busy);
+        }
         let pending = self
             .pending_enrol
             .as_ref()
@@ -293,6 +306,11 @@ impl KeyWorker {
             .ok_or(YubiKeyJobError::Vault(VaultError::InvalidState))?
             .check_replace_hardware_key(id, plan.remaining(&record).as_ref())
             .map_err(YubiKeyJobError::Vault)?;
+        // Nor may an account whose transaction may still confirm lose its last key (spec/10
+        // §15, the rule of an imported key).
+        if self.yk_keys_busy(id, plan.remaining(&record).as_ref()) {
+            return Err(YubiKeyJobError::Busy);
+        }
         let report =
             crate::yubikey::clear_card(self.cards.as_mut(), &record, plan, admin_pin, piv_pin)
                 .map_err(YubiKeyJobError::Card)?;

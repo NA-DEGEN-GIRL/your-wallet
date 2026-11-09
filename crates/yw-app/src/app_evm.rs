@@ -381,6 +381,11 @@ impl EvmUi {
         self.discard = None;
         self.token_delete = None;
         self.send_show_hidden = false;
+        // S17, `다시 고정` and a chain delete in progress: a check answering after the lock
+        // finds nothing to confirm or save.
+        self.chain_form = None;
+        self.repin = None;
+        self.delete_chain = None;
     }
 
     /// Records of the journal view.
@@ -1921,6 +1926,33 @@ impl App {
     }
 
     fn on_probe(&mut self, job: u64, result: Result<[u8; 32], ProbeError>) {
+        // A check that answers after the user left its screen (or after a lock, which also
+        // drops the forms) changes nothing: never a chain confirmation over the lock screen or
+        // another screen, never a chain saved without the user on S17.
+        let unlocked = matches!(self.mode, AppMode::Unlocked { .. });
+        if self
+            .evm
+            .repin
+            .as_ref()
+            .is_some_and(|repin| repin.job == job)
+            && (!unlocked || self.screen != Screen::Settings(SettingsSection::Chains))
+        {
+            self.evm.repin = None;
+            return;
+        }
+        if self
+            .evm
+            .chain_form
+            .as_ref()
+            .is_some_and(|form| form.job == job)
+            && (!unlocked || self.screen != Screen::ChainEdit)
+        {
+            if let Some(form) = self.evm.chain_form.as_mut() {
+                form.pending = None;
+                form.message = None;
+            }
+            return;
+        }
         if let Some(repin) = self.evm.repin.as_mut()
             && repin.job == job
         {

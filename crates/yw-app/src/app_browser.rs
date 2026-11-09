@@ -634,7 +634,8 @@ impl App {
 
     /// spec/04 §2.5: one topmost unlock window for all waiting dApp requests.
     fn open_unlock_for_dapp(&mut self) {
-        if self.mode != AppMode::Locked || self.secret_open() {
+        // A wallet reset in progress answers the waiting items when it ends (no vault then).
+        if self.mode != AppMode::Locked || self.secret_open() || self.reset.running {
             return;
         }
         if let Some(browser) = self.browser.as_mut() {

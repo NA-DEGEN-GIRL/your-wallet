@@ -14,6 +14,7 @@ use yw_core::yubikey::CardError;
 use yw_core::yubikey::enrol::PreviewLine;
 use yw_core::yubikey::piv::ManagementState;
 use yw_core::yubikey::plan::{PlanError, PlannedSlot};
+use yw_core::yubikey::record::HwKeyRecord;
 
 use super::{KeyWorker, ascii, new_slot, now_unix, passphrase, password, reconcile_hardware};
 
@@ -242,6 +243,9 @@ pub enum YkOutcome {
     PinsSet(u32, Result<PinReport, CardJobError>),
     /// `Remove` finished.
     Removed(Result<RecordId, VaultError>),
+    /// `Remove` was refused before the password check: the record holds the last key of an
+    /// account whose transaction may still confirm (nothing removed, spec/10 §15).
+    RemoveBusy(RecordId),
     /// `Discard` finished.
     Discarded,
     /// A card action finished.
@@ -250,6 +254,55 @@ pub enum YkOutcome {
     Scanned(Result<yw_core::yubikey::connect::CardScan, CardJobError>),
     /// `ConnectVerify` finished.
     ConnectVerified(Result<(), CardJobError>),
+}
+
+/// What an enrolled card key is used for — its account — compared before and after a card
+/// change (spec/10 §15).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CardUse {
+    /// The EVM account with this address.
+    Evm(Address),
+    /// A Bitcoin single-address account: network, key, address type.
+    Btc(
+        yw_core::btc::BtcNetwork,
+        yw_core::btc::account::HwBtcKey,
+        yw_core::btc::ScriptType,
+    ),
+    /// The Solana account of this index.
+    Sol(yw_core::bip32::path::AccountIndex),
+    /// The Zcash address of this network and index.
+    Zec(yw_core::zec::ZecNetwork, u32),
+}
+
+/// The account uses of every slot of `records` (a key held by several cards is listed once per
+/// card; only membership matters).
+fn card_uses(records: &[HwKeyRecord]) -> Vec<CardUse> {
+    use yw_core::btc::account::HwBtcKey;
+    let mut uses = Vec::new();
+    for slot in records.iter().flat_map(|record| &record.slots) {
+        match slot.role {
+            KeyRole::Evm { index, btc } => {
+                if let Ok(address) = yw_core::yubikey::plan::evm_address(&slot.public) {
+                    uses.push(CardUse::Evm(address));
+                }
+                if let Some(shared) = btc {
+                    uses.push(CardUse::Btc(
+                        shared.network,
+                        HwBtcKey::Evm(index.get()),
+                        shared.script,
+                    ));
+                }
+            }
+            KeyRole::Btc {
+                network,
+                script,
+                index,
+            } => uses.push(CardUse::Btc(network, HwBtcKey::Address(index), script)),
+            KeyRole::Sol { index } => uses.push(CardUse::Sol(index)),
+            KeyRole::Zec { network, index } => uses.push(CardUse::Zec(network, index)),
+        }
+    }
+    uses
 }
 
 /// The recovery words of an enrolment held between the confirmation and the card.
@@ -401,12 +454,19 @@ impl KeyWorker {
             YkJob::Remove {
                 password: bytes,
                 id,
-            } => KeyOutcome::YubiKey(YkOutcome::Removed((|| {
-                let password = password(&bytes).map_err(|_| VaultError::UnlockFailed)?;
-                self.vault()?.remove_hardware_key(&password, id)?;
-                logging::info("key", "yubikey.removed", &[]);
-                Ok(id)
-            })())),
+            } => {
+                // Whatever the UI showed: refused before the password like an imported key.
+                if self.yk_keys_busy(id, None) {
+                    logging::info("key", "yubikey.remove_busy", &[]);
+                    return KeyOutcome::YubiKey(YkOutcome::RemoveBusy(id));
+                }
+                KeyOutcome::YubiKey(YkOutcome::Removed((|| {
+                    let password = password(&bytes).map_err(|_| VaultError::UnlockFailed)?;
+                    self.vault()?.remove_hardware_key(&password, id)?;
+                    logging::info("key", "yubikey.removed", &[]);
+                    Ok(id)
+                })()))
+            }
             YkJob::Discard => {
                 self.yk_wipe();
                 KeyOutcome::YubiKey(YkOutcome::Discarded)
@@ -435,6 +495,33 @@ impl KeyWorker {
                 KeyOutcome::YubiKey(YkOutcome::ConnectVerified(result))
             }
         }
+    }
+
+    /// Whether changing the card record `id` to `after` (`None`: removed) takes away the last
+    /// key of an account whose transaction may still confirm (spec/10 §15, the rule of an
+    /// imported key or an added recovery phrase): tracking, fee bumps, speed-up and the abandon
+    /// rule still need that account, which the next meta reconcile would drop. `false` without
+    /// a vault (the job reports that itself).
+    pub(super) fn yk_keys_busy(&mut self, id: RecordId, after: Option<&HwKeyRecord>) -> bool {
+        let Some(vault) = self.vault.as_ref() else {
+            return false;
+        };
+        let Ok(cards) = vault.hardware_keys() else {
+            return true;
+        };
+        let before: Vec<HwKeyRecord> = cards.iter().map(|card| card.record.clone()).collect();
+        let mut rest: Vec<HwKeyRecord> = cards
+            .into_iter()
+            .filter(|card| card.id != id)
+            .map(|card| card.record)
+            .collect();
+        rest.extend(after.cloned());
+        let kept = card_uses(&rest);
+        let lost: Vec<CardUse> = card_uses(&before)
+            .into_iter()
+            .filter(|card_use| !kept.contains(card_use))
+            .collect();
+        !lost.is_empty() && self.journal.hardware_busy(vault, &lost, now_unix())
     }
 
     /// `Counters`: the PIN tries left of card `serial` or of the inserted card holding a key.

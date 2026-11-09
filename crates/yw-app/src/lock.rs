@@ -41,11 +41,17 @@ pub const IDLE_CHECK_MS: u64 = 1_000;
 /// App-input idle tracking. Only input to yw-app windows counts (never `GetLastInputInfo`);
 /// while an approval or W08/W09 window is open the clock is paused. Closing one does not restart
 /// the count: only user input does (a window that expired or was answered for the user — e.g. a
-/// dApp's request nobody looked at — must not keep the wallet unlocked).
+/// dApp's request nobody looked at — must not keep the wallet unlocked). One pause per input:
+/// a window shown after another one without input in between (a page re-sending its requests
+/// as each expires) does not pause again, so unattended windows extend the session once, never
+/// indefinitely.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct IdleTracker {
     last_input_ms: u64,
-    paused: bool,
+    /// The window that pauses the clock now.
+    paused: Option<u64>,
+    /// No window has paused the clock since the last input.
+    pause_left: bool,
 }
 
 impl IdleTracker {
@@ -54,26 +60,37 @@ impl IdleTracker {
     pub const fn new(now_ms: u64) -> Self {
         Self {
             last_input_ms: now_ms,
-            paused: false,
+            paused: None,
+            pause_left: true,
         }
     }
 
     /// Key or button input to a yw-app window (and unlock success).
     pub const fn input(&mut self, now_ms: u64) {
         self.last_input_ms = now_ms;
+        self.pause_left = true;
     }
 
-    /// Pauses while a self-timed window is open. Resuming keeps the last input time: input to
-    /// the window itself (approve, reject, scrolling) already counted through [`Self::input`].
-    pub const fn set_paused(&mut self, paused: bool) {
-        self.paused = paused;
+    /// The self-timed window open now (`Some(identity)`, `None` when none is). A window pauses
+    /// the clock when it is the one already pausing it, or when no window has paused it since
+    /// the last input. Resuming keeps the last input time: input to the window itself (approve,
+    /// reject, scrolling) already counted through [`Self::input`].
+    pub const fn set_window(&mut self, window: Option<u64>) {
+        self.paused = match (window, self.paused) {
+            (Some(window), Some(paused)) if window == paused => Some(window),
+            (Some(window), _) if self.pause_left => {
+                self.pause_left = false;
+                Some(window)
+            }
+            _ => None,
+        };
     }
 
     /// Whether `minutes` of app inactivity have passed.
     #[must_use]
     pub const fn should_lock(&self, now_ms: u64, minutes: u8) -> bool {
         let limit = (minutes as u64).saturating_mul(60_000);
-        !self.paused && now_ms.saturating_sub(self.last_input_ms) >= limit
+        self.paused.is_none() && now_ms.saturating_sub(self.last_input_ms) >= limit
     }
 }
 
@@ -119,19 +136,33 @@ mod tests {
         assert!(idle.should_lock(10_000 + limit, minutes));
         // An approval window open across the whole period: no lock while it is open.
         let mut idle = IdleTracker::new(0);
-        idle.set_paused(true);
+        idle.set_window(Some(1));
         assert!(!idle.should_lock(limit * 2, minutes));
         // It closed by itself (expired, or a dApp request answered without the user): the count
         // is not restarted — the wallet locks at once.
-        idle.set_paused(false);
+        idle.set_window(None);
         assert!(idle.should_lock(limit * 2, minutes));
-        // The user answered it: that click is input, the count starts there.
+        // The user answered it: that click is input, the count starts there, and the next
+        // window pauses again.
         let mut idle = IdleTracker::new(0);
-        idle.set_paused(true);
+        idle.set_window(Some(1));
         idle.input(limit * 2);
-        idle.set_paused(false);
+        idle.set_window(None);
         assert!(!idle.should_lock(limit * 3 - 1, minutes));
         assert!(idle.should_lock(limit * 3, minutes));
+        idle.set_window(Some(2));
+        assert!(!idle.should_lock(limit * 4, minutes));
+        // Windows nobody touches, shown back to back (a page re-sending each request as it
+        // expires): the first pauses, the next one does not — the wallet locks.
+        let mut idle = IdleTracker::new(0);
+        idle.set_window(Some(1));
+        assert!(!idle.should_lock(limit * 2, minutes));
+        idle.set_window(Some(2));
+        assert!(idle.should_lock(limit * 2, minutes));
+        // Input while it is shown (the user reads and scrolls it): it pauses again.
+        idle.input(limit * 2);
+        idle.set_window(Some(2));
+        assert!(!idle.should_lock(limit * 4, minutes));
     }
 
     #[test]

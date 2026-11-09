@@ -440,7 +440,7 @@ mod tests {
 
     fn key_jobs(app: &App) -> Vec<KeyJob> {
         app.key_queue
-            .cancel_pending()
+            .cancel_pending(u64::MAX)
             .into_iter()
             .map(|(_, job)| job)
             .collect()

@@ -305,6 +305,7 @@ fn job_error_text(error: YubiKeyJobError) -> String {
         YubiKeyJobError::Key(error) => crate::errors::key_code(error).text(),
         YubiKeyJobError::Vault(error) => crate::errors::vault_code(error).text(),
         YubiKeyJobError::Card(error) => error.to_string(),
+        YubiKeyJobError::Busy => crate::app_yubikey::T_YK_BUSY.to_owned(),
     }
 }
 
@@ -324,6 +325,10 @@ const FACTORY_PIN: &[u8] = b"123456";
 
 /// The refusal of a card signing while the card uses factory PINs (spec/10 §9.3).
 pub const T_CARD_FACTORY_PIN: &str = "이 YubiKey는 아직 공장 기본 PIN을 쓰고 있어 서명하지 않았습니다. 먼저 'PIN 설정'으로 PIN을 바꾸세요 (설정 → YubiKey). 아무것도 서명하지 않았습니다.";
+
+/// A card approval while another card signature is in progress (its PIN entered, waiting for
+/// the touch): the new one is not signed, the running one continues (spec/10 §9.2).
+pub const T_CARD_BUSY: &str = "다른 YubiKey 서명이 진행 중이어서 방금 승인한 요청은 서명하지 않았습니다. 진행 중인 서명이 끝난 뒤(YubiKey 터치) 다시 시도하세요.";
 
 fn now_ms() -> u64 {
     yw_win::time::monotonic_ms()
@@ -511,10 +516,6 @@ impl App {
             _ => 1,
         };
         self.card.next_id = self.card.next_id.wrapping_add(1);
-        if let Some(previous) = self.card.step.take() {
-            // One card step at a time: an older one still waiting ends as cancelled.
-            self.card_resolve_cancelled(previous);
-        }
         let step = CardStep {
             id: self.card.next_id,
             approval_id: approved.id(),
@@ -528,6 +529,23 @@ impl App {
             swallow_failure: false,
             counters: None,
         };
+        if let Some(previous) = self.card.step.take() {
+            if previous.approved.is_none() {
+                // The older step's PIN is in: its card job runs (or waits for its blockhash)
+                // and its result is final — never answered as cancelled, since it may still be
+                // signed, journaled and sent. This approval is not used: nothing is signed for
+                // it, so its waiter gets 4001 and its own send slot is released.
+                self.card.step = Some(previous);
+                logging::info("app", "card.busy_refused", &[]);
+                self.card_resolve_cancelled(step);
+                self.banner(None, T_CARD_BUSY.to_owned());
+                self.refresh();
+                return Ok(());
+            }
+            // One card step at a time: an older one still waiting for its PIN ends as
+            // cancelled (nothing was signed for it).
+            self.card_resolve_cancelled(previous);
+        }
         // spec/10 §9.3: a card still on its factory PINs (noted at enrolment, cleared by "PIN
         // 설정") does not sign; the approval is dropped before any PIN is asked.
         if let Some(serial) = self.card_on_defaults(role) {

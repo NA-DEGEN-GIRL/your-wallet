@@ -100,6 +100,8 @@ pub enum ZecRpcEvent {
         job: u64,
         /// Network.
         network: ZecNetwork,
+        /// The address asked about (an answer for another account is dropped).
+        address: String,
         /// The snapshot or the first failure.
         result: Result<Box<ZecSnapshot>, ZecRpcError>,
     },
@@ -236,6 +238,7 @@ pub fn handle(transport: &dyn Transport, job: ZecRpcJob) -> ZecRpcEvent {
             ZecRpcEvent::Refreshed {
                 job,
                 network,
+                address,
                 result,
             }
         }

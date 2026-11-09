@@ -1164,7 +1164,14 @@ impl SecretForm {
             return self.non_ascii(now_ms);
         }
         if vk == VK_ESCAPE {
-            return self.cancel();
+            // A submitted value's job (reveal, removal, `.prev` recovery, unlock) is running
+            // and cannot be called back: Esc would only look like a cancel. The window closes
+            // with the result (1–2 s).
+            return if self.busy {
+                FormAction::None
+            } else {
+                self.cancel()
+            };
         }
         if alt {
             return FormAction::None;
@@ -1219,7 +1226,8 @@ impl SecretForm {
                 .is_some_and(|display| display.copy_allowed),
             Button::Reveal(_) => self.capture_excluded && self.input_enabled(now_ms),
             Button::ClearAll | Button::Checkbox => self.input_enabled(now_ms),
-            Button::Cancel => true,
+            // Not while a submitted job runs (see `on_key`'s Esc).
+            Button::Cancel => !self.busy,
         }
     }
 

@@ -1213,7 +1213,8 @@ impl App {
         }
         self.background = false;
         self.refresh();
-        if self.mode == AppMode::Locked && self.secret.is_none() {
+        // Not while a wallet reset moves the files (its vault is gone once it finishes).
+        if self.mode == AppMode::Locked && self.secret.is_none() && !self.reset.running {
             self.open_input(SecretKind::Unlock, Purpose::Unlock, false);
         }
     }
@@ -1243,24 +1244,35 @@ impl App {
         }
     }
 
-    /// Whether the idle clock is paused (spec/04 §5.1, LK-1): a W08/W09 display window or an
-    /// approval window (A01, any chain) is open. Each has its own time limit; closing does not
-    /// restart the count (only input does), so a dApp's unattended requests cannot keep the
-    /// wallet unlocked.
-    fn idle_paused(&self) -> bool {
-        self.secret
+    /// The window that may pause the idle clock (spec/04 §5.1, LK-1): a W08/W09 display window
+    /// (its serial) or the shown approval (A01, any chain; its queue id), as an identity. Each
+    /// has its own time limit; closing does not restart the count (only input does), and a
+    /// window shown after another one without input in between does not pause again
+    /// ([`IdleTracker::set_window`]), so a dApp's unattended requests — even re-sent back to
+    /// back — cannot keep the wallet unlocked.
+    fn idle_window(&self) -> Option<u64> {
+        const DISPLAY: u64 = 1 << 63;
+        if let Some(secret) = self
+            .secret
             .as_ref()
-            .is_some_and(|secret| secret.form.kind().is_display())
-            || self.evm.window.is_some()
-            || self.evm.queue.shown().is_some()
+            .filter(|secret| secret.form.kind().is_display())
+        {
+            return Some(DISPLAY | secret.serial);
+        }
+        match self.evm.queue.shown() {
+            Some(item) => Some(item.id.0),
+            // An approval window without its queue item (not expected between messages): one
+            // window like any other.
+            None => self.evm.window.is_some().then_some(DISPLAY - 1),
+        }
     }
 
     /// The idle part of the main timer: pause/resume, then `LockReason::Idle` when due. Before
     /// any vault exists, a pending import (password, words or key held here or in the key
     /// worker) is discarded after the same idle time.
     fn idle_tick(&mut self, now: u64) {
-        let paused = self.idle_paused();
-        self.idle.set_paused(paused);
+        let window = self.idle_window();
+        self.idle.set_window(window);
         if !self.idle.should_lock(now, self.settings.auto_lock_minutes) {
             return;
         }
@@ -1377,9 +1389,15 @@ impl App {
         self.startup_load = false;
         if vault_present {
             self.set_mode(AppMode::Locked);
-            self.set_screen(Screen::Locked);
-        } else if self.mode == AppMode::NoVault {
-            self.set_screen(Screen::FirstRun);
+        }
+        // A running reset keeps its `Processing` screen until its result, which is taken from
+        // any epoch: a lock meanwhile (Windows lock, sleep) never strands it on S07 or S01.
+        if !self.reset.running {
+            if vault_present {
+                self.set_screen(Screen::Locked);
+            } else if self.mode == AppMode::NoVault {
+                self.set_screen(Screen::FirstRun);
+            }
         }
         // `Load` is a control job (it survives `Lock`): its result tells what the lock left on
         // disk. A `CreateWallet`/`CommitImport` that finished just before the lock had its
@@ -2306,6 +2324,11 @@ impl App {
                 return Reply::Default;
             }
             Msg::Close => {
+                if form.busy() {
+                    // The submitted job runs on and cannot be called back (like Esc): the
+                    // window closes with its result instead of pretending to cancel.
+                    return Reply::Handled(0);
+                }
                 let action = if form.kind().is_display() && !form.kind().needs_hold() {
                     form.wipe();
                     FormAction::Close
