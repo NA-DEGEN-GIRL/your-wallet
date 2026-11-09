@@ -19,8 +19,8 @@
 //! moved the focus. Page keys scroll a page, Ctrl+Home/End to the top or bottom (not while an
 //! edit has the focus: there they move the caret). Controls out of view are hidden, so the dialog
 //! manager's Tab skips them and wraps around inside the view: Tab instead goes to the next tab stop
-//! in placed order ([`tab_target`]), scrolling it into view, and every focus moved by the keyboard
-//! ends fully in view ([`reveal_offset`]).
+//! in placed order ([`tab_target`]; a radio group's checked button, [`radio_entry`]), scrolling it
+//! into view, and every focus moved by the keyboard ends fully in view ([`reveal_offset`]).
 //!
 //! [`WM_YW_NAV_KEY`]: crate::events::WM_YW_NAV_KEY
 
@@ -28,7 +28,7 @@ use yw_win::ui::{Window, wheel_scroll_lines};
 
 use crate::app::App;
 use crate::events::NavKey;
-use crate::ui::main_window::is_tab_stop;
+use crate::ui::main_window::{is_tab_stop, radio_state};
 
 /// Main window timer of the wheel glide (the main tick is 1).
 pub(crate) const SCROLL_TIMER_ID: usize = 2;
@@ -77,6 +77,32 @@ pub fn tab_target(stops: &[bool], from: usize, back: bool) -> Option<usize> {
             }
         })
         .find(|&index| stops.get(index).copied().unwrap_or(false))
+}
+
+/// Where Tab enters the radio group whose first button (the group's only tab stop) is `target`,
+/// as the dialog manager does: on its checked button. Focusing an unchecked auto radio button
+/// clicks it (`BN_CLICKED`), so the first button is never focused while another one is checked.
+/// `radios[i]` is control `i`'s [`radio_state`](crate::ui::main_window::radio_state) in placed
+/// order; the group runs to the next first-of-group radio (the only `WS_GROUP` controls). `now`,
+/// where the dialog manager already put the focus, is kept when it is a radio of the group.
+/// `target` itself when it starts no group or no enabled button of the group is checked.
+#[must_use]
+pub fn radio_entry(radios: &[Option<(bool, bool)>], target: usize, now: usize) -> usize {
+    if !matches!(radios.get(target), Some(Some((true, _)))) {
+        return target;
+    }
+    let end = radios
+        .iter()
+        .enumerate()
+        .skip(target.saturating_add(1))
+        .find(|(_, radio)| matches!(radio, Some((true, _))))
+        .map_or(radios.len(), |(index, _)| index);
+    if (target..end).contains(&now) && matches!(radios.get(now), Some(Some(_))) {
+        return now;
+    }
+    (target..end)
+        .find(|&index| matches!(radios.get(index), Some(Some((_, true)))))
+        .unwrap_or(target)
 }
 
 /// The scroll offset that shows a control at client `y` with height `h` fully in a `view` px
@@ -233,6 +259,15 @@ impl App {
                     })
                     .and_then(|from| tab_target(&stops, from, back))
                     .unwrap_or(now);
+                // A radio group is entered on its checked button, never by focusing (and so
+                // clicking) its unchecked first one.
+                let radios: Vec<Option<(bool, bool)>> = self
+                    .placed
+                    .controls
+                    .iter()
+                    .map(|(ctl, _)| radio_state(ctl))
+                    .collect();
+                let target = radio_entry(&radios, target, now);
                 self.reveal_control(target);
                 if target != now {
                     self.controls.focus_at(target);
@@ -293,8 +328,33 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{reveal_offset, tab_target};
+    use super::{radio_entry, reveal_offset, tab_target};
     use crate::events::NavKey;
+
+    /// Review 2026-11-10: Tab into S11's asset radios (ETH first, USDC checked) focused the
+    /// unchecked ETH, which Windows answers with a click; the group is entered on USDC.
+    #[test]
+    fn tab_enters_a_radio_group_on_its_checked_button() {
+        // 0 button, 1 ETH (first), 2 WETH, 3 USDC (checked), 4 link, 5 fee radio (first, checked).
+        let radios = [
+            None,
+            Some((true, false)),
+            Some((false, false)),
+            Some((false, true)),
+            None,
+            Some((true, true)),
+        ];
+        // The dialog manager already put the focus on USDC: it stays there.
+        assert_eq!(radio_entry(&radios, 1, 3), 3);
+        // The group was out of view (the focus wrapped elsewhere): USDC, not ETH.
+        assert_eq!(radio_entry(&radios, 1, 0), 3);
+        // The next group starts at 5; a target that is no first radio is kept.
+        assert_eq!(radio_entry(&radios, 5, 0), 5);
+        assert_eq!(radio_entry(&radios, 4, 0), 4);
+        // Nothing checked (or only a disabled button): the first button, as before.
+        let unchecked = [None, Some((true, false)), Some((false, false))];
+        assert_eq!(radio_entry(&unchecked, 1, 0), 1);
+    }
 
     /// Review 2026-11-10: controls out of view are hidden, so the dialog manager's Tab wrapped
     /// inside the view; the placed-order target reaches the ones below (and above) the fold.

@@ -1176,6 +1176,18 @@ pub const fn is_tab_stop(ctl: &Ctl) -> bool {
         }
 }
 
+/// A radio button's `(first of its group, checked and enabled)`; `None` for other controls
+/// (Tab's entry into a radio group, `app_scroll::radio_entry`).
+#[must_use]
+pub fn radio_state(ctl: &Ctl) -> Option<(bool, bool)> {
+    match ctl.kind {
+        ControlKind::Radio { first_in_group } => {
+            Some((first_in_group, ctl.enabled && ctl.checked == Some(true)))
+        }
+        _ => None,
+    }
+}
+
 /// The kind of a control without its button colors (a style change keeps the control).
 fn kind_class(kind: ControlKind) -> ControlKind {
     match kind {
