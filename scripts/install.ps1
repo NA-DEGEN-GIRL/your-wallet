@@ -1669,6 +1669,7 @@ function Invoke-Install {
             if ($null -ne $tools -and $null -ne $tools.Cargo) { $cargoExe = $tools.Cargo }
             Write-Plan "실행: $cargoExe $((Get-CargoBuildArguments $cargoTarget) -join ' ')  (저장소 루트, 결과 $releaseDir)"
             Write-Plan "빌드 동안만 지울 환경 변수: $((@($ClearedBuildVariableNames) + @($RustflagsVariables)) -join ', '), 이름이 $($ClearedBuildVariablePrefixes -join '·')로 시작하는 것"
+            Write-Plan "cargo 실행 직전에 지울 이전 결과: $releaseDir 의 yw-app.exe·yw-host.exe(변경 없는 빌드는 cargo가 다시 링크한다)"
         } else {
             Invoke-Build $root $tools $cargoTarget
             foreach ($exe in $sourceApp, $sourceHost) {
