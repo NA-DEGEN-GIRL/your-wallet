@@ -191,14 +191,14 @@ impl App {
 
     /// The immediate refusal of a Solana/Bitcoin connect while unlocked: no account to offer
     /// (4100 with the reason, spec/05 §4.9). With Bitcoin off every Bitcoin request is
-    /// `NoBtcAccount`.
+    /// `BtcDisabled`.
     pub(crate) fn chain_unlocked_refusal(&self, site: &SiteRequest) -> Option<ProviderError> {
         if matches!(
             site.kind,
             SiteKind::BtcConnect(_) | SiteKind::BtcSign { .. }
         ) && !self.settings.bitcoin.enabled
         {
-            return Some(ProviderError::NoBtcAccount);
+            return Some(ProviderError::BtcDisabled);
         }
         match &site.kind {
             // An account on its way (account 0 derived with the session's meta, spec/07 §3.1)
@@ -370,7 +370,7 @@ impl App {
         let core = std::sync::Arc::clone(&browser.core);
         let family = site.kind.family();
         if family == Family::Bitcoin && !self.settings.bitcoin.enabled {
-            self.respond(&site.reply, Err(ProviderError::NoBtcAccount));
+            self.refuse_site(site, ProviderError::BtcDisabled);
             return;
         }
         if !self.chain_choices_current(choices) {
@@ -460,7 +460,7 @@ impl App {
                     refusal().or_else(|| rows.is_empty().then_some(ProviderError::NoSolAccount))
                 {
                     // An empty list never opens a window (an account still on its way included).
-                    self.respond(&site.reply, Err(error));
+                    self.refuse_site(site, error);
                     Some(QueueOutcome::Cancelled)
                 } else {
                     None
@@ -469,7 +469,7 @@ impl App {
             SiteKind::BtcConnect(_) | SiteKind::BtcSign { .. }
                 if !self.settings.bitcoin.enabled =>
             {
-                self.respond(&site.reply, Err(ProviderError::NoBtcAccount));
+                self.refuse_site(site, ProviderError::BtcDisabled);
                 Some(QueueOutcome::Cancelled)
             }
             SiteKind::BtcConnect(purposes) => {
@@ -501,11 +501,11 @@ impl App {
                         )),
                     );
                     Some(QueueOutcome::Approved)
+                } else if let Some(error) = refusal() {
+                    self.refuse_site(site, error);
+                    Some(QueueOutcome::Cancelled)
                 } else {
-                    refusal().map(|error| {
-                        self.respond(&site.reply, Err(error));
-                        QueueOutcome::Cancelled
-                    })
+                    None
                 }
             }
             SiteKind::SolSign { public, .. } => {
@@ -809,15 +809,33 @@ mod tests {
 
     #[test]
     fn connect_refusals_and_choices() {
-        let empty = app(false);
+        let mut empty = app(false);
         assert_eq!(
             empty.chain_unlocked_refusal(&site(SiteKind::SolConnect)),
             Some(ProviderError::NoSolAccount)
         );
+        let ordinals = site(SiteKind::BtcConnect(vec![BtcPurpose::Ordinals]));
+        // Bitcoin off (the default) is its own reason; on, the missing account type.
+        assert!(!empty.settings.bitcoin.enabled);
         assert_eq!(
-            empty.chain_unlocked_refusal(&site(SiteKind::BtcConnect(vec![BtcPurpose::Ordinals]))),
+            empty.chain_unlocked_refusal(&ordinals),
+            Some(ProviderError::BtcDisabled)
+        );
+        empty.settings.bitcoin.enabled = true;
+        assert_eq!(
+            empty.chain_unlocked_refusal(&ordinals),
             Some(ProviderError::NoBtcAccount)
         );
+        // The app says what to add (once, however often the page asks).
+        empty.refuse_site(&ordinals, ProviderError::NoBtcAccount);
+        empty.refuse_site(&ordinals, ProviderError::NoBtcAccount);
+        let notices: Vec<&str> = empty
+            .banners
+            .iter()
+            .map(|banner| banner.text.as_str())
+            .collect();
+        assert_eq!(notices.len(), 1);
+        assert!(notices[0].contains("오디널스용 Taproot(P2TR) 주소가 없습니다"));
         let app = app(true);
         assert_eq!(
             app.chain_unlocked_refusal(&site(SiteKind::SolConnect)),
@@ -1306,12 +1324,13 @@ mod tests {
             app.chain_site_preflight(&site(SiteKind::SolConnect)),
             Some(Some(QueueOutcome::Approved))
         );
-        // Bitcoin off: every Bitcoin request ends with NoBtcAccount, without a window.
+        // Bitcoin off: every Bitcoin request ends with BtcDisabled, without a window; a refused
+        // connect (not a signature) says in the app where Bitcoin is turned on.
         app.settings.bitcoin.enabled = false;
         let btc_connect = site(SiteKind::BtcConnect(vec![BtcPurpose::Payment]));
         assert_eq!(
             app.chain_unlocked_refusal(&btc_connect),
-            Some(ProviderError::NoBtcAccount)
+            Some(ProviderError::BtcDisabled)
         );
         let btc_sign = site(SiteKind::BtcSign {
             address: "bc1q".to_owned(),
@@ -1322,9 +1341,15 @@ mod tests {
             app.chain_site_preflight(&btc_sign),
             Some(Some(QueueOutcome::Cancelled))
         );
+        assert!(app.banners.is_empty());
         assert_eq!(
             app.chain_site_preflight(&btc_connect),
             Some(Some(QueueOutcome::Cancelled))
+        );
+        assert!(
+            app.banners
+                .iter()
+                .any(|banner| banner.text.contains("Bitcoin이 꺼져 있습니다"))
         );
         // 256 Solana grants (queued while locked, so the dispatcher never checked): a new origin
         // is refused before the window; the granted origin is still answered.

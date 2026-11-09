@@ -545,6 +545,9 @@ impl App {
             DappEvent::GrantChanged { origin, change } => {
                 self.persist_grant_change(&origin, change);
             }
+            DappEvent::ConnectRefused { origin, error } => {
+                self.connect_refused_notice(&origin, &error, &[]);
+            }
             DappEvent::ChainChecked { chain_id, check } => self.on_chain_check(chain_id, check),
             DappEvent::Connections(count) => {
                 if let Some(browser) = self.browser.as_mut() {
@@ -613,6 +616,71 @@ impl App {
         .then_some(ProviderError::NoEvmAccount)
     }
 
+    /// Answers a site item refused without a window with `error`; a connect refused for a
+    /// reason the user can fix in the app also gets [`Self::connect_refused_notice`].
+    pub(crate) fn refuse_site(&mut self, site: &SiteRequest, error: ProviderError) {
+        if site.kind.is_connect() {
+            let purposes = match &site.kind {
+                SiteKind::BtcConnect(purposes) => purposes.as_slice(),
+                _ => &[],
+            };
+            self.connect_refused_notice(&site.origin, &error, purposes);
+        }
+        self.respond(&site.reply, Err(error));
+    }
+
+    /// A one-line notice for a dApp connect refused without a window for a reason the user can
+    /// fix here (spec/05 §4.9): Bitcoin off, no account of the requested kind (for Bitcoin the
+    /// first purpose `purposes` has no account for), the 256-site limit. Before, only the page
+    /// got the 4100, and nothing in the app said what to turn on or add. Shown once per text: a
+    /// page asking again adds no banner.
+    pub(crate) fn connect_refused_notice(
+        &mut self,
+        origin: &BrowserOrigin,
+        error: &ProviderError,
+        purposes: &[yw_core::policy::BtcPurpose],
+    ) {
+        use yw_core::policy::BtcPurpose;
+        let site = origin.as_str();
+        let text = match error {
+            ProviderError::BtcDisabled => format!(
+                "{site}의 Bitcoin 연결 요청을 거부했습니다: Bitcoin이 꺼져 있습니다. 설정 → Bitcoin에서 켠 뒤 다시 연결하세요."
+            ),
+            ProviderError::NoBtcAccount => {
+                let rows = self.btc_dapp_rows();
+                let missing = purposes.iter().find(|purpose| {
+                    !rows
+                        .iter()
+                        .any(|row| purpose.accepts(row.entry.script_type))
+                });
+                let address = match missing {
+                    Some(BtcPurpose::Ordinals) => "오디널스용 Taproot(P2TR) 주소",
+                    Some(BtcPurpose::Payment) => "결제용 SegWit(P2WPKH·P2SH-P2WPKH) 주소",
+                    _ => "Bitcoin 주소",
+                };
+                format!(
+                    "{site}의 Bitcoin 연결 요청을 거부했습니다: 지갑에 {} {address}가 없습니다. Bitcoin 탭에서 그 형식의 계정을 추가한 뒤 다시 연결하세요.",
+                    self.btc_network_now().display_name()
+                )
+            }
+            ProviderError::NoSolAccount => format!(
+                "{site}의 Solana 연결 요청을 거부했습니다: 지갑에 Solana 계정이 없습니다. Solana 탭에서 계정을 추가하거나 개인키를 가져온 뒤 다시 연결하세요."
+            ),
+            ProviderError::NoEvmAccount => format!(
+                "{site}의 연결 요청을 거부했습니다: 지갑에 EVM 계정이 없습니다. EVM 개인키를 가져온 뒤 다시 연결하세요."
+            ),
+            ProviderError::TooManySites => format!(
+                "{site}의 연결 요청을 거부했습니다: 이 체인에 연결된 사이트가 이미 256개입니다. 연결된 사이트 화면에서 하나를 해제한 뒤 다시 연결하세요."
+            ),
+            _ => return,
+        };
+        if self.banners.iter().any(|banner| banner.text == text) {
+            return;
+        }
+        self.notice(text, crate::ui::main_window::Tone::Warn);
+        self.refresh();
+    }
+
     fn on_site_request(&mut self, site: SiteRequest) {
         logging::info(
             "browser",
@@ -641,7 +709,7 @@ impl App {
             }
             AppMode::Unlocked { .. } => {
                 if let Some(error) = self.unlocked_refusal(&site) {
-                    self.respond(&site.reply, Err(error));
+                    self.refuse_site(&site, error);
                     return;
                 }
             }

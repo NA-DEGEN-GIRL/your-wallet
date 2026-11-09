@@ -205,7 +205,7 @@ pub struct WalletView {
     /// The settings Bitcoin network (`btc_getNetwork`; grants of another network are unused).
     pub btc_network: yw_core::btc::BtcNetwork,
     /// settings `bitcoin.enabled`: when off, `btc_*` requests other than `btc_getNetwork` and
-    /// `btc_disconnect` end 4100 `NoBtcAccount` (spec/05 §4.9).
+    /// `btc_disconnect` end 4100 `BtcDisabled` (spec/05 §4.9).
     pub btc_enabled: bool,
     /// The Solana public keys dApps may use now (the visible accounts, `App::sol_dapp_rows`;
     /// empty while locked): a grant naming another key is not used (spec/05 §4.9).
@@ -405,6 +405,15 @@ pub enum DappEvent {
         origin: BrowserOrigin,
         /// Change.
         change: GrantChange,
+    },
+    /// A connect the dispatcher refused at once for a reason the user can fix in the app
+    /// (Bitcoin off, spec/05 §4.9): the app says where. Sent for a connect request only, never
+    /// for the silent account reads, and only while a wallet exists.
+    ConnectRefused {
+        /// Origin.
+        origin: BrowserOrigin,
+        /// The answer the page got.
+        error: yw_core::policy::ProviderError,
     },
     /// A read worker checked a chain (999 first-use pin, blocked state).
     ChainChecked {

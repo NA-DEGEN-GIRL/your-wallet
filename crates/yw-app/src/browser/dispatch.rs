@@ -1237,12 +1237,23 @@ impl BrowserCore {
                     .cloned()
             })
             .flatten();
-        // Bitcoin off (spec/05 §4.9): only the network name and a disconnect are answered.
+        // Bitcoin off (spec/05 §4.9): only the network name and a disconnect are answered. A
+        // connect (the page's connect button, not its silent account reads) also tells the app,
+        // which says where Bitcoin is turned on.
         if !state.wallet.btc_enabled
             && method.family() == Family::Bitcoin
             && !matches!(method, Method::BtcGetNetwork | Method::BtcDisconnect)
         {
-            reject(&state, ProviderError::NoBtcAccount);
+            reject(&state, ProviderError::BtcDisabled);
+            if method == Method::BtcRequestAccounts
+                && matches!(vault, VaultView::Unlocked | VaultView::Locked)
+            {
+                drop(state);
+                let _ = self.sink.push(DappEvent::ConnectRefused {
+                    origin,
+                    error: ProviderError::BtcDisabled,
+                });
+            }
             return;
         }
         let immediate = |state: &mut State, body: Answer| {

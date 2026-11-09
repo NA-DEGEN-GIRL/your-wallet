@@ -431,11 +431,20 @@ fn bitcoin_off_refuses_bitcoin_requests() -> TestResult {
             let sent = h.send(SITE, 1, method, json(&params));
             assert_eq!(
                 single(&h, &sent)?,
-                Err(ProviderError::NoBtcAccount),
+                Err(ProviderError::BtcDisabled),
                 "{method} {vault:?}"
             );
         }
-        assert!(h.sink.requests().is_empty(), "no window, no unlock prompt");
+        // No window or unlock prompt; the connect (only) tells the app, which says where
+        // Bitcoin is turned on.
+        assert_eq!(
+            h.sink.take(),
+            vec![DappEvent::ConnectRefused {
+                origin: origin(SITE)?,
+                error: ProviderError::BtcDisabled,
+            }],
+            "{vault:?}"
+        );
         let network = h.send(SITE, 1, "btc_getNetwork", json("[]"));
         assert_eq!(text(&single(&h, &network)?), "\"mainnet\"");
         let disconnect = h.send(SITE, 1, "btc_disconnect", json("[]"));

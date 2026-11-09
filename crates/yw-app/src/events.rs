@@ -1168,7 +1168,8 @@ struct Lanes {
 impl Lanes {
     /// Folds `event` into an equivalent queued one: the connection count and a pending chain
     /// switch of the same origin keep only their latest value; an `Unverified` chain check adds
-    /// nothing to a queued check of the same chain and is replaced by a conclusive one.
+    /// nothing to a queued check of the same chain and is replaced by a conclusive one; a
+    /// connect refusal equal to a queued one adds nothing.
     fn merge(&mut self, event: &crate::browser::DappEvent) -> bool {
         use crate::browser::{DappEvent, GrantChange};
         for queued in self.events.iter_mut().rev() {
@@ -1178,6 +1179,16 @@ impl Lanes {
             match (queued, event) {
                 (DappEvent::Connections(count), DappEvent::Connections(new)) => {
                     *count = *new;
+                    return true;
+                }
+                // A page asking again while the first refusal waits adds nothing.
+                (
+                    DappEvent::ConnectRefused { origin, error },
+                    DappEvent::ConnectRefused {
+                        origin: new_origin,
+                        error: new_error,
+                    },
+                ) if origin == new_origin && error == new_error => {
                     return true;
                 }
                 (

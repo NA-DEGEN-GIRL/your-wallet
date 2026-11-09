@@ -24,8 +24,10 @@ pub enum ProviderError {
     /// 4100 with the reason: no Solana account to connect (spec/05 §4.9).
     NoSolAccount,
     /// 4100 with the reason: no Bitcoin account of a requested kind on the settings network
-    /// (spec/05 §4.9).
+    /// (spec/05 §4.9); the message names the address types of each purpose.
     NoBtcAccount,
+    /// 4100 with the reason: Bitcoin is turned off in the app's settings (spec/05 §3.6, §4.9).
+    BtcDisabled,
     /// 4100 with the reason: a new Solana/Bitcoin connection would exceed the 256 grants of that
     /// chain (meta `sol_sites`/`btc_sites`, spec/05 §4.9).
     TooManySites,
@@ -85,6 +87,7 @@ impl ProviderError {
             | Self::NoEvmAccount
             | Self::NoSolAccount
             | Self::NoBtcAccount
+            | Self::BtcDisabled
             | Self::TooManySites => 4100,
             Self::UnsupportedMethod => 4200,
             Self::Unavailable | Self::ConnectionClosed | Self::ExtensionReloaded => 4900,
@@ -118,7 +121,10 @@ impl ProviderError {
                 "Unauthorized: this wallet has no Solana account. Add or import one in the Your Wallet app first."
             }
             Self::NoBtcAccount => {
-                "Unauthorized: this wallet has no Bitcoin account of the requested type on the selected network. Add one in the Your Wallet app first."
+                "Unauthorized: this wallet has no Bitcoin account of the requested type on the selected network (payment: native or nested SegWit, P2WPKH or P2SH-P2WPKH; ordinals: Taproot, P2TR). Add one in the Your Wallet app first."
+            }
+            Self::BtcDisabled => {
+                "Unauthorized: Bitcoin is turned off in the Your Wallet app. Turn it on in the app's settings first."
             }
             Self::TooManySites => {
                 "Unauthorized: too many sites are connected on this chain (256). Disconnect one in the Your Wallet app first."

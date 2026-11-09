@@ -107,7 +107,7 @@ fn r_err_provider_errors_match_spec_05_section_5() {
         (
             ProviderError::NoBtcAccount,
             4100,
-            "Unauthorized: this wallet has no Bitcoin account of the requested type on the selected network. Add one in the Your Wallet app first.",
+            "Unauthorized: this wallet has no Bitcoin account of the requested type on the selected network (payment: native or nested SegWit, P2WPKH or P2SH-P2WPKH; ordinals: Taproot, P2TR). Add one in the Your Wallet app first.",
         ),
         (
             ProviderError::UnsupportedMethod,
@@ -179,6 +179,17 @@ fn r_err_provider_errors_match_spec_05_section_5() {
     let upstream = ProviderError::upstream(Some(-32_000), Some("nonce too low"), None);
     assert_eq!(upstream.code(), -32_000);
     assert_eq!(upstream.message(), "nonce too low");
+}
+
+#[test]
+fn r_err_bitcoin_off_matches_spec_05_section_5() {
+    let error = ProviderError::BtcDisabled;
+    assert_eq!(error.code(), 4100);
+    assert_eq!(
+        error.message(),
+        "Unauthorized: Bitcoin is turned off in the Your Wallet app. Turn it on in the app's settings first."
+    );
+    assert_eq!(error.data(), None);
 }
 
 #[test]
