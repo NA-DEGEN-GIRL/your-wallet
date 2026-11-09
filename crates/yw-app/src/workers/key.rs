@@ -418,6 +418,87 @@ fn reconcile_hardware(document: &mut Meta, vault: &Vault) -> Result<bool, VaultE
     Ok(changed)
 }
 
+/// The stable addresses (receive address 0) of every Bitcoin account of a reconciled meta
+/// document on every network: meta `btc` and `btc_accounts`, and BIP84 account 0 of every
+/// network from the vault — meta `btc` holds only the settings network's, the others come back
+/// when that network is chosen again and their grants are kept (spec/05 §4.9). `None` when one
+/// is not known.
+fn btc_stable_addresses(document: &Meta, vault: &Vault, has_mnemonic: bool) -> Option<Vec<String>> {
+    use yw_core::bip32::path::BtcChain;
+    let stable = |meta: &BtcMeta| {
+        meta.address(BtcChain::Receive, 0)
+            .ok()
+            .map(|address| address.as_str().to_owned())
+    };
+    let mut addresses = document
+        .btc
+        .as_deref()
+        .into_iter()
+        .chain(document.btc_accounts.accounts.iter())
+        .map(stable)
+        .collect::<Option<Vec<String>>>()?;
+    if has_mnemonic {
+        for network in BtcNetwork::ALL {
+            let xpub = vault.btc_account_xpub(network.coin_type()).ok()?;
+            addresses.push(stable(&BtcMeta::new(network, xpub))?);
+        }
+    }
+    Some(addresses)
+}
+
+/// The wallet's accounts in a reconciled meta document, hidden ones included (the input of
+/// `grants::prune_grants`): derived, imported, `YubiKey` and added-mnemonic accounts of EVM and
+/// Solana, and [`btc_stable_addresses`] (only when a Bitcoin grant is there to check; `None`
+/// keeps the Bitcoin grants).
+fn wallet_accounts(
+    document: &Meta,
+    vault: &Vault,
+    has_mnemonic: bool,
+) -> crate::browser::grants::WalletAccounts {
+    let evm = document
+        .evm_accounts
+        .iter()
+        .chain(document.mnemonics.iter().flat_map(|entry| &entry.evm))
+        .chain(&document.hw_accounts.evm)
+        .map(|account| account.address.as_str())
+        .chain(
+            document
+                .evm_raw_accounts
+                .iter()
+                .map(|raw| raw.address.as_str()),
+        )
+        .filter_map(|text| yw_core::evm::address::parse_address(text).ok())
+        .collect();
+    let sol = document
+        .sol_accounts
+        .iter()
+        .chain(&document.hw_accounts.sol)
+        .chain(
+            document
+                .mnemonic_accounts
+                .sol
+                .iter()
+                .map(|(_, account)| account),
+        )
+        .map(|account| account.address.as_str())
+        .chain(
+            document
+                .sol_raw_accounts
+                .iter()
+                .map(|raw| raw.address.as_str()),
+        )
+        .filter_map(|text| SolAddress::parse(text).ok())
+        .map(SolAddress::to_bytes)
+        .collect();
+    let btc = if document.chain_sites.btc.is_empty() {
+        // Nothing to check (and no seed derived for it).
+        Some(Vec::new())
+    } else {
+        btc_stable_addresses(document, vault, has_mnemonic)
+    };
+    crate::browser::grants::WalletAccounts { evm, sol, btc }
+}
+
 impl KeyWorker {
     /// A worker for the data folder `dir`.
     #[must_use]
@@ -1312,6 +1393,25 @@ impl KeyWorker {
             if account.address != text {
                 mismatch = true;
                 account.address = text;
+            }
+        }
+        // dApp grants follow the accounts: one naming an account the wallet no longer has (a
+        // key or recovery phrase removed while the session could not clean its grants up — a
+        // lock during the removal, a meta that failed to load) goes before the dispatcher loads
+        // it, so adding the same key or words again never brings it back (spec/05 §4.1, §4.9).
+        // Not in an alt session (nothing is stored), nor beside keys of a newer version, whose
+        // accounts this one may not know.
+        if !alt && document.unknown.is_empty() {
+            let held = wallet_accounts(&document, vault, keys.has_mnemonic);
+            let sites = &mut *document.chain_sites;
+            if crate::browser::grants::prune_grants(
+                &mut document.connected_sites,
+                &mut sites.sol,
+                &mut sites.btc,
+                &held,
+            ) {
+                logging::info("key", "meta.grants_pruned", &[]);
+                mismatch = true;
             }
         }
         if mismatch {
