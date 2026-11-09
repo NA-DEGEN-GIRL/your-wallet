@@ -47,6 +47,8 @@ pub mod ids {
     pub const INDEXER_NODE: u16 = 8_014;
     /// UTXO source: Blockbook.
     pub const INDEXER_BB: u16 = 8_015;
+    /// W-ADDR-3 `주소 전체를 직접 확인했습니다`.
+    pub const SEND_ADDR_ACK: u16 = 8_016;
     /// Key source: EVM account radios (position in the EVM account list).
     pub const SOURCE_EVM_BASE: u16 = 8_020;
     /// EVM radio span.
@@ -66,12 +68,13 @@ pub mod ids {
     /// Imported-key button span (15 keys per chain).
     pub const IMPORTED_SPAN: u16 = 16;
 
+    const _: () = assert!(SEND_ADDR_ACK < SOURCE_EVM_BASE);
     const _: () = assert!(SOURCE_EVM_BASE + SOURCE_EVM_SPAN <= HW_BASE);
     const _: () = assert!(HW_BASE + HW_SPAN <= IMPORT);
     const _: () = assert!(IMPORTED_BASE + IMPORTED_SPAN <= 8_100);
 
     /// Every fixed id.
-    pub const FIXED: [u16; 19] = [
+    pub const FIXED: [u16; 20] = [
         TAB_ZEC,
         ENABLE_MAINNET,
         ENABLE_TESTNET,
@@ -88,6 +91,7 @@ pub mod ids {
         SOURCE_CANCEL,
         INDEXER_NODE,
         INDEXER_BB,
+        SEND_ADDR_ACK,
         IMPORT,
         REVEAL,
         REMOVE,
@@ -152,7 +156,10 @@ impl App {
     pub fn on_zec_edit_change(&mut self, id: u16) -> bool {
         let text = || self.controls.text(id, TEXT_MAX).unwrap_or_default();
         match id {
-            ids::SEND_TO_EDIT => self.zec.to_text = text(),
+            ids::SEND_TO_EDIT => {
+                self.zec.to_text = text();
+                self.zec_check_recipient();
+            }
             ids::SEND_AMOUNT_EDIT => self.zec.amount_text = text(),
             _ => return false,
         }
@@ -190,6 +197,10 @@ impl App {
                 self.zec.send_max = !self.zec.send_max;
                 self.refresh();
             }
+            ids::SEND_ADDR_ACK => {
+                self.zec.ack = !self.zec.ack && self.zec.checked.is_some();
+                self.refresh();
+            }
             ids::SEND_REVIEW => {
                 self.zec.to_text = self
                     .controls
@@ -199,6 +210,7 @@ impl App {
                     .controls
                     .text(ids::SEND_AMOUNT_EDIT, TEXT_MAX)
                     .unwrap_or_default();
+                self.zec_check_recipient();
                 self.zec_review();
             }
             ids::SOURCE_STANDARD => {
@@ -643,6 +655,14 @@ impl App {
                 1_000,
             )],
         ));
+        if let Some(note) = &self.zec.look_alike {
+            items.push(Item::Banner(note.clone(), Tone::HighRisk));
+            items.push(Item::Row(vec![Ctl::check(
+                ids::SEND_ADDR_ACK,
+                "주소 전체를 직접 확인했습니다",
+                self.zec.ack,
+            )]));
+        }
         items.push(Item::LabeledRow(
             "금액 (ZEC)".to_owned(),
             vec![
@@ -659,7 +679,8 @@ impl App {
             && account.is_some()
             && !self.zec.busy
             && !self.zec.refreshing
-            && !self.zec_journal_damaged();
+            && !self.zec_journal_damaged()
+            && (self.zec.look_alike.is_none() || self.zec.ack);
         items.push(Item::Row(vec![
             Ctl::primary(ids::SEND_REVIEW, "검토").enabled(can_send),
         ]));

@@ -2458,10 +2458,10 @@ impl App {
                 // W-ADDR-3 under the recipient (spec/04 §3.3, outside the digest).
                 let note = match &ui.item {
                     QueuedItem::Btc(item) => item.look_alike.as_deref(),
+                    QueuedItem::Zec(item) => item.look_alike.as_deref(),
                     QueuedItem::App(_)
                     | QueuedItem::Site(_)
                     | QueuedItem::Sol(_)
-                    | QueuedItem::Zec(_)
                     | QueuedItem::HyperCore(_) => None,
                 };
                 if let Some(note) = note {

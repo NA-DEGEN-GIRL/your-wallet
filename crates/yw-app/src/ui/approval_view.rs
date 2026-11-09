@@ -708,9 +708,9 @@ pub fn signing_view(
 
 /// yw-app's W-ADDR-3 note on the summary's recipient (spec/04 §3.3): a `WARN_BG` block right
 /// under the summary card. It is built from meta (book, own addresses, sent history) and is not
-/// part of the digested display — a Bitcoin send, whose form already required `주소 전체를 직접
-/// 확인했습니다`, shows it again here (an EVM recipient gets the digested rule E43 instead).
-/// Nothing is added without a summary address.
+/// part of the digested display — the Bitcoin and Zcash sends, whose forms already required
+/// `주소 전체를 직접 확인했습니다`, show it again here (an EVM recipient gets the digested rule
+/// E43 instead). Nothing is added without a summary address.
 pub fn attach_address_note(view: &mut ApprovalView, note: &str) {
     let Some(index) = view.blocks.iter().position(|block| {
         matches!(

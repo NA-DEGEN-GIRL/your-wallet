@@ -182,6 +182,16 @@ const TYPE_METADATA_END: u64 = 0xFC;
 /// MUST-understand metadata 0xE0–0xFC: a revision-0 UA must not contain any (refused).
 const TYPE_MUST_UNDERSTAND_START: u64 = 0xE0;
 
+/// W-ADDR-3 for Zcash transparent addresses (spec/12 §11): `Some((prefix, suffix))` for two
+/// different `t1…`/`t3…`/`tm…`/`t2…` addresses whose equal leading and trailing characters after
+/// the two-character prefix total at least 5 in any split — the Bitcoin rule
+/// ([`crate::btc::address::look_alike_parts`]). A TEX or unified recipient is compared by the
+/// encoding of its transparent receiver.
+#[must_use]
+pub fn look_alike_ends(a: &str, b: &str) -> Option<(usize, usize)> {
+    crate::btc::address::look_alike_parts(a.get(2..)?, b.get(2..)?)
+}
+
 /// Parses `text` as a recipient on `network`.
 ///
 /// # Errors

@@ -53,6 +53,44 @@ pub enum SourceChoice {
 pub struct ZecApprovalItem {
     /// The plan (bound by the approval payload).
     pub plan: ZecPlan,
+    /// The W-ADDR-3 note of the recipient, drawn under the approval summary outside the digest
+    /// (spec/04 §3.3).
+    pub look_alike: Option<String>,
+    /// No confirmed send of this wallet went to the recipient yet (Z06).
+    pub first_time: bool,
+}
+
+/// A known Zcash transparent address of one network (W-ADDR-3, Z06).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ZecKnown {
+    /// `t1…`/`t3…`/`tm…`/`t2…`.
+    address: String,
+    /// What the note calls it.
+    name: String,
+    /// One of this wallet's own addresses (an exact match is trusted).
+    own: bool,
+    /// A confirmed earlier send went there (not a first-time recipient).
+    confirmed: bool,
+}
+
+/// The W-ADDR-3 note of `address` among `known`: the first look-alike, unless `address` is
+/// exactly one of our own addresses (an earlier recipient does not silence the check).
+fn zec_look_alike_note(known: &[ZecKnown], address: &str) -> Option<String> {
+    if known
+        .iter()
+        .any(|entry| entry.own && entry.address == address)
+    {
+        return None;
+    }
+    known.iter().find_map(|entry| {
+        yw_core::zec::address::look_alike_ends(&entry.address, address).map(|ends| {
+            format!(
+                "'{}'과 {}가 같지만 다른 주소입니다. 주소 오염 공격일 수 있습니다.",
+                entry.name,
+                crate::app_btc::ends_text(ends)
+            )
+        })
+    })
 }
 
 impl ZecApprovalItem {
@@ -87,6 +125,12 @@ pub struct ZecUi {
     pub amount_text: String,
     /// Send form: send everything.
     pub send_max: bool,
+    /// Send form: the W-ADDR-3 note of the recipient (spec/12 §11).
+    pub look_alike: Option<String>,
+    /// Send form: `주소 전체를 직접 확인했습니다` for [`ZecUi::checked`].
+    pub ack: bool,
+    /// Send form: the transparent address the note and the acknowledgement belong to.
+    pub checked: Option<String>,
     /// An approval or signature is in progress (one at a time).
     pub busy: bool,
     /// A public-key job is running.
@@ -211,6 +255,72 @@ impl App {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// Known transparent addresses of `network` for W-ADDR-3 and Z06, in preference order: this
+    /// wallet's account and imported keys, then the recipients of its earlier sends (every
+    /// account's journal records of the network).
+    fn zec_known(&self, network: ZecNetwork) -> Vec<ZecKnown> {
+        let mut out = Vec::new();
+        if let Some(account) = self
+            .zec_account()
+            .filter(|account| account.network == network)
+        {
+            out.push(ZecKnown {
+                address: account.address(),
+                name: "내 Zcash 계정".to_owned(),
+                own: true,
+                confirmed: false,
+            });
+        }
+        for (_, info) in self.zec_imported_keys() {
+            if info.network == network {
+                out.push(ZecKnown {
+                    address: info.address,
+                    name: "내 Zcash 가져온 키".to_owned(),
+                    own: true,
+                    confirmed: false,
+                });
+            }
+        }
+        if let Some(journal) = self.evm.journal.as_ref() {
+            for record in &journal.zec_records {
+                if record.account.network != network {
+                    continue;
+                }
+                if let Some(dest) = record.recipient() {
+                    out.push(ZecKnown {
+                        address: dest.encode(network),
+                        name: "이전에 보낸 주소".to_owned(),
+                        own: false,
+                        confirmed: record.state == ZecTxState::Confirmed,
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    /// Re-checks the send form's recipient for W-ADDR-3 (spec/12 §11): the transparent address
+    /// it pays (a TEX or unified address by its transparent receiver), its note, and the
+    /// acknowledgement, which belongs to one address and is dropped when that changes.
+    pub fn zec_check_recipient(&mut self) {
+        let network = self.zec_network();
+        let address = parse_recipient(&self.zec.to_text, network)
+            .ok()
+            .map(|recipient| recipient.dest.encode(network));
+        let note = address
+            .as_deref()
+            .and_then(|address| zec_look_alike_note(&self.zec_known(network), address));
+        let changed = address != self.zec.checked || note != self.zec.look_alike;
+        if address != self.zec.checked {
+            self.zec.ack = false;
+        }
+        self.zec.checked = address;
+        self.zec.look_alike = note;
+        if changed {
+            self.refresh();
+        }
     }
 
     /// A ZEC journal entry is undecodable (ZEC sending stops).
@@ -670,6 +780,16 @@ impl App {
         }
         let recipient = parse_recipient(&self.zec.to_text, account.network)
             .map_err(|error| error.text().to_owned())?;
+        // W-ADDR-3 (spec/12 §11): a look-alike needs the acknowledgement for this very address.
+        let address = recipient.dest.encode(account.network);
+        if zec_look_alike_note(&self.zec_known(account.network), &address).is_some()
+            && !(self.zec.ack && self.zec.checked.as_deref() == Some(address.as_str()))
+        {
+            return Err(
+                "받는 주소가 아는 주소와 앞뒤가 비슷합니다. 주소 전체를 확인했으면 '주소 전체를 직접 확인했습니다'를 체크한 뒤 다시 검토하세요."
+                    .to_owned(),
+            );
+        }
         let amount = if self.zec.send_max {
             ZecAmount::Max
         } else {
@@ -722,7 +842,18 @@ impl App {
     }
 
     fn zec_enqueue(&mut self, plan: ZecPlan) {
-        let item = ZecApprovalItem { plan };
+        let network = plan.account.network;
+        let address = plan.recipient.dest.encode(network);
+        let known = self.zec_known(network);
+        let look_alike = zec_look_alike_note(&known, &address);
+        let first_time = !known
+            .iter()
+            .any(|entry| entry.address == address && (entry.own || entry.confirmed));
+        let item = ZecApprovalItem {
+            plan,
+            look_alike,
+            first_time,
+        };
         if self
             .evm
             .queue
@@ -746,7 +877,7 @@ impl App {
             self.show_failure(ErrorCode::Vlt005, false, ErrorCode::Vlt005.text());
             return;
         };
-        match yw_core::zec::display::build_zec_request(id, &item.plan) {
+        match yw_core::zec::display::build_zec_request_with(id, &item.plan, item.first_time) {
             Ok(draft) => self.show_ready_draft_at(draft, None, now_unix_ms()),
             Err(_) => self.show_failure(ErrorCode::App009, false, ErrorCode::App009.text()),
         }

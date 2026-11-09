@@ -24,6 +24,8 @@ pub const RULE_UA_TRANSPARENT: RuleId = RuleId::new(b'Z', 3);
 pub const RULE_EXPIRY_CAPPED: RuleId = RuleId::new(b'Z', 4);
 /// Z05: transparent sends are public (always shown).
 pub const RULE_PUBLIC: RuleId = RuleId::new(b'Z', 5);
+/// Z06: no confirmed send of this wallet went to the recipient yet (caution).
+pub const RULE_FIRST_TIME: RuleId = RuleId::new(b'Z', 6);
 
 fn warning(rule: RuleId, level: RiskLevel, text: &str) -> Warning {
     Warning {
@@ -176,7 +178,29 @@ fn advanced_text(plan: &ZecPlan) -> String {
 ///
 /// [`DisplayError`] (defensive).
 pub fn build_zec_request(id: ApprovalId, plan: &ZecPlan) -> Result<ApprovalDraft, DisplayError> {
+    build_zec_request_with(id, plan, false)
+}
+
+/// [`build_zec_request`] with Z06 (caution: "처음 보내는 주소입니다…") when `first_time` — no
+/// confirmed send of this wallet went to the recipient yet (the app knows its journal).
+///
+/// # Errors
+///
+/// [`DisplayError`] (defensive).
+pub fn build_zec_request_with(
+    id: ApprovalId,
+    plan: &ZecPlan,
+    first_time: bool,
+) -> Result<ApprovalDraft, DisplayError> {
     let network = plan.account.network;
+    let mut warnings = plan_warnings(plan);
+    if first_time && !plan.to_self() {
+        warnings.push(warning(
+            RULE_FIRST_TIME,
+            RiskLevel::Caution,
+            "처음 보내는 주소입니다. 주소 전체를 확인하고, 큰 금액은 소액 시험 송금 뒤 보내세요.",
+        ));
+    }
     let total = plan
         .amount
         .checked_add(plan.fee)
@@ -202,7 +226,7 @@ pub fn build_zec_request(id: ApprovalId, plan: &ZecPlan) -> Result<ApprovalDraft
             format_zec(plan.amount)
         ),
         fields,
-        plan_warnings(plan),
+        warnings,
     )?;
     Ok(ApprovalDraft {
         id,
