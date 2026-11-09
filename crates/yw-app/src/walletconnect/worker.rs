@@ -3,9 +3,10 @@
 //! connection. Session requests become dispatcher requests of the session's synthetic origin, so
 //! they meet the same grants, rate limits, approval queue, risk rules and simulation as the
 //! extension — except that a locked wallet refuses them (4100) instead of opening the password
-//! window, `eth_accounts` is empty while locked, and a rejected or expired request holds the
-//! session's next ones off for [`REQUEST_COOLDOWN_MS`]. Proposals become an
-//! `eth_requestAccounts` of the session origin: the connect window's answer approves or rejects.
+//! window (counted, and reported once at the next unlock), `eth_accounts` is empty while locked,
+//! and a rejected, expired or timed-out request holds the session's next ones off for
+//! [`REQUEST_COOLDOWN_MS`]. Proposals become an `eth_requestAccounts` of the session origin: the
+//! connect window's answer approves or rejects, and the panel says which ([`ProposalEnd`]).
 //!
 //! Inputs arrive on one channel: UI commands, relay text frames (from a reader thread per
 //! connection), and the dispatcher's answers and events (through [`WcOutlet`]).
@@ -20,7 +21,9 @@ use yw_core::policy::{BrowserOrigin, Method, ProviderError};
 use yw_core::secret::Zeroizing;
 use yw_json::{Limits, Value};
 
-use super::engine::{Engine, Out, ProposalView, Publish, Session, SessionRequest};
+use super::engine::{
+    Engine, Notice, Out, ProposalView, Publish, SETTLE_TAG, Session, SessionRequest,
+};
 use super::store::WcStore;
 use super::verify::{VerifyHttp, VerifyKey};
 use super::{Metadata, VerifyStatus, session_origin};
@@ -46,9 +49,9 @@ const IDLE_CLOSE_MS: u64 = 10_000;
 const JWT_TTL_S: u64 = 86_400;
 /// Messages kept while the relay is down.
 const MAX_QUEUED: usize = 256;
-/// After a session's signing request was rejected or expired, its next ones are refused (4001)
-/// for this long: a dApp cannot keep an approval window — and so the paused idle clock — up
-/// continuously (spec/13 §7.3).
+/// After a session's signing request was rejected, expired or timed out, its next ones are
+/// refused (4001) for this long (and the UI ends its already waiting ones, 4001): a dApp cannot
+/// keep an approval window up continuously (spec/13 §5.2).
 pub const REQUEST_COOLDOWN_MS: u64 = 15_000;
 
 const RELAY_LIMITS: Limits = Limits {
@@ -196,6 +199,23 @@ pub struct SessionView {
     pub expiry: u64,
     /// Approved at (Unix s).
     pub created: u64,
+    /// The dApp confirmed the session (answered its settle or used it); `false` is shown as
+    /// `연결 확인 중` until it does or the session ends ([`super::engine::SETTLE_ACK_S`]).
+    pub acknowledged: bool,
+}
+
+/// How a proposal's connect request ended (the panel says so instead of "arrived").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProposalEnd {
+    /// Approved: the session exists.
+    Connected,
+    /// Approved after the proposal lapsed (or with no session slot left): nothing connected.
+    TooLate,
+    /// Refused while the wallet was locked (4100 at once — no password window for a remote
+    /// dApp — or its window closed by the lock).
+    Locked,
+    /// Refused with this answer (rejected, expired, no EVM account, …).
+    Refused(ProviderError),
 }
 
 /// Events for the UI thread.
@@ -205,14 +225,17 @@ pub enum WcEvent {
     Status(RelayStatus),
     /// A verified proposal (its connect request follows on the dispatcher).
     Proposal(Box<ProposalView>),
-    /// The proposal of this session topic finished (approved, rejected or expired).
-    ProposalDone([u8; 32]),
+    /// The proposal of this session topic finished, and how.
+    ProposalDone([u8; 32], ProposalEnd),
     /// The session list and the state to persist in meta.
     Sessions(Vec<SessionView>, Box<WcStore>),
     /// A session ended: the UI removes its grant and its waiting requests.
     Ended(BrowserOrigin),
-    /// A message for the `WalletConnect` panel (pairing errors etc.).
+    /// A message for the `WalletConnect` panel (pairing errors, refused proposals etc.).
     Notice(String),
+    /// Connect and signing requests refused (4100) while the wallet was locked, reported once
+    /// at the next unlock (no window was opened for them).
+    RefusedWhileLocked(u32),
 }
 
 /// Where worker events go (the UI event queue; a recorder in tests).
@@ -295,8 +318,10 @@ pub struct Worker {
     idle_since_ms: Option<u64>,
     waiting: HashMap<[u8; 16], Waiting>,
     /// Session topic → monotonic ms until which its signing requests are refused (after one was
-    /// rejected or expired).
+    /// rejected, expired or timed out).
     cooldowns: HashMap<[u8; 32], u64>,
+    /// Requests refused (4100) while the wallet was locked since the last unlock.
+    locked_refusals: u32,
     counter: u64,
     status: RelayStatus,
 }
@@ -332,6 +357,71 @@ pub fn valid_project_id(text: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
+/// The panel's words for an engine [`Notice`]: wallet text only (nothing the dApp sent is
+/// repeated), chains by `label` (this wallet's registry name, else `eip155:N`).
+#[must_use]
+pub fn notice_text(notice: &Notice, label: &dyn Fn(u64) -> String) -> String {
+    const ADD_CHAIN: &str =
+        "설정 → EVM 체인에서 그 네트워크를 추가하거나 RPC를 확인한 뒤 dApp에서 다시 연결하세요.";
+    const EVM_ONLY: &str = "이 지갑의 WalletConnect는 EVM 네트워크만 지원합니다.";
+    const NEW_LINK: &str = "dApp에서 새 QR/링크를 받아 다시 연결하세요.";
+    let list = |chains: &[u64]| {
+        let mut parts: Vec<String> = chains.iter().take(4).map(|id| label(*id)).collect();
+        if chains.len() > 4 {
+            parts.push(format!("외 {}개", chains.len() - 4));
+        }
+        parts.join(", ")
+    };
+    match notice {
+        Notice::MissingChains { chains, non_evm } => {
+            let mut parts = Vec::new();
+            if !chains.is_empty() {
+                parts.push(list(chains));
+            }
+            if *non_evm {
+                parts.push("EVM이 아닌 네트워크(Solana·Bitcoin 등)".to_owned());
+            }
+            let hint = if chains.is_empty() { EVM_ONLY } else { ADD_CHAIN };
+            format!(
+                "연결 요청을 거절했습니다: dApp이 이 지갑에서 쓸 수 없는 네트워크를 필수로 요구합니다 — {}. {hint}",
+                parts.join(", ")
+            )
+        }
+        Notice::NonEvmOnly => format!(
+            "연결 요청을 거절했습니다: dApp이 EVM이 아닌 네트워크(Solana·Bitcoin 등)만 요청했습니다. {EVM_ONLY}"
+        ),
+        Notice::NoChains(chains) if chains.is_empty() => {
+            "연결 요청을 거절했습니다: dApp이 연결할 EVM 네트워크를 지정하지 않았습니다.".to_owned()
+        }
+        Notice::NoChains(chains) => format!(
+            "연결 요청을 거절했습니다: dApp이 요청한 네트워크({}) 중 이 지갑에서 쓸 수 있는 것이 없습니다. {ADD_CHAIN}",
+            list(chains)
+        ),
+        Notice::Malformed => {
+            "연결 요청을 거절했습니다: dApp이 보낸 연결 요청의 형식이 올바르지 않습니다.".to_owned()
+        }
+        Notice::Cooling => format!(
+            "방금 거절했거나 시간이 지난 연결 요청과 같은 연결 주소라 {}초 동안은 새 요청을 받지 않습니다. 잠시 뒤 dApp에서 다시 연결하세요.",
+            super::engine::PROPOSAL_COOLDOWN_S
+        ),
+        Notice::PairingUsed => format!("이 연결 주소(QR/링크)는 이미 쓰였습니다. {NEW_LINK}"),
+        Notice::Busy => {
+            "처리하지 않은 연결 요청이 많아 새 요청을 거절했습니다. 열린 연결 창부터 처리하세요."
+                .to_owned()
+        }
+        Notice::PairingExpired => {
+            format!("dApp의 연결 요청이 오지 않은 채 연결 주소가 만료되었습니다. {NEW_LINK}")
+        }
+        Notice::SettleRefused => {
+            "dApp이 방금 승인한 연결을 받아들이지 않아 그 WalletConnect 세션을 지웠습니다. dApp에서 다시 연결하세요."
+                .to_owned()
+        }
+        Notice::Unconfirmed => format!(
+            "dApp이 WalletConnect 연결을 확인하지 않아 세션을 끊었습니다(dApp 창이 닫혔을 수 있습니다). 필요하면 {NEW_LINK}"
+        ),
+    }
+}
+
 impl Worker {
     /// A worker on `core` (opens the virtual connection) and its input sender.
     pub fn new(
@@ -364,6 +454,7 @@ impl Worker {
             idle_since_ms: None,
             waiting: HashMap::new(),
             cooldowns: HashMap::new(),
+            locked_refusals: 0,
             counter: 0,
             status: RelayStatus::NoProject,
         };
@@ -461,6 +552,12 @@ impl Worker {
                 // (deleted while locked) are pruned by the UI from the snapshot below.
                 self.sync_grants(None);
                 self.push_sessions();
+                // `Load` follows every unlock: what was refused meanwhile is said once.
+                if self.locked_refusals > 0 {
+                    self.sink
+                        .push(WcEvent::RefusedWhileLocked(self.locked_refusals));
+                    self.locked_refusals = 0;
+                }
             }
             WcCommand::Pair(text) => self.pair(&text),
             WcCommand::Disconnect(topic) => {
@@ -537,6 +634,7 @@ impl Worker {
         self.queued.clear();
         self.waiting.clear();
         self.cooldowns.clear();
+        self.locked_refusals = 0;
         self.client_seed = None;
         self.loaded = false;
         self.next_attempt_ms = 0;
@@ -747,8 +845,14 @@ impl Worker {
             ("ttl", json_u64(u64::from(publish.ttl))),
             ("tag", json_u64(u64::from(publish.tag))),
         ]);
-        if !self.send_rpc("irn_publish", params, RelayCall::Other) && self.queued.len() < MAX_QUEUED
-        {
+        if self.send_rpc("irn_publish", params, RelayCall::Other) {
+            if publish.tag == SETTLE_TAG {
+                // The settle is on its way (not just queued while offline): the wait for the
+                // dApp's confirmation starts now.
+                let now = self.now_s();
+                self.engine.settle_reachable(&publish.topic, now);
+            }
+        } else if self.queued.len() < MAX_QUEUED {
             self.queued.push(publish.clone());
         }
     }
@@ -804,6 +908,9 @@ impl Worker {
             (Some(RelayCall::Subscribe(topic)), Some(result)) => {
                 let subscription = result.as_str().unwrap_or("").to_owned();
                 self.subscribed.insert(topic, subscription);
+                // A restored session the dApp had not confirmed can hear it from now on.
+                let now = self.now_s();
+                self.engine.settle_reachable(&topic, now);
             }
             (Some(_), None) => {
                 logging::info("walletconnect", "relay.rpc_error", &[]);
@@ -828,6 +935,21 @@ impl Worker {
                         self.sink.push(WcEvent::Ended(origin));
                     }
                 }
+                Out::Notice(notice) => {
+                    let wallet = self.core.wallet();
+                    let label = |id: u64| {
+                        wallet
+                            .chains
+                            .iter()
+                            .find(|entry| entry.info.chain_id == id)
+                            .map_or_else(
+                                || format!("eip155:{id}"),
+                                |entry| format!("{} (eip155:{id})", entry.info.name),
+                            )
+                    };
+                    self.sink
+                        .push(WcEvent::Notice(notice_text(&notice, &label)));
+                }
             }
         }
     }
@@ -847,6 +969,7 @@ impl Worker {
                     chains: session.chains.clone(),
                     expiry: session.expiry,
                     created: session.created,
+                    acknowledged: session.acknowledged,
                 })
             })
             .collect();
@@ -997,12 +1120,13 @@ impl Worker {
                     self.answer(&request.topic, request.id, Err(unsupported()));
                     return;
                 };
+                // The dApp's own deadline when it sent one (it gives up then: an approval shown
+                // later could be answered after the dApp already asked again), at most 10 min.
                 let now = self.core.clock().now_unix_ms();
+                let longest = now.saturating_add(INTERACTIVE_DEADLINE_MS);
                 let deadline = request
                     .expiry
-                    .map_or(now.saturating_add(INTERACTIVE_DEADLINE_MS), |expiry| {
-                        expiry.saturating_mul(1_000)
-                    });
+                    .map_or(longest, |expiry| expiry.saturating_mul(1_000).min(longest));
                 // Runs on the request's chain or not at all (the dispatcher moves the origin to
                 // it under its lock, or refuses 4901).
                 self.submit(
@@ -1083,12 +1207,17 @@ impl Worker {
                         self.connect_answer(proposal, &origin, &body);
                     }
                     Waiting::Request { topic, id } => {
+                        // Ended without an answer (the dApp's own short deadline included):
+                        // the session's next requests wait (spec/13 §5.2).
                         if matches!(
                             body,
-                            Err(ProviderError::UserRejected | ProviderError::Expired)
+                            Err(ProviderError::UserRejected
+                                | ProviderError::Expired
+                                | ProviderError::TimedOut)
                         ) {
                             self.cool_down(topic);
                         }
+                        self.refused_while_locked(&body);
                         let result = body.map_err(|e| (e.code(), e.message().to_owned()));
                         self.answer(&topic, id, result);
                     }
@@ -1102,6 +1231,23 @@ impl Worker {
         }
     }
 
+    /// Whether an error answer came while the wallet is locked (or starting). A 4100 then was
+    /// given without any window (none opens for a remote dApp): counted, and reported at the
+    /// next unlock.
+    fn refused_while_locked(&mut self, body: &Result<Value, ProviderError>) -> bool {
+        let Err(error) = body else {
+            return false;
+        };
+        let locked = matches!(
+            self.core.wallet().vault,
+            VaultView::Locked | VaultView::Starting
+        );
+        if locked && matches!(error, ProviderError::Unauthorized) {
+            self.locked_refusals = self.locked_refusals.saturating_add(1);
+        }
+        locked
+    }
+
     fn connect_answer(
         &mut self,
         proposal: [u8; 32],
@@ -1109,6 +1255,8 @@ impl Worker {
         body: &Result<Value, ProviderError>,
     ) {
         let now = self.now_s();
+        // Refused at once while locked, or the shown window closed by the lock.
+        let locked = self.refused_while_locked(body);
         let accounts: Option<Vec<Address>> = body.as_ref().ok().and_then(|value| {
             value
                 .as_array()?
@@ -1120,26 +1268,32 @@ impl Worker {
         // approves (the grant it may have stored goes).
         let accounts = accounts
             .filter(|list| !list.is_empty() && super::topic_of_origin(origin) == Some(proposal));
-        let outs = if let Some(accounts) = accounts {
+        let (outs, end) = if let Some(accounts) = accounts {
             let outs = self.engine.approve(&proposal, accounts, now);
             if self.engine.session(&proposal).is_some() {
                 self.attach(proposal);
+                (outs, ProposalEnd::Connected)
             } else {
                 // The proposal expired meanwhile (or no session fits): the grant the window
                 // stored goes again.
                 self.core.remove_grant(origin);
                 self.sink.push(WcEvent::Ended(origin.clone()));
+                (outs, ProposalEnd::TooLate)
             }
-            outs
         } else {
             if body.is_ok() {
                 // Accounts for another origin (never expected): undo the stored grant.
                 self.core.remove_grant(origin);
             }
-            self.engine.reject(&proposal, 5_000, "User rejected.")
+            let end = match body {
+                Err(_) if locked => ProposalEnd::Locked,
+                Err(error) => ProposalEnd::Refused(error.clone()),
+                Ok(_) => ProposalEnd::Refused(ProviderError::Internal),
+            };
+            (self.engine.reject(&proposal, 5_000, "User rejected."), end)
         };
         self.apply(outs);
-        self.sink.push(WcEvent::ProposalDone(proposal));
+        self.sink.push(WcEvent::ProposalDone(proposal, end));
     }
 
     fn dispatcher_event(&mut self, topic: [u8; 32], event: &BrowserEvent) {

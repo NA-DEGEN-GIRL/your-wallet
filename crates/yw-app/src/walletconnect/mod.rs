@@ -32,7 +32,8 @@ pub const LABEL_PREFIX: &str = "WalletConnect: ";
 /// The Verify API result (spec/13 §7).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum VerifyStatus {
-    /// The attested origin equals the claimed one.
+    /// The attested origin equals the claimed one. What the Verify server reported, not a proof:
+    /// a dApp running outside a browser can obtain it (spec/13 §7), so it is shown as such.
     Valid,
     /// The attested origin differs: high risk.
     Invalid,
@@ -67,11 +68,12 @@ impl VerifyStatus {
         }
     }
 
-    /// The Korean status word (lists, badges).
+    /// The Korean status word (lists, badges). `Valid` says what the server reported, never
+    /// "confirmed".
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Valid => "확인됨",
+            Self::Valid => "일치(서버 알림)",
             Self::Invalid => "불일치(위험)",
             Self::Scam => "알려진 사기 사이트(위험)",
             Self::Unknown => "확인 불가",
@@ -286,7 +288,7 @@ pub fn origin_label(peer: &Metadata) -> String {
 }
 
 /// The risk rule a `WalletConnect` request carries (C01 caution unverified, C02 mismatch, C03
-/// scam, C04 info verified).
+/// scam, C04 info: the Verify server reported a match).
 #[must_use]
 pub fn verify_warning(verify: VerifyStatus) -> yw_core::approval::Warning {
     use yw_core::evm::risk::{C01, C02, C03, C04, warning};

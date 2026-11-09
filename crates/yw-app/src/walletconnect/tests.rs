@@ -534,6 +534,135 @@ fn pairings_are_short_lived_and_bounded() {
     assert!(engine.proposal(&pending[0]).is_some());
 }
 
+/// A proposal refused before its window says why (spec/13 §5.1): a Solana-only dApp gets no EVM
+/// chains (5100, not "every chain"), a missing required chain is named, and a pairing no
+/// proposal came on says it lapsed. An approved session the dApp never confirms ends
+/// `SETTLE_ACK_S` after its settle went out (not while it could not), at once when the dApp
+/// refuses the settle, and never once it answered (spec/13 §5.3). A session's own
+/// `wc_pairingDelete` does not unsubscribe it; an `expiryTimestamp` in the past is 8000.
+#[test]
+fn proposal_refusals_say_why_and_unconfirmed_sessions_end() {
+    use super::engine::{Engine, Notice, Out, PAIRING_TTL_S, SETTLE_ACK_S, SETTLE_TAG};
+    let now = 1_700_000_000_u64;
+    let mut engine = Engine::new();
+    engine.supported_chains = vec![1, 8_453];
+    let notices = |outs: &[Out]| -> Vec<Notice> {
+        outs.iter()
+            .filter_map(|out| match out {
+                Out::Notice(notice) => Some(notice.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    let ended = |outs: &[Out]| outs.iter().any(|out| matches!(out, Out::Ended(_)));
+    let propose = |engine: &mut Engine, key: &[u8; 32], id: u64, namespaces: &str| {
+        let secret = X25519Secret::from_bytes([key[0] ^ 0x5a; 32]);
+        let proposal = format!(
+            r#"{{"id":{id},"jsonrpc":"2.0","method":"wc_sessionPropose","params":{{"relays":[{{"protocol":"irn"}}],"proposer":{{"publicKey":"{}","metadata":{{"name":"d","url":"https://app.example"}}}},{namespaces}}}}}"#,
+            yw_core::hex::encode(&secret.public())
+        );
+        engine.on_message(&topic_of(key), &Dapp::seal(key, &proposal), None, now)
+    };
+
+    let key = [0x91_u8; 32];
+    let _ = engine.pair(&pairing_uri(&key, None), now);
+    let solana = r#""requiredNamespaces":{},"optionalNamespaces":{"solana":{"chains":["solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"],"methods":["solana_signMessage"],"events":[]}}"#;
+    let outs = propose(&mut engine, &key, 1, solana);
+    assert!(proposed(&outs).is_none());
+    assert_eq!(reply_code(&outs, &key), Some(5_100));
+    assert_eq!(notices(&outs), vec![Notice::NonEvmOnly]);
+    let polygon = r#""requiredNamespaces":{"eip155":{"chains":["eip155:137","eip155:1"],"methods":["personal_sign"],"events":[]}}"#;
+    assert_eq!(
+        notices(&propose(&mut engine, &key, 2, polygon)),
+        vec![Notice::MissingChains {
+            chains: vec![137],
+            non_evm: false
+        }]
+    );
+    // Nothing named at all: every chain of the wallet.
+    let outs = propose(&mut engine, &key, 3, r#""requiredNamespaces":{}"#);
+    assert_eq!(proposed(&outs).unwrap().chains, vec![1, 8_453]);
+    let unused = [0x92_u8; 32];
+    let _ = engine.pair(&pairing_uri(&unused, None), now);
+    assert_eq!(
+        notices(&engine.tick(now + PAIRING_TTL_S)),
+        vec![Notice::PairingExpired]
+    );
+
+    // Three sessions approved; their settles' ids as the dApp reads them.
+    let t = now + 1_000;
+    let account = yw_core::evm::address::Address::from_bytes([3; 20]);
+    let approve = |engine: &mut Engine, key: [u8; 32]| {
+        let _ = engine.pair(&pairing_uri(&key, None), t);
+        let view = proposed(&propose_on(
+            engine,
+            &key,
+            u64::from(key[0]),
+            r#"["personal_sign"]"#,
+            "[]",
+            t,
+        ))
+        .unwrap();
+        let outs = engine.approve(&view.session_topic, vec![account], t);
+        let session_key = *engine.session(&view.session_topic).unwrap().sym_key;
+        let settle_id = outs
+            .iter()
+            .find_map(|out| match out {
+                Out::Publish(p) if p.tag == SETTLE_TAG => {
+                    get(&Dapp::open(&session_key, &p.message), &["id"])
+                        .as_number()
+                        .and_then(yw_json::Number::as_u64)
+                }
+                _ => None,
+            })
+            .unwrap();
+        (view.session_topic, session_key, settle_id)
+    };
+    let (silent, ..) = approve(&mut engine, [0xa1; 32]);
+    let (refused, refused_key, refused_id) = approve(&mut engine, [0xa2; 32]);
+    let (answered, answered_key, answered_id) = approve(&mut engine, [0xa3; 32]);
+    // The settles never left (relay offline): no clock runs.
+    assert!(!ended(&engine.tick(t + SETTLE_ACK_S)));
+    let sent = t + SETTLE_ACK_S;
+    for topic in [silent, answered] {
+        engine.settle_reachable(&topic, sent);
+    }
+    let refusal =
+        format!(r#"{{"id":{refused_id},"jsonrpc":"2.0","error":{{"code":5000,"message":"no"}}}}"#);
+    let outs = engine.on_message(&refused, &Dapp::seal(&refused_key, &refusal), None, sent);
+    assert!(outs.contains(&Out::Ended(refused)));
+    assert_eq!(notices(&outs), vec![Notice::SettleRefused]);
+    let result = format!(r#"{{"id":{answered_id},"jsonrpc":"2.0","result":true}}"#);
+    let _ = engine.on_message(&answered, &Dapp::seal(&answered_key, &result), None, sent);
+    assert!(engine.session(&answered).unwrap().acknowledged);
+    assert!(!ended(&engine.tick(sent + SETTLE_ACK_S - 1)));
+    let outs = engine.tick(sent + SETTLE_ACK_S);
+    assert!(outs.contains(&Out::Ended(silent)));
+    assert!(
+        outs.iter()
+            .any(|out| matches!(out, Out::Publish(p) if p.topic == silent && p.tag == 1112)),
+        "wc_sessionDelete"
+    );
+    assert_eq!(notices(&outs), vec![Notice::Unconfirmed]);
+    assert!(engine.session(&answered).is_some());
+
+    // The session's peer sends wc_pairingDelete on the session topic: ignored, still subscribed.
+    let delete = r#"{"id":1700000000000099,"jsonrpc":"2.0","method":"wc_pairingDelete","params":{"code":6000,"message":"x"}}"#;
+    let later = sent + SETTLE_ACK_S;
+    assert!(
+        engine
+            .on_message(&answered, &Dapp::seal(&answered_key, delete), None, later)
+            .is_empty()
+    );
+    assert!(engine.topics().contains(&answered));
+    let expired = format!(
+        r#"{{"id":1700000000000100,"jsonrpc":"2.0","method":"wc_sessionRequest","params":{{"request":{{"method":"personal_sign","params":[],"expiryTimestamp":{}}},"chainId":"eip155:1"}}}}"#,
+        later - 1
+    );
+    let outs = engine.on_message(&answered, &Dapp::seal(&answered_key, &expired), None, later);
+    assert_eq!(reply_code(&outs, &answered_key), Some(8_000));
+}
+
 /// Required method and event names enter the session only when known and plain (the rest are
 /// counted, never shown or stored); stored sessions are filtered the same way on read.
 #[test]
@@ -716,6 +845,28 @@ fn verify_status_rules() {
         status_of(
             Some(&attested("https://app.example", false, false)),
             claimed
+        ),
+        VerifyStatus::Unknown
+    );
+    // An attested origin this wallet cannot parse is still another origin than the claimed one
+    // (a phishing page on plain http, IPv6, an extension page, an opaque origin) — unless it is
+    // the claimed URL's own origin, which this wallet cannot judge.
+    for origin in [
+        "http://phish.example",
+        "https://[::1]:8443",
+        "chrome-extension://abcdefghijklmnopabcdefghijklmnop",
+        "null",
+    ] {
+        assert_eq!(
+            status_of(Some(&attested(origin, false, true)), claimed),
+            VerifyStatus::Invalid,
+            "{origin}"
+        );
+    }
+    assert_eq!(
+        status_of(
+            Some(&attested("http://192.168.0.7:3000", false, true)),
+            "HTTP://192.168.0.7:3000/app"
         ),
         VerifyStatus::Unknown
     );
@@ -1039,12 +1190,20 @@ fn mocked_end_to_end_session() {
     assert!(methods.contains(&"personal_sign") && methods.contains(&"eth_sign"));
     let key = dapp.session_key.unwrap();
 
-    // personal_sign → dispatcher → the UI queue (answered with a dummy value; never signed).
-    let request = r#"{"id":1700000000000002,"jsonrpc":"2.0","method":"wc_sessionRequest","params":{"request":{"method":"personal_sign","params":["0x48656c6c6f","0x9858effd232b4033e47d90003d41ec34ecaeda94"]},"chainId":"eip155:11155111"}}"#;
+    // personal_sign → dispatcher → the UI queue (answered with a dummy value; never signed). The
+    // reference sign-client puts its deadline in `request.expiryTimestamp` (5 min by default).
+    let soon = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 300;
+    let request = format!(
+        r#"{{"id":1700000000000002,"jsonrpc":"2.0","method":"wc_sessionRequest","params":{{"request":{{"method":"personal_sign","params":["0x48656c6c6f","0x9858effd232b4033e47d90003d41ec34ecaeda94"],"expiryTimestamp":{soon}}},"chainId":"eip155:11155111"}}}}"#
+    );
     wire.inbox
         .lock()
         .unwrap()
-        .push_back(subscription(&session_topic, &Dapp::seal(&key, request)));
+        .push_back(subscription(&session_topic, &Dapp::seal(&key, &request)));
     pump(&mut worker);
     let sign = recorder
         .dapp
@@ -1065,6 +1224,10 @@ fn mocked_end_to_end_session() {
         sign.chain_id,
         yw_core::evm::chain::SEPOLIA,
         "the request's chain"
+    );
+    assert!(
+        sign.deadline_ms <= yw_win::time::monotonic_ms() + 300_000,
+        "the dApp's own deadline, not the 10-minute default"
     );
     core.respond(&sign.reply, Ok(Value::String("0xdummy".to_owned())));
     // Local answers and refusals.

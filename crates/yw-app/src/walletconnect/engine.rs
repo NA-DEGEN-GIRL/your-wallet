@@ -92,6 +92,12 @@ pub const PROPOSAL_COOLDOWN_S: u64 = 15;
 pub const PAIRING_TTL_S: u64 = 300;
 /// Proposals one pairing may make (then it is refused without a connect window).
 pub const MAX_PROPOSALS_PER_PAIRING: usize = 3;
+/// The IRN tag of `wc_sessionSettle`.
+pub const SETTLE_TAG: u32 = 1102;
+/// An approved session the dApp has not confirmed (its `wc_sessionSettle` unanswered, nothing
+/// asked on it) is disconnected this long after the settle could first reach the dApp: the
+/// settle lives 300 s at the relay, the dApp's answer 300 s more, plus a minute's margin.
+pub const SETTLE_ACK_S: u64 = 660;
 
 /// Whether `name` is a plain RPC name: 1–64 ASCII letters, digits, `_` or `:`.
 #[must_use]
@@ -152,8 +158,6 @@ pub struct ProposalView {
     pub peer: Metadata,
     /// Chains that will be approved (required ∪ supported optional), in request order.
     pub chains: Vec<u64>,
-    /// Required chains this wallet does not have (non-empty: the proposal is refused 5100).
-    pub missing_required: Vec<String>,
     /// Required methods outside [`WALLET_METHODS`] (granted in the namespace but answered 4200);
     /// [`KNOWN_METHODS`] names only.
     pub unsupported_methods: Vec<String>,
@@ -190,8 +194,41 @@ pub struct SessionRequest {
     pub method: String,
     /// Params.
     pub params: Value,
-    /// `request.expiry` (Unix s), if set.
+    /// `request.expiryTimestamp` (Unix s; `request.expiry` of older dApps), if set.
     pub expiry: Option<u64>,
+}
+
+/// Something the user should hear about that has no window of its own: a proposal refused
+/// before its connect window, a pairing that lapsed unused, a session the dApp never confirmed.
+/// The worker words it ([`super::worker::notice_text`]); nothing the dApp sent is shown.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Notice {
+    /// Required chains this wallet does not have or has blocked (`eip155` references), and
+    /// whether a non-EVM namespace was required too.
+    MissingChains {
+        /// The `eip155` chains.
+        chains: Vec<u64>,
+        /// A non-`eip155` namespace or chain was required.
+        non_evm: bool,
+    },
+    /// Only non-EVM namespaces were named (e.g. a Solana-only dApp).
+    NonEvmOnly,
+    /// None of the named `eip155` chains is usable here (the optional ones asked for).
+    NoChains(Vec<u64>),
+    /// A malformed proposal (params, proposer key, relay protocol or chain ids).
+    Malformed,
+    /// The pairing's last proposal was rejected or lapsed a moment ago.
+    Cooling,
+    /// The pairing already made its session or took its proposals: a new link is needed.
+    PairingUsed,
+    /// Too many proposals are pending.
+    Busy,
+    /// A pairing lapsed without any proposal.
+    PairingExpired,
+    /// The dApp answered the settle of a session just approved with an error (it dropped it).
+    SettleRefused,
+    /// The dApp never confirmed a session ([`SETTLE_ACK_S`]); it was disconnected.
+    Unconfirmed,
 }
 
 /// Engine output.
@@ -211,6 +248,8 @@ pub enum Out {
     SessionsChanged,
     /// A session ended (peer delete, expiry or our disconnect).
     Ended([u8; 32]),
+    /// Something to tell the user (the worker turns it into a panel notice).
+    Notice(Notice),
 }
 
 /// A settled (or settling) session.
@@ -312,6 +351,17 @@ struct Proposal {
     events: Vec<String>,
 }
 
+/// A session the dApp has not confirmed yet (its settle unanswered, nothing asked on it).
+#[derive(Clone, Copy, Debug)]
+struct Settling {
+    topic: [u8; 32],
+    /// The settle's JSON-RPC id (`None`: restored from meta, which does not keep it).
+    id: Option<u64>,
+    /// When the settle could first reach the dApp (Unix s): its publish went out, or the
+    /// restored session's topic was subscribed. [`SETTLE_ACK_S`] counts from here.
+    since: Option<u64>,
+}
+
 /// Our metadata in `wc_sessionSettle`.
 #[must_use]
 pub fn wallet_metadata() -> Value {
@@ -395,14 +445,27 @@ fn push_unique(list: &mut Vec<String>, item: &str) {
     }
 }
 
-/// The parsed proposal namespaces: eip155 chain references (required, optional), the required
-/// non-eip155 chains, the requested known methods and events, and how many requested names were
-/// left out.
+/// Which namespaces a proposal named at all, in either object.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+enum Named {
+    /// None (both objects absent or empty): every chain of the wallet.
+    #[default]
+    Nothing,
+    /// Only non-eip155 ones (a Solana-only dApp).
+    OtherOnly,
+    /// An eip155 one.
+    Eip155,
+}
+
+/// The parsed proposal namespaces: eip155 chain references (required, optional), whether a
+/// non-eip155 namespace was required, which namespaces were named at all, the requested known
+/// methods and events, and how many requested names were left out.
 #[derive(Debug, Default)]
 struct Requested {
     required: Vec<u64>,
     optional: Vec<u64>,
-    foreign_required: Vec<String>,
+    foreign_required: bool,
+    named: Named,
     bad_required: bool,
     methods: Vec<String>,
     events: Vec<String>,
@@ -413,6 +476,9 @@ fn read_namespaces(value: Option<&Value>, required: bool, into: &mut Requested) 
     let Some(object) = value.and_then(Value::as_object) else {
         return;
     };
+    if object.iter().next().is_some() {
+        into.named = into.named.max(Named::OtherOnly);
+    }
     if required && object.iter().count() > MAX_NAMESPACES {
         // Requirements this wallet would not even read cannot be met.
         into.bad_required = true;
@@ -430,14 +496,11 @@ fn read_namespaces(value: Option<&Value>, required: bool, into: &mut Requested) 
             // Solana, Bitcoin and other namespaces are out of scope (spec/13 §9): a required one
             // refuses the proposal, an optional one is left out of the session.
             if required {
-                if chains.is_empty() {
-                    into.foreign_required.push(key.to_owned());
-                } else {
-                    into.foreign_required.extend(chains);
-                }
+                into.foreign_required = true;
             }
             continue;
         }
+        into.named = Named::Eip155;
         for chain in &chains {
             match parse_caip2(chain) {
                 Some(id) => {
@@ -484,6 +547,8 @@ pub struct Engine {
     /// Pairings whose last proposal was rejected or expired: (pairing topic, until Unix s). A
     /// new proposal on them meanwhile is refused without a connect window (spec/13 §7.3).
     cooldowns: Vec<([u8; 32], u64)>,
+    /// Sessions the dApp has not confirmed yet (one entry per such session).
+    settling: Vec<Settling>,
     /// The latest `now` a caller passed (the clock of [`Self::reject`], which takes none).
     last_now: u64,
     /// The wallet's supported chains (registered EVM chains), set by the worker.
@@ -517,6 +582,7 @@ impl Engine {
             sessions: Vec::new(),
             recent: VecDeque::new(),
             cooldowns: Vec::new(),
+            settling: Vec::new(),
             last_now: 0,
             supported_chains: Vec::new(),
         }
@@ -572,7 +638,8 @@ impl Engine {
             .collect()
     }
 
-    /// Restores stored sessions (at unlock); expired ones are dropped.
+    /// Restores stored sessions (at unlock); expired ones are dropped. One the dApp had not
+    /// confirmed waits for it again once its topic is subscribed ([`Self::settle_reachable`]).
     pub fn restore(&mut self, sessions: Vec<Session>, now: u64) -> Vec<Out> {
         let mut out = Vec::new();
         for session in sessions {
@@ -584,10 +651,66 @@ impl Engine {
                 && self.sessions.len() < MAX_SESSIONS
             {
                 out.push(Out::Subscribe(session.topic));
+                if !session.acknowledged {
+                    self.settling.push(Settling {
+                        topic: session.topic,
+                        id: None,
+                        since: None,
+                    });
+                }
                 self.sessions.push(session);
             }
         }
         out
+    }
+
+    /// The settle of unconfirmed session `topic` can reach the dApp from `now` on (Unix s): its
+    /// publish went out on the relay, or the session's topic was subscribed. The wait for the
+    /// dApp's confirmation ([`SETTLE_ACK_S`]) starts at the first such moment.
+    pub fn settle_reachable(&mut self, topic: &[u8; 32], now: u64) {
+        if let Some(entry) = self
+            .settling
+            .iter_mut()
+            .find(|entry| entry.topic == *topic && entry.since.is_none())
+        {
+            entry.since = Some(now);
+        }
+    }
+
+    /// The dApp holds session `topic` (it answered our message or asked something on it): the
+    /// session is confirmed.
+    fn confirmed(&mut self, topic: &[u8; 32]) -> Vec<Out> {
+        self.settling.retain(|entry| entry.topic != *topic);
+        match self.sessions.iter_mut().find(|s| s.topic == *topic) {
+            Some(session) if !session.acknowledged => {
+                session.acknowledged = true;
+                vec![Out::SessionsChanged]
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// A response to one of our messages on `topic`: a result confirms an unconfirmed session;
+    /// an error answering its settle means the dApp refused it (the reference
+    /// `onSessionSettleResponse` drops the session too). Other errors say nothing about it.
+    fn on_response(&mut self, topic: &[u8; 32], id: u64, ok: bool, failed: bool) -> Vec<Out> {
+        if self.session(topic).is_none_or(|s| s.acknowledged) {
+            return Vec::new();
+        }
+        if ok {
+            return self.confirmed(topic);
+        }
+        if failed
+            && self
+                .settling
+                .iter()
+                .any(|entry| entry.topic == *topic && entry.id == Some(id))
+        {
+            let mut out = self.drop_session(topic);
+            out.push(Out::Notice(Notice::SettleRefused));
+            return out;
+        }
+        Vec::new()
     }
 
     /// `pair(uri)`: remembers the pairing key and subscribes its topic; the proposal arrives as a
@@ -707,14 +830,9 @@ impl Engine {
         };
         let Some(method) = object.get("method").and_then(Value::as_str) else {
             // A response to one of ours.
-            if object.get("result").is_some()
-                && let Some(session) = self.sessions.iter_mut().find(|s| s.topic == *topic)
-                && !session.acknowledged
-            {
-                session.acknowledged = true;
-                return vec![Out::SessionsChanged];
-            }
-            return Vec::new();
+            let ok = object.get("result").is_some();
+            let failed = object.get("error").is_some();
+            return self.on_response(topic, id, ok, failed);
         };
         // At-least-once delivery: a request seen before is not handled twice.
         if self.recent.contains(&(*topic, id)) {
@@ -737,11 +855,21 @@ impl Engine {
                 };
                 self.on_propose(*topic, id, &params, verify, now)
             }
-            "wc_sessionRequest" if is_session => self.on_request(*topic, id, &params, now),
-            "wc_sessionPing" => self
-                .publish(*topic, &rpc_result(id, Value::Bool(true)), 1115, 30)
-                .into_iter()
-                .collect(),
+            // Only the dApp sends these on a session: it holds the session (confirmed).
+            "wc_sessionRequest" if is_session => {
+                let mut out = self.confirmed(topic);
+                out.extend(self.on_request(*topic, id, &params, now));
+                out
+            }
+            "wc_sessionPing" => {
+                let mut out = if is_session {
+                    self.confirmed(topic)
+                } else {
+                    Vec::new()
+                };
+                out.extend(self.publish(*topic, &rpc_result(id, Value::Bool(true)), 1115, 30));
+                out
+            }
             "wc_pairingPing" => self
                 .publish(*topic, &rpc_result(id, Value::Bool(true)), 1003, 30)
                 .into_iter()
@@ -754,7 +882,9 @@ impl Engine {
                 out.extend(self.drop_session(topic));
                 out
             }
-            "wc_pairingDelete" => {
+            // On a pairing topic only: a session's peer sending it on the session topic must not
+            // unsubscribe the session (its requests would go unheard until a reconnect).
+            "wc_pairingDelete" if !is_session => {
                 let out: Vec<Out> = self
                     .publish(*topic, &rpc_result(id, Value::Bool(true)), 1001, 86_400)
                     .into_iter()
@@ -792,14 +922,18 @@ impl Engine {
         verify: VerifyInput,
         now: u64,
     ) -> Vec<Out> {
-        let reject = |engine: &Self, code: i64, message: &str| -> Vec<Out> {
-            engine
+        // Every refusal before the connect window also tells the user why (wallet text only):
+        // the dApp alone would otherwise know, and the panel would keep waiting.
+        let reject = |engine: &Self, code: i64, message: &str, notice: Notice| -> Vec<Out> {
+            let mut out: Vec<Out> = engine
                 .publish(pairing_topic, &rpc_error(id, code, message), 1120, 300)
                 .into_iter()
-                .collect()
+                .collect();
+            out.push(Out::Notice(notice));
+            out
         };
         if self.cooling(&pairing_topic, now) {
-            return reject(self, 5000, "User rejected.");
+            return reject(self, 5000, "User rejected.", Notice::Cooling);
         }
         // A JSON-RPC id already pending (on any pairing) is not a second proposal: ids are chosen
         // by the dApp, so one pairing could otherwise shadow another's. No answer (a redelivery
@@ -812,11 +946,11 @@ impl Engine {
             return Vec::new();
         };
         if pairing.settled || pairing.proposals >= MAX_PROPOSALS_PER_PAIRING {
-            return reject(self, 5000, "User rejected.");
+            return reject(self, 5000, "User rejected.", Notice::PairingUsed);
         }
         pairing.proposals += 1;
         let Some(object) = params.as_object() else {
-            return reject(self, 1006, "Invalid proposal namespaces");
+            return reject(self, 1006, "Invalid proposal namespaces", Notice::Malformed);
         };
         let proposer = object.get("proposer").and_then(Value::as_object);
         let Some(proposer_public) = proposer
@@ -824,7 +958,7 @@ impl Engine {
             .and_then(Value::as_str)
             .and_then(|text| yw_core::hex::decode_array::<32>(&text.to_ascii_lowercase()).ok())
         else {
-            return reject(self, 1006, "Invalid proposer");
+            return reject(self, 1006, "Invalid proposer", Notice::Malformed);
         };
         let relay_ok = object
             .get("relays")
@@ -839,20 +973,32 @@ impl Engine {
                 })
             });
         if !relay_ok {
-            return reject(self, 5100, "Unsupported relay protocol");
+            return reject(self, 5100, "Unsupported relay protocol", Notice::Malformed);
         }
         let peer = Metadata::from_value(proposer.and_then(|p| p.get("metadata")));
         let mut requested = Requested::default();
         read_namespaces(object.get("requiredNamespaces"), true, &mut requested);
         read_namespaces(object.get("optionalNamespaces"), false, &mut requested);
         if requested.bad_required {
-            return reject(self, 5100, "Chains must be CAIP-2 compliant");
+            return reject(
+                self,
+                5100,
+                "Chains must be CAIP-2 compliant",
+                Notice::Malformed,
+            );
         }
-        let mut missing: Vec<String> = requested.foreign_required.clone();
-        for chain in &requested.required {
-            if !self.supported_chains.contains(chain) {
-                missing.push(chain_caip2(*chain));
-            }
+        let missing: Vec<u64> = requested
+            .required
+            .iter()
+            .copied()
+            .filter(|chain| !self.supported_chains.contains(chain))
+            .collect();
+        if requested.foreign_required || !missing.is_empty() {
+            let notice = Notice::MissingChains {
+                chains: missing,
+                non_evm: requested.foreign_required,
+            };
+            return reject(self, 5100, "Unsupported chains", notice);
         }
         let mut chains: Vec<u64> = requested.required.clone();
         for chain in &requested.optional {
@@ -860,11 +1006,26 @@ impl Engine {
                 chains.push(*chain);
             }
         }
-        if requested.required.is_empty() && requested.optional.is_empty() {
-            // No requirements (namespaces spec 1.9): every chain of the wallet.
+        if requested.named == Named::Nothing {
+            // No namespaces at all (namespaces spec 1.9, the reference `buildApprovedNamespaces`):
+            // every chain of the wallet. One naming only other namespaces (a Solana-only dApp)
+            // gets none — it never asked for EVM addresses.
             chains.clone_from(&self.supported_chains);
         }
         chains.retain(|chain| self.supported_chains.contains(chain));
+        if chains.is_empty() {
+            let notice = if requested.named == Named::Eip155 {
+                Notice::NoChains(requested.optional.clone())
+            } else {
+                Notice::NonEvmOnly
+            };
+            return reject(self, 5100, "Unsupported chains", notice);
+        }
+        // Full: the newcomer is refused (a pending proposal — perhaps the user's own — is never
+        // pushed out by others).
+        if self.proposals.len() >= MAX_PROPOSALS {
+            return reject(self, 5000, "User rejected.", Notice::Busy);
+        }
         let expiry = object
             .get("expiryTimestamp")
             .and_then(Value::as_number)
@@ -889,7 +1050,7 @@ impl Engine {
             return Vec::new();
         };
         let Some(sym_key) = derive_sym_key(&secret, &proposer_public) else {
-            return reject(self, 1006, "Invalid proposer");
+            return reject(self, 1006, "Invalid proposer", Notice::Malformed);
         };
         let session_topic = topic_of(&sym_key);
         let view = ProposalView {
@@ -897,23 +1058,11 @@ impl Engine {
             session_topic,
             peer,
             chains,
-            missing_required: missing,
             unsupported_methods: unsupported,
             dropped_names: requested.dropped,
             verify: VerifyStatus::Unknown,
             expiry,
         };
-        if !view.missing_required.is_empty() {
-            return reject(self, 5100, "Unsupported chains");
-        }
-        if view.chains.is_empty() {
-            return reject(self, 5100, "Unsupported chains");
-        }
-        // Full: the newcomer is refused (a pending proposal — perhaps the user's own — is never
-        // pushed out by others).
-        if self.proposals.len() >= MAX_PROPOSALS {
-            return reject(self, 5000, "User rejected.");
-        }
         self.proposals.push(Proposal {
             view: view.clone(),
             pairing_topic,
@@ -999,11 +1148,20 @@ impl Engine {
         );
         let topic = session.topic;
         self.sessions.push(session);
+        // Unconfirmed until the dApp answers the settle (or uses the session); its wait starts
+        // when the settle actually goes out ([`Self::settle_reachable`]).
+        let settle_id = new_id(now * 1_000);
+        self.settling.retain(|entry| entry.topic != topic);
+        self.settling.push(Settling {
+            topic,
+            id: Some(settle_id),
+            since: None,
+        });
         let mut out = vec![Out::Subscribe(topic)];
         out.extend(self.publish(
             topic,
-            &rpc_request(new_id(now * 1_000), "wc_sessionSettle", settle),
-            1102,
+            &rpc_request(settle_id, "wc_sessionSettle", settle),
+            SETTLE_TAG,
             300,
         ));
         out.extend(self.publish(proposal.pairing_topic, &response, 1101, 300));
@@ -1060,10 +1218,15 @@ impl Engine {
             .and_then(|o| o.get("chainId"))
             .and_then(Value::as_str)
             .and_then(parse_caip2);
-        let expiry = request
-            .and_then(|r| r.get("expiry"))
-            .and_then(Value::as_number)
-            .and_then(yw_json::Number::as_u64);
+        // The reference sign-client sends `request.expiryTimestamp` (Unix s, 300 s by default);
+        // `request.expiry` is the older name the specs page still shows.
+        let number = |key: &str| {
+            request
+                .and_then(|r| r.get(key))
+                .and_then(Value::as_number)
+                .and_then(yw_json::Number::as_u64)
+        };
+        let expiry = number("expiryTimestamp").or_else(|| number("expiry"));
         let Some(session) = self.sessions.iter().find(|s| s.topic == topic) else {
             return Vec::new();
         };
@@ -1274,6 +1437,7 @@ impl Engine {
     }
 
     fn drop_session(&mut self, topic: &[u8; 32]) -> Vec<Out> {
+        self.settling.retain(|entry| entry.topic != *topic);
         let before = self.sessions.len();
         self.sessions.retain(|s| s.topic != *topic);
         if before == self.sessions.len() {
@@ -1286,7 +1450,7 @@ impl Engine {
         ]
     }
 
-    /// Expiry of sessions, proposals and pairings.
+    /// Expiry of sessions, proposals and pairings; sessions the dApp never confirmed end.
     pub fn tick(&mut self, now: u64) -> Vec<Out> {
         let mut out = Vec::new();
         let expired: Vec<[u8; 32]> = self
@@ -1297,6 +1461,27 @@ impl Engine {
             .collect();
         for topic in expired {
             out.extend(self.drop_session(&topic));
+        }
+        // Approved, but the dApp never answered the settle nor used the session within
+        // SETTLE_ACK_S of the settle reaching the relay (its tab closed, its SDK dropped the
+        // settle): a dead "connected" session and grant would otherwise stay for 7 days.
+        let unconfirmed: Vec<[u8; 32]> = self
+            .settling
+            .iter()
+            .filter(|entry| {
+                entry
+                    .since
+                    .is_some_and(|since| now >= since.saturating_add(SETTLE_ACK_S))
+            })
+            .map(|entry| entry.topic)
+            .collect();
+        for topic in unconfirmed {
+            let ended = self.disconnect(&topic, now);
+            self.settling.retain(|entry| entry.topic != topic);
+            if !ended.is_empty() {
+                out.extend(ended);
+                out.push(Out::Notice(Notice::Unconfirmed));
+            }
         }
         self.last_now = self.last_now.max(now);
         let lapsed: Vec<[u8; 32]> = self
@@ -1319,8 +1504,17 @@ impl Engine {
             .map(|p| p.topic)
             .collect();
         for topic in gone {
+            // A pairing no proposal ever came on (the dApp closed, a Project ID problem on its
+            // side): the panel stops saying it is waiting.
+            let unused = self
+                .pairings
+                .iter()
+                .any(|p| p.topic == topic && p.proposals == 0 && !p.settled);
             self.pairings.retain(|p| p.topic != topic);
             out.push(Out::Unsubscribe(topic));
+            if unused {
+                out.push(Out::Notice(Notice::PairingExpired));
+            }
         }
         out.extend(self.retire_settled());
         out

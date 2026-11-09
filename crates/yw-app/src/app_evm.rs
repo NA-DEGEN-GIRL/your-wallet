@@ -690,6 +690,19 @@ impl App {
     pub fn evm_lock(&mut self) {
         self.close_approval_window();
         self.evm.store.invalidate_all();
+        // WalletConnect requests never wait for the unlock (spec/13 §5.2, §8): no password
+        // window opens for a remote dApp, so the waiting ones end now with the locked answer
+        // (4100) instead of raising it after the reload or reappearing after the unlock.
+        let finished = self.evm.queue.drain_waiting_matching(
+            |item| {
+                matches!(item, QueuedItem::Site(site)
+                    if crate::walletconnect::is_session_origin(&site.origin))
+            },
+            QueueOutcome::Revoked,
+        );
+        for (item, outcome) in finished {
+            self.approval_finished(&item.payload, outcome);
+        }
         for (item, outcome) in self.evm.queue.lock() {
             self.approval_finished(&item.payload, outcome);
         }

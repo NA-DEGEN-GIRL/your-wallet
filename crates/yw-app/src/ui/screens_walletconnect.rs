@@ -1,7 +1,8 @@
 //! The `WalletConnect` panel at the top of S13 연결된 사이트 (spec/13 §6): `WalletConnect 연결`
 //! (paste a `wc:` URI, `클립보드 이미지에서 QR 읽기`, `이미지 파일에서 QR 읽기`), the Reown
 //! Project ID, the relay state, and the `WalletConnect 세션` cards (peer name, claimed URL,
-//! Verify state, accounts, chains, expiry) with `연결 해제` and `모든 WalletConnect 세션 끊기`.
+//! `연결 확인 중` until the dApp confirms, Verify state, accounts, chains, expiry) with
+//! `연결 해제` and `모든 WalletConnect 세션 끊기`.
 
 use crate::app::App;
 use crate::ui::main_window::{Ctl, Item, Tone};
@@ -205,6 +206,15 @@ impl App {
                 "사이트 주소".to_owned(),
                 format!("{} (사이트가 주장한 주소)", session.peer.display_url()),
             ));
+            if !session.acknowledged {
+                // Approved here, not yet confirmed by the dApp (spec/13 §5.3): never shown as
+                // simply "connected" while the dApp may not have it.
+                items.push(Item::Field(
+                    "상태".to_owned(),
+                    "연결 확인 중 — dApp의 확인을 기다리는 중입니다. 몇 분 안에 확인되지 않으면 자동으로 끊습니다."
+                        .to_owned(),
+                ));
+            }
             let tone = match session.verify {
                 VerifyStatus::Valid => None,
                 VerifyStatus::Unknown => Some(Tone::Warn),

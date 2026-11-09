@@ -8,15 +8,43 @@ use std::sync::Arc;
 use yw_core::approval::{
     ApprovalDisplay, ApprovalDraft, ApprovalOrigin, DisplayField, FieldKey, MAX_DISPLAY_WARNINGS,
 };
-use yw_core::policy::BrowserOrigin;
+use yw_core::policy::{BrowserOrigin, ProviderError};
 
 use crate::app::App;
 use crate::browser::{SiteRequest, VaultView};
 use crate::logging::{self, Field};
 use crate::walletconnect::engine::ProposalView;
 use crate::walletconnect::store::WcStore;
-use crate::walletconnect::worker::{RelayStatus, SessionView, WcCommand, WcEvent, WcHandle};
+use crate::walletconnect::worker::{
+    ProposalEnd, RelayStatus, SessionView, WcCommand, WcEvent, WcHandle,
+};
 use crate::walletconnect::{Metadata, VerifyStatus, is_session_origin};
+
+/// The starts of a `WalletConnect` pairing link: `wc:`, or the whole link percent-encoded
+/// (`wc%3A…`, which the URI parser also takes); ASCII case ignored.
+const PAIRING_LINK_STARTS: [&str; 2] = ["wc:", "wc%3a"];
+
+/// Whether `text` starts like a pairing link (leading whitespace ignored).
+#[must_use]
+pub fn looks_like_pairing_link(text: &str) -> bool {
+    let text = text.trim_start();
+    PAIRING_LINK_STARTS.iter().any(|prefix| {
+        text.get(..prefix.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+    })
+}
+
+/// [`looks_like_pairing_link`] on UTF-16 clipboard units (leading whitespace already skipped),
+/// without copying any of them out of the wiped buffer.
+#[must_use]
+pub fn units_look_like_pairing_link(units: &[u16]) -> bool {
+    PAIRING_LINK_STARTS.iter().any(|prefix| {
+        units.len() >= prefix.len()
+            && units.iter().zip(prefix.bytes()).all(|(unit, byte)| {
+                u8::try_from(*unit).is_ok_and(|unit| unit.to_ascii_lowercase() == byte)
+            })
+    })
+}
 
 /// Largest clipboard bitmap read (bytes; a 4K screenshot is ≈ 33 MB).
 pub const MAX_CLIPBOARD_IMAGE: usize = 80 * 1_048_576;
@@ -210,9 +238,11 @@ impl ConnectPatch {
             title.clone_from(&label);
         }
         let (text, tone) = match proposal.verify {
+            // What the Verify server reported, not a proof (a dApp outside a browser can obtain
+            // it, spec/13 §7): a mild caution, never the plain "confirmed" tone.
             VerifyStatus::Valid => (
-                "WalletConnect 연결입니다. Verify가 사이트 주소를 확인했습니다.".to_owned(),
-                Tone::Plain,
+                "WalletConnect 연결입니다. Verify 서버는 이 연결이 사이트가 주장한 주소에서 시작되었다고 알렸습니다. 다만 브라우저 밖에서 도는 dApp은 이 결과를 꾸밀 수 있으니, 지금 직접 연 사이트에서 연결했는지 확인하세요.".to_owned(),
+                Tone::Warn,
             ),
             VerifyStatus::Unknown => (
                 "WalletConnect 연결입니다. 사이트 이름과 주소는 사이트가 스스로 주장한 값이며 확인되지 않았습니다. 지금 연결하려던 사이트가 맞는지 확인하세요.".to_owned(),
@@ -369,8 +399,19 @@ impl App {
                 self.wc.notice =
                     Some("연결 요청이 도착했습니다 — 연결 창을 확인하세요.".to_owned());
             }
-            WcEvent::ProposalDone(topic) => {
+            WcEvent::ProposalDone(topic, end) => {
                 self.wc.proposals.retain(|p| p.session_topic != topic);
+                // "연결 요청이 도착했습니다" never outlives its window (or a refusal that opened
+                // none): the panel says how it ended.
+                self.wc.notice = Some(self.wc_proposal_end_text(&end));
+            }
+            WcEvent::RefusedWhileLocked(count) => {
+                let text = format!(
+                    "지갑이 잠겨 있는 동안 WalletConnect 요청 {count}개를 거절했습니다(잠금 해제 창은 열지 않습니다). 필요하면 dApp에서 다시 요청하세요."
+                );
+                if !self.banners.iter().any(|banner| banner.text == text) {
+                    self.notice(text, crate::ui::main_window::Tone::Info);
+                }
             }
             WcEvent::Sessions(views, store) => {
                 if !self.wc_store_is_current(&store) {
@@ -390,6 +431,43 @@ impl App {
             }
         }
         self.refresh();
+    }
+
+    /// The panel line after a proposal's connect request ended (wallet text only).
+    fn wc_proposal_end_text(&self, end: &ProposalEnd) -> String {
+        let text = match end {
+            ProposalEnd::Connected => {
+                "연결을 승인했습니다. 아래 WalletConnect 세션 카드에서 확인하세요."
+            }
+            ProposalEnd::TooLate => {
+                "연결 요청이 그 사이 만료되어 연결하지 않았습니다. dApp에서 다시 연결하세요."
+            }
+            ProposalEnd::Locked => {
+                "지갑이 잠겨 있어 연결 요청을 거절했습니다(잠금 해제 창은 열지 않습니다). 잠금을 해제한 뒤 dApp에서 다시 연결하세요."
+            }
+            ProposalEnd::Refused(ProviderError::UserRejected) => "연결 요청을 거절했습니다.",
+            ProposalEnd::Refused(ProviderError::Expired | ProviderError::TimedOut) => {
+                "연결 창의 시간이 지나 연결하지 않았습니다. dApp에서 다시 연결하세요."
+            }
+            ProposalEnd::Refused(ProviderError::NoEvmAccount) => {
+                "지갑에 EVM 계정이 없어 연결할 수 없습니다. EVM 개인키를 가져온 뒤 dApp에서 다시 연결하세요."
+            }
+            ProposalEnd::Refused(ProviderError::PassphraseUnverified) => {
+                "확인되지 않은 passphrase로 연 지갑이라 연결할 수 없습니다. 잠근 뒤 올바른 passphrase로 다시 여세요."
+            }
+            ProposalEnd::Refused(ProviderError::Unauthorized)
+                if self.browser_grants().len() >= yw_core::policy::MAX_GRANTS =>
+            {
+                "연결된 사이트가 이미 256개라 연결하지 않았습니다. 연결된 사이트에서 하나를 해제한 뒤 dApp에서 다시 연결하세요."
+            }
+            ProposalEnd::Refused(error) => {
+                return format!(
+                    "연결 요청을 처리하지 못했습니다 (코드 {}). dApp에서 다시 연결하세요.",
+                    error.code()
+                );
+            }
+        };
+        text.to_owned()
     }
 
     /// Whether a worker snapshot belongs to the loaded wallet: its relay key is the one in this
@@ -464,12 +542,7 @@ impl App {
     /// Decodes a QR from BGRA pixels and pairs with it.
     fn wc_pair_pixels(&mut self, width: usize, height: usize, pixels: &[u8], source: &'static str) {
         match crate::walletconnect::qr_decode::decode_bgra_text(width, height, pixels) {
-            Some(text)
-                if text
-                    .trim_start()
-                    .get(..3)
-                    .is_some_and(|p| p.eq_ignore_ascii_case("wc:")) =>
-            {
+            Some(text) if looks_like_pairing_link(&text) => {
                 logging::info(
                     "walletconnect",
                     "qr.decoded",
@@ -583,11 +656,11 @@ impl App {
         self.wc_send(WcCommand::Disconnect(topic));
     }
 
-    /// `클립보드에서 연결` (2026-11-08): a copied `wc:` link pairs at once; otherwise a copied
-    /// image goes to the QR reader. The clipboard is read only on this press, never written, and
-    /// its text is not logged (only the source word, as `qr.decoded`). Only a `wc:` link leaves
-    /// the wiped buffer as a `String`: other clipboard text (it may be a copied secret) is never
-    /// copied out of it.
+    /// `클립보드에서 연결` (2026-11-08): a copied `wc:` link (also a wholly percent-encoded
+    /// `wc%3A…` one) pairs at once; otherwise a copied image goes to the QR reader. The clipboard
+    /// is read only on this press, never written, and its text is not logged (only the source
+    /// word, as `qr.decoded`). Only a pairing link leaves the wiped buffer as a `String`: other
+    /// clipboard text (it may be a copied secret) is never copied out of it.
     pub(crate) fn wc_clipboard_connect(&mut self) {
         let Some(main) = self.main.as_ref() else {
             return;
@@ -599,13 +672,8 @@ impl App {
                 let start = units.iter().position(|unit| {
                     !char::from_u32(u32::from(*unit)).is_some_and(char::is_whitespace)
                 })?;
-                let link = matches!(
-                    units.get(start..start.saturating_add(3)),
-                    Some(&[w, c, colon]) if (w | 0x20) == u16::from(b'w')
-                        && (c | 0x20) == u16::from(b'c')
-                        && colon == u16::from(b':')
-                );
-                link.then(|| String::from_utf16_lossy(units))
+                units_look_like_pairing_link(units.get(start..)?)
+                    .then(|| String::from_utf16_lossy(units))
             });
         if let Some(text) = text {
             logging::info(

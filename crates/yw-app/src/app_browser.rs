@@ -495,7 +495,8 @@ impl App {
     }
 
     /// `Vault::load` reported a status: waiting dApp items get the unlock window (locked) or
-    /// 4100 (no wallet, damaged vault, backup pending; spec/05 §4.1–§4.2).
+    /// 4100 (no wallet, damaged vault, backup pending; spec/05 §4.1–§4.2). A `WalletConnect`
+    /// request never opens the password window (spec/13 §5.2; the lock ends them anyway).
     pub(crate) fn browser_vault_loaded(&mut self) {
         let waiting = self
             .evm
@@ -505,8 +506,12 @@ impl App {
         if !waiting {
             return;
         }
+        let for_unlock = self.evm.queue.waiting_payloads().any(|item| {
+            matches!(item, QueuedItem::Site(site)
+                if !crate::walletconnect::is_session_origin(&site.origin))
+        });
         match self.mode {
-            AppMode::Locked => self.open_unlock_for_dapp(),
+            AppMode::Locked if for_unlock => self.open_unlock_for_dapp(),
             AppMode::NoVault
             | AppMode::Corrupt { .. }
             | AppMode::MainMissing
@@ -641,7 +646,15 @@ impl App {
         purposes: &[yw_core::policy::BtcPurpose],
     ) {
         use yw_core::policy::BtcPurpose;
-        let site = origin.as_str();
+        // A WalletConnect session's synthetic origin means nothing to the user: its claimed
+        // origin label instead (spec/13 §7).
+        let label = crate::walletconnect::is_session_origin(origin).then(|| {
+            self.wc_peer_of(origin).map_or_else(
+                || "WalletConnect dApp".to_owned(),
+                |(peer, _)| crate::walletconnect::origin_label(&peer),
+            )
+        });
+        let site = label.as_deref().unwrap_or_else(|| origin.as_str());
         let text = match error {
             ProviderError::BtcDisabled => format!(
                 "{site}의 Bitcoin 연결 요청을 거부했습니다: Bitcoin이 꺼져 있습니다. 설정 → Bitcoin에서 켠 뒤 다시 연결하세요."
@@ -809,6 +822,23 @@ impl App {
             && let SiteKind::Send(tx) = &site.kind
         {
             self.release_slot(site.chain_id, &tx.from);
+        }
+        // A WalletConnect request that ended unanswered (rejected, expired, timed out) takes
+        // its session's waiting ones along (4001), like the worker's 15 s hold-off does for the
+        // next ones: requests lined up in advance cannot follow each other on screen
+        // (spec/13 §5.2).
+        if matches!(
+            outcome,
+            QueueOutcome::Rejected | QueueOutcome::Expired | QueueOutcome::TimedOut
+        ) && crate::walletconnect::is_session_origin(&site.origin)
+        {
+            let finished = self.evm.queue.drain_waiting_matching(
+                |item| matches!(item, QueuedItem::Site(waiting) if waiting.origin == site.origin),
+                QueueOutcome::Rejected,
+            );
+            for (item, outcome) in finished {
+                self.approval_finished(&item.payload, outcome);
+            }
         }
     }
 
@@ -1626,6 +1656,67 @@ mod tests {
             crate::app_evm::QueuedItem::Site(site)
                 if matches!(&site.kind, SiteKind::PersonalSign { account, .. } if *account == addr(ACCOUNT_A))
         )));
+    }
+
+    /// spec/13 §5.2: a `WalletConnect` request that ends unanswered takes its session's waiting
+    /// ones along (requests lined up in advance cannot follow each other on screen), and a lock
+    /// ends every waiting `WalletConnect` request instead of keeping it for the password window,
+    /// which only the extension's requests open. Other origins' requests are untouched.
+    #[test]
+    fn walletconnect_requests_end_with_their_window_and_at_lock() {
+        use crate::app_evm::QueuedItem;
+        use crate::ui::approval::{QueueOutcome, QueueSource};
+        let mut app = accounts_app(false);
+        // The unlock merge (it moves the queue) is behind us, as in the app.
+        app.sync_browser();
+        let wc = |n: u8, session: u8| {
+            let mut request = site(n, sign_kind());
+            request.origin = crate::walletconnect::session_origin(&[session; 32]).unwrap();
+            request
+        };
+        let enqueue = |app: &mut App, request: crate::browser::SiteRequest| {
+            let source = QueueSource::Site {
+                origin: request.origin.as_str().to_owned(),
+                deadline_ms: u64::MAX,
+            };
+            app.evm
+                .queue
+                .enqueue(source, QueuedItem::Site(Box::new(request)))
+                .unwrap();
+        };
+        let is_wc = |item: &QueuedItem| {
+            matches!(item, QueuedItem::Site(site)
+                if crate::walletconnect::is_session_origin(&site.origin))
+        };
+        for request in [wc(1, 1), wc(2, 1), site(3, sign_kind()), wc(4, 2), wc(5, 1)] {
+            enqueue(&mut app, request);
+        }
+        // Session 1's shown request expires unanswered: its two waiting ones end with it.
+        let mut finished = Vec::new();
+        assert!(app.evm.queue.show_next(0, &mut finished).is_some());
+        let (item, outcome) = app.evm.queue.finish_shown(QueueOutcome::Expired).unwrap();
+        app.approval_finished(&item.payload, outcome);
+        assert_eq!(
+            app.evm.queue.len(),
+            2,
+            "the extension's and session 2's remain"
+        );
+        // Lock: the waiting WalletConnect request ends; the extension's waits for the unlock.
+        app.evm_lock();
+        app.mode = crate::app::AppMode::Locked;
+        assert_eq!(app.evm.queue.len(), 1);
+        assert!(app.evm.queue.waiting_payloads().all(|item| !is_wc(item)));
+        // The reload after the lock: the password window for the extension's request only.
+        app.browser_vault_loaded();
+        assert!(app.browser.as_ref().is_some_and(|b| b.dapp_unlock));
+        app.browser.as_mut().unwrap().dapp_unlock = false;
+        let _ = app
+            .evm
+            .queue
+            .drain_waiting_matching(|_| true, QueueOutcome::Revoked);
+        enqueue(&mut app, wc(6, 3));
+        app.browser_vault_loaded();
+        assert!(app.browser.as_ref().is_some_and(|b| !b.dapp_unlock));
     }
 
     /// spec/05 §4.1, spec/02 §8.4: removing an imported EVM key or an added recovery phrase

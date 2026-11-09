@@ -132,7 +132,7 @@ rules! {
     C01 = b'C' 1, Caution, "WalletConnect 요청입니다 — 사이트 주소는 사이트가 스스로 주장한 값이며 확인되지 않았습니다";
     C02 = b'C' 2, High, "WalletConnect Verify 결과 사이트가 주장한 주소와 실제 주소가 다릅니다 — 피싱일 수 있습니다";
     C03 = b'C' 3, High, "WalletConnect Verify가 이 사이트를 알려진 사기 사이트로 표시했습니다";
-    C04 = b'C' 4, Info, "WalletConnect 요청 — Verify로 사이트 주소가 확인되었습니다";
+    C04 = b'C' 4, Info, "WalletConnect 요청 — Verify 서버는 사이트가 주장한 주소와 일치한다고 알렸지만, 브라우저 밖에서 도는 dApp은 이 결과를 꾸밀 수 있습니다";
 }
 
 /// Simulation-status rules shown first within their level (spec/03 §10.1, D15).

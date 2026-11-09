@@ -10,8 +10,10 @@
 //!    → 200 `{origin, isScam?}`; anything else is unknown.
 //!
 //! Result: `isScam` → [`VerifyStatus::Scam`]; attested origin = claimed origin →
-//! [`VerifyStatus::Valid`]; another origin → [`VerifyStatus::Invalid`]; no answer →
-//! [`VerifyStatus::Unknown`]. Only the official server is used (`metadata.verifyUrl` ignored).
+//! [`VerifyStatus::Valid`]; another origin → [`VerifyStatus::Invalid`] (also one this wallet
+//! cannot parse — plain http off localhost, IPv6, an extension page, `null` — unless it is the
+//! claimed URL's own origin); no answer → [`VerifyStatus::Unknown`]. Only the official server
+//! is used (`metadata.verifyUrl` ignored).
 
 use yw_json::{Limits, Value};
 
@@ -151,9 +153,44 @@ pub fn status_of(attestation: Option<&Attestation>, claimed_url: &str) -> Verify
         super::claimed_origin(claimed_url),
     ) {
         (Some(attested), Some(claimed)) if attested == claimed => VerifyStatus::Valid,
-        (Some(_), _) => VerifyStatus::Invalid,
-        (None, _) => VerifyStatus::Unknown,
+        // An attested origin outside what this wallet parses (a page on plain http, an IPv6
+        // host, an extension page, `null`) is still another origin than the claimed one — the
+        // reference SDK compares it with `new URL(metadata.url).origin` and says INVALID — unless
+        // it is empty or that very origin (a LAN dev server), which this wallet cannot judge.
+        (None, _)
+            if attestation.origin.is_empty()
+                || raw_origin(&attestation.origin)
+                    .is_some_and(|attested| Some(attested) == raw_origin(claimed_url)) =>
+        {
+            VerifyStatus::Unknown
+        }
+        _ => VerifyStatus::Invalid,
     }
+}
+
+/// `scheme://authority` of `url`, lowercased, default port removed (`None` without `://` or
+/// with user info) — a byte comparison for origins [`super::claimed_origin`] does not accept.
+fn raw_origin(url: &str) -> Option<String> {
+    let (scheme, rest) = url.trim().split_once("://")?;
+    let scheme = scheme.to_ascii_lowercase();
+    let authority = rest
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if authority.is_empty() || authority.contains('@') {
+        return None;
+    }
+    let default_port = match scheme.as_str() {
+        "https" => ":443",
+        "http" => ":80",
+        _ => "",
+    };
+    let authority = match authority.strip_suffix(default_port) {
+        Some(host) if !default_port.is_empty() => host.to_owned(),
+        _ => authority,
+    };
+    Some(format!("{scheme}://{authority}"))
 }
 
 /// HTTP access for the check (the worker's `WinHTTP` client; a stub in tests).
