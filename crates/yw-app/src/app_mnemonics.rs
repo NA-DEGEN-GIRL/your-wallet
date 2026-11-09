@@ -94,6 +94,9 @@ pub const T_MN_REMOVE_UNCONFIRMED: &str = "백업하지 않은 복구 단어입�
 pub const T_MN_REMOVE_WORD: &str = "백업 없이 지우기";
 /// T-MN-RECEIVE-UNCONFIRMED: the receive screens of an unconfirmed phrase's accounts.
 pub const T_MN_RECEIVE_UNCONFIRMED: &str = "백업하지 않은 복구 단어의 계정입니다. 이 주소로 받은 자산은 백업 확인 전에는 보낼 수 없고, 단어를 적어 두지 않은 채 잃으면 영구히 잃습니다. 받기 전에 설정 → 복구 단어에서 '백업 확인'을 마치세요.";
+/// T-MN-ALT-PASS: phrases are not added, made or removed in a session opened with an
+/// unverified passphrase (the vault refuses it too, spec/02 §7.5, §8.6).
+pub const T_MN_ALT_PASS: &str = "확인되지 않은 passphrase로 연 지갑에서는 복구 단어를 더하거나 새로 만들거나 지울 수 없습니다(이 세션의 변경은 저장되지 않고, 같은 복구 단어가 두 번 들어갈 수 있습니다). 잠그고 passphrase를 다시 입력하세요.";
 
 impl App {
     /// The label of mnemonic `id` (meta `mnemonics`; `니모닉 N` by vault position otherwise).
@@ -278,6 +281,53 @@ impl App {
         matches!(self.mode, AppMode::Unlocked { .. })
     }
 
+    /// Whether recovery phrases may be added, made or removed now: unlocked, and not a session
+    /// opened with an unverified passphrase ([`T_MN_ALT_PASS`]; like a key import).
+    #[must_use]
+    pub fn mn_phrases_editable(&self) -> bool {
+        self.unlocked() && !self.passphrase_unverified()
+    }
+
+    /// The primary phrase while its backup quiz is open in an unlocked session: a key-only or
+    /// `YubiKey` wallet's first phrase from "새 복구 단어 만들기" (a created wallet waits on S04
+    /// instead). Its accounts get the same banners as an added phrase's ([`Self::mn_backup_gate`]).
+    fn mn_primary_pending(&self) -> Option<RecordId> {
+        if !self.unlocked() {
+            return None;
+        }
+        self.mn
+            .infos
+            .iter()
+            .find(|info| info.primary && !info.backup_confirmed)
+            .map(|info| info.id)
+    }
+
+    /// The recovery phrase whose open backup quiz gates an account's signatures: the added
+    /// phrase `added`, else for a key of the primary phrase (`primary_key`: a derived account,
+    /// an EVM key's Bitcoin or Zcash use) the primary one while [`Self::mn_primary_pending`].
+    /// For [`Self::mn_receive_banner`] and [`Self::mn_signing_banner`].
+    #[must_use]
+    pub(crate) fn mn_backup_gate(
+        &self,
+        added: Option<RecordId>,
+        primary_key: bool,
+    ) -> Option<RecordId> {
+        if added.is_some() || !primary_key {
+            return added;
+        }
+        self.mn_primary_pending()
+    }
+
+    /// [`Self::mn_backup_gate`] of an EVM key source.
+    #[must_use]
+    pub(crate) fn evm_backup_gate(&self, source: EvmKeySource) -> Option<RecordId> {
+        match source {
+            EvmKeySource::Mnemonic(id, _) => Some(id),
+            EvmKeySource::Derived(_) => self.mn_backup_gate(None, true),
+            EvmKeySource::Raw(_) | EvmKeySource::Hardware(_) => None,
+        }
+    }
+
     /// The recovery-phrase commands; `false` when `id` is not one of them.
     pub(crate) fn on_mn_command(&mut self, id: u16) -> bool {
         let row = |base: u16| {
@@ -336,11 +386,11 @@ impl App {
             ids::SECTION_MNEMONICS | ids::MAIN_LINK => {
                 self.set_screen(Screen::Settings(SettingsSection::Mnemonics));
             }
-            ids::IMPORT if self.unlocked() => {
+            ids::IMPORT if self.mn_phrases_editable() => {
                 self.mn.preview = None;
                 self.open_mn_input(SecretKind::Mnemonic, MnPurpose::ImportWords);
             }
-            ids::CREATE if self.unlocked() => {
+            ids::CREATE if self.mn_phrases_editable() => {
                 self.open_mn_input(SecretKind::ConfirmPassword, MnPurpose::CreatePassword);
             }
             ids::PREVIEW_CONFIRM | ids::PREVIEW_SAME_ACK | ids::PREVIEW_CANCEL => {
@@ -400,9 +450,10 @@ impl App {
     }
 
     /// `지우기` of a mnemonic card: the warning, unless a transaction of its accounts may still
-    /// confirm (T-MN-BUSY). The primary mnemonic has no `지우기`.
+    /// confirm (T-MN-BUSY). The primary mnemonic has no `지우기`; nothing is removed in a session
+    /// opened with an unverified passphrase ([`T_MN_ALT_PASS`]).
     fn mn_remove_clicked(&mut self, info: MnemonicInfo) {
-        if !info.primary {
+        if !info.primary && self.mn_phrases_editable() {
             if self.mnemonic_busy(info.id) {
                 self.notice(T_MN_BUSY.to_owned(), Tone::Warn);
             } else {
@@ -498,8 +549,9 @@ impl App {
         self.mn.remove_typed = text;
     }
 
-    /// The prominent banner of a receive screen whose account comes from the added phrase
-    /// `mnemonic` while that phrase's backup is not confirmed (until its quiz passes).
+    /// The prominent banner of a receive screen whose account comes from the phrase `mnemonic`
+    /// ([`Self::mn_backup_gate`]) while that phrase's backup is not confirmed (until its quiz
+    /// passes).
     pub(crate) fn mn_receive_banner(&self, mnemonic: Option<RecordId>, items: &mut Vec<Item>) {
         let Some(id) = mnemonic else {
             return;
@@ -518,10 +570,11 @@ impl App {
         }
     }
 
-    /// The selected account's band while its added recovery phrase waits for the backup quiz
-    /// (2026-11-08): the vault refuses its signatures until then (E-VLT-009), so this says it
-    /// before the send form and the approval, with the quiz one press away. Display only; the
-    /// vault's refusal stays the last line of defence.
+    /// The selected account's band while its recovery phrase ([`Self::mn_backup_gate`]: an added
+    /// one, or a key-only wallet's later primary one) waits for the backup quiz (2026-11-08):
+    /// the vault refuses its signatures until then (E-VLT-009), so this says it before the send
+    /// form and the approval, with the quiz one press away. Display only; the vault's refusal
+    /// stays the last line of defence.
     pub(crate) fn mn_signing_banner(&self, mnemonic: Option<RecordId>, items: &mut Vec<Item>) {
         let Some(id) = mnemonic else {
             return;
@@ -530,7 +583,7 @@ impl App {
             .mn
             .infos
             .iter()
-            .any(|info| info.id == id && !info.primary && !info.backup_confirmed)
+            .any(|info| info.id == id && !info.backup_confirmed)
         {
             items.push(Item::Banner(
                 format!(
@@ -543,13 +596,17 @@ impl App {
         }
     }
 
-    /// `지금 백업 확인`: the recovery-phrase list's `백업 확인` of `id` (W03 → W08 → W10).
+    /// `지금 백업 확인`: the recovery-phrase list's `백업 확인` of `id` (W03 → W08 → W10; the
+    /// vault runs the quiz of any phrase in an unlocked session).
     fn mn_backup_now(&self, id: RecordId, items: &mut Vec<Item>) {
+        if !self.unlocked() {
+            return;
+        }
         if let Some(offset) = self
             .mn
             .infos
             .iter()
-            .position(|info| info.id == id && !info.primary)
+            .position(|info| info.id == id)
             .and_then(|position| u16::try_from(position).ok())
             .filter(|offset| *offset < ids::ROW_SPAN)
         {

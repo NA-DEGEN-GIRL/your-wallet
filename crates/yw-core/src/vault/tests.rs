@@ -3598,3 +3598,74 @@ fn added_mnemonic_backup_gates_solana_bitcoin_and_zcash_signing() {
     assert!(vault.with_secp_key(btc, |_, _| Ok(())).is_ok());
     assert!(vault.with_secp_key(zec, |_, _| Ok(())).is_ok());
 }
+
+/// spec/02 §7.5, §8.6: a session that continued with a mismatched passphrase adds (its duplicate
+/// check would see the other-passphrase seed), makes and removes no recovery phrase.
+#[test]
+fn alt_passphrase_session_changes_no_recovery_phrase() {
+    let (storage, mut vault) = imported(Some("TREZOR"));
+    vault.lock();
+    vault.unlock(&pw(PASSWORD), new_slot()).unwrap();
+    assert_eq!(
+        vault.enter_passphrase(Bip39Passphrase::new("trezor").unwrap()),
+        Ok(VaultStatus::PassphraseMismatch)
+    );
+    vault.accept_mismatched_passphrase().unwrap();
+    assert_eq!(
+        vault.add_mnemonic(&pw(PASSWORD), HARDHAT, None, 2),
+        Err(VaultError::InvalidState)
+    );
+    assert_eq!(
+        vault.generate_mnemonic(&pw(PASSWORD), 2).err(),
+        Some(VaultError::InvalidState)
+    );
+    let primary = vault.mnemonics().unwrap().first().unwrap().id;
+    assert_eq!(
+        vault.remove_mnemonic(&pw(PASSWORD), primary),
+        Err(VaultError::InvalidState)
+    );
+    assert_eq!(storage.commits(), 1);
+}
+
+/// A key-only vault's first phrase from "새 복구 단어 만들기" is its primary one with the quiz
+/// open: the next unlock is `Unlocked`, not `BackupPending` (the imported key keeps signing),
+/// and only the phrase's own keys wait for its quiz, which runs in the unlocked session.
+#[test]
+fn key_only_vault_first_phrase_gates_only_its_own_keys() {
+    let (storage, mut vault) = empty_vault(KDF_TEST);
+    let raw = vault
+        .create_with_key(&pw(PASSWORD), evm_import(7), new_slot(), 1)
+        .unwrap();
+    let (id, phrase) = vault.generate_mnemonic(&pw(PASSWORD), 2).unwrap();
+    assert!(
+        vault
+            .mnemonics()
+            .unwrap()
+            .first()
+            .is_some_and(|info| info.id == id && info.primary && !info.backup_confirmed)
+    );
+    vault.lock();
+    let mut vault = reload(&storage);
+    assert_eq!(
+        vault.unlock(&pw(PASSWORD), new_slot()),
+        Ok(VaultStatus::Unlocked {
+            alt_passphrase: false
+        })
+    );
+    let imported = KeyRef::Evm(EvmKeySource::Raw(raw));
+    let derived = KeyRef::Evm(EvmKeySource::Derived(index(0)));
+    assert!(vault.with_secp_key(imported, |_, _| Ok(())).is_ok());
+    assert_eq!(
+        vault.with_secp_key(derived, |_, _| Ok(())),
+        Err(VaultError::BackupNotConfirmed)
+    );
+    let challenge = vault.backup_challenge_for(id).unwrap();
+    vault
+        .confirm_backup_for(
+            id,
+            challenge.id,
+            refs(&answers(phrase.expose(), challenge.positions)),
+        )
+        .unwrap();
+    assert!(vault.with_secp_key(derived, |_, _| Ok(())).is_ok());
+}

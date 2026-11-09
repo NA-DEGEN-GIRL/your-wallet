@@ -343,7 +343,10 @@ impl App {
             items.push(Item::Subtitle(label.clone()));
             items.push(Item::Help(id.path_text()));
             self.mn_signing_banner(
-                id.mnemonic().map(yw_core::vault::RecordId::from_bytes),
+                self.mn_backup_gate(
+                    id.mnemonic().map(yw_core::vault::RecordId::from_bytes),
+                    matches!(id, crate::app_sol::SolAccountId::Derived(_)),
+                ),
                 items,
             );
             if let Some(lamports) = self.sol_balance(address) {
@@ -1057,7 +1060,10 @@ impl App {
             ));
         }
         self.mn_receive_banner(
-            index.mnemonic().map(yw_core::vault::RecordId::from_bytes),
+            self.mn_backup_gate(
+                index.mnemonic().map(yw_core::vault::RecordId::from_bytes),
+                matches!(index, crate::app_sol::SolAccountId::Derived(_)),
+            ),
             items,
         );
         let tokens: Vec<&str> = spl_entries(self.sol_cluster())

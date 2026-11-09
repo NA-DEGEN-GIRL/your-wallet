@@ -357,10 +357,15 @@ fn fill_slot(
 }
 
 /// The state once every passphrase is in: `BackupPending` while the primary mnemonic's quiz is
-/// open (a created wallet), else unlocked. A key-only vault has neither step.
+/// open and that phrase is the vault's only record (a created wallet), else unlocked. A key-only
+/// vault has neither step. A key-only or `YubiKey` vault whose first phrase came later from
+/// "새 복구 단어 만들기" stays unlocked until that quiz passes: only the new phrase's own keys
+/// wait for it ([`Vault::require_key_backup`]), its imported keys and cards keep signing.
 fn status_when_ready(payload: &Payload, alt_passphrase: bool) -> VaultStatus {
     match payload.primary() {
-        Some(record) if !record.backup_confirmed => VaultStatus::BackupPending,
+        Some(record) if !record.backup_confirmed && payload.record_count() == 1 => {
+            VaultStatus::BackupPending
+        }
         _ => VaultStatus::Unlocked { alt_passphrase },
     }
 }
@@ -627,6 +632,17 @@ impl Vault {
             VaultStatus::BackupPending => Err(VaultError::BackupNotConfirmed),
             _ => Err(VaultError::InvalidState),
         }
+    }
+
+    /// Adding, making or removing a recovery phrase needs a session whose passphrases matched
+    /// their check values (spec/02 §7.5, §8.6): with a mismatched one accepted, a phrase's seed
+    /// is the other-passphrase one (the duplicate check of `add_mnemonic` would compare against
+    /// it), and nothing of the change reaches meta (labels, accounts, the removal of site grants).
+    fn require_verified_passphrase(&self) -> Result<(), VaultError> {
+        if self.alt_passphrase {
+            return Err(VaultError::InvalidState);
+        }
+        Ok(())
     }
 
     fn current_bytes(&self) -> Result<&[u8], VaultError> {
@@ -1896,10 +1912,10 @@ impl Vault {
     ///
     /// # Errors
     ///
-    /// `BackupNotConfirmed`/`InvalidState`, `UnlockFailed`, the mnemonic and passphrase
-    /// `KeyError`s, `DuplicateKey` (the same seed — phrase and passphrase — is already in the
-    /// vault; compared in constant time), `RecordLimit` (8 mnemonics), `RandomnessUnavailable`
-    /// or `Storage`.
+    /// `BackupNotConfirmed`/`InvalidState` (also in a session opened with a mismatched
+    /// passphrase), `UnlockFailed`, the mnemonic and passphrase `KeyError`s, `DuplicateKey` (the
+    /// same seed — phrase and passphrase — is already in the vault; compared in constant time),
+    /// `RecordLimit` (8 mnemonics), `RandomnessUnavailable` or `Storage`.
     #[expect(
         clippy::needless_pass_by_value,
         reason = "spec/02 §10.3: the passphrase moves into the vault and is wiped on return"
@@ -1912,6 +1928,7 @@ impl Vault {
         now_unix: u64,
     ) -> Result<RecordId, VaultError> {
         self.require_signing()?;
+        self.require_verified_passphrase()?;
         self.verify_password(password)?;
         let mnemonic = Mnemonic::parse(phrase)?;
         if passphrase.as_ref().is_some_and(Bip39Passphrase::is_empty) {
@@ -1962,14 +1979,15 @@ impl Vault {
     ///
     /// # Errors
     ///
-    /// `BackupNotConfirmed`/`InvalidState`, `UnlockFailed`, `RecordLimit`,
-    /// `RandomnessUnavailable` or `Storage`.
+    /// `BackupNotConfirmed`/`InvalidState` (also in a session opened with a mismatched
+    /// passphrase), `UnlockFailed`, `RecordLimit`, `RandomnessUnavailable` or `Storage`.
     pub fn generate_mnemonic(
         &mut self,
         password: &VaultPassword,
         now_unix: u64,
     ) -> Result<(RecordId, SecretString), VaultError> {
         self.require_signing()?;
+        self.require_verified_passphrase()?;
         self.verify_password(password)?;
         let mut payload = self.payload()?;
         if payload.bip39.len() >= MAX_MNEMONICS {
@@ -1995,14 +2013,15 @@ impl Vault {
     ///
     /// # Errors
     ///
-    /// `BackupNotConfirmed`/`InvalidState`, `UnlockFailed`, `RecordNotFound`,
-    /// `PrimaryMnemonic` or `Storage`.
+    /// `BackupNotConfirmed`/`InvalidState` (also in a session opened with a mismatched
+    /// passphrase), `UnlockFailed`, `RecordNotFound`, `PrimaryMnemonic` or `Storage`.
     pub fn remove_mnemonic(
         &mut self,
         password: &VaultPassword,
         id: RecordId,
     ) -> Result<(), VaultError> {
         self.require_signing()?;
+        self.require_verified_passphrase()?;
         self.verify_password(password)?;
         let mut payload = self.payload()?;
         let primary = record_of(&payload, &id.0)?.1;

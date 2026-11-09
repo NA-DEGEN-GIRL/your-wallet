@@ -597,7 +597,17 @@ impl App {
             items.push(Item::CardStart(Some("받기".to_owned())));
             items.push(Item::Mono(grouped(&address)));
             items.push(Item::Banner(T_ZEC_RECEIVE.to_owned(), Tone::Info));
-            self.mn_receive_banner(account.source.mnemonic(), items);
+            self.mn_receive_banner(
+                self.mn_backup_gate(
+                    account.source.mnemonic(),
+                    matches!(
+                        account.source,
+                        yw_core::zec::ZecKeySource::Derived { .. }
+                            | yw_core::zec::ZecKeySource::EvmShared { .. }
+                    ),
+                ),
+                items,
+            );
             let receive_ok = !self.passphrase_unverified();
             items.push(Item::Row(vec![
                 Ctl::button(ids::COPY_ADDRESS, "주소 복사").enabled(receive_ok),

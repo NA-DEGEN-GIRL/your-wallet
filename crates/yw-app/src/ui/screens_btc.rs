@@ -1456,8 +1456,13 @@ impl App {
         if let Some(message) = &self.btc.receive_message {
             items.push(Item::Banner(message.clone(), Tone::Danger));
         }
+        // An HD account of the primary phrase or an EVM key's use is the primary phrase's key.
+        let account = ctx.btc_meta().map(|meta| *meta.account());
         self.mn_receive_banner(
-            ctx.btc_meta().and_then(|meta| meta.account().mnemonic()),
+            self.mn_backup_gate(
+                account.and_then(|key| key.mnemonic()),
+                account.is_some_and(|key| !key.is_imported() && !key.is_hardware()),
+            ),
             items,
         );
         let Some(view) = &self.btc.receive else {

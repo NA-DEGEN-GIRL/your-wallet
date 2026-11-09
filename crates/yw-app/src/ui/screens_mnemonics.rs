@@ -4,7 +4,8 @@
 
 use crate::app::{App, AppMode};
 use crate::app_mnemonics::{
-    T_MN_INTRO, T_MN_REMOVE, T_MN_REMOVE_UNCONFIRMED, T_MN_REMOVE_WORD, T_MN_UNCONFIRMED,
+    T_MN_ALT_PASS, T_MN_INTRO, T_MN_REMOVE, T_MN_REMOVE_UNCONFIRMED, T_MN_REMOVE_WORD,
+    T_MN_UNCONFIRMED,
 };
 use crate::app_yubikey::T_YK_SAME;
 use crate::ui::main_window::{Ctl, Item, Tone};
@@ -91,7 +92,12 @@ impl App {
     /// Settings → 복구 단어.
     pub(crate) fn mn_settings_section(&self, items: &mut Vec<Item>) {
         let unlocked = matches!(self.mode, AppMode::Unlocked { .. });
+        // Adding, making and removing phrases: not with an unverified passphrase (T-MN-ALT-PASS).
+        let editable = self.mn_phrases_editable();
         items.push(Item::Help(T_MN_INTRO.to_owned()));
+        if unlocked && !editable {
+            items.push(Item::Help(T_MN_ALT_PASS.to_owned()));
+        }
         if self.mn.infos.is_empty() {
             items.push(Item::Help(
                 "이 지갑에는 아직 복구 단어가 없습니다(개인키·YubiKey로 시작한 지갑). 복구 단어를 더하면 그 계정이 계정 목록에 생깁니다."
@@ -147,7 +153,7 @@ impl App {
                 }
                 if !info.primary {
                     actions.push(
-                        Ctl::danger(row_id(ids::REMOVE_BASE, row), "지우기").enabled(unlocked),
+                        Ctl::danger(row_id(ids::REMOVE_BASE, row), "지우기").enabled(editable),
                     );
                 }
                 items.push(Item::Row(actions));
@@ -162,8 +168,8 @@ impl App {
         }
         let room = self.mn.infos.len() < yw_core::vault::MAX_MNEMONICS;
         items.push(Item::Row(vec![
-            Ctl::primary(ids::IMPORT, "복구 단어 추가 가져오기").enabled(unlocked && room),
-            Ctl::button(ids::CREATE, "새 복구 단어 만들기 (추가)").enabled(unlocked && room),
+            Ctl::primary(ids::IMPORT, "복구 단어 추가 가져오기").enabled(editable && room),
+            Ctl::button(ids::CREATE, "새 복구 단어 만들기 (추가)").enabled(editable && room),
         ]));
         items.push(Item::Help(
             "추가한 복구 단어에서도 EVM·Solana·Bitcoin·Zcash 계정을 만들 수 있습니다(각 탭의 '계정 추가'에서 복구 단어를 고릅니다). 비밀번호를 다시 입력해야 합니다."

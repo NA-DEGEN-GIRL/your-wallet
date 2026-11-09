@@ -1188,9 +1188,7 @@ impl App {
                 Tone::BtcMainnet,
             ));
         }
-        if let yw_core::vault::EvmKeySource::Mnemonic(id, _) = source {
-            self.mn_receive_banner(Some(id), items);
-        }
+        self.mn_receive_banner(self.evm_backup_gate(source), items);
         items.push(Item::Help(
             "보내는 사람에게 아래 주소나 QR을 알려주세요. 이 네트워크의 자산만 보내야 합니다."
                 .to_owned(),

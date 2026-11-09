@@ -659,7 +659,7 @@ yw-app이 yw-win 파일 함수로 구현한다(출처: 데모 원자적 쓰기, 
 | `NoVault` | `create_wallet` | 비밀번호 규칙 통과, 커밋 성공 | `BackupPending` |
 | `NoVault` | `import_mnemonic` | 커밋 성공 | `Unlocked { alt: false }` |
 | `NoVault` | `create_with_key` | 커밋 성공 | `Unlocked { alt: false }` (키 전용 vault) |
-| `Locked` | `unlock` | 성공 | `Bip39` 없음(키 전용) → `Unlocked { alt: false }`; `passphrase_used = 1` → `PassphraseRequired`; 아니면 `backup = 0` → `BackupPending`, `backup = 1` → `Unlocked { alt: false }` |
+| `Locked` | `unlock` | 성공 | `Bip39` 없음(키 전용) → `Unlocked { alt: false }`; `passphrase_used = 1` → `PassphraseRequired`; 아니면 주 니모닉 `backup = 0`이고 그것이 vault의 유일한 record(만든 지갑) → `BackupPending`, 그 밖 → `Unlocked { alt: false }`(2026-11-10: 키 전용·YubiKey vault가 나중에 만든 첫 니모닉은 그 키만 백업 확인을 기다린다, §8.6) |
 | `Locked` | `unlock` | 실패 | `Locked` (`UnlockFailed` 등) |
 | `Locked` | `unlock` | `PayloadCorrupt`(§6.3) | `Corrupt { prev_available }` (본 파일은 그대로, `.prev` 복구 제안) |
 | `PassphraseRequired` | `enter_passphrase` | 확인값 일치 | `Unlocked { alt: false }` |
@@ -717,7 +717,7 @@ pub trait LockedSlot: Send {
 - 불일치 → `PassphraseMismatch`. UI는 **"passphrase가 다를 수 있습니다"** 대화상자에 [다시 입력]과 [이 passphrase로 계속]을 보여준다. 계속은 "다른 passphrase는 다른(빈) 지갑을 엽니다" 확인 체크를 켠 뒤에만 활성화된다([04](04-app-ui.md) §2.5).
 - `Unlocked { alt_passphrase: true }` 세션: 코어에서는 서명 포함 모든 기능이 동작한다. 그러나 이 passphrase는 오타일 수 있고, 이 지갑으로 받은 자산은 대소문자·공백까지 같은 passphrase로만 다시 꺼낼 수 있다. 그래서 yw-app은 모든 화면에 닫을 수 없는 경고 띠 T-ALT-PASS를 보이고, **받기(S12, 모든 체인)와 브라우저 연결·서명을 막는다**(`App::passphrase_unverified()`, [04] §2.1·§2.5; dApp 연결·서명은 4100 `PassphraseUnverified`, 읽기는 계속, [05] §5). 앱 자신의 보내기는 허용한다(일부러 다른 passphrase 지갑을 쓰는 경우 자산을 옮길 수 있게). meta는 디스크에서 읽지도 쓰지도 않고 메모리 기본 meta(§5.3)로 동작한다. journal은 정상 저장한다(진행 중 거래 보호). 확인값은 바꾸지 않는다.
 
-- **여러 니모닉(2026-11-07, §8.6):** 각 니모닉의 passphrase는 그 니모닉의 모든 파생(EVM, 2026-11-08부터 Solana·Bitcoin·Zcash)에 쓴다. passphrase를 쓰는 니모닉이 여럿이면 잠금 해제 때 payload 순서대로 하나씩 묻는다(`pending_passphrase()` = 묻는 record id와 위치/개수). 맞으면 다음 니모닉으로(`PassphraseRequired` 유지), 모두 끝나면 주 니모닉 백업 상태에 따라 `BackupPending` 또는 `Unlocked`. 불일치·다시 입력·계속은 그 니모닉에만 적용되고, 어느 하나라도 계속을 고르면 세션은 `alt_passphrase: true`다. 각 passphrase는 슬롯의 그 record 칸에 둔다(`SLOT_LEN`).
+- **여러 니모닉(2026-11-07, §8.6):** 각 니모닉의 passphrase는 그 니모닉의 모든 파생(EVM, 2026-11-08부터 Solana·Bitcoin·Zcash)에 쓴다. passphrase를 쓰는 니모닉이 여럿이면 잠금 해제 때 payload 순서대로 하나씩 묻는다(`pending_passphrase()` = 묻는 record id와 위치/개수). 맞으면 다음 니모닉으로(`PassphraseRequired` 유지), 모두 끝나면 주 니모닉 백업 상태에 따라 `BackupPending`(만든 지갑, §7.2) 또는 `Unlocked`. 불일치·다시 입력·계속은 그 니모닉에만 적용되고, 어느 하나라도 계속을 고르면 세션은 `alt_passphrase: true`다. 각 passphrase는 슬롯의 그 record 칸에 둔다(`SLOT_LEN`).
 
 ## 8. 생성·가져오기·백업 확인
 
@@ -789,13 +789,13 @@ pub fn parse_wif(text: &str) -> Result<WifKey, KeyError>;   // compressed(), net
 
 ### 8.6 복구 단어 여러 개 (2026-11-07, D37)
 
-`Unlocked`에서만(`BackupPending`이면 `BackupNotConfirmed`). 모두 `PayloadRewrite`(§4.4)이며 비밀번호를 다시 받는다(Argon2 1회).
+`Unlocked`에서만(`BackupPending`이면 `BackupNotConfirmed`). 모두 `PayloadRewrite`(§4.4)이며 비밀번호를 다시 받는다(Argon2 1회). `add_mnemonic`·`generate_mnemonic`·`remove_mnemonic`은 확인값과 맞지 않는 passphrase로 연 세션(`Unlocked { alt: true }`, §7.5)에서 `InvalidState`다(2026-11-10): 그 세션의 니모닉 시드는 다른 passphrase의 것이라 중복 검사가 같은 단어를 못 알아보고, meta(이름·계정·연결 정리)는 저장되지 않는다. 앱은 세 버튼을 끄고 T-MN-ALT-PASS를 보인다([04] §2.24).
 
 - `mnemonics() -> Vec<MnemonicInfo>`(`BackupPending`·`Unlocked`): record id·생성 시각·단어 수·passphrase 사용·백업 확인·주 니모닉 여부(첫 record), payload 순서.
 - `add_mnemonic(password, phrase, passphrase: Option, now_unix) -> RecordId` ("복구 단어 추가 가져오기"): 엄격 파싱(§2.4), 8개면 `RecordLimit`. 새 시드(단어 + passphrase)를 vault의 각 니모닉 시드(슬롯의 passphrase로)와 **상수 시간**으로 비교해 같으면 `DuplicateKey`(같은 단어라도 passphrase가 다르면 다른 지갑이라 받는다). 백업은 확인된 것으로 친다. passphrase가 있으면 §4.6 확인값을 저장하고 이 세션의 슬롯 칸에 둔다(다음 잠금 해제부터 §7.5 순서로 묻는다). 키 전용·YubiKey vault의 첫 니모닉은 주 니모닉이 된다.
 - `generate_mnemonic(password, now_unix) -> (RecordId, SecretString)` ("새 복구 단어 만들기 (추가)"): 24단어, passphrase 없음, 백업 확인 전. 단어는 W08 첫 표시에만 돌려준다.
 - `backup_challenge_for(id)`·`confirm_backup_for(id, challenge, words)`: §8.3과 같은 4단어 확인을 그 니모닉에 한다(`Unlocked`, 또는 `BackupPending`이면 주 니모닉만). 기존 `backup_challenge`·`confirm_backup`은 주 니모닉의 것이다.
-- **백업 확인 전 니모닉의 키로는 서명하지 않는다**: `with_secp_key`·`with_ed25519_seed`·`reveal_evm_private_key`·`reveal_evm_shared_wif`는 그 키의 니모닉(`Mnemonic(id, _)`은 `id`, `Derived`·BTC·ZEC·Solana 파생은 주 니모닉)이 백업 확인 전이면 `BackupNotConfirmed`. 주소 계산(받기)은 된다. 지갑 단위 `BackupPending`(만든 지갑의 주 니모닉, 잠금 해제 때)은 그대로다.
+- **백업 확인 전 니모닉의 키로는 서명하지 않는다**: `with_secp_key`·`with_ed25519_seed`·`reveal_evm_private_key`·`reveal_evm_shared_wif`는 그 키의 니모닉(`Mnemonic(id, _)`은 `id`, `Derived`·BTC·ZEC·Solana 파생은 주 니모닉)이 백업 확인 전이면 `BackupNotConfirmed`. 주소 계산(받기)은 된다. 지갑 단위 `BackupPending`은 만든 지갑(주 니모닉이 유일한 record)에만 남는다: 키 전용·YubiKey vault에서 `generate_mnemonic`으로 생긴 첫(주) 니모닉은 잠금 해제 뒤에도 `Unlocked`이고 그 니모닉의 키만 이 규칙으로 막힌다(가져온 키·YubiKey는 계속 서명, 2026-11-10). 그 계정의 받기·서명 화면은 추가한 니모닉과 같은 띠와 `지금 백업 확인`을 보인다([04] §2.24).
 - `reveal_mnemonic_of(password, id)`: 그 니모닉의 단어(§9 규칙, W08).
 - `remove_mnemonic(password, id)`: 주 니모닉은 `PrimaryMnemonic`으로 거부(기존 계정 목록·다른 체인 파생이 그것에서 나온다; 없애려면 지갑 초기화). 슬롯의 그 passphrase 칸과 열린 확인 문항도 지운다. 자금 확인은 하지 않는다 — UI가 강한 경고와 "단어 보기"를 먼저 안내한다([04] §2.24).
 - `evm_addresses_of(id, indices)`, `evm_address(EvmKeySource::Mnemonic(id, i))`: 그 니모닉의 EVM 계정. 없는 id는 `RecordNotFound`.
@@ -803,7 +803,7 @@ pub fn parse_wif(text: &str) -> Result<WifKey, KeyError>;   // compressed(), net
 - 저널·승인: 그런 계정의 기록은 새 레코드 버전(SOL 2, BTC 3, ZEC 2: 헤더 뒤 record id 16바이트, §5.4)이고, 승인 transcript(SOL intent·메시지, BTC 보내기 payload·메시지, ZEC payload)는 그 출처에서만 record id를 더 묶는다. 주 니모닉·가져온 키·YubiKey 계정의 기록·digest 바이트는 바뀌지 않는다. 이전 빌드는 새 버전 기록을 본문 오류로 보아 그 체인의 보내기만 멈춘다([04] §6.6).
 - `remove_mnemonic` 앞의 앱 규칙([04] §2.24): 그 니모닉 계정의 SOL·BTC·ZEC 기록이 아직 확정될 수 있거나 BTC 승인이 열려 있으면 지우지 않는다(가져온 키 삭제와 같음). 지운 뒤 그 니모닉 계정의 기록(모두 종결)은 저널에서 지운다.
 - **백업 확인 전 니모닉 지우기(2026-11-08):** 단어가 PC 어디에도 남지 않게 되므로 그 계정으로 받은 자산을 잃을 수 있다. 앱은 T-MN-REMOVE-UNCONFIRMED("백업하지 않은 복구 단어입니다…")를 보이고, 이번 지우기 안에서 `단어 보기`(W03 → W08, 2초 `다 적었습니다` 누르기 끝까지)와 입력란의 정확한 `백업 없이 지우기`가 있어야 W03(지우기 비밀번호)을 연다. 그 니모닉 계정의 받기 화면(EVM·Solana·Bitcoin·Zcash)은 확인 문항을 통과할 때까지 T-MN-RECEIVE-UNCONFIRMED(위험 띠)를 보인다([04] §2.24).
-- **지운 뒤 dApp 연결(2026-11-08, [05] §4.9):** EVM 계정은 모든 연결에서 빠진다(`account_removed_from_sites`). Solana·Bitcoin은 앱이 먼저 그 니모닉의 계정을 meta에서 뺀 뒤(`mnemonic_accounts.remove_mnemonic`, `btc_accounts.remove_mnemonic`) Solana 공개키마다 `sol_account_removed_from_sites`, Bitcoin 계정마다 receive/0 주소로 `btc_addresses_removed_from_sites`를 부른다(가져온 키 삭제와 같은 순서 — 아직 계정인 키·주소는 연결을 지키므로). 같은 단어를 다시 더하면 계정은 돌아오지만 연결은 돌아오지 않는다.
+- **지운 뒤 dApp 연결(2026-11-08, [05] §4.9):** EVM 계정은 모든 연결에서 빠진다(`account_removed_from_sites`). Solana·Bitcoin은 앱이 먼저 그 니모닉의 계정을 meta에서 뺀 뒤(`mnemonic_accounts.remove_mnemonic`, `btc_accounts.remove_mnemonic`) Solana 공개키마다 `sol_account_removed_from_sites`, Bitcoin 계정마다 receive/0 주소로 `btc_addresses_removed_from_sites`를 부른다(가져온 키 삭제와 같은 순서 — 아직 계정인 키·주소는 연결을 지키므로). 같은 단어를 다시 더하면 계정은 돌아오지만 연결은 돌아오지 않는다. 세션이 정리하지 못한 연결(지우는 중 잠금, meta를 읽지 못한 세션)은 다음 meta 읽기(`LoadMeta`)가 지운다: 계정 정리 뒤 지갑에 없는 EVM 주소·Solana 키·Bitcoin 안정 주소를 가리키는 grant를 지우고 저장한다([05] §4.9, 2026-11-10).
 - **YubiKey의 단어(2026-11-08, [10] §7.1):** "복구 단어 추가 가져오기"의 미리보기는 새 시드의 마스터 지문이 경로를 아는 등록 YubiKey record의 지문과 같으면 그 카드와 T-YK-SAME을 보이고 확인 체크 전에는 저장(W03)으로 넘어가지 않는다.
 
 ### 8.3 백업 확인 (아카이브 이식, 변경 포함)
