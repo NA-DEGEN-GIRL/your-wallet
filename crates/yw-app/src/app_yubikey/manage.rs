@@ -191,6 +191,9 @@ pub struct ReslotFlow {
     pub loss_ack: bool,
     /// The typed [`LOSS_WORD`] (checked when `YubiKey에 넣기` is pressed).
     pub loss_typed: String,
+    /// The T-YK-SAME checkbox: a card connected without recovery words gets words this PC also
+    /// holds ([`ReslotPreview::same_as_vault`]).
+    pub same_ack: bool,
     /// Input error of the choose step (and of the confirmation's typed word).
     pub error: Option<String>,
     /// The new `OpenPGP` slots sent to the preview / the card.
@@ -389,6 +392,7 @@ impl ReslotFlow {
             removed_ack: false,
             loss_ack: false,
             loss_typed: String::new(),
+            same_ack: false,
             error: None,
             slots: Vec::new(),
             preview: None,
@@ -535,10 +539,9 @@ impl ReslotFlow {
     #[must_use]
     pub fn can_import(&self, others: &[HwKeyRecord]) -> bool {
         let dropped = self.dropped(others);
-        self.preview
-            .as_ref()
-            .is_some_and(|preview| preview.plan.is_ok())
-            && (dropped.is_empty() || self.removed_ack)
+        self.preview.as_ref().is_some_and(|preview| {
+            preview.plan.is_ok() && (!preview.same_as_vault || self.same_ack)
+        }) && (dropped.is_empty() || self.removed_ack)
             && (lost_slots(&dropped).is_empty() || self.loss_ack)
     }
 
@@ -650,6 +653,7 @@ impl App {
                 flow.removed_ack = false;
                 flow.loss_ack = false;
                 flow.loss_typed.clear();
+                flow.same_ack = false;
                 flow.step = ReslotStep::Confirm;
                 let serial = flow.serial;
                 if flow.seed_held {
@@ -732,6 +736,7 @@ impl App {
         flow.removed_ack = false;
         flow.loss_ack = false;
         flow.loss_typed.clear();
+        flow.same_ack = false;
         match flow.plan(network) {
             Ok(slots) => {
                 flow.slots.clone_from(&slots);
@@ -1168,6 +1173,11 @@ impl App {
             ids::RESLOT_LOSS_ACK => {
                 if let Some(flow) = self.reslot() {
                     flow.loss_ack = !flow.loss_ack;
+                }
+            }
+            ids::RESLOT_SAME_ACK => {
+                if let Some(flow) = self.reslot() {
+                    flow.same_ack = !flow.same_ack;
                 }
             }
             ids::CLEAR_LOSS_ACK => {

@@ -80,6 +80,9 @@ pub struct ReslotPreview {
     pub lines: Vec<PreviewLine>,
     /// The checks before the card (`manage::validate_reslot`, then the slot map consistency).
     pub plan: Result<(), PlanError>,
+    /// The card was connected without recovery words and the entered ones are also one of this
+    /// PC's phrases (T-YK-SAME and its checkbox before `YubiKey에 넣기`).
+    pub same_as_vault: bool,
 }
 
 /// What a clear did.
@@ -191,8 +194,9 @@ impl KeyWorker {
 }
 
 /// The record a card would have after the re-slot, from the held seed (the public keys are the
-/// derived ones, which the card must read back).
-fn reslot_record(record: &HwKeyRecord, lines: &[PreviewLine]) -> HwKeyRecord {
+/// derived ones, which the card must read back; `fingerprint` is the seed's, which a card
+/// connected without recovery words takes, as `manage::reslot_card` writes it).
+fn reslot_record(record: &HwKeyRecord, lines: &[PreviewLine], fingerprint: [u8; 4]) -> HwKeyRecord {
     let mut slots: Vec<RecordedSlot> = lines
         .iter()
         .map(|line| RecordedSlot {
@@ -213,6 +217,7 @@ fn reslot_record(record: &HwKeyRecord, lines: &[PreviewLine]) -> HwKeyRecord {
             .copied(),
     );
     HwKeyRecord {
+        fingerprint,
         slots,
         ..record.clone()
     }
@@ -228,7 +233,7 @@ impl KeyWorker {
         if let Some(words) = mnemonic {
             self.yk_hold_words(words)?;
         }
-        let (id, record, _) = self.yk_card(serial)?;
+        let (id, record, others) = self.yk_card(serial)?;
         let seed = self
             .pending_enrol
             .as_ref()
@@ -236,10 +241,11 @@ impl KeyWorker {
             .seed
             .expose();
         let lines = yw_core::yubikey::enrol::preview_seed(seed, slots).map_err(card_error)?;
-        let (fingerprint, _) = yw_core::yubikey::enrol::seed_identity(seed).map_err(card_error)?;
-        let mut plan = validate_reslot(&record, fingerprint, slots);
+        let (fingerprint, evm0) =
+            yw_core::yubikey::enrol::seed_identity(seed).map_err(card_error)?;
+        let mut plan = validate_reslot(&record, fingerprint, slots, &others);
         if plan.is_ok() {
-            let next = reslot_record(&record, &lines);
+            let next = reslot_record(&record, &lines, fingerprint);
             let consistent = self
                 .vault
                 .as_ref()
@@ -248,7 +254,18 @@ impl KeyWorker {
                 plan = Err(PlanError::DifferentMnemonic);
             }
         }
-        Ok(ReslotPreview { lines, plan })
+        // A card connected without recovery words takes the entered words as its mnemonic, as
+        // at an enrolment: words this PC holds too get T-YK-SAME (spec/10 §7.1, §15.1).
+        let same_as_vault = !record.has_known_path()
+            && self
+                .vault
+                .as_ref()
+                .is_some_and(|vault| Self::vault_holds_evm0(vault, evm0));
+        Ok(ReslotPreview {
+            lines,
+            plan,
+            same_as_vault,
+        })
     }
 
     fn yk_reslot(
@@ -258,17 +275,21 @@ impl KeyWorker {
         admin_pin: (&[u8], bool),
     ) -> Result<HwKeyRecord, YubiKeyJobError> {
         let (id, record, others) = self.yk_card(serial)?;
-        let lines = {
-            let pending = self
+        let (lines, fingerprint) = {
+            let seed = self
                 .pending_enrol
                 .as_ref()
-                .ok_or(YubiKeyJobError::Vault(VaultError::InvalidState))?;
-            yw_core::yubikey::enrol::preview_seed(pending.seed.expose(), slots)
-                .map_err(card_error)?
+                .ok_or(YubiKeyJobError::Vault(VaultError::InvalidState))?
+                .seed
+                .expose();
+            let lines = yw_core::yubikey::enrol::preview_seed(seed, slots).map_err(card_error)?;
+            let (fingerprint, _) =
+                yw_core::yubikey::enrol::seed_identity(seed).map_err(card_error)?;
+            (lines, fingerprint)
         };
         // Before the card is written: no account whose transaction may still confirm loses its
         // last key (spec/10 §15).
-        if self.yk_keys_busy(id, Some(&reslot_record(&record, &lines))) {
+        if self.yk_keys_busy(id, Some(&reslot_record(&record, &lines, fingerprint))) {
             return Err(YubiKeyJobError::Busy);
         }
         let pending = self

@@ -191,6 +191,9 @@ pub mod ids {
     pub const CLEAR_LOSS_ACK: u16 = 13_392;
     /// Clear: the typed `영구 삭제`.
     pub const CLEAR_LOSS_EDIT: u16 = 13_393;
+    /// Re-slot: the T-YK-SAME checkbox (a card connected without recovery words gets words this
+    /// PC also holds).
+    pub const RESLOT_SAME_ACK: u16 = 13_394;
 
     const KINDS: [PgpKind; 4] = [PgpKind::None, PgpKind::Evm, PgpKind::Btc, PgpKind::Shared];
     const ZEC_NETWORKS: [ZecNetwork; 2] = [ZecNetwork::Mainnet, ZecNetwork::Testnet];
@@ -545,6 +548,7 @@ pub mod ids {
         RESLOT_LOSS_EDIT,
         CLEAR_LOSS_ACK,
         CLEAR_LOSS_EDIT,
+        RESLOT_SAME_ACK,
         CONNECT_START,
         CONNECT_NEW_WALLET,
         CONNECT_RESCAN,

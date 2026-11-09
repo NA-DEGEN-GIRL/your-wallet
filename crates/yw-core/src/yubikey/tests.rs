@@ -1120,9 +1120,42 @@ fn connect_without_words_and_sign_every_chain() {
         super::manage::validate_reslot(
             &original,
             original.fingerprint,
-            &[sig(evm(950)), aut(btc(3))]
+            &[sig(evm(950)), aut(btc(3))],
+            &[]
         ),
         Err(PlanError::UnsupportedRole(sig_slot))
+    );
+    // The connected card names no mnemonic: a re-slot takes the entered words (its PIV key
+    // stays as it is), unless another card with a known path has other words.
+    let words = [9, 8, 7, 6];
+    let new_slots = [sig(evm(0)), aut(btc(1))];
+    assert_eq!(
+        super::manage::validate_reslot(&record, words, &new_slots, &[]),
+        Ok(())
+    );
+    let mut other_card = original.clone();
+    other_card.serial = 32;
+    assert_eq!(
+        super::manage::validate_reslot(
+            &record,
+            words,
+            &new_slots,
+            std::slice::from_ref(&other_card)
+        ),
+        Err(PlanError::DifferentMnemonic)
+    );
+    assert_eq!(
+        super::manage::validate_reslot(
+            &record,
+            other_card.fingerprint,
+            &new_slots,
+            std::slice::from_ref(&other_card)
+        ),
+        Ok(())
+    );
+    assert_eq!(
+        super::manage::validate_reslot(&original, words, &new_slots, &[]),
+        Err(PlanError::DifferentMnemonic)
     );
 
     // Record: round trip; the flag sits in the bytes earlier builds require to be zero, so

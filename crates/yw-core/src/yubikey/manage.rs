@@ -44,8 +44,11 @@ pub fn reslot_plan(record: &HwKeyRecord, openpgp: &[PlannedSlot]) -> Vec<Planned
 
 /// The checks of a re-slot that need no card (spec/10 §15.1): the new `OpenPGP` slots are
 /// `OpenPGP` slots, the card's full plan passes the per-card rules (§3.5 rules 1–5), and the
-/// mnemonic is the card's (master fingerprint). A key that another card already holds is
-/// allowed: it becomes a backup copy of that card's key (the same path is always the same key).
+/// mnemonic is the card's (master fingerprint). A card connected without recovery words names
+/// no mnemonic (§7.6): the entered words become its mnemonic, as at an enrolment, so they must
+/// be those of the other enrolled cards with a known path (`others`). A key that another card
+/// already holds is allowed: it becomes a backup copy of that card's key (the same path is
+/// always the same key).
 ///
 /// # Errors
 ///
@@ -56,6 +59,7 @@ pub fn validate_reslot(
     record: &HwKeyRecord,
     fingerprint: [u8; 4],
     openpgp: &[PlannedSlot],
+    others: &[HwKeyRecord],
 ) -> Result<(), PlanError> {
     if openpgp.is_empty() {
         return Err(PlanError::SlotCount);
@@ -75,7 +79,18 @@ pub fn validate_reslot(
         return Err(PlanError::UnsupportedRole(planned.slot));
     }
     validate_plan(&reslot_plan(record, openpgp))?;
-    if record.fingerprint != fingerprint {
+    // A card connected without recovery words takes the entered words' fingerprint; the cards
+    // with a known path keep naming one mnemonic (`records_consistent`).
+    let different = if record.has_known_path() {
+        record.fingerprint != fingerprint
+    } else {
+        others.iter().any(|other| {
+            other.serial != record.serial
+                && other.has_known_path()
+                && other.fingerprint != fingerprint
+        })
+    };
+    if different {
         return Err(PlanError::DifferentMnemonic);
     }
     Ok(())
@@ -129,7 +144,7 @@ pub fn reslot_card(
 ) -> Result<HwKeyRecord, EnrolError> {
     let ctx = crate::entropy::secp_context(&mut crate::entropy::OsRandom)?;
     let fingerprint = master_fingerprint(&ctx, seed)?;
-    validate_reslot(record, fingerprint, openpgp)?;
+    validate_reslot(record, fingerprint, openpgp, others)?;
     let (serial, firmware) = identify(transport, mode, true, false)?;
     if serial != record.serial {
         return Err(EnrolError::Card(CardError::WrongCard));

@@ -15,7 +15,7 @@ use crate::app_yubikey::manage::{
     T_YK_CLEAR_PIV_RESET, T_YK_CLEAR_SCOPE, T_YK_KEY_LOST, T_YK_KEY_LOST_ACK, T_YK_RESLOT_BACKUP,
     T_YK_RESLOT_REMOVED, T_YK_RESLOT_WORDS, YkManage, lost_slots,
 };
-use crate::app_yubikey::{CARD_SCRIPTS, T_YK_SHARED};
+use crate::app_yubikey::{CARD_SCRIPTS, T_YK_SAME, T_YK_SHARED};
 use crate::ui::main_window::{Ctl, Item, Tone};
 
 /// The steps of "슬롯 구성 바꾸기".
@@ -189,6 +189,16 @@ impl App {
             "OpenPGP 서명(SIG)·인증(AUT) 두 슬롯만 바꿉니다. PIV(Solana) 슬롯은 그대로입니다."
                 .to_owned(),
         ));
+        if flow
+            .before
+            .as_ref()
+            .is_some_and(|before| !before.has_known_path())
+        {
+            items.push(Item::Help(
+                "복구 단어 없이 연결한 YubiKey입니다. 바꾸면 SIG·AUT에 입력할 복구 단어의 키가 들어가고 이 YubiKey는 그 복구 단어의 카드가 됩니다. 지금 그 슬롯의 키는 다른 YubiKey에 없으면 영구히 사라집니다(다음 화면에서 확인)."
+                    .to_owned(),
+            ));
+        }
         items.push(Item::CardEnd);
         items.push(Item::CardStart(Some("새 구성".to_owned())));
         items.push(Item::LabeledRow(
@@ -282,6 +292,14 @@ impl App {
         };
         if let Err(error) = preview.plan {
             items.push(Item::Banner(error.to_string(), Tone::Danger));
+        }
+        if preview.same_as_vault {
+            items.push(Item::Banner(T_YK_SAME.to_owned(), Tone::HighRisk));
+            items.push(Item::Row(vec![Ctl::check(
+                ids::RESLOT_SAME_ACK,
+                "이해했습니다. 그래도 이 복구 단어의 키를 넣습니다",
+                flow.same_ack,
+            )]));
         }
         let others = self.yk_other_records(flow.serial);
         items.push(Item::CardStart(Some(format!(
