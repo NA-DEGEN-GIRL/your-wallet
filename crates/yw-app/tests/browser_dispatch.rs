@@ -821,6 +821,58 @@ fn r_g1_connect_lock_unlock_events_and_reads() -> TestResult {
     Ok(())
 }
 
+/// spec/05 §4.4: `wallet_revokePermissions` while locked opens no password window (wagmi sends
+/// it on every Disconnect): `null` at once, remembered, and the unlock merge drops the grant
+/// before any `accountsChanged` — returned with the changed grants so the UI writes meta. Other
+/// origins unlock as usual; the chain merge clears the list.
+#[test]
+fn locked_revoke_answers_at_once_and_drops_the_grant_at_unlock() -> TestResult {
+    let mut h = Harness::with(VaultView::Locked, &Settings::default());
+    let _ = h.send(SITE, 1, "eth_chainId", json("[]"));
+    let _ = h.send(OTHER, 2, "eth_chainId", json("[]"));
+    h.out.take();
+    let revoke = h.send(
+        SITE,
+        1,
+        "wallet_revokePermissions",
+        json(r#"[{"eth_accounts":{}}]"#),
+    );
+    assert_eq!(text(&single(&h, &revoke)?), "null");
+    assert!(h.sink.take().is_empty(), "no unlock window");
+    assert_eq!(
+        h.core.locked_revocations(),
+        vec![(origin(SITE)?, yw_core::policy::Family::Evm)]
+    );
+    h.core
+        .set_wallet(wallet(VaultView::Unlocked, &Settings::default()));
+    let changed = h.core.unlock_wallet(vec![
+        grant(SITE, &[A0], SEPOLIA)?,
+        grant(OTHER, &[A0], SEPOLIA)?,
+    ]);
+    assert_eq!(
+        changed
+            .iter()
+            .map(|site| site.origin.as_str())
+            .collect::<Vec<_>>(),
+        vec![SITE]
+    );
+    let out = h.out.take();
+    assert!(events_of(&out, 1).is_empty(), "never told its accounts");
+    assert_eq!(
+        events_of(&out, 2),
+        vec![BrowserEvent::AccountsChanged(vec![
+            *account(A0)?.as_bytes()
+        ])]
+    );
+    let accounts = h.send(SITE, 1, "eth_accounts", json("[]"));
+    assert_eq!(text(&single(&h, &accounts)?), "[]");
+    let other = h.send(OTHER, 2, "eth_accounts", json("[]"));
+    assert_eq!(text(&single(&h, &other)?), format!(r#"["{A0}"]"#));
+    assert!(!h.core.unlock_chains(Vec::new(), Vec::new()));
+    assert!(h.core.locked_revocations().is_empty());
+    Ok(())
+}
+
 /// spec/02 §7.5: a session opened with an unverified BIP39 passphrase refuses connect and
 /// signing requests with 4100 and the reason (no window), while reads continue.
 #[test]

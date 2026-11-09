@@ -366,8 +366,9 @@ impl App {
                 let mut locked_view = view.clone();
                 locked_view.vault = VaultView::Locked;
                 core.set_wallet(locked_view);
+                // Disconnects received while locked (EVM, Solana, Bitcoin) are applied by these
+                // two merges and written below.
                 let changed = core.unlock_wallet(grants);
-                // Disconnects received while locked are applied here and written below.
                 let mut revoked = false;
                 if verified && let Some(meta) = self.meta.as_ref() {
                     revoked = core.unlock_chains(

@@ -621,14 +621,14 @@ meta가 암호화되어 있으므로(D7) 잠긴 동안 grant를 알 수 없다.
 | `eth_chainId`, `net_version`, read | 캐시 체인(없으면 `evmChainId`, §4.3) |
 | `wallet_switchEthereumChain` | 캐시만 변경(4902·4901 판정은 §4.3과 같음). grant는 해제 시 병합 |
 | `eth_requestAccounts`, `wallet_requestPermissions`, signing | 잠금 해제 창 → 해제 후 정상 처리(요청 기한 600 s에 해제 시간 포함, D23). 여러 요청이 기다리면 해제 창은 하나만 띄우고 결과를 공유한다. 거부 → 모두 4001 |
-| `wallet_revokePermissions` | 잠금 해제 창 → 해제 후 처리 |
+| `wallet_revokePermissions` | 창 없이 즉시 `null`. 디스패처가 (origin, EVM)을 기억했다가(§4.9 `sol_disconnect`와 같은 목록·한도) 잠금 해제 때 meta grant를 읽은 직후·`accountsChanged` 전에 그 grant를 지우고 meta를 쓴다(2026-11-10: 연결 해제에 잠금 해제 창을 띄우면 `나중에`로 닫았을 때 연결이 남고 다음 잠금 해제가 계정을 다시 보냈다. wagmi는 Disconnect마다 이 메서드를 보낸다). 확인되지 않은 passphrase 세션은 grant를 읽지 않으므로 다음 잠금 해제까지 기억한다 |
 
 잠금 시 연결된 origin의 문서에 `accountsChanged([])`, 해제 시 `accountsChanged(grant.accounts)`를 보낸다. 잠금 순간 진행 중이던 승인 창은 닫고 4001로 응답한다. 디스패처는 잠금 절차가 시작되는 순간 잠긴 상태가 된다(절전 잠금의 `LockDone` 대기 1.5 s 동안에도 `eth_accounts`가 계정을 돌려주지 않는다).
 
 dApp 요청으로 띄운 잠금 해제 창을 `나중에`로 닫으면 `UNLOCK_PROMPT_COOLDOWN_MS`(30 s) 동안, 잠글 때 연결되어 있지 않던 origin(메모리에만 두고 해제 시 지움; 잠긴 채 시작했으면 모든 origin)의 잠금 해제를 기다릴 요청은 창을 다시 띄우지 않고 즉시 4001이다. 연결되어 있던 origin의 요청은 그대로 창을 띄운다.
 
 ### 4.5 연결 해제
-- `wallet_revokePermissions` 또는 yw-app 화면의 연결된 사이트 목록에서 해제([04](04-app-ui.md)) → grant 삭제·저장, 그 origin 문서에 `accountsChanged([])`. 대기 중인 그 origin의 signing 요청은 4100.
+- `wallet_revokePermissions` 또는 yw-app 화면의 연결된 사이트 목록에서 해제([04](04-app-ui.md)) → grant 삭제·저장, 그 origin 문서에 `accountsChanged([])`. 대기 중인 그 origin의 signing 요청은 4100. 잠김 중의 `wallet_revokePermissions`는 §4.4(창 없이 기억, 잠금 해제 때 적용).
 - yw-app 화면은 grant의 계정 목록 변경을 제공할 수 있다(선택). 변경 시 `accountsChanged`.
 
 ### 4.6 localhost 토글
@@ -672,7 +672,7 @@ dApp 요청으로 띄운 잠금 해제 창을 `나중에`로 닫으면 `UNLOCK_P
 |---|---|---|---|
 | 4001 | `UserRejected` | `User rejected the request.` | 승인·연결·잠금 해제 창 거부·닫기(D16 차단 창 포함), 잠금으로 창 닫힘, 잠금 해제 창 쿨다운(§4.4) |
 | 4001 | `Expired` | `Request expired.` | 승인·연결 창 표시 후 120 s 만료(D23, [03] §11.5) |
-| 4100 | `Unauthorized` | `Unauthorized.` | 미연결 origin의 계정 요구 메서드, grant에 없는 계정, localhost 토글 꺼짐, vault 없음, vault가 `BackupPending`(백업 미확인)인 동안의 signing·연결 요청과 `wallet_revokePermissions`(vault 없음도 같다 — grant가 로드되지 않아 지울 것이 없고 잠김 때의 해제 창도 띄울 수 없다; `sol_disconnect`·`btc_disconnect`는 이때 지울 grant가 없어 `null`로 답하고 아무것도 기억하지 않는다, 보안 검토 L14), 대기 중 연결 해제(§4.5), grant 256개 상태에서 새 origin 연결(§4.1) |
+| 4100 | `Unauthorized` | `Unauthorized.` | 미연결 origin의 계정 요구 메서드, grant에 없는 계정, localhost 토글 꺼짐, vault 없음, vault가 `BackupPending`(백업 미확인)인 동안의 signing·연결 요청과 `wallet_revokePermissions`(vault 없음도 같다 — grant가 로드되지 않아 지울 것이 없고 잠금 해제로 이어지지도 않는다; `sol_disconnect`·`btc_disconnect`는 이때 지울 grant가 없어 `null`로 답하고 아무것도 기억하지 않는다, 보안 검토 L14), 대기 중 연결 해제(§4.5), grant 256개 상태에서 새 origin 연결(§4.1) |
 | 4100 | `PassphraseUnverified` | `Unauthorized: the wallet was opened with an unverified passphrase, so connecting and signing are disabled. Lock the wallet and unlock it with the correct passphrase.` | 확인값과 맞지 않는 BIP39 passphrase로 연 세션(`Unlocked { alt_passphrase: true }`, `App::passphrase_unverified()`, [02] §7.5)의 연결·signing 요청(디스패처 상태 `VaultView::PassphraseUnverified`, 잠김 중 큐에 들어갔다가 이 세션으로 풀린 요청은 [04] §3.1 `PassphraseUnverified`). 읽기 메서드는 계속 동작하고 grant는 없다(`eth_accounts` `[]`, `wallet_revokePermissions` `null`) |
 | 4100 | `NoEvmAccount` | `Unauthorized: this wallet has no EVM account. Import an EVM private key in the Your Wallet app first.` | EVM 계정(파생·가져온 키)이 하나도 없는 지갑(키 전용 지갑, [02] §8.5)의 연결 요청(§4.2). 앱에서 EVM 개인키를 가져오면 연결할 수 있다 |
 | 4100 | `NoSolAccount` | `Unauthorized: this wallet has no Solana account. Add or import one in the Your Wallet app first.` | Solana 계정이 하나도 없는 지갑의 `sol_connect`(§4.9) |
@@ -998,7 +998,7 @@ pub const UNLOCK_PROMPT_COOLDOWN_MS: u64 = 30_000;                              
 
 | 분류 | 대상 | 처리 |
 |---|---|---|
-| 즉시 | `eth_accounts`, `eth_chainId`, `net_version`, `wallet_getPermissions`, `web3_clientVersion`, `wallet_switchEthereumChain`, 창이 필요 없는 `eth_requestAccounts`·`wallet_revokePermissions` | reader 스레드에서 메모리 상태(체인 캐시·레지스트리·체인 상태 포함, RPC 없음)로 응답(meta 쓰기는 저장 스레드에 위임) |
+| 즉시 | `eth_accounts`, `eth_chainId`, `net_version`, `wallet_getPermissions`, `web3_clientVersion`, `wallet_switchEthereumChain`, 창이 필요 없는 `eth_requestAccounts`, `wallet_revokePermissions`(잠김 중이면 기억만, §4.4) | reader 스레드에서 메모리 상태(체인 캐시·레지스트리·체인 상태 포함, RPC 없음)로 응답(meta 쓰기는 저장 스레드에 위임) |
 | read | route `read` | 작업 큐 → 워커 4개. 문서당 64, 연결되지 않은 origin(잠금 해제 상태의 grant 없음)은 모든 문서 합쳐 64(한 사이트가 전체 슬롯을 차지하지 못한다), 전체 256. 한쪽만 태그인 `eth_getLogs` 범위 검사(§3.4)는 워커가 전달 직전에 한다 |
 | 승인 | signing, 창이 필요한 연결 요청, 잠금 해제를 기다리는 요청 | 전역 FIFO 승인 큐 → GUI 스레드([04](04-app-ui.md)). 창은 한 번에 하나. origin당 16, 전체 64 |
 

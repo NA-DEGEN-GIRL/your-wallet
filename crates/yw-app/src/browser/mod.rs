@@ -275,7 +275,9 @@ pub enum SiteKind {
     RequestAccounts,
     /// `wallet_requestPermissions` (always a window).
     RequestPermissions,
-    /// `wallet_revokePermissions` while locked.
+    /// `wallet_revokePermissions` without a wallet session (no vault, backup pending): refused
+    /// 4100 before the queue. Unlocked and locked revokes are answered by the dispatcher (a
+    /// locked one is remembered for the unlock, spec/05 §4.4); the UI handling stays for safety.
     Revoke,
     /// `eth_sendTransaction`.
     Send(Box<TxParams>),

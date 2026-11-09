@@ -232,19 +232,31 @@ struct State {
     locked_connected: Vec<BrowserOrigin>,
     /// Monotonic ms until which unconnected origins cannot reopen the dApp unlock window.
     unlock_cooldown_until_ms: u64,
-    /// `sol_disconnect`/`btc_disconnect` received while locked (the grants are not loaded):
-    /// applied by [`BrowserCore::unlock_chains`] before any account event (in memory only,
-    /// at most [`MAX_LOCKED_REVOCATIONS`], oldest dropped first).
+    /// `wallet_revokePermissions`/`sol_disconnect`/`btc_disconnect` received while locked (the
+    /// grants are not loaded): applied before any account event by [`BrowserCore::unlock_wallet`]
+    /// (EVM) and [`BrowserCore::unlock_chains`] (Solana, Bitcoin; it clears the list), in memory
+    /// only, at most [`MAX_LOCKED_REVOCATIONS`], oldest dropped first.
     revoked_while_locked: Vec<(BrowserOrigin, Family)>,
     /// Virtual connections (the `WalletConnect` bridge, spec/13 §5): not counted as browser pipes.
     virtual_conns: std::collections::HashSet<ConnId>,
 }
 
-/// Bound of the disconnects remembered while locked (one per origin and family; twice the
-/// Solana plus Bitcoin grant limit).
+/// Bound of the disconnects remembered while locked (one per origin and family; more than the
+/// EVM, Solana and Bitcoin grant limits together).
 pub const MAX_LOCKED_REVOCATIONS: usize = 4 * MAX_CHAIN_GRANTS;
 
 impl State {
+    /// Remembers a disconnect of `origin`'s `family` grant received while locked (spec/05 §4.4,
+    /// §4.9): once per origin and family, the oldest dropped past [`MAX_LOCKED_REVOCATIONS`].
+    fn remember_revocation(&mut self, origin: &BrowserOrigin, family: Family) {
+        let list = &mut self.revoked_while_locked;
+        list.retain(|(known, which)| !(known == origin && *which == family));
+        if list.len() >= MAX_LOCKED_REVOCATIONS {
+            list.remove(0);
+        }
+        list.push((origin.clone(), family));
+    }
+
     /// Live pipe connections (virtual ones excluded).
     fn pipe_count(&self) -> usize {
         self.conns
@@ -648,10 +660,15 @@ impl BrowserCore {
         self.lock().unlock_cooldown_until_ms = until;
     }
 
-    /// Wallet unlocked with the meta grants: merges the chain cache (spec/05 §4.3: a cached
-    /// chain overrides the grant, else the cache takes the grant's chain; unregistered grant
-    /// chains become `evmChainId`) and sends `accountsChanged(accounts)` plus `chainChanged`
-    /// where the origin chain changed. Returns the grants whose `chain_id` must be saved.
+    /// Wallet unlocked with the meta grants: the grants of origins that sent
+    /// `wallet_revokePermissions` while locked are dropped first (spec/05 §4.4; the list is
+    /// cleared by [`BrowserCore::unlock_chains`], so a session without grants — an unverified
+    /// passphrase — keeps them for the next unlock), then the chain cache is merged (§4.3: a
+    /// cached chain overrides the grant, else the cache takes the grant's chain; unregistered
+    /// grant chains become `evmChainId`) and `accountsChanged(accounts)` plus `chainChanged`
+    /// where the origin chain changed are sent. Returns the grants whose stored form changed — a
+    /// moved `chain_id`, or a dropped grant (no longer in [`BrowserCore::grants`]) — so the
+    /// caller writes meta when it is not empty.
     pub fn unlock_wallet(&self, grants: Vec<ConnectedSite>) -> Vec<ConnectedSite> {
         let mut state = self.lock();
         state.locked_connected.clear();
@@ -659,6 +676,14 @@ impl BrowserCore {
         let mut changed_grants = Vec::new();
         let mut merged = Vec::with_capacity(grants.len());
         for mut site in grants {
+            if state
+                .revoked_while_locked
+                .iter()
+                .any(|(origin, family)| *origin == site.origin && *family == Family::Evm)
+            {
+                changed_grants.push(site);
+                continue;
+            }
             let cached = state.chain_cache.get(&site.origin).copied();
             let previous_origin_chain = cached;
             let target = match cached {
@@ -715,7 +740,8 @@ impl BrowserCore {
     }
 
     /// Wallet unlocked: the Solana and Bitcoin grants of meta are loaded, minus the disconnects
-    /// received while locked, and the origins of usable grants get `solAccountsChanged`/
+    /// received while locked (the list is cleared here, after [`BrowserCore::unlock_wallet`]
+    /// used its EVM entries), and the origins of usable grants get `solAccountsChanged`/
     /// `btcAccountsChanged` (spec/05 §4.9). A grant whose account is not one dApps may use now
     /// ([`WalletView::sol_usable`]/[`WalletView::btc_usable`]: hidden or removed account, another
     /// Bitcoin network, Bitcoin off) is kept but exposes nothing. Call after
@@ -1307,6 +1333,31 @@ impl BrowserCore {
                     });
                 }
             }
+            (Method::RevokePermissions, _)
+                if matches!(vault, VaultView::Locked | VaultView::Starting) =>
+            {
+                // Locked: the grants are not loaded. Like `sol_disconnect`, the disconnect is
+                // answered at once and remembered; the unlock merge drops the grant before any
+                // `accountsChanged` and meta is written (spec/05 §4.4). No password window for a
+                // disconnect: dismissing one left the site connected, and the unlock then handed
+                // it its accounts again. A grant loaded in the instant between the unlock merge
+                // and the unlocked view goes at once.
+                let removed = grant.is_some();
+                if removed {
+                    state.grants.retain(|site| site.origin != origin);
+                } else {
+                    state.remember_revocation(&origin, Family::Evm);
+                }
+                immediate(&mut state, Ok(Value::Null));
+                if removed {
+                    Self::emit_locked(&state, &origin, &BrowserEvent::AccountsChanged(Vec::new()));
+                    drop(state);
+                    let _ = self.sink.push(DappEvent::GrantChanged {
+                        origin,
+                        change: GrantChange::Revoked,
+                    });
+                }
+            }
             (Method::SolAccounts, _) => {
                 let list = sol_grant.as_ref().map_or_else(Vec::new, |grant| {
                     vec![Value::String(yw_core::codec::base58::base58_encode(
@@ -1373,12 +1424,7 @@ impl BrowserCore {
                     before != state.btc_grants.len()
                 };
                 if !removed && matches!(vault, VaultView::Locked | VaultView::Starting) {
-                    let list = &mut state.revoked_while_locked;
-                    list.retain(|(known, which)| !(*known == origin && *which == family));
-                    if list.len() >= MAX_LOCKED_REVOCATIONS {
-                        list.remove(0);
-                    }
-                    list.push((origin.clone(), family));
+                    state.remember_revocation(&origin, family);
                 }
                 immediate(&mut state, Ok(Value::Null));
                 if removed {
