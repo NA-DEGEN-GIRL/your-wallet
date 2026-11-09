@@ -294,7 +294,14 @@ impl App {
             items.push(Item::Banner(error.to_string(), Tone::Danger));
         }
         if preview.same_as_vault {
-            items.push(Item::Banner(T_YK_SAME.to_owned(), Tone::HighRisk));
+            items.push(Item::Banner(
+                if preview.words_only {
+                    crate::app_yubikey::T_YK_SAME_WORDS.to_owned()
+                } else {
+                    T_YK_SAME.to_owned()
+                },
+                Tone::HighRisk,
+            ));
             items.push(Item::Row(vec![Ctl::check(
                 ids::RESLOT_SAME_ACK,
                 "이해했습니다. 그래도 이 복구 단어의 키를 넣습니다",
@@ -713,8 +720,11 @@ impl App {
             items.push(Item::Banner(failure.clone(), Tone::Danger));
         }
         if let Some(cleared) = flow.result {
+            // "이 지갑의 슬롯만 지우기" sent the applet's PIN (OpenPGP admin PIN, PIV PIN): a
+            // wrong one is named (spec/10 §9.1).
             let line =
                 |name: &str,
+                 pin: crate::yubikey::PinKind,
                  asked: Option<ClearMethod>,
                  result: Option<Result<(), yw_core::yubikey::CardError>>| {
                     match (asked, result) {
@@ -726,8 +736,13 @@ impl App {
                             format!("{name}: 공장 상태로 초기화했습니다 (PIN도 기본값)."),
                             Tone::Success,
                         )),
-                        (Some(_), Some(Err(error))) => {
-                            Some((format!("{name}: 실패 — {error}"), Tone::Danger))
+                        (Some(method), Some(Err(error))) => {
+                            let text = if method == ClearMethod::OurSlots {
+                                pin.error_text(error)
+                            } else {
+                                error.to_string()
+                            };
+                            Some((format!("{name}: 실패 — {text}"), Tone::Danger))
                         }
                         (Some(_), None) => Some((
                             format!("{name}: 앞 단계가 실패해 하지 않았습니다."),
@@ -737,8 +752,18 @@ impl App {
                     }
                 };
             for (text, tone) in [
-                line("OpenPGP", cleared.asked.openpgp, cleared.report.openpgp),
-                line("PIV", cleared.asked.piv, cleared.report.piv),
+                line(
+                    "OpenPGP",
+                    crate::yubikey::PinKind::OpenPgpAdmin,
+                    cleared.asked.openpgp,
+                    cleared.report.openpgp,
+                ),
+                line(
+                    "PIV",
+                    crate::yubikey::PinKind::PivPin,
+                    cleared.asked.piv,
+                    cleared.report.piv,
+                ),
             ]
             .into_iter()
             .flatten()

@@ -692,6 +692,14 @@ impl MockCard {
                 let _ = tlv::push(&mut out, 0x06, &[3, self.piv_retries]);
                 ok(out)
             }
+            0x81 => {
+                let _ = tlv::push(&mut out, 0x01, &[0xFF]);
+                let _ = tlv::push(&mut out, 0x02, &[0x00, 0x00]);
+                let default = self.piv_puk == super::piv::DEFAULT_PUK;
+                let _ = tlv::push(&mut out, 0x05, &[u8::from(default)]);
+                let _ = tlv::push(&mut out, 0x06, &[3, self.piv_puk_retries]);
+                ok(out)
+            }
             _ => match self.piv_key(slot) {
                 None => sw(0x6A88),
                 Some(key) => {
@@ -789,8 +797,17 @@ impl MockCard {
         ok(tlv::encode(0x7C, &out).unwrap_or_default())
     }
 
-    /// CHANGE REFERENCE DATA of the PIN (`80`) or the PUK (`81`): `old(8, FF) ‖ new(8, FF)`.
+    /// CHANGE REFERENCE DATA of the PIN (`80`) or the PUK (`81`): `old(8, FF) ‖ new(8, FF)`. A
+    /// wrong current value counts against that secret (`63Cx`, `6983` once blocked).
     fn piv_change_reference(&mut self, puk: bool, data: &[u8]) -> Vec<u8> {
+        let left = if puk {
+            self.piv_puk_retries
+        } else {
+            self.piv_retries
+        };
+        if left == 0 {
+            return sw(0x6983);
+        }
         let mut padded = if puk {
             self.piv_puk.clone()
         } else {
@@ -798,7 +815,18 @@ impl MockCard {
         };
         padded.resize(8, 0xFF);
         if data.get(..8) != Some(padded.as_slice()) {
-            return sw(0x63C2);
+            let left = left.saturating_sub(1);
+            if puk {
+                self.piv_puk_retries = left;
+            } else {
+                self.piv_retries = left;
+            }
+            return sw(0x63C0 | u16::from(left));
+        }
+        if puk {
+            self.piv_puk_retries = 3;
+        } else {
+            self.piv_retries = 3;
         }
         let new: Vec<u8> = data
             .get(8..)

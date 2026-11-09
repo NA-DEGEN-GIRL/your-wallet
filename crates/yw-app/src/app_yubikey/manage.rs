@@ -24,13 +24,15 @@ use yw_core::yubikey::plan::{
 use yw_core::yubikey::record::{HwKeyRecord, HwPublicKey, RecordedSlot};
 use yw_core::zec::ZecNetwork;
 
-use super::{YkPurpose, failure_text};
-use crate::app::App;
+use super::{YkPurpose, failure_text, failure_text_for};
+use crate::app::{App, Screen, SettingsSection};
 use crate::events::{KeyJob, YubiKeyJobError};
 use crate::logging;
 use crate::ui::secret::{CardSecretKind, SecretKind};
 use crate::workers::key::yubikey::YkJob;
 use crate::workers::key::yubikey::manage::{Cleared, ManageJob, ManageOutcome, ReslotPreview};
+use crate::yubikey::PinKind;
+use yw_core::yubikey::enrol::Enrolled;
 
 /// The word typed to confirm "`YubiKey` 비우기".
 pub const CLEAR_WORD: &str = "비우기";
@@ -1011,45 +1013,80 @@ impl App {
         }
     }
 
-    fn on_reslotted(&mut self, serial: u32, result: Result<HwKeyRecord, YubiKeyJobError>) {
+    fn on_reslotted(&mut self, serial: u32, result: Result<Enrolled, YubiKeyJobError>) {
         if let Err(YubiKeyJobError::Card(error)) = &result {
             self.yk_note_last_try(serial, *error);
         }
+        // The user left the YubiKey tab while the card worked (`yk_leaving` keeps a running
+        // flow): it ends now and the key worker wipes the held words (spec/10 §7.1 "떠나면
+        // 지움"); the result becomes a banner.
+        let away = self.screen != Screen::Settings(SettingsSection::YubiKey);
         let Some(flow) = self.reslot().filter(|flow| flow.serial == serial) else {
             return;
         };
         flow.step = ReslotStep::Result;
-        match result {
-            Ok(record) => {
+        let banner = match result {
+            Ok(enrolled) => {
                 flow.failure = None;
                 if !flow.done.contains(&serial) {
                     flow.done.push(serial);
                 }
-                let roles: Vec<KeyRole> = record.slots.iter().map(|slot| slot.role).collect();
-                flow.result = Some(record);
+                let roles: Vec<KeyRole> =
+                    enrolled.record.slots.iter().map(|slot| slot.role).collect();
+                flow.result = Some(enrolled.record);
                 logging::info("app", "yubikey.reslotted", &[]);
                 self.card.unhide_later(roles);
+                // The factory admin PIN worked: the card's OpenPGP PINs are its defaults
+                // (spec/10 §9.3: it does not sign until "PIN 설정", which then asks only for
+                // the OpenPGP PINs).
+                if enrolled.defaults.openpgp_admin {
+                    self.card
+                        .list_defaults
+                        .retain(|(other, _)| *other != serial);
+                    self.card.list_defaults.push((serial, enrolled.defaults));
+                    self.yk_flag_defaults(serial);
+                }
                 self.key(KeyJob::HardwareKeys);
                 self.request_meta();
+                format!("YubiKey #{serial}의 슬롯 구성을 바꿨습니다.")
             }
             Err(error) => {
-                // A slot holding another key is found before anything is written.
+                // A slot holding another key or a wrong admin PIN stops before anything is
+                // written: the partial-write note only follows a started import.
                 let partial = matches!(
                     error,
                     YubiKeyJobError::Card(crate::yubikey::CardJobError::Enrol(
-                        yw_core::yubikey::enrol::EnrolError::Card(card)
-                    )) if card != yw_core::yubikey::CardError::ForeignKey
+                        yw_core::yubikey::enrol::EnrolError::Partial(_)
+                    ))
                 );
-                let mut text = failure_text(error);
+                let mut text = failure_text_for(error, PinKind::OpenPgpAdmin);
                 if partial {
                     text.push(' ');
                     text.push_str(
                         "일부 슬롯에 새 키가 이미 들어갔을 수 있습니다. 지갑의 슬롯 표는 바꾸지 않았습니다. 다시 시도하면 덮어씁니다.",
                     );
                 }
-                flow.failure = Some(text);
+                flow.failure = Some(text.clone());
                 flow.result = None;
+                text
             }
+        };
+        if away {
+            self.card.manage = None;
+            self.key(KeyJob::YubiKey(YkJob::Discard));
+            self.banner(None, banner);
+        }
+    }
+
+    /// Card `serial` uses its factory PINs (again): `hw_accounts.defaults` (spec/10 §9.3).
+    fn yk_flag_defaults(&mut self, serial: u32) {
+        if let Some(meta) = self.meta.as_mut()
+            && !meta.hw_accounts.defaults.contains(&serial)
+        {
+            meta.hw_accounts.defaults.push(serial);
+            meta.hw_accounts.defaults.sort_unstable();
+            meta.hw_accounts.defaults.truncate(8);
+            self.save_meta();
         }
     }
 
@@ -1063,22 +1100,11 @@ impl App {
         flow.step = ClearStep::Result;
         match result {
             Ok(cleared) => {
-                let reset = cleared.report.done(cleared.asked);
-                let any_reset = reset.openpgp == Some(ClearMethod::Reset)
-                    || reset.piv == Some(ClearMethod::Reset);
+                // A reset applet keeps no slot of the record (`ClearPlan::remaining`): its
+                // factory PINs protect no wallet key, so the card is not flagged for them; the
+                // next key written under the factory admin PIN flags it (re-slot) — spec/10 §15.4.
                 flow.result = Some(cleared);
                 flow.failure = None;
-                if any_reset
-                    && !cleared.removed
-                    && let Some(meta) = self.meta.as_mut()
-                    && !meta.hw_accounts.defaults.contains(&serial)
-                {
-                    // The reset applet has its factory PINs again.
-                    meta.hw_accounts.defaults.push(serial);
-                    meta.hw_accounts.defaults.sort_unstable();
-                    meta.hw_accounts.defaults.truncate(8);
-                    self.save_meta();
-                }
                 if cleared.removed
                     && let Some(meta) = self.meta.as_mut()
                     && meta.hw_accounts.defaults.contains(&serial)

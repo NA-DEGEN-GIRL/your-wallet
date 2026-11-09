@@ -6,7 +6,7 @@
 use yw_core::error::VaultError;
 use yw_core::secret::Zeroizing;
 use yw_core::vault::{HardwareKey, RecordId};
-use yw_core::yubikey::enrol::PreviewLine;
+use yw_core::yubikey::enrol::{Enrolled, PreviewLine};
 use yw_core::yubikey::manage::{ClearPlan, ClearReport, validate_reslot};
 use yw_core::yubikey::plan::{PlanError, PlannedSlot};
 use yw_core::yubikey::record::{HwKeyRecord, RecordedSlot};
@@ -81,8 +81,11 @@ pub struct ReslotPreview {
     /// The checks before the card (`manage::validate_reslot`, then the slot map consistency).
     pub plan: Result<(), PlanError>,
     /// The card was connected without recovery words and the entered ones are also one of this
-    /// PC's phrases (T-YK-SAME and its checkbox before `YubiKey에 넣기`).
+    /// PC's phrases (T-YK-SAME and its checkbox before `YubiKey에 넣기`) — with the same
+    /// passphrase, or (`words_only`) with another one.
     pub same_as_vault: bool,
+    /// The words are this PC's but the passphrase differs (T-YK-SAME-WORDS).
+    pub words_only: bool,
 }
 
 /// What a clear did.
@@ -103,8 +106,9 @@ pub struct Cleared {
 pub enum ManageOutcome {
     /// `ReslotPreview` of card `serial` finished.
     ReslotPreview(u32, Result<ReslotPreview, YubiKeyJobError>),
-    /// `Reslot` of card `serial` finished: the new record.
-    Reslotted(u32, Result<HwKeyRecord, YubiKeyJobError>),
+    /// `Reslot` of card `serial` finished: the new record (and whether the factory admin PIN
+    /// worked).
+    Reslotted(u32, Result<Enrolled, YubiKeyJobError>),
     /// `Clear` of card `serial` finished.
     Cleared(u32, Result<Cleared, YubiKeyJobError>),
 }
@@ -255,16 +259,20 @@ impl KeyWorker {
             }
         }
         // A card connected without recovery words takes the entered words as its mnemonic, as
-        // at an enrolment: words this PC holds too get T-YK-SAME (spec/10 §7.1, §15.1).
-        let same_as_vault = !record.has_known_path()
+        // at an enrolment: words this PC holds too (whatever the passphrase) get T-YK-SAME
+        // (spec/10 §7.1, §15.1).
+        let unnamed = !record.has_known_path();
+        let same_seed = unnamed
             && self
                 .vault
                 .as_ref()
                 .is_some_and(|vault| Self::vault_holds_evm0(vault, evm0));
+        let same_words = unnamed && self.yk_held_same_words();
         Ok(ReslotPreview {
             lines,
             plan,
-            same_as_vault,
+            same_as_vault: same_seed || same_words,
+            words_only: same_words && !same_seed,
         })
     }
 
@@ -273,7 +281,7 @@ impl KeyWorker {
         serial: u32,
         slots: &[PlannedSlot],
         admin_pin: (&[u8], bool),
-    ) -> Result<HwKeyRecord, YubiKeyJobError> {
+    ) -> Result<Enrolled, YubiKeyJobError> {
         let (id, record, others) = self.yk_card(serial)?;
         let (lines, fingerprint) = {
             let seed = self
@@ -307,7 +315,7 @@ impl KeyWorker {
         .map_err(YubiKeyJobError::Card)?;
         self.vault()
             .map_err(YubiKeyJobError::Vault)?
-            .replace_hardware_key(id, Some(&updated))
+            .replace_hardware_key(id, Some(&updated.record))
             .map_err(YubiKeyJobError::Vault)?;
         Ok(updated)
     }

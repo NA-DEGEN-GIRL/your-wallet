@@ -239,8 +239,20 @@ impl KeyWorker {
                 .transpose()?;
             let address = preview_evm_address(phrase, passphrase.as_ref(), AccountIndex::ZERO)?;
             let empty = Bip39Passphrase::empty();
-            let seed = Mnemonic::parse(phrase)?.to_seed(passphrase.as_ref().unwrap_or(&empty))?;
-            Ok((address, self.cards_of_seed(seed.expose())))
+            let mnemonic = Mnemonic::parse(phrase)?;
+            let seed = mnemonic.to_seed(passphrase.as_ref().unwrap_or(&empty))?;
+            let mut cards = self.cards_of_seed(seed.expose());
+            if passphrase.is_some() {
+                // A card made from the same words without a passphrase is still these words'
+                // (spec/10 §7.1-2): adding them puts that card's keys on this PC.
+                let bare = mnemonic.to_seed(&empty)?;
+                for serial in self.cards_of_seed(bare.expose()) {
+                    if !cards.contains(&serial) {
+                        cards.push(serial);
+                    }
+                }
+            }
+            Ok((address, cards))
         })();
         self.pending_mnemonic = result.is_ok().then_some(pending);
         result

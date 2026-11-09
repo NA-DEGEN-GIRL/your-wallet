@@ -51,10 +51,23 @@ pub const MAX_ACCOUNT_INDEX: u32 = yw_core::yubikey::plan::UNKNOWN_PATH_FIRST - 
 
 /// T-YK-SAME (spec/10 §7.1-2, user decision 2026-11-05): the entered words are this vault's.
 pub const T_YK_SAME: &str = "이 복구 단어는 이 PC의 vault에도 저장되어 있습니다. 복구 단어가 이 PC에 남아 있는 동안 YubiKey는 보안 이득이 없습니다(같은 키를 PC에서도 만들 수 있음). 키를 PC 밖에 두려면 'YubiKey 지갑'(복구 단어를 저장하지 않는 지갑)을 새로 만드세요.";
+/// T-YK-SAME-WORDS (spec/10 §7.1-2): the same words are on this PC with another passphrase.
+pub const T_YK_SAME_WORDS: &str = "이 복구 단어는 이 PC의 vault에도 저장되어 있습니다(passphrase만 다름). 이 PC의 복구 단어를 손에 넣은 사람에게는 passphrase만이 이 YubiKey의 키를 지킵니다. 키를 PC 밖에 두려면 'YubiKey 지갑'(복구 단어를 저장하지 않는 지갑)을 새로 만들거나 다른 복구 단어를 쓰세요.";
 /// T-YK-SHARED (spec/10 §3.2): the two sentences of the shared-key choice.
 pub const T_YK_SHARED: &str = "EVM 공유 키는 EVM 주소와 Bitcoin 주소가 같은 공개키에서 나옵니다. Bitcoin에서 그 주소로 한 번이라도 보내면 누구나 그 공개키에서 EVM 주소를 계산할 수 있어 두 체인의 신원이 연결됩니다. 또 표준 Bitcoin 지갑은 이 주소를 찾지 못합니다(경로가 m/44'/60'/…): 복구는 이 지갑으로 같은 복구 단어·같은 인덱스를 다시 등록하거나 그 EVM 개인키를 WIF로 가져와야 합니다.";
 /// T-YK-OVERWRITE (spec/10 §7.4).
-pub const T_YK_OVERWRITE: &str = "가져오기를 하면 이 YubiKey의 고른 슬롯(OpenPGP SIG/AUT, PIV 82…)에 있던 키는 지워지고 바뀝니다. 다른 용도(GPG 등)로 쓰던 슬롯이면 고르지 마세요.";
+pub const T_YK_OVERWRITE: &str = "가져오기는 고른 슬롯(OpenPGP SIG/AUT, PIV 82…)에 키를 씁니다. 그 슬롯에 이번에 넣을 키가 아닌 다른 키가 있으면 가져오기 전에 그 키와 주소를 보여 드리고, 지워도 된다고 확인해야만 덮어씁니다. 다른 용도(GPG 등)로 쓰는 슬롯이면 고르지 마세요.";
+/// T-YK-OCCUPIED (spec/10 §7.4): planned slots hold keys the enrolment would destroy.
+pub const T_YK_OCCUPIED: &str = "이 YubiKey의 아래 슬롯에는 이미 다른 키가 있습니다(이번에 넣을 키가 아님). 가져오면 그 키는 카드에서 영구히 지워지고, 그 키를 다시 만들 복구 단어나 백업이 없으면 그 주소의 자산을 다시 쓸 수 없습니다. 잔액이 있으면 먼저 옮기고, 다른 용도(GPG 등)의 키라면 다른 슬롯을 고르세요.";
+/// The checkbox of [`T_YK_OCCUPIED`].
+pub const T_YK_OCCUPIED_ACK: &str =
+    "이해했습니다: 이 슬롯의 키는 영구히 지워지고 그 주소의 자산을 다시 쓸 수 없을 수 있습니다";
+/// The hint after an enrolment refused for a key already in a slot.
+pub const T_YK_OCCUPIED_RETRY: &str =
+    "'다시 시도'를 누르면 그 슬롯의 키를 보여 드리고, 지워도 된다고 확인한 뒤에만 덮어씁니다.";
+/// T-YK-BACKUP-UNKNOWN (spec/10 §7.6): a card connected without recovery words cannot be
+/// copied.
+pub const T_YK_BACKUP_UNKNOWN: &str = "복구 단어 없이 연결한 키는 경로를 몰라 복구 단어로 다른 YubiKey에 똑같이 넣을 수 없습니다. 백업 복사본은 복구 단어로 등록한 YubiKey에서만 만들 수 있습니다.";
 /// T-YK-PARTIAL (spec/10 §7.4).
 pub const T_YK_PARTIAL: &str = "일부 슬롯에 키가 이미 들어갔을 수 있습니다. 다시 시도하면 덮어씁니다. 지갑에는 아무것도 기록하지 않았습니다.";
 /// T-YK-PIV-FIRMWARE (spec/10 §2, user decision 2026-11-05).
@@ -249,6 +262,15 @@ pub struct YkWizard {
     pub card: Option<crate::yubikey::CardFacts>,
     /// Why no card is identified (none, several, reader error); `None` while reading.
     pub card_error: Option<String>,
+    /// The planned slots of the identified card holding a key the held words do not derive,
+    /// read at step (d) (`YkJob::Occupied`; `None` while reading, `Err` when it could not be
+    /// read): an import overwrites them only after [`YkWizard::overwrite_ack`] and the typed
+    /// [`manage::LOSS_WORD`] (spec/10 §7.4).
+    pub occupied: Option<Result<Vec<yw_core::yubikey::enrol::Occupant>, String>>,
+    /// The [`T_YK_OCCUPIED`] checkbox.
+    pub overwrite_ack: bool,
+    /// The typed [`manage::LOSS_WORD`] (checked when `가져오기` is pressed).
+    pub overwrite_typed: String,
     /// The admin PIN between W12 and the job (wiped on drop).
     admin_pin: Option<Zeroizing<Vec<u8>>>,
     /// The words of W05 while W06 asks for the passphrase (wiped on drop).
@@ -353,6 +375,9 @@ impl YkWizard {
             management: None,
             card: None,
             card_error: None,
+            occupied: None,
+            overwrite_ack: false,
+            overwrite_typed: String::new(),
             admin_pin: None,
             phrase: None,
             adopt: false,
@@ -451,14 +476,21 @@ impl YkWizard {
                 .iter()
                 .find(|record| record.serial == serial)
                 .ok_or_else(|| "복사할 YubiKey 기록을 찾지 못했습니다.".to_owned())?;
-            record
+            // A key connected without recovery words has no path: the words cannot make it again
+            // (spec/10 §7.6), so only the slots with a known path are copied.
+            let copied: Vec<PlannedSlot> = record
                 .slots
                 .iter()
+                .filter(|slot| slot.path_known)
                 .map(|slot| PlannedSlot {
                     backup_copy: true,
                     ..slot.planned()
                 })
-                .collect()
+                .collect();
+            if copied.is_empty() {
+                return Err(T_YK_BACKUP_UNKNOWN.to_owned());
+            }
+            copied
         } else {
             let mut slots = Vec::new();
             for key in [PgpKey::Sig, PgpKey::Aut] {
@@ -554,6 +586,30 @@ impl YkWizard {
             preview.plan.is_ok() && (!preview.same_as_vault || self.same_ack)
         })
     }
+
+    /// The planned slots of the identified card holding a key the plan would destroy (empty
+    /// while not read or unreadable: the card job then refuses such a key itself).
+    #[must_use]
+    pub fn occupants(&self) -> &[yw_core::yubikey::enrol::Occupant] {
+        match &self.occupied {
+            Some(Ok(occupants)) => occupants,
+            _ => &[],
+        }
+    }
+
+    /// Whether `가져오기` may go on: no key would be destroyed, or the user checked
+    /// [`T_YK_OCCUPIED_ACK`] (the typed word is checked when it is pressed).
+    #[must_use]
+    pub fn can_import(&self) -> bool {
+        self.occupants().is_empty() || self.overwrite_ack
+    }
+
+    /// Forgets the slot read of step (d) and its confirmation (another card, another read).
+    fn reset_occupied(&mut self) {
+        self.occupied = None;
+        self.overwrite_ack = false;
+        self.overwrite_typed.clear();
+    }
 }
 
 /// A card record's removal, clear or re-slot refused: it holds the last key of an account whose
@@ -568,6 +624,45 @@ fn failure_text(error: YubiKeyJobError) -> String {
         YubiKeyJobError::Card(error) => error.to_string(),
         YubiKeyJobError::Busy => T_YK_BUSY.to_owned(),
     }
+}
+
+/// [`failure_text`] of a job that sent the card secret `kind`: a wrong or blocked value names
+/// that secret (spec/10 §9.1).
+fn failure_text_for(error: YubiKeyJobError, kind: PinKind) -> String {
+    match error {
+        YubiKeyJobError::Card(error) => error.text_for(kind),
+        other => failure_text(other),
+    }
+}
+
+/// T-YK-ENROL-FOREIGN (spec/10 §7.4): an enrolment stopped at a key it does not derive.
+pub const T_YK_ENROL_FOREIGN: &str =
+    "이 YubiKey의 고른 슬롯에 이번에 넣을 키가 아닌 다른 키가 있어 아무것도 쓰지 않았습니다.";
+
+/// The wizard's text of an enrolment (or connect) failure: the secret a wrong PIN was (the admin
+/// PIN before any write of a plan with `OpenPGP` slots, else the PIV PIN), a key found in a slot
+/// with how to see it, and the partial-write note only once an import started (spec/10 §7.4).
+fn enrol_failure_text(error: YubiKeyJobError, openpgp: bool) -> String {
+    use yw_core::yubikey::enrol::EnrolError;
+    let enrol = match error {
+        YubiKeyJobError::Card(CardJobError::Enrol(enrol)) => Some(enrol),
+        _ => None,
+    };
+    if enrol == Some(EnrolError::Card(yw_core::yubikey::CardError::ForeignKey)) {
+        return format!("{T_YK_ENROL_FOREIGN} {T_YK_OCCUPIED_RETRY}");
+    }
+    let partial = matches!(enrol, Some(EnrolError::Partial(_)));
+    let kind = if openpgp && !partial {
+        PinKind::OpenPgpAdmin
+    } else {
+        PinKind::PivPin
+    };
+    let mut text = failure_text_for(error, kind);
+    if partial {
+        text.push(' ');
+        text.push_str(T_YK_PARTIAL);
+    }
+    text
 }
 
 /// Command ids of the wizard's touch radios: `(policy, id offset)`.
@@ -732,7 +827,9 @@ impl App {
         self.refresh();
     }
 
-    /// (d) `가져오기` (`adopt` = "가져오기 없이 등록"): the credentials windows, then the job.
+    /// (d) `가져오기` (`adopt` = "가져오기 없이 등록"): the credentials windows, then the job. A
+    /// key in a planned slot that the words do not derive is overwritten only after its
+    /// checkbox and the typed `영구 삭제` (spec/10 §7.4).
     pub fn yk_import(&mut self, adopt: bool) {
         let Some(wizard) = self.card.wizard.as_mut() else {
             return;
@@ -740,6 +837,20 @@ impl App {
         if !wizard.can_continue() || wizard.card.is_none() {
             return;
         }
+        if !adopt && !wizard.occupants().is_empty() {
+            if !wizard.overwrite_ack {
+                return;
+            }
+            if wizard.overwrite_typed.trim() != manage::LOSS_WORD {
+                wizard.error = Some(format!(
+                    "다른 키를 지우고 가져오려면 입력란에 '{}'를 정확히 입력하세요.",
+                    manage::LOSS_WORD
+                ));
+                self.refresh();
+                return;
+            }
+        }
+        wizard.error = None;
         wizard.adopt = adopt;
         wizard.admin_pin = None;
         let (pgp, piv) = wizard.applets();
@@ -845,6 +956,10 @@ impl App {
         };
         wizard.step = WizardStep::Running;
         wizard.failure = None;
+        // The keys shown at step (d) were confirmed for destruction (checked in `yk_import`).
+        let overwrite = !wizard.adopt
+            && wizard.overwrite_ack
+            && wizard.overwrite_typed.trim() == manage::LOSS_WORD;
         let job = YkJob::Enrol {
             serial,
             slots: wizard.slots.clone(),
@@ -853,6 +968,7 @@ impl App {
             piv_pin: piv_pin.unwrap_or_default(),
             adopt: wizard.adopt,
             admin_last_try,
+            overwrite,
         };
         self.card.enrol = Some(crate::app_card::EnrolState::Running);
         logging::info("app", "yubikey.enrol_start", &[]);
@@ -947,14 +1063,21 @@ impl App {
             YkPurpose::SetPins => {
                 let current = next();
                 let new = next();
-                let last_try = self
-                    .yk_pin_serial()
-                    .is_some_and(|serial| self.yk_take_last_try(serial));
+                // Both guarded last tries (admin PIN, PUK) go with the job; the consents stay
+                // until a job runs past the guards (`on_yk_pins_set`), so confirming one does
+                // not lose the other.
+                let last_tries = self.yk_pin_serial().map_or_else(
+                    crate::yubikey::LastTries::default,
+                    |serial| crate::yubikey::LastTries {
+                        admin: self.card.admin_last_try == Some(serial),
+                        puk: self.card.puk_last_try == Some(serial),
+                    },
+                );
                 self.yk_pin_job(|serial| YkJob::SetPins {
                     serial,
                     current,
                     new,
-                    admin_last_try: last_try,
+                    last_tries,
                 });
             }
             YkPurpose::ManagementKey => {
@@ -980,15 +1103,18 @@ impl App {
                     self.close_secret();
                     return;
                 };
-                let admin_last_try =
-                    target == PinTarget::OpenPgpAdmin && self.yk_take_last_try(serial);
+                let last_try = match target {
+                    PinTarget::OpenPgpAdmin => self.yk_take_last_try(serial),
+                    PinTarget::PivPuk => self.yk_take_puk_last_try(serial),
+                    PinTarget::OpenPgpUser | PinTarget::PivPin => false,
+                };
                 self.with_form(|form| form.set_busy(true));
                 self.key(KeyJob::YubiKey(YkJob::ChangePin {
                     serial,
                     target,
                     old,
                     new,
-                    admin_last_try,
+                    last_try,
                 }));
             }
             YkPurpose::ConnectPassword => self.yk_connect_password(next()),
@@ -1071,14 +1197,17 @@ impl App {
         }
     }
 
-    /// The flags of the "PIN 설정" card of `serial` (the wizard's when it shows that card).
+    /// The flags of the "PIN 설정" card of `serial` (the wizard's when it shows that card, else
+    /// what a card action of this session saw).
     #[must_use]
     pub fn yk_pin_defaults(&self, serial: u32) -> DefaultsSeen {
         self.card
             .wizard
             .as_ref()
             .filter(|_| self.yk_result_serial() == Some(serial))
-            .map_or_else(DefaultsSeen::default, |wizard| wizard.defaults)
+            .map(|wizard| wizard.defaults)
+            .or_else(|| self.card.seen_defaults(serial))
+            .unwrap_or_default()
     }
 
     /// Queues a "PIN 설정" card job for the action's card (the window waits, busy).
@@ -1130,10 +1259,15 @@ impl App {
             | YkPurpose::ProtectManagement
             | YkPurpose::ClearPivPin
             | YkPurpose::ChangePin(PinTarget::PivPin) => &[PinKind::PivPin],
-            YkPurpose::SetPins => &[PinKind::PivPin, PinKind::OpenPgpAdmin, PinKind::OpenPgpUser],
+            YkPurpose::ChangePin(PinTarget::PivPuk) => &[PinKind::PivPuk],
+            YkPurpose::SetPins => &[
+                PinKind::PivPin,
+                PinKind::PivPuk,
+                PinKind::OpenPgpAdmin,
+                PinKind::OpenPgpUser,
+            ],
             YkPurpose::ConnectPin => &[PinKind::OpenPgpUser, PinKind::PivPin],
-            YkPurpose::ChangePin(PinTarget::PivPuk)
-            | YkPurpose::ConnectPassword
+            YkPurpose::ConnectPassword
             | YkPurpose::Mnemonic
             | YkPurpose::Passphrase
             | YkPurpose::NewPassword
@@ -1185,11 +1319,25 @@ impl App {
         }
     }
 
-    /// A card job of card `serial` was refused for the admin PIN's last try: the next
-    /// submission for that card sends it (spec/10 §9.1).
+    /// The consent to spend the PIV PUK's last try on card `serial` (given by seeing
+    /// [`yw_core::yubikey::CardError::PukLastTry`] and submitting again), used once.
+    pub(crate) fn yk_take_puk_last_try(&mut self, serial: u32) -> bool {
+        if self.card.puk_last_try == Some(serial) {
+            self.card.puk_last_try = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// A card job of card `serial` was refused for the last try of the admin PIN or the PUK:
+    /// the next submission for that card sends it (spec/10 §9.1).
     pub(crate) fn yk_note_last_try(&mut self, serial: u32, error: CardJobError) {
         if error.is_admin_last_try() {
             self.card.admin_last_try = Some(serial);
+        }
+        if error.is_puk_last_try() {
+            self.card.puk_last_try = Some(serial);
         }
     }
 
@@ -1201,13 +1349,17 @@ impl App {
         };
         wizard.step = WizardStep::Credentials;
         wizard.failure = None;
+        wizard.error = None;
         wizard.management = None;
         wizard.card = None;
         wizard.card_error = None;
+        wizard.reset_occupied();
         self.key(KeyJob::YubiKey(YkJob::Identify));
     }
 
-    /// `Identify` finished: the card the wizard enrols (or why there is none).
+    /// `Identify` finished: the card the wizard enrols (or why there is none). At step (d) the
+    /// card's management key state and the keys already in the planned slots are read next
+    /// (read-only).
     fn on_yk_identified(&mut self, result: Result<crate::yubikey::CardFacts, CardJobError>) {
         let Some(wizard) = self.card.wizard.as_mut() else {
             return;
@@ -1219,9 +1371,17 @@ impl App {
             Ok(facts) => {
                 wizard.card = Some(facts);
                 wizard.card_error = None;
-                if wizard.step == WizardStep::Credentials && wizard.applets().1 {
-                    self.key(KeyJob::YubiKey(YkJob::ProbeManagement {
+                if wizard.step == WizardStep::Credentials {
+                    let slots = wizard.slots.clone();
+                    let piv = wizard.applets().1;
+                    if piv {
+                        self.key(KeyJob::YubiKey(YkJob::ProbeManagement {
+                            serial: facts.serial,
+                        }));
+                    }
+                    self.key(KeyJob::YubiKey(YkJob::Occupied {
                         serial: facts.serial,
+                        slots,
                     }));
                 }
             }
@@ -1230,6 +1390,24 @@ impl App {
                 wizard.card_error = Some(error.to_string());
             }
         }
+        self.refresh();
+    }
+
+    /// `Occupied` finished: the keys an import would destroy, shown before `가져오기`.
+    fn on_yk_occupied(
+        &mut self,
+        serial: u32,
+        result: Result<Vec<yw_core::yubikey::enrol::Occupant>, CardJobError>,
+    ) {
+        let Some(wizard) = self.card.wizard.as_mut() else {
+            return;
+        };
+        if wizard.step != WizardStep::Credentials
+            || wizard.card.map(|card| card.serial) != Some(serial)
+        {
+            return;
+        }
+        wizard.occupied = Some(result.map_err(|error| error.to_string()));
         self.refresh();
     }
 
@@ -1257,6 +1435,7 @@ impl App {
         wizard.card = None;
         wizard.card_error = None;
         wizard.management = None;
+        wizard.reset_occupied();
         if matches!(step, WizardStep::Confirm | WizardStep::Credentials) {
             self.key(KeyJob::YubiKey(YkJob::Identify));
         }
@@ -1292,7 +1471,7 @@ impl App {
             }
             Err(error) => self.with_form(|form| {
                 form.set_busy(false);
-                form.set_error(Some(error.to_string()));
+                form.set_error(Some(error.text_for(PinKind::PivPin)));
             }),
         }
     }
@@ -1305,6 +1484,21 @@ impl App {
         use core::fmt::Write as _;
 
         use crate::yubikey::DefaultsStep;
+        use yw_core::yubikey::CardError;
+        // The guards of the last tries refuse before anything is sent: the consents of this
+        // card stay (and the refused one is added). Any other result used or did not need them.
+        let guarded = matches!(
+            &result,
+            Ok(report) if report.done.is_empty()
+                && matches!(
+                    report.failed,
+                    Some((_, CardError::AdminLastTry | CardError::PukLastTry))
+                )
+        );
+        if !guarded {
+            self.card.admin_last_try = self.card.admin_last_try.filter(|other| *other != serial);
+            self.card.puk_last_try = self.card.puk_last_try.filter(|other| *other != serial);
+        }
         let report = match result {
             Ok(report) if !report.done.is_empty() || report.failed.is_none() => report,
             Ok(report) => {
@@ -1314,7 +1508,7 @@ impl App {
                 }
                 let text = report
                     .failed
-                    .map(|(_, error)| error.to_string())
+                    .map(|(step, error)| step.kind().error_text(error))
                     .unwrap_or_default();
                 self.with_form(|form| {
                     form.set_busy(false);
@@ -1345,8 +1539,9 @@ impl App {
         if let Some((step, error)) = report.failed {
             let _ = write!(
                 text,
-                " 실패: {} — {error} 그 뒤 항목은 바꾸지 않았습니다.",
-                step.name()
+                " 실패: {} — {} 그 뒤 항목은 바꾸지 않았습니다.",
+                step.name(),
+                step.kind().error_text(error)
             );
         } else {
             text.push_str(" 새 PIN은 이 지갑에 저장하지 않으니 따로 기억해 두세요.");
@@ -1375,6 +1570,9 @@ impl App {
         self.yk_note(text);
         if report.failed.is_none() {
             self.card.pin_needed = self.card.pin_needed.filter(|other| *other != serial);
+            self.card
+                .list_defaults
+                .retain(|(other, _)| *other != serial);
         }
         if report.failed.is_none()
             && let Some(meta) = self.meta.as_mut()
@@ -1463,6 +1661,7 @@ impl App {
             YkOutcome::PinChanged(serial, target, result) => {
                 self.on_yk_pin_changed(serial, target, result);
             }
+            YkOutcome::Occupied(serial, result) => self.on_yk_occupied(serial, result),
             YkOutcome::Identified(result) => self.on_yk_identified(result),
             YkOutcome::Counters(target, result) => self.on_yk_counters(target, result),
             YkOutcome::Management(result) => self.on_yk_management(result),
@@ -1584,6 +1783,21 @@ impl App {
         ) {
             self.yk_note_last_try(serial, *error);
         }
+        // The user left the wizard while the card worked (`yk_leaving` keeps a running flow): the
+        // flow ends now and the key worker wipes the held words (and a connect password); the
+        // result is shown as a banner by `on_yubikey_enrolled` (spec/10 §7.1 "떠나면 지움").
+        let away = !matches!(
+            self.screen,
+            Screen::YubiKey
+                | Screen::YubiKeyWalletIntro
+                | Screen::Processing(_)
+                | Screen::Confirm(_)
+        );
+        if away && self.card.wizard.is_some() {
+            self.card.wizard = None;
+            self.key(KeyJob::YubiKey(YkJob::Discard));
+            return;
+        }
         let Some(wizard) = self.card.wizard.as_mut() else {
             return;
         };
@@ -1602,18 +1816,11 @@ impl App {
                 wizard.notes.clear();
             }
             Err(error) => {
-                let mut text = failure_text(*error);
-                if matches!(
-                    error,
-                    YubiKeyJobError::Card(CardJobError::Enrol(
-                        yw_core::yubikey::enrol::EnrolError::Card(_)
-                    ))
-                ) && !wizard.adopt
-                {
-                    text.push(' ');
-                    text.push_str(T_YK_PARTIAL);
-                }
-                wizard.failure = Some(text);
+                wizard.failure = Some(if wizard.adopt {
+                    failure_text(*error)
+                } else {
+                    enrol_failure_text(*error, wizard.applets().0)
+                });
                 wizard.enrolled = None;
             }
         }
@@ -1680,9 +1887,9 @@ impl App {
                 self.yk_defaults_done(serial);
             }
             Err(error) => {
-                // A wrong PIN's text carries the tries left (one left: "한 번 더 틀리면
-                // 잠깁니다", spec/10 §9.1).
-                let text = error.to_string();
+                // A wrong value's text names the secret and carries the tries left (one left:
+                // "한 번 더 틀리면 잠깁니다", spec/10 §9.1).
+                let text = error.text_for(target.kind());
                 self.yk_note_last_try(serial, error);
                 self.with_form(|form| {
                     form.set_busy(false);
@@ -1706,6 +1913,9 @@ impl App {
         };
         if done {
             self.card.pin_needed = self.card.pin_needed.filter(|other| *other != serial);
+            self.card
+                .list_defaults
+                .retain(|(other, _)| *other != serial);
         }
         if done
             && let Some(meta) = self.meta.as_mut()
@@ -1817,9 +2027,16 @@ impl App {
             return true;
         }
         if let Some(row) = ids::backup_row(id) {
-            let serial = self.card.records.get(row).map(|record| record.serial);
-            if let Some(wizard) = self.yk_wizard() {
-                wizard.backup_of = serial;
+            // Only a card with a known path can be copied (spec/10 §7.6).
+            let serial = self
+                .card
+                .records
+                .get(row)
+                .filter(|record| record.has_known_path())
+                .map(|record| record.serial);
+            if let (Some(serial), Some(wizard)) = (serial, self.yk_wizard()) {
+                wizard.backup_of = Some(serial);
+                wizard.error = None;
             }
             self.refresh();
             return true;
@@ -1863,13 +2080,30 @@ impl App {
                 self.refresh();
             }
             ids::BACKUP_TOGGLE => {
-                let first = self.card.records.first().map(|record| record.serial);
+                // The first card the words can copy: one with a known path (a card connected
+                // without recovery words cannot be made again from words, spec/10 §7.6).
+                let first = self
+                    .card
+                    .records
+                    .iter()
+                    .find(|record| record.has_known_path())
+                    .map(|record| record.serial);
                 if let Some(wizard) = self.yk_wizard() {
-                    wizard.backup_of = if wizard.backup_of.is_some() {
-                        None
+                    if wizard.backup_of.is_some() {
+                        wizard.backup_of = None;
+                        wizard.error = None;
+                    } else if first.is_some() {
+                        wizard.backup_of = first;
+                        wizard.error = None;
                     } else {
-                        first
-                    };
+                        wizard.error = Some(T_YK_BACKUP_UNKNOWN.to_owned());
+                    }
+                }
+                self.refresh();
+            }
+            ids::OVERWRITE_ACK => {
+                if let Some(wizard) = self.yk_wizard() {
+                    wizard.overwrite_ack = !wizard.overwrite_ack;
                     wizard.error = None;
                 }
                 self.refresh();
@@ -1920,6 +2154,7 @@ impl App {
                 if let Some(wizard) = self.yk_wizard() {
                     wizard.step = WizardStep::Confirm;
                     wizard.failure = None;
+                    wizard.error = None;
                 }
                 self.refresh();
             }
@@ -1943,10 +2178,11 @@ impl App {
                     ids::CHANGE_PIV_PIN => PinTarget::PivPin,
                     _ => PinTarget::PivPuk,
                 };
-                self.open_input(
-                    SecretKind::CardSecret(CardSecretKind::ChangePin(target)),
-                    Purpose::YubiKey(YkPurpose::ChangePin(target)),
-                    false,
+                // The tries left of that secret are read and shown before it is typed
+                // (spec/10 §9.1).
+                self.yk_open_pin_action(
+                    CardSecretKind::ChangePin(target),
+                    YkPurpose::ChangePin(target),
                 );
             }
             ids::CHANGE_MGMT => {
@@ -1966,6 +2202,14 @@ impl App {
     pub fn on_yk_edit_change(&mut self, id: u16) -> bool {
         use crate::ui::screens_yubikey::ids;
         if self.on_yk_manage_edit_change(id) {
+            return true;
+        }
+        if id == ids::OVERWRITE_EDIT {
+            // No repaint while typing: `가져오기` checks the word when pressed.
+            let text = self.controls.text(id, 16).unwrap_or_default();
+            if let Some(wizard) = self.yk_wizard() {
+                wizard.overwrite_typed = text;
+            }
             return true;
         }
         if ![
@@ -1994,6 +2238,7 @@ impl App {
             ids::AUT_INDEX_EDIT => wizard.aut.index_text = text,
             ids::SOL_COUNT_EDIT => wizard.sol_count_text = text,
             ids::SOL_START_EDIT => wizard.sol_start_text = text,
+            ids::OVERWRITE_EDIT => wizard.overwrite_typed = text,
             _ => {}
         }
         wizard.error = None;

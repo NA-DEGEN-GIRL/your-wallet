@@ -49,6 +49,8 @@ pub const PIN_LEN: core::ops::RangeInclusive<usize> = 6..=8;
 pub const SLOT_MANAGEMENT: u8 = 0x9B;
 /// The PIN "slot" of GET METADATA.
 pub const SLOT_PIN: u8 = 0x80;
+/// The PUK "slot" of GET METADATA (5.3+; the same layout as the PIN's).
+pub const SLOT_PUK: u8 = 0x81;
 /// Longest message signed in one GENERAL AUTHENTICATE (fits one extended APDU; Solana messages
 /// are at most 1,232 bytes).
 pub const MAX_SIGN_MESSAGE: usize = 2_048;
@@ -67,8 +69,10 @@ const INS_PUT_DATA: u8 = 0xDB;
 const INS_RESET_RETRY: u8 = 0x2C;
 const INS_MOVE_KEY: u8 = 0xF6;
 const INS_RESET: u8 = 0xFB;
-/// Most wrong attempts sent to block the PIN or the PUK (the counters are at most 15).
-const MAX_BLOCK_ATTEMPTS: usize = 16;
+/// Bound of the wrong attempts sent to block the PIN or the PUK: the tries the card reports
+/// (GET METADATA `80` / `81`; `ykman piv access set-retries` allows up to 255) plus one, never
+/// more than this (also when the metadata cannot be read).
+const MAX_BLOCK_ATTEMPTS: usize = 256;
 /// PIV key DELETE (yubikit `delete_key` = MOVE KEY to `FF`): documented by Yubico "as of
 /// 5.7.4"; yubikit accepts it from 5.7.0 (spec/10 §15.3).
 pub const DOCUMENTED_FIRMWARE_DELETE_KEY: Firmware = Firmware::new(5, 7, 4);
@@ -785,6 +789,15 @@ impl<'t> Piv<'t> {
         parse_pin_metadata(&self.run(&get_metadata(SLOT_PIN))?)
     }
 
+    /// Whether the PUK is still the default, and its remaining tries (read-only).
+    ///
+    /// # Errors
+    ///
+    /// Status and parse errors.
+    pub fn puk_metadata(&mut self) -> Result<(bool, u8), CardError> {
+        parse_pin_metadata(&self.run(&get_metadata(SLOT_PUK))?)
+    }
+
     /// Mutual authentication with the management key (ykman `authenticate`): decrypt the card's
     /// witness, send it with our random challenge, and require the card's encryption of the
     /// challenge.
@@ -1128,8 +1141,13 @@ impl<'t> Piv<'t> {
         }
     }
 
-    fn block(&mut self, command: &Command) -> Result<(), CardError> {
-        for _ in 0..MAX_BLOCK_ATTEMPTS {
+    /// Sends `command` (a wrong PIN or PUK) until the card answers "blocked": at most `left` (the
+    /// tries the card reported; the bound when unknown) plus one times.
+    fn block(&mut self, command: &Command, left: Option<u8>) -> Result<(), CardError> {
+        let attempts = left.map_or(MAX_BLOCK_ATTEMPTS, |left| {
+            usize::from(left).saturating_add(1).min(MAX_BLOCK_ATTEMPTS)
+        });
+        for _ in 0..attempts {
             match self.run(command) {
                 Err(CardError::PinBlocked | CardError::WrongPin { retries: 0 }) => return Ok(()),
                 Err(
@@ -1141,22 +1159,25 @@ impl<'t> Piv<'t> {
                 _ => {}
             }
         }
-        Err(CardError::Conditions)
+        Err(CardError::NotBlocked)
     }
 
     /// Factory reset of the PIV applet (yubikit `reset`): VERIFY with an invalid PIN until the
-    /// PIN is blocked, RESET RETRY COUNTER with an invalid PUK until the PUK is blocked, then
-    /// RESET. Every PIV key and data object is deleted and the PIN, PUK and management key
-    /// return to the factory values (`123456`, `12345678`, the default AES-192 / 3DES key). No
-    /// PIN is needed; `OpenPGP`, FIDO, OTP and OATH are not touched.
+    /// PIN is blocked, RESET RETRY COUNTER with an invalid PUK until the PUK is blocked (each at
+    /// most the tries GET METADATA `80` / `81` reports plus one), then RESET. Every PIV key and
+    /// data object is deleted and the PIN, PUK and management key return to the factory values
+    /// (`123456`, `12345678`, the default AES-192 / 3DES key). No PIN is needed; `OpenPGP`,
+    /// FIDO, OTP and OATH are not touched.
     ///
     /// # Errors
     ///
-    /// [`CardError::Conditions`] (a counter did not block, or RESET refused), transport and
-    /// status errors.
+    /// [`CardError::NotBlocked`] (a counter did not block: RESET not sent),
+    /// [`CardError::Conditions`] (RESET refused), transport and status errors.
     pub fn reset(mut self) -> Result<(), CardError> {
-        self.block(&verify_invalid_pin())?;
-        self.block(&reset_retry_invalid())?;
+        let pin_left = self.pin_metadata().ok().map(|(_, left)| left);
+        let puk_left = self.puk_metadata().ok().map(|(_, left)| left);
+        self.block(&verify_invalid_pin(), pin_left)?;
+        self.block(&reset_retry_invalid(), puk_left)?;
         self.run(&reset()).map(drop)
     }
 }

@@ -495,6 +495,7 @@ fn card_signing_verifies_and_recovers_the_account() {
         piv_pin: b"",
         cipher: Some(&ToyCipher),
         challenge: [0; 16],
+        overwrite: false,
     };
     let record = crate::yubikey::enrol::enrol_card(
         &mut card,

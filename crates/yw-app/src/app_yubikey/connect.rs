@@ -334,6 +334,7 @@ impl App {
             pw1: scan.pgp_pin_retries,
             pw3: None,
             piv_pin: scan.piv_pin_retries,
+            puk: None,
         };
         counters.lines(&[if piv {
             crate::yubikey::PinKind::PivPin
@@ -364,10 +365,10 @@ impl App {
             Curve::Ed25519
         };
         let serial = record.serial;
-        if pin.as_slice() == yw_core::yubikey::connect::FACTORY_PIN {
+        if yw_core::yubikey::is_factory_secret(&pin) {
             self.with_form(|form| {
                 form.set_error(Some(
-                    "공장 기본 PIN(123456)으로는 확인하지 않습니다. 이 YubiKey가 아직 기본 PIN이면 연결한 뒤 'PIN 설정'으로 바꾸세요."
+                    "공장 기본값(123456·12345678)으로는 확인하지 않습니다. 이 YubiKey가 아직 기본 PIN이면 연결한 뒤 'PIN 설정'으로 바꾸세요."
                         .to_owned(),
                 ));
             });
@@ -382,6 +383,20 @@ impl App {
 
     /// `ConnectVerify` finished.
     pub(crate) fn on_yk_connect_verified(&mut self, result: Result<(), CardJobError>) {
+        // The PIN of the applet that was asked (`yk_connect_pin`), named in its error.
+        let kind = match self.yk_connect_form() {
+            Some(form)
+                if form.record.as_ref().is_some_and(|record| {
+                    record
+                        .slots
+                        .iter()
+                        .any(|slot| slot.role.curve() == Curve::Secp256k1)
+                }) =>
+            {
+                crate::yubikey::PinKind::OpenPgpUser
+            }
+            _ => crate::yubikey::PinKind::PivPin,
+        };
         if let Some(form) = self.yk_connect_form() {
             form.busy = false;
         }
@@ -404,7 +419,7 @@ impl App {
                             | yw_core::yubikey::CardError::WrongPin { retries: 0 }
                     )
                 );
-                let text = error.to_string();
+                let text = error.text_for(kind);
                 if retry {
                     self.with_form(|form| {
                         form.set_busy(false);

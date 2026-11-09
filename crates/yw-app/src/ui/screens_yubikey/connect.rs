@@ -94,6 +94,7 @@ impl App {
             pw1: scan.pgp_pin_retries,
             pw3: None,
             piv_pin: scan.piv_pin_retries,
+            puk: None,
         };
         for line in counters.lines(&[
             crate::yubikey::PinKind::OpenPgpUser,

@@ -54,7 +54,9 @@ pub const T_CARD_USER_PIN: &str = "선택 사항입니다: 이 YubiKey의 PIN을
 /// W12 PIV PIN (spec/10 §7.3, §9.3).
 pub const T_CARD_PIV_PIN: &str = "YubiKey를 하나만 연결하고 PIV PIN(6–8자, 공장 기본값 123456)을 입력하세요. PIN으로 보호된 PIV 관리 키를 꺼내는 데 한 번만 쓰고 바로 지웁니다.";
 /// W12 "PIN 하나로 통일" (spec/10 §9.3).
-pub const T_CARD_SET_PINS: &str = "YubiKey를 하나만 연결하세요. 새 8자 PIN 하나를 OpenPGP PIN·OpenPGP 관리자 PIN·PIV PIN·PIV PUK에 똑같이 넣고, PIV 관리 키는 자동으로 새로 만들어 PIN으로 보호합니다. 현재 값이 공장 기본값이면 '현재 PIN'을 비워 두고, 전에 하나로 통일했다면 그 8자를 넣으세요. 중간에 실패하면 거기서 멈추고 바뀐 것만 알려 드립니다.";
+pub const T_CARD_SET_PINS: &str = "YubiKey를 하나만 연결하세요. 새 8자 PIN 하나를 OpenPGP PIN·OpenPGP 관리자 PIN·PIV PIN·PIV PUK에 똑같이 넣고, PIV 관리 키는 자동으로 새로 만들어 PIN으로 보호합니다. 현재 값이 공장 기본값이면 '현재 PIN'을 비워 두고, 전에 하나로 통일했다면 그 8자를 넣으세요. 공장 기본값(12345678)은 새 PIN으로 쓸 수 없습니다. 중간에 실패하면 거기서 멈추고 바뀐 것만 알려 드립니다.";
+/// W12: a new PIN / PUK / admin PIN that is a factory value (spec/10 §9.3).
+pub const T_CARD_NEW_FACTORY: &str = "공장 기본값(123456·12345678)은 새 PIN으로 쓸 수 없습니다 — YubiKey를 가진 사람이 그 값으로 바로 서명할 수 있습니다. 다른 값을 고르세요.";
 /// W07 help of a Solana key (spec/04 §2.18).
 pub const T_SOL_KEY_INPUT: &str = "Phantom·Solflare의 '개인키 내보내기'로 받은 base58 문자열(64바이트 keypair) 또는 solana-keygen JSON 파일의 내용([숫자 64개])을 붙여넣으세요. 주소(32바이트)는 개인키가 아닙니다.";
 /// W07 help of a Zcash key (spec/12 §2.3).
@@ -894,6 +896,12 @@ impl SecretForm {
             self.slots.get(a).map(|slot| slot.field.as_bytes())
                 == self.slots.get(b).map(|slot| slot.field.as_bytes())
         };
+        // A new card secret that is a published factory value (spec/10 §9.3).
+        let factory = |index: usize| {
+            self.slots
+                .get(index)
+                .is_some_and(|slot| yw_core::yubikey::is_factory_secret(slot.field.as_bytes()))
+        };
         let password_ok = |index: usize| {
             self.slots
                 .get(index)
@@ -995,6 +1003,9 @@ impl SecretForm {
                 if equal(0, 1) {
                     return Err("새 PIN이 현재 값과 같습니다.".to_owned());
                 }
+                if factory(1) {
+                    return Err(T_CARD_NEW_FACTORY.to_owned());
+                }
             }
             SecretKind::CardSecret(CardSecretKind::ChangePin(target)) => {
                 let (min, max) = target.bounds();
@@ -1011,6 +1022,9 @@ impl SecretForm {
                 }
                 if equal(0, 1) {
                     return Err(format!("새 {}이(가) 현재 값과 같습니다.", target.name()));
+                }
+                if factory(1) {
+                    return Err(T_CARD_NEW_FACTORY.to_owned());
                 }
             }
             _ => {}

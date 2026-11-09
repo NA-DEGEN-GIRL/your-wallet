@@ -163,8 +163,28 @@ pub enum CardError {
     /// More than one `YubiKey` is inserted where the wallet must know which card it writes to
     /// (enrolment, adoption, the credentials probe; spec/10 §7.3).
     MultipleCards,
+    /// A new PIN, PUK or admin PIN is a published factory value ([`FACTORY_SECRETS`]): nothing
+    /// was sent — whoever holds a card with such a secret signs with it (spec/10 §9.3).
+    DefaultPin,
+    /// An applet reset stopped because a PIN or the PUK did not block within the tries the card
+    /// reported (+1): TERMINATE / RESET were not sent, no key was deleted (spec/10 §15.5).
+    NotBlocked,
+    /// The PIV PUK has one try left and the user did not confirm spending it: nothing was sent
+    /// (spec/10 §9.1).
+    PukLastTry,
     /// Internal error (derivation failure, invariant).
     Internal,
+}
+
+/// The factory values of the card secrets (`OpenPGP` PW1 / PIV PIN `123456`, `OpenPGP` PW3 /
+/// PIV PUK `12345678`): never accepted as a new value, never sent as a signing PIN (spec/10 §9.2,
+/// §9.3).
+pub const FACTORY_SECRETS: [&[u8]; 2] = [b"123456", b"12345678"];
+
+/// Whether `value` is one of [`FACTORY_SECRETS`].
+#[must_use]
+pub fn is_factory_secret(value: &[u8]) -> bool {
+    FACTORY_SECRETS.contains(&value)
 }
 
 impl CardError {
@@ -231,6 +251,9 @@ impl CardError {
             Self::Ed25519ImportRefused => "ed25519_import_refused",
             Self::AdminLastTry => "admin_last_try",
             Self::MultipleCards => "multiple_cards",
+            Self::DefaultPin => "default_pin",
+            Self::NotBlocked => "not_blocked",
+            Self::PukLastTry => "puk_last_try",
             Self::Internal => "internal",
         }
     }
@@ -266,6 +289,15 @@ impl fmt::Display for CardError {
             ),
             Self::MultipleCards => formatter.write_str(
                 "YubiKey가 둘 이상 연결되어 있습니다. YubiKey를 하나만 연결하세요.",
+            ),
+            Self::DefaultPin => formatter.write_str(
+                "공장 기본값(123456·12345678)은 새 PIN으로 쓸 수 없습니다 — YubiKey를 가진 사람이 그 값으로 바로 서명할 수 있습니다. 다른 값을 고르세요.",
+            ),
+            Self::NotBlocked => formatter.write_str(
+                "애플릿 초기화를 멈췄습니다: PIN이 카드가 알려 준 횟수 안에 잠기지 않았습니다. 키는 지우지 않았습니다(PIN 남은 시도는 줄었을 수 있습니다). YubiKey를 다시 연결하고 한 번 더 시도하세요.",
+            ),
+            Self::PukLastTry => formatter.write_str(
+                "PIV PUK 시도가 1회 남았습니다. 한 번 더 틀리면 PUK가 잠기고, 그 뒤 PIV PIN까지 잠기면 PIV 초기화밖에 방법이 없습니다(복구 단어 없이 연결한 Solana 키는 그때 영구히 사라집니다). 정확한 PUK가 확실하면 다시 입력해 제출하세요 — 그때는 마지막 시도로 카드에 보냅니다.",
             ),
             Self::WrongPin { retries: 0 } | Self::PinBlocked => formatter.write_str(
                 "PIN이 잠겼습니다. PUK(또는 관리자 PIN)로 풀거나 복구 단어로 다시 등록하세요.",

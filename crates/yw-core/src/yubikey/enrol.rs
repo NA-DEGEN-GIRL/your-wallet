@@ -2,21 +2,26 @@
 //! the public keys back and compare them with the derived ones, and return the tag-5 record.
 //!
 //! Order on the card: read the serial(s) first and validate the plan against the enrolled
-//! records (nothing is written before that), then all OpenPGP work (VERIFY PW3 → per slot:
-//! attributes, import, UIF, read-back), then PIV (selecting PIV ends the PW3 session): GET
+//! records (nothing is written before that), read every planned slot (a key the plan does not
+//! derive is never overwritten unless the user saw it and agreed, [`occupied_slots`]; a fixed
+//! touch policy other than the planned one is refused), then all OpenPGP work (VERIFY PW3 → per
+//! slot: attributes, import, UIF, read-back), then PIV (selecting PIV ends the PW3 session): GET
 //! METADATA 9B → ADMIN DATA (a PIN-protected key: VERIFY PIN → PRINTED) → management-key
 //! mutual authentication → per slot import + metadata read-back.
 //! Every derived private key lives only in a `Zeroizing` buffer for the import command and is
-//! wiped right after it. A failure part-way leaves earlier slots written on the card but no
-//! record in the vault; repeating the enrolment overwrites them (spec/10 §7.4).
+//! wiped right after it. A failure part-way ([`EnrolError::Partial`]) leaves earlier slots
+//! written on the card but no record in the vault; repeating the enrolment overwrites them
+//! (spec/10 §7.4).
 
 use secp256k1::{All, PublicKey, Secp256k1, Signing};
 use zeroize::Zeroizing;
 
 use super::apdu::ApduMode;
-use super::openpgp::{DEFAULT_PW3, OpenPgp, Pw};
+use super::openpgp::{DEFAULT_PW3, OpenPgp, Pw, SlotKey};
 use super::piv::{ManagementCredential, MgmtCipher, Piv};
-use super::plan::{CardSlot, KeyPath, KeyRole, PlanError, PlannedSlot, validate_against};
+use super::plan::{
+    CardSlot, KeyPath, KeyRole, PlanError, PlannedSlot, TouchPolicy, validate_against,
+};
 use super::record::{HwKeyRecord, HwPublicKey, RecordedSlot};
 use super::{CardError, CardTransport, Firmware};
 use crate::bip32::XPriv;
@@ -28,8 +33,12 @@ use crate::slip10::slip10_ed25519;
 pub enum EnrolError {
     /// The plan was refused before anything was written.
     Plan(PlanError),
-    /// A card operation failed (possibly after earlier slots were written).
+    /// A card operation failed before any key was written (identification, slot check, PIN,
+    /// management key).
     Card(CardError),
+    /// A card operation failed once a key import had started: earlier slots (or this one) may
+    /// already hold new keys, the vault records nothing (spec/10 §7.4).
+    Partial(CardError),
     /// Key derivation failed.
     Key(KeyError),
     /// The OpenPGP and PIV serials differ (two devices answering?).
@@ -58,7 +67,7 @@ impl core::fmt::Display for EnrolError {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Plan(error) => error.fmt(formatter),
-            Self::Card(error) => error.fmt(formatter),
+            Self::Card(error) | Self::Partial(error) => error.fmt(formatter),
             Self::Key(error) => error.fmt(formatter),
             Self::SerialMismatch => {
                 formatter.write_str("YubiKey 일련번호를 확인하지 못했습니다. 하나만 연결하세요.")
@@ -337,6 +346,10 @@ pub struct EnrolAuth<'a> {
     pub cipher: Option<&'a dyn MgmtCipher>,
     /// A fresh random challenge (16 bytes; the first 8 are used for 3DES).
     pub challenge: [u8; 16],
+    /// The user saw the keys [`occupied_slots`] found in the planned slots and confirmed that
+    /// they are destroyed. Without it such a key stops the enrolment before anything is sent
+    /// that needs a PIN ([`CardError::ForeignKey`]).
+    pub overwrite: bool,
 }
 
 impl core::fmt::Debug for EnrolAuth<'_> {
@@ -401,11 +414,107 @@ pub fn identify(
     found.ok_or(EnrolError::Card(CardError::Internal))
 }
 
+/// A planned slot that already holds a key the enrolment would destroy ([`occupied_slots`],
+/// spec/10 §7.4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Occupant {
+    /// The slot.
+    pub slot: CardSlot,
+    /// Its key, when it is one of the curves this wallet reads in that applet (secp256k1 in
+    /// `OpenPGP`, Ed25519 in PIV); `None` for RSA, another curve or an unreadable key.
+    pub public: Option<HwPublicKey>,
+}
+
+/// The planned slots of the card on `transport` that hold a key the enrolment would destroy
+/// (read-only: SELECT, `00 47 81 00`, GET METADATA; no PIN): not empty, and not a key that
+/// stays reachable — one the plan derives from `seed` (for this slot: a retry after a partial
+/// write or the same words again; for another slot: it moves) or one an enrolled card of
+/// `records` holds. The serial is the caller's business.
+///
+/// # Errors
+///
+/// Card (also applet and firmware) and derivation errors.
+pub fn occupied_slots(
+    transport: &mut dyn CardTransport,
+    mode: ApduMode,
+    seed: &[u8; 64],
+    slots: &[PlannedSlot],
+    records: &[HwKeyRecord],
+) -> Result<Vec<Occupant>, EnrolError> {
+    let ctx = crate::entropy::secp_context(&mut crate::entropy::OsRandom)?;
+    let mut kept = Vec::with_capacity(slots.len());
+    for planned in slots {
+        kept.push(derive_public(&ctx, seed, planned.role)?);
+    }
+    kept.extend(
+        records
+            .iter()
+            .flat_map(|record| &record.slots)
+            .map(|held| held.public),
+    );
+    let mut found = Vec::new();
+    let mut found_key = |slot: CardSlot, public: Option<HwPublicKey>| {
+        if !public.is_some_and(|public| kept.contains(&public)) {
+            found.push(Occupant { slot, public });
+        }
+    };
+    if slots
+        .iter()
+        .any(|planned| matches!(planned.slot, CardSlot::OpenPgp(_)))
+    {
+        let mut session = OpenPgp::open(transport, mode)?;
+        for planned in slots {
+            let CardSlot::OpenPgp(key) = planned.slot else {
+                continue;
+            };
+            match session.slot_key(key)? {
+                SlotKey::Empty => {}
+                SlotKey::Secp256k1(public) => {
+                    found_key(planned.slot, Some(HwPublicKey::Secp256k1(public)));
+                }
+                SlotKey::Other => found_key(planned.slot, None),
+            }
+        }
+    }
+    if slots
+        .iter()
+        .any(|planned| matches!(planned.slot, CardSlot::Piv(_)))
+    {
+        let mut session = Piv::open(transport, mode)?;
+        for planned in slots {
+            let CardSlot::Piv(slot) = planned.slot else {
+                continue;
+            };
+            match session.slot_metadata(slot) {
+                Err(CardError::NotFound) => {}
+                Ok(metadata) if metadata.algorithm == super::piv::ALG_ED25519 => {
+                    found_key(planned.slot, metadata.public.map(HwPublicKey::Ed25519));
+                }
+                Ok(_) => found_key(planned.slot, None),
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+    Ok(found)
+}
+
+/// A card error once an import has started ([`EnrolError::Partial`]): keys may be on the card.
+const fn partial(error: CardError) -> EnrolError {
+    EnrolError::Partial(error)
+}
+
 /// Enrols one card with `slots` (spec/10 §7.3).
 ///
 /// # Errors
 ///
-/// [`EnrolError::Plan`] before any write; card or derivation errors afterwards.
+/// Before any write: [`EnrolError::Plan`], [`EnrolError::Card`] — among them
+/// [`CardError::ForeignKey`] (a planned slot holds a key the plan does not derive and
+/// `auth.overwrite` is not set) and [`CardError::Conditions`] (a fixed touch policy other than
+/// the planned one) — and derivation errors; [`EnrolError::Partial`] once an import started.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one card sequence: checks, OpenPGP, PIV"
+)]
 pub fn enrol_card(
     transport: &mut dyn CardTransport,
     mode: ApduMode,
@@ -424,9 +533,32 @@ pub fn enrol_card(
         .any(|planned| matches!(planned.slot, CardSlot::Piv(_)));
     let (serial, firmware) = identify(transport, mode, has_pgp, has_piv)?;
     validate_against(records, serial, fingerprint, slots)?;
+    // Read-only checks before any PIN or write: a key the plan does not derive is never
+    // destroyed without the user's confirmation, and a fixed touch policy is never changed.
+    if !auth.overwrite && !occupied_slots(transport, mode, seed, slots, records)?.is_empty() {
+        return Err(EnrolError::Card(CardError::ForeignKey));
+    }
+    if has_pgp {
+        let mut session = OpenPgp::open(transport, mode)?;
+        for planned in slots {
+            let CardSlot::OpenPgp(key) = planned.slot else {
+                continue;
+            };
+            let current = session.touch_policy(key).ok();
+            let fixed = matches!(
+                current,
+                Some(TouchPolicy::AlwaysFixed | TouchPolicy::CachedFixed)
+            );
+            if fixed && current != Some(planned.touch) {
+                return Err(EnrolError::Card(CardError::Conditions));
+            }
+        }
+    }
 
     let mut defaults = DefaultsSeen::default();
     let mut recorded = Vec::with_capacity(slots.len());
+    // Set when the first import starts: every card error after it may leave new keys behind.
+    let mut written = false;
     if has_pgp {
         let mut session = OpenPgp::open(transport, mode)?;
         if session.app.serial != serial {
@@ -439,7 +571,10 @@ pub fn enrol_card(
                 continue;
             };
             let scalar = secp_scalar(&ctx, seed, planned.role)?;
-            let public = session.import_secp256k1(&ctx, key, &scalar, planned.touch)?;
+            written = true;
+            let public = session
+                .import_secp256k1(&ctx, key, &scalar, planned.touch)
+                .map_err(partial)?;
             drop(scalar);
             recorded.push(RecordedSlot {
                 slot: planned.slot,
@@ -452,20 +587,31 @@ pub fn enrol_card(
         }
     }
     if has_piv {
-        let mut session = Piv::open(transport, mode)?;
+        // After OpenPGP keys were written, every failure is a partial enrolment.
+        let after_openpgp = written;
+        let stage = move |error: CardError| {
+            if after_openpgp {
+                EnrolError::Partial(error)
+            } else {
+                EnrolError::Card(error)
+            }
+        };
+        let mut session = Piv::open(transport, mode).map_err(stage)?;
         if session.serial != serial {
             return Err(EnrolError::SerialMismatch);
         }
-        let (pin_default, _) = session.pin_metadata()?;
-        let cipher = auth.cipher.ok_or(CardError::Internal)?;
-        let management = session.authenticate_management(
-            ManagementCredential {
-                key: auth.management_key,
-                pin: auth.piv_pin,
-            },
-            cipher,
-            &auth.challenge,
-        )?;
+        let (pin_default, _) = session.pin_metadata().map_err(stage)?;
+        let cipher = auth.cipher.ok_or(CardError::Internal).map_err(stage)?;
+        let management = session
+            .authenticate_management(
+                ManagementCredential {
+                    key: auth.management_key,
+                    pin: auth.piv_pin,
+                },
+                cipher,
+                &auth.challenge,
+            )
+            .map_err(stage)?;
         defaults.piv_management = management.default;
         defaults.piv_management_protected = management.protected;
         defaults.piv_pin = pin_default;
@@ -474,7 +620,15 @@ pub fn enrol_card(
                 continue;
             };
             let ed = ed_seed(seed, planned.role)?;
-            let public = session.import_ed25519(slot, &ed, planned.pin, planned.touch)?;
+            let before = written;
+            written = true;
+            let public = session
+                .import_ed25519(slot, &ed, planned.pin, planned.touch)
+                .map_err(|error| match error {
+                    // The card refused the import command itself: nothing of this slot written.
+                    CardError::Ed25519ImportRefused if !before => EnrolError::Card(error),
+                    other => EnrolError::Partial(other),
+                })?;
             drop(ed);
             recorded.push(RecordedSlot {
                 slot: planned.slot,
@@ -503,7 +657,7 @@ pub fn enrol_card(
     let mut all = records.to_vec();
     all.push(record.clone());
     if !record.is_valid() || !super::record::records_consistent(&all) {
-        return Err(EnrolError::Card(CardError::KeyMismatch));
+        return Err(partial(CardError::KeyMismatch));
     }
     Ok(Enrolled { record, defaults })
 }

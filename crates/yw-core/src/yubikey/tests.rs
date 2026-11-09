@@ -70,6 +70,7 @@ fn default_auth() -> EnrolAuth<'static> {
         piv_pin: b"",
         cipher: Some(&ToyCipher),
         challenge: [0x5C; 16],
+        overwrite: false,
     }
 }
 
@@ -379,24 +380,41 @@ fn enrolment_refusals() {
         Some(EnrolError::Card(CardError::SecurityStatus))
     );
     assert!(card.piv_keys.is_empty());
-    // Re-enrolling a card whose SIG touch policy is already fixed: the same fixed policy is
-    // kept (no UIF write), another one is refused before any key is written.
+    // Re-enrolling a card whose SIG touch policy is already fixed (the user agreed to replace
+    // the key there): the same fixed policy is kept (no UIF write), another one is refused
+    // before any key is written.
     let mut card = MockCard::new(8);
     let fixed = |role| {
         let mut planned = sig(role);
         planned.touch = TouchPolicy::AlwaysFixed;
         planned
     };
+    let overwrite = EnrolAuth {
+        overwrite: true,
+        ..default_auth()
+    };
+    let replace = |card: &mut MockCard, slots: &[PlannedSlot]| {
+        enrol_card(
+            card,
+            ApduMode::Short,
+            &seed_of(ABOUT),
+            slots,
+            &[],
+            &overwrite,
+        )
+    };
     enrol(&mut card, ABOUT, &[fixed(evm(0))], &[]).unwrap();
-    enrol(&mut card, ABOUT, &[fixed(evm(5))], &[]).unwrap();
+    replace(&mut card, &[fixed(evm(5))]).unwrap();
     let mut cached = sig(evm(6));
     cached.touch = TouchPolicy::CachedFixed;
     let before = card.pgp_keys[0];
+    card.log.clear();
     assert_eq!(
-        enrol(&mut card, ABOUT, &[cached], &[]).err(),
+        replace(&mut card, &[cached]).err(),
         Some(EnrolError::Card(CardError::Conditions))
     );
     assert_eq!(card.pgp_keys[0], before);
+    assert!(!card.saw_write() && !card.log.iter().any(|header| header[1] == 0x20));
     // A 5.7.2 card refusing the Ed25519 import gets the specific message; on 5.7.4 the same
     // refusal stays a plain data error.
     let mut card = MockCard::new(9);
@@ -409,7 +427,7 @@ fn enrolment_refusals() {
     card.firmware = Firmware::new(5, 7, 4);
     assert_eq!(
         enrol(&mut card, ABOUT, &[piv(0x82, sol(0))], &[]).err(),
-        Some(EnrolError::Card(CardError::WrongData))
+        Some(EnrolError::Partial(CardError::WrongData))
     );
     let mut card = MockCard::new(6);
     card.has_openpgp = false;
@@ -1432,17 +1450,123 @@ fn clear_and_reslot_keep_a_key_the_record_does_not_list() {
     );
     assert!(!card.saw_write() && !pin_sent(&card));
     assert_eq!(card.pgp_keys[2], Some(foreign));
-    // An empty AUT is written; SIG keeps its key.
+    // An empty AUT is written; SIG keeps its key. The factory admin PIN worked: the card is
+    // reported as on its defaults again (spec/10 §9.3).
     card.pgp_keys[2] = None;
     let updated = reslot(&mut card, &record).unwrap();
+    assert!(updated.defaults.openpgp_admin);
+    let updated = updated.record;
     assert_eq!(updated.slots[0], record.slots[0]);
     assert_eq!(updated.slots[1].role, evm(1));
     assert_eq!(card.pgp_keys[0], our_sig);
     // A retry with the old record (the vault was not updated): AUT already holds the new key.
-    assert_eq!(reslot(&mut card, &record), Ok(updated.clone()));
+    assert_eq!(
+        reslot(&mut card, &record).map(|enrolled| enrolled.record),
+        Ok(updated.clone())
+    );
     // The record of the card again: an empty SIG and the recorded keys elsewhere are cleared.
     card.pgp_keys[0] = None;
     let report = clear_card(&mut card, ApduMode::Short, &updated, both, &auth).unwrap();
+    assert_eq!((report.openpgp, report.piv), (Some(Ok(())), Some(Ok(()))));
+    assert_eq!(card.pgp_keys, [None, None, None]);
+    assert!(card.piv_keys.is_empty());
+}
+
+/// spec/10 §7.4: an enrolment never writes over a key it does not derive unless the user saw it
+/// and agreed (`EnrolAuth::overwrite`): another key in AUT and another Ed25519 key in PIV 82 are
+/// listed (read-only) and refused before any PIN or write; the empty SIG and the planned keys
+/// themselves (a retry after a partial write, the same words again) are not listed. spec/10
+/// §15.5: an applet reset blocks counters above 15 within the tries the card reports.
+#[test]
+fn enrolment_keeps_a_key_it_does_not_derive_and_resets_high_counters() {
+    use super::manage::{ClearAuth, ClearMethod, ClearPlan, clear_card};
+
+    let seed = seed_of(ABOUT);
+    let mut card = MockCard::new(42);
+    let foreign = [0x11; 32];
+    card.pgp_attributes[2] = super::openpgp::secp256k1_attributes();
+    let auth = ClearAuth {
+        admin_pin: b"12345678",
+        piv_pin: super::piv::DEFAULT_PIN,
+        cipher: Some(&ToyCipher),
+        challenge: [0x5C; 16],
+    };
+    let pin_sent = |card: &MockCard| card.log.iter().any(|[_, ins, _, _]| *ins == 0x20);
+
+    let ed_foreign = [0x33; 32];
+    card.pgp_keys[2] = Some(foreign);
+    card.piv_keys.push((
+        0x82,
+        super::mock::PivKey {
+            seed: ed_foreign,
+            pin_policy: 3,
+            touch_policy: 2,
+        },
+    ));
+    card.log.clear();
+    let occupied =
+        super::enrol::occupied_slots(&mut card, ApduMode::Short, &seed, &recommended_plan(), &[])
+            .unwrap();
+    let ed_public = ed25519_dalek::SigningKey::from_bytes(&ed_foreign)
+        .verifying_key()
+        .to_bytes();
+    let foreign_public = secp256k1::SecretKey::from_byte_array(foreign)
+        .unwrap()
+        .public_key(&Secp256k1::new())
+        .serialize();
+    assert_eq!(
+        occupied,
+        [
+            super::enrol::Occupant {
+                slot: CardSlot::OpenPgp(PgpKey::Aut),
+                public: Some(HwPublicKey::Secp256k1(foreign_public)),
+            },
+            super::enrol::Occupant {
+                slot: CardSlot::Piv(PivSlot::new(0x82).unwrap()),
+                public: Some(HwPublicKey::Ed25519(ed_public)),
+            },
+        ]
+    );
+    assert_eq!(
+        enrol(&mut card, ABOUT, &recommended_plan(), &[]).err(),
+        Some(EnrolError::Card(CardError::ForeignKey))
+    );
+    assert!(!card.saw_write() && !pin_sent(&card));
+    assert_eq!(card.pgp_keys[2], Some(foreign));
+    let overwrite = EnrolAuth {
+        overwrite: true,
+        ..default_auth()
+    };
+    let enrolled = enrol_card(
+        &mut card,
+        ApduMode::Short,
+        &seed,
+        &recommended_plan(),
+        &[],
+        &overwrite,
+    )
+    .unwrap();
+    assert_eq!(enrolled.record.slots.len(), 4);
+    let occupied = |card: &mut MockCard| {
+        super::enrol::occupied_slots(card, ApduMode::Short, &seed, &recommended_plan(), &[])
+            .unwrap()
+    };
+    assert!(occupied(&mut card).is_empty());
+    // Keys the plan moves to another slot stay on the card: not listed either.
+    card.pgp_keys.swap(0, 2);
+    assert!(occupied(&mut card).is_empty());
+    enrol(&mut card, ABOUT, &recommended_plan(), &[]).unwrap();
+
+    // A reset of an applet whose counters allow more than 15 tries (ykman `set-retries`) blocks
+    // them all within the tries the card reports.
+    card.pgp_retries = [20, 20];
+    card.piv_retries = 20;
+    card.piv_puk_retries = 20;
+    let reset = ClearPlan {
+        openpgp: Some(ClearMethod::Reset),
+        piv: Some(ClearMethod::Reset),
+    };
+    let report = clear_card(&mut card, ApduMode::Short, &enrolled.record, reset, &auth).unwrap();
     assert_eq!((report.openpgp, report.piv), (Some(Ok(())), Some(Ok(()))));
     assert_eq!(card.pgp_keys, [None, None, None]);
     assert!(card.piv_keys.is_empty());

@@ -342,7 +342,8 @@ fn yubikey_clear_our_slots_and_applet_resets() {
     yk_pump(&mut h, &mut seen);
     assert!(h.app.card.manage.is_none());
 
-    // Enrol again, then change the card's PINs (as a user would).
+    // Enrol again, then change the card's PINs (as a user would; "PIN 설정" clears the
+    // factory-PIN note).
     h.app.on_command(yk::ENROL_START);
     wizard_import(&mut h, &mut seen, true);
     h.app.on_command(yk::FINISH);
@@ -356,6 +357,9 @@ fn yubikey_clear_our_slots_and_applet_resets() {
         card.pw3 = b"13571357".to_vec();
         card.log.clear();
     }
+    h.app.meta.as_mut().unwrap().hw_accounts.defaults.clear();
+    h.app.save_meta();
+    yk_pump(&mut h, &mut seen);
     // PIV reset only: no PIN asked.
     h.app.on_command(yk::CLEAR_BASE);
     h.app.on_command(yk::CLEAR_PIV_TOGGLE);
@@ -382,15 +386,17 @@ fn yubikey_clear_our_slots_and_applet_resets() {
             .iter()
             .all(|slot| matches!(slot.slot, CardSlot::OpenPgp(_)))
     );
+    // The reset PIV applet keeps no wallet key (its factory PINs protect nothing of the
+    // record) and OpenPGP keeps its PINs: the card still signs (spec/10 §15.4).
     assert!(
-        h.app
+        !h.app
             .meta
             .as_ref()
             .unwrap()
             .hw_accounts
             .defaults
             .contains(&8_900_011),
-        "factory PINs again"
+        "no factory-PIN flag for an applet without wallet keys"
     );
     h.app.on_command(yk::MANAGE_DONE);
     yk_pump(&mut h, &mut seen);

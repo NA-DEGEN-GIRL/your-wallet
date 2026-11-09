@@ -205,6 +205,8 @@ pub struct CardUi {
     /// The card whose next admin-PIN job may spend the PIN's last try: the user saw
     /// `AdminLastTry` and submits again (spec/10 §9.1). Used once.
     pub admin_last_try: Option<u32>,
+    /// The same for the PIV PUK (`PukLastTry`).
+    pub puk_last_try: Option<u32>,
     /// A card signing was refused because the card still uses factory PINs: the main window
     /// shows "PIN 설정" for it (spec/10 §9.3).
     pub pin_needed: Option<u32>,
@@ -212,6 +214,9 @@ pub struct CardUi {
     pub list_changed: Vec<(u32, crate::yubikey::PinTarget)>,
     /// Cards whose management key was protected from the `YubiKey` list in this session.
     pub list_protected: Vec<u32>,
+    /// The factory values a card action of this session saw (a re-slot under the factory admin
+    /// PIN): "PIN 설정" of the list then asks only for those (spec/10 §9.3).
+    pub list_defaults: Vec<(u32, yw_core::yubikey::enrol::DefaultsSeen)>,
 }
 
 impl CardUi {
@@ -230,28 +235,43 @@ impl CardUi {
         self.pending_unhide.clear();
         self.manage = None;
         self.admin_last_try = None;
+        self.puk_last_try = None;
         self.pin_needed = None;
         self.list_changed.clear();
         self.list_protected.clear();
+        self.list_defaults.clear();
     }
 
-    /// Every secret of card `serial`'s applets was changed from the `YubiKey` list in this
-    /// session ("하나씩 따로"), and its PIV management key protected.
+    /// The factory values seen for card `serial` in this session ([`CardUi::list_defaults`]).
+    #[must_use]
+    pub fn seen_defaults(&self, serial: u32) -> Option<yw_core::yubikey::enrol::DefaultsSeen> {
+        self.list_defaults
+            .iter()
+            .find(|(other, _)| *other == serial)
+            .map(|(_, seen)| *seen)
+    }
+
+    /// Every factory secret of card `serial` was changed from the `YubiKey` list in this session
+    /// ("하나씩 따로"): the ones a card action of this session saw, else every secret of the
+    /// card's applets with the PIV management key protected.
     #[must_use]
     pub fn list_pins_done(&self, serial: u32) -> bool {
         use crate::yubikey::PinTarget;
         use yw_core::yubikey::plan::Curve;
+        let changed = |target| self.list_changed.contains(&(serial, target));
+        let openpgp = changed(PinTarget::OpenPgpUser) && changed(PinTarget::OpenPgpAdmin);
+        let piv = changed(PinTarget::PivPin) && changed(PinTarget::PivPuk);
+        let protected = self.list_protected.contains(&serial);
+        if let Some(seen) = self.seen_defaults(serial) {
+            return (!seen.openpgp_admin || openpgp)
+                && (!seen.piv_pin || piv)
+                && (!seen.piv_management || protected);
+        }
         let Some(record) = self.records.iter().find(|record| record.serial == serial) else {
             return false;
         };
         let has = |curve| record.slots.iter().any(|slot| slot.role.curve() == curve);
-        let changed = |target| self.list_changed.contains(&(serial, target));
-        (!has(Curve::Secp256k1)
-            || (changed(PinTarget::OpenPgpUser) && changed(PinTarget::OpenPgpAdmin)))
-            && (!has(Curve::Ed25519)
-                || (changed(PinTarget::PivPin)
-                    && changed(PinTarget::PivPuk)
-                    && self.list_protected.contains(&serial)))
+        (!has(Curve::Secp256k1) || openpgp) && (!has(Curve::Ed25519) || (piv && protected))
     }
 
     /// Keys whose hidden accounts become visible at the next meta load (after a card change).
@@ -318,10 +338,6 @@ const fn retryable(error: CardJobError) -> bool {
         CardJobError::Enrol(_) => false,
     }
 }
-
-/// The factory value of the `OpenPGP` PIN (PW1) and the PIV PIN: a card still using it does
-/// not sign (spec/10 §9.3).
-const FACTORY_PIN: &[u8] = b"123456";
 
 /// The refusal of a card signing while the card uses factory PINs (spec/10 §9.3).
 pub const T_CARD_FACTORY_PIN: &str = "이 YubiKey는 아직 공장 기본 PIN을 쓰고 있어 서명하지 않았습니다. 먼저 'PIN 설정'으로 PIN을 바꾸세요 (설정 → YubiKey). 아무것도 서명하지 않았습니다.";
@@ -426,7 +442,16 @@ impl App {
             }
             Err(error) => {
                 logging::info("app", "yubikey.enrol_failed", &[]);
-                let text = job_error_text(error);
+                let mut text = job_error_text(error);
+                if matches!(
+                    error,
+                    YubiKeyJobError::Card(CardJobError::Enrol(
+                        yw_core::yubikey::enrol::EnrolError::Partial(_)
+                    ))
+                ) {
+                    text.push(' ');
+                    text.push_str(crate::app_yubikey::T_YK_PARTIAL);
+                }
                 self.card.enrol = Some(EnrolState::Failed(text.clone()));
                 // The wizard's result screen shows it (with the §7.4 note).
                 if self.card.wizard.is_none() {
@@ -668,8 +693,9 @@ impl App {
             drop(pin);
             return;
         };
-        if pin.as_slice() == FACTORY_PIN {
-            // spec/10 §9.3: the factory PIN is never sent for a signature.
+        if yw_core::yubikey::is_factory_secret(&pin) {
+            // spec/10 §9.3: a factory value (the user PIN's 123456, or the 12345678 of the
+            // admin PIN and PUK) is never sent for a signature.
             drop(pin);
             drop(approved);
             if let Some(step) = self.card.step.take() {
@@ -835,16 +861,21 @@ impl App {
         }
         step.approved = Some(approved);
         step.swallow_failure = true;
-        // A wrong PIN's text carries the tries left ("한 번 더 틀리면 잠깁니다" at one).
+        // A wrong PIN's text names the PIN and carries the tries left ("한 번 더 틀리면
+        // 잠깁니다" at one).
+        let kind = match step.role.curve() {
+            yw_core::yubikey::plan::Curve::Secp256k1 => crate::yubikey::PinKind::OpenPgpUser,
+            yw_core::yubikey::plan::Curve::Ed25519 => crate::yubikey::PinKind::PivPin,
+        };
         if let CardJobError::Card(CardError::WrongPin { retries }) = error
             && let Some(counters) = step.counters.as_mut()
         {
-            match step.role.curve() {
-                yw_core::yubikey::plan::Curve::Secp256k1 => counters.pw1 = Some(retries),
-                yw_core::yubikey::plan::Curve::Ed25519 => counters.piv_pin = Some(retries),
+            match kind {
+                crate::yubikey::PinKind::OpenPgpUser => counters.pw1 = Some(retries),
+                _ => counters.piv_pin = Some(retries),
             }
         }
-        step.error = Some(error.to_string());
+        step.error = Some(error.text_for(kind));
         self.card_open_pin();
     }
 

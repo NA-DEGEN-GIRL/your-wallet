@@ -1201,6 +1201,7 @@ fn sol_card() -> (
         piv_pin: b"",
         cipher: Some(&ToyCipher),
         challenge: [0; 16],
+        overwrite: false,
     };
     let record = enrol_card(
         &mut card,

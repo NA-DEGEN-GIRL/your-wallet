@@ -555,6 +555,7 @@ fn yubikey_card_signs_bip137_and_bip322() {
             piv_pin: b"",
             cipher: Some(&ToyCipher),
             challenge: [0; 16],
+            overwrite: false,
         };
         let record = enrol_card(
             &mut card,

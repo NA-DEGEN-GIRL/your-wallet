@@ -12,9 +12,11 @@ use yw_core::yubikey::record::HwKeyRecord;
 use yw_core::zec::ZecNetwork;
 
 use crate::app::{App, AppMode};
+use crate::app_yubikey::manage::LOSS_WORD;
 use crate::app_yubikey::{
-    CARD_SCRIPTS, PGP_TOUCH, PIV_TOUCH, PgpKind, T_YK_OVERWRITE, T_YK_PIV_FIRMWARE, T_YK_SAME,
-    T_YK_SHARED, WizardOrigin, WizardStep, YkWizard,
+    CARD_SCRIPTS, PGP_TOUCH, PIV_TOUCH, PgpKind, T_YK_BACKUP_UNKNOWN, T_YK_OCCUPIED,
+    T_YK_OCCUPIED_ACK, T_YK_OVERWRITE, T_YK_PIV_FIRMWARE, T_YK_SAME, T_YK_SAME_WORDS, T_YK_SHARED,
+    WizardOrigin, WizardStep, YkWizard,
 };
 use crate::ui::main_window::{Ctl, Item, Tone};
 
@@ -194,6 +196,11 @@ pub mod ids {
     /// Re-slot: the T-YK-SAME checkbox (a card connected without recovery words gets words this
     /// PC also holds).
     pub const RESLOT_SAME_ACK: u16 = 13_394;
+    /// Wizard step (d): the T-YK-OCCUPIED checkbox (a planned slot holds a key the words do not
+    /// derive, spec/10 §7.4).
+    pub const OVERWRITE_ACK: u16 = 13_395;
+    /// Wizard step (d): the typed `영구 삭제` of that key.
+    pub const OVERWRITE_EDIT: u16 = 13_396;
 
     const KINDS: [PgpKind; 4] = [PgpKind::None, PgpKind::Evm, PgpKind::Btc, PgpKind::Shared];
     const ZEC_NETWORKS: [ZecNetwork; 2] = [ZecNetwork::Mainnet, ZecNetwork::Testnet];
@@ -549,6 +556,8 @@ pub mod ids {
         CLEAR_LOSS_ACK,
         CLEAR_LOSS_EDIT,
         RESLOT_SAME_ACK,
+        OVERWRITE_ACK,
+        OVERWRITE_EDIT,
         CONNECT_START,
         CONNECT_NEW_WALLET,
         CONNECT_RESCAN,
@@ -588,8 +597,7 @@ pub const T_YK_PIN_TRADEOFF: &str = "순서: PIV PIN → PIV PUK → PIV 관리 
 /// T-YK-PROTECT-MGMT (the separate mode).
 pub const T_YK_PROTECT_MGMT: &str = "PIV 관리 키 자동 보호: 새 관리 키를 이 PC에서 무작위로 만들어 YubiKey에 PIN으로 잠가 둡니다('ykman piv access change-management-key --generate --protect'와 같음). 현재 PIV PIN만 묻고, 관리 키는 보여 주지도 묻지도 않습니다.";
 /// T-YK-IMPORT: the "가져오기" choice.
-pub const T_YK_IMPORT: &str =
-    "복구 단어에서 고른 키를 YubiKey에 씁니다. 그 슬롯에 있던 키는 덮어씁니다.";
+pub const T_YK_IMPORT: &str = "복구 단어에서 고른 키를 YubiKey에 씁니다. 그 슬롯에 이번에 넣을 키가 아닌 다른 키가 있으면 위의 확인을 마친 뒤에만 덮어씁니다.";
 /// T-YK-ADOPT (spec/10 §7.5).
 pub const T_YK_ADOPT: &str = "YubiKey에 이미 같은 복구 단어의 키가 들어 있을 때 씁니다. 카드에는 아무것도 쓰지 않고, 카드의 공개키가 복구 단어와 맞는지만 확인해 지갑에 연결합니다(재설치·새 PC·지갑 초기화 후).";
 
@@ -857,7 +865,7 @@ impl App {
         match wizard.step {
             WizardStep::Plan => self.yk_plan_items(wizard, items),
             WizardStep::Confirm => self.yk_confirm_items(wizard, items),
-            WizardStep::Credentials => Self::yk_credentials_items(wizard, items),
+            WizardStep::Credentials => self.yk_credentials_items(wizard, items),
             WizardStep::Running => {
                 items.push(Item::CardStart(None));
                 items.push(Item::Subtitle("YubiKey에 키를 넣는 중입니다".to_owned()));
@@ -1000,29 +1008,48 @@ impl App {
                     .to_owned(),
             ));
             if let Some(serial) = wizard.backup_of {
+                // Only cards with a known path can be copied from words (spec/10 §7.6); the
+                // radio keeps the record's row as its id.
                 items.push(Item::LabeledRow(
                     "복사할 YubiKey".to_owned(),
                     records
                         .iter()
                         .enumerate()
-                        .map(|(row, record)| {
+                        .filter(|(_, record)| record.has_known_path())
+                        .enumerate()
+                        .map(|(position, (row, record))| {
                             Ctl::radio(
                                 ids::BACKUP_BASE
                                     .saturating_add(u16::try_from(row).unwrap_or(u16::MAX)),
                                 &format!("#{} (슬롯 {}개)", record.serial, record.slots.len()),
                                 record.serial == serial,
-                                row == 0,
+                                position == 0,
                             )
                         })
                         .collect(),
                 ));
+                if records.iter().any(|record| !record.has_known_path()) {
+                    items.push(Item::Help(T_YK_BACKUP_UNKNOWN.to_owned()));
+                }
                 if let Some(record) = records.iter().find(|record| record.serial == serial) {
-                    for slot in &record.slots {
+                    for slot in record.slots.iter().filter(|slot| slot.path_known) {
                         items.push(Item::Text(format!(
                             "{} — {} ({})",
                             slot.slot.label(),
                             slot.role.title(),
                             slot.role.path_text()
+                        )));
+                    }
+                    let skipped: Vec<String> = record
+                        .slots
+                        .iter()
+                        .filter(|slot| !slot.path_known)
+                        .map(|slot| format!("{} — {}", slot.slot.label(), slot.role.title()))
+                        .collect();
+                    if !skipped.is_empty() {
+                        items.push(Item::Help(format!(
+                            "복구 단어 없이 연결한 키는 복사하지 않습니다: {}",
+                            skipped.join(", ")
                         )));
                     }
                 }
@@ -1133,7 +1160,14 @@ impl App {
             return;
         };
         if preview.same_as_vault {
-            items.push(Item::Banner(T_YK_SAME.to_owned(), Tone::HighRisk));
+            items.push(Item::Banner(
+                if preview.words_only {
+                    T_YK_SAME_WORDS.to_owned()
+                } else {
+                    T_YK_SAME.to_owned()
+                },
+                Tone::HighRisk,
+            ));
             items.push(Item::Row(vec![Ctl::check(
                 ids::SAME_ACK,
                 "이해했습니다. 그래도 이 복구 단어로 등록합니다",
@@ -1207,7 +1241,75 @@ impl App {
         }
     }
 
-    fn yk_credentials_items(wizard: &YkWizard, items: &mut Vec<Item>) {
+    /// The keys of the identified card's planned slots an import would destroy (spec/10 §7.4):
+    /// each slot with its key's addresses (a secp256k1 key as an EVM and a Bitcoin P2WPKH
+    /// address, an Ed25519 key as a Solana address), T-YK-OCCUPIED, its checkbox and the typed
+    /// `영구 삭제`.
+    fn yk_occupied_items(&self, wizard: &YkWizard, items: &mut Vec<Item>) {
+        use yw_core::yubikey::record::HwPublicKey;
+        match &wizard.occupied {
+            None if wizard.card.is_some() => items.push(Item::Help(
+                "고른 슬롯에 이미 있는 키를 읽는 중… (PIN 없이 읽기만)".to_owned(),
+            )),
+            Some(Err(error)) => items.push(Item::Help(format!(
+                "고른 슬롯을 읽지 못했습니다: {error} 가져오기는 다른 키가 있으면 아무것도 쓰기 전에 멈춥니다."
+            ))),
+            Some(Ok(occupants)) if !occupants.is_empty() => {
+                items.push(Item::Banner(T_YK_OCCUPIED.to_owned(), Tone::HighRisk));
+                let shared = KeyRole::Evm {
+                    index: yw_core::bip32::path::AccountIndex::ZERO,
+                    btc: Some(yw_core::yubikey::plan::BtcUse {
+                        network: self.yk_network(),
+                        script: ScriptType::P2wpkh,
+                    }),
+                };
+                for occupant in occupants {
+                    let (kind, addresses) = match occupant.public {
+                        Some(public @ HwPublicKey::Secp256k1(_)) => (
+                            "secp256k1 키 (EVM · Bitcoin P2WPKH로 본 주소)",
+                            address_texts(shared, &public).unwrap_or_default(),
+                        ),
+                        Some(public @ HwPublicKey::Ed25519(_)) => (
+                            "Ed25519 키 (Solana 주소)",
+                            address_texts(
+                                KeyRole::Sol {
+                                    index: yw_core::bip32::path::AccountIndex::ZERO,
+                                },
+                                &public,
+                            )
+                            .unwrap_or_default(),
+                        ),
+                        None => ("이 지갑이 읽지 못하는 키 (RSA 등 — GPG 키일 수 있음)", Vec::new()),
+                    };
+                    items.push(Item::Subtitle(format!(
+                        "{} — {kind}",
+                        occupant.slot.label()
+                    )));
+                    for address in addresses {
+                        items.push(Item::Mono(grouped_address(&address)));
+                    }
+                }
+                items.push(Item::Row(vec![Ctl::check(
+                    ids::OVERWRITE_ACK,
+                    T_YK_OCCUPIED_ACK,
+                    wizard.overwrite_ack,
+                )]));
+                items.push(Item::LabeledRow(
+                    format!("확인: '{LOSS_WORD}' 입력"),
+                    vec![Ctl::edit(
+                        ids::OVERWRITE_EDIT,
+                        &wizard.overwrite_typed,
+                        120,
+                        false,
+                        8,
+                    )],
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    fn yk_credentials_items(&self, wizard: &YkWizard, items: &mut Vec<Item>) {
         let (pgp, piv) = wizard.applets();
         items.push(Item::CardStart(Some("YubiKey 자격 정보".to_owned())));
         items.push(Item::Text(
@@ -1266,8 +1368,13 @@ impl App {
         items.push(Item::CardEnd);
         let ready = wizard.can_continue() && wizard.card.is_some();
         items.push(Item::CardStart(Some("어떻게 등록할까요?".to_owned())));
+        self.yk_occupied_items(wizard, items);
+        if let Some(error) = &wizard.error {
+            items.push(Item::Banner(error.clone(), Tone::Danger));
+        }
         items.push(Item::Row(vec![
-            Ctl::primary(ids::IMPORT, "복구 단어에서 키를 넣기 (처음 등록)").enabled(ready),
+            Ctl::primary(ids::IMPORT, "복구 단어에서 키를 넣기 (처음 등록)")
+                .enabled(ready && wizard.can_import()),
         ]));
         items.push(Item::Help(T_YK_IMPORT.to_owned()));
         items.push(Item::Row(vec![

@@ -566,6 +566,7 @@ impl KeyWorker {
             management_key,
             piv_pin: &[],
             admin_last_try: false,
+            overwrite: false,
         };
         // The one inserted card (spec/10 §7.3: several are refused, never guessed).
         let serial = crate::yubikey::single_card(self.cards.as_mut())
@@ -2761,6 +2762,7 @@ pub(crate) mod tests {
                     piv_pin: Zeroizing::new(Vec::new()),
                     adopt,
                     admin_last_try: false,
+                    overwrite: false,
                 }))
                 .pop()
         };
@@ -2840,7 +2842,7 @@ pub(crate) mod tests {
                     target: PinTarget::OpenPgpUser,
                     old: bytes(old),
                     new: bytes("135791"),
-                    admin_last_try: false,
+                    last_try: false,
                 }))
                 .pop()
         };
@@ -2866,7 +2868,7 @@ pub(crate) mod tests {
                 serial: 9_900_001,
                 current: Zeroizing::new(Vec::new()),
                 new: bytes("24681357"),
-                admin_last_try: false,
+                last_tries: crate::yubikey::LastTries::default(),
             },
         ) else {
             unreachable!("set pins");
@@ -3026,7 +3028,7 @@ pub(crate) mod tests {
             target: PinTarget::OpenPgpAdmin,
             old: Zeroizing::new(b"12345678".to_vec()),
             new: Zeroizing::new(b"87654321".to_vec()),
-            admin_last_try: last_try,
+            last_try,
         };
         assert!(matches!(
             yk(change(false)),

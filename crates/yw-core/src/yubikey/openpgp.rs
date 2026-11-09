@@ -58,8 +58,9 @@ pub const RSA2048_ATTRIBUTES: [u8; 6] = [0x01, 0x08, 0x00, 0x00, 0x20, 0x00];
 pub const RSA4096_ATTRIBUTES: [u8; 6] = [0x01, 0x10, 0x00, 0x00, 0x20, 0x00];
 /// The wrong PIN yubikit's `reset` sends until PW1 and PW3 are blocked (`b"\0" * 8`).
 pub const INVALID_PIN: [u8; 8] = [0; 8];
-/// Most wrong VERIFY attempts sent to block one PIN (the counters are at most 15).
-const MAX_BLOCK_ATTEMPTS: usize = 16;
+/// Bound of the wrong VERIFY attempts sent to block one PIN: the tries the card reports (`C4`;
+/// `ykman openpgp access set-retries` allows up to 99) plus one, never more than this.
+const MAX_BLOCK_ATTEMPTS: usize = 256;
 
 /// Which PIN a VERIFY targets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -686,19 +687,22 @@ impl<'t> OpenPgp<'t> {
     }
 
     /// Factory reset of the `OpenPGP` applet (yubikit `reset`): VERIFY PW1 (`81`) and PW3
-    /// (`83`) with a wrong value until each is blocked, then TERMINATE DF and ACTIVATE FILE.
-    /// Every key, the touch policies (also fixed ones) and both PINs return to the factory
-    /// state (PW1 `123456`, PW3 `12345678`). No PIN is needed — anyone holding the card can do
-    /// this; it never touches PIV, FIDO, OTP or OATH.
+    /// (`83`) with a wrong value until each is blocked — at most the tries left the card reported
+    /// at selection (`C4`) plus one, like yubikit's loop over `get_pin_status` — then TERMINATE
+    /// DF and ACTIVATE FILE. Every key, the touch policies (also fixed ones) and both PINs return
+    /// to the factory state (PW1 `123456`, PW3 `12345678`). No PIN is needed — anyone holding
+    /// the card can do this; it never touches PIV, FIDO, OTP or OATH.
     ///
     /// # Errors
     ///
-    /// [`CardError::Conditions`] when a PIN did not block within the attempt bound, transport
-    /// and status errors of TERMINATE / ACTIVATE.
+    /// [`CardError::NotBlocked`] when a PIN did not block within that bound (nothing terminated),
+    /// transport and status errors of TERMINATE / ACTIVATE.
     pub fn reset(mut self) -> Result<(), CardError> {
-        for pw in [Pw::UserSign, Pw::Admin] {
+        let [pw1_left, _, pw3_left] = self.app.retries;
+        for (pw, left) in [(Pw::UserSign, pw1_left), (Pw::Admin, pw3_left)] {
+            let attempts = usize::from(left).saturating_add(1).min(MAX_BLOCK_ATTEMPTS);
             let mut blocked = false;
-            for _ in 0..MAX_BLOCK_ATTEMPTS {
+            for _ in 0..attempts {
                 match self.run(&verify(pw, &INVALID_PIN)) {
                     Err(CardError::PinBlocked | CardError::WrongPin { retries: 0 }) => {
                         blocked = true;
@@ -715,7 +719,7 @@ impl<'t> OpenPgp<'t> {
                 }
             }
             if !blocked {
-                return Err(CardError::Conditions);
+                return Err(CardError::NotBlocked);
             }
         }
         self.run(&terminate())?;

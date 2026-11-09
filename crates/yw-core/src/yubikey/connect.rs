@@ -510,17 +510,15 @@ pub fn connect_card(
     })
 }
 
-/// The factory user PIN of both applets (`123456`): the optional ownership check never sends it
-/// (spec/10 §9.2, a card still on factory PINs is set up first).
-pub const FACTORY_PIN: &[u8] = b"123456";
-
 /// "PIN으로 소유 확인" (optional, spec/10 §7.6): one VERIFY of the user PIN of the applet holding
 /// `curve` keys (`OpenPGP` PW1 for other operations `82`, PIV PIN `80`) on the card on
-/// `transport`, which must be card `serial`. No signature, no write, no touch.
+/// `transport`, which must be card `serial`. No signature, no write, no touch. A factory value
+/// ([`super::FACTORY_SECRETS`]) is never sent (spec/10 §9.2: a card still on factory PINs is set
+/// up first).
 ///
 /// # Errors
 ///
-/// [`CardError::WrongCard`], [`CardError::PinFormat`] (also for the factory PIN, never sent),
+/// [`CardError::WrongCard`], [`CardError::PinFormat`] (also for a factory value, never sent),
 /// [`CardError::WrongPin`] with the tries left, [`CardError::PinBlocked`], card errors.
 pub fn verify_pin(
     transport: &mut dyn CardTransport,
@@ -529,7 +527,7 @@ pub fn verify_pin(
     curve: Curve,
     pin: &[u8],
 ) -> Result<(), CardError> {
-    if pin == FACTORY_PIN {
+    if super::is_factory_secret(pin) {
         return Err(CardError::PinFormat);
     }
     match curve {

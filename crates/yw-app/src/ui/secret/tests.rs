@@ -455,10 +455,16 @@ fn w12_card_secrets() {
         FormAction::Redraw
     ));
     // A PIV PIN field holds at most 8 characters (the 9th is not taken).
-    let FormAction::Submit(long) = submit(change, &["123456", "123456789", "123456789"]) else {
+    let FormAction::Submit(long) = submit(change, &["123456", "876543219", "876543219"]) else {
         unreachable!("8 characters kept");
     };
-    assert_eq!(long.values[1].as_slice(), b"12345678");
+    assert_eq!(long.values[1].as_slice(), b"87654321");
+    // A factory value is never a new secret (spec/10 §9.3): 12345678 is the factory PUK and
+    // admin PIN.
+    assert!(matches!(
+        submit(change, &["654321", "12345678", "12345678"]),
+        FormAction::Redraw
+    ));
     let FormAction::Submit(submission) = submit(change, &["123456", "654321", "654321"]) else {
         unreachable!("valid change");
     };
@@ -481,6 +487,10 @@ fn w12_card_secrets() {
     ));
     assert!(matches!(
         submit(pins, &["", "24681357", "24681358"]),
+        FormAction::Redraw
+    ));
+    assert!(matches!(
+        submit(pins, &["", "12345678", "12345678"]),
         FormAction::Redraw
     ));
     let FormAction::Submit(submission) = submit(pins, &["", "24681357", "24681357"]) else {

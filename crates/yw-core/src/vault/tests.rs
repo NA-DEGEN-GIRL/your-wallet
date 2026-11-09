@@ -2852,6 +2852,7 @@ fn hw_record(
         piv_pin: b"",
         cipher: Some(&crate::yubikey::mock::ToyCipher),
         challenge: [1; 16],
+        overwrite: false,
     };
     crate::yubikey::enrol::enrol_card(
         &mut card,

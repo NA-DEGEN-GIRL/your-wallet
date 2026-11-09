@@ -3176,6 +3176,94 @@ fn yubikey_leaving_the_wizard_wipes_the_seed() {
     assert!(h.app.card.wizard.is_none());
     yk_pump(&mut h, &mut seen);
     assert!(!held(&mut h), "the seed is wiped");
+    // Left while the card job runs: the flow stays until the result, which then ends it off
+    // screen (a banner) and wipes the seed.
+    h.app.on_command(yk::SECTION_YUBIKEY);
+    h.pump();
+    h.app.on_command(yk::ENROL_START);
+    h.app.on_command(yk::PLAN_NEXT);
+    h.submit(Purpose::YubiKey(YkPurpose::Mnemonic), &[ABOUT.as_bytes()]);
+    yk_pump(&mut h, &mut seen);
+    h.app.on_command(yk::SAME_ACK);
+    h.app.on_command(yk::CONFIRM_NEXT);
+    yk_pump(&mut h, &mut seen);
+    h.app.on_command(yk::IMPORT);
+    h.submit(Purpose::YubiKey(YkPurpose::AdminPin), &[b"12345678"]);
+    assert_eq!(
+        wizard_step(&h),
+        Some(crate::app_yubikey::WizardStep::Running)
+    );
+    h.app.set_screen(Screen::Main);
+    assert!(
+        h.app.card.wizard.is_some(),
+        "a running card job keeps its flow"
+    );
+    yk_pump(&mut h, &mut seen);
+    assert!(h.app.card.wizard.is_none());
+    assert_eq!(h.app.card.records.len(), 1, "the card was enrolled");
+    assert!(!held(&mut h), "the seed is wiped when the result arrives");
+    let _ = std::fs::remove_dir_all(&h.dir);
+}
+
+/// spec/10 §7.4: a planned slot holding a key the words do not derive is read at the
+/// credentials step (no PIN) and shown with its addresses; `가져오기` waits for the checkbox and
+/// the typed `영구 삭제`, and only then overwrites that key.
+#[test]
+fn yubikey_import_shows_the_key_it_would_overwrite() {
+    use crate::app_yubikey::{WizardStep, YkPurpose};
+    use crate::ui::screens_yubikey::ids as yk;
+    use yw_core::yubikey::plan::{CardSlot, PgpKey};
+
+    let (mut h, cards) = card_harness("yk-occupied", 8_800_041);
+    let mut seen = YkSeen::default();
+    about_wallet(&mut h);
+    // Another program's secp256k1 key in AUT (the default plan puts Bitcoin 0 there).
+    let foreign = [0x11; 32];
+    {
+        let card = &mut cards.lock().unwrap()[0];
+        card.pgp_attributes[2] = yw_core::yubikey::openpgp::secp256k1_attributes();
+        card.pgp_keys[2] = Some(foreign);
+    }
+    h.app.on_command(yk::SECTION_YUBIKEY);
+    h.pump();
+    h.app.on_command(yk::ENROL_START);
+    h.app.on_command(yk::PLAN_NEXT);
+    h.submit(Purpose::YubiKey(YkPurpose::Mnemonic), &[ABOUT.as_bytes()]);
+    yk_pump(&mut h, &mut seen);
+    h.app.on_command(yk::SAME_ACK);
+    h.app.on_command(yk::CONFIRM_NEXT);
+    yk_pump(&mut h, &mut seen);
+    assert_eq!(wizard_step(&h), Some(WizardStep::Credentials));
+    let occupants = h.app.card.wizard.as_ref().unwrap().occupants().to_vec();
+    assert_eq!(occupants.len(), 1);
+    assert_eq!(occupants[0].slot, CardSlot::OpenPgp(PgpKey::Aut));
+    let foreign_evm = yw_core::yubikey::plan::evm_address(&occupants[0].public.unwrap())
+        .unwrap()
+        .to_checksum();
+    {
+        let card = &cards.lock().unwrap()[0];
+        assert!(!card.saw_write() && !card.log.iter().any(|header| header[1] == 0x20));
+    }
+    let items = h.app.items();
+    unique_ids(&items);
+    assert!(has_text(&items, crate::app_yubikey::T_YK_OCCUPIED));
+    assert!(all_text(&items).contains(&foreign_evm), "the key's address");
+    assert!(!ctl(&items, yk::IMPORT).unwrap().enabled);
+    h.app.on_command(yk::OVERWRITE_ACK);
+    assert!(ctl(&h.app.items(), yk::IMPORT).unwrap().enabled);
+    // The word must be typed exactly; nothing is asked or sent before.
+    h.app.yk_set_text(yk::OVERWRITE_EDIT, "삭제".to_owned());
+    h.app.on_command(yk::IMPORT);
+    assert!(h.app.card.wizard.as_ref().unwrap().error.is_some());
+    assert!(h.app.secret_purpose().is_none());
+    h.app
+        .yk_set_text(yk::OVERWRITE_EDIT, "영구 삭제".to_owned());
+    h.app.on_command(yk::IMPORT);
+    h.submit(Purpose::YubiKey(YkPurpose::AdminPin), &[b"12345678"]);
+    yk_pump(&mut h, &mut seen);
+    assert_eq!(wizard_step(&h), Some(WizardStep::Result));
+    assert_eq!(h.app.card.records.len(), 1);
+    assert_ne!(cards.lock().unwrap()[0].pgp_keys[2], Some(foreign));
     let _ = std::fs::remove_dir_all(&h.dir);
 }
 
@@ -4023,6 +4111,7 @@ fn yubikey_connect_without_words_from_the_first_run_screen() {
             piv_pin: b"",
             cipher: Some(&yw_core::yubikey::mock::ToyCipher),
             challenge: [3; 16],
+            overwrite: false,
         };
         let record = yw_core::yubikey::enrol::enrol_card(
             &mut cards[0],

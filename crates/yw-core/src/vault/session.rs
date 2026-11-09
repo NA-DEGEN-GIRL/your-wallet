@@ -1905,6 +1905,27 @@ impl Vault {
             .collect())
     }
 
+    /// Whether a recovery phrase of the vault has the words of `mnemonic`, whatever BIP39
+    /// passphrase either uses (entropy compared in constant time, every record visited): keys
+    /// made from these words are only as safe as this PC plus the passphrase (T-YK-SAME,
+    /// spec/10 §7.1-2).
+    ///
+    /// # Errors
+    ///
+    /// `InvalidState` outside `BackupPending`/`Unlocked`.
+    pub fn holds_words(&self, mnemonic: &Mnemonic) -> Result<bool, VaultError> {
+        self.require_public()?;
+        let mut found = 0_u8;
+        for record in &self.payload()?.bip39 {
+            found |= record
+                .mnemonic
+                .entropy()
+                .ct_eq(mnemonic.entropy())
+                .unwrap_u8();
+        }
+        Ok(found != 0)
+    }
+
     /// Adds an existing recovery phrase ("복구 단어 추가 가져오기", spec/02 §8.6) after
     /// re-entering the password: backup counts as confirmed; a passphrase is checked like at
     /// import and kept in the slot for this session (asked again at each unlock). A key-only or

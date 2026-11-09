@@ -23,7 +23,7 @@ pub mod manage;
 use crate::events::{KeyOutcome, YubiKeyJobError};
 use crate::logging::{self, Field};
 use crate::meta::{EvmAccountPref, Meta, Tab};
-use crate::yubikey::{CardFacts, CardJobError, PinCounters, PinReport, PinTarget};
+use crate::yubikey::{CardFacts, CardJobError, LastTries, PinCounters, PinReport, PinTarget};
 use yw_core::yubikey::plan::KeyRole;
 
 /// Recovery words and an optional BIP39 passphrase as entered (W05, W06).
@@ -70,6 +70,17 @@ pub enum YkJob {
         adopt: bool,
         /// The user confirmed spending the admin PIN's last try (spec/10 §9.1).
         admin_last_try: bool,
+        /// The user saw the keys already in the planned slots ([`YkJob::Occupied`]) and
+        /// confirmed that they are destroyed (spec/10 §7.4).
+        overwrite: bool,
+    },
+    /// Read which planned slots of card `serial` hold a key the held words do not derive
+    /// (read-only, no PIN; spec/10 §7.4) for the credentials step.
+    Occupied {
+        /// The card identified at the credentials step.
+        serial: u32,
+        /// The plan.
+        slots: Vec<PlannedSlot>,
     },
     /// "다시 확인": read every recorded slot of card `serial` again (read-only).
     Check {
@@ -86,8 +97,9 @@ pub enum YkJob {
         old: Zeroizing<Vec<u8>>,
         /// New value.
         new: Zeroizing<Vec<u8>>,
-        /// The user confirmed spending the admin PIN's last try (spec/10 §9.1).
-        admin_last_try: bool,
+        /// The user confirmed spending the last try of the admin PIN or the PUK (whichever is
+        /// changed; spec/10 §9.1).
+        last_try: bool,
     },
     /// Identify the one inserted card (read-only; more than one is refused) for the
     /// confirmation and credentials steps (spec/10 §7.3).
@@ -115,8 +127,8 @@ pub enum YkJob {
         current: Zeroizing<Vec<u8>>,
         /// The new value (8 characters).
         new: Zeroizing<Vec<u8>>,
-        /// The user confirmed spending the admin PIN's last try (spec/10 §9.1).
-        admin_last_try: bool,
+        /// The last tries of the admin PIN and the PUK the user confirmed (spec/10 §9.1).
+        last_tries: LastTries,
     },
     /// Remove a `YubiKey` record after the password (spec/10 §7.5).
     Remove {
@@ -178,6 +190,7 @@ impl YkJob {
             Self::Challenge => "YkChallenge",
             Self::ConfirmWords { .. } => "YkConfirmWords",
             Self::Enrol { .. } => "YkEnrol",
+            Self::Occupied { .. } => "YkOccupied",
             Self::Check { .. } => "YkCheck",
             Self::ChangePin { .. } => "YkChangePin",
             Self::Identify => "YkIdentify",
@@ -210,8 +223,12 @@ pub enum CounterTarget {
 pub struct YkPreview {
     /// Every planned slot with its path, derived public key and addresses.
     pub lines: Vec<PreviewLine>,
-    /// The entered words (+ passphrase) are the ones this vault stores (spec/10 §7.1-2).
+    /// The entered words are one of this vault's recovery phrases (spec/10 §7.1-2): with the
+    /// same passphrase, or (`words_only`) with another one.
     pub same_as_vault: bool,
+    /// The words are this vault's but the passphrase differs: only the passphrase keeps the
+    /// card's keys apart from this PC (T-YK-SAME-WORDS).
+    pub words_only: bool,
     /// The plan checks that need no card (`plan::validate_before_card`).
     pub plan: Result<(), PlanError>,
 }
@@ -231,6 +248,11 @@ pub enum YkOutcome {
     Checked(u32, Result<Vec<Result<(), CardError>>, CardJobError>),
     /// `ChangePin` finished.
     PinChanged(u32, PinTarget, Result<(), CardJobError>),
+    /// `Occupied` of card `serial` finished.
+    Occupied(
+        u32,
+        Result<Vec<yw_core::yubikey::enrol::Occupant>, CardJobError>,
+    ),
     /// `Identify` finished.
     Identified(Result<CardFacts, CardJobError>),
     /// `ProbeManagement` finished.
@@ -308,6 +330,9 @@ fn card_uses(records: &[HwKeyRecord]) -> Vec<CardUse> {
 /// The recovery words of an enrolment held between the confirmation and the card.
 pub(super) struct PendingEnrol {
     seed: SecretBytes<64>,
+    /// The words (whatever the passphrase) are one of the vault's recovery phrases, checked
+    /// when they were entered (`Vault::holds_words`).
+    same_words: bool,
     /// A new `YubiKey` wallet's words (kept for the backup confirmation).
     fresh: Option<Mnemonic>,
     challenge: Option<[u8; BACKUP_WORDS]>,
@@ -380,6 +405,7 @@ impl KeyWorker {
                 piv_pin,
                 adopt,
                 admin_last_try,
+                overwrite,
             } => KeyOutcome::YubiKeyEnrolled(self.yk_enrol(
                 serial,
                 &slots,
@@ -388,9 +414,32 @@ impl KeyWorker {
                     management_key: &management_key,
                     piv_pin: &piv_pin,
                     admin_last_try,
+                    overwrite,
                 },
                 adopt,
             )),
+            YkJob::Occupied { serial, slots } => {
+                // The records the card job checks against (none for a new YubiKey wallet).
+                let records = match (self.vault.as_ref(), self.pending_enrol.as_ref()) {
+                    (Some(vault), Some(pending))
+                        if pending.fresh.is_none() && vault.status() != VaultStatus::NoVault =>
+                    {
+                        Self::hardware_records(vault).unwrap_or_default()
+                    }
+                    _ => Vec::new(),
+                };
+                let result = match self.pending_enrol.as_ref() {
+                    Some(pending) => crate::yubikey::occupied_serial(
+                        self.cards.as_mut(),
+                        serial,
+                        pending.seed.expose(),
+                        &slots,
+                        &records,
+                    ),
+                    None => Err(CardJobError::Card(CardError::Internal)),
+                };
+                KeyOutcome::YubiKey(YkOutcome::Occupied(serial, result))
+            }
             YkJob::Check { serial } => {
                 let result = self
                     .vault
@@ -407,14 +456,14 @@ impl KeyWorker {
                 target,
                 old,
                 new,
-                admin_last_try,
+                last_try,
             } => {
                 let result = crate::yubikey::change_card_pin(
                     self.cards.as_mut(),
                     serial,
                     target,
                     (&old, &new),
-                    admin_last_try,
+                    last_try,
                 );
                 logging::info(
                     "key",
@@ -446,10 +495,10 @@ impl KeyWorker {
                 serial,
                 current,
                 new,
-                admin_last_try,
+                last_tries,
             } => KeyOutcome::YubiKey(YkOutcome::PinsSet(
                 serial,
-                self.yk_set_pins(serial, (&current, &new), admin_last_try),
+                self.yk_set_pins(serial, (&current, &new), last_tries),
             )),
             YkJob::Remove {
                 password: bytes,
@@ -556,7 +605,7 @@ impl KeyWorker {
         &mut self,
         serial: u32,
         values: (&[u8], &[u8]),
-        admin_last_try: bool,
+        last_tries: LastTries,
     ) -> Result<PinReport, CardJobError> {
         use yw_core::yubikey::plan::Curve;
         let applets = self
@@ -569,7 +618,7 @@ impl KeyWorker {
                 (has(Curve::Secp256k1), has(Curve::Ed25519))
             });
         let result =
-            crate::yubikey::set_pins(self.cards.as_mut(), serial, applets, values, admin_last_try);
+            crate::yubikey::set_pins(self.cards.as_mut(), serial, applets, values, last_tries);
         logging::info(
             "key",
             "yubikey.set_pins",
@@ -597,8 +646,13 @@ impl KeyWorker {
             None => Bip39Passphrase::empty(),
         };
         let seed = parsed.to_seed(&passphrase).map_err(job_key)?;
+        // The same words with another passphrase are still this PC's words (spec/10 §7.1-2).
+        let same_words = self.vault.as_ref().is_some_and(|vault| {
+            vault.status() != VaultStatus::NoVault && vault.holds_words(&parsed).unwrap_or(false)
+        });
         self.pending_enrol = Some(PendingEnrol {
             seed,
+            same_words,
             fresh: None,
             challenge: None,
             retry: None,
@@ -624,7 +678,8 @@ impl KeyWorker {
             .map_err(|error| YubiKeyJobError::Card(CardJobError::Enrol(error)))?;
         let (fingerprint, evm0) = yw_core::yubikey::enrol::seed_identity(seed)
             .map_err(|error| YubiKeyJobError::Card(CardJobError::Enrol(error)))?;
-        let (records, same_as_vault) = match self.vault.as_ref() {
+        let same_words = pending.same_words;
+        let (records, same_seed) = match self.vault.as_ref() {
             Some(vault) if vault.status() != VaultStatus::NoVault => {
                 let records = Self::hardware_records(vault).map_err(YubiKeyJobError::Vault)?;
                 (records, Self::vault_holds_evm0(vault, evm0))
@@ -633,9 +688,18 @@ impl KeyWorker {
         };
         Ok(YkPreview {
             lines,
-            same_as_vault,
+            same_as_vault: same_seed || same_words,
+            words_only: same_words && !same_seed,
             plan: yw_core::yubikey::plan::validate_before_card(&records, fingerprint, slots),
         })
+    }
+
+    /// Whether the held words (whatever their passphrase) are one of the vault's recovery
+    /// phrases (checked when they were entered).
+    pub(super) fn yk_held_same_words(&self) -> bool {
+        self.pending_enrol
+            .as_ref()
+            .is_some_and(|pending| pending.same_words)
     }
 
     /// Whether account 0 (`m/44'/60'/0'/0/0`, with its own passphrase) of ANY recovery phrase of
@@ -679,6 +743,7 @@ impl KeyWorker {
         self.pending_password = Some(password);
         self.pending_enrol = Some(PendingEnrol {
             seed,
+            same_words: false,
             fresh: Some(mnemonic),
             challenge: None,
             retry: None,

@@ -18,8 +18,8 @@ use secp256k1::{All, Secp256k1};
 use zeroize::Zeroizing;
 
 use super::apdu::ApduMode;
-use super::enrol::{EnrolError, identify, master_fingerprint};
-use super::openpgp::{OpenPgp, Pw, SlotKey};
+use super::enrol::{DefaultsSeen, EnrolError, Enrolled, identify, master_fingerprint};
+use super::openpgp::{DEFAULT_PW3, OpenPgp, Pw, SlotKey};
 use super::piv::{DEFAULT_MANAGEMENT_KEY, ManagementCredential, MgmtCipher, Piv};
 use super::plan::{CardSlot, KeyPath, PlanError, PlannedSlot, is_unknown_index, validate_plan};
 use super::record::{HwKeyRecord, HwPublicKey, RecordedSlot, records_consistent};
@@ -124,15 +124,18 @@ fn secp_scalar(
 /// "슬롯 구성 바꾸기" of card `record.serial` (spec/10 §15.1): imports the keys of the new
 /// `OpenPGP` plan from `seed` (a slot keeping its key is only read back), compares every public
 /// key read from the card with the derived one, and returns the card's new record (the PIV
-/// slots unchanged). `others` are the other enrolled cards: the same path must keep the same
-/// public key. Nothing is written before the serial, the mnemonic and the plan are checked.
+/// slots unchanged) with [`DefaultsSeen::openpgp_admin`] when the admin PIN that worked is the
+/// factory one (the card then joins the factory-PIN list again, spec/10 §9.3). `others` are the
+/// other enrolled cards: the same path must keep the same public key. Nothing is written before
+/// the serial, the mnemonic and the plan are checked.
 ///
 /// # Errors
 ///
 /// [`EnrolError::Plan`] (before any write), [`CardError::WrongCard`] (another card),
 /// [`CardError::ForeignKey`] (a slot to be written holds neither nothing, nor the recorded key,
-/// nor the new one; before the admin PIN and any write), [`CardError::KeyMismatch`], PIN and
-/// status errors (earlier slots may have been written).
+/// nor the new one; before the admin PIN and any write), PIN errors (before any write);
+/// [`EnrolError::Partial`] once an import started (earlier slots may have been written), among
+/// them [`CardError::KeyMismatch`].
 pub fn reslot_card(
     transport: &mut dyn CardTransport,
     mode: ApduMode,
@@ -141,7 +144,7 @@ pub fn reslot_card(
     openpgp: &[PlannedSlot],
     others: &[HwKeyRecord],
     admin_pin: &[u8],
-) -> Result<HwKeyRecord, EnrolError> {
+) -> Result<Enrolled, EnrolError> {
     let ctx = crate::entropy::secp_context(&mut crate::entropy::OsRandom)?;
     let fingerprint = master_fingerprint(&ctx, seed)?;
     validate_reslot(record, fingerprint, openpgp, others)?;
@@ -176,19 +179,32 @@ pub fn reslot_card(
         steps.push((planned, key, expected, current, unchanged));
     }
     session.verify(Pw::Admin, admin_pin)?;
+    let defaults = DefaultsSeen {
+        openpgp_admin: admin_pin == DEFAULT_PW3,
+        ..DefaultsSeen::default()
+    };
     let mut recorded = Vec::with_capacity(openpgp.len());
+    // Set when the first import starts: every card error after it may leave new keys behind.
+    let mut written = false;
     for (planned, key, expected, current, unchanged) in steps {
         let public = match current {
             SlotKey::Secp256k1(public) if unchanged => public,
             _ => {
                 let scalar = secp_scalar(&ctx, seed, planned)?;
-                let public = session.import_secp256k1(&ctx, key, &scalar, planned.touch)?;
+                written = true;
+                let public = session
+                    .import_secp256k1(&ctx, key, &scalar, planned.touch)
+                    .map_err(EnrolError::Partial)?;
                 drop(scalar);
                 public
             }
         };
         if expected != HwPublicKey::Secp256k1(public) {
-            return Err(EnrolError::Card(CardError::KeyMismatch));
+            return Err(if written {
+                EnrolError::Partial(CardError::KeyMismatch)
+            } else {
+                EnrolError::Card(CardError::KeyMismatch)
+            });
         }
         recorded.push(RecordedSlot {
             slot: planned.slot,
@@ -220,9 +236,16 @@ pub fn reslot_card(
         .collect();
     all.push(updated.clone());
     if !updated.is_valid() || !records_consistent(&all) {
-        return Err(EnrolError::Card(CardError::KeyMismatch));
+        return Err(if written {
+            EnrolError::Partial(CardError::KeyMismatch)
+        } else {
+            EnrolError::Card(CardError::KeyMismatch)
+        });
     }
-    Ok(updated)
+    Ok(Enrolled {
+        record: updated,
+        defaults,
+    })
 }
 
 /// How one applet is cleared (spec/10 §15.2, §15.3).

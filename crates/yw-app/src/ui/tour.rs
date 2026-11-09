@@ -1011,6 +1011,7 @@ fn tour_yubikey(app: &Rc<RefCell<App>>) {
         wizard.preview = Some(YkPreview {
             lines: lines.clone(),
             same_as_vault: false,
+            words_only: false,
             plan: Ok(()),
         });
     });

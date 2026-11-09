@@ -129,20 +129,38 @@ impl CardSource for PcscSource {
         if readers.is_empty() {
             return Err(CardError::Transport(TransportFault::NoReader));
         }
+        // A reader without a card is skipped silently; a card another program holds (gpg-agent,
+        // scdaemon) or a reader error is remembered and reported when no card could be visited
+        // (spec/10 §5.1: "다른 프로그램이 YubiKey를 쓰고 있습니다", not "찾을 수 없습니다").
+        let mut fault: Option<PcscFault> = None;
+        let mut visited = false;
+        let mut note = |found: PcscFault| {
+            if found != PcscFault::NoCard && fault != Some(PcscFault::Busy) {
+                fault = Some(found);
+            }
+        };
         for reader in readers {
-            // A reader without a card (or held by another program) is skipped.
-            let Ok(mut card) = context.connect(&reader) else {
-                continue;
+            let mut card = match context.connect(&reader) {
+                Ok(card) => card,
+                Err(error) => {
+                    note(pcsc::fault(&error));
+                    continue;
+                }
             };
-            if card.begin_transaction().is_err() {
+            if let Err(error) = card.begin_transaction() {
+                note(pcsc::fault(&error));
                 continue;
             }
+            visited = true;
             let mut transport = PcscTransport { card };
             if visit(&mut transport, &CngCipher) {
                 break;
             }
         }
-        Ok(())
+        match fault {
+            Some(found) if !visited => Err(transport_error(found)),
+            _ => Ok(()),
+        }
     }
 }
 
@@ -167,10 +185,45 @@ impl core::fmt::Display for CardJobError {
     }
 }
 
+/// The cards [`CardSource::each_card`] visited without finding the one wanted: whether a card
+/// answered with another serial, and the most specific identification failure (a missing
+/// applet — another kind of smart card — counts only when nothing else answered). Reported when
+/// no card matched, instead of calling every failure "another card" (spec/10 §7.3).
+#[derive(Clone, Copy, Debug, Default)]
+struct Unmatched {
+    other: bool,
+    failure: Option<CardError>,
+}
+
+impl Unmatched {
+    /// A card that could not be identified.
+    fn failed(&mut self, error: EnrolError) {
+        let error = match error {
+            EnrolError::Card(error) | EnrolError::Partial(error) => error,
+            EnrolError::SerialMismatch => CardError::MultipleCards,
+            EnrolError::Plan(_) | EnrolError::Key(_) => CardError::Internal,
+        };
+        if self.failure.is_none() || self.failure == Some(CardError::AppletMissing) {
+            self.failure = Some(error);
+        }
+    }
+
+    /// The error when no card matched.
+    fn error(self) -> CardJobError {
+        match self.failure {
+            Some(error) if error != CardError::AppletMissing || !self.other => {
+                CardJobError::Card(error)
+            }
+            _ if self.other => CardJobError::Card(CardError::WrongCard),
+            _ => CardJobError::NoCard,
+        }
+    }
+}
+
 /// Runs `operation` once on the first inserted card that holds the key of `role` (found by the
 /// serial the card reports and the vault slot map), with that card's [`CardKey`] (recorded
 /// public key). Cards that do not hold the key are skipped; when only such cards answered the
-/// error is [`CardError::WrongCard`].
+/// error is [`CardError::WrongCard`] (or why a card could not be identified, [`Unmatched`]).
 fn on_card<T>(
     source: &mut dyn CardSource,
     records: &[HwKeyRecord],
@@ -182,14 +235,18 @@ fn on_card<T>(
         Curve::Ed25519 => (false, true),
     };
     let mut result: Option<Result<T, CardError>> = None;
-    let mut seen_other = false;
+    let mut unmatched = Unmatched::default();
     source
         .each_card(&mut |transport, _| {
-            let Ok((serial, _)) = identify(transport, MODE, pgp, piv) else {
-                return false;
+            let serial = match identify(transport, MODE, pgp, piv) {
+                Ok((serial, _)) => serial,
+                Err(error) => {
+                    unmatched.failed(error);
+                    return false;
+                }
             };
             let Some(holder) = slot_on_card(records, role, serial) else {
-                seen_other = true;
+                unmatched.other = true;
                 return false;
             };
             let Some(public) = records
@@ -211,8 +268,7 @@ fn on_card<T>(
         .map_err(CardJobError::Card)?;
     match result {
         Some(outcome) => outcome.map_err(CardJobError::Card),
-        None if seen_other => Err(CardJobError::Card(CardError::WrongCard)),
-        None => Err(CardJobError::NoCard),
+        None => Err(unmatched.error()),
     }
 }
 
@@ -398,6 +454,9 @@ pub struct EnrolSecrets<'a> {
     pub piv_pin: &'a [u8],
     /// The user confirmed spending the admin PIN's last try ([`admin_guard`]).
     pub admin_last_try: bool,
+    /// The user saw the keys already in the planned slots ([`occupied_serial`]) and confirmed
+    /// that they are destroyed (`enrol::EnrolAuth::overwrite`).
+    pub overwrite: bool,
 }
 
 impl core::fmt::Debug for EnrolSecrets<'_> {
@@ -406,9 +465,9 @@ impl core::fmt::Debug for EnrolSecrets<'_> {
     }
 }
 
-/// The tries left of a card's PINs (read-only: `OpenPGP` `6E`/`C4`, PIV GET METADATA `80`),
-/// shown in W11/W12 before the PIN is entered (spec/10 §9.1). `None` = applet missing or not
-/// read.
+/// The tries left of a card's PINs (read-only: `OpenPGP` `6E`/`C4`, PIV GET METADATA `80` and
+/// `81`), shown in W11/W12 before the PIN is entered (spec/10 §9.1). `None` = applet missing or
+/// not read.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PinCounters {
     /// The card.
@@ -419,9 +478,11 @@ pub struct PinCounters {
     pub pw3: Option<u8>,
     /// PIV PIN.
     pub piv_pin: Option<u8>,
+    /// PIV PUK.
+    pub puk: Option<u8>,
 }
 
-/// Which PIN a counter line is about.
+/// Which card secret a counter line or an error is about.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PinKind {
     /// `OpenPGP` PIN (PW1).
@@ -430,6 +491,56 @@ pub enum PinKind {
     OpenPgpAdmin,
     /// PIV PIN.
     PivPin,
+    /// PIV PUK.
+    PivPuk,
+}
+
+impl PinKind {
+    /// The name in sentences.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::OpenPgpUser => "OpenPGP PIN",
+            Self::OpenPgpAdmin => "OpenPGP 관리자 PIN",
+            Self::PivPin => "PIV PIN",
+            Self::PivPuk => "PIV PUK",
+        }
+    }
+
+    /// What a blocked secret means and how it is unblocked.
+    const fn blocked(self) -> &'static str {
+        match self {
+            Self::OpenPgpUser => {
+                "OpenPGP PIN이 잠겼습니다. 관리자 PIN으로 풀 수 있습니다(ykman openpgp access unblock-pin). 관리자 PIN도 모르면 'YubiKey 비우기'의 OpenPGP 초기화 뒤 다시 등록하세요."
+            }
+            Self::OpenPgpAdmin => {
+                "OpenPGP 관리자 PIN이 잠겼습니다. 'YubiKey 비우기'의 OpenPGP 초기화 뒤 다시 등록해야 합니다(그 애플릿의 키는 지워집니다)."
+            }
+            Self::PivPin => {
+                "PIV PIN이 잠겼습니다. PUK로 풀 수 있습니다(ykman piv access unblock-pin)."
+            }
+            Self::PivPuk => {
+                "PIV PUK이 잠겼습니다. 이제 PIV PIN이 잠기면 PIV 초기화 말고는 방법이 없으니 PIV PIN을 잊지 마세요."
+            }
+        }
+    }
+
+    /// The text of a card error of an operation that sent this secret (spec/10 §9.1): a wrong
+    /// or blocked value names this secret with the tries left; any other error keeps its text.
+    #[must_use]
+    pub fn error_text(self, error: CardError) -> String {
+        match error {
+            CardError::WrongPin { retries: 1 } => format!(
+                "{}이 틀렸습니다. 남은 시도 1회 — 한 번 더 틀리면 잠깁니다.",
+                self.name()
+            ),
+            CardError::WrongPin {
+                retries: retries @ 2..,
+            } => format!("{}이 틀렸습니다. 남은 시도 {retries}회.", self.name()),
+            CardError::WrongPin { retries: 0 } | CardError::PinBlocked => self.blocked().to_owned(),
+            other => other.to_string(),
+        }
+    }
 }
 
 impl PinCounters {
@@ -440,11 +551,13 @@ impl PinCounters {
         kinds
             .iter()
             .filter_map(|kind| {
-                let (name, left) = match kind {
-                    PinKind::OpenPgpUser => ("OpenPGP PIN", self.pw1),
-                    PinKind::OpenPgpAdmin => ("OpenPGP 관리자 PIN", self.pw3),
-                    PinKind::PivPin => ("PIV PIN", self.piv_pin),
+                let left = match kind {
+                    PinKind::OpenPgpUser => self.pw1,
+                    PinKind::OpenPgpAdmin => self.pw3,
+                    PinKind::PivPin => self.piv_pin,
+                    PinKind::PivPuk => self.puk,
                 };
+                let name = kind.name();
                 Some(match left? {
                     0 => format!("{name}: 잠김 — 남은 시도가 없습니다."),
                     1 => format!("{name}: 남은 시도 1회 — 한 번 더 틀리면 잠깁니다."),
@@ -466,6 +579,25 @@ impl CardJobError {
                 | Self::Enrol(EnrolError::Card(CardError::AdminLastTry))
         )
     }
+
+    /// The job was refused because the PIV PUK has one try left and the user did not confirm
+    /// spending it (nothing was sent).
+    #[must_use]
+    pub const fn is_puk_last_try(self) -> bool {
+        matches!(self, Self::Card(CardError::PukLastTry))
+    }
+
+    /// The text of this failure of an operation that sent `kind` ([`PinKind::error_text`]).
+    #[must_use]
+    pub fn text_for(self, kind: PinKind) -> String {
+        match self {
+            Self::Card(error) => kind.error_text(error),
+            Self::Enrol(EnrolError::Card(error) | EnrolError::Partial(error)) => {
+                kind.error_text(error)
+            }
+            Self::NoCard | Self::Enrol(_) => self.to_string(),
+        }
+    }
 }
 
 /// The one inserted card (spec/10 §7.3: enrolment, adoption and the credentials probe refuse
@@ -480,11 +612,17 @@ pub struct CardFacts {
     pub counters: PinCounters,
 }
 
-/// The serial and firmware a card reports (`OpenPGP` first, else PIV).
-fn card_identity(transport: &mut dyn CardTransport) -> Option<(u32, yw_core::yubikey::Firmware)> {
-    identify(transport, MODE, true, false)
-        .or_else(|_| identify(transport, MODE, false, true))
-        .ok()
+/// The serial and firmware a card reports (`OpenPGP` first, else PIV); when neither applet
+/// answers, the more specific of the two failures (`OpenPGP`'s unless it is only missing).
+fn card_identity(
+    transport: &mut dyn CardTransport,
+) -> Result<(u32, yw_core::yubikey::Firmware), EnrolError> {
+    identify(transport, MODE, true, false).or_else(|pgp| {
+        identify(transport, MODE, false, true).map_err(|piv| match pgp {
+            EnrolError::Card(CardError::AppletMissing) => piv,
+            other => other,
+        })
+    })
 }
 
 /// The PIN counters of the card on `transport` (read-only, nothing is verified).
@@ -498,10 +636,10 @@ fn read_counters(transport: &mut dyn CardTransport, serial: u32) -> PinCounters 
         counters.pw1 = Some(pw1);
         counters.pw3 = Some(pw3);
     }
-    counters.piv_pin = yw_core::yubikey::piv::Piv::open(transport, MODE)
-        .and_then(|mut session| session.pin_metadata())
-        .ok()
-        .map(|(_, retries)| retries);
+    if let Ok(mut session) = yw_core::yubikey::piv::Piv::open(transport, MODE) {
+        counters.piv_pin = session.pin_metadata().ok().map(|(_, retries)| retries);
+        counters.puk = session.puk_metadata().ok().map(|(_, retries)| retries);
+    }
     counters
 }
 
@@ -513,20 +651,22 @@ fn read_counters(transport: &mut dyn CardTransport, serial: u32) -> PinCounters 
 /// [`CardJobError::NoCard`], [`CardJobError::Card`] (`MultipleCards`, reader errors).
 pub fn single_card(source: &mut dyn CardSource) -> Result<CardFacts, CardJobError> {
     let mut found: Vec<CardFacts> = Vec::new();
+    let mut unmatched = Unmatched::default();
     source
         .each_card(&mut |transport, _| {
-            if let Some((serial, firmware)) = card_identity(transport) {
-                found.push(CardFacts {
+            match card_identity(transport) {
+                Ok((serial, firmware)) => found.push(CardFacts {
                     serial,
                     firmware,
                     counters: read_counters(transport, serial),
-                });
+                }),
+                Err(error) => unmatched.failed(error),
             }
             false
         })
         .map_err(CardJobError::Card)?;
     match found.as_slice() {
-        [] => Err(CardJobError::NoCard),
+        [] => Err(unmatched.error()),
         [one] => Ok(*one),
         _ => Err(CardJobError::Card(CardError::MultipleCards)),
     }
@@ -574,6 +714,25 @@ pub fn admin_guard(transport: &mut dyn CardTransport, last_try: bool) -> Result<
     }
 }
 
+/// spec/10 §9.1: the PIV PUK is not sent while it has one try left unless the user confirmed it
+/// (`last_try`, after seeing [`CardError::PukLastTry`]) — a blocked PUK can no longer unblock the
+/// PIV PIN. Read-only (GET METADATA `81`).
+///
+/// # Errors
+///
+/// [`CardError::PukLastTry`].
+pub fn puk_guard(transport: &mut dyn CardTransport, last_try: bool) -> Result<(), CardError> {
+    if last_try {
+        return Ok(());
+    }
+    match yw_core::yubikey::piv::Piv::open(transport, MODE)
+        .and_then(|mut session| session.puk_metadata())
+    {
+        Ok((_, 1)) => Err(CardError::PukLastTry),
+        _ => Ok(()),
+    }
+}
+
 /// The applets a plan uses.
 fn plan_applets(slots: &[PlannedSlot]) -> (bool, bool) {
     (
@@ -612,8 +771,30 @@ pub fn enrol_card_serial(
             piv_pin: secrets.piv_pin,
             cipher: Some(cipher),
             challenge,
+            overwrite: secrets.overwrite,
         };
         enrol_card(transport, MODE, seed, slots, records, &auth)
+    })
+}
+
+/// The planned slots of card `serial` that hold a key the plan would destroy
+/// (`enrol::occupied_slots`, read-only, no PIN; a key the plan derives or an enrolled card of
+/// `records` holds is not listed): shown at the credentials step before an import (spec/10
+/// §7.4).
+///
+/// # Errors
+///
+/// [`CardJobError::NoCard`], [`CardJobError::Card`] (`WrongCard`, why the card could not be
+/// identified), [`CardJobError::Enrol`] (the read failed).
+pub fn occupied_serial(
+    source: &mut dyn CardSource,
+    serial: u32,
+    seed: &[u8; 64],
+    slots: &[PlannedSlot],
+    records: &[HwKeyRecord],
+) -> Result<Vec<yw_core::yubikey::enrol::Occupant>, CardJobError> {
+    on_serial_enrol(source, serial, plan_applets(slots), &mut |transport, _| {
+        yw_core::yubikey::enrol::occupied_slots(transport, MODE, seed, slots, records)
     })
 }
 
@@ -698,6 +879,17 @@ impl PinTarget {
             Self::PivPin | Self::PivPuk => (false, true),
         }
     }
+
+    /// The secret as a counter / error kind.
+    #[must_use]
+    pub const fn kind(self) -> PinKind {
+        match self {
+            Self::OpenPgpUser => PinKind::OpenPgpUser,
+            Self::OpenPgpAdmin => PinKind::OpenPgpAdmin,
+            Self::PivPin => PinKind::PivPin,
+            Self::PivPuk => PinKind::PivPuk,
+        }
+    }
 }
 
 /// A card operation of [`on_serial`].
@@ -705,7 +897,8 @@ type CardOperation<'a, T> =
     dyn FnMut(&mut dyn CardTransport, &dyn MgmtCipher) -> Result<T, CardError> + 'a;
 
 /// Runs `operation` once on the inserted card whose serial is `serial` (read with the applets
-/// `pgp` / `piv`); other cards are skipped ([`CardError::WrongCard`] when only they answered).
+/// `pgp` / `piv`); other cards are skipped ([`CardError::WrongCard`] when only they answered, or
+/// why a card could not be identified, [`Unmatched`]).
 fn on_serial<T>(
     source: &mut dyn CardSource,
     serial: u32,
@@ -713,13 +906,17 @@ fn on_serial<T>(
     operation: &mut CardOperation<'_, T>,
 ) -> Result<T, CardJobError> {
     let mut result: Option<Result<T, CardError>> = None;
-    let mut seen_other = false;
+    let mut unmatched = Unmatched::default();
     source
         .each_card(&mut |transport, cipher| {
             match identify(transport, MODE, pgp, piv) {
                 Ok((found, _)) if found == serial => {}
-                _ => {
-                    seen_other = true;
+                Ok(_) => {
+                    unmatched.other = true;
+                    return false;
+                }
+                Err(error) => {
+                    unmatched.failed(error);
                     return false;
                 }
             }
@@ -729,8 +926,7 @@ fn on_serial<T>(
         .map_err(CardJobError::Card)?;
     match result {
         Some(outcome) => outcome.map_err(CardJobError::Card),
-        None if seen_other => Err(CardJobError::Card(CardError::WrongCard)),
-        None => Err(CardJobError::NoCard),
+        None => Err(unmatched.error()),
     }
 }
 
@@ -741,12 +937,19 @@ fn on_serial_any<T>(
     operation: &mut CardOperation<'_, T>,
 ) -> Result<T, CardJobError> {
     let mut result: Option<Result<T, CardError>> = None;
-    let mut seen_other = false;
+    let mut unmatched = Unmatched::default();
     source
         .each_card(&mut |transport, cipher| {
-            if card_identity(transport).map(|(found, _)| found) != Some(serial) {
-                seen_other = true;
-                return false;
+            match card_identity(transport) {
+                Ok((found, _)) if found == serial => {}
+                Ok(_) => {
+                    unmatched.other = true;
+                    return false;
+                }
+                Err(error) => {
+                    unmatched.failed(error);
+                    return false;
+                }
             }
             result = Some(operation(transport, cipher));
             true
@@ -754,18 +957,18 @@ fn on_serial_any<T>(
         .map_err(CardJobError::Card)?;
     match result {
         Some(outcome) => outcome.map_err(CardJobError::Card),
-        None if seen_other => Err(CardJobError::Card(CardError::WrongCard)),
-        None => Err(CardJobError::NoCard),
+        None => Err(unmatched.error()),
     }
 }
 
 /// Changes a PIN or PUK of card `serial` (spec/10 §9.3: `OpenPGP` CHANGE REFERENCE DATA `81` /
-/// `83`, PIV `80` / `81`). The admin PIN's last try needs `last_try` ([`admin_guard`]).
+/// `83`, PIV `80` / `81`). A factory value ([`yw_core::yubikey::FACTORY_SECRETS`]) is never set.
+/// The last try of the admin PIN or the PUK needs `last_try` ([`admin_guard`], [`puk_guard`]).
 ///
 /// # Errors
 ///
 /// [`CardJobError::NoCard`], [`CardJobError::Card`] (wrong current value with the tries left,
-/// blocked, format, another card, `AdminLastTry`).
+/// blocked, format, another card, `DefaultPin`, `AdminLastTry`, `PukLastTry`).
 pub fn change_card_pin(
     source: &mut dyn CardSource,
     serial: u32,
@@ -773,6 +976,9 @@ pub fn change_card_pin(
     (old, new): (&[u8], &[u8]),
     last_try: bool,
 ) -> Result<(), CardJobError> {
+    if yw_core::yubikey::is_factory_secret(new) {
+        return Err(CardJobError::Card(CardError::DefaultPin));
+    }
     on_serial(
         source,
         serial,
@@ -788,10 +994,16 @@ pub fn change_card_pin(
                     new,
                 )
             }
-            PinTarget::PivPin | PinTarget::PivPuk => yw_core::yubikey::piv::Piv::open(
-                transport, MODE,
-            )?
-            .change_reference(target == PinTarget::PivPuk, old, new),
+            PinTarget::PivPin | PinTarget::PivPuk => {
+                if target == PinTarget::PivPuk {
+                    puk_guard(transport, last_try)?;
+                }
+                yw_core::yubikey::piv::Piv::open(transport, MODE)?.change_reference(
+                    target == PinTarget::PivPuk,
+                    old,
+                    new,
+                )
+            }
         },
     )
 }
@@ -873,6 +1085,18 @@ impl DefaultsStep {
             Self::PivPuk | Self::OpenPgpAdmin => b"12345678",
         }
     }
+
+    /// The secret this step sends, which its errors name (the management-key step verifies the
+    /// new PIV PIN).
+    #[must_use]
+    pub const fn kind(self) -> PinKind {
+        match self {
+            Self::PivPin | Self::PivManagement => PinKind::PivPin,
+            Self::PivPuk => PinKind::PivPuk,
+            Self::OpenPgpAdmin => PinKind::OpenPgpAdmin,
+            Self::OpenPgpUser => PinKind::OpenPgpUser,
+        }
+    }
 }
 
 /// What "PIN 설정" did: the steps done in order, the ones skipped (applet missing or already
@@ -933,23 +1157,39 @@ impl PinReport {
     }
 }
 
+/// The confirmations of a last try (spec/10 §9.1) a "PIN 설정" job carries.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LastTries {
+    /// The `OpenPGP` admin PIN's last try may be spent ([`admin_guard`]).
+    pub admin: bool,
+    /// The PIV PUK's last try may be spent ([`puk_guard`]).
+    pub puk: bool,
+}
+
 /// "PIN 하나로 통일" of card `serial` (spec/10 §9.3): one `new` value (8 characters, valid for
 /// every applet) replaces, in this order, the PIV PIN, the PIV PUK, the management key
 /// (generated and stored PIN-protected with the new PIN), the `OpenPGP` admin PIN and the
 /// `OpenPGP` user PIN. `current` empty = the factory values; otherwise the one current value of
-/// all four. The first failure stops the sequence; the report says what changed. An applet the
-/// card lacks is skipped. `applets` are the ones used to identify the card (its record's).
+/// all four. A factory `new` value is refused before the card is touched (`12345678` would
+/// "change" the factory PUK and admin PIN to themselves and clear the factory-PIN note). The
+/// last tries of the admin PIN and the PUK are checked first (`last_tries`). The first failure
+/// stops the sequence; the report says what changed. An applet the card lacks is skipped.
+/// `applets` are the ones used to identify the card (its record's).
 ///
 /// # Errors
 ///
-/// [`CardJobError::NoCard`], [`CardJobError::Card`] (`WrongCard`, the serial could not be read).
+/// [`CardJobError::NoCard`], [`CardJobError::Card`] (`DefaultPin`, `WrongCard`, the serial
+/// could not be read).
 pub fn set_pins(
     source: &mut dyn CardSource,
     serial: u32,
     applets: (bool, bool),
     (current, new): (&[u8], &[u8]),
-    last_try: bool,
+    last_tries: LastTries,
 ) -> Result<PinReport, CardJobError> {
+    if yw_core::yubikey::is_factory_secret(new) {
+        return Err(CardJobError::Card(CardError::DefaultPin));
+    }
     let challenge = fresh_challenge()?;
     let old = |step: DefaultsStep| -> &[u8] {
         if current.is_empty() {
@@ -960,9 +1200,14 @@ pub fn set_pins(
     };
     on_serial(source, serial, applets, &mut |transport, cipher| {
         let mut report = PinReport::default();
-        // The admin PIN's last try is refused before anything changes (spec/10 §9.1).
-        if let Err(error) = admin_guard(transport, last_try) {
+        // The last tries of the admin PIN and the PUK are refused before anything changes
+        // (spec/10 §9.1).
+        if let Err(error) = admin_guard(transport, last_tries.admin) {
             report.failed = Some((DefaultsStep::OpenPgpAdmin, error));
+            return Ok(report);
+        }
+        if let Err(error) = puk_guard(transport, last_tries.puk) {
+            report.failed = Some((DefaultsStep::PivPuk, error));
             return Ok(report);
         }
         match yw_core::yubikey::piv::Piv::open(transport, MODE) {
@@ -1051,13 +1296,17 @@ fn on_serial_enrol<T>(
     operation: &mut EnrolOperation<'_, T>,
 ) -> Result<T, CardJobError> {
     let mut result: Option<Result<T, EnrolError>> = None;
-    let mut seen_other = false;
+    let mut unmatched = Unmatched::default();
     source
         .each_card(&mut |transport, cipher| {
             match identify(transport, MODE, pgp, piv) {
                 Ok((found, _)) if found == serial => {}
-                _ => {
-                    seen_other = true;
+                Ok(_) => {
+                    unmatched.other = true;
+                    return false;
+                }
+                Err(error) => {
+                    unmatched.failed(error);
                     return false;
                 }
             }
@@ -1067,8 +1316,7 @@ fn on_serial_enrol<T>(
         .map_err(CardJobError::Card)?;
     match result {
         Some(outcome) => outcome.map_err(CardJobError::Enrol),
-        None if seen_other => Err(CardJobError::Card(CardError::WrongCard)),
-        None => Err(CardJobError::NoCard),
+        None => Err(unmatched.error()),
     }
 }
 
@@ -1084,10 +1332,12 @@ pub fn scan_single(
     source: &mut dyn CardSource,
 ) -> Result<yw_core::yubikey::connect::CardScan, CardJobError> {
     let mut found: Vec<Result<yw_core::yubikey::connect::CardScan, EnrolError>> = Vec::new();
+    let mut unmatched = Unmatched::default();
     source
         .each_card(&mut |transport, _| {
-            if card_identity(transport).is_some() {
-                found.push(yw_core::yubikey::connect::scan_card(transport, MODE));
+            match card_identity(transport) {
+                Ok(_) => found.push(yw_core::yubikey::connect::scan_card(transport, MODE)),
+                Err(error) => unmatched.failed(error),
             }
             false
         })
@@ -1097,7 +1347,7 @@ pub fn scan_single(
     }
     found
         .pop()
-        .ok_or(CardJobError::NoCard)?
+        .ok_or_else(|| unmatched.error())?
         .map_err(CardJobError::Enrol)
 }
 
@@ -1108,12 +1358,19 @@ fn on_serial_connect<T>(
     operation: &mut dyn FnMut(&mut dyn CardTransport) -> Result<T, EnrolError>,
 ) -> Result<T, CardJobError> {
     let mut result: Option<Result<T, EnrolError>> = None;
-    let mut seen_other = false;
+    let mut unmatched = Unmatched::default();
     source
         .each_card(&mut |transport, _| {
-            if card_identity(transport).map(|(found, _)| found) != Some(serial) {
-                seen_other = true;
-                return false;
+            match card_identity(transport) {
+                Ok((found, _)) if found == serial => {}
+                Ok(_) => {
+                    unmatched.other = true;
+                    return false;
+                }
+                Err(error) => {
+                    unmatched.failed(error);
+                    return false;
+                }
             }
             result = Some(operation(transport));
             true
@@ -1121,8 +1378,7 @@ fn on_serial_connect<T>(
         .map_err(CardJobError::Card)?;
     match result {
         Some(outcome) => outcome.map_err(CardJobError::Enrol),
-        None if seen_other => Err(CardJobError::Card(CardError::WrongCard)),
-        None => Err(CardJobError::NoCard),
+        None => Err(unmatched.error()),
     }
 }
 
@@ -1166,7 +1422,8 @@ pub fn verify_card_pin(
 }
 
 /// "슬롯 구성 바꾸기" of the inserted card `record.serial` (spec/10 §15.1,
-/// `yubikey::manage::reslot_card`): the new `OpenPGP` keys from `seed`, read back and compared.
+/// `yubikey::manage::reslot_card`): the new `OpenPGP` keys from `seed`, read back and compared;
+/// the new record and whether the factory admin PIN worked.
 ///
 /// # Errors
 ///
@@ -1178,7 +1435,7 @@ pub fn reslot_card(
     openpgp: &[PlannedSlot],
     others: &[HwKeyRecord],
     (admin_pin, last_try): (&[u8], bool),
-) -> Result<HwKeyRecord, CardJobError> {
+) -> Result<Enrolled, CardJobError> {
     on_serial_enrol(source, record.serial, (true, false), &mut |transport, _| {
         admin_guard(transport, last_try)?;
         yw_core::yubikey::manage::reslot_card(
