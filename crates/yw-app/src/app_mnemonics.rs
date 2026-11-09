@@ -328,6 +328,91 @@ impl App {
         }
     }
 
+    /// The phrase of `gate` ([`Self::mn_backup_gate`]) while its backup quiz has not passed: the
+    /// vault refuses that key's signatures until then (E-VLT-009, spec/02 §8.6). For the dApp
+    /// connect windows and the checks before a dApp signing window (spec/05 §4.5, §4.9).
+    #[must_use]
+    pub(crate) fn mn_unconfirmed(&self, gate: Option<RecordId>) -> Option<RecordId> {
+        let id = gate?;
+        self.mn
+            .infos
+            .iter()
+            .any(|info| info.id == id && !info.backup_confirmed)
+            .then_some(id)
+    }
+
+    /// [`Self::mn_unconfirmed`] of an EVM account of this wallet (its key source as a signature
+    /// would use it).
+    #[must_use]
+    pub(crate) fn evm_account_unconfirmed(&self, account: &Address) -> Option<RecordId> {
+        self.account_source(account)
+            .and_then(|source| self.mn_unconfirmed(self.evm_backup_gate(source)))
+    }
+
+    /// [`Self::mn_unconfirmed`] of a Solana key source (the primary phrase's for its derived
+    /// paths; none for an imported or `YubiKey` key).
+    #[must_use]
+    pub(crate) fn sol_source_unconfirmed(
+        &self,
+        source: yw_core::slip10::SolKeySource,
+    ) -> Option<RecordId> {
+        use yw_core::slip10::SolKeySource;
+        let primary = !matches!(source, SolKeySource::Imported | SolKeySource::Hardware(_));
+        self.mn_unconfirmed(self.mn_backup_gate(source.mnemonic(), primary))
+    }
+
+    /// [`Self::mn_unconfirmed`] of a Bitcoin key source (an HD account's phrase, the primary one
+    /// for an EVM key's use; none for an imported or `YubiKey` key).
+    #[must_use]
+    pub(crate) fn btc_source_unconfirmed(
+        &self,
+        source: &yw_core::btc::BtcKeySource,
+    ) -> Option<RecordId> {
+        use yw_core::btc::BtcKeySource;
+        let (added, primary) = match source {
+            BtcKeySource::Derived { mnemonic, .. } => (*mnemonic, mnemonic.is_none()),
+            BtcKeySource::EvmShared { .. } => (None, true),
+            BtcKeySource::Imported { .. } | BtcKeySource::Hardware { .. } => (None, false),
+        };
+        self.mn_unconfirmed(self.mn_backup_gate(added, primary))
+    }
+
+    /// Refuses a dApp signing request of an account that cannot sign yet
+    /// ([`Self::mn_unconfirmed`] names its phrase): 4100 `BackupUnconfirmed` before any window —
+    /// the vault would refuse the key only after the approval, and the page got a bare -32603 —
+    /// and one notice saying where the backup is confirmed.
+    pub(crate) fn refuse_unconfirmed(
+        &mut self,
+        site: &crate::browser::SiteRequest,
+        phrase: RecordId,
+    ) {
+        let text = format!(
+            "{}의 서명 요청을 거부했습니다: '{}'의 백업 확인 전이라 이 계정은 받기만 되고 서명은 안 됩니다. 설정 → 복구 단어에서 '백업 확인'을 마치세요.",
+            site.origin.as_str(),
+            self.mnemonic_label(phrase)
+        );
+        if !self.banners.iter().any(|banner| banner.text == text) {
+            self.notice(text, Tone::Warn);
+            self.refresh();
+        }
+        logging::info("browser", "site.sign_backup_unconfirmed", &[]);
+        self.respond(
+            &site.reply,
+            Err(yw_core::policy::ProviderError::BackupUnconfirmed),
+        );
+    }
+
+    /// The tag of a dApp connect-window row whose account cannot sign yet.
+    #[must_use]
+    pub(crate) fn mn_connect_tag(&self, phrase: Option<RecordId>) -> String {
+        phrase.map_or_else(String::new, |id| {
+            format!(
+                "  [{} 백업 확인 전 — 받기만, 서명 불가]",
+                self.mnemonic_label(id)
+            )
+        })
+    }
+
     /// The recovery-phrase commands; `false` when `id` is not one of them.
     pub(crate) fn on_mn_command(&mut self, id: u16) -> bool {
         let row = |base: u16| {
@@ -926,6 +1011,11 @@ impl App {
             MnOutcome::Confirmed(Ok(id)) => {
                 self.close_secret();
                 self.mn.challenge = None;
+                // Its keys sign from now on: the dApp checks (`mn_unconfirmed`) see it before
+                // the meta reload brings the vault's list.
+                if let Some(info) = self.mn.infos.iter_mut().find(|info| info.id == id) {
+                    info.backup_confirmed = true;
+                }
                 logging::info("app", "mnemonic.backup_confirmed", &[]);
                 self.notice(
                     format!(

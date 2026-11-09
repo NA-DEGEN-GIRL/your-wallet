@@ -28,6 +28,9 @@ pub enum ProviderError {
     NoBtcAccount,
     /// 4100 with the reason: Bitcoin is turned off in the app's settings (spec/05 §3.6, §4.9).
     BtcDisabled,
+    /// 4100 with the reason: the signing account's recovery phrase has no confirmed backup, so
+    /// the vault would refuse its key (spec/02 §8.6, spec/05 §4.5).
+    BackupUnconfirmed,
     /// 4100 with the reason: a new Solana/Bitcoin connection would exceed the 256 grants of that
     /// chain (meta `sol_sites`/`btc_sites`, spec/05 §4.9).
     TooManySites,
@@ -88,6 +91,7 @@ impl ProviderError {
             | Self::NoSolAccount
             | Self::NoBtcAccount
             | Self::BtcDisabled
+            | Self::BackupUnconfirmed
             | Self::TooManySites => 4100,
             Self::UnsupportedMethod => 4200,
             Self::Unavailable | Self::ConnectionClosed | Self::ExtensionReloaded => 4900,
@@ -125,6 +129,9 @@ impl ProviderError {
             }
             Self::BtcDisabled => {
                 "Unauthorized: Bitcoin is turned off in the Your Wallet app. Turn it on in the app's settings first."
+            }
+            Self::BackupUnconfirmed => {
+                "Unauthorized: the recovery phrase of this account is not backed up yet, so it can receive but not sign. Confirm its backup in the Your Wallet app first."
             }
             Self::TooManySites => {
                 "Unauthorized: too many sites are connected on this chain (256). Disconnect one in the Your Wallet app first."

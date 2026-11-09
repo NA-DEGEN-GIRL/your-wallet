@@ -596,7 +596,7 @@ pub struct ConnectedSite {
 4. "사이트 연결" 창(승인 큐 순서대로, §8.4):
    - 제목 `사이트 연결`, origin 전체(scheme://host[:port]) 크게 표시. `http` origin이면 `로컬 개발 사이트(http)` 표시. 호스트에 `xn--` 라벨이 있으면 `국제화 도메인(punycode)` 경고. 요청 `context.compatMode`가 있으면 배지 `호환 모드: MetaMask` 또는 `호환 모드: Rabby`(§2.12, 서명 승인 창도 같은 배지). origin은 바뀌지 않는다.
    - 안내: `이 사이트는 선택한 계정의 주소, 잔액, 거래 기록을 볼 수 있습니다. 서명과 전송은 매번 따로 승인합니다.`
-   - EVM 계정 목록: 체크박스 + 라벨 + 전체 주소(EIP-55 표기). 기본 선택: 기존 grant가 있으면 그 계정, 없으면 메인 화면에서 지금 고른 EVM 계정(목록에 없으면 첫 계정; 2026-11-08 — 이전에는 언제나 계정 0). 목록 아래 흐린 줄 "사이트가 기본으로 쓰는 계정: {라벨} (체크한 계정 중 목록의 첫 계정)"(반환 순서의 첫 계정, 표시 전용).
+   - EVM 계정 목록: 체크박스 + 라벨 + 전체 주소(EIP-55 표기). 기본 선택: 기존 grant가 있으면 그 계정, 없으면 메인 화면에서 지금 고른 EVM 계정(목록에 없으면 첫 계정; 2026-11-08 — 이전에는 언제나 계정 0). 백업 확인 전 복구 단어의 계정([02] §8.6: 받기만 되고 vault가 서명을 거부, E-VLT-009)은 라벨 뒤에 `[{복구 단어 라벨} 백업 확인 전 — 받기만, 서명 불가]`를 붙이고, 서명할 수 있는 다른 계정이 있으면 새 사이트의 기본 선택이 되지 않는다(메인 화면에서 골랐어도 그 대신 서명할 수 있는 첫 계정; 2026-11-10, Solana·Bitcoin 연결 창도 같은 표시·기본 선택 규칙). 체크하면 연결은 된다. 목록 아래 흐린 줄 "사이트가 기본으로 쓰는 계정: {라벨} (체크한 계정 중 목록의 첫 계정)"(반환 순서의 첫 계정, 표시 전용).
    - 현재 origin 체인 이름 표시. 창을 그릴 때마다 origin 체인을 다시 읽는다(창 없는 `wallet_switchEthereumChain`이 그 사이 바꿀 수 있다, 보안 검토 L4(c)).
    - 버튼 `거부`, `연결`(선택 0개 또는 16개 초과면 비활성, [02] §5.3). 창 닫기 = 거부.
 5. `연결` → 먼저 다시 검사한다: origin 체인이 창에 그려진 값과 다르면 승인하지 않고 새 체인으로 다시 그린 뒤 1 s 무장 지연부터 다시 시작한다(새 클릭 필요). 고른 계정 중 창이 열린 사이 숨기거나 지운 계정이 있으면 4100 `Unauthorized`(Solana·Bitcoin 연결의 같은 경우와 같다, 보안 검토 L4(a)). 통과하면 grant 저장(meta 원자적 쓰기), origin 체인 = 창에 보인 origin 체인. 결과 반환 후 그 origin의 모든 문서에 `accountsChanged`. `거부` → 4001. 창 표시 후 120 s(D23) → 창 닫고 4001 "Request expired.". 요청 기한(§6.4) 만료 → 창 닫고 -32603 "Request timed out.". 확장 cancel·연결 끊김 → 창 닫고 응답 없음.
@@ -662,6 +662,7 @@ dApp 요청으로 띄운 잠금 해제 창을 `나중에`로 닫으면 `UNLOCK_P
 - **연결 거부 알림(2026-11-10)**: 연결 요청(`eth_requestAccounts`·`wallet_requestPermissions`·`sol_connect`·`btc_requestAccounts`)이 사용자가 앱에서 고칠 수 있는 이유로 창 없이 거부되면(`BtcDisabled`, `NoBtcAccount`, `NoSolAccount`, `NoEvmAccount`, `TooManySites`) 앱에 알림(주의 띠) 한 줄을 띄운다: 사이트 origin, 이유, 할 일(설정 → Bitcoin에서 켜기, 없는 주소 형식 — `ordinals`는 "오디널스용 Taproot(P2TR) 주소", `payment`는 "결제용 SegWit(P2WPKH·P2SH-P2WPKH) 주소" — 의 계정 추가, Solana 계정 추가·개인키 가져오기, EVM 개인키 가져오기, 사이트 하나 해제). 같은 글의 알림이 이미 있으면 더하지 않는다(페이지가 다시 요청해도 늘지 않음). 서명 요청의 거부는 알리지 않는다.
 - **256개 한도**: 계열마다 grant ≤ 256(meta `sol_sites`·`btc_sites` 검증 한도). 새 origin의 연결은 잠금 해제 중 디스패처에서, 잠김 중 큐에 들어간 것은 꺼낼 때, 승인 때 한 번 더 4100 `TooManySites`로 거부하고 grant를 쓰지 않는다(이미 grant가 있는 origin은 교체).
 - 서명 요청은 grant의 계정·주소만(4100). 큐에서 꺼낼 때 그 계정이 지갑에서 사라졌으면 `Revoked`(4100).
+- **백업 확인 전 복구 단어의 계정(2026-11-10)**: 서명 요청(EVM `eth_sendTransaction`·`personal_sign`·`eth_signTypedData_v4`, `sol_signMessage`·`sol_signIn`, `btc_signMessage`)의 서명 키가 백업 확인 전 복구 단어의 것이면(추가한 복구 단어, 또는 키 전용·YubiKey 지갑의 나중 첫 복구 단어 — [02] §8.6, `App::mn_unconfirmed`) 큐에서 꺼낼 때 창을 열지 않고 4100 `BackupUnconfirmed`(§5)로 끝내고, 앱에 주의 알림 한 줄("{origin}의 서명 요청을 거부했습니다: '{라벨}'의 백업 확인 전이라 … 설정 → 복구 단어에서 '백업 확인'을 마치세요.", 같은 글은 한 번)을 띄운다. 전에는 승인 뒤 vault가 E-VLT-009로 거부해 페이지는 -32603만 받고 앱에는 아무것도 없었다. 확인 문항을 통과한 순간부터는 정상 처리한다. EVM 메시지 서명이 그 밖의 이유로 vault·서명 단계에서 실패해도 앱에 이유 띠를 보인다(거래의 실패 띠와 같다).
 - 해제: `sol_disconnect`·`btc_disconnect`, 연결된 사이트 화면([04] §2.9)의 `연결 해제`. 그 계열의 대기 서명 항목만 `Revoked`. 잠김 중 해제는 디스패처가 (origin, 계열)을 메모리에 기억해(중복 없이 최대 1,024개, 넘치면 가장 오래된 것부터 버림) 잠금 해제 때 meta grant를 읽은 직후·계정 이벤트 전에 적용하고 meta를 쓴다. grant를 읽고 잠금 해제 상태가 되기 전 순간에 온 해제는 읽힌 grant에 바로 적용한다.
 
 ---
@@ -679,6 +680,7 @@ dApp 요청으로 띄운 잠금 해제 창을 `나중에`로 닫으면 `UNLOCK_P
 | 4100 | `NoSolAccount` | `Unauthorized: this wallet has no Solana account. Add or import one in the Your Wallet app first.` | Solana 계정이 하나도 없는 지갑의 `sol_connect`(§4.9) |
 | 4100 | `NoBtcAccount` | `Unauthorized: this wallet has no Bitcoin account of the requested type on the selected network (payment: native or nested SegWit, P2WPKH or P2SH-P2WPKH; ordinals: Taproot, P2TR). Add one in the Your Wallet app first.` | 요청 목적에 맞는 Bitcoin 계정이 settings 네트워크에 없음(`btc_requestAccounts`, §4.9) |
 | 4100 | `BtcDisabled` | `Unauthorized: Bitcoin is turned off in the Your Wallet app. Turn it on in the app's settings first.` | settings에서 Bitcoin이 꺼짐(`btc_getNetwork`·`btc_disconnect` 밖의 `btc_*`, §3.6, 2026-11-10 `NoBtcAccount`에서 분리) |
+| 4100 | `BackupUnconfirmed` | `Unauthorized: the recovery phrase of this account is not backed up yet, so it can receive but not sign. Confirm its backup in the Your Wallet app first.` | 서명 키가 백업 확인 전 복구 단어의 것인 서명 요청(창 없이, §4.9, 2026-11-10) |
 | 4100 | `TooManySites` | `Unauthorized: too many sites are connected on this chain (256). Disconnect one in the Your Wallet app first.` | Solana·Bitcoin grant가 이미 256개인 계열에 새 origin 연결(§4.9) |
 | 4200 | `UnsupportedMethod` | `Unsupported method.` | 허용 표 밖(`wallet_addEthereumChain` 포함, D14·§3.2), method 형식 오류 |
 | 4900 | `Unavailable` | `Wallet is unavailable.` | yw-host가 yw-app에 연결 실패(§7.6, `browserAutoLaunch` 꺼짐 포함), 확장 backoff 중, `connectNative` 실패 |

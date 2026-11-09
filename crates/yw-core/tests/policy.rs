@@ -182,14 +182,21 @@ fn r_err_provider_errors_match_spec_05_section_5() {
 }
 
 #[test]
-fn r_err_bitcoin_off_matches_spec_05_section_5() {
-    let error = ProviderError::BtcDisabled;
-    assert_eq!(error.code(), 4100);
-    assert_eq!(
-        error.message(),
-        "Unauthorized: Bitcoin is turned off in the Your Wallet app. Turn it on in the app's settings first."
-    );
-    assert_eq!(error.data(), None);
+fn r_err_bitcoin_off_and_unconfirmed_backup_match_spec_05_section_5() {
+    for (error, message) in [
+        (
+            ProviderError::BtcDisabled,
+            "Unauthorized: Bitcoin is turned off in the Your Wallet app. Turn it on in the app's settings first.",
+        ),
+        (
+            ProviderError::BackupUnconfirmed,
+            "Unauthorized: the recovery phrase of this account is not backed up yet, so it can receive but not sign. Confirm its backup in the Your Wallet app first.",
+        ),
+    ] {
+        assert_eq!(error.code(), 4100);
+        assert_eq!(error.message(), message);
+        assert_eq!(error.data(), None);
+    }
 }
 
 #[test]

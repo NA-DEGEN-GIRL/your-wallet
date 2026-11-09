@@ -233,106 +233,140 @@ impl App {
     }
 
     /// The connect-window choices of a Solana or Bitcoin connect: `(choice, label, address,
-    /// group)`, the default selection (the granted account, else the first of each group) and
-    /// the network name.
+    /// group)`, the default selection (the granted account, else the first of each group that
+    /// can sign) and the network name.
     pub(crate) fn chain_connect_choices(
         &self,
         site: &SiteRequest,
     ) -> (Vec<ConnectEntry>, Vec<bool>, String) {
+        match &site.kind {
+            SiteKind::SolConnect => self.sol_connect_choices(&site.origin),
+            SiteKind::BtcConnect(purposes) => self.btc_connect_choices(&site.origin, purposes),
+            _ => (Vec::new(), Vec::new(), String::new()),
+        }
+    }
+
+    /// [`Self::chain_connect_choices`] of a Solana connect: one radio group.
+    fn sol_connect_choices(
+        &self,
+        origin: &BrowserOrigin,
+    ) -> (Vec<ConnectEntry>, Vec<bool>, String) {
+        let granted = self
+            .browser
+            .as_ref()
+            .and_then(|browser| {
+                browser
+                    .core
+                    .sol_grants()
+                    .into_iter()
+                    .find(|grant| grant.origin == *origin)
+            })
+            .map(|grant| grant.public);
+        let rows = self.sol_dapp_rows();
+        // An account whose phrase is not backed up can receive but not sign: tagged, and not
+        // the default while another account is.
+        let unconfirmed: Vec<_> = rows
+            .iter()
+            .map(|row| self.sol_source_unconfirmed(row.source))
+            .collect();
+        let pick = rows
+            .iter()
+            .position(|row| Some(row.public) == granted)
+            .or_else(|| unconfirmed.iter().position(Option::is_none))
+            .unwrap_or(0);
         let mut choices = Vec::new();
         let mut selected = Vec::new();
-        match &site.kind {
-            SiteKind::SolConnect => {
-                let granted = self
-                    .browser
-                    .as_ref()
-                    .and_then(|browser| {
-                        browser
-                            .core
-                            .sol_grants()
-                            .into_iter()
-                            .find(|grant| grant.origin == site.origin)
-                    })
-                    .map(|grant| grant.public);
-                let rows = self.sol_dapp_rows();
-                let pick = rows
-                    .iter()
-                    .position(|row| Some(row.public) == granted)
-                    .unwrap_or(0);
-                for (index, row) in rows.into_iter().enumerate() {
-                    choices.push((
-                        ConnectChoice::Sol(row.public),
-                        format!("{} · {}", row.label, row.path),
-                        yw_core::codec::base58::base58_encode(&row.public),
-                        0,
-                    ));
-                    selected.push(index == pick);
-                }
-                (
-                    choices,
-                    selected,
-                    self.sol_cluster().display_name().to_owned(),
-                )
-            }
-            SiteKind::BtcConnect(purposes) => {
-                let rows = self.btc_dapp_rows();
-                // The origin's grant on this network: a reconnect starts on the connected
-                // addresses (spec/05 §4.9), not on each group's first account.
-                let net = self.btc_network_now();
-                let granted: Vec<BtcGrantAddress> = self
-                    .browser
-                    .as_ref()
-                    .and_then(|browser| {
-                        browser
-                            .core
-                            .btc_grants()
-                            .into_iter()
-                            .find(|grant| grant.origin == site.origin && grant.network == net)
-                    })
-                    .map(|grant| grant.addresses)
-                    .unwrap_or_default();
-                for (group, purpose) in purposes.iter().enumerate() {
-                    let members: Vec<&BtcRow> = rows
-                        .iter()
-                        .filter(|row| purpose.accepts(row.entry.script_type))
-                        .collect();
-                    // The granted address of this purpose, else any granted address this group
-                    // offers (a UniSat `any` grant asked again for `payment`), else the first.
-                    let pick = granted
-                        .iter()
-                        .filter(|entry| entry.purpose == *purpose)
-                        .chain(granted.iter())
-                        .find_map(|entry| {
-                            members
-                                .iter()
-                                .position(|row| row.entry.address == entry.address)
-                        })
-                        .unwrap_or(0);
-                    for (index, row) in members.into_iter().enumerate() {
-                        let mut entry = row.entry.clone();
-                        entry.purpose = *purpose;
-                        let prefix = match purpose {
-                            BtcPurpose::Payment => "[결제용] ",
-                            BtcPurpose::Ordinals => "[오디널스용] ",
-                            BtcPurpose::Any => "",
-                        };
-                        choices.push((
-                            ConnectChoice::Btc(entry),
-                            format!("{prefix}{} · {}", row.label, row.path),
-                            row.entry.address.clone(),
-                            u8::try_from(group).unwrap_or(0),
-                        ));
-                        selected.push(index == pick);
-                    }
-                }
-                (
-                    choices,
-                    selected,
-                    self.btc_network_now().display_name().to_owned(),
-                )
-            }
-            _ => (choices, selected, String::new()),
+        for ((index, row), phrase) in rows.into_iter().enumerate().zip(unconfirmed) {
+            choices.push((
+                ConnectChoice::Sol(row.public),
+                format!(
+                    "{} · {}{}",
+                    row.label,
+                    row.path,
+                    self.mn_connect_tag(phrase)
+                ),
+                yw_core::codec::base58::base58_encode(&row.public),
+                0,
+            ));
+            selected.push(index == pick);
         }
+        (
+            choices,
+            selected,
+            self.sol_cluster().display_name().to_owned(),
+        )
+    }
+
+    /// [`Self::chain_connect_choices`] of a Bitcoin connect: one radio group per purpose.
+    fn btc_connect_choices(
+        &self,
+        origin: &BrowserOrigin,
+        purposes: &[BtcPurpose],
+    ) -> (Vec<ConnectEntry>, Vec<bool>, String) {
+        let rows = self.btc_dapp_rows();
+        // The origin's grant on this network: a reconnect starts on the connected addresses
+        // (spec/05 §4.9), not on each group's first account.
+        let net = self.btc_network_now();
+        let granted: Vec<BtcGrantAddress> = self
+            .browser
+            .as_ref()
+            .and_then(|browser| {
+                browser
+                    .core
+                    .btc_grants()
+                    .into_iter()
+                    .find(|grant| grant.origin == *origin && grant.network == net)
+            })
+            .map(|grant| grant.addresses)
+            .unwrap_or_default();
+        let mut choices = Vec::new();
+        let mut selected = Vec::new();
+        for (group, purpose) in purposes.iter().enumerate() {
+            let members: Vec<&BtcRow> = rows
+                .iter()
+                .filter(|row| purpose.accepts(row.entry.script_type))
+                .collect();
+            let unconfirmed: Vec<_> = members
+                .iter()
+                .map(|row| self.btc_source_unconfirmed(&row.source))
+                .collect();
+            // The granted address of this purpose, else any granted address this group offers
+            // (a UniSat `any` grant asked again for `payment`), else the first account that can
+            // sign (one whose phrase is not backed up only receives).
+            let pick = granted
+                .iter()
+                .filter(|entry| entry.purpose == *purpose)
+                .chain(granted.iter())
+                .find_map(|entry| {
+                    members
+                        .iter()
+                        .position(|row| row.entry.address == entry.address)
+                })
+                .or_else(|| unconfirmed.iter().position(Option::is_none))
+                .unwrap_or(0);
+            let prefix = match purpose {
+                BtcPurpose::Payment => "[결제용] ",
+                BtcPurpose::Ordinals => "[오디널스용] ",
+                BtcPurpose::Any => "",
+            };
+            for ((index, row), phrase) in members.into_iter().enumerate().zip(unconfirmed) {
+                let mut entry = row.entry.clone();
+                entry.purpose = *purpose;
+                choices.push((
+                    ConnectChoice::Btc(entry),
+                    format!(
+                        "{prefix}{} · {}{}",
+                        row.label,
+                        row.path,
+                        self.mn_connect_tag(phrase)
+                    ),
+                    row.entry.address.clone(),
+                    u8::try_from(group).unwrap_or(0),
+                ));
+                selected.push(index == pick);
+            }
+        }
+        (choices, selected, net.display_name().to_owned())
     }
 
     /// Whether the chosen accounts are still the wallet's on the settings network (the window
@@ -425,6 +459,32 @@ impl App {
         logging::info("browser", "site.connected", &[("accounts", Field::Num(1))]);
     }
 
+    /// The origin's Bitcoin grant that may be used now (the settings network, every address
+    /// still one of the wallet's) and has an address for every purpose of `purposes`.
+    fn btc_grant_covering(
+        &self,
+        core: &crate::browser::BrowserCore,
+        origin: &BrowserOrigin,
+        purposes: &[BtcPurpose],
+    ) -> Option<BtcGrant> {
+        let net = self.btc_network_now();
+        let rows = self.btc_dapp_rows();
+        core.btc_grants().into_iter().find(|grant| {
+            grant.origin == *origin
+                && grant.network == net
+                && grant
+                    .addresses
+                    .iter()
+                    .all(|entry| rows.iter().any(|row| row.entry.address == entry.address))
+                && purposes.iter().all(|purpose| {
+                    grant
+                        .addresses
+                        .iter()
+                        .any(|entry| entry.purpose == *purpose)
+                })
+        })
+    }
+
     /// Checks of a queued Solana/Bitcoin site item (unlocked); `None` = not a chain kind,
     /// `Some(None)` = passed (show the window), `Some(Some(outcome))` = finished.
     #[expect(
@@ -473,26 +533,9 @@ impl App {
                 Some(QueueOutcome::Cancelled)
             }
             SiteKind::BtcConnect(purposes) => {
-                // Like a queued `sol_connect` and `eth_requestAccounts`: a grant that may be used
-                // now (this network, every address still one of the wallet's) and covers every
-                // requested purpose answers at once, as the dispatcher does while unlocked.
-                let net = self.btc_network_now();
-                let rows = self.btc_dapp_rows();
-                let usable = core.btc_grants().into_iter().find(|grant| {
-                    grant.origin == site.origin
-                        && grant.network == net
-                        && grant
-                            .addresses
-                            .iter()
-                            .all(|entry| rows.iter().any(|row| row.entry.address == entry.address))
-                        && purposes.iter().all(|purpose| {
-                            grant
-                                .addresses
-                                .iter()
-                                .any(|entry| entry.purpose == *purpose)
-                        })
-                });
-                if let Some(grant) = usable {
+                // Like a queued `sol_connect` and `eth_requestAccounts`: answered at once from a
+                // grant that covers it, as the dispatcher does while unlocked.
+                if let Some(grant) = self.btc_grant_covering(&core, &site.origin, purposes) {
                     self.respond(
                         &site.reply,
                         Ok(crate::browser::dispatch::btc_accounts_value(
@@ -513,8 +556,21 @@ impl App {
                     .sol_grants()
                     .iter()
                     .any(|g| g.origin == site.origin && g.public == *public);
-                let known = self.sol_dapp_rows().iter().any(|row| row.public == *public);
-                (!granted || !known).then_some(QueueOutcome::Revoked)
+                match self
+                    .sol_dapp_rows()
+                    .into_iter()
+                    .find(|row| row.public == *public)
+                {
+                    Some(row) if granted => {
+                        // Not backed up: the vault would refuse the key after the approval.
+                        let phrase = self.sol_source_unconfirmed(row.source);
+                        phrase.map(|phrase| {
+                            self.refuse_unconfirmed(site, phrase);
+                            QueueOutcome::Cancelled
+                        })
+                    }
+                    _ => Some(QueueOutcome::Revoked),
+                }
             }
             SiteKind::BtcSign {
                 address, protocol, ..
@@ -530,7 +586,11 @@ impl App {
                 {
                     Some(row) if granted => {
                         let protocol = protocol.unwrap_or(default_protocol(row.entry.script_type));
-                        if protocol.supports(row.entry.script_type) {
+                        if let Some(phrase) = self.btc_source_unconfirmed(&row.source) {
+                            // Not backed up: the vault would refuse the key after the approval.
+                            self.refuse_unconfirmed(site, phrase);
+                            Some(QueueOutcome::Cancelled)
+                        } else if protocol.supports(row.entry.script_type) {
                             None
                         } else {
                             // e.g. ECDSA for a Taproot address: no BIP137 header exists.

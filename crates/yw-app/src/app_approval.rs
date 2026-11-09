@@ -1077,11 +1077,21 @@ impl App {
             .map(|grant| grant.accounts)
             .unwrap_or_default();
         let accounts = self.own_accounts();
+        // An account whose recovery phrase is not backed up can receive but not sign (spec/02
+        // §8.6): its row says so, and it is not the default of a new site while another is.
+        let unconfirmed: Vec<Option<yw_core::vault::RecordId>> = accounts
+            .iter()
+            .map(|(address, _)| self.evm_account_unconfirmed(address))
+            .collect();
         // A new site starts with the account chosen on the main screen (2026-11-08; account 0
         // before), so the user picks deliberately; the window is still approved explicitly.
-        let current = self.selected_account().map(|(address, ..)| address);
+        let current = self
+            .selected_account()
+            .and_then(|(current, ..)| accounts.iter().position(|(address, _)| *address == current));
         let first = current
-            .and_then(|current| accounts.iter().position(|(address, _)| *address == current))
+            .filter(|index| unconfirmed.get(*index).is_some_and(Option::is_none))
+            .or_else(|| unconfirmed.iter().position(Option::is_none))
+            .or(current)
             .unwrap_or(0);
         let selected = accounts
             .iter()
@@ -1097,10 +1107,11 @@ impl App {
         ConnectState {
             accounts: accounts
                 .into_iter()
-                .map(|(address, label)| {
+                .zip(unconfirmed)
+                .map(|((address, label), phrase)| {
                     (
                         crate::app_chain_sites::ConnectChoice::Evm(address),
-                        label,
+                        format!("{label}{}", self.mn_connect_tag(phrase)),
                         address.to_checksum(),
                         0,
                     )

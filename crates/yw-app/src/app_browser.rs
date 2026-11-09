@@ -872,6 +872,12 @@ impl App {
                 {
                     return Some(QueueOutcome::Revoked);
                 }
+                // An account whose phrase is not backed up: the vault would refuse its key only
+                // after the approval (E-VLT-009), so the page is told before any window.
+                if let Some(phrase) = self.evm_account_unconfirmed(&account) {
+                    self.refuse_unconfirmed(site, phrase);
+                    return Some(QueueOutcome::Cancelled);
+                }
                 if chain_info(&self.settings, site.chain_id).is_none() {
                     self.respond(&site.reply, Err(ProviderError::ChainUnavailable));
                     return Some(QueueOutcome::Cancelled);
@@ -1214,7 +1220,25 @@ impl App {
         if let Some(SignWaiter::Message(reply)) = self.take_sign_waiter(signed.ticket) {
             match signed.result {
                 Ok(signature) => self.respond(&reply, Ok(hex_signature(&signature))),
-                Err(_) => self.respond(&reply, Err(ProviderError::Internal)),
+                Err(failure) => {
+                    self.respond(&reply, Err(ProviderError::Internal));
+                    // Like a dApp transaction's failure (`on_signed`), the app says why nothing
+                    // was signed (the page only gets -32603). A card failure has the card
+                    // step's own banner.
+                    if let MessageSignFailure::Sign(error) = failure {
+                        let reason = match error {
+                            yw_core::evm::sign::SignError::Vault(error) => {
+                                crate::errors::vault_code(error).text()
+                            }
+                            other => other.to_string(),
+                        };
+                        self.banner(
+                            None,
+                            format!("사이트의 메시지에 서명하지 못했습니다: {reason}"),
+                        );
+                        self.refresh();
+                    }
+                }
             }
         }
     }
@@ -1722,6 +1746,92 @@ mod tests {
         app.sync_browser();
         assert_eq!(core.grants()[0].accounts, expected);
         assert!(core.sol_grants().is_empty());
+    }
+
+    /// spec/02 §8.6, spec/05 §4.5, §4.9: an account of an added phrase whose backup quiz has not
+    /// passed can receive but not sign. Its connect-window row says so and is not a new site's
+    /// default; a signing request for it ends 4100 `BackupUnconfirmed` before any window (the
+    /// vault would refuse the key only after the approval) with one notice in the app; once the
+    /// quiz passes it reaches its window.
+    #[test]
+    fn an_unconfirmed_phrase_account_is_tagged_and_refused_before_the_window() {
+        use crate::browser::SiteKind;
+        use crate::meta::{Account, EvmAccountPref, MnemonicEntry};
+        use crate::ui::approval::QueueOutcome;
+        use yw_core::vault::{MnemonicInfo, RecordId};
+        const ACCOUNT_C: &str = "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266";
+        let phrase = RecordId::from_bytes([7; 16]);
+        let mut app = accounts_app(false);
+        let meta = app.meta.as_mut().unwrap();
+        meta.mnemonics = vec![MnemonicEntry {
+            record_id: *phrase.as_bytes(),
+            label: "복구 단어 2".to_owned(),
+            evm: vec![Account {
+                index: 0,
+                label: "계정 1".to_owned(),
+                address: ACCOUNT_C.to_owned(),
+                hidden: false,
+            }],
+        }];
+        // The main screen shows the unconfirmed phrase's account.
+        meta.prefs.evm_account = EvmAccountPref::Mnemonic(*phrase.as_bytes(), 0);
+        let info = |id: RecordId, primary: bool, backup_confirmed: bool| MnemonicInfo {
+            id,
+            created_unix: 0,
+            words: 12,
+            passphrase_used: false,
+            backup_confirmed,
+            primary,
+        };
+        app.mn.infos = vec![
+            info(RecordId::from_bytes([1; 16]), true, true),
+            info(phrase, false, false),
+        ];
+        app.sync_browser();
+        let state = app.connect_state(&site(1, SiteKind::RequestAccounts));
+        let row = |address: &str| {
+            state
+                .accounts
+                .iter()
+                .position(|(choice, ..)| {
+                    *choice == crate::app_chain_sites::ConnectChoice::Evm(addr(address))
+                })
+                .unwrap()
+        };
+        assert!(state.accounts[row(ACCOUNT_C)].1.contains("백업 확인 전"));
+        assert!(!state.accounts[row(ACCOUNT_A)].1.contains("백업 확인 전"));
+        assert!(!state.selected[row(ACCOUNT_C)], "not the default");
+        assert!(state.selected[row(ACCOUNT_A)]);
+        // Connected anyway: its signing request is refused before the window, once noted.
+        let core = Arc::clone(&app.browser.as_ref().unwrap().core);
+        core.upsert_grant(
+            yw_core::policy::ConnectedSite::new(
+                yw_core::policy::BrowserOrigin::parse("https://app.example").unwrap(),
+                vec![addr(ACCOUNT_C)],
+                yw_core::evm::chain::SEPOLIA,
+                0,
+            )
+            .unwrap(),
+        );
+        let sign = SiteKind::PersonalSign {
+            account: addr(ACCOUNT_C),
+            message: b"hi".to_vec(),
+        };
+        for n in [2, 3] {
+            assert_eq!(
+                app.site_preflight(&site(n, sign.clone())),
+                Some(QueueOutcome::Cancelled)
+            );
+        }
+        let notices = app
+            .banners
+            .iter()
+            .filter(|banner| banner.text.contains("백업 확인 전이라"))
+            .count();
+        assert_eq!(notices, 1);
+        // The quiz passed: the request reaches its window.
+        app.mn.infos[1].backup_confirmed = true;
+        assert_eq!(app.site_preflight(&site(4, sign)), None);
     }
 
     /// spec/10 §10: a site connected to a `YubiKey` EVM account may ask it to sign (the request
