@@ -33,8 +33,8 @@
 # cargo 설정 규칙(Confirm-CargoConfigs): cargo는 저장소 루트와 그 모든 상위 폴더(D:\#Programming, D:\ 등)의
 # .cargo\config.toml·.cargo\config, 그리고 CARGO_HOME의 config.toml·config를 빌드에 적용한다. 저장소 자신의 .cargo는
 # 소스의 일부다. CARGO_HOME(위 도구 규칙과 같은 폴더: %CARGO_HOME% 또는 %USERPROFILE%\.cargo)은 사용자 자신의 설정이라
-# 빌드 동작을 바꾸는 키(build.rustc*·build.rustflags, target.*.linker·target.*.rustflags, profile.release.*, [patch]·
-# [source]·paths)가 있을 때 그 키를 출력해 경고만 한다. 그 밖의 상위 폴더에 그런 파일이 하나라도 있으면(드라이브 루트처럼
+# 빌드 동작을 바꾸는 키(build.rustc*·build.rustflags·build.target, target.*.linker·target.*.rustflags, profile.release.*,
+# [patch]·[source]·paths)가 있을 때 그 키를 출력해 경고만 한다. 그 밖의 상위 폴더에 그런 파일이 하나라도 있으면(드라이브 루트처럼
 # 다른 사용자가 만들 수 있는 곳일 수 있다) 목록을 출력하고 종료 7(-AllowAncestorCargoConfig면 계속). 빌드는 또
 # --config로 build.rustc-wrapper·build.rustc-workspace-wrapper를 빈 값으로, target.x86_64-pc-windows-msvc.linker를 기본
 # link.exe로 고정한다.
@@ -64,6 +64,9 @@
 # 빌드 폴더(2026-11-08): CARGO_TARGET_DIR(상대 경로면 저장소 기준), 없으면 저장소의 target. cargo에 --target-dir로 그 폴더를
 # 그대로 넘긴다 — 명령줄이 .cargo\config.toml·CARGO_HOME 설정의 build.target-dir과 CARGO_BUILD_TARGET_DIR보다 우선하므로,
 # 설치 프로그램이 복사해 오는 release\ 폴더가 언제나 이번 빌드의 결과다(다른 곳에 빌드되고 옛 exe가 설치되는 일이 없다).
+# 대상 지정(2026-11-10): CARGO_BUILD_TARGET은 빌드 동안 지우고, 설정 파일의 build.target(결과를 <빌드 폴더>\<대상>\release로
+# 보낸다)은 아래 cargo 설정 규칙대로 경고한다. 그리고 빌드 직전에 release\의 yw-app.exe·yw-host.exe를 지운다: 변경 없는 빌드도
+# cargo가 deps\에서 다시 링크해 되살리고, 결과가 다른 폴더로 간 빌드는 옛 exe를 설치하지 않고 종료 8로 멈춘다.
 # cargo는 빌드 폴더의 빌드 스크립트·proc-macro를 실행하므로 빌드 폴더의 권한(소스 폴더 규칙)과 레이블(아래)은 cargo를 실행하기
 # **전에** 본다: 빌드 폴더와 release\·release\build\·release\deps\(있는 것), 빌드 폴더가 아직 없으면 그것을 만들 가장 가까운
 # 상위 폴더(다른 사용자나 낮은 무결성 프로세스가 먼저 만들 수 있으면 안 된다). 빌드 뒤에도 release\·yw-app.exe·yw-host.exe를
@@ -146,7 +149,8 @@ $ReleaseProfileOverrides = @('codegen-units=1', "lto='fat'", 'overflow-checks=tr
 # 폴더·CARGO_HOME의 설정이나 환경 변수가 정한 값보다 우선한다.
 $BuildConfigOverrides = @("build.rustc-wrapper=''", "build.rustc-workspace-wrapper=''", "target.x86_64-pc-windows-msvc.linker='link.exe'")
 # 빌드(cargo·rustc 실행) 동안만 지우는 환경 변수: 정확한 이름과 접두사(대소문자 무시). RUSTFLAGS 계열은 아래 목록.
-$ClearedBuildVariableNames = @('RUSTC', 'RUSTC_WRAPPER', 'RUSTC_WORKSPACE_WRAPPER')
+# CARGO_BUILD_TARGET은 결과를 <빌드 폴더>\<대상>\release로 보내 설치가 읽는 release\를 비껴간다(머리말의 빌드 폴더).
+$ClearedBuildVariableNames = @('RUSTC', 'RUSTC_WRAPPER', 'RUSTC_WORKSPACE_WRAPPER', 'CARGO_BUILD_TARGET')
 $ClearedBuildVariablePrefixes = @('CARGO_PROFILE_RELEASE_', 'CARGO_BUILD_RUSTC', 'CC', 'CFLAGS', 'CXX', 'CXXFLAGS')
 # 사용자가 Y라고 답할 때만 실행하는 winget 명령(인자 문자열 그대로 winget에 넘긴다).
 $RustupWingetArgs = 'install --id Rustlang.Rustup -e'
@@ -1234,8 +1238,8 @@ function Confirm-Prerequisites([string]$UserSid) {
     return $state
 }
 
-# 빌드 동안 지우는 환경 변수인지(대소문자 무시): RUSTFLAGS 계열 4개, RUSTC·RUSTC_WRAPPER·RUSTC_WORKSPACE_WRAPPER,
-# CARGO_PROFILE_RELEASE_*·CARGO_BUILD_RUSTC*·CC*·CFLAGS*·CXX*·CXXFLAGS*.
+# 빌드 동안 지우는 환경 변수인지(대소문자 무시): RUSTFLAGS 계열 4개, RUSTC·RUSTC_WRAPPER·RUSTC_WORKSPACE_WRAPPER·
+# CARGO_BUILD_TARGET, CARGO_PROFILE_RELEASE_*·CARGO_BUILD_RUSTC*·CC*·CFLAGS*·CXX*·CXXFLAGS*.
 function Test-ClearedBuildVariable([string]$Name) {
     foreach ($exact in @($ClearedBuildVariableNames) + @($RustflagsVariables)) {
         if ($Name.Equals($exact, [StringComparison]::OrdinalIgnoreCase)) { return $true }
@@ -1317,12 +1321,13 @@ function Remove-TomlComment([string]$Line) {
 }
 
 # 빌드 동작을 바꾸는 cargo 설정 키인지(키 조각 배열, 대소문자 구분): build.rustc*(rustc·rustc-wrapper·
-# rustc-workspace-wrapper)·build.rustflags, target.<대상>.linker·target.<대상>.rustflags, profile.release.*, patch.*·
+# rustc-workspace-wrapper)·build.rustflags·build.target(결과가 <빌드 폴더>\<대상>\release로 간다; build.target-dir은
+# 명령줄 --target-dir이 이긴다), target.<대상>.linker·target.<대상>.rustflags, profile.release.*, patch.*·
 # source.*(의존성 소스 바꾸기), paths(경로 재정의).
 function Test-RiskyCargoKey([string[]]$Parts) {
     if ($Parts.Count -lt 1) { return $false }
     $first = $Parts[0]
-    if ($first -ceq 'build') { return $Parts.Count -ge 2 -and ($Parts[1].StartsWith('rustc', [StringComparison]::Ordinal) -or $Parts[1] -ceq 'rustflags') }
+    if ($first -ceq 'build') { return $Parts.Count -ge 2 -and ($Parts[1].StartsWith('rustc', [StringComparison]::Ordinal) -or $Parts[1] -ceq 'rustflags' -or $Parts[1] -ceq 'target') }
     if ($first -ceq 'target') { return $Parts.Count -ge 3 -and ($Parts[2] -ceq 'linker' -or $Parts[2] -ceq 'rustflags') }
     if ($first -ceq 'profile') { return $Parts.Count -ge 2 -and $Parts[1] -ceq 'release' }
     return $first -ceq 'patch' -or $first -ceq 'source' -or $first -ceq 'paths'
@@ -1409,13 +1414,31 @@ function Confirm-CargoConfigs([string]$Root, [string]$CargoHome, [bool]$Allow) {
         $keys = Get-CargoConfigRiskyKeys $text
         if ($keys.Count -gt 0) {
             Write-Warn "CARGO_HOME의 cargo 설정 파일 $file 이 빌드를 바꾸는 키를 정합니다: $($keys -join ', '). 설치 빌드는 컴파일러 래퍼·링커·release 프로필 일부를 명령줄로 다시 정하지만 나머지는 그대로 적용됩니다. 직접 넣은 설정인지 확인하세요."
+            if ($keys -contains 'build.target') {
+                Write-Warn "build.target이 있으면 cargo가 결과를 빌드 폴더\<대상>\release에 만들어 설치가 읽는 release\에 새 exe가 없으므로 설치하지 않고 멈춥니다(종료 8). 설치하려면 그 줄을 지우거나 주석으로 막으세요."
+            }
+        }
+    }
+}
+
+# 빌드 직전에 $TargetDir\release의 yw-app.exe·yw-host.exe를 지운다(머리말의 빌드 폴더). 변경 없는 빌드도 cargo가 deps\에서
+# 다시 링크해 되살리므로 결과는 같고, 설정 파일의 build.target처럼 결과를 다른 폴더로 보내는 빌드는 옛 exe를 남기지 않는다
+# (빌드 뒤 결과 파일이 없어 종료 8 — 옛 코드를 새 버전으로 기록해 설치하는 일이 없다). 지울 수 없으면(그 exe를 실행 중) 종료 8.
+function Remove-StaleBuildOutputs([string]$TargetDir) {
+    foreach ($name in 'yw-app.exe', 'yw-host.exe') {
+        $file = [IO.Path]::Combine($TargetDir, 'release', $name)
+        if (-not [IO.File]::Exists($file)) { continue }
+        try {
+            [IO.File]::Delete($file)
+        } catch {
+            Stop-Install 8 "이전 빌드 결과를 지울 수 없습니다: $file ($((Get-InnerException $_).Message)). 이 파일을 실행 중이면(개발 중 직접 실행한 yw-app, Chrome이 실행한 yw-host) 닫은 뒤 다시 실행하세요."
         }
     }
 }
 
 # Rust $RustToolchain(+툴체인)으로 릴리스 빌드한다. $Tools = Get-RustTools(전체 경로), $TargetDir = 빌드 폴더(전체 경로,
 # --target-dir). 컴파일러·빌드 설정을 바꾸는 환경 변수는 이 함수 동안만 지우고 끝나면 되돌린다. 툴체인 버전·대상이 다르면
-# 종료 7, 빌드 실패는 종료 8.
+# 종료 7, 이전 결과를 지울 수 없거나 빌드가 실패하면 종료 8.
 function Invoke-Build([string]$Root, $Tools, [string]$TargetDir) {
     $saved = Clear-BuildEnvironment
     foreach ($name in @($saved.Keys)) {
@@ -1455,6 +1478,7 @@ function Invoke-Build([string]$Root, $Tools, [string]$TargetDir) {
         if ($hostLine.Count -ne 1 -or $hostLine[0].Trim() -cne 'host: x86_64-pc-windows-msvc') {
             Stop-Install 7 "Rust 기본 대상이 x86_64-pc-windows-msvc가 아닙니다($(if ($hostLine.Count -eq 1) { $hostLine[0] } else { 'host 없음' })). rustup set default-host x86_64-pc-windows-msvc 실행 후 다시 실행하세요."
         }
+        Remove-StaleBuildOutputs $TargetDir
         $argList = Get-CargoBuildArguments $TargetDir
         Write-Host "  $($Tools.Cargo) $($argList -join ' ')"
         Write-Host '  처음 빌드는 crates.io에서 의존성을 내려받고(Cargo.lock 체크섬으로 고정) 몇 분 걸립니다.'
@@ -1648,7 +1672,9 @@ function Invoke-Install {
         } else {
             Invoke-Build $root $tools $cargoTarget
             foreach ($exe in $sourceApp, $sourceHost) {
-                if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { Stop-Install 8 "빌드가 끝났지만 결과 파일이 없습니다: $exe" }
+                if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
+                    Stop-Install 8 "빌드가 끝났지만 결과 파일이 없습니다: $exe. cargo 설정(CARGO_HOME의 config.toml 등)의 build.target이 결과를 $cargoTarget\<대상>\release로 보냈을 수 있습니다(위 경고 참고). 그 줄을 지우거나 주석으로 막은 뒤 다시 실행하세요."
+                }
             }
             Write-Host '  빌드 완료.'
         }

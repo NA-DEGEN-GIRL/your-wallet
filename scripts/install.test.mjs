@@ -862,6 +862,8 @@ const CLEARED = {
   CXX: "evil-cxx", CXXFLAGS: "-O0", "CXXFLAGS_x86_64-pc-windows-msvc": "-O0",
   RUSTC: "evil-rustc", RUSTC_WRAPPER: "evil-wrapper", RUSTC_WORKSPACE_WRAPPER: "evil-wrapper",
   CARGO_BUILD_RUSTC: "evil-rustc", CARGO_BUILD_RUSTC_WRAPPER: "evil-wrapper", CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER: "evil-wrapper",
+  // Moves the output to <target>\<triple>\release, past the release\ folder the installer copies from.
+  CARGO_BUILD_TARGET: "x86_64-pc-windows-msvc",
   CARGO_PROFILE_RELEASE_LTO: "off", CARGO_PROFILE_RELEASE_OVERFLOW_CHECKS: "false", CARGO_PROFILE_RELEASE_PACKAGE_YW_CORE_OPT_LEVEL: "0",
   RUSTFLAGS: "-Cdebug-assertions", CARGO_ENCODED_RUSTFLAGS: "-Cdebug-assertions",
 };
@@ -879,7 +881,7 @@ function releaseProfile(cargoToml) {
 
 const buildShells = windows ? [["Windows PowerShell 5.1", windowsPowerShell], ["PowerShell 7", findOnPath("pwsh.exe")]] : [];
 for (const [label, shell] of buildShells) {
-  test(`install.ps1 Invoke-Build runs cargo +1.95.0 with Cargo.toml's release profile as --config and an explicit --target-dir, clears compiler/build env vars only for the build, and stops on a toolchain mismatch (${label})`, { skip: shell === null ? "pwsh.exe not found" : false, timeout: 120_000 }, async () => {
+  test(`install.ps1 Invoke-Build runs cargo +1.95.0 with Cargo.toml's release profile as --config and an explicit --target-dir, clears compiler/build env vars only for the build, removes the previous release exes first, and stops on a toolchain mismatch (${label})`, { skip: shell === null ? "pwsh.exe not found" : false, timeout: 120_000 }, async () => {
     await withTemp("your-wallet-install-build-", async (temp) => {
       const bin = path.join(temp, "bin");
       await mkdir(bin);
@@ -904,8 +906,15 @@ for (const [label, shell] of buildShells) {
         return { run, lines };
       };
 
+      // An earlier build's exes: removed before cargo runs, so a build whose output goes elsewhere (build.target,
+      // CARGO_BUILD_TARGET) leaves nothing to install instead of the old code (the fake cargo writes no output).
+      const stale = ["yw-app.exe", "yw-host.exe"].map((name) => path.join(targetDir, "release", name));
+      await mkdir(path.join(targetDir, "release"), { recursive: true });
+      for (const file of stale) await writeFile(file, "old build\n");
+
       const { run, lines } = await build({});
       assert.equal(run.status, 0, run.out);
+      for (const file of stale) assert.equal(existsSync(file), false, `${file} left for the installer`);
       const result = JSON.parse(await readFile(out, "utf8"));
 
       // The argument list: +1.95.0 first, then Cargo.toml [profile.release] exactly, then the build.
@@ -1100,7 +1109,7 @@ test("install.ps1 finds ancestor cargo configs (not the repo's own, not CARGO_HO
     await writeFile(path.join(temp, "outer", "mid", ".cargo", "config"), "[build]\n");
     const samples = [
       RISKY_CONFIG,
-      "build.rustc-workspace-wrapper = 'x'\nprofile = { release = { lto = false } }\ntarget.\"x86_64-pc-windows-msvc\".linker = \"a\"\npaths = [\"../x\"]\nbuild = { rustflags = [] }\n",
+      "build.rustc-workspace-wrapper = 'x'\nprofile = { release = { lto = false } }\ntarget.\"x86_64-pc-windows-msvc\".linker = \"a\"\npaths = [\"../x\"]\nbuild = { rustflags = [], target = 'x86_64-pc-windows-msvc' }\n",
       "[build]\nrustdoc = 'x'\njobs = 2\n[env]\nRUSTC_WRAPPER = 'x'\n[target.x86_64-pc-windows-msvc]\nrunner = 'x'\n[profile.dev]\nlto = false\n[registries.x]\nindex = 'y'\n",
       "",
     ];
@@ -1123,7 +1132,7 @@ test("install.ps1 finds ancestor cargo configs (not the repo's own, not CARGO_HO
       "build.rustc-wrapper", "target.x86_64-pc-windows-msvc.linker", "target.cfg(windows).rustflags", "profile.release.opt-level",
       "patch.crates-io.serde", "patch.crates-io.serde.path", "source.crates-io.replace-with",
     ]);
-    assert.deepEqual(result.keys[1], ["build.rustc-workspace-wrapper", "profile.release", "target.x86_64-pc-windows-msvc.linker", "paths", "build.rustflags"]);
+    assert.deepEqual(result.keys[1], ["build.rustc-workspace-wrapper", "profile.release", "target.x86_64-pc-windows-msvc.linker", "paths", "build.rustflags", "build.target"]);
     assert.deepEqual(result.keys[2], []);
     assert.deepEqual(result.keys[3], []);
     // The .cargo folder that is CARGO_HOME (any case) is the user's own configuration, not an ancestor config.

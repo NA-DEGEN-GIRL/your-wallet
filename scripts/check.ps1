@@ -30,8 +30,9 @@ function Get-Tests([string]$Dir, [int]$Code) {
 # 지우고(시스템·사용자 설정은 그대로), cargo에 --config로 컴파일러 래퍼를 끄고 링커를 기본 link.exe로 고정한다. 그래야 게이트
 # 통과가 설치 빌드와 같은 조건을 뜻한다. 이름·접두사·--config 값은 install.ps1과 같아야 한다(scripts/install.test.mjs가 확인;
 # 게이트는 dev·test 프로필도 빌드하므로 CARGO_PROFILE_RELEASE_ 대신 CARGO_PROFILE_ 전체를 지운다). RUSTFLAGS 계열은 지우지
-# 않고 거부한다(아래, 종료 11).
-$ClearedBuildVariableNames = @('RUSTC', 'RUSTC_WRAPPER', 'RUSTC_WORKSPACE_WRAPPER')
+# 않고 거부한다(아래, 종료 11). CARGO_BUILD_TARGET은 결과를 <빌드 폴더>\<대상>\debug로 보내 확장 테스트가 찾는 yw-host.exe를
+# 비껴가게 한다.
+$ClearedBuildVariableNames = @('RUSTC', 'RUSTC_WRAPPER', 'RUSTC_WORKSPACE_WRAPPER', 'CARGO_BUILD_TARGET')
 $ClearedBuildVariablePrefixes = @('CARGO_PROFILE_', 'CARGO_BUILD_RUSTC', 'CC', 'CFLAGS', 'CXX', 'CXXFLAGS')
 $BuildConfigOverrides = @("build.rustc-wrapper=''", "build.rustc-workspace-wrapper=''", "target.x86_64-pc-windows-msvc.linker='link.exe'")
 $clearedNames = @([Environment]::GetEnvironmentVariables('Process').Keys | ForEach-Object { [string]$_ } | Where-Object {
