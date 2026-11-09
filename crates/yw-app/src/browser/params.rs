@@ -701,9 +701,18 @@ fn address_shaped(text: &str) -> bool {
 }
 
 fn personal_sign(values: &[Value]) -> Checked<Validated> {
-    let [message, account] = values else {
+    let [message, account, rest @ ..] = values else {
         return invalid();
     };
+    // web3.js (`web3.eth.personal.sign(message, address, password)`) always sends a third
+    // element, the node-account password or `null`; MetaMask ignores it, and so does this wallet
+    // (never read, logged or kept). Only `null`, a string or an object may stand there.
+    if !matches!(
+        rest,
+        [] | [Value::Null | Value::String(_) | Value::Object(_)]
+    ) {
+        return invalid();
+    }
     let account = address(account)?;
     let message = text(message)?;
     // spec/05 §3.4: the swapped `[address, message]` is refused. When the "message" is itself

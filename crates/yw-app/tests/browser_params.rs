@@ -358,7 +358,34 @@ fn r_v1_personal_sign_utf8_or_hex() -> TestResult {
             Validated::PersonalSign { .. }
         ));
     }
-    bad(Method::PersonalSign, &format!(r#"["0x00","{A}","extra"]"#));
+    // web3.js sends `[message, address, password]`: a `null`, string or object third element is
+    // ignored (same message and account); anything else, or a fourth element, is refused, and
+    // the L11 and order checks still apply.
+    for third in ["null", r#""a password""#, "{}"] {
+        assert_eq!(
+            ok(
+                Method::PersonalSign,
+                &format!(r#"["0x48656c6c6f","{A}",{third}]"#)
+            )?,
+            Validated::PersonalSign {
+                message: b"Hello".to_vec(),
+                account: yw_core::evm::address::parse_address(A).unwrap()
+            },
+            "{third}"
+        );
+    }
+    for third in ["1", "true", "[]"] {
+        bad(Method::PersonalSign, &format!(r#"["0x00","{A}",{third}]"#));
+    }
+    bad(
+        Method::PersonalSign,
+        &format!(r#"["0x00","{A}",null,null]"#),
+    );
+    bad(Method::PersonalSign, &format!(r#"["{A}","{B}",null]"#));
+    bad(
+        Method::PersonalSign,
+        &format!(r#"["{A}","0x48656c6c6f",null]"#),
+    );
     let largest = format!("0x{}", "00".repeat(65_536));
     assert!(matches!(
         ok(Method::PersonalSign, &format!(r#"["{largest}","{A}"]"#))?,

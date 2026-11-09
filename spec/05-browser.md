@@ -527,7 +527,7 @@ EIP-55 판정과 주소 파싱은 yw-core 함수를 쓴다(이름은 [03](03-evm
 | `eth_getTransactionByHash` `eth_getTransactionReceipt` | `[hash32]` | — |
 | `eth_getLogs` | `[filter]` | 아래 |
 | `eth_sendTransaction` | `[tx]` | §3.3 |
-| `personal_sign` | `[message, address]` | message가 `^0x([0-9a-fA-F]{2})*$`면 hex 바이트, 아니면 문자열의 UTF-8 바이트. ≤ 65,536 B. address는 grant 계정(아니면 4100). 순서가 뒤바뀐 `[address, message]`는 거부(-32602). message 자리가 주소 모양(`0x` + 40 hex, 대소문자 무관)이면 순서를 구분할 수 없으므로 뒤바뀐 것으로 보고 거부한다(보안 검토 L11: `[A0, A1]`이 A0의 20바이트를 A1로 서명하는 일이 없다). 19·21바이트 hex는 해당 없음 |
+| `personal_sign` | `[message, address]` 또는 `[message, address, password]` | message가 `^0x([0-9a-fA-F]{2})*$`면 hex 바이트, 아니면 문자열의 UTF-8 바이트. ≤ 65,536 B. address는 grant 계정(아니면 4100). 순서가 뒤바뀐 `[address, message]`는 거부(-32602). message 자리가 주소 모양(`0x` + 40 hex, 대소문자 무관)이면 순서를 구분할 수 없으므로 뒤바뀐 것으로 보고 거부한다(보안 검토 L11: `[A0, A1]`이 A0의 20바이트를 A1로 서명하는 일이 없다). 19·21바이트 hex는 해당 없음. 세 번째 원소(web3.js `personal.sign`의 password 자리, 2026-11-10)는 `null`·문자열·객체일 때 읽지도 남기지도 않고 무시한다(MetaMask와 같음). 그 밖의 타입이나 네 번째 원소는 -32602 |
 | `eth_signTypedData_v4` | `[address, typedData]` | typedData는 JSON 문자열(≤ 131,072 B, `REQUEST_LIMITS`로 엄격 파싱, 객체여야 함) 또는 객체. 최상위 키는 정확히 `types primaryType domain message`. 정규 직렬화 ≤ 131,072 B. address는 grant 계정. domain·스키마 규칙(D17)은 [03](03-evm.md) |
 
 `eth_getLogs` filter: 키는 `fromBlock toBlock blockHash address topics`의 부분집합. `blockHash`가 있으면 `fromBlock`·`toBlock` 금지. `fromBlock`·`toBlock`은 u64 quantity 또는 `latest` `safe` `finalized`(생략은 `latest`). `pending`은 거부하고, `earliest`도 거부한다(`blockHash` 없이 `fromBlock: "earliest"`로 0번 블록부터 훑는 경로 차단). 모두 -32602. `address`는 주소 하나 또는 1–32개 배열. `topics`는 ≤ 4개, 각 항목은 `null`, hash32, 또는 hash32 1–32개 배열. 결과 크기는 §3.5가 제한한다.
