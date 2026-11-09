@@ -70,6 +70,8 @@ enum DataDirError {
     Unavailable,
     /// Owned by someone else or open to others in a way this user cannot repair.
     Untrusted,
+    /// This folder (as shown to the user) is a link (junction, symbolic link) or a file.
+    NotPlain(&'static str),
 }
 
 /// `%LOCALAPPDATA%\YourWallet`, `v3\` and `logs\` (spec/04 §1.4-3), each created or checked by
@@ -85,7 +87,11 @@ fn data_paths() -> Result<(Paths, Vec<DirReport>), DataDirError> {
     let data = base.join("v3");
     let logs = data.join("logs");
     let mut reports = Vec::new();
-    for (tag, dir) in [("base", &base), ("data", &data), ("logs", &logs)] {
+    for (tag, shown, dir) in [
+        ("base", "%LOCALAPPDATA%\\YourWallet", &base),
+        ("data", "%LOCALAPPDATA%\\YourWallet\\v3", &data),
+        ("logs", "%LOCALAPPDATA%\\YourWallet\\v3\\logs", &logs),
+    ] {
         match yw_win::security::ensure_private_dir(dir, &user) {
             Ok(outcome) => {
                 if outcome.repaired || outcome.entries_repaired > 0 {
@@ -94,6 +100,9 @@ fn data_paths() -> Result<(Paths, Vec<DirReport>), DataDirError> {
             }
             Err(yw_win::security::PrivateDirError::Untrusted) => {
                 return Err(DataDirError::Untrusted);
+            }
+            Err(yw_win::security::PrivateDirError::NotPlainDir) => {
+                return Err(DataDirError::NotPlain(shown));
             }
             Err(_) => return Err(DataDirError::Unavailable),
         }
@@ -162,6 +171,11 @@ fn main() -> ExitCode {
         }
         Err(DataDirError::Unavailable) => {
             return fail("데이터 폴더를 만들지 못했습니다. LOCALAPPDATA 경로와 권한을 확인하세요.");
+        }
+        Err(DataDirError::NotPlain(shown)) => {
+            return fail(&format!(
+                "다음 데이터 폴더가 링크(정션·심볼릭 링크)이거나 폴더가 아닌 파일입니다: {shown}\n\n지갑 파일을 보호하기 위해 링크된 데이터 폴더는 쓰지 않습니다. 다른 드라이브로 옮기고 링크를 만들었다면 링크만 지우고(대상 폴더의 지갑 파일은 지우지 마세요) 옮긴 폴더를 원래 자리로 되돌린 뒤 다시 시작하세요."
+            ));
         }
     };
 
