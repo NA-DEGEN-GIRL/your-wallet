@@ -148,7 +148,7 @@ BTC_MAINNET_BG #C42B1C / BTC_MAINNET_TEXT #FFFFFF, BTC_TESTNET4_BG #F7A23B(글�
 | 캡처 제외 | `ui::exclude_from_capture(&Window) -> Result<(), UiError>`(`UiError::CaptureExclusionFailed`). 비밀 클래스는 `create_window`가 숨긴 채 적용하고, 실패 처리는 `ClassSpec.capture`(`CaptureExclusion::{Required, Preferred}`)를 따른다(§1.7, §4.5) |
 | 그리기·입력 | `PaintDc::{fill_rect, round_rect, ellipse, draw_text, measure, select_font}`, `Font::create`, `input::is_down(vk)`. 버튼은 `ControlKind::Button(ButtonStyle)`(소유자 그리기, §1.6 스타일을 yw-app이 넘긴다), `Control::{set_backdrop, set_button_style}`(체크박스·라디오·버튼 모서리 배경 = 놓인 카드·창 색) |
 | 화면 투어(개발 전용) | `ui::capture::{capture_client, dev_tour_redraw, dev_tour_flush, dev_tour_lift_capture_exclusion}`, 스크롤 잔상 점검용 `dev_tour_post_wheel`·`dev_tour_post_vscroll`·`dev_tour_app_env`·`dev_tour_clear_of_pointer` — `#[cfg(debug_assertions)]`라 release 빌드에 없다. 앱 코드는 쓰지 않고 `ui::tour`(`#[ignore]` 테스트)만 쓴다(§11) |
-| 클립보드 | `clipboard::{set_text, set_secret_text -> SecretClip, clear_secret(owner, &SecretClip), read_text(owner, max) -> (WipeBuf<u16>, u32), clear_if_unchanged}`, `ClipError::{Busy, TooLong, Os}` |
+| 클립보드 | `clipboard::{set_text, set_secret_text -> SecretClip, clear_secret(owner, &SecretClip), try_clear_secret(owner, &SecretClip), read_text(owner, max) -> (WipeBuf<u16>, u32), clear_if_unchanged}`, `ClipError::{Busy, TooLong, Os}` |
 | 단일 인스턴스 | `process::SingleInstance::acquire_private`, `ui::find_windows -> Vec<(Poster, u32)>`, `security::verify_process`, `process::allow_set_foreground_window`(§1.1) |
 | 세션·전원·종료 | `session::{register_session_notifications, unregister_session_notifications}`, `Msg::{SessionLock, SessionUnlock, SessionDisconnect, SessionLogoff, Suspend, Resume, QueryEndSession, EndSession}`(§1.5, §5.1) |
 | DPAPI·파일 | `dpapi::{protect -> Vec<u8>, unprotect -> WipeBuf<u8>}`(`WinError`), `file::{atomic_write, read_limited, ensure_dir}`(`FileError`) |
@@ -438,6 +438,8 @@ W04(현재, 새, 새 확인) → 새 비밀번호 검사(E-INP-001/002) → `Key
 | T-COPY-ON | S15 | 복사를 허용하면 복구 단어(니모닉)·개인키를 클립보드에 넣을 수 있습니다. 클립보드 기록·클라우드 동기화에서는 제외하고 30초 뒤 지우지만, 그 사이에는 다른 프로그램이 읽을 수 있습니다. |
 | T-COPY-OFF | W08·W09 | 복사가 꺼져 있습니다. 설정에서 바꿀 수 있습니다. |
 | T-COPIED | W08·W09 | 클립보드에 복사했습니다. 30초 뒤 지웁니다. |
+| T-CLIP-NOT-CLEARED | 주 창 배너(경고, §4.8) | 복사한 복구 단어·개인키를 클립보드에서 지우지 못했습니다(다른 프로그램이 클립보드를 쓰고 있습니다). 아직 클립보드에 남아 있을 수 있으니 다른 텍스트를 복사해 덮어쓰세요. |
+| T-CLIP-CLEARED | 주 창 배너(알림, §4.8) | 클립보드에 남아 있던 복구 단어·개인키를 지웠습니다. |
 | T-PASTE-CLEARED | W01–W07 | 붙여넣은 뒤 클립보드를 비웠습니다. Windows 클립보드 기록(Win+V)을 쓴다면 그 항목도 지우세요. |
 | T-PASTE-EDGE-SPACE | W01–W04·W06 | 앞/뒤 공백이 포함되어 있습니다. 공백도 그대로 비밀번호·passphrase의 일부가 됩니다. |
 | T-MASKED | W05·W07–W10 | 창이 비활성화되어 내용을 가렸습니다. 창을 클릭하면 다시 표시합니다. |
@@ -913,7 +915,8 @@ impl SecretField {
 ### 4.8 복사 (설정 토글)
 - `allowSecretCopy == false`(기본): W08·W09에 `복사` 버튼이 없고 Ctrl+C에는 T-COPY-OFF.
 - `true`: `복사` 버튼과 Ctrl+C. 내용은 W08 = 단어를 공백 하나로 이은 문자열, W09 = 64 hex. `clipboard::set_secret_text`가 한 번의 `OpenClipboard`…`CloseClipboard` 안에서 `CF_UNICODETEXT (13)`(문자열 + NUL)과 `RegisterClipboardFormatW`로 등록한 `"ExcludeClipboardContentFromMonitorProcessing"`·`"CanIncludeInClipboardHistory"`·`"CanUploadToCloudClipboard"`를 각각 DWORD 0으로 넣는다(모니터·기록·클라우드 동기화 제외, D11).
-- 같은 `OpenClipboard`…`CloseClipboard` 안에서 등록 형식 `"YourWalletV3SecretClipNonce"`에 복사마다 새 16바이트 난수(`BCryptGenRandom`)를 함께 넣는다. 반환된 `SecretClip`(그 nonce)을 `App.secret_clip = Some((clip, now))`에 둔다. `SECRET_CLIPBOARD_TTL_MS = 30_000` 뒤, 그리고 잠금·종료 때 `clear_secret(clip)`: 클립보드를 열어 그 형식에 같은 nonce가 아직 있을 때만 비운다(다른 복사로 바뀌었으면 지우지 않는다). T-COPIED.
+- 같은 `OpenClipboard`…`CloseClipboard` 안에서 등록 형식 `"YourWalletV3SecretClipNonce"`에 복사마다 새 16바이트 난수(`BCryptGenRandom`)를 함께 넣는다. 반환된 `SecretClip`(그 nonce)을 `App.secret_clip`(`PendingClip`: nonce, 복사 시각, 재시도 상태)에 둔다. `SECRET_CLIPBOARD_TTL_MS = 30_000` 뒤, 그리고 잠금·종료 때 `clear_secret(clip)`: 클립보드를 열어 그 형식에 같은 nonce가 아직 있을 때만 비운다(다른 복사로 바뀌었으면 지우지 않는다). T-COPIED.
+- 클립보드가 바쁠 때(2026-11-10): 다른 프로그램(클립보드 관리자, RDP 클립보드 동기화, 큰 붙여넣기)이 클립보드를 잡고 있어 `clear_secret`이 `Busy`(또는 `Os`)면 `secret_clip`을 버리지 않고 주 타이머 틱(250 ms)마다 `try_clear_secret`(`OpenClipboard` 1회, UI 스레드에서 잠자지 않음)으로 다시 지운다. 처음 실패에서 5초(`SECRET_CLIPBOARD_NOTICE_MS`)가 지나도 못 지우면 주 창에 배너 T-CLIP-NOT-CLEARED(경고)를 한 번 보이고 계속 시도하며, 5분(`SECRET_CLIPBOARD_RETRY_MS`) 뒤 멈춘다(배너는 남는다). 그 사이 지우면 배너를 T-CLIP-CLEARED로 바꾸고, 다른 내용으로 바뀌었으면 배너만 내린다(새 비밀 복사도 같다). 잠금 때 못 지운 것은 잠긴 뒤에도 틱이 다시 시도한다. 종료 때는 뒤에 틱이 없으므로 약 1초 동안(`clear_secret` 반복) 시도한다. 로그 `clipboard.secret_clear cleared=yes|no|busy|gave_up`(재시도마다는 남기지 않는다).
 - 시퀀스 번호로 판정하지 않는 이유: `CloseClipboard`가 합성 형식(`CF_LOCALE`·`CF_TEXT`·`CF_OEMTEXT`)을 더하며 번호를 다시 올리므로, 닫기 전에 읽은 번호는 자동 삭제 때 결코 같지 않았다(적대적 검토로 확인, yw-win `tests/clipboard_winsta.rs`가 사설 window station에서 실제 클립보드로 시험).
 - 한계: 클립보드 전역 메모리는 시스템 소유라 0으로 덮을 수 없다(`EmptyClipboard`는 해제만). 앱이 비정상 종료하면 자동 삭제가 없다.
 

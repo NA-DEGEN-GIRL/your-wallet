@@ -4299,3 +4299,44 @@ fn hidden_account_comes_back_with_show_again() {
     assert!(app.hidden_rows(Family::Evm).is_empty());
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// Spec/04 §4.8: a clear that finds the clipboard busy is retried on every tick, says so once
+/// after 5 s busy, stops after 5 minutes, and ends as soon as an attempt gets through.
+#[test]
+fn a_busy_secret_clipboard_clear_is_retried_noticed_once_and_bounded() {
+    use super::{
+        ClipRetry, ClipStep, SECRET_CLIPBOARD_NOTICE_MS, SECRET_CLIPBOARD_RETRY_MS, clip_step,
+    };
+    use yw_win::clipboard::ClipError;
+
+    let busy = Err(ClipError::Busy);
+    let start = 30_000;
+    let mut retry = ClipRetry::default();
+    assert_eq!(clip_step(&mut retry, start, busy), ClipStep::Retry(false));
+    assert_eq!(
+        clip_step(&mut retry, start + 250, busy),
+        ClipStep::Retry(false)
+    );
+    let notice_at = start + SECRET_CLIPBOARD_NOTICE_MS;
+    assert_eq!(
+        clip_step(&mut retry, notice_at, busy),
+        ClipStep::Retry(true)
+    );
+    assert_eq!(
+        clip_step(&mut retry, notice_at + 250, busy),
+        ClipStep::Retry(false)
+    );
+    assert!(retry.noticed);
+    let end = start + SECRET_CLIPBOARD_RETRY_MS;
+    assert_eq!(clip_step(&mut retry, end - 1, busy), ClipStep::Retry(false));
+    assert_eq!(clip_step(&mut retry, end, busy), ClipStep::GiveUp);
+
+    let mut retry = ClipRetry::default();
+    assert_eq!(clip_step(&mut retry, 1, busy), ClipStep::Retry(false));
+    assert_eq!(clip_step(&mut retry, 2, Ok(true)), ClipStep::Done(true));
+    // Replaced by another copy meanwhile: nothing to clear, no more retries.
+    assert_eq!(
+        clip_step(&mut ClipRetry::default(), 3, Ok(false)),
+        ClipStep::Done(false)
+    );
+}

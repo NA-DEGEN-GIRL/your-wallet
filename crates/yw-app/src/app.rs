@@ -40,7 +40,7 @@ use crate::meta::{EvmAccountPref, Meta, RawAccount};
 use crate::network::NetworkId;
 use crate::settings::{LogLevel, RpcTemplate, Settings};
 use crate::text::is_valid_label;
-use crate::ui::main_window::{ControlSet, Placed, layout, paint};
+use crate::ui::main_window::{ControlSet, Placed, Tone, layout, paint};
 use crate::ui::secret::{
     CaptureDecision, DisplaySecret, FormAction, PASTE_MAX_UTF16_UNITS, SECRET_TIMER_ID,
     SECRET_TIMER_MS, SecretForm, SecretKind, SecretStep, Submission, capture_decision,
@@ -64,6 +64,18 @@ pub const INSTANCE_ALIAS: &str = "YourWalletV3";
 pub const INSTANCE_MUTEX: &str = "app";
 /// Secret clipboard lifetime (D11).
 pub const SECRET_CLIPBOARD_TTL_MS: u64 = 30_000;
+/// How long a clear that found the clipboard busy is retried (spec/04 §4.8): every main tick,
+/// one `OpenClipboard` each, no sleep on the UI thread.
+pub const SECRET_CLIPBOARD_RETRY_MS: u64 = 300_000;
+/// Busy this long, the main window says the copy is still on the clipboard (retries go on).
+pub const SECRET_CLIPBOARD_NOTICE_MS: u64 = 5_000;
+/// At shutdown (no later tick): retries of a busy clear for about this long.
+const SECRET_CLIPBOARD_EXIT_MS: u64 = 1_000;
+/// T-CLIP-NOT-CLEARED (spec/04 §4.8): the main-window banner while a secret copy could not be
+/// cleared.
+pub const T_CLIP_NOT_CLEARED: &str = "복사한 복구 단어·개인키를 클립보드에서 지우지 못했습니다(다른 프로그램이 클립보드를 쓰고 있습니다). 아직 클립보드에 남아 있을 수 있으니 다른 텍스트를 복사해 덮어쓰세요.";
+/// The banner after a clear that succeeded only on a retry.
+const T_CLIP_CLEARED_LATE: &str = "클립보드에 남아 있던 복구 단어·개인키를 지웠습니다.";
 const MAIN_TIMER_ID: usize = 1;
 const LOG_FLUSH_MS: u64 = 2_000;
 const SESSION_RETRY_MS: u64 = 1_000;
@@ -395,6 +407,68 @@ pub struct Banner {
     pub tone: crate::ui::main_window::Tone,
 }
 
+/// A secret copy still to be cleared from the clipboard (spec/04 §4.8).
+#[derive(Clone, Copy, Debug)]
+struct PendingClip {
+    clip: SecretClip,
+    /// When it was copied: the clear is due [`SECRET_CLIPBOARD_TTL_MS`] later (or at lock).
+    copied_ms: u64,
+    retry: ClipRetry,
+}
+
+impl PendingClip {
+    const fn new(clip: SecretClip, copied_ms: u64) -> Self {
+        Self {
+            clip,
+            copied_ms,
+            retry: ClipRetry {
+                busy_since_ms: None,
+                noticed: false,
+            },
+        }
+    }
+
+    const fn due(&self, now: u64) -> bool {
+        self.retry.busy_since_ms.is_some()
+            || now.saturating_sub(self.copied_ms) >= SECRET_CLIPBOARD_TTL_MS
+    }
+}
+
+/// The retry state of a pending clear.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct ClipRetry {
+    /// When a clear first found the clipboard busy: retried every tick from then on.
+    busy_since_ms: Option<u64>,
+    /// [`T_CLIP_NOT_CLEARED`] is showing.
+    noticed: bool,
+}
+
+/// What one clear attempt of a pending secret copy means (spec/04 §4.8).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ClipStep {
+    /// Cleared, or replaced by another copy meanwhile (`true` = it was emptied).
+    Done(bool),
+    /// Busy: try again on the next tick (`true` = show [`T_CLIP_NOT_CLEARED`] now).
+    Retry(bool),
+    /// Busy for [`SECRET_CLIPBOARD_RETRY_MS`]: stop retrying.
+    GiveUp,
+}
+
+/// The step after a clear attempt at `now` that returned `result`. A failure starts (or continues)
+/// the busy period that bounds the retries and decides when the notice appears (once).
+fn clip_step(retry: &mut ClipRetry, now: u64, result: Result<bool, ClipError>) -> ClipStep {
+    let Err(_) = result else {
+        return ClipStep::Done(matches!(result, Ok(true)));
+    };
+    let busy_for = now.saturating_sub(*retry.busy_since_ms.get_or_insert(now));
+    if busy_for >= SECRET_CLIPBOARD_RETRY_MS {
+        return ClipStep::GiveUp;
+    }
+    let notice = !retry.noticed && busy_for >= SECRET_CLIPBOARD_NOTICE_MS;
+    retry.noticed |= notice;
+    ClipStep::Retry(notice)
+}
+
 /// Paths of the data folder.
 #[derive(Clone, Debug)]
 pub struct Paths {
@@ -589,7 +663,7 @@ pub struct App {
     import: ImportFlow,
     challenge: Option<BackupChallenge>,
     pub(crate) idle: IdleTracker,
-    secret_clip: Option<(SecretClip, u64)>,
+    secret_clip: Option<PendingClip>,
     startup_load: bool,
     session_retries: u32,
     session_next_ms: u64,
@@ -1228,10 +1302,8 @@ impl App {
         self.idle_tick(now);
         self.wait_tick(now);
         self.reset_hold_tick(now);
-        if let Some((clip, at)) = self.secret_clip
-            && now.saturating_sub(at) >= SECRET_CLIPBOARD_TTL_MS
-        {
-            self.clear_secret_clip(clip);
+        if self.secret_clip.is_some_and(|pending| pending.due(now)) {
+            self.clear_secret_clip(now);
         }
         self.evm_tick(now);
         self.hc_tick(now);
@@ -1321,23 +1393,102 @@ impl App {
         self.set_screen(Screen::FirstRun);
     }
 
-    fn clear_secret_clip(&mut self, clip: SecretClip) {
-        self.secret_clip = None;
-        if let Some(main) = self.main.as_ref() {
-            let result = clipboard::clear_secret(main, &clip);
+    /// The automatic clear of the pending secret copy (spec/04 §4.8), when due (copy + 30 s, or
+    /// at lock). The first attempt retries `OpenClipboard` 5 times 20 ms apart; while another
+    /// program holds the clipboard, every main tick tries once more (no sleep) for
+    /// [`SECRET_CLIPBOARD_RETRY_MS`], and after [`SECRET_CLIPBOARD_NOTICE_MS`] of that the main
+    /// window says so ([`T_CLIP_NOT_CLEARED`]) instead of leaving the user believing it is gone.
+    fn clear_secret_clip(&mut self, now: u64) {
+        let Some(mut pending) = self.secret_clip.take() else {
+            return;
+        };
+        let Some(main) = self.main.as_ref() else {
+            return;
+        };
+        let retrying = pending.retry.busy_since_ms.is_some();
+        let result = if retrying {
+            clipboard::try_clear_secret(main, &pending.clip)
+        } else {
+            clipboard::clear_secret(main, &pending.clip)
+        };
+        let step = clip_step(&mut pending.retry, now, result);
+        let outcome = match step {
+            ClipStep::Done(true) => "yes",
+            ClipStep::Done(false) => "no",
+            ClipStep::Retry(_) => "busy",
+            ClipStep::GiveUp => "gave_up",
+        };
+        // Every outcome once: the retries in between are not logged.
+        if !(retrying && matches!(step, ClipStep::Retry(_))) {
             logging::info(
                 "app",
                 "clipboard.secret_clear",
-                &[(
-                    "cleared",
-                    Field::Word(if matches!(result, Ok(true)) {
-                        "yes"
-                    } else {
-                        "no"
-                    }),
-                )],
+                &[("cleared", Field::Word(outcome))],
             );
         }
+        match step {
+            ClipStep::Done(cleared) => {
+                if pending.retry.noticed {
+                    self.drop_clip_notice();
+                    if cleared {
+                        self.notice(T_CLIP_CLEARED_LATE.to_owned(), Tone::Info);
+                    }
+                    self.refresh();
+                }
+            }
+            ClipStep::Retry(notice) => {
+                self.secret_clip = Some(pending);
+                if notice {
+                    self.notice(T_CLIP_NOT_CLEARED.to_owned(), Tone::Warn);
+                    self.refresh();
+                }
+            }
+            // The banner stays: the copy may still be there. (Not shown yet only when the PC
+            // slept through the whole retry period.)
+            ClipStep::GiveUp => {
+                if !pending.retry.noticed {
+                    self.notice(T_CLIP_NOT_CLEARED.to_owned(), Tone::Warn);
+                    self.refresh();
+                }
+            }
+        }
+    }
+
+    /// At shutdown there is no later tick: a busy clipboard is retried for about
+    /// [`SECRET_CLIPBOARD_EXIT_MS`].
+    fn clear_secret_clip_at_exit(&mut self) {
+        let Some(pending) = self.secret_clip.take() else {
+            return;
+        };
+        let Some(main) = self.main.as_ref() else {
+            return;
+        };
+        let deadline = now_ms().saturating_add(SECRET_CLIPBOARD_EXIT_MS);
+        let result = loop {
+            let result = clipboard::clear_secret(main, &pending.clip);
+            if result.is_ok() || now_ms() >= deadline {
+                break result;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        logging::info(
+            "app",
+            "clipboard.secret_clear",
+            &[(
+                "cleared",
+                Field::Word(match result {
+                    Ok(true) => "yes",
+                    Ok(false) => "no",
+                    Err(_) => "gave_up",
+                }),
+            )],
+        );
+    }
+
+    /// Removes [`T_CLIP_NOT_CLEARED`] (the caller refreshes).
+    fn drop_clip_notice(&mut self) {
+        self.banners
+            .retain(|banner| banner.text != T_CLIP_NOT_CLEARED);
     }
 
     // ----- lock and shutdown -------------------------------------------------------------
@@ -1357,8 +1508,11 @@ impl App {
         self.close_secret();
         self.import = ImportFlow::default();
         self.challenge = None;
-        if let Some((clip, _)) = self.secret_clip {
-            self.clear_secret_clip(clip);
+        if self.mode == AppMode::ShuttingDown {
+            self.clear_secret_clip_at_exit();
+        } else {
+            // Due now; a busy clipboard keeps being retried by the tick after the lock.
+            self.clear_secret_clip(now_ms());
         }
         self.evm_lock();
         self.book = crate::app_book::BookUi::default();
@@ -2428,9 +2582,10 @@ impl App {
         let Some(units) = secret.form.copy_units() else {
             return;
         };
+        let mut replaced = None;
         match clipboard::set_secret_text(&secret.window, &units) {
             Ok(clip) => {
-                self.secret_clip = Some((clip, now_ms()));
+                replaced = self.secret_clip.replace(PendingClip::new(clip, now_ms()));
                 secret.form.set_info(Some(
                     "클립보드에 복사했습니다. 30초 뒤 지웁니다.".to_owned(),
                 ));
@@ -2443,6 +2598,11 @@ impl App {
             Err(_) => secret.form.set_error(Some(ErrorCode::Sec002.text())),
         }
         secret.window.invalidate();
+        // This copy replaced the earlier one whose clear was still being retried.
+        if replaced.is_some_and(|old| old.retry.noticed) {
+            self.drop_clip_notice();
+            self.refresh();
+        }
     }
 
     #[expect(clippy::too_many_lines, reason = "one arm per secret-window purpose")]

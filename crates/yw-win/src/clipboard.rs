@@ -102,11 +102,16 @@ pub(crate) trait ClipOps {
 }
 
 fn open_with_retry(ops: &mut impl ClipOps) -> Result<(), ClipError> {
-    for attempt in 0..OPEN_ATTEMPTS {
+    open_with_attempts(ops, OPEN_ATTEMPTS)
+}
+
+/// `attempts` tries of `OpenClipboard`, [`OPEN_RETRY_MS`] apart (no sleep after the last).
+fn open_with_attempts(ops: &mut impl ClipOps, attempts: u32) -> Result<(), ClipError> {
+    for attempt in 0..attempts {
         if ops.open() {
             return Ok(());
         }
-        if attempt.saturating_add(1) < OPEN_ATTEMPTS {
+        if attempt.saturating_add(1) < attempts {
             ops.sleep(OPEN_RETRY_MS);
         }
     }
@@ -163,7 +168,16 @@ pub(crate) fn clear_secret_with(
     ops: &mut impl ClipOps,
     clip: &SecretClip,
 ) -> Result<bool, ClipError> {
-    open_with_retry(ops)?;
+    clear_secret_attempts(ops, clip, OPEN_ATTEMPTS)
+}
+
+/// [`clear_secret_with`] with `attempts` tries of `OpenClipboard`.
+pub(crate) fn clear_secret_attempts(
+    ops: &mut impl ClipOps,
+    clip: &SecretClip,
+    attempts: u32,
+) -> Result<bool, ClipError> {
+    open_with_attempts(ops, attempts)?;
     let result = (|| {
         let format = ops.register_format(MARKER_FORMAT).map_err(ClipError::Os)?;
         let ours = ops
@@ -476,6 +490,16 @@ pub fn clear_secret(owner: &Window, clip: &SecretClip) -> Result<bool, ClipError
     clear_secret_with(&mut ops_for(owner), clip)
 }
 
+/// [`clear_secret`] with a single `OpenClipboard` attempt and no sleep: the retry of a clear that
+/// found the clipboard busy, once per timer tick of the UI thread.
+///
+/// # Errors
+///
+/// [`ClipError::Busy`] when another program holds the clipboard open, or another [`ClipError`].
+pub fn try_clear_secret(owner: &Window, clip: &SecretClip) -> Result<bool, ClipError> {
+    clear_secret_attempts(&mut ops_for(owner), clip, 1)
+}
+
 /// Reads `CF_UNICODETEXT` (≤ `max_units`) and the current sequence number.
 ///
 /// # Errors
@@ -514,8 +538,8 @@ pub fn clear_if_unchanged(owner: &Window, seq: u32) -> Result<bool, ClipError> {
 mod tests {
     use super::{
         ClipError, ClipOps, EXCLUSION_FORMATS, MARKER_FORMAT, MAX_TEXT_UNITS,
-        clear_if_unchanged_with, clear_secret_with, read_with, set_plain_with, set_secret_with,
-        text_len_within,
+        clear_if_unchanged_with, clear_secret_attempts, clear_secret_with, read_with,
+        set_plain_with, set_secret_with, text_len_within,
     };
     use crate::error::WinError;
     use crate::mem::WipeBuf;
@@ -764,6 +788,19 @@ mod tests {
             ..Mock::default()
         };
         assert!(set_secret_with(&mut mock, &units("x"), NONCE).is_ok());
+
+        // The timer-tick retry of a busy clear: one attempt, never a sleep on the UI thread.
+        let mut mock = Mock::default();
+        let clip = set_secret_with(&mut mock, &units("x"), NONCE).unwrap();
+        mock.open_failures = 1;
+        mock.ops.clear();
+        assert_eq!(
+            clear_secret_attempts(&mut mock, &clip, 1),
+            Err(ClipError::Busy)
+        );
+        assert!(mock.ops.is_empty());
+        assert_eq!(clear_secret_attempts(&mut mock, &clip, 1), Ok(true));
+        assert!(mock.content.is_none());
     }
 
     #[test]

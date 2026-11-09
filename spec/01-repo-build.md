@@ -1038,15 +1038,17 @@ pub fn unprotect(blob: &[u8], entropy: &[u8]) -> Result<WipeBuf<u8>, WinError>; 
 ```rust
 pub enum ClipError { Busy, TooLong, Os(WinError) }
 pub fn set_text(owner: &ui::Window, text: &str) -> Result<(), ClipError>;               // 비밀 아님(주소 등), ≤ 4096자
-pub fn set_secret_text(owner: &ui::Window, text: &[u16]) -> Result<u32, ClipError>;     // ≤ 4096단위, 반환 = 설정 직후 순번
+pub fn set_secret_text(owner: &ui::Window, text: &[u16]) -> Result<SecretClip, ClipError>;  // ≤ 4096단위, 반환 = 이 복사의 nonce
+pub fn clear_secret(owner: &ui::Window, clip: &SecretClip) -> Result<bool, ClipError>;  // 그 nonce가 아직 있을 때만 비움
+pub fn try_clear_secret(owner: &ui::Window, clip: &SecretClip) -> Result<bool, ClipError>;  // 같음, OpenClipboard 1회·대기 없음(재시도용)
 pub fn read_text(owner: &ui::Window, max_units: usize) -> Result<(WipeBuf<u16>, u32), ClipError>;  // (내용, 순번)
 pub fn clear_if_unchanged(owner: &ui::Window, seq: u32) -> Result<bool, ClipError>;     // 순번이 같을 때만 비움
 ```
 
 - 공통: `OpenClipboard(owner)`(20 ms 간격 5회, 실패 시 `Busy`) … `CloseClipboard`. 텍스트는 `GlobalAlloc(GMEM_MOVEABLE)` 메모리에 UTF-16으로 직접 쓰고 `SetClipboardData(CF_UNICODETEXT = 13)`.
-- `set_secret_text`: `EmptyClipboard` → `RegisterClipboardFormatW`로 얻은 `ExcludeClipboardContentFromMonitorProcessing`, `CanIncludeInClipboardHistory`, `CanUploadToCloudClipboard`에 각각 DWORD 0 → 마지막에 텍스트 → `GetClipboardSequenceNumber()`(클립보드를 연 채로 읽는다: 닫은 직후 다른 프로세스가 복사하면 그 순번을 잡아 남의 내용을 지울 수 있다) → `CloseClipboard` → 그 순번 반환. 제외 형식 하나라도 실패하면 텍스트 없이 `EmptyClipboard` 후 오류. `SetClipboardData`가 실패하면(소유권이 넘어가지 않음) 블록을 잠가 0으로 지운 뒤 `GlobalFree`.
+- `set_secret_text`: `EmptyClipboard` → `RegisterClipboardFormatW`로 얻은 `ExcludeClipboardContentFromMonitorProcessing`, `CanIncludeInClipboardHistory`, `CanUploadToCloudClipboard`에 각각 DWORD 0 → 등록 형식 `YourWalletV3SecretClipNonce`에 복사마다 새 16바이트 난수 → 마지막에 텍스트 → `CloseClipboard` → 그 nonce(`SecretClip`) 반환. 제외 형식·nonce 하나라도 실패하면 텍스트 없이 `EmptyClipboard` 후 오류. `SetClipboardData`가 실패하면(소유권이 넘어가지 않음) 블록을 잠가 0으로 지운 뒤 `GlobalFree`. 순번으로 판정하지 않는 이유는 [04](04-app-ui.md) §4.8.
 - `read_text`: `GlobalSize`가 0(실패 또는 빈 블록)이면 텍스트 없음, NUL은 처음 `max_units + 1`단위까지만 찾는다(그 안에 없고 블록이 더 길면 `TooLong`).
-- 자동 삭제(D11 30초)는 yw-app 타이머가 `clear_if_unchanged(owner, seq)`로 한다. 순번이 다르면(사용자가 이후 다른 것을 복사) 건드리지 않는다. 잠금·종료 때도 같은 호출([04](04-app-ui.md)).
+- 자동 삭제(D11 30초)는 yw-app 타이머가 `clear_secret(owner, clip)`으로 한다. 그 nonce가 없으면(사용자가 이후 다른 것을 복사) 건드리지 않는다. 잠금·종료 때도 같은 호출이고, `Busy`면 yw-app이 `try_clear_secret`으로 다시 시도한다([04](04-app-ui.md) §4.8).
 - 시스템이 해제한 GlobalAlloc 메모리는 지워지지 않는다(§2.2 범위 밖).
 
 ### 7.4 `http`
