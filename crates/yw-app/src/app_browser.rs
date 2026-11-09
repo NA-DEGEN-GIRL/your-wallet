@@ -30,6 +30,7 @@ use crate::events::{EventQueue, MessageSignFailure, MessageSigned, SignTicket};
 use crate::flow::evm::track::BroadcastOutcome;
 use crate::flow::evm::{SharedTransport, SystemClock, chain_info};
 use crate::logging::{self, Field};
+use crate::meta::EvmAccountPref;
 use crate::network::NetworkId;
 use crate::ui::approval::{QueueOutcome, QueueSource};
 use crate::ui::secret::SecretKind;
@@ -901,6 +902,28 @@ impl App {
         }
     }
 
+    /// A removed imported EVM key or recovery phrase took `accounts` with it: each address
+    /// leaves the grants ([`Self::account_removed_from_sites`]) unless another visible account
+    /// still has it — the same key imported beside a derived, added-phrase or `YubiKey` account
+    /// (spec/02 §8.4) — like the Solana and Bitcoin helpers keep a key or address the wallet
+    /// still shows (spec/05 §4.1). `leaving` names the account-list rows that go with the
+    /// removal (meta still lists them).
+    pub(crate) fn evm_key_removed_from_sites(
+        &mut self,
+        accounts: &[Address],
+        leaving: impl Fn(EvmAccountPref) -> bool,
+    ) {
+        let held: Vec<Address> = self
+            .account_rows()
+            .into_iter()
+            .filter(|(pref, ..)| !leaving(*pref))
+            .filter_map(|(_, _, address, _)| yw_core::evm::address::parse_address(&address).ok())
+            .collect();
+        for account in accounts.iter().filter(|account| !held.contains(account)) {
+            self.account_removed_from_sites(account);
+        }
+    }
+
     /// A user chain was deleted (spec/05 §4.3): origins move to `evmChainId`, grants are
     /// rewritten, signing items on that chain end with 4901.
     pub fn chain_removed_from_sites(&mut self, chain_id: u64) {
@@ -1418,6 +1441,64 @@ mod tests {
             crate::app_evm::QueuedItem::Site(site)
                 if matches!(&site.kind, SiteKind::PersonalSign { account, .. } if *account == addr(ACCOUNT_A))
         )));
+    }
+
+    /// spec/05 §4.1, spec/02 §8.4: removing an imported EVM key or an added recovery phrase
+    /// takes an address out of the grants only when no other visible account has it (the same
+    /// key may be imported beside a derived or added-phrase account).
+    #[test]
+    fn a_removed_key_or_phrase_keeps_the_grants_of_addresses_still_shown() {
+        use crate::meta::{Account, MnemonicEntry, RawAccount};
+        use crate::workers::key::mnemonics::MnOutcome;
+        use yw_core::vault::RecordId;
+        const ACCOUNT_C: &str = "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266";
+        let phrase = [7_u8; 16];
+        let mut app = accounts_app(false);
+        let raw = |n: u8, address: &str| RawAccount {
+            record_id: [n; 16],
+            label: format!("가져온 계정 {n}"),
+            address: address.to_owned(),
+        };
+        let meta = app.meta.as_mut().unwrap();
+        meta.evm_raw_accounts = vec![raw(1, ACCOUNT_B), raw(2, ACCOUNT_C)];
+        meta.mnemonics = vec![MnemonicEntry {
+            record_id: phrase,
+            label: "복구 단어 2".to_owned(),
+            evm: vec![Account {
+                index: 0,
+                label: "계정 1".to_owned(),
+                address: ACCOUNT_C.to_owned(),
+                hidden: false,
+            }],
+        }];
+        app.sync_browser();
+        let core = Arc::clone(&app.browser.as_ref().unwrap().core);
+        core.upsert_grant(
+            yw_core::policy::ConnectedSite::new(
+                yw_core::policy::BrowserOrigin::parse("https://app.example").unwrap(),
+                vec![addr(ACCOUNT_A), addr(ACCOUNT_B), addr(ACCOUNT_C)],
+                yw_core::evm::chain::SEPOLIA,
+                0,
+            )
+            .unwrap(),
+        );
+        let granted = || {
+            core.grants()
+                .first()
+                .map(|site| site.accounts.clone())
+                .unwrap_or_default()
+        };
+        // B stays derived account 2 and C the added phrase's account: both stay connected.
+        app.on_evm_raw_key_removed(RecordId::from_bytes([1; 16]));
+        app.on_evm_raw_key_removed(RecordId::from_bytes([2; 16]));
+        assert!(app.meta.as_ref().unwrap().evm_raw_accounts.is_empty());
+        assert_eq!(
+            granted(),
+            vec![addr(ACCOUNT_A), addr(ACCOUNT_B), addr(ACCOUNT_C)]
+        );
+        // The phrase was C's last source: C leaves.
+        app.on_mn_outcome(MnOutcome::Removed(Ok(RecordId::from_bytes(phrase))), 0);
+        assert_eq!(granted(), vec![addr(ACCOUNT_A), addr(ACCOUNT_B)]);
     }
 
     /// spec/10 §10: a site connected to a `YubiKey` EVM account may ask it to sign (the request

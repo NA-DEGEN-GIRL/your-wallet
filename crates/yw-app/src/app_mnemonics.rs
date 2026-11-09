@@ -985,9 +985,13 @@ impl App {
                             .collect()
                     })
                     .unwrap_or_default();
-                for address in &removed {
-                    self.account_removed_from_sites(address);
-                }
+                // An address another visible account still has (the same key imported, a
+                // `YubiKey` account made from the same words) keeps its connections.
+                let phrase = *id.as_bytes();
+                self.evm_key_removed_from_sites(
+                    &removed,
+                    |pref| matches!(pref, EvmAccountPref::Mnemonic(of, _) if of == phrase),
+                );
                 self.mn_chain_accounts_removed(id);
                 self.after_change();
             }

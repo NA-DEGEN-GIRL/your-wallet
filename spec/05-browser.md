@@ -587,7 +587,7 @@ pub struct ConnectedSite {
 - 한도 정본은 [02] §5.3이다: grant 0..=256개, grant당 계정 1..=16개. 연결 창은 17개 이상을 고를 수 없고(§4.2), `accountsChanged` payload도 최대 16개다(§2.8). grant가 256개인 상태에서 새 origin이 연결을 요청하면 창을 띄우지 않고 4100(연결된 사이트 화면에서 해제한 뒤 다시 요청).
 - 계정 주소는 연결된 origin에만 노출한다. 연결되지 않은 origin이 계정을 요구하는 메서드를 부르면 4100이다. 연결 안 된 계정을 지정한 경우도 같은 4100이다(계정 존재 여부를 구분해 알려주지 않는다).
 - 지갑(vault)이 없으면 계정 관련 메서드는 4100, `eth_accounts`는 `[]`다.
-- 계정을 지갑에서 숨기거나 지우면([04](04-app-ui.md)) 모든 grant에서 빼고, 빈 grant는 삭제한다. meta를 읽을 때(`LoadMeta`, 잠금 해제 포함)도 계정 정리 뒤 지갑에 없는 계정을 grant에서 뺀다(§4.9, 2026-11-10). 그 계정을 서명 계정으로 하는 dApp 서명 요청(`eth_sendTransaction`·`personal_sign`·`eth_signTypedData_v4`)은 대기 중이든 표시 중이든 `Revoked`(4100)로 끝나고 표시 중인 창은 닫힌다(체인 삭제 §4.3과 같은 방식, 보안 검토 L4(b)).
+- 계정을 지갑에서 숨기거나 지우면([04](04-app-ui.md)) 모든 grant에서 빼고, 빈 grant는 삭제한다. 가져온 EVM 키나 추가한 복구 단어를 지울 때 그 주소가 숨기지 않은 다른 계정(파생·다른 복구 단어·YubiKey·가져온 키 — 그 계정의 개인키를 가져온 경우, [02] §8.4)으로 남아 있으면 그 주소는 grant에 남긴다(Solana·Bitcoin의 "아직 계정인 키" 규칙과 같음, 2026-11-10). meta를 읽을 때(`LoadMeta`, 잠금 해제 포함)도 계정 정리 뒤 지갑에 없는 계정을 grant에서 뺀다(§4.9, 2026-11-10). 그 계정을 서명 계정으로 하는 dApp 서명 요청(`eth_sendTransaction`·`personal_sign`·`eth_signTypedData_v4`)은 대기 중이든 표시 중이든 `Revoked`(4100)로 끝나고 표시 중인 창은 닫힌다(체인 삭제 §4.3과 같은 방식, 보안 검토 L4(b)).
 
 ### 4.2 연결 흐름 (`eth_requestAccounts`, `wallet_requestPermissions`)
 1. 같은 origin의 연결 창이 이미 대기·표시 중 → -32002 "Request already pending.".

@@ -1796,37 +1796,7 @@ impl App {
                     form.set_error(Some(vault_code(error).text()));
                 });
             }
-            KeyOutcome::RawKeyRemoved(Ok(id)) => {
-                self.close_secret();
-                let removed = self.meta.as_ref().and_then(|meta| {
-                    let raw = meta
-                        .evm_raw_accounts
-                        .iter()
-                        .find(|raw| raw.record_id == *id.as_bytes())?;
-                    // The same key may also be a derived account (its private key was
-                    // imported): that account stays, and so do its site connections.
-                    let still_derived = meta.evm_accounts.iter().any(|account| {
-                        !account.hidden && account.address.eq_ignore_ascii_case(&raw.address)
-                    });
-                    if still_derived {
-                        return None;
-                    }
-                    yw_core::evm::address::parse_address(&raw.address).ok()
-                });
-                if let Some(address) = removed {
-                    self.account_removed_from_sites(&address);
-                }
-                if let Some(meta) = self.meta.as_mut() {
-                    meta.evm_raw_accounts
-                        .retain(|raw| raw.record_id != *id.as_bytes());
-                    if meta.prefs.evm_account == EvmAccountPref::Record(*id.as_bytes()) {
-                        meta.prefs.evm_account = EvmAccountPref::Index(0);
-                    }
-                }
-                logging::info("app", "rawkey.removed", &[]);
-                self.save_meta();
-                self.refresh();
-            }
+            KeyOutcome::RawKeyRemoved(Ok(id)) => self.on_evm_raw_key_removed(id),
             KeyOutcome::Meta(Ok(MetaLoaded {
                 meta,
                 prefs_reset,

@@ -7,6 +7,7 @@
 
 use yw_core::btc::{BtcNetwork, ScriptType};
 use yw_core::error::{KeyError, VaultError};
+use yw_core::evm::address::Address;
 use yw_core::keyimport::{ImportChain, ImportPreview, ImportSpec};
 use yw_core::secret::Zeroizing;
 use yw_core::vault::RecordId;
@@ -15,7 +16,7 @@ use crate::app::{App, AppMode, Confirm, PasswordAction, Purpose, Screen};
 use crate::errors::{key_code, vault_code};
 use crate::events::{ImportedAccount, KeyJob};
 use crate::logging::{self, Field};
-use crate::meta::{MAX_RAW_ACCOUNTS, RawAccount, SolRawAccount, Tab};
+use crate::meta::{EvmAccountPref, MAX_RAW_ACCOUNTS, RawAccount, SolRawAccount, Tab};
 use crate::ui::secret::SecretKind;
 use crate::workers::journal::btc::BtcMetaOp;
 
@@ -578,6 +579,36 @@ impl App {
                     info.address.clone(),
                 ))
             })
+    }
+
+    /// The EVM tab's imported key `id` was removed from the vault (`remove_evm_raw_key`): its
+    /// address leaves the dApp grants unless another visible account still has it — a derived,
+    /// added-phrase or `YubiKey` account whose private key was imported (spec/02 §8.4) stays,
+    /// and so do its site connections — then the key leaves meta.
+    pub(crate) fn on_evm_raw_key_removed(&mut self, id: RecordId) {
+        self.close_secret();
+        let record = *id.as_bytes();
+        let removed: Vec<Address> = self
+            .meta
+            .as_ref()
+            .and_then(|meta| {
+                meta.evm_raw_accounts
+                    .iter()
+                    .find(|raw| raw.record_id == record)
+            })
+            .and_then(|raw| yw_core::evm::address::parse_address(&raw.address).ok())
+            .into_iter()
+            .collect();
+        self.evm_key_removed_from_sites(&removed, |pref| pref == EvmAccountPref::Record(record));
+        if let Some(meta) = self.meta.as_mut() {
+            meta.evm_raw_accounts.retain(|raw| raw.record_id != record);
+            if meta.prefs.evm_account == EvmAccountPref::Record(record) {
+                meta.prefs.evm_account = EvmAccountPref::Index(0);
+            }
+        }
+        logging::info("app", "rawkey.removed", &[]);
+        self.save_meta();
+        self.refresh();
     }
 
     /// An imported key was removed from the vault: drop it from meta (an imported Bitcoin key's
