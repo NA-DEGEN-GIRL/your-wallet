@@ -293,6 +293,15 @@ fn field_value(display: &yw_core::approval::ApprovalDisplay, key: u16) -> Option
         .map(|field| field.value.as_str())
 }
 
+/// The value of the top-level call argument `name` (`호출 인수 · {name}`, `0x0104`).
+fn call_arg<'d>(display: &'d yw_core::approval::ApprovalDisplay, name: &str) -> Option<&'d str> {
+    display
+        .fields
+        .iter()
+        .find(|field| field.key == FieldKey::CALL_ARG && field.sub_label == name)
+        .map(|field| field.value.as_str())
+}
+
 /// The network name of the header value (`Sepolia 테스트넷 (chainId 11155111)` → the name).
 fn network_name(display: &yw_core::approval::ApprovalDisplay) -> String {
     let value = field_value(display, 0x0002).map_or("", first_line);
@@ -379,6 +388,27 @@ fn typed_data_summary(display: &yw_core::approval::ApprovalDisplay, place: &str)
 /// the full grouped address follows it.
 #[must_use]
 pub fn summary(request: &ApprovalRequest) -> (String, Option<String>) {
+    let (sentence, value) = summary_value(request);
+    (
+        sentence,
+        value
+            .map(address_part)
+            .filter(|address| !address.is_empty()),
+    )
+}
+
+/// `{place}{amount}을(를) 아래 주소로 보냅니다.`
+fn send_sentence(place: &str, amount: &str) -> String {
+    let amount = first_line(amount).trim();
+    format!(
+        "{place}{amount}{} 아래 주소로 보냅니다.",
+        crate::ui::theme::object_particle(amount)
+    )
+}
+
+/// [`summary`] with the whole display value of the address (the address and its bracketed
+/// notes).
+fn summary_value(request: &ApprovalRequest) -> (String, Option<&str>) {
     use yw_core::approval::ApprovalKind;
     let display = &request.display;
     let network = network_name(display);
@@ -387,15 +417,9 @@ pub fn summary(request: &ApprovalRequest) -> (String, Option<String>) {
     } else {
         format!("{network}에서 ")
     };
-    let send = |amount: &str, to: Option<&str>| {
-        let amount = first_line(amount).trim();
-        (
-            format!(
-                "{place}{amount}{} 아래 주소로 보냅니다.",
-                crate::ui::theme::object_particle(amount)
-            ),
-            to.map(address_part).filter(|address| !address.is_empty()),
-        )
+    let send = |amount: Option<&str>, asset: &str| match amount {
+        Some(amount) => send_sentence(&place, amount),
+        None => format!("{place}{asset} 보냅니다."),
     };
     match request.kind {
         ApprovalKind::EvmTransaction => {
@@ -404,16 +428,25 @@ pub fn summary(request: &ApprovalRequest) -> (String, Option<String>) {
             let call = field_value(display, 0x0103).map(first_line);
             let plain = call.is_none_or(|call| call.ends_with(" 보내기"))
                 && field_value(display, 0x0104).is_none();
-            match (plain, field_value(display, 0x0102)) {
-                (true, Some(amount)) => send(amount, field_value(display, 0x0101)),
+            // A strict ERC-20 `transfer` ("토큰 전송") without native value: the tokens go to the
+            // decoded `to` (its row carries the account kind and book notes), not to the token
+            // contract of `0x0101` — the address a user checks must be the recipient's.
+            let no_value = field_value(display, 0x0102)
+                .is_some_and(|value| first_line(value).split(' ').next() == Some("0"));
+            let token = (call == Some("토큰 전송") && no_value)
+                .then(|| call_arg(display, "amount").zip(call_arg(display, "to")))
+                .flatten();
+            match (plain, field_value(display, 0x0102), token) {
+                (true, Some(amount), _) => {
+                    (send_sentence(&place, amount), field_value(display, 0x0101))
+                }
+                (_, _, Some((amount, to))) => (send_sentence(&place, amount), Some(to)),
                 _ => (
                     format!(
                         "{place}컨트랙트를 호출합니다: {}. 아래 자산 변화와 경고를 확인하세요.",
                         title_action(&display.title)
                     ),
-                    field_value(display, 0x0101)
-                        .map(address_part)
-                        .filter(|address| !address.is_empty()),
+                    field_value(display, 0x0101),
                 ),
             }
         }
@@ -427,18 +460,21 @@ pub fn summary(request: &ApprovalRequest) -> (String, Option<String>) {
         ),
         ApprovalKind::EvmPersonalSign => (personal_sign_summary(display, &place), None),
         ApprovalKind::EvmTypedData => (typed_data_summary(display, &place), None),
-        ApprovalKind::SolTransfer => match field_value(display, 0x0502) {
-            Some(amount) => send(amount, field_value(display, 0x0501)),
-            None => (format!("{place}SOL을 보냅니다."), None),
-        },
-        ApprovalKind::BtcSend => match field_value(display, 0x0603) {
-            Some(amount) => send(amount, field_value(display, 0x0601)),
-            None => (format!("{place}BTC를 보냅니다."), None),
-        },
-        ApprovalKind::ZecSend => match field_value(display, 0x0803) {
-            Some(amount) => send(amount, field_value(display, 0x0801)),
-            None => (format!("{place}ZEC를 보냅니다."), None),
-        },
+        ApprovalKind::SolTransfer => {
+            let amount = field_value(display, 0x0502);
+            let to = amount.and(field_value(display, 0x0501));
+            (send(amount, "SOL을"), to)
+        }
+        ApprovalKind::BtcSend => {
+            let amount = field_value(display, 0x0603);
+            let to = amount.and(field_value(display, 0x0601));
+            (send(amount, "BTC를"), to)
+        }
+        ApprovalKind::ZecSend => {
+            let amount = field_value(display, 0x0803);
+            let to = amount.and(field_value(display, 0x0801));
+            (send(amount, "ZEC를"), to)
+        }
         ApprovalKind::BtcFeeBump => (
             format!("{place}아직 확정되지 않은 거래의 수수료를 올려 다시 보냅니다."),
             None,
@@ -454,9 +490,7 @@ pub fn summary(request: &ApprovalRequest) -> (String, Option<String>) {
                 "{place}Hyperliquid HyperCore 작업에 서명합니다: {}. 서명하면 Hyperliquid가 바로 처리하며 되돌릴 수 없습니다.",
                 field_value(display, 0x0701).map_or("", first_line)
             ),
-            field_value(display, 0x0702)
-                .map(address_part)
-                .filter(|address| !address.is_empty()),
+            field_value(display, 0x0702),
         ),
         ApprovalKind::SolSignIn => (
             format!(
@@ -541,10 +575,11 @@ pub fn signing_view(
             retry: state == SimState::NoResult,
         });
     }
-    let (sentence, address) = summary(request);
-    let notes = [0x0101, 0x0501, 0x0601, 0x0702]
-        .into_iter()
-        .find_map(|key| field_value(display, key))
+    let (sentence, value) = summary_value(request);
+    let address = value
+        .map(address_part)
+        .filter(|address| !address.is_empty());
+    let notes = value
         .filter(|_| address.is_some())
         .map(address_notes)
         .unwrap_or_default();
@@ -669,6 +704,35 @@ pub fn signing_view(
         }
     }
     Ok(view)
+}
+
+/// yw-app's W-ADDR-3 note on the summary's recipient (spec/04 §3.3): a `WARN_BG` block right
+/// under the summary card. It is built from meta (book, own addresses, sent history) and is not
+/// part of the digested display — a Bitcoin send, whose form already required `주소 전체를 직접
+/// 확인했습니다`, shows it again here (an EVM recipient gets the digested rule E43 instead).
+/// Nothing is added without a summary address.
+pub fn attach_address_note(view: &mut ApprovalView, note: &str) {
+    let Some(index) = view.blocks.iter().position(|block| {
+        matches!(
+            block,
+            Block::Summary {
+                address: Some(_),
+                ..
+            }
+        )
+    }) else {
+        return;
+    };
+    view.blocks.insert(
+        index.saturating_add(1),
+        Block::Warning {
+            text: format!(
+                "받는 주소: {}",
+                yw_core::approval::escape_untrusted(note).text
+            ),
+            tone: Tone::Warn,
+        },
+    );
 }
 
 /// Builds the view of any preparation state. `failure` is the text of a `Failed` state.
@@ -805,5 +869,90 @@ pub fn connect_view(
         badges,
         blocks,
         ..ApprovalView::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use yw_core::approval::{
+        ApprovalId, ApprovalKind, ApprovalOrigin, ApprovalStore, ChainFacts, build_evm_tx_request,
+    };
+    use yw_core::bip32::path::AccountIndex;
+    use yw_core::evm::abi::erc20_transfer_data;
+    use yw_core::evm::address::Address;
+    use yw_core::evm::amount::U256;
+    use yw_core::evm::chain::sepolia;
+    use yw_core::evm::decode::{DecodedTx, decode_call};
+    use yw_core::evm::display::format_address;
+    use yw_core::evm::simulate::SimResult;
+    use yw_core::evm::tx::Eip1559Tx;
+    use yw_core::vault::EvmKeySource;
+
+    use super::{Block, Tone, attach_address_note, signing_view, summary};
+
+    /// spec/04 §3.2–§3.3: an ERC-20 `transfer` summary names the token recipient with its book
+    /// note (not the token contract), and a W-ADDR-3 note goes right under the summary.
+    #[test]
+    fn token_transfer_summary_names_the_recipient() {
+        const NOW: u64 = 1_790_000_000_000;
+        let chain = sepolia();
+        let usdc = chain.tokens[1].address;
+        let recipient = Address::from_bytes([0x42; 20]);
+        let tx = Eip1559Tx {
+            chain_id: chain.chain_id,
+            nonce: 0,
+            max_priority_fee_per_gas: U256::from_u64(1),
+            max_fee_per_gas: U256::from_u64(2),
+            gas_limit: 60_000,
+            to: usdc,
+            value: U256::ZERO,
+            data: erc20_transfer_data(&recipient, &U256::from_u64(1_000_000)),
+            access_list: Vec::new(),
+        };
+        let facts = ChainFacts {
+            address_book: vec![(recipient, "친구".to_owned())],
+            ..ChainFacts::default()
+        };
+        let decoded = DecodedTx {
+            call: decode_call(&chain, &tx.to, &tx.data),
+            tx,
+        };
+        let draft = build_evm_tx_request(
+            ApprovalId([1; 16]),
+            ApprovalOrigin::App,
+            EvmKeySource::Derived(AccountIndex::ZERO),
+            Address::from_bytes([0x01; 20]),
+            ApprovalKind::EvmTransaction,
+            &chain,
+            &decoded,
+            &SimResult::skipped(),
+            &facts,
+            Vec::new(),
+            NOW,
+        )
+        .unwrap();
+        let request = ApprovalStore::new().issue(draft, 1, NOW).unwrap();
+        let (sentence, address) = summary(&request);
+        assert_eq!(
+            sentence,
+            "Sepolia 테스트넷에서 1 USDC를 아래 주소로 보냅니다."
+        );
+        assert_eq!(address, Some(format_address(&recipient)));
+        let mut view = signing_view(&request, false, true, Vec::new(), true).unwrap();
+        assert!(
+            matches!(view.blocks.first(), Some(Block::Summary { notes, .. }) if notes == "주소록: 친구"),
+            "{:?}",
+            view.blocks.first()
+        );
+        attach_address_note(&mut view, "'친구'과 끝 6자가 같지만 다른 주소입니다.");
+        assert!(
+            matches!(
+                view.blocks.get(1),
+                Some(Block::Warning { text, tone: Tone::Warn })
+                    if text == "받는 주소: '친구'과 끝 6자가 같지만 다른 주소입니다."
+            ),
+            "{:?}",
+            view.blocks.get(1)
+        );
     }
 }

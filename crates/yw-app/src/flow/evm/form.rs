@@ -4,7 +4,8 @@
 
 use std::collections::BTreeSet;
 
-use yw_core::evm::address::{Address, AddressError, parse_address};
+use yw_core::evm::address::{Address, AddressError, parse_address, poisoning_look_alike};
+pub use yw_core::evm::address::{KnownAddress, LOOK_ALIKE_MIN_ENDS, look_alike};
 use yw_core::evm::amount::{U256, format_amount, format_gwei, format_units, parse_units};
 use yw_core::evm::chain::ChainInfo;
 use yw_core::evm::decode::token_transfer_recipient;
@@ -19,22 +20,6 @@ use super::{ChainCache, ChainCheck, ChainJob, Clock, SharedTransport};
 use crate::errors::ErrorCode;
 use crate::rpc::evm::{self as rpc, EstimateOutcome};
 use crate::rpc::{RpcClient, classify};
-
-/// An address the user knows (address book, own account or sent history).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct KnownAddress {
-    /// Address.
-    pub address: Address,
-    /// Book name or account label (the lowercase address for a history entry).
-    pub name: String,
-    /// Book entry marked verified.
-    pub verified: bool,
-    /// One of the wallet's own accounts.
-    pub mine: bool,
-    /// A past recipient (journal record or activity row): compared for look-alikes only — an
-    /// exact match gives no book note and it is not offered by the picker.
-    pub history: bool,
-}
 
 /// A note shown under the recipient (spec/04 §2.15 rows 5–8).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -156,70 +141,12 @@ pub fn add_history(known: &mut Vec<KnownAddress>, recipients: impl IntoIterator<
     }
 }
 
-/// Matching end digits (prefix + suffix) that make two different addresses look-alikes.
-pub const LOOK_ALIKE_MIN_ENDS: usize = 6;
-
-fn nibbles(address: &Address) -> impl DoubleEndedIterator<Item = u8> + '_ {
-    address
-        .as_bytes()
-        .iter()
-        .flat_map(|byte| [byte >> 4, byte & 0x0f])
-}
-
-/// W-ADDR-3 address-poisoning check: `Some((prefix, suffix))` when `typed` is a look-alike of
-/// `known`.
-///
-/// Rule: the two addresses differ (so some middle digit mismatches), and there is a split
-/// `p + s ≥ 6` where the first `p` and the last `s` of the 40 hex digits are equal (after `0x`,
-/// case-insensitive: checksum casing is ignored). Any split counts — 6+0, 4+2, 3+3, 2+4, 0+6 —
-/// because poisoners grind whichever ends a wallet shows, and some show only the head or only
-/// the tail. Checking every split is the same as `P + S ≥ 6` for the longest common prefix `P`
-/// and suffix `S`, which are returned.
-///
-/// False positives: for a random 40-digit address, `P(P + S ≥ 6) = 16⁻⁶ · (1 + 6 · 15/16) ≈
-/// 3.9e-7` per known address (≈ the 7 splits × 16⁻⁶ ≈ 4e-7 union bound). Even with the full
-/// activity history (3,000 rows) plus book and accounts that stays near 1e-3 per typed
-/// address, and a false positive only asks for the `주소 전체를 직접 확인했습니다` checkbox; so no
-/// per-side minimum is imposed. Five matching end digits (e.g. 3+2) are not flagged: that
-/// would be ≈ 16⁻⁵ · 5.7 ≈ 5.4e-6 per known address, i.e. ~1.6 % of honest addresses warned
-/// against a full history.
-#[must_use]
-pub fn look_alike(known: &Address, typed: &Address) -> Option<(usize, usize)> {
-    if known == typed {
-        return None;
-    }
-    let prefix = nibbles(known)
-        .zip(nibbles(typed))
-        .take_while(|(a, b)| a == b)
-        .count();
-    let suffix = nibbles(known)
-        .rev()
-        .zip(nibbles(typed).rev())
-        .take_while(|(a, b)| a == b)
-        .count();
-    (prefix.saturating_add(suffix) >= LOOK_ALIKE_MIN_ENDS).then_some((prefix, suffix))
-}
-
-/// The look-alike entry with the most matching end digits; on a tie the earlier entry (book and
-/// own accounts come before history).
-fn closest_look_alike<'k>(
-    known: &'k [KnownAddress],
-    address: &Address,
-) -> Option<(&'k KnownAddress, (usize, usize))> {
-    let mut best: Option<(&KnownAddress, (usize, usize))> = None;
-    for entry in known {
-        if let Some(ends) = look_alike(&entry.address, address)
-            && best.is_none_or(|(_, (p, s))| ends.0.saturating_add(ends.1) > p.saturating_add(s))
-        {
-            best = Some((entry, ends));
-        }
-    }
-    best
-}
-
 /// Recipient checks (spec/04 §2.15 rows 1–8; row 9 needs `eth_getCode`). Book entries and own
 /// accounts give exact-match notes; every entry, history included, is compared by
-/// [`look_alike`].
+/// [`look_alike`] — also beside an exact match with an unverified book entry or a past
+/// recipient (a poisoned address saved to the book must not silence the warning against the
+/// address it imitates). Only an exact own account or verified book entry skips the comparison
+/// ([`KnownAddress::trusted`]).
 ///
 /// # Errors
 ///
@@ -245,10 +172,10 @@ pub fn check_recipient(
     if address == *sender {
         notes.push(AddressNote::SameAsSender);
     }
-    if let Some(entry) = known
+    let exact = known
         .iter()
-        .find(|entry| !entry.history && entry.address == address)
-    {
+        .find(|entry| !entry.history && entry.address == address);
+    if let Some(entry) = exact {
         notes.push(if entry.mine {
             AddressNote::Mine {
                 label: entry.name.clone(),
@@ -259,14 +186,15 @@ pub fn check_recipient(
                 verified: entry.verified,
             }
         });
-    } else if let Some((entry, (prefix, suffix))) = closest_look_alike(known, &address) {
+    }
+    if let Some((entry, (prefix, suffix))) = poisoning_look_alike(known, &address) {
         notes.push(AddressNote::LookAlike {
             name: entry.name.clone(),
             history: entry.history,
             prefix,
             suffix,
         });
-    } else {
+    } else if exact.is_none() {
         notes.push(AddressNote::NotInBook);
     }
     Ok((address, notes))

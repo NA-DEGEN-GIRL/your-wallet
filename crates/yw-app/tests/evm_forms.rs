@@ -238,6 +238,46 @@ fn past_recipients_become_history_entries() -> TestResult {
     Ok(())
 }
 
+/// spec/04 §2.15 rows 6–7: a poison saved to the book (an unverified entry) is still flagged
+/// against the past recipient it imitates — the book note does not end the check — until the
+/// user verifies that entry.
+#[test]
+fn a_saved_poison_is_still_flagged() -> TestResult {
+    let real = address(BASE)?;
+    let poison = poisoned(3, 3)?;
+    let mut known = vec![KnownAddress {
+        address: poison,
+        name: "친구".to_owned(),
+        verified: false,
+        mine: false,
+        history: false,
+    }];
+    add_history(&mut known, [real]);
+    let sender = address(USER)?;
+    let book = |verified| AddressNote::Book {
+        name: "친구".to_owned(),
+        verified,
+    };
+    let typed = poison.to_lower_hex();
+    let (_, notes) = check_recipient(&typed, &sender, None, &known).map_err(ErrorCode::code)?;
+    assert_eq!(
+        notes,
+        vec![
+            book(false),
+            AddressNote::LookAlike {
+                name: real.to_lower_hex(),
+                history: true,
+                prefix: 3,
+                suffix: 3,
+            }
+        ]
+    );
+    known[0].verified = true;
+    let (_, notes) = check_recipient(&typed, &sender, None, &known).map_err(ErrorCode::code)?;
+    assert_eq!(notes, vec![book(true)]);
+    Ok(())
+}
+
 #[test]
 fn recipient_rules_and_notes() -> TestResult {
     let sender = address(USER)?;

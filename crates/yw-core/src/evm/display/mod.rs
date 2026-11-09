@@ -86,7 +86,7 @@ fn message_value(escaped_text: &str) -> String {
 }
 
 /// Address with registry label, classification, own-account label and address-book label
-/// (spec/03 §2.2, §8.5).
+/// (`✓ 확인됨` for an entry the user verified; spec/03 §2.2, §8.5).
 #[must_use]
 pub fn describe_address(chain: &ChainInfo, facts: &ChainFacts, address: &Address) -> String {
     let mut out = format_address(address);
@@ -115,6 +115,9 @@ pub fn describe_address(chain: &ChainInfo, facts: &ChainFacts, address: &Address
     if let Some(name) = facts.book_name(address) {
         out.push_str(" [주소록: ");
         out.push_str(&escape_inline(name).0);
+        if facts.book_verified(address) {
+            out.push_str(" ✓ 확인됨");
+        }
         out.push(']');
     }
     out

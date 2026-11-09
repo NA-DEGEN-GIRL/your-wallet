@@ -1211,9 +1211,11 @@ impl App {
             items.push(Item::Help(format!("주소 종류: {}", kind.type_label())));
             let address = encode_address(&kind, net);
             items.push(Item::Mono(grouped(&address)));
-            if let Some(meta) = self.meta.as_ref()
-                && let Some(entry) = meta.contact(BookChain::Btc, &address)
-            {
+            let entry = self
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.contact(BookChain::Btc, &address));
+            if let Some(entry) = &entry {
                 items.push(Item::Banner(
                     format!(
                         "주소록: {}{}",
@@ -1224,12 +1226,15 @@ impl App {
                 ));
             }
             if let Some(note) = &form.look_alike {
-                items.push(Item::Banner(note.clone(), Tone::Warn));
+                items.push(Item::Banner(note.clone(), Tone::HighRisk));
                 items.push(Item::Row(vec![Ctl::check(
                     ids::SEND_ADDR_ACK,
                     "주소 전체를 직접 확인했습니다",
                     form.ack,
                 )]));
+                if entry.as_ref().is_some_and(|entry| !entry.verified) {
+                    items.push(Item::Help(crate::app_book::T_BOOK_VERIFY_HINT.to_owned()));
+                }
             }
             self.recipient_save_items(target, items);
         }

@@ -926,6 +926,17 @@ impl App {
                     "주소 전체를 직접 확인했습니다",
                     form.ack,
                 )]));
+                if notes.iter().any(|note| {
+                    matches!(
+                        note,
+                        crate::flow::evm::form::AddressNote::Book {
+                            verified: false,
+                            ..
+                        }
+                    )
+                }) {
+                    items.push(Item::Help(crate::app_book::T_BOOK_VERIFY_HINT.to_owned()));
+                }
             }
             self.recipient_save_items(BookTarget::Evm, items);
         }

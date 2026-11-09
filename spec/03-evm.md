@@ -238,7 +238,7 @@ pub fn user_chain_info(i: &UserChainInput, genesis: [u8; 32]) -> ChainInfo;     
 
 - 내부: `Address([u8;20])`. RPC·JSON 출력은 소문자 `0x…`.
 - 표시: EIP-55 체크섬 전체 주소를 4자 묶음으로: `"0x" + g1 + " " + g2 + … + " " + g10`. 예: `0x5aAe b605 3F3E 94C9 b9A0 9f33 6694 35E7 Ef1B eAed`. 승인 창에서 자르지 않는다.
-- 라벨: 레지스트리 `[Uniswap Permit2]`, 이 지갑의 계정 `[내 계정: {계정 이름}]`(서명 계정 줄 포함), 주소록 `[주소록: {이름}]`(이름은 §9.2 이스케이프). 라벨은 주소를 대체하지 않는다.
+- 라벨: 레지스트리 `[Uniswap Permit2]`, 이 지갑의 계정 `[내 계정: {계정 이름}]`(서명 계정 줄 포함), 주소록 `[주소록: {이름}]`(이름은 §9.2 이스케이프; 사용자가 확인(verified)한 항목은 `[주소록: {이름} ✓ 확인됨]`, `ChainFacts::known`의 확인 표시로). 라벨은 주소를 대체하지 않는다.
 
 ### 2.3 U256
 
@@ -1008,10 +1008,11 @@ pub struct RuleId(pub u16);   // 상위 바이트 = 'E'(0x45)·'T'(0x54)·'P'(0x
 | E40 | 확인된 자산(네이티브·레지스트리 토큰)을 보내는데 받는 것 중 미등록 토큰·NFT가 있음(가짜 Transfer 로그로 교환처럼 보이게 하는 탈취, §6.4). 문구 "내 자산을 보내고 받는 것은 등록되지 않은 토큰·NFT입니다 — 가짜 자산일 수 있습니다" | 고위험 |
 | E41 | OP-stack 내장 체인(Base, `l1_data_fee = OpStack`)에서 `GasPriceOracle.getL1Fee` 조회 실패(§3.4a-5). 문구 "L1 데이터 수수료를 확인하지 못했습니다 — 최대 수수료에 L1 수수료가 빠져 있습니다". 차단하지 않는다(최대 수수료·상한 검사는 L2 몫만) | 주의 |
 | E42 | 단순 전송 요청(§10.2a의 (a)·(b) 모양, origin 무관 — 지갑 보내기 포함)에서 서명 계정의 diff가 화면에 보이는 것보다 많이 내보냄: 거래 금액이 있는 자산(네이티브 `value`, (b)의 토큰 `tx.to` 해석 금액)의 순 보냄이 그 금액보다 큼(원인 줄 "보내는 자산이 거래 금액보다 많이 나갑니다"), 또는 거래 금액이 없는 자산(미등록 토큰·NFT 포함, 행마다 1개)이 나감(원인 줄 "거래에 없는 다른 자산 {n}개도 나갑니다", 둘 다면 "보내는 자산이 거래 금액보다 많이 나가고, 거래에 없는 다른 자산 {n}개도 나갑니다"). 합산 불가 행은 보냄으로 친다(§6.4). 문구 "보내려는 금액보다 많은 자산이 빠져나갑니다 — 자산을 빼가는 거래일 수 있습니다". 나가는 행 자체는 "자산 변화 (시뮬레이션 결과)"의 보냄 행으로 보인다 | 고위험 |
+| E43 | 받는 주소가 아는 주소를 흉내 냄(주소 오염, [04] §2.15 W-ADDR-3의 승인 창 규칙, 2026-11-10): 네이티브 값이 있으면 `tx.to`, 그리고 해석된 모든 이동 호출(`transfer`·`transferFrom`·ERC-721·1155 이동, multicall 내부 포함)의 `to`가 `ChainFacts::known`(주소록 항목과 확인 표시·이 지갑 계정·모든 EVM 체인의 보낸 내역, yw-app이 채움)의 한 주소와 같지 않으면서 `0x` 뒤 앞 P자 + 끝 S자 ≥ 6(어떤 나눔이든, [04] §2.15 7행 `look_alike`)이 같음. 서명 계정 자신, 정확히 이 지갑 계정이거나 확인된 주소록 항목인 주소는 보지 않고, 확인되지 않은 주소록 항목·보낸 내역과 정확히 같아도 나머지와 비교한다. origin(앱·사이트·WalletConnect)과 시뮬레이션 결과와 무관. 문구 "알고 있는 주소와 앞뒤가 같지만 다른 주소입니다 — 주소 오염 공격일 수 있습니다", 원인 줄 "{주소록 '{이름}'과 \| 내 계정 '{라벨}'과 \| 보낸 내역에 있는 주소와} 앞 P자·끝 S자가 같습니다: {흉내 낸 주소 전체}"(이름은 §9.2 이스케이프, 한 줄). 받는 주소마다 1개 | 고위험 |
 
 ### 10.2a 단순 전송: E23 예외와 E42 (2026-11-07)
 
-E23은 dApp의 평범한 송금마다 붙어 경고 피로를 만들었다(docs/ux-review-20261031 D2, 20261107 D1). 단순 전송에서 "보내는 자산만 있다"는 새 정보가 아니다: (a)는 제목·필드가 "보내기"와 금액·받는 주소를 보여 주고, (b)는 요약이 "컨트랙트를 호출합니다: 토큰 전송 …"이고 금액·받는 주소가 "호출 인수 · amount/to" 행에 있다(받는 주소에 계정 종류·주소록 표시, §8.5). 그래서 **시뮬레이션이 화면의 의도와 정확히 같을 때만** E23을 뺀다. 조금이라도 다르면 E23은 지금처럼 남고, 더 많이 나가는 경우는 E42(고위험)로 올린다.
+E23은 dApp의 평범한 송금마다 붙어 경고 피로를 만들었다(docs/ux-review-20261031 D2, 20261107 D1). 단순 전송에서 "보내는 자산만 있다"는 새 정보가 아니다: (a)는 제목·필드가 "보내기"와 금액·받는 주소를 보여 주고, (b)는 금액·받는 주소가 "호출 인수 · amount/to" 행에 있고(받는 주소에 계정 종류·주소록 표시, §8.5), 2026-11-10부터 요약도 "{금액}을(를) 아래 주소로 보냅니다." + 그 받는 사람 주소다([04] §3.2; 전에는 "컨트랙트를 호출합니다: 토큰 전송 …" + 토큰 컨트랙트 주소). 그래서 **시뮬레이션이 화면의 의도와 정확히 같을 때만** E23을 뺀다. 조금이라도 다르면 E23은 지금처럼 남고, 더 많이 나가는 경우는 E42(고위험)로 올린다.
 
 빼는 대신 남기는 줄: dApp이 정한 받는 주소가 주소록에 없으면 E28(정보, 원인 줄 "사이트가 정한 주소입니다 — 받는 주소가 맞는지 확인하세요")을 낸다. 주소록에 있는 주소로의 단순 전송만 경고 줄이 없다. D1 제안("네이티브만, `정보`로 내림")과 다른 점: 내린 `정보` 줄을 E23 문구 대신 받는 사람에 대한 E28로 바꿨고(보내기만 한다는 사실보다 모르는 주소라는 사실이 행동할 거리다), ERC-20 `transfer`도 넣었다(시뮬레이션 일치 조건이 같고, 넣지 않으면 dApp 토큰 결제마다 같은 피로가 남는다).
 
@@ -1120,7 +1121,8 @@ pub struct ApprovalDraft {                            // build_* 결과: 시각�
 pub enum CodeKind { Eoa, Delegated7702 { target: Address }, Contract }       // §8.5
 pub struct TokenMeta { pub symbol: Option<String>, pub decimals: Option<u8>, pub registered: bool }
 pub struct ChainFacts { pub account_code: CodeKind, pub code: Vec<(Address, CodeKind)>,
-    pub tokens: Vec<(Address, TokenMeta)>, pub balances: Vec<(Address, U256)>, pub address_book: Vec<(Address, String)> }
+    pub tokens: Vec<(Address, TokenMeta)>, pub balances: Vec<(Address, U256)>, pub address_book: Vec<(Address, String)>,
+    pub own_accounts: Vec<(Address, String)>, pub known: Vec<KnownAddress> /* E43·"✓ 확인됨" */, /* … */ }
 pub fn build_evm_tx_request(id: ApprovalId, origin: ApprovalOrigin, signer: EvmKeySource, account: Address, kind: ApprovalKind,
     chain: &ChainInfo, d: &DecodedTx, sim: &SimResult, facts: &ChainFacts, warnings: Vec<Warning>, now_unix_ms: u64)
     -> Result<ApprovalDraft, DisplayError>;

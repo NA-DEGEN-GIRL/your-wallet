@@ -328,8 +328,12 @@ impl App {
     }
 
     /// Under the recipient of a send form: `주소록에 저장` for a parsed recipient that is not in
-    /// the book, or its open prompt.
+    /// the book, or its open prompt — neither while the form shows a W-ADDR-3 note (a suspected
+    /// poison must not be saved from the warning; spec/04 §2.10).
     pub fn recipient_save_items(&self, target: BookTarget, items: &mut Vec<Item>) {
+        if self.send_look_alike(target) {
+            return;
+        }
         let Some(address) = self.send_recipient(target) else {
             return;
         };

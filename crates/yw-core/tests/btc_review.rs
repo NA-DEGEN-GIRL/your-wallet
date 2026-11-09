@@ -168,10 +168,11 @@ fn resigned_identical_transaction() {
     assert_eq!(records_of(&journal).len(), 1);
 }
 
-/// W-ADDR-3 for Bitcoin: equal first 4 and last 4 characters after the fixed prefix.
+/// W-ADDR-3 for Bitcoin: equal leading plus trailing characters after the fixed prefix total at
+/// least 5, in any split (the bold `bc1q`+2 … last 6 included).
 #[test]
 fn look_alike_addresses() {
-    use yw_core::btc::address::is_look_alike;
+    use yw_core::btc::address::{is_look_alike, look_alike_ends};
     let a = "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx";
     assert!(is_look_alike(
         a,
@@ -182,18 +183,28 @@ fn look_alike_addresses() {
         "TB1QW508ZZQEJXTDG4Y5R3ZARVARY0C5XW7KXPJZSX"
     ));
     assert!(!is_look_alike(a, a), "the same address");
+    // Any split of 5: 2+3, 0+5 (only the tail), 5+0 (only the head).
+    assert_eq!(
+        look_alike_ends(a, "tb1qw5z8d6qejxtdg4y5r3zarvary0c5xw7kxpqzsx"),
+        Some((2, 3))
+    );
+    assert_eq!(
+        look_alike_ends(a, "tb1qx508d6qejxtdg4y5r3zarvary0c5xw7kqpjzsx"),
+        Some((0, 5))
+    );
+    assert_eq!(
+        look_alike_ends(a, "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsy"),
+        Some((37, 0))
+    );
+    // Four in total (2+2) is not flagged.
     assert!(!is_look_alike(
         a,
-        "tb1qx508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx"
-    ));
-    assert!(!is_look_alike(
-        a,
-        "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsy"
+        "tb1qw5z8d6qejxtdg4y5r3zarvary0c5xw7kxpjqsx"
     ));
     // base58: the version character is the prefix.
     let p2pkh = "mipcBbFg9gMiCh81Kj8tqqdgoZub1ZJRfn";
     assert!(is_look_alike(p2pkh, "mipcBzzzzzzzzzzzzzzzzzzzzzzzzZJRfn"));
-    assert!(!is_look_alike(p2pkh, "mzzzBbFg9gMiCh81Kj8tqqdgoZub1ZJRfn"));
+    assert!(!is_look_alike(p2pkh, "mipzBbFg9gMiCh81Kj8tqqdgoZub1ZJRzn"));
     assert!(!is_look_alike("bc1q", "bc1q"));
     assert!(!is_look_alike("tb1qabc", "tb1qabd"), "too short");
 }

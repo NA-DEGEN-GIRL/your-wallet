@@ -1411,6 +1411,7 @@ fn approval_view_shows_btc_money_rows() -> TestResult {
         account: account(),
         tip_height: TIP,
         plan,
+        look_alike: None,
     };
     let draft =
         BtcUi::draft(&item, ApprovalId::random()?).map_err(yw_app::errors::ErrorCode::code)?;

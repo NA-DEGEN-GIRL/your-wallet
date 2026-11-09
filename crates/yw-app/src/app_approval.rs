@@ -1377,6 +1377,7 @@ impl App {
             journal_room: room,
             address_book,
             own_accounts: self.own_accounts(),
+            known: self.known_addresses(),
             extra_warnings,
             limits: Limits::PRODUCTION,
         })));
@@ -1589,9 +1590,11 @@ impl App {
             self.show_failure(failure.code, false, failure.message());
             return;
         }
-        // A Hyperliquid transfer gets the S-HC recipient and spotMeta checks (spec/11 §7).
+        // A Hyperliquid transfer gets the S-HC recipient and spotMeta checks (spec/11 §7); a
+        // verified book entry's row says so (`✓ 확인됨`).
         let mut facts = facts.clone();
         facts.hyperliquid = self.hl_site_facts(&typed, account);
+        facts.known = self.known_addresses();
         let facts = &facts;
         let draft = self.message_chain(site.chain_id).and_then(|chain| {
             let signer = self.account_source(account)?;
@@ -2452,6 +2455,18 @@ impl App {
             Ok(mut view) => {
                 view.btc_banner = btc_banner;
                 view.chain = chain_badge;
+                // W-ADDR-3 under the recipient (spec/04 §3.3, outside the digest).
+                let note = match &ui.item {
+                    QueuedItem::Btc(item) => item.look_alike.as_deref(),
+                    QueuedItem::App(_)
+                    | QueuedItem::Site(_)
+                    | QueuedItem::Sol(_)
+                    | QueuedItem::Zec(_)
+                    | QueuedItem::HyperCore(_) => None,
+                };
+                if let Some(note) = note {
+                    crate::ui::approval_view::attach_address_note(&mut view, note);
+                }
                 if !force && view == ui.view {
                     return;
                 }

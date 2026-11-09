@@ -10,8 +10,10 @@
 //!
 //! Saving never weakens the send checks: the send forms still run their recipient rules
 //! (format, checksum, look-alike / poisoning, first-time) on whatever a chip or the picker
-//! fills in, and a new entry that looks like an existing one (same ends) needs
-//! `주소 전체를 직접 확인했습니다` before it is saved.
+//! fills in — an exact unverified book entry is still compared with the other known addresses —
+//! a new entry that looks like an address the user knows (book, own accounts, sent history;
+//! same ends) needs `주소 전체를 직접 확인했습니다` before it is saved, and a send form showing a
+//! W-ADDR-3 note does not offer to save its recipient.
 
 use yw_core::btc::BtcNetwork;
 use yw_core::evm::address::{Address, AddressError, parse_address};
@@ -25,6 +27,10 @@ use crate::ui::screens_book::ids;
 
 /// Favorite chips shown above a recipient field.
 pub const FAVORITE_CHIPS: usize = 5;
+
+/// Under a W-ADDR-3 note whose recipient is itself an unverified book entry: how the user who
+/// checked the entry out of band stops the warning (spec/04 §2.15 row 6).
+pub const T_BOOK_VERIFY_HINT: &str = "이 주소록 항목을 다른 경로(전화·대면 등)로 확인했다면 주소록 → 편집에서 확인 표시를 하세요. 확인한 항목으로 보낼 때는 이 경고가 나오지 않습니다.";
 
 /// The address family a send form takes (and the Bitcoin network that filters its entries).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -188,41 +194,27 @@ pub fn short_address(chain: BookChain, address: &str) -> String {
     format!("{start}…{end}")
 }
 
-/// The entry of `contacts` that `address` looks like (same family rules as the send forms:
-/// EVM [`crate::flow::evm::form::look_alike`], Solana `is_lookalike`, Bitcoin `is_look_alike`).
-#[must_use]
-pub fn look_alike_of<'c>(
-    chain: BookChain,
-    address: &str,
-    contacts: &'c [Contact],
-) -> Option<&'c Contact> {
-    contacts.iter().find(|entry| {
-        entry.address != address
-            && match chain {
-                BookChain::Evm => match (parse_address(&entry.address), parse_address(address)) {
-                    (Ok(known), Ok(typed)) => {
-                        crate::flow::evm::form::look_alike(&known, &typed).is_some()
-                    }
-                    _ => false,
-                },
-                BookChain::Sol => match (
-                    SolAddress::parse(&entry.address),
-                    SolAddress::parse(address),
-                ) {
-                    (Ok(known), Ok(typed)) => yw_core::sol::recipient::is_lookalike(&known, &typed),
-                    _ => false,
-                },
-                BookChain::Btc => yw_core::btc::address::is_look_alike(&entry.address, address),
-            }
-    })
+/// What a new book entry resembles (the wording of its note by source).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Resembles {
+    /// An address-book entry (its label).
+    Book(String),
+    /// One of the wallet's own accounts or addresses (its label).
+    Own(String),
+    /// A past recipient (its address).
+    Sent(String),
 }
 
-/// The W-ADDR-3-style note of a new entry that looks like `known`.
+/// The W-ADDR-3-style note of a new entry that looks like a known address (spec/04 §2.10).
 #[must_use]
-pub fn look_alike_note(known: &Contact) -> String {
+pub fn look_alike_note(known: &Resembles) -> String {
+    let whom = match known {
+        Resembles::Book(label) => format!("주소록의 '{label}'과"),
+        Resembles::Own(label) => format!("내 계정 '{label}'과"),
+        Resembles::Sent(address) => format!("보낸 내역에 있는 주소({address})와"),
+    };
     format!(
-        "주소록의 '{}'과 앞·끝 글자가 같지만 다른 주소입니다. 주소 오염 공격일 수 있으니 주소 전체를 확인한 뒤 저장하세요.",
-        known.label
+        "{whom} 앞·끝 글자가 같지만 다른 주소입니다. 주소 오염 공격일 수 있으니 주소 전체를 확인한 뒤 저장하세요."
     )
 }
 
@@ -239,6 +231,93 @@ fn offset(id: u16, base: u16, span: u16) -> Option<u16> {
 }
 
 impl App {
+    /// The note of a new book entry `address` (canonical, of `chain`) that looks like an
+    /// address the user knows — the family's whole known set, as the send forms compare it:
+    /// book entries, own accounts and sent history (EVM [`App::known_addresses`], Solana
+    /// [`App::sol_known`], Bitcoin the network's book, own and sent addresses). An exact own
+    /// account or verified book entry is never a look-alike. Comparing only with the book would
+    /// let a poison of a past recipient be saved silently, and the saved entry would then pass
+    /// for known (spec/04 §2.10).
+    #[must_use]
+    pub fn book_look_alike(&self, chain: BookChain, address: &str) -> Option<String> {
+        let resembles = match chain {
+            BookChain::Evm => {
+                let typed = parse_address(address).ok()?;
+                let known = self.known_addresses();
+                let (entry, _) = yw_core::evm::address::poisoning_look_alike(&known, &typed)?;
+                if entry.history {
+                    Resembles::Sent(entry.address.to_checksum())
+                } else if entry.mine {
+                    Resembles::Own(entry.name.clone())
+                } else {
+                    Resembles::Book(entry.name.clone())
+                }
+            }
+            BookChain::Sol => {
+                use yw_core::sol::recipient::{KnownKind, is_lookalike};
+                let typed = SolAddress::parse(address).ok()?;
+                let known = self.sol_known();
+                let trusted = |kind: &KnownKind| {
+                    !matches!(
+                        kind,
+                        KnownKind::Book { verified: false } | KnownKind::Sent | KnownKind::History
+                    )
+                };
+                if known
+                    .iter()
+                    .any(|entry| entry.address == typed && trusted(&entry.kind))
+                {
+                    return None;
+                }
+                let entry = known
+                    .iter()
+                    .find(|entry| is_lookalike(&entry.address, &typed))?;
+                match entry.kind {
+                    KnownKind::Book { .. } => Resembles::Book(entry.label.clone()),
+                    KnownKind::Sent | KnownKind::History => {
+                        Resembles::Sent(entry.address.to_base58())
+                    }
+                    KnownKind::Own { .. }
+                    | KnownKind::OwnImported
+                    | KnownKind::OwnHardware
+                    | KnownKind::OwnMnemonic => Resembles::Own(entry.label.clone()),
+                }
+            }
+            BookChain::Btc => {
+                use crate::app_btc::BtcKnownSource;
+                let net = btc_network_of(address)?;
+                let known = crate::app_btc::known_addresses_on(&self.btc_ctx(), net);
+                let (entry, _) = crate::app_btc::btc_look_alike(&known, address)?;
+                match &entry.source {
+                    BtcKnownSource::Book { label, .. } => Resembles::Book(label.clone()),
+                    BtcKnownSource::Own { account } => Resembles::Own(account.clone()),
+                    BtcKnownSource::Sent => Resembles::Sent(entry.address.clone()),
+                }
+            }
+        };
+        Some(look_alike_note(&resembles))
+    }
+
+    /// The send form of `target` shows a W-ADDR-3 note for its recipient (`＋ 이 주소를 주소록에
+    /// 저장` is not offered then: saving a suspected poison would make it pass for known).
+    #[must_use]
+    pub fn send_look_alike(&self, target: BookTarget) -> bool {
+        match target {
+            BookTarget::Evm => self.evm.send.recipient.as_ref().is_some_and(|(_, notes)| {
+                notes
+                    .iter()
+                    .any(crate::flow::evm::form::AddressNote::needs_ack)
+            }),
+            BookTarget::Sol => self
+                .sol
+                .send
+                .check
+                .as_ref()
+                .is_some_and(|check| !check.lookalikes.is_empty()),
+            BookTarget::Btc(_) => self.btc.send.look_alike.is_some(),
+        }
+    }
+
     /// The S14 rows in display order: each family's entries, favorites first.
     #[must_use]
     pub fn book_rows(&self) -> Vec<Contact> {
@@ -392,12 +471,7 @@ impl App {
         if self.in_book(chain, address) {
             return;
         }
-        let contacts = self
-            .meta
-            .as_ref()
-            .map(|meta| meta.contacts(chain))
-            .unwrap_or_default();
-        let look_alike = look_alike_of(chain, address, &contacts).map(look_alike_note);
+        let look_alike = self.book_look_alike(chain, address);
         self.book.saved = None;
         self.book.prompt = Some(SavePrompt {
             chain,
@@ -487,6 +561,11 @@ impl App {
             self.refresh();
             return;
         }
+        let note = form
+            .editing
+            .is_none()
+            .then(|| self.book_look_alike(form.chain, &address))
+            .flatten();
         let Some(meta) = self.meta.as_mut() else {
             return;
         };
@@ -496,16 +575,16 @@ impl App {
                 self.refresh();
                 return;
             }
-            let contacts = meta.contacts(form.chain);
-            if let Some(known) = look_alike_of(form.chain, &address, &contacts) {
-                let note = look_alike_note(known);
-                if !form.ack || form.look_alike.as_deref() != Some(note.as_str()) {
-                    self.book.form.look_alike = Some(note);
-                    self.book.form.ack = false;
-                    self.book.form.message = None;
-                    self.refresh();
-                    return;
-                }
+            // The acknowledgement is dropped whenever the address field changes, so it always
+            // belongs to the address shown with this note.
+            if let Some(note) = note
+                && (!form.ack || form.look_alike.as_deref() != Some(note.as_str()))
+            {
+                self.book.form.look_alike = Some(note);
+                self.book.form.ack = false;
+                self.book.form.message = None;
+                self.refresh();
+                return;
             }
         }
         let entry = Contact {
@@ -588,7 +667,16 @@ impl App {
     pub fn on_book_edit_change(&mut self, id: u16) -> bool {
         match id {
             ids::ADDR_EDIT => {
-                self.book.form.address = self.controls.text(id, 512).unwrap_or_default();
+                let text = self.controls.text(id, 512).unwrap_or_default();
+                // A look-alike note and its acknowledgement belong to the address they were
+                // shown for: an edited address is checked again at `추가`.
+                let stale = text != self.book.form.address && self.book.form.look_alike.is_some();
+                self.book.form.address = text;
+                if stale {
+                    self.book.form.look_alike = None;
+                    self.book.form.ack = false;
+                    self.refresh();
+                }
             }
             ids::LABEL_EDIT => {
                 self.book.form.label = self.controls.text(id, 512).unwrap_or_default();
@@ -787,20 +875,70 @@ mod tests {
         assert_eq!(short_address(BookChain::Evm, EVM), "0x5290…9EE7");
     }
 
+    /// A new entry is compared with everything the send forms know, not only the book: a poison
+    /// of a past recipient is flagged on save with the sent-history wording (it used to save
+    /// silently and then pass for known), a book entry by its label.
     #[test]
-    fn look_alikes_are_found_per_family() {
-        let known = Contact {
-            chain: BookChain::Evm,
-            address: EVM.to_owned(),
-            label: "친구".to_owned(),
-            verified: true,
-            added_at_unix_ms: 1,
+    fn book_saves_compare_with_the_whole_known_set() {
+        use crate::apikeys::ApiKeys;
+        use crate::app::{AppMode, Paths};
+        use crate::meta::{ActivityEntry, Meta};
+        use crate::settings::Settings;
+
+        let dir = std::env::temp_dir().join(format!("yw-app-book-known-{}", std::process::id()));
+        let mut app = App::new(
+            Paths {
+                data: dir.clone(),
+                logs: dir.join("logs"),
+            },
+            true,
+            Settings::default(),
+            ApiKeys::default(),
+        );
+        app.mode = AppMode::Unlocked {
+            alt_passphrase: false,
         };
+        let mut meta = Meta::default();
+        meta.upsert_activity(
+            "eip155:1",
+            &ActivityEntry {
+                account: "0xfe3b557e8fb62b89f4916b721be55ceb828dbd73".to_owned(),
+                tx_id: format!("0x{}", "ab".repeat(32)),
+                title: "보내기".to_owned(),
+                asset: "native".to_owned(),
+                amount: "1".to_owned(),
+                counterparty: EVM.to_owned(),
+                status: "succeeded".to_owned(),
+                time_unix_ms: 1,
+            },
+        );
+        app.meta = Some(meta);
         let poisoned = format!("0x5290{}4169ee7", "0".repeat(29));
-        let found = look_alike_of(BookChain::Evm, &poisoned, core::slice::from_ref(&known));
-        assert_eq!(found.map(|entry| entry.label.as_str()), Some("친구"));
-        assert!(look_alike_of(BookChain::Evm, EVM, core::slice::from_ref(&known)).is_none());
+        let note = app.book_look_alike(BookChain::Evm, &poisoned);
+        assert!(
+            note.as_deref()
+                .is_some_and(|note| note.starts_with("보낸 내역에 있는 주소(0x5290")),
+            "{note:?}"
+        );
+        assert!(app.book_look_alike(BookChain::Evm, EVM).is_none());
         let other = "0x1111111111111111111111111111111111111111";
-        assert!(look_alike_of(BookChain::Evm, other, core::slice::from_ref(&known)).is_none());
+        assert!(app.book_look_alike(BookChain::Evm, other).is_none());
+        if let Some(meta) = app.meta.as_mut() {
+            meta.add_contact(&Contact {
+                chain: BookChain::Evm,
+                address: EVM.to_owned(),
+                label: "친구".to_owned(),
+                verified: false,
+                added_at_unix_ms: 1,
+            })
+            .unwrap();
+        }
+        let note = app.book_look_alike(BookChain::Evm, &poisoned);
+        assert!(
+            note.as_deref()
+                .is_some_and(|note| note.starts_with("주소록의 '친구'과 앞·끝 글자가")),
+            "{note:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

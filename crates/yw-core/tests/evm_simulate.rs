@@ -404,6 +404,7 @@ fn facts() -> ChainFacts {
         balances: vec![(TOKEN, U256::from_u64(10))],
         address_book: Vec::new(),
         own_accounts: Vec::new(),
+        known: Vec::new(),
         lookups_limited: false,
         l1_fee: None,
         hyperliquid: None,
@@ -1630,6 +1631,84 @@ fn e23_simple_transfer_exception_and_e42_excess_outflow() -> Fallible<()> {
         has(&labels, "E13") && has(&labels, "E23") && !has(&labels, "E42"),
         "{labels:?}"
     );
+    Ok(())
+}
+
+/// E43 (W-ADDR-3 in the approval, spec/03 §10.2): a site's plain transfer to an address that
+/// imitates a known one is high risk whatever the simulation says, and names what it imitates;
+/// a recipient that is exactly an unverified book entry is still checked (a saved poison), a
+/// verified one is not.
+#[test]
+fn e43_look_alike_recipient_is_high_risk() -> Fallible<()> {
+    use yw_core::evm::address::KnownAddress;
+    let real = Address::from_bytes([0xab; 20]);
+    let mut bytes = [0xab_u8; 20];
+    for byte in bytes.iter_mut().skip(2).take(16) {
+        *byte = 0;
+    }
+    // Same first 4 and last 4 hex digits as `real`.
+    let poison = Address::from_bytes(bytes);
+    let entry = |address, name: &str, verified, history| KnownAddress {
+        address,
+        name: name.to_owned(),
+        verified,
+        mine: false,
+        history,
+    };
+    let book = ChainFacts {
+        address_book: vec![(real, "거래소".to_owned())],
+        known: vec![entry(real, "거래소", false, false)],
+        ..facts()
+    };
+    let pay = tx(poison, 5, vec![]);
+    let paid = ok(vec![native(ERC7528_NATIVE, USER, poison, 5)]);
+    let draft = try_request(&sepolia(), &pay, &paid, site()?, &book, Vec::new())?;
+    assert_eq!(labels(&draft), ["E43", "E28"]);
+    assert_eq!(draft.display.risk, RiskLevel::High);
+    assert!(draft.display.ack_required);
+    let text = rule_text(&draft, risk::E43).ok_or("E43")?;
+    assert!(
+        text.contains("\n주소록 '거래소'과 앞 4자·끝 4자가 같습니다: 0x"),
+        "{text}"
+    );
+    // A token transfer's decoded recipient, a past recipient, no simulation result.
+    let history = ChainFacts {
+        known: vec![entry(real, &real.to_lower_hex(), false, true)],
+        ..facts()
+    };
+    let send = tx(
+        sepolia_usdc(),
+        0,
+        yw_core::evm::abi::erc20_transfer_data(&poison, &U256::from_u64(1)),
+    );
+    let outcome = SimOutcome::Transport(TransportKind::Other);
+    let draft = try_request(&sepolia(), &send, &outcome, site()?, &history, Vec::new())?;
+    let text = rule_text(&draft, risk::E43).ok_or("E43")?;
+    assert!(
+        text.contains("보낸 내역에 있는 주소와 앞 4자·끝 4자"),
+        "{text}"
+    );
+    // The poison saved to the book: still E43 unless the user verified that entry.
+    for verified in [false, true] {
+        let saved = ChainFacts {
+            address_book: vec![(poison, "친구".to_owned()), (real, "거래소".to_owned())],
+            known: vec![
+                entry(poison, "친구", verified, false),
+                entry(real, "거래소", false, false),
+            ],
+            ..facts()
+        };
+        let draft = try_request(&sepolia(), &pay, &paid, site()?, &saved, Vec::new())?;
+        let expected: &[&str] = if verified { &[] } else { &["E43"] };
+        assert_eq!(labels(&draft), expected, "verified {verified}");
+        let to = draft.display.fields.iter().find(|f| f.key.0 == 0x0101);
+        let tag = if verified {
+            "[주소록: 친구 ✓ 확인됨]"
+        } else {
+            "[주소록: 친구]"
+        };
+        assert!(to.is_some_and(|field| field.value.ends_with(tag)), "{to:?}");
+    }
     Ok(())
 }
 

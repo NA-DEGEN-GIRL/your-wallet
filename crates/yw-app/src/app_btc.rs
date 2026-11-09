@@ -624,6 +624,9 @@ pub struct BtcApprovalItem {
     pub account: BtcAccountKey,
     /// Core tip of the plan.
     pub tip_height: u32,
+    /// The W-ADDR-3 note of the recipient (a send, not a fee bump), drawn under the approval
+    /// summary outside the digest (spec/04 §3.3).
+    pub look_alike: Option<String>,
 }
 
 impl BtcApprovalItem {
@@ -1234,63 +1237,145 @@ pub fn confirmations_text(confirmations: u32) -> String {
 pub const NOT_SENT: &str =
     "전송 직전 연결 검사에 실패해 보내지 않았습니다. [같은 바이트 다시 전송]으로 다시 시도하세요";
 
-/// Known addresses of the settings network for W-ADDR-3: Bitcoin address book entries, the
-/// recipients of earlier sends (`activity` counterparties) and this wallet's watched addresses
-/// (spec/08 §3.3), with the name shown in the note.
-fn known_addresses(ctx: &BtcCtx<'_>) -> Vec<(String, String)> {
-    let mut out: Vec<(String, String)> = Vec::new();
+/// A known Bitcoin address of one network for W-ADDR-3 (lowercase).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BtcKnown {
+    /// The address, ASCII-lowercased.
+    pub address: String,
+    /// What the note calls it (`주소록: {이름}`, `이전에 보낸 주소`, `내 계정 '…'의 받기 주소 #i`).
+    pub name: String,
+    /// Where it comes from (and the book label).
+    pub source: BtcKnownSource,
+}
+
+/// The source of a [`BtcKnown`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BtcKnownSource {
+    /// An address-book entry.
+    Book {
+        /// Label.
+        label: String,
+        /// Verified out of band.
+        verified: bool,
+    },
+    /// An address of one of the wallet's own accounts (watch set, spec/08 §3.3).
+    Own {
+        /// The account name.
+        account: String,
+    },
+    /// A recipient of an earlier send (`activity` counterparty).
+    Sent,
+}
+
+impl BtcKnown {
+    /// An exact match needs no look-alike check: an own address or a verified book entry.
+    #[must_use]
+    pub const fn trusted(&self) -> bool {
+        matches!(
+            self.source,
+            BtcKnownSource::Own { .. } | BtcKnownSource::Book { verified: true, .. }
+        )
+    }
+}
+
+/// Known addresses of `net` for W-ADDR-3, in preference order: Bitcoin address-book entries,
+/// the watched addresses of every account of the network (spec/08 §3.3) and the recipients of
+/// earlier sends (`activity` counterparties).
+#[must_use]
+pub fn known_addresses_on(ctx: &BtcCtx<'_>, net: BtcNetwork) -> Vec<BtcKnown> {
+    let mut out: Vec<BtcKnown> = Vec::new();
     if let Some(meta) = ctx.meta {
-        for entry in &meta.address_book {
-            let Some(object) = entry.as_object() else {
-                continue;
-            };
-            if object.get("chain").and_then(yw_json::Value::as_str) != Some("btc") {
+        for entry in meta.contacts(crate::meta::BookChain::Btc) {
+            // A Bitcoin entry belongs to one network (`bc1…` vs `tb1…`).
+            if parse_address(&entry.address, net).is_err() {
                 continue;
             }
-            if let (Some(address), Some(label)) = (
-                object.get("address").and_then(yw_json::Value::as_str),
-                object.get("label").and_then(yw_json::Value::as_str),
-            ) {
-                out.push((address.to_ascii_lowercase(), format!("주소록: {label}")));
-            }
-        }
-        for entry in meta.activity_of(&network_id(ctx.net()).to_string()) {
-            if !entry.counterparty.is_empty() {
-                out.push((
-                    entry.counterparty.to_ascii_lowercase(),
-                    "이전에 보낸 주소".to_owned(),
-                ));
-            }
+            out.push(BtcKnown {
+                address: entry.address.to_ascii_lowercase(),
+                name: format!("주소록: {}", entry.label),
+                source: BtcKnownSource::Book {
+                    label: entry.label,
+                    verified: entry.verified,
+                },
+            });
         }
     }
-    if let Some(watch) = ctx.btc_meta().and_then(|meta| meta.watch_set().ok()) {
+    for meta in ctx.accounts_on(net) {
+        let Ok(watch) = meta.watch_set() else {
+            continue;
+        };
+        let account = account_label(meta.account());
         for (chain, index, address) in watch {
             let name = match chain {
-                BtcChain::Receive => format!("내 받기 주소 #{index}"),
-                BtcChain::Change => format!("내 잔돈 주소 #{index}"),
+                BtcChain::Receive => format!("내 계정 '{account}'의 받기 주소 #{index}"),
+                BtcChain::Change => format!("내 계정 '{account}'의 잔돈 주소 #{index}"),
             };
-            out.push((address.as_str().to_ascii_lowercase(), name));
+            out.push(BtcKnown {
+                address: address.as_str().to_ascii_lowercase(),
+                name,
+                source: BtcKnownSource::Own {
+                    account: account.clone(),
+                },
+            });
+        }
+    }
+    if let Some(meta) = ctx.meta {
+        for entry in meta.activity_of(&network_id(net).to_string()) {
+            if !entry.counterparty.is_empty() {
+                out.push(BtcKnown {
+                    address: entry.counterparty.to_ascii_lowercase(),
+                    name: "이전에 보낸 주소".to_owned(),
+                    source: BtcKnownSource::Sent,
+                });
+            }
         }
     }
     out
 }
 
-/// The W-ADDR-3 note of `address` (spec/04 §2.15 row 7 for Bitcoin), `None` when it is not a
-/// look-alike of a known address (or is exactly one).
-fn look_alike_note(ctx: &BtcCtx<'_>, address: &str) -> Option<String> {
-    let known = known_addresses(ctx);
+/// The known address `address` imitates (spec/04 §2.15 row 7 for Bitcoin, spec/08 §10) with
+/// its equal leading and trailing characters after the fixed prefix: the first look-alike in
+/// preference order, compared even when `address` is exactly a past recipient or an unverified
+/// book entry (a poisoned address sent to once, or saved, must not silence the warning); only
+/// an exact own address or verified book entry is trusted.
+#[must_use]
+pub fn btc_look_alike<'k>(
+    known: &'k [BtcKnown],
+    address: &str,
+) -> Option<(&'k BtcKnown, (usize, usize))> {
     let lower = address.to_ascii_lowercase();
-    if known.iter().any(|(known, _)| *known == lower) {
+    if known
+        .iter()
+        .any(|entry| entry.address == lower && entry.trusted())
+    {
         return None;
     }
-    known
-        .iter()
-        .find(|(known, _)| yw_core::btc::address::is_look_alike(known, &lower))
-        .map(|(_, name)| {
-            format!(
-                "'{name}'과 앞 4자·끝 4자가 같지만 다른 주소입니다. 주소 오염 공격일 수 있습니다."
-            )
-        })
+    known.iter().find_map(|entry| {
+        yw_core::btc::address::look_alike_ends(&entry.address, &lower).map(|ends| (entry, ends))
+    })
+}
+
+/// `앞 P자·끝 S자` (a zero side left out), the equal ends of a W-ADDR-3 note.
+#[must_use]
+pub fn ends_text((prefix, suffix): (usize, usize)) -> String {
+    match (prefix, suffix) {
+        (0, suffix) => format!("끝 {suffix}자"),
+        (prefix, 0) => format!("앞 {prefix}자"),
+        (prefix, suffix) => format!("앞 {prefix}자·끝 {suffix}자"),
+    }
+}
+
+/// The W-ADDR-3 note of `address` on `net`, `None` when it imitates no known address
+/// ([`btc_look_alike`]).
+fn look_alike_note(ctx: &BtcCtx<'_>, net: BtcNetwork, address: &str) -> Option<String> {
+    let known = known_addresses_on(ctx, net);
+    btc_look_alike(&known, address).map(|(entry, ends)| {
+        format!(
+            "'{}'과 {}가 같지만 다른 주소입니다. 주소 오염 공격일 수 있습니다.",
+            entry.name,
+            ends_text(ends)
+        )
+    })
 }
 
 fn activity_status(status: &str) -> String {
@@ -1973,7 +2058,7 @@ impl BtcUi {
             form.ack = false;
             form.look_alike = form
                 .recipient
-                .and_then(|kind| look_alike_note(ctx, &encode_address(&kind, net)));
+                .and_then(|kind| look_alike_note(ctx, net, &encode_address(&kind, net)));
         }
         let amount = form.amount_text.trim();
         if form.send_max || amount.is_empty() {
@@ -3288,12 +3373,19 @@ impl BtcUi {
                                 },
                             }));
                         }
+                        let look_alike = (!bump)
+                            .then(|| {
+                                let recipient = prepared.plan.recipient();
+                                look_alike_note(ctx, net, &encode_address(&recipient, net))
+                            })
+                            .flatten();
                         actions.push(BtcAction::Enqueue(Box::new(BtcApprovalItem {
                             network: net,
                             facts: prepared.facts,
                             account: *prepared.plan.account(),
                             tip_height: prepared.chain.tip_height,
                             plan: prepared.plan,
+                            look_alike,
                         })));
                         actions
                     }

@@ -392,31 +392,62 @@ fn varying_part(address: &str) -> Option<&str> {
     address.get(skip..)
 }
 
-/// W-ADDR-3 for Bitcoin (spec/04 §2.15 row 7, [08] §10 "유사 주소 주석"): two different
-/// addresses whose first 4 and last 4 characters after the fixed prefix
-/// ([`varying_part`]) are equal, ASCII case ignored — what address-poisoning generators match.
+/// Matching end characters (prefix + suffix of the part after the fixed prefix) that make two
+/// different Bitcoin (or Zcash transparent) addresses look-alikes.
+pub const LOOK_ALIKE_MIN_ENDS: usize = 5;
+
+/// The longest common prefix and suffix of two strings, ASCII case ignored; the suffix never
+/// reaches into the prefix of the shorter one.
+#[must_use]
+pub fn common_ends(a: &str, b: &str) -> (usize, usize) {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    let prefix = a
+        .iter()
+        .zip(b)
+        .take_while(|(x, y)| x.eq_ignore_ascii_case(y))
+        .count();
+    let room = a.len().min(b.len()).saturating_sub(prefix);
+    let suffix = a
+        .iter()
+        .rev()
+        .zip(b.iter().rev())
+        .take(room)
+        .take_while(|(x, y)| x.eq_ignore_ascii_case(y))
+        .count();
+    (prefix, suffix)
+}
+
+/// W-ADDR-3 on the parts after a fixed prefix: `Some((prefix, suffix))` when the parts differ,
+/// are at least 8 characters, and their equal leading plus trailing characters total at least
+/// [`LOOK_ALIKE_MIN_ENDS`] in any split (5+0, 2+3, 0+5 …), ASCII case ignored.
+#[must_use]
+pub fn look_alike_parts(left: &str, right: &str) -> Option<(usize, usize)> {
+    if left.eq_ignore_ascii_case(right) || left.len() < 8 || right.len() < 8 {
+        return None;
+    }
+    let (prefix, suffix) = common_ends(left, right);
+    (prefix.saturating_add(suffix) >= LOOK_ALIKE_MIN_ENDS).then_some((prefix, suffix))
+}
+
+/// W-ADDR-3 for Bitcoin (spec/04 §2.15 row 7, [08] §10 "유사 주소 주석"): `Some((prefix,
+/// suffix))` for two different addresses whose equal leading and trailing characters after the
+/// fixed prefix ([`varying_part`]) total at least 5 in any split — like the EVM rule, because
+/// poisoners grind whichever ends a wallet shows (this one bolds the first and last 6
+/// characters, i.e. `bc1q` plus 2 and the last 6), ASCII case ignored. False positives for a
+/// random address: ≈ 32⁻⁵ · (1 + 5 · 31/32) ≈ 1.7e-7 per known bech32 address (base58 ≈ 9e-9).
+#[must_use]
+pub fn look_alike_ends(a: &str, b: &str) -> Option<(usize, usize)> {
+    let (a, b) = (a.to_ascii_lowercase(), b.to_ascii_lowercase());
+    let (Some(left), Some(right)) = (varying_part(&a), varying_part(&b)) else {
+        return None;
+    };
+    look_alike_parts(left, right)
+}
+
+/// Whether [`look_alike_ends`] flags the pair.
 #[must_use]
 pub fn is_look_alike(a: &str, b: &str) -> bool {
-    let a = a.to_ascii_lowercase();
-    let b = b.to_ascii_lowercase();
-    if a == b {
-        return false;
-    }
-    let (Some(left), Some(right)) = (varying_part(&a), varying_part(&b)) else {
-        return false;
-    };
-    let head = |text: &str| text.get(..4).map(str::to_owned);
-    let tail = |text: &str| {
-        text.len()
-            .checked_sub(4)
-            .and_then(|start| text.get(start..))
-            .map(str::to_owned)
-    };
-    left.len() >= 8
-        && right.len() >= 8
-        && head(left).is_some()
-        && head(left) == head(right)
-        && tail(left) == tail(right)
+    look_alike_ends(a, b).is_some()
 }
 
 /// The P2WPKH program `HASH160(K)` of `m/84'/{coin}'/0'/{chain}/{index}` from the cached account

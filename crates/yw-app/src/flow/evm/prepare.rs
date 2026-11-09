@@ -110,6 +110,9 @@ pub struct PrepareJob {
     pub address_book: Vec<(Address, String)>,
     /// This wallet's own accounts and labels (`내 계정` on address rows, known to E28).
     pub own_accounts: Vec<(Address, String)>,
+    /// Book entries, own accounts and sent history for the look-alike rule E43
+    /// ([`ChainFacts::known`]).
+    pub known: Vec<yw_core::evm::address::KnownAddress>,
     /// Step 1–2 warnings (E31 for dApp fee fields).
     pub extra_warnings: Vec<Warning>,
     /// Time limits.
@@ -990,6 +993,7 @@ pub fn prepare(
     let mut facts = ChainFacts {
         address_book: job.address_book.clone(),
         own_accounts: job.own_accounts.clone(),
+        known: job.known.clone(),
         ..ChainFacts::default()
     };
     match rpc::code(&client, url, &job.account) {
@@ -1240,6 +1244,7 @@ fn rebuild(
         journal_room: true,
         address_book: job.address_book.clone(),
         own_accounts: context.facts.own_accounts.clone(),
+        known: context.facts.known.clone(),
         extra_warnings: job.extra_warnings.clone(),
         limits: job.limits,
     };

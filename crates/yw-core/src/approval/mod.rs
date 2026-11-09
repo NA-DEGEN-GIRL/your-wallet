@@ -558,6 +558,10 @@ pub struct ChainFacts {
     /// This wallet's own EVM accounts and their labels (user-entered text; escaped at display):
     /// address rows show `[내 계정: …]` and E28 knows them like address-book entries.
     pub own_accounts: Vec<(Address, String)>,
+    /// The W-ADDR-3 set (spec/04 §2.15 row 7): address-book entries with their verified flag,
+    /// own accounts, then past recipients of every EVM chain. E43 compares transaction
+    /// recipients with it, and a verified book entry's row shows `✓ 확인됨`. Empty: no check.
+    pub known: Vec<crate::evm::address::KnownAddress>,
     /// Typed data: some lookups were skipped (the 16-lookup limit or the budget, spec/03 §8.5),
     /// shown as E27 by the typed-data rules (a transaction's step 9 adds its E27 itself).
     pub lookups_limited: bool,
@@ -608,6 +612,24 @@ impl ChainFacts {
         self.own_accounts
             .iter()
             .find_map(|(known, name)| (known == address).then_some(name.as_str()))
+    }
+
+    /// Whether `address` is an address-book entry the user marked verified (`✓ 확인됨`).
+    #[must_use]
+    pub fn book_verified(&self, address: &Address) -> bool {
+        self.known.iter().any(|entry| {
+            entry.address == *address && entry.verified && !entry.mine && !entry.history
+        })
+    }
+
+    /// The known address `address` imitates (W-ADDR-3, E43) with the equal leading and
+    /// trailing hex digits ([`crate::evm::address::poisoning_look_alike`]).
+    #[must_use]
+    pub fn look_alike(
+        &self,
+        address: &Address,
+    ) -> Option<(&crate::evm::address::KnownAddress, (usize, usize))> {
+        crate::evm::address::poisoning_look_alike(&self.known, address)
     }
 }
 

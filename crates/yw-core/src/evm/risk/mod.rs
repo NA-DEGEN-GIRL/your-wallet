@@ -7,17 +7,18 @@ mod rules;
 pub use rules::*;
 
 use super::abi::{AbiValue, SEL_TRANSFER};
-use super::address::Address;
+use super::address::{Address, KnownAddress};
 use super::amount::{Delta, U256};
 use super::chain::ChainInfo;
 use super::decode::DecodedCall;
+use super::display::format_address;
 use super::eip712::{DecodedTypedData, HlUserAction, KnownSchema, TdNode};
 use super::simulate::{
     ApprovalKindEvm, AssetChange, AssetId, LogEvent, SimResult, SimulationDiff, TransferRow,
     is_verified_asset,
 };
 use super::tx::Eip1559Tx;
-use crate::approval::{ApprovalOrigin, ChainFacts, CodeKind, RuleId, Warning};
+use crate::approval::{ApprovalOrigin, ChainFacts, CodeKind, RuleId, Warning, escape_untrusted};
 
 const THIRTY_DAYS: u64 = 30 * 86_400;
 const ONE_DAY: u64 = 86_400;
@@ -504,8 +505,59 @@ impl TransferIntent {
     }
 }
 
-/// Transaction rules E12–E33, E40 and E42 from interpretation, simulation and facts (spec/03
-/// §10.2).
+/// The E43 cause line: the known address a recipient imitates (book name or account label,
+/// user-entered: escaped and kept on one line; a past recipient by its role), the equal end
+/// digits as in the send form's W-ADDR-3 note, and that known address in full.
+fn look_alike_cause(entry: &KnownAddress, (prefix, suffix): (usize, usize)) -> String {
+    let ends = match (prefix, suffix) {
+        (0, suffix) => format!("끝 {suffix}자"),
+        (prefix, 0) => format!("앞 {prefix}자"),
+        (prefix, suffix) => format!("앞 {prefix}자·끝 {suffix}자"),
+    };
+    let name = escape_untrusted(&entry.name).text.replace('\n', "[U+000A]");
+    let whom = if entry.history {
+        "보낸 내역에 있는 주소와".to_owned()
+    } else if entry.mine {
+        format!("내 계정 '{name}'과")
+    } else {
+        format!("주소록 '{name}'과")
+    };
+    format!(
+        "{whom} {ends}가 같습니다: {}",
+        format_address(&entry.address)
+    )
+}
+
+/// E43 (spec/03 §10.2, the approval form of W-ADDR-3): every recipient the request names that
+/// imitates a known address — `tx.to` when native value moves, and the `to` of every decoded
+/// transfer (multicall inner calls included) — whatever the origin and the simulation result.
+/// The signing account itself is never a look-alike.
+fn look_alike_rules(input: &TxRiskInput<'_>, warnings: &mut Vec<Warning>) {
+    let tx = input.tx;
+    let mut recipients: Vec<Address> = Vec::new();
+    if !tx.value.is_zero() {
+        recipients.push(tx.to);
+    }
+    for call in calls(input.call) {
+        if call.kind().is_some_and(|kind| kind.contains("transfer"))
+            && let Some(to) = arg_address(call, "to")
+            && !recipients.contains(&to)
+        {
+            recipients.push(to);
+        }
+    }
+    for recipient in recipients {
+        if recipient == *input.account {
+            continue;
+        }
+        if let Some((entry, ends)) = input.facts.look_alike(&recipient) {
+            warnings.push(warning(E43, Some(&look_alike_cause(entry, ends))));
+        }
+    }
+}
+
+/// Transaction rules E12–E33, E40, E42 and E43 from interpretation, simulation and facts
+/// (spec/03 §10.2).
 #[must_use]
 #[expect(clippy::too_many_lines, reason = "one block per rule of spec/03 §10.2")]
 pub fn tx_rules(input: &TxRiskInput<'_>) -> Vec<Warning> {
@@ -723,6 +775,8 @@ pub fn tx_rules(input: &TxRiskInput<'_>) -> Vec<Warning> {
     {
         warnings.push(warning(E28, cause));
     }
+    // E43
+    look_alike_rules(input, &mut warnings);
     // E29
     if matches!(input.call, DecodedCall::NativeTransfer)
         && facts.code_of(&tx.to) == Some(CodeKind::Contract)
