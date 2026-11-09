@@ -842,6 +842,7 @@ const forbidden = [
 - URL 전체가 비밀이다(D13). 출력·로그·오류 문구·`docs/acceptance/` 기록·커밋 메시지에는 URL·호스트·토큰 대신 `NetworkId`만 쓴다. 설정 파일 파싱·검증 오류도 고정 문구 + 키 이름만 출력한다(값·파서 메시지 출력 금지).
 - 파일은 저장소 밖에 둔다. 도구는 설정 파일의 실제 경로(`realpath`)가 저장소 루트 아래이면 읽지 않고 실패한다. `%USERPROFILE%\.yw-dev\`는 저장소 밖이므로 `.gitignore` 변경은 없다. 저장소에 잘못 들어온 URL은 privacy scan(§4.3)이 알케미·QuickNode 모양만 잡는다.
 - 제품 코드는 이 파일을 엔드포인트로 쓰지 않는다. 앱의 엔드포인트는 `apikeys.dpapi`([04](04-app-ui.md) §6.3)뿐이다. 예외는 사용자가 누르는 yw-app 설정 → 네트워크(RPC) → `rpc.json에서 가져오기`(파일이 있을 때만 보임) 하나다: `%USERPROFILE%\.yw-dev\rpc.json`(디버그 빌드만 `YW_RPC_JSON`도)을 위 형식·크기 규칙으로 읽고, 값마다 `교체`와 같은 `HttpsUrl` 검사에 QuickNode(`parse_quicknode_url`)·알케미(`<label>.g.alchemy.com/v2/<key>`) 모양·포트 없음을 더해 통과한 것만, 가린 확인 목록(네트워크·공급자·`…/****`)을 거쳐 `apikeys.dpapi`에 저장한다(`덮어쓰기` / `비어 있는 네트워크만`; 모두 한 QuickNode 이름·토큰이면 `tpl:quicknode`와 `rpc.template = quicknode`도). yw-host는 읽지 않는다.
+- 파일 자체는 평문이다(2026-11-10): 이 사용자로 도는 프로그램은 모두 읽을 수 있고, 폴더에 아래 §4.8의 레이블이 없으면 낮은 무결성 프로세스도 읽는다(앱의 사본은 DPAPI + 데이터 폴더 NRNW 레이블). 그래서 앱 카드는 그 사실을 적고 `rpc.json 지우기…`(경고 띠 + `지우기`/`취소`로 한 번 더 묻고, 심볼릭 링크·폴더는 지우지 않으며 — 대상에 토큰이 남는다 — 없는 파일은 지운 것으로 본다)를 둔다. 가져오기가 끝나면 카드가 네트워크(RPC) 구역 맨 위로 올라와 "앱에는 암호화해 저장했지만 rpc.json에는 같은 주소·토큰이 암호화되지 않은 채 남아 있습니다 … 지우세요" 경고를 보인다(지우거나 잠그면 원래 자리인 맨 아래로). 로그는 `rpc.import_file_deleted`·`rpc.import_file_delete_failed`(경로 없음).
 
 ### 4.7 `scripts/probe-rpc.mjs` (수동 실서비스 프로브)
 
@@ -856,10 +857,11 @@ const forbidden = [
 
 ### 4.8 `scripts/dev-rpc-setup.ps1` (개발용 RPC 설정 도우미)
 
-§4.6의 `rpc.json`을 만드는 대화형 PowerShell 스크립트다(Windows PowerShell 5.1 호환, UTF-8 BOM). 실행: `powershell -NoProfile -ExecutionPolicy Bypass -File scriptsdev-rpc-setup.ps1`(직접 연 터미널에서).
+§4.6의 `rpc.json`을 만드는 대화형 PowerShell 스크립트다(Windows PowerShell 5.1 호환, UTF-8 BOM). 실행: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\dev-rpc-setup.ps1`(직접 연 터미널에서).
 
 - 입력: QuickNode 엔드포인트 이름(`https://<이름>.<체인>.quiknode.pro/<API 키>/`의 `<이름>`)과 API 키(`Read-Host -AsSecureString`, 화면에 표시 안 함). 이름 칸에 전체 URL을 붙여넣으면 이름·키를 뽑아 쓴다.
 - 네트워크 11개(`eip155:1` 서브도메인 없음, `eip155:11155111` `ethereum-sepolia`, `eip155:999` `hype-mainnet` + `/nanoreth`, `eip155:42161` `arbitrum-mainnet`, `eip155:8453` `base-mainnet`, `eip155:56` `bsc`, `eip155:4663` `robinhood-mainnet`, `solana:mainnet`·`solana:devnet`, `bitcoin:mainnet` `btc`, `bitcoin:testnet4` `btc-testnet4`)의 URL을 만들어 각각 한 번 호출로 확인(`eth_chainId` / `getGenesisHash` / `getblockhash 0`)한다. 실패한 네트워크는 대시보드 URL을 그 자리에서 붙여넣거나 건너뛴다. 확인된 것만 기존 파일에 병합해 저장한다(UTF-8, BOM 없음).
+- 폴더 보호(2026-11-10, `Protect-DevDir`): 저장 전에 `%USERPROFILE%\.yw-dev`(없으면 만든 뒤, 있으면 그대로)에 앱 데이터 폴더([04](04-app-ui.md) §1.4-3)와 같은 보안을 쓴다 — `SetNamedSecurityInfoW`로 DACL `D:PAI(A;OICI;FA;;;<사용자 SID>)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)`(보호됨)와 레이블 `S:(ML;OICI;NRNW;;;ME)`(레이블은 `Set-Acl`이 SACL 전체를 써 관리자 권한이 필요하므로 check.ps1처럼 메모리 P/Invoke). 안의 `rpc.json`은 시스템이 다시 계산한 상속 ACE·레이블을 받는다(확인함: 사본 cmd.exe를 Low로 실행해 `type` → 거부, 보호 전에는 읽힘). 실패하면 경고 후 기존 권한으로 저장한다. 끝에 "앱에 넣은 뒤 더 쓰지 않으면 지우세요"를 출력한다.
 - URL·토큰은 출력하지 않는다. 결과 표는 `NetworkId`·이름·OK/실패만 보여준다.
 
 ## 5. 코딩 규칙

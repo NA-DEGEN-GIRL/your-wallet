@@ -152,6 +152,12 @@ pub mod ids {
     pub const RPC_IMPORT_FILL: u16 = 532;
     /// The import confirmation `취소`.
     pub const RPC_IMPORT_CANCEL: u16 = 533;
+    /// `rpc.json 지우기…` (asks first).
+    pub const RPC_JSON_DELETE: u16 = 534;
+    /// Its confirmation `지우기`.
+    pub const RPC_JSON_DELETE_CONFIRM: u16 = 535;
+    /// Its confirmation `취소`.
+    pub const RPC_JSON_DELETE_CANCEL: u16 = 536;
     /// URL rows base (3 ids per row: 교체, 테스트, 삭제).
     pub const ROW_BASE: u16 = 540;
     /// URL rows span.
@@ -243,6 +249,9 @@ pub mod ids {
         RPC_IMPORT_OVERWRITE,
         RPC_IMPORT_FILL,
         RPC_IMPORT_CANCEL,
+        RPC_JSON_DELETE,
+        RPC_JSON_DELETE_CONFIRM,
+        RPC_JSON_DELETE_CANCEL,
         REPLACE_EDIT,
         REPLACE_SAVE,
         REPLACE_CANCEL,
@@ -1485,8 +1494,9 @@ impl App {
         reason = "the RPC provider form and the URL rows"
     )]
     fn network_section(&self, items: &mut Vec<Item>) {
-        // A pending rpc.json import review stays first (it waits for a decision).
-        if self.rpc_import.plan.is_some() {
+        // A pending rpc.json import review stays first (it waits for a decision), and so does the
+        // advice to delete the plaintext file right after an import.
+        if self.rpc_import.on_top() {
             self.rpc_import_section(items);
         }
         items.push(Item::CardStart(Some("RPC 공급자".to_owned())));
@@ -1641,7 +1651,7 @@ impl App {
             items.push(Item::CardEnd);
         }
         // The developer import's button last: most owners set RPC with the provider card above.
-        if self.rpc_import.plan.is_none() {
+        if !self.rpc_import.on_top() {
             self.rpc_import_section(items);
         }
     }

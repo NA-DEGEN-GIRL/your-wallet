@@ -13,6 +13,10 @@
 //!   `QuickNode 멀티체인` through `save_settings` (which also updates the meta snapshot). A URL
 //!   the template would not produce stays as that network's own entry.
 //! - URLs, hosts and tokens are never logged or shown (D13): logs carry `NetworkId`s and counts.
+//! - The file itself holds every token in plaintext, readable by any process of this user
+//!   (Low integrity included, unless `dev-rpc-setup.ps1` labelled its folder). The card says so,
+//!   right after an import it moves to the top and recommends deleting the file, and
+//!   `rpc.json 지우기…` deletes it after a confirmation (a link is not followed or deleted).
 
 use core::fmt::{self, Write as _};
 use std::path::{Path, PathBuf};
@@ -45,6 +49,41 @@ const LIMITS: yw_json::Limits = yw_json::Limits {
 /// The persistence note of the import result (the data folder survives `install.cmd`,
 /// `uninstall.cmd` without `-RemoveWalletData`, and a default `지갑 초기화`).
 pub const T_IMPORT_KEPT: &str = "주소는 %LOCALAPPDATA%\\YourWallet\\v3\\apikeys.dpapi에 이 Windows 사용자만 풀 수 있게 암호화해 저장했습니다. 재설치해도 유지됩니다. 지갑 초기화 때 '설정과 API 키도 함께 옮기기'를 켜지 않으면 그대로 남습니다.";
+
+/// The card's note on the source file (before an import).
+pub const T_JSON_PLAINTEXT: &str = "이 파일에는 RPC 주소와 그 토큰이 암호화되지 않은 채 들어 있어, 이 Windows 사용자로 도는 다른 프로그램도 읽을 수 있습니다. 가져온 뒤 개발 스크립트에 더 쓰지 않으면 지우세요.";
+
+/// The card's warning right after an import.
+pub const T_JSON_LEFT: &str = "가져오기를 마쳤습니다. 앱에는 암호화해 저장했지만 rpc.json에는 같은 주소·토큰이 암호화되지 않은 채 남아 있습니다. 개발 스크립트(probe-rpc 등)에 더 쓰지 않으면 지우세요.";
+
+/// The delete confirmation.
+pub const T_JSON_DELETE_CONFIRM: &str = "rpc.json을 지웁니다. 휴지통으로 가지 않아 되돌릴 수 없습니다. 앱에 저장한 RPC 주소는 그대로이고, 개발 스크립트가 이 파일을 쓴다면 scripts\\dev-rpc-setup.ps1로 다시 만들어야 합니다.";
+
+/// Why `rpc.json 지우기` did not delete the file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeleteError {
+    /// A link (symbolic link, junction) or not a file: neither it nor its target is deleted.
+    NotPlainFile,
+    /// The delete failed (in use, no permission).
+    Failed,
+}
+
+/// Deletes the endpoint file at `path`; a missing file counts as deleted. A link is refused:
+/// deleting it would leave its target, with the tokens, in place.
+///
+/// # Errors
+///
+/// [`DeleteError`].
+pub fn delete_file(path: &Path) -> Result<(), DeleteError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_file() => {
+            std::fs::remove_file(path).map_err(|_| DeleteError::Failed)
+        }
+        Ok(_) => Err(DeleteError::NotPlainFile),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err(DeleteError::Failed),
+    }
+}
 
 /// The endpoint file: `YW_RPC_JSON` (debug builds only), else `%USERPROFILE%\.yw-dev\rpc.json`.
 #[must_use]
@@ -268,6 +307,18 @@ pub fn apply_plan(keys: &mut ApiKeys, plan: &ImportPlan, overwrite: bool) -> App
 pub struct RpcImportUi {
     /// The plan waiting for confirmation.
     pub plan: Option<ImportPlan>,
+    /// An import finished on this screen: the card recommends deleting the file.
+    pub imported: bool,
+    /// `rpc.json 지우기…` waits for its confirmation.
+    pub confirm_delete: bool,
+}
+
+impl RpcImportUi {
+    /// The card goes first in settings → 네트워크(RPC) (it waits for a decision); otherwise last.
+    #[must_use]
+    pub const fn on_top(&self) -> bool {
+        self.plan.is_some() || self.imported
+    }
 }
 
 impl App {
@@ -286,9 +337,43 @@ impl App {
                 self.rpc_import = RpcImportUi::default();
                 self.refresh();
             }
+            ids::RPC_JSON_DELETE | ids::RPC_JSON_DELETE_CANCEL => {
+                self.rpc_import.confirm_delete = id == ids::RPC_JSON_DELETE;
+                self.refresh();
+            }
+            ids::RPC_JSON_DELETE_CONFIRM => {
+                if let Some(path) = rpc_json_path() {
+                    self.delete_rpc_json(&path);
+                }
+            }
             _ => return false,
         }
         true
+    }
+
+    /// `rpc.json 지우기` confirmed: deletes the file (never a link) and says what happened.
+    pub(crate) fn delete_rpc_json(&mut self, path: &Path) {
+        self.rpc_import.confirm_delete = false;
+        let text = match delete_file(path) {
+            Ok(()) => {
+                logging::info("app", "rpc.import_file_deleted", &[]);
+                self.rpc_import.imported = false;
+                "rpc.json을 지웠습니다. 앱에 저장한 RPC 주소는 그대로입니다."
+            }
+            Err(error) => {
+                logging::info("app", "rpc.import_file_delete_failed", &[]);
+                match error {
+                    DeleteError::NotPlainFile => {
+                        "rpc.json이 링크(심볼릭 링크)이거나 파일이 아니라 지우지 않았습니다. 링크가 가리키는 파일에 토큰이 있으니 탐색기에서 확인해 직접 지우세요."
+                    }
+                    DeleteError::Failed => {
+                        "rpc.json을 지우지 못했습니다. 다른 프로그램이 열고 있거나 권한이 없습니다. 탐색기에서 직접 지우세요."
+                    }
+                }
+            }
+        };
+        self.info = Some(text.to_owned());
+        self.refresh();
     }
 
     /// Reads `path` and shows the confirmation list (or a fixed error text).
@@ -363,6 +448,8 @@ impl App {
         text.push_str(" 아래 '네트워크별 RPC 주소'에서 네트워크마다 '테스트'를 눌러 확인하세요. ");
         text.push_str(T_IMPORT_KEPT);
         self.info = Some(text);
+        // The plaintext source is still there: the card moves up and recommends deleting it.
+        self.rpc_import.imported = true;
         if applied.template && self.settings.rpc_template != RpcTemplate::QuickNode {
             let mut settings = self.settings.clone();
             settings.rpc_template = RpcTemplate::QuickNode;
@@ -394,21 +481,35 @@ impl App {
         }
     }
 
-    /// The `rpc.json에서 가져오기` card at the top of settings → 네트워크(RPC): shown only when
-    /// the file exists or a plan waits for confirmation.
+    /// The `rpc.json에서 가져오기` card of settings → 네트워크(RPC) ([`RpcImportUi::on_top`]):
+    /// shown only when the file exists or a plan waits for confirmation.
     pub(crate) fn rpc_import_section(&self, items: &mut Vec<Item>) {
         use crate::ui::screens::ids;
         let Some(plan) = self.rpc_import.plan.as_ref() else {
             if rpc_json_path().is_some_and(|path| path.is_file()) {
                 items.push(Item::CardStart(Some("rpc.json에서 가져오기".to_owned())));
-                items.push(Item::Help(
-                    "개발용 설정 파일(%USERPROFILE%\\.yw-dev\\rpc.json)에 있는 RPC 주소를 읽어 위 '네트워크별 RPC 주소' 목록에 넣습니다. 저장하기 전에 가린 목록으로 한 번 더 확인합니다."
-                        .to_owned(),
-                ));
-                items.push(Item::Row(vec![Ctl::button(
-                    ids::RPC_IMPORT,
-                    "rpc.json에서 가져오기",
-                )]));
+                if !self.rpc_import.imported {
+                    items.push(Item::Help(
+                        "개발용 설정 파일(%USERPROFILE%\\.yw-dev\\rpc.json)에 있는 RPC 주소를 읽어 위 '네트워크별 RPC 주소' 목록에 넣습니다. 저장하기 전에 가린 목록으로 한 번 더 확인합니다."
+                            .to_owned(),
+                    ));
+                    items.push(Item::Help(T_JSON_PLAINTEXT.to_owned()));
+                }
+                if self.rpc_import.confirm_delete {
+                    items.push(Item::Banner(T_JSON_DELETE_CONFIRM.to_owned(), Tone::Warn));
+                    items.push(Item::Row(vec![
+                        Ctl::danger(ids::RPC_JSON_DELETE_CONFIRM, "지우기"),
+                        Ctl::button(ids::RPC_JSON_DELETE_CANCEL, "취소"),
+                    ]));
+                } else {
+                    if self.rpc_import.imported {
+                        items.push(Item::Banner(T_JSON_LEFT.to_owned(), Tone::Warn));
+                    }
+                    items.push(Item::Row(vec![
+                        Ctl::button(ids::RPC_IMPORT, "rpc.json에서 가져오기"),
+                        Ctl::button(ids::RPC_JSON_DELETE, "rpc.json 지우기…"),
+                    ]));
+                }
                 items.push(Item::CardEnd);
             }
             return;
@@ -627,6 +728,16 @@ mod tests {
         let (reloaded, failed) = crate::app::load_apikeys(&app.paths, &app.settings);
         assert!(!failed);
         assert_eq!(reloaded.endpoints().len(), 7);
+
+        // The plaintext source is still there: the card recommends deleting it, which is asked
+        // first and then removes the file only.
+        assert!(app.rpc_import.imported && app.rpc_import.on_top());
+        assert!(app.on_rpc_import_command(ids::RPC_JSON_DELETE));
+        assert!(app.rpc_import.confirm_delete);
+        app.delete_rpc_json(&file);
+        assert!(!file.exists());
+        assert!(!app.rpc_import.confirm_delete && !app.rpc_import.on_top());
+        assert_eq!(app.apikeys.endpoints().len(), 7);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

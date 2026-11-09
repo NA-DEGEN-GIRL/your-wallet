@@ -2,7 +2,12 @@
 # - QuickNode 엔드포인트 이름과 API 키만 입력하면 네트워크별 URL을 만들고 실제로 호출해 확인한 뒤
 #   %USERPROFILE%\.yw-dev\rpc.json 에 저장한다.
 # - URL·토큰은 화면에 표시하지 않는다(입력은 별표로 가려진다).
-# - 지갑 앱(yw-app)은 이 파일을 읽지 않는다. 개발 프로브·E2E 전용이다.
+# - 파일에는 토큰이 평문으로 들어간다. 그래서 .yw-dev 폴더를 앱 데이터 폴더와 같은 보안으로 둔다(Protect-DevDir): 상속을 끊은
+#   DACL(현재 사용자·SYSTEM·Administrators만)과 Medium 무결성 레이블 no-read-up·no-write-up — 브라우저 샌드박스 같은 낮은 무결성
+#   프로세스는 같은 사용자여도 이 폴더를 읽지 못한다.
+# - 개발 프로브·E2E가 이 파일을 읽는다. 지갑 앱(yw-app)은 사용자가 설정 → 네트워크(RPC) → 'rpc.json에서 가져오기'를 누를
+#   때만 읽어 apikeys.dpapi(DPAPI)에 저장하고, 엔드포인트로 이 파일을 쓰지 않는다(spec/01 §4.6). 가져온 뒤 개발 스크립트에
+#   더 쓰지 않으면 앱의 'rpc.json 지우기…'나 탐색기로 지운다.
 # 실행: powershell -NoProfile -ExecutionPolicy Bypass -File scripts\dev-rpc-setup.ps1
 
 $ErrorActionPreference = 'Stop'
@@ -10,6 +15,46 @@ Set-StrictMode -Version 2
 
 $dir  = Join-Path $env:USERPROFILE '.yw-dev'
 $file = Join-Path $dir 'rpc.json'
+
+# $Dir에 앱 데이터 폴더(spec/04 §1.4-3)와 같은 DACL·레이블을 쓴다. 레이블은 Set-Acl로 쓸 수 없어(SACL 전체를 쓰므로 관리자
+# 권한이 필요하다) SetNamedSecurityInfoW(LABEL_SECURITY_INFORMATION)를 메모리 P/Invoke로 부른다(Add-Type처럼 %TEMP%에 쓰지
+# 않는다, check.ps1과 같은 방식). 안의 rpc.json은 시스템이 다시 계산한 상속 ACE·레이블을 받는다. 실패하면 예외.
+function Protect-DevDir([string]$Dir) {
+    $assembly = [Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly((New-Object Reflection.AssemblyName('YwDevRpcNative')), [Reflection.Emit.AssemblyBuilderAccess]::Run)
+    $type = $assembly.DefineDynamicModule('YwDevRpcNative').DefineType('YwDevRpcNative.Advapi', 'Public, Class')
+    $outPtr = [IntPtr].MakeByRefType()
+    $outInt = [int].MakeByRefType()
+    foreach ($m in @(
+        @('advapi32.dll', 'ConvertStringSecurityDescriptorToSecurityDescriptorW', [bool], @([string], [int], $outPtr, [IntPtr])),
+        @('advapi32.dll', 'GetSecurityDescriptorDacl', [bool], @([IntPtr], $outInt, $outPtr, $outInt)),
+        @('advapi32.dll', 'GetSecurityDescriptorSacl', [bool], @([IntPtr], $outInt, $outPtr, $outInt)),
+        @('advapi32.dll', 'SetNamedSecurityInfoW', [int], @([string], [int], [uint32], [IntPtr], [IntPtr], [IntPtr], [IntPtr])),
+        @('kernel32.dll', 'LocalFree', [IntPtr], @([IntPtr])))) {
+        $method = $type.DefinePInvokeMethod($m[1], $m[0], [Reflection.MethodAttributes]'Public, Static, PinvokeImpl',
+            [Reflection.CallingConventions]::Standard, $m[2], [type[]]$m[3],
+            [Runtime.InteropServices.CallingConvention]::Winapi, [Runtime.InteropServices.CharSet]::Unicode)
+        $method.SetImplementationFlags([Reflection.MethodImplAttributes]::PreserveSig)
+    }
+    $native = $type.CreateType()
+    $user = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $sddl = "D:PAI(A;OICI;FA;;;$user)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)S:(ML;OICI;NRNW;;;ME)"
+    $sd = [IntPtr]::Zero
+    if (-not $native::ConvertStringSecurityDescriptorToSecurityDescriptorW($sddl, 1, [ref]$sd, [IntPtr]::Zero)) {
+        throw 'ConvertStringSecurityDescriptorToSecurityDescriptorW 실패'
+    }
+    try {
+        $present = 0; $defaulted = 0; $dacl = [IntPtr]::Zero; $sacl = [IntPtr]::Zero
+        if (-not $native::GetSecurityDescriptorDacl($sd, [ref]$present, [ref]$dacl, [ref]$defaulted) -or $dacl -eq [IntPtr]::Zero) { throw 'GetSecurityDescriptorDacl 실패' }
+        if (-not $native::GetSecurityDescriptorSacl($sd, [ref]$present, [ref]$sacl, [ref]$defaulted) -or $sacl -eq [IntPtr]::Zero) { throw 'GetSecurityDescriptorSacl 실패' }
+        # SE_FILE_OBJECT 1; DACL_SECURITY_INFORMATION 0x4 | PROTECTED_DACL_SECURITY_INFORMATION 0x80000000; LABEL_SECURITY_INFORMATION 0x10.
+        $status = $native::SetNamedSecurityInfoW($Dir, 1, [uint32]2147483652, [IntPtr]::Zero, [IntPtr]::Zero, $dacl, [IntPtr]::Zero)
+        if ($status -ne 0) { throw "SetNamedSecurityInfoW(DACL) 실패($status)" }
+        $status = $native::SetNamedSecurityInfoW($Dir, 1, [uint32]16, [IntPtr]::Zero, [IntPtr]::Zero, [IntPtr]::Zero, $sacl)
+        if ($status -ne 0) { throw "SetNamedSecurityInfoW(LABEL) 실패($status)" }
+    } finally {
+        [void]$native::LocalFree($sd)
+    }
+}
 
 # 네트워크 표: QuickNode 서브도메인/경로와 기대값(체인 ID 또는 제네시스 해시)
 $nets = @(
@@ -105,6 +150,11 @@ foreach ($n in $nets) {
 $token = $null
 
 if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir | Out-Null }
+try {
+    Protect-DevDir $dir
+} catch {
+    Write-Host ("주의: {0} 폴더 보호(권한·무결성 레이블)를 설정하지 못했습니다: {1}. 파일은 그 폴더의 기존 권한으로 저장합니다." -f $dir, $_.Exception.Message) -ForegroundColor Yellow
+}
 $json = ($cfg | ConvertTo-Json -Depth 2)
 [IO.File]::WriteAllText($file, $json, (New-Object Text.UTF8Encoding $false))
 $json = $null; $cfg = $null
@@ -113,3 +163,4 @@ Write-Host ''
 $results | Format-Table -AutoSize
 Write-Host ("저장 위치: {0}" -f $file)
 Write-Host '실패한 네트워크는 QuickNode 대시보드에서 해당 체인을 엔드포인트에 추가(Multichain)한 뒤 다시 실행하면 됩니다.'
+Write-Host '이 파일에는 토큰이 평문으로 들어 있습니다. 앱(설정 → 네트워크(RPC) → rpc.json에서 가져오기)에 넣은 뒤 개발 스크립트에 더 쓰지 않으면 지우세요.'

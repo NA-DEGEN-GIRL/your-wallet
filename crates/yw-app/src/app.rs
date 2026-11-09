@@ -654,7 +654,8 @@ pub struct App {
     pub(crate) wait: crate::app_reset::WaitWatch,
     /// S22 `지갑 초기화` (spec/04 §2.20).
     pub(crate) reset: crate::app_reset::ResetUi,
-    /// Settings → 네트워크(RPC) `rpc.json에서 가져오기` (a plan waiting for confirmation).
+    /// Settings → 네트워크(RPC) `rpc.json에서 가져오기` (a plan waiting for confirmation, the
+    /// advice to delete the plaintext file after an import).
     pub(crate) rpc_import: crate::app_rpc_import::RpcImportUi,
     /// S23 `Chrome 확장 설치` (spec/04 §2.21).
     pub(crate) ext: crate::app_extension::ExtensionUi,

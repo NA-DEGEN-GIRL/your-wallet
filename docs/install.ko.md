@@ -145,7 +145,9 @@ Chrome → `chrome://extensions` → 오른쪽 위 **개발자 모드** 켜기 �
    (템플릿이 만들지 않는 주소는 그 네트워크의 주소로 그대로 둔다). 그다음 네트워크마다 **테스트**.
    가져온 주소는 `%LOCALAPPDATA%\YourWallet\v3\apikeys.dpapi`(설정은 같은 폴더의 `settings.json`)에 있어 `install.cmd`로
    다시 설치하거나 `uninstall.cmd`(`-RemoveWalletData` 없이)로 제거해도 유지된다. 지갑 초기화 때 **설정과 API 키도 함께
-   옮기기**를 켜지 않으면 그대로 남는다.
+   옮기기**를 켜지 않으면 그대로 남는다. `rpc.json` 자체는 토큰이 암호화되지 않은 파일이므로, 가져온 뒤 개발 스크립트에
+   더 쓰지 않으면 같은 카드의 **rpc.json 지우기…**(한 번 더 묻는다)로 지운다. `dev-rpc-setup.ps1`은 `.yw-dev` 폴더를 이
+   사용자·SYSTEM·Administrators만 열 수 있고 낮은 무결성 프로세스는 읽지 못하게 만든다.
 
    RPC 주소 전체(이름·토큰 포함)가 비밀이다. 스크린샷·메신저·이슈에 붙이지 않는다. Bitcoin 조회는 기본으로 키가 필요
    없는 Esplora(mempool.space)를 쓴다. 연결되지 않으면(E-BTC-001·E-BTC-002가 계속) 설정 → Bitcoin → **Esplora URL**을

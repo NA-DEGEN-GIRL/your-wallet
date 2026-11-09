@@ -1,7 +1,8 @@
 // 개발용 RPC 실측 프로브 (spec/01 §4.7, spec/03 §1.5, spec/09 §2.5)
 // - 설정: 환경 변수 YW_RPC_JSON(파일 경로) 또는 %USERPROFILE%\.yw-dev\rpc.json
 // - URL·호스트·토큰은 출력하지 않는다. 오류 메시지는 엔드포인트 정보를 가린 뒤 80자까지만 보여준다.
-// - 지갑 앱은 이 파일을 쓰지 않는다. check.ps1에 포함하지 않는다(수동 실행).
+// - 지갑 앱은 이 파일을 엔드포인트로 쓰지 않는다(설정의 'rpc.json에서 가져오기'만 읽어 apikeys.dpapi에 저장, spec/01 §4.6).
+//   check.ps1에 포함하지 않는다(수동 실행).
 // 실행: node scripts/probe-rpc.mjs
 import fs from 'node:fs';
 import os from 'node:os';
