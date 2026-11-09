@@ -49,6 +49,80 @@ pub const WM_YW_CHILD_DONE: u32 = 0x8003;
 pub const WM_YW_LOCK_SHORTCUT: u32 = 0x8004;
 /// Ctrl+1/2/3/4 observed by the message loop (`WM_APP + 5`, wParam = tab 1–4): the chain tabs.
 pub const WM_YW_TAB_SHORTCUT: u32 = 0x8005;
+/// A navigation key observed by the message loop (`WM_APP + 6`, wParam = [`NavKey::code`]),
+/// handled after the dialog manager has moved the focus (spec/04 §1.7).
+pub const WM_YW_NAV_KEY: u32 = 0x8006;
+
+/// A keyboard key that moves around the main window (spec/04 §1.7).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NavKey {
+    /// Tab (`back` = Shift+Tab).
+    Tab {
+        /// Shift held.
+        back: bool,
+    },
+    /// Page Up (`up`) / Page Down.
+    Page {
+        /// Page Up.
+        up: bool,
+    },
+    /// Ctrl+Home (`top`) / Ctrl+End.
+    Edge {
+        /// Ctrl+Home.
+        top: bool,
+    },
+    /// An arrow key (the dialog manager may move the focus within a group).
+    Arrow,
+}
+
+impl NavKey {
+    /// The navigation key of virtual key `vk` with these modifiers, or `None` (never with Alt;
+    /// Tab, Page Up/Down and the arrows without Ctrl; Home/End only with Ctrl).
+    #[must_use]
+    pub const fn of(vk: u16, ctrl: bool, alt: bool, shift: bool) -> Option<Self> {
+        if alt {
+            return None;
+        }
+        match vk {
+            0x09 if !ctrl => Some(Self::Tab { back: shift }),
+            0x21 if !ctrl => Some(Self::Page { up: true }),
+            0x22 if !ctrl => Some(Self::Page { up: false }),
+            0x24 if ctrl => Some(Self::Edge { top: true }),
+            0x23 if ctrl => Some(Self::Edge { top: false }),
+            0x25..=0x28 if !ctrl => Some(Self::Arrow),
+            _ => None,
+        }
+    }
+
+    /// The `WM_YW_NAV_KEY` wParam.
+    #[must_use]
+    pub const fn code(self) -> usize {
+        match self {
+            Self::Tab { back: false } => 1,
+            Self::Tab { back: true } => 2,
+            Self::Page { up: true } => 3,
+            Self::Page { up: false } => 4,
+            Self::Edge { top: true } => 5,
+            Self::Edge { top: false } => 6,
+            Self::Arrow => 7,
+        }
+    }
+
+    /// The key of a `WM_YW_NAV_KEY` wParam (`None` for any other value).
+    #[must_use]
+    pub const fn from_code(code: usize) -> Option<Self> {
+        Some(match code {
+            1 => Self::Tab { back: false },
+            2 => Self::Tab { back: true },
+            3 => Self::Page { up: true },
+            4 => Self::Page { up: false },
+            5 => Self::Edge { top: true },
+            6 => Self::Edge { top: false },
+            7 => Self::Arrow,
+            _ => return None,
+        })
+    }
+}
 
 /// The chain tab (1 EVM, 2 Solana, 3 Bitcoin, 4 Zcash) of a digit key's virtual-key code
 /// (`'1'`–`'4'`, used with Ctrl), or `None`.

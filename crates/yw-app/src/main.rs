@@ -19,20 +19,21 @@ use yw_app::app_approval::{APPROVAL_CLASS, PANEL_CLASS};
 use yw_app::app_browser::BrowserUi;
 use yw_app::errors::ErrorCode;
 use yw_app::events::{
-    EventQueue, KeyJob, UiEvent, WM_YW_ACTIVATE, WM_YW_EVENTS, WM_YW_LOCK_SHORTCUT,
-    WM_YW_TAB_SHORTCUT, chain_tab_key,
+    EventQueue, KeyJob, NavKey, UiEvent, WM_YW_ACTIVATE, WM_YW_EVENTS, WM_YW_LOCK_SHORTCUT,
+    WM_YW_NAV_KEY, WM_YW_TAB_SHORTCUT, chain_tab_key,
 };
 use yw_app::logging::{self, Field};
 use yw_app::rpc::{RPC_TIMEOUTS, Transport};
 use yw_app::settings::LogLevel;
 use yw_app::workers::key::{KeyWorker, run as run_key_worker};
 use yw_app::workers::rpc::{RpcWorker, run as run_rpc_worker};
-use yw_win::input::is_down;
+use yw_win::input::{is_down, is_down_in_message};
 use yw_win::process::{InstanceError, SingleInstance};
 use yw_win::ui::{self, CaptureExclusion, ClassSpec, InputKind, MbKind};
 
 const EXIT_ARGUMENTS: u8 = 2;
 const EXIT_INIT: u8 = 10;
+const VK_SHIFT: u16 = 0x10;
 const VK_CONTROL: u16 = 0x11;
 const VK_MENU: u16 = 0x12;
 const VK_L: u16 = 0x4C;
@@ -354,8 +355,26 @@ fn main() -> ExitCode {
     // 10. The message loop.
     let observer = Rc::clone(&app);
     let code = ui::run_loop(&mut |kind, _| {
+        // Page Up/Down, Ctrl+Home/End, Tab, arrows: the main window scrolls after the dialog
+        // manager has handled the key (spec/04 §1.7; it decides whether it applies). The
+        // modifiers as of this message, as the dialog manager reads Shift for Shift+Tab.
+        let nav = match kind {
+            InputKind::Key { vk: Some(vk) } => NavKey::of(
+                vk,
+                is_down_in_message(VK_CONTROL),
+                is_down_in_message(VK_MENU),
+                is_down_in_message(VK_SHIFT),
+            ),
+            _ => None,
+        };
         if let Ok(mut state) = observer.try_borrow_mut() {
             state.note_input();
+            if let Some(key) = nav {
+                state.note_nav_key(key);
+            }
+        }
+        if let Some(key) = nav {
+            let _ = poster.post(WM_YW_NAV_KEY, key.code());
         }
         if kind == (InputKind::Key { vk: Some(VK_L) }) && is_down(VK_CONTROL) && !is_down(VK_MENU) {
             let _ = poster.post(WM_YW_LOCK_SHORTCUT, 0);

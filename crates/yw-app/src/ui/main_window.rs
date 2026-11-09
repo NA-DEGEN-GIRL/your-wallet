@@ -1164,6 +1164,18 @@ pub fn paint(dc: &mut PaintDc<'_>, client: Rect, placed: &Placed, fonts: &Fonts)
     }
 }
 
+/// Whether Tab stops at this control (`WS_TABSTOP` of yw-win's controls: buttons, check boxes,
+/// edits and the first radio of a group) while it is enabled.
+#[must_use]
+pub const fn is_tab_stop(ctl: &Ctl) -> bool {
+    ctl.enabled
+        && match ctl.kind {
+            ControlKind::Button(_) | ControlKind::CheckBox | ControlKind::Edit { .. } => true,
+            ControlKind::Radio { first_in_group } => first_in_group,
+            ControlKind::Label => false,
+        }
+}
+
 /// The kind of a control without its button colors (a style change keeps the control).
 fn kind_class(kind: ControlKind) -> ControlKind {
     match kind {
@@ -1222,6 +1234,32 @@ impl ControlSet {
     pub fn clear_text(&self, id: u16) {
         if let Some((_, control)) = self.controls.iter().find(|(ctl, _)| ctl.id == id) {
             control.set_text("");
+        }
+    }
+
+    /// The index (placed order) of the control that has the keyboard focus.
+    #[must_use]
+    pub fn focused(&self) -> Option<usize> {
+        self.controls
+            .iter()
+            .position(|(_, control)| control.has_focus())
+    }
+
+    /// Whether the control at `index` is an edit.
+    #[must_use]
+    pub fn is_edit(&self, index: usize) -> bool {
+        self.controls
+            .get(index)
+            .is_some_and(|(ctl, _)| matches!(ctl.kind, ControlKind::Edit { .. }))
+    }
+
+    /// Focuses the control at `index` as Tab does (an edit's text selected).
+    pub fn focus_at(&self, index: usize) {
+        if let Some((ctl, control)) = self.controls.get(index) {
+            if matches!(ctl.kind, ControlKind::Edit { .. }) {
+                control.select_all();
+            }
+            control.focus();
         }
     }
 

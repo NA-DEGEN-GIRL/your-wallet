@@ -20,10 +20,12 @@ use windows_sys::Win32::Graphics::Gdi::{
     RoundRect, SelectObject, SetBkColor, SetBkMode, SetTextColor, TRANSPARENT,
 };
 use windows_sys::Win32::UI::Controls::{
-    BST_CHECKED, BST_UNCHECKED, DRAWITEMSTRUCT, EM_SETLIMITTEXT, ODS_DISABLED, ODS_FOCUS,
-    ODS_NOFOCUSRECT, ODS_SELECTED, ODT_BUTTON,
+    BST_CHECKED, BST_UNCHECKED, DRAWITEMSTRUCT, EM_SETLIMITTEXT, EM_SETSEL, ODS_DISABLED,
+    ODS_FOCUS, ODS_NOFOCUSRECT, ODS_SELECTED, ODT_BUTTON,
 };
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, IsWindowEnabled, SetFocus};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+    EnableWindow, GetFocus, IsWindowEnabled, SetFocus,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     BM_GETCHECK, BM_SETCHECK, BS_AUTOCHECKBOX, BS_AUTORADIOBUTTON, BS_MULTILINE, BS_OWNERDRAW,
     CreateWindowExW, DestroyWindow, ES_AUTOHSCROLL, ES_PASSWORD, ES_READONLY, GWL_STYLE,
@@ -633,6 +635,24 @@ impl Control {
         let Some(hwnd) = self.live() else { return };
         // SAFETY: Sets focus to our live control.
         unsafe { SetFocus(hwnd) };
+    }
+
+    /// Whether the control has the keyboard focus.
+    #[must_use]
+    pub fn has_focus(&self) -> bool {
+        let Some(hwnd) = self.live() else {
+            return false;
+        };
+        // SAFETY: Reads the thread's focus window.
+        let focus = unsafe { GetFocus() };
+        focus == hwnd
+    }
+
+    /// Selects an edit's whole text, as the dialog manager does when Tab reaches an edit.
+    pub fn select_all(&self) {
+        let Some(hwnd) = self.live() else { return };
+        // SAFETY: Sends EM_SETSEL with plain values (0 to -1 = all text) to our live control.
+        unsafe { SendMessageW(hwnd, EM_SETSEL, 0, -1) };
     }
 
     /// Sets the color under the control (card or window background) used to paint the corners of

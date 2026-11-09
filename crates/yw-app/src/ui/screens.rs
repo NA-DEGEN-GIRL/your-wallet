@@ -1746,7 +1746,7 @@ impl App {
         )]));
         items.push(Item::Field(
             "단축키".to_owned(),
-            "Ctrl+L 잠금 · Ctrl+1 / 2 / 3 / 4 체인 탭(EVM·Solana·Bitcoin·Zcash) · Tab 다음 칸"
+            "Ctrl+L 잠금 · Ctrl+1 / 2 / 3 / 4 체인 탭(EVM·Solana·Bitcoin·Zcash) · Tab 다음 칸 · PgUp / PgDn 한 쪽 스크롤 · Ctrl+Home / End 맨 위·맨 아래"
                 .to_owned(),
         ));
         items.push(Item::CardEnd);

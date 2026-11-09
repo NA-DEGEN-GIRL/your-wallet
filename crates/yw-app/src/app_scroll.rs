@@ -13,10 +13,22 @@
 //! Wheel: the delta accumulates in 1/120 notches (high-resolution touchpads send small deltas),
 //! one notch = `SPI_GETWHEELSCROLLLINES` lines of [`LINE_DIP`] (or a page). A whole-notch wheel
 //! step glides over [`GLIDE_TICKS`] timer ticks; small touchpad deltas scroll at once.
+//!
+//! Keyboard (2026-11-10): the message loop's observer posts [`WM_YW_NAV_KEY`] for Page Up/Down,
+//! Ctrl+Home/End, Tab and the arrows ([`NavKey`]); it is handled after the dialog manager has
+//! moved the focus. Page keys scroll a page, Ctrl+Home/End to the top or bottom (not while an
+//! edit has the focus: there they move the caret). Controls out of view are hidden, so the dialog
+//! manager's Tab skips them and wraps around inside the view: Tab instead goes to the next tab stop
+//! in placed order ([`tab_target`]), scrolling it into view, and every focus moved by the keyboard
+//! ends fully in view ([`reveal_offset`]).
+//!
+//! [`WM_YW_NAV_KEY`]: crate::events::WM_YW_NAV_KEY
 
 use yw_win::ui::{Window, wheel_scroll_lines};
 
 use crate::app::App;
+use crate::events::NavKey;
+use crate::ui::main_window::is_tab_stop;
 
 /// Main window timer of the wheel glide (the main tick is 1).
 pub(crate) const SCROLL_TIMER_ID: usize = 2;
@@ -26,6 +38,13 @@ const LINE_DIP: i32 = 20;
 const GLIDE_TICKS: u8 = 4;
 const GLIDE_TICK_MS: u32 = 15;
 const WHEEL_DELTA: i32 = 120;
+/// Room kept between a control the keyboard brought into view and the view's edge.
+const REVEAL_MARGIN_DIP: i32 = 12;
+/// `WM_VSCROLL` codes [`App::main_vscroll`] takes.
+const SB_PAGEUP: u16 = 2;
+const SB_PAGEDOWN: u16 = 3;
+const SB_TOP: u16 = 6;
+const SB_BOTTOM: u16 = 7;
 
 /// Scroll input state of the main window.
 #[derive(Debug, Default)]
@@ -35,6 +54,47 @@ pub struct MainScroll {
     wheel_rest: i32,
     /// A wheel glide in progress: target offset and ticks left.
     glide: Option<(i32, u8)>,
+    /// The command id of the control that had the focus when Tab was pressed (noted by the loop
+    /// observer before the dialog manager moved the focus).
+    tab_from: Option<u16>,
+}
+
+/// The control Tab (Shift+Tab: `back`) reaches from the control at `from`, given whether each
+/// control in placed order is a tab stop: the next stop after it (before it), wrapping around;
+/// `None` when there is no other stop or `from` is out of range.
+#[must_use]
+pub fn tab_target(stops: &[bool], from: usize, back: bool) -> Option<usize> {
+    let len = stops.len();
+    if from >= len {
+        return None;
+    }
+    (1..len)
+        .map(|step| {
+            if back {
+                (from + len - step) % len
+            } else {
+                (from + step) % len
+            }
+        })
+        .find(|&index| stops.get(index).copied().unwrap_or(false))
+}
+
+/// The scroll offset that shows a control at client `y` with height `h` fully in a `view` px
+/// high view, `margin` px from its edges: `scroll` when it already is; a control taller than the
+/// view shows its top.
+#[must_use]
+pub const fn reveal_offset(scroll: i32, y: i32, h: i32, view: i32, margin: i32) -> i32 {
+    if y < margin {
+        return scroll.saturating_add(y).saturating_sub(margin);
+    }
+    let overflow = y
+        .saturating_add(h)
+        .saturating_sub(view.saturating_sub(margin));
+    if overflow > 0 {
+        let to_top = y.saturating_sub(margin);
+        return scroll.saturating_add(if overflow < to_top { overflow } else { to_top });
+    }
+    scroll
 }
 
 impl App {
@@ -122,6 +182,94 @@ impl App {
         self.scroll_to(next);
     }
 
+    /// The loop observer saw a navigation key, before the dialog manager handles it: Tab notes
+    /// which control had the focus.
+    pub fn note_nav_key(&mut self, key: NavKey) {
+        if let NavKey::Tab { .. } = key {
+            self.scroll_state.tab_from = self
+                .controls
+                .focused()
+                .and_then(|index| self.placed.controls.get(index))
+                .map(|(ctl, _)| ctl.id);
+        }
+    }
+
+    /// `WM_YW_NAV_KEY` while the main window is in the foreground (module docs).
+    pub(crate) fn main_nav_key(&mut self, window: &Window, code: usize) {
+        let Some(key) = NavKey::from_code(code) else {
+            return;
+        };
+        match key {
+            NavKey::Page { up } => {
+                self.main_vscroll(window, if up { SB_PAGEUP } else { SB_PAGEDOWN });
+            }
+            NavKey::Edge { top } => {
+                if !self
+                    .controls
+                    .focused()
+                    .is_some_and(|index| self.controls.is_edit(index))
+                {
+                    self.main_vscroll(window, if top { SB_TOP } else { SB_BOTTOM });
+                }
+            }
+            NavKey::Tab { back } => {
+                let from = self.scroll_state.tab_from.take();
+                // Focus outside the main window's controls (another window): nothing to do.
+                let Some(now) = self.controls.focused() else {
+                    return;
+                };
+                let stops: Vec<bool> = self
+                    .placed
+                    .controls
+                    .iter()
+                    .map(|(ctl, _)| is_tab_stop(ctl))
+                    .collect();
+                let target = from
+                    .and_then(|id| {
+                        self.placed
+                            .controls
+                            .iter()
+                            .position(|(ctl, _)| ctl.id == id)
+                    })
+                    .and_then(|from| tab_target(&stops, from, back))
+                    .unwrap_or(now);
+                self.reveal_control(target);
+                if target != now {
+                    self.controls.focus_at(target);
+                }
+            }
+            NavKey::Arrow => {
+                if let Some(now) = self.controls.focused() {
+                    self.reveal_control(now);
+                }
+            }
+        }
+    }
+
+    /// Scrolls the control at `index` (placed order) fully into view ([`reveal_offset`]); a
+    /// control that comes into view is shown by the scroll.
+    fn reveal_control(&mut self, index: usize) {
+        let Some(main) = self.main.as_ref() else {
+            return;
+        };
+        let Some(rect) = self.placed.controls.get(index).map(|(_, rect)| *rect) else {
+            return;
+        };
+        let target = reveal_offset(
+            self.scroll,
+            rect.y,
+            rect.h,
+            main.client_rect().h,
+            main.px(REVEAL_MARGIN_DIP),
+        );
+        if target == self.scroll {
+            return;
+        }
+        main.kill_timer(SCROLL_TIMER_ID);
+        self.stop_scroll();
+        self.scroll_to(target);
+    }
+
     /// `WM_VSCROLL` from the main window's bar; the thumb tracks live (`SB_THUMBTRACK`).
     pub(crate) fn main_vscroll(&mut self, window: &Window, code: u16) {
         let page = window.client_rect().h;
@@ -140,5 +288,67 @@ impl App {
         self.stop_scroll();
         window.kill_timer(SCROLL_TIMER_ID);
         self.scroll_to(target);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{reveal_offset, tab_target};
+    use crate::events::NavKey;
+
+    /// Review 2026-11-10: controls out of view are hidden, so the dialog manager's Tab wrapped
+    /// inside the view; the placed-order target reaches the ones below (and above) the fold.
+    #[test]
+    fn tab_goes_through_every_stop_in_placed_order_and_wraps() {
+        // 0 label, 1 button, 2 disabled, 3 edit, 4 label, 5 button (below the fold).
+        let stops = [false, true, false, true, false, true];
+        assert_eq!(tab_target(&stops, 3, false), Some(5));
+        assert_eq!(tab_target(&stops, 5, false), Some(1));
+        assert_eq!(tab_target(&stops, 1, true), Some(5));
+        assert_eq!(tab_target(&stops, 5, true), Some(3));
+        // From a control that is not a stop (a clicked label-like control): the next stop.
+        assert_eq!(tab_target(&stops, 4, false), Some(5));
+        assert_eq!(tab_target(&[true], 0, false), None);
+        assert_eq!(tab_target(&stops, 6, false), None);
+    }
+
+    #[test]
+    fn a_control_cut_by_the_edge_is_scrolled_fully_into_view() {
+        // View 500 px, margin 12, scrolled to 100.
+        assert_eq!(reveal_offset(100, 200, 30, 500, 12), 100);
+        // Cut by the bottom edge (480..510): up by 22 to end 12 px above the edge.
+        assert_eq!(reveal_offset(100, 480, 30, 500, 12), 122);
+        // Far below (900..930): its bottom 12 px above the edge.
+        assert_eq!(reveal_offset(100, 900, 30, 500, 12), 542);
+        // Above the view: its top 12 px below the edge.
+        assert_eq!(reveal_offset(100, -40, 30, 500, 12), 48);
+        // Taller than the view: its top.
+        assert_eq!(reveal_offset(100, 300, 900, 500, 12), 388);
+    }
+
+    #[test]
+    fn navigation_keys_and_their_codes() {
+        assert_eq!(
+            NavKey::of(0x09, false, false, true),
+            Some(NavKey::Tab { back: true })
+        );
+        assert_eq!(
+            NavKey::of(0x22, false, false, false),
+            Some(NavKey::Page { up: false })
+        );
+        assert_eq!(
+            NavKey::of(0x24, true, false, false),
+            Some(NavKey::Edge { top: true })
+        );
+        // Home without Ctrl is the edit's; Alt never; Ctrl+Tab is not Tab.
+        assert_eq!(NavKey::of(0x24, false, false, false), None);
+        assert_eq!(NavKey::of(0x22, false, true, false), None);
+        assert_eq!(NavKey::of(0x09, true, false, false), None);
+        for code in 1..=7 {
+            let key = NavKey::from_code(code).unwrap();
+            assert_eq!(key.code(), code);
+        }
+        assert_eq!(NavKey::from_code(0), None);
+        assert_eq!(NavKey::from_code(8), None);
     }
 }

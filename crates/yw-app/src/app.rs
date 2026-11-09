@@ -32,7 +32,8 @@ use crate::apikeys::{
 use crate::errors::{ErrorCode, key_code, vault_code};
 use crate::events::{
     KeyJob, KeyOutcome, KeyQueue, KeyResult, LockSignal, MetaLoaded, RevealWhat, RpcEvent, UiEvent,
-    WM_YW_ACTIVATE, WM_YW_EVENTS, WM_YW_LOCK_SHORTCUT, WM_YW_TAB_SHORTCUT, accept_result,
+    WM_YW_ACTIVATE, WM_YW_EVENTS, WM_YW_LOCK_SHORTCUT, WM_YW_NAV_KEY, WM_YW_TAB_SHORTCUT,
+    accept_result,
 };
 use crate::lock::{IdleTracker, LockReason, SystemAction, system_action};
 use crate::logging::{self, Field};
@@ -1220,6 +1221,7 @@ impl App {
                     WM_YW_ACTIVATE => self.activate(),
                     WM_YW_LOCK_SHORTCUT => self.lock_shortcut(),
                     WM_YW_TAB_SHORTCUT if window.is_foreground() => self.tab_shortcut(*wparam),
+                    WM_YW_NAV_KEY if window.is_foreground() => self.main_nav_key(window, *wparam),
                     _ => {}
                 }
                 Reply::Handled(0)

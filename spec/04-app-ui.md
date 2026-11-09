@@ -53,6 +53,7 @@ pub const WM_YW_ACTIVATE: u32   = WM_APP + 2; // 두 번째 인스턴스 → 첫
 pub const WM_YW_CHILD_DONE: u32 = WM_APP + 3; // 승인·비밀 창 → 주 창, wParam = 창 id
 pub const WM_YW_LOCK_SHORTCUT: u32 = WM_APP + 4; // 메시지 루프 관찰자가 Ctrl+L(어느 창이든)을 보면 주 창에 post
 pub const WM_YW_TAB_SHORTCUT: u32 = WM_APP + 5;  // Ctrl+1/2/3/4 → 주 창에 post(wParam 1–4), 주 창이 전경인 S10에서만 체인 탭(§2.1)
+pub const WM_YW_NAV_KEY: u32 = WM_APP + 6;       // PgUp/PgDn·Ctrl+Home/End·Tab·화살표 → 주 창에 post(wParam = NavKey::code), 주 창이 전경일 때만 스크롤·포커스(§1.7)
 pub const EVENT_QUEUE_CAP: usize = 4096;
 pub const MAIN_TIMER_MS: u32 = 250;           // 큐 보조 배출, 자동 잠금 판정, 기한 검사
 
@@ -136,7 +137,7 @@ BTC_MAINNET_BG #C42B1C / BTC_MAINNET_TEXT #FFFFFF, BTC_TESTNET4_BG #F7A23B(글�
 - 비밀 클래스는 `ClassSpec { name, secret: true, capture }`로 등록한다([01] §7.7). `capture`는 캡처 제외 실패 처리다(§4.5): `Required` = 창 파괴·비밀 미표시, `Preferred` = 창 유지·경고 배너. 비밀 아닌 클래스에는 캡처 제외를 적용하지 않는다.
 - **앱 아이콘**: 둥근 사각 타일(왼쪽 위 짙은 남색 `#352A9C` → 오른쪽 아래 청록 `#0B8A80` 대각 그라데이션) 위의 흰 지갑(둥근 몸통, 덮개 선, 오른쪽 끈과 둥근 똑딱단추). 독자 도안이며 다른 지갑의 로고(여우·토끼 등)를 닮지 않는다. `scripts/make-icons.mjs`가 절차적으로(부호 거리 도형 + 초과 표본 안티에일리어싱) 그리고, 32 px 이하는 가장자리를 픽셀 격자에 맞추고 24 px 이하는 끈을 똑딱단추 점만 남겨 16 px에서도 읽히게 한다. 출력: `crates/yw-app/icons/yw-app.ico`(16·20·24·32·40·48·64 = 32비트 BMP, 256 = PNG)와 같은 이미지의 컴파일된 리소스 `yw-app.res`(RT_ICON 1–8 + RT_GROUP_ICON 1, 언어 0x0409), 미리 보기 `docs/icon-preview.png`. `build.rs`가 `.res`를 링크 인자로 넘긴다([01] §2.4). 모든 클래스의 `hIcon`·`hIconSm` = 그 그룹을 `LoadImageW`로 `SM_CXICON`·`SM_CXSMICON`(시스템 DPI) 크기로 읽은 것(프로세스당 한 번, 해제 안 함; 리소스가 없는 테스트 바이너리는 `IDI_APPLICATION`, [01] §7.7). 제목 표시줄(`WS_EX_DLGMODALFRAME` 창 포함, Windows 11에서 확인)·작업 표시줄·Alt-Tab은 클래스 아이콘을, 탐색기·시작 메뉴 바로가기(`yw-app.exe,0`, [01] §9.2)는 exe의 아이콘 그룹을 쓴다. 생성 결과는 커밋하고 check.ps1 icons 단계(30)가 같은지 확인한다.
 
-주 창 960×680 DIP(최소 720×520), 비밀 창 640×480(W04·W10은 640×560, W05는 24칸 때문에 720×600, W08·W09는 820×680), 승인 창 §3.6. M3 주 창은 화면을 직접 그리고 표준 컨트롤을 직접 소유한다. 세로 스크롤 막대는 늘 보이고 내용이 창에 다 들어가면 비활성이다(`SIF_DISABLENOSCROLL`, 내용에 따라 폭이 바뀌지 않는다). 스크롤(휠·터치패드는 1/120 단위로 누적, 한 칸 = `SPI_GETWHEELSCROLLLINES`줄 × 20 DIP, 마우스 휠 한 칸은 약 60 ms 동안 4단계로 미끄러진다; 막대 화살표 20 DIP, 막대 안 클릭 한 쪽, 엄지 끌기는 실시간)은 다시 배치하지 않는다: 배치된 사각형을 옮기고 `ScrollWindowEx(SW_SCROLLCHILDREN|SW_INVALIDATE)`로 남는 픽셀·자식 컨트롤을 함께 옮긴 뒤 드러난 띠만 그린다(`app_scroll`). 보기 가장자리를 넘는 컨트롤만 보이기·숨기기를 바꾼다. 띠와 자식 컨트롤은 그 스크롤을 처리한 메시지 핸들러가 끝난 직후, 다음 메시지를 꺼내기 전에 동기로 그린다(yw-win `Window::update_now`): 핸들러 안에서 바로 보낸 `WM_PAINT`는 앱 상태가 빌려진 채라 그릴 수 없어 기본 처리로 유효화만 되고 옛 픽셀(버튼·글자의 겹친 잔상)이 남았다(2026-11-07). 같은 이유로 바쁜 동안 온 `WM_PAINT`는 버리지 않고 미뤄 두었다가(`Window::defer_paint`) 실행 중인 핸들러가 모두 끝나면 다시 그린다. `YourWalletV3Panel`·`YourWalletV3Approval`은 owner-draw 목록·승인 창이 생기는 M4에서 등록한다.
+주 창 960×680 DIP(최소 720×520), 비밀 창 640×480(W04·W10은 640×560, W05는 24칸 때문에 720×600, W08·W09는 820×680), 승인 창 §3.6. M3 주 창은 화면을 직접 그리고 표준 컨트롤을 직접 소유한다. 세로 스크롤 막대는 늘 보이고 내용이 창에 다 들어가면 비활성이다(`SIF_DISABLENOSCROLL`, 내용에 따라 폭이 바뀌지 않는다). 스크롤(휠·터치패드는 1/120 단위로 누적, 한 칸 = `SPI_GETWHEELSCROLLLINES`줄 × 20 DIP, 마우스 휠 한 칸은 약 60 ms 동안 4단계로 미끄러진다; 막대 화살표 20 DIP, 막대 안 클릭 한 쪽, 엄지 끌기는 실시간)은 다시 배치하지 않는다: 배치된 사각형을 옮기고 `ScrollWindowEx(SW_SCROLLCHILDREN|SW_INVALIDATE)`로 남는 픽셀·자식 컨트롤을 함께 옮긴 뒤 드러난 띠만 그린다(`app_scroll`). 보기 가장자리를 넘는 컨트롤만 보이기·숨기기를 바꾼다. **키보드**(2026-11-10): 메시지 루프 관찰자가 PgUp·PgDn(한 쪽), Ctrl+Home·Ctrl+End(맨 위·맨 아래; 편집 칸에 포커스가 있으면 칸 안 커서 이동이라 스크롤하지 않음), Tab·Shift+Tab, 화살표를 보면 `WM_YW_NAV_KEY`를 주 창에 post하고, 주 창은 대화 관리자(`IsDialogMessageW`)가 포커스를 옮긴 뒤 처리한다(전경일 때만). 보기 밖 컨트롤은 숨겨져 있어 대화 관리자의 Tab은 그것을 건너뛰고 보이는 컨트롤 안에서 되돌았다(설정 → 네트워크(RPC)·초기화·YubiKey 카드의 아래 `저장`·`테스트`·`교체`에 키보드로 갈 수 없었다): 그래서 Tab은 관찰자가 기록한 직전 포커스(명령 id)에서 배치 순서로 다음(Shift+Tab은 앞) 탭 정지 컨트롤(사용 가능한 버튼·체크박스·편집 칸·그룹 첫 라디오)로 가고 — 끝에서는 처음으로 — 그 컨트롤을 보기 안으로 스크롤한 뒤(스크롤이 보이게 한다) 포커스를 준다(편집 칸은 전체 선택). 키보드로 옮긴 포커스(Tab·화살표)는 언제나 보기 가장자리에서 12 DIP 안쪽까지 완전히 보이게 스크롤한다(보기보다 큰 컨트롤은 위쪽). 띠와 자식 컨트롤은 그 스크롤을 처리한 메시지 핸들러가 끝난 직후, 다음 메시지를 꺼내기 전에 동기로 그린다(yw-win `Window::update_now`): 핸들러 안에서 바로 보낸 `WM_PAINT`는 앱 상태가 빌려진 채라 그릴 수 없어 기본 처리로 유효화만 되고 옛 픽셀(버튼·글자의 겹친 잔상)이 남았다(2026-11-07). 같은 이유로 바쁜 동안 온 `WM_PAINT`는 버리지 않고 미뤄 두었다가(`Window::defer_paint`) 실행 중인 핸들러가 모두 끝나면 다시 그린다. `YourWalletV3Panel`·`YourWalletV3Approval`은 owner-draw 목록·승인 창이 생기는 M4에서 등록한다.
 
 ### 1.8 yw-win 사용 API
 이름·시그니처·오류 타입의 정본은 [01] §7이다(D31). yw-app이 쓰는 것:
@@ -322,7 +323,7 @@ S16 토큰 추가: 컨트랙트 주소(§2.15) → RPC `decimals()`·`symbol()`(
 | 브라우저 | WalletConnect·연결된 사이트 | "WalletConnect" 카드의 `연결된 사이트 · WalletConnect 열기` → S13 |
 | AI 설명 (M6) | [06] §2 | [06] |
 | 진단 | 로그 수준, 로그 폴더 열기 | §8, §2.14 |
-| 정보 | 버전, 데이터 폴더 경로, `폴더 열기`, "단축키" 줄(Ctrl+L 잠금 · Ctrl+1/2/3/4 체인 탭 · Tab 다음 칸) | §2.14 |
+| 정보 | 버전, 데이터 폴더 경로, `폴더 열기`, "단축키" 줄(Ctrl+L 잠금 · Ctrl+1/2/3/4 체인 탭 · Tab 다음 칸 · PgUp/PgDn 한 쪽 스크롤 · Ctrl+Home/End 맨 위·맨 아래, §1.7) | §2.14 |
 
 - 템플릿 자격 정보 형식(`저장` 때 검사, 위반 E-KEY-002 + 항목 이름): QuickNode 엔드포인트 이름은 소문자로 바꾼 뒤 `^[a-z0-9]+(-[a-z0-9]+)*$` 1–63자(호스트 첫 라벨), QuickNode 토큰 `^[A-Za-z0-9_-]{16,128}$`(URL 경로 한 단계), 알케미 키 `^[A-Za-z0-9_-]{16,128}$`(URL 경로). 구현 시 확인: 실제 이름·토큰·키의 길이·문자 집합. 다르면 이 정규식만 고친다.
 - 변경은 즉시 `settings.json`에 원자적으로 쓴다(`apikeys.dpapi` 항목은 §6.3). 실패 → E-APP-002, 화면 값을 되돌린다. 읽기 전용 `settings.json`(§6.6 더 새로운 `version`, `Settings::read_only()`)이면 쓰지 않고 이번 실행의 메모리에만 적용한다(로그 `settings.changed key=<키> saved=no`).
