@@ -2641,7 +2641,7 @@ fn yubikey_accounts_and_the_card_step() {
     h.app.meta.as_mut().unwrap().hw_accounts.defaults = vec![7_700_011];
     let ticket = h.app.push_sign_waiter(SignWaiter::App);
     h.app
-        .dispatch_evm_sign(ticket, approve(source, account), info.clone());
+        .dispatch_evm_sign(ticket, approve(source, account), info.clone(), false);
     assert!(h.app.card.step.is_none());
     assert!(h.app.key_queue.is_empty());
     assert_eq!(h.app.card.pin_needed, Some(7_700_011));
@@ -2655,7 +2655,7 @@ fn yubikey_accounts_and_the_card_step() {
 
     let ticket = h.app.push_sign_waiter(SignWaiter::App);
     h.app
-        .dispatch_evm_sign(ticket, approve(source, account), info.clone());
+        .dispatch_evm_sign(ticket, approve(source, account), info.clone(), false);
     // No signing job yet: the card step waits for the PIN (W11 bounds: OpenPGP PW1 6–127); only
     // the read-only PIN counters are read, shown before the PIN is entered (spec/10 §9.1).
     let id = h.app.card_waiting_id().unwrap();
@@ -2680,7 +2680,7 @@ fn yubikey_accounts_and_the_card_step() {
 
     let ticket = h.app.push_sign_waiter(SignWaiter::App);
     h.app
-        .dispatch_evm_sign(ticket, approve(source, account), info.clone());
+        .dispatch_evm_sign(ticket, approve(source, account), info.clone(), false);
     let id = h.app.card_waiting_id().unwrap();
     run_named(&mut h, "YkCounters");
     // Wrong PIN: the worker checks it before the approval is used; the step asks again with
@@ -2705,23 +2705,31 @@ fn yubikey_accounts_and_the_card_step() {
     assert!(h.app.card.step.is_none());
     assert_eq!(records(&h), before + 1);
 
-    // Cancelling the PIN window signs nothing.
+    // Cancelling the PIN window signs nothing and releases only this approval's send slot: an
+    // other open approval keeps its own (spec/03 §3.6, D20).
+    let other = (
+        11_155_111,
+        parse_address("0xF278cF59F82eDcf871d630F28EcC8056f25C1cdb").unwrap(),
+    );
+    h.app.evm.slots = vec![other, (11_155_111, account)];
     let ticket = h.app.push_sign_waiter(SignWaiter::App);
     h.app
-        .dispatch_evm_sign(ticket, approve(source, account), info.clone());
+        .dispatch_evm_sign(ticket, approve(source, account), info.clone(), false);
     let id = h.app.card_waiting_id().unwrap();
     run_named(&mut h, "YkCounters");
     h.app.on_cancel(Purpose::CardSign(id));
     assert!(h.app.card.step.is_none());
     assert!(h.app.key_queue.is_empty());
     assert_eq!(records(&h), before + 1);
+    assert_eq!(h.app.evm.slots, vec![other]);
+    h.app.evm.slots.clear();
 
     // A software account is unchanged: `SignEvm` right away, no card step.
     let derived = EvmKeySource::Derived(AccountIndex::ZERO);
     let address = parse_address("0x9858EfFD232B4033E47d90003D41EC34EcaEda94").unwrap();
     let ticket = h.app.push_sign_waiter(SignWaiter::App);
     h.app
-        .dispatch_evm_sign(ticket, approve(derived, address), info);
+        .dispatch_evm_sign(ticket, approve(derived, address), info, false);
     assert!(h.app.card.step.is_none());
     run_named(&mut h, "SignEvm");
     h.pump();

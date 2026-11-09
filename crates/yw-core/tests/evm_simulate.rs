@@ -403,6 +403,8 @@ fn facts() -> ChainFacts {
         )],
         balances: vec![(TOKEN, U256::from_u64(10))],
         address_book: Vec::new(),
+        own_accounts: Vec::new(),
+        lookups_limited: false,
         l1_fee: None,
         hyperliquid: None,
     }

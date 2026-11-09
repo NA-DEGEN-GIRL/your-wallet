@@ -129,6 +129,7 @@ pub fn job(chain: ChainInfo, account: Address, intent: SendIntent) -> PrepareJob
         records: Vec::new(),
         journal_room: true,
         address_book: Vec::new(),
+        own_accounts: Vec::new(),
         extra_warnings: Vec::new(),
         limits: limits(),
     }

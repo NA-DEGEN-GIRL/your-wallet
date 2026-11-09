@@ -99,6 +99,8 @@ fn evaluate(chain: &ChainInfo, tx: &Eip1559Tx, outcome: SimOutcome, now: u64) ->
         )],
         balances: Vec::new(),
         address_book: Vec::new(),
+        own_accounts: Vec::new(),
+        lookups_limited: false,
         l1_fee: None,
         hyperliquid: None,
     };

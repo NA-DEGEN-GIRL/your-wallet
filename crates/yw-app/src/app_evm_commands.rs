@@ -99,7 +99,9 @@ impl App {
             }
             ids::SEND_MAX => self.fill_max(),
             ids::SEND_PICK => {
-                self.evm.send.picker = !self.evm.send.picker;
+                let form = &mut self.evm.send;
+                form.picker = !form.picker;
+                form.picker_filter.clone_from(&form.to_text);
                 self.refresh();
             }
             ids::SEND_HIDDEN_TOGGLE => {
@@ -253,6 +255,7 @@ impl App {
             return true;
         }
         if let Some(index) = offset(id, ids::SEND_PICK_BASE, ids::SEND_PICK_SPAN) {
+            // The rows on screen (their filter, not text typed since): the clicked row's address.
             if let Some(address) = self.picker_entries().get(usize::from(index)).copied() {
                 self.evm.send.to_text = address.to_checksum();
                 self.evm.send.picker = false;

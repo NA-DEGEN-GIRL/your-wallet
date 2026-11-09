@@ -305,6 +305,7 @@ fn read_only_prepare(
         records: Vec::new(),
         journal_room: true,
         address_book: Vec::new(),
+        own_accounts: Vec::new(),
         extra_warnings: Vec::new(),
         limits: Limits::PRODUCTION,
     };

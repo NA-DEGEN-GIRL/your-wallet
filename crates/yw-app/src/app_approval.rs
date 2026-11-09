@@ -1360,6 +1360,7 @@ impl App {
             records,
             journal_room: room,
             address_book,
+            own_accounts: self.own_accounts(),
             extra_warnings,
             limits: Limits::PRODUCTION,
         })));
@@ -1477,24 +1478,34 @@ impl App {
                 if let Some(ui) = self.evm.window.as_mut() {
                     ui.typed = Some(typed.clone());
                 }
+                // Without the lookups (no endpoint, no worker) the spender counts as a failed
+                // lookup (`Unknown`, T18, fail closed).
+                let mut unlooked = yw_core::approval::ChainFacts {
+                    address_book: self.address_book_facts(),
+                    own_accounts: self.own_accounts(),
+                    ..yw_core::approval::ChainFacts::default()
+                };
+                if let Some(info) = crate::flow::evm::chain_info(&self.settings, site.chain_id) {
+                    crate::flow::evm::prepare::typed_spender_unknown_unless_classified(
+                        &mut unlooked,
+                        &info,
+                        &typed,
+                    );
+                }
                 if let Ok(chain) = self.chain_job(site.chain_id) {
-                    let address_book = self.address_book_facts();
                     let sent = self.rpc(RpcJob::TypedFacts {
                         job,
                         chain,
                         account: *account,
                         typed,
-                        address_book,
+                        address_book: unlooked.address_book.clone(),
+                        own_accounts: unlooked.own_accounts.clone(),
                     });
                     if !sent {
-                        self.on_typed_facts(job, &yw_core::approval::ChainFacts::default());
+                        self.on_typed_facts(job, &unlooked, None);
                     }
                 } else {
-                    let facts = yw_core::approval::ChainFacts {
-                        address_book: self.address_book_facts(),
-                        ..yw_core::approval::ChainFacts::default()
-                    };
-                    self.on_typed_facts(job, &facts);
+                    self.on_typed_facts(job, &unlooked, None);
                 }
             }
             SiteKind::SolSign { .. } | SiteKind::BtcSign { .. } => {
@@ -1531,8 +1542,15 @@ impl App {
         })
     }
 
-    /// Typed-data facts arrived: build the draft (spec/03 §8).
-    pub fn on_typed_facts(&mut self, job: u64, facts: &yw_core::approval::ChainFacts) {
+    /// Typed-data facts arrived: build the draft (spec/03 §8). `check` is the chain check the
+    /// lookups were made under (`None` without lookups): a chain found to answer for another
+    /// chain — now or before — blocks with E34 like a send (spec/03 §1.4, L12).
+    pub fn on_typed_facts(
+        &mut self,
+        job: u64,
+        facts: &yw_core::approval::ChainFacts,
+        check: Option<crate::flow::evm::ChainCheck>,
+    ) {
         let Some(ui) = self.evm.window.as_ref() else {
             return;
         };
@@ -1545,6 +1563,16 @@ impl App {
         let SiteKind::TypedData { account, .. } = &site.kind else {
             return;
         };
+        let mismatch = match check {
+            Some(crate::flow::evm::ChainCheck::Mismatch(kind)) => Some(
+                crate::flow::evm::prepare::PrepareFailure::chain_mismatch(kind),
+            ),
+            _ => self.message_chain_failure(site.chain_id),
+        };
+        if let Some(failure) = mismatch {
+            self.show_failure(failure.code, false, failure.message());
+            return;
+        }
         // A Hyperliquid transfer gets the S-HC recipient and spotMeta checks (spec/11 §7).
         let mut facts = facts.clone();
         facts.hyperliquid = self.hl_site_facts(&typed, account);
@@ -1805,6 +1833,19 @@ impl App {
             self.finish_approval(QueueOutcome::Rejected);
             return;
         }
+        // The worker compared its undecorated draft with the shown request, which carries the
+        // `WalletConnect` label and Verify warning: the stable part is compared again on the
+        // decorated draft (an extension request is unchanged by decoration).
+        let kind = match result.kind {
+            ResimKind::Same | ResimKind::Changed => {
+                if crate::flow::evm::prepare::stable_equal(&old, &draft) {
+                    ResimKind::Same
+                } else {
+                    ResimKind::Changed
+                }
+            }
+            other => other,
+        };
         let replaced = self.evm.store.replace(old.id, old.digest, draft);
         let Ok(request) = replaced else {
             self.show_failure(ErrorCode::App009, false, ErrorCode::App009.text());
@@ -1816,12 +1857,12 @@ impl App {
             ui.prepared = Some(prepared);
             ui.resim_click = false;
         }
-        if click && result.kind == ResimKind::Same {
+        if click && kind == ResimKind::Same {
             self.consume_and_sign();
             return;
         }
         if let Some(ui) = self.evm.window.as_mut() {
-            ui.status = match result.kind {
+            ui.status = match kind {
                 ResimKind::Same => None,
                 ResimKind::Changed | ResimKind::Blocked | ResimKind::Failed => {
                     Some("시뮬레이션 결과가 바뀌었습니다. 다시 확인하세요".to_owned())
@@ -2093,7 +2134,10 @@ impl App {
                             role: prepared.context.role,
                             now_unix_ms: now_unix_ms(),
                         };
-                        self.dispatch_evm_sign(ticket, approved, info);
+                        // The S11 send: an app item that replaces nothing (speed-up and cancel
+                        // come from the activity list).
+                        let form = matches!(&item, QueuedItem::App(app) if app.replace.is_none());
+                        self.dispatch_evm_sign(ticket, approved, info, form);
                     }
                     (None, _) => {
                         self.show_failure(ErrorCode::App009, false, ErrorCode::App009.text());
@@ -2110,13 +2154,29 @@ impl App {
 
     /// The signing job of a consumed EVM transaction approval: `SignEvm`, or — for a `YubiKey`
     /// account (`EvmKeySource::Hardware`) — the card step: the PIN window, then `SignEvmCard`
-    /// (spec/10 §9.2).
+    /// (spec/10 §9.2). The job's send slot is noted by `ticket` (released when this job ends
+    /// without a signature, spec/03 §3.6); `form` marks the S11 send.
     pub(crate) fn dispatch_evm_sign(
         &mut self,
         ticket: crate::events::SignTicket,
         approved: yw_core::approval::Approved,
         info: SignInfo,
+        form: bool,
     ) {
+        if let (
+            yw_core::approval::ChainRef::Evm { chain_id, .. },
+            yw_core::approval::AccountRef::Evm(account),
+        ) = (approved.chain(), approved.account())
+        {
+            self.evm.signing.insert(
+                ticket,
+                crate::app_evm::SigningSlot {
+                    chain_id,
+                    account,
+                    form,
+                },
+            );
+        }
         if crate::yubikey::approval_role(&approved).is_none() {
             self.key(KeyJob::SignEvm {
                 ticket,
@@ -2130,6 +2190,7 @@ impl App {
             // Not reached (the role was checked); never signed in software by accident.
             drop(approved);
             self.browser_sign_cancelled(ticket);
+            self.release_signing(ticket);
         }
     }
 

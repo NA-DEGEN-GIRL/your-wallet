@@ -132,6 +132,8 @@ pub enum RpcJob {
         typed: Box<yw_core::evm::eip712::DecodedTypedData>,
         /// Address-book names.
         address_book: Vec<(Address, String)>,
+        /// This wallet's own accounts and labels.
+        own_accounts: Vec<(Address, String)>,
     },
     /// Solana balances of `accounts` (genesis checked first).
     SolBalances {
@@ -455,6 +457,7 @@ impl RpcWorker {
                 account,
                 typed,
                 address_book,
+                own_accounts,
             } => {
                 let (facts, check) = crate::flow::evm::prepare::typed_facts(
                     &transport,
@@ -463,6 +466,7 @@ impl RpcWorker {
                     &account,
                     &typed,
                     address_book,
+                    own_accounts,
                     &*self.clock,
                     self.limits.retry_delay_ms,
                 );

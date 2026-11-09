@@ -699,7 +699,9 @@ pub fn tx_rules(input: &TxRiskInput<'_>) -> Vec<Warning> {
         warnings.push(warning(E24, None));
     }
     // E28: the wallet's own send, or a site's simple transfer that the E23 exception left
-    // without a line — the site chose that recipient (spec/03 §10.2a).
+    // without a line — the site chose that recipient (spec/03 §10.2a). The signing account
+    // itself (a cancel's zero self-transfer) and this wallet's own accounts are known
+    // recipients, like address-book entries.
     let (recipient, cause) = match input.origin {
         ApprovalOrigin::App => {
             let recipient = match input.call {
@@ -715,7 +717,9 @@ pub fn tx_rules(input: &TxRiskInput<'_>) -> Vec<Warning> {
         ),
     };
     if let Some(recipient) = recipient
+        && recipient != *input.account
         && facts.book_name(&recipient).is_none()
+        && facts.own_name(&recipient).is_none()
     {
         warnings.push(warning(E28, cause));
     }
@@ -1047,6 +1051,10 @@ pub fn typed_rules(input: &TypedRiskInput<'_>, hidden_characters: bool) -> Vec<W
     }
     if hidden_characters {
         warnings.push(warning(T17, None));
+    }
+    // Some addresses or tokens were not looked up (limit or budget, spec/03 §8.5).
+    if input.facts.lookups_limited {
+        warnings.push(warning(E27, None));
     }
     warnings
 }

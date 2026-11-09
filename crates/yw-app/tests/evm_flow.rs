@@ -882,7 +882,7 @@ fn resimulation_classifies_new_spenders() -> TestResult {
 
 /// spec/03 §8.5: a typed-data spender whose `eth_getCode` fails is recorded as
 /// `CodeKind::Unknown` (T18, high risk) instead of being left unclassified; a working lookup
-/// classifies it (an EOA spender is T09, not T18).
+/// classifies it (an EOA spender is T09, not T18); without a verified chain it is `Unknown` too.
 #[test]
 fn typed_facts_failed_code_lookup_is_unknown_and_t18() -> TestResult {
     use yw_core::approval::CodeKind;
@@ -908,6 +908,7 @@ fn typed_facts_failed_code_lookup_is_unknown_and_t18() -> TestResult {
             &chain,
             &account,
             &typed,
+            Vec::new(),
             Vec::new(),
             &FakeClock::at(S2_UNIX_MS),
             0,
@@ -950,6 +951,22 @@ fn typed_facts_failed_code_lookup_is_unknown_and_t18() -> TestResult {
     assert_eq!(facts.code_of(&address(TYPED_SPENDER)?), Some(CodeKind::Eoa));
     let found = rules_of(&facts);
     assert!(found.contains(&T09) && !found.contains(&T18), "{found:?}");
+    // No verified chain (transport failure): no lookups, and the spender is still `Unknown`
+    // (T18), never silently unclassified.
+    let (facts, check) = run(&fake(world(
+        11_155_111,
+        SEPOLIA_GENESIS,
+        vec![(
+            "eth_chainId",
+            Answer::Transport(yw_win::http::HttpError::Timeout),
+        )],
+    )));
+    assert!(matches!(check, ChainCheck::Unverified(_)), "{check:?}");
+    assert_eq!(
+        facts.code_of(&address(TYPED_SPENDER)?),
+        Some(CodeKind::Unknown)
+    );
+    assert!(rules_of(&facts).contains(&T18));
     Ok(())
 }
 

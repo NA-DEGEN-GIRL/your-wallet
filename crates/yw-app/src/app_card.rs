@@ -741,7 +741,7 @@ impl App {
         if let Some(ticket) = ticket {
             self.browser_sign_cancelled(ticket);
         }
-        self.card_release(&kind);
+        self.card_release(&kind, ticket);
     }
 
     /// Ends a step without a signature for another reason (`text` shown).
@@ -767,14 +767,20 @@ impl App {
                 _ => self.browser_tx_signed(ticket, Err(())),
             }
         }
-        self.card_release(&kind);
+        self.card_release(&kind, ticket);
         self.banner(None, text.to_owned());
         self.refresh();
     }
 
-    fn card_release(&mut self, kind: &CardJobKind) {
+    /// The send slot of a step that ends without a signature: an EVM transaction releases only
+    /// the slot of its own approval (by its ticket, spec/03 §3.6), never another open one's.
+    fn card_release(&mut self, kind: &CardJobKind, ticket: Option<SignTicket>) {
         match kind {
-            CardJobKind::EvmTx { .. } => self.evm.slots.clear(),
+            CardJobKind::EvmTx { .. } => {
+                if let Some(ticket) = ticket {
+                    self.release_signing(ticket);
+                }
+            }
             CardJobKind::SolTransfer { .. } => self.sol.slot = None,
             CardJobKind::Btc { .. } => self.btc.slot = false,
             CardJobKind::Zec { .. } => self.zec_card_cancelled(),

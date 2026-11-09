@@ -23,7 +23,7 @@ use yw_core::evm::chain::{ChainInfo, SimulationSupport};
 use yw_core::evm::decode::{DecodedCall, DecodedTx, decode_call};
 use yw_core::evm::display::add_replacement;
 use yw_core::evm::fee::{
-    FeeError, Fees, GAS_PRICE_ORACLE, GasEstimate, L1DataFee, L1FeeQuote, cancel_tx,
+    FeeCaps, FeeError, Fees, GAS_PRICE_ORACLE, GasEstimate, L1DataFee, L1FeeQuote, cancel_tx,
     check_caps_with_l1, fees_of, get_l1_fee_data, get_operator_fee_data, max_total_fee,
     plan_gas_limit, speed_up_tx, suggest_fees,
 };
@@ -108,6 +108,8 @@ pub struct PrepareJob {
     pub journal_room: bool,
     /// Address-book names.
     pub address_book: Vec<(Address, String)>,
+    /// This wallet's own accounts and labels (`내 계정` on address rows, known to E28).
+    pub own_accounts: Vec<(Address, String)>,
     /// Step 1–2 warnings (E31 for dApp fee fields).
     pub extra_warnings: Vec<Warning>,
     /// Time limits.
@@ -987,6 +989,7 @@ pub fn prepare(
     // Step 4: account code, reconcile, nonce, journal room.
     let mut facts = ChainFacts {
         address_book: job.address_book.clone(),
+        own_accounts: job.own_accounts.clone(),
         ..ChainFacts::default()
     };
     match rpc::code(&client, url, &job.account) {
@@ -1158,11 +1161,51 @@ pub struct ResimResult {
     pub failure: Option<PrepareFailure>,
 }
 
-fn stable_equal(a: &ApprovalRequest, b: &ApprovalDraft) -> bool {
+/// The stable-part comparison of spec/03 §6.6-3: the display without volatile fields and the
+/// payload. The UI compares again after decorating a `WalletConnect` draft (spec/13 §7): the
+/// issued request carries that decoration, the worker's draft does not.
+#[must_use]
+pub fn stable_equal(a: &ApprovalRequest, b: &ApprovalDraft) -> bool {
     match (a.display.stable_bytes(), b.display.stable_bytes()) {
         (Ok(left), Ok(right)) => left == right && a.payload == b.payload,
         _ => false,
     }
+}
+
+/// §6.6-4: the shown transaction with its fees recomputed after the base fee rose above its max
+/// fee, and the E05 warning when those fees break a cap. A new transaction takes the fresh fees;
+/// a speed-up or cancel never goes below its own fees, which carry the +10 % floor over the
+/// replaced candidate (§4.6) — the plain fresh tip could fall under it and the node would refuse
+/// the replacement as underpriced. `None` when no fees could be computed.
+fn refeed(
+    client: &RpcClient<'_>,
+    url: &HttpsUrl,
+    context: &TxContext,
+    caps: &FeeCaps,
+) -> Option<(Eip1559Tx, Option<Warning>)> {
+    let fresh = fresh_fees(client, url, &context.chain).ok()?;
+    let tx = &context.tx;
+    let (tip, max_fee) = match context.kind {
+        ApprovalKind::EvmSpeedUp | ApprovalKind::EvmCancel => {
+            let tip = tx
+                .max_priority_fee_per_gas
+                .max(fresh.max_priority_fee_per_gas);
+            let floor = fresh.base_fee_next.checked_mul_u64(2)?.checked_add(tip)?;
+            (tip, tx.max_fee_per_gas.max(floor))
+        }
+        _ => (fresh.max_priority_fee_per_gas, fresh.max_fee_per_gas),
+    };
+    let refed = Eip1559Tx {
+        max_priority_fee_per_gas: tip,
+        max_fee_per_gas: max_fee,
+        ..tx.clone()
+    };
+    let l1_max = context.facts.l1_fee.map_or(U256::ZERO, |quote| quote.max);
+    let used = fees_of(&refed, fresh.base_fee_next);
+    let violation = check_caps_with_l1(&used, refed.gas_limit, &l1_max, caps)
+        .err()
+        .map(|violation| violation.warning(&context.chain));
+    Some((refed, violation))
 }
 
 fn rebuild(
@@ -1196,6 +1239,7 @@ fn rebuild(
         records: Vec::new(),
         journal_room: true,
         address_book: job.address_book.clone(),
+        own_accounts: context.facts.own_accounts.clone(),
         extra_warnings: job.extra_warnings.clone(),
         limits: job.limits,
     };
@@ -1327,15 +1371,11 @@ pub fn resimulate(
         SimOutcome::RpcError {
             code: -38_012 | -32_005
         }
-    ) && let Ok(fees) = fresh_fees(&client, url, &context.chain)
+    ) && let Some((tx, violation)) = refeed(&client, url, &context, &job.chain.caps)
     {
-        let mut tx = context.tx.clone();
-        tx.max_priority_fee_per_gas = fees.max_priority_fee_per_gas;
-        tx.max_fee_per_gas = fees.max_fee_per_gas;
-        let l1_max = context.facts.l1_fee.map_or(U256::ZERO, |quote| quote.max);
-        if let Err(violation) = check_caps_with_l1(&fees, tx.gas_limit, &l1_max, &job.chain.caps) {
-            context.tx = tx;
-            context.blocking.push(violation.warning(&context.chain));
+        context.tx = tx;
+        if let Some(violation) = violation {
+            context.blocking.push(violation);
             result.kind = ResimKind::Blocked;
             result.prepared = rebuild(
                 job,
@@ -1346,7 +1386,6 @@ pub fn resimulate(
             );
             return result;
         }
-        context.tx = tx;
         outcome = simulate_bounded(
             transport,
             url,
@@ -1414,9 +1453,31 @@ fn collect_addresses(
     }
 }
 
+/// A typed-data `spender` that was not classified (no lookups, no verified chain, the budget) is
+/// recorded as [`CodeKind::Unknown`] — T18, high risk — never left out (spec/03 §8.5, fail
+/// closed). A registry spender needs no classification.
+pub fn typed_spender_unknown_unless_classified(
+    facts: &mut ChainFacts,
+    chain: &ChainInfo,
+    typed: &yw_core::evm::eip712::DecodedTypedData,
+) {
+    if let Some(spender) = typed
+        .root
+        .field("spender")
+        .and_then(yw_core::evm::eip712::TdNode::address)
+        && chain.label(&spender).is_none()
+        && facts.code_of(&spender).is_none()
+    {
+        facts.code.push((spender, CodeKind::Unknown));
+    }
+}
+
 /// Facts for a typed-data display (spec/03 §8.5 address classification, §2.5 token metadata of
-/// `token` fields and of an EIP-2612/DAI verifying contract), at most 16 lookups each. When the
-/// chain check does not verify, no lookup is made (the display shows unclassified addresses).
+/// `token` fields and of an EIP-2612/DAI verifying contract), at most 16 lookups each beyond the
+/// signing account, the verifying contract and the `spender`, which have their own slots (the
+/// rules judge the spender: T09/T18). Skipped lookups set `lookups_limited` (E27). When the
+/// chain check does not verify, no lookup is made: the spender is `Unknown` (T18) and the other
+/// addresses show unclassified; a mismatch is for the caller to block (E34).
 #[expect(
     clippy::too_many_arguments,
     reason = "the inputs of one typed-data preparation"
@@ -1429,18 +1490,22 @@ pub fn typed_facts(
     account: &Address,
     typed: &yw_core::evm::eip712::DecodedTypedData,
     address_book: Vec<(Address, String)>,
+    own_accounts: Vec<(Address, String)>,
     clock: &dyn Clock,
     retry_delay_ms: u64,
 ) -> (ChainFacts, ChainCheck) {
-    use yw_core::evm::eip712::KnownSchema;
+    use yw_core::evm::eip712::{KnownSchema, TdNode};
     let mut facts = ChainFacts {
         address_book,
+        own_accounts,
         ..ChainFacts::default()
     };
+    let spender = typed.root.field("spender").and_then(TdNode::address);
     let client = RpcClient::new(&**transport);
     let url = &chain.url;
     let check = cache.ensure(&client, url, &chain.info, clock, retry_delay_ms);
     if !matches!(check, ChainCheck::Verified { .. }) {
+        typed_spender_unknown_unless_classified(&mut facts, &chain.info, typed);
         return (facts, check);
     }
     let mut addresses = vec![*account];
@@ -1454,22 +1519,34 @@ pub fn typed_facts(
             tokens.push(contract);
         }
     }
+    if let Some(spender) = spender
+        && !addresses.contains(&spender)
+    {
+        addresses.push(spender);
+    }
+    // `addresses[..reserved]` (account, verifying contract, spender) are outside the limit: a
+    // batch of many tokens cannot push the spender out of the lookups.
+    let reserved = addresses.len();
     collect_addresses(&typed.root, false, &mut addresses, &mut tokens);
+    let address_slots = MAX_FACT_LOOKUPS.saturating_add(reserved);
+    facts.lookups_limited = tokens.len() > MAX_FACT_LOOKUPS || addresses.len() > address_slots;
     let started = clock.now_ms();
     let over = || clock.now_ms().saturating_sub(started) > PREPARE_TYPED_BUDGET_MS;
     for token in tokens.iter().take(MAX_FACT_LOOKUPS) {
         if over() {
+            facts.lookups_limited = true;
             break;
         }
         let meta = token_meta(&client, url, &chain.info, token);
         facts.tokens.push((*token, meta));
     }
-    for address in addresses.iter().take(MAX_FACT_LOOKUPS) {
-        if over() {
-            break;
-        }
+    for address in addresses.iter().take(address_slots) {
         if chain.info.label(address).is_some() || facts.code_of(address).is_some() {
             continue;
+        }
+        if over() {
+            facts.lookups_limited = true;
+            break;
         }
         let kind = code_kind(&client, url, address);
         if address == account {
@@ -1477,6 +1554,7 @@ pub fn typed_facts(
         }
         facts.code.push((*address, kind));
     }
+    typed_spender_unknown_unless_classified(&mut facts, &chain.info, typed);
     (facts, check)
 }
 

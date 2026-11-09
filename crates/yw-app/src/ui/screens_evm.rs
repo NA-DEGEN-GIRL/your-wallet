@@ -1050,22 +1050,9 @@ impl App {
     }
 
     fn picker_rows(&self, items: &mut Vec<Item>) {
-        let filter = self.evm.send.to_text.trim().to_ascii_lowercase();
         let mut shown = 0_u16;
-        for entry in self.known_addresses() {
-            if entry.history {
-                continue;
-            }
+        for entry in self.picker_known() {
             let hex = entry.address.to_lower_hex();
-            if !filter.is_empty()
-                && !hex.contains(filter.trim_start_matches("0x"))
-                && !entry.name.to_ascii_lowercase().contains(&filter)
-            {
-                continue;
-            }
-            if shown >= ids::SEND_PICK_SPAN {
-                break;
-            }
             let favorite = !entry.mine
                 && self
                     .meta
@@ -1093,10 +1080,10 @@ impl App {
         }
     }
 
-    /// The picker entries in display order (for the command handler).
-    #[must_use]
-    pub fn picker_entries(&self) -> Vec<Address> {
-        let filter = self.evm.send.to_text.trim().to_ascii_lowercase();
+    /// The picker rows in display order: book entries and own accounts matching the filter of
+    /// the rows on screen (`SendForm::picker_filter`), at most [`ids::SEND_PICK_SPAN`].
+    fn picker_known(&self) -> Vec<crate::flow::evm::form::KnownAddress> {
+        let filter = self.evm.send.picker_filter.trim().to_ascii_lowercase();
         self.known_addresses()
             .into_iter()
             .filter(|entry| !entry.history)
@@ -1108,8 +1095,17 @@ impl App {
                         .contains(filter.trim_start_matches("0x"))
                     || entry.name.to_ascii_lowercase().contains(&filter)
             })
-            .map(|entry| entry.address)
             .take(usize::from(ids::SEND_PICK_SPAN))
+            .collect()
+    }
+
+    /// The picker entries in display order (for the command handler): the same rows as drawn,
+    /// so a click picks the row it was drawn for even when the recipient text changed since.
+    #[must_use]
+    pub fn picker_entries(&self) -> Vec<Address> {
+        self.picker_known()
+            .into_iter()
+            .map(|entry| entry.address)
             .collect()
     }
 

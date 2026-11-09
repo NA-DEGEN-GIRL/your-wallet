@@ -555,6 +555,12 @@ pub struct ChainFacts {
     pub balances: Vec<(Address, U256)>,
     /// Address-book names (already user-entered text; escaped at display).
     pub address_book: Vec<(Address, String)>,
+    /// This wallet's own EVM accounts and their labels (user-entered text; escaped at display):
+    /// address rows show `[내 계정: …]` and E28 knows them like address-book entries.
+    pub own_accounts: Vec<(Address, String)>,
+    /// Typed data: some lookups were skipped (the 16-lookup limit or the budget, spec/03 §8.5),
+    /// shown as E27 by the typed-data rules (a transaction's step 9 adds its E27 itself).
+    pub lookups_limited: bool,
     /// The OP-stack L1 data fee of the prepared transaction (spec/03 §3.4a), `None` when the
     /// chain charges none or the lookup failed (E41).
     pub l1_fee: Option<crate::evm::fee::L1FeeQuote>,
@@ -592,6 +598,14 @@ impl ChainFacts {
     #[must_use]
     pub fn book_name(&self, address: &Address) -> Option<&str> {
         self.address_book
+            .iter()
+            .find_map(|(known, name)| (known == address).then_some(name.as_str()))
+    }
+
+    /// The label of `address` when it is one of this wallet's own accounts.
+    #[must_use]
+    pub fn own_name(&self, address: &Address) -> Option<&str> {
+        self.own_accounts
             .iter()
             .find_map(|(known, name)| (known == address).then_some(name.as_str()))
     }

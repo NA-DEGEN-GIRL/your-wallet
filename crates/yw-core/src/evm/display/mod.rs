@@ -85,7 +85,8 @@ fn message_value(escaped_text: &str) -> String {
     }
 }
 
-/// Address with registry label, classification and address-book label (spec/03 §2.2, §8.5).
+/// Address with registry label, classification, own-account label and address-book label
+/// (spec/03 §2.2, §8.5).
 #[must_use]
 pub fn describe_address(chain: &ChainInfo, facts: &ChainFacts, address: &Address) -> String {
     let mut out = format_address(address);
@@ -105,6 +106,11 @@ pub fn describe_address(chain: &ChainInfo, facts: &ChainFacts, address: &Address
             Some(CodeKind::Unknown) => out.push_str(" [계정 종류 확인 불가]"),
             None => {}
         }
+    }
+    if let Some(name) = facts.own_name(address) {
+        out.push_str(" [내 계정: ");
+        out.push_str(&escape_inline(name).0);
+        out.push(']');
     }
     if let Some(name) = facts.book_name(address) {
         out.push_str(" [주소록: ");

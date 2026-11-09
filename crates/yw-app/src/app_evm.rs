@@ -66,6 +66,10 @@ pub enum SendAsset {
 
 /// S11 state (inputs survive rejection and expiry, spec/04 §2.7).
 #[derive(Clone, Debug, Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent states of one form (ack, picker, quote in flight, `최대` waiting)"
+)]
 pub struct SendForm {
     /// Asset.
     pub asset: SendAsset,
@@ -77,6 +81,10 @@ pub struct SendForm {
     pub ack: bool,
     /// Address-book picker open.
     pub picker: bool,
+    /// The filter of the picker rows on screen: the recipient text as of the last validation
+    /// or picker toggle. Typing does not redraw the open picker before its validation, so the
+    /// rows — and the row a click picks — follow this, not the text being typed.
+    pub picker_filter: String,
     /// Last edit (monotonic ms) awaiting validation.
     pub dirty_ms: Option<u64>,
     /// Parsed recipient and notes.
@@ -93,11 +101,14 @@ pub struct SendForm {
     pub quote_error: Option<ErrorCode>,
     /// Pending quote job.
     pub quote_job: u64,
+    /// A quote job was sent and its answer has not arrived (a second `최대` click waits for it
+    /// instead of asking again).
+    pub quoting: bool,
     /// Pending code job.
     pub code_job: u64,
     /// Recipient has code (W-ADDR-4).
     pub contract: Option<bool>,
-    /// `최대` requested: fill when the quote arrives.
+    /// `최대` requested: fill when the quote arrives (dropped when that quote fails).
     pub max_pending: bool,
     /// Message (T-APPR-EXPIRED, errors).
     pub info: Option<String>,
@@ -200,6 +211,19 @@ impl QueuedItem {
             Self::HyperCore(item) => NetworkId::Eip155(item.action.network.hyperevm_chain_id()),
         }
     }
+}
+
+/// A consumed EVM transaction approval whose signing job has not ended (spec/03 §3.6): the send
+/// slot it holds, released when that job ends without a signature — never another approval's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SigningSlot {
+    /// Chain.
+    pub chain_id: u64,
+    /// Signing account.
+    pub account: Address,
+    /// The S11 send: once signed, its form resets and `보내기 결과` shows (a dApp transaction,
+    /// speed-up or cancel leaves the form alone).
+    pub form: bool,
 }
 
 /// The last sent transaction (S11 result).
@@ -306,6 +330,8 @@ pub struct EvmUi {
     pub store: ApprovalStore,
     /// Send slots `(chain, account)` (spec/03 §3.6).
     pub slots: Vec<(u64, Address)>,
+    /// Signing jobs of consumed EVM transaction approvals, by ticket.
+    pub signing: HashMap<crate::events::SignTicket, SigningSlot>,
     /// Job counter.
     pub next_job: u64,
     /// Signing-ticket counter (`SignEvm` / `SignMessage` waiters).
@@ -348,6 +374,7 @@ impl EvmUi {
         self.balances.clear();
         self.notes.clear();
         self.slots.clear();
+        self.signing.clear();
         self.sent = None;
         self.send = SendForm::default();
         self.token = TokenForm::default();
@@ -731,14 +758,20 @@ impl App {
             ticket,
             result.as_ref().map(|signed| signed.tx_hash).map_err(|_| ()),
         );
+        // Only this job's slot is released, and only the S11 send touches the send form: a dApp
+        // transaction, speed-up or cancel signed meanwhile leaves a half-typed form alone.
+        let form = self.evm.signing.get(&ticket).is_some_and(|slot| slot.form);
         match result {
             Ok(signed) => {
+                self.evm.signing.remove(&ticket);
                 self.release_slot(signed.chain_id, &signed.account);
-                self.evm.sent = Some(SentInfo {
-                    chain_id: signed.chain_id,
-                    tx_hash: signed.tx_hash,
-                });
-                self.evm.send = SendForm::default();
+                if form {
+                    self.evm.sent = Some(SentInfo {
+                        chain_id: signed.chain_id,
+                        tx_hash: signed.tx_hash,
+                    });
+                    self.evm.send = SendForm::default();
+                }
                 match self.chain_job(signed.chain_id) {
                     Ok(chain) => {
                         let _ = self.rpc(RpcJob::Broadcast {
@@ -749,23 +782,14 @@ impl App {
                     }
                     Err(code) => self.error_banner(code),
                 }
-                if matches!(self.screen, Screen::Send) {
+                if form && matches!(self.screen, Screen::Send) {
                     self.set_screen(Screen::SendResult);
                 } else {
                     self.refresh();
                 }
             }
             Err(failure) => {
-                for (chain_id, account) in std::mem::take(&mut self.evm.slots) {
-                    logging::info(
-                        "app",
-                        "slot.released",
-                        &[
-                            ("net", Field::Net(NetworkId::Eip155(chain_id))),
-                            ("account", Field::Address(account.as_bytes())),
-                        ],
-                    );
-                }
+                self.release_signing(ticket);
                 let message = match failure {
                     SignFailure::Sign(yw_core::evm::sign::SignError::Vault(error)) => {
                         crate::errors::vault_code(error).text()
@@ -779,11 +803,31 @@ impl App {
                     SignFailure::Card(error) => error.to_string(),
                 };
                 logging::warn("app", "sign.failed", &[]);
-                self.evm.send.info = Some(message.clone());
+                if form {
+                    self.evm.send.info = Some(message.clone());
+                }
                 self.banner(None, message);
                 self.refresh();
             }
         }
+    }
+
+    /// The signing job of `ticket` ended without a signature (failure, `YubiKey` PIN cancelled or
+    /// timed out, card step superseded): the send slot of its own approval is released — the
+    /// slots of other open approvals stay held (spec/03 §3.6, D20).
+    pub(crate) fn release_signing(&mut self, ticket: crate::events::SignTicket) {
+        let Some(slot) = self.evm.signing.remove(&ticket) else {
+            return;
+        };
+        self.release_slot(slot.chain_id, &slot.account);
+        logging::info(
+            "app",
+            "slot.released",
+            &[
+                ("net", Field::Net(NetworkId::Eip155(slot.chain_id))),
+                ("account", Field::Address(slot.account.as_bytes())),
+            ],
+        );
     }
 
     /// A consumed signing job with `ticket` ended without a signature because of the lock: its
@@ -798,6 +842,7 @@ impl App {
     pub fn evm_sign_cancelled(&mut self) {
         logging::info("app", "sign.aborted", &[("reason", Field::Word("locked"))]);
         self.evm.slots.clear();
+        self.evm.signing.clear();
     }
 
     pub(crate) fn release_slot(&mut self, chain_id: u64, account: &Address) {
@@ -834,19 +879,7 @@ impl App {
                 job,
                 address,
                 result,
-            } => {
-                if job == self.evm.send.code_job
-                    && self
-                        .evm
-                        .send
-                        .recipient
-                        .as_ref()
-                        .is_some_and(|(recipient, _)| *recipient == address)
-                {
-                    self.evm.send.contract = result.ok();
-                    self.refresh();
-                }
-            }
+            } => self.on_recipient_code(job, address, result),
             RpcEvent::TokenMeta { job, token, result } => {
                 if job == self.evm.token.job {
                     match result {
@@ -869,7 +902,9 @@ impl App {
             }
             RpcEvent::Simulating { job, since_ms } => self.on_simulating(job, since_ms),
             RpcEvent::Prepared(result) => self.on_prepared(*result),
-            RpcEvent::TypedFacts { job, facts, .. } => self.on_typed_facts(job, &facts),
+            RpcEvent::TypedFacts { job, facts, check } => {
+                self.on_typed_facts(job, &facts, Some(check));
+            }
             RpcEvent::Resimulated(result) => self.on_resimulated(*result),
             RpcEvent::Broadcast {
                 chain_id,
@@ -907,6 +942,21 @@ impl App {
             RpcEvent::Btc(event) => self.btc_rpc_event(*event),
             RpcEvent::Zec(event) => self.zec_rpc_event(*event),
             RpcEvent::HyperCore(event) => self.hc_rpc_event(*event),
+        }
+    }
+
+    /// The S11 recipient's `eth_getCode` answer (W-ADDR-4), for the recipient still shown.
+    fn on_recipient_code(&mut self, job: u64, address: Address, result: Result<bool, ErrorCode>) {
+        if job == self.evm.send.code_job
+            && self
+                .evm
+                .send
+                .recipient
+                .as_ref()
+                .is_some_and(|(recipient, _)| *recipient == address)
+        {
+            self.evm.send.contract = result.ok();
+            self.refresh();
         }
     }
 
@@ -1271,6 +1321,7 @@ impl App {
         };
         let known = self.known_addresses();
         let form = &mut self.evm.send;
+        form.picker_filter.clone_from(&form.to_text);
         let previous = form.recipient.as_ref().map(|(address, _)| *address);
         match check_recipient(&form.to_text, &sender, token.as_ref(), &known) {
             Ok((address, notes)) => {
@@ -1341,7 +1392,7 @@ impl App {
         }
         let job = self.evm.job();
         self.evm.send.quote_job = job;
-        let _ = self.rpc(RpcJob::Quote {
+        self.evm.send.quoting = self.rpc(RpcJob::Quote {
             job,
             chain,
             from,
@@ -1353,6 +1404,8 @@ impl App {
         if job != self.evm.send.quote_job {
             return;
         }
+        self.evm.send.quoting = false;
+        let quoted = result.is_ok();
         match result {
             Ok(quote) => {
                 self.evm.send.quote = Some(quote);
@@ -1363,8 +1416,9 @@ impl App {
                 self.evm.send.quote_error = Some(code);
             }
         }
-        if self.evm.send.max_pending {
-            self.evm.send.max_pending = false;
+        // `최대` waited for this quote: filled when it arrived, dropped when it failed (the quote
+        // error shows; asking again at once would loop on a failing or rate-limited RPC).
+        if std::mem::take(&mut self.evm.send.max_pending) && quoted {
             self.fill_max();
         }
         self.on_balances_for_form();
@@ -1400,7 +1454,8 @@ impl App {
         }
     }
 
-    /// `최대`.
+    /// `최대`. Without a quote it asks for one and fills when it arrives (one request per click
+    /// that is not already waiting; never a retry loop, see [`Self::on_quote`]).
     pub fn fill_max(&mut self) {
         let chain_id = self.settings.evm_chain_id;
         let Some((account, ..)) = self.selected_account() else {
@@ -1410,8 +1465,16 @@ impl App {
         let value = match self.evm.send.asset {
             SendAsset::Native => {
                 let Some(quote) = self.evm.send.quote.clone() else {
-                    self.evm.send.max_pending = true;
-                    self.request_quote();
+                    // A click while `최대` already waits for a quote in flight asks nothing more.
+                    if !(self.evm.send.max_pending && self.evm.send.quoting) {
+                        self.request_quote();
+                    }
+                    // Nothing to wait for when no quote could be asked (no endpoint: its error
+                    // shows).
+                    self.evm.send.max_pending = self.evm.send.quoting;
+                    if !self.evm.send.quoting {
+                        self.refresh();
+                    }
                     return;
                 };
                 let Some(balance) = self.native_balance(chain_id, &account) else {
@@ -2421,6 +2484,72 @@ mod tests {
         app.evm.send.amount_text = "x".to_owned();
         app.validate_send(false);
         assert_eq!(app.review_item().unwrap_err(), ReviewRefusal::NotReady);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// spec/04 §2.7 `최대` without a quote: one quote is asked for (a click while it is in
+    /// flight waits for it), and a failed quote shows its error and ends the wait — it is never
+    /// asked again by itself (a failing or rate-limited RPC used to loop quote → refresh).
+    #[test]
+    fn max_with_a_failing_quote_asks_once() {
+        use crate::apikeys::ApiKeys;
+        use crate::app::{App, AppMode, Paths};
+        use crate::errors::ErrorCode;
+        use crate::events::JournalView;
+        use crate::meta::{Account, Meta};
+        use crate::network::NetworkId;
+        use crate::settings::Settings;
+        use crate::workers::rpc::RpcJob;
+
+        let dir = std::env::temp_dir().join(format!("yw-app-evm-max-{}", std::process::id()));
+        let mut app = App::new(
+            Paths {
+                data: dir.clone(),
+                logs: dir.join("logs"),
+            },
+            true,
+            Settings::default(),
+            ApiKeys::default(),
+        );
+        app.mode = AppMode::Unlocked {
+            alt_passphrase: false,
+        };
+        app.meta = Some(Meta {
+            evm_accounts: vec![Account {
+                index: 0,
+                label: "계정 1".to_owned(),
+                address: "0xfe3b557e8fb62b89f4916b721be55ceb828dbd73".to_owned(),
+                hidden: false,
+            }],
+            ..Meta::default()
+        });
+        app.evm.journal = Some(JournalView::default());
+        app.apikeys.set_rpc(
+            NetworkId::Eip155(app.settings.evm_chain_id),
+            &yw_win::http::HttpsUrl::parse("https://rpc.example.test/").unwrap(),
+        );
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.rpc_tx = Some(tx);
+        let quotes = |rx: &std::sync::mpsc::Receiver<RpcJob>| {
+            rx.try_iter()
+                .filter(|job| matches!(job, RpcJob::Quote { .. }))
+                .count()
+        };
+        app.fill_max();
+        assert_eq!(quotes(&rx), 1);
+        assert!(app.evm.send.max_pending);
+        // A second click while that quote is in flight waits for it.
+        app.fill_max();
+        assert_eq!(quotes(&rx), 0);
+        // The quote fails: its error shows, the wait ends, nothing is asked again.
+        let job = app.evm.send.quote_job;
+        app.on_quote(job, Err(ErrorCode::Rpc001));
+        assert!(!app.evm.send.max_pending);
+        assert_eq!(app.evm.send.quote_error, Some(ErrorCode::Rpc001));
+        assert_eq!(quotes(&rx), 0);
+        // A new click asks once more.
+        app.fill_max();
+        assert_eq!(quotes(&rx), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
