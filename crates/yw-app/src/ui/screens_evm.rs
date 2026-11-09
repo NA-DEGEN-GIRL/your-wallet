@@ -610,7 +610,8 @@ impl App {
             items.push(Item::Mono(row.hash));
             let mut buttons = vec![Ctl::button(base, "해시 복사")];
             if row.open.is_some() {
-                buttons.push(Ctl::button(base.saturating_add(1), "가속"));
+                // Replace-by-fee has one name on every chain (Bitcoin's `수수료 올리기`).
+                buttons.push(Ctl::button(base.saturating_add(1), "수수료 올리기"));
                 buttons.push(Ctl::button(base.saturating_add(2), "취소"));
                 if row.manual {
                     buttons.push(Ctl::button(base.saturating_add(3), "재전송"));
@@ -844,9 +845,6 @@ impl App {
             ));
         }
         let form = &self.evm.send;
-        if let Some(info) = &form.info {
-            items.push(Item::Banner(info.clone(), Tone::Warn));
-        }
         if let Some(record) = self.send_in_flight() {
             items.push(Item::Banner(
                 "이 계정의 이전 거래가 아직 확정되지 않았습니다. 확정된 뒤 보낼 수 있습니다."
@@ -860,7 +858,7 @@ impl App {
             )));
             items.push(Item::Mono(hash_text(&record.tx_hash)));
         }
-        if let Some((account, _, label)) = self.selected_account() {
+        if let Some((account, source, label)) = self.selected_account() {
             items.push(Item::CardStart(Some("보내는 계정".to_owned())));
             let balance = self
                 .native_balance(chain_id, &account)
@@ -869,6 +867,8 @@ impl App {
                 });
             items.push(Item::Text(format!("{label}{balance}")));
             items.push(Item::Mono(format_address(&account)));
+            // U7: `검토` stays off while the phrase waits for its backup quiz.
+            self.mn_signing_banner(self.evm_backup_gate(source), items);
             items.push(Item::Row(vec![Ctl::link(
                 crate::ui::screens::ids::SWITCH_ACCOUNT,
                 "다른 계정으로 바꾸기 (메인)",
@@ -1048,6 +1048,10 @@ impl App {
         }
         if let Some(code) = form.quote_error {
             items.push(Item::Banner(code.text(), Tone::Danger));
+        }
+        // What `검토`, the approval or the signature ended with, next to the button.
+        if let Some(info) = &form.info {
+            items.push(Item::Banner(info.clone(), Tone::Warn));
         }
         items.push(Item::CardEnd);
         items.push(Item::Row(vec![

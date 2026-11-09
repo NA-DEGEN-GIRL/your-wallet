@@ -107,6 +107,20 @@ impl App {
         ApprovalOrigin::Site(claimed.unwrap_or_else(|| site.origin.clone()))
     }
 
+    /// What an app notice calls the dApp of `origin`: a `WalletConnect` session's synthetic
+    /// `….walletconnect.invalid` origin means nothing to the user (and looks like phishing), so
+    /// its claimed origin label, or `WalletConnect dApp` once the session is gone (spec/13 §7);
+    /// any other origin as it is.
+    pub(crate) fn origin_display(&self, origin: &BrowserOrigin) -> String {
+        if !is_session_origin(origin) {
+            return origin.as_str().to_owned();
+        }
+        self.wc_peer_of(origin).map_or_else(
+            || "WalletConnect dApp".to_owned(),
+            |(peer, _)| crate::walletconnect::origin_label(&peer),
+        )
+    }
+
     /// The origin text of a site request for logs-free display and the AI explanation input.
     pub(crate) fn site_origin_text(&self, site: &SiteRequest) -> String {
         self.wc_peer_of(&site.origin).map_or_else(

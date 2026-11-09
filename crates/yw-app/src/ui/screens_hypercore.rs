@@ -249,9 +249,6 @@ impl App {
             Box::new(Item::Title(format!("{title} — {}", network.label()))),
         ));
         network_band(network, items);
-        if let Some(info) = &form.info {
-            items.push(Item::Banner(info.clone(), Tone::Warn));
-        }
         // A failed load is shown and can be retried here (the card is not on this screen).
         if let Some(error) = &self.hypercore.error {
             items.push(Item::Banner(error.clone(), Tone::Warn));
@@ -259,10 +256,12 @@ impl App {
         if self.hypercore.error.is_some() || self.hc_balances().is_none() {
             items.push(Item::Row(vec![Ctl::button(ids::REFRESH, "새로고침")]));
         }
-        if let Some((account, _, label)) = self.selected_account() {
+        if let Some((account, source, label)) = self.selected_account() {
             items.push(Item::CardStart(Some("서명 계정".to_owned())));
             items.push(Item::Text(label));
             items.push(Item::Mono(yw_core::evm::display::format_address(&account)));
+            // U7: `검토` stays off while the phrase waits for its backup quiz.
+            self.mn_signing_banner(self.evm_backup_gate(source), items);
             items.push(Item::CardEnd);
         }
         items.push(Item::CardStart(Some("내용".to_owned())));
@@ -388,6 +387,10 @@ impl App {
                 Tone::Danger
             };
             items.push(Item::Banner(error.clone(), tone));
+        }
+        // What `검토` or the approval ended with (queue full, expired), also next to it.
+        if let Some(info) = &form.info {
+            items.push(Item::Banner(info.clone(), Tone::Warn));
         }
         items.push(Item::CardEnd);
         items.push(Item::Row(vec![

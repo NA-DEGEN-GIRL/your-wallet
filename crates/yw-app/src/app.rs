@@ -909,9 +909,14 @@ impl App {
         self.banner(None, crate::ui::screens::T_WER_UNPROTECTED.to_owned());
     }
 
-    /// Adds a banner once per code.
+    /// Adds a banner once per code; a codeless one once per text (a failure repeated while its
+    /// band is still up adds no second identical band).
     pub fn banner(&mut self, code: Option<ErrorCode>, text: String) {
-        if code.is_some() && self.banners.iter().any(|banner| banner.code == code) {
+        if self
+            .banners
+            .iter()
+            .any(|banner| banner.code == code && (code.is_some() || banner.text == text))
+        {
             return;
         }
         self.banners.push(Banner {

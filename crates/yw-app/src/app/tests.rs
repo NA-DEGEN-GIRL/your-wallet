@@ -2025,6 +2025,76 @@ fn zcash_missing_endpoint_is_one_line_with_the_next_step() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// Review 2026-11-10 (usability): what `검토` ends with on the Zcash tab is said in the 보내기
+/// card right above the button — the tab's own band is several cards higher, out of the
+/// default window's view — and the same text is not also the top band; a codeless failure
+/// band is not stacked again.
+#[test]
+fn zcash_review_result_is_drawn_next_to_the_button() {
+    use crate::ui::screens_zec::ids as zec;
+    let (mut app, dir) = unlocked_app("zec-review-line", false);
+    app.meta.as_mut().unwrap().prefs.tab = Tab::Zec;
+    app.settings.zcash.enabled = true;
+    app.settings.zcash.network = yw_core::zec::ZecNetwork::Testnet;
+    app.meta
+        .as_mut()
+        .unwrap()
+        .zcash
+        .set(yw_core::zec::ZecAccount {
+            network: yw_core::zec::ZecNetwork::Testnet,
+            source: yw_core::zec::ZecKeySource::DEFAULT,
+            pubkey: yw_core::hex::decode_array::<33>(
+                "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+            )
+            .unwrap(),
+        });
+    // No `zcash:testnet` URL: `검토`'s node check cannot start, and says so by the button.
+    app.on_command(zec::SEND_REVIEW);
+    let missing = crate::errors::ErrorCode::Key005.text();
+    assert_eq!(app.zec.send_error.as_deref(), Some(missing.as_str()));
+    assert_eq!(app.zec.send_info, None);
+    let line_above_review = |items: &[Item]| {
+        let review = items
+            .iter()
+            .position(|item| {
+                matches!(item, Item::Row(ctls) if ctls.iter().any(|ctl| ctl.id == zec::SEND_REVIEW))
+            })
+            .unwrap();
+        items.get(review - 1).cloned()
+    };
+    let items = app.items();
+    assert_eq!(
+        line_above_review(&items),
+        Some(Item::Banner(missing.clone(), Tone::Danger))
+    );
+    // The same text as the tab's error is drawn once, next to the button.
+    let refused = "보낼 금액(ZEC)을 올바르게 입력하세요.".to_owned();
+    app.zec.error = Some(refused.clone());
+    app.zec.send_error = Some(refused.clone());
+    let items = app.items();
+    assert_eq!(
+        line_above_review(&items),
+        Some(Item::Banner(refused.clone(), Tone::Danger))
+    );
+    assert_eq!(
+        texts(&items)
+            .iter()
+            .filter(|text| **text == refused)
+            .count(),
+        1
+    );
+    app.banner(None, "서명 실패".to_owned());
+    app.banner(None, "서명 실패".to_owned());
+    assert_eq!(
+        app.banners
+            .iter()
+            .filter(|banner| banner.text == "서명 실패")
+            .count(),
+        1
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// Review 2026-11-07 F3: every settings section opens with its one-line map.
 #[test]
 fn settings_sections_start_with_their_map() {

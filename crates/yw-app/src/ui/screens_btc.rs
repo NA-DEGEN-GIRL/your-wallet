@@ -732,6 +732,8 @@ impl App {
     fn btc_balance_items(&self, ctx: &BtcCtx<'_>, items: &mut Vec<Item>) {
         items.push(Item::Subtitle(active_label(ctx)));
         items.push(Item::Help(active_detail(ctx)));
+        // U7, as on the EVM and Solana tabs: the account's phrase waits for its backup quiz.
+        self.mn_signing_banner(self.btc_backup_gate(), items);
         if let Some(balance) = self.btc.balance(ctx) {
             items.push(Item::Display(BtcUi::amount_text(balance.available)));
             items.push(Item::Help("사용 가능 (확인 1 이상, 서버 기준)".to_owned()));
@@ -1172,10 +1174,11 @@ impl App {
         ));
         network_banners(net, items);
         let form = &self.btc.send;
-        if let Some(info) = &form.info {
-            items.push(Item::Banner(info.clone(), Tone::Warn));
-        } else if let Some(reason) = self.btc.send_block(&ctx) {
-            items.push(Item::Banner(reason, Tone::Warn));
+        // Why the form cannot send at all is said first; what `검토` ended with is said next
+        // to the button (below).
+        let block = self.btc.send_block(&ctx);
+        if let Some(reason) = &block {
+            items.push(Item::Banner(reason.clone(), Tone::Warn));
         }
         if ctx.journal_damaged() {
             items.push(Item::Banner(JOURNAL_DAMAGED.to_owned(), Tone::Blocked));
@@ -1189,6 +1192,7 @@ impl App {
                 BtcUi::amount_text(balance.available)
             )));
         }
+        self.mn_signing_banner(self.btc_backup_gate(), items);
         items.push(Item::CardEnd);
         items.push(Item::CardStart(Some("받는 사람".to_owned())));
         let target = BookTarget::Btc(net);
@@ -1277,11 +1281,35 @@ impl App {
         ));
         items.push(Item::Rule);
         self.btc_fee_items(&form.fee, false, items);
+        // `검토`'s progress, a plan the node refused (funds, dust, no fee estimate, tip ahead),
+        // an expired approval or a signature that failed: next to the button, where the user
+        // pressed it (the top of the form is below the fold by then).
+        if let Some(info) = form
+            .info
+            .as_ref()
+            .filter(|info| block.as_ref() != Some(*info))
+        {
+            items.push(Item::Banner(
+                info.clone(),
+                if info.as_str() == crate::app_btc::BTC_PREPARING {
+                    Tone::Info
+                } else {
+                    Tone::Warn
+                },
+            ));
+        }
         items.push(Item::CardEnd);
         items.push(Item::Row(vec![
-            Ctl::primary(ids::SEND_REVIEW, "검토").enabled(self.btc.can_review(&ctx)),
+            Ctl::primary(ids::SEND_REVIEW, "검토").enabled(self.btc_can_review()),
             Ctl::button(ids::SEND_CANCEL, "취소"),
         ]));
+    }
+
+    /// Whether the send form's `검토` is enabled: the controller's checks, and an account whose
+    /// phrase has passed its backup quiz (U7; the band above says why).
+    #[must_use]
+    pub fn btc_can_review(&self) -> bool {
+        self.btc.can_review(&self.btc_ctx()) && !self.mn_send_blocked(self.btc_backup_gate())
     }
 
     /// Whether the fee-bump form's `검토` is enabled.
@@ -1462,14 +1490,7 @@ impl App {
             items.push(Item::Banner(message.clone(), Tone::Danger));
         }
         // An HD account of the primary phrase or an EVM key's use is the primary phrase's key.
-        let account = ctx.btc_meta().map(|meta| *meta.account());
-        self.mn_receive_banner(
-            self.mn_backup_gate(
-                account.and_then(|key| key.mnemonic()),
-                account.is_some_and(|key| !key.is_imported() && !key.is_hardware()),
-            ),
-            items,
-        );
+        self.mn_receive_banner(self.btc_backup_gate(), items);
         let Some(view) = &self.btc.receive else {
             if self.btc.receive_message.is_none() {
                 items.push(Item::Muted("주소를 준비하는 중…".to_owned()));

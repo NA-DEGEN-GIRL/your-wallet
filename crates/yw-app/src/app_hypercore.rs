@@ -768,6 +768,8 @@ impl App {
             && (!look_alike || acknowledged)
             && matches!(self.mode, AppMode::Unlocked { .. })
             && self.hypercore.pending.is_empty()
+            // U7: the signing account's phrase waits for its backup quiz (the band says so).
+            && !self.mn_send_blocked(self.evm_selected_gate())
     }
 
     /// `검토`: queue the approval (the nonce is the current wall-clock ms).

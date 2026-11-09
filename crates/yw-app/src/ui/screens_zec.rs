@@ -1,7 +1,8 @@
 //! The S10 Zcash tab (spec/12 §11, spec/04 §2.6): enable / network, account and key source,
 //! balance, receive (transparent address, QR, the Zashi note), send (t-address, TEX or the
-//! transparent receiver of a UA; amount or 최대; review), activity (this wallet's journal
-//! records and the address UTXOs). One page, no extra screens.
+//! transparent receiver of a UA; amount or `보내기 최대`; review, with what it ended with next
+//! to `검토`), activity (this wallet's journal records with `해시 복사`, and the address UTXOs).
+//! One page, no extra screens.
 
 use yw_core::journal::zec::ZecTxState;
 use yw_core::zec::{ZecNetwork, format_zec, format_zec_and_zats};
@@ -49,6 +50,12 @@ pub mod ids {
     pub const INDEXER_BB: u16 = 8_015;
     /// W-ADDR-3 `주소 전체를 직접 확인했습니다`.
     pub const SEND_ADDR_ACK: u16 = 8_016;
+    /// `해시 복사` of the 보내기 card's result line (the txid the node accepted).
+    pub const RESULT_COPY: u16 = 8_017;
+    /// `해시 복사` of the activity rows (newest first, one id per row).
+    pub const ACTIVITY_COPY_BASE: u16 = 8_100;
+    /// Activity copy span (every record the journal can hold).
+    pub const ACTIVITY_COPY_SPAN: u16 = 80;
     /// Key source: EVM account radios (position in the EVM account list).
     pub const SOURCE_EVM_BASE: u16 = 8_020;
     /// EVM radio span.
@@ -68,13 +75,14 @@ pub mod ids {
     /// Imported-key button span (15 keys per chain).
     pub const IMPORTED_SPAN: u16 = 16;
 
-    const _: () = assert!(SEND_ADDR_ACK < SOURCE_EVM_BASE);
+    const _: () = assert!(RESULT_COPY < SOURCE_EVM_BASE);
     const _: () = assert!(SOURCE_EVM_BASE + SOURCE_EVM_SPAN <= HW_BASE);
     const _: () = assert!(HW_BASE + HW_SPAN <= IMPORT);
-    const _: () = assert!(IMPORTED_BASE + IMPORTED_SPAN <= 8_100);
+    const _: () = assert!(IMPORTED_BASE + IMPORTED_SPAN <= ACTIVITY_COPY_BASE);
+    const _: () = assert!(ACTIVITY_COPY_BASE + ACTIVITY_COPY_SPAN <= 8_200);
 
     /// Every fixed id.
-    pub const FIXED: [u16; 20] = [
+    pub const FIXED: [u16; 21] = [
         TAB_ZEC,
         ENABLE_MAINNET,
         ENABLE_TESTNET,
@@ -92,6 +100,7 @@ pub mod ids {
         INDEXER_NODE,
         INDEXER_BB,
         SEND_ADDR_ACK,
+        RESULT_COPY,
         IMPORT,
         REVEAL,
         REMOVE,
@@ -193,6 +202,12 @@ impl App {
                 self.zec.show_qr = !self.zec.show_qr;
                 self.refresh();
             }
+            // A txid is public data (like Bitcoin's `해시 복사`): for checking on an explorer.
+            ids::RESULT_COPY => {
+                if let Some(txid) = self.zec.sent {
+                    self.copy_text(&yw_core::zec::tx::txid_display(&txid));
+                }
+            }
             ids::SEND_MAX => {
                 self.zec.send_max = !self.zec.send_max;
                 self.refresh();
@@ -238,29 +253,40 @@ impl App {
                     }
                 }
             }
-            other => {
-                if let Some(position) = offset(other, ids::IMPORTED_BASE, ids::IMPORTED_SPAN) {
-                    self.zec_use_imported(usize::from(position));
-                    return true;
-                }
-                if let Some(position) = offset(other, ids::SOURCE_EVM_BASE, ids::SOURCE_EVM_SPAN) {
-                    if let Some(index) = self.zec_evm_indices().get(usize::from(position)) {
-                        self.zec.source = SourceChoice::EvmShared(*index);
-                        self.zec.confirm_shared = false;
-                        self.refresh();
-                    }
-                    return true;
-                }
-                if let Some(position) = offset(other, ids::HW_BASE, ids::HW_SPAN) {
-                    if let Some(index) = self.zec_hw_slots().get(usize::from(position)) {
-                        self.zec_use_hardware(*index);
-                    }
-                    return true;
-                }
-                return false;
-            }
+            other => return self.on_zec_indexed(other),
         }
         true
+    }
+
+    /// The Zcash row commands (activity `해시 복사`, imported keys, EVM-key radios, `YubiKey`
+    /// slots); `false` when `id` is not one of them.
+    fn on_zec_indexed(&mut self, id: u16) -> bool {
+        if let Some(row) = offset(id, ids::ACTIVITY_COPY_BASE, ids::ACTIVITY_COPY_SPAN) {
+            // Rows are drawn newest first; a txid is public data, for an explorer.
+            if let Some(record) = self.zec_records().iter().rev().nth(usize::from(row)) {
+                self.copy_text(&record.txid_hex());
+            }
+            return true;
+        }
+        if let Some(position) = offset(id, ids::IMPORTED_BASE, ids::IMPORTED_SPAN) {
+            self.zec_use_imported(usize::from(position));
+            return true;
+        }
+        if let Some(position) = offset(id, ids::SOURCE_EVM_BASE, ids::SOURCE_EVM_SPAN) {
+            if let Some(index) = self.zec_evm_indices().get(usize::from(position)) {
+                self.zec.source = SourceChoice::EvmShared(*index);
+                self.zec.confirm_shared = false;
+                self.refresh();
+            }
+            return true;
+        }
+        if let Some(position) = offset(id, ids::HW_BASE, ids::HW_SPAN) {
+            if let Some(index) = self.zec_hw_slots().get(usize::from(position)) {
+                self.zec_use_hardware(*index);
+            }
+            return true;
+        }
+        false
     }
 
     /// The imported keys of the network ("[가져온 키]" rows with `이 키 사용`), `개인키 가져오기`,
@@ -361,13 +387,12 @@ impl App {
             .rpc_url(crate::network::NetworkId::Zcash(network))
             .is_some();
         // A missing URL is already the network card's status line with `RPC 설정하기`; the same
-        // E-KEY-005 is not repeated as a red band above it (review 2026-11-07 F6).
-        if let Some(error) = self
-            .zec
-            .error
-            .as_ref()
-            .filter(|error| has_endpoint || **error != crate::errors::ErrorCode::Key005.text())
-        {
+        // E-KEY-005 is not repeated as a red band above it (review 2026-11-07 F6). Nor is what
+        // the 보내기 card already says next to `검토`.
+        if let Some(error) = self.zec.error.as_ref().filter(|error| {
+            (has_endpoint || **error != crate::errors::ErrorCode::Key005.text())
+                && self.zec.send_error.as_ref() != Some(*error)
+        }) {
             items.push(Item::Banner(error.clone(), Tone::Danger));
         }
         if let Some(info) = &self.zec.info {
@@ -641,6 +666,10 @@ impl App {
 
         // Send.
         items.push(Item::CardStart(Some("보내기".to_owned())));
+        // U7: an account whose phrase has not passed its backup quiz cannot sign; said before
+        // the form, with `검토` off, instead of after the approval (E-VLT-009).
+        let backup_gate = self.zec_backup_gate();
+        self.mn_signing_banner(backup_gate, items);
         items.push(Item::Help(
             "받는 주소: t1…/t3… (testnet tm…/t2…), TEX(tex1…) 또는 일반 수신자가 있는 통합 주소(u1…). 비공개 주소(zs…)는 받지 않습니다."
                 .to_owned(),
@@ -668,9 +697,15 @@ impl App {
             vec![
                 Ctl::edit(ids::SEND_AMOUNT_EDIT, &self.zec.amount_text, 200, false, 24)
                     .enabled(!self.zec.send_max),
-                Ctl::check(ids::SEND_MAX, "최대 (수수료 빼고 전부)", self.zec.send_max),
+                Ctl::check(ids::SEND_MAX, "보내기 최대", self.zec.send_max),
             ],
         ));
+        if self.zec.send_max {
+            items.push(Item::Help(format!(
+                "보내기 최대: 확인된 출력(최대 {}개)의 합에서 수수료를 뺀 금액을 보냅니다(승인 창에서 확인).",
+                yw_core::zec::ZEC_MAX_INPUTS
+            )));
+        }
         items.push(Item::Help(
             "수수료는 ZIP 317 기본값(입력·출력 수에 따라 0.0001 ZEC부터)입니다. 승인 창에서 받는 주소·금액·수수료·만료 높이를 확인하세요."
                 .to_owned(),
@@ -680,10 +715,30 @@ impl App {
             && !self.zec.busy
             && !self.zec.refreshing
             && !self.zec_journal_damaged()
+            && !self.mn_send_blocked(backup_gate)
             && (self.zec.look_alike.is_none() || self.zec.ack);
-        items.push(Item::Row(vec![
-            Ctl::primary(ids::SEND_REVIEW, "검토").enabled(can_send),
-        ]));
+        // What `검토`, the approval, signing and sending ended with, next to the button (the
+        // tab's own band is several cards above it).
+        if let Some(error) = &self.zec.send_error {
+            items.push(Item::Banner(error.clone(), Tone::Danger));
+        }
+        if let Some(info) = &self.zec.send_info {
+            items.push(Item::Banner(info.clone(), Tone::Info));
+        }
+        if let Some(txid) = &self.zec.sent {
+            items.push(Item::Banner(
+                format!(
+                    "보냈습니다. txid {} — 아래 활동에서 확인 상태를 봅니다.",
+                    yw_core::zec::tx::txid_display(txid)
+                ),
+                Tone::Success,
+            ));
+        }
+        let mut row = vec![Ctl::primary(ids::SEND_REVIEW, "검토").enabled(can_send)];
+        if self.zec.sent.is_some() {
+            row.push(Ctl::button(ids::RESULT_COPY, "해시 복사"));
+        }
+        items.push(Item::Row(row));
         items.push(Item::CardEnd);
 
         // Activity.
@@ -694,7 +749,7 @@ impl App {
                 "이 지갑에서 보낸 Zcash 거래가 없습니다.".to_owned(),
             ));
         }
-        for record in records.iter().rev() {
+        for (row, record) in records.iter().rev().enumerate() {
             let to = record
                 .recipient()
                 .map_or_else(|| "-".to_owned(), |dest| dest.encode(network));
@@ -711,6 +766,13 @@ impl App {
                 ),
             ));
             items.push(Item::Mono(record.txid_hex()));
+            if let Some(id) = u16::try_from(row)
+                .ok()
+                .filter(|row| *row < ids::ACTIVITY_COPY_SPAN)
+                .map(|row| ids::ACTIVITY_COPY_BASE.saturating_add(row))
+            {
+                items.push(Item::Row(vec![Ctl::button(id, "해시 복사")]));
+            }
         }
         if let Some(snapshot) = snapshot {
             items.push(Item::Subtitle("받은 출력 (UTXO, 서버 기준)".to_owned()));

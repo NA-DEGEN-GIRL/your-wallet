@@ -349,16 +349,25 @@ impl App {
             .and_then(|source| self.mn_unconfirmed(self.evm_backup_gate(source)))
     }
 
-    /// [`Self::mn_unconfirmed`] of a Solana key source (the primary phrase's for its derived
+    /// [`Self::mn_backup_gate`] of a Solana key source (the primary phrase's for its derived
     /// paths; none for an imported or `YubiKey` key).
     #[must_use]
-    pub(crate) fn sol_source_unconfirmed(
+    pub(crate) fn sol_backup_gate(
         &self,
         source: yw_core::slip10::SolKeySource,
     ) -> Option<RecordId> {
         use yw_core::slip10::SolKeySource;
         let primary = !matches!(source, SolKeySource::Imported | SolKeySource::Hardware(_));
-        self.mn_unconfirmed(self.mn_backup_gate(source.mnemonic(), primary))
+        self.mn_backup_gate(source.mnemonic(), primary)
+    }
+
+    /// [`Self::mn_unconfirmed`] of a Solana key source ([`Self::sol_backup_gate`]).
+    #[must_use]
+    pub(crate) fn sol_source_unconfirmed(
+        &self,
+        source: yw_core::slip10::SolKeySource,
+    ) -> Option<RecordId> {
+        self.mn_unconfirmed(self.sol_backup_gate(source))
     }
 
     /// [`Self::mn_unconfirmed`] of a Bitcoin key source (an HD account's phrase, the primary one
@@ -377,6 +386,25 @@ impl App {
         self.mn_unconfirmed(self.mn_backup_gate(added, primary))
     }
 
+    /// [`Self::mn_backup_gate`] of the selected Bitcoin account (an HD account's phrase, the
+    /// primary one for an EVM key's use; none for an imported or `YubiKey` key).
+    #[must_use]
+    pub(crate) fn btc_backup_gate(&self) -> Option<RecordId> {
+        let ctx = self.btc_ctx();
+        let account = ctx.btc_meta().map(|meta| *meta.account());
+        self.mn_backup_gate(
+            account.and_then(|key| key.mnemonic()),
+            account.is_some_and(|key| !key.is_imported() && !key.is_hardware()),
+        )
+    }
+
+    /// [`Self::mn_backup_gate`] of the selected EVM account (S11 and S-HC sign with it).
+    #[must_use]
+    pub(crate) fn evm_selected_gate(&self) -> Option<RecordId> {
+        self.selected_account()
+            .and_then(|(_, source, _)| self.evm_backup_gate(source))
+    }
+
     /// Refuses a dApp signing request of an account that cannot sign yet
     /// ([`Self::mn_unconfirmed`] names its phrase): 4100 `BackupUnconfirmed` before any window —
     /// the vault would refuse the key only after the approval, and the page got a bare -32603 —
@@ -386,9 +414,11 @@ impl App {
         site: &crate::browser::SiteRequest,
         phrase: RecordId,
     ) {
+        // A WalletConnect session is named by the address its dApp claimed, never by its
+        // internal `….walletconnect.invalid` origin (spec/13 §7).
         let text = format!(
             "{}의 서명 요청을 거부했습니다: '{}'의 백업 확인 전이라 이 계정은 받기만 되고 서명은 안 됩니다. 설정 → 복구 단어에서 '백업 확인'을 마치세요.",
-            site.origin.as_str(),
+            self.origin_display(&site.origin),
             self.mnemonic_label(phrase)
         );
         if !self.banners.iter().any(|banner| banner.text == text) {
@@ -400,6 +430,33 @@ impl App {
             &site.reply,
             Err(yw_core::policy::ProviderError::BackupUnconfirmed),
         );
+    }
+
+    /// What a send form says when the vault refused its signature after the approval because the
+    /// account's recovery phrase has not passed its backup quiz (E-VLT-009). The forms keep
+    /// `검토` off while the app knows that ([`Self::mn_send_blocked`]), so this is the vault's
+    /// last line of defence speaking: which phrase (`phrase`, when known) and where to finish it,
+    /// as the dApp refusal says ([`Self::refuse_unconfirmed`]).
+    #[must_use]
+    pub(crate) fn backup_refused_text(&self, phrase: Option<RecordId>) -> String {
+        let which = phrase.map_or_else(
+            || "복구 단어가 백업 확인 전이라".to_owned(),
+            |id| format!("'{}'의 백업 확인 전이라", self.mnemonic_label(id)),
+        );
+        format!(
+            "서명하지 않았습니다: {which} 이 계정은 받기만 되고 서명은 안 됩니다. 설정 → 복구 단어에서 '백업 확인'을 마치세요. ({})",
+            crate::errors::ErrorCode::Vlt009.code()
+        )
+    }
+
+    /// The send forms' check before `검토` (S11, Solana, Bitcoin, the Zcash 보내기 card, S-HC):
+    /// the sending account's phrase (its [`Self::mn_backup_gate`] `gate`) while its backup quiz
+    /// has not passed — the form shows [`Self::mn_signing_banner`] and keeps `검토` off, instead
+    /// of building an approval the vault is certain to refuse (E-VLT-009). Display only: the
+    /// vault's refusal stays the last line of defence.
+    #[must_use]
+    pub(crate) fn mn_send_blocked(&self, gate: Option<RecordId>) -> bool {
+        self.mn_unconfirmed(gate).is_some()
     }
 
     /// The tag of a dApp connect-window row whose account cannot sign yet.

@@ -2,7 +2,8 @@
 //! Solana tab (with the allowlisted-token card of v1.1), the SOL/SPL send form with its asset
 //! picker and its result, receive, the S15 Solana section, the recovery scan and the Solana part
 //! of the address book. Addresses are always shown in full, in 4-character groups (spec/07
-//! §12.3); activity addresses have no copy or select buttons.
+//! §12.3); activity addresses have no copy or select buttons (a transaction id, public data,
+//! has `해시 복사` like Bitcoin's and EVM's).
 
 use core::fmt::Write as _;
 
@@ -67,6 +68,12 @@ pub mod ids {
     pub const TOKEN_HIDE_SPAN: u16 = 4;
     /// Token card `숨긴 토큰 n개 보기` / `접기`.
     pub const TOKEN_HIDDEN_TOGGLE: u16 = 7_075;
+    /// `해시 복사` of the send result (the signature, i.e. the transaction id).
+    pub const RESULT_COPY: u16 = 7_076;
+    /// `해시 복사` of the S10 activity rows (display order, one id per row).
+    pub const ACTIVITY_COPY_BASE: u16 = 7_400;
+    /// Activity copy span (the journal's records, or the drawn activity rows).
+    pub const ACTIVITY_COPY_SPAN: u16 = 64;
     /// Account radios (one id per row; rows ≤ 100, spec/02 §5.3). The span covers the whole
     /// account-index range 0..=999. It used to start at 7,200, inside the scan rows below, so
     /// the 41st scan row's `계정 추가` selected account 0 instead.
@@ -147,6 +154,7 @@ pub mod ids {
         SEND_AGAIN,
         SEND_NOW,
         TOKEN_HIDDEN_TOGGLE,
+        RESULT_COPY,
         SECTION_SOL,
         FEE_CAP_EDIT,
         CU_PRICE_EDIT,
@@ -567,7 +575,7 @@ impl App {
                 items.push(Item::Help(format!("받는 주소 {}", grouped(&core.to))));
             }
             items.push(Item::Mono(record.tx_id()));
-            self.sol_activity_save(shown, &counterparties, &mut prompt_drawn, items);
+            self.sol_activity_actions(shown, &counterparties, &mut prompt_drawn, items);
             shown = shown.saturating_add(1);
         }
         if let Some(meta) = self.meta.as_ref() {
@@ -588,7 +596,7 @@ impl App {
                         .map_or_else(|_| entry.counterparty.clone(), |address| grouped(&address))
                 )));
                 items.push(Item::Mono(entry.tx_id.clone()));
-                self.sol_activity_save(shown, &counterparties, &mut prompt_drawn, items);
+                self.sol_activity_actions(shown, &counterparties, &mut prompt_drawn, items);
                 shown = shown.saturating_add(1);
             }
         }
@@ -699,9 +707,6 @@ impl App {
         ));
         self.sol_cluster_banner(items);
         let form = &self.sol.send;
-        if let Some(info) = &form.info {
-            items.push(Item::Banner(info.clone(), Tone::Warn));
-        }
         if self.sol_journal_damaged() {
             items.push(Item::Banner(
                 "거래 저널의 Solana 기록이 손상되어 Solana 보내기를 멈췄습니다. (E-VLT-006)"
@@ -731,6 +736,8 @@ impl App {
                 format!(" · 잔액 {} (RPC 참고)", App::sol_text(lamports))
             });
         items.push(Item::Help(format!("{}{balance}", source.path_text())));
+        // U7: `검토` stays off while the phrase waits for its backup quiz.
+        self.mn_signing_banner(self.sol_backup_gate(source), items);
         items.push(Item::CardEnd);
         items.push(Item::CardStart(Some("받는 사람".to_owned())));
         if form.moving.is_some() {
@@ -835,6 +842,10 @@ impl App {
         }
         items.push(Item::CardEnd);
         self.sol_asset_amount_card(items, &from);
+        // What `검토`, the approval or the signature ended with, next to the button.
+        if let Some(info) = &form.info {
+            items.push(Item::Banner(info.clone(), Tone::Warn));
+        }
         items.push(Item::Row(vec![
             Ctl::primary(ids::SEND_REVIEW, "검토").enabled(self.sol_can_review()),
             Ctl::button(ids::SEND_CANCEL, "취소"),
@@ -1002,6 +1013,8 @@ impl App {
             items.push(Item::Mono(yw_core::codec::base58::base58_encode(
                 &signature,
             )));
+            // For checking on an explorer: 88 characters are not retyped by hand.
+            items.push(Item::Row(vec![Ctl::button(ids::RESULT_COPY, "해시 복사")]));
             items.push(Item::CardEnd);
             self.sol_send_now_row(items);
             self.result_save_items(BookTarget::Sol, items);
@@ -1284,6 +1297,28 @@ impl App {
         }
     }
 
+    /// The transaction ids of the S10 Solana activity rows, in display order (the rows of
+    /// [`Self::sol_activity_counterparties`]), for their `해시 복사`.
+    #[must_use]
+    pub fn sol_activity_tx_ids(&self) -> Vec<String> {
+        let cluster = self.sol_cluster();
+        let mut out: Vec<String> = self
+            .sol_records()
+            .iter()
+            .filter(|record| record.cluster == cluster)
+            .map(yw_core::journal::sol::SolRecord::tx_id)
+            .collect();
+        if let Some(meta) = self.meta.as_ref() {
+            for entry in meta.activity_of(cluster.network_id()) {
+                if out.len() >= crate::app_sol::SOL_MAX_ACTIVITY_ROWS {
+                    break;
+                }
+                out.push(entry.tx_id.clone());
+            }
+        }
+        out
+    }
+
     /// The counterparties of the S10 Solana activity rows, in display order (`""` without one):
     /// the cluster's journal records, then its meta activity, at most `SOL_MAX_ACTIVITY_ROWS`
     /// after the records (as drawn).
@@ -1314,35 +1349,44 @@ impl App {
         out
     }
 
-    /// `이 주소 저장` of activity row `row` and its prompt.
-    fn sol_activity_save(
+    /// The buttons of activity row `row`: `해시 복사` (the transaction id is public data, as on
+    /// the other chains), then `이 주소 저장` — or, under them, its open prompt.
+    fn sol_activity_actions(
         &self,
         row: usize,
         counterparties: &[String],
         prompt_drawn: &mut bool,
         items: &mut Vec<Item>,
     ) {
-        let Some(address) = counterparties
+        let mut buttons: Vec<Ctl> = u16::try_from(row)
+            .ok()
+            .filter(|offset| *offset < ids::ACTIVITY_COPY_SPAN)
+            .map(|offset| Ctl::button(ids::ACTIVITY_COPY_BASE.saturating_add(offset), "해시 복사"))
+            .into_iter()
+            .collect();
+        let mut prompt = Vec::new();
+        if let Some(address) = counterparties
             .get(row)
             .filter(|address| !address.is_empty())
-        else {
-            return;
-        };
-        if !*prompt_drawn
-            && self.prompt_items(PromptPlace::Activity, BookChain::Sol, address, items)
         {
-            *prompt_drawn = true;
-            return;
+            if !*prompt_drawn
+                && self.prompt_items(PromptPlace::Activity, BookChain::Sol, address, &mut prompt)
+            {
+                *prompt_drawn = true;
+            } else if self.offer_save(BookChain::Sol, address)
+                && let Ok(offset) = u16::try_from(row)
+                && offset < crate::ui::screens_book::ids::SOL_ACTIVITY_SPAN
+            {
+                buttons.push(Ctl::link(
+                    crate::ui::screens_book::ids::SOL_ACTIVITY_BASE.saturating_add(offset),
+                    "이 주소 저장",
+                ));
+            }
         }
-        if self.offer_save(BookChain::Sol, address)
-            && let Ok(offset) = u16::try_from(row)
-            && offset < crate::ui::screens_book::ids::SOL_ACTIVITY_SPAN
-        {
-            items.push(Item::Row(vec![Ctl::link(
-                crate::ui::screens_book::ids::SOL_ACTIVITY_BASE.saturating_add(offset),
-                "이 주소 저장",
-            )]));
+        if !buttons.is_empty() {
+            items.push(Item::Row(buttons));
         }
+        items.extend(prompt);
     }
 
     /// Whether the main screen shows the Solana tab.

@@ -51,8 +51,9 @@ pub const BALANCE_REFRESH_MS: u64 = 60_000;
 pub const SEND_DEBOUNCE_MS: u64 = 500;
 /// Activity rows shown.
 pub const MAX_ACTIVITY_ROWS: usize = 50;
-/// `가속`·`취소` of a group whose account has no key in this wallet any more (spec/03 §4.6).
-pub const T_REPLACE_NO_KEY: &str = "이 거래를 보낸 계정의 키가 이 지갑에 없어 가속·취소할 수 없습니다. 그 키를 다시 가져오거나 YubiKey를 다시 연결한 뒤 시도하세요.";
+/// `수수료 올리기`·`취소` of a group whose account has no key in this wallet any more
+/// (spec/03 §4.6).
+pub const T_REPLACE_NO_KEY: &str = "이 거래를 보낸 계정의 키가 이 지갑에 없어 수수료 올리기·취소를 할 수 없습니다. 그 키를 다시 가져오거나 YubiKey를 다시 연결한 뒤 시도하세요.";
 
 /// The asset being sent.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -807,8 +808,16 @@ impl App {
                 }
             }
             Err(failure) => {
+                let account = self.evm.signing.get(&ticket).map(|slot| slot.account);
                 self.release_signing(ticket);
                 let message = match failure {
+                    // Which phrase, and where its backup quiz is finished (the form's `검토`
+                    // is off while the app knows; this is the vault's last word).
+                    SignFailure::Sign(yw_core::evm::sign::SignError::Vault(
+                        yw_core::error::VaultError::BackupNotConfirmed,
+                    )) => self.backup_refused_text(
+                        account.and_then(|account| self.evm_account_unconfirmed(&account)),
+                    ),
                     SignFailure::Sign(yw_core::evm::sign::SignError::Vault(error)) => {
                         crate::errors::vault_code(error).text()
                     }
@@ -821,10 +830,15 @@ impl App {
                     SignFailure::Card(error) => error.to_string(),
                 };
                 logging::warn("app", "sign.failed", &[]);
+                // The S11 send says it next to its `검토`; a header band only when that form is
+                // not on screen (a dApp transaction, a speed-up or cancel, another screen).
+                let on_form = form && matches!(self.screen, Screen::Send);
                 if form {
                     self.evm.send.info = Some(message.clone());
                 }
-                self.banner(None, message);
+                if !on_form {
+                    self.banner(None, message);
+                }
                 self.refresh();
             }
         }
@@ -1547,6 +1561,8 @@ impl App {
             && self.evm.journal.is_some()
             && self.send_in_flight().is_none()
             && matches!(self.mode, AppMode::Unlocked { .. })
+            // U7: the phrase waits for its backup quiz (the form's band says so).
+            && !self.mn_send_blocked(self.evm_selected_gate())
     }
 
     /// The approval item of `검토` (spec/04 §2.7, the EVM counterpart of spec/07 §13.1-1). The

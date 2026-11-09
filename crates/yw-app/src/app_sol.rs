@@ -1374,7 +1374,7 @@ impl App {
     pub fn sol_can_review(&self) -> bool {
         let form = &self.sol.send;
         let cluster = self.sol_cluster();
-        let Some((_, from, _)) = self.sol_form_sender() else {
+        let Some((source, from, _)) = self.sol_form_sender() else {
             return false;
         };
         form.check.is_some()
@@ -1387,6 +1387,8 @@ impl App {
             && self.sol.slot.is_none()
             && self.sol.pending_sign.is_none()
             && matches!(self.mode, AppMode::Unlocked { .. })
+            // U7: the phrase waits for its backup quiz (the form's band says so).
+            && !self.mn_send_blocked(self.sol_backup_gate(source))
     }
 
     /// The approval item of `검토` (spec/07 §13.1 step 1). The form is validated again first and
@@ -1601,8 +1603,16 @@ impl App {
         self.card_abandon_sol();
         let message = format!("{} — {}", ErrorCode::Sol004.text(), cause.text());
         logging::warn("app", "sol.sign_aborted", &[("code", Field::Code(cause))]);
+        self.sol_send_failed(message);
+    }
+
+    /// Why a transfer was not signed or sent: the send form's line next to `검토`, and a header
+    /// band only while the form is not on screen (one place, not two bands for one failure).
+    fn sol_send_failed(&mut self, message: String) {
         self.sol.send.info = Some(message.clone());
-        self.banner(None, message);
+        if !matches!(self.screen, Screen::SolSend) {
+            self.banner(None, message);
+        }
         self.refresh();
     }
 
@@ -1691,6 +1701,24 @@ impl App {
             }
             Err(failure) => {
                 let cause = match failure {
+                    SolSignFailure::Sign(yw_core::sol::SolSignError::Vault(
+                        yw_core::error::VaultError::BackupNotConfirmed,
+                    )) => {
+                        // Which phrase and where its backup is confirmed (the form's `검토`
+                        // is off while the app knows; this is the vault's last word).
+                        logging::warn(
+                            "app",
+                            "sol.sign_aborted",
+                            &[("code", Field::Code(ErrorCode::Vlt009))],
+                        );
+                        self.card_abandon_sol();
+                        let phrase = self
+                            .sol_form_sender()
+                            .and_then(|(source, ..)| self.sol_source_unconfirmed(source));
+                        let text = self.backup_refused_text(phrase);
+                        self.sol_send_failed(text);
+                        return;
+                    }
                     SolSignFailure::Sign(yw_core::sol::SolSignError::Vault(error)) => {
                         crate::errors::vault_code(error)
                     }
@@ -1707,9 +1735,7 @@ impl App {
                             "sol.sign_aborted",
                             &[("reason", Field::Word("card"))],
                         );
-                        self.sol.send.info = Some(message.clone());
-                        self.banner(None, message);
-                        self.refresh();
+                        self.sol_send_failed(message);
                         return;
                     }
                 };

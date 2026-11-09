@@ -124,6 +124,12 @@ impl App {
             ids::SEND_REVIEW => self.sol_review(),
             ids::SEND_AGAIN => self.sol_send_again(),
             ids::SEND_NOW => self.sol_send_now(),
+            // The signature is the transaction id: public data, for an explorer.
+            ids::RESULT_COPY => {
+                if let Some((_, signature)) = self.sol.sent {
+                    self.copy_text(&yw_core::codec::base58::base58_encode(&signature));
+                }
+            }
             ids::SEND_CANCEL => {
                 self.sol.send = SolSendForm::default();
                 self.set_screen(Screen::Main);
@@ -158,6 +164,12 @@ impl App {
         if id == ids::TOKEN_HIDDEN_TOGGLE {
             self.sol.show_hidden_tokens = !self.sol.show_hidden_tokens;
             self.refresh();
+            return true;
+        }
+        if let Some(row) = offset(id, ids::ACTIVITY_COPY_BASE, ids::ACTIVITY_COPY_SPAN) {
+            if let Some(tx_id) = self.sol_activity_tx_ids().get(usize::from(row)) {
+                self.copy_text(tx_id);
+            }
             return true;
         }
         if let Some(index) = offset(id, ids::TOKEN_SEND_BASE, ids::TOKEN_SEND_SPAN) {

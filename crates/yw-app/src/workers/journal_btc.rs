@@ -371,6 +371,16 @@ pub type BtcSigner<'a> = dyn FnMut(
     + 'a;
 
 impl BtcSignFailure {
+    /// The vault refused the key because its recovery phrase has not passed the backup quiz
+    /// (E-VLT-009).
+    #[must_use]
+    pub const fn backup_unconfirmed(&self) -> bool {
+        matches!(
+            self,
+            Self::Sign(SignError::Vault(VaultError::BackupNotConfirmed))
+        )
+    }
+
     /// Fixed text.
     #[must_use]
     pub fn text(self) -> String {

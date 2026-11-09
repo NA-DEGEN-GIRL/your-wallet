@@ -9,8 +9,8 @@ use yw_core::keyimport::ZecKeyInfo;
 use yw_core::zec::address::parse_recipient;
 use yw_core::zec::upgrade::tx_consensus;
 use yw_core::zec::{
-    ZecAccount, ZecAmount, ZecKeySource, ZecNetwork, ZecPlan, ZecSendRequest, parse_user_zec,
-    plan_send,
+    ZecAccount, ZecAmount, ZecKeySource, ZecNetwork, ZecPlan, ZecSendRequest, ZecSignError,
+    parse_user_zec, plan_send,
 };
 
 use crate::app::{App, AppMode};
@@ -18,7 +18,7 @@ use crate::errors::ErrorCode;
 use crate::events::KeyJob;
 use crate::logging::{self, Field};
 use crate::network::NetworkId;
-use crate::workers::journal::zec::{ZecKeyJob, ZecKeyOutcome, ZecSignedSummary};
+use crate::workers::journal::zec::{ZecKeyJob, ZecKeyOutcome, ZecSignFailure, ZecSignedSummary};
 use crate::workers::rpc::RpcJob;
 use crate::zec::rpc::{SendOutcome, TxStatus, ZecRpcError};
 use crate::zec::work::{ZecRpcEvent, ZecRpcJob, ZecSnapshot};
@@ -115,10 +115,19 @@ pub struct ZecUi {
     pub refreshing: bool,
     /// The running refresh ends in a review (plan → approval).
     review_after: bool,
-    /// The last error (fixed text).
+    /// The last error of the tab (fixed text), drawn above the network card.
     pub error: Option<String>,
-    /// The last information line.
+    /// The last information line of the tab.
     pub info: Option<String>,
+    /// The 보내기 card's error line, drawn next to `검토`: what `검토`, the approval, signing
+    /// or handing the transaction to the node ended with (a band at the top of the tab is
+    /// several hundred DIP above the button).
+    pub send_error: Option<String>,
+    /// The 보내기 card's progress line (`검토`'s node check, signing, sending).
+    pub send_info: Option<String>,
+    /// The txid of the last transaction the node accepted: the 보내기 card's result line with
+    /// `해시 복사`.
+    pub sent: Option<[u8; 32]>,
     /// Send form: recipient.
     pub to_text: String,
     /// Send form: amount.
@@ -672,20 +681,30 @@ impl App {
     }
 
     /// Starts a refresh (chain check, UTXOs, tracking); `review` plans the send form after it.
-    pub fn zec_refresh(&mut self, review: bool) {
+    /// `false` when none started (`검토` then says why next to the button).
+    pub fn zec_refresh(&mut self, review: bool) -> bool {
         if !self.settings.zcash.enabled || !matches!(self.mode, AppMode::Unlocked { .. }) {
-            return;
+            return false;
         }
         let Some(account) = self.zec_account() else {
-            return;
+            return false;
         };
+        if self.zec.review_after && !review {
+            // This refresh replaces `검토`'s (a network, source or indexer change): no plan
+            // follows, so its progress line goes.
+            self.zec.send_info = None;
+        }
         let url = match self.zec_url() {
             Ok(url) => url,
             Err(code) => {
-                self.zec.error = Some(code.text());
+                if review {
+                    self.zec.send_error = Some(code.text());
+                } else {
+                    self.zec.error = Some(code.text());
+                }
                 self.zec.review_after = false;
                 self.refresh();
-                return;
+                return false;
             }
         };
         let records = self.zec_records();
@@ -721,6 +740,7 @@ impl App {
             self.zec.refreshing = false;
             self.zec.review_after = false;
         }
+        sent
     }
 
     /// Periodic refresh while the tab is shown or a record may still confirm.
@@ -746,15 +766,30 @@ impl App {
         };
     }
 
-    /// `검토`: refresh first (fresh tip, branch id and UTXOs), then plan.
+    /// The backup gate of the account's key source ([`App::mn_backup_gate`]: an added phrase's
+    /// standard path, or the primary phrase's derived or EVM-shared key).
+    #[must_use]
+    pub fn zec_backup_gate(&self) -> Option<yw_core::vault::RecordId> {
+        let account = self.zec_account()?;
+        self.mn_backup_gate(
+            account.source.mnemonic(),
+            matches!(
+                account.source,
+                ZecKeySource::Derived { .. } | ZecKeySource::EvmShared { .. }
+            ),
+        )
+    }
+
+    /// `검토`: refresh first (fresh tip, branch id and UTXOs), then plan. What it ends with is
+    /// said in the 보내기 card next to the button ([`ZecUi::send_error`], [`ZecUi::send_info`]).
     pub fn zec_review(&mut self) {
         if self.zec.busy {
-            self.zec.error = Some("Zcash 승인이 이미 진행 중입니다.".to_owned());
+            self.zec.send_error = Some("Zcash 승인이 이미 진행 중입니다.".to_owned());
             self.refresh();
             return;
         }
         if self.zec_journal_damaged() {
-            self.zec.error = Some(
+            self.zec.send_error = Some(
                 yw_core::journal::zec::ZecJournalBlock::Corrupt
                     .text()
                     .to_owned(),
@@ -762,9 +797,22 @@ impl App {
             self.refresh();
             return;
         }
+        // The card's band says why (U7); the vault would refuse only after the approval.
+        if self.mn_send_blocked(self.zec_backup_gate()) {
+            self.refresh();
+            return;
+        }
         self.zec.error = None;
-        self.zec.info = Some("Zcash 노드를 확인하는 중…".to_owned());
-        self.zec_refresh(true);
+        self.zec.info = None;
+        self.zec.sent = None;
+        self.zec.send_error = None;
+        self.zec.send_info = Some("Zcash 노드를 확인하는 중…".to_owned());
+        if !self.zec_refresh(true) {
+            self.zec.send_info = None;
+            if self.zec.send_error.is_none() {
+                self.zec.send_error = Some(ErrorCode::Rpc001.text());
+            }
+        }
         self.refresh();
     }
 
@@ -864,10 +912,10 @@ impl App {
             .is_ok()
         {
             self.zec.busy = true;
-            self.zec.info = None;
+            self.zec.send_info = None;
             self.show_next_approval();
         } else {
-            self.zec.error = Some(ErrorCode::App005.text());
+            self.zec.send_error = Some(ErrorCode::App005.text());
         }
     }
 
@@ -911,6 +959,9 @@ impl App {
         if outcome != crate::ui::approval::QueueOutcome::Approved {
             self.zec.busy = false;
         }
+        if outcome == crate::ui::approval::QueueOutcome::Expired {
+            self.zec.send_error = Some(crate::app_btc::APPROVAL_EXPIRED.to_owned());
+        }
         logging::info(
             "app",
             "approval.finished",
@@ -942,7 +993,9 @@ impl App {
             }
             ZecKeyOutcome::Signed(result) => match result {
                 Ok(summary) => {
-                    self.zec.info = Some("서명했습니다. Zcash 노드로 보내는 중…".to_owned());
+                    self.zec.send_error = None;
+                    self.zec.sent = None;
+                    self.zec.send_info = Some("서명했습니다. Zcash 노드로 보내는 중…".to_owned());
                     self.zec.to_text.clear();
                     self.zec.amount_text.clear();
                     self.zec.send_max = false;
@@ -956,8 +1009,19 @@ impl App {
                 }
                 Err(failure) => {
                     self.zec.busy = false;
-                    self.zec.info = None;
-                    self.zec.error = Some(failure.text());
+                    self.zec.send_info = None;
+                    self.zec.send_error = Some(
+                        if matches!(
+                            failure,
+                            ZecSignFailure::Sign(ZecSignError::Vault(
+                                yw_core::error::VaultError::BackupNotConfirmed
+                            ))
+                        ) {
+                            self.backup_refused_text(self.mn_unconfirmed(self.zec_backup_gate()))
+                        } else {
+                            failure.text()
+                        },
+                    );
                 }
             },
             ZecKeyOutcome::Journal { txid, state } => {
@@ -993,8 +1057,8 @@ impl App {
                     .as_ref()
                     .is_some_and(|pending| pending.txid == txid)
                 {
-                    self.zec.info = None;
-                    self.zec.error = Some(
+                    self.zec.send_info = None;
+                    self.zec.send_error = Some(
                         "거래 기록을 저장하지 못해 아직 보내지 않았습니다. 다음 새로고침 때 다시 시도합니다."
                             .to_owned(),
                     );
@@ -1006,7 +1070,8 @@ impl App {
 
     fn zec_send(&mut self, network: ZecNetwork, raw: Vec<u8>, txid: [u8; 32]) {
         let Ok(url) = self.zec_url() else {
-            self.zec.error = Some(
+            self.zec.send_info = None;
+            self.zec.send_error = Some(
                 "엔드포인트가 없어 아직 보내지 못했습니다. 다음 새로고침 때 다시 보냅니다."
                     .to_owned(),
             );
@@ -1054,12 +1119,19 @@ impl App {
                 }
                 self.zec.refreshing = false;
                 let review = core::mem::take(&mut self.zec.review_after);
+                if review {
+                    self.zec.send_info = None;
+                }
                 if self.zec_account().is_none_or(|account| {
                     account.network != network || account.address() != address
                 }) {
                     // Not the current account's answer (it changed meanwhile): nothing of it is
                     // shown, planned from or sent as known; the next tick asks again.
-                    self.zec.info = None;
+                    if review {
+                        self.zec.send_error = Some(
+                            "검토하는 동안 Zcash 계정이 바뀌었습니다. 다시 검토하세요.".to_owned(),
+                        );
+                    }
                     self.zec.next_refresh_ms = 0;
                     self.refresh();
                     return;
@@ -1069,30 +1141,30 @@ impl App {
                         self.zec.error = snapshot.utxo_error.map(ZecRpcError::text);
                         self.zec_track(&snapshot);
                         if review {
-                            self.zec.info = None;
                             match self.zec_plan(&snapshot) {
                                 Ok(plan) => self.zec_enqueue(plan),
-                                Err(text) => self.zec.error = Some(text),
+                                Err(text) => self.zec.send_error = Some(text),
                             }
                         }
                         self.zec.snapshot = Some((network, snapshot));
                     }
-                    Err(error) => {
-                        self.zec.info = None;
-                        self.zec.error = Some(error.text());
-                    }
+                    // `검토`'s own node check failed: said next to the button.
+                    Err(error) if review => self.zec.send_error = Some(error.text()),
+                    Err(error) => self.zec.error = Some(error.text()),
                 }
             }
+            // The outcome of handing a transaction to the node is the 보내기 card's line, next
+            // to `검토` (the result line has `해시 복사`).
             ZecRpcEvent::Sent { txid, outcome, .. } => match outcome {
                 SendOutcome::Accepted => {
-                    self.zec.info = Some(format!(
-                        "보냈습니다. txid {}",
-                        yw_core::zec::tx::txid_display(&txid)
-                    ));
+                    self.zec.send_info = None;
+                    self.zec.send_error = None;
+                    self.zec.sent = Some(txid);
                     self.zec_journal(txid, ZecTransition::Broadcast);
                 }
                 SendOutcome::Rejected(code) => {
-                    self.zec.error = Some(format!(
+                    self.zec.send_info = None;
+                    self.zec.send_error = Some(format!(
                         "Zcash 노드가 거래를 거부했습니다 (코드 {code}). 만료 높이가 지나면 입력이 풀립니다."
                     ));
                     // The resend backoff starts now (not on the next 30 s refresh).
@@ -1105,7 +1177,8 @@ impl App {
                     self.zec_journal(txid, ZecTransition::Rejected);
                 }
                 SendOutcome::Unknown(code) => {
-                    self.zec.error = Some(format!(
+                    self.zec.send_info = None;
+                    self.zec.send_error = Some(format!(
                         "전송 결과를 알 수 없습니다 ({}). 새로고침 때 다시 확인하고 보냅니다.",
                         code.code()
                     ));

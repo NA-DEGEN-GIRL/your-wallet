@@ -70,6 +70,8 @@ pub const DISCOVERY_INCOMPLETE: &str = "주소 검색 미완료";
 pub const PENDING_INCOMING: &str = "미확정 입금 있음(미검증, 교체될 수 있음)";
 /// T-APPR-EXPIRED.
 pub const APPROVAL_EXPIRED: &str = "승인 시간이 지났습니다. 다시 검토하세요.";
+/// `검토`'s progress line (the plan job on the node), drawn next to the button.
+pub const BTC_PREPARING: &str = "수수료를 계산하는 중…";
 /// "(서버 기준)" suffix of confirmations (spec/08 §12.2-4).
 pub const SERVER_BASED: &str = "(서버 기준)";
 /// The "블록 높이 기록 초기화" confirmation (spec/08 §2 step 2).
@@ -2027,9 +2029,10 @@ impl BtcUi {
         None
     }
 
-    /// Opens S11 for Bitcoin.
-    pub fn open_send(&mut self, ctx: &BtcCtx<'_>) -> Vec<BtcAction> {
-        self.send.info = self.send_block(ctx);
+    /// Opens S11 for Bitcoin (a fresh line next to `검토`; the form draws the live
+    /// [`Self::send_block`] at its top).
+    pub fn open_send(&mut self, _ctx: &BtcCtx<'_>) -> Vec<BtcAction> {
+        self.send.info = None;
         vec![BtcAction::Screen(BtcScreen::Send)]
     }
 
@@ -2243,7 +2246,7 @@ impl BtcUi {
         ) {
             Some((job, action)) => {
                 self.send.preparing = Some(job);
-                self.send.info = Some("수수료를 계산하는 중…".to_owned());
+                self.send.info = Some(BTC_PREPARING.to_owned());
                 vec![action]
             }
             None => Vec::new(),
@@ -2306,7 +2309,7 @@ impl BtcUi {
         ) {
             Some((job, action)) => {
                 self.bump.preparing = Some(job);
-                self.bump.info = Some("수수료를 계산하는 중…".to_owned());
+                self.bump.info = Some(BTC_PREPARING.to_owned());
                 vec![action]
             }
             None => Vec::new(),
@@ -3038,14 +3041,18 @@ impl BtcUi {
                 actions.push(BtcAction::Screen(BtcScreen::SendResult));
                 actions
             }
-            Err(failure) => {
-                let message = failure.text();
-                logging::warn("app", "btc.sign_failed", &[]);
-                self.send.info = Some(message.clone());
-                self.bump.info = Some(message.clone());
-                vec![BtcAction::Banner(None, message)]
-            }
+            Err(failure) => self.sign_failed(failure.text()),
         }
+    }
+
+    /// A signature that did not happen: the forms' line next to `검토` (the App adds a header
+    /// band only when no form shows it, `btc_apply`).
+    pub fn sign_failed(&mut self, message: String) -> Vec<BtcAction> {
+        self.slot = false;
+        logging::warn("app", "btc.sign_failed", &[]);
+        self.send.info = Some(message.clone());
+        self.bump.info = Some(message.clone());
+        vec![BtcAction::Banner(None, message)]
     }
 
     /// `Broadcasting` is committed: send the journal's bytes.
@@ -3872,7 +3879,17 @@ impl crate::app::App {
                     };
                     self.set_screen(target);
                 }
-                BtcAction::Banner(code, text) => self.banner(code, text),
+                BtcAction::Banner(code, text) => {
+                    // A form on screen already says it next to its `검토`: no second band.
+                    let shown = match self.screen {
+                        crate::app::Screen::BtcSend => self.btc.send.info.as_ref(),
+                        crate::app::Screen::BtcBump => self.btc.bump.info.as_ref(),
+                        _ => None,
+                    };
+                    if code.is_some() || shown != Some(&text) {
+                        self.banner(code, text);
+                    }
+                }
             }
         }
         self.refresh();
@@ -3940,6 +3957,15 @@ impl crate::app::App {
 
     /// A BTC key worker outcome.
     pub fn btc_key_outcome(&mut self, outcome: KeyOutcome) {
+        // The vault refused the signature for the phrase's open backup quiz: the form says
+        // which phrase and where to finish it, not the bare vault text.
+        if let KeyOutcome::SignedBtc(Err(failure)) = &outcome
+            && failure.backup_unconfirmed()
+        {
+            let text = self.backup_refused_text(self.mn_unconfirmed(self.btc_backup_gate()));
+            self.btc_call(|ui, _| ui.sign_failed(text));
+            return;
+        }
         self.btc_call_and_repaint(|ui, ctx| ui.on_key_outcome(ctx, outcome));
     }
 
@@ -4056,8 +4082,13 @@ impl crate::app::App {
         self.refresh();
     }
 
-    /// `검토` of the send form.
+    /// `검토` of the send form (off while the account's phrase waits for its backup quiz: the
+    /// form's band says so, U7).
     pub fn btc_review(&mut self) {
+        if self.mn_send_blocked(self.btc_backup_gate()) {
+            self.refresh();
+            return;
+        }
         let Some(seed) = layout_seed() else {
             self.btc.send.info = Some(ErrorCode::Vlt005.text());
             self.refresh();

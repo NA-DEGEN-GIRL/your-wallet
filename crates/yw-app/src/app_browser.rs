@@ -648,13 +648,7 @@ impl App {
         use yw_core::policy::BtcPurpose;
         // A WalletConnect session's synthetic origin means nothing to the user: its claimed
         // origin label instead (spec/13 §7).
-        let label = crate::walletconnect::is_session_origin(origin).then(|| {
-            self.wc_peer_of(origin).map_or_else(
-                || "WalletConnect dApp".to_owned(),
-                |(peer, _)| crate::walletconnect::origin_label(&peer),
-            )
-        });
-        let site = label.as_deref().unwrap_or_else(|| origin.as_str());
+        let site = self.origin_display(origin);
         let text = match error {
             ProviderError::BtcDisabled => format!(
                 "{site}의 Bitcoin 연결 요청을 거부했습니다: Bitcoin이 꺼져 있습니다. 설정 → Bitcoin에서 켠 뒤 다시 연결하세요."
@@ -1935,9 +1929,38 @@ mod tests {
             .filter(|banner| banner.text.contains("백업 확인 전이라"))
             .count();
         assert_eq!(notices, 1);
-        // The quiz passed: the request reaches its window.
+        // A WalletConnect session's request: the notice names the dApp, never the session's
+        // internal `….walletconnect.invalid` origin.
+        let session = crate::walletconnect::session_origin(&[9; 32]).unwrap();
+        core.upsert_grant(
+            yw_core::policy::ConnectedSite::new(
+                session.clone(),
+                vec![addr(ACCOUNT_C)],
+                yw_core::evm::chain::SEPOLIA,
+                0,
+            )
+            .unwrap(),
+        );
+        let mut request = site(5, sign.clone());
+        request.origin = session;
+        assert_eq!(app.site_preflight(&request), Some(QueueOutcome::Cancelled));
+        let notice = app
+            .banners
+            .iter()
+            .find(|banner| {
+                banner.text.contains("백업 확인 전이라") && !banner.text.contains("app.example")
+            })
+            .map(|banner| banner.text.clone())
+            .unwrap();
+        assert!(notice.starts_with("WalletConnect dApp의 서명 요청을 거부했습니다"));
+        assert!(!notice.contains("walletconnect.invalid"));
+        // The app's own send forms keep `검토` off for that account (U7) instead of building an
+        // approval the vault would refuse.
+        assert!(app.mn_send_blocked(app.evm_selected_gate()));
+        // The quiz passed: the request reaches its window, and the forms can review.
         app.mn.infos[1].backup_confirmed = true;
         assert_eq!(app.site_preflight(&site(4, sign)), None);
+        assert!(!app.mn_send_blocked(app.evm_selected_gate()));
     }
 
     /// spec/10 §10: a site connected to a `YubiKey` EVM account may ask it to sign (the request
