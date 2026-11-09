@@ -264,12 +264,39 @@ impl App {
             }
             SiteKind::BtcConnect(purposes) => {
                 let rows = self.btc_dapp_rows();
+                // The origin's grant on this network: a reconnect starts on the connected
+                // addresses (spec/05 §4.9), not on each group's first account.
+                let net = self.btc_network_now();
+                let granted: Vec<BtcGrantAddress> = self
+                    .browser
+                    .as_ref()
+                    .and_then(|browser| {
+                        browser
+                            .core
+                            .btc_grants()
+                            .into_iter()
+                            .find(|grant| grant.origin == site.origin && grant.network == net)
+                    })
+                    .map(|grant| grant.addresses)
+                    .unwrap_or_default();
                 for (group, purpose) in purposes.iter().enumerate() {
-                    let mut first = true;
-                    for row in rows
+                    let members: Vec<&BtcRow> = rows
                         .iter()
                         .filter(|row| purpose.accepts(row.entry.script_type))
-                    {
+                        .collect();
+                    // The granted address of this purpose, else any granted address this group
+                    // offers (a UniSat `any` grant asked again for `payment`), else the first.
+                    let pick = granted
+                        .iter()
+                        .filter(|entry| entry.purpose == *purpose)
+                        .chain(granted.iter())
+                        .find_map(|entry| {
+                            members
+                                .iter()
+                                .position(|row| row.entry.address == entry.address)
+                        })
+                        .unwrap_or(0);
+                    for (index, row) in members.into_iter().enumerate() {
                         let mut entry = row.entry.clone();
                         entry.purpose = *purpose;
                         let prefix = match purpose {
@@ -283,8 +310,7 @@ impl App {
                             row.entry.address.clone(),
                             u8::try_from(group).unwrap_or(0),
                         ));
-                        selected.push(first);
-                        first = false;
+                        selected.push(index == pick);
                     }
                 }
                 (
@@ -431,10 +457,42 @@ impl App {
                 self.respond(&site.reply, Err(ProviderError::NoBtcAccount));
                 Some(QueueOutcome::Cancelled)
             }
-            SiteKind::BtcConnect(_) => refusal().map(|error| {
-                self.respond(&site.reply, Err(error));
-                QueueOutcome::Cancelled
-            }),
+            SiteKind::BtcConnect(purposes) => {
+                // Like a queued `sol_connect` and `eth_requestAccounts`: a grant that may be used
+                // now (this network, every address still one of the wallet's) and covers every
+                // requested purpose answers at once, as the dispatcher does while unlocked.
+                let net = self.btc_network_now();
+                let rows = self.btc_dapp_rows();
+                let usable = core.btc_grants().into_iter().find(|grant| {
+                    grant.origin == site.origin
+                        && grant.network == net
+                        && grant
+                            .addresses
+                            .iter()
+                            .all(|entry| rows.iter().any(|row| row.entry.address == entry.address))
+                        && purposes.iter().all(|purpose| {
+                            grant
+                                .addresses
+                                .iter()
+                                .any(|entry| entry.purpose == *purpose)
+                        })
+                });
+                if let Some(grant) = usable {
+                    self.respond(
+                        &site.reply,
+                        Ok(crate::browser::dispatch::btc_accounts_value(
+                            &grant,
+                            Some(purposes.as_slice()),
+                        )),
+                    );
+                    Some(QueueOutcome::Approved)
+                } else {
+                    refusal().map(|error| {
+                        self.respond(&site.reply, Err(error));
+                        QueueOutcome::Cancelled
+                    })
+                }
+            }
             SiteKind::SolSign { public, .. } => {
                 let granted = core
                     .sol_grants()
@@ -1082,6 +1140,78 @@ mod tests {
         assert!(!relock(&app));
         assert!(core.sol_grants().is_empty());
         assert!(core.btc_grants().is_empty());
+    }
+
+    /// spec/05 §4.9: the Bitcoin connect window starts on the origin's granted address of each
+    /// purpose (not the group's first account), and a reconnect queued while locked that a
+    /// usable grant covers is answered without a window; a purpose the grant lacks opens it.
+    #[test]
+    fn btc_reconnect_starts_on_and_answers_with_the_granted_address() {
+        use yw_core::btc::{BtcAccountKey, BtcMeta, BtcNetwork};
+        let mut app = app(false);
+        app.settings.bitcoin.enabled = true;
+        let account = |script_type, number: u32, byte: u8| {
+            let node = yw_core::bip32::AccountXpub {
+                pubkey: yw_core::hex::decode_array::<33>(
+                    "03b88e0fbe3f646337ed93bc0c0f3b843fcf7d2589e5ec884754e6402027a890b4",
+                )
+                .unwrap(),
+                chain_code: [byte; 32],
+            };
+            BtcMeta::with_key(
+                BtcNetwork::Mainnet,
+                BtcAccountKey::hd(script_type, number, node).unwrap(),
+            )
+        };
+        let meta = app.meta.as_mut().unwrap();
+        for (script_type, number, byte) in [
+            (ScriptType::P2wpkh, 1, 7),
+            (ScriptType::P2wpkh, 2, 8),
+            (ScriptType::P2tr, 3, 9),
+        ] {
+            meta.btc_accounts
+                .upsert(account(script_type, number, byte))
+                .unwrap();
+        }
+        // Connected to the second payment account.
+        let rows = app.btc_dapp_rows();
+        let payment: Vec<&super::BtcRow> = rows
+            .iter()
+            .filter(|row| row.entry.script_type == ScriptType::P2wpkh)
+            .collect();
+        assert_eq!(payment.len(), 2);
+        let mut entry = payment[1].entry.clone();
+        entry.purpose = BtcPurpose::Payment;
+        let granted = entry.address.clone();
+        let grant = yw_core::policy::BtcGrant::new(
+            BrowserOrigin::parse("https://app.example").unwrap(),
+            BtcNetwork::Mainnet,
+            vec![entry],
+            1,
+        )
+        .unwrap();
+        assert!(core(&app).upsert_btc_grant(grant));
+        let both = site(SiteKind::BtcConnect(vec![
+            BtcPurpose::Payment,
+            BtcPurpose::Ordinals,
+        ]));
+        let (choices, selected, _) = app.chain_connect_choices(&both);
+        let picked: Vec<(u8, &str)> = choices
+            .iter()
+            .zip(&selected)
+            .filter(|(_, on)| **on)
+            .map(|((_, _, address, group), _)| (*group, address.as_str()))
+            .collect();
+        assert_eq!(picked.len(), 2, "one per group");
+        assert_eq!(picked[0], (0, granted.as_str()));
+        assert_eq!(picked[1].0, 1);
+        // Queued: payment only is covered (answered), payment + ordinals needs the window.
+        let payment_only = site(SiteKind::BtcConnect(vec![BtcPurpose::Payment]));
+        assert_eq!(
+            app.chain_site_preflight(&payment_only),
+            Some(Some(QueueOutcome::Approved))
+        );
+        assert_eq!(app.chain_site_preflight(&both), Some(None));
     }
 
     #[test]
