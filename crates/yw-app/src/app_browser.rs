@@ -1686,13 +1686,15 @@ mod tests {
         assert_eq!(granted(), vec![addr(ACCOUNT_A), addr(ACCOUNT_B)]);
     }
 
-    /// spec/05 §4.1, §4.9, spec/10 §13: a meta reload whose reconcile dropped a `YubiKey`'s
-    /// accounts (its record removed, the card cleared or re-slotted) takes them out of the
-    /// dispatcher's grants and meta — the same card enrolled again does not reconnect — while an
-    /// address another visible account has (derived B, enrolled from the same words) stays.
+    /// spec/05 §4.1, §4.9, spec/10 §13: a meta reload (`KeyOutcome::Meta`) whose reconcile
+    /// dropped a `YubiKey`'s accounts (its record removed, the card cleared or re-slotted) takes
+    /// them out of the dispatcher's grants and meta — the same card enrolled again (the next
+    /// reload) does not reconnect — while an address another visible account has (derived B,
+    /// enrolled from the same words) stays.
     #[test]
     fn a_reload_without_a_cards_accounts_drops_them_from_the_grants() {
         use crate::browser::grants::{sites_from_values, sol_sites_from_values};
+        use crate::events::{KeyOutcome, KeyResult, MetaLoaded};
         const ACCOUNT_YK: &str = "0x6fac4d18c912343bf86fa7049364dd4e424ab9c0";
         const SOL_YK: &str = "FVen3X669xLzsi6N2V91DoiyzHzg1uAgqiT8jZ9nS96Z";
         let card = |index: u32, address: &str| crate::meta::Account {
@@ -1705,6 +1707,19 @@ mod tests {
         let enrolled = |meta: &mut crate::meta::Meta| {
             meta.hw_accounts.evm = vec![card(0, ACCOUNT_YK), card(1, ACCOUNT_B)];
             meta.hw_accounts.sol = vec![card(0, SOL_YK)];
+        };
+        let reload = |app: &mut App, meta: crate::meta::Meta| {
+            app.on_key_result(KeyResult {
+                epoch: app.lock_epoch,
+                outcome: KeyOutcome::Meta(Ok(MetaLoaded {
+                    meta: Box::new(meta),
+                    mismatch: false,
+                    prefs_reset: false,
+                    has_mnemonic: true,
+                    zec_keys: Vec::new(),
+                    mnemonics: Vec::new(),
+                })),
+            });
         };
         enrolled(app.meta.as_mut().unwrap());
         app.sync_browser();
@@ -1725,25 +1740,25 @@ mod tests {
             public,
             granted_at_unix_ms: 0,
         }));
-        let before = app.hardware_site_accounts();
-        assert!(before.is_some());
+        assert!(app.hardware_site_accounts().is_some());
         // The reloaded document: no card holds the keys any more.
-        let meta = app.meta.as_mut().unwrap();
-        meta.hw_accounts.evm.clear();
-        meta.hw_accounts.sol.clear();
-        app.hardware_accounts_reloaded(before);
+        let mut gone = app.meta.clone().unwrap();
+        gone.hw_accounts.evm.clear();
+        gone.hw_accounts.sol.clear();
+        reload(&mut app, gone);
         let expected = vec![addr(ACCOUNT_A), addr(ACCOUNT_B)];
         assert_eq!(core.grants()[0].accounts, expected);
         assert!(core.sol_grants().is_empty());
-        let meta = app.meta.as_ref().unwrap();
+        let meta = app.meta.clone().unwrap();
         assert_eq!(
             sites_from_values(&meta.connected_sites)[0].accounts,
             expected
         );
         assert!(sol_sites_from_values(&meta.chain_sites.sol).is_empty());
         // The same card enrolled again (the next reload): nothing comes back.
-        enrolled(app.meta.as_mut().unwrap());
-        app.sync_browser();
+        let mut again = meta;
+        enrolled(&mut again);
+        reload(&mut app, again);
         assert_eq!(core.grants()[0].accounts, expected);
         assert!(core.sol_grants().is_empty());
     }

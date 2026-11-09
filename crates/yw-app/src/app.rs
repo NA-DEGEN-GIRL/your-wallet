@@ -1496,7 +1496,7 @@ impl App {
     }
 
     #[expect(clippy::too_many_lines, reason = "one arm per key outcome")]
-    fn on_key_result(&mut self, result: KeyResult) {
+    pub(crate) fn on_key_result(&mut self, result: KeyResult) {
         if !accept_result(&result, self.lock_epoch) {
             return;
         }
