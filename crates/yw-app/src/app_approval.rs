@@ -1014,6 +1014,11 @@ impl App {
             self.refresh();
             return;
         }
+        if self.sol_connect_waits_for_account() {
+            // Moves again when the account arrives (`KeyOutcome::SolKeys`).
+            self.refresh();
+            return;
+        }
         loop {
             let now = now_ms();
             let mut finished = Vec::new();

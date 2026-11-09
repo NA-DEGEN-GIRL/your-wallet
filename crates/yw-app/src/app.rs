@@ -1656,7 +1656,18 @@ impl App {
             outcome @ (KeyOutcome::BtcMeta(_)
             | KeyOutcome::SignedBtc(_)
             | KeyOutcome::BtcJournal(_)) => self.btc_key_outcome(outcome),
-            KeyOutcome::SolKeys(purpose, result) => self.on_sol_keys(purpose, result),
+            KeyOutcome::SolKeys(purpose, result) => {
+                let added = matches!(
+                    purpose,
+                    crate::events::SolKeysPurpose::AddAccount { .. }
+                        | crate::events::SolKeysPurpose::AddMnemonicAccount { .. }
+                );
+                self.on_sol_keys(purpose, result);
+                // A dApp's Solana connect may have waited for this account (spec/05 §4.9).
+                if added {
+                    self.show_next_approval();
+                }
+            }
             KeyOutcome::SignedSol(result) => self.on_sol_signed(result),
             KeyOutcome::SignedMessage(result) => self.browser_message_signed(result),
             KeyOutcome::SignedChainMessage(result) => self.browser_chain_message_signed(&result),
@@ -1833,6 +1844,11 @@ impl App {
                     }
                     return;
                 }
+                // Solana account 0 of a recovery-phrase wallet comes with the session's meta
+                // (like the Zcash account below), before the dApp queue moves at the unlock: a
+                // Solana dApp finds it without the Solana tab ever opened, and a connect queued
+                // while locked waits for it (spec/07 §3.1, spec/05 §4.9).
+                self.sol_ensure_account();
                 if matches!(self.mode, AppMode::Unlocked { .. })
                     && matches!(
                         self.screen,
@@ -1845,9 +1861,6 @@ impl App {
                 }
                 if self.evm.journal.is_none() {
                     self.evm_after_unlock();
-                }
-                if self.sol_tab_active() {
-                    self.sol_ensure_account();
                 }
                 self.btc_after_meta();
                 self.zec_ensure_account();

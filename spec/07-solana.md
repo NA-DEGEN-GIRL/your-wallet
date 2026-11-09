@@ -50,7 +50,7 @@ pub struct SignedSolTransfer { pub tx: Vec<u8>, pub signature: [u8; 64], pub mes
 ### 3.1 표준 경로
 
 - 경로 `m/44'/501'/{i}'/0'`(D29). SLIP-0010 Ed25519(HMAC 키 `"ed25519 seed"`, hardened만)의 알고리즘, `Slip10Path`(hardened 성분만, 비hardened 입력은 오류, 자동 승격 금지), crate 내부 `slip10_ed25519(seed: &[u8; 64], path)`, 벡터는 [02] §3.5.
-- 계정 0은 Solana 화면 첫 진입 때 파생해 meta `sol_accounts`에 [02] §5.3 `Account {index, label, address(base58), hidden}`로 저장한다. 계정 추가는 i를 1씩 늘린다. 상한은 [02] §5.3(100개)·§3.3(`i ≤ 999`).
+- 계정 0은 복구 단어 지갑에서 아직 없으면 세션의 meta를 읽을 때(잠금 해제, Zcash 계정과 같은 때) 파생해 meta `sol_accounts`에 [02] §5.3 `Account {index, label, address(base58), hidden}`로 저장한다(2026-11-10: 전에는 Solana 화면 첫 진입 때만 파생해, Solana 탭을 연 적 없는 지갑의 Solana dApp 연결이 4100 `NoSolAccount`로 끝났다. 파생 중에 온 연결은 [05] §4.9대로 기다린다). Solana 화면 진입도 없으면 파생한다. 계정 추가는 i를 1씩 늘린다. 상한은 [02] §5.3(100개)·§3.3(`i ≤ 999`).
 - 저장된 `address`는 표시용 캐시다([02] §5.3). 서명 때는 키 접근 클로저 안에서 다시 파생한 공개키가 `intent.core.from`과 같아야 한다(다르면 `KeyMismatch`, 서명 안 함).
 - 같은 시드를 EVM(`"Bitcoin seed"`)과 Solana(`"ed25519 seed"`)가 공유하는 것은 표준이며 키가 섞이지 않는다.
 - BIP39 passphrase(D8, 가져오기에서만 D29)는 모든 Solana 주소를 바꾼다.

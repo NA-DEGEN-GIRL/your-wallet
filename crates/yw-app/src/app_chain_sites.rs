@@ -201,9 +201,9 @@ impl App {
             return Some(ProviderError::NoBtcAccount);
         }
         match &site.kind {
-            SiteKind::SolConnect => self
-                .sol_dapp_rows()
-                .is_empty()
+            // An account on its way (account 0 derived with the session's meta, spec/07 §3.1)
+            // is waited for: [`Self::sol_connect_waits_for_account`].
+            SiteKind::SolConnect => (self.sol_dapp_rows().is_empty() && !self.sol.creating)
                 .then_some(ProviderError::NoSolAccount),
             SiteKind::BtcConnect(purposes) => {
                 let rows = self.btc_dapp_rows();
@@ -218,6 +218,18 @@ impl App {
             }
             _ => None,
         }
+    }
+
+    /// Whether the approval queue waits for a Solana account being derived: a dApp's
+    /// `sol_connect` waits in it, the wallet shows no Solana account yet and one is on its way
+    /// (account 0 comes with the session's meta, spec/07 §3.1). The queue moves again when the
+    /// key worker answers; the connect then gets its window, or `NoSolAccount` if nothing came.
+    pub(crate) fn sol_connect_waits_for_account(&self) -> bool {
+        self.sol.creating
+            && self.evm.queue.waiting_payloads().any(|item| {
+                matches!(item, crate::app_evm::QueuedItem::Site(site) if site.kind == SiteKind::SolConnect)
+            })
+            && self.sol_dapp_rows().is_empty()
     }
 
     /// The connect-window choices of a Solana or Bitcoin connect: `(choice, label, address,
@@ -444,7 +456,10 @@ impl App {
                         Ok(crate::browser::dispatch::sol_connect_value(&grant.public)),
                     );
                     Some(QueueOutcome::Approved)
-                } else if let Some(error) = refusal() {
+                } else if let Some(error) =
+                    refusal().or_else(|| rows.is_empty().then_some(ProviderError::NoSolAccount))
+                {
+                    // An empty list never opens a window (an account still on its way included).
                     self.respond(&site.reply, Err(error));
                     Some(QueueOutcome::Cancelled)
                 } else {
@@ -1140,6 +1155,68 @@ mod tests {
         assert!(!relock(&app));
         assert!(core.sol_grants().is_empty());
         assert!(core.btc_grants().is_empty());
+    }
+
+    /// spec/05 §4.9, spec/07 §3.1: a recovery-phrase wallet's Solana connect that arrives while
+    /// account 0 is still being derived (it comes with the session's meta) waits in the queue
+    /// instead of ending `NoSolAccount`, and reaches its window once the account is there; with
+    /// no account on its way it still ends `NoSolAccount`, never an empty window.
+    #[test]
+    fn a_solana_connect_waits_for_account_zero() {
+        use crate::app_evm::QueuedItem;
+        use crate::ui::approval::QueueSource;
+        let mut app = app(false);
+        app.mode = crate::app::AppMode::Unlocked {
+            alt_passphrase: false,
+        };
+        app.keys.has_mnemonic = true;
+        let connect = site(SiteKind::SolConnect);
+        let enqueue = |app: &mut App| {
+            let source = QueueSource::Site {
+                origin: connect.origin.as_str().to_owned(),
+                deadline_ms: u64::MAX,
+            };
+            app.evm
+                .queue
+                .enqueue(source, QueuedItem::Site(Box::new(connect.clone())))
+                .unwrap();
+        };
+        app.sol_ensure_account();
+        assert!(app.sol.creating, "account 0 on its way");
+        assert_eq!(app.chain_unlocked_refusal(&connect), None);
+        enqueue(&mut app);
+        assert!(app.sol_connect_waits_for_account());
+        app.show_next_approval();
+        assert!(app.evm.queue.shown().is_none(), "the queue waits");
+        // The account arrives: the connect gets its window with it.
+        app.on_sol_keys(
+            crate::events::SolKeysPurpose::AddAccount { index: 0 },
+            Ok(vec![(
+                yw_core::slip10::SolKeySource::Standard(
+                    yw_core::bip32::path::AccountIndex::new(0).unwrap(),
+                ),
+                yw_core::sol::SolAddress::parse(SOL_KEY).unwrap(),
+            )]),
+        );
+        assert!(!app.sol.creating);
+        assert!(!app.sol_connect_waits_for_account());
+        assert_eq!(
+            next_window(&mut app).map(|shown| shown.kind),
+            Some(SiteKind::SolConnect)
+        );
+        if let Some((done, outcome)) = app.evm.queue.finish_shown(QueueOutcome::Rejected) {
+            app.approval_finished(&done.payload, outcome);
+        }
+        // Nothing on its way (a derivation that failed, a key-only wallet): refused, no window.
+        app.meta.as_mut().unwrap().sol_accounts.clear();
+        assert_eq!(
+            app.chain_unlocked_refusal(&connect),
+            Some(ProviderError::NoSolAccount)
+        );
+        enqueue(&mut app);
+        assert!(!app.sol_connect_waits_for_account());
+        assert!(next_window(&mut app).is_none());
+        assert!(app.evm.queue.is_empty());
     }
 
     /// spec/05 §4.9: the Bitcoin connect window starts on the origin's granted address of each
