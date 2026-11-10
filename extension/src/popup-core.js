@@ -35,7 +35,7 @@
     Object.freeze({
       value: "off",
       label: "기본 (Your Wallet)",
-      explanation: "Solana dApp의 지갑 목록에 Your Wallet 이름으로 보입니다."
+      explanation: "Solana dApp의 지갑 목록에 Your Wallet (Solana) 이름으로 보입니다."
     }),
     Object.freeze({
       value: "phantom",
@@ -66,6 +66,8 @@
     title: "Your Wallet",
     statusHeading: "Your Wallet 앱 연결 상태",
     statusLoading: "확인하는 중…",
+    statusStale: "지난번에 확인한 상태입니다. 지금 다시 확인하는 중…",
+    metamaskConnectNote: "Uniswap처럼 MetaMask Connect로 MetaMask 확장과 직접 통신하는 dApp에서는 이 모드로 연결되지 않습니다. 그런 dApp에서는 기본이나 Rabby처럼 보이기를 쓰세요.",
     modeHeading: "EVM (이더리움 등) dApp에 보이는 지갑",
     warning: "호환 모드를 쓸 때는 실제 MetaMask·Rabby 확장을 꺼 두세요. 켜져 있으면 dApp이 그 지갑에 연결될 수 있습니다.",
     applyNote: "모드 변경은 다음 페이지 로드부터 적용됩니다. 열려 있는 dApp 탭은 새로고침하세요.",
@@ -126,6 +128,45 @@
     return mode !== "off";
   }
 
+  // The MetaMask Connect limitation (spec/05 §2.12) concerns the MetaMask look-alike mode only.
+  function metamaskNoteShown(mode) {
+    return mode === "metamask";
+  }
+
+  // spec/05 §2.12 (2026-11-11): the popup renders at once from what it showed last time (the
+  // modes and the last status the background reported), then refreshes from chrome.storage.local
+  // and the background. Kept in the popup page's own localStorage: the extension origin only,
+  // never a page or a content script, and nothing secret (mode names and a status word).
+  const MODES_CACHE_KEY = "yourWalletPopupModesV1";
+  const STATUS_CACHE_KEY = "yourWalletPopupStatusV1";
+
+  // `{ evm, sol, btc }` exactly, each a valid mode of its group, or null.
+  function parseCachedModes(text) {
+    if (typeof text !== "string" || text.length > 256) {
+      return null;
+    }
+    let value;
+    try {
+      value = JSON.parse(text);
+    } catch (_error) {
+      return null;
+    }
+    if (!shared.hasExactKeys(value, ["evm", "sol", "btc"])
+      || Object.keys(GROUPS).some((kind) => typeof value[kind] !== "string" || GROUPS[kind].normalize(value[kind]) !== value[kind])) {
+      return null;
+    }
+    return Object.freeze({ evm: value.evm, sol: value.sol, btc: value.btc });
+  }
+
+  function serializeModes(modes) {
+    return JSON.stringify({ evm: modes.evm, sol: modes.sol, btc: modes.btc });
+  }
+
+  // A status word the background can report, or null.
+  function parseCachedStatus(text) {
+    return typeof text === "string" && Object.prototype.hasOwnProperty.call(STATUS_VIEWS, text) ? text : null;
+  }
+
   // What the popup writes to chrome.storage.local for a selection (null for anything else).
   function storageUpdate(mode) {
     return shared.isCompatMode(mode) ? { [shared.COMPAT_MODE_STORAGE_KEY]: mode } : null;
@@ -143,8 +184,14 @@
       TEXT,
       STATUS_VIEWS,
       STATUS_TIMEOUT_MS: 2_000,
+      MODES_CACHE_KEY,
+      STATUS_CACHE_KEY,
+      metamaskNoteShown,
       modeOption,
+      parseCachedModes,
+      parseCachedStatus,
       parseStatusMessage,
+      serializeModes,
       statusView,
       storageUpdate,
       storageUpdateFor,

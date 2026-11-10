@@ -14,7 +14,7 @@
   const COMPAT_MODE_STORAGE_KEY = "compatMode";
   const COMPAT_MODES = Object.freeze(["off", "metamask", "rabby"]);
   // Solana and Bitcoin compatibility modes (spec/05 §2.13), stored under their own keys. Solana
-  // `off` still registers the Wallet Standard "Your Wallet"; Bitcoin `off` exposes nothing.
+  // `off` still registers the Wallet Standard "Your Wallet (Solana)"; Bitcoin `off` exposes nothing.
   const SOL_COMPAT_MODE_STORAGE_KEY = "solCompatMode";
   const SOL_COMPAT_MODES = Object.freeze(["off", "phantom"]);
   const BTC_COMPAT_MODE_STORAGE_KEY = "btcCompatMode";

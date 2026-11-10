@@ -257,3 +257,110 @@ test("PO3 popup.js: shows the stored mode, saves a new one to chrome.storage.loc
     delete globalThis.chrome;
   }
 });
+
+test("PO4 popup.js renders at once from the last known modes and status, then refreshes live", async () => {
+  // The cached values are validated: wrong keys, unknown modes or statuses are ignored.
+  assert.deepEqual(popup.parseCachedModes('{"evm":"metamask","sol":"off","btc":"unisat"}'), { evm: "metamask", sol: "off", btc: "unisat" });
+  for (const bad of [null, "", "{bad", '{"evm":"metamask","sol":"off"}', '{"evm":"MetaMask","sol":"off","btc":"off"}',
+    '{"evm":"off","sol":"unisat","btc":"off"}', '{"evm":"off","sol":"off","btc":"off","x":1}', '["off","off","off"]']) {
+    assert.equal(popup.parseCachedModes(bad), null, String(bad));
+  }
+  assert.equal(popup.parseCachedStatus("connected"), "connected");
+  for (const bad of [null, "bogus", "toString", "__proto__"]) {
+    assert.equal(popup.parseCachedStatus(bad), null, String(bad));
+  }
+  assert.ok(popup.TEXT.metamaskConnectNote.includes("기본이나 Rabby처럼 보이기"));
+  assert.equal(popup.metamaskNoteShown("metamask"), true);
+  assert.equal(popup.metamaskNoteShown("rabby"), false);
+
+  const elements = new Map([...POPUP_HTML.matchAll(/\sid="([a-z-]+)"/gu)].map((match) => [match[1], new FakeElement("x", match[1])]));
+  const store = new Map([
+    [popup.MODES_CACHE_KEY, JSON.stringify({ evm: "metamask", sol: "off", btc: "unisat" })],
+    [popup.STATUS_CACHE_KEY, "connected"]
+  ]);
+  const writes = [];
+  const ports = [];
+  let resolveStorage = null;
+  globalThis.document = {
+    getElementById: (id) => elements.get(id) ?? null,
+    createElement: (tagName) => new FakeElement(tagName)
+  };
+  globalThis.localStorage = {
+    getItem: (key) => store.get(key) ?? null,
+    setItem: (key, value) => store.set(key, String(value))
+  };
+  globalThis.chrome = {
+    runtime: {
+      lastError: undefined,
+      connect({ name }) {
+        const port = { name, messageListeners: [], disconnected: false };
+        ports.push(port);
+        return {
+          onMessage: { addListener: (listener) => port.messageListeners.push(listener) },
+          onDisconnect: { addListener() {} },
+          disconnect: () => {
+            port.disconnected = true;
+          }
+        };
+      }
+    },
+    storage: {
+      local: {
+        // The storage read and the background stay unanswered until the test says so.
+        get: () => new Promise((resolve) => {
+          resolveStorage = resolve;
+        }),
+        async set(values) {
+          writes.push(values);
+        }
+      }
+    }
+  };
+  const text = (id) => elements.get(id).textContent;
+  const checked = (id) => elements.get(id).children.map((card) => card.children[0]).find((input) => input.checked)?.value;
+  try {
+    // A fresh module instance (PO3 already ran popup.js once in this process).
+    await import("../src/popup.js?po4");
+    // First paint, before any answer: last time's modes, warnings and status.
+    assert.equal(typeof resolveStorage, "function");
+    assert.equal(ports.length, 1);
+    assert.deepEqual(["modes", "sol-modes", "btc-modes"].map(checked), ["metamask", "off", "unisat"]);
+    assert.equal(elements.get("warning").hidden, false);
+    assert.equal(elements.get("metamask-note").hidden, false);
+    assert.equal(text("metamask-note"), popup.TEXT.metamaskConnectNote);
+    assert.equal(elements.get("sol-warning").hidden, true);
+    assert.equal(elements.get("btc-warning").hidden, false);
+    assert.equal(text("status-value"), "연결됨");
+    assert.equal(elements.get("status-value").dataset.tone, "ok");
+    assert.equal(text("status-detail"), popup.TEXT.statusStale);
+
+    // The user picks Phantom before the storage read answers; the read must not undo it.
+    const solInputs = elements.get("sol-modes").children.map((card) => card.children[0]);
+    // A radio group: checking one unchecks the others.
+    solInputs[0].checked = false;
+    solInputs[1].checked = true;
+    for (const listener of solInputs[1].listeners.get("change")) {
+      listener();
+    }
+    resolveStorage({ compatMode: "rabby", solCompatMode: "off", btcCompatMode: "unisat" });
+    await settle();
+    assert.deepEqual(writes, [{ solCompatMode: "phantom" }]);
+    assert.deepEqual(["modes", "sol-modes", "btc-modes"].map(checked), ["rabby", "phantom", "unisat"]);
+    assert.equal(elements.get("metamask-note").hidden, true);
+    assert.equal(elements.get("sol-warning").hidden, false);
+    assert.deepEqual(JSON.parse(store.get(popup.MODES_CACHE_KEY)), { evm: "rabby", sol: "phantom", btc: "unisat" });
+
+    // The live status replaces last time's and is remembered for the next popup.
+    for (const listener of ports[0].messageListeners) {
+      listener({ namespace: "your-wallet", version: 1, kind: "status", native: "unavailable" });
+    }
+    assert.equal(text("status-value"), "연결 안 됨");
+    assert.equal(text("status-detail"), popup.STATUS_VIEWS.unavailable.detail);
+    assert.equal(store.get(popup.STATUS_CACHE_KEY), "unavailable");
+    assert.equal(ports[0].disconnected, true);
+  } finally {
+    delete globalThis.document;
+    delete globalThis.chrome;
+    delete globalThis.localStorage;
+  }
+});
