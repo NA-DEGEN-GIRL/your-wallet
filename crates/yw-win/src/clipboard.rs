@@ -8,8 +8,9 @@
 //! automatic clear empties the clipboard only while that nonce is still there. (The sequence
 //! number cannot identify our copy: `CloseClipboard` itself adds the synthesized `CF_LOCALE`,
 //! `CF_TEXT` and `CF_OEMTEXT` formats and bumps it.) Paste-clear compares the sequence number
-//! read with the text (reading does not change it). The sequencing logic runs over [`ClipOps`] so
-//! it is tested without a real clipboard.
+//! read with the text (reading does not change it). A copy that outlived the run that made it (the
+//! process ended before its clear) is recognised by the marker format alone ([`SecretClip::ANY`]).
+//! The sequencing logic runs over [`ClipOps`] so it is tested without a real clipboard.
 
 use core::fmt;
 
@@ -74,7 +75,25 @@ impl std::error::Error for ClipError {}
 /// [`clear_secret`] empties the clipboard only while that nonce is still on it.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct SecretClip {
-    nonce: [u8; NONCE_LEN],
+    /// `None`: [`SecretClip::ANY`].
+    nonce: Option<[u8; NONCE_LEN]>,
+}
+
+impl SecretClip {
+    /// Any secret copy, whichever copy and run placed it: [`clear_secret`] with this empties the
+    /// clipboard while [`MARKER_FORMAT`] holds a nonce of the right length. For a copy that
+    /// outlived the run that made it (spec/04 §4.8): the next start clears it this way (it holds
+    /// the single-instance mutex, so no running copy of the app placed it), and so does the panic
+    /// hook ([`try_clear_secret_windowless`]). A running app clears its own copies by their nonce.
+    pub const ANY: Self = Self { nonce: None };
+
+    /// Whether `marker` (the bytes of [`MARKER_FORMAT`]) is this copy's.
+    fn marks(&self, marker: &[u8]) -> bool {
+        match &self.nonce {
+            Some(nonce) => marker == nonce.as_slice(),
+            None => marker.len() == NONCE_LEN,
+        }
+    }
 }
 
 impl fmt::Debug for SecretClip {
@@ -157,13 +176,14 @@ pub(crate) fn set_secret_with(
             let _ = ops.empty();
             return Err(ClipError::Os(error));
         }
-        Ok(SecretClip { nonce })
+        Ok(SecretClip { nonce: Some(nonce) })
     })();
     ops.close();
     result
 }
 
-/// Empties the clipboard only while it still carries `clip`'s nonce (our copy, unreplaced).
+/// Empties the clipboard only while it still carries `clip`'s nonce (our copy, unreplaced; any
+/// nonce for [`SecretClip::ANY`]).
 pub(crate) fn clear_secret_with(
     ops: &mut impl ClipOps,
     clip: &SecretClip,
@@ -182,7 +202,7 @@ pub(crate) fn clear_secret_attempts(
         let format = ops.register_format(MARKER_FORMAT).map_err(ClipError::Os)?;
         let ours = ops
             .get_bytes(format, NONCE_LEN)?
-            .is_some_and(|bytes| bytes.as_slice() == clip.nonce.as_slice());
+            .is_some_and(|bytes| clip.marks(&bytes));
         if ours {
             ops.empty().map_err(ClipError::Os)?;
         }
@@ -500,6 +520,20 @@ pub fn try_clear_secret(owner: &Window, clip: &SecretClip) -> Result<bool, ClipE
     clear_secret_attempts(&mut ops_for(owner), clip, 1)
 }
 
+/// [`try_clear_secret`] with the clipboard opened for the calling thread instead of a window: for
+/// code with no window at hand on any thread, namely the panic hook just before the process
+/// aborts (spec/04 §1.5, §4.8). One `OpenClipboard` attempt, no sleep.
+///
+/// # Errors
+///
+/// [`ClipError::Busy`] when another program holds the clipboard open, or another [`ClipError`].
+pub fn try_clear_secret_windowless(clip: &SecretClip) -> Result<bool, ClipError> {
+    let mut ops = Win32Clip {
+        owner: core::ptr::null_mut(),
+    };
+    clear_secret_attempts(&mut ops, clip, 1)
+}
+
 /// Reads `CF_UNICODETEXT` (≤ `max_units`) and the current sequence number.
 ///
 /// # Errors
@@ -537,7 +571,7 @@ pub fn clear_if_unchanged(owner: &Window, seq: u32) -> Result<bool, ClipError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ClipError, ClipOps, EXCLUSION_FORMATS, MARKER_FORMAT, MAX_TEXT_UNITS,
+        ClipError, ClipOps, EXCLUSION_FORMATS, MARKER_FORMAT, MAX_TEXT_UNITS, SecretClip,
         clear_if_unchanged_with, clear_secret_attempts, clear_secret_with, read_with,
         set_plain_with, set_secret_with, text_len_within,
     };
@@ -732,6 +766,29 @@ mod tests {
         let clip = set_secret_with(&mut mock, &units("abc"), NONCE).unwrap();
         set_plain_with(&mut mock, &units("0xabc")).unwrap();
         assert_eq!(clear_secret_with(&mut mock, &clip), Ok(false));
+        assert_eq!(mock.content, Some(units("0xabc")));
+    }
+
+    /// A copy whose run ended before its clear (a crash, a forced kill): the next start knows no
+    /// nonce, only the marker. `ANY` clears it, but never a later copy by another program (that
+    /// emptied the marker) nor a marker of another length.
+    #[test]
+    fn any_clears_an_earlier_runs_copy_but_not_a_later_copy() {
+        let mut mock = Mock::default();
+        set_secret_with(&mut mock, &units("abandon about"), NONCE).unwrap();
+        assert_eq!(clear_secret_with(&mut mock, &SecretClip::ANY), Ok(true));
+        assert!(mock.content.is_none());
+        assert!(mock.formats.is_empty());
+
+        let mut mock = Mock::default();
+        set_secret_with(&mut mock, &units("abandon about"), NONCE).unwrap();
+        set_plain_with(&mut mock, &units("0xabc")).unwrap();
+        assert_eq!(clear_secret_with(&mut mock, &SecretClip::ANY), Ok(false));
+        assert_eq!(mock.content, Some(units("0xabc")));
+
+        let format = mock.register_format(MARKER_FORMAT).unwrap();
+        mock.set_bytes(format, &[7; 8]).unwrap();
+        assert_eq!(clear_secret_with(&mut mock, &SecretClip::ANY), Ok(false));
         assert_eq!(mock.content, Some(units("0xabc")));
     }
 

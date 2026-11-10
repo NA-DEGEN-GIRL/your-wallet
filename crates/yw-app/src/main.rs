@@ -27,6 +27,7 @@ use yw_app::rpc::{RPC_TIMEOUTS, Transport};
 use yw_app::settings::LogLevel;
 use yw_app::workers::key::{KeyWorker, run as run_key_worker};
 use yw_app::workers::rpc::{RpcWorker, run as run_rpc_worker};
+use yw_win::clipboard::SecretClip;
 use yw_win::input::{is_down, is_down_in_message};
 use yw_win::process::{InstanceError, SingleInstance};
 use yw_win::ui::{self, CaptureExclusion, ClassSpec, InputKind, MbKind};
@@ -119,6 +120,20 @@ fn fail(text: &str) -> ExitCode {
     ExitCode::from(EXIT_INIT)
 }
 
+/// The panic hook (spec/04 §1.5-6). A panic on any thread aborts the process (`panic = "abort"`,
+/// D28) without the orderly exit, so this is the last code of ours to run: one `app.panic` line
+/// with where it happened (never the message) flushed with the lines buffered before it, one
+/// attempt to empty the clipboard of a secret copy (no window, no sleep; the next start clears
+/// what is left, spec/04 §4.8), then the default hook (stderr, when there is one) and the abort.
+fn install_panic_hook() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        logging::panic_line(info.location());
+        let _ = yw_win::clipboard::try_clear_secret_windowless(&SecretClip::ANY);
+        default(info);
+    }));
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "the startup sequence of spec/04 §1.4 in order"
@@ -180,8 +195,9 @@ fn main() -> ExitCode {
         }
     };
 
-    // 4. Logging.
+    // 4. Logging, and the panic hook that writes to it.
     logging::init(&paths.logs, LogLevel::Info);
+    install_panic_hook();
     logging::info(
         "app",
         "app.start",
@@ -297,7 +313,12 @@ fn main() -> ExitCode {
     let Some(poster) = app.borrow().main_poster() else {
         return fail("주 창을 만들지 못했습니다.");
     };
-    app.borrow_mut().register_session();
+    {
+        let mut state = app.borrow_mut();
+        // A secret copy an earlier run left on the clipboard (spec/04 §4.8).
+        state.clear_earlier_secret_clip();
+        state.register_session();
+    }
 
     // 7. Workers.
     let events = Arc::new(EventQueue::new(Box::new(move || {

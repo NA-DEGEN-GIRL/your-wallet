@@ -7,9 +7,11 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
+use std::panic::Location;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 
 use crate::errors::ErrorCode;
 use crate::network::NetworkId;
@@ -43,6 +45,9 @@ pub enum Field<'a> {
     /// The LLM endpoint `host[:port]` (spec/01 §5.4, spec/06 §8): never an RPC host, never a
     /// path or query.
     LlmHost(&'a str),
+    /// A source location, written `file:line` (the panic hook, [`panic_line`]): where in the code,
+    /// never a value.
+    Source(&'a Location<'a>),
 }
 
 /// UTC `YYYY-MM-DDTHH:MM:SS.mmmZ` from Unix milliseconds.
@@ -132,6 +137,11 @@ pub fn format_line(
             Field::LlmHost(host) => {
                 let authority = host.split(['/', '?', '#']).next().unwrap_or("");
                 push_sanitized(&mut line, authority);
+            }
+            Field::Source(location) => {
+                push_sanitized(&mut line, location.file());
+                line.push(':');
+                line.push_str(&location.line().to_string());
             }
         }
     }
@@ -321,6 +331,34 @@ pub fn info(area: &'static str, event: &'static str, fields: &[(&'static str, Fi
 /// `warn` shorthand.
 pub fn warn(area: &'static str, event: &'static str, fields: &[(&'static str, Field<'_>)]) {
     log(LogLevel::Warn, area, event, fields);
+}
+
+/// How often [`panic_line`] tries the logger, 1 ms apart.
+const PANIC_LOCK_TRIES: u32 = 10;
+
+/// The panic hook's line (spec/04 §1.5, §8): `ERROR app app.panic at=<file>:<line>`, never the
+/// message (it may carry values), written at once with the lines buffered before it (they would
+/// be lost: the process aborts right after). The logger is only tried, briefly: this thread may
+/// have panicked while holding it.
+pub fn panic_line(location: Option<&Location<'_>>) {
+    let Some(logger) = LOGGER.get() else {
+        return;
+    };
+    let at = location.map(|location| ("at", Field::Source(location)));
+    let line = format_line(
+        now_unix_ms(),
+        LogLevel::Error,
+        "app",
+        "app.panic",
+        at.as_slice(),
+    );
+    for _ in 0..PANIC_LOCK_TRIES {
+        if let Ok(mut writer) = logger.writer.try_lock() {
+            writer.write_line(&line, true);
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
 }
 
 #[cfg(test)]

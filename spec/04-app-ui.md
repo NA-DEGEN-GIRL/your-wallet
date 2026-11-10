@@ -79,9 +79,9 @@ impl EventQueue {
    2. 이미 있는 폴더: 소유자·DACL·레이블(`GetNamedSecurityInfoW(OWNER|DACL|LABEL)`)을 읽는다. 소유자가 사용자·SYSTEM(`S-1-5-18`)·Administrators(`S-1-5-32-544`)가 아니면 거부. 위 상태(보호됨, 다른 SID에 허용 ACE 없음 — 상속된 읽기 전용 ACE도 포함, NULL DACL은 모두에게 허용으로 본다 —, 사용자 ACE가 OI·CI 모두 권한, 레이블 ≥ Medium·NR·NW·OI·CI)면 그대로 둔다. 아니면 `SetNamedSecurityInfoW(DACL|PROTECTED_DACL)`와 `(LABEL)`로 위 DACL·레이블을 다시 쓴다(하위 항목의 상속 ACE는 시스템이 다시 계산한다). 예: 프로필 전체에 다른 그룹(샌드박스 그룹 등)의 RX가 상속된 PC에서 예전 빌드가 만든 폴더 — 조용히 고치고 로그 `datadir.acl_repaired`(dir, folder, entries)를 남긴다. 고친 뒤에도 다른 SID가 허용되면 거부. 다시 쓰기에 실패했는데 다른 SID 허용이 없으면(보호·레이블만 빠짐) 계속한다.
    3. 폴더 바로 안의 항목(재분석 지점 제외): 소유자가 위 세 SID가 아니면 거부. 다른 SID에 허용 ACE가 있으면 명시 DACL을 빈 비보호 DACL로 바꿔(`UNPROTECTED_DACL`) 폴더에서 상속된 ACE만 남긴다.
    4. 거부(`PrivateDirError::Untrusted`): 오류 상자("데이터 폴더(%LOCALAPPDATA%\YourWallet)를 열지 않았습니다. 이 폴더나 안의 파일이 다른 계정의 소유이거나, 이 사용자가 고칠 수 없는 방식으로 다른 계정에 열려 있습니다. 지갑 파일을 보호하기 위해 시작을 멈춥니다.") 후 종료 코드 10. 폴더가 재분석 지점(정션·심볼릭 링크)이거나 폴더가 아니면(`PrivateDirError::NotPlainDir`, 2026-11-10) 그 폴더를 밝히는 오류 상자("다음 데이터 폴더가 링크(정션·심볼릭 링크)이거나 폴더가 아닌 파일입니다: %LOCALAPPDATA%\YourWallet[\v3[\logs]] — 지갑 파일을 보호하기 위해 링크된 데이터 폴더는 쓰지 않습니다. 다른 드라이브로 옮기고 링크를 만들었다면 링크만 지우고(대상 폴더의 지갑 파일은 지우지 마세요) 옮긴 폴더를 원래 자리로 되돌린 뒤 다시 시작하세요.") 후 종료 코드 10 — 공간 때문에 `mklink /J`로 옮긴 사용자가 무엇을 되돌릴지 알게 한다(이전에는 아래 문구로 원인이 잘못 보였다). 만들 수 없으면 기존 "데이터 폴더를 만들지 못했습니다…" 후 종료 코드 10. 앱은 데이터 폴더 밖의 ACL을 바꾸지 않는다(`%LOCALAPPDATA%` 등 상위 폴더의 상속 상태와 무관하게 동작).
-4. 로그 시작(§8), `app.start`(버전, OS 빌드, `--background` 여부).
+4. 로그 시작(§8), 패닉 훅 설치(§1.5-6), `app.start`(버전, OS 빌드, `--background` 여부).
 5. `settings.json`(§6.1), `apikeys.dpapi`(§6.3) 읽기. 실패 항목은 기본값 + 배너.
-6. 창 클래스 등록(§1.7), 주 창 생성(숨김). `session::register_session_notifications(&main)`(`WTSRegisterSessionNotification`, `NOTIFY_FOR_THIS_SESSION = 0`). 실패하면 1초 간격 최대 30회 재시도, 끝내 실패하면 배너 E-APP-004.
+6. 창 클래스 등록(§1.7), 주 창 생성(숨김). 이전 실행이 클립보드에 남긴 비밀 복사를 지운다(§4.8). `session::register_session_notifications(&main)`(`WTSRegisterSessionNotification`, `NOTIFY_FOR_THIS_SESSION = 0`). 실패하면 1초 간격 최대 30회 재시도, 끝내 실패하면 배너 E-APP-004.
 7. 키·RPC·read 작업자, pipe 서버 시작([05]: 프로세스 시작 2 s 안). pipe 생성 실패는 치명이 아니다(배너 E-PIPE-001, 브라우저 연동 없이 계속). 단일 인스턴스 뮤텍스를 쥔 채 첫 인스턴스 생성이 `AlreadyExists`면 이 사용자의 고정 pipe 이름을 다른 프로그램이 점유한 것이다: 로그 `pipe server.squatted`(E-PIPE-002) + 배너 E-PIPE-002, 상태 줄 `브라우저: 사용 불가 E-PIPE-002`, 브라우저 연동 없이 계속([05] §8.1).
 8. 키 작업자가 `Vault::load` → `VaultStatus`([02] §6.3)를 보고한다.
 9. `--background`가 아니면 주 창을 표시한다(S01·S07·S09). `Locked`면 W02를 자동으로 연다.
@@ -94,7 +94,7 @@ impl EventQueue {
 3. 큐와 창의 모든 항목 → `QueueOutcome::Shutdown`.
 4. 키 작업자의 `LockDone`을 최대 5초 기다린 뒤 채널을 닫는다(저널 쓰기 중단 방지). RPC·read·LLM 작업자에는 종료를 알리고 최대 2초 join한다(진행 중 호출이 끝나지 않으면 기다리지 않고 다음 단계로 간다). 전송·영수증 확인은 다음 시작 때 저널이 이어받는다([03]).
 5. `session::unregister_session_notifications`, 창 파괴.
-6. `app.stop`, 로그 flush, 종료 코드 0. `panic = "abort"`(D28)이면 이 절차가 돌지 않으며, 디스크 일관성은 원자적 쓰기(§9)와 저널이 지킨다.
+6. `app.stop`, 로그 flush, 종료 코드 0. `panic = "abort"`(D28)이면 이 절차가 돌지 않으며, 디스크 일관성은 원자적 쓰기(§9)와 저널이 지킨다. 그때 도는 것은 패닉 훅(시작 4단계에서 설치)뿐이다: `ERROR app app.panic at=<파일>:<줄>` 한 줄(메시지는 값이 들어 있을 수 있어 쓰지 않는다)을 그 전에 버퍼에 있던 줄과 함께 flush하고(로거는 `try_lock`으로 잠깐만 시도), 클립보드의 비밀 복사를 한 번 지워 보고(`try_clear_secret_windowless(&SecretClip::ANY)`, 창 없이·잠자지 않음, §4.8), 기본 훅을 부른 뒤 abort가 이어진다. 강제 종료(작업 관리자 `세부 정보`의 `작업 끝내기`, `Stop-Process -Force`)나 Chrome의 job 종료에는 훅도 돌지 않는다(남은 복사는 다음 시작이 지운다, §4.8).
 
 ### 1.6 DPI·글꼴·색
 - 크기 상수는 96 DPI 기준 DIP이고 `GetDpiForWindow`로 환산한다. `WM_DPICHANGED`: lParam 제안 사각형으로 `SetWindowPos`, 새 DPI로 글꼴을 다시 만들고 다시 배치한다.
@@ -149,7 +149,7 @@ BTC_MAINNET_BG #C42B1C / BTC_MAINNET_TEXT #FFFFFF, BTC_TESTNET4_BG #F7A23B(글�
 | 캡처 제외 | `ui::exclude_from_capture(&Window) -> Result<(), UiError>`(`UiError::CaptureExclusionFailed`). 비밀 클래스는 `create_window`가 숨긴 채 적용하고, 실패 처리는 `ClassSpec.capture`(`CaptureExclusion::{Required, Preferred}`)를 따른다(§1.7, §4.5) |
 | 그리기·입력 | `PaintDc::{fill_rect, round_rect, ellipse, draw_text, measure, select_font}`, `Font::create`, `input::is_down(vk)`. 버튼은 `ControlKind::Button(ButtonStyle)`(소유자 그리기, §1.6 스타일을 yw-app이 넘긴다), `Control::{set_backdrop, set_button_style}`(체크박스·라디오·버튼 모서리 배경 = 놓인 카드·창 색) |
 | 화면 투어(개발 전용) | `ui::capture::{capture_client, dev_tour_redraw, dev_tour_flush, dev_tour_lift_capture_exclusion}`, 스크롤 잔상 점검용 `dev_tour_post_wheel`·`dev_tour_post_vscroll`·`dev_tour_app_env`·`dev_tour_clear_of_pointer` — `#[cfg(debug_assertions)]`라 release 빌드에 없다. 앱 코드는 쓰지 않고 `ui::tour`(`#[ignore]` 테스트)만 쓴다(§11) |
-| 클립보드 | `clipboard::{set_text, set_secret_text -> SecretClip, clear_secret(owner, &SecretClip), try_clear_secret(owner, &SecretClip), read_text(owner, max) -> (WipeBuf<u16>, u32), clear_if_unchanged}`, `ClipError::{Busy, TooLong, Os}` |
+| 클립보드 | `clipboard::{set_text, set_secret_text -> SecretClip, clear_secret(owner, &SecretClip), try_clear_secret(owner, &SecretClip), try_clear_secret_windowless(&SecretClip), read_text(owner, max) -> (WipeBuf<u16>, u32), clear_if_unchanged}`, `SecretClip::ANY`, `ClipError::{Busy, TooLong, Os}` |
 | 단일 인스턴스 | `process::SingleInstance::acquire_private`, `ui::find_windows -> Vec<(Poster, u32)>`, `security::verify_process`, `process::allow_set_foreground_window`(§1.1) |
 | 세션·전원·종료 | `session::{register_session_notifications, unregister_session_notifications}`, `Msg::{SessionLock, SessionUnlock, SessionDisconnect, SessionLogoff, Suspend, Resume, QueryEndSession, EndSession}`(§1.5, §5.1) |
 | DPAPI·파일 | `dpapi::{protect -> Vec<u8>, unprotect -> WipeBuf<u8>}`(`WinError`), `file::{atomic_write, read_limited, ensure_dir}`(`FileError`) |
@@ -444,11 +444,11 @@ W04(현재, 새, 새 확인) → 새 비밀번호 검사(E-INP-001/002) → `Key
 | T-META-CLOSED | 세션의 모든 화면 (meta 오버레이를 닫은 뒤, T-META-FAILED 자리) | meta 파일(meta.ywm)을 읽을 수 없어 아무것도 바꾸지 않았습니다. 계정 이름·주소록·연결한 사이트 없이 열려 있고 보내기는 멈춥니다. 고를 때까지 이 파일에 아무것도 쓰지 않습니다. 앱을 업데이트했거나 파일을 직접 되돌렸다면 '다시 불러오기'를 누르세요. 여전히 읽을 수 없으면 고르는 화면이 다시 열립니다. (E-VLT-006) |
 | T-RECOVER-PREV | S09 | 이전 사본으로 복구하면 마지막 변경(예: 가져온 개인키)이 사라질 수 있습니다. |
 | T-REVEAL-WARN | S15 | 화면 근처의 사람이나 카메라가 볼 수 있습니다. 계속하려면 비밀번호를 입력하세요. |
-| T-COPY-ON | S15 | 복사를 허용하면 복구 단어(니모닉)·개인키를 클립보드에 넣을 수 있습니다. 클립보드 기록·클라우드 동기화에서는 제외하고 30초 뒤 지우지만, 그 사이에는 다른 프로그램이 읽을 수 있습니다. |
+| T-COPY-ON | S15 | 복사를 허용하면 복구 단어(니모닉)·개인키를 클립보드에 넣을 수 있습니다. 클립보드 기록·클라우드 동기화에서는 제외하고 30초 뒤 지우지만, 그 사이에는 다른 프로그램이 읽을 수 있습니다. 그 전에 앱이 비정상 종료되면 다음에 앱을 열 때 지우며, 그때까지는 클립보드에 남습니다. |
 | T-COPY-OFF | W08·W09 | 복사가 꺼져 있습니다. 설정에서 바꿀 수 있습니다. |
 | T-COPIED | W08·W09 | 클립보드에 복사했습니다. 30초 뒤 지웁니다. |
 | T-CLIP-NOT-CLEARED | 주 창 배너(경고, §4.8) | 복사한 복구 단어·개인키를 클립보드에서 지우지 못했습니다(다른 프로그램이 클립보드를 쓰고 있습니다). 아직 클립보드에 남아 있을 수 있으니 다른 텍스트를 복사해 덮어쓰세요. |
-| T-CLIP-CLEARED | 주 창 배너(알림, §4.8) | 클립보드에 남아 있던 복구 단어·개인키를 지웠습니다. |
+| T-CLIP-CLEARED | 주 창 배너(알림, §4.8; 늦게 지웠을 때와 시작 때 이전 실행의 복사를 지웠을 때) | 클립보드에 남아 있던 복구 단어·개인키를 지웠습니다. |
 | T-PASTE-CLEARED | W01–W07 | 붙여넣은 뒤 클립보드를 비웠습니다. Windows 클립보드 기록(Win+V)을 쓴다면 그 항목도 지우세요. |
 | T-PASTE-EDGE-SPACE | W01–W04·W06 | 앞/뒤 공백이 포함되어 있습니다. 공백도 그대로 비밀번호·passphrase의 일부가 됩니다. |
 | T-MASKED | W05·W07–W10 | 창이 비활성화되어 내용을 가렸습니다. 창을 클릭하면 다시 표시합니다. |
@@ -927,7 +927,8 @@ impl SecretField {
 - 같은 `OpenClipboard`…`CloseClipboard` 안에서 등록 형식 `"YourWalletV3SecretClipNonce"`에 복사마다 새 16바이트 난수(`BCryptGenRandom`)를 함께 넣는다. 반환된 `SecretClip`(그 nonce)을 `App.secret_clip`(`PendingClip`: nonce, 복사 시각, 재시도 상태)에 둔다. `SECRET_CLIPBOARD_TTL_MS = 30_000` 뒤, 그리고 잠금·종료 때 `clear_secret(clip)`: 클립보드를 열어 그 형식에 같은 nonce가 아직 있을 때만 비운다(다른 복사로 바뀌었으면 지우지 않는다). T-COPIED.
 - 클립보드가 바쁠 때(2026-11-10): 다른 프로그램(클립보드 관리자, RDP 클립보드 동기화, 큰 붙여넣기)이 클립보드를 잡고 있어 `clear_secret`이 `Busy`(또는 `Os`)면 `secret_clip`을 버리지 않고 주 타이머 틱(250 ms)마다 `try_clear_secret`(`OpenClipboard` 1회, UI 스레드에서 잠자지 않음)으로 다시 지운다. 처음 실패에서 5초(`SECRET_CLIPBOARD_NOTICE_MS`)가 지나도 못 지우면 주 창에 배너 T-CLIP-NOT-CLEARED(경고)를 한 번 보이고 계속 시도하며, 5분(`SECRET_CLIPBOARD_RETRY_MS`) 뒤 멈춘다(배너는 남는다). 그 사이 지우면 배너를 T-CLIP-CLEARED로 바꾸고, 다른 내용으로 바뀌었으면 배너만 내린다(새 비밀 복사도 같다). 잠금 때 못 지운 것은 잠긴 뒤에도 틱이 다시 시도한다. 종료 때는 뒤에 틱이 없으므로 약 1초 동안(`clear_secret` 반복) 시도한다. 로그 `clipboard.secret_clear cleared=yes|no|busy|gave_up`(재시도마다는 남기지 않는다).
 - 시퀀스 번호로 판정하지 않는 이유: `CloseClipboard`가 합성 형식(`CF_LOCALE`·`CF_TEXT`·`CF_OEMTEXT`)을 더하며 번호를 다시 올리므로, 닫기 전에 읽은 번호는 자동 삭제 때 결코 같지 않았다(적대적 검토로 확인, yw-win `tests/clipboard_winsta.rs`가 사설 window station에서 실제 클립보드로 시험).
-- 한계: 클립보드 전역 메모리는 시스템 소유라 0으로 덮을 수 없다(`EmptyClipboard`는 해제만). 앱이 비정상 종료하면 자동 삭제가 없다.
+- 비정상 종료(2026-11-10): 복사 뒤 30초 안에 프로세스가 끝나면(`panic = "abort"`의 패닉, 강제 종료 — 작업 관리자 `세부 정보`의 `작업 끝내기`·`Stop-Process -Force`, breakaway가 거부되어 Chrome이 자기 job과 함께 닫음) 또는 종료 때 1초 안에 못 지웠으면, 시스템 소유인 텍스트는 그대로 남고 nonce는 프로세스와 함께 사라진다. 패닉이면 훅이 한 번 지워 본다(§1.5-6). 그리고 다음 시작 때 주 창을 만든 직후(§1.4-6) `App::clear_earlier_secret_clip`이 `clear_secret(main, &SecretClip::ANY)`로 지운다: nonce와 상관없이 표지 형식에 16바이트가 있으면 우리 복사다. 단일 인스턴스 뮤텍스를 쥔 뒤라 실행 중인 다른 인스턴스의 복사일 수 없고, 그 뒤 다른 프로그램이 복사했다면 그 `EmptyClipboard`가 표지도 지웠다. 지웠으면 배너 T-CLIP-CLEARED, 없으면 아무것도 하지 않는다(로그도 없음). 바쁘면 위와 같이 틱마다 다시 시도하되 T-CLIP-NOT-CLEARED는 보이지 않는다(지우기 전에는 남은 복사가 있는지 모른다). 로그 `clipboard.earlier_clear cleared=yes|busy`, 재시도의 끝은 `clipboard.secret_clear`. 종료부터 다음 시작까지는 남아 있으므로 T-COPY-ON이 그렇게 말한다.
+- 한계: 클립보드 전역 메모리는 시스템 소유라 0으로 덮을 수 없다(`EmptyClipboard`는 해제만).
 
 ### 4.9 비활성화·닫기
 - 클릭 관통 방지는 §1.8과 같다.
@@ -939,7 +940,7 @@ impl SecretField {
 ### 4.10 시험 (자동)
 - SW-1: 이식 `recovery_native.rs:1610-1738` 테스트(2초 hold, 고정 용량 버퍼, 소거, 창 없는 차단 판정, 시간 초과·포커스 잃음) 통과.
 - SW-2: `Printable`에 0x1F·0x7F·0xAC00·서로게이트 → 거부, 버퍼 불변. `MnemonicText`에 `"  Abandon  ABOUT "` 단위 입력 → `abandon about `. `PrivateKeyHex`에 `0X…`·중간 `x`·65자 → 거부. `backspace` 뒤 내부 용량의 지운 위치 = 0.
-- SW-3: 붙여넣기 `"abandon\r\n abandon\tabout"` → `abandon abandon about`, `"abandon 1"` → 전체 거부, 시퀀스 같음/다름 → 비움/유지. `Printable`: `"  pass word \r\n"` → `"  pass word "`, `" TREZOR "` 그대로(같은 지갑 주소) + T-PASTE-EDGE-SPACE, 탭·앞 줄바꿈·줄바꿈 둘 → 거부. 비밀 복사 → 닫기가 번호를 올려도 `clear_secret`이 비움, 다른 복사 뒤에는 유지.
+- SW-3: 붙여넣기 `"abandon\r\n abandon\tabout"` → `abandon abandon about`, `"abandon 1"` → 전체 거부, 시퀀스 같음/다름 → 비움/유지. `Printable`: `"  pass word \r\n"` → `"  pass word "`, `" TREZOR "` 그대로(같은 지갑 주소) + T-PASTE-EDGE-SPACE, 탭·앞 줄바꿈·줄바꿈 둘 → 거부. 비밀 복사 → 닫기가 번호를 올려도 `clear_secret`이 비움, 다른 복사 뒤에는 유지. `SecretClip::ANY`는 nonce와 상관없이 비움, 일반 복사 뒤·길이가 다른 표지는 유지.
 - SW-4: 차단 목록 22개와 비밀 상태를 붙인 뒤의 `WM_SETTEXT` → 0 반환, 핸들러 미호출. `exclude_from_capture` 실패 모의(설정 실패, 읽기 값 ≠ 0x11 각각) → `Required`(W08·W09)는 창 파괴·`CaptureExclusionFailed`·비밀 버퍼 미전달·E-SEC-001, `Preferred`(W01·W05·W10)는 T-CAPTURE-WARN 배너와 함께 열리고 `보기` 비활성.
 
 ## 5. 자동 잠금 (D12)
@@ -1253,7 +1254,7 @@ BTC 계정 선택은 `prefs`에 두지 않는다(알려진 객체에 키를 더�
 
 | 기록한다 | 기록하지 않는다 |
 |---|---|
-| 시작·종료(버전, OS 빌드, 인자), `AppMode` 전이, 잠금 사유, 잠금 해제 성공·실패(횟수만) | 비밀번호, passphrase, 니모닉 단어, 개인키, 시드, DEK·KEK, 백업 확인 답 |
+| 시작·종료(버전, OS 빌드, 인자), 패닉 위치(`app.panic at=<파일>:<줄>`, §1.5-6), `AppMode` 전이, 잠금 사유, 잠금 해제 성공·실패(횟수만) | 비밀번호, passphrase, 니모닉 단어, 개인키, 시드, DEK·KEK, 백업 확인 답, 패닉 메시지 |
 | 오류 코드와 분류 입력(HTTP 상태, JSON-RPC 코드, Win32 오류 번호, enum 이름) | API 키, RPC 엔드포인트 URL의 어느 부분도(호스트·엔드포인트 이름·경로·쿼리·토큰), 템플릿 자격 정보, `Authorization` 헤더 |
 | RPC 메서드 이름, `NetworkId`, 지연, 응답 크기 | RPC·LLM 요청·응답 본문(`debug`의 잘린 원격 오류 문자열 제외, §7) |
 | dApp 요청: 메서드 이름, 내부 요청 번호, `QueueOutcome` | dApp origin, personal_sign 내용, 타입 데이터, calldata |
@@ -1297,6 +1298,7 @@ BTC 계정 선택은 `prefs`에 두지 않는다(알려진 객체에 키를 더�
 | UI-M3-12 | M3 | `abandon … about` 가져오기 | S06 첫 주소 `0x9858EfFD232B4033E47d90003D41EC34EcaEda94` |
 | UI-M3-13 | M3 | passphrase 지갑 가져오기 → 재시작 → 다른 passphrase 입력 | T-PASS-MISMATCH, 계속 시 T-ALT-PASS 배너 |
 | UI-M3-14 | M3 | 125%·150% 배율 모니터 사이 창 이동 | 글자·QR 잘림 없음 |
+| UI-M3-15 | M3 | 토글 켜고 W08 `복사` → 30초 안에 강제 종료(작업 관리자 `세부 정보` 탭의 `yw-app.exe` → `작업 끝내기`, 또는 `Stop-Process -Name yw-app -Force`) → 재실행 | 주 창 배너 T-CLIP-CLEARED, 붙여넣기 결과 빈 값, 로그 `clipboard.earlier_clear cleared=yes`(§4.8) |
 | UI-M4-01 | M4 | Sepolia ETH 보내기(주소 붙여넣기) | 승인 창 헤더·제목·자산 변화 표시, 확정까지 활동 갱신 |
 | UI-M4-02 | M4 | Sepolia ERC-20 보내기 | 같음, 토큰 라벨·컨트랙트 주소 표시 |
 | UI-M4-03 | M4 | 되돌려지는 거래(ETH를 받지 않는 컨트랙트 — Sepolia USDC 컨트랙트 주소 — 로 SepoliaETH 소액; 잔액 초과 금액은 §2.15 E-INP-012로 폼에서 막힘) 검토 → 체크 없이 2초 누르기 → 체크 + 2초 누르기 | "시뮬레이션 중…" 동안 승인 비활성, 이어서 맨 위 띠 E-SIM-001 "시뮬레이션에서 거래가 실패했습니다 — 수수료만 잃을 수 있습니다" + 되돌림 이유, 자산 변화 T-SIM-NODIFF / 진행 없음 / 전송, 활동 `failed`(영수증 status 0) |

@@ -429,6 +429,20 @@ impl PendingClip {
         }
     }
 
+    /// A copy an earlier run may have left behind ([`App::clear_earlier_secret_clip`]). `noticed`
+    /// starts set: until a clear finds one nothing says it is there, so a busy clipboard is
+    /// retried without [`T_CLIP_NOT_CLEARED`], and a clear that empties it says so.
+    const fn earlier_run(now: u64) -> Self {
+        Self {
+            clip: SecretClip::ANY,
+            copied_ms: now,
+            retry: ClipRetry {
+                busy_since_ms: None,
+                noticed: true,
+            },
+        }
+    }
+
     const fn due(&self, now: u64) -> bool {
         self.retry.busy_since_ms.is_some()
             || now.saturating_sub(self.copied_ms) >= SECRET_CLIPBOARD_TTL_MS
@@ -440,7 +454,8 @@ impl PendingClip {
 struct ClipRetry {
     /// When a clear first found the clipboard busy: retried every tick from then on.
     busy_since_ms: Option<u64>,
-    /// [`T_CLIP_NOT_CLEARED`] is showing.
+    /// [`T_CLIP_NOT_CLEARED`] is showing (or, for an earlier run's copy, is never to show): a
+    /// clear that empties the clipboard then shows [`T_CLIP_CLEARED_LATE`].
     noticed: bool,
 }
 
@@ -1464,6 +1479,39 @@ impl App {
                 }
             }
         }
+    }
+
+    /// At start-up, right after the main window (spec/04 §1.4-6, §4.8): clears a secret copy an
+    /// earlier run left on the clipboard, a run that ended before its own clear (a panic under
+    /// `panic = "abort"`, a forced kill, Chrome closing the job it started us in, a clipboard
+    /// still busy at exit). Only the marker format says it is ours ([`SecretClip::ANY`]): the
+    /// single-instance mutex is held, so no running copy of the app placed it, and a later copy by
+    /// another program would have emptied it. A busy clipboard is retried by the tick like any
+    /// pending clear ([`PendingClip::earlier_run`]).
+    pub fn clear_earlier_secret_clip(&mut self) {
+        let Some(main) = self.main.as_ref() else {
+            return;
+        };
+        let now = now_ms();
+        let mut pending = PendingClip::earlier_run(now);
+        let result = clipboard::clear_secret(main, &pending.clip);
+        let outcome = match clip_step(&mut pending.retry, now, result) {
+            // The usual start: nothing left behind (not logged).
+            ClipStep::Done(false) => return,
+            ClipStep::Done(true) => {
+                self.notice(T_CLIP_CLEARED_LATE.to_owned(), Tone::Info);
+                "yes"
+            }
+            ClipStep::Retry(_) | ClipStep::GiveUp => {
+                self.secret_clip = Some(pending);
+                "busy"
+            }
+        };
+        logging::info(
+            "app",
+            "clipboard.earlier_clear",
+            &[("cleared", Field::Word(outcome))],
+        );
     }
 
     /// At shutdown there is no later tick: a busy clipboard is retried for about
