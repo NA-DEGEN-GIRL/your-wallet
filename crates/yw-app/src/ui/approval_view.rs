@@ -425,9 +425,9 @@ fn grant_summary<'d>(
             .to_owned()
     };
     match call {
-        "토큰 사용 승인" | "토큰 승인 증가" => {
+        "토큰 사용 승인" => {
             let spender = call_arg(display, "spender")?;
-            let amount = call_arg(display, "amount").or_else(|| call_arg(display, "added"))?;
+            let amount = call_arg(display, "amount")?;
             Some(if is_zero_amount(amount) {
                 (revoke_sentence(place), Some(spender))
             } else {
@@ -440,6 +440,25 @@ fn grant_summary<'d>(
                     Some(spender),
                 )
             })
+        }
+        // `increaseAllowance` adds to what the spender may already use (security review
+        // 2026-11-10): its amount is the increase, not the new total, and 0 changes nothing —
+        // never "승인 해제", which a revoke-looking site could otherwise show for a no-op.
+        "토큰 승인 증가" => {
+            let spender = call_arg(display, "spender")?;
+            let added = first_line(call_arg(display, "added")?).trim();
+            let sentence = if is_zero_amount(added) {
+                format!(
+                    "{place}아래 주소의 {} 사용 권한을 늘리는 거래이지만 늘리는 양이 0이라 이미 준 권한은 그대로입니다(승인 해제가 아닙니다).",
+                    token()
+                )
+            } else {
+                format!(
+                    "{place}아래 주소의 {} 사용 권한을 늘립니다: +{added} (이미 준 권한에 더해집니다).",
+                    token()
+                )
+            };
+            Some((sentence, Some(spender)))
         }
         "컬렉션 전체 권한" => {
             let operator = call_arg(display, "operator")?;
@@ -1297,8 +1316,11 @@ mod tests {
     /// spec/04 §3.2 요약 (2026-11-10): a permission says who gets it and how much, and the
     /// address under the sentence is the one receiving it (spender, operator), not the token.
     #[test]
+    #[expect(clippy::too_many_lines, reason = "one table row per permission kind")]
     fn permission_summaries_name_who_gets_what() {
-        use yw_core::evm::abi::{AbiValue, SEL_APPROVE, SEL_SET_APPROVAL_FOR_ALL, encode_call};
+        use yw_core::evm::abi::{
+            AbiValue, SEL_APPROVE, SEL_INCREASE_ALLOWANCE, SEL_SET_APPROVAL_FOR_ALL, encode_call,
+        };
         let chain = sepolia();
         let usdc = chain.tokens[1].address;
         let spender = Address::from_bytes([0x42; 20]);
@@ -1351,6 +1373,20 @@ mod tests {
                 &SimResult::skipped(),
             )
         };
+        // increaseAllowance adds to an allowance: the increase, and 0 is never a revoke.
+        let increase = |added: u64| {
+            tx_request(
+                usdc,
+                encode_call(
+                    SEL_INCREASE_ALLOWANCE,
+                    &[
+                        AbiValue::Address(spender),
+                        AbiValue::Uint(U256::from_u64(added)),
+                    ],
+                ),
+                &SimResult::skipped(),
+            )
+        };
         let permit = typed_request(&format!(
             r#"{{"types":{{"EIP712Domain":[{{"name":"name","type":"string"}},{{"name":"version","type":"string"}},{{"name":"chainId","type":"uint256"}},{{"name":"verifyingContract","type":"address"}}],"Permit":[{{"name":"owner","type":"address"}},{{"name":"spender","type":"address"}},{{"name":"value","type":"uint256"}},{{"name":"nonce","type":"uint256"}},{{"name":"deadline","type":"uint256"}}]}},"primaryType":"Permit","domain":{{"name":"USDC","version":"2","chainId":11155111,"verifyingContract":"{usdc_text}"}},"message":{{"owner":"{}","spender":"{spender_text}","value":"1000000","nonce":"0","deadline":"1893456000"}}}}"#,
             Address::from_bytes([0x01; 20]).to_checksum()
@@ -1358,7 +1394,7 @@ mod tests {
         let permit_single = typed_request(&format!(
             r#"{{"types":{{"EIP712Domain":[{{"name":"name","type":"string"}},{{"name":"chainId","type":"uint256"}},{{"name":"verifyingContract","type":"address"}}],"PermitDetails":[{{"name":"token","type":"address"}},{{"name":"amount","type":"uint160"}},{{"name":"expiration","type":"uint48"}},{{"name":"nonce","type":"uint48"}}],"PermitSingle":[{{"name":"details","type":"PermitDetails"}},{{"name":"spender","type":"address"}},{{"name":"sigDeadline","type":"uint256"}}]}},"primaryType":"PermitSingle","domain":{{"name":"Permit2","chainId":11155111,"verifyingContract":"0x000000000022D473030F116dDEE9F6B43aC78BA3"}},"message":{{"details":{{"token":"{usdc_text}","amount":"1461501637330902918203684832716283019655932542975","expiration":"1790086400","nonce":"0"}},"spender":"{spender_text}","sigDeadline":"1790000600"}}}}"#
         ));
-        let rows: [(&yw_core::approval::ApprovalRequest, &str); 5] = [
+        let rows: [(&yw_core::approval::ApprovalRequest, &str); 7] = [
             (
                 &approve,
                 "Sepolia 테스트넷에서 아래 주소에 USDC 사용 권한을 줍니다: 무제한.",
@@ -1378,6 +1414,14 @@ mod tests {
             (
                 &for_all(false),
                 "Sepolia 테스트넷에서 아래 주소의 권한을 거둡니다(승인 해제).",
+            ),
+            (
+                &increase(2_500_000),
+                "Sepolia 테스트넷에서 아래 주소의 USDC 사용 권한을 늘립니다: +2.5 USDC (이미 준 권한에 더해집니다).",
+            ),
+            (
+                &increase(0),
+                "Sepolia 테스트넷에서 아래 주소의 USDC 사용 권한을 늘리는 거래이지만 늘리는 양이 0이라 이미 준 권한은 그대로입니다(승인 해제가 아닙니다).",
             ),
         ];
         for (request, sentence) in rows {
