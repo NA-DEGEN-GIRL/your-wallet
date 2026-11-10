@@ -926,6 +926,63 @@ fn wait_for_ai(app: &Rc<RefCell<App>>) {
     }
 }
 
+/// S08 after `연결하기` and the RPC list head it links to (2026-11-10): every `QuickNode`
+/// template network has an `*.example.test` placeholder address (never contacted) and made-up
+/// test results — Base failed (its row link), Zcash testnet still testing, the rest working.
+fn tour_first_setup(app: &Rc<RefCell<App>>) {
+    use crate::app::TestState;
+    use crate::errors::ErrorCode;
+    use crate::ui::screens::ids;
+    {
+        let mut state = app.borrow_mut();
+        let networks = state.generation_plan().0;
+        let mut keys = ApiKeys::default();
+        for (index, network) in networks.iter().enumerate() {
+            let url = format!("https://rpc{index}.example.test/");
+            keys.set_rpc(*network, &HttpsUrl::parse(&url).unwrap());
+        }
+        state.apikeys = keys;
+        for network in &networks {
+            let (message, test) = match network {
+                NetworkId::Eip155(8_453) => (ErrorCode::Rpc003.text(), TestState::Failed),
+                NetworkId::Zcash(yw_core::zec::ZecNetwork::Testnet) => {
+                    ("테스트 중…".to_owned(), TestState::Testing)
+                }
+                _ => (
+                    format!(
+                        "RPC 주소가 작동합니다. ({}, 확인됨)",
+                        state.network_name(*network)
+                    ),
+                    TestState::Works,
+                ),
+            };
+            state.set_rpc_message(*network, message, test);
+        }
+        state.done_tested = networks;
+    }
+    set_screen(app, UNLOCKED, Screen::Done);
+    save(main_hwnd(app), "51-first-setup-rpc");
+    app.borrow_mut().done_return = true;
+    set_screen(app, UNLOCKED, Screen::Settings(SettingsSection::Network));
+    {
+        let mut state = app.borrow_mut();
+        let top = state
+            .placed
+            .controls
+            .iter()
+            .find(|(ctl, _)| ctl.id == ids::TEST_ALL)
+            .map_or(0, |(_, rect)| rect.y);
+        state.scroll = top.saturating_sub(170).max(0);
+        state.refresh();
+    }
+    save(main_hwnd(app), "52-settings-rpc-tests");
+    let mut state = app.borrow_mut();
+    state.scroll = 0;
+    state.done_return = false;
+    state.done_tested.clear();
+    state.rpc_messages.clear();
+}
+
 /// The `YubiKey` scenes (spec/10 §7, §9.2): the wizard's four steps, W12, settings → `YubiKey`
 /// and W11. No card and no key worker: the preview and the record are computed here from the
 /// public test mnemonic (`abandon`×11 `about`) — SIG = EVM 0, AUT = Bitcoin P2WPKH 0 (testnet4),
@@ -1137,6 +1194,9 @@ fn screenshot_tour() {
         false,
     );
     app.borrow_mut().tour_type("abandon");
+    // A typo in the second word (2026-11-10): marked as not in the BIP39 list, `확인` off.
+    app.borrow_mut().tour_next_field();
+    app.borrow_mut().tour_type("abilty");
     save(secret_hwnd(&app), "05-create-backup-check");
     app.borrow_mut().close_secret();
     let endpoints = {
@@ -1147,6 +1207,7 @@ fn screenshot_tour() {
     };
     set_screen(&app, UNLOCKED, Screen::Done);
     save(main_hwnd(&app), "06-create-done");
+    tour_first_setup(&app);
     app.borrow_mut().apikeys = endpoints;
     set_screen(&app, AppMode::NoVault, Screen::ImportIntro);
     save(main_hwnd(&app), "07-import-start");

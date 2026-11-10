@@ -194,6 +194,12 @@ impl App {
             Ctl::button(ids::KEY_SAVE, "키 저장"),
             Ctl::danger(ids::KEY_DELETE, "키 삭제").enabled(has_key),
         ]));
+        if form.key_deleted && !has_key {
+            items.push(Item::Banner(
+                "API 키를 지웠습니다.".to_owned(),
+                Tone::Success,
+            ));
+        }
         items.push(Item::Help(
             "로컬 모델처럼 키가 필요 없으면 비워 두세요. 키는 Windows가 이 사용자 계정에서만 풀 수 있게 암호화해 저장하고, 로그에 남기지 않습니다."
                 .to_owned(),

@@ -639,7 +639,8 @@ impl App {
             .to_ascii_lowercase();
         if !text.is_empty() && !crate::walletconnect::worker::valid_project_id(&text) {
             self.wc.notice = Some(
-                "Project ID는 32자리 16진수입니다 (Reown Cloud 대시보드의 Project ID).".to_owned(),
+                "Project ID는 32자리 16진수입니다(dashboard.reown.com 프로젝트의 Project ID)."
+                    .to_owned(),
             );
             return;
         }

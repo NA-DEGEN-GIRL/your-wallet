@@ -32,6 +32,8 @@ pub mod ids {
     pub const CLIPBOARD_CONNECT: u16 = 16_009;
     /// `다른 방법 (이미지 파일) ▸` / `접기 ▾`.
     pub const FILE_TOGGLE: u16 = 16_010;
+    /// `dashboard.reown.com 주소 복사` (copies the address, opens nothing).
+    pub const REOWN_COPY: u16 = 16_011;
     /// Session row buttons (`연결 해제`).
     pub const ROW_BASE: u16 = 16_020;
     /// Row span (the engine keeps at most 64 sessions).
@@ -49,6 +51,7 @@ pub mod ids {
         PROJECT_TOGGLE,
         CLIPBOARD_CONNECT,
         FILE_TOGGLE,
+        REOWN_COPY,
     ];
 }
 
@@ -155,6 +158,11 @@ impl App {
         ));
         items.push(Item::Subtitle("1단계: Reown Project ID 저장".to_owned()));
         self.wc_project_row(items, true);
+        // The address only goes to the clipboard: the app opens no web page (2026-11-10).
+        items.push(Item::Row(vec![Ctl::link(
+            ids::REOWN_COPY,
+            "dashboard.reown.com 주소 복사",
+        )]));
         if let Some(notice) = &self.wc.notice {
             items.push(Item::Banner(notice.clone(), Tone::Info));
         }
@@ -305,6 +313,16 @@ impl App {
                 let open = self.wc.project_open || self.wc.project_text.is_some();
                 self.wc.project_open = !open;
                 self.wc.project_text = None;
+            }
+            ids::REOWN_COPY => {
+                // Only the address string: no browser is started (2026-11-10).
+                self.copy_text("https://dashboard.reown.com");
+                if self.info.as_deref() == Some("복사했습니다.") {
+                    self.info = Some(
+                        "dashboard.reown.com 주소를 복사했습니다. 브라우저 주소창에 붙여넣으세요."
+                            .to_owned(),
+                    );
+                }
             }
             _ => {
                 let Some(offset) = id

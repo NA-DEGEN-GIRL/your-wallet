@@ -766,6 +766,70 @@ fn quicknode_fields_accept_a_pasted_endpoint_url() {
     );
 }
 
+/// 2026-11-10 (batch 1): S08 `연결하기` takes the whole `QuickNode` address from its one
+/// `ES_PASSWORD` field, empties the field, makes the template addresses without the overwrite
+/// overlay (S08 has none to overwrite) and sends only the first `RpcJob::Test` — the next one goes
+/// with its answer. With addresses there, settings' `저장하고 RPC 주소 만들기` still asks first.
+#[test]
+fn first_setup_connects_quicknode_in_one_step() {
+    use crate::apikeys::KeyName;
+    use crate::network::NetworkId;
+    use crate::workers::rpc::RpcJob;
+    const TOKEN: &str = "abcdef0123456789abcdef0123456789";
+    let tests = |rx: &std::sync::mpsc::Receiver<RpcJob>| -> Vec<NetworkId> {
+        rx.try_iter()
+            .filter_map(|job| match job {
+                RpcJob::Test { network, .. } => Some(network),
+                _ => None,
+            })
+            .collect()
+    };
+    let (mut app, dir) = unlocked_app("first-setup", false);
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.rpc_tx = Some(tx);
+    app.done_imported = true;
+    app.set_screen(Screen::Done);
+    let items = app.items();
+    assert!(ctl(&items, ids::DONE_QN_EDIT).is_some());
+    assert!(ctl(&items, ids::DONE_CONTINUE).is_some());
+    app.on_command(ids::DONE_CONNECT);
+    assert_eq!(app.done_error.as_deref(), Some("주소를 붙여넣으세요."));
+    app.controls.type_text(
+        ids::DONE_QN_EDIT,
+        &format!("https://my-node.quiknode.pro/{TOKEN}/"),
+    );
+    app.on_command(ids::DONE_CONNECT);
+    assert_eq!(app.screen, Screen::Done, "no T-RPC-GENERATE overlay");
+    assert_eq!(
+        app.controls.text(ids::DONE_QN_EDIT, 256),
+        None,
+        "the field is emptied"
+    );
+    let (targets, _) = app.generation_plan();
+    assert!(targets.len() > 2);
+    assert!(
+        targets
+            .iter()
+            .all(|network| app.apikeys.has(KeyName::Rpc(*network)))
+    );
+    assert_eq!(app.done_tested, targets);
+    assert_eq!(tests(&rx), [targets[0]], "one test at a time");
+    assert!(has_text(
+        &app.items(),
+        &format!("{}개 중 0개 작동", targets.len())
+    ));
+    app.on_rpc_event(targets[0], "RPC 주소가 작동합니다.".to_owned(), true);
+    assert_eq!(tests(&rx), [targets[1]], "the next goes with the answer");
+    assert!(has_text(
+        &app.items(),
+        &format!("✓ {}", app.network_name(targets[0]))
+    ));
+    app.set_screen(Screen::Settings(super::SettingsSection::Network));
+    app.on_command(ids::GENERATE);
+    assert_eq!(app.screen, Screen::Confirm(Confirm::Generate));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// D2 follow-up: dormant `apikeys.dpapi` entries are listed in S15 and removed only through the
 /// `보관 항목 삭제` confirmation (`ApiKeys::prune_dormant`, spec/04 §6.6).
 #[test]
@@ -2021,7 +2085,7 @@ fn zcash_missing_endpoint_is_one_line_with_the_next_step() {
     app.zec.error = Some(missing.clone());
     let items = app.items();
     assert!(!texts(&items).contains(&missing));
-    assert!(ctl(&items, ids::SECTION_NETWORK).is_some());
+    assert!(ctl(&items, ids::ZEC_RPC_OPEN).is_some());
     app.zec.error = Some("진행 중인 Zcash 거래가 있어 끌 수 없습니다.".to_owned());
     assert!(has_text(&app.items(), "진행 중인 Zcash 거래가 있어"));
     let _ = std::fs::remove_dir_all(dir);
@@ -3760,6 +3824,70 @@ fn yubikey_only_wallet_from_the_first_run_screen() {
     assert!(matches!(again.app.mode, AppMode::Unlocked { .. }));
     assert_eq!(accounts(&again), before);
     assert_eq!(again.app.card.records.len(), 1);
+}
+
+/// 2026-11-10 (batch 1): the new `YubiKey` wallet's wizard `취소` after the words were shown asks
+/// first (`Confirm::YkAbandon`) — nothing is discarded yet and `계속 만들기` returns to the wizard
+/// with the words held —; `그만두기` discards them (`YkJob::Discard`) and S01 says the paper
+/// belongs to no wallet.
+#[test]
+fn yubikey_new_wallet_cancel_after_the_words_asks_first() {
+    use crate::app_yubikey::{T_YK_WORDS_UNUSED, YkPurpose};
+    use crate::events::KeyJob;
+    use crate::ui::screens_yubikey::ids as yk;
+    use crate::workers::key::yubikey::{YkJob, YkOutcome};
+
+    let (mut h, _cards) = card_harness("yk-abandon", 8_800_041);
+    let mut seen = YkSeen::default();
+    h.app.on_command(yk::NEW_WALLET);
+    h.app.on_command(yk::NEW_WALLET_START);
+    h.submit(Purpose::YubiKey(YkPurpose::NewPassword), &[WALLET_PW]);
+    yk_pump(&mut h, &mut seen);
+    let words: Vec<String> = seen
+        .words
+        .clone()
+        .unwrap()
+        .split(' ')
+        .map(str::to_owned)
+        .collect();
+    h.app.yk_hold_complete(YkPurpose::ShowWords);
+    yk_pump(&mut h, &mut seen);
+    let answer: Vec<Vec<u8>> = seen
+        .positions
+        .take()
+        .unwrap()
+        .iter()
+        .map(|position| words[usize::from(*position) - 1].as_bytes().to_vec())
+        .collect();
+    let refs: Vec<&[u8]> = answer.iter().map(Vec::as_slice).collect();
+    h.submit(Purpose::YubiKey(YkPurpose::Backup), &refs);
+    yk_pump(&mut h, &mut seen);
+    assert_eq!(h.app.screen, Screen::YubiKey);
+    let held = |h: &mut Harness| {
+        matches!(
+            h.worker
+                .handle(KeyJob::YubiKey(YkJob::Preview {
+                    mnemonic: None,
+                    slots: Vec::new(),
+                }))
+                .pop(),
+            Some(KeyOutcome::YubiKey(YkOutcome::Preview(Ok(_))))
+        )
+    };
+    h.app.on_command(yk::WIZARD_CANCEL);
+    assert_eq!(h.app.screen, Screen::Confirm(Confirm::YkAbandon));
+    assert!(h.app.key_queue.is_empty(), "no Discard yet");
+    assert!(held(&mut h));
+    h.app.on_command(ids::CONFIRM_NO);
+    assert_eq!(h.app.screen, Screen::YubiKey);
+    assert!(h.app.card.wizard.is_some() && held(&mut h));
+    h.app.on_command(yk::WIZARD_CANCEL);
+    h.app.on_command(ids::CONFIRM_YES);
+    assert_eq!(h.app.screen, Screen::FirstRun);
+    assert!(h.app.card.wizard.is_none());
+    yk_pump(&mut h, &mut seen);
+    assert!(!held(&mut h), "the words are wiped");
+    assert!(has_text(&h.app.items(), T_YK_WORDS_UNUSED));
 }
 
 /// spec/10 §10 with spec/03 §11.3: the approval window's `YubiKey로 서명` badge (holders, touches)

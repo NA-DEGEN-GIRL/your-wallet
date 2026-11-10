@@ -978,6 +978,51 @@ $result = [ordered]@{
 [IO.File]::WriteAllText($Out, (ConvertTo-Json -InputObject $result -Depth 3 -Compress))
 `;
 
+// The interactive question (install.ps1 Confirm-IntegrityLabels with Test-Interactive and Read-Host replaced after dot-sourcing):
+// an answer that is not exactly '계속' or 'continue' is asked again twice (a keyboard left in English is the usual cause), Enter or
+// a third wrong answer cancels with exit 3 and the labels as they are; a second folder with the same key is one line, not the
+// whole list and command again.
+const LABEL_PROMPT_SCRIPT = `\uFEFFparam([string]$Script, [string]$Labelled, [string]$Answers)
+$ErrorActionPreference = 'Stop'
+. $Script
+Set-RedirectedOutputUtf8
+$script:queued = New-Object 'System.Collections.Generic.Queue[string]'
+foreach ($answer in ($Answers -split ',')) { $script:queued.Enqueue($answer) }
+function Test-Interactive { return $true }
+function Read-Host([string]$Prompt) { Write-Host 'ASKED'; return $script:queued.Dequeue() }
+Confirm-IntegrityLabels 'SOURCE' 'build' $Labelled @($Labelled) @() $false
+Confirm-IntegrityLabels 'BUILD' 'build' $Labelled @($Labelled) @() $false
+Write-Host 'PASSED'
+`;
+
+test("install.ps1 asks again for an answer that is not '계속', cancels on Enter or a third one, and repeats an accepted label in one line (Windows PowerShell 5.1)", { skip: !windows, timeout: 120_000 }, async () => {
+  await withTemp("your-wallet-install-label-ask-", async (temp) => {
+    const labelled = path.join(temp, "lowered");
+    await mkdir(labelled);
+    icacls(labelled, "/setintegritylevel", "(OI)(CI)L");
+    const helper = path.join(temp, "ask.ps1");
+    await writeFile(helper, LABEL_PROMPT_SCRIPT);
+    const ask = (answers) => runPowerShell(windowsPowerShell, ["-File", helper, "-Script", installScript, "-Labelled", labelled, "-Answers", answers], childEnv());
+    const asked = (run) => run.out.split("ASKED").length - 1;
+    let run = ask("ㅊㅐ,continue");
+    assert.equal(run.status, 0, run.out);
+    assert.equal(asked(run), 2, run.out);
+    assert.match(run.out, /'계속'이 아닙니다. 영문 상태였다면 한\/영 키를 누르세요./u);
+    assert.match(run.out, /git status/u);
+    assert.match(run.out, /BUILD에도 같은 낮은 무결성 레이블이 있습니다\(1개\) — 위에서 계속하기로 했으므로 계속합니다\./u);
+    assert.equal(run.out.split("/setintegritylevel").length - 1, 1, run.out);
+    assert.match(run.out, /PASSED/u);
+    for (const [answers, times] of [["", 1], ["a,b,c", 3]]) {
+      run = ask(answers);
+      assert.equal(run.status, 3, run.out);
+      assert.equal(asked(run), times, run.out);
+      assert.match(run.out, /설치를 취소했습니다\(레이블은 그대로입니다\)\./u);
+      assert.doesNotMatch(run.out, /PASSED/u);
+    }
+    icacls(labelled, "/setintegritylevel", "(OI)(CI)M");
+  });
+});
+
 test("install.ps1 reads integrity labels without admin rights; a Low label on the source, build or install folder stops a non-interactive run unless -AllowUnsafeSourcePath, the build folder before cargo (Windows PowerShell 5.1)", { skip: !windows, timeout: 300_000 }, async () => {
   await withTemp("your-wallet-install-label-", async (temp) => {
     const lowered = path.join(temp, "lowered");
@@ -1014,7 +1059,7 @@ test("install.ps1 reads integrity labels without admin rights; a Low label on th
     const install = (...extra) => runPowerShell(windowsPowerShell, ["-File", script, "-NoBuild", "-NoShortcut", "-NoNativeHost", "-InstallDir", installDir, ...extra], env);
     const refused = (what, labelled) => {
       assert.equal(run.status, 1, run.out);
-      assert.match(run.out, new RegExp(`${what} 에 낮은 무결성 레이블이 있습니다`, "u"));
+      assert.match(run.out, new RegExp(`${what}에 낮은 무결성 레이블이 있습니다`, "u"));
       assert.ok(run.out.includes(`icacls "${labelled}" /setintegritylevel (OI)(CI)M`), run.out);
       assert.match(run.out, /-AllowUnsafeSourcePath/u);
     };

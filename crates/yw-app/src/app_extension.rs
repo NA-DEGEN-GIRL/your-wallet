@@ -174,6 +174,13 @@ impl App {
             ids::EXT_COPY_PATH => {
                 if let Some(dir) = extension_dir() {
                     self.copy_text(&dir.display().to_string());
+                    if self.info.as_deref() == Some("복사했습니다.") {
+                        self.info = Some(
+                            "경로를 복사했습니다. 폴더 선택 창 위쪽 주소 칸에 Ctrl+V 하세요."
+                                .to_owned(),
+                        );
+                        self.refresh();
+                    }
                 }
             }
             ids::EXT_COPY_URL => {

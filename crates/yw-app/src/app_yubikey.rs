@@ -36,6 +36,7 @@ use yw_core::yubikey::record::HwKeyRecord;
 use crate::app::{App, AppMode, Confirm, PasswordAction, Purpose, Screen, SettingsSection};
 use crate::events::{KeyJob, YubiKeyJobError};
 use crate::logging;
+use crate::ui::main_window::Tone;
 use crate::ui::secret::{CardSecretKind, DisplaySecret, SecretKind};
 use crate::workers::key::yubikey::{CounterTarget, YkJob, YkOutcome, YkPreview};
 use crate::yubikey::{CardJobError, PinCounters, PinKind, PinTarget};
@@ -125,6 +126,27 @@ pub fn zec_network_for(network: BtcNetwork) -> yw_core::zec::ZecNetwork {
     } else {
         yw_core::zec::ZecNetwork::Mainnet
     }
+}
+
+/// T-YK-ABANDON: the new `YubiKey` wallet's wizard `취소` after the words were shown (2026-11-10).
+pub const T_YK_ABANDON: &str =
+    "지금 그만두면 방금 적은 복구 단어 24개는 지워지고 이 지갑에 쓰이지 않습니다.";
+/// T-YK-WORDS-UNUSED: S01's band once a new `YubiKey` wallet's shown words were discarded.
+pub const T_YK_WORDS_UNUSED: &str = "방금 적은 복구 단어 종이는 어느 지갑에도 쓰이지 않습니다. 다시 시작하면 새 단어가 나오니 그 종이에 “사용 안 함”이라고 적거나 폐기하세요.";
+/// Added to [`T_YK_WORDS_UNUSED`] when a card job may have written keys from those words.
+pub const T_YK_WORDS_ON_CARD: &str = "(YubiKey에 이미 넣은 키는 이 종이의 단어로 만든 것입니다.)";
+
+/// How far a new `YubiKey` wallet got with its words, for S01's band when they are discarded
+/// before a wallet is made from them (spec/10 §7.1-1, 2026-11-10).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum YkWords {
+    /// No new words shown (or they became a wallet).
+    #[default]
+    None,
+    /// W08 showed them (the user may have written them down).
+    Shown,
+    /// An enrolment job started writing keys made from them to a card.
+    OnCard,
 }
 
 /// What S08 says after a new `YubiKey` wallet (spec/04 §2.19): the wallet is made from new words
@@ -718,8 +740,15 @@ impl App {
             .is_some_and(|wizard| wizard.step != WizardStep::Running);
         let intro_words = self.card.wizard.is_none() && self.screen == Screen::YubiKeyWalletIntro;
         if !wizard_screen && (wizard_idle || intro_words) {
+            let new_wallet =
+                self.card.wizard.as_ref().is_none_or(|wizard| {
+                    wizard.origin == WizardOrigin::NewWallet && !wizard.created
+                });
             self.card.wizard = None;
             self.key(KeyJob::YubiKey(YkJob::Discard));
+            if new_wallet {
+                self.yk_words_dropped();
+            }
         }
         let reslot_idle = matches!(
             self.card.manage.as_ref(),
@@ -735,12 +764,41 @@ impl App {
         self.card.wizard.as_mut()
     }
 
+    /// A new `YubiKey` wallet's words were discarded: when they had been shown, S01's band says
+    /// the paper belongs to no wallet (and that a card may hold keys made from it).
+    pub(crate) fn yk_words_dropped(&mut self) {
+        let words = core::mem::take(&mut self.yk_words);
+        if words == YkWords::None {
+            return;
+        }
+        let text = if words == YkWords::OnCard {
+            format!("{T_YK_WORDS_UNUSED} {T_YK_WORDS_ON_CARD}")
+        } else {
+            T_YK_WORDS_UNUSED.to_owned()
+        };
+        if !self.banners.iter().any(|banner| banner.text == text) {
+            self.notice(text, Tone::Warn);
+        }
+    }
+
+    /// The new `YubiKey` wallet's wizard before its wallet exists (its words were shown on W08):
+    /// `취소` asks first ([`Confirm::YkAbandon`]).
+    fn yk_abandon_asks(&self) -> bool {
+        self.card.wizard.as_ref().is_some_and(|wizard| {
+            wizard.origin == WizardOrigin::NewWallet
+                && !wizard.created
+                && wizard.connect.is_none()
+                && wizard.step != WizardStep::Running
+        })
+    }
+
     /// Ends the wizard: the key worker wipes the words (and a new wallet's password).
     pub fn yk_close_wizard(&mut self) {
         let wizard = self.card.wizard.take();
         self.key(KeyJob::YubiKey(YkJob::Discard));
         let back = match wizard {
             Some(wizard) if wizard.origin == WizardOrigin::NewWallet && !wizard.created => {
+                self.yk_words_dropped();
                 Screen::FirstRun
             }
             Some(wizard) if wizard.created => {
@@ -956,6 +1014,11 @@ impl App {
         };
         wizard.step = WizardStep::Running;
         wizard.failure = None;
+        // A new wallet's card may now hold keys from the words shown (S01's band if dropped).
+        let writes_new_words = wizard.origin == WizardOrigin::NewWallet
+            && !wizard.created
+            && !wizard.adopt
+            && wizard.connect.is_none();
         // The keys shown at step (d) were confirmed for destruction (checked in `yk_import`).
         let overwrite = !wizard.adopt
             && wizard.overwrite_ack
@@ -970,6 +1033,9 @@ impl App {
             admin_last_try,
             overwrite,
         };
+        if writes_new_words {
+            self.yk_words = YkWords::OnCard;
+        }
         self.card.enrol = Some(crate::app_card::EnrolState::Running);
         logging::info("app", "yubikey.enrol_start", &[]);
         self.key(KeyJob::YubiKey(job));
@@ -1132,9 +1198,11 @@ impl App {
     pub(crate) fn yk_cancel(&mut self, purpose: YkPurpose) {
         match purpose {
             YkPurpose::NewPassword | YkPurpose::ShowWords | YkPurpose::Backup => {
-                // The new wallet is abandoned: the worker wipes the words and the password.
+                // The new wallet is abandoned: the worker wipes the words and the password; S01
+                // says the paper of words already shown belongs to no wallet.
                 self.key(KeyJob::YubiKey(YkJob::Discard));
                 self.card.wizard = None;
+                self.yk_words_dropped();
                 self.set_screen(Screen::FirstRun);
             }
             YkPurpose::Mnemonic | YkPurpose::Passphrase => {
@@ -1174,6 +1242,9 @@ impl App {
     pub(crate) fn yk_hold_complete(&mut self, purpose: YkPurpose) {
         self.close_secret();
         if purpose == YkPurpose::ShowWords {
+            if self.yk_words == YkWords::None {
+                self.yk_words = YkWords::Shown;
+            }
             self.key(KeyJob::YubiKey(YkJob::Challenge));
         }
         self.refresh();
@@ -1623,6 +1694,11 @@ impl App {
                         copy_allowed: self.settings.allow_secret_copy,
                     },
                 );
+                if self.secret_purpose() == Some(Purpose::YubiKey(YkPurpose::ShowWords))
+                    && self.yk_words == YkWords::None
+                {
+                    self.yk_words = YkWords::Shown;
+                }
             }
             YkOutcome::Words(Err(error)) => {
                 self.banner(None, failure_text(error));
@@ -1651,6 +1727,9 @@ impl App {
             }
             YkOutcome::WordsConfirmed(Ok(true)) => {
                 self.close_secret();
+                if self.yk_words == YkWords::None {
+                    self.yk_words = YkWords::Shown;
+                }
                 let mut wizard = YkWizard::new(WizardOrigin::NewWallet, &[], self.yk_network());
                 wizard.seed_held = true;
                 self.card.wizard = Some(wizard);
@@ -1745,7 +1824,9 @@ impl App {
             _ => false,
         };
         if created {
-            // The YubiKey wallet exists and is open (`create_with_hardware`).
+            // The YubiKey wallet exists and is open (`create_with_hardware`): its words are now
+            // that wallet's backup.
+            self.yk_words = YkWords::None;
             self.set_mode(AppMode::Unlocked {
                 alt_passphrase: false,
             });
@@ -1796,6 +1877,7 @@ impl App {
         if away && self.card.wizard.is_some() {
             self.card.wizard = None;
             self.key(KeyJob::YubiKey(YkJob::Discard));
+            self.yk_words_dropped();
             return;
         }
         let Some(wizard) = self.card.wizard.as_mut() else {
@@ -2110,6 +2192,10 @@ impl App {
             }
             ids::PLAN_NEXT => self.yk_plan_next(),
             ids::FINISH | ids::ANOTHER if self.yk_pins_first() => self.refresh(),
+            // The words of a new wallet are not dropped on one click: asked first (2026-11-10).
+            ids::WIZARD_CANCEL if self.yk_abandon_asks() => {
+                self.set_screen(Screen::Confirm(Confirm::YkAbandon));
+            }
             ids::WIZARD_CANCEL | ids::FINISH => self.yk_close_wizard(),
             ids::IDENTIFY_AGAIN => self.yk_identify_again(),
             ids::PIN_NEEDED_OPEN => {

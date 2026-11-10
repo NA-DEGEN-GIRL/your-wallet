@@ -576,6 +576,15 @@ pub const T_YK_PIN_NEEDED: &str =
 
 /// The wizard's step labels (S21).
 pub const WIZARD_STEPS: [&str; 4] = ["키·슬롯 고르기", "확인", "자격 정보", "결과"];
+/// The new `YubiKey` wallet's five steps (S20, its secret windows' head, the wizard's head and
+/// the result's PIN card; 2026-11-10 — it said n/3 and seemed to end at the backup check).
+pub const YK_WALLET_STEPS: [&str; 5] = [
+    "비밀번호",
+    "복구 단어 적기",
+    "백업 확인",
+    "YubiKey에 넣기",
+    "PIN 정하기",
+];
 /// T-YK-LIST (settings → `YubiKey`).
 pub const T_YK_LIST: &str = "YubiKey 계정은 복구 단어에서 만든 키를 YubiKey에 넣어 두고, 서명할 때마다 YubiKey에서 PIN과 터치로 서명합니다. 이 PC에는 공개키·주소·슬롯 표만 있습니다. 같은 키를 여러 YubiKey에 넣어 서로의 백업으로 쓸 수 있습니다(최대 8개).";
 /// T-YK-MNEMONIC-WALLET: the recommendation in a wallet that stores its words.
@@ -673,16 +682,15 @@ impl App {
     /// S20: what the new `YubiKey` wallet is, before W01.
     pub fn yk_wallet_intro(items: &mut Vec<Item>) {
         items.push(Item::Title("YubiKey 지갑 만들기".to_owned()));
-        items.push(crate::ui::screens::steps(
-            crate::ui::screens::CREATE_STEPS,
-            0,
-        ));
+        items.push(crate::ui::screens::steps(YK_WALLET_STEPS, 0));
         items.push(Item::CardStart(Some("시작하기 전에".to_owned())));
         for line in [
             "· 종이와 펜, YubiKey를 준비하세요. 새 복구 단어 24개를 한 번 보여 드립니다.",
             "· 복구 단어는 이 PC에 저장하지 않습니다. 적은 종이가 이 지갑의 유일한 백업입니다.",
             "· 단어 4개로 바르게 적었는지 확인한 뒤, YubiKey에 넣을 키를 고르고 가져옵니다.",
             "· 같은 단어로 백업 YubiKey를 바로 더 등록할 수 있습니다(마칠 때까지 메모리에만 있음).",
+            "· OpenPGP 관리자 PIN(새 카드는 12345678)이 필요합니다.",
+            "· 10분쯤 걸리고, 중간에 유휴 한도(기본 10분) 넘게 입력이 없으면 처음부터 다시 합니다.",
         ] {
             items.push(Item::Text(line.to_owned()));
         }
@@ -844,6 +852,10 @@ impl App {
         if let Some(form) = wizard.connect.as_deref() {
             self.yk_connect_screen(wizard, form, items);
             return;
+        }
+        if wizard.origin == WizardOrigin::NewWallet && !wizard.created {
+            // Steps 1–3 were the secret windows (2026-11-10).
+            items.push(Item::Help("4/5단계 · YubiKey에 넣기".to_owned()));
         }
         items.push(Item::Title(match wizard.origin {
             WizardOrigin::NewWallet => "YubiKey 지갑 만들기 — YubiKey 등록".to_owned(),
@@ -1069,6 +1081,13 @@ impl App {
                     .to_owned(),
                 Tone::Success,
             ));
+        }
+        if self.card.records.is_empty() {
+            // The defaults of a first card (`YkWizard::new`, spec/10 §3.1), 2026-11-10.
+            items.push(Item::Text(format!(
+                "처음이면 기본 선택 그대로 다음을 눌러도 됩니다(SIG: EVM 계정 0 · AUT: {} 네이티브 세그윗 주소 0 · PIV: Solana 계정 1개(인덱스 0부터) · 터치: 항상).",
+                self.yk_network().display_name()
+            )));
         }
         self.yk_backup_items(wizard, items);
         if wizard.backup_of.is_none() {
@@ -1504,6 +1523,17 @@ impl App {
         items.push(Item::CardStart(Some(format!(
             "기본값 변경 / PIN 설정 — YubiKey #{serial}"
         ))));
+        // The last step of a new YubiKey wallet (2026-11-10).
+        if self.card.wizard.as_ref().is_some_and(|wizard| {
+            wizard.created
+                && wizard.connect.is_none()
+                && wizard
+                    .enrolled
+                    .as_ref()
+                    .is_some_and(|enrolled| enrolled.record.serial == serial)
+        }) {
+            items.push(Item::Help("5/5단계 · PIN 정하기".to_owned()));
+        }
         for line in crate::app_card::defaults_lines(self.yk_pin_defaults(serial)) {
             items.push(Item::Banner(line, Tone::Warn));
         }

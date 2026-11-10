@@ -59,7 +59,7 @@ use crate::workers::journal::btc::{
 use crate::workers::rpc::RpcJob;
 
 /// Fixed text of the import screen (spec/08 §1.2).
-pub const BTC_IMPORT_NOTE: &str = "Bitcoin은 네이티브 세그윗(bc1q…, BIP84) 계정 0을 먼저 찾습니다. 탭루트·호환 세그윗·레거시 주소는 Bitcoin 탭의 [계정 추가]로 더하세요";
+pub const BTC_IMPORT_NOTE: &str = "Bitcoin은 네이티브 세그윗(bc1q…, BIP84) 계정 0을 먼저 찾습니다. 탭루트·호환 세그윗·레거시 주소는 Bitcoin 탭의 “계정 추가”로 더하세요.";
 /// Refresh / tracking period while unlocked (spec/08 §4.7, §12.2).
 pub const BTC_TICK_MS: u64 = BTC_POLL_SECS * 1_000;
 /// Activity rows shown.
@@ -1131,8 +1131,8 @@ pub struct BtcUi {
     pub result: Option<Txid>,
     /// Open confirmation overlay.
     pub confirm: Option<BtcConfirm>,
-    /// Esplora settings `테스트` messages per network.
-    pub esplora_tests: Vec<(BtcNetwork, String, bool)>,
+    /// Esplora settings `테스트` messages per network (testing, works, failed).
+    pub esplora_tests: Vec<(BtcNetwork, String, crate::app::TestState)>,
     /// Settings message (E-BTC-006, E-KEY-005, refusals).
     pub settings_message: Option<String>,
     /// `check_chain` step 3 passed in this session (a refresh or discovery succeeded).
@@ -1757,16 +1757,17 @@ impl BtcUi {
         };
         let base = validate_esplora_url(candidate).and_then(|value| HttpsUrl::parse(&value).ok());
         let Some(base) = base else {
-            self.set_esplora_test(net, ErrorCode::Btc006.text(), false);
+            self.set_esplora_test(net, ErrorCode::Btc006.text(), crate::app::TestState::Failed);
             return Vec::new();
         };
-        self.set_esplora_test(net, "테스트 중…".to_owned(), false);
+        // An information band while it runs, not an error (2026-11-10).
+        self.set_esplora_test(net, "테스트 중…".to_owned(), crate::app::TestState::Testing);
         vec![btc_job(BtcRpcJob::EsploraTest { net, base })]
     }
 
-    fn set_esplora_test(&mut self, net: BtcNetwork, message: String, ok: bool) {
+    fn set_esplora_test(&mut self, net: BtcNetwork, message: String, state: crate::app::TestState) {
         self.esplora_tests.retain(|(known, ..)| *known != net);
-        self.esplora_tests.push((net, message, ok));
+        self.esplora_tests.push((net, message, state));
     }
 
     /// The Core URL of a network changed (`네트워크 URL`): reset the sessions.
@@ -3265,7 +3266,15 @@ impl BtcUi {
     pub fn on_rpc_event(&mut self, ctx: &BtcCtx<'_>, event: BtcRpcEvent) -> Vec<BtcAction> {
         match event {
             BtcRpcEvent::EsploraTest { net, message, ok } => {
-                self.set_esplora_test(net, message, ok);
+                self.set_esplora_test(
+                    net,
+                    message,
+                    if ok {
+                        crate::app::TestState::Works
+                    } else {
+                        crate::app::TestState::Failed
+                    },
+                );
                 Vec::new()
             }
             BtcRpcEvent::Progress { job, checked } => {

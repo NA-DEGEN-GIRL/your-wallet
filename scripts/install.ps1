@@ -520,13 +520,18 @@ function Get-IntegrityLabelProblems([string[]]$Paths, [string[]]$Trees) {
 }
 
 # 레이블 확인: 문제가 있으면 목록·이유와 되돌리는 명령($Root 기준)을 출력한다(레이블은 바꾸지 않는다). $Allow
-# (-AllowUnsafeSourcePath)면 경고 후 계속, 대화형이면 '계속'을 정확히 입력해야 계속(그 밖의 입력은 종료 3), 비대화형이면 종료 1.
-# 같은 $Key로 이미 '계속'을 받았으면 다시 묻지 않는다(소스와 빌드 폴더는 'build', 설치 폴더는 'install').
+# (-AllowUnsafeSourcePath)면 경고 후 계속, 대화형이면 '계속'(또는 continue)을 정확히 입력해야 계속, 비대화형이면 종료 1.
+# 다른 입력은 두 번까지 다시 묻고(한/영 상태가 흔한 원인), Enter만 누르거나 세 번째도 다르면 종료 3.
+# 같은 $Key로 이미 '계속'을 받았으면 목록·설명 없이 한 줄만 쓰고 계속한다(소스와 빌드 폴더는 'build', 설치 폴더는 'install').
 $script:LabelAccepted = @{}
 function Confirm-IntegrityLabels([string]$What, [string]$Key, [string]$Root, [string[]]$Paths, [string[]]$Trees, [bool]$Allow) {
     $problems = Get-IntegrityLabelProblems $Paths $Trees
     if ($problems.Count -eq 0) { return }
-    Write-Host "  $What 에 낮은 무결성 레이블이 있습니다:" -ForegroundColor Yellow
+    if ($script:LabelAccepted.ContainsKey($Key)) {
+        Write-Warn "${What}에도 같은 낮은 무결성 레이블이 있습니다($($problems.Count)개) — 위에서 계속하기로 했으므로 계속합니다."
+        return
+    }
+    Write-Host "  ${What}에 낮은 무결성 레이블이 있습니다:" -ForegroundColor Yellow
     foreach ($problem in @($problems | Select-Object -First 10)) { Write-Host "    - $problem" }
     if ($problems.Count -gt 10) { Write-Host "    - 그 밖에 $($problems.Count - 10)개" }
     Write-Host '  이 레이블은 보통 다른 도구(샌드박스·에디터 확장 등)가 붙인 것입니다. 레이블이 있으면 브라우저 샌드박스 같은 낮은 무결성'
@@ -534,19 +539,20 @@ function Confirm-IntegrityLabels([string]$What, [string]$Key, [string]$Root, [st
     Write-Host '  설치 프로그램은 레이블을 바꾸지 않습니다. 직접 붙인 것이 아니면 다음 명령으로 보통 수준(Medium)으로 되돌린 뒤 다시'
     Write-Host '  실행하세요(하위 항목에 따로 붙은 레이블이 남으면 끝에 /T를 붙입니다):'
     Write-Host "    icacls `"$Root`" /setintegritylevel (OI)(CI)M"
-    if ($script:LabelAccepted.ContainsKey($Key)) {
-        Write-Warn '위에서 이미 계속하기로 했습니다.'
-        return
-    }
     if ($Allow) {
         Write-Warn '-AllowUnsafeSourcePath: 레이블을 그대로 두고 계속합니다. 낮은 무결성 프로세스가 파일을 바꿔 두었다면 그대로 빌드·설치됩니다.'
         return
     }
     if (-not (Test-Interactive)) {
-        Stop-Install 1 "낮은 무결성 레이블이 있는 $What 로는 설치하지 않습니다(비대화형이라 물을 수 없습니다). 위 명령으로 레이블을 되돌린 뒤 다시 실행하거나, 위험을 이해했으면 -AllowUnsafeSourcePath로 실행하세요."
+        Stop-Install 1 "낮은 무결성 레이블이 있는 ${What}로는 설치하지 않습니다(비대화형이라 물을 수 없습니다). 위 명령으로 레이블을 되돌린 뒤 다시 실행하거나, 위험을 이해했으면 -AllowUnsafeSourcePath로 실행하세요."
     }
-    $answer = "$(Read-Host "  그래도 계속하려면 '계속'을 입력하세요(그 밖의 입력 = 설치 취소)")".Trim()
-    if ($answer -cne '계속') { Stop-Install 3 '설치를 취소했습니다. 레이블을 되돌린 뒤 다시 실행하세요.' }
+    Write-Host '  계속하기 전에 저장소에서 git status로 내가 바꾸지 않은 파일·새 파일이 없는지 확인하세요.'
+    for ($try = 1; $try -le 3; $try++) {
+        $answer = "$(Read-Host "  그래도 계속하려면 '계속'(또는 continue)을 입력하세요(Enter만 누르면 설치 취소)")".Trim()
+        if ($answer -ceq '계속' -or $answer -ceq 'continue') { break }
+        if ($answer -eq '' -or $try -eq 3) { Stop-Install 3 '설치를 취소했습니다(레이블은 그대로입니다).' }
+        Write-Host "  '계속'이 아닙니다. 영문 상태였다면 한/영 키를 누르세요. '계속'(또는 continue)을 입력하면 계속, Enter만 누르면 취소합니다." -ForegroundColor Yellow
+    }
     $script:LabelAccepted[$Key] = $true
     Write-Warn '레이블을 그대로 두고 계속합니다.'
 }
@@ -1921,7 +1927,7 @@ function Invoke-Install {
     Write-Host ''
     $runHint = '시작 메뉴 → Your Wallet'
     if ($NoShortcut) { $runHint = $appExe }
-    Write-Host "[실행] $runHint. 처음이면 지갑 만들기(24단어 종이 백업) → 설정 → 네트워크(RPC). 자세한 안내: docs\install.ko.md"
+    Write-Host "[실행] $runHint. 첫 화면에서 새로 만들거나 쓰던 지갑(복구 단어·개인키·YubiKey)을 연 뒤 설정 → 네트워크(RPC). 자세한 안내: docs\install.ko.md"
     Write-Host '[업데이트] 저장소 폴더에서 git pull 후 install.cmd를 다시 실행합니다(ZIP으로 받았다면 새 ZIP의 install.cmd).'
     Write-Host '[제거] 저장소의 uninstall.cmd. 지갑 데이터는 지우지 않습니다.'
     Write-Host "지갑 데이터와 로그: $dataDir\v3"

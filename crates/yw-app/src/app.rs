@@ -3,7 +3,9 @@
 //! handler that cannot borrow it (re-entrant synchronous message) falls back to the default
 //! processing, and the yw-win trampoline has already applied the secret-message block list.
 
+use core::fmt::Write as _;
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
@@ -238,6 +240,71 @@ pub enum Confirm {
     RemoveImported,
     /// Remove a `YubiKey` record (`CardUi::remove_target`, spec/10 §7.5).
     RemoveYubiKey,
+    /// A network row's `삭제` in settings → 네트워크(RPC) (2026-11-10: the stored address cannot
+    /// be shown again).
+    RpcUrlDelete(NetworkId),
+    /// `자격 정보 삭제` of the selected RPC provider.
+    TemplateDelete,
+    /// The AI explanation's `키 삭제`.
+    LlmKeyDelete,
+    /// The new `YubiKey` wallet's wizard `취소` after the words were shown (spec/10 §7.1-1).
+    YkAbandon,
+}
+
+/// The state of an endpoint `테스트` (settings → 네트워크(RPC) rows, Bitcoin's Esplora URL):
+/// drawn as an information, success or error band (spec/04 §2.11.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TestState {
+    /// Sent (or waiting for its turn), no answer yet.
+    Testing,
+    /// The endpoint answered for the right network (T-RPC-OK).
+    Works,
+    /// Any failure (its code is in the text).
+    Failed,
+}
+
+impl TestState {
+    /// The band tone: information while testing, success, error.
+    #[must_use]
+    pub const fn tone(self) -> Tone {
+        match self {
+            Self::Testing => Tone::Info,
+            Self::Works => Tone::Success,
+            Self::Failed => Tone::Danger,
+        }
+    }
+}
+
+/// Endpoint tests run one at a time (spec/04 §2.11.1): the RPC worker is FIFO, so a batch sent
+/// at once would hold balance and send jobs behind it. The next `RpcJob::Test` goes when the
+/// previous one's answer arrives.
+#[derive(Debug, Default)]
+pub struct RpcTests {
+    /// Networks waiting for their turn (no duplicates).
+    pub waiting: VecDeque<NetworkId>,
+    /// The one test the worker has now.
+    pub running: Option<NetworkId>,
+    /// Tests of this run of the queue that answered, and all of them (`테스트 중 3/11`).
+    pub done: usize,
+    /// See [`RpcTests::done`].
+    pub total: usize,
+}
+
+impl RpcTests {
+    /// Whether tests are queued or running.
+    #[must_use]
+    pub fn busy(&self) -> bool {
+        self.running.is_some() || !self.waiting.is_empty()
+    }
+}
+
+/// A completion band after a confirmed removal in settings → 네트워크(RPC).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RpcRemoved {
+    /// A network's address (its row).
+    Url(NetworkId),
+    /// The provider credentials (the `RPC 공급자` card).
+    Template,
 }
 
 /// Screens S01–S15 (M3 subset).
@@ -613,7 +680,11 @@ pub struct App {
     pub(crate) rename: Option<EvmAccountPref>,
     pub(crate) pending_remove: Option<RecordId>,
     pub(crate) replace_target: Option<NetworkId>,
-    pub(crate) rpc_messages: Vec<(NetworkId, String, bool)>,
+    pub(crate) rpc_messages: Vec<(NetworkId, String, TestState)>,
+    /// Endpoint tests waiting or running (one at a time).
+    pub(crate) rpc_tests: RpcTests,
+    /// The completion band of a confirmed removal (a row's address, the credentials).
+    pub(crate) rpc_removed: Option<RpcRemoved>,
     pub(crate) passphrase_session: bool,
     /// `unlock` reported `PayloadCorrupt` (spec/02 §6.3): the header is intact, so a reload
     /// reports `Locked`; this keeps S09 (and `.prev` recovery) until a session opens.
@@ -634,6 +705,15 @@ pub struct App {
     pub(crate) activity_all: bool,
     /// S08 follows a new `YubiKey` wallet (spec/04 §2.19): what its completion banner says.
     pub(crate) done_yubikey: Option<crate::app_yubikey::YkDone>,
+    /// Settings → 네트워크(RPC) or S13 was opened from S08's '처음 설정' card: their back link is
+    /// `← 처음 설정으로` (spec/04 §2.3). Cleared with the other S08 flags.
+    pub(crate) done_return: bool,
+    /// The networks S08 `연결하기` made addresses for: their result lines on S08.
+    pub(crate) done_tested: Vec<NetworkId>,
+    /// S08's address field: what was wrong with the last `연결하기` (empty, E-KEY-002).
+    pub(crate) done_error: Option<String>,
+    /// How far a new `YubiKey` wallet got with its words: S01's band when they are discarded.
+    pub(crate) yk_words: crate::app_yubikey::YkWords,
     /// While a `.prev` recovery submitted from W03 is pending or failed: the mode to return to
     /// when it fails or the window is cancelled.
     recover_return: Option<AppMode>,
@@ -743,24 +823,27 @@ fn now_ms() -> u64 {
 /// (spec/04 §2.3–§2.4).
 fn flow_step(purpose: Purpose) -> Option<SecretStep> {
     use crate::ui::screens::{CREATE_STEPS, IMPORT_STEPS};
-    let (flow, labels, current) = match purpose {
-        Purpose::CreatePassword => ("새 지갑 만들기", CREATE_STEPS, 1),
-        Purpose::ShowForBackup => ("새 지갑 만들기", CREATE_STEPS, 2),
-        Purpose::Backup => ("새 지갑 만들기", CREATE_STEPS, 3),
-        Purpose::ImportPassword => ("기존 지갑 가져오기", IMPORT_STEPS, 1),
+    use crate::ui::screens_yubikey::YK_WALLET_STEPS;
+    let (flow, labels, current): (&str, &'static [&'static str], usize) = match purpose {
+        Purpose::CreatePassword => ("새 지갑 만들기", &CREATE_STEPS, 1),
+        Purpose::ShowForBackup => ("새 지갑 만들기", &CREATE_STEPS, 2),
+        Purpose::Backup => ("새 지갑 만들기", &CREATE_STEPS, 3),
+        Purpose::ImportPassword => ("기존 지갑 가져오기", &IMPORT_STEPS, 1),
         Purpose::ImportMnemonic | Purpose::ImportPassphrase => {
-            ("기존 지갑 가져오기", IMPORT_STEPS, 2)
+            ("기존 지갑 가져오기", &IMPORT_STEPS, 2)
         }
-        Purpose::KeyStartPassword => ("개인키로 시작하기", crate::app_keys::KEY_START_STEPS, 1),
-        Purpose::KeyStartKey => ("개인키로 시작하기", crate::app_keys::KEY_START_STEPS, 2),
+        Purpose::KeyStartPassword => ("개인키로 시작하기", &crate::app_keys::KEY_START_STEPS, 1),
+        Purpose::KeyStartKey => ("개인키로 시작하기", &crate::app_keys::KEY_START_STEPS, 2),
+        // The new YubiKey wallet has five steps: the wizard is 4 and its PIN setup 5
+        // (2026-11-10; it showed n/3 and seemed to end at the backup check).
         Purpose::YubiKey(crate::app_yubikey::YkPurpose::NewPassword) => {
-            ("YubiKey 지갑 만들기", CREATE_STEPS, 1)
+            ("YubiKey 지갑 만들기", &YK_WALLET_STEPS, 1)
         }
         Purpose::YubiKey(crate::app_yubikey::YkPurpose::ShowWords) => {
-            ("YubiKey 지갑 만들기", CREATE_STEPS, 2)
+            ("YubiKey 지갑 만들기", &YK_WALLET_STEPS, 2)
         }
         Purpose::YubiKey(crate::app_yubikey::YkPurpose::Backup) => {
-            ("YubiKey 지갑 만들기", CREATE_STEPS, 3)
+            ("YubiKey 지갑 만들기", &YK_WALLET_STEPS, 3)
         }
         _ => return None,
     };
@@ -769,6 +852,21 @@ fn flow_step(purpose: Purpose) -> Option<SecretStep> {
         labels,
         current,
     })
+}
+
+/// What W08's countdown adds on a first display (`다 적었습니다`, spec/04 §4.9): where the words
+/// can be seen again after the window closes, or that they are wiped (a new `YubiKey` wallet).
+const fn timeout_note(purpose: Purpose) -> Option<&'static str> {
+    match purpose {
+        Purpose::ShowForBackup => {
+            Some("(닫혀도 “복구 단어 보고 백업 확인”으로 다시 볼 수 있습니다)")
+        }
+        Purpose::YubiKey(crate::app_yubikey::YkPurpose::ShowWords) => {
+            Some("(닫히면 이 단어는 지워집니다)")
+        }
+        Purpose::Mnemonics(_) => Some("(설정 → 복구 단어에서 다시 볼 수 있습니다)"),
+        _ => None,
+    }
 }
 
 fn eip55(address: &Address) -> String {
@@ -875,6 +973,8 @@ impl App {
             pending_remove: None,
             replace_target: None,
             rpc_messages: Vec::new(),
+            rpc_tests: RpcTests::default(),
+            rpc_removed: None,
             passphrase_session: false,
             payload_damaged: false,
             unlock_failed: false,
@@ -882,6 +982,10 @@ impl App {
             prev_on_disk: false,
             done_imported: false,
             done_yubikey: None,
+            done_return: false,
+            done_tested: Vec::new(),
+            done_error: None,
+            yk_words: crate::app_yubikey::YkWords::None,
             hidden_open: false,
             activity_all: false,
             recover_return: None,
@@ -1107,6 +1211,19 @@ impl App {
             self.book.prompt = None;
             self.book.saved = None;
             self.book.btc_picker = false;
+        }
+        // A removal's completion band stays with its section (its confirmation returns there).
+        if !matches!(
+            screen,
+            Screen::Confirm(_) | Screen::Settings(SettingsSection::Network)
+        ) {
+            self.rpc_removed = None;
+        }
+        if !matches!(
+            screen,
+            Screen::Confirm(_) | Screen::Settings(SettingsSection::Ai)
+        ) {
+            self.llm_ui.key_deleted = false;
         }
         self.wait.screen_changed(&self.screen, &screen, now_ms());
         self.screen = screen;
@@ -1417,6 +1534,8 @@ impl App {
             "오래 입력이 없어 입력하던 비밀번호·복구 단어·개인키를 지웠습니다. 처음부터 다시 진행하세요."
                 .to_owned(),
         );
+        // Words already shown on W08: their paper belongs to no wallet now.
+        self.yk_words_dropped();
         self.set_screen(Screen::FirstRun);
     }
 
@@ -1586,6 +1705,14 @@ impl App {
         self.hold_cancel();
         self.rename = None;
         self.pending_remove = None;
+        // A new YubiKey wallet's words go with the lock (the key worker wipes them): S01 says
+        // their paper is not a wallet's.
+        self.yk_words_dropped();
+        self.done_imported = false;
+        self.done_yubikey = None;
+        self.done_return = false;
+        self.done_tested.clear();
+        self.done_error = None;
         self.keys = crate::app_keys::KeysUi::default();
         // The recovery-phrase flows: words typed for "복구 단어 추가 가져오기" (wiped on drop),
         // the preview, the quiz, the removal warning.
@@ -1694,9 +1821,22 @@ impl App {
         }
     }
 
-    fn on_rpc_event(&mut self, network: NetworkId, message: String, ok: bool) {
-        self.rpc_messages.retain(|(id, _, _)| *id != network);
-        self.rpc_messages.push((network, message, ok));
+    /// A `테스트` answer: its band, then the next queued test (one at a time).
+    pub(crate) fn on_rpc_event(&mut self, network: NetworkId, message: String, ok: bool) {
+        self.set_rpc_message(
+            network,
+            message,
+            if ok {
+                TestState::Works
+            } else {
+                TestState::Failed
+            },
+        );
+        if self.rpc_tests.running == Some(network) {
+            self.rpc_tests.running = None;
+            self.rpc_tests.done = self.rpc_tests.done.saturating_add(1);
+            self.next_rpc_test();
+        }
         self.refresh();
     }
 
@@ -2422,6 +2562,7 @@ impl App {
             (CaptureDecision::Show { .. }, Ok(window)) => {
                 let mut form = SecretForm::display(kind, now_ms(), display);
                 form.set_step(flow_step(purpose));
+                form.set_timeout_note(timeout_note(purpose));
                 self.show_secret(serial, window, form, purpose);
             }
             (CaptureDecision::Refuse(code), _) => {
@@ -2557,8 +2698,16 @@ impl App {
             FormAction::Submit(submission) => self.on_submit(purpose, submission),
             FormAction::Cancel | FormAction::TimedOut => {
                 let timed_out = matches!(action, FormAction::TimedOut);
+                // A new YubiKey wallet's W08/W10: S01's band about the unused paper says it.
+                let words_band = matches!(
+                    purpose,
+                    Purpose::YubiKey(
+                        crate::app_yubikey::YkPurpose::ShowWords
+                            | crate::app_yubikey::YkPurpose::Backup
+                    )
+                ) && self.yk_words != crate::app_yubikey::YkWords::None;
                 self.on_cancel(purpose);
-                if timed_out {
+                if timed_out && !words_band {
                     self.info = Some("시간이 지나 창을 닫았습니다.".to_owned());
                     self.refresh();
                 }
@@ -3162,8 +3311,7 @@ impl App {
             ids::LOCK => self.lock(LockReason::Manual),
             ids::DONE_CONTINUE | ids::BACK_MAIN | ids::SWITCH_ACCOUNT => {
                 self.info = None;
-                self.keys.done_start = false;
-                self.done_yubikey = None;
+                self.clear_done();
                 if self.mode == AppMode::BackupPending {
                     // `← 메인으로` from S12 during the backup check: S04 is this mode's main
                     // screen (S10, and a `Processing` wait for it, never come in this mode).
@@ -3212,8 +3360,41 @@ impl App {
             ids::OPEN_SETTINGS | ids::SECTION_SECURITY => {
                 self.set_screen(Screen::Settings(SettingsSection::Security));
             }
-            ids::DONE_RPC | ids::SECTION_NETWORK | ids::GO_NETWORK => {
+            ids::DONE_RPC | ids::DONE_RPC_JSON | ids::DONE_WC => {
+                // S08's '처음 설정' card: the opened screen's back link returns to S08.
+                self.done_return = true;
+                if id == ids::DONE_WC {
+                    self.set_screen(Screen::Sites);
+                } else {
+                    self.set_screen(Screen::Settings(SettingsSection::Network));
+                    if id == ids::DONE_RPC_JSON {
+                        self.reveal_id(ids::RPC_IMPORT);
+                    }
+                }
+            }
+            ids::SECTION_NETWORK | ids::GO_NETWORK => {
                 self.set_screen(Screen::Settings(SettingsSection::Network));
+            }
+            ids::BACK_DONE => self.set_screen(Screen::Done),
+            ids::DONE_CONNECT => self.done_connect(),
+            ids::DONE_MAINNET => {
+                // The network chip's path (`evmChainId`), from S08's '잔액이 안 보이면' card.
+                let mut settings = self.settings.clone();
+                settings.evm_chain_id = yw_core::evm::chain::ETHEREUM_MAINNET;
+                self.save_settings(settings, "evmChainId");
+            }
+            ids::TEST_ALL => self.test_all_networks(),
+            ids::EVM_RPC_OPEN => {
+                self.open_rpc_row(NetworkId::Eip155(self.settings.evm_chain_id), true);
+            }
+            ids::SOL_RPC_OPEN => {
+                self.open_rpc_row(NetworkId::Solana(self.settings.solana.cluster), true);
+            }
+            ids::BTC_RPC_OPEN => {
+                self.open_rpc_row(NetworkId::Bitcoin(self.settings.bitcoin.network), true);
+            }
+            ids::ZEC_RPC_OPEN => {
+                self.open_rpc_row(NetworkId::Zcash(self.settings.zcash.network), true);
             }
             ids::SECTION_OTHER => self.set_screen(Screen::Settings(SettingsSection::Other)),
             ids::ADVANCED_TOGGLE => {
@@ -3315,10 +3496,24 @@ impl App {
                 self.save_settings(settings, "rpc.template");
             }
             ids::TPL_SAVE => {
-                let _ = self.save_template_credentials();
+                if self.save_template_credentials() == Ok(true) {
+                    let mut text = "템플릿 자격 정보를 저장했습니다.".to_owned();
+                    if !self.template_addresses() {
+                        // Saved, but nothing uses the credentials yet (2026-11-10).
+                        text.push_str(
+                            " RPC 주소는 아직 없습니다 — “저장하고 RPC 주소 만들기”를 누르세요.",
+                        );
+                    }
+                    self.info = Some(text);
+                }
                 self.refresh();
             }
-            ids::TPL_DELETE => self.delete_template_credentials(),
+            ids::TPL_DELETE => {
+                // The stored value cannot be shown again: asked first (2026-11-10).
+                if self.template_stored() {
+                    self.set_screen(Screen::Confirm(Confirm::TemplateDelete));
+                }
+            }
             ids::GENERATE => self.begin_generate(),
             ids::PRUNE_DORMANT => {
                 if !self.apikeys.dormant_names().is_empty() {
@@ -3416,6 +3611,16 @@ impl App {
             return;
         }
         if let Some(offset) = id
+            .checked_sub(ids::RPC_ROW_OPEN_BASE)
+            .filter(|offset| *offset < ids::RPC_ROW_OPEN_SPAN)
+        {
+            // A failed network named on S08 or in the RPC summary: its row (spec/04 §2.11.1).
+            if let Some(network) = self.url_networks().get(usize::from(offset)).copied() {
+                self.open_rpc_row(network, false);
+            }
+            return;
+        }
+        if let Some(offset) = id
             .checked_sub(ids::ROW_BASE)
             .filter(|offset| *offset < ids::ROW_SPAN)
         {
@@ -3430,17 +3635,25 @@ impl App {
                     self.refresh();
                 }
                 1 => self.test_network(network),
-                2 => {
-                    if self.apikeys.remove(KeyName::Rpc(network)) && self.save_apikeys() {
-                        logging::info("app", "rpc.url_deleted", &[("net", Field::Net(network))]);
-                        self.network_url_changed(network);
-                    }
-                    self.rpc_messages.retain(|(id, _, _)| *id != network);
-                    self.refresh();
+                // The stored address cannot be shown again: asked first (2026-11-10).
+                2 if self.apikeys.has(KeyName::Rpc(network)) => {
+                    self.set_screen(Screen::Confirm(Confirm::RpcUrlDelete(network)));
                 }
                 _ => {}
             }
         }
+    }
+
+    /// `RpcUrlDelete` confirmed: the row's address goes (E-APP-002 keeps it), with a completion
+    /// band on that row.
+    fn delete_rpc_url(&mut self, network: NetworkId) {
+        if self.apikeys.remove(KeyName::Rpc(network)) && self.save_apikeys() {
+            logging::info("app", "rpc.url_deleted", &[("net", Field::Net(network))]);
+            self.network_url_changed(network);
+            self.rpc_removed = Some(RpcRemoved::Url(network));
+            self.rpc_tests.waiting.retain(|waiting| *waiting != network);
+        }
+        self.rpc_messages.retain(|(id, _, _)| *id != network);
     }
 
     /// Networks in the URL list (spec/04 §2.11.1 order).
@@ -3717,15 +3930,17 @@ impl App {
         out
     }
 
-    /// `저장` of the template credentials (spec/04 §2.11): E-KEY-002 with the item name.
-    fn save_template_credentials(&mut self) -> Result<(), ErrorCode> {
+    /// `자격 정보만 저장` (and the first step of `저장하고 RPC 주소 만들기`) of the template
+    /// credentials (spec/04 §2.11): `Ok(true)` saved, `Ok(false)` the fields were empty (nothing
+    /// to save); E-KEY-002 with the item name (its text is in the information band) or E-APP-002.
+    fn save_template_credentials(&mut self) -> Result<bool, ErrorCode> {
         use crate::ui::screens::ids;
         match self.settings.rpc_template {
             RpcTemplate::QuickNode => {
                 let name = self.read_wiping(ids::QN_NAME_EDIT, TOKEN_MAX_UNITS);
                 let token = self.read_wiping(ids::QN_TOKEN_EDIT, TOKEN_MAX_UNITS);
                 match quicknode_input(&name, &token) {
-                    Ok(None) => return Ok(()),
+                    Ok(None) => return Ok(false),
                     Ok(Some((name, token))) => self.apikeys.set_quicknode(&name, &token),
                     Err(text) => {
                         self.info = Some(text);
@@ -3736,7 +3951,7 @@ impl App {
             RpcTemplate::Alchemy => {
                 let key = self.read_wiping(ids::ALCHEMY_KEY_EDIT, TOKEN_MAX_UNITS);
                 if key.is_empty() {
-                    return Ok(());
+                    return Ok(false);
                 }
                 if !valid_provider_token(key.trim()) {
                     self.info = Some(key002_text("알케미 키"));
@@ -3744,20 +3959,23 @@ impl App {
                 }
                 self.apikeys.set_alchemy(key.trim());
             }
-            RpcTemplate::Manual => return Ok(()),
+            RpcTemplate::Manual => return Ok(false),
         }
         self.controls.clear_text(ids::QN_NAME_EDIT);
         self.controls.clear_text(ids::QN_TOKEN_EDIT);
         self.controls.clear_text(ids::ALCHEMY_KEY_EDIT);
-        if self.save_apikeys() {
-            logging::info(
-                "app",
-                "tpl.saved",
-                &[("template", Field::Word(self.settings.rpc_template.as_str()))],
-            );
-            self.info = Some("템플릿 자격 정보를 저장했습니다.".to_owned());
+        if !self.save_apikeys() {
+            return Err(ErrorCode::App002);
         }
-        Ok(())
+        logging::info(
+            "app",
+            "tpl.saved",
+            &[("template", Field::Word(self.settings.rpc_template.as_str()))],
+        );
+        if self.rpc_removed == Some(RpcRemoved::Template) {
+            self.rpc_removed = None;
+        }
+        Ok(true)
     }
 
     /// `보관 항목 삭제` confirmed: drops the dormant entries and saves (a failed save reloads
@@ -3774,11 +3992,35 @@ impl App {
         }
     }
 
+    /// The stored credential of the selected template (`None` for `직접 입력`).
+    const fn template_key(&self) -> Option<KeyName> {
+        match self.settings.rpc_template {
+            RpcTemplate::QuickNode => Some(KeyName::TplQuickNode),
+            RpcTemplate::Alchemy => Some(KeyName::TplAlchemy),
+            RpcTemplate::Manual => None,
+        }
+    }
+
+    /// Whether the selected template's credentials are stored.
+    #[must_use]
+    pub fn template_stored(&self) -> bool {
+        self.template_key()
+            .is_some_and(|name| self.apikeys.has(name))
+    }
+
+    /// Whether some network the selected template can make an address for has one already.
+    #[must_use]
+    pub fn template_addresses(&self) -> bool {
+        self.generation_plan()
+            .0
+            .into_iter()
+            .any(|network| self.apikeys.has(KeyName::Rpc(network)))
+    }
+
+    /// `TemplateDelete` confirmed: the credentials go, the addresses made with them stay.
     fn delete_template_credentials(&mut self) {
-        let name = match self.settings.rpc_template {
-            RpcTemplate::QuickNode => KeyName::TplQuickNode,
-            RpcTemplate::Alchemy => KeyName::TplAlchemy,
-            RpcTemplate::Manual => return,
+        let Some(name) = self.template_key() else {
+            return;
         };
         if self.apikeys.remove(name) && self.save_apikeys() {
             logging::info(
@@ -3786,8 +4028,8 @@ impl App {
                 "tpl.deleted",
                 &[("template", Field::Word(self.settings.rpc_template.as_str()))],
             );
+            self.rpc_removed = Some(RpcRemoved::Template);
         }
-        self.refresh();
     }
 
     /// Generation targets and skipped networks for the current template.
@@ -3799,6 +4041,9 @@ impl App {
             .partition(|network| template_entry(template, *network, &self.settings).is_some())
     }
 
+    /// `저장하고 RPC 주소 만들기` (spec/04 §2.11.1): the typed credentials are saved first; the
+    /// overwrite question (T-RPC-GENERATE) comes only when a target has an address already
+    /// (2026-11-10), otherwise the addresses are made at once.
     fn begin_generate(&mut self) {
         if self.settings.rpc_template == RpcTemplate::Manual {
             return;
@@ -3812,21 +4057,67 @@ impl App {
             .credential(self.settings.rpc_template)
             .is_none()
         {
-            self.info = Some(ErrorCode::Key004.text());
+            // Nothing typed and nothing stored: what to type, not E-KEY-004.
+            self.info = Some(
+                if self.settings.rpc_template == RpcTemplate::Alchemy {
+                    "위 칸에 알케미 API 키를 넣으세요."
+                } else {
+                    "위 칸에 엔드포인트 이름과 토큰(또는 주소 전체)을 넣으세요."
+                }
+                .to_owned(),
+            );
             self.refresh();
             return;
         }
         self.overwrite_checked = false;
-        self.set_screen(Screen::Confirm(Confirm::Generate));
+        if self.template_addresses() {
+            self.set_screen(Screen::Confirm(Confirm::Generate));
+        } else {
+            self.generate_and_report();
+            self.refresh();
+        }
     }
 
-    fn generate(&mut self) {
+    /// [`App::generate`] from settings → 네트워크(RPC), with T-RPC-GENERATED: the new addresses
+    /// are being tested and their results are on the rows.
+    fn generate_and_report(&mut self) {
+        let Some(written) = self.generate() else {
+            return;
+        };
+        let skipped = self.generation_plan().1;
+        let mut text = if written.is_empty() {
+            "새로 만든 RPC 주소가 없습니다. 이미 주소가 있는 네트워크는 '기존 주소 덮어쓰기'를 켰을 때만 바꿉니다.".to_owned()
+        } else {
+            format!(
+                "RPC 주소 {}개를 만들었습니다. 연결을 확인하는 중입니다 — 결과는 아래 각 행에 나옵니다.",
+                written.len()
+            )
+        };
+        if !skipped.is_empty() {
+            let names: Vec<String> = skipped
+                .iter()
+                .map(|network| self.network_name(*network))
+                .collect();
+            let _ = write!(
+                text,
+                " 템플릿 항목이 없는 {}개는 직접 입력하세요: {}",
+                skipped.len(),
+                names.join(", ")
+            );
+        }
+        self.info = Some(text);
+    }
+
+    /// Writes the template addresses of the generation targets (a target with an address only
+    /// when `overwrite_checked`) and queues their tests: the written networks, or `None` when
+    /// nothing was saved (no credential: E-KEY-004; E-APP-002).
+    fn generate(&mut self) -> Option<Vec<NetworkId>> {
         let template = self.settings.rpc_template;
         let Some(credential) = self.apikeys.credential(template) else {
             self.info = Some(ErrorCode::Key004.text());
-            return;
+            return None;
         };
-        let (targets, skipped) = self.generation_plan();
+        let (targets, _) = self.generation_plan();
         let written = self.apikeys.generate_urls(
             template,
             &credential,
@@ -3835,27 +4126,18 @@ impl App {
             self.overwrite_checked,
         );
         drop(credential);
-        if self.save_apikeys() {
-            for network in &written {
-                logging::info("app", "rpc.generated", &[("net", Field::Net(*network))]);
-                self.rpc_messages.retain(|(id, _, _)| id != network);
-                self.network_url_changed(*network);
-            }
-            let skipped_names: Vec<String> = skipped
-                .iter()
-                .map(|network| self.network_name(*network))
-                .collect();
-            self.info = Some(format!(
-                "RPC URL {}개를 만들었습니다. 템플릿 항목이 없는 네트워크 {}개는 직접 입력하세요: {}",
-                written.len(),
-                skipped.len(),
-                if skipped_names.is_empty() {
-                    "없음".to_owned()
-                } else {
-                    skipped_names.join(", ")
-                }
-            ));
+        if !self.save_apikeys() {
+            return None;
         }
+        for network in &written {
+            logging::info("app", "rpc.generated", &[("net", Field::Net(*network))]);
+            self.rpc_messages.retain(|(id, _, _)| id != network);
+            self.network_url_changed(*network);
+        }
+        self.rpc_removed = None;
+        // Every new address is tested, one at a time (2026-11-10).
+        self.queue_rpc_tests(&written);
+        Some(written)
     }
 
     fn save_replacement(&mut self) {
@@ -3871,20 +4153,89 @@ impl App {
                     logging::info("app", "rpc.url_set", &[("net", Field::Net(network))]);
                     self.rpc_messages.retain(|(id, _, _)| *id != network);
                     self.network_url_changed(network);
+                    if self.rpc_removed == Some(RpcRemoved::Url(network)) {
+                        self.rpc_removed = None;
+                    }
+                    // The saved address is tested right away (2026-11-10).
+                    self.queue_rpc_tests(&[network]);
                 }
                 self.controls.clear_text(ids::REPLACE_EDIT);
                 self.replace_target = None;
             }
-            Err(_) => self.set_rpc_message(network, ErrorCode::Key003.text(), false),
+            Err(_) => self.set_rpc_message(network, ErrorCode::Key003.text(), TestState::Failed),
         }
         self.refresh();
     }
 
-    fn set_rpc_message(&mut self, network: NetworkId, message: String, ok: bool) {
+    pub(crate) fn set_rpc_message(
+        &mut self,
+        network: NetworkId,
+        message: String,
+        state: TestState,
+    ) {
         self.rpc_messages.retain(|(id, _, _)| *id != network);
-        self.rpc_messages.push((network, message, ok));
+        self.rpc_messages.push((network, message, state));
     }
 
+    /// Queues `테스트` of each network that has a stored address (not twice; in order) and starts
+    /// the first when none runs. A queued row reads "테스트 중…" until its answer.
+    pub(crate) fn queue_rpc_tests(&mut self, networks: &[NetworkId]) {
+        for network in networks {
+            let queued = self.rpc_tests.running == Some(*network)
+                || self.rpc_tests.waiting.contains(network);
+            if queued || self.apikeys.rpc_url(*network).is_none() {
+                continue;
+            }
+            self.rpc_tests.waiting.push_back(*network);
+            self.rpc_tests.total = self.rpc_tests.total.saturating_add(1);
+            self.set_rpc_message(*network, "테스트 중…".to_owned(), TestState::Testing);
+        }
+        self.next_rpc_test();
+    }
+
+    /// Sends the next queued test when none is running (the stored address of that moment).
+    fn next_rpc_test(&mut self) {
+        while self.rpc_tests.running.is_none() {
+            let Some(network) = self.rpc_tests.waiting.pop_front() else {
+                // The queue ran out: the next batch counts from zero.
+                self.rpc_tests.done = 0;
+                self.rpc_tests.total = 0;
+                return;
+            };
+            let Some(url) = self.apikeys.rpc_url(network) else {
+                // Deleted meanwhile.
+                self.rpc_messages.retain(|(id, _, _)| *id != network);
+                self.rpc_tests.total = self.rpc_tests.total.saturating_sub(1);
+                continue;
+            };
+            let name = self.network_name(network);
+            if self.rpc(RpcJob::Test { network, name, url }) {
+                self.rpc_tests.running = Some(network);
+            } else {
+                // No RPC worker: nothing will answer, so no row keeps "테스트 중…".
+                let waiting = core::mem::take(&mut self.rpc_tests.waiting);
+                self.rpc_messages
+                    .retain(|(id, _, _)| *id != network && !waiting.contains(id));
+                self.rpc_tests.done = 0;
+                self.rpc_tests.total = 0;
+                return;
+            }
+        }
+    }
+
+    /// `모두 테스트`: every network with an address, one at a time.
+    fn test_all_networks(&mut self) {
+        let networks: Vec<NetworkId> = self
+            .url_networks()
+            .into_iter()
+            .filter(|network| self.apikeys.has(KeyName::Rpc(*network)))
+            .collect();
+        self.queue_rpc_tests(&networks);
+        self.refresh();
+    }
+
+    /// A row's `테스트`: the typed address (the open `교체` field) is sent at once; the stored one
+    /// goes first in the queue.
     fn test_network(&mut self, network: NetworkId) {
         use crate::ui::screens::ids;
         let typed = if self.replace_target == Some(network) {
@@ -3901,16 +4252,131 @@ impl App {
                     "rpc.test",
                     &[("net", Field::Net(network)), ("result", Field::Code(code))],
                 );
-                self.set_rpc_message(network, code.text(), false);
+                self.set_rpc_message(network, code.text(), TestState::Failed);
                 self.refresh();
                 return;
             }
         };
+        if self.rpc_removed == Some(RpcRemoved::Url(network)) {
+            self.rpc_removed = None;
+        }
+        if typed.trim().is_empty() {
+            if self.rpc_tests.running != Some(network) {
+                let before = self.rpc_tests.waiting.len();
+                self.rpc_tests.waiting.retain(|waiting| *waiting != network);
+                if before == self.rpc_tests.waiting.len() {
+                    self.rpc_tests.total = self.rpc_tests.total.saturating_add(1);
+                }
+                self.rpc_tests.waiting.push_front(network);
+                self.set_rpc_message(network, "테스트 중…".to_owned(), TestState::Testing);
+                self.next_rpc_test();
+            }
+            self.refresh();
+            return;
+        }
         let name = self.network_name(network);
-        if let Some(tx) = self.rpc_tx.as_ref()
-            && tx.send(RpcJob::Test { network, name, url }).is_ok()
+        if self.rpc(RpcJob::Test { network, name, url }) {
+            self.set_rpc_message(network, "테스트 중…".to_owned(), TestState::Testing);
+        }
+        self.refresh();
+    }
+
+    /// Settings → 네트워크(RPC) with `network`'s row in view (spec/04 §2.11.1, 2026-11-10): `edit`
+    /// opens its address field (`ES_PASSWORD`) with the focus — a chain tab's `RPC 설정하기` —,
+    /// otherwise the focus goes to its `테스트` (a failed network named on S08 or in the
+    /// summary).
+    pub(crate) fn open_rpc_row(&mut self, network: NetworkId, edit: bool) {
+        use crate::ui::screens::ids;
+        let row = self
+            .url_networks()
+            .iter()
+            .position(|known| *known == network);
+        if edit && row.is_some() {
+            self.replace_target = Some(network);
+        }
+        self.set_screen(Screen::Settings(SettingsSection::Network));
+        let Some(row) = row.and_then(|row| u16::try_from(row).ok()) else {
+            return;
+        };
+        let target = if edit {
+            ids::REPLACE_EDIT
+        } else {
+            ids::ROW_BASE
+                .saturating_add(row.saturating_mul(3))
+                .saturating_add(1)
+        };
+        self.reveal_id(target);
+    }
+
+    /// Scrolls the control `id` of the current screen into view and gives it the focus.
+    pub(crate) fn reveal_id(&mut self, id: u16) {
+        if let Some(index) = self
+            .placed
+            .controls
+            .iter()
+            .position(|(ctl, _)| ctl.id == id)
         {
-            self.set_rpc_message(network, "테스트 중…".to_owned(), false);
+            self.reveal_control(index);
+            self.controls.focus_at(index);
+        }
+    }
+
+    /// Clears what S08 shows (its banners, `← 처음 설정으로`, the connect results).
+    fn clear_done(&mut self) {
+        self.done_imported = false;
+        self.keys.done_start = false;
+        self.done_yubikey = None;
+        self.done_return = false;
+        self.done_tested.clear();
+        self.done_error = None;
+    }
+
+    /// S08 `연결하기` (spec/04 §2.3, 2026-11-10): the whole `QuickNode` address from its field —
+    /// read into a wiping buffer, the field emptied at once.
+    fn done_connect(&mut self) {
+        use crate::ui::screens::ids;
+        let text = self.read_wiping(ids::DONE_QN_EDIT, TOKEN_MAX_UNITS);
+        self.controls.clear_text(ids::DONE_QN_EDIT);
+        self.done_connect_with(&text);
+    }
+
+    /// The steps of S08 `연결하기` with only existing paths: the address is split into the
+    /// endpoint name and token ([`quicknode_input`]), saved as the template credential, the
+    /// template addresses are made without overwriting (S08 shows only while there is none, so
+    /// no T-RPC-GENERATE), and each one is tested in turn; S08 lists their results.
+    fn done_connect_with(&mut self, text: &str) {
+        if self.settings.rpc_template != RpcTemplate::QuickNode {
+            return;
+        }
+        match quicknode_input(text, "") {
+            Ok(None) => {
+                self.done_error = Some("주소를 붙여넣으세요.".to_owned());
+                self.refresh();
+                return;
+            }
+            Err(message) => {
+                self.done_error = Some(message);
+                self.refresh();
+                return;
+            }
+            Ok(Some((name, token))) => {
+                self.apikeys.set_quicknode(&name, &token);
+                drop(token);
+                if !self.save_apikeys() {
+                    self.refresh();
+                    return;
+                }
+                logging::info(
+                    "app",
+                    "tpl.saved",
+                    &[("template", Field::Word(RpcTemplate::QuickNode.as_str()))],
+                );
+            }
+        }
+        self.done_error = None;
+        self.overwrite_checked = false;
+        if let Some(written) = self.generate() {
+            self.done_tested = written;
         }
         self.refresh();
     }
@@ -3989,8 +4455,25 @@ impl App {
                 );
             }
             Confirm::Generate => {
-                self.generate();
+                self.generate_and_report();
                 self.set_screen(previous);
+            }
+            Confirm::RpcUrlDelete(network) => {
+                self.delete_rpc_url(network);
+                self.set_screen(previous);
+            }
+            Confirm::TemplateDelete => {
+                self.delete_template_credentials();
+                self.set_screen(previous);
+            }
+            Confirm::LlmKeyDelete => {
+                self.set_screen(previous);
+                self.llm_delete_key();
+            }
+            Confirm::YkAbandon => {
+                // `그만두기`: the wizard ends as before (the key worker wipes the words).
+                self.screen = previous;
+                self.yk_close_wizard();
             }
             Confirm::PruneDormant => {
                 self.prune_dormant();

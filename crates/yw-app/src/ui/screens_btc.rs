@@ -453,8 +453,9 @@ impl App {
             }
             BtcGate::NoEndpoint => {
                 items.push(Item::Banner(gate.text(), Tone::Danger));
+                // That network's row with its field open (2026-11-10).
                 items.push(Item::Row(vec![Ctl::button(
-                    crate::ui::screens::ids::SECTION_NETWORK,
+                    crate::ui::screens::ids::BTC_RPC_OPEN,
                     "RPC 설정하기",
                 )]));
             }
@@ -473,7 +474,7 @@ impl App {
     fn btc_status_line(&self, ctx: &BtcCtx<'_>) -> String {
         let net = ctx.net();
         let rpc = if ctx.core_url(net).is_none() {
-            "엔드포인트 없음 (E-KEY-005)".to_owned()
+            "RPC 주소 없음 (E-KEY-005)".to_owned()
         } else if self.btc.blocked.is_some() {
             "차단됨".to_owned()
         } else if let Some(tip) = self.btc.tip {
@@ -1585,7 +1586,7 @@ impl App {
             } else {
                 format!("없음 — {}", ErrorCode::Key005.code())
             };
-            items.push(Item::Help(format!("Core 엔드포인트 {network}: {state}")));
+            items.push(Item::Help(format!("Core RPC 주소 {network}: {state}")));
         }
         items.push(Item::Row(vec![Ctl::button(
             crate::ui::screens::ids::GO_NETWORK,
@@ -1638,16 +1639,13 @@ impl App {
                 Ctl::button(default, "기본값으로"),
                 Ctl::button(test, "테스트"),
             ]));
-            if let Some((_, message, ok)) = self
+            if let Some((_, message, state)) = self
                 .btc
                 .esplora_tests
                 .iter()
                 .find(|(tested, ..)| *tested == known)
             {
-                items.push(Item::Banner(
-                    message.clone(),
-                    if *ok { Tone::Success } else { Tone::Danger },
-                ));
+                items.push(Item::Banner(message.clone(), state.tone()));
             }
         }
         items.push(Item::Help(
@@ -2040,11 +2038,11 @@ mod tests {
         assert!(control(&items, ids::SECTION_BTC).is_some());
         assert!(control(&items, ids::SEND_OPEN).is_none());
         assert!(!has_text(&items, "BITCOIN TESTNET4"));
-        // No endpoint: E-KEY-005 and `RPC 설정하기`.
+        // No endpoint: E-KEY-005 and `RPC 설정하기` (that network's row).
         let app_no_url = app(true, BtcNet::Testnet4, Some(BtcNetwork::Testnet4), false);
         let items = app_no_url.items();
         assert!(has_text(&items, &ErrorCode::Key005.text()));
-        assert!(control(&items, crate::ui::screens::ids::SECTION_NETWORK).is_some());
+        assert!(control(&items, crate::ui::screens::ids::BTC_RPC_OPEN).is_some());
         assert!(items.iter().any(|item| matches!(
             item,
             Item::Banner(text, Tone::BtcTestnet4) if text == "BITCOIN TESTNET4 — 가치 없음"
@@ -2155,10 +2153,10 @@ mod tests {
             control(&items, ids::ESPLORA_MAINNET_EDIT).map(|ctl| ctl.text),
             Some("https://mempool.space/api".to_owned())
         );
-        assert!(has_text(&items, "Core 엔드포인트 bitcoin:mainnet: 설정됨"));
+        assert!(has_text(&items, "Core RPC 주소 bitcoin:mainnet: 설정됨"));
         assert!(has_text(
             &items,
-            "Core 엔드포인트 bitcoin:testnet4: 없음 — E-KEY-005"
+            "Core RPC 주소 bitcoin:testnet4: 없음 — E-KEY-005"
         ));
         // The selected settings tab is drawn selected (Ctl::tab).
         assert_eq!(

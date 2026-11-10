@@ -282,8 +282,8 @@ impl App {
     }
 
     /// Scrolls the control at `index` (placed order) fully into view ([`reveal_offset`]); a
-    /// control that comes into view is shown by the scroll.
-    fn reveal_control(&mut self, index: usize) {
+    /// control that comes into view is shown by the scroll (also `App::open_rpc_row`).
+    pub(crate) fn reveal_control(&mut self, index: usize) {
         let Some(main) = self.main.as_ref() else {
             return;
         };

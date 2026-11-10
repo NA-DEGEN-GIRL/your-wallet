@@ -58,6 +58,8 @@ pub struct LlmUi {
     pub notice_checked: bool,
     /// Approval-window serial for LLM results.
     pub next_window: u64,
+    /// `키 삭제` was confirmed and done: the key card's completion band.
+    pub key_deleted: bool,
 }
 
 impl Default for LlmUi {
@@ -72,6 +74,7 @@ impl Default for LlmUi {
             test_running: false,
             notice_checked: false,
             next_window: 0,
+            key_deleted: false,
         }
     }
 }
@@ -260,6 +263,16 @@ impl App {
         self.refresh();
     }
 
+    /// `LlmKeyDelete` confirmed: the key goes (E-APP-002 keeps it), with a completion band.
+    pub(crate) fn llm_delete_key(&mut self) {
+        if self.apikeys.remove(KeyName::Llm) && self.save_apikeys() {
+            logging::info("llm", "llm.key_deleted", &[]);
+            self.llm_reconfigure();
+            self.llm_ui.key_deleted = true;
+        }
+        self.refresh();
+    }
+
     /// AI-section commands; `false` when `id` is not one of them.
     pub fn on_llm_command(&mut self, id: u16) -> bool {
         match id {
@@ -282,12 +295,9 @@ impl App {
             ids::TEST => self.llm_test(),
             ids::KEY_SAVE => self.llm_save_key(),
             ids::KEY_DELETE => {
-                if self.apikeys.remove(KeyName::Llm) && self.save_apikeys() {
-                    logging::info("llm", "llm.key_deleted", &[]);
-                    self.llm_reconfigure();
-                    self.llm_message("API 키를 삭제했습니다.", true);
-                } else {
-                    self.refresh();
+                // The stored key cannot be shown again: asked first (2026-11-10).
+                if self.apikeys.has(KeyName::Llm) {
+                    self.set_screen(Screen::Confirm(Confirm::LlmKeyDelete));
                 }
             }
             ids::NOTICE_CHECK => {
@@ -461,6 +471,7 @@ impl App {
         self.apikeys.set_llm(key, host.as_deref());
         if self.save_apikeys() {
             logging::info("llm", "llm.key_set", &[]);
+            self.llm_ui.key_deleted = false;
             self.llm_reconfigure();
             self.llm_message("API 키를 저장했습니다.", true);
         } else {

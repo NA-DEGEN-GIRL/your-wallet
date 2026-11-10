@@ -96,6 +96,17 @@ pub fn is_word(word: &str) -> bool {
     })
 }
 
+/// Whether some English word starts with `prefix` (the backup check's as-you-type hint, spec/04
+/// §4.2 W10): the first word not below `prefix` in list order starts with it.
+#[must_use]
+pub fn is_word_prefix(prefix: &str) -> bool {
+    wordlist().is_ok_and(|list| {
+        let at = list.partition_point(|candidate| candidate.as_bytes() < prefix.as_bytes());
+        list.get(at)
+            .is_some_and(|candidate| candidate.as_bytes().starts_with(prefix.as_bytes()))
+    })
+}
+
 /// Supported mnemonic lengths (entropy 16/20/24/28/32 bytes).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WordCount {

@@ -1196,12 +1196,32 @@ fn kind_class(kind: ControlKind) -> ControlKind {
     }
 }
 
+/// What a headless test typed into edit `id` ([`ControlSet::type_text`]).
+#[cfg(test)]
+fn typed(set: &ControlSet, id: u16) -> Option<String> {
+    set.typed
+        .borrow()
+        .iter()
+        .find(|(known, _)| *known == id)
+        .map(|(_, text)| text.clone())
+}
+
+/// Outside tests nothing is typed without a window.
+#[cfg(not(test))]
+const fn typed(_: &ControlSet, _: u16) -> Option<String> {
+    None
+}
+
 /// The main window's child controls, recreated when the set changes and moved otherwise.
 #[derive(Debug, Default)]
 pub struct ControlSet {
     controls: Vec<(Ctl, Control)>,
     /// The DPI the button badges were rendered at.
     icon_dpi: u32,
+    /// Headless tests only: what a test typed into an edit that has no window
+    /// ([`ControlSet::type_text`]); the readers and `clear_text` use it then.
+    #[cfg(test)]
+    typed: core::cell::RefCell<Vec<(u16, String)>>,
 }
 
 impl ControlSet {
@@ -1224,6 +1244,7 @@ impl ControlSet {
             .iter()
             .find(|(ctl, _)| ctl.id == id)
             .map(|(_, control)| control.text(max_units))
+            .or_else(|| typed(self, id))
     }
 
     /// Reads an edit's text into a wiping buffer (RPC tokens and URLs).
@@ -1233,6 +1254,21 @@ impl ControlSet {
             .iter()
             .find(|(ctl, _)| ctl.id == id)
             .map(|(_, control)| control.text_wiping(max_units))
+            .or_else(|| {
+                let text = typed(self, id)?;
+                let units: Vec<u16> = text.encode_utf16().take(max_units).collect();
+                let mut buffer = yw_win::mem::WipeBuf::with_capacity(units.len().max(1));
+                buffer.extend_from_slice(&units).ok()?;
+                Some(buffer)
+            })
+    }
+
+    /// Headless tests: types `text` into edit `id` (no window exists).
+    #[cfg(test)]
+    pub fn type_text(&self, id: u16, text: &str) {
+        let mut typed = self.typed.borrow_mut();
+        typed.retain(|(known, _)| *known != id);
+        typed.push((id, text.to_owned()));
     }
 
     /// Replaces a control's text (non-secret values only).
@@ -1247,6 +1283,8 @@ impl ControlSet {
         if let Some((_, control)) = self.controls.iter().find(|(ctl, _)| ctl.id == id) {
             control.set_text("");
         }
+        #[cfg(test)]
+        self.typed.borrow_mut().retain(|(known, _)| *known != id);
     }
 
     /// The index (placed order) of the control that has the keyboard focus.

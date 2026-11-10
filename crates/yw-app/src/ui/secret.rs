@@ -10,7 +10,7 @@
 //! [`SecretForm`] is window-independent: `app` forwards decoded messages and acts on the returned
 //! [`FormAction`].
 
-use yw_core::bip39::is_word;
+use yw_core::bip39::{is_word, is_word_prefix};
 use yw_core::keyimport::ImportChain;
 use yw_core::password::VaultPassword;
 use yw_core::secret::{SecretString, Zeroizing};
@@ -404,6 +404,10 @@ struct Layout {
 }
 
 /// The state of one secret window.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent flags of one window"
+)]
 pub struct SecretForm {
     kind: SecretKind,
     slots: Vec<Slot>,
@@ -427,18 +431,40 @@ pub struct SecretForm {
     step: Option<SecretStep>,
     /// Extra non-secret lines under the intro (W11: the cards holding the key, the PIN tries).
     details: Vec<String>,
+    /// W08 `create`: what the countdown line adds (where the words are seen again, or that
+    /// they are wiped).
+    timeout_note: Option<&'static str>,
+    /// W08 `create`: the countdown seconds last drawn (a tick repaints when they change).
+    countdown_secs: u64,
+    /// W10: `확인`/Enter was pressed with a word not in the list — every field counts as left
+    /// (red) until the next edit.
+    backup_left: bool,
 }
 
 /// The flow a secret window belongs to and its step (the main window's step indicator, spec/04
-/// §2.3–§2.4): the flow title, the three step labels and the current step (1-based).
+/// §2.3–§2.4): the flow title, the step labels (three; five for the new `YubiKey` wallet) and
+/// the current step (1-based).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SecretStep {
     /// 새 지갑 만들기 / 기존 지갑 가져오기.
     pub flow: &'static str,
-    /// The three step labels.
-    pub labels: [&'static str; 3],
+    /// The step labels.
+    pub labels: &'static [&'static str],
     /// Current step, 1-based.
     pub current: usize,
+}
+
+/// W10's verdict on one typed word (2026-11-10, the public BIP39 list as W05 uses it): nothing,
+/// a list word (grey), or a word that is not in the list (red; the field was left or no list word
+/// starts with it). It says nothing about the paper: only the vault compares the four words.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WordMark {
+    /// Empty, or still a beginning of some list word while typed.
+    None,
+    /// `목록에 있음`.
+    Listed,
+    /// `목록에 없는 단어`.
+    Unlisted,
 }
 
 impl core::fmt::Debug for SecretForm {
@@ -586,7 +612,7 @@ fn slots_for(kind: SecretKind) -> Vec<Slot> {
     slots.into_iter().flatten().collect()
 }
 
-fn intro(kind: SecretKind, words: usize) -> Vec<String> {
+fn intro(kind: SecretKind, words: usize, address: bool) -> Vec<String> {
     let rule = "비밀번호는 영문·숫자·기호(ASCII) 12–128자입니다. 단어 4개 이상을 이은 긴 문장을 권장합니다. 잊으면 복구 단어(니모닉)로만 복구할 수 있습니다.";
     match kind {
         SecretKind::SetPassword => vec![rule.to_owned()],
@@ -624,8 +650,10 @@ fn intro(kind: SecretKind, words: usize) -> Vec<String> {
                 T_IMPORTED_KEY_BACKUP.to_owned()
             },
         ],
+        // Without a known first address (an added phrase whose meta has none) only the words.
         SecretKind::ShowMnemonic { .. } => vec![format!(
-            "아래 {words}단어와 첫 주소를 순서대로 종이에 적으세요. 이 단어들이 지갑의 유일한 백업이며, 아는 사람은 누구든 자산을 옮길 수 있습니다. 이 창은 화면 캡처에서 제외됩니다."
+            "아래 {words}단어{}를 순서대로 종이에 적으세요. 이 단어들이 지갑의 유일한 백업이며, 아는 사람은 누구든 자산을 옮길 수 있습니다. 이 창은 화면 캡처에서 제외됩니다.",
+            if address { "와 첫 주소" } else { "" }
         )],
         SecretKind::ShowKey => vec![
             "개인키입니다. 다른 사람에게 보여주거나 사진·클라우드에 남기지 마세요. 이 창은 화면 캡처에서 제외됩니다.".to_owned(),
@@ -666,7 +694,7 @@ pub const fn valid_word_count(count: usize) -> bool {
     matches!(count, 12 | 15 | 18 | 21 | 24)
 }
 
-/// Draws the flow name, `n/3단계` and the three step dots of a secret window; returns the new y.
+/// Draws the flow name, `n/{steps}단계` and the step dots of a secret window; returns the new y.
 fn paint_steps(
     dc: &mut PaintDc<'_>,
     fonts: &Fonts,
@@ -679,13 +707,21 @@ fn paint_steps(
     dc.select_font(&fonts.caption);
     dc.set_text_color(theme::MUTED);
     dc.draw_text(
-        &wide(&format!("{} · {}/3단계", step.flow, step.current)),
+        &wide(&format!(
+            "{} · {}/{}단계",
+            step.flow,
+            step.current,
+            step.labels.len()
+        )),
         Rect::new(margin, y, width, px(18)),
         DrawFlags::LINE,
     );
     let top = y.saturating_add(px(22));
     let dot = px(20);
-    let column = width / 3;
+    let count = i32::try_from(step.labels.len()).unwrap_or(1).max(1);
+    let column = width / count;
+    // Five labels share the width: the caption font keeps each on its line.
+    let small = step.labels.len() > 3;
     for (index, label) in step.labels.iter().enumerate() {
         let number = index.saturating_add(1);
         let x = margin.saturating_add(column.saturating_mul(i32::try_from(index).unwrap_or(0)));
@@ -715,7 +751,9 @@ fn paint_steps(
             number.to_string()
         };
         dc.draw_text(&wide(&mark), Rect::new(x, top, dot, dot), DrawFlags::CENTER);
-        dc.select_font(if number == step.current {
+        dc.select_font(if small {
+            &fonts.caption
+        } else if number == step.current {
             &fonts.body_bold
         } else {
             &fonts.body
@@ -760,6 +798,9 @@ impl SecretForm {
             layout: Layout::default(),
             step: None,
             details: Vec::new(),
+            timeout_note: None,
+            countdown_secs: 0,
+            backup_left: false,
             note: matches!(kind, SecretKind::Mnemonic).then(|| {
                 "이전 지갑에서 BIP39 passphrase(25번째 단어)를 썼을 때만 켜세요. ASCII만 지원합니다.".to_owned()
             }),
@@ -777,6 +818,132 @@ impl SecretForm {
     /// Shows the flow's step indicator above the title.
     pub const fn set_step(&mut self, step: Option<SecretStep>) {
         self.step = step;
+    }
+
+    /// W08 `create`: the note after the countdown (where the words can be seen again, or that
+    /// they are wiped when the window closes).
+    pub const fn set_timeout_note(&mut self, note: Option<&'static str>) {
+        self.timeout_note = note;
+    }
+
+    /// W10: the list verdict of field `index` ([`WordMark`]).
+    #[must_use]
+    pub fn word_mark(&self, index: usize) -> WordMark {
+        let Some(slot) = self.slots.get(index) else {
+            return WordMark::None;
+        };
+        let Ok(word) = core::str::from_utf8(slot.field.as_bytes()) else {
+            return WordMark::Unlisted;
+        };
+        if word.is_empty() {
+            return WordMark::None;
+        }
+        if is_word(word) {
+            return WordMark::Listed;
+        }
+        let left = self.backup_left || index != self.active;
+        if left || !is_word_prefix(word) {
+            WordMark::Unlisted
+        } else {
+            WordMark::None
+        }
+    }
+
+    /// W10: the first field whose word is not in the list (its 1-based word position).
+    fn unlisted_position(&self) -> Option<u8> {
+        let SecretKind::Backup { positions } = self.kind else {
+            return None;
+        };
+        (0..self.slots.len())
+            .find(|index| self.word_mark(*index) == WordMark::Unlisted)
+            .and_then(|index| positions.get(index).copied())
+    }
+
+    /// W01/W04 (2026-11-10): whether the new password meets the rule (`VaultPassword::new`, the
+    /// same check as the vault's) and whether the two new fields are equal — each `None` (grey)
+    /// while its field is empty. Never the value or its characters.
+    fn password_checks(&self) -> Option<(Option<bool>, Option<bool>)> {
+        let (new, again) = match self.kind {
+            SecretKind::SetPassword => (0, 1),
+            SecretKind::ChangePassword => (1, 2),
+            _ => return None,
+        };
+        let first = self.slots.get(new)?;
+        let second = self.slots.get(again)?;
+        let rule =
+            (!first.field.is_empty()).then(|| VaultPassword::new(&first.field.copy()).is_ok());
+        let same =
+            (!second.field.is_empty()).then(|| first.field.as_bytes() == second.field.as_bytes());
+        Some((rule, same))
+    }
+
+    /// The lines between the content and the messages (2026-11-10): W01/W04's two password
+    /// conditions, W10's word that is not in the list, W08's countdown on a first display.
+    /// Returns the new y.
+    #[expect(clippy::too_many_arguments, reason = "plain layout helpers")]
+    fn paint_status(
+        &self,
+        dc: &mut PaintDc<'_>,
+        fonts: &Fonts,
+        margin: i32,
+        mut y: i32,
+        width: i32,
+        px: impl Fn(i32) -> i32,
+        now_ms: u64,
+    ) -> i32 {
+        dc.select_font(&fonts.body);
+        if let Some((rule, same)) = self.password_checks() {
+            let part = |ok: Option<bool>, label: &'static str| match ok {
+                Some(true) => (format!("✓ {label}"), theme::SUCCESS_TEXT),
+                Some(false) => (format!("✗ {label}"), theme::DANGER_TEXT),
+                None => (format!("· {label}"), theme::MUTED),
+            };
+            let mut x = margin;
+            for (text, color) in [
+                part(rule, "12–128자"),
+                (" · ".to_owned(), theme::MUTED),
+                part(same, "두 칸이 같음"),
+            ] {
+                let units = wide(&text);
+                let (_, text_w) = dc.measure(&units, i32::MAX);
+                dc.set_text_color(color);
+                dc.draw_text(
+                    &units,
+                    Rect::new(x, y, text_w.saturating_add(px(2)), px(22)),
+                    DrawFlags::LINE,
+                );
+                x = x.saturating_add(text_w);
+            }
+            y = y.saturating_add(px(26));
+        }
+        let mut lines: Vec<(String, yw_win::ui::Color)> = Vec::new();
+        if let Some(position) = self.unlisted_position() {
+            lines.push((
+                format!(
+                    "{position}번째 칸의 단어가 BIP39 단어 목록에 없습니다. 오타인지, 종이의 철자를 다시 보세요."
+                ),
+                theme::DANGER_TEXT,
+            ));
+        }
+        if self.kind.needs_hold() && self.display.is_some() {
+            let left = SECRET_WINDOW_TIMEOUT_MS
+                .saturating_sub(now_ms.saturating_sub(self.started_ms))
+                .div_ceil(1_000);
+            let mut text = format!("{}:{:02} 남음 — 지나면 창이 닫힙니다", left / 60, left % 60);
+            if let Some(note) = self.timeout_note {
+                text.push(' ');
+                text.push_str(note);
+            }
+            lines.push((text, theme::MUTED));
+        }
+        for (text, color) in lines {
+            let units = wide(&text);
+            dc.set_text_color(color);
+            let height = dc.measure_wrapped(&units, width, DrawFlags::WRAP);
+            dc.draw_text(&units, Rect::new(margin, y, width, height), DrawFlags::WRAP);
+            y = y.saturating_add(height).saturating_add(px(4));
+        }
+        y
     }
 
     /// The kind.
@@ -844,6 +1011,7 @@ impl SecretForm {
         self.slots = slots_for(self.kind);
         self.active = 0;
         self.busy = false;
+        self.backup_left = false;
         self.error = message;
     }
 
@@ -884,6 +1052,16 @@ impl SecretForm {
         if self.kind == SecretKind::Mnemonic {
             let (count, _, all_known) = self.mnemonic_status();
             return valid_word_count(count) && all_known && count <= 24;
+        }
+        // W01/W04: both conditions shown above the buttons (2026-11-10).
+        if let Some((rule, same)) = self.password_checks()
+            && !(rule == Some(true) && same == Some(true))
+        {
+            return false;
+        }
+        // W10: a word not in the list is a typo (or a misspelt paper), never sent (2026-11-10).
+        if self.unlisted_position().is_some() {
+            return false;
         }
         self.slots
             .iter()
@@ -1062,6 +1240,28 @@ impl SecretForm {
                 });
                 return FormAction::Redraw;
             }
+            if !self.input_enabled(now_ms) {
+                return FormAction::None;
+            }
+            if matches!(
+                self.kind,
+                SecretKind::SetPassword | SecretKind::ChangePassword
+            ) && let Err(message) = self.validate()
+            {
+                // Enter with a rule not met: the reason (E-INP-001/002), as before.
+                self.error = Some(message);
+                return FormAction::Redraw;
+            }
+            if matches!(self.kind, SecretKind::Backup { .. })
+                && self.slots.iter().any(|slot| {
+                    !slot.field.is_empty()
+                        && !core::str::from_utf8(slot.field.as_bytes()).is_ok_and(is_word)
+                })
+            {
+                // Every field counts as left: the status line names the word.
+                self.backup_left = true;
+                return FormAction::Redraw;
+            }
             return FormAction::None;
         }
         if let Err(message) = self.validate() {
@@ -1135,6 +1335,7 @@ impl SecretForm {
                     && slot.field.backspace()
                 {
                     self.error = None;
+                    self.backup_left = false;
                     return FormAction::Redraw;
                 }
                 FormAction::None
@@ -1154,6 +1355,7 @@ impl SecretForm {
                 match slot.field.push_unit(unit) {
                     PushResult::Accepted => {
                         self.error = None;
+                        self.backup_left = false;
                         FormAction::Redraw
                     }
                     PushResult::Rejected(RejectReason::NonAscii) => self.non_ascii(now_ms),
@@ -1396,6 +1598,16 @@ impl SecretForm {
             return FormAction::TimedOut;
         }
         let mut redraw = self.hold.active();
+        // W08 `create`: its countdown changes every second.
+        if self.kind.needs_hold() && self.display.is_some() {
+            let secs = SECRET_WINDOW_TIMEOUT_MS
+                .saturating_sub(now_ms.saturating_sub(self.started_ms))
+                .div_ceil(1_000);
+            if secs != self.countdown_secs {
+                self.countdown_secs = secs;
+                redraw = true;
+            }
+        }
         if self
             .transient
             .as_ref()
@@ -1503,7 +1715,11 @@ impl SecretForm {
             .map_or(24, |display| display.text.expose().split(' ').count());
         dc.select_font(&fonts.body);
         dc.set_text_color(theme::MUTED);
-        for paragraph in intro(self.kind, words).iter().chain(&self.details) {
+        let address = self
+            .display
+            .as_ref()
+            .is_some_and(|display| display.address.is_some());
+        for paragraph in intro(self.kind, words, address).iter().chain(&self.details) {
             let text = wide(paragraph);
             let height = dc.measure_wrapped(&text, width, DrawFlags::WRAP);
             dc.draw_text(&text, Rect::new(margin, y, width, height), DrawFlags::WRAP);
@@ -1584,6 +1800,7 @@ impl SecretForm {
             }
         }
 
+        y = self.paint_status(dc, fonts, inner_x, y, inner_w, px, now_ms);
         dc.select_font(&fonts.body);
         for (message, color) in [
             (self.error.as_deref(), theme::DANGER_TEXT),
@@ -1848,9 +2065,22 @@ impl SecretForm {
                 DrawFlags::LINE,
             );
             dc.select_font(&fonts.caption);
-            dc.set_text_color(theme::MUTED);
+            // W10: the list verdict instead of the length (2026-11-10); other fields their length.
+            let (right, color) = if matches!(self.kind, SecretKind::Backup { .. }) {
+                match self.word_mark(index) {
+                    WordMark::None => (String::new(), theme::MUTED),
+                    WordMark::Listed => ("목록에 있음".to_owned(), theme::MUTED),
+                    WordMark::Unlisted => ("목록에 없는 단어".to_owned(), theme::DANGER_TEXT),
+                }
+            } else {
+                (
+                    format!("{}/{}", slot.field.len(), slot.field.limit()),
+                    theme::MUTED,
+                )
+            };
+            dc.set_text_color(color);
             dc.draw_text(
-                &wide(&format!("{}/{}", slot.field.len(), slot.field.limit())),
+                &wide(&right),
                 Rect::new(margin, y, width, px(22)),
                 DrawFlags::RIGHT,
             );

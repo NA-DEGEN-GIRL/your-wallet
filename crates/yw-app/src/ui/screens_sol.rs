@@ -336,7 +336,7 @@ impl App {
         let network = crate::network::NetworkId::Solana(self.settings.solana.cluster);
         let no_endpoint = self.sol_endpoint(cluster).is_err();
         let rpc = if no_endpoint {
-            "엔드포인트 없음 (E-KEY-005)".to_owned()
+            "RPC 주소 없음 (E-KEY-005)".to_owned()
         } else if let Some(code) = self.sol.balance_error.get(&cluster) {
             format!("오류 {}", code.code())
         } else if self.sol.balances.keys().any(|(known, _)| *known == cluster) {
@@ -406,9 +406,10 @@ impl App {
                 Ctl::primary(ids::RECEIVE_OPEN, "받기"),
             ];
             if no_endpoint {
-                // The same next step as every tab (2026-11-08): no refresh without an address.
+                // The same next step as every tab (2026-11-08): no refresh without an address;
+                // it opens this cluster's row with its field (2026-11-10).
                 row.push(Ctl::button(
-                    crate::ui::screens::ids::SECTION_NETWORK,
+                    crate::ui::screens::ids::SOL_RPC_OPEN,
                     "RPC 설정하기",
                 ));
             } else {
@@ -1152,7 +1153,7 @@ impl App {
             ],
         ));
         items.push(Item::Help(
-            "엔드포인트는 '네트워크(RPC)' 구역의 solana:mainnet·solana:devnet URL입니다."
+            "RPC 주소는 '네트워크(RPC)' 구역의 solana:mainnet·solana:devnet 행에 있습니다."
                 .to_owned(),
         ));
         items.push(Item::Rule);

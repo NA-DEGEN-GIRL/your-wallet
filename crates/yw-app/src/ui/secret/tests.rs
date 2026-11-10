@@ -58,7 +58,11 @@ fn sw1_backup_form_collects_only_owned_buffers() {
         0,
         true,
     );
-    for (index, word) in ["apple", "breeze", "cedar", "dune"].into_iter().enumerate() {
+    // List words: W10 does not send a word that is not in the BIP39 list (2026-11-10).
+    for (index, word) in ["apple", "breeze", "cement", "dune"]
+        .into_iter()
+        .enumerate()
+    {
         if index > 0 {
             form.on_key(0x09, false, false, false, 10);
         }
@@ -72,7 +76,7 @@ fn sw1_backup_form_collects_only_owned_buffers() {
         .iter()
         .map(|value| value.as_slice())
         .collect();
-    assert_eq!(values, [b"apple".as_slice(), b"breeze", b"cedar", b"dune"]);
+    assert_eq!(values, [b"apple".as_slice(), b"breeze", b"cement", b"dune"]);
     // Paste is refused in W10 (paper backup check).
     assert!(matches!(
         form.on_key(u16::from(b'V'), true, false, false, 30),
@@ -252,7 +256,7 @@ fn sw4_capture_decisions() {
 
 #[test]
 fn w07_warns_that_imported_keys_are_not_in_the_recovery_words() {
-    let lines = super::intro(EVM_KEY, 0);
+    let lines = super::intro(EVM_KEY, 0, false);
     assert!(
         lines
             .iter()
@@ -269,6 +273,7 @@ fn w07_warns_that_imported_keys_are_not_in_the_recovery_words() {
                 no_words: true,
             },
             0,
+            false,
         );
         assert!(lines.iter().any(|line| line == super::T_KEY_ONLY_BACKUP));
         assert!(
@@ -369,7 +374,7 @@ fn w11_card_pin_bounds_mask_and_owned_buffer() {
         capture_decision(kind, Ok(false)),
         CaptureDecision::Show { warning: true }
     );
-    let intro = super::intro(kind, 0);
+    let intro = super::intro(kind, 0, false);
     assert!(intro[0].contains("YubiKey를 연결하고 PIN 입력 후 터치하세요"));
     assert!(intro[1].contains("YubiKey 터치 3회가 필요합니다"));
     assert_eq!(
@@ -379,7 +384,8 @@ fn w11_card_pin_bounds_mask_and_owned_buffer() {
                 max: 127,
                 touches: 1
             },
-            0
+            0,
+            false
         )
         .len(),
         1
@@ -504,4 +510,47 @@ fn w12_card_secrets() {
         submit(piv_pin, &["123456"]),
         FormAction::Submit(_)
     ));
+}
+
+/// 2026-11-10 (batch 1): W10 checks each word against the public BIP39 list as it is typed — a
+/// word that is not in the list keeps `확인` off and is never sent (a typo is not "the paper is
+/// wrong"); fixing it turns `확인` on. A word being typed is not marked until it can no longer
+/// become one.
+#[test]
+fn w10_word_not_in_the_list_keeps_confirm_off() {
+    use super::WordMark;
+    let mut form = SecretForm::new(
+        SecretKind::Backup {
+            positions: [3, 9, 16, 22],
+        },
+        0,
+        true,
+    );
+    for (index, word) in ["abandon", "ability", "aban", "abandonx"]
+        .into_iter()
+        .enumerate()
+    {
+        if index > 0 {
+            form.on_key(0x09, false, false, false, 10);
+        }
+        type_text(&mut form, word, 10);
+        if index == 2 {
+            assert_eq!(form.word_mark(2), WordMark::None, "still typing");
+        }
+    }
+    assert_eq!(form.word_mark(0), WordMark::Listed);
+    assert_eq!(form.word_mark(2), WordMark::Unlisted, "left unfinished");
+    assert_eq!(form.word_mark(3), WordMark::Unlisted, "no word starts so");
+    assert!(!form.can_submit(20));
+    assert!(matches!(form.on_char(0x0D, 20), FormAction::Redraw));
+    form.on_char(0x08, 30);
+    form.on_key(0x09, false, false, false, 30);
+    form.on_key(0x09, false, false, false, 30);
+    form.on_key(0x09, false, false, false, 30);
+    type_text(&mut form, "don", 30);
+    assert_eq!(form.word_mark(2), WordMark::Listed);
+    assert!(form.can_submit(40));
+    // Enter moves to the last field, then sends.
+    assert!(matches!(form.on_char(0x0D, 40), FormAction::Redraw));
+    assert!(matches!(form.on_char(0x0D, 50), FormAction::Submit(_)));
 }

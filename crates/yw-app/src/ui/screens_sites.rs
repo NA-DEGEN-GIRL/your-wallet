@@ -131,7 +131,7 @@ impl App {
 
     /// S13.
     pub(crate) fn sites_screen(&self, items: &mut Vec<Item>) {
-        items.push(crate::ui::screens::back_main());
+        items.push(self.back_row());
         items.push(Item::Title("연결된 사이트 · WalletConnect".to_owned()));
         // WalletConnect sessions have their own cards (spec/13 §6).
         self.wc_panel(items);

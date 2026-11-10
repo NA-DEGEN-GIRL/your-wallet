@@ -113,7 +113,7 @@ pub fn no_accounts_text(chain: ImportChain) -> String {
 fn chain_help(chain: ImportChain) -> &'static str {
     match chain {
         ImportChain::Evm => {
-            "16진수 64자리 개인키(0x 선택) — MetaMask·Rabby의 '개인키 내보내기' 값입니다. 모든 EVM 체인(Ethereum, Sepolia, HyperEVM, 추가한 체인)에서 같은 주소로 쓰입니다."
+            "16진수 64자리 개인키(0x 선택) — MetaMask·Rabby의 '개인키 내보내기' 값입니다. 모든 EVM 체인(기본 7개와 직접 추가한 체인)에서 같은 주소로 쓰입니다."
         }
         ImportChain::Sol => {
             "Phantom·Solflare의 '개인키 내보내기'(base58) 또는 solana-keygen JSON 파일의 내용입니다."
@@ -234,7 +234,15 @@ impl App {
                 network.display_name().to_owned(),
             ));
         }
-        items.push(Item::Mono(view.address.clone()));
+        // In 4-character groups like every other address (spec/04 §3.3): EVM in its checksum
+        // groups, Solana and Bitcoin as encoded.
+        items.push(Item::Mono(match view.chain {
+            ImportChain::Evm => yw_core::evm::address::parse_address(&view.address).map_or_else(
+                |_| view.address.clone(),
+                |parsed| yw_core::evm::display::format_address(&parsed),
+            ),
+            _ => crate::ui::screens_btc::grouped(&view.address),
+        }));
         items.push(Item::CardEnd);
         items.push(Item::Banner(T_KEY_START_BACKUP.to_owned(), Tone::Warn));
         items.push(Item::Row(vec![

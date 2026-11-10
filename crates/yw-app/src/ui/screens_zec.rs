@@ -345,7 +345,7 @@ impl App {
                 .to_owned(),
         ));
         items.push(Item::Help(
-            "켜면 복구 단어에서 m/44'/133'/0'/0/0 (testnet m/44'/1'/0'/0/0) 주소 하나를 씁니다. 먼저 설정 → 네트워크(RPC)에서 그 네트워크의 Zcash 주소(zcash:mainnet·zcash:testnet)를 넣으세요."
+            "켜면 복구 단어에서 m/44'/133'/0'/0/0 (testnet m/44'/1'/0'/0/0) 주소 하나를 씁니다. 먼저 설정 → 네트워크(RPC)에서 그 네트워크의 Zcash RPC 주소(zcash:mainnet·zcash:testnet)를 넣으세요."
                 .to_owned(),
         ));
         let unlocked = matches!(self.mode, AppMode::Unlocked { .. });
@@ -359,7 +359,7 @@ impl App {
                 .is_none()
         }) {
             row.push(Ctl::link(
-                crate::ui::screens::ids::SECTION_NETWORK,
+                crate::ui::screens::ids::ZEC_RPC_OPEN,
                 "RPC 설정하기",
             ));
         }
@@ -435,7 +435,7 @@ impl App {
         ));
         let rpc = match (has_endpoint, snapshot) {
             (false, _) => {
-                "엔드포인트 없음 (E-KEY-005) — 설정 → 네트워크(RPC)에서 Zcash 주소를 넣으세요"
+                "RPC 주소 없음 (E-KEY-005) — 설정 → 네트워크(RPC)에서 Zcash RPC 주소를 넣으세요"
                     .to_owned()
             }
             (true, Some(snapshot)) => {
@@ -474,9 +474,9 @@ impl App {
             Ctl::link(ids::DISABLE, "Zcash 끄기").enabled(!self.zec.busy),
         ];
         if !has_endpoint {
-            // The next step of E-KEY-005, as on the other tabs.
+            // The next step of E-KEY-005, as on the other tabs: this network's row.
             row.push(Ctl::link(
-                crate::ui::screens::ids::SECTION_NETWORK,
+                crate::ui::screens::ids::ZEC_RPC_OPEN,
                 "RPC 설정하기",
             ));
         }

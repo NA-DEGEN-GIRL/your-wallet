@@ -172,6 +172,91 @@ impl App {
         sol || zec || self.btc_mnemonic_busy(id)
     }
 
+    /// The first address of recovery phrase `id` as the meta has it — its EVM account 0 (the
+    /// first phrase's is in `evm_accounts`) —, what W08 and the phrase's card show to compare
+    /// with the paper (2026-11-10). Nothing is derived here; `None` when the meta has none.
+    #[must_use]
+    pub fn mnemonic_first_address(&self, id: RecordId) -> Option<Address> {
+        let meta = self.meta.as_ref()?;
+        let primary = self
+            .mn
+            .infos
+            .iter()
+            .any(|info| info.id == id && info.primary);
+        let account = if primary {
+            meta.evm_accounts.iter().find(|account| account.index == 0)
+        } else {
+            meta.mnemonics
+                .iter()
+                .find(|entry| entry.record_id == *id.as_bytes())?
+                .evm
+                .iter()
+                .find(|account| account.index == 0)
+        }?;
+        yw_core::evm::address::parse_address(&account.address).ok()
+    }
+
+    /// How many accounts recovery phrase `id` has on each chain: `[EVM, Solana, Bitcoin (the
+    /// current network), Zcash (networks)]` (the settings card, 2026-11-10).
+    #[must_use]
+    pub fn mnemonic_account_counts(&self, id: RecordId, primary: bool) -> [usize; 4] {
+        use yw_core::btc::BtcAccountKey;
+        use yw_core::zec::ZecKeySource;
+        let Some(meta) = self.meta.as_ref() else {
+            return [0; 4];
+        };
+        let key = *id.as_bytes();
+        let evm = if primary {
+            meta.evm_accounts.len()
+        } else {
+            meta.mnemonics
+                .iter()
+                .find(|entry| entry.record_id == key)
+                .map_or(0, |entry| entry.evm.len())
+        };
+        let sol = if primary {
+            meta.sol_accounts.len()
+        } else {
+            meta.mnemonic_accounts.sol_of(key).count()
+        };
+        let network = crate::btc::core_network(self.settings.bitcoin.network);
+        let first_btc = usize::from(
+            primary
+                && meta
+                    .btc
+                    .as_ref()
+                    .is_some_and(|btc| btc.network() == network),
+        );
+        let btc = meta
+            .btc_accounts
+            .accounts
+            .iter()
+            .filter(|account| account.network() == network)
+            .filter(|account| match account.account() {
+                BtcAccountKey::Hd { mnemonic, .. } => {
+                    if primary {
+                        mnemonic.is_none()
+                    } else {
+                        *mnemonic == Some(id)
+                    }
+                }
+                BtcAccountKey::EvmShared { .. } => primary,
+                _ => false,
+            })
+            .count()
+            .saturating_add(first_btc);
+        let zec = [meta.zcash.mainnet.as_ref(), meta.zcash.testnet.as_ref()]
+            .into_iter()
+            .flatten()
+            .filter(|account| match account.source {
+                ZecKeySource::Derived { .. } | ZecKeySource::EvmShared { .. } => primary,
+                ZecKeySource::Mnemonic { mnemonic, .. } => !primary && mnemonic == id,
+                ZecKeySource::Hardware { .. } | ZecKeySource::Imported => false,
+            })
+            .count();
+        [evm, sol, btc, zec]
+    }
+
     /// The EVM account rows of the added mnemonics `(pref, label, address (lowercase), path)`.
     pub(crate) fn mnemonic_account_rows(&self) -> Vec<(EvmAccountPref, String, String, String)> {
         let Some(meta) = self.meta.as_ref() else {
@@ -1099,12 +1184,15 @@ impl App {
                 // 2 s `다 적었습니다`), like a new phrase's first display.
                 let hold = then_backup
                     || (self.mn.confirm_remove == Some(id) && self.mn_remove_unconfirmed());
+                // The first address as the paper has it (2026-11-10): the meta's EVM account 0 of
+                // this phrase, no new derivation; without one, W08 asks for the words only.
+                let address = self.mnemonic_first_address(id).map(Address::to_checksum);
                 self.open_display(
                     SecretKind::ShowMnemonic { create: hold },
                     Purpose::Mnemonics(MnPurpose::ShowWords(id, then_backup)),
                     DisplaySecret {
                         text: phrase,
-                        address: None,
+                        address,
                         passphrase_note,
                         copy_allowed: self.settings.allow_secret_copy,
                     },

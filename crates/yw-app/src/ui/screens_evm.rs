@@ -39,7 +39,7 @@ pub fn custom_chain_badge(chain_id: u64) -> String {
 /// The S15 `EVM 체인` add note and button (spec/04 §2.11): any other L1/L2 is a user chain.
 fn chain_add_row(items: &mut Vec<Item>) {
     items.push(Item::Help(
-        "다른 EVM 체인(L1·L2)은 여기서 추가합니다 — chainId·RPC URL을 넣으면 chainId와 블록 0을 확인해 등록합니다."
+        "다른 EVM 체인(L1·L2)은 여기서 추가합니다 — chainId·RPC 주소를 넣으면 chainId와 블록 0을 확인해 등록합니다."
             .to_owned(),
     ));
     items.push(Item::Row(vec![Ctl::button(
@@ -479,7 +479,7 @@ impl App {
         let chain_id = self.settings.evm_chain_id;
         let network = NetworkId::Eip155(chain_id);
         let rpc = if !self.apikeys.has(crate::apikeys::KeyName::Rpc(network)) {
-            "엔드포인트 없음 (E-KEY-005)".to_owned()
+            "RPC 주소 없음 (E-KEY-005)".to_owned()
         } else if let Some(kind) = self.evm.blocked(chain_id) {
             format!("차단 {}", kind.code().code())
         } else if let Some(code) = self
@@ -1360,7 +1360,7 @@ impl App {
                 ))),
             ));
             items.push(Item::Help(format!(
-                "{symbol}, 소수 {decimals} · 시뮬레이션 {simulation} · {state} · 엔드포인트: {}",
+                "{symbol}, 소수 {decimals} · 시뮬레이션 {simulation} · {state} · RPC 주소: {}",
                 self.endpoint_text(chain_id)
             )));
             if let Some(def) = user {
@@ -1534,21 +1534,21 @@ impl App {
         let credential = self.apikeys.credential(template).is_some();
         let hint = match template {
             crate::settings::RpcTemplate::QuickNode => format!(
-                "https:// URL 또는 QuickNode 서브도메인(예 base-sepolia). 자격 정보: {}",
+                "https:// 주소 또는 QuickNode 서브도메인(예 base-sepolia). 자격 정보: {}",
                 if credential { "설정됨" } else { "없음" }
             ),
             crate::settings::RpcTemplate::Alchemy => format!(
-                "https:// URL 또는 알케미 라벨(예 base-sepolia). 자격 정보: {}",
+                "https:// 주소 또는 알케미 라벨(예 base-sepolia). 자격 정보: {}",
                 if credential { "설정됨" } else { "없음" }
             ),
-            crate::settings::RpcTemplate::Manual => "https:// URL (직접 입력 템플릿)".to_owned(),
+            crate::settings::RpcTemplate::Manual => "https:// 주소 (직접 입력 템플릿)".to_owned(),
         };
         items.push(Item::LabeledRow(
-            "RPC".to_owned(),
+            "RPC 주소".to_owned(),
             vec![Ctl::edit(ids::CHAIN_RPC_EDIT, "", 430, true, 2_048)],
         ));
         items.push(Item::Help(if form.editing.is_some() {
-            format!("{hint} · 비워 두면 기존 URL을 유지합니다.")
+            format!("{hint} · 비워 두면 기존 주소를 유지합니다.")
         } else {
             hint
         }));

@@ -2318,7 +2318,7 @@ impl App {
         self.apikeys
             .rpc_url(NetworkId::Eip155(chain_id))
             .map_or_else(
-                || "엔드포인트 없음".to_owned(),
+                || "없음".to_owned(),
                 |url| format!("설정됨 {}", mask_url(&url)),
             )
     }

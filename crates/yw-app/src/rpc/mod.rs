@@ -389,7 +389,7 @@ impl TestOutcome {
     #[must_use]
     pub fn message(&self, network_name: &str) -> String {
         match self {
-            Self::Ok(item) => format!("엔드포인트가 작동합니다. ({network_name}, {item})"),
+            Self::Ok(item) => format!("RPC 주소가 작동합니다. ({network_name}, {item})"),
             Self::Mismatch {
                 item,
                 rpc_chain_id: Some(id),

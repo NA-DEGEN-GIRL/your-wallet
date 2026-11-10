@@ -11,7 +11,7 @@ use yw_core::evm::chain::SEPOLIA;
 use yw_core::evm::display::format_address;
 
 use crate::apikeys::{KeyName, mask_url};
-use crate::app::{App, AppMode, Confirm, Screen, SettingsSection};
+use crate::app::{App, AppMode, Confirm, Screen, SettingsSection, TestState};
 use crate::errors::ErrorCode;
 use crate::meta::EvmAccountPref;
 use crate::network::NetworkId;
@@ -44,9 +44,9 @@ pub mod ids {
     pub const BACKUP_CHECK: u16 = 150;
     /// 잠금.
     pub const LOCK: u16 = 151;
-    /// S08 RPC 설정하기.
+    /// S08 `RPC 설정 열기` (also `알케미·직접 입력은 설정에서 ▸`, `RPC 설정하기`).
     pub const DONE_RPC: u16 = 160;
-    /// S08 지갑 열기 / 나중에.
+    /// S08 `지갑 열기`.
     pub const DONE_CONTINUE: u16 = 161;
     /// S09 이전 사본으로 복구.
     pub const RECOVER: u16 = 170;
@@ -136,11 +136,11 @@ pub mod ids {
     pub const QN_TOKEN_EDIT: u16 = 524;
     /// Alchemy key edit (`ES_PASSWORD`).
     pub const ALCHEMY_KEY_EDIT: u16 = 525;
-    /// Template save.
+    /// `자격 정보만 저장`.
     pub const TPL_SAVE: u16 = 526;
     /// Template delete.
     pub const TPL_DELETE: u16 = 527;
-    /// 네트워크 URL 생성.
+    /// `저장하고 RPC 주소 만들기`.
     pub const GENERATE: u16 = 528;
     /// 보관 항목 삭제 (`ApiKeys::prune_dormant`, spec/04 §6.6).
     pub const PRUNE_DORMANT: u16 = 529;
@@ -184,8 +184,36 @@ pub mod ids {
     pub const CONFIRM_YES: u16 = 800;
     /// Overlay cancel.
     pub const CONFIRM_NO: u16 = 801;
-    /// T-RPC-GENERATE `기존 URL 덮어쓰기`.
+    /// T-RPC-GENERATE `기존 주소 덮어쓰기`.
     pub const OVERWRITE_CHECK: u16 = 802;
+    /// S08 '처음 설정' (2026-11-10, block 16,700–16,783): the whole `QuickNode` address
+    /// (`ES_PASSWORD`).
+    pub const DONE_QN_EDIT: u16 = 16_700;
+    /// S08 `연결하기`.
+    pub const DONE_CONNECT: u16 = 16_701;
+    /// S08 `rpc.json이 있습니다 — 설정에서 가져오기 ▸`.
+    pub const DONE_RPC_JSON: u16 = 16_702;
+    /// S08 `Ethereum 메인넷으로 보기`.
+    pub const DONE_MAINNET: u16 = 16_703;
+    /// S08 `WalletConnect` `설정` (S13).
+    pub const DONE_WC: u16 = 16_704;
+    /// `← 처음 설정으로` (settings and S13 opened from S08).
+    pub const BACK_DONE: u16 = 16_705;
+    /// Settings → 네트워크(RPC) `모두 테스트`.
+    pub const TEST_ALL: u16 = 16_706;
+    /// The EVM tab's `RPC 설정하기` (that network's row, its field open).
+    pub const EVM_RPC_OPEN: u16 = 16_707;
+    /// The Solana tab's `RPC 설정하기`.
+    pub const SOL_RPC_OPEN: u16 = 16_708;
+    /// The Bitcoin tab's `RPC 설정하기`.
+    pub const BTC_RPC_OPEN: u16 = 16_709;
+    /// The Zcash tab's `RPC 설정하기`.
+    pub const ZEC_RPC_OPEN: u16 = 16_710;
+    /// A failed network's link (S08 result lines, the RPC summary): `RPC_ROW_OPEN_BASE + row`
+    /// of [`App::url_networks`](crate::app::App::url_networks) opens that row.
+    pub const RPC_ROW_OPEN_BASE: u16 = 16_720;
+    /// Span of [`RPC_ROW_OPEN_BASE`].
+    pub const RPC_ROW_OPEN_SPAN: u16 = 64;
 
     /// Every fixed id of this module (`ui::command_ids` checks them against all ranges).
     pub const FIXED: &[u16] = &[
@@ -264,6 +292,17 @@ pub mod ids {
         CONFIRM_YES,
         CONFIRM_NO,
         OVERWRITE_CHECK,
+        DONE_QN_EDIT,
+        DONE_CONNECT,
+        DONE_RPC_JSON,
+        DONE_MAINNET,
+        DONE_WC,
+        BACK_DONE,
+        TEST_ALL,
+        EVM_RPC_OPEN,
+        SOL_RPC_OPEN,
+        BTC_RPC_OPEN,
+        ZEC_RPC_OPEN,
     ];
 }
 
@@ -274,7 +313,7 @@ pub const IMPORT_STEPS: [&str; 3] = ["비밀번호 정하기", "복구 단어 �
 
 /// The step indicator item of a flow.
 #[must_use]
-pub fn steps(labels: [&str; 3], current: usize) -> Item {
+pub fn steps<const N: usize>(labels: [&str; N], current: usize) -> Item {
     Item::Steps(
         labels.iter().map(|label| (*label).to_owned()).collect(),
         current,
@@ -286,6 +325,12 @@ pub fn steps(labels: [&str; 3], current: usize) -> Item {
 pub fn back_main() -> Item {
     Item::Row(vec![Ctl::link(ids::BACK_MAIN, "← 메인으로")])
 }
+
+/// S08 `QuickNode 주소`'s help (2026-11-10).
+pub const T_DONE_QUICKNODE: &str = "QuickNode 대시보드의 엔드포인트 주소(https://….quiknode.pro/…/)를 통째로 붙여넣으세요. 쓸 체인(Ethereum·Arbitrum·Base·Solana·Bitcoin 등)은 대시보드에서 그 엔드포인트에 켜 두어야 합니다. 입력은 가려지고, 이 Windows 사용자만 풀 수 있게 암호화해 저장합니다.";
+/// The `RPC 공급자` card's `QuickNode` note (2026-11-10): a chain not enabled on the endpoint
+/// fails its test.
+pub const T_QUICKNODE_CHAINS: &str = "QuickNode는 대시보드에서 쓸 체인(Ethereum·Arbitrum·Base·Solana·Bitcoin 등)을 엔드포인트에 하나씩 켜야 그 네트워크가 작동합니다.";
 
 /// T-FIRST-1 (S01, three plain sentences).
 pub const T_FIRST: [&str; 3] = [
@@ -789,7 +834,7 @@ impl App {
             .enabled(enabled),
         ]));
         items.push(Item::Help(format!(
-            "YubiKey에 보관하는 새 지갑: {} YubiKey 5(펌웨어 5.2.3 이상, Solana 계정은 5.7 이상)가 필요합니다.",
+            "YubiKey에 보관하는 새 지갑: {} YubiKey 5(펌웨어 5.2.3 이상, Solana 계정은 5.7.4 이상)가 필요합니다.",
             crate::app_yubikey::T_YK_WALLET
         )));
         items.push(Item::CardEnd);
@@ -1001,30 +1046,223 @@ impl App {
                 Tone::Success,
             ));
         }
-        if self.apikeys.endpoints().is_empty() {
-            items.push(Item::CardStart(Some(
-                "마지막 단계: 블록체인 연결(RPC)".to_owned(),
+        // One '처음 설정' card (2026-11-10): RPC, the optional dApp connection, a first small
+        // deposit; `지갑 열기` always below it.
+        items.push(Item::CardStart(Some("처음 설정".to_owned())));
+        self.done_rpc_items(items);
+        items.push(Item::Rule);
+        self.done_dapp_items(items);
+        items.push(Item::Rule);
+        self.done_deposit_items(items);
+        items.push(Item::CardEnd);
+        if self.done_imported || self.keys.done_start {
+            self.done_balance_card(items);
+        }
+        items.push(Item::Row(vec![Ctl::primary(
+            ids::DONE_CONTINUE,
+            "지갑 열기",
+        )]));
+    }
+
+    /// S08 ① 블록체인 연결(RPC): the `QuickNode` address field while there is no address, the
+    /// results of `연결하기`, or how many addresses there are and this run's tests.
+    fn done_rpc_items(&self, items: &mut Vec<Item>) {
+        items.push(Item::Subtitle("① 블록체인 연결(RPC)".to_owned()));
+        if !self.done_tested.is_empty() {
+            self.done_results(items);
+            return;
+        }
+        if !self.apikeys.endpoints().is_empty() {
+            let (configured, _, works, failed, _) = self.rpc_summary();
+            items.push(Item::Text(format!(
+                "RPC 주소 {configured}개 · 이번 실행 테스트: 작동 {works} · 실패 {failed}"
             )));
-            items.push(Item::Text(
-                "잔액을 보고 돈을 보내려면 블록체인 노드에 연결할 주소(RPC 엔드포인트)가 필요합니다."
-                    .to_owned(),
+            items.push(Item::Row(vec![Ctl::button(ids::DONE_RPC, "RPC 설정 열기")]));
+            return;
+        }
+        items.push(Item::Text(
+            "잔액을 보고 돈을 보내려면 블록체인 노드에 연결할 RPC 주소가 필요합니다.".to_owned(),
+        ));
+        if self.settings.rpc_template == RpcTemplate::QuickNode {
+            items.push(Item::LabeledRow(
+                "QuickNode 주소".to_owned(),
+                vec![Ctl::edit(ids::DONE_QN_EDIT, "", 520, true, 256)],
             ));
-            items.push(Item::Help(
-                "QuickNode나 알케미 계정이 있으면 설정에서 이름과 토큰만 넣어 모든 네트워크의 주소를 한 번에 만들 수 있습니다. 나중에 설정 → 네트워크(RPC)에서 해도 됩니다."
-                    .to_owned(),
-            ));
+            items.push(Item::Help(T_DONE_QUICKNODE.to_owned()));
+            if let Some(error) = &self.done_error {
+                items.push(Item::Banner(error.clone(), Tone::Danger));
+            }
             items.push(Item::Row(vec![
-                Ctl::primary(ids::DONE_RPC, "RPC 설정하기"),
-                Ctl::button(ids::DONE_CONTINUE, "나중에"),
+                Ctl::primary(ids::DONE_CONNECT, "연결하기"),
+                Ctl::link(ids::DONE_RPC, "알케미·직접 입력은 설정에서 ▸"),
             ]));
-            items.push(Item::CardEnd);
         } else {
-            items.push(Item::Row(vec![Ctl::primary(
-                ids::DONE_CONTINUE,
-                "지갑 열기",
+            items.push(Item::Help(
+                "선택한 RPC 공급자의 자격 정보나 주소는 설정 → 네트워크(RPC)에서 넣습니다."
+                    .to_owned(),
+            ));
+            items.push(Item::Row(vec![Ctl::button(ids::DONE_RPC, "RPC 설정하기")]));
+        }
+        if crate::app_rpc_import::rpc_json_path().is_some_and(|path| path.is_file()) {
+            items.push(Item::Row(vec![Ctl::link(
+                ids::DONE_RPC_JSON,
+                "rpc.json이 있습니다 — 설정에서 가져오기 ▸",
             )]));
         }
-        self.extension_link(items);
+    }
+
+    /// S08 after `연결하기`: one line per network made (✓ works / ✗ with its §7 text and a link to
+    /// its row / … testing), then the count.
+    fn done_results(&self, items: &mut Vec<Item>) {
+        let networks = self.url_networks();
+        let mut works = 0_usize;
+        let mut failed = false;
+        for network in &self.done_tested {
+            let name = self.network_name(*network);
+            match self
+                .rpc_messages
+                .iter()
+                .find(|(id, _, _)| id == network)
+                .map(|(_, message, state)| (message, *state))
+            {
+                Some((_, TestState::Works)) => {
+                    works = works.saturating_add(1);
+                    items.push(Item::Text(format!("✓ {name}")));
+                }
+                Some((message, TestState::Failed)) => {
+                    failed = true;
+                    items.push(Item::Banner(format!("✗ {name} — {message}"), Tone::Danger));
+                    if let Some(row) = networks
+                        .iter()
+                        .position(|known| known == network)
+                        .and_then(|row| u16::try_from(row).ok())
+                        .filter(|row| *row < ids::RPC_ROW_OPEN_SPAN)
+                    {
+                        items.push(Item::Row(vec![Ctl::link(
+                            ids::RPC_ROW_OPEN_BASE.saturating_add(row),
+                            &format!("{name} 행 열기 ▸"),
+                        )]));
+                    }
+                }
+                Some((_, TestState::Testing)) | None => {
+                    items.push(Item::Muted(format!("… {name} 테스트 중")));
+                }
+            }
+        }
+        items.push(Item::Subtitle(format!(
+            "{}개 중 {works}개 작동",
+            self.done_tested.len()
+        )));
+        if failed {
+            items.push(Item::Help(
+                "QuickNode 대시보드에서 그 체인을 켰는지 확인한 뒤 설정 → 네트워크(RPC)의 “모두 테스트”로 다시 확인하세요. 나머지는 지금 쓸 수 있습니다."
+                    .to_owned(),
+            ));
+        }
+        items.push(Item::Row(vec![Ctl::button(ids::DONE_RPC, "RPC 설정 열기")]));
+    }
+
+    /// S08 ② dApp 연결 (선택): the Chrome extension or `WalletConnect`.
+    fn done_dapp_items(&self, items: &mut Vec<Item>) {
+        items.push(Item::Subtitle("② dApp 연결 (선택, 둘 중 하나)".to_owned()));
+        items.push(Item::Text(format!(
+            "Chrome 확장: {}",
+            self.extension_status().text()
+        )));
+        items.push(Item::Row(vec![Ctl::button(
+            crate::ui::screens_reset::ids::EXT_OPEN,
+            "설치 방법",
+        )]));
+        items.push(Item::Text(format!(
+            "WalletConnect: {}",
+            if self.settings.walletconnect_project.is_empty() {
+                "Project ID 없음"
+            } else {
+                "설정됨"
+            }
+        )));
+        items.push(Item::Row(vec![Ctl::button(ids::DONE_WC, "설정")]));
+    }
+
+    /// S08 ③ 첫 입금 시험: receive on the wallet's first chain (EVM when it has an account).
+    fn done_deposit_items(&self, items: &mut Vec<Item>) {
+        items.push(Item::Subtitle("③ 첫 입금 시험".to_owned()));
+        let evm = self.selected_account().is_some();
+        let mut text = "실제 자산은 소액으로 받기 → 보내기를 한 번 해 보세요.".to_owned();
+        if evm {
+            if self.settings.evm_chain_id == SEPOLIA {
+                text.push_str(" EVM 탭은 Sepolia 테스트넷으로 시작합니다.");
+            } else {
+                let _ = write!(
+                    text,
+                    " 지금 EVM 네트워크: {}.",
+                    self.network_name(NetworkId::Eip155(self.settings.evm_chain_id))
+                );
+            }
+        }
+        items.push(Item::Text(text));
+        let receive = if evm {
+            Some(crate::ui::screens_evm::ids::RECEIVE_OPEN)
+        } else if self.sol_selected().is_some() {
+            Some(crate::ui::screens_sol::ids::RECEIVE_OPEN)
+        } else if self.settings.bitcoin.enabled {
+            Some(crate::ui::screens_btc::ids::RECEIVE_OPEN)
+        } else {
+            None
+        };
+        if let Some(id) = receive {
+            items.push(Item::Row(vec![Ctl::button(id, "받기")]));
+        }
+    }
+
+    /// S08 after an import or "개인키로 시작하기": why a wallet that held funds may show none
+    /// (the network, accounts not searched, chains off).
+    fn done_balance_card(&self, items: &mut Vec<Item>) {
+        let mut lines: Vec<Item> = Vec::new();
+        if self.selected_account().is_some() {
+            if self.settings.evm_chain_id == SEPOLIA {
+                lines.push(Item::Text(
+                    "· EVM 탭은 Sepolia 테스트넷으로 시작합니다 — 쓰던 네트워크를 고르세요"
+                        .to_owned(),
+                ));
+                lines.push(Item::Row(vec![Ctl::button(
+                    ids::DONE_MAINNET,
+                    "Ethereum 메인넷으로 보기",
+                )]));
+            } else {
+                lines.push(Item::Text(format!(
+                    "· EVM 탭은 지금 {}입니다 — 다른 네트워크는 메인 화면의 네트워크 칩에서 고르세요",
+                    self.network_name(NetworkId::Eip155(self.settings.evm_chain_id))
+                )));
+            }
+        }
+        if self.done_imported {
+            lines.push(Item::Text(
+                "· 계정은 자동으로 찾지 않습니다. 이전 지갑에서 계정을 여러 개 썼다면 “내 계정 → 계정 추가”를 차례로 누르세요. Solana의 다른 경로는 Solana 탭 “다른 경로 스캔”."
+                    .to_owned(),
+            ));
+            let bitcoin = !self.settings.bitcoin.enabled;
+            let zcash = !self.settings.zcash.enabled;
+            let off = match (bitcoin, zcash) {
+                (true, true) => Some(
+                    "· Bitcoin·Zcash는 꺼져 있습니다 — 설정 → Bitcoin, Zcash 탭에서 켜면 보입니다(Bitcoin은 네이티브 세그윗 계정 0부터).",
+                ),
+                (true, false) => Some(
+                    "· Bitcoin은 꺼져 있습니다 — 설정 → Bitcoin에서 켜면 보입니다(네이티브 세그윗 계정 0부터).",
+                ),
+                (false, true) => Some("· Zcash는 꺼져 있습니다 — Zcash 탭에서 켜면 보입니다."),
+                (false, false) => None,
+            };
+            if let Some(line) = off {
+                lines.push(Item::Text(line.to_owned()));
+            }
+        }
+        if lines.is_empty() {
+            return;
+        }
+        items.push(Item::CardStart(Some("잔액이 안 보이면".to_owned())));
+        items.extend(lines);
+        items.push(Item::CardEnd);
     }
 
     fn recovery(&self, items: &mut Vec<Item>) {
@@ -1155,8 +1393,9 @@ impl App {
         if endpoint {
             row.push(Ctl::link(crate::ui::screens_evm::ids::REFRESH, "새로고침"));
         } else {
-            // Nothing to refresh without an address: the next step instead (spec/04 §2.6).
-            row.push(Ctl::button(ids::SECTION_NETWORK, "RPC 설정하기"));
+            // Nothing to refresh without an address: that network's row with its field open
+            // (spec/04 §2.6, 2026-11-10).
+            row.push(Ctl::button(ids::EVM_RPC_OPEN, "RPC 설정하기"));
         }
         items.push(Item::Row(row));
         items.push(Item::CardEnd);
@@ -1320,8 +1559,19 @@ impl App {
         self.evm_main_sections(items);
     }
 
+    /// The top link of settings and S13: `← 처음 설정으로` while they were opened from S08's
+    /// '처음 설정' card ([`App::done_return`], spec/04 §2.3), else `← 메인으로`.
+    #[must_use]
+    pub fn back_row(&self) -> Item {
+        if self.done_return {
+            Item::Row(vec![Ctl::link(ids::BACK_DONE, "← 처음 설정으로")])
+        } else {
+            back_main()
+        }
+    }
+
     fn settings_screen(&self, section: SettingsSection, items: &mut Vec<Item>) {
-        items.push(back_main());
+        items.push(self.back_row());
         items.push(Item::Title("설정".to_owned()));
         items.push(Item::Row(vec![
             Ctl::tab(
@@ -1501,6 +1751,14 @@ impl App {
             self.rpc_import_section(items);
         }
         items.push(Item::CardStart(Some("RPC 공급자".to_owned())));
+        if !self.rpc_import.on_top()
+            && crate::app_rpc_import::rpc_json_path().is_some_and(|path| path.is_file())
+        {
+            items.push(Item::Text(
+                "rpc.json이 있습니다 — 맨 아래 “rpc.json에서 가져오기”로 한 번에 넣을 수 있습니다."
+                    .to_owned(),
+            ));
+        }
         items.push(Item::Help(
             "RPC는 지갑이 블록체인에서 잔액을 읽고 거래를 보낼 때 쓰는 연결 주소입니다. QuickNode나 알케미 계정 정보를 한 번 넣으면 아래 모든 네트워크의 주소를 자동으로 만들 수 있습니다."
                 .to_owned(),
@@ -1526,13 +1784,10 @@ impl App {
                 false,
             ),
         ]));
+        let stored = self.template_stored();
+        let status = if stored { "설정됨" } else { "없음" };
         match template {
             RpcTemplate::QuickNode => {
-                let status = if self.apikeys.has(KeyName::TplQuickNode) {
-                    "설정됨"
-                } else {
-                    "없음"
-                };
                 items.push(Item::Help(format!(
                     "저장된 QuickNode 자격 정보: {status} (저장된 값은 다시 보이지 않습니다)"
                 )));
@@ -1552,13 +1807,9 @@ impl App {
                     "주소 끝의 긴 문자열입니다. 입력한 값은 가려지고, 저장하면 Windows가 이 사용자 계정에서만 풀 수 있게 암호화합니다."
                         .to_owned(),
                 ));
+                items.push(Item::Help(T_QUICKNODE_CHAINS.to_owned()));
             }
             RpcTemplate::Alchemy => {
-                let status = if self.apikeys.has(KeyName::TplAlchemy) {
-                    "설정됨"
-                } else {
-                    "없음"
-                };
                 items.push(Item::Help(format!(
                     "저장된 알케미 키: {status} (저장된 값은 다시 보이지 않습니다)"
                 )));
@@ -1572,23 +1823,30 @@ impl App {
             }
             RpcTemplate::Manual => {
                 items.push(Item::Help(
-                    "직접 입력: 아래 '네트워크별 RPC 주소'에서 네트워크마다 '교체'로 https:// 주소를 넣으세요."
+                    "직접 입력: 아래 '네트워크별 RPC 주소'에서 네트워크마다 '입력'으로 https:// 주소를 넣으세요."
                         .to_owned(),
                 ));
             }
         }
         let manual = template == RpcTemplate::Manual;
         items.push(Item::Row(vec![
-            Ctl::primary(ids::TPL_SAVE, "저장").enabled(!manual),
-            Ctl::button(ids::GENERATE, "네트워크 URL 생성").enabled(!manual),
-            Ctl::danger(ids::TPL_DELETE, "자격 정보 삭제").enabled(!manual),
+            Ctl::primary(ids::GENERATE, "저장하고 RPC 주소 만들기").enabled(!manual),
+            Ctl::button(ids::TPL_SAVE, "자격 정보만 저장").enabled(!manual),
+            Ctl::danger(ids::TPL_DELETE, "자격 정보 삭제").enabled(!manual && stored),
         ]));
+        if self.rpc_removed == Some(crate::app::RpcRemoved::Template) {
+            items.push(Item::Banner(
+                "자격 정보를 지웠습니다. 이미 만든 네트워크별 RPC 주소는 그대로입니다.".to_owned(),
+                Tone::Success,
+            ));
+        }
         items.push(Item::Help(
-            "'네트워크 URL 생성'은 저장한 자격 정보로 아래 목록의 주소를 한 번에 만듭니다. 이미 있는 주소는 덮어쓸지 따로 묻습니다."
+            "'저장하고 RPC 주소 만들기'는 위 칸의 자격 정보를 저장하고 아래 목록의 주소를 한 번에 만든 뒤 하나씩 테스트합니다. 이미 있는 주소는 덮어쓸지 따로 묻습니다."
                 .to_owned(),
         ));
         items.push(Item::CardEnd);
         items.push(Item::CardStart(Some("네트워크별 RPC 주소".to_owned())));
+        self.rpc_summary_items(items);
         items.push(Item::Help(
             "주소에는 토큰이 들어 있어 가린 형태로만 보입니다. '테스트'는 그 주소가 올바른 네트워크를 가리키는지 한 번 확인합니다."
                 .to_owned(),
@@ -1596,6 +1854,12 @@ impl App {
         let mut networks = self.url_networks();
         networks.truncate(usize::from(ids::ROW_SPAN / 3));
         let last = networks.len().saturating_sub(1);
+        // The note above an open field: the stored credentials can make the empty addresses.
+        let template_name = match template {
+            RpcTemplate::QuickNode => Some("QuickNode"),
+            RpcTemplate::Alchemy => Some("알케미"),
+            RpcTemplate::Manual => None,
+        };
         for (row, network) in networks.into_iter().enumerate() {
             let url = self.apikeys.rpc_url(network);
             let state = url.as_ref().map_or_else(
@@ -1615,22 +1879,34 @@ impl App {
                 Ctl::danger(base.saturating_add(2), "삭제").enabled(url.is_some()),
             ]));
             if self.replace_target == Some(network) {
+                if let Some(name) = template_name.filter(|_| {
+                    stored
+                        && crate::apikeys::template_entry(template, network, &self.settings)
+                            .is_some()
+                }) {
+                    items.push(Item::Help(format!(
+                        "{name} 자격 정보가 저장되어 있습니다 — 위 “저장하고 RPC 주소 만들기”로 비어 있는 주소를 한 번에 만들 수 있습니다."
+                    )));
+                }
                 items.push(Item::Row(vec![
                     Ctl::edit(ids::REPLACE_EDIT, "", 420, true, 2_048),
                     Ctl::primary(ids::REPLACE_SAVE, "저장"),
                     Ctl::button(ids::REPLACE_CANCEL, "취소"),
                 ]));
                 items.push(Item::Help(
-                    "https:// 로 시작하는 전체 주소를 붙여넣으세요. 저장 전에 형식을 검사합니다."
+                    "https:// 로 시작하는 전체 주소를 붙여넣으세요. 저장 전에 형식을 검사하고, 저장하면 바로 테스트합니다."
                         .to_owned(),
                 ));
             }
-            if let Some((_, message, ok)) =
+            if let Some((_, message, state)) =
                 self.rpc_messages.iter().find(|(id, _, _)| *id == network)
             {
+                items.push(Item::Banner(message.clone(), state.tone()));
+            }
+            if self.rpc_removed == Some(crate::app::RpcRemoved::Url(network)) {
                 items.push(Item::Banner(
-                    message.clone(),
-                    if *ok { Tone::Success } else { Tone::Danger },
+                    "RPC 주소를 지웠습니다.".to_owned(),
+                    Tone::Success,
                 ));
             }
             if row != last {
@@ -1655,6 +1931,78 @@ impl App {
         if !self.rpc_import.on_top() {
             self.rpc_import_section(items);
         }
+    }
+
+    /// The RPC list's numbers over the networks that have an address: `(with an address,
+    /// networks, works, failed, not tested in this run)`.
+    #[must_use]
+    pub fn rpc_summary(&self) -> (usize, usize, usize, usize, usize) {
+        let networks = self.url_networks();
+        let (mut configured, mut works, mut failed) = (0_usize, 0_usize, 0_usize);
+        for network in &networks {
+            if !self.apikeys.has(KeyName::Rpc(*network)) {
+                continue;
+            }
+            configured = configured.saturating_add(1);
+            match self
+                .rpc_messages
+                .iter()
+                .find(|(id, _, _)| id == network)
+                .map(|(_, _, state)| *state)
+            {
+                Some(TestState::Works) => works = works.saturating_add(1),
+                Some(TestState::Failed) => failed = failed.saturating_add(1),
+                Some(TestState::Testing) | None => {}
+            }
+        }
+        let untested = configured.saturating_sub(works).saturating_sub(failed);
+        (configured, networks.len(), works, failed, untested)
+    }
+
+    /// The head of "네트워크별 RPC 주소" (2026-11-10): how many addresses there are, this run's
+    /// tests, the failed networks as links to their rows, and `모두 테스트`.
+    fn rpc_summary_items(&self, items: &mut Vec<Item>) {
+        let (configured, total, works, failed, untested) = self.rpc_summary();
+        items.push(Item::Text(format!(
+            "RPC 주소 {configured}/{total}개 설정 · 이번 실행 테스트: 작동 {works} · 실패 {failed} · 안 함 {untested}"
+        )));
+        let links: Vec<Ctl> = self
+            .url_networks()
+            .into_iter()
+            .enumerate()
+            .filter(|(_, network)| {
+                self.apikeys.has(KeyName::Rpc(*network))
+                    && self
+                        .rpc_messages
+                        .iter()
+                        .any(|(id, _, state)| id == network && *state == TestState::Failed)
+            })
+            .filter_map(|(row, network)| {
+                let row = u16::try_from(row)
+                    .ok()
+                    .filter(|row| *row < ids::RPC_ROW_OPEN_SPAN)?;
+                Some(Ctl::link(
+                    ids::RPC_ROW_OPEN_BASE.saturating_add(row),
+                    &self.network_name(network),
+                ))
+            })
+            .collect();
+        if !links.is_empty() {
+            items.push(Item::LabeledRow("실패한 네트워크".to_owned(), links));
+        }
+        let tests = &self.rpc_tests;
+        let label = if tests.busy() {
+            format!(
+                "테스트 중 {}/{}",
+                tests.done.saturating_add(1).min(tests.total.max(1)),
+                tests.total.max(1)
+            )
+        } else {
+            "모두 테스트".to_owned()
+        };
+        items.push(Item::Row(vec![
+            Ctl::button(ids::TEST_ALL, &label).enabled(configured > 0 && !tests.busy()),
+        ]));
     }
 
     fn other_section(&self, items: &mut Vec<Item>) {
@@ -1784,7 +2132,23 @@ impl App {
                 "화면 근처의 사람이나 카메라가 볼 수 있습니다. 계속하려면 비밀번호를 입력하세요.".to_owned(),
                 "계속",
             ),
-            Confirm::Generate => ("네트워크 URL 생성", self.generate_text(), "생성"),
+            Confirm::Generate => ("RPC 주소 만들기", self.generate_text(), "만들기"),
+            Confirm::RpcUrlDelete(network) => (
+                "RPC 주소 지우기",
+                self.rpc_delete_text(network),
+                "지우기",
+            ),
+            Confirm::TemplateDelete => ("자격 정보 지우기", self.template_delete_text(), "지우기"),
+            Confirm::LlmKeyDelete => (
+                "AI API 키 지우기",
+                "저장된 AI 설명용 API 키를 지웁니다. 저장된 키는 다시 볼 수 없어, AI 설명을 다시 쓰려면 키를 다시 넣어야 합니다.".to_owned(),
+                "지우기",
+            ),
+            Confirm::YkAbandon => (
+                "YubiKey 지갑 만들기를 그만둘까요?",
+                crate::app_yubikey::T_YK_ABANDON.to_owned(),
+                "그만두기",
+            ),
             // Drawn above.
             Confirm::SidecarCorrupt | Confirm::JournalCorrupt => ("", String::new(), ""),
             Confirm::RemoveKey => (
@@ -1807,7 +2171,7 @@ impl App {
             Confirm::ChainRepin => ("다시 고정", self.chain_repin_text(), "다시 고정"),
             Confirm::ChainDelete => (
                 "체인 삭제",
-                "체인 정의, RPC URL, 수수료 상한을 지웁니다. 이 체인의 토큰·활동 기록은 남고, 같은 chainId를 다시 추가하면 다시 보입니다.".to_owned(),
+                "체인 정의, RPC 주소, 수수료 상한을 지웁니다. 이 체인의 토큰·활동 기록은 남고, 같은 chainId를 다시 추가하면 다시 보입니다.".to_owned(),
                 "삭제",
             ),
             Confirm::BookDelete => (
@@ -1865,6 +2229,9 @@ impl App {
         let destructive = matches!(
             kind,
             Confirm::PruneDormant
+                | Confirm::RpcUrlDelete(_)
+                | Confirm::TemplateDelete
+                | Confirm::LlmKeyDelete
                 | Confirm::ChainDelete
                 | Confirm::BookDelete
                 | Confirm::TokenDelete
@@ -1902,7 +2269,7 @@ impl App {
         if kind == Confirm::Generate {
             items.push(Item::Row(vec![Ctl::check(
                 ids::OVERWRITE_CHECK,
-                "기존 URL 덮어쓰기",
+                "기존 주소 덮어쓰기",
                 self.overwrite_checked,
             )]));
         }
@@ -1924,6 +2291,15 @@ impl App {
             items.push(Item::Row(vec![
                 Ctl::primary(ids::CONFIRM_YES, yes).enabled(checked),
                 Ctl::button(ids::CONFIRM_NO, "취소"),
+            ]));
+            items.push(Item::CardEnd);
+            return;
+        }
+        if kind == Confirm::YkAbandon {
+            // Going on is the main choice; giving up discards the words (spec/10 §7.1-1).
+            items.push(Item::Row(vec![
+                Ctl::primary(ids::CONFIRM_NO, "계속 만들기"),
+                Ctl::danger(ids::CONFIRM_YES, yes),
             ]));
             items.push(Item::CardEnd);
             return;
@@ -1981,12 +2357,49 @@ impl App {
         }
     }
 
+    /// `RpcUrlDelete`'s text (2026-11-10): the address cannot be shown again, how it comes back,
+    /// and what stops meanwhile.
+    fn rpc_delete_text(&self, network: NetworkId) -> String {
+        let again = match self.settings.rpc_template {
+            RpcTemplate::Manual => "“입력”으로 다시 넣어야 합니다".to_owned(),
+            template => format!(
+                "“저장하고 RPC 주소 만들기”({} 자격 정보: {}) 또는 “입력”으로 다시 넣어야 합니다",
+                if template == RpcTemplate::QuickNode {
+                    "QuickNode"
+                } else {
+                    "알케미"
+                },
+                if self.template_stored() {
+                    "설정됨"
+                } else {
+                    "없음"
+                }
+            ),
+        };
+        format!(
+            "{} ({network})의 RPC 주소를 지웁니다. 저장된 주소는 다시 볼 수 없어, 다시 쓰려면 {again}. 이 네트워크에 확정 전 거래가 있으면 주소를 다시 넣을 때까지 상태 확인이 멈춥니다.",
+            self.network_name(network)
+        )
+    }
+
+    /// `TemplateDelete`'s text (2026-11-10).
+    fn template_delete_text(&self) -> String {
+        let what = if self.settings.rpc_template == RpcTemplate::Alchemy {
+            "알케미 API 키"
+        } else {
+            "QuickNode 자격 정보(엔드포인트 이름·토큰)"
+        };
+        format!(
+            "저장된 {what}를 지웁니다. 저장된 값은 다시 볼 수 없습니다. 이미 만든 네트워크별 RPC 주소는 그대로이고, 새 체인 주소를 만들 때 다시 넣어야 합니다."
+        )
+    }
+
     fn generate_text(&self) -> String {
         let (targets, skipped) = self.generation_plan();
-        let mut text = "선택한 템플릿으로 아래 네트워크의 RPC URL을 만듭니다. 이미 URL이 있는 네트워크는 '기존 URL 덮어쓰기'를 켰을 때만 바꿉니다.".to_owned();
+        let mut text = "선택한 템플릿으로 아래 네트워크의 RPC 주소를 만듭니다. 이미 주소가 있는 네트워크는 '기존 주소 덮어쓰기'를 켰을 때만 바꿉니다.".to_owned();
         for network in targets {
             let existing = if self.apikeys.has(KeyName::Rpc(network)) {
-                " — 기존 URL 있음"
+                " — 기존 주소 있음"
             } else {
                 ""
             };

@@ -107,21 +107,14 @@ impl App {
         for (row, info) in self.mn.infos.iter().enumerate() {
             let label = self.mnemonic_label(info.id);
             items.push(Item::CardStart(Some(label.clone())));
-            let accounts = if info.primary {
-                self.meta.as_ref().map_or(0, |meta| meta.evm_accounts.len())
-            } else {
-                self.meta.as_ref().map_or(0, |meta| {
-                    meta.mnemonics
-                        .iter()
-                        .find(|entry| entry.record_id == *info.id.as_bytes())
-                        .map_or(0, |entry| entry.evm.len())
-                })
-            };
+            let [evm, sol, btc, zec] = self.mnemonic_account_counts(info.id, info.primary);
             let mut facts = vec![format!("{}단어", info.words)];
             if info.passphrase_used {
                 facts.push("passphrase 사용".to_owned());
             }
-            facts.push(format!("EVM 계정 {accounts}개"));
+            facts.push(format!(
+                "계정: EVM {evm} · Solana {sol} · Bitcoin {btc} · Zcash {zec}"
+            ));
             if info.primary {
                 // Added phrases make Solana/Bitcoin/Zcash accounts too since 2026-11-08.
                 facts.push("처음 만든(가져온) 복구 단어 · 지울 수 없음".to_owned());
@@ -132,6 +125,11 @@ impl App {
                 "백업 확인 전".to_owned()
             });
             items.push(Item::Help(facts.join(" · ")));
+            // The address written on the paper with the words (W08), to tell the papers apart.
+            if let Some(address) = self.mnemonic_first_address(info.id) {
+                items.push(Item::Help("첫 주소(종이에 함께 적은 주소):".to_owned()));
+                items.push(Item::Mono(yw_core::evm::display::format_address(&address)));
+            }
             if !info.backup_confirmed {
                 items.push(Item::Banner(T_MN_UNCONFIRMED.to_owned(), Tone::Warn));
             }

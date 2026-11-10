@@ -187,7 +187,7 @@ impl PrepareFailure {
 
     fn e35(code: ErrorCode) -> Self {
         let cause = if code == ErrorCode::Key005 {
-            "RPC 엔드포인트 없음 — 설정에서 이 네트워크의 RPC URL을 저장하세요".to_owned()
+            "RPC 주소 없음 — 설정 → 네트워크(RPC)에서 이 네트워크의 RPC 주소를 넣으세요".to_owned()
         } else {
             code.text()
         };

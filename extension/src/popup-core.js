@@ -96,7 +96,7 @@
     connected: Object.freeze({ text: "연결됨", tone: "ok", detail: "Your Wallet 앱이 마지막 요청에 응답했습니다." }),
     checking: Object.freeze({ text: "확인 중", tone: "neutral", detail: "Your Wallet 앱에 연결해 응답을 기다리는 중입니다." }),
     unavailable: Object.freeze({ text: "연결 안 됨", tone: "bad", detail: "Your Wallet 앱에 연결하지 못했습니다. 앱이 실행 중인지, native host가 등록되어 있는지 확인하세요." }),
-    unknown: Object.freeze({ text: "확인 불가", tone: "neutral", detail: "아직 확인한 기록이 없습니다. dApp에서 지갑을 한 번 사용하면 표시됩니다." })
+    unknown: Object.freeze({ text: "확인 불가", tone: "neutral", detail: "아직 이 Chrome에서 Your Wallet 앱과 주고받은 요청이 없습니다(설치 직후에는 정상). dApp 사이트에서 “지갑 연결”을 누르면 연결되고 여기에 연결됨이 보입니다. 설치 전에 열어 둔 탭은 새로고침하세요." })
   });
 
   function modeOption(mode) {

@@ -25,9 +25,9 @@ pub mod ids {
     pub const EXT_OPEN: u16 = 13_420;
     /// S23 `← 돌아가기`.
     pub const EXT_BACK: u16 = 13_421;
-    /// S23 `폴더 열기`.
+    /// S23 `탐색기에서 폴더 열기`.
     pub const EXT_OPEN_FOLDER: u16 = 13_422;
-    /// S23 `경로 복사`.
+    /// S23 `확장 폴더 경로 복사`.
     pub const EXT_COPY_PATH: u16 = 13_423;
     /// S23 `chrome://extensions 주소 복사`.
     pub const EXT_COPY_URL: u16 = 13_424;
@@ -70,6 +70,9 @@ pub const T_RESET_IN_FLIGHT: &str = "보내는 중인 거래가 있습니다. �
 pub const T_EXT_COMPAT: &str = "dApp의 지갑 목록에 Your Wallet이 없으면: Chrome 툴바의 Your Wallet 아이콘 → 'MetaMask처럼 보이기'(Solana는 'Phantom처럼 보이기', Bitcoin은 'UniSat처럼'·'Xverse처럼 보이기')를 고르고 dApp 탭을 새로고침하세요. 그때는 실제 MetaMask 등 같은 종류의 확장을 꺼 두세요.";
 /// The short form of T-EXT-COMPAT (S13 empty state, settings).
 pub const T_EXT_COMPAT_SHORT: &str = "지갑 목록에 Your Wallet이 없는 dApp은 Chrome의 Your Wallet 아이콘에서 'MetaMask처럼 보이기'(Solana는 'Phantom처럼', Bitcoin은 'UniSat'·'Xverse처럼')를 고른 뒤 탭을 새로고침하세요.";
+/// S23 step 5 (2026-11-10): the extension reports "연결됨" only after a dApp request, so the
+/// install ends with the app's connect window; "확인 불가" before that is normal.
+pub const T_EXT_STEP_5: &str = "5. dApp 사이트를 열고(설치 전에 열어 둔 탭은 새로고침) “지갑 연결”에서 Your Wallet을 고르세요. 이 앱에 연결 창이 뜨면 설치가 끝난 것입니다 — 그 뒤로는 툴바의 Your Wallet 아이콘과 위 “연결 상태”에 연결됨이 보입니다. 그 전에는 아이콘이 “확인 불가”로 보이는 것이 정상입니다.";
 /// T-EXT-MISSING.
 pub const T_EXT_MISSING: &str = "확장 폴더를 찾지 못했습니다. 설치 프로그램(install.cmd)을 다시 실행하면 앱 폴더 안에 extension 폴더가 만들어집니다.";
 
@@ -232,15 +235,22 @@ impl App {
             status.text().to_owned(),
         ));
         items.push(Item::CardStart(Some("설치 방법".to_owned())));
-        for line in [
-            "1. Chrome 주소창에 chrome://extensions 를 입력합니다 (아래 '주소 복사' 후 붙여넣기).",
-            "2. 오른쪽 위 '개발자 모드'를 켭니다.",
-            "3. '압축해제된 확장 프로그램을 로드합니다'를 누르고 아래 확장 폴더를 선택합니다.",
-            "4. 퍼즐 모양 아이콘에서 Your Wallet을 고정해 두면 편합니다.",
-            "5. Chrome 툴바의 Your Wallet 아이콘을 눌러 '연결됨'이 보이면 끝입니다 (위 '연결 상태'도 바뀝니다).",
-        ] {
-            items.push(Item::Text(line.to_owned()));
-        }
+        items.push(Item::Text(
+            "1. Chrome 주소창에 chrome://extensions 를 입력합니다 (아래 'chrome://extensions 주소 복사' 후 붙여넣기)."
+                .to_owned(),
+        ));
+        items.push(Item::Text(
+            "2. 오른쪽 위 '개발자 모드'를 켭니다.".to_owned(),
+        ));
+        // The id the app accepts (`extension-id.txt`, compiled in, spec/05 §2.3).
+        let id = crate::browser::pinned_extension_id().unwrap_or("(확인할 수 없음)");
+        items.push(Item::Text(format!(
+            "3. '압축해제된 확장 프로그램을 로드합니다'를 누르고 아래 확장 폴더를 선택합니다. 카드에 보이는 ID가 {id}인지 확인하세요(다르면 그 카드를 삭제하세요 — 앱이 연결을 받지 않습니다)."
+        )));
+        items.push(Item::Text(
+            "4. 퍼즐 모양 아이콘에서 Your Wallet을 고정해 두면 편합니다.".to_owned(),
+        ));
+        items.push(Item::Text(T_EXT_STEP_5.to_owned()));
         items.push(Item::Help(T_EXT_COMPAT.to_owned()));
         items.push(Item::Help(
             "앱을 업데이트한 뒤에는 chrome://extensions의 Your Wallet 카드에서 '새로고침'(↻)을 누르세요."
@@ -260,13 +270,14 @@ impl App {
                 ));
             }
         }
+        // The folder picker takes the copied path (2026-11-10): copying is the main step.
         items.push(Item::Row(vec![
-            Ctl::primary(ids::EXT_OPEN_FOLDER, "폴더 열기").enabled(found.is_some()),
-            Ctl::button(ids::EXT_COPY_PATH, "경로 복사").enabled(found.is_some()),
+            Ctl::primary(ids::EXT_COPY_PATH, "확장 폴더 경로 복사").enabled(found.is_some()),
             Ctl::button(
                 ids::EXT_COPY_URL,
                 &format!("{CHROME_EXTENSIONS_URL} 주소 복사"),
             ),
+            Ctl::link(ids::EXT_OPEN_FOLDER, "탐색기에서 폴더 열기").enabled(found.is_some()),
         ]));
         items.push(Item::Help(
             "Chrome은 다른 프로그램이 chrome:// 주소를 여는 것을 막습니다. 주소를 복사한 뒤 Chrome 주소창에 붙여넣으세요."

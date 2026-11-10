@@ -1286,9 +1286,9 @@ fn locked_no_btc_calls_except_esplora_test() -> TestResult {
     let last = calls.last().ok_or("call")?;
     assert_eq!(last.verb, Verb::Get);
     assert_eq!(last.path(), "/block-height/0");
-    let (net, message, ok) = harness.ui.esplora_tests.first().cloned().ok_or("message")?;
+    let (net, message, state) = harness.ui.esplora_tests.first().cloned().ok_or("message")?;
     assert_eq!(net, BtcNetwork::Testnet4);
-    assert!(ok);
+    assert_eq!(state, yw_app::app::TestState::Works);
     assert_eq!(
         message,
         "Esplora 서버가 작동합니다. (Bitcoin testnet4, genesis 일치)"

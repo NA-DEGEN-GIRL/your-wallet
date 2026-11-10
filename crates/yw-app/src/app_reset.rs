@@ -353,6 +353,9 @@ impl App {
                 if report.settings_moved {
                     self.settings = crate::settings::Settings::default();
                     self.apikeys = crate::apikeys::ApiKeys::default();
+                    // The test bands belonged to the addresses that moved.
+                    self.rpc_messages.clear();
+                    self.rpc_removed = None;
                     logging::set_level(self.settings.log_level);
                 }
                 // The old wallet's snapshot and generation facts went with its meta.

@@ -26,6 +26,7 @@
 //! | `WalletConnect` (`screens_walletconnect`) | 16,000–16,099 | S13 panel, session rows 16,020–16,083 |
 //! | hidden accounts (`app_hidden`) | 16,200–16,589 | toggles 16,200–16,201, EVM `다시 보이기` rows 16,210–16,399, Solana rows 16,400–16,589 |
 //! | side-file choices (`app_sidecar`) | 16,600–16,609 | meta `닫기`, `고급`, journal `선택 다시 보기`, the Bitcoin form's check after a journal reset |
+//! | first setup·RPC (`screens`) | 16,700–16,783 | S08 '처음 설정' 16,700–16,705, `모두 테스트` 16,706, the chain tabs' `RPC 설정하기` 16,707–16,710, failed-network links 16,720–16,783 |
 
 use crate::ui::{
     screens, screens_book, screens_btc, screens_evm, screens_hypercore, screens_keys, screens_llm,
@@ -104,7 +105,8 @@ pub fn ranges() -> Vec<IdRange> {
     use crate::meta::{MAX_ADDRESS_BOOK, MAX_EVM_ACCOUNTS, MAX_RAW_ACCOUNTS};
     use crate::settings::MAX_CUSTOM_EVM_CHAINS;
     let evm_chains = crate::network::BUILTIN_EVM.len() + MAX_CUSTOM_EVM_CHAINS;
-    // URL rows: every EVM chain, solana:mainnet/devnet, bitcoin:mainnet/testnet4 (spec/04 §2.11.1).
+    // URL rows: every EVM chain, solana:mainnet/devnet, bitcoin:mainnet/testnet4,
+    // zcash:mainnet/testnet (spec/04 §2.11.1).
     let url_rows = evm_chains + 2 + 2 + 2;
     vec![
         range(
@@ -175,6 +177,13 @@ pub fn ranges() -> Vec<IdRange> {
             screens::ids::ROW_BASE,
             screens::ids::ROW_SPAN,
             3,
+            url_rows,
+        ),
+        range(
+            "core.rpc_row_links",
+            screens::ids::RPC_ROW_OPEN_BASE,
+            screens::ids::RPC_ROW_OPEN_SPAN,
+            1,
             url_rows,
         ),
         range(

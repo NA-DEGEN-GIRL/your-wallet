@@ -445,9 +445,14 @@ impl App {
         if applied.template {
             text.push_str(" 모두 같은 QuickNode 엔드포인트라 RPC 공급자를 'QuickNode 멀티체인'으로 하고 이름·토큰을 템플릿 자격 정보로 저장했습니다.");
         }
-        text.push_str(" 아래 '네트워크별 RPC 주소'에서 네트워크마다 '테스트'를 눌러 확인하세요. ");
+        // Every imported address is tested in turn (2026-11-10).
+        if !applied.written.is_empty() {
+            text.push_str(" 연결을 확인하는 중입니다 — 결과는 아래 각 행에 나옵니다.");
+        }
+        text.push(' ');
         text.push_str(T_IMPORT_KEPT);
         self.info = Some(text);
+        self.queue_rpc_tests(&applied.written);
         // The plaintext source is still there: the card moves up and recommends deleting it.
         self.rpc_import.imported = true;
         if applied.template && self.settings.rpc_template != RpcTemplate::QuickNode {
