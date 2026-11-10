@@ -149,10 +149,12 @@ impl App {
         self.sol_account_rows()
             .into_iter()
             .filter_map(|(id, label, address)| {
+                // `{label} ({phrase})` with several phrases (S13, the connect window, the
+                // approval's account line; 2026-11-10).
                 let label = if id.is_imported() || id.is_hardware() {
                     label
                 } else {
-                    self.mnemonic_tagged(&label, id.mnemonic())
+                    self.mnemonic_named(&label, id.mnemonic())
                 };
                 Some(SolRow {
                     public: address.to_bytes(),
@@ -263,27 +265,46 @@ impl App {
             })
             .map(|grant| grant.public);
         let rows = self.sol_dapp_rows();
-        // An account whose phrase is not backed up can receive but not sign: tagged, and not
-        // the default while another account is.
+        // An account whose phrase is not backed up, or whose YubiKey is still on its factory
+        // PINs, can receive but not sign: tagged, and not the default while another account is.
         let unconfirmed: Vec<_> = rows
             .iter()
             .map(|row| self.sol_source_unconfirmed(row.source))
             .collect();
+        let factory: Vec<_> = rows
+            .iter()
+            .map(|row| self.sol_card_gate(row.source))
+            .collect();
+        let can_sign = |index: usize| {
+            unconfirmed.get(index).is_some_and(Option::is_none)
+                && factory.get(index).is_some_and(Option::is_none)
+        };
+        // A new site starts with the account chosen in the Solana tab (2026-11-10), like the
+        // EVM window; a granted account is kept.
+        let current = self.sol_selected().and_then(|(_, _, address)| {
+            rows.iter().position(|row| row.public == address.to_bytes())
+        });
         let pick = rows
             .iter()
             .position(|row| Some(row.public) == granted)
-            .or_else(|| unconfirmed.iter().position(Option::is_none))
+            .or_else(|| current.filter(|index| can_sign(*index)))
+            .or_else(|| (0..rows.len()).find(|index| can_sign(*index)))
             .unwrap_or(0);
         let mut choices = Vec::new();
         let mut selected = Vec::new();
-        for ((index, row), phrase) in rows.into_iter().enumerate().zip(unconfirmed) {
+        for ((index, row), (phrase, serial)) in rows
+            .into_iter()
+            .enumerate()
+            .zip(unconfirmed.into_iter().zip(factory))
+        {
             choices.push((
                 ConnectChoice::Sol(row.public),
                 format!(
-                    "{} · {}{}",
+                    "{}{}{}\n{}",
                     row.label,
-                    row.path,
-                    self.mn_connect_tag(phrase)
+                    self.mn_connect_tag(phrase),
+                    Self::card_connect_tag(serial),
+                    row.path
                 ),
                 yw_core::codec::base58::base58_encode(&row.public),
                 0,
@@ -319,6 +340,13 @@ impl App {
             })
             .map(|grant| grant.addresses)
             .unwrap_or_default();
+        // The Bitcoin tab's account (its stable receive address 0, as the rows offer).
+        let selected_address = {
+            let ctx = self.btc_ctx();
+            ctx.btc_meta()
+                .and_then(|meta| meta.address(BtcChain::Receive, 0).ok())
+                .map(|address| address.as_str().to_owned())
+        };
         let mut choices = Vec::new();
         let mut selected = Vec::new();
         for (group, purpose) in purposes.iter().enumerate() {
@@ -330,9 +358,21 @@ impl App {
                 .iter()
                 .map(|row| self.btc_source_unconfirmed(&row.source))
                 .collect();
+            let factory: Vec<_> = members
+                .iter()
+                .map(|row| self.btc_source_card_gate(&row.source))
+                .collect();
+            let can_sign = |index: usize| {
+                unconfirmed.get(index).is_some_and(Option::is_none)
+                    && factory.get(index).is_some_and(Option::is_none)
+            };
             // The granted address of this purpose, else any granted address this group offers
-            // (a UniSat `any` grant asked again for `payment`), else the first account that can
-            // sign (one whose phrase is not backed up only receives).
+            // (a UniSat `any` grant asked again for `payment`), else the account chosen in the
+            // Bitcoin tab (2026-11-10), else the first account that can sign (one whose phrase
+            // is not backed up, or whose YubiKey has its factory PINs, only receives).
+            let current = selected_address
+                .as_ref()
+                .and_then(|address| members.iter().position(|row| row.entry.address == *address));
             let pick = granted
                 .iter()
                 .filter(|entry| entry.purpose == *purpose)
@@ -342,23 +382,29 @@ impl App {
                         .iter()
                         .position(|row| row.entry.address == entry.address)
                 })
-                .or_else(|| unconfirmed.iter().position(Option::is_none))
+                .or_else(|| current.filter(|index| can_sign(*index)))
+                .or_else(|| (0..members.len()).find(|index| can_sign(*index)))
                 .unwrap_or(0);
             let prefix = match purpose {
                 BtcPurpose::Payment => "[결제용] ",
                 BtcPurpose::Ordinals => "[오디널스용] ",
                 BtcPurpose::Any => "",
             };
-            for ((index, row), phrase) in members.into_iter().enumerate().zip(unconfirmed) {
+            for ((index, row), (phrase, serial)) in members
+                .into_iter()
+                .enumerate()
+                .zip(unconfirmed.into_iter().zip(factory))
+            {
                 let mut entry = row.entry.clone();
                 entry.purpose = *purpose;
                 choices.push((
                     ConnectChoice::Btc(entry),
                     format!(
-                        "{prefix}{} · {}{}",
+                        "{prefix}{}{}{}\n{}",
                         row.label,
-                        row.path,
-                        self.mn_connect_tag(phrase)
+                        self.mn_connect_tag(phrase),
+                        Self::card_connect_tag(serial),
+                        row.path
                     ),
                     row.entry.address.clone(),
                     u8::try_from(group).unwrap_or(0),
@@ -491,6 +537,10 @@ impl App {
         clippy::option_option,
         reason = "not-mine / passed / finished, as `site_preflight` reads it"
     )]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one arm per Solana/Bitcoin request kind"
+    )]
     pub(crate) fn chain_site_preflight(
         &mut self,
         site: &SiteRequest,
@@ -562,12 +612,17 @@ impl App {
                     .find(|row| row.public == *public)
                 {
                     Some(row) if granted => {
-                        // Not backed up: the vault would refuse the key after the approval.
-                        let phrase = self.sol_source_unconfirmed(row.source);
-                        phrase.map(|phrase| {
+                        // Not backed up: the vault would refuse the key after the approval; a
+                        // YubiKey on its factory PINs: the card step would (spec/10 §9.3).
+                        if let Some(phrase) = self.sol_source_unconfirmed(row.source) {
                             self.refuse_unconfirmed(site, phrase);
-                            QueueOutcome::Cancelled
-                        })
+                            Some(QueueOutcome::Cancelled)
+                        } else if let Some(serial) = self.sol_card_gate(row.source) {
+                            self.refuse_card_defaults(site, serial);
+                            Some(QueueOutcome::Cancelled)
+                        } else {
+                            None
+                        }
                     }
                     _ => Some(QueueOutcome::Revoked),
                 }
@@ -589,6 +644,10 @@ impl App {
                         if let Some(phrase) = self.btc_source_unconfirmed(&row.source) {
                             // Not backed up: the vault would refuse the key after the approval.
                             self.refuse_unconfirmed(site, phrase);
+                            Some(QueueOutcome::Cancelled)
+                        } else if let Some(serial) = self.btc_source_card_gate(&row.source) {
+                            // A YubiKey on its factory PINs (spec/10 §9.3).
+                            self.refuse_card_defaults(site, serial);
                             Some(QueueOutcome::Cancelled)
                         } else if protocol.supports(row.entry.script_type) {
                             None

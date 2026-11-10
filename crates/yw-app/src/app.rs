@@ -251,6 +251,9 @@ pub enum Confirm {
     LlmKeyDelete,
     /// The new `YubiKey` wallet's wizard `취소` after the words were shown (spec/10 §7.1-1).
     YkAbandon,
+    /// `완료` of a result screen that leaves its card on factory PINs (2026-11-10, spec/10
+    /// §9.3): `지금 PIN 설정` (back) or `나중에`.
+    YkPinLater,
 }
 
 /// The state of an endpoint `테스트` (settings → 네트워크(RPC) rows, Bitcoin's Esplora URL):
@@ -4708,6 +4711,11 @@ impl App {
                 // `그만두기`: the wizard ends as before (the key worker wipes the words).
                 self.close_overlay_in_place(previous);
                 self.yk_close_wizard();
+            }
+            Confirm::YkPinLater => {
+                // `나중에`: the result screen ends as `완료` would have.
+                self.close_overlay_in_place(previous);
+                self.yk_pin_later();
             }
             Confirm::PruneDormant => {
                 self.prune_dormant();

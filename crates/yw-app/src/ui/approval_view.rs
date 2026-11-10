@@ -4,8 +4,15 @@
 
 use core::fmt::Write as _;
 
-use yw_core::approval::{ApprovalRequest, DisplayField, FieldKey, RiskLevel, Warning};
-use yw_core::evm::risk::{E01, E02, E03, E04, E07, E08, E09, E36};
+use yw_core::approval::{ApprovalRequest, DisplayField, FieldKey, RiskLevel, RuleId, Warning};
+use yw_core::evm::risk::{
+    E01, E02, E03, E04, E07, E08, E09, E28, E29, E36, H01, M04, P03, S09, W08,
+};
+
+/// Information lines that restate the summary (`HyperCore` user action, ownership proof, SIWE,
+/// SIWS, message signature): one muted line of the summary card instead of their own boxes
+/// (2026-11-10). C04 (the `WalletConnect` Verify caution) is not one of them.
+const RESTATING: [RuleId; 5] = [H01, M04, S09, W08, P03];
 
 use crate::errors::ErrorCode;
 use crate::ui::approval::{field_label, validate_for_display};
@@ -51,9 +58,14 @@ pub enum Block {
         notes: String,
         /// `display.title`.
         title: String,
+        /// The information lines that restate the summary (H01, M04, S09, W08, P03), as one
+        /// muted 9 pt line "참고: … · …" at the bottom of the card (2026-11-10; no box, no tag).
+        remark: Option<String>,
     },
     /// A large title line (the connect window's origin).
     Title(String),
+    /// A sub-heading inside a card ("로그인 내용", "메시지 원문").
+    Subheading(&'static str),
     /// A warning (or the preparation failure).
     Warning {
         /// Text.
@@ -334,6 +346,238 @@ fn address_part(value: &str) -> String {
         .to_owned()
 }
 
+/// The value of the typed-data structured field `label` (`0x0303`).
+fn td_field<'d>(display: &'d yw_core::approval::ApprovalDisplay, label: &str) -> Option<&'d str> {
+    display
+        .fields
+        .iter()
+        .find(|field| field.key == FieldKey::TD_FIELD && field.sub_label == label)
+        .map(|field| field.value.as_str())
+}
+
+/// The chain's own label of an address value (a token symbol, `Uniswap Permit2`): its first
+/// bracketed note that is not the account kind nor the wallet's own or book name.
+fn chain_label(value: &str) -> Option<&str> {
+    first_line(value)
+        .split(" [")
+        .skip(1)
+        .map(|note| note.trim_end().trim_end_matches(']'))
+        .find(|note| {
+            !matches!(*note, "컨트랙트" | "일반 계정(EOA)" | "계정 종류 확인 불가")
+                && !note.starts_with("위임된 계정")
+                && !note.starts_with("내 계정")
+                && !note.starts_with("주소록")
+        })
+}
+
+/// An amount display that is zero (`0 USDC`, `0 (원시 단위) …`).
+fn is_zero_amount(amount: &str) -> bool {
+    first_line(amount).split(' ').next() == Some("0")
+}
+
+/// `{amount}을(를)` with the token named once: "무제한" says which token
+/// (`USDC를 무제한으로`), an amount that already ends in the token's name stands alone.
+fn amount_object(token: &str, amount: &str) -> String {
+    let amount = first_line(amount).trim();
+    if amount == "무제한" {
+        return format!(
+            "{token}{} 무제한으로",
+            crate::ui::theme::object_particle(token)
+        );
+    }
+    let what = if amount.contains(token) {
+        amount.to_owned()
+    } else {
+        format!("{token} {amount}")
+    };
+    format!("{what}{}", crate::ui::theme::object_particle(&what))
+}
+
+/// "…까지" of an allowance expiry (`만료 없음` → `기한 없이`).
+fn until(expiration: &str) -> String {
+    let expiration = first_line(expiration).trim();
+    if expiration == "만료 없음" {
+        "기한 없이".to_owned()
+    } else if expiration.starts_with(|character: char| character.is_ascii_digit()) {
+        format!("{expiration}까지")
+    } else {
+        format!("({expiration})")
+    }
+}
+
+/// `{place}아래 주소의 권한을 거둡니다(승인 해제).`
+fn revoke_sentence(place: &str) -> String {
+    format!("{place}아래 주소의 권한을 거둡니다(승인 해제).")
+}
+
+/// The summary of a permission a transaction gives (spec/04 §3.2 요약, 2026-11-10): who gets
+/// what — the address is the one receiving the permission (spender, operator), with its notes.
+/// `None` for any other call (the general sentence stays).
+fn grant_summary<'d>(
+    display: &'d yw_core::approval::ApprovalDisplay,
+    call: &str,
+    place: &str,
+) -> Option<(String, Option<&'d str>)> {
+    let token = || {
+        field_value(display, 0x0101)
+            .and_then(chain_label)
+            .unwrap_or("토큰")
+            .to_owned()
+    };
+    match call {
+        "토큰 사용 승인" | "토큰 승인 증가" => {
+            let spender = call_arg(display, "spender")?;
+            let amount = call_arg(display, "amount").or_else(|| call_arg(display, "added"))?;
+            Some(if is_zero_amount(amount) {
+                (revoke_sentence(place), Some(spender))
+            } else {
+                (
+                    format!(
+                        "{place}아래 주소에 {} 사용 권한을 줍니다: {}.",
+                        token(),
+                        first_line(amount).trim()
+                    ),
+                    Some(spender),
+                )
+            })
+        }
+        "컬렉션 전체 권한" => {
+            let operator = call_arg(display, "operator")?;
+            Some(match call_arg(display, "approved") {
+                Some("예") => (
+                    format!("{place}아래 주소에 이 컬렉션 NFT 전체를 옮길 권한을 줍니다."),
+                    Some(operator),
+                ),
+                Some("아니오") => (revoke_sentence(place), Some(operator)),
+                _ => return None,
+            })
+        }
+        "Permit2 승인" => {
+            let spender = call_arg(display, "spender")?;
+            let amount = call_arg(display, "amount")?;
+            if is_zero_amount(amount) {
+                return Some((revoke_sentence(place), Some(spender)));
+            }
+            let token = call_arg(display, "token")
+                .and_then(chain_label)
+                .unwrap_or("토큰");
+            let expiration = call_arg(display, "expiration")?;
+            Some((
+                format!(
+                    "{place}아래 주소가 {} {} 쓸 수 있게 하는 거래입니다.",
+                    amount_object(token, amount),
+                    until(expiration)
+                ),
+                Some(spender),
+            ))
+        }
+        "Permit2 승인 해제" => {
+            // The first pair's spender (`token → spender` lines).
+            let pairs = call_arg(display, "pairs")?;
+            let spender = first_line(pairs).split(" → ").nth(1)?;
+            Some((revoke_sentence(place), Some(spender)))
+        }
+        _ => None,
+    }
+}
+
+/// The summary of a permission a typed-data signature gives (spec/04 §3.2 요약, 2026-11-10),
+/// from the structured fields (`사용자`, `금액`, `허용 만료`); `None` when they are not there.
+fn permit_summary<'d>(
+    display: &'d yw_core::approval::ApprovalDisplay,
+    action: &str,
+    place: &str,
+) -> Option<(String, Option<&'d str>)> {
+    let token = |label: &str| {
+        td_field(display, label)
+            .and_then(chain_label)
+            .unwrap_or("토큰")
+            .to_owned()
+    };
+    // A batch names how many tokens (`항목 n 토큰`) instead of one amount.
+    let batch = display
+        .fields
+        .iter()
+        .filter(|field| {
+            field.key == FieldKey::TD_FIELD
+                && field.sub_label.starts_with("항목 ")
+                && field.sub_label.ends_with(" 토큰")
+        })
+        .count();
+    match action {
+        "토큰 사용 허가 서명 (permit)" => {
+            let spender = td_field(display, "사용자")?;
+            let amount = td_field(display, "금액")?;
+            Some(if is_zero_amount(amount) {
+                (revoke_sentence(place), Some(spender))
+            } else {
+                (
+                    format!(
+                        "{place}아래 주소가 {} 가져갈 수 있게 하는 서명입니다. 거래 없이 서명만으로 쓰일 수 있습니다.",
+                        amount_object(&token("토큰"), amount)
+                    ),
+                    Some(spender),
+                )
+            })
+        }
+        "DAI 사용 허가 서명" => {
+            let spender = td_field(display, "사용자")?;
+            Some(match td_field(display, "허용")? {
+                "무제한 허용" => (
+                    format!(
+                        "{place}아래 주소가 {} 가져갈 수 있게 하는 서명입니다. 거래 없이 서명만으로 쓰일 수 있습니다.",
+                        amount_object("DAI", "무제한")
+                    ),
+                    Some(spender),
+                ),
+                _ => (revoke_sentence(place), Some(spender)),
+            })
+        }
+        "Permit2 승인 서명" => {
+            let spender = td_field(display, "사용자")?;
+            if batch > 0 {
+                return Some((
+                    format!("{place}아래 주소가 토큰 {batch}종을 쓸 수 있게 하는 서명입니다."),
+                    Some(spender),
+                ));
+            }
+            let amount = td_field(display, "금액")?;
+            if is_zero_amount(amount) {
+                return Some((revoke_sentence(place), Some(spender)));
+            }
+            Some((
+                format!(
+                    "{place}아래 주소가 {} {} 쓸 수 있게 하는 서명입니다.",
+                    amount_object(&token("토큰"), amount),
+                    until(td_field(display, "허용 만료")?)
+                ),
+                Some(spender),
+            ))
+        }
+        "Permit2 즉시 이체 서명" | "Permit2 즉시 이체 서명(조건 포함)" => {
+            let spender = td_field(display, "사용자")?;
+            let what = if batch > 0 {
+                format!("토큰 {batch}종을")
+            } else {
+                let amount = first_line(td_field(display, "금액")?).trim();
+                format!("{amount}{}", crate::ui::theme::object_particle(amount))
+            };
+            Some((
+                format!("{place}아래 주소가 {what} 바로 가져갈 수 있게 하는 서명입니다."),
+                Some(spender),
+            ))
+        }
+        "Hyperliquid 거래 권한 위임 서명" => {
+            let agent = td_field(display, "agentAddress")?;
+            Some((
+                format!("{place}아래 주소(API 지갑)에 내 계정으로 주문·취소할 권한을 줍니다."),
+                Some(agent),
+            ))
+        }
+        _ => None,
+    }
+}
+
 /// The action of `[{network}] {action}`.
 fn title_action(title: &str) -> &str {
     title
@@ -408,6 +652,7 @@ fn send_sentence(place: &str, amount: &str) -> String {
 
 /// [`summary`] with the whole display value of the address (the address and its bracketed
 /// notes).
+#[expect(clippy::too_many_lines, reason = "one arm per approval kind")]
 fn summary_value(request: &ApprovalRequest) -> (String, Option<&str>) {
     use yw_core::approval::ApprovalKind;
     let display = &request.display;
@@ -421,6 +666,22 @@ fn summary_value(request: &ApprovalRequest) -> (String, Option<&str>) {
         Some(amount) => send_sentence(&place, amount),
         None => format!("{place}{asset} 보냅니다."),
     };
+    // A Sign-In-With-Bitcoin message (yw-core `SIWB_MARKER` on its first line) says it is a site
+    // log-in and which domain it names (2026-11-10).
+    if request.kind == ApprovalKind::BtcMessage
+        && let Some(domain) = field_value(display, 0x0401).and_then(|text| {
+            yw_core::btc::msgsign::sign_in_domain(text.as_bytes())
+                .map(str::trim)
+                .filter(|domain| !domain.is_empty())
+        })
+    {
+        return (
+            format!(
+                "{place}{domain} 사이트 로그인(Sign-In with Bitcoin) 메시지에 서명합니다. 거래 서명이나 전송은 하지 않습니다."
+            ),
+            None,
+        );
+    }
     match request.kind {
         ApprovalKind::EvmTransaction => {
             // The core names a plain native transfer "{symbol} 보내기" (spec/03 §9) and gives it
@@ -436,6 +697,11 @@ fn summary_value(request: &ApprovalRequest) -> (String, Option<&str>) {
             let token = (call == Some("토큰 전송") && no_value)
                 .then(|| call_arg(display, "amount").zip(call_arg(display, "to")))
                 .flatten();
+            // A permission (approve, increaseAllowance, setApprovalForAll, Permit2) names who
+            // gets it and how much; the address is the one receiving it (2026-11-10).
+            if let Some(grant) = call.and_then(|call| grant_summary(display, call, &place)) {
+                return grant;
+            }
             match (plain, field_value(display, 0x0102), token) {
                 (true, Some(amount), _) => {
                     (send_sentence(&place, amount), field_value(display, 0x0101))
@@ -459,7 +725,8 @@ fn summary_value(request: &ApprovalRequest) -> (String, Option<&str>) {
             None,
         ),
         ApprovalKind::EvmPersonalSign => (personal_sign_summary(display, &place), None),
-        ApprovalKind::EvmTypedData => (typed_data_summary(display, &place), None),
+        ApprovalKind::EvmTypedData => permit_summary(display, title_action(&display.title), &place)
+            .unwrap_or_else(|| (typed_data_summary(display, &place), None)),
         ApprovalKind::SolTransfer => {
             let amount = field_value(display, 0x0502);
             let to = amount.and(field_value(display, 0x0501));
@@ -583,12 +850,51 @@ pub fn signing_view(
         .filter(|_| address.is_some())
         .map(address_notes)
         .unwrap_or_default();
+    let shown_warnings: Vec<&Warning> = display
+        .warnings
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| band_index.is_none_or(|(band, _)| band != *index))
+        .map(|(_, warning)| warning)
+        .collect();
+    // Information lines go below the attention ones (2026-11-08) and, since 2026-11-10, where
+    // they belong: the lines that restate the summary become one muted line of its card, a note
+    // on the recipient goes right under the card when the summary is the recipient's sentence,
+    // and the rest follow the key fields ("참고"). Every line is still shown and never folded;
+    // levels, the digest and the ack are unchanged.
+    let (attention, infos): (Vec<&Warning>, Vec<&Warning>) = shown_warnings
+        .into_iter()
+        .partition(|warning| warning.level != RiskLevel::Info);
+    let (restated, infos): (Vec<&Warning>, Vec<&Warning>) = infos
+        .into_iter()
+        .partition(|warning| RESTATING.contains(&warning.rule));
+    let recipient = address.is_some() && sentence.ends_with("아래 주소로 보냅니다.");
+    let (recipient_notes, notes_left): (Vec<&Warning>, Vec<&Warning>) = infos
+        .into_iter()
+        .partition(|warning| recipient && [E28, E29].contains(&warning.rule));
+    let remark = (!restated.is_empty()).then(|| {
+        format!(
+            "참고: {}",
+            restated
+                .iter()
+                .map(|warning| warning.text.replace('\n', " — "))
+                .collect::<Vec<_>>()
+                .join(" · ")
+        )
+    });
     view.blocks.push(Block::Summary {
         sentence,
         address,
         notes,
         title: display.title.clone(),
+        remark,
     });
+    for warning in recipient_notes {
+        view.blocks.push(Block::Warning {
+            text: warning.text.clone(),
+            tone: Tone::Plain,
+        });
+    }
     let show_diff = matches!(state, Some(SimState::Ok | SimState::Incomplete));
     let sol = request.kind == yw_core::approval::ApprovalKind::SolTransfer;
     let btc = request.kind.is_btc();
@@ -605,6 +911,9 @@ pub fn signing_view(
             || (btc && is_btc_money(key))
             || (hc && matches!(key.0, 0x0703 | 0x0704))
     };
+    // The EVM asset-change card ends with the fee (2026-11-10): the expected fee of the
+    // simulation and the maximum, so they are not looked for below.
+    let fee_in_card = !(sol || btc || hc || message) && field_value(display, 0x0120).is_some();
     if sol || btc || hc {
         view.blocks.push(Block::Section("금액·수수료"));
         for field in display.fields.iter().filter(|field| money(field.key)) {
@@ -616,21 +925,19 @@ pub fn signing_view(
         }
     } else if !message {
         push_simulation_section(&mut view, display, state, show_diff);
+        if let Some(max) = field_value(display, 0x0120) {
+            let value = match field_value(display, 0x0121).filter(|fee| *fee != "알 수 없음") {
+                Some(expected) => format!("예상 {expected} (최대 {max})"),
+                None => format!("최대 {max}"),
+            };
+            view.blocks.push(Block::Field {
+                label: "수수료".to_owned(),
+                value,
+                mono: false,
+            });
+        }
     }
-    let shown_warnings: Vec<&Warning> = display
-        .warnings
-        .iter()
-        .enumerate()
-        .filter(|(index, _)| band_index.is_none_or(|(band, _)| band != *index))
-        .map(|(_, warning)| warning)
-        .collect();
     let acknowledge = view.high && !view.blocked;
-    // Information lines go to their own "참고" section (2026-11-08): a window whose only lines
-    // restate the summary is not titled "확인할 경고", so that title keeps its weight. Every line
-    // is still shown, in display order within its section; levels and the ack are unchanged.
-    let (attention, notes): (Vec<&Warning>, Vec<&Warning>) = shown_warnings
-        .into_iter()
-        .partition(|warning| warning.level != RiskLevel::Info);
     if !attention.is_empty() || acknowledge {
         view.blocks.push(Block::Section("확인할 경고"));
     }
@@ -648,19 +955,11 @@ pub fn signing_view(
     if acknowledge {
         view.blocks.push(Block::Ack);
     }
-    if !notes.is_empty() {
-        view.blocks.push(Block::Section("참고"));
-    }
-    for warning in notes {
-        view.blocks.push(Block::Warning {
-            text: warning.text.clone(),
-            tone: tone_of(warning.level),
-        });
-    }
     let shown_above = |field: &DisplayField| {
         is_header(field.key)
             || money(field.key)
             || (show_diff && (is_diff(field.key) || field.key == FieldKey::SIMULATION))
+            || (fee_in_card && matches!(field.key.0, 0x0120 | 0x0121))
     };
     let key_fields: Vec<&DisplayField> = display
         .fields
@@ -670,11 +969,45 @@ pub fn signing_view(
     if !key_fields.is_empty() {
         view.blocks.push(Block::Section("핵심 정보"));
     }
-    for field in key_fields {
+    // A log-in message (SIWE, SIWS) shows what it parsed first and the message after it, both
+    // open (2026-11-10).
+    let login = matches!(
+        title_action(&display.title),
+        "로그인 요청 (SIWE)" | "로그인 요청 (SIWS)"
+    );
+    let is_login_field = |field: &DisplayField| {
+        field.key == FieldKey::SIWE_FIELD || field.key == FieldKey::SIWS_FIELD
+    };
+    let (login_fields, other_fields): (Vec<&DisplayField>, Vec<&DisplayField>) = key_fields
+        .into_iter()
+        .partition(|field| login && is_login_field(field));
+    if !login_fields.is_empty() {
+        view.blocks.push(Block::Subheading("로그인 내용"));
+    }
+    for field in login_fields {
         view.blocks.push(Block::Field {
             label: label_of(field),
             value: field.value.clone(),
             mono: is_mono(field.key),
+        });
+    }
+    if login && !other_fields.is_empty() {
+        view.blocks.push(Block::Subheading("메시지 원문"));
+    }
+    for field in other_fields {
+        view.blocks.push(Block::Field {
+            label: label_of(field),
+            value: field.value.clone(),
+            mono: is_mono(field.key),
+        });
+    }
+    if !notes_left.is_empty() {
+        view.blocks.push(Block::Section("참고"));
+    }
+    for warning in notes_left {
+        view.blocks.push(Block::Warning {
+            text: warning.text.clone(),
+            tone: tone_of(warning.level),
         });
     }
     let details: Vec<&DisplayField> = display
@@ -794,6 +1127,13 @@ pub fn compat_mode_badge(mode: crate::browser::envelope::CompatMode) -> String {
     format!("호환 모드: {}", mode.label())
 }
 
+/// The name of a connect-window row label: its first line without the `  [...]` tags.
+#[must_use]
+pub fn account_name(label: &str) -> &str {
+    let first = first_line(label);
+    first.split("  [").next().unwrap_or(first).trim_end()
+}
+
 /// The connect window content (spec/05 §4.2): the origin in large type, the http and punycode
 /// badges, the fixed guidance, the account checkboxes and the origin chain.
 #[must_use]
@@ -847,7 +1187,8 @@ pub fn connect_view(
         ));
     }
     // The account a dApp uses is the first checked one in list order (spec/05 §4.2); say which
-    // (2026-11-08) so the choice is not a guess.
+    // (2026-11-08) so the choice is not a guess — its name only (2026-11-10: a row's label
+    // carries its tags and, on a second line, its source and path).
     if family == Family::Evm
         && let Some((label, _)) = accounts
             .iter()
@@ -856,7 +1197,8 @@ pub fn connect_view(
             .map(|(account, _)| account)
     {
         blocks.push(Block::Muted(format!(
-            "사이트가 기본으로 쓰는 계정: {label} (체크한 계정 중 목록의 첫 계정)"
+            "사이트가 기본으로 쓰는 계정: {} (체크한 계정 중 목록의 첫 계정)",
+            account_name(label)
         )));
     }
     blocks.push(Block::Field {
@@ -889,6 +1231,217 @@ mod tests {
     use yw_core::vault::EvmKeySource;
 
     use super::{Block, Tone, attach_address_note, signing_view, summary};
+
+    const NOW: u64 = 1_790_000_000_000;
+
+    /// A Sepolia transaction request from account `0x01…` (no simulation unless `sim`).
+    fn tx_request(
+        to: Address,
+        data: Vec<u8>,
+        sim: &SimResult,
+    ) -> yw_core::approval::ApprovalRequest {
+        let chain = sepolia();
+        let tx = Eip1559Tx {
+            chain_id: chain.chain_id,
+            nonce: 0,
+            max_priority_fee_per_gas: U256::from_u64(1),
+            max_fee_per_gas: U256::from_u64(2),
+            gas_limit: 60_000,
+            to,
+            value: U256::ZERO,
+            data,
+            access_list: Vec::new(),
+        };
+        let decoded = DecodedTx {
+            call: decode_call(&chain, &tx.to, &tx.data),
+            tx,
+        };
+        let draft = build_evm_tx_request(
+            ApprovalId([1; 16]),
+            ApprovalOrigin::App,
+            EvmKeySource::Derived(AccountIndex::ZERO),
+            Address::from_bytes([0x01; 20]),
+            ApprovalKind::EvmTransaction,
+            &chain,
+            &decoded,
+            sim,
+            &ChainFacts::default(),
+            Vec::new(),
+            NOW,
+        )
+        .unwrap();
+        ApprovalStore::new().issue(draft, 1, NOW).unwrap()
+    }
+
+    /// A Sepolia typed-data request of `source`.
+    fn typed_request(source: &str) -> yw_core::approval::ApprovalRequest {
+        let value = yw_json::parse(source.as_bytes(), &yw_json::Limits::REQUEST).unwrap();
+        let typed =
+            yw_core::evm::eip712::validate_typed_data_v4(source.as_bytes(), &value, 11_155_111)
+                .unwrap();
+        let draft = yw_core::approval::build_typed_request(
+            ApprovalId([2; 16]),
+            ApprovalOrigin::App,
+            EvmKeySource::Derived(AccountIndex::ZERO),
+            Address::from_bytes([0x01; 20]),
+            ApprovalKind::EvmTypedData,
+            &sepolia(),
+            &typed,
+            &ChainFacts::default(),
+            NOW,
+        )
+        .unwrap();
+        ApprovalStore::new().issue(draft, 1, NOW).unwrap()
+    }
+
+    /// spec/04 §3.2 요약 (2026-11-10): a permission says who gets it and how much, and the
+    /// address under the sentence is the one receiving it (spender, operator), not the token.
+    #[test]
+    fn permission_summaries_name_who_gets_what() {
+        use yw_core::evm::abi::{AbiValue, SEL_APPROVE, SEL_SET_APPROVAL_FOR_ALL, encode_call};
+        let chain = sepolia();
+        let usdc = chain.tokens[1].address;
+        let spender = Address::from_bytes([0x42; 20]);
+        let nft = Address::from_bytes([0x77; 20]);
+        let usdc_text = usdc.to_checksum();
+        let spender_text = spender.to_checksum();
+        // approve(spender, max) that the simulation saw as an ERC-20 `Approval` (R4 resolved).
+        let approval_log = yw_core::evm::simulate::LogEvent::Erc20Approval {
+            token: usdc,
+            owner: Address::from_bytes([0x01; 20]),
+            spender,
+            amount: U256::MAX,
+        };
+        let simulated = SimResult::Simulated {
+            verdict: yw_core::approval::SimVerdict::Ok,
+            diff: yw_core::evm::simulate::SimulationDiff {
+                block: yw_core::approval::SimBinding {
+                    number: 1,
+                    parent_hash: [1; 32],
+                    timestamp: 1_790_000_000,
+                    base_fee: U256::from_u64(1),
+                    sim_digest: [2; 32],
+                },
+                changes: Vec::new(),
+                approvals: Vec::new(),
+                transfers: Vec::new(),
+                other_events: 0,
+                gas_used: 46_000,
+                events: vec![approval_log],
+                omitted_rows: 0,
+                native_emitter_mismatch: false,
+            },
+            warnings: Vec::new(),
+        };
+        let approve = tx_request(
+            usdc,
+            encode_call(
+                SEL_APPROVE,
+                &[AbiValue::Address(spender), AbiValue::Uint(U256::MAX)],
+            ),
+            &simulated,
+        );
+        let for_all = |approved| {
+            tx_request(
+                nft,
+                encode_call(
+                    SEL_SET_APPROVAL_FOR_ALL,
+                    &[AbiValue::Address(spender), AbiValue::Bool(approved)],
+                ),
+                &SimResult::skipped(),
+            )
+        };
+        let permit = typed_request(&format!(
+            r#"{{"types":{{"EIP712Domain":[{{"name":"name","type":"string"}},{{"name":"version","type":"string"}},{{"name":"chainId","type":"uint256"}},{{"name":"verifyingContract","type":"address"}}],"Permit":[{{"name":"owner","type":"address"}},{{"name":"spender","type":"address"}},{{"name":"value","type":"uint256"}},{{"name":"nonce","type":"uint256"}},{{"name":"deadline","type":"uint256"}}]}},"primaryType":"Permit","domain":{{"name":"USDC","version":"2","chainId":11155111,"verifyingContract":"{usdc_text}"}},"message":{{"owner":"{}","spender":"{spender_text}","value":"1000000","nonce":"0","deadline":"1893456000"}}}}"#,
+            Address::from_bytes([0x01; 20]).to_checksum()
+        ));
+        let permit_single = typed_request(&format!(
+            r#"{{"types":{{"EIP712Domain":[{{"name":"name","type":"string"}},{{"name":"chainId","type":"uint256"}},{{"name":"verifyingContract","type":"address"}}],"PermitDetails":[{{"name":"token","type":"address"}},{{"name":"amount","type":"uint160"}},{{"name":"expiration","type":"uint48"}},{{"name":"nonce","type":"uint48"}}],"PermitSingle":[{{"name":"details","type":"PermitDetails"}},{{"name":"spender","type":"address"}},{{"name":"sigDeadline","type":"uint256"}}]}},"primaryType":"PermitSingle","domain":{{"name":"Permit2","chainId":11155111,"verifyingContract":"0x000000000022D473030F116dDEE9F6B43aC78BA3"}},"message":{{"details":{{"token":"{usdc_text}","amount":"1461501637330902918203684832716283019655932542975","expiration":"1790086400","nonce":"0"}},"spender":"{spender_text}","sigDeadline":"1790000600"}}}}"#
+        ));
+        let rows: [(&yw_core::approval::ApprovalRequest, &str); 5] = [
+            (
+                &approve,
+                "Sepolia 테스트넷에서 아래 주소에 USDC 사용 권한을 줍니다: 무제한.",
+            ),
+            (
+                &permit,
+                "Sepolia 테스트넷에서 아래 주소가 1 USDC를 가져갈 수 있게 하는 서명입니다. 거래 없이 서명만으로 쓰일 수 있습니다.",
+            ),
+            (
+                &permit_single,
+                "Sepolia 테스트넷에서 아래 주소가 USDC를 무제한으로 2026-09-22 ",
+            ),
+            (
+                &for_all(true),
+                "Sepolia 테스트넷에서 아래 주소에 이 컬렉션 NFT 전체를 옮길 권한을 줍니다.",
+            ),
+            (
+                &for_all(false),
+                "Sepolia 테스트넷에서 아래 주소의 권한을 거둡니다(승인 해제).",
+            ),
+        ];
+        for (request, sentence) in rows {
+            let (text, address) = summary(request);
+            assert!(
+                text.starts_with(sentence),
+                "{text:?} does not start with {sentence:?}"
+            );
+            assert_eq!(address, Some(format_address(&spender)), "{text}");
+        }
+        let (single, _) = summary(&permit_single);
+        assert!(
+            single.ends_with("까지 쓸 수 있게 하는 서명입니다."),
+            "{single}"
+        );
+    }
+
+    /// spec/04 §3.2 (2026-11-10): an information line that restates the summary (M04) is one
+    /// muted line of the summary card — no box, no tag — and its words are still there; the
+    /// other information lines follow the key fields.
+    #[test]
+    fn restating_lines_join_the_summary_card() {
+        let draft = yw_core::sol::msgsign::build_sol_message_request(
+            &yw_core::sol::msgsign::SolMessageRequest {
+                id: ApprovalId([3; 16]),
+                origin: yw_core::policy::BrowserOrigin::parse("https://app.example").unwrap(),
+                cluster: yw_core::sol::SolCluster::Devnet,
+                source: yw_core::slip10::SolKeySource::Standard(AccountIndex::ZERO),
+                public: [7; 32],
+                label: "Solana 1".to_owned(),
+                message: b"Prove it".to_vec(),
+                sign_in: false,
+            },
+            NOW,
+        )
+        .unwrap();
+        let m04 = yw_core::evm::risk::base_text(yw_core::evm::risk::M04).unwrap();
+        assert!(draft.display.warnings.iter().any(|w| w.text == m04));
+        let request = ApprovalStore::new().issue(draft, 1, NOW).unwrap();
+        let view = signing_view(&request, false, true, Vec::new(), true).unwrap();
+        assert!(
+            matches!(
+                view.blocks.first(),
+                Some(Block::Summary { remark: Some(remark), .. }) if *remark == format!("참고: {m04}")
+            ),
+            "{:?}",
+            view.blocks.first()
+        );
+        assert!(!view.blocks.iter().any(|block| matches!(
+            block,
+            Block::Warning { text, .. } if text.contains(m04)
+        )));
+        assert!(!view.blocks.contains(&Block::Section("참고")));
+        // The key fields come right after the summary; `자세히` stays last.
+        let sections: Vec<&str> = view
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                Block::Section(title) => Some(*title),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(sections, ["핵심 정보"]);
+    }
 
     /// spec/04 §3.2–§3.3: an ERC-20 `transfer` summary names the token recipient with its book
     /// note (not the token contract), and a W-ADDR-3 note goes right under the summary.

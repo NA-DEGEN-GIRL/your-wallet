@@ -49,7 +49,7 @@ pub mod ids {
 }
 
 /// T-WAIT-STALLED.
-pub const T_WAIT_STALLED: &str = "30초가 지나도 불러오기가 끝나지 않았습니다. '다시 불러오기'를 누르거나, '잠금'을 누른 뒤 다시 잠금 해제해 보세요. 그래도 안 되면 앱을 종료했다가 다시 실행하세요. 계속되면 로그 폴더의 yw-app.log를 확인하고, 복구 단어(또는 원래 개인키)가 있다면 잠금 화면의 '지갑 초기화…'로 처음부터 시작할 수 있습니다.";
+pub const T_WAIT_STALLED: &str = "30초가 지나도 불러오기가 끝나지 않았습니다. '다시 불러오기'를 누르거나, '잠금'을 누른 뒤 다시 잠금 해제해 보세요. 그래도 안 되면 앱을 종료했다가 다시 실행하세요. 계속되면 로그 폴더의 yw-app.log를 확인하세요. 처음부터 다시 쓰려면 복구 단어·원래 개인키, 또는 YubiKey(“YubiKey 연결하기 (복구 단어 없이)”)가 필요합니다 — 있다면 잠금 화면의 '지갑 초기화…'로 시작할 수 있습니다.";
 /// T-META-FAILED: a meta load failed (other than a damaged file, E-VLT-006's overlay).
 pub const T_META_FAILED: &str = "계정 이름·주소록·연결한 사이트·보안 설정 기록이 담긴 meta 파일(meta.ywm)을 불러오지 못했습니다. 파일은 그대로 두었고, 불러오기에 성공할 때까지 이 파일에 아무것도 쓰지 않습니다. '다시 불러오기'를 누르거나, '잠금'을 누른 뒤 다시 잠금 해제해 보세요. 계속 실패하면 디스크 공간과 백신의 파일 차단을 확인하고 로그 폴더의 yw-app.log를 보세요. 그래도 안 되면 앱을 종료하고 데이터 폴더를 통째로 백업한 뒤 복구 안내(recovery-guide)를 따르세요.";
 /// T-RESET-INTRO (S22 danger banner).
@@ -160,6 +160,20 @@ impl App {
     /// S22.
     pub(crate) fn reset_screen(&self, items: &mut Vec<Item>) {
         items.push(Item::Title("지갑 초기화".to_owned()));
+        // Unlocked: what brings this wallet back, before anything is moved (2026-11-10; the
+        // lines of settings → 보안).
+        if matches!(self.mode, crate::app::AppMode::Unlocked { .. }) {
+            let lines = self.backup_status_all();
+            if !lines.is_empty() {
+                items.push(Item::CardStart(Some(
+                    "백업 현황 — 이 지갑을 다시 열려면".to_owned(),
+                )));
+                for line in lines {
+                    items.push(Item::Text(line));
+                }
+                items.push(Item::CardEnd);
+            }
+        }
         items.push(Item::Banner(T_RESET_INTRO.to_owned(), Tone::HighRisk));
         if self.sends_in_flight() {
             items.push(Item::Banner(T_RESET_IN_FLIGHT.to_owned(), Tone::Warn));

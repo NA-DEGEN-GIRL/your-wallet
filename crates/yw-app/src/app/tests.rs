@@ -657,10 +657,12 @@ fn backup_discard_mainnet_and_done_texts() {
     let items = app.items();
     assert!(has_text(&items, "개인키 보기"));
     assert!(has_text(&items, "복구 단어로 복구되지 않"));
+    // 2026-11-10: an imported key is lost for good with its removal, so the unknown balance is
+    // said inside the removal's own 고위험 band.
     assert!(
         items
             .iter()
-            .any(|item| matches!(item, Item::Banner(text, Tone::Warn) if text.contains("잔액을 확인하지 못했습니다"))),
+            .any(|item| matches!(item, Item::Banner(text, Tone::HighRisk) if text.contains("잔액을 확인하지 못했습니다"))),
         "unknown balance warns"
     );
     let address = parse_address(raw).unwrap();
@@ -3149,6 +3151,15 @@ fn yk_pump(h: &mut Harness, seen: &mut YkSeen) {
     }
 }
 
+/// `완료` (`FINISH`, `MANAGE_DONE`) of a result screen: a card left on factory PINs asks once
+/// (2026-11-10), answered `나중에`.
+fn finish_result(h: &mut Harness, id: u16) {
+    h.app.on_command(id);
+    if h.app.screen == Screen::Confirm(Confirm::YkPinLater) {
+        h.app.on_command(ids::CONFIRM_YES);
+    }
+}
+
 /// Every text, field value and monospace line of a screen.
 fn all_text(items: &[Item]) -> Vec<String> {
     items
@@ -3196,6 +3207,127 @@ fn about_wallet(h: &mut Harness) {
 
 /// "슬롯 구성 바꾸기" and "YubiKey 비우기" (spec/10 §15).
 mod yubikey_manage;
+
+/// spec/10 §9.2 (2026-11-10): once the PIN is in, the touch prompt is the S11 form's line next to
+/// `검토` (a dApp request: the header band), and it is gone once the card answered — signed or
+/// failed.
+#[test]
+#[expect(clippy::too_many_lines, reason = "two card steps end to end")]
+fn the_touch_prompt_is_gone_once_the_card_answers() {
+    use yw_core::approval::{ApprovalId, ApprovalKind, ApprovalOrigin, ApprovalStore};
+    use yw_core::bip32::path::AccountIndex;
+    use yw_core::evm::decode::{DecodedTx, decode_call};
+    use yw_core::evm::simulate::SimResult;
+    use yw_core::evm::tx::Eip1559Tx;
+    use yw_core::journal::evm::Role;
+    use yw_core::vault::EvmKeySource;
+
+    use crate::app_browser::SignWaiter;
+    use crate::app_card::T_CARD_TOUCH;
+    use crate::events::{KeyJob, SignInfo};
+
+    let (worker, cards, dir, _) = crate::workers::key::tests::yubikey_wallet("touch");
+    let mut h = Harness {
+        app: app_at(&dir),
+        worker,
+        dir,
+        phrase: None,
+        address: None,
+    };
+    h.app.key(KeyJob::Load);
+    h.pump();
+    h.submit(Purpose::Unlock, &[b"yubikey wallet password"]);
+    h.pump();
+    cards.lock().unwrap()[0].pw1 = b"135790".to_vec();
+    let account = parse_address("0x6Fac4D18c912343BF86fa7049364Dd4E424Ab9C0").unwrap();
+    let source = EvmKeySource::Hardware(AccountIndex::new(1).unwrap());
+    let chain = yw_core::evm::chain::sepolia();
+    let tx = Eip1559Tx {
+        chain_id: 11_155_111,
+        nonce: 0,
+        max_priority_fee_per_gas: U256::from_u64(1_000_000_000),
+        max_fee_per_gas: U256::from_u64(2_000_000_000),
+        gas_limit: 21_000,
+        to: parse_address("0x9858EfFD232B4033E47d90003D41EC34EcaEda94").unwrap(),
+        value: U256::from_u64(1_000),
+        data: Vec::new(),
+        access_list: Vec::new(),
+    };
+    let mut store = ApprovalStore::new();
+    let mut approve = || {
+        let decoded = DecodedTx {
+            call: decode_call(&chain, &tx.to, &tx.data),
+            tx: tx.clone(),
+        };
+        let draft = yw_core::approval::build_evm_tx_request(
+            ApprovalId::random().unwrap(),
+            ApprovalOrigin::App,
+            source,
+            account,
+            ApprovalKind::EvmTransaction,
+            &chain,
+            &decoded,
+            &SimResult::skipped(),
+            &yw_core::approval::ChainFacts::default(),
+            Vec::new(),
+            1_790_000_000_000,
+        )
+        .unwrap();
+        let request = store.issue(draft, 0, 1_790_000_000_000).unwrap();
+        store.consume(request.id, request.digest, 1).unwrap()
+    };
+    let info = SignInfo {
+        origin: "yw-app".to_owned(),
+        label: "YubiKey 보내기".to_owned(),
+        role: Role::Original,
+        now_unix_ms: 1_790_000_000_000,
+    };
+    // Runs the queued jobs (the counters read, then the card job) and delivers them.
+    let run_all = |h: &mut Harness| {
+        while !h.app.key_queue.is_empty() {
+            let Some(entry) = h.app.key_queue.pop() else {
+                break;
+            };
+            let results = std::cell::RefCell::new(Vec::new());
+            let signal = std::sync::Arc::clone(&h.app.lock_signal);
+            step(
+                &mut h.worker,
+                &h.app.key_queue,
+                entry,
+                &|result| results.borrow_mut().push(result),
+                &signal,
+            );
+            h.deliver(results.into_inner());
+        }
+    };
+    // S11's own send: the prompt is the form's line, gone once signed.
+    h.app.set_screen(Screen::Send);
+    let ticket = h.app.push_sign_waiter(SignWaiter::App);
+    h.app
+        .dispatch_evm_sign(ticket, approve(), info.clone(), true);
+    let id = h.app.card_waiting_id().unwrap();
+    run_all(&mut h);
+    h.submit(Purpose::CardSign(id), &[b"135790"]);
+    assert_eq!(h.app.evm.send.info.as_deref(), Some(T_CARD_TOUCH));
+    assert_ne!(h.app.info.as_deref(), Some(T_CARD_TOUCH));
+    run_all(&mut h);
+    h.pump();
+    assert!(h.app.card.step.is_none());
+    assert_ne!(h.app.evm.send.info.as_deref(), Some(T_CARD_TOUCH));
+    assert!(h.app.card.notice.is_none());
+    // Not from a form (a dApp request): the header band, gone once the card refused the PIN.
+    h.app.set_screen(Screen::Main);
+    let ticket = h.app.push_sign_waiter(SignWaiter::App);
+    h.app.dispatch_evm_sign(ticket, approve(), info, false);
+    let id = h.app.card_waiting_id().unwrap();
+    run_all(&mut h);
+    h.submit(Purpose::CardSign(id), &[b"000000"]);
+    assert_eq!(h.app.info.as_deref(), Some(T_CARD_TOUCH));
+    run_all(&mut h);
+    assert!(h.app.card_waiting(id), "the PIN window opens again");
+    assert_ne!(h.app.info.as_deref(), Some(T_CARD_TOUCH));
+    assert!(h.app.card.notice.is_none());
+}
 
 /// spec/10 §7.1-2, §7.2, §13 at the App level: Settings → `YubiKey` → the wizard with SIG = EVM 2,
 /// AUT = Bitcoin P2WPKH 0 and 2 Solana accounts from index 1 → the recovery words (this vault's:
@@ -3336,6 +3468,9 @@ fn yubikey_wizard_enrols_an_existing_wallet() {
     assert_eq!(record.slots.len(), 4);
     assert!(wizard.defaults.openpgp_admin && wizard.defaults.piv_pin);
     assert_eq!(h.app.card.records, core::slice::from_ref(&record));
+    // The slots checked in 2/4 are folded under '슬롯·주소 자세히 ▸' (2026-11-10).
+    assert!(!all_text(&h.app.items()).contains(&evm2));
+    h.app.on_command(yk::RESULT_DETAILS);
     let items = h.app.items();
     unique_ids(&items);
     assert!(all_text(&items).contains(&evm2));
@@ -3388,7 +3523,7 @@ fn yubikey_wizard_enrols_an_existing_wallet() {
     assert_eq!(cards.lock().unwrap()[0].piv_puk, b"87654321");
     assert!(!h.app.card.wizard.as_ref().unwrap().defaults.piv_pin);
     // `완료`: the key worker forgets the words.
-    h.app.on_command(yk::FINISH);
+    finish_result(&mut h, yk::FINISH);
     yk_pump(&mut h, &mut seen);
     assert!(h.app.card.wizard.is_none());
     assert_eq!(
@@ -3657,7 +3792,7 @@ fn yubikey_backup_copy_removal_and_management_key() {
     // Remove card A's record: overlay, W03 (a wrong password first), the copy keeps the account.
     h.app.on_command(yk::REMOVE_BASE);
     assert_eq!(h.app.screen, Screen::Confirm(Confirm::RemoveYubiKey));
-    assert!(has_text(&h.app.items(), "다른 YubiKey에도 있어"));
+    assert!(has_text(&h.app.items(), "YubiKey #8800012로 계속 서명"));
     let id = h.app.card.record_ids[0];
     h.app.on_command(ids::CONFIRM_YES);
     h.submit(
@@ -3722,14 +3857,18 @@ fn yubikey_backup_copy_removal_and_management_key() {
     // §9.3 on the result screen ("하나씩 따로"): "PIV 관리 키 자동 보호" — a random key made on
     // this PC and stored PIN-protected on the card; the user never sees or types it. A custom
     // key the wallet does not know is refused first.
+    // 2026-11-10: only some secrets were seen at their factory values (the PIV PIN; the
+    // management key is custom), so the card starts in "하나씩 따로", the factory ones marked.
     let items = h.app.items();
     assert!(
-        ctl(&items, yk::SET_PINS).is_some(),
-        "unified mode by default"
+        ctl(&items, yk::SET_PINS).is_none(),
+        "separate mode by default"
     );
-    assert!(ctl(&items, yk::CHANGE_MGMT).is_none());
-    h.app.on_command(yk::PINS_SEPARATE);
-    assert!(ctl(&h.app.items(), yk::CHANGE_MGMT).is_some());
+    assert_eq!(
+        ctl(&items, yk::CHANGE_PIV_PIN).map(|ctl| ctl.text.clone()),
+        Some("PIV PIN (공장값 — 바꿔야 함)".to_owned())
+    );
+    assert!(ctl(&items, yk::CHANGE_MGMT).is_some());
     h.app.on_command(yk::CHANGE_MGMT);
     h.submit(Purpose::YubiKey(YkPurpose::ProtectManagement), &[b"123456"]);
     yk_pump(&mut h, &mut seen);
@@ -4410,7 +4549,7 @@ fn yubikey_connect_without_words_from_the_first_run_screen() {
     use crate::app_yubikey::YkPurpose;
     use crate::app_yubikey::connect::{Choice, T_YK_UNKNOWN_PATH};
     use crate::app_yubikey::manage::{
-        ClearStep, LOSS_WORD, T_YK_CLEAR_FUNDS, T_YK_KEY_LOST, YkManage,
+        CLEAR_WORD, ClearStep, LOSS_WORD, T_YK_CLEAR_FUNDS, T_YK_KEY_LOST, YkManage,
     };
     use crate::ui::screens_yubikey::ids as yk;
     use yw_core::bip32::path::AccountIndex;
@@ -4522,7 +4661,10 @@ fn yubikey_connect_without_words_from_the_first_run_screen() {
     );
     assert!(evm[0].3.starts_with("경로를 알 수 없음"));
     assert_eq!(h.app.sol_account_rows().len(), 1);
+    // The card keeps its factory PINs: `완료` asks once (2026-11-10), `나중에` goes on.
     h.app.on_command(yk::FINISH);
+    assert_eq!(h.app.screen, Screen::Confirm(Confirm::YkPinLater));
+    h.app.on_command(ids::CONFIRM_YES);
     yk_pump(&mut h, &mut seen);
     // S08 like the other first-run paths (2026-11-08), then the main screen.
     assert_eq!(h.app.screen, Screen::Done);
@@ -4579,7 +4721,7 @@ fn yubikey_connect_without_words_from_the_first_run_screen() {
     h.app.on_command(yk::CLEAR_LOSS_ACK);
     assert!(ctl(&h.app.items(), yk::CLEAR_RUN).unwrap().enabled);
     h.app
-        .yk_manage_set_text(yk::CLEAR_CONFIRM_EDIT, "비우기".to_owned());
+        .yk_manage_set_text(yk::CLEAR_CONFIRM_EDIT, CLEAR_WORD.to_owned());
     h.app.on_command(yk::CLEAR_RUN);
     let clear_state = |h: &Harness| match h.app.card.manage.as_ref() {
         Some(YkManage::Clear(flow)) => Some((flow.step, flow.error.is_some())),

@@ -583,6 +583,42 @@ impl App {
             })
     }
 
+    /// The imported key of `Confirm::RemoveImported` as the "지워지는 계정" block shows it
+    /// (2026-11-10): its chain, full address and last-read balance; lost for good with the key.
+    #[must_use]
+    pub fn imported_removed(&self) -> Option<crate::ui::removed::RemovedAccount> {
+        let meta = self.meta.as_ref()?;
+        let id = *self.keys.target?.as_bytes();
+        if let Some(raw) = meta.evm_raw_accounts.iter().find(|raw| raw.record_id == id) {
+            let address = yw_core::evm::address::parse_address(&raw.address).ok()?;
+            return Some(self.evm_removed(raw.label.clone(), &address, true));
+        }
+        if let Some(raw) = meta.sol_raw_accounts.iter().find(|raw| raw.record_id == id) {
+            let address = yw_core::sol::SolAddress::parse(&raw.address).ok()?;
+            return Some(self.sol_removed(raw.label.clone(), &address, true));
+        }
+        if let Some(account) = btc_imported_account(meta, id) {
+            let address = account
+                .address(yw_core::bip32::path::BtcChain::Receive, 0)
+                .ok()?;
+            return Some(self.btc_removed(
+                crate::app_btc::account_label(account.account()),
+                address.as_str(),
+                true,
+            ));
+        }
+        let (_, info) = self
+            .keys
+            .zec_keys
+            .iter()
+            .find(|(record, _)| *record.as_bytes() == id)?;
+        Some(self.zec_removed(
+            format!("Zcash 가져온 키 ({})", info.network.display_name()),
+            &info.address,
+            true,
+        ))
+    }
+
     /// The EVM tab's imported key `id` was removed from the vault (`remove_evm_raw_key`): its
     /// address leaves the dApp grants unless another visible account still has it — a derived,
     /// added-phrase or `YubiKey` account whose private key was imported (spec/02 §8.4) stays,

@@ -196,6 +196,18 @@ impl App {
                 "볼 수 있는 계정".to_owned(),
                 format!("{}개", site.accounts.len()),
             ));
+            // The grant's first account is the one the site uses (U9's line of the connect
+            // window, 2026-11-10).
+            if let Some(first) = site.accounts.first() {
+                let name = labels
+                    .iter()
+                    .find(|(address, _)| address == first)
+                    .map_or_else(
+                        || yw_core::evm::display::format_address(first),
+                        |(_, label)| label.clone(),
+                    );
+                items.push(Item::Text(format!("사이트가 기본으로 쓰는 계정: {name}")));
+            }
             for account in &site.accounts {
                 let label = labels
                     .iter()

@@ -115,7 +115,7 @@ fn now_unix_ms() -> u64 {
 pub fn reset_done_text(report: &ResetReport) -> String {
     match &report.folder {
         Some(folder) => format!(
-            "지갑을 초기화했습니다. 지갑 파일 {}개를 지우지 않고 {} 폴더로 옮겼습니다. 그 지갑의 자산은 복구 단어(또는 원래 개인키)로 다시 가져올 수 있고, 옮긴 파일은 예전 비밀번호로 열립니다(되돌리는 방법: 복구 안내).",
+            "지갑을 초기화했습니다. 지갑 파일 {}개를 지우지 않고 {} 폴더로 옮겼습니다. 그 지갑을 다시 쓰려면 복구 단어·원래 개인키, 또는 YubiKey(“YubiKey 연결하기 (복구 단어 없이)”)가 필요합니다. 옮긴 파일은 예전 비밀번호로 열립니다(되돌리는 방법: 복구 안내).",
             report.moved.len(),
             folder.display()
         ),

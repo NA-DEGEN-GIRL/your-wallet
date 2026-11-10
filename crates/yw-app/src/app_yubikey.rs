@@ -1363,11 +1363,17 @@ impl App {
 
     /// `Counters` finished: the open W11 or W12 shows the tries left.
     fn on_yk_counters(&mut self, target: CounterTarget, result: Result<PinCounters, CardJobError>) {
+        // The card step's read is kept even when it failed: W11 says before the PIN what it
+        // found instead (no card, a busy card, another card; 2026-11-10).
+        if let CounterTarget::Key(role) = target {
+            self.card_counters(role, result);
+            return;
+        }
         let Ok(counters) = result else {
             return;
         };
         match target {
-            CounterTarget::Key(role) => self.card_counters(role, counters),
+            CounterTarget::Key(_) => {}
             CounterTarget::Card(serial) => {
                 if counters.serial != serial {
                     return;
@@ -1497,6 +1503,29 @@ impl App {
         })
     }
 
+    /// Card `serial` is still on its factory PINs as the wallet knows it (`hw_accounts.defaults`,
+    /// or the new wallet's card waiting for its meta): it does not sign (spec/10 §9.3).
+    #[must_use]
+    pub fn yk_card_on_defaults(&self, serial: u32) -> bool {
+        self.card.pending_default_is(serial)
+            || self
+                .meta
+                .as_ref()
+                .is_some_and(|meta| meta.hw_accounts.defaults.contains(&serial))
+    }
+
+    /// `나중에` of [`Confirm::YkPinLater`]: the result screen ends as `완료` would.
+    pub(crate) fn yk_pin_later(&mut self) {
+        if matches!(
+            self.card.manage,
+            Some(crate::app_yubikey::manage::YkManage::Reslot(_))
+        ) {
+            self.yk_manage_close();
+        } else {
+            self.yk_close_wizard();
+        }
+    }
+
     /// `다시 읽기` of the confirmation / credentials card line.
     pub fn yk_identify_again(&mut self) {
         let Some(wizard) = self.yk_wizard() else {
@@ -1540,13 +1569,23 @@ impl App {
                 );
                 self.yk_defaults_done(serial);
             }
-            Err(error) => self.with_form(|form| {
-                form.set_busy(false);
-                form.set_error(Some(error.text_for(PinKind::PivPin)));
-            }),
+            Err(error) => {
+                let text = error.text_for_in(
+                    PinKind::PivPin,
+                    &crate::yubikey::PinContext::of(&self.card.records, serial, PinKind::PivPin),
+                );
+                self.with_form(|form| {
+                    form.set_busy(false);
+                    form.set_error(Some(text));
+                });
+            }
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the report's done, skipped and failed parts in order"
+    )]
     fn on_yk_pins_set(
         &mut self,
         serial: u32,
@@ -1577,9 +1616,15 @@ impl App {
                 if let Some((_, error)) = report.failed {
                     self.yk_note_last_try(serial, CardJobError::Card(error));
                 }
+                let records = &self.card.records;
                 let text = report
                     .failed
-                    .map(|(step, error)| step.kind().error_text(error))
+                    .map(|(step, error)| {
+                        step.kind().error_text_in(
+                            error,
+                            &crate::yubikey::PinContext::of(records, serial, step.kind()),
+                        )
+                    })
                     .unwrap_or_default();
                 self.with_form(|form| {
                     form.set_busy(false);
@@ -1612,7 +1657,10 @@ impl App {
                 text,
                 " 실패: {} — {} 그 뒤 항목은 바꾸지 않았습니다.",
                 step.name(),
-                step.kind().error_text(error)
+                step.kind().error_text_in(
+                    error,
+                    &crate::yubikey::PinContext::of(&self.card.records, serial, step.kind())
+                )
             );
         } else {
             text.push_str(" 새 PIN은 이 지갑에 저장하지 않으니 따로 기억해 두세요.");
@@ -1971,7 +2019,10 @@ impl App {
             Err(error) => {
                 // A wrong value's text names the secret and carries the tries left (one left:
                 // "한 번 더 틀리면 잠깁니다", spec/10 §9.1).
-                let text = error.text_for(target.kind());
+                let text = error.text_for_in(
+                    target.kind(),
+                    &crate::yubikey::PinContext::of(&self.card.records, serial, target.kind()),
+                );
                 self.yk_note_last_try(serial, error);
                 self.with_form(|form| {
                     form.set_busy(false);
@@ -1994,6 +2045,7 @@ impl App {
             None => self.card.list_pins_done(serial),
         };
         if done {
+            self.card.forget_pending_default(serial);
             self.card.pin_needed = self.card.pin_needed.filter(|other| *other != serial);
             self.card
                 .list_defaults
@@ -2192,9 +2244,25 @@ impl App {
             }
             ids::PLAN_NEXT => self.yk_plan_next(),
             ids::FINISH | ids::ANOTHER if self.yk_pins_first() => self.refresh(),
+            // A card left on its factory PINs does not sign: `완료` asks once (2026-11-10).
+            ids::FINISH
+                if self
+                    .yk_result_serial()
+                    .is_some_and(|serial| self.yk_card_on_defaults(serial)) =>
+            {
+                self.set_screen(Screen::Confirm(Confirm::YkPinLater));
+            }
             // The words of a new wallet are not dropped on one click: asked first (2026-11-10).
             ids::WIZARD_CANCEL if self.yk_abandon_asks() => {
                 self.set_screen(Screen::Confirm(Confirm::YkAbandon));
+            }
+            ids::RESULT_DETAILS => {
+                self.card.result_details_open = !self.card.result_details_open;
+                self.refresh();
+            }
+            ids::PIN_GUIDE => {
+                self.card.pin_guide_open = !self.card.pin_guide_open;
+                self.refresh();
             }
             ids::WIZARD_CANCEL | ids::FINISH => self.yk_close_wizard(),
             ids::IDENTIFY_AGAIN => self.yk_identify_again(),
@@ -2203,6 +2271,17 @@ impl App {
                 self.card.pin_serial = self.card.pin_needed;
                 self.set_screen(Screen::Settings(SettingsSection::YubiKey));
                 self.key(KeyJob::HardwareKeys);
+            }
+            gate if (ids::PIN_GATE_BASE..ids::PIN_GATE_BASE + ids::PIN_GATE_SPAN)
+                .contains(&gate) =>
+            {
+                // A form's or account card's band: that card's "PIN 설정" card.
+                let row = usize::from(gate - ids::PIN_GATE_BASE);
+                if let Some(serial) = self.card.records.get(row).map(|record| record.serial) {
+                    self.card.pin_serial = Some(serial);
+                    self.set_screen(Screen::Settings(SettingsSection::YubiKey));
+                    self.key(KeyJob::HardwareKeys);
+                }
             }
             ids::SAME_ACK => {
                 if let Some(wizard) = self.yk_wizard() {
@@ -2277,6 +2356,7 @@ impl App {
             ids::SET_PINS => self.yk_open_pin_action(CardSecretKind::SetPins, YkPurpose::SetPins),
             ids::PINS_UNIFIED | ids::PINS_SEPARATE => {
                 self.card.pins_separate = id == ids::PINS_SEPARATE;
+                self.card.pins_chosen = true;
                 self.refresh();
             }
             _ => return false,

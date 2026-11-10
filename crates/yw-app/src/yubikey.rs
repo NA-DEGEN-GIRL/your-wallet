@@ -513,8 +513,9 @@ impl PinKind {
             Self::OpenPgpUser => {
                 "OpenPGP PIN이 잠겼습니다. 관리자 PIN으로 풀 수 있습니다(ykman openpgp access unblock-pin). 관리자 PIN도 모르면 설정 → YubiKey의 'YubiKey의 키 지우기…'에서 OpenPGP 애플릿 초기화 뒤 다시 등록하세요."
             }
+            // Signing goes on with the user PIN (2026-11-10: it never said so).
             Self::OpenPgpAdmin => {
-                "OpenPGP 관리자 PIN이 잠겼습니다. 설정 → YubiKey의 'YubiKey의 키 지우기…'에서 OpenPGP 애플릿 초기화 뒤 다시 등록해야 합니다(그 애플릿의 키는 지워집니다)."
+                "OpenPGP 관리자 PIN이 잠겼습니다. 서명은 지금처럼 OpenPGP PIN으로 됩니다. 키 넣기·슬롯 구성 바꾸기·PIN 풀기만 막히며, 다시 쓰려면 OpenPGP 초기화(그 애플릿의 키가 지워짐)가 필요합니다."
             }
             Self::PivPin => {
                 "PIV PIN이 잠겼습니다. PUK로 풀 수 있습니다(ykman piv access unblock-pin)."
@@ -525,10 +526,74 @@ impl PinKind {
         }
     }
 
+    /// What a blocked secret means for the card's keys (spec/10 §9.1, 2026-11-10): whether they
+    /// come back from recovery words — a key without words that only this card holds must never
+    /// be reset away — and which backup card keeps signing. Unknown context: [`Self::blocked`].
+    fn blocked_in(self, context: &PinContext) -> String {
+        let Some(words) = context.words else {
+            return self.blocked().to_owned();
+        };
+        let backup = if context.backups.is_empty() {
+            String::new()
+        } else {
+            let list: Vec<String> = context
+                .backups
+                .iter()
+                .map(|serial| format!("#{serial}"))
+                .collect();
+            let cards = list.join("·");
+            format!(
+                " 백업 YubiKey {cards}{} 계속 서명할 수 있습니다.",
+                crate::ui::theme::direction_particle(&cards)
+            )
+        };
+        let only_here = !words && context.backups.is_empty();
+        let text = match (self, only_here, words) {
+            (Self::OpenPgpAdmin, true, _) => {
+                "OpenPGP 관리자 PIN이 잠겼습니다. 서명은 지금처럼 OpenPGP PIN으로 됩니다. 키 넣기·슬롯 구성 바꾸기·PIN 풀기만 막힙니다. 다시 쓰려면 OpenPGP 초기화(그 애플릿의 키가 지워짐)가 필요하지만, 이 카드의 키는 복구 단어가 없어 초기화하면 영구히 사라지니 초기화하지 마세요."
+            }
+            (Self::OpenPgpAdmin, false, _) => {
+                "OpenPGP 관리자 PIN이 잠겼습니다. 서명은 지금처럼 OpenPGP PIN으로 됩니다. 키 넣기·슬롯 구성 바꾸기·PIN 풀기만 막히며, 다시 쓰려면 OpenPGP 초기화(그 애플릿의 키가 지워짐)가 필요합니다."
+            }
+            (Self::OpenPgpUser, true, _) => {
+                "OpenPGP PIN이 잠겼습니다. 이 키는 복구 단어가 없어 초기화하면 영구히 사라집니다. 관리자 PIN으로 PIN을 푸는 방법(ykman openpgp access unblock-pin)만 쓰고 초기화하지 마세요."
+            }
+            (Self::OpenPgpUser, false, true) => {
+                "OpenPGP PIN이 잠겼습니다. 관리자 PIN으로 풀 수 있습니다(ykman openpgp access unblock-pin). 관리자 PIN도 모르면 OpenPGP 초기화 뒤 같은 복구 단어로 다시 등록하세요."
+            }
+            (Self::OpenPgpUser, false, false) => {
+                "OpenPGP PIN이 잠겼습니다. 관리자 PIN으로 풀 수 있습니다(ykman openpgp access unblock-pin)."
+            }
+            (Self::PivPin, true, _) => {
+                "PIV PIN이 잠겼습니다. 이 Solana 키는 복구 단어가 없어 PIV 초기화하면 영구히 사라집니다. PUK로 PIN을 푸는 방법(ykman piv access unblock-pin)만 쓰고 초기화하지 마세요."
+            }
+            (Self::PivPin, false, true) => {
+                "PIV PIN이 잠겼습니다. PUK로 풀 수 있습니다(ykman piv access unblock-pin). PUK도 잠기면 PIV 초기화(Solana 키 삭제) 뒤 같은 복구 단어로 다시 등록하세요."
+            }
+            (Self::PivPin, false, false) => {
+                "PIV PIN이 잠겼습니다. PUK로 풀 수 있습니다(ykman piv access unblock-pin)."
+            }
+            (Self::PivPuk, true, _) => {
+                "PIV PUK이 잠겼습니다. 이제 PIV PIN까지 잠기면 PIV 초기화(Solana 키 삭제)밖에 없고, 이 Solana 키는 복구 단어가 없어 그때 영구히 사라집니다. PIV PIN을 잊지 마세요."
+            }
+            (Self::PivPuk, false, _) => {
+                "PIV PUK이 잠겼습니다. 이제 PIV PIN이 잠기면 PIV 초기화(Solana 키 삭제) 말고는 방법이 없으니 PIV PIN을 잊지 마세요."
+            }
+        };
+        format!("{text}{backup}")
+    }
+
     /// The text of a card error of an operation that sent this secret (spec/10 §9.1): a wrong
     /// or blocked value names this secret with the tries left; any other error keeps its text.
     #[must_use]
     pub fn error_text(self, error: CardError) -> String {
+        self.error_text_in(error, &PinContext::default())
+    }
+
+    /// [`Self::error_text`] with what the card's keys are ([`PinContext`]): a blocked secret
+    /// says what is safe to do for those keys (W11, W12, the `YubiKey` list's results).
+    #[must_use]
+    pub fn error_text_in(self, error: CardError, context: &PinContext) -> String {
         match error {
             CardError::WrongPin { retries: 1 } => format!(
                 "{}이 틀렸습니다. 남은 시도 1회 — 한 번 더 틀리면 잠깁니다.",
@@ -537,8 +602,59 @@ impl PinKind {
             CardError::WrongPin {
                 retries: retries @ 2..,
             } => format!("{}이 틀렸습니다. 남은 시도 {retries}회.", self.name()),
-            CardError::WrongPin { retries: 0 } | CardError::PinBlocked => self.blocked().to_owned(),
+            CardError::WrongPin { retries: 0 } | CardError::PinBlocked => self.blocked_in(context),
             other => other.to_string(),
+        }
+    }
+}
+
+/// What a card's PINs guard (2026-11-10): whether the keys of that applet come back from
+/// recovery words, and the other enrolled cards holding the same keys. `words: None` (not known,
+/// e.g. a card not yet enrolled) keeps the general sentences.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PinContext {
+    /// Every key of the applet has a known path (`None`: not known).
+    pub words: Option<bool>,
+    /// Backup cards holding the same keys.
+    pub backups: Vec<u32>,
+}
+
+impl PinContext {
+    /// The context of `kind` on card `serial` of `records`.
+    #[must_use]
+    pub fn of(records: &[HwKeyRecord], serial: u32, kind: PinKind) -> Self {
+        let Some(record) = records.iter().find(|record| record.serial == serial) else {
+            return Self::default();
+        };
+        let curve = match kind {
+            PinKind::OpenPgpUser | PinKind::OpenPgpAdmin => Curve::Secp256k1,
+            PinKind::PivPin | PinKind::PivPuk => Curve::Ed25519,
+        };
+        let slots: Vec<_> = record
+            .slots
+            .iter()
+            .filter(|slot| slot.role.curve() == curve)
+            .collect();
+        if slots.is_empty() {
+            return Self::default();
+        }
+        let mut backups: Vec<u32> = records
+            .iter()
+            .filter(|other| other.serial != serial)
+            .filter(|other| {
+                slots.iter().all(|slot| {
+                    other
+                        .slots
+                        .iter()
+                        .any(|held| held.role.key_identity() == slot.role.key_identity())
+                })
+            })
+            .map(|other| other.serial)
+            .collect();
+        backups.sort_unstable();
+        Self {
+            words: Some(slots.iter().all(|slot| slot.path_known)),
+            backups,
         }
     }
 }
@@ -590,10 +706,16 @@ impl CardJobError {
     /// The text of this failure of an operation that sent `kind` ([`PinKind::error_text`]).
     #[must_use]
     pub fn text_for(self, kind: PinKind) -> String {
+        self.text_for_in(kind, &PinContext::default())
+    }
+
+    /// [`Self::text_for`] with the card's [`PinContext`] (2026-11-10).
+    #[must_use]
+    pub fn text_for_in(self, kind: PinKind, context: &PinContext) -> String {
         match self {
-            Self::Card(error) => kind.error_text(error),
+            Self::Card(error) => kind.error_text_in(error, context),
             Self::Enrol(EnrolError::Card(error) | EnrolError::Partial(error)) => {
-                kind.error_text(error)
+                kind.error_text_in(error, context)
             }
             Self::NoCard | Self::Enrol(_) => self.to_string(),
         }
@@ -1534,6 +1656,62 @@ mod tests {
     use yw_core::yubikey::{CardTransport, apdu};
 
     use super::{CardSource, MODE, MockSource};
+
+    /// spec/10 §9.1 (2026-11-10): a blocked PIN of a key without recovery words that only one
+    /// card holds never advises a reset (it would destroy the key); with recovery words it
+    /// does; a backup card is named; the admin PIN says signing goes on.
+    #[test]
+    fn a_blocked_pin_of_a_key_without_words_never_advises_a_reset() {
+        use yw_core::bip32::path::AccountIndex;
+        use yw_core::yubikey::plan::{CardSlot, KeyRole, PinPolicy, TouchPolicy};
+        use yw_core::yubikey::record::{HwKeyRecord, HwPublicKey, RecordedSlot};
+        use yw_core::yubikey::{CardError, Firmware};
+
+        use super::{PinContext, PinKind};
+        fn kind_text(kind: PinKind, context: &PinContext) -> String {
+            kind.error_text_in(CardError::PinBlocked, context)
+        }
+        let record = |serial: u32, index: u32, known: bool| HwKeyRecord {
+            serial,
+            firmware: Firmware::new(5, 7, 4),
+            fingerprint: [0; 4],
+            slots: vec![RecordedSlot {
+                slot: CardSlot::OpenPgp(PgpKey::Sig),
+                role: KeyRole::Evm {
+                    index: AccountIndex::new(index).unwrap(),
+                    btc: None,
+                },
+                touch: TouchPolicy::Always,
+                pin: PinPolicy::NotApplicable,
+                public: HwPublicKey::Secp256k1([2; 33]),
+                path_known: known,
+            }],
+        };
+        let blocked = |records: &[HwKeyRecord], kind: PinKind| {
+            kind_text(kind, &PinContext::of(records, 7_700_001, kind))
+        };
+        let alone = [record(7_700_001, 900, false)];
+        let text = blocked(&alone, PinKind::OpenPgpUser);
+        assert!(text.contains("초기화하지 마세요"), "{text}");
+        assert!(!text.contains("초기화 뒤"), "{text}");
+        assert!(text.contains("ykman openpgp access unblock-pin"));
+        let words = [record(7_700_001, 0, true)];
+        assert!(blocked(&words, PinKind::OpenPgpUser).contains("같은 복구 단어로 다시 등록"));
+        let backed = [record(7_700_001, 900, false), record(7_700_002, 900, false)];
+        assert!(
+            blocked(&backed, PinKind::OpenPgpUser)
+                .ends_with("백업 YubiKey #7700002로 계속 서명할 수 있습니다.")
+        );
+        assert!(
+            blocked(&words, PinKind::OpenPgpAdmin)
+                .contains("서명은 지금처럼 OpenPGP PIN으로 됩니다")
+        );
+        // Without a context (a card not enrolled) the general sentence stays.
+        assert_eq!(
+            PinKind::OpenPgpUser.error_text(CardError::PinBlocked),
+            kind_text(PinKind::OpenPgpUser, &PinContext::default())
+        );
+    }
 
     /// spec/10 §5.1: the PIN check is a card job of its own before the signing job. A program
     /// that gets the reader in between (or after any job) and sends PSO:CDS without SELECT or

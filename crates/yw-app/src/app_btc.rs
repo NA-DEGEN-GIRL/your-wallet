@@ -4177,6 +4177,7 @@ impl crate::app::App {
     /// form's band says so, U7; and while the journal holds sends, `app_sidecar`).
     pub fn btc_review(&mut self) {
         if self.mn_send_blocked(self.btc_backup_gate())
+            || self.btc_selected_card_gate().is_some()
             || self
                 .journal_hold(crate::app_sidecar::SendChain::Btc)
                 .is_some()

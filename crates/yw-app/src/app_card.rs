@@ -94,6 +94,57 @@ pub struct CardStep {
     /// The tries left of the card holding the key, read when the step began (spec/10 §9.1:
     /// shown before the PIN is entered).
     pub counters: Option<crate::yubikey::PinCounters>,
+    /// What that read found instead (2026-11-10): the card is missing, another program holds
+    /// it, or another card is connected — said in W11 before the PIN is entered.
+    pub presence: Option<String>,
+}
+
+/// The send form that opened a card step (spec/10 §9.2, 2026-11-10): where its touch prompt and
+/// cancel note go — next to that form's `검토`, as its signature results do — or `Site` (a dApp
+/// request, a speed-up or cancel: the header band).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CardForm {
+    /// EVM S11.
+    EvmSend,
+    /// The Solana send form.
+    SolSend,
+    /// The Bitcoin send form.
+    BtcSend,
+    /// The Bitcoin fee-bump form.
+    BtcBump,
+    /// The Zcash tab's 보내기 card.
+    ZecSend,
+    /// S-HC.
+    HyperCore,
+    /// No form (the header band).
+    Site,
+}
+
+/// The card step's progress line as last placed (the touch prompt): cleared when the card's
+/// result comes, from the form and from the header band.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CardNotice {
+    /// Text.
+    pub text: String,
+    /// The form whose line holds it, or `Site` for the header band.
+    pub form: CardForm,
+}
+
+/// W11's touch prompt after the PIN (2026-11-10): one touch.
+pub const T_CARD_TOUCH: &str = "PIN을 확인하는 중… YubiKey가 깜박이면 15초 안에 터치하세요";
+/// The cancel note of the card step.
+pub const T_CARD_CANCELLED: &str = "YubiKey 서명을 취소했습니다. 아무것도 서명하지 않았습니다.";
+
+/// The touch prompt of a card job of `touches` card signatures (Bitcoin and Zcash: one per
+/// input).
+#[must_use]
+pub fn touch_text(kind: &CardJobKind, touches: u8) -> String {
+    match kind {
+        CardJobKind::Btc { .. } | CardJobKind::Zec { .. } => {
+            format!("YubiKey가 깜박일 때마다 터치하세요 — 모두 {touches}회(입력마다 한 번)")
+        }
+        _ => T_CARD_TOUCH.to_owned(),
+    }
 }
 
 impl core::fmt::Debug for CardStep {
@@ -176,6 +227,10 @@ pub enum EnrolState {
 
 /// `YubiKey` UI state.
 #[derive(Debug, Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent flags of the YubiKey screens"
+)]
 pub struct CardUi {
     /// The approval in the card step (one at a time).
     pub step: Option<CardStep>,
@@ -197,8 +252,15 @@ pub struct CardUi {
     pending_default: Option<u32>,
     /// The card whose "PIN 설정" card is open in the `YubiKey` list (spec/10 §9.3).
     pub pin_serial: Option<u32>,
-    /// "PIN 설정" mode: `false` = "8자리 하나로 통일" (the default), `true` = one value each.
+    /// "PIN 설정" mode: `false` = "8자리 하나로 통일", `true` = one value each.
     pub pins_separate: bool,
+    /// The mode was picked by the user this run; until then it follows the factory values seen
+    /// (2026-11-10: all three → 통일, some → 하나씩 따로, unknown → 통일).
+    pub pins_chosen: bool,
+    /// 'PIN 안내 ▸' is open (this run's memory).
+    pub pin_guide_open: bool,
+    /// The result screen's '슬롯·주소 자세히 ▸' is open (this run's memory).
+    pub result_details_open: bool,
     /// The open card action of the `YubiKey` list ("슬롯 구성 바꾸기" / "`YubiKey` 비우기",
     /// spec/10 §15).
     pub manage: Option<crate::app_yubikey::manage::YkManage>,
@@ -217,6 +279,8 @@ pub struct CardUi {
     /// The factory values a card action of this session saw (a re-slot under the factory admin
     /// PIN): "PIN 설정" of the list then asks only for those (spec/10 §9.3).
     pub list_defaults: Vec<(u32, yw_core::yubikey::enrol::DefaultsSeen)>,
+    /// The card step's touch prompt where it was placed (2026-11-10).
+    pub notice: Option<CardNotice>,
 }
 
 impl CardUi {
@@ -232,6 +296,9 @@ impl CardUi {
         self.pending_default = None;
         self.pin_serial = None;
         self.pins_separate = false;
+        self.pins_chosen = false;
+        self.pin_guide_open = false;
+        self.result_details_open = false;
         self.pending_unhide.clear();
         self.manage = None;
         self.admin_last_try = None;
@@ -240,6 +307,7 @@ impl CardUi {
         self.list_changed.clear();
         self.list_protected.clear();
         self.list_defaults.clear();
+        self.notice = None;
     }
 
     /// The factory values seen for card `serial` in this session ([`CardUi::list_defaults`]).
@@ -272,6 +340,20 @@ impl CardUi {
         };
         let has = |curve| record.slots.iter().any(|slot| slot.role.curve() == curve);
         (!has(Curve::Secp256k1) || openpgp) && (!has(Curve::Ed25519) || (piv && protected))
+    }
+
+    /// The new wallet's card noted with factory PINs before its meta existed is `serial`.
+    #[must_use]
+    pub const fn pending_default_is(&self, serial: u32) -> bool {
+        matches!(self.pending_default, Some(other) if other == serial)
+    }
+
+    /// Card `serial`'s PINs were all changed: it no longer joins the defaults at the next meta
+    /// load.
+    pub fn forget_pending_default(&mut self, serial: u32) {
+        if self.pending_default_is(serial) {
+            self.pending_default = None;
+        }
     }
 
     /// Keys whose hidden accounts become visible at the next meta load (after a card change).
@@ -339,7 +421,9 @@ const fn retryable(error: CardJobError) -> bool {
     }
 }
 
-/// The refusal of a card signing while the card uses factory PINs (spec/10 §9.3).
+/// The refusal of a card signing while the card uses factory PINs (spec/10 §9.3). Since
+/// 2026-11-10 the yellow T-YK-PIN-NEEDED band (with `PIN 설정`) says it instead; this text is
+/// left for a factory value typed for a key no enrolled card holds (no card to point to).
 pub const T_CARD_FACTORY_PIN: &str = "이 YubiKey는 아직 공장 기본 PIN을 쓰고 있어 서명하지 않았습니다. 먼저 'PIN 설정'으로 PIN을 바꾸세요 (설정 → YubiKey). 아무것도 서명하지 않았습니다.";
 
 /// A card approval while another card signature is in progress (its PIN entered, waiting for
@@ -553,6 +637,7 @@ impl App {
             error: None,
             swallow_failure: false,
             counters: None,
+            presence: None,
         };
         if let Some(previous) = self.card.step.take() {
             if previous.approved.is_none() {
@@ -572,11 +657,13 @@ impl App {
             self.card_resolve_cancelled(previous);
         }
         // spec/10 §9.3: a card still on its factory PINs (noted at enrolment, cleared by "PIN
-        // 설정") does not sign; the approval is dropped before any PIN is asked.
+        // 설정") does not sign; the approval is dropped before any PIN is asked. One band says
+        // it, the yellow T-YK-PIN-NEEDED with its `PIN 설정` (2026-11-10: not also the red
+        // T-CARD-FACTORY-PIN).
         if let Some(serial) = self.card_on_defaults(role) {
             logging::info("app", "card.factory_pin_refused", &[]);
             self.card.pin_needed = Some(serial);
-            self.card_resolve_failed(step, T_CARD_FACTORY_PIN);
+            self.card_resolve_failed(step, None);
             return Ok(());
         }
         self.card.step = Some(step);
@@ -592,20 +679,210 @@ impl App {
     }
 
     /// A card holding `role` that is still in `hw_accounts.defaults` (factory PINs seen at
-    /// enrolment and not yet changed).
-    fn card_on_defaults(&self, role: KeyRole) -> Option<u32> {
+    /// enrolment and not yet changed). The card step refuses such a key ([`Self::card_begin`],
+    /// the last line of defence); since 2026-11-10 the forms, account cards, connect rows and
+    /// dApp signing requests say it first, from this same check.
+    pub(crate) fn card_on_defaults(&self, role: KeyRole) -> Option<u32> {
         let meta = self.meta.as_ref()?;
         crate::yubikey::holders(&self.card.records, role)
             .into_iter()
             .find(|serial| meta.hw_accounts.defaults.contains(serial))
     }
 
-    /// `Counters` of the card step's key arrived: the open W11 shows them.
-    pub(crate) fn card_counters(&mut self, role: KeyRole, counters: crate::yubikey::PinCounters) {
+    /// [`Self::card_on_defaults`] of an EVM key source.
+    pub(crate) fn evm_card_gate(&self, source: yw_core::vault::EvmKeySource) -> Option<u32> {
+        match source {
+            yw_core::vault::EvmKeySource::Hardware(index) => {
+                self.card_on_defaults(KeyRole::Evm { index, btc: None })
+            }
+            _ => None,
+        }
+    }
+
+    /// [`Self::card_on_defaults`] of the selected EVM account (S11 and S-HC sign with it).
+    pub(crate) fn evm_selected_card_gate(&self) -> Option<u32> {
+        self.selected_account()
+            .and_then(|(_, source, _)| self.evm_card_gate(source))
+    }
+
+    /// [`Self::card_on_defaults`] of an EVM account of this wallet.
+    pub(crate) fn evm_account_card_gate(
+        &self,
+        account: &yw_core::evm::address::Address,
+    ) -> Option<u32> {
+        self.account_source(account)
+            .and_then(|source| self.evm_card_gate(source))
+    }
+
+    /// [`Self::card_on_defaults`] of a Solana key source.
+    pub(crate) fn sol_card_gate(&self, source: yw_core::slip10::SolKeySource) -> Option<u32> {
+        match source {
+            yw_core::slip10::SolKeySource::Hardware(index) => {
+                self.card_on_defaults(KeyRole::Sol { index })
+            }
+            _ => None,
+        }
+    }
+
+    /// [`Self::card_on_defaults`] of a Bitcoin key source of the settings network.
+    pub(crate) fn btc_source_card_gate(&self, source: &yw_core::btc::BtcKeySource) -> Option<u32> {
+        match *source {
+            yw_core::btc::BtcKeySource::Hardware { key, script_type } => key
+                .role(self.btc_network_now(), script_type)
+                .and_then(|role| self.card_on_defaults(role)),
+            _ => None,
+        }
+    }
+
+    /// [`Self::card_on_defaults`] of the selected Bitcoin account.
+    pub(crate) fn btc_selected_card_gate(&self) -> Option<u32> {
+        let ctx = self.btc_ctx();
+        let account = ctx.btc_meta().map(|meta| *meta.account())?;
+        match account {
+            yw_core::btc::account::BtcAccountKey::Hardware {
+                key, script_type, ..
+            } => key
+                .role(self.btc_network_now(), script_type)
+                .and_then(|role| self.card_on_defaults(role)),
+            _ => None,
+        }
+    }
+
+    /// [`Self::card_on_defaults`] of the Zcash account of the shown network.
+    pub(crate) fn zec_card_gate(&self) -> Option<u32> {
+        let account = self.zec_account()?;
+        match account.source {
+            yw_core::zec::ZecKeySource::Hardware { index } => self.card_on_defaults(KeyRole::Zec {
+                network: account.network,
+                index,
+            }),
+            _ => None,
+        }
+    }
+
+    /// The tag of a dApp connect-window row whose `YubiKey` is still on its factory PINs.
+    #[must_use]
+    pub(crate) fn card_connect_tag(serial: Option<u32>) -> String {
+        serial.map_or_else(String::new, |serial| {
+            format!("  [YubiKey #{serial} PIN 설정 전 — 서명 불가]")
+        })
+    }
+
+    /// The band of an account card or send form whose `YubiKey` is still on its factory PINs
+    /// (spec/10 §9.3, 2026-11-10), with `PIN 설정` (that card's "PIN 설정" in 설정 → `YubiKey`).
+    /// Display only: the card step's refusal stays the last line of defence.
+    pub(crate) fn card_pin_banner(
+        &self,
+        serial: Option<u32>,
+        items: &mut Vec<crate::ui::main_window::Item>,
+    ) {
+        use crate::ui::main_window::{Ctl, Item, Tone};
+        let Some(serial) = serial else {
+            return;
+        };
+        items.push(Item::Banner(
+            format!(
+                "YubiKey #{serial} PIN 설정 전 — 이 계정은 받기만 되고, 보내기·서명은 PIN을 바꾼 뒤에 됩니다."
+            ),
+            Tone::Warn,
+        ));
+        if let Some(row) = self
+            .card
+            .records
+            .iter()
+            .position(|record| record.serial == serial)
+            .and_then(|row| u16::try_from(row).ok())
+            .filter(|row| *row < crate::ui::screens_yubikey::ids::PIN_GATE_SPAN)
+        {
+            items.push(Item::Row(vec![Ctl::button(
+                crate::ui::screens_yubikey::ids::PIN_GATE_BASE + row,
+                "PIN 설정",
+            )]));
+        }
+    }
+
+    /// Refuses a dApp signing request of a `YubiKey` key still on its factory PINs: 4100 before
+    /// any window (the card step would refuse it only after the approval), and one notice
+    /// saying where the PIN is set.
+    pub(crate) fn refuse_card_defaults(&mut self, site: &crate::browser::SiteRequest, serial: u32) {
+        let text = format!(
+            "{}의 서명 요청을 거부했습니다: YubiKey #{serial}의 PIN이 아직 공장 기본값이라 서명하지 않았습니다 — 설정 → YubiKey → PIN 설정",
+            self.origin_display(&site.origin)
+        );
+        if !self.banners.iter().any(|banner| banner.text == text) {
+            self.notice(text, crate::ui::main_window::Tone::Warn);
+            self.refresh();
+        }
+        logging::info("browser", "site.sign_card_defaults", &[]);
+        self.respond(
+            &site.reply,
+            Err(yw_core::policy::ProviderError::Unauthorized),
+        );
+    }
+
+    /// `Counters` of the card step's key arrived: the open W11 shows them — or, before the PIN
+    /// is entered, what the read found instead (2026-11-10): the card is not connected, another
+    /// program holds it, or the connected card does not hold this key (`CardJobError` kinds).
+    pub(crate) fn card_counters(
+        &mut self,
+        role: KeyRole,
+        result: Result<crate::yubikey::PinCounters, CardJobError>,
+    ) {
+        let holders = crate::yubikey::holders(&self.card.records, role);
+        let wanted = if holders.is_empty() {
+            "YubiKey".to_owned()
+        } else {
+            let list: Vec<String> = holders.iter().map(|serial| format!("#{serial}")).collect();
+            format!("YubiKey {}", list.join("·"))
+        };
         let Some(step) = self.card.step.as_mut().filter(|step| step.role == role) else {
             return;
         };
-        step.counters = Some(counters);
+        let card = wanted.trim_start_matches("YubiKey ");
+        // The particle follows how the last digit is read (#…2 → 를, #…8 → 을).
+        let card_object = crate::ui::theme::object_particle(card);
+        let wanted_object = crate::ui::theme::object_particle(&wanted);
+        match result {
+            Ok(counters) if holders.is_empty() || holders.contains(&counters.serial) => {
+                step.counters = Some(counters);
+                step.presence = None;
+            }
+            // The only card connected (read for its serial) does not hold this key.
+            Ok(counters) => {
+                step.presence = Some(format!(
+                    "연결된 YubiKey(#{})에는 이 키가 없습니다 — {card}{card_object} 연결하세요",
+                    counters.serial
+                ));
+            }
+            Err(
+                CardJobError::NoCard
+                | CardJobError::Card(CardError::Transport(
+                    yw_core::yubikey::TransportFault::NoReader
+                    | yw_core::yubikey::TransportFault::NoCard,
+                )),
+            ) => {
+                step.presence = Some(format!(
+                    "{wanted}{wanted_object} 찾지 못했습니다 — 연결한 뒤 PIN을 입력하세요"
+                ));
+            }
+            Err(CardJobError::Card(CardError::Transport(
+                yw_core::yubikey::TransportFault::Busy,
+            ))) => {
+                step.presence = Some(
+                    "다른 프로그램(gpg-agent 등)이 YubiKey를 쓰고 있습니다 — 그 프로그램을 닫은 뒤 확인을 누르세요"
+                        .to_owned(),
+                );
+            }
+            Err(CardJobError::Card(CardError::WrongCard)) => {
+                step.presence = Some(format!(
+                    "연결된 YubiKey에는 이 키가 없습니다 — {card}{card_object} 연결하세요"
+                ));
+            }
+            Err(error @ CardJobError::Card(CardError::Transport(_) | CardError::CardRemoved)) => {
+                step.presence = Some(error.to_string());
+            }
+            Err(_) => return,
+        }
         let id = step.id;
         if self.secret_purpose() == Some(Purpose::CardSign(id))
             && let Some(step) = self.card.step.as_ref()
@@ -630,6 +907,9 @@ impl App {
             let list: Vec<String> = serials.iter().map(|serial| format!("#{serial}")).collect();
             lines.push(format!("이 키를 가진 YubiKey: {}", list.join(", ")));
         }
+        if let Some(presence) = &step.presence {
+            lines.push(presence.clone());
+        }
         if let Some(counters) = step.counters {
             let kind = match step.role.curve() {
                 yw_core::yubikey::plan::Curve::Secp256k1 => crate::yubikey::PinKind::OpenPgpUser,
@@ -651,6 +931,10 @@ impl App {
             min,
             max,
             touches: step.touches,
+            serial: crate::yubikey::holders(&self.card.records, step.role)
+                .first()
+                .copied()
+                .unwrap_or(0),
         };
         let details = self.card_details(step);
         let error = step.error.clone();
@@ -703,7 +987,10 @@ impl App {
                     .first()
                     .copied();
                 logging::info("app", "card.factory_pin_refused", &[]);
-                self.card_resolve_failed(step, T_CARD_FACTORY_PIN);
+                // The yellow T-YK-PIN-NEEDED band with `PIN 설정` says it (one band); a key no
+                // enrolled card holds has no such band, so the red text says it.
+                let text = self.card.pin_needed.is_none().then_some(T_CARD_FACTORY_PIN);
+                self.card_resolve_failed(step, text);
             }
             return;
         }
@@ -713,14 +1000,17 @@ impl App {
             if let Some(step) = self.card.step.take() {
                 self.card_resolve_failed(
                     step,
-                    "YubiKey 단계 시간(120초)이 지나 서명하지 않았습니다.",
+                    Some("YubiKey 단계 시간(120초)이 지나 서명하지 않았습니다."),
                 );
             }
             return;
         }
         step.error = None;
+        step.presence = None;
         let ticket = step.ticket;
         let kind = step.kind.clone();
+        let touch = touch_text(&kind, step.touches);
+        let form = self.card_form(&kind, ticket);
         match kind {
             CardJobKind::EvmTx { info } => self.key(KeyJob::SignEvmCard {
                 ticket: ticket.unwrap_or(SignTicket(0)),
@@ -759,7 +1049,12 @@ impl App {
                 },
             ))),
         }
-        self.info = Some("YubiKey가 깜박이면 터치하세요 (15초 안에).".to_owned());
+        // The touch prompt goes next to the `검토` of the form that opened the step (the header
+        // band for a dApp request), and is cleared when the card's result comes — only while the
+        // step still runs (a SOL transfer whose blockhash step failed at once has ended).
+        if self.card.step.as_ref().is_some_and(|step| step.id == id) {
+            self.card_notice_set(form, touch, true);
+        }
         self.refresh();
     }
 
@@ -772,15 +1067,117 @@ impl App {
             self.card.step = Some(step);
             return;
         }
+        let form = self.card_form(&step.kind, step.ticket);
         self.card_resolve_cancelled(step);
-        self.info = Some("YubiKey 서명을 취소했습니다. 아무것도 서명하지 않았습니다.".to_owned());
+        self.card_notice_set(form, T_CARD_CANCELLED.to_owned(), false);
         self.refresh();
+    }
+
+    /// The form that opened a step of `kind` (its waiter `ticket`).
+    fn card_form(&self, kind: &CardJobKind, ticket: Option<SignTicket>) -> CardForm {
+        match kind {
+            CardJobKind::EvmTx { .. } => {
+                if ticket.is_some_and(|ticket| {
+                    self.evm.signing.get(&ticket).is_some_and(|slot| slot.form)
+                }) {
+                    CardForm::EvmSend
+                } else {
+                    CardForm::Site
+                }
+            }
+            CardJobKind::EvmMessage { .. } => {
+                if ticket.is_some_and(|ticket| self.hypercore.pending.contains_key(&ticket)) {
+                    CardForm::HyperCore
+                } else {
+                    CardForm::Site
+                }
+            }
+            CardJobKind::ChainMessage => CardForm::Site,
+            CardJobKind::SolTransfer { .. } => CardForm::SolSend,
+            CardJobKind::Btc { plan, .. } => {
+                if plan.replaces().is_some() {
+                    CardForm::BtcBump
+                } else {
+                    CardForm::BtcSend
+                }
+            }
+            CardJobKind::Zec { .. } => CardForm::ZecSend,
+        }
+    }
+
+    /// Whether `form` is the screen shown now.
+    fn card_form_shown(&self, form: CardForm) -> bool {
+        use crate::app::Screen;
+        match form {
+            CardForm::EvmSend => matches!(self.screen, Screen::Send),
+            CardForm::SolSend => matches!(self.screen, Screen::SolSend),
+            CardForm::BtcSend => matches!(self.screen, Screen::BtcSend),
+            CardForm::BtcBump => matches!(self.screen, Screen::BtcBump),
+            CardForm::ZecSend => {
+                matches!(self.screen, Screen::Main)
+                    && self
+                        .meta
+                        .as_ref()
+                        .is_some_and(|meta| meta.prefs.tab == crate::meta::Tab::Zec)
+            }
+            CardForm::HyperCore => matches!(self.screen, Screen::HyperCore),
+            CardForm::Site => false,
+        }
+    }
+
+    /// The line next to `form`'s `검토`.
+    fn card_form_line(&mut self, form: CardForm) -> Option<&mut Option<String>> {
+        match form {
+            CardForm::EvmSend => Some(&mut self.evm.send.info),
+            CardForm::SolSend => Some(&mut self.sol.send.info),
+            CardForm::BtcSend => Some(&mut self.btc.send.info),
+            CardForm::BtcBump => Some(&mut self.btc.bump.info),
+            CardForm::ZecSend => Some(&mut self.zec.send_info),
+            CardForm::HyperCore => Some(&mut self.hypercore.form.info),
+            CardForm::Site => None,
+        }
+    }
+
+    /// Says `text` of the card step next to `form`'s `검토` when that form is on screen, else in
+    /// the header band (spec/10 §9.2, 2026-11-10; like a signature's result, `on_signed`). A
+    /// `progress` line (the touch prompt) is remembered so the card's result clears it.
+    fn card_notice_set(&mut self, form: CardForm, text: String, progress: bool) {
+        self.card_notice_clear();
+        let placed = if self.card_form_shown(form) {
+            form
+        } else {
+            CardForm::Site
+        };
+        match self.card_form_line(placed) {
+            Some(line) => *line = Some(text.clone()),
+            None => self.info = Some(text.clone()),
+        }
+        if progress {
+            self.card.notice = Some(CardNotice { text, form: placed });
+        }
+    }
+
+    /// The card's result came (signed, failed, cancelled, the PIN asked again): the touch prompt
+    /// leaves the form's line and the header band.
+    pub(crate) fn card_notice_clear(&mut self) {
+        let Some(notice) = self.card.notice.take() else {
+            return;
+        };
+        if let Some(line) = self.card_form_line(notice.form)
+            && line.as_deref() == Some(notice.text.as_str())
+        {
+            *line = None;
+        }
+        if self.info.as_deref() == Some(notice.text.as_str()) {
+            self.info = None;
+        }
     }
 
     /// Ends a step whose approval was not used: a dApp gets 4001 (user rejected), the in-flight
     /// slot of the send is released.
     fn card_resolve_cancelled(&mut self, step: CardStep) {
         logging::info("app", "card.cancelled", &[]);
+        self.card_notice_clear();
         let CardStep { ticket, kind, .. } = step;
         if let Some(ticket) = ticket {
             self.browser_sign_cancelled(ticket);
@@ -788,9 +1185,11 @@ impl App {
         self.card_release(&kind, ticket);
     }
 
-    /// Ends a step without a signature for another reason (`text` shown).
-    fn card_resolve_failed(&mut self, step: CardStep, text: &str) {
+    /// Ends a step without a signature for another reason (`text` shown as a header band; `None`
+    /// when another band says it — the factory-PIN refusal's T-YK-PIN-NEEDED).
+    fn card_resolve_failed(&mut self, step: CardStep, text: Option<&str>) {
         logging::info("app", "card.failed", &[]);
+        self.card_notice_clear();
         let CardStep { ticket, kind, .. } = step;
         if let Some(ticket) = ticket {
             match kind {
@@ -812,7 +1211,9 @@ impl App {
             }
         }
         self.card_release(&kind, ticket);
-        self.banner(None, text.to_owned());
+        if let Some(text) = text {
+            self.banner(None, text.to_owned());
+        }
         self.refresh();
     }
 
@@ -875,7 +1276,16 @@ impl App {
                 _ => counters.piv_pin = Some(retries),
             }
         }
-        step.error = Some(error.text_for(kind));
+        // A blocked PIN says what is safe for this card's keys (2026-11-10).
+        let serial = step.counters.map(|counters| counters.serial).or_else(|| {
+            crate::yubikey::holders(&self.card.records, step.role)
+                .first()
+                .copied()
+        });
+        let context = serial.map_or_else(crate::yubikey::PinContext::default, |serial| {
+            crate::yubikey::PinContext::of(&self.card.records, serial, kind)
+        });
+        step.error = Some(error.text_for_in(kind, &context));
         self.card_open_pin();
     }
 
@@ -902,15 +1312,22 @@ impl App {
     /// taken here (a returned approval, or the failure of an attempt that is asked again).
     pub(crate) fn card_filter(&mut self, outcome: KeyOutcome) -> Option<KeyOutcome> {
         if let KeyOutcome::CardUnused(approved, error) = outcome {
+            // The card answered (the PIN is asked again or the step ends): no touch is due.
+            self.card_notice_clear();
             self.card_unused(approved, error);
             return None;
         }
-        let Some(step) = self.card.step.as_mut() else {
+        let Some(step) = self.card.step.as_ref() else {
             return Some(outcome);
         };
         if !Self::card_outcome_matches(step, &outcome) {
             return Some(outcome);
         }
+        // The card's result (signed or failed): the touch prompt goes.
+        self.card_notice_clear();
+        let Some(step) = self.card.step.as_mut() else {
+            return Some(outcome);
+        };
         if step.swallow_failure {
             step.swallow_failure = false;
             return None;
@@ -944,7 +1361,7 @@ impl App {
             if expired {
                 self.card_resolve_failed(
                     step,
-                    "YubiKey 단계 시간(120초)이 지나 서명을 취소했습니다.",
+                    Some("YubiKey 단계 시간(120초)이 지나 서명을 취소했습니다."),
                 );
             } else {
                 self.card_resolve_cancelled(step);
@@ -960,6 +1377,7 @@ impl App {
             step.approved.is_none() && matches!(step.kind, CardJobKind::SolTransfer { .. })
         }) {
             self.card.step = None;
+            self.card_notice_clear();
         }
     }
 
@@ -971,6 +1389,7 @@ impl App {
                 self.card_resolve_cancelled(step);
             }
         }
+        self.card_notice_clear();
         self.card.clear();
     }
 }

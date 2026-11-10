@@ -781,8 +781,10 @@ impl App {
     fn btc_balance_items(&self, ctx: &BtcCtx<'_>, items: &mut Vec<Item>) {
         items.push(Item::Subtitle(active_label(ctx)));
         items.push(Item::Help(active_detail(ctx)));
-        // U7, as on the EVM and Solana tabs: the account's phrase waits for its backup quiz.
+        // U7, as on the EVM and Solana tabs: the account's phrase waits for its backup quiz;
+        // a YubiKey on its factory PINs likewise (spec/10 §9.3).
         self.mn_signing_banner(self.btc_backup_gate(), items);
+        self.card_pin_banner(self.btc_selected_card_gate(), items);
         if let Some(balance) = self.btc.balance(ctx) {
             items.push(Item::Display(BtcUi::amount_text(balance.available)));
             items.push(Item::Help("사용 가능 (확인 1 이상, 서버 기준)".to_owned()));
@@ -1340,6 +1342,7 @@ impl App {
             )));
         }
         self.mn_signing_banner(self.btc_backup_gate(), items);
+        self.card_pin_banner(self.btc_selected_card_gate(), items);
         items.push(Item::CardEnd);
         items.push(Item::CardStart(Some("받는 사람".to_owned())));
         let target = BookTarget::Btc(net);
@@ -1460,6 +1463,8 @@ impl App {
     pub fn btc_can_review(&self) -> bool {
         self.btc.can_review(&self.btc_ctx())
             && !self.mn_send_blocked(self.btc_backup_gate())
+            // spec/10 §9.3: the YubiKey is still on its factory PINs (the band says so).
+            && self.btc_selected_card_gate().is_none()
             && self
                 .journal_hold(crate::app_sidecar::SendChain::Btc)
                 .is_none()

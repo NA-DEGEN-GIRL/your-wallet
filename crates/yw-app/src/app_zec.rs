@@ -799,7 +799,7 @@ impl App {
             return;
         }
         // The card's band says why (U7); the vault would refuse only after the approval.
-        if self.mn_send_blocked(self.zec_backup_gate()) {
+        if self.mn_send_blocked(self.zec_backup_gate()) || self.zec_card_gate().is_some() {
             self.refresh();
             return;
         }

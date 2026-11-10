@@ -7,10 +7,10 @@ use yw_core::yubikey::plan::{CardSlot, KeyRole, PgpKey};
 
 use super::{
     ABOUT, EvmAccountPref, Harness, Purpose, YkSeen, about_wallet, all_text, card_harness, ctl,
-    has_text, unique_ids, yk_pump,
+    finish_result, has_text, unique_ids, yk_pump,
 };
 use crate::app_yubikey::YkPurpose;
-use crate::app_yubikey::manage::{ClearStep, Preset, ReslotStep, YkManage};
+use crate::app_yubikey::manage::{CLEAR_WORD, ClearStep, Preset, ReslotStep, YkManage};
 use crate::ui::screens_yubikey::ids as yk;
 use crate::ui::screens_yubikey::ids::{PgpAction, pgp_id};
 
@@ -116,7 +116,7 @@ fn yubikey_reslot_switches_chains_and_applies_it_to_the_backup() {
     };
     wizard_import(&mut h, &mut seen, false);
     assert_eq!(h.app.card.records.len(), 2);
-    h.app.on_command(yk::FINISH);
+    finish_result(&mut h, yk::FINISH);
     yk_pump(&mut h, &mut seen);
 
     // "슬롯 구성 바꾸기" of A (row 0): the current map is shown; EVM + Bitcoin.
@@ -148,10 +148,13 @@ fn yubikey_reslot_switches_chains_and_applies_it_to_the_backup() {
     for expected in ["m/44'/60'/0'/0/0", "m/84'/0'/0'/0/0", BIP84_0] {
         assert!(shown.iter().any(|text| text == expected), "{expected}");
     }
+    // The "지워지는 계정" block (2026-11-10): the account, its address, what still signs.
     assert!(
-        shown
-            .iter()
-            .any(|text| text.contains("Zcash") && text.contains("#8900002에 남아 있음")),
+        shown.iter().any(|text| text.starts_with("Zcash"))
+            && shown.contains(&zec_address)
+            && shown
+                .iter()
+                .any(|text| text.starts_with("#8900002에 남아 있음")),
         "the dropped Zcash account and its other holder: {shown:?}"
     );
     // The import waits for the acknowledgement of the removed chain.
@@ -231,7 +234,7 @@ fn yubikey_reslot_switches_chains_and_applies_it_to_the_backup() {
     assert_eq!(after_b.slots[1], after_a.slots[1], "same key on the backup");
     assert!(ctl(&h.app.items(), yk::RESLOT_BACKUP_BASE + 1).is_none());
     // `완료`: the flow ends and the key worker forgets the words.
-    h.app.on_command(yk::MANAGE_DONE);
+    finish_result(&mut h, yk::MANAGE_DONE);
     yk_pump(&mut h, &mut seen);
     assert!(h.app.card.manage.is_none());
     let outcome = h
@@ -280,7 +283,7 @@ fn yubikey_clear_our_slots_and_applet_resets() {
     h.pump();
     h.app.on_command(yk::ENROL_START);
     wizard_import(&mut h, &mut seen, true);
-    h.app.on_command(yk::FINISH);
+    finish_result(&mut h, yk::FINISH);
     yk_pump(&mut h, &mut seen);
     assert_eq!(record(&h, 8_900_011).slots.len(), 3);
     // Both applets, our slots only.
@@ -293,7 +296,7 @@ fn yubikey_clear_our_slots_and_applet_resets() {
     let shown = all_text(&items);
     assert!(
         shown.iter().any(|text| text == BIP84_0),
-        "the account to lose"
+        "the account to lose: {shown:?}"
     );
     assert!(has_text(
         &items,
@@ -306,7 +309,7 @@ fn yubikey_clear_our_slots_and_applet_resets() {
     assert_eq!(clear_step(&h), Some(ClearStep::Choose));
     assert!(h.app.key_queue.is_empty());
     h.app
-        .yk_manage_set_text(yk::CLEAR_CONFIRM_EDIT, "비우기".to_owned());
+        .yk_manage_set_text(yk::CLEAR_CONFIRM_EDIT, CLEAR_WORD.to_owned());
     cards.lock().unwrap()[0].log.clear();
     h.app.on_command(yk::CLEAR_RUN);
     h.submit(Purpose::YubiKey(YkPurpose::ClearAdminPin), &[ADMIN]);
@@ -338,7 +341,7 @@ fn yubikey_clear_our_slots_and_applet_resets() {
             .iter()
             .any(|(pref, ..)| matches!(pref, EvmAccountPref::Hardware(_)))
     );
-    h.app.on_command(yk::MANAGE_DONE);
+    finish_result(&mut h, yk::MANAGE_DONE);
     yk_pump(&mut h, &mut seen);
     assert!(h.app.card.manage.is_none());
 
@@ -346,7 +349,7 @@ fn yubikey_clear_our_slots_and_applet_resets() {
     // factory-PIN note).
     h.app.on_command(yk::ENROL_START);
     wizard_import(&mut h, &mut seen, true);
-    h.app.on_command(yk::FINISH);
+    finish_result(&mut h, yk::FINISH);
     yk_pump(&mut h, &mut seen);
     assert_eq!(record(&h, 8_900_011).slots.len(), 3);
     {
@@ -365,7 +368,7 @@ fn yubikey_clear_our_slots_and_applet_resets() {
     h.app.on_command(yk::CLEAR_PIV_TOGGLE);
     h.app.on_command(yk::CLEAR_PIV_RESET);
     h.app
-        .yk_manage_set_text(yk::CLEAR_CONFIRM_EDIT, "비우기".to_owned());
+        .yk_manage_set_text(yk::CLEAR_CONFIRM_EDIT, CLEAR_WORD.to_owned());
     h.app.on_command(yk::CLEAR_RUN);
     yk_pump(&mut h, &mut seen);
     assert_eq!(clear_step(&h), Some(ClearStep::Result));
@@ -398,7 +401,7 @@ fn yubikey_clear_our_slots_and_applet_resets() {
             .contains(&8_900_011),
         "no factory-PIN flag for an applet without wallet keys"
     );
-    h.app.on_command(yk::MANAGE_DONE);
+    finish_result(&mut h, yk::MANAGE_DONE);
     yk_pump(&mut h, &mut seen);
     // OpenPGP reset: the factory PINs, no key, the record gone.
     h.app.on_command(yk::CLEAR_BASE);
@@ -410,7 +413,7 @@ fn yubikey_clear_our_slots_and_applet_resets() {
     h.app.on_command(yk::CLEAR_PGP_TOGGLE);
     h.app.on_command(yk::CLEAR_PGP_RESET);
     h.app
-        .yk_manage_set_text(yk::CLEAR_CONFIRM_EDIT, "비우기".to_owned());
+        .yk_manage_set_text(yk::CLEAR_CONFIRM_EDIT, CLEAR_WORD.to_owned());
     h.app.on_command(yk::CLEAR_RUN);
     yk_pump(&mut h, &mut seen);
     {

@@ -200,7 +200,7 @@ impl App {
         items.push(Item::CardStart(Some("이 지갑의 백업".to_owned())));
         items.push(Item::Banner(T_KEY_START_BACKUP.to_owned(), Tone::Warn));
         items.push(Item::Help(
-            "개인키로 시작한 지갑에서는 복구 단어로 계정을 더 만드는 기능(계정 추가·복구 단어 보기)이 없습니다. 메인 화면의 '개인키 가져오기'로 다른 개인키를 더할 수 있습니다(체인마다 최대 15개)."
+            "복구 단어가 없어 “계정 추가”는 없습니다 — 나중에 설정 → 복구 단어에서 더하면 생깁니다. 메인 화면의 '개인키 가져오기'로 다른 개인키를 더할 수 있습니다(체인마다 최대 15개)."
                 .to_owned(),
         ));
         items.push(Item::CardEnd);

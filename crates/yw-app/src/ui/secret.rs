@@ -43,8 +43,22 @@ pub const MNEMONIC_TEXT_MAX: usize = 216;
 pub const T_IMPORTED_KEY_BACKUP: &str = "주의: 가져온 개인키는 이 지갑의 복구 단어(24단어)로 복구되지 않습니다. 이 PC나 지갑 파일을 잃으면 이 계정은 원래 개인키로만 되살릴 수 있으니, 원래 개인키를 따로 안전하게 보관하세요.";
 /// T-KEY-ONLY (W07 of a wallet without recovery words, spec/04 §2.16).
 pub const T_KEY_ONLY_BACKUP: &str = "주의: 이 지갑에는 복구 단어가 없습니다. 이 계정의 백업은 지금 입력하는 원래 개인키뿐입니다. 이 PC나 지갑 파일을 잃으면 원래 개인키로만 되살릴 수 있으니, 원래 개인키를 종이 등 안전한 곳에 따로 보관하세요.";
-/// W11 (spec/10 §9.2): the card step after approval.
-pub const T_CARD_PIN: &str = "YubiKey를 연결하고 PIN 입력 후 터치하세요. PIN을 확인한 뒤 YubiKey가 깜박이면 터치하세요(15초 안에). PIN은 이 서명 한 번에만 쓰고 바로 지웁니다.";
+/// W11 (spec/10 §9.2): the card step after approval, after its three steps
+/// ([`card_pin_steps`]).
+pub const T_CARD_PIN: &str = "PIN은 이 서명 한 번에만 쓰고 바로 지웁니다.";
+
+/// W11's steps (2026-11-10): which card to connect, the PIN, the touch — and the bounds.
+#[must_use]
+pub fn card_pin_steps(serial: u32) -> String {
+    let card = if serial == 0 {
+        "YubiKey".to_owned()
+    } else {
+        format!("YubiKey #{serial}")
+    };
+    format!(
+        "1. {card} 연결 → 2. PIN 입력 후 확인 → 3. 깜박이면 15초 안에 터치 (승인 뒤 120초 안에)"
+    )
+}
 /// W12 admin PIN (spec/10 §7.3).
 pub const T_CARD_ADMIN_PIN: &str = "YubiKey를 하나만 연결하고 OpenPGP 관리자 PIN(PW3, 8–127자, 공장 기본값 12345678)을 입력하세요. 키를 가져오는 동안 한 번만 쓰고 바로 지웁니다.";
 /// W12 management key (spec/10 §7.3).
@@ -55,6 +69,8 @@ pub const T_CARD_USER_PIN: &str = "선택 사항입니다: 이 YubiKey의 PIN을
 pub const T_CARD_PIV_PIN: &str = "YubiKey를 하나만 연결하고 PIV PIN(6–8자, 공장 기본값 123456)을 입력하세요. PIN으로 보호된 PIV 관리 키를 꺼내는 데 한 번만 쓰고 바로 지웁니다.";
 /// W12 "PIN 하나로 통일" (spec/10 §9.3).
 pub const T_CARD_SET_PINS: &str = "YubiKey를 하나만 연결하세요. 새 8자 PIN 하나를 OpenPGP PIN·OpenPGP 관리자 PIN·PIV PIN·PIV PUK에 똑같이 넣고, PIV 관리 키는 자동으로 새로 만들어 PIN으로 보호합니다. 현재 값이 공장 기본값이면 '현재 PIN'을 비워 두고, 전에 하나로 통일했다면 그 8자를 넣으세요. 공장 기본값(12345678)은 새 PIN으로 쓸 수 없습니다. 중간에 실패하면 거기서 멈추고 바뀐 것만 알려 드립니다.";
+/// The unified W12's warning (2026-11-10): one current value is sent to all four secrets.
+pub const T_CARD_SET_PINS_SAME: &str = "지금 네 값이 모두 같을 때만(공장값이거나 전에 통일한 값) 쓰세요. 다르면 “하나씩 따로”를 쓰세요. 틀린 현재 값은 그 PIN의 남은 시도를 1회 줄입니다.";
 /// W12: a new PIN / PUK / admin PIN that is a factory value (spec/10 §9.3).
 pub const T_CARD_NEW_FACTORY: &str = "공장 기본값(123456·12345678)은 새 PIN으로 쓸 수 없습니다 — YubiKey를 가진 사람이 그 값으로 바로 서명할 수 있습니다. 다른 값을 고르세요.";
 /// W07 help of a Solana key (spec/04 §2.18).
@@ -116,6 +132,8 @@ pub enum SecretKind {
         max: u8,
         /// Card signatures (touches) the operation needs.
         touches: u8,
+        /// The card to connect (the first holding the key; 0 when unknown).
+        serial: u32,
     },
     /// W12 `YubiKey` credentials of the enrolment wizard and the defaults change (spec/10 §7,
     /// §9.1, §9.3): the `OpenPGP` admin PIN, a PIV management key (48 hex digits), or a PIN /
@@ -672,12 +690,17 @@ fn intro(kind: SecretKind, words: usize, address: bool) -> Vec<String> {
             rule = target.rule()
         )],
         SecretKind::CardSecret(CardSecretKind::PivPin) => vec![T_CARD_PIV_PIN.to_owned()],
-        SecretKind::CardSecret(CardSecretKind::SetPins) => vec![T_CARD_SET_PINS.to_owned()],
+        SecretKind::CardSecret(CardSecretKind::SetPins) => vec![
+            T_CARD_SET_PINS.to_owned(),
+            T_CARD_SET_PINS_SAME.to_owned(),
+        ],
         SecretKind::CardSecret(CardSecretKind::UserPin { .. }) => {
             vec![T_CARD_USER_PIN.to_owned()]
         }
-        SecretKind::CardPin { touches, .. } => {
-            let mut lines = vec![T_CARD_PIN.to_owned()];
+        SecretKind::CardPin {
+            touches, serial, ..
+        } => {
+            let mut lines = vec![format!("{}. {T_CARD_PIN}", card_pin_steps(serial))];
             if touches > 1 {
                 lines.push(format!(
                     "YubiKey 터치 {touches}회가 필요합니다 (입력마다 한 번, 15초 유지 정책이면 첫 터치 뒤 15초 안의 입력은 터치 없이 서명됩니다)."

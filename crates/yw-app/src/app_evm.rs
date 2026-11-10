@@ -565,15 +565,32 @@ impl App {
         }
     }
 
-    /// Visible own accounts `(address, label)`.
+    /// Visible own accounts `(address, label)`. With several recovery phrases a derived
+    /// account's name carries its phrase, `{label} ({phrase})` ([`Self::mnemonic_named`]): the
+    /// connect window, S13, the `WalletConnect` session cards and the approval's `[내 계정: …]`
+    /// tell the accounts apart (2026-11-10). Display only.
     #[must_use]
     pub fn own_accounts(&self) -> Vec<(Address, String)> {
+        self.own_account_rows()
+            .into_iter()
+            .map(|(address, name, _)| (address, name))
+            .collect()
+    }
+
+    /// [`Self::own_accounts`] with each row's source and path (the fourth column of
+    /// [`Self::account_rows`]).
+    #[must_use]
+    pub fn own_account_rows(&self) -> Vec<(Address, String, String)> {
         self.account_rows()
             .into_iter()
-            .filter_map(|(_, label, address, _)| {
-                yw_core::evm::address::parse_address(&address)
-                    .ok()
-                    .map(|address| (address, label))
+            .filter_map(|(pref, label, address, path)| {
+                let address = yw_core::evm::address::parse_address(&address).ok()?;
+                let name = match pref {
+                    EvmAccountPref::Index(_) => self.mnemonic_named(&label, None),
+                    EvmAccountPref::Mnemonic(id, _) => self.mnemonic_named(&label, Some(id)),
+                    EvmAccountPref::Record(_) | EvmAccountPref::Hardware(_) => label,
+                };
+                Some((address, name, path))
             })
             .collect()
     }
@@ -1601,6 +1618,8 @@ impl App {
             && matches!(self.mode, AppMode::Unlocked { .. })
             // U7: the phrase waits for its backup quiz (the form's band says so).
             && !self.mn_send_blocked(self.evm_selected_gate())
+            // spec/10 §9.3: the YubiKey is still on its factory PINs (the band says so).
+            && self.evm_selected_card_gate().is_none()
     }
 
     /// The approval item of `검토` (spec/04 §2.7, the EVM counterpart of spec/07 §13.1-1). The

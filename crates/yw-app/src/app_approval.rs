@@ -138,6 +138,9 @@ struct Line {
     font: FontRole,
     color: Color,
     height: i32,
+    /// The line ended at an LF of the value (an escaped `[U+000A]` right before it is the
+    /// visible mark of that very line break).
+    lf: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -237,12 +240,36 @@ struct Bottom {
 /// redrawn by the timer.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct BarState {
+    /// `남은 시간 m:ss · 대기 n건 · 상태 문구` (and the hold's seconds).
     status: String,
+    /// The `남은 시간 m:ss` prefix of `status` is drawn in the caution color (30 s or less).
+    urgent: Option<usize>,
+    /// The user's next step, drawn on its own (bold, next to or above the buttons).
+    step: Option<&'static str>,
     label: &'static str,
     armed: bool,
     /// Milliseconds held so far while a high-risk hold is under way.
     held_ms: Option<u64>,
     focus: Option<Focus>,
+}
+
+/// T-SIM-CHANGED (spec/04 §7): the fact, and what to do when no next step says it.
+pub const T_SIM_CHANGED: &str = "시뮬레이션 결과가 바뀌었습니다";
+const T_SIM_CHANGED_STEP: &str = ". 다시 확인하세요";
+/// T-SIM-RESIM-FAILED (spec/04 §7): the fact, and what to do when no next step says it.
+pub const T_SIM_RESIM_FAILED: &str = "다시 실행한 시뮬레이션이 성공하지 못했습니다";
+const T_SIM_RESIM_FAILED_STEP: &str = ". 경고를 확인하고 다시 승인하세요.";
+
+/// The status message on the status line: while a next step is shown, a message that also
+/// says what to do keeps only its fact (the step says the rest, once).
+fn status_fact(message: &str, step_shown: bool) -> &str {
+    if !step_shown {
+        return message;
+    }
+    [T_SIM_CHANGED, T_SIM_RESIM_FAILED]
+        .into_iter()
+        .find(|fact| message.starts_with(fact))
+        .unwrap_or(message)
 }
 
 /// The status-line note while the approve button waits for its 1 s arm delay (spec/04 §3.4-2).
@@ -288,30 +315,36 @@ fn next_step(ui: &ApprovalUi, held: bool, now: u64) -> Option<&'static str> {
 fn bar_state(ui: &ApprovalUi, waiting: usize, now: u64) -> BarState {
     let gate = &ui.session.gate;
     let remaining = gate.deadline_ms.saturating_sub(now);
-    let mut status = String::new();
-    if matches!(gate.prepare, PrepareState::Ready(_)) {
-        let _ = write!(status, "남은 시간 {}", remaining_text(remaining));
-    }
-    if waiting > 0 {
-        let _ = write!(status, "   ·   대기 중인 다른 요청 {waiting}건");
-    }
-    if let Some(message) = &ui.status {
-        status.push_str("   ·   ");
-        status.push_str(message);
-    }
     let held_ms = ui
         .session
         .interaction()
         .hold_remaining_ms(now)
         .map(|left| HIGH_RISK_HOLD_MS.saturating_sub(left));
-    if let Some(done) = held_ms {
-        let _ = write!(status, "   ·   {}.{}초", done / 1_000, (done % 1_000) / 100);
-    }
-    if let Some(step) = next_step(ui, held_ms.is_some(), now) {
+    let step = next_step(ui, held_ms.is_some(), now);
+    let mut status = String::new();
+    let mut urgent = None;
+    let part = |status: &mut String, text: &str| {
         if !status.is_empty() {
-            status.push_str("   ·   ");
+            status.push_str(" · ");
         }
-        status.push_str(step);
+        status.push_str(text);
+    };
+    if matches!(gate.prepare, PrepareState::Ready(_)) {
+        let _ = write!(status, "남은 시간 {}", remaining_text(remaining));
+        // The last 30 s are drawn in the caution color.
+        urgent = (remaining <= 30_000).then_some(status.len());
+    }
+    if waiting > 0 {
+        part(&mut status, &format!("대기 {waiting}건"));
+    }
+    if let Some(message) = &ui.status {
+        part(&mut status, status_fact(message, step.is_some()));
+    }
+    if let Some(done) = held_ms {
+        part(
+            &mut status,
+            &format!("{}.{}초", done / 1_000, (done % 1_000) / 100),
+        );
     }
     let simulating = matches!(
         gate.prepare,
@@ -334,6 +367,8 @@ fn bar_state(ui: &ApprovalUi, waiting: usize, now: u64) -> BarState {
     };
     BarState {
         status,
+        urgent,
+        step,
         label,
         armed: ui.session.approve_ready(now),
         held_ms,
@@ -499,6 +534,7 @@ impl Builder<'_, '_> {
                 font: role,
                 color,
                 height,
+                lf: line.brk == text_layout::Break::Newline,
             });
             self.y = self.y.saturating_add(height);
         }
@@ -648,6 +684,7 @@ fn build_layout(
                 address,
                 notes,
                 title,
+                remark,
             } => {
                 builder.open_card(theme::INFO_BG, theme::INFO_ACCENT);
                 let (x, w) = (builder.x, builder.w);
@@ -671,7 +708,19 @@ fn build_layout(
                 }
                 builder.gap(6);
                 builder.text(title, FontRole::Caption, theme::MUTED, x, w);
+                if let Some(remark) = remark {
+                    builder.gap(4);
+                    builder.text(remark, FontRole::Caption, theme::MUTED, x, w);
+                }
                 builder.close_card();
+            }
+            Block::Subheading(text) => {
+                let (x, w) = (builder.x, builder.w);
+                if builder.last_gap == 0 {
+                    builder.gap(4);
+                }
+                builder.text(text, FontRole::BodyBold, theme::INFO_TEXT, x, w);
+                builder.gap(4);
             }
             Block::Title(text) => {
                 let (x, w) = (builder.x, builder.w);
@@ -827,7 +876,18 @@ fn build_layout(
                 }
                 let x = x0.saturating_add(size).saturating_add(builder.px(8));
                 let width = w0.saturating_sub(size).saturating_sub(builder.px(8));
-                builder.text(label, FontRole::BodyBold, theme::TEXT, x, width);
+                // The name (with why it cannot sign), then its source and path muted.
+                let mut lines = label.split('\n');
+                builder.text(
+                    lines.next().unwrap_or(""),
+                    FontRole::BodyBold,
+                    theme::TEXT,
+                    x,
+                    width,
+                );
+                for detail in lines {
+                    builder.text(detail, FontRole::Caption, theme::MUTED, x, width);
+                }
                 let shown = yw_core::evm::address::parse_address(address).map_or_else(
                     |_| address.clone(),
                     |parsed| yw_core::evm::display::format_address(&parsed),
@@ -899,12 +959,15 @@ fn draw_line(
             line.color,
             &mut x,
         );
-        draw(
-            dc,
-            line.text.get(start..end).unwrap_or(""),
-            theme::ESCAPE_TEXT,
-            &mut x,
-        );
+        // An escaped LF right before the real line break only marks that break: muted, so the
+        // marks of other characters keep their warning color (2026-11-10).
+        let marker = line.text.get(start..end).unwrap_or("");
+        let color = if line.lf && end == line.text.len() && marker == "[U+000A]" {
+            theme::MUTED
+        } else {
+            theme::ESCAPE_TEXT
+        };
+        draw(dc, marker, color, &mut x);
         cursor = end;
     }
     draw(
@@ -930,6 +993,20 @@ fn window_is_foreground(window: &Window) -> bool {
         return true;
     }
     window.is_foreground()
+}
+
+/// A header line that is one whole Solana or Bitcoin address (no spaces), in the 4-character
+/// groups its chain draws (spec/04 §3.3); `None` for anything else. Only spacing is added.
+fn grouped_header_address(line: &str) -> Option<String> {
+    if line.is_empty() || line.contains(' ') {
+        return None;
+    }
+    if let Ok(address) = yw_core::sol::SolAddress::parse(line) {
+        return Some(yw_core::sol::address::grouped(&address));
+    }
+    let grouped = crate::ui::screens_btc::grouped(line);
+    let parsed = crate::ui::theme::btc_address_segments(&grouped).is_some();
+    parsed.then_some(grouped)
 }
 
 fn remaining_text(ms: u64) -> String {
@@ -993,6 +1070,227 @@ fn network_badge(
 
 /// The mainnet header badge.
 const MAINNET_BADGE: &str = "메인넷 — 실제 자산";
+
+/// Where a header badge goes (spec/04 §3.2, 2026-11-10): the network first (mainnet / testnet),
+/// then the origin's risk (punycode, http), the compatibility mode and the `WalletConnect`
+/// session, the user chain, and last the signer (`YubiKey`) and the Verify state. Signing,
+/// connect and `WalletConnect` connect windows use the same order. The badges are app chrome
+/// outside the digested display.
+fn badge_rank(text: &str) -> u8 {
+    if text == MAINNET_BADGE
+        || text.contains("실제 자산이 아닙니다")
+        || text == yw_core::btc::BtcNetwork::Mainnet.banner()
+        || text == yw_core::btc::BtcNetwork::Testnet4.banner()
+    {
+        0
+    } else if text.starts_with("국제화 도메인(punycode)") {
+        1
+    } else if text.starts_with("로컬 개발 사이트(http)") {
+        2
+    } else if text.starts_with("호환 모드:") {
+        3
+    } else if text == "WalletConnect 세션" {
+        4
+    } else if text.starts_with("사용자 추가 체인") {
+        5
+    } else if text.starts_with("YubiKey로 서명") {
+        6
+    } else if text.starts_with("Verify ") {
+        7
+    } else {
+        8
+    }
+}
+
+/// Puts header badges in [`badge_rank`] order (stable within a rank).
+fn order_badges(badges: &mut [String]) {
+    badges.sort_by_key(|badge| badge_rank(badge));
+}
+
+/// One header badge pill as painted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Pill {
+    text: String,
+    rect: Rect,
+    fill: Color,
+    border: Color,
+    color: Color,
+}
+
+/// The colors of a header badge: the mainnet badge (EVM and Solana mainnets, `HyperCore`
+/// mainnet) is filled with `DANGER_ACCENT` and lettered white like the 고위험 tag, so a
+/// real-asset window stands out at least as much as a testnet one; every other badge keeps the
+/// white pill.
+fn badge_colors(text: &str) -> (Color, Color, Color) {
+    if text == MAINNET_BADGE {
+        (theme::DANGER_ACCENT, theme::DANGER_ACCENT, theme::CARD)
+    } else {
+        (theme::CARD, theme::CARD_BORDER, theme::TEXT)
+    }
+}
+
+/// Header badge pitch (DIP): a 24 DIP pill and its gap.
+const BADGE_ROW_DIP: i32 = 30;
+
+/// Lays the header badges out from `(left, top)` in rows of `width` pixels: each pill is its
+/// measured text plus 20 DIP (never wider than a row), 8 DIP apart, and a pill that does not fit
+/// the rest of a row starts the next one — none is dropped. Returns the pills and the row count.
+fn layout_badges(
+    badges: &[String],
+    left: i32,
+    top: i32,
+    width: i32,
+    px: &dyn Fn(i32) -> i32,
+    measure: &mut dyn FnMut(&str) -> i32,
+) -> (Vec<Pill>, i32) {
+    let mut pills = Vec::with_capacity(badges.len());
+    let (mut x, mut row) = (left, 0_i32);
+    for badge in badges {
+        let w = measure(badge).saturating_add(px(20)).min(width.max(1));
+        if x > left && x.saturating_add(w) > left.saturating_add(width) {
+            row = row.saturating_add(1);
+            x = left;
+        }
+        let (fill, border, color) = badge_colors(badge);
+        pills.push(Pill {
+            text: badge.clone(),
+            rect: Rect::new(
+                x,
+                top.saturating_add(row.saturating_mul(px(BADGE_ROW_DIP))),
+                w,
+                px(24),
+            ),
+            fill,
+            border,
+            color,
+        });
+        x = x.saturating_add(w).saturating_add(px(8));
+    }
+    let rows = if pills.is_empty() {
+        0
+    } else {
+        row.saturating_add(1)
+    };
+    (pills, rows)
+}
+
+/// The bottom bar's layout (spec/04 §3.2 하단, 2026-11-10). The status line (`남은 시간 m:ss ·
+/// 대기 n건 · 상태 문구`) wraps at the full width; the next step is bold text to the left of the
+/// buttons, two lines at most — or, where that space is narrower than 260 DIP (or would need a
+/// third line), on its own row above the buttons; the buttons stay at the bottom right. The bar
+/// grows with its lines and the content area shrinks by as much. Pure: measured character widths
+/// in.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct BarLayout {
+    /// Bar height.
+    height: i32,
+    /// Status lines `(y, text)`, `y` from the bar top.
+    status: Vec<(i32, String)>,
+    /// Next-step lines `(y, text)`, `y` from the bar top.
+    step: Vec<(i32, String)>,
+    /// The next step's left edge and width.
+    step_x: i32,
+    step_w: i32,
+    /// `승인` and `거부`, `y` from the bar top.
+    approve: Rect,
+    reject: Rect,
+}
+
+/// What [`bar_layout`] measures with.
+struct BarMetrics<'a> {
+    px: &'a dyn Fn(i32) -> i32,
+    status_line: i32,
+    step_line: i32,
+    status_char: &'a dyn Fn(char) -> i32,
+    step_char: &'a dyn Fn(char) -> i32,
+}
+
+fn wrap_lines(text: &str, width: i32, char_width: &dyn Fn(char) -> i32) -> Vec<String> {
+    text_layout::layout(text, width.max(1), char_width)
+        .into_iter()
+        .map(|line| text.get(line.start..line.end).unwrap_or("").to_owned())
+        .collect()
+}
+
+fn bar_layout(
+    client_w: i32,
+    status: &str,
+    step: Option<&str>,
+    metrics: &BarMetrics<'_>,
+) -> BarLayout {
+    let px = metrics.px;
+    let margin = px(16);
+    let gap = px(12);
+    let button_h = px(40);
+    let width = client_w
+        .saturating_sub(margin.saturating_mul(2))
+        .max(px(100));
+    let mut layout = BarLayout::default();
+    let mut y = px(10);
+    if !status.is_empty() {
+        for line in wrap_lines(status, width, metrics.status_char) {
+            layout.status.push((y, line));
+            y = y.saturating_add(metrics.status_line);
+        }
+    }
+    let approve_x = client_w.saturating_sub(margin).saturating_sub(px(220));
+    let reject_x = approve_x.saturating_sub(gap).saturating_sub(px(140));
+    let free = reject_x.saturating_sub(gap).saturating_sub(margin);
+    let narrow = free < px(260);
+    let mut beside: Vec<String> = Vec::new();
+    let side = step
+        .filter(|_| !narrow)
+        .map(|step| wrap_lines(step, free, metrics.step_char))
+        .filter(|lines| lines.len() <= 2);
+    if let Some(lines) = side {
+        beside = lines;
+        layout.step_x = margin;
+        layout.step_w = free;
+    } else if step.is_some() || narrow {
+        // Its own row above the buttons. A narrow window keeps two lines for it even without a
+        // step, so the content does not jump when a step comes or goes (the arm delay, a hold).
+        y = y.saturating_add(px(4));
+        layout.step_x = margin;
+        layout.step_w = width;
+        let lines = step.map_or_else(Vec::new, |step| wrap_lines(step, width, metrics.step_char));
+        let reserved = if narrow {
+            lines.len().max(2)
+        } else {
+            lines.len()
+        };
+        for line in lines {
+            layout.step.push((y, line));
+            y = y.saturating_add(metrics.step_line);
+        }
+        let shown = layout.step.len();
+        y = y.saturating_add(
+            metrics
+                .step_line
+                .saturating_mul(i32::try_from(reserved.saturating_sub(shown)).unwrap_or(0)),
+        );
+    }
+    let buttons_y = y.saturating_add(px(8));
+    layout.height = buttons_y
+        .saturating_add(button_h)
+        .saturating_add(margin)
+        .max(px(96));
+    let buttons_y = layout
+        .height
+        .saturating_sub(margin)
+        .saturating_sub(button_h);
+    layout.approve = Rect::new(approve_x, buttons_y, px(220), button_h);
+    layout.reject = Rect::new(reject_x, buttons_y, px(140), button_h);
+    if !beside.is_empty() {
+        let lines = i32::try_from(beside.len()).unwrap_or(2);
+        let block = metrics.step_line.saturating_mul(lines);
+        let mut top = buttons_y.saturating_add(button_h.saturating_sub(block) / 2);
+        for line in beside {
+            layout.step.push((top, line));
+            top = top.saturating_add(metrics.step_line);
+        }
+    }
+    layout
+}
 
 impl App {
     // ----- queue and window lifecycle -----------------------------------------------------
@@ -1076,27 +1374,38 @@ impl App {
             .find(|grant| grant.origin == site.origin)
             .map(|grant| grant.accounts)
             .unwrap_or_default();
-        let accounts = self.own_accounts();
+        let accounts = self.own_account_rows();
         // An account whose recovery phrase is not backed up can receive but not sign (spec/02
-        // §8.6): its row says so, and it is not the default of a new site while another is.
+        // §8.6), nor can a YubiKey key on a card still at its factory PINs (spec/10 §9.3): its
+        // row says so, and it is not the default of a new site while another is.
         let unconfirmed: Vec<Option<yw_core::vault::RecordId>> = accounts
             .iter()
-            .map(|(address, _)| self.evm_account_unconfirmed(address))
+            .map(|(address, ..)| self.evm_account_unconfirmed(address))
             .collect();
+        let factory: Vec<Option<u32>> = accounts
+            .iter()
+            .map(|(address, ..)| self.evm_account_card_gate(address))
+            .collect();
+        let can_sign = |index: usize| {
+            unconfirmed.get(index).is_some_and(Option::is_none)
+                && factory.get(index).is_some_and(Option::is_none)
+        };
         // A new site starts with the account chosen on the main screen (2026-11-08; account 0
         // before), so the user picks deliberately; the window is still approved explicitly.
-        let current = self
-            .selected_account()
-            .and_then(|(current, ..)| accounts.iter().position(|(address, _)| *address == current));
+        let current = self.selected_account().and_then(|(current, ..)| {
+            accounts
+                .iter()
+                .position(|(address, ..)| *address == current)
+        });
         let first = current
-            .filter(|index| unconfirmed.get(*index).is_some_and(Option::is_none))
-            .or_else(|| unconfirmed.iter().position(Option::is_none))
+            .filter(|index| can_sign(*index))
+            .or_else(|| (0..accounts.len()).find(|index| can_sign(*index)))
             .or(current)
             .unwrap_or(0);
         let selected = accounts
             .iter()
             .enumerate()
-            .map(|(index, (address, _))| {
+            .map(|(index, (address, ..))| {
                 if granted.is_empty() {
                     index == first
                 } else {
@@ -1105,13 +1414,19 @@ impl App {
             })
             .collect();
         ConnectState {
+            // Each row: the name (and why it cannot sign), a muted line with its source and
+            // path, then the address — the Solana window's shape (2026-11-10).
             accounts: accounts
                 .into_iter()
-                .zip(unconfirmed)
-                .map(|((address, label), phrase)| {
+                .zip(unconfirmed.into_iter().zip(factory))
+                .map(|((address, label, path), (phrase, serial))| {
                     (
                         crate::app_chain_sites::ConnectChoice::Evm(address),
-                        format!("{label}{}", self.mn_connect_tag(phrase)),
+                        format!(
+                            "{label}{}{}\n{path}",
+                            self.mn_connect_tag(phrase),
+                            Self::card_connect_tag(serial)
+                        ),
                         address.to_checksum(),
                         0,
                     )
@@ -1837,10 +2152,7 @@ impl App {
         }
         let Some(prepared) = result.prepared else {
             if let Some(ui) = self.evm.window.as_mut() {
-                ui.status = Some(
-                    "다시 실행한 시뮬레이션이 성공하지 못했습니다. 경고를 확인하고 다시 승인하세요."
-                        .to_owned(),
-                );
+                ui.status = Some(format!("{T_SIM_RESIM_FAILED}{T_SIM_RESIM_FAILED_STEP}"));
                 ui.resim_click = false;
                 // Same content, but a new approval (checkbox, arm delay, fresh interaction).
                 let prepare = ui.session.gate.prepare.clone();
@@ -1894,12 +2206,11 @@ impl App {
             ui.status = match kind {
                 ResimKind::Same => None,
                 ResimKind::Changed | ResimKind::Blocked | ResimKind::Failed => {
-                    Some("시뮬레이션 결과가 바뀌었습니다. 다시 확인하세요".to_owned())
+                    Some(format!("{T_SIM_CHANGED}{T_SIM_CHANGED_STEP}"))
                 }
-                ResimKind::NoResult => Some(
-                    "다시 실행한 시뮬레이션이 성공하지 못했습니다. 경고를 확인하고 다시 승인하세요."
-                        .to_owned(),
-                ),
+                ResimKind::NoResult => {
+                    Some(format!("{T_SIM_RESIM_FAILED}{T_SIM_RESIM_FAILED_STEP}"))
+                }
             };
             let _ = ui.session.replace_content(
                 now,
@@ -2422,6 +2733,7 @@ impl App {
                     patch.apply(&mut connect_view);
                 }
                 connect_view.badges.extend(badges);
+                order_badges(&mut connect_view.badges);
                 connect_view.testnet = testnet;
                 connect_view.chain = chain_badge;
                 ui.view = connect_view;
@@ -2463,6 +2775,7 @@ impl App {
             ui.failure.as_deref(),
         ) {
             Ok(mut view) => {
+                order_badges(&mut view.badges);
                 view.btc_banner = btc_banner;
                 view.chain = chain_badge;
                 // W-ADDR-3 under the recipient (spec/04 §3.3, outside the digest).
@@ -2945,10 +3258,14 @@ impl App {
         let mut rows: Vec<(String, String, FontRole)> = Vec::new();
         for (label, value) in &ui.view.header {
             for (index, line) in value.split('\n').enumerate() {
-                let role = if index > 0 && crate::ui::theme::sol_address_segments(line).is_some() {
-                    FontRole::Mono
+                // A Solana or Bitcoin address on a line of its own is drawn in 4-character
+                // groups (bold middle / bold first and last 6; spacing only, spec/04 §3.3).
+                let (text, role) = if let Some(grouped) = grouped_header_address(line) {
+                    (grouped, FontRole::Mono)
+                } else if index > 0 && crate::ui::theme::sol_address_segments(line).is_some() {
+                    (line.to_owned(), FontRole::Mono)
                 } else {
-                    FontRole::Body
+                    (line.to_owned(), FontRole::Body)
                 };
                 rows.push((
                     if index == 0 {
@@ -2956,7 +3273,7 @@ impl App {
                     } else {
                         String::new()
                     },
-                    line.to_owned(),
+                    text,
                     role,
                 ));
             }
@@ -3000,9 +3317,14 @@ impl App {
                 )
                 .saturating_add(px(4));
         }
-        if !badges.is_empty() {
-            header_height += px(30);
-        }
+        // Every badge is laid out, in as many rows as it takes (2026-11-10: a badge that did not
+        // fit the first row used to be dropped). Positions are relative to the badge area top.
+        dc.select_font(&fonts.body_bold);
+        let (pills, badge_rows) = layout_badges(&badges, margin, 0, width, &px, &mut |text| {
+            dc.measure(&wide(text), i32::MAX).1
+        });
+        header_height += badge_rows.saturating_mul(px(BADGE_ROW_DIP));
+        let mainnet = badges.iter().any(|badge| badge == MAINNET_BADGE);
         let (header_fill, header_text, header_muted) = match ui.view.btc_banner {
             Some(crate::ui::approval_view::BtcBanner::Mainnet) => (
                 theme::BTC_MAINNET_BG,
@@ -3022,6 +3344,10 @@ impl App {
             header_height.saturating_add(margin.saturating_mul(2)),
         );
         dc.fill_rect(header_rect, header_fill);
+        if mainnet {
+            // A real-asset window: a red rule across the top of the header.
+            dc.fill_rect(Rect::new(0, 0, client.w, px(4)), theme::DANGER_ACCENT);
+        }
         dc.fill_rect(
             Rect::new(0, header_rect.bottom(), client.w, 1),
             theme::CARD_BORDER,
@@ -3062,7 +3388,7 @@ impl App {
             );
             dc.set_text_color(header_text);
             let emphasized = *role == FontRole::Mono
-                && crate::ui::theme::sol_address_segments(value).is_some_and(|segments| {
+                && crate::ui::theme::address_segments(value).is_some_and(|segments| {
                     crate::ui::theme::paint_sol_address(&mut dc, fonts, &segments, rect)
                 });
             if !emphasized {
@@ -3071,25 +3397,19 @@ impl App {
             }
             y = y.saturating_add(height).saturating_add(px(4));
         }
-        if !badges.is_empty() {
-            let mut x = margin;
+        if !pills.is_empty() {
             let top = y.saturating_add(px(4));
             dc.select_font(&fonts.body_bold);
-            for badge in &badges {
-                let text = wide(badge);
-                let w = dc
-                    .measure(&text, i32::MAX)
-                    .1
-                    .saturating_add(px(20))
-                    .min(width);
-                if x > margin && x.saturating_add(w) > margin.saturating_add(width) {
-                    break;
-                }
-                let pill = Rect::new(x, top, w, px(24));
-                dc.round_rect(pill, px(12), theme::CARD, theme::CARD_BORDER);
-                dc.set_text_color(theme::TEXT);
-                dc.draw_text(&text, pill, DrawFlags::CENTER);
-                x = x.saturating_add(w).saturating_add(px(8));
+            for pill in &pills {
+                let rect = Rect::new(
+                    pill.rect.x,
+                    pill.rect.y.saturating_add(top),
+                    pill.rect.w,
+                    pill.rect.h,
+                );
+                dc.round_rect(rect, px(12), pill.fill, pill.border);
+                dc.set_text_color(pill.color);
+                dc.draw_text(&wide(&pill.text), rect, DrawFlags::CENTER);
             }
         }
         y = header_rect.bottom().saturating_add(px(10));
@@ -3158,34 +3478,124 @@ impl App {
             }
             y = y.saturating_add(height).saturating_add(px(8));
         }
-        // Bottom bar.
-        let bottom_h = px(96);
-        let bottom_top = client.h.saturating_sub(bottom_h);
-        dc.fill_rect(Rect::new(0, bottom_top, client.w, bottom_h), theme::CARD);
-        dc.fill_rect(Rect::new(0, bottom_top, client.w, 1), theme::CARD_BORDER);
+        // Bottom bar: the status line(s), the next step, the buttons (spec/04 §3.2 하단).
         let waiting = evm.queue.len().saturating_sub(1);
         let bar = bar_state(ui, waiting, now);
+        for character in bar.status.chars() {
+            let _ = char_width(&mut dc, fonts, &mut ui.widths, FontRole::Body, character);
+        }
+        for character in bar.step.unwrap_or("").chars() {
+            let _ = char_width(
+                &mut dc,
+                fonts,
+                &mut ui.widths,
+                FontRole::BodyBold,
+                character,
+            );
+        }
+        let status_line = line_height(&mut dc, fonts, FontRole::Body);
+        let step_line = line_height(&mut dc, fonts, FontRole::BodyBold);
+        let bar_layout = {
+            let widths = &ui.widths;
+            let status_char = |character| {
+                widths
+                    .get(&(FontRole::Body, character))
+                    .copied()
+                    .unwrap_or(0)
+            };
+            let step_char = |character| {
+                widths
+                    .get(&(FontRole::BodyBold, character))
+                    .copied()
+                    .unwrap_or(0)
+            };
+            bar_layout(
+                client.w,
+                &bar.status,
+                bar.step,
+                &BarMetrics {
+                    px: &px,
+                    status_line,
+                    step_line,
+                    status_char: &status_char,
+                    step_char: &step_char,
+                },
+            )
+        };
+        let bottom_h = bar_layout.height.min(client.h);
+        let bottom_top = client.h.saturating_sub(bottom_h);
+        if ui.bottom.bar.h > 0 && ui.bottom.bar.h != bottom_h {
+            // The bar grew or shrank (a wrapped status line, a step above the buttons): the
+            // content area moves, so the whole window is painted again.
+            window.invalidate();
+        }
+        dc.fill_rect(Rect::new(0, bottom_top, client.w, bottom_h), theme::CARD);
+        dc.fill_rect(Rect::new(0, bottom_top, client.w, 1), theme::CARD_BORDER);
         dc.select_font(&fonts.body);
-        dc.set_text_color(theme::MUTED);
-        dc.draw_text(
-            &wide(&bar.status),
-            Rect::new(margin, bottom_top + px(10), width, px(22)),
-            DrawFlags::LINE,
-        );
-        let button_w = px(220);
-        let button_h = px(40);
-        let buttons_y = client.h.saturating_sub(margin).saturating_sub(button_h);
+        for (index, (line_y, line)) in bar_layout.status.iter().enumerate() {
+            let top = bottom_top.saturating_add(*line_y);
+            // The remaining time of the last 30 s in the caution color (first line only).
+            let (urgent, rest) = match bar.urgent {
+                Some(end) if index == 0 => line
+                    .get(..end)
+                    .zip(line.get(end..))
+                    .unwrap_or(("", line.as_str())),
+                _ => ("", line.as_str()),
+            };
+            let urgent_w: i32 = urgent
+                .chars()
+                .map(|character| {
+                    ui.widths
+                        .get(&(FontRole::Body, character))
+                        .copied()
+                        .unwrap_or(0)
+                })
+                .sum();
+            if !urgent.is_empty() {
+                dc.set_text_color(theme::WARN_TEXT);
+                dc.draw_text(
+                    &wide(urgent),
+                    Rect::new(margin, top, urgent_w.saturating_add(px(4)), status_line),
+                    DrawFlags::LINE,
+                );
+            }
+            dc.set_text_color(theme::MUTED);
+            dc.draw_text(
+                &wide(rest),
+                Rect::new(
+                    margin.saturating_add(urgent_w),
+                    top,
+                    width.saturating_sub(urgent_w).saturating_add(px(4)),
+                    status_line,
+                ),
+                DrawFlags::LINE,
+            );
+        }
+        dc.select_font(&fonts.body_bold);
+        dc.set_text_color(theme::TEXT);
+        for (line_y, line) in &bar_layout.step {
+            dc.draw_text(
+                &wide(line),
+                Rect::new(
+                    bar_layout.step_x,
+                    bottom_top.saturating_add(*line_y),
+                    bar_layout.step_w.saturating_add(px(4)),
+                    step_line,
+                ),
+                DrawFlags::LINE,
+            );
+        }
         let approve = Rect::new(
-            client.w.saturating_sub(margin).saturating_sub(button_w),
-            buttons_y,
-            button_w,
-            button_h,
+            bar_layout.approve.x,
+            bottom_top.saturating_add(bar_layout.approve.y),
+            bar_layout.approve.w,
+            bar_layout.approve.h,
         );
         let reject = Rect::new(
-            approve.x.saturating_sub(px(12)).saturating_sub(px(140)),
-            buttons_y,
-            px(140),
-            button_h,
+            bar_layout.reject.x,
+            bottom_top.saturating_add(bar_layout.reject.y),
+            bar_layout.reject.w,
+            bar_layout.reject.h,
         );
         let radius = px(theme::RADIUS_CONTROL);
         dc.round_rect(reject, radius, theme::CARD, theme::BUTTON_SECONDARY.border);
@@ -3832,8 +4242,105 @@ mod tests {
     };
     use yw_core::sol::SolCluster;
 
-    use super::{MAINNET_BADGE, StatusAction, network_badge, status_action};
+    use super::{
+        BarMetrics, MAINNET_BADGE, StatusAction, T_ACK_FIRST, T_SIM_RESIM_FAILED, bar_layout,
+        layout_badges, network_badge, order_badges, status_action,
+    };
     use crate::ui::interaction::InteractionStatus;
+    use crate::ui::theme;
+
+    /// Test widths: 13 px a Hangul (or other wide) character, 7 px an ASCII one (96 DPI).
+    fn test_width(character: char) -> i32 {
+        if character.is_ascii() { 7 } else { 13 }
+    }
+
+    /// spec/04 §3.2 (2026-11-10): six badges in a 520 DIP window are all placed, in the
+    /// network-first order, and the mainnet pill is filled red with white letters.
+    #[test]
+    fn every_header_badge_is_placed_and_the_mainnet_pill_is_red() {
+        let px = |dip: i32| dip;
+        let mut badges = vec![
+            "YubiKey로 서명 · #12345678 · 터치 1회".to_owned(),
+            "WalletConnect 세션".to_owned(),
+            "사용자 추가 체인 (chainId 10)".to_owned(),
+            "로컬 개발 사이트(http)".to_owned(),
+            "국제화 도메인(punycode)".to_owned(),
+            MAINNET_BADGE.to_owned(),
+        ];
+        order_badges(&mut badges);
+        assert_eq!(
+            badges,
+            [
+                MAINNET_BADGE,
+                "국제화 도메인(punycode)",
+                "로컬 개발 사이트(http)",
+                "WalletConnect 세션",
+                "사용자 추가 체인 (chainId 10)",
+                "YubiKey로 서명 · #12345678 · 터치 1회",
+            ]
+        );
+        let width = 520 - 2 * 16;
+        let (pills, rows) = layout_badges(&badges, 16, 0, width, &px, &mut |text| {
+            text.chars().map(test_width).sum()
+        });
+        assert_eq!(pills.len(), 6, "no badge is dropped");
+        assert!(rows >= 2, "{rows}");
+        for pill in &pills {
+            assert!(
+                pill.rect.x >= 16 && pill.rect.right() <= 16 + width,
+                "{pill:?}"
+            );
+            assert_eq!(pill.rect.y % 30, 0);
+        }
+        assert_eq!(
+            (pills[0].fill, pills[0].color),
+            (theme::DANGER_ACCENT, theme::CARD)
+        );
+        assert!(pills[1..].iter().all(|pill| pill.fill == theme::CARD));
+    }
+
+    /// spec/04 §3.2 하단 (2026-11-10): at 520 DIP with three waiting requests and a failed
+    /// re-simulation the whole next step is shown (its own row above the buttons) and the status
+    /// line is kept whole; at 820 DIP the step goes beside the buttons.
+    #[test]
+    fn the_whole_next_step_fits_a_narrow_bar() {
+        let px = |dip: i32| dip;
+        let status = format!("남은 시간 1:58 · 대기 3건 · {T_SIM_RESIM_FAILED}");
+        let metrics = BarMetrics {
+            px: &px,
+            status_line: 19,
+            step_line: 19,
+            status_char: &test_width,
+            step_char: &test_width,
+        };
+        let narrow = bar_layout(520, &status, Some(T_ACK_FIRST), &metrics);
+        let joined = |lines: &[(i32, String)]| {
+            lines
+                .iter()
+                .map(|(_, line)| line.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        assert_eq!(joined(&narrow.step), T_ACK_FIRST);
+        assert_eq!(joined(&narrow.status), status);
+        let status_bottom = narrow.status.last().map_or(0, |(y, _)| y + 19);
+        for (y, line) in &narrow.step {
+            assert!(line.chars().map(test_width).sum::<i32>() <= narrow.step_w);
+            assert!(
+                *y >= status_bottom && y + 19 <= narrow.approve.y,
+                "{narrow:?}"
+            );
+        }
+        assert_eq!(narrow.approve.bottom(), narrow.height - 16);
+        assert_eq!(narrow.approve.right(), 520 - 16);
+        // Without a step the narrow bar keeps the same height (no jump at arming).
+        let armed = bar_layout(520, &status, None, &metrics);
+        assert_eq!(armed.height, narrow.height);
+        let wide = bar_layout(820, &status, Some(T_ACK_FIRST), &metrics);
+        assert!(wide.step.len() <= 2 && wide.step_w >= 260, "{wide:?}");
+        assert_eq!(joined(&wide.step), T_ACK_FIRST);
+        assert!(wide.step.iter().all(|(y, _)| *y >= wide.approve.y - 2));
+    }
 
     /// C1: `Approved` is terminal and comes back on every 50 ms tick; only the transition into
     /// it acts, so one click dispatches at most one re-simulation.

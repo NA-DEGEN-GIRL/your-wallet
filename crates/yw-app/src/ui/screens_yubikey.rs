@@ -185,6 +185,19 @@ pub mod ids {
     pub const IDENTIFY_AGAIN: u16 = 13_388;
     /// Main window: `PIN 설정` after a signing refused for factory PINs.
     pub const PIN_NEEDED_OPEN: u16 = 13_389;
+    /// `PIN 설정` of the band of an account card or send form whose card is still on its
+    /// factory PINs (2026-11-10): `PIN_GATE_BASE + card row`.
+    pub const PIN_GATE_BASE: u16 = 13_510;
+    /// Rows of [`PIN_GATE_BASE`].
+    pub const PIN_GATE_SPAN: u16 = 8;
+    /// Clear: '어떻게 지우나요 ▸' (2026-11-10).
+    pub const CLEAR_HOW: u16 = 13_520;
+    /// Result screen: '슬롯·주소 자세히 ▸' (2026-11-10).
+    pub const RESULT_DETAILS: u16 = 13_521;
+    /// "PIN 설정": 'PIN 안내 ▸' (2026-11-10).
+    pub const PIN_GUIDE: u16 = 13_522;
+    /// Re-slot result: `PIN 설정하기` of a card left on its factory PINs (2026-11-10).
+    pub const RESLOT_PIN_NOW: u16 = 13_523;
     /// Re-slot: the T-YK-KEY-LOST checkbox (a key without recovery words is overwritten).
     pub const RESLOT_LOSS_ACK: u16 = 13_390;
     /// Re-slot: the typed `영구 삭제`.
@@ -565,6 +578,10 @@ pub mod ids {
         CONNECT_BACK,
         CONNECT_PIN,
         CONNECT_SAVE,
+        CLEAR_HOW,
+        RESULT_DETAILS,
+        PIN_GUIDE,
+        RESLOT_PIN_NOW,
     ];
 }
 
@@ -743,6 +760,15 @@ impl App {
             .unwrap_or_default();
         for (row, record) in records.iter().enumerate() {
             items.push(Item::CardStart(Some(format!("YubiKey #{}", record.serial))));
+            // A card on its factory PINs does not sign: said first, and `PIN 설정` is the card's
+            // main button (2026-11-10).
+            let factory = defaults.contains(&record.serial);
+            if factory {
+                items.push(Item::Banner(
+                    "PIN: 공장 기본값 — 서명 안 됨".to_owned(),
+                    Tone::Warn,
+                ));
+            }
             items.push(Item::Field(
                 "펌웨어".to_owned(),
                 record.firmware.to_string(),
@@ -761,27 +787,22 @@ impl App {
                     items,
                 );
             }
-            if defaults.contains(&record.serial) {
-                items.push(Item::Banner(
-                    "기본 PIN·관리 키를 쓰고 있을 수 있습니다. 'PIN 설정 / 기본값 변경'에서 바꾸세요."
-                        .to_owned(),
-                    Tone::Warn,
-                ));
-            }
             let row_id = u16::try_from(row).unwrap_or(u16::MAX);
             let open = self.card.pin_serial == Some(record.serial);
+            let pins_label = match (open, factory) {
+                (true, _) => "PIN 설정 닫기",
+                (false, true) => "PIN 설정",
+                (false, false) => "PIN 설정 / 기본값 변경 (PIN 안내)",
+            };
             // Everyday actions first; the two destructive ones on their own row, named by what
             // they erase (2026-11-08: `삭제` / `YubiKey 비우기` did not say which one touches
             // the card).
             items.push(Item::Row(vec![
-                Ctl::button(
-                    ids::PINS_BASE.saturating_add(row_id),
-                    if open {
-                        "PIN 설정 닫기"
-                    } else {
-                        "PIN 설정 / 기본값 변경 (PIN 안내)"
-                    },
-                )
+                if factory && !open {
+                    Ctl::primary(ids::PINS_BASE.saturating_add(row_id), pins_label)
+                } else {
+                    Ctl::button(ids::PINS_BASE.saturating_add(row_id), pins_label)
+                }
                 .enabled(unlocked),
                 Ctl::button(ids::RESLOT_BASE.saturating_add(row_id), "슬롯 구성 바꾸기")
                     .enabled(unlocked),
@@ -1451,41 +1472,51 @@ impl App {
                 Tone::Info,
             ));
         }
-        items.push(Item::CardStart(Some(format!("YubiKey #{}", record.serial))));
-        items.push(Item::Field(
-            "펌웨어".to_owned(),
-            record.firmware.to_string(),
-        ));
-        items.push(Item::Help(
-            "YubiKey에서 다시 읽은 공개키와 그 주소입니다.".to_owned(),
-        ));
-        for slot in &record.slots {
-            slot_items(
-                slot.slot,
-                slot.role,
-                slot.touch,
-                slot.pin,
-                &address_texts(slot.role, &slot.public).unwrap_or_default(),
-                items,
-            );
-        }
-        items.push(Item::Row(vec![Ctl::button(ids::RECHECK, "다시 확인")]));
-        if let Some(lines) = &wizard.check {
-            for line in lines {
-                items.push(Item::Text(line.clone()));
-            }
-        }
-        items.push(Item::CardEnd);
-        // "가져오기" and "가져오기 없이 등록" both end here (spec/10 §9.3).
+        // "가져오기" and "가져오기 없이 등록" both end here (spec/10 §9.3): the PIN card right
+        // under the completion band (2026-11-10), the slots already checked in 2/4 folded.
         self.yk_pin_items(record.serial, items);
         for note in &wizard.notes {
             items.push(Item::Banner(note.clone(), Tone::Info));
         }
-        // spec/10 §9.3: a new YubiKey wallet ends with its PIN setup (it cannot be skipped).
-        let pins_first = wizard.created && wizard.connect.is_none() && !wizard.pins_done();
-        if pins_first {
-            items.push(Item::Banner(T_YK_PINS_FIRST.to_owned(), Tone::Warn));
+        let open = self.card.result_details_open;
+        items.push(Item::Row(vec![Ctl::link(
+            ids::RESULT_DETAILS,
+            if open {
+                "슬롯·주소 자세히 ▾"
+            } else {
+                "슬롯·주소 자세히 ▸"
+            },
+        )]));
+        if open {
+            items.push(Item::CardStart(Some(format!("YubiKey #{}", record.serial))));
+            items.push(Item::Field(
+                "펌웨어".to_owned(),
+                record.firmware.to_string(),
+            ));
+            items.push(Item::Help(
+                "YubiKey에서 다시 읽은 공개키와 그 주소입니다.".to_owned(),
+            ));
+            for slot in &record.slots {
+                slot_items(
+                    slot.slot,
+                    slot.role,
+                    slot.touch,
+                    slot.pin,
+                    &address_texts(slot.role, &slot.public).unwrap_or_default(),
+                    items,
+                );
+            }
+            items.push(Item::Row(vec![Ctl::button(ids::RECHECK, "다시 확인")]));
+            if let Some(lines) = &wizard.check {
+                for line in lines {
+                    items.push(Item::Text(line.clone()));
+                }
+            }
+            items.push(Item::CardEnd);
         }
+        // spec/10 §9.3: a new YubiKey wallet ends with its PIN setup (it cannot be skipped; the
+        // PIN card's first line says why `완료` is off).
+        let pins_first = wizard.created && wizard.connect.is_none() && !wizard.pins_done();
         items.push(Item::Row(vec![
             Ctl::primary(ids::FINISH, "완료").enabled(!pins_first),
             Ctl::button(
@@ -1518,31 +1549,70 @@ impl App {
     /// "기본값 변경 / PIN 설정" of card `serial` (spec/10 §9.3): the defaults still seen, the
     /// PIN guide, and the two modes — "8자리 하나로 통일" (default: one W12 window sets the four
     /// PINs and protects the management key) or one secret at a time.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the PIN card's first line, defaults, modes and guide in order"
+    )]
     pub fn yk_pin_items(&self, serial: u32, items: &mut Vec<Item>) {
-        let separate = self.card.pins_separate;
+        use crate::yubikey::PinTarget;
+        let seen = self.yk_pin_defaults(serial);
+        // The mode follows the factory values seen this run until the user picks one
+        // (2026-11-10): all three factory → 통일, some → 하나씩 따로, unknown → 통일.
+        let factory = [seen.openpgp_admin, seen.piv_pin, seen.piv_management];
+        let separate = if self.card.pins_chosen {
+            self.card.pins_separate
+        } else {
+            factory.iter().any(|seen| *seen) && !factory.iter().all(|seen| *seen)
+        };
         items.push(Item::CardStart(Some(format!(
             "기본값 변경 / PIN 설정 — YubiKey #{serial}"
         ))));
-        // The last step of a new YubiKey wallet (2026-11-10).
-        if self.card.wizard.as_ref().is_some_and(|wizard| {
+        // The first line: why `완료` waits (a new YubiKey wallet), or that the card does not
+        // sign yet (2026-11-10).
+        let new_wallet = self.card.wizard.as_ref().is_some_and(|wizard| {
             wizard.created
                 && wizard.connect.is_none()
                 && wizard
                     .enrolled
                     .as_ref()
                     .is_some_and(|enrolled| enrolled.record.serial == serial)
-        }) {
+        });
+        if new_wallet && self.yk_pins_first() {
+            items.push(Item::Banner(T_YK_PINS_FIRST.to_owned(), Tone::Warn));
+        } else if self.yk_card_on_defaults(serial) {
+            items.push(Item::Banner(
+                "PIN을 설정하기 전에는 이 YubiKey로 서명하지 않습니다.".to_owned(),
+                Tone::Warn,
+            ));
+        }
+        if new_wallet {
             items.push(Item::Help("5/5단계 · PIN 정하기".to_owned()));
         }
-        for line in crate::app_card::defaults_lines(self.yk_pin_defaults(serial)) {
-            items.push(Item::Banner(line, Tone::Warn));
+        // One line of the factory values seen (only those).
+        let mut names = Vec::new();
+        if seen.openpgp_admin {
+            names.push("OpenPGP 관리자 PIN");
         }
-        items.push(Item::Subtitle("PIN 안내".to_owned()));
-        for line in T_YK_PIN_GUIDE {
-            items.push(Item::Text(format!("· {line}")));
+        if seen.piv_pin {
+            names.push("PIV PIN");
         }
-        items.push(Item::Help(T_YK_PIN_LOCKS.to_owned()));
-        items.push(Item::Text(T_YK_PIN_EASY.to_owned()));
+        if seen.piv_management {
+            names.push("PIV 관리 키");
+        }
+        if !names.is_empty() {
+            items.push(Item::Banner(
+                format!(
+                    "공장 기본값: {} — {}",
+                    names.join(" · "),
+                    if separate {
+                        "아래 '공장값 — 바꿔야 함' 버튼으로 하나씩 바꿉니다."
+                    } else {
+                        "아래 “PIN 설정하기” 한 번으로 모두 바꿉니다."
+                    }
+                ),
+                Tone::Warn,
+            ));
+        }
         items.push(Item::LabeledRow(
             "방식".to_owned(),
             vec![
@@ -1556,22 +1626,67 @@ impl App {
             ],
         ));
         if separate {
+            // The secrets still at their factory values say so (this run's changes count).
+            let label = |name: &str, target, factory: bool| {
+                if factory && !self.card.list_changed.contains(&(serial, target)) {
+                    format!("{name} (공장값 — 바꿔야 함)")
+                } else {
+                    name.to_owned()
+                }
+            };
             items.push(Item::Row(vec![
-                Ctl::button(ids::CHANGE_PW1, "OpenPGP PIN"),
-                Ctl::button(ids::CHANGE_PW3, "OpenPGP 관리자 PIN"),
-                Ctl::button(ids::CHANGE_PIV_PIN, "PIV PIN"),
-                Ctl::button(ids::CHANGE_PUK, "PIV PUK"),
+                Ctl::button(
+                    ids::CHANGE_PW1,
+                    &label("OpenPGP PIN", PinTarget::OpenPgpUser, seen.openpgp_admin),
+                ),
+                Ctl::button(
+                    ids::CHANGE_PW3,
+                    &label(
+                        "OpenPGP 관리자 PIN",
+                        PinTarget::OpenPgpAdmin,
+                        seen.openpgp_admin,
+                    ),
+                ),
             ]));
-            items.push(Item::Row(vec![Ctl::button(
-                ids::CHANGE_MGMT,
-                "PIV 관리 키 자동 보호",
-            )]));
+            items.push(Item::Row(vec![
+                Ctl::button(
+                    ids::CHANGE_PIV_PIN,
+                    &label("PIV PIN", PinTarget::PivPin, seen.piv_pin),
+                ),
+                Ctl::button(
+                    ids::CHANGE_PUK,
+                    &label("PIV PUK", PinTarget::PivPuk, seen.piv_pin),
+                ),
+            ]));
+            let protect = if seen.piv_management && !self.card.list_protected.contains(&serial) {
+                "PIV 관리 키 자동 보호 (공장값 — 바꿔야 함)"
+            } else {
+                "PIV 관리 키 자동 보호"
+            };
+            items.push(Item::Row(vec![Ctl::button(ids::CHANGE_MGMT, protect)]));
             items.push(Item::Help(T_YK_PROTECT_MGMT.to_owned()));
         } else {
             items.push(Item::Row(vec![Ctl::primary(
                 ids::SET_PINS,
                 "PIN 설정하기 (8자리 하나)",
             )]));
+        }
+        // The guide and the order behind a link (2026-11-10).
+        let open = self.card.pin_guide_open;
+        items.push(Item::Row(vec![Ctl::link(
+            ids::PIN_GUIDE,
+            if open {
+                "PIN 안내 ▾"
+            } else {
+                "PIN 안내 ▸"
+            },
+        )]));
+        if open {
+            for line in T_YK_PIN_GUIDE {
+                items.push(Item::Text(format!("· {line}")));
+            }
+            items.push(Item::Help(T_YK_PIN_LOCKS.to_owned()));
+            items.push(Item::Text(T_YK_PIN_EASY.to_owned()));
             items.push(Item::Help(T_YK_PIN_TRADEOFF.to_owned()));
         }
         items.push(Item::CardEnd);
@@ -1587,45 +1702,53 @@ impl App {
         let Some(record) = position.and_then(|position| self.card.records.get(position)) else {
             return "선택한 YubiKey 기록을 지웁니다.".to_owned();
         };
-        let others: Vec<&HwKeyRecord> = self
+        // One sentence here; the accounts follow as the "지워지는 계정" block (2026-11-10).
+        format!(
+            "YubiKey #{}의 기록을 이 지갑에서 지웁니다. YubiKey 안의 키는 지우지 않습니다. 계속하려면 비밀번호를 입력하세요.",
+            record.serial
+        )
+    }
+
+    /// The removal overlay's accounts (2026-11-10): each key of the card with its addresses and
+    /// last-read balance, what still signs for it ("`YubiKey` #m(으)로 계속 서명" / "이 지갑에서 서명
+    /// 불가") and how it comes back, then what to do about a lost card.
+    pub fn yk_remove_items(&self, items: &mut Vec<Item>) {
+        let position = self
+            .card
+            .remove_target
+            .and_then(|id| self.card.record_ids.iter().position(|other| *other == id));
+        let Some(record) = position.and_then(|position| self.card.records.get(position)) else {
+            return;
+        };
+        let others: Vec<HwKeyRecord> = self
             .card
             .records
             .iter()
             .filter(|other| other.serial != record.serial)
+            .cloned()
             .collect();
-        let only_here: Vec<_> = record
+        items.push(Item::Subtitle(format!("YubiKey #{}의 계정", record.serial)));
+        let accounts: Vec<crate::ui::removed::RemovedAccount> = record
             .slots
             .iter()
-            .filter(|slot| {
-                !others.iter().any(|other| {
-                    other
-                        .slots
-                        .iter()
-                        .any(|held| held.role.key_identity() == slot.role.key_identity())
-                })
+            .map(|slot| {
+                let mut account = self.card_removed(slot, &others, false);
+                if crate::yubikey::holders(&others, slot.role).is_empty() {
+                    // Only on this card: how the account comes back after the record goes.
+                    let back = if yw_core::yubikey::plan::is_unknown_index(slot.role.index()) {
+                        "이 지갑에서 서명 불가 — 카드를 'YubiKey 연결하기 (복구 단어 없이)'로 다시 연결하면 돌아옵니다(이 카드를 잃거나 키를 지우면 영구히 사라집니다)"
+                    } else {
+                        "이 지갑에서 서명 불가 — 같은 복구 단어로 다시 등록하면 돌아옵니다"
+                    };
+                    account.note = Some(back.to_owned());
+                }
+                account
             })
             .collect();
-        let lost: Vec<String> = only_here.iter().map(|slot| slot.role.title()).collect();
-        // A key connected without recovery words cannot be "registered again from the words".
-        let unknown = only_here
-            .iter()
-            .any(|slot| yw_core::yubikey::plan::is_unknown_index(slot.role.index()));
-        let mut text = format!(
-            "YubiKey #{}의 기록을 이 지갑에서 지웁니다. YubiKey 안의 키는 지우지 않습니다.",
-            record.serial
-        );
-        if lost.is_empty() {
-            text.push_str(" 이 YubiKey의 키는 모두 다른 YubiKey에도 있어 계정은 그대로 남습니다.");
-        } else {
-            text.push_str(" 이 YubiKey에만 있는 계정(");
-            text.push_str(&lost.join(", "));
-            text.push_str(if unknown {
-                ")은 목록에서 사라집니다. 복구 단어 없이 연결한 키는 카드를 'YubiKey 연결하기 (복구 단어 없이)'로 다시 연결하면 돌아옵니다 — 이 카드를 잃거나 비우면 영구히 사라집니다."
-            } else {
-                ")은 목록에서 사라집니다. 같은 복구 단어로 다시 등록하면 돌아옵니다."
-            });
-        }
-        text.push_str(" 잃어버린 YubiKey라면 PIN을 3번 틀리면 잠기지만, 자산을 새 복구 단어로 옮길지는 직접 판단하세요. 계속하려면 비밀번호를 입력하세요.");
-        text
+        let _ = crate::ui::removed::removed_items(&accounts, items);
+        items.push(Item::Help(
+            "잃어버린 YubiKey라면: 기록을 지워도 카드의 키는 그대로입니다 — 백업 YubiKey나 복구 단어로 새 카드를 등록해 자산을 옮기세요."
+                .to_owned(),
+        ));
     }
 }

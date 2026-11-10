@@ -327,8 +327,10 @@ impl App {
             items.push(Item::CardStart(Some("서명 계정".to_owned())));
             items.push(Item::Text(label));
             items.push(Item::Mono(yw_core::evm::display::format_address(&account)));
-            // U7: `검토` stays off while the phrase waits for its backup quiz.
+            // U7: `검토` stays off while the phrase waits for its backup quiz, and while the
+            // YubiKey is still on its factory PINs (spec/10 §9.3).
             self.mn_signing_banner(self.evm_backup_gate(source), items);
+            self.card_pin_banner(self.evm_card_gate(source), items);
             items.push(Item::CardEnd);
         }
         items.push(Item::CardStart(Some("내용".to_owned())));

@@ -384,6 +384,10 @@ impl App {
                 ),
                 items,
             );
+            self.card_pin_banner(
+                id.source().and_then(|source| self.sol_card_gate(source)),
+                items,
+            );
             // Three states under the big balance (2026-11-10, like EVM): loading, read (with
             // the time), or failed — explained once by the network card above.
             match (self.sol_balance(address), failure) {
@@ -463,14 +467,13 @@ impl App {
             items.push(Item::CardEnd);
         }
         items.push(Item::CardStart(Some("내 Solana 계정".to_owned())));
-        items.push(Item::Help(if self.key_only() {
-            "이 지갑은 개인키로 시작해 복구 단어가 없습니다. 모든 계정은 '가져온 키'이며 각각의 원래 개인키가 유일한 백업입니다."
-                .to_owned()
-        } else {
-            "경로 m/44'/501'/i'/0' (Phantom·Solflare와 같은 표준 경로). '가져온 키' 계정은 복구 단어로 복구되지 않으니 원래 개인키를 따로 백업하세요."
-                .to_owned()
-        }));
         let rows = self.sol_account_rows();
+        items.push(Item::Help(self.accounts_help(
+            "이 지갑은 개인키로 시작해 복구 단어가 없습니다. 모든 계정은 '가져온 키'이며 각각의 원래 개인키가 유일한 백업입니다.",
+            "경로 m/44'/501'/i'/0' (Phantom·Solflare와 같은 표준 경로). '가져온 키' 계정은 복구 단어로 복구되지 않으니 원래 개인키를 따로 백업하세요.",
+            rows.iter().any(|(id, ..)| id.is_hardware()),
+            rows.iter().any(|(id, ..)| id.is_imported()),
+        )));
         if rows.is_empty() {
             items.push(Item::Muted(if self.sol.creating {
                 "Solana 계정을 만드는 중…".to_owned()
@@ -808,8 +811,10 @@ impl App {
                 format!(" · 잔액 {} (RPC 참고)", App::sol_text(lamports))
             });
         items.push(Item::Help(format!("{}{balance}", source.path_text())));
-        // U7: `검토` stays off while the phrase waits for its backup quiz.
+        // U7: `검토` stays off while the phrase waits for its backup quiz, and while the
+        // YubiKey is still on its factory PINs (spec/10 §9.3).
         self.mn_signing_banner(self.sol_backup_gate(source), items);
+        self.card_pin_banner(self.sol_card_gate(source), items);
         items.push(Item::CardEnd);
         items.push(Item::CardStart(Some("받는 사람".to_owned())));
         if form.moving.is_some() {

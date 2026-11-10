@@ -434,6 +434,13 @@ pub const T_MAINNET: &str = "메인넷 — 실제 자산";
 pub const T_ACCOUNTS_BACKUP: &str = "보내기·받기에 쓸 계정을 고르세요. 경로(m/44'/60'/…)가 있는 계정은 복구 단어로 복구되지만, '가져온 개인키' 계정은 복구 단어로 복구되지 않으니 그 개인키를 따로 백업하세요.";
 /// S10 `내 계정` help of a key-only wallet (no recovery words).
 pub const T_ACCOUNTS_KEY_ONLY: &str = "보내기·받기에 쓸 계정을 고르세요. 이 지갑은 개인키로 시작해 복구 단어가 없습니다. 모든 계정은 '가져온 키'이며 각각의 원래 개인키가 유일한 백업입니다.";
+/// The `내 계정` / `내 Solana 계정` help of a wallet without recovery words that has `YubiKey`
+/// cards (2026-11-10: not the key-only text, which says the wallet started from a key).
+pub const T_ACCOUNTS_YUBIKEY: &str = "보내기·받기에 쓸 계정을 고르세요. 이 지갑은 복구 단어를 저장하지 않습니다. [YubiKey] 계정의 키는 카드 안에만 있고, 백업은 등록할 때 적은 복구 단어입니다(복구 단어 없이 연결한 키는 그 카드와 같은 키를 가진 백업 카드).";
+/// Its last sentence when the wallet also has imported keys.
+pub const T_ACCOUNTS_IMPORTED: &str = "[가져온 키]는 원래 개인키가 백업입니다.";
+/// Added to T-ACCOUNTS-BACKUP when a wallet with recovery words has `YubiKey` accounts.
+pub const T_ACCOUNTS_YUBIKEY_WORDS: &str = "[YubiKey] 계정은 YubiKey를 등록할 때 쓴 복구 단어로 복구됩니다(이 지갑의 복구 단어와 다를 수 있음).";
 /// The imported-key removal confirmation (export first: imported keys are not in the 24 words).
 pub const T_REMOVE_KEY: &str = "선택한 가져온 개인키 계정을 이 지갑에서 지웁니다. 가져온 개인키는 복구 단어로 복구되지 않으므로, 지우고 나면 원래 개인키 없이는 이 계정의 자산에 다시 접근할 수 없습니다. 지우기 전에 설정 → 보안 → '개인키 보기'로 개인키를 내보내 안전하게 보관했는지 확인하세요. 계속하려면 비밀번호를 입력하세요.";
 /// The EVM `폐기` confirmation: discarding only stops tracking; a resend may pay twice.
@@ -678,12 +685,50 @@ impl App {
         items.push(Item::Row(row));
     }
 
+    /// The `내 계정` / `내 Solana 계정` help (2026-11-10): a wallet without recovery words that has
+    /// `YubiKey` cards says where their keys' backup is (not the key-only text); a wallet with
+    /// words and `YubiKey` accounts adds that those come back with the card's own words.
+    #[must_use]
+    pub(crate) fn accounts_help(
+        &self,
+        key_only: &str,
+        words: &str,
+        has_card: bool,
+        imported: bool,
+    ) -> String {
+        if self.key_only() && !self.card.records.is_empty() {
+            if imported {
+                format!("{T_ACCOUNTS_YUBIKEY} {T_ACCOUNTS_IMPORTED}")
+            } else {
+                T_ACCOUNTS_YUBIKEY.to_owned()
+            }
+        } else if self.key_only() {
+            key_only.to_owned()
+        } else if has_card {
+            format!("{words} {T_ACCOUNTS_YUBIKEY_WORDS}")
+        } else {
+            words.to_owned()
+        }
+    }
+
     /// The backup status of a wallet whose first recovery phrase is not its only backup
     /// (2026-11-08, settings → 보안): one line per recovery phrase (words, passphrase, quiz),
-    /// the imported keys, and the `YubiKey` cards. Empty for a wallet with one phrase only.
+    /// the imported keys, and one per `YubiKey` key (2026-11-10). Empty for a wallet with one
+    /// phrase only.
     #[must_use]
     pub fn backup_status_lines(&self) -> Vec<String> {
-        let imported = self.meta.as_ref().map_or(0, |meta| {
+        if !self.several_mnemonics()
+            && self.imported_key_count() == 0
+            && self.card.records.is_empty()
+        {
+            return Vec::new();
+        }
+        self.backup_status_all()
+    }
+
+    /// The imported keys of every chain.
+    fn imported_key_count(&self) -> usize {
+        self.meta.as_ref().map_or(0, |meta| {
             meta.evm_raw_accounts.len()
                 + meta.sol_raw_accounts.len()
                 + meta
@@ -692,11 +737,14 @@ impl App {
                     .iter()
                     .filter(|account| account.is_imported())
                     .count()
-        });
-        let cards = self.card.records.len();
-        if !self.several_mnemonics() && imported == 0 && cards == 0 {
-            return Vec::new();
-        }
+        })
+    }
+
+    /// [`Self::backup_status_lines`] of any wallet (a wallet without recovery words included:
+    /// settings → 보안 and S22 show it always, 2026-11-10).
+    #[must_use]
+    pub fn backup_status_all(&self) -> Vec<String> {
+        let imported = self.imported_key_count();
         let mut lines = Vec::new();
         for info in &self.mn.infos {
             lines.push(format!(
@@ -725,21 +773,34 @@ impl App {
                 "· 가져온 개인키 {imported}개 — 복구 단어로 되찾을 수 없고, 각각 원래 개인키가 백업입니다"
             ));
         }
-        if cards > 0 {
-            let unknown = self.card.records.iter().any(|record| {
-                record
-                    .slots
-                    .iter()
-                    .any(|slot| yw_core::yubikey::plan::is_unknown_index(slot.role.index()))
-            });
-            lines.push(format!(
-                "· YubiKey {cards}개 — {}",
-                if unknown {
-                    "복구 단어 없이 연결한 키는 그 카드(와 같은 키를 가진 백업 카드)가 유일한 사본입니다 ⚠"
-                } else {
-                    "카드의 키는 등록할 때 쓴 복구 단어로 다시 만들 수 있습니다"
+        // One line per card key (2026-11-10): where it is, and whether recovery words make it
+        // again (a key connected without words is only on its cards).
+        let mut seen: Vec<(yw_core::yubikey::plan::Curve, Vec<u32>)> = Vec::new();
+        for record in &self.card.records {
+            for slot in &record.slots {
+                let identity = slot.role.key_identity();
+                if seen.contains(&identity) {
+                    continue;
                 }
-            ));
+                seen.push(identity);
+                let holders: Vec<String> = crate::yubikey::holders(&self.card.records, slot.role)
+                    .iter()
+                    .map(|serial| format!("#{serial}"))
+                    .collect();
+                let cards = holders.join("·");
+                let title = slot.role.title();
+                lines.push(
+                    if yw_core::yubikey::plan::is_unknown_index(slot.role.index()) {
+                        if holders.len() > 1 {
+                            format!("· {title} — 복구 단어 없음, {cards}에 있음")
+                        } else {
+                            format!("· {title} — 복구 단어 없음, {cards}에만 있음 ⚠")
+                        }
+                    } else {
+                        format!("· {title} — YubiKey {cards} · 복구 단어로 다시 만들 수 있음")
+                    },
+                );
+            }
         }
         lines
     }
@@ -1383,6 +1444,7 @@ impl App {
         items.push(Item::Subtitle(self.evm_account_title(source, &label)));
         items.push(Item::Help(self.evm_path_text(source)));
         self.mn_signing_banner(self.evm_backup_gate(source), items);
+        self.card_pin_banner(self.evm_card_gate(source), items);
         let balance = self.native_balance(chain_id, &address);
         let state = self.evm.balances.get(&chain_id);
         let endpoint = self.apikeys.has(KeyName::Rpc(NetworkId::Eip155(chain_id)));
@@ -1528,13 +1590,21 @@ impl App {
         }
         self.evm_hero(items);
         items.push(Item::CardStart(Some("내 계정".to_owned())));
-        items.push(Item::Help(if self.key_only() {
-            T_ACCOUNTS_KEY_ONLY.to_owned()
-        } else {
-            T_ACCOUNTS_BACKUP.to_owned()
-        }));
         let selected = self.selected_pref();
         let rows = self.account_rows();
+        let has_card = rows
+            .iter()
+            .any(|(pref, ..)| matches!(pref, EvmAccountPref::Hardware(_)));
+        let imported = self
+            .meta
+            .as_ref()
+            .is_some_and(|meta| !meta.evm_raw_accounts.is_empty());
+        items.push(Item::Help(self.accounts_help(
+            T_ACCOUNTS_KEY_ONLY,
+            T_ACCOUNTS_BACKUP,
+            has_card,
+            imported,
+        )));
         let single = rows.len() == 1;
         for (row, (pref, label, address, path)) in rows
             .into_iter()
@@ -1759,6 +1829,16 @@ impl App {
         let public = unlocked || self.mode == AppMode::BackupPending;
         items.push(Item::CardStart(Some("복구 단어·개인키".to_owned())));
         if self.key_only() {
+            // No recovery words: what brings this wallet back is said anyway (2026-11-10).
+            let lines = self.backup_status_all();
+            if !lines.is_empty() {
+                items.push(Item::Subtitle(
+                    "백업 현황 — 이 지갑을 다시 열려면".to_owned(),
+                ));
+                for line in lines {
+                    items.push(Item::Text(line));
+                }
+            }
             items.push(Item::Help(
                 "이 지갑은 개인키로 시작해 복구 단어가 없습니다. 각 계정의 백업은 그 원래 개인키이며, 보기 전에 비밀번호를 다시 묻고 화면 캡처에서 제외된 창에 보여줍니다."
                     .to_owned(),
@@ -1808,7 +1888,7 @@ impl App {
         items.push(Item::CardEnd);
         items.push(Item::CardStart(Some("지갑 초기화".to_owned())));
         items.push(Item::Help(
-            "이 PC의 지갑 파일을 데이터 폴더 안의 reset- 폴더로 옮기고(지우지 않음) 처음 화면으로 돌아갑니다. 다시 쓰려면 복구 단어 또는 원래 개인키가 필요합니다."
+            "이 PC의 지갑 파일을 데이터 폴더 안의 reset- 폴더로 옮기고(지우지 않음) 처음 화면으로 돌아갑니다. 다시 쓰려면 복구 단어·원래 개인키, 또는 YubiKey(“YubiKey 연결하기 (복구 단어 없이)”)가 필요합니다."
                 .to_owned(),
         ));
         items.push(Item::Row(vec![Ctl::danger(
@@ -2228,6 +2308,12 @@ impl App {
                 crate::app_yubikey::T_YK_ABANDON.to_owned(),
                 "그만두기",
             ),
+            Confirm::YkPinLater => (
+                "PIN을 나중에 설정할까요?",
+                "PIN을 설정하기 전에는 이 YubiKey로 서명하지 않습니다. 나중에 설정 → YubiKey에서 바꿀 수 있습니다."
+                    .to_owned(),
+                "나중에",
+            ),
             // Drawn above.
             Confirm::SidecarCorrupt | Confirm::JournalCorrupt => ("", String::new(), ""),
             Confirm::RemoveKey => (
@@ -2323,9 +2409,31 @@ impl App {
         );
         items.push(Item::Title(title.to_owned()));
         items.push(Item::CardStart(None));
-        items.push(Item::Text(text));
-        if kind == Confirm::RemoveKey {
-            self.remove_key_balance(items);
+        match kind {
+            // The "지워지는 계정" block (2026-11-10), then the imported-key band with the balance
+            // sentence inside it (the key is lost for good with its removal).
+            Confirm::RemoveKey | Confirm::RemoveImported => {
+                let account = if kind == Confirm::RemoveKey {
+                    self.remove_key_account()
+                } else {
+                    self.imported_removed()
+                };
+                let inside = account.map_or_else(Vec::new, |account| {
+                    items.push(Item::Subtitle("지워지는 계정".to_owned()));
+                    crate::ui::removed::removed_items(&[account], items)
+                });
+                let mut band = inside.join(" ");
+                if !band.is_empty() {
+                    band.push(' ');
+                }
+                band.push_str(&text);
+                items.push(Item::Banner(band, Tone::HighRisk));
+            }
+            Confirm::RemoveYubiKey => {
+                items.push(Item::Text(text));
+                self.yk_remove_items(items);
+            }
+            _ => items.push(Item::Text(text)),
         }
         if kind == Confirm::SettingsFile {
             for line in self.settings_file_lines() {
@@ -2339,7 +2447,7 @@ impl App {
             items.push(Item::Help("컨트랙트 주소".to_owned()));
             items.push(Item::Mono(yw_core::evm::display::format_address(&address)));
         }
-        if matches!(kind, Confirm::RemoveImported | Confirm::RevealImported)
+        if kind == Confirm::RevealImported
             && let Some((label, address)) = self.imported_target_text()
         {
             items.push(Item::Field("계정".to_owned(), label));
@@ -2383,6 +2491,15 @@ impl App {
             items.push(Item::CardEnd);
             return;
         }
+        if kind == Confirm::YkPinLater {
+            // Setting the PIN now is the main choice (back to the result and its PIN card).
+            items.push(Item::Row(vec![
+                Ctl::primary(ids::CONFIRM_NO, "지금 PIN 설정"),
+                Ctl::button(ids::CONFIRM_YES, yes),
+            ]));
+            items.push(Item::CardEnd);
+            return;
+        }
         let no = match (kind, btc) {
             (Confirm::Btc, Some(confirm)) => confirm.no_label(),
             _ => "취소",
@@ -2398,42 +2515,19 @@ impl App {
         items.push(Item::CardEnd);
     }
 
-    /// The balance check of the imported key about to be removed (the selected EVM network's
-    /// native balance as last read; other networks and tokens are not checked).
-    fn remove_key_balance(&self, items: &mut Vec<Item>) {
-        let chain_id = self.settings.evm_chain_id;
-        let account = self.pending_remove.and_then(|id| {
+    /// The EVM imported key about to be removed (`Confirm::RemoveKey`) as the "지워지는 계정"
+    /// block shows it (2026-11-10, was `remove_key_balance`): the selected EVM network's native
+    /// balance as last read; other networks and tokens are not checked.
+    fn remove_key_account(&self) -> Option<crate::ui::removed::RemovedAccount> {
+        let (label, address) = self.pending_remove.and_then(|id| {
             self.meta.as_ref()?.evm_raw_accounts.iter().find_map(|raw| {
                 (raw.record_id == *id.as_bytes())
                     .then(|| yw_core::evm::address::parse_address(&raw.address).ok())
                     .flatten()
                     .map(|address| (raw.label.clone(), address))
             })
-        });
-        let Some((label, address)) = account else {
-            return;
-        };
-        items.push(Item::Field("계정".to_owned(), label));
-        items.push(Item::Mono(format_address(&address)));
-        let network = self.network_label(chain_id);
-        match self.native_balance(chain_id, &address) {
-            Some(balance) if !balance.is_zero() => items.push(Item::Banner(
-                format!(
-                    "이 계정에 잔액이 있습니다: {} ({network}). 지우기 전에 다른 계정으로 옮기거나, 설정 → 보안 → '개인키 보기'로 개인키를 먼저 내보내세요.",
-                    self.native_text(chain_id, &balance)
-                ),
-                Tone::HighRisk,
-            )),
-            Some(_) => items.push(Item::Help(format!(
-                "{network} 잔액: 0. 다른 네트워크와 토큰 잔액은 여기서 확인하지 않았습니다."
-            ))),
-            None => items.push(Item::Banner(
-                format!(
-                    "이 계정의 잔액을 확인하지 못했습니다({network}). 자산이 남아 있을 수 있으니 개인키를 먼저 내보내세요."
-                ),
-                Tone::Warn,
-            )),
-        }
+        })?;
+        Some(self.evm_removed(label, &address, true))
     }
 
     /// `RpcUrlDelete`'s text (2026-11-10): the address cannot be shown again, how it comes back,

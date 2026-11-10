@@ -157,7 +157,7 @@ impl App {
                 items.push(Item::Row(actions));
             }
             if self.mn.confirm_remove == Some(info.id) {
-                self.mn_remove_items(info.backup_confirmed, items);
+                self.mn_remove_items(info.id, info.backup_confirmed, items);
             }
             items.push(Item::CardEnd);
         }
@@ -178,7 +178,19 @@ impl App {
     /// The removal warning of an added phrase. One whose backup is not confirmed needs its words
     /// shown to the end (`단어 보기`) and [`T_MN_REMOVE_WORD`] typed before `지우기` asks for the
     /// password.
-    fn mn_remove_items(&self, backup_confirmed: bool, items: &mut Vec<Item>) {
+    fn mn_remove_items(
+        &self,
+        id: yw_core::vault::RecordId,
+        backup_confirmed: bool,
+        items: &mut Vec<Item>,
+    ) {
+        // The "지워지는 계정" block (2026-11-10): every account of this phrase on every chain,
+        // with its last-read balance.
+        let accounts = self.mn_removed_accounts(id);
+        if !accounts.is_empty() {
+            items.push(Item::Subtitle("지워지는 계정".to_owned()));
+            let _ = crate::ui::removed::removed_items(&accounts, items);
+        }
         if backup_confirmed {
             items.push(Item::Banner(T_MN_REMOVE.to_owned(), Tone::Danger));
         } else {
@@ -217,6 +229,56 @@ impl App {
                 .enabled(backup_confirmed || self.mn.remove_revealed),
             Ctl::button(ids::REMOVE_CANCEL, "취소"),
         ]));
+    }
+
+    /// The accounts of added phrase `id` on every chain (EVM, Solana, the settings network's
+    /// Bitcoin, both Zcash networks).
+    fn mn_removed_accounts(
+        &self,
+        id: yw_core::vault::RecordId,
+    ) -> Vec<crate::ui::removed::RemovedAccount> {
+        let mut accounts = Vec::new();
+        for (pref, label, address, _) in self.mnemonic_account_rows() {
+            if let crate::meta::EvmAccountPref::Mnemonic(record, _) = pref
+                && record == *id.as_bytes()
+                && let Ok(address) = yw_core::evm::address::parse_address(&address)
+            {
+                accounts.push(self.evm_removed(label, &address, false));
+            }
+        }
+        for (account, label, address) in self.sol_account_rows() {
+            if account.mnemonic() == Some(*id.as_bytes()) {
+                accounts.push(self.sol_removed(label, &address, false));
+            }
+        }
+        let ctx = self.btc_ctx();
+        for meta in ctx.accounts() {
+            if meta.account().mnemonic() == Some(id)
+                && let Ok(address) = meta.address(yw_core::bip32::path::BtcChain::Receive, 0)
+            {
+                accounts.push(self.btc_removed(
+                    crate::app_btc::account_label(meta.account()),
+                    address.as_str(),
+                    false,
+                ));
+            }
+        }
+        if let Some(meta) = self.meta.as_ref() {
+            for account in [meta.zcash.mainnet, meta.zcash.testnet]
+                .into_iter()
+                .flatten()
+            {
+                if matches!(account.source, yw_core::zec::ZecKeySource::Mnemonic { mnemonic, .. } if mnemonic == id)
+                {
+                    accounts.push(self.zec_removed(
+                        format!("Zcash 계정 ({})", account.network.display_name()),
+                        &account.address(),
+                        false,
+                    ));
+                }
+            }
+        }
+        accounts
     }
 
     /// The address preview of "복구 단어 추가 가져오기", with T-YK-SAME when the words are an

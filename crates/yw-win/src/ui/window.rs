@@ -970,12 +970,29 @@ impl Window {
         focus == hwnd || unsafe { IsChild(hwnd, focus) } != 0
     }
 
-    /// Centers the window on `anchor`'s monitor work area (or its own monitor).
+    /// Centers the window on `anchor`'s monitor work area (or its own monitor), fitted into it
+    /// (2026-11-10): the window is first moved onto that monitor, so a monitor of another DPI
+    /// resizes it through `WM_DPICHANGED` (its suggested rectangle), and then its outer size is
+    /// cut to the work area and centered. The minimum track size of `WM_GETMINMAXINFO` still
+    /// applies (`SetWindowPos` goes through `WM_WINDOWPOSCHANGING`).
     pub fn center_on(&self, anchor: Option<&Self>) {
         let Some(hwnd) = self.live() else { return };
         let target = anchor.and_then(Self::live).unwrap_or(hwnd);
         let Some(work) = work_area(target, MONITOR_DEFAULTTONEAREST) else {
             return;
+        };
+        // SAFETY: Moves our live window onto the target monitor (size unchanged); a DPI change
+        // there is handled by our window procedure (the suggested rectangle).
+        unsafe {
+            SetWindowPos(
+                hwnd,
+                core::ptr::null_mut(),
+                work.left,
+                work.top,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+            )
         };
         let mut rect = RECT {
             left: 0,
@@ -985,19 +1002,22 @@ impl Window {
         };
         // SAFETY: `rect` is writable storage for our live window's rectangle.
         unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetWindowRect(hwnd, &raw mut rect) };
-        let (w, h) = (rect.right - rect.left, rect.bottom - rect.top);
-        let x = work.left + (work.right - work.left - w).max(0) / 2;
-        let y = work.top + (work.bottom - work.top - h).max(0) / 2;
-        // SAFETY: Moves our live window.
+        let work_w = (work.right - work.left).max(1);
+        let work_h = (work.bottom - work.top).max(1);
+        let w = (rect.right - rect.left).min(work_w);
+        let h = (rect.bottom - rect.top).min(work_h);
+        let x = work.left + (work_w - w).max(0) / 2;
+        let y = work.top + (work_h - h).max(0) / 2;
+        // SAFETY: Moves and sizes our live window inside the work area.
         unsafe {
             SetWindowPos(
                 hwnd,
                 core::ptr::null_mut(),
                 x,
                 y,
-                0,
-                0,
-                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+                w,
+                h,
+                SWP_NOZORDER | SWP_NOACTIVATE,
             )
         };
     }

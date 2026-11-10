@@ -11,9 +11,11 @@ use super::{script_label, slot_items, zec_network_label};
 use crate::app::App;
 use crate::app_yubikey::manage::{
     CLEAR_WORD, Chain, ClearFlow, ClearStep, LOSS_WORD, MAX_RESLOT_INDEX, Preset, ReslotFlow,
-    ReslotStep, T_YK_CLEAR_FUNDS, T_YK_CLEAR_PGP_OURS, T_YK_CLEAR_PGP_RESET, T_YK_CLEAR_PIV_OURS,
-    T_YK_CLEAR_PIV_RESET, T_YK_CLEAR_SCOPE, T_YK_KEY_LOST, T_YK_KEY_LOST_ACK, T_YK_RESLOT_BACKUP,
-    T_YK_RESLOT_REMOVED, T_YK_RESLOT_WORDS, YkManage, lost_slots,
+    ReslotStep, T_YK_CLEAR_FUNDS, T_YK_CLEAR_PGP_OURS, T_YK_CLEAR_PGP_OURS_RESULT,
+    T_YK_CLEAR_PGP_RESET, T_YK_CLEAR_PGP_RESET_RESULT, T_YK_CLEAR_PIV_OURS,
+    T_YK_CLEAR_PIV_OURS_RESULT, T_YK_CLEAR_PIV_RESET, T_YK_CLEAR_PIV_RESET_RESULT,
+    T_YK_CLEAR_SCOPE, T_YK_KEY_LOST, T_YK_KEY_LOST_ACK, T_YK_RESLOT_BACKUP, T_YK_RESLOT_REMOVED,
+    T_YK_RESLOT_WORDS, YkManage, lost_slots,
 };
 use crate::app_yubikey::{CARD_SCRIPTS, T_YK_SAME, T_YK_SHARED};
 use crate::ui::main_window::{Ctl, Item, Tone};
@@ -30,9 +32,11 @@ fn holders_text(holders: &[u32]) -> String {
 }
 
 /// T-YK-KEY-LOST with the keys it names, its checkbox and the typed [`LOSS_WORD`] (spec/10 §15):
-/// keys connected without recovery words that no other enrolled card holds.
+/// keys connected without recovery words that no other enrolled card holds. `balances` are those
+/// keys' balance sentences of the "지워지는 계정" block (2026-11-10), said inside the band.
 fn loss_items(
     lost: &[RecordedSlot],
+    balances: &[String],
     (ack_id, edit_id): (u16, u16),
     (acked, typed): (bool, &str),
     items: &mut Vec<Item>,
@@ -40,7 +44,12 @@ fn loss_items(
     if lost.is_empty() {
         return;
     }
-    items.push(Item::Banner(T_YK_KEY_LOST.to_owned(), Tone::HighRisk));
+    let mut band = T_YK_KEY_LOST.to_owned();
+    for sentence in balances {
+        band.push(' ');
+        band.push_str(sentence);
+    }
+    items.push(Item::Banner(band, Tone::HighRisk));
     for slot in lost {
         items.push(Item::Text(format!(
             "{} — {} (복구 단어 없음)",
@@ -351,27 +360,29 @@ impl App {
             items.push(Item::CardStart(Some(
                 "이 YubiKey에서 빠지는 계정".to_owned(),
             )));
-            for (slot, holders) in &dropped {
-                let note = match (holders.is_empty(), slot.path_known) {
-                    (true, true) => {
-                        "다른 YubiKey에 없음 — 바꾼 뒤에는 이 지갑에서 서명할 수 없습니다"
-                            .to_owned()
-                    }
-                    (true, false) => {
-                        "복구 단어 없음·다른 YubiKey에도 없음 — 바꾸면 이 키는 영구히 사라집니다"
-                            .to_owned()
-                    }
-                    (false, _) => format!(
-                        "{}에 남아 있음 — 그 YubiKey로는 계속 서명할 수 있습니다",
-                        holders_text(holders)
-                    ),
-                };
-                items.push(Item::Text(format!(
-                    "{} ({}) — {note}",
-                    slot.role.title(),
-                    slot.path_text()
-                )));
-            }
+            // The "지워지는 계정" block (2026-11-10): addresses and last-read balances.
+            let accounts: Vec<crate::ui::removed::RemovedAccount> = dropped
+                .iter()
+                .map(|(slot, holders)| {
+                    let mut account = self.card_removed(slot, &others, true);
+                    account.note = Some(match (holders.is_empty(), slot.path_known) {
+                        (true, true) => {
+                            "다른 YubiKey에 없음 — 바꾼 뒤에는 이 지갑에서 서명할 수 없습니다"
+                                .to_owned()
+                        }
+                        (true, false) => {
+                            "복구 단어 없음·다른 YubiKey에도 없음 — 바꾸면 이 키는 영구히 사라집니다"
+                                .to_owned()
+                        }
+                        (false, _) => format!(
+                            "{}에 남아 있음 — 그 YubiKey로 계속 서명할 수 있습니다",
+                            holders_text(holders)
+                        ),
+                    });
+                    account
+                })
+                .collect();
+            let balances = crate::ui::removed::removed_items(&accounts, items);
             let changed: Vec<CardSlot> = dropped.iter().map(|(slot, _)| slot.slot).collect();
             self.yk_zec_unusable_items(flow.serial, &changed, "바꾼", items);
             // "복구 단어로 언제든 복구" holds only for keys with a known path.
@@ -385,6 +396,7 @@ impl App {
             )]));
             loss_items(
                 &lost_slots(&dropped),
+                &balances,
                 (ids::RESLOT_LOSS_ACK, ids::RESLOT_LOSS_EDIT),
                 (flow.loss_ack, &flow.loss_typed),
                 items,
@@ -426,6 +438,18 @@ impl App {
             ),
             Tone::Success,
         ));
+        // Done under the factory admin PIN: the card does not sign until its PINs are set
+        // (spec/10 §9.3, 2026-11-10).
+        if self.yk_card_on_defaults(record.serial) {
+            items.push(Item::Banner(
+                "PIN을 설정하기 전에는 이 YubiKey로 서명하지 않습니다.".to_owned(),
+                Tone::Warn,
+            ));
+            items.push(Item::Row(vec![Ctl::primary(
+                ids::RESLOT_PIN_NOW,
+                "PIN 설정하기",
+            )]));
+        }
         items.push(Item::CardStart(Some(format!("YubiKey #{}", record.serial))));
         record_items(record, items);
         items.push(Item::CardEnd);
@@ -478,12 +502,17 @@ impl App {
         )]));
     }
 
-    // ----- YubiKey 비우기 ------------------------------------------------------------------------
+    // ----- YubiKey의 키 지우기 -------------------------------------------------------------------
 
+    /// The method radios of one applet (2026-11-10: named by their result, the recommended one
+    /// first), what it does, the irreversible band right under them for a reset, and how it is
+    /// done under '어떻게 지우나요 ▸'.
     fn yk_clear_method_items(
         current: Option<ClearMethod>,
         (ours, reset): (u16, u16),
+        labels: (&str, &str),
         (ours_text, reset_text): (&str, &str),
+        (how_ours, how_reset, how_open): (&str, &str, bool),
         items: &mut Vec<Item>,
     ) {
         let Some(method) = current else {
@@ -492,20 +521,17 @@ impl App {
         items.push(Item::LabeledRow(
             "방법".to_owned(),
             vec![
-                Ctl::radio(
-                    ours,
-                    "이 지갑의 슬롯만 지우기",
-                    method == ClearMethod::OurSlots,
-                    true,
-                ),
-                Ctl::radio(
-                    reset,
-                    "애플릿 초기화 (PIN도 공장 기본값)",
-                    method == ClearMethod::Reset,
-                    false,
-                ),
+                Ctl::radio(ours, labels.0, method == ClearMethod::OurSlots, true),
+                Ctl::radio(reset, labels.1, method == ClearMethod::Reset, false),
             ],
         ));
+        if method == ClearMethod::Reset {
+            items.push(Item::Banner(
+                "되돌릴 수 없습니다: 초기화는 그 기능의 다른 키(GPG·PIV 인증서 등 이 지갑이 쓰지 않은 것 포함)도 모두 지우고 PIN을 공장 기본값으로 되돌립니다."
+                    .to_owned(),
+                Tone::HighRisk,
+            ));
+        }
         items.push(Item::Help(
             if method == ClearMethod::OurSlots {
                 ours_text
@@ -514,6 +540,16 @@ impl App {
             }
             .to_owned(),
         ));
+        if how_open {
+            items.push(Item::Help(
+                if method == ClearMethod::OurSlots {
+                    how_ours
+                } else {
+                    how_reset
+                }
+                .to_owned(),
+            ));
+        }
     }
 
     /// The wallet's Zcash accounts whose key only `slots` of card `serial` hold
@@ -549,13 +585,13 @@ impl App {
         match flow.step {
             ClearStep::Running => {
                 items.push(Item::CardStart(None));
-                items.push(Item::Subtitle("YubiKey를 비우는 중입니다".to_owned()));
+                items.push(Item::Subtitle("YubiKey의 키를 지우는 중입니다".to_owned()));
                 items.push(Item::Text("YubiKey를 빼지 마세요.".to_owned()));
                 items.push(Item::CardEnd);
                 return;
             }
             ClearStep::Result => {
-                Self::yk_clear_result_items(flow, items);
+                self.yk_clear_result_items(flow, items);
                 return;
             }
             ClearStep::Choose => {}
@@ -567,7 +603,7 @@ impl App {
                 .filter(|slot| matches!(slot.slot, CardSlot::OpenPgp(_)) == pgp)
                 .count()
         };
-        items.push(Item::CardStart(Some("무엇을 비울까요?".to_owned())));
+        items.push(Item::CardStart(Some("무엇을 지울까요?".to_owned())));
         if has(true) > 0 {
             items.push(Item::Row(vec![Ctl::check(
                 ids::CLEAR_PGP_TOGGLE,
@@ -580,7 +616,12 @@ impl App {
             Self::yk_clear_method_items(
                 flow.openpgp,
                 (ids::CLEAR_PGP_OURS, ids::CLEAR_PGP_RESET),
-                (T_YK_CLEAR_PGP_OURS, T_YK_CLEAR_PGP_RESET),
+                (
+                    "이 지갑의 키만 지우기 (권장)",
+                    "OpenPGP 전체 초기화 — 다른 키도 지움",
+                ),
+                (T_YK_CLEAR_PGP_OURS_RESULT, T_YK_CLEAR_PGP_RESET_RESULT),
+                (T_YK_CLEAR_PGP_OURS, T_YK_CLEAR_PGP_RESET, flow.how_open),
                 items,
             );
         }
@@ -593,7 +634,12 @@ impl App {
             Self::yk_clear_method_items(
                 flow.piv,
                 (ids::CLEAR_PIV_OURS, ids::CLEAR_PIV_RESET),
-                (T_YK_CLEAR_PIV_OURS, T_YK_CLEAR_PIV_RESET),
+                (
+                    "Solana 키만 지우기 (권장)",
+                    "PIV 전체 초기화 — 인증서 등 다른 키도 지움",
+                ),
+                (T_YK_CLEAR_PIV_OURS_RESULT, T_YK_CLEAR_PIV_RESET_RESULT),
+                (T_YK_CLEAR_PIV_OURS, T_YK_CLEAR_PIV_RESET, flow.how_open),
                 items,
             );
             if flow.piv == Some(ClearMethod::OurSlots)
@@ -608,6 +654,16 @@ impl App {
             }
         }
         items.push(Item::Help(T_YK_CLEAR_SCOPE.to_owned()));
+        if flow.openpgp.is_some() || flow.piv.is_some() {
+            items.push(Item::Row(vec![Ctl::link(
+                ids::CLEAR_HOW,
+                if flow.how_open {
+                    "어떻게 지우나요 ▾"
+                } else {
+                    "어떻게 지우나요 ▸"
+                },
+            )]));
+        }
         items.push(Item::CardEnd);
         let plan = flow.plan();
         if plan.any() {
@@ -615,36 +671,37 @@ impl App {
             items.push(Item::CardStart(Some(
                 "이 YubiKey로 쓸 수 없게 되는 계정".to_owned(),
             )));
-            for slot in before.slots.iter().filter(|slot| plan.clears(slot.slot)) {
-                let holders = crate::yubikey::holders(&others, slot.role);
-                let note = if holders.is_empty() && !slot.path_known {
-                    "복구 단어 없음·다른 YubiKey에도 없음 — 비우면 이 키는 영구히 사라집니다"
-                        .to_owned()
-                } else if holders.is_empty() {
-                    "다른 YubiKey에 없음 — 이 지갑의 계정 목록에서 빠집니다(같은 복구 단어로 다시 넣으면 돌아옵니다)".to_owned()
-                } else {
-                    format!(
-                        "{}에도 있음 — 그 YubiKey로는 계속 서명할 수 있습니다",
-                        holders_text(&holders)
-                    )
-                };
-                items.push(Item::Text(format!(
-                    "{} — {} ({}) — {note}",
-                    slot.slot.label(),
-                    slot.role.title(),
-                    slot.path_text()
-                )));
-                for address in address_texts(slot.role, &slot.public).unwrap_or_default() {
-                    items.push(Item::Mono(address));
-                }
-            }
+            // The "지워지는 계정" block (2026-11-10): addresses and last-read balances.
+            let accounts: Vec<crate::ui::removed::RemovedAccount> = before
+                .slots
+                .iter()
+                .filter(|slot| plan.clears(slot.slot))
+                .map(|slot| {
+                    let holders = crate::yubikey::holders(&others, slot.role);
+                    let mut account = self.card_removed(slot, &others, true);
+                    account.label = format!("{} — {}", slot.slot.label(), account.label);
+                    account.note = Some(if holders.is_empty() && !slot.path_known {
+                        "복구 단어 없음·다른 YubiKey에도 없음 — 지우면 이 키는 영구히 사라집니다"
+                            .to_owned()
+                    } else if holders.is_empty() {
+                        "다른 YubiKey에 없음 — 이 지갑의 계정 목록에서 빠집니다(같은 복구 단어로 다시 넣으면 돌아옵니다)".to_owned()
+                    } else {
+                        format!(
+                            "{}에도 있음 — 그 YubiKey로 계속 서명할 수 있습니다",
+                            holders_text(&holders)
+                        )
+                    });
+                    account
+                })
+                .collect();
+            let balances = crate::ui::removed::removed_items(&accounts, items);
             let cleared: Vec<CardSlot> = before
                 .slots
                 .iter()
                 .filter(|slot| plan.clears(slot.slot))
                 .map(|slot| slot.slot)
                 .collect();
-            self.yk_zec_unusable_items(flow.serial, &cleared, "비운", items);
+            self.yk_zec_unusable_items(flow.serial, &cleared, "지운", items);
             // "복구 단어로 언제든 복구" holds only for keys with a known path.
             if before
                 .slots
@@ -655,6 +712,7 @@ impl App {
             }
             loss_items(
                 &self.yk_clear_lost(flow),
+                &balances,
                 (ids::CLEAR_LOSS_ACK, ids::CLEAR_LOSS_EDIT),
                 (flow.loss_ack, &flow.loss_typed),
                 items,
@@ -665,18 +723,11 @@ impl App {
                         .to_owned(),
                 ));
             }
-            if plan.openpgp == Some(ClearMethod::Reset) || plan.piv == Some(ClearMethod::Reset) {
-                items.push(Item::Banner(
-                    "초기화는 그 애플릿의 다른 키(GPG·PIV 인증서 등 이 지갑이 쓰지 않은 것 포함)도 모두 지우고 PIN을 공장 기본값으로 되돌립니다. 되돌릴 수 없습니다."
-                        .to_owned(),
-                    Tone::HighRisk,
-                ));
-            }
             items.push(Item::CardEnd);
         }
         if !self.yk_clear_allowed(flow) {
             items.push(Item::Banner(
-                "이 YubiKey가 이 지갑의 마지막 키입니다. 모두 비우면 지갑에 남는 키가 없으므로 비울 수 없습니다. 다른 YubiKey를 먼저 등록하세요."
+                "이 YubiKey가 이 지갑의 마지막 키입니다. 모두 지우면 지갑에 남는 키가 없으므로 지울 수 없습니다. 다른 YubiKey를 먼저 등록하세요."
                     .to_owned(),
                 Tone::Danger,
             ));
@@ -710,12 +761,13 @@ impl App {
             items.push(Item::Banner(error.clone(), Tone::Danger));
         }
         items.push(Item::Row(vec![
-            Ctl::danger(ids::CLEAR_RUN, "비우기").enabled(self.yk_clear_ready(flow)),
+            Ctl::danger(ids::CLEAR_RUN, "이 YubiKey의 키 지우기")
+                .enabled(self.yk_clear_ready(flow)),
             Ctl::button(ids::MANAGE_CANCEL, "취소"),
         ]));
     }
 
-    fn yk_clear_result_items(flow: &ClearFlow, items: &mut Vec<Item>) {
+    fn yk_clear_result_items(&self, flow: &ClearFlow, items: &mut Vec<Item>) {
         if let Some(failure) = &flow.failure {
             items.push(Item::Banner(failure.clone(), Tone::Danger));
         }
@@ -728,17 +780,23 @@ impl App {
                  asked: Option<ClearMethod>,
                  result: Option<Result<(), yw_core::yubikey::CardError>>| {
                     match (asked, result) {
-                        (Some(ClearMethod::OurSlots), Some(Ok(()))) => Some((
-                            format!("{name}: 이 지갑의 슬롯을 지웠습니다."),
-                            Tone::Success,
-                        )),
+                        (Some(ClearMethod::OurSlots), Some(Ok(()))) => {
+                            Some((format!("{name}: 이 지갑의 키를 지웠습니다."), Tone::Success))
+                        }
                         (Some(ClearMethod::Reset), Some(Ok(()))) => Some((
-                            format!("{name}: 공장 상태로 초기화했습니다 (PIN도 기본값)."),
+                            format!("{name}: 전체를 공장 상태로 초기화했습니다 (PIN도 기본값)."),
                             Tone::Success,
                         )),
                         (Some(method), Some(Err(error))) => {
                             let text = if method == ClearMethod::OurSlots {
-                                pin.error_text(error)
+                                pin.error_text_in(
+                                    error,
+                                    &crate::yubikey::PinContext::of(
+                                        &self.card.records,
+                                        flow.serial,
+                                        pin,
+                                    ),
+                                )
                             } else {
                                 error.to_string()
                             };

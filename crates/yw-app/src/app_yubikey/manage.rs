@@ -10,7 +10,7 @@
 //!
 //! "`YubiKey` 비우기": what to clear (`OpenPGP` wallet keys, PIV Solana slots, or both) and how
 //! (our slots only, or the applet's factory reset), the accounts that become unusable, the word
-//! "비우기" typed, the admin PIN / PIV PIN when only our slots are deleted, then the card and the
+//! "지우기" typed, the admin PIN / PIV PIN when only our slots are deleted, then the card and the
 //! slot map (a card with no wallet slot left leaves the list).
 
 use yw_core::bip32::path::AccountIndex;
@@ -34,8 +34,9 @@ use crate::workers::key::yubikey::manage::{Cleared, ManageJob, ManageOutcome, Re
 use crate::yubikey::PinKind;
 use yw_core::yubikey::enrol::Enrolled;
 
-/// The word typed to confirm "`YubiKey` 비우기".
-pub const CLEAR_WORD: &str = "비우기";
+/// The word typed to confirm "`YubiKey`의 키 지우기" (2026-11-10: the title's and the button's
+/// word).
+pub const CLEAR_WORD: &str = "지우기";
 /// T-YK-RESLOT-WORDS: what happens to the recovery words.
 pub const T_YK_RESLOT_WORDS: &str = "새 키를 만들려면 복구 단어가 한 번 필요합니다. 비밀 입력 창에서 받아 키를 만드는 데만 쓰고 저장하지 않으며, 이 작업(백업 YubiKey 적용 포함)을 마치거나 취소하거나 지갑이 잠기면 바로 지웁니다.";
 /// T-YK-RESLOT-REMOVED: the accounts this card stops holding (shown only when one of them has a
@@ -52,8 +53,17 @@ pub const T_YK_KEY_LOST_ACK: &str =
 /// T-YK-RESLOT-BACKUP: backup cards should get the same change.
 pub const T_YK_RESLOT_BACKUP: &str = "이 YubiKey의 백업 YubiKey가 있으면 같은 구성으로 바꾸세요. 그렇지 않으면 백업 YubiKey에는 예전 키가 남아 같은 계정을 대신 서명할 수 없습니다.";
 /// T-YK-CLEAR-FUNDS (shown only when a cleared slot has a known path).
-pub const T_YK_CLEAR_FUNDS: &str = "비우면 아래 계정은 이 YubiKey로 서명할 수 없습니다. 자금은 체인에 그대로 있고 복구 단어로 언제든 복구할 수 있습니다(같은 키를 다시 넣거나 다른 지갑에서).";
-/// T-YK-CLEAR-PGP-OURS.
+pub const T_YK_CLEAR_FUNDS: &str = "지우면 아래 계정은 이 YubiKey로 서명할 수 없습니다. 자금은 체인에 그대로 있고 복구 단어로 언제든 복구할 수 있습니다(같은 키를 다시 넣거나 다른 지갑에서).";
+/// What "이 지갑의 키만 지우기" of `OpenPGP` does (2026-11-10: the result first; how is under
+/// '어떻게 지우나요 ▸').
+pub const T_YK_CLEAR_PGP_OURS_RESULT: &str = "이 지갑이 넣은 키만 지웁니다. 같은 YubiKey의 GPG 키·PIN·FIDO2(패스키)는 그대로입니다. 관리자 PIN이 필요합니다.";
+/// What "`OpenPGP` 전체 초기화" does.
+pub const T_YK_CLEAR_PGP_RESET_RESULT: &str = "OpenPGP 기능 전체를 공장 상태로 되돌립니다. 이 지갑 키뿐 아니라 GPG 등 다른 키도 모두 지워지고 PIN은 123456, 관리자 PIN은 12345678이 됩니다. PIN 없이 되며 되돌릴 수 없습니다.";
+/// What "Solana 키만 지우기" (PIV) does.
+pub const T_YK_CLEAR_PIV_OURS_RESULT: &str = "이 지갑이 넣은 Solana 키만 지웁니다. 같은 YubiKey의 다른 PIV 키·인증서·PIN·FIDO2(패스키)는 그대로입니다. PIV PIN이 필요합니다.";
+/// What "PIV 전체 초기화" does.
+pub const T_YK_CLEAR_PIV_RESET_RESULT: &str = "PIV 기능 전체를 공장 상태로 되돌립니다. 이 지갑 키뿐 아니라 인증서 등 다른 키도 모두 지워지고 PIN은 123456, PUK는 12345678이 됩니다. PIN 없이 되며 되돌릴 수 없습니다.";
+/// T-YK-CLEAR-PGP-OURS (how; under '어떻게 지우나요 ▸').
 pub const T_YK_CLEAR_PGP_OURS: &str = "OpenPGP에는 '키 삭제' 명령이 없습니다. yubikey-manager의 delete_key와 같이 SIG/AUT 슬롯의 알고리즘 속성을 두 번 바꿔(RSA 4096 → RSA 2048) 그 슬롯의 키를 지웁니다. PIN과 다른 슬롯(DEC)은 그대로이고, '고정' 터치 정책은 남습니다(지우려면 초기화). 관리자 PIN이 필요합니다.";
 /// T-YK-CLEAR-PGP-RESET.
 pub const T_YK_CLEAR_PGP_RESET: &str = "OpenPGP 애플릿 전체를 공장 상태로 되돌립니다(Yubico 절차: PIN·관리자 PIN을 틀린 값으로 잠근 뒤 TERMINATE·ACTIVATE). 세 슬롯의 모든 키(GPG 등 다른 용도 포함)가 지워지고 PIN은 123456, 관리자 PIN은 12345678로 돌아갑니다. PIN이 필요 없습니다.";
@@ -249,8 +259,10 @@ pub struct ClearFlow {
     pub error: Option<String>,
     /// The [`T_YK_KEY_LOST`] checkbox (a key without recovery words is cleared).
     pub loss_ack: bool,
-    /// The typed [`LOSS_WORD`] (checked when `비우기` is pressed).
+    /// The typed [`LOSS_WORD`] (checked when `이 YubiKey의 키 지우기` is pressed).
     pub loss_typed: String,
+    /// '어떻게 지우나요 ▸' is open (this run's memory).
+    pub how_open: bool,
 }
 
 impl ClearFlow {
@@ -599,6 +611,7 @@ impl App {
             error: None,
             loss_ack: false,
             loss_typed: String::new(),
+            how_open: false,
         }));
         self.refresh();
     }
@@ -1021,6 +1034,8 @@ impl App {
         // flow): it ends now and the key worker wipes the held words (spec/10 §7.1 "떠나면
         // 지움"); the result becomes a banner.
         let away = self.screen != Screen::Settings(SettingsSection::YubiKey);
+        let admin_context =
+            crate::yubikey::PinContext::of(&self.card.records, serial, PinKind::OpenPgpAdmin);
         let Some(flow) = self.reslot().filter(|flow| flow.serial == serial) else {
             return;
         };
@@ -1059,7 +1074,12 @@ impl App {
                         yw_core::yubikey::enrol::EnrolError::Partial(_)
                     ))
                 );
-                let mut text = failure_text_for(error, PinKind::OpenPgpAdmin);
+                let mut text = match error {
+                    YubiKeyJobError::Card(error) => {
+                        error.text_for_in(PinKind::OpenPgpAdmin, &admin_context)
+                    }
+                    other => failure_text_for(other, PinKind::OpenPgpAdmin),
+                };
                 if partial {
                     text.push(' ');
                     text.push_str(
@@ -1232,8 +1252,38 @@ impl App {
                 }
                 self.yk_reslot_import();
             }
+            // A re-slot under the factory admin PIN leaves the card on factory PINs: `완료`
+            // asks once (2026-11-10).
+            ids::MANAGE_DONE
+                if self
+                    .card
+                    .manage
+                    .as_ref()
+                    .is_some_and(|manage| match manage {
+                        YkManage::Reslot(flow) => {
+                            flow.step == ReslotStep::Result
+                                && flow.result.is_some()
+                                && self.yk_card_on_defaults(flow.serial)
+                        }
+                        YkManage::Clear(_) => false,
+                    }) =>
+            {
+                self.set_screen(Screen::Confirm(crate::app::Confirm::YkPinLater));
+                return true;
+            }
             ids::MANAGE_CANCEL | ids::MANAGE_DONE => {
                 self.yk_manage_close();
+                return true;
+            }
+            ids::RESLOT_PIN_NOW => {
+                // That card's "PIN 설정" card in the list (the held words are wiped).
+                let serial = match self.card.manage.as_ref() {
+                    Some(YkManage::Reslot(flow)) => Some(flow.serial),
+                    _ => None,
+                };
+                self.yk_manage_close();
+                self.card.pin_serial = serial;
+                self.refresh();
                 return true;
             }
             ids::CLEAR_PGP_TOGGLE | ids::CLEAR_PIV_TOGGLE => {
@@ -1274,6 +1324,11 @@ impl App {
             ids::CLEAR_RUN => {
                 self.yk_clear_run();
                 return true;
+            }
+            ids::CLEAR_HOW => {
+                if let Some(flow) = self.clear_flow() {
+                    flow.how_open = !flow.how_open;
+                }
             }
             _ => return false,
         }

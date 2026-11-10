@@ -682,6 +682,7 @@ impl App {
         // the form, with `검토` off, instead of after the approval (E-VLT-009).
         let backup_gate = self.zec_backup_gate();
         self.mn_signing_banner(backup_gate, items);
+        self.card_pin_banner(self.zec_card_gate(), items);
         items.push(Item::Help(
             "받는 주소: t1…/t3… (testnet tm…/t2…), TEX(tex1…) 또는 일반 수신자가 있는 통합 주소(u1…). 비공개 주소(zs…)는 받지 않습니다."
                 .to_owned(),
@@ -728,6 +729,8 @@ impl App {
             && !self.zec.refreshing
             && !self.zec_journal_damaged()
             && !self.mn_send_blocked(backup_gate)
+            // spec/10 §9.3: the YubiKey is still on its factory PINs (the band says so).
+            && self.zec_card_gate().is_none()
             && self
                 .journal_hold(crate::app_sidecar::SendChain::Zec)
                 .is_none()

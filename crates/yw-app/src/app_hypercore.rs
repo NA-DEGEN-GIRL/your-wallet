@@ -183,6 +183,8 @@ pub struct HcUi {
     pub form: HcForm,
     /// Signing jobs waiting for their signature.
     pub pending: HashMap<SignTicket, HcAction>,
+    /// The `YubiKey` signature that keeps S-HC open until the card answers (2026-11-10).
+    pub card_ticket: Option<SignTicket>,
     /// Session activity, newest first.
     pub activity: Vec<HcActivity>,
     /// Settings: testnet API text.
@@ -772,6 +774,8 @@ impl App {
             && self.hypercore.pending.is_empty()
             // U7: the signing account's phrase waits for its backup quiz (the band says so).
             && !self.mn_send_blocked(self.evm_selected_gate())
+            // spec/10 §9.3: the YubiKey is still on its factory PINs (the band says so).
+            && self.evm_selected_card_gate().is_none()
     }
 
     /// `검토`: queue the approval (the nonce is the current wall-clock ms).
@@ -886,7 +890,16 @@ impl App {
                 typed: true,
             });
         }
-        if matches!(self.screen, Screen::HyperCore) {
+        // A YubiKey signature keeps S-HC until the card answers: its PIN window, then the
+        // touch prompt next to `검토` (2026-11-10). Otherwise the activity row says the rest.
+        let card_step = self
+            .card
+            .step
+            .as_ref()
+            .is_some_and(|step| step.ticket == Some(ticket));
+        if card_step {
+            self.hypercore.card_ticket = Some(ticket);
+        } else if matches!(self.screen, Screen::HyperCore) {
             self.set_screen(Screen::Main);
         }
         self.refresh();
@@ -898,6 +911,13 @@ impl App {
             return false;
         };
         let _ = self.take_sign_waiter(signed.ticket);
+        // A card signature kept S-HC open: the activity row shows the rest.
+        if self.hypercore.card_ticket == Some(signed.ticket) {
+            self.hypercore.card_ticket = None;
+            if matches!(self.screen, Screen::HyperCore) {
+                self.set_screen(Screen::Main);
+            }
+        }
         match &signed.result {
             Ok(signature) => {
                 let job = HcRpcJob::Submit {
@@ -930,6 +950,9 @@ impl App {
         let Some(action) = self.hypercore.pending.remove(&ticket) else {
             return false;
         };
+        if self.hypercore.card_ticket == Some(ticket) {
+            self.hypercore.card_ticket = None;
+        }
         self.hc_set_status(
             action.network,
             action.nonce,

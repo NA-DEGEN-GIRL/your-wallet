@@ -366,6 +366,7 @@ fn w11_card_pin_bounds_mask_and_owned_buffer() {
         min: 6,
         max: 8,
         touches: 3,
+        serial: 7_700_011,
     };
     assert_eq!(kind.id(), "W11");
     assert_eq!(kind.title(), "YubiKey PIN");
@@ -375,14 +376,17 @@ fn w11_card_pin_bounds_mask_and_owned_buffer() {
         CaptureDecision::Show { warning: true }
     );
     let intro = super::intro(kind, 0, false);
-    assert!(intro[0].contains("YubiKey를 연결하고 PIN 입력 후 터치하세요"));
+    assert!(intro[0].starts_with(
+        "1. YubiKey #7700011 연결 → 2. PIN 입력 후 확인 → 3. 깜박이면 15초 안에 터치"
+    ));
     assert!(intro[1].contains("YubiKey 터치 3회가 필요합니다"));
     assert_eq!(
         super::intro(
             SecretKind::CardPin {
                 min: 6,
                 max: 127,
-                touches: 1
+                touches: 1,
+                serial: 0,
             },
             0,
             false

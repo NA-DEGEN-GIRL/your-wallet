@@ -986,8 +986,10 @@ impl App {
                 self.evm_account_title(source, &label)
             )));
             items.push(Item::Mono(format_address(&account)));
-            // U7: `검토` stays off while the phrase waits for its backup quiz.
+            // U7: `검토` stays off while the phrase waits for its backup quiz, and while the
+            // YubiKey is still on its factory PINs (spec/10 §9.3).
             self.mn_signing_banner(self.evm_backup_gate(source), items);
+            self.card_pin_banner(self.evm_card_gate(source), items);
             items.push(Item::Row(vec![Ctl::link(
                 crate::ui::screens::ids::SWITCH_ACCOUNT,
                 "다른 계정으로 바꾸기 (메인)",

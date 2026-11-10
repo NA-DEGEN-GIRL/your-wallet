@@ -902,6 +902,12 @@ impl App {
                     self.refuse_unconfirmed(site, phrase);
                     return Some(QueueOutcome::Cancelled);
                 }
+                // A YubiKey still on its factory PINs: the card step would refuse it only after
+                // the approval (spec/10 §9.3), so the page is told before any window.
+                if let Some(serial) = self.evm_account_card_gate(&account) {
+                    self.refuse_card_defaults(site, serial);
+                    return Some(QueueOutcome::Cancelled);
+                }
                 if chain_info(&self.settings, site.chain_id).is_none() {
                     self.respond(&site.reply, Err(ProviderError::ChainUnavailable));
                     return Some(QueueOutcome::Cancelled);
@@ -2006,6 +2012,104 @@ mod tests {
             app.site_preflight(&site(3, sign(stranger))),
             Some(QueueOutcome::Revoked)
         );
+    }
+
+    /// spec/10 §9.3 (2026-11-10): a `YubiKey` account whose card is still on its factory PINs
+    /// (`hw_accounts.defaults`, the card step's own check) is stopped at the send form — its
+    /// band with `PIN 설정` and `검토` off — and a dApp's signing request for it ends 4100 before
+    /// any window, with one notice; out of the defaults both open again.
+    #[test]
+    fn a_factory_pin_card_is_stopped_at_the_form_and_before_the_window() {
+        use crate::browser::SiteKind;
+        use crate::ui::approval::QueueOutcome;
+        use yw_core::bip32::path::AccountIndex;
+        use yw_core::yubikey::plan::{CardSlot, KeyRole, PgpKey, PinPolicy, TouchPolicy};
+        use yw_core::yubikey::record::{HwKeyRecord, HwPublicKey, RecordedSlot};
+        const ACCOUNT_YK: &str = "0x6fac4d18c912343bf86fa7049364dd4e424ab9c0";
+        const SERIAL: u32 = 7_700_011;
+        let mut app = accounts_app(false);
+        let meta = app.meta.as_mut().unwrap();
+        meta.hw_accounts.evm = vec![crate::meta::Account {
+            index: 1,
+            label: "YubiKey 계정 2".to_owned(),
+            address: ACCOUNT_YK.to_owned(),
+            hidden: false,
+        }];
+        meta.prefs.evm_account = crate::meta::EvmAccountPref::Hardware(1);
+        meta.hw_accounts.defaults = vec![SERIAL];
+        app.card.records = vec![HwKeyRecord {
+            serial: SERIAL,
+            firmware: yw_core::yubikey::Firmware::new(5, 7, 4),
+            fingerprint: [0; 4],
+            slots: vec![RecordedSlot {
+                slot: CardSlot::OpenPgp(PgpKey::Sig),
+                role: KeyRole::Evm {
+                    index: AccountIndex::new(1).unwrap(),
+                    btc: None,
+                },
+                touch: TouchPolicy::Always,
+                pin: PinPolicy::NotApplicable,
+                public: HwPublicKey::Secp256k1([2; 33]),
+                path_known: true,
+            }],
+        }];
+        app.sync_browser();
+        let core = Arc::clone(&app.browser.as_ref().unwrap().core);
+        core.upsert_grant(
+            yw_core::policy::ConnectedSite::new(
+                yw_core::policy::BrowserOrigin::parse("https://app.example").unwrap(),
+                vec![addr(ACCOUNT_YK)],
+                yw_core::evm::chain::SEPOLIA,
+                0,
+            )
+            .unwrap(),
+        );
+        let sign = SiteKind::PersonalSign {
+            account: addr(ACCOUNT_YK),
+            message: b"hi".to_vec(),
+        };
+        // The send form: the band and its `PIN 설정`, `검토` off.
+        assert_eq!(app.evm_selected_card_gate(), Some(SERIAL));
+        assert!(!app.can_review());
+        app.screen = crate::app::Screen::Send;
+        let items = app.items();
+        let band = format!(
+            "YubiKey #{SERIAL} PIN 설정 전 — 이 계정은 받기만 되고, 보내기·서명은 PIN을 바꾼 뒤에 됩니다."
+        );
+        assert!(items.iter().any(|item| matches!(
+            item,
+            crate::ui::main_window::Item::Banner(text, _) if *text == band
+        )));
+        assert!(items.iter().any(|item| matches!(
+            item,
+            crate::ui::main_window::Item::Row(row)
+                if row.iter().any(|ctl| ctl.id == crate::ui::screens_yubikey::ids::PIN_GATE_BASE)
+        )));
+        // A dApp request: refused before any window, one notice.
+        for n in [2, 3] {
+            assert_eq!(
+                app.site_preflight(&site(n, sign.clone())),
+                Some(QueueOutcome::Cancelled)
+            );
+        }
+        let notices = app
+            .banners
+            .iter()
+            .filter(|banner| {
+                banner
+                    .text
+                    .contains("PIN이 아직 공장 기본값이라 서명하지 않았습니다")
+            })
+            .count();
+        assert_eq!(notices, 1);
+        // The PINs were set ("PIN 설정" takes the card out of the defaults): both open again.
+        app.meta.as_mut().unwrap().hw_accounts.defaults.clear();
+        assert_eq!(app.evm_selected_card_gate(), None);
+        assert_eq!(app.site_preflight(&site(4, sign)), None);
+        assert!(!app.items().iter().any(|item| matches!(
+            item,
+            crate::ui::main_window::Item::Banner(text, _) if *text == band
+        )));
     }
 
     /// Security review L12: `personal_sign`/`eth_signTypedData_v4` on a chain whose check found

@@ -146,6 +146,22 @@ impl App {
         tag.map_or_else(|| label.to_owned(), |tag| format!("{label}  [{tag}]"))
     }
 
+    /// The name a site, a session or an approval shows for a derived account (2026-11-10):
+    /// `{label} ({phrase label})` under the same condition as [`Self::mnemonic_tagged`] —
+    /// parentheses, so the approval's `[내 계정: …]` note never nests brackets. Display only:
+    /// addresses and grants are compared as before.
+    #[must_use]
+    pub fn mnemonic_named(&self, label: &str, mnemonic: Option<[u8; 16]>) -> String {
+        let tag = match mnemonic {
+            Some(id) => Some(self.mnemonic_label(RecordId::from_bytes(id))),
+            None => self
+                .several_mnemonics()
+                .then(|| self.primary_mnemonic_label())
+                .flatten(),
+        };
+        tag.map_or_else(|| label.to_owned(), |tag| format!("{label} ({tag})"))
+    }
+
     /// Whether a Solana, Bitcoin or Zcash journal record of mnemonic `id`'s accounts may still
     /// confirm (a SOL `Pending`, a BTC record in flight / replaced / given up or refused inside
     /// the 30-day window, a ZEC record not final), or a Bitcoin approval of one of its accounts

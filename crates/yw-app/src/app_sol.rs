@@ -1418,6 +1418,8 @@ impl App {
             && matches!(self.mode, AppMode::Unlocked { .. })
             // U7: the phrase waits for its backup quiz (the form's band says so).
             && !self.mn_send_blocked(self.sol_backup_gate(source))
+            // spec/10 §9.3: the YubiKey is still on its factory PINs (the band says so).
+            && self.sol_card_gate(source).is_none()
     }
 
     /// The approval item of `검토` (spec/07 §13.1 step 1). The form is validated again first and

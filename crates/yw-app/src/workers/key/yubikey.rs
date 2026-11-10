@@ -574,16 +574,27 @@ impl KeyWorker {
     }
 
     /// `Counters`: the PIN tries left of card `serial` or of the inserted card holding a key.
+    /// When only another card answered for a key (`WrongCard`), the one connected card's
+    /// counters come back instead, so W11 can name that card (read-only: identify and the
+    /// counters, nothing verified; 2026-11-10).
     fn yk_counters(&mut self, target: CounterTarget) -> Result<PinCounters, CardJobError> {
         match target {
             CounterTarget::Card(serial) => crate::yubikey::counters_of(self.cards.as_mut(), serial),
-            CounterTarget::Key(role) => self
-                .vault
-                .as_ref()
-                .and_then(|vault| Self::hardware_records(vault).ok())
-                .map_or(Err(CardJobError::Card(CardError::NotFound)), |records| {
-                    crate::yubikey::counters_for_role(self.cards.as_mut(), &records, role)
-                }),
+            CounterTarget::Key(role) => {
+                let records = self
+                    .vault
+                    .as_ref()
+                    .and_then(|vault| Self::hardware_records(vault).ok())
+                    .ok_or(CardJobError::Card(CardError::NotFound))?;
+                match crate::yubikey::counters_for_role(self.cards.as_mut(), &records, role) {
+                    Err(error @ CardJobError::Card(CardError::WrongCard)) => {
+                        crate::yubikey::single_card(self.cards.as_mut())
+                            .map(|facts| facts.counters)
+                            .map_err(|_| error)
+                    }
+                    other => other,
+                }
+            }
         }
     }
 
