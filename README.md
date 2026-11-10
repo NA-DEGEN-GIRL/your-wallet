@@ -35,7 +35,7 @@ Rust(rustup)나 Visual Studio C++ 빌드 도구가 없으면 설치 스크립트
 
 업데이트는 `git pull` 후 `install.cmd`를 다시 실행하고 확장 카드에서 새로고침한다. 제거는 `uninstall.cmd`
 (지갑 데이터 `%LOCALAPPDATA%\YourWallet`은 남긴다). 옵션·백업·문제 해결: [docs/install.ko.md](docs/install.ko.md).
-처음 실제 자산(메인넷 소액)을 넣기 전에는 [docs/first-use-checklist.ko.md](docs/first-use-checklist.ko.md)를 위에서부터 한 번 한다.
+처음 실제 자산(메인넷 소액)을 넣을 때는 [docs/first-use-checklist.ko.md](docs/first-use-checklist.ko.md)(짧은 버전)를 따른다.
 
 ## 개발
 
@@ -63,7 +63,7 @@ native host 등록은 `install.cmd`가 한다(spec/05 §9). 확장 소스를 고
 | [spec.md](spec.md) | 목표, 위협 모델, 결정 사항, 아키텍처, 마일스톤 |
 | [spec/](spec/) | 01 저장소·빌드, 02 키·vault, 03 EVM, 04 앱 UI, 05 브라우저, 06 LLM 설명, 07 Solana, 08 Bitcoin, 09 테스트 |
 | [docs/install.ko.md](docs/install.ko.md) | 설치·업데이트·제거, 첫 실행(RPC), 파일 위치, 문제 해결 |
-| [docs/first-use-checklist.ko.md](docs/first-use-checklist.ko.md) | 처음 실제 사용(메인넷·소액) 체크리스트: 설치·레이블, 주소 대조, 체인별 받기·보내기, dApp·서명, YubiKey, 복구 훈련, 로그 |
+| [docs/first-use-checklist.ko.md](docs/first-use-checklist.ko.md) | 처음 실제 사용 체크리스트(짧은 버전): 설치, RPC 테스트, 체인별 소액 받기·보내기, 쓰는 기능만 한 번씩 |
 | [docs/recovery-guide.ko.md](docs/recovery-guide.ko.md) | 백업·복구 안내 |
 | [docs/acceptance/](docs/acceptance/) | 체크리스트·라이브 확인 기록 |
 | [docs/screenshots/](docs/screenshots/) | 화면 투어(주요 화면·승인 창·확장 팝업, 시험용 값) |
