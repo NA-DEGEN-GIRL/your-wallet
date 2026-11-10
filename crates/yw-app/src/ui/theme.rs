@@ -434,6 +434,128 @@ pub fn address_segments(text: &str) -> Option<Vec<(&str, bool)>> {
     sol_address_segments(text).or_else(|| btc_address_segments(text))
 }
 
+/// The address family of an own-account address line ([`own_address_spans`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AddressKind {
+    /// `0x` + 40 hex (checksum case kept).
+    Evm,
+    /// Base58, no prefix.
+    Solana,
+    /// Bech32 (`bc1q`/`bc1p`/`tb1q`/`tb1p`, prefix of 4) or base58 (`1…`/`3…`/`m…`/`n…`/`2…`).
+    Bitcoin,
+    /// Transparent `t1…`/`t3…` (testnet `tm…`/`t2…`), prefix of 2.
+    Zcash,
+}
+
+/// Characters emphasized at each end of an own-account address (after the prefix).
+pub const OWN_ADDRESS_ENDS: usize = 4;
+
+/// The part of `address` that is a fixed prefix of its family, not emphasized: `0x`, the
+/// bech32 `bc1q`·`bc1p`·`tb1q`·`tb1p`, Zcash `t1`·`t3`·`tm`·`t2`; none for base58.
+fn own_address_prefix(address: &str, kind: AddressKind) -> usize {
+    let starts = |prefix: &str| {
+        address
+            .get(..prefix.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+    };
+    match kind {
+        AddressKind::Evm if starts("0x") => 2,
+        AddressKind::Bitcoin if ["bc1q", "bc1p", "tb1q", "tb1p"].into_iter().any(starts) => 4,
+        AddressKind::Zcash if ["t1", "t3", "tm", "t2"].into_iter().any(starts) => 2,
+        _ => 0,
+    }
+}
+
+/// How the account cards draw the user's **own** address (2026-11-11, spec/04 §2.6): the whole
+/// address without spaces (case kept), the [`OWN_ADDRESS_ENDS`] characters after the family's
+/// prefix and the last [`OWN_ADDRESS_ENDS`] emphasized: `(text, emphasized)` spans. Recipient
+/// checks (approval windows, send forms, receive screens, the address book) keep the grouped
+/// form of spec/04 §3.3 — emphasis on the ends belongs only where the user views their own
+/// account. With `short`, the middle is replaced by `…` (`0x0Bd7…AD73`, token contracts).
+/// An address too short to have a middle is one plain span.
+#[must_use]
+pub fn own_address_spans(address: &str, kind: AddressKind, short: bool) -> Vec<(String, bool)> {
+    let prefix = own_address_prefix(address, kind);
+    let ends = OWN_ADDRESS_ENDS;
+    let chars: Vec<char> = address.chars().collect();
+    let total = chars.len();
+    if !address.is_ascii()
+        || total
+            < prefix
+                .saturating_add(ends.saturating_mul(2))
+                .saturating_add(1)
+    {
+        return vec![(address.to_owned(), false)];
+    }
+    let piece =
+        |from: usize, to: usize| -> String { address.get(from..to).unwrap_or("").to_owned() };
+    let head_end = prefix.saturating_add(ends);
+    let tail_start = total.saturating_sub(ends);
+    let mut spans = Vec::with_capacity(5);
+    if prefix > 0 {
+        spans.push((piece(0, prefix), false));
+    }
+    spans.push((piece(prefix, head_end), true));
+    spans.push((
+        if short {
+            "…".to_owned()
+        } else {
+            piece(head_end, tail_start)
+        },
+        false,
+    ));
+    spans.push((piece(tail_start, total), true));
+    spans
+}
+
+/// Draws `(text, emphasized)` spans on one line from `rect`'s left edge: emphasized spans in
+/// bold mono and `strong`, the rest in regular mono and `color`. Returns `false` (nothing
+/// drawn) when the line is wider than `rect.w`.
+pub fn paint_spans(
+    dc: &mut PaintDc<'_>,
+    fonts: &Fonts,
+    spans: &[(String, bool)],
+    rect: Rect,
+    color: Color,
+    strong: Color,
+) -> bool {
+    let measured: Vec<(Vec<u16>, bool, i32)> = spans
+        .iter()
+        .map(|(text, emphasized)| {
+            dc.select_font(fonts.get(if *emphasized {
+                FontRole::MonoBold
+            } else {
+                FontRole::Mono
+            }));
+            let units = wide(text);
+            let (_, width) = dc.measure(&units, i32::MAX);
+            (units, *emphasized, width)
+        })
+        .collect();
+    let total = measured
+        .iter()
+        .fold(0_i32, |sum, (_, _, width)| sum.saturating_add(*width));
+    if total > rect.w {
+        return false;
+    }
+    let mut x = rect.x;
+    for (units, emphasized, width) in &measured {
+        dc.select_font(fonts.get(if *emphasized {
+            FontRole::MonoBold
+        } else {
+            FontRole::Mono
+        }));
+        dc.set_text_color(if *emphasized { strong } else { color });
+        dc.draw_text(
+            units,
+            Rect::new(x, rect.y, width.saturating_add(4), rect.h),
+            DrawFlags::LINE,
+        );
+        x = x.saturating_add(*width);
+    }
+    true
+}
+
 /// Draws `segments` on one line from `(x, y)` with the regular / bold mono fonts in the current
 /// text color. Returns `false` (nothing drawn) when the line is wider than `rect.w`.
 pub fn paint_sol_address(
@@ -477,7 +599,97 @@ pub fn paint_sol_address(
 
 #[cfg(test)]
 mod tests {
-    use super::{direction_particle, object_particle, sol_address_segments};
+    use super::{
+        AddressKind, direction_particle, object_particle, own_address_spans, sol_address_segments,
+    };
+
+    /// `(joined text, emphasized pieces)` of an own-address line.
+    fn own(address: &str, kind: AddressKind, short: bool) -> (String, Vec<String>) {
+        let spans = own_address_spans(address, kind, short);
+        (
+            spans.iter().map(|(text, _)| text.as_str()).collect(),
+            spans
+                .into_iter()
+                .filter(|(_, strong)| *strong)
+                .map(|(text, _)| text)
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn own_evm_address_emphasizes_four_after_0x_and_the_last_four() {
+        let address = "0xF9900bb6FF2D2C67858c3468d21c5f103C4Ff646";
+        let (joined, strong) = own(address, AddressKind::Evm, false);
+        assert_eq!(joined, address, "no spaces, case kept");
+        assert_eq!(strong, ["F990", "f646"]);
+        let (short, strong) = own(
+            "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73",
+            AddressKind::Evm,
+            true,
+        );
+        assert_eq!(short, "0x0Bd7…AD73");
+        assert_eq!(strong, ["0Bd7", "AD73"]);
+    }
+
+    #[test]
+    fn own_solana_address_emphasizes_its_first_and_last_four() {
+        let address = "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk";
+        let (joined, strong) = own(address, AddressKind::Solana, false);
+        assert_eq!(joined, address);
+        assert_eq!(strong, ["HAgk", "Kpqk"]);
+    }
+
+    #[test]
+    fn own_bitcoin_address_skips_the_bech32_prefix_only() {
+        for (address, first) in [
+            ("bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu", "cr8t"),
+            (
+                "bc1p5d7rjq7g6rdk2yhzks9smlaqtedr4dekq08ge8ztwac72sfr9rusxg3297",
+                "5d7r",
+            ),
+            ("tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx", "w508"),
+        ] {
+            let (joined, strong) = own(address, AddressKind::Bitcoin, false);
+            assert_eq!(joined, address);
+            assert_eq!(strong.first().map(String::as_str), Some(first), "{address}");
+            assert_eq!(strong.get(1).map(String::len), Some(4));
+        }
+        // Base58 (legacy, nested segwit): no prefix.
+        let (_, strong) = own(
+            "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2",
+            AddressKind::Bitcoin,
+            false,
+        );
+        assert_eq!(strong, ["1BvB", "NVN2"]);
+        let (_, strong) = own(
+            "3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy",
+            AddressKind::Bitcoin,
+            false,
+        );
+        assert_eq!(strong, ["3J98", "WNLy"]);
+    }
+
+    #[test]
+    fn own_zcash_address_skips_the_two_character_prefix() {
+        let (joined, strong) = own(
+            "t1Rv4exT7bqhZqi2j7xz8bUHDMxwosrjADU",
+            AddressKind::Zcash,
+            false,
+        );
+        assert_eq!(joined, "t1Rv4exT7bqhZqi2j7xz8bUHDMxwosrjADU");
+        assert_eq!(strong, ["Rv4e", "jADU"]);
+        let (_, strong) = own(
+            "t3Vz22vK5z2LcKEdg16Yv4FFneEL1zg9ojd",
+            AddressKind::Zcash,
+            false,
+        );
+        assert_eq!(strong, ["Vz22", "9ojd"]);
+        // Too short to have a middle: one plain span.
+        assert_eq!(
+            own_address_spans("t1abc", AddressKind::Zcash, false),
+            [("t1abc".to_owned(), false)]
+        );
+    }
 
     #[test]
     fn particles_follow_the_last_sound() {

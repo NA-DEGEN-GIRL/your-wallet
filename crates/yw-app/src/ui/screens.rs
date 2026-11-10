@@ -17,6 +17,7 @@ use crate::meta::EvmAccountPref;
 use crate::network::NetworkId;
 use crate::settings::{LogLevel, RpcTemplate};
 use crate::ui::main_window::{Ctl, Item, Tone};
+use crate::ui::theme::AddressKind;
 
 /// Command ids (never 1/2, which `IsDialogMessageW` uses for Enter/Esc).
 pub mod ids {
@@ -452,17 +453,43 @@ pub const T_TOKEN_DELETE: &str = "이 토큰을 이 네트워크의 토큰 목�
 pub const T_SINGLE_ACCOUNT: &str = "주소와 잔액은 위 카드에 있습니다";
 /// Under the off `숨기기` of a recovery phrase's account 0 (EVM, Solana; 2026-11-10).
 pub const T_FIRST_ACCOUNT_KEPT: &str = "각 복구 단어의 첫 계정(…/0)은 숨길 수 없습니다.";
-/// Every chain's `받기` (S12) command.
-pub const RECEIVE_IDS: [u16; 3] = [
+/// The note after every `주소 복사` (S12 and the S10 account cards, `App::copy_address_text`).
+pub const T_ADDRESS_COPIED: &str = "주소를 복사했습니다. 붙여넣은 곳에서 주소 전체를 확인하세요.";
+/// Every chain's `받기` (S12) command, and every `주소 복사` on S10 (2026-11-11: the account
+/// cards' address line and the Zcash 받기 card) — an unverified passphrase's addresses belong
+/// to another wallet, so they are not handed out from the main screen either.
+pub const RECEIVE_IDS: [u16; 8] = [
     crate::ui::screens_evm::ids::RECEIVE_OPEN,
     crate::ui::screens_sol::ids::RECEIVE_OPEN,
     crate::ui::screens_btc::ids::RECEIVE_OPEN,
+    crate::ui::screens_evm::ids::COPY_ADDRESS,
+    crate::ui::screens_sol::ids::COPY_ADDRESS,
+    crate::ui::screens_btc::ids::CARD_COPY,
+    crate::ui::screens_zec::ids::COPY_ADDRESS,
+    crate::ui::screens_zec::ids::CARD_COPY,
 ];
 
-/// Turns off every `받기` control in `items` (unverified-passphrase sessions).
+/// The account cards' address line (2026-11-11, spec/04 §2.6): the user's own address without
+/// spaces, the 4 characters after its prefix and the last 4 emphasized
+/// (`ui::theme::own_address_spans`), and a small `주소 복사` (`copy`, off when `enabled` is
+/// not) at the end of the line. Only for the user's own account: recipient checks keep the
+/// grouped form of §3.3.
+#[must_use]
+pub fn own_address_row(address: &str, kind: AddressKind, copy: u16, enabled: bool) -> Item {
+    Item::AddressRow(
+        crate::ui::theme::own_address_spans(address, kind, false),
+        vec![Ctl::button(copy, "주소 복사").compact().enabled(enabled)],
+    )
+}
+
+/// Turns off every `받기` and `주소 복사` control in `items` (unverified-passphrase sessions).
 fn disable_receive(items: &mut [Item]) {
     for item in items {
-        if let Item::Row(ctls) | Item::LabeledRow(_, ctls) | Item::Toolbar(_, ctls) = item {
+        if let Item::Row(ctls)
+        | Item::LabeledRow(_, ctls)
+        | Item::Toolbar(_, ctls)
+        | Item::AddressRow(_, ctls) = item
+        {
             for ctl in ctls.iter_mut().filter(|ctl| RECEIVE_IDS.contains(&ctl.id)) {
                 ctl.enabled = false;
             }
@@ -1523,7 +1550,14 @@ impl App {
                 tokens.join(" · ")
             )));
         }
-        items.push(Item::Mono(format_address(&address)));
+        // The own address whole, its ends emphasized, with `주소 복사` on the same line
+        // (2026-11-11; recipient checks elsewhere keep the grouped form).
+        items.push(own_address_row(
+            &address.to_checksum(),
+            AddressKind::Evm,
+            crate::ui::screens_evm::ids::COPY_ADDRESS,
+            true,
+        ));
         let unlocked = matches!(self.mode, AppMode::Unlocked { .. });
         let mut row = vec![
             Ctl::primary(crate::ui::screens_evm::ids::SEND_OPEN, "보내기").enabled(unlocked),
@@ -1560,30 +1594,53 @@ impl App {
             self.btc_main_screen(items);
             return;
         }
-        let chains = self.settings.registered_evm();
-        let chips: Vec<Ctl> = chains
-            .iter()
-            .take(usize::from(ids::NETWORK_SPAN))
-            .enumerate()
-            .map(|(index, chain_id)| {
-                Ctl::tab(
-                    ids::NETWORK_BASE.saturating_add(u16::try_from(index).unwrap_or(0)),
-                    &self.network_label(*chain_id),
-                    *chain_id == self.settings.evm_chain_id,
-                )
-                .badge(self.evm_badge(*chain_id))
-            })
-            .collect();
         items.push(Item::CardStart(None));
-        items.push(Item::LabeledRow("네트워크".to_owned(), chips));
-        if self.settings.evm_chain_id == SEPOLIA {
-            items.push(Item::Banner(
+        // One drop-down instead of a grid of chips (2026-11-11): the selected network with its
+        // badge, and the network tag on the same line; open, the list hangs under it (each
+        // entry is the chip of before: same ids, same handler).
+        let selected = self.settings.evm_chain_id;
+        let open = self.evm.network_picker;
+        items.push(Item::LabeledRow(
+            "네트워크".to_owned(),
+            vec![
+                Ctl::button(
+                    crate::ui::screens_evm::ids::NETWORK_PICKER,
+                    &format!(
+                        "{}   {}",
+                        self.network_choice_label(selected),
+                        if open { "▴" } else { "▾" }
+                    ),
+                )
+                .badge(self.evm_badge(selected)),
+            ],
+        ));
+        if selected == SEPOLIA {
+            items.push(Item::Pill(
                 "테스트넷 — 실제 자산이 아닙니다".to_owned(),
                 Tone::Testnet,
             ));
-        } else if yw_core::evm::chain::is_builtin_mainnet(self.settings.evm_chain_id) {
-            // The built-in mainnets (user chains carry no testnet flag, so no badge).
-            items.push(Item::Banner(T_MAINNET.to_owned(), Tone::BtcMainnet));
+        } else if yw_core::evm::chain::is_builtin_mainnet(selected) {
+            // The built-in mainnets (user chains carry no testnet flag, so no tag).
+            items.push(Item::Pill(T_MAINNET.to_owned(), Tone::BtcMainnet));
+        }
+        if open {
+            let chains = self.settings.registered_evm();
+            items.push(Item::Menu(
+                chains
+                    .iter()
+                    .take(usize::from(ids::NETWORK_SPAN))
+                    .enumerate()
+                    .map(|(index, chain_id)| {
+                        Ctl::tab(
+                            ids::NETWORK_BASE.saturating_add(u16::try_from(index).unwrap_or(0)),
+                            &self.network_choice_label(*chain_id),
+                            *chain_id == selected,
+                        )
+                        .badge(self.evm_badge(*chain_id))
+                        .compact()
+                    })
+                    .collect(),
+            ));
         }
         self.evm_banners(items);
         self.evm_balance_failure(items);

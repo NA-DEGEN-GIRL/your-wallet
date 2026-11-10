@@ -168,6 +168,9 @@ pub mod ids {
     pub const ACCOUNT_SOURCE_STANDARD: u16 = 9_018;
     /// The chooser's key source `EVM 계정과 같은 키`.
     pub const ACCOUNT_SOURCE_EVM: u16 = 9_019;
+    /// The selected account card's `주소 복사` (2026-11-11): the address that card shows
+    /// (`App::btc_card_address`), not the receive screen's.
+    pub const CARD_COPY: u16 = 9_034;
     /// Address mode of the selected HD account: `고정 주소 하나만 사용`.
     pub const ADDRESS_MODE_SINGLE: u16 = 9_062;
     /// Address mode of the selected HD account: `받을 때마다 새 주소`.
@@ -191,7 +194,8 @@ pub mod ids {
     const _: () = assert!(ACTIVITY_BASE + ACTIVITY_SPAN <= 10_000);
 
     /// Every fixed id (tests check uniqueness and the range).
-    pub const FIXED: [u16; 63] = [
+    pub const FIXED: [u16; 64] = [
+        CARD_COPY,
         ACCOUNT_SOURCE_STANDARD,
         ACCOUNT_SOURCE_EVM,
         ADDRESS_MODE_SINGLE,
@@ -570,19 +574,15 @@ impl App {
     }
 
     /// `새로고침` and, for an HD account after discovery, `더 찾기`.
-    fn btc_refresh_row(&self, ctx: &BtcCtx<'_>, usable: bool, items: &mut Vec<Item>) {
+    /// The network card's `더 찾기` (`새로고침` is on the account card since 2026-11-11, like
+    /// the other tabs).
+    fn btc_discover_row(&self, ctx: &BtcCtx<'_>, usable: bool, items: &mut Vec<Item>) {
         let discovery_done = ctx.btc_meta().is_some_and(BtcMeta::discovery_done);
         let single = ctx.btc_meta().is_some_and(BtcMeta::is_single);
-        let mut row = vec![
-            Ctl::button(ids::REFRESH, "새로고침")
-                .enabled(usable && !self.btc.refresh.busy && !self.btc.discovery.running),
-        ];
         if discovery_done && !single && !self.btc.discovery.running {
-            row.push(Ctl::button(ids::DISCOVER_MORE, "더 찾기").enabled(usable));
-        }
-        items.push(Item::Row(row));
-        if self.btc.refresh.busy {
-            items.push(Item::Help("새로고침 중…".to_owned()));
+            items.push(Item::Row(vec![
+                Ctl::button(ids::DISCOVER_MORE, "더 찾기").enabled(usable),
+            ]));
         }
     }
 
@@ -787,6 +787,8 @@ impl App {
         self.card_pin_banner(self.btc_selected_card_gate(), items);
         if let Some(balance) = self.btc.balance(ctx) {
             items.push(Item::Display(BtcUi::amount_text(balance.available)));
+            // One status line, like the other tabs (the UTXO explanation is the UTXO card's,
+            // 2026-11-11).
             items.push(Item::Help("사용 가능 (확인 1 이상, 서버 기준)".to_owned()));
             if balance.frozen.get() > 0 {
                 items.push(Item::Muted(format!(
@@ -800,10 +802,6 @@ impl App {
                     BtcUi::amount_text(balance.pending)
                 )));
             }
-            items.push(Item::Help(
-                    "잔액은 이전 거래로 검증한 UTXO 가운데 확인 수 1 이상(서버 기준)인 것의 합입니다. 진행 중 거래가 쓰는 UTXO는 빠집니다."
-                        .to_owned(),
-                ));
         } else {
             items.push(Item::Display("잔액 —".to_owned()));
             items.push(Item::Help("잔액 알 수 없음".to_owned()));
@@ -849,7 +847,7 @@ impl App {
     fn btc_utxo_items(&self, ctx: &BtcCtx<'_>, items: &mut Vec<Item>) {
         items.push(Item::Subtitle("UTXO (검증됨)".to_owned()));
         items.push(Item::Help(
-            "UTXO는 받은 돈 한 건 한 건입니다. 작은 입금은 먼지 공격을 막으려고 자동으로 동결합니다."
+            "UTXO는 받은 돈 한 건 한 건입니다. 작은 입금은 먼지 공격을 막으려고 자동으로 동결합니다. 위 계정 카드의 잔액은 이전 거래로 검증한 UTXO 가운데 확인 수 1 이상(서버 기준)인 것의 합이고, 진행 중 거래가 쓰는 UTXO는 빠집니다."
                 .to_owned(),
         ));
         let utxos = self.btc.utxos(ctx);
@@ -1079,7 +1077,10 @@ impl App {
             return;
         }
         items.push(Item::CardStart(None));
-        network_banners(net, items);
+        // The network as a small tag on a `네트워크` line like the other tabs (2026-11-11; the
+        // send, receive and result screens keep the full band of spec/08 §2).
+        items.push(Item::LabeledRow("네트워크".to_owned(), Vec::new()));
+        items.push(Item::Pill(net.banner().to_owned(), network_tone(net)));
         let gate = ctx.gate();
         if let Err(reason) = gate {
             Self::btc_gate_items(reason, items);
@@ -1122,7 +1123,7 @@ impl App {
         }
         self.btc_discovery_items(&ctx, items);
         let usable = gate.is_ok();
-        self.btc_refresh_row(&ctx, usable, items);
+        self.btc_discover_row(&ctx, usable, items);
         items.push(Item::CardEnd);
         // `YubiKey` accounts (spec/10 §13) are listed even before BIP84 account 0 exists.
         let has_hardware = ctx
@@ -1142,26 +1143,7 @@ impl App {
         }
         // Same order as the EVM and Solana tabs (spec/04 §2.6): the selected account's balance
         // with `보내기`·`받기` first, then the account list.
-        {
-            items.push(Item::CardStart(None));
-            self.btc_balance_items(&ctx, items);
-            let send_block = self.btc.send_block(&ctx);
-            let mut actions = vec![
-                Ctl::primary(ids::SEND_OPEN, "보내기").enabled(send_block.is_none()),
-                Ctl::primary(ids::RECEIVE_OPEN, "받기").enabled(self.btc_unlocked()),
-            ];
-            if BtcUi::bump_target(&ctx).is_some() {
-                actions.push(
-                    Ctl::button(ids::BUMP_OPEN, "수수료 올리기")
-                        .enabled(usable && !self.btc.slot && !ctx.journal_damaged()),
-                );
-            }
-            items.push(Item::Row(actions));
-            if let Some(reason) = send_block {
-                items.push(Item::Help(format!("보내기: {reason}")));
-            }
-            items.push(Item::CardEnd);
-        }
+        self.btc_selected_card(&ctx, usable, items);
         // The account card: a mnemonic wallet once BIP84 account 0 exists, a key-only wallet
         // always (its imported keys are its accounts).
         if show_accounts {
@@ -1174,6 +1156,49 @@ impl App {
         items.push(Item::CardEnd);
         items.push(Item::CardStart(None));
         self.btc_activity_items(&ctx, items);
+        items.push(Item::CardEnd);
+    }
+
+    /// The selected account card, in one layout with the other tabs (2026-11-11): name, path
+    /// and type, balance, status, the address with `주소 복사`, then 보내기 · 받기 · 새로고침.
+    fn btc_selected_card(&self, ctx: &BtcCtx<'_>, usable: bool, items: &mut Vec<Item>) {
+        items.push(Item::CardStart(None));
+        self.btc_balance_items(ctx, items);
+        if let Some(address) = self.btc_card_address() {
+            items.push(crate::ui::screens::own_address_row(
+                &address,
+                crate::ui::theme::AddressKind::Bitcoin,
+                ids::CARD_COPY,
+                true,
+            ));
+        } else if usable && ctx.btc_meta().is_some() {
+            // HD mode with every issued address used: `받기` issues the next one.
+            items.push(Item::Help(
+                "받을 주소는 '받기'를 누르면 새로 만듭니다.".to_owned(),
+            ));
+        }
+        let send_block = self.btc.send_block(ctx);
+        let mut actions = vec![
+            Ctl::primary(ids::SEND_OPEN, "보내기").enabled(send_block.is_none()),
+            Ctl::primary(ids::RECEIVE_OPEN, "받기").enabled(self.btc_unlocked()),
+        ];
+        if BtcUi::bump_target(ctx).is_some() {
+            actions.push(
+                Ctl::button(ids::BUMP_OPEN, "수수료 올리기")
+                    .enabled(usable && !self.btc.slot && !ctx.journal_damaged()),
+            );
+        }
+        actions.push(
+            Ctl::link(ids::REFRESH, "새로고침")
+                .enabled(usable && !self.btc.refresh.busy && !self.btc.discovery.running),
+        );
+        items.push(Item::Row(actions));
+        if self.btc.refresh.busy {
+            items.push(Item::Help("새로고침 중…".to_owned()));
+        }
+        if let Some(reason) = send_block {
+            items.push(Item::Help(format!("보내기: {reason}")));
+        }
         items.push(Item::CardEnd);
     }
 
@@ -1879,7 +1904,9 @@ mod tests {
         items
             .iter()
             .flat_map(|item| match item {
-                Item::Row(ctls) | Item::LabeledRow(_, ctls) => ctls.clone(),
+                Item::Row(ctls) | Item::LabeledRow(_, ctls) | Item::AddressRow(_, ctls) => {
+                    ctls.clone()
+                }
                 _ => Vec::new(),
             })
             .collect()
@@ -1894,7 +1921,8 @@ mod tests {
             | Item::Help(text)
             | Item::Subtitle(text)
             | Item::Display(text)
-            | Item::Banner(text, _) => text.contains(wanted),
+            | Item::Banner(text, _)
+            | Item::Pill(text, _) => text.contains(wanted),
             _ => false,
         })
     }
@@ -2016,9 +2044,10 @@ mod tests {
             control(&items, ids::REFRESH).map(|ctl| ctl.enabled),
             Some(false)
         );
+        // The network card's tag (2026-11-11: no longer a full-width band on S10).
         assert!(items.iter().any(|item| matches!(
             item,
-            Item::Banner(text, Tone::BtcMainnet) if text == "BITCOIN MAINNET"
+            Item::Pill(text, Tone::BtcMainnet) if text == "BITCOIN MAINNET"
         )));
         // The settings section shows the same pair.
         app.screen = Screen::Settings(SettingsSection::Bitcoin);
@@ -2169,11 +2198,15 @@ mod tests {
         );
         assert!(app.on_keys_command(key_ids::BTC_IMPORT_CANCEL));
         assert!(control(&app.items(), key_ids::BTC_IMPORT).is_some());
-        // One Bitcoin banner, not a second generic testnet band.
+        // One Bitcoin network tag, not a second generic testnet band.
         assert_eq!(
             items
                 .iter()
-                .filter(|item| matches!(item, Item::Banner(_, Tone::BtcTestnet4 | Tone::Testnet)))
+                .filter(|item| matches!(
+                    item,
+                    Item::Banner(_, Tone::BtcTestnet4 | Tone::Testnet)
+                        | Item::Pill(_, Tone::BtcTestnet4 | Tone::Testnet)
+                ))
                 .count(),
             1
         );
@@ -2195,13 +2228,12 @@ mod tests {
         assert!(control(&items, crate::ui::screens::ids::BTC_RPC_OPEN).is_some());
         assert!(items.iter().any(|item| matches!(
             item,
-            Item::Banner(text, Tone::BtcTestnet4) if text == "BITCOIN TESTNET4 — 가치 없음"
+            Item::Pill(text, Tone::BtcTestnet4) if text == "BITCOIN TESTNET4 — 가치 없음"
         )));
-        assert!(
-            !items
-                .iter()
-                .any(|item| matches!(item, Item::Banner(_, Tone::Testnet)))
-        );
+        assert!(!items.iter().any(|item| matches!(
+            item,
+            Item::Banner(_, Tone::Testnet) | Item::Pill(_, Tone::Testnet)
+        )));
         // Usable but discovery not done: "주소 검색 미완료" + [다시 시도]; sending blocked.
         let ready = app(true, BtcNet::Testnet4, Some(BtcNetwork::Testnet4), true);
         let items = ready.items();

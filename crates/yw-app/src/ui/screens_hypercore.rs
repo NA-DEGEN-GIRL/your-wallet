@@ -203,9 +203,15 @@ impl App {
         if foldable {
             items.push(Item::Row(vec![Ctl::link(ids::COLLAPSE, "접기 ▴")]));
         }
-        // The band always goes with the action buttons below.
-        network_band(network, items);
+        // The network tag always goes with the action buttons below (2026-11-11: a small tag
+        // after the radios, as on the network cards; S-HC keeps the full band).
         items.push(network_row(network));
+        items.push(match network {
+            HcNetwork::Testnet => {
+                Item::Pill("테스트넷 — 실제 자산이 아닙니다".to_owned(), Tone::Testnet)
+            }
+            HcNetwork::Mainnet => Item::Pill(T_HC_MAINNET.to_owned(), Tone::BtcMainnet),
+        });
         items.push(Item::Help(
             "같은 EVM 주소의 HyperCore(Hyperliquid L1) 잔액입니다. 이 지갑은 전송만 하고 거래(주문)는 하지 않습니다."
                 .to_owned(),

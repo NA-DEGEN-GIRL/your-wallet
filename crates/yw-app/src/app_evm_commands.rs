@@ -133,14 +133,15 @@ impl App {
                 self.return_to(Screen::Main);
             }
             ids::COPY_ADDRESS => {
+                // S12 and the S10 account card: the selected account (one path for both).
                 if let Some((address, ..)) = self.selected_account() {
                     let text = address.to_checksum();
-                    self.copy_text(&text);
-                    self.info = Some(
-                        "주소를 복사했습니다. 붙여넣은 곳에서 주소 전체를 확인하세요.".to_owned(),
-                    );
-                    self.refresh();
+                    self.copy_address_text(&text);
                 }
+            }
+            ids::NETWORK_PICKER => {
+                self.evm.network_picker = !self.evm.network_picker;
+                self.refresh();
             }
             ids::QR_EIP681 | ids::QR_PLAIN => {
                 self.evm.receive_qr = if id == ids::QR_PLAIN {
@@ -245,6 +246,14 @@ impl App {
         }
         if let Some(index) = offset(id, ids::TOKEN_SEND_BASE, ids::TOKEN_SEND_SPAN) {
             self.send_token_row(chain_id, usize::from(index));
+            return true;
+        }
+        if let Some(index) = offset(id, ids::TOKEN_COPY_BASE, ids::TOKEN_COPY_SPAN) {
+            // The token card's `주소 복사`: the whole contract, checksum case (2026-11-11).
+            if let Some((address, ..)) = self.chain_tokens(chain_id).get(usize::from(index)) {
+                let text = address.to_checksum();
+                self.copy_address_text(&text);
+            }
             return true;
         }
         if let Some(action) = ids::token_action(id) {

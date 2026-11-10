@@ -25,6 +25,12 @@ pub struct EvmTokenRow {
     pub address: Address,
     /// Symbol (registry) or label (user token).
     pub symbol: String,
+    /// The short ticker of the token card's amounts (2026-11-11): the registry's on-chain
+    /// symbol (`USDG`), or a user token's label.
+    pub ticker: String,
+    /// The small note after the ticker on the token card: a pegged/bridged registry label's
+    /// words (`Global Dollar, Paxos`), `사용자 추가` for a user token, else empty.
+    pub name: String,
     /// Decimals.
     pub decimals: u8,
     /// A registry token: it can be hidden, not deleted.
@@ -33,6 +39,21 @@ pub struct EvmTokenRow {
     pub balance: Option<U256>,
     /// Card placement.
     pub place: RowPlace,
+}
+
+/// The words of a registry token's label without its symbol: `USDG (Global Dollar, Paxos)` →
+/// `Global Dollar, Paxos`; a label of another form whole; empty without a label.
+fn token_note(token: &yw_core::evm::chain::KnownToken) -> String {
+    let Some(label) = token.label else {
+        return String::new();
+    };
+    label
+        .strip_prefix(token.symbol)
+        .map(str::trim_start)
+        .and_then(|rest| rest.strip_prefix('('))
+        .and_then(|rest| rest.strip_suffix(')'))
+        .unwrap_or(label)
+        .to_owned()
 }
 
 fn evm_network(chain_id: u64) -> String {
@@ -67,15 +88,28 @@ impl App {
     #[must_use]
     pub fn evm_token_rows(&self, chain_id: u64) -> Vec<EvmTokenRow> {
         let hide_zero = self.evm_hide_zero();
+        let registry = yw_core::evm::chain::builtin_chain(chain_id)
+            .map(|chain| chain.tokens)
+            .unwrap_or_default();
         self.chain_tokens(chain_id)
             .into_iter()
             .enumerate()
             .map(|(index, (address, symbol, decimals, registered))| {
                 let balance = self.token_balance(chain_id, &address);
+                let known = registry
+                    .iter()
+                    .find(|token| registered && token.address == address);
+                let (ticker, name) = match known {
+                    Some(token) => (token.symbol.to_owned(), token_note(token)),
+                    None if registered => (symbol.clone(), String::new()),
+                    None => (symbol.clone(), "사용자 추가".to_owned()),
+                };
                 EvmTokenRow {
                     index,
                     address,
                     symbol,
+                    ticker,
+                    name,
                     decimals,
                     registered,
                     balance,

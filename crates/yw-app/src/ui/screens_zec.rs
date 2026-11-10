@@ -52,6 +52,8 @@ pub mod ids {
     pub const SEND_ADDR_ACK: u16 = 8_016;
     /// `해시 복사` of the 보내기 card's result line (the txid the node accepted).
     pub const RESULT_COPY: u16 = 8_017;
+    /// The account card's `주소 복사` (2026-11-11; the 받기 card keeps [`COPY_ADDRESS`]).
+    pub const CARD_COPY: u16 = 8_018;
     /// `해시 복사` of the activity rows (newest first, one id per row).
     pub const ACTIVITY_COPY_BASE: u16 = 8_100;
     /// Activity copy span (every record the journal can hold).
@@ -75,14 +77,15 @@ pub mod ids {
     /// Imported-key button span (15 keys per chain).
     pub const IMPORTED_SPAN: u16 = 16;
 
-    const _: () = assert!(RESULT_COPY < SOURCE_EVM_BASE);
+    const _: () = assert!(CARD_COPY < SOURCE_EVM_BASE);
     const _: () = assert!(SOURCE_EVM_BASE + SOURCE_EVM_SPAN <= HW_BASE);
     const _: () = assert!(HW_BASE + HW_SPAN <= IMPORT);
     const _: () = assert!(IMPORTED_BASE + IMPORTED_SPAN <= ACTIVITY_COPY_BASE);
     const _: () = assert!(ACTIVITY_COPY_BASE + ACTIVITY_COPY_SPAN <= 8_200);
 
     /// Every fixed id.
-    pub const FIXED: [u16; 21] = [
+    pub const FIXED: [u16; 22] = [
+        CARD_COPY,
         TAB_ZEC,
         ENABLE_MAINNET,
         ENABLE_TESTNET,
@@ -199,7 +202,7 @@ impl App {
                 self.zec_refresh(false);
                 self.refresh();
             }
-            ids::COPY_ADDRESS => {
+            ids::COPY_ADDRESS | ids::CARD_COPY => {
                 if let Some(account) = self.zec_account()
                     && matches!(
                         self.zec_hw_state(),
@@ -207,7 +210,7 @@ impl App {
                             | crate::app_zec::ZecHwState::Present
                     )
                 {
-                    self.copy_text(&account.address());
+                    self.copy_address_text(&account.address());
                 }
             }
             ids::QR_TOGGLE => {
@@ -437,8 +440,9 @@ impl App {
                 .enabled(!self.zec.busy),
             ],
         ));
-        // The network band inside the network card, as on the other tabs.
-        items.push(Item::Banner(
+        // The network tag after the chips, as on the other tabs (2026-11-11: a small tag, no
+        // longer a full-width band).
+        items.push(Item::Pill(
             network.banner().to_owned(),
             match network {
                 ZecNetwork::Mainnet => Tone::BtcMainnet,
@@ -481,37 +485,39 @@ impl App {
                 ),
             ],
         ));
-        let mut row = vec![
-            Ctl::button(ids::REFRESH, "새로고침").enabled(!self.zec.refreshing),
+        // `새로고침` (or `RPC 설정하기`) is the account card's, as on the other tabs (2026-11-11).
+        items.push(Item::Row(vec![
             Ctl::link(ids::DISABLE, "Zcash 끄기").enabled(!self.zec.busy),
-        ];
-        if !has_endpoint {
-            // The next step of E-KEY-005, as on the other tabs: this network's row.
-            row.push(Ctl::link(
-                crate::ui::screens::ids::ZEC_RPC_OPEN,
-                "RPC 설정하기",
-            ));
-        }
-        items.push(Item::Row(row));
+        ]));
         items.push(Item::CardEnd);
 
-        // Account and balance.
+        // Account and balance: the other tabs' layout (2026-11-11) — name, key source and
+        // path, balance, status, the address with `주소 복사`, `새로고침`.
         let account = self.zec_account();
-        items.push(Item::CardStart(Some("계정".to_owned())));
+        let hw_state = self.zec_hw_state();
+        let address_ok = matches!(
+            hw_state,
+            crate::app_zec::ZecHwState::NotHardware | crate::app_zec::ZecHwState::Present
+        );
+        items.push(Item::CardStart(None));
+        items.push(Item::Badged(
+            Badge::zcash(network),
+            Box::new(Item::Subtitle(format!(
+                "Zcash 계정 · {}",
+                network.display_name()
+            ))),
+        ));
         match account {
             None => items.push(Item::Text(
                 "Zcash 계정 키를 불러오는 중… (복구 단어가 없는 지갑은 YubiKey Zcash 슬롯만 쓸 수 있습니다)"
                     .to_owned(),
             )),
             Some(account) => {
-                items.push(Item::Field(
-                    "키 출처".to_owned(),
-                    format!(
-                        "{} · {}",
-                        self.zec_source_label(account.source),
-                        account.source.path_text(network)
-                    ),
-                ));
+                items.push(Item::Help(format!(
+                    "키 출처: {} · {}",
+                    self.zec_source_label(account.source),
+                    account.source.path_text(network)
+                )));
                 let (confirmed, pending) = snapshot.map_or((None, 0), |snapshot| {
                     let reserved: Vec<_> = self
                         .zec_records()
@@ -533,12 +539,13 @@ impl App {
                     }
                     (Some(confirmed), pending)
                 });
+                // The other tabs' words when there is no balance yet (2026-11-11).
                 items.push(Item::Display(confirmed.map_or_else(
-                    || "잔액 확인 전".to_owned(),
+                    || "잔액 —".to_owned(),
                     |zats| format!("{} ZEC", format_zec(zats)),
                 )));
-                if let Some(zats) = confirmed {
-                    items.push(Item::Help(format!(
+                items.push(Item::Help(match confirmed {
+                    Some(zats) => format!(
                         "확인된 잔액 {} (서버 기준, 진행 중 거래의 입력 제외){}",
                         format_zec_and_zats(zats),
                         if pending > 0 {
@@ -546,11 +553,35 @@ impl App {
                         } else {
                             String::new()
                         }
-                    )));
+                    ),
+                    None if !has_endpoint => crate::ui::screens::no_endpoint_text(
+                        &self.network_name(crate::network::NetworkId::Zcash(network)),
+                    ),
+                    None if self.zec.error.is_some() && !self.zec.refreshing => {
+                        crate::ui::screens::T_BALANCE_FAILED.to_owned()
+                    }
+                    None => crate::ui::screens::T_BALANCE_LOADING.to_owned(),
+                }));
+                // Not while a hardware account's key is missing or unchecked (like 받기).
+                if address_ok {
+                    items.push(crate::ui::screens::own_address_row(
+                        &account.address(),
+                        crate::ui::theme::AddressKind::Zcash,
+                        ids::CARD_COPY,
+                        !self.passphrase_unverified(),
+                    ));
                 }
             }
         }
+        items.push(Item::Row(vec![if has_endpoint {
+            Ctl::link(ids::REFRESH, "새로고침").enabled(!self.zec.refreshing)
+        } else {
+            // Nothing to refresh without an address: this network's row (EVM·Solana alike).
+            Ctl::button(crate::ui::screens::ids::ZEC_RPC_OPEN, "RPC 설정하기")
+        }]));
+        items.push(Item::CardEnd);
         // Key source choice.
+        items.push(Item::CardStart(Some("키 출처".to_owned())));
         let unlocked = matches!(self.mode, AppMode::Unlocked { .. });
         let mut sources = vec![Ctl::radio(
             ids::SOURCE_STANDARD,
@@ -629,19 +660,13 @@ impl App {
         items.push(Item::CardEnd);
 
         // Receive (hidden while a hardware account's key is missing or not yet checked).
-        let hw_state = self.zec_hw_state();
         if hw_state == crate::app_zec::ZecHwState::Missing {
             items.push(Item::Banner(
                 crate::app_zec::T_ZEC_HW_MISSING.to_owned(),
                 Tone::Danger,
             ));
         }
-        if let Some(account) = account.filter(|_| {
-            matches!(
-                hw_state,
-                crate::app_zec::ZecHwState::NotHardware | crate::app_zec::ZecHwState::Present
-            )
-        }) {
+        if let Some(account) = account.filter(|_| address_ok) {
             let address = account.address();
             items.push(Item::CardStart(Some("받기".to_owned())));
             items.push(Item::Mono(grouped(&address)));

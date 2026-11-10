@@ -101,6 +101,9 @@ pub struct Ctl {
     pub backdrop: Option<Color>,
     /// A chain badge drawn before a button's label (`crate::ui::badge`).
     pub badge: Option<Badge>,
+    /// A small button (26 DIP tall, tighter padding): the actions inside a list row
+    /// (2026-11-11, token rows and the address line's `주소 복사`).
+    pub compact: bool,
 }
 
 impl Ctl {
@@ -115,6 +118,7 @@ impl Ctl {
             limit: None,
             backdrop: None,
             badge: None,
+            compact: false,
         }
     }
 
@@ -171,6 +175,7 @@ impl Ctl {
             limit: None,
             backdrop: None,
             badge: None,
+            compact: false,
         }
     }
 
@@ -189,6 +194,7 @@ impl Ctl {
             limit: None,
             backdrop: None,
             badge: None,
+            compact: false,
         }
     }
 
@@ -208,6 +214,7 @@ impl Ctl {
             limit: Some(limit),
             backdrop: None,
             badge: None,
+            compact: false,
         }
     }
 
@@ -215,6 +222,13 @@ impl Ctl {
     #[must_use]
     pub const fn badge(mut self, badge: Badge) -> Self {
         self.badge = Some(badge);
+        self
+    }
+
+    /// Makes a button small (list-row actions, 2026-11-11).
+    #[must_use]
+    pub const fn compact(mut self) -> Self {
+        self.compact = true;
         self
     }
 
@@ -271,6 +285,31 @@ pub enum Item {
     DisplayMuted(String),
     /// Monospace line (addresses, hashes). Grouped Solana/Bitcoin addresses get their bold groups.
     Mono(String),
+    /// A monospace line of `(text, emphasized)` spans (the user's own address,
+    /// `ui::theme::own_address_spans`) with controls at the right end of the same line, or on
+    /// the next line when both do not fit (2026-11-11: the account cards' address line with
+    /// `주소 복사`, the token rows' shortened contract with their actions).
+    AddressRow(Vec<(String, bool)>, Vec<Ctl>),
+    /// One list entry (2026-11-11, the token card): a bold title with a small muted note after
+    /// it (wrapped at words in the left column, never into the value), and a bold value
+    /// right-aligned on the same line. `dim` draws everything muted (hidden rows).
+    ListRow {
+        /// Bold title (a token symbol).
+        title: String,
+        /// Small muted note after the title (the token name).
+        note: String,
+        /// Right-aligned value (a balance).
+        value: String,
+        /// Muted (a hidden row).
+        dim: bool,
+    },
+    /// A small rounded status tag in its tone's colors (2026-11-11: the S10 network cards'
+    /// `메인넷 — 실제 자산`·testnet tags instead of a full-width band). Drawn at the end of the
+    /// row just above it when it fits there, else on its own line.
+    Pill(String, Tone),
+    /// A vertical list of controls under the value column of a [`Item::LabeledRow`] (the open
+    /// network drop-down of S10, 2026-11-11).
+    Menu(Vec<Ctl>),
     /// A label and its read-only value on one line (the value wraps).
     Field(String, String),
     /// Colored banner with its status tag.
@@ -320,6 +359,8 @@ pub enum TextAlign {
     Line,
     /// One line, centered both ways.
     Center,
+    /// One line, right aligned, vertically centered.
+    Right,
 }
 
 /// A text to paint.
@@ -339,6 +380,9 @@ pub struct PaintText {
     pub wrap: bool,
     /// Alignment (overrides `wrap` when not [`TextAlign::Wrap`]).
     pub align: TextAlign,
+    /// `(text, emphasized)` mono spans drawn on one line instead of `text` when they fit
+    /// ([`Item::AddressRow`]); empty for every other text.
+    pub spans: Vec<(String, bool)>,
 }
 
 /// A filled rounded shape (cards, banner backgrounds, tags, step dots).
@@ -411,13 +455,19 @@ pub type Measure<'a> = &'a dyn Fn(&str, FontRole, i32) -> i32;
 /// Measures a one-line label width in pixels.
 pub type MeasureWidth<'a> = &'a dyn Fn(&str) -> i32;
 
-const fn control_height(kind: ControlKind) -> i32 {
-    match kind {
+const fn control_height(ctl: &Ctl) -> i32 {
+    match ctl.kind {
         ControlKind::Edit { .. } => 30,
+        ControlKind::Button(_) if ctl.compact => 26,
         ControlKind::Button(_) => 34,
         ControlKind::CheckBox | ControlKind::Radio { .. } => 24,
         ControlKind::Label => 22,
     }
+}
+
+/// A bold label's width from the regular-weight measure (bold Malgun Gothic is a little wider).
+fn bold_width(regular: i32) -> i32 {
+    regular.saturating_mul(110) / 100
 }
 
 /// The content box items are placed in: the window margin, or a card's padded inside.
@@ -440,6 +490,9 @@ struct Layouter<'m> {
     frame: Frame,
     card: Option<i32>,
     last_gap: i32,
+    /// The last row just placed: `(x after its last control, content y of its last line, line
+    /// height)`; an [`Item::Pill`] right after it goes on that line.
+    row_end: Option<(i32, i32, i32)>,
     placed: Placed,
 }
 
@@ -477,6 +530,7 @@ impl Layouter<'_> {
             fill: None,
             wrap: true,
             align: TextAlign::Wrap,
+            spans: Vec::new(),
         });
         self.advance(height, gap);
     }
@@ -604,6 +658,7 @@ impl Layouter<'_> {
                 fill: None,
                 wrap: false,
                 align: TextAlign::Center,
+                spans: Vec::new(),
             });
         }
         self.placed.texts.push(PaintText {
@@ -620,6 +675,7 @@ impl Layouter<'_> {
             fill: None,
             wrap: true,
             align: TextAlign::Wrap,
+            spans: Vec::new(),
         });
         self.advance(height, self.px(theme::SPACE_S));
     }
@@ -628,15 +684,24 @@ impl Layouter<'_> {
         if ctl.width > 0 {
             self.px(ctl.width)
         } else {
-            let pad = if ctl.is_button() { 36 } else { 28 };
+            let pad = match (ctl.is_button(), ctl.compact) {
+                (true, true) => 20,
+                (true, false) => 36,
+                (false, _) => 28,
+            };
             let badge = if ctl.is_button() && ctl.badge.is_some() {
                 BADGE_DIP + BADGE_GAP_DIP
             } else {
                 0
             };
+            let least = match (ctl.is_button(), ctl.compact) {
+                (true, true) => 44,
+                (true, false) => 88,
+                (false, _) => 60,
+            };
             (self.label_width)(&ctl.text)
                 .saturating_add(self.px(pad + badge))
-                .max(self.px(if ctl.is_button() { 88 } else { 60 }))
+                .max(self.px(least))
         }
     }
 
@@ -646,12 +711,12 @@ impl Layouter<'_> {
         let right = frame.x.saturating_add(frame.w);
         let mut row_h = ctls
             .iter()
-            .map(|ctl| self.px(control_height(ctl.kind)))
+            .map(|ctl| self.px(control_height(ctl)))
             .max()
             .unwrap_or(self.px(24))
             .max(self.px(24));
         if let Some(label) = label {
-            let label_w = self.px(170).min(frame.w / 3);
+            let label_w = self.label_column();
             let label_h = (self.measure)(label, FontRole::Body, label_w).max(row_h);
             let single = row_h;
             row_h = label_h;
@@ -667,6 +732,7 @@ impl Layouter<'_> {
                 } else {
                     TextAlign::Line
                 },
+                spans: Vec::new(),
             });
             x = frame.x.saturating_add(label_w).saturating_add(self.px(8));
         }
@@ -679,7 +745,7 @@ impl Layouter<'_> {
                 x = line_start;
                 self.y = self.y.saturating_add(row_h).saturating_add(self.px(6));
             }
-            let h = self.px(control_height(ctl.kind));
+            let h = self.px(control_height(ctl));
             let rect = Rect::new(
                 x,
                 self.y
@@ -688,19 +754,266 @@ impl Layouter<'_> {
                 w,
                 h,
             );
-            let mut placed = ctl.clone();
-            placed.backdrop = Some(frame.backdrop);
-            if let ControlKind::Button(style) = placed.kind
-                && style.fill == theme::BG
-                && frame.backdrop != theme::BG
-            {
-                // A link button on a card takes the card color.
-                placed.kind = ControlKind::Button(theme::link_on(frame.backdrop));
-            }
-            self.placed.controls.push((placed, rect));
+            self.push_control(ctl, rect);
             x = x.saturating_add(w).saturating_add(self.px(8));
         }
+        let end = (x, self.y, row_h);
         self.advance(row_h, self.px(10));
+        self.row_end = Some(end);
+    }
+
+    /// Places one control at `rect` on the current frame (a link button takes the card color).
+    fn push_control(&mut self, ctl: &Ctl, rect: Rect) {
+        let backdrop = self.frame.backdrop;
+        let mut placed = ctl.clone();
+        placed.backdrop = Some(backdrop);
+        if let ControlKind::Button(style) = placed.kind
+            && style.fill == theme::BG
+            && backdrop != theme::BG
+        {
+            // A link button on a card takes the card color.
+            placed.kind = ControlKind::Button(theme::link_on(backdrop));
+        }
+        self.placed.controls.push((placed, rect));
+    }
+
+    /// The width of the label column of a [`Item::LabeledRow`] (and of the [`Item::Menu`] under
+    /// it).
+    fn label_column(&self) -> i32 {
+        self.px(170).min(self.frame.w / 3)
+    }
+
+    /// The drawn width of `text` in the mono font: Consolas 10 pt (`theme::Fonts::create`) has
+    /// one advance for every character and weight — GDI's cell height at this DPI
+    /// (`(10 × dpi + 36) / 72`) × 1126/2048.
+    fn mono_width(&self, text: &str) -> i32 {
+        let cell = self.px(960).saturating_add(36) / 72;
+        let advance = cell.saturating_mul(1_126).saturating_add(1_024) / 2_048;
+        i32::try_from(text.chars().count())
+            .unwrap_or(i32::MAX)
+            .saturating_mul(advance.max(1))
+    }
+
+    /// [`Item::AddressRow`]: the spans, then the controls right after them on the same line
+    /// when both fit; else the address wraps on its own line and the controls follow as a row.
+    fn address_row(&mut self, spans: &[(String, bool)], ctls: &[Ctl]) {
+        let text: String = spans.iter().map(|(piece, _)| piece.as_str()).collect();
+        let gap = self.px(8);
+        let ctls_w = ctls.iter().fold(0_i32, |sum, ctl| {
+            sum.saturating_add(self.ctl_width(ctl)).saturating_add(gap)
+        });
+        let row_h = ctls
+            .iter()
+            .map(|ctl| self.px(control_height(ctl)))
+            .max()
+            .unwrap_or(0);
+        let one_line = (self.measure)("0", FontRole::Mono, self.frame.w.max(1)).max(self.px(16));
+        // A wider gap than between buttons: the address reads as one unit.
+        let lead = self.px(14);
+        let drawn_w = self.mono_width(&text);
+        let text_w = drawn_w.saturating_add(lead.saturating_sub(gap).max(0));
+        let fits = text_w.saturating_add(ctls_w) <= self.frame.w;
+        if !fits || ctls.is_empty() {
+            let width = self.frame.w.max(self.px(40));
+            let height = (self.measure)(&text, FontRole::Mono, width).max(self.px(16));
+            self.mono_spans(&text, spans, Rect::new(self.frame.x, self.y, width, height));
+            self.advance(height, self.px(theme::SPACE_S));
+            if !ctls.is_empty() {
+                self.row(None, ctls);
+            }
+            return;
+        }
+        let line_h = row_h.max(one_line);
+        // Some room past the computed width: the spans are drawn whole or not at all.
+        let room = text_w.saturating_add(self.px(40)).min(self.frame.w);
+        self.mono_spans(&text, spans, Rect::new(self.frame.x, self.y, room, line_h));
+        let mut x = self.frame.x.saturating_add(drawn_w).saturating_add(lead);
+        for ctl in ctls {
+            let w = self.ctl_width(ctl);
+            let h = self.px(control_height(ctl));
+            let rect = Rect::new(
+                x,
+                self.y
+                    .saturating_add((line_h - h) / 2)
+                    .saturating_sub(self.scroll),
+                w,
+                h,
+            );
+            self.push_control(ctl, rect);
+            x = x.saturating_add(w).saturating_add(gap);
+        }
+        self.advance(line_h, self.px(theme::SPACE_S));
+    }
+
+    /// A mono text at content rectangle `rect` drawn as `spans` when they fit on one line.
+    fn mono_spans(&mut self, text: &str, spans: &[(String, bool)], rect: Rect) {
+        self.placed.texts.push(PaintText {
+            rect: Rect::new(rect.x, rect.y.saturating_sub(self.scroll), rect.w, rect.h),
+            text: text.to_owned(),
+            font: FontRole::Mono,
+            color: theme::TEXT.0,
+            fill: None,
+            wrap: true,
+            align: TextAlign::Wrap,
+            spans: spans.to_vec(),
+        });
+    }
+
+    /// [`Item::ListRow`].
+    fn list_row(&mut self, title: &str, note: &str, value: &str, dim: bool) {
+        let gap = self.px(12);
+        let (title_color, value_color) = if dim {
+            (theme::MUTED, theme::MUTED)
+        } else {
+            (theme::TEXT, theme::TEXT)
+        };
+        let line_h = (self.measure)("가", FontRole::BodyBold, self.frame.w.max(1));
+        let wanted_value = bold_width((self.label_width)(value)).saturating_add(self.px(4));
+        let value_w = wanted_value.min(self.frame.w / 2);
+        let value_wraps = wanted_value > value_w;
+        let left_w = self
+            .frame
+            .w
+            .saturating_sub(value_w)
+            .saturating_sub(gap)
+            .max(self.px(60));
+        let top = self.y.saturating_sub(self.scroll);
+        let title_w = bold_width((self.label_width)(title))
+            .saturating_add(self.px(2))
+            .min(left_w);
+        let title_h = (self.measure)(title, FontRole::BodyBold, title_w).max(line_h);
+        self.placed.texts.push(PaintText {
+            rect: Rect::new(self.frame.x, top, title_w, title_h),
+            text: title.to_owned(),
+            font: FontRole::BodyBold,
+            color: title_color.0,
+            fill: None,
+            wrap: true,
+            align: TextAlign::Wrap,
+            spans: Vec::new(),
+        });
+        let mut height = title_h;
+        if !note.is_empty() {
+            let beside = left_w.saturating_sub(title_w).saturating_sub(self.px(6));
+            let (x, y, w) = if title_h <= line_h && beside >= self.px(80) {
+                // Beside the title, its first line on the title's baseline (9 pt under 10 pt).
+                (
+                    self.frame
+                        .x
+                        .saturating_add(title_w)
+                        .saturating_add(self.px(6)),
+                    top.saturating_add(self.px(2)),
+                    beside,
+                )
+            } else {
+                (self.frame.x, top.saturating_add(title_h), left_w)
+            };
+            let note_h = (self.measure)(note, FontRole::Caption, w).max(self.px(14));
+            self.placed.texts.push(PaintText {
+                rect: Rect::new(x, y, w, note_h),
+                text: note.to_owned(),
+                font: FontRole::Caption,
+                color: theme::MUTED.0,
+                fill: None,
+                wrap: true,
+                align: TextAlign::Wrap,
+                spans: Vec::new(),
+            });
+            height = height.max(y.saturating_sub(top).saturating_add(note_h));
+        }
+        let value_h = if value_wraps {
+            (self.measure)(value, FontRole::BodyBold, value_w).max(line_h)
+        } else {
+            line_h
+        };
+        self.placed.texts.push(PaintText {
+            rect: Rect::new(
+                self.frame
+                    .x
+                    .saturating_add(self.frame.w)
+                    .saturating_sub(value_w),
+                top,
+                value_w,
+                value_h,
+            ),
+            text: value.to_owned(),
+            font: FontRole::BodyBold,
+            color: value_color.0,
+            fill: None,
+            wrap: value_wraps,
+            align: if value_wraps {
+                TextAlign::Wrap
+            } else {
+                TextAlign::Right
+            },
+            spans: Vec::new(),
+        });
+        self.advance(height.max(value_h), self.px(theme::SPACE_XS));
+    }
+
+    /// [`Item::Pill`]: at the end of the row just placed when it fits there, else on its own
+    /// line.
+    fn pill(&mut self, text: &str, tone: Tone, row_end: Option<(i32, i32, i32)>) {
+        let (fill, color, border) = tone.colors();
+        let w = bold_width((self.label_width)(text)).saturating_add(self.px(20));
+        let h = self.px(22);
+        let right = self.frame.x.saturating_add(self.frame.w);
+        let inline = row_end.filter(|(x, _, _)| x.saturating_add(w) <= right);
+        let (x, y) = match inline {
+            Some((x, line_y, line_h)) => (x, line_y.saturating_add((line_h - h) / 2)),
+            None => (self.frame.x, self.y),
+        };
+        let rect = Rect::new(x, y.saturating_sub(self.scroll), w, h);
+        self.shape(rect, h / 2, fill, border);
+        self.placed.texts.push(PaintText {
+            rect,
+            text: text.to_owned(),
+            font: FontRole::BodyBold,
+            color: color.0,
+            fill: None,
+            wrap: false,
+            align: TextAlign::Center,
+            spans: Vec::new(),
+        });
+        if inline.is_none() {
+            self.advance(h, self.px(theme::SPACE_S));
+        }
+    }
+
+    /// [`Item::Menu`]: one control per line under the value column of the row above.
+    fn menu(&mut self, ctls: &[Ctl]) {
+        let x = self
+            .frame
+            .x
+            .saturating_add(self.label_column())
+            .saturating_add(self.px(8));
+        let available = self
+            .frame
+            .x
+            .saturating_add(self.frame.w)
+            .saturating_sub(x)
+            .max(self.px(80));
+        let width = ctls
+            .iter()
+            .map(|ctl| self.ctl_width(ctl))
+            .max()
+            .unwrap_or(0)
+            .max(self.px(260))
+            .min(available);
+        // The list hangs under the row above (its 10 DIP gap shrinks to 4).
+        self.y = self
+            .y
+            .saturating_sub(self.last_gap)
+            .saturating_add(self.px(theme::SPACE_XS));
+        for ctl in ctls {
+            let h = self.px(control_height(ctl));
+            self.push_control(
+                ctl,
+                Rect::new(x, self.y.saturating_sub(self.scroll), width, h),
+            );
+            self.advance(h, self.px(2));
+        }
+        self.advance(0, self.px(10));
     }
 
     fn hold(&mut self, id: u16, label: &str, progress: u16, enabled: bool) {
@@ -742,6 +1055,7 @@ impl Layouter<'_> {
             fill: None,
             wrap: false,
             align: TextAlign::Center,
+            spans: Vec::new(),
         });
         self.placed.holds.push((id, rect, enabled));
         self.advance(h, self.px(10));
@@ -772,11 +1086,12 @@ impl Layouter<'_> {
             fill: None,
             wrap: false,
             align: TextAlign::Line,
+            spans: Vec::new(),
         });
         let mut x = self.margin.saturating_add(self.width);
         for ctl in ctls.iter().rev() {
             let w = self.ctl_width(ctl);
-            let h = self.px(control_height(ctl.kind));
+            let h = self.px(control_height(ctl));
             x = x.saturating_sub(w);
             let mut placed = ctl.clone();
             placed.backdrop = Some(theme::CARD);
@@ -849,6 +1164,7 @@ impl Layouter<'_> {
                 fill: None,
                 wrap: false,
                 align: TextAlign::Center,
+                spans: Vec::new(),
             });
             self.placed.texts.push(PaintText {
                 rect: Rect::new(
@@ -871,6 +1187,7 @@ impl Layouter<'_> {
                 fill: None,
                 wrap: false,
                 align: TextAlign::Center,
+                spans: Vec::new(),
             });
         }
         self.advance(
@@ -906,6 +1223,7 @@ impl Layouter<'_> {
             fill: None,
             wrap: false,
             align: TextAlign::Line,
+            spans: Vec::new(),
         });
         self.placed.texts.push(PaintText {
             rect: Rect::new(self.frame.x.saturating_add(value_x), top, value_w, value_h),
@@ -915,6 +1233,7 @@ impl Layouter<'_> {
             fill: None,
             wrap: true,
             align: TextAlign::Wrap,
+            spans: Vec::new(),
         });
         self.advance(value_h.max(self.px(20)), self.px(theme::SPACE_S));
     }
@@ -979,6 +1298,7 @@ pub fn layout(
         },
         card: None,
         last_gap: 0,
+        row_end: None,
         placed: Placed::default(),
     };
     for item in items {
@@ -1058,6 +1378,8 @@ impl Layouter<'_> {
 
     fn place(&mut self, item: &Item, dpi: u32) {
         let px = |dip: i32| scale(dip, dpi);
+        // Only a pill right after a row uses the row's last line.
+        let row_end = self.row_end.take();
         if let Some((text, font, color, gap)) = text_style(item) {
             self.text(text, font, color, 0, px(gap));
             return;
@@ -1093,6 +1415,15 @@ impl Layouter<'_> {
             }
             Item::Row(ctls) => layouter.row(None, ctls),
             Item::LabeledRow(label, ctls) => layouter.row(Some(label), ctls),
+            Item::AddressRow(spans, ctls) => layouter.address_row(spans, ctls),
+            Item::ListRow {
+                title,
+                note,
+                value,
+                dim,
+            } => layouter.list_row(title, note, value, *dim),
+            Item::Pill(text, tone) => layouter.pill(text, *tone, row_end),
+            Item::Menu(ctls) => layouter.menu(ctls),
             Item::CardStart(title) => layouter.open_card(title.as_deref()),
             Item::CardEnd => layouter.close_card(),
             Item::Steps(labels, current) => layouter.steps(labels, *current),
@@ -1157,6 +1488,20 @@ pub fn paint(dc: &mut PaintDc<'_>, client: Rect, placed: &Placed, fonts: &Fonts)
         if let Some(fill) = text.fill {
             dc.fill_rect(text.rect, Color(fill));
         }
+        // Own-address spans: one line, vertically centered beside their buttons; a line too
+        // wide for them wraps as plain mono below.
+        if !text.spans.is_empty()
+            && crate::ui::theme::paint_spans(
+                dc,
+                fonts,
+                &text.spans,
+                text.rect,
+                Color(text.color),
+                theme::FOCUS,
+            )
+        {
+            continue;
+        }
         dc.set_text_color(Color(text.color));
         if text.font == FontRole::Mono
             && let Some(segments) = crate::ui::theme::address_segments(&text.text)
@@ -1167,6 +1512,7 @@ pub fn paint(dc: &mut PaintDc<'_>, client: Rect, placed: &Placed, fonts: &Fonts)
         dc.select_font(fonts.get(text.font));
         let flags = match text.align {
             TextAlign::Center => DrawFlags::CENTER,
+            TextAlign::Right => DrawFlags::RIGHT,
             TextAlign::Wrap if text.wrap => DrawFlags::WRAP,
             TextAlign::Line | TextAlign::Wrap => DrawFlags::LINE,
         };
@@ -1424,6 +1770,25 @@ mod tests {
             Item::CardStart(Some("카드".to_owned())),
             Item::Field("주소".to_owned(), "0x1234".to_owned()),
             Item::Row(vec![Ctl::button(1, "보내기"), Ctl::primary(2, "받기")]),
+            Item::Pill("메인넷 — 실제 자산".to_owned(), Tone::BtcMainnet),
+            Item::Menu(vec![
+                Ctl::tab(4, "Base", false),
+                Ctl::tab(5, "Sepolia", true),
+            ]),
+            Item::AddressRow(
+                crate::ui::theme::own_address_spans(
+                    "0xF9900bb6FF2D2C67858c3468d21c5f103C4Ff646",
+                    crate::ui::theme::AddressKind::Evm,
+                    false,
+                ),
+                vec![Ctl::button(6, "주소 복사").compact()],
+            ),
+            Item::ListRow {
+                title: "USDG".to_owned(),
+                note: "Global Dollar, Paxos".to_owned(),
+                value: "0 USDG".to_owned(),
+                dim: false,
+            },
             Item::Rule,
             Item::Qr("0x1234".to_owned()),
             Item::CardEnd,
@@ -1443,5 +1808,59 @@ mod tests {
         assert_eq!(shifted, at(45));
         shifted.shift(45 - 300);
         assert_eq!(shifted, at(300));
+    }
+
+    /// A pill sits at the end of the row above it when it fits (no line of its own); the
+    /// address row keeps its button on the address line and its spans on the text.
+    #[test]
+    fn pill_joins_the_row_and_address_row_keeps_one_line() {
+        let measure = |_: &str, _: FontRole, _: i32| 20;
+        let width = |text: &str| i32::try_from(text.len()).unwrap_or(0).saturating_mul(7);
+        let row = Item::LabeledRow("네트워크".to_owned(), vec![Ctl::button(1, "Sepolia ▾")]);
+        let pill = Item::Pill("테스트넷".to_owned(), Tone::Testnet);
+        let alone = layout(std::slice::from_ref(&row), 900, 96, 0, &measure, &width);
+        let tagged = layout(&[row, pill], 900, 96, 0, &measure, &width);
+        assert_eq!(tagged.content_height, alone.content_height);
+        let (_, button) = &tagged.controls[0];
+        let tag = tagged
+            .texts
+            .iter()
+            .find(|text| text.text == "테스트넷")
+            .unwrap();
+        assert!(tag.rect.x > button.x + button.w, "after the button");
+        assert!(tag.rect.y >= button.y && tag.rect.bottom() <= button.bottom());
+
+        let spans = crate::ui::theme::own_address_spans(
+            "0xF9900bb6FF2D2C67858c3468d21c5f103C4Ff646",
+            crate::ui::theme::AddressKind::Evm,
+            false,
+        );
+        let placed = layout(
+            &[Item::AddressRow(
+                spans.clone(),
+                vec![Ctl::button(7, "주소 복사").compact()],
+            )],
+            900,
+            96,
+            0,
+            &measure,
+            &width,
+        );
+        let line = placed
+            .texts
+            .iter()
+            .find(|text| !text.spans.is_empty())
+            .unwrap();
+        assert_eq!(line.text, "0xF9900bb6FF2D2C67858c3468d21c5f103C4Ff646");
+        assert_eq!(line.spans, spans);
+        let (ctl, rect) = &placed.controls[0];
+        assert!(ctl.compact);
+        // Right after the 42 Consolas cells (7 px at 96 DPI), not at the far end of the line.
+        assert_eq!(
+            rect.x,
+            line.rect.x + 42 * 7 + 14,
+            "button beside the address"
+        );
+        assert!(rect.y >= line.rect.y && rect.bottom() <= line.rect.bottom());
     }
 }

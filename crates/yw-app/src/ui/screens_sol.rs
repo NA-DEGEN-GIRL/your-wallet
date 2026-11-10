@@ -68,6 +68,10 @@ pub mod ids {
     pub const TOKEN_HIDE_SPAN: u16 = 4;
     /// Token card `숨긴 토큰 n개 보기` / `접기`.
     pub const TOKEN_HIDDEN_TOGGLE: u16 = 7_075;
+    /// Token card `주소 복사` of the mint (one per allowlist row; 2026-11-11).
+    pub const TOKEN_COPY_BASE: u16 = 7_080;
+    /// Mint copy span.
+    pub const TOKEN_COPY_SPAN: u16 = 4;
     /// `해시 복사` of the send result (the signature, i.e. the transaction id).
     pub const RESULT_COPY: u16 = 7_076;
     /// `해시 복사` of the S10 activity rows (display order, one id per row).
@@ -288,19 +292,29 @@ impl App {
         ]));
     }
 
-    fn sol_cluster_banner(&self, items: &mut Vec<Item>) {
-        if self.sol_cluster() == SolCluster::Devnet {
-            items.push(Item::Banner(
-                "Solana devnet (테스트) — 실제 자산이 아닙니다".to_owned(),
+    /// The cluster band: a full band on S11 (`pill == false`), a small tag after the S10
+    /// cluster chips (2026-11-11, like the EVM network card).
+    fn sol_cluster_banner(&self, items: &mut Vec<Item>, pill: bool) {
+        let (text, tone) = if self.sol_cluster() == SolCluster::Devnet {
+            // The tag sits after the `Solana devnet (테스트)` chip: the EVM tag's words.
+            (
+                if pill {
+                    "테스트넷 — 실제 자산이 아닙니다"
+                } else {
+                    "Solana devnet (테스트) — 실제 자산이 아닙니다"
+                }
+                .to_owned(),
                 Tone::Testnet,
-            ));
+            )
         } else {
             // Like the EVM mainnets (2026-11-08): S10, S11 and S12 say real assets move.
-            items.push(Item::Banner(
-                crate::ui::screens::T_MAINNET.to_owned(),
-                Tone::BtcMainnet,
-            ));
-        }
+            (crate::ui::screens::T_MAINNET.to_owned(), Tone::BtcMainnet)
+        };
+        items.push(if pill {
+            Item::Pill(text, tone)
+        } else {
+            Item::Banner(text, tone)
+        });
     }
 
     /// The S10 Solana tab.
@@ -325,7 +339,7 @@ impl App {
                 .badge(Badge::solana(SolCluster::Devnet)),
             ],
         ));
-        self.sol_cluster_banner(items);
+        self.sol_cluster_banner(items, true);
         if self.sol_journal_damaged() {
             items.push(Item::Banner(
                 "거래 저널의 Solana 기록이 손상되어 Solana 보내기를 멈췄습니다. (E-VLT-006)"
@@ -448,7 +462,13 @@ impl App {
                     )));
                 }
             }
-            items.push(Item::Mono(grouped(address)));
+            // The own address whole with its ends emphasized and `주소 복사` (2026-11-11).
+            items.push(crate::ui::screens::own_address_row(
+                &address.to_base58(),
+                crate::ui::theme::AddressKind::Solana,
+                ids::COPY_ADDRESS,
+                true,
+            ));
             let mut row = vec![
                 Ctl::primary(ids::SEND_OPEN, "보내기").enabled(unlocked),
                 Ctl::primary(ids::RECEIVE_OPEN, "받기"),
@@ -704,25 +724,40 @@ impl App {
                 "보이는 토큰이 없습니다. 숨긴 토큰은 아래에서 다시 볼 수 있습니다.".to_owned(),
             ));
         }
-        for (index, entry) in shown {
+        // The EVM token card's list rows (2026-11-11): symbol and balance on one line, what
+        // the balance means, then the pinned mint shortened with `보내기`·`주소 복사`·`숨기기`.
+        for (position, (index, entry)) in shown.into_iter().enumerate() {
+            if position > 0 {
+                items.push(Item::Rule);
+            }
             let holding = self.sol_token_holding(address, entry);
             let (value, note) = token_holding_text(entry, holding);
-            items.push(Item::Field(entry.symbol.to_owned(), value));
+            items.push(Item::ListRow {
+                title: entry.symbol.to_owned(),
+                note: "SPL Token · mint 허용 목록 고정".to_owned(),
+                value,
+                dim: false,
+            });
             items.push(Item::Help(note));
-            items.push(Item::Help("mint (허용 목록 고정)".to_owned()));
-            items.push(Item::Mono(grouped(&entry.mint)));
             let id = ids::TOKEN_SEND_BASE.saturating_add(u16::try_from(index).unwrap_or(0));
             let mut row = vec![
-                Ctl::link(id, &format!("{} 보내기", entry.symbol)).enabled(
+                Ctl::link(id, "보내기").compact().enabled(
                     can_send
                         && holding
                             .and_then(TokenHolding::balance)
                             .is_some_and(|raw| raw > 0),
                 ),
             ];
+            row.extend(Self::sol_token_copy_button(index));
             row.extend(Self::sol_token_hide_button(index, false));
-            items.push(Item::Row(row));
-            items.push(Item::Gap(4));
+            items.push(Item::AddressRow(
+                crate::ui::theme::own_address_spans(
+                    &entry.mint.to_base58(),
+                    crate::ui::theme::AddressKind::Solana,
+                    true,
+                ),
+                row,
+            ));
         }
         if !hidden.is_empty() {
             let open = self.sol.show_hidden_tokens;
@@ -740,16 +775,44 @@ impl App {
                     "숨기기는 이 카드에서만 감춥니다. 보내기 화면의 자산 선택, 승인 창의 확인, 활동 기록은 그대로입니다."
                         .to_owned(),
                 ));
-                for (index, entry) in hidden {
+                for (position, (index, entry)) in hidden.into_iter().enumerate() {
+                    if position > 0 {
+                        items.push(Item::Rule);
+                    }
                     let (value, _) =
                         token_holding_text(entry, self.sol_token_holding(address, entry));
-                    items.push(Item::Muted(format!("{} · {value} · 숨김", entry.symbol)));
-                    items.push(Item::Mono(grouped(&entry.mint)));
-                    items.push(Item::Row(Self::sol_token_hide_button(index, true)));
+                    items.push(Item::ListRow {
+                        title: entry.symbol.to_owned(),
+                        note: "숨김".to_owned(),
+                        value,
+                        dim: true,
+                    });
+                    let mut row = Self::sol_token_copy_button(index);
+                    row.extend(Self::sol_token_hide_button(index, true));
+                    items.push(Item::AddressRow(
+                        crate::ui::theme::own_address_spans(
+                            &entry.mint.to_base58(),
+                            crate::ui::theme::AddressKind::Solana,
+                            true,
+                        ),
+                        row,
+                    ));
                 }
             }
         }
         items.push(Item::CardEnd);
+    }
+
+    /// `주소 복사` of allowlist row `index`'s mint (none beyond the id span).
+    fn sol_token_copy_button(index: usize) -> Vec<Ctl> {
+        u16::try_from(index)
+            .ok()
+            .filter(|offset| *offset < ids::TOKEN_COPY_SPAN)
+            .map(|offset| {
+                Ctl::link(ids::TOKEN_COPY_BASE.saturating_add(offset), "주소 복사").compact()
+            })
+            .into_iter()
+            .collect()
     }
 
     /// `숨기기` / `다시 보이기` of allowlist row `index` (none beyond the id span).
@@ -766,6 +829,7 @@ impl App {
                         "숨기기"
                     },
                 )
+                .compact()
             })
             .into_iter()
             .collect()
@@ -780,7 +844,7 @@ impl App {
             Badge::solana(cluster),
             Box::new(Item::Title(format!("보내기 — {}", cluster.display_name()))),
         ));
-        self.sol_cluster_banner(items);
+        self.sol_cluster_banner(items, false);
         let form = &self.sol.send;
         if self.sol_journal_damaged() {
             items.push(Item::Banner(

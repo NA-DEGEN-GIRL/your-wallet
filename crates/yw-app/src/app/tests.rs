@@ -180,7 +180,15 @@ fn texts(items: &[Item]) -> Vec<String> {
             | Item::Subtitle(text)
             | Item::Display(text)
             | Item::DisplayMuted(text)
-            | Item::Banner(text, _) => Some(text.clone()),
+            | Item::Banner(text, _)
+            | Item::Pill(text, _) => Some(text.clone()),
+            // A list row reads as "title · note · value" (the token card, 2026-11-11).
+            Item::ListRow {
+                title, note, value, ..
+            } => Some(format!("{title} · {note} · {value}")),
+            Item::AddressRow(spans, _) => {
+                Some(spans.iter().map(|(text, _)| text.as_str()).collect())
+            }
             _ => None,
         })
         .collect()
@@ -190,7 +198,11 @@ fn controls(items: &[Item]) -> Vec<Ctl> {
     items
         .iter()
         .flat_map(|item| match item {
-            Item::Row(ctls) | Item::LabeledRow(_, ctls) | Item::Toolbar(_, ctls) => ctls.clone(),
+            Item::Row(ctls)
+            | Item::LabeledRow(_, ctls)
+            | Item::Toolbar(_, ctls)
+            | Item::AddressRow(_, ctls)
+            | Item::Menu(ctls) => ctls.clone(),
             _ => Vec::new(),
         })
         .collect()
@@ -611,11 +623,18 @@ fn backup_discard_mainnet_and_done_texts() {
     assert!(!has_text(&items, "모든 계정은 같은 복구 단어로 복구됩니다"));
     assert!(!has_text(&items, T_MAINNET), "Sepolia is a testnet");
     // Mainnet badges: Ethereum, HyperEVM, Solana mainnet; none on Solana devnet. Exactly one
-    // band per screen (2026-11-10: Solana mainnet's S10 drew two since 11-08).
+    // per screen (2026-11-10: Solana mainnet's S10 drew two since 11-08), and on S10 it is the
+    // network card's small tag, not a full-width band (2026-11-11).
     let mainnet_bands = |items: &[Item]| {
+        assert!(
+            !items
+                .iter()
+                .any(|item| matches!(item, Item::Banner(text, _) if text == T_MAINNET)),
+            "S10 draws no full-width mainnet band"
+        );
         items
             .iter()
-            .filter(|item| matches!(item, Item::Banner(text, _) if text == T_MAINNET))
+            .filter(|item| matches!(item, Item::Pill(text, Tone::BtcMainnet) if text == T_MAINNET))
             .count()
     };
     for chain in [1, 999] {
@@ -1026,11 +1045,8 @@ fn key_start_creates_a_key_only_wallet() {
     // Solana tab: the imported account with its badge, no derivation controls; it signs as an
     // imported key.
     let items = h.app.items();
-    assert!(
-        items
-            .iter()
-            .any(|item| matches!(item, Item::Mono(text) if text.replace(' ', "") == SOL_ADDRESS))
-    );
+    // The account card's own-address line (2026-11-11: whole, no spaces).
+    assert!(texts(&items).iter().any(|text| text == SOL_ADDRESS));
     assert!(
         controls(&items)
             .iter()
@@ -2231,13 +2247,19 @@ fn walletconnect_panel_asks_for_the_project_id_first() {
 fn single_account_row_does_not_repeat_the_hero_card() {
     use crate::ui::screens::T_SINGLE_ACCOUNT;
     let (mut app, dir) = unlocked_app("single-account", false);
-    // How often an account address is drawn (token contracts are other Mono lines).
+    // How often an account address is drawn (token contracts are other lines): the account
+    // rows' grouped `Mono`, the account card's own-address line (2026-11-11).
     let shown = |items: &[Item], address: &str| {
         items
             .iter()
-            .filter(|item| {
-                matches!(item, Item::Mono(text)
-                    if text.replace(' ', "").eq_ignore_ascii_case(address))
+            .filter(|item| match item {
+                Item::Mono(text) => text.replace(' ', "").eq_ignore_ascii_case(address),
+                Item::AddressRow(spans, _) => spans
+                    .iter()
+                    .map(|(text, _)| text.as_str())
+                    .collect::<String>()
+                    .eq_ignore_ascii_case(address),
+                _ => false,
             })
             .count()
     };
@@ -2423,11 +2445,22 @@ fn token_app(tag: &str) -> (App, PathBuf) {
     (app, dir)
 }
 
-fn fields(items: &[Item]) -> Vec<String> {
+/// The EVM token card's visible rows (2026-11-11 list rows): `{symbol}`, or `{symbol} ({note})`
+/// for a token with a name note (`SCAM (사용자 추가)`).
+fn shown_tokens(items: &[Item]) -> Vec<String> {
     items
         .iter()
         .filter_map(|item| match item {
-            Item::Field(label, _) => Some(label.clone()),
+            Item::ListRow {
+                title,
+                note,
+                dim: false,
+                ..
+            } => Some(if note.is_empty() {
+                title.clone()
+            } else {
+                format!("{title} ({note})")
+            }),
             _ => None,
         })
         .collect()
@@ -2455,7 +2488,7 @@ fn evm_token_rows_hide_unhide_and_zero_balance() {
     assert_eq!(tokens.len(), registry + 2);
     let scam = registry;
     let items = app.items();
-    assert!(fields(&items).contains(&"SCAM (사용자 추가)".to_owned()));
+    assert!(shown_tokens(&items).contains(&"SCAM (사용자 추가)".to_owned()));
     for (index, (.., registered)) in tokens.iter().enumerate() {
         let hide = ctl(
             &items,
@@ -2478,7 +2511,7 @@ fn evm_token_rows_hide_unhide_and_zero_balance() {
     let meta = app.meta.as_ref().unwrap();
     assert!(meta.token_view.is_hidden("eip155:11155111", SCAM));
     let items = app.items();
-    assert!(!fields(&items).contains(&"SCAM (사용자 추가)".to_owned()));
+    assert!(!shown_tokens(&items).contains(&"SCAM (사용자 추가)".to_owned()));
     assert_eq!(
         ctl(&items, TOKEN_HIDDEN_TOGGLE).unwrap().text,
         "숨긴 토큰 1개 보기 ▸"
@@ -2498,7 +2531,7 @@ fn evm_token_rows_hide_unhide_and_zero_balance() {
     let items = app.items();
     assert!(has_text(
         &items,
-        "SCAM (사용자 추가) · 잔액 알 수 없음 · 숨김"
+        "SCAM · 사용자 추가 · 숨김 · 잔액 알 수 없음"
     ));
     assert!(has_text(
         &items,
@@ -2535,14 +2568,14 @@ fn evm_token_rows_hide_unhide_and_zero_balance() {
         },
     );
     let zero_label = tokens[0].1.clone();
-    assert!(fields(&app.items()).contains(&zero_label));
+    assert!(shown_tokens(&app.items()).contains(&zero_label));
     app.on_command(TOKEN_HIDE_ZERO);
     assert!(app.meta.as_ref().unwrap().token_view.hide_zero);
     let items = app.items();
-    assert!(!fields(&items).contains(&zero_label));
-    assert!(fields(&items).contains(&tokens[1].1));
+    assert!(!shown_tokens(&items).contains(&zero_label));
+    assert!(shown_tokens(&items).contains(&tokens[1].1));
     assert!(
-        fields(&items).contains(&"GOOD (사용자 추가)".to_owned()),
+        shown_tokens(&items).contains(&"GOOD (사용자 추가)".to_owned()),
         "an unread balance never hides a row"
     );
     assert!(has_text(&items, "잔액이 0인 토큰 1개를 감췄습니다"));
@@ -2560,7 +2593,7 @@ fn evm_token_rows_hide_unhide_and_zero_balance() {
     assert_eq!(app.evm_token_rows(chain)[scam].place, RowPlace::ZeroHidden);
     app.on_command(TOKEN_HIDE_ZERO);
     assert!(app.meta.as_ref().unwrap().token_view.is_default());
-    assert!(fields(&app.items()).contains(&"SCAM (사용자 추가)".to_owned()));
+    assert!(shown_tokens(&app.items()).contains(&"SCAM (사용자 추가)".to_owned()));
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -2716,7 +2749,14 @@ fn sol_token_card_hides_allowlist_rows_per_cluster() {
         .next()
         .unwrap();
     let items = app.items();
-    assert!(fields(&items).contains(&entry.symbol.to_owned()));
+    let visible = |items: &[Item]| {
+        items.iter().any(
+            |item| matches!(item, Item::ListRow { title, dim: false, .. } if title == entry.symbol),
+        )
+    };
+    assert!(visible(&items));
+    // The mint's `주소 복사` sits on the row (2026-11-11 list rows).
+    assert!(ctl(&items, crate::ui::screens_sol::ids::TOKEN_COPY_BASE).is_some());
     assert_eq!(ctl(&items, TOKEN_HIDE_BASE).unwrap().text, "숨기기");
     app.on_command(TOKEN_HIDE_BASE);
     let network = app.sol_token_network();
@@ -2728,7 +2768,7 @@ fn sol_token_card_hides_allowlist_rows_per_cluster() {
             .is_hidden(&network, &entry.mint.to_base58())
     );
     let items = app.items();
-    assert!(!fields(&items).contains(&entry.symbol.to_owned()));
+    assert!(!visible(&items));
     assert_eq!(
         ctl(&items, TOKEN_HIDDEN_TOGGLE).unwrap().text,
         "숨긴 토큰 1개 보기 ▸"
@@ -2737,7 +2777,7 @@ fn sol_token_card_hides_allowlist_rows_per_cluster() {
     let items = app.items();
     assert!(has_text(
         &items,
-        &format!("{} · 잔액 알 수 없음 · 숨김", entry.symbol)
+        &format!("{} · 숨김 · 잔액 알 수 없음", entry.symbol)
     ));
     assert_eq!(ctl(&items, TOKEN_HIDE_BASE).unwrap().text, "다시 보이기");
     // Another cluster is not affected.
@@ -2756,7 +2796,7 @@ fn sol_token_card_hides_allowlist_rows_per_cluster() {
     app.on_command(TOKEN_HIDE_BASE);
     assert!(app.meta.as_ref().unwrap().token_view.is_default());
     assert!(!app.sol.show_hidden_tokens);
-    assert!(fields(&app.items()).contains(&entry.symbol.to_owned()));
+    assert!(visible(&app.items()));
     let _ = std::fs::remove_dir_all(dir);
 }
 
