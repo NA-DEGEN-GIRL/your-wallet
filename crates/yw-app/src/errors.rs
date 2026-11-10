@@ -521,6 +521,35 @@ impl ErrorCode {
         format!("{} ({})", self.message(), self.code())
     }
 
+    /// A few words naming an RPC failure (E-RPC-001–010, spec/04 §7), for the S10 status line
+    /// "오류 E-RPC-003 · 인증 거부" (2026-11-10: the code alone said nothing); `None` for every
+    /// other code.
+    #[must_use]
+    pub const fn short_name(self) -> Option<&'static str> {
+        Some(match self {
+            Self::Rpc001 => "연결 실패",
+            Self::Rpc002 => "시간 초과",
+            Self::Rpc003 => "인증 거부",
+            Self::Rpc004 => "요청 한도 초과",
+            Self::Rpc005 => "응답 형식 오류",
+            Self::Rpc006 => "다른 네트워크",
+            Self::Rpc007 => "요청 거부",
+            Self::Rpc008 => "보안 연결 실패",
+            Self::Rpc009 => "허용 목록 거부",
+            Self::Rpc010 => "네트워크 불일치",
+            _ => return None,
+        })
+    }
+
+    /// `"E-RPC-003 · 인증 거부"`: the code with its [`ErrorCode::short_name`], if it has one.
+    #[must_use]
+    pub fn code_with_name(self) -> String {
+        match self.short_name() {
+            Some(name) => format!("{} · {name}", self.code()),
+            None => self.code().to_owned(),
+        }
+    }
+
     /// Like [`ErrorCode::text`] with one `{…}` placeholder replaced by `value`.
     #[must_use]
     pub fn render(self, value: &str) -> String {

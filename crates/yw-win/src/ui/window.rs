@@ -1205,6 +1205,244 @@ fn work_area(hwnd: HWND, flags: u32) -> Option<RECT> {
     (ok != 0).then_some(info.rcWork)
 }
 
+/// A top-level window's place (spec/04 §1.7, 2026-11-10): its restored (normal) rectangle in
+/// screen pixels — also while maximized or minimized —, whether it is (or restores to)
+/// maximized, and its DPI.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Placement {
+    /// The restored rectangle (outer, screen pixels).
+    pub rect: Rect,
+    /// Maximized, or minimized from maximized.
+    pub maximized: bool,
+    /// The window's DPI.
+    pub dpi: u32,
+}
+
+/// A monitor's work area (screen pixels) and effective DPI.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MonitorArea {
+    /// The work area (without the taskbar and docked toolbars).
+    pub work: Rect,
+    /// `GetDpiForMonitor(MDT_EFFECTIVE_DPI)` (96 when it fails).
+    pub dpi: u32,
+}
+
+fn monitor_area(monitor: windows_sys::Win32::Graphics::Gdi::HMONITOR) -> Option<MonitorArea> {
+    if monitor.is_null() {
+        return None;
+    }
+    let empty = RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+    let mut info = MONITORINFO {
+        cbSize: u32::try_from(core::mem::size_of::<MONITORINFO>()).unwrap_or(40),
+        rcMonitor: empty,
+        rcWork: empty,
+        dwFlags: 0,
+    };
+    // SAFETY: `info` is writable with `cbSize` set; the handle came from `MonitorFrom*`.
+    if unsafe { GetMonitorInfoW(monitor, &raw mut info) } == 0 {
+        return None;
+    }
+    let (mut dpi_x, mut dpi_y) = (0_u32, 0_u32);
+    // SAFETY: Writes two DWORDs for a monitor handle from `MonitorFrom*`.
+    let hr = unsafe {
+        windows_sys::Win32::UI::HiDpi::GetDpiForMonitor(
+            monitor,
+            windows_sys::Win32::UI::HiDpi::MDT_EFFECTIVE_DPI,
+            &raw mut dpi_x,
+            &raw mut dpi_y,
+        )
+    };
+    Some(MonitorArea {
+        work: Rect::from_win(&info.rcWork),
+        dpi: if hr >= 0 && dpi_x >= 48 { dpi_x } else { 96 },
+    })
+}
+
+/// The monitor a screen rectangle mostly lies on (`MonitorFromRect`,
+/// `MONITOR_DEFAULTTONULL`): `None` when it touches no monitor (a saved place on a monitor that
+/// is gone).
+#[must_use]
+pub fn monitor_for_rect(rect: Rect) -> Option<MonitorArea> {
+    let raw = RECT {
+        left: rect.x,
+        top: rect.y,
+        right: rect.x.saturating_add(rect.w),
+        bottom: rect.y.saturating_add(rect.h),
+    };
+    // SAFETY: Reads a valid RECT; returns null for no monitor with this flag.
+    let monitor = unsafe {
+        windows_sys::Win32::Graphics::Gdi::MonitorFromRect(
+            &raw const raw,
+            windows_sys::Win32::Graphics::Gdi::MONITOR_DEFAULTTONULL,
+        )
+    };
+    monitor_area(monitor)
+}
+
+/// Screen minus workspace coordinates: `WINDOWPLACEMENT` rectangles are relative to the primary
+/// monitor's work area (a taskbar on the left or top moves them).
+fn workspace_offset() -> (i32, i32) {
+    // SAFETY: The primary monitor (never null with this flag).
+    let primary = unsafe {
+        windows_sys::Win32::Graphics::Gdi::MonitorFromPoint(
+            POINT { x: 0, y: 0 },
+            MONITOR_DEFAULTTOPRIMARY,
+        )
+    };
+    let empty = RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+    let mut info = MONITORINFO {
+        cbSize: u32::try_from(core::mem::size_of::<MONITORINFO>()).unwrap_or(40),
+        rcMonitor: empty,
+        rcWork: empty,
+        dwFlags: 0,
+    };
+    // SAFETY: `info` is writable with `cbSize` set.
+    if unsafe { GetMonitorInfoW(primary, &raw mut info) } == 0 {
+        return (0, 0);
+    }
+    (
+        info.rcWork.left.saturating_sub(info.rcMonitor.left),
+        info.rcWork.top.saturating_sub(info.rcMonitor.top),
+    )
+}
+
+impl Window {
+    /// Where the window is ([`Placement`]; `GetWindowPlacement`, converted to screen pixels).
+    #[must_use]
+    pub fn placement(&self) -> Option<Placement> {
+        let hwnd = self.live()?;
+        let empty = RECT {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        let mut placement = windows_sys::Win32::UI::WindowsAndMessaging::WINDOWPLACEMENT {
+            length: u32::try_from(core::mem::size_of::<
+                windows_sys::Win32::UI::WindowsAndMessaging::WINDOWPLACEMENT,
+            >())
+            .unwrap_or(44),
+            flags: 0,
+            showCmd: 0,
+            ptMinPosition: POINT { x: 0, y: 0 },
+            ptMaxPosition: POINT { x: 0, y: 0 },
+            rcNormalPosition: empty,
+        };
+        // SAFETY: `placement` is writable with `length` set; the window is ours and alive.
+        if unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::GetWindowPlacement(
+                hwnd,
+                &raw mut placement,
+            )
+        } == 0
+        {
+            return None;
+        }
+        let show = i32::try_from(placement.showCmd).unwrap_or(0);
+        let maximized = show == windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWMAXIMIZED
+            || (show == windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWMINIMIZED
+                && placement.flags
+                    & windows_sys::Win32::UI::WindowsAndMessaging::WPF_RESTORETOMAXIMIZED
+                    != 0);
+        let (dx, dy) = workspace_offset();
+        let mut rect = Rect::from_win(&placement.rcNormalPosition);
+        rect.x = rect.x.saturating_add(dx);
+        rect.y = rect.y.saturating_add(dy);
+        Some(Placement {
+            rect,
+            maximized,
+            dpi: self.dpi(),
+        })
+    }
+
+    /// The work area and DPI of the monitor the window is on (nearest).
+    #[must_use]
+    pub fn monitor_area(&self) -> Option<MonitorArea> {
+        let hwnd = self.live()?;
+        // SAFETY: Returns the nearest monitor of our live window (never null with this flag).
+        monitor_area(unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) })
+    }
+
+    /// The outer size (pixels at `dpi`) of a client area `w`×`h` DIP
+    /// (`AdjustWindowRectExForDpi` with the window's styles): the size the window has once on a
+    /// monitor of that DPI.
+    #[must_use]
+    pub fn outer_size(&self, w: i32, h: i32, dpi: u32) -> (i32, i32) {
+        let Some(hwnd) = self.live() else {
+            return (w, h);
+        };
+        // SAFETY: Reads our live window's style word.
+        let style = unsafe {
+            GetWindowLongPtrW(hwnd, windows_sys::Win32::UI::WindowsAndMessaging::GWL_STYLE)
+        };
+        // SAFETY: Reads our live window's extended style word.
+        let ex_style = unsafe {
+            GetWindowLongPtrW(
+                hwnd,
+                windows_sys::Win32::UI::WindowsAndMessaging::GWL_EXSTYLE,
+            )
+        };
+        let mut rect = RECT {
+            left: 0,
+            top: 0,
+            right: scale(w, dpi),
+            bottom: scale(h, dpi),
+        };
+        // SAFETY: `rect` is writable; the style values are our window's (low 32 bits).
+        unsafe {
+            AdjustWindowRectExForDpi(
+                &raw mut rect,
+                u32::try_from(style & 0xFFFF_FFFF).unwrap_or(0),
+                0,
+                u32::try_from(ex_style & 0xFFFF_FFFF).unwrap_or(0),
+                dpi,
+            )
+        };
+        (rect.right - rect.left, rect.bottom - rect.top)
+    }
+
+    /// Sets the window's outer rectangle (screen pixels). Onto a monitor of another DPI the
+    /// window receives `WM_DPICHANGED` (its suggested rectangle is applied); setting the same
+    /// rectangle again then sizes it at the new DPI.
+    pub fn set_outer_rect(&self, rect: Rect) {
+        let Some(hwnd) = self.live() else { return };
+        // SAFETY: Positions and sizes our live window; no z-order or activation change.
+        unsafe {
+            SetWindowPos(
+                hwnd,
+                core::ptr::null_mut(),
+                rect.x,
+                rect.y,
+                rect.w,
+                rect.h,
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            )
+        };
+    }
+
+    /// Shows the window maximized (its restored rectangle stays for `복원`).
+    pub fn show_maximized(&self) {
+        let Some(hwnd) = self.live() else { return };
+        // SAFETY: Shows our live window handle maximized.
+        unsafe {
+            ShowWindow(
+                hwnd,
+                windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWMAXIMIZED,
+            )
+        };
+    }
+}
+
 /// Sizes the hidden window for its monitor's DPI and centers it on `anchor`'s monitor.
 fn place(hwnd: HWND, anchor: HWND, spec: &WindowSpec, style: u32, ex_style: u32) {
     let Some(work) = work_area(anchor, MONITOR_DEFAULTTOPRIMARY) else {

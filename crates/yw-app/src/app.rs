@@ -34,8 +34,8 @@ use crate::apikeys::{
 use crate::errors::{ErrorCode, key_code, vault_code};
 use crate::events::{
     KeyJob, KeyOutcome, KeyQueue, KeyResult, LockSignal, MetaLoaded, RevealWhat, RpcEvent, UiEvent,
-    WM_YW_ACTIVATE, WM_YW_EVENTS, WM_YW_LOCK_SHORTCUT, WM_YW_NAV_KEY, WM_YW_TAB_SHORTCUT,
-    accept_result,
+    WM_YW_ACTIVATE, WM_YW_EVENTS, WM_YW_LOCK_SHORTCUT, WM_YW_NAV_KEY, WM_YW_SHORTCUT,
+    WM_YW_TAB_SHORTCUT, accept_result,
 };
 use crate::lock::{IdleTracker, LockReason, SystemAction, system_action};
 use crate::logging::{self, Field};
@@ -88,6 +88,8 @@ const VK_SHIFT: u16 = 0x10;
 const VK_MENU: u16 = 0x12;
 const MA_ACTIVATEANDEAT: isize = 2;
 const EN_CHANGE: u16 = 0x0300;
+/// The command id `IsDialogMessageW` sends for Esc (no control uses it, `ui::command_ids`).
+const IDCANCEL: u16 = 2;
 /// Settings field limits (UTF-16 units).
 const TOKEN_MAX_UNITS: usize = 256;
 const URL_MAX_UNITS: usize = 2_048;
@@ -720,6 +722,16 @@ pub struct App {
     pub(crate) scroll: i32,
     /// Wheel accumulation and glide of the main window (`app_scroll`).
     pub(crate) scroll_state: crate::app_scroll::MainScroll,
+    /// Where each S10 tab, settings section, S08, S13 and S14 was left (DIP, this run only) and
+    /// the screen under an overlay: the ways back open there (`app_scroll`, 2026-11-10).
+    pub(crate) scroll_memory: crate::app_scroll::ScrollMemory,
+    /// The settings section opened last in this run: `설정` and Ctrl+, open it (first 보안).
+    pub(crate) settings_last: SettingsSection,
+    /// The main window's position and size (`window.json`, `window_state`).
+    pub(crate) window_state: crate::window_state::WindowSaver,
+    /// `설정 → 브라우저·정보 → 정보`: the commit of the installation record next to the executable
+    /// (`build_info`), checked; `None` = a development build.
+    pub(crate) install_commit: Option<String>,
     pub(crate) controls: ControlSet,
     pub(crate) placed: Placed,
     pub(crate) evm: crate::app_evm::EvmUi,
@@ -991,6 +1003,10 @@ impl App {
             recover_return: None,
             scroll: 0,
             scroll_state: crate::app_scroll::MainScroll::default(),
+            scroll_memory: crate::app_scroll::ScrollMemory::default(),
+            settings_last: SettingsSection::Security,
+            window_state: crate::window_state::WindowSaver::default(),
+            install_commit: None,
             controls: ControlSet::default(),
             placed: Placed::default(),
             evm: crate::app_evm::EvmUi::default(),
@@ -1023,6 +1039,11 @@ impl App {
             session_next_ms: 0,
             last_flush_ms: now,
         }
+    }
+
+    /// The installed commit read at start (`build_info::read_install_commit`, already checked).
+    pub fn set_install_commit(&mut self, commit: Option<String>) {
+        self.install_commit = commit.filter(|commit| crate::build_info::is_commit(commit));
     }
 
     /// `WerAddExcludedApplication` failed at startup (review L9): a banner now and a line in
@@ -1146,13 +1167,26 @@ impl App {
 
     /// Shows the main window (not in `--background`).
     pub fn show_main(&mut self) {
-        if let Some(main) = self.main.as_ref() {
-            main.show();
-            if !main.set_foreground() {
-                main.flash();
-            }
+        self.show_main_window();
+        if let Some(main) = self.main.as_ref()
+            && !main.set_foreground()
+        {
+            main.flash();
         }
         self.refresh();
+    }
+
+    /// Shows the main window; the first show of a place saved maximized maximizes it
+    /// (`window_state`).
+    fn show_main_window(&mut self) {
+        let Some(main) = self.main.as_ref() else {
+            return;
+        };
+        if core::mem::take(&mut self.window_state.start_maximized) {
+            main.show_maximized();
+        } else {
+            main.show();
+        }
     }
 
     /// Queues a key job in the current epoch.
@@ -1188,7 +1222,19 @@ impl App {
         )
     }
 
+    /// Opens `screen` at its top (a new screen, an overlay, a lock); the screen under an overlay
+    /// opens where it was when the overlay ends (`취소`, or done and back to it).
     pub(crate) fn set_screen(&mut self, screen: Screen) {
+        self.enter_screen(screen, false);
+    }
+
+    /// The way back to `screen` (`← 메인으로`, `← 돌아가기`, `← 처음 설정으로`, a form's `취소`):
+    /// it opens where it was left in this run, cut to its content height (2026-11-10).
+    pub(crate) fn return_to(&mut self, screen: Screen) {
+        self.enter_screen(screen, true);
+    }
+
+    fn enter_screen(&mut self, screen: Screen, back: bool) {
         if self.passphrase_unverified()
             && matches!(
                 screen,
@@ -1203,9 +1249,29 @@ impl App {
         // "복구 단어" wipes the words held for "복구 단어 추가 가져오기".
         self.yk_leaving(&screen);
         self.mn_leaving(&screen);
-        if matches!(screen, Screen::Confirm(_)) && !matches!(self.screen, Screen::Confirm(_)) {
+        let overlay = matches!(self.screen, Screen::Confirm(_));
+        if matches!(screen, Screen::Confirm(_)) && !overlay {
             self.previous_screen = self.screen.clone();
+            self.scroll_memory.under_overlay = Some(self.scroll_dip());
         }
+        if screen != self.screen {
+            self.remember_scroll();
+        }
+        // Where the new screen opens: under a closing overlay where it was, on a way back where
+        // it was left, else at the top.
+        let restore = if overlay && !matches!(screen, Screen::Confirm(_)) {
+            let under = self.scroll_memory.under_overlay.take();
+            if screen == self.previous_screen {
+                under
+            } else {
+                None
+            }
+        } else if back {
+            self.scroll_place(&screen)
+                .and_then(|place| self.scroll_memory.get(place))
+        } else {
+            None
+        };
         if screen != self.screen && !matches!(screen, Screen::Confirm(_)) {
             // The inline `주소록에 저장` prompt and its note belong to the screen they opened on.
             self.book.prompt = None;
@@ -1226,9 +1292,13 @@ impl App {
             self.llm_ui.key_deleted = false;
         }
         self.wait.screen_changed(&self.screen, &screen, now_ms());
+        if let Screen::Settings(section) = &screen {
+            self.settings_last = *section;
+        }
         self.screen = screen;
-        self.scroll = 0;
+        self.scroll = restore.map_or(0, |dip| self.scroll_px(dip));
         self.stop_scroll();
+        // `refresh` cuts a remembered offset to the content height.
         self.refresh();
     }
 
@@ -1264,6 +1334,7 @@ impl App {
             )
             .0
         };
+        self.scroll_memory.layout_dpi = dpi;
         let mut placed = layout(&items, client.w, dpi, self.scroll, &measure, &label);
         let max_scroll = placed.content_height.saturating_sub(client.h).max(0);
         if self.scroll > max_scroll {
@@ -1300,9 +1371,18 @@ impl App {
             }
             Msg::Size { .. } => {
                 self.refresh();
+                self.window_state.changed(now_ms());
                 Reply::Default
             }
-            Msg::DpiChanged { .. } => {
+            Msg::ExitSizeMove => {
+                self.window_state.changed(now_ms());
+                Reply::Default
+            }
+            Msg::DpiChanged { dpi } => {
+                // The offset follows the new scale (2026-11-10); the suggested rectangle applied
+                // by the default processing resizes and lays the screen out again.
+                self.scroll_dpi_changed(*dpi);
+                self.window_state.changed(now_ms());
                 if let Some(main) = self.main.as_ref() {
                     main.invalidate();
                 }
@@ -1362,6 +1442,7 @@ impl App {
                     WM_YW_ACTIVATE => self.activate(),
                     WM_YW_LOCK_SHORTCUT => self.lock_shortcut(),
                     WM_YW_TAB_SHORTCUT if window.is_foreground() => self.tab_shortcut(*wparam),
+                    WM_YW_SHORTCUT if window.is_foreground() => self.shortcut(*wparam),
                     WM_YW_NAV_KEY if window.is_foreground() => self.main_nav_key(window, *wparam),
                     _ => {}
                 }
@@ -1419,14 +1500,110 @@ impl App {
         }
     }
 
+    /// Presses the first of `ids` the current screen shows enabled, exactly as a click (the
+    /// keyboard shortcuts' path); whether one was.
+    fn press_shown(&mut self, ids: &[u16]) -> bool {
+        let items = self.items();
+        let shown = ids.iter().copied().find(|id| {
+            items.iter().any(|item| {
+                matches!(item, crate::ui::main_window::Item::Row(ctls)
+                    | crate::ui::main_window::Item::LabeledRow(_, ctls)
+                    | crate::ui::main_window::Item::Toolbar(_, ctls)
+                    if ctls.iter().any(|ctl| ctl.id == *id && ctl.enabled))
+            })
+        });
+        if let Some(id) = shown {
+            self.on_command(id);
+        }
+        shown.is_some()
+    }
+
+    /// F5 and Ctrl+, (posted by the loop observer; the main window is in the foreground; never
+    /// while a secret window is open), 2026-11-10: F5 is the visible chain tab's `새로고침` on
+    /// S10, Ctrl+, the `설정` button (the section last opened in this run), each only when that
+    /// control is shown enabled.
+    pub(crate) fn shortcut(&mut self, code: usize) {
+        if self.secret.is_some() {
+            return;
+        }
+        match crate::events::Shortcut::from_code(code) {
+            Some(crate::events::Shortcut::Refresh) if self.screen == Screen::Main => {
+                let _ = self.press_shown(&[
+                    crate::ui::screens_evm::ids::REFRESH,
+                    crate::ui::screens_sol::ids::REFRESH,
+                    crate::ui::screens_btc::ids::REFRESH,
+                    crate::ui::screens_zec::ids::REFRESH,
+                ]);
+            }
+            Some(crate::events::Shortcut::Settings) => {
+                let _ = self.press_shown(&[crate::ui::screens::ids::OPEN_SETTINGS]);
+            }
+            _ => {}
+        }
+    }
+
+    /// Esc on the main window (`IDCANCEL` from the dialog manager), 2026-11-10: an overlay's
+    /// `취소`; else an open inline edit's cancel (rename, an RPC row's `교체`, the address-book save
+    /// prompt or entry being edited); else the back link of a screen that has one (S11–S16, S23, S-HC, the Solana and
+    /// Bitcoin send and receive screens) — its inputs stay. Nothing on S17, the `YubiKey` flows,
+    /// S22, a waiting screen or the first-run screens, nor while a secret window is open. Enter
+    /// (`IDOK`) stays ignored.
+    pub(crate) fn escape_key(&mut self) {
+        use crate::ui::screens::ids;
+        if self.secret.is_some() {
+            return;
+        }
+        if matches!(self.screen, Screen::Confirm(_)) {
+            let _ = self.press_shown(&[ids::CONFIRM_NO]);
+            return;
+        }
+        let in_yubikey_flow = matches!(self.screen, Screen::Settings(SettingsSection::YubiKey))
+            && self.card.manage.is_some();
+        if in_yubikey_flow {
+            return;
+        }
+        if self.press_shown(&[
+            ids::RENAME_CANCEL,
+            crate::ui::screens_sol::ids::RENAME_CANCEL,
+            crate::ui::screens_mnemonics::ids::RENAME_CANCEL,
+            ids::REPLACE_CANCEL,
+            crate::ui::screens_book::ids::PROMPT_CANCEL,
+            // S14's entry being edited.
+            crate::ui::screens_book::ids::CANCEL,
+        ]) {
+            return;
+        }
+        if matches!(
+            self.screen,
+            Screen::Send
+                | Screen::Receive
+                | Screen::Sites
+                | Screen::AddressBook
+                | Screen::Settings(_)
+                | Screen::TokenAdd
+                | Screen::Extension
+                | Screen::HyperCore
+                | Screen::SolSend
+                | Screen::SolReceive
+                | Screen::BtcSend
+                | Screen::BtcReceive
+        ) {
+            let _ = self.press_shown(&[
+                ids::BACK_DONE,
+                ids::BACK_MAIN,
+                crate::ui::screens_reset::ids::EXT_BACK,
+            ]);
+        }
+    }
+
     /// Records app input for the idle timer.
     pub fn note_input(&mut self) {
         self.idle.input(now_ms());
     }
 
     fn activate(&mut self) {
+        self.show_main_window();
         if let Some(main) = self.main.as_ref() {
-            main.show();
             let _ = main.set_foreground();
         }
         self.background = false;
@@ -1449,6 +1626,7 @@ impl App {
         if self.secret_clip.is_some_and(|pending| pending.due(now)) {
             self.clear_secret_clip(now);
         }
+        self.window_state_tick(now);
         self.evm_tick(now);
         self.hc_tick(now);
         self.sol_tick(now);
@@ -1720,6 +1898,8 @@ impl App {
         self.rpc_import = crate::app_rpc_import::RpcImportUi::default();
         self.passphrase_session = false;
         self.recover_return = None;
+        // After a lock every screen opens at its top again (2026-11-10).
+        self.scroll_memory.clear();
         logging::info("app", "lock", &[("reason", Field::Word(reason.as_str()))]);
         if reason == LockReason::Suspend {
             let _ = self
@@ -1770,6 +1950,8 @@ impl App {
             let _ = tx.send(RpcJob::Shutdown);
         }
         self.llm_shutdown();
+        // The window's place for the next start (`window.json`, 2026-11-10).
+        self.save_window_state();
         let deadline = now_ms().saturating_add(2_000);
         for handle in std::mem::take(&mut self.workers) {
             while !handle.is_finished() && now_ms() < deadline {
@@ -1836,6 +2018,15 @@ impl App {
             self.rpc_tests.running = None;
             self.rpc_tests.done = self.rpc_tests.done.saturating_add(1);
             self.next_rpc_test();
+        }
+        // A working address of the network a chain tab shows: its balances are read again at
+        // the next tick (the tab's failure band goes with a good answer, 2026-11-10).
+        if ok {
+            if network == NetworkId::Eip155(self.settings.evm_chain_id) {
+                self.evm_balances_due();
+            } else if network == NetworkId::Solana(self.settings.solana.cluster) {
+                self.sol.next_balance_ms = 0;
+            }
         }
         self.refresh();
     }
@@ -2155,6 +2346,7 @@ impl App {
                     &[("address", Field::Address(address.as_bytes()))],
                 );
                 self.save_meta();
+                self.evm_balances_due();
                 self.refresh();
             }
             KeyOutcome::RawKeyImported(Err(error)) => {
@@ -2184,6 +2376,9 @@ impl App {
                 self.meta = Some(*meta);
                 self.wait.meta_since = None;
                 self.wait.meta_failed = None;
+                // The accounts may have changed (an added recovery phrase, a `YubiKey`'s
+                // accounts): their balances are read at the next tick.
+                self.evm_balances_due();
                 // Review M1/L15/L17: compare settings.json with the snapshot in the meta.
                 self.verify_settings();
                 self.hardware_accounts_reloaded(hardware);
@@ -2256,12 +2451,14 @@ impl App {
                             .iter()
                             .any(|account| account.index == index)
                         {
-                            meta.evm_accounts.push(new_account(index, &address));
+                            let number = meta.next_evm_number();
+                            meta.evm_accounts.push(new_account(index, number, &address));
                         }
                     }
                     meta.evm_accounts.sort_by_key(|account| account.index);
                 }
                 self.save_meta();
+                self.evm_balances_due();
                 self.refresh();
             }
         }
@@ -3275,6 +3472,8 @@ impl App {
         use crate::ui::screens::ids;
         self.note_input();
         match id {
+            // Esc (the dialog manager's `IDCANCEL`); Enter's `IDOK` (1) stays ignored.
+            IDCANCEL => self.escape_key(),
             ids::FIRST_CREATE => self.set_screen(Screen::CreateIntro),
             ids::FIRST_IMPORT => self.set_screen(Screen::ImportIntro),
             ids::OPEN_DATA_FOLDER => Self::open_folder(&self.paths.data.clone()),
@@ -3320,7 +3519,12 @@ impl App {
                     }
                     self.set_screen(Screen::BackupPending);
                 } else if self.meta.is_some() {
-                    self.set_screen(Screen::Main);
+                    // `← 메인으로` is a way back (where S10 was left); `지갑 열기` opens it.
+                    if id == ids::DONE_CONTINUE {
+                        self.set_screen(Screen::Main);
+                    } else {
+                        self.return_to(Screen::Main);
+                    }
                 } else {
                     self.request_meta();
                     self.set_screen(Screen::Processing("불러오는 중…"));
@@ -3357,7 +3561,9 @@ impl App {
             ids::SIDECAR_PREV | ids::SIDECAR_FRESH => {
                 self.choose_sidecar(FileKind::Meta, id == ids::SIDECAR_PREV);
             }
-            ids::OPEN_SETTINGS | ids::SECTION_SECURITY => {
+            // `설정` (and Ctrl+,) opens the section last opened in this run (2026-11-10).
+            ids::OPEN_SETTINGS => self.set_screen(Screen::Settings(self.settings_last)),
+            ids::SECTION_SECURITY => {
                 self.set_screen(Screen::Settings(SettingsSection::Security));
             }
             ids::DONE_RPC | ids::DONE_RPC_JSON | ids::DONE_WC => {
@@ -3375,13 +3581,14 @@ impl App {
             ids::SECTION_NETWORK | ids::GO_NETWORK => {
                 self.set_screen(Screen::Settings(SettingsSection::Network));
             }
-            ids::BACK_DONE => self.set_screen(Screen::Done),
+            ids::BACK_DONE => self.return_to(Screen::Done),
             ids::DONE_CONNECT => self.done_connect(),
             ids::DONE_MAINNET => {
                 // The network chip's path (`evmChainId`), from S08's '잔액이 안 보이면' card.
                 let mut settings = self.settings.clone();
                 settings.evm_chain_id = yw_core::evm::chain::ETHEREUM_MAINNET;
                 self.save_settings(settings, "evmChainId");
+                self.evm_balances_due();
             }
             ids::TEST_ALL => self.test_all_networks(),
             ids::EVM_RPC_OPEN => {
@@ -3395,6 +3602,20 @@ impl App {
             }
             ids::ZEC_RPC_OPEN => {
                 self.open_rpc_row(NetworkId::Zcash(self.settings.zcash.network), true);
+            }
+            // The failure band of an EVM / Solana network card (2026-11-10): the stored address's
+            // `테스트` (its three-state band in the same card), or that network's row.
+            ids::EVM_RPC_TEST => {
+                self.test_network(NetworkId::Eip155(self.settings.evm_chain_id));
+            }
+            ids::SOL_RPC_TEST => {
+                self.test_network(NetworkId::Solana(self.settings.solana.cluster));
+            }
+            ids::EVM_RPC_ROW => {
+                self.open_rpc_row(NetworkId::Eip155(self.settings.evm_chain_id), false);
+            }
+            ids::SOL_RPC_ROW => {
+                self.open_rpc_row(NetworkId::Solana(self.settings.solana.cluster), false);
             }
             ids::SECTION_OTHER => self.set_screen(Screen::Settings(SettingsSection::Other)),
             ids::ADVANCED_TOGGLE => {
@@ -3600,6 +3821,8 @@ impl App {
                 let mut settings = self.settings.clone();
                 settings.evm_chain_id = chain_id;
                 self.save_settings(settings, "evmChainId");
+                // The new network's balances at the next tick, not up to 60 s later.
+                self.evm_balances_due();
             }
             return;
         }
@@ -3763,6 +3986,8 @@ impl App {
             meta.prefs.evm_account = *pref;
             self.rename = None;
             self.save_meta();
+            // Its token balances (and a new account's native one) at the next tick.
+            self.evm_balances_due();
         }
         self.refresh();
     }
@@ -4381,6 +4606,15 @@ impl App {
         self.refresh();
     }
 
+    /// Back to the screen under the overlay without `set_screen` (its leaving hooks stay out of
+    /// it), where it was.
+    fn close_overlay_in_place(&mut self, previous: Screen) {
+        self.screen = previous;
+        if let Some(dip) = self.scroll_memory.under_overlay.take() {
+            self.scroll = self.scroll_px(dip);
+        }
+    }
+
     #[expect(clippy::too_many_lines, reason = "one arm per confirmation overlay")]
     fn confirm_yes(&mut self) {
         let Screen::Confirm(kind) = self.screen.clone() else {
@@ -4391,13 +4625,13 @@ impl App {
             Confirm::CopyOn => {
                 let mut settings = self.settings.clone();
                 settings.allow_secret_copy = true;
-                self.screen = previous;
+                self.close_overlay_in_place(previous);
                 self.save_settings(settings, "allowSecretCopy");
             }
             Confirm::LocalhostOn => {
                 let mut settings = self.settings.clone();
                 settings.allow_localhost_dapps = true;
-                self.screen = previous;
+                self.close_overlay_in_place(previous);
                 self.save_settings(settings, "allowLocalhostDapps");
             }
             Confirm::DisconnectAll => {
@@ -4472,7 +4706,7 @@ impl App {
             }
             Confirm::YkAbandon => {
                 // `그만두기`: the wizard ends as before (the key worker wipes the words).
-                self.screen = previous;
+                self.close_overlay_in_place(previous);
                 self.yk_close_wizard();
             }
             Confirm::PruneDormant => {

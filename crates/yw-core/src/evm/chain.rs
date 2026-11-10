@@ -489,7 +489,7 @@ pub fn ethereum_mainnet() -> ChainInfo {
         name: "Ethereum 메인넷".to_owned(),
         native_symbol: "ETH".to_owned(),
         native_decimals: 18,
-        explorer: None,
+        explorer: Some("https://etherscan.io".to_owned()),
         simulation: SimulationSupport::Auto,
         amsterdam_time: None,
         default_caps: FeeCaps {
@@ -520,7 +520,7 @@ pub fn sepolia() -> ChainInfo {
         name: "Sepolia 테스트넷".to_owned(),
         native_symbol: "SepoliaETH".to_owned(),
         native_decimals: 18,
-        explorer: None,
+        explorer: Some("https://sepolia.etherscan.io".to_owned()),
         simulation: SimulationSupport::Auto,
         amsterdam_time: Some(SEPOLIA_AMSTERDAM_TIME),
         default_caps: FeeCaps {

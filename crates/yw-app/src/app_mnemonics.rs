@@ -1231,23 +1231,27 @@ impl App {
                 self.after_change();
             }
             MnOutcome::Derived(Ok((id, index, address))) => {
+                // `계정 N` one above the highest of every phrase (2026-11-10: each phrase
+                // counted from its own index, so `계정 2` appeared once per phrase).
+                let number = self
+                    .meta
+                    .as_ref()
+                    .map_or(1, crate::meta::Meta::next_evm_number);
                 if let Some(entry) = self.meta.as_mut().and_then(|meta| {
                     meta.mnemonics
                         .iter_mut()
                         .find(|entry| entry.record_id == *id.as_bytes())
                 }) && !entry.evm.iter().any(|account| account.index == index)
                 {
-                    entry.evm.push(Account {
-                        index,
-                        label: format!("계정 {}", index.saturating_add(1)),
-                        address: address.to_lower_hex(),
-                        hidden: false,
-                    });
+                    entry
+                        .evm
+                        .push(crate::workers::key::new_account(index, number, &address));
                     entry.evm.sort_by_key(|account| account.index);
                     if let Some(meta) = self.meta.as_mut() {
                         meta.prefs.evm_account = EvmAccountPref::Mnemonic(*id.as_bytes(), index);
                     }
                     self.save_meta();
+                    self.evm_balances_due();
                 }
                 self.refresh();
             }

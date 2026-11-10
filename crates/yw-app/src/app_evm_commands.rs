@@ -130,7 +130,7 @@ impl App {
             }
             ids::SEND_CANCEL => {
                 self.evm.send = SendForm::default();
-                self.set_screen(Screen::Main);
+                self.return_to(Screen::Main);
             }
             ids::COPY_ADDRESS => {
                 if let Some((address, ..)) = self.selected_account() {

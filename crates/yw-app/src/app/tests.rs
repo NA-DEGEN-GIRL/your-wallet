@@ -179,6 +179,7 @@ fn texts(items: &[Item]) -> Vec<String> {
             | Item::Help(text)
             | Item::Subtitle(text)
             | Item::Display(text)
+            | Item::DisplayMuted(text)
             | Item::Banner(text, _) => Some(text.clone()),
             _ => None,
         })
@@ -609,16 +610,23 @@ fn backup_discard_mainnet_and_done_texts() {
     assert!(has_text(&items, T_ACCOUNTS_BACKUP));
     assert!(!has_text(&items, "모든 계정은 같은 복구 단어로 복구됩니다"));
     assert!(!has_text(&items, T_MAINNET), "Sepolia is a testnet");
-    // Mainnet badges: Ethereum, HyperEVM, Solana mainnet; none on Solana devnet.
+    // Mainnet badges: Ethereum, HyperEVM, Solana mainnet; none on Solana devnet. Exactly one
+    // band per screen (2026-11-10: Solana mainnet's S10 drew two since 11-08).
+    let mainnet_bands = |items: &[Item]| {
+        items
+            .iter()
+            .filter(|item| matches!(item, Item::Banner(text, _) if text == T_MAINNET))
+            .count()
+    };
     for chain in [1, 999] {
         app.settings.evm_chain_id = chain;
-        assert!(has_text(&app.items(), T_MAINNET), "chain {chain}");
+        assert_eq!(mainnet_bands(&app.items()), 1, "chain {chain}");
     }
     if let Some(meta) = app.meta.as_mut() {
         meta.prefs.tab = Tab::Sol;
     }
     app.settings.solana.cluster = crate::network::SolCluster::Mainnet;
-    assert!(has_text(&app.items(), T_MAINNET));
+    assert_eq!(mainnet_bands(&app.items()), 1, "Solana mainnet");
     app.settings.solana.cluster = crate::network::SolCluster::Devnet;
     assert!(!has_text(&app.items(), T_MAINNET));
     if let Some(meta) = app.meta.as_mut() {
@@ -663,6 +671,7 @@ fn backup_discard_mainnet_and_done_texts() {
                 block: 7,
                 native: vec![(address, U256::from_u64(5_000_000_000_000_000))],
                 tokens: Vec::new(),
+                token_owner: address,
             }),
             ..BalanceState::default()
         },
@@ -1984,6 +1993,137 @@ fn ctrl_4_is_the_zcash_tab() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// 2-10 (2026-11-10): a chain tab opens at its top — its network band first —, also with Ctrl+3;
+/// the tab it left keeps its offset for the way back.
+#[test]
+fn a_chain_tab_opens_at_its_top() {
+    let (mut app, dir) = unlocked_app("tab-top", false);
+    app.scroll = 640;
+    app.tab_shortcut(3);
+    assert_eq!(app.meta.as_ref().map(|meta| meta.prefs.tab), Some(Tab::Btc));
+    assert_eq!(app.scroll, 0);
+    assert_eq!(
+        app.scroll_memory
+            .get(crate::app_scroll::ScrollPlace::Main(Tab::Evm)),
+        Some(640)
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// 2-1 (2026-11-10): a network chip or another account reads the balances at the next tick,
+/// not up to 60 s later.
+#[test]
+fn chip_and_account_changes_read_balances_at_the_next_tick() {
+    use crate::network::NetworkId;
+    use crate::workers::rpc::RpcJob;
+    let (mut app, dir) = unlocked_app("balances-due", false);
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.rpc_tx = Some(tx);
+    let url = yw_win::http::HttpsUrl::parse("https://rpc.example.test/").unwrap();
+    for chain in app.settings.registered_evm() {
+        app.apikeys.set_rpc(NetworkId::Eip155(chain), &url);
+    }
+    let second = parse_address("0x6fac4d18c912343bf86fa7049364dd4e424ab9c0").unwrap();
+    app.meta
+        .as_mut()
+        .unwrap()
+        .evm_accounts
+        .push(crate::meta::Account {
+            index: 1,
+            label: "계정 2".to_owned(),
+            address: second.to_lower_hex(),
+            hidden: false,
+        });
+    // `(chain, token owner)` of each balance job sent since the last look.
+    let sent = |rx: &std::sync::mpsc::Receiver<RpcJob>| -> Vec<(u64, Address)> {
+        rx.try_iter()
+            .filter_map(|job| match job {
+                RpcJob::Balances {
+                    chain, token_owner, ..
+                } => Some((chain.info.chain_id, token_owner)),
+                _ => None,
+            })
+            .collect()
+    };
+    let now = yw_win::time::monotonic_ms();
+    app.evm_tick(now);
+    assert_eq!(sent(&rx).len(), 1, "S10's first read");
+    app.evm_tick(now);
+    assert!(sent(&rx).is_empty(), "the next one is 60 s away");
+    let mainnet = app
+        .settings
+        .registered_evm()
+        .iter()
+        .position(|chain| *chain == 1)
+        .unwrap();
+    app.on_command(ids::NETWORK_BASE + u16::try_from(mainnet).unwrap());
+    app.evm_tick(now);
+    let first = parse_address("0x9858EfFD232B4033E47d90003D41EC34EcaEda94").unwrap();
+    assert_eq!(sent(&rx), [(1, first)], "the chip's network at once");
+    app.on_command(ids::ACCOUNT_BASE + 1);
+    app.evm_tick(now);
+    assert_eq!(
+        sent(&rx),
+        [(1, second)],
+        "the selected account's tokens at once"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// 2-2 (2026-11-10): token balances read for another account are unknown for the selected one
+/// (its token card says "잔액 알 수 없음" and S11 "잔액 모름").
+#[test]
+fn token_balances_of_another_owner_are_unknown() {
+    let (mut app, dir) = token_app("token-owner");
+    let chain = 11_155_111;
+    let token = app.chain_tokens(chain)[0].0;
+    let state = |owner: &str| BalanceState {
+        snapshot: Some(BalanceSnapshot {
+            block: 7,
+            native: Vec::new(),
+            tokens: vec![(token, Some(U256::from_u64(5)))],
+            token_owner: parse_address(owner).unwrap(),
+        }),
+        ..BalanceState::default()
+    };
+    app.evm
+        .balances
+        .insert(chain, state("0x9858EfFD232B4033E47d90003D41EC34EcaEda94"));
+    assert_eq!(app.token_balance(chain, &token), Some(U256::from_u64(5)));
+    app.evm
+        .balances
+        .insert(chain, state("0x6fac4d18c912343bf86fa7049364dd4e424ab9c0"));
+    assert_eq!(app.token_balance(chain, &token), None);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// 2-8 (2026-11-10): next to a chain the card does not work with, the `HyperCore` card is one
+/// line without its band or actions; on `HyperEVM` (or unfolded) it is whole, band included.
+#[test]
+fn the_hypercore_card_folds_next_to_other_chains() {
+    use crate::ui::screens_hypercore::{T_HC_MAINNET, ids as hc};
+    let (mut app, dir) = unlocked_app("hc-fold", false);
+    app.settings.hypercore.enabled = true;
+    app.settings.hypercore.network = yw_core::hypercore::HcNetwork::Mainnet;
+    app.settings.evm_chain_id = 11_155_111;
+    let items = app.items();
+    assert!(!has_text(&items, T_HC_MAINNET));
+    assert!(ctl(&items, hc::OPEN_SEND).is_none());
+    assert!(ctl(&items, hc::EXPAND).is_some());
+    app.settings.evm_chain_id = 999;
+    let items = app.items();
+    assert!(has_text(&items, T_HC_MAINNET));
+    assert!(ctl(&items, hc::OPEN_SEND).is_some());
+    assert!(ctl(&items, hc::COLLAPSE).is_none(), "always whole here");
+    app.settings.evm_chain_id = 11_155_111;
+    app.on_command(hc::EXPAND);
+    let items = app.items();
+    assert!(has_text(&items, T_HC_MAINNET));
+    assert!(ctl(&items, hc::OPEN_SEND).is_some());
+    assert!(ctl(&items, hc::COLLAPSE).is_some());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// Review 2026-11-07 F1: without a Project ID the `WalletConnect` card is a setup card (the ID
 /// first, no disabled pairing controls); with one, pairing comes first and the ID is one line
 /// behind `Project ID 바꾸기 ▸`.
@@ -2315,6 +2455,7 @@ fn evm_token_rows_hide_unhide_and_zero_balance() {
                     (address(1), Some(U256::from_u64(5))),
                     (address(scam), Some(U256::ZERO)),
                 ],
+                token_owner: parse_address("0x9858EfFD232B4033E47d90003D41EC34EcaEda94").unwrap(),
             }),
             ..BalanceState::default()
         },
@@ -2373,6 +2514,7 @@ fn send_picker_tucks_hidden_tokens_away() {
                 block: 7,
                 native: Vec::new(),
                 tokens: vec![(tokens[scam + 1].0, Some(U256::ZERO))],
+                token_owner: parse_address("0x9858EfFD232B4033E47d90003D41EC34EcaEda94").unwrap(),
             }),
             ..BalanceState::default()
         },

@@ -12,7 +12,8 @@ mod window;
 pub use msg::{CaptureExclusion, CaptureOutcome, Msg, capture_outcome, is_blocked_secret_msg};
 pub use paint::{Color, DrawFlags, Font, PaintDc, Rect};
 pub use window::{
-    ClassSpec, Handler, Hwnd, InputKind, MbKind, MbResult, PaintStats, Poster, Reply, UiError,
-    Window, WindowKind, WindowSpec, create_window, exclude_from_capture, find_windows, init,
-    message_box, quit, register_class, run_loop, scale, wheel_scroll_lines,
+    ClassSpec, Handler, Hwnd, InputKind, MbKind, MbResult, MonitorArea, PaintStats, Placement,
+    Poster, Reply, UiError, Window, WindowKind, WindowSpec, create_window, exclude_from_capture,
+    find_windows, init, message_box, monitor_for_rect, quit, register_class, run_loop, scale,
+    wheel_scroll_lines,
 };

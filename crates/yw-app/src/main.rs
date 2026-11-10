@@ -19,8 +19,8 @@ use yw_app::app_approval::{APPROVAL_CLASS, PANEL_CLASS};
 use yw_app::app_browser::BrowserUi;
 use yw_app::errors::ErrorCode;
 use yw_app::events::{
-    EventQueue, KeyJob, NavKey, UiEvent, WM_YW_ACTIVATE, WM_YW_EVENTS, WM_YW_LOCK_SHORTCUT,
-    WM_YW_NAV_KEY, WM_YW_TAB_SHORTCUT, chain_tab_key,
+    EventQueue, KeyJob, NavKey, Shortcut, UiEvent, WM_YW_ACTIVATE, WM_YW_EVENTS,
+    WM_YW_LOCK_SHORTCUT, WM_YW_NAV_KEY, WM_YW_SHORTCUT, WM_YW_TAB_SHORTCUT, chain_tab_key,
 };
 use yw_app::logging::{self, Field};
 use yw_app::rpc::{RPC_TIMEOUTS, Transport};
@@ -109,7 +109,7 @@ fn data_paths() -> Result<(Paths, Vec<DirReport>), DataDirError> {
             Err(_) => return Err(DataDirError::Unavailable),
         }
     }
-    for name in ["settings.json.tmp", "apikeys.dpapi.tmp"] {
+    for name in ["settings.json.tmp", "apikeys.dpapi.tmp", "window.json.tmp"] {
         let _ = std::fs::remove_file(data.join(name));
     }
     Ok((Paths { data, logs }, reports))
@@ -195,20 +195,22 @@ fn main() -> ExitCode {
         }
     };
 
-    // 4. Logging, and the panic hook that writes to it.
+    // 4. Logging, and the panic hook that writes to it. The installed commit (checked, 2026-11-10)
+    // says which build wrote the lines that follow.
     logging::init(&paths.logs, LogLevel::Info);
     install_panic_hook();
-    logging::info(
-        "app",
-        "app.start",
-        &[
-            ("version", Field::Word(env!("CARGO_PKG_VERSION"))),
-            (
-                "background",
-                Field::Word(if background { "yes" } else { "no" }),
-            ),
-        ],
-    );
+    let install_commit = yw_app::build_info::read_install_commit();
+    let mut start_fields = vec![
+        ("version", Field::Word(env!("CARGO_PKG_VERSION"))),
+        (
+            "background",
+            Field::Word(if background { "yes" } else { "no" }),
+        ),
+    ];
+    if let Some(commit) = install_commit.as_deref() {
+        start_fields.push(("commit", Field::Commit(commit)));
+    }
+    logging::info("app", "app.start", &start_fields);
     for (dir, outcome) in dir_reports {
         logging::info(
             "app",
@@ -273,6 +275,7 @@ fn main() -> ExitCode {
             // Review L9: crash dumps are possible; say so instead of only logging it.
             state.note_wer_unprotected();
         }
+        state.set_install_commit(install_commit);
     }
 
     // 6. Window classes, main window (hidden), session notifications.
@@ -310,6 +313,8 @@ fn main() -> ExitCode {
     if App::create_main_window(&app).is_err() {
         return fail("주 창을 만들지 못했습니다.");
     }
+    // Where it was last (window.json), also for --background (spec/04 §1.7).
+    app.borrow_mut().place_main_window();
     let Some(poster) = app.borrow().main_poster() else {
         return fail("주 창을 만들지 못했습니다.");
     };
@@ -399,6 +404,13 @@ fn main() -> ExitCode {
         }
         if kind == (InputKind::Key { vk: Some(VK_L) }) && is_down(VK_CONTROL) && !is_down(VK_MENU) {
             let _ = poster.post(WM_YW_LOCK_SHORTCUT, 0);
+        }
+        // F5 (the visible tab's refresh) and Ctrl+, (settings), 2026-11-10: the main window
+        // decides whether they apply.
+        if let InputKind::Key { vk: Some(vk) } = kind
+            && let Some(shortcut) = Shortcut::of(vk, is_down(VK_CONTROL), is_down(VK_MENU))
+        {
+            let _ = poster.post(WM_YW_SHORTCUT, shortcut.code());
         }
         // Ctrl+1/2/3/4: chain tabs EVM·Solana·Bitcoin·Zcash (the main window decides whether
         // it applies).

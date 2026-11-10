@@ -46,6 +46,68 @@ const SB_PAGEDOWN: u16 = 3;
 const SB_TOP: u16 = 6;
 const SB_BOTTOM: u16 = 7;
 
+/// A screen whose scroll offset is remembered for the ways back (2026-11-10): each S10 chain tab,
+/// each settings section, S08, S13 and S14.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScrollPlace {
+    /// S10 on a chain tab.
+    Main(crate::meta::Tab),
+    /// A settings section.
+    Settings(crate::app::SettingsSection),
+    /// S08 '처음 설정' (`← 처음 설정으로` returns there).
+    Done,
+    /// S13.
+    Sites,
+    /// S14.
+    AddressBook,
+}
+
+/// Where the remembered screens were left (DIP, so a DPI change keeps them; this run only,
+/// emptied by a lock) and the screen under an open overlay.
+#[derive(Debug, Default)]
+pub struct ScrollMemory {
+    places: Vec<(ScrollPlace, i32)>,
+    /// The offset (DIP) of the screen an overlay opened over.
+    pub under_overlay: Option<i32>,
+    /// The DPI of the last layout (a `WM_DPICHANGED` scales the offset by new / old).
+    pub layout_dpi: u32,
+}
+
+impl ScrollMemory {
+    /// The offset `place` was left at.
+    #[must_use]
+    pub fn get(&self, place: ScrollPlace) -> Option<i32> {
+        self.places
+            .iter()
+            .find(|(known, _)| *known == place)
+            .map(|(_, dip)| *dip)
+    }
+
+    /// Notes where `place` was left.
+    pub fn set(&mut self, place: ScrollPlace, dip: i32) {
+        match self.places.iter_mut().find(|(known, _)| *known == place) {
+            Some(slot) => slot.1 = dip,
+            None => self.places.push((place, dip)),
+        }
+    }
+
+    /// Forgets every place (lock: the next session opens at the top).
+    pub fn clear(&mut self) {
+        self.places.clear();
+        self.under_overlay = None;
+    }
+}
+
+/// `value` × `to` / `from` (DPI conversions), saturating.
+#[must_use]
+pub fn rescale(value: i32, from: u32, to: u32) -> i32 {
+    if from == 0 {
+        return value;
+    }
+    let scaled = i64::from(value).saturating_mul(i64::from(to)) / i64::from(from);
+    i32::try_from(scaled).unwrap_or(if scaled < 0 { i32::MIN } else { i32::MAX })
+}
+
 /// Scroll input state of the main window.
 #[derive(Debug, Default)]
 pub struct MainScroll {
@@ -124,6 +186,66 @@ pub const fn reveal_offset(scroll: i32, y: i32, h: i32, view: i32, margin: i32) 
 }
 
 impl App {
+    fn window_dpi(&self) -> u32 {
+        self.main.as_ref().map_or(96, Window::dpi)
+    }
+
+    /// The current offset in DIP.
+    pub(crate) fn scroll_dip(&self) -> i32 {
+        rescale(self.scroll, self.window_dpi(), 96)
+    }
+
+    /// A remembered offset (DIP) in pixels at the window's DPI.
+    pub(crate) fn scroll_px(&self, dip: i32) -> i32 {
+        rescale(dip, 96, self.window_dpi()).max(0)
+    }
+
+    /// The remembered place of `screen`, if it is one.
+    pub(crate) fn scroll_place(&self, screen: &crate::app::Screen) -> Option<ScrollPlace> {
+        use crate::app::Screen;
+        Some(match screen {
+            Screen::Main => ScrollPlace::Main(
+                self.meta
+                    .as_ref()
+                    .map_or(crate::meta::Tab::Evm, |meta| meta.prefs.tab),
+            ),
+            Screen::Settings(section) => ScrollPlace::Settings(*section),
+            Screen::Done => ScrollPlace::Done,
+            Screen::Sites => ScrollPlace::Sites,
+            Screen::AddressBook => ScrollPlace::AddressBook,
+            _ => return None,
+        })
+    }
+
+    /// Notes where the current screen was left (before it is left, or its tab switched).
+    pub(crate) fn remember_scroll(&mut self) {
+        if let Some(place) = self.scroll_place(&self.screen) {
+            let dip = self.scroll_dip();
+            self.scroll_memory.set(place, dip);
+        }
+    }
+
+    /// A chain tab click or Ctrl+1–4 (2026-11-10): the old tab's offset is noted and the new tab
+    /// opens at its top, its network band first (the previous tab's offset stayed before).
+    pub(crate) fn tab_top(&mut self) {
+        self.remember_scroll();
+        self.scroll = 0;
+        self.stop_scroll();
+        if let Some(main) = self.main.as_ref() {
+            main.kill_timer(SCROLL_TIMER_ID);
+        }
+    }
+
+    /// `WM_DPICHANGED` on the main window: the offset keeps its place in the content (× new DPI /
+    /// old DPI); the layout that follows the new size cuts it to the content height.
+    pub(crate) fn scroll_dpi_changed(&mut self, dpi: u32) {
+        let old = self.scroll_memory.layout_dpi;
+        if old != 0 && old != dpi {
+            self.scroll = rescale(self.scroll, old, dpi).max(0);
+        }
+        self.stop_scroll();
+    }
+
     /// Scrolls the main window to `target` (clamped to the content), without a new layout.
     pub(crate) fn scroll_to(&mut self, target: i32) {
         let Some(main) = self.main.as_ref() else {

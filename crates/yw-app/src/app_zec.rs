@@ -218,6 +218,7 @@ impl App {
 
     /// Selects the Zcash tab (refresh on open).
     pub fn zec_select_tab(&mut self) {
+        self.tab_top();
         if let Some(meta) = self.meta.as_mut()
             && meta.prefs.tab != crate::meta::Tab::Zec
         {

@@ -369,6 +369,9 @@ pub struct SolUi {
     pub tokens: HashMap<(SolCluster, SolAddress), Vec<(&'static SplAllowEntry, TokenHolding)>>,
     /// Last balance error per cluster.
     pub balance_error: HashMap<SolCluster, ErrorCode>,
+    /// Wall-clock Unix ms of the last successful balance result per cluster (S10 "HH:MM 갱신";
+    /// no result and no error yet is "잔액을 불러오는 중…").
+    pub balance_at: HashMap<SolCluster, u64>,
     /// Outstanding balance job.
     pub balance_job: u64,
     /// Next balance refresh.
@@ -413,6 +416,7 @@ impl SolUi {
         self.balances.clear();
         self.tokens.clear();
         self.balance_error.clear();
+        self.balance_at.clear();
         self.creating = false;
         self.add_pick = false;
         self.send = SolSendForm::default();
@@ -561,13 +565,28 @@ impl App {
         yw_core::journal::sol::pending_for(&records, cluster, from).cloned()
     }
 
-    /// The account label of an address (own accounts), or the address.
+    /// The account label of an address (own accounts, with the recovery phrase while the wallet
+    /// has several), or the address.
     #[must_use]
     pub fn sol_label(&self, address: &str) -> String {
         self.sol_account_rows()
             .into_iter()
             .find(|(_, _, known)| known.to_base58() == address)
-            .map_or_else(|| address.to_owned(), |(_, label, _)| label)
+            .map_or_else(
+                || address.to_owned(),
+                |(id, label, _)| self.sol_title(id, &label),
+            )
+    }
+
+    /// An account's name with its recovery phrase while the wallet has several (`Solana 1
+    /// [복구 단어 2]`, 2026-11-10: the selected-account card, S12 and the activity).
+    #[must_use]
+    pub fn sol_title(&self, id: SolAccountId, label: &str) -> String {
+        if id.is_imported() || id.is_hardware() {
+            label.to_owned()
+        } else {
+            self.mnemonic_tagged(label, id.mnemonic())
+        }
     }
 
     /// Address book, own accounts and sent history for the §12.1 checks. Only recipients of
@@ -639,6 +658,8 @@ impl App {
 
     /// Switches the main tab; the first Solana entry derives account 0 (spec/07 §3.1).
     pub fn sol_select_tab(&mut self, tab: Tab) {
+        // The new tab opens at its top (2026-11-10).
+        self.tab_top();
         if let Some(meta) = self.meta.as_mut()
             && meta.prefs.tab != tab
         {
@@ -914,11 +935,13 @@ impl App {
             return;
         };
         if let Some(meta) = self.meta.as_mut() {
+            // `Solana N` one above the highest of every phrase (2026-11-10).
+            let label = meta.next_sol_label();
             meta.mnemonic_accounts.upsert_sol(
                 mnemonic,
                 Account {
                     index,
-                    label: format!("Solana {}", index.saturating_add(1)),
+                    label,
                     address: address.to_base58(),
                     hidden: false,
                 },
@@ -955,9 +978,10 @@ impl App {
                         .iter()
                         .any(|account| account.index == index)
                 {
+                    let label = meta.next_sol_label();
                     meta.sol_accounts.push(Account {
                         index,
-                        label: format!("Solana {}", index.saturating_add(1)),
+                        label,
                         address: address.to_base58(),
                         hidden: false,
                     });
@@ -1144,6 +1168,7 @@ impl App {
                             self.sol.tokens.insert((cluster, row.address), row.tokens);
                         }
                         self.sol.balance_error.remove(&cluster);
+                        self.sol.balance_at.insert(cluster, now_unix_ms());
                     }
                     Err(code) => {
                         self.sol.balance_error.insert(cluster, code);
@@ -2152,9 +2177,10 @@ impl App {
                 .any(|account| account.index == index.get())
             && meta.sol_accounts.len() < crate::meta::MAX_EVM_ACCOUNTS
         {
+            let label = meta.next_sol_label();
             meta.sol_accounts.push(Account {
                 index: index.get(),
-                label: format!("Solana {}", index.get().saturating_add(1)),
+                label,
                 address: address.to_base58(),
                 hidden: false,
             });

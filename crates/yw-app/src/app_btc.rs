@@ -42,7 +42,8 @@ use crate::btc::broadcast::{EsploraPostOutcome, ManualBroadcastGate};
 use crate::btc::chain::{BtcBlock, ChainInput, CoreCheckFailure};
 use crate::btc::flow::{DiscoveryJob, RefreshJob, TrackItem};
 use crate::btc::work::{
-    BtcRpcEvent, BtcRpcJob, BtcTarget, FeeInput, PrepareError, PrepareJob, PrepareKind, SignedTxRef,
+    BtcRpcEvent, BtcRpcJob, BtcTarget, FeeInput, FeeQuote, PrepareError, PrepareJob, PrepareKind,
+    SignedTxRef,
 };
 use crate::btc::{BtcEndpoint, BtcError, Trigger, app_network, core_network, network_id};
 use crate::errors::ErrorCode;
@@ -72,6 +73,8 @@ pub const PENDING_INCOMING: &str = "미확정 입금 있음(미검증, 교체될
 pub const APPROVAL_EXPIRED: &str = "승인 시간이 지났습니다. 다시 검토하세요.";
 /// `검토`'s progress line (the plan job on the node), drawn next to the button.
 pub const BTC_PREPARING: &str = "수수료를 계산하는 중…";
+/// A fee preview this old is asked again when a fee radio changes (spec/08 §8, 2026-11-10).
+pub const FEE_QUOTE_FRESH_MS: u64 = 60_000;
 /// "(서버 기준)" suffix of confirmations (spec/08 §12.2-4).
 pub const SERVER_BASED: &str = "(서버 기준)";
 /// The "블록 높이 기록 초기화" confirmation (spec/08 §2 step 2).
@@ -1157,6 +1160,11 @@ pub struct BtcUi {
     /// The mnemonic of a standard-path account added now (`None`: the primary one; several
     /// mnemonics, spec/02 §8.6). EVM-key accounts are the primary mnemonic's only.
     pub add_mnemonic: Option<yw_core::vault::RecordId>,
+    /// The send form's fee preview (spec/08 §8, 2026-11-10): the network, the node's floor and
+    /// estimates, and when they arrived (monotonic ms).
+    pub fee_quote: Option<(BtcNetwork, FeeQuote, u64)>,
+    /// The fee-quote job whose answer has not arrived ("수수료 추정을 불러오는 중…").
+    pub fee_quote_job: Option<u64>,
     next_job: u64,
 }
 
@@ -1198,6 +1206,8 @@ impl Default for BtcUi {
             add_source: BtcAddSource::Standard,
             add_evm_index: 0,
             add_mnemonic: None,
+            fee_quote: None,
+            fee_quote_job: None,
             next_job: 0,
         }
     }
@@ -1901,7 +1911,7 @@ impl BtcUi {
         actions
     }
 
-    /// `새로고침` (user) or the automatic cycle.
+    /// `새로고침` (user) or the automatic cycle; the user's also asks for the fee preview.
     pub fn refresh(&mut self, ctx: &BtcCtx<'_>, trigger: Trigger) -> Vec<BtcAction> {
         if ctx.gate().is_err() || self.refresh.busy {
             return Vec::new();
@@ -1909,7 +1919,11 @@ impl BtcUi {
         let Some(meta) = ctx.btc_meta().cloned() else {
             return Vec::new();
         };
-        self.refresh_with(ctx, &meta, trigger)
+        let mut actions = self.refresh_with(ctx, &meta, trigger);
+        if trigger == Trigger::User {
+            actions.extend(self.request_fee_quote(ctx));
+        }
+        actions
     }
 
     /// Discovery (spec/08 §3.4) of the selected account: full (also [다시 시도]) or "더 찾기"
@@ -2043,10 +2057,52 @@ impl BtcUi {
     }
 
     /// Opens S11 for Bitcoin (a fresh line next to `검토`; the form draws the live
-    /// [`Self::send_block`] at its top).
-    pub fn open_send(&mut self, _ctx: &BtcCtx<'_>) -> Vec<BtcAction> {
+    /// [`Self::send_block`] at its top) and asks for the fee preview.
+    pub fn open_send(&mut self, ctx: &BtcCtx<'_>) -> Vec<BtcAction> {
         self.send.info = None;
-        vec![BtcAction::Screen(BtcScreen::Send)]
+        let mut actions = vec![BtcAction::Screen(BtcScreen::Send)];
+        actions.extend(self.request_fee_quote(ctx));
+        actions
+    }
+
+    /// Asks the node for the send form's fee preview (spec/08 §8, 2026-11-10): the read-only
+    /// [`BtcRpcJob::FeeQuote`] — the session's chain check, `getmempoolinfo` and
+    /// `estimatesmartfee` 2·6·24, no address sent, nothing planned, approved or reserved. `검토`
+    /// reads its own estimate and floor again and never uses this one.
+    pub fn request_fee_quote(&mut self, ctx: &BtcCtx<'_>) -> Vec<BtcAction> {
+        if ctx.gate().is_err() {
+            return Vec::new();
+        }
+        let Ok(target) = ctx.target() else {
+            return Vec::new();
+        };
+        let job = self.job();
+        self.fee_quote_job = Some(job);
+        vec![btc_job(BtcRpcJob::FeeQuote {
+            job,
+            target,
+            chain: ctx.chain_input(),
+        })]
+    }
+
+    /// A fee radio of the send form changed: a preview older than 60 s (or none) is asked again.
+    pub fn quote_if_stale(&mut self, ctx: &BtcCtx<'_>) -> Vec<BtcAction> {
+        let fresh = self.fee_quote.as_ref().is_some_and(|(net, _, at)| {
+            *net == ctx.net() && ctx.now_ms.saturating_sub(*at) <= FEE_QUOTE_FRESH_MS
+        });
+        if fresh || self.fee_quote_job.is_some() {
+            return Vec::new();
+        }
+        self.request_fee_quote(ctx)
+    }
+
+    /// The preview of the current network, if any.
+    #[must_use]
+    pub fn fee_quote_of(&self, net: BtcNetwork) -> Option<&FeeQuote> {
+        self.fee_quote
+            .as_ref()
+            .filter(|(known, ..)| *known == net)
+            .map(|(_, quote, _)| quote)
     }
 
     /// Validates the form (local checks; the plan job does the rest).
@@ -3265,6 +3321,18 @@ impl BtcUi {
     #[expect(clippy::too_many_lines, reason = "one arm per BTC job result")]
     pub fn on_rpc_event(&mut self, ctx: &BtcCtx<'_>, event: BtcRpcEvent) -> Vec<BtcAction> {
         match event {
+            BtcRpcEvent::FeeQuote { job, net, result } => {
+                if self.fee_quote_job == Some(job) {
+                    self.fee_quote_job = None;
+                    match result {
+                        Ok(quote) => self.fee_quote = Some((net, quote, ctx.now_ms)),
+                        // The preview is only a hint: a failure leaves the plain labels, and
+                        // `검토` reports its own errors.
+                        Err(_) => self.fee_quote = None,
+                    }
+                }
+                Vec::new()
+            }
             BtcRpcEvent::EsploraTest { net, message, ok } => {
                 self.set_esplora_test(
                     net,
@@ -3936,6 +4004,7 @@ impl crate::app::App {
 
     /// Selects the Bitcoin tab (refresh on open, spec/08 §4.7).
     pub fn btc_select_tab(&mut self) {
+        self.tab_top();
         if let Some(meta) = self.meta.as_mut()
             && meta.prefs.tab != crate::meta::Tab::Btc
         {

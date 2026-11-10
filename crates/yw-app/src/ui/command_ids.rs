@@ -20,13 +20,14 @@
 //! | imported keys (`screens_keys`) | 13,000–13,199 | S18/S19, script radios 13,010–13,013, selected imported Solana/Bitcoin account 13,022–13,025 (Bitcoin keys are rows of `btc.accounts`) |
 //! | `YubiKey` (`screens_yubikey`) | 13,200–13,399 | S20, S21 wizard (`OpenPGP` SIG 13,210–13,221, AUT 13,230–13,241), settings tab; backup sources 13,260–13,267, `삭제` rows 13,270–13,277 |
 //! | reset·extension (`screens_reset`) | 13,400–13,449 | S22 `지갑 초기화`, T-WAIT-STALLED, S23 `Chrome 확장 설치` |
+//! | `HyperCore` (`screens_hypercore`) | 13,450–13,499 | the S10 card, S-HC, settings; spot asset radios 13,470–13,489, the card's `펼치기 ▸`·`접기 ▴` 13,494–13,495 |
 //! | `YubiKey` connect (`screens_yubikey`) | 13,500–13,506, 13,720–13,927 | `YubiKey 연결하기 (복구 단어 없이)` 13,500–13,506, choice radios 13,720–13,927 (26 keys × 8) |
 //! | recovery phrases (`screens_mnemonics`) | 13,600–13,699 | settings 복구 단어; card actions 13,620–13,657 (8 rows each), 계정 추가 picker 13,660–13,667, Solana picker 13,670–13,677, Bitcoin key source 13,680–13,687, Zcash key source 13,690–13,697 |
 //! | address book (`screens_book`) | 14,000–15,699 | S14 form 14,000–14,016, favorite chips 14,020–14,027, BTC picker 14,030–14,069, SOL activity `이 주소 저장` 14,080–14,143, S14 rows 14,200–15,699 (★·편집·삭제) |
 //! | `WalletConnect` (`screens_walletconnect`) | 16,000–16,099 | S13 panel, session rows 16,020–16,083 |
 //! | hidden accounts (`app_hidden`) | 16,200–16,589 | toggles 16,200–16,201, EVM `다시 보이기` rows 16,210–16,399, Solana rows 16,400–16,589 |
 //! | side-file choices (`app_sidecar`) | 16,600–16,609 | meta `닫기`, `고급`, journal `선택 다시 보기`, the Bitcoin form's check after a journal reset |
-//! | first setup·RPC (`screens`) | 16,700–16,783 | S08 '처음 설정' 16,700–16,705, `모두 테스트` 16,706, the chain tabs' `RPC 설정하기` 16,707–16,710, failed-network links 16,720–16,783 |
+//! | first setup·RPC (`screens`) | 16,700–16,783 | S08 '처음 설정' 16,700–16,705, `모두 테스트` 16,706, the chain tabs' `RPC 설정하기` 16,707–16,710, the EVM·Solana failure bands' `이 네트워크 RPC 테스트`·`RPC 설정 열기` 16,711–16,714, failed-network links 16,720–16,783 |
 
 use crate::ui::{
     screens, screens_book, screens_btc, screens_evm, screens_hypercore, screens_keys, screens_llm,

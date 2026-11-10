@@ -16,6 +16,7 @@ use crate::app_btc::{
     BtcCtx, BtcFeeChoice, BtcFeeForm, BtcFlowStage, BtcGate, BtcUi, DISCOVERY_INCOMPLETE,
     PENDING_INCOMING, confirmations_text, record_status,
 };
+use crate::btc::work::FeeQuote;
 use crate::errors::ErrorCode;
 use crate::meta::BookChain;
 use crate::settings::BtcIndexer;
@@ -384,6 +385,52 @@ fn local_time(unix_ms: u64) -> String {
         short
     } else {
         format!("{short} UTC")
+    }
+}
+
+/// The rate a fee choice would use with `quote` (the floor when the estimate is below it, like
+/// `choose_fee_rate`); `None` for no estimate, no preview or `직접 입력`.
+fn quoted_rate(choice: BtcFeeChoice, quote: Option<&FeeQuote>) -> Option<FeeRate> {
+    let quote = quote?;
+    let slot = match choice {
+        BtcFeeChoice::Fast => 0,
+        BtcFeeChoice::Normal => 1,
+        BtcFeeChoice::Slow => 2,
+        BtcFeeChoice::Manual => return None,
+    };
+    quote
+        .rates
+        .get(slot)
+        .copied()
+        .flatten()
+        .map(|rate| rate.max(quote.floor))
+}
+
+/// A send-form fee radio (2026-11-10): "빠름 · 약 20분 · 12 sat/vB" — the usual wait of 2·6·24
+/// blocks — with "· 추정 없음" when the node gave none, the name and wait alone before the preview.
+fn fee_choice_label(choice: BtcFeeChoice, quote: Option<&FeeQuote>) -> String {
+    let wait = match choice {
+        BtcFeeChoice::Fast => "약 20분",
+        BtcFeeChoice::Normal => "약 1시간",
+        BtcFeeChoice::Slow => "약 4시간",
+        BtcFeeChoice::Manual => return choice.label().to_owned(),
+    };
+    match (quote, quoted_rate(choice, quote)) {
+        (Some(_), Some(rate)) => format!("{} · {wait} · {rate}", choice.label()),
+        (Some(_), None) => format!("{} · {wait} · 추정 없음", choice.label()),
+        (None, _) => format!("{} · {wait}", choice.label()),
+    }
+}
+
+/// The plain name of a recipient's address type before its technical name (2026-11-10:
+/// "네이티브 세그윗 (P2WPKH)"; the approval window keeps `ScriptKind::type_label`).
+const fn kind_text(kind: &yw_core::btc::ScriptKind) -> &'static str {
+    match kind {
+        yw_core::btc::ScriptKind::P2pkh(_) => "레거시 (P2PKH)",
+        yw_core::btc::ScriptKind::P2sh(_) => "호환 세그윗·스크립트 (P2SH)",
+        yw_core::btc::ScriptKind::P2wpkh(_) => "네이티브 세그윗 (P2WPKH)",
+        yw_core::btc::ScriptKind::P2wsh(_) => "스크립트 세그윗 (P2WSH)",
+        yw_core::btc::ScriptKind::P2tr(_) => "탭루트 (P2TR)",
     }
 }
 
@@ -871,6 +918,13 @@ impl App {
         }
         let usable = ctx.gate().is_ok();
         let unlocked = self.btc_unlocked();
+        // Display-only names of the recipients (2026-11-10, like EVM's U11): an address-book
+        // entry or one of the wallet's own accounts; earlier recipients are not named.
+        let known = if rows.iter().any(|row| !row.counterparty.is_empty()) {
+            crate::app_btc::known_addresses_on(ctx, ctx.net())
+        } else {
+            Vec::new()
+        };
         for (index, row) in rows.iter().enumerate() {
             let base = ids::ACTIVITY_BASE.saturating_add(
                 u16::try_from(index)
@@ -884,13 +938,27 @@ impl App {
                 row.title
             )));
             items.push(Item::Muted(format!("상태: {}", row.status)));
+            let lower = row.counterparty.to_ascii_lowercase();
+            let name = known
+                .iter()
+                .filter(|entry| entry.address == lower)
+                .find_map(|entry| match &entry.source {
+                    crate::app_btc::BtcKnownSource::Book { label, .. } => {
+                        Some(format!(" → 주소록: {label}"))
+                    }
+                    crate::app_btc::BtcKnownSource::Own { account } => {
+                        Some(format!(" → 내 계정: {account}"))
+                    }
+                    crate::app_btc::BtcKnownSource::Sent => None,
+                })
+                .unwrap_or_default();
             if let Some(amount) = row.amount {
                 items.push(Item::Muted(format!(
-                    "받는 금액 {} · 받는 주소:",
+                    "받는 금액 {} · 받는 주소{name}",
                     BtcUi::amount_text(amount)
                 )));
             } else if !row.counterparty.is_empty() {
-                items.push(Item::Muted("받는 주소:".to_owned()));
+                items.push(Item::Muted(format!("받는 주소{name}")));
             }
             if !row.counterparty.is_empty() {
                 items.push(Item::Mono(grouped(&row.counterparty)));
@@ -1107,18 +1175,90 @@ impl App {
         items.push(Item::CardEnd);
     }
 
-    /// The fee radios, manual rate, floor note and typed-fee override of a form.
+    /// The send form's fee estimate before `검토` (spec/08 §8, 2026-11-10): with a valid recipient
+    /// and a typed amount, the chosen rate × the local vsize of one input of the account's type
+    /// and two outputs (recipient, change) — `estimate_weight_with`, no call. Display only: `검토`
+    /// plans with the node's fresh estimate and floor, and the approval shows the real fee.
+    fn btc_fee_estimate_items(
+        &self,
+        fee: &BtcFeeForm,
+        quote: Option<&FeeQuote>,
+        items: &mut Vec<Item>,
+    ) {
+        let form = &self.btc.send;
+        let (Some(recipient), Some(_)) = (form.recipient, form.amount) else {
+            return;
+        };
+        if form.send_max || form.recipient_error.is_some() || form.amount_error.is_some() {
+            return;
+        }
+        let rate = match fee.choice {
+            BtcFeeChoice::Manual => fee.manual,
+            choice => quoted_rate(choice, quote),
+        };
+        let ctx = self.btc_ctx();
+        let (Some(rate), Some(meta)) = (rate, ctx.btc_meta()) else {
+            return;
+        };
+        let account = meta.account();
+        let Some(weight) = yw_core::btc::tx::estimate_weight_with(
+            account.input_weight(),
+            1,
+            &[
+                yw_core::btc::script::spk_len(&recipient),
+                account.script_type().spk_len(),
+            ],
+        ) else {
+            return;
+        };
+        let vsize = weight.div_ceil(4);
+        let Some(estimate) = yw_core::btc::fee::fee_for(rate, vsize) else {
+            return;
+        };
+        items.push(Item::Text(format!(
+            "예상 수수료 약 {} sats ({} BTC) — 입력 1개·출력 2개(받는 사람·잔돈) 기준입니다. UTXO를 여러 개 쓰면 늘어납니다. 실제 수수료는 검토에서 다시 계산해 승인 창에 보입니다.",
+            yw_core::btc::amount::format_sats_grouped(estimate.get()),
+            yw_core::btc::amount::format_btc(estimate)
+        )));
+        if rate.sat_per_kvb() > yw_core::btc::BTC_FEE_RATE_CAP
+            || estimate.get() > yw_core::btc::BTC_FEE_ABS_CAP
+        {
+            items.push(Item::Banner(
+                "이 수수료율은 상한을 넘어 검토 뒤 수수료(sats)를 직접 입력해야 합니다.".to_owned(),
+                Tone::Warn,
+            ));
+        }
+    }
+
+    /// The fee radios, manual rate, floor note and typed-fee override of a form. The send form's
+    /// radios carry the node's preview (2026-11-10, `BtcUi::fee_quote`): "빠름 · 약 20분 · 12
+    /// sat/vB" (the floor when the estimate is below it), "· 추정 없음", or a loading line.
     fn btc_fee_items(&self, fee: &BtcFeeForm, bump: bool, items: &mut Vec<Item>) {
         let radio_ids = fee_ids(bump);
+        let net = self.btc_ctx().net();
+        let quote = if bump {
+            None
+        } else {
+            self.btc.fee_quote_of(net).copied()
+        };
+        let loading = !bump && quote.is_none() && self.btc.fee_quote_job.is_some();
         let radios = FEE_CHOICES
             .iter()
             .zip(radio_ids)
             .enumerate()
             .map(|(index, (choice, id))| {
-                Ctl::radio(id, choice.label(), fee.choice == *choice, index == 0)
+                let label = if bump {
+                    choice.label().to_owned()
+                } else {
+                    fee_choice_label(*choice, quote.as_ref())
+                };
+                Ctl::radio(id, &label, fee.choice == *choice, index == 0)
             })
             .collect();
         items.push(Item::LabeledRow("수수료".to_owned(), radios));
+        if loading {
+            items.push(Item::Help("수수료 추정을 불러오는 중…".to_owned()));
+        }
         items.push(Item::Help(
             "빠름·보통·느림 = 노드 추정(2·6·24블록). 추정이 없으면(testnet4에서 흔함) 직접 입력만 됩니다."
                 .to_owned(),
@@ -1134,13 +1274,18 @@ impl App {
                 vec![Ctl::edit(id, &fee.manual_text, 160, false, 12)],
             ));
         }
-        items.push(Item::Help(match self.btc.floor {
+        // The preview's floor fills the line before `검토` (2026-11-10).
+        let floor = quote.map(|quote| quote.floor).or(self.btc.floor);
+        items.push(Item::Help(match floor {
             Some(floor) => format!(
                 "수수료 하한 {floor} (노드 기준): 추정이 하한보다 낮으면 하한을 적용합니다(하한 적용). 직접 입력은 하한 이상이어야 합니다."
             ),
             None => "수수료 하한(1 sat/vB와 노드 최소값 중 큰 값)은 검토할 때 노드에서 확인합니다."
                 .to_owned(),
         }));
+        if !bump {
+            self.btc_fee_estimate_items(fee, quote.as_ref(), items);
+        }
         if let Some(error) = &fee.error {
             items.push(Item::Banner(error.clone(), Tone::Danger));
         }
@@ -1214,7 +1359,7 @@ impl App {
         if let Some(error) = &form.recipient_error {
             items.push(Item::Banner(error.clone(), Tone::Danger));
         } else if let Some(kind) = form.recipient {
-            items.push(Item::Help(format!("주소 종류: {}", kind.type_label())));
+            items.push(Item::Help(format!("주소 종류: {}", kind_text(&kind))));
             let address = encode_address(&kind, net);
             items.push(Item::Mono(grouped(&address)));
             let entry = self

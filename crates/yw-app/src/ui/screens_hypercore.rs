@@ -52,6 +52,10 @@ pub mod ids {
     pub const API_SAVE: u16 = 13_492;
     /// Settings: official testnet API.
     pub const API_DEFAULT: u16 = 13_493;
+    /// The folded card's `펼치기 ▸` (2026-11-10).
+    pub const EXPAND: u16 = 13_494;
+    /// The unfolded card's `접기 ▴`.
+    pub const COLLAPSE: u16 = 13_495;
     /// Asset radios of spot tokens (row = position in the list).
     pub const ASSET_BASE: u16 = 13_470;
     /// Asset radio span.
@@ -80,8 +84,15 @@ pub mod ids {
         API_EDIT,
         API_SAVE,
         API_DEFAULT,
+        EXPAND,
+        COLLAPSE,
     ];
 }
+
+/// The EVM chains next to which the `HyperCore` card is always unfolded: `HyperEVM` mainnet and
+/// testnet (`HyperEVM으로 이동`·`HyperEVM에서 Core로 이동`) and Arbitrum One and Sepolia (withdrawals
+/// arrive there, spec/11 §8).
+pub const HC_UNFOLDED_CHAINS: [u64; 4] = [999, 998, 42_161, 421_614];
 
 fn local_time(unix_ms: u64) -> String {
     let wall = yw_win::time::local_wall_ms(unix_ms);
@@ -126,17 +137,73 @@ fn network_band(network: HcNetwork, items: &mut Vec<Item>) {
 }
 
 impl App {
-    /// The S10 `HyperCore` card (balances, actions, session activity).
+    /// Whether the `HyperCore` card may be folded to one line (2026-11-10): the selected EVM
+    /// chain is not one the card works with ([`HC_UNFOLDED_CHAINS`]) and no `HyperCore` action of
+    /// the selected account is being signed or sent.
+    #[must_use]
+    pub fn hc_foldable(&self) -> bool {
+        let account = self.selected_account().map(|(account, ..)| account);
+        let network = self.hc_network();
+        !HC_UNFOLDED_CHAINS.contains(&self.settings.evm_chain_id)
+            && !self.hypercore.activity.iter().any(|row| {
+                row.network == network
+                    && Some(row.account) == account
+                    && matches!(
+                        row.status,
+                        crate::app_hypercore::HcStatus::Signing
+                            | crate::app_hypercore::HcStatus::Submitting
+                    )
+            })
+    }
+
+    /// The folded card: the badge and one line (network, account value and spot count, or the
+    /// load state), and `펼치기 ▸`. No action button and so no band (every place that draws
+    /// the actions draws the network band too). The balances are still read every 60 s.
+    fn hc_folded_card(&self, network: HcNetwork, items: &mut Vec<Item>) {
+        let state = match self.hc_balances() {
+            Some(balances) => format!(
+                "계정 가치 {} USDC · 현물 {}종",
+                balances.perp.account_value,
+                self.hc_spot_rows().len()
+            ),
+            None if self.hypercore.loading => "불러오는 중…".to_owned(),
+            None if self.hypercore.error.is_some() => "잔액을 불러오지 못했습니다".to_owned(),
+            None => "잔액을 아직 불러오지 않았습니다".to_owned(),
+        };
+        items.push(Item::CardStart(None));
+        items.push(Item::Badged(
+            crate::ui::badge::Badge::hyperliquid(),
+            Box::new(Item::Text(format!(
+                "Hyperliquid {} · {state}",
+                network.label()
+            ))),
+        ));
+        items.push(Item::Row(vec![Ctl::link(ids::EXPAND, "펼치기 ▸")]));
+        items.push(Item::CardEnd);
+    }
+
+    /// The S10 `HyperCore` card (balances, actions, session activity), folded to one line next
+    /// to a chain it does not work with ([`App::hc_foldable`]) until `펼치기 ▸` (this run only).
+    #[expect(clippy::too_many_lines, reason = "the card's sections in order")]
     pub fn hc_card(&self, items: &mut Vec<Item>) {
         if !self.hc_visible() {
             return;
         }
         let network = self.hc_network();
+        let foldable = self.hc_foldable();
+        if foldable && !self.hypercore.unfolded {
+            self.hc_folded_card(network, items);
+            return;
+        }
         items.push(Item::CardStart(None));
         items.push(Item::Badged(
             crate::ui::badge::Badge::hyperliquid(),
             Box::new(Item::Subtitle(format!("Hyperliquid {}", network.label()))),
         ));
+        if foldable {
+            items.push(Item::Row(vec![Ctl::link(ids::COLLAPSE, "접기 ▴")]));
+        }
+        // The band always goes with the action buttons below.
         network_band(network, items);
         items.push(network_row(network));
         items.push(Item::Help(
@@ -510,7 +577,11 @@ impl App {
             }
             ids::ACK => self.hc_toggle_ack(),
             ids::REVIEW => self.hc_review(),
-            ids::CANCEL => self.set_screen(crate::app::Screen::Main),
+            ids::CANCEL => self.return_to(crate::app::Screen::Main),
+            ids::EXPAND | ids::COLLAPSE => {
+                self.hypercore.unfolded = id == ids::EXPAND;
+                self.refresh();
+            }
             ids::DIR_TO_PERP | ids::DIR_TO_SPOT => {
                 self.hypercore.form.to_perp = id == ids::DIR_TO_PERP;
                 self.hc_validate();

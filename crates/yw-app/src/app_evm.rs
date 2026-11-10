@@ -144,6 +144,9 @@ pub struct BalanceState {
     pub error: Option<ErrorCode>,
     /// Outstanding job.
     pub job: u64,
+    /// Wall-clock Unix ms of the last successful result (S10 "블록 N 기준 · HH:MM 갱신"; no
+    /// result and no error yet is "잔액을 불러오는 중…").
+    pub updated_unix_ms: Option<u64>,
 }
 
 /// Tracking state of one nonce group.
@@ -889,21 +892,7 @@ impl App {
                 job,
                 chain_id,
                 result,
-            } => {
-                let state = self.evm.balances.entry(chain_id).or_default();
-                if state.job != job {
-                    return;
-                }
-                match result {
-                    Ok(snapshot) => {
-                        state.snapshot = Some(snapshot);
-                        state.error = None;
-                    }
-                    Err(code) => state.error = Some(code),
-                }
-                self.on_balances_for_form();
-                self.refresh();
-            }
+            } => self.on_balances(job, chain_id, result),
             RpcEvent::Quote { job, result } => self.on_quote(job, result),
             RpcEvent::Code {
                 job,
@@ -958,6 +947,18 @@ impl App {
                         &[("net", Field::Net(NetworkId::Eip155(key.chain_id)))],
                     );
                 }
+                // A transaction confirmed or failed: the balances changed, read them at the next
+                // tick instead of up to a minute later (2026-11-10).
+                if result.transitions.iter().any(|transition| {
+                    matches!(
+                        transition,
+                        Transition::Included { .. }
+                            | Transition::Finalized { .. }
+                            | Transition::Dropped { .. }
+                    )
+                }) {
+                    self.evm_balances_due();
+                }
                 if !result.transitions.is_empty() {
                     self.apply_transitions(result.transitions);
                 }
@@ -973,6 +974,25 @@ impl App {
             RpcEvent::Zec(event) => self.zec_rpc_event(*event),
             RpcEvent::HyperCore(event) => self.hc_rpc_event(*event),
         }
+    }
+
+    /// A balance job's answer (the latest job of its chain only): the snapshot and when it came,
+    /// or the error with the old values kept.
+    fn on_balances(&mut self, job: u64, chain_id: u64, result: Result<BalanceSnapshot, ErrorCode>) {
+        let state = self.evm.balances.entry(chain_id).or_default();
+        if state.job != job {
+            return;
+        }
+        match result {
+            Ok(snapshot) => {
+                state.snapshot = Some(snapshot);
+                state.error = None;
+                state.updated_unix_ms = Some(now_unix_ms());
+            }
+            Err(code) => state.error = Some(code),
+        }
+        self.on_balances_for_form();
+        self.refresh();
     }
 
     /// The S11 recipient's `eth_getCode` answer (W-ADDR-4), for the recipient still shown.
@@ -1047,6 +1067,13 @@ impl App {
 
     // ----- balances -----------------------------------------------------------------------
 
+    /// The balances of the active chain are read at the next main tick (S10 visible): the
+    /// network, the selected account or the account list changed, or a transaction of the
+    /// journal confirmed or failed (2026-11-10; before, the next read was up to 60 s away).
+    pub(crate) fn evm_balances_due(&mut self) {
+        self.evm.next_balance_ms = 0;
+    }
+
     /// Requests balances of the active chain (S10 entry, `새로고침`, every 60 s).
     pub fn refresh_balances(&mut self) {
         self.hc_refresh();
@@ -1055,8 +1082,15 @@ impl App {
         }
         let chain_id = self.settings.evm_chain_id;
         self.evm.next_balance_ms = now_ms().saturating_add(BALANCE_REFRESH_MS);
-        let Ok(chain) = self.chain_job(chain_id) else {
-            return;
+        let chain = match self.chain_job(chain_id) {
+            Ok(chain) => chain,
+            // No address is U17's own line; anything else (an unknown chain) is a failed read,
+            // not "loading" forever.
+            Err(ErrorCode::Key005) => return,
+            Err(code) => {
+                self.evm.balances.entry(chain_id).or_default().error = Some(code);
+                return;
+            }
         };
         let Some((owner, _, _)) = self.selected_account() else {
             return;
@@ -1091,14 +1125,17 @@ impl App {
             .find_map(|(known, balance)| (known == account).then_some(*balance))
     }
 
-    /// Token balance of the selected account.
+    /// Token balance of the selected account: `None` while the last snapshot's token balances
+    /// are another account's (the selection changed after the job was sent, 2026-11-10) — the
+    /// token card then says "잔액 알 수 없음", S11 "잔액 모름", and `{기호} 보내기` hides.
     #[must_use]
     pub fn token_balance(&self, chain_id: u64, token: &Address) -> Option<U256> {
-        self.evm
-            .balances
-            .get(&chain_id)?
-            .snapshot
-            .as_ref()?
+        let snapshot = self.evm.balances.get(&chain_id)?.snapshot.as_ref()?;
+        let (selected, ..) = self.selected_account()?;
+        if snapshot.token_owner != selected {
+            return None;
+        }
+        snapshot
             .tokens
             .iter()
             .find_map(|(known, balance)| (known == token).then_some(*balance))?

@@ -34,7 +34,7 @@ pub struct ChainInfo {
     pub chain_id: u64, pub source: ChainSource, pub genesis: GenesisRule,   // §1.4
     pub templates: Option<EndpointTemplates>,             // 내장 체인만 Some, 사용자 체인 None. 설정 화면의 URL 생성 전용(아래), 런타임 엔드포인트(§1.4)에 쓰지 않음
     pub name: String, pub native_symbol: String, pub native_decimals: u8,
-    pub explorer: Option<String>,                         // https 기본 URL, 표시·링크 전용([04]), RPC에 쓰지 않음. 내장 L2/BSC(아래 둘째 표)와 사용자 체인
+    pub explorer: Option<String>,                         // https 기본 URL, 표시·링크 전용([04]), RPC에 쓰지 않음. Ethereum mainnet·Sepolia(첫 표, 2026-11-10), 내장 L2/BSC(둘째 표)와 사용자 체인; HyperEVM은 None(공식 탐색기 없음)
     pub simulation: SimulationSupport,                    // D14·D15, §6
     pub amsterdam_time: Option<u64>,                      // Glamsterdam 활성 unix 초, None = 미정·해당 없음
     pub default_caps: FeeCaps, pub tip_floor_wei: u64,    // §3.4
@@ -66,6 +66,7 @@ pub enum ContractRole { Permit2, Seaport16, Seaport15, LabelOnly }
 | `templates.quicknode_path` (구현 시 대시보드와 대조) | `None` | `None` | `nanoreth` (아래) |
 | `templates.alchemy_label` | `eth-mainnet` | `eth-sepolia` | `hyperliquid-mainnet` |
 | `name` / `native_symbol` / `native_decimals` | `Ethereum 메인넷` / `ETH` / 18 | `Sepolia 테스트넷` / `SepoliaETH` / 18 | `HyperEVM 메인넷` / `HYPE` / 18 |
+| `explorer` (2026-11-10, 활동의 `탐색기 링크 복사` `{explorer}/tx/{hash}`, [04] §2.6·§2.14) | `https://etherscan.io` | `https://sepolia.etherscan.io` | `None` (이 문서가 정한 공식 탐색기 없음) |
 | `simulation` | `Auto` (§1.5 A2·A5로 확인) | `Auto` (§1.5 A1·A5로 확인) | `Auto` (§1.5 A9 실측 2026-10-27: QuickNode `/nanoreth` 경로에서 성공, `/evm` 경로는 -32601) |
 | `amsterdam_time` | `None` (미정) | `Some(1_791_294_816)` = 2026-10-06 13:53:36 UTC | `None` (해당 없음) |
 | `default_caps` (maxFee / tip / 총 최대 수수료) | 200 gwei / 5 gwei / 0.05 ETH | 1,000 gwei / 100 gwei / 1 SepoliaETH | 100 gwei / 10 gwei / 0.05 HYPE (평소 base fee 약 0.1 gwei, 사용자 변경 가능) |

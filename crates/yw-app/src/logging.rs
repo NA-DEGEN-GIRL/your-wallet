@@ -48,6 +48,9 @@ pub enum Field<'a> {
     /// A source location, written `file:line` (the panic hook, [`panic_line`]): where in the code,
     /// never a value.
     Source(&'a Location<'a>),
+    /// The installed commit (`build_info`): written only when it is 7–40 lowercase hex digits,
+    /// else `?`.
+    Commit(&'a str),
 }
 
 /// UTC `YYYY-MM-DDTHH:MM:SS.mmmZ` from Unix milliseconds.
@@ -142,6 +145,13 @@ pub fn format_line(
                 push_sanitized(&mut line, location.file());
                 line.push(':');
                 line.push_str(&location.line().to_string());
+            }
+            Field::Commit(commit) => {
+                if crate::build_info::is_commit(commit) {
+                    line.push_str(commit);
+                } else {
+                    line.push('?');
+                }
             }
         }
     }

@@ -119,6 +119,18 @@ fn offset(id: u16, base: u16, span: u16) -> Option<u16> {
     id.checked_sub(base).filter(|offset| *offset < span)
 }
 
+/// `YYYY-MM-DD HH:MM` in local time (UTC with a suffix if the conversion fails).
+fn local_time(unix_ms: u64) -> String {
+    let wall = yw_win::time::local_wall_ms(unix_ms);
+    let text = crate::logging::format_utc(wall.unwrap_or(unix_ms));
+    let short = text.get(..16).unwrap_or(&text).replace('T', " ");
+    if wall.is_some() {
+        short
+    } else {
+        format!("{short} UTC")
+    }
+}
+
 fn grouped(address: &str) -> String {
     let mut out = String::with_capacity(address.len() + address.len() / 4);
     for (position, character) in address.chars().enumerate() {
@@ -753,22 +765,40 @@ impl App {
                 "이 지갑에서 보낸 Zcash 거래가 없습니다.".to_owned(),
             ));
         }
+        // The rows of the other chains' order (2026-11-10): time and amount, status (the expiry
+        // height only while it may still confirm), the recipient with its display-only name on
+        // its own `Mono` line, the fee in ZEC, then the txid.
+        let own = self
+            .zec_account()
+            .map(|account| (account.address(), self.zec_source_label(account.source)));
         for (row, record) in records.iter().rev().enumerate() {
-            let to = record
-                .recipient()
-                .map_or_else(|| "-".to_owned(), |dest| dest.encode(network));
             let state = match record.state {
                 ZecTxState::Confirmed => format!("확인됨 (블록 {})", record.mined_height),
                 other => other.label().to_owned(),
             };
-            items.push(Item::Field(
-                format!("보냄 {} ZEC", format_zec(record.amount)),
-                format!(
-                    "{state} · 수수료 {} zats · 받는 주소 {to} · 만료 높이 {}",
-                    record.fee,
-                    record.expiry_height()
-                ),
-            ));
+            items.push(Item::Text(format!(
+                "{} · 보냄 {} ZEC",
+                local_time(record.signed_at_ms),
+                format_zec(record.amount)
+            )));
+            items.push(Item::Help(if record.state.is_terminal() {
+                format!("상태: {state}")
+            } else {
+                format!("상태: {state} · 만료 높이 {}", record.expiry_height())
+            }));
+            match record.recipient().map(|dest| dest.encode(network)) {
+                Some(to) => {
+                    let name = own
+                        .as_ref()
+                        .filter(|(address, _)| *address == to)
+                        .map(|(_, label)| format!(" → 내 계정: {label}"))
+                        .unwrap_or_default();
+                    items.push(Item::Help(format!("받는 주소{name}")));
+                    items.push(Item::Mono(grouped(&to)));
+                }
+                None => items.push(Item::Help("받는 주소 -".to_owned())),
+            }
+            items.push(Item::Help(format!("수수료 {} ZEC", format_zec(record.fee))));
             items.push(Item::Mono(record.txid_hex()));
             if let Some(id) = u16::try_from(row)
                 .ok()

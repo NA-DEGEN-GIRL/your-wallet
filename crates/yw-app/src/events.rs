@@ -52,6 +52,50 @@ pub const WM_YW_TAB_SHORTCUT: u32 = 0x8005;
 /// A navigation key observed by the message loop (`WM_APP + 6`, wParam = [`NavKey::code`]),
 /// handled after the dialog manager has moved the focus (spec/04 §1.7).
 pub const WM_YW_NAV_KEY: u32 = 0x8006;
+/// F5 or Ctrl+, observed by the message loop (`WM_APP + 7`, wParam = [`Shortcut::code`]); the
+/// main window decides whether it applies (spec/04 §1.7, 2026-11-10).
+pub const WM_YW_SHORTCUT: u32 = 0x8007;
+
+/// A main-window shortcut other than Ctrl+L and Ctrl+1–4 (2026-11-10).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Shortcut {
+    /// F5: the visible chain tab's `새로고침`.
+    Refresh,
+    /// Ctrl+,: `설정` (the section last opened in this run).
+    Settings,
+}
+
+impl Shortcut {
+    /// The shortcut of virtual key `vk` with these modifiers, or `None` (F5 without Ctrl or Alt;
+    /// Ctrl+, without Alt).
+    #[must_use]
+    pub const fn of(vk: u16, ctrl: bool, alt: bool) -> Option<Self> {
+        match vk {
+            0x74 if !ctrl && !alt => Some(Self::Refresh),
+            0xBC if ctrl && !alt => Some(Self::Settings),
+            _ => None,
+        }
+    }
+
+    /// The `WM_YW_SHORTCUT` wParam.
+    #[must_use]
+    pub const fn code(self) -> usize {
+        match self {
+            Self::Refresh => 1,
+            Self::Settings => 2,
+        }
+    }
+
+    /// The shortcut of a `WM_YW_SHORTCUT` wParam (`None` for any other value).
+    #[must_use]
+    pub const fn from_code(code: usize) -> Option<Self> {
+        match code {
+            1 => Some(Self::Refresh),
+            2 => Some(Self::Settings),
+            _ => None,
+        }
+    }
+}
 
 /// A keyboard key that moves around the main window (spec/04 §1.7).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1084,8 +1128,11 @@ pub struct BalanceSnapshot {
     pub block: u64,
     /// Native balance per account.
     pub native: Vec<(Address, U256)>,
-    /// Token balances of the selected account (`None` = lookup failed).
+    /// Token balances of [`BalanceSnapshot::token_owner`] (`None` = lookup failed).
     pub tokens: Vec<(Address, Option<U256>)>,
+    /// The account the token balances belong to (the selected account when the job was sent;
+    /// another selection shows them as unknown, 2026-11-10).
+    pub token_owner: Address,
 }
 
 /// An RPC worker result.

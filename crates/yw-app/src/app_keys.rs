@@ -434,6 +434,8 @@ impl App {
         logging::info("app", "key.imported", &[("chain", Field::Word(chain))]);
         self.save_meta();
         self.sol.next_balance_ms = 0;
+        // A new EVM account: its balance at the next tick too (2026-11-10).
+        self.evm_balances_due();
         self.refresh();
     }
 

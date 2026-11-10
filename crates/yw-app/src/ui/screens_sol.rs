@@ -335,10 +335,31 @@ impl App {
         }
         let network = crate::network::NetworkId::Solana(self.settings.solana.cluster);
         let no_endpoint = self.sol_endpoint(cluster).is_err();
+        let failure = (!no_endpoint)
+            .then(|| self.sol.balance_error.get(&cluster).copied())
+            .flatten();
+        // The failed read, said once with what to do (2026-11-10, like the EVM network card).
+        if let Some(code) = failure {
+            let last = self
+                .sol
+                .balance_at
+                .get(&cluster)
+                .map(|at| format!("{}에", crate::ui::screens::local_hh_mm(*at)));
+            items.push(Item::Banner(
+                crate::ui::screens::balance_failure_text(code, last.as_deref()),
+                Tone::Danger,
+            ));
+            self.rpc_failure_buttons(
+                network,
+                crate::ui::screens::ids::SOL_RPC_TEST,
+                crate::ui::screens::ids::SOL_RPC_ROW,
+                items,
+            );
+        }
         let rpc = if no_endpoint {
             "RPC 주소 없음 (E-KEY-005)".to_owned()
-        } else if let Some(code) = self.sol.balance_error.get(&cluster) {
-            format!("오류 {}", code.code())
+        } else if let Some(code) = failure {
+            format!("오류 {}", code.code_with_name())
         } else if self.sol.balances.keys().any(|(known, _)| *known == cluster) {
             "연결됨 (genesis 확인)".to_owned()
         } else {
@@ -354,7 +375,7 @@ impl App {
         }
         if let Some((id, label, address)) = &selected {
             items.push(Item::CardStart(None));
-            items.push(Item::Subtitle(label.clone()));
+            items.push(Item::Subtitle(self.sol_title(*id, label)));
             items.push(Item::Help(id.path_text()));
             self.mn_signing_banner(
                 self.mn_backup_gate(
@@ -363,22 +384,45 @@ impl App {
                 ),
                 items,
             );
-            if let Some(lamports) = self.sol_balance(address) {
-                items.push(Item::Display(App::sol_text(lamports)));
-                items.push(Item::Help(format!(
-                    "{} lamports · RPC finalized 기준(참고)",
-                    format_raw(lamports)
-                )));
-            } else if no_endpoint {
-                items.push(Item::Display("잔액 —".to_owned()));
-                items.push(Item::Help(crate::ui::screens::no_endpoint_text(
-                    &self.network_name(network),
-                )));
-            } else {
-                items.push(Item::Display("잔액 —".to_owned()));
-                items.push(Item::Help(
-                    "잔액을 아직 읽지 못했습니다. RPC 연결을 확인하고 새로고침하세요.".to_owned(),
-                ));
+            // Three states under the big balance (2026-11-10, like EVM): loading, read (with
+            // the time), or failed — explained once by the network card above.
+            match (self.sol_balance(address), failure) {
+                (Some(lamports), Some(_)) => {
+                    items.push(Item::DisplayMuted(App::sol_text(lamports)));
+                    items.push(Item::Help(crate::ui::screens::T_BALANCE_FAILED.to_owned()));
+                }
+                (Some(lamports), None) => {
+                    items.push(Item::Display(App::sol_text(lamports)));
+                    let read = crate::ui::screens::balance_read_text(
+                        None,
+                        self.sol.balance_at.get(&cluster).copied(),
+                    );
+                    items.push(Item::Help(if read.is_empty() {
+                        format!(
+                            "{} lamports · RPC finalized 기준(참고)",
+                            format_raw(lamports)
+                        )
+                    } else {
+                        format!(
+                            "{} lamports · RPC finalized 기준(참고) · {read}",
+                            format_raw(lamports)
+                        )
+                    }));
+                }
+                (None, _) if no_endpoint => {
+                    items.push(Item::Display("잔액 —".to_owned()));
+                    items.push(Item::Help(crate::ui::screens::no_endpoint_text(
+                        &self.network_name(network),
+                    )));
+                }
+                (None, Some(_)) => {
+                    items.push(Item::Display("잔액 —".to_owned()));
+                    items.push(Item::Help(crate::ui::screens::T_BALANCE_FAILED.to_owned()));
+                }
+                (None, None) => {
+                    items.push(Item::Display("잔액 —".to_owned()));
+                    items.push(Item::Help(crate::ui::screens::T_BALANCE_LOADING.to_owned()));
+                }
             }
             if let Some(holdings) = self.sol_token_holdings(address) {
                 let tokens: Vec<String> = holdings
@@ -490,8 +534,10 @@ impl App {
                     ]));
                 } else {
                     let mut row_ctls = vec![Ctl::button(ids::RENAME, "이름 바꾸기")];
+                    let mut first_of_phrase = false;
                     match id {
                         SolAccountId::Derived(index) | SolAccountId::Mnemonic(_, index) => {
+                            first_of_phrase = index == 0;
                             row_ctls.push(Ctl::button(ids::HIDE, "숨기기").enabled(index != 0));
                         }
                         // A YubiKey account: no "개인키 보기" (the key is on the card only).
@@ -513,6 +559,11 @@ impl App {
                         }
                     }
                     items.push(Item::Row(row_ctls));
+                    if first_of_phrase {
+                        items.push(Item::Help(
+                            crate::ui::screens::T_FIRST_ACCOUNT_KEPT.to_owned(),
+                        ));
+                    }
                 }
             }
             items.push(Item::Gap(4));
@@ -573,7 +624,7 @@ impl App {
                 self.sol_record_status(&record)
             )));
             if let Some(core) = core {
-                items.push(Item::Help(format!("받는 주소 {}", grouped(&core.to))));
+                self.sol_recipient_items(&core.to, items);
             }
             items.push(Item::Mono(record.tx_id()));
             self.sol_activity_actions(shown, &counterparties, &mut prompt_drawn, items);
@@ -590,12 +641,11 @@ impl App {
                     self.sol_label(&entry.account),
                     entry.title
                 )));
-                items.push(Item::Help(format!(
-                    "상태: {} · 받는 주소 {}",
-                    status_word(&entry.status),
-                    SolAddress::parse(&entry.counterparty)
-                        .map_or_else(|_| entry.counterparty.clone(), |address| grouped(&address))
-                )));
+                items.push(Item::Help(format!("상태: {}", status_word(&entry.status))));
+                match SolAddress::parse(&entry.counterparty) {
+                    Ok(address) => self.sol_recipient_items(&address, items),
+                    Err(_) => items.push(Item::Help(format!("받는 주소 {}", entry.counterparty))),
+                }
                 items.push(Item::Mono(entry.tx_id.clone()));
                 self.sol_activity_actions(shown, &counterparties, &mut prompt_drawn, items);
                 shown = shown.saturating_add(1);
@@ -608,6 +658,27 @@ impl App {
             )));
         }
         items.push(Item::CardEnd);
+    }
+
+    /// The recipient lines of an activity row (2026-11-10, like EVM's U11): "받는 주소" with, display
+    /// only, the address-book or own-account name, then the full grouped address on a `Mono`
+    /// line. Never a copy or select button (address poisoning, spec/07 §12.3).
+    fn sol_recipient_items(&self, address: &SolAddress, items: &mut Vec<Item>) {
+        let text = address.to_base58();
+        let name = self
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.contact(BookChain::Sol, &text))
+            .map(|contact| format!(" → 주소록: {}", contact.label))
+            .or_else(|| {
+                self.sol_account_rows()
+                    .into_iter()
+                    .find(|(_, _, known)| known == address)
+                    .map(|(id, label, _)| format!(" → 내 계정: {}", self.sol_title(id, &label)))
+            })
+            .unwrap_or_default();
+        items.push(Item::Help(format!("받는 주소{name}")));
+        items.push(Item::Mono(grouped(address)));
     }
 
     /// The "토큰" card of S10 (spec/04 §2.6, spec/07 §8.3, §12.3): the allowlisted tokens of the
@@ -1080,7 +1151,8 @@ impl App {
         items.push(Item::Badged(
             Badge::solana(self.sol_cluster()),
             Box::new(Item::Subtitle(format!(
-                "{label} · {}",
+                "{} · {}",
+                self.sol_title(index, &label),
                 self.sol_cluster().display_name()
             ))),
         ));

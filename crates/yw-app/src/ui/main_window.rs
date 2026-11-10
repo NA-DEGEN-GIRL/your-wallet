@@ -266,6 +266,9 @@ pub enum Item {
     Subtitle(String),
     /// Large text: a balance or the welcome headline (bold 20 pt).
     Display(String),
+    /// A balance kept from an earlier read that the last read could not refresh (bold 20 pt,
+    /// muted; 2026-11-10).
+    DisplayMuted(String),
     /// Monospace line (addresses, hashes). Grouped Solana/Bitcoin addresses get their bold groups.
     Mono(String),
     /// A label and its read-only value on one line (the value wraps).
@@ -997,6 +1000,12 @@ fn text_style(item: &Item) -> Option<(&str, FontRole, Color, i32)> {
             theme::TEXT,
             theme::SPACE_XS,
         ),
+        Item::DisplayMuted(text) => (
+            text.as_str(),
+            FontRole::Display,
+            theme::MUTED,
+            theme::SPACE_XS,
+        ),
         Item::Subtitle(text) => (
             text.as_str(),
             FontRole::Subtitle,
@@ -1058,6 +1067,7 @@ impl Layouter<'_> {
             // Handled by `text_style` above.
             Item::Title(_)
             | Item::Display(_)
+            | Item::DisplayMuted(_)
             | Item::Subtitle(_)
             | Item::Text(_)
             | Item::Muted(_)

@@ -132,7 +132,7 @@ impl App {
             }
             ids::SEND_CANCEL => {
                 self.sol.send = SolSendForm::default();
-                self.set_screen(Screen::Main);
+                self.return_to(Screen::Main);
             }
             ids::SEND_PICK => {
                 self.sol.send.picker = !self.sol.send.picker;

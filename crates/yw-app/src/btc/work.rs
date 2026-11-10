@@ -16,8 +16,8 @@ use yw_core::btc::fee::{FeeError, choose_fee_rate, fee_floor};
 use yw_core::btc::policy::{MempoolAccept, SendRawResult};
 use yw_core::btc::select::BumpSource;
 use yw_core::btc::{
-    BtcMeta, BtcNetwork, BtcSendFacts, BumpRequest, FeeRate, FeeSelection, OutPoint, PlanError,
-    Sats, SendAmount, SendPlan, SendRequest, Txid, plan_fee_bump, plan_send,
+    BTC_CONF_TARGETS, BtcMeta, BtcNetwork, BtcSendFacts, BumpRequest, FeeRate, FeeSelection,
+    OutPoint, PlanError, Sats, SendAmount, SendPlan, SendRequest, Txid, plan_fee_bump, plan_send,
 };
 use yw_core::journal::btc::TrackObservation;
 use yw_win::http::HttpsUrl;
@@ -204,6 +204,17 @@ impl PrepareError {
     }
 }
 
+/// The send form's fee preview (spec/08 §8, 2026-11-10): the node's floor and the economical
+/// `estimatesmartfee` of the three targets (2·6·24 blocks; `None` = no estimate). Read-only: no
+/// address is sent and nothing is planned, approved or reserved; `검토` reads both again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FeeQuote {
+    /// `fee_floor(mempoolminfee, minrelaytxfee)`.
+    pub floor: FeeRate,
+    /// Fast, normal, slow.
+    pub rates: [Option<FeeRate>; 3],
+}
+
 /// One tracking round over several records.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TrackRound {
@@ -247,6 +258,16 @@ pub enum BtcRpcJob {
         target: BtcTarget,
         /// Watch set and known outputs.
         work: RefreshJob,
+    },
+    /// The send form's fee preview ([`FeeQuote`]; the session's chain check like
+    /// `Refresh`, then `getmempoolinfo` and `estimatesmartfee` 2·6·24 with their caps).
+    FeeQuote {
+        /// UI job id.
+        job: u64,
+        /// Network.
+        target: BtcTarget,
+        /// Chain-check inputs.
+        chain: ChainInput,
     },
     /// Plan a send or fee bump.
     Prepare {
@@ -316,6 +337,7 @@ impl BtcRpcJob {
             Self::Reset => "BtcReset",
             Self::Discover { .. } => "BtcDiscover",
             Self::Refresh { .. } => "BtcRefresh",
+            Self::FeeQuote { .. } => "BtcFeeQuote",
             Self::Prepare { .. } => "BtcPrepare",
             Self::Precheck { .. } => "BtcPrecheck",
             Self::Send { .. } => "BtcSend",
@@ -367,6 +389,15 @@ pub enum BtcRpcEvent {
         net: BtcNetwork,
         /// Result.
         result: Result<Box<RefreshResult>, BtcError>,
+    },
+    /// The fee preview arrived.
+    FeeQuote {
+        /// UI job id.
+        job: u64,
+        /// Network.
+        net: BtcNetwork,
+        /// Floor and estimates, or why not.
+        result: Result<FeeQuote, BtcError>,
     },
     /// Plan finished.
     Prepared {
@@ -544,6 +575,24 @@ fn prepare(
     })
 }
 
+fn fee_quote(
+    client: &BtcClient<'_>,
+    session: &mut ChainSession,
+    chain: ChainInput,
+) -> Result<FeeQuote, BtcError> {
+    ensure_chain(client, session, chain, false)?;
+    let mempool = rpc::get_mempool_info(client)?;
+    let floor = fee_floor(
+        Some(FeeRate::from_sat_per_kvb(mempool.mempool_min)),
+        Some(FeeRate::from_sat_per_kvb(mempool.min_relay)),
+    );
+    let mut rates = [None; 3];
+    for (slot, target) in rates.iter_mut().zip(BTC_CONF_TARGETS) {
+        *slot = rpc::estimate_smart_fee(client, target)?.map(FeeRate::from_sat_per_kvb);
+    }
+    Ok(FeeQuote { floor, rates })
+}
+
 fn track(
     client: &BtcClient<'_>,
     session: &mut ChainSession,
@@ -715,6 +764,26 @@ impl BtcWorker {
                     net,
                     result: result.map(Box::new),
                 });
+            }
+            BtcRpcJob::FeeQuote {
+                job,
+                target,
+                chain: input,
+            } => {
+                let net = target.endpoint.net;
+                let Session { chain, pace, .. } = self.session(&target);
+                let client = BtcClient::new(
+                    BtcEnv {
+                        transport,
+                        clock,
+                        pace,
+                        log,
+                    },
+                    &target.endpoint,
+                );
+                let result = fee_quote(&client, chain, input);
+                self.log_result(net, "fee_quote", result.as_ref().err().copied());
+                emit(BtcRpcEvent::FeeQuote { job, net, result });
             }
             BtcRpcJob::Prepare { job, target, work } => {
                 let net = target.endpoint.net;

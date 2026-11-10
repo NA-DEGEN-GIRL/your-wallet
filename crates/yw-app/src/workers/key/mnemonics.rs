@@ -374,11 +374,14 @@ fn reconcile_sol(
                 .next()
                 .is_none()
             {
+                // `Solana N` one above the highest of every phrase (2026-11-10: each phrase's
+                // first account was `Solana 1`).
+                let label = document.next_sol_label();
                 document.mnemonic_accounts.upsert_sol(
                     *id.as_bytes(),
                     Account {
                         index: 0,
-                        label: "Solana 1".to_owned(),
+                        label,
                         address: String::new(),
                         hidden: false,
                     },
@@ -503,11 +506,22 @@ pub(super) fn reconcile_mnemonics(document: &mut Meta, vault: &Vault) -> Result<
         if !info.primary {
             evm = existing.map(|entry| entry.evm.clone()).unwrap_or_default();
             if evm.first().is_none_or(|account| account.index != 0) {
+                // `계정 N` one above the highest of every phrase, the entries made so far
+                // included (2026-11-10: each added phrase's first account was `계정 1`).
+                let number = meta::next_label_number(
+                    meta::EVM_ACCOUNT_PREFIX,
+                    document.evm_labels().chain(
+                        entries
+                            .iter()
+                            .flat_map(|entry| entry.evm.iter())
+                            .map(|account| account.label.as_str()),
+                    ),
+                );
                 evm.insert(
                     0,
                     Account {
                         index: 0,
-                        label: "계정 1".to_owned(),
+                        label: format!("{}{number}", meta::EVM_ACCOUNT_PREFIX),
                         address: String::new(),
                         hidden: false,
                     },

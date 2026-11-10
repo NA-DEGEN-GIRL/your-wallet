@@ -242,7 +242,7 @@ impl App {
             }
             ids::SEND_CANCEL => {
                 self.btc.send = BtcSendForm::default();
-                self.set_screen(Screen::Main);
+                self.return_to(Screen::Main);
             }
             ids::RESULT_COPY => {
                 if let Some(txid) = self.btc.result {
@@ -261,7 +261,7 @@ impl App {
             }
             ids::BUMP_CANCEL => {
                 self.btc.bump = BtcBumpForm::default();
-                self.set_screen(Screen::Main);
+                self.return_to(Screen::Main);
             }
             ids::COPY_ADDRESS => {
                 self.btc_copy_address();
@@ -294,7 +294,12 @@ impl App {
         if let Some((choice, bump)) = fee_choice_of(id) {
             self.btc_call(|ui, ctx| {
                 ui.set_fee_choice(ctx, choice, bump);
-                Vec::new()
+                // The send form's preview is asked again when older than 60 s (2026-11-10).
+                if bump {
+                    Vec::new()
+                } else {
+                    ui.quote_if_stale(ctx)
+                }
             });
             self.btc_drop_stale_typed(bump);
             return true;

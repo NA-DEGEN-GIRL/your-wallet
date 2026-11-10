@@ -318,9 +318,12 @@ fn unlocked_state(state: &mut App) {
                 block: 7_412_096,
                 native: vec![(evm_address(0), eth(1_250)), (evm_address(1), eth(40))],
                 tokens: Vec::new(),
+                token_owner: evm_address(0),
             }),
             error: None,
             job: 0,
+            // A made-up read time (2026-11-10 05:05 UTC) for "HH:MM 갱신".
+            updated_unix_ms: Some(1_794_287_100_000),
         },
     );
     let sol = SolAddress::parse("HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk").unwrap();
@@ -1270,6 +1273,29 @@ fn screenshot_tour() {
     set_screen(&app, UNLOCKED, Screen::Main);
     save(main_hwnd(&app), "10-main-evm");
     {
+        // A failed balance read (2026-11-10): the network card's band with the code's text and
+        // the block of the balance kept below, its two buttons and a test on its way (made up).
+        let mut state = app.borrow_mut();
+        if let Some(balance) = state.evm.balances.get_mut(&SEPOLIA) {
+            balance.error = Some(crate::errors::ErrorCode::Rpc003);
+        }
+        state.set_rpc_message(
+            NetworkId::Eip155(SEPOLIA),
+            "테스트 중…".to_owned(),
+            crate::app::TestState::Testing,
+        );
+        state.refresh();
+    }
+    save(main_hwnd(&app), "53-main-evm-rpc-failed");
+    {
+        let mut state = app.borrow_mut();
+        if let Some(balance) = state.evm.balances.get_mut(&SEPOLIA) {
+            balance.error = None;
+        }
+        state.rpc_messages.clear();
+        state.refresh();
+    }
+    {
         // The token card (2026-11-03): a made-up airdrop token hidden with the hidden list open,
         // `잔액 0인 토큰 숨기기` on (WETH 0 is tucked away), made-up USDC balance; scrolled to it.
         let mut state = app.borrow_mut();
@@ -1334,13 +1360,19 @@ fn screenshot_tour() {
         }
         state.evm.show_hidden_tokens = false;
         // The HyperCore card under the token card (balances not loaded: no network; the tour
-        // has no RPC worker, so its "worker unavailable" note is cleared).
+        // has no RPC worker, so its "worker unavailable" note is cleared), unfolded with
+        // `펼치기 ▸` (next to Sepolia it is one line, 2026-11-10).
         state.hypercore.error = None;
+        state.hypercore.unfolded = true;
         state.scroll = 1_000;
         state.refresh();
     }
     save(main_hwnd(&app), "49-main-evm-hypercore");
-    app.borrow_mut().scroll = 0;
+    {
+        let mut state = app.borrow_mut();
+        state.hypercore.unfolded = false;
+        state.scroll = 0;
+    }
     {
         let mut state = app.borrow_mut();
         state.evm.send.to_text = recipient().to_checksum();
@@ -1450,6 +1482,42 @@ fn screenshot_tour() {
     }
     set_screen(&app, UNLOCKED, Screen::BtcReceive);
     save(main_hwnd(&app), "34-receive-bitcoin");
+    {
+        // S11 for Bitcoin before `검토` (2026-11-10): the node's preview on the fee radios (made
+        // up: 12 / 8 sat/vB and no slow estimate, floor 1 sat/vB), the estimated fee of one input
+        // and two outputs, and the plain address type. The recipient is the BIP173 test vector.
+        let mut state = app.borrow_mut();
+        let to = "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx";
+        state.btc.send.to_text = to.to_owned();
+        state.btc.send.recipient =
+            yw_core::btc::parse_address(to, yw_core::btc::BtcNetwork::Testnet4).ok();
+        state.btc.send.amount_text = "0.001".to_owned();
+        state.btc.send.amount = yw_core::btc::Sats::new(100_000);
+        state.btc.fee_quote = Some((
+            yw_core::btc::BtcNetwork::Testnet4,
+            crate::btc::work::FeeQuote {
+                floor: yw_core::btc::FeeRate::from_sat_per_kvb(1_000),
+                rates: [
+                    Some(yw_core::btc::FeeRate::from_sat_per_kvb(12_000)),
+                    Some(yw_core::btc::FeeRate::from_sat_per_kvb(8_000)),
+                    None,
+                ],
+            },
+            0,
+        ));
+    }
+    set_screen(&app, UNLOCKED, Screen::BtcSend);
+    {
+        let mut state = app.borrow_mut();
+        state.scroll = 360;
+        state.refresh();
+    }
+    save(main_hwnd(&app), "54-send-bitcoin-fee");
+    {
+        let mut state = app.borrow_mut();
+        state.btc.send = crate::app_btc::BtcSendForm::default();
+        state.btc.fee_quote = None;
+    }
     set_screen(&app, UNLOCKED, Screen::Main);
     {
         let mut state = app.borrow_mut();

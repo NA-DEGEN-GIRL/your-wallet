@@ -189,6 +189,8 @@ pub struct HcUi {
     pub api_text: Option<String>,
     /// Settings message.
     pub settings_message: Option<String>,
+    /// The S10 card was unfolded with `펼치기 ▸` (this run only, 2026-11-10).
+    pub unfolded: bool,
 }
 
 impl HcUi {
@@ -969,6 +971,7 @@ impl App {
             let mut settings = self.settings.clone();
             settings.evm_chain_id = chain_id;
             self.save_settings(settings, "evmChainId");
+            self.evm_balances_due();
         }
         self.evm.send = crate::app_evm::SendForm {
             asset: SendAsset::Native,
@@ -1182,6 +1185,8 @@ mod tests {
     fn card_activity_is_the_selected_accounts() {
         let mut app = app();
         app.screen = Screen::Main;
+        // Whole next to HyperEVM (the card folds to one line next to other chains, 2026-11-10).
+        app.settings.evm_chain_id = 999;
         for (account, amount) in [(OWN, "10 USDC"), (OTHER, "20 USDC")] {
             app.hypercore.activity.push(HcActivity {
                 network: HcNetwork::Mainnet,

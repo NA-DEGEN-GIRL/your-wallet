@@ -153,7 +153,8 @@ impl App {
             AppMode::NoVault => Screen::FirstRun,
             _ => Screen::Locked,
         };
-        self.set_screen(back.unwrap_or(fallback));
+        // `← 돌아가기` opens the screen where it was left (2026-11-10).
+        self.return_to(back.unwrap_or(fallback));
     }
 
     /// Commands of S23; `false` when `id` is not one of them.

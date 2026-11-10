@@ -1926,12 +1926,14 @@ impl KeyWorker {
     }
 }
 
-/// A default account entry for `계정 추가`.
+/// A default account entry for `계정 추가`: label `계정 {number}`, where the app passes the number
+/// one above the highest `계정 N` of every recovery phrase (`Meta::next_evm_number`, 2026-11-10;
+/// before, `index + 1` repeated `계정 1` once per phrase).
 #[must_use]
-pub fn new_account(index: u32, address: &yw_core::evm::address::Address) -> Account {
+pub fn new_account(index: u32, number: usize, address: &yw_core::evm::address::Address) -> Account {
     Account {
         index,
-        label: format!("계정 {}", index.saturating_add(1)),
+        label: format!("{}{number}", crate::meta::EVM_ACCOUNT_PREFIX),
         address: address.to_lower_hex(),
         hidden: false,
     }

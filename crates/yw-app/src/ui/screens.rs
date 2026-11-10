@@ -209,6 +209,14 @@ pub mod ids {
     pub const BTC_RPC_OPEN: u16 = 16_709;
     /// The Zcash tab's `RPC 설정하기`.
     pub const ZEC_RPC_OPEN: u16 = 16_710;
+    /// The EVM network card's failure band: `이 네트워크 RPC 테스트` (2026-11-10).
+    pub const EVM_RPC_TEST: u16 = 16_711;
+    /// The Solana network card's failure band: `이 네트워크 RPC 테스트`.
+    pub const SOL_RPC_TEST: u16 = 16_712;
+    /// The EVM failure band's `RPC 설정 열기` (that network's row, `open_rpc_row(_, false)`).
+    pub const EVM_RPC_ROW: u16 = 16_713;
+    /// The Solana failure band's `RPC 설정 열기`.
+    pub const SOL_RPC_ROW: u16 = 16_714;
     /// A failed network's link (S08 result lines, the RPC summary): `RPC_ROW_OPEN_BASE + row`
     /// of [`App::url_networks`](crate::app::App::url_networks) opens that row.
     pub const RPC_ROW_OPEN_BASE: u16 = 16_720;
@@ -303,6 +311,10 @@ pub mod ids {
         SOL_RPC_OPEN,
         BTC_RPC_OPEN,
         ZEC_RPC_OPEN,
+        EVM_RPC_TEST,
+        SOL_RPC_TEST,
+        EVM_RPC_ROW,
+        SOL_RPC_ROW,
     ];
 }
 
@@ -362,6 +374,51 @@ pub fn no_endpoint_text(network: &str) -> String {
     format!("이 네트워크({network})의 RPC 주소가 아직 없어 잔액을 읽을 수 없습니다.")
 }
 
+/// The selected-account card while its balance read failed (2026-11-10): the network card above
+/// says why and what to do, once.
+pub const T_BALANCE_FAILED: &str = "잔액을 읽지 못했습니다 — 위 네트워크 카드의 안내를 보세요.";
+/// Under the big balance while the first read of the network is on its way.
+pub const T_BALANCE_LOADING: &str = "잔액을 불러오는 중…";
+
+/// `HH:MM` in local time (UTC with a suffix if the conversion fails).
+#[must_use]
+pub fn local_hh_mm(unix_ms: u64) -> String {
+    let wall = yw_win::time::local_wall_ms(unix_ms);
+    let text = crate::logging::format_utc(wall.unwrap_or(unix_ms));
+    let time = text.get(11..16).unwrap_or("--:--").to_owned();
+    if wall.is_some() {
+        time
+    } else {
+        format!("{time} UTC")
+    }
+}
+
+/// The line under a balance read successfully: "블록 N 기준 · HH:MM 갱신" (EVM) or
+/// "HH:MM 갱신" (no block number).
+#[must_use]
+pub fn balance_read_text(block: Option<u64>, at_unix_ms: Option<u64>) -> String {
+    let when = at_unix_ms.map(|at| format!("{} 갱신", local_hh_mm(at)));
+    match (block, when) {
+        (Some(block), Some(when)) => format!("블록 {block} 기준 · {when}"),
+        (Some(block), None) => format!("블록 {block} 기준"),
+        (None, Some(when)) => when,
+        (None, None) => String::new(),
+    }
+}
+
+/// The network card's band of a failed balance read (2026-11-10): the code's whole §7 text, and
+/// where the balance below comes from when there is one (`last` = "블록 N에서", "HH:MM에").
+#[must_use]
+pub fn balance_failure_text(code: ErrorCode, last: Option<&str>) -> String {
+    match last {
+        Some(last) => format!(
+            "{} 아래 잔액은 {last} 마지막으로 읽은 값입니다.",
+            code.text()
+        ),
+        None => code.text(),
+    }
+}
+
 /// The empty activity cards (2026-11-08): received deposits are not listed (spec/04 §2.6).
 pub const T_ACTIVITY_RECEIVED: &str =
     "받은 입금은 이 목록에 나오지 않습니다. 선택 계정의 잔액(새로고침)으로 확인하세요.";
@@ -386,6 +443,8 @@ pub const T_DISCARD: &str = "폐기는 이 앱에서 추적만 멈추고 '폐기
 pub const T_TOKEN_DELETE: &str = "이 토큰을 이 네트워크의 토큰 목록에서 지웁니다. 토큰이나 잔액은 그대로이며 블록체인에는 아무것도 보내지 않습니다. 같은 컨트랙트 주소로 언제든 다시 추가할 수 있습니다. 지운 뒤 이 토큰의 활동 기록은 원시 단위로 보입니다.";
 /// The `내 계정` row of a wallet's only account: its address and balance are on the hero card.
 pub const T_SINGLE_ACCOUNT: &str = "주소와 잔액은 위 카드에 있습니다";
+/// Under the off `숨기기` of a recovery phrase's account 0 (EVM, Solana; 2026-11-10).
+pub const T_FIRST_ACCOUNT_KEPT: &str = "각 복구 단어의 첫 계정(…/0)은 숨길 수 없습니다.";
 /// Every chain's `받기` (S12) command.
 pub const RECEIVE_IDS: [u16; 3] = [
     crate::ui::screens_evm::ids::RECEIVE_OPEN,
@@ -1321,50 +1380,63 @@ impl App {
             return;
         };
         items.push(Item::CardStart(None));
-        items.push(Item::Subtitle(label));
-        items.push(Item::Help(match source {
-            yw_core::vault::EvmKeySource::Derived(index) => {
-                format!("m/44'/60'/0'/0/{}", index.get())
-            }
-            yw_core::vault::EvmKeySource::Mnemonic(id, index) => {
-                format!(
-                    "{} · m/44'/60'/0'/0/{}",
-                    self.mnemonic_label(id),
-                    index.get()
-                )
-            }
-            yw_core::vault::EvmKeySource::Raw(_) => "가져온 개인키".to_owned(),
-            yw_core::vault::EvmKeySource::Hardware(index) => format!(
-                "YubiKey · {}",
-                yw_core::yubikey::plan::KeyRole::Evm { index, btc: None }.path_text()
-            ),
-        }));
+        items.push(Item::Subtitle(self.evm_account_title(source, &label)));
+        items.push(Item::Help(self.evm_path_text(source)));
         self.mn_signing_banner(self.evm_backup_gate(source), items);
         let balance = self.native_balance(chain_id, &address);
         let state = self.evm.balances.get(&chain_id);
         let endpoint = self.apikeys.has(KeyName::Rpc(NetworkId::Eip155(chain_id)));
-        if let Some(value) = balance {
-            items.push(Item::Display(self.native_text(chain_id, &value)));
-            if let Some(block) = state
-                .and_then(|state| state.snapshot.as_ref())
-                .map(|snapshot| snapshot.block)
-            {
-                let mut caption = format!("블록 {block} 기준");
-                if let Some(code) = state.and_then(|state| state.error) {
-                    let _ = write!(caption, " · 갱신 실패 {}", code.code());
+        let blocked = self.evm.blocked(chain_id).is_some();
+        let error = state.and_then(|state| state.error);
+        let block = state
+            .and_then(|state| state.snapshot.as_ref())
+            .map(|snapshot| snapshot.block);
+        // Three states under the big balance (2026-11-10): loading, read at block N, or failed —
+        // the failure is explained once, by the network card above (`evm_balance_failure`).
+        match (balance, error) {
+            (Some(value), Some(code)) if blocked => {
+                // A blocked chain keeps its band and this caption (U17 and E-RPC-006 as before).
+                items.push(Item::Display(self.native_text(chain_id, &value)));
+                if let Some(block) = block {
+                    items.push(Item::Help(format!(
+                        "블록 {block} 기준 · 갱신 실패 {}",
+                        code.code()
+                    )));
                 }
-                items.push(Item::Help(caption));
             }
-        } else if endpoint {
-            items.push(Item::Display("잔액 —".to_owned()));
-            items.push(Item::Help(
-                "잔액을 아직 읽지 못했습니다. RPC 연결을 확인하고 새로고침하세요.".to_owned(),
-            ));
-        } else {
-            items.push(Item::Display("잔액 —".to_owned()));
-            items.push(Item::Help(no_endpoint_text(
-                &self.network_name(NetworkId::Eip155(chain_id)),
-            )));
+            (Some(value), Some(_)) => {
+                items.push(Item::DisplayMuted(self.native_text(chain_id, &value)));
+                items.push(Item::Help(T_BALANCE_FAILED.to_owned()));
+            }
+            (Some(value), None) => {
+                items.push(Item::Display(self.native_text(chain_id, &value)));
+                if let Some(block) = block {
+                    items.push(Item::Help(balance_read_text(
+                        Some(block),
+                        state.and_then(|state| state.updated_unix_ms),
+                    )));
+                }
+            }
+            (None, _) if !endpoint => {
+                items.push(Item::Display("잔액 —".to_owned()));
+                items.push(Item::Help(no_endpoint_text(
+                    &self.network_name(NetworkId::Eip155(chain_id)),
+                )));
+            }
+            (None, Some(_)) if !blocked => {
+                items.push(Item::Display("잔액 —".to_owned()));
+                items.push(Item::Help(T_BALANCE_FAILED.to_owned()));
+            }
+            (None, Some(_)) => {
+                items.push(Item::Display("잔액 —".to_owned()));
+                items.push(Item::Help(
+                    "잔액을 아직 읽지 못했습니다. RPC 연결을 확인하고 새로고침하세요.".to_owned(),
+                ));
+            }
+            (None, None) => {
+                items.push(Item::Display("잔액 —".to_owned()));
+                items.push(Item::Help(T_BALANCE_LOADING.to_owned()));
+            }
         }
         // The visible tokens with a balance, like the Solana tab's one-line summary.
         let tokens: Vec<String> = self
@@ -1406,9 +1478,8 @@ impl App {
         // T-ALT-PASS is drawn by `header` on every screen.
         self.tab_row(items);
         if self.sol_tab_active() {
-            if self.sol_cluster() == yw_core::sol::SolCluster::Mainnet {
-                items.push(Item::Banner(T_MAINNET.to_owned(), Tone::BtcMainnet));
-            }
+            // The cluster band is the tab's own (`sol_cluster_banner`, one per screen; 2026-11-10:
+            // a second T-MAINNET above the tab was drawn here since 11-08).
             self.sol_main_screen(items);
             return;
         }
@@ -1448,6 +1519,7 @@ impl App {
             items.push(Item::Banner(T_MAINNET.to_owned(), Tone::BtcMainnet));
         }
         self.evm_banners(items);
+        self.evm_balance_failure(items);
         items.push(Item::Help(self.evm_status_line()));
         items.push(Item::CardEnd);
         if self.account_rows().is_empty() && self.meta.is_some() {
@@ -1517,8 +1589,10 @@ impl App {
                     ]));
                 } else {
                     let mut row_ctls = vec![Ctl::button(ids::RENAME, "이름 바꾸기")];
+                    let mut first_of_phrase = false;
                     match pref {
                         EvmAccountPref::Index(index) | EvmAccountPref::Mnemonic(_, index) => {
+                            first_of_phrase = index == 0;
                             row_ctls.push(Ctl::button(ids::HIDE, "숨기기").enabled(index != 0));
                         }
                         EvmAccountPref::Record(_) => {
@@ -1534,6 +1608,10 @@ impl App {
                         }
                     }
                     items.push(Item::Row(row_ctls));
+                    if first_of_phrase {
+                        // Why `숨기기` is off (2026-11-10).
+                        items.push(Item::Help(T_FIRST_ACCOUNT_KEPT.to_owned()));
+                    }
                 }
             }
             items.push(Item::Gap(4));
@@ -2081,9 +2159,10 @@ impl App {
         self.advanced_toggle(items);
         items.push(Item::CardEnd);
         items.push(Item::CardStart(Some("정보".to_owned())));
+        // The installed commit says which build runs (2026-11-10, `build_info`).
         items.push(Item::Field(
             "버전".to_owned(),
-            env!("CARGO_PKG_VERSION").to_owned(),
+            crate::build_info::version_text(self.install_commit.as_deref()),
         ));
         items.push(Item::Field(
             "데이터 폴더".to_owned(),
@@ -2095,7 +2174,7 @@ impl App {
         )]));
         items.push(Item::Field(
             "단축키".to_owned(),
-            "Ctrl+L 잠금 · Ctrl+1 / 2 / 3 / 4 체인 탭(EVM·Solana·Bitcoin·Zcash) · Tab 다음 칸 · PgUp / PgDn 한 쪽 스크롤 · Ctrl+Home / End 맨 위·맨 아래"
+            "Ctrl+L 잠금 · Ctrl+1 / 2 / 3 / 4 체인 탭(EVM·Solana·Bitcoin·Zcash) · F5 새로고침 · Ctrl+, 설정 · Esc 뒤로·취소 · Tab 다음 칸 · PgUp / PgDn 한 쪽 스크롤 · Ctrl+Home / End 맨 위·맨 아래"
                 .to_owned(),
         ));
         items.push(Item::CardEnd);

@@ -300,10 +300,11 @@ pub struct ActivityRowView {
 }
 
 impl App {
-    /// The activity line of a recipient (2026-11-08, like Solana and Zcash): the full grouped
-    /// address and, display only, the address-book or own-account name. No copy button: the
+    /// The activity lines of a recipient (2026-11-08, like Solana and Zcash; 2026-11-10 the
+    /// address on its own `Mono` line, every chain): "받는 주소" with, display only, the
+    /// address-book or own-account name, then the full grouped address. No copy button: the
     /// activity list never offers its addresses for reuse (address poisoning).
-    fn recipient_line(&self, address: &Address) -> String {
+    fn recipient_items(&self, address: &Address, items: &mut Vec<Item>) {
         let lower = address.to_lower_hex();
         let name = self
             .meta
@@ -318,17 +319,34 @@ impl App {
                 self.account_rows()
                     .into_iter()
                     .find(|(_, _, shown, _)| shown.eq_ignore_ascii_case(&lower))
-                    .map(|(_, label, _, _)| format!(" → 내 계정: {label}"))
+                    .map(|(pref, label, _, _)| {
+                        format!(" → 내 계정: {}", self.evm_pref_title(pref, &label))
+                    })
             })
             .unwrap_or_default();
-        format!("받는 주소 {}{name}", format_address(address))
+        items.push(Item::Help(format!("받는 주소{name}")));
+        items.push(Item::Mono(format_address(address)));
+    }
+
+    /// An account row's name with its recovery phrase while the wallet has several.
+    fn evm_pref_title(&self, pref: crate::meta::EvmAccountPref, label: &str) -> String {
+        match pref {
+            crate::meta::EvmAccountPref::Index(_) => self.mnemonic_tagged(label, None),
+            crate::meta::EvmAccountPref::Mnemonic(id, _) => self.mnemonic_tagged(label, Some(id)),
+            crate::meta::EvmAccountPref::Record(_) | crate::meta::EvmAccountPref::Hardware(_) => {
+                label.to_owned()
+            }
+        }
     }
 
     fn account_label(&self, address: &str) -> String {
         self.account_rows()
             .into_iter()
             .find(|(_, _, shown, _)| shown.eq_ignore_ascii_case(address))
-            .map_or_else(|| address.to_owned(), |(_, label, _, _)| label)
+            .map_or_else(
+                || address.to_owned(),
+                |(pref, label, _, _)| self.evm_pref_title(pref, &label),
+            )
     }
 
     fn record_status(&self, record: &EvmRecord) -> String {
@@ -488,7 +506,8 @@ impl App {
             .get(&chain_id)
             .and_then(|state| state.error)
         {
-            format!("오류 {}", code.code())
+            // The code with its short name (2026-11-10: "오류 E-RPC-003" alone said nothing).
+            format!("오류 {}", code.code_with_name())
         } else if self.evm.chain_checks.contains_key(&chain_id) {
             "연결됨".to_owned()
         } else {
@@ -542,6 +561,103 @@ impl App {
                 "거래 저널이 손상되어 보내기를 멈췄습니다. (E-VLT-006)".to_owned(),
                 Tone::Blocked,
             ));
+        }
+    }
+
+    /// The network card's band of a failed balance read (2026-11-10, spec/04 §2.6): the code's
+    /// whole §7 text (network names only, no URL or host, §1.9), the block of the balance below,
+    /// `이 네트워크 RPC 테스트` (its answer in the same card as the three-state band of
+    /// settings) and `RPC 설정 열기`. Not for a network without an address (U17) or a blocked
+    /// chain: those keep their own lines.
+    pub fn evm_balance_failure(&self, items: &mut Vec<Item>) {
+        let chain_id = self.settings.evm_chain_id;
+        let network = NetworkId::Eip155(chain_id);
+        let Some(state) = self.evm.balances.get(&chain_id) else {
+            return;
+        };
+        let Some(code) = state.error else {
+            return;
+        };
+        if self.evm.blocked(chain_id).is_some()
+            || !self.apikeys.has(crate::apikeys::KeyName::Rpc(network))
+        {
+            return;
+        }
+        let last = state
+            .snapshot
+            .as_ref()
+            .map(|snapshot| format!("블록 {}에서", snapshot.block));
+        items.push(Item::Banner(
+            crate::ui::screens::balance_failure_text(code, last.as_deref()),
+            Tone::Danger,
+        ));
+        self.rpc_failure_buttons(
+            network,
+            crate::ui::screens::ids::EVM_RPC_TEST,
+            crate::ui::screens::ids::EVM_RPC_ROW,
+            items,
+        );
+    }
+
+    /// The two buttons under a network card's failure band, and the answer of its test.
+    pub(crate) fn rpc_failure_buttons(
+        &self,
+        network: NetworkId,
+        test: u16,
+        open: u16,
+        items: &mut Vec<Item>,
+    ) {
+        let testing =
+            self.rpc_tests.running == Some(network) || self.rpc_tests.waiting.contains(&network);
+        items.push(Item::Row(vec![
+            Ctl::button(test, "이 네트워크 RPC 테스트").enabled(!testing),
+            Ctl::button(open, "RPC 설정 열기"),
+        ]));
+        if let Some((_, message, state)) = self.rpc_messages.iter().find(|(id, ..)| *id == network)
+        {
+            items.push(Item::Banner(message.clone(), state.tone()));
+        }
+    }
+
+    /// The account name, with its recovery phrase when the wallet has several
+    /// (`계정 1  [복구 단어 2]`, 2026-11-10: two `계정 1` could not be told apart on the
+    /// selected-account card, S11, S12 and in the activity).
+    #[must_use]
+    pub fn evm_account_title(&self, source: yw_core::vault::EvmKeySource, label: &str) -> String {
+        match source {
+            yw_core::vault::EvmKeySource::Derived(_) => self.mnemonic_tagged(label, None),
+            yw_core::vault::EvmKeySource::Mnemonic(id, _) => {
+                self.mnemonic_tagged(label, Some(*id.as_bytes()))
+            }
+            yw_core::vault::EvmKeySource::Raw(_) | yw_core::vault::EvmKeySource::Hardware(_) => {
+                label.to_owned()
+            }
+        }
+    }
+
+    /// The path line of an EVM account: `{복구 단어} · m/44'/60'/0'/0/{i}` (the first phrase's
+    /// accounts too while the wallet has several), `가져온 개인키` or `YubiKey · …`.
+    #[must_use]
+    pub fn evm_path_text(&self, source: yw_core::vault::EvmKeySource) -> String {
+        match source {
+            yw_core::vault::EvmKeySource::Derived(index) => match self
+                .several_mnemonics()
+                .then(|| self.primary_mnemonic_label())
+                .flatten()
+            {
+                Some(name) => format!("{name} · m/44'/60'/0'/0/{}", index.get()),
+                None => format!("m/44'/60'/0'/0/{}", index.get()),
+            },
+            yw_core::vault::EvmKeySource::Mnemonic(id, index) => format!(
+                "{} · m/44'/60'/0'/0/{}",
+                self.mnemonic_label(id),
+                index.get()
+            ),
+            yw_core::vault::EvmKeySource::Raw(_) => "가져온 개인키".to_owned(),
+            yw_core::vault::EvmKeySource::Hardware(index) => format!(
+                "YubiKey · {}",
+                yw_core::yubikey::plan::KeyRole::Evm { index, btc: None }.path_text()
+            ),
         }
     }
 
@@ -605,7 +721,7 @@ impl App {
             items.push(Item::Text(row.head));
             items.push(Item::Help(format!("상태: {}", row.status)));
             if let Some(address) = &row.counterparty {
-                items.push(Item::Help(self.recipient_line(address)));
+                self.recipient_items(address, items);
             }
             items.push(Item::Mono(row.hash));
             let mut buttons = vec![Ctl::button(base, "해시 복사")];
@@ -865,7 +981,10 @@ impl App {
                 .map_or_else(String::new, |value| {
                     format!(" · 잔액 {}", self.native_text(chain_id, &value))
                 });
-            items.push(Item::Text(format!("{label}{balance}")));
+            items.push(Item::Text(format!(
+                "{}{balance}",
+                self.evm_account_title(source, &label)
+            )));
             items.push(Item::Mono(format_address(&account)));
             // U7: `검토` stays off while the phrase waits for its backup quiz.
             self.mn_signing_banner(self.evm_backup_gate(source), items);
@@ -943,12 +1062,25 @@ impl App {
         items.push(Item::CardEnd);
         items.push(Item::CardStart(Some("보낼 자산과 금액".to_owned())));
         let mut assets = Vec::new();
-        let native_symbol = self
-            .active_chain()
-            .map_or_else(|| "ETH".to_owned(), |chain| chain.native_symbol);
+        let (native_symbol, native_decimals) = self.active_chain().map_or_else(
+            || ("ETH".to_owned(), 18),
+            |chain| (chain.native_symbol, chain.native_decimals),
+        );
+        // The native asset shows its holding like the tokens (2026-11-10).
+        let native_held = self
+            .selected_account()
+            .and_then(|(account, ..)| self.native_balance(chain_id, &account));
         assets.push(Ctl::radio(
             ids::SEND_ASSET_BASE,
-            &native_symbol,
+            &native_held.map_or_else(
+                || format!("{native_symbol} · 잔액 모름"),
+                |value| {
+                    format!(
+                        "{native_symbol} · {}",
+                        format_units(&value, native_decimals)
+                    )
+                },
+            ),
             form.asset == SendAsset::Native,
             true,
         ));
@@ -1002,18 +1134,37 @@ impl App {
                 format_address(&token)
             )));
         }
+        // The unit next to the field and a `최대` note for the chosen asset (2026-11-10).
+        let (_, asset_symbol) = self.send_asset_meta();
         items.push(Item::LabeledRow(
-            "금액".to_owned(),
+            format!("금액 ({asset_symbol})"),
             vec![
                 Ctl::edit(ids::SEND_AMOUNT_EDIT, &form.amount_text, 260, false, 128),
                 Ctl::button(ids::SEND_MAX, "최대"),
             ],
         ));
-        items.push(Item::Help(
-            "숫자와 소수점만 씁니다(예: 0.01). '최대'는 수수료를 뺀 잔액 전부입니다.".to_owned(),
-        ));
+        items.push(Item::Help(match form.asset {
+            SendAsset::Native => {
+                "숫자와 소수점만 씁니다(예: 0.01). '최대'는 수수료를 뺀 잔액 전부입니다.".to_owned()
+            }
+            SendAsset::Token(_) => format!(
+                "숫자와 소수점만 씁니다(예: 0.01). '최대'는 이 토큰 잔액 전부입니다. 수수료는 {native_symbol}로 따로 냅니다."
+            ),
+        }));
         if let Some(code) = form.amount_error {
             items.push(Item::Banner(code.text(), Tone::Danger));
+            // E-INP-012 of a token send whose amount the token balance covers: the native fee is
+            // what is missing (2026-11-10; the text and code stay §7's).
+            if let SendAsset::Token(token) = form.asset
+                && code == ErrorCode::Inp012
+                && let (Some(amount), Some(held)) =
+                    (form.amount, self.token_balance(chain_id, &token))
+                && amount <= held
+            {
+                items.push(Item::Help(format!(
+                    "수수료를 낼 {native_symbol}이(가) 부족합니다 — 이 계정에 {native_symbol}을(를) 먼저 받으세요."
+                )));
+            }
         }
         if let (Some(quote), Some(chain)) = (&form.quote, self.active_chain()) {
             let line = quote.line(&chain);
@@ -1022,7 +1173,18 @@ impl App {
                 .map_or((line.as_str(), None), |(head, tail)| {
                     (head, Some(tail.trim_end_matches(')')))
                 });
-            items.push(Item::Text(summary.to_owned()));
+            match form.asset {
+                SendAsset::Native => items.push(Item::Text(summary.to_owned())),
+                // A token send pays its fee in the native asset: what it costs and what the
+                // account holds of it, side by side.
+                SendAsset::Token(_) => items.push(Item::Text(format!(
+                    "{summary} (보유 {})",
+                    native_held.map_or_else(
+                        || "잔액 모름".to_owned(),
+                        |value| format_amount(&value, native_decimals, &native_symbol)
+                    )
+                ))),
+            }
             if self.show_advanced
                 && let Some(detail) = detail
             {
@@ -1189,7 +1351,8 @@ impl App {
         items.push(Item::Badged(
             self.evm_badge(chain_id),
             Box::new(Item::Subtitle(format!(
-                "{label} · {}",
+                "{} · {}",
+                self.evm_account_title(source, &label),
                 self.network_name(NetworkId::Eip155(chain_id))
             ))),
         ));
@@ -1244,23 +1407,7 @@ impl App {
         items.push(Item::Qr(crate::ui::qr::evm_receive_payload(
             &address, chain_id, kind,
         )));
-        items.push(Item::Help(match source {
-            yw_core::vault::EvmKeySource::Derived(index) => {
-                format!("m/44'/60'/0'/0/{}", index.get())
-            }
-            yw_core::vault::EvmKeySource::Mnemonic(id, index) => {
-                format!(
-                    "{} · m/44'/60'/0'/0/{}",
-                    self.mnemonic_label(id),
-                    index.get()
-                )
-            }
-            yw_core::vault::EvmKeySource::Raw(_) => "가져온 개인키".to_owned(),
-            yw_core::vault::EvmKeySource::Hardware(index) => format!(
-                "YubiKey · {}",
-                yw_core::yubikey::plan::KeyRole::Evm { index, btc: None }.path_text()
-            ),
-        }));
+        items.push(Item::Help(self.evm_path_text(source)));
         items.push(Item::CardEnd);
     }
 

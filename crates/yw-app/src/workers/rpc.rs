@@ -388,6 +388,7 @@ impl RpcWorker {
             block,
             native,
             tokens: token_balances,
+            token_owner: *owner,
         })
     }
 

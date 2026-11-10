@@ -543,13 +543,24 @@ pub const SOL_IMPORTED_PREFIX: &str = "가져온 Solana ";
 /// among the existing default labels (`len + 1` repeated a number after a removal).
 #[must_use]
 pub fn next_imported_label<'a>(prefix: &str, labels: impl IntoIterator<Item = &'a str>) -> String {
-    let highest = labels
+    format!("{prefix}{}", next_label_number(prefix, labels))
+}
+
+/// One more than the highest `N` of the labels `prefix` + `N` (1 when there is none).
+#[must_use]
+pub fn next_label_number<'a>(prefix: &str, labels: impl IntoIterator<Item = &'a str>) -> usize {
+    labels
         .into_iter()
         .filter_map(|label| label.strip_prefix(prefix)?.parse::<usize>().ok())
         .max()
-        .unwrap_or(0);
-    format!("{prefix}{}", highest.saturating_add(1))
+        .unwrap_or(0)
+        .saturating_add(1)
 }
+
+/// Default label prefix of a new EVM account of any recovery phrase (`계정 N`).
+pub const EVM_ACCOUNT_PREFIX: &str = "계정 ";
+/// Default label prefix of a new Solana account of any recovery phrase (`Solana N`).
+pub const SOL_ACCOUNT_PREFIX: &str = "Solana ";
 
 /// An imported raw EVM key (`RawAccount`).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1542,6 +1553,47 @@ impl Meta {
                 })
                 .collect(),
         )
+    }
+
+    /// Every EVM account label: the first recovery phrase's, the added phrases', imported keys'
+    /// and `YubiKey` accounts' (hidden ones too).
+    pub fn evm_labels(&self) -> impl Iterator<Item = &str> {
+        self.evm_accounts
+            .iter()
+            .chain(self.mnemonics.iter().flat_map(|entry| entry.evm.iter()))
+            .chain(self.hw_accounts.evm.iter())
+            .map(|account| account.label.as_str())
+            .chain(self.evm_raw_accounts.iter().map(|raw| raw.label.as_str()))
+    }
+
+    /// The number of a new EVM account's default label `계정 N`: one above the highest `계정 N`
+    /// of every recovery phrase (2026-11-10: each phrase's first account was `계정 1`, so the
+    /// same name appeared once per phrase). Stored names are never changed.
+    #[must_use]
+    pub fn next_evm_number(&self) -> usize {
+        next_label_number(EVM_ACCOUNT_PREFIX, self.evm_labels())
+    }
+
+    /// Every Solana account label (all phrases, imported keys, `YubiKey` accounts).
+    pub fn sol_labels(&self) -> impl Iterator<Item = &str> {
+        self.sol_accounts
+            .iter()
+            .chain(
+                self.mnemonic_accounts
+                    .sol
+                    .iter()
+                    .map(|(_, account)| account),
+            )
+            .chain(self.hw_accounts.sol.iter())
+            .map(|account| account.label.as_str())
+            .chain(self.sol_raw_accounts.iter().map(|raw| raw.label.as_str()))
+    }
+
+    /// The default label of a new Solana account: `Solana N`, one above the highest of every
+    /// recovery phrase (like [`Meta::next_evm_number`]).
+    #[must_use]
+    pub fn next_sol_label(&self) -> String {
+        next_imported_label(SOL_ACCOUNT_PREFIX, self.sol_labels())
     }
 
     /// The next Solana standard index (largest + 1, or 0 for the first account), `None` at the
