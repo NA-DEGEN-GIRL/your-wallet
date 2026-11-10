@@ -74,6 +74,9 @@ pub mod ids {
     pub const TOKEN_OPEN: u16 = 904;
     /// 설정에서 다시 고정.
     pub const REPIN_SETTINGS: u16 = 905;
+    /// S10 network drop-down: opens / closes the list (2026-11-11; the entries keep the chip
+    /// ids `screens::ids::NETWORK_BASE`…).
+    pub const NETWORK_PICKER: u16 = 906;
     /// Recipient edit.
     pub const SEND_TO_EDIT: u16 = 910;
     /// Amount edit.
@@ -106,6 +109,11 @@ pub mod ids {
     pub const QR_EIP681: u16 = 1_001;
     /// Receive QR: the bare address (`ui::qr::EvmQrKind::PlainAddress`).
     pub const QR_PLAIN: u16 = 1_002;
+    /// Token card `주소 복사` of the contract (one per row, indexed like [`TOKEN_ROW_BASE`];
+    /// 2026-11-11).
+    pub const TOKEN_COPY_BASE: u16 = 1_010;
+    /// Token contract copy span (120 rows).
+    pub const TOKEN_COPY_SPAN: u16 = 120;
     /// Token address edit.
     pub const TOKEN_ADDR_EDIT: u16 = 2_100;
     /// 조회.
@@ -229,6 +237,7 @@ pub mod ids {
         BOOK_OPEN,
         TOKEN_OPEN,
         REPIN_SETTINGS,
+        NETWORK_PICKER,
         SEND_TO_EDIT,
         SEND_AMOUNT_EDIT,
         SEND_MAX,
@@ -538,6 +547,20 @@ impl App {
         name
     }
 
+    /// The S10 network drop-down's text of a chain (2026-11-11): [`App::network_label`] with
+    /// `(메인넷)` after a built-in mainnet whose name does not say so (`Arbitrum One (메인넷)`;
+    /// `Sepolia 테스트넷` and `Ethereum 메인넷` already do; user chains carry no such flag).
+    #[must_use]
+    pub fn network_choice_label(&self, chain_id: u64) -> String {
+        let name = self.network_name(NetworkId::Eip155(chain_id));
+        let label = self.network_label(chain_id);
+        if yw_core::evm::chain::is_builtin_mainnet(chain_id) && !name.contains("메인넷") {
+            label.replacen(&name, &format!("{name} (메인넷)"), 1)
+        } else {
+            label
+        }
+    }
+
     /// The badge of an EVM chain (user chains: from their name).
     #[must_use]
     pub fn evm_badge(&self, chain_id: u64) -> Badge {
@@ -799,10 +822,14 @@ impl App {
             && self
                 .apikeys
                 .has(crate::apikeys::KeyName::Rpc(NetworkId::Eip155(chain_id)));
-        for row in shown {
+        for (position, row) in shown.into_iter().enumerate() {
+            if position > 0 {
+                items.push(Item::Rule);
+            }
             Self::evm_token_row(items, row, false, can_send);
         }
         if !rows.is_empty() {
+            items.push(Item::Rule);
             items.push(Item::Row(vec![Ctl::check(
                 ids::TOKEN_HIDE_ZERO,
                 "잔액 0인 토큰 숨기기",
@@ -827,7 +854,10 @@ impl App {
             )]));
             if open {
                 items.push(Item::Help(T_TOKEN_HIDDEN_NOTE.to_owned()));
-                for row in hidden {
+                for (position, row) in hidden.into_iter().enumerate() {
+                    if position > 0 {
+                        items.push(Item::Rule);
+                    }
                     Self::evm_token_row(items, row, true, false);
                 }
             }
@@ -836,58 +866,70 @@ impl App {
         items.push(Item::CardEnd);
     }
 
-    /// One token row: label and balance (dimmed when hidden), the full contract, and its
-    /// buttons: `{기호} 보내기` (a visible row with a balance, like the Solana token card) and
-    /// the hide/delete links. Registry tokens have no `삭제`.
+    /// One token row (2026-11-11, a list a person can scan): the symbol bold with the token's
+    /// name small and muted after it, the balance (amount and symbol only) right-aligned; under
+    /// it the contract shortened `0x0Bd7…AD73` (its ends emphasized like the account card's
+    /// address) and small actions — `보내기` (a visible row with a balance, like the Solana
+    /// token card), `주소 복사` (the whole contract) and `숨기기`/`다시 보이기`; user tokens
+    /// also `삭제`. Hidden rows are muted, their note ending in `숨김`.
     fn evm_token_row(items: &mut Vec<Item>, row: &EvmTokenRow, hidden: bool, can_send: bool) {
         use ids::{TokenAction, token_row_id};
         let balance = row.balance.map_or_else(
             || "잔액 알 수 없음".to_owned(),
-            |value| format_amount(&value, row.decimals, &row.symbol),
+            |value| format_amount(&value, row.decimals, &row.ticker),
         );
-        let label = if row.registered {
-            row.symbol.clone()
-        } else {
-            format!("{} (사용자 추가)", row.symbol)
+        let note = match (row.name.is_empty(), hidden) {
+            (true, false) => String::new(),
+            (true, true) => "숨김".to_owned(),
+            (false, false) => row.name.clone(),
+            (false, true) => format!("{} · 숨김", row.name),
         };
-        if hidden {
-            items.push(Item::Muted(format!("{label} · {balance} · 숨김")));
-        } else {
-            items.push(Item::Field(label, balance));
-        }
-        items.push(Item::Mono(format_address(&row.address)));
+        items.push(Item::ListRow {
+            title: row.ticker.clone(),
+            note,
+            value: balance,
+            dim: hidden,
+        });
+        let offset = u16::try_from(row.index).ok();
         let mut buttons = Vec::new();
-        if !hidden
-            && let Some(offset) = u16::try_from(row.index)
-                .ok()
-                .filter(|offset| *offset < ids::TOKEN_SEND_SPAN)
-        {
+        if !hidden && let Some(offset) = offset.filter(|offset| *offset < ids::TOKEN_SEND_SPAN) {
             buttons.push(
-                Ctl::link(
-                    ids::TOKEN_SEND_BASE.saturating_add(offset),
-                    &format!("{} 보내기", row.symbol),
-                )
-                .enabled(can_send && row.balance.is_some_and(|value| !value.is_zero())),
+                Ctl::link(ids::TOKEN_SEND_BASE.saturating_add(offset), "보내기")
+                    .compact()
+                    .enabled(can_send && row.balance.is_some_and(|value| !value.is_zero())),
+            );
+        }
+        if let Some(offset) = offset.filter(|offset| *offset < ids::TOKEN_COPY_SPAN) {
+            buttons.push(
+                Ctl::link(ids::TOKEN_COPY_BASE.saturating_add(offset), "주소 복사").compact(),
             );
         }
         if let Some(id) = token_row_id(TokenAction::ToggleHidden(row.index)) {
-            buttons.push(Ctl::link(
-                id,
-                if hidden {
-                    "다시 보이기"
-                } else {
-                    "숨기기"
-                },
-            ));
+            buttons.push(
+                Ctl::link(
+                    id,
+                    if hidden {
+                        "다시 보이기"
+                    } else {
+                        "숨기기"
+                    },
+                )
+                .compact(),
+            );
         }
         if !row.registered
             && let Some(id) = token_row_id(TokenAction::Delete(row.index))
         {
-            buttons.push(Ctl::danger(id, "삭제"));
+            buttons.push(Ctl::danger(id, "삭제").compact());
         }
-        if !buttons.is_empty() {
-            items.push(Item::Row(buttons));
-        }
+        items.push(Item::AddressRow(
+            crate::ui::theme::own_address_spans(
+                &row.address.to_checksum(),
+                crate::ui::theme::AddressKind::Evm,
+                true,
+            ),
+            buttons,
+        ));
     }
 
     /// The explorer base URL: the user chain's, else the built-in chain's (spec/03 §1.1).

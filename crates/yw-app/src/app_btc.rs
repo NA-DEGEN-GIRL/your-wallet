@@ -1988,6 +1988,33 @@ impl BtcUi {
         self.request_receive(ctx, true, false)
     }
 
+    /// The address the selected account card shows (2026-11-11, spec/04 §2.6): the one S12
+    /// would show, **without issuing** one — `(Receive, 0)` for a one-key account and for
+    /// fixed-address mode once issued, the smallest issued unused receive index in HD mode
+    /// (`BtcMeta::receive_address` without its side effect). `None` when `받기` would have to
+    /// issue a new index first: rendering never writes meta.
+    #[must_use]
+    pub fn card_address(meta: &BtcMeta) -> Option<String> {
+        let next = meta.receive_next();
+        let index = if meta.is_single() {
+            0
+        } else if meta.fixed_address() {
+            if next == 0 {
+                return None;
+            }
+            0
+        } else {
+            let start = next.saturating_sub(meta.unused_receive_tail());
+            if start >= next {
+                return None;
+            }
+            start
+        };
+        meta.address(BtcChain::Receive, index)
+            .ok()
+            .map(|address| address.as_str().to_owned())
+    }
+
     /// The S12 view of `meta`'s receive address `index` (address, path, mode and explanation).
     #[must_use]
     pub fn receive_view(meta: &BtcMeta, index: u32) -> Option<BtcReceiveView> {
@@ -4155,7 +4182,23 @@ impl crate::app::App {
     /// Copies the receive address (plain clipboard, not a secret).
     pub fn btc_copy_address(&mut self) {
         if let Some(address) = self.btc.receive.as_ref().map(|view| view.address.clone()) {
-            self.copy_text(&address);
+            self.copy_address_text(&address);
+        }
+    }
+
+    /// The selected account card's address ([`BtcUi::card_address`]), only while the tab is
+    /// usable (the gate `받기` checks: unlocked, no network mismatch, …).
+    #[must_use]
+    pub fn btc_card_address(&self) -> Option<String> {
+        let ctx = self.btc_ctx();
+        ctx.gate().ok()?;
+        ctx.btc_meta().and_then(BtcUi::card_address)
+    }
+
+    /// The account card's `주소 복사` (2026-11-11): the address that card shows.
+    pub fn btc_copy_card_address(&mut self) {
+        if let Some(address) = self.btc_card_address() {
+            self.copy_address_text(&address);
         }
     }
 

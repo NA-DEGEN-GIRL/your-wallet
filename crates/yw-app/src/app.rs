@@ -3820,6 +3820,8 @@ impl App {
             .filter(|offset| *offset < ids::NETWORK_SPAN)
         {
             let chains = self.settings.registered_evm();
+            // A choice closes the S10 network drop-down (2026-11-11).
+            self.evm.network_picker = false;
             if let Some(chain_id) = chains.get(usize::from(index)).copied() {
                 let mut settings = self.settings.clone();
                 settings.evm_chain_id = chain_id;

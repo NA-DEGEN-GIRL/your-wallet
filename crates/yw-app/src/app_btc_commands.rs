@@ -263,14 +263,8 @@ impl App {
                 self.btc.bump = BtcBumpForm::default();
                 self.return_to(Screen::Main);
             }
-            ids::COPY_ADDRESS => {
-                self.btc_copy_address();
-                if self.info.as_deref() == Some("복사했습니다.") {
-                    self.info = Some(
-                        "주소를 복사했습니다. 붙여넣은 곳에서 주소 전체를 확인하세요.".to_owned(),
-                    );
-                }
-            }
+            ids::COPY_ADDRESS => self.btc_copy_address(),
+            ids::CARD_COPY => self.btc_copy_card_address(),
             ids::NEW_ADDRESS => self.btc_new_receive_address(),
             ids::ENABLE => self.btc_toggle_enabled(),
             ids::SET_MAINNET => self.btc_settings_network(BtcNetwork::Mainnet),

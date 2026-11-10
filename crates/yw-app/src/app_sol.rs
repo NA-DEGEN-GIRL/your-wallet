@@ -2053,10 +2053,11 @@ impl App {
 
     // ----- receive, book, scan --------------------------------------------------------------
 
-    /// Copies the selected address (not a secret: plain clipboard, spec/07 §12.3).
+    /// Copies the selected address (not a secret: plain clipboard, spec/07 §12.3) — S12 and the
+    /// S10 account card, with the same note as the other chains (2026-11-11).
     pub fn sol_copy_address(&mut self) {
         if let Some((_, _, address)) = self.sol_selected() {
-            self.copy_text(&address.to_base58());
+            self.copy_address_text(&address.to_base58());
         }
     }
 

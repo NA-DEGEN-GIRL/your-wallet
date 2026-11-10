@@ -166,6 +166,15 @@ impl App {
             self.refresh();
             return true;
         }
+        if let Some(index) = offset(id, ids::TOKEN_COPY_BASE, ids::TOKEN_COPY_SPAN) {
+            // The token card's `주소 복사`: the allowlist row's whole mint (2026-11-11).
+            if let Some(entry) =
+                yw_core::sol::template::spl_entries(self.sol_cluster()).nth(usize::from(index))
+            {
+                self.copy_address_text(&entry.mint.to_base58());
+            }
+            return true;
+        }
         if let Some(row) = offset(id, ids::ACTIVITY_COPY_BASE, ids::ACTIVITY_COPY_SPAN) {
             if let Some(tx_id) = self.sol_activity_tx_ids().get(usize::from(row)) {
                 self.copy_text(tx_id);

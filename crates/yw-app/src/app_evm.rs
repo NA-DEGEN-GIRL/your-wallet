@@ -362,6 +362,8 @@ pub struct EvmUi {
     pub window: Option<crate::app_approval::ApprovalUi>,
     /// What the S12 receive QR encodes (session only, spec/04 §2.8).
     pub receive_qr: crate::ui::qr::EvmQrKind,
+    /// The S10 network drop-down is open (2026-11-11; session only, closed by a choice).
+    pub network_picker: bool,
 }
 
 impl EvmUi {
@@ -1844,6 +1846,17 @@ impl App {
             });
         }
         self.refresh();
+    }
+
+    /// `주소 복사` of every chain (S12, the S10 account cards; 2026-11-11 one path): the plain
+    /// copy of [`App::copy_text`], and on success its note becomes "주소를 복사했습니다. 붙여넣은
+    /// 곳에서 주소 전체를 확인하세요." (a failure keeps E-SEC-002).
+    pub fn copy_address_text(&mut self, address: &str) {
+        self.copy_text(address);
+        if self.info.as_deref() == Some("복사했습니다.") {
+            self.info = Some(crate::ui::screens::T_ADDRESS_COPIED.to_owned());
+            self.refresh();
+        }
     }
 
     // ----- tokens (S16) ---------------------------------------------------------------------
