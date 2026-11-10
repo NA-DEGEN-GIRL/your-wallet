@@ -45,8 +45,9 @@ use crate::text::{hash32_text, is_valid_label, json_object, json_str};
 use crate::ui::approval::{ApprovalQueue, QueueOutcome, QueueSource};
 use crate::workers::rpc::RpcJob;
 
-/// Balance refresh while S10 is visible (spec/04 §2.6).
-pub const BALANCE_REFRESH_MS: u64 = 60_000;
+/// Balance refresh while S10 is visible and the window is not hidden or minimized
+/// (spec/04 §2.6; 15 s since 2026-11-11, was 60 s).
+pub const BALANCE_REFRESH_MS: u64 = 15_000;
 /// Send-form validation after typing stops (spec/04 §2.7).
 pub const SEND_DEBOUNCE_MS: u64 = 500;
 /// Activity rows shown.
@@ -1313,6 +1314,7 @@ impl App {
         if matches!(self.mode, AppMode::Unlocked { .. })
             && matches!(self.screen, Screen::Main)
             && now >= self.evm.next_balance_ms
+            && !self.main_hidden()
         {
             self.refresh_balances();
         }

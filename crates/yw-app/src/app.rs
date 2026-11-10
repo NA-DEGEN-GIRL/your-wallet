@@ -1617,6 +1617,15 @@ impl App {
         }
     }
 
+    /// The main window exists and is hidden or minimized: periodic balance reads pause
+    /// (2026-11-11); showing it again reads at the next tick. No window (tests) is not hidden.
+    #[must_use]
+    pub fn main_hidden(&self) -> bool {
+        self.main
+            .as_ref()
+            .is_some_and(Window::is_hidden_or_minimized)
+    }
+
     fn tick(&mut self) {
         let now = now_ms();
         self.drain_events();
@@ -4366,6 +4375,32 @@ impl App {
         // Every new address is tested, one at a time (2026-11-10).
         self.queue_rpc_tests(&written);
         Some(written)
+    }
+
+    /// Gives every network of the URL list that has no address the selected template's address,
+    /// when that template's credential is stored (2026-11-11): at start (a chain added by an
+    /// update) and after an `rpc.json` import (a file with one `QuickNode` URL fills them all).
+    /// A stored address is never replaced. Returns the networks written; nothing on a failed
+    /// save (E-APP-002).
+    pub fn fill_template_gaps(&mut self) -> Vec<NetworkId> {
+        let template = self.settings.rpc_template;
+        let Some(credential) = self.apikeys.credential(template) else {
+            return Vec::new();
+        };
+        let (targets, _) = self.generation_plan();
+        let written =
+            self.apikeys
+                .generate_urls(template, &credential, &self.settings, &targets, false);
+        drop(credential);
+        if written.is_empty() || !self.save_apikeys() {
+            return Vec::new();
+        }
+        for network in &written {
+            logging::info("app", "rpc.generated", &[("net", Field::Net(*network))]);
+            self.rpc_messages.retain(|(id, _, _)| id != network);
+            self.network_url_changed(*network);
+        }
+        written
     }
 
     fn save_replacement(&mut self) {

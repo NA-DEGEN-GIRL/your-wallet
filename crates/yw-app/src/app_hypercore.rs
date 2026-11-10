@@ -32,7 +32,7 @@ use crate::ui::approval::{QueueOutcome, QueueSource};
 use crate::workers::rpc::RpcJob;
 
 /// Balance refresh while the card or S-HC is visible.
-pub const HC_REFRESH_MS: u64 = 60_000;
+pub const HC_REFRESH_MS: u64 = 15_000;
 /// Session activity rows kept.
 const MAX_ACTIVITY: usize = 50;
 /// S-HC while the balances load (a status, not an input error).
@@ -355,7 +355,10 @@ impl App {
             .hypercore
             .loaded_ms
             .is_none_or(|at| now.saturating_sub(at) >= HC_REFRESH_MS);
-        if due && matches!(self.screen, Screen::Main | Screen::HyperCore) && !self.hypercore.loading
+        if due
+            && matches!(self.screen, Screen::Main | Screen::HyperCore)
+            && !self.hypercore.loading
+            && !self.main_hidden()
         {
             self.hc_refresh();
         }

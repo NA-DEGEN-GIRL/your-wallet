@@ -47,12 +47,12 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     FlashWindowEx, GA_ROOT, GWLP_USERDATA, GetAncestor, GetClientRect, GetForegroundWindow,
     GetMessageW, GetScrollInfo, GetWindowDisplayAffinity, GetWindowLongPtrW,
     GetWindowThreadProcessId, HICON, HWND_NOTOPMOST, HWND_TOPMOST, IDC_ARROW, IDI_APPLICATION,
-    IMAGE_ICON, IsChild, IsDialogMessageW, IsIconic, KillTimer, LR_DEFAULTCOLOR, LoadCursorW,
-    LoadIconW, LoadImageW, MB_ICONERROR, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK, MINMAXINFO,
-    MSG, MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassExW, SB_VERT, SCROLLINFO,
-    SIF_DISABLENOSCROLL, SIF_PAGE, SIF_POS, SIF_RANGE, SIF_TRACKPOS, SM_CXICON, SM_CXSMICON,
-    SM_CYICON, SM_CYSMICON, SPI_GETWHEELSCROLLLINES, SW_HIDE, SW_INVALIDATE, SW_RESTORE,
-    SW_SCROLLCHILDREN, SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    IMAGE_ICON, IsChild, IsDialogMessageW, IsIconic, IsWindowVisible, KillTimer, LR_DEFAULTCOLOR,
+    LoadCursorW, LoadIconW, LoadImageW, MB_ICONERROR, MB_ICONINFORMATION, MB_ICONWARNING, MB_OK,
+    MINMAXINFO, MSG, MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassExW, SB_VERT,
+    SCROLLINFO, SIF_DISABLENOSCROLL, SIF_PAGE, SIF_POS, SIF_RANGE, SIF_TRACKPOS, SM_CXICON,
+    SM_CXSMICON, SM_CYICON, SM_CYSMICON, SPI_GETWHEELSCROLLLINES, SW_HIDE, SW_INVALIDATE,
+    SW_RESTORE, SW_SCROLLCHILDREN, SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
     SYSTEM_METRICS_INDEX, ScrollWindowEx, SendMessageW, SetForegroundWindow, SetTimer,
     SetWindowDisplayAffinity, SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow,
     SystemParametersInfoW, TranslateMessage, WDA_EXCLUDEFROMCAPTURE, WM_APP, WM_CHAR, WM_CREATE,
@@ -717,6 +717,17 @@ impl Window {
         let iconic = unsafe { IsIconic(hwnd) } != 0;
         // SAFETY: Shows our live window handle.
         unsafe { ShowWindow(hwnd, if iconic { SW_RESTORE } else { SW_SHOW }) };
+    }
+
+    /// Whether the window is hidden or minimized (a destroyed window counts as hidden): the
+    /// app pauses its periodic balance reads meanwhile.
+    #[must_use]
+    pub fn is_hidden_or_minimized(&self) -> bool {
+        let Some(hwnd) = self.live() else { return true };
+        // SAFETY: Queries the visibility of our live window handle.
+        let visible = unsafe { IsWindowVisible(hwnd) } != 0;
+        // SAFETY: Queries the minimized state of our live window handle.
+        !visible || unsafe { IsIconic(hwnd) } != 0
     }
 
     /// Hides the window.

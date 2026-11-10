@@ -270,6 +270,9 @@ fn main() -> ExitCode {
                 &[("code", Field::Code(ErrorCode::Key001))],
             );
             state.banner(Some(ErrorCode::Key001), ErrorCode::Key001.text());
+        } else {
+            // Networks added since the addresses were made get the template's address.
+            state.fill_template_gaps();
         }
         if wer_unprotected {
             // Review L9: crash dumps are possible; say so instead of only logging it.

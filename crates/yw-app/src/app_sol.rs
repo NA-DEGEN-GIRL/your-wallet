@@ -41,7 +41,7 @@ use crate::workers::journal::sol_network;
 use crate::workers::rpc::RpcJob;
 
 /// Balance refresh while the Solana tab is visible (spec/04 §2.6).
-pub const SOL_BALANCE_REFRESH_MS: u64 = 60_000;
+pub const SOL_BALANCE_REFRESH_MS: u64 = 15_000;
 /// Send-form validation after typing stops.
 pub const SOL_SEND_DEBOUNCE_MS: u64 = 500;
 /// Activity rows shown.
@@ -1211,6 +1211,7 @@ impl App {
             && on_tab
             && matches!(self.screen, Screen::Main)
             && now >= self.sol.next_balance_ms
+            && !self.main_hidden()
         {
             self.sol_refresh_balances();
         }

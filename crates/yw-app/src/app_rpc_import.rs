@@ -445,23 +445,33 @@ impl App {
         if applied.template {
             text.push_str(" 모두 같은 QuickNode 엔드포인트라 RPC 공급자를 'QuickNode 멀티체인'으로 하고 이름·토큰을 템플릿 자격 정보로 저장했습니다.");
         }
-        // Every imported address is tested in turn (2026-11-10).
-        if !applied.written.is_empty() {
+        if applied.template && self.settings.rpc_template != RpcTemplate::QuickNode {
+            let mut settings = self.settings.clone();
+            settings.rpc_template = RpcTemplate::QuickNode;
+            self.save_settings(settings, "rpc.template");
+        }
+        // The networks the file did not list get the template's address (2026-11-11): one
+        // QuickNode URL is enough for every chain.
+        let filled = self.fill_template_gaps();
+        if !filled.is_empty() {
+            let _ = write!(
+                text,
+                " 파일에 없던 {}개 네트워크는 저장된 RPC 공급자 템플릿으로 주소를 만들었습니다.",
+                filled.len()
+            );
+        }
+        // Every imported or made address is tested in turn (2026-11-10).
+        if !applied.written.is_empty() || !filled.is_empty() {
             text.push_str(" 연결을 확인하는 중입니다 — 결과는 아래 각 행에 나옵니다.");
         }
         text.push(' ');
         text.push_str(T_IMPORT_KEPT);
         self.info = Some(text);
         self.queue_rpc_tests(&applied.written);
+        self.queue_rpc_tests(&filled);
         // The plaintext source is still there: the card moves up and recommends deleting it.
         self.rpc_import.imported = true;
-        if applied.template && self.settings.rpc_template != RpcTemplate::QuickNode {
-            let mut settings = self.settings.clone();
-            settings.rpc_template = RpcTemplate::QuickNode;
-            self.save_settings(settings, "rpc.template");
-        } else {
-            self.refresh();
-        }
+        self.refresh();
     }
 
     fn push_rejected(&self, text: &mut String, plan: &ImportPlan) {
@@ -724,15 +734,19 @@ mod tests {
         assert!(app.on_rpc_import_command(ids::RPC_IMPORT_OVERWRITE));
         assert!(app.rpc_import.plan.is_none());
         assert!(app.apikeys.has(KeyName::TplQuickNode));
-        assert_eq!(app.apikeys.endpoints().len(), 7);
         assert_eq!(app.settings.rpc_template, RpcTemplate::QuickNode);
+        // The file lists 7 networks; the template fills every other one (2026-11-11).
+        let targets = app.generation_plan().0;
+        assert!(targets.len() > 7);
+        assert_eq!(app.apikeys.endpoints().len(), targets.len());
         assert!(dir.join("apikeys.dpapi").is_file());
         let info = app.info.clone().unwrap_or_default();
         assert!(info.contains("재설치해도 유지됩니다"), "{info}");
+        assert!(info.contains("파일에 없던"), "{info}");
         assert!(!info.contains(TOKEN) && !info.contains(NAME));
         let (reloaded, failed) = crate::app::load_apikeys(&app.paths, &app.settings);
         assert!(!failed);
-        assert_eq!(reloaded.endpoints().len(), 7);
+        assert_eq!(reloaded.endpoints().len(), targets.len());
 
         // The plaintext source is still there: the card recommends deleting it, which is asked
         // first and then removes the file only.
@@ -742,7 +756,56 @@ mod tests {
         app.delete_rpc_json(&file);
         assert!(!file.exists());
         assert!(!app.rpc_import.confirm_delete && !app.rpc_import.on_top());
-        assert_eq!(app.apikeys.endpoints().len(), 7);
+        assert_eq!(app.apikeys.endpoints().len(), targets.len());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A stored `QuickNode` credential gives every network without an address the template's
+    /// address (start, after an update added chains); a stored address is never replaced.
+    #[test]
+    fn template_fills_networks_without_an_address() {
+        let dir = std::env::temp_dir().join(format!(
+            "yw-rpc-fill-{}-{}",
+            std::process::id(),
+            yw_win::time::monotonic_ms()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut keys = ApiKeys::default();
+        keys.set_quicknode(NAME, TOKEN);
+        let own = check_url(&qn(None, "own")).unwrap().0;
+        keys.set_rpc(NetworkId::Eip155(1), &own);
+        let mut app = App::new(
+            Paths {
+                data: dir.clone(),
+                logs: dir.join("logs"),
+            },
+            true,
+            Settings::default(),
+            keys,
+        );
+        let filled = app.fill_template_gaps();
+        let targets = app.generation_plan().0;
+        assert_eq!(filled.len(), targets.len() - 1);
+        assert!(!filled.contains(&NetworkId::Eip155(1)));
+        assert!(filled.contains(&NetworkId::Eip155(42_161)));
+        assert!(app.apikeys.rpc_url(NetworkId::Eip155(1)) == Some(own));
+        assert!(dir.join("apikeys.dpapi").is_file());
+        assert!(app.fill_template_gaps().is_empty());
+
+        // `직접 입력` makes nothing.
+        let mut manual = App::new(
+            Paths {
+                data: dir.clone(),
+                logs: dir.join("logs"),
+            },
+            true,
+            Settings {
+                rpc_template: RpcTemplate::Manual,
+                ..Settings::default()
+            },
+            ApiKeys::default(),
+        );
+        assert!(manual.fill_template_gaps().is_empty());
         let _ = std::fs::remove_dir_all(dir);
     }
 }

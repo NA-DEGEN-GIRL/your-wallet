@@ -10,7 +10,7 @@ use core::fmt::Write as _;
 use yw_core::evm::chain::SEPOLIA;
 use yw_core::evm::display::format_address;
 
-use crate::apikeys::{KeyName, mask_url};
+use crate::apikeys::{KeyName, mask_url, template_entry};
 use crate::app::{App, AppMode, Confirm, Screen, SettingsSection, TestState};
 use crate::errors::ErrorCode;
 use crate::meta::EvmAccountPref;
@@ -2043,9 +2043,7 @@ impl App {
             ]));
             if self.replace_target == Some(network) {
                 if let Some(name) = template_name.filter(|_| {
-                    stored
-                        && crate::apikeys::template_entry(template, network, &self.settings)
-                            .is_some()
+                    stored && template_entry(template, network, &self.settings).is_some()
                 }) {
                     items.push(Item::Help(format!(
                         "{name} 자격 정보가 저장되어 있습니다 — 위 “저장하고 RPC 주소 만들기”로 비어 있는 주소를 한 번에 만들 수 있습니다."
@@ -2554,8 +2552,16 @@ impl App {
                 }
             ),
         };
+        // A stored template credential fills an empty network at the next start (2026-11-11).
+        let refill = if self.template_stored()
+            && template_entry(self.settings.rpc_template, network, &self.settings).is_some()
+        {
+            " 공급자 템플릿의 자격 정보가 저장돼 있어 다음 실행 때 템플릿 주소로 다시 채워집니다. 다른 주소를 쓰려면 지우지 말고 “교체”하세요."
+        } else {
+            ""
+        };
         format!(
-            "{} ({network})의 RPC 주소를 지웁니다. 저장된 주소는 다시 볼 수 없어, 다시 쓰려면 {again}. 이 네트워크에 확정 전 거래가 있으면 주소를 다시 넣을 때까지 상태 확인이 멈춥니다.",
+            "{} ({network})의 RPC 주소를 지웁니다. 저장된 주소는 다시 볼 수 없어, 다시 쓰려면 {again}.{refill} 이 네트워크에 확정 전 거래가 있으면 주소를 다시 넣을 때까지 상태 확인이 멈춥니다.",
             self.network_name(network)
         )
     }
