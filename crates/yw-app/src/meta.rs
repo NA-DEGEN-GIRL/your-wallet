@@ -1,7 +1,9 @@
 //! The decrypted `meta.ywm` JSON (`schema = "yw-meta/3"`, spec/02 §5.3) and its `prefs` object
 //! (spec/04 §6.4). yw-core only seals bytes; this module parses and writes the JSON with yw-json.
-//! Duplicate keys, a missing known key or an invalid value reject the whole document (treated as
-//! `SidecarCorrupt`, E-VLT-006), except `prefs`, which falls back to its default on any error.
+//! Duplicate keys, a missing known key or an invalid value reject the whole document (the key
+//! worker reports it as `SidecarUnsupported`, E-VLT-006: the file opened with the wallet's key, so
+//! a build of this app wrote it — usually a newer one), except `prefs`, which falls back to its
+//! default on any error.
 //! Unknown top-level keys (a newer minor version's) are kept and written back after the known keys
 //! (spec/04 §6.6, spec/02 §5.3). The imported-key keys (`sol_raw_accounts`, `sol_raw_selected`)
 //! are optional on read (files written before key import lack them) and always written after
@@ -71,6 +73,11 @@ pub const SECURITY_KEY: &str = "security_settings";
 /// (review L17): a smaller generation at the next unlock means `vault.ywv` was rolled back on its
 /// own. Written when non-zero.
 pub const VAULT_SEEN_KEY: &str = "vault_generation_seen";
+/// The optional top-level key of the last journal reset (2026-11-10, spec/04 §2.5): Unix seconds
+/// of `격리하고 새로 시작` on a `journal.ywj` that did not open. A transaction the old journal
+/// tracked may still confirm without a record, so for a while after it the Bitcoin send form asks
+/// for a check and Solana and Zcash sends wait (`crate::app_sidecar`). Written when non-zero.
+pub const JOURNAL_RESET_KEY: &str = "journal_reset_at";
 
 /// The optional top-level key of the address-book favorites (spec/02 §5.3, spec/04 §2.10):
 /// `[{"chain": "evm"|"sol"|"btc", "address": string}]` naming `address_book` entries, in the
@@ -491,6 +498,8 @@ pub struct MetaSecurity {
     pub snapshot: Option<crate::settings::SecuritySnapshot>,
     /// The highest `vault.ywv` generation seen (0 = none recorded).
     pub vault_generation_seen: u64,
+    /// `journal_reset_at`: Unix seconds of the last journal reset (0 = none recorded).
+    pub journal_reset_at: u64,
 }
 
 /// meta `sol_sites` and `btc_sites` as validated JSON values (spec/05 §4.9).
@@ -1189,6 +1198,7 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
                 && *key != BTC_SITES_KEY
                 && *key != SECURITY_KEY
                 && *key != VAULT_SEEN_KEY
+                && *key != JOURNAL_RESET_KEY
                 && *key != TOKEN_VIEW_KEY
                 && *key != HW_ACCOUNTS_KEY
                 && *key != MNEMONICS_KEY
@@ -1299,6 +1309,10 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
         None => 0,
         Some(value) => u64_of(value).ok_or(MetaError)?,
     };
+    let journal_reset_at = match object.get(JOURNAL_RESET_KEY) {
+        None => 0,
+        Some(value) => u64_of(value).ok_or(MetaError)?,
+    };
     // A view preference: an invalid value falls back to the default like `prefs`.
     let (token_view, token_view_reset) = match object.get(TOKEN_VIEW_KEY) {
         None => (TokenView::default(), false),
@@ -1334,6 +1348,7 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
         security: Box::new(MetaSecurity {
             snapshot,
             vault_generation_seen,
+            journal_reset_at,
         }),
         token_view: Box::new(token_view),
         hw_accounts,
@@ -1485,6 +1500,9 @@ impl Meta {
                 VAULT_SEEN_KEY,
                 json_u64(self.security.vault_generation_seen),
             ));
+        }
+        if self.security.journal_reset_at != 0 {
+            members.push((JOURNAL_RESET_KEY, json_u64(self.security.journal_reset_at)));
         }
         if !self.token_view.is_default() {
             members.push((TOKEN_VIEW_KEY, self.token_view.to_json()));

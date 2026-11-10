@@ -1383,6 +1383,10 @@ impl App {
             && (form.send_max || (form.amount.is_some() && form.amount_error.is_none()))
             && self.evm.journal.is_some()
             && !self.sol_journal_damaged()
+            // After a journal reset a transfer it tracked may still land for a minute or two.
+            && self
+                .journal_hold(crate::app_sidecar::SendChain::Sol)
+                .is_none()
             && self.sol_pending(cluster, &from).is_none()
             && self.sol.slot.is_none()
             && self.sol.pending_sign.is_none()

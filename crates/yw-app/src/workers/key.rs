@@ -14,13 +14,12 @@ use yw_core::password::{Bip39Passphrase, VaultPassword};
 use yw_core::secret::{SecretString, Zeroizing};
 use yw_core::slip10::SolKeySource;
 use yw_core::sol::SolAddress;
-use yw_core::vault::{
-    EvmKeySource, FileKind, ImportedKeys, RecordId, Vault, VaultStatus, VaultStorage,
-};
+use yw_core::vault::{EvmKeySource, FileKind, ImportedKeys, RecordId, Vault, VaultStatus};
 
 use crate::errors::ErrorCode;
 use crate::events::{
     ImportedAccount, KeyJob, KeyOutcome, KeyQueue, KeyResult, LockSignal, MetaLoaded, RevealWhat,
+    SidecarMoves, SidecarRefusal,
 };
 use crate::logging::{self, Field};
 use crate::meta::{self, Account, EvmAccountPref, Meta, RawAccount, SolRawAccount, Tab};
@@ -58,6 +57,11 @@ pub struct KeyWorker {
     journal: JournalState,
     /// The inserted `YubiKey`s (PC/SC; the emulator in tests, spec/10 §12.1).
     cards: Box<dyn crate::yubikey::CardSource>,
+    /// The last `LoadMeta` could not read `meta.ywm` (most importantly: it opened with this
+    /// wallet's key but this build cannot read it, a newer build's format): `SaveMeta` is refused
+    /// until a load succeeds, so a document the UI queued before is never sealed over it (the
+    /// vault itself only refuses a file that failed to open, spec/02 §6.3).
+    meta_unreadable: bool,
 }
 
 impl core::fmt::Debug for KeyWorker {
@@ -514,6 +518,7 @@ impl KeyWorker {
             pending_mnemonic: None,
             journal: JournalState::default(),
             cards: Box::new(crate::yubikey::PcscSource),
+            meta_unreadable: false,
         }
     }
 
@@ -1322,21 +1327,31 @@ impl KeyWorker {
         }
     }
 
+    /// The stored meta document (the default when there is none) and whether its `prefs` fell
+    /// back. The file opened with this wallet's key, so some build of this app wrote it: a
+    /// document this build cannot read is `SidecarUnsupported` (a newer format, not damage,
+    /// spec/02 §6.3).
+    fn read_meta(vault: &Vault) -> Result<(Meta, bool), VaultError> {
+        match vault.open_sidecar(FileKind::Meta)? {
+            None => Ok((Meta::default(), false)),
+            Some((_, plaintext)) => meta::parse(plaintext.expose())
+                .map(|parsed| (parsed.meta, parsed.prefs_reset))
+                .map_err(|_| VaultError::SidecarUnsupported(FileKind::Meta)),
+        }
+    }
+
     fn load_meta(&mut self) -> Result<MetaLoaded, VaultError> {
         let alt = self.is_alt();
-        let vault = self.vault()?;
-        let (mut document, prefs_reset) = if alt {
-            (Meta::default(), false)
+        let read = if alt {
+            Ok((Meta::default(), false))
         } else {
-            match vault.open_sidecar(FileKind::Meta)? {
-                None => (Meta::default(), false),
-                Some((_, plaintext)) => {
-                    let parsed = meta::parse(plaintext.expose())
-                        .map_err(|_| VaultError::SidecarCorrupt(FileKind::Meta))?;
-                    (parsed.meta, parsed.prefs_reset)
-                }
-            }
+            Self::read_meta(self.vault()?)
         };
+        // Nothing is sealed over a meta that could not be read until a load succeeds (the vault
+        // itself refuses only a file that failed to open; T-META-FAILED keeps the UI's copy away).
+        self.meta_unreadable = read.is_err();
+        let (mut document, prefs_reset) = read?;
+        let vault = self.vault()?;
         let keys = vault.imported_keys()?;
         let mut mismatch = false;
         if !keys.has_mnemonic {
@@ -1435,16 +1450,79 @@ impl KeyWorker {
         })
     }
 
-    fn resolve_sidecar(&mut self, kind: FileKind, use_prev: bool) -> Result<(), ErrorCode> {
-        let mut storage = FileStorage::open(&self.dir).map_err(|_| ErrorCode::Vlt006)?;
-        let now = now_unix();
-        if use_prev {
-            storage
-                .restore_prev(kind, now)
-                .map_err(|_| ErrorCode::Vlt006)
+    /// Whether `<name>.prev` opens with this wallet's key and this build can read it.
+    fn prev_readable(&self, kind: FileKind) -> Result<(), SidecarRefusal> {
+        let vault = self
+            .vault
+            .as_ref()
+            .ok_or(SidecarRefusal::Failed(ErrorCode::App009))?;
+        let (_, plaintext) = vault
+            .open_sidecar_prev(kind)
+            .map_err(|_| SidecarRefusal::PrevUnreadable)?
+            .ok_or(SidecarRefusal::NoPrev)?;
+        let readable = match kind {
+            FileKind::Meta => meta::parse(plaintext.expose()).is_ok(),
+            FileKind::Journal => yw_core::journal::JournalPlain::decode(plaintext.expose()).is_ok(),
+            FileKind::Vault => false,
+        };
+        if readable {
+            Ok(())
         } else {
-            storage.quarantine(kind, now).map_err(|_| ErrorCode::Vlt006)
+            Err(SidecarRefusal::PrevUnreadable)
         }
+    }
+
+    /// The E-VLT-006 choice for `meta.ywm` or `journal.ywj` that did not open (spec/02 §6.3,
+    /// spec/04 §2.5). `.prev`: the copy is opened and read first; when it is missing or cannot be
+    /// read, nothing moves (no `.corrupt-<t>` per click, no loop back to the same choice).
+    /// Fresh: the file and its `.prev` both move aside, never deleted, so the new file's saves
+    /// never rotate over the last readable copy. A file already gone (a click repeated, a move
+    /// that failed half-way) is skipped. The new names are reported for the notice.
+    fn resolve_sidecar(
+        &mut self,
+        kind: FileKind,
+        use_prev: bool,
+    ) -> Result<SidecarMoves, SidecarRefusal> {
+        if kind == FileKind::Vault {
+            return Err(SidecarRefusal::Failed(ErrorCode::App009));
+        }
+        if use_prev {
+            self.prev_readable(kind)?;
+        }
+        let failed = |error| {
+            logging::warn(
+                "key",
+                "sidecar.resolve_failed",
+                &[("error", Field::Word(crate::errors::storage_name(error)))],
+            );
+            SidecarRefusal::Failed(ErrorCode::Vlt003)
+        };
+        let mut storage = FileStorage::open(&self.dir).map_err(failed)?;
+        let now = now_unix();
+        let moves = if use_prev {
+            SidecarMoves {
+                quarantined: storage.restore_prev(kind, now).map_err(failed)?,
+                prev: None,
+            }
+        } else {
+            let quarantined = storage.quarantine_main(kind, now).map_err(failed)?;
+            SidecarMoves {
+                quarantined,
+                prev: storage.set_prev_aside(kind, now).map_err(failed)?,
+            }
+        };
+        logging::warn(
+            "key",
+            "sidecar.resolved",
+            &[
+                ("file", Field::Word(crate::store::file_name(kind))),
+                (
+                    "prev",
+                    Field::Word(if use_prev { "used" } else { "set_aside" }),
+                ),
+            ],
+        );
+        Ok(moves)
     }
 
     /// Runs one non-control job; journal jobs can report several outcomes (signing result,
@@ -1723,6 +1801,10 @@ impl KeyWorker {
                 if self.is_alt() {
                     return Ok(());
                 }
+                // A document queued before the load that could not read the file.
+                if self.meta_unreadable {
+                    return Err(VaultError::SidecarUnsupported(FileKind::Meta));
+                }
                 let mut document = *meta;
                 let vault = self.vault.as_mut().ok_or(VaultError::InvalidState)?;
                 self.journal.merge_overlay(vault, &mut document);
@@ -1730,9 +1812,11 @@ impl KeyWorker {
                     .save_sidecar(FileKind::Meta, &document.to_json())
                     .map(|_| ())
             })()),
-            KeyJob::ResolveSidecar { kind, use_prev } => {
-                KeyOutcome::SidecarResolved(self.resolve_sidecar(kind, use_prev))
-            }
+            KeyJob::ResolveSidecar { kind, use_prev } => KeyOutcome::SidecarResolved {
+                kind,
+                use_prev,
+                result: self.resolve_sidecar(kind, use_prev),
+            },
             KeyJob::DeriveAddresses { indices } => KeyOutcome::Addresses((|| {
                 let parsed: Vec<AccountIndex> = indices
                     .iter()

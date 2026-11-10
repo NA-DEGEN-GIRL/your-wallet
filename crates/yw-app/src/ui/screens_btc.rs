@@ -446,6 +446,7 @@ impl App {
             BtcGate::Locked | BtcGate::NoMeta | BtcGate::JournalLoading => {
                 items.push(Item::Muted(gate.text()));
             }
+            BtcGate::JournalClosed => items.push(Item::Banner(gate.text(), Tone::Blocked)),
             BtcGate::Mismatch { meta, settings } => {
                 items.push(Item::Banner(gate.text(), Tone::Danger));
                 Self::btc_mismatch_row(meta, settings, items);
@@ -1299,17 +1300,23 @@ impl App {
             ));
         }
         items.push(Item::CardEnd);
+        self.journal_send_items(crate::app_sidecar::SendChain::Btc, items);
         items.push(Item::Row(vec![
             Ctl::primary(ids::SEND_REVIEW, "검토").enabled(self.btc_can_review()),
             Ctl::button(ids::SEND_CANCEL, "취소"),
         ]));
     }
 
-    /// Whether the send form's `검토` is enabled: the controller's checks, and an account whose
-    /// phrase has passed its backup quiz (U7; the band above says why).
+    /// Whether the send form's `검토` is enabled: the controller's checks, an account whose
+    /// phrase has passed its backup quiz (U7; the band above says why), and after a journal reset
+    /// the check above the button.
     #[must_use]
     pub fn btc_can_review(&self) -> bool {
-        self.btc.can_review(&self.btc_ctx()) && !self.mn_send_blocked(self.btc_backup_gate())
+        self.btc.can_review(&self.btc_ctx())
+            && !self.mn_send_blocked(self.btc_backup_gate())
+            && self
+                .journal_hold(crate::app_sidecar::SendChain::Btc)
+                .is_none()
     }
 
     /// Whether the fee-bump form's `검토` is enabled.

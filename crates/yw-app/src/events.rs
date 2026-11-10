@@ -817,6 +817,28 @@ pub struct MetaLoaded {
     pub mnemonics: Vec<yw_core::vault::MnemonicInfo>,
 }
 
+/// The files `KeyJob::ResolveSidecar` moved aside — never deleted — by name, so the notice can
+/// say where they are and the user can put one back by hand (docs/recovery-guide.ko.md).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SidecarMoves {
+    /// The file that did not open, now `<name>.corrupt-<unix s>` (`None`: there was none).
+    pub quarantined: Option<String>,
+    /// `격리하고 새로 시작`: `<name>.prev`, now `<name>.prev.corrupt-<unix s>`, so the new file's
+    /// saves never rotate over what may be the last readable copy (`None`: there was none).
+    pub prev: Option<String>,
+}
+
+/// Why `KeyJob::ResolveSidecar` did not finish.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SidecarRefusal {
+    /// `.prev` was asked for and there is none: nothing moved.
+    NoPrev,
+    /// `.prev` does not open with this wallet's key or this build cannot read it: nothing moved.
+    PrevUnreadable,
+    /// A file operation failed (its code); a file may already have moved.
+    Failed(ErrorCode),
+}
+
 /// What a key job produced.
 pub enum KeyOutcome {
     /// Load status; `leftover` = meta/journal or their `.prev` exist without a vault.
@@ -866,8 +888,15 @@ pub enum KeyOutcome {
     Meta(Result<MetaLoaded, VaultError>),
     /// Meta saved.
     MetaSaved(Result<(), VaultError>),
-    /// Sidecar resolved.
-    SidecarResolved(Result<(), ErrorCode>),
+    /// The E-VLT-006 choice of `kind` ran: what moved, or why nothing (or not all) did.
+    SidecarResolved {
+        /// `meta.ywm` or `journal.ywj`.
+        kind: FileKind,
+        /// `true` = `이전 사본(.prev) 사용`, `false` = `격리하고 새로 시작`.
+        use_prev: bool,
+        /// The files moved aside, or the refusal.
+        result: Result<SidecarMoves, SidecarRefusal>,
+    },
     /// Derived addresses (index, address).
     Addresses(Result<Vec<(u32, Address)>, VaultError>),
     /// Journal loaded or changed.

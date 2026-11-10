@@ -802,6 +802,15 @@ impl App {
             self.refresh();
             return;
         }
+        // The journal holds sends: the header band (closed) or the line above `검토` (a reset's
+        // wait) says why.
+        if self
+            .journal_hold(crate::app_sidecar::SendChain::Zec)
+            .is_some()
+        {
+            self.refresh();
+            return;
+        }
         self.zec.error = None;
         self.zec.info = None;
         self.zec.sent = None;

@@ -471,12 +471,12 @@ journal_key = HKDF-SHA256(salt = 없음,                   ikm = DEK, info = "yo
 | 60 | 4 | `ct_len` | 평문 + 16; meta ≤ 8 MiB + 16, journal ≤ 16 MiB + 16 (yw-win `atomic_write` 상한 64 MiB 안, [01] §7.2) |
 | 64 | `ct_len` | `ct` | XChaCha20-Poly1305(하위 키, nonce, 평문, aad = header[0..64]) |
 
-- 디코드 오류: 구조 위반은 `SidecarCorrupt(kind)`, `vault_id` 불일치는 `SidecarVaultMismatch(kind)`, AEAD 실패는 `SidecarCorrupt(kind)`.
+- 디코드 오류: 구조 위반은 `SidecarCorrupt(kind)`, `vault_id` 불일치는 `SidecarVaultMismatch(kind)`, AEAD 실패는 `SidecarCorrupt(kind)`. AEAD까지 통과했는데 평문을 이 빌드가 읽지 못하면(meta JSON 거부, journal 프레이밍 오류) yw-app이 `SidecarUnsupported(kind)`로 본다: 이 지갑의 키로 봉인됐으니 이 앱의 어떤 빌드(대개 새 버전)가 쓴 파일이고 손상이 아니다(§6.3, 2026-11-10).
 - 평문: meta는 yw-json 직렬화기 출력(UTF-8, 공백 없음, §5.3 순서의 키), journal은 §5.4 이진 형식이다. `vault`는 바이트만 봉인·개봉한다(`open_sidecar`/`save_sidecar`). meta JSON 변환은 yw-app이 yw-json으로 하고, journal 컨테이너 코덱은 yw-core `journal`이 둔다. yw-core 자체는 EIP-712 입력용으로 yw-json에 의존한다(D5, [03] §0·§8).
 
 ### 5.3 meta JSON (`schema = "yw-meta/3"`)
 
-최상위 객체. 중복 키·아래 키(선택 키 `btc_accounts`·`btc_accounts_ext`·`sol_sites`·`btc_sites`·`sol_raw_accounts`·`sol_raw_selected`·`security_settings`·`vault_generation_seen`·`token_view` 제외)의 누락은 거부한다. 아래 표에 없는 **최상위** 키는 같은 `schema`의 새 부 버전이 더한 키로 보고 보존해 다음 쓰기에서 알려진 키 뒤에 그대로 쓴다([04](04-app-ui.md) §6.6). 레코드·객체 안의 알 수 없는 키는 거부한다(`prefs`는 기본값으로 되돌림, [04] §6.4). 정수는 JSON 정수(소수·지수 금지), 64비트 금액은 10진 문자열(각 체인 문서).
+최상위 객체. 중복 키·아래 키(선택 키 `btc_accounts`·`btc_accounts_ext`·`sol_sites`·`btc_sites`·`sol_raw_accounts`·`sol_raw_selected`·`security_settings`·`vault_generation_seen`·`journal_reset_at`·`token_view` 제외)의 누락은 거부한다. 아래 표에 없는 **최상위** 키는 같은 `schema`의 새 부 버전이 더한 키로 보고 보존해 다음 쓰기에서 알려진 키 뒤에 그대로 쓴다([04](04-app-ui.md) §6.6). 레코드·객체 안의 알 수 없는 키는 거부한다(`prefs`는 기본값으로 되돌림, [04] §6.4). 정수는 JSON 정수(소수·지수 금지), 64비트 금액은 10진 문자열(각 체인 문서).
 
 | 키 | 타입 | 규칙 |
 |---|---|---|
@@ -501,6 +501,7 @@ journal_key = HKDF-SHA256(salt = 없음,                   ikm = DEK, info = "yo
 | `mnemonic_accounts` (선택, 2026-11-08) | object | 추가한 니모닉(§8.6)의 Solana·Zcash 계정: `{"version": 1, "sol": MnSolAccount[0..=800], "sol_selected": null \| {"mnemonic": Hex16, "index": u32}, "zec": {"mainnet"?: MnZec, "testnet"?: MnZec}}`. 니모닉마다 `index` 중복 금지, `sol_selected`는 `sol`에 있는 계정만. Solana 선택 우선순위는 `hw_accounts.sol_selected` → 이것 → `sol_raw_selected` → `prefs.sol_account`. Zcash 항목은 그 네트워크의 `zcash` 항목보다 우선한다([12] §12.3). 비어 있으면 쓰지 않는다. 형식이 틀리면 문서 거부(`hw_accounts`와 같음). 이전 빌드가 엄격하게 읽는 `sol_accounts`·`prefs`·`zcash`·`mnemonics`(멤버 정확히 3개)에 새 멤버·값을 넣지 않으려고 따로 둔다. 잠금 해제 때 vault와 맞춘다: 없는 니모닉의 항목·선택은 버리고(Zcash 계정은 표준 경로로 다시 만든다), 지갑이 Solana를 쓰면(`sol_accounts`가 있음) 새 니모닉에 Solana 계정 0을 더하고, 주소 캐시를 `sol_public_keys`(태그 8)로 다시 계산한다. Bitcoin 계정은 `btc_accounts_mn`([08] §12.3c) |
 | `btc_accounts_mn` (선택, 2026-11-08) | object | 추가한 니모닉의 Bitcoin HD 계정·선택·HD 모드([08] §12.3c). 엄격 |
 | `vault_generation_seen` (선택, 2026-11-01) | u64 | 이 meta와 함께 본 가장 큰 `vault.ywv` `generation`. 0이면 쓰지 않는다. 잠금 해제 때 본 파일의 generation이 이보다 작으면 경고 배너([04] §6.7) |
+| `journal_reset_at` (선택, 2026-11-10) | u64 | 열리지 않던 `journal.ywj`를 `격리하고 새로 시작`한 마지막 시각(Unix 초). 0이면 쓰지 않는다. 그 전에 보낸 거래가 기록 없이 확정될 수 있어 Bitcoin 보내기 폼은 30일 동안 확인 체크를, Solana는 3분·Zcash는 2시간 기다림을 둔다([04] §2.5). 이전 빌드는 모르는 최상위 키로 보존한다 |
 
 ```
 Account          = { "index": u32(0..=999), "label": Label, "address": string, "hidden": bool }
@@ -566,10 +567,12 @@ off len
 entry = kind u8 ‖ body_len u32 BE (1..=1_048_576) ‖ body
 kind  = 0x01 EVM ([03](03-evm.md) §5.1, body[0] = record_kind 0x01이어야 함)
       | 0x02 SOL ([07](07-solana.md) §14.1) | 0x03 BTC ([08](08-bitcoin.md) §12.4)
+      | 0x04 ZEC ([12](12-zcash.md) §12.1) | 0x05–0xFF 나중 빌드의 체인(보존만, 아래)
 ```
 
 - 이 이진 컨테이너가 정본이다. `kind`가 유일한 체인 판별자이고(0x01 EVM, 0x02 SOL, 0x03 BTC), `body`는 체인 문서가 정한 이진 바이트 그대로다(JSON·hex 문자열로 감싸지 않는다). 본문 바이트 배치·상태 기계·종결 정의·정리 순서는 체인 문서가 정한다. entry 순서는 추가 순서이며 의미가 없다. 파일이 없으면 entry 0개다.
-- **프레이밍 오류**(magic, `entry_count` 범위, reserved ≠ 0, 알 수 없는 `kind`, `body_len` 범위 밖·남은 길이 초과, 남는 바이트) → `VaultError::SidecarCorrupt(Journal)`, §6.3 선택 대화상자.
+- **프레이밍 오류**(magic, `entry_count` 범위, reserved ≠ 0, `kind` 0, `body_len` 범위 밖·남은 길이 초과, 남는 바이트) → `VaultError::SidecarCorrupt(Journal)`(파일이 AEAD로 열렸으면 yw-app은 `SidecarUnsupported(Journal)`, §5.2), §6.3 선택 대화상자.
+- **모르는 kind**(0x05–0xFF, 2026-11-10): 나중 빌드가 더한 체인의 entry다. 바이트 그대로 보존하고(개수·용량 상한에는 들어간다) 어느 체인도 읽거나 정리하거나 지우지 않으며 다른 체인은 정상 동작한다(`EntryKind::Unknown`). 그래서 **새 kind는 새 체인에만** 쓴다: 기존 체인의 새 형식은 그 kind의 `record_version`으로만 더한다(이전 빌드에서는 본문 오류 — 그 체인의 보내기만 멈춤, 아래). 그 전 빌드는 모르는 kind를 프레이밍 오류로 봐서 새 kind 하나가 저널 전체(모든 체인의 진행 중 기록)를 열 수 없게 만들었다.
 - **본문 오류**: 프레이밍은 맞는데 체인 디코더가 본문을 거부하면 그 체인의 보내기만 끄고 "저널 손상"(E-VLT-006, [04] §2.6)을 표시한다([03] §5.1 규칙을 모든 체인에 적용). 자동 삭제하지 않고 다른 entry를 고쳐 쓸 때도 그 본문을 바이트 그대로 보존한다. 다른 체인은 정상 동작한다.
 - **개수 상한**: 전체 ≤ 256. SOL ≤ 64([07] §14.2 `SOL_JOURNAL_MAX_RECORDS`), BTC 종결 항목 ≤ 64(진행 중 BTC 항목은 지우지 않음), EVM은 나머지. EVM 몫은 등록된 EVM 체인 수와 무관하게 모든 체인이 함께 쓴다(체인은 본문 `chain_id`, [03](03-evm.md) §5.1). 컨테이너·본문 검증은 체인 레지스트리를 보지 않으므로 미등록 chainId의 레코드도 유효하다.
 - **용량 상한**: 평문 ≤ 16 MiB(16,777,216바이트, §5.2). 체인별 최대 본문: EVM 131,761(172 + 255 + 2 + 256 + 4 + 131,072), SOL 1,337(고정 헤더 89 + 니모닉 id 16 + 트랜잭션 1,232; 레코드 버전 1은 1,321, [07] §14.1), ZEC 32,919(머리 135 + 니모닉 id 16 + 32,768; 버전 1은 32,903, [12](12-zcash.md) §12.1), BTC 37,940(238 + 18 + 16 + 49 × 100 + 32,768; 레코드 버전 1은 37,906, 버전 2는 37,924, [08] §12.4). 니모닉 id 16바이트는 추가한 니모닉 계정의 기록에만 있다(§8.6).
@@ -636,7 +639,7 @@ yw-app이 yw-win 파일 함수로 구현한다(출처: 데모 원자적 쓰기, 
 - `recover_from_prev(password)`: `.prev`를 잠금 해제한다. 성공하면 본 파일이 있을 경우 `quarantine` → `.prev` 내용을 `PayloadRewrite`(generation = prev.generation + 1)로 `commit(Vault, None, …)` → `Unlocked`/`BackupPending`. 본 파일에 있던 더 새로운 변경(예: 추가한 raw key)은 잃는다고 UI가 알린다. 격리한 파일 이름(`vault.ywv.corrupt-<now_unix>`, `quarantined_at()`)을 UI가 그대로 보여 주어 사용자가 직접 되돌릴 수 있게 한다([04] §2.15, `docs/recovery-guide.ko.md`).
 - payload 인증 실패(`PayloadCorrupt`)는 잠금 해제 시점에 드러난다. 이때도 본 파일은 그대로 두고 `.prev` 복구를 제안한다. 헤더는 정상이라 다시 `load`하면 `Locked`가 되므로, yw-app은 이 상태를 기억해 S09(복구 화면)를 유지한다([04] §2.5).
 - **`Locked`에서의 복구(사용자의 명시적 요청):** 키 구간(`header[0..130]`)이 손상되면 `unlock`은 비밀번호 오류와 구분할 수 없는 `UnlockFailed`만 낸다(§7.4). 그래서 `recover_from_prev`는 `Locked`에서도 받는다. 이때는 먼저 본 파일을 같은 비밀번호로 연다: 열리면 **아무것도 복구하지 않고** `unlock`과 똑같이 세션을 연다. 본 파일이 열리지 않을 때(`UnlockFailed`·`PayloadCorrupt`·구조 오류·없음)만 `.prev`를 같은 비밀번호로 열어 위 절차로 복구한다. 틀린 비밀번호는 두 파일 모두 실패해 `UnlockFailed`이고 어떤 파일도 바뀌지 않는다(Argon2 최대 2회).
-- meta·journal: 구조 손상이나 `SidecarCorrupt`(journal 프레이밍 오류 포함, §5.4)면 해당 파일 쓰기를 멈추고 사용자에게 (a) `.prev` 사용, (b) 격리 후 새로 시작 중 하나를 고르게 한다(E-VLT-006, [04] §2.5). journal 새로 시작은 "진행 중 거래 기록이 사라질 수 있음" 경고 후에만 한다. 파일이 없는 것은 손상이 아니다(§5.3 기본값, journal은 entry 0개).
+- meta·journal: 열리지 않으면(구조 손상, `SidecarCorrupt`·`SidecarVaultMismatch`) 해당 파일 쓰기를 멈추고 사용자에게 (a) `.prev` 사용, (b) 격리 후 새로 시작, (c) 닫기(아무것도 바꾸지 않음) 중 하나를 고르게 한다(E-VLT-006, [04] §2.5). (a)는 `.prev`가 있을 때만 보이고, `Vault::open_sidecar_prev`로 이 지갑의 키로 열어 이 빌드가 읽을 수 있을 때만 본 파일을 `<name>.corrupt-<now_unix>`로 옮긴 뒤 되돌린다(아니면 아무것도 옮기지 않는다). (b)는 본 파일과 `<name>.prev`(→ `<name>.prev.corrupt-<now_unix>`)를 함께 옮긴다: `.prev`를 두면 새 파일의 두 번째 커밋(§6.2 단계 2)이 마지막으로 읽히던 사본을 덮는다. 옮긴 이름은 UI가 보여 준다. journal 새로 시작은 T-JOURNAL-RESET(확정 전 거래가 기록 없이 확정될 수 있음, 두 번 지불 위험) 경고 후에만 한다. 이 지갑의 키로 열리지만 이 빌드가 읽지 못하는 파일(`SidecarUnsupported`, 대개 새 버전이 쓴 것)은 손상이 아니다: 앱 업데이트를 안내하고 (a)·(b)는 `고급` 아래에만 둔다. 읽지 못한 meta가 있는 동안 키 작업자는 `SaveMeta`를 거부한다(`Vault`는 열리지 않은 파일만 거부하므로). 파일이 없는 것은 손상이 아니다(§5.3 기본값, journal은 entry 0개).
 
 ## 7. 잠금 상태 기계
 
@@ -881,6 +884,7 @@ pub enum VaultError {
     PayloadCorrupt,              // payload AEAD 인증 실패(손상, `.prev` 복구 제안)
     UnsupportedPayload,          // 인증된 payload를 이 빌드가 디코드하지 못함(새 버전의 tag 등, `.prev` 제안 없음)
     SidecarCorrupt(FileKind), SidecarVaultMismatch(FileKind),
+    SidecarUnsupported(FileKind), // 이 vault의 키로 열렸지만 이 빌드가 평문을 읽지 못함(새 버전의 형식, §6.3; yw-app이 분류)
     OutOfMemory,
     BackupNotConfirmed, BackupMismatch, ChallengeStale,
     RecordLimit, DuplicateKey, RecordNotFound,
@@ -968,6 +972,7 @@ impl Vault {
 
     // 사이드카 (BackupPending·Unlocked)
     pub fn open_sidecar(&self, kind: FileKind) -> R<Option<(u64, SecretVec)>>;
+    pub fn open_sidecar_prev(&self, kind: FileKind) -> R<Option<(u64, SecretVec)>>;  // `<name>.prev`, 기억한 generation은 바꾸지 않음(§6.3 (a)의 사전 확인)
     pub fn save_sidecar(&mut self, kind: FileKind, plaintext: &[u8]) -> R<u64>;       // 새 generation
 
     // 서명 모듈 전용 (03·07·08), Unlocked만
@@ -1101,7 +1106,7 @@ payload_nonce 707172…87   record_id 909192…9f   generation 1, backup_state 0
 
 - 사이드카 왕복, `vault_id` 불일치 → `SidecarVaultMismatch`, 1비트 변조 → `SidecarCorrupt`, magic 교차(meta 파일을 journal로 열기) 거부, generation CAS 충돌 → `Storage(GenerationConflict)`.
 - `MemStorage` 기준 `commit` 계약: `None`인데 파일 있음 → `AlreadyExists`, 손상 본 파일 위 커밋 → `Corrupt`이고 바이트 불변, 성공 시 `.prev` = 직전 바이트.
-- journal 컨테이너(M4, §5.4): kind 4종 왕복(4 = Zcash, [12](12-zcash.md) §12.1); 알 수 없는 kind, `body_len` 0·초과, 남는 바이트, `entry_count` 257 → `SidecarCorrupt(Journal)`; 본문 오류 entry는 다른 entry 갱신 후에도 바이트 불변; 개수·용량 초과 시 종결 레코드 정리 후에도 넘으면 `Full`이고 커밋 0회.
+- journal 컨테이너(M4, §5.4): kind 4종 왕복(4 = Zcash, [12](12-zcash.md) §12.1); kind 5·255는 `Unknown`으로 보존되어 바이트 그대로 다시 인코딩되고 EVM 레코드는 그대로 읽힘; kind 0, `body_len` 0·초과, 남는 바이트, `entry_count` 257 → `SidecarCorrupt(Journal)`; 본문 오류 entry는 다른 entry 갱신 후에도 바이트 불변; 개수·용량 초과 시 종결 레코드 정리 후에도 넘으면 `Full`이고 커밋 0회.
 - yw-win 실제 파일 구현의 중단 지점 테스트(각 단계 후 강제 중단 → 재시작 분류)와 고아 `.tmp` 정리는 [09](09-testing.md) §4.1 V-FS.
 
 ### 11.8 상태 기계·백업

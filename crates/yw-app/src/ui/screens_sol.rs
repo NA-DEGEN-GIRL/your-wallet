@@ -846,6 +846,7 @@ impl App {
         if let Some(info) = &form.info {
             items.push(Item::Banner(info.clone(), Tone::Warn));
         }
+        self.journal_send_items(crate::app_sidecar::SendChain::Sol, items);
         items.push(Item::Row(vec![
             Ctl::primary(ids::SEND_REVIEW, "검토").enabled(self.sol_can_review()),
             Ctl::button(ids::SEND_CANCEL, "취소"),

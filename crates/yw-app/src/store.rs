@@ -135,22 +135,67 @@ impl FileStorage {
     }
 
     /// Replaces `<name>` with the bytes of `<name>.prev` after quarantining the main file
-    /// (E-VLT-006 "이전 사본 사용" for sidecars).
+    /// (E-VLT-006 "이전 사본 사용" for sidecars; the key worker has opened and decoded `.prev`
+    /// first). Returns the name the main file was moved to (`None`: there was none).
     ///
     /// # Errors
     ///
     /// [`StorageError`].
-    pub fn restore_prev(&mut self, kind: FileKind, now_unix: u64) -> Result<(), StorageError> {
+    pub fn restore_prev(
+        &mut self,
+        kind: FileKind,
+        now_unix: u64,
+    ) -> Result<Option<String>, StorageError> {
         let prev = Self::read(&with_suffix(&self.dir, kind, ".prev"), kind)?
             .ok_or(StorageError::NotFound)?;
-        if self.path(kind).exists() {
-            self.quarantine(kind, now_unix)?;
-        }
+        let quarantined = self.quarantine_main(kind, now_unix)?;
         let tmp = with_suffix(&self.dir, kind, ".tmp");
         remove_if_present(&tmp)?;
         write_new_synced(&tmp, &prev).map_err(storage_error)?;
         replace_file(&tmp, &self.path(kind)).map_err(storage_error)?;
-        flush_dir(&self.dir).map_err(storage_error)
+        flush_dir(&self.dir).map_err(storage_error)?;
+        Ok(quarantined)
+    }
+
+    /// Moves the main file, when there is one, aside as `<name>.corrupt-<now_unix>` (never
+    /// overwriting) and returns that name.
+    ///
+    /// # Errors
+    ///
+    /// [`StorageError`].
+    pub fn quarantine_main(
+        &mut self,
+        kind: FileKind,
+        now_unix: u64,
+    ) -> Result<Option<String>, StorageError> {
+        if !self.path(kind).exists() {
+            return Ok(None);
+        }
+        self.quarantine(kind, now_unix)?;
+        flush_dir(&self.dir).map_err(storage_error)?;
+        Ok(Some(format!("{}.corrupt-{now_unix}", file_name(kind))))
+    }
+
+    /// `격리하고 새로 시작` of a sidecar: moves `<name>.prev`, when there is one, aside as
+    /// `<name>.prev.corrupt-<now_unix>` (never overwriting) and returns that name. Otherwise the
+    /// fresh file's second save would rotate over it, and it may be the last readable copy.
+    ///
+    /// # Errors
+    ///
+    /// [`StorageError`].
+    pub fn set_prev_aside(
+        &mut self,
+        kind: FileKind,
+        now_unix: u64,
+    ) -> Result<Option<String>, StorageError> {
+        let prev = with_suffix(&self.dir, kind, ".prev");
+        if !prev.exists() {
+            return Ok(None);
+        }
+        let name = format!("{}.prev.corrupt-{now_unix}", file_name(kind));
+        rename_no_replace(&prev, &self.dir.join(&name)).map_err(storage_error)?;
+        flush_dir(&self.dir).map_err(storage_error)?;
+        Ok(Some(name))
     }
 
     /// Refuses (before anything is written) a folder, main file or `.prev` that is a reparse

@@ -2365,6 +2365,28 @@ impl Vault {
         Ok(opened)
     }
 
+    /// Opens `<name>.prev` of `meta.ywm` or `journal.ywj` with this session's key, without
+    /// touching what [`Vault::open_sidecar`] remembers: the `.prev` choice of a sidecar that does
+    /// not open checks the copy before anything is moved (spec/02 §6.3). `None` if there is no
+    /// `.prev`.
+    ///
+    /// # Errors
+    ///
+    /// `InvalidState` (also for `FileKind::Vault`), `SidecarCorrupt`, `SidecarVaultMismatch`, `Storage`.
+    pub fn open_sidecar_prev(&self, kind: FileKind) -> Result<Option<SidecarContents>, VaultError> {
+        self.require_public()?;
+        sidecar_index(kind)?;
+        let vault_id = self.id.ok_or(VaultError::InvalidState)?;
+        let dek = slot_dek(self.slot.as_ref())?;
+        match self.storage.load_prev(kind).map_err(VaultError::Storage)? {
+            None => Ok(None),
+            Some(bytes) => {
+                let (generation, plaintext) = format::open_sidecar(kind, &bytes, &vault_id, dek)?;
+                Ok(Some((generation, SecretVec::from_zeroizing(plaintext))))
+            }
+        }
+    }
+
     /// Seals and commits a sidecar with generation CAS against the last generation seen.
     /// Returns the new generation. A file not yet opened in this session is opened (and so
     /// authenticated) first: a file that fails is never overwritten.

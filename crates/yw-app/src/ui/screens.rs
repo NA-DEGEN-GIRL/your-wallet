@@ -392,6 +392,7 @@ fn header(app: &App, items: &mut Vec<Item>) {
         items.push(Item::Banner(T_ALT_PASS.to_owned(), Tone::HighRisk));
     }
     app.meta_failed_items(items);
+    app.journal_closed_items(items);
     if app.guard.pending.is_some() && app.screen != Screen::Confirm(Confirm::SettingsFile) {
         // What differs, in plain words with both values (2026-11-08); the safe choice is the
         // primary button and `파일 값 사용…` asks once more (spec/04 §6.7).
@@ -1754,6 +1755,15 @@ impl App {
 
     #[expect(clippy::too_many_lines, reason = "one arm per overlay")]
     fn confirm(&self, kind: Confirm, items: &mut Vec<Item>) {
+        // The E-VLT-006 choices have their own texts and buttons (`app_sidecar`).
+        if kind == Confirm::SidecarCorrupt {
+            self.meta_overlay(items);
+            return;
+        }
+        if kind == Confirm::JournalCorrupt {
+            self.journal_overlay(items);
+            return;
+        }
         let btc = self.btc.confirm;
         let (title, text, yes) = match kind {
             Confirm::Btc => btc.map_or(("Bitcoin", String::new(), "확인"), |confirm| {
@@ -1775,11 +1785,8 @@ impl App {
                 "계속",
             ),
             Confirm::Generate => ("네트워크 URL 생성", self.generate_text(), "생성"),
-            Confirm::SidecarCorrupt => (
-                "부가 파일 손상",
-                format!("{} meta 파일을 이전 사본(.prev)으로 되돌리거나, 손상된 파일을 격리하고 새로 시작할 수 있습니다(계정 이름 등 메타 정보가 초기화됩니다).", ErrorCode::Vlt006.text()),
-                "",
-            ),
+            // Drawn above.
+            Confirm::SidecarCorrupt | Confirm::JournalCorrupt => ("", String::new(), ""),
             Confirm::RemoveKey => (
                 "가져온 개인키 삭제",
                 T_REMOVE_KEY.to_owned(),
@@ -1795,11 +1802,6 @@ impl App {
                 "개인키 보기",
                 "화면 근처의 사람이나 카메라가 볼 수 있습니다. 계속하려면 비밀번호를 입력하세요.".to_owned(),
                 "계속",
-            ),
-            Confirm::JournalCorrupt => (
-                "거래 저널 손상",
-                format!("{} 거래 저널을 새로 시작하면 진행 중 거래 기록이 사라질 수 있습니다. 손상된 파일은 격리(보존)합니다. 이전 사본(.prev)을 쓰려면 앱을 종료하고 직접 확인하세요.", ErrorCode::Vlt006.text()),
-                "격리하고 새로 시작",
             ),
             Confirm::ChainPin => ("체인 추가 — 제네시스 고정", self.chain_pin_text(), "고정하고 저장"),
             Confirm::ChainRepin => ("다시 고정", self.chain_repin_text(), "다시 고정"),
@@ -1872,7 +1874,6 @@ impl App {
                 | Confirm::RemoveKey
                 | Confirm::RemoveImported
                 | Confirm::RemoveYubiKey
-                | Confirm::JournalCorrupt
         );
         items.push(Item::Title(title.to_owned()));
         items.push(Item::CardStart(None));
@@ -1927,25 +1928,18 @@ impl App {
             items.push(Item::CardEnd);
             return;
         }
-        if kind == Confirm::SidecarCorrupt {
-            items.push(Item::Row(vec![
-                Ctl::primary(ids::SIDECAR_PREV, "이전 사본(.prev) 사용"),
-                Ctl::danger(ids::SIDECAR_FRESH, "격리하고 새로 시작"),
-            ]));
-        } else {
-            let no = match (kind, btc) {
-                (Confirm::Btc, Some(confirm)) => confirm.no_label(),
-                _ => "취소",
-            };
-            items.push(Item::Row(vec![
-                if destructive {
-                    Ctl::danger(ids::CONFIRM_YES, yes)
-                } else {
-                    Ctl::primary(ids::CONFIRM_YES, yes)
-                },
-                Ctl::button(ids::CONFIRM_NO, no),
-            ]));
-        }
+        let no = match (kind, btc) {
+            (Confirm::Btc, Some(confirm)) => confirm.no_label(),
+            _ => "취소",
+        };
+        items.push(Item::Row(vec![
+            if destructive {
+                Ctl::danger(ids::CONFIRM_YES, yes)
+            } else {
+                Ctl::primary(ids::CONFIRM_YES, yes)
+            },
+            Ctl::button(ids::CONFIRM_NO, no),
+        ]));
         items.push(Item::CardEnd);
     }
 

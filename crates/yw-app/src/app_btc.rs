@@ -184,6 +184,8 @@ pub struct BtcCtx<'a> {
     pub meta: Option<&'a Meta>,
     /// The journal view.
     pub journal: Option<&'a JournalView>,
+    /// The journal did not open and its choice was closed (`app_sidecar::SidecarUi`).
+    pub journal_closed: bool,
     /// `AppMode::Unlocked`.
     pub unlocked: bool,
     /// The wallet has recovery words (`false`: a key-only wallet, whose Bitcoin accounts are
@@ -223,6 +225,8 @@ pub enum BtcGate {
     NoEndpoint,
     /// The journal is not read yet.
     JournalLoading,
+    /// The journal did not open and its choice was closed (`app_sidecar`): not "loading".
+    JournalClosed,
 }
 
 impl BtcGate {
@@ -241,6 +245,10 @@ impl BtcGate {
             Self::Mismatch { .. } => texts::NETWORK_MISMATCH.to_owned(),
             Self::NoEndpoint => ErrorCode::Key005.text(),
             Self::JournalLoading => "불러오는 중…".to_owned(),
+            Self::JournalClosed => {
+                "거래 저널을 열지 못해 Bitcoin 조회·보내기를 멈췄습니다. 맨 위 안내의 '선택 다시 보기'에서 고르세요."
+                    .to_owned()
+            }
         }
     }
 }
@@ -445,7 +453,11 @@ impl BtcCtx<'_> {
             return Err(BtcGate::NoEndpoint);
         }
         if self.journal.is_none() {
-            return Err(BtcGate::JournalLoading);
+            return Err(if self.journal_closed {
+                BtcGate::JournalClosed
+            } else {
+                BtcGate::JournalLoading
+            });
         }
         Ok(())
     }
@@ -3767,6 +3779,7 @@ impl crate::app::App {
                 apikeys: &self.apikeys,
                 meta: self.meta.as_ref(),
                 journal: self.evm.journal.as_ref(),
+                journal_closed: self.sidecar.journal_closed,
                 unlocked: matches!(self.mode, crate::app::AppMode::Unlocked { .. }),
                 has_mnemonic: self.keys.has_mnemonic,
                 now_ms: yw_win::time::monotonic_ms(),
@@ -4083,9 +4096,13 @@ impl crate::app::App {
     }
 
     /// `검토` of the send form (off while the account's phrase waits for its backup quiz: the
-    /// form's band says so, U7).
+    /// form's band says so, U7; and while the journal holds sends, `app_sidecar`).
     pub fn btc_review(&mut self) {
-        if self.mn_send_blocked(self.btc_backup_gate()) {
+        if self.mn_send_blocked(self.btc_backup_gate())
+            || self
+                .journal_hold(crate::app_sidecar::SendChain::Btc)
+                .is_some()
+        {
             self.refresh();
             return;
         }
@@ -4237,6 +4254,7 @@ impl crate::app::App {
             apikeys: &self.apikeys,
             meta: self.meta.as_ref(),
             journal: self.evm.journal.as_ref(),
+            journal_closed: self.sidecar.journal_closed,
             unlocked: matches!(self.mode, crate::app::AppMode::Unlocked { .. }),
             has_mnemonic: self.keys.has_mnemonic,
             now_ms: yw_win::time::monotonic_ms(),

@@ -98,8 +98,25 @@ impl App {
         if !matches!(self.mode, AppMode::BackupPending | AppMode::Unlocked { .. }) {
             return;
         }
+        // E-VLT-006: the file did not open or this build cannot read it. Its own overlay (and the
+        // choice being carried out) says so; once closed, this form says nothing was changed.
+        let unreadable = code == crate::errors::ErrorCode::Vlt006;
+        if unreadable
+            && matches!(
+                self.screen,
+                crate::app::Screen::Confirm(crate::app::Confirm::SidecarCorrupt)
+                    | crate::app::Screen::Processing(_)
+            )
+        {
+            return;
+        }
+        let text = if unreadable {
+            crate::app_sidecar::T_META_CLOSED
+        } else {
+            T_META_FAILED
+        };
         items.push(Item::Banner(
-            format!("{T_META_FAILED} ({})", code.code()),
+            format!("{text} ({})", code.code()),
             Tone::Danger,
         ));
         let mut row = vec![Ctl::primary(ids::WAIT_RETRY, "다시 불러오기")];

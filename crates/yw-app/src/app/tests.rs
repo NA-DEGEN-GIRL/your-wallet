@@ -1477,6 +1477,7 @@ fn meta_with_snapshot(settings: &Settings) -> Meta {
         security: Box::new(crate::meta::MetaSecurity {
             snapshot: Some(crate::settings::SecuritySnapshot::of(settings)),
             vault_generation_seen: 0,
+            journal_reset_at: 0,
         }),
         ..Meta::default()
     }
@@ -1732,6 +1733,7 @@ fn snapshot_created_once_and_early_saves_taken_over() {
         security: Box::new(crate::meta::MetaSecurity {
             snapshot: Some(created),
             vault_generation_seen: 0,
+            journal_reset_at: 0,
         }),
         ..Meta::default()
     });
@@ -4409,4 +4411,177 @@ fn a_busy_secret_clipboard_clear_is_retried_noticed_once_and_bounded() {
         clip_step(&mut ClipRetry::default(), 3, Ok(false)),
         ClipStep::Done(false)
     );
+}
+
+/// The files of the data folder whose names start with `prefix`.
+fn files_starting(dir: &std::path::Path, prefix: &str) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with(prefix))
+        .collect();
+    names.sort();
+    names
+}
+
+/// 2026-11-10 E-VLT-006 review (journal): a journal that does not open asks with
+/// T-JOURNAL-RESET; `닫기` stops every send with one band and `선택 다시 보기`; starting over moves
+/// the file and its `.prev` aside (never deleted, both named in the notice), clears the stale band,
+/// and remembers the time in meta, after which Bitcoin asks for a check and Solana and Zcash wait.
+#[test]
+fn journal_choice_closes_without_change_and_a_reset_keeps_the_old_copy_and_guards_sends() {
+    use crate::app_sidecar::{JournalHold, SendChain, ids as sidecar_ids};
+    let mut h = Harness::new("journalreset");
+    h.create_and_confirm();
+    h.app.lock(LockReason::Manual);
+    h.pump();
+    std::fs::write(h.dir.join("journal.ywj"), b"not a journal").unwrap();
+    std::fs::write(h.dir.join("journal.ywj.prev"), b"older copy").unwrap();
+    h.submit(Purpose::Unlock, &[WALLET_PW]);
+    h.pump();
+    assert_eq!(h.app.screen, Screen::Confirm(Confirm::JournalCorrupt));
+    let items = h.app.items();
+    assert!(
+        has_text(&items, "두 번 지불될 수 있습니다"),
+        "T-JOURNAL-RESET"
+    );
+    assert!(!has_text(&items, "자산에는 영향이 없습니다"));
+
+    // `닫기`: nothing moves; one band with the way back, on every screen; sends held.
+    h.app.on_command(ids::CONFIRM_NO);
+    assert_eq!(h.app.screen, Screen::Main);
+    assert!(h.dir.join("journal.ywj").is_file());
+    assert_eq!(
+        h.app.journal_hold(SendChain::Btc),
+        Some(JournalHold::Closed)
+    );
+    assert!(
+        controls(&h.app.items())
+            .iter()
+            .any(|ctl| ctl.id == sidecar_ids::JOURNAL_REOPEN)
+    );
+    h.app.on_command(sidecar_ids::JOURNAL_REOPEN);
+    assert_eq!(h.app.screen, Screen::Confirm(Confirm::JournalCorrupt));
+
+    // Starting over: both files kept aside under the names the notice gives.
+    h.app.on_command(ids::CONFIRM_YES);
+    h.pump();
+    assert_eq!(h.app.screen, Screen::Main);
+    assert!(!h.dir.join("journal.ywj.prev").exists());
+    let quarantined = files_starting(&h.dir, "journal.ywj.corrupt-");
+    let prev = files_starting(&h.dir, "journal.ywj.prev.corrupt-");
+    assert_eq!((quarantined.len(), prev.len()), (1, 1));
+    assert_eq!(
+        std::fs::read(h.dir.join(&prev[0])).unwrap(),
+        b"older copy".to_vec()
+    );
+    let notice = h
+        .app
+        .banners
+        .iter()
+        .find(|banner| banner.text.starts_with("거래 저널을 새로 시작했습니다"))
+        .map(|banner| banner.text.clone())
+        .unwrap();
+    assert!(notice.contains(&quarantined[0]) && notice.contains(&prev[0]));
+    assert!(
+        !h.app
+            .banners
+            .iter()
+            .any(|banner| banner.code == Some(crate::errors::ErrorCode::Vlt006))
+    );
+    assert!(h.app.evm.journal.is_some());
+    assert!(h.app.meta.as_ref().unwrap().security.journal_reset_at > 0);
+    assert_eq!(h.app.journal_hold(SendChain::Evm), None);
+    assert!(matches!(
+        h.app.journal_hold(SendChain::Sol),
+        Some(JournalHold::Wait(_))
+    ));
+    assert!(matches!(
+        h.app.journal_hold(SendChain::Zec),
+        Some(JournalHold::Wait(_))
+    ));
+    assert_eq!(h.app.journal_hold(SendChain::Btc), Some(JournalHold::Check));
+    h.app.on_command(sidecar_ids::RESET_ACK);
+    assert_eq!(h.app.journal_hold(SendChain::Btc), None);
+
+    // The time is in the sealed meta: the next session asks again.
+    h.app.lock(LockReason::Manual);
+    h.pump();
+    h.submit(Purpose::Unlock, &[WALLET_PW]);
+    h.pump();
+    assert_eq!(h.app.screen, Screen::Main);
+    assert_eq!(h.app.journal_hold(SendChain::Btc), Some(JournalHold::Check));
+}
+
+/// 2026-11-10 E-VLT-006 review (meta): a meta that opens with the wallet's key but that this
+/// build cannot read (a newer build's) is not called damage: `닫기`·`잠금`, the destructive choices
+/// only under `고급`, no default in memory and no save over it. `.prev` is read first and, when it
+/// cannot be read either, nothing moves; starting over moves the file and its `.prev` aside.
+#[test]
+fn unreadable_meta_is_never_overwritten_and_prev_is_checked_before_anything_moves() {
+    use crate::app_sidecar::ids as sidecar_ids;
+    let mut h = Harness::new("metanewer");
+    h.create_and_confirm();
+    h.pump();
+    // Two documents this build cannot read: the file and its `.prev`.
+    h.worker
+        .test_write_meta_bytes(br#"{"schema":"yw-meta/3","newer":"#)
+        .unwrap();
+    h.worker
+        .test_write_meta_bytes(br#"{"schema":"yw-meta/3","newest":"#)
+        .unwrap();
+    let meta_file = h.dir.join("meta.ywm");
+    let sealed = std::fs::read(&meta_file).unwrap();
+    h.app.request_meta();
+    h.pump();
+    assert_eq!(h.app.screen, Screen::Confirm(Confirm::SidecarCorrupt));
+    assert!(h.app.sidecar.meta_newer && h.app.meta.is_none());
+    assert_eq!(
+        h.app.wait.meta_failed,
+        Some(crate::errors::ErrorCode::Vlt006)
+    );
+    let shown =
+        |h: &Harness| -> Vec<u16> { controls(&h.app.items()).iter().map(|ctl| ctl.id).collect() };
+    assert!(shown(&h).contains(&sidecar_ids::SIDECAR_CLOSE));
+    assert!(!shown(&h).contains(&ids::SIDECAR_FRESH), "only under 고급");
+    // A document queued before the failed load is not sealed over the file.
+    h.app.key(crate::events::KeyJob::SaveMeta {
+        meta: Box::new(Meta::default()),
+    });
+    h.pump();
+    assert_eq!(std::fs::read(&meta_file).unwrap(), sealed);
+
+    // `닫기` changes nothing; `다시 불러오기` reads the file again and asks again.
+    h.app.on_command(sidecar_ids::SIDECAR_CLOSE);
+    assert_eq!(h.app.screen, Screen::Main);
+    assert!(has_text(&h.app.items(), "아무것도 바꾸지 않았습니다"));
+    h.app.on_command(crate::ui::screens_reset::ids::WAIT_RETRY);
+    h.pump();
+    assert_eq!(h.app.screen, Screen::Confirm(Confirm::SidecarCorrupt));
+
+    // `.prev` cannot be read either: nothing moves, the overlay says so.
+    h.app.on_command(sidecar_ids::ADVANCED);
+    assert!(shown(&h).contains(&ids::SIDECAR_PREV));
+    h.app.on_command(ids::SIDECAR_PREV);
+    h.pump();
+    assert_eq!(h.app.screen, Screen::Confirm(Confirm::SidecarCorrupt));
+    assert!(has_text(&h.app.items(), "아무 파일도 바꾸지 않았습니다"));
+    assert_eq!(std::fs::read(&meta_file).unwrap(), sealed);
+    assert!(files_starting(&h.dir, "meta.ywm.corrupt-").is_empty());
+
+    // Starting over: the file and `.prev` kept aside and named; a fresh meta loads.
+    h.app.on_command(ids::SIDECAR_FRESH);
+    h.pump();
+    assert_eq!(h.app.screen, Screen::Main);
+    assert!(h.app.meta.is_some() && h.app.wait.meta_failed.is_none());
+    let quarantined = files_starting(&h.dir, "meta.ywm.corrupt-");
+    let prev = files_starting(&h.dir, "meta.ywm.prev.corrupt-");
+    assert_eq!((quarantined.len(), prev.len()), (1, 1));
+    assert_eq!(std::fs::read(h.dir.join(&quarantined[0])).unwrap(), sealed);
+    assert!(h.app.banners.iter().any(|banner| {
+        banner.text.starts_with("meta를 새로 시작했습니다")
+            && banner.text.contains(&quarantined[0])
+            && banner.text.contains(&prev[0])
+    }));
 }

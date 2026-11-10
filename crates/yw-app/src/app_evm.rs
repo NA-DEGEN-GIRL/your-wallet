@@ -741,12 +741,10 @@ impl App {
                 self.refresh();
             }
             KeyOutcome::Journal(Err(
-                yw_core::error::VaultError::SidecarCorrupt(FileKind::Journal)
-                | yw_core::error::VaultError::SidecarVaultMismatch(FileKind::Journal),
-            )) => {
-                self.banner(Some(ErrorCode::Vlt006), ErrorCode::Vlt006.text());
-                self.set_screen(Screen::Confirm(Confirm::JournalCorrupt));
-            }
+                error @ (yw_core::error::VaultError::SidecarCorrupt(FileKind::Journal)
+                | yw_core::error::VaultError::SidecarVaultMismatch(FileKind::Journal)
+                | yw_core::error::VaultError::SidecarUnsupported(FileKind::Journal)),
+            )) => self.journal_unreadable(error),
             KeyOutcome::Journal(Err(error)) => {
                 logging::warn(
                     "journal",
@@ -1559,6 +1557,9 @@ impl App {
             && self.evm.blocked(chain_id).is_none()
             && !self.evm.journal_damaged()
             && self.evm.journal.is_some()
+            && self
+                .journal_hold(crate::app_sidecar::SendChain::Evm)
+                .is_none()
             && self.send_in_flight().is_none()
             && matches!(self.mode, AppMode::Unlocked { .. })
             // U7: the phrase waits for its backup quiz (the form's band says so).

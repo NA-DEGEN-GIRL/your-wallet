@@ -154,11 +154,15 @@ impl JournalState {
     ///
     /// # Errors
     ///
-    /// Vault errors; `SidecarCorrupt(Journal)` for framing errors (E-VLT-006 choice).
+    /// Vault errors (`SidecarCorrupt`/`SidecarVaultMismatch(Journal)`: the file does not open);
+    /// `SidecarUnsupported(Journal)` when it opens with this wallet's key but its framing does not
+    /// decode — some build of this app wrote it, almost always a newer one (E-VLT-006 choice,
+    /// spec/02 §6.3).
     pub fn load(&mut self, vault: &Vault) -> Result<JournalView, VaultError> {
         let plain = match vault.open_sidecar(FileKind::Journal)? {
             None => JournalPlain::default(),
-            Some((_, bytes)) => JournalPlain::decode(bytes.expose())?,
+            Some((_, bytes)) => JournalPlain::decode(bytes.expose())
+                .map_err(|_| VaultError::SidecarUnsupported(FileKind::Journal))?,
         };
         let view = view_of(&plain);
         self.plain = Some(plain);
@@ -555,7 +559,8 @@ impl JournalState {
                 yw_core::journal::zec::ZecRecord::decode(&entry.body)
                     .map_or(true, |record| record.account.source.mnemonic() != Some(id))
             }
-            yw_core::journal::EntryKind::Evm => true,
+            // EVM records name no mnemonic; a later build's kind is kept as it is.
+            yw_core::journal::EntryKind::Evm | yw_core::journal::EntryKind::Unknown(_) => true,
         });
         if next.entries.len() == before {
             return Vec::new();

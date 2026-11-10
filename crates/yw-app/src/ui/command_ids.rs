@@ -25,6 +25,7 @@
 //! | address book (`screens_book`) | 14,000–15,699 | S14 form 14,000–14,016, favorite chips 14,020–14,027, BTC picker 14,030–14,069, SOL activity `이 주소 저장` 14,080–14,143, S14 rows 14,200–15,699 (★·편집·삭제) |
 //! | `WalletConnect` (`screens_walletconnect`) | 16,000–16,099 | S13 panel, session rows 16,020–16,083 |
 //! | hidden accounts (`app_hidden`) | 16,200–16,589 | toggles 16,200–16,201, EVM `다시 보이기` rows 16,210–16,399, Solana rows 16,400–16,589 |
+//! | side-file choices (`app_sidecar`) | 16,600–16,609 | meta `닫기`, `고급`, journal `선택 다시 보기`, the Bitcoin form's check after a journal reset |
 
 use crate::ui::{
     screens, screens_book, screens_btc, screens_evm, screens_hypercore, screens_keys, screens_llm,
@@ -451,6 +452,7 @@ pub fn fixed() -> Vec<(&'static str, &'static [u16])> {
         ("hypercore", screens_hypercore::ids::FIXED),
         ("walletconnect", screens_walletconnect::ids::FIXED),
         ("hidden", crate::app_hidden::ids::FIXED),
+        ("sidecar", crate::app_sidecar::ids::FIXED),
     ]
 }
 

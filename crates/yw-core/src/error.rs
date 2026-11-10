@@ -179,6 +179,10 @@ pub enum VaultError {
     SidecarCorrupt(FileKind),
     /// A sidecar file belongs to another vault.
     SidecarVaultMismatch(FileKind),
+    /// A sidecar authenticated with this vault's key, but its plaintext does not decode with this
+    /// build: some build of the app wrote it, almost always a newer one (spec/02 §6.3). Not
+    /// damage: nothing is moved or replaced unless the user asks under `고급`.
+    SidecarUnsupported(FileKind),
     /// The Argon2 working memory could not be reserved.
     OutOfMemory,
     /// The operation needs a confirmed backup.
@@ -224,6 +228,9 @@ impl fmt::Display for VaultError {
             Self::UnsupportedPayload => "새 버전 앱이 저장한 지갑입니다. 앱을 업데이트하세요.",
             Self::SidecarCorrupt(_) | Self::SidecarVaultMismatch(_) => {
                 "지갑 부가 파일(meta·저널)을 읽을 수 없습니다."
+            }
+            Self::SidecarUnsupported(_) => {
+                "지갑 부가 파일(meta·저널)이 이 버전이 모르는 형식입니다. 앱을 업데이트하세요."
             }
             Self::OutOfMemory => "메모리를 잠그지 못해 잠금 해제하지 않았습니다.",
             Self::BackupNotConfirmed => "백업 확인을 먼저 끝내세요.",

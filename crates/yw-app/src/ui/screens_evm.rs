@@ -1054,6 +1054,7 @@ impl App {
             items.push(Item::Banner(info.clone(), Tone::Warn));
         }
         items.push(Item::CardEnd);
+        self.journal_send_items(crate::app_sidecar::SendChain::Evm, items);
         items.push(Item::Row(vec![
             Ctl::primary(ids::SEND_REVIEW, "검토").enabled(self.can_review()),
             Ctl::button(ids::SEND_CANCEL, "취소"),

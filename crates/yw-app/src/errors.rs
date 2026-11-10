@@ -337,7 +337,7 @@ impl ErrorCode {
             Self::Vlt003 => "지갑 파일을 저장하지 못했습니다. 디스크 공간과 권한을 확인하세요.",
             Self::Vlt005 => "안전한 난수를 얻지 못해 작업을 중단했습니다.",
             Self::Vlt006 => {
-                "지갑 부가 파일(meta·저널)을 읽을 수 없습니다. 복구 단어·키와 자산에는 영향이 없습니다. 더 새로운 버전의 앱이 쓴 파일이면 앱을 최신 버전으로 업데이트한 뒤 다시 여세요."
+                "지갑 부가 파일(meta·저널)을 읽을 수 없습니다. 복구 단어와 키는 이 파일에 없어 그대로입니다. 더 새로운 버전의 앱이 쓴 파일이면 앱을 최신 버전으로 업데이트한 뒤 다시 여세요."
             }
             Self::Vlt007 => "메모리를 잠그지 못해 잠금 해제하지 않았습니다.",
             Self::Vlt008 => "지갑 내용이 손상되었습니다. 이전 사본(.prev)으로 복구할 수 있습니다.",
@@ -545,7 +545,9 @@ pub const fn vault_code(error: VaultError) -> ErrorCode {
             ErrorCode::Vlt002
         }
         VaultError::Storage(_) => ErrorCode::Vlt003,
-        VaultError::SidecarCorrupt(_) | VaultError::SidecarVaultMismatch(_) => ErrorCode::Vlt006,
+        VaultError::SidecarCorrupt(_)
+        | VaultError::SidecarVaultMismatch(_)
+        | VaultError::SidecarUnsupported(_) => ErrorCode::Vlt006,
         VaultError::OutOfMemory => ErrorCode::Vlt007,
         VaultError::PayloadCorrupt => ErrorCode::Vlt008,
         VaultError::UnsupportedPayload => ErrorCode::Vlt014,

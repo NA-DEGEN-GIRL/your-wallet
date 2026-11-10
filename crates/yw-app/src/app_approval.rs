@@ -1340,6 +1340,16 @@ impl App {
 
     /// Steps 3–10 of spec/03 §3.7 on the RPC worker, for an app send or a dApp transaction.
     fn prepare_transaction(&mut self, job: u64, item: &AppApproval, site: Option<&SiteRequest>) {
+        // The journal did not open and its choice was closed: one fixed reason, not the
+        // `공간이 부족합니다` an absent journal's room would otherwise end with.
+        if self.evm.journal.is_none() && self.sidecar.journal_closed {
+            self.show_failure(
+                ErrorCode::Vlt006,
+                false,
+                crate::app_sidecar::T_JOURNAL_CLOSED_SEND.to_owned(),
+            );
+            return;
+        }
         let records = self.evm.records().to_vec();
         let room = self
             .evm

@@ -174,11 +174,7 @@ fn frame(count: u16, entries: &[(u8, Vec<u8>)]) -> Vec<u8> {
 fn container_framing_errors_are_sidecar_corrupt() {
     let ok = frame(1, &[(1, vec![1; 4])]);
     assert!(JournalPlain::decode(&ok).is_ok());
-    // Unknown kind (4 is Zcash since spec/12; its body is checked by `journal::zec`).
-    assert_eq!(
-        JournalPlain::decode(&frame(1, &[(5, vec![1])])),
-        Err(CORRUPT)
-    );
+    // Kind 0 is never written (5–255 are a later build's chains, kept: see below).
     assert_eq!(
         JournalPlain::decode(&frame(1, &[(0, vec![1])])),
         Err(CORRUPT)
@@ -241,6 +237,25 @@ fn container_framing_errors_are_sidecar_corrupt() {
             .collect(),
     };
     assert_eq!(over.encode(), Err(JournalError::Full));
+}
+
+/// A later build's chain (kind 5–255) is not a framing error any more: its entry is kept byte
+/// for byte beside this build's chains, which read and clean up only their own entries (before,
+/// one new kind made the whole journal — every chain's in-flight records — unreadable here).
+#[test]
+fn unknown_kinds_are_kept_verbatim() {
+    let record = v13_record().encode().unwrap();
+    let bytes = frame(3, &[(5, vec![9; 7]), (1, record), (255, vec![0xAB])]);
+    let plain = JournalPlain::decode(&bytes).unwrap();
+    assert_eq!(plain.entries[0].kind, EntryKind::Unknown(5));
+    assert_eq!(plain.entries[2].kind, EntryKind::Unknown(255));
+    assert_eq!(plain.encode().unwrap(), bytes, "re-encoded byte for byte");
+    let entries = EvmEntries::from_plain(&plain);
+    assert_eq!((entries.records().len(), entries.corrupt), (1, 0));
+    assert_eq!(EntryKind::read(5), Some(EntryKind::Unknown(5)));
+    assert_eq!(EntryKind::read(4), Some(EntryKind::Zec));
+    assert_eq!(EntryKind::read(0), None);
+    assert_eq!(EntryKind::from_code(5), None);
 }
 
 fn tamper(body: &[u8], at: usize, value: u8) -> Vec<u8> {

@@ -36,10 +36,11 @@ pub struct WaitWatch {
     pub meta_since: Option<u64>,
     /// A wait passed [`WAIT_TIMEOUT_MS`] (shown on `Processing` and the account-loading lines).
     pub stalled: bool,
-    /// The last meta load failed (not `SidecarCorrupt`, which has its own overlay): no meta is
-    /// in memory, nothing writes the meta, the main timer does not ask again, and T-META-FAILED
-    /// offers the next steps (`다시 불러오기`, `잠금`, the log folder). The next `request_meta`
-    /// clears it; a meta is in memory again only after a load succeeds.
+    /// The last meta load failed: no meta is in memory, nothing writes the meta, the main timer
+    /// does not ask again, and T-META-FAILED offers the next steps (`다시 불러오기`, `잠금`, the
+    /// log folder). E-VLT-006 (the file did not open, or this build cannot read it) has its own
+    /// overlay first (`app_sidecar`); closed, the band says nothing was changed. The next
+    /// `request_meta` clears it; a meta is in memory again only after a load succeeds.
     pub meta_failed: Option<ErrorCode>,
 }
 

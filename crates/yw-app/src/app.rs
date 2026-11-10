@@ -653,6 +653,9 @@ pub struct App {
     pub(crate) guard: SettingsGuard,
     /// Loading waits that time out to T-WAIT-STALLED instead of hanging (`app_reset`).
     pub(crate) wait: crate::app_reset::WaitWatch,
+    /// The E-VLT-006 choices for `meta.ywm`/`journal.ywj` and the journal's state after them
+    /// (`app_sidecar`, this session).
+    pub(crate) sidecar: crate::app_sidecar::SidecarUi,
     /// S22 `지갑 초기화` (spec/04 §2.20).
     pub(crate) reset: crate::app_reset::ResetUi,
     /// Settings → 네트워크(RPC) `rpc.json에서 가져오기` (a plan waiting for confirmation, the
@@ -886,6 +889,7 @@ impl App {
             llm_ui: crate::app_llm::LlmUi::default(),
             guard: SettingsGuard::default(),
             wait: crate::app_reset::WaitWatch::default(),
+            sidecar: crate::app_sidecar::SidecarUi::default(),
             reset: crate::app_reset::ResetUi::default(),
             rpc_import: crate::app_rpc_import::RpcImportUi::default(),
             ext: crate::app_extension::ExtensionUi::default(),
@@ -1529,6 +1533,8 @@ impl App {
         self.zec_lock();
         self.meta = None;
         self.wait = crate::app_reset::WaitWatch::default();
+        // The next unlock reads meta and the journal again (and asks again if they still fail).
+        self.sidecar = crate::app_sidecar::SidecarUi::default();
         self.hold_cancel();
         self.rename = None;
         self.pending_remove = None;
@@ -2029,12 +2035,10 @@ impl App {
                 self.card_after_meta();
             }
             KeyOutcome::Meta(Err(
-                VaultError::SidecarCorrupt(_) | VaultError::SidecarVaultMismatch(_),
-            )) => {
-                self.wait.meta_since = None;
-                self.error_banner(ErrorCode::Vlt006);
-                self.set_screen(Screen::Confirm(Confirm::SidecarCorrupt));
-            }
+                error @ (VaultError::SidecarCorrupt(_)
+                | VaultError::SidecarVaultMismatch(_)
+                | VaultError::SidecarUnsupported(_)),
+            )) => self.meta_unreadable(error),
             KeyOutcome::Meta(Err(error)) => {
                 // Fail closed: a read or the reconcile write failed, but the sealed meta (address
                 // book, sites, labels, the security snapshot) may be fine. No default stands in
@@ -2051,14 +2055,11 @@ impl App {
                     Screen::Main
                 });
             }
-            KeyOutcome::SidecarResolved(result) => {
-                if let Err(code) = result {
-                    self.error_banner(code);
-                }
-                self.evm.journal = None;
-                self.request_meta();
-                self.set_screen(Screen::Processing("불러오는 중…"));
-            }
+            KeyOutcome::SidecarResolved {
+                kind,
+                use_prev,
+                result,
+            } => self.on_sidecar_resolved(kind, use_prev, result),
             KeyOutcome::Addresses(Ok(list)) => {
                 if let Some(meta) = self.meta.as_mut() {
                     for (index, address) in list {
@@ -3158,10 +3159,7 @@ impl App {
                 }
             }
             ids::SIDECAR_PREV | ids::SIDECAR_FRESH => {
-                self.key(KeyJob::ResolveSidecar {
-                    kind: FileKind::Meta,
-                    use_prev: id == ids::SIDECAR_PREV,
-                });
+                self.choose_sidecar(FileKind::Meta, id == ids::SIDECAR_PREV);
             }
             ids::OPEN_SETTINGS | ids::SECTION_SECURITY => {
                 self.set_screen(Screen::Settings(SettingsSection::Security));
@@ -3293,6 +3291,9 @@ impl App {
             ids::CONFIRM_NO if matches!(self.screen, Screen::Confirm(Confirm::Btc)) => {
                 self.btc_confirm_no();
             }
+            ids::CONFIRM_NO if matches!(self.screen, Screen::Confirm(Confirm::JournalCorrupt)) => {
+                self.journal_choice_closed();
+            }
             ids::CONFIRM_NO => {
                 self.pending_remove = None;
                 self.keys.target = None;
@@ -3337,6 +3338,7 @@ impl App {
                     && !self.on_hc_command(other)
                     && !self.on_wc_command(other)
                     && !self.on_hidden_command(other)
+                    && !self.on_sidecar_command(other)
                 {
                     self.on_indexed_command(other);
                 }
@@ -3946,14 +3948,9 @@ impl App {
                 self.prune_dormant();
                 self.set_screen(previous);
             }
+            // The meta overlay has its own buttons (`app_sidecar`).
             Confirm::SidecarCorrupt => {}
-            Confirm::JournalCorrupt => {
-                self.set_screen(Screen::Main);
-                self.key(KeyJob::ResolveSidecar {
-                    kind: FileKind::Journal,
-                    use_prev: false,
-                });
-            }
+            Confirm::JournalCorrupt => self.choose_sidecar(FileKind::Journal, false),
             Confirm::ChainPin => {
                 let pending = self
                     .evm

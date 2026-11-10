@@ -38,26 +38,36 @@ pub const MAX_BODY: usize = 1_048_576;
 
 /// The chain discriminator of an entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[repr(u8)]
 pub enum EntryKind {
     /// EVM record (spec/03 §5.1).
-    Evm = 1,
+    Evm,
     /// Solana record (spec/07 §14.1, M7).
-    Sol = 2,
+    Sol,
     /// Bitcoin record (spec/08 §12.4, M8).
-    Btc = 3,
+    Btc,
     /// Zcash transparent record (spec/12 §12).
-    Zec = 4,
+    Zec,
+    /// A `kind` byte this build does not know (5–255): a later build's chain. A new kind is only
+    /// ever a new chain — a known chain's new record layout is a new `record_version` of its own
+    /// kind (a body error here) — so its entries are kept byte for byte, never read, cleaned up or
+    /// counted as any chain's, and the other chains work as usual (spec/02 §5.4).
+    Unknown(u8),
 }
 
 impl EntryKind {
     /// The `kind` byte.
     #[must_use]
     pub const fn code(self) -> u8 {
-        self as u8
+        match self {
+            Self::Evm => 1,
+            Self::Sol => 2,
+            Self::Btc => 3,
+            Self::Zec => 4,
+            Self::Unknown(code) => code,
+        }
     }
 
-    /// Parses a `kind` byte.
+    /// Parses the `kind` byte of a chain this build knows.
     #[must_use]
     pub const fn from_code(code: u8) -> Option<Self> {
         match code {
@@ -69,7 +79,19 @@ impl EntryKind {
         }
     }
 
-    /// The largest body of this chain (spec/02 §5.4: EVM 131,761, SOL 1,321, BTC 37,924).
+    /// The kind of a `kind` byte read from a journal: a known chain, or a later build's
+    /// ([`Self::Unknown`], 5–255). `None` for 0, which no build writes.
+    #[must_use]
+    pub const fn read(code: u8) -> Option<Self> {
+        match Self::from_code(code) {
+            Some(kind) => Some(kind),
+            None if code == 0 => None,
+            None => Some(Self::Unknown(code)),
+        }
+    }
+
+    /// The largest body of this chain (spec/02 §5.4: EVM 131,761, SOL 1,321, BTC 37,924); the
+    /// framing bound for a kind this build does not know.
     #[must_use]
     pub const fn max_body(self) -> usize {
         match self {
@@ -77,6 +99,7 @@ impl EntryKind {
             Self::Sol => sol::SOL_JOURNAL_MAX_BODY,
             Self::Btc => btc::BTC_JOURNAL_MAX_BODY,
             Self::Zec => zec::ZEC_JOURNAL_MAX_BODY,
+            Self::Unknown(_) => MAX_BODY,
         }
     }
 }
@@ -125,13 +148,14 @@ fn read_u32(bytes: &[u8], at: usize) -> Option<u32> {
 
 impl JournalPlain {
     /// Decodes the plaintext. A missing journal file is an empty journal (the caller passes no
-    /// bytes then).
+    /// bytes then). An entry of a kind this build does not know is kept as it is
+    /// ([`EntryKind::Unknown`]).
     ///
     /// # Errors
     ///
     /// `VaultError::SidecarCorrupt(Journal)` for any framing error: magic, `entry_count` above
-    /// 256, reserved bytes ≠ 0, an unknown `kind`, `body_len` 0 or above 1 MiB or past the end,
-    /// trailing bytes, or a plaintext above 16 MiB.
+    /// 256, reserved bytes ≠ 0, `kind` 0, `body_len` 0 or above 1 MiB or past the end, trailing
+    /// bytes, or a plaintext above 16 MiB.
     pub fn decode(bytes: &[u8]) -> Result<Self, VaultError> {
         if bytes.len() > MAX_PLAINTEXT || bytes.get(..8) != Some(PLAIN_MAGIC.as_slice()) {
             return Err(CORRUPT);
@@ -155,7 +179,7 @@ impl JournalPlain {
             let kind = bytes
                 .get(at)
                 .copied()
-                .and_then(EntryKind::from_code)
+                .and_then(EntryKind::read)
                 .ok_or(CORRUPT)?;
             let body_len = read_u32(bytes, at.checked_add(1).ok_or(CORRUPT)?)
                 .and_then(|len| usize::try_from(len).ok())

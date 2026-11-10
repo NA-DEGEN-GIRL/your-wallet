@@ -716,6 +716,9 @@ impl App {
             && !self.zec.refreshing
             && !self.zec_journal_damaged()
             && !self.mn_send_blocked(backup_gate)
+            && self
+                .journal_hold(crate::app_sidecar::SendChain::Zec)
+                .is_none()
             && (self.zec.look_alike.is_none() || self.zec.ack);
         // What `검토`, the approval, signing and sending ended with, next to the button (the
         // tab's own band is several cards above it).
@@ -734,6 +737,7 @@ impl App {
                 Tone::Success,
             ));
         }
+        self.journal_send_items(crate::app_sidecar::SendChain::Zec, items);
         let mut row = vec![Ctl::primary(ids::SEND_REVIEW, "검토").enabled(can_send)];
         if self.zec.sent.is_some() {
             row.push(Ctl::button(ids::RESULT_COPY, "해시 복사"));
