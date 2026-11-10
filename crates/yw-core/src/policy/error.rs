@@ -4,6 +4,250 @@
 //! (4001/4100/4200/-32602/-32603 mapping with fixed phrases) extended with the v3 rows. Errors
 //! made by yw-app carry no `data`; only [`ProviderError::Upstream`] (sanitized read errors,
 //! spec/05 §3.5) may.
+//!
+//! An `eth_sendTransaction` refused before any window says which rule it broke
+//! ([`ProviderError::InvalidTxParams`], 2026-11-11): every message is a compiled-in ASCII string
+//! that names a field or a rule and never a value from the request.
+
+macro_rules! unsupported_tx_keys {
+    ($($variant:ident = $key:literal),* $(,)?) => {
+        /// A known Ethereum transaction key this wallet does not accept (spec/03 §3.2). Its name
+        /// is compiled in, so a -32602 may quote it; any other unknown key is
+        /// [`TxRule::UnknownKey`] and is never echoed.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub enum UnsupportedTxKey {
+            $(
+                #[doc = concat!("`", $key, "`")]
+                $variant,
+            )*
+        }
+
+        impl UnsupportedTxKey {
+            /// The key named exactly `key` (case-sensitive), if it is one of the known keys.
+            #[must_use]
+            pub fn parse(key: &str) -> Option<Self> {
+                match key {
+                    $($key => Some(Self::$variant),)*
+                    _ => None,
+                }
+            }
+
+            /// The JSON key.
+            #[must_use]
+            pub const fn key(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $key,)*
+                }
+            }
+
+            const fn rule(self) -> &'static str {
+                match self {
+                    $(Self::$variant => concat!("key_", $key),)*
+                }
+            }
+
+            const fn message(self) -> &'static str {
+                match self {
+                    $(Self::$variant => concat!("Invalid params: unsupported key \"", $key, "\"."),)*
+                }
+            }
+
+            #[cfg(test)]
+            const ALL: &'static [Self] = &[$(Self::$variant),*];
+        }
+    };
+}
+
+unsupported_tx_keys![
+    AuthorizationList = "authorizationList",
+    BlobVersionedHashes = "blobVersionedHashes",
+    Blobs = "blobs",
+    MaxFeePerBlobGas = "maxFeePerBlobGas",
+    Sidecars = "sidecars",
+    Commitments = "commitments",
+    Proofs = "proofs",
+    Kzg = "kzg",
+    CustomData = "customData",
+    CcipReadEnabled = "ccipReadEnabled",
+    EnableCcipRead = "enableCcipRead",
+    BlockTag = "blockTag",
+    FeeCurrency = "feeCurrency",
+    Paymaster = "paymaster",
+    PaymasterInput = "paymasterInput",
+    GasPerPubdata = "gasPerPubdata",
+    FactoryDeps = "factoryDeps",
+    CustomSignature = "customSignature",
+    SourceHash = "sourceHash",
+    Mint = "mint",
+    IsSystemTx = "isSystemTx",
+    Hash = "hash",
+    V = "v",
+    R = "r",
+    S = "s",
+    YParity = "yParity",
+];
+
+/// A member of an `eth_sendTransaction` object whose value has the wrong form (spec/03 §3.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TxField {
+    /// `from` (address).
+    From,
+    /// `to` (address).
+    To,
+    /// `value` (quantity).
+    Value,
+    /// `data` (hex bytes).
+    Data,
+    /// `input` (hex bytes).
+    Input,
+    /// `gas` (quantity).
+    Gas,
+    /// `gasLimit` (quantity, alias of `gas`).
+    GasLimit,
+    /// `gasPrice` (quantity).
+    GasPrice,
+    /// `maxFeePerGas` (quantity).
+    MaxFeePerGas,
+    /// `maxPriorityFeePerGas` (quantity).
+    MaxPriorityFeePerGas,
+    /// `nonce` (u64 quantity).
+    Nonce,
+    /// `type` (quantity).
+    Type,
+    /// `chainId` (u64 quantity or JSON integer).
+    ChainId,
+    /// `accessList`.
+    AccessList,
+}
+
+impl TxField {
+    const fn rule(self) -> &'static str {
+        match self {
+            Self::From => "bad_from",
+            Self::To => "bad_to",
+            Self::Value => "bad_value",
+            Self::Data => "bad_data",
+            Self::Input => "bad_input",
+            Self::Gas => "bad_gas",
+            Self::GasLimit => "bad_gasLimit",
+            Self::GasPrice => "bad_gasPrice",
+            Self::MaxFeePerGas => "bad_maxFeePerGas",
+            Self::MaxPriorityFeePerGas => "bad_maxPriorityFeePerGas",
+            Self::Nonce => "bad_nonce",
+            Self::Type => "bad_type",
+            Self::ChainId => "bad_chainId",
+            Self::AccessList => "bad_accessList",
+        }
+    }
+
+    const fn message(self) -> &'static str {
+        match self {
+            Self::From => {
+                "Invalid params: \"from\" is not a valid address (0x + 40 hex; mixed case must be EIP-55)."
+            }
+            Self::To => {
+                "Invalid params: \"to\" is not a valid address (0x + 40 hex; mixed case must be EIP-55)."
+            }
+            Self::Value => "Invalid params: \"value\" is not a hex quantity.",
+            Self::Data => "Invalid params: \"data\" is not hex bytes.",
+            Self::Input => "Invalid params: \"input\" is not hex bytes.",
+            Self::Gas => "Invalid params: \"gas\" is not a hex quantity.",
+            Self::GasLimit => "Invalid params: \"gasLimit\" is not a hex quantity.",
+            Self::GasPrice => "Invalid params: \"gasPrice\" is not a hex quantity.",
+            Self::MaxFeePerGas => "Invalid params: \"maxFeePerGas\" is not a hex quantity.",
+            Self::MaxPriorityFeePerGas => {
+                "Invalid params: \"maxPriorityFeePerGas\" is not a hex quantity."
+            }
+            Self::Nonce => "Invalid params: \"nonce\" is not a 64-bit hex quantity.",
+            Self::Type => "Invalid params: \"type\" is not a hex quantity.",
+            Self::ChainId => "Invalid params: \"chainId\" is not a 64-bit hex quantity or integer.",
+            Self::AccessList => {
+                "Invalid params: \"accessList\" is not a valid access list (at most 256 entries of exactly {address, storageKeys}, at most 256 keys each, no repeated address)."
+            }
+        }
+    }
+}
+
+/// The rule an `eth_sendTransaction` object broke before any window (spec/03 §3.2, spec/05 §5,
+/// 2026-11-11). Each rule has a fixed log word ([`TxRule::id`]) and a fixed ASCII message of at
+/// most 256 characters; neither ever carries a value from the request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TxRule {
+    /// `params` is not exactly one transaction object.
+    Shape,
+    /// A key outside spec/03 §3.2 that is not a known one (never named).
+    UnknownKey,
+    /// A known Ethereum transaction key this wallet does not accept (named).
+    UnsupportedKey(UnsupportedTxKey),
+    /// A member with the wrong form.
+    Invalid(TxField),
+    /// `from` is missing.
+    FromRequired,
+    /// `to` is missing.
+    ToRequired,
+    /// `to` is `null` (contract deployment, D19).
+    ToNull,
+    /// `type` other than 0 or 2 (D19).
+    Type,
+    /// `gas`/`gasLimit` above 16,777,216 (D20).
+    GasCap,
+    /// `gas` and `gasLimit` are both present with different values.
+    GasLimitDiffers,
+    /// `data` and `input` are both present with different bytes.
+    DataInputDiffer,
+    /// `data`/`input` longer than 131,072 bytes.
+    DataTooLarge,
+    /// `chainId` is not the site's chain (D17).
+    ChainId,
+    /// `nonce` is not the account's next nonce (spec/03 §3.6–§3.7 step 4).
+    Nonce,
+}
+
+impl TxRule {
+    /// The log word of this rule (a static identifier, no values).
+    #[must_use]
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::Shape => "shape",
+            Self::UnknownKey => "unknown_key",
+            Self::UnsupportedKey(key) => key.rule(),
+            Self::Invalid(field) => field.rule(),
+            Self::FromRequired => "from_required",
+            Self::ToRequired => "to_required",
+            Self::ToNull => "to_null",
+            Self::Type => "type",
+            Self::GasCap => "gas_cap",
+            Self::GasLimitDiffers => "gas_limit_differs",
+            Self::DataInputDiffer => "data_input_differ",
+            Self::DataTooLarge => "data_too_large",
+            Self::ChainId => "chain_id",
+            Self::Nonce => "nonce",
+        }
+    }
+
+    /// The exact dApp-facing message.
+    #[must_use]
+    pub const fn message(self) -> &'static str {
+        match self {
+            Self::Shape => "Invalid params: expected exactly one transaction object.",
+            Self::UnknownKey => "Invalid params: unsupported transaction key.",
+            Self::UnsupportedKey(key) => key.message(),
+            Self::Invalid(field) => field.message(),
+            Self::FromRequired => "Invalid params: \"from\" is required.",
+            Self::ToRequired => "Invalid params: \"to\" is required.",
+            Self::ToNull => {
+                "Invalid params: \"to\" must not be null (contract deployment is not supported)."
+            }
+            Self::Type => "Invalid params: transaction type is not supported (only 0 and 2).",
+            Self::GasCap => "Invalid params: gas exceeds 16777216.",
+            Self::GasLimitDiffers => "Invalid params: \"gas\" and \"gasLimit\" differ.",
+            Self::DataInputDiffer => "Invalid params: \"data\" and \"input\" differ.",
+            Self::DataTooLarge => "Invalid params: transaction data exceeds 131072 bytes.",
+            Self::ChainId => "Invalid params: chainId does not match the site's network.",
+            Self::Nonce => "Invalid params: nonce does not match the account's next nonce.",
+        }
+    }
+}
 
 /// A dApp-facing error (spec/05 §5).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -60,6 +304,9 @@ pub enum ProviderError {
     RequestTooLarge,
     /// -32602 `Invalid params.`
     InvalidParams,
+    /// -32602 with the rule an `eth_sendTransaction` object broke (`Invalid params: …`,
+    /// [`TxRule::message`]). Other methods keep [`ProviderError::InvalidParams`].
+    InvalidTxParams(TxRule),
     /// -32603 `Internal error.`
     Internal,
     /// -32603 `Request timed out.`
@@ -100,7 +347,7 @@ impl ProviderError {
             Self::RequestPending | Self::TransactionPending => -32_002,
             Self::RateLimited | Self::TooManyPending => -32_005,
             Self::InvalidRequest | Self::RequestTooLarge => -32_600,
-            Self::InvalidParams => -32_602,
+            Self::InvalidParams | Self::InvalidTxParams(_) => -32_602,
             Self::Internal | Self::TimedOut | Self::ResponseTooLarge | Self::BroadcastFailed => {
                 -32_603
             }
@@ -149,6 +396,7 @@ impl ProviderError {
             Self::InvalidRequest => "Invalid request.",
             Self::RequestTooLarge => "Request too large.",
             Self::InvalidParams => "Invalid params.",
+            Self::InvalidTxParams(rule) => rule.message(),
             Self::Internal => "Internal error.",
             Self::TimedOut => "Request timed out.",
             Self::ResponseTooLarge => "Response too large.",
@@ -162,6 +410,15 @@ impl ProviderError {
     pub fn data(&self) -> Option<&str> {
         match self {
             Self::Upstream { data, .. } => data.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// The log word of the broken `eth_sendTransaction` rule ([`TxRule::id`]), if any.
+    #[must_use]
+    pub const fn rule(&self) -> Option<&'static str> {
+        match self {
+            Self::InvalidTxParams(rule) => Some(rule.id()),
             _ => None,
         }
     }
@@ -201,7 +458,84 @@ impl ProviderError {
 
 #[cfg(test)]
 mod tests {
-    use super::ProviderError;
+    use super::{ProviderError, TxField, TxRule, UnsupportedTxKey};
+
+    #[test]
+    fn tx_rules_are_fixed_short_ascii_and_distinct() {
+        let fields = [
+            TxField::From,
+            TxField::To,
+            TxField::Value,
+            TxField::Data,
+            TxField::Input,
+            TxField::Gas,
+            TxField::GasLimit,
+            TxField::GasPrice,
+            TxField::MaxFeePerGas,
+            TxField::MaxPriorityFeePerGas,
+            TxField::Nonce,
+            TxField::Type,
+            TxField::ChainId,
+            TxField::AccessList,
+        ];
+        let mut rules = vec![
+            TxRule::Shape,
+            TxRule::UnknownKey,
+            TxRule::FromRequired,
+            TxRule::ToRequired,
+            TxRule::ToNull,
+            TxRule::Type,
+            TxRule::GasCap,
+            TxRule::GasLimitDiffers,
+            TxRule::DataInputDiffer,
+            TxRule::DataTooLarge,
+            TxRule::ChainId,
+            TxRule::Nonce,
+        ];
+        rules.extend(fields.iter().map(|field| TxRule::Invalid(*field)));
+        rules.extend(
+            UnsupportedTxKey::ALL
+                .iter()
+                .map(|key| TxRule::UnsupportedKey(*key)),
+        );
+        let mut ids = std::collections::BTreeSet::new();
+        let mut messages = std::collections::BTreeSet::new();
+        for rule in &rules {
+            let error = ProviderError::InvalidTxParams(*rule);
+            assert_eq!(error.code(), -32_602);
+            assert_eq!(error.data(), None);
+            assert_eq!(error.rule(), Some(rule.id()));
+            assert_eq!(error.message(), rule.message());
+            let message = rule.message();
+            assert!(message.starts_with("Invalid params: "), "{message}");
+            assert!(message.ends_with('.'), "{message}");
+            assert!((1..=256).contains(&message.len()), "{message}");
+            assert!(
+                message.bytes().all(|byte| (0x20..=0x7e).contains(&byte)),
+                "{message}"
+            );
+            assert!(
+                rule.id()
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_'),
+                "{}",
+                rule.id()
+            );
+            assert!(ids.insert(rule.id()), "duplicate id {}", rule.id());
+            assert!(messages.insert(message), "duplicate message {message}");
+        }
+        for key in UnsupportedTxKey::ALL {
+            assert_eq!(UnsupportedTxKey::parse(key.key()), Some(*key));
+            assert_eq!(
+                TxRule::UnsupportedKey(*key).message(),
+                format!("Invalid params: unsupported key \"{}\".", key.key())
+            );
+        }
+        assert_eq!(UnsupportedTxKey::parse("AuthorizationList"), None);
+        assert_eq!(UnsupportedTxKey::parse("gasLimit"), None);
+        assert_eq!(ProviderError::InvalidParams.rule(), None);
+        assert_eq!(ProviderError::InvalidParams.message(), "Invalid params.");
+    }
 
     #[test]
     fn upstream_sanitizing_rules() {

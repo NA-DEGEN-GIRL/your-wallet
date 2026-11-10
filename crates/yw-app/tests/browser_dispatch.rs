@@ -981,19 +981,23 @@ fn r_g1_x3_backup_pending_no_vault_and_unconnected_accounts() -> TestResult {
         json(&format!(r#"["0x00","{A0}"]"#)),
     );
     assert_eq!(text(&single(&h, &stranger)?), "error 4100 Unauthorized.");
-    // chainId of the transaction ≠ origin chain → -32602; typed data T01 → -32602 (no window).
-    let wrong_chain = h.send(
-        SITE,
-        1,
-        "eth_sendTransaction",
-        json(&format!(
-            r#"[{{"from":"{A0}","to":"{A1}","chainId":"0x1"}}]"#
-        )),
-    );
-    assert_eq!(
-        text(&single(&h, &wrong_chain)?),
-        "error -32602 Invalid params."
-    );
+    // chainId of the transaction ≠ origin chain → -32602 naming the rule (2026-11-11, a JSON
+    // integer chainId is compared the same way); typed data T01 → -32602 (no window).
+    for chain in [r#""0x1""#, "1"] {
+        let wrong_chain = h.send(
+            SITE,
+            1,
+            "eth_sendTransaction",
+            json(&format!(
+                r#"[{{"from":"{A0}","to":"{A1}","chainId":{chain}}}]"#
+            )),
+        );
+        assert_eq!(
+            text(&single(&h, &wrong_chain)?),
+            "error -32602 Invalid params: chainId does not match the site's network.",
+            "{chain}"
+        );
+    }
     let typed = r#"{"types":{"EIP712Domain":[{"name":"chainId","type":"uint256"}],"Mail":[{"name":"x","type":"uint256"}]},"primaryType":"Mail","domain":{"chainId":1},"message":{"x":1}}"#;
     let t01 = h.send(
         SITE,

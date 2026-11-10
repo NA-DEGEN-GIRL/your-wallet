@@ -373,7 +373,7 @@ const TESTS = {
   },
   async T15() {
     await expectCode("T15", "eth_sendTransaction",
-      [{ from: await a0(), to: recipient(), value: "0x0", authorizationList: [] }], -32602, "Invalid params.");
+      [{ from: await a0(), to: recipient(), value: "0x0", authorizationList: [] }], -32602, 'Invalid params: unsupported key "authorizationList".');
   },
   async T16() {
     const from = await a0();

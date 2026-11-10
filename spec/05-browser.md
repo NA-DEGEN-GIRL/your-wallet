@@ -504,18 +504,18 @@ EIP-2255 권한 객체: `{ "invoker": "<origin>", "parentCapability": "eth_accou
 | 값 | 허용 | 정규화(RPC 전달·내부 표현) | 거부 |
 |---|---|---|---|
 | address | `0x` + 40 hex. 전부 소문자, 전부 대문자, 또는 EIP-55 체크섬이 맞는 대소문자 혼합 | 20바이트, 출력은 소문자 | `0X` 접두사, 길이 오류, 혼합 대소문자 체크섬 불일치 |
-| quantity | `0x` + 1–64 hex, 대소문자 무관, 앞자리 0 허용 | 앞자리 0 제거 소문자(`"0x0"` 포함) | `"0x"`, 65자리 이상, JSON 숫자, 음수 |
+| quantity | `0x` + 1–64 hex, 대소문자 무관, 앞자리 0 허용 | 앞자리 0 제거 소문자(`"0x0"` 포함) | `"0x"`, `0X` 접두사, 65자리 이상, JSON 숫자(call·tx 객체의 `chainId`만 예외, 아래), 음수 |
 | u64 quantity | quantity이면서 값 ≤ 2^64−1 | 동일 | 초과 |
 | data | `0x` + 짝수 길이 hex, 대소문자 무관, `"0x"` 허용 | 소문자 바이트 | 홀수 길이 |
 | hash32 | `0x` + 64 hex, 대소문자 무관 | 소문자 | 그 밖 |
 | block tag | `latest` `earliest` `pending` `safe` `finalized` 또는 u64 quantity | 동일 | 그 밖 |
 | block ref(EIP-1898) | block tag, `{ "blockNumber": q }`, `{ "blockHash": h }`, `{ "blockHash": h, "requireCanonical": bool }` (정확한 키) | 동일 구조 | 그 밖 |
 
-EIP-55 판정과 주소 파싱은 yw-core 함수를 쓴다(이름은 [03](03-evm.md)이 정한다). 모든 파라미터 오류는 -32602 "Invalid params."다.
+EIP-55 판정과 주소 파싱은 yw-core 함수를 쓴다(이름은 [03](03-evm.md)이 정한다). 모든 파라미터 오류는 -32602 "Invalid params."다. 단, `eth_sendTransaction`은 창 없이 거부할 때 깨진 규칙을 밝힌다(§5 `InvalidTxParams`, 2026-11-11: dApp 콘솔에 `Invalid params: gas exceeds 16777216.` 같은 고정 문구, 앱 로그 `request.error`에 `rule=gas_cap` 같은 단어. 요청의 값은 어느 쪽에도 넣지 않는다).
 
-**call 객체**(read용): 키는 `from to gas gasPrice maxFeePerGas maxPriorityFeePerGas value data input nonce type chainId accessList`의 부분집합. 모두 선택이고 `to`는 `null`·생략 가능(배포 추정). `data`와 `input`이 둘 다 있으면 바이트가 같아야 하며 하나(`input`)로 합친다. `data` ≤ 131,072 B. `accessList`는 ≤ 256 항목, 각 `{ address, storageKeys: hash32[] ≤ 256 }`(정확한 키). 그 밖 키(`authorizationList`, `blobVersionedHashes`, `blobs` 등)는 거부.
+**call 객체**(read용): 키는 `from to gas gasLimit gasPrice maxFeePerGas maxPriorityFeePerGas value data input nonce type chainId accessList`의 부분집합. 모두 선택이고 `to`는 `null`·생략 가능(배포 추정). `gasLimit`은 `gas`의 별칭이다(2026-11-11, ethers v5 이름·MetaMask와 같음): 둘 다 있으면 값이 같아야 하고, 전달은 `gas`로만 한다. `chainId`는 u64 quantity 또는 JSON 정수(ethers v5 `chainId: number`를 Uniswap이 그대로 보냄)이고 전달은 quantity다. `data`와 `input`이 둘 다 있으면 바이트가 같아야 하며 하나(`input`)로 합친다. `data` ≤ 131,072 B. `accessList`는 ≤ 256 항목, 각 `{ address, storageKeys: hash32[] ≤ 256 }`(정확한 키). 그 밖 키(`authorizationList`, `blobVersionedHashes`, `blobs` 등)는 거부.
 
-**tx 객체**(`eth_sendTransaction`): 키·값 의미의 정본은 [03](03-evm.md) §3.2다. 요약: call 객체 규칙에 더해 `from` 필수이고 grant 계정이어야 한다(아니면 4100). `to` 필수·non-null(D19). `type`은 생략·`0x0`·`0x2`만. `gas` ≤ 16,777,216(D20). `chainId`가 있으면 origin 체인과 같아야 한다. `gasPrice`·`maxFeePerGas`·`maxPriorityFeePerGas`는 quantity 형식만 검사하고 값은 버린다(조합 규칙 없음, [03] §3.2, D20). `nonce` 의미 검사와 가스 한도 계산은 [03]이 한다.
+**tx 객체**(`eth_sendTransaction`): 키·값 의미의 정본은 [03](03-evm.md) §3.2다. 요약: call 객체 규칙에 더해 `from` 필수이고 grant 계정이어야 한다(아니면 4100). `to` 필수·non-null(D19). `type`은 생략·`0x0`·`0x2`만(앞자리 0 `0x00`·`0x02` 포함). `gas`(또는 `gasLimit`) ≤ 16,777,216(D20). `chainId`가 있으면 origin 체인과 같아야 한다. `gasPrice`·`maxFeePerGas`·`maxPriorityFeePerGas`는 quantity 형식만 검사하고 값은 버린다(조합 규칙 없음, [03] §3.2, D20). `nonce` 의미 검사와 가스 한도 계산은 [03]이 한다.
 
 ### 3.4 메서드별 파라미터
 | 메서드 | params(배열, 정확한 길이) | 추가 규칙 |
@@ -702,12 +702,15 @@ dApp 요청으로 띄운 잠금 해제 창을 `나중에`로 닫으면 `UNLOCK_P
 | -32005 | `TooManyPending` | `Too many pending requests.` | pending 한도 |
 | -32600 | `InvalidRequest` | `Invalid request.` | 봉투 형식·순번·route 불일치 |
 | -32600 | `RequestTooLarge` | `Request too large.` | 크기·JSON 한도 초과 |
-| -32602 | `InvalidParams` | `Invalid params.` | §3.3–3.4, [03](03-evm.md)의 사전 정책 거부(D17 chainId 불일치, D19, nonce 불일치 등) |
+| -32602 | `InvalidParams` | `Invalid params.` | §3.3–3.4, [03](03-evm.md)의 사전 정책 거부(D17 chainId 불일치, D19, nonce 불일치 등). `eth_sendTransaction`의 형식·키·D17·D19·D20 거부는 아래 `InvalidTxParams` |
+| -32602 | `InvalidTxParams(TxRule)` | `Invalid params: …`(규칙별 고정 문구, 아래) | `eth_sendTransaction`을 창 없이 거부하는 §3.3–3.4·[03] §3.2 규칙, tx `chainId` ≠ origin 체인, dApp `nonce` 불일치(2026-11-11) |
 | -32603 | `Internal` | `Internal error.` | 그 밖의 내부 오류 |
 | -32603 | `TimedOut` | `Request timed out.` | 기한 만료(확장·yw-app) |
 | -32603 | `ResponseTooLarge` | `Response too large.` | §3.5 |
 | -32603 | `BroadcastFailed` | `Transaction broadcast failed.` | 서명 후 RPC가 확정적으로 거부, 다른 해시 반환, 전송 직전 체인 재확인 불일치(판정은 [03](03-evm.md) §4.4). 자동 재전송이 이어지지 않는 경우만이다: 결과가 불확실(시간 초과)하거나 체인 재확인이 전송 오류로 끝나 자동 재전송이 이어지면 tx hash를 반환한다 |
 | 그대로 | `Upstream { code, message, data }` | §3.5 정화 규칙 | read의 상위 JSON-RPC 오류 |
+
+`InvalidTxParams` 문구(정본 `yw_core::policy::TxRule::message`, 모두 `Invalid params: `로 시작하는 ASCII ≤ 256자, 요청의 값은 넣지 않음, 2026-11-11): `expected exactly one transaction object.` · `unsupported key "<k>".`(k가 바이너리에 든 알려진 키 `UnsupportedTxKey`일 때만: `authorizationList` `blobVersionedHashes` `blobs` `maxFeePerBlobGas` `sidecars` `commitments` `proofs` `kzg` `customData` `ccipReadEnabled` 등) · `unsupported transaction key.`(그 밖 키, 이름을 되풀이하지 않음) · `"<field>" is not a hex quantity.`/`is not hex bytes.`/`is not a valid address (…).`/`is not a valid access list (…).` · `"from" is required.` · `"to" is required.` · `"to" must not be null (contract deployment is not supported).` · `transaction type is not supported (only 0 and 2).` · `gas exceeds 16777216.` · `"gas" and "gasLimit" differ.` · `"data" and "input" differ.` · `transaction data exceeds 131072 bytes.` · `chainId does not match the site's network.` · `nonce does not match the account's next nonce.`([03] §3.7 단계 4, 준비 중 창을 닫을 때) 앱 로그 `request.error`에는 같은 규칙의 단어(`rule=key_authorizationList`, `rule=gas_cap`, `rule=chain_id` 등)를 더한다.
 
 `eth_sendTransaction`의 dApp 응답(D15–D16, 상황별 매핑은 [03](03-evm.md) §11.6): 시뮬레이션 결과(성공·revert·RPC 오류·시간 초과·응답 이상·`simulation = unsupported`)는 승인 창의 경고와 고위험 확인에만 영향을 주고 **어떤 오류 코드로도 바꾸지 않는다**. 결과는 승인 → tx hash(브로드캐스트 결과가 불확실해도 hash), 확정적 브로드캐스트 거부 → -32603 `BroadcastFailed`, 거부·창 닫기·잠금(D16 차단 창 포함) → 4001, 창 표시 후 120 s → 4001 `Request expired.`, 요청 기한 → -32603 `Request timed out.`, 창 없는 사전 거부(§3.3–3.4, [03] §11.6) → -32602·4100·-32002 중 하나, 승인 전 사용자 체인 삭제 → 4901(§4.3)이다.
 

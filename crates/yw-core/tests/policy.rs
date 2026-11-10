@@ -2,7 +2,9 @@
 //! `ProviderError` code and message against the spec/05 §5 table; `BrowserOrigin` rules are the
 //! unit tests of `policy`).
 
-use yw_core::policy::{BrowserOrigin, Method, ProviderError, Route};
+use yw_core::policy::{
+    BrowserOrigin, Method, ProviderError, Route, TxField, TxRule, UnsupportedTxKey,
+};
 use yw_json::{Limits, Value, parse};
 
 const METHODS_GOLDEN: &str = include_str!("../../../extension/native-host/v1-methods.golden.json");
@@ -179,6 +181,49 @@ fn r_err_provider_errors_match_spec_05_section_5() {
     let upstream = ProviderError::upstream(Some(-32_000), Some("nonce too low"), None);
     assert_eq!(upstream.code(), -32_000);
     assert_eq!(upstream.message(), "nonce too low");
+}
+
+/// spec/05 §5 `InvalidTxParams` (2026-11-11): -32602 naming the broken `eth_sendTransaction` rule.
+#[test]
+fn r_err_send_transaction_rules_match_spec_05_section_5() {
+    for (rule, message) in [
+        (
+            TxRule::ChainId,
+            "Invalid params: chainId does not match the site's network.",
+        ),
+        (
+            TxRule::UnsupportedKey(UnsupportedTxKey::AuthorizationList),
+            "Invalid params: unsupported key \"authorizationList\".",
+        ),
+        (
+            TxRule::UnknownKey,
+            "Invalid params: unsupported transaction key.",
+        ),
+        (
+            TxRule::Type,
+            "Invalid params: transaction type is not supported (only 0 and 2).",
+        ),
+        (TxRule::GasCap, "Invalid params: gas exceeds 16777216."),
+        (
+            TxRule::GasLimitDiffers,
+            "Invalid params: \"gas\" and \"gasLimit\" differ.",
+        ),
+        (TxRule::ToRequired, "Invalid params: \"to\" is required."),
+        (
+            TxRule::DataInputDiffer,
+            "Invalid params: \"data\" and \"input\" differ.",
+        ),
+        (
+            TxRule::Invalid(TxField::Value),
+            "Invalid params: \"value\" is not a hex quantity.",
+        ),
+    ] {
+        let error = ProviderError::InvalidTxParams(rule);
+        assert_eq!(error.code(), -32_602, "{message}");
+        assert_eq!(error.message(), message);
+        assert_eq!(error.data(), None);
+        assert_eq!(error.rule(), Some(rule.id()));
+    }
 }
 
 #[test]

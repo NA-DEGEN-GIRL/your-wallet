@@ -1020,16 +1020,19 @@ impl BrowserCore {
         }
     }
 
+    /// `rule`: the broken `eth_sendTransaction` rule's static word (no values, spec/01 §5.4).
     fn log_error(method: &'static str, error: &ProviderError, conn: ConnId) {
-        logging::info(
-            "browser",
-            "request.error",
-            &[
-                ("method", Field::Word(method)),
-                ("code", Field::Num(error.code().unsigned_abs())),
-                ("conn", Field::Num(conn)),
-            ],
-        );
+        let method = ("method", Field::Word(method));
+        let code = ("code", Field::Num(error.code().unsigned_abs()));
+        let conn = ("conn", Field::Num(conn));
+        match error.rule() {
+            Some(rule) => logging::info(
+                "browser",
+                "request.error",
+                &[method, code, ("rule", Field::Word(rule)), conn],
+            ),
+            None => logging::info("browser", "request.error", &[method, code, conn]),
+        }
     }
 
     /// Whether `session` is this connection's session (or the connection has none yet).
@@ -1739,7 +1742,9 @@ impl BrowserCore {
         if let SiteKind::Send(tx) = kind
             && tx.chain_id.is_some_and(|id| id != admission.chain_id)
         {
-            return Err(ProviderError::InvalidParams);
+            return Err(ProviderError::InvalidTxParams(
+                yw_core::policy::TxRule::ChainId,
+            ));
         }
         Ok(())
     }
