@@ -18,8 +18,10 @@
 //!   `dev_tour_lift_capture_exclusion` (debug builds only) — the app's code path is unchanged.
 //!
 //! `cargo test -p yw-app --lib ui::tour::screenshot_tour -- --ignored --exact --nocapture`
-//! (`YW_TOUR_DIR` = output folder, default `target/screenshot-tour`; a bare `ui::tour` filter
-//! also runs the scroll check, `ui::tour::scroll`).
+//! (`YW_TOUR_DIR` = output folder, default `target/screenshot-tour`; `YW_TOUR_APP_ENV=1` = the
+//! installed app's themed controls at the monitor's DPI, e.g. 150 %, instead of the 96 DPI
+//! classic look of `docs/screenshots`; a bare `ui::tour` filter also runs the scroll check,
+//! `ui::tour::scroll`).
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -1141,6 +1143,12 @@ fn tour_yubikey(app: &Rc<RefCell<App>>) {
 #[expect(clippy::too_many_lines, reason = "one scene after another")]
 fn screenshot_tour() {
     register_classes();
+    // `YW_TOUR_APP_ENV` set: the installed app's UI environment instead — themed controls at the
+    // monitor's DPI (Per-Monitor-V2), as the scroll check's `app` pass — for a high-DPI look.
+    let app_env = std::env::var_os("YW_TOUR_APP_ENV").map(|_| {
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("yw-app.manifest");
+        yw_win::ui::capture::dev_tour_app_env(&manifest).unwrap()
+    });
     std::fs::create_dir_all(out_dir()).unwrap();
     let dir = std::env::temp_dir().join(format!("yw-tour-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -1707,6 +1715,8 @@ fn screenshot_tour() {
         browser.stop();
     }
     drop(app);
+    // After the windows are gone, on this thread (`DevAppEnv`).
+    drop(app_env);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
