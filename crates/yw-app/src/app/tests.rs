@@ -1551,6 +1551,73 @@ fn llm_key_is_bound_to_the_saved_endpoint_host() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// S15 `빠른 입력` and `추론 강도` (2026-11-11): a preset fills only the endpoint draft (Claude
+/// also picks `json_schema`); `저장` applies it with the consent rule unchanged (a new host turns
+/// the AI explanation off); `api.openai.com` disables the `max_tokens` field and says why; the
+/// effort draft is saved with the form.
+#[test]
+fn llm_presets_fill_the_draft_and_the_effort_is_saved() {
+    use crate::explain::{ReasoningEffort, ResponseFormatMode};
+    use crate::ui::screens_llm::ids;
+    let (mut app, dir) = llm_app("llm-presets", LLM_A);
+    app.mode = AppMode::Unlocked {
+        alt_passphrase: false,
+    };
+    app.meta = Some(Meta::default());
+    app.settings.llm_explain.enabled = true;
+    app.settings.llm_explain.privacy_notice_version = 1;
+    app.open_llm_settings();
+    app.llm_ui.format = ResponseFormatMode::JsonObject;
+    assert!(app.on_llm_command(ids::PRESET_CLAUDE));
+    assert_eq!(
+        app.llm_ui.endpoint_text,
+        "https://api.anthropic.com/v1/chat/completions"
+    );
+    assert_eq!(app.llm_ui.format, ResponseFormatMode::JsonSchema);
+    assert!(has_text(&app.items(), "json_schema만 받습니다"));
+    assert!(app.on_llm_command(ids::PRESET_OPENAI));
+    assert_eq!(app.settings.llm_explain.endpoint, LLM_A, "only the draft");
+    let items = app.items();
+    assert!(!ctl(&items, ids::MAX_TOKENS_EDIT).unwrap().enabled);
+    assert!(has_text(
+        &items,
+        "api.openai.com에는 max_tokens를 보내지 않습니다"
+    ));
+    assert!(!has_text(&items, "/chat/completions로 끝나지 않습니다"));
+    app.llm_ui.endpoint_text = "https://api.openai.com/v1/responses".to_owned();
+    assert!(has_text(
+        &app.items(),
+        "/chat/completions로 끝나지 않습니다"
+    ));
+    assert!(app.on_llm_command(ids::PRESET_OPENAI));
+    assert!(app.on_llm_command(ids::EFFORT_MEDIUM));
+    assert_eq!(app.llm_ui.effort, Some(ReasoningEffort::Medium));
+    app.llm_ui.max_tokens_text = "300".to_owned();
+    app.llm_save();
+    let saved = &app.settings.llm_explain;
+    assert_eq!(saved.endpoint, "https://api.openai.com/v1/chat/completions");
+    assert_eq!(saved.reasoning_effort, Some(ReasoningEffort::Medium));
+    assert_eq!(saved.max_tokens, 300, "kept for other hosts");
+    assert!(!saved.enabled, "a new host needs a new consent");
+    let config = crate::explain::LlmConfig::from_settings(saved, None).unwrap();
+    assert_eq!(config.sent_max_tokens(), None);
+    assert_eq!(config.reasoning_effort(), Some(ReasoningEffort::Medium));
+    // The file holds the effort as its own top-level key; `보내지 않음` removes it.
+    let file = std::fs::read_to_string(dir.join("settings.json")).unwrap();
+    assert!(
+        file.contains(r#""llm_reasoning_effort":"medium""#),
+        "{file}"
+    );
+    app.open_llm_settings();
+    assert_eq!(app.llm_ui.effort, Some(ReasoningEffort::Medium));
+    assert!(app.on_llm_command(ids::EFFORT_NONE));
+    app.llm_save();
+    assert_eq!(app.settings.llm_explain.reasoning_effort, None);
+    let file = std::fs::read_to_string(dir.join("settings.json")).unwrap();
+    assert!(!file.contains("llm_reasoning_effort"), "{file}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// The meta of an unlocked wallet whose settings snapshot was taken of `settings`.
 fn meta_with_snapshot(settings: &Settings) -> Meta {
     Meta {

@@ -50,7 +50,9 @@ fn response_format(mode: ResponseFormatMode) -> Value {
     }
 }
 
-/// The request body (§4.1): fixed key order, no whitespace, `max_tokens` only when set.
+/// The request body (§4.1): fixed key order, no whitespace, `max_tokens` only when set and the
+/// endpoint is not `api.openai.com` ([`LlmConfig::sent_max_tokens`]), `reasoning_effort` last
+/// and only when set. The explanation and the connection test both go through here.
 ///
 /// # Errors
 ///
@@ -75,11 +77,14 @@ pub fn build_body(cfg: &LlmConfig, input: &ExplainInput) -> Result<Vec<u8>, Expl
         ),
         ("response_format", response_format(cfg.response_format())),
     ];
-    if cfg.max_tokens() > 0 {
+    if let Some(max_tokens) = cfg.sent_max_tokens() {
         pairs.push((
             "max_tokens",
-            Value::Number(Number::from_u64(u64::from(cfg.max_tokens()))),
+            Value::Number(Number::from_u64(u64::from(max_tokens))),
         ));
+    }
+    if let Some(effort) = cfg.reasoning_effort() {
+        pairs.push(("reasoning_effort", json_str(effort.as_str())));
     }
     let body = yw_json::to_vec(&json_object(pairs));
     if body.len() > MAX_REQUEST_BODY {

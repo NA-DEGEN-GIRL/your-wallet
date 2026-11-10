@@ -22,10 +22,11 @@ use crate::explain::input::RequestKind;
 use crate::explain::panel::Ended;
 use crate::explain::{
     ExplainError, ExplainService, ExplainSim, ExplainSource, LlmConfig, LlmDone,
-    PRIVACY_NOTICE_VERSION, RequestStats, ResponseFormatMode, build_input, explain_once,
+    PRIVACY_NOTICE_VERSION, ReasoningEffort, RequestStats, ResponseFormatMode, build_input,
+    explain_once,
 };
 use crate::logging::{self, Field};
-use crate::ui::screens_llm::ids;
+use crate::ui::screens_llm::{DraftNotes, ids, preset_url};
 
 /// How long the UI waits for the old worker when the configuration changes (it is never
 /// blocked on `WinHTTP`; a late result is dropped with its channel).
@@ -48,6 +49,8 @@ pub struct LlmUi {
     pub max_tokens_text: String,
     /// Response format draft.
     pub format: ResponseFormatMode,
+    /// Reasoning effort draft (`None` = not sent).
+    pub effort: Option<ReasoningEffort>,
     /// Result of the last action (text, ok).
     pub message: Option<(String, bool)>,
     /// Connection test result (text, ok).
@@ -69,6 +72,7 @@ impl Default for LlmUi {
             model_text: String::new(),
             max_tokens_text: "0".to_owned(),
             format: ResponseFormatMode::JsonSchema,
+            effort: None,
             message: None,
             test_result: None,
             test_running: false,
@@ -185,7 +189,8 @@ pub fn log_request(host: &str, kind: RequestKind, ended: &Ended, stats: Option<&
 
 impl App {
     /// (Re)creates or drops the `yw-llm` worker to match the settings and the key (spec/06 §9):
-    /// off → `None`; a changed endpoint, model, format, `max_tokens` or key → a new worker.
+    /// off → `None`; a changed endpoint, model, format, `max_tokens`, reasoning effort or key → a
+    /// new worker.
     pub fn llm_reconfigure(&mut self) {
         if let Some(service) = self.llm.take() {
             service.stop(RECONFIGURE_WAIT_MS);
@@ -242,6 +247,7 @@ impl App {
         self.llm_ui.max_tokens_text = settings.max_tokens.to_string();
         self.llm_ui.format = ResponseFormatMode::parse(&settings.response_format)
             .unwrap_or(ResponseFormatMode::JsonSchema);
+        self.llm_ui.effort = settings.reasoning_effort;
         self.llm_ui.message = None;
         self.set_screen(Screen::Settings(SettingsSection::Ai));
     }
@@ -250,7 +256,14 @@ impl App {
     pub fn on_llm_edit_change(&mut self, id: u16) -> bool {
         let read = |app: &Self, max: usize| app.controls.text(id, max).unwrap_or_default();
         match id {
-            ids::ENDPOINT_EDIT => self.llm_ui.endpoint_text = read(self, 2_048),
+            ids::ENDPOINT_EDIT => {
+                let before = DraftNotes::of(&self.llm_ui.endpoint_text);
+                self.llm_ui.endpoint_text = read(self, 2_048);
+                if DraftNotes::of(&self.llm_ui.endpoint_text) != before {
+                    // The path hint and the OpenAI / Claude notes follow the draft.
+                    self.refresh();
+                }
+            }
             ids::MODEL_EDIT => self.llm_ui.model_text = read(self, 128),
             ids::MAX_TOKENS_EDIT => self.llm_ui.max_tokens_text = read(self, 8),
             _ => return false,
@@ -273,8 +286,31 @@ impl App {
         self.refresh();
     }
 
+    /// `빠른 입력` (2026-11-11): fills the endpoint draft only — `저장` applies it, with the new
+    /// consent a changed endpoint needs (spec/06 §2.1). Claude's layer takes `json_schema` only.
+    fn llm_preset(&mut self, url: &str) {
+        url.clone_into(&mut self.llm_ui.endpoint_text);
+        // The edit keeps its own text; its `EN_CHANGE` arrives while this handler runs and is
+        // not seen, so the draft above is set directly.
+        self.controls.set_text(ids::ENDPOINT_EDIT, url);
+        if DraftNotes::of(url).anthropic {
+            self.llm_ui.format = ResponseFormatMode::JsonSchema;
+        }
+        self.llm_ui.message = None;
+        self.refresh();
+    }
+
+    fn llm_set_effort(&mut self, effort: Option<ReasoningEffort>) {
+        self.llm_ui.effort = effort;
+        self.refresh();
+    }
+
     /// AI-section commands; `false` when `id` is not one of them.
     pub fn on_llm_command(&mut self, id: u16) -> bool {
+        if let Some(url) = preset_url(id) {
+            self.llm_preset(url);
+            return true;
+        }
         match id {
             ids::SECTION_AI => self.open_llm_settings(),
             ids::ENABLE => self.llm_toggle(),
@@ -286,6 +322,10 @@ impl App {
                 self.llm_ui.format = ResponseFormatMode::JsonObject;
                 self.refresh();
             }
+            ids::EFFORT_NONE => self.llm_set_effort(None),
+            ids::EFFORT_LOW => self.llm_set_effort(Some(ReasoningEffort::Low)),
+            ids::EFFORT_MEDIUM => self.llm_set_effort(Some(ReasoningEffort::Medium)),
+            ids::EFFORT_HIGH => self.llm_set_effort(Some(ReasoningEffort::High)),
             ids::SAVE => {
                 for edit in [ids::ENDPOINT_EDIT, ids::MODEL_EDIT, ids::MAX_TOKENS_EDIT] {
                     self.on_llm_edit_change(edit);
@@ -407,6 +447,7 @@ impl App {
         settings.llm_explain.endpoint = endpoint;
         settings.llm_explain.model = model;
         settings.llm_explain.max_tokens = max_tokens;
+        settings.llm_explain.reasoning_effort = self.llm_ui.effort;
         self.llm_ui
             .format
             .as_str()

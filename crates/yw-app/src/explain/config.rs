@@ -24,6 +24,12 @@ pub const MAX_TOKENS_LIMIT: u16 = 4_096;
 /// (spec/06 §2.1): the key is not sent until it is entered again for the current endpoint.
 pub const KEY_REENTER_TEXT: &str =
     "API 키를 다시 입력하세요. 저장된 키는 다른 엔드포인트 주소에서 입력한 것이라 보내지 않습니다.";
+/// The host of the `OpenAI` API itself: the request never carries `max_tokens` there (its
+/// reasoning models reject it with HTTP 400; spec/06 §4.1, 2026-11-11).
+pub const OPENAI_HOST: &str = "api.openai.com";
+/// Anthropic's `OpenAI`-compatible layer (S15 note: `json_schema` only, `reasoning_effort`
+/// ignored).
+pub const ANTHROPIC_HOST: &str = "api.anthropic.com";
 
 /// `response_format` (§4.5).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,6 +61,40 @@ impl ResponseFormatMode {
     }
 }
 
+/// `reasoning_effort` (§4.1, 2026-11-11): sent only when set (`None` in the settings = not sent).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReasoningEffort {
+    /// `"low"`.
+    Low,
+    /// `"medium"`.
+    Medium,
+    /// `"high"`.
+    High,
+}
+
+impl ReasoningEffort {
+    /// Settings and request string.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        }
+    }
+
+    /// Parses the settings string.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "low" => Some(Self::Low),
+            "medium" => Some(Self::Medium),
+            "high" => Some(Self::High),
+            _ => None,
+        }
+    }
+}
+
 /// A validated endpoint: the URL, its display host (`host[:port]`) and whether it is loopback.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Endpoint {
@@ -64,6 +104,40 @@ pub struct Endpoint {
     pub host: String,
     /// `http://127.0.0.1|localhost|[::1]`.
     pub loopback: bool,
+}
+
+impl Endpoint {
+    /// The host without `:port` (`[::1]` keeps its brackets).
+    #[must_use]
+    pub fn host_name(&self) -> &str {
+        match self.host.rsplit_once(':') {
+            Some((name, port)) if !port.contains(']') => name,
+            _ => &self.host,
+        }
+    }
+
+    /// The `OpenAI` API itself (`api.openai.com`, any port): `max_tokens` is never sent there.
+    #[must_use]
+    pub fn is_openai(&self) -> bool {
+        !self.loopback && self.host_name() == OPENAI_HOST
+    }
+
+    /// Anthropic's `OpenAI`-compatible layer (`api.anthropic.com`, any port).
+    #[must_use]
+    pub fn is_anthropic(&self) -> bool {
+        !self.loopback && self.host_name() == ANTHROPIC_HOST
+    }
+}
+
+/// The S15 hint for a typed endpoint draft that looks like a URL but whose path does not end in
+/// `/chat/completions` (e.g. `…/v1/responses`, which answers HTTP 404). Only a hint:
+/// [`parse_endpoint`] stays the rule that `저장` applies.
+#[must_use]
+pub fn endpoint_path_hint(text: &str) -> bool {
+    let text = text.trim();
+    let path = text.split(['?', '#']).next().unwrap_or(text);
+    (text.starts_with("https://") || text.starts_with("http://"))
+        && !path.ends_with("/chat/completions")
 }
 
 /// Validates an endpoint string (§2.1, D21): ASCII 1–2048 bytes, `https://<host>[:port]<path>` or
@@ -252,6 +326,7 @@ pub struct LlmConfig {
     key_withheld: bool,
     response_format: ResponseFormatMode,
     max_tokens: u16,
+    reasoning_effort: Option<ReasoningEffort>,
 }
 
 impl LlmConfig {
@@ -276,7 +351,15 @@ impl LlmConfig {
             key_withheld,
             response_format,
             max_tokens,
+            reasoning_effort: None,
         }
+    }
+
+    /// Sets `reasoning_effort` (`None` = not sent).
+    #[must_use]
+    pub const fn with_reasoning_effort(mut self, effort: Option<ReasoningEffort>) -> Self {
+        self.reasoning_effort = effort;
+        self
     }
 
     /// From the settings (the `enabled` flag and the notice are not checked here: the
@@ -317,7 +400,8 @@ impl LlmConfig {
             .ok()
             .filter(|tokens| *tokens <= MAX_TOKENS_LIMIT)
             .unwrap_or(0);
-        let mut config = Self::new(endpoint, model, api_key, response_format, max_tokens);
+        let mut config = Self::new(endpoint, model, api_key, response_format, max_tokens)
+            .with_reasoning_effort(settings.reasoning_effort);
         config.key_withheld |= withheld;
         Ok(config)
     }
@@ -366,17 +450,31 @@ impl LlmConfig {
         self.response_format
     }
 
-    /// `max_tokens` (0 = not sent).
+    /// `max_tokens` as set (0 = not sent).
     #[must_use]
     pub const fn max_tokens(&self) -> u16 {
         self.max_tokens
+    }
+
+    /// The `max_tokens` the request carries: `None` when the setting is 0 or the endpoint is
+    /// [`OPENAI_HOST`] (spec/06 §4.1, 2026-11-11).
+    #[must_use]
+    pub fn sent_max_tokens(&self) -> Option<u16> {
+        (self.max_tokens > 0 && !self.endpoint.is_openai()).then_some(self.max_tokens)
+    }
+
+    /// `reasoning_effort` (`None` = not sent).
+    #[must_use]
+    pub const fn reasoning_effort(&self) -> Option<ReasoningEffort> {
+        self.reasoning_effort
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        LlmConfig, effectively_enabled, parse_endpoint, privacy_notice, valid_api_key, valid_model,
+        LlmConfig, ReasoningEffort, effectively_enabled, endpoint_path_hint, parse_endpoint,
+        privacy_notice, valid_api_key, valid_model,
     };
     use crate::settings::LlmSettings;
 
@@ -403,6 +501,29 @@ mod tests {
         assert_eq!(remote.host, "api.example.org");
         assert!(parse_endpoint("http://localhost/v1/chat/completions").is_some());
         assert!(parse_endpoint("http://[::1]:8080/chat/completions").is_some());
+        // Host recognition (2026-11-11): the host name with any port, never a loopback server.
+        let host = |text: &str| parse_endpoint(text).unwrap();
+        assert!(host("https://API.OpenAI.com/v1/chat/completions").is_openai());
+        assert!(host("https://api.openai.com:443/v1/chat/completions").is_openai());
+        assert!(!host("https://api.openai.com.example.org/v1/chat/completions").is_openai());
+        assert!(!host("https://openrouter.ai/api/v1/chat/completions").is_openai());
+        assert!(host("https://api.anthropic.com/v1/chat/completions").is_anthropic());
+        assert_eq!(
+            host("http://[::1]:8080/chat/completions").host_name(),
+            "[::1]"
+        );
+        assert_eq!(host("http://[::1]/chat/completions").host_name(), "[::1]");
+        // The S15 path hint (not a rule).
+        assert!(endpoint_path_hint("https://api.openai.com/v1/responses"));
+        assert!(endpoint_path_hint("https://api.openai.com/v1"));
+        assert!(!endpoint_path_hint(
+            "https://api.openai.com/v1/chat/completions"
+        ));
+        assert!(!endpoint_path_hint(
+            " https://h.example/v1/chat/completions?x=1 "
+        ));
+        assert!(!endpoint_path_hint(""));
+        assert!(!endpoint_path_hint("api.openai"));
     }
 
     #[test]
@@ -429,6 +550,18 @@ mod tests {
         assert!(!effectively_enabled(&settings));
         assert!(!effectively_enabled(&LlmSettings::default()));
         assert!(LlmConfig::from_settings(&LlmSettings::default(), None).is_err());
+        settings.model = "m".to_owned();
+        settings.reasoning_effort = Some(ReasoningEffort::Medium);
+        let config = LlmConfig::from_settings(&settings, None).unwrap();
+        assert_eq!(config.reasoning_effort(), Some(ReasoningEffort::Medium));
+        for effort in [
+            ReasoningEffort::Low,
+            ReasoningEffort::Medium,
+            ReasoningEffort::High,
+        ] {
+            assert_eq!(ReasoningEffort::parse(effort.as_str()), Some(effort));
+        }
+        assert_eq!(ReasoningEffort::parse("minimal"), None);
     }
 
     #[test]

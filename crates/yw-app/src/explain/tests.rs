@@ -15,7 +15,9 @@ use yw_json::{Limits, Value};
 
 use yw_core::approval::RiskLevel;
 
-use super::config::{ApiKey, LlmConfig, ModelName, ResponseFormatMode, StoredKey, parse_endpoint};
+use super::config::{
+    ApiKey, LlmConfig, ModelName, ReasoningEffort, ResponseFormatMode, StoredKey, parse_endpoint,
+};
 use super::input::{
     CriticalAction, ExplainInput, ExplainSim, ExplainSource, RequestKind, build_input,
     clean_untrusted, norm, tokens,
@@ -883,6 +885,52 @@ fn e11_authorization_only_with_a_key() {
     assert!(body.contains("\"response_format\":{\"type\":\"json_schema\""));
     assert!(!body.contains("max_tokens"));
     assert!(format!("{:?}", ApiKey::parse(KEY, "127.0.0.1:9")).contains("REDACTED"));
+}
+
+/// spec/06 §4.1 (2026-11-11): `api.openai.com` never gets `max_tokens` (its reasoning models
+/// answer HTTP 400); `reasoning_effort` is the last key and only there when set. The explanation
+/// and the connection test both build their body here.
+#[test]
+fn max_tokens_and_reasoning_effort_in_the_body() {
+    let input = ExplainInput::raw(b"{}".to_vec(), RequestKind::EvmTx);
+    let body = |endpoint: &str, effort: Option<ReasoningEffort>| {
+        let cfg = LlmConfig::new(
+            parse_endpoint(endpoint).unwrap(),
+            ModelName::parse("m").unwrap(),
+            None,
+            ResponseFormatMode::JsonSchema,
+            300,
+        )
+        .with_reasoning_effort(effort);
+        let bytes = build_body(&cfg, &input).unwrap();
+        assert!(yw_json::parse(&bytes, &LIMITS).is_ok());
+        String::from_utf8(bytes).unwrap()
+    };
+    for other in [
+        "https://openrouter.ai/api/v1/chat/completions",
+        "https://api.anthropic.com/v1/chat/completions",
+        "http://127.0.0.1:11434/v1/chat/completions",
+    ] {
+        let plain = body(other, None);
+        assert!(plain.ends_with(",\"max_tokens\":300}"), "{plain}");
+        assert!(!plain.contains("reasoning_effort"));
+        let with = body(other, Some(ReasoningEffort::High));
+        assert!(
+            with.ends_with(",\"max_tokens\":300,\"reasoning_effort\":\"high\"}"),
+            "{with}"
+        );
+    }
+    for openai in [
+        "https://api.openai.com/v1/chat/completions",
+        "https://API.openai.com:443/v1/chat/completions",
+    ] {
+        let plain = body(openai, None);
+        assert!(!plain.contains("max_tokens"), "{plain}");
+        assert!(!plain.contains("reasoning_effort"));
+        let with = body(openai, Some(ReasoningEffort::Low));
+        assert!(!with.contains("max_tokens"), "{with}");
+        assert!(with.ends_with("}},\"reasoning_effort\":\"low\"}"), "{with}");
+    }
 }
 
 #[test]
