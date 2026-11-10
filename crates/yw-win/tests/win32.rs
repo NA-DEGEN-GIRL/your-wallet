@@ -151,7 +151,13 @@ fn read_limited_no_reparse_refuses_links() -> TestResult {
     // privilege the junction case above already covered the refusal.
     let link = dir.join("meta.ywm");
     if std::os::windows::fs::symlink_file(&real, &link).is_ok() {
-        assert_eq!(read_limited(&link, 64)?, b"ciphertext");
+        // Where the host resolves the link, it reads its target. Some temp folders do not (a
+        // filesystem filter that redirects the folder, 2026-11-10: following a link fails there
+        // with NotFound); the refusal below holds either way, as it never follows the link.
+        match read_limited(&link, 64) {
+            Ok(bytes) => assert_eq!(bytes, b"ciphertext"),
+            Err(error) => assert_eq!(error, FileError::NotFound, "{error:?}"),
+        }
         assert_eq!(
             read_limited_no_reparse(&link, 64),
             Err(FileError::ReparsePoint)
