@@ -661,7 +661,7 @@ Issued At: 2026-10-25T23:59:00Z
 - [ ] M5-10 공개 dApp 1개(구현 시 확인: app.uniswap.org의 Sepolia 지원): EIP-6963 목록에 Your Wallet, 연결, Permit2 서명 창이 `Permit2 승인 서명` 구조 표시, swap 거래는 Universal Router 라벨 + E12 + 시뮬레이션 성공. 지원하지 않으면 이 항목은 "해당 없음"으로 기록한다(T01–T32가 판정 근거).
 - [ ] M5-11 05 §10.4 7번(직접 실행 플래그 켬·끔 각각 T01–T06).
 - [ ] M5-12 `settings.json`에 `"browserAutoLaunch": false`, yw-app 종료 상태에서 T03 → 4900 `Wallet is unavailable.`, 작업 관리자에 yw-app 없음(yw-host가 실행하지 않음). true로 되돌림.
-- [ ] M5-13 T03으로 yw-app 자동 실행 → Chrome 완전 종료(백그라운드 실행 포함) → yw-app 생존 여부 기록(D24 job object). 함께 종료되면 D24 대안 적용: `browserAutoLaunch` 기본값을 false로 바꾸고 수동 실행 안내, M5-6을 "yw-app 수동 실행 후 T03 성공"으로 재판정.
+- [ ] M5-13 (M5 준비 직후, 다른 M5 항목보다 먼저) T03으로 yw-app 자동 실행 → Chrome 완전 종료(백그라운드 실행 포함) → yw-app 생존 여부 기록(D24 job object). 함께 종료되면 D24 대안 적용: 자동 실행을 끈다. 기본값만 false로 바꾸면 이미 저장된 `"browserAutoLaunch": true`(설정을 한 번이라도 저장한 파일 — 저장은 모든 키를 쓴다, M5 준비의 localhost 허용 포함)에는 닿지 않으므로 S15 `dApp 요청 시 앱 자동 실행`도 끄거나 저장값까지 바꾼다. 확인은 yw-app을 닫은 상태에서 T03 → 4900, yw-app 실행 없음(M5-12 절차). M5-6의 자동 실행 부분은 "해당 없음"(수동 실행 후 T03은 자동 실행이 켜져 있어도 통과해 판정 근거가 아니다), 잠긴 상태의 T07 부분은 시작 메뉴로 연 yw-app으로 그대로 한다.
 - [ ] M5-14 자동: 05 §10.1·§10.2 전 사례(JS S1–S4·P1–P11·C1–C5·E1–E2·B1–B8·PO1–PO3·N1·manifest M1·M2·H1, Rust R-F1·R-J1·R-H1–R-H4·R-P1·R-P2·R-E1–R-E3·R-M1·R-V1·R-ERR·R-D1–R-D5·R-G1)와 X-1–X-3·X-25 통과(H1은 `YW_CHECK=1`이라 skip 없이 실행됨, §2.2). 퍼징 `frame`·`envelope` 각 600 s, 충돌 0.
 
 호환 모드(D22, 05 §2.12) 준비: 확장 카드의 새로고침 버튼으로 확장을 다시 읽고 열린 탭을 새로고침한다. 툴바의 퍼즐 아이콘 → Your Wallet 옆 핀을 눌러 아이콘(남색→청록 타일의 흰 지갑)을 고정한다. 모드를 바꾼 뒤에는 **항상 dApp 탭을 새로고침**한다(다음 페이지 로드부터 적용). 실제 MetaMask·Rabby 켬/끔은 `chrome://extensions`의 사용 토글로 한다.

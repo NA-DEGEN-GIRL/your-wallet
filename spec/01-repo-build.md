@@ -1237,7 +1237,7 @@ impl SecureTextField {
 
 ## 8. 미결 사항
 
-1. **구현 시 확인 — yw-host가 실행한 yw-app의 수명(D24, M5).** Chrome이 native host를 job object에 넣고 연결 종료 때 job을 정리하면 yw-host가 띄운 yw-app도 함께 종료될 수 있다(`spawn_detached`는 `CREATE_BREAKAWAY_FROM_JOB`을 먼저 시도한다, §7.6). 확인: 확장 연결 → yw-app 자동 실행 → Chrome 완전 종료 후 yw-app 생존 여부([09](09-testing.md) M5-13). 함께 종료되면 D24의 대안을 그대로 적용한다: `browserAutoLaunch` 기본값을 `false`로 바꾸고([04](04-app-ui.md) §6.1, [05](05-browser.md) §7.4) 사용자가 yw-app을 먼저 실행한다(yw-app이 없으면 요청마다 4900). D24 변경은 필요 없다.
+1. **구현 시 확인 — yw-host가 실행한 yw-app의 수명(D24, M5).** Chrome이 native host를 job object에 넣고 연결 종료 때 job을 정리하면 yw-host가 띄운 yw-app도 함께 종료될 수 있다(`spawn_detached`는 `CREATE_BREAKAWAY_FROM_JOB`을 먼저 시도한다, §7.6). 확인: 확장 연결 → yw-app 자동 실행 → Chrome 완전 종료 후 yw-app 생존 여부([09](09-testing.md) M5-13). 함께 종료되면 D24의 대안을 그대로 적용한다: `browserAutoLaunch` 기본값을 `false`로 바꾸고([04](04-app-ui.md) §6.1, [05](05-browser.md) §7.4) 사용자가 yw-app을 먼저 실행한다(yw-app이 없으면 요청마다 4900). 기본값만으로는 이미 저장된 `true`에 닿지 않으므로(`settings.json`은 저장할 때마다 모든 키를 쓴다) S15에서 끄거나 저장값도 false로 바꾼다([09](09-testing.md) M5-13). D24 변경은 필요 없다.
 2. **구현 시 확인 — `WerAddExcludedApplication`.** feature 이름과 심볼은 windows-sys 0.61.2에 있고 해당 feature로 크레이트 컴파일을 확인했지만, 실제로 Windows 11에서 이 호출이 fast-fail 보고(`panic = "abort"`)를 WER 업로드 대상에서 빼는지는 확인하지 않았다. 확인: 테스트 빌드에서 의도적 abort 후 "안정성 모니터"·`%LOCALAPPDATA%\Microsoft\Windows\WER\ReportQueue`에 보고가 생기는지. 효과가 없으면 이 호출을 빼고 D28의 "크래시 업로드 없음"은 "지갑이 업로드하지 않음"으로 한정한다.
 3. **구현 시 확인 — loopback `[::1]`(§7.4).** `WinHttpConnect`가 IPv6 리터럴을 대괄호 없이 받는지 [06](06-llm-explain.md) §10 mock 테스트에서 확인한다. 대체: 대괄호 포함 형태, 둘 다 실패하면 `LoopbackUrl`에서 `[::1]`을 거부한다.
 

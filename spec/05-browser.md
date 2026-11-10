@@ -1170,7 +1170,7 @@ response 프로필 사례: `array` n=262,141 ok, n=262,142 거부(nodes 262,145.
 |---|---|---|---|
 | 1 | `http://localhost/*` 패턴이 모든 포트에 매치되는가 | `http://localhost:5173` 페이지에서 `window.ethereum` 존재 확인 | 두 content script에 `http://localhost:*/*`, `http://127.0.0.1:*/*` 추가(그래도 안 되면 자주 쓰는 포트를 명시) |
 | 2 | yw-host의 `AllowSetForegroundWindow`로 승인 창이 앞으로 오는가(직접 실행·cmd 경유 각각) | E2E 3 | [04](04-app-ui.md)의 `FlashWindowEx` 작업 표시줄 알림만 사용 |
-| 3 | yw-host가 실행한 yw-app이 yw-host 종료 후에도 살아 있는가(Chrome job 객체) | Chrome 종료 후 작업 관리자 확인(M5) | `CREATE_BREAKAWAY_FROM_JOB` 실패 시 플래그 없이 실행(§7.4). 그래도 같이 죽으면 D24에 따라 자동 실행을 끈다: `browserAutoLaunch` 기본값을 `false`로 바꾸고([04] §6.1과 §7.4 `auto_launch_enabled`의 기본값 함께) 사용자가 yw-app을 먼저 수동 실행 |
+| 3 | yw-host가 실행한 yw-app이 yw-host 종료 후에도 살아 있는가(Chrome job 객체) | Chrome 종료 후 작업 관리자 확인(M5) | `CREATE_BREAKAWAY_FROM_JOB` 실패 시 플래그 없이 실행(§7.4). 그래도 같이 죽으면 D24에 따라 자동 실행을 끈다: `browserAutoLaunch` 기본값을 `false`로 바꾸고([04] §6.1과 §7.4 `auto_launch_enabled`의 기본값 함께) 사용자가 yw-app을 먼저 수동 실행. 기본값은 이미 저장된 `true`에 닿지 않으므로 S15에서 끄거나 저장값도 바꾼다([09] M5-13) |
 | 4 | Chrome이 2^31 이상 정수(`deadlineUnixMs`)를 정수 어휘로 넘기는가 | 첫 request 프레임 로그(디버그 빌드에서 바이트 덤프) | 이미 `.0` 허용 규칙으로 대비됨. 다른 형태(지수 표기 등)가 보이면 §6.1 규칙에 추가 |
 | 5 | cmd.exe 경유 실행 시 사용자 이름에 공백·비ASCII가 있는 경로가 동작하는가 | 해당 경로로 `install.cmd -InstallDir <경로>` 후 E2E 1 | 사용자 프로필 아래의 단순 경로(예: `-InstallDir "%USERPROFILE%\Apps\YourWallet"`) 사용. 프로필 경로 자체가 문제면 설치 프로그램이 새로 만드는 다른 폴더(현재 사용자·SYSTEM·Administrators만 쓰기, [01] §9.2 6) |
 | 6 | MV3 worker가 native 포트 연결 중 유지되고, idle 종료 후 content 재연결이 worker를 깨우는가 | E2E 6 | 없음(§2.7 설계가 두 경우를 모두 처리) |
