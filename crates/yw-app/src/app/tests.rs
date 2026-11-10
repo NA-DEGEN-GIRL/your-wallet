@@ -825,9 +825,14 @@ fn first_setup_connects_quicknode_in_one_step() {
     );
     assert_eq!(app.done_tested, targets);
     assert_eq!(tests(&rx), [targets[0]], "one test at a time");
+    // The count says how many are still being tested (none has answered yet).
     assert!(has_text(
         &app.items(),
-        &format!("{}개 중 0개 작동", targets.len())
+        &format!(
+            "{}개 중 0개 작동 · {}개 테스트 중",
+            targets.len(),
+            targets.len()
+        )
     ));
     app.on_rpc_event(targets[0], "RPC 주소가 작동합니다.".to_owned(), true);
     assert_eq!(tests(&rx), [targets[1]], "the next goes with the answer");

@@ -1232,10 +1232,12 @@ impl App {
     }
 
     /// S08 after `연결하기`: one line per network made (✓ works / ✗ with its §7 text and a link to
-    /// its row / … testing), then the count.
+    /// its row / … testing), then the count — with how many are still being tested, so a short
+    /// count while the queue runs does not read as failures.
     fn done_results(&self, items: &mut Vec<Item>) {
         let networks = self.url_networks();
         let mut works = 0_usize;
+        let mut testing = 0_usize;
         let mut failed = false;
         for network in &self.done_tested {
             let name = self.network_name(*network);
@@ -1265,14 +1267,17 @@ impl App {
                     }
                 }
                 Some((_, TestState::Testing)) | None => {
+                    testing = testing.saturating_add(1);
                     items.push(Item::Muted(format!("… {name} 테스트 중")));
                 }
             }
         }
-        items.push(Item::Subtitle(format!(
-            "{}개 중 {works}개 작동",
-            self.done_tested.len()
-        )));
+        let total = self.done_tested.len();
+        items.push(Item::Subtitle(if testing == 0 {
+            format!("{total}개 중 {works}개 작동")
+        } else {
+            format!("{total}개 중 {works}개 작동 · {testing}개 테스트 중")
+        }));
         if failed {
             items.push(Item::Help(
                 "QuickNode 대시보드에서 그 체인을 켰는지 확인한 뒤 설정 → 네트워크(RPC)의 “모두 테스트”로 다시 확인하세요. 나머지는 지금 쓸 수 있습니다."
