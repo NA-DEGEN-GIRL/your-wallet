@@ -339,7 +339,15 @@ pub struct LlmSettings {
     pub max_tokens: u64,
     /// Accepted privacy notice version.
     pub privacy_notice_version: u64,
+    /// `reasoning_effort` (`None` = not sent). Stored outside the `llm_explain` object, as the
+    /// top-level key [`LLM_EFFORT_KEY`] written only when set: an older version resets a known
+    /// object that has a key it does not know, but keeps an unknown top-level key (spec/04 §6.6).
+    pub reasoning_effort: Option<crate::explain::ReasoningEffort>,
 }
+
+/// The top-level `settings.json` key of [`LlmSettings::reasoning_effort`] (spec/06 §2.1,
+/// 2026-11-11).
+pub const LLM_EFFORT_KEY: &str = "llm_reasoning_effort";
 
 /// Format-compatibility state of the loaded file (spec/04 §6.6). It travels with every clone of
 /// [`Settings`], so each write keeps it.
@@ -463,6 +471,7 @@ impl Default for LlmSettings {
             response_format: "json_schema".to_owned(),
             max_tokens: 0,
             privacy_notice_version: 0,
+            reasoning_effort: None,
         }
     }
 }
@@ -860,9 +869,18 @@ pub fn load(bytes: Option<&[u8]>) -> SettingsLoad {
         .copied()
         .chain(settings.evm_chains.iter().map(|chain| chain.chain_id))
         .collect();
+    // Applied after the loop: `llm_explain` may come later in the file and replaces the object.
+    let mut reasoning_effort = None;
     for (key, value) in object.iter() {
         match key {
             "version" | "evmChains" => {}
+            LLM_EFFORT_KEY => match value
+                .as_str()
+                .and_then(crate::explain::ReasoningEffort::parse)
+            {
+                Some(effort) => reasoning_effort = Some(effort),
+                None => banners.push(key.to_owned()),
+            },
             "autoLockMinutes" => match value
                 .as_number()
                 .and_then(yw_json::Number::as_u64)
@@ -987,6 +1005,7 @@ pub fn load(bytes: Option<&[u8]>) -> SettingsLoad {
                 .push((key.to_owned(), value.clone())),
         }
     }
+    settings.llm_explain.reasoning_effort = reasoning_effort;
     SettingsLoad { settings, banners }
 }
 
@@ -1219,6 +1238,9 @@ impl Settings {
                 "walletconnect",
                 json_object(vec![("projectId", json_str(&self.walletconnect_project))]),
             ));
+        }
+        if let Some(effort) = self.llm_explain.reasoning_effort {
+            members.push((LLM_EFFORT_KEY, json_str(effort.as_str())));
         }
         members
     }

@@ -32,7 +32,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 
-pub use config::{LlmConfig, PRIVACY_NOTICE_VERSION, ResponseFormatMode};
+pub use config::{LlmConfig, PRIVACY_NOTICE_VERSION, ReasoningEffort, ResponseFormatMode};
 pub use input::{ExplainInput, ExplainSim, ExplainSource, build_input};
 pub use panel::{AiPanel, AiPanelState};
 pub use request::{HttpResponse, LlmTransport, WinHttpTransport, build_body, explain_once};

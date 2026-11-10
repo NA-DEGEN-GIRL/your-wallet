@@ -25,9 +25,10 @@ D21의 세부 명세다. 이 기능은 승인 창에 참고용 문장을 덧붙�
 | `endpoint` | string | `""` | ASCII 1–2048바이트 전체 URL. `https://<host>[:port]<path>` 또는 로컬 모델용 `http://(127.0.0.1\|localhost\|[::1])[:port]<path>`(D21). `<path>`는 `/chat/completions`로 끝난다. userinfo(`@`)·query(`?`)·fragment(`#`)·그 밖의 scheme 거부. 바꾸면 `enabled=false`로 되돌린다. |
 | `model` | string | `""` | `^[A-Za-z0-9._:/@+-]{1,128}$` |
 | `response_format` | string | `"json_schema"` | `"json_schema"` 또는 `"json_object"`(§4.5) |
-| `max_tokens` | integer | `0` | 0이면 필드를 보내지 않는다. 1–4096이면 `max_tokens`로 보낸다. |
+| `max_tokens` | integer | `0` | 0이면 필드를 보내지 않는다. 1–4096이면 `max_tokens`로 보낸다. 엔드포인트 호스트 이름이 `api.openai.com`(포트 무관)이면 값과 상관없이 보내지 않는다(§4.1). |
 | `privacy_notice_version` | integer | `0` | 동의한 고지 버전 |
 
+- **추론 강도(2026-11-11)**: 최상위 키 `llm_reasoning_effort`(string, `"low"`·`"medium"`·`"high"`). 없으면 보내지 않음(기본), 정했을 때만 쓴다. 그 밖 값·타입 → 보내지 않음 + 배너 `llm_reasoning_effort`. `llm_explain` 객체 **밖**에 두는 이유: 이전 버전은 알려진 객체 안의 모르는 키를 객체 단위 오류로 보고 `llm_explain` 전체를 기본값으로 되돌리지만, 모르는 최상위 키는 보존만 한다([04] §6.6). 데이터가 가는 곳을 바꾸지 않으므로 `max_tokens`처럼 보안 설정 스냅샷([04] §6.7)에 넣지 않는다.
 - `enabled=true`여도 `endpoint`·`model`이 무효이거나 `privacy_notice_version < PRIVACY_NOTICE_VERSION`이면 꺼진 것으로 취급한다(요청 0건).
 - API 키: `apikeys.dpapi`의 항목 `llm`. 파일 형식·DPAPI 호출·입력 창은 RPC 엔드포인트 항목과 같다([04](04-app-ui.md) §6.3). 0x21–0x7E 1–512자, 없으면 `Authorization` 헤더를 보내지 않는다(로컬 모델). 설정 화면은 값을 다시 보여주지 않고 "설정됨/없음"과 삭제 버튼만 둔다.
 - **키는 엔드포인트 호스트에 묶인다.** 키를 저장할 때 그때 엔드포인트의 소문자 `host[:port]`를 항목 `llm:host`로 함께 저장한다(키 삭제 시 함께 삭제). 요청·연결 테스트는 설정된 엔드포인트의 `host[:port]`가 묶인 호스트와 같을 때만 키를 붙인다(포트가 달라도 다른 호스트). 다르면 키를 보내지 않고, 연결 테스트·켜기(공지의 `켜기` 포함)는 아무것도 보내지 않은 채 "API 키를 다시 입력하세요. 저장된 키는 다른 엔드포인트 주소에서 입력한 것이라 보내지 않습니다."로 실패한다. 키를 다시 입력하면 현재 호스트에 묶인다. 호환: `llm:host`가 없는 이전 키는 읽을 때 묶지 않는다(평문 `settings.json`의 엔드포인트는 누구나 바꿀 수 있다, 2026-11-01 검토 M1). 잠금 해제 뒤 보안 설정 스냅샷 대조([04] §6.7)가 스냅샷의 **동의 호스트**에 (메모리에서) 묶고, 엔드포인트를 바꾸기 전에 그 묶음을 먼저 파일에 쓴다. 유효한 엔드포인트가 없으면 첫 엔드포인트를 저장할 때까지 보내지 않는다.
@@ -79,10 +80,10 @@ AI 설명은 틀릴 수 있으며 승인 판단과 위험 표시에 쓰이지 �
 
 - `POST <endpoint>`. 헤더는 정확히 `Content-Type: application/json`, `Accept: application/json`, `Authorization: Bearer <key>`(키가 있을 때만).
 - 전송: yw-win `http::Client`([01](01-repo-build.md) §7.4)를 RPC와 분리된 인스턴스(별도 세션 핸들, `yw-llm` 소유)로 쓴다. https는 `Client::new`(TLS 1.2|1.3만, 프록시 설정은 RPC 클라이언트와 같음), loopback http(D21)는 `Client::new_loopback`(`WINHTTP_ACCESS_TYPE_NO_PROXY`)으로 열고, 둘 다 `Timeouts` 네 값 모두 10,000 ms. 리디렉트 금지(`WINHTTP_OPTION_REDIRECT_POLICY_NEVER`)·쿠키 비활성(`WINHTTP_DISABLE_COOKIES`)은 01 §7.4 공통 규칙을 따른다.
-- 본문은 키 순서 고정, 공백 없는 직렬화. `max_tokens`는 설정값 0이면 생략하고 다른 파라미터는 보내지 않는다. 본문이 `MAX_REQUEST_BODY`를 넘으면 보내지 않고 `Failed(InputTooLarge)`.
+- 본문은 키 순서 고정, 공백 없는 직렬화. `max_tokens`는 설정값 0이거나 엔드포인트 호스트 이름이 `api.openai.com`이면 생략한다(2026-11-11: OpenAI 추론 모델은 `max_tokens`를 HTTP 400으로 거부하고 `max_completion_tokens`를 요구한다). `reasoning_effort`는 설정(§2.1 `llm_reasoning_effort`)이 있을 때만 맨 끝에 넣는다(공급자 무관 같은 형식 — OpenRouter도 최상위 `reasoning_effort`를 받는다, Anthropic 호환 층은 무시한다). 다른 파라미터는 보내지 않는다. 연결 테스트도 같은 본문 함수를 쓴다. 본문이 `MAX_REQUEST_BODY`를 넘으면 보내지 않고 `Failed(InputTooLarge)`.
 
 ```json
-{"model":"<model>","stream":false,"messages":[{"role":"system","content":"<SYSTEM_PROMPT_V1>"},{"role":"user","content":"<§4.3 입력 JSON 텍스트>"}],"response_format":<§4.5>,"max_tokens":<n>}
+{"model":"<model>","stream":false,"messages":[{"role":"system","content":"<SYSTEM_PROMPT_V1>"},{"role":"user","content":"<§4.3 입력 JSON 텍스트>"}],"response_format":<§4.5>,"max_tokens":<n>,"reasoning_effort":"<low|medium|high>"}
 ```
 
 ### 4.2 system 프롬프트
@@ -222,8 +223,10 @@ pub const MAX_CONCURRENT_REQUESTS: usize = 1;  pub const UNTRUSTED_TOTAL_SCALARS
 pub const PRIVACY_NOTICE_VERSION: u32 = 1;
 
 pub enum ResponseFormatMode { JsonSchema, JsonObject }
+pub enum ReasoningEffort { Low, Medium, High }
 pub struct LlmConfig { endpoint: EndpointUrl, model: ModelName, api_key: Option<ApiKey>,
-                       response_format: ResponseFormatMode, max_tokens: u16 }
+                       response_format: ResponseFormatMode, max_tokens: u16,
+                       reasoning_effort: Option<ReasoningEffort> }
 pub enum ExplainSource<'a> {   // 타입은 [03] §6.4·§7.2·§8.1·§9.2. origin·user는 공통 인자
     EvmTx(&'a DecodedTx, ExplainSim<'a>), PersonalSign(&'a DecodedPersonalMessage),
     TypedData(&'a DecodedTypedData) }
@@ -267,6 +270,7 @@ pub trait LlmTransport: Send {                     // 테스트는 mock, 실제 
 | E10 | 응답 전 입력 변경, 창 닫힘 후 응답, 4번째 요청 / 시뮬레이션 `unsupported`·`unavailable`·`reverted`·`incomplete` 픽스처 4종(같은 tx, 각각 diff를 만들 수 있는 응답 데이터를 함께 둠) / 본문 49,153바이트가 되는 입력 | 폐기, 폐기, `LimitReached` / 각각 요청 1회, 입력 `simulation`은 `status`만 값이고 나머지 null, 요청 본문에 diff 값·RPC 오류 문자열 없음, diff에만 있는 주소를 쓴 응답 → `Mismatch`, 로컬 해석 값만 쓴 응답 → `Shown` / 요청 0·`InputTooLarge` |
 | E11 | 키 없음 / 키 있음 | `Authorization` 없음 / 정확히 `Bearer <key>`, 본문에 키 문자열 없음 |
 | E12 | 엔드포인트: `ftp://…`, `http://example.com/v1/chat/completions`, `https://u@h/…`, `…?x=1`, 경로 불일치, `http://127.0.0.1:11434/v1/chat/completions` | 마지막만 허용 |
+| E13 (2026-11-11) | `max_tokens` 300으로 OpenRouter·Anthropic·로컬 / `api.openai.com`(·`:443`) 본문, 각각 추론 강도 없음·있음. `llm_reasoning_effort` `"medium"` 왕복, `"minimal"`·`1`·`null` | `…,"max_tokens":300}` / `max_tokens` 없음, 강도가 있으면 맨 끝 `"reasoning_effort":"<v>"`. 왕복 바이트 동일·정하지 않으면 키 없음 / 보내지 않음 + 배너 |
 
 수동 체크리스트([09](09-testing.md) §5.8 M6-3): 실제 공급자로 Sepolia dApp의 ERC-20 transfer와 Permit2 typed data 설명 1회, 켜기 고지 모달 표시, 결과 도착 시 버튼 위치 불변.
 
@@ -275,6 +279,7 @@ pub trait LlmTransport: Send {                     // 테스트는 mock, 실제 
 - 공급자의 `json_schema`+`strict:true` 지원과 `max_tokens` 필수·거부 여부를 연결 테스트로 확인한다. HTTP 400이면 `response_format="json_object"` 또는 `max_tokens` 설정(0 또는 1–4096)으로 맞춘다.
 - 응답 `Content-Type`(로컬 서버 포함)이 `application/json`인지, 추론형 모델의 추가 필드(예: `reasoning_content`)로 16 KiB를 넘는지 확인한다. 규칙과 상한은 완화하지 않고 맞는 서버·비추론 모델을 쓴다.
 - 다른 스레드의 `WinHttpCloseHandle`이 동기 호출을 중단시키는지 E8로 관찰한다. 중단되지 않으면 `WinHttpSetTimeouts`에 맡기고 늦은 결과는 버린다(§3.2).
+- 2026-11-11: 설정 화면 `빠른 입력`(OpenAI·Claude·OpenRouter·Ollama·LM Studio, [04] §2.11)과 추론 강도를 더하고 `api.openai.com`에는 `max_tokens`를 보내지 않게 했다(§2.1, §4.1). OpenRouter 파라미터 문서가 최상위 `reasoning_effort`(OpenAI 형식)를 받는다고 적고 있어 호스트별 형식(`reasoning: {effort}`)은 두지 않았다. 실제 공급자 확인은 수동 M6-3.
 - 확인함(2026-10-28, `tests/llm_mock.rs`): loopback `http://127.0.0.1:<port>`로 `Client::new_loopback` 요청·헤더·302 미추적·16 KiB 상한(Content-Length 있음/없음)이 정의대로 동작. 11초 지연 mock에서 패널은 10초(±0.5초)에 `Failed(Timeout)`이 되고, 11초에 도착한 유효 응답(가짜 전송)은 버려진다. `WinHttpCloseHandle` 중단은 쓰지 않고 `WinHttpSetTimeouts` + 늦은 결과 폐기로 정했다. `[::1]`은 URL 규칙만 시험했다. 실제 공급자(json_schema·max_tokens 호환)는 수동 M6-3.
 
 ## 미결 사항

@@ -227,6 +227,41 @@ fn scalar_keys_and_unknown_keys() {
     );
 }
 
+/// spec/06 §2.1 (2026-11-11): the reasoning effort is the top-level key `llm_reasoning_effort`,
+/// written only when set (an older version keeps it as an unknown top-level key, §6.6; inside
+/// `llm_explain` it would reset that object there). `llm_explain` after it does not clear it.
+#[test]
+fn llm_reasoning_effort_is_an_optional_top_level_key() {
+    use yw_app::explain::ReasoningEffort;
+    let loaded = with(
+        r#""llm_reasoning_effort":"medium","llm_explain":{"enabled":false,"endpoint":"","model":"m","response_format":"json_schema","max_tokens":0,"privacy_notice_version":0}"#,
+    );
+    assert!(loaded.banners.is_empty(), "{:?}", loaded.banners);
+    assert!(loaded.settings.compat.unknown_keys().is_empty());
+    assert_eq!(loaded.settings.llm_explain.model, "m");
+    assert_eq!(
+        loaded.settings.llm_explain.reasoning_effort,
+        Some(ReasoningEffort::Medium)
+    );
+    let bytes = loaded.settings.to_json();
+    let text = String::from_utf8(bytes.clone()).unwrap();
+    assert!(
+        text.ends_with(r#""logLevel":"info","llm_reasoning_effort":"medium"}"#),
+        "{text}"
+    );
+    let again = load(Some(&bytes));
+    assert!(again.banners.is_empty());
+    assert_eq!(again.settings, loaded.settings);
+    assert_eq!(again.settings.to_json(), bytes);
+    let unset = String::from_utf8(Settings::default().to_json()).unwrap();
+    assert!(!unset.contains("llm_reasoning_effort"), "{unset}");
+    for bad in [r#""minimal""#, r#""HIGH""#, "1", "null"] {
+        let loaded = with(&format!(r#""llm_reasoning_effort":{bad}"#));
+        assert_eq!(loaded.settings.llm_explain.reasoning_effort, None, "{bad}");
+        assert_eq!(loaded.banners, ["llm_reasoning_effort"], "{bad}");
+    }
+}
+
 #[test]
 fn round_trip_is_byte_identical_with_fixed_key_order() {
     let loaded = with(&format!(

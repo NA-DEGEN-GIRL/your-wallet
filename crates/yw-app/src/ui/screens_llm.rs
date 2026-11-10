@@ -1,11 +1,14 @@
 //! S15 `AI 설명` section (M6, spec/04 §2.11, spec/06 §2): the switch, the OpenAI-compatible
-//! endpoint, model, response format and `max_tokens`, the API key (`apikeys.dpapi` entry `llm`,
-//! never shown again), the connection test, and the privacy notice overlay shown when enabling.
+//! endpoint (with the `빠른 입력` presets), model, response format, `max_tokens` and reasoning
+//! effort, the API key (`apikeys.dpapi` entry `llm`, never shown again), the connection test,
+//! and the privacy notice overlay shown when enabling.
 
 use crate::apikeys::KeyName;
 use crate::app::App;
-use crate::explain::ResponseFormatMode;
-use crate::explain::config::{effectively_enabled, host_phrase, parse_endpoint, privacy_notice};
+use crate::explain::config::{
+    Endpoint, effectively_enabled, endpoint_path_hint, host_phrase, parse_endpoint, privacy_notice,
+};
+use crate::explain::{ReasoningEffort, ResponseFormatMode};
 use crate::ui::main_window::{Ctl, Item, Tone};
 
 /// Command ids of the AI section (10,000–10,099; the whole map is `ui::command_ids`).
@@ -36,6 +39,24 @@ pub mod ids {
     pub const KEY_DELETE: u16 = 10_011;
     /// Notice overlay `이해했습니다`.
     pub const NOTICE_CHECK: u16 = 10_012;
+    /// `빠른 입력` `OpenAI`.
+    pub const PRESET_OPENAI: u16 = 10_013;
+    /// `빠른 입력` `Claude`.
+    pub const PRESET_CLAUDE: u16 = 10_014;
+    /// `빠른 입력` `OpenRouter`.
+    pub const PRESET_OPENROUTER: u16 = 10_015;
+    /// `빠른 입력` `Ollama (로컬)`.
+    pub const PRESET_OLLAMA: u16 = 10_016;
+    /// `빠른 입력` `LM Studio (로컬)`.
+    pub const PRESET_LM_STUDIO: u16 = 10_017;
+    /// Reasoning effort `보내지 않음`.
+    pub const EFFORT_NONE: u16 = 10_018;
+    /// Reasoning effort `low`.
+    pub const EFFORT_LOW: u16 = 10_019;
+    /// Reasoning effort `medium`.
+    pub const EFFORT_MEDIUM: u16 = 10_020;
+    /// Reasoning effort `high`.
+    pub const EFFORT_HIGH: u16 = 10_021;
 
     /// Every fixed id of this module.
     pub const FIXED: &[u16] = &[
@@ -52,7 +73,80 @@ pub mod ids {
         KEY_SAVE,
         KEY_DELETE,
         NOTICE_CHECK,
+        PRESET_OPENAI,
+        PRESET_CLAUDE,
+        PRESET_OPENROUTER,
+        PRESET_OLLAMA,
+        PRESET_LM_STUDIO,
+        EFFORT_NONE,
+        EFFORT_LOW,
+        EFFORT_MEDIUM,
+        EFFORT_HIGH,
     ];
+}
+
+/// The `빠른 입력` presets (spec/06 §2.1, 2026-11-11): command id, button label, endpoint. A
+/// preset only fills the endpoint draft; `저장` (with its consent rule) applies it.
+pub const PRESETS: &[(u16, &str, &str)] = &[
+    (
+        ids::PRESET_OPENAI,
+        "OpenAI",
+        "https://api.openai.com/v1/chat/completions",
+    ),
+    (
+        ids::PRESET_CLAUDE,
+        "Claude",
+        "https://api.anthropic.com/v1/chat/completions",
+    ),
+    (
+        ids::PRESET_OPENROUTER,
+        "OpenRouter",
+        "https://openrouter.ai/api/v1/chat/completions",
+    ),
+    (
+        ids::PRESET_OLLAMA,
+        "Ollama (로컬)",
+        "http://127.0.0.1:11434/v1/chat/completions",
+    ),
+    (
+        ids::PRESET_LM_STUDIO,
+        "LM Studio (로컬)",
+        "http://127.0.0.1:1234/v1/chat/completions",
+    ),
+];
+
+/// The endpoint of preset button `id`.
+#[must_use]
+pub fn preset_url(id: u16) -> Option<&'static str> {
+    PRESETS
+        .iter()
+        .find(|(preset, ..)| *preset == id)
+        .map(|(_, _, url)| *url)
+}
+
+/// What the provider card says about the endpoint draft (2026-11-11). The card is drawn again
+/// when this changes while typing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DraftNotes {
+    /// Looks like a URL but the path does not end in `/chat/completions` (a hint, not a rule).
+    pub path_hint: bool,
+    /// `api.openai.com`: `max_tokens` is never sent.
+    pub openai: bool,
+    /// `api.anthropic.com`: `json_schema` only, `reasoning_effort` ignored.
+    pub anthropic: bool,
+}
+
+impl DraftNotes {
+    /// The notes of an endpoint draft.
+    #[must_use]
+    pub fn of(text: &str) -> Self {
+        let endpoint = parse_endpoint(text.trim());
+        Self {
+            path_hint: endpoint_path_hint(text),
+            openai: endpoint.as_ref().is_some_and(Endpoint::is_openai),
+            anthropic: endpoint.as_ref().is_some_and(Endpoint::is_anthropic),
+        }
+    }
 }
 
 impl App {
@@ -106,6 +200,18 @@ impl App {
                 .to_owned(),
         ));
         items.push(Item::LabeledRow(
+            "빠른 입력".to_owned(),
+            PRESETS
+                .iter()
+                .map(|(id, label, _)| Ctl::button(*id, label))
+                .collect(),
+        ));
+        items.push(Item::Help(
+            "버튼은 엔드포인트 칸만 채웁니다. '저장'해야 바뀝니다. 모델 이름은 공급자 문서에서 확인하세요(OpenRouter는 openai/gpt-… · anthropic/claude-… 형식). Ollama·LM Studio는 이 PC에서 서버를 켜 두어야 합니다."
+                .to_owned(),
+        ));
+        let notes = DraftNotes::of(&form.endpoint_text);
+        items.push(Item::LabeledRow(
             "엔드포인트".to_owned(),
             vec![Ctl::edit(
                 ids::ENDPOINT_EDIT,
@@ -115,6 +221,19 @@ impl App {
                 2_048,
             )],
         ));
+        if notes.path_hint {
+            items.push(Item::Banner(
+                "주소가 /chat/completions로 끝나지 않습니다. OpenAI 호환 채팅 API의 전체 주소를 넣으세요(…/v1/responses 같은 다른 API 주소는 HTTP 404가 납니다)."
+                    .to_owned(),
+                Tone::Warn,
+            ));
+        }
+        if notes.anthropic {
+            items.push(Item::Help(
+                "Claude(api.anthropic.com의 OpenAI 호환 층): 응답 형식은 json_schema만 받습니다(json_object는 HTTP 400). 추론 강도(reasoning_effort)는 무시합니다. Claude 5 모델은 기본으로 생각(추론)을 하므로 10초 기한에는 빠른 모델(예: claude-haiku-4-5-20251001)이 맞습니다."
+                    .to_owned(),
+            ));
+        }
         items.push(Item::LabeledRow(
             "모델".to_owned(),
             vec![Ctl::edit(
@@ -144,16 +263,31 @@ impl App {
         ));
         items.push(Item::LabeledRow(
             "max_tokens".to_owned(),
-            vec![Ctl::edit(
-                ids::MAX_TOKENS_EDIT,
-                &form.max_tokens_text,
-                100,
-                false,
-                4,
-            )],
+            vec![
+                Ctl::edit(ids::MAX_TOKENS_EDIT, &form.max_tokens_text, 100, false, 4)
+                    .enabled(!notes.openai),
+            ],
+        ));
+        if notes.openai {
+            items.push(Item::Help(
+                "api.openai.com에는 max_tokens를 보내지 않습니다(최신 추론 모델이 HTTP 400으로 거부합니다). 다른 주소로 바꾸면 이 값을 다시 씁니다."
+                    .to_owned(),
+            ));
+        }
+        let effort = |id: u16, label: &str, value: Option<ReasoningEffort>| {
+            Ctl::radio(id, label, form.effort == value, value.is_none())
+        };
+        items.push(Item::LabeledRow(
+            "추론 강도".to_owned(),
+            vec![
+                effort(ids::EFFORT_NONE, "보내지 않음 (기본)", None),
+                effort(ids::EFFORT_LOW, "low", Some(ReasoningEffort::Low)),
+                effort(ids::EFFORT_MEDIUM, "medium", Some(ReasoningEffort::Medium)),
+                effort(ids::EFFORT_HIGH, "high", Some(ReasoningEffort::High)),
+            ],
         ));
         items.push(Item::Help(
-            "공급자가 json_schema를 거부하면(HTTP 400) json_object로 바꾸세요. max_tokens는 0이면 보내지 않고, 1–4096이면 그 값을 보냅니다."
+            "공급자가 json_schema를 거부하면(HTTP 400) json_object로 바꾸세요. max_tokens는 0이면 보내지 않고, 1–4096이면 그 값을 보냅니다. 추론 강도는 추론 모델이 답하기 전에 생각하는 양(reasoning_effort)입니다. 높을수록 느려져 10초 기한을 넘기 쉽고, 추론 모델이 아니면 HTTP 400으로 거부할 수 있습니다 — 그러면 '보내지 않음'으로 두세요."
                 .to_owned(),
         ));
         items.push(Item::Row(vec![

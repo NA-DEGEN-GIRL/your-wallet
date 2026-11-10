@@ -1703,9 +1703,15 @@ fn screenshot_tour() {
         }
     }
     {
-        // Past the back link and the title, so the test result under the buttons is in view.
+        // From just above the `빠른 입력` row, so the test result under the buttons is in view.
         let mut state = app.borrow_mut();
-        state.scroll = 96;
+        let top = state
+            .placed
+            .controls
+            .iter()
+            .find(|(ctl, _)| ctl.id == crate::ui::screens_llm::ids::PRESET_OPENAI)
+            .map_or(0, |(_, rect)| rect.y.saturating_add(state.scroll));
+        state.scroll = top.saturating_sub(48).max(0);
         state.refresh();
     }
     save(main_hwnd(&app), "23-settings-ai");
