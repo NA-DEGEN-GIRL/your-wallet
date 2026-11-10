@@ -303,6 +303,7 @@ pub struct AccessListItem { pub address: Address, pub storage_keys: Vec<[u8; 32]
 
 - quantity: `^0x[0-9a-fA-F]{1,64}$`(대소문자·앞 0 허용, 내부 정규화). `gas`·`nonce`·`type`·`chainId`는 u64 범위.
 - hex data: `^0x([0-9a-fA-F]{2})*$`, ≤ 131,072바이트.
+- 실제 지갑이 받는 무해한 형태도 받는다(2026-11-11, Uniswap 스왑이 `{ from, ...hexlifyTransaction(txRequest) }`를 그대로 보내 `gasLimit`과 JS 숫자 `chainId`가 온다): `gasLimit`은 `gas`의 별칭(MetaMask `normalizeTransactionParams`와 같음, 둘 다 있으면 값이 같아야 함, 내부·RPC 전달은 `gas`만), `chainId`는 JSON 정수도 허용(Rabby `Number(chainId)` 비교와 같음, 전달은 quantity). 위반 응답은 -32602에 깨진 규칙을 밝힌 고정 ASCII 문구다([05](05-browser.md) §5 `InvalidTxParams`): 요청의 값은 넣지 않고, 키 이름은 바이너리에 든 알려진 키일 때만 넣는다(그 밖 키는 `unsupported transaction key.`).
 
 | 키 | 규칙 | 위반 코드 |
 |---|---|---|
@@ -310,10 +311,10 @@ pub struct AccessListItem { pub address: Address, pub storage_keys: Vec<[u8; 32]
 | `to` | 필수, null 금지, §2.1 | -32602 |
 | `value` | 선택, quantity, 기본 0 | -32602 |
 | `data`, `input` | 선택, hex data. 둘 다 있으면 디코드한 바이트가 같을 때만 수락 | -32602 |
-| `gas` | 선택, ≤ 16,777,216 | -32602 |
+| `gas`, `gasLimit`(별칭) | 선택, ≤ 16,777,216. 둘 다 있으면 같은 값 | -32602 |
 | `nonce` | 선택. 있으면 §3.6에서 정한 nonce와 같아야 함(§3.7 단계 4에서 판정: 다르면 준비 중이던 창을 닫고 -32602, 실패 표시 없음) | -32602 |
 | `type` | 선택, 값 0 또는 2 (1·3·4·그 밖 거부, D19) | -32602 |
-| `chainId` | 선택, 활성 체인과 같음 | -32602 |
+| `chainId` | 선택, u64 quantity 또는 JSON 정수, 활성 체인과 같음 | -32602 |
 | `gasPrice`, `maxFeePerGas`, `maxPriorityFeePerGas` | 선택, quantity 형식만 검사, 값은 버림(D20). 하나라도 있으면 E31 | -32602 |
 | `accessList` | 선택, 배열 ≤ 256, 원소는 정확히 `{address, storageKeys}`, `storageKeys` ≤ 256개 32바이트 hex, 주소 중복 금지 | -32602 |
 | 그 밖(`authorizationList`, `blobVersionedHashes`, `blobs`, `maxFeePerBlobGas`, `commitments`, `proofs` 포함) | 거부 | -32602 |

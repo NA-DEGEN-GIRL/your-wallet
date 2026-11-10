@@ -1162,7 +1162,7 @@ function registeredWallets(page) {
   return wallets;
 }
 
-test("P13 Wallet Standard: 'Your Wallet' in off mode, app-ready answered, features and tx rejection", async () => {
+test("P13 Wallet Standard: 'Your Wallet (Solana)' in off mode, app-ready answered, features and tx rejection", async () => {
   const page = createPage({ init: false });
   const early = [];
   page.context.dispatchEvent(new TestCustomEvent("wallet-standard:app-ready", { detail: { register: (wallet) => early.push(wallet) } }));
@@ -1171,7 +1171,12 @@ test("P13 Wallet Standard: 'Your Wallet' in off mode, app-ready answered, featur
   const [wallet] = registeredWallets(page);
   assert.equal(early.length, 1);
   assert.equal(early[0], wallet);
-  assert.equal(wallet.name, "Your Wallet");
+  // Not the EVM announcement's "Your Wallet": dApps that merge wallets by name (Uniswap lower-cases
+  // and drops a trailing " wallet") must not fold the two into one EVM+Solana entry.
+  assert.equal(wallet.name, "Your Wallet (Solana)");
+  const mergeKey = (name) => name.toLowerCase().replace(/ wallet$/u, "");
+  assert.equal(announcements(page)[0].detail.info.name, "Your Wallet");
+  assert.notEqual(mergeKey(wallet.name), mergeKey(announcements(page)[0].detail.info.name));
   assert.equal(wallet.version, "1.0.0");
   assert.match(wallet.icon, /^data:image\/png;base64,/u);
   assert.deepEqual(plain(wallet.chains), ["solana:mainnet", "solana:devnet"]);
@@ -1388,4 +1393,97 @@ test("P1 the provider installs exactly on the v1-origins.golden.json pages (secu
     assert.equal("ethereum" in page.context, ok, note);
     assert.equal(page.posted.length, ok ? 1 : 0, note);
   }
+});
+
+// ---------- spec/05 §2.12 MetaMask Connect and metamask_getProviderState (P17–P18) ----------
+
+const MM_CONNECT_MESSAGE = "Your Wallet's MetaMask look-alike mode cannot answer MetaMask Connect, which talks to the MetaMask extension directly. Choose the default or Rabby mode in the Your Wallet extension popup and reload this page.";
+
+// What MetaMask Connect (@metamask/multichain-api-client windowPostMessageTransport) posts to
+// MetaMask's content script.
+function metaMaskConnectPost(page, body, name = "metamask-multichain-provider", options = {}) {
+  dispatchMessage(page, { target: "metamask-contentscript", data: { name, data: body } }, options);
+}
+
+function inpageReplies(page) {
+  return page.posted.filter((entry) => entry.message.target === "metamask-inpage")
+    .map((entry) => ({ targetOrigin: entry.targetOrigin, message: plain(entry.message) }));
+}
+
+test("P17 metamask mode refuses MetaMask Connect's substream at once (4200) unless a real MetaMask is present", () => {
+  const warnings = [];
+  const page = createPage({
+    init: "metamask",
+    beforeInstall: (target) => {
+      target.console = { warn: (...args) => warnings.push(args.join(" ")) };
+    }
+  });
+  metaMaskConnectPost(page, { jsonrpc: "2.0", id: 7, method: "wallet_getSession" });
+  metaMaskConnectPost(page, { jsonrpc: "2.0", id: "8", method: "wallet_createSession", params: { optionalScopes: {} } });
+  const error = { code: 4200, message: MM_CONNECT_MESSAGE };
+  assert.deepEqual(inpageReplies(page), [7, "8"].map((id) => ({
+    targetOrigin: ORIGIN,
+    message: { target: "metamask-inpage", data: { name: "metamask-multichain-provider", data: { jsonrpc: "2.0", id, error } } }
+  })));
+  // Nothing reaches the wallet, and the console explains it once.
+  assert.equal(requests(page).length, 0);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /default or Rabby mode/u);
+  // Notifications, other substreams, odd ids, other origins and other targets get no answer.
+  const before = page.posted.length;
+  metaMaskConnectPost(page, { jsonrpc: "2.0", method: "wallet_notify" });
+  metaMaskConnectPost(page, { jsonrpc: "2.0", id: 9, method: "metamask_getProviderState" }, "metamask-provider");
+  metaMaskConnectPost(page, { jsonrpc: "2.0", id: { nested: 1 }, method: "wallet_getSession" });
+  metaMaskConnectPost(page, { jsonrpc: "2.0", id: "x".repeat(129), method: "wallet_getSession" });
+  metaMaskConnectPost(page, { jsonrpc: "2.0", id: 10, method: "wallet_getSession" }, undefined, { origin: "https://evil.example" });
+  dispatchMessage(page, { target: "metamask-inpage", data: { name: "metamask-multichain-provider", data: { id: 11, method: "x" } } });
+  assert.equal(page.posted.length, before);
+
+  // Rabby and the default mode never answer for MetaMask.
+  for (const mode of ["rabby", "off"]) {
+    const other = createPage({ init: mode });
+    metaMaskConnectPost(other, { jsonrpc: "2.0", id: 1, method: "wallet_getSession" });
+    assert.deepEqual(inpageReplies(other), [], mode);
+  }
+  // A real MetaMask announced on the page (hidden from the dApp, still installed): its content
+  // script answers, so ours stays silent, whether it announced before or after the mode settled.
+  for (const early of [true, false]) {
+    const withReal = createPage({ init: early ? false : "metamask" });
+    foreignAnnouncement(withReal, "io.metamask", "MetaMask");
+    if (early) {
+      bridgeInit(withReal, CHANNEL, "metamask");
+    }
+    metaMaskConnectPost(withReal, { jsonrpc: "2.0", id: 1, method: "wallet_getSession" });
+    assert.deepEqual(inpageReplies(withReal), [], String(early));
+  }
+});
+
+test("P18 metamask_getProviderState is answered in the page in the compat modes from three reads", async () => {
+  for (const mode of ["metamask", "rabby"]) {
+    const page = createPage({ init: mode });
+    const provider = providerOf(page);
+    for (const [accounts, unlocked] of [[[ACCOUNT], true], [[], false]]) {
+      const before = requests(page).length;
+      const state = provider.request(pageValue(page, { method: "metamask_getProviderState" }));
+      await flush();
+      const sent = requests(page).slice(before);
+      assert.deepEqual(sent.map((request) => request.method), ["eth_accounts", "eth_chainId", "net_version"], mode);
+      respond(page, sent[0].id, { result: accounts });
+      respond(page, sent[1].id, { result: "0x1237" });
+      respond(page, sent[2].id, { result: "4663" });
+      assert.deepEqual(plain(await state), { accounts, chainId: "0x1237", isUnlocked: unlocked, networkVersion: "4663" }, mode);
+    }
+    // A failing read rejects with that read's error.
+    const failing = provider.request(pageValue(page, { method: "metamask_getProviderState" }));
+    await flush();
+    for (const request of requests(page).slice(-3)) {
+      respond(page, request.id, { error: { code: 4900, message: "Wallet is unavailable." } });
+    }
+    await assert.rejects(failing, (error) => error.code === 4900);
+  }
+  // The default mode does not impersonate MetaMask: the call goes out as is (content answers 4200).
+  const off = createPage();
+  void providerOf(off).request(pageValue(off, { method: "metamask_getProviderState" })).catch(() => {});
+  await flush();
+  assert.equal(lastRequest(off).method, "metamask_getProviderState");
 });

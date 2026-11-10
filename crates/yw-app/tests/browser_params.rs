@@ -6,7 +6,7 @@ mod common;
 
 use common::browser::json;
 use yw_app::browser::params::{LogsBound, LogsRange, Validated, check_logs_range, validate};
-use yw_core::policy::{Method, ProviderError};
+use yw_core::policy::{Method, ProviderError, TxField, TxRule, UnsupportedTxKey};
 
 const A: &str = "0x1111111111111111111111111111111111111111";
 const B: &str = "0x2222222222222222222222222222222222222222";
@@ -24,6 +24,15 @@ fn bad(method: Method, params: &str) {
     assert_eq!(
         validate(method, &json(params)),
         Err(ProviderError::InvalidParams),
+        "{params}"
+    );
+}
+
+/// `eth_sendTransaction` answers the broken rule (spec/05 §5, 2026-11-11).
+fn bad_tx(params: &str, rule: TxRule) {
+    assert_eq!(
+        validate(Method::SendTransaction, &json(params)),
+        Err(ProviderError::InvalidTxParams(rule)),
         "{params}"
     );
 }
@@ -245,54 +254,57 @@ fn r_v1_x1_x2_send_transaction_rules() -> TestResult {
     };
     assert!(!plain.fee_fields);
     assert!(plain.data.is_empty());
-    // X-1: forbidden keys.
-    for key in [
-        "authorizationList",
-        "blobVersionedHashes",
-        "blobs",
-        "maxFeePerBlobGas",
-        "commitments",
-        "proofs",
-        "foo",
+    // X-1: forbidden keys (known ones named, any other not echoed).
+    for (key, named) in [
+        (
+            "authorizationList",
+            Some(UnsupportedTxKey::AuthorizationList),
+        ),
+        (
+            "blobVersionedHashes",
+            Some(UnsupportedTxKey::BlobVersionedHashes),
+        ),
+        ("blobs", Some(UnsupportedTxKey::Blobs)),
+        ("maxFeePerBlobGas", Some(UnsupportedTxKey::MaxFeePerBlobGas)),
+        ("commitments", Some(UnsupportedTxKey::Commitments)),
+        ("proofs", Some(UnsupportedTxKey::Proofs)),
+        ("foo", None),
     ] {
-        bad(Method::SendTransaction, &tx(&format!(r#","{key}":[]"#)));
+        bad_tx(
+            &tx(&format!(r#","{key}":[]"#)),
+            named.map_or(TxRule::UnknownKey, TxRule::UnsupportedKey),
+        );
     }
     // X-2: type 1/3/4, missing or null `to`, gas over 2^24, data ≠ input, data too long.
     for kind in ["0x1", "0x3", "0x4"] {
-        bad(
-            Method::SendTransaction,
-            &tx(&format!(r#","type":"{kind}""#)),
-        );
+        bad_tx(&tx(&format!(r#","type":"{kind}""#)), TxRule::Type);
     }
     assert!(matches!(
         ok(Method::SendTransaction, &tx(r#","type":"0x0""#))?,
         Validated::Send(_)
     ));
-    bad(Method::SendTransaction, &format!(r#"[{{"from":"{A}"}}]"#));
-    bad(
-        Method::SendTransaction,
-        &format!(r#"[{{"from":"{A}","to":null}}]"#),
-    );
-    bad(Method::SendTransaction, &format!(r#"[{{"to":"{B}"}}]"#));
-    bad(Method::SendTransaction, &tx(r#","gas":"0x1000001""#));
+    bad_tx(&format!(r#"[{{"from":"{A}"}}]"#), TxRule::ToRequired);
+    bad_tx(&format!(r#"[{{"from":"{A}","to":null}}]"#), TxRule::ToNull);
+    bad_tx(&format!(r#"[{{"to":"{B}"}}]"#), TxRule::FromRequired);
+    bad_tx(&tx(r#","gas":"0x1000001""#), TxRule::GasCap);
     assert!(matches!(
         ok(Method::SendTransaction, &tx(r#","gas":"0x1000000""#))?,
         Validated::Send(_)
     ));
-    bad(
-        Method::SendTransaction,
+    bad_tx(
         &tx(r#","data":"0x00","input":"0x01""#),
+        TxRule::DataInputDiffer,
     );
     let oversized = format!("0x{}", "aa".repeat(131_073));
-    bad(
-        Method::SendTransaction,
+    bad_tx(
         &tx(&format!(r#","data":"{oversized}""#)),
+        TxRule::DataTooLarge,
     );
     // Duplicate access-list addresses are rejected for transactions (spec/03 §3.2).
     let entry = format!(r#"{{"address":"{A}","storageKeys":["{H}"]}}"#);
-    bad(
-        Method::SendTransaction,
+    bad_tx(
         &tx(&format!(r#","accessList":[{entry},{entry}]"#)),
+        TxRule::Invalid(TxField::AccessList),
     );
     assert!(matches!(
         ok(
@@ -301,9 +313,9 @@ fn r_v1_x1_x2_send_transaction_rules() -> TestResult {
         )?,
         Validated::Send(_)
     ));
-    bad(
-        Method::SendTransaction,
+    bad_tx(
         &tx(&format!(r#","accessList":[{{"address":"{A}"}}]"#)),
+        TxRule::Invalid(TxField::AccessList),
     );
     // chainId format only here; the origin-chain comparison is the dispatcher's.
     let Validated::Send(with_chain) = ok(Method::SendTransaction, &tx(r#","chainId":"0x1""#))?

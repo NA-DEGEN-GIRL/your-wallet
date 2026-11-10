@@ -26,6 +26,18 @@
   });
   // Foreign EIP-6963 announcements hidden from the page in the two compatibility modes.
   const INTERCEPTED_RDNS = new Set(["io.metamask", "io.metamask.flask", "io.rabby"]);
+  // spec/05 §2.12 MetaMask Connect (2026-11-11). MetaMask Connect (`@metamask/connect-evm`, the
+  // wagmi `metaMask()` connector Uniswap uses) never calls window.ethereum: once an EIP-6963
+  // `io.metamask` announcement is seen it talks to MetaMask's own content script over
+  // window.postMessage (CAIP-25 `wallet_getSession`/`wallet_createSession` on this substream)
+  // and, with no answer, waits 60 s ("clicking MetaMask does nothing"). In metamask mode, while no
+  // real MetaMask has announced itself on the page, such requests are refused at once (4200) so
+  // the dApp reports an error. Nothing is forwarded to the wallet.
+  const MM_RDNS = new Set(["io.metamask", "io.metamask.flask", "io.metamask.mobile"]);
+  const MM_CONTENT_SCRIPT = "metamask-contentscript";
+  const MM_INPAGE = "metamask-inpage";
+  const MM_MULTICHAIN_STREAM = "metamask-multichain-provider";
+  const MM_CONNECT_UNSUPPORTED = "Your Wallet's MetaMask look-alike mode cannot answer MetaMask Connect, which talks to the MetaMask extension directly. Choose the default or Rabby mode in the Your Wallet extension popup and reload this page.";
   // The app icon as a 96 px PNG, written by scripts/make-icons.mjs (do not edit by hand).
   const PROVIDER_ICON = "data:image/png;base64,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";
   const EVENT_NAMES = new Set(["connect", "disconnect", "accountsChanged", "chainChanged", "message"]);
@@ -38,6 +50,9 @@
   // Captured before any page script runs. Reports a throwing legacy callback like an uncaught
   // page error without letting it reach provider state (spec/05 §2.5 레거시 API).
   const nativeReportError = typeof root.reportError === "function" ? root.reportError : null;
+  const nativeWarn = root.console !== null && typeof root.console === "object" && typeof root.console.warn === "function"
+    ? root.console.warn.bind(root.console)
+    : null;
 
   class ProviderRpcError extends Error {
     constructor(code, message, data) {
@@ -67,6 +82,10 @@
   let compatMode = "off";
   let modeSettled = false;
   let modeTimer = null;
+  // A real MetaMask announced itself (EIP-6963) on this page: its content script answers the
+  // MetaMask Connect substream, so ours stays silent (spec/05 §2.12).
+  let foreignMetaMaskSeen = false;
+  let metaMaskConnectWarned = false;
 
   // ----- Solana and Bitcoin (spec/05 §2.13): connect and message signing only ---------------
   // The wire methods are sol_* / btc_* (shared.js METHOD_ROUTE). Transaction and PSBT methods
@@ -76,6 +95,11 @@
   const BTC_TX_UNSUPPORTED = "이 지갑은 Bitcoin에서 메시지 서명(소유 증명)만 지원합니다";
   const BTC_NETWORK_FIXED = "Bitcoin 네트워크는 Your Wallet 앱 설정에서만 바꿀 수 있습니다";
   const SOL_MODES = new Set(["off", "phantom"]);
+  // spec/05 §2.13 (2026-11-11): the default-mode Wallet Standard name differs from the EVM
+  // "Your Wallet" announcement. Multi-chain dApps merge wallets of the same name into one entry
+  // (Uniswap: lower-cased, a trailing " wallet" dropped, then EVM connect followed by a Solana
+  // connect), so a shared name turned "Your Wallet" into a Solana connection as well.
+  const SOL_WALLET_NAME = "Your Wallet (Solana)";
   const BTC_MODES = new Set(["off", "unisat", "xverse"]);
   const BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
   const XVERSE_PROVIDER_ID = "XverseProviders.BitcoinProvider";
@@ -426,7 +450,7 @@
   // Phantom mode names the wallet "Phantom" (our icon, never Phantom's logo).
   const solWallet = Object.freeze(Object.defineProperties({}, {
     version: { value: "1.0.0", enumerable: true },
-    name: { get: () => (solCompatMode === "phantom" ? "Phantom" : "Your Wallet"), enumerable: true },
+    name: { get: () => (solCompatMode === "phantom" ? "Phantom" : SOL_WALLET_NAME), enumerable: true },
     icon: { value: PROVIDER_ICON, enumerable: true },
     chains: { get: () => SOL_CHAINS.slice(), enumerable: true },
     features: { value: solFeatures, enumerable: true },
@@ -974,6 +998,7 @@
   // capture listeners run before the page's own (non-capture) announcement listeners.
   root.addEventListener(EIP6963_ANNOUNCE_EVENT, interceptAnnouncement, true);
   root.addEventListener("message", receiveBridgeMessage);
+  root.addEventListener("message", receiveMetaMaskConnect);
   root.addEventListener(EIP6963_REQUEST_EVENT, receiveProviderRequest);
   root.addEventListener("DOMContentLoaded", reclaimWindowEthereum);
   root.addEventListener("load", reclaimWindowEthereum);
@@ -1084,10 +1109,8 @@
 
   // Foreign MetaMask/Rabby announcements never reach the page in a compatibility mode. Off (and
   // before the mode is settled) nothing is intercepted. Hostile `detail` getters let the event pass.
+  // In every mode a foreign MetaMask announcement is remembered (see receiveMetaMaskConnect).
   function interceptAnnouncement(event) {
-    if (compatMode === "off") {
-      return;
-    }
     try {
       const detail = event.detail;
       if (detail === providerDetails[compatMode]) {
@@ -1095,11 +1118,67 @@
       }
       const info = detail !== null && typeof detail === "object" ? detail.info : undefined;
       const rdns = info !== null && typeof info === "object" ? info.rdns : undefined;
-      if (typeof rdns === "string" && INTERCEPTED_RDNS.has(rdns.toLowerCase())) {
+      if (typeof rdns !== "string") {
+        return;
+      }
+      const normalized = rdns.toLowerCase();
+      if (MM_RDNS.has(normalized)) {
+        foreignMetaMaskSeen = true;
+      }
+      if (compatMode !== "off" && INTERCEPTED_RDNS.has(normalized)) {
         event.stopImmediatePropagation();
       }
     } catch (_error) {
       // Leave events we cannot inspect alone.
+    }
+  }
+
+  // MetaMask Connect's request to MetaMask's content script (spec/05 §2.12): in metamask mode,
+  // with no real MetaMask on the page, every request on the multichain substream is answered with
+  // 4200 at once (notifications, without an id, get nothing). Only the page's own messages count.
+  function receiveMetaMaskConnect(event) {
+    if (compatMode !== "metamask" || foreignMetaMaskSeen || event.source !== root || event.origin !== targetOrigin) {
+      return;
+    }
+    let id;
+    try {
+      const message = event.data;
+      if (!isPlainObject(message) || message.target !== MM_CONTENT_SCRIPT) {
+        return;
+      }
+      const envelope = message.data;
+      if (!isPlainObject(envelope) || envelope.name !== MM_MULTICHAIN_STREAM) {
+        return;
+      }
+      const body = envelope.data;
+      if (!isPlainObject(body) || typeof body.method !== "string") {
+        return;
+      }
+      id = body.id;
+    } catch (_error) {
+      return;
+    }
+    if (!Number.isSafeInteger(id) && !(typeof id === "string" && id.length >= 1 && id.length <= 128)) {
+      return;
+    }
+    if (!metaMaskConnectWarned && nativeWarn !== null) {
+      metaMaskConnectWarned = true;
+      try {
+        nativeWarn(`[Your Wallet] ${MM_CONNECT_UNSUPPORTED}`);
+      } catch (_error) {
+        // Logging is best effort.
+      }
+    }
+    try {
+      root.postMessage({
+        target: MM_INPAGE,
+        data: {
+          name: MM_MULTICHAIN_STREAM,
+          data: { jsonrpc: "2.0", id, error: { code: 4200, message: MM_CONNECT_UNSUPPORTED } }
+        }
+      }, targetOrigin);
+    } catch (_error) {
+      // The window is closing.
     }
   }
 
@@ -1154,6 +1233,19 @@
     }
   }
 
+  // MetaMask's `metamask_getProviderState` in the compatibility modes (spec/05 §2.12): answered
+  // in the page from three ordinary requests (no wire method of its own, no extensionId).
+  // `isUnlocked` follows `_metamask.isUnlocked()`: accounts exposed to this origin now.
+  async function providerState() {
+    const [accounts, chainId, networkVersion] = await Promise.all([
+      request({ method: "eth_accounts" }),
+      request({ method: "eth_chainId" }),
+      request({ method: "net_version" })
+    ]);
+    const list = Array.isArray(accounts) ? accounts.filter((account) => typeof account === "string") : [];
+    return { accounts: list, chainId, isUnlocked: list.length > 0, networkVersion };
+  }
+
   async function request(args) {
     const method = isPlainObject(args) ? args.method : undefined;
     if (typeof method !== "string" || !METHOD_PATTERN.test(method)) {
@@ -1163,6 +1255,9 @@
     const params = suppliedParams === undefined ? [] : suppliedParams;
     if (!Array.isArray(params) && !isPlainObject(params)) {
       throw new ProviderRpcError(-32602, "Invalid params.");
+    }
+    if (method === "metamask_getProviderState" && compatMode !== "off") {
+      return providerState();
     }
     if (!bridgeOpen && !dead) {
       await waitForBridge();

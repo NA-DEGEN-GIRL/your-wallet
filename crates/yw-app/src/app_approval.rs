@@ -2044,8 +2044,14 @@ impl App {
                 if failure.invalid_params
                     && let Some(reply) = site
                 {
-                    // spec/03 §3.2: the dApp nonce differs — -32602, no failure window.
-                    self.respond(&reply, Err(yw_core::policy::ProviderError::InvalidParams));
+                    // spec/03 §3.2: the dApp nonce differs — -32602 naming the rule (spec/05 §5
+                    // `InvalidTxParams`), no failure window.
+                    self.respond(
+                        &reply,
+                        Err(yw_core::policy::ProviderError::InvalidTxParams(
+                            yw_core::policy::TxRule::Nonce,
+                        )),
+                    );
                     self.finish_approval(QueueOutcome::Cancelled);
                     return;
                 }

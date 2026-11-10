@@ -3,6 +3,12 @@ import "./popup-core.js";
 
 // spec/05 §2.12 action popup: yw-app status (as last observed by the background) and the
 // compatibility mode selector. Text is set with textContent only.
+//
+// It renders at once (2026-11-11): everything below up to the first `await` runs before the
+// page's load event, so Chrome opens the popup already showing the modes and status it showed
+// last time (popup-core MODES_CACHE_KEY/STATUS_CACHE_KEY, this page's own localStorage). The
+// chrome.storage.local read and the background's answer (which may first have to start the
+// service worker) then refresh it in place.
 const shared = globalThis.__YOUR_WALLET_SHARED__;
 const popup = globalThis.__YOUR_WALLET_POPUP_CORE__;
 
@@ -12,24 +18,46 @@ function setText(id, text) {
   byId(id).textContent = text;
 }
 
-function renderStatus(status) {
+// localStorage can be missing or throw (blocked site data); the popup then renders live only.
+function cacheGet(key) {
+  try {
+    return globalThis.localStorage.getItem(key);
+  } catch (_error) {
+    return null;
+  }
+}
+
+function cacheSet(key, value) {
+  try {
+    globalThis.localStorage.setItem(key, value);
+  } catch (_error) {
+    // Only the next popup's first paint is affected.
+  }
+}
+
+// `stale`: the status shown last time, until the background answers again.
+function renderStatus(status, stale = false) {
   const view = popup.statusView(status);
   const value = byId("status-value");
   value.textContent = view.text;
   value.dataset.tone = view.tone;
-  setText("status-detail", view.detail);
+  setText("status-detail", stale ? popup.TEXT.statusStale : view.detail);
 }
 
 function requestStatus() {
   let answered = false;
   let port = null;
-  const finish = (status) => {
+  const finish = (status, observed) => {
     if (answered) {
       return;
     }
     answered = true;
     clearTimeout(timer);
     renderStatus(status);
+    // Only what the background reported is remembered (not a timeout or a closed port).
+    if (observed) {
+      cacheSet(popup.STATUS_CACHE_KEY, status);
+    }
     if (port !== null) {
       try {
         port.disconnect();
@@ -38,16 +66,19 @@ function requestStatus() {
       }
     }
   };
-  const timer = setTimeout(() => finish("unknown"), popup.STATUS_TIMEOUT_MS);
+  const timer = setTimeout(() => finish("unknown", false), popup.STATUS_TIMEOUT_MS);
   try {
     port = chrome.runtime.connect({ name: shared.POPUP_PORT_NAME });
-    port.onMessage.addListener((message) => finish(popup.parseStatusMessage(message) ?? "unknown"));
+    port.onMessage.addListener((message) => {
+      const status = popup.parseStatusMessage(message);
+      finish(status ?? "unknown", status !== null);
+    });
     port.onDisconnect.addListener(() => {
       void chrome.runtime.lastError;
-      finish("unknown");
+      finish("unknown", false);
     });
   } catch (_error) {
-    finish("unknown");
+    finish("unknown", false);
   }
 }
 
@@ -83,16 +114,36 @@ function renderModes(selected, kind = "evm", containerId = "modes") {
   }
 }
 
-// Per group: where its "saved" line goes and which look-alike warning it has. The warning
-// matters only while that group's look-alike mode is on, so it is hidden for "off".
+// Per group: where its cards and "saved" line go and which look-alike warning it has. The
+// warning matters only while that group's look-alike mode is on, so it is hidden for "off".
 const GROUP_IDS = Object.freeze({
-  evm: Object.freeze({ saved: "mode-saved", warning: "warning" }),
-  sol: Object.freeze({ saved: "sol-saved", warning: "sol-warning" }),
-  btc: Object.freeze({ saved: "btc-saved", warning: "btc-warning" })
+  evm: Object.freeze({ modes: "modes", saved: "mode-saved", warning: "warning" }),
+  sol: Object.freeze({ modes: "sol-modes", saved: "sol-saved", warning: "sol-warning" }),
+  btc: Object.freeze({ modes: "btc-modes", saved: "btc-saved", warning: "btc-warning" })
 });
+const KINDS = Object.freeze(["evm", "sol", "btc"]);
 
 function showWarning(kind, mode) {
   byId(GROUP_IDS[kind].warning).hidden = !popup.warningShown(mode);
+  if (kind === "evm") {
+    byId("metamask-note").hidden = !popup.metamaskNoteShown(mode);
+  }
+}
+
+function renderGroup(kind, mode) {
+  renderModes(mode, kind, GROUP_IDS[kind].modes);
+  showWarning(kind, mode);
+}
+
+// What the cards show now, and which groups the user changed in this popup (a late storage read
+// never overwrites a choice made meanwhile).
+const shown = { evm: null, sol: null, btc: null };
+const touched = new Set();
+
+function rememberModes() {
+  if (KINDS.every((kind) => shown[kind] !== null)) {
+    cacheSet(popup.MODES_CACHE_KEY, popup.serializeModes(shown));
+  }
 }
 
 async function saveMode(mode, kind = "evm") {
@@ -100,10 +151,13 @@ async function saveMode(mode, kind = "evm") {
   if (update === null) {
     return;
   }
+  touched.add(kind);
+  shown[kind] = mode;
   showWarning(kind, mode);
   try {
     await chrome.storage.local.set(update);
     setText(GROUP_IDS[kind].saved, popup.TEXT.saved);
+    rememberModes();
   } catch (_error) {
     setText(GROUP_IDS[kind].saved, popup.TEXT.saveFailed);
   }
@@ -117,13 +171,15 @@ async function loadModes() {
       shared.BTC_COMPAT_MODE_STORAGE_KEY
     ]);
     return {
-      mode: shared.normalizeCompatMode(stored?.[shared.COMPAT_MODE_STORAGE_KEY]),
-      sol: shared.normalizeSolCompatMode(stored?.[shared.SOL_COMPAT_MODE_STORAGE_KEY]),
-      btc: shared.normalizeBtcCompatMode(stored?.[shared.BTC_COMPAT_MODE_STORAGE_KEY]),
+      modes: {
+        evm: shared.normalizeCompatMode(stored?.[shared.COMPAT_MODE_STORAGE_KEY]),
+        sol: shared.normalizeSolCompatMode(stored?.[shared.SOL_COMPAT_MODE_STORAGE_KEY]),
+        btc: shared.normalizeBtcCompatMode(stored?.[shared.BTC_COMPAT_MODE_STORAGE_KEY])
+      },
       failed: false
     };
   } catch (_error) {
-    return { mode: "off", sol: "off", btc: "off", failed: true };
+    return { modes: { evm: "off", sol: "off", btc: "off" }, failed: true };
   }
 }
 
@@ -133,22 +189,41 @@ async function main() {
   setText("mode-heading", popup.TEXT.modeHeading);
   setText("apply-note", popup.TEXT.applyNote);
   setText("warning", popup.TEXT.warning);
+  setText("metamask-note", popup.TEXT.metamaskConnectNote);
   setText("sol-heading", popup.TEXT.solHeading);
   setText("btc-heading", popup.TEXT.btcHeading);
   setText("sol-warning", popup.TEXT.solWarning);
   setText("btc-warning", popup.TEXT.btcWarning);
   setText("chain-note", popup.TEXT.chainNote);
-  setText("status-value", popup.TEXT.statusLoading);
+
+  // First paint: last time's state (or the loading text), with no round trip.
+  const cachedStatus = popup.parseCachedStatus(cacheGet(popup.STATUS_CACHE_KEY));
+  if (cachedStatus === null) {
+    setText("status-value", popup.TEXT.statusLoading);
+  } else {
+    renderStatus(cachedStatus, true);
+  }
+  const cachedModes = popup.parseCachedModes(cacheGet(popup.MODES_CACHE_KEY));
+  if (cachedModes !== null) {
+    for (const kind of KINDS) {
+      shown[kind] = cachedModes[kind];
+      renderGroup(kind, cachedModes[kind]);
+    }
+  }
+
+  // Live state, filled in as it arrives.
   requestStatus();
-  const { mode, sol, btc, failed } = await loadModes();
-  renderModes(mode);
-  renderModes(sol, "sol", "sol-modes");
-  renderModes(btc, "btc", "btc-modes");
-  showWarning("evm", mode);
-  showWarning("sol", sol);
-  showWarning("btc", btc);
+  const { modes, failed } = await loadModes();
+  for (const kind of KINDS) {
+    if (!touched.has(kind) && shown[kind] !== modes[kind]) {
+      shown[kind] = modes[kind];
+      renderGroup(kind, modes[kind]);
+    }
+  }
   if (failed) {
     setText("mode-saved", popup.TEXT.loadFailed);
+  } else {
+    rememberModes();
   }
 }
 

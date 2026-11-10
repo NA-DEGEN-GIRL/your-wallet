@@ -9,13 +9,20 @@
 //! are equal, and one-sided `eth_getLogs` ranges resolved against the cached block number (the
 //! archive required both bounds). `wallet_addEthereumChain`, `wallet_watchAsset` and
 //! `wallet_getCapabilities` schemas are gone (4200 before validation). Every violation is
-//! -32602 `Invalid params.`; account membership (4100) and the origin chain (`chainId`, T01)
-//! are checked by the dispatcher.
+//! -32602 `Invalid params.`, except that an `eth_sendTransaction` says which rule it broke
+//! (`Invalid params: …`, [`TxRule`], 2026-11-11: a dApp sees why, the app log gets the rule
+//! word; never a value). Account membership (4100) and the origin chain (`chainId`, T01) are
+//! checked by the dispatcher.
+//!
+//! Harmless forms real wallets accept are taken as well (2026-11-11, Uniswap's swap on an Arbitrum
+//! Orbit chain): `gasLimit` as an alias of `gas` (`MetaMask` `normalizeTransactionParams`; both
+//! present → they must be equal) and a JSON-integer `chainId` (ethers v5 `TransactionRequest`,
+//! Rabby compares `Number(chainId)`). Forwarded objects carry `gas` and quantity `chainId` only.
 
 use yw_core::evm::address::{Address, parse_address};
 use yw_core::evm::amount::U256;
 use yw_core::evm::tx::AccessListItem;
-use yw_core::policy::{Method, ProviderError};
+use yw_core::policy::{Method, ProviderError, TxField, TxRule, UnsupportedTxKey};
 use yw_json::{Limits, Number, Object, Value};
 
 use crate::text::{json_object, json_str};
@@ -44,6 +51,9 @@ pub const MAX_FEE_HISTORY_PERCENTILES: usize = 100;
 pub const MAX_GAS: u64 = 16_777_216;
 
 type Checked<T> = Result<T, ProviderError>;
+
+/// A call/transaction object rule: `eth_sendTransaction` answers the rule, reads plain -32602.
+type Ruled<T> = Result<T, TxRule>;
 
 const fn invalid<T>() -> Checked<T> {
     Err(ProviderError::InvalidParams)
@@ -201,13 +211,41 @@ fn quantity_value(value: &U256) -> Value {
     json_str(&value.to_quantity())
 }
 
-/// spec/05 §3.3 data: `0x` + even hex, any case, `0x` allowed.
-fn data(value: &Value, max_bytes: usize) -> Checked<Vec<u8>> {
-    let digits = ok_or_invalid(text(value)?.strip_prefix("0x"))?;
-    if digits.len() > max_bytes.saturating_mul(2) {
-        return invalid();
+/// spec/05 §3.3 data of a call/transaction object: `0x` + even hex, any case, `0x` allowed,
+/// ≤ 131,072 bytes.
+fn call_data(value: &Value, field: TxField) -> Ruled<Vec<u8>> {
+    let digits = value
+        .as_str()
+        .and_then(|text| text.strip_prefix("0x"))
+        .ok_or(TxRule::Invalid(field))?;
+    if digits.len() > MAX_CALL_DATA_BYTES.saturating_mul(2) {
+        return Err(TxRule::DataTooLarge);
     }
-    yw_core::hex::decode(&digits.to_ascii_lowercase()).map_err(|_| ProviderError::InvalidParams)
+    yw_core::hex::decode(&digits.to_ascii_lowercase()).map_err(|_| TxRule::Invalid(field))
+}
+
+/// A common-rule check of one call/transaction member, failing as `field`'s form.
+fn member<T>(checked: Checked<T>, field: TxField) -> Ruled<T> {
+    checked.map_err(|_| TxRule::Invalid(field))
+}
+
+/// `gas`/`gasLimit`: a quantity; one beyond u64 is over the D20 cap as well.
+fn gas_value(value: &Value, field: TxField) -> Ruled<u64> {
+    member(quantity(value), field)?
+        .to_u64()
+        .ok_or(TxRule::GasCap)
+}
+
+/// `chainId`: a u64 quantity or a non-negative JSON integer. Uniswap's swap sends ethers v5's
+/// `TransactionRequest.chainId` (a JS number) as is through `provider.send("eth_sendTransaction")`;
+/// Rabby compares `Number(chainId)` and `MetaMask` drops the key. The number still has to be the
+/// origin chain (dispatcher), and only the quantity form is forwarded.
+fn chain_id(value: &Value) -> Ruled<u64> {
+    let parsed = match value {
+        Value::Number(number) => number.as_u64(),
+        other => quantity(other).ok().and_then(U256::to_u64),
+    };
+    parsed.ok_or(TxRule::Invalid(TxField::ChainId))
 }
 
 fn data_value(bytes: &[u8]) -> Value {
@@ -303,10 +341,11 @@ fn access_list(value: &Value, unique: bool) -> Checked<(Vec<AccessListItem>, Val
     Ok((items, Value::Array(out)))
 }
 
-const CALL_KEYS: [&str; 13] = [
+const CALL_KEYS: [&str; 14] = [
     "from",
     "to",
     "gas",
+    "gasLimit",
     "gasPrice",
     "maxFeePerGas",
     "maxPriorityFeePerGas",
@@ -342,47 +381,82 @@ struct CallObject {
 }
 
 impl CallObject {
-    fn parse(value: &Value, unique_access: bool) -> Checked<Self> {
-        let object = ok_or_invalid(value.as_object())?;
-        if !exact_keys(object, &[], &CALL_KEYS) {
-            return invalid();
+    /// The common rules, failing with the first broken one (keys first, in source order).
+    fn parse(value: &Value, unique_access: bool) -> Ruled<Self> {
+        let object = value.as_object().ok_or(TxRule::Shape)?;
+        if let Some(key) = object.keys().find(|key| !CALL_KEYS.contains(key)) {
+            // Only a compiled-in key name may appear in the message, never the page's text.
+            return Err(
+                UnsupportedTxKey::parse(key).map_or(TxRule::UnknownKey, TxRule::UnsupportedKey)
+            );
         }
         let opt = |key: &str| object.get(key);
         let input = match (opt("data"), opt("input")) {
             (Some(left), Some(right)) => {
-                let left = data(left, MAX_CALL_DATA_BYTES)?;
-                if left != data(right, MAX_CALL_DATA_BYTES)? {
-                    return invalid();
+                let left = call_data(left, TxField::Data)?;
+                if left != call_data(right, TxField::Input)? {
+                    return Err(TxRule::DataInputDiffer);
                 }
                 Some(left)
             }
-            (Some(one), None) | (None, Some(one)) => Some(data(one, MAX_CALL_DATA_BYTES)?),
+            (Some(one), None) => Some(call_data(one, TxField::Data)?),
+            (None, Some(one)) => Some(call_data(one, TxField::Input)?),
             (None, None) => None,
         };
         let to = match opt("to") {
             None => To::Absent,
             Some(Value::Null) => To::Null,
-            Some(value) => To::Address(address(value)?),
+            Some(value) => To::Address(member(address(value), TxField::To)?),
+        };
+        // `gasLimit` is an alias of `gas` (ethers v5 field name; MetaMask takes it when `gas` is
+        // absent). Both present must agree; only `gas` is kept and forwarded.
+        let gas = match (opt("gas"), opt("gasLimit")) {
+            (Some(gas), Some(limit)) => {
+                let gas = gas_value(gas, TxField::Gas)?;
+                if gas != gas_value(limit, TxField::GasLimit)? {
+                    return Err(TxRule::GasLimitDiffers);
+                }
+                Some(gas)
+            }
+            (Some(gas), None) => Some(gas_value(gas, TxField::Gas)?),
+            (None, Some(limit)) => Some(gas_value(limit, TxField::GasLimit)?),
+            (None, None) => None,
         };
         let mut fee = [None, None, None];
-        for (slot, key) in fee
-            .iter_mut()
-            .zip(["gasPrice", "maxFeePerGas", "maxPriorityFeePerGas"])
-        {
-            *slot = opt(key).map(quantity).transpose()?;
+        for (slot, (key, field)) in fee.iter_mut().zip([
+            ("gasPrice", TxField::GasPrice),
+            ("maxFeePerGas", TxField::MaxFeePerGas),
+            ("maxPriorityFeePerGas", TxField::MaxPriorityFeePerGas),
+        ]) {
+            *slot = opt(key)
+                .map(|value| member(quantity(value), field))
+                .transpose()?;
         }
         Ok(Self {
-            from: opt("from").map(address).transpose()?,
+            from: opt("from")
+                .map(|value| member(address(value), TxField::From))
+                .transpose()?,
             to,
-            gas: opt("gas").map(quantity_u64).transpose()?,
+            gas,
             fee,
-            value: opt("value").map(quantity).transpose()?,
+            value: opt("value")
+                .map(|value| member(quantity(value), TxField::Value))
+                .transpose()?,
             input,
-            nonce: opt("nonce").map(quantity_u64).transpose()?,
-            tx_type: opt("type").map(quantity_u64).transpose()?,
-            chain_id: opt("chainId").map(quantity_u64).transpose()?,
+            nonce: opt("nonce")
+                .map(|value| member(quantity_u64(value), TxField::Nonce))
+                .transpose()?,
+            // A type beyond u64 is no supported type either.
+            tx_type: opt("type")
+                .map(|value| {
+                    member(quantity(value), TxField::Type)?
+                        .to_u64()
+                        .ok_or(TxRule::Type)
+                })
+                .transpose()?,
+            chain_id: opt("chainId").map(chain_id).transpose()?,
             access: opt("accessList")
-                .map(|list| access_list(list, unique_access))
+                .map(|list| member(access_list(list, unique_access), TxField::AccessList))
                 .transpose()?,
         })
     }
@@ -431,14 +505,20 @@ impl CallObject {
     }
 }
 
-fn tx_params(value: &Value) -> Checked<TxParams> {
+/// spec/03 §3.2 on the one element of `eth_sendTransaction`.
+fn tx_params(value: &Value) -> Ruled<TxParams> {
     let call = CallObject::parse(value, true)?;
-    let from = ok_or_invalid(call.from)?;
-    let To::Address(to) = call.to else {
-        return invalid();
+    let from = call.from.ok_or(TxRule::FromRequired)?;
+    let to = match call.to {
+        To::Address(to) => to,
+        To::Absent => return Err(TxRule::ToRequired),
+        To::Null => return Err(TxRule::ToNull),
     };
-    if !matches!(call.tx_type, None | Some(0 | 2)) || call.gas.is_some_and(|gas| gas > MAX_GAS) {
-        return invalid();
+    if !matches!(call.tx_type, None | Some(0 | 2)) {
+        return Err(TxRule::Type);
+    }
+    if call.gas.is_some_and(|gas| gas > MAX_GAS) {
+        return Err(TxRule::GasCap);
     }
     Ok(TxParams {
         from,
@@ -451,6 +531,13 @@ fn tx_params(value: &Value) -> Checked<TxParams> {
         fee_fields: call.fee.iter().any(Option::is_some),
         access_list: call.access.map(|(items, _)| items).unwrap_or_default(),
     })
+}
+
+fn send_transaction(values: &[Value]) -> Ruled<Validated> {
+    let [tx] = values else {
+        return Err(TxRule::Shape);
+    };
+    Ok(Validated::Send(Box::new(tx_params(tx)?)))
 }
 
 fn read(params: Vec<Value>) -> Validated {
@@ -493,10 +580,8 @@ fn call_params(values: &[Value]) -> Checked<Validated> {
         [call, block] => (call, block_ref(block)?),
         _ => return invalid(),
     };
-    Ok(read(vec![
-        CallObject::parse(call, false)?.normalized(),
-        block,
-    ]))
+    let call = CallObject::parse(call, false).map_err(|_| ProviderError::InvalidParams)?;
+    Ok(read(vec![call.normalized(), block]))
 }
 
 fn percentile(value: &Value) -> Checked<f64> {
@@ -771,9 +856,16 @@ fn exactly_empty(values: &[Value]) -> Checked<Validated> {
 ///
 /// # Errors
 ///
-/// -32602 `Invalid params.`
+/// -32602: `Invalid params.`, or for `eth_sendTransaction` the broken rule
+/// ([`ProviderError::InvalidTxParams`]).
 pub fn validate(method: Method, params: &Value) -> Result<Validated, ProviderError> {
-    let values = array(params)?;
+    let Some(values) = params.as_array() else {
+        return Err(if method == Method::SendTransaction {
+            ProviderError::InvalidTxParams(TxRule::Shape)
+        } else {
+            ProviderError::InvalidParams
+        });
+    };
     match method {
         Method::RequestAccounts
         | Method::Accounts
@@ -821,10 +913,7 @@ pub fn validate(method: Method, params: &Value) -> Result<Validated, ProviderErr
             _ => invalid(),
         },
         Method::GetLogs => log_filter(values),
-        Method::SendTransaction => match values {
-            [tx] => Ok(Validated::Send(Box::new(tx_params(tx)?))),
-            _ => invalid(),
-        },
+        Method::SendTransaction => send_transaction(values).map_err(ProviderError::InvalidTxParams),
         Method::PersonalSign => personal_sign(values),
         Method::SignTypedDataV4 => typed_data(values),
     }
@@ -845,4 +934,268 @@ pub fn permission_value(origin: &str, accounts: &[[u8; 20]], granted_at_unix_ms:
         ),
         ("date", Value::Number(Number::from_u64(granted_at_unix_ms))),
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        MAX_GAS, Method, ProviderError, TxField, TxParams, TxRule, UnsupportedTxKey, Validated,
+    };
+    use yw_json::{Limits, Value};
+
+    const FROM: &str = "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed";
+    const TO: &str = "0x2222222222222222222222222222222222222222";
+
+    fn validate(method: Method, params: &str) -> Result<Validated, ProviderError> {
+        super::validate(
+            method,
+            &yw_json::parse(params.as_bytes(), &Limits::REQUEST).unwrap(),
+        )
+    }
+
+    /// `[{from, to <extra>}]`.
+    fn tx(extra: &str) -> String {
+        format!(r#"[{{"from":"{FROM}","to":"{TO}"{extra}}}]"#)
+    }
+
+    fn send(params: &str) -> Box<TxParams> {
+        match validate(Method::SendTransaction, params) {
+            Ok(Validated::Send(tx)) => tx,
+            other => unreachable!("{params}: {other:?}"),
+        }
+    }
+
+    fn refused(params: &str) -> TxRule {
+        match validate(Method::SendTransaction, params) {
+            Err(ProviderError::InvalidTxParams(rule)) => rule,
+            other => unreachable!("{params}: {other:?}"),
+        }
+    }
+
+    fn message(params: &str) -> &'static str {
+        refused(params).message()
+    }
+
+    /// The object Uniswap's web swap sends (2026-11-11): `submitTransactionAsync` →
+    /// `provider.send("eth_sendTransaction", [{ from, ...hexlifyTransaction(txRequest) }])`, so the
+    /// Trading API's `gasLimit` keeps its name (`BigNumber.toHexString()`: even length, leading
+    /// zero) and `chainId` stays a JS number.
+    #[test]
+    fn uniswap_swap_object_is_accepted() {
+        let tx = send(&format!(
+            r#"[{{"from":"{FROM}","to":"{TO}","data":"0x3593564c00","value":"0x00","gasLimit":"0x0493e0","chainId":4663,"maxFeePerGas":"0x05f5e100","maxPriorityFeePerGas":"0x00"}}]"#
+        ));
+        assert_eq!(tx.gas, Some(300_000));
+        assert_eq!(tx.chain_id, Some(4663));
+        assert!(tx.value.is_zero());
+        assert_eq!(tx.data, [0x35, 0x93, 0x56, 0x4c, 0x00]);
+        assert!(tx.fee_fields);
+    }
+
+    #[test]
+    fn gas_limit_is_an_alias_of_gas() {
+        assert_eq!(send(&tx(r#","gasLimit":"0x5208""#)).gas, Some(21_000));
+        // Both present: equal values (any spelling) pass, different ones are refused.
+        assert_eq!(
+            send(&tx(r#","gas":"0x5208","gasLimit":"0x005208""#)).gas,
+            Some(21_000)
+        );
+        assert_eq!(
+            refused(&tx(r#","gas":"0x5208","gasLimit":"0x5209""#)),
+            TxRule::GasLimitDiffers
+        );
+        assert_eq!(
+            message(&tx(r#","gasLimit":"0x5209","gas":"0x5208""#)),
+            "Invalid params: \"gas\" and \"gasLimit\" differ."
+        );
+        // The D20 cap holds for the alias too; a u64 overflow is over it as well.
+        assert_eq!(send(&tx(r#","gasLimit":"0x1000000""#)).gas, Some(MAX_GAS));
+        assert_eq!(refused(&tx(r#","gasLimit":"0x1000001""#)), TxRule::GasCap);
+        assert_eq!(
+            refused(&tx(r#","gasLimit":"0x10000000000000000""#)),
+            TxRule::GasCap
+        );
+        for value in [r#""0x""#, "21000", r#""21000""#] {
+            assert_eq!(
+                refused(&tx(&format!(r#","gasLimit":{value}"#))),
+                TxRule::Invalid(TxField::GasLimit),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn reads_forward_gas_and_a_quantity_chain_id_only() {
+        let Ok(Validated::Read(read)) = validate(
+            Method::EstimateGas,
+            &format!(r#"[{{"from":"{FROM}","to":"{TO}","gasLimit":"0x05208","chainId":4663}}]"#),
+        ) else {
+            unreachable!("not a read");
+        };
+        assert_eq!(
+            String::from_utf8(yw_json::to_vec(&read.params)).unwrap(),
+            format!(
+                r#"[{{"from":"{}","to":"{TO}","gas":"0x5208","chainId":"0x1237"}},"latest"]"#,
+                FROM.to_ascii_lowercase()
+            )
+        );
+        // Reads keep the plain -32602.
+        for params in [
+            format!(r#"[{{"to":"{TO}","authorizationList":[]}}]"#),
+            format!(r#"[{{"to":"{TO}","gas":"0x1","gasLimit":"0x2"}}]"#),
+            format!(r#"[{{"to":"{TO}","value":"0x"}}]"#),
+            "[1]".to_owned(),
+        ] {
+            assert_eq!(
+                validate(Method::Call, &params),
+                Err(ProviderError::InvalidParams),
+                "{params}"
+            );
+        }
+    }
+
+    #[test]
+    fn leading_zero_and_upper_case_quantities_are_accepted() {
+        let sent = send(&tx(
+            r#","value":"0x00","type":"0x02","nonce":"0x007","chainId":"0x01237","gas":"0x05208","gasPrice":"0x0A","maxFeePerGas":"0x00ff","maxPriorityFeePerGas":"0x0""#,
+        ));
+        assert!(sent.value.is_zero());
+        assert_eq!(sent.nonce, Some(7));
+        assert_eq!(sent.chain_id, Some(4663));
+        assert_eq!(sent.gas, Some(21_000));
+        for kind in ["0x0", "0x00", "0x2", "0x02", "0x000002"] {
+            send(&tx(&format!(r#","type":"{kind}""#)));
+        }
+        send(&tx(
+            r#","value":"0xDE0B6B3A7640000","data":"0xABcd","accessList":[]"#,
+        ));
+        // Still refused: empty digits, `0X`, JSON numbers (only `chainId` may be one), 65 digits.
+        let long = format!(r#""0x{}""#, "0".repeat(65));
+        for value in [r#""0x""#, r#""0X1""#, "1", r#""1""#, long.as_str()] {
+            assert_eq!(
+                refused(&tx(&format!(r#","value":{value}"#))),
+                TxRule::Invalid(TxField::Value),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn chain_id_may_be_a_json_integer() {
+        assert_eq!(send(&tx(r#","chainId":4663"#)).chain_id, Some(4663));
+        assert_eq!(send(&tx(r#","chainId":0"#)).chain_id, Some(0));
+        for value in [
+            "4663.0",
+            "-1",
+            "4.663e3",
+            r#""4663""#,
+            "18446744073709551616",
+            r#""0x10000000000000000""#,
+            "null",
+        ] {
+            assert_eq!(
+                refused(&tx(&format!(r#","chainId":{value}"#))),
+                TxRule::Invalid(TxField::ChainId),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn refusals_name_the_rule_and_never_echo_the_page() {
+        assert_eq!(
+            message(&tx(r#","authorizationList":[]"#)),
+            "Invalid params: unsupported key \"authorizationList\"."
+        );
+        assert_eq!(
+            refused(&tx(r#","blobVersionedHashes":[]"#)),
+            TxRule::UnsupportedKey(UnsupportedTxKey::BlobVersionedHashes)
+        );
+        // An unknown key is never quoted, whatever it says.
+        for key in ["foo", "<img src=x>", "Gas", "authorizationlist"] {
+            let quoted =
+                String::from_utf8(yw_json::to_vec(&Value::String(key.to_owned()))).unwrap();
+            let text = message(&tx(&format!(",{quoted}:1")));
+            assert_eq!(text, "Invalid params: unsupported transaction key.");
+            assert!(!text.contains(key));
+        }
+        // The first offending key in source order is the one reported.
+        assert_eq!(
+            refused(&tx(r#","foo":1,"authorizationList":[]"#)),
+            TxRule::UnknownKey
+        );
+        for kind in ["0x1", "0x3", "0x4", "0x10000000000000000"] {
+            assert_eq!(
+                message(&tx(&format!(r#","type":"{kind}""#))),
+                "Invalid params: transaction type is not supported (only 0 and 2).",
+                "{kind}"
+            );
+        }
+        let cap = message(&tx(r#","gas":"0x1000001""#));
+        assert_eq!(cap, "Invalid params: gas exceeds 16777216.");
+        assert!(cap.contains(&MAX_GAS.to_string()));
+        assert_eq!(
+            message(&format!(r#"[{{"from":"{FROM}","value":"0x0"}}]"#)),
+            "Invalid params: \"to\" is required."
+        );
+        assert_eq!(
+            refused(&format!(r#"[{{"from":"{FROM}","to":null}}]"#)),
+            TxRule::ToNull
+        );
+        assert_eq!(
+            message(&format!(r#"[{{"to":"{TO}"}}]"#)),
+            "Invalid params: \"from\" is required."
+        );
+        assert_eq!(
+            message(&tx(r#","data":"0x00","input":"0x01""#)),
+            "Invalid params: \"data\" and \"input\" differ."
+        );
+        assert_eq!(
+            refused(&tx(r#","data":"0xabc""#)),
+            TxRule::Invalid(TxField::Data)
+        );
+        assert_eq!(
+            refused(&tx(r#","input":"abcd""#)),
+            TxRule::Invalid(TxField::Input)
+        );
+        assert_eq!(
+            refused(&format!(r#"[{{"from":"{FROM}","to":"0x2222"}}]"#)),
+            TxRule::Invalid(TxField::To)
+        );
+        // A wrong EIP-55 checksum (the last letter's case flipped).
+        assert_eq!(
+            refused(&format!(
+                r#"[{{"from":"0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAeD","to":"{TO}"}}]"#
+            )),
+            TxRule::Invalid(TxField::From)
+        );
+        assert_eq!(
+            refused(&tx(r#","nonce":"0x10000000000000000""#)),
+            TxRule::Invalid(TxField::Nonce)
+        );
+        assert_eq!(
+            refused(&tx(r#","maxFeePerGas":"0x""#)),
+            TxRule::Invalid(TxField::MaxFeePerGas)
+        );
+    }
+
+    #[test]
+    fn shape_errors() {
+        for params in ["[]", "[1]", r#"{"from":"0x00"}"#, "[{},{}]", "[null]"] {
+            assert_eq!(refused(params), TxRule::Shape, "{params}");
+        }
+        assert_eq!(
+            message("[]"),
+            "Invalid params: expected exactly one transaction object."
+        );
+        // Other methods keep the plain message.
+        assert_eq!(
+            validate(Method::Accounts, "{}"),
+            Err(ProviderError::InvalidParams)
+        );
+        assert_eq!(
+            validate(Method::PersonalSign, "[]").map_err(|error| error.message().to_owned()),
+            Err("Invalid params.".to_owned())
+        );
+    }
 }

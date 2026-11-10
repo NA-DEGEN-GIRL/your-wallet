@@ -418,6 +418,10 @@ Object.defineProperty(window, "ethereum", { get: () => provider, set: (_ignored)
 
 **`_metamask.isUnlocked()`**: `eth_accounts`를 보내 결과가 비어 있지 않으면 `true`(이 origin이 연결되어 있고 yw-app이 잠금 해제 상태), 비었거나 오류면 `false`. 거부하지 않는다. `requestBatch` 등 다른 `_metamask` 멤버는 없다.
 
+**`metamask_getProviderState`**(호환 모드만, 2026-11-11): 와이어 메서드가 아니다. provider가 페이지 안에서 `eth_accounts`·`eth_chainId`·`net_version` 세 요청으로 `{ accounts, chainId, isUnlocked, networkVersion }`을 만든다(`isUnlocked`는 `_metamask.isUnlocked()`와 같은 뜻, `extensionId` 없음, 세 요청 중 하나의 오류는 그대로 거부). 기본 모드에서는 다른 메서드처럼 content가 4200으로 답한다. `wallet_requestPermissions`·`wallet_getPermissions`·`wallet_revokePermissions`는 원래 허용 목록(§3.1)에 있어 EIP-2255 형태로 답한다.
+
+**MetaMask Connect(2026-11-11, Uniswap에서 "MetaMask를 눌러도 아무 일 없음")**: wagmi `metaMask()` 커넥터(현재 `@metamask/connect-evm` = MetaMask Connect, Uniswap `apps/web/src/connection/wagmiConfig.ts`가 씀)는 `window.ethereum`을 쓰지 않는다. 연결 때 EIP-6963 알림 중 rdns가 `io.metamask`·`io.metamask.mobile`·`io.metamask.flask`인 것이 300 ms 안에 오면 "확장 설치됨"으로 보고(`connect-multichain` `hasExtension()`), MetaMask **자체 content script**와 `window.postMessage`(`{ target: "metamask-contentscript", data: { name: "metamask-multichain-provider", data: <JSON-RPC> } }`, CAIP-25 `wallet_getSession`→`wallet_createSession`)로, 페이지에 `chrome.runtime.connect`가 있으면 MetaMask 확장 ID로 `externally_connectable` 연결(ID는 `metamask_getProviderState`의 `extensionId`로 알아냄)로 직접 통신한다. MetaMask 모드의 `io.metamask` 알림이 이 판정을 참으로 만들지만 그 통로에는 아무도 답하지 않아 60 s(ID 탐지는 10 s) 뒤에야 실패했다. 우리 요청은 하나도 yw-app에 가지 않는다. 대응: MetaMask 모드이고 이 페이지에 **실제 MetaMask 알림이 없었을 때만**(우리가 가로챈 알림도 기억한다) provider가 그 substream의 요청(`id`가 정수 또는 1–128자 문자열, `event.source === window`·같은 origin)에 즉시 `{ target: "metamask-inpage", data: { name: "metamask-multichain-provider", data: { jsonrpc: "2.0", id, error: { code: 4200, message } } } }`로 답하고 콘솔 경고를 1회 남긴다(message: "Your Wallet's MetaMask look-alike mode cannot answer MetaMask Connect, which talks to the MetaMask extension directly. Choose the default or Rabby mode in the Your Wallet extension popup and reload this page."). 그래서 dApp은 바로 오류를 보인다. 아무것도 wallet으로 보내지 않고 다른 substream(`metamask-provider`)·알림은 답하지 않는다. CAIP-25 Multichain API를 흉내 내지 않는 이유: MetaMask 확장의 비공개 통로이고 `externally_connectable` 경로는 확장 ID가 필요해 흉내 낼 수 없다. 그런 dApp(Uniswap 등)은 EIP-6963 지갑 목록을 함께 보이므로 **기본 또는 Rabby 모드**로 연결한다(Rabby 모드는 Uniswap에서 동작 확인). 팝업 EVM 카드에 MetaMask 모드일 때만 안내 한 줄(`metamask-note`)을 보인다.
+
 **한계(최선 노력, 팝업 경고 문구로 알림)**
 
 - 임시 구간(모드 확정 전 수 ms)에 실행된 페이지 코드는 기본 플래그(`isMetaMask: false`)를 보고, 그 사이 실제 MetaMask가 보낸 알림은 막히지 않는다. 대부분의 dApp은 번들 로드 뒤(또는 버튼 클릭 때) 지갑을 찾고, EIP-6963 목록은 계속 듣기 때문에 영향이 적다.
@@ -428,6 +432,7 @@ Object.defineProperty(window, "ethereum", { get: () => provider, set: (_ignored)
 
 - yw-app 연결 상태(제목 "Your Wallet 앱 연결 상태", 사용자 문구에는 `yw-app` 대신 "Your Wallet 앱"을 쓴다): popup이 `chrome.runtime.connect({ name: "your-wallet-popup-v1" })`로 묻고 background가 상태 하나를 답한다(§2.6). 봉투 v1에는 ping이 없으므로 background가 **마지막으로 관찰한** 상태다: `connected`(native 열림 + yw-app 응답 받음) "연결됨", `checking`(열림, 응답 전) "확인 중", `unavailable`(마지막 연결 실패·backoff) "연결 안 됨", `unknown`(관찰 없음: worker 재시작 직후, 요청이 없었음, 2 s 무응답) "확인 불가" — 설명은 "아직 이 Chrome에서 Your Wallet 앱과 주고받은 요청이 없습니다(설치 직후에는 정상). dApp 사이트에서 “지갑 연결”을 누르면 연결되고 여기에 연결됨이 보입니다. 설치 전에 열어 둔 탭은 새로고침하세요."(2026-11-10; 이전 "아직 확인한 기록이 없습니다…"는 설치 직후 무엇을 하라는지 말하지 않았다. 팝업은 여전히 native를 열지 않는다). 상태 조회는 router를 만들지 않고 native를 열지 않는다(열면 yw-app이 자동 실행된다). background는 `port.sender.id === chrome.runtime.id`, `sender.tab` 없음, `sender.url === chrome.runtime.getURL("popup/popup.html")`일 때만 답하고 그 밖은 port를 닫는다.
 - 모드 선택: 고를 수 있는 라디오 카드 3개("기본 (Your Wallet)", "MetaMask처럼 보이기", "Rabby처럼 보이기", 카드마다 그 모드가 하는 일을 쉬운 말로 한 줄 설명), 저장 결과, "모드 변경은 다음 페이지 로드부터 적용됩니다. 열려 있는 dApp 탭은 새로고침하세요.", 위 경고. 순서는 연결 상태 카드 → EVM 카드(제목 "EVM (이더리움 등) dApp에 보이는 지갑", 앱의 체인 탭 이름과 같다) → 공통 안내(§2.13, 카드 밖 한 줄) → Solana 카드 → Bitcoin 카드. 계열마다(EVM·Solana·Bitcoin) 저장 결과 줄은 그 카드 안에(`mode-saved`·`sol-saved`·`btc-saved`), 실제 확장을 끄라는 경고는 그 계열의 모드가 `off`가 아닐 때만 보인다(`popup-core.warningShown`; `off`에서는 실제 확장과 겹칠 일이 없어 경고를 숨긴다 — 늘 세 개가 떠 있으면 정작 켰을 때 눈에 띄지 않는다). 라디오를 바꾸면 그 자리에서 경고를 보이거나 숨긴다.
+- 즉시 표시(2026-11-11, "팝업이 늦게 뜬다"): 팝업은 native를 열지 않으므로 기다림은 (a) `chrome.storage.local.get` 왕복 — 그 전에는 모드 카드가 없어 팝업이 작게 열렸다가 커졌다 — 과 (b) background 상태 답 — MV3 service worker는 30 s 쉬면 멈추므로 다시 시작(모듈 3개 평가)한 뒤 답하고, 답이 없으면 `STATUS_TIMEOUT_MS = 2_000` 뒤 "확인 불가" — 였다. 이제 popup.js는 첫 `await` 전에(페이지 load 전, 즉 팝업이 열리기 전에) 지난번 모드와 마지막으로 **background가 보고한** 상태를 팝업 페이지 자신의 `localStorage`(`yourWalletPopupModesV1` = `{ evm, sol, btc }` 정확한 키·각 계열의 유효 값, `yourWalletPopupStatusV1` = 상태 단어 4개 중 하나, 그 밖은 무시)로 그리고, 상태 설명은 "지난번에 확인한 상태입니다. 지금 다시 확인하는 중…"으로 둔다. 그 뒤 저장소와 background 답으로 제자리 갱신한다(사용자가 그 사이 바꾼 계열은 덮어쓰지 않는다, 시간 초과·port 닫힘은 기억하지 않는다). 확장 origin 전용 저장소이고 페이지·content script는 읽을 수 없으며 비밀은 없다(모드 이름·상태 단어). 정본은 여전히 `chrome.storage.local`이다(content가 읽는 곳).
 - 모양: 데스크톱 앱([04](04-app-ui.md))과 같은 라이트 테마 하나(다크 변형 없음). 배경 `#F3F4F6`, 카드 `#FFFFFF`·테두리 1px `#E1E4E8`·모서리 8px, 글자 `#1F1F1F`, 보조 글자 `#5F6368`, 강조(선택 카드 테두리·라디오) `#0F6CBD`, 글꼴 `"Malgun Gothic", "Segoe UI", system-ui`(본문 13px, 설명 12px, 제목 굵게 16px), 간격 4/8/12/16px. 상단에 앱 이름 머리글, 연결 상태는 색 알약(`connected` 성공 `#DFF6DD`/`#0E700E`, `unavailable` 고위험 `#FDE7E9`/`#A4262C`, 그 밖 정보 `#E8F1FB`/`#0F4C81`), 경고는 주의 색(`#FFF4CE`/`#7A5C00`). 원격 글꼴·이미지 없음(§2.11 검사).
 
 ### 2.13 Solana·Bitcoin dApp 연결 (D22·D25·D26·D27: 소유 증명 전용)
@@ -437,7 +442,7 @@ Object.defineProperty(window, "ethereum", { get: () => provider, set: (_ignored)
 
 | 계열·모드 | 페이지에 보이는 것 |
 |---|---|
-| Solana `off`(기본) | Wallet Standard 지갑 하나(이름 `Your Wallet`)만 등록. `window.phantom`·`window.solana` 없음 |
+| Solana `off`(기본) | Wallet Standard 지갑 하나(이름 `Your Wallet (Solana)`, 2026-11-11 전 `Your Wallet`)만 등록. `window.phantom`·`window.solana` 없음. 이름을 EVM 알림(`Your Wallet`)과 다르게 둔 이유: 여러 체인 dApp은 같은 이름의 EVM·Solana 지갑을 한 항목으로 합친다 — Uniswap은 소문자로 바꾸고 끝의 " wallet"을 떼어 비교하고(`apps/web/src/connection/connectors/multiplatform.ts` `normalizeWalletName`, `accounts/provider.tsx` `deduplicationId`), 합친 항목을 누르면 EVM 연결 뒤 Solana 연결을 이어 한다(`services/multiplatformConnectionService.ts`, EVM이 거절·이미 연결 등으로 `connected: false`여도 Solana로 넘어감). 그래서 "Your Wallet"이 Solana 연결 창으로 이어졌다. 우리 Solana는 메시지 서명 전용이라 Uniswap의 Solana 스왑에 쓸 수도 없다. 이제 "Your Wallet"(EVM)과 "Your Wallet (Solana)"는 따로 보인다 |
 | Solana `phantom` | Wallet Standard 지갑 이름 `Phantom`(아이콘은 우리 PNG, Phantom 로고를 쓰지 않는다) + `window.phantom.solana`(접근자로 차지·재차지, `window.ethereum` 호환 모드와 같은 규칙 §2.12) + `window.solana`(없을 때만 데이터 속성) |
 | Bitcoin `off`(기본) | **아무것도 주입하지 않는다**(Bitcoin dApp 지원은 호환 모드에서만). content의 `ContentBridge`도 이 문서의 `btc_*` 요청을 와이어로 보내지 않고 즉시 4200 `Unsupported method.`로 답한다(페이지가 채널 메시지를 직접 만들어도 같다). Solana `off`는 `Your Wallet` 지갑을 등록하므로 `sol_*`는 그대로 보낸다 |
 | Bitcoin `unisat` | `window.unisat`(접근자로 차지·재차지) |
@@ -499,18 +504,18 @@ EIP-2255 권한 객체: `{ "invoker": "<origin>", "parentCapability": "eth_accou
 | 값 | 허용 | 정규화(RPC 전달·내부 표현) | 거부 |
 |---|---|---|---|
 | address | `0x` + 40 hex. 전부 소문자, 전부 대문자, 또는 EIP-55 체크섬이 맞는 대소문자 혼합 | 20바이트, 출력은 소문자 | `0X` 접두사, 길이 오류, 혼합 대소문자 체크섬 불일치 |
-| quantity | `0x` + 1–64 hex, 대소문자 무관, 앞자리 0 허용 | 앞자리 0 제거 소문자(`"0x0"` 포함) | `"0x"`, 65자리 이상, JSON 숫자, 음수 |
+| quantity | `0x` + 1–64 hex, 대소문자 무관, 앞자리 0 허용 | 앞자리 0 제거 소문자(`"0x0"` 포함) | `"0x"`, `0X` 접두사, 65자리 이상, JSON 숫자(call·tx 객체의 `chainId`만 예외, 아래), 음수 |
 | u64 quantity | quantity이면서 값 ≤ 2^64−1 | 동일 | 초과 |
 | data | `0x` + 짝수 길이 hex, 대소문자 무관, `"0x"` 허용 | 소문자 바이트 | 홀수 길이 |
 | hash32 | `0x` + 64 hex, 대소문자 무관 | 소문자 | 그 밖 |
 | block tag | `latest` `earliest` `pending` `safe` `finalized` 또는 u64 quantity | 동일 | 그 밖 |
 | block ref(EIP-1898) | block tag, `{ "blockNumber": q }`, `{ "blockHash": h }`, `{ "blockHash": h, "requireCanonical": bool }` (정확한 키) | 동일 구조 | 그 밖 |
 
-EIP-55 판정과 주소 파싱은 yw-core 함수를 쓴다(이름은 [03](03-evm.md)이 정한다). 모든 파라미터 오류는 -32602 "Invalid params."다.
+EIP-55 판정과 주소 파싱은 yw-core 함수를 쓴다(이름은 [03](03-evm.md)이 정한다). 모든 파라미터 오류는 -32602 "Invalid params."다. 단, `eth_sendTransaction`은 창 없이 거부할 때 깨진 규칙을 밝힌다(§5 `InvalidTxParams`, 2026-11-11: dApp 콘솔에 `Invalid params: gas exceeds 16777216.` 같은 고정 문구, 앱 로그 `request.error`에 `rule=gas_cap` 같은 단어. 요청의 값은 어느 쪽에도 넣지 않는다).
 
-**call 객체**(read용): 키는 `from to gas gasPrice maxFeePerGas maxPriorityFeePerGas value data input nonce type chainId accessList`의 부분집합. 모두 선택이고 `to`는 `null`·생략 가능(배포 추정). `data`와 `input`이 둘 다 있으면 바이트가 같아야 하며 하나(`input`)로 합친다. `data` ≤ 131,072 B. `accessList`는 ≤ 256 항목, 각 `{ address, storageKeys: hash32[] ≤ 256 }`(정확한 키). 그 밖 키(`authorizationList`, `blobVersionedHashes`, `blobs` 등)는 거부.
+**call 객체**(read용): 키는 `from to gas gasLimit gasPrice maxFeePerGas maxPriorityFeePerGas value data input nonce type chainId accessList`의 부분집합. 모두 선택이고 `to`는 `null`·생략 가능(배포 추정). `gasLimit`은 `gas`의 별칭이다(2026-11-11, ethers v5 이름·MetaMask와 같음): 둘 다 있으면 값이 같아야 하고, 전달은 `gas`로만 한다. `chainId`는 u64 quantity 또는 JSON 정수(ethers v5 `chainId: number`를 Uniswap이 그대로 보냄)이고 전달은 quantity다. `data`와 `input`이 둘 다 있으면 바이트가 같아야 하며 하나(`input`)로 합친다. `data` ≤ 131,072 B. `accessList`는 ≤ 256 항목, 각 `{ address, storageKeys: hash32[] ≤ 256 }`(정확한 키). 그 밖 키(`authorizationList`, `blobVersionedHashes`, `blobs` 등)는 거부.
 
-**tx 객체**(`eth_sendTransaction`): 키·값 의미의 정본은 [03](03-evm.md) §3.2다. 요약: call 객체 규칙에 더해 `from` 필수이고 grant 계정이어야 한다(아니면 4100). `to` 필수·non-null(D19). `type`은 생략·`0x0`·`0x2`만. `gas` ≤ 16,777,216(D20). `chainId`가 있으면 origin 체인과 같아야 한다. `gasPrice`·`maxFeePerGas`·`maxPriorityFeePerGas`는 quantity 형식만 검사하고 값은 버린다(조합 규칙 없음, [03] §3.2, D20). `nonce` 의미 검사와 가스 한도 계산은 [03]이 한다.
+**tx 객체**(`eth_sendTransaction`): 키·값 의미의 정본은 [03](03-evm.md) §3.2다. 요약: call 객체 규칙에 더해 `from` 필수이고 grant 계정이어야 한다(아니면 4100). `to` 필수·non-null(D19). `type`은 생략·`0x0`·`0x2`만(앞자리 0 `0x00`·`0x02` 포함). `gas`(또는 `gasLimit`) ≤ 16,777,216(D20). `chainId`가 있으면 origin 체인과 같아야 한다. `gasPrice`·`maxFeePerGas`·`maxPriorityFeePerGas`는 quantity 형식만 검사하고 값은 버린다(조합 규칙 없음, [03] §3.2, D20). `nonce` 의미 검사와 가스 한도 계산은 [03]이 한다.
 
 ### 3.4 메서드별 파라미터
 | 메서드 | params(배열, 정확한 길이) | 추가 규칙 |
@@ -697,12 +702,15 @@ dApp 요청으로 띄운 잠금 해제 창을 `나중에`로 닫으면 `UNLOCK_P
 | -32005 | `TooManyPending` | `Too many pending requests.` | pending 한도 |
 | -32600 | `InvalidRequest` | `Invalid request.` | 봉투 형식·순번·route 불일치 |
 | -32600 | `RequestTooLarge` | `Request too large.` | 크기·JSON 한도 초과 |
-| -32602 | `InvalidParams` | `Invalid params.` | §3.3–3.4, [03](03-evm.md)의 사전 정책 거부(D17 chainId 불일치, D19, nonce 불일치 등) |
+| -32602 | `InvalidParams` | `Invalid params.` | §3.3–3.4, [03](03-evm.md)의 사전 정책 거부(D17 chainId 불일치, D19, nonce 불일치 등). `eth_sendTransaction`의 형식·키·D17·D19·D20 거부는 아래 `InvalidTxParams` |
+| -32602 | `InvalidTxParams(TxRule)` | `Invalid params: …`(규칙별 고정 문구, 아래) | `eth_sendTransaction`을 창 없이 거부하는 §3.3–3.4·[03] §3.2 규칙, tx `chainId` ≠ origin 체인, dApp `nonce` 불일치(2026-11-11) |
 | -32603 | `Internal` | `Internal error.` | 그 밖의 내부 오류 |
 | -32603 | `TimedOut` | `Request timed out.` | 기한 만료(확장·yw-app) |
 | -32603 | `ResponseTooLarge` | `Response too large.` | §3.5 |
 | -32603 | `BroadcastFailed` | `Transaction broadcast failed.` | 서명 후 RPC가 확정적으로 거부, 다른 해시 반환, 전송 직전 체인 재확인 불일치(판정은 [03](03-evm.md) §4.4). 자동 재전송이 이어지지 않는 경우만이다: 결과가 불확실(시간 초과)하거나 체인 재확인이 전송 오류로 끝나 자동 재전송이 이어지면 tx hash를 반환한다 |
 | 그대로 | `Upstream { code, message, data }` | §3.5 정화 규칙 | read의 상위 JSON-RPC 오류 |
+
+`InvalidTxParams` 문구(정본 `yw_core::policy::TxRule::message`, 모두 `Invalid params: `로 시작하는 ASCII ≤ 256자, 요청의 값은 넣지 않음, 2026-11-11): `expected exactly one transaction object.` · `unsupported key "<k>".`(k가 바이너리에 든 알려진 키 `UnsupportedTxKey`일 때만: `authorizationList` `blobVersionedHashes` `blobs` `maxFeePerBlobGas` `sidecars` `commitments` `proofs` `kzg` `customData` `ccipReadEnabled` 등) · `unsupported transaction key.`(그 밖 키, 이름을 되풀이하지 않음) · `"<field>" is not a hex quantity.`/`is not hex bytes.`/`is not a valid address (…).`/`is not a valid access list (…).` · `"from" is required.` · `"to" is required.` · `"to" must not be null (contract deployment is not supported).` · `transaction type is not supported (only 0 and 2).` · `gas exceeds 16777216.` · `"gas" and "gasLimit" differ.` · `"data" and "input" differ.` · `transaction data exceeds 131072 bytes.` · `chainId does not match the site's network.` · `nonce does not match the account's next nonce.`([03] §3.7 단계 4, 준비 중 창을 닫을 때) 앱 로그 `request.error`에는 같은 규칙의 단어(`rule=key_authorizationList`, `rule=gas_cap`, `rule=chain_id` 등)를 더한다.
 
 `eth_sendTransaction`의 dApp 응답(D15–D16, 상황별 매핑은 [03](03-evm.md) §11.6): 시뮬레이션 결과(성공·revert·RPC 오류·시간 초과·응답 이상·`simulation = unsupported`)는 승인 창의 경고와 고위험 확인에만 영향을 주고 **어떤 오류 코드로도 바꾸지 않는다**. 결과는 승인 → tx hash(브로드캐스트 결과가 불확실해도 hash), 확정적 브로드캐스트 거부 → -32603 `BroadcastFailed`, 거부·창 닫기·잠금(D16 차단 창 포함) → 4001, 창 표시 후 120 s → 4001 `Request expired.`, 요청 기한 → -32603 `Request timed out.`, 창 없는 사전 거부(§3.3–3.4, [03] §11.6) → -32602·4100·-32002 중 하나, 승인 전 사용자 체인 삭제 → 4901(§4.3)이다.
 
@@ -1101,6 +1109,9 @@ yw-host는 자기와 같은 폴더의 yw-app을 실행하므로 yw-app은 등록
 | PO1 | `tests/popup.test.mjs`(신규) | 모드 라벨 3개·카드 설명 3개·경고 문구·"다음 페이지 로드부터 적용" 문구·상태 제목 정확히, 사용자 문구에 `yw-app` 없음, 상태 표시(`연결됨`·`확인 중`·`연결 안 됨`·`확인 불가`, 모르는 값 → `확인 불가`)와 tone(`ok`·`neutral`·`bad`·`neutral`), 상태 메시지 정확한 키, 저장 값 |
 | PO2 | 〃 | `popup.html`: `lang="ko"`, module script 하나(`../src/popup.js`), 인라인 코드·스타일·원격 URL 없음, `popup.js`가 쓰는 id가 모두 있음. `popup.css`: 라이트 전용(`prefers-color-scheme`·`@font-face` 없음), §2.12 모양의 토큰 값, ok → 성공·bad → 고위험·경고 → 주의 색 |
 | PO3 | 〃 | 가짜 DOM·`chrome`으로 `popup.js` 실행: 모드마다 카드(`label.mode` > 라디오 + 이름·한 줄 설명), 저장된 모드 선택 표시, 계열 경고는 모드가 `off`가 아닐 때만 보임(Bitcoin `off` → 숨김, `xverse` 선택 → 보임·`btc-saved`에 저장 문구), MetaMask 선택 시 `chrome.storage.local.set({ compatMode: "metamask" })`·저장 문구, 팝업 port `your-wallet-popup-v1`의 `connected` → "연결됨" 후 port 닫음 |
+| PO4 | 〃 (2026-11-11) | 저장소·background가 답하기 전(모듈 평가 직후)에 `localStorage`의 지난 모드·상태로 카드 선택·경고·`metamask-note`·상태 알약("지난번에 확인한…")이 그려짐, 그 사이 사용자가 바꾼 계열은 늦은 저장소 값이 덮지 않음, 저장소 값으로 다른 계열 갱신·캐시 갱신, 실제 상태 답이 오면 바꾸고 기억; 캐시 파서는 키·값이 틀리면 무시 |
+| P17 | `tests/provider-main.test.mjs` (2026-11-11) | MetaMask 모드: `metamask-multichain-provider` 요청(정수·문자열 id)에 즉시 4200 답(정확한 모양, `targetOrigin`), wire 요청 0, 콘솔 경고 1회; 알림·`metamask-provider` substream·이상한 id·다른 origin·`metamask-inpage` 대상은 무시; Rabby·기본 모드와 실제 MetaMask 알림(모드 확정 전·후)이 있는 페이지는 답하지 않음 |
+| P18 | 〃 | 호환 모드의 `metamask_getProviderState` = `eth_accounts`·`eth_chainId`·`net_version` 세 요청으로 `{ accounts, chainId, isUnlocked, networkVersion }`, 오류는 그대로 거부; 기본 모드는 와이어로 그대로 |
 | N1 | `tests/native-contract.test.mjs`(갱신) | request·cancel 골든과 바이트-필드 일치, response·event·unavailable 골든을 받아 올바르게 전달, `validateNativeManifest` + 템플릿은 항상 무효 |
 | M1 | `tests/manifest.test.mjs`(신규) | `JSON.parse`한 manifest에서 `key`를 뺀 값이 §2.2 객체(`action` 포함)와 deep-equal(키 순서 무관, `action.default_icon`·`icons` 포함), `extensionIdFromKey(manifest.key)` == `extension-id.txt`, 호스트 권한·선택 권한·CSP 키 없음 |
 | M2 | 〃 | 가짜 `chrome`으로 `background.js`를 로드했을 때 `onConnectExternal`·`onMessageExternal`·`onMessage` 등록 0회. 팝업 port: router 전 `unknown`(native 0회), 응답 받은 뒤 `connected`, 탭 sender·다른 페이지는 port 닫힘·메시지 없음 |

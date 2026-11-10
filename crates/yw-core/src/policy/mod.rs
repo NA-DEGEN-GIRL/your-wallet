@@ -18,7 +18,7 @@ pub use chain_grant::{
     BtcGrant, BtcGrantAddress, BtcPurpose, MAX_CHAIN_GRANTS, SolGrant, btc_address_type,
     btc_purposes_valid,
 };
-pub use error::ProviderError;
+pub use error::{ProviderError, TxField, TxRule, UnsupportedTxKey};
 pub use grant::{ConnectedSite, MAX_GRANT_ACCOUNTS, MAX_GRANTS, valid_selection};
 pub use method::{Family, Method, Route, is_method_name};
 
