@@ -1043,11 +1043,26 @@ fn mocked_end_to_end_session() {
         None,
     );
     worker.refresh_chains();
+    // Until something arrived and then 40 quiet rounds (5 ms each); up to 2 s for the first
+    // input, since a loaded machine (the whole gate running) delays the mock relay thread.
     let pump = |worker: &mut Worker| {
-        for _ in 0..50 {
+        let mut seen = false;
+        let mut quiet = 0;
+        for _ in 0..400 {
             std::thread::sleep(std::time::Duration::from_millis(5));
+            let mut got = false;
             while let Ok(input) = rx.try_recv() {
                 worker.handle(input);
+                got = true;
+            }
+            if got {
+                seen = true;
+                quiet = 0;
+            } else {
+                quiet += 1;
+            }
+            if seen && quiet >= 40 {
+                break;
             }
         }
     };
@@ -1374,11 +1389,26 @@ fn restored_sessions_follow_grants_and_chains() {
         None,
     );
     worker.refresh_chains();
+    // Until something arrived and then 40 quiet rounds (5 ms each); up to 2 s for the first
+    // input, since a loaded machine (the whole gate running) delays the mock relay thread.
     let pump = |worker: &mut Worker| {
-        for _ in 0..40 {
+        let mut seen = false;
+        let mut quiet = 0;
+        for _ in 0..400 {
             std::thread::sleep(std::time::Duration::from_millis(5));
+            let mut got = false;
             while let Ok(input) = rx.try_recv() {
                 worker.handle(input);
+                got = true;
+            }
+            if got {
+                seen = true;
+                quiet = 0;
+            } else {
+                quiet += 1;
+            }
+            if seen && quiet >= 40 {
+                break;
             }
         }
     };
