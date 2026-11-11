@@ -605,13 +605,16 @@ impl App {
                 BtcGate::NoAccount.text()
             }));
         }
+        // A drop-down like the network's (2026-11-11): the selected account on its button, the
+        // accounts under it while open (each keeps the id its radio had).
+        let mut entries = Vec::new();
         for (index, row) in rows.iter().take(usize::from(ids::ACCOUNT_SPAN)).enumerate() {
             let id = ids::ACCOUNT_BASE.saturating_add(u16::try_from(index).unwrap_or(0));
             let hardware = matches!(row.id, yw_core::btc::BtcAccountId::Hardware { .. });
             let badge = match (row.imported, row.evm_shared) {
-                _ if hardware => "[YubiKey] ".to_owned(),
-                (true, _) => "[가져온 키] ".to_owned(),
-                (false, Some(evm_index)) => format!("[EVM 계정 {evm_index} 키] "),
+                _ if hardware => " · YubiKey".to_owned(),
+                (true, _) => " · 가져온 키".to_owned(),
+                (false, Some(evm_index)) => format!(" · EVM 계정 {evm_index} 키"),
                 (false, None) => String::new(),
             };
             // HD rows name their mnemonic with several (spec/02 §8.6).
@@ -620,20 +623,26 @@ impl App {
                     mnemonic,
                     script_type,
                     account,
-                } => self.mnemonic_tagged(
-                    &format!("{} 계정 {account}", script_type.name()),
-                    mnemonic.map(|id| *id.as_bytes()),
-                ),
+                } => {
+                    let name = format!("{} 계정 {account}", script_type.name());
+                    self.mnemonic_tag(mnemonic.map(|id| *id.as_bytes()))
+                        .map_or_else(|| name.clone(), |tag| format!("{name} · {tag}"))
+                }
                 _ => row.name.clone(),
             };
-            let label = format!(
-                "{badge}{name} · {} · {}",
-                row.kind,
-                BtcUi::amount_text(row.available)
-            );
-            items.push(Item::Row(vec![
-                Ctl::radio(id, &label, row.selected, index == 0).enabled(usable || row.selected),
-            ]));
+            entries.push(crate::ui::screens_links::PickerEntry {
+                id,
+                label: format!(
+                    "{name}{badge} · {} · {}",
+                    row.kind,
+                    BtcUi::amount_text(row.available)
+                ),
+                selected: row.selected,
+                enabled: usable || row.selected,
+            });
+        }
+        if !entries.is_empty() {
+            self.push_account_picker(items, crate::ui::screens_links::ids::PICKER_BTC, &entries);
         }
         if let Some(message) = &self.btc.account_message {
             items.push(Item::Banner(message.clone(), Tone::Warn));
@@ -960,10 +969,40 @@ impl App {
             } else if !row.counterparty.is_empty() {
                 items.push(Item::Muted(format!("받는 주소{name}")));
             }
+            // 2026-11-11: the recipient whole (ends emphasized) and the txid on lines of their
+            // own; a click copies either (the wallet's own signed journal — the received
+            // history's senders never are), the explorer and address-book actions are icons at
+            // the right end of their line.
             if !row.counterparty.is_empty() {
-                items.push(Item::Mono(grouped(&row.counterparty)));
+                let save = self.offer_save(BookChain::Btc, &row.counterparty).then(|| {
+                    crate::ui::screens_links::save_icon(base.saturating_add(ids::ACT_SAVE))
+                });
+                crate::ui::screens_links::push_address_line(
+                    items,
+                    crate::ui::screens_links::ids::row_id(
+                        crate::ui::screens_links::ids::BTC_TO_BASE,
+                        crate::ui::screens_links::ids::BTC_TO_SPAN,
+                        index,
+                    ),
+                    &row.counterparty,
+                    crate::ui::theme::AddressKind::Bitcoin,
+                    save.into_iter().collect(),
+                );
             }
-            items.push(Item::Mono(row.txid.clone()));
+            crate::ui::screens_links::push_hash_line(
+                items,
+                Some(base.saturating_add(ids::ACT_COPY)),
+                &row.txid,
+                self.explorer_tx_icons(
+                    crate::network::NetworkId::Bitcoin(self.settings.bitcoin.network),
+                    &row.txid,
+                    crate::ui::screens_explorer::ids::activity_ids(
+                        crate::ui::screens_explorer::ids::BTC_ACTIVITY_BASE,
+                        crate::ui::screens_explorer::ids::BTC_ACTIVITY_SPAN,
+                        index,
+                    ),
+                ),
+            );
             let flow = Txid::from_display_hex(&row.txid)
                 .ok()
                 .and_then(|txid| self.btc.flow(&txid));
@@ -977,17 +1016,7 @@ impl App {
                     if waiting { Tone::Warn } else { Tone::Info },
                 ));
             }
-            let mut buttons = vec![Ctl::button(base, "해시 복사")];
-            // 2026-11-11: `탐색기에서 열기`·`탐색기 링크 복사` (ids of `ui::screens_explorer`).
-            buttons.extend(self.explorer_tx_buttons(
-                crate::network::NetworkId::Bitcoin(self.settings.bitcoin.network),
-                &row.txid,
-                crate::ui::screens_explorer::ids::activity_ids(
-                    crate::ui::screens_explorer::ids::BTC_ACTIVITY_BASE,
-                    crate::ui::screens_explorer::ids::BTC_ACTIVITY_SPAN,
-                    index,
-                ),
-            ));
+            let mut buttons = Vec::new();
             if row.can_bump {
                 buttons.push(
                     Ctl::button(base.saturating_add(ids::ACT_BUMP), "수수료 올리기")
@@ -1031,13 +1060,9 @@ impl App {
                     Ctl::button(base.saturating_add(ids::ACT_CANCEL), "취소").enabled(unlocked),
                 );
             }
-            if self.offer_save(BookChain::Btc, &row.counterparty) {
-                buttons.push(Ctl::link(
-                    base.saturating_add(ids::ACT_SAVE),
-                    "이 주소 저장",
-                ));
+            if !buttons.is_empty() {
+                items.push(Item::Row(buttons));
             }
-            items.push(Item::Row(buttons));
             if !prompt_drawn && !row.counterparty.is_empty() {
                 prompt_drawn = self.prompt_items(
                     PromptPlace::Activity,
@@ -1181,7 +1206,7 @@ impl App {
                 crate::ui::theme::AddressKind::Bitcoin,
                 ids::CARD_COPY,
                 true,
-                self.explorer_address_link(
+                self.explorer_address_icon(
                     crate::network::NetworkId::Bitcoin(self.settings.bitcoin.network),
                     &address,
                     crate::ui::screens_explorer::ids::CARD_BTC,
@@ -1930,8 +1955,11 @@ mod tests {
         items
             .iter()
             .flat_map(|item| match item {
-                Item::Row(ctls) | Item::LabeledRow(_, ctls) | Item::AddressRow(_, ctls) => {
-                    ctls.clone()
+                Item::Row(ctls) | Item::LabeledRow(_, ctls) | Item::Menu(ctls) => ctls.clone(),
+                Item::CopyLine { value, actions } => {
+                    let mut all = vec![value.clone()];
+                    all.extend(actions.iter().cloned());
+                    all
                 }
                 _ => Vec::new(),
             })
@@ -2110,6 +2138,18 @@ mod tests {
             ),
         ] {
             let mut app = app(true, settings_net, Some(net), true);
+            // The account drop-down (2026-11-11): its button names the selected account; open,
+            // the list has one entry per account (the radio ids of before), the selected marked.
+            let items = app.items();
+            let picker = control(&items, crate::ui::screens_links::ids::PICKER_BTC)
+                .expect("account drop-down");
+            assert!(
+                picker
+                    .text
+                    .starts_with("네이티브 세그윗 계정 0 · 네이티브 세그윗 (")
+            );
+            assert!(control(&items, ids::ACCOUNT_BASE).is_none());
+            assert!(app.on_links_command(crate::ui::screens_links::ids::PICKER_BTC));
             let items = app.items();
             let row = control(&items, ids::ACCOUNT_BASE).expect("account row");
             assert!(
@@ -2117,6 +2157,8 @@ mod tests {
                     .starts_with("네이티브 세그윗 계정 0 · 네이티브 세그윗 (")
             );
             assert_eq!(row.checked, Some(true));
+            assert!(app.on_links_command(crate::ui::screens_links::ids::PICKER_BTC));
+            let items = app.items();
             assert!(control(&items, ids::ACCOUNT_ADD).is_some_and(|ctl| ctl.text == "계정 추가"));
             assert!(has_text(&items, "네이티브 세그윗 계정 0"));
             app.btc.add_account_open = true;
@@ -2204,7 +2246,7 @@ mod tests {
         let items = app.items();
         let order: Vec<u16> = controls(&items).iter().map(|ctl| ctl.id).collect();
         let position = |id: u16| order.iter().position(|each| *each == id).unwrap();
-        assert!(position(ids::SEND_OPEN) < position(ids::ACCOUNT_BASE));
+        assert!(position(ids::SEND_OPEN) < position(crate::ui::screens_links::ids::PICKER_BTC));
         assert!(position(ids::RECEIVE_OPEN) < position(ids::ACCOUNT_ADD));
         // Closed: one line and the button, no radios.
         assert!(order.contains(&key_ids::BTC_IMPORT));

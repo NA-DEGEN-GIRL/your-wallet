@@ -17,6 +17,7 @@ pub mod screens_evm;
 pub mod screens_explorer;
 pub mod screens_hypercore;
 pub mod screens_keys;
+pub mod screens_links;
 pub mod screens_llm;
 pub mod screens_mnemonics;
 pub mod screens_received;

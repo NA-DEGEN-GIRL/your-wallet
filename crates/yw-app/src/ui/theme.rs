@@ -238,6 +238,9 @@ pub struct Fonts {
     pub mono_small: Font,
     /// Bold mono.
     pub mono_bold: Font,
+    /// Icon symbols (Segoe UI Symbol 11 pt: the icon buttons' ⧉ ↗ 🔗 ☆ and the copy symbol of a
+    /// copyable value, 2026-11-11).
+    pub symbol: Font,
 }
 
 fn body_font(size: u16, bold: bool, dpi: u32) -> Option<Font> {
@@ -262,6 +265,7 @@ impl Fonts {
             body_bold: body_font(10, true, dpi)?,
             mono_small: Font::create("Consolas", 9, false, dpi).ok()?,
             mono_bold: Font::create("Consolas", 10, true, dpi).ok()?,
+            symbol: Font::create("Segoe UI Symbol", 11, false, dpi).ok()?,
         })
     }
 
@@ -468,10 +472,12 @@ fn own_address_prefix(address: &str, kind: AddressKind) -> usize {
 
 /// How the account cards draw the user's **own** address (2026-11-11, spec/04 §2.6): the whole
 /// address without spaces (case kept), the [`OWN_ADDRESS_ENDS`] characters after the family's
-/// prefix and the last [`OWN_ADDRESS_ENDS`] emphasized: `(text, emphasized)` spans. Recipient
-/// checks (approval windows, send forms, receive screens, the address book) keep the grouped
-/// form of spec/04 §3.3 — emphasis on the ends belongs only where the user views their own
-/// account. With `short`, the middle is replaced by `…` (`0x0Bd7…AD73`, token contracts).
+/// prefix and the last [`OWN_ADDRESS_ENDS`] emphasized: `(text, emphasized)` spans. Also the
+/// token contracts and mints and the recipients of the wallet's own sent transactions
+/// (2026-11-11, `ui::screens_links`). Recipient checks (approval windows, send forms, receive
+/// screens, the address book) and the received history's senders keep the grouped form of
+/// spec/04 §3.3. With `short`, the middle is replaced by `…` (`0x0Bd7…AD73`; no screen uses it
+/// since the copy lines of 2026-11-11 show every address whole).
 /// An address too short to have a middle is one plain span.
 #[must_use]
 pub fn own_address_spans(address: &str, kind: AddressKind, short: bool) -> Vec<(String, bool)> {

@@ -29,12 +29,13 @@
 //! | side-file choices (`app_sidecar`) | 16,600–16,609 | meta `닫기`, `고급`, journal `선택 다시 보기`, the Bitcoin form's check after a journal reset |
 //! | first setup·RPC (`screens`) | 16,700–16,783 | S08 '처음 설정' 16,700–16,705, `모두 테스트` 16,706, the chain tabs' `RPC 설정하기` 16,707–16,710, the EVM·Solana failure bands' `이 네트워크 RPC 테스트`·`RPC 설정 열기` 16,711–16,714, failed-network links 16,720–16,783 |
 //! | block explorers (`screens_explorer`) | 17,200–17,709 | S15 card form 17,200–17,203, account cards' `탐색기에서 주소 보기` 17,204–17,208, send results' `탐색기에서 열기`·`탐색기 링크 복사` 17,210–17,217, card rows 17,220–17,319 (`변경`·`기본값으로`), activity `탐색기에서 열기`·`탐색기 링크 복사`: Solana 17,320–17,447, Bitcoin 17,450–17,549, Zcash 17,550–17,709 (EVM rows use offset 7 of their own stride) |
-//! | received history (`screens_received`) | 17,800–18,399 | `받은 내역도 보기` per card 17,800–17,804 (EVM·Solana·Bitcoin·HyperCore·Zcash), `더 보기` 17,805–17,809, rows 17,900 + 100 × chain + 2 × row (0 `해시 복사`, 1 reserved `탐색기에서 열기`), 50 rows per chain |
+//! | received history (`screens_received`) | 17,800–18,399 | `받은 내역도 보기` per card 17,800–17,804 (EVM·Solana·Bitcoin·HyperCore·Zcash), `더 보기` 17,805–17,809, rows 17,900 + 100 × chain + 2 × row (0 a click on the hash = copy, 1 ↗ `탐색기에서 열기`), 50 rows per chain |
+//! | copy lines·drop-downs (`screens_links`) | 18,400–18,659 | `내 계정` drop-down buttons 18,400–18,402 (EVM·Solana·Bitcoin), a click on an activity recipient = copy: EVM 18,410–18,459, Solana 18,460–18,523, Bitcoin 18,530–18,579, Zcash 18,580–18,659 |
 
 use crate::ui::{
     screens, screens_book, screens_btc, screens_evm, screens_explorer, screens_hypercore,
-    screens_keys, screens_llm, screens_mnemonics, screens_received, screens_reset, screens_sites,
-    screens_sol, screens_walletconnect, screens_yubikey, screens_zec,
+    screens_keys, screens_links, screens_llm, screens_mnemonics, screens_received, screens_reset,
+    screens_sites, screens_sol, screens_walletconnect, screens_yubikey, screens_zec,
 };
 
 /// Largest number of rows of the Solana recovery scan (spec/07 §3.3: 50 standard + 50 BIP44
@@ -494,6 +495,35 @@ pub fn ranges() -> Vec<IdRange> {
             yw_core::journal::zec::ZEC_JOURNAL_MAX_RECORDS,
         ),
         range(
+            "links.evm_to",
+            screens_links::ids::EVM_TO_BASE,
+            screens_links::ids::EVM_TO_SPAN,
+            1,
+            crate::app_evm::MAX_ACTIVITY_ROWS,
+        ),
+        range(
+            "links.sol_to",
+            screens_links::ids::SOL_TO_BASE,
+            screens_links::ids::SOL_TO_SPAN,
+            1,
+            yw_core::journal::sol::SOL_JOURNAL_MAX_RECORDS
+                .max(crate::app_sol::SOL_MAX_ACTIVITY_ROWS),
+        ),
+        range(
+            "links.btc_to",
+            screens_links::ids::BTC_TO_BASE,
+            screens_links::ids::BTC_TO_SPAN,
+            1,
+            crate::app_btc::BTC_MAX_ACTIVITY_ROWS,
+        ),
+        range(
+            "links.zec_to",
+            screens_links::ids::ZEC_TO_BASE,
+            screens_links::ids::ZEC_TO_SPAN,
+            1,
+            yw_core::journal::zec::ZEC_JOURNAL_MAX_RECORDS,
+        ),
+        range(
             "received.rows",
             screens_received::ids::ROW_BASE,
             screens_received::ids::ROW_SPAN,
@@ -525,6 +555,7 @@ pub fn fixed() -> Vec<(&'static str, &'static [u16])> {
         ("sidecar", crate::app_sidecar::ids::FIXED),
         ("explorer", screens_explorer::ids::FIXED),
         ("received", &screens_received::ids::FIXED),
+        ("links", &screens_links::ids::FIXED),
     ]
 }
 

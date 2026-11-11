@@ -310,10 +310,10 @@ pub struct ActivityRowView {
 }
 
 impl App {
-    /// The activity lines of a recipient (2026-11-08, like Solana and Zcash; 2026-11-10 the
-    /// address on its own `Mono` line, every chain): "받는 주소" with, display only, the
-    /// address-book or own-account name, then the full grouped address. No copy button: the
-    /// activity list never offers its addresses for reuse (address poisoning).
+    /// The heading line of an activity row's recipient (2026-11-08, like Solana and Zcash):
+    /// "받는 주소" with, display only, the address-book or own-account name. The address follows
+    /// on its own copy line (2026-11-11: sent rows come only from the wallet's own signed
+    /// journal, so their recipient may be copied; the received history's senders never are).
     fn recipient_items(&self, address: &Address, items: &mut Vec<Item>) {
         let lower = address.to_lower_hex();
         let name = self
@@ -335,7 +335,6 @@ impl App {
             })
             .unwrap_or_default();
         items.push(Item::Help(format!("받는 주소{name}")));
-        items.push(Item::Mono(format_address(address)));
     }
 
     /// An account row's name with its recovery phrase while the wallet has several.
@@ -744,11 +743,42 @@ impl App {
             );
             items.push(Item::Text(row.head));
             items.push(Item::Help(format!("상태: {}", row.status)));
+            // 2026-11-11: the recipient whole (ends emphasized) and the hash on lines of their
+            // own; a click copies either (the wallet's own signed journal — the received
+            // history's senders never are), the explorer and address-book actions are icons
+            // at the right end of their line.
+            let counterparty = row.counterparty.map(Address::to_lower_hex);
             if let Some(address) = &row.counterparty {
+                let save = counterparty
+                    .as_ref()
+                    .filter(|lower| self.offer_save(BookChain::Evm, lower))
+                    .map(|_| crate::ui::screens_links::save_icon(base.saturating_add(6)));
                 self.recipient_items(address, items);
+                crate::ui::screens_links::push_address_line(
+                    items,
+                    crate::ui::screens_links::ids::row_id(
+                        crate::ui::screens_links::ids::EVM_TO_BASE,
+                        crate::ui::screens_links::ids::EVM_TO_SPAN,
+                        index,
+                    ),
+                    &address.to_checksum(),
+                    crate::ui::theme::AddressKind::Evm,
+                    save.into_iter().collect(),
+                );
             }
-            items.push(Item::Mono(row.hash.clone()));
-            let mut buttons = vec![Ctl::button(base, "해시 복사")];
+            // The chain's transaction page (2026-11-11: the templates of the S15 card "블록
+            // 탐색기" — built-in, the user chain's `explorer`, or the user's override).
+            crate::ui::screens_links::push_hash_line(
+                items,
+                Some(base),
+                &row.hash,
+                self.explorer_tx_icons(
+                    NetworkId::Eip155(chain_id),
+                    &row.hash,
+                    Some((base.saturating_add(7), base.saturating_add(5))),
+                ),
+            );
+            let mut buttons = Vec::new();
             if row.open.is_some() {
                 // Replace-by-fee has one name on every chain (Bitcoin's `수수료 올리기`).
                 buttons.push(Ctl::button(base.saturating_add(1), "수수료 올리기"));
@@ -758,22 +788,9 @@ impl App {
                 }
                 buttons.push(Ctl::danger(base.saturating_add(4), "폐기"));
             }
-            // The chain's transaction page (2026-11-11: the templates of the S15 card "블록
-            // 탐색기" — built-in, the user chain's `explorer`, or the user's override).
-            if self
-                .explorer_tx_url(NetworkId::Eip155(chain_id), &row.hash)
-                .is_some()
-            {
-                buttons.push(Ctl::button(base.saturating_add(7), "탐색기에서 열기"));
-                buttons.push(Ctl::button(base.saturating_add(5), "탐색기 링크 복사"));
+            if !buttons.is_empty() {
+                items.push(Item::Row(buttons));
             }
-            let counterparty = row.counterparty.map(Address::to_lower_hex);
-            if let Some(address) = &counterparty
-                && self.offer_save(BookChain::Evm, address)
-            {
-                buttons.push(Ctl::link(base.saturating_add(6), "이 주소 저장"));
-            }
-            items.push(Item::Row(buttons));
             if let Some(address) = &counterparty
                 && !prompt_drawn
             {
@@ -876,10 +893,11 @@ impl App {
 
     /// One token row (2026-11-11, a list a person can scan): the symbol bold with the token's
     /// name small and muted after it, the balance (amount and symbol only) right-aligned; under
-    /// it the contract shortened `0x0Bd7…AD73` (its ends emphasized like the account card's
-    /// address) and small actions — `보내기` (a visible row with a balance, like the Solana
-    /// token card), `주소 복사` (the whole contract) and `숨기기`/`다시 보이기`; user tokens
-    /// also `삭제`. Hidden rows are muted, their note ending in `숨김`.
+    /// it the whole contract without spaces (its ends emphasized like the account card's
+    /// address; a click copies it, checksum case) and, at the right end of that line, small
+    /// actions — `보내기` (a visible row with a balance, like the Solana token card) and
+    /// `숨기기`/`다시 보이기`; user tokens also `삭제`. Hidden rows are muted, their note ending
+    /// in `숨김`.
     fn evm_token_row(items: &mut Vec<Item>, row: &EvmTokenRow, hidden: bool, can_send: bool) {
         use ids::{TokenAction, token_row_id};
         let balance = row.balance.map_or_else(
@@ -907,11 +925,6 @@ impl App {
                     .enabled(can_send && row.balance.is_some_and(|value| !value.is_zero())),
             );
         }
-        if let Some(offset) = offset.filter(|offset| *offset < ids::TOKEN_COPY_SPAN) {
-            buttons.push(
-                Ctl::link(ids::TOKEN_COPY_BASE.saturating_add(offset), "주소 복사").compact(),
-            );
-        }
         if let Some(id) = token_row_id(TokenAction::ToggleHidden(row.index)) {
             buttons.push(
                 Ctl::link(
@@ -930,14 +943,15 @@ impl App {
         {
             buttons.push(Ctl::danger(id, "삭제").compact());
         }
-        items.push(Item::AddressRow(
-            crate::ui::theme::own_address_spans(
-                &row.address.to_checksum(),
-                crate::ui::theme::AddressKind::Evm,
-                true,
-            ),
+        crate::ui::screens_links::push_address_line(
+            items,
+            offset
+                .filter(|offset| *offset < ids::TOKEN_COPY_SPAN)
+                .map(|offset| ids::TOKEN_COPY_BASE.saturating_add(offset)),
+            &row.address.to_checksum(),
+            crate::ui::theme::AddressKind::Evm,
             buttons,
-        ));
+        );
     }
 
     /// The explorer base URL: the user chain's, else the built-in chain's (spec/03 §1.1).

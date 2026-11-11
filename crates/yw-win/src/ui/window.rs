@@ -31,7 +31,8 @@ use windows_sys::Win32::Graphics::Gdi::{
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Controls::{
-    ICC_STANDARD_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx, SetScrollInfo,
+    ICC_BAR_CLASSES, ICC_STANDARD_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx,
+    SetScrollInfo,
 };
 use windows_sys::Win32::UI::HiDpi::{
     AdjustWindowRectExForDpi, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForSystem,
@@ -404,7 +405,8 @@ pub fn init() -> Result<(), WinError> {
     };
     let controls = INITCOMMONCONTROLSEX {
         dwSize: u32::try_from(core::mem::size_of::<INITCOMMONCONTROLSEX>()).unwrap_or(8),
-        dwICC: ICC_STANDARD_CLASSES,
+        // The bar classes include the tooltip control (icon buttons' tooltips, 2026-11-11).
+        dwICC: ICC_STANDARD_CLASSES | ICC_BAR_CLASSES,
     };
     // SAFETY: `controls` is a valid, initialized structure for the call.
     let controls_ok = unsafe { InitCommonControlsEx(&raw const controls) };

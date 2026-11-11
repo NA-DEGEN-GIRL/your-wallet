@@ -186,9 +186,7 @@ fn texts(items: &[Item]) -> Vec<String> {
             Item::ListRow {
                 title, note, value, ..
             } => Some(format!("{title} · {note} · {value}")),
-            Item::AddressRow(spans, _) => {
-                Some(spans.iter().map(|(text, _)| text.as_str()).collect())
-            }
+            Item::CopyLine { value, .. } => value.value_text(),
             _ => None,
         })
         .collect()
@@ -201,8 +199,12 @@ fn controls(items: &[Item]) -> Vec<Ctl> {
             Item::Row(ctls)
             | Item::LabeledRow(_, ctls)
             | Item::Toolbar(_, ctls)
-            | Item::AddressRow(_, ctls)
             | Item::Menu(ctls) => ctls.clone(),
+            Item::CopyLine { value, actions } => {
+                let mut all = vec![value.clone()];
+                all.extend(actions.iter().cloned());
+                all
+            }
             _ => Vec::new(),
         })
         .collect()
@@ -1047,10 +1049,11 @@ fn key_start_creates_a_key_only_wallet() {
     let items = h.app.items();
     // The account card's own-address line (2026-11-11: whole, no spaces).
     assert!(texts(&items).iter().any(|text| text == SOL_ADDRESS));
+    // The account drop-down's button names it with its badge (2026-11-11).
     assert!(
         controls(&items)
             .iter()
-            .any(|ctl| ctl.text.contains("[가져온 키]"))
+            .any(|ctl| ctl.text.contains("· 가져온 키"))
     );
     let ids_now = control_ids(&items);
     assert!(!ids_now.contains(&crate::ui::screens_sol::ids::ADD_ACCOUNT));
@@ -1098,11 +1101,12 @@ fn key_start_creates_a_key_only_wallet() {
     // selected imported account's `개인키 보기`·`삭제`, no `계정 추가`, and no placeholder.
     h.app.settings.bitcoin.enabled = true;
     let items = h.app.items();
-    assert!(
-        controls(&items)
-            .iter()
-            .any(|ctl| ctl.text.starts_with("[가져온 키] bc1qcr") && ctl.checked == Some(true))
-    );
+    // The account drop-down's button names the selected account (2026-11-11).
+    assert!(controls(&items).iter().any(|ctl| {
+        ctl.id == crate::ui::screens_links::ids::PICKER_BTC
+            && ctl.text.starts_with("bc1qcr")
+            && ctl.text.contains("· 가져온 키")
+    }));
     let ids_now = control_ids(&items);
     assert!(ids_now.contains(&key_ids::BTC_REVEAL) && ids_now.contains(&key_ids::BTC_REMOVE));
     assert!(ids_now.contains(&key_ids::BTC_IMPORT));
@@ -1283,11 +1287,12 @@ fn key_start_with_a_bitcoin_key() {
     assert_eq!(address.as_str(), view.address);
     // The Bitcoin tab (no RPC URL here: the E-KEY-005 banner) lists the imported account.
     let items = h.app.items();
-    assert!(
-        controls(&items)
-            .iter()
-            .any(|ctl| ctl.text.starts_with("[가져온 키] tb1p") && ctl.checked == Some(true))
-    );
+    // The account drop-down's button names the selected account (2026-11-11).
+    assert!(controls(&items).iter().any(|ctl| {
+        ctl.id == crate::ui::screens_links::ids::PICKER_BTC
+            && ctl.text.starts_with("tb1p")
+            && ctl.text.contains("· 가져온 키")
+    }));
     let ids_now = control_ids(&items);
     assert!(!ids_now.contains(&btc_ids::ACCOUNT_ADD));
     assert!(ids_now.contains(&key_ids::BTC_REVEAL) && ids_now.contains(&key_ids::BTC_REMOVE));
@@ -2242,23 +2247,22 @@ fn walletconnect_panel_asks_for_the_project_id_first() {
 }
 
 /// Review 2026-11-07 (10-31 D3): a wallet's only account is not listed a second time with the
-/// same address and balance under `내 계정`; with two accounts every row has its address.
+/// same address and balance under `내 계정`; with two accounts the drop-down (2026-11-11) names
+/// them and opens to list both, the address staying the hero card's.
 #[test]
 fn single_account_row_does_not_repeat_the_hero_card() {
     use crate::ui::screens::T_SINGLE_ACCOUNT;
     let (mut app, dir) = unlocked_app("single-account", false);
-    // How often an account address is drawn (token contracts are other lines): the account
-    // rows' grouped `Mono`, the account card's own-address line (2026-11-11).
+    // How often an account address is drawn (token contracts are other lines): a grouped
+    // `Mono`, the account card's own-address copy line (2026-11-11).
     let shown = |items: &[Item], address: &str| {
         items
             .iter()
             .filter(|item| match item {
                 Item::Mono(text) => text.replace(' ', "").eq_ignore_ascii_case(address),
-                Item::AddressRow(spans, _) => spans
-                    .iter()
-                    .map(|(text, _)| text.as_str())
-                    .collect::<String>()
-                    .eq_ignore_ascii_case(address),
+                Item::CopyLine { value, .. } => value
+                    .value_text()
+                    .is_some_and(|text| text.eq_ignore_ascii_case(address)),
                 _ => false,
             })
             .count()
@@ -2284,7 +2288,33 @@ fn single_account_row_does_not_repeat_the_hero_card() {
         });
     let items = app.items();
     assert!(!has_text(&items, T_SINGLE_ACCOUNT));
-    assert_eq!(shown(&items, evm), 2, "hero card and its row");
+    assert_eq!(shown(&items, evm), 1, "the hero card's only");
+    let picker = crate::ui::screens_links::ids::PICKER_EVM;
+    let button = controls(&items)
+        .into_iter()
+        .find(|ctl| ctl.id == picker)
+        .unwrap();
+    assert!(button.text.ends_with('▾'), "{}", button.text);
+    assert!(
+        !controls(&items)
+            .iter()
+            .any(|ctl| ctl.text.contains("계정 2"))
+    );
+    app.on_command(picker);
+    let open = controls(&app.items());
+    let entries: Vec<&Ctl> = open
+        .iter()
+        .filter(|ctl| {
+            (crate::ui::screens::ids::ACCOUNT_BASE..crate::ui::screens::ids::ACCOUNT_BASE + 2)
+                .contains(&ctl.id)
+        })
+        .collect();
+    assert_eq!(entries.len(), 2, "both accounts listed");
+    assert!(entries[1].text.starts_with("계정 2"), "{}", entries[1].text);
+    assert_eq!(entries[0].checked, Some(true), "the selected one marked");
+    // A choice selects that account and closes the list.
+    app.on_command(crate::ui::screens::ids::ACCOUNT_BASE + 1);
+    assert_eq!(app.account_menu, None);
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -2909,7 +2939,7 @@ fn yubikey_accounts_and_the_card_step() {
     assert!(
         controls(&h.app.items())
             .iter()
-            .any(|ctl| ctl.text.contains("[YubiKey]"))
+            .any(|ctl| ctl.text.contains("· YubiKey"))
     );
     // dApp connect lists offer it.
     assert!(
@@ -2955,7 +2985,7 @@ fn yubikey_accounts_and_the_card_step() {
     assert!(
         controls(&h.app.items())
             .iter()
-            .any(|ctl| ctl.text.contains("[YubiKey]"))
+            .any(|ctl| ctl.text.contains("· YubiKey"))
     );
     if let Some(meta) = h.app.meta.as_mut() {
         meta.prefs.tab = Tab::Evm;
