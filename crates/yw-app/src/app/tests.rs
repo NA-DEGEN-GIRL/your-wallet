@@ -2755,7 +2755,7 @@ fn ctl(items: &[Item], id: u16) -> Option<Ctl> {
 #[test]
 fn copy_is_answered_at_its_control_and_expires() {
     use crate::app_evm::Copied;
-    use crate::ui::main_window::{Face, T_COPIED, T_COPIED_ADDRESS};
+    use crate::ui::main_window::{Face, T_COPIED_ADDRESS};
     use crate::ui::screens_evm::ids::COPY_ADDRESS;
     let (mut app, dir) = unlocked_app("copied-mark", false);
     app.meta.as_mut().unwrap().prefs.tab = Tab::Evm;
@@ -2784,15 +2784,15 @@ fn copy_is_answered_at_its_control_and_expires() {
     app.copied_tick(1_000);
     assert_eq!(app.copied, None);
     assert!(matches!(face(&app), Some(Face::Value(_))));
-    // S12: the text button says so itself.
+    // S12: the same copy line (the grouped address), marked the same way.
     app.copied = Some(copied);
     app.set_screen(Screen::Receive);
     assert_eq!(app.copied, None);
     app.copied = Some(copied);
-    assert_eq!(
-        ctl(&app.items(), COPY_ADDRESS).map(|ctl| ctl.text),
-        Some(T_COPIED.to_owned())
-    );
+    assert!(matches!(
+        face(&app),
+        Some(Face::Copied(_, T_COPIED_ADDRESS))
+    ));
     let _ = std::fs::remove_dir_all(dir);
 }
 
