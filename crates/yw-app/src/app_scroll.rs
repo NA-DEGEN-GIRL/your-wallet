@@ -12,12 +12,17 @@
 //!
 //! Wheel: the delta accumulates in 1/120 notches (high-resolution touchpads send small deltas),
 //! one notch = `SPI_GETWHEELSCROLLLINES` lines of [`LINE_DIP`] (or a page). A whole-notch wheel
-//! step glides over [`GLIDE_TICKS`] timer ticks; small touchpad deltas scroll at once.
+//! step glides: its first step ([`glide_step`]) is taken in the wheel handler itself
+//! (2026-11-12; before, nothing moved until the first timer tick, and a fast wheel that kept
+//! restarting the timer moved nothing until it slowed), the rest over [`GLIDE_TICKS`] timer
+//! ticks; small touchpad deltas scroll at once. A page (Page keys, a click in the bar's track, a
+//! wheel set to pages) keeps [`PAGE_KEEP_DIP`] of the old view in sight ([`page_step`]).
 //!
 //! Keyboard (2026-11-10): the message loop's observer posts [`WM_YW_NAV_KEY`] for Page Up/Down,
-//! Ctrl+Home/End, Tab and the arrows ([`NavKey`]); it is handled after the dialog manager has
-//! moved the focus. Page keys scroll a page, Ctrl+Home/End to the top or bottom (not while an
-//! edit has the focus: there they move the caret). Controls out of view are hidden, so the dialog
+//! Home/End (with or without Ctrl, 2026-11-12), Tab and the arrows ([`NavKey`]); it is handled
+//! after the dialog manager has moved the focus. Page keys scroll a page, Home/End to the top or
+//! bottom (not while an edit has the focus: there they move the caret; plain Home/End did nothing
+//! anywhere else before). Controls out of view are hidden, so the dialog
 //! manager's Tab skips them and wraps around inside the view: Tab instead goes to the next tab stop
 //! in placed order ([`tab_target`]; a radio group's checked button, [`radio_entry`]), scrolling it
 //! into view, and every focus moved by the keyboard ends fully in view ([`reveal_offset`]).
@@ -32,9 +37,13 @@ use crate::ui::main_window::{is_tab_stop, radio_state};
 
 /// Main window timer of the wheel glide (the main tick is 1).
 pub(crate) const SCROLL_TIMER_ID: usize = 2;
-/// One scroll line (bar arrows, wheel lines).
-const LINE_DIP: i32 = 20;
-/// Ticks of a wheel glide (about 60 ms at the timer's resolution).
+/// One scroll line (bar arrows, wheel lines). 36 since 2026-11-12: a notch of the default three
+/// lines moves 108 DIP, about what browsers and Explorer move (20 made it 60, half of that).
+const LINE_DIP: i32 = 36;
+/// What a page step keeps of the old view, so the reader does not lose their place.
+const PAGE_KEEP_DIP: i32 = 48;
+/// Timer ticks of a wheel glide after its first step, which the wheel handler takes itself
+/// (about 60 ms at the timer's resolution).
 const GLIDE_TICKS: u8 = 4;
 const GLIDE_TICK_MS: u32 = 15;
 const WHEEL_DELTA: i32 = 120;
@@ -185,6 +194,33 @@ pub const fn reveal_offset(scroll: i32, y: i32, h: i32, view: i32, margin: i32) 
     scroll
 }
 
+/// The offset one glide step takes `scroll` to on its way to `target`: half the remaining
+/// distance, all of it once the half rounds to nothing. The wheel handler's first step and the
+/// timer ticks share it.
+#[must_use]
+pub const fn glide_step(scroll: i32, target: i32) -> i32 {
+    let remaining = target.saturating_sub(scroll);
+    let half = remaining / 2;
+    scroll.saturating_add(if half == 0 { remaining } else { half })
+}
+
+/// A page step in a `view` px high view: the view less `keep` px of context, at least one
+/// `line`.
+#[must_use]
+pub const fn page_step(view: i32, keep: i32, line: i32) -> i32 {
+    let step = view.saturating_sub(keep);
+    if step < line { line } else { step }
+}
+
+/// The main window's page step at its size and DPI ([`page_step`]).
+fn page_px(window: &Window) -> i32 {
+    page_step(
+        window.client_rect().h,
+        window.px(PAGE_KEEP_DIP),
+        window.px(LINE_DIP),
+    )
+}
+
 impl App {
     fn window_dpi(&self) -> u32 {
         self.main.as_ref().map_or(96, Window::dpi)
@@ -274,7 +310,7 @@ impl App {
     pub(crate) fn main_wheel(&mut self, window: &Window, delta: i16) {
         let delta = i32::from(delta);
         let notch = match wheel_scroll_lines() {
-            None => window.client_rect().h,
+            None => page_px(window),
             Some(lines) => window
                 .px(LINE_DIP)
                 .saturating_mul(i32::try_from(lines).unwrap_or(i32::MAX)),
@@ -295,8 +331,20 @@ impl App {
             .unwrap_or(self.scroll)
             .saturating_sub(pixels)
             .clamp(0, self.max_scroll());
-        if delta.abs() >= WHEEL_DELTA && window.set_timer(SCROLL_TIMER_ID, GLIDE_TICK_MS).is_ok() {
-            self.scroll_state.glide = Some((target, GLIDE_TICKS));
+        if delta.abs() >= WHEEL_DELTA {
+            // The first step now, in this handler (2026-11-12): a `WM_TIMER` comes 16–31 ms
+            // later, and not at all while notches keep arriving, each one restarting the timer.
+            self.scroll_to(glide_step(self.scroll, target));
+            if self.scroll == target {
+                // Already there (one pixel to go, or at the top or bottom): no ticks to wait for.
+                self.scroll_state.glide = None;
+                window.kill_timer(SCROLL_TIMER_ID);
+            } else if window.set_timer(SCROLL_TIMER_ID, GLIDE_TICK_MS).is_ok() {
+                self.scroll_state.glide = Some((target, GLIDE_TICKS));
+            } else {
+                self.scroll_state.glide = None;
+                self.scroll_to(target);
+            }
         } else if let Some((glide_target, _)) = self.scroll_state.glide.as_mut() {
             *glide_target = target;
         } else {
@@ -322,10 +370,7 @@ impl App {
             target
         } else {
             self.scroll_state.glide = Some((target, left.saturating_sub(1)));
-            let remaining = target.saturating_sub(self.scroll);
-            let half = remaining / 2;
-            self.scroll
-                .saturating_add(if half == 0 { remaining } else { half })
+            glide_step(self.scroll, target)
         };
         self.scroll_to(next);
     }
@@ -429,7 +474,7 @@ impl App {
 
     /// `WM_VSCROLL` from the main window's bar; the thumb tracks live (`SB_THUMBTRACK`).
     pub(crate) fn main_vscroll(&mut self, window: &Window, code: u16) {
-        let page = window.client_rect().h;
+        let page = page_px(window);
         let line = window.px(LINE_DIP);
         let current = self.scroll;
         let target = match code {
@@ -450,7 +495,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{radio_entry, reveal_offset, tab_target};
+    use super::{glide_step, page_step, radio_entry, reveal_offset, tab_target};
     use crate::events::NavKey;
 
     /// Review 2026-11-10: Tab into S11's asset radios (ETH first, USDC checked) focused the
@@ -508,6 +553,37 @@ mod tests {
         assert_eq!(reveal_offset(100, 300, 900, 500, 12), 388);
     }
 
+    /// 2026-11-12: the wheel handler takes the first of these steps itself and the timer the
+    /// rest, so both use one rule. A 108 px notch: 54, 27, 13, 7, then the last tick lands.
+    #[test]
+    fn a_glide_halves_the_remaining_distance_and_lands_on_the_target() {
+        let mut scroll = 200;
+        let steps: Vec<i32> = (0..4)
+            .map(|_| {
+                let next = glide_step(scroll, 308);
+                let step = next - scroll;
+                scroll = next;
+                step
+            })
+            .collect();
+        assert_eq!(steps, [54, 27, 13, 7]);
+        // Upwards it mirrors.
+        assert_eq!(glide_step(308, 200), 254);
+        // One pixel left (its half is 0): the target itself, either way; there: stays.
+        assert_eq!(glide_step(307, 308), 308);
+        assert_eq!(glide_step(201, 200), 200);
+        assert_eq!(glide_step(200, 200), 200);
+    }
+
+    /// 2026-11-12: a page keeps 48 px of the old view (it moved the whole view before), and is
+    /// never shorter than a line.
+    #[test]
+    fn a_page_step_keeps_some_of_the_old_view() {
+        assert_eq!(page_step(680, 48, 36), 632);
+        assert_eq!(page_step(70, 48, 36), 36);
+        assert_eq!(page_step(0, 48, 36), 36);
+    }
+
     #[test]
     fn navigation_keys_and_their_codes() {
         assert_eq!(
@@ -522,8 +598,17 @@ mod tests {
             NavKey::of(0x24, true, false, false),
             Some(NavKey::Edge { top: true })
         );
-        // Home without Ctrl is the edit's; Alt never; Ctrl+Tab is not Tab.
-        assert_eq!(NavKey::of(0x24, false, false, false), None);
+        // Home/End without Ctrl too (2026-11-12; `main_nav_key` leaves them to a focused edit).
+        assert_eq!(
+            NavKey::of(0x24, false, false, false),
+            Some(NavKey::Edge { top: true })
+        );
+        assert_eq!(
+            NavKey::of(0x23, false, false, true),
+            Some(NavKey::Edge { top: false })
+        );
+        // Alt never; Ctrl+Tab is not Tab.
+        assert_eq!(NavKey::of(0x23, false, true, false), None);
         assert_eq!(NavKey::of(0x22, false, true, false), None);
         assert_eq!(NavKey::of(0x09, true, false, false), None);
         for code in 1..=7 {

@@ -3141,7 +3141,12 @@ impl App {
                 Focus::Raw if !repeat => self.toggle_raw(),
                 _ => {}
             },
-            VK_PRIOR | VK_NEXT | VK_UP | VK_DOWN | VK_HOME | VK_END if focus == Focus::Scroll => {
+            // Page keys and Home/End scroll wherever the focus is (2026-11-12: they did nothing
+            // until Tab reached the scroll area, the fifth stop); the arrows there only. The
+            // focus stays where it was.
+            VK_PRIOR | VK_NEXT | VK_HOME | VK_END | VK_UP | VK_DOWN
+                if focus == Focus::Scroll || !matches!(vk, VK_UP | VK_DOWN) =>
+            {
                 let page = ui.panel.client_rect().h;
                 let line = ui.panel.px(20);
                 let delta = match vk {

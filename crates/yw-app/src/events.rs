@@ -110,9 +110,9 @@ pub enum NavKey {
         /// Page Up.
         up: bool,
     },
-    /// Ctrl+Home (`top`) / Ctrl+End.
+    /// Home (`top`) / End, with or without Ctrl.
     Edge {
-        /// Ctrl+Home.
+        /// Home.
         top: bool,
     },
     /// An arrow key (the dialog manager may move the focus within a group).
@@ -121,7 +121,8 @@ pub enum NavKey {
 
 impl NavKey {
     /// The navigation key of virtual key `vk` with these modifiers, or `None` (never with Alt;
-    /// Tab, Page Up/Down and the arrows without Ctrl; Home/End only with Ctrl).
+    /// Tab, Page Up/Down and the arrows without Ctrl; Home/End with or without it since
+    /// 2026-11-12 — the main window leaves them to an edit that has the focus).
     #[must_use]
     pub const fn of(vk: u16, ctrl: bool, alt: bool, shift: bool) -> Option<Self> {
         if alt {
@@ -131,8 +132,8 @@ impl NavKey {
             0x09 if !ctrl => Some(Self::Tab { back: shift }),
             0x21 if !ctrl => Some(Self::Page { up: true }),
             0x22 if !ctrl => Some(Self::Page { up: false }),
-            0x24 if ctrl => Some(Self::Edge { top: true }),
-            0x23 if ctrl => Some(Self::Edge { top: false }),
+            0x24 => Some(Self::Edge { top: true }),
+            0x23 => Some(Self::Edge { top: false }),
             0x25..=0x28 if !ctrl => Some(Self::Arrow),
             _ => None,
         }
