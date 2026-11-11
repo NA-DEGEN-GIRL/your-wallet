@@ -55,8 +55,8 @@ pub mod ids {
     ];
 }
 
-/// The setup card's intro (no Project ID yet).
-pub const T_WC_SETUP_INTRO: &str = "확장 프로그램 대신 WalletConnect로 dApp에 연결합니다(EVM). 처음 한 번 Reown Project ID를 저장하면 dApp의 WalletConnect QR이나 링크로 연결할 수 있습니다. 연결과 서명은 확장과 같은 이 앱의 승인 창에서 확인합니다.";
+/// The setup card's one help (no Project ID yet): what it is for and where the ID comes from.
+pub const T_WC_SETUP_INTRO: &str = "확장 프로그램 없이 dApp에 연결하려면(EVM) Reown Project ID를 한 번 저장하세요. dashboard.reown.com에서 무료 프로젝트를 만들면 받는 32자리 값이고 비밀값이 아닙니다. 프로젝트의 허용 출처(allowlist)는 비워 둡니다.";
 /// What `WalletConnect` is for and how a pairing starts (the panel with a Project ID).
 pub const T_WC_INTRO: &str = "확장 프로그램 대신 WalletConnect로 dApp에 연결합니다(EVM). 연결과 서명은 확장과 같은 이 앱의 승인 창에서 확인합니다.";
 /// The two steps above `클립보드에서 연결` (2026-11-08).
@@ -78,9 +78,9 @@ fn local_time(seconds: u64) -> String {
 }
 
 impl App {
-    /// The `WalletConnect` panel (drawn first on S13). Without a Project ID it is a two-step
-    /// setup card (the ID first; the pairing inputs appear once it is saved); with one, the
-    /// pairing inputs come first and the saved ID is one line with `Project ID 바꾸기 ▸`.
+    /// The `WalletConnect` panel (drawn first on S13). Without a Project ID it is a short setup
+    /// card (the ID only; the pairing inputs appear once it is saved); with one, the pairing
+    /// inputs come first and the saved ID is one line with `Project ID 바꾸기 ▸`.
     pub(crate) fn wc_panel(&self, items: &mut Vec<Item>) {
         let has_project = !self.settings.walletconnect_project.is_empty();
         if !has_project {
@@ -145,57 +145,49 @@ impl App {
         self.wc_session_cards(items);
     }
 
-    /// The setup card shown while no Project ID is saved: step 1 (the ID) with its input, and
-    /// step 2 (pairing) described until the ID is saved.
+    /// The setup card shown while no Project ID is saved — the default, and the lasting state of
+    /// a wallet that only uses the extension, so it is three rows and the site list stays in the
+    /// first view (2026-11-12; before: relay line, two step headings and a description of the
+    /// controls that were not there yet).
     fn wc_setup_card(&self, items: &mut Vec<Item>) {
         items.push(Item::CardStart(Some(
-            "WalletConnect 연결 — 처음 한 번 준비".to_owned(),
+            "WalletConnect (선택) — 꺼져 있음".to_owned(),
         )));
         items.push(Item::Help(T_WC_SETUP_INTRO.to_owned()));
-        items.push(Item::Field(
-            "릴레이".to_owned(),
-            crate::walletconnect::worker::RelayStatus::NoProject.text(),
-        ));
-        items.push(Item::Subtitle("1단계: Reown Project ID 저장".to_owned()));
         self.wc_project_row(items, true);
-        // The address only goes to the clipboard: the app opens no web page (2026-11-10).
-        items.push(Item::Row(vec![Ctl::link(
-            ids::REOWN_COPY,
-            "dashboard.reown.com 주소 복사",
-        )]));
         if let Some(notice) = &self.wc.notice {
             items.push(Item::Banner(notice.clone(), Tone::Info));
         }
-        items.push(Item::Subtitle("2단계: dApp에 연결".to_owned()));
-        items.push(Item::Help(
-            "Project ID를 저장하면 여기에 dApp의 연결 주소(wc:…)를 붙여 넣는 칸과 QR 이미지 읽기 버튼이 나타납니다."
-                .to_owned(),
-        ));
         items.push(Item::CardEnd);
     }
 
-    /// The Project ID input, `저장`, and where to get the ID.
+    /// The Project ID input and `저장`; then, in the setup card, the link that copies where to
+    /// get the ID, and behind `Project ID 바꾸기 ▸` the help for changing it.
     fn wc_project_row(&self, items: &mut Vec<Item>, setup: bool) {
         let project = self
             .wc
             .project_text
             .clone()
             .unwrap_or_else(|| self.settings.walletconnect_project.clone());
-        items.push(Item::LabeledRow(
-            "Reown Project ID".to_owned(),
-            vec![
-                Ctl::edit(ids::PROJECT_EDIT, &project, 300, false, 64),
-                if setup {
-                    Ctl::primary(ids::PROJECT_SAVE, "저장")
-                } else {
-                    Ctl::button(ids::PROJECT_SAVE, "저장")
-                },
-            ],
-        ));
-        items.push(Item::Help(
-            "WalletConnect 릴레이를 쓰려면 dashboard.reown.com에서 무료 프로젝트를 만들고 그 Project ID(32자리)를 넣어야 합니다. 이 지갑에는 기본 ID가 들어 있지 않습니다. Project ID는 비밀값이 아닙니다. 프로젝트의 허용 출처(allowlist)는 비워 두세요 — 데스크톱 앱은 웹 출처를 보내지 않습니다. 비우고 저장하면 WalletConnect가 꺼집니다."
-                .to_owned(),
-        ));
+        let mut row = vec![
+            Ctl::edit(ids::PROJECT_EDIT, &project, 300, false, 64),
+            if setup {
+                Ctl::primary(ids::PROJECT_SAVE, "저장")
+            } else {
+                Ctl::button(ids::PROJECT_SAVE, "저장")
+            },
+        ];
+        if setup {
+            // The address only goes to the clipboard: the app opens no web page (2026-11-10).
+            row.push(Ctl::link(ids::REOWN_COPY, "dashboard.reown.com 주소 복사"));
+        }
+        items.push(Item::LabeledRow("Reown Project ID".to_owned(), row));
+        if !setup {
+            items.push(Item::Help(
+                "dashboard.reown.com에서 무료 프로젝트를 만들고 그 Project ID(32자리)를 넣습니다. 비밀값이 아닙니다. 프로젝트의 허용 출처(allowlist)는 비워 두세요. 비우고 저장하면 WalletConnect가 꺼집니다."
+                    .to_owned(),
+            ));
+        }
     }
 
     fn wc_session_cards(&self, items: &mut Vec<Item>) {
@@ -251,6 +243,15 @@ impl App {
                 local_time(session.created),
             ));
             items.push(Item::Field("만료".to_owned(), local_time(session.expiry)));
+            // Under the times, before the accounts — where the site cards have it (2026-11-12).
+            if let Some(id) = u16::try_from(rows.len())
+                .ok()
+                .filter(|offset| *offset < ids::ROW_SPAN)
+                .map(|offset| ids::ROW_BASE + offset)
+            {
+                rows.push(session.topic);
+                items.push(Item::Row(vec![Ctl::danger(id, "연결 해제").compact()]));
+            }
             for account in &session.accounts {
                 let label = labels
                     .iter()
@@ -258,14 +259,6 @@ impl App {
                     .map_or("", |(_, label)| label.as_str());
                 items.push(Item::Help(label.to_owned()));
                 items.push(Item::Mono(yw_core::evm::display::format_address(account)));
-            }
-            if let Some(id) = u16::try_from(rows.len())
-                .ok()
-                .filter(|offset| *offset < ids::ROW_SPAN)
-                .map(|offset| ids::ROW_BASE + offset)
-            {
-                rows.push(session.topic);
-                items.push(Item::Row(vec![Ctl::danger(id, "연결 해제")]));
             }
             items.push(Item::CardEnd);
         }

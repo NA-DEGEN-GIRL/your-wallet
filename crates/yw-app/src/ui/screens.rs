@@ -847,36 +847,25 @@ impl App {
     }
 }
 
-/// The one-line map under the settings tabs: what the selected section holds, and where the
-/// things that are not in settings live (spec/04 §2.11).
+/// The one line under the settings tabs, only where something people look for in this section
+/// lives elsewhere (spec/04 §2.11). The list of the section's cards that used to open every
+/// section ("이 구역: …") repeated the card headings right below it and is gone (2026-11-12).
 #[must_use]
-pub const fn settings_map(section: SettingsSection) -> &'static str {
+pub const fn settings_elsewhere(section: SettingsSection) -> Option<&'static str> {
     match section {
         SettingsSection::Security => {
-            "이 구역: 자동 잠금 · 백업 현황 · 첫 복구 단어·개인키 보기와 복사 허용 · 비밀번호 변경 · 지갑 파일 상태 · 지갑 초기화. 복구 단어별 보기·백업 확인은 '복구 단어' 탭에 있습니다."
+            Some("복구 단어별 보기·백업 확인은 '복구 단어' 탭에 있습니다.")
         }
-        SettingsSection::Network => {
-            "이 구역: RPC 공급자(QuickNode·알케미) · 네트워크별 RPC 주소(EVM·Solana·Bitcoin·Zcash) · 블록 탐색기(네트워크별 링크 주소) · rpc.json 가져오기(개발용, 파일이 있을 때 맨 아래)"
-        }
-        SettingsSection::Chains => {
-            "이 구역: EVM 체인 목록과 체인 추가·편집 · Hyperliquid HyperCore 카드 켜기 · 수수료 상한(고급). 토큰 추가는 메인의 '토큰' 카드에 있습니다."
-        }
-        SettingsSection::Solana => {
-            "이 구역: Solana 네트워크(mainnet·devnet) · 다른 경로 스캔 · 수수료 상한(고급)"
-        }
+        SettingsSection::Chains => Some("토큰 추가는 메인 화면의 '토큰' 카드에 있습니다."),
         SettingsSection::Bitcoin => {
-            "이 구역: Bitcoin 사용과 네트워크 · 주소 조회 서버(인덱서) · Esplora URL. Bitcoin 계정·주소 방식은 메인의 Bitcoin 탭에 있습니다."
+            Some("Bitcoin 계정과 주소 방식은 메인 화면의 Bitcoin 탭에 있습니다.")
         }
-        SettingsSection::Ai => "이 구역: AI 설명(선택 기능) 켜기 · AI 공급자 · AI API 키",
-        SettingsSection::Mnemonics => {
-            "이 구역: 지갑의 복구 단어 목록 · 복구 단어 추가 가져오기 · 새 복구 단어 만들기 · 이름 바꾸기 · 단어 보기 · 백업 확인 · 지우기"
-        }
-        SettingsSection::YubiKey => {
-            "이 구역: YubiKey 등록 · PIN 설정 · 슬롯 구성 바꾸기 · YubiKey의 키 지우기 · 계정별 YubiKey. 서명할 때는 승인 뒤 PIN 창이 저절로 열립니다."
-        }
-        SettingsSection::Other => {
-            "이 구역: Chrome 확장 설치 · WalletConnect · 브라우저 연결 · 진단(로그) · 버전·데이터 폴더·단축키. Zcash는 메인의 Zcash 탭에서 켭니다."
-        }
+        SettingsSection::YubiKey => Some("서명할 때는 승인 뒤 PIN 창이 저절로 열립니다."),
+        SettingsSection::Other => Some("Zcash는 메인 화면의 Zcash 탭에서 켭니다."),
+        SettingsSection::Network
+        | SettingsSection::Solana
+        | SettingsSection::Ai
+        | SettingsSection::Mnemonics => None,
     }
 }
 
@@ -1121,7 +1110,12 @@ impl App {
         if let Some(pending) = self.unlock_pending_text() {
             items.push(Item::Banner(pending, Tone::Info));
         }
-        items.push(Item::Row(vec![Ctl::primary(ids::UNLOCK, "잠금 해제")]));
+        // The screen's one action, wider than a default button; the way out for a lost password
+        // is a single row at the bottom (2026-11-12).
+        items.push(Item::Gap(4));
+        items.push(Item::Row(vec![
+            Ctl::primary(ids::UNLOCK, "잠금 해제").width(160),
+        ]));
         items.push(Item::Help(format!(
             "{}분 동안 쓰지 않거나, Windows를 잠그거나 절전에 들어가면 지갑이 자동으로 잠깁니다.",
             self.settings.auto_lock_minutes
@@ -1141,10 +1135,15 @@ impl App {
                 "이전 사본(.prev)으로 복구",
             )]));
         }
-        Self::reset_link(
-            items,
-            "비밀번호를 잊었거나 더 진행할 수 없다면: 지갑 파일을 옮겨 두고(지우지 않음) 복구 단어로 새로 시작할 수 있습니다.",
-        );
+        // What a reset does (the files are moved, not deleted) is the first band of S22.
+        items.push(Item::Gap(16));
+        items.push(Item::LabeledRow(
+            "비밀번호를 잊었나요?".to_owned(),
+            vec![Ctl::link(
+                crate::ui::screens_reset::ids::RESET_OPEN,
+                "지갑 초기화…",
+            )],
+        ));
     }
 
     fn pass_mismatch(&self, items: &mut Vec<Item>) {
@@ -1864,7 +1863,9 @@ impl App {
             )
             .width(108),
         ]));
-        items.push(Item::Help(settings_map(section).to_owned()));
+        if let Some(elsewhere) = settings_elsewhere(section) {
+            items.push(Item::Help(elsewhere.to_owned()));
+        }
         match section {
             SettingsSection::Security => self.security_section(items),
             SettingsSection::Network => self.network_section(items),

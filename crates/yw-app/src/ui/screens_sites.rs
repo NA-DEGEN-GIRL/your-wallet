@@ -1,5 +1,7 @@
 //! S13 연결된 사이트 (spec/04 §2.9): every grant with its origin (http badge), accounts in return
 //! order, origin chain and connection time; `연결 해제` per row and `모두 해제` (confirmation).
+//! The three families' cards have one order (2026-11-12): network, connection time, `연결 해제`,
+//! then the accounts with grouped addresses.
 //! Solana and Bitcoin connections (spec/05 §4.9: ownership proof only) follow the EVM grants with
 //! their own `연결 해제` rows. The combined list (up to 3 × 256 grants) is shown
 //! [`ids::SITES_PAGE_ROWS`] cards per page; each button disconnects the `(origin, family)` it was
@@ -11,7 +13,9 @@ use core::fmt::Write as _;
 use yw_core::policy::{BrowserOrigin, Family};
 
 use crate::app::{App, Confirm};
+use crate::meta::BookChain;
 use crate::ui::main_window::{Ctl, Item, Tone};
+use crate::ui::screens_book::shown_address;
 
 /// Control ids (6,700–6,965; the whole map is `ui::command_ids`).
 pub mod ids {
@@ -46,7 +50,8 @@ impl Page<'_> {
         (self.start..self.end).contains(&index)
     }
 
-    /// The `연결 해제` row of a card (none when the id range or the record is unavailable).
+    /// The `연결 해제` row of a card, right under its connection time (none when the id range or
+    /// the record is unavailable).
     fn button(&mut self, origin: &BrowserOrigin, family: Family) -> Option<Item> {
         let keys = self.keys.as_mut()?;
         let id = u16::try_from(keys.len())
@@ -54,7 +59,7 @@ impl Page<'_> {
             .filter(|offset| usize::from(*offset) < ids::SITES_PAGE_ROWS)
             .map(|offset| ids::SITE_ROW_BASE + offset)?;
         keys.push((origin.clone(), family));
-        Some(Item::Row(vec![Ctl::danger(id, "연결 해제")]))
+        Some(Item::Row(vec![Ctl::danger(id, "연결 해제").compact()]))
     }
 }
 
@@ -97,8 +102,30 @@ fn local_time(unix_ms: u64) -> String {
 
 /// A site card title: the full origin, then the chain family (one site may be connected on
 /// several chains and gets one card per family).
-fn card_title(origin: &yw_core::policy::BrowserOrigin, family: &str) -> String {
-    format!("{}  ·  {family}", origin.as_str())
+fn card_title(origin: &BrowserOrigin, family: Family) -> String {
+    format!("{}  ·  {}", origin.as_str(), family_name(family))
+}
+
+/// What a Solana or Bitcoin connection allows (spec/05 §4.9), on its own line of the card.
+const T_PROOF_ONLY: &str = "메시지 서명·소유 증명만";
+
+/// The family name of a card title and of the `연결 해제` notice.
+const fn family_name(family: Family) -> &'static str {
+    match family {
+        Family::Evm => "EVM",
+        Family::Solana => "Solana",
+        Family::Bitcoin => "Bitcoin",
+    }
+}
+
+/// The label line of an EVM card's account; the grant's first account is the one the site uses
+/// (U9's line of the connect window, 2026-11-10) and says so when the site sees several.
+fn account_label(label: &str, site_default: bool) -> String {
+    match (site_default, label.is_empty()) {
+        (false, _) => label.to_owned(),
+        (true, true) => "사이트가 기본으로 쓰는 계정".to_owned(),
+        (true, false) => format!("{label} · 사이트가 기본으로 쓰는 계정"),
+    }
 }
 
 /// The count line above the cards ("EVM 2곳 · Solana 1곳").
@@ -173,7 +200,7 @@ impl App {
             if !page.shows(index) {
                 continue;
             }
-            items.push(Item::CardStart(Some(card_title(&site.origin, "EVM"))));
+            items.push(Item::CardStart(Some(card_title(&site.origin, Family::Evm))));
             if site.origin.is_http() {
                 items.push(Item::Banner(
                     "로컬 개발 사이트(http)".to_owned(),
@@ -192,31 +219,18 @@ impl App {
                 "연결 시각".to_owned(),
                 local_time(site.granted_at_unix_ms),
             ));
-            items.push(Item::Field(
-                "볼 수 있는 계정".to_owned(),
-                format!("{}개", site.accounts.len()),
-            ));
-            // The grant's first account is the one the site uses (U9's line of the connect
-            // window, 2026-11-10).
-            if let Some(first) = site.accounts.first() {
-                let name = labels
-                    .iter()
-                    .find(|(address, _)| address == first)
-                    .map_or_else(
-                        || yw_core::evm::display::format_address(first),
-                        |(_, label)| label.clone(),
-                    );
-                items.push(Item::Text(format!("사이트가 기본으로 쓰는 계정: {name}")));
-            }
-            for account in &site.accounts {
+            items.extend(page.button(&site.origin, Family::Evm));
+            for (index, account) in site.accounts.iter().enumerate() {
                 let label = labels
                     .iter()
                     .find(|(address, _)| address == account)
                     .map_or("", |(_, label)| label.as_str());
-                items.push(Item::Help(label.to_owned()));
+                items.push(Item::Help(account_label(
+                    label,
+                    index == 0 && site.accounts.len() > 1,
+                )));
                 items.push(Item::Mono(yw_core::evm::display::format_address(account)));
             }
-            items.extend(page.button(&site.origin, Family::Evm));
             items.push(Item::CardEnd);
         }
         self.chain_site_cards(&mut page, grants.len(), &sol_grants, &btc_grants, items);
@@ -243,51 +257,57 @@ impl App {
             if !page.shows(first + offset) {
                 continue;
             }
-            items.push(Item::CardStart(Some(card_title(&grant.origin, "Solana"))));
+            items.push(Item::CardStart(Some(card_title(
+                &grant.origin,
+                Family::Solana,
+            ))));
             items.push(Item::Badged(
-                crate::ui::badge::Badge::family(crate::meta::BookChain::Sol),
-                Box::new(Item::Field(
-                    "네트워크".to_owned(),
-                    "Solana (메시지 서명·소유 증명만)".to_owned(),
-                )),
+                crate::ui::badge::Badge::family(BookChain::Sol),
+                Box::new(Item::Field("네트워크".to_owned(), "Solana".to_owned())),
             ));
+            items.push(Item::Field("권한".to_owned(), T_PROOF_ONLY.to_owned()));
             items.push(Item::Field(
                 "연결 시각".to_owned(),
                 local_time(grant.granted_at_unix_ms),
             ));
+            items.extend(page.button(&grant.origin, Family::Solana));
             items.push(Item::Help(
                 sol_labels
                     .iter()
                     .find(|row| row.public == grant.public)
                     .map_or_else(String::new, |row| row.label.clone()),
             ));
-            items.push(Item::Mono(yw_core::codec::base58::base58_encode(
-                &grant.public,
+            items.push(Item::Mono(shown_address(
+                BookChain::Sol,
+                &yw_core::codec::base58::base58_encode(&grant.public),
             )));
-            items.extend(page.button(&grant.origin, Family::Solana));
             items.push(Item::CardEnd);
         }
         for (offset, grant) in btc_grants.iter().enumerate() {
             if !page.shows(first + sol_grants.len() + offset) {
                 continue;
             }
-            items.push(Item::CardStart(Some(card_title(&grant.origin, "Bitcoin"))));
+            items.push(Item::CardStart(Some(card_title(
+                &grant.origin,
+                Family::Bitcoin,
+            ))));
             items.push(Item::Badged(
                 crate::ui::badge::Badge::bitcoin(grant.network),
                 Box::new(Item::Field(
                     "네트워크".to_owned(),
-                    format!("{} (메시지 서명·소유 증명만)", grant.network.display_name()),
+                    grant.network.display_name().to_owned(),
                 )),
             ));
+            items.push(Item::Field("권한".to_owned(), T_PROOF_ONLY.to_owned()));
             items.push(Item::Field(
                 "연결 시각".to_owned(),
                 local_time(grant.granted_at_unix_ms),
             ));
+            items.extend(page.button(&grant.origin, Family::Bitcoin));
             for entry in &grant.addresses {
                 items.push(Item::Help(entry.purpose.label().to_owned()));
-                items.push(Item::Mono(entry.address.clone()));
+                items.push(Item::Mono(shown_address(BookChain::Btc, &entry.address)));
             }
-            items.extend(page.button(&grant.origin, Family::Bitcoin));
             items.push(Item::CardEnd);
         }
     }
@@ -361,10 +381,18 @@ impl App {
                         .get(usize::from(offset))
                         .cloned()
                 });
-                match key {
-                    Some((origin, Family::Evm)) => self.disconnect_site(&origin),
-                    Some((origin, family)) => self.disconnect_chain_site(&origin, family),
-                    None => {}
+                if let Some((origin, family)) = key {
+                    // The card just disappears: say which one went (2026-11-12).
+                    self.info = Some(format!(
+                        "{} 연결을 해제했습니다.",
+                        card_title(&origin, family)
+                    ));
+                    match family {
+                        Family::Evm => self.disconnect_site(&origin),
+                        Family::Solana | Family::Bitcoin => {
+                            self.disconnect_chain_site(&origin, family);
+                        }
+                    }
                 }
                 true
             }

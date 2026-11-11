@@ -157,6 +157,31 @@ fn password_rules_and_confirmation() {
     assert!(matches!(form.on_char(0x0D, 0), FormAction::Submit(_)));
 }
 
+/// W01/W04's status line names what is wrong: a ✗ never stands before the rule itself, and an
+/// empty field is a grey hint.
+#[test]
+fn password_status_names_the_problem() {
+    let texts = |rule, same| super::password_status(rule, same).map(|(text, _)| text);
+    assert_eq!(
+        texts(None, None),
+        ["· 12–128자", "· 확인 칸에 한 번 더 입력"]
+    );
+    assert_eq!(
+        texts(Some(false), Some(false)),
+        ["✗ 12자 이상 필요", "✗ 두 칸이 다름"]
+    );
+    assert_eq!(
+        texts(Some(true), Some(true)),
+        ["✓ 12–128자", "✓ 두 칸이 같음"]
+    );
+    let mut form = SecretForm::new(SecretKind::SetPassword, 0, true);
+    type_text(&mut form, "short", 0);
+    assert_eq!(form.password_checks(), Some((Some(false), None)));
+    form.on_key(0x09, false, false, false, 0);
+    type_text(&mut form, "shorT", 0);
+    assert_eq!(form.password_checks(), Some((Some(false), Some(false))));
+}
+
 #[test]
 fn ime_and_non_ascii_show_e_inp_008_without_changing_the_buffer() {
     let mut form = SecretForm::new(SecretKind::Unlock, 0, true);

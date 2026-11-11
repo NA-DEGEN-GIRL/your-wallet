@@ -652,8 +652,7 @@ impl Worker {
         };
         if self.project_id.is_none() {
             self.sink.push(WcEvent::Notice(
-                "먼저 Reown Project ID를 저장하세요 (연결된 사이트 → WalletConnect 연결 → 1단계)."
-                    .to_owned(),
+                "먼저 Reown Project ID를 저장하세요 (연결된 사이트 → WalletConnect).".to_owned(),
             ));
             return;
         }

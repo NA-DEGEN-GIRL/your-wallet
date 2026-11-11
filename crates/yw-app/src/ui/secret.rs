@@ -711,6 +711,28 @@ fn intro(kind: SecretKind, words: usize, address: bool) -> Vec<String> {
     }
 }
 
+/// The two parts of W01/W04's status line for [`SecretForm::password_checks`]. A failed
+/// condition names what is wrong, not the rule with a ✗ before it ("✗ 두 칸이 같음" read as
+/// "being the same is wrong", 2026-11-12). The fields take only 0x20–0x7E and at most 128
+/// characters, so the rule fails only by being short.
+const fn password_status(
+    rule: Option<bool>,
+    same: Option<bool>,
+) -> [(&'static str, yw_win::ui::Color); 2] {
+    [
+        match rule {
+            Some(true) => ("✓ 12–128자", theme::SUCCESS_TEXT),
+            Some(false) => ("✗ 12자 이상 필요", theme::DANGER_TEXT),
+            None => ("· 12–128자", theme::MUTED),
+        },
+        match same {
+            Some(true) => ("✓ 두 칸이 같음", theme::SUCCESS_TEXT),
+            Some(false) => ("✗ 두 칸이 다름", theme::DANGER_TEXT),
+            None => ("· 확인 칸에 한 번 더 입력", theme::MUTED),
+        },
+    ]
+}
+
 /// `true` when `count` is a valid BIP39 length.
 #[must_use]
 pub const fn valid_word_count(count: usize) -> bool {
@@ -916,18 +938,14 @@ impl SecretForm {
     ) -> i32 {
         dc.select_font(&fonts.body);
         if let Some((rule, same)) = self.password_checks() {
-            let part = |ok: Option<bool>, label: &'static str| match ok {
-                Some(true) => (format!("✓ {label}"), theme::SUCCESS_TEXT),
-                Some(false) => (format!("✗ {label}"), theme::DANGER_TEXT),
-                None => (format!("· {label}"), theme::MUTED),
-            };
+            let [(rule, rule_color), (same, same_color)] = password_status(rule, same);
             let mut x = margin;
             for (text, color) in [
-                part(rule, "12–128자"),
-                (" · ".to_owned(), theme::MUTED),
-                part(same, "두 칸이 같음"),
+                (rule, rule_color),
+                (" · ", theme::MUTED),
+                (same, same_color),
             ] {
-                let units = wide(&text);
+                let units = wide(text);
                 let (_, text_w) = dc.measure(&units, i32::MAX);
                 dc.set_text_color(color);
                 dc.draw_text(

@@ -2288,8 +2288,8 @@ fn the_hypercore_card_folds_next_to_other_chains() {
 }
 
 /// Review 2026-11-07 F1: without a Project ID the `WalletConnect` card is a setup card (the ID
-/// first, no disabled pairing controls); with one, pairing comes first and the ID is one line
-/// behind `Project ID 바꾸기 ▸`.
+/// first, no disabled pairing controls; since 2026-11-12 one help and one row, no step headings);
+/// with one, pairing comes first and the ID is one line behind `Project ID 바꾸기 ▸`.
 #[test]
 fn walletconnect_panel_asks_for_the_project_id_first() {
     use crate::ui::screens_walletconnect::ids as wc;
@@ -2299,7 +2299,17 @@ fn walletconnect_panel_asks_for_the_project_id_first() {
     assert!(ctl(&items, wc::PROJECT_EDIT).is_some());
     assert!(ctl(&items, wc::URI_EDIT).is_none());
     assert!(ctl(&items, wc::PAIR).is_none());
-    assert!(has_text(&items, "1단계: Reown Project ID 저장"));
+    assert!(ctl(&items, wc::REOWN_COPY).is_some());
+    assert!(has_text(
+        &items,
+        crate::ui::screens_walletconnect::T_WC_SETUP_INTRO
+    ));
+    assert!(!has_text(&items, "단계"));
+    assert!(
+        !items
+            .iter()
+            .any(|item| matches!(item, Item::Field(label, _) if label == "릴레이"))
+    );
     unique_ids(&items);
     "0123456789abcdef0123456789abcdef".clone_into(&mut app.settings.walletconnect_project);
     let items = app.items();
@@ -2500,9 +2510,10 @@ fn zcash_review_result_is_drawn_next_to_the_button() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// Review 2026-11-07 F3: every settings section opens with its one-line map.
+/// Review 2026-11-07 F3, cut down 2026-11-12: under the tabs a section says only what lives
+/// elsewhere — no list of its own cards.
 #[test]
-fn settings_sections_start_with_their_map() {
+fn settings_sections_point_elsewhere_without_listing_their_cards() {
     use super::SettingsSection;
     let (mut app, dir) = unlocked_app("settings-map", false);
     for section in [
@@ -2517,9 +2528,10 @@ fn settings_sections_start_with_their_map() {
     ] {
         app.screen = Screen::Settings(section);
         let items = app.items();
-        let map = crate::ui::screens::settings_map(section);
-        assert!(map.starts_with("이 구역: "));
-        assert!(has_text(&items, map), "{section:?}");
+        assert!(!has_text(&items, "이 구역"), "{section:?}");
+        if let Some(elsewhere) = crate::ui::screens::settings_elsewhere(section) {
+            assert!(has_text(&items, elsewhere), "{section:?}");
+        }
         unique_ids(&items);
     }
     let _ = std::fs::remove_dir_all(dir);
@@ -4673,7 +4685,14 @@ fn wallet_reset_from_the_lock_screen_returns_to_first_run() {
     h.app.lock(LockReason::Manual);
     h.pump();
     assert_eq!(h.app.screen, Screen::Locked);
-    assert!(control_ids(&h.app.items()).contains(&reset_ids::RESET_OPEN));
+    // S07: the way out is one labeled row under the unlock button, not a paragraph.
+    let locked = h.app.items();
+    assert!(locked.iter().any(|item| matches!(
+        item,
+        Item::LabeledRow(label, row)
+            if label == "비밀번호를 잊었나요?" && row.len() == 1 && row[0].id == reset_ids::RESET_OPEN
+    )));
+    assert!(!has_text(&locked, "비밀번호를 잊었거나"));
     h.app.on_command(reset_ids::RESET_OPEN);
     assert_eq!(h.app.screen, Screen::Reset);
     let items = h.app.items();

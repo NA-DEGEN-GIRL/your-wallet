@@ -1546,6 +1546,48 @@ mod tests {
         let drawn = keys(&app);
         assert_eq!(drawn.len(), ids::SITES_PAGE_ROWS);
         assert_eq!(drawn[0], "https://s0.example");
+        // One order for every family's card: network, what the connection allows, connection
+        // time, `연결 해제`, then the account with its address in 4-character groups.
+        let card = items
+            .iter()
+            .position(|item| {
+                matches!(item, crate::ui::main_window::Item::CardStart(Some(title))
+                    if title == "https://s0.example  ·  Solana")
+            })
+            .unwrap();
+        let fields: Vec<String> = items[card + 1..card + 7]
+            .iter()
+            .map(|item| match item {
+                crate::ui::main_window::Item::Badged(_, inner) => match &**inner {
+                    crate::ui::main_window::Item::Field(label, value) => {
+                        format!("{label}={value}")
+                    }
+                    _ => String::new(),
+                },
+                crate::ui::main_window::Item::Field(label, _) => label.clone(),
+                crate::ui::main_window::Item::Row(row) => {
+                    assert_eq!(row[0].id, ids::SITE_ROW_BASE);
+                    row[0].text.clone()
+                }
+                crate::ui::main_window::Item::Help(_) => "계정".to_owned(),
+                crate::ui::main_window::Item::Mono(address) => {
+                    assert_eq!(address.find(' '), Some(4));
+                    "주소".to_owned()
+                }
+                _ => String::new(),
+            })
+            .collect();
+        assert_eq!(
+            fields,
+            [
+                "네트워크=Solana",
+                "권한",
+                "연결 시각",
+                "연결 해제",
+                "계정",
+                "주소"
+            ]
+        );
         // The list changes under the screen (a dApp disconnected s0 meanwhile): the first
         // button still means s0 — nothing else is disconnected.
         assert!(core.remove_sol_grant(&BrowserOrigin::parse("https://s0.example").unwrap()));
@@ -1553,6 +1595,10 @@ mod tests {
         assert_eq!(core.sol_grants().len(), 119);
         assert!(app.on_sites_command(ids::SITE_ROW_BASE + 1));
         assert_eq!(core.sol_grants().len(), 118);
+        assert_eq!(
+            app.info.as_deref(),
+            Some("https://s1.example  ·  Solana 연결을 해제했습니다.")
+        );
         assert!(
             core.sol_grants()
                 .iter()
