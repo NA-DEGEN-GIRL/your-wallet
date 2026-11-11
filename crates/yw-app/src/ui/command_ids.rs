@@ -28,11 +28,12 @@
 //! | hidden accounts (`app_hidden`) | 16,200–16,589 | toggles 16,200–16,201, EVM `다시 보이기` rows 16,210–16,399, Solana rows 16,400–16,589 |
 //! | side-file choices (`app_sidecar`) | 16,600–16,609 | meta `닫기`, `고급`, journal `선택 다시 보기`, the Bitcoin form's check after a journal reset |
 //! | first setup·RPC (`screens`) | 16,700–16,783 | S08 '처음 설정' 16,700–16,705, `모두 테스트` 16,706, the chain tabs' `RPC 설정하기` 16,707–16,710, the EVM·Solana failure bands' `이 네트워크 RPC 테스트`·`RPC 설정 열기` 16,711–16,714, failed-network links 16,720–16,783 |
+//! | received history (`screens_received`) | 17,000–17,599 | `받은 내역도 보기` per card 17,000–17,004 (EVM·Solana·Bitcoin·HyperCore·Zcash), `더 보기` 17,005–17,009, rows 17,100 + 100 × chain + 2 × row (0 `해시 복사`, 1 reserved `탐색기에서 열기`), 50 rows per chain |
 
 use crate::ui::{
     screens, screens_book, screens_btc, screens_evm, screens_hypercore, screens_keys, screens_llm,
-    screens_mnemonics, screens_reset, screens_sites, screens_sol, screens_walletconnect,
-    screens_yubikey, screens_zec,
+    screens_mnemonics, screens_received, screens_reset, screens_sites, screens_sol,
+    screens_walletconnect, screens_yubikey, screens_zec,
 };
 
 /// Largest number of rows of the Solana recovery scan (spec/07 §3.3: 50 standard + 50 BIP44
@@ -461,6 +462,13 @@ pub fn ranges() -> Vec<IdRange> {
             1,
             yw_core::journal::zec::ZEC_JOURNAL_MAX_RECORDS,
         ),
+        range(
+            "received.rows",
+            screens_received::ids::ROW_BASE,
+            screens_received::ids::ROW_SPAN,
+            screens_received::ids::ROW_STRIDE,
+            crate::received::MAX_ENTRIES * usize::from(screens_received::ids::CHAINS),
+        ),
     ]
 }
 
@@ -484,6 +492,7 @@ pub fn fixed() -> Vec<(&'static str, &'static [u16])> {
         ("walletconnect", screens_walletconnect::ids::FIXED),
         ("hidden", crate::app_hidden::ids::FIXED),
         ("sidecar", crate::app_sidecar::ids::FIXED),
+        ("received", &screens_received::ids::FIXED),
     ]
 }
 

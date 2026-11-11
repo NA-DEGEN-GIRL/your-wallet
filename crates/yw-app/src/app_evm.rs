@@ -993,6 +993,7 @@ impl App {
             RpcEvent::Btc(event) => self.btc_rpc_event(*event),
             RpcEvent::Zec(event) => self.zec_rpc_event(*event),
             RpcEvent::HyperCore(event) => self.hc_rpc_event(*event),
+            RpcEvent::Received(event) => self.received_event(*event),
         }
     }
 

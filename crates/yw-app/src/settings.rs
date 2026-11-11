@@ -386,6 +386,10 @@ pub fn newer_version_banner(version: u64) -> String {
 
 /// The whole settings file.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent top-level switches of settings.json"
+)]
 pub struct Settings {
     /// 1–60.
     pub auto_lock_minutes: u8,
@@ -419,6 +423,9 @@ pub struct Settings {
     /// hex; not a secret — dApps embed theirs in web pages). Empty = `WalletConnect` off. The key
     /// is written only when set.
     pub walletconnect_project: String,
+    /// `receivedHistory` (spec/04 §2.6, §6.1; 2026-11-11): the opt-in received history of the
+    /// activity cards. Off by default; the top-level key is written only when on.
+    pub received_history: bool,
     /// Log level.
     pub log_level: LogLevel,
     /// Format compatibility (unknown keys, read-only newer file; spec/04 §6.6).
@@ -494,6 +501,7 @@ impl Default for Settings {
             llm_explain: LlmSettings::default(),
             hypercore: HyperCoreSettings::default(),
             walletconnect_project: String::new(),
+            received_history: false,
             log_level: LogLevel::Info,
             compat: SettingsCompat::default(),
         }
@@ -1006,6 +1014,7 @@ pub fn load(bytes: Option<&[u8]>) -> SettingsLoad {
         }
     }
     settings.llm_explain.reasoning_effort = reasoning_effort;
+    load_received_history(&mut settings, &mut banners);
     SettingsLoad { settings, banners }
 }
 
@@ -1242,6 +1251,7 @@ impl Settings {
         if let Some(effort) = self.llm_explain.reasoning_effort {
             members.push((LLM_EFFORT_KEY, json_str(effort.as_str())));
         }
+        members.extend(received_history_member(self));
         members
     }
 
@@ -1253,6 +1263,39 @@ impl Settings {
             yw_core::hypercore::HcNetwork::Testnet => self.hypercore.testnet_api.clone(),
         }
     }
+}
+
+// ----- received history (spec/04 §2.6, 2026-11-11) ------------------------------------------
+
+/// The top-level `settings.json` key of [`Settings::received_history`]: written only when on
+/// (`true`). A top-level key, never inside an existing object: an older build resets a known
+/// object that has a key it does not know, but keeps an unknown top-level key and writes it back
+/// (spec/04 §6.6).
+pub const RECEIVED_HISTORY_KEY: &str = "receivedHistory";
+
+/// Moves `receivedHistory` from the unknown keys [`load`] kept into the setting: a boolean is the
+/// value, anything else is the default (off) with a banner.
+fn load_received_history(settings: &mut Settings, banners: &mut Vec<String>) {
+    let unknown = &mut settings.compat.unknown;
+    let Some(position) = unknown
+        .iter()
+        .position(|(key, _)| key == RECEIVED_HISTORY_KEY)
+    else {
+        return;
+    };
+    let (key, value) = unknown.remove(position);
+    match value.as_bool() {
+        Some(on) => settings.received_history = on,
+        None => banners.push(key),
+    }
+}
+
+/// The serialized member of [`Settings::received_history`] (after every other known key), only
+/// when on.
+fn received_history_member(settings: &Settings) -> Option<(&'static str, Value)> {
+    settings
+        .received_history
+        .then_some((RECEIVED_HISTORY_KEY, Value::Bool(true)))
 }
 
 // ----- security settings snapshot (review M1, L15) -------------------------------------------

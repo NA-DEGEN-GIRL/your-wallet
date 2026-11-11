@@ -37,6 +37,7 @@
 - `{"type":"spotClearinghouseState","user":"0x…"}` → `balances[]`: `coin`, `token`(index), `total`, `hold`(10진 문자열).
 - `{"type":"clearinghouseState","user":"0x…"}` → `marginSummary.accountValue`, `withdrawable`, `assetPositions`.
 - 주소는 소문자로 보낸다. 잔액은 S10이 보이는 동안 60초마다, `새로고침`, 계정 전환, 제출 결과 뒤에 다시 읽는다. `spotMeta`는 네트워크당 한 번(앱 실행 중 캐시).
+- 받은 내역(2026-11-11, [04] §2.6 opt-in, 카드를 펼쳤을 때만): `{"type":"userNonFundingLedgerUpdates","user":"0x…","startTime":ms}` 1회(처음 최근 30일, 뒤로는 본 가장 늦은 `time` 다음부터; 응답 `[{time, hash, delta}]`, 오래된 것부터). 행: `deposit`(Arbitrum 브리지 USDC, 보낸 주소 대신 "보낸 곳: Arbitrum 브리지 입금 (보낸 주소 없음)"), `destination`이 이 계정이고 `user`가 아닌 `internalTransfer`(USDC)·`spotTransfer`·`send`의 USDC·HYPE만(시스템 주소에서 온 것은 "보낸 곳: HyperEVM에서 이동 (시스템 주소)"). USDC < 0.01·HYPE < 0.001과 0은 개수만, 다른 토큰·펀딩·볼트·현물↔선물 이동은 무시.
 
 ## 4. 사용자 서명 작업 (EIP-712)
 

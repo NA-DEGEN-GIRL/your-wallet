@@ -162,7 +162,7 @@ fn our_script(account: &BtcAccountKey, chain: BtcChain, index: u32) -> Result<Ve
 }
 
 /// An address request is only sent after step 3 passed in this session.
-fn address_request(
+pub(crate) fn address_request(
     client: &BtcClient<'_>,
     session: &ChainSession,
     request: &BtcIndexerReq,

@@ -3320,6 +3320,9 @@ fn about_wallet(h: &mut Harness) {
 /// "슬롯 구성 바꾸기" and "YubiKey 비우기" (spec/10 §15).
 mod yubikey_manage;
 
+/// The opt-in received history (spec/04 §2.6).
+mod received;
+
 /// spec/10 §9.2 (2026-11-10): once the PIN is in, the touch prompt is the S11 form's line next to
 /// `검토` (a dApp request: the header band), and it is gone once the card answered — signed or
 /// failed.

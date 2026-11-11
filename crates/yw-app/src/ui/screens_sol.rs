@@ -680,6 +680,7 @@ impl App {
                 crate::ui::screens::T_ACTIVITY_RECEIVED
             )));
         }
+        self.received_items(crate::received::RecvChain::Sol, items);
         items.push(Item::CardEnd);
     }
 

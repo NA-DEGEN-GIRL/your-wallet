@@ -789,9 +789,10 @@ impl App {
         items.push(Item::CardStart(Some("활동".to_owned())));
         let records = self.zec_records();
         if records.is_empty() {
-            items.push(Item::Help(
-                "이 지갑에서 보낸 Zcash 거래가 없습니다.".to_owned(),
-            ));
+            items.push(Item::Help(format!(
+                "이 지갑에서 보낸 Zcash 거래가 없습니다. {}",
+                crate::ui::screens::T_ACTIVITY_RECEIVED
+            )));
         }
         // The rows of the other chains' order (2026-11-10): time and amount, status (the expiry
         // height only while it may still confirm), the recipient with its display-only name on
@@ -872,6 +873,7 @@ impl App {
                 ));
             }
         }
+        self.received_items(crate::received::RecvChain::Zec, items);
         items.push(Item::CardEnd);
     }
 }

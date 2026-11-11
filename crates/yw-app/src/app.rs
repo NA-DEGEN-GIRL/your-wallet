@@ -744,6 +744,8 @@ pub struct App {
     pub(crate) zec: crate::app_zec::ZecUi,
     /// `HyperCore` card, form and session activity (spec/11).
     pub(crate) hypercore: crate::app_hypercore::HcUi,
+    /// The opt-in received history (spec/04 §2.6; this run only).
+    pub(crate) received: crate::app_received::ReceivedUi,
     /// `WalletConnect` worker, sessions and panel state (spec/13).
     pub(crate) wc: crate::app_walletconnect::WcUi,
     /// Address book (S14, favorites, the inline save prompt).
@@ -1017,6 +1019,7 @@ impl App {
             btc: crate::app_btc::BtcUi::default(),
             zec: crate::app_zec::ZecUi::default(),
             hypercore: crate::app_hypercore::HcUi::default(),
+            received: crate::app_received::ReceivedUi::default(),
             wc: crate::app_walletconnect::WcUi::default(),
             book: crate::app_book::BookUi::default(),
             keys: crate::app_keys::KeysUi::default(),
@@ -1644,6 +1647,7 @@ impl App {
         self.sol_tick(now);
         self.btc_tick(now);
         self.zec_tick(now);
+        self.received_tick(now);
         if now.saturating_sub(self.last_flush_ms) >= LOG_FLUSH_MS {
             self.last_flush_ms = now;
             logging::flush();
@@ -1888,6 +1892,7 @@ impl App {
         self.sol_lock();
         self.btc_lock();
         self.zec_lock();
+        self.received_lock();
         self.meta = None;
         self.wait = crate::app_reset::WaitWatch::default();
         // The next unlock reads meta and the journal again (and asks again if they still fail).
@@ -3798,7 +3803,8 @@ impl App {
                 self.refresh();
             }
             other => {
-                if !self.on_reset_command(other)
+                if !self.on_received_command(other)
+                    && !self.on_reset_command(other)
                     && !self.on_book_command(other)
                     && !self.on_rpc_import_command(other)
                     && !self.on_extension_command(other)

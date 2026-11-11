@@ -103,7 +103,7 @@ fn failure_text(error: &HttpError) -> String {
     }
 }
 
-fn post(
+pub(crate) fn post(
     transport: &dyn Transport,
     endpoint: &HcEndpoint,
     path: &str,
