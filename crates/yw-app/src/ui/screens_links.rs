@@ -179,19 +179,17 @@ impl App {
             .map_or("계정을 고르세요", |entry| entry.label.as_str());
         items.push(Item::LabeledRow(
             "계정".to_owned(),
-            vec![Ctl::button(
-                picker,
-                &format!("{selected}   {}", if open { "▴" } else { "▾" }),
-            )],
+            vec![
+                Ctl::picker(picker, selected, open)
+                    .fit(entries.iter().map(|entry| entry.label.as_str())),
+            ],
         ));
         if open {
             items.push(Item::Menu(
                 entries
                     .iter()
                     .map(|entry| {
-                        Ctl::tab(entry.id, &entry.label, entry.selected)
-                            .compact()
-                            .enabled(entry.enabled)
+                        Ctl::entry(entry.id, &entry.label, entry.selected).enabled(entry.enabled)
                     })
                     .collect(),
             ));

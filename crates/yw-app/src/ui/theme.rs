@@ -173,6 +173,26 @@ pub const BUTTON_TAB_OFF: ButtonStyle = ButtonStyle {
     focus: FOCUS,
     radius: RADIUS_CONTROL,
 };
+/// An entry of an open drop-down (2026-11-12): flat on the list panel, the hover fill shows
+/// which one the pointer is on.
+pub const BUTTON_ENTRY: ButtonStyle = ButtonStyle {
+    fill: CARD,
+    text: TEXT,
+    border: CARD,
+    pressed: Color(0x00DD_E3EB),
+    disabled_fill: CARD,
+    disabled_text: DISABLED_TEXT,
+    disabled_border: CARD,
+    focus: FOCUS,
+    radius: 4,
+};
+/// The selected entry: a light tint (and a ✓ at its right end) instead of a solid bar.
+pub const BUTTON_ENTRY_ON: ButtonStyle = ButtonStyle {
+    fill: INFO_BG,
+    border: INFO_BG,
+    pressed: Color(0x00CF_E0F5),
+    ..BUTTON_ENTRY
+};
 
 /// A link button drawn on `backdrop` (card or window background).
 #[must_use]

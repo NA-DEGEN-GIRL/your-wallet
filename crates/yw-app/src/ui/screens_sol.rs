@@ -223,7 +223,7 @@ fn local_time(unix_ms: u64) -> String {
 /// `(value, note)` of a token holding: the balance with the pinned decimals and symbol, and what
 /// it means (RPC reference; missing account; frozen; unreadable).
 fn token_holding_text(entry: &SplAllowEntry, holding: Option<TokenHolding>) -> (String, String) {
-    let amount = |raw: u64| format!("{} {}", format_amount(raw, entry.decimals), entry.symbol);
+    let amount = |raw: u64| format_amount(raw, entry.decimals);
     let raw = |raw: u64| {
         format!(
             "{} 원시 단위 · decimals {} · RPC finalized 기준(참고)",

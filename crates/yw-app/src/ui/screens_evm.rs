@@ -902,7 +902,7 @@ impl App {
         use ids::{TokenAction, token_row_id};
         let balance = row.balance.map_or_else(
             || "잔액 알 수 없음".to_owned(),
-            |value| format_amount(&value, row.decimals, &row.ticker),
+            |value| format_units(&value, row.decimals),
         );
         let note = match (row.name.is_empty(), hidden) {
             (true, false) => String::new(),

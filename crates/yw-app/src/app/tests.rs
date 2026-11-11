@@ -2294,7 +2294,12 @@ fn single_account_row_does_not_repeat_the_hero_card() {
         .into_iter()
         .find(|ctl| ctl.id == picker)
         .unwrap();
-    assert!(button.text.ends_with('▾'), "{}", button.text);
+    assert_eq!(
+        button.face,
+        Some(crate::ui::main_window::Face::Entry(Some(
+            crate::ui::main_window::GLYPH_DOWN
+        )))
+    );
     assert!(
         !controls(&items)
             .iter()

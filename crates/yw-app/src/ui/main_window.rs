@@ -111,6 +111,8 @@ pub struct Ctl {
     pub face: Option<Face>,
     /// The tooltip shown while the pointer rests on the control.
     pub tip: Option<String>,
+    /// Other labels the control is sized for ([`Ctl::fit`]).
+    pub fit: Vec<String>,
 }
 
 /// Symbol of a copy action (Segoe UI Symbol U+29C9 TWO JOINED SQUARES).
@@ -121,6 +123,12 @@ pub const GLYPH_OPEN: &str = "\u{2197}";
 pub const GLYPH_LINK: &str = "\u{1F517}";
 /// Symbol of "save to the address book" (U+2606 WHITE STAR).
 pub const GLYPH_SAVE: &str = "\u{2606}";
+/// A closed drop-down (U+25BE BLACK DOWN-POINTING SMALL TRIANGLE).
+pub const GLYPH_DOWN: &str = "\u{25BE}";
+/// An open drop-down (U+25B4 BLACK UP-POINTING SMALL TRIANGLE).
+pub const GLYPH_UP: &str = "\u{25B4}";
+/// The selected entry of a drop-down (U+2713 CHECK MARK).
+pub const GLYPH_CHECK: &str = "\u{2713}";
 
 /// What a button draws instead of its label ([`Ctl::face`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -131,6 +139,10 @@ pub enum Face {
     /// screen gives one line, [`layout`] breaks it to the button's width — left-aligned, with
     /// [`GLYPH_COPY`] at the right end of the button.
     Value(Vec<Vec<(String, bool)>>),
+    /// A drop-down's selector or one of its entries (2026-11-12): the label left-aligned after
+    /// the badge, and the symbol ([`GLYPH_DOWN`], [`GLYPH_UP`], [`GLYPH_CHECK`]) at the right
+    /// end.
+    Entry(Option<&'static str>),
 }
 
 impl Ctl {
@@ -148,6 +160,7 @@ impl Ctl {
             compact: false,
             face: None,
             tip: None,
+            fit: Vec::new(),
         }
     }
 
@@ -191,6 +204,42 @@ impl Ctl {
         ctl
     }
 
+    /// The selector of a drop-down (2026-11-12): the selected entry's label with ▾ (▴ while
+    /// `open`) at the right end. The list is the [`Item::Menu`] after its row.
+    #[must_use]
+    pub fn picker(id: u16, text: &str, open: bool) -> Self {
+        let mut ctl = Self::button(id, text);
+        ctl.face = Some(Face::Entry(Some(if open { GLYPH_UP } else { GLYPH_DOWN })));
+        ctl
+    }
+
+    /// One entry of an open drop-down; `checked == Some(selected)` (the selected one is tinted
+    /// and carries a ✓).
+    #[must_use]
+    pub fn entry(id: u16, text: &str, selected: bool) -> Self {
+        let mut ctl = Self::styled(
+            id,
+            text,
+            if selected {
+                theme::BUTTON_ENTRY_ON
+            } else {
+                theme::BUTTON_ENTRY
+            },
+        );
+        ctl.checked = Some(selected);
+        ctl.compact = true;
+        ctl.face = Some(Face::Entry(selected.then_some(GLYPH_CHECK)));
+        ctl
+    }
+
+    /// Sizes the control for the widest of `labels` too (a drop-down's selector keeps one width
+    /// whichever entry is selected, and its list is as wide).
+    #[must_use]
+    pub fn fit<'a>(mut self, labels: impl IntoIterator<Item = &'a str>) -> Self {
+        self.fit = labels.into_iter().map(str::to_owned).collect();
+        self
+    }
+
     /// A check box.
     #[must_use]
     pub fn check(id: u16, text: &str, checked: bool) -> Self {
@@ -207,6 +256,7 @@ impl Ctl {
             compact: false,
             face: None,
             tip: None,
+            fit: Vec::new(),
         }
     }
 
@@ -228,6 +278,7 @@ impl Ctl {
             compact: false,
             face: None,
             tip: None,
+            fit: Vec::new(),
         }
     }
 
@@ -250,6 +301,7 @@ impl Ctl {
             compact: false,
             face: None,
             tip: None,
+            fit: Vec::new(),
         }
     }
 
@@ -366,18 +418,18 @@ pub enum Item {
     CopyLine {
         /// The copyable value.
         value: Ctl,
-        /// Actions at the right end.
+        /// Actions right after the value.
         actions: Vec<Ctl>,
     },
-    /// One list entry (2026-11-11, the token card): a bold title with a small muted note after
-    /// it (wrapped at words in the left column, never into the value), and a bold value
-    /// right-aligned on the same line. `dim` draws everything muted (hidden rows).
+    /// One list entry (the token card): a bold title, the bold value right after it (2026-11-12:
+    /// beside the symbol it belongs to, not at the far edge of the card) and a small muted note
+    /// after the value. `dim` draws everything muted (hidden rows).
     ListRow {
         /// Bold title (a token symbol).
         title: String,
-        /// Small muted note after the title (the token name).
+        /// Small muted note after the value (the token name).
         note: String,
-        /// Right-aligned value (a balance).
+        /// The value after the title (a balance: the amount alone, the title names the symbol).
         value: String,
         /// Muted (a hidden row).
         dim: bool,
@@ -554,6 +606,14 @@ const VALUE_GLYPH_DIP: i32 = 16;
 const VALUE_GAP_DIP: i32 = 12;
 /// A value button's width beyond its text.
 const VALUE_CHROME_DIP: i32 = 2 * VALUE_PAD_DIP + VALUE_GLYPH_DIP + VALUE_GAP_DIP;
+/// Inner left and right padding of a drop-down's selector and entries ([`Face::Entry`]).
+const ENTRY_PAD_DIP: i32 = 12;
+/// Room for the symbol at the right end of a [`Face::Entry`] (with the gap before it).
+const ENTRY_MARK_DIP: i32 = 28;
+/// Height of one entry of an open drop-down.
+const ENTRY_DIP: i32 = 30;
+/// Padding of the list panel around its entries.
+const MENU_PAD_DIP: i32 = 4;
 
 /// How many mono characters `advance` pixels wide fit in `room` pixels (at least 8).
 fn columns(room: i32, advance: i32) -> usize {
@@ -610,6 +670,9 @@ struct Layouter<'m> {
     /// The last row just placed: `(x after its last control, content y of its last line, line
     /// height)`; an [`Item::Pill`] right after it goes on that line.
     row_end: Option<(i32, i32, i32)>,
+    /// The first control of the last labeled row: `(x, width)`; an [`Item::Menu`] hangs under
+    /// it.
+    anchor: Option<(i32, i32)>,
     placed: Placed,
 }
 
@@ -805,6 +868,20 @@ impl Layouter<'_> {
         } else if let Some(text) = ctl.value_text() {
             self.mono_width(&text)
                 .saturating_add(self.px(VALUE_CHROME_DIP))
+        } else if let Some(Face::Entry(_)) = ctl.face {
+            let label = ctl
+                .fit
+                .iter()
+                .map(|other| (self.label_width)(other))
+                .fold((self.label_width)(&ctl.text), i32::max);
+            let badge = if ctl.badge.is_some() {
+                BADGE_DIP + BADGE_GAP_DIP
+            } else {
+                0
+            };
+            label
+                .saturating_add(self.px(2 * ENTRY_PAD_DIP + ENTRY_MARK_DIP + badge))
+                .max(self.px(160))
         } else {
             let pad = match (ctl.is_button(), ctl.compact) {
                 (true, true) => 20,
@@ -859,10 +936,14 @@ impl Layouter<'_> {
             x = frame.x.saturating_add(label_w).saturating_add(self.px(8));
         }
         let line_start = x;
-        for ctl in ctls {
+        self.anchor = None;
+        for (index, ctl) in ctls.iter().enumerate() {
             let w = self
                 .ctl_width(ctl)
                 .min(right.saturating_sub(line_start).max(self.px(40)));
+            if index == 0 && label.is_some() {
+                self.anchor = Some((line_start, w));
+            }
             if x.saturating_add(w) > right && x > line_start {
                 x = line_start;
                 self.y = self.y.saturating_add(row_h).saturating_add(self.px(6));
@@ -932,10 +1013,8 @@ impl Layouter<'_> {
         })
     }
 
-    /// Places `actions` right-aligned on the line at content `y` that is `line_h` tall.
-    fn place_actions(&mut self, actions: &[Ctl], y: i32, line_h: i32) {
-        let right = self.frame.x.saturating_add(self.frame.w);
-        let mut x = right.saturating_sub(self.actions_width(actions));
+    /// Places `actions` side by side from `x` on the line at content `y` that is `line_h` tall.
+    fn place_actions(&mut self, actions: &[Ctl], mut x: i32, y: i32, line_h: i32) {
         for (index, ctl) in actions.iter().enumerate() {
             if index > 0 {
                 x = x.saturating_add(self.action_gap(ctl));
@@ -955,9 +1034,10 @@ impl Layouter<'_> {
     }
 
     /// [`Item::CopyLine`]: the value button from the frame's left edge (its padding hangs into
-    /// the card's, so the text lines up with the lines above) up to the actions; or, when the
-    /// value does not fit there, the value over the whole width (in lines of whole characters)
-    /// and the actions on the next line.
+    /// the card's, so the text lines up with the lines above), as wide as its text, and the
+    /// actions right after it (2026-11-12: an icon belongs next to the value it acts on, not at
+    /// the far edge of the card); or, when the value does not fit beside them, the value over
+    /// the whole width (in lines of whole characters) and the actions under its left edge.
     fn copy_line(&mut self, value: &Ctl, actions: &[Ctl]) {
         let pad = self.px(VALUE_PAD_DIP);
         let chrome = self.px(VALUE_CHROME_DIP);
@@ -971,13 +1051,14 @@ impl Layouter<'_> {
         let actions_w = self.actions_width(actions);
         let left = self.frame.x.saturating_sub(pad);
         let full = self.frame.w.saturating_add(pad.saturating_mul(2));
-        let gap = if actions.is_empty() { 0 } else { self.px(6) };
+        let gap = if actions.is_empty() { 0 } else { self.px(4) };
         let beside = full
             .saturating_sub(pad)
             .saturating_sub(actions_w)
             .saturating_sub(gap);
-        let one_line = text_w.saturating_add(chrome) <= beside;
-        let width = if one_line { beside } else { full };
+        let fitted = text_w.saturating_add(chrome);
+        let one_line = fitted <= beside;
+        let width = if one_line { fitted } else { full };
         let room = width.saturating_sub(chrome).max(self.px(40));
         let lines = break_spans(&spans, columns(room, self.mono_width("0")));
         let count = i32::try_from(lines.len()).unwrap_or(1).max(1);
@@ -992,66 +1073,80 @@ impl Layouter<'_> {
             Rect::new(left, self.y.saturating_sub(self.scroll), width, height),
         );
         if one_line {
-            self.place_actions(actions, self.y, height);
+            let x = left.saturating_add(width).saturating_add(gap);
+            self.place_actions(actions, x, self.y, height);
             self.advance(height, self.px(theme::SPACE_XS));
             return;
         }
         self.advance(height, self.px(2));
         if !actions.is_empty() {
             let line_h = self.px(26);
-            self.place_actions(actions, self.y, line_h);
+            self.place_actions(actions, self.frame.x, self.y, line_h);
             self.advance(line_h, self.px(theme::SPACE_XS));
         }
     }
 
-    /// [`Item::ListRow`].
+    /// [`Item::ListRow`]: the title in a column of at least 72 DIP (so the values of short
+    /// symbols line up down the list), the value right after it, the note after the value — or
+    /// under the line when it has no room there.
     fn list_row(&mut self, title: &str, note: &str, value: &str, dim: bool) {
         let gap = self.px(12);
-        let (title_color, value_color) = if dim {
-            (theme::MUTED, theme::MUTED)
-        } else {
-            (theme::TEXT, theme::TEXT)
-        };
+        let color = if dim { theme::MUTED } else { theme::TEXT };
         let line_h = (self.measure)("가", FontRole::BodyBold, self.frame.w.max(1));
-        let wanted_value = bold_width((self.label_width)(value)).saturating_add(self.px(4));
-        let value_w = wanted_value.min(self.frame.w / 2);
-        let value_wraps = wanted_value > value_w;
-        let left_w = self
-            .frame
-            .w
-            .saturating_sub(value_w)
-            .saturating_sub(gap)
-            .max(self.px(60));
         let top = self.y.saturating_sub(self.scroll);
         let title_w = bold_width((self.label_width)(title))
             .saturating_add(self.px(2))
-            .min(left_w);
+            .min(self.frame.w / 2);
         let title_h = (self.measure)(title, FontRole::BodyBold, title_w).max(line_h);
         self.placed.texts.push(PaintText {
             rect: Rect::new(self.frame.x, top, title_w, title_h),
             text: title.to_owned(),
             font: FontRole::BodyBold,
-            color: title_color.0,
+            color: color.0,
             fill: None,
             wrap: true,
             align: TextAlign::Wrap,
             spans: Vec::new(),
         });
-        let mut height = title_h;
-        if !note.is_empty() {
-            let beside = left_w.saturating_sub(title_w).saturating_sub(self.px(6));
-            let (x, y, w) = if title_h <= line_h && beside >= self.px(80) {
-                // Beside the title, its first line on the title's baseline (9 pt under 10 pt).
-                (
-                    self.frame
-                        .x
-                        .saturating_add(title_w)
-                        .saturating_add(self.px(6)),
-                    top.saturating_add(self.px(2)),
-                    beside,
-                )
+        let value_x = self
+            .frame
+            .x
+            .saturating_add(title_w.max(self.px(72)))
+            .saturating_add(gap);
+        let right = self.frame.x.saturating_add(self.frame.w);
+        let value_room = right.saturating_sub(value_x).max(self.px(60));
+        let wanted_value = bold_width((self.label_width)(value)).saturating_add(self.px(4));
+        let value_w = wanted_value.min(value_room);
+        let value_wraps = wanted_value > value_room;
+        let value_h = if value_wraps {
+            (self.measure)(value, FontRole::BodyBold, value_w).max(line_h)
+        } else {
+            line_h
+        };
+        self.placed.texts.push(PaintText {
+            rect: Rect::new(value_x, top, value_w, value_h),
+            text: value.to_owned(),
+            font: FontRole::BodyBold,
+            color: color.0,
+            fill: None,
+            wrap: value_wraps,
+            align: if value_wraps {
+                TextAlign::Wrap
             } else {
-                (self.frame.x, top.saturating_add(title_h), left_w)
+                TextAlign::Line
+            },
+            spans: Vec::new(),
+        });
+        let mut height = title_h.max(value_h);
+        if !note.is_empty() {
+            let note_x = value_x.saturating_add(value_w).saturating_add(gap);
+            let beside = right.saturating_sub(note_x);
+            let wanted_note = (self.label_width)(note);
+            let (x, y, w) = if height <= line_h && wanted_note <= beside {
+                // After the value, its line on the value's baseline (9 pt beside 10 pt).
+                (note_x, top.saturating_add(self.px(2)), beside)
+            } else {
+                (self.frame.x, top.saturating_add(height), self.frame.w)
             };
             let note_h = (self.measure)(note, FontRole::Caption, w).max(self.px(14));
             self.placed.texts.push(PaintText {
@@ -1066,34 +1161,7 @@ impl Layouter<'_> {
             });
             height = height.max(y.saturating_sub(top).saturating_add(note_h));
         }
-        let value_h = if value_wraps {
-            (self.measure)(value, FontRole::BodyBold, value_w).max(line_h)
-        } else {
-            line_h
-        };
-        self.placed.texts.push(PaintText {
-            rect: Rect::new(
-                self.frame
-                    .x
-                    .saturating_add(self.frame.w)
-                    .saturating_sub(value_w),
-                top,
-                value_w,
-                value_h,
-            ),
-            text: value.to_owned(),
-            font: FontRole::BodyBold,
-            color: value_color.0,
-            fill: None,
-            wrap: value_wraps,
-            align: if value_wraps {
-                TextAlign::Wrap
-            } else {
-                TextAlign::Right
-            },
-            spans: Vec::new(),
-        });
-        self.advance(height.max(value_h), self.px(theme::SPACE_XS));
+        self.advance(height, self.px(theme::SPACE_XS));
     }
 
     /// [`Item::Pill`]: at the end of the row just placed when it fits there, else on its own
@@ -1125,13 +1193,17 @@ impl Layouter<'_> {
         }
     }
 
-    /// [`Item::Menu`]: one control per line under the value column of the row above.
+    /// [`Item::Menu`]: a drop-down's list (2026-11-12) — a bordered panel right under the
+    /// selector of the row above, from its left edge and at least as wide, one entry per line.
     fn menu(&mut self, ctls: &[Ctl]) {
-        let x = self
-            .frame
-            .x
-            .saturating_add(self.label_column())
-            .saturating_add(self.px(8));
+        let pad = self.px(MENU_PAD_DIP);
+        let (x, selector_w) = self.anchor.unwrap_or((
+            self.frame
+                .x
+                .saturating_add(self.label_column())
+                .saturating_add(self.px(8)),
+            0,
+        ));
         let available = self
             .frame
             .x
@@ -1143,22 +1215,43 @@ impl Layouter<'_> {
             .map(|ctl| self.ctl_width(ctl))
             .max()
             .unwrap_or(0)
-            .max(self.px(260))
+            .saturating_add(pad.saturating_mul(2))
+            .max(selector_w)
+            .max(self.px(160))
             .min(available);
-        // The list hangs under the row above (its 10 DIP gap shrinks to 4).
+        // The list hangs under the row above (its 10 DIP gap shrinks to 2).
         self.y = self
             .y
             .saturating_sub(self.last_gap)
-            .saturating_add(self.px(theme::SPACE_XS));
+            .saturating_add(self.px(2));
+        let entry_h = self.px(ENTRY_DIP);
+        let count = i32::try_from(ctls.len()).unwrap_or(0);
+        let height = entry_h
+            .saturating_mul(count)
+            .saturating_add(pad.saturating_mul(2));
+        self.shape(
+            Rect::new(x, self.y.saturating_sub(self.scroll), width, height),
+            self.px(theme::RADIUS_CONTROL),
+            theme::CARD,
+            theme::BUTTON_SECONDARY.border,
+        );
+        let mut y = self.y.saturating_add(pad);
         for ctl in ctls {
-            let h = self.px(control_height(ctl));
-            self.push_control(
-                ctl,
-                Rect::new(x, self.y.saturating_sub(self.scroll), width, h),
-            );
-            self.advance(h, self.px(2));
+            // On the panel, whatever is under it.
+            let mut placed = ctl.clone();
+            placed.backdrop = Some(theme::CARD);
+            self.placed.controls.push((
+                placed,
+                Rect::new(
+                    x.saturating_add(pad),
+                    y.saturating_sub(self.scroll),
+                    width.saturating_sub(pad.saturating_mul(2)),
+                    entry_h,
+                ),
+            ));
+            y = y.saturating_add(entry_h);
         }
-        self.advance(0, self.px(10));
+        self.advance(height, self.px(10));
     }
 
     fn hold(&mut self, id: u16, label: &str, progress: u16, enabled: bool) {
@@ -1444,6 +1537,7 @@ pub fn layout(
         card: None,
         last_gap: 0,
         row_end: None,
+        anchor: None,
         placed: Placed::default(),
     };
     for item in items {
@@ -1697,11 +1791,24 @@ fn kind_class(kind: ControlKind) -> ControlKind {
     }
 }
 
-/// The yw-win face of `face` in `style` at `dpi`: a glyph in the style's text color, or a value's
-/// lines (emphasized spans in bold mono and `theme::FOCUS`, the rest in mono and
-/// `theme::TEXT`) with the copy symbol in the link color at the right end.
-fn button_face(face: &Face, fonts: &Fonts, style: ButtonStyle, dpi: u32) -> ButtonFace {
+/// The yw-win face of `ctl`'s `face` in `style` at `dpi`: a glyph in the style's text color, a
+/// value's lines (emphasized spans in bold mono and `theme::FOCUS`, the rest in mono and
+/// `theme::TEXT`) with the copy symbol in the link color at the right end, or a drop-down
+/// entry's label from the left with its symbol at the right end.
+fn button_face(ctl: &Ctl, face: &Face, fonts: &Fonts, style: ButtonStyle, dpi: u32) -> ButtonFace {
     match face {
+        Face::Entry(mark) => ButtonFace {
+            lines: vec![vec![FaceRun::new(&ctl.text, &fonts.body, style.text)]],
+            left: Some(scale(ENTRY_PAD_DIP, dpi)),
+            trailing: mark.map(|mark| {
+                let color = if mark == GLYPH_CHECK {
+                    theme::FOCUS
+                } else {
+                    theme::MUTED
+                };
+                FaceRun::new(mark, &fonts.symbol, color)
+            }),
+        },
         Face::Glyph(glyph) => ButtonFace {
             lines: vec![vec![FaceRun::new(glyph, &fonts.symbol, style.text)]],
             left: None,
@@ -1912,12 +2019,15 @@ impl ControlSet {
                         pixels: badge.render(size),
                     }));
                 }
-                if fresh || ctl.face != wanted_ctl.face {
+                // An entry's face draws the label and takes its color from the style.
+                let relabeled = matches!(wanted_ctl.face, Some(Face::Entry(_)))
+                    && (ctl.text != wanted_ctl.text || ctl.kind != wanted_ctl.kind);
+                if fresh || relabeled || ctl.face != wanted_ctl.face {
                     control.set_face(
                         wanted_ctl
                             .face
                             .as_ref()
-                            .map(|face| button_face(face, fonts, style, dpi)),
+                            .map(|face| button_face(wanted_ctl, face, fonts, style, dpi)),
                     );
                 }
             }
@@ -2025,7 +2135,7 @@ mod tests {
     /// which sit right-aligned on the same line; in a narrow window the value takes the whole
     /// width in lines of whole characters (its spans kept) and the icons go on the next line.
     #[test]
-    fn copy_line_keeps_the_value_whole_and_the_icons_right() {
+    fn copy_line_keeps_the_value_whole_and_the_icons_beside_it() {
         let measure = |_: &str, _: FontRole, _: i32| 20;
         let width = |text: &str| i32::try_from(text.len()).unwrap_or(0).saturating_mul(7);
         let address = "0xF9900bb6FF2D2C67858c3468d21c5f103C4Ff646";
@@ -2048,12 +2158,13 @@ mod tests {
         let (chain_link, link_rect) = &placed.controls[2];
         assert_eq!(open.face, Some(Face::Glyph(GLYPH_OPEN)));
         assert_eq!(chain_link.tip.as_deref(), Some("탐색기 링크 복사"));
-        // The text lines up with the card's left edge (the padding hangs out), the icons end at
-        // the right edge, and everything is on one line.
+        // The text lines up with the card's left edge (the padding hangs out), the icons sit
+        // right after the value (4 DIP, then 2 DIP apart), and everything is on one line.
         let margin = scale(theme::SPACE_XL, 96);
         assert_eq!(value_rect.x + VALUE_PAD_DIP, margin);
-        assert_eq!(link_rect.x + link_rect.w, 900 - margin);
-        assert!(value_rect.x + value_rect.w < open_rect.x);
+        assert_eq!(open_rect.x, value_rect.x + value_rect.w + 4);
+        assert_eq!(link_rect.x, open_rect.x + open_rect.w + 2);
+        assert!(link_rect.x + link_rect.w < 900 - margin);
         assert!(open_rect.y >= value_rect.y && open_rect.bottom() <= value_rect.bottom());
         assert_eq!(link_rect.y, open_rect.y);
 
@@ -2078,6 +2189,7 @@ mod tests {
         assert_eq!(strong, "F990f646");
         let (_, open_rect) = &narrow.controls[1];
         assert!(open_rect.y >= value_rect.bottom(), "icons under the value");
+        assert_eq!(open_rect.x, value_rect.x + VALUE_PAD_DIP);
     }
 
     #[test]

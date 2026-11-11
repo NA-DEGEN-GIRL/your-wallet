@@ -8,14 +8,16 @@
 //! colors check boxes, radios and read-only edits with the control's backdrop (the card or window
 //! color under it) on `WM_CTLCOLORSTATIC`/`WM_CTLCOLORBTN`. A button may draw a [`ButtonFace`]
 //! instead of its window text (2026-11-11: icon buttons and copyable address/hash lines; the
-//! window text stays the accessible name) and show a tooltip ([`Control::set_tooltip`]).
+//! window text stays the accessible name) and show a tooltip ([`Control::set_tooltip`]). The
+//! button under the pointer is drawn in a hover fill and the pointer over it is the hand
+//! (2026-11-12, the parent's `WM_SETCURSOR`).
 
-use core::cell::RefCell;
+use core::cell::{Cell, RefCell};
 use core::fmt;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use windows_sys::Win32::Foundation::{ERROR_INVALID_WINDOW_HANDLE, HWND, RECT, SIZE};
+use windows_sys::Win32::Foundation::{ERROR_INVALID_WINDOW_HANDLE, HWND, POINT, RECT, SIZE};
 use windows_sys::Win32::Graphics::Gdi::{
     CreatePen, CreateSolidBrush, DT_CENTER, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DeleteObject,
     DrawTextW, FillRect, GetTextExtentPoint32W, GetTextMetricsW, HBRUSH, HDC, HFONT,
@@ -34,10 +36,11 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     BM_GETCHECK, BM_SETCHECK, BS_AUTOCHECKBOX, BS_AUTORADIOBUTTON, BS_MULTILINE, BS_OWNERDRAW,
     CW_USEDEFAULT, CreateWindowExW, DestroyWindow, ES_AUTOHSCROLL, ES_PASSWORD, ES_READONLY,
-    GW_OWNER, GWL_STYLE, GetParent, GetWindow, GetWindowLongW, GetWindowTextLengthW,
-    GetWindowTextW, HMENU, IsWindow, MoveWindow, SW_HIDE, SW_SHOW, SendMessageW, SetWindowTextW,
-    ShowWindow, WM_GETFONT, WM_SETFONT, WS_CHILD, WS_EX_CLIENTEDGE, WS_EX_TOPMOST, WS_GROUP,
-    WS_POPUP, WS_TABSTOP, WS_VISIBLE,
+    GW_OWNER, GWL_STYLE, GetCursorPos, GetParent, GetWindow, GetWindowLongW, GetWindowTextLengthW,
+    GetWindowTextW, HMENU, HTCLIENT, IDC_HAND, IsWindow, KillTimer, LoadCursorW, MoveWindow,
+    SW_HIDE, SW_SHOW, SendMessageW, SetCursor, SetTimer, SetWindowTextW, ShowWindow, WM_GETFONT,
+    WM_SETFONT, WS_CHILD, WS_EX_CLIENTEDGE, WS_EX_TOPMOST, WS_GROUP, WS_POPUP, WS_TABSTOP,
+    WS_VISIBLE, WindowFromPoint,
 };
 
 use super::paint::{Color, Font, Rect};
@@ -132,6 +135,9 @@ thread_local! {
     static PAINTS: RefCell<HashMap<usize, ControlPaint>> = RefCell::new(HashMap::new());
     /// Owner-drawn button hwnd → its icon (UI thread only; removed when the control is dropped).
     static ICONS: RefCell<HashMap<usize, ButtonIcon>> = RefCell::new(HashMap::new());
+    /// The owner-drawn button under the pointer and its parent (`(0, 0)` = none): drawn in its
+    /// hover fill ([`set_cursor`], [`hover_tick`]).
+    static HOT: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
     /// Owner-drawn button hwnd → its face (UI thread only; removed when the control is dropped).
     static FACES: RefCell<HashMap<usize, ButtonFace>> = RefCell::new(HashMap::new());
     /// Parent hwnd → its tooltip window (created on the first [`Control::set_tooltip`]; owned by
@@ -232,6 +238,95 @@ pub(crate) fn round_rect(hdc: HDC, rect: &RECT, radius: i32, fill: Color, border
     unsafe { DeleteObject(brush) };
 }
 
+/// Timer of a parent window while one of its buttons is hot: the pointer can leave the window
+/// without another `WM_SETCURSOR`, so [`hover_tick`] looks where it is. Far from the app's ids.
+pub(crate) const HOVER_TIMER_ID: usize = 0x5957_0001;
+/// Period of [`HOVER_TIMER_ID`].
+const HOVER_TICK_MS: u32 = 60;
+
+/// The fill of a button under the pointer: two thirds of the way from its fill to its pressed
+/// fill.
+fn hover_fill(style: ButtonStyle) -> Color {
+    let channel = |shift: u32| {
+        let from = (style.fill.0 >> shift) & 0xFF;
+        let to = (style.pressed.0 >> shift) & 0xFF;
+        (from.saturating_add(to.saturating_mul(2)) / 3) << shift
+    };
+    Color(channel(16) | channel(8) | channel(0))
+}
+
+/// Makes button `hot` of `parent` the one under the pointer (`(0, 0)` = none): repaints the old
+/// and the new one, and runs [`HOVER_TIMER_ID`] on the parent while there is one.
+fn set_hot(hot: usize, parent: usize) {
+    let (old, old_parent) = HOT.with(|cell| cell.replace((hot, parent)));
+    if old == hot {
+        return;
+    }
+    for button in [old, hot] {
+        if button != 0 {
+            let button: HWND = core::ptr::with_exposed_provenance_mut(button);
+            // SAFETY: Invalidates one non-null window (ours; a handle that died meanwhile only
+            // fails the call); no rectangle pointer.
+            unsafe { InvalidateRect(button, core::ptr::null(), 0) };
+        }
+    }
+    if old_parent != 0 && old_parent != parent {
+        let old_parent: HWND = core::ptr::with_exposed_provenance_mut(old_parent);
+        // SAFETY: Stops a timer of our window (fails harmlessly when it is gone).
+        unsafe { KillTimer(old_parent, HOVER_TIMER_ID) };
+    }
+    if parent != 0 && old_parent != parent {
+        let parent: HWND = core::ptr::with_exposed_provenance_mut(parent);
+        // SAFETY: Starts a timer of our live window; no callback (it arrives as `WM_TIMER`).
+        unsafe { SetTimer(parent, HOVER_TIMER_ID, HOVER_TICK_MS, None) };
+    }
+}
+
+/// `WM_SETCURSOR` of `parent` (`wParam` = the window under the pointer, low word of `lParam` =
+/// the hit test): over the client area of one of its enabled owner-drawn buttons the pointer is
+/// the hand and the button becomes hot. `false` anywhere else (default processing).
+pub(crate) fn set_cursor(parent: HWND, wparam: usize, lparam: isize) -> bool {
+    let parent = parent.expose_provenance();
+    let client = usize::try_from(HTCLIENT).ok() == Some(lparam.cast_unsigned() & 0xFFFF);
+    let target: HWND = core::ptr::with_exposed_provenance_mut(wparam);
+    let ours = client
+        && paint_of(target).is_some_and(|paint| paint.style.is_some() && paint.parent == parent);
+    if !ours {
+        if HOT.get().1 == parent {
+            set_hot(0, 0);
+        }
+        return false;
+    }
+    set_hot(wparam, parent);
+    // SAFETY: Loads the shared system hand cursor (a null module and a predefined id).
+    let hand = unsafe { LoadCursorW(core::ptr::null_mut(), IDC_HAND) };
+    if hand.is_null() {
+        return false;
+    }
+    // SAFETY: Sets the pointer to the shared system cursor loaded above.
+    unsafe { SetCursor(hand) };
+    true
+}
+
+/// [`HOVER_TIMER_ID`] of `parent`: the hot button stops being hot once the pointer is no longer
+/// over it; the timer stops when no button of `parent` is hot.
+pub(crate) fn hover_tick(parent: HWND) {
+    let (hot, hot_parent) = HOT.get();
+    if hot == 0 || hot_parent != parent.expose_provenance() {
+        // SAFETY: Stops a timer of our live window.
+        unsafe { KillTimer(parent, HOVER_TIMER_ID) };
+        return;
+    }
+    let mut point = POINT { x: 0, y: 0 };
+    // SAFETY: `point` is writable for the call.
+    let known = unsafe { GetCursorPos(&raw mut point) } != 0;
+    // SAFETY: A plain-value query of the window at a screen point.
+    let under = unsafe { WindowFromPoint(point) };
+    if !known || under.expose_provenance() != hot {
+        set_hot(0, 0);
+    }
+}
+
 /// The owner-drawn button created under `parent` with command `id` (its hwnd), if any.
 fn owner_drawn_button(parent: HWND, id: usize) -> Option<usize> {
     let parent = parent.expose_provenance();
@@ -298,6 +393,8 @@ pub(crate) fn draw_item(parent: HWND, wparam: usize, lparam: isize) -> bool {
         )
     } else if pressed {
         (style.pressed, style.text, style.border)
+    } else if HOT.get().0 == item.hwndItem.expose_provenance() {
+        (hover_fill(style), style.text, style.border)
     } else {
         (style.fill, style.text, style.border)
     };
@@ -338,7 +435,11 @@ pub(crate) fn draw_item(parent: HWND, wparam: usize, lparam: isize) -> bool {
             .and_then(|faces| faces.get(&item.hwndItem.expose_provenance()).cloned())
     });
     match face {
-        Some(face) => draw_face(hdc, rect, &face, disabled.then_some(text)),
+        Some(face) => {
+            let icon = icon_of(item.hwndItem);
+            let disabled = disabled.then_some(text);
+            draw_face(hdc, rect, &face, icon.as_ref(), dpi, disabled);
+        }
         None => draw_window_label(hdc, rect, item.hwndItem, dpi),
     }
     if !old_font.is_null() {
@@ -346,6 +447,16 @@ pub(crate) fn draw_item(parent: HWND, wparam: usize, lparam: isize) -> bool {
         unsafe { SelectObject(hdc, old_font) };
     }
     true
+}
+
+/// The icon of button `hwnd`.
+fn icon_of(hwnd: HWND) -> Option<ButtonIcon> {
+    ICONS.with(|icons| {
+        icons
+            .try_borrow()
+            .ok()
+            .and_then(|icons| icons.get(&hwnd.expose_provenance()).cloned())
+    })
 }
 
 /// Draws button `hwnd`'s window text (and its icon) centered in `rect`.
@@ -358,12 +469,7 @@ fn draw_window_label(hdc: HDC, rect: RECT, hwnd: HWND, dpi: u32) {
     // SAFETY: `buffer` is writable for `capacity` units including the terminator.
     let copied = unsafe { GetWindowTextW(hwnd, buffer.as_mut_ptr(), capacity) };
     let count = usize::try_from(copied).unwrap_or(0).min(len);
-    let icon = ICONS.with(|icons| {
-        icons
-            .try_borrow()
-            .ok()
-            .and_then(|icons| icons.get(&hwnd.expose_provenance()).cloned())
-    });
+    let icon = icon_of(hwnd);
     draw_label(
         hdc,
         rect,
@@ -433,8 +539,16 @@ fn run_metrics(hdc: HDC, run: &FaceRun) -> (i32, i32, i32) {
 type MeasuredLine<'a> = (Vec<(&'a FaceRun, i32, i32)>, i32, i32, i32);
 
 /// Draws `face` in `rect` (the caller restores the DC's font); `disabled` replaces every run's
-/// color.
-fn draw_face(hdc: HDC, rect: RECT, face: &ButtonFace, disabled: Option<Color>) {
+/// color. A left-aligned face starts after `icon` (a drop-down entry's chain badge); a centered
+/// one has none.
+fn draw_face(
+    hdc: HDC,
+    rect: RECT,
+    face: &ButtonFace,
+    icon: Option<&ButtonIcon>,
+    dpi: u32,
+    disabled: Option<Color>,
+) {
     let measured: Vec<MeasuredLine<'_>> = face
         .lines
         .iter()
@@ -459,13 +573,22 @@ fn draw_face(hdc: HDC, rect: RECT, face: &ButtonFace, disabled: Option<Color>) {
     let mut y = rect
         .top
         .saturating_add((height.saturating_sub(total) / 2).max(0));
+    let mut indent = 0_i32;
+    if let (Some(pad), Some(icon)) = (face.left, icon) {
+        let top = rect
+            .top
+            .saturating_add((height.saturating_sub(icon.size) / 2).max(0));
+        let left = rect.left.saturating_add(pad);
+        let _ = super::paint::alpha_blit(hdc, left, top, icon.size, icon.size, &icon.pixels);
+        indent = icon.size.saturating_add(super::window::scale(6, dpi));
+    }
     for (runs, line_w, line_h, ascent) in measured {
         let mut x = face.left.map_or_else(
             || {
                 rect.left
                     .saturating_add((width.saturating_sub(line_w) / 2).max(0))
             },
-            |pad| rect.left.saturating_add(pad),
+            |pad| rect.left.saturating_add(pad).saturating_add(indent),
         );
         let baseline = y.saturating_add(ascent);
         for (run, run_w, run_ascent) in runs {
@@ -1074,6 +1197,10 @@ impl Drop for Control {
                     tipped.remove(&self.hwnd);
                 }
             });
+        }
+        if HOT.get().0 == self.hwnd {
+            // The parent's hover timer stops itself at its next tick.
+            HOT.set((0, 0));
         }
         FACES.with(|faces| {
             if let Ok(mut faces) = faces.try_borrow_mut() {

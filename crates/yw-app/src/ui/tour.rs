@@ -1282,6 +1282,25 @@ fn screenshot_tour() {
     set_screen(&app, UNLOCKED, Screen::Main);
     save(main_hwnd(&app), "10-main-evm");
     {
+        // The two drop-downs, open (2026-11-12): a list panel under its selector.
+        let mut state = app.borrow_mut();
+        state.evm.network_picker = true;
+        state.refresh();
+    }
+    save(main_hwnd(&app), "56-network-menu");
+    {
+        let mut state = app.borrow_mut();
+        state.evm.network_picker = false;
+        state.account_menu = Some(crate::ui::screens_links::ids::PICKER_EVM);
+        state.refresh();
+    }
+    save(main_hwnd(&app), "57-account-menu");
+    {
+        let mut state = app.borrow_mut();
+        state.account_menu = None;
+        state.refresh();
+    }
+    {
         // A failed balance read (2026-11-10): the network card's band with the code's text and
         // the block of the balance kept below, its two buttons and a test on its way (made up).
         let mut state = app.borrow_mut();

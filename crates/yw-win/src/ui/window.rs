@@ -59,8 +59,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     SystemParametersInfoW, TranslateMessage, WDA_EXCLUDEFROMCAPTURE, WM_APP, WM_CHAR, WM_CREATE,
     WM_CTLCOLORBTN, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM, WM_ERASEBKGND,
     WM_GETMINMAXINFO, WM_IME_STARTCOMPOSITION, WM_KEYDOWN, WM_LBUTTONDOWN, WM_MBUTTONDOWN,
-    WM_MOUSEWHEEL, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_RBUTTONDOWN, WM_SETREDRAW,
-    WM_SYSKEYDOWN, WNDCLASSEXW, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN, WS_EX_APPWINDOW,
+    WM_MOUSEWHEEL, WM_NCCREATE, WM_NCDESTROY, WM_PAINT, WM_RBUTTONDOWN, WM_SETCURSOR, WM_SETREDRAW,
+    WM_SYSKEYDOWN, WM_TIMER, WNDCLASSEXW, WS_CAPTION, WS_CHILD, WS_CLIPCHILDREN, WS_EX_APPWINDOW,
     WS_EX_CONTROLPARENT, WS_EX_DLGMODALFRAME, WS_EX_TOPMOST, WS_MINIMIZEBOX, WS_OVERLAPPED,
     WS_OVERLAPPEDWINDOW, WS_SYSMENU, WS_THICKFRAME, WS_VSCROLL,
 };
@@ -1786,6 +1786,12 @@ fn dispatch(state: &WindowState, hwnd: HWND, msg: u32, wparam: WPARAM, lparam: L
             return brush.expose_provenance().cast_signed();
         }
         WM_DRAWITEM if super::controls::draw_item(hwnd, wparam, lparam) => return 1,
+        // Over one of this window's buttons: the hand, and the button's hover fill.
+        WM_SETCURSOR if super::controls::set_cursor(hwnd, wparam, lparam) => return 1,
+        WM_TIMER if wparam == super::controls::HOVER_TIMER_ID => {
+            super::controls::hover_tick(hwnd);
+            return 0;
+        }
         // Never erase: `PaintDc` fills its back buffer (white, like the class brush) and copies
         // it in one step, so an erase would only flash the background before every repaint.
         WM_ERASEBKGND => return 1,

@@ -1616,18 +1616,22 @@ impl App {
         // entry is the chip of before: same ids, same handler).
         let selected = self.settings.evm_chain_id;
         let open = self.evm.network_picker;
+        let chains = self.settings.registered_evm();
+        let labels: Vec<String> = chains
+            .iter()
+            .take(usize::from(ids::NETWORK_SPAN))
+            .map(|chain_id| self.network_choice_label(*chain_id))
+            .collect();
         items.push(Item::LabeledRow(
             "네트워크".to_owned(),
             vec![
-                Ctl::button(
+                Ctl::picker(
                     crate::ui::screens_evm::ids::NETWORK_PICKER,
-                    &format!(
-                        "{}   {}",
-                        self.network_choice_label(selected),
-                        if open { "▴" } else { "▾" }
-                    ),
+                    &self.network_choice_label(selected),
+                    open,
                 )
-                .badge(self.evm_badge(selected)),
+                .badge(self.evm_badge(selected))
+                .fit(labels.iter().map(String::as_str)),
             ],
         ));
         if selected == SEPOLIA {
@@ -1640,20 +1644,18 @@ impl App {
             items.push(Item::Pill(T_MAINNET.to_owned(), Tone::BtcMainnet));
         }
         if open {
-            let chains = self.settings.registered_evm();
             items.push(Item::Menu(
                 chains
                     .iter()
                     .take(usize::from(ids::NETWORK_SPAN))
                     .enumerate()
                     .map(|(index, chain_id)| {
-                        Ctl::tab(
+                        Ctl::entry(
                             ids::NETWORK_BASE.saturating_add(u16::try_from(index).unwrap_or(0)),
                             &self.network_choice_label(*chain_id),
                             *chain_id == selected,
                         )
                         .badge(self.evm_badge(*chain_id))
-                        .compact()
                     })
                     .collect(),
             ));
