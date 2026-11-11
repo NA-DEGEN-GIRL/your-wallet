@@ -196,6 +196,19 @@ impl App {
         }
     }
 
+    /// Whether `id` is the selector of a drop-down (an account one or S10's network one).
+    pub(crate) fn is_picker_button(id: u16) -> bool {
+        ids::FIXED.contains(&id) || id == crate::ui::screens_evm::ids::NETWORK_PICKER
+    }
+
+    /// Closes the open account and network drop-downs (2026-11-12: Esc, any other command, a
+    /// click on the window, another screen); whether one was open. The caller lays out again.
+    pub(crate) fn close_pickers(&mut self) -> bool {
+        let account = self.account_menu.take().is_some();
+        let network = core::mem::take(&mut self.evm.network_picker);
+        account || network
+    }
+
     /// The drop-down buttons and the activity recipients; `false` when `id` is none of them.
     pub fn on_links_command(&mut self, id: u16) -> bool {
         if ids::FIXED.contains(&id) {
@@ -204,6 +217,8 @@ impl App {
             } else {
                 Some(id)
             };
+            // One drop-down at a time.
+            self.evm.network_picker = false;
             self.refresh();
             return true;
         }

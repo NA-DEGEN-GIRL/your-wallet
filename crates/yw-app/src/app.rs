@@ -90,6 +90,8 @@ const MA_ACTIVATEANDEAT: isize = 2;
 const EN_CHANGE: u16 = 0x0300;
 /// The command id `IsDialogMessageW` sends for Esc (no control uses it, `ui::command_ids`).
 const IDCANCEL: u16 = 2;
+/// The one it sends for Enter (no button is a default button: they are owner-drawn).
+const IDOK: u16 = 1;
 /// Settings field limits (UTF-16 units).
 const TOKEN_MAX_UNITS: usize = 256;
 const URL_MAX_UNITS: usize = 2_048;
@@ -897,6 +899,46 @@ fn eip55(address: &Address) -> String {
     address.to_checksum()
 }
 
+/// The action Enter presses while the focus is in edit `edit` of the main window (2026-11-12):
+/// the send forms' `검토` (it only opens the approval window) and the one save, look-up or
+/// connect button of a plain form. Not listed, so Enter stays ignored there: forms with two
+/// candidate buttons (the RPC template credentials), typed confirmations, the fee caps, the
+/// chain form, the `YubiKey` wizard and `HyperCore`.
+fn enter_primary(edit: u16) -> Option<u16> {
+    use crate::ui::{
+        screens, screens_book as book, screens_btc as btc, screens_evm as evm,
+        screens_explorer as explorer, screens_llm as llm, screens_mnemonics as mnemonics,
+        screens_sol as sol, screens_walletconnect as wc, screens_zec as zec,
+    };
+    Some(match edit {
+        evm::ids::SEND_TO_EDIT | evm::ids::SEND_AMOUNT_EDIT => evm::ids::SEND_REVIEW,
+        sol::ids::SEND_TO_EDIT | sol::ids::SEND_AMOUNT_EDIT => sol::ids::SEND_REVIEW,
+        btc::ids::SEND_TO_EDIT | btc::ids::SEND_AMOUNT_EDIT | btc::ids::FEE_MANUAL_EDIT => {
+            btc::ids::SEND_REVIEW
+        }
+        zec::ids::SEND_TO_EDIT | zec::ids::SEND_AMOUNT_EDIT => zec::ids::SEND_REVIEW,
+        screens::ids::RENAME_EDIT => screens::ids::RENAME_SAVE,
+        sol::ids::RENAME_EDIT => sol::ids::RENAME_SAVE,
+        mnemonics::ids::RENAME_EDIT => mnemonics::ids::RENAME_SAVE,
+        screens::ids::REPLACE_EDIT => screens::ids::REPLACE_SAVE,
+        screens::ids::AUTOLOCK_EDIT => screens::ids::AUTOLOCK_SAVE,
+        screens::ids::DONE_QN_EDIT => screens::ids::DONE_CONNECT,
+        evm::ids::TOKEN_ADDR_EDIT => evm::ids::TOKEN_LOOKUP,
+        evm::ids::TOKEN_LABEL_EDIT => evm::ids::TOKEN_SAVE,
+        book::ids::ADDR_EDIT | book::ids::LABEL_EDIT => book::ids::SAVE,
+        book::ids::PROMPT_LABEL_EDIT => book::ids::PROMPT_SAVE,
+        wc::ids::URI_EDIT => wc::ids::PAIR,
+        wc::ids::FILE_EDIT => wc::ids::FILE_QR,
+        wc::ids::PROJECT_EDIT => wc::ids::PROJECT_SAVE,
+        explorer::ids::EDIT_TX | explorer::ids::EDIT_ADDRESS => explorer::ids::SAVE,
+        llm::ids::ENDPOINT_EDIT | llm::ids::MODEL_EDIT | llm::ids::MAX_TOKENS_EDIT => {
+            llm::ids::SAVE
+        }
+        llm::ids::KEY_EDIT => llm::ids::KEY_SAVE,
+        _ => return None,
+    })
+}
+
 /// E-KEY-002 with the item name before the code (spec/04 §2.11, §7).
 fn key002_text(item: &str) -> String {
     ErrorCode::Key002
@@ -1272,6 +1314,8 @@ impl App {
         }
         if screen != self.screen {
             self.remember_scroll();
+            // A drop-down does not stay open behind another screen (a lock, 2026-11-12).
+            let _ = self.close_pickers();
         }
         // Where the new screen opens: under a closing overlay where it was, on a way back where
         // it was left, else at the top.
@@ -1430,9 +1474,13 @@ impl App {
                 }
                 Reply::Handled(0)
             }
-            // The S22 hold area (painted, no child control).
+            // The S22 hold area (painted, no child control). A click on the window itself, not
+            // on a control, also closes an open drop-down (2026-11-12).
             Msg::MouseDown { x, y } => {
                 self.hold_down(*x, *y, now_ms());
+                if self.close_pickers() {
+                    self.refresh();
+                }
                 Reply::Default
             }
             Msg::MouseMove { x, y } => {
@@ -1568,8 +1616,11 @@ impl App {
     /// `취소`; else an open inline edit's cancel (rename, an RPC row's `교체`, the address-book save
     /// prompt or entry being edited); else the back link of a screen that has one (S11–S16, S23, S-HC, the Solana and
     /// Bitcoin send and receive screens) — its inputs stay. Nothing on S17, the `YubiKey` flows,
-    /// S22, a waiting screen or the first-run screens, nor while a secret window is open. Enter
-    /// (`IDOK`) stays ignored.
+    /// a waiting screen or S01, nor while a secret window is open. 2026-11-12: after the overlay
+    /// an open network or account drop-down closes first (nothing else happens on that press),
+    /// and a screen's own `취소` counts like an inline edit's: the intro screens (S02, S05, S18,
+    /// S20), S22, the Bitcoin `계정 추가` chooser and the Zcash key-source confirmation. Enter is
+    /// [`Self::enter_key`].
     pub(crate) fn escape_key(&mut self) {
         use crate::ui::screens::ids;
         if self.secret.is_some() {
@@ -1577,6 +1628,10 @@ impl App {
         }
         if matches!(self.screen, Screen::Confirm(_)) {
             let _ = self.press_shown(&[ids::CONFIRM_NO]);
+            return;
+        }
+        if self.close_pickers() {
+            self.refresh();
             return;
         }
         let in_yubikey_flow = matches!(self.screen, Screen::Settings(SettingsSection::YubiKey))
@@ -1594,7 +1649,19 @@ impl App {
             crate::ui::screens_book::ids::CANCEL,
             // The block explorer row being changed (2026-11-11).
             crate::ui::screens_explorer::ids::CANCEL,
+            // A screen's or chooser's own `취소` (2026-11-12).
+            ids::INTRO_CANCEL,
+            crate::ui::screens_reset::ids::RESET_CANCEL,
+            crate::ui::screens_btc::ids::ACCOUNT_ADD_CANCEL,
+            crate::ui::screens_zec::ids::SOURCE_CANCEL,
         ]) {
+            return;
+        }
+        // S20's `취소` too, but never once its new words were shown: it discards them, like the
+        // YubiKey wizard's (both stay a click then).
+        if self.yk_words == crate::app_yubikey::YkWords::None
+            && self.press_shown(&[crate::ui::screens_yubikey::ids::NEW_WALLET_CANCEL])
+        {
             return;
         }
         if matches!(
@@ -1617,6 +1684,36 @@ impl App {
                 ids::BACK_MAIN,
                 crate::ui::screens_reset::ids::EXT_BACK,
             ]);
+        }
+    }
+
+    /// Enter on the main window (`IDOK` from the dialog manager; the buttons are owner-drawn, so
+    /// there is no default button), 2026-11-12: [`Self::enter_on`] the control that has the
+    /// focus.
+    fn enter_key(&mut self) {
+        let focus = self
+            .controls
+            .focused()
+            .and_then(|index| self.placed.controls.get(index))
+            .map(|(ctl, _)| ctl.clone());
+        self.enter_on(focus.as_ref());
+    }
+
+    /// Enter with the focus on `focus`: an enabled button is pressed, exactly as a click; in an
+    /// edit of a form with one obvious action ([`enter_primary`]) that action, when it is shown
+    /// enabled. A check box, a radio, any other edit or no focus: nothing, and nothing while a
+    /// secret window is open (the secret and approval windows have their own key rules).
+    pub(crate) fn enter_on(&mut self, focus: Option<&crate::ui::main_window::Ctl>) {
+        let Some(ctl) = focus else {
+            return;
+        };
+        if self.secret.is_some() || !ctl.enabled {
+            return;
+        }
+        if ctl.is_button() {
+            self.on_command(ctl.id);
+        } else if let Some(primary) = enter_primary(ctl.id) {
+            let _ = self.press_shown(&[primary]);
         }
     }
 
@@ -3521,13 +3618,26 @@ impl App {
 
     // ----- commands ----------------------------------------------------------------------
 
-    #[expect(clippy::too_many_lines, reason = "one arm per command id")]
+    /// A command of the main window. Any command but Enter, Esc and a drop-down's own selector
+    /// closes an open network or account drop-down (2026-11-12); the layout follows after the
+    /// command ran, because its handler may read the live controls (check boxes, edits).
     fn on_command(&mut self, id: u16) {
-        use crate::ui::screens::ids;
         self.note_input();
+        let closed =
+            !matches!(id, IDOK | IDCANCEL) && !Self::is_picker_button(id) && self.close_pickers();
+        self.dispatch_command(id);
+        if closed {
+            self.refresh();
+        }
+    }
+
+    #[expect(clippy::too_many_lines, reason = "one arm per command id")]
+    fn dispatch_command(&mut self, id: u16) {
+        use crate::ui::screens::ids;
         match id {
-            // Esc (the dialog manager's `IDCANCEL`); Enter's `IDOK` (1) stays ignored.
+            // Esc and Enter (the dialog manager's `IDCANCEL` and `IDOK`).
             IDCANCEL => self.escape_key(),
+            IDOK => self.enter_key(),
             ids::FIRST_CREATE => self.set_screen(Screen::CreateIntro),
             ids::FIRST_IMPORT => self.set_screen(Screen::ImportIntro),
             ids::OPEN_DATA_FOLDER => Self::open_folder(&self.paths.data.clone()),

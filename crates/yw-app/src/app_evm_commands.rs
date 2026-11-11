@@ -142,6 +142,8 @@ impl App {
             }
             ids::NETWORK_PICKER => {
                 self.evm.network_picker = !self.evm.network_picker;
+                // One drop-down at a time.
+                self.account_menu = None;
                 self.refresh();
             }
             ids::QR_EIP681 | ids::QR_PLAIN => {

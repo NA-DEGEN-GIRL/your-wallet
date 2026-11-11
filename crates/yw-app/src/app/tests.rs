@@ -2401,6 +2401,92 @@ fn single_account_row_does_not_repeat_the_hero_card() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// 2026-11-12: one drop-down is open at a time; Esc closes it before anything else; any other
+/// command closes it and still runs; another screen closes it. Esc also presses a screen's own
+/// `취소`, but never S20's once its new words were shown.
+#[test]
+fn drop_downs_close_on_escape_and_other_commands() {
+    use crate::ui::screens_evm::ids::NETWORK_PICKER;
+    let (mut app, dir) = unlocked_app("picker-close", false);
+    let picker = crate::ui::screens_links::ids::PICKER_EVM;
+    let open = |app: &App| (app.evm.network_picker, app.account_menu);
+    app.on_command(NETWORK_PICKER);
+    assert_eq!(open(&app), (true, None));
+    app.on_command(picker);
+    assert_eq!(open(&app), (false, Some(picker)));
+    app.on_command(NETWORK_PICKER);
+    assert_eq!(open(&app), (true, None));
+    // Another command closes the list and still runs.
+    app.on_command(ids::RENAME);
+    assert_eq!(open(&app), (false, None));
+    assert!(app.rename.is_some());
+    // Esc: the list first, the inline edit on the next press.
+    app.on_command(picker);
+    app.on_command(super::IDCANCEL);
+    assert_eq!(open(&app), (false, None));
+    assert!(app.rename.is_some(), "only the list closed");
+    app.on_command(super::IDCANCEL);
+    assert_eq!(app.rename, None);
+    app.on_command(picker);
+    app.set_screen(Screen::Locked);
+    assert_eq!(open(&app), (false, None));
+    // A screen's own `취소`.
+    app.set_screen(Screen::CreateIntro);
+    app.on_command(super::IDCANCEL);
+    assert_eq!(app.screen, Screen::FirstRun);
+    app.set_screen(Screen::YubiKeyWalletIntro);
+    app.yk_words = crate::app_yubikey::YkWords::Shown;
+    app.on_command(super::IDCANCEL);
+    assert_eq!(app.screen, Screen::YubiKeyWalletIntro, "shown words stay");
+    app.yk_words = crate::app_yubikey::YkWords::None;
+    app.on_command(super::IDCANCEL);
+    assert_eq!(app.screen, Screen::FirstRun);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// 2026-11-12: Enter presses the focused enabled button, and in an edit the one primary action
+/// of its form when that is shown enabled; a disabled button, a check box, an edit without such
+/// an action and no focus stay ignored.
+#[test]
+fn enter_presses_the_focused_button_or_the_form_primary() {
+    use crate::ui::screens_evm::ids as evm;
+    let (mut app, dir) = unlocked_app("enter-key", false);
+    let rename = Ctl::button(ids::RENAME, "이름 바꾸기");
+    app.enter_on(None);
+    app.enter_on(Some(&rename.clone().enabled(false)));
+    app.enter_on(Some(&Ctl::check(ids::RENAME, "", false)));
+    assert_eq!(app.rename, None);
+    app.enter_on(Some(&rename));
+    assert!(app.rename.is_some());
+    // In the name edit: `저장`.
+    let edit = ctl(&app.items(), ids::RENAME_EDIT).unwrap();
+    app.controls.type_text(ids::RENAME_EDIT, "새 이름");
+    app.enter_on(Some(&edit));
+    assert_eq!(app.rename, None);
+    assert_eq!(app.meta.as_ref().unwrap().evm_accounts[0].label, "새 이름");
+    // The send form: `검토`, pressed only while it is enabled (an empty form's is not).
+    assert_eq!(
+        super::enter_primary(evm::SEND_AMOUNT_EDIT),
+        Some(evm::SEND_REVIEW)
+    );
+    app.set_screen(Screen::Send);
+    let items = app.items();
+    assert_eq!(
+        ctl(&items, evm::SEND_REVIEW).map(|ctl| ctl.enabled),
+        Some(false)
+    );
+    app.enter_on(ctl(&items, evm::SEND_TO_EDIT).as_ref());
+    assert_eq!(app.screen, Screen::Send);
+    assert!(app.evm.queue.is_empty());
+    // Two candidate buttons, a typed confirmation: no action.
+    assert_eq!(super::enter_primary(ids::QN_TOKEN_EDIT), None);
+    assert_eq!(
+        super::enter_primary(crate::ui::screens_reset::ids::RESET_PHRASE),
+        None
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// Review 2026-11-07 F5: a notice keeps its own tone (a pinned genesis is information, not a red
 /// error band); errors stay red; `알림 닫기` clears both.
 #[test]
