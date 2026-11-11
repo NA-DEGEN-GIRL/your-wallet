@@ -911,7 +911,7 @@ hello 교환(§8.2, 2 s) 실패 → UNAVAILABLE
 - 종료: yw-host `main.rs`에 단 하나의 `fn terminate(code: u8) -> ! { std::process::exit(i32::from(code)) }`를 두고 `#[expect(clippy::exit, reason = "stdin/pipe 리더 스레드가 메인이 블록된 I/O 중에 프로세스를 끝내야 함")]`를 붙인다([01] §3.1 `exit = "deny"`). 다른 곳에서는 exit를 쓰지 않는다(`lib.rs` 함수는 종료 코드를 돌려주고 `main.rs`의 스레드 본문이 `terminate`를 부른다).
 
 ### 7.6 UNAVAILABLE 모드
-yw-app에 연결하지 못했을 때만 쓴다. 채널의 프레임을 `recv_timeout(1 s)`로 꺼내며, 1 s 동안 새 프레임이 없으면 종료 코드 3.
+yw-app에 연결하지 못했을 때만 쓴다. 채널의 프레임을 `recv_timeout`으로 꺼내며, 이 모드를 **시작한 지 1 s**가 지나면 종료 코드 3(2026-11-12: 이전에는 "1 s 동안 새 프레임이 없으면"이라, 1초에 한 번 넘게 요청하는 페이지가 있으면 앱을 다시 찾지 않는 호스트가 계속 살아 4900만 답했다. 끝나야 확장이 새 호스트를 띄워 다시 연결을 시도한다 — §2.8 backoff).
 
 - 프레임을 yw-json `REQUEST_LIMITS`로 파싱한다. 루트 객체에서 `version`, `kind`와 상관 필드 4개만 읽는다(spec.md §4.1): `version == 1`이고 `kind == "request"`이고 `sessionId`(id64), `sequence`(safe), `activationNonce`(id64), `requestId`(id32)가 형식대로이면 아래를 쓴다(정수는 §6.1과 같이 `as_u64_allow_dot_zero`). 다른 키는 보지 않는다. 그 밖(cancel, `version` 불일치, 형식 오류)은 버린다.
 - `sequence`는 이 프로세스의 송신 카운터(1부터)다. 이 모드에서는 yw-host가 유일한 송신자다.

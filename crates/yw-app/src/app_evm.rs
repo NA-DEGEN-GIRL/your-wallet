@@ -1464,9 +1464,25 @@ impl App {
             .cloned()
     }
 
-    /// Opens S11.
+    /// Opens S11. A token chosen on another network (the form outlives `← 메인으로` and a
+    /// network change) is not an asset of this one: the form goes back to the native asset
+    /// with no amount instead of a transfer to that address with guessed decimals.
     pub fn open_send(&mut self) {
         self.evm.send.info = None;
+        if let SendAsset::Token(token) = self.evm.send.asset {
+            let listed = self
+                .chain_tokens(self.settings.evm_chain_id)
+                .iter()
+                .any(|(address, ..)| *address == token);
+            if !listed {
+                self.evm.send.asset = SendAsset::Native;
+                self.evm.send.amount_text.clear();
+                self.evm.send.amount = None;
+                self.evm.send.amount_error = None;
+                self.evm.send.quote = None;
+                self.evm.send.contract = None;
+            }
+        }
         self.set_screen(Screen::Send);
         self.refresh_balances();
     }

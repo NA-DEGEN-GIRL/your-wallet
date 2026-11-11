@@ -607,6 +607,9 @@ impl App {
                     chain: form.chain,
                     ..BookForm::default()
                 };
+                // The focused edit is kept across the new row (Enter saves from it).
+                self.controls.clear_text(ids::ADDR_EDIT);
+                self.controls.clear_text(ids::LABEL_EDIT);
                 self.save_meta();
             }
             Err(error) => self.book.form.message = Some(list_error_text(error)),
@@ -728,6 +731,9 @@ impl App {
                     chain: self.book.form.chain,
                     ..BookForm::default()
                 };
+                // Esc presses this from a focused edit, which is kept.
+                self.controls.clear_text(ids::ADDR_EDIT);
+                self.controls.clear_text(ids::LABEL_EDIT);
                 self.refresh();
             }
             ids::PROMPT_SAVE => self.save_prompt(),

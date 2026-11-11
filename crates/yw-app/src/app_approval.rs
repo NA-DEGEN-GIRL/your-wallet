@@ -3126,10 +3126,12 @@ impl App {
                     physical: yw_win::input::is_down_in_message(VK_RETURN)
                         && !yw_win::input::injected(),
                 }),
-                Focus::Reject => self.interaction(InteractionEvent::RejectActivated),
-                Focus::Ack => self.toggle_ack(),
-                Focus::Raw => self.toggle_raw(),
-                Focus::Scroll => {}
+                // Not an auto-repeat (2026-11-12): the Enter that opened this window from a
+                // send form may still be held.
+                Focus::Reject if !repeat => self.interaction(InteractionEvent::RejectActivated),
+                Focus::Ack if !repeat => self.toggle_ack(),
+                Focus::Raw if !repeat => self.toggle_raw(),
+                _ => {}
             },
             VK_SPACE => match focus {
                 Focus::Approve => self.interaction(InteractionEvent::SpacePressed {

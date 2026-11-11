@@ -2071,6 +2071,10 @@ pub fn run_loop(observe: &mut dyn FnMut(InputKind, Hwnd)) -> i32 {
                     .try_borrow()
                     .is_ok_and(|roots| roots.contains(&root.expose_provenance()))
             });
+        // A held Enter is one press: the dialog manager would turn every repeat into `IDOK`.
+        if dialog_root && repeated_enter(message.message, message.wParam, message.lParam) {
+            continue;
+        }
         // SAFETY: `root` is our main window and `message` the message just retrieved.
         if dialog_root && unsafe { IsDialogMessageW(root, &raw const message) } != 0 {
             continue;
@@ -2080,6 +2084,14 @@ pub fn run_loop(observe: &mut dyn FnMut(InputKind, Hwnd)) -> i32 {
         // SAFETY: Dispatches the message just retrieved to its window procedure.
         unsafe { DispatchMessageW(&raw const message) };
     }
+}
+
+/// Whether a message is an auto-repeat `WM_KEYDOWN` of Enter (bit 30 of `lParam`: the key was
+/// already down). A dialog root drops it (2026-11-12): Enter presses the focused button, and a
+/// row button keeps the focus when its row goes away, so a held key would press the next row's.
+fn repeated_enter(message: u32, wparam: usize, lparam: isize) -> bool {
+    const VK_RETURN: usize = 0x0D;
+    message == WM_KEYDOWN && wparam == VK_RETURN && lparam & (1 << 30) != 0
 }
 
 /// `PostQuitMessage(code)`.
@@ -2178,7 +2190,8 @@ mod tests {
     use super::{
         CaptureExclusion, ClassSpec, Handler, InputKind, Msg, Reply, Window, WindowKind,
         WindowSpec, create_window, dpi_changed_wparam_valid, exclusion_verified, may_adopt,
-        never_posted, observed_input, register_class, registered_state, run_loop, scale,
+        never_posted, observed_input, register_class, registered_state, repeated_enter, run_loop,
+        scale,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         CREATESTRUCTW, GWLP_USERDATA, PostMessageW, PostQuitMessage, SendMessageW,
@@ -2297,6 +2310,17 @@ mod tests {
 
         drop(window);
         assert!(registered_state(hwnd).is_null());
+    }
+
+    #[test]
+    fn only_a_repeated_enter_key_down_is_dropped() {
+        // Scan code 0x1C, repeat count 1; bit 30 = the key was already down.
+        let first = 0x001C_0001_isize;
+        let repeat = first | (1 << 30);
+        assert!(repeated_enter(WM_KEYDOWN, 0x0D, repeat));
+        assert!(!repeated_enter(WM_KEYDOWN, 0x0D, first));
+        assert!(!repeated_enter(WM_KEYDOWN, 0x20, repeat));
+        assert!(!repeated_enter(WM_CHAR, 0x0D, repeat));
     }
 
     /// Records, for every `WM_KEYDOWN`, the physical-input checks the approval window uses.

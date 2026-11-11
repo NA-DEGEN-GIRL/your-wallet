@@ -144,6 +144,25 @@ fn r_h2_only_correlation_fields_are_read() {
     );
 }
 
+/// The mode ends `idle` after it began even while requests keep coming (2026-11-12): a page
+/// that asks twice a second must not keep a host alive that never looks for the app again.
+#[test]
+fn r_h2_steady_requests_do_not_keep_the_mode_alive() {
+    let (queue, received) = mpsc::sync_channel(64);
+    let sender = std::thread::spawn(move || {
+        // Far more often than the life of the mode; ends when the receiver is gone.
+        while queue.send(REQUEST.as_bytes().to_vec()).is_ok() {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    });
+    let mut output = Vec::new();
+    let code = run_unavailable(&received, &mut output, Duration::from_millis(60));
+    drop(received);
+    assert_eq!(code, EXIT_UNAVAILABLE);
+    assert!(!output.is_empty());
+    assert!(sender.join().is_ok());
+}
+
 #[test]
 fn r_h2_closed_queue_is_eof_and_stdout_failure_is_io() -> Result<(), Box<dyn std::error::Error>> {
     let (queue, received) = mpsc::sync_channel::<Vec<u8>>(1);

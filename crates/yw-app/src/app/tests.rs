@@ -2784,6 +2784,10 @@ fn copy_is_answered_at_its_control_and_expires() {
     app.copied_tick(1_000);
     assert_eq!(app.copied, None);
     assert!(matches!(face(&app), Some(Face::Value(_))));
+    // Any other command takes the mark away (it may change the value behind the control).
+    app.copied = Some(copied);
+    app.on_command(crate::ui::screens_evm::ids::REFRESH);
+    assert_eq!(app.copied, None);
     // S12: the same copy line (the grouped address), marked the same way.
     app.copied = Some(copied);
     app.set_screen(Screen::Receive);
@@ -2984,6 +2988,29 @@ fn send_picker_tucks_hidden_tokens_away() {
     assert!(!ctl(&items, SEND_HIDDEN_TOGGLE).unwrap().enabled);
     // The radio id maps to the same token whatever is hidden.
     assert_eq!(app.send_asset_meta(), (18, "SCAM".to_owned()));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A token chosen on one network is not carried into the send form of another: the form
+/// outlives `← 메인으로`, and opening it again after a network change goes back to the native
+/// asset with no amount (not a transfer to that address with guessed decimals).
+#[test]
+fn send_form_drops_a_token_of_another_network() {
+    use crate::app_evm::SendAsset;
+    let (mut app, dir) = token_app("send-other-network");
+    let tokens = app.chain_tokens(11_155_111);
+    let token = tokens[tokens.len() - 2].0;
+    app.evm.send.asset = SendAsset::Token(token);
+    app.evm.send.amount_text = "5".to_owned();
+    // The same network: the choice stays.
+    app.open_send();
+    assert_eq!(app.evm.send.asset, SendAsset::Token(token));
+    assert_eq!(app.evm.send.amount_text, "5");
+    app.settings.evm_chain_id = 1;
+    app.open_send();
+    assert_eq!(app.evm.send.asset, SendAsset::Native);
+    assert!(app.evm.send.amount_text.is_empty());
+    assert_eq!(app.evm.send.amount, None);
     let _ = std::fs::remove_dir_all(dir);
 }
 

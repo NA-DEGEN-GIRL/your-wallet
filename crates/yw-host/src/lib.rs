@@ -42,7 +42,8 @@ pub const RETRY_SLEEP_MS: u64 = 100;
 pub const BUSY_WAIT_MS: u64 = 500;
 /// Hello-ack deadline (spec/05 §8.2).
 pub const HELLO_TIMEOUT_MS: u64 = 2_000;
-/// UNAVAILABLE mode ends after this long without a frame (spec/05 §7.6).
+/// UNAVAILABLE mode ends this long after it began (spec/05 §7.6; until 2026-11-12 this long
+/// without a frame, so a page asking twice a second kept it alive after the app had started).
 pub const UNAVAILABLE_IDLE_MS: u64 = 1_000;
 /// `settings.json` read limit (spec/05 §7.4).
 pub const SETTINGS_MAX_BYTES: u64 = 65_536;
@@ -228,12 +229,14 @@ pub fn encode_unavailable(request: &Correlation, sequence: u64) -> Vec<u8> {
 }
 
 /// UNAVAILABLE mode (spec/05 §7.6): answers each well-formed v1 request with 4900 and drops
-/// everything else. Returns [`EXIT_UNAVAILABLE`] after `idle` without a frame, [`EXIT_EOF`] if
-/// the queue closes, [`EXIT_IO`] if stdout fails.
+/// everything else. Returns [`EXIT_UNAVAILABLE`] once `idle` has passed since the call and no
+/// frame is waiting (the next request then starts a host that looks for the app again),
+/// [`EXIT_EOF`] if the queue closes, [`EXIT_IO`] if stdout fails.
 pub fn run_unavailable(frames: &Receiver<Vec<u8>>, output: &mut impl Write, idle: Duration) -> u8 {
+    let start = Instant::now();
     let mut sequence = 0_u64;
     loop {
-        match frames.recv_timeout(idle) {
+        match frames.recv_timeout(idle.saturating_sub(start.elapsed())) {
             Ok(frame) => {
                 let Some(request) = unavailable_correlation(&frame) else {
                     continue;

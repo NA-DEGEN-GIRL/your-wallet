@@ -3650,6 +3650,9 @@ impl App {
     fn dispatch_command(&mut self, id: u16) {
         use crate::ui::screens::ids;
         self.command = id;
+        // The mark is for the last press: a command that changes the value behind the marked
+        // control (another account, a new receive address) must not leave it there.
+        self.copied = None;
         match id {
             // Esc and Enter (the dialog manager's `IDCANCEL` and `IDOK`).
             IDCANCEL => self.escape_key(),
