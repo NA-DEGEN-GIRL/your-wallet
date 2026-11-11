@@ -790,6 +790,8 @@ pub struct App {
     session_retries: u32,
     session_next_ms: u64,
     last_flush_ms: u64,
+    /// When [`App::reads_due`] last started a balance read ahead of the timer.
+    reads_due_ms: u64,
 }
 
 impl core::fmt::Debug for App {
@@ -1051,6 +1053,7 @@ impl App {
             session_retries: 0,
             session_next_ms: 0,
             last_flush_ms: now,
+            reads_due_ms: 0,
         }
     }
 
@@ -1408,6 +1411,8 @@ impl App {
             Msg::Command { id, code } => {
                 if *code == 0 {
                     self.on_command(*id);
+                    // What the click made due starts now, not at the next tick (2026-11-12).
+                    self.reads_due(now_ms());
                 } else if *code == EN_CHANGE
                     && !self.on_reset_edit_change(*id)
                     && !self.on_book_edit_change(*id)
@@ -1460,6 +1465,9 @@ impl App {
                     WM_YW_NAV_KEY if window.is_foreground() => self.main_nav_key(window, *wparam),
                     _ => {}
                 }
+                // A worker's answer, a shortcut or the window shown again may have made a
+                // read due.
+                self.reads_due(now_ms());
                 Reply::Handled(0)
             }
             Msg::Resume => {
@@ -1661,6 +1669,25 @@ impl App {
         if now.saturating_sub(self.last_flush_ms) >= LOG_FLUSH_MS {
             self.last_flush_ms = now;
             logging::flush();
+        }
+    }
+
+    /// The reads a main-window message made due (a tab, network or account choice, the unlock,
+    /// a worker's answer) start right after it instead of up to one timer period later
+    /// (2026-11-12): the timer's own checks, so the guards, the 15 s cycle and the retries are
+    /// the tick's, and several marks in one message still give one read. Bitcoin, Zcash and
+    /// `HyperCore` commands start their reads themselves. At most one early balance start per
+    /// timer period — a held key (Ctrl+2 repeating) marks them due at the repeat rate, and
+    /// the RPC worker runs jobs one after another; the tick starts what this leaves.
+    pub(crate) fn reads_due(&mut self, now: u64) {
+        if now.saturating_sub(self.reads_due_ms) < u64::from(crate::events::MAIN_TIMER_MS) {
+            return;
+        }
+        let evm = self.evm_balance_tick(now);
+        let sol = self.sol_balance_tick(now);
+        self.received_tick(now);
+        if evm || sol {
+            self.reads_due_ms = now;
         }
     }
 

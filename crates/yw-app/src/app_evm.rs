@@ -1091,6 +1091,7 @@ impl App {
     /// The balances of the active chain are read at the next main tick (S10 visible): the
     /// network, the selected account or the account list changed, or a transaction of the
     /// journal confirmed or failed (2026-11-10; before, the next read was up to 60 s away).
+    /// A main-window message runs that check right after itself (`App::reads_due`, 2026-11-12).
     pub(crate) fn evm_balances_due(&mut self) {
         self.evm.next_balance_ms = 0;
     }
@@ -1314,19 +1315,27 @@ impl App {
         self.tick_approval(now);
         self.tick_tracking(now);
         self.browser_tick(now);
-        if matches!(self.mode, AppMode::Unlocked { .. })
-            && matches!(self.screen, Screen::Main)
-            && now >= self.evm.next_balance_ms
-            && !self.main_hidden()
-        {
-            self.refresh_balances();
-        }
+        self.evm_balance_tick(now);
         if let Some(changed) = self.evm.send.dirty_ms
             && now.saturating_sub(changed) >= SEND_DEBOUNCE_MS
         {
             self.evm.send.dirty_ms = None;
             self.validate_send(true);
         }
+    }
+
+    /// The timer's balance check: a due read starts while S10 shows, unlocked and not hidden;
+    /// whether one did. Also run right after a main-window message (`App::reads_due`,
+    /// 2026-11-12).
+    pub(crate) fn evm_balance_tick(&mut self, now: u64) -> bool {
+        let due = matches!(self.mode, AppMode::Unlocked { .. })
+            && matches!(self.screen, Screen::Main)
+            && now >= self.evm.next_balance_ms
+            && !self.main_hidden();
+        if due {
+            self.refresh_balances();
+        }
+        due
     }
 
     // ----- send form (S11) ----------------------------------------------------------------

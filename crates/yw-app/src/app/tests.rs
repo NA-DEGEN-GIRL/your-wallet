@@ -2165,6 +2165,74 @@ fn chip_and_account_changes_read_balances_at_the_next_tick() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// 2026-11-12: a read a click made due starts right after the message (`App::reads_due`), once;
+/// a second early start within the same timer period is left to the tick (a held key).
+#[test]
+fn reads_due_starts_a_due_balance_read_without_the_tick() {
+    use crate::network::NetworkId;
+    use crate::workers::rpc::RpcJob;
+    let (mut app, dir) = unlocked_app("reads-due", false);
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.rpc_tx = Some(tx);
+    let url = yw_win::http::HttpsUrl::parse("https://rpc.example.test/").unwrap();
+    for chain in app.settings.registered_evm() {
+        app.apikeys.set_rpc(NetworkId::Eip155(chain), &url);
+    }
+    let sent = |rx: &std::sync::mpsc::Receiver<RpcJob>| -> Vec<u64> {
+        rx.try_iter()
+            .filter_map(|job| match job {
+                RpcJob::Balances { chain, .. } => Some(chain.info.chain_id),
+                _ => None,
+            })
+            .collect()
+    };
+    let chip = |app: &App, chain_id: u64| -> u16 {
+        let index = app
+            .settings
+            .registered_evm()
+            .iter()
+            .position(|chain| *chain == chain_id)
+            .unwrap();
+        ids::NETWORK_BASE + u16::try_from(index).unwrap()
+    };
+    let other = app
+        .settings
+        .registered_evm()
+        .into_iter()
+        .find(|chain| *chain != 1 && *chain != app.settings.evm_chain_id)
+        .unwrap();
+    let now = yw_win::time::monotonic_ms();
+    app.evm_tick(now);
+    assert_eq!(sent(&rx).len(), 1, "S10's first read");
+    app.reads_due(now);
+    assert!(sent(&rx).is_empty(), "nothing is due");
+    app.on_command(chip(&app, 1));
+    app.reads_due(now);
+    assert_eq!(
+        sent(&rx),
+        [1],
+        "the chip's network without waiting for the tick"
+    );
+    app.evm_tick(now);
+    assert!(sent(&rx).is_empty(), "and the tick does not read it again");
+    // Marked due again within the timer period: the tick's read, as before.
+    app.on_command(chip(&app, other));
+    app.reads_due(now.saturating_add(100));
+    assert!(sent(&rx).is_empty());
+    app.evm_tick(now.saturating_add(100));
+    assert_eq!(sent(&rx), [other]);
+    // A period later the early start is back; never while S10 is not the screen.
+    let later = now.saturating_add(u64::from(crate::events::MAIN_TIMER_MS));
+    app.on_command(chip(&app, 1));
+    app.screen = Screen::Settings(super::SettingsSection::Network);
+    app.reads_due(later);
+    assert!(sent(&rx).is_empty(), "the tick's guards");
+    app.screen = Screen::Main;
+    app.reads_due(later);
+    assert_eq!(sent(&rx), [1]);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// 2-2 (2026-11-10): token balances read for another account are unknown for the selected one
 /// (its token card says "잔액 알 수 없음" and S11 "잔액 모름").
 #[test]
