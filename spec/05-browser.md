@@ -180,7 +180,7 @@ fn pinned_extension_id() -> Option<&'static str> {
 
 **전역 등록**
 
-- EIP-6963: 모드가 정해지는 순간(§2.12: 첫 유효 `bridge-init`, 또는 로드 후 `MODE_WAIT_MS = 10_000` 동안 없으면 `off`) 한 번, 그 뒤 `eip6963:requestProvider` 이벤트마다 항상 `eip6963:announceProvider`를 보낸다. 모드가 정해지기 전에 받은 `requestProvider`는 그 첫 알림으로 답한다(보통 document_start 뒤 수 ms). `info = Object.freeze({ uuid: <페이지마다 UUIDv4>, name: "Your Wallet", icon: <앱 아이콘 96×96 PNG data URI, `scripts/make-icons.mjs`가 이 줄을 쓴다>, rdns: "io.github.na-degen-girl.yourwallet" })`(기본 모드, 호환 모드의 이름·rdns는 §2.12). 재귀 방지(`archive/spec-v2.4:extension/src/provider-main.js:111-126`) 유지.
+- EIP-6963: 모드가 정해지는 순간(§2.12: 첫 유효 `bridge-init`, 또는 로드 후 `MODE_WAIT_MS = 10_000` 동안 없으면 `off`) 한 번, 그 뒤 `eip6963:requestProvider` 이벤트마다 항상 `eip6963:announceProvider`를 보낸다. 모드가 정해지기 전에 받은 `requestProvider`는 그 첫 알림으로 답한다(보통 document_start 뒤 수 ms). `info = Object.freeze({ uuid: <페이지마다 UUIDv4>, name: "Your Wallet", icon: <앱 아이콘 96×96 PNG data URI, `scripts/make-icons.mjs`가 이 줄을 쓴다>, rdns: "io.github.na-degen-girl.yourwallet" })`(2026-11-11부터 name은 `"Your Wallet (EVM)"`)(기본 모드, 호환 모드의 이름·rdns는 §2.12). 재귀 방지(`archive/spec-v2.4:extension/src/provider-main.js:111-126`) 유지.
 - `window.ethereum`(로드 시, 모드와 무관): `!("ethereum" in window)`일 때만 `Object.defineProperty(window, "ethereum", { value: provider, configurable: true, enumerable: true, writable: true })` 후 `window.dispatchEvent(new Event("ethereum#initialized"))`. 이미 있으면 건드리지 않는다. 예외는 삼킨다. 기본 모드는 이것으로 끝이고, 호환 모드는 모드가 정해질 때 §2.12 규칙으로 차지한다.
 
 **provider 객체**: 확장 가능한(extensible) 일반 객체. 아래 멤버는 `writable:false, configurable:false`로 정의한다. 객체를 freeze하지 않는다(레거시 dApp의 속성 대입이 strict mode에서 실패하지 않도록).
@@ -389,7 +389,7 @@ spec.md §6에 따라 유지한다. 이동·정리는 [01](01-repo-build.md) §4
 
 | 모드(`compatMode`) | 팝업 표시 | `isMetaMask` | `isRabby` | `_metamask` | EIP-6963 `info.name` / `rdns` | `window.ethereum` | 다른 확장 알림 가로채기 |
 |---|---|---|---|---|---|---|---|
-| `off`(기본) | 기본 (Your Wallet) | `false` | `false` | `undefined` | `Your Wallet` / `io.github.na-degen-girl.yourwallet` | 없을 때만 등록(§2.5) | 안 함 |
+| `off`(기본) | 기본 (Your Wallet EVM) | `false` | `false` | `undefined` | `Your Wallet (EVM)` / `io.github.na-degen-girl.yourwallet` | 없을 때만 등록(§2.5) | 안 함 |
 | `metamask` | MetaMask처럼 보이기 | `true` | `false` | `{ isUnlocked }` | `MetaMask` / `io.metamask` | 차지(아래) | `io.metamask`·`io.metamask.flask`·`io.rabby` |
 | `rabby` | Rabby처럼 보이기 | `true` | `true` | `{ isUnlocked }` | `Rabby Wallet` / `io.rabby` | 차지(아래) | 같음 |
 
