@@ -1851,7 +1851,75 @@ const fn typed(_: &ControlSet, _: u16) -> Option<String> {
     None
 }
 
-/// The main window's child controls, recreated when the set changes and moved otherwise.
+/// How many leading and how many trailing entries `old` and `new` have in common, as
+/// `(prefix, suffix)`. The two never overlap (`prefix + suffix <= min(old.len(), new.len())`);
+/// what lies between them is the middle that a change replaces ([`ControlSet::sync`]). An entry
+/// of the prefix has the same entries before it and one of the suffix the same after it, so a
+/// control that moved past another one (an edit opened under another row) is always in the
+/// middle.
+fn common_ends<T: PartialEq>(old: &[T], new: &[T]) -> (usize, usize) {
+    let prefix = old
+        .iter()
+        .zip(new)
+        .take_while(|(was, is)| was == is)
+        .count();
+    let room = old.len().min(new.len()).saturating_sub(prefix);
+    let suffix = old
+        .iter()
+        .rev()
+        .zip(new.iter().rev())
+        .take(room)
+        .take_while(|(was, is)| was == is)
+        .count();
+    (prefix, suffix)
+}
+
+/// Whether a changed control list keeps the live edit of `old` where `wanted` goes, instead of
+/// re-creating it from the model as it does with every other edit. Only the edit being typed in
+/// stays: it has the keyboard focus (so the change did not come from a click on another control)
+/// and the model did not give it another text — the wanted text is the one it wanted before, or
+/// the one the edit shows (`shows`, asked last). A masked edit never stays and is never asked for
+/// its text: what was typed into it is gone with any change of the list, as before.
+fn keeps_edit(old: &Ctl, wanted: &Ctl, focused: bool, shows: impl FnOnce(&str) -> bool) -> bool {
+    matches!(
+        old.kind,
+        ControlKind::Edit {
+            password: false,
+            ..
+        }
+    ) && focused
+        && old.limit == wanted.limit
+        && (wanted.text == old.text || shows(&wanted.text))
+}
+
+/// Whether the live edit shows exactly `text`; its text is compared in a wiping buffer.
+fn shows_text(control: &Control, text: &str) -> bool {
+    let units = text.encode_utf16().count().saturating_add(1);
+    control
+        .text_wiping(units)
+        .as_slice()
+        .iter()
+        .copied()
+        .eq(text.encode_utf16())
+}
+
+/// Whether the control that took the place of the focused one in a rebuild gets the focus back
+/// ([`ControlSet::sync`]): an enabled button, check box or edit, and a radio button only when it
+/// is the checked one (focusing an unchecked radio button clicks it).
+const fn takes_focus_back(ctl: &Ctl) -> bool {
+    ctl.enabled
+        && match ctl.kind {
+            ControlKind::Button(_) | ControlKind::CheckBox | ControlKind::Edit { .. } => true,
+            ControlKind::Radio { .. } => matches!(ctl.checked, Some(true)),
+            ControlKind::Label => false,
+        }
+}
+
+/// The main window's child controls, moved and updated by every refresh. A changed control list
+/// replaces only the controls between its common ends ([`common_ends`]); the ones before and
+/// after stay, and the keyboard focus stays on the control with the same id (2026-11-12 —
+/// before, any change re-created every control and left the focus on the window: a balance that
+/// arrived took it from the field being typed in).
 #[derive(Debug, Default)]
 pub struct ControlSet {
     controls: Vec<(Ctl, Control)>,
@@ -1978,7 +2046,96 @@ impl ControlSet {
         }
     }
 
-    /// Creates, moves and updates controls to match `placed`.
+    /// The focused control's id and, for an edit, its selection (positions, not text).
+    fn focus_mark(&self) -> Option<(u16, Option<(u32, u32)>)> {
+        let (ctl, control) = self.controls.get(self.focused()?)?;
+        let selection = matches!(ctl.kind, ControlKind::Edit { .. }).then(|| control.selection());
+        Some((ctl.id, selection))
+    }
+
+    /// After a rebuild destroyed the focused control: focuses the control that has its id now
+    /// ([`takes_focus_back`]); a re-created edit gets its caret or selection back, so typing goes
+    /// on where it was. An id that is gone leaves the focus on the window, as before.
+    fn refocus(&self, id: u16, selection: Option<(u32, u32)>) {
+        if self.focused().is_some() {
+            return;
+        }
+        let Some((ctl, control)) = self.controls.iter().find(|(ctl, _)| ctl.id == id) else {
+            return;
+        };
+        if !takes_focus_back(ctl) {
+            return;
+        }
+        control.focus();
+        if let (ControlKind::Edit { .. }, Some((start, end))) = (ctl.kind, selection) {
+            control.set_selection(start, end);
+        }
+    }
+
+    /// Makes the set match a changed control list whose `prefix` first and `suffix` last
+    /// controls are the old ones ([`common_ends`]): destroys the old middle, then creates the
+    /// new one. Buttons, check boxes, radios and labels at the two ends stay; an edit there
+    /// stays only by [`keeps_edit`] and is otherwise re-created from the model in place.
+    /// Returns, for each control of the set, whether it was created here.
+    fn rebuild(
+        &mut self,
+        window: &Window,
+        placed: &Placed,
+        fonts: &Fonts,
+        (prefix, suffix): (usize, usize),
+    ) -> Vec<bool> {
+        let tail_at = self.controls.len().saturating_sub(suffix);
+        let tail = self.controls.split_off(tail_at);
+        // Every old control that goes is destroyed before a new one is created.
+        self.controls.truncate(prefix);
+        let head = core::mem::take(&mut self.controls);
+        let middle = placed
+            .controls
+            .len()
+            .saturating_sub(prefix.saturating_add(suffix));
+        let mut old: Vec<Option<(Ctl, Control)>> = head
+            .into_iter()
+            .map(Some)
+            .chain(core::iter::repeat_with(|| None).take(middle))
+            .chain(tail.into_iter().map(Some))
+            .collect();
+        for (slot, (wanted, _)) in old.iter_mut().zip(&placed.controls) {
+            if let Some((ctl, control)) = slot.as_ref()
+                && matches!(ctl.kind, ControlKind::Edit { .. })
+                && !keeps_edit(ctl, wanted, control.has_focus(), |text| {
+                    shows_text(control, text)
+                })
+            {
+                *slot = None;
+            }
+        }
+        // Sibling z-order is the Tab, arrow-key and radio-group order, and a new child starts at
+        // its bottom: beside controls that stayed, each new one is put behind its predecessor
+        // (in ascending order, so the whole set ends up in placed order).
+        let reused = old.iter().any(Option::is_some);
+        let mut created = Vec::with_capacity(old.len());
+        for (slot, (ctl, rect)) in old.into_iter().zip(&placed.controls) {
+            if let Some(kept) = slot {
+                self.controls.push(kept);
+                created.push(false);
+            } else if let Ok(control) = create_control(window, ctl.kind, ctl.id, &ctl.text, *rect) {
+                control.set_font(&fonts.body);
+                if let Some(limit) = ctl.limit {
+                    control.set_limit(limit);
+                }
+                if reused {
+                    control.place_after(self.controls.last().map(|(_, previous)| previous));
+                }
+                self.controls.push((ctl.clone(), control));
+                created.push(true);
+            }
+        }
+        created
+    }
+
+    /// Creates, moves and updates controls to match `placed`. A changed list of `(id, kind)`
+    /// goes through [`Self::rebuild`]; the focus it took from a destroyed control goes back to
+    /// the control with that id.
     pub fn sync(&mut self, window: &Window, placed: &Placed, fonts: &Fonts, client: Rect) {
         let wanted = Self::signature(&placed.controls);
         let current: Vec<(u16, ControlKind)> = self
@@ -1987,24 +2144,22 @@ impl ControlSet {
             .map(|(ctl, _)| (ctl.id, kind_class(ctl.kind)))
             .collect();
         let dpi = window.dpi();
-        let fresh = wanted != current || self.icon_dpi != dpi;
+        let rescaled = self.icon_dpi != dpi;
         self.icon_dpi = dpi;
+        let mut created = Vec::new();
+        let mut focus = None;
         if wanted != current {
-            self.controls.clear();
-            for (ctl, rect) in &placed.controls {
-                if let Ok(control) = create_control(window, ctl.kind, ctl.id, &ctl.text, *rect) {
-                    control.set_font(&fonts.body);
-                    if let Some(limit) = ctl.limit {
-                        control.set_limit(limit);
-                    }
-                    self.controls.push((ctl.clone(), control));
-                }
-            }
+            focus = self.focus_mark();
+            created = self.rebuild(window, placed, fonts, common_ends(&current, &wanted));
         }
         // One repaint for the whole batch: moving each control with its own repaint leaves
         // stale button images behind while scrolling.
         window.begin_batch();
-        for ((ctl, control), (wanted_ctl, rect)) in self.controls.iter_mut().zip(&placed.controls) {
+        for (index, ((ctl, control), (wanted_ctl, rect))) in
+            self.controls.iter_mut().zip(&placed.controls).enumerate()
+        {
+            // A new control has no badge, face or tooltip yet; a new DPI redoes them all.
+            let fresh = rescaled || created.get(index).copied().unwrap_or(false);
             control.set_rect(*rect);
             control.set_font(&fonts.body);
             if let Some(backdrop) = wanted_ctl.backdrop {
@@ -2052,12 +2207,164 @@ impl ControlSet {
             *ctl = wanted_ctl.clone();
         }
         window.end_batch();
+        if let Some((id, selection)) = focus {
+            self.refocus(id, selection);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The old and the new middle of a changed control list, as index ranges.
+    fn middles(old: &[Ctl], new: &[Ctl]) -> (core::ops::Range<usize>, core::ops::Range<usize>) {
+        let signature = |ctls: &[Ctl]| -> Vec<(u16, ControlKind)> {
+            ctls.iter()
+                .map(|ctl| (ctl.id, kind_class(ctl.kind)))
+                .collect()
+        };
+        let (prefix, suffix) = common_ends(&signature(old), &signature(new));
+        (prefix..old.len() - suffix, prefix..new.len() - suffix)
+    }
+
+    #[test]
+    fn common_ends_never_overlap() {
+        assert_eq!(common_ends(&[1, 2, 3], &[1, 2, 3]), (3, 0));
+        assert_eq!(common_ends(&[1, 2, 3], &[4, 5]), (0, 0));
+        assert_eq!(common_ends::<u8>(&[], &[1]), (0, 0));
+        // Rows added in the middle, and a style-only difference (same class) changes nothing.
+        assert_eq!(common_ends(&[1, 2, 5, 6], &[1, 2, 3, 4, 5, 6]), (2, 2));
+        let was = [Ctl::button(1, "가"), Ctl::button(2, "나")];
+        let is = [Ctl::primary(1, "가"), Ctl::button(2, "다")];
+        assert_eq!(middles(&was, &is), (2..2, 2..2));
+        // Repeated ids: the suffix takes only what the prefix left.
+        assert_eq!(common_ends(&[7, 7, 7], &[7, 7]), (2, 0));
+        assert_eq!(common_ends(&[7, 8, 7], &[7]), (1, 0));
+        assert_eq!(common_ends(&[7, 8, 7], &[7, 7]), (1, 1));
+    }
+
+    /// An edit that opens under another row is in the middle (destroyed and re-created), with
+    /// whatever was typed into it: the masked RPC address field (설정 → 네트워크(RPC) `교체`) and
+    /// the rename field of the recovery phrases.
+    #[test]
+    fn an_edit_that_changes_rows_is_rebuilt() {
+        const EDIT: u16 = 90;
+        let row = |base: u16| {
+            vec![
+                Ctl::button(base, "교체"),
+                Ctl::button(base + 1, "테스트"),
+                Ctl::danger(base + 2, "삭제"),
+            ]
+        };
+        let field = |password: bool| {
+            vec![
+                Ctl::edit(EDIT, "", 420, password, 2_048),
+                Ctl::primary(91, "저장"),
+                Ctl::button(92, "취소"),
+            ]
+        };
+        let at = |ctls: &[Ctl]| ctls.iter().position(|ctl| ctl.id == EDIT).unwrap();
+        // RPC rows: three buttons each, the field under the row being replaced.
+        let under_first = [row(10), field(true), row(13), row(16)].concat();
+        let under_second = [row(10), row(13), field(true), row(16)].concat();
+        let (old, new) = middles(&under_first, &under_second);
+        assert!(old.contains(&at(&under_first)) && new.contains(&at(&under_second)));
+        let (old, new) = middles(&under_second, &under_first);
+        assert!(old.contains(&at(&under_second)) && new.contains(&at(&under_first)));
+        // Recovery phrases: the field takes the place of the row's own buttons.
+        let actions = |base: u16| {
+            vec![
+                Ctl::button(base, "이름 바꾸기"),
+                Ctl::button(base + 1, "단어 보기"),
+            ]
+        };
+        let first = [field(false), actions(22), actions(24)].concat();
+        let second = [actions(20), field(false), actions(24)].concat();
+        let third = [actions(20), actions(22), field(false)].concat();
+        for (was, is) in [(&first, &second), (&second, &third), (&third, &first)] {
+            let (old, new) = middles(was, is);
+            assert!(
+                old.contains(&at(was)) && new.contains(&at(is)),
+                "{old:?} {new:?}"
+            );
+        }
+    }
+
+    /// The send form while the address-book rows under the address change: the address edit
+    /// stays in the prefix and the amount edit in the suffix (kept or not by [`keeps_edit`]).
+    #[test]
+    fn picker_rows_change_between_the_send_edits() {
+        let form = |rows: &[u16]| {
+            let mut ctls = vec![
+                Ctl::edit(1, "0x12", 430, false, 64),
+                Ctl::button(2, "주소록에서 선택"),
+            ];
+            ctls.extend(rows.iter().map(|id| Ctl::tab(*id, "항목", false)));
+            ctls.extend([
+                Ctl::edit(3, "", 260, false, 128),
+                Ctl::button(4, "최대"),
+                Ctl::primary(5, "검토"),
+            ]);
+            ctls
+        };
+        assert_eq!(
+            middles(&form(&[30, 31]), &form(&[30, 31, 32, 33])),
+            (4..4, 4..6)
+        );
+        assert_eq!(middles(&form(&[30, 31, 32]), &form(&[35])), (2..5, 2..3));
+        assert_eq!(middles(&form(&[]), &form(&[30])), (2..2, 2..3));
+    }
+
+    /// Only the plain edit being typed in survives a rebuild, and only while the model did not
+    /// give it another text; a masked edit never does, and its text is not even looked at.
+    #[test]
+    fn only_the_focused_plain_edit_is_kept() {
+        let plain = Ctl::edit(1, "abc", 200, false, 64);
+        let asked = core::cell::Cell::new(false);
+        let shows = |answer: bool| {
+            let asked = &asked;
+            move |_: &str| {
+                asked.set(true);
+                answer
+            }
+        };
+        // The model did not change: kept without reading the edit (what was typed stays).
+        assert!(keeps_edit(&plain, &plain, true, shows(false)));
+        assert!(!asked.get());
+        // The model follows the typing: kept when the edit shows the wanted text.
+        let typed = Ctl::edit(1, "abcd", 200, false, 64);
+        assert!(keeps_edit(&plain, &typed, true, shows(true)));
+        // The model re-seeded it, it is not focused, or its limit changed: re-created.
+        assert!(!keeps_edit(&plain, &typed, true, shows(false)));
+        assert!(!keeps_edit(&plain, &plain, false, shows(true)));
+        let longer = Ctl::edit(1, "abc", 200, false, 128);
+        assert!(!keeps_edit(&plain, &longer, true, shows(true)));
+        // Masked: never, whatever the answers would be — and nobody asks.
+        asked.set(false);
+        let masked = Ctl::edit(1, "", 200, true, 64);
+        assert!(!keeps_edit(&masked, &masked, true, shows(true)));
+        assert!(!asked.get());
+        // Not an edit at all.
+        let button = Ctl::button(1, "abc");
+        assert!(!keeps_edit(&button, &button, true, shows(true)));
+    }
+
+    /// The focus goes back to an enabled control, and to a radio button only when it is the
+    /// checked one (a focused unchecked radio button would be clicked).
+    #[test]
+    fn focus_returns_only_where_it_cannot_click() {
+        assert!(takes_focus_back(&Ctl::button(1, "가")));
+        assert!(takes_focus_back(&Ctl::edit(1, "", 100, true, 8)));
+        assert!(!takes_focus_back(&Ctl::button(1, "가").enabled(false)));
+        assert!(takes_focus_back(&Ctl::radio(1, "가", true, true)));
+        assert!(!takes_focus_back(&Ctl::radio(1, "가", false, true)));
+        let label = Ctl {
+            kind: ControlKind::Label,
+            ..Ctl::button(1, "가")
+        };
+        assert!(!takes_focus_back(&label));
+    }
 
     #[test]
     fn shift_equals_layout_at_the_new_offset() {

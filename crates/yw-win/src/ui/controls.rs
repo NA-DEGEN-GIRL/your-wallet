@@ -25,9 +25,9 @@ use windows_sys::Win32::Graphics::Gdi::{
     TEXTMETRICW, TRANSPARENT, TextOutW,
 };
 use windows_sys::Win32::UI::Controls::{
-    BST_CHECKED, BST_UNCHECKED, DRAWITEMSTRUCT, EM_SETLIMITTEXT, EM_SETSEL, ODS_DISABLED,
-    ODS_FOCUS, ODS_NOFOCUSRECT, ODS_SELECTED, ODT_BUTTON, TOOLTIPS_CLASSW, TTF_IDISHWND,
-    TTF_SUBCLASS, TTM_ADDTOOLW, TTM_DELTOOLW, TTM_SETMAXTIPWIDTH, TTM_UPDATETIPTEXTW,
+    BST_CHECKED, BST_UNCHECKED, DRAWITEMSTRUCT, EM_GETSEL, EM_SETLIMITTEXT, EM_SETSEL,
+    ODS_DISABLED, ODS_FOCUS, ODS_NOFOCUSRECT, ODS_SELECTED, ODT_BUTTON, TOOLTIPS_CLASSW,
+    TTF_IDISHWND, TTF_SUBCLASS, TTM_ADDTOOLW, TTM_DELTOOLW, TTM_SETMAXTIPWIDTH, TTM_UPDATETIPTEXTW,
     TTS_ALWAYSTIP, TTS_NOPREFIX, TTTOOLINFOW,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
@@ -37,8 +37,9 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     BM_GETCHECK, BM_SETCHECK, BS_AUTOCHECKBOX, BS_AUTORADIOBUTTON, BS_MULTILINE, BS_OWNERDRAW,
     CW_USEDEFAULT, CreateWindowExW, DestroyWindow, ES_AUTOHSCROLL, ES_PASSWORD, ES_READONLY,
     GW_OWNER, GWL_STYLE, GetCursorPos, GetParent, GetWindow, GetWindowLongW, GetWindowTextLengthW,
-    GetWindowTextW, HMENU, HTCLIENT, IDC_HAND, IsWindow, KillTimer, LoadCursorW, MoveWindow,
-    SW_HIDE, SW_SHOW, SendMessageW, SetCursor, SetTimer, SetWindowTextW, ShowWindow, WM_GETFONT,
+    GetWindowTextW, HMENU, HTCLIENT, HWND_TOP, IDC_HAND, IsWindow, KillTimer, LoadCursorW,
+    MoveWindow, SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOREDRAW, SWP_NOSIZE,
+    SendMessageW, SetCursor, SetTimer, SetWindowPos, SetWindowTextW, ShowWindow, WM_GETFONT,
     WM_SETFONT, WS_CHILD, WS_EX_CLIENTEDGE, WS_EX_TOPMOST, WS_GROUP, WS_POPUP, WS_TABSTOP,
     WS_VISIBLE, WindowFromPoint,
 };
@@ -1048,6 +1049,66 @@ impl Control {
         unsafe { SendMessageW(hwnd, EM_SETSEL, 0, -1) };
     }
 
+    /// An edit's selection as `(start, end)` in UTF-16 units (equal values: the caret). Positions
+    /// only, never the text.
+    #[must_use]
+    pub fn selection(&self) -> (u32, u32) {
+        let Some(hwnd) = self.live() else {
+            return (0, 0);
+        };
+        let mut start = 0_u32;
+        let mut end = 0_u32;
+        // SAFETY: EM_GETSEL writes one DWORD through each pointer; both locals live across the
+        // synchronous call to our live control.
+        unsafe {
+            SendMessageW(
+                hwnd,
+                EM_GETSEL,
+                (&raw mut start).expose_provenance(),
+                (&raw mut end).expose_provenance().cast_signed(),
+            )
+        };
+        (start, end)
+    }
+
+    /// Selects `start..end` (UTF-16 units) of an edit and puts the caret at `end`; positions past
+    /// the text end at it.
+    pub fn set_selection(&self, start: u32, end: u32) {
+        let Some(hwnd) = self.live() else { return };
+        // SAFETY: Sends EM_SETSEL with plain values to our live control.
+        unsafe {
+            SendMessageW(
+                hwnd,
+                EM_SETSEL,
+                usize::try_from(start).unwrap_or(0),
+                isize::try_from(end).unwrap_or(0),
+            )
+        };
+    }
+
+    /// Moves the control right behind `previous` in its parent's z-order (to the top without
+    /// one); nothing is moved, resized, activated or repainted. Sibling z-order is the order of
+    /// the dialog manager's Tab and arrow keys and what makes a radio group (`WS_GROUP` up to the
+    /// next one), and a new child starts at the bottom: a control created between existing ones
+    /// is put in its place with this (2026-11-12).
+    pub fn place_after(&self, previous: Option<&Self>) {
+        let Some(hwnd) = self.live() else { return };
+        let after = previous.and_then(Self::live).unwrap_or(HWND_TOP);
+        // SAFETY: Both handles are live children of the same live parent (or `HWND_TOP`); the
+        // flags leave position, size and activation alone, so only the z-order changes.
+        unsafe {
+            SetWindowPos(
+                hwnd,
+                after,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOREDRAW,
+            )
+        };
+    }
+
     /// Sets the color under the control (card or window background) used to paint the corners of
     /// an owner-drawn button and the background of check boxes, radios and read-only edits.
     pub fn set_backdrop(&self, color: Color) {
@@ -1221,5 +1282,93 @@ impl Drop for Control {
             // SAFETY: The parent is alive, so this child handle is still ours.
             unsafe { DestroyWindow(hwnd) };
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GW_CHILD, GW_HWNDNEXT, GetDlgCtrlID, GetWindow,
+    };
+
+    use super::{ControlKind, create_control};
+    use crate::ui::{
+        CaptureExclusion, ClassSpec, Handler, Msg, Rect, Reply, Window, WindowKind, WindowSpec,
+        create_window, register_class,
+    };
+
+    struct Quiet;
+
+    impl Handler for Quiet {
+        fn on(&mut self, _window: &Window, _msg: &Msg) -> Reply {
+            Reply::Default
+        }
+    }
+
+    /// Child ids of `window` in z-order, top first: the order Tab and the arrow keys walk.
+    fn order(window: &Window) -> Vec<i32> {
+        let mut ids = Vec::new();
+        // SAFETY: Asks our own live test window for its top child.
+        let mut child = unsafe { GetWindow(window.hwnd().raw(), GW_CHILD) };
+        while !child.is_null() {
+            // SAFETY: `child` is a live child of our own test window.
+            ids.push(unsafe { GetDlgCtrlID(child) });
+            // SAFETY: As above; asks for the sibling right below.
+            child = unsafe { GetWindow(child, GW_HWNDNEXT) };
+        }
+        ids
+    }
+
+    /// A real hidden window on the test thread: a new child starts at the bottom of the z-order,
+    /// `place_after` puts it right behind a sibling (or on top), and an edit's selection round
+    /// trips (clamped to the text).
+    #[test]
+    fn place_after_orders_siblings_and_the_selection_round_trips() {
+        const CLASS: &str = "YourWalletV3UnitTestZOrder";
+        register_class(&ClassSpec {
+            name: CLASS,
+            secret: false,
+            capture: CaptureExclusion::Preferred,
+        })
+        .unwrap();
+        let window = create_window(
+            &WindowSpec::new(CLASS, WindowKind::HiddenTopLevel),
+            Box::new(Quiet),
+        )
+        .unwrap();
+        let make =
+            |kind, id| create_control(&window, kind, id, "", Rect::new(0, 0, 40, 20)).unwrap();
+
+        let first = make(
+            ControlKind::Radio {
+                first_in_group: true,
+            },
+            1,
+        );
+        let last = make(ControlKind::CheckBox, 3);
+        let middle = make(
+            ControlKind::Radio {
+                first_in_group: false,
+            },
+            2,
+        );
+        assert_eq!(order(&window), [1, 3, 2], "a new child is the bottom one");
+        middle.place_after(Some(&first));
+        assert_eq!(order(&window), [1, 2, 3]);
+        last.place_after(None);
+        assert_eq!(order(&window), [3, 1, 2]);
+
+        let edit = make(
+            ControlKind::Edit {
+                password: false,
+                readonly: false,
+            },
+            4,
+        );
+        edit.set_text("abcdef");
+        edit.set_selection(2, 4);
+        assert_eq!(edit.selection(), (2, 4));
+        edit.set_selection(9, 9);
+        assert_eq!(edit.selection(), (6, 6));
     }
 }
