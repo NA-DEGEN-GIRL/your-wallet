@@ -531,7 +531,7 @@ test("B6 unhealthy native connections back off 1 s, 2 s, 4 s ... capped at 30 s 
   doc.request(rid(++id));
   native.last.drop();
   assert.deepEqual(doc.responses(rid(id))[0].error, CLOSED);
-  for (const delay of expectedDelays) {
+  for (const [round, delay] of expectedDelays.entries()) {
     clock.advance(delay - 1);
     const connections = native.connections.length;
     doc.request(rid(++id));
@@ -540,9 +540,13 @@ test("B6 unhealthy native connections back off 1 s, 2 s, 4 s ... capped at 30 s 
     clock.advance(1);
     assert.equal(doc.request(rid(++id)), true, `at ${delay}`);
     assert.equal(native.connections.length, connections + 1);
-    // yw-host UNAVAILABLE answers 4900 and exits: the connection never became healthy.
-    native.last.reply(native.last.sent[0], { error: { ...UNAVAILABLE } });
-    assert.deepEqual(doc.responses(rid(id))[0].error, UNAVAILABLE);
+    if (round % 2 === 1) {
+      // yw-host launched yw-app, waited out its 10 s connect deadline, answered 4900 and
+      // exited: as much a failure as a host that dies without answering (the even rounds).
+      clock.advance(core.NATIVE_QUICK_UNAVAILABLE_MS);
+      native.last.reply(native.last.sent[0], { error: { ...UNAVAILABLE } });
+      assert.deepEqual(doc.responses(rid(id))[0].error, UNAVAILABLE);
+    }
     native.last.drop();
   }
   // A healthy connection (non-4900 response) resets the failure count.
@@ -557,6 +561,46 @@ test("B6 unhealthy native connections back off 1 s, 2 s, 4 s ... capped at 30 s 
   native.last.drop();
   assert.equal(doc.request(rid(++id)), true);
   assert.equal(doc.portClosed, false);
+});
+
+test("B6 a quick 4900 answer (yw-host found no app and launched none) retries after a flat 1 s", () => {
+  const { clock, native, router } = makeRouter();
+  const doc = attach(router);
+  let id = 0;
+  const quickEnd = (answerAfter = 0) => {
+    const connections = native.connections.length;
+    assert.equal(doc.request(rid(++id)), true);
+    assert.equal(native.connections.length, connections + 1);
+    clock.advance(answerAfter);
+    native.last.reply(native.last.sent[0], { error: { ...UNAVAILABLE } });
+    assert.deepEqual(doc.responses(rid(id))[0].error, UNAVAILABLE);
+    native.last.drop();
+  };
+  const blockedFor = (delay) => {
+    clock.advance(delay - 1);
+    const connections = native.connections.length;
+    doc.request(rid(++id));
+    assert.deepEqual(doc.responses(rid(id))[0].error, UNAVAILABLE, `before ${delay}`);
+    assert.equal(native.connections.length, connections);
+    clock.advance(1);
+  };
+  for (let round = 0; round < 8; round += 1) {
+    // The last answer inside the window still counts as quick.
+    quickEnd(round === 7 ? core.NATIVE_QUICK_UNAVAILABLE_MS - 1 : 0);
+    assert.equal(router.nativeStatus(), "unavailable");
+    blockedFor(1_000);
+  }
+  // Hosts that die without answering escalate from there (the quick end counted once) ...
+  for (const delay of [2_000, 4_000, 8_000]) {
+    assert.equal(doc.request(rid(++id)), true);
+    native.last.drop();
+    blockedFor(delay);
+  }
+  // ... and one quick end brings the delay back to 1 s.
+  quickEnd();
+  blockedFor(1_000);
+  assert.equal(doc.request(rid(++id)), true);
+  assert.equal(core.NATIVE_QUICK_UNAVAILABLE_MS, 5_000);
 });
 
 test("B6 a throwing connectNative answers 4900 Wallet is unavailable and starts backoff", () => {

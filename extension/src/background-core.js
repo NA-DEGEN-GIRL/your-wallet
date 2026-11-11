@@ -21,6 +21,10 @@
   const RATE_BURST = 80;
   const NATIVE_BACKOFF_BASE_MS = 1_000;
   const NATIVE_BACKOFF_MAX_MS = 30_000;
+  // A 4900 answer this soon after the connection opened is yw-host finding no app without
+  // waiting out its 10 s connect deadline (auto-launch off): nothing was launched, so that end
+  // never escalates the backoff (2026-11-12). Must stay below CONNECT_DEADLINE_MS (yw-host).
+  const NATIVE_QUICK_UNAVAILABLE_MS = 5_000;
   const DEFAULT_DISCONNECT_REASON = "content-port-disconnect";
   const DOCUMENT_ID_PATTERN = /^[A-Za-z0-9._:-]{1,256}$/u;
   const EXTENSION_ID_PATTERN = /^[a-p]{32}$/u;
@@ -216,7 +220,9 @@
         sessionId: this.randomHex(32),
         outSequence: 0,
         lastInSequence: 0,
-        healthy: false
+        healthy: false,
+        openedAt: now,
+        quickUnavailable: false
       };
       try {
         if (!shared.isId64(native.sessionId)) {
@@ -280,6 +286,13 @@
       const isResult = hasOwn(value, "result");
       if (isResult || value.error.code !== 4900) {
         native.healthy = true;
+      } else {
+        // A bad clock leaves the flag unset: the exponential path is the safe default.
+        const now = this.now();
+        if (Number.isSafeInteger(now) && now >= native.openedAt
+          && now - native.openedAt < NATIVE_QUICK_UNAVAILABLE_MS) {
+          native.quickUnavailable = true;
+        }
       }
       const activation = this.activations.get(value.activationNonce);
       const record = activation ? activation.pending.get(value.requestId) : undefined;
@@ -309,6 +322,11 @@
           this.failures = 0;
           this.nativeRetryAt = 0;
         } else {
+          // Quick unavailable: always one failure, so the next attempt is 1 s away and the
+          // popup still reports `unavailable`.
+          if (native.quickUnavailable) {
+            this.failures = 0;
+          }
           this.recordFailure(this.now());
         }
       }
@@ -581,6 +599,7 @@
       RATE_BURST,
       NATIVE_BACKOFF_BASE_MS,
       NATIVE_BACKOFF_MAX_MS,
+      NATIVE_QUICK_UNAVAILABLE_MS,
       NATIVE_STATUSES,
       POPUP_PORT_NAME: shared.POPUP_PORT_NAME,
       deriveSenderContext,

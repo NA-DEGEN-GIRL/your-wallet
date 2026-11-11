@@ -294,7 +294,7 @@ fn pinned_extension_id() -> Option<&'static str> {
 - `content-core.js`의 `ContentBridge`는 Chrome API 없이 테스트할 수 있게 어댑터를 받는다: `new ContentBridge({ channelNonce, compatMode = "off", connectPort, postToPage, isContextValid, setTimer, clearTimer, now })`. `connectPort()`는 `{ postMessage, disconnect, onMessage(fn), onDisconnect(fn) }`를 돌려준다. 모드 읽기는 `loadCompatMode({ readStorage, setTimer, clearTimer })`(거부하지 않는 Promise)다.
 
 ### 2.8 background router
-상수(`background-core.js`): `CONTENT_PORT_NAME = "your-wallet-content-v1"`, `NATIVE_HOST_NAME = "com.your_wallet.native"`, `READ_DEADLINE_MS = 60_000`(route `read`), `INTERACTIVE_DEADLINE_MS = 600_000`(route `permission`·`signing`, 잠금 해제·검토 포함, D23), `MAX_ACTIVE_DOCUMENTS = 128`, `MAX_GLOBAL_PENDING = 512`, `MAX_PENDING_PER_DOCUMENT = 64`, `RATE_PER_SECOND = 40`(문서별 토큰 버킷 충전), `RATE_BURST = 80`(용량·초기값), `NATIVE_BACKOFF_BASE_MS = 1_000`, `NATIVE_BACKOFF_MAX_MS = 30_000`. 삭제: `MAX_NATIVE_CONNECTION_ATTEMPTS`, `seenIds`, `respondedIds`, `shared.MAX_REQUESTS_PER_ACTIVATION`.
+상수(`background-core.js`): `CONTENT_PORT_NAME = "your-wallet-content-v1"`, `NATIVE_HOST_NAME = "com.your_wallet.native"`, `READ_DEADLINE_MS = 60_000`(route `read`), `INTERACTIVE_DEADLINE_MS = 600_000`(route `permission`·`signing`, 잠금 해제·검토 포함, D23), `MAX_ACTIVE_DOCUMENTS = 128`, `MAX_GLOBAL_PENDING = 512`, `MAX_PENDING_PER_DOCUMENT = 64`, `RATE_PER_SECOND = 40`(문서별 토큰 버킷 충전), `RATE_BURST = 80`(용량·초기값), `NATIVE_BACKOFF_BASE_MS = 1_000`, `NATIVE_BACKOFF_MAX_MS = 30_000`, `NATIVE_QUICK_UNAVAILABLE_MS = 5_000`. 삭제: `MAX_NATIVE_CONNECTION_ATTEMPTS`, `seenIds`, `respondedIds`, `shared.MAX_REQUESTS_PER_ACTIVATION`.
 
 **activation**: content port 하나 = activation 하나(`activationNonce`, `channelNonce`는 `randomHex(32)`, 기존 `issuePortNonce` 유지). `MAX_ACTIVE_DOCUMENTS`에 도달하면 pending이 0인 activation 중 마지막 사용이 가장 오래된 것의 port를 닫는다. 그런 것이 없으면 새 port를 즉시 닫는다.
 
@@ -314,7 +314,7 @@ fn pinned_extension_id() -> Option<&'static str> {
 
 **native 연결 끊김**(port `onDisconnect`, drop 포함): 모든 pending에 4900 "Wallet connection closed." 응답, 타이머 해제. **activation은 유지한다**(기존 `cancelAllPending`이 문서를 죽이던 버그 수정). 다음 요청이 새로 연결한다. 연결마다 새 `sessionId = randomHex(32)`, 송신 `sequence`는 0부터 다시 센다.
 
-**backoff**: 연결마다 `healthy = false`로 시작하고, 4900이 아닌 response 또는 event를 하나라도 받으면 `true`. 끊길 때 `healthy`면 `failures = 0`, 아니면 `failures += 1`과 `nativeRetryAt = now + min(NATIVE_BACKOFF_BASE_MS × 2^(failures−1), NATIVE_BACKOFF_MAX_MS)`.
+**backoff**: 연결마다 `healthy = false`로 시작하고, 4900이 아닌 response 또는 event를 하나라도 받으면 `true`. 끊길 때 `healthy`면 `failures = 0`, 아니면 `failures += 1`과 `nativeRetryAt = now + min(NATIVE_BACKOFF_BASE_MS × 2^(failures−1), NATIVE_BACKOFF_MAX_MS)`. 단, 연결을 연 지 `NATIVE_QUICK_UNAVAILABLE_MS` 안에 4900 response를 받은 연결(`quickUnavailable`: yw-host가 앱을 못 찾고 실행도 하지 않은 경우, `browserAutoLaunch` 꺼짐)이 `healthy` 없이 끊기면 `failures`를 0으로 되돌린 뒤 센다 — 항상 `failures = 1`, 다음 시도는 1 s 뒤다(2026-11-12; 이전에는 이 경우도 30 s까지 늘어, 앱을 켠 뒤에도 최대 30 s 동안 로컬 4900이 나갔다). 답 없이 죽는 host·`connectNative` 예외·10 s 기한(§7.4) 뒤의 4900은 그대로 지수 backoff다(yw-app 반복 실행 억제). `NATIVE_QUICK_UNAVAILABLE_MS`는 yw-host의 연결 기한 10 s(§7.4)보다 작아야 한다.
 
 **background.js**: router 초기화(`profileInstallId` 로드) 실패 시 그 port를 닫는다(content는 일시 끊김으로 처리). `chrome.runtime.onConnectExternal`, `onMessageExternal`, `onMessage`는 등록하지 않는다(팝업도 `onConnect`의 이름 있는 port를 쓴다, §2.12). `onSuspend`에서 native 연결만 닫는다.
 
@@ -1104,7 +1104,7 @@ yw-host는 자기와 같은 폴더의 yw-app을 실행하므로 yw-app은 등록
 | B3 | 〃 | 중복 pending id는 무시되고 activation 유지(261, 515 반전). 형식 오류 메시지가 activation을 끊지 않음 |
 | B4 | 〃 | native 프레임 오류·순번 건너뜀·`accountsChanged` 주소 17개 → native만 끊기고 pending 4900, activation 유지, 다음 요청이 새 세션으로 재연결. 주소 16개는 전달 |
 | B5 | 〃 | 기한 타이머: `eth_blockNumber` 60 s·`personal_sign` 600 s(봉투 `deadlineUnixMs`도 같은 값) → content에 -32603, native `cancel`이 `v1-cancel.golden.json` 형태 |
-| B6 | 〃 | native 끊김 후 backoff: `healthy` 아닌 연결 반복 시 1 s, 2 s, 4 s… 30 s 상한, 그동안 로컬 4900 "Wallet is unavailable." |
+| B6 | 〃 | native 끊김 후 backoff: 답 없이 끊기거나 `NATIVE_QUICK_UNAVAILABLE_MS` 뒤에 4900만 답한 연결 반복 시 1 s, 2 s, 4 s… 30 s 상한, 그동안 로컬 4900 "Wallet is unavailable."; 그 시간 안에 4900을 답하고 끊긴 연결은 몇 번이든 1 s 뒤 재연결(지수 구간 뒤에도 1 s로 복귀), `nativeStatus()`는 `unavailable` |
 | B7 | 〃 | `deriveSenderContext`: §2.4 표 전부 |
 | B8 | 〃 (§2.12) | content `compatMode` → 그 요청 봉투 `context.compatMode`만(activation context 불변, 기본 모드 9개 키), `"off"`·모르는 값·null·숫자는 무시(형식 오류); `nativeStatus()`: 처음 `unknown` → 요청 중 `checking` → 응답 `connected` → 정상 연결 종료 `unknown` → 4900만 받고 끊김 `unavailable`, 상태 조회가 native를 열지 않음; `popupStatusMessage` 형식; `isPopupSender`: 팝업 페이지만 허용, 탭·다른 확장·다른 페이지·웹 페이지 거부 |
 | S4 | `tests/shared.test.mjs` | `COMPAT_MODES`·`normalizeCompatMode`·`POPUP_PORT_NAME`, content→bg `compatMode` 선택 키 규칙, page `request`의 `compatMode` 거부 |
