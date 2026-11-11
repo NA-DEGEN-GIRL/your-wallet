@@ -5,6 +5,7 @@ use yw_core::evm::chain::builtin_chain;
 use crate::app::{App, AppMode, Confirm, Screen, SettingsSection};
 use crate::app_evm::{SendAsset, SendForm, hash_text};
 use crate::flow::evm::prepare::ReplaceMode;
+use crate::network::NetworkId;
 use crate::ui::screens_evm::ids;
 
 const TEXT_MAX: usize = 512;
@@ -325,12 +326,10 @@ impl App {
                         self.set_screen(Screen::Confirm(Confirm::Discard));
                     }
                 }
-                5 => {
-                    if let Some(explorer) = self.explorer(chain_id) {
-                        let link = format!("{explorer}/tx/{}", row.hash);
-                        self.copy_text(&link);
-                    }
-                }
+                // `탐색기 링크 복사` / `탐색기에서 열기` (2026-11-11: the S15 "블록 탐색기"
+                // templates, `app_explorer`).
+                5 => self.copy_explorer_tx(NetworkId::Eip155(chain_id), &row.hash),
+                7 => self.open_explorer_tx(NetworkId::Eip155(chain_id), &row.hash),
                 6 => self.save_activity_address(
                     crate::meta::BookChain::Evm,
                     usize::from(index / ids::ACTIVITY_STRIDE),

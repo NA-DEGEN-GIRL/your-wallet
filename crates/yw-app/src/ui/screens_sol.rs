@@ -463,11 +463,17 @@ impl App {
                 }
             }
             // The own address whole with its ends emphasized and `주소 복사` (2026-11-11).
+            let text = address.to_base58();
             items.push(crate::ui::screens::own_address_row(
-                &address.to_base58(),
+                &text,
                 crate::ui::theme::AddressKind::Solana,
                 ids::COPY_ADDRESS,
                 true,
+                self.explorer_address_link(
+                    crate::network::NetworkId::Solana(self.settings.solana.cluster),
+                    &text,
+                    crate::ui::screens_explorer::ids::CARD_SOL,
+                ),
             ));
             let mut row = vec![
                 Ctl::primary(ids::SEND_OPEN, "보내기").enabled(unlocked),
@@ -649,8 +655,9 @@ impl App {
             if let Some(core) = core {
                 self.sol_recipient_items(&core.to, items);
             }
-            items.push(Item::Mono(record.tx_id()));
-            self.sol_activity_actions(shown, &counterparties, &mut prompt_drawn, items);
+            let tx_id = record.tx_id();
+            items.push(Item::Mono(tx_id.clone()));
+            self.sol_activity_actions(shown, &tx_id, &counterparties, &mut prompt_drawn, items);
             shown = shown.saturating_add(1);
         }
         if let Some(meta) = self.meta.as_ref() {
@@ -670,7 +677,13 @@ impl App {
                     Err(_) => items.push(Item::Help(format!("받는 주소 {}", entry.counterparty))),
                 }
                 items.push(Item::Mono(entry.tx_id.clone()));
-                self.sol_activity_actions(shown, &counterparties, &mut prompt_drawn, items);
+                self.sol_activity_actions(
+                    shown,
+                    &entry.tx_id,
+                    &counterparties,
+                    &mut prompt_drawn,
+                    items,
+                );
                 shown = shown.saturating_add(1);
             }
         }
@@ -1156,7 +1169,16 @@ impl App {
                 &signature,
             )));
             // For checking on an explorer: 88 characters are not retyped by hand.
-            items.push(Item::Row(vec![Ctl::button(ids::RESULT_COPY, "해시 복사")]));
+            let mut buttons = vec![Ctl::button(ids::RESULT_COPY, "해시 복사")];
+            buttons.extend(self.explorer_tx_buttons(
+                crate::network::NetworkId::Solana(crate::app_explorer::app_cluster(cluster)),
+                &yw_core::codec::base58::base58_encode(&signature),
+                Some((
+                    crate::ui::screens_explorer::ids::RESULT_SOL_OPEN,
+                    crate::ui::screens_explorer::ids::RESULT_SOL_COPY,
+                )),
+            ));
+            items.push(Item::Row(buttons));
             items.push(Item::CardEnd);
             self.sol_send_now_row(items);
             self.result_save_items(BookTarget::Sol, items);
@@ -1493,20 +1515,30 @@ impl App {
     }
 
     /// The buttons of activity row `row`: `해시 복사` (the transaction id is public data, as on
-    /// the other chains), then `이 주소 저장` — or, under them, its open prompt.
+    /// the other chains), `탐색기에서 열기`·`탐색기 링크 복사` (2026-11-11, when the cluster has a
+    /// transaction page), then `이 주소 저장` — or, under them, its open prompt.
     fn sol_activity_actions(
         &self,
         row: usize,
+        tx_id: &str,
         counterparties: &[String],
         prompt_drawn: &mut bool,
         items: &mut Vec<Item>,
     ) {
+        use crate::ui::screens_explorer::ids::{
+            SOL_ACTIVITY_BASE, SOL_ACTIVITY_SPAN, activity_ids,
+        };
         let mut buttons: Vec<Ctl> = u16::try_from(row)
             .ok()
             .filter(|offset| *offset < ids::ACTIVITY_COPY_SPAN)
             .map(|offset| Ctl::button(ids::ACTIVITY_COPY_BASE.saturating_add(offset), "해시 복사"))
             .into_iter()
             .collect();
+        buttons.extend(self.explorer_tx_buttons(
+            crate::network::NetworkId::Solana(self.settings.solana.cluster),
+            tx_id,
+            activity_ids(SOL_ACTIVITY_BASE, SOL_ACTIVITY_SPAN, row),
+        ));
         let mut prompt = Vec::new();
         if let Some(address) = counterparties
             .get(row)

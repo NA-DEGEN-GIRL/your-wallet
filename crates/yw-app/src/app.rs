@@ -773,6 +773,8 @@ pub struct App {
     pub(crate) rpc_import: crate::app_rpc_import::RpcImportUi,
     /// S23 `Chrome 확장 설치` (spec/04 §2.21).
     pub(crate) ext: crate::app_extension::ExtensionUi,
+    /// Block explorer links: the S15 card's form and the launcher (`app_explorer`, 2026-11-11).
+    pub(crate) explorer_ui: crate::app_explorer::ExplorerUi,
     secret: Option<SecretWin>,
     secret_serial: u64,
     import: ImportFlow,
@@ -1031,6 +1033,7 @@ impl App {
             reset: crate::app_reset::ResetUi::default(),
             rpc_import: crate::app_rpc_import::RpcImportUi::default(),
             ext: crate::app_extension::ExtensionUi::default(),
+            explorer_ui: crate::app_explorer::ExplorerUi::default(),
             secret: None,
             secret_serial: 0,
             import: ImportFlow::default(),
@@ -1409,6 +1412,7 @@ impl App {
                     && !self.on_mn_edit_change(*id)
                     && !self.on_hc_edit_change(*id)
                     && !self.on_wc_edit_change(*id)
+                    && !self.on_explorer_edit_change(*id)
                 {
                     self.on_edit_change(*id);
                 }
@@ -1573,6 +1577,8 @@ impl App {
             crate::ui::screens_book::ids::PROMPT_CANCEL,
             // S14's entry being edited.
             crate::ui::screens_book::ids::CANCEL,
+            // The block explorer row being changed (2026-11-11).
+            crate::ui::screens_explorer::ids::CANCEL,
         ]) {
             return;
         }
@@ -3815,6 +3821,7 @@ impl App {
                     && !self.on_wc_command(other)
                     && !self.on_hidden_command(other)
                     && !self.on_sidecar_command(other)
+                    && !self.on_explorer_command(other)
                 {
                     self.on_indexed_command(other);
                 }

@@ -551,7 +551,9 @@ pub fn hyperevm_mainnet() -> ChainInfo {
         name: "HyperEVM 메인넷".to_owned(),
         native_symbol: "HYPE".to_owned(),
         native_decimals: 18,
-        explorer: None,
+        // 2026-11-11: HyperEVMScan (Etherscan family, `/tx/` and `/address/`; listed by the
+        // Hyperliquid docs).
+        explorer: Some("https://hyperevmscan.io".to_owned()),
         simulation: SimulationSupport::Auto,
         amsterdam_time: None,
         default_caps: FeeCaps {
