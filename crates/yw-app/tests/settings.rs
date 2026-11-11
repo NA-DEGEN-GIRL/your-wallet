@@ -284,3 +284,45 @@ fn round_trip_is_byte_identical_with_fixed_key_order() {
     assert!(text.ends_with(r#""logLevel":"info"}"#));
     assert!(load(Some(text.as_bytes())).banners.is_empty());
 }
+
+/// spec/04 §2.6, §6.1 (2026-11-11): `receivedHistory` is an optional top-level boolean, written
+/// only when on (after every other known key). A top-level key, so an older build keeps it as an
+/// unknown key and writes it back (§6.6) instead of resetting an object it knows.
+#[test]
+fn received_history_is_an_optional_top_level_key() {
+    let loaded = with(r#""receivedHistory":true"#);
+    assert!(loaded.banners.is_empty(), "{:?}", loaded.banners);
+    assert!(loaded.settings.received_history);
+    assert!(loaded.settings.compat.unknown_keys().is_empty());
+    let bytes = loaded.settings.to_json();
+    let text = String::from_utf8(bytes.clone()).unwrap();
+    assert!(
+        text.ends_with(r#""logLevel":"info","receivedHistory":true}"#),
+        "{text}"
+    );
+    let again = load(Some(&bytes));
+    assert!(again.banners.is_empty());
+    assert_eq!(again.settings, loaded.settings);
+    assert_eq!(again.settings.to_json(), bytes);
+    // Off is the default and is not written (an explicit `false` goes at the next write).
+    assert!(!Settings::default().received_history);
+    let off = with(r#""receivedHistory":false"#);
+    assert!(off.banners.is_empty());
+    assert!(!off.settings.received_history);
+    let text = String::from_utf8(off.settings.to_json()).unwrap();
+    assert!(!text.contains("receivedHistory"), "{text}");
+    for bad in ["1", r#""true""#, "null", "{}"] {
+        let loaded = with(&format!(r#""receivedHistory":{bad}"#));
+        assert!(!loaded.settings.received_history, "{bad}");
+        assert_eq!(loaded.banners, ["receivedHistory"], "{bad}");
+        assert!(loaded.settings.compat.unknown_keys().is_empty(), "{bad}");
+    }
+    // A newer build's key next to it is still kept and written back after it.
+    let both = with(r#""receivedHistory":true,"futureKey":7"#);
+    assert_eq!(both.settings.compat.unknown_keys(), ["futureKey"]);
+    let text = String::from_utf8(both.settings.to_json()).unwrap();
+    assert!(
+        text.ends_with(r#""receivedHistory":true,"futureKey":7}"#),
+        "{text}"
+    );
+}

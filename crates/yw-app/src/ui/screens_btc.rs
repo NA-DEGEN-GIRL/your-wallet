@@ -1166,6 +1166,7 @@ impl App {
         items.push(Item::CardEnd);
         items.push(Item::CardStart(None));
         self.btc_activity_items(&ctx, items);
+        self.received_items(crate::received::RecvChain::Btc, items);
         items.push(Item::CardEnd);
     }
 

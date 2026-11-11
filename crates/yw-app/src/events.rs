@@ -1266,6 +1266,8 @@ pub enum RpcEvent {
     Zec(Box<crate::zec::work::ZecRpcEvent>),
     /// A `HyperCore` job result (spec/11).
     HyperCore(Box<crate::hypercore::HcEvent>),
+    /// A received-history read (spec/04 §2.6).
+    Received(Box<crate::received::ReceivedEvent>),
 }
 
 /// An event for the UI thread.

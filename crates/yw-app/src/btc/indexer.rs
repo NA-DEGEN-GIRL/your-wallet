@@ -4,7 +4,8 @@
 //! `<esploraBaseUrl>/address/{a}/utxo`, `/address/{a}`, `/tx/{t}/status`, `/tx/{t}/hex`,
 //! `/block-height/0`, `/blocks/tip/height` (no trailing `/`, no query); `bb-rpc` calls
 //! `bb_getUTXOs`, `bb_getAddress`, `bb_getTx`, `bb_getBlockHash` on the Core URL; `bb-rest` GETs
-//! `utxo/`, `address/`, `tx/`, `block-index/0` under `<Core URL>/api/v2/`. `TipHeight` exists
+//! `utxo/`, `address/`, `tx/`, `block-index/0` under `<Core URL>/api/v2/`. `TipHeight` and the
+//! opt-in received history's `AddressTxs` (`/address/{a}/txs`, spec/04 §2.6, 2026-11-11) exist
 //! for `esplora` only.
 //!
 //! The parsers are strict (spec/08 §4.1): Esplora integers are JSON integer tokens within the
@@ -43,6 +44,8 @@ pub const CAP_BB_TX: usize = 2 * 1_048_576;
 pub const CAP_GENESIS: usize = 4 * 1_024;
 /// Esplora `/blocks/tip/height` cap (4 KiB).
 pub const CAP_TIP: usize = 4 * 1_024;
+/// Esplora `/address/{a}/txs` cap (4 MiB: up to 50 mempool and 25 confirmed transactions).
+pub const CAP_ADDRESS_TXS: usize = 4 * 1_048_576;
 
 const U32_MAX: u64 = 4_294_967_295;
 const I64_MAX: u64 = 9_223_372_036_854_775_807;
@@ -62,19 +65,28 @@ pub enum BtcIndexerReq {
     GenesisHash,
     /// Indexer tip height (`esplora` only, spec/08 §2 step 4).
     TipHeight,
+    /// Recent transactions of one of our addresses (`esplora` only; the opt-in received
+    /// history, spec/04 §2.6).
+    AddressTxs(BtcAddress),
 }
 
 impl BtcIndexerReq {
     const fn txid(&self) -> Option<Txid> {
         match self {
             Self::TxStatus(txid) | Self::TxRaw(txid) => Some(*txid),
-            Self::Utxo(_) | Self::Address(_) | Self::GenesisHash | Self::TipHeight => None,
+            Self::Utxo(_)
+            | Self::Address(_)
+            | Self::AddressTxs(_)
+            | Self::GenesisHash
+            | Self::TipHeight => None,
         }
     }
 
     const fn address(&self) -> Option<&BtcAddress> {
         match self {
-            Self::Utxo(address) | Self::Address(address) => Some(address),
+            Self::Utxo(address) | Self::Address(address) | Self::AddressTxs(address) => {
+                Some(address)
+            }
             Self::TxStatus(_) | Self::TxRaw(_) | Self::GenesisHash | Self::TipHeight => None,
         }
     }
@@ -120,6 +132,8 @@ pub enum BtcIndexerResp {
     GenesisHash([u8; 32]),
     /// Indexer tip height.
     TipHeight(u32),
+    /// Recent transactions of an address (the received history derives from them).
+    AddressTxs(Vec<crate::received::btc::EsploraTx>),
 }
 
 /// Why an indexer request failed (spec/08 §4.3, spec/04 §7).
@@ -216,6 +230,12 @@ fn esplora_path(request: &BtcIndexerReq) -> (String, &'static str, usize, &'stat
             TEXT,
         ),
         BtcIndexerReq::TipHeight => ("/blocks/tip/height".to_owned(), "tip-height", CAP_TIP, TEXT),
+        BtcIndexerReq::AddressTxs(address) => (
+            format!("/address/{}/txs", address.as_str()),
+            "address-txs",
+            CAP_ADDRESS_TXS,
+            JSON,
+        ),
     }
 }
 
@@ -236,7 +256,7 @@ fn bb_rest_path(request: &BtcIndexerReq) -> Option<(String, &'static str, usize)
             (format!("tx/{}", txid.to_display_hex()), "tx", CAP_BB_TX)
         }
         BtcIndexerReq::GenesisHash => ("block-index/0".to_owned(), "block-index", CAP_GENESIS),
-        BtcIndexerReq::TipHeight => return None,
+        BtcIndexerReq::TipHeight | BtcIndexerReq::AddressTxs(_) => return None,
     })
 }
 
@@ -269,7 +289,7 @@ fn bb_rpc_call(request: &BtcIndexerReq) -> Option<(&'static str, Value, usize)> 
             Value::Array(vec![json_str("0")]),
             CAP_GENESIS,
         ),
-        BtcIndexerReq::TipHeight => return None,
+        BtcIndexerReq::TipHeight | BtcIndexerReq::AddressTxs(_) => return None,
     })
 }
 
@@ -641,7 +661,10 @@ pub fn parse_esplora(
 ) -> Result<BtcIndexerResp, IndexerError> {
     match (response.status, request) {
         (200, _) => {}
-        (400, BtcIndexerReq::Utxo(_) | BtcIndexerReq::Address(_)) => {
+        (
+            400,
+            BtcIndexerReq::Utxo(_) | BtcIndexerReq::Address(_) | BtcIndexerReq::AddressTxs(_),
+        ) => {
             return Err(IndexerError::Rejected);
         }
         (404, BtcIndexerReq::TxStatus(_)) => return Ok(BtcIndexerResp::TxStatus(TxSeen::NotFound)),
@@ -669,6 +692,9 @@ pub fn parse_esplora(
         BtcIndexerReq::TxRaw(_) => raw_tx_hex(body_text(body)?).map(BtcIndexerResp::TxRaw),
         BtcIndexerReq::GenesisHash => genesis_body(body).map(BtcIndexerResp::GenesisHash),
         BtcIndexerReq::TipHeight => tip_body(body).map(BtcIndexerResp::TipHeight),
+        BtcIndexerReq::AddressTxs(_) => {
+            crate::received::btc::parse_txs(&parse_json(body, cap)?).map(BtcIndexerResp::AddressTxs)
+        }
     }
 }
 
@@ -802,7 +828,7 @@ pub fn parse_bb(request: &BtcIndexerReq, value: &Value) -> Result<BtcIndexerResp
             let object = value.as_object().ok_or(IndexerError::Malformed)?;
             hash_text(object.get("blockHash")).map(BtcIndexerResp::GenesisHash)
         }
-        BtcIndexerReq::TipHeight => Err(IndexerError::Refused),
+        BtcIndexerReq::TipHeight | BtcIndexerReq::AddressTxs(_) => Err(IndexerError::Refused),
     }
 }
 

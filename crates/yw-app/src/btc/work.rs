@@ -696,6 +696,33 @@ impl BtcWorker {
         }
     }
 
+    /// The opt-in received history of one account (spec/04 §2.6, 2026-11-11) on the session of
+    /// its network: the same paced request line, cooldown and chain check as every other job.
+    ///
+    /// # Errors
+    ///
+    /// A fixed error text.
+    pub fn received(
+        &mut self,
+        transport: &dyn Transport,
+        clock: &dyn Clock,
+        target: &BtcTarget,
+        work: &crate::received::btc::BtcReceivedWork,
+    ) -> Result<crate::received::Fetched, String> {
+        let log = self.log;
+        let Session { chain, pace, .. } = self.session(target);
+        let client = BtcClient::new(
+            BtcEnv {
+                transport,
+                clock,
+                pace,
+                log,
+            },
+            &target.endpoint,
+        );
+        crate::received::btc::fetch(&client, chain, work)
+    }
+
     /// Runs one job and emits its events.
     #[expect(clippy::too_many_lines, reason = "one arm per job kind")]
     pub fn handle(

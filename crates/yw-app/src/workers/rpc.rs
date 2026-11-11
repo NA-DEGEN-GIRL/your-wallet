@@ -170,6 +170,8 @@ pub enum RpcJob {
     Zec(Box<crate::zec::work::ZecRpcJob>),
     /// A `HyperCore` job (spec/11).
     HyperCore(Box<crate::hypercore::HcRpcJob>),
+    /// The opt-in received history of one list (spec/04 §2.6).
+    Received(Box<crate::received::ReceivedJob>),
     /// Stop.
     Shutdown,
 }
@@ -205,6 +207,7 @@ impl RpcJob {
             Self::Btc(job) => job.name(),
             Self::Zec(job) => job.name(),
             Self::HyperCore(_) => "HyperCore",
+            Self::Received(_) => "Received",
             Self::Shutdown => "Shutdown",
         }
     }
@@ -428,6 +431,92 @@ impl RpcWorker {
         })
     }
 
+    /// One received-history read (spec/04 §2.6): EVM after the cached chain check, Bitcoin on
+    /// its session; logs `received.read chain=… net=… result=… new=n dust=n` (counts only).
+    fn received(
+        &mut self,
+        transport: &SharedTransport,
+        job: crate::received::ReceivedJob,
+        events: &EventQueue,
+    ) -> crate::received::ReceivedEvent {
+        use crate::received::JobKind;
+        let crate::received::ReceivedJob {
+            job: id,
+            key,
+            cursor,
+            kind,
+        } = job;
+        let (net, result) = match kind {
+            JobKind::Evm {
+                chain,
+                owner,
+                tokens,
+            } => {
+                let net = Field::Net(NetworkId::Eip155(chain.info.chain_id));
+                let result = match self.ensure(transport, &chain, events) {
+                    ChainCheck::Verified { .. } => crate::received::evm::fetch(
+                        &**transport,
+                        &chain.url,
+                        &owner,
+                        &tokens,
+                        &cursor,
+                    ),
+                    other => Err(other.code().unwrap_or(ErrorCode::App009).text()),
+                };
+                (net, result)
+            }
+            JobKind::Sol { endpoint, owner } => (
+                Field::Net(sol_net(&endpoint)),
+                crate::received::sol::fetch(&**transport, &endpoint, &owner, &cursor),
+            ),
+            JobKind::Btc { target, work } => (
+                Field::Net(crate::btc::network_id(target.endpoint.net)),
+                self.btc
+                    .received(&**transport, &*self.clock, &target, &work),
+            ),
+            JobKind::Hc {
+                endpoint,
+                account,
+                start_ms,
+            } => (
+                Field::Word(endpoint.network.as_str()),
+                crate::received::hc::fetch(&**transport, &endpoint, &account, &cursor, start_ms),
+            ),
+            JobKind::Zec {
+                network,
+                url,
+                indexer,
+                address,
+                tip,
+            } => (
+                Field::Net(NetworkId::Zcash(network)),
+                crate::received::zec::fetch(&**transport, &url, indexer, &address, tip, &cursor),
+            ),
+        };
+        let count = |items: usize| Field::Num(u64::try_from(items).unwrap_or(u64::MAX));
+        let (word, new, dust) = match &result {
+            Ok(fetched) if fetched.unsupported.is_some() => ("unsupported", 0, 0),
+            Ok(fetched) => ("ok", fetched.found.entries.len(), fetched.found.dust.len()),
+            Err(_) => ("error", 0, 0),
+        };
+        logging::info(
+            "rpc",
+            "received.read",
+            &[
+                ("chain", Field::Word(key.chain.word())),
+                ("net", net),
+                ("result", Field::Word(word)),
+                ("new", count(new)),
+                ("dust", count(dust)),
+            ],
+        );
+        crate::received::ReceivedEvent {
+            job: id,
+            key,
+            result,
+        }
+    }
+
     /// Handles one job (pushes its events).
     #[expect(clippy::too_many_lines, reason = "one arm per job kind")]
     pub fn handle(&mut self, job: RpcJob, events: &EventQueue) {
@@ -447,6 +536,10 @@ impl RpcWorker {
             RpcJob::HyperCore(job) => {
                 let event = crate::hypercore::run(&*transport, *job);
                 push(events, RpcEvent::HyperCore(Box::new(event)));
+            }
+            RpcJob::Received(job) => {
+                let event = self.received(&transport, *job, events);
+                push(events, RpcEvent::Received(Box::new(event)));
             }
             RpcJob::Test { network, name, url } => {
                 push(events, run_test(&*transport, network, &name, &url));

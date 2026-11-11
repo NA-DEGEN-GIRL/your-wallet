@@ -794,6 +794,7 @@ impl App {
                 },
             )]));
         }
+        self.received_items(crate::received::RecvChain::Evm, items);
         items.push(Item::CardEnd);
     }
 

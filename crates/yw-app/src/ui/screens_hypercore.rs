@@ -316,6 +316,7 @@ impl App {
                 )));
             }
         }
+        self.received_items(crate::received::RecvChain::Hc, items);
         items.push(Item::CardEnd);
     }
 
