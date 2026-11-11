@@ -310,7 +310,8 @@ impl App {
             ids::REOWN_COPY => {
                 // Only the address string: no browser is started (2026-11-10).
                 self.copy_text("https://dashboard.reown.com");
-                if self.info.as_deref() == Some("복사했습니다.") {
+                // A setup step: its instruction stays a band (not the mark at the button).
+                if self.copied.take().is_some() {
                     self.info = Some(
                         "dashboard.reown.com 주소를 복사했습니다. 브라우저 주소창에 붙여넣으세요."
                             .to_owned(),

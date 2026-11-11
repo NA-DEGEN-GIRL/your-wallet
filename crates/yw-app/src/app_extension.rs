@@ -175,7 +175,8 @@ impl App {
             ids::EXT_COPY_PATH => {
                 if let Some(dir) = extension_dir() {
                     self.copy_text(&dir.display().to_string());
-                    if self.info.as_deref() == Some("복사했습니다.") {
+                    // A setup step: its instruction stays a band (not the mark at the button).
+                    if self.copied.take().is_some() {
                         self.info = Some(
                             "경로를 복사했습니다. 폴더 선택 창 위쪽 주소 칸에 Ctrl+V 하세요."
                                 .to_owned(),
@@ -186,7 +187,7 @@ impl App {
             }
             ids::EXT_COPY_URL => {
                 self.copy_text(CHROME_EXTENSIONS_URL);
-                if self.info.as_deref() == Some("복사했습니다.") {
+                if self.copied.take().is_some() {
                     self.info = Some(
                         "chrome://extensions 주소를 복사했습니다. Chrome 주소창에 붙여넣으세요."
                             .to_owned(),

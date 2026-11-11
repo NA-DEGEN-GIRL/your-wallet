@@ -433,6 +433,22 @@ fn now_ms() -> u64 {
     yw_win::time::monotonic_ms()
 }
 
+/// How long a copy is answered at its control (2026-11-12): the check mark and `복사됨`.
+pub const COPIED_MS: u64 = 1_500;
+
+/// The copy just made (2026-11-12): answered at the control that was pressed instead of in a
+/// band at the top of the page, which moved everything under the pointer, was out of sight on
+/// a scrolled page and stayed until it was closed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Copied {
+    /// The pressed control.
+    pub id: u16,
+    /// When the mark goes (monotonic ms).
+    pub until_ms: u64,
+    /// An address: the caption keeps the paste check.
+    pub address: bool,
+}
+
 /// `0x` + lowercase hash.
 #[must_use]
 pub fn hash_text(hash: &[u8; 32]) -> String {
@@ -1847,26 +1863,45 @@ impl App {
         }]);
     }
 
-    /// `해시 복사`.
+    /// `해시 복사`: a plain copy, answered at the pressed control for [`COPIED_MS`] (2026-11-12:
+    /// the check mark and `복사됨`, `crate::ui::main_window::mark_copied`; no band, so nothing
+    /// moves and no control is created again). A failure stays the E-SEC-002 band.
     pub fn copy_text(&mut self, text: &str) {
+        self.copy(text, false);
+    }
+
+    /// `주소 복사` of every chain (S12, the S10 account cards; 2026-11-11 one path): the plain
+    /// copy of [`App::copy_text`], and its caption keeps the paste check in short ("복사됨 ·
+    /// 붙여넣은 뒤 전체 확인"; a failure keeps E-SEC-002).
+    pub fn copy_address_text(&mut self, address: &str) {
+        self.copy(address, true);
+    }
+
+    fn copy(&mut self, text: &str, address: bool) {
         if let Some(main) = self.main.as_ref() {
-            let ok = clipboard::set_text(main, text).is_ok();
-            self.info = Some(if ok {
-                "복사했습니다.".to_owned()
+            let failed = ErrorCode::Sec002.text();
+            if clipboard::set_text(main, text).is_ok() {
+                self.copied = Some(Copied {
+                    id: self.command,
+                    until_ms: now_ms().saturating_add(COPIED_MS),
+                    address,
+                });
+                // An earlier failure's band no longer holds.
+                if self.info.as_deref() == Some(failed.as_str()) {
+                    self.info = None;
+                }
             } else {
-                ErrorCode::Sec002.text()
-            });
+                self.copied = None;
+                self.info = Some(failed);
+            }
         }
         self.refresh();
     }
 
-    /// `주소 복사` of every chain (S12, the S10 account cards; 2026-11-11 one path): the plain
-    /// copy of [`App::copy_text`], and on success its note becomes "주소를 복사했습니다. 붙여넣은
-    /// 곳에서 주소 전체를 확인하세요." (a failure keeps E-SEC-002).
-    pub fn copy_address_text(&mut self, address: &str) {
-        self.copy_text(address);
-        if self.info.as_deref() == Some("복사했습니다.") {
-            self.info = Some(crate::ui::screens::T_ADDRESS_COPIED.to_owned());
+    /// Copy part of the main timer: the mark of [`App::copy_text`] goes at its deadline.
+    pub fn copied_tick(&mut self, now: u64) {
+        if self.copied.is_some_and(|copied| now >= copied.until_ms) {
+            self.copied = None;
             self.refresh();
         }
     }

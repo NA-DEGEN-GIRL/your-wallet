@@ -453,8 +453,6 @@ pub const T_TOKEN_DELETE: &str = "이 토큰을 이 네트워크의 토큰 목�
 pub const T_SINGLE_ACCOUNT: &str = "주소와 잔액은 위 카드에 있습니다";
 /// Under the off `숨기기` of a recovery phrase's account 0 (EVM, Solana; 2026-11-10).
 pub const T_FIRST_ACCOUNT_KEPT: &str = "각 복구 단어의 첫 계정(…/0)은 숨길 수 없습니다.";
-/// The note after every `주소 복사` (S12 and the S10 account cards, `App::copy_address_text`).
-pub const T_ADDRESS_COPIED: &str = "주소를 복사했습니다. 붙여넣은 곳에서 주소 전체를 확인하세요.";
 /// Every chain's `받기` (S12) command, and every `주소 복사` on S10 (2026-11-11: the account
 /// cards' address line and the Zcash 받기 card) — an unverified passphrase's addresses belong
 /// to another wallet, so they are not handed out from the main screen either.
@@ -939,6 +937,10 @@ impl App {
         }
         if self.passphrase_unverified() {
             disable_receive(&mut items);
+        }
+        // The copy just made says so at its own control (2026-11-12, `App::copy_text`).
+        if let Some(copied) = self.copied {
+            crate::ui::main_window::mark_copied(&mut items, copied.id, copied.address);
         }
         items
     }

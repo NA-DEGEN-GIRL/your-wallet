@@ -2671,6 +2671,53 @@ fn ctl(items: &[Item], id: u16) -> Option<Ctl> {
     controls(items).into_iter().find(|ctl| ctl.id == id)
 }
 
+/// 2026-11-12: a copy is answered at its control for about 1.5 s — no band at the top and the
+/// same controls (none is created again); the main timer takes the mark away, and so does
+/// leaving the screen (S12's `주소 복사` has the account card's id).
+#[test]
+fn copy_is_answered_at_its_control_and_expires() {
+    use crate::app_evm::Copied;
+    use crate::ui::main_window::{Face, T_COPIED, T_COPIED_ADDRESS};
+    use crate::ui::screens_evm::ids::COPY_ADDRESS;
+    let (mut app, dir) = unlocked_app("copied-mark", false);
+    app.meta.as_mut().unwrap().prefs.tab = Tab::Evm;
+    let face = |app: &App| ctl(&app.items(), COPY_ADDRESS).and_then(|ctl| ctl.face);
+    let ids = |app: &App| -> Vec<u16> { controls(&app.items()).iter().map(|ctl| ctl.id).collect() };
+    let plain = ids(&app);
+    assert!(matches!(face(&app), Some(Face::Value(_))));
+    // The command is kept for the copy it makes (headless: no clipboard, so no mark).
+    app.on_command(COPY_ADDRESS);
+    assert_eq!((app.command, app.copied), (COPY_ADDRESS, None));
+    let copied = Copied {
+        id: COPY_ADDRESS,
+        until_ms: 1_000,
+        address: true,
+    };
+    app.copied = Some(copied);
+    assert!(matches!(
+        face(&app),
+        Some(Face::Copied(_, T_COPIED_ADDRESS))
+    ));
+    assert_eq!(ids(&app), plain);
+    assert_eq!(app.info, None);
+    assert!(!has_text(&app.items(), "알림 닫기"));
+    app.copied_tick(999);
+    assert_eq!(app.copied, Some(copied));
+    app.copied_tick(1_000);
+    assert_eq!(app.copied, None);
+    assert!(matches!(face(&app), Some(Face::Value(_))));
+    // S12: the text button says so itself.
+    app.copied = Some(copied);
+    app.set_screen(Screen::Receive);
+    assert_eq!(app.copied, None);
+    app.copied = Some(copied);
+    assert_eq!(
+        ctl(&app.items(), COPY_ADDRESS).map(|ctl| ctl.text),
+        Some(T_COPIED.to_owned())
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// `숨기기` moves a row under `숨긴 토큰 n개 보기` (dimmed, `다시 보이기`) and persists in meta
 /// `token_view`; `잔액 0인 토큰 숨기기` hides only known zero balances; registry tokens have no
 /// `삭제`; hiding never removes a token from `chain_tokens` (balances, approvals, recognition).

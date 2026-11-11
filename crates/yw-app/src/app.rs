@@ -680,6 +680,11 @@ pub struct App {
     pub(crate) previous_screen: Screen,
     pub(crate) leftover: bool,
     pub(crate) info: Option<String>,
+    /// The copy just made, answered at its control for about 1.5 s (2026-11-12,
+    /// `App::copy_text`).
+    pub(crate) copied: Option<crate::app_evm::Copied>,
+    /// The command being handled: the control a copy is answered at.
+    pub(crate) command: u16,
     pub(crate) mismatch_checked: bool,
     pub(crate) overwrite_checked: bool,
     /// 고급 설정 보기 (technical settings and fee details shown).
@@ -1032,6 +1037,8 @@ impl App {
             previous_screen: Screen::Starting,
             leftover: false,
             info: None,
+            copied: None,
+            command: 0,
             mismatch_checked: false,
             overwrite_checked: false,
             show_advanced: false,
@@ -1316,6 +1323,8 @@ impl App {
             self.remember_scroll();
             // A drop-down does not stay open behind another screen (a lock, 2026-11-12).
             let _ = self.close_pickers();
+            // A copy's mark belongs to the screen it was made on.
+            self.copied = None;
         }
         // Where the new screen opens: under a closing overlay where it was, on a way back where
         // it was left, else at the top.
@@ -1757,6 +1766,7 @@ impl App {
             self.clear_secret_clip(now);
         }
         self.window_state_tick(now);
+        self.copied_tick(now);
         self.evm_tick(now);
         self.hc_tick(now);
         self.sol_tick(now);
@@ -3634,6 +3644,7 @@ impl App {
     #[expect(clippy::too_many_lines, reason = "one arm per command id")]
     fn dispatch_command(&mut self, id: u16) {
         use crate::ui::screens::ids;
+        self.command = id;
         match id {
             // Esc and Enter (the dialog manager's `IDCANCEL` and `IDOK`).
             IDCANCEL => self.escape_key(),
