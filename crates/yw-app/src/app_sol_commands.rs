@@ -150,6 +150,8 @@ impl App {
 
     fn on_sol_indexed(&mut self, id: u16) -> bool {
         if let Some(row) = offset(id, ids::ACCOUNT_BASE, ids::ACCOUNT_SPAN) {
+            // A choice closes the drop-down (2026-11-11).
+            self.account_menu = None;
             self.sol_select_account(usize::from(row));
             return true;
         }

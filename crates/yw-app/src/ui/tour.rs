@@ -1378,6 +1378,52 @@ fn screenshot_tour() {
     }
     save(main_hwnd(&app), "49-main-evm-hypercore");
     {
+        // The EVM activity card (2026-11-11): two made-up sent rows — the recipient whole with
+        // its ends emphasized and the hash on lines of their own (a click copies either), the
+        // explorer icons ↗ 🔗 and, for a recipient not in the address book, ☆ at the right end.
+        let mut state = app.borrow_mut();
+        state.hypercore.unfolded = false;
+        let network = NetworkId::Eip155(SEPOLIA).to_string();
+        let account = evm_address(0).to_lower_hex();
+        if let Some(meta) = state.meta.as_mut() {
+            for (index, (to, milli)) in [
+                (recipient().to_lower_hex(), 250_u64),
+                ("0x00000000000000000000000000000000000b0b01".to_owned(), 40),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let index = u64::try_from(index).unwrap();
+                meta.upsert_activity(
+                    &network,
+                    &crate::meta::ActivityEntry {
+                        account: account.clone(),
+                        tx_id: format!("0x{:064x}", 0x7a11_u64 + index),
+                        title: "SepoliaETH 보내기".to_owned(),
+                        asset: "native".to_owned(),
+                        amount: eth(milli).to_decimal_string(),
+                        counterparty: to,
+                        status: "succeeded".to_owned(),
+                        time_unix_ms: 1_793_000_000_000 - index * 3_600_000,
+                    },
+                );
+            }
+        }
+        state.scroll = 1_000;
+        state.refresh();
+    }
+    save(main_hwnd(&app), "55-main-evm-activity");
+    {
+        let mut state = app.borrow_mut();
+        let network = NetworkId::Eip155(SEPOLIA).to_string();
+        if let Some(meta) = state.meta.as_mut() {
+            meta.activity.retain(|(key, _)| *key != network);
+        }
+        state.hypercore.unfolded = true;
+        state.scroll = 0;
+        state.refresh();
+    }
+    {
         let mut state = app.borrow_mut();
         state.hypercore.unfolded = false;
         state.scroll = 0;

@@ -2,8 +2,9 @@
 //! switch `받은 내역도 보기` (off by default, one setting for every chain) and, when on, the
 //! sub-heading "받은 내역" with the address-poisoning help line, the rows (local time, "받음
 //! {금액} {기호}", status, the sender — read only, grouped, never with a copy or select button,
-//! with the exact address-book / own-account name or a look-alike warning tag — the hash with
-//! `해시 복사`), and the muted count of hidden dust transfers. One call per card:
+//! with the exact address-book / own-account name or a look-alike warning tag — the hash on its
+//! own line, a click copying it, with the ↗ `탐색기에서 열기` icon), and the muted count of hidden
+//! dust transfers. One call per card:
 //! [`App::received_items`].
 
 use yw_core::evm::address::parse_address;
@@ -28,7 +29,7 @@ pub mod ids {
     ];
     /// Row buttons: `ROW_BASE + slot × CHAIN_SPAN + row × ROW_STRIDE`.
     pub const ROW_BASE: u16 = 17_900;
-    /// Ids per row: 0 `해시 복사`, 1 reserved for `탐색기에서 열기`.
+    /// Ids per row: 0 a click on the hash (copy, the `해시 복사` of before), 1 ↗ `탐색기에서 열기`.
     pub const ROW_STRIDE: u16 = 2;
     /// Ids per chain (50 rows × 2).
     pub const CHAIN_SPAN: u16 = 100;
@@ -245,19 +246,29 @@ impl App {
         if entry.hash.is_empty() {
             return;
         }
-        items.push(Item::Mono(entry.hash.clone()));
-        if let Some(id) = ids::row(chain, row) {
-            let mut buttons = vec![Ctl::button(id, "해시 복사")];
-            // `탐색기에서 열기` (id + 1) when the list's network has a transaction page.
-            if self
-                .received_explorer_net(chain)
-                .and_then(|net| self.explorer_tx_url(net, &entry.hash))
-                .is_some()
-            {
-                buttons.push(Ctl::button(id + 1, "탐색기에서 열기"));
-            }
-            items.push(Item::Row(buttons));
-        }
+        // The hash (public data) on its own line: a click copies it, `탐색기에서 열기` ↗
+        // (id + 1) at its right end when the list's network has a transaction page
+        // (2026-11-11). The sender above stays read-only.
+        let id = ids::row(chain, row);
+        let explorer = id
+            .filter(|_| {
+                self.received_explorer_net(chain)
+                    .and_then(|net| self.explorer_tx_url(net, &entry.hash))
+                    .is_some()
+            })
+            .map(|id| {
+                Ctl::icon(
+                    id + 1,
+                    crate::ui::main_window::GLYPH_OPEN,
+                    crate::ui::screens_links::T_EXPLORER_OPEN,
+                )
+            });
+        crate::ui::screens_links::push_hash_line(
+            items,
+            id,
+            &entry.hash,
+            explorer.into_iter().collect(),
+        );
     }
 
     /// The switch and, when on, the received section of `chain`'s activity card (spec/04 §2.6).

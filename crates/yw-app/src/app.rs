@@ -706,6 +706,9 @@ pub struct App {
     pub(crate) done_imported: bool,
     /// `숨긴 계정 n개 보기 ▸` is open (EVM and Solana `내 계정`, this run only).
     pub(crate) hidden_open: bool,
+    /// The open account drop-down of `내 계정` (EVM, Solana, Bitcoin; 2026-11-11): its button's
+    /// id (`ui::screens_links::ids::PICKER_*`), closed by a choice.
+    pub(crate) account_menu: Option<u16>,
     /// The EVM activity card shows every row, not only the latest ten (this run only).
     pub(crate) activity_all: bool,
     /// S08 follows a new `YubiKey` wallet (spec/04 §2.19): what its completion banner says.
@@ -1006,6 +1009,7 @@ impl App {
             done_error: None,
             yk_words: crate::app_yubikey::YkWords::None,
             hidden_open: false,
+            account_menu: None,
             activity_all: false,
             recover_return: None,
             scroll: 0,
@@ -3828,6 +3832,7 @@ impl App {
                     && !self.on_hidden_command(other)
                     && !self.on_sidecar_command(other)
                     && !self.on_explorer_command(other)
+                    && !self.on_links_command(other)
                 {
                     self.on_indexed_command(other);
                 }
@@ -3857,6 +3862,8 @@ impl App {
             .checked_sub(ids::ACCOUNT_BASE)
             .filter(|offset| *offset < ids::ACCOUNT_SPAN)
         {
+            // A choice closes the `내 계정` drop-down (2026-11-11).
+            self.account_menu = None;
             self.select_account(usize::from(offset));
             return;
         }

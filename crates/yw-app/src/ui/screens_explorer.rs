@@ -4,7 +4,7 @@
 
 use crate::app::App;
 use crate::explorer::{ExplorerNet, LinkKind, TEMPLATE_MAX_BYTES};
-use crate::ui::main_window::{Ctl, Item, Tone};
+use crate::ui::main_window::{Ctl, GLYPH_OPEN, Item, Tone};
 
 /// Command ids (17,200–17,709; the whole map is `ui::command_ids`).
 pub mod ids {
@@ -126,7 +126,8 @@ impl App {
         }
     }
 
-    /// The account card's small `탐색기에서 주소 보기` (`None` without an address page).
+    /// The small `탐색기에서 주소 보기` link (the `HyperCore` card; `None` without an address
+    /// page).
     #[must_use]
     pub fn explorer_address_link(
         &self,
@@ -138,7 +139,20 @@ impl App {
             .map(|_| Ctl::link(id, "탐색기에서 주소 보기").compact())
     }
 
-    /// An account card's address line ([`crate::ui::screens::own_address_row`]) with its
+    /// The account card's ↗ icon `탐색기에서 주소 보기` on its address line (2026-11-11; `None`
+    /// without an address page).
+    #[must_use]
+    pub fn explorer_address_icon(
+        &self,
+        network: impl Into<ExplorerNet>,
+        address: &str,
+        id: u16,
+    ) -> Option<Ctl> {
+        self.explorer_address_url(network, address)
+            .map(|_| Ctl::icon(id, GLYPH_OPEN, "탐색기에서 주소 보기"))
+    }
+
+    /// An account card's address line ([`crate::ui::screens::own_address_row`]) with its ↗
     /// `탐색기에서 주소 보기` (`card`) when `network` has an address page.
     #[must_use]
     pub fn own_address_line(
@@ -155,7 +169,7 @@ impl App {
             kind,
             copy,
             enabled,
-            self.explorer_address_link(network, address, card),
+            self.explorer_address_icon(network, address, card),
         )
     }
 

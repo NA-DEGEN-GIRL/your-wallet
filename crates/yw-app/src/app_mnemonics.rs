@@ -136,14 +136,21 @@ impl App {
     /// the wallet has several (as the EVM rows); `label` unchanged otherwise.
     #[must_use]
     pub fn mnemonic_tagged(&self, label: &str, mnemonic: Option<[u8; 16]>) -> String {
-        let tag = match mnemonic {
+        self.mnemonic_tag(mnemonic)
+            .map_or_else(|| label.to_owned(), |tag| format!("{label}  [{tag}]"))
+    }
+
+    /// The source tag of [`Self::mnemonic_tagged`] alone (`None` when it adds none; the account
+    /// drop-downs write `계정 1 · 니모닉 2`, 2026-11-11).
+    #[must_use]
+    pub fn mnemonic_tag(&self, mnemonic: Option<[u8; 16]>) -> Option<String> {
+        match mnemonic {
             Some(id) => Some(self.mnemonic_label(RecordId::from_bytes(id))),
             None => self
                 .several_mnemonics()
                 .then(|| self.primary_mnemonic_label())
                 .flatten(),
-        };
-        tag.map_or_else(|| label.to_owned(), |tag| format!("{label}  [{tag}]"))
+        }
     }
 
     /// The name a site, a session or an approval shows for a derived account (2026-11-10):

@@ -471,10 +471,10 @@ pub const RECEIVE_IDS: [u16; 8] = [
 
 /// The account cards' address line (2026-11-11, spec/04 §2.6): the user's own address without
 /// spaces, the 4 characters after its prefix and the last 4 emphasized
-/// (`ui::theme::own_address_spans`), and a small `주소 복사` (`copy`, off when `enabled` is
-/// not) at the end of the line, then `explorer` — the small `탐색기에서 주소 보기`
-/// (`App::explorer_address_link`) when the network has an address page. Only for the user's own
-/// account: recipient checks keep the grouped form of §3.3.
+/// (`ui::theme::own_address_spans`), on a flat button whose click copies it (`copy`, off when
+/// `enabled` is not; the `주소 복사` of before), then `explorer` — the ↗ icon
+/// `탐색기에서 주소 보기` (`App::explorer_address_icon`) when the network has an address page —
+/// at the right end. Recipient checks (approval, send, receive) keep the grouped form of §3.3.
 #[must_use]
 pub fn own_address_row(
     address: &str,
@@ -483,25 +483,30 @@ pub fn own_address_row(
     enabled: bool,
     explorer: Option<Ctl>,
 ) -> Item {
-    let mut controls = vec![Ctl::button(copy, "주소 복사").compact().enabled(enabled)];
-    controls.extend(explorer);
-    Item::AddressRow(
-        crate::ui::theme::own_address_spans(address, kind, false),
-        controls,
-    )
+    Item::CopyLine {
+        value: Ctl::value(
+            copy,
+            crate::ui::screens_links::T_ADDRESS_COPY,
+            crate::ui::theme::own_address_spans(address, kind, false),
+        )
+        .enabled(enabled),
+        actions: explorer.into_iter().collect(),
+    }
 }
 
 /// Turns off every `받기` and `주소 복사` control in `items` (unverified-passphrase sessions).
 fn disable_receive(items: &mut [Item]) {
     for item in items {
-        if let Item::Row(ctls)
-        | Item::LabeledRow(_, ctls)
-        | Item::Toolbar(_, ctls)
-        | Item::AddressRow(_, ctls) = item
-        {
-            for ctl in ctls.iter_mut().filter(|ctl| RECEIVE_IDS.contains(&ctl.id)) {
-                ctl.enabled = false;
+        match item {
+            Item::Row(ctls) | Item::LabeledRow(_, ctls) | Item::Toolbar(_, ctls) => {
+                for ctl in ctls.iter_mut().filter(|ctl| RECEIVE_IDS.contains(&ctl.id)) {
+                    ctl.enabled = false;
+                }
             }
+            Item::CopyLine { value, .. } if RECEIVE_IDS.contains(&value.id) => {
+                value.enabled = false;
+            }
+            _ => {}
         }
     }
 }
@@ -1679,101 +1684,106 @@ impl App {
             imported,
         )));
         let single = rows.len() == 1;
+        // A drop-down like the network's (2026-11-11): the selected account on its button, the
+        // accounts under it while open (each keeps the id its radio had); the selected
+        // account's path and balance and its actions follow (its address is the hero card's).
+        let mut entries = Vec::new();
+        let mut chosen = None;
         for (row, (pref, label, address, path)) in rows
             .into_iter()
             .take(usize::from(ids::ACCOUNT_SPAN))
             .enumerate()
         {
             let is_selected = selected == Some(pref);
-            let shown_label = match pref {
-                EvmAccountPref::Record(_) => format!("{label}  [가져온 키]"),
-                EvmAccountPref::Hardware(_) => format!("{label}  [YubiKey]"),
-                EvmAccountPref::Index(_) => match self
-                    .several_mnemonics()
-                    .then(|| self.primary_mnemonic_label())
-                    .flatten()
-                {
-                    Some(source) => format!("{label}  [{source}]"),
-                    None => label.clone(),
-                },
-                EvmAccountPref::Mnemonic(id, _) => format!(
-                    "{label}  [{}]",
-                    self.mnemonic_label(yw_core::vault::RecordId::from_bytes(id))
-                ),
+            let tag = match pref {
+                EvmAccountPref::Record(_) => Some("가져온 키".to_owned()),
+                EvmAccountPref::Hardware(_) => Some("YubiKey".to_owned()),
+                EvmAccountPref::Index(_) => self.mnemonic_tag(None),
+                EvmAccountPref::Mnemonic(id, _) => self.mnemonic_tag(Some(id)),
             };
-            items.push(Item::Row(vec![
-                Ctl::radio(
-                    ids::ACCOUNT_BASE.saturating_add(u16::try_from(row).unwrap_or(0)),
-                    &shown_label,
-                    is_selected,
-                    row == 0,
-                )
-                .width(420),
-            ]));
-            if single && is_selected {
+            entries.push(crate::ui::screens_links::PickerEntry {
+                id: ids::ACCOUNT_BASE.saturating_add(u16::try_from(row).unwrap_or(0)),
+                label: tag.map_or_else(|| label.clone(), |tag| format!("{label} · {tag}")),
+                selected: is_selected,
+                enabled: true,
+            });
+            if is_selected {
+                chosen = Some((pref, label, address, path));
+            }
+        }
+        if !entries.is_empty() {
+            self.push_account_picker(items, crate::ui::screens_links::ids::PICKER_EVM, &entries);
+        }
+        if let Some((pref, label, address, path)) = chosen {
+            if single {
                 // One account: its address and balance are the hero card's (review D3).
                 items.push(Item::Help(format!("{path} · {T_SINGLE_ACCOUNT}")));
             } else {
-                let balance = self.balance_text(&address);
-                let shown = yw_core::evm::address::parse_address(&address)
-                    .map_or_else(|_| address.clone(), |parsed| format_address(&parsed));
-                items.push(Item::Mono(shown));
-                items.push(Item::Help(match balance {
+                items.push(Item::Help(match self.balance_text(&address) {
                     Some(balance) => format!("{path} · {balance}"),
                     None => path,
                 }));
             }
-            if is_selected {
-                if self.rename == Some(pref) {
-                    items.push(Item::Row(vec![
-                        Ctl::edit(ids::RENAME_EDIT, &label, 260, false, 64),
-                        Ctl::primary(ids::RENAME_SAVE, "저장"),
-                        Ctl::button(ids::RENAME_CANCEL, "취소"),
-                    ]));
-                } else {
-                    let mut row_ctls = vec![Ctl::button(ids::RENAME, "이름 바꾸기")];
-                    let mut first_of_phrase = false;
-                    match pref {
-                        EvmAccountPref::Index(index) | EvmAccountPref::Mnemonic(_, index) => {
-                            first_of_phrase = index == 0;
-                            row_ctls.push(Ctl::button(ids::HIDE, "숨기기").enabled(index != 0));
-                        }
-                        EvmAccountPref::Record(_) => {
-                            row_ctls.push(
-                                Ctl::danger(ids::REMOVE_KEY, "삭제")
-                                    .enabled(self.can_remove_imported()),
-                            );
-                        }
-                        // A YubiKey account (spec/10 §13): no "개인키 보기" (the key is on
-                        // the card only); hidden until a card with its key is enrolled again.
-                        EvmAccountPref::Hardware(_) => {
-                            row_ctls.push(Ctl::button(ids::HIDE, "숨기기"));
-                        }
+            if self.rename == Some(pref) {
+                items.push(Item::Row(vec![
+                    Ctl::edit(ids::RENAME_EDIT, &label, 260, false, 64),
+                    Ctl::primary(ids::RENAME_SAVE, "저장"),
+                    Ctl::button(ids::RENAME_CANCEL, "취소"),
+                ]));
+            } else {
+                let mut row_ctls = vec![Ctl::button(ids::RENAME, "이름 바꾸기").compact()];
+                let mut first_of_phrase = false;
+                match pref {
+                    EvmAccountPref::Index(index) | EvmAccountPref::Mnemonic(_, index) => {
+                        first_of_phrase = index == 0;
+                        row_ctls.push(
+                            Ctl::button(ids::HIDE, "숨기기")
+                                .compact()
+                                .enabled(index != 0),
+                        );
                     }
-                    items.push(Item::Row(row_ctls));
-                    if first_of_phrase {
-                        // Why `숨기기` is off (2026-11-10).
-                        items.push(Item::Help(T_FIRST_ACCOUNT_KEPT.to_owned()));
+                    EvmAccountPref::Record(_) => {
+                        row_ctls.push(
+                            Ctl::danger(ids::REMOVE_KEY, "삭제")
+                                .compact()
+                                .enabled(self.can_remove_imported()),
+                        );
+                    }
+                    // A YubiKey account (spec/10 §13): no "개인키 보기" (the key is on the card
+                    // only); hidden until a card with its key is enrolled again.
+                    EvmAccountPref::Hardware(_) => {
+                        row_ctls.push(Ctl::button(ids::HIDE, "숨기기").compact());
                     }
                 }
+                items.push(Item::Row(row_ctls));
+                if first_of_phrase {
+                    // Why `숨기기` is off (2026-11-10).
+                    items.push(Item::Help(T_FIRST_ACCOUNT_KEPT.to_owned()));
+                }
             }
-            items.push(Item::Gap(4));
         }
         self.hidden_items(crate::app_hidden::Family::Evm, items);
         items.push(Item::Rule);
         let mut actions = Vec::new();
         if !self.key_only() {
-            actions
-                .push(Ctl::button(ids::ADD_ACCOUNT, "계정 추가").enabled(self.can_add_account()));
+            actions.push(
+                Ctl::button(ids::ADD_ACCOUNT, "계정 추가")
+                    .compact()
+                    .enabled(self.can_add_account()),
+            );
         }
         actions.push(
             Ctl::button(ids::IMPORT_KEY, "개인키 가져오기")
+                .compact()
                 .enabled(self.can_import(yw_core::keyimport::ImportChain::Evm)),
         );
-        actions.push(Ctl::link(
-            crate::ui::screens_mnemonics::ids::MAIN_LINK,
-            "복구 단어 추가·관리",
-        ));
+        actions.push(
+            Ctl::link(
+                crate::ui::screens_mnemonics::ids::MAIN_LINK,
+                "복구 단어 추가·관리",
+            )
+            .compact(),
+        );
         items.push(Item::Row(actions));
         self.mn_pick_row(items);
         items.push(Item::CardEnd);

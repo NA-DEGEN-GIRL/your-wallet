@@ -8,7 +8,9 @@
 //! primary / secondary / danger / link / tab buttons, and banners that always name their status
 //! (정보·완료·주의·고위험·차단·오류·테스트넷) in a colored tag.
 
-use yw_win::ui::controls::{ButtonIcon, ButtonStyle, Control, ControlKind, create_control};
+use yw_win::ui::controls::{
+    ButtonFace, ButtonIcon, ButtonStyle, Control, ControlKind, FaceRun, create_control,
+};
 use yw_win::ui::{Color, DrawFlags, PaintDc, Rect, Window, scale};
 
 use crate::ui::badge::{BADGE_DIP, BADGE_GAP_DIP, Badge, TITLE_BADGE_DIP};
@@ -102,8 +104,33 @@ pub struct Ctl {
     /// A chain badge drawn before a button's label (`crate::ui::badge`).
     pub badge: Option<Badge>,
     /// A small button (26 DIP tall, tighter padding): the actions inside a list row
-    /// (2026-11-11, token rows and the address line's `주소 복사`).
+    /// (2026-11-11, token rows and the address line's actions).
     pub compact: bool,
+    /// What a button draws instead of its label (2026-11-11: icon buttons and copyable values;
+    /// the label stays the control's text, i.e. its accessible name).
+    pub face: Option<Face>,
+    /// The tooltip shown while the pointer rests on the control.
+    pub tip: Option<String>,
+}
+
+/// Symbol of a copy action (Segoe UI Symbol U+29C9 TWO JOINED SQUARES).
+pub const GLYPH_COPY: &str = "\u{29C9}";
+/// Symbol of "open in the browser" (U+2197 NORTH EAST ARROW).
+pub const GLYPH_OPEN: &str = "\u{2197}";
+/// Symbol of "copy the explorer link" (U+1F517 LINK SYMBOL, monochrome in Segoe UI Symbol).
+pub const GLYPH_LINK: &str = "\u{1F517}";
+/// Symbol of "save to the address book" (U+2606 WHITE STAR).
+pub const GLYPH_SAVE: &str = "\u{2606}";
+
+/// What a button draws instead of its label ([`Ctl::face`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Face {
+    /// A symbol in Segoe UI Symbol (`theme::Fonts::symbol`), centered: an icon button.
+    Glyph(&'static str),
+    /// A copyable value (an address or a hash): mono `(text, emphasized)` spans by line — the
+    /// screen gives one line, [`layout`] breaks it to the button's width — left-aligned, with
+    /// [`GLYPH_COPY`] at the right end of the button.
+    Value(Vec<Vec<(String, bool)>>),
 }
 
 impl Ctl {
@@ -119,6 +146,8 @@ impl Ctl {
             backdrop: None,
             badge: None,
             compact: false,
+            face: None,
+            tip: None,
         }
     }
 
@@ -176,6 +205,8 @@ impl Ctl {
             backdrop: None,
             badge: None,
             compact: false,
+            face: None,
+            tip: None,
         }
     }
 
@@ -195,6 +226,8 @@ impl Ctl {
             backdrop: None,
             badge: None,
             compact: false,
+            face: None,
+            tip: None,
         }
     }
 
@@ -215,6 +248,44 @@ impl Ctl {
             backdrop: None,
             badge: None,
             compact: false,
+            face: None,
+            tip: None,
+        }
+    }
+
+    /// A small icon button (2026-11-11): `glyph` drawn in the link color, `label` its accessible
+    /// name and tooltip (`탐색기에서 열기`, `탐색기 링크 복사`, `이 주소 저장` …).
+    #[must_use]
+    pub fn icon(id: u16, glyph: &'static str, label: &str) -> Self {
+        let mut ctl = Self::link(id, label).compact();
+        ctl.face = Some(Face::Glyph(glyph));
+        ctl.tip = Some(label.to_owned());
+        ctl
+    }
+
+    /// A copyable value (2026-11-11): the whole address or hash as mono `spans` on a flat button
+    /// whose click (or Enter) runs `id` — a copy; `label` (`주소 복사`, `해시 복사`) is its
+    /// accessible name and tooltip. Used as the value of an [`Item::CopyLine`].
+    #[must_use]
+    pub fn value(id: u16, label: &str, spans: Vec<(String, bool)>) -> Self {
+        let mut ctl = Self::link(id, label);
+        ctl.face = Some(Face::Value(vec![spans]));
+        ctl.tip = Some(label.to_owned());
+        ctl
+    }
+
+    /// The plain text of a [`Face::Value`] (`None` for other controls).
+    #[must_use]
+    pub fn value_text(&self) -> Option<String> {
+        match &self.face {
+            Some(Face::Value(lines)) => Some(
+                lines
+                    .iter()
+                    .flatten()
+                    .map(|(piece, _)| piece.as_str())
+                    .collect(),
+            ),
+            _ => None,
         }
     }
 
@@ -285,11 +356,19 @@ pub enum Item {
     DisplayMuted(String),
     /// Monospace line (addresses, hashes). Grouped Solana/Bitcoin addresses get their bold groups.
     Mono(String),
-    /// A monospace line of `(text, emphasized)` spans (the user's own address,
-    /// `ui::theme::own_address_spans`) with controls at the right end of the same line, or on
-    /// the next line when both do not fit (2026-11-11: the account cards' address line with
-    /// `주소 복사`, the token rows' shortened contract with their actions).
-    AddressRow(Vec<(String, bool)>, Vec<Ctl>),
+    /// A copyable value line (2026-11-11, spec/04 §2.6): `value` ([`Ctl::value`]: the whole
+    /// address or hash in mono with its emphasis, a click copies it, [`GLYPH_COPY`] at its right
+    /// end) stretched up to `actions` (icon buttons [`Ctl::icon`] or small links), which sit
+    /// right-aligned on the same line. When the value does not fit beside them it takes the
+    /// line's whole width (breaking into several lines when longer) and the actions go
+    /// right-aligned on the next line. The account cards' own address, the token contracts, the
+    /// activity recipients (the wallet's own signed journal) and the transaction hashes.
+    CopyLine {
+        /// The copyable value.
+        value: Ctl,
+        /// Actions at the right end.
+        actions: Vec<Ctl>,
+    },
     /// One list entry (2026-11-11, the token card): a bold title with a small muted note after
     /// it (wrapped at words in the left column, never into the value), and a bold value
     /// right-aligned on the same line. `dim` draws everything muted (hidden rows).
@@ -380,8 +459,8 @@ pub struct PaintText {
     pub wrap: bool,
     /// Alignment (overrides `wrap` when not [`TextAlign::Wrap`]).
     pub align: TextAlign,
-    /// `(text, emphasized)` mono spans drawn on one line instead of `text` when they fit
-    /// ([`Item::AddressRow`]); empty for every other text.
+    /// `(text, emphasized)` mono spans drawn on one line instead of `text` when they fit; empty
+    /// for every text placed today (the copyable values are [`Face::Value`] buttons).
     pub spans: Vec<(String, bool)>,
 }
 
@@ -463,6 +542,44 @@ const fn control_height(ctl: &Ctl) -> i32 {
         ControlKind::CheckBox | ControlKind::Radio { .. } => 24,
         ControlKind::Label => 22,
     }
+}
+
+/// Width of an icon button ([`Ctl::icon`], 26 DIP tall).
+const ICON_DIP: i32 = 30;
+/// Inner left and right padding of a value button ([`Ctl::value`]).
+pub const VALUE_PAD_DIP: i32 = 6;
+/// Room for [`GLYPH_COPY`] at the value button's right end.
+const VALUE_GLYPH_DIP: i32 = 16;
+/// Least gap between the value text and its copy symbol.
+const VALUE_GAP_DIP: i32 = 12;
+/// A value button's width beyond its text.
+const VALUE_CHROME_DIP: i32 = 2 * VALUE_PAD_DIP + VALUE_GLYPH_DIP + VALUE_GAP_DIP;
+
+/// How many mono characters `advance` pixels wide fit in `room` pixels (at least 8).
+fn columns(room: i32, advance: i32) -> usize {
+    usize::try_from(room / advance.max(1)).unwrap_or(0).max(8)
+}
+
+/// `spans` cut into lines of at most `columns` characters (the emphasis kept on each piece).
+fn break_spans(spans: &[(String, bool)], columns: usize) -> Vec<Vec<(String, bool)>> {
+    let mut lines: Vec<Vec<(String, bool)>> = vec![Vec::new()];
+    let mut used = 0_usize;
+    for (piece, emphasized) in spans {
+        let mut rest: Vec<char> = piece.chars().collect();
+        while !rest.is_empty() {
+            if used == columns {
+                lines.push(Vec::new());
+                used = 0;
+            }
+            let take = columns.saturating_sub(used).min(rest.len());
+            let head: String = rest.drain(..take).collect();
+            used = used.saturating_add(take);
+            if let Some(line) = lines.last_mut() {
+                line.push((head, *emphasized));
+            }
+        }
+    }
+    lines
 }
 
 /// A bold label's width from the regular-weight measure (bold Malgun Gothic is a little wider).
@@ -683,6 +800,11 @@ impl Layouter<'_> {
     fn ctl_width(&self, ctl: &Ctl) -> i32 {
         if ctl.width > 0 {
             self.px(ctl.width)
+        } else if let Some(Face::Glyph(_)) = ctl.face {
+            self.px(ICON_DIP)
+        } else if let Some(text) = ctl.value_text() {
+            self.mono_width(&text)
+                .saturating_add(self.px(VALUE_CHROME_DIP))
         } else {
             let pad = match (ctl.is_button(), ctl.compact) {
                 (true, true) => 20,
@@ -794,69 +916,92 @@ impl Layouter<'_> {
             .saturating_mul(advance.max(1))
     }
 
-    /// [`Item::AddressRow`]: the spans, then the controls right after them on the same line
-    /// when both fit; else the address wraps on its own line and the controls follow as a row.
-    fn address_row(&mut self, spans: &[(String, bool)], ctls: &[Ctl]) {
-        let text: String = spans.iter().map(|(piece, _)| piece.as_str()).collect();
-        let gap = self.px(8);
-        let ctls_w = ctls.iter().fold(0_i32, |sum, ctl| {
-            sum.saturating_add(self.ctl_width(ctl)).saturating_add(gap)
-        });
-        let row_h = ctls
-            .iter()
-            .map(|ctl| self.px(control_height(ctl)))
-            .max()
-            .unwrap_or(0);
-        let one_line = (self.measure)("0", FontRole::Mono, self.frame.w.max(1)).max(self.px(16));
-        // A wider gap than between buttons: the address reads as one unit.
-        let lead = self.px(14);
-        let drawn_w = self.mono_width(&text);
-        let text_w = drawn_w.saturating_add(lead.saturating_sub(gap).max(0));
-        let fits = text_w.saturating_add(ctls_w) <= self.frame.w;
-        if !fits || ctls.is_empty() {
-            let width = self.frame.w.max(self.px(40));
-            let height = (self.measure)(&text, FontRole::Mono, width).max(self.px(16));
-            self.mono_spans(&text, spans, Rect::new(self.frame.x, self.y, width, height));
-            self.advance(height, self.px(theme::SPACE_S));
-            if !ctls.is_empty() {
-                self.row(None, ctls);
+    /// The width of `actions` placed side by side (icons 2 DIP apart, other controls 4).
+    fn actions_width(&self, actions: &[Ctl]) -> i32 {
+        actions.iter().enumerate().fold(0_i32, |sum, (index, ctl)| {
+            let gap = if index == 0 { 0 } else { self.action_gap(ctl) };
+            sum.saturating_add(gap).saturating_add(self.ctl_width(ctl))
+        })
+    }
+
+    fn action_gap(&self, ctl: &Ctl) -> i32 {
+        self.px(if matches!(ctl.face, Some(Face::Glyph(_))) {
+            2
+        } else {
+            4
+        })
+    }
+
+    /// Places `actions` right-aligned on the line at content `y` that is `line_h` tall.
+    fn place_actions(&mut self, actions: &[Ctl], y: i32, line_h: i32) {
+        let right = self.frame.x.saturating_add(self.frame.w);
+        let mut x = right.saturating_sub(self.actions_width(actions));
+        for (index, ctl) in actions.iter().enumerate() {
+            if index > 0 {
+                x = x.saturating_add(self.action_gap(ctl));
             }
-            return;
-        }
-        let line_h = row_h.max(one_line);
-        // Some room past the computed width: the spans are drawn whole or not at all.
-        let room = text_w.saturating_add(self.px(40)).min(self.frame.w);
-        self.mono_spans(&text, spans, Rect::new(self.frame.x, self.y, room, line_h));
-        let mut x = self.frame.x.saturating_add(drawn_w).saturating_add(lead);
-        for ctl in ctls {
             let w = self.ctl_width(ctl);
             let h = self.px(control_height(ctl));
             let rect = Rect::new(
                 x,
-                self.y
-                    .saturating_add((line_h - h) / 2)
+                y.saturating_add((line_h - h) / 2)
                     .saturating_sub(self.scroll),
                 w,
                 h,
             );
             self.push_control(ctl, rect);
-            x = x.saturating_add(w).saturating_add(gap);
+            x = x.saturating_add(w);
         }
-        self.advance(line_h, self.px(theme::SPACE_S));
     }
 
-    /// A mono text at content rectangle `rect` drawn as `spans` when they fit on one line.
-    fn mono_spans(&mut self, text: &str, spans: &[(String, bool)], rect: Rect) {
-        self.placed.texts.push(PaintText {
-            rect: Rect::new(rect.x, rect.y.saturating_sub(self.scroll), rect.w, rect.h),
-            text: text.to_owned(),
-            font: FontRole::Mono,
-            color: theme::TEXT.0,
-            fill: None,
-            wrap: true,
-            align: TextAlign::Wrap,
-            spans: spans.to_vec(),
-        });
+    /// [`Item::CopyLine`]: the value button from the frame's left edge (its padding hangs into
+    /// the card's, so the text lines up with the lines above) up to the actions; or, when the
+    /// value does not fit there, the value over the whole width (in lines of whole characters)
+    /// and the actions on the next line.
+    fn copy_line(&mut self, value: &Ctl, actions: &[Ctl]) {
+        let pad = self.px(VALUE_PAD_DIP);
+        let chrome = self.px(VALUE_CHROME_DIP);
+        let mono_h = (self.measure)("0", FontRole::Mono, self.frame.w.max(1)).max(self.px(16));
+        let spans: Vec<(String, bool)> = match &value.face {
+            Some(Face::Value(lines)) => lines.iter().flatten().cloned().collect(),
+            _ => vec![(value.text.clone(), false)],
+        };
+        let text: String = spans.iter().map(|(piece, _)| piece.as_str()).collect();
+        let text_w = self.mono_width(&text);
+        let actions_w = self.actions_width(actions);
+        let left = self.frame.x.saturating_sub(pad);
+        let full = self.frame.w.saturating_add(pad.saturating_mul(2));
+        let gap = if actions.is_empty() { 0 } else { self.px(6) };
+        let beside = full
+            .saturating_sub(pad)
+            .saturating_sub(actions_w)
+            .saturating_sub(gap);
+        let one_line = text_w.saturating_add(chrome) <= beside;
+        let width = if one_line { beside } else { full };
+        let room = width.saturating_sub(chrome).max(self.px(40));
+        let lines = break_spans(&spans, columns(room, self.mono_width("0")));
+        let count = i32::try_from(lines.len()).unwrap_or(1).max(1);
+        let height = mono_h
+            .saturating_mul(count)
+            .saturating_add(self.px(8))
+            .max(self.px(26));
+        let mut placed = value.clone();
+        placed.face = Some(Face::Value(lines));
+        self.push_control(
+            &placed,
+            Rect::new(left, self.y.saturating_sub(self.scroll), width, height),
+        );
+        if one_line {
+            self.place_actions(actions, self.y, height);
+            self.advance(height, self.px(theme::SPACE_XS));
+            return;
+        }
+        self.advance(height, self.px(2));
+        if !actions.is_empty() {
+            let line_h = self.px(26);
+            self.place_actions(actions, self.y, line_h);
+            self.advance(line_h, self.px(theme::SPACE_XS));
+        }
     }
 
     /// [`Item::ListRow`].
@@ -1415,7 +1560,7 @@ impl Layouter<'_> {
             }
             Item::Row(ctls) => layouter.row(None, ctls),
             Item::LabeledRow(label, ctls) => layouter.row(Some(label), ctls),
-            Item::AddressRow(spans, ctls) => layouter.address_row(spans, ctls),
+            Item::CopyLine { value, actions } => layouter.copy_line(value, actions),
             Item::ListRow {
                 title,
                 note,
@@ -1549,6 +1694,37 @@ fn kind_class(kind: ControlKind) -> ControlKind {
     match kind {
         ControlKind::Button(_) => ControlKind::Button(theme::BUTTON_SECONDARY),
         other => other,
+    }
+}
+
+/// The yw-win face of `face` in `style` at `dpi`: a glyph in the style's text color, or a value's
+/// lines (emphasized spans in bold mono and `theme::FOCUS`, the rest in mono and
+/// `theme::TEXT`) with the copy symbol in the link color at the right end.
+fn button_face(face: &Face, fonts: &Fonts, style: ButtonStyle, dpi: u32) -> ButtonFace {
+    match face {
+        Face::Glyph(glyph) => ButtonFace {
+            lines: vec![vec![FaceRun::new(glyph, &fonts.symbol, style.text)]],
+            left: None,
+            trailing: None,
+        },
+        Face::Value(lines) => ButtonFace {
+            lines: lines
+                .iter()
+                .map(|line| {
+                    line.iter()
+                        .map(|(piece, emphasized)| {
+                            if *emphasized {
+                                FaceRun::new(piece, &fonts.mono_bold, theme::FOCUS)
+                            } else {
+                                FaceRun::new(piece, &fonts.mono, theme::TEXT)
+                            }
+                        })
+                        .collect()
+                })
+                .collect(),
+            left: Some(scale(VALUE_PAD_DIP, dpi)),
+            trailing: Some(FaceRun::new(GLYPH_COPY, &fonts.symbol, theme::FOCUS)),
+        },
     }
 }
 
@@ -1736,6 +1912,17 @@ impl ControlSet {
                         pixels: badge.render(size),
                     }));
                 }
+                if fresh || ctl.face != wanted_ctl.face {
+                    control.set_face(
+                        wanted_ctl
+                            .face
+                            .as_ref()
+                            .map(|face| button_face(face, fonts, style, dpi)),
+                    );
+                }
+            }
+            if fresh || ctl.tip != wanted_ctl.tip {
+                control.set_tooltip(wanted_ctl.tip.as_deref());
             }
             let visible = rect.bottom() > 0 && rect.y < client.h;
             control.show(visible);
@@ -1775,14 +1962,18 @@ mod tests {
                 Ctl::tab(4, "Base", false),
                 Ctl::tab(5, "Sepolia", true),
             ]),
-            Item::AddressRow(
-                crate::ui::theme::own_address_spans(
-                    "0xF9900bb6FF2D2C67858c3468d21c5f103C4Ff646",
-                    crate::ui::theme::AddressKind::Evm,
-                    false,
+            Item::CopyLine {
+                value: Ctl::value(
+                    6,
+                    "주소 복사",
+                    crate::ui::theme::own_address_spans(
+                        "0xF9900bb6FF2D2C67858c3468d21c5f103C4Ff646",
+                        crate::ui::theme::AddressKind::Evm,
+                        false,
+                    ),
                 ),
-                vec![Ctl::button(6, "주소 복사").compact()],
-            ),
+                actions: vec![Ctl::icon(7, GLYPH_OPEN, "탐색기에서 주소 보기")],
+            },
             Item::ListRow {
                 title: "USDG".to_owned(),
                 note: "Global Dollar, Paxos".to_owned(),
@@ -1810,10 +2001,9 @@ mod tests {
         assert_eq!(shifted, at(300));
     }
 
-    /// A pill sits at the end of the row above it when it fits (no line of its own); the
-    /// address row keeps its button on the address line and its spans on the text.
+    /// A pill sits at the end of the row above it when it fits (no line of its own).
     #[test]
-    fn pill_joins_the_row_and_address_row_keeps_one_line() {
+    fn pill_joins_the_row() {
         let measure = |_: &str, _: FontRole, _: i32| 20;
         let width = |text: &str| i32::try_from(text.len()).unwrap_or(0).saturating_mul(7);
         let row = Item::LabeledRow("네트워크".to_owned(), vec![Ctl::button(1, "Sepolia ▾")]);
@@ -1829,38 +2019,85 @@ mod tests {
             .unwrap();
         assert!(tag.rect.x > button.x + button.w, "after the button");
         assert!(tag.rect.y >= button.y && tag.rect.bottom() <= button.bottom());
+    }
 
-        let spans = crate::ui::theme::own_address_spans(
-            "0xF9900bb6FF2D2C67858c3468d21c5f103C4Ff646",
-            crate::ui::theme::AddressKind::Evm,
-            false,
-        );
-        let placed = layout(
-            &[Item::AddressRow(
-                spans.clone(),
-                vec![Ctl::button(7, "주소 복사").compact()],
-            )],
-            900,
-            96,
-            0,
-            &measure,
-            &width,
-        );
-        let line = placed
-            .texts
+    /// A copy line (2026-11-11): the value button from the text's left edge up to the icons,
+    /// which sit right-aligned on the same line; in a narrow window the value takes the whole
+    /// width in lines of whole characters (its spans kept) and the icons go on the next line.
+    #[test]
+    fn copy_line_keeps_the_value_whole_and_the_icons_right() {
+        let measure = |_: &str, _: FontRole, _: i32| 20;
+        let width = |text: &str| i32::try_from(text.len()).unwrap_or(0).saturating_mul(7);
+        let address = "0xF9900bb6FF2D2C67858c3468d21c5f103C4Ff646";
+        let spans =
+            crate::ui::theme::own_address_spans(address, crate::ui::theme::AddressKind::Evm, false);
+        let line = Item::CopyLine {
+            value: Ctl::value(7, "주소 복사", spans.clone()),
+            actions: vec![
+                Ctl::icon(8, GLYPH_OPEN, "탐색기에서 열기"),
+                Ctl::icon(9, GLYPH_LINK, "탐색기 링크 복사"),
+            ],
+        };
+        let placed = layout(std::slice::from_ref(&line), 900, 96, 0, &measure, &width);
+        let (value, value_rect) = &placed.controls[0];
+        assert_eq!(value.text, "주소 복사");
+        assert_eq!(value.tip.as_deref(), Some("주소 복사"));
+        assert_eq!(value.face, Some(Face::Value(vec![spans.clone()])));
+        assert_eq!(value.value_text().as_deref(), Some(address));
+        let (open, open_rect) = &placed.controls[1];
+        let (chain_link, link_rect) = &placed.controls[2];
+        assert_eq!(open.face, Some(Face::Glyph(GLYPH_OPEN)));
+        assert_eq!(chain_link.tip.as_deref(), Some("탐색기 링크 복사"));
+        // The text lines up with the card's left edge (the padding hangs out), the icons end at
+        // the right edge, and everything is on one line.
+        let margin = scale(theme::SPACE_XL, 96);
+        assert_eq!(value_rect.x + VALUE_PAD_DIP, margin);
+        assert_eq!(link_rect.x + link_rect.w, 900 - margin);
+        assert!(value_rect.x + value_rect.w < open_rect.x);
+        assert!(open_rect.y >= value_rect.y && open_rect.bottom() <= value_rect.bottom());
+        assert_eq!(link_rect.y, open_rect.y);
+
+        // 300 px: 42 characters do not fit beside the icons; on their own line they need two
+        // lines of whole characters.
+        let narrow = layout(std::slice::from_ref(&line), 300, 96, 0, &measure, &width);
+        let (value, value_rect) = &narrow.controls[0];
+        let lines = match &value.face {
+            Some(Face::Value(lines)) => lines.clone(),
+            _ => Vec::new(),
+        };
+        assert!(lines.len() >= 2, "{lines:?}");
+        let joined: Vec<(String, bool)> = lines.iter().flatten().cloned().collect();
+        let text: String = joined.iter().map(|(piece, _)| piece.as_str()).collect();
+        assert_eq!(text, address);
+        // The emphasis survives the break (a piece may end up on the next line).
+        let strong: String = joined
             .iter()
-            .find(|text| !text.spans.is_empty())
-            .unwrap();
-        assert_eq!(line.text, "0xF9900bb6FF2D2C67858c3468d21c5f103C4Ff646");
-        assert_eq!(line.spans, spans);
-        let (ctl, rect) = &placed.controls[0];
-        assert!(ctl.compact);
-        // Right after the 42 Consolas cells (7 px at 96 DPI), not at the far end of the line.
+            .filter(|(_, strong)| *strong)
+            .map(|(piece, _)| piece.as_str())
+            .collect();
+        assert_eq!(strong, "F990f646");
+        let (_, open_rect) = &narrow.controls[1];
+        assert!(open_rect.y >= value_rect.bottom(), "icons under the value");
+    }
+
+    #[test]
+    fn break_spans_cuts_whole_characters() {
+        let spans = vec![
+            ("0x".to_owned(), false),
+            ("AbCd".to_owned(), true),
+            ("1234".to_owned(), false),
+        ];
         assert_eq!(
-            rect.x,
-            line.rect.x + 42 * 7 + 14,
-            "button beside the address"
+            break_spans(&spans, 8),
+            vec![
+                vec![
+                    ("0x".to_owned(), false),
+                    ("AbCd".to_owned(), true),
+                    ("12".to_owned(), false)
+                ],
+                vec![("34".to_owned(), false)],
+            ]
         );
-        assert!(rect.y >= line.rect.y && rect.bottom() <= line.rect.bottom());
+        assert_eq!(break_spans(&spans, 10).len(), 1);
     }
 }

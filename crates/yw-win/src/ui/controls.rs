@@ -6,7 +6,9 @@
 //! Push buttons are owner-drawn (`BS_OWNERDRAW`) from a [`ButtonStyle`] the app passes in (the
 //! app's design tokens, spec/04 §1.6); the parent's wndproc paints them on `WM_DRAWITEM` and
 //! colors check boxes, radios and read-only edits with the control's backdrop (the card or window
-//! color under it) on `WM_CTLCOLORSTATIC`/`WM_CTLCOLORBTN`.
+//! color under it) on `WM_CTLCOLORSTATIC`/`WM_CTLCOLORBTN`. A button may draw a [`ButtonFace`]
+//! instead of its window text (2026-11-11: icon buttons and copyable address/hash lines; the
+//! window text stays the accessible name) and show a tooltip ([`Control::set_tooltip`]).
 
 use core::cell::RefCell;
 use core::fmt;
@@ -16,22 +18,26 @@ use std::rc::Rc;
 use windows_sys::Win32::Foundation::{ERROR_INVALID_WINDOW_HANDLE, HWND, RECT, SIZE};
 use windows_sys::Win32::Graphics::Gdi::{
     CreatePen, CreateSolidBrush, DT_CENTER, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DeleteObject,
-    DrawTextW, FillRect, GetTextExtentPoint32W, HBRUSH, HDC, HFONT, InvalidateRect, PS_SOLID,
-    RoundRect, SelectObject, SetBkColor, SetBkMode, SetTextColor, TRANSPARENT,
+    DrawTextW, FillRect, GetTextExtentPoint32W, GetTextMetricsW, HBRUSH, HDC, HFONT,
+    InvalidateRect, PS_SOLID, RoundRect, SelectObject, SetBkColor, SetBkMode, SetTextColor,
+    TEXTMETRICW, TRANSPARENT, TextOutW,
 };
 use windows_sys::Win32::UI::Controls::{
     BST_CHECKED, BST_UNCHECKED, DRAWITEMSTRUCT, EM_SETLIMITTEXT, EM_SETSEL, ODS_DISABLED,
-    ODS_FOCUS, ODS_NOFOCUSRECT, ODS_SELECTED, ODT_BUTTON,
+    ODS_FOCUS, ODS_NOFOCUSRECT, ODS_SELECTED, ODT_BUTTON, TOOLTIPS_CLASSW, TTF_IDISHWND,
+    TTF_SUBCLASS, TTM_ADDTOOLW, TTM_DELTOOLW, TTM_SETMAXTIPWIDTH, TTM_UPDATETIPTEXTW,
+    TTS_ALWAYSTIP, TTS_NOPREFIX, TTTOOLINFOW,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     EnableWindow, GetFocus, IsWindowEnabled, SetFocus,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     BM_GETCHECK, BM_SETCHECK, BS_AUTOCHECKBOX, BS_AUTORADIOBUTTON, BS_MULTILINE, BS_OWNERDRAW,
-    CreateWindowExW, DestroyWindow, ES_AUTOHSCROLL, ES_PASSWORD, ES_READONLY, GWL_STYLE,
-    GetWindowLongW, GetWindowTextLengthW, GetWindowTextW, HMENU, MoveWindow, SW_HIDE, SW_SHOW,
-    SendMessageW, SetWindowTextW, ShowWindow, WM_GETFONT, WM_SETFONT, WS_CHILD, WS_EX_CLIENTEDGE,
-    WS_GROUP, WS_TABSTOP, WS_VISIBLE,
+    CW_USEDEFAULT, CreateWindowExW, DestroyWindow, ES_AUTOHSCROLL, ES_PASSWORD, ES_READONLY,
+    GW_OWNER, GWL_STYLE, GetParent, GetWindow, GetWindowLongW, GetWindowTextLengthW,
+    GetWindowTextW, HMENU, IsWindow, MoveWindow, SW_HIDE, SW_SHOW, SendMessageW, SetWindowTextW,
+    ShowWindow, WM_GETFONT, WM_SETFONT, WS_CHILD, WS_EX_CLIENTEDGE, WS_EX_TOPMOST, WS_GROUP,
+    WS_POPUP, WS_TABSTOP, WS_VISIBLE,
 };
 
 use super::paint::{Color, Font, Rect};
@@ -85,11 +91,54 @@ pub struct ButtonIcon {
     pub pixels: Vec<u32>,
 }
 
+/// One piece of a [`ButtonFace`] line: text in one font and color.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FaceRun {
+    text: Vec<u16>,
+    /// The `HFONT` of a live [`Font`] (the caller keeps the font alive while the face is set,
+    /// as for `WM_SETFONT`).
+    font: usize,
+    color: Color,
+}
+
+impl FaceRun {
+    /// `text` drawn in `font` and `color`.
+    #[must_use]
+    pub fn new(text: &str, font: &Font, color: Color) -> Self {
+        Self {
+            text: text.encode_utf16().collect(),
+            font: font.raw().expose_provenance(),
+            color,
+        }
+    }
+}
+
+/// What an owner-drawn button draws instead of its window text (which stays its accessible
+/// name): lines of runs on a common baseline each, the block vertically centered; each line
+/// starts `left` pixels from the button's left edge, or is centered when `left` is `None`. A
+/// disabled button draws every run in its style's disabled text color.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ButtonFace {
+    /// Lines of runs.
+    pub lines: Vec<Vec<FaceRun>>,
+    /// Left padding in pixels (`None` = centered).
+    pub left: Option<i32>,
+    /// A run at the right end (the same padding from the right edge), vertically centered.
+    pub trailing: Option<FaceRun>,
+}
+
 thread_local! {
     /// Child control hwnd → paint state (UI thread only; removed when the control is dropped).
     static PAINTS: RefCell<HashMap<usize, ControlPaint>> = RefCell::new(HashMap::new());
     /// Owner-drawn button hwnd → its icon (UI thread only; removed when the control is dropped).
     static ICONS: RefCell<HashMap<usize, ButtonIcon>> = RefCell::new(HashMap::new());
+    /// Owner-drawn button hwnd → its face (UI thread only; removed when the control is dropped).
+    static FACES: RefCell<HashMap<usize, ButtonFace>> = RefCell::new(HashMap::new());
+    /// Parent hwnd → its tooltip window (created on the first [`Control::set_tooltip`]; owned by
+    /// the parent, so destroyed with it).
+    static TIPS: RefCell<HashMap<usize, usize>> = RefCell::new(HashMap::new());
+    /// Control hwnd → the parent whose tooltip lists it (removed with the control).
+    static TIPPED: RefCell<HashMap<usize, usize>> = RefCell::new(HashMap::new());
     /// Solid brushes by color for `WM_CTLCOLOR*` replies (a handful of theme colors, kept for
     /// the process lifetime because the system uses the brush after the reply).
     static BRUSHES: RefCell<HashMap<u32, usize>> = RefCell::new(HashMap::new());
@@ -282,19 +331,38 @@ pub(crate) fn draw_item(parent: HWND, wparam: usize, lparam: isize) -> bool {
     unsafe { SetBkMode(hdc, i32::try_from(TRANSPARENT).unwrap_or(1)) };
     // SAFETY: Plain DC state change on the live DC.
     unsafe { SetTextColor(hdc, text.colorref()) };
+    let face = FACES.with(|faces| {
+        faces
+            .try_borrow()
+            .ok()
+            .and_then(|faces| faces.get(&item.hwndItem.expose_provenance()).cloned())
+    });
+    match face {
+        Some(face) => draw_face(hdc, rect, &face, disabled.then_some(text)),
+        None => draw_window_label(hdc, rect, item.hwndItem, dpi),
+    }
+    if !old_font.is_null() {
+        // SAFETY: Restores the DC's previous font.
+        unsafe { SelectObject(hdc, old_font) };
+    }
+    true
+}
+
+/// Draws button `hwnd`'s window text (and its icon) centered in `rect`.
+fn draw_window_label(hdc: HDC, rect: RECT, hwnd: HWND, dpi: u32) {
     // SAFETY: Queries the label length of our control.
-    let len = unsafe { GetWindowTextLengthW(item.hwndItem) };
+    let len = unsafe { GetWindowTextLengthW(hwnd) };
     let len = usize::try_from(len).unwrap_or(0).min(512);
     let mut buffer = vec![0_u16; len.saturating_add(1)];
     let capacity = i32::try_from(buffer.len()).unwrap_or(0);
     // SAFETY: `buffer` is writable for `capacity` units including the terminator.
-    let copied = unsafe { GetWindowTextW(item.hwndItem, buffer.as_mut_ptr(), capacity) };
+    let copied = unsafe { GetWindowTextW(hwnd, buffer.as_mut_ptr(), capacity) };
     let count = usize::try_from(copied).unwrap_or(0).min(len);
     let icon = ICONS.with(|icons| {
         icons
             .try_borrow()
             .ok()
-            .and_then(|icons| icons.get(&item.hwndItem.expose_provenance()).cloned())
+            .and_then(|icons| icons.get(&hwnd.expose_provenance()).cloned())
     });
     draw_label(
         hdc,
@@ -303,11 +371,6 @@ pub(crate) fn draw_item(parent: HWND, wparam: usize, lparam: isize) -> bool {
         icon.as_ref(),
         dpi,
     );
-    if !old_font.is_null() {
-        // SAFETY: Restores the DC's previous font.
-        unsafe { SelectObject(hdc, old_font) };
-    }
-    true
 }
 
 /// Draws a button label centered in `rect` (font and color already selected), with the icon
@@ -345,6 +408,213 @@ fn draw_label(hdc: HDC, rect: RECT, label: &[u16], icon: Option<&ButtonIcon>, dp
         // SAFETY: `label` holds `count` units; DT_MODIFYSTRING is not set.
         unsafe { DrawTextW(hdc, label.as_ptr(), count, &raw mut text_rect, flags) };
     }
+}
+
+/// Selects `run`'s font into `hdc` (GDI refuses a stale handle and keeps the current font) and
+/// returns its `(width, height, ascent)` in pixels.
+fn run_metrics(hdc: HDC, run: &FaceRun) -> (i32, i32, i32) {
+    let font: HFONT = core::ptr::with_exposed_provenance_mut(run.font);
+    // SAFETY: Selects a font handle into the live DC; the caller restores the DC's font.
+    unsafe { SelectObject(hdc, font) };
+    let mut metrics = TEXTMETRICW::default();
+    // SAFETY: `metrics` is writable for the call.
+    unsafe { GetTextMetricsW(hdc, &raw mut metrics) };
+    let mut extent = SIZE { cx: 0, cy: 0 };
+    let count = i32::try_from(run.text.len()).unwrap_or(0);
+    if count > 0 {
+        // SAFETY: `run.text` holds `count` units; `extent` is writable.
+        unsafe { GetTextExtentPoint32W(hdc, run.text.as_ptr(), count, &raw mut extent) };
+    }
+    (extent.cx, metrics.tmHeight, metrics.tmAscent)
+}
+
+/// One measured line of a face: its runs with `(width, ascent)`, then the line's width, height
+/// and ascent.
+type MeasuredLine<'a> = (Vec<(&'a FaceRun, i32, i32)>, i32, i32, i32);
+
+/// Draws `face` in `rect` (the caller restores the DC's font); `disabled` replaces every run's
+/// color.
+fn draw_face(hdc: HDC, rect: RECT, face: &ButtonFace, disabled: Option<Color>) {
+    let measured: Vec<MeasuredLine<'_>> = face
+        .lines
+        .iter()
+        .map(|line| {
+            let mut runs = Vec::with_capacity(line.len());
+            let (mut width, mut ascent, mut descent) = (0_i32, 0_i32, 0_i32);
+            for run in line {
+                let (w, h, run_ascent) = run_metrics(hdc, run);
+                width = width.saturating_add(w);
+                ascent = ascent.max(run_ascent);
+                descent = descent.max(h.saturating_sub(run_ascent));
+                runs.push((run, w, run_ascent));
+            }
+            (runs, width, ascent.saturating_add(descent), ascent)
+        })
+        .collect();
+    let total = measured
+        .iter()
+        .fold(0_i32, |sum, line| sum.saturating_add(line.2));
+    let width = rect.right.saturating_sub(rect.left);
+    let height = rect.bottom.saturating_sub(rect.top);
+    let mut y = rect
+        .top
+        .saturating_add((height.saturating_sub(total) / 2).max(0));
+    for (runs, line_w, line_h, ascent) in measured {
+        let mut x = face.left.map_or_else(
+            || {
+                rect.left
+                    .saturating_add((width.saturating_sub(line_w) / 2).max(0))
+            },
+            |pad| rect.left.saturating_add(pad),
+        );
+        let baseline = y.saturating_add(ascent);
+        for (run, run_w, run_ascent) in runs {
+            let font: HFONT = core::ptr::with_exposed_provenance_mut(run.font);
+            // SAFETY: Selects a font handle into the live DC; the caller restores the DC's font.
+            unsafe { SelectObject(hdc, font) };
+            // SAFETY: Plain DC state change on the live DC.
+            unsafe { SetTextColor(hdc, disabled.unwrap_or(run.color).colorref()) };
+            let count = i32::try_from(run.text.len()).unwrap_or(0);
+            if count > 0 {
+                // SAFETY: `run.text` holds `count` units.
+                unsafe {
+                    TextOutW(
+                        hdc,
+                        x,
+                        baseline.saturating_sub(run_ascent),
+                        run.text.as_ptr(),
+                        count,
+                    )
+                };
+            }
+            x = x.saturating_add(run_w);
+        }
+        y = y.saturating_add(line_h);
+    }
+    if let Some(run) = &face.trailing {
+        let (run_w, run_h, _) = run_metrics(hdc, run);
+        let x = rect
+            .right
+            .saturating_sub(face.left.unwrap_or(0))
+            .saturating_sub(run_w);
+        let top = rect
+            .top
+            .saturating_add((height.saturating_sub(run_h) / 2).max(0));
+        // SAFETY: Plain DC state change on the live DC (the run's font is selected above).
+        unsafe { SetTextColor(hdc, disabled.unwrap_or(run.color).colorref()) };
+        let count = i32::try_from(run.text.len()).unwrap_or(0);
+        if count > 0 {
+            // SAFETY: `run.text` holds `count` units.
+            unsafe { TextOutW(hdc, x, top, run.text.as_ptr(), count) };
+        }
+    }
+}
+
+/// The tooltip window of `parent`: the one created before while it is still a live window owned
+/// by `parent`, else a new one.
+fn tooltip_of(parent: HWND) -> Option<HWND> {
+    let key = parent.expose_provenance();
+    let known = TIPS.with(|tips| {
+        tips.try_borrow()
+            .ok()
+            .and_then(|tips| tips.get(&key).copied())
+    });
+    if let Some(known) = known {
+        let tip: HWND = core::ptr::with_exposed_provenance_mut(known);
+        if tooltip_alive(tip, parent) {
+            return Some(tip);
+        }
+    }
+    // SAFETY: Creates a tooltip window owned by our live parent (the class name is a static
+    // NUL-terminated string; no window name, menu or creation data).
+    let tip = unsafe {
+        CreateWindowExW(
+            WS_EX_TOPMOST,
+            TOOLTIPS_CLASSW,
+            core::ptr::null(),
+            WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX,
+            CW_USEDEFAULT,
+            CW_USEDEFAULT,
+            CW_USEDEFAULT,
+            CW_USEDEFAULT,
+            parent,
+            core::ptr::null_mut(),
+            core::ptr::null_mut(),
+            core::ptr::null(),
+        )
+    };
+    if tip.is_null() {
+        return None;
+    }
+    // SAFETY: A plain-value message to our tooltip: long tips wrap at 400 px.
+    unsafe { SendMessageW(tip, TTM_SETMAXTIPWIDTH, 0, 400) };
+    TIPS.with(|tips| {
+        if let Ok(mut tips) = tips.try_borrow_mut() {
+            tips.insert(key, tip.expose_provenance());
+        }
+    });
+    Some(tip)
+}
+
+/// Whether `tip` is still a window owned by `parent` (a handle value can be reused after its
+/// window is destroyed).
+fn tooltip_alive(tip: HWND, parent: HWND) -> bool {
+    // SAFETY: A plain query; a stale handle makes it return 0.
+    let window = unsafe { IsWindow(tip) } != 0;
+    // SAFETY: A plain query; a stale handle makes it return null.
+    window && unsafe { GetWindow(tip, GW_OWNER) } == parent
+}
+
+/// The tool entry of control `hwnd` under `parent` (`text` is null for a removal).
+fn tool_info(parent: HWND, hwnd: HWND, text: *mut u16) -> TTTOOLINFOW {
+    TTTOOLINFOW {
+        cbSize: u32::try_from(core::mem::size_of::<TTTOOLINFOW>()).unwrap_or(0),
+        uFlags: TTF_IDISHWND | TTF_SUBCLASS,
+        hwnd: parent,
+        uId: hwnd.expose_provenance(),
+        lpszText: text,
+        ..TTTOOLINFOW::default()
+    }
+}
+
+/// Removes control `hwnd`'s entry from its parent's tooltip while that tooltip still exists.
+fn remove_tool(hwnd: usize) {
+    let parent = TIPPED.with(|tipped| {
+        tipped
+            .try_borrow_mut()
+            .ok()
+            .and_then(|mut tipped| tipped.remove(&hwnd))
+    });
+    let Some(parent) = parent else {
+        return;
+    };
+    let tip = TIPS.with(|tips| {
+        tips.try_borrow()
+            .ok()
+            .and_then(|tips| tips.get(&parent).copied())
+    });
+    let Some(tip) = tip else {
+        return;
+    };
+    let tip: HWND = core::ptr::with_exposed_provenance_mut(tip);
+    let parent: HWND = core::ptr::with_exposed_provenance_mut(parent);
+    if !tooltip_alive(tip, parent) {
+        return;
+    }
+    let info = tool_info(
+        parent,
+        core::ptr::with_exposed_provenance_mut(hwnd),
+        core::ptr::null_mut(),
+    );
+    // SAFETY: `info` lives for the call; the tooltip reads only its `hwnd` and `uId`.
+    unsafe {
+        SendMessageW(
+            tip,
+            TTM_DELTOOLW,
+            0,
+            (&raw const info).expose_provenance().cast_signed(),
+        )
+    };
 }
 
 /// Kind of a child control.
@@ -699,6 +969,79 @@ impl Control {
         }
     }
 
+    /// Sets or clears the face an owner-drawn button draws instead of its window text.
+    pub fn set_face(&self, face: Option<ButtonFace>) {
+        let Some(hwnd) = self.live() else { return };
+        let changed = FACES.with(|faces| {
+            let Ok(mut faces) = faces.try_borrow_mut() else {
+                return false;
+            };
+            match face {
+                Some(face) if faces.get(&self.hwnd) != Some(&face) => {
+                    faces.insert(self.hwnd, face);
+                    true
+                }
+                None => faces.remove(&self.hwnd).is_some(),
+                Some(_) => false,
+            }
+        });
+        if changed {
+            // SAFETY: Invalidates our live control so it repaints with the new face.
+            unsafe { InvalidateRect(hwnd, core::ptr::null(), 1) };
+        }
+    }
+
+    /// Shows `text` (non-secret) as the control's tooltip while the pointer rests on it; `None`
+    /// removes it. The parent's tooltip window keeps its own copy of the text.
+    pub fn set_tooltip(&self, text: Option<&str>) {
+        let Some(hwnd) = self.live() else { return };
+        let registered = TIPPED.with(|tipped| {
+            tipped
+                .try_borrow()
+                .is_ok_and(|tipped| tipped.contains_key(&self.hwnd))
+        });
+        let Some(text) = text else {
+            if registered {
+                remove_tool(self.hwnd);
+            }
+            return;
+        };
+        // SAFETY: Reads the parent of our live child control.
+        let parent = unsafe { GetParent(hwnd) };
+        if parent.is_null() {
+            return;
+        }
+        let Some(tip) = tooltip_of(parent) else {
+            return;
+        };
+        let Ok(mut wide) = to_wide(text, "TTM_ADDTOOLW") else {
+            return;
+        };
+        let info = tool_info(parent, hwnd, wide.as_mut_ptr());
+        let message = if registered {
+            TTM_UPDATETIPTEXTW
+        } else {
+            TTM_ADDTOOLW
+        };
+        // SAFETY: `info` and the text it points to live for the call; the tooltip copies the
+        // text.
+        unsafe {
+            SendMessageW(
+                tip,
+                message,
+                0,
+                (&raw const info).expose_provenance().cast_signed(),
+            )
+        };
+        if !registered {
+            TIPPED.with(|tipped| {
+                if let Ok(mut tipped) = tipped.try_borrow_mut() {
+                    tipped.insert(self.hwnd, parent.expose_provenance());
+                }
+            });
+        }
+    }
+
     /// Replaces an owner-drawn button's style (same control, new colors).
     pub fn set_button_style(&self, style: ButtonStyle) {
         let Some(hwnd) = self.live() else { return };
@@ -723,6 +1066,20 @@ impl Control {
 
 impl Drop for Control {
     fn drop(&mut self) {
+        if (self.parent_alive)() {
+            remove_tool(self.hwnd);
+        } else {
+            TIPPED.with(|tipped| {
+                if let Ok(mut tipped) = tipped.try_borrow_mut() {
+                    tipped.remove(&self.hwnd);
+                }
+            });
+        }
+        FACES.with(|faces| {
+            if let Ok(mut faces) = faces.try_borrow_mut() {
+                faces.remove(&self.hwnd);
+            }
+        });
         PAINTS.with(|paints| {
             if let Ok(mut paints) = paints.try_borrow_mut() {
                 paints.remove(&self.hwnd);

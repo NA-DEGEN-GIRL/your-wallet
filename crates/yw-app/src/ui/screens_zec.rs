@@ -382,6 +382,18 @@ impl App {
         items.push(Item::CardEnd);
     }
 
+    /// The recipients of the activity rows, newest first as drawn (`None` without one): the
+    /// copy of a click on a row's recipient (2026-11-11).
+    #[must_use]
+    pub fn zec_activity_recipients(&self) -> Vec<Option<String>> {
+        let network = self.zec_network();
+        self.zec_records()
+            .iter()
+            .rev()
+            .map(|record| record.recipient().map(|dest| dest.encode(network)))
+            .collect()
+    }
+
     /// The S10 Zcash tab body.
     #[expect(clippy::too_many_lines, reason = "the Zcash tab sections in order")]
     pub fn zec_main_screen(&self, items: &mut Vec<Item>) {
@@ -570,7 +582,7 @@ impl App {
                         crate::ui::theme::AddressKind::Zcash,
                         ids::CARD_COPY,
                         !self.passphrase_unverified(),
-                        self.explorer_address_link(
+                        self.explorer_address_icon(
                             crate::network::NetworkId::Zcash(network),
                             &address,
                             crate::ui::screens_explorer::ids::CARD_ZEC,
@@ -838,32 +850,44 @@ impl App {
                         .map(|(_, label)| format!(" → 내 계정: {label}"))
                         .unwrap_or_default();
                     items.push(Item::Help(format!("받는 주소{name}")));
-                    items.push(Item::Mono(grouped(&to)));
+                    // 2026-11-11: whole, ends emphasized; a click copies it (the wallet's own
+                    // signed journal — the received history's senders never are).
+                    crate::ui::screens_links::push_address_line(
+                        items,
+                        crate::ui::screens_links::ids::row_id(
+                            crate::ui::screens_links::ids::ZEC_TO_BASE,
+                            crate::ui::screens_links::ids::ZEC_TO_SPAN,
+                            row,
+                        ),
+                        &to,
+                        crate::ui::theme::AddressKind::Zcash,
+                        Vec::new(),
+                    );
                 }
                 None => items.push(Item::Help("받는 주소 -".to_owned())),
             }
             items.push(Item::Help(format!("수수료 {} ZEC", format_zec(record.fee))));
             let txid = record.txid_hex();
-            items.push(Item::Mono(txid.clone()));
-            let mut buttons: Vec<Ctl> = u16::try_from(row)
-                .ok()
-                .filter(|row| *row < ids::ACTIVITY_COPY_SPAN)
-                .map(|row| Ctl::button(ids::ACTIVITY_COPY_BASE.saturating_add(row), "해시 복사"))
-                .into_iter()
-                .collect();
-            // 2026-11-11: `탐색기에서 열기`·`탐색기 링크 복사` (ids of `ui::screens_explorer`).
-            buttons.extend(self.explorer_tx_buttons(
-                crate::network::NetworkId::Zcash(network),
-                &txid,
-                crate::ui::screens_explorer::ids::activity_ids(
-                    crate::ui::screens_explorer::ids::ZEC_ACTIVITY_BASE,
-                    crate::ui::screens_explorer::ids::ZEC_ACTIVITY_SPAN,
+            // A click copies the txid; `탐색기에서 열기` ↗ · `탐색기 링크 복사` 🔗 at the right
+            // end (ids of `ui::screens_explorer`).
+            crate::ui::screens_links::push_hash_line(
+                items,
+                crate::ui::screens_links::ids::row_id(
+                    ids::ACTIVITY_COPY_BASE,
+                    ids::ACTIVITY_COPY_SPAN,
                     row,
                 ),
-            ));
-            if !buttons.is_empty() {
-                items.push(Item::Row(buttons));
-            }
+                &txid,
+                self.explorer_tx_icons(
+                    crate::network::NetworkId::Zcash(network),
+                    &txid,
+                    crate::ui::screens_explorer::ids::activity_ids(
+                        crate::ui::screens_explorer::ids::ZEC_ACTIVITY_BASE,
+                        crate::ui::screens_explorer::ids::ZEC_ACTIVITY_SPAN,
+                        row,
+                    ),
+                ),
+            );
         }
         if let Some(snapshot) = snapshot {
             items.push(Item::Subtitle("받은 출력 (UTXO, 서버 기준)".to_owned()));

@@ -469,7 +469,7 @@ impl App {
                 crate::ui::theme::AddressKind::Solana,
                 ids::COPY_ADDRESS,
                 true,
-                self.explorer_address_link(
+                self.explorer_address_icon(
                     crate::network::NetworkId::Solana(self.settings.solana.cluster),
                     &text,
                     crate::ui::screens_explorer::ids::CARD_SOL,
@@ -510,6 +510,11 @@ impl App {
         let selected = selected.map(|(id, ..)| id);
         let removable = self.can_remove_imported();
         let single = rows.len() == 1;
+        // A drop-down like the EVM network's (2026-11-11): the selected account on its button,
+        // the accounts under it while open (each keeps the id its radio had); the selected
+        // account's path and balance and its actions follow (its address is the hero card's).
+        let mut entries = Vec::new();
+        let mut chosen = None;
         for (row, (id, label, address)) in rows
             .into_iter()
             .take(usize::from(ids::ACCOUNT_SPAN))
@@ -517,23 +522,29 @@ impl App {
         {
             let is_selected = selected == Some(id);
             let shown_label = if id.is_imported() {
-                format!("{label}  [가져온 키]")
+                format!("{label} · 가져온 키")
             } else if id.is_hardware() {
-                format!("{label}  [YubiKey]")
+                format!("{label} · YubiKey")
             } else {
                 // With several mnemonics every derived row names its source.
-                self.mnemonic_tagged(&label, id.mnemonic())
+                self.mnemonic_tag(id.mnemonic())
+                    .map_or_else(|| label.clone(), |tag| format!("{label} · {tag}"))
             };
-            items.push(Item::Row(vec![
-                Ctl::radio(
-                    ids::ACCOUNT_BASE.saturating_add(u16::try_from(row).unwrap_or(0)),
-                    &shown_label,
-                    is_selected,
-                    row == 0,
-                )
-                .width(420),
-            ]));
-            if single && is_selected {
+            entries.push(crate::ui::screens_links::PickerEntry {
+                id: ids::ACCOUNT_BASE.saturating_add(u16::try_from(row).unwrap_or(0)),
+                label: shown_label,
+                selected: is_selected,
+                enabled: true,
+            });
+            if is_selected {
+                chosen = Some((id, label, address));
+            }
+        }
+        if !entries.is_empty() {
+            self.push_account_picker(items, crate::ui::screens_links::ids::PICKER_SOL, &entries);
+        }
+        if let Some((id, label, address)) = chosen {
+            if single {
                 // One account: its address and balance are the hero card's (review D3).
                 items.push(Item::Help(format!(
                     "{} · {}",
@@ -541,7 +552,6 @@ impl App {
                     crate::ui::screens::T_SINGLE_ACCOUNT
                 )));
             } else {
-                items.push(Item::Mono(grouped(&address)));
                 let balance = self.sol_balance(&address).map_or_else(
                     || "잔액 알 수 없음".to_owned(),
                     |lamports| {
@@ -554,67 +564,70 @@ impl App {
                 );
                 items.push(Item::Help(format!("{} · {balance}", id.path_text())));
             }
-            if is_selected {
-                if self.sol.rename == Some(id) {
-                    items.push(Item::Row(vec![
-                        Ctl::edit(ids::RENAME_EDIT, &label, 260, false, 64),
-                        Ctl::primary(ids::RENAME_SAVE, "저장"),
-                        Ctl::button(ids::RENAME_CANCEL, "취소"),
-                    ]));
-                } else {
-                    let mut row_ctls = vec![Ctl::button(ids::RENAME, "이름 바꾸기")];
-                    let mut first_of_phrase = false;
-                    match id {
-                        SolAccountId::Derived(index) | SolAccountId::Mnemonic(_, index) => {
-                            first_of_phrase = index == 0;
-                            row_ctls.push(Ctl::button(ids::HIDE, "숨기기").enabled(index != 0));
-                        }
-                        // A YubiKey account: no "개인키 보기" (the key is on the card only).
-                        SolAccountId::Hardware(_) => {
-                            row_ctls.push(Ctl::button(ids::HIDE, "숨기기"));
-                        }
-                        SolAccountId::Imported(_) => {
-                            row_ctls.push(
-                                Ctl::button(
-                                    crate::ui::screens_keys::ids::SOL_REVEAL,
-                                    "개인키 보기",
-                                )
-                                .enabled(unlocked),
-                            );
-                            row_ctls.push(
-                                Ctl::danger(crate::ui::screens_keys::ids::SOL_REMOVE, "삭제")
-                                    .enabled(unlocked && removable),
-                            );
-                        }
+            if self.sol.rename == Some(id) {
+                items.push(Item::Row(vec![
+                    Ctl::edit(ids::RENAME_EDIT, &label, 260, false, 64),
+                    Ctl::primary(ids::RENAME_SAVE, "저장"),
+                    Ctl::button(ids::RENAME_CANCEL, "취소"),
+                ]));
+            } else {
+                let mut row_ctls = vec![Ctl::button(ids::RENAME, "이름 바꾸기").compact()];
+                let mut first_of_phrase = false;
+                match id {
+                    SolAccountId::Derived(index) | SolAccountId::Mnemonic(_, index) => {
+                        first_of_phrase = index == 0;
+                        row_ctls.push(
+                            Ctl::button(ids::HIDE, "숨기기")
+                                .compact()
+                                .enabled(index != 0),
+                        );
                     }
-                    items.push(Item::Row(row_ctls));
-                    if first_of_phrase {
-                        items.push(Item::Help(
-                            crate::ui::screens::T_FIRST_ACCOUNT_KEPT.to_owned(),
-                        ));
+                    // A YubiKey account: no "개인키 보기" (the key is on the card only).
+                    SolAccountId::Hardware(_) => {
+                        row_ctls.push(Ctl::button(ids::HIDE, "숨기기").compact());
+                    }
+                    SolAccountId::Imported(_) => {
+                        row_ctls.push(
+                            Ctl::button(crate::ui::screens_keys::ids::SOL_REVEAL, "개인키 보기")
+                                .compact()
+                                .enabled(unlocked),
+                        );
+                        row_ctls.push(
+                            Ctl::danger(crate::ui::screens_keys::ids::SOL_REMOVE, "삭제")
+                                .compact()
+                                .enabled(unlocked && removable),
+                        );
                     }
                 }
+                items.push(Item::Row(row_ctls));
+                if first_of_phrase {
+                    items.push(Item::Help(
+                        crate::ui::screens::T_FIRST_ACCOUNT_KEPT.to_owned(),
+                    ));
+                }
             }
-            items.push(Item::Gap(4));
         }
         self.hidden_items(crate::app_hidden::Family::Sol, items);
         items.push(Item::Rule);
         let import = Ctl::button(crate::ui::screens_keys::ids::SOL_IMPORT, "개인키 가져오기")
+            .compact()
             .enabled(self.can_import(yw_core::keyimport::ImportChain::Sol));
         if self.key_only() {
             items.push(Item::Row(vec![import]));
         } else {
             items.push(Item::Row(vec![
-                Ctl::button(ids::ADD_ACCOUNT, "계정 추가").enabled(
-                    !self.sol.creating
-                        && (self.several_mnemonics()
-                            || self
-                                .meta
-                                .as_ref()
-                                .and_then(crate::meta::Meta::next_sol_index)
-                                .is_some()),
-                ),
-                Ctl::button(ids::SCAN_OPEN, "다른 경로 스캔"),
+                Ctl::button(ids::ADD_ACCOUNT, "계정 추가")
+                    .compact()
+                    .enabled(
+                        !self.sol.creating
+                            && (self.several_mnemonics()
+                                || self
+                                    .meta
+                                    .as_ref()
+                                    .and_then(crate::meta::Meta::next_sol_index)
+                                    .is_some()),
+                    ),
+                Ctl::button(ids::SCAN_OPEN, "다른 경로 스캔").compact(),
                 import,
             ]));
             self.sol_pick_row(items);
@@ -653,10 +666,9 @@ impl App {
                 self.sol_record_status(&record)
             )));
             if let Some(core) = core {
-                self.sol_recipient_items(&core.to, items);
+                self.sol_recipient_items(shown, &core.to, &counterparties, items);
             }
             let tx_id = record.tx_id();
-            items.push(Item::Mono(tx_id.clone()));
             self.sol_activity_actions(shown, &tx_id, &counterparties, &mut prompt_drawn, items);
             shown = shown.saturating_add(1);
         }
@@ -673,10 +685,11 @@ impl App {
                 )));
                 items.push(Item::Help(format!("상태: {}", status_word(&entry.status))));
                 match SolAddress::parse(&entry.counterparty) {
-                    Ok(address) => self.sol_recipient_items(&address, items),
+                    Ok(address) => {
+                        self.sol_recipient_items(shown, &address, &counterparties, items);
+                    }
                     Err(_) => items.push(Item::Help(format!("받는 주소 {}", entry.counterparty))),
                 }
-                items.push(Item::Mono(entry.tx_id.clone()));
                 self.sol_activity_actions(
                     shown,
                     &entry.tx_id,
@@ -697,10 +710,18 @@ impl App {
         items.push(Item::CardEnd);
     }
 
-    /// The recipient lines of an activity row (2026-11-10, like EVM's U11): "받는 주소" with, display
-    /// only, the address-book or own-account name, then the full grouped address on a `Mono`
-    /// line. Never a copy or select button (address poisoning, spec/07 §12.3).
-    fn sol_recipient_items(&self, address: &SolAddress, items: &mut Vec<Item>) {
+    /// The recipient lines of activity row `row` (2026-11-10, like EVM's U11): "받는 주소" with,
+    /// display only, the address-book or own-account name, then the whole address (ends
+    /// emphasized) on its own copy line with `☆ 이 주소 저장` at its right end when offered
+    /// (2026-11-11: sent rows come only from the wallet's own signed journal, so their recipient
+    /// may be copied; the received history's senders never are, spec/07 §12.3).
+    fn sol_recipient_items(
+        &self,
+        row: usize,
+        address: &SolAddress,
+        counterparties: &[String],
+        items: &mut Vec<Item>,
+    ) {
         let text = address.to_base58();
         let name = self
             .meta
@@ -715,7 +736,27 @@ impl App {
             })
             .unwrap_or_default();
         items.push(Item::Help(format!("받는 주소{name}")));
-        items.push(Item::Mono(grouped(address)));
+        // The save icon only for the row's own counterparty (the list `이 주소 저장` reads).
+        let save = counterparties
+            .get(row)
+            .filter(|known| **known == text && self.offer_save(BookChain::Sol, known))
+            .and(crate::ui::screens_links::ids::row_id(
+                crate::ui::screens_book::ids::SOL_ACTIVITY_BASE,
+                crate::ui::screens_book::ids::SOL_ACTIVITY_SPAN,
+                row,
+            ))
+            .map(crate::ui::screens_links::save_icon);
+        crate::ui::screens_links::push_address_line(
+            items,
+            crate::ui::screens_links::ids::row_id(
+                crate::ui::screens_links::ids::SOL_TO_BASE,
+                crate::ui::screens_links::ids::SOL_TO_SPAN,
+                row,
+            ),
+            &text,
+            crate::ui::theme::AddressKind::Solana,
+            save.into_iter().collect(),
+        );
     }
 
     /// The "토큰" card of S10 (spec/04 §2.6, spec/07 §8.3, §12.3): the allowlisted tokens of the
@@ -739,7 +780,8 @@ impl App {
             ));
         }
         // The EVM token card's list rows (2026-11-11): symbol and balance on one line, what
-        // the balance means, then the pinned mint shortened with `보내기`·`주소 복사`·`숨기기`.
+        // the balance means, then the pinned mint whole (a click copies it) with `보내기`·
+        // `숨기기` at the right end.
         for (position, (index, entry)) in shown.into_iter().enumerate() {
             if position > 0 {
                 items.push(Item::Rule);
@@ -762,16 +804,14 @@ impl App {
                             .is_some_and(|raw| raw > 0),
                 ),
             ];
-            row.extend(Self::sol_token_copy_button(index));
             row.extend(Self::sol_token_hide_button(index, false));
-            items.push(Item::AddressRow(
-                crate::ui::theme::own_address_spans(
-                    &entry.mint.to_base58(),
-                    crate::ui::theme::AddressKind::Solana,
-                    true,
-                ),
+            crate::ui::screens_links::push_address_line(
+                items,
+                Self::sol_token_copy_id(index),
+                &entry.mint.to_base58(),
+                crate::ui::theme::AddressKind::Solana,
                 row,
-            ));
+            );
         }
         if !hidden.is_empty() {
             let open = self.sol.show_hidden_tokens;
@@ -801,32 +841,25 @@ impl App {
                         value,
                         dim: true,
                     });
-                    let mut row = Self::sol_token_copy_button(index);
-                    row.extend(Self::sol_token_hide_button(index, true));
-                    items.push(Item::AddressRow(
-                        crate::ui::theme::own_address_spans(
-                            &entry.mint.to_base58(),
-                            crate::ui::theme::AddressKind::Solana,
-                            true,
-                        ),
-                        row,
-                    ));
+                    crate::ui::screens_links::push_address_line(
+                        items,
+                        Self::sol_token_copy_id(index),
+                        &entry.mint.to_base58(),
+                        crate::ui::theme::AddressKind::Solana,
+                        Self::sol_token_hide_button(index, true),
+                    );
                 }
             }
         }
         items.push(Item::CardEnd);
     }
 
-    /// `주소 복사` of allowlist row `index`'s mint (none beyond the id span).
-    fn sol_token_copy_button(index: usize) -> Vec<Ctl> {
+    /// The copy id of allowlist row `index`'s mint (none beyond the id span).
+    fn sol_token_copy_id(index: usize) -> Option<u16> {
         u16::try_from(index)
             .ok()
             .filter(|offset| *offset < ids::TOKEN_COPY_SPAN)
-            .map(|offset| {
-                Ctl::link(ids::TOKEN_COPY_BASE.saturating_add(offset), "주소 복사").compact()
-            })
-            .into_iter()
-            .collect()
+            .map(|offset| ids::TOKEN_COPY_BASE.saturating_add(offset))
     }
 
     /// `숨기기` / `다시 보이기` of allowlist row `index` (none beyond the id span).
@@ -1515,9 +1548,10 @@ impl App {
         out
     }
 
-    /// The buttons of activity row `row`: `해시 복사` (the transaction id is public data, as on
-    /// the other chains), `탐색기에서 열기`·`탐색기 링크 복사` (2026-11-11, when the cluster has a
-    /// transaction page), then `이 주소 저장` — or, under them, its open prompt.
+    /// The transaction id line of activity row `row` (2026-11-11): a click copies it (the
+    /// transaction id is public data, as on the other chains), `탐색기에서 열기` ↗ and
+    /// `탐색기 링크 복사` 🔗 at its right end when the cluster has a transaction page; then the
+    /// open `이 주소 저장` prompt of the row's recipient, if any.
     fn sol_activity_actions(
         &self,
         row: usize,
@@ -1529,40 +1563,28 @@ impl App {
         use crate::ui::screens_explorer::ids::{
             SOL_ACTIVITY_BASE, SOL_ACTIVITY_SPAN, activity_ids,
         };
-        let mut buttons: Vec<Ctl> = u16::try_from(row)
-            .ok()
-            .filter(|offset| *offset < ids::ACTIVITY_COPY_SPAN)
-            .map(|offset| Ctl::button(ids::ACTIVITY_COPY_BASE.saturating_add(offset), "해시 복사"))
-            .into_iter()
-            .collect();
-        buttons.extend(self.explorer_tx_buttons(
-            crate::network::NetworkId::Solana(self.settings.solana.cluster),
+        crate::ui::screens_links::push_hash_line(
+            items,
+            crate::ui::screens_links::ids::row_id(
+                ids::ACTIVITY_COPY_BASE,
+                ids::ACTIVITY_COPY_SPAN,
+                row,
+            ),
             tx_id,
-            activity_ids(SOL_ACTIVITY_BASE, SOL_ACTIVITY_SPAN, row),
-        ));
-        let mut prompt = Vec::new();
+            self.explorer_tx_icons(
+                crate::network::NetworkId::Solana(self.settings.solana.cluster),
+                tx_id,
+                activity_ids(SOL_ACTIVITY_BASE, SOL_ACTIVITY_SPAN, row),
+            ),
+        );
         if let Some(address) = counterparties
             .get(row)
             .filter(|address| !address.is_empty())
+            && !*prompt_drawn
         {
-            if !*prompt_drawn
-                && self.prompt_items(PromptPlace::Activity, BookChain::Sol, address, &mut prompt)
-            {
-                *prompt_drawn = true;
-            } else if self.offer_save(BookChain::Sol, address)
-                && let Ok(offset) = u16::try_from(row)
-                && offset < crate::ui::screens_book::ids::SOL_ACTIVITY_SPAN
-            {
-                buttons.push(Ctl::link(
-                    crate::ui::screens_book::ids::SOL_ACTIVITY_BASE.saturating_add(offset),
-                    "이 주소 저장",
-                ));
-            }
+            *prompt_drawn =
+                self.prompt_items(PromptPlace::Activity, BookChain::Sol, address, items);
         }
-        if !buttons.is_empty() {
-            items.push(Item::Row(buttons));
-        }
-        items.extend(prompt);
     }
 
     /// Whether the main screen shows the Solana tab.

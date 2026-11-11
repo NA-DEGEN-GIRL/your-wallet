@@ -315,6 +315,8 @@ impl App {
             return true;
         }
         if let Some(row) = offset(id, ids::ACCOUNT_BASE, ids::ACCOUNT_SPAN) {
+            // A choice closes the drop-down (2026-11-11).
+            self.account_menu = None;
             let account = {
                 let ctx = self.btc_ctx();
                 self.btc
