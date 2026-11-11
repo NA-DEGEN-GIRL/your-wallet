@@ -147,6 +147,25 @@ impl SolSendForm {
             None => SolAsset::Sol,
         }
     }
+
+    /// How long an edit of the recipient (`true`) or the amount waits for its validation
+    /// (2026-11-12): text that is a whole address or amount, or empty, is checked at once;
+    /// anything else after the typing pause, so no error flashes under half-typed text.
+    #[must_use]
+    pub fn edit_wait_ms(&self, recipient: bool) -> u64 {
+        let whole = if recipient {
+            let text = self.to_text.trim();
+            text.is_empty() || SolAddress::parse(text).is_ok()
+        } else {
+            self.amount_text.is_empty()
+                || parse_amount(&self.amount_text, self.asset().decimals()).is_ok()
+        };
+        if whole {
+            crate::app_evm::SEND_QUICK_MS
+        } else {
+            SOL_SEND_DEBOUNCE_MS
+        }
+    }
 }
 
 /// Shown when the validation at `검토` differs from the one on screen (spec/07 §13.1-1).
@@ -160,6 +179,65 @@ pub enum ReviewRefusal {
     NotReady,
     /// The fresh validation differs from the shown one: nothing is queued.
     Changed,
+}
+
+/// Why `검토` is off: the first unmet condition, said in one line under the button
+/// (2026-11-12). Each send form's `can_review` is "no blocker", so the button and the line
+/// cannot disagree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReviewBlocker {
+    /// The wallet is locked.
+    Locked,
+    /// An earlier transfer of this account is not settled yet.
+    InFlight,
+    /// A band of the form already says why (the journal, the backup quiz, the `YubiKey` PINs,
+    /// a fee cap, …).
+    Held,
+    /// An edit awaits its validation.
+    Checking,
+    /// No recipient yet.
+    NoRecipient,
+    /// A band under a field says what is wrong with it.
+    InputError,
+    /// The look-alike check box is not ticked (W-ADDR-3).
+    NeedsAck,
+    /// No amount yet.
+    NoAmount,
+    /// The fee is being worked out.
+    NoFee,
+    /// `직접 입력` without a rate (Bitcoin).
+    NoFeeRate,
+}
+
+/// Under an enabled `검토`: pressing it sends nothing.
+const REVIEW_READY_TEXT: &str = "검토를 눌러도 아직 보내지 않습니다 — 승인 창에서 최종 확인합니다.";
+
+impl ReviewBlocker {
+    /// The line.
+    #[must_use]
+    pub const fn text(self) -> &'static str {
+        match self {
+            Self::Locked => "잠금 해제가 필요합니다",
+            Self::InFlight => "앞선 전송이 끝난 뒤 다시 시도하세요",
+            Self::Held => "지금은 보낼 수 없습니다 — 위 안내를 확인하세요",
+            Self::Checking => "입력을 확인하는 중…",
+            Self::NoRecipient => "받는 주소를 입력하세요",
+            Self::InputError => "위 오류를 먼저 고치세요",
+            Self::NeedsAck => "위 '주소 전체를 직접 확인했습니다'에 체크하세요",
+            Self::NoAmount => "금액을 입력하세요",
+            Self::NoFee => "수수료 계산 중…",
+            Self::NoFeeRate => "수수료율을 입력하세요",
+        }
+    }
+
+    /// The line under `검토`: the blocker, or that the button sends nothing yet.
+    #[must_use]
+    pub const fn line(blocker: Option<Self>) -> &'static str {
+        match blocker {
+            Some(blocker) => blocker.text(),
+            None => REVIEW_READY_TEXT,
+        }
+    }
 }
 
 /// What an approval is built from: the parsed recipient, the asset and the amount.
@@ -1406,29 +1484,55 @@ impl App {
     /// Whether `검토` is enabled.
     #[must_use]
     pub fn sol_can_review(&self) -> bool {
+        self.sol_review_blocker().is_none()
+    }
+
+    /// Why `검토` is off, `None` when it is on (2026-11-12: the line under the button).
+    #[must_use]
+    pub fn sol_review_blocker(&self) -> Option<ReviewBlocker> {
         let form = &self.sol.send;
         let cluster = self.sol_cluster();
         let Some((source, from, _)) = self.sol_form_sender() else {
-            return false;
+            return Some(ReviewBlocker::Held);
         };
-        form.check.is_some()
-            && form.recipient_error.is_none()
-            && self.sol_move_target_ok()
-            && (form.send_max || (form.amount.is_some() && form.amount_error.is_none()))
-            && self.evm.journal.is_some()
-            && !self.sol_journal_damaged()
+        if !matches!(self.mode, AppMode::Unlocked { .. }) {
+            return Some(ReviewBlocker::Locked);
+        }
+        if self.sol_pending(cluster, &from).is_some()
+            || self.sol.slot.is_some()
+            || self.sol.pending_sign.is_some()
+        {
+            return Some(ReviewBlocker::InFlight);
+        }
+        let held = self.evm.journal.is_none()
+            || self.sol_journal_damaged()
             // After a journal reset a transfer it tracked may still land for a minute or two.
-            && self
+            || self
                 .journal_hold(crate::app_sidecar::SendChain::Sol)
-                .is_none()
-            && self.sol_pending(cluster, &from).is_none()
-            && self.sol.slot.is_none()
-            && self.sol.pending_sign.is_none()
-            && matches!(self.mode, AppMode::Unlocked { .. })
+                .is_some()
             // U7: the phrase waits for its backup quiz (the form's band says so).
-            && !self.mn_send_blocked(self.sol_backup_gate(source))
+            || self.mn_send_blocked(self.sol_backup_gate(source))
             // spec/10 §9.3: the YubiKey is still on its factory PINs (the band says so).
-            && self.sol_card_gate(source).is_none()
+            || self.sol_card_gate(source).is_some();
+        if held {
+            return Some(ReviewBlocker::Held);
+        }
+        if form.recipient_error.is_some() {
+            return Some(ReviewBlocker::InputError);
+        }
+        if form.check.is_none() {
+            return Some(ReviewBlocker::NoRecipient);
+        }
+        if !self.sol_move_target_ok() {
+            return Some(ReviewBlocker::InputError);
+        }
+        if form.send_max {
+            return None;
+        }
+        if form.amount_error.is_some() {
+            return Some(ReviewBlocker::InputError);
+        }
+        form.amount.is_none().then_some(ReviewBlocker::NoAmount)
     }
 
     /// The approval item of `검토` (spec/07 §13.1 step 1). The form is validated again first and
@@ -2548,6 +2652,7 @@ mod tests {
         app.sol.send.amount_text = "1".to_owned();
         app.sol_validate_send();
         assert_eq!(app.sol.send.check.as_ref().unwrap().to, addr(TO_A));
+        assert_eq!(app.sol_review_blocker(), None);
         // Edits inside the debounce: the shown validation still says A / 1 SOL.
         app.sol.send.to_text = TO_B.to_owned();
         app.sol.send.dirty_ms = Some(1);

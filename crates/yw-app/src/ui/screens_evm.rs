@@ -1066,10 +1066,11 @@ impl App {
                 Ctl::button(ids::SEND_PICK, "주소록에서 선택"),
             ],
         ));
-        items.push(Item::Help(
-            "0x로 시작하는 42자 주소입니다. 붙여넣은 뒤에는 앞뒤만이 아니라 주소 전체를 확인하세요."
-                .to_owned(),
-        ));
+        // The format hint only until the address is valid (2026-11-12); the reminder to check
+        // all of it then sits under the grouped address.
+        if form.recipient.is_none() {
+            items.push(Item::Help("0x로 시작하는 42자 주소".to_owned()));
+        }
         if form.picker {
             self.picker_rows(items);
         }
@@ -1081,6 +1082,9 @@ impl App {
         }
         if let Some((address, notes)) = &form.recipient {
             items.push(Item::Mono(format_address(address)));
+            items.push(Item::Help(
+                "앞뒤만이 아니라 주소 전체를 확인하세요.".to_owned(),
+            ));
             for note in notes {
                 items.push(Item::Banner(
                     note.text(),
@@ -1206,14 +1210,15 @@ impl App {
                 Ctl::button(ids::SEND_MAX, "최대"),
             ],
         ));
-        items.push(Item::Help(match form.asset {
-            SendAsset::Native => {
-                "숫자와 소수점만 씁니다(예: 0.01). '최대'는 수수료를 뺀 잔액 전부입니다.".to_owned()
-            }
-            SendAsset::Token(_) => format!(
-                "숫자와 소수점만 씁니다(예: 0.01). '최대'는 이 토큰 잔액 전부입니다. 수수료는 {native_symbol}로 따로 냅니다."
-            ),
-        }));
+        // Only until the amount is valid (2026-11-12).
+        if form.amount.is_none() {
+            items.push(Item::Help(match form.asset {
+                SendAsset::Native => "예: 0.01 · '최대'는 수수료를 뺀 잔액 전부입니다.".to_owned(),
+                SendAsset::Token(_) => format!(
+                    "예: 0.01 · '최대'는 이 토큰 잔액 전부입니다. 수수료는 {native_symbol}로 따로 냅니다."
+                ),
+            }));
+        }
         if let Some(code) = form.amount_error {
             items.push(Item::Banner(code.text(), Tone::Danger));
             // E-INP-012 of a token send whose amount the token balance covers: the native fee is
@@ -1280,13 +1285,14 @@ impl App {
         }
         items.push(Item::CardEnd);
         self.journal_send_items(crate::app_sidecar::SendChain::Evm, items);
+        let blocker = self.review_blocker();
         items.push(Item::Row(vec![
-            Ctl::primary(ids::SEND_REVIEW, "검토").enabled(self.can_review()),
+            Ctl::primary(ids::SEND_REVIEW, "검토").enabled(blocker.is_none()),
             Ctl::button(ids::SEND_CANCEL, "취소"),
         ]));
+        // What `검토` waits for, or that it sends nothing yet (2026-11-12).
         items.push(Item::Help(
-            "수수료는 지갑이 계산합니다. '검토'를 누르면 승인 창에서 시뮬레이션 결과와 함께 최종 확인합니다. 아직 아무것도 보내지 않습니다."
-                .to_owned(),
+            crate::app_sol::ReviewBlocker::line(blocker).to_owned(),
         ));
     }
 

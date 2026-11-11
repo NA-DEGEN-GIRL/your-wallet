@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use yw_core::approval::{ApprovalId, ApprovalStore, TokenMeta};
 use yw_core::bip32::path::AccountIndex;
 use yw_core::evm::abi::erc20_transfer_data;
-use yw_core::evm::address::Address;
+use yw_core::evm::address::{Address, parse_address};
 use yw_core::evm::amount::{U256, format_amount, format_units};
 use yw_core::evm::chain::{ChainInfo, GenesisRule, HYPEREVM_MAINNET, SimulationSupport};
 use yw_core::journal::evm::{
@@ -21,7 +21,9 @@ use yw_win::clipboard;
 
 use crate::apikeys::{KeyName, mask_url};
 use crate::app::{App, AppMode, Confirm, Screen, SettingsSection};
-use crate::app_sol::{ReviewRefusal, SOL_REVIEW_CHANGED_TEXT as REVIEW_CHANGED_TEXT};
+use crate::app_sol::{
+    ReviewBlocker, ReviewRefusal, SOL_REVIEW_CHANGED_TEXT as REVIEW_CHANGED_TEXT,
+};
 use crate::errors::ErrorCode;
 use crate::events::{
     BalanceSnapshot, EvmSigned, JournalView, KeyJob, KeyOutcome, RpcEvent, SignFailure,
@@ -48,8 +50,16 @@ use crate::workers::rpc::RpcJob;
 /// Balance refresh while S10 is visible and the window is not hidden or minimized
 /// (spec/04 §2.6; 15 s since 2026-11-11, was 60 s).
 pub const BALANCE_REFRESH_MS: u64 = 15_000;
-/// Send-form validation after typing stops (spec/04 §2.7).
+/// Send-form validation after typing stops (spec/04 §2.7): text that is not a whole address
+/// or amount yet.
 pub const SEND_DEBOUNCE_MS: u64 = 500;
+/// The same for text that is a whole address or amount, or empty (2026-11-12): checked at once.
+pub const SEND_QUICK_MS: u64 = 40;
+/// The fee quote after the last amount edit (2026-11-12; a new recipient is quoted at once).
+pub const SEND_QUOTE_PAUSE_MS: u64 = 250;
+/// Main-window timer of the send-form validation, one shot (the main tick is 1, the wheel
+/// glide 2).
+pub(crate) const SEND_TIMER_ID: usize = 21;
 /// Activity rows shown.
 pub const MAX_ACTIVITY_ROWS: usize = 50;
 /// `수수료 올리기`·`취소` of a group whose account has no key in this wallet any more
@@ -1356,6 +1366,67 @@ impl App {
 
     // ----- send form (S11) ----------------------------------------------------------------
 
+    /// How long an edit of the recipient (`true`) or the amount waits for its validation
+    /// (2026-11-12): text that is a whole address or amount, or empty, is checked at once;
+    /// anything else after the typing pause, so no error flashes under half-typed text.
+    pub(crate) fn send_edit_wait_ms(&self, recipient: bool) -> u64 {
+        let form = &self.evm.send;
+        let whole = if recipient {
+            let text = form.to_text.trim();
+            text.is_empty() || parse_address(text).is_ok()
+        } else {
+            form.amount_text.is_empty()
+                || parse_amount(&form.amount_text, self.send_asset_meta().0).is_ok()
+        };
+        if whole {
+            SEND_QUICK_MS
+        } else {
+            SEND_DEBOUNCE_MS
+        }
+    }
+
+    /// Arms the one-shot validation of a send-form edit (EVM and Solana). Without a window or a
+    /// timer the main tick's `dirty_ms` poll runs it after the full pause.
+    pub(crate) fn arm_send_timer(&self, wait_ms: u64) {
+        if let Some(main) = self.main.as_ref() {
+            let _ = main.set_timer(SEND_TIMER_ID, u32::try_from(wait_ms).unwrap_or(u32::MAX));
+        }
+    }
+
+    /// The send timer fired: the edit it waited for is validated. Never from `EN_CHANGE` itself
+    /// — a validation may rebuild the controls, the edit that is notifying included.
+    pub(crate) fn on_send_timer(&mut self) {
+        if let Some(main) = self.main.as_ref() {
+            main.kill_timer(SEND_TIMER_ID);
+        }
+        // Solana validates locally only.
+        if self.sol.send.dirty_ms.take().is_some() {
+            self.sol_validate_send();
+        }
+        let Some(edited) = self.evm.send.dirty_ms else {
+            return;
+        };
+        let waited = now_ms().saturating_sub(edited);
+        if waited >= SEND_QUOTE_PAUSE_MS {
+            self.evm.send.dirty_ms = None;
+            self.validate_send(true);
+            return;
+        }
+        // The local result shows now. A new recipient is quoted (and its code read) at once; an
+        // amount alone once the typing pauses — the RPC worker is one queue, and `검토` stays
+        // off until then.
+        let recipient = |app: &Self| app.evm.send.recipient.as_ref().map(|(address, _)| *address);
+        let shown = recipient(self);
+        self.validate_send(false);
+        if recipient(self) == shown {
+            self.arm_send_timer(SEND_QUOTE_PAUSE_MS.saturating_sub(waited));
+        } else {
+            self.evm.send.dirty_ms = None;
+            self.request_quote();
+            self.refresh();
+        }
+    }
+
     /// The send form's asset decimals and symbol.
     #[must_use]
     pub fn send_asset_meta(&self) -> (u8, String) {
@@ -1621,35 +1692,65 @@ impl App {
     /// validation (`dirty_ms`): the shown result is not the input's yet.
     #[must_use]
     pub fn can_review(&self) -> bool {
+        self.review_blocker().is_none()
+    }
+
+    /// Why `검토` is off, `None` when it is on (2026-11-12: the line under the button). The
+    /// form's fields come in screen order.
+    #[must_use]
+    pub fn review_blocker(&self) -> Option<ReviewBlocker> {
         let form = &self.evm.send;
         let chain_id = self.settings.evm_chain_id;
-        let look_alike = form
-            .recipient
-            .as_ref()
-            .is_some_and(|(_, notes)| notes.iter().any(AddressNote::needs_ack));
-        form.dirty_ms.is_none()
-            && form.recipient.is_some()
-            && form.amount.is_some()
-            && form.amount_error.is_none()
-            && form.recipient_error.is_none()
-            && form
-                .quote
-                .as_ref()
-                .is_some_and(|quote| quote.cap_violation.is_none())
-            && (!look_alike || form.ack)
-            && form.system_error.is_none()
-            && self.evm.blocked(chain_id).is_none()
-            && !self.evm.journal_damaged()
-            && self.evm.journal.is_some()
-            && self
+        if !matches!(self.mode, AppMode::Unlocked { .. }) {
+            return Some(ReviewBlocker::Locked);
+        }
+        if self.send_in_flight().is_some() {
+            return Some(ReviewBlocker::InFlight);
+        }
+        let held = self.evm.blocked(chain_id).is_some()
+            || self.evm.journal_damaged()
+            || self.evm.journal.is_none()
+            || self
                 .journal_hold(crate::app_sidecar::SendChain::Evm)
-                .is_none()
-            && self.send_in_flight().is_none()
-            && matches!(self.mode, AppMode::Unlocked { .. })
+                .is_some()
             // U7: the phrase waits for its backup quiz (the form's band says so).
-            && !self.mn_send_blocked(self.evm_selected_gate())
+            || self.mn_send_blocked(self.evm_selected_gate())
             // spec/10 §9.3: the YubiKey is still on its factory PINs (the band says so).
-            && self.evm_selected_card_gate().is_none()
+            || self.evm_selected_card_gate().is_some();
+        if held {
+            return Some(ReviewBlocker::Held);
+        }
+        if form.dirty_ms.is_some() {
+            return Some(if form.to_text.trim().is_empty() {
+                ReviewBlocker::NoRecipient
+            } else if form.amount_text.is_empty() {
+                ReviewBlocker::NoAmount
+            } else {
+                ReviewBlocker::Checking
+            });
+        }
+        if form.recipient_error.is_some() || form.system_error.is_some() {
+            return Some(ReviewBlocker::InputError);
+        }
+        let Some((_, notes)) = form.recipient.as_ref() else {
+            return Some(ReviewBlocker::NoRecipient);
+        };
+        if !form.ack && notes.iter().any(AddressNote::needs_ack) {
+            return Some(ReviewBlocker::NeedsAck);
+        }
+        if form.amount_error.is_some() {
+            return Some(ReviewBlocker::InputError);
+        }
+        if form.amount.is_none() {
+            return Some(ReviewBlocker::NoAmount);
+        }
+        match &form.quote {
+            Some(quote) if quote.cap_violation.is_some() => Some(ReviewBlocker::Held),
+            Some(_) => None,
+            // The quote failed: the band above says why.
+            None if form.quote_error.is_some() => Some(ReviewBlocker::Held),
+            None => Some(ReviewBlocker::NoFee),
+        }
     }
 
     /// The approval item of `검토` (spec/04 §2.7, the EVM counterpart of spec/07 §13.1-1). The
@@ -2481,7 +2582,8 @@ mod tests {
         EvmRecord, FLAG_MANUAL_RESEND, FLAG_RPC_HASH_MISMATCH, Role, TxState,
     };
 
-    use super::seed_notes;
+    use super::{SEND_DEBOUNCE_MS, SEND_QUICK_MS, seed_notes};
+    use crate::app_sol::ReviewBlocker;
     use crate::flow::evm::track::BroadcastOutcome;
 
     const BESU_SIGNED: &str = "02f86e048203338301284d8301d97c828ae094000000000000000000000000000000000000aaaa8402933bc980c080a00f924cb68412c8f1cfd74d9b581c71eeaf94fff6abdde3e5b02ca6b2931dcf47a07dd1c50027c3e31f8b565e25ce68a5072110f61fce5eee81b195dd51273c2f83";
@@ -2638,6 +2740,8 @@ mod tests {
         app.evm.send.to_text = TO_A.to_owned();
         app.evm.send.amount_text = "1".to_owned();
         app.validate_send(false);
+        // The line under `검토` names what is missing: here the fee quote.
+        assert_eq!(app.review_blocker(), Some(ReviewBlocker::NoFee));
         app.evm.send.quote = Some(quote.clone());
         assert!(app.can_review());
         // B / 10 pasted, the debounce has not run: `검토` is off and the shown result is A / 1.
@@ -2645,6 +2749,16 @@ mod tests {
         app.evm.send.amount_text = "10".to_owned();
         app.evm.send.dirty_ms = Some(1);
         assert!(!app.can_review());
+        assert_eq!(app.review_blocker(), Some(ReviewBlocker::Checking));
+        // A whole address or amount is validated at once, half-typed text after the pause.
+        assert_eq!(app.send_edit_wait_ms(true), SEND_QUICK_MS);
+        assert_eq!(app.send_edit_wait_ms(false), SEND_QUICK_MS);
+        app.evm.send.to_text.truncate(20);
+        app.evm.send.amount_text = "0.".to_owned();
+        assert_eq!(app.send_edit_wait_ms(true), SEND_DEBOUNCE_MS);
+        assert_eq!(app.send_edit_wait_ms(false), SEND_DEBOUNCE_MS);
+        app.evm.send.to_text = TO_B.to_owned();
+        app.evm.send.amount_text = "10".to_owned();
         assert_eq!(app.review_item().unwrap_err(), ReviewRefusal::Changed);
         assert_eq!(app.evm.send.dirty_ms, None);
         assert_eq!(app.evm.send.recipient.as_ref().unwrap().0, to(TO_B));
@@ -2662,6 +2776,13 @@ mod tests {
         app.evm.send.amount_text = "x".to_owned();
         app.validate_send(false);
         assert_eq!(app.review_item().unwrap_err(), ReviewRefusal::NotReady);
+        assert_eq!(app.review_blocker(), Some(ReviewBlocker::InputError));
+        app.evm.send.amount_text.clear();
+        app.validate_send(false);
+        assert_eq!(app.review_blocker(), Some(ReviewBlocker::NoAmount));
+        app.evm.send.to_text.clear();
+        app.validate_send(false);
+        assert_eq!(app.review_blocker(), Some(ReviewBlocker::NoRecipient));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

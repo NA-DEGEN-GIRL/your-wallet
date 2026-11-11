@@ -1504,6 +1504,11 @@ impl App {
                 self.scroll_tick(window);
                 Reply::Handled(0)
             }
+            // The validation a send-form edit waits for (one shot).
+            Msg::Timer(crate::app_evm::SEND_TIMER_ID) => {
+                self.on_send_timer();
+                Reply::Handled(0)
+            }
             Msg::Wheel(delta) => {
                 self.main_wheel(window, *delta);
                 Reply::Handled(0)

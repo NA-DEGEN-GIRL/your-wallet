@@ -19,8 +19,9 @@ impl App {
         self.controls.text(id, TEXT_MAX).unwrap_or_default()
     }
 
-    /// `EN_CHANGE` of an EVM edit: keep the text (controls may be recreated) and debounce the
-    /// send-form validation (spec/04 §2.7: 500 ms after typing stops). `검토` is off until that
+    /// `EN_CHANGE` of an EVM edit: keep the text (controls may be recreated) and leave the
+    /// send-form validation to the send timer (spec/04 §2.7, `App::on_send_timer`: at once for
+    /// a whole address or amount, 500 ms after typing stops otherwise). `검토` is off until that
     /// validation runs; the first edit of a burst repaints it so (the picker, whose rows follow
     /// the text, keeps its controls until the validation).
     pub fn on_edit_change(&mut self, id: u16) {
@@ -38,6 +39,7 @@ impl App {
                 if first && !form.picker {
                     self.refresh();
                 }
+                self.arm_send_timer(self.send_edit_wait_ms(id == ids::SEND_TO_EDIT));
             }
             ids::TOKEN_ADDR_EDIT => self.evm.token.address = self.edit_text(id),
             ids::TOKEN_LABEL_EDIT => self.evm.token.label = self.edit_text(id),

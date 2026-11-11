@@ -38,6 +38,7 @@ use yw_core::journal::btc::{
 use yw_win::http::HttpsUrl;
 
 use crate::apikeys::ApiKeys;
+use crate::app_sol::ReviewBlocker;
 use crate::btc::broadcast::{EsploraPostOutcome, ManualBroadcastGate};
 use crate::btc::chain::{BtcBlock, ChainInput, CoreCheckFailure};
 use crate::btc::flow::{DiscoveryJob, RefreshJob, TrackItem};
@@ -2262,15 +2263,45 @@ impl BtcUi {
     /// Whether `검토` is enabled.
     #[must_use]
     pub fn can_review(&self, ctx: &BtcCtx<'_>) -> bool {
+        self.review_blocker(ctx).is_none()
+    }
+
+    /// Why `검토` is off, `None` when it is on (2026-11-12: the line under the button). The
+    /// form's fields come in screen order.
+    #[must_use]
+    pub fn review_blocker(&self, ctx: &BtcCtx<'_>) -> Option<ReviewBlocker> {
         let form = &self.send;
-        self.send_block(ctx).is_none()
-            && form.preparing.is_none()
-            && form.recipient.is_some()
-            && form.recipient_error.is_none()
-            && (form.send_max || (form.amount.is_some() && form.amount_error.is_none()))
-            && form.fee.error.is_none()
-            && form.fee.input().is_some()
-            && (form.look_alike.is_none() || form.ack)
+        if self.send_block(ctx).is_some() {
+            return Some(ReviewBlocker::Held);
+        }
+        if form.preparing.is_some() {
+            return Some(ReviewBlocker::NoFee);
+        }
+        if form.recipient_error.is_some() {
+            return Some(ReviewBlocker::InputError);
+        }
+        if form.recipient.is_none() {
+            return Some(ReviewBlocker::NoRecipient);
+        }
+        if form.look_alike.is_some() && !form.ack {
+            return Some(ReviewBlocker::NeedsAck);
+        }
+        if !form.send_max {
+            if form.amount_error.is_some() {
+                return Some(ReviewBlocker::InputError);
+            }
+            if form.amount.is_none() {
+                return Some(ReviewBlocker::NoAmount);
+            }
+        }
+        if form.fee.error.is_some() {
+            return Some(ReviewBlocker::InputError);
+        }
+        // `직접 입력` without a parsed rate.
+        form.fee
+            .input()
+            .is_none()
+            .then_some(ReviewBlocker::NoFeeRate)
     }
 
     /// `주소 전체를 직접 확인했습니다` (W-ADDR-3).

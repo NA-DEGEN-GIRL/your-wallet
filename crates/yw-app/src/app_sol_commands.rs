@@ -17,7 +17,9 @@ impl App {
         self.controls.text(id, TEXT_MAX).unwrap_or_default()
     }
 
-    /// `EN_CHANGE` of a Solana edit; `false` when `id` is not one of them.
+    /// `EN_CHANGE` of a Solana edit; `false` when `id` is not one of them. A send-form edit is
+    /// validated by the send timer (`App::on_send_timer`): at once when the text is a whole
+    /// address or amount, after the typing pause otherwise.
     pub fn on_sol_edit_change(&mut self, id: u16) -> bool {
         let now = yw_win::time::monotonic_ms();
         match id {
@@ -25,11 +27,13 @@ impl App {
                 if self.sol.send.moving.is_none() {
                     self.sol.send.to_text = self.sol_edit_text(id);
                     self.sol.send.dirty_ms = Some(now);
+                    self.arm_send_timer(self.sol.send.edit_wait_ms(true));
                 }
             }
             ids::SEND_AMOUNT_EDIT => {
                 self.sol.send.amount_text = self.sol_edit_text(id);
                 self.sol.send.dirty_ms = Some(now);
+                self.arm_send_timer(self.sol.send.edit_wait_ms(false));
             }
             _ => return false,
         }

@@ -1280,11 +1280,19 @@ impl App {
         let Some(estimate) = yw_core::btc::fee::fee_for(rate, vsize) else {
             return;
         };
-        items.push(Item::Text(format!(
-            "예상 수수료 약 {} sats ({} BTC) — 입력 1개·출력 2개(받는 사람·잔돈) 기준입니다. UTXO를 여러 개 쓰면 늘어납니다. 실제 수수료는 검토에서 다시 계산해 승인 창에 보입니다.",
-            yw_core::btc::amount::format_sats_grouped(estimate.get()),
-            yw_core::btc::amount::format_btc(estimate)
-        )));
+        // A label-value row and one muted line (2026-11-12, was a three-sentence paragraph).
+        items.push(Item::Field(
+            "예상 수수료".to_owned(),
+            format!(
+                "약 {} sats ({} BTC)",
+                yw_core::btc::amount::format_sats_grouped(estimate.get()),
+                yw_core::btc::amount::format_btc(estimate)
+            ),
+        ));
+        items.push(Item::Help(
+            "입력 1개·출력 2개 기준 — UTXO를 여러 개 쓰면 늘어납니다. 검토에서 다시 계산합니다."
+                .to_owned(),
+        ));
         if rate.sat_per_kvb() > yw_core::btc::BTC_FEE_RATE_CAP
             || estimate.get() > yw_core::btc::BTC_FEE_ABS_CAP
         {
@@ -1324,10 +1332,17 @@ impl App {
         if loading {
             items.push(Item::Help("수수료 추정을 불러오는 중…".to_owned()));
         }
-        items.push(Item::Help(
-            "빠름·보통·느림 = 노드 추정(2·6·24블록). 추정이 없으면(testnet4에서 흔함) 직접 입력만 됩니다."
-                .to_owned(),
-        ));
+        // The send form's radios say the wait and the rate themselves: the note only when one
+        // of them has no estimate (2026-11-12). The bump form's radios are bare.
+        let missing = FEE_CHOICES.iter().any(|choice| {
+            *choice != BtcFeeChoice::Manual && quoted_rate(*choice, quote.as_ref()).is_none()
+        });
+        if bump || (missing && !loading) {
+            items.push(Item::Help(
+                "빠름·보통·느림 = 노드 추정(2·6·24블록). 추정이 없으면(testnet4에서 흔함) 직접 입력만 됩니다."
+                    .to_owned(),
+            ));
+        }
         if fee.choice == BtcFeeChoice::Manual {
             let id = if bump {
                 ids::BUMP_MANUAL_EDIT
@@ -1341,13 +1356,22 @@ impl App {
         }
         // The preview's floor fills the line before `검토` (2026-11-10).
         let floor = quote.map(|quote| quote.floor).or(self.btc.floor);
-        items.push(Item::Help(match floor {
-            Some(floor) => format!(
-                "수수료 하한 {floor} (노드 기준): 추정이 하한보다 낮으면 하한을 적용합니다(하한 적용). 직접 입력은 하한 이상이어야 합니다."
-            ),
-            None => "수수료 하한(1 sat/vB와 노드 최소값 중 큰 값)은 검토할 때 노드에서 확인합니다."
-                .to_owned(),
-        }));
+        // On the send form only where the floor matters (2026-11-12): `직접 입력`, or a chosen
+        // estimate below it (`FEE_CHOICES` starts with the three estimates in `rates` order).
+        let floored = quote.is_some_and(|quote| {
+            FEE_CHOICES.iter().zip(quote.rates).any(|(choice, rate)| {
+                *choice == fee.choice && rate.is_some_and(|rate| rate < quote.floor)
+            })
+        });
+        if bump || fee.choice == BtcFeeChoice::Manual || floored {
+            items.push(Item::Help(match floor {
+                Some(floor) => format!(
+                    "수수료 하한 {floor} (노드 기준): 추정이 하한보다 낮으면 하한을 적용합니다(하한 적용). 직접 입력은 하한 이상이어야 합니다."
+                ),
+                None => "수수료 하한(1 sat/vB와 노드 최소값 중 큰 값)은 검토할 때 노드에서 확인합니다."
+                    .to_owned(),
+            }));
+        }
         if !bump {
             self.btc_fee_estimate_items(fee, quote.as_ref(), items);
         }
@@ -1417,10 +1441,11 @@ impl App {
                 Ctl::button(crate::ui::screens_book::ids::BTC_PICK, "주소록에서 선택"),
             ],
         ));
-        items.push(Item::Help(
-            "bc1…·tb1… 등 Bitcoin 주소입니다. 붙여넣은 뒤 굵게 표시된 앞 6자·뒤 6자와 가운데까지 전체를 확인하세요."
-                .to_owned(),
-        ));
+        // The format hint only until the address is valid (2026-11-12); the reminder to check
+        // all of it then sits under the grouped address.
+        if form.recipient.is_none() || form.recipient_error.is_some() {
+            items.push(Item::Help("bc1…·tb1… 등 Bitcoin 주소".to_owned()));
+        }
         self.btc_picker_items(target, items);
         if let Some(error) = &form.recipient_error {
             items.push(Item::Banner(error.clone(), Tone::Danger));
@@ -1428,6 +1453,9 @@ impl App {
             items.push(Item::Help(format!("주소 종류: {}", kind_text(&kind))));
             let address = encode_address(&kind, net);
             items.push(Item::Mono(grouped(&address)));
+            items.push(Item::Help(
+                "굵게 표시된 앞 6자·뒤 6자와 가운데까지 주소 전체를 확인하세요.".to_owned(),
+            ));
             let entry = self
                 .meta
                 .as_ref()
@@ -1488,10 +1516,12 @@ impl App {
                     .to_owned(),
             ));
         }
-        items.push(Item::Help(
-            "BTC는 소수 8자리까지(예 0.0012), sats는 정수(예 120000)로 입력합니다. 천 단위 구분자·지수 표기는 받지 않습니다."
-                .to_owned(),
-        ));
+        // Only until the amount is valid (2026-11-12).
+        if !form.send_max && form.amount.is_none() {
+            items.push(Item::Help(
+                "BTC는 소수 8자리까지(예 0.0012) · sats는 정수(예 120000)".to_owned(),
+            ));
+        }
         items.push(Item::Rule);
         self.btc_fee_items(&form.fee, false, items);
         // `검토`'s progress, a plan the node refused (funds, dust, no fee estimate, tip ahead),
@@ -1513,10 +1543,15 @@ impl App {
         }
         items.push(Item::CardEnd);
         self.journal_send_items(crate::app_sidecar::SendChain::Btc, items);
+        let blocker = self.btc_review_blocker();
         items.push(Item::Row(vec![
-            Ctl::primary(ids::SEND_REVIEW, "검토").enabled(self.btc_can_review()),
+            Ctl::primary(ids::SEND_REVIEW, "검토").enabled(blocker.is_none()),
             Ctl::button(ids::SEND_CANCEL, "취소"),
         ]));
+        // What `검토` waits for, or that it sends nothing yet (2026-11-12).
+        items.push(Item::Help(
+            crate::app_sol::ReviewBlocker::line(blocker).to_owned(),
+        ));
     }
 
     /// Whether the send form's `검토` is enabled: the controller's checks, an account whose
@@ -1524,13 +1559,23 @@ impl App {
     /// the check above the button.
     #[must_use]
     pub fn btc_can_review(&self) -> bool {
-        self.btc.can_review(&self.btc_ctx())
-            && !self.mn_send_blocked(self.btc_backup_gate())
+        self.btc_review_blocker().is_none()
+    }
+
+    /// Why the send form's `검토` is off, `None` when it is on (2026-11-12: the line under the
+    /// button).
+    #[must_use]
+    pub fn btc_review_blocker(&self) -> Option<crate::app_sol::ReviewBlocker> {
+        let held = self.mn_send_blocked(self.btc_backup_gate())
             // spec/10 §9.3: the YubiKey is still on its factory PINs (the band says so).
-            && self.btc_selected_card_gate().is_none()
-            && self
+            || self.btc_selected_card_gate().is_some()
+            || self
                 .journal_hold(crate::app_sidecar::SendChain::Btc)
-                .is_none()
+                .is_some();
+        if held {
+            return Some(crate::app_sol::ReviewBlocker::Held);
+        }
+        self.btc.review_blocker(&self.btc_ctx())
     }
 
     /// Whether the fee-bump form's `검토` is enabled.
@@ -1900,6 +1945,7 @@ mod tests {
     use crate::apikeys::ApiKeys;
     use crate::app::{App, AppMode, Paths, Screen, SettingsSection};
     use crate::app_btc::{BTC_IMPORT_NOTE, BTC_MAX_ACTIVITY_ROWS, BtcFeeChoice};
+    use crate::app_sol::ReviewBlocker;
     use crate::errors::ErrorCode;
     use crate::events::JournalView;
     use crate::meta::{Meta, Tab};
@@ -2369,6 +2415,9 @@ mod tests {
             control(&items, ids::SEND_REVIEW).map(|ctl| ctl.enabled),
             Some(false)
         );
+        // The line under it says why: the address search has not run (the band at the top).
+        assert_eq!(app.btc_review_blocker(), Some(ReviewBlocker::Held));
+        assert!(has_text(&items, ReviewBlocker::Held.text()));
         app.btc.send.fee.choice = BtcFeeChoice::Manual;
         app.btc.send.fee.needs_typed = Sats::new(600_000);
         let items = app.items();

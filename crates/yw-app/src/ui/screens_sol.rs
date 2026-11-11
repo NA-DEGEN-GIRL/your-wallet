@@ -918,14 +918,17 @@ impl App {
             to_row.push(Ctl::button(ids::SEND_PICK, "주소록에서 선택"));
         }
         items.push(Item::LabeledRow("받는 주소".to_owned(), to_row));
-        items.push(Item::Help(
-            "Solana 주소(base58, 32–44자)입니다. 붙여넣은 뒤 굵게 표시된 가운데 부분까지 전체를 확인하세요."
-                .to_owned(),
-        ));
-        if let Some(entry) = form.token {
-            items.push(Item::Help(format!(
-                "{0}을(를) 받을 사람의 지갑 주소를 넣으세요. {0} 토큰 계정(ATA) 주소가 아닙니다 — 받는 토큰 계정은 지갑이 계산합니다. PDA·토큰 계정 같은 곡선 밖 주소로는 토큰을 보낼 수 없습니다.",
-                entry.symbol
+        // The format hint only until the address is valid (2026-11-12); the reminder to check
+        // all of it then sits under the grouped address.
+        if form.check.is_none() {
+            items.push(Item::Help(form.token.map_or_else(
+                || "Solana 주소 (base58)".to_owned(),
+                |entry| {
+                    format!(
+                        "{0}을(를) 받을 사람의 지갑 주소를 넣으세요 ({0} 토큰 계정(ATA) 주소가 아닙니다).",
+                        entry.symbol
+                    )
+                },
             )));
         }
         if form.picker && form.moving.is_none() {
@@ -942,6 +945,9 @@ impl App {
         }
         if let Some(check) = &form.check {
             items.push(Item::Mono(grouped(&check.to)));
+            items.push(Item::Help(
+                "굵게 표시된 가운데 부분까지 주소 전체를 확인하세요.".to_owned(),
+            ));
             if let Some(exact) = &check.exact {
                 let note = match exact.kind {
                     KnownKind::Book { verified } => format!(
@@ -1005,10 +1011,15 @@ impl App {
             items.push(Item::Banner(info.clone(), Tone::Warn));
         }
         self.journal_send_items(crate::app_sidecar::SendChain::Sol, items);
+        let blocker = self.sol_review_blocker();
         items.push(Item::Row(vec![
-            Ctl::primary(ids::SEND_REVIEW, "검토").enabled(self.sol_can_review()),
+            Ctl::primary(ids::SEND_REVIEW, "검토").enabled(blocker.is_none()),
             Ctl::button(ids::SEND_CANCEL, "취소"),
         ]));
+        // What `검토` waits for, or that it sends nothing yet (2026-11-12).
+        items.push(Item::Help(
+            crate::app_sol::ReviewBlocker::line(blocker).to_owned(),
+        ));
     }
 
     /// The "보낼 자산과 금액" card: asset radios (SOL and the cluster's allowlisted tokens), the
