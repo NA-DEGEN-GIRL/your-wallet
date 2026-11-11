@@ -210,13 +210,13 @@ pub mod ids {
     pub const BTC_RPC_OPEN: u16 = 16_709;
     /// The Zcash tab's `RPC 설정하기`.
     pub const ZEC_RPC_OPEN: u16 = 16_710;
-    /// The EVM network card's failure band: `이 네트워크 RPC 테스트` (2026-11-10).
+    /// The EVM network card's failure band: `RPC 테스트` (2026-11-10).
     pub const EVM_RPC_TEST: u16 = 16_711;
-    /// The Solana network card's failure band: `이 네트워크 RPC 테스트`.
+    /// The Solana network card's failure band: `RPC 테스트`.
     pub const SOL_RPC_TEST: u16 = 16_712;
-    /// The EVM failure band's `RPC 설정 열기` (that network's row, `open_rpc_row(_, false)`).
+    /// The EVM failure band's `RPC 설정` (that network's row, `open_rpc_row(_, false)`).
     pub const EVM_RPC_ROW: u16 = 16_713;
-    /// The Solana failure band's `RPC 설정 열기`.
+    /// The Solana failure band's `RPC 설정`.
     pub const SOL_RPC_ROW: u16 = 16_714;
     /// A failed network's link (S08 result lines, the RPC summary): `RPC_ROW_OPEN_BASE + row`
     /// of [`App::url_networks`](crate::app::App::url_networks) opens that row.
@@ -375,9 +375,9 @@ pub fn no_endpoint_text(network: &str) -> String {
     format!("이 네트워크({network})의 RPC 주소가 아직 없어 잔액을 읽을 수 없습니다.")
 }
 
-/// The selected-account card while its balance read failed (2026-11-10): the network card above
-/// says why and what to do, once.
-pub const T_BALANCE_FAILED: &str = "잔액을 읽지 못했습니다 — 위 네트워크 카드의 안내를 보세요.";
+/// The selected-account card while its balance read failed and there is no earlier value
+/// (2026-11-10; 2026-11-12 without the pointer to the network card, whose band says why).
+pub const T_BALANCE_FAILED: &str = "잔액을 읽지 못했습니다.";
 /// Under the big balance while the first read of the network is on its way.
 pub const T_BALANCE_LOADING: &str = "잔액을 불러오는 중…";
 
@@ -407,21 +407,39 @@ pub fn balance_read_text(block: Option<u64>, at_unix_ms: Option<u64>) -> String 
     }
 }
 
-/// The network card's band of a failed balance read (2026-11-10): the code's whole §7 text, and
-/// where the balance below comes from when there is one (`last` = "블록 N에서", "HH:MM에").
+/// The line under a balance kept from before a failed read (2026-11-12): where the number is
+/// from — "블록 N 기준 · HH:MM 이후 갱신 실패" (EVM), "HH:MM 이후 갱신 실패" (no block number).
+/// Why it failed is the network card's band.
 #[must_use]
-pub fn balance_failure_text(code: ErrorCode, last: Option<&str>) -> String {
-    match last {
-        Some(last) => format!(
-            "{} 아래 잔액은 {last} 마지막으로 읽은 값입니다.",
-            code.text()
+pub fn balance_stale_text(block: Option<u64>, at_unix_ms: Option<u64>) -> String {
+    let since = at_unix_ms.map_or_else(
+        || "갱신 실패".to_owned(),
+        |at| format!("{} 이후 갱신 실패", local_hh_mm(at)),
+    );
+    match block {
+        Some(block) => format!("블록 {block} 기준 · {since}"),
+        None => since,
+    }
+}
+
+/// The network card's band of a failed balance read (2026-11-10; one line since 2026-11-12):
+/// what failed (the code's short name) and its code. The buttons under it are the next step,
+/// and the code's whole §7 text is the answer of `RPC 테스트` and of settings. A code without
+/// a short name keeps its whole text.
+#[must_use]
+pub fn balance_failure_text(code: ErrorCode) -> String {
+    match code.short_name() {
+        Some(name) => format!(
+            "RPC {name} ({}) — 잔액을 갱신하지 못했습니다. 'RPC 테스트'로 원인을 확인하세요.",
+            code.code()
         ),
         None => code.text(),
     }
 }
 
-/// The empty activity cards (2026-11-08; 2026-11-11 the opt-in switch): received deposits are not
-/// in the sent list (spec/04 §2.6).
+/// The empty Zcash activity card (2026-11-08; 2026-11-11 the opt-in switch): received deposits
+/// are not in the sent list (spec/04 §2.6). The other chains' cards are titled `보낸 거래` and
+/// say only that there is none yet (2026-11-12).
 pub const T_ACTIVITY_RECEIVED: &str = "받은 입금은 이 목록(보낸 거래)에 나오지 않습니다. 아래 '받은 내역도 보기'를 켜면 최근 받은 내역을 따로 보여 줍니다(기본 꺼짐).";
 
 /// T-ALT-PASS (every screen while `App::passphrase_unverified`, spec/04 §2.1): not dismissible.
@@ -431,13 +449,15 @@ pub const T_ALT_PASS_RECEIVE: &str = "확인되지 않은 passphrase로 연 지�
 /// T-MAINNET: the main-screen badge of a network with real assets (EVM mainnets, Solana mainnet;
 /// Bitcoin shows `BITCOIN MAINNET`, spec/08 §2).
 pub const T_MAINNET: &str = "메인넷 — 실제 자산";
-/// S10 `내 계정` help: only derived accounts come back from the recovery words.
-pub const T_ACCOUNTS_BACKUP: &str = "보내기·받기에 쓸 계정을 고르세요. 경로(m/44'/60'/…)가 있는 계정은 복구 단어로 복구되지만, '가져온 개인키' 계정은 복구 단어로 복구되지 않으니 그 개인키를 따로 백업하세요.";
-/// S10 `내 계정` help of a key-only wallet (no recovery words).
-pub const T_ACCOUNTS_KEY_ONLY: &str = "보내기·받기에 쓸 계정을 고르세요. 이 지갑은 개인키로 시작해 복구 단어가 없습니다. 모든 계정은 '가져온 키'이며 각각의 원래 개인키가 유일한 백업입니다.";
+/// The `내 계정` / `내 Solana 계정` help of a wallet with recovery words, shown only while it
+/// has an imported key (2026-11-12): only derived accounts come back from the words.
+pub const T_ACCOUNTS_BACKUP: &str =
+    "'가져온 개인키' 계정은 복구 단어로 복구되지 않습니다 — 그 개인키를 따로 백업하세요.";
+/// That help of a key-only wallet (no recovery words).
+pub const T_ACCOUNTS_KEY_ONLY: &str = "이 지갑은 개인키로 시작해 복구 단어가 없습니다. 모든 계정은 '가져온 키'이며 각각의 원래 개인키가 유일한 백업입니다.";
 /// The `내 계정` / `내 Solana 계정` help of a wallet without recovery words that has `YubiKey`
 /// cards (2026-11-10: not the key-only text, which says the wallet started from a key).
-pub const T_ACCOUNTS_YUBIKEY: &str = "보내기·받기에 쓸 계정을 고르세요. 이 지갑은 복구 단어를 저장하지 않습니다. [YubiKey] 계정의 키는 카드 안에만 있고, 백업은 등록할 때 적은 복구 단어입니다(복구 단어 없이 연결한 키는 그 카드와 같은 키를 가진 백업 카드).";
+pub const T_ACCOUNTS_YUBIKEY: &str = "이 지갑은 복구 단어를 저장하지 않습니다. [YubiKey] 계정의 키는 카드 안에만 있고, 백업은 등록할 때 적은 복구 단어입니다(복구 단어 없이 연결한 키는 그 카드와 같은 키를 가진 백업 카드).";
 /// Its last sentence when the wallet also has imported keys.
 pub const T_ACCOUNTS_IMPORTED: &str = "[가져온 키]는 원래 개인키가 백업입니다.";
 /// Added to T-ACCOUNTS-BACKUP when a wallet with recovery words has `YubiKey` accounts.
@@ -449,10 +469,6 @@ pub const T_DISCARD: &str = "폐기는 이 앱에서 추적만 멈추고 '폐기
 /// T-TOKEN-DELETE: `삭제` of a user-added EVM token (spec/04 §2.6); the label and the full
 /// contract address follow it.
 pub const T_TOKEN_DELETE: &str = "이 토큰을 이 네트워크의 토큰 목록에서 지웁니다. 토큰이나 잔액은 그대로이며 블록체인에는 아무것도 보내지 않습니다. 같은 컨트랙트 주소로 언제든 다시 추가할 수 있습니다. 지운 뒤 이 토큰의 활동 기록은 원시 단위로 보입니다.";
-/// The `내 계정` row of a wallet's only account: its address and balance are on the hero card.
-pub const T_SINGLE_ACCOUNT: &str = "주소와 잔액은 위 카드에 있습니다";
-/// Under the off `숨기기` of a recovery phrase's account 0 (EVM, Solana; 2026-11-10).
-pub const T_FIRST_ACCOUNT_KEPT: &str = "각 복구 단어의 첫 계정(…/0)은 숨길 수 없습니다.";
 /// Every chain's `받기` (S12) command, and every `주소 복사` on S10 (2026-11-11: the account
 /// cards' address line and the Zcash 받기 card) — an unverified passphrase's addresses belong
 /// to another wallet, so they are not handed out from the main screen either.
@@ -489,6 +505,27 @@ pub fn own_address_row(
         )
         .enabled(enabled),
         actions: explorer.into_iter().collect(),
+    }
+}
+
+/// The receive screens' address line (S12, 2026-11-12): the address in the grouped 4-character
+/// form of §3.3 (`grouped`, with the emphasis the mono line had: `ui::theme::address_segments`)
+/// on the flat copy button — the `주소 복사` button under the address of before; the command
+/// still copies the address itself — and `actions` (Bitcoin's `새 주소`) at the right end.
+#[must_use]
+pub fn receive_address_row(grouped: &str, copy: u16, actions: Vec<Ctl>) -> Item {
+    let spans = crate::ui::theme::address_segments(grouped).map_or_else(
+        || vec![(grouped.to_owned(), false)],
+        |segments| {
+            segments
+                .into_iter()
+                .map(|(piece, strong)| (piece.to_owned(), strong))
+                .collect()
+        },
+    );
+    Item::CopyLine {
+        value: Ctl::value(copy, crate::ui::screens_links::T_ADDRESS_COPY, spans),
+        actions,
     }
 }
 
@@ -726,27 +763,26 @@ impl App {
 
     /// The `내 계정` / `내 Solana 계정` help (2026-11-10): a wallet without recovery words that has
     /// `YubiKey` cards says where their keys' backup is (not the key-only text); a wallet with
-    /// words and `YubiKey` accounts adds that those come back with the card's own words.
+    /// words and `YubiKey` accounts says that those come back with the card's own words. Since
+    /// 2026-11-12 only what is not backed up by this wallet's words is said: an imported key
+    /// always gets its reminder, and a wallet of derived accounts only has no paragraph.
     #[must_use]
-    pub(crate) fn accounts_help(
-        &self,
-        key_only: &str,
-        words: &str,
-        has_card: bool,
-        imported: bool,
-    ) -> String {
+    pub(crate) fn accounts_help(&self, has_card: bool, imported: bool) -> Option<String> {
         if self.key_only() && !self.card.records.is_empty() {
-            if imported {
+            return Some(if imported {
                 format!("{T_ACCOUNTS_YUBIKEY} {T_ACCOUNTS_IMPORTED}")
             } else {
                 T_ACCOUNTS_YUBIKEY.to_owned()
-            }
-        } else if self.key_only() {
-            key_only.to_owned()
-        } else if has_card {
-            format!("{words} {T_ACCOUNTS_YUBIKEY_WORDS}")
-        } else {
-            words.to_owned()
+            });
+        }
+        if self.key_only() {
+            return Some(T_ACCOUNTS_KEY_ONLY.to_owned());
+        }
+        match (imported, has_card) {
+            (true, true) => Some(format!("{T_ACCOUNTS_BACKUP} {T_ACCOUNTS_YUBIKEY_WORDS}")),
+            (true, false) => Some(T_ACCOUNTS_BACKUP.to_owned()),
+            (false, true) => Some(T_ACCOUNTS_YUBIKEY_WORDS.to_owned()),
+            (false, false) => None,
         }
     }
 
@@ -1514,8 +1550,13 @@ impl App {
                 }
             }
             (Some(value), Some(_)) => {
+                // The earlier value, dimmed, and where it is from (2026-11-12: not "잔액을
+                // 읽지 못했습니다" under a balance).
                 items.push(Item::DisplayMuted(self.native_text(chain_id, &value)));
-                items.push(Item::Help(T_BALANCE_FAILED.to_owned()));
+                items.push(Item::Help(balance_stale_text(
+                    block,
+                    state.and_then(|state| state.updated_unix_ms),
+                )));
             }
             (Some(value), None) => {
                 items.push(Item::Display(self.native_text(chain_id, &value)));
@@ -1560,10 +1601,7 @@ impl App {
             .take(4)
             .collect();
         if !tokens.is_empty() {
-            items.push(Item::Help(format!(
-                "토큰: {} (아래 토큰 카드)",
-                tokens.join(" · ")
-            )));
+            items.push(Item::Help(format!("토큰: {}", tokens.join(" · "))));
         }
         // The own address whole, its ends emphasized, with `주소 복사` on the same line
         // (2026-11-11; recipient checks elsewhere keep the grouped form).
@@ -1680,19 +1718,16 @@ impl App {
             .meta
             .as_ref()
             .is_some_and(|meta| !meta.evm_raw_accounts.is_empty());
-        items.push(Item::Help(self.accounts_help(
-            T_ACCOUNTS_KEY_ONLY,
-            T_ACCOUNTS_BACKUP,
-            has_card,
-            imported,
-        )));
-        let single = rows.len() == 1;
+        if let Some(help) = self.accounts_help(has_card, imported) {
+            items.push(Item::Help(help));
+        }
         // A drop-down like the network's (2026-11-11): the selected account on its button, the
         // accounts under it while open (each keeps the id its radio had); the selected
-        // account's path and balance and its actions follow (its address is the hero card's).
+        // account's actions follow (2026-11-12: its path, balance and address are the hero
+        // card's and are not said again here).
         let mut entries = Vec::new();
         let mut chosen = None;
-        for (row, (pref, label, address, path)) in rows
+        for (row, (pref, label, ..)) in rows
             .into_iter()
             .take(usize::from(ids::ACCOUNT_SPAN))
             .enumerate()
@@ -1711,22 +1746,13 @@ impl App {
                 enabled: true,
             });
             if is_selected {
-                chosen = Some((pref, label, address, path));
+                chosen = Some((pref, label));
             }
         }
         if !entries.is_empty() {
             self.push_account_picker(items, crate::ui::screens_links::ids::PICKER_EVM, &entries);
         }
-        if let Some((pref, label, address, path)) = chosen {
-            if single {
-                // One account: its address and balance are the hero card's (review D3).
-                items.push(Item::Help(format!("{path} · {T_SINGLE_ACCOUNT}")));
-            } else {
-                items.push(Item::Help(match self.balance_text(&address) {
-                    Some(balance) => format!("{path} · {balance}"),
-                    None => path,
-                }));
-            }
+        if let Some((pref, label)) = chosen {
             if self.rename == Some(pref) {
                 items.push(Item::Row(vec![
                     Ctl::edit(ids::RENAME_EDIT, &label, 260, false, 64),
@@ -1735,15 +1761,13 @@ impl App {
                 ]));
             } else {
                 let mut row_ctls = vec![Ctl::button(ids::RENAME, "이름 바꾸기").compact()];
-                let mut first_of_phrase = false;
                 match pref {
+                    // A recovery phrase's first account (…/0) cannot be hidden: no button
+                    // (2026-11-12; an off button and a line saying why before).
                     EvmAccountPref::Index(index) | EvmAccountPref::Mnemonic(_, index) => {
-                        first_of_phrase = index == 0;
-                        row_ctls.push(
-                            Ctl::button(ids::HIDE, "숨기기")
-                                .compact()
-                                .enabled(index != 0),
-                        );
+                        if index != 0 {
+                            row_ctls.push(Ctl::button(ids::HIDE, "숨기기").compact());
+                        }
                     }
                     EvmAccountPref::Record(_) => {
                         row_ctls.push(
@@ -1759,10 +1783,6 @@ impl App {
                     }
                 }
                 items.push(Item::Row(row_ctls));
-                if first_of_phrase {
-                    // Why `숨기기` is off (2026-11-10).
-                    items.push(Item::Help(T_FIRST_ACCOUNT_KEPT.to_owned()));
-                }
             }
         }
         self.hidden_items(crate::app_hidden::Family::Evm, items);

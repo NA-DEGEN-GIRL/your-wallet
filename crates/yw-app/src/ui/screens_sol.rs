@@ -354,13 +354,8 @@ impl App {
             .flatten();
         // The failed read, said once with what to do (2026-11-10, like the EVM network card).
         if let Some(code) = failure {
-            let last = self
-                .sol
-                .balance_at
-                .get(&cluster)
-                .map(|at| format!("{}에", crate::ui::screens::local_hh_mm(*at)));
             items.push(Item::Banner(
-                crate::ui::screens::balance_failure_text(code, last.as_deref()),
+                crate::ui::screens::balance_failure_text(code),
                 Tone::Danger,
             ));
             self.rpc_failure_buttons(
@@ -370,16 +365,17 @@ impl App {
                 items,
             );
         }
-        let rpc = if no_endpoint {
-            "RPC 주소 없음 (E-KEY-005)".to_owned()
-        } else if let Some(code) = failure {
-            format!("오류 {}", code.code_with_name())
-        } else if self.sol.balances.keys().any(|(known, _)| *known == cluster) {
-            "연결됨 (genesis 확인)".to_owned()
-        } else {
-            "확인 전".to_owned()
-        };
-        items.push(Item::Help(format!("RPC ({network}): {rpc}")));
+        // The status line, unless the band above has just said the failure (2026-11-12).
+        if failure.is_none() {
+            let rpc = if no_endpoint {
+                "RPC 주소 없음 (E-KEY-005)"
+            } else if self.sol.balances.keys().any(|(known, _)| *known == cluster) {
+                "연결됨 (genesis 확인)"
+            } else {
+                "확인 전"
+            };
+            items.push(Item::Help(format!("RPC ({network}): {rpc}")));
+        }
         items.push(Item::CardEnd);
         let unlocked = matches!(self.mode, AppMode::Unlocked { .. });
         let selected = self.sol_selected();
@@ -406,8 +402,12 @@ impl App {
             // the time), or failed — explained once by the network card above.
             match (self.sol_balance(address), failure) {
                 (Some(lamports), Some(_)) => {
+                    // The earlier value, dimmed, and since when (2026-11-12, like EVM).
                     items.push(Item::DisplayMuted(App::sol_text(lamports)));
-                    items.push(Item::Help(crate::ui::screens::T_BALANCE_FAILED.to_owned()));
+                    items.push(Item::Help(crate::ui::screens::balance_stale_text(
+                        None,
+                        self.sol.balance_at.get(&cluster).copied(),
+                    )));
                 }
                 (Some(lamports), None) => {
                     items.push(Item::Display(App::sol_text(lamports)));
@@ -456,10 +456,7 @@ impl App {
                     })
                     .collect();
                 if !tokens.is_empty() {
-                    items.push(Item::Help(format!(
-                        "허용 목록 토큰: {} (아래 '토큰' 카드)",
-                        tokens.join(" · ")
-                    )));
+                    items.push(Item::Help(format!("토큰: {}", tokens.join(" · "))));
                 }
             }
             // The own address whole with its ends emphasized and `주소 복사` (2026-11-11).
@@ -494,12 +491,13 @@ impl App {
         }
         items.push(Item::CardStart(Some("내 Solana 계정".to_owned())));
         let rows = self.sol_account_rows();
-        items.push(Item::Help(self.accounts_help(
-            "이 지갑은 개인키로 시작해 복구 단어가 없습니다. 모든 계정은 '가져온 키'이며 각각의 원래 개인키가 유일한 백업입니다.",
-            "경로 m/44'/501'/i'/0' (Phantom·Solflare와 같은 표준 경로). '가져온 키' 계정은 복구 단어로 복구되지 않으니 원래 개인키를 따로 백업하세요.",
+        // The same help as `내 계정` (2026-11-12; the path is the hero card's second line).
+        if let Some(help) = self.accounts_help(
             rows.iter().any(|(id, ..)| id.is_hardware()),
             rows.iter().any(|(id, ..)| id.is_imported()),
-        )));
+        ) {
+            items.push(Item::Help(help));
+        }
         if rows.is_empty() {
             items.push(Item::Muted(if self.sol.creating {
                 "Solana 계정을 만드는 중…".to_owned()
@@ -509,13 +507,13 @@ impl App {
         }
         let selected = selected.map(|(id, ..)| id);
         let removable = self.can_remove_imported();
-        let single = rows.len() == 1;
         // A drop-down like the EVM network's (2026-11-11): the selected account on its button,
         // the accounts under it while open (each keeps the id its radio had); the selected
-        // account's path and balance and its actions follow (its address is the hero card's).
+        // account's actions follow (2026-11-12: its path, balance and address are the hero
+        // card's and are not said again here).
         let mut entries = Vec::new();
         let mut chosen = None;
-        for (row, (id, label, address)) in rows
+        for (row, (id, label, _)) in rows
             .into_iter()
             .take(usize::from(ids::ACCOUNT_SPAN))
             .enumerate()
@@ -537,33 +535,13 @@ impl App {
                 enabled: true,
             });
             if is_selected {
-                chosen = Some((id, label, address));
+                chosen = Some((id, label));
             }
         }
         if !entries.is_empty() {
             self.push_account_picker(items, crate::ui::screens_links::ids::PICKER_SOL, &entries);
         }
-        if let Some((id, label, address)) = chosen {
-            if single {
-                // One account: its address and balance are the hero card's (review D3).
-                items.push(Item::Help(format!(
-                    "{} · {}",
-                    id.path_text(),
-                    crate::ui::screens::T_SINGLE_ACCOUNT
-                )));
-            } else {
-                let balance = self.sol_balance(&address).map_or_else(
-                    || "잔액 알 수 없음".to_owned(),
-                    |lamports| {
-                        format!(
-                            "잔액 {} ({} lamports, RPC finalized)",
-                            App::sol_text(lamports),
-                            format_raw(lamports)
-                        )
-                    },
-                );
-                items.push(Item::Help(format!("{} · {balance}", id.path_text())));
-            }
+        if let Some((id, label)) = chosen {
             if self.sol.rename == Some(id) {
                 items.push(Item::Row(vec![
                     Ctl::edit(ids::RENAME_EDIT, &label, 260, false, 64),
@@ -572,15 +550,12 @@ impl App {
                 ]));
             } else {
                 let mut row_ctls = vec![Ctl::button(ids::RENAME, "이름 바꾸기").compact()];
-                let mut first_of_phrase = false;
                 match id {
+                    // No `숨기기` for a recovery phrase's first account (2026-11-12, as EVM).
                     SolAccountId::Derived(index) | SolAccountId::Mnemonic(_, index) => {
-                        first_of_phrase = index == 0;
-                        row_ctls.push(
-                            Ctl::button(ids::HIDE, "숨기기")
-                                .compact()
-                                .enabled(index != 0),
-                        );
+                        if index != 0 {
+                            row_ctls.push(Ctl::button(ids::HIDE, "숨기기").compact());
+                        }
                     }
                     // A YubiKey account: no "개인키 보기" (the key is on the card only).
                     SolAccountId::Hardware(_) => {
@@ -600,11 +575,6 @@ impl App {
                     }
                 }
                 items.push(Item::Row(row_ctls));
-                if first_of_phrase {
-                    items.push(Item::Help(
-                        crate::ui::screens::T_FIRST_ACCOUNT_KEPT.to_owned(),
-                    ));
-                }
             }
         }
         self.hidden_items(crate::app_hidden::Family::Sol, items);
@@ -632,8 +602,7 @@ impl App {
             ]));
             self.sol_pick_row(items);
             items.push(Item::Help(
-                "다른 지갑에서 쓰던 계정이 안 보이면 '다른 경로 스캔'으로 찾을 수 있습니다(읽기 전용). 개인키만 있으면 '개인키 가져오기'(Phantom·Solflare base58 또는 solana-keygen JSON)."
-                    .to_owned(),
+                "안 보이는 계정은 '다른 경로 스캔'으로 찾습니다.".to_owned(),
             ));
         }
         items.push(Item::CardEnd);
@@ -643,7 +612,7 @@ impl App {
         items.push(Item::CardStart(None));
         items.push(Item::Badged(
             Badge::solana(cluster),
-            Box::new(Item::Subtitle("활동 (이 지갑이 보낸 거래)".to_owned())),
+            Box::new(Item::Subtitle("보낸 거래".to_owned())),
         ));
         let mut shown = 0_usize;
         let mut prompt_drawn = false;
@@ -701,10 +670,7 @@ impl App {
             }
         }
         if shown == 0 {
-            items.push(Item::Help(format!(
-                "아직 보낸 거래가 없습니다. 보낸 거래는 여기에서 진행 상태와 함께 보입니다. {}",
-                crate::ui::screens::T_ACTIVITY_RECEIVED
-            )));
+            items.push(Item::Help("아직 보낸 거래가 없습니다.".to_owned()));
         }
         self.received_items(crate::received::RecvChain::Sol, items);
         items.push(Item::CardEnd);
@@ -765,9 +731,9 @@ impl App {
     fn sol_token_card(&self, items: &mut Vec<Item>, address: &SolAddress, can_send: bool) {
         let entries: Vec<&'static SplAllowEntry> = spl_entries(self.sol_cluster()).collect();
         let symbols: Vec<&str> = entries.iter().map(|entry| entry.symbol).collect();
-        items.push(Item::CardStart(Some("토큰 (선택한 계정)".to_owned())));
+        items.push(Item::CardStart(Some("토큰".to_owned())));
         items.push(Item::Help(format!(
-            "허용 목록 토큰만 표시합니다: {} (SPL Token). 다른 토큰·NFT는 받아도 여기에 보이지 않고 보낼 수 없습니다.",
+            "허용 목록 토큰만 표시합니다 ({}). 다른 토큰·NFT는 보이지 않고 보낼 수 없습니다.",
             symbols.join("·")
         )));
         let (hidden, shown): (Vec<_>, Vec<_>) = entries
@@ -779,9 +745,11 @@ impl App {
                 "보이는 토큰이 없습니다. 숨긴 토큰은 아래에서 다시 볼 수 있습니다.".to_owned(),
             ));
         }
-        // The EVM token card's list rows (2026-11-11): symbol and balance on one line, what
-        // the balance means, then the pinned mint whole (a click copies it) with `보내기`·
-        // `숨기기` at the right end.
+        // The EVM token card's list rows (2026-11-11): symbol and balance on one line, then
+        // the pinned mint whole (a click copies it) with `보내기`·`숨기기` at the right end.
+        // What the balance means is said only when it is not a plain one (2026-11-12: no
+        // token account yet, frozen, unreadable, not read) — the raw-unit line and the note
+        // "SPL Token · mint 허용 목록 고정" were the same on every row.
         for (position, (index, entry)) in shown.into_iter().enumerate() {
             if position > 0 {
                 items.push(Item::Rule);
@@ -790,11 +758,13 @@ impl App {
             let (value, note) = token_holding_text(entry, holding);
             items.push(Item::ListRow {
                 title: entry.symbol.to_owned(),
-                note: "SPL Token · mint 허용 목록 고정".to_owned(),
+                note: String::new(),
                 value,
                 dim: false,
             });
-            items.push(Item::Help(note));
+            if !matches!(holding, Some(TokenHolding::Active(_))) {
+                items.push(Item::Help(note));
+            }
             let id = ids::TOKEN_SEND_BASE.saturating_add(u16::try_from(index).unwrap_or(0));
             let mut row = vec![
                 Ctl::link(id, "보내기").compact().enabled(
@@ -1273,14 +1243,8 @@ impl App {
             return;
         };
         items.push(Item::CardStart(None));
-        items.push(Item::Badged(
-            Badge::solana(self.sol_cluster()),
-            Box::new(Item::Subtitle(format!(
-                "{} · {}",
-                self.sol_title(index, &label),
-                self.sol_cluster().display_name()
-            ))),
-        ));
+        // The account only: the screen title above names the cluster (2026-11-12).
+        items.push(Item::Subtitle(self.sol_title(index, &label)));
         if self.sol_cluster() == SolCluster::Devnet {
             items.push(Item::Banner(
                 "devnet(테스트) 주소입니다. 주소 자체는 mainnet과 같습니다.".to_owned(),
@@ -1303,23 +1267,21 @@ impl App {
             .map(|entry| entry.symbol)
             .collect();
         items.push(Item::Help(format!(
-            "보내는 사람에게 아래 주소나 QR을 알려주세요. SOL과 허용 목록 토큰({})을 받을 수 있습니다. 다른 토큰은 받아도 이 지갑에 보이지 않고 보낼 수 없습니다.",
+            "SOL과 허용 목록 토큰({})만 받으세요. 다른 토큰은 이 지갑에 보이지 않고 보낼 수 없습니다.",
             tokens.join("·")
         )));
-        items.push(Item::Help(
-            "토큰을 보내는 쪽에는 이 지갑 주소를 알려주면 됩니다(토큰 계정 주소는 상대 지갑이 계산합니다)."
-                .to_owned(),
-        ));
-        // Address and `주소 복사` before the QR (2026-11-08, all chains).
-        items.push(Item::Mono(grouped(&address)));
-        items.push(Item::Row(vec![Ctl::primary(
+        // The address on its copy line, then the QR (2026-11-12, all chains: the notes that
+        // are not needed to copy follow the QR).
+        items.push(crate::ui::screens::receive_address_row(
+            &grouped(&address),
             ids::COPY_ADDRESS,
-            "주소 복사",
-        )]));
-        items.push(Item::Help(
-            "주소를 복사한 뒤 붙여넣은 곳에서 주소 전체를 확인하세요.".to_owned(),
+            Vec::new(),
         ));
         items.push(Item::Qr(address.to_base58()));
+        items.push(Item::Help(
+            "토큰을 보내는 쪽에도 이 지갑 주소를 알려주면 됩니다(토큰 계정 주소는 상대 지갑이 계산합니다)."
+                .to_owned(),
+        ));
         items.push(Item::Help(index.path_text()));
         items.push(Item::CardEnd);
     }

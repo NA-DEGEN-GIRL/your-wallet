@@ -60,6 +60,9 @@ pub mod ids {
 
 /// The switch's label.
 pub const T_RECEIVED_TOGGLE: &str = "받은 내역도 보기";
+/// The EVM card's label while the whole `HyperCore` card is above it: that card has no switch
+/// of its own (2026-11-12).
+pub const T_RECEIVED_TOGGLE_HC: &str = "받은 내역도 보기 (위 HyperCore 카드 포함)";
 /// The help line at the top of the section (address poisoning).
 pub const T_RECEIVED_HELP: &str = "받은 내역은 참고용입니다. 여기의 주소를 복사해 보내지 마세요 — 보낼 주소는 주소록이나 상대에게 직접 받은 값을 쓰세요.";
 /// The EVM line: native-coin deposits are not visible to standard RPC.
@@ -272,16 +275,33 @@ impl App {
     }
 
     /// The switch and, when on, the received section of `chain`'s activity card (spec/04 §2.6).
+    /// The `HyperCore` card has the section only (2026-11-12): it sits right above the EVM
+    /// activity card, whose switch is the same setting and names it — two check boxes for one
+    /// setting on one tab before.
     pub fn received_items(&self, chain: RecvChain, items: &mut Vec<Item>) {
         let on = self.settings.received_history;
-        items.push(Item::Rule);
-        items.push(Item::Row(vec![Ctl::check(
-            ids::toggle(chain),
-            T_RECEIVED_TOGGLE,
-            on,
-        )]));
-        if !on {
-            return;
+        if chain == RecvChain::Hc {
+            if !on {
+                return;
+            }
+            items.push(Item::Rule);
+        } else {
+            let whole_hc = chain == RecvChain::Evm
+                && self.hc_visible()
+                && (!self.hc_foldable() || self.hypercore.unfolded);
+            items.push(Item::Rule);
+            items.push(Item::Row(vec![Ctl::check(
+                ids::toggle(chain),
+                if whole_hc {
+                    T_RECEIVED_TOGGLE_HC
+                } else {
+                    T_RECEIVED_TOGGLE
+                },
+                on,
+            )]));
+            if !on {
+                return;
+            }
         }
         items.push(Item::Subtitle("받은 내역".to_owned()));
         items.push(Item::Help(T_RECEIVED_HELP.to_owned()));

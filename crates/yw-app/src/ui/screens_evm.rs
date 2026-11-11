@@ -25,10 +25,10 @@ use crate::token_view::RowPlace;
 use crate::ui::badge::Badge;
 use crate::ui::main_window::{Ctl, Item, Tone};
 use crate::ui::qr::{EvmQrKind, RECEIVE_SHARED_ADDRESS_NOTE};
-use crate::ui::screens::T_ACTIVITY_RECEIVED;
 
 /// T-TOKEN-HIDDEN: the note above the hidden token rows (spec/04 §2.6).
-pub const T_TOKEN_HIDDEN_NOTE: &str = "숨기기는 이 목록과 보내기 화면의 자산 선택에서만 감춥니다. 잔액 조회, 승인 창의 토큰 확인, 활동 기록은 그대로입니다.";
+pub const T_TOKEN_HIDDEN_NOTE: &str =
+    "숨긴 토큰은 이 목록과 보내기 화면의 자산 선택에서만 빠집니다. 자산은 그대로입니다.";
 
 /// T-CUSTOM-CHAIN (spec/04 §2.16): the user-chain badge of S10, S15 and the A01 header.
 #[must_use]
@@ -505,27 +505,26 @@ impl App {
     pub fn evm_status_line(&self) -> String {
         let chain_id = self.settings.evm_chain_id;
         let network = NetworkId::Eip155(chain_id);
+        let browser = crate::app_browser::status_text(self.browser.as_ref());
         let rpc = if !self.apikeys.has(crate::apikeys::KeyName::Rpc(network)) {
-            "RPC 주소 없음 (E-KEY-005)".to_owned()
+            "RPC 주소 없음 (E-KEY-005)"
         } else if let Some(kind) = self.evm.blocked(chain_id) {
-            format!("차단 {}", kind.code().code())
-        } else if let Some(code) = self
+            return format!("RPC: 차단 {}   ·   {browser}", kind.code().code());
+        } else if self
             .evm
             .balances
             .get(&chain_id)
-            .and_then(|state| state.error)
+            .is_some_and(|state| state.error.is_some())
         {
-            // The code with its short name (2026-11-10: "오류 E-RPC-003" alone said nothing).
-            format!("오류 {}", code.code_with_name())
+            // A failed read is the band right above (`evm_balance_failure`, name and code):
+            // not said again here (2026-11-12; "오류 E-RPC-003 · 인증 거부" before).
+            return browser;
         } else if self.evm.chain_checks.contains_key(&chain_id) {
-            "연결됨".to_owned()
+            "연결됨"
         } else {
-            "확인 전".to_owned()
+            "확인 전"
         };
-        format!(
-            "RPC: {rpc}   ·   {}",
-            crate::app_browser::status_text(self.browser.as_ref())
-        )
+        format!("RPC: {rpc}   ·   {browser}")
     }
 
     /// Network radios with "(차단됨)".
@@ -587,10 +586,10 @@ impl App {
         }
     }
 
-    /// The network card's band of a failed balance read (2026-11-10, spec/04 §2.6): the code's
-    /// whole §7 text (network names only, no URL or host, §1.9), the block of the balance below,
-    /// `이 네트워크 RPC 테스트` (its answer in the same card as the three-state band of
-    /// settings) and `RPC 설정 열기`. Not for a network without an address (U17) or a blocked
+    /// The network card's band of a failed balance read (2026-11-10, spec/04 §2.6; one line
+    /// since 2026-11-12): the failure's short name and code (no URL or host, §1.9), `RPC 테스트`
+    /// (its answer — the code's whole §7 text — in the same card as the three-state band of
+    /// settings) and `RPC 설정`. Not for a network without an address (U17) or a blocked
     /// chain: those keep their own lines.
     pub fn evm_balance_failure(&self, items: &mut Vec<Item>) {
         let chain_id = self.settings.evm_chain_id;
@@ -606,12 +605,8 @@ impl App {
         {
             return;
         }
-        let last = state
-            .snapshot
-            .as_ref()
-            .map(|snapshot| format!("블록 {}에서", snapshot.block));
         items.push(Item::Banner(
-            crate::ui::screens::balance_failure_text(code, last.as_deref()),
+            crate::ui::screens::balance_failure_text(code),
             Tone::Danger,
         ));
         self.rpc_failure_buttons(
@@ -633,8 +628,8 @@ impl App {
         let testing =
             self.rpc_tests.running == Some(network) || self.rpc_tests.waiting.contains(&network);
         items.push(Item::Row(vec![
-            Ctl::button(test, "이 네트워크 RPC 테스트").enabled(!testing),
-            Ctl::button(open, "RPC 설정 열기"),
+            Ctl::button(test, "RPC 테스트").compact().enabled(!testing),
+            Ctl::button(open, "RPC 설정").compact(),
         ]));
         if let Some((_, message, state)) = self.rpc_messages.iter().find(|(id, ..)| *id == network)
         {
@@ -710,13 +705,13 @@ impl App {
         items.push(Item::CardStart(None));
         items.push(Item::Badged(
             self.evm_badge(chain_id),
-            Box::new(Item::Subtitle("활동 (이 지갑이 보낸 거래)".to_owned())),
+            Box::new(Item::Subtitle("보낸 거래".to_owned())),
         ));
         let rows = self.activity_rows();
         if rows.is_empty() {
-            items.push(Item::Help(format!(
-                "아직 보낸 거래가 없습니다. 보낸 거래는 여기에서 진행 상태와 함께 보입니다. {T_ACTIVITY_RECEIVED}"
-            )));
+            // One line (2026-11-12): the title says these are sent ones, and the switch for
+            // received ones is right below.
+            items.push(Item::Help("아직 보낸 거래가 없습니다.".to_owned()));
         }
         // The latest rows first; the rest behind a link (this run only). A row still in flight
         // (speed-up, cancel, a broadcast that needs a resend) is never folded away; its buttons
@@ -816,10 +811,10 @@ impl App {
     }
 
     /// The S10 EVM "토큰" card (spec/04 §2.6): shown rows with `숨기기` (and `삭제` for user
-    /// tokens), `잔액 0인 토큰 숨기기`, and `숨긴 토큰 n개 보기` listing the hidden rows dimmed
-    /// with `다시 보이기`.
+    /// tokens), then one footer row (2026-11-12) — `토큰 추가`, `잔액 0 숨기기` with the count
+    /// it hides, and `숨긴 토큰 n개 ▸` listing the hidden rows dimmed with `다시 보이기`.
     fn evm_token_card(&self, items: &mut Vec<Item>, chain_id: u64) {
-        items.push(Item::CardStart(Some("토큰 (선택한 계정)".to_owned())));
+        items.push(Item::CardStart(Some("토큰".to_owned())));
         let rows = self.evm_token_rows(chain_id);
         let shown: Vec<&EvmTokenRow> = rows
             .iter()
@@ -853,41 +848,43 @@ impl App {
             }
             Self::evm_token_row(items, row, false, can_send);
         }
+        // The footer in one row (2026-11-12; four stacked lines before): the action first,
+        // the count of tucked-away zero rows in the check box's label, the hidden rows' link.
+        let mut footer = vec![Ctl::button(ids::TOKEN_OPEN, "토큰 추가").compact()];
         if !rows.is_empty() {
             items.push(Item::Rule);
-            items.push(Item::Row(vec![Ctl::check(
+            footer.push(Ctl::check(
                 ids::TOKEN_HIDE_ZERO,
-                "잔액 0인 토큰 숨기기",
+                &if zero > 0 {
+                    format!("잔액 0 숨기기 ({zero}개)")
+                } else {
+                    "잔액 0 숨기기".to_owned()
+                },
                 self.evm_hide_zero(),
-            )]));
-            if zero > 0 {
-                items.push(Item::Help(format!(
-                    "잔액이 0인 토큰 {zero}개를 감췄습니다. 잔액이 생기면 다시 보입니다."
-                )));
-            }
+            ));
         }
+        let open = self.evm.show_hidden_tokens && !hidden.is_empty();
         if !hidden.is_empty() {
-            let open = self.evm.show_hidden_tokens;
             let count = hidden.len();
-            items.push(Item::Row(vec![Ctl::link(
+            footer.push(Ctl::link(
                 ids::TOKEN_HIDDEN_TOGGLE,
                 &if open {
                     format!("숨긴 토큰 {count}개 접기 ▾")
                 } else {
                     format!("숨긴 토큰 {count}개 보기 ▸")
                 },
-            )]));
-            if open {
-                items.push(Item::Help(T_TOKEN_HIDDEN_NOTE.to_owned()));
-                for (position, row) in hidden.into_iter().enumerate() {
-                    if position > 0 {
-                        items.push(Item::Rule);
-                    }
-                    Self::evm_token_row(items, row, true, false);
+            ));
+        }
+        items.push(Item::Row(footer));
+        if open {
+            items.push(Item::Help(T_TOKEN_HIDDEN_NOTE.to_owned()));
+            for (position, row) in hidden.into_iter().enumerate() {
+                if position > 0 {
+                    items.push(Item::Rule);
                 }
+                Self::evm_token_row(items, row, true, false);
             }
         }
-        items.push(Item::Row(vec![Ctl::button(ids::TOKEN_OPEN, "토큰 추가")]));
         items.push(Item::CardEnd);
     }
 
@@ -1427,14 +1424,8 @@ impl App {
             return;
         };
         items.push(Item::CardStart(None));
-        items.push(Item::Badged(
-            self.evm_badge(chain_id),
-            Box::new(Item::Subtitle(format!(
-                "{} · {}",
-                self.evm_account_title(source, &label),
-                self.network_name(NetworkId::Eip155(chain_id))
-            ))),
-        ));
+        // The account only: the screen title above names the network (2026-11-12).
+        items.push(Item::Subtitle(self.evm_account_title(source, &label)));
         if chain_id == SEPOLIA {
             items.push(Item::Banner(
                 "테스트넷 주소입니다.".to_owned(),
@@ -1447,21 +1438,17 @@ impl App {
             ));
         }
         self.mn_receive_banner(self.evm_backup_gate(source), items);
-        items.push(Item::Help(
-            "보내는 사람에게 아래 주소나 QR을 알려주세요. 이 네트워크의 자산만 보내야 합니다."
-                .to_owned(),
-        ));
-        // Address and `주소 복사` first (2026-11-08): both stay in the first view of the
-        // default window; the QR follows.
-        items.push(Item::Mono(format_address(&address)));
-        items.push(Item::Row(vec![Ctl::primary(
+        items.push(Item::Help(format!(
+            "{} 네트워크의 자산만 이 주소로 받으세요.",
+            self.network_name(NetworkId::Eip155(chain_id))
+        )));
+        // The address on its copy line, then the QR (2026-11-12: one line of help above and
+        // no button row, so the QR comes that much earlier; the other notes follow the QR).
+        items.push(crate::ui::screens::receive_address_row(
+            &format_address(&address),
             ids::COPY_ADDRESS,
-            "주소 복사",
-        )]));
-        items.push(Item::Help(
-            "주소를 복사한 뒤 붙여넣은 곳에서 주소 전체를 확인하세요.".to_owned(),
+            Vec::new(),
         ));
-        items.push(Item::Help(RECEIVE_SHARED_ADDRESS_NOTE.to_owned()));
         let kind = self.evm.receive_qr;
         items.push(Item::Row(vec![
             Ctl::radio(
@@ -1486,6 +1473,7 @@ impl App {
         items.push(Item::Qr(crate::ui::qr::evm_receive_payload(
             &address, chain_id, kind,
         )));
+        items.push(Item::Help(RECEIVE_SHARED_ADDRESS_NOTE.to_owned()));
         items.push(Item::Help(self.evm_path_text(source)));
         items.push(Item::CardEnd);
     }

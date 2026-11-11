@@ -270,9 +270,9 @@ pub const T_BTC_ESPLORA_NOTE: &str = "인덱서(Esplora 서버)는 조회하는 
 const JOURNAL_DAMAGED: &str =
     "거래 저널의 Bitcoin 기록이 손상되어 Bitcoin 보내기를 멈췄습니다. (E-VLT-006)";
 /// Help under the account list (spec/04 §2.6 Bitcoin).
-const ACCOUNTS_HELP: &str = "계정마다 주소 형식이 정해집니다. 새 계정은 같은 복구 단어에서 만들어지며 다른 지갑에서도 같은 형식(BIP44·49·84·86)을 고르면 복구됩니다.";
+const ACCOUNTS_HELP: &str = "주소 형식은 계정마다 고정입니다(BIP44·49·84·86). 다른 지갑에서 복구할 때 같은 형식을 고르세요.";
 /// Help of the add-account chooser.
-const ADD_ACCOUNT_HELP: &str = "주소 형식을 고르세요. 잘 모르면 네이티브 세그윗을 고르세요(수수료가 낮고 대부분의 거래소·지갑이 지원). 탭루트는 수수료가 가장 낮지만 일부 거래소는 보내기를 지원하지 않습니다. 레거시·호환 세그윗은 오래된 서비스와 호환용입니다.";
+const ADD_ACCOUNT_HELP: &str = "잘 모르면 네이티브 세그윗을 고르세요. 탭루트 주소로는 일부 거래소가 보내 주지 않습니다. 레거시·호환 세그윗은 오래된 서비스용입니다.";
 
 /// The fee choices in radio order.
 const FEE_CHOICES: [BtcFeeChoice; 4] = [
@@ -915,15 +915,12 @@ impl App {
     fn btc_activity_items(&self, ctx: &BtcCtx<'_>, items: &mut Vec<Item>) {
         items.push(Item::Badged(
             Badge::bitcoin(ctx.net()),
-            Box::new(Item::Subtitle("활동 (이 지갑이 보낸 거래)".to_owned())),
+            Box::new(Item::Subtitle("보낸 거래".to_owned())),
         ));
         let mut prompt_drawn = false;
         let rows = self.btc.activity_rows(ctx);
         if rows.is_empty() {
-            items.push(Item::Help(format!(
-                "아직 보낸 거래가 없습니다. {}",
-                crate::ui::screens::T_ACTIVITY_RECEIVED
-            )));
+            items.push(Item::Help("아직 보낸 거래가 없습니다.".to_owned()));
         }
         let usable = ctx.gate().is_ok();
         let unlocked = self.btc_unlocked();
@@ -1746,15 +1743,23 @@ impl App {
                 Tone::Info,
             ));
         }
-        // Address and `주소 복사` before the QR (2026-11-08, all chains).
-        items.push(Item::Mono(grouped(&view.address)));
-        let mut row = vec![Ctl::primary(ids::COPY_ADDRESS, "주소 복사")];
+        // The address on its copy line with `새 주소` beside it, then the QR (2026-11-12, all
+        // chains); the account's note follows the QR.
+        let mut actions = Vec::new();
         if !view.fixed {
-            row.push(Ctl::button(ids::NEW_ADDRESS, "새 주소").enabled(ctx.gate().is_ok()));
+            actions.push(
+                Ctl::button(ids::NEW_ADDRESS, "새 주소")
+                    .compact()
+                    .enabled(ctx.gate().is_ok()),
+            );
         }
-        items.push(Item::Row(row));
-        items.push(Item::Help(view.note.clone()));
+        items.push(crate::ui::screens::receive_address_row(
+            &grouped(&view.address),
+            ids::COPY_ADDRESS,
+            actions,
+        ));
         items.push(Item::Qr(view.qr.clone()));
+        items.push(Item::Help(view.note.clone()));
         items.push(Item::Help(view.path.clone()));
         items.push(Item::CardEnd);
     }
@@ -2229,6 +2234,17 @@ mod tests {
         assert!(!has_text(&items, crate::app_btc::T_BTC_FIXED_RECEIVE));
         assert!(has_text(&items, "m/84'/1'/0'/0/3"));
         assert!(control(&items, ids::NEW_ADDRESS).is_some());
+        // The address is one copy line before the QR (2026-11-12), grouped as before, with
+        // `새 주소` on that line.
+        let address = app.btc.receive.as_ref().unwrap().address.clone();
+        assert_eq!(
+            control(&items, ids::COPY_ADDRESS).and_then(|line| line.value_text()),
+            Some(grouped(&address))
+        );
+        let line = items
+            .iter()
+            .position(|item| matches!(item, Item::CopyLine { actions, .. } if actions.len() == 1));
+        assert!(line.is_some() && line < items.iter().position(|item| matches!(item, Item::Qr(_))));
         app.screen = Screen::Main;
         let items = app.items();
         assert_eq!(

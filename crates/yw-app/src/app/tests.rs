@@ -618,10 +618,11 @@ fn idle_lock_pauses_while_an_approval_is_shown() {
 #[test]
 fn backup_discard_mainnet_and_done_texts() {
     let (mut app, dir) = unlocked_app("texts", false);
-    // S10 `내 계정`: imported keys are not covered by the recovery words.
+    // S10 `내 계정`: nothing to say while the recovery words back up every account
+    // (2026-11-12); the reminder comes with an imported key (below).
     app.settings.evm_chain_id = 11_155_111;
     let items = app.items();
-    assert!(has_text(&items, T_ACCOUNTS_BACKUP));
+    assert!(!has_text(&items, T_ACCOUNTS_BACKUP));
     assert!(!has_text(&items, "모든 계정은 같은 복구 단어로 복구됩니다"));
     assert!(!has_text(&items, T_MAINNET), "Sepolia is a testnet");
     // Mainnet badges: Ethereum, HyperEVM, Solana mainnet; none on Solana devnet. Exactly one
@@ -673,6 +674,10 @@ fn backup_discard_mainnet_and_done_texts() {
     }
     app.settings.evm_chain_id = 11_155_111;
     app.screen = Screen::Main;
+    assert!(
+        has_text(&app.items(), T_ACCOUNTS_BACKUP),
+        "imported keys are not covered by the recovery words"
+    );
     app.on_command(ids::REMOVE_KEY);
     assert_eq!(app.screen, Screen::Confirm(Confirm::RemoveKey));
     let items = app.items();
@@ -954,6 +959,15 @@ fn evm_receive_qr_toggles_to_the_plain_address() {
     );
     assert!(has_text(&items, RECEIVE_SHARED_ADDRESS_NOTE));
     assert!(!has_text(&items, "네트워크 정보가 없습니다"));
+    // The address is the copy line (2026-11-12): the grouped form of §3.3, before the QR.
+    assert_eq!(
+        ctl(&items, evm_ids::COPY_ADDRESS).and_then(|line| line.value_text()),
+        Some(yw_core::evm::display::format_address(&address))
+    );
+    let at = |wanted: fn(&Item) -> bool| items.iter().position(wanted);
+    assert!(
+        at(|item| matches!(item, Item::CopyLine { .. })) < at(|item| matches!(item, Item::Qr(_)))
+    );
     app.on_command(evm_ids::QR_PLAIN);
     let items = app.items();
     assert_eq!(app.evm.receive_qr, EvmQrKind::PlainAddress);
@@ -2264,7 +2278,14 @@ fn token_balances_of_another_owner_are_unknown() {
 /// line without its band or actions; on `HyperEVM` (or unfolded) it is whole, band included.
 #[test]
 fn the_hypercore_card_folds_next_to_other_chains() {
+    use crate::received::RecvChain;
     use crate::ui::screens_hypercore::{T_HC_MAINNET, ids as hc};
+    use crate::ui::screens_received::{T_RECEIVED_TOGGLE, T_RECEIVED_TOGGLE_HC, ids as received};
+    // The tab's one `받은 내역도 보기` (2026-11-12): the EVM activity card's.
+    let switch = |items: &[Item]| {
+        assert!(ctl(items, received::toggle(RecvChain::Hc)).is_none());
+        ctl(items, received::toggle(RecvChain::Evm)).map(|check| check.text)
+    };
     let (mut app, dir) = unlocked_app("hc-fold", false);
     app.settings.hypercore.enabled = true;
     app.settings.hypercore.network = yw_core::hypercore::HcNetwork::Mainnet;
@@ -2273,11 +2294,13 @@ fn the_hypercore_card_folds_next_to_other_chains() {
     assert!(!has_text(&items, T_HC_MAINNET));
     assert!(ctl(&items, hc::OPEN_SEND).is_none());
     assert!(ctl(&items, hc::EXPAND).is_some());
+    assert_eq!(switch(&items).as_deref(), Some(T_RECEIVED_TOGGLE));
     app.settings.evm_chain_id = 999;
     let items = app.items();
     assert!(has_text(&items, T_HC_MAINNET));
     assert!(ctl(&items, hc::OPEN_SEND).is_some());
     assert!(ctl(&items, hc::COLLAPSE).is_none(), "always whole here");
+    assert_eq!(switch(&items).as_deref(), Some(T_RECEIVED_TOGGLE_HC));
     app.settings.evm_chain_id = 11_155_111;
     app.on_command(hc::EXPAND);
     let items = app.items();
@@ -2326,11 +2349,17 @@ fn walletconnect_panel_asks_for_the_project_id_first() {
 
 /// Review 2026-11-07 (10-31 D3): a wallet's only account is not listed a second time with the
 /// same address and balance under `내 계정`; with two accounts the drop-down (2026-11-11) names
-/// them and opens to list both, the address staying the hero card's.
+/// them and opens to list both, the address staying the hero card's. 2026-11-12: the path too
+/// is the hero card's only, and the words' first account has no `숨기기` (it cannot be hidden).
 #[test]
 fn single_account_row_does_not_repeat_the_hero_card() {
-    use crate::ui::screens::T_SINGLE_ACCOUNT;
     let (mut app, dir) = unlocked_app("single-account", false);
+    let paths = |items: &[Item]| {
+        texts(items)
+            .iter()
+            .filter(|text| text.contains("m/44'"))
+            .count()
+    };
     // How often an account address is drawn (token contracts are other lines): a grouped
     // `Mono`, the account card's own-address copy line (2026-11-11).
     let shown = |items: &[Item], address: &str| {
@@ -2347,11 +2376,15 @@ fn single_account_row_does_not_repeat_the_hero_card() {
     };
     let evm = "0x9858effd232b4033e47d90003d41ec34ecaeda94";
     let sol = yw_core::sol::SolAddress::from_bytes([7; 32]).to_base58();
-    for (tab, address) in [(Tab::Evm, evm), (Tab::Sol, sol.as_str())] {
+    for (tab, address, hide) in [
+        (Tab::Evm, evm, ids::HIDE),
+        (Tab::Sol, sol.as_str(), crate::ui::screens_sol::ids::HIDE),
+    ] {
         app.meta.as_mut().unwrap().prefs.tab = tab;
         let items = app.items();
-        assert!(has_text(&items, T_SINGLE_ACCOUNT), "{tab:?}");
         assert_eq!(shown(&items, address), 1, "{tab:?}: the hero card's only");
+        assert_eq!(paths(&items), 1, "{tab:?}: the hero card's only");
+        assert!(ctl(&items, hide).is_none(), "{tab:?}");
     }
     app.meta.as_mut().unwrap().prefs.tab = Tab::Evm;
     app.meta
@@ -2365,8 +2398,8 @@ fn single_account_row_does_not_repeat_the_hero_card() {
             hidden: false,
         });
     let items = app.items();
-    assert!(!has_text(&items, T_SINGLE_ACCOUNT));
     assert_eq!(shown(&items, evm), 1, "the hero card's only");
+    assert_eq!(paths(&items), 1, "the hero card's only");
     let picker = crate::ui::screens_links::ids::PICKER_EVM;
     let button = controls(&items)
         .into_iter()
@@ -2484,6 +2517,51 @@ fn enter_presses_the_focused_button_or_the_form_primary() {
         super::enter_primary(crate::ui::screens_reset::ids::RESET_PHRASE),
         None
     );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// 2026-11-12: a failed balance read is said once — the network card's band (short name and
+/// code, `RPC 테스트`·`RPC 설정`); the status line does not repeat the code, and the earlier
+/// balance stays, dimmed, with where it is from instead of "잔액을 읽지 못했습니다".
+#[test]
+fn rpc_failure_is_said_once() {
+    use crate::errors::ErrorCode;
+    use crate::network::NetworkId;
+    use crate::ui::screens::T_BALANCE_FAILED;
+    let (mut app, dir) = unlocked_app("rpc-once", false);
+    let chain = app.settings.evm_chain_id;
+    let url = yw_win::http::HttpsUrl::parse("https://rpc.example.test/").unwrap();
+    app.apikeys.set_rpc(NetworkId::Eip155(chain), &url);
+    let address = parse_address("0x9858effd232b4033e47d90003d41ec34ecaeda94").unwrap();
+    app.evm.balances.insert(
+        chain,
+        BalanceState {
+            snapshot: Some(BalanceSnapshot {
+                block: 7,
+                native: vec![(address, U256::from_u64(5))],
+                tokens: Vec::new(),
+                token_owner: address,
+            }),
+            error: Some(ErrorCode::Rpc003),
+            ..BalanceState::default()
+        },
+    );
+    let items = app.items();
+    let said: Vec<String> = texts(&items)
+        .into_iter()
+        .filter(|text| text.contains("E-RPC-003") || text.contains("인증 거부"))
+        .collect();
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].starts_with("RPC 인증 거부 (E-RPC-003)"), "{said:?}");
+    assert!(
+        items
+            .iter()
+            .any(|item| matches!(item, Item::DisplayMuted(_)))
+    );
+    assert!(has_text(&items, "블록 7 기준 · 갱신 실패"));
+    assert!(!has_text(&items, T_BALANCE_FAILED));
+    assert_eq!(ctl(&items, ids::EVM_RPC_TEST).unwrap().text, "RPC 테스트");
+    assert_eq!(ctl(&items, ids::EVM_RPC_ROW).unwrap().text, "RPC 설정");
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -2826,8 +2904,10 @@ fn evm_token_rows_hide_unhide_and_zero_balance() {
         shown_tokens(&items).contains(&"GOOD (사용자 추가)".to_owned()),
         "an unread balance never hides a row"
     );
-    assert!(has_text(&items, "잔액이 0인 토큰 1개를 감췄습니다"));
-    assert_eq!(ctl(&items, TOKEN_HIDE_ZERO).unwrap().checked, Some(true));
+    // The count is on the check box itself (2026-11-12; a help line under it before).
+    let zero = ctl(&items, TOKEN_HIDE_ZERO).unwrap();
+    assert_eq!(zero.text, "잔액 0 숨기기 (1개)");
+    assert_eq!(zero.checked, Some(true));
     // An explicit hide wins over the zero rule (still listed under the hidden tokens).
     assert_eq!(app.evm_token_rows(chain)[scam].place, RowPlace::Hidden);
 
