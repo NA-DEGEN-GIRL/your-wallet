@@ -36,7 +36,7 @@ test("PO1 popup text: the three mode labels, the warning and the next-load note"
   assert.equal(popup.modeOption("metamask").explanation, "MetaMask만 지원하는 dApp에서 쓰며, 승인 창은 그대로 Your Wallet 앱에 뜹니다.");
   assert.equal(popup.modeOption("rabby").explanation, "Rabby만 지원하는 dApp에서 쓰며, 승인 창은 그대로 Your Wallet 앱에 뜹니다.");
   assert.equal(popup.TEXT.warning, "호환 모드를 쓸 때는 실제 MetaMask·Rabby 확장을 꺼 두세요. 켜져 있으면 dApp이 그 지갑에 연결될 수 있습니다.");
-  assert.equal(popup.TEXT.applyNote, "모드 변경은 다음 페이지 로드부터 적용됩니다. 열려 있는 dApp 탭은 새로고침하세요.");
+  assert.equal(popup.TEXT.applyNote, "모드 변경은 다음 페이지 로드부터 적용됩니다(열린 dApp 탭은 새로고침).");
   assert.match(popup.TEXT.saved, /다음 페이지 로드부터 적용/u);
   assert.equal(popup.TEXT.statusHeading, "Your Wallet 앱 연결 상태");
   // Plain Korean: no internal binary names in user-facing text.
@@ -86,7 +86,13 @@ test("PO1 popup status: observed states map to Korean text; anything else is 확
 
 test("PO2 popup page: local module script only, no inline code, every id popup.js uses exists", () => {
   assert.match(POPUP_HTML, /<html lang="ko">/u);
-  assert.deepEqual([...POPUP_HTML.matchAll(/<script\b[^>]*>/gu)].map((match) => match[0]), ['<script type="module" src="../src/popup.js">']);
+  // shared.js and popup-core.js are listed too so all three load in parallel (2026-11-11); popup.js
+  // still imports them (one module instance each).
+  assert.deepEqual([...POPUP_HTML.matchAll(/<script\b[^>]*>/gu)].map((match) => match[0]), [
+    '<script type="module" src="../src/shared.js">',
+    '<script type="module" src="../src/popup-core.js">',
+    '<script type="module" src="../src/popup.js">'
+  ]);
   assert.match(POPUP_HTML, /<script type="module" src="\.\.\/src\/popup\.js"><\/script>/u);
   assert.doesNotMatch(POPUP_HTML, /\son[a-z]+=|style=|<style|https?:|javascript:/iu);
   assert.doesNotMatch(POPUP_CSS, /url\(|@import|https?:/iu);

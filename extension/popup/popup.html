@@ -18,6 +18,7 @@
     <section class="card" aria-labelledby="mode-heading">
       <h2 id="mode-heading" class="card-title"></h2>
       <div id="modes" class="modes" role="radiogroup" aria-labelledby="mode-heading"></div>
+      <p id="mode-explain" class="caption"></p>
       <p id="mode-saved" class="caption" role="status"></p>
       <p id="apply-note" class="caption"></p>
       <p id="warning" class="notice-warning"></p>
@@ -27,16 +28,20 @@
     <section class="card" aria-labelledby="sol-heading">
       <h2 id="sol-heading" class="card-title"></h2>
       <div id="sol-modes" class="modes" role="radiogroup" aria-labelledby="sol-heading"></div>
+      <p id="sol-explain" class="caption"></p>
       <p id="sol-saved" class="caption" role="status"></p>
       <p id="sol-warning" class="notice-warning"></p>
     </section>
     <section class="card" aria-labelledby="btc-heading">
       <h2 id="btc-heading" class="card-title"></h2>
       <div id="btc-modes" class="modes" role="radiogroup" aria-labelledby="btc-heading"></div>
+      <p id="btc-explain" class="caption"></p>
       <p id="btc-saved" class="caption" role="status"></p>
       <p id="btc-warning" class="notice-warning"></p>
     </section>
   </main>
+  <script type="module" src="../src/shared.js"></script>
+  <script type="module" src="../src/popup-core.js"></script>
   <script type="module" src="../src/popup.js"></script>
 </body>
 </html>

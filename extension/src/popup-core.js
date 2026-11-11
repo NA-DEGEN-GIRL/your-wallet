@@ -70,7 +70,7 @@
     metamaskConnectNote: "Uniswap처럼 MetaMask Connect로 MetaMask 확장과 직접 통신하는 dApp에서는 이 모드로 연결되지 않습니다. 그런 dApp에서는 기본이나 Rabby처럼 보이기를 쓰세요.",
     modeHeading: "EVM (이더리움 등) dApp에 보이는 지갑",
     warning: "호환 모드를 쓸 때는 실제 MetaMask·Rabby 확장을 꺼 두세요. 켜져 있으면 dApp이 그 지갑에 연결될 수 있습니다.",
-    applyNote: "모드 변경은 다음 페이지 로드부터 적용됩니다. 열려 있는 dApp 탭은 새로고침하세요.",
+    applyNote: "모드 변경은 다음 페이지 로드부터 적용됩니다(열린 dApp 탭은 새로고침).",
     saved: "저장했습니다. 다음 페이지 로드부터 적용됩니다.",
     saveFailed: "저장하지 못했습니다. 팝업을 닫았다가 다시 열어 보세요.",
     loadFailed: "저장된 모드를 읽지 못해 기본 모드로 표시합니다.",
@@ -78,7 +78,7 @@
     btcHeading: "Bitcoin dApp에 보이는 지갑",
     solWarning: "Phantom처럼 보이기를 쓸 때는 실제 Phantom 확장을 꺼 두세요. Solana 지갑 목록(Wallet Standard)에서는 실제 Phantom을 숨길 수 없어 두 지갑이 함께 보일 수 있습니다.",
     btcWarning: "UniSat·Xverse처럼 보이기를 쓸 때는 실제 UniSat·Xverse 확장을 꺼 두세요. 켜져 있으면 dApp이 그 지갑에 연결될 수 있습니다.",
-    chainNote: "이 지갑은 Solana·Bitcoin에서 연결과 메시지 서명(소유 증명)만 지원합니다. 거래 서명과 전송은 할 수 없습니다."
+    chainNote: "Solana·Bitcoin은 연결과 메시지 서명(소유 증명)만 됩니다. 거래 서명·전송은 없습니다."
   });
 
   const GROUPS = Object.freeze({
@@ -98,7 +98,7 @@
     connected: Object.freeze({ text: "연결됨", tone: "ok", detail: "Your Wallet 앱이 마지막 요청에 응답했습니다." }),
     checking: Object.freeze({ text: "확인 중", tone: "neutral", detail: "Your Wallet 앱에 연결해 응답을 기다리는 중입니다." }),
     unavailable: Object.freeze({ text: "연결 안 됨", tone: "bad", detail: "Your Wallet 앱에 연결하지 못했습니다. 앱이 실행 중인지, native host가 등록되어 있는지 확인하세요." }),
-    unknown: Object.freeze({ text: "확인 불가", tone: "neutral", detail: "아직 이 Chrome에서 Your Wallet 앱과 주고받은 요청이 없습니다(설치 직후에는 정상). dApp 사이트에서 “지갑 연결”을 누르면 연결되고 여기에 연결됨이 보입니다. 설치 전에 열어 둔 탭은 새로고침하세요." })
+    unknown: Object.freeze({ text: "확인 불가", tone: "neutral", detail: "아직 dApp 요청이 없었습니다(설치 직후 정상). 사이트에서 “지갑 연결”을 누르면 연결됨으로 바뀝니다. 설치 전에 연 탭은 새로고침하세요." })
   });
 
   function modeOption(mode) {

@@ -117,13 +117,17 @@ function renderModes(selected, kind = "evm", containerId = "modes") {
 // Per group: where its cards and "saved" line go and which look-alike warning it has. The
 // warning matters only while that group's look-alike mode is on, so it is hidden for "off".
 const GROUP_IDS = Object.freeze({
-  evm: Object.freeze({ modes: "modes", saved: "mode-saved", warning: "warning" }),
-  sol: Object.freeze({ modes: "sol-modes", saved: "sol-saved", warning: "sol-warning" }),
-  btc: Object.freeze({ modes: "btc-modes", saved: "btc-saved", warning: "btc-warning" })
+  evm: Object.freeze({ modes: "modes", saved: "mode-saved", warning: "warning", explain: "mode-explain" }),
+  sol: Object.freeze({ modes: "sol-modes", saved: "sol-saved", warning: "sol-warning", explain: "sol-explain" }),
+  btc: Object.freeze({ modes: "btc-modes", saved: "btc-saved", warning: "btc-warning", explain: "btc-explain" })
 });
 const KINDS = Object.freeze(["evm", "sol", "btc"]);
 
+// The modes sit side by side (2026-11-11, a short popup); the chosen one's sentence is shown once
+// under them instead of on every card.
 function showWarning(kind, mode) {
+  const option = popup.GROUPS[kind].options.find((candidate) => candidate.value === mode);
+  byId(GROUP_IDS[kind].explain).textContent = option?.explanation ?? "";
   byId(GROUP_IDS[kind].warning).hidden = !popup.warningShown(mode);
   if (kind === "evm") {
     byId("metamask-note").hidden = !popup.metamaskNoteShown(mode);
