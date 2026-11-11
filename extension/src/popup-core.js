@@ -15,8 +15,8 @@
   const MODE_OPTIONS = Object.freeze([
     Object.freeze({
       value: "off",
-      label: "기본 (Your Wallet)",
-      explanation: "Your Wallet 이름 그대로 보이며, 다른 지갑 확장은 건드리지 않습니다."
+      label: "기본 (Your Wallet EVM)",
+      explanation: "dApp에 Your Wallet (EVM) 이름으로 보이며, 다른 지갑 확장은 건드리지 않습니다."
     }),
     Object.freeze({
       value: "metamask",
@@ -34,7 +34,7 @@
   const SOL_MODE_OPTIONS = Object.freeze([
     Object.freeze({
       value: "off",
-      label: "기본 (Your Wallet)",
+      label: "기본 (Your Wallet Solana)",
       explanation: "Solana dApp의 지갑 목록에 Your Wallet (Solana) 이름으로 보입니다."
     }),
     Object.freeze({

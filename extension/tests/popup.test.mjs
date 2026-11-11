@@ -21,7 +21,7 @@ const settle = async (turns = 4) => {
 
 test("PO1 popup text: the three mode labels, the warning and the next-load note", () => {
   assert.deepEqual(popup.MODE_OPTIONS.map((option) => [option.value, option.label]), [
-    ["off", "기본 (Your Wallet)"],
+    ["off", "기본 (Your Wallet EVM)"],
     ["metamask", "MetaMask처럼 보이기"],
     ["rabby", "Rabby처럼 보이기"]
   ]);
@@ -32,7 +32,7 @@ test("PO1 popup text: the three mode labels, the warning and the next-load note"
     assert.ok(option.explanation.length > 10 && option.explanation.length < 80, option.value);
     assert.doesNotMatch(option.explanation, /\n/u);
   }
-  assert.equal(popup.modeOption("off").explanation, "Your Wallet 이름 그대로 보이며, 다른 지갑 확장은 건드리지 않습니다.");
+  assert.equal(popup.modeOption("off").explanation, "dApp에 Your Wallet (EVM) 이름으로 보이며, 다른 지갑 확장은 건드리지 않습니다.");
   assert.equal(popup.modeOption("metamask").explanation, "MetaMask만 지원하는 dApp에서 쓰며, 승인 창은 그대로 Your Wallet 앱에 뜹니다.");
   assert.equal(popup.modeOption("rabby").explanation, "Rabby만 지원하는 dApp에서 쓰며, 승인 창은 그대로 Your Wallet 앱에 뜹니다.");
   assert.equal(popup.TEXT.warning, "호환 모드를 쓸 때는 실제 MetaMask·Rabby 확장을 꺼 두세요. 켜져 있으면 dApp이 그 지갑에 연결될 수 있습니다.");
@@ -199,7 +199,7 @@ test("PO3 popup.js: shows the stored mode, saves a new one to chrome.storage.loc
       ["mode-label", option.label],
       ["mode-explanation", option.explanation]
     ]));
-    assert.deepEqual(cards.map((card) => card.children[1].children[0].textContent), ["기본 (Your Wallet)", "MetaMask처럼 보이기", "Rabby처럼 보이기"]);
+    assert.deepEqual(cards.map((card) => card.children[1].children[0].textContent), ["기본 (Your Wallet EVM)", "MetaMask처럼 보이기", "Rabby처럼 보이기"]);
     const inputs = cards.map((card) => card.children[0]);
     assert.deepEqual(inputs.map((input) => [input.type, input.name, input.value, input.checked]), [
       ["radio", "compat-mode", "off", false],

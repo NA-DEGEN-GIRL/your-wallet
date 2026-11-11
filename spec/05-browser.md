@@ -473,6 +473,7 @@ Wallet Standard에는 숨기기가 없다: 실제 Phantom이 켜져 있으면 `P
 ---
 
 ## 3. 메서드 허용 목록
+- **기본 모드 이름에 체인 표시**(2026-11-11, 사용자 요청): 기본 모드의 EIP-6963 이름은 `Your Wallet (EVM)`, Wallet Standard 이름은 `Your Wallet (Solana)`다 — EVM·Solana를 함께 지원하는 dApp 목록에서 어느 쪽인지 바로 보인다. rdns·아이콘은 그대로. 팝업의 기본 모드 이름은 "기본 (Your Wallet EVM)"·"기본 (Your Wallet Solana)".
 ### 3.1 허용 메서드 (37개 = 아래 27개 + §3.6의 Solana·Bitcoin 10개, 정본: JS `shared.js METHOD_ROUTE`, Rust `yw_core::policy::Method`)
 `route`는 봉투 v1의 `"permission" | "read" | "signing"`이다. `permission`은 RPC 없이 yw-app이 답하는 메서드를 뜻한다.
 

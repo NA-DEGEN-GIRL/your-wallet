@@ -257,7 +257,7 @@ test("E2 a failing storage read means off: Your Wallet identity and no compatMod
     await settle();
     const announced = doc.main.dispatched.filter((event) => event.type === "eip6963:announceProvider");
     assert.equal(announced.length, 1);
-    assert.equal(announced[0].detail.info.name, "Your Wallet");
+    assert.equal(announced[0].detail.info.name, "Your Wallet (EVM)");
     const ethereum = doc.main.context.ethereum;
     assert.equal(ethereum.isMetaMask, false);
     void ethereum.request(vm.runInContext(`({ method: "eth_chainId" })`, doc.main.context));

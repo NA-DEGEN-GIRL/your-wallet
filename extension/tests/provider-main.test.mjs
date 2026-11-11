@@ -231,7 +231,7 @@ test("P1 announces one frozen EIP-6963 detail with the io.github rdns, page UUID
   assert.deepEqual(Object.keys(announcement.detail).sort(), ["info", "provider"]);
   assert.deepEqual(Object.keys(announcement.detail.info).sort(), ["icon", "name", "rdns", "uuid"]);
   assert.match(announcement.detail.info.uuid, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u);
-  assert.equal(announcement.detail.info.name, "Your Wallet");
+  assert.equal(announcement.detail.info.name, "Your Wallet (EVM)");
   assert.equal(announcement.detail.info.rdns, OUR_RDNS);
   assert.match(announcement.detail.info.icon, /^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/u);
   const png = Buffer.from(announcement.detail.info.icon.split(",")[1], "base64");
@@ -651,7 +651,7 @@ test("P7 mode delivery: bridge-init must carry a valid compatMode; the first one
 
 test("P8 identity flags and EIP-6963 info per mode (getters read the current mode)", () => {
   const expected = {
-    off: { isMetaMask: false, isRabby: false, name: "Your Wallet", rdns: OUR_RDNS, metamask: false },
+    off: { isMetaMask: false, isRabby: false, name: "Your Wallet (EVM)", rdns: OUR_RDNS, metamask: false },
     metamask: { isMetaMask: true, isRabby: false, name: "MetaMask", rdns: "io.metamask", metamask: true },
     rabby: { isMetaMask: true, isRabby: true, name: "Rabby Wallet", rdns: "io.rabby", metamask: true }
   };
@@ -671,7 +671,7 @@ test("P8 identity flags and EIP-6963 info per mode (getters read the current mod
       assert.equal(Object.isFrozen(provider._metamask), true, mode);
       assert.equal("requestBatch" in provider._metamask, false, mode);
     }
-    // Exactly one identity: the compat identity replaces "Your Wallet" (no duplicate entries).
+    // Exactly one identity: the compat identity replaces "Your Wallet (EVM)" (no duplicate entries).
     page.context.dispatchEvent(new TestEvent(REQUEST_EVENT));
     const events = announcements(page);
     assert.equal(events.length, 2, mode);
@@ -1171,11 +1171,11 @@ test("P13 Wallet Standard: 'Your Wallet (Solana)' in off mode, app-ready answere
   const [wallet] = registeredWallets(page);
   assert.equal(early.length, 1);
   assert.equal(early[0], wallet);
-  // Not the EVM announcement's "Your Wallet": dApps that merge wallets by name (Uniswap lower-cases
+  // Not the EVM announcement's "Your Wallet (EVM)": dApps that merge wallets by name (Uniswap lower-cases
   // and drops a trailing " wallet") must not fold the two into one EVM+Solana entry.
   assert.equal(wallet.name, "Your Wallet (Solana)");
   const mergeKey = (name) => name.toLowerCase().replace(/ wallet$/u, "");
-  assert.equal(announcements(page)[0].detail.info.name, "Your Wallet");
+  assert.equal(announcements(page)[0].detail.info.name, "Your Wallet (EVM)");
   assert.notEqual(mergeKey(wallet.name), mergeKey(announcements(page)[0].detail.info.name));
   assert.equal(wallet.version, "1.0.0");
   assert.match(wallet.icon, /^data:image\/png;base64,/u);

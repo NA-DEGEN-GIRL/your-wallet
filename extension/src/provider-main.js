@@ -20,7 +20,7 @@
   const PROVIDER_RDNS = "io.github.na-degen-girl.yourwallet";
   // spec/05 §2.12. Names and rdns only; the icon is always ours (no third-party logos).
   const IDENTITIES = Object.freeze({
-    off: Object.freeze({ name: "Your Wallet", rdns: PROVIDER_RDNS }),
+    off: Object.freeze({ name: "Your Wallet (EVM)", rdns: PROVIDER_RDNS }),
     metamask: Object.freeze({ name: "MetaMask", rdns: "io.metamask" }),
     rabby: Object.freeze({ name: "Rabby Wallet", rdns: "io.rabby" })
   });
@@ -95,8 +95,8 @@
   const BTC_TX_UNSUPPORTED = "이 지갑은 Bitcoin에서 메시지 서명(소유 증명)만 지원합니다";
   const BTC_NETWORK_FIXED = "Bitcoin 네트워크는 Your Wallet 앱 설정에서만 바꿀 수 있습니다";
   const SOL_MODES = new Set(["off", "phantom"]);
-  // spec/05 §2.13 (2026-11-11): the default-mode Wallet Standard name differs from the EVM
-  // "Your Wallet" announcement. Multi-chain dApps merge wallets of the same name into one entry
+  // spec/05 §2.13 (2026-11-11): the default-mode names say which chain they are — the EIP-6963
+  // announcement is "Your Wallet (EVM)" and the Wallet Standard wallet "Your Wallet (Solana)". Multi-chain dApps merge wallets of the same name into one entry
   // (Uniswap: lower-cased, a trailing " wallet" dropped, then EVM connect followed by a Solana
   // connect), so a shared name turned "Your Wallet" into a Solana connection as well.
   const SOL_WALLET_NAME = "Your Wallet (Solana)";
