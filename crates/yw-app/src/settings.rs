@@ -421,6 +421,10 @@ pub struct Settings {
     pub walletconnect_project: String,
     /// Log level.
     pub log_level: LogLevel,
+    /// Block explorer overrides (2026-11-11, spec/04 §2.11 "블록 탐색기"): the top-level key
+    /// [`crate::explorer::EXPLORERS_KEY`], written only when there is one. Defaults are not
+    /// stored (`crate::explorer::builtin_defaults`; a user chain's `explorer` is its default).
+    pub explorers: Vec<crate::explorer::ExplorerOverride>,
     /// Format compatibility (unknown keys, read-only newer file; spec/04 §6.6).
     pub compat: SettingsCompat,
 }
@@ -495,6 +499,7 @@ impl Default for Settings {
             hypercore: HyperCoreSettings::default(),
             walletconnect_project: String::new(),
             log_level: LogLevel::Info,
+            explorers: Vec::new(),
             compat: SettingsCompat::default(),
         }
     }
@@ -1006,6 +1011,18 @@ pub fn load(bytes: Option<&[u8]>) -> SettingsLoad {
         }
     }
     settings.llm_explain.reasoning_effort = reasoning_effort;
+    // ----- block explorers (2026-11-11, spec/04 §2.11 "블록 탐색기") -----
+    // Taken out of the kept unknown keys (the loop above files every key it does not name there),
+    // so this block stays apart from the per-key match.
+    if let Some(position) = settings
+        .compat
+        .unknown
+        .iter()
+        .position(|(key, _)| key == crate::explorer::EXPLORERS_KEY)
+    {
+        let (_, value) = settings.compat.unknown.remove(position);
+        settings.explorers = crate::explorer::load_overrides(&value, &mut banners);
+    }
     SettingsLoad { settings, banners }
 }
 
@@ -1241,6 +1258,13 @@ impl Settings {
         }
         if let Some(effort) = self.llm_explain.reasoning_effort {
             members.push((LLM_EFFORT_KEY, json_str(effort.as_str())));
+        }
+        // ----- block explorers (2026-11-11): only while the user has an override -----
+        if !self.explorers.is_empty() {
+            members.push((
+                crate::explorer::EXPLORERS_KEY,
+                crate::explorer::overrides_json(&self.explorers),
+            ));
         }
         members
     }

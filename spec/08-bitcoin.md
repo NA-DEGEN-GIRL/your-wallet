@@ -724,6 +724,8 @@ pub fn verify_signed(raw: &[u8], plan: &SendPlan, account: &BtcAccountKey)
 4. 표시: `확인 대기` / `확정`(확인 1 이상). 확인 수는 서버 기준이라고 함께 적는다("(서버 기준)"). 확인 1이면 추적을 멈춘다(끝난 항목, §12.4). 그 밖의 상태는 고정 문구로 보인다: `Signed` "서명됨(전송 전)", `Broadcasting` "전송 중", `BroadcastUnknown` "전송 결과 확인 필요", `Rejected` "거부됨", `Replaced` "교체됨", `Conflicted` "충돌(다른 거래가 확정됨)", `Abandoned` "포기함".
 5. `Confirmed`가 되면 우리 잔돈 출력을 `verified`에 `(outpoint, value, chain, index, height)`로 넣고, 같은 meta 쓰기에서 그 거래의 입력을 그 네트워크 모든 계정의 `verified`·`frozen`에서 지운다(`BtcMeta::forget_spent`: 확인 1 = 최종, D32. 그러지 않으면 다음 새로고침까지 — UTXO가 많아 건너뛰는 주소면 영원히 — 잔액이 쓰인 출력을 세고 보내기가 그것을 고른다). 원본이 로컬에 있으므로 다시 받지 않는다. 단, 출력 스크립트가 현재 세션의 계정으로 파생한 잔돈 스크립트와 같을 때만 넣는다(다른 패스프레이즈 세션이 같은 저널을 볼 때 등): 후보는 `BtcAccountKey::change_candidates` — 현재 모드의 경로(HD 모드 `(1, index)`, 고정 주소 `(0, 0)`)를 먼저, HD 계정이면 다른 모드의 경로도(모드를 바꾸기 전에 쓴 레코드) — 이고 스크립트가 맞는 경로로 넣는다.
 
+**탐색기 링크(2026-11-11, [04] §2.6·§2.11 "블록 탐색기").** 활동 행과 보내기·수수료 올리기 결과 화면의 `해시 복사` 옆에 `탐색기에서 열기`·`탐색기 링크 복사`(txid 표시 순서 hex 64자), 선택 계정 카드의 주소 줄에 `탐색기에서 주소 보기`. 기본은 mempool.space(`https://mempool.space/tx/{hash}`·`/address/{address}`, testnet4는 `https://mempool.space/testnet4/…`)이고 사용자가 바꿀 수 있다. 앱은 그 페이지를 읽지 않으며 상태 판정(위 1–5)은 그대로 RPC·인덱서만 쓴다.
+
 ### 12.3 `BtcMeta` (meta.ywm 키 `btc`, [02] §5.3)
 
 meta JSON의 `btc`는 `BtcMeta` 객체 또는 `null`(BTC 데이터 없음)이다. 인코딩: 바이트 배열은 소문자 hex, u64 sats는 10진 문자열([02] §5.3), u8–u32는 JSON 정수, `Option`은 `null`, outpoint는 `"<txid hex(표시 순서)>:<vout 10진>"`. 알 수 없는 키·형식·상한 위반은 [02] §5.3 meta 검증 실패와 같게 처리한다.

@@ -978,6 +978,16 @@ impl App {
                 ));
             }
             let mut buttons = vec![Ctl::button(base, "해시 복사")];
+            // 2026-11-11: `탐색기에서 열기`·`탐색기 링크 복사` (ids of `ui::screens_explorer`).
+            buttons.extend(self.explorer_tx_buttons(
+                crate::network::NetworkId::Bitcoin(self.settings.bitcoin.network),
+                &row.txid,
+                crate::ui::screens_explorer::ids::activity_ids(
+                    crate::ui::screens_explorer::ids::BTC_ACTIVITY_BASE,
+                    crate::ui::screens_explorer::ids::BTC_ACTIVITY_SPAN,
+                    index,
+                ),
+            ));
             if row.can_bump {
                 buttons.push(
                     Ctl::button(base.saturating_add(ids::ACT_BUMP), "수수료 올리기")
@@ -1170,6 +1180,11 @@ impl App {
                 crate::ui::theme::AddressKind::Bitcoin,
                 ids::CARD_COPY,
                 true,
+                self.explorer_address_link(
+                    crate::network::NetworkId::Bitcoin(self.settings.bitcoin.network),
+                    &address,
+                    crate::ui::screens_explorer::ids::CARD_BTC,
+                ),
             ));
         } else if usable && ctx.btc_meta().is_some() {
             // HD mode with every issued address used: `받기` issues the next one.
@@ -1623,6 +1638,16 @@ impl App {
             ));
         }
         let mut row = vec![Ctl::button(ids::RESULT_COPY, "해시 복사")];
+        // 2026-11-11: the txid on the network's explorer (also before the broadcast is known:
+        // the page then says it does not know the transaction yet).
+        row.extend(self.explorer_tx_buttons(
+            crate::network::NetworkId::Bitcoin(self.settings.bitcoin.network),
+            &txid.to_display_hex(),
+            Some((
+                crate::ui::screens_explorer::ids::RESULT_BTC_OPEN,
+                crate::ui::screens_explorer::ids::RESULT_BTC_COPY,
+            )),
+        ));
         let signed = record
             .as_ref()
             .is_some_and(|record| record.state == yw_core::journal::btc::BtcTxState::Signed);

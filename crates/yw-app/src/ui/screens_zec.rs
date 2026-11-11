@@ -564,11 +564,17 @@ impl App {
                 }));
                 // Not while a hardware account's key is missing or unchecked (like 받기).
                 if address_ok {
+                    let address = account.address();
                     items.push(crate::ui::screens::own_address_row(
-                        &account.address(),
+                        &address,
                         crate::ui::theme::AddressKind::Zcash,
                         ids::CARD_COPY,
                         !self.passphrase_unverified(),
+                        self.explorer_address_link(
+                            crate::network::NetworkId::Zcash(network),
+                            &address,
+                            crate::ui::screens_explorer::ids::CARD_ZEC,
+                        ),
                     ));
                 }
             }
@@ -779,8 +785,17 @@ impl App {
         }
         self.journal_send_items(crate::app_sidecar::SendChain::Zec, items);
         let mut row = vec![Ctl::primary(ids::SEND_REVIEW, "검토").enabled(can_send)];
-        if self.zec.sent.is_some() {
+        if let Some(txid) = &self.zec.sent {
             row.push(Ctl::button(ids::RESULT_COPY, "해시 복사"));
+            // 2026-11-11: the accepted txid on the network's explorer.
+            row.extend(self.explorer_tx_buttons(
+                crate::network::NetworkId::Zcash(network),
+                &yw_core::zec::tx::txid_display(txid),
+                Some((
+                    crate::ui::screens_explorer::ids::RESULT_ZEC_OPEN,
+                    crate::ui::screens_explorer::ids::RESULT_ZEC_COPY,
+                )),
+            ));
         }
         items.push(Item::Row(row));
         items.push(Item::CardEnd);
@@ -827,13 +842,26 @@ impl App {
                 None => items.push(Item::Help("받는 주소 -".to_owned())),
             }
             items.push(Item::Help(format!("수수료 {} ZEC", format_zec(record.fee))));
-            items.push(Item::Mono(record.txid_hex()));
-            if let Some(id) = u16::try_from(row)
+            let txid = record.txid_hex();
+            items.push(Item::Mono(txid.clone()));
+            let mut buttons: Vec<Ctl> = u16::try_from(row)
                 .ok()
                 .filter(|row| *row < ids::ACTIVITY_COPY_SPAN)
-                .map(|row| ids::ACTIVITY_COPY_BASE.saturating_add(row))
-            {
-                items.push(Item::Row(vec![Ctl::button(id, "해시 복사")]));
+                .map(|row| Ctl::button(ids::ACTIVITY_COPY_BASE.saturating_add(row), "해시 복사"))
+                .into_iter()
+                .collect();
+            // 2026-11-11: `탐색기에서 열기`·`탐색기 링크 복사` (ids of `ui::screens_explorer`).
+            buttons.extend(self.explorer_tx_buttons(
+                crate::network::NetworkId::Zcash(network),
+                &txid,
+                crate::ui::screens_explorer::ids::activity_ids(
+                    crate::ui::screens_explorer::ids::ZEC_ACTIVITY_BASE,
+                    crate::ui::screens_explorer::ids::ZEC_ACTIVITY_SPAN,
+                    row,
+                ),
+            ));
+            if !buttons.is_empty() {
+                items.push(Item::Row(buttons));
             }
         }
         if let Some(snapshot) = snapshot {

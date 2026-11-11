@@ -472,13 +472,22 @@ pub const RECEIVE_IDS: [u16; 8] = [
 /// The account cards' address line (2026-11-11, spec/04 §2.6): the user's own address without
 /// spaces, the 4 characters after its prefix and the last 4 emphasized
 /// (`ui::theme::own_address_spans`), and a small `주소 복사` (`copy`, off when `enabled` is
-/// not) at the end of the line. Only for the user's own account: recipient checks keep the
-/// grouped form of §3.3.
+/// not) at the end of the line, then `explorer` — the small `탐색기에서 주소 보기`
+/// (`App::explorer_address_link`) when the network has an address page. Only for the user's own
+/// account: recipient checks keep the grouped form of §3.3.
 #[must_use]
-pub fn own_address_row(address: &str, kind: AddressKind, copy: u16, enabled: bool) -> Item {
+pub fn own_address_row(
+    address: &str,
+    kind: AddressKind,
+    copy: u16,
+    enabled: bool,
+    explorer: Option<Ctl>,
+) -> Item {
+    let mut controls = vec![Ctl::button(copy, "주소 복사").compact().enabled(enabled)];
+    controls.extend(explorer);
     Item::AddressRow(
         crate::ui::theme::own_address_spans(address, kind, false),
-        vec![Ctl::button(copy, "주소 복사").compact().enabled(enabled)],
+        controls,
     )
 }
 
@@ -842,7 +851,7 @@ pub const fn settings_map(section: SettingsSection) -> &'static str {
             "이 구역: 자동 잠금 · 백업 현황 · 첫 복구 단어·개인키 보기와 복사 허용 · 비밀번호 변경 · 지갑 파일 상태 · 지갑 초기화. 복구 단어별 보기·백업 확인은 '복구 단어' 탭에 있습니다."
         }
         SettingsSection::Network => {
-            "이 구역: RPC 공급자(QuickNode·알케미) · 네트워크별 RPC 주소(EVM·Solana·Bitcoin·Zcash) · rpc.json 가져오기(개발용, 파일이 있을 때 맨 아래)"
+            "이 구역: RPC 공급자(QuickNode·알케미) · 네트워크별 RPC 주소(EVM·Solana·Bitcoin·Zcash) · 블록 탐색기(네트워크별 링크 주소) · rpc.json 가져오기(개발용, 파일이 있을 때 맨 아래)"
         }
         SettingsSection::Chains => {
             "이 구역: EVM 체인 목록과 체인 추가·편집 · Hyperliquid HyperCore 카드 켜기 · 수수료 상한(고급). 토큰 추가는 메인의 '토큰' 카드에 있습니다."
@@ -1552,11 +1561,13 @@ impl App {
         }
         // The own address whole, its ends emphasized, with `주소 복사` on the same line
         // (2026-11-11; recipient checks elsewhere keep the grouped form).
-        items.push(own_address_row(
+        items.push(self.own_address_line(
+            NetworkId::Eip155(chain_id),
             &address.to_checksum(),
             AddressKind::Evm,
             crate::ui::screens_evm::ids::COPY_ADDRESS,
             true,
+            crate::ui::screens_explorer::ids::CARD_EVM,
         ));
         let unlocked = matches!(self.mode, AppMode::Unlocked { .. });
         let mut row = vec![
@@ -2132,6 +2143,8 @@ impl App {
             }
         }
         items.push(Item::CardEnd);
+        // Block explorers (2026-11-11): per network, like the RPC list above.
+        self.explorer_settings_card(items);
         let dormant = self.apikeys.dormant_names();
         if !dormant.is_empty() {
             items.push(Item::CardStart(Some("보관 중인 항목".to_owned())));

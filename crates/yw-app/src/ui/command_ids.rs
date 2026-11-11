@@ -28,11 +28,12 @@
 //! | hidden accounts (`app_hidden`) | 16,200–16,589 | toggles 16,200–16,201, EVM `다시 보이기` rows 16,210–16,399, Solana rows 16,400–16,589 |
 //! | side-file choices (`app_sidecar`) | 16,600–16,609 | meta `닫기`, `고급`, journal `선택 다시 보기`, the Bitcoin form's check after a journal reset |
 //! | first setup·RPC (`screens`) | 16,700–16,783 | S08 '처음 설정' 16,700–16,705, `모두 테스트` 16,706, the chain tabs' `RPC 설정하기` 16,707–16,710, the EVM·Solana failure bands' `이 네트워크 RPC 테스트`·`RPC 설정 열기` 16,711–16,714, failed-network links 16,720–16,783 |
+//! | block explorers (`screens_explorer`) | 17,200–17,709 | S15 card form 17,200–17,203, account cards' `탐색기에서 주소 보기` 17,204–17,208, send results' `탐색기에서 열기`·`탐색기 링크 복사` 17,210–17,217, card rows 17,220–17,319 (`변경`·`기본값으로`), activity `탐색기에서 열기`·`탐색기 링크 복사`: Solana 17,320–17,447, Bitcoin 17,450–17,549, Zcash 17,550–17,709 (EVM rows use offset 7 of their own stride) |
 
 use crate::ui::{
-    screens, screens_book, screens_btc, screens_evm, screens_hypercore, screens_keys, screens_llm,
-    screens_mnemonics, screens_reset, screens_sites, screens_sol, screens_walletconnect,
-    screens_yubikey, screens_zec,
+    screens, screens_book, screens_btc, screens_evm, screens_explorer, screens_hypercore,
+    screens_keys, screens_llm, screens_mnemonics, screens_reset, screens_sites, screens_sol,
+    screens_walletconnect, screens_yubikey, screens_zec,
 };
 
 /// Largest number of rows of the Solana recovery scan (spec/07 §3.3: 50 standard + 50 BIP44
@@ -461,6 +462,36 @@ pub fn ranges() -> Vec<IdRange> {
             1,
             yw_core::journal::zec::ZEC_JOURNAL_MAX_RECORDS,
         ),
+        // Block explorers (2026-11-11): the S15 rows also list the two `HyperCore` networks.
+        range(
+            "explorer.rows",
+            screens_explorer::ids::ROW_BASE,
+            screens_explorer::ids::ROW_SPAN,
+            screens_explorer::ids::ROW_STRIDE,
+            url_rows + 2,
+        ),
+        range(
+            "explorer.sol_activity",
+            screens_explorer::ids::SOL_ACTIVITY_BASE,
+            screens_explorer::ids::SOL_ACTIVITY_SPAN,
+            screens_explorer::ids::ACTIVITY_STRIDE,
+            yw_core::journal::sol::SOL_JOURNAL_MAX_RECORDS
+                .max(crate::app_sol::SOL_MAX_ACTIVITY_ROWS),
+        ),
+        range(
+            "explorer.btc_activity",
+            screens_explorer::ids::BTC_ACTIVITY_BASE,
+            screens_explorer::ids::BTC_ACTIVITY_SPAN,
+            screens_explorer::ids::ACTIVITY_STRIDE,
+            crate::app_btc::BTC_MAX_ACTIVITY_ROWS,
+        ),
+        range(
+            "explorer.zec_activity",
+            screens_explorer::ids::ZEC_ACTIVITY_BASE,
+            screens_explorer::ids::ZEC_ACTIVITY_SPAN,
+            screens_explorer::ids::ACTIVITY_STRIDE,
+            yw_core::journal::zec::ZEC_JOURNAL_MAX_RECORDS,
+        ),
     ]
 }
 
@@ -484,6 +515,7 @@ pub fn fixed() -> Vec<(&'static str, &'static [u16])> {
         ("walletconnect", screens_walletconnect::ids::FIXED),
         ("hidden", crate::app_hidden::ids::FIXED),
         ("sidecar", crate::app_sidecar::ids::FIXED),
+        ("explorer", screens_explorer::ids::FIXED),
     ]
 }
 

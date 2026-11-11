@@ -272,6 +272,19 @@ impl App {
         ]));
         // The selected account's rows only, like the balances above.
         let account = self.selected_account().map(|(account, ..)| account);
+        // 2026-11-11: the account on Hyperliquid's explorer. `/exchange` answers without a
+        // transaction hash, so the activity rows below have no link of their own; this page
+        // lists the account's actions.
+        let explorer = account.and_then(|account| {
+            self.explorer_address_link(
+                crate::explorer::ExplorerNet::HyperCore(network),
+                &account.to_checksum(),
+                crate::ui::screens_explorer::ids::CARD_HC,
+            )
+        });
+        if let Some(link) = explorer {
+            items.push(Item::Row(vec![link]));
+        }
         let rows: Vec<_> = self
             .hypercore
             .activity
@@ -281,6 +294,10 @@ impl App {
         if !rows.is_empty() {
             items.push(Item::Rule);
             items.push(Item::Subtitle("HyperCore 활동 (이번 실행)".to_owned()));
+            items.push(Item::Help(
+                "Hyperliquid는 전송에 거래 해시를 돌려주지 않아 활동 줄에는 탐색기 링크가 없습니다. 위 '탐색기에서 주소 보기'에서 이 계정의 기록을 확인하세요."
+                    .to_owned(),
+            ));
             for row in rows {
                 let to = row
                     .to

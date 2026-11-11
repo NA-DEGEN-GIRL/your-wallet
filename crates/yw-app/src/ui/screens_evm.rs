@@ -170,7 +170,8 @@ pub mod ids {
     pub const CAPS_DEFAULT: u16 = 2_454;
     /// Activity rows ([`ACTIVITY_STRIDE`] ids per row, at most `MAX_ACTIVITY_ROWS` = 50 rows).
     pub const ACTIVITY_BASE: u16 = 2_500;
-    /// Ids per activity row.
+    /// Ids per activity row (해시 복사, 수수료 올리기, 취소, 재전송, 폐기, 탐색기 링크 복사, 이 주소
+    /// 저장, 탐색기에서 열기).
     pub const ACTIVITY_STRIDE: u16 = 8;
     /// Activity span (50 rows × 8).
     pub const ACTIVITY_SPAN: u16 = 400;
@@ -746,7 +747,7 @@ impl App {
             if let Some(address) = &row.counterparty {
                 self.recipient_items(address, items);
             }
-            items.push(Item::Mono(row.hash));
+            items.push(Item::Mono(row.hash.clone()));
             let mut buttons = vec![Ctl::button(base, "해시 복사")];
             if row.open.is_some() {
                 // Replace-by-fee has one name on every chain (Bitcoin's `수수료 올리기`).
@@ -757,7 +758,13 @@ impl App {
                 }
                 buttons.push(Ctl::danger(base.saturating_add(4), "폐기"));
             }
-            if self.explorer(chain_id).is_some() {
+            // The chain's transaction page (2026-11-11: the templates of the S15 card "블록
+            // 탐색기" — built-in, the user chain's `explorer`, or the user's override).
+            if self
+                .explorer_tx_url(NetworkId::Eip155(chain_id), &row.hash)
+                .is_some()
+            {
+                buttons.push(Ctl::button(base.saturating_add(7), "탐색기에서 열기"));
                 buttons.push(Ctl::button(base.saturating_add(5), "탐색기 링크 복사"));
             }
             let counterparty = row.counterparty.map(Address::to_lower_hex);
@@ -1360,7 +1367,20 @@ impl App {
                 )),
             ));
             items.push(Item::Field("거래 해시".to_owned(), String::new()));
-            items.push(Item::Mono(hash_text(&sent.tx_hash)));
+            let hash = hash_text(&sent.tx_hash);
+            items.push(Item::Mono(hash.clone()));
+            // 2026-11-11: the transaction on the chain's explorer (no row without a page).
+            let buttons = self.explorer_tx_buttons(
+                NetworkId::Eip155(sent.chain_id),
+                &hash,
+                Some((
+                    crate::ui::screens_explorer::ids::RESULT_EVM_OPEN,
+                    crate::ui::screens_explorer::ids::RESULT_EVM_COPY,
+                )),
+            );
+            if !buttons.is_empty() {
+                items.push(Item::Row(buttons));
+            }
             items.push(Item::CardEnd);
             self.result_save_items(BookTarget::Evm, items);
         }
