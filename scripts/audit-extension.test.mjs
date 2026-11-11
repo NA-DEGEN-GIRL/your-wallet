@@ -220,7 +220,7 @@ test("popup HTML with inline or remote code fails closed", async () => {
   await withPopupFile("popup.html", swap('<h1 id="title">', '<h1 id="title" style="color:red">'), /inline style attribute/u);
   await withPopupFile("popup.html", swap("</body>", '<iframe src="frame.html"></iframe></body>'), /embedding or navigation element/u);
   await withPopupFile("popup.html", swap('href="popup.css"', 'href="other.css"'), /local stylesheet popup\.css/u);
-  await withPopupFile("popup.html", swap('<script type="module" src="../src/popup.js"></script>', ""), /must load its module script/u);
+  await withPopupFile("popup.html", (source) => source.replace(/\s*<script type="module" src="\.\.\/src\/[a-z-]+\.js"><\/script>/gu, ""), /must load its module script/u);
   await withPopupFile("popup.css", (source) => `${source}\nbody { background: url(x.png); }\n`, /url\(\) reference/u);
   await withPopupFile("popup.css", (source) => `@import "x.css";\n${source}`, /@import/u);
 });
