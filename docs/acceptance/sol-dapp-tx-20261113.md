@@ -46,11 +46,11 @@
 | 항목 | 근거 | 메모 |
 |---|---|---|
 | S1·S9 | `shared.test.mjs` | 세 `sol_*`는 `signing`·계열 `sol`, 허용 40·`rejected` 35 |
-| P13 | `provider-main.test.mjs` | feature 7개(`solana:signAndSendTransaction` 신규), 두 거래 feature `["legacy", 0]`; 입력 1개 정확한 와이어 JSON(`options`·`chain: undefined` 무시), 3개 → `sol_signAllTransactions` 한 번; 다른 계정 4100·잘못된/섞인 `chain`·33개·1,233 B·서명 수 0 → 로컬 -32602(전송 0); 메시지 바이트·길이·두 슬롯·서명 수를 바꾼 응답 -32603; 전송 옵션 정규화(`singleGossip → confirmed`, `maxRetries`·`mode`·`foo` 버림), `minContextSlot: -1` -32602; 두 건은 순서대로, 두 번째 실패 → `data.signatures`; M01 짝(거래 모양 바이트의 `signMessage`는 `sol_signMessage`만) |
-| P14 | 같음 | 가짜 `Tx`·`VTx` 페이지 클래스: 페이지 클래스로 복원, legacy serialize 옵션 기록, signAll 요청 하나, signAndSend base58 `{signature, publicKey}`, signAndSendAll 순서대로, serialize 실패 -32602·전송 0, 팩토리 없음 -32603, 미연결 4100; `request({method:"signTransaction", params:{transaction}})`; base58 `message`(legacy·v0·앞 0바이트)는 0 슬롯으로 감싸 `{publicKey, signature}`, `messages` 배열, 전송 형식, 잘못된 메시지 -32602, 그 밖 메서드 4200 `Unsupported method.` |
+| P13 | `provider-main.test.mjs` | feature 7개(`solana:signAndSendTransaction` 신규), 두 거래 feature `["legacy", 0]`; 입력 1개 정확한 와이어 JSON(`options`·`chain: undefined` 무시), 3개 → `sol_signAllTransactions` 한 번; 다른 계정 4100·잘못된/섞인 `chain`·33개·1,233 B·서명 수 0 → 로컬 -32602(전송 0); 메시지 바이트·길이·두 슬롯·서명 수를 바꾼 응답 -32603; 전송 옵션 정규화(`singleGossip → confirmed`, `maxRetries`·`mode`·`foo` 버림), `minContextSlot: -1` -32602; 두 건은 순서대로, 두 번째 실패 → `data.signatures`, 그 사이 계정 변경·끊김 → 두 번째 없이 4100 + `data.signatures`(리뷰 수정); M01 짝(거래 모양 바이트의 `signMessage`는 `sol_signMessage`만) |
+| P14 | 같음 | 가짜 `Tx`·`VTx` 페이지 클래스: 페이지 클래스로 복원, legacy serialize 옵션 기록, signAll 요청 하나, signAndSend base58 `{signature, publicKey}`, signAndSendAll 순서대로(사이 계정 변경 → 4100 + `data.signatures`), serialize 실패 -32602·전송 0, 팩토리 없음 -32603, 미연결 4100; `request({method:"signTransaction", params:{transaction}})`; base58 `message`(legacy·v0·앞 0바이트)는 0 슬롯으로 감싸 `{publicKey, signature}`, `messages` 배열, 전송 형식, 잘못된 메시지 -32602, 그 밖 메서드 4200 `Unsupported method.` |
 | C6 | `content.test.mjs` | `sol_signTransaction`이 `phantom` 모드면 `compatMode: "phantom"`, `off`면 키 없이 전달 |
 | B5 | `extension.test.mjs` | `sol_signAndSendTransaction`의 마감 600 s(signing 경로) |
-| 팝업 | `popup.test.mjs` | 공통 안내 "Bitcoin은 연결과 메시지 서명만 됩니다. Solana는 거래 서명·전송도 됩니다." |
+| 팝업 | `popup.test.mjs` PO1(문구 고정)·PO3(화면 표시) | 공통 안내 "Bitcoin은 연결과 메시지 서명만 됩니다. Solana는 거래 서명·전송도 됩니다." |
 
 ### 게이트
 

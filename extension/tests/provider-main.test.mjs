@@ -1553,6 +1553,37 @@ test("P13 M01 half: transaction-shaped bytes through signMessage post only sol_s
   assert.equal(requests(page).length, before + 1);
 });
 
+test("P13 signAndSend inputs stay on the checked account: a change between sends → 4100 with data.signatures", async () => {
+  const page = createPage();
+  const wallet = await solConnectedWallet(page);
+  const account = wallet.accounts[0];
+  const send = wallet.features["solana:signAndSendTransaction"].signAndSendTransaction;
+  const tx = wireTx(1);
+  const before = requests(page).length;
+  // The account changes while the first send's window is open: the second is not posted under
+  // the new key, the first signature comes back in data.
+  const changed = send({ account, transaction: pageBytes(page, tx) }, { account, transaction: pageBytes(page, tx) });
+  assert.equal(lastRequest(page).params[0].publicKey, SOL_KEY);
+  sendEvent(page, "solAccountsChanged", [SOL_KEY_2]);
+  respond(page, lastRequest(page).id, { result: { publicKey: SOL_KEY, signature: "0c".repeat(64) } });
+  await assert.rejects(changed, (error) => error.code === 4100
+    && error.message === "Unauthorized."
+    && JSON.stringify(error.data) === JSON.stringify({ signatures: [b58(new Array(64).fill(0x0c))] }));
+  await flush();
+  assert.equal(requests(page).length, before + 1, "no second sol_signAndSendTransaction");
+  // A disconnect in between ends the same way.
+  const current = wallet.accounts[0];
+  assert.equal(current.address, SOL_KEY_2);
+  const dropped = send({ account: current, transaction: pageBytes(page, tx) }, { account: current, transaction: pageBytes(page, tx) });
+  assert.equal(lastRequest(page).params[0].publicKey, SOL_KEY_2);
+  sendEvent(page, "solAccountsChanged", []);
+  respond(page, lastRequest(page).id, { result: { publicKey: SOL_KEY_2, signature: "0d".repeat(64) } });
+  await assert.rejects(dropped, (error) => error.code === 4100
+    && JSON.stringify(error.data) === JSON.stringify({ signatures: [b58(new Array(64).fill(0x0d))] }));
+  await flush();
+  assert.equal(requests(page).length, before + 2);
+});
+
 // Fake web3.js classes in the page realm: `Tx` (legacy: serialize(options), static from) and
 // `VTx` (versioned: `version`, serialize(), static deserialize). Serialize options are recorded.
 const PAGE_CLASSES = `
@@ -1657,6 +1688,16 @@ test("P14 phantom transactions: the page's own classes come back, signAll is one
   await flush();
   respond(page, lastRequest(page).id, { result: { publicKey: SOL_KEY, signature: "09".repeat(64) } });
   assert.deepEqual(plain(await sendingAll), { signatures: [b58(new Array(64).fill(8)), b58(new Array(64).fill(9))], publicKey: SOL_KEY });
+  // An account change between sends: no send under the new key, 4100 with the first signature.
+  const switching = phantom.signAndSendAllTransactions(vm.runInContext(`[new Tx(${JSON.stringify(one)}), new Tx(${JSON.stringify(one)})]`, page.context));
+  const sentBefore = requests(page).length;
+  sendEvent(page, "solAccountsChanged", [SOL_KEY_2]);
+  respond(page, lastRequest(page).id, { result: { publicKey: SOL_KEY, signature: "0a".repeat(64) } });
+  await assert.rejects(switching, (error) => error.code === 4100
+    && JSON.stringify(error.data) === JSON.stringify({ signatures: [b58(new Array(64).fill(0x0a))] }));
+  await flush();
+  assert.equal(requests(page).length, sentBefore);
+  sendEvent(page, "solAccountsChanged", [SOL_KEY]);
 
   // A legacy transaction that cannot serialize: -32602 with nothing posted; no factory: -32603.
   const count = requests(page).length;

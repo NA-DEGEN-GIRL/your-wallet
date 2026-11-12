@@ -693,9 +693,10 @@ Issued At: 2026-10-25T23:59:00Z
 | 파일 | 내용 |
 |---|---|
 | `serve.mjs` | `node:http` 정적 서버. `127.0.0.1:5173`과 `[::1]:5173`에만 바인드, 이 폴더 파일만, 디렉터리 목록 없음, `Content-Type` 고정 표, 30줄 안팎 |
-| `index.html` | 버튼 T01–T32(T20b 포함), "MetaMask 전용 dApp 흉내" 구역 C01–C05와 지갑 선택 목록, 입력칸(수신 주소, 금액, 토큰 주소), 결과 로그(`<pre>`, `textContent`만) |
+| `index.html` | 버튼 T01–T32(T20b 포함), "MetaMask 전용 dApp 흉내" 구역 C01–C05와 지갑 선택 목록, "Solana dApp 거래" 구역 S01–S10·P01–P03과 입력칸(최근 devnet 블록해시, S08 받는 주소), 입력칸(수신 주소, 금액, 토큰 주소), 결과 로그(`<pre>`, `textContent`만) |
 | `app.js` | T01–T32: EIP-6963 `requestProvider`로 Your Wallet 선택, 없으면 `window.ethereum`(호환 모드에서는 Your Wallet rdns 알림이 없으므로 `window.ethereum` = 우리 provider). C01–C04: `window.ethereum.isMetaMask`만 검사하고 `window.ethereum`만 쓴다. C05: 받은 EIP-6963 알림을 uuid로 모아 이름·rdns 목록과 항목별 연결 버튼을 만든다 |
 | `keccak.js` | 시험용 Keccak-256(약 80줄). personal_sign·SIWE 서명을 ecrecover 프리컴파일(`0x…01`) `eth_call`로 검증 |
+| `sol.js` | S01–S10·P01–P03(2026-11-13, M7-12–M7-14): Wallet Standard `wallet-standard:register-wallet`·`app-ready`로 `Your Wallet (Solana)`(Phantom 모드는 `Phantom`)을 고른다. 거래는 페이지가 직접 만든다(legacy·v0 메시지, System·Memo 명령, web3.js 없음). 서명 결과는 길이 같음·우리 슬롯 밖 바이트 불변·우리 서명 유효(WebCrypto Ed25519)로 판정. S05–S07의 공동 서명자는 이 페이지에서 만든 Ed25519 키(SOL 없음) |
 
 WETH = Sepolia `0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14`(03 §1.2, 구현 시 확인), Permit2 = `0x000000000022D473030F116dDEE9F6B43aC78BA3`, A0/A1 = 연결 계정 0/1.
 
@@ -744,6 +745,24 @@ WETH = Sepolia `0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14`(03 §1.2, 구현 시
 | C03 | `window.ethereum`으로 SIWE(T20과 같은 메시지) `personal_sign` + ecrecover | 서명 창(S09 정보, 배지) → ecrecover = A0 / 같음 / 동작 안 함 |
 | C04 | `window.ethereum._metamask.isUnlocked()` | 연결·해제 상태 `true`, 잠김·미연결 `false` / 같음 / 동작 안 함 |
 | C05 | `requestProvider` 뒤 300 ms 동안 모은 알림을 이름·rdns·uuid로 나열, 항목별 "…로 연결" 버튼 | MetaMask·Rabby rdns 항목이 정확히 하나(`io.metamask`, `isYourWallet` true)이고 Your Wallet rdns 항목 없음 / 같음(`io.rabby`) / Your Wallet 하나, 다른 지갑은 그대로 |
+
+"Solana dApp 거래"(07 §20, 05 §2.13; 앱은 Solana devnet, 매번 새 블록해시를 입력칸에, A = 연결 계정, "서명 판정" = `sol.js`의 길이·슬롯 밖 바이트·우리 서명 검사):
+
+| ID | 요청 | 기대 |
+|---|---|---|
+| S01 | Wallet Standard 목록의 `Your Wallet (Solana)` → `standard:connect` | 연결 창 → 계정 A 하나, 두 거래 feature의 `supportedTransactionVersions` `["legacy",0]` |
+| S02 | `solana:signTransaction` legacy, Memo 하나(`chain: "solana:devnet"`) | 사이트 거래 서명 창(Memo 해석, X11 서명만) → 서명 판정 PASS |
+| S03 | S02를 v0(조회 테이블 없음)으로 | 같음 |
+| S04 | `signTransaction` 입력 3개(legacy·v0·legacy) | 창 하나에 거래 1/3–3/3, 승인 한 번 → 세 결과 모두 서명 판정 PASS |
+| S05 | 페이지 공동 서명자가 수수료 지불자(슬롯 0)로 먼저 서명, A는 슬롯 1 | X13 정보 → 슬롯 1 서명 판정 PASS, 슬롯 0의 사이트 서명 유지(서명만) |
+| S06 | S05와 같은 거래, 슬롯 0에 틀린 서명(`0x01`×64) | X01 차단(승인 불가) → 4001 |
+| S07 | 맨 앞 `AdvanceNonceAccount`(지어낸 nonce 계정) + Memo: `signTransaction`, 이어서 같은 거래 `signAndSendTransaction` | X08(만료 없음) 서명 판정 PASS / 전송은 -32602 |
+| S08 | `signAndSendTransaction` v0 송금 + Memo, `preflightCommitment: "confirmed"`. 받는 주소가 비면 A에게 1,000 lamports, 다른 주소면 1,000,000(rent 면제 최소 890,880보다 많아 새 주소도 preflight 통과) | 서명 후 전송 창 → 서명 0번(64 B, 거래 ID), devnet explorer 착지, 앱 활동 행 |
+| S09 | `signAndSendTransaction` Memo, `{ skipPreflight: true, maxRetries: 0 }` | 창의 전송 방식(`0x0519`)에 사전 검사 생략 → 서명 0번 |
+| S10 | 거래 바이트를 `solana:signMessage`로 | M01 차단(승인 불가) → 4001, 거래 와이어 메서드 없음 |
+| P01 | Phantom 모드(팝업 "Phantom처럼 보이기" 뒤 새로고침): `window.phantom.solana.connect()` → `signTransaction(Uint8Array)` | `Uint8Array`, 서명 판정 PASS |
+| P02 | `signAndSendTransaction(bytes, { skipPreflight: false })` | `{ signature: base58, publicKey: base58(A) }` |
+| P03 | 폐기된 `request({ method: "signTransaction", params: { message: base58 } })` | `{ publicKey: base58(A), signature: base58 }`, 서명이 그 메시지에 대해 유효 |
 
 ### 5.8 M6 LLM 설명 (선택)
 

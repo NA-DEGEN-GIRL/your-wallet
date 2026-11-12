@@ -364,11 +364,15 @@ const SOL_TESTS = {
     }
   },
   async S08() {
-    write("S08 send: memo + 1,000 lamports to the recipient (yourself when empty). Expect 서명 후 전송, then the activity row.");
+    // Another recipient gets 0.001 SOL, above the 890,880-lamport rent-exempt minimum, so a new
+    // (never funded) address does not fail preflight with InsufficientFundsForRent.
+    const to = recipient();
+    const lamports = sameKey(to, me()) ? 1_000 : 1_000_000;
+    write(`S08 send: memo + ${lamports.toLocaleString("en-US")} lamports to the recipient (yourself when empty). Expect 서명 후 전송, then the activity row.`);
     const compiled = compile({
       version: 0,
       payer: me(),
-      instructions: [transfer(me(), recipient(), 1_000), memo("Your Wallet test dApp send", me())],
+      instructions: [transfer(me(), to, lamports), memo("Your Wallet test dApp send", me())],
       blockhash: blockhash()
     });
     await sendOne("S08", compiled, { preflightCommitment: "confirmed" });

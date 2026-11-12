@@ -38,6 +38,8 @@ test("PO1 popup text: the three mode labels, the warning and the next-load note"
   assert.equal(popup.TEXT.warning, "호환 모드를 쓸 때는 실제 MetaMask·Rabby 확장을 꺼 두세요. 켜져 있으면 dApp이 그 지갑에 연결될 수 있습니다.");
   assert.equal(popup.TEXT.applyNote, "모드 변경은 다음 페이지 로드부터 적용됩니다(열린 dApp 탭은 새로고침).");
   assert.match(popup.TEXT.saved, /다음 페이지 로드부터 적용/u);
+  // spec/05 §2.13 (2026-11-12): Solana dApp transactions are supported, Bitcoin stays message-only.
+  assert.equal(popup.TEXT.chainNote, "Bitcoin은 연결과 메시지 서명만 됩니다. Solana는 거래 서명·전송도 됩니다.");
   assert.equal(popup.TEXT.statusHeading, "Your Wallet 앱 연결 상태");
   // Plain Korean: no internal binary names in user-facing text.
   for (const text of [...Object.values(popup.TEXT), ...Object.values(popup.STATUS_VIEWS).map((view) => view.detail)]) {

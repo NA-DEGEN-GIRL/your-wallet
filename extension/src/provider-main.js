@@ -561,12 +561,14 @@
   }
 
   // `sol_signAndSendTransaction`: the app signs, journals and sends; the answer is signature 0
-  // (the transaction id).
-  async function solSignAndSend(bytes, chain, options) {
-    if (solKey === null) {
+  // (the transaction id). `publicKey` is the account the call was checked against (base58): when
+  // the current account is no longer that one (changed or disconnected while an earlier send's
+  // window was open), 4100 and nothing posted, never the bytes under another key.
+  async function solSignAndSend(bytes, chain, options, publicKey) {
+    if (solKey === null || base58Encode(solKey) !== publicKey) {
       throw unauthorized();
     }
-    const params = { publicKey: base58Encode(solKey), transaction: toHex(bytes) };
+    const params = { publicKey, transaction: toHex(bytes) };
     if (chain !== undefined) {
       params.chain = chain;
     }
@@ -577,13 +579,15 @@
     return fromHex(isPlainObject(result) ? result.signature : undefined, 64);
   }
 
-  // Sends one after another (no multi-send wire method). A failure after the first rejects with
-  // the error of that send and `data: { signatures: [base58…] }` of those already sent.
-  async function solSendSerially(items) {
+  // Sends one after another (no multi-send wire method), all for the one account `publicKey`
+  // (base58) the inputs were checked against. A failure after the first, an account change
+  // included (4100), rejects with the error of that send and `data: { signatures: [base58…] }` of
+  // those already sent.
+  async function solSendSerially(items, publicKey) {
     const signatures = [];
     for (const item of items) {
       try {
-        signatures.push(await solSignAndSend(item.bytes, item.chain, item.options));
+        signatures.push(await solSignAndSend(item.bytes, item.chain, item.options, publicKey));
       } catch (error) {
         if (signatures.length === 0) {
           throw error;
@@ -707,7 +711,7 @@
     }
     const options = solSendOptions(opts);
     const publicKey = base58Encode(solKey);
-    const signatures = await solSendSerially(pageTxs.map((entry) => ({ bytes: entry.bytes, chain: undefined, options })));
+    const signatures = await solSendSerially(pageTxs.map((entry) => ({ bytes: entry.bytes, chain: undefined, options })), publicKey);
     return { signatures: signatures.map((signature) => base58Encode(signature)), publicKey };
   }
 
@@ -750,7 +754,7 @@
       return { publicKey, signatures: signed.map((entry) => ownSignature(entry)) };
     }
     const options = solSendOptions(params.options);
-    const signature = await solSignAndSend(solMessageArgument(params.message), undefined, options);
+    const signature = await solSignAndSend(solMessageArgument(params.message), undefined, options, publicKey);
     return { publicKey, signature: base58Encode(signature) };
   }
 
@@ -851,7 +855,8 @@
       signAndSendTransaction: async (...inputs) => {
         const items = solStandardInputs(inputs).map((item) => ({ ...item, options: solSendOptions(item.options) }));
         solBatchChain(items.map((item) => item.chain));
-        const signatures = await solSendSerially(items);
+        // Every input named this account (checked above); later sends stay on it.
+        const signatures = await solSendSerially(items, solKey === null ? null : base58Encode(solKey));
         return signatures.map((signature) => ({ signature }));
       }
     })
