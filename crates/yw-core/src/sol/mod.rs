@@ -3,8 +3,9 @@
 //! classic Token program, ATA `CreateIdempotent` + `TransferChecked`) — the strict parser with
 //! re-encoding identity, PDA/ATA derivation, SPL account data, fees, rent rules, recipient
 //! checks, the transfer intent and its approval request, signing with post-sign verification, and
-//! the pure broadcast/expiry decisions. Journal records are `journal::sol`. Nothing here touches
-//! the network, clocks or files: RPC observations and times are arguments (spec/01 §2.2).
+//! the pure broadcast/expiry decisions. dApp-built legacy/v0 transactions (parser, lookup tables,
+//! instruction decoders) are `dapp` (spec/07 §20). Journal records are `journal::sol`. Nothing here
+//! touches the network, clocks or files: RPC observations and times are arguments (spec/01 §2.2).
 
 // `doc`/`doctest`: rustdoc does not receive the config rustflags; the guard is for the real
 // rustc build of the crate (doctests link that build).
@@ -15,6 +16,7 @@ compile_error!(
 
 pub mod address;
 pub mod broadcast;
+pub mod dapp;
 pub mod display;
 pub mod fee;
 pub mod intent;

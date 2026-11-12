@@ -2,7 +2,9 @@
 
 use core::fmt;
 
-use super::address::{CurveClass, SolAddress, curve_class, is_blocked_recipient};
+use super::address::{
+    CurveClass, SolAddress, TOKEN_2022_PROGRAM, curve_class, is_blocked_recipient,
+};
 use super::template::SolAsset;
 use crate::codec::base58::Base58Error;
 
@@ -202,11 +204,6 @@ pub enum AccountClass {
 /// Classifies an account from its owner and `executable` flag (`None` = account missing).
 #[must_use]
 pub fn classify_account(info: Option<(&SolAddress, bool)>) -> AccountClass {
-    const TOKEN_2022: [u8; 32] = [
-        0x06, 0xdd, 0xf6, 0xe1, 0xee, 0x75, 0x8f, 0xde, 0x18, 0x42, 0x5d, 0xbc, 0xe4, 0x6c, 0xcd,
-        0xda, 0xb6, 0x1a, 0xfc, 0x4d, 0x83, 0xb9, 0x0d, 0x27, 0xfe, 0xbd, 0xf9, 0x28, 0xd8, 0xa1,
-        0x8b, 0xfc,
-    ];
     match info {
         None => AccountClass::Missing,
         Some((_, true)) => AccountClass::Program,
@@ -214,7 +211,7 @@ pub fn classify_account(info: Option<(&SolAddress, bool)>) -> AccountClass {
             AccountClass::SystemWallet
         }
         Some((owner, false))
-            if owner == &super::address::TOKEN_PROGRAM || owner.as_bytes() == &TOKEN_2022 =>
+            if owner == &super::address::TOKEN_PROGRAM || owner == &TOKEN_2022_PROGRAM =>
         {
             AccountClass::TokenAccount
         }

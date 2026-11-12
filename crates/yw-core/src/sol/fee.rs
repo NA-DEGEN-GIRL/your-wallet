@@ -1,5 +1,5 @@
 //! Fees (spec/07 §10): the maximum fee of a template, the CU price choice and the
-//! `getFeeForMessage` cross-check.
+//! `getFeeForMessage` cross-check; the local fee estimate of a dApp transaction (§20.4).
 
 use core::fmt;
 
@@ -141,6 +141,54 @@ pub fn check_rpc_fee(
         core::cmp::Ordering::Less if send_max => Err(FeeError::FeeFormulaChanged),
         core::cmp::Ordering::Less => Ok(FeeCheck::RpcLower { rpc }),
     }
+}
+
+/// Compute units assumed per instruction outside `ComputeBudget` when a dApp transaction sets no
+/// limit (Agave `DEFAULT_INSTRUCTION_COMPUTE_UNIT_LIMIT`; builtins are given less, so the
+/// estimate errs high).
+pub const DEFAULT_IX_COMPUTE_UNITS: u32 = 200_000;
+
+/// The fee of a dApp transaction computed locally (spec/07 §20.4), shown only when
+/// `getFeeForMessage` gives no value: `5_000 × (required signatures + precompile signatures) +
+/// ceil(price × limit / 1_000_000)`, where the price and limit are the first
+/// `SetComputeUnitPrice`/`SetComputeUnitLimit` (the limit capped at 1,400,000) and the limit
+/// otherwise `min(200_000 × n, 1_400_000)` for the `n` instructions outside `ComputeBudget`.
+/// `u128`: no overflow. [`max_fee`] stays the template formula.
+#[must_use]
+pub fn dapp_fee_estimate(message: &super::dapp::SolTxMessage) -> u128 {
+    use super::dapp::decode::{CbIx, DecodedIx, decode};
+    let (mut limit, mut price, mut others) = (None, None, 0_u32);
+    for index in 0..message.instruction_count() {
+        let Some((program, _, data)) = message.instruction(index) else {
+            continue;
+        };
+        if *program != super::address::COMPUTE_BUDGET_PROGRAM {
+            others = others.saturating_add(1);
+            continue;
+        }
+        match decode(program, &[], data) {
+            DecodedIx::ComputeBudget(CbIx::SetComputeUnitLimit(units)) => {
+                limit.get_or_insert(units);
+            }
+            DecodedIx::ComputeBudget(CbIx::SetComputeUnitPrice(micro)) => {
+                price.get_or_insert(micro);
+            }
+            _ => {}
+        }
+    }
+    let max = super::template::SOL_MAX_COMPUTE_UNITS;
+    let limit = limit.map_or_else(
+        || DEFAULT_IX_COMPUTE_UNITS.saturating_mul(others).min(max),
+        |units| units.min(max),
+    );
+    let signatures = u128::from(message.header.required)
+        .saturating_add(u128::from(message.precompile_signatures()));
+    let priority = u128::from(price.unwrap_or(0))
+        .saturating_mul(u128::from(limit))
+        .div_ceil(1_000_000);
+    u128::from(SOL_BASE_FEE_LAMPORTS_PER_SIG)
+        .saturating_mul(signatures)
+        .saturating_add(priority)
 }
 
 #[cfg(test)]

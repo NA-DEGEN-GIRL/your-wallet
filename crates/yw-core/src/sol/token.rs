@@ -5,7 +5,7 @@
 //! which come from the allowlist and the local ATA derivation.
 #![deny(clippy::indexing_slicing)]
 
-use super::address::SolAddress;
+use super::address::{SolAddress, TOKEN_2022_PROGRAM, TOKEN_PROGRAM};
 use super::template::{MINT_LEN, SplAllowEntry, TOKEN_ACCOUNT_LEN};
 
 /// A parsed mint account.
@@ -204,14 +204,153 @@ pub fn classify_holding(
     }
 }
 
+// ----- any token account or mint (dApp transactions, spec/07 §20.7) -----------------------
+
+/// Size of a Token multisig account: Token-2022 pads an extended account that would have this
+/// length, so an account of exactly this size is always a multisig.
+const MULTISIG_LEN: usize = 355;
+/// Token-2022 account-type byte after the 165-byte base (`1` mint, `2` account).
+const ACCOUNT_TYPE_AT: usize = TOKEN_ACCOUNT_LEN;
+/// Most Token-2022 mint extensions read.
+const MAX_MINT_EXTENSIONS: usize = 64;
+
+/// A token account of Token or Token-2022 (the 165-byte base; extensions are not read). Used
+/// only to show RPC pre-state and simulation changes, never to build a message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TokenAccountView {
+    /// Mint.
+    pub mint: SolAddress,
+    /// Wallet that owns the tokens.
+    pub owner: SolAddress,
+    /// Raw amount (the public balance only; Token-2022 confidential balances are not visible).
+    pub amount: u64,
+    /// Delegate allowed to move `delegated_amount`.
+    pub delegate: Option<SolAddress>,
+    /// Amount the delegate may move.
+    pub delegated_amount: u64,
+    /// State byte: 0 uninitialized, 1 initialized, 2 frozen.
+    pub state: u8,
+    /// Rent-exempt reserve of a wrapped-SOL account.
+    pub is_native: Option<u64>,
+    /// Who may close the account (the owner when `None`).
+    pub close_authority: Option<SolAddress>,
+}
+
+/// `COption<Pubkey>` (u32 LE tag + 32 bytes) at `at`; `Err` for an invalid tag.
+fn option_key(data: &[u8], at: usize) -> Result<Option<SolAddress>, ()> {
+    if option_tag(data, at).ok_or(())? {
+        let key = array::<32>(data, at.checked_add(4).ok_or(())?).ok_or(())?;
+        Ok(Some(SolAddress::from_bytes(key)))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Parses a token account owned by `owner_program`: Token needs exactly 165 bytes; Token-2022
+/// takes 165 bytes, or at least 166 with account type `2` at byte 165 (a 355-byte account is a
+/// multisig). `COption` tags must be 0/1 and the state 0–2.
+#[must_use]
+pub fn parse_token_account_any(
+    owner_program: &SolAddress,
+    data: &[u8],
+) -> Option<TokenAccountView> {
+    let base_only = data.len() == TOKEN_ACCOUNT_LEN;
+    let ok = if *owner_program == TOKEN_PROGRAM {
+        base_only
+    } else if *owner_program == TOKEN_2022_PROGRAM {
+        base_only || (data.len() != MULTISIG_LEN && data.get(ACCOUNT_TYPE_AT) == Some(&2))
+    } else {
+        false
+    };
+    if !ok {
+        return None;
+    }
+    let state = *data.get(108)?;
+    if state > 2 {
+        return None;
+    }
+    let is_native = if option_tag(data, 109)? {
+        Some(le_u64(data, 113)?)
+    } else {
+        None
+    };
+    Some(TokenAccountView {
+        mint: SolAddress::from_bytes(array::<32>(data, 0)?),
+        owner: SolAddress::from_bytes(array::<32>(data, 32)?),
+        amount: le_u64(data, 64)?,
+        delegate: option_key(data, 72).ok()?,
+        delegated_amount: le_u64(data, 121)?,
+        state,
+        is_native,
+        close_authority: option_key(data, 129).ok()?,
+    })
+}
+
+/// A mint of Token or Token-2022: decimals and the Token-2022 extension types (TLV order).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MintView {
+    /// Decimals as stored on chain (display only).
+    pub decimals: u8,
+    /// Token-2022 extension types (`12` permanent delegate, `14` transfer hook, `1` transfer fee
+    /// config, …); empty for Token and base-only mints.
+    pub extensions: Vec<u16>,
+}
+
+/// Parses a mint owned by `owner_program`: Token needs exactly 82 bytes; Token-2022 takes 82
+/// bytes, or more than 165 with zero padding after the base, account type `1` at byte 165 and
+/// TLV entries from byte 166 (u16 LE type, u16 LE length, inside the data, at most 64; type 0
+/// or fewer than two bytes left ends the list).
+#[must_use]
+pub fn parse_mint_any(owner_program: &SolAddress, data: &[u8]) -> Option<MintView> {
+    let base = parse_mint(data.get(..MINT_LEN)?)?;
+    if data.len() == MINT_LEN {
+        return (*owner_program == TOKEN_PROGRAM || *owner_program == TOKEN_2022_PROGRAM).then(
+            || MintView {
+                decimals: base.decimals,
+                extensions: Vec::new(),
+            },
+        );
+    }
+    if *owner_program != TOKEN_2022_PROGRAM
+        || data.len() <= ACCOUNT_TYPE_AT
+        || data.len() == MULTISIG_LEN
+        || data.get(ACCOUNT_TYPE_AT) != Some(&1)
+        || data
+            .get(MINT_LEN..ACCOUNT_TYPE_AT)?
+            .iter()
+            .any(|byte| *byte != 0)
+    {
+        return None;
+    }
+    let mut extensions = Vec::new();
+    let mut at = ACCOUNT_TYPE_AT.checked_add(1)?;
+    // Fewer than two bytes left cannot hold a type: the end (Token-2022 `get_extension_types`).
+    while let Some(kind) = array::<2>(data, at).map(u16::from_le_bytes) {
+        if kind == 0 {
+            break;
+        }
+        let length = usize::from(u16::from_le_bytes(array::<2>(data, at.checked_add(2)?)?));
+        let end = at.checked_add(4)?.checked_add(length)?;
+        if end > data.len() || extensions.len() == MAX_MINT_EXTENSIONS {
+            return None;
+        }
+        extensions.push(kind);
+        at = end;
+    }
+    Some(MintView {
+        decimals: base.decimals,
+        extensions,
+    })
+}
+
 #[cfg(test)]
 #[expect(clippy::indexing_slicing, reason = "fixed-size test buffers")]
 pub(crate) mod tests {
     use super::{
-        MintMismatch, TokenHolding, TokenState, check_mint, classify_holding, parse_mint,
-        parse_token_account,
+        MintMismatch, MintView, TokenHolding, TokenState, check_mint, classify_holding, parse_mint,
+        parse_mint_any, parse_token_account, parse_token_account_any,
     };
-    use crate::sol::address::{SYSTEM_PROGRAM, SolAddress, TOKEN_PROGRAM};
+    use crate::sol::address::{SYSTEM_PROGRAM, SolAddress, TOKEN_2022_PROGRAM, TOKEN_PROGRAM};
     use crate::sol::template::SPL_ALLOWLIST;
 
     /// A classic mint body (82 bytes).
@@ -343,5 +482,160 @@ pub(crate) mod tests {
         assert_eq!(classify(&TOKEN_PROGRAM, &native), TokenHolding::Invalid);
         assert_eq!(TokenHolding::Missing.balance(), Some(0));
         assert_eq!(TokenHolding::Invalid.balance(), None);
+    }
+
+    /// Token and Token-2022 accounts: the full base with delegate, native reserve and close
+    /// authority; Token-2022 extended (or `dataSlice` 0/166) accounts need account type 2.
+    #[test]
+    fn any_token_account() {
+        let mint = SolAddress::from_bytes([3; 32]);
+        let wallet = SolAddress::from_bytes([7; 32]);
+        let mut data = token_bytes(&mint, &wallet, 42, 1);
+        data[72] = 1;
+        data[76..108].copy_from_slice(&[9; 32]);
+        data[109] = 1;
+        data[113..121].copy_from_slice(&2_039_280_u64.to_le_bytes());
+        data[121..129].copy_from_slice(&40_u64.to_le_bytes());
+        data[129] = 1;
+        data[133..165].copy_from_slice(&[5; 32]);
+        let view = parse_token_account_any(&TOKEN_PROGRAM, &data).unwrap();
+        assert_eq!(
+            (view.mint, view.owner, view.amount, view.state),
+            (mint, wallet, 42, 1)
+        );
+        assert_eq!(view.delegate, Some(SolAddress::from_bytes([9; 32])));
+        assert_eq!(view.delegated_amount, 40);
+        assert_eq!(view.is_native, Some(2_039_280));
+        assert_eq!(view.close_authority, Some(SolAddress::from_bytes([5; 32])));
+        assert_eq!(
+            parse_token_account_any(&TOKEN_2022_PROGRAM, &data),
+            Some(view)
+        );
+        let plain =
+            parse_token_account_any(&TOKEN_PROGRAM, &token_bytes(&mint, &wallet, 1, 2)).unwrap();
+        assert_eq!(
+            (plain.delegate, plain.is_native, plain.close_authority),
+            (None, None, None)
+        );
+
+        let mut extended = data.clone();
+        extended.push(2);
+        assert_eq!(
+            parse_token_account_any(&TOKEN_2022_PROGRAM, &extended),
+            Some(view)
+        );
+        extended.extend_from_slice(&[0; 40]);
+        assert!(parse_token_account_any(&TOKEN_2022_PROGRAM, &extended).is_some());
+        // Classic Token has no extensions; type 1 is a mint; a 355-byte account is a multisig.
+        assert!(parse_token_account_any(&TOKEN_PROGRAM, &extended).is_none());
+        extended[165] = 1;
+        assert!(parse_token_account_any(&TOKEN_2022_PROGRAM, &extended).is_none());
+        let mut multisig = data.clone();
+        multisig.push(2);
+        multisig.resize(355, 0);
+        assert!(parse_token_account_any(&TOKEN_2022_PROGRAM, &multisig).is_none());
+        assert!(parse_token_account_any(&SYSTEM_PROGRAM, &data).is_none());
+        assert!(parse_token_account_any(&TOKEN_PROGRAM, &data[..164]).is_none());
+        for (at, value) in [(72, 2), (108, 3), (109, 2), (129, 7)] {
+            let mut bad = data.clone();
+            bad[at] = value;
+            assert!(
+                parse_token_account_any(&TOKEN_PROGRAM, &bad).is_none(),
+                "{at}"
+            );
+        }
+    }
+
+    /// A Token-2022 mint with `types` as TLV entries of `length` bytes each.
+    fn mint_2022(types: &[u16], length: u16) -> Vec<u8> {
+        let mut data = mint_bytes(9, 1);
+        data.resize(165, 0);
+        data.push(1);
+        for kind in types {
+            data.extend_from_slice(&kind.to_le_bytes());
+            data.extend_from_slice(&length.to_le_bytes());
+            data.extend(std::iter::repeat_n(0xab, usize::from(length)));
+        }
+        data
+    }
+
+    #[test]
+    fn any_mint() {
+        let base = mint_bytes(6, 1);
+        for program in [TOKEN_PROGRAM, TOKEN_2022_PROGRAM] {
+            assert_eq!(
+                parse_mint_any(&program, &base),
+                Some(MintView {
+                    decimals: 6,
+                    extensions: Vec::new()
+                })
+            );
+        }
+        assert!(parse_mint_any(&SYSTEM_PROGRAM, &base).is_none());
+        let extended = mint_2022(&[1, 12, 14], 3);
+        assert_eq!(
+            parse_mint_any(&TOKEN_2022_PROGRAM, &extended),
+            Some(MintView {
+                decimals: 9,
+                extensions: vec![1, 12, 14]
+            })
+        );
+        assert!(parse_mint_any(&TOKEN_PROGRAM, &extended).is_none());
+        // Type 0 and a lone trailing byte end the list; an empty list is a valid extended mint.
+        let mut padded = mint_2022(&[12], 32);
+        padded.extend_from_slice(&[0; 8]);
+        assert_eq!(
+            parse_mint_any(&TOKEN_2022_PROGRAM, &padded)
+                .unwrap()
+                .extensions,
+            [12]
+        );
+        let mut odd = mint_2022(&[14], 0);
+        odd.push(0xff);
+        assert_eq!(
+            parse_mint_any(&TOKEN_2022_PROGRAM, &odd)
+                .unwrap()
+                .extensions,
+            [14]
+        );
+        assert_eq!(
+            parse_mint_any(&TOKEN_2022_PROGRAM, &mint_2022(&[], 0))
+                .unwrap()
+                .extensions,
+            Vec::<u16>::new()
+        );
+        // A value past the end, a type cut in half, nonzero padding, account type 2, the
+        // in-between lengths and a 65th entry are all refused.
+        let mut long = mint_2022(&[1], 4);
+        long.truncate(long.len() - 1);
+        assert!(parse_mint_any(&TOKEN_2022_PROGRAM, &long).is_none());
+        let mut cut = mint_2022(&[1], 0);
+        cut.extend_from_slice(&[0x0c, 0x00, 0x01]);
+        assert!(parse_mint_any(&TOKEN_2022_PROGRAM, &cut).is_none());
+        let mut dirty = mint_2022(&[1], 0);
+        dirty[100] = 1;
+        assert!(parse_mint_any(&TOKEN_2022_PROGRAM, &dirty).is_none());
+        let mut account = mint_2022(&[1], 0);
+        account[165] = 2;
+        assert!(parse_mint_any(&TOKEN_2022_PROGRAM, &account).is_none());
+        for length in [83, 165] {
+            let mut data = mint_bytes(6, 1);
+            data.resize(length, 0);
+            assert!(
+                parse_mint_any(&TOKEN_2022_PROGRAM, &data).is_none(),
+                "{length}"
+            );
+        }
+        let many: Vec<u16> = (1..=64).collect();
+        assert_eq!(
+            parse_mint_any(&TOKEN_2022_PROGRAM, &mint_2022(&many, 0))
+                .unwrap()
+                .extensions
+                .len(),
+            64
+        );
+        let too_many: Vec<u16> = (1..=65).collect();
+        assert!(parse_mint_any(&TOKEN_2022_PROGRAM, &mint_2022(&too_many, 0)).is_none());
+        assert!(parse_mint_any(&TOKEN_2022_PROGRAM, &mint_bytes(6, 2)).is_none());
     }
 }

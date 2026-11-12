@@ -17,6 +17,7 @@ use yw_core::hex;
 use yw_core::policy::BrowserOrigin;
 use yw_core::slip10::SolKeySource;
 use yw_core::sol::SolCluster;
+use yw_core::sol::dapp::{parse_message_any, parse_wire_tx};
 use yw_core::sol::msgsign::{
     MAX_SOL_MESSAGE_BYTES, OFFCHAIN_DOMAIN, SiwsMessage, SolMessageRequest,
     build_sol_message_request, looks_like_transaction, looks_like_versioned_message,
@@ -169,6 +170,10 @@ fn fuzz_lite_sol_msgsign() {
     for round in 0..runs() {
         let input = mutator.mutate(&seeds);
         let transaction = looks_like_transaction(&input);
+        // Whatever the dApp transaction parser accepts is blocked here (spec/07 §20.2, M01).
+        if parse_wire_tx(&input).is_ok() || parse_message_any(&input).is_ok() {
+            assert!(transaction);
+        }
         // A later message version is a transaction too.
         assert!(!looks_like_versioned_message(&input) || transaction);
         // Trailing bytes never unblock a parsed message prefix.
