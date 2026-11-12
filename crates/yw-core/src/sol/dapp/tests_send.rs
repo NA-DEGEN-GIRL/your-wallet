@@ -31,7 +31,7 @@ use crate::journal::sol::{
 };
 use crate::journal::{ENTRY_HEADER_LEN, Entry, EntryKind, JournalPlain, MAX_PLAINTEXT};
 use crate::slip10::SolKeySource;
-use crate::sol::address::{SYSTEM_PROGRAM, SolAddress, SolCluster};
+use crate::sol::address::{SYSTEM_PROGRAM, SYSVAR_RECENT_BLOCKHASHES, SolAddress, SolCluster};
 use crate::sol::broadcast::err;
 use crate::sol::message::{encode_message, parse_transaction};
 use crate::sol::template::system_transfer_data;
@@ -599,32 +599,45 @@ fn version_3_origin_and_nonce_rejections() {
         record.dapp.as_mut().unwrap().origin = origin;
         assert_eq!(record.encode(), Err(SolRecordError::Dapp));
     }
-    // A durable-nonce transaction (sign-only can sign one; it is never journaled).
+    // A durable-nonce transaction (sign-only can sign one; it is never journaled), also with
+    // bytes after the AdvanceNonce tag (spec/07 §19, spec/09 SOL-N15).
     let vault = unlocked_with(ABOUT);
-    let nonce = wire(&nonce_message(Vec::new()), &[]);
-    let mut sign_only = send_payload(wallet(), STANDARD, &nonce, SolSendOptions::default());
-    sign_only.mode = SolTxMode::SignOnly;
-    let signed = sign_txs(&vault, approval(sign_only, ApprovalKind::SolTransaction)).unwrap();
-    assert!(
-        parse_wire_tx(&signed[0])
-            .unwrap()
-            .message
-            .durable_nonce()
-            .is_some()
+    let trailing = legacy(
+        [1, 0, 2],
+        &[
+            wallet(),
+            key(0x44),
+            SYSVAR_RECENT_BLOCKHASHES,
+            SYSTEM_PROGRAM,
+        ],
+        vec![ix(3, &[1, 2, 0], &[4, 0, 0, 0, 0xFF])],
     );
-    let nonce_record = SolRecord {
-        tx: signed[0].clone(),
-        dapp: Some(SolDappMeta {
-            signer_slot: 0,
-            flags: dapp_flags::BROADCAST | dapp_flags::FEE_PAYER,
-            ..site_paid.dapp.clone().unwrap()
-        }),
-        ..site_paid
-    };
-    assert_eq!(
-        SolRecord::decode(&nonce_record.encode().unwrap()),
-        Err(SolRecordError::Dapp)
-    );
+    for message in [nonce_message(Vec::new()), trailing] {
+        let nonce = wire(&message, &[]);
+        let mut sign_only = send_payload(wallet(), STANDARD, &nonce, SolSendOptions::default());
+        sign_only.mode = SolTxMode::SignOnly;
+        let signed = sign_txs(&vault, approval(sign_only, ApprovalKind::SolTransaction)).unwrap();
+        assert!(
+            parse_wire_tx(&signed[0])
+                .unwrap()
+                .message
+                .durable_nonce()
+                .is_some()
+        );
+        let nonce_record = SolRecord {
+            tx: signed[0].clone(),
+            dapp: Some(SolDappMeta {
+                signer_slot: 0,
+                flags: dapp_flags::BROADCAST | dapp_flags::FEE_PAYER,
+                ..site_paid.dapp.clone().unwrap()
+            }),
+            ..site_paid.clone()
+        };
+        assert_eq!(
+            SolRecord::decode(&nonce_record.encode().unwrap()),
+            Err(SolRecordError::Dapp)
+        );
+    }
 }
 
 #[test]

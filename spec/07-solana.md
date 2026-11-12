@@ -553,7 +553,7 @@ pub const SOL_DAPP_MAX_PENDING_TOTAL: usize = 32;                               
 - 서명·블록해시·from·to·금액은 tx 바이트 안에 있다. 로드 때 헤더 검사(`record_kind == 0x02`, `record_version == 1`, `state` 1–4, `cluster` 1–2, `source_tag` 1–6과 §13.2의 a·b 규칙, `body_len == 89 + tx_len`, `Pending`·`Expired`면 `terminal_slot == 0`·`terminal_err == 0`) + `parse_transaction` + 재인코딩 동일성 + `verify_strict(from)`이 모두 성공해야 한다. 실패는 [02] §5.4 **본문 오류**다: SOL 보내기만 끄고 "저널 손상"(E-VLT-006)을 표시하며, 그 entry는 브로드캐스트하지 않고 자동 삭제하지 않으며 바이트 그대로 보존한다. 프레이밍 오류(`kind`·`body_len` 범위 등)는 [02] §5.4가 처리한다.
 - 이식 근거(먼저 기록하고 나중에 내보내는 패턴): `archive/spec-v2.4:crates/key-agent/src/durable.rs:725-806,1100-1129`. 이 문서의 상태 수는 4개로 줄인다.
 - 정리: 터미널 상태(2–4) 레코드는 meta `activity["solana:mainnet" | "solana:devnet"]`([02] §5.3)에 아래 `ActivityEntry`로 옮긴(meta 쓰기 성공) 뒤 저널에서 삭제한다. `Pending`은 자동 삭제하지 않는다.
-- 저널 자리 검사(서명 전, [02] §5.4 추가 전 검사): 새 `Pending`을 만들 서명 전에 `entry_count + 1 ≤ 256`, SOL entry 수 + 1 ≤ `SOL_JOURNAL_MAX_RECORDS`, `현재 평문 길이 + 5 + SOL_JOURNAL_MAX_BODY ≤ 16 MiB`를 본다. 넘으면 SOL 종결 레코드를 오래된 것(`signed_at_ms` 오름차순)부터 activity로 옮긴 뒤 지우며 다시 보고, 그래도 넘으면 `journal::JournalError::Full`로 서명·전송하지 않는다(E-TX-005 "거래 저널 공간이 부족합니다", [04] §7). 다른 체인 entry는 지우지 않는다.
+- 저널 자리 검사(서명 전, [02] §5.4 추가 전 검사): 새 `Pending`을 만들 서명 전에 `entry_count + 1 ≤ 256`, SOL entry 수 + 1 ≤ `SOL_JOURNAL_MAX_RECORDS`, `현재 평문 길이 + 5 + SOL_JOURNAL_MAX_BODY_V3 ≤ 16 MiB`(1,629, 템플릿과 dApp `Pending`이 같다)를 본다. 넘으면 SOL 종결 레코드를 오래된 것(`signed_at_ms` 오름차순)부터 activity로 옮긴 뒤 지우며 다시 보고, 그래도 넘으면 `journal::JournalError::Full`로 서명·전송하지 않는다(E-TX-005 "거래 저널 공간이 부족합니다", [04] §7). 다른 체인 entry는 지우지 않는다.
 - 종결 레코드 → [02] §5.3 `ActivityEntry`(SOL 전용 스키마는 없다):
 
 | `ActivityEntry` 필드 | SOL 값 |
