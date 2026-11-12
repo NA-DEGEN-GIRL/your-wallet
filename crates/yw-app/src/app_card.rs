@@ -946,6 +946,7 @@ impl App {
             min,
             max,
             touches: step.touches,
+            per_tx: matches!(step.kind, CardJobKind::ChainMessage),
             serial: crate::yubikey::holders(&self.card.records, step.role)
                 .first()
                 .copied()

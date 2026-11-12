@@ -15,6 +15,7 @@ use yw_core::btc::{BtcNetwork, BtcPubKey, ScriptType};
 use yw_core::policy::{
     BrowserOrigin, BtcGrant, BtcGrantAddress, BtcPurpose, ProviderError, SolGrant,
 };
+use yw_core::sol::SolCluster;
 use yw_core::sol::dapp::{SolCommitment, SolTxMode};
 use yw_json::{Limits, Object, Value};
 
@@ -192,15 +193,20 @@ fn tx_hex(tail: &[u8]) -> TestResult<String> {
 
 /// spec/05 §3.6, §4.9: the three Solana transaction methods need the origin's grant of the
 /// signing key (4100 otherwise, per origin), reach the queue as `SiteKind::SolTx` with the exact
-/// bytes, mode, list flag and options, and a `chain` other than the wallet's cluster (the
-/// fixture view is mainnet) or bad params end -32602 before the queue.
+/// bytes, mode, list flag, options and bound cluster, and a `chain` other than the wallet's
+/// cluster (the fixture view is mainnet) or bad params end -32602 before the queue. Without the
+/// grant a `chain` of the other cluster is 4100 like any other: no page learns the cluster.
 #[test]
 fn solana_transactions_need_the_grant_and_reach_the_queue() -> TestResult {
     let mut h = Harness::new();
     let one = tx_hex(&[1])?;
     let sign = format!(r#"[{{"publicKey":"{SOL_KEY}","transaction":"{one}"}}]"#);
+    let on_devnet =
+        format!(r#"[{{"publicKey":"{SOL_KEY}","transaction":"{one}","chain":"solana:devnet"}}]"#);
     let refused = h.send(SITE, 1, "sol_signTransaction", json(&sign));
     assert_eq!(single(&h, &refused)?, Err(ProviderError::Unauthorized));
+    let probe = h.send(SITE, 1, "sol_signTransaction", json(&on_devnet));
+    assert_eq!(single(&h, &probe)?, Err(ProviderError::Unauthorized));
     h.core.upsert_sol_grant(sol_grant(SITE)?);
     h.out.take();
     h.sink.take();
@@ -230,12 +236,14 @@ fn solana_transactions_need_the_grant_and_reach_the_queue() -> TestResult {
     let [
         SiteKind::SolTx {
             public,
+            cluster: SolCluster::Mainnet,
             txs,
             mode: SolTxMode::SignOnly,
             batch: false,
             ..
         },
         SiteKind::SolTx {
+            cluster: SolCluster::Mainnet,
             txs: listed,
             mode: SolTxMode::SignOnly,
             batch: true,
@@ -261,14 +269,9 @@ fn solana_transactions_need_the_grant_and_reach_the_queue() -> TestResult {
     // -32602 before the queue.
     let elsewhere = h.send(OTHER, 2, "sol_signTransaction", json(&sign));
     assert_eq!(single(&h, &elsewhere)?, Err(ProviderError::Unauthorized));
-    let devnet = h.send(
-        SITE,
-        1,
-        "sol_signTransaction",
-        json(&format!(
-            r#"[{{"publicKey":"{SOL_KEY}","transaction":"{one}","chain":"solana:devnet"}}]"#
-        )),
-    );
+    let elsewhere = h.send(OTHER, 2, "sol_signTransaction", json(&on_devnet));
+    assert_eq!(single(&h, &elsewhere)?, Err(ProviderError::Unauthorized));
+    let devnet = h.send(SITE, 1, "sol_signTransaction", json(&on_devnet));
     assert_eq!(single(&h, &devnet)?, Err(ProviderError::InvalidParams));
     let garbage = h.send(
         SITE,

@@ -659,8 +659,8 @@ impl App {
                         } else if let Some(serial) = self.sol_card_gate(row.source) {
                             self.refuse_card_defaults(site, serial);
                             Some(QueueOutcome::Cancelled)
-                        } else if let SiteKind::SolTx { mode, .. } = &site.kind
-                            && let Some(error) = self.sol_dapp_refusal(public, *mode)
+                        } else if let SiteKind::SolTx { mode, cluster, .. } = &site.kind
+                            && let Some(error) = self.sol_dapp_refusal(public, *cluster, *mode)
                         {
                             self.respond(&site.reply, Err(error));
                             Some(QueueOutcome::Cancelled)
@@ -1905,9 +1905,13 @@ mod tests {
         out
     }
 
+    const DEVNET: yw_core::sol::SolCluster = yw_core::sol::SolCluster::Devnet;
+
+    /// A request of [`sol_tx`] bound to devnet.
     fn sol_tx_kind(mode: yw_core::sol::dapp::SolTxMode) -> SiteKind {
         SiteKind::SolTx {
             public: public(),
+            cluster: DEVNET,
             txs: vec![sol_tx(1)],
             mode,
             batch: false,
@@ -1940,8 +1944,9 @@ mod tests {
     }
 
     /// spec/05 §3.6: a granted dApp transaction request opens its window only with an endpoint
-    /// (4901 otherwise); a send is refused at the pending caps (-32002: 16 of the signer, 32 in
-    /// the journal) and, until the send path exists, with 4200. Not granted: revoked (4100).
+    /// (4901 otherwise) and while its cluster is still the wallet's (-32602, Q16); a send is
+    /// refused at the pending caps (-32002: 16 of the signer, 32 in the journal) and, until the
+    /// send path exists, with 4200. Not granted: revoked (4100).
     #[test]
     fn sol_tx_preflight_refusals() {
         use yw_core::sol::dapp::SolTxMode;
@@ -1958,7 +1963,7 @@ mod tests {
                 .upsert_sol_grant(sol_grant("https://app.example", public()));
         }
         assert_eq!(
-            app.sol_dapp_refusal(&public(), SolTxMode::SignOnly),
+            app.sol_dapp_refusal(&public(), DEVNET, SolTxMode::SignOnly),
             Some(ProviderError::ChainUnavailable)
         );
         assert_eq!(
@@ -1970,11 +1975,14 @@ mod tests {
             crate::network::NetworkId::Solana(crate::network::SolCluster::Devnet),
             &url,
         );
-        assert_eq!(app.sol_dapp_refusal(&public(), SolTxMode::SignOnly), None);
+        assert_eq!(
+            app.sol_dapp_refusal(&public(), DEVNET, SolTxMode::SignOnly),
+            None
+        );
         assert_eq!(app.chain_site_preflight(&sign), Some(None));
         let send = site(sol_tx_kind(SolTxMode::SignAndSend));
         assert_eq!(
-            app.sol_dapp_refusal(&public(), SolTxMode::SignAndSend),
+            app.sol_dapp_refusal(&public(), DEVNET, SolTxMode::SignAndSend),
             Some(ProviderError::UnsupportedMethod)
         );
         assert_eq!(
@@ -1988,24 +1996,273 @@ mod tests {
         };
         app.evm.journal = Some(journal.clone());
         assert_eq!(
-            app.sol_dapp_refusal(&public(), SolTxMode::SignAndSend),
+            app.sol_dapp_refusal(&public(), DEVNET, SolTxMode::SignAndSend),
             Some(ProviderError::UnsupportedMethod)
         );
         journal.sol_records.push(dapp_pending(public()));
         app.evm.journal = Some(journal.clone());
         assert_eq!(
-            app.sol_dapp_refusal(&public(), SolTxMode::SignAndSend),
+            app.sol_dapp_refusal(&public(), DEVNET, SolTxMode::SignAndSend),
             Some(ProviderError::TransactionPending)
         );
         // 32 pending sends of other keys: the whole-journal cap.
         journal.sol_records = vec![dapp_pending([9; 32]); 32];
         app.evm.journal = Some(journal);
         assert_eq!(
-            app.sol_dapp_refusal(&public(), SolTxMode::SignAndSend),
+            app.sol_dapp_refusal(&public(), DEVNET, SolTxMode::SignAndSend),
             Some(ProviderError::TransactionPending)
         );
         // Sign-only never counts pending sends.
-        assert_eq!(app.sol_dapp_refusal(&public(), SolTxMode::SignOnly), None);
+        assert_eq!(
+            app.sol_dapp_refusal(&public(), DEVNET, SolTxMode::SignOnly),
+            None
+        );
+        // The wallet switched to mainnet while a devnet request waited (an endpoint for both).
+        app.apikeys.set_rpc(
+            crate::network::NetworkId::Solana(crate::network::SolCluster::Mainnet),
+            &url,
+        );
+        app.settings.solana.cluster = crate::network::SolCluster::Mainnet;
+        assert_eq!(
+            app.sol_dapp_refusal(&public(), DEVNET, SolTxMode::SignOnly),
+            Some(ProviderError::InvalidParams)
+        );
+        assert_eq!(
+            app.chain_site_preflight(&sign),
+            Some(Some(QueueOutcome::Cancelled))
+        );
+    }
+
+    /// spec/05 §3.6, R-SOLTX: the backup and card gates of `sol_signMessage` hold for a dApp
+    /// transaction too — an account of an added phrase whose backup quiz has not passed, and a
+    /// `YubiKey` account on its factory PINs, are refused before the window (4100, one notice);
+    /// once cleared the request reaches its window.
+    #[test]
+    fn sol_tx_preflight_backup_and_card_gates() {
+        use yw_core::bip32::path::AccountIndex;
+        use yw_core::sol::dapp::SolTxMode;
+        use yw_core::vault::{MnemonicInfo, RecordId};
+        use yw_core::yubikey::plan::{CardSlot, KeyRole, PinPolicy, PivSlot, TouchPolicy};
+        use yw_core::yubikey::record::{HwKeyRecord, HwPublicKey, RecordedSlot};
+        const SERIAL: u32 = 7_700_011;
+        let mut app = app(false);
+        app.settings.solana.cluster = crate::network::SolCluster::Devnet;
+        let url = yw_win::http::HttpsUrl::parse("https://sol.example.test/").unwrap();
+        app.apikeys.set_rpc(
+            crate::network::NetworkId::Solana(crate::network::SolCluster::Devnet),
+            &url,
+        );
+        core(&app).upsert_sol_grant(sol_grant("https://app.example", public()));
+        let sign = site(sol_tx_kind(SolTxMode::SignOnly));
+        let account = || crate::meta::Account {
+            index: 0,
+            label: "SOL 1".to_owned(),
+            address: SOL_KEY.to_owned(),
+            hidden: false,
+        };
+        let notices = |app: &App, text: &str| {
+            app.banners
+                .iter()
+                .filter(|banner| banner.text.contains(text))
+                .count()
+        };
+        // An added phrase's account before its backup quiz.
+        let phrase = RecordId::from_bytes([7; 16]);
+        app.meta
+            .as_mut()
+            .unwrap()
+            .mnemonic_accounts
+            .sol
+            .push((*phrase.as_bytes(), account()));
+        app.mn.infos = vec![MnemonicInfo {
+            id: phrase,
+            created_unix: 0,
+            words: 12,
+            passphrase_used: false,
+            backup_confirmed: false,
+            primary: false,
+        }];
+        for _ in 0..2 {
+            assert_eq!(
+                app.chain_site_preflight(&sign),
+                Some(Some(QueueOutcome::Cancelled))
+            );
+        }
+        assert_eq!(notices(&app, "백업 확인 전이라"), 1);
+        app.mn.infos[0].backup_confirmed = true;
+        assert_eq!(app.chain_site_preflight(&sign), Some(None));
+        // A YubiKey account whose card is still on its factory PINs.
+        let meta = app.meta.as_mut().unwrap();
+        meta.mnemonic_accounts.sol.clear();
+        meta.hw_accounts.sol = vec![account()];
+        meta.hw_accounts.defaults = vec![SERIAL];
+        app.card.records = vec![HwKeyRecord {
+            serial: SERIAL,
+            firmware: yw_core::yubikey::Firmware::new(5, 7, 4),
+            fingerprint: [0; 4],
+            slots: vec![RecordedSlot {
+                slot: CardSlot::Piv(PivSlot::new(0x82).unwrap()),
+                role: KeyRole::Sol {
+                    index: AccountIndex::ZERO,
+                },
+                touch: TouchPolicy::Always,
+                pin: PinPolicy::NotApplicable,
+                public: HwPublicKey::Ed25519(public()),
+                path_known: true,
+            }],
+        }];
+        for _ in 0..2 {
+            assert_eq!(
+                app.chain_site_preflight(&sign),
+                Some(Some(QueueOutcome::Cancelled))
+            );
+        }
+        assert_eq!(
+            notices(&app, "PIN이 아직 공장 기본값이라 서명하지 않았습니다"),
+            1
+        );
+        app.meta.as_mut().unwrap().hw_accounts.defaults.clear();
+        assert_eq!(app.chain_site_preflight(&sign), Some(None));
+    }
+
+    /// One preview entry per transaction (no tables, no simulation result).
+    fn preview(n: usize) -> crate::sol::flow::DappPreview {
+        let item = yw_core::sol::dapp::SolTxItemFacts {
+            tables: Ok((0, Vec::new())),
+            pre: Vec::new(),
+            post: None,
+            sim: yw_core::sol::display::SimSummary::NoResult,
+            sim_replaced_blockhash: false,
+            rpc_fee: Some(5_000),
+            blockhash_valid: Some(true),
+        };
+        crate::sol::flow::DappPreview {
+            items: vec![item; n],
+            mints: Vec::new(),
+            unread_mints: Vec::new(),
+        }
+    }
+
+    /// R-SOLTX, spec/07 §20.7: a failed preview is the window's failure, never a draft without
+    /// it (no X01) — a genesis mismatch E-RPC-006 not retried, a transport error retried; a
+    /// preview of a request whose cluster is no longer the wallet's (switched during the
+    /// preview) is E-RPC-006 too. The draft names the request's cluster. Closing the window
+    /// answers 4001.
+    #[test]
+    fn a_failed_preview_is_the_window_failure_and_closing_answers_4001() {
+        use crate::app_evm::QueuedItem;
+        use crate::errors::ErrorCode;
+        use crate::ui::approval::QueueSource;
+        let mut app = app(true);
+        app.settings.solana.cluster = crate::network::SolCluster::Devnet;
+        let url = yw_win::http::HttpsUrl::parse("https://sol.example.test/").unwrap();
+        app.apikeys.set_rpc(
+            crate::network::NetworkId::Solana(crate::network::SolCluster::Devnet),
+            &url,
+        );
+        let (events, frames, conn) = recorded(&mut app);
+        let request = queued_sol_tx(&app, &events, conn, 1);
+        assert!(matches!(
+            request.kind,
+            SiteKind::SolTx {
+                cluster: DEVNET,
+                ..
+            }
+        ));
+        assert_eq!(
+            app.sol_dapp_draft(&request, Err(ErrorCode::Rpc006)),
+            Err((ErrorCode::Rpc006, false))
+        );
+        assert_eq!(
+            app.sol_dapp_draft(&request, Err(ErrorCode::Rpc001)),
+            Err((ErrorCode::Rpc001, true))
+        );
+        let draft = app.sol_dapp_draft(&request, Ok(preview(1))).unwrap();
+        assert!(matches!(
+            draft.chain,
+            yw_core::approval::ChainRef::Solana {
+                cluster: DEVNET,
+                ..
+            }
+        ));
+        app.settings.solana.cluster = crate::network::SolCluster::Mainnet;
+        assert_eq!(
+            app.sol_dapp_draft(&request, Ok(preview(1))),
+            Err((ErrorCode::Rpc006, false))
+        );
+        app.settings.solana.cluster = crate::network::SolCluster::Devnet;
+        // The failed window is closed: the dApp gets 4001.
+        let source = QueueSource::Site {
+            origin: request.origin.as_str().to_owned(),
+            deadline_ms: u64::MAX,
+        };
+        app.evm
+            .queue
+            .enqueue(source, QueuedItem::Site(Box::new(request.clone())))
+            .unwrap();
+        assert_eq!(next_window(&mut app), Some(request));
+        assert!(answers(&frames).is_empty());
+        if let Some((done, outcome)) = app.evm.queue.finish_shown(QueueOutcome::Rejected) {
+            app.approval_finished(&done.payload, outcome);
+        }
+        assert_eq!(answers(&frames), vec![Err(ProviderError::UserRejected)]);
+    }
+
+    /// spec/07 §20.8 (step 6): an approved sign-only request leaves one chain-message waiter
+    /// (`ChainAnswer::SolTx`, not a send) and a `SignChainMessage` job for its ticket; an
+    /// approved send is answered 4200 with no waiter and no job until the send path exists.
+    #[test]
+    fn approved_sign_only_goes_to_the_key_worker_and_a_send_is_refused() {
+        use crate::app_browser::SignWaiter;
+        use crate::events::KeyJob;
+        use yw_core::sol::dapp::SolTxMode;
+        let mut app = app(true);
+        app.settings.solana.cluster = crate::network::SolCluster::Devnet;
+        let (events, frames, conn) = recorded(&mut app);
+        let approve = |app: &App, site: &SiteRequest| {
+            let draft = app.sol_dapp_draft(site, Ok(preview(1))).unwrap();
+            let mut store = yw_core::approval::ApprovalStore::new();
+            let request = store.issue(draft, 1, 1_800_000_000_000).unwrap();
+            store.consume(request.id, request.digest, 2).unwrap()
+        };
+        let sign = queued_sol_tx(&app, &events, conn, 1);
+        let approved = approve(&app, &sign);
+        app.sol_dapp_consumed(approved, &sign);
+        let waiters: Vec<_> = app.browser.as_ref().unwrap().waiters.iter().collect();
+        let [(ticket, SignWaiter::Chain(reply, answer))] = waiters.as_slice() else {
+            unreachable!("one chain waiter, got {}", waiters.len());
+        };
+        let ticket = **ticket;
+        assert_eq!(*reply, sign.reply);
+        assert_eq!(
+            **answer,
+            ChainAnswer::SolTx {
+                public: public(),
+                origin: sign.origin.clone(),
+                batch: false,
+                send: false,
+            }
+        );
+        let Some((_, KeyJob::SignChainMessage { ticket: job, .. })) = app.key_queue.pop() else {
+            unreachable!("a SignChainMessage job");
+        };
+        assert_eq!(job, ticket);
+        assert!(app.key_queue.is_empty());
+        assert!(answers(&frames).is_empty());
+        app.browser.as_mut().unwrap().waiters.clear();
+        // A send (refused at preflight in this step) is never signed here either.
+        let mut send = queued_sol_tx(&app, &events, conn, 2);
+        if let SiteKind::SolTx { mode, .. } = &mut send.kind {
+            *mode = SolTxMode::SignAndSend;
+        }
+        let approved = approve(&app, &send);
+        app.sol_dapp_consumed(approved, &send);
+        assert!(app.browser.as_ref().unwrap().waiters.is_empty());
+        assert!(app.key_queue.is_empty());
+        assert_eq!(
+            answers(&frames),
+            vec![Err(ProviderError::UnsupportedMethod)]
+        );
     }
 
     /// A recorded connection on a fresh dispatcher of `app`, unlocked with the app's accounts

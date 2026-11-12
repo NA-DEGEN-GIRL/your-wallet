@@ -384,13 +384,15 @@ fn w07_solana_and_bitcoin_fields_take_their_formats() {
 /// W11 (spec/10 §9.1): one masked field with the applet's bounds (PIV 6–8 here), ASCII only,
 /// no copy (Ctrl+C does nothing), capture exclusion preferred like the other input windows, the
 /// submitted PIN moved out as an owned `Zeroizing` buffer and the field wiped; the title and the
-/// "N회 터치" line follow the kind.
+/// "N회 터치" line follow the kind (per input for Bitcoin and Zcash, per transaction for a Solana
+/// dApp request).
 #[test]
 fn w11_card_pin_bounds_mask_and_owned_buffer() {
     let kind = SecretKind::CardPin {
         min: 6,
         max: 8,
         touches: 3,
+        per_tx: false,
         serial: 7_700_011,
     };
     assert_eq!(kind.id(), "W11");
@@ -404,13 +406,32 @@ fn w11_card_pin_bounds_mask_and_owned_buffer() {
     assert!(intro[0].starts_with(
         "1. YubiKey #7700011 연결 → 2. PIN 입력 후 확인 → 3. 깜박이면 15초 안에 터치"
     ));
-    assert!(intro[1].contains("YubiKey 터치 3회가 필요합니다"));
+    assert!(intro[1].contains("YubiKey 터치 3회가 필요합니다 (입력마다 한 번,"));
+    let per_tx = super::intro(
+        SecretKind::CardPin {
+            min: 6,
+            max: 8,
+            touches: 3,
+            per_tx: true,
+            serial: 7_700_011,
+        },
+        0,
+        false,
+    );
+    assert!(
+        per_tx[1].contains("YubiKey 터치 3회가 필요합니다 (거래마다 한 번,")
+            && per_tx[1].contains("15초 안의 거래는 터치 없이")
+            && !per_tx[1].contains("입력"),
+        "{}",
+        per_tx[1]
+    );
     assert_eq!(
         super::intro(
             SecretKind::CardPin {
                 min: 6,
                 max: 127,
                 touches: 1,
+                per_tx: false,
                 serial: 0,
             },
             0,

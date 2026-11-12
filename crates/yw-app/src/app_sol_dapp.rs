@@ -5,13 +5,13 @@
 //! `browser_chain_message_signed` after the grant re-check). The wallet never builds or changes
 //! these transactions; the core signs the exact approved bytes in our slot.
 
-use yw_core::approval::{Approved, SigningPayload};
+use yw_core::approval::{ApprovalDraft, Approved, SigningPayload};
 use yw_core::journal::sol::{
     SOL_DAPP_MAX_PENDING, SOL_DAPP_MAX_PENDING_TOTAL, pending_dapp_count, pending_dapp_total,
 };
 use yw_core::policy::ProviderError;
-use yw_core::sol::SolAddress;
 use yw_core::sol::dapp::{SolTxMode, SolTxRequest, build_sol_tx_request};
+use yw_core::sol::{SolAddress, SolCluster};
 
 use crate::app::App;
 use crate::app_browser::SignWaiter;
@@ -25,17 +25,22 @@ use crate::sol::flow::{DappPreview, DappPreviewJob};
 use crate::workers::rpc::RpcJob;
 
 impl App {
-    /// Why a granted dApp transaction request of `public` ends before its window (spec/05 §3.6):
-    /// no endpoint for the cluster (4901; the preview needs RPC), or for a send the (cluster,
-    /// signer) or whole-journal cap of pending dApp sends (-32002). `None`: open the window.
+    /// Why a granted dApp transaction request of `public` on `cluster` ends before its window
+    /// (spec/05 §3.6): `cluster` is no longer the wallet's (-32602, Q16: switched while it
+    /// waited), no endpoint for the cluster (4901; the preview needs RPC), or for a send the
+    /// (cluster, signer) or whole-journal cap of pending dApp sends (-32002). `None`: open the
+    /// window.
     ///
     /// Step 6 of the rollout: a send is refused with 4200 until the send path exists.
     pub(crate) fn sol_dapp_refusal(
         &self,
         public: &[u8; 32],
+        cluster: SolCluster,
         mode: SolTxMode,
     ) -> Option<ProviderError> {
-        let cluster = self.sol_cluster();
+        if cluster != self.sol_cluster() {
+            return Some(ProviderError::InvalidParams);
+        }
         if self.sol_endpoint(cluster).is_err() {
             return Some(ProviderError::ChainUnavailable);
         }
@@ -54,11 +59,19 @@ impl App {
 
     /// The preview on the RPC worker (called by `prepare_site`, spec/07 §20.7).
     pub(crate) fn prepare_sol_dapp(&mut self, job: u64, site: &SiteRequest) {
-        let SiteKind::SolTx { public, txs, .. } = &site.kind else {
+        let SiteKind::SolTx {
+            public,
+            cluster,
+            txs,
+            ..
+        } = &site.kind
+        else {
             self.show_failure(ErrorCode::App009, false, ErrorCode::App009.text());
             return;
         };
-        let endpoint = match self.sol_endpoint(self.sol_cluster()) {
+        // The request's cluster, never the one shown now: the preview facts, the draft and the
+        // signature all belong to the cluster the dApp asked for.
+        let endpoint = match self.sol_endpoint(*cluster) {
             Ok(endpoint) => endpoint,
             Err(code) => {
                 self.show_failure(code, false, code.text());
@@ -76,9 +89,8 @@ impl App {
         }
     }
 
-    /// The preview of the shown request finished: the draft from the core builder with the
-    /// address book, own accounts and the fee cap, or the failure (a genesis mismatch is
-    /// E-RPC-006, not retried).
+    /// The preview of the shown request finished: its draft ([`Self::sol_dapp_draft`]) or the
+    /// failure goes to the window.
     pub(crate) fn on_sol_dapp_previewed(
         &mut self,
         job: u64,
@@ -91,44 +103,55 @@ impl App {
             },
             _ => return,
         };
-        let preview = match result {
-            Ok(preview) => preview,
-            Err(code) => {
-                logging::warn(
-                    "app",
-                    "sol.dapp_preview_failed",
-                    &[("code", Field::Code(code))],
-                );
-                self.show_failure(code, crate::sol::flow::retryable(code), code.text());
-                return;
-            }
-        };
+        match self.sol_dapp_draft(&site, result) {
+            Ok(draft) => self.show_ready_draft(draft, None),
+            Err((code, retryable)) => self.show_failure(code, retryable, code.text()),
+        }
+    }
+
+    /// The approval draft of the dApp transaction request `site` from its preview: the core
+    /// builder with the address book, own accounts and the fee cap, on the request's cluster.
+    /// Otherwise the window's failure `(code, retryable)`, never a draft without the preview (no
+    /// X01): the wallet switched to another cluster since the request came (Q16) or a genesis
+    /// mismatch is E-RPC-006, not retried; a transport error keeps its own code.
+    pub(crate) fn sol_dapp_draft(
+        &self,
+        site: &SiteRequest,
+        result: Result<DappPreview, ErrorCode>,
+    ) -> Result<ApprovalDraft, (ErrorCode, bool)> {
         let SiteKind::SolTx {
             public,
+            cluster,
             txs,
             mode,
             options,
             ..
         } = &site.kind
         else {
-            return;
+            return Err((ErrorCode::App009, false));
         };
-        let Some(row) = self
+        if *cluster != self.sol_cluster() {
+            logging::warn("app", "sol.dapp_cluster_changed", &[]);
+            return Err((ErrorCode::Rpc006, false));
+        }
+        let preview = result.map_err(|code| {
+            logging::warn(
+                "app",
+                "sol.dapp_preview_failed",
+                &[("code", Field::Code(code))],
+            );
+            (code, crate::sol::flow::retryable(code))
+        })?;
+        let row = self
             .sol_dapp_rows()
             .into_iter()
             .find(|row| row.public == *public)
-        else {
-            self.show_failure(ErrorCode::App009, false, ErrorCode::App009.text());
-            return;
-        };
-        let Ok(id) = Self::new_approval_id() else {
-            self.show_failure(ErrorCode::Vlt005, false, ErrorCode::Vlt005.text());
-            return;
-        };
+            .ok_or((ErrorCode::App009, false))?;
+        let id = Self::new_approval_id().map_err(|_| (ErrorCode::Vlt005, false))?;
         let request = SolTxRequest {
             id,
             origin: site.origin.clone(),
-            cluster: self.sol_cluster(),
+            cluster: *cluster,
             source: row.source,
             public: *public,
             label: row.label,
@@ -137,10 +160,7 @@ impl App {
             txs: txs.clone(),
         };
         let facts = preview.into_facts(self.sol_known(), self.settings.solana.max_fee_lamports);
-        match build_sol_tx_request(&request, &facts) {
-            Ok(draft) => self.show_ready_draft(draft, None),
-            Err(_) => self.show_failure(ErrorCode::App009, false, ErrorCode::App009.text()),
-        }
+        build_sol_tx_request(&request, &facts).map_err(|_| (ErrorCode::App009, false))
     }
 
     /// An approved dApp transaction request (spec/07 §20.8): the waiter that answers it, then a

@@ -315,6 +315,10 @@ pub enum SiteKind {
     SolTx {
         /// Signing account (a granted one).
         public: [u8; 32],
+        /// The cluster the request is bound to: the dApp's `chain`, else the wallet's cluster
+        /// when it arrived. The preflight, the preview and the draft use it, and refuse it once
+        /// it is no longer the wallet's cluster (spec/05 §3.6, -32602).
+        cluster: yw_core::sol::SolCluster,
         /// The wire transactions, in request order.
         txs: Vec<Vec<u8>>,
         /// Sign only or sign and send.

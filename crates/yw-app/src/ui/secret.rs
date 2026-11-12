@@ -124,7 +124,8 @@ pub enum SecretKind {
     },
     /// W11 `YubiKey` PIN (spec/10 §9.1): one masked ASCII field of `min..=max` characters
     /// (`OpenPGP` PW1 6–127, PIV 6–8), for one card operation; `touches` > 1 adds the
-    /// "`YubiKey` 터치 N회가 필요합니다" line (one touch per Bitcoin input).
+    /// "`YubiKey` 터치 N회가 필요합니다" line (one touch per Bitcoin or Zcash input, or per
+    /// transaction of a Solana dApp request when `per_tx`).
     CardPin {
         /// Shortest PIN.
         min: u8,
@@ -132,6 +133,8 @@ pub enum SecretKind {
         max: u8,
         /// Card signatures (touches) the operation needs.
         touches: u8,
+        /// One touch per transaction ("거래마다", a Solana dApp request), not per input.
+        per_tx: bool,
         /// The card to connect (the first holding the key; 0 when unknown).
         serial: u32,
     },
@@ -698,12 +701,20 @@ fn intro(kind: SecretKind, words: usize, address: bool) -> Vec<String> {
             vec![T_CARD_USER_PIN.to_owned()]
         }
         SecretKind::CardPin {
-            touches, serial, ..
+            touches,
+            per_tx,
+            serial,
+            ..
         } => {
             let mut lines = vec![format!("{}. {T_CARD_PIN}", card_pin_steps(serial))];
             if touches > 1 {
+                let (unit, topic) = if per_tx {
+                    ("거래", "거래는")
+                } else {
+                    ("입력", "입력은")
+                };
                 lines.push(format!(
-                    "YubiKey 터치 {touches}회가 필요합니다 (입력마다 한 번, 15초 유지 정책이면 첫 터치 뒤 15초 안의 입력은 터치 없이 서명됩니다)."
+                    "YubiKey 터치 {touches}회가 필요합니다 ({unit}마다 한 번, 15초 유지 정책이면 첫 터치 뒤 15초 안의 {topic} 터치 없이 서명됩니다)."
                 ));
             }
             lines

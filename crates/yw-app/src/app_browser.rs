@@ -1413,15 +1413,25 @@ mod tests {
     }
 
     /// C2: signing results are matched to their waiters by ticket, so a result for a later job
-    /// (or a dropped one) never answers another dApp request.
+    /// (or a dropped one) never answers another dApp request — a Solana dApp transaction's
+    /// waiter (`ChainAnswer::SolTx`) included.
     #[test]
     fn signing_results_answer_their_own_ticket() {
         let mut app = app();
         let first = app.push_sign_waiter(SignWaiter::Tx(reply(1)));
         let message = app.push_sign_waiter(SignWaiter::Message(reply(2)));
+        let sol = app.push_sign_waiter(SignWaiter::Chain(
+            reply(4),
+            Box::new(crate::app_chain_sites::ChainAnswer::SolTx {
+                public: [1; 32],
+                origin: yw_core::policy::BrowserOrigin::parse("https://app.example").unwrap(),
+                batch: false,
+                send: false,
+            }),
+        ));
         let second = app.push_sign_waiter(SignWaiter::Tx(reply(3)));
         let own = app.push_sign_waiter(SignWaiter::App);
-        assert!(first != message && message != second && second != own);
+        assert!(first != message && message != sol && sol != second && second != own);
         // Out of queue order: the second transaction finishes first.
         app.browser_tx_signed(second, Ok([0x33; 32]));
         assert_eq!(broadcast_reply(&app, [0x33; 32]), Some(reply(3)));
@@ -1437,6 +1447,14 @@ mod tests {
         app.browser_tx_signed(crate::events::SignTicket(999), Ok([0x55; 32]));
         assert_eq!(broadcast_reply(&app, [0x44; 32]), None);
         assert_eq!(broadcast_reply(&app, [0x55; 32]), None);
+        // The Solana transactions' waiter is still there; its own result takes it.
+        assert!(app.browser.as_ref().is_some_and(|browser| {
+            browser.waiters.len() == 1 && browser.waiters.contains_key(&sol)
+        }));
+        app.browser_chain_message_signed(&crate::events::ChainMessageSigned {
+            ticket: sol,
+            result: Ok(crate::events::ChainSignature::SolTxs(vec![vec![0xab]])),
+        });
         assert!(
             app.browser
                 .as_ref()
@@ -1471,10 +1489,24 @@ mod tests {
         }
     }
 
+    /// A `sol_signTransaction` request of key `[1; 32]` (an empty transaction list: the
+    /// passphrase check comes before any other).
+    fn sol_tx_kind() -> crate::browser::SiteKind {
+        crate::browser::SiteKind::SolTx {
+            public: [1; 32],
+            cluster: yw_core::sol::SolCluster::Devnet,
+            txs: Vec::new(),
+            mode: yw_core::sol::dapp::SolTxMode::SignOnly,
+            batch: false,
+            options: yw_core::sol::dapp::SolSendOptions::default(),
+        }
+    }
+
     /// spec/02 §7.5: while `App::passphrase_unverified` the dispatcher view refuses connect and
-    /// signing (4100 `PassphraseUnverified`), a request that slipped through is answered without
-    /// a queue entry, and site requests queued while locked end `PassphraseUnverified` once the
-    /// session turns out unverified. A verified session is unaffected.
+    /// signing (4100 `PassphraseUnverified`; Solana dApp transactions included), a request that
+    /// slipped through is answered without a queue entry, and site requests queued while locked
+    /// end `PassphraseUnverified` once the session turns out unverified. A verified session is
+    /// unaffected.
     #[test]
     fn unverified_passphrase_refuses_dapp_connect_and_signing() {
         use crate::app::AppMode;
@@ -1501,6 +1533,7 @@ mod tests {
             SiteKind::RequestAccounts,
             SiteKind::RequestPermissions,
             sign_kind(),
+            sol_tx_kind(),
         ] {
             assert_eq!(
                 app.site_preflight(&site(1, kind)),
@@ -1517,6 +1550,7 @@ mod tests {
             3,
             SiteKind::RequestAccounts,
         ))));
+        app.on_dapp_event(DappEvent::Request(Box::new(site(7, sol_tx_kind()))));
         assert!(app.evm.queue.is_empty());
         // Queued while locked, then unlocked with the unverified passphrase: finished, no window.
         app.mode = AppMode::Locked;
@@ -1526,7 +1560,8 @@ mod tests {
             5,
             SiteKind::RequestAccounts,
         ))));
-        assert_eq!(app.evm.queue.len(), 2);
+        app.on_dapp_event(DappEvent::Request(Box::new(site(8, sol_tx_kind()))));
+        assert_eq!(app.evm.queue.len(), 3);
         app.mode = AppMode::Unlocked {
             alt_passphrase: true,
         };

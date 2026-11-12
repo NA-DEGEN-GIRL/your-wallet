@@ -47,9 +47,9 @@ use crate::sol::template::{set_compute_unit_limit_data, spl_entries, system_tran
 use crate::sol::token::MintView;
 use crate::vault::tests::unlocked_with;
 
-/// `abandon`×11 `about`, standard account 0 (spec/07 §17.1).
-pub(super) const ABOUT: &str =
-    "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+/// `abandon`×11 `about`, standard account 0 (spec/07 §17.1). The literal stays in `sol/tests.rs`,
+/// a path the privacy scan accepts for test vectors.
+pub(super) use crate::sol::tests::ABOUT;
 const FROM: &str = "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk";
 pub(super) const CLUSTER: SolCluster = SolCluster::Devnet;
 

@@ -1568,20 +1568,14 @@ impl BrowserCore {
                             batch,
                             options,
                         },
-                    ) => {
-                        // spec/05 §3.6: a `chain` the dApp names must be the wallet's cluster.
-                        if chain.is_some_and(|chain| chain != state.wallet.sol_cluster) {
-                            immediate(&mut state, Err(ProviderError::InvalidParams));
-                            return;
-                        }
-                        SiteKind::SolTx {
-                            public,
-                            txs,
-                            mode,
-                            batch,
-                            options,
-                        }
-                    }
+                    ) => SiteKind::SolTx {
+                        public,
+                        cluster: chain.unwrap_or(state.wallet.sol_cluster),
+                        txs,
+                        mode,
+                        batch,
+                        options,
+                    },
                     _ => {
                         immediate(&mut state, Err(ProviderError::Internal));
                         return;
@@ -1598,6 +1592,19 @@ impl BrowserCore {
                 };
                 if let Err(error) = Self::admit_site(&state, &admission, &kind) {
                     immediate(&mut state, Err(error));
+                    return;
+                }
+                // spec/05 §3.6: a `chain` the dApp names must be the wallet's cluster. Answered
+                // here only to an origin holding the grant of the key, after admission, so a page
+                // without one cannot learn the cluster; any other request is checked by the
+                // preflight once its grant is.
+                if let SiteKind::SolTx {
+                    public, cluster, ..
+                } = &kind
+                    && *cluster != state.wallet.sol_cluster
+                    && sol_grant.as_ref().is_some_and(|g| g.public == *public)
+                {
+                    immediate(&mut state, Err(ProviderError::InvalidParams));
                     return;
                 }
                 let key = reply.key();

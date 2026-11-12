@@ -1121,6 +1121,7 @@ fn tour_yubikey(app: &Rc<RefCell<App>>) {
             min: 6,
             max: 127,
             touches: 1,
+            per_tx: false,
             serial: 12_345_678,
         },
         Purpose::CardSign(0),

@@ -2623,9 +2623,11 @@ impl App {
         }
         let (evm_chain, sol_cluster) = match (self.evm.window.as_ref().map(|ui| &ui.item), family) {
             (Some(QueuedItem::Sol(item)), _) => (None, Some(item.cluster)),
-            (Some(QueuedItem::Site(_)), yw_core::policy::Family::Solana) => {
-                (None, Some(self.sol_cluster()))
-            }
+            // A dApp transaction shows the cluster it is bound to, whatever is selected now.
+            (Some(QueuedItem::Site(site)), yw_core::policy::Family::Solana) => match &site.kind {
+                SiteKind::SolTx { cluster, .. } => (None, Some(*cluster)),
+                _ => (None, Some(self.sol_cluster())),
+            },
             (Some(QueuedItem::Site(_)), yw_core::policy::Family::Bitcoin)
             | (
                 Some(QueuedItem::Btc(_) | QueuedItem::Zec(_) | QueuedItem::HyperCore(_)) | None,
