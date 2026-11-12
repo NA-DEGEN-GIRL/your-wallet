@@ -531,15 +531,18 @@ fn several_yubikeys_with_different_index_ranges_and_backup_copies() {
         let plan = [sig(evm(first)), aut(evm(first + 1))];
         records.push(enrol(&mut card, ABOUT, &plan, &records).unwrap().record);
     }
-    // Same path on another card without the backup flag is refused before anything is written.
-    let mut card = MockCard::new(104);
+    // Same path on another card without the backup flag is a copy too, and may sit next to a
+    // new key (2026-11-12): #1's EVM 0 and a new EVM 9.
+    let mut mixed = MockCard::new(105);
+    let enrolled = enrol(&mut mixed, ABOUT, &[sig(evm(0)), aut(evm(9))], &records).unwrap();
     assert_eq!(
-        enrol(&mut card, ABOUT, &[sig(evm(0))], &records).err(),
-        Some(EnrolError::Plan(PlanError::PathOnOtherCard(
-            CardSlot::OpenPgp(PgpKey::Sig)
-        )))
+        enrolled.record.slots.first().map(|slot| slot.public),
+        records
+            .first()
+            .and_then(|record| record.slots.first())
+            .map(|slot| slot.public)
     );
-    assert!(card.pgp_keys.iter().all(Option::is_none));
+    let mut card = MockCard::new(104);
     // Backup flag on a path no other card has.
     let mut flagged = sig(evm(9));
     flagged.backup_copy = true;
@@ -791,9 +794,10 @@ fn validate_before_card_and_address_texts() {
     let first = enrol(&mut card, ABOUT, &[sig(evm(0)), aut(btc(0))], &[]).unwrap();
     let records = [first.record.clone()];
     let fingerprint = first.record.fingerprint;
+    // Another card's path is a copy with or without the flag (2026-11-12).
     assert_eq!(
-        validate_before_card(&records, fingerprint, &[sig(evm(0))]),
-        Err(PlanError::PathOnOtherCard(CardSlot::OpenPgp(PgpKey::Sig)))
+        validate_before_card(&records, fingerprint, &[sig(evm(0)), aut(evm(7))]),
+        Ok(())
     );
     let mut copy = sig(evm(0));
     copy.backup_copy = true;

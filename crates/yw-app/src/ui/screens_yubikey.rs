@@ -1037,7 +1037,7 @@ impl App {
                 wizard.backup_of.is_some(),
             )]));
             items.push(Item::Help(
-                "같은 키를 다른 YubiKey에도 넣어 예비용으로 씁니다. 이미 등록한 YubiKey의 슬롯 구성을 그대로 따릅니다."
+                "같은 키를 다른 YubiKey에도 넣어 예비용으로 씁니다. 이미 등록한 YubiKey의 슬롯 구성을 그대로 따릅니다. 다른 구성(예: 같은 EVM 키 + 새 Zcash 키)은 이 체크를 끄고 아래에서 슬롯을 직접 고르세요 — 다른 YubiKey에 이미 있는 키는 확인 화면에 표시만 하고 그대로 넣습니다."
                     .to_owned(),
             ));
             if let Some(serial) = wizard.backup_of {
@@ -1242,7 +1242,7 @@ impl App {
                     if planned.backup_copy {
                         "백업 복사본"
                     } else {
-                        "이미 다른 YubiKey에 있음"
+                        "이미 다른 YubiKey에 있음 (이 YubiKey에도 같은 키를 넣습니다)"
                     },
                     list.join(", ")
                 )

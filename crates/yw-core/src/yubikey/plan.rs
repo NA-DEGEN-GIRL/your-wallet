@@ -553,8 +553,6 @@ pub enum PlanError {
     CardAlreadyEnrolled,
     /// [`MAX_CARDS`] cards are enrolled.
     TooManyCards,
-    /// The path is already on another card but the slot is not marked as a backup copy.
-    PathOnOtherCard(CardSlot),
     /// The slot is marked as a backup copy but no other card holds the path.
     NotACopy(CardSlot),
     /// The mnemonic is not the one of the cards already enrolled (master fingerprint differs).
@@ -592,11 +590,6 @@ impl core::fmt::Display for PlanError {
                 "이 YubiKey는 이미 등록되어 있습니다. 다시 등록하려면 먼저 등록을 지우세요.",
             ),
             Self::TooManyCards => formatter.write_str("YubiKey는 최대 8개까지 등록할 수 있습니다."),
-            Self::PathOnOtherCard(slot) => write!(
-                formatter,
-                "{}: 이 키는 다른 YubiKey에 이미 있습니다. 같은 키를 넣으려면 '백업 복사본'으로 고르세요.",
-                slot.label()
-            ),
             Self::NotACopy(slot) => write!(
                 formatter,
                 "{}: '백업 복사본'으로 골랐지만 다른 YubiKey에 같은 키가 없습니다.",
@@ -699,10 +692,11 @@ pub fn validate_before_card(
                 .iter()
                 .any(|held| held.role.key_identity() == identity)
         });
-        match (elsewhere, planned.backup_copy) {
-            (true, false) => return Err(PlanError::PathOnOtherCard(planned.slot)),
-            (false, true) => return Err(PlanError::NotACopy(planned.slot)),
-            _ => {}
+        // A path another card holds is simply a copy of that key on this card (2026-11-12: the
+        // confirmation screen says which cards hold it; before, it was refused unless the whole
+        // card was enrolled as a `백업 복사본`, so a card could not mix copied and new keys).
+        if planned.backup_copy && !elsewhere {
+            return Err(PlanError::NotACopy(planned.slot));
         }
     }
     Ok(())
