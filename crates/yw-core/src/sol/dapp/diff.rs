@@ -199,9 +199,10 @@ fn authority_changes(
 }
 
 /// The changes of the accounts in `post` against `pre` (spec/07 §20.7), authority changes
-/// first: the wallet's lamports and owner program; for token accounts, the public balance of
-/// those the wallet owns (before or after), every owner, delegate or close-authority change,
-/// closing; and accounts the pre-state lists as missing that exist after.
+/// first: the wallet's lamports and owner program when the pre-state lists it; for token
+/// accounts, the public balance of those the wallet owns (before or after), every owner,
+/// delegate or close-authority change, closing; and accounts the pre-state lists as missing
+/// that exist after.
 #[must_use]
 pub fn changes(
     wallet: &SolAddress,
@@ -218,6 +219,11 @@ pub fn changes(
             .iter()
             .any(|(listed, snapshot)| listed == account && snapshot.is_none());
         if account == wallet {
+            // The pre-state lists the writable accounts only: a wallet that signs read-only (a
+            // site pays the fee) is watched but cannot change, and a missing entry is not 0.
+            if before.is_none() && !listed_missing {
+                continue;
+            }
             let (pre_lamports, post_lamports) = (
                 before.map_or(0, |snapshot| snapshot.lamports),
                 after.as_ref().map_or(0, |snapshot| snapshot.lamports),

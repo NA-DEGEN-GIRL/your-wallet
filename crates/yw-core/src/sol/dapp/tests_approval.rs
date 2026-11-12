@@ -34,8 +34,9 @@ use crate::evm::risk::{
 use crate::policy::BrowserOrigin;
 use crate::slip10::SolKeySource;
 use crate::sol::address::{
-    ATA_PROGRAM, COMPUTE_BUDGET_PROGRAM, ED25519_PRECOMPILE, MEMO_PROGRAM_V2, SYSTEM_PROGRAM,
-    SYSVAR_RECENT_BLOCKHASHES, SolAddress, SolCluster, TOKEN_2022_PROGRAM, TOKEN_PROGRAM, grouped,
+    ATA_PROGRAM, BPF_LOADER_UPGRADEABLE, COMPUTE_BUDGET_PROGRAM, ED25519_PRECOMPILE,
+    MEMO_PROGRAM_V2, SYSTEM_PROGRAM, SYSVAR_CLOCK, SYSVAR_RECENT_BLOCKHASHES, SYSVAR_RENT,
+    SolAddress, SolCluster, TOKEN_2022_PROGRAM, TOKEN_PROGRAM, grouped,
 };
 use crate::sol::display::SimSummary;
 use crate::sol::message::CompiledIx;
@@ -300,7 +301,9 @@ fn plain_transfer_is_a_caution_sign_only_request() {
         "[Solana devnet (테스트)] 사이트 거래 서명"
     );
     assert!(field(&draft, FieldKey::SOL_TX_SUMMARY).starts_with("서명만"));
-    assert!(field(&draft, FieldKey::SOL_TX_CHANGES).contains("내 지갑 SOL -0.000006000 SOL"));
+    assert!(field(&draft, FieldKey::SOL_TX_CHANGES).contains(
+        "내 지갑 SOL -0.000006000 SOL (1,000,000,000 → 999,994,000 lamports, 수수료 포함)"
+    ));
     assert!(field(&draft, FieldKey::SOL_TX_INSTRUCTIONS).contains("System: SOL 보내기 (Transfer)"));
     assert!(field(&draft, FieldKey::SOL_TX_FEE).contains("수수료 지불: 내 지갑"));
     assert!(field(&draft, FieldKey::SOL_TX_VALIDITY).starts_with("블록해시 유효 확인됨"));
@@ -541,6 +544,27 @@ fn site_signatures_and_foreign_fee_payer() {
     assert!(signers.contains("서명자 1 · 수수료 지불"));
     assert!(signers.contains("사이트가 넣은 서명 (확인됨)"));
     assert!(signers.contains("지갑이 서명합니다"));
+    // The site pays the fee: the wallet's SOL change does not include it.
+    let changes = field(&draft, FieldKey::SOL_TX_CHANGES);
+    assert!(changes.contains("내 지갑 SOL "), "{changes}");
+    assert!(!changes.contains("수수료 포함"), "{changes}");
+    // The wallet only signs read-only (an authority): not in the pre-state, so its watched
+    // balance is no change rather than a gain from 0.
+    let readonly = legacy(
+        [2, 1, 1],
+        &[site_address(), wallet(), SYSTEM_PROGRAM],
+        vec![ix(2, &[0, 0], &system_transfer_data(1))],
+    );
+    let mut item = ok_facts();
+    item.pre = vec![(
+        site_address(),
+        Some(snapshot(SYSTEM_PROGRAM, 1_000_000_000, Vec::new())),
+    )];
+    let draft = draft_of(wire(&readonly, &[(0, &site_key())]), item);
+    assert_eq!(
+        field(&draft, FieldKey::SOL_TX_CHANGES),
+        "지켜본 계정(내 지갑·내 토큰 계정·새 계정)에 변화 없음"
+    );
     // A broken site signature is X01: shown, never approvable.
     let mut broken = signed;
     broken[5] ^= 1;
@@ -550,6 +574,39 @@ fn site_signatures_and_foreign_fee_payer() {
     assert_eq!(
         issue_and_consume(draft).unwrap_err(),
         ApprovalError::Blocked
+    );
+}
+
+#[test]
+fn runtime_demotion_is_the_runtime_rule() {
+    // Writable keys: a non-sysvar whose base58 starts with "Sysvar", the Clock sysvar, the
+    // Token program (not invoked) and a program `0x77…` that instruction 0 calls.
+    let vanity = SolAddress::parse("SysvarRent111111111111111111111111111111112").unwrap();
+    assert!(vanity.to_base58().starts_with("Sysvar") && vanity != SYSVAR_RENT);
+    let program = key(0x77);
+    let demoted = |extra: &[SolAddress]| {
+        let mut keys = vec![wallet(), vanity, SYSVAR_CLOCK, TOKEN_PROGRAM, program];
+        keys.extend_from_slice(extra);
+        let tx = wire(&legacy([1, 0, 0], &keys, vec![ix(4, &[0], &[])]), &[]);
+        let writable = field(&draft_of(tx, ok_facts()), FieldKey::SOL_TX_WRITABLE);
+        let lines: Vec<&str> = writable.lines().collect();
+        keys.iter()
+            .filter(|address| {
+                let at = lines
+                    .iter()
+                    .position(|line| *line == grouped(address))
+                    .unwrap();
+                lines.get(at + 2) == Some(&"(런타임에서 읽기 전용)")
+            })
+            .copied()
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(demoted(&[]), vec![SYSVAR_CLOCK, program]);
+    // With the BPF Upgradeable Loader among the keys a called program stays writable; the
+    // loader itself is a reserved key.
+    assert_eq!(
+        demoted(&[BPF_LOADER_UPGRADEABLE]),
+        vec![SYSVAR_CLOCK, BPF_LOADER_UPGRADEABLE]
     );
 }
 
@@ -1237,6 +1294,18 @@ fn changes_between_pre_and_post_state() {
         token(TOKEN_PROGRAM, usdc.mint, wallet(), 1, None),
     )];
     assert!(changes(&wallet(), CLUSTER, &pre, &unlisted, &[]).is_empty());
+    // A wallet that signs read-only is watched but not in the pre-state: no made-up SOL gain
+    // (its balance against 0) and no owner-program change.
+    assert!(changes(&wallet(), CLUSTER, &pre[1..], &post[..1], &[]).is_empty());
+    assert!(changes(&wallet(), CLUSTER, &pre[1..], &assigned, &[]).is_empty());
+    // A wallet the pre-state lists as missing (no account yet) changes from 0.
+    assert_eq!(
+        changes(&wallet(), CLUSTER, &[(wallet(), None)], &post[..1], &[]),
+        vec![Change::Sol {
+            pre: 0,
+            post: 4_000
+        }]
+    );
 }
 
 // ----- signing ---------------------------------------------------------------------------------

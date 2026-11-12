@@ -918,7 +918,7 @@ payload digest(transcript `"your-wallet/v3/sol-tx"`, `u16 1`): 출처 태그·�
 | `0x051A` | `SOL_TX_AUDIT` | (false, false) | 감사 (메시지 SHA-256) |
 | `0x0540` | `SOL_TX_RAW` | (false, false) | 원본 메시지(hex) |
 
-- 앞에 `ORIGIN`·`NETWORK`(제네시스 확인 줄)·`ACCOUNT`(라벨·경로·주소). 주소는 모두 한 줄에 하나, `sol::address::grouped(&address)`(자유 함수)로 통째로 그린다. 역할 꼬리표: `[서명]` `[쓰기]` `[테이블 k]` `[내 지갑]` `[내 토큰 계정 · mint]` `[주소록: 이름]` `[비슷한 주소 주의]`. 프로그램·sysvar는 "(런타임에서 읽기 전용)".
+- 앞에 `ORIGIN`·`NETWORK`(제네시스 확인 줄)·`ACCOUNT`(라벨·경로·주소). 주소는 모두 한 줄에 하나, `sol::address::grouped(&address)`(자유 함수)로 통째로 그린다. 역할 꼬리표: `[서명]` `[쓰기]` `[테이블 k]` `[내 지갑]` `[내 토큰 계정 · mint]` `[주소록: 이름]` `[비슷한 주소 주의]`. 쓰기 가능한 계정 중 런타임이 읽기 전용으로 내리는 것은 "(런타임에서 읽기 전용)": 예약 계정(`sol::address::SOL_RESERVED_KEYS`, 정확히 같은 주소만 — SPL 프로그램·wSOL 민트는 아니다)과, BPF Upgradeable Loader가 키에 없을 때 프로그램으로 호출된 계정(Agave `is_writable`). 주소 앞부분("Sysvar…")으로 정하지 않는다.
 - 금액은 허용 목록(§8.3)의 기호·소수 자릿수, 없으면 RPC decimals("RPC 참고"), 없으면 원시 단위. `0x0515`는 권한 변화를 먼저 보인다. `0x0518`은 "블록해시 유효 확인됨 (RPC, processed)" / "블록해시 확인 안 됨 — 만료되었거나 RPC보다 새것" / "durable nonce — 만료 없음".
 - 빌더(`build_sol_tx_request`)는 거래 바이트를 스스로 다시 파싱한다(앱이 파싱한 구조를 받지 않는다). 조회 테이블 해석 오류는 그 거래만 X01이다.
 

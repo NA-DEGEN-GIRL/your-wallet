@@ -25,7 +25,9 @@ use crate::evm::risk::{
 };
 use crate::policy::BrowserOrigin;
 use crate::slip10::SolKeySource;
-use crate::sol::address::{SolAddress, SolCluster, grouped, program_name};
+use crate::sol::address::{
+    BPF_LOADER_UPGRADEABLE, SolAddress, SolCluster, grouped, is_reserved_key, program_name,
+};
 use crate::sol::broadcast::err;
 use crate::sol::display::SimSummary;
 use crate::sol::fee::dapp_fee_estimate;
@@ -197,11 +199,16 @@ impl Tx<'_> {
             .map(|view| view.mint)
     }
 
-    /// Programs and sysvars are demoted to read-only by the runtime.
+    /// Whether the runtime loads a writable key read-only (Agave `is_writable`, spec/07 §20.6):
+    /// an exact reserved key, or a key called as a program while the BPF Upgradeable Loader is
+    /// not among the keys.
     fn demoted(&self, address: &SolAddress) -> bool {
-        self.programs.contains(address)
-            || program_name(address).is_some()
-            || address.to_base58().starts_with("Sysvar")
+        is_reserved_key(address)
+            || (self.programs.contains(address)
+                && !self
+                    .keys
+                    .iter()
+                    .any(|(key, _)| *key == BPF_LOADER_UPGRADEABLE))
     }
 
     fn symbol(&self, mint: &SolAddress) -> Option<&'static str> {
@@ -938,8 +945,9 @@ fn lookups_text(
     out.join("\n")
 }
 
-/// The changes (`0x0515`), authority changes first.
-fn changes_text(tx: &Tx<'_>, list: Option<&[Change]>) -> String {
+/// The changes (`0x0515`), authority changes first. The SOL change includes the fee only when
+/// the wallet pays it (`wallet_pays`, slot 0; spec/07 §20.7).
+fn changes_text(tx: &Tx<'_>, list: Option<&[Change]>, wallet_pays: bool) -> String {
     let Some(list) = list else {
         return "시뮬레이션 결과가 없어 변화를 확인할 수 없습니다".to_owned();
     };
@@ -950,10 +958,15 @@ fn changes_text(tx: &Tx<'_>, list: Option<&[Change]>) -> String {
     for change in list {
         match change {
             Change::Sol { pre, post } => out.push(format!(
-                "내 지갑 SOL {} SOL ({} → {} lamports, 수수료 포함)",
+                "내 지갑 SOL {} SOL ({} → {} lamports{})",
                 delta(*pre, *post, 9),
                 format_raw(*pre),
-                format_raw(*post)
+                format_raw(*post),
+                if wallet_pays {
+                    ", 수수료 포함"
+                } else {
+                    ""
+                }
             )),
             Change::Token {
                 account,
@@ -1443,7 +1456,7 @@ fn build_item(
         DisplayField::new(
             FieldKey::SOL_TX_CHANGES,
             sub.clone(),
-            changes_text(&tx, diff.as_deref()),
+            changes_text(&tx, diff.as_deref(), slot == 0),
         )?,
         DisplayField::new(
             FieldKey::SOL_TX_FEE,

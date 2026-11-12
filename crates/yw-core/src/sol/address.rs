@@ -368,16 +368,51 @@ pub fn is_blocked_recipient(address: &SolAddress) -> bool {
         || crate::sol::template::is_allowlisted_mint(address)
 }
 
+/// The runtime's reserved account keys among `SOL_BLOCKED_RECIPIENTS` (the builtins, loaders,
+/// precompiles and sysvars, not the SPL programs or the wSOL mint): a transaction can mark them
+/// writable, but the runtime loads them read-only (spec/07 §20.6 `0x0513`). A key missing here
+/// is only shown writable, never the other way round.
+pub const SOL_RESERVED_KEYS: [&str; 21] = [
+    "11111111111111111111111111111111",
+    "ComputeBudget111111111111111111111111111111",
+    "Stake11111111111111111111111111111111111111",
+    "Vote111111111111111111111111111111111111111",
+    "BPFLoaderUpgradeab1e11111111111111111111111",
+    "BPFLoader2111111111111111111111111111111111",
+    "BPFLoader1111111111111111111111111111111111",
+    "NativeLoader1111111111111111111111111111111",
+    "Config1111111111111111111111111111111111111",
+    "AddressLookupTab1e1111111111111111111111111",
+    "Sysvar1111111111111111111111111111111111111",
+    "SysvarRent111111111111111111111111111111111",
+    "SysvarC1ock11111111111111111111111111111111",
+    "SysvarRecentB1ockHashes11111111111111111111",
+    "SysvarEpochSchedu1e111111111111111111111111",
+    "SysvarFees111111111111111111111111111111111",
+    "Sysvar1nstructions1111111111111111111111111",
+    "SysvarS1otHashes111111111111111111111111111",
+    "SysvarStakeHistory1111111111111111111111111",
+    "Ed25519SigVerify111111111111111111111111111",
+    "KeccakSecp256k11111111111111111111111111111",
+];
+
+/// Whether `address` is exactly one of `SOL_RESERVED_KEYS`.
+#[must_use]
+pub fn is_reserved_key(address: &SolAddress) -> bool {
+    SOL_RESERVED_KEYS.contains(&address.to_base58().as_str())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         ADDRESS_LOOKUP_TABLE_PROGRAM, ATA_PROGRAM, BPF_LOADER, BPF_LOADER_DEPRECATED,
         BPF_LOADER_UPGRADEABLE, COMPUTE_BUDGET_PROGRAM, CONFIG_PROGRAM, CurveClass, DEVNET_GENESIS,
         ED25519_PRECOMPILE, MAINNET_GENESIS, MEMO_PROGRAM_V1, MEMO_PROGRAM_V2,
-        SECP256K1_PRECOMPILE, SECP256R1_PRECOMPILE, SOL_BLOCKED_RECIPIENTS, STAKE_PROGRAM,
-        SYSTEM_PROGRAM, SYSVAR_CLOCK, SYSVAR_INSTRUCTIONS, SYSVAR_RECENT_BLOCKHASHES, SYSVAR_RENT,
-        SolAddress, SolCluster, TOKEN_2022_PROGRAM, TOKEN_PROGRAM, VOTE_PROGRAM, WSOL_MINT,
-        curve_class, grouped, is_on_curve_solana, program_name,
+        SECP256K1_PRECOMPILE, SECP256R1_PRECOMPILE, SOL_BLOCKED_RECIPIENTS, SOL_RESERVED_KEYS,
+        STAKE_PROGRAM, SYSTEM_PROGRAM, SYSVAR_CLOCK, SYSVAR_INSTRUCTIONS,
+        SYSVAR_RECENT_BLOCKHASHES, SYSVAR_RENT, SolAddress, SolCluster, TOKEN_2022_PROGRAM,
+        TOKEN_PROGRAM, VOTE_PROGRAM, WSOL_MINT, curve_class, grouped, is_on_curve_solana,
+        is_reserved_key, program_name,
     };
 
     /// Every named constant with its base58 text (spec/07 §20.4 names in `program_name`).
@@ -505,6 +540,29 @@ mod tests {
         assert_eq!(program_name(&TOKEN_2022_PROGRAM), Some("Token-2022"));
         assert_eq!(program_name(&STAKE_PROGRAM), Some("Stake"));
         assert_eq!(program_name(&SolAddress::from_bytes([9; 32])), None);
+    }
+
+    #[test]
+    fn reserved_keys_are_the_blocked_list_without_spl() {
+        let spl = [
+            TOKEN_PROGRAM,
+            TOKEN_2022_PROGRAM,
+            ATA_PROGRAM,
+            MEMO_PROGRAM_V1,
+            MEMO_PROGRAM_V2,
+            WSOL_MINT,
+        ];
+        for text in SOL_BLOCKED_RECIPIENTS {
+            let address = SolAddress::parse(text).unwrap();
+            assert_eq!(is_reserved_key(&address), !spl.contains(&address), "{text}");
+        }
+        for text in SOL_RESERVED_KEYS {
+            assert!(SOL_BLOCKED_RECIPIENTS.contains(&text), "{text}");
+        }
+        // Exact addresses only: a vanity key with a sysvar's prefix is not reserved.
+        let vanity = SolAddress::parse("SysvarRent111111111111111111111111111111112").unwrap();
+        assert!(!is_reserved_key(&vanity));
+        assert!(is_reserved_key(&SYSVAR_RENT));
     }
 
     #[test]
