@@ -27,7 +27,10 @@ pub use parse::{
     LookupRef, MessageHeader, SOL_TX_MAX_BATCH, SOL_TX_MAX_IX, SOL_TX_MAX_KEYS, SolTxError,
     SolTxMessage, SolTxVersion, SolWireTx, encode_message_any, parse_message_any, parse_wire_tx,
 };
-pub use sign::{SolTxCardError, SolTxSignError, sign_txs, sign_txs_card};
+pub use sign::{
+    PreSignCheck, SignedSolDappTx, SolTxCardError, SolTxSignError, sign_send, sign_send_card,
+    sign_txs, sign_txs_card,
+};
 
 use crate::codec::transcript::Transcript;
 use crate::slip10::SolKeySource;
@@ -279,3 +282,5 @@ impl SolTxPayload {
 mod tests;
 #[cfg(test)]
 mod tests_approval;
+#[cfg(test)]
+mod tests_send;

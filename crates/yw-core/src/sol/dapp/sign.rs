@@ -3,17 +3,24 @@
 //! and every site signature, fills only its own slot and verifies the result. The blockhash is
 //! never changed. A software key signs every message of the request in one key lending; a
 //! `YubiKey` signs each message on the card (one touch per transaction).
+//!
+//! A send (`SignAndSend`, spec/07 §20.8) additionally runs after the pre-sign RPC check
+//! (§20.10-2): the 20 s deadline from that answer, the pre-sign blockhash and the re-resolved
+//! lookup tables against the approved ones, and every other required signature present.
 #![deny(clippy::indexing_slicing)]
 
 use core::fmt;
 
+use sha2::{Digest, Sha256};
+
+use super::alt::ResolvedKeys;
 use super::parse::{SolWireTx, parse_wire_tx};
-use super::{SolTxMode, SolTxPayload};
+use super::{SolTxItem, SolTxMode, SolTxPayload, SolTxPayloadError};
 use crate::approval::{AccountRef, ApprovalKind, Approved, ChainRef, SigningPayload};
 use crate::error::VaultError;
 use crate::sol::keys::verify_strict;
 use crate::sol::msgsign::{SolMessageError, sign_with_seed};
-use crate::sol::sign::SolCardSigner;
+use crate::sol::sign::{SOL_SIGN_DEADLINE_SECS, SolCardSigner};
 use crate::sol::template::SOL_MAX_TX_BYTES;
 use crate::vault::Vault;
 
@@ -113,7 +120,8 @@ impl From<crate::yubikey::CardError> for SolTxCardError {
 }
 
 /// The approval checks before any key use: kind, payload, the cluster's pinned genesis, the
-/// account, no recovery-scan source (`PolicyMismatch`), the payload rules and the mode.
+/// account, no recovery-scan source (`PolicyMismatch`), the payload rules (a send missing
+/// another required signature is `MissingSignature`) and the mode.
 pub(crate) fn approved_tx(
     approved: &Approved,
     mode: SolTxMode,
@@ -135,9 +143,10 @@ pub(crate) fn approved_tx(
     if payload.source.needs_move_rule() {
         return Err(SolTxSignError::PolicyMismatch);
     }
-    payload
-        .validate()
-        .map_err(|_| SolTxSignError::KindMismatch)?;
+    payload.validate().map_err(|error| match error {
+        SolTxPayloadError::MissingSignature => SolTxSignError::MissingSignature,
+        _ => SolTxSignError::KindMismatch,
+    })?;
     Ok(payload)
 }
 
@@ -250,4 +259,148 @@ pub fn sign_txs_card(
         out.push(finish(wire, item.signer_slot, &payload.public, &signature)?);
     }
     Ok(out)
+}
+
+/// What the pre-sign RPC check of a send observed (spec/07 §20.10-2): the transaction's own
+/// blockhash (`isBlockhashValid(processed)` answered `true` for it) and the addresses its lookup
+/// tables resolve to now (`None` for a message without lookups).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreSignCheck {
+    /// The blockhash the pre-sign check found valid.
+    pub blockhash: [u8; 32],
+    /// The lookups re-resolved at pre-sign (`None`: the message has none).
+    pub loaded: Option<ResolvedKeys>,
+}
+
+/// A signed dApp send, ready for the journal (version 3, spec/07 §14.1) and the broadcast loop.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SignedSolDappTx {
+    /// The fully signed wire transaction (only our slot changed).
+    pub tx: Vec<u8>,
+    /// Signature 0 (the fee payer's): the transaction id, `SolRecord::signature()`.
+    pub tx_id: [u8; 64],
+    /// Our signature (in our slot; equal to `tx_id` when the wallet pays the fee).
+    pub own_signature: [u8; 64],
+    /// `SHA-256(message)`.
+    pub message_sha256: [u8; 32],
+}
+
+/// The send checks before any key use (spec/07 §20.10-3): the deadline from the pre-sign answer,
+/// the approval, the one approved transaction parsed again with every other slot signed and
+/// valid, the pre-sign blockhash and the re-resolved tables.
+fn approved_send<'a>(
+    approved: &'a Approved,
+    consumed_at_ms: u64,
+    now_ms: u64,
+    check: &PreSignCheck,
+) -> Result<(&'a SolTxPayload, &'a SolTxItem, SolWireTx), SolTxSignError> {
+    let deadline = consumed_at_ms.saturating_add(SOL_SIGN_DEADLINE_SECS.saturating_mul(1_000));
+    if now_ms > deadline {
+        return Err(SolTxSignError::DeadlineExceeded);
+    }
+    let payload = approved_tx(approved, SolTxMode::SignAndSend)?;
+    let [item] = payload.items.as_slice() else {
+        return Err(SolTxSignError::KindMismatch);
+    };
+    let wire = checked_wires(payload, true)?
+        .pop()
+        .ok_or(SolTxSignError::KindMismatch)?;
+    if wire.message.durable_nonce().is_some() {
+        return Err(SolTxSignError::KindMismatch);
+    }
+    if wire.message.blockhash != check.blockhash {
+        return Err(SolTxSignError::EncodingMismatch);
+    }
+    let same_tables = match (&check.loaded, &item.loaded) {
+        (Some(fresh), Some(approved_keys)) => fresh == approved_keys,
+        (None, Some(approved_keys)) => {
+            wire.message.lookups.is_empty() && *approved_keys == ResolvedKeys::default()
+        }
+        (_, None) => false,
+    };
+    if !same_tables {
+        return Err(SolTxSignError::TablesChanged);
+    }
+    Ok((payload, item, wire))
+}
+
+/// [`finish`] for a send: every slot of the result is signed and verifies, and signature 0 is
+/// the transaction id.
+fn finish_send(
+    wire: &SolWireTx,
+    slot: u8,
+    public: &[u8; 32],
+    signature: &[u8; 64],
+) -> Result<SignedSolDappTx, SolTxSignError> {
+    let tx = finish(wire, slot, public, signature)?;
+    let signed = parse_wire_tx(&tx).map_err(|_| SolTxSignError::PostSignVerification)?;
+    let all_valid = signed
+        .signatures
+        .iter()
+        .zip(&signed.message.static_keys)
+        .all(|(slot, key)| verify_strict(key.as_bytes(), &signed.message_bytes, slot));
+    let tx_id = *signed.slot(0).ok_or(SolTxSignError::PostSignVerification)?;
+    if !all_valid {
+        return Err(SolTxSignError::PostSignVerification);
+    }
+    Ok(SignedSolDappTx {
+        tx,
+        tx_id,
+        own_signature: *signature,
+        message_sha256: Sha256::digest(&signed.message_bytes).into(),
+    })
+}
+
+/// Signs the one transaction of an approved send with the vault key (spec/07 §20.8): the
+/// deadline runs from `consumed_at_ms`, which the app sets at the pre-sign answer, and the
+/// pre-sign `check` must match what was approved. The blockhash is never changed.
+///
+/// # Errors
+///
+/// [`SolTxSignError`]; nothing is returned on error.
+pub fn sign_send(
+    vault: &Vault,
+    approved: &Approved,
+    consumed_at_ms: u64,
+    now_ms: u64,
+    check: &PreSignCheck,
+) -> Result<SignedSolDappTx, SolTxSignError> {
+    let (payload, item, wire) = approved_send(approved, consumed_at_ms, now_ms, check)?;
+    let sign = |secret: &[u8; 32]| Ok(sign_with_seed(secret, &payload.public, &wire.message_bytes));
+    let signed = if payload.source.is_imported() {
+        vault.with_imported_ed25519_seed(&payload.public, sign)
+    } else {
+        vault.with_ed25519_seed(payload.source, sign)
+    };
+    let signature = signed
+        .map_err(SolTxSignError::Vault)?
+        .map_err(from_message_error)?;
+    finish_send(&wire, item.signer_slot, &payload.public, &signature)
+}
+
+/// [`sign_send`] on a card (spec/10 §6.4): the same checks before the card is asked (one touch),
+/// then the same post-sign verification.
+///
+/// # Errors
+///
+/// [`SolTxCardError::Sign`] (`KindMismatch` also for a source other than
+/// `SolKeySource::Hardware`), [`SolTxCardError::Card`]; nothing is returned on error.
+pub fn sign_send_card(
+    approved: &Approved,
+    consumed_at_ms: u64,
+    now_ms: u64,
+    check: &PreSignCheck,
+    card: SolCardSigner<'_>,
+) -> Result<SignedSolDappTx, SolTxCardError> {
+    let (payload, item, wire) = approved_send(approved, consumed_at_ms, now_ms, check)?;
+    if !payload.source.is_hardware() {
+        return Err(SolTxSignError::KindMismatch.into());
+    }
+    let signature = card(&wire.message_bytes)?;
+    Ok(finish_send(
+        &wire,
+        item.signer_slot,
+        &payload.public,
+        &signature,
+    )?)
 }

@@ -48,29 +48,29 @@ use crate::sol::token::MintView;
 use crate::vault::tests::unlocked_with;
 
 /// `abandon`×11 `about`, standard account 0 (spec/07 §17.1).
-const ABOUT: &str =
+pub(super) const ABOUT: &str =
     "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 const FROM: &str = "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk";
-const CLUSTER: SolCluster = SolCluster::Devnet;
+pub(super) const CLUSTER: SolCluster = SolCluster::Devnet;
 
-fn wallet() -> SolAddress {
+pub(super) fn wallet() -> SolAddress {
     SolAddress::parse(FROM).unwrap()
 }
 
-fn key(byte: u8) -> SolAddress {
+pub(super) fn key(byte: u8) -> SolAddress {
     SolAddress::from_bytes([byte; 32])
 }
 
 /// A co-signer of the site (fee payer or partial signer).
-fn site_key() -> SigningKey {
+pub(super) fn site_key() -> SigningKey {
     SigningKey::from_bytes(&[0x42; 32])
 }
 
-fn site_address() -> SolAddress {
+pub(super) fn site_address() -> SolAddress {
     SolAddress::from_bytes(site_key().verifying_key().to_bytes())
 }
 
-fn ix(program: u8, accounts: &[u8], data: &[u8]) -> CompiledIx {
+pub(super) fn ix(program: u8, accounts: &[u8], data: &[u8]) -> CompiledIx {
     CompiledIx {
         program,
         accounts: accounts.to_vec(),
@@ -99,12 +99,16 @@ fn message(
     })
 }
 
-fn legacy(header: [u8; 3], keys: &[SolAddress], instructions: Vec<CompiledIx>) -> Vec<u8> {
+pub(super) fn legacy(
+    header: [u8; 3],
+    keys: &[SolAddress],
+    instructions: Vec<CompiledIx>,
+) -> Vec<u8> {
     message(SolTxVersion::Legacy, header, keys, instructions, Vec::new())
 }
 
 /// The wire form with every slot zero, then `signers` filled by their keys.
-fn wire(message: &[u8], signers: &[(usize, &SigningKey)]) -> Vec<u8> {
+pub(super) fn wire(message: &[u8], signers: &[(usize, &SigningKey)]) -> Vec<u8> {
     let required = usize::from(if message[0] & 0x80 == 0 {
         message[0]
     } else {
@@ -123,7 +127,7 @@ fn wire(message: &[u8], signers: &[(usize, &SigningKey)]) -> Vec<u8> {
 }
 
 /// Wallet pays and sends 1,000 lamports to `0x22…`.
-fn transfer_message() -> Vec<u8> {
+pub(super) fn transfer_message() -> Vec<u8> {
     legacy(
         [1, 0, 1],
         &[wallet(), key(0x22), SYSTEM_PROGRAM],
@@ -449,7 +453,7 @@ fn wallet_permission_rules() {
 }
 
 /// `AdvanceNonceAccount` first: nonce `0x44…` (writable), recent blockhashes, the wallet.
-fn nonce_message(extra: Vec<CompiledIx>) -> Vec<u8> {
+pub(super) fn nonce_message(extra: Vec<CompiledIx>) -> Vec<u8> {
     let mut instructions = vec![ix(3, &[1, 2, 0], &[4, 0, 0, 0])];
     instructions.extend(extra);
     legacy(
@@ -612,7 +616,7 @@ fn runtime_demotion_is_the_runtime_rule() {
 
 /// A v0 transaction with one table `0xa1…` loading writable index 0 (`0x30…`) and read-only
 /// index 1 (`0x31…`).
-fn v0_tx() -> Vec<u8> {
+pub(super) fn v0_tx() -> Vec<u8> {
     let message = message(
         SolTxVersion::V0,
         [1, 0, 1],
@@ -1310,7 +1314,7 @@ fn changes_between_pre_and_post_state() {
 
 // ----- signing ---------------------------------------------------------------------------------
 
-fn approval(payload: SolTxPayload, kind: ApprovalKind) -> Approved {
+pub(super) fn approval(payload: SolTxPayload, kind: ApprovalKind) -> Approved {
     Approved::for_test(
         ChainRef::Solana {
             cluster: CLUSTER,
@@ -1345,7 +1349,7 @@ fn sign_only(public: SolAddress, source: SolKeySource, txs: &[Vec<u8>]) -> SolTx
 }
 
 /// Only our slot changed, it verifies, and the message bytes are the approved ones.
-fn assert_only_our_slot(before: &[u8], after: &[u8], public: &SolAddress) {
+pub(super) fn assert_only_our_slot(before: &[u8], after: &[u8], public: &SolAddress) {
     let old = parse_wire_tx(before).unwrap();
     let new = parse_wire_tx(after).unwrap();
     assert_eq!(old.message_bytes, new.message_bytes);

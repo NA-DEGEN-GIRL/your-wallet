@@ -4,6 +4,10 @@
 //! and the `ActivityEntry` mapping. A body the decoder rejects stops SOL sending only; its bytes
 //! are kept verbatim and never broadcast.
 //!
+//! Version 3 (2026-11-12, spec/07 §20.9) journals a dApp transaction the wallet sends: the same
+//! header, then the signer, its slot, the send flags and the site origin before the transaction,
+//! which is checked by the dApp parser (`sol::dapp::parse_wire_tx`) instead of the templates.
+//!
 //! Pattern: "record first, send later" of
 //! `archive/spec-v2.4:crates/key-agent/src/durable.rs:725-806,1100-1129`, with 4 states.
 #![deny(clippy::indexing_slicing)]
@@ -13,8 +17,11 @@ use core::fmt;
 use super::{
     ENTRY_HEADER_LEN, Entry, EntryKind, JournalError, JournalPlain, MAX_ENTRIES, MAX_PLAINTEXT,
 };
+use crate::approval::MAX_TITLE_BYTES;
 use crate::codec::base58::base58_encode;
+use crate::policy::MAX_ORIGIN_BYTES;
 use crate::slip10::SolKeySource;
+use crate::sol::dapp::{SignedSolDappTx, SolCommitment, SolTxError, SolTxPayload, parse_wire_tx};
 use crate::sol::display::transfer_title;
 use crate::sol::intent::SolTransferIntent;
 use crate::sol::keys::verify_strict;
@@ -34,13 +41,50 @@ pub const RECORD_VERSION_V2: u8 = 2;
 pub const SOL_JOURNAL_HEADER_LEN: usize = 89;
 /// The mnemonic record id of a version 2 record.
 pub const SOL_JOURNAL_MNEMONIC_LEN: usize = 16;
-/// Largest SOL body: 89 + 16 + 1,232 = 1,337 (spec/02 §5.4; version 1 bodies are at most
+/// `record_version` of a dApp send (spec/07 §14.1, §20.9): the version 1 header, the 16-byte
+/// mnemonic record id iff source tag 8, then `public[32] ‖ signer_slot ‖ flags ‖ origin_len u16
+/// BE ‖ origin ‖ tx`. Earlier builds treat it as a damaged body (spec/04 §6.6).
+pub const RECORD_VERSION_V3: u8 = 3;
+/// Largest SOL body of versions 1 and 2: 89 + 16 + 1,232 = 1,337 (version 1 bodies are at most
 /// 1,321).
 pub const SOL_JOURNAL_MAX_BODY: usize =
     SOL_JOURNAL_HEADER_LEN + SOL_JOURNAL_MNEMONIC_LEN + SOL_MAX_TX_BYTES;
+/// Longest site origin of a version 3 record (`MAX_ORIGIN_BYTES`).
+pub const SOL_JOURNAL_ORIGIN_MAX: usize = MAX_ORIGIN_BYTES;
+/// Largest SOL body (spec/02 §5.4, the room check): a version 3 record, 89 + 16 + 32 + 1 + 1 +
+/// 2 + 256 + 1,232 = 1,629.
+pub const SOL_JOURNAL_MAX_BODY_V3: usize = SOL_JOURNAL_HEADER_LEN
+    + SOL_JOURNAL_MNEMONIC_LEN
+    + DAPP_FIXED_LEN
+    + SOL_JOURNAL_ORIGIN_MAX
+    + SOL_MAX_TX_BYTES;
+/// `Pending` dApp sends per (cluster, signer) (spec/07 §20.9).
+pub const SOL_DAPP_MAX_PENDING: usize = 16;
+/// `Pending` dApp sends in the whole journal (half of [`SOL_JOURNAL_MAX_RECORDS`], so wallet sends
+/// keep the other 32 places).
+pub const SOL_DAPP_MAX_PENDING_TOTAL: usize = 32;
+/// `public ‖ signer_slot ‖ flags ‖ origin_len` of a version 3 record.
+const DAPP_FIXED_LEN: usize = 32 + 1 + 1 + 2;
 /// SOL records in the journal.
 pub const SOL_JOURNAL_MAX_RECORDS: usize = 64;
 const MIN_TX_LEN: usize = 65;
+
+/// The `flags` byte of a version 3 record (spec/07 §14.1).
+pub mod dapp_flags {
+    /// The wallet broadcasts the transaction (always set).
+    pub const BROADCAST: u8 = 0x01;
+    /// The wallet is the fee payer (signer slot 0).
+    pub const FEE_PAYER: u8 = 0x02;
+    /// `skipPreflight` on every send.
+    pub const SKIP_PREFLIGHT: u8 = 0x04;
+    /// Bits 3–4: the preflight commitment (0 `confirmed`, 1 `processed`, 2 `finalized`; 3 is
+    /// invalid).
+    pub const COMMITMENT_MASK: u8 = 0x18;
+    /// Shift of the commitment bits.
+    pub const COMMITMENT_SHIFT: u8 = 3;
+    /// Every defined bit; the others must be zero.
+    pub const DEFINED: u8 = BROADCAST | FEE_PAYER | SKIP_PREFLIGHT | COMMITMENT_MASK;
+}
 
 /// Record state (spec/07 §14.2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -101,10 +145,11 @@ impl SolTxState {
 /// A body the SOL decoder rejects ("저널 손상": SOL sending stops, the bytes are kept).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SolRecordError {
-    /// Body shorter than the header, `tx_len` outside 65..=1232, or `body_len != 89 + tx_len`.
+    /// Body shorter than the header, `tx_len` outside 65..=1232, or `body_len` other than the
+    /// layout's (`89 + tx_len` in version 1).
     Length,
     /// `record_kind != 0x02`, an unknown `record_version`, or a version that does not match the
-    /// source (version 2 exactly for tag 8).
+    /// source (version 2 only for tag 8; version 3 takes any tag).
     Header,
     /// Unknown state or cluster.
     Value,
@@ -114,9 +159,14 @@ pub enum SolRecordError {
     Terminal,
     /// The transaction does not parse as a template.
     Tx(SolParseError),
+    /// A version 3 transaction does not parse as a dApp transaction (spec/07 §20.2).
+    DappTx(SolTxError),
+    /// A version 3 field is invalid: our key not at the signer slot, the flags, the origin, or a
+    /// durable-nonce transaction.
+    Dapp,
     /// The message does not re-encode to the same bytes.
     Identity,
-    /// `verify_strict(from)` failed.
+    /// `verify_strict(from)` failed (version 3: a required signature is missing or invalid).
     Signature,
 }
 
@@ -151,6 +201,84 @@ pub struct SolRecord {
     pub terminal_err: u16,
     /// The signed transaction.
     pub tx: Vec<u8>,
+    /// The dApp part of a version 3 record (`None` for a wallet send).
+    pub dapp: Option<SolDappMeta>,
+}
+
+/// The dApp part of a version 3 record (spec/07 §14.1).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SolDappMeta {
+    /// The wallet's signing key (the approval account).
+    pub public: [u8; 32],
+    /// Its signature slot (`< required`).
+    pub signer_slot: u8,
+    /// [`dapp_flags`].
+    pub flags: u8,
+    /// The site origin (printable ASCII, 1..=256 bytes).
+    pub origin: String,
+}
+
+impl SolDappMeta {
+    /// 1..=256 printable ASCII bytes (a serialized origin never has spaces or controls).
+    fn valid_origin(origin: &str) -> bool {
+        (1..=SOL_JOURNAL_ORIGIN_MAX).contains(&origin.len())
+            && origin.bytes().all(|byte| byte.is_ascii_graphic())
+    }
+
+    /// The flags of a send: bit 0, bit 1 iff the wallet pays the fee (slot 0), the options.
+    fn flags_of(payload: &SolTxPayload, signer_slot: u8) -> u8 {
+        let mut flags = dapp_flags::BROADCAST;
+        if signer_slot == 0 {
+            flags |= dapp_flags::FEE_PAYER;
+        }
+        if payload.options.skip_preflight {
+            flags |= dapp_flags::SKIP_PREFLIGHT;
+        }
+        let commitment: u8 = match payload.options.preflight_commitment {
+            None | Some(SolCommitment::Confirmed) => 0,
+            Some(SolCommitment::Processed) => 1,
+            Some(SolCommitment::Finalized) => 2,
+        };
+        flags | (commitment << dapp_flags::COMMITMENT_SHIFT)
+    }
+
+    /// The preflight commitment of the flags (`None` for the invalid value 3).
+    const fn commitment(flags: u8) -> Option<SolCommitment> {
+        match (flags & dapp_flags::COMMITMENT_MASK) >> dapp_flags::COMMITMENT_SHIFT {
+            0 => Some(SolCommitment::Confirmed),
+            1 => Some(SolCommitment::Processed),
+            2 => Some(SolCommitment::Finalized),
+            _ => None,
+        }
+    }
+
+    /// The version 3 load checks of the transaction (spec/07 §14.1): it parses with identity,
+    /// our key is at the signer slot, the flags are valid (bit 0 set, bit 1 iff slot 0, no
+    /// undefined bit, commitment not 3), the origin is valid, it has no durable nonce, and every
+    /// required slot is signed and verifies strictly (ours included).
+    fn check(&self, tx: &[u8]) -> Result<(), SolRecordError> {
+        let wire = parse_wire_tx(tx).map_err(SolRecordError::DappTx)?;
+        let message = &wire.message;
+        if message.signer_slot(&self.public) != Ok(self.signer_slot) {
+            return Err(SolRecordError::Dapp);
+        }
+        let flags_ok = self.flags & !dapp_flags::DEFINED == 0
+            && self.flags & dapp_flags::BROADCAST != 0
+            && (self.flags & dapp_flags::FEE_PAYER != 0) == (self.signer_slot == 0)
+            && Self::commitment(self.flags).is_some();
+        if !flags_ok || !Self::valid_origin(&self.origin) || message.durable_nonce().is_some() {
+            return Err(SolRecordError::Dapp);
+        }
+        let all_signed = wire
+            .signatures
+            .iter()
+            .zip(&message.static_keys)
+            .all(|(signature, key)| verify_strict(key.as_bytes(), &wire.message_bytes, signature));
+        if !all_signed {
+            return Err(SolRecordError::Signature);
+        }
+        Ok(())
+    }
 }
 
 fn be_u16(body: &[u8], at: usize) -> Option<u16> {
@@ -193,14 +321,51 @@ impl SolRecord {
             terminal_slot: 0,
             terminal_err: 0,
             tx: signed.tx.clone(),
+            dapp: None,
         }
     }
 
-    /// Encodes the body (`89 + tx_len` bytes).
+    /// The `Pending` version 3 record of a freshly signed dApp send (spec/07 §20.9): the
+    /// signer's key source, the approval id as `intent_id`, `payload.intent_hash(approval_id)`,
+    /// the flags from the send options and our slot, and the site origin.
+    #[must_use]
+    pub fn new_dapp_pending(
+        cluster: SolCluster,
+        payload: &SolTxPayload,
+        approval_id: &[u8; 16],
+        origin: &str,
+        signed: &SignedSolDappTx,
+        signed_at_ms: u64,
+        last_valid_block_height: u64,
+    ) -> Self {
+        let signer_slot = payload.items.first().map_or(0, |item| item.signer_slot);
+        Self {
+            state: SolTxState::Pending,
+            cluster,
+            source: payload.source,
+            intent_id: *approval_id,
+            intent_hash: payload.intent_hash(approval_id),
+            signed_at_ms,
+            last_valid_block_height,
+            terminal_slot: 0,
+            terminal_err: 0,
+            tx: signed.tx.clone(),
+            dapp: Some(SolDappMeta {
+                public: payload.public,
+                signer_slot,
+                flags: SolDappMeta::flags_of(payload, signer_slot),
+                origin: origin.to_owned(),
+            }),
+        }
+    }
+
+    /// Encodes the body (`89 + tx_len` bytes; version 2 adds the mnemonic record id, version 3
+    /// also the dApp part).
     ///
     /// # Errors
     ///
-    /// [`SolRecordError::Length`] for a transaction outside 65..=1232 bytes.
+    /// [`SolRecordError::Length`] for a transaction outside 65..=1232 bytes,
+    /// [`SolRecordError::Dapp`] for a version 3 origin outside 1..=256 printable ASCII bytes.
     pub fn encode(&self) -> Result<Vec<u8>, SolRecordError> {
         if !(MIN_TX_LEN..=SOL_MAX_TX_BYTES).contains(&self.tx.len()) {
             return Err(SolRecordError::Length);
@@ -208,12 +373,12 @@ impl SolRecord {
         let tx_len = u16::try_from(self.tx.len()).map_err(|_| SolRecordError::Length)?;
         let (a, b) = self.source.params();
         let mnemonic = self.source.mnemonic();
-        let mut out = Vec::with_capacity(SOL_JOURNAL_MAX_BODY);
+        let mut out = Vec::with_capacity(SOL_JOURNAL_MAX_BODY_V3);
         out.push(RECORD_KIND);
-        out.push(if mnemonic.is_some() {
-            RECORD_VERSION_V2
-        } else {
-            RECORD_VERSION
+        out.push(match (&self.dapp, mnemonic) {
+            (Some(_), _) => RECORD_VERSION_V3,
+            (None, Some(_)) => RECORD_VERSION_V2,
+            (None, None) => RECORD_VERSION,
         });
         out.push(self.state as u8);
         out.push(self.cluster.code());
@@ -230,6 +395,17 @@ impl SolRecord {
         if let Some(id) = mnemonic {
             out.extend_from_slice(id.as_bytes());
         }
+        if let Some(dapp) = &self.dapp {
+            if !SolDappMeta::valid_origin(&dapp.origin) {
+                return Err(SolRecordError::Dapp);
+            }
+            let origin_len = u16::try_from(dapp.origin.len()).map_err(|_| SolRecordError::Dapp)?;
+            out.extend_from_slice(&dapp.public);
+            out.push(dapp.signer_slot);
+            out.push(dapp.flags);
+            out.extend_from_slice(&origin_len.to_be_bytes());
+            out.extend_from_slice(dapp.origin.as_bytes());
+        }
         out.extend_from_slice(&self.tx);
         Ok(out)
     }
@@ -244,30 +420,49 @@ impl SolRecord {
             return Err(SolRecordError::Length);
         }
         let byte = |at: usize| body.get(at).copied().ok_or(SolRecordError::Length);
-        let v2 = match (byte(0)?, byte(1)?) {
-            (RECORD_KIND, RECORD_VERSION) => false,
-            (RECORD_KIND, RECORD_VERSION_V2) => true,
-            _ => return Err(SolRecordError::Header),
+        let (RECORD_KIND, version @ (RECORD_VERSION | RECORD_VERSION_V2 | RECORD_VERSION_V3)) =
+            (byte(0)?, byte(1)?)
+        else {
+            return Err(SolRecordError::Header);
         };
         let state = SolTxState::from_code(byte(2)?).ok_or(SolRecordError::Value)?;
         let cluster = SolCluster::from_code(byte(3)?).ok_or(SolRecordError::Value)?;
         let a = be_u32(body, 5).ok_or(SolRecordError::Length)?;
         let b = be_u32(body, 9).ok_or(SolRecordError::Length)?;
-        let tx_at = if v2 {
+        let mnemonic_id =
+            || array::<16>(body, SOL_JOURNAL_HEADER_LEN).ok_or(SolRecordError::Length);
+        let source = match (version, byte(4)?) {
+            (RECORD_VERSION_V2 | RECORD_VERSION_V3, 8) => {
+                SolKeySource::from_mnemonic_parts(mnemonic_id()?, a, b)
+                    .map_err(|_| SolRecordError::Source)?
+            }
+            (RECORD_VERSION_V2, _) => return Err(SolRecordError::Header),
+            // Tag 8 in version 1 is refused by `from_parts` (it needs the record id).
+            (_, tag) => SolKeySource::from_parts(tag, a, b).map_err(|_| SolRecordError::Source)?,
+        };
+        let mut tx_at = if source.mnemonic().is_some() {
             SOL_JOURNAL_HEADER_LEN + SOL_JOURNAL_MNEMONIC_LEN
         } else {
             SOL_JOURNAL_HEADER_LEN
         };
-        let source = match (v2, byte(4)?) {
-            (true, 8) => {
-                let id = array::<16>(body, SOL_JOURNAL_HEADER_LEN).ok_or(SolRecordError::Length)?;
-                SolKeySource::from_mnemonic_parts(id, a, b).map_err(|_| SolRecordError::Source)?
-            }
-            // Tag 8 in version 1 is refused by `from_parts` (it needs the record id).
-            (false, tag) => {
-                SolKeySource::from_parts(tag, a, b).map_err(|_| SolRecordError::Source)?
-            }
-            (true, _) => return Err(SolRecordError::Header),
+        let dapp = if version == RECORD_VERSION_V3 {
+            let public = array::<32>(body, tx_at).ok_or(SolRecordError::Length)?;
+            let signer_slot = byte(tx_at.saturating_add(32))?;
+            let flags = byte(tx_at.saturating_add(33))?;
+            let origin_len =
+                usize::from(be_u16(body, tx_at.saturating_add(34)).ok_or(SolRecordError::Length)?);
+            let origin_at = tx_at.saturating_add(DAPP_FIXED_LEN);
+            tx_at = origin_at.saturating_add(origin_len);
+            let origin = body.get(origin_at..tx_at).ok_or(SolRecordError::Length)?;
+            let origin = core::str::from_utf8(origin).map_err(|_| SolRecordError::Dapp)?;
+            Some(SolDappMeta {
+                public,
+                signer_slot,
+                flags,
+                origin: origin.to_owned(),
+            })
+        } else {
+            None
         };
         let intent_id = array::<16>(body, 13).ok_or(SolRecordError::Length)?;
         let intent_hash = array::<32>(body, 29).ok_or(SolRecordError::Length)?;
@@ -287,14 +482,18 @@ impl SolRecord {
             return Err(SolRecordError::Terminal);
         }
         let tx = body.get(tx_at..).ok_or(SolRecordError::Length)?.to_vec();
-        let (core, blockhash, signature) =
-            parse_transaction(&tx, cluster).map_err(SolRecordError::Tx)?;
-        let message = tx.get(MIN_TX_LEN..).ok_or(SolRecordError::Length)?;
-        if encode_message(&core, &blockhash) != message {
-            return Err(SolRecordError::Identity);
-        }
-        if !verify_strict(core.from.as_bytes(), message, &signature) {
-            return Err(SolRecordError::Signature);
+        if let Some(dapp) = &dapp {
+            dapp.check(&tx)?;
+        } else {
+            let (core, blockhash, signature) =
+                parse_transaction(&tx, cluster).map_err(SolRecordError::Tx)?;
+            let message = tx.get(MIN_TX_LEN..).ok_or(SolRecordError::Length)?;
+            if encode_message(&core, &blockhash) != message {
+                return Err(SolRecordError::Identity);
+            }
+            if !verify_strict(core.from.as_bytes(), message, &signature) {
+                return Err(SolRecordError::Signature);
+            }
         }
         Ok(Self {
             state,
@@ -307,15 +506,41 @@ impl SolRecord {
             terminal_slot,
             terminal_err,
             tx,
+            dapp,
         })
     }
 
-    /// The parsed transaction content (always `Some` for a decoded record).
+    /// The parsed transaction content (always `Some` for a decoded wallet send; `None` for a
+    /// dApp send, even one that matches a template: it is not a wallet send, spec/07 §14.1).
     #[must_use]
     pub fn core(&self) -> Option<SolTransferCore> {
+        if self.dapp.is_some() {
+            return None;
+        }
         parse_transaction(&self.tx, self.cluster)
             .ok()
             .map(|(core, _, _)| core)
+    }
+
+    /// The wallet account that signed: the dApp signer, or the template's `from` (`None` only for
+    /// a record that was never decoded and does not parse).
+    #[must_use]
+    pub fn signer(&self) -> Option<SolAddress> {
+        match &self.dapp {
+            Some(dapp) => Some(SolAddress::from_bytes(dapp.public)),
+            None => self.core().map(|core| core.from),
+        }
+    }
+
+    /// The send parameters of a dApp send: `skipPreflight` and the preflight commitment
+    /// (`None` for a wallet send, which always preflights at `confirmed`).
+    #[must_use]
+    pub fn send_flags(&self) -> Option<(bool, SolCommitment)> {
+        let dapp = self.dapp.as_ref()?;
+        Some((
+            dapp.flags & dapp_flags::SKIP_PREFLIGHT != 0,
+            SolDappMeta::commitment(dapp.flags)?,
+        ))
     }
 
     /// The signature (`tx[1..65]`).
@@ -395,6 +620,37 @@ pub fn pending_for<'a>(
     })
 }
 
+/// `Pending` dApp sends (version 3) of `(cluster, signer)`; at [`SOL_DAPP_MAX_PENDING`] a new
+/// send is refused (spec/07 §20.9, -32002).
+#[must_use]
+pub fn pending_dapp_count(
+    records: &[SolRecord],
+    cluster: SolCluster,
+    signer: &SolAddress,
+) -> usize {
+    records
+        .iter()
+        .filter(|record| {
+            record.state == SolTxState::Pending
+                && record.cluster == cluster
+                && record
+                    .dapp
+                    .as_ref()
+                    .is_some_and(|dapp| dapp.public == signer.to_bytes())
+        })
+        .count()
+}
+
+/// `Pending` dApp sends in the whole journal; at [`SOL_DAPP_MAX_PENDING_TOTAL`] a new send is
+/// refused (spec/07 §20.9).
+#[must_use]
+pub fn pending_dapp_total(records: &[SolRecord]) -> usize {
+    records
+        .iter()
+        .filter(|record| record.state == SolTxState::Pending && record.dapp.is_some())
+        .count()
+}
+
 fn sol_entries(plain: &JournalPlain) -> usize {
     plain
         .entries
@@ -411,7 +667,7 @@ pub fn has_room(plain: &JournalPlain) -> bool {
         && plain
             .plaintext_len()
             .saturating_add(ENTRY_HEADER_LEN)
-            .saturating_add(SOL_JOURNAL_MAX_BODY)
+            .saturating_add(SOL_JOURNAL_MAX_BODY_V3)
             <= MAX_PLAINTEXT
 }
 
@@ -420,7 +676,7 @@ pub fn has_room(plain: &JournalPlain) -> bool {
 pub struct SolActivityRow {
     /// Cluster (`solana:<cluster>` network).
     pub cluster: SolCluster,
-    /// Sender (base58).
+    /// Sender (base58; the signer of a dApp send).
     pub account: String,
     /// `base58(signature)`.
     pub tx_id: String,
@@ -430,7 +686,7 @@ pub struct SolActivityRow {
     pub asset: String,
     /// Lamports or raw token units, decimal.
     pub amount: String,
-    /// Recipient wallet (base58).
+    /// Recipient wallet (base58; empty for a dApp send).
     pub counterparty: String,
     /// `succeeded` / `failed` / `expired`.
     pub status: &'static str,
@@ -438,10 +694,35 @@ pub struct SolActivityRow {
     pub time_unix_ms: u64,
 }
 
-/// The activity row of a terminal record (`None` for `Pending`).
+/// `[Solana {cluster}] 사이트 거래 · {origin}`, cut on a character boundary to 256 bytes.
+fn dapp_title(cluster: SolCluster, origin: &str) -> String {
+    let mut title = format!("[{}] 사이트 거래 · {origin}", cluster.display_name());
+    let mut end = title.len().min(MAX_TITLE_BYTES);
+    while !title.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    title.truncate(end);
+    title
+}
+
+/// The activity row of a terminal record (`None` for `Pending`). A dApp send (version 3) always
+/// has one: its signer, no counterparty, amount `"0"` and the site title (spec/07 §14.1).
 #[must_use]
 pub fn activity_row(record: &SolRecord, time_unix_ms: u64) -> Option<SolActivityRow> {
     let status = record.state.activity_status()?;
+    if let Some(dapp) = &record.dapp {
+        return Some(SolActivityRow {
+            cluster: record.cluster,
+            account: SolAddress::from_bytes(dapp.public).to_base58(),
+            tx_id: record.tx_id(),
+            title: dapp_title(record.cluster, &dapp.origin),
+            asset: "native".to_owned(),
+            amount: "0".to_owned(),
+            counterparty: String::new(),
+            status,
+            time_unix_ms,
+        });
+    }
     let core = record.core()?;
     Some(SolActivityRow {
         cluster: record.cluster,

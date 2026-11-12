@@ -1,6 +1,7 @@
 //! spec/09 §2.4 fallback for the M7 fuzz targets (`sol_base58`, `sol_shortvec`, `sol_tx`,
 //! `sol_journal`; seeds `T_SOL` and, since v1.1, `T_SPL`; since M7.2 `sol_dapp_tx` with a v0
-//! message over two lookup tables): cargo-fuzz/nightly are not installed (offline), so each
+//! message over two lookup tables, and version 3 dApp-send journal bodies): cargo-fuzz/nightly
+//! are not installed (offline), so each
 //! target's invariant runs here over 1,000,000 xorshift64* mutations (bit flip, insert, delete,
 //! truncate) of its seeds.
 //! Run with `cargo test --release -p yw-core --test sol_fuzz_lite -- --ignored`.
@@ -186,6 +187,33 @@ fn body_of(state: u8, cluster: u8, tx: &[u8]) -> Vec<u8> {
     body
 }
 
+/// A version 3 (dApp send, spec/07 §14.1) devnet body: a one-signer legacy transaction with one
+/// instruction of an unknown program, signed by a fixed key, from `https://dapp.example`.
+fn v3_body(state: u8) -> Vec<u8> {
+    use ed25519_dalek::{Signer as _, SigningKey};
+    let key = SigningKey::from_bytes(&[0x11; 32]);
+    let public = key.verifying_key().to_bytes();
+    let mut message = vec![1, 0, 1, 2];
+    message.extend_from_slice(&public);
+    message.extend_from_slice(&[0x05; 32]);
+    message.extend_from_slice(&[7; 32]);
+    message.extend_from_slice(&[1, 1, 1, 0, 2, b'g', b'm']);
+    let mut tx = vec![1];
+    tx.extend_from_slice(&key.sign(&message).to_bytes());
+    tx.extend_from_slice(&message);
+    let origin = b"https://dapp.example";
+    let mut dapp = public.to_vec();
+    dapp.extend_from_slice(&[0, 0x03]);
+    dapp.extend_from_slice(&u16::try_from(origin.len()).unwrap_or(0).to_be_bytes());
+    dapp.extend_from_slice(origin);
+    let mut body = body_of(state, 2, &tx);
+    if let Some(version) = body.get_mut(1) {
+        *version = 3;
+    }
+    body.splice(89..89, dapp);
+    body
+}
+
 #[test]
 fn seeds_are_valid() {
     assert!(parse_transaction(&golden_tx(), SolCluster::Mainnet).is_ok());
@@ -207,6 +235,10 @@ fn seeds_are_valid() {
             SolRecord::decode(&body_of(state, 1, &spl_tx())).is_ok(),
             "{state}"
         );
+        let v3 = v3_body(state);
+        let record = SolRecord::decode(&v3).unwrap();
+        assert!(record.dapp.is_some() && record.core().is_none());
+        assert_eq!(record.encode().unwrap(), v3);
     }
 }
 
@@ -288,6 +320,7 @@ fn fuzz_lite_sol_tx() {
 fn fuzz_lite_sol_journal() {
     let mut seeds: Vec<Vec<u8>> = (1..=4).map(golden_body).collect();
     seeds.extend((1..=4).map(|state| body_of(state, 1, &spl_tx())));
+    seeds.extend((1..=4).map(v3_body));
     let mut mutator = Mutator::new(0x736f_6c6a_726e_6c21, 2_048);
     let mut accepted = 0_u32;
     for _ in 0..runs() {

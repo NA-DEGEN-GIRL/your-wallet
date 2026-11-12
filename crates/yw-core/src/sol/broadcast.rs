@@ -33,13 +33,16 @@ pub mod err {
     pub const BLOCKHASH_NOT_FOUND: u16 = 7;
     /// `AlreadyProcessed`.
     pub const ALREADY_PROCESSED: u16 = 8;
+    /// `InstructionError` in an instruction of another program (a dApp transaction, spec/07
+    /// §20.8; deterministic). Earlier builds show it as "알 수 없는 거래 오류".
+    pub const PROGRAM_INSTRUCTION: u16 = 9;
     /// Anything else.
     pub const OTHER: u16 = 0xFFFF;
 
-    /// Codes 1–6: deterministic transaction errors (preflight stops re-sending).
+    /// Codes 1–6 and 9: deterministic transaction errors (preflight stops re-sending).
     #[must_use]
     pub const fn is_deterministic(code: u16) -> bool {
-        matches!(code, 1..=6)
+        matches!(code, 1..=6 | 9)
     }
 
     /// Fixed Korean text of a code (never the RPC message).
@@ -54,6 +57,7 @@ pub mod err {
             6 => "계산 한도(CU)를 넘었습니다",
             7 => "블록해시를 찾을 수 없습니다(일시적)",
             8 => "이미 처리된 거래입니다",
+            9 => "프로그램 명령이 실패했습니다",
             _ => "알 수 없는 거래 오류",
         }
     }
@@ -86,7 +90,7 @@ pub enum SendResult {
     },
     /// Transport error, timeout or `BlockhashNotFound` and other transient preflight errors.
     Transient,
-    /// A deterministic preflight transaction error (§15.3 codes 1–6).
+    /// A deterministic preflight transaction error (§15.3 codes 1–6 and 9).
     Deterministic(u16),
 }
 

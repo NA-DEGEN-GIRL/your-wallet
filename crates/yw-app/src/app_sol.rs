@@ -2436,6 +2436,7 @@ mod tests {
             terminal_slot: 0,
             terminal_err: 0,
             tx: assemble_transaction(&[sig; 64], &encode_message(&core, &[7; 32])),
+            dapp: None,
         }
     }
 

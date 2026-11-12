@@ -90,13 +90,13 @@ impl EntryKind {
         }
     }
 
-    /// The largest body of this chain (spec/02 §5.4: EVM 131,761, SOL 1,321, BTC 37,924); the
+    /// The largest body of this chain (spec/02 §5.4: EVM 131,761, SOL 1,629, BTC 37,924); the
     /// framing bound for a kind this build does not know.
     #[must_use]
     pub const fn max_body(self) -> usize {
         match self {
             Self::Evm => evm::MAX_BODY,
-            Self::Sol => sol::SOL_JOURNAL_MAX_BODY,
+            Self::Sol => sol::SOL_JOURNAL_MAX_BODY_V3,
             Self::Btc => btc::BTC_JOURNAL_MAX_BODY,
             Self::Zec => zec::ZEC_JOURNAL_MAX_BODY,
             Self::Unknown(_) => MAX_BODY,
