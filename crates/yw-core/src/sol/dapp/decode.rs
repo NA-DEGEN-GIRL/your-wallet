@@ -598,10 +598,18 @@ impl<'a> Data<'a> {
         String::from_utf8(self.take(len)?.to_vec()).ok()
     }
 
-    /// Token `COption<Pubkey>` in instruction data: `0` or `1 ‖ 32 bytes`.
+    /// Token `COption<Pubkey>` in instruction data: `0` or `1 ‖ 32 bytes`. As the last field, `0`
+    /// may also be followed by exactly 32 zero bytes: @solana/spl-token writes the option at a
+    /// fixed width, and the programs ignore what follows a `0` (spec/07 §20.4).
     fn option_key(&mut self) -> Result<Option<SolAddress>, ()> {
         match self.u8().ok_or(())? {
-            0 => Ok(None),
+            0 => {
+                let rest = self.bytes.get(self.at..).unwrap_or(&[]);
+                if rest.len() == 32 && rest.iter().all(|&byte| byte == 0) {
+                    self.at = self.bytes.len();
+                }
+                Ok(None)
+            }
             1 => self.key().map(Some).ok_or(()),
             _ => Err(()),
         }

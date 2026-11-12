@@ -1105,6 +1105,17 @@ fn token_instructions() {
                 freeze_authority: None,
             },
         ),
+        // @solana/spl-token writes `None` at a fixed width: `0 ‖ 00×32`.
+        (
+            2,
+            with(0, &[&[6], k9.as_bytes(), &[0], &[0; 32]]),
+            TokenIx::InitializeMint {
+                mint: a[0],
+                decimals: 6,
+                mint_authority: k9,
+                freeze_authority: None,
+            },
+        ),
         (
             4,
             vec![1],
@@ -1167,6 +1178,16 @@ fn token_instructions() {
                 account: a[0],
                 current: a[1],
                 kind: AuthorityType::CloseAccount,
+                new: None,
+            },
+        ),
+        (
+            2,
+            with(6, &[&[0, 0], &[0; 32]]),
+            TokenIx::SetAuthority {
+                account: a[0],
+                current: a[1],
+                kind: AuthorityType::MintTokens,
                 new: None,
             },
         ),
@@ -1302,6 +1323,16 @@ fn token_instructions() {
         ),
         (
             1,
+            with(20, &[&[9], k9.as_bytes(), &[0], &[0; 32]]),
+            TokenIx::InitializeMint2 {
+                mint: a[0],
+                decimals: 9,
+                mint_authority: k9,
+                freeze_authority: None,
+            },
+        ),
+        (
+            1,
             vec![21],
             TokenIx::GetAccountDataSize {
                 mint: a[0],
@@ -1362,6 +1393,30 @@ fn token_instructions() {
     assert_eq!(decode(&TOKEN_PROGRAM, &a, &[6, 4, 0]), malformed());
     assert_eq!(decode(&TOKEN_2022_PROGRAM, &a, &[6, 4, 0]), malformed());
     assert_eq!(decode(&TOKEN_PROGRAM, &a, &[6, 2, 2]), malformed());
+    // Only `0` alone or `0 ‖ 00×32` is `None`: no other trailing bytes.
+    let mut nonzero = vec![6, 1, 0];
+    nonzero.extend_from_slice(k9.as_bytes());
+    let mut short = vec![6, 1, 0];
+    short.extend_from_slice(&[0; 31]);
+    let mut long = vec![6, 1, 0];
+    long.extend_from_slice(&[0; 33]);
+    let mut one_set = vec![6, 1, 0];
+    one_set.extend_from_slice(&[0; 32]);
+    one_set[34] = 1;
+    for data in [nonzero, short, long, one_set] {
+        assert_eq!(decode(&TOKEN_PROGRAM, &a, &data), malformed());
+        assert_eq!(decode(&TOKEN_2022_PROGRAM, &a, &data), malformed());
+    }
+    let mut mint = vec![0, 6];
+    mint.extend_from_slice(k9.as_bytes());
+    mint.push(0);
+    mint.extend_from_slice(&[0; 31]);
+    assert_eq!(decode(&TOKEN_PROGRAM, &a, &mint), malformed());
+    let mut mint2 = vec![20, 6];
+    mint2.extend_from_slice(k9.as_bytes());
+    mint2.push(0);
+    mint2.extend_from_slice(k10.as_bytes());
+    assert_eq!(decode(&TOKEN_PROGRAM, &a, &mint2), malformed());
     // GetAccountDataSize lists extension types only on Token-2022, in whole u16s.
     assert_eq!(
         decode(&TOKEN_2022_PROGRAM, &a[..1], &[21, 7, 0, 14, 0]),
