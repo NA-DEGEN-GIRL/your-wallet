@@ -517,6 +517,12 @@ impl Builder<'_, '_> {
     }
 
     fn text(&mut self, text: &str, role: FontRole, color: Color, x: i32, width: i32) {
+        // An address line (whole or in the display model's 4-character groups) is laid out
+        // whole; `draw_line` emphasizes its ends (2026-11-12, spec/04 §3.3).
+        let whole = (role == FontRole::Mono)
+            .then(|| crate::ui::theme::whole_address(text))
+            .flatten();
+        let text = whole.as_ref().map_or(text, |(address, _)| address.as_str());
         let height = line_height(self.dc, self.fonts, role);
         for character in text.chars() {
             let _ = char_width(self.dc, self.fonts, self.cache, role, character);
@@ -693,15 +699,7 @@ fn build_layout(
                 builder.text(sentence, FontRole::ApprovalTitle, theme::TEXT, x, w);
                 if let Some(address) = address {
                     builder.gap(6);
-                    let grouped = crate::ui::screens_btc::grouped(address);
-                    let shown = if !address.contains(' ')
-                        && crate::ui::theme::btc_address_segments(&grouped).is_some()
-                    {
-                        grouped
-                    } else {
-                        address.clone()
-                    };
-                    builder.text(&shown, FontRole::Mono, theme::TEXT, x, w);
+                    builder.text(address, FontRole::Mono, theme::TEXT, x, w);
                     if !notes.is_empty() {
                         builder.text(notes, FontRole::Caption, theme::INFO_TEXT, x, w);
                     }
@@ -778,17 +776,6 @@ fn build_layout(
             Block::Field { label, value, mono } => {
                 let (x, w) = (builder.x, builder.w);
                 builder.text(label, FontRole::Caption, theme::MUTED, x, w);
-                // A Bitcoin address (0x0601, no spaces in the value) is drawn in 4-character
-                // groups with the first and last 6 characters bold (spec/04 §3.3, spec/08 §10).
-                let grouped = crate::ui::screens_btc::grouped(value);
-                let value = if *mono
-                    && !value.contains(' ')
-                    && crate::ui::theme::btc_address_segments(&grouped).is_some()
-                {
-                    &grouped
-                } else {
-                    value
-                };
                 let role = if *mono {
                     if label.starts_with("calldata") {
                         FontRole::MonoSmall
@@ -799,16 +786,15 @@ fn build_layout(
                     FontRole::Body
                 };
                 builder.gap(2);
-                let has_sol_address = !*mono
+                let has_address = !*mono
                     && value
                         .split('\n')
-                        .any(|line| crate::ui::theme::sol_address_segments(line).is_some());
-                if has_sol_address {
-                    // Grouped Solana addresses on their own lines of a text field (the SPL mint
-                    // and token accounts of `0x0502`) are drawn like address fields: Consolas
-                    // with bold middle groups (spec/07 §12.3).
+                        .any(|line| crate::ui::theme::whole_address(line).is_some());
+                if has_address {
+                    // Addresses on their own lines of a text field (the SPL mint and token
+                    // accounts of `0x0502`) are drawn like address fields (spec/04 §3.3).
                     for line in value.split('\n') {
-                        let line_role = if crate::ui::theme::sol_address_segments(line).is_some() {
+                        let line_role = if crate::ui::theme::whole_address(line).is_some() {
                             FontRole::Mono
                         } else {
                             role
@@ -888,10 +874,8 @@ fn build_layout(
                 for detail in lines {
                     builder.text(detail, FontRole::Caption, theme::MUTED, x, width);
                 }
-                let shown = yw_core::evm::address::parse_address(address).map_or_else(
-                    |_| address.clone(),
-                    |parsed| yw_core::evm::display::format_address(&parsed),
-                );
+                let shown = yw_core::evm::address::parse_address(address)
+                    .map_or_else(|_| address.clone(), yw_core::evm::Address::to_checksum);
                 builder.text(&shown, FontRole::Mono, theme::TEXT, x, width);
                 builder.layout.accounts.push((
                     *index,
@@ -914,16 +898,15 @@ fn draw_line(
     widths: &HashMap<(FontRole, char), i32>,
 ) {
     if line.font == FontRole::Mono
-        && let Some(segments) = crate::ui::theme::address_segments(&line.text)
+        && let Some(spans) = crate::ui::theme::address_spans(&line.text)
     {
-        dc.set_text_color(line.color);
         let rect = Rect::new(
             line.x,
             line.y.saturating_sub(offset_y),
             i32::MAX / 4,
             line.height,
         );
-        if crate::ui::theme::paint_sol_address(dc, fonts, &segments, rect) {
+        if crate::ui::theme::paint_spans(dc, fonts, &spans, rect, line.color, theme::FOCUS) {
             return;
         }
     }
@@ -993,20 +976,6 @@ fn window_is_foreground(window: &Window) -> bool {
         return true;
     }
     window.is_foreground()
-}
-
-/// A header line that is one whole Solana or Bitcoin address (no spaces), in the 4-character
-/// groups its chain draws (spec/04 §3.3); `None` for anything else. Only spacing is added.
-fn grouped_header_address(line: &str) -> Option<String> {
-    if line.is_empty() || line.contains(' ') {
-        return None;
-    }
-    if let Ok(address) = yw_core::sol::SolAddress::parse(line) {
-        return Some(yw_core::sol::address::grouped(&address));
-    }
-    let grouped = crate::ui::screens_btc::grouped(line);
-    let parsed = crate::ui::theme::btc_address_segments(&grouped).is_some();
-    parsed.then_some(grouped)
 }
 
 fn remaining_text(ms: u64) -> String {
@@ -3271,12 +3240,11 @@ impl App {
         let mut rows: Vec<(String, String, FontRole)> = Vec::new();
         for (label, value) in &ui.view.header {
             for (index, line) in value.split('\n').enumerate() {
-                // A Solana or Bitcoin address on a line of its own is drawn in 4-character
-                // groups (bold middle / bold first and last 6; spacing only, spec/04 §3.3).
-                let (text, role) = if let Some(grouped) = grouped_header_address(line) {
-                    (grouped, FontRole::Mono)
-                } else if index > 0 && crate::ui::theme::sol_address_segments(line).is_some() {
-                    (line.to_owned(), FontRole::Mono)
+                // An address on a line of its own is drawn whole with its ends emphasized
+                // (spec/04 §3.3, 2026-11-12).
+                let (text, role) = if let Some((address, _)) = crate::ui::theme::whole_address(line)
+                {
+                    (address, FontRole::Mono)
                 } else {
                     (line.to_owned(), FontRole::Body)
                 };
@@ -3401,8 +3369,21 @@ impl App {
             );
             dc.set_text_color(header_text);
             let emphasized = *role == FontRole::Mono
-                && crate::ui::theme::address_segments(value).is_some_and(|segments| {
-                    crate::ui::theme::paint_sol_address(&mut dc, fonts, &segments, rect)
+                && crate::ui::theme::address_spans(value).is_some_and(|spans| {
+                    crate::ui::theme::paint_spans(
+                        &mut dc,
+                        fonts,
+                        &spans,
+                        rect,
+                        header_text,
+                        // White on the red Bitcoin mainnet header, `FOCUS` elsewhere.
+                        if ui.view.btc_banner == Some(crate::ui::approval_view::BtcBanner::Mainnet)
+                        {
+                            header_text
+                        } else {
+                            theme::FOCUS
+                        },
+                    )
                 });
             if !emphasized {
                 dc.select_font(fonts.get(*role));

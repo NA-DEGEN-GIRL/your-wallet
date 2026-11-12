@@ -318,7 +318,7 @@ impl App {
                     && account.pubkey == info.pubkey
             });
             items.push(Item::LabeledRow(
-                format!("[가져온 키] {}", grouped(&info.address)),
+                format!("[가져온 키] {}", info.address),
                 vec![
                     Ctl::button(
                         id,
@@ -519,6 +519,8 @@ impl App {
                 network.display_name()
             ))),
         ));
+        // The confirmed balance, shown again next to the send amount (2026-11-12).
+        let mut spendable = None;
         match account {
             None => items.push(Item::Text(
                 "Zcash 계정 키를 불러오는 중… (복구 단어가 없는 지갑은 YubiKey Zcash 슬롯만 쓸 수 있습니다)"
@@ -551,6 +553,7 @@ impl App {
                     }
                     (Some(confirmed), pending)
                 });
+                spendable = confirmed;
                 // The other tabs' words when there is no balance yet (2026-11-11).
                 items.push(Item::Display(confirmed.map_or_else(
                     || "잔액 —".to_owned(),
@@ -750,6 +753,10 @@ impl App {
                 self.zec.ack,
             )]));
         }
+        items.push(Item::Help(spendable.map_or_else(
+            || "확인된 잔액: 아직 읽지 못했습니다".to_owned(),
+            |zats| format!("확인된 잔액 {}", format_zec_and_zats(zats)),
+        )));
         items.push(Item::LabeledRow(
             "금액 (ZEC)".to_owned(),
             vec![

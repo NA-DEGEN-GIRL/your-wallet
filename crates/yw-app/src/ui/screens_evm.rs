@@ -1196,10 +1196,7 @@ impl App {
                     },
                 )));
             }
-            items.push(Item::Help(format!(
-                "토큰 컨트랙트 {}",
-                format_address(&token)
-            )));
+            items.push(Item::Help(format!("토큰 컨트랙트 {}", token.to_checksum())));
         }
         // The unit next to the field and a `최대` note for the chosen asset (2026-11-10).
         let (_, asset_symbol) = self.send_asset_meta();

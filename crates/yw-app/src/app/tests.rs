@@ -959,10 +959,10 @@ fn evm_receive_qr_toggles_to_the_plain_address() {
     );
     assert!(has_text(&items, RECEIVE_SHARED_ADDRESS_NOTE));
     assert!(!has_text(&items, "네트워크 정보가 없습니다"));
-    // The address is the copy line (2026-11-12): the grouped form of §3.3, before the QR.
+    // The address is the copy line (2026-11-12): whole (§3.3), before the QR.
     assert_eq!(
         ctl(&items, evm_ids::COPY_ADDRESS).and_then(|line| line.value_text()),
-        Some(yw_core::evm::display::format_address(&address))
+        Some(address.to_checksum())
     );
     let at = |wanted: fn(&Item) -> bool| items.iter().position(wanted);
     assert!(

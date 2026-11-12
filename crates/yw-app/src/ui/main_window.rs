@@ -639,6 +639,22 @@ fn columns(room: i32, advance: i32) -> usize {
     usize::try_from(room / advance.max(1)).unwrap_or(0).max(8)
 }
 
+/// A mono line's text and spans: an address (whole or in the older 4-character groups) becomes
+/// the whole address with its ends emphasized (2026-11-12, spec/04 §3.3,
+/// `ui::theme::address_spans`); any other text is kept as it is, without spans.
+fn address_line(text: &str, font: FontRole) -> (String, Vec<(String, bool)>) {
+    match (font == FontRole::Mono)
+        .then(|| crate::ui::theme::whole_address(text))
+        .flatten()
+    {
+        Some((address, kind)) => {
+            let spans = crate::ui::theme::own_address_spans(&address, kind, false);
+            (address, spans)
+        }
+        None => (text.to_owned(), Vec::new()),
+    }
+}
+
 /// `spans` cut into lines of at most `columns` characters (the emphasis kept on each piece).
 fn break_spans(spans: &[(String, bool)], columns: usize) -> Vec<Vec<(String, bool)>> {
     let mut lines: Vec<Vec<(String, bool)>> = vec![Vec::new()];
@@ -715,7 +731,9 @@ impl Layouter<'_> {
 
     fn text(&mut self, text: &str, font: FontRole, color: Color, indent: i32, gap: i32) {
         let width = self.frame.w.saturating_sub(indent).max(self.px(40));
-        let height = (self.measure)(text, font, width).max(self.px(16));
+        // An address line (grouped or not) is drawn whole with its ends emphasized (§3.3).
+        let (text, spans) = address_line(text, font);
+        let height = (self.measure)(&text, font, width).max(self.px(16));
         self.placed.texts.push(PaintText {
             rect: Rect::new(
                 self.frame.x.saturating_add(indent),
@@ -723,13 +741,13 @@ impl Layouter<'_> {
                 width,
                 height,
             ),
-            text: text.to_owned(),
+            text,
             font,
             color: color.0,
             fill: None,
             wrap: true,
             align: TextAlign::Wrap,
-            spans: Vec::new(),
+            spans,
         });
         self.advance(height, gap);
     }
@@ -1521,10 +1539,11 @@ impl Layouter<'_> {
         }
         let value_w = self.frame.w.saturating_sub(value_x).max(self.px(40));
         let mono = value.starts_with("0x")
-            || crate::ui::theme::address_segments(value).is_some()
+            || crate::ui::theme::whole_address(value).is_some()
             || value.starts_with("m/");
         let font = if mono { FontRole::Mono } else { FontRole::Body };
-        let value_h = (self.measure)(value, font, value_w).max(self.px(18));
+        let (value, spans) = address_line(value, font);
+        let value_h = (self.measure)(&value, font, value_w).max(self.px(18));
         let top = self.y.saturating_sub(self.scroll);
         self.placed.texts.push(PaintText {
             rect: Rect::new(self.frame.x, top, label_w, self.px(20)),
@@ -1538,13 +1557,13 @@ impl Layouter<'_> {
         });
         self.placed.texts.push(PaintText {
             rect: Rect::new(self.frame.x.saturating_add(value_x), top, value_w, value_h),
-            text: value.to_owned(),
+            text: value,
             font,
             color: theme::TEXT.0,
             fill: None,
             wrap: true,
             align: TextAlign::Wrap,
-            spans: Vec::new(),
+            spans,
         });
         self.advance(value_h.max(self.px(20)), self.px(theme::SPACE_S));
     }
@@ -1846,8 +1865,8 @@ pub fn paint(dc: &mut PaintDc<'_>, client: Rect, placed: &Placed, fonts: &Fonts)
         if let Some(fill) = text.fill {
             dc.fill_rect(text.rect, Color(fill));
         }
-        // Own-address spans: one line, vertically centered beside their buttons; a line too
-        // wide for them wraps as plain mono below.
+        // Address spans: one line, vertically centered beside their buttons; a line too wide
+        // for them wraps as plain mono below.
         if !text.spans.is_empty()
             && crate::ui::theme::paint_spans(
                 dc,
@@ -1861,12 +1880,6 @@ pub fn paint(dc: &mut PaintDc<'_>, client: Rect, placed: &Placed, fonts: &Fonts)
             continue;
         }
         dc.set_text_color(Color(text.color));
-        if text.font == FontRole::Mono
-            && let Some(segments) = crate::ui::theme::address_segments(&text.text)
-            && crate::ui::theme::paint_sol_address(dc, fonts, &segments, text.rect)
-        {
-            continue;
-        }
         dc.select_font(fonts.get(text.font));
         let flags = match text.align {
             TextAlign::Center => DrawFlags::CENTER,

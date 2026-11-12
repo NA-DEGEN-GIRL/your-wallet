@@ -369,93 +369,75 @@ pub fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().collect()
 }
 
-/// The segments of a grouped Solana address line (spec/07 §12.3: the whole address in 4-character
-/// groups, first and last group regular, the middle groups bold): `(text, bold)` with the
-/// separating spaces as regular segments. `None` unless `text` is exactly
-/// [`yw_core::sol::address::grouped`] of a valid address, so no other text changes weight.
+/// The family of `text` when it is one whole address without spaces: `0x` + 40 hex digits, a
+/// Bitcoin address of mainnet or testnet4, a Zcash address or a Solana address.
 #[must_use]
-pub fn sol_address_segments(text: &str) -> Option<Vec<(&str, bool)>> {
-    let groups: Vec<&str> = text.split(' ').collect();
-    if groups.len() < 3
-        || groups
-            .iter()
-            .any(|group| group.is_empty() || group.len() > 4)
-    {
+pub fn address_kind(text: &str) -> Option<AddressKind> {
+    if text.is_empty() || !text.is_ascii() || text.contains(char::is_whitespace) {
         return None;
     }
-    let address = yw_core::sol::SolAddress::parse(&groups.concat()).ok()?;
-    if yw_core::sol::address::grouped(&address) != text {
-        return None;
+    if let Some(digits) = text.strip_prefix("0x") {
+        return (digits.len() == 40 && digits.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            .then_some(AddressKind::Evm);
     }
-    let last = groups.len().saturating_sub(1);
-    let mut segments = Vec::with_capacity(groups.len().saturating_mul(2));
-    for (index, group) in groups.into_iter().enumerate() {
-        if index != 0 {
-            segments.push((" ", false));
-        }
-        segments.push((group, index != 0 && index != last));
-    }
-    Some(segments)
-}
-
-/// Characters drawn bold at each end of a Bitcoin address (spec/04 §3.3, spec/08 §10).
-pub const BTC_BOLD_ENDS: usize = 6;
-
-/// The segments of a grouped Bitcoin address line (spec/04 §3.3: the whole address in
-/// 4-character groups, the first 6 and the last 6 characters bold): `(text, bold)` with the
-/// separating spaces as regular segments; a group crossing a boundary is split there. `None`
-/// unless `text` is exactly [`crate::ui::screens_btc::grouped`] of an address that parses on
-/// mainnet or testnet4, so no other text changes weight.
-#[must_use]
-pub fn btc_address_segments(text: &str) -> Option<Vec<(&str, bool)>> {
-    let groups: Vec<&str> = text.split(' ').collect();
-    if groups.len() < 3
-        || groups
-            .iter()
-            .any(|group| group.is_empty() || group.len() > 4 || !group.is_ascii())
-    {
-        return None;
-    }
-    let address = groups.concat();
-    let parses = yw_core::btc::BtcNetwork::ALL
+    if yw_core::btc::BtcNetwork::ALL
         .into_iter()
-        .any(|net| yw_core::btc::parse_address(&address, net).is_ok());
-    if !parses || crate::ui::screens_btc::grouped(&address) != text {
-        return None;
+        .any(|net| yw_core::btc::parse_address(text, net).is_ok())
+    {
+        return Some(AddressKind::Bitcoin);
     }
-    let tail = address.len().checked_sub(BTC_BOLD_ENDS)?;
-    let mut segments = Vec::with_capacity(groups.len().saturating_mul(3));
-    let mut start = 0_usize;
-    for (index, group) in groups.into_iter().enumerate() {
-        if index != 0 {
-            segments.push((" ", false));
-        }
-        let end = start.saturating_add(group.len());
-        let mut cuts = vec![0_usize];
-        for boundary in [BTC_BOLD_ENDS, tail] {
-            if boundary > start && boundary < end {
-                cuts.push(boundary.saturating_sub(start));
-            }
-        }
-        cuts.push(group.len());
-        cuts.dedup();
-        for pair in cuts.windows(2) {
-            let (Some(&from), Some(&to)) = (pair.first(), pair.get(1)) else {
-                continue;
-            };
-            let piece = group.get(from..to)?;
-            let at = start.saturating_add(from);
-            segments.push((piece, at < BTC_BOLD_ENDS || at >= tail));
-        }
-        start = end;
+    if yw_core::zec::ZecNetwork::ALL
+        .into_iter()
+        .any(|net| yw_core::zec::parse_recipient(text, net).is_ok())
+    {
+        return Some(AddressKind::Zcash);
     }
-    Some(segments)
+    yw_core::sol::SolAddress::parse(text)
+        .is_ok()
+        .then_some(AddressKind::Solana)
 }
 
-/// The emphasized segments of a grouped Solana or Bitcoin address line, if `text` is one.
+/// `address` in the 4-character groups the screens drew before 2026-11-12 (EVM: `0x`, then
+/// groups of the 40 digits; the others from the first character).
+fn grouped_form(address: &str, kind: AddressKind) -> String {
+    let (head, rest) = match kind {
+        AddressKind::Evm => (
+            address.get(..2).unwrap_or(""),
+            address.get(2..).unwrap_or(""),
+        ),
+        AddressKind::Solana | AddressKind::Bitcoin | AddressKind::Zcash => ("", address),
+    };
+    let mut out = String::with_capacity(address.len().saturating_add(address.len() / 4));
+    out.push_str(head);
+    for (index, character) in rest.chars().enumerate() {
+        if index != 0 && index % 4 == 0 {
+            out.push(' ');
+        }
+        out.push(character);
+    }
+    out
+}
+
+/// `text` as one whole address and its family: the address itself ([`address_kind`]) or that
+/// address in exactly the 4-character groups of [`grouped_form`] (the approval display model's
+/// EVM addresses, `yw_core::sol::address::grouped`, `ui::screens_btc::grouped`), so only an
+/// address line is redrawn, never other text with spaces.
 #[must_use]
-pub fn address_segments(text: &str) -> Option<Vec<(&str, bool)>> {
-    sol_address_segments(text).or_else(|| btc_address_segments(text))
+pub fn whole_address(text: &str) -> Option<(String, AddressKind)> {
+    if !text.contains(' ') {
+        return address_kind(text).map(|kind| (text.to_owned(), kind));
+    }
+    let joined: String = text.split(' ').collect();
+    let kind = address_kind(&joined)?;
+    (grouped_form(&joined, kind) == text).then_some((joined, kind))
+}
+
+/// How every address line is drawn (2026-11-12, spec/04 §3.3): the [`own_address_spans`] of
+/// [`whole_address`]: the whole address without spaces, the 4 characters after its family's
+/// prefix and the last 4 emphasized. `None` for any other text.
+#[must_use]
+pub fn address_spans(text: &str) -> Option<Vec<(String, bool)>> {
+    whole_address(text).map(|(address, kind)| own_address_spans(&address, kind, false))
 }
 
 /// The address family of an own-account address line ([`own_address_spans`]).
@@ -490,13 +472,10 @@ fn own_address_prefix(address: &str, kind: AddressKind) -> usize {
     }
 }
 
-/// How the account cards draw the user's **own** address (2026-11-11, spec/04 §2.6): the whole
-/// address without spaces (case kept), the [`OWN_ADDRESS_ENDS`] characters after the family's
-/// prefix and the last [`OWN_ADDRESS_ENDS`] emphasized: `(text, emphasized)` spans. Also the
-/// token contracts and mints and the recipients of the wallet's own sent transactions
-/// (2026-11-11, `ui::screens_links`). Recipient checks (approval windows, send forms, receive
-/// screens, the address book) and the received history's senders keep the grouped form of
-/// spec/04 §3.3. With `short`, the middle is replaced by `…` (`0x0Bd7…AD73`; no screen uses it
+/// How every address is drawn (the account cards since 2026-11-11, spec/04 §2.6; every screen
+/// and approval window since 2026-11-12, §3.3 and [`address_spans`]): the whole address without
+/// spaces (case kept), the [`OWN_ADDRESS_ENDS`] characters after the family's prefix and the
+/// last [`OWN_ADDRESS_ENDS`] emphasized: `(text, emphasized)` spans. With `short`, the middle is replaced by `…` (`0x0Bd7…AD73`; no screen uses it
 /// since the copy lines of 2026-11-11 show every address whole).
 /// An address too short to have a middle is one plain span.
 #[must_use]
@@ -582,51 +561,11 @@ pub fn paint_spans(
     true
 }
 
-/// Draws `segments` on one line from `(x, y)` with the regular / bold mono fonts in the current
-/// text color. Returns `false` (nothing drawn) when the line is wider than `rect.w`.
-pub fn paint_sol_address(
-    dc: &mut PaintDc<'_>,
-    fonts: &Fonts,
-    segments: &[(&str, bool)],
-    rect: Rect,
-) -> bool {
-    let measured: Vec<(Vec<u16>, FontRole, i32)> = segments
-        .iter()
-        .map(|(text, bold)| {
-            let role = if *bold {
-                FontRole::MonoBold
-            } else {
-                FontRole::Mono
-            };
-            dc.select_font(fonts.get(role));
-            let units = wide(text);
-            let (_, width) = dc.measure(&units, i32::MAX);
-            (units, role, width)
-        })
-        .collect();
-    let total = measured
-        .iter()
-        .fold(0_i32, |sum, (_, _, width)| sum.saturating_add(*width));
-    if total > rect.w {
-        return false;
-    }
-    let mut x = rect.x;
-    for (units, role, width) in &measured {
-        dc.select_font(fonts.get(*role));
-        dc.draw_text(
-            units,
-            Rect::new(x, rect.y, width.saturating_add(4), rect.h),
-            DrawFlags::LINE,
-        );
-        x = x.saturating_add(*width);
-    }
-    true
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        AddressKind, direction_particle, object_particle, own_address_spans, sol_address_segments,
+        AddressKind, address_spans, direction_particle, object_particle, own_address_spans,
+        whole_address,
     };
 
     /// `(joined text, emphasized pieces)` of an own-address line.
@@ -733,40 +672,67 @@ mod tests {
     }
 
     #[test]
-    fn only_grouped_solana_addresses_get_bold_middle_groups() {
-        let segments =
-            sol_address_segments("HAgk 14Jp MQLg t6rV gv7c BQFJ WFto 5Dqx i472 uT3D Kpqk")
-                .unwrap_or_default();
-        assert_eq!(segments.len(), 21);
-        let bold: Vec<&str> = segments
-            .iter()
-            .filter(|(_, bold)| *bold)
-            .map(|(text, _)| *text)
-            .collect();
-        assert_eq!(
-            bold,
-            [
-                "14Jp", "MQLg", "t6rV", "gv7c", "BQFJ", "WFto", "5Dqx", "i472", "uT3D"
-            ]
-        );
-        assert_eq!(segments.first(), Some(&("HAgk", false)));
-        assert_eq!(segments.last(), Some(&("Kpqk", false)));
-        let joined: String = segments.iter().map(|(text, _)| *text).collect();
-        assert_eq!(
-            joined,
-            "HAgk 14Jp MQLg t6rV gv7c BQFJ WFto 5Dqx i472 uT3D Kpqk"
-        );
-        // Ungrouped, regrouped, altered or non-address text keeps its weight.
+    fn address_lines_are_drawn_whole_with_their_ends_emphasized() {
+        let strong = |text: &str| -> Option<(String, Vec<String>)> {
+            address_spans(text).map(|spans| {
+                (
+                    spans.iter().map(|(piece, _)| piece.as_str()).collect(),
+                    spans
+                        .into_iter()
+                        .filter(|(_, strong)| *strong)
+                        .map(|(piece, _)| piece)
+                        .collect(),
+                )
+            })
+        };
+        let evm = "0xF9900bb6FF2D2C67858c3468d21c5f103C4Ff646";
+        for text in [evm, "0xF990 0bb6 FF2D 2C67 858c 3468 d21c 5f10 3C4F f646"] {
+            assert_eq!(
+                strong(text),
+                Some((evm.to_owned(), vec!["F990".to_owned(), "f646".to_owned()])),
+                "{text}"
+            );
+        }
+        let sol = "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk";
         for text in [
-            "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk",
+            sol,
+            "HAgk 14Jp MQLg t6rV gv7c BQFJ WFto 5Dqx i472 uT3D Kpqk",
+        ] {
+            assert_eq!(
+                whole_address(text),
+                Some((sol.to_owned(), AddressKind::Solana))
+            );
+        }
+        for (text, kind) in [
+            (
+                "tb1q w508 d6qe jxtd g4y5 r3za rvar y0c5 xw7k xpjz sx",
+                AddressKind::Bitcoin,
+            ),
+            ("1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2", AddressKind::Bitcoin),
+            (
+                "t1Kg n7v5 a2rK kxC2 4LoX NyHR n4q4 Gs3K EEF",
+                AddressKind::Zcash,
+            ),
+        ] {
+            assert_eq!(
+                whole_address(text).map(|(_, kind)| kind),
+                Some(kind),
+                "{text}"
+            );
+        }
+        // Other groupings, altered addresses and other text keep their look.
+        for text in [
             "HAgk 14Jp MQLg t6rV gv7c BQFJ WFto 5Dqx i472 uT3D Kpq0",
             "HAg k14J pMQL gt6r Vgv7 cBQF JWFt o5Dq xi47 2uT3 DKpq k",
             "HAgk  14Jp MQLg t6rV gv7c BQFJ WFto 5Dqx i472 uT3D Kpqk",
+            "0x F990 0bb6 FF2D 2C67 858c 3468 d21c 5f10 3C4F f646",
+            "0xF9900bb6FF2D2C67858c3468d21c5f103C4Ff64",
             "0x98 58Ef FD23",
             "새 계정(아직 없음)",
+            "m/44'/60'/0'/0/0",
             "",
         ] {
-            assert!(sol_address_segments(text).is_none(), "{text}");
+            assert!(address_spans(text).is_none(), "{text}");
         }
     }
 }

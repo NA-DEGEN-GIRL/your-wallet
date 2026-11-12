@@ -946,7 +946,7 @@ impl App {
         if let Some(check) = &form.check {
             items.push(Item::Mono(grouped(&check.to)));
             items.push(Item::Help(
-                "굵게 표시된 가운데 부분까지 주소 전체를 확인하세요.".to_owned(),
+                "강조된 앞뒤 4자만 보지 말고 가운데까지 주소 전체를 확인하세요.".to_owned(),
             ));
             if let Some(exact) = &check.exact {
                 let note = match exact.kind {
@@ -1043,6 +1043,14 @@ impl App {
             })
             .collect();
         items.push(Item::LabeledRow("자산".to_owned(), radios));
+        // The SOL holding next to the amount like a token's (2026-11-12; only in the sender
+        // card before).
+        if asset == SolAsset::Sol {
+            items.push(Item::Help(self.sol_balance(from).map_or_else(
+                || "SOL · 보유: 잔액을 아직 읽지 못했습니다".to_owned(),
+                |lamports| format!("SOL · 보유 {} (RPC 참고)", App::sol_text(lamports)),
+            )));
+        }
         if let SolAsset::Spl(entry) = asset {
             let (value, note) = token_holding_text(entry, self.sol_token_holding(from, entry));
             items.push(Item::Help(format!(

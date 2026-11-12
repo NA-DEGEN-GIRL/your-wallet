@@ -513,21 +513,15 @@ pub fn own_address_row(
     }
 }
 
-/// The receive screens' address line (S12, 2026-11-12): the address in the grouped 4-character
-/// form of §3.3 (`grouped`, with the emphasis the mono line had: `ui::theme::address_segments`)
-/// on the flat copy button — the `주소 복사` button under the address of before; the command
-/// still copies the address itself — and `actions` (Bitcoin's `새 주소`) at the right end.
+/// The receive screens' and the address book's address line (S12, 2026-11-12): the address
+/// whole with its ends emphasized like every address (§3.3, `ui::theme::address_spans`; `shown`
+/// may still be the older grouped form) on the flat copy button — the `주소 복사` button under
+/// the address of before; the command still copies the address itself — and `actions`
+/// (Bitcoin's `새 주소`) at the right end.
 #[must_use]
-pub fn receive_address_row(grouped: &str, copy: u16, actions: Vec<Ctl>) -> Item {
-    let spans = crate::ui::theme::address_segments(grouped).map_or_else(
-        || vec![(grouped.to_owned(), false)],
-        |segments| {
-            segments
-                .into_iter()
-                .map(|(piece, strong)| (piece.to_owned(), strong))
-                .collect()
-        },
-    );
+pub fn receive_address_row(shown: &str, copy: u16, actions: Vec<Ctl>) -> Item {
+    let spans =
+        crate::ui::theme::address_spans(shown).unwrap_or_else(|| vec![(shown.to_owned(), false)]);
     Item::CopyLine {
         value: Ctl::value(copy, crate::ui::screens_links::T_ADDRESS_COPY, spans),
         actions,

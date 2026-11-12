@@ -1456,7 +1456,7 @@ impl App {
             let address = encode_address(&kind, net);
             items.push(Item::Mono(grouped(&address)));
             items.push(Item::Help(
-                "굵게 표시된 앞 6자·뒤 6자와 가운데까지 주소 전체를 확인하세요.".to_owned(),
+                "강조된 앞뒤 4자만 보지 말고 가운데까지 주소 전체를 확인하세요.".to_owned(),
             ));
             let entry = self
                 .meta
@@ -1487,6 +1487,11 @@ impl App {
         }
         items.push(Item::CardEnd);
         items.push(Item::CardStart(Some("금액과 수수료".to_owned())));
+        // What `최대` can send, next to the amount (2026-11-12; only in the sender card before).
+        items.push(Item::Help(self.btc.balance(&ctx).map_or_else(
+            || "사용 가능: 잔액을 아직 읽지 못했습니다".to_owned(),
+            |balance| format!("사용 가능 {}", BtcUi::amount_text(balance.available)),
+        )));
         items.push(Item::LabeledRow(
             "금액".to_owned(),
             vec![
@@ -1955,7 +1960,7 @@ mod tests {
     use crate::network::{BtcNet, NetworkId};
     use crate::settings::Settings;
     use crate::ui::main_window::{Ctl, Item, Tone};
-    use crate::ui::theme::{address_segments, btc_address_segments};
+    use crate::ui::theme::address_spans;
 
     /// A compressed account public key (the `meta.rs` test value; never derived from here).
     const TESTNET_ACCOUNT: &str =
@@ -2071,49 +2076,22 @@ mod tests {
     }
 
     #[test]
-    fn btc_grouped_address_bolds_first_and_last_six_characters() {
+    fn btc_address_is_drawn_whole_with_four_after_the_prefix_and_the_last_four() {
         let address = "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu";
         let text = grouped(address);
         assert_eq!(text, "bc1q cr8t e4kr 609g cawu tmrz a0j4 xv80 jy8z 306f yu");
-        let segments = btc_address_segments(&text).unwrap();
-        let joined: String = segments.iter().map(|(piece, _)| *piece).collect();
-        assert_eq!(joined, text);
-        let bold: String = segments
-            .iter()
-            .filter(|(_, bold)| *bold)
-            .map(|(piece, _)| *piece)
-            .collect();
-        assert_eq!(bold, "bc1qcr306fyu");
-        assert_eq!(segments.first(), Some(&("bc1q", true)));
-        assert!(segments.contains(&("cr", true)));
-        assert!(segments.contains(&("8t", false)));
-        assert_eq!(segments.last(), Some(&("yu", true)));
-        // Testnet4 and base58 addresses take the same rule.
-        let testnet = grouped("tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx");
-        assert!(btc_address_segments(&testnet).is_some());
-        let legacy = grouped("1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2");
-        let bold: String = btc_address_segments(&legacy)
-            .unwrap()
-            .iter()
-            .filter(|(_, bold)| *bold)
-            .map(|(piece, _)| *piece)
-            .collect();
-        assert_eq!(bold, "1BvBMSJaNVN2");
-        // Ungrouped, altered or non-address text keeps its weight; Solana keeps its own rule.
-        for text in [
-            address,
-            "bc1q cr8t e4kr 609g cawu tmrz a0j4 xv80 jy8z 306f yv",
-            "bc1 qcr8 te4k r609 gcaw utmr za0j 4xv8 0jy8 z306 fyu",
-            "bitc oin: bc1q",
-            "0x98 58Ef FD23",
-            "",
-        ] {
-            assert!(btc_address_segments(text).is_none(), "{text}");
+        for line in [address, text.as_str()] {
+            let spans = address_spans(line).unwrap();
+            let joined: String = spans.iter().map(|(piece, _)| piece.as_str()).collect();
+            assert_eq!(joined, address);
+            let strong: Vec<&str> = spans
+                .iter()
+                .filter(|(_, strong)| *strong)
+                .map(|(piece, _)| piece.as_str())
+                .collect();
+            assert_eq!(strong, ["cr8t", "6fyu"]);
         }
-        let sol = "HAgk 14Jp MQLg t6rV gv7c BQFJ WFto 5Dqx i472 uT3D Kpqk";
-        assert!(btc_address_segments(sol).is_none());
-        assert!(address_segments(sol).is_some());
-        assert!(address_segments(&text).is_some());
+        assert!(address_spans("bc1q cr8t e4kr 609g cawu tmrz a0j4 xv80 jy8z 306f yv").is_none());
     }
 
     #[test]
@@ -2283,12 +2261,12 @@ mod tests {
         assert!(!has_text(&items, crate::app_btc::T_BTC_FIXED_RECEIVE));
         assert!(has_text(&items, "m/84'/1'/0'/0/3"));
         assert!(control(&items, ids::NEW_ADDRESS).is_some());
-        // The address is one copy line before the QR (2026-11-12), grouped as before, with
+        // The address is one copy line before the QR (2026-11-12), whole (§3.3), with
         // `새 주소` on that line.
         let address = app.btc.receive.as_ref().unwrap().address.clone();
         assert_eq!(
             control(&items, ids::COPY_ADDRESS).and_then(|line| line.value_text()),
-            Some(grouped(&address))
+            Some(address)
         );
         let line = items
             .iter()
