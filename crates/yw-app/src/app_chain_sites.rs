@@ -947,6 +947,7 @@ mod tests {
             connections: 0,
             waiters: HashMap::new(),
             broadcasts: HashMap::new(),
+            sol_broadcasts: HashMap::new(),
             dapp_unlock: false,
             unlocked: false,
             locking: false,
@@ -1945,8 +1946,8 @@ mod tests {
 
     /// spec/05 §3.6: a granted dApp transaction request opens its window only with an endpoint
     /// (4901 otherwise) and while its cluster is still the wallet's (-32602, Q16); a send is
-    /// refused at the pending caps (-32002: 16 of the signer, 32 in the journal) and, until the
-    /// send path exists, with 4200. Not granted: revoked (4100).
+    /// refused at the pending caps (-32002: 16 of the signer, 32 in the journal). Not granted:
+    /// revoked (4100).
     #[test]
     fn sol_tx_preflight_refusals() {
         use yw_core::sol::dapp::SolTxMode;
@@ -1983,13 +1984,10 @@ mod tests {
         let send = site(sol_tx_kind(SolTxMode::SignAndSend));
         assert_eq!(
             app.sol_dapp_refusal(&public(), DEVNET, SolTxMode::SignAndSend),
-            Some(ProviderError::UnsupportedMethod)
+            None
         );
-        assert_eq!(
-            app.chain_site_preflight(&send),
-            Some(Some(QueueOutcome::Cancelled))
-        );
-        // 15 pending sends of the key: still the step guard; the 16th is the cap.
+        assert_eq!(app.chain_site_preflight(&send), Some(None));
+        // 15 pending sends of the key still open the window; the 16th is the cap.
         let mut journal = crate::events::JournalView {
             sol_records: vec![dapp_pending(public()); 15],
             ..crate::events::JournalView::default()
@@ -1997,13 +1995,17 @@ mod tests {
         app.evm.journal = Some(journal.clone());
         assert_eq!(
             app.sol_dapp_refusal(&public(), DEVNET, SolTxMode::SignAndSend),
-            Some(ProviderError::UnsupportedMethod)
+            None
         );
         journal.sol_records.push(dapp_pending(public()));
         app.evm.journal = Some(journal.clone());
         assert_eq!(
             app.sol_dapp_refusal(&public(), DEVNET, SolTxMode::SignAndSend),
             Some(ProviderError::TransactionPending)
+        );
+        assert_eq!(
+            app.chain_site_preflight(&send),
+            Some(Some(QueueOutcome::Cancelled))
         );
         // 32 pending sends of other keys: the whole-journal cap.
         journal.sol_records = vec![dapp_pending([9; 32]); 32];
@@ -2208,26 +2210,119 @@ mod tests {
         assert_eq!(answers(&frames), vec![Err(ProviderError::UserRejected)]);
     }
 
-    /// spec/07 §20.8 (step 6): an approved sign-only request leaves one chain-message waiter
-    /// (`ChainAnswer::SolTx`, not a send) and a `SignChainMessage` job for its ticket; an
-    /// approved send is answered 4200 with no waiter and no job until the send path exists.
+    /// A devnet wallet with a devnet endpoint (no request is ever sent: the RPC worker is a
+    /// channel in these tests).
+    fn devnet(app: &mut App) {
+        app.settings.solana.cluster = crate::network::SolCluster::Devnet;
+        let url = yw_win::http::HttpsUrl::parse("https://sol.example.test/").unwrap();
+        app.apikeys.set_rpc(
+            crate::network::NetworkId::Solana(crate::network::SolCluster::Devnet),
+            &url,
+        );
+    }
+
+    /// The window's part for `site`: its draft issued and consumed.
+    fn approve_site(app: &App, site: &SiteRequest) -> yw_core::approval::Approved {
+        let draft = app.sol_dapp_draft(site, Ok(preview(1))).unwrap();
+        let mut store = yw_core::approval::ApprovalStore::new();
+        let request = store.issue(draft, 1, 1_800_000_000_000).unwrap();
+        store.consume(request.id, request.digest, 2).unwrap()
+    }
+
+    /// [`queued_sol_tx`] as `sol_signAndSendTransaction`.
+    fn queued_send(app: &App, events: &EventQueue, conn: u64, n: u8) -> SiteRequest {
+        let mut send = queued_sol_tx(app, events, conn, n);
+        if let SiteKind::SolTx { mode, .. } = &mut send.kind {
+            *mode = yw_core::sol::dapp::SolTxMode::SignAndSend;
+        }
+        send
+    }
+
+    /// The send waiter `sol_dapp_consumed` leaves for `site`.
+    fn send_waiter(app: &mut App, site: &SiteRequest) -> crate::events::SignTicket {
+        app.push_sign_waiter(crate::app_browser::SignWaiter::Chain(
+            site.reply,
+            Box::new(ChainAnswer::SolTx {
+                public: public(),
+                origin: site.origin.clone(),
+                batch: false,
+                send: true,
+            }),
+        ))
+    }
+
+    /// A journaled send of [`public`] with transaction id `tx_id`.
+    fn summary(
+        tx_id: [u8; 64],
+        reused: bool,
+        min_context_slot: Option<u64>,
+    ) -> crate::events::SolDappSignedSummary {
+        crate::events::SolDappSignedSummary {
+            cluster: DEVNET,
+            public: public(),
+            tx_id,
+            own_signature: tx_id,
+            tx: sol_tx(1),
+            signed_at_ms: 1,
+            last_valid_block_height: 1,
+            min_context_slot,
+            reused,
+        }
+    }
+
+    /// The first broadcast round of `tx_id` with `state` and `outcome`.
+    fn first_round(
+        tx_id: [u8; 64],
+        state: yw_core::sol::broadcast::LoopState,
+        outcome: Result<yw_core::sol::broadcast::Outcome, crate::errors::ErrorCode>,
+    ) -> crate::events::RpcEvent {
+        crate::events::RpcEvent::SolTracked(Box::new(crate::sol::flow::TrackResult {
+            signature: tx_id,
+            state,
+            outcome,
+            genesis_ok: Some(true),
+            sends: 1,
+            generation: 0,
+        }))
+    }
+
+    /// The `{publicKey, signature}` text of a send answer.
+    fn send_answer_text(tx_id: [u8; 64]) -> String {
+        format!(
+            r#"{{"publicKey":"{SOL_KEY}","signature":"{}"}}"#,
+            yw_core::hex::encode(&tx_id)
+        )
+    }
+
+    fn texts(
+        found: Vec<Result<yw_json::Value, ProviderError>>,
+    ) -> Vec<Result<String, ProviderError>> {
+        found
+            .into_iter()
+            .map(|body| body.map(|value| String::from_utf8(yw_json::to_vec(&value)).unwrap()))
+            .collect()
+    }
+
+    /// spec/07 §20.8: an approved sign-only request leaves one chain-message waiter
+    /// (`ChainAnswer::SolTx`, not a send) and a `SignChainMessage` job for its ticket. An
+    /// approved send leaves a send waiter and its pre-sign check on the RPC worker (the
+    /// approved message on the request's cluster), then `SignSolDapp` with the bound
+    /// `lastValidBlockHeight`, the check and the origin; nothing is signed before. A failed
+    /// check answers -32603 with the reason in a band, a late check is dropped, and no
+    /// endpoint answers 4901.
     #[test]
-    fn approved_sign_only_goes_to_the_key_worker_and_a_send_is_refused() {
+    #[expect(clippy::too_many_lines, reason = "one request of each kind, in order")]
+    fn approved_requests_go_to_the_key_worker_or_the_presign_check() {
         use crate::app_browser::SignWaiter;
         use crate::events::KeyJob;
-        use yw_core::sol::dapp::SolTxMode;
+        use crate::sol::flow::PreSignError;
+        use crate::workers::rpc::RpcJob;
+        use yw_core::sol::dapp::PreSignCheck;
         let mut app = app(true);
-        app.settings.solana.cluster = crate::network::SolCluster::Devnet;
+        devnet(&mut app);
         let (events, frames, conn) = recorded(&mut app);
-        let approve = |app: &App, site: &SiteRequest| {
-            let draft = app.sol_dapp_draft(site, Ok(preview(1))).unwrap();
-            let mut store = yw_core::approval::ApprovalStore::new();
-            let request = store.issue(draft, 1, 1_800_000_000_000).unwrap();
-            store.consume(request.id, request.digest, 2).unwrap()
-        };
         let sign = queued_sol_tx(&app, &events, conn, 1);
-        let approved = approve(&app, &sign);
-        app.sol_dapp_consumed(approved, &sign);
+        app.sol_dapp_consumed(approve_site(&app, &sign), &sign);
         let waiters: Vec<_> = app.browser.as_ref().unwrap().waiters.iter().collect();
         let [(ticket, SignWaiter::Chain(reply, answer))] = waiters.as_slice() else {
             unreachable!("one chain waiter, got {}", waiters.len());
@@ -2250,19 +2345,334 @@ mod tests {
         assert!(app.key_queue.is_empty());
         assert!(answers(&frames).is_empty());
         app.browser.as_mut().unwrap().waiters.clear();
-        // A send (refused at preflight in this step) is never signed here either.
-        let mut send = queued_sol_tx(&app, &events, conn, 2);
-        if let SiteKind::SolTx { mode, .. } = &mut send.kind {
-            *mode = SolTxMode::SignAndSend;
-        }
-        let approved = approve(&app, &send);
-        app.sol_dapp_consumed(approved, &send);
-        assert!(app.browser.as_ref().unwrap().waiters.is_empty());
+        // A send: its pre-sign check first, nothing signed yet.
+        let (rpc, jobs) = std::sync::mpsc::channel();
+        app.rpc_tx = Some(rpc);
+        let send = queued_send(&app, &events, conn, 2);
+        app.sol_dapp_consumed(approve_site(&app, &send), &send);
+        let ticket = {
+            let waiters: Vec<_> = app.browser.as_ref().unwrap().waiters.iter().collect();
+            let [(ticket, SignWaiter::Chain(_, answer))] = waiters.as_slice() else {
+                unreachable!("one send waiter");
+            };
+            assert!(matches!(**answer, ChainAnswer::SolTx { send: true, .. }));
+            **ticket
+        };
+        let Ok(RpcJob::SolDappPreSign {
+            job,
+            endpoint,
+            message,
+        }) = jobs.try_recv()
+        else {
+            unreachable!("a pre-sign check");
+        };
+        assert_eq!(endpoint.cluster, DEVNET);
+        assert_eq!(message.blockhash, [7; 32]);
         assert!(app.key_queue.is_empty());
+        let check = PreSignCheck {
+            blockhash: [7; 32],
+            loaded: None,
+        };
+        app.on_sol_dapp_presigned(job, Ok((1_150, check.clone())));
+        let Some((
+            _,
+            KeyJob::SignSolDapp {
+                ticket: signing,
+                last_valid_block_height,
+                check: passed,
+                origin,
+                ..
+            },
+        )) = app.key_queue.pop()
+        else {
+            unreachable!("a SignSolDapp job");
+        };
+        assert_eq!(signing, ticket);
+        assert_eq!(last_valid_block_height, 1_150);
+        assert_eq!(passed, check);
+        assert_eq!(origin, "https://app.example");
+        assert!(app.sol.dapp_presign.is_empty());
+        assert!(answers(&frames).is_empty());
+        app.browser.as_mut().unwrap().waiters.clear();
+        // The check found the blockhash expired: -32603 and a band, the waiter gone.
+        let expired = queued_send(&app, &events, conn, 3);
+        app.sol_dapp_consumed(approve_site(&app, &expired), &expired);
+        let Ok(RpcJob::SolDappPreSign { job, .. }) = jobs.try_recv() else {
+            unreachable!("a pre-sign check");
+        };
+        app.on_sol_dapp_presigned(job, Err(PreSignError::BlockhashExpired));
+        assert_eq!(answers(&frames), vec![Err(ProviderError::BroadcastFailed)]);
+        assert!(app.banners.iter().any(|banner| {
+            banner
+                .text
+                .starts_with("사이트 거래를 보내지 못했습니다: 거래의 블록해시가 만료")
+        }));
+        assert!(app.browser.as_ref().unwrap().waiters.is_empty());
+        // A check whose entry is gone (answered) is dropped.
+        app.on_sol_dapp_presigned(job, Ok((1_150, check)));
+        assert!(app.key_queue.is_empty());
+        // No endpoint any more: 4901 before any RPC.
+        app.apikeys = ApiKeys::default();
+        let late = queued_send(&app, &events, conn, 4);
+        app.sol_dapp_consumed(approve_site(&app, &late), &late);
+        assert_eq!(answers(&frames), vec![Err(ProviderError::ChainUnavailable)]);
+        assert!(jobs.try_recv().is_err());
+        assert!(app.sol.dapp_presign.is_empty());
+        // A card send takes one touch and says so as any single-touch step.
+        let kind = crate::app_card::CardJobKind::SolDappSend { cluster: DEVNET };
+        assert_eq!(
+            crate::app_card::approval_touches(&approve_site(&app, &late), &kind),
+            1
+        );
+        assert_eq!(
+            crate::app_card::touch_text(&kind, 1),
+            crate::app_card::T_CARD_TOUCH
+        );
+    }
+
+    /// spec/07 §20.8, spec/05 §3.6: a journaled send is tracked at once (its first round sends
+    /// with `minContextSlot` and the record's own options) and answered `{publicKey,
+    /// signature}` with the transaction id after that round; later sends drop
+    /// `minContextSlot`. The same bytes approved twice are one record and both are answered.
+    /// A deterministic preflight error answers -32603; a site disconnected before the round,
+    /// or before the signature came, gets 4100 (the transaction is still journaled and
+    /// tracked).
+    #[test]
+    #[expect(clippy::too_many_lines, reason = "one record's answers, in order")]
+    fn a_send_is_answered_after_its_first_round() {
+        use crate::events::SolDappSigned;
+        use crate::workers::rpc::RpcJob;
+        use yw_core::sol::broadcast::{LoopState, Outcome};
+        let mut app = app(true);
+        devnet(&mut app);
+        app.mode = crate::app::AppMode::Unlocked {
+            alt_passphrase: false,
+        };
+        let (events, frames, conn) = recorded(&mut app);
+        // The dispatcher already holds the unlocked grants (no unlock merge from meta).
+        app.browser.as_mut().unwrap().unlocked = true;
+        let (rpc, jobs) = std::sync::mpsc::channel();
+        app.rpc_tx = Some(rpc);
+        let record = dapp_pending(public());
+        let tx_id = record.signature();
+        app.evm.journal = Some(crate::events::JournalView {
+            sol_records: vec![record],
+            ..crate::events::JournalView::default()
+        });
+        let pending = |app: &App| {
+            app.browser
+                .as_ref()
+                .unwrap()
+                .sol_broadcasts
+                .get(&tx_id)
+                .map_or(0, Vec::len)
+        };
+        let first = queued_send(&app, &events, conn, 1);
+        let ticket = send_waiter(&mut app, &first);
+        app.on_sol_dapp_signed(SolDappSigned {
+            ticket,
+            result: Ok(summary(tx_id, false, Some(77))),
+        });
+        assert!(answers(&frames).is_empty());
+        assert_eq!(pending(&app), 1);
+        assert_eq!(app.sol_dapp_min_context_slot(&tx_id), Some(77));
+        let Ok(RpcJob::SolTrack(job)) = jobs.try_recv() else {
+            unreachable!("the first round");
+        };
+        assert_eq!(job.signature, tx_id);
+        assert_eq!(job.send.min_context_slot, Some(77));
+        assert!(!job.send.skip_preflight);
+        assert!(!job.check_genesis, "checked at pre-sign");
+        app.sol_rpc_event(first_round(
+            tx_id,
+            LoopState::default(),
+            Ok(Outcome::Pending { notice: false }),
+        ));
+        assert_eq!(texts(answers(&frames)), vec![Ok(send_answer_text(tx_id))]);
+        assert_eq!(pending(&app), 0);
+        assert_eq!(app.sol_dapp_min_context_slot(&tx_id), None);
+        // The next round's sends: no minContextSlot.
+        app.sol_tick_tracking(u64::MAX);
+        let Ok(RpcJob::SolTrack(job)) = jobs.try_recv() else {
+            unreachable!("the next round");
+        };
+        assert_eq!(job.send.min_context_slot, None);
+        app.sol_rpc_event(first_round(
+            tx_id,
+            LoopState::default(),
+            Ok(Outcome::Pending { notice: false }),
+        ));
+        assert!(answers(&frames).is_empty());
+        // The same bytes approved twice (the second found the record): both get the same id.
+        for (n, reused) in [(2, false), (3, true)] {
+            let site = queued_send(&app, &events, conn, n);
+            let ticket = send_waiter(&mut app, &site);
+            app.on_sol_dapp_signed(SolDappSigned {
+                ticket,
+                result: Ok(summary(tx_id, reused, None)),
+            });
+        }
+        assert_eq!(pending(&app), 2);
+        assert!(answers(&frames).is_empty());
+        app.sol_rpc_event(first_round(
+            tx_id,
+            LoopState::default(),
+            Err(crate::errors::ErrorCode::Rpc002),
+        ));
+        assert_eq!(
+            texts(answers(&frames)),
+            vec![Ok(send_answer_text(tx_id)), Ok(send_answer_text(tx_id))]
+        );
+        // A deterministic preflight error stopped the re-sends: -32603.
+        let site = queued_send(&app, &events, conn, 4);
+        let ticket = send_waiter(&mut app, &site);
+        app.on_sol_dapp_signed(SolDappSigned {
+            ticket,
+            result: Ok(summary(tx_id, true, None)),
+        });
+        app.sol_rpc_event(first_round(
+            tx_id,
+            LoopState {
+                stop_rebroadcast: true,
+                preflight_err: Some(9),
+                ..LoopState::default()
+            },
+            Ok(Outcome::Pending { notice: false }),
+        ));
+        assert_eq!(answers(&frames), vec![Err(ProviderError::BroadcastFailed)]);
+        // Disconnected before the round: 4100.
+        let site = queued_send(&app, &events, conn, 5);
+        let later = queued_send(&app, &events, conn, 6);
+        let ticket = send_waiter(&mut app, &site);
+        app.on_sol_dapp_signed(SolDappSigned {
+            ticket,
+            result: Ok(summary(tx_id, true, None)),
+        });
+        assert!(core(&app).remove_sol_grant(&site.origin));
+        app.sol_rpc_event(first_round(
+            tx_id,
+            LoopState::default(),
+            Ok(Outcome::Pending { notice: false }),
+        ));
+        assert_eq!(answers(&frames), vec![Err(ProviderError::Unauthorized)]);
+        // Disconnected before the signature came: 4100 at once, the record still tracked.
+        let ticket = send_waiter(&mut app, &later);
+        app.on_sol_dapp_signed(SolDappSigned {
+            ticket,
+            result: Ok(summary(tx_id, true, None)),
+        });
+        assert_eq!(answers(&frames), vec![Err(ProviderError::Unauthorized)]);
+        assert_eq!(pending(&app), 0);
+        assert!(app.sol.tracking.contains_key(&tx_id));
+    }
+
+    /// spec/07 §20.8, §20.10-5: a send cancelled by the lock before it ran answers 4001, the
+    /// pending caps -32002, a signer refusal -32603 with the reason in a band; a send whose
+    /// record already ended (approved again) is answered at once. The lock answers a send
+    /// still waiting for its pre-sign check 4001 (approval and PIN dropped) and a journaled
+    /// one waiting for its first round with its transaction id; a signature that comes while
+    /// locked is answered at once.
+    #[test]
+    fn send_failures_and_the_lock_answer_every_waiter() {
+        use crate::events::{SolDappSigned, SolSignFailure};
+        use yw_core::sol::dapp::SolTxSignError;
+        let mut app = app(true);
+        devnet(&mut app);
+        app.mode = crate::app::AppMode::Unlocked {
+            alt_passphrase: false,
+        };
+        let (events, frames, conn) = recorded(&mut app);
+        // The dispatcher already holds the unlocked grants (no unlock merge from meta).
+        app.browser.as_mut().unwrap().unlocked = true;
+        let mut landed = dapp_pending(public());
+        landed.state = yw_core::journal::sol::SolTxState::Landed;
+        let tx_id = landed.signature();
+        app.evm.journal = Some(crate::events::JournalView {
+            sol_records: vec![landed],
+            ..crate::events::JournalView::default()
+        });
+        let mut n = 0_u8;
+        let mut next = |app: &mut App| {
+            n += 1;
+            let site = queued_send(app, &events, conn, n);
+            (send_waiter(app, &site), site)
+        };
+        for failure in [
+            SolSignFailure::Locked,
+            SolSignFailure::TooManyPending,
+            SolSignFailure::DappSign(SolTxSignError::DeadlineExceeded),
+        ] {
+            let (ticket, _) = next(&mut app);
+            app.on_sol_dapp_signed(SolDappSigned {
+                ticket,
+                result: Err(failure),
+            });
+        }
         assert_eq!(
             answers(&frames),
-            vec![Err(ProviderError::UnsupportedMethod)]
+            vec![
+                Err(ProviderError::UserRejected),
+                Err(ProviderError::TransactionPending),
+                Err(ProviderError::Internal)
+            ]
         );
+        assert!(app.banners.iter().any(|banner| {
+            banner.text
+                == "사이트 거래에 서명하지 못했습니다: 승인 후 서명까지 시간이 너무 오래 걸려 서명하지 않았습니다"
+        }));
+        // Approved again after the record landed: its id at once.
+        let (ticket, _) = next(&mut app);
+        app.on_sol_dapp_signed(SolDappSigned {
+            ticket,
+            result: Ok(summary(tx_id, true, None)),
+        });
+        assert_eq!(texts(answers(&frames)), vec![Ok(send_answer_text(tx_id))]);
+        // The lock: one send waiting for its check, one for its first round.
+        let (waiting, site) = next(&mut app);
+        let approved = approve_site(&app, &site);
+        app.sol.dapp_presign.insert(
+            41,
+            crate::app_sol_dapp::PendingDappSign {
+                ticket: waiting,
+                approved: Box::new(approved),
+                pin: None,
+                origin: site.origin.as_str().to_owned(),
+            },
+        );
+        let (ticket, site) = next(&mut app);
+        app.browser.as_mut().unwrap().waiters.remove(&ticket);
+        app.browser
+            .as_mut()
+            .unwrap()
+            .sol_broadcasts
+            .entry([3; 64])
+            .or_default()
+            .push(crate::app_sol_dapp::SolBroadcast {
+                reply: site.reply,
+                public: public(),
+                origin: site.origin.clone(),
+                min_context_slot: None,
+            });
+        app.sol_lock();
+        assert_eq!(
+            texts(answers(&frames)),
+            vec![
+                Err(ProviderError::UserRejected),
+                Ok(send_answer_text([3; 64]))
+            ]
+        );
+        assert!(app.sol.dapp_presign.is_empty());
+        assert!(app.browser.as_ref().unwrap().sol_broadcasts.is_empty());
+        // A signature that comes after the lock: answered at once (tracked after unlock).
+        app.mode = crate::app::AppMode::Locked;
+        let (ticket, _) = next(&mut app);
+        app.on_sol_dapp_signed(SolDappSigned {
+            ticket,
+            result: Ok(summary([4; 64], false, None)),
+        });
+        assert_eq!(texts(answers(&frames)), vec![Ok(send_answer_text([4; 64]))]);
+        assert!(app.sol.tracking.is_empty());
+        assert!(app.browser.as_ref().unwrap().waiters.is_empty());
     }
 
     /// A recorded connection on a fresh dispatcher of `app`, unlocked with the app's accounts

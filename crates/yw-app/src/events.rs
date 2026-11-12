@@ -18,6 +18,7 @@ use yw_core::journal::sol::{SolRecord, SolTransition};
 use yw_core::keyimport::{BtcKeyInfo, ImportChain, ImportPreview, ImportSpec};
 use yw_core::secret::{SecretString, Zeroizing};
 use yw_core::slip10::SolKeySource;
+use yw_core::sol::dapp::{PreSignCheck, SolTxSignError};
 use yw_core::sol::{SolAddress, SolCluster, SolSignError};
 use yw_core::vault::{
     BackupChallenge, ChallengeId, EvmKeySource, FileKind, PasswordChange, RecordId, VaultStatus,
@@ -486,6 +487,44 @@ pub enum KeyJob {
         /// The card PIN for this one operation.
         pin: Zeroizing<Vec<u8>>,
     },
+    /// Sign the one transaction of an approved dApp send and commit its `Pending` version 3
+    /// record before anything is sent (spec/07 §20.8, §20.9): after the pre-sign RPC check.
+    SignSolDapp {
+        /// Who answers the result ([`KeyOutcome::SignedSolDapp`]).
+        ticket: SignTicket,
+        /// The one-time approval (moved).
+        approved: Box<Approved>,
+        /// Monotonic ms of the pre-sign answer (the 20 s signing deadline runs from it).
+        consumed_at_ms: u64,
+        /// Wall clock (journal `signed_at_ms`).
+        now_unix_ms: u64,
+        /// `lastValidBlockHeight` bound at pre-sign (`getLatestBlockhash(processed)`).
+        last_valid_block_height: u64,
+        /// What the pre-sign check observed (blockhash, re-resolved lookup tables).
+        check: PreSignCheck,
+        /// The requesting site (journal version 3 origin).
+        origin: String,
+    },
+    /// [`KeyJob::SignSolDapp`] for a `YubiKey` Solana account (spec/10 §6.4): the same journal
+    /// handling, the signature from the card (`sol::dapp::sign_send_card`, one touch).
+    SignSolDappCard {
+        /// Who answers the result ([`KeyOutcome::SignedSolDapp`]).
+        ticket: SignTicket,
+        /// The one-time approval (moved; payload source `SolKeySource::Hardware`).
+        approved: Box<Approved>,
+        /// Monotonic ms of the pre-sign answer.
+        consumed_at_ms: u64,
+        /// Wall clock (journal `signed_at_ms`).
+        now_unix_ms: u64,
+        /// `lastValidBlockHeight` bound at pre-sign.
+        last_valid_block_height: u64,
+        /// What the pre-sign check observed.
+        check: PreSignCheck,
+        /// The requesting site.
+        origin: String,
+        /// The card PIN for this one operation.
+        pin: Zeroizing<Vec<u8>>,
+    },
     /// Apply a SOL broadcast-loop transition; terminal records move to activity (spec/07 §14.1).
     SolApply {
         /// Transition.
@@ -679,11 +718,55 @@ pub struct SolSignedSummary {
     pub last_valid_block_height: u64,
 }
 
+/// A signed and journaled dApp send ready to broadcast (spec/07 §20.8). The transaction id is
+/// signature 0 (the fee payer's, `SolRecord::signature()`), which is ours only when the wallet
+/// pays the fee.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SolDappSignedSummary {
+    /// Cluster.
+    pub cluster: SolCluster,
+    /// Our signing account.
+    pub public: [u8; 32],
+    /// Signature 0: the transaction id the dApp is answered with.
+    pub tx_id: [u8; 64],
+    /// Our signature (in our slot).
+    pub own_signature: [u8; 64],
+    /// Signed bytes.
+    pub tx: Vec<u8>,
+    /// Journal `signed_at_ms`.
+    pub signed_at_ms: u64,
+    /// Journal `last_valid_block_height`.
+    pub last_valid_block_height: u64,
+    /// `minContextSlot` of the dApp's options: the first send only (spec/07 §20.8).
+    pub min_context_slot: Option<u64>,
+    /// The journal already held a record of these exact bytes (the same transaction approved
+    /// twice): nothing new was written, the dApp gets the same signature.
+    pub reused: bool,
+}
+
+/// A finished `SignSolDapp` job (or one cancelled by `Lock` before it ran).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SolDappSigned {
+    /// The job's ticket.
+    pub ticket: SignTicket,
+    /// The journaled send or why there is none.
+    pub result: Result<SolDappSignedSummary, SolSignFailure>,
+}
+
 /// Why a SOL signing produced nothing to send.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SolSignFailure {
     /// Signing or verification refused (nothing signed or stored).
     Sign(SolSignError),
+    /// A dApp send: cancelled by `Lock` before it ran (nothing signed or stored; 4001).
+    Locked,
+    /// A dApp send: the core signer refused (nothing signed or stored).
+    DappSign(SolTxSignError),
+    /// A dApp send: the `YubiKey` did not sign (nothing stored or sent).
+    DappCard(crate::yubikey::CardJobError),
+    /// A dApp send: the pending dApp send caps (16 per signer and cluster, 32 in the journal)
+    /// or the journal's room are reached (-32002, spec/07 §20.9).
+    TooManyPending,
     /// A record with the same `intent_hash` exists (`AlreadySigned`).
     AlreadySigned,
     /// No room in the journal (E-TX-005).
@@ -768,6 +851,8 @@ impl KeyJob {
             Self::Mnemonics(job) => job.name(),
             Self::SignChainMessageCard { .. } => "SignChainMessageCard",
             Self::SignSolCard { .. } => "SignSolCard",
+            Self::SignSolDapp { .. } => "SignSolDapp",
+            Self::SignSolDappCard { .. } => "SignSolDappCard",
             Self::SignBtcCard { .. } => "SignBtcCard",
             Self::JournalApply { .. } => "JournalApply",
             Self::SolKeys { .. } => "SolKeys",
@@ -821,6 +906,12 @@ impl KeyJob {
                 KeyOutcome::SignedChainMessage(ChainMessageSigned {
                     ticket,
                     result: Err(true),
+                })
+            }
+            Self::SignSolDapp { ticket, .. } | Self::SignSolDappCard { ticket, .. } => {
+                KeyOutcome::SignedSolDapp(SolDappSigned {
+                    ticket,
+                    result: Err(SolSignFailure::Locked),
                 })
             }
             // The card jobs end like their software jobs for the UI.
@@ -988,6 +1079,8 @@ pub enum KeyOutcome {
     ),
     /// `SignSol` finished.
     SignedSol(Result<SolSignedSummary, SolSignFailure>),
+    /// `SignSolDapp` finished (or was cancelled by `Lock`), with its ticket.
+    SignedSolDapp(SolDappSigned),
     /// A `BtcMeta` job finished (the meta is persisted when `Ok`).
     BtcMeta(Result<BtcMetaUpdate, BtcKeyError>),
     /// `SignBtc` finished.
@@ -1031,6 +1124,7 @@ pub fn accept_result(result: &KeyResult, current_epoch: u64) -> bool {
             | KeyOutcome::SignedMessage(_)
             | KeyOutcome::SignedChainMessage(_)
             | KeyOutcome::SignedSol(_)
+            | KeyOutcome::SignedSolDapp(_)
             | KeyOutcome::SignedBtc(_)
             | KeyOutcome::Cancelled("SignEvm" | "SignMessage" | "SignSol" | "SignBtc", _)
     ) || matches!(&result.outcome, KeyOutcome::Zec(outcome) if outcome.is_signed())
@@ -1268,6 +1362,14 @@ pub enum RpcEvent {
         job: u64,
         /// `(blockhash, lastValidBlockHeight)` or why not.
         result: Result<([u8; 32], u64), PreSignError>,
+    },
+    /// The pre-sign check of an approved dApp send finished (spec/07 §20.10-2): the job and
+    /// `(lastValidBlockHeight, what was observed)` or why the send stops.
+    SolDappPreSigned {
+        /// Job.
+        job: u64,
+        /// The bound `lastValidBlockHeight` and the check, or why not.
+        result: Result<(u64, PreSignCheck), PreSignError>,
     },
     /// A Solana broadcast round finished.
     SolTracked(Box<SolTrackResult>),

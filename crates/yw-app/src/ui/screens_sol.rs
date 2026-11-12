@@ -624,14 +624,25 @@ impl App {
                 continue;
             }
             let core = record.core();
+            // A dApp send (journal version 3) has no transfer of its own: its signer and the
+            // site (spec/07 §20.9).
+            let (from, title) = match (core, record.dapp.as_ref()) {
+                (Some(core), _) => (
+                    self.sol_label(&core.from.to_base58()),
+                    yw_core::sol::display::transfer_title(record.cluster, &core),
+                ),
+                (None, Some(dapp)) => (
+                    self.sol_label(&SolAddress::from_bytes(dapp.public).to_base58()),
+                    crate::app_sol_dapp::dapp_record_title(&record),
+                ),
+                (None, None) => (String::new(), String::new()),
+            };
             // The status at the end of the first line (2026-11-12: a line of its own before).
             items.push(Item::Text(format!(
                 "{} · {} · {} · {}",
                 local_time(record.signed_at_ms),
-                core.map_or_else(String::new, |core| self.sol_label(&core.from.to_base58())),
-                core.map_or_else(String::new, |core| {
-                    yw_core::sol::display::transfer_title(record.cluster, &core)
-                }),
+                from,
+                title,
                 self.sol_record_status(&record)
             )));
             if let Some(core) = core {

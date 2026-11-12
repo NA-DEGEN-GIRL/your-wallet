@@ -1015,6 +1015,7 @@ impl App {
             | RpcEvent::SolPreviewed(_)
             | RpcEvent::SolDappPreviewed(_)
             | RpcEvent::SolPreSigned { .. }
+            | RpcEvent::SolDappPreSigned { .. }
             | RpcEvent::SolTracked(_)
             | RpcEvent::SolScanned { .. }) => self.sol_rpc_event(event),
             RpcEvent::Btc(event) => self.btc_rpc_event(*event),

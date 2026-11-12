@@ -155,6 +155,16 @@ pub enum RpcJob {
         /// Endpoint.
         endpoint: SolEndpoint,
     },
+    /// The pre-sign check of an approved dApp send (spec/07 §20.10-2): genesis, its blockhash
+    /// still valid at `processed`, the lookup tables re-resolved, `lastValidBlockHeight` bound.
+    SolDappPreSign {
+        /// Job.
+        job: u64,
+        /// Endpoint of the request's cluster.
+        endpoint: SolEndpoint,
+        /// The approved transaction's message (parsed from the approved bytes).
+        message: Box<yw_core::sol::dapp::SolTxMessage>,
+    },
     /// One Solana broadcast round.
     SolTrack(Box<TrackJob>),
     /// Solana recovery scan.
@@ -205,6 +215,7 @@ impl RpcJob {
             Self::SolPreview(_) => "SolPreview",
             Self::SolDappPreview(_) => "SolDappPreview",
             Self::SolPreSign { .. } => "SolPreSign",
+            Self::SolDappPreSign { .. } => "SolDappPreSign",
             Self::SolTrack(_) => "SolTrack",
             Self::SolScan { .. } => "SolScan",
             Self::Btc(job) => job.name(),
@@ -839,6 +850,25 @@ impl RpcWorker {
                     ],
                 );
                 push(events, RpcEvent::SolPreSigned { job, result });
+            }
+            RpcJob::SolDappPreSign {
+                job,
+                endpoint,
+                message,
+            } => {
+                let result = crate::sol::flow::pre_sign_dapp(&*transport, &endpoint, &message);
+                logging::info(
+                    "rpc",
+                    "sol.dapp_presign",
+                    &[
+                        ("net", Field::Net(sol_net(&endpoint))),
+                        (
+                            "result",
+                            Field::Word(if result.is_ok() { "ok" } else { "err" }),
+                        ),
+                    ],
+                );
+                push(events, RpcEvent::SolDappPreSigned { job, result });
             }
             RpcJob::SolTrack(track_job) => {
                 let result = crate::sol::flow::track_round(&*transport, &track_job, &*self.clock);

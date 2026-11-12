@@ -370,6 +370,7 @@ fn tour_browser(state: &mut App) {
         connections: 1,
         waiters: std::collections::HashMap::new(),
         broadcasts: std::collections::HashMap::new(),
+        sol_broadcasts: std::collections::HashMap::new(),
         dapp_unlock: false,
         unlocked: false,
         locking: false,

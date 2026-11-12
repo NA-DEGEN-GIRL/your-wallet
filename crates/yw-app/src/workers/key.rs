@@ -816,6 +816,80 @@ impl KeyWorker {
         )
     }
 
+    /// `SignSolDappCard` (spec/10 §6.4, spec/07 §20.8): the journal's dApp send step with the
+    /// card signer (one touch); a refused PIN returns the unused approval first.
+    fn sign_sol_dapp_card(
+        &mut self,
+        approved: Box<yw_core::approval::Approved>,
+        job: crate::workers::journal::SolDappSignJob,
+        pin: &[u8],
+        alt: bool,
+    ) -> Vec<KeyOutcome> {
+        use crate::events::{SolDappSigned, SolSignFailure};
+        use crate::yubikey::CardJobError;
+        use yw_core::sol::dapp::{SolTxCardError, SolTxSignError};
+        let ticket = job.ticket;
+        let failed = |error: SolSignFailure| {
+            KeyOutcome::SignedSolDapp(SolDappSigned {
+                ticket,
+                result: Err(error),
+            })
+        };
+        let role = crate::yubikey::approval_role(&approved);
+        if let Some(error) = self.card_refusal(role, pin) {
+            return vec![
+                KeyOutcome::CardUnused(approved, error),
+                failed(SolSignFailure::DappCard(error)),
+            ];
+        }
+        let Some(vault) = self.vault.as_mut() else {
+            return vec![failed(SolSignFailure::JournalWrite(
+                VaultError::InvalidState,
+            ))];
+        };
+        let records = match Self::hardware_records(vault) {
+            Ok(records) => records,
+            Err(error) => return vec![failed(SolSignFailure::JournalWrite(error))],
+        };
+        let Some(yw_core::yubikey::plan::KeyRole::Sol { index }) = role else {
+            return vec![failed(SolSignFailure::DappSign(
+                SolTxSignError::KindMismatch,
+            ))];
+        };
+        let cards = self.cards.as_mut();
+        self.journal.sign_sol_dapp_with(
+            vault,
+            approved,
+            job,
+            alt,
+            &mut |_, approved, consumed_at_ms, now_ms, check| {
+                let mut failure = None;
+                let mut card = |message: &[u8]| {
+                    crate::yubikey::sign_sol_message(cards, &records, index, pin, message).map_err(
+                        |error| {
+                            failure = Some(error);
+                            yw_core::yubikey::CardError::Internal
+                        },
+                    )
+                };
+                let result = yw_core::sol::dapp::sign_send_card(
+                    approved,
+                    consumed_at_ms,
+                    now_ms,
+                    check,
+                    &mut card,
+                );
+                result.map_err(|error| match (failure, error) {
+                    (Some(failure), _) => SolSignFailure::DappCard(failure),
+                    (None, SolTxCardError::Sign(error)) => SolSignFailure::DappSign(error),
+                    (None, SolTxCardError::Card(error)) => {
+                        SolSignFailure::DappCard(CardJobError::Card(error))
+                    }
+                })
+            },
+        )
+    }
+
     /// A Zcash step (spec/12 §10–§12).
     fn zec_job(&mut self, job: crate::workers::journal::zec::ZecKeyJob) -> Vec<KeyOutcome> {
         use crate::workers::journal::JournalState;
@@ -1642,6 +1716,55 @@ impl KeyWorker {
                 Some(vault) => self.journal.apply_sol(vault, &transition, now_unix_ms, alt),
                 None => vec![KeyOutcome::Journal(Err(VaultError::InvalidState))],
             },
+            KeyJob::SignSolDapp {
+                ticket,
+                approved,
+                consumed_at_ms,
+                now_unix_ms,
+                last_valid_block_height,
+                check,
+                origin,
+            } => {
+                let job = crate::workers::journal::SolDappSignJob {
+                    ticket,
+                    consumed_at_ms,
+                    last_valid_block_height,
+                    now_unix_ms,
+                    check,
+                    origin,
+                };
+                match self.vault.as_mut() {
+                    Some(vault) => self.journal.sign_sol_dapp(vault, approved, job, alt),
+                    None => vec![KeyOutcome::SignedSolDapp(crate::events::SolDappSigned {
+                        ticket,
+                        result: Err(crate::events::SolSignFailure::JournalWrite(
+                            VaultError::InvalidState,
+                        )),
+                    })],
+                }
+            }
+            KeyJob::SignSolDappCard {
+                ticket,
+                approved,
+                consumed_at_ms,
+                now_unix_ms,
+                last_valid_block_height,
+                check,
+                origin,
+                pin,
+            } => self.sign_sol_dapp_card(
+                approved,
+                crate::workers::journal::SolDappSignJob {
+                    ticket,
+                    consumed_at_ms,
+                    last_valid_block_height,
+                    now_unix_ms,
+                    check,
+                    origin,
+                },
+                &pin,
+                alt,
+            ),
             KeyJob::SignSolCard {
                 approved,
                 consumed_at_ms,
@@ -1933,6 +2056,8 @@ impl KeyWorker {
             | KeyJob::SignBtcCard { .. }
             | KeyJob::JournalApply { .. }
             | KeyJob::SignSol { .. }
+            | KeyJob::SignSolDapp { .. }
+            | KeyJob::SignSolDappCard { .. }
             | KeyJob::SolApply { .. }
             | KeyJob::BtcMeta { .. }
             | KeyJob::SignBtc { .. }
@@ -2775,6 +2900,155 @@ pub(crate) mod tests {
         };
         check(list);
         assert_eq!(touches(&cards), 3);
+        drop(worker);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// spec/07 §20.8, spec/10 §6.4: `SignSolDappCard` signs an approved dApp send of `YubiKey`
+    /// Solana account 0 on the emulator's PIV slot with one touch — the version 3 `Pending`
+    /// record is journaled before the transaction is returned and our signature verifies
+    /// strictly; a wrong PIN returns the unused approval and a card failure with nothing
+    /// journaled; a job cancelled by the lock answers its ticket as `Locked`.
+    #[test]
+    #[allow(clippy::indexing_slicing, reason = "Solana wire offsets")]
+    #[allow(clippy::too_many_lines, reason = "one emulator scenario")]
+    fn sign_sol_dapp_send_on_the_card() {
+        use yw_core::approval::ApprovalStore;
+        use yw_core::bip32::path::AccountIndex;
+        use yw_core::secret::Zeroizing;
+        use yw_core::slip10::SolKeySource;
+        use yw_core::sol::SolCluster;
+        use yw_core::sol::dapp::{
+            PreSignCheck, SolSendOptions, SolTxFacts, SolTxItemFacts, SolTxMode, SolTxRequest,
+            build_sol_tx_request,
+        };
+        use yw_core::sol::display::SimSummary;
+
+        use crate::events::{SignTicket, SolDappSigned, SolSignFailure};
+        use crate::yubikey::CardJobError;
+
+        const NOW: u64 = 1_800_000_000_000;
+        let public = yw_core::codec::base58::base58_decode_32(
+            "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk",
+        )
+        .unwrap();
+        let mut tx = vec![1_u8];
+        tx.extend_from_slice(&[0; 64]);
+        tx.extend_from_slice(&[1, 0, 1, 2]);
+        tx.extend_from_slice(&public);
+        tx.extend_from_slice(&[5; 32]);
+        tx.extend_from_slice(&[7; 32]);
+        tx.extend_from_slice(&[1, 1, 1, 0, 1, 9]);
+        let (mut worker, cards, dir, _) = yubikey_wallet("sol-dapp-send");
+        let approve = |id: u8| {
+            let request = SolTxRequest {
+                id: yw_core::approval::ApprovalId([id; 16]),
+                origin: yw_core::policy::BrowserOrigin::parse("https://app.example").unwrap(),
+                cluster: SolCluster::Devnet,
+                source: SolKeySource::Hardware(AccountIndex::ZERO),
+                public,
+                label: "YubiKey Solana 1".to_owned(),
+                mode: SolTxMode::SignAndSend,
+                options: SolSendOptions::default(),
+                txs: vec![tx.clone()],
+            };
+            let facts = SolTxFacts {
+                items: vec![SolTxItemFacts {
+                    tables: Ok((0, Vec::new())),
+                    pre: Vec::new(),
+                    post: None,
+                    sim: SimSummary::NoResult,
+                    sim_replaced_blockhash: false,
+                    rpc_fee: Some(5_000),
+                    blockhash_valid: Some(true),
+                }],
+                mints: Vec::new(),
+                unread_mints: Vec::new(),
+                known: Vec::new(),
+                fee_cap: 100_000,
+            };
+            let draft = build_sol_tx_request(&request, &facts).unwrap();
+            let mut store = ApprovalStore::new();
+            let request = store.issue(draft, 1, NOW).unwrap();
+            Box::new(store.consume(request.id, request.digest, 2).unwrap())
+        };
+        let job = |id: u8, pin: &str| KeyJob::SignSolDappCard {
+            ticket: SignTicket(u64::from(id)),
+            approved: approve(id),
+            consumed_at_ms: yw_win::time::monotonic_ms(),
+            now_unix_ms: NOW,
+            last_valid_block_height: 1_150,
+            check: PreSignCheck {
+                blockhash: [7; 32],
+                loaded: None,
+            },
+            origin: "https://app.example".to_owned(),
+            pin: Zeroizing::new(pin.as_bytes().to_vec()),
+        };
+        let touches = |cards: &std::sync::Mutex<Vec<yw_core::yubikey::mock::MockCard>>| {
+            cards
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|card| card.touches)
+                .sum::<u32>()
+        };
+        let journal = |worker: &KeyWorker| {
+            crate::workers::journal::JournalState::default()
+                .load(worker.vault.as_ref().unwrap())
+                .unwrap()
+        };
+        // Wrong PIN: the approval comes back unused, nothing is signed or journaled.
+        let refused = worker.handle(job(1, "000000"));
+        assert!(matches!(refused[0], KeyOutcome::CardUnused(_, _)));
+        assert!(matches!(
+            refused[1],
+            KeyOutcome::SignedSolDapp(SolDappSigned {
+                ticket: SignTicket(1),
+                result: Err(SolSignFailure::DappCard(CardJobError::Card(
+                    yw_core::yubikey::CardError::WrongPin { retries: 2 }
+                ))),
+            })
+        ));
+        assert_eq!(touches(&cards), 0);
+        assert!(journal(&worker).sol_records.is_empty());
+        let signed = worker.handle(job(2, "123456"));
+        let Some(KeyOutcome::SignedSolDapp(SolDappSigned {
+            ticket: SignTicket(2),
+            result: Ok(summary),
+        })) = signed.first()
+        else {
+            unreachable!("card signed: {signed:?}");
+        };
+        assert_eq!(touches(&cards), 1, "one touch");
+        assert_eq!(summary.public, public);
+        assert_eq!(&summary.tx[65..], &tx[65..], "the message is untouched");
+        assert_eq!(&summary.tx[1..65], &summary.tx_id[..]);
+        assert!(yw_core::sol::keys::verify_strict(
+            &public,
+            &summary.tx[65..],
+            &summary.tx_id
+        ));
+        let records = journal(&worker).sol_records;
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].tx, summary.tx);
+        assert_eq!(
+            records[0].source,
+            SolKeySource::Hardware(AccountIndex::ZERO)
+        );
+        assert!(records[0].dapp.is_some());
+        // Cancelled by the lock before it ran: its ticket is answered as locked.
+        assert!(matches!(
+            job(3, "123456").cancelled_outcome(),
+            KeyOutcome::SignedSolDapp(SolDappSigned {
+                ticket: SignTicket(3),
+                result: Err(SolSignFailure::Locked),
+            })
+        ));
+        assert!(
+            cards.lock().unwrap().iter().all(|card| !card.saw_write()),
+            "card signing sends no write"
+        );
         drop(worker);
         let _ = std::fs::remove_dir_all(&dir);
     }

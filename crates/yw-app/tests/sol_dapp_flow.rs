@@ -8,7 +8,10 @@
 //! Cases: a transaction whose fee payer is another account that signed first keeps that
 //! signature and gets ours in its own slot only, both verifying; a `signAll` of three answers
 //! three signed transactions in order; a forged site signature is X01 Blocked and cannot be
-//! consumed.
+//! consumed. A send (spec/07 §20.8–§20.10) runs the pre-sign check over the scripted RPC, is
+//! signed and journaled by the key worker (`SignSolDapp`), and its first broadcast round decides
+//! the answer: the transaction id, or -32603 after a deterministic preflight error; an expired
+//! blockhash stops it at pre-sign.
 
 mod common;
 
@@ -18,7 +21,8 @@ use common::{Answer, FakeClock, FakeRpc, url};
 use yw_app::app_chain_sites::{ChainAnswer, chain_answer_value};
 use yw_app::browser::params::{Validated, validate};
 use yw_app::events::{
-    ChainMessageSigned, ChainSignature, KeyJob, KeyOutcome, SignTicket, SolKeysPurpose,
+    ChainMessageSigned, ChainSignature, KeyJob, KeyOutcome, SignTicket, SolDappSigned,
+    SolKeysPurpose,
 };
 use yw_app::sol::flow::{DappPreviewJob, SolEndpoint, dapp_preview};
 use yw_app::workers::key::KeyWorker;
@@ -27,7 +31,7 @@ use yw_core::bip32::path::AccountIndex;
 use yw_core::policy::{BrowserOrigin, Method};
 use yw_core::secret::Zeroizing;
 use yw_core::slip10::SolKeySource;
-use yw_core::sol::dapp::{SolTxRequest, build_sol_tx_request};
+use yw_core::sol::dapp::{SolTxMode, SolTxRequest, build_sol_tx_request};
 use yw_core::sol::{SolAddress, SolCluster};
 use yw_json::{Limits, Value};
 
@@ -184,12 +188,26 @@ fn params(method: Method, public: &[u8; 32], txs: &[Vec<u8>]) -> TestResult<(Vec
     }
 }
 
-/// Preview → draft → one approval (the window's part), for `public` of `source`.
+/// [`approve_as`] of a sign-only request.
 fn approve(
     public: [u8; 32],
     source: SolKeySource,
     txs: Vec<Vec<u8>>,
     id: u8,
+) -> TestResult<(
+    RiskLevel,
+    Result<yw_core::approval::Approved, yw_core::approval::ApprovalError>,
+)> {
+    approve_as(public, source, txs, id, SolTxMode::SignOnly)
+}
+
+/// Preview → draft → one approval (the window's part), for `public` of `source`.
+fn approve_as(
+    public: [u8; 32],
+    source: SolKeySource,
+    txs: Vec<Vec<u8>>,
+    id: u8,
+    mode: SolTxMode,
 ) -> TestResult<(
     RiskLevel,
     Result<yw_core::approval::Approved, yw_core::approval::ApprovalError>,
@@ -216,7 +234,7 @@ fn approve(
         source,
         public,
         label: "Solana 1".to_owned(),
-        mode: yw_core::sol::dapp::SolTxMode::SignOnly,
+        mode,
         options: yw_core::sol::dapp::SolSendOptions::default(),
         txs,
     };
@@ -371,6 +389,180 @@ fn sign_all_answers_every_transaction_in_order() -> TestResult {
             &slot(&returned, 0)?
         ));
     }
+    drop(worker);
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+/// What the scripted devnet answers to a send: whether the blockhash is still valid, the
+/// `sendTransaction` answer, and the signature an accepting node returns.
+struct SendWorld {
+    valid: bool,
+    send: Option<Answer>,
+    signature: String,
+}
+
+fn send_rpc(world: &std::sync::Arc<std::sync::Mutex<SendWorld>>) -> std::sync::Arc<FakeRpc> {
+    let world = std::sync::Arc::clone(world);
+    FakeRpc::new(move |method, _| {
+        let Ok(world) = world.lock() else {
+            return Answer::Error(-32_603, None);
+        };
+        match method {
+            "getGenesisHash" => Answer::Result(format!("\"{DEVNET}\"")),
+            "isBlockhashValid" => ctx(if world.valid { "true" } else { "false" }),
+            "getLatestBlockhash" => ctx(&format!(
+                "{{\"blockhash\":\"{}\",\"lastValidBlockHeight\":1150}}",
+                SolAddress::from_bytes([7; 32]).to_base58()
+            )),
+            "getBlockHeight" => Answer::Result("1000".to_owned()),
+            "getSignatureStatuses" => ctx("[null]"),
+            "sendTransaction" => world
+                .send
+                .clone()
+                .unwrap_or_else(|| Answer::Result(format!("\"{}\"", world.signature))),
+            _ => Answer::Error(-32_601, None),
+        }
+    })
+}
+
+/// A preflight failure of the instruction itself (spec/07 §15.3 code 9, deterministic).
+fn program_failed() -> Answer {
+    Answer::Envelope(
+        concat!(
+            r#"{"jsonrpc":"2.0","id":0,"error":{"code":-32002,"message":"Transaction "#,
+            r#"simulation failed: x","data":{"err":{"InstructionError":[0,{"Custom":1}]},"#,
+            r#""logs":[],"accounts":null,"unitsConsumed":0}}}"#
+        )
+        .as_bytes()
+        .to_vec(),
+    )
+}
+
+/// spec/07 §20.8–§20.10, spec/05 §3.6, §5: `sol_signAndSendTransaction` end to end — the
+/// pre-sign check binds `lastValidBlockHeight` at `processed`, `SignSolDapp` journals the
+/// transaction before returning it (only our slot changed), and the first broadcast round
+/// sends those exact bytes and answers `{publicKey, signature}` with the transaction id. A
+/// deterministic preflight failure (code 9) stops the re-sends and answers -32603; an expired
+/// blockhash stops the send at pre-sign, before any key use.
+#[test]
+#[expect(clippy::too_many_lines, reason = "one send from params to answer")]
+fn send_is_checked_journaled_and_answered_after_the_first_round() -> TestResult {
+    use yw_app::app_sol_dapp::{sol_round_failed, sol_send_answer};
+    use yw_app::sol::flow::{PreSignError, TrackJob, pre_sign_dapp, track_round};
+    use yw_app::sol::rpc::SendConfig;
+    use yw_core::sol::broadcast::{LoopState, PendingTx};
+
+    let dir = temp_dir("send")?;
+    let (mut worker, wallet, _) = worker(&dir)?;
+    let world = std::sync::Arc::new(std::sync::Mutex::new(SendWorld {
+        valid: true,
+        send: None,
+        signature: String::new(),
+    }));
+    let rpc = send_rpc(&world);
+    let endpoint = SolEndpoint {
+        cluster: SolCluster::Devnet,
+        url: url(),
+    };
+    let sent = legacy(&[wallet, PROGRAM], 1, 1);
+    let (txs, batch) = params(
+        Method::SolSignAndSendTransaction,
+        &wallet,
+        std::slice::from_ref(&sent),
+    )?;
+    assert!(!batch);
+    let (risk, approved) = approve_as(
+        wallet,
+        SolKeySource::Standard(AccountIndex::ZERO),
+        txs,
+        5,
+        SolTxMode::SignAndSend,
+    )?;
+    assert!(risk < RiskLevel::Blocked, "{risk:?}");
+    let approved = approved?;
+    let message = yw_core::sol::dapp::parse_wire_tx(&sent)?.message;
+    let (last_valid, check) =
+        pre_sign_dapp(&*rpc, &endpoint, &message).map_err(|error| format!("{error:?}"))?;
+    assert_eq!(last_valid, 1_150);
+    let outcomes = worker.handle(KeyJob::SignSolDapp {
+        ticket: SignTicket(5),
+        approved: Box::new(approved),
+        consumed_at_ms: yw_win::time::monotonic_ms(),
+        now_unix_ms: NOW,
+        last_valid_block_height: last_valid,
+        check,
+        origin: "https://app.example".to_owned(),
+    });
+    let Some(KeyOutcome::SignedSolDapp(SolDappSigned {
+        ticket: SignTicket(5),
+        result: Ok(summary),
+    })) = outcomes.first()
+    else {
+        return Err(format!("not signed: {outcomes:?}").into());
+    };
+    // Journaled before it was returned: the view that follows holds the record.
+    assert!(outcomes.iter().any(|outcome| matches!(
+        outcome,
+        KeyOutcome::Journal(Ok(view))
+            if view.sol_records.iter().any(|record| record.signature() == summary.tx_id)
+    )));
+    assert_eq!(
+        summary.tx.get(65..),
+        sent.get(65..),
+        "only our slot changed"
+    );
+    if let Ok(mut world) = world.lock() {
+        world.signature = yw_core::codec::base58::base58_encode(&summary.tx_id);
+    }
+    let round = |state: LoopState| TrackJob {
+        endpoint: endpoint.clone(),
+        signature: summary.tx_id,
+        tx: summary.tx.clone(),
+        pending: PendingTx {
+            signed_at_ms: summary.signed_at_ms,
+            last_valid_block_height: summary.last_valid_block_height,
+        },
+        state,
+        check_genesis: false,
+        generation: 0,
+        send: SendConfig::default(),
+    };
+    let clock = FakeClock::at(NOW + 1_000);
+    let first = track_round(&*rpc, &round(LoopState::default()), &clock);
+    assert_eq!(first.sends, 1);
+    assert!(!sol_round_failed(&first), "{first:?}");
+    let sends = rpc.params_of("sendTransaction");
+    assert!(
+        sends
+            .first()
+            .is_some_and(|params| params.contains(&yw_core::codec::base64::encode(&summary.tx))),
+        "the journaled bytes are sent"
+    );
+    let answer = sol_send_answer(&wallet, &first.signature);
+    assert_eq!(
+        String::from_utf8(yw_json::to_vec(&answer))?,
+        format!(
+            r#"{{"publicKey":"{}","signature":"{}"}}"#,
+            SolAddress::from_bytes(wallet).to_base58(),
+            yw_core::hex::encode(&summary.tx_id)
+        )
+    );
+    // The program fails in preflight (code 9): the re-sends stop, the dApp gets -32603.
+    if let Ok(mut world) = world.lock() {
+        world.send = Some(program_failed());
+    }
+    let failed = track_round(&*rpc, &round(LoopState::default()), &clock);
+    assert_eq!(failed.state.preflight_err, Some(9));
+    assert!(sol_round_failed(&failed));
+    // An expired blockhash stops the send at pre-sign: nothing is signed.
+    if let Ok(mut world) = world.lock() {
+        world.valid = false;
+    }
+    assert!(matches!(
+        pre_sign_dapp(&*rpc, &endpoint, &message),
+        Err(PreSignError::BlockhashExpired)
+    ));
     drop(worker);
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())

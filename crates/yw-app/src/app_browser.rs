@@ -113,6 +113,9 @@ pub struct BrowserUi {
     pub waiters: HashMap<SignTicket, SignWaiter>,
     /// dApp transactions waiting for their broadcast.
     pub broadcasts: HashMap<[u8; 32], Reply>,
+    /// Solana dApp sends waiting for their first broadcast round, by transaction id
+    /// (signature 0; several when the same bytes were approved twice, spec/07 §20.8).
+    pub sol_broadcasts: HashMap<[u8; 64], Vec<crate::app_sol_dapp::SolBroadcast>>,
     /// The unlock window was opened for dApp requests (spec/04 §2.5 `나중에` rejects them).
     pub dapp_unlock: bool,
     /// Grants are loaded into the dispatcher (unlocked with meta).
@@ -234,6 +237,7 @@ impl BrowserUi {
             connections: 0,
             waiters: HashMap::new(),
             broadcasts: HashMap::new(),
+            sol_broadcasts: HashMap::new(),
             dapp_unlock: false,
             unlocked: false,
             locking: false,
@@ -1385,6 +1389,7 @@ mod tests {
             connections: 0,
             waiters: HashMap::new(),
             broadcasts: HashMap::new(),
+            sol_broadcasts: HashMap::new(),
             dapp_unlock: false,
             unlocked: false,
             locking: false,

@@ -55,6 +55,12 @@ pub enum CardJobKind {
         /// Cluster of the transfer.
         cluster: yw_core::sol::SolCluster,
     },
+    /// A Solana dApp send (spec/07 §20.8): the pre-sign check runs after the PIN, then
+    /// `SignSolDappCard` (one touch). The waiter is the step's ticket.
+    SolDappSend {
+        /// Cluster of the request.
+        cluster: yw_core::sol::SolCluster,
+    },
     /// A BTC send (`SignBtcCard`, one card signature per input).
     Btc {
         /// The approved plan.
@@ -1049,6 +1055,15 @@ impl App {
                 // The SOL signing deadline runs from here: the blockhash is fetched now.
                 self.sol_consumed_card(*approved, cluster, now, PinBuffer::new(pin));
             }
+            CardJobKind::SolDappSend { cluster } => {
+                // The pre-sign check runs now; the signing deadline starts at its answer.
+                self.sol_dapp_presign(
+                    *approved,
+                    cluster,
+                    Some(PinBuffer::new(pin)),
+                    ticket.unwrap_or(SignTicket(0)),
+                );
+            }
             CardJobKind::Btc { plan, tip_height } => self.key(KeyJob::SignBtcCard {
                 approved,
                 plan,
@@ -1108,7 +1123,7 @@ impl App {
                     CardForm::Site
                 }
             }
-            CardJobKind::ChainMessage => CardForm::Site,
+            CardJobKind::ChainMessage | CardJobKind::SolDappSend { .. } => CardForm::Site,
             CardJobKind::SolTransfer { .. } => CardForm::SolSend,
             CardJobKind::Btc { plan, .. } => {
                 if plan.replaces().is_some() {
@@ -1217,7 +1232,8 @@ impl App {
                         ))),
                     });
                 }
-                CardJobKind::ChainMessage => {
+                // A dApp send's waiter is a chain waiter too: -32603, nothing was signed.
+                CardJobKind::ChainMessage | CardJobKind::SolDappSend { .. } => {
                     self.browser_chain_message_signed(&ChainMessageSigned {
                         ticket,
                         result: Err(false),
@@ -1243,6 +1259,13 @@ impl App {
                 }
             }
             CardJobKind::SolTransfer { .. } => self.sol.slot = None,
+            CardJobKind::SolDappSend { .. } => {
+                if let Some(ticket) = ticket {
+                    self.sol
+                        .dapp_presign
+                        .retain(|_, pending| pending.ticket != ticket);
+                }
+            }
             CardJobKind::Btc { .. } => self.btc.slot = false,
             CardJobKind::Zec { .. } => self.zec_card_cancelled(),
             CardJobKind::EvmMessage { .. } | CardJobKind::ChainMessage => {}
@@ -1316,6 +1339,10 @@ impl App {
             | (
                 CardJobKind::ChainMessage,
                 KeyOutcome::SignedChainMessage(ChainMessageSigned { ticket, .. }),
+            )
+            | (
+                CardJobKind::SolDappSend { .. },
+                KeyOutcome::SignedSolDapp(crate::events::SolDappSigned { ticket, .. }),
             ) => step.ticket == Some(*ticket),
             (CardJobKind::SolTransfer { .. }, KeyOutcome::SignedSol(_))
             | (CardJobKind::Btc { .. }, KeyOutcome::SignedBtc(_)) => true,
@@ -1391,6 +1418,20 @@ impl App {
     pub(crate) fn card_abandon_sol(&mut self) {
         if self.card.step.as_ref().is_some_and(|step| {
             step.approved.is_none() && matches!(step.kind, CardJobKind::SolTransfer { .. })
+        }) {
+            self.card.step = None;
+            self.card_notice_clear();
+        }
+    }
+
+    /// A card dApp send that will not reach the card (its pre-sign check failed or the request
+    /// ended after the PIN): the in-flight step of `ticket` ends (its pending entry, with the
+    /// PIN, is already dropped).
+    pub(crate) fn card_abandon_dapp(&mut self, ticket: SignTicket) {
+        if self.card.step.as_ref().is_some_and(|step| {
+            step.approved.is_none()
+                && step.ticket == Some(ticket)
+                && matches!(step.kind, CardJobKind::SolDappSend { .. })
         }) {
             self.card.step = None;
             self.card_notice_clear();

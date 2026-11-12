@@ -2382,6 +2382,7 @@ impl App {
                 }
             }
             KeyOutcome::SignedSol(result) => self.on_sol_signed(result),
+            KeyOutcome::SignedSolDapp(signed) => self.on_sol_dapp_signed(signed),
             KeyOutcome::SignedMessage(result) => self.browser_message_signed(result),
             KeyOutcome::SignedChainMessage(result) => self.browser_chain_message_signed(&result),
             KeyOutcome::YubiKeyEnrolled(result) => self.on_yubikey_enrolled(result),

@@ -13,19 +13,28 @@ use yw_core::journal::evm::{
     room_after_cleanup, take_expired,
 };
 use yw_core::journal::sol::{
-    SolActivityRow, SolEntries, SolRecord, SolTransition, has_intent, has_room as sol_has_room,
-    make_room as sol_make_room, pending_for, push_record as sol_push_record, take_terminal,
+    SOL_DAPP_MAX_PENDING, SOL_DAPP_MAX_PENDING_TOTAL, SolActivityRow, SolEntries, SolRecord,
+    SolTransition, has_intent, has_room as sol_has_room, make_room as sol_make_room,
+    pending_dapp_count, pending_dapp_total, pending_for, push_record as sol_push_record,
+    take_terminal,
 };
-use yw_core::sol::{SignedSolTransfer, SolSignError, sign_transfer};
+use yw_core::sol::dapp::{PreSignCheck, SignedSolDappTx, SolTxMode, SolTxSignError, sign_send};
+use yw_core::sol::{SignedSolTransfer, SolAddress, SolSignError, sign_transfer};
 
 /// The signing step of a SOL transfer: `(vault, approval, consumed_at_ms, blockhash, now_ms)`
 /// → the signed and verified transfer (the vault's `sign_transfer` or the card path).
 pub type SolSigner<'a> = dyn FnMut(&Vault, Approved, u64, [u8; 32], u64) -> Result<SignedSolTransfer, SolSignFailure>
     + 'a;
+
+/// The signing step of a dApp send: `(vault, approval, consumed_at_ms, now_ms, pre-sign check)`
+/// → the signed and verified transaction (the vault's `sol::dapp::sign_send` or the card path).
+pub type SolDappSigner<'a> = dyn FnMut(&Vault, &Approved, u64, u64, &PreSignCheck) -> Result<SignedSolDappTx, SolSignFailure>
+    + 'a;
 use yw_core::vault::{FileKind, Vault};
 
 use crate::events::{
-    JournalView, KeyOutcome, SignFailure, SignInfo, SignedSummary, SolSignFailure, SolSignedSummary,
+    JournalView, KeyOutcome, SignFailure, SignInfo, SignTicket, SignedSummary, SolDappSigned,
+    SolDappSignedSummary, SolSignFailure, SolSignedSummary,
 };
 use crate::logging::{self, Field};
 use crate::meta::{self, ActivityEntry, Meta};
@@ -53,6 +62,23 @@ pub struct SolSignTimes {
     pub last_valid_block_height: u64,
     /// Wall clock (journal `signed_at_ms`).
     pub now_unix_ms: u64,
+}
+
+/// What one dApp send signing needs besides the approval (spec/07 §20.8–§20.10).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SolDappSignJob {
+    /// The waiter's ticket.
+    pub ticket: SignTicket,
+    /// Monotonic ms of the pre-sign answer (the signing deadline runs from it).
+    pub consumed_at_ms: u64,
+    /// `lastValidBlockHeight` bound at pre-sign.
+    pub last_valid_block_height: u64,
+    /// Wall clock (journal `signed_at_ms`).
+    pub now_unix_ms: u64,
+    /// What the pre-sign check observed.
+    pub check: PreSignCheck,
+    /// The requesting site (journal version 3 origin).
+    pub origin: String,
 }
 
 #[path = "journal_btc.rs"]
@@ -365,6 +391,151 @@ impl JournalState {
             signed_at_ms: times.now_unix_ms,
             last_valid_block_height: times.last_valid_block_height,
         })
+    }
+
+    /// Signs the approved dApp send (spec/07 §20.8, §20.9) with the vault key: the same
+    /// journal-first order as a wallet send — the caps and room checked, the transaction signed,
+    /// its `Pending` version 3 record committed — and only then returned for broadcast.
+    pub fn sign_sol_dapp(
+        &mut self,
+        vault: &mut Vault,
+        approved: Box<Approved>,
+        job: SolDappSignJob,
+        alt: bool,
+    ) -> Vec<KeyOutcome> {
+        self.sign_sol_dapp_with(
+            vault,
+            approved,
+            job,
+            alt,
+            &mut |vault, approved, consumed_at_ms, now_ms, check| {
+                sign_send(vault, approved, consumed_at_ms, now_ms, check)
+                    .map_err(SolSignFailure::DappSign)
+            },
+        )
+    }
+
+    /// [`JournalState::sign_sol_dapp`] with another signer (the `YubiKey` path passes the card
+    /// signer, `sol::dapp::sign_send_card`); the checks before signing and the `Pending` commit
+    /// before anything is returned are the same.
+    pub fn sign_sol_dapp_with(
+        &mut self,
+        vault: &mut Vault,
+        approved: Box<Approved>,
+        job: SolDappSignJob,
+        alt: bool,
+        sign_step: &mut SolDappSigner<'_>,
+    ) -> Vec<KeyOutcome> {
+        let mut out = Vec::new();
+        let ticket = job.ticket;
+        let result = self.sign_sol_dapp_inner(vault, &approved, &job, alt, &mut out, sign_step);
+        // The one-time approval and the job end here, used or not.
+        drop((approved, job));
+        out.insert(
+            0,
+            KeyOutcome::SignedSolDapp(SolDappSigned { ticket, result }),
+        );
+        out
+    }
+
+    fn sign_sol_dapp_inner(
+        &mut self,
+        vault: &mut Vault,
+        approved: &Approved,
+        job: &SolDappSignJob,
+        alt: bool,
+        out: &mut Vec<KeyOutcome>,
+        sign_step: &mut SolDappSigner<'_>,
+    ) -> Result<SolDappSignedSummary, SolSignFailure> {
+        let refused = SolSignFailure::DappSign(SolTxSignError::KindMismatch);
+        let (yw_core::approval::SigningPayload::SolTx(payload), ChainRef::Solana { cluster, .. }) =
+            (approved.payload(), approved.chain())
+        else {
+            return Err(refused);
+        };
+        if payload.mode != SolTxMode::SignAndSend {
+            return Err(refused);
+        }
+        let approval_id = approved.id().0;
+        let current = self.current(vault).map_err(SolSignFailure::JournalWrite)?;
+        let mut trial = current;
+        if has_intent(&trial, &payload.intent_hash(&approval_id)) {
+            return Err(SolSignFailure::AlreadySigned);
+        }
+        // The dApp send caps (spec/07 §20.9), checked again on the journal itself; the wallet's
+        // one-pending rule does not apply (the wallet never re-signs a dApp transaction).
+        let records = SolEntries::from_plain(&trial).records();
+        let wallet = SolAddress::from_bytes(payload.public);
+        if pending_dapp_count(&records, cluster, &wallet) >= SOL_DAPP_MAX_PENDING
+            || pending_dapp_total(&records) >= SOL_DAPP_MAX_PENDING_TOTAL
+        {
+            return Err(SolSignFailure::TooManyPending);
+        }
+        if !sol_has_room(&trial) {
+            // A journal full of pending records is the dApp's -32002, not an internal error.
+            let rows = sol_make_room(&mut trial, job.now_unix_ms)
+                .map_err(|_| SolSignFailure::TooManyPending)?;
+            match self.persist_sol_activity(vault, &rows, alt) {
+                Ok(moved) if !moved.is_empty() => out.push(KeyOutcome::ActivityMoved(moved)),
+                Ok(_) => {}
+                Err(_) => return Err(SolSignFailure::JournalFull),
+            }
+        }
+        let now_ms = yw_win::time::monotonic_ms();
+        let signed = sign_step(vault, approved, job.consumed_at_ms, now_ms, &job.check)?;
+        let mut summary = SolDappSignedSummary {
+            cluster,
+            public: payload.public,
+            tx_id: signed.tx_id,
+            own_signature: signed.own_signature,
+            tx: signed.tx.clone(),
+            signed_at_ms: job.now_unix_ms,
+            last_valid_block_height: job.last_valid_block_height,
+            min_context_slot: payload.options.min_context_slot,
+            reused: false,
+        };
+        // The same bytes approved again (Ed25519 is deterministic): the record already there is
+        // the one that broadcasts; nothing new is written and the dApp gets its signature.
+        if let Some(record) = records
+            .iter()
+            .find(|record| record.signature() == signed.tx_id)
+        {
+            logging::info("journal", "journal.sol_dapp_reused", &[]);
+            summary.signed_at_ms = record.signed_at_ms;
+            summary.last_valid_block_height = record.last_valid_block_height;
+            summary.reused = true;
+            return Ok(summary);
+        }
+        let record = SolRecord::new_dapp_pending(
+            cluster,
+            payload,
+            &approval_id,
+            &job.origin,
+            &signed,
+            job.now_unix_ms,
+            job.last_valid_block_height,
+        );
+        sol_push_record(&mut trial, &record).map_err(|_| SolSignFailure::JournalFull)?;
+        let bytes = trial.encode().map_err(|_| SolSignFailure::JournalFull)?;
+        if let Err(error) = vault.save_sidecar(FileKind::Journal, &bytes) {
+            // As for a wallet send: a record that reached the disk anyway will be resumed and
+            // broadcast after a restart, so it is tracked like a written one.
+            let Some(on_disk) = written_anyway(vault, &record) else {
+                logging::warn("journal", "journal.sol_dapp_pending_write_failed", &[]);
+                return Err(SolSignFailure::JournalWrite(error));
+            };
+            logging::warn("journal", "journal.sol_pending_write_found_on_disk", &[]);
+            trial = on_disk;
+        }
+        logging::info(
+            "journal",
+            "journal.sol_dapp_pending",
+            &[("net", Field::Net(sol_network(cluster)))],
+        );
+        out.push(KeyOutcome::Journal(Ok(view_of(&trial))));
+        self.plain = Some(trial);
+        fault_point("sol.after_journal_dapp_pending");
+        Ok(summary)
     }
 
     /// Applies a SOL transition, moves terminal records to activity (meta first) and commits.

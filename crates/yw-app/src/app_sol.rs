@@ -52,7 +52,7 @@ fn now_ms() -> u64 {
     yw_win::time::monotonic_ms()
 }
 
-fn now_unix_ms() -> u64 {
+pub(crate) fn now_unix_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| {
@@ -465,6 +465,9 @@ pub struct SolUi {
     pub slot: Option<(SolCluster, SolAddress)>,
     /// Approved transfer waiting for its blockhash.
     pub pending_sign: Option<PendingSign>,
+    /// Approved dApp sends waiting for their pre-sign check, by RPC job (spec/07 §20.10-2;
+    /// answered 4001 by [`App::sol_lock`] before the lock clears it).
+    pub dapp_presign: HashMap<u64, crate::app_sol_dapp::PendingDappSign>,
     /// Broadcast loop per signature.
     pub tracking: HashMap<[u8; 64], SolTrackState>,
     /// Last sent transfer.
@@ -501,6 +504,7 @@ impl SolUi {
         self.send = SolSendForm::default();
         self.slot = None;
         self.pending_sign = None;
+        self.dapp_presign.clear();
         self.tracking.clear();
         self.sent = None;
         self.resend = None;
@@ -1261,6 +1265,7 @@ impl App {
                 self.on_sol_dapp_previewed(job, result);
             }
             RpcEvent::SolPreSigned { job, result } => self.on_sol_presigned(job, result),
+            RpcEvent::SolDappPreSigned { job, result } => self.on_sol_dapp_presigned(job, result),
             RpcEvent::SolTracked(result) => self.on_sol_tracked(&result),
             RpcEvent::SolScanned { job, result } => {
                 if job != self.sol.scan.job {
@@ -1877,10 +1882,15 @@ impl App {
                     SolSignFailure::Sign(yw_core::sol::SolSignError::PendingExists) => {
                         ErrorCode::Tx002
                     }
-                    SolSignFailure::Sign(_) | SolSignFailure::AlreadySigned => ErrorCode::Tx003,
+                    // The dApp send failures never come from `SignSol`.
+                    SolSignFailure::Sign(_)
+                    | SolSignFailure::AlreadySigned
+                    | SolSignFailure::Locked
+                    | SolSignFailure::DappSign(_)
+                    | SolSignFailure::TooManyPending => ErrorCode::Tx003,
                     SolSignFailure::JournalFull => ErrorCode::Tx005,
                     SolSignFailure::JournalWrite(_) => ErrorCode::Vlt003,
-                    SolSignFailure::Card(error) => {
+                    SolSignFailure::Card(error) | SolSignFailure::DappCard(error) => {
                         let message = format!("{} — {error}", ErrorCode::Sol004.text());
                         logging::warn(
                             "app",
@@ -1968,7 +1978,7 @@ impl App {
         self.refresh();
     }
 
-    fn sol_tick_tracking(&mut self, now: u64) {
+    pub(crate) fn sol_tick_tracking(&mut self, now: u64) {
         let records = self.sol_records();
         // A final state that is still not in the journal long after `SolApply`: the write failed
         // (the key worker reports it only to the log). Resume the loop; it observes the same
@@ -2002,6 +2012,9 @@ impl App {
                 }
                 continue;
             };
+            // `minContextSlot` of a dApp send applies while its answer still waits for the first
+            // round (spec/07 §20.8): never to a later re-send.
+            let min_context_slot = self.sol_dapp_min_context_slot(&signature);
             let Some(state) = self.sol.tracking.get_mut(&signature) else {
                 continue;
             };
@@ -2020,13 +2033,13 @@ impl App {
                 check_genesis: !state.genesis_checked,
                 generation: state.generation,
                 // A dApp record keeps its own preflight options on every send (spec/07 §20.8);
-                // `minContextSlot` of its first send is held by the browser answer (none yet).
+                // `minContextSlot` of its first send is held by the browser answer.
                 send: record.send_flags().map_or_else(
                     SendConfig::default,
                     |(skip_preflight, commitment)| SendConfig {
                         skip_preflight,
                         preflight_commitment: commitment.as_str(),
-                        min_context_slot: None,
+                        min_context_slot,
                     },
                 ),
             };
@@ -2104,6 +2117,8 @@ impl App {
             // Locked: the journal is written after unlock (spec/07 §14.2); the loop resumes from
             // the journal then and observes the same final state.
         }
+        // A dApp send waiting for its first round is answered now (spec/07 §20.8).
+        self.browser_sol_broadcast(result);
         self.refresh();
     }
 
@@ -2155,8 +2170,11 @@ impl App {
 
     // ----- lock, URL changes ----------------------------------------------------------------
 
-    /// Lock: drop the unlocked state (the approval token, if any, is dropped unused).
+    /// Lock: drop the unlocked state (the approval token, if any, is dropped unused). The dApp
+    /// sends are answered first (spec/07 §20.10-5): those still before signing get 4001, those
+    /// journaled their signature.
     pub fn sol_lock(&mut self) {
+        self.sol_dapp_lock();
         self.sol.clear_unlocked();
     }
 
@@ -2703,5 +2721,71 @@ mod tests {
         app.sol.send.amount_text = "x".to_owned();
         app.sol_validate_send();
         assert_eq!(app.sol_review_item().unwrap_err(), ReviewRefusal::NotReady);
+    }
+
+    /// spec/07 §20.9, Q6: dApp sends of account 0 are tracked side by side (one round each, with
+    /// its own preflight options) and never hold the send form: the one-pending rule of
+    /// spec/07 §1 counts wallet sends only.
+    #[test]
+    fn dapp_sends_are_tracked_together_and_do_not_hold_the_send_form() {
+        use yw_core::journal::sol::{SolDappMeta, dapp_flags};
+
+        use crate::workers::rpc::RpcJob;
+        let mut app = app();
+        let dapp = |sig: u8, flags: u8| {
+            let mut pending = record(SolCluster::Mainnet, SolTxState::Pending, TO_A, sig);
+            pending.dapp = Some(SolDappMeta {
+                public: OWN,
+                signer_slot: 0,
+                flags,
+                origin: "https://app.example".to_owned(),
+            });
+            pending
+        };
+        let plain = dapp(0x61, dapp_flags::BROADCAST);
+        let skip = dapp(0x62, dapp_flags::BROADCAST | dapp_flags::SKIP_PREFLIGHT);
+        let (plain_id, skip_id) = (plain.signature(), skip.signature());
+        app.evm.journal = Some(JournalView {
+            sol_records: vec![plain, skip],
+            ..JournalView::default()
+        });
+        app.sol_schedule_tracking();
+        assert_eq!(app.sol.tracking.len(), 2);
+        let (rpc, jobs) = std::sync::mpsc::channel();
+        app.rpc_tx = Some(rpc);
+        let url = yw_win::http::HttpsUrl::parse("https://sol.example.test/").unwrap();
+        app.apikeys.set_rpc(
+            crate::network::NetworkId::Solana(crate::network::SolCluster::Mainnet),
+            &url,
+        );
+        app.sol_tick_tracking(now_ms());
+        let mut sent: Vec<([u8; 64], bool)> = jobs
+            .try_iter()
+            .filter_map(|job| match job {
+                RpcJob::SolTrack(job) => Some((job.signature, job.send.skip_preflight)),
+                _ => None,
+            })
+            .collect();
+        sent.sort_unstable();
+        assert_eq!(sent, vec![(plain_id, false), (skip_id, true)]);
+        assert!(
+            app.sol_pending(SolCluster::Mainnet, &SolAddress::from_bytes(OWN))
+                .is_none()
+        );
+        assert_ne!(
+            app.sol_review_blocker(),
+            Some(super::ReviewBlocker::InFlight)
+        );
+        // A wallet transfer of the account does hold it.
+        let mut records = app.sol_records();
+        records.push(record(SolCluster::Mainnet, SolTxState::Pending, TO_B, 0x63));
+        app.evm.journal = Some(JournalView {
+            sol_records: records,
+            ..JournalView::default()
+        });
+        assert_eq!(
+            app.sol_review_blocker(),
+            Some(super::ReviewBlocker::InFlight)
+        );
     }
 }

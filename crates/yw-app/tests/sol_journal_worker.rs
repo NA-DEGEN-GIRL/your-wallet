@@ -4,20 +4,27 @@
 //! the same intent cannot be signed twice (`AlreadySigned`), a late approval is refused before
 //! any key use, and a `Landed` transition moves the record to meta `activity`. The v1.1 case
 //! signs a devnet USDC transfer (`T_SPL`, 526-byte body) and checks the activity `asset` = mint.
+//! The dApp case (spec/07 §20.8–§20.9) journals a site's send (version 3) before returning it,
+//! reuses the record of the same bytes, and refuses the 17th pending send of the account.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use yw_app::events::{KeyOutcome, SolSignFailure};
+use yw_app::events::{KeyOutcome, SignTicket, SolDappSigned, SolDappSignedSummary, SolSignFailure};
 use yw_app::meta;
 use yw_app::store::{FileStorage, LockedSlotBox};
-use yw_app::workers::journal::{JournalState, SolSignTimes};
-use yw_core::approval::{ApprovalStore, Approved};
+use yw_app::workers::journal::{JournalState, SolDappSignJob, SolSignTimes};
+use yw_core::approval::{ApprovalId, ApprovalStore, Approved};
 use yw_core::bip32::path::AccountIndex;
 use yw_core::error::StorageError;
 use yw_core::journal::sol::{SolTransition, SolTxState};
 use yw_core::password::VaultPassword;
+use yw_core::policy::BrowserOrigin;
 use yw_core::slip10::SolKeySource;
+use yw_core::sol::dapp::{
+    PreSignCheck, SolSendOptions, SolTxFacts, SolTxItemFacts, SolTxMode, SolTxRequest,
+    SolTxSignError, build_sol_tx_request,
+};
 use yw_core::sol::display::{
     SimSummary, SolPreviewFacts, SplPreviewFacts, build_sol_transfer_request,
 };
@@ -411,6 +418,251 @@ fn spl_transfer_is_journaled_and_its_activity_names_the_mint() -> TestResult {
     assert_eq!(
         activity.title,
         "[Solana devnet (테스트)] 토큰 전송: 2.500000 USDC"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+/// A legacy dApp transaction account 0 signs and pays for: one unknown-program instruction
+/// with data `[tag]` (blockhash `[7; 32]`).
+fn dapp_tx(tag: u8) -> TestResult<Vec<u8>> {
+    let mut out = vec![1_u8];
+    out.extend_from_slice(&[0; 64]);
+    out.extend_from_slice(&[1, 0, 1, 2]);
+    out.extend_from_slice(&addr(FROM)?.to_bytes());
+    out.extend_from_slice(&[5; 32]);
+    out.extend_from_slice(&[7; 32]);
+    out.extend_from_slice(&[1, 1, 1, 0, 1, tag]);
+    Ok(out)
+}
+
+/// An approved `sol_signAndSendTransaction` of [`dapp_tx`]`(tag)` (approval id `[id; 16]`).
+fn approve_send(tag: u8, id: u8) -> TestResult<Approved> {
+    let request = SolTxRequest {
+        id: ApprovalId([id; 16]),
+        origin: BrowserOrigin::parse("https://app.example").ok_or("origin")?,
+        cluster: SolCluster::Devnet,
+        source: SolKeySource::Standard(AccountIndex::ZERO),
+        public: addr(FROM)?.to_bytes(),
+        label: "Solana 1".to_owned(),
+        mode: SolTxMode::SignAndSend,
+        options: SolSendOptions {
+            skip_preflight: true,
+            preflight_commitment: None,
+            min_context_slot: Some(77),
+        },
+        txs: vec![dapp_tx(tag)?],
+    };
+    let facts = SolTxFacts {
+        items: vec![SolTxItemFacts {
+            tables: Ok((0, Vec::new())),
+            pre: Vec::new(),
+            post: None,
+            sim: SimSummary::NoResult,
+            sim_replaced_blockhash: false,
+            rpc_fee: Some(5_000),
+            blockhash_valid: Some(true),
+        }],
+        mints: Vec::new(),
+        unread_mints: Vec::new(),
+        known: Vec::new(),
+        fee_cap: 100_000,
+    };
+    let draft = build_sol_tx_request(&request, &facts).map_err(|error| format!("{error:?}"))?;
+    let mut store = ApprovalStore::new();
+    let issued = store.issue(draft, 1, NOW)?;
+    Ok(store.consume(issued.id, issued.digest, 2)?)
+}
+
+/// The pre-sign part of a send job: the check found blockhash `[7; 32]` valid just now.
+fn dapp_job(ticket: u64, consumed_at_ms: u64) -> SolDappSignJob {
+    SolDappSignJob {
+        ticket: SignTicket(ticket),
+        consumed_at_ms,
+        last_valid_block_height: 1_150,
+        now_unix_ms: NOW,
+        check: PreSignCheck {
+            blockhash: [7; 32],
+            loaded: None,
+        },
+        origin: "https://app.example".to_owned(),
+    }
+}
+
+/// `sign_sol_dapp` of [`dapp_tx`]`(tag)` approved as `id`.
+fn sign_dapp(
+    state: &mut JournalState,
+    vault: &mut Vault,
+    tag: u8,
+    id: u8,
+    consumed_at_ms: u64,
+) -> TestResult<Vec<KeyOutcome>> {
+    Ok(state.sign_sol_dapp(
+        vault,
+        Box::new(approve_send(tag, id)?),
+        dapp_job(u64::from(id), consumed_at_ms),
+        false,
+    ))
+}
+
+/// spec/07 §20.8, §20.9: a dApp send is journaled (version 3) before it is returned — next to
+/// a wallet transfer of the same account still pending (the one-pending rule is the wallet's
+/// own) — with the dApp's origin and options; the same bytes approved again write nothing and
+/// return the same transaction id; a late signing is refused before any key use; the 17th
+/// pending send of the account is -32002 (`TooManyPending`); a landed send moves to activity
+/// as a site transaction.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one account's dApp sends: pending, reuse, refusals, activity"
+)]
+fn dapp_send_is_journaled_first_reused_and_capped() -> TestResult {
+    let dir = temp_dir("dapp")?;
+    let mut vault = vault(&dir)?;
+    let mut state = JournalState::default();
+    let transfer = state.sign_sol(
+        &mut vault,
+        Box::new(approve(&intent()?)?),
+        times(yw_win::time::monotonic_ms()),
+        false,
+    );
+    assert!(matches!(
+        transfer.first(),
+        Some(KeyOutcome::SignedSol(Ok(_)))
+    ));
+    let outcomes = sign_dapp(&mut state, &mut vault, 1, 1, yw_win::time::monotonic_ms())?;
+    let Some(KeyOutcome::SignedSolDapp(SolDappSigned {
+        ticket: SignTicket(1),
+        result: Ok(summary),
+    })) = outcomes.first()
+    else {
+        return Err(format!("not signed: {outcomes:?}").into());
+    };
+    assert!(!summary.reused);
+    assert_eq!(summary.cluster, SolCluster::Devnet);
+    assert_eq!(summary.min_context_slot, Some(77));
+    // The wallet pays: signature 0 is ours and the transaction id.
+    assert_eq!(summary.tx_id, summary.own_signature);
+    let message = summary.tx.get(65..).ok_or("message")?;
+    assert_eq!(Some(message), dapp_tx(1)?.get(65..));
+    assert!(yw_core::sol::keys::verify_strict(
+        &addr(FROM)?.to_bytes(),
+        message,
+        &summary.tx_id
+    ));
+    // On disk before the summary was returned.
+    let view = JournalState::default().load(&vault)?;
+    assert_eq!(view.sol_corrupt, 0);
+    let record = view
+        .sol_records
+        .iter()
+        .find(|record| record.dapp.is_some())
+        .ok_or("no dApp record")?;
+    assert_eq!(record.state, SolTxState::Pending);
+    assert_eq!(record.signature(), summary.tx_id);
+    assert_eq!(record.tx, summary.tx);
+    assert_eq!(record.last_valid_block_height, 1_150);
+    assert_eq!(
+        record.dapp.as_ref().map(|dapp| dapp.origin.as_str()),
+        Some("https://app.example")
+    );
+    assert_eq!(
+        record.send_flags(),
+        Some((true, yw_core::sol::dapp::SolCommitment::Confirmed))
+    );
+    assert!(record.core().is_none());
+    // The same bytes approved again: the same id, nothing written.
+    let before = std::fs::read(dir.join("journal.ywj"))?;
+    let again = sign_dapp(&mut state, &mut vault, 1, 2, yw_win::time::monotonic_ms())?;
+    let Some(KeyOutcome::SignedSolDapp(SolDappSigned {
+        result: Ok(repeat), ..
+    })) = again.first()
+    else {
+        return Err(format!("not reused: {again:?}").into());
+    };
+    assert!(repeat.reused);
+    assert_eq!(repeat.tx_id, summary.tx_id);
+    assert_eq!(std::fs::read(dir.join("journal.ywj"))?, before);
+    // More than 20 s after the pre-sign answer: refused before any key use or write.
+    let late = sign_dapp(
+        &mut state,
+        &mut vault,
+        2,
+        3,
+        yw_win::time::monotonic_ms().saturating_sub(20_001),
+    )?;
+    assert!(matches!(
+        late.first(),
+        Some(KeyOutcome::SignedSolDapp(SolDappSigned {
+            result: Err(SolSignFailure::DappSign(SolTxSignError::DeadlineExceeded)),
+            ..
+        }))
+    ));
+    assert_eq!(std::fs::read(dir.join("journal.ywj"))?, before);
+    // Up to 16 pending sends of the account; the 17th is refused.
+    for tag in 2..=16 {
+        let signed = sign_dapp(
+            &mut state,
+            &mut vault,
+            tag,
+            tag + 10,
+            yw_win::time::monotonic_ms(),
+        )?;
+        assert!(
+            matches!(
+                signed.first(),
+                Some(KeyOutcome::SignedSolDapp(SolDappSigned {
+                    result: Ok(SolDappSignedSummary { reused: false, .. }),
+                    ..
+                }))
+            ),
+            "send {tag}"
+        );
+    }
+    let before = std::fs::read(dir.join("journal.ywj"))?;
+    let refused = sign_dapp(&mut state, &mut vault, 17, 40, yw_win::time::monotonic_ms())?;
+    assert!(matches!(
+        refused.first(),
+        Some(KeyOutcome::SignedSolDapp(SolDappSigned {
+            result: Err(SolSignFailure::TooManyPending),
+            ..
+        }))
+    ));
+    assert_eq!(std::fs::read(dir.join("journal.ywj"))?, before);
+    let view = JournalState::default().load(&vault)?;
+    assert_eq!(
+        view.sol_records
+            .iter()
+            .filter(|record| record.dapp.is_some())
+            .count(),
+        16
+    );
+    // Landed: a site transaction in activity.
+    let moved = state.apply_sol(
+        &mut vault,
+        &SolTransition::Landed {
+            signature: summary.tx_id,
+            slot: 77,
+        },
+        NOW + 5_000,
+        false,
+    );
+    let Some(KeyOutcome::ActivityMoved(rows)) = moved.get(1) else {
+        return Err("no activity".into());
+    };
+    let (network, entry) = rows.first().ok_or("empty activity")?;
+    assert_eq!(network.to_string(), "solana:devnet");
+    assert_eq!(entry.status, "succeeded");
+    assert_eq!(entry.account, FROM);
+    assert_eq!(entry.counterparty, "");
+    assert_eq!(
+        entry.tx_id,
+        yw_core::codec::base58::base58_encode(&summary.tx_id)
+    );
+    assert!(
+        entry.title.contains("사이트 거래 · https://app.example"),
+        "{}",
+        entry.title
     );
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())
