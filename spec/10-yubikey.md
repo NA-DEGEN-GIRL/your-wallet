@@ -198,6 +198,7 @@ Bitcoin 슬롯의 인덱스는 **계정 0의 받기 체인 주소 인덱스**(`�
 - 카드 서명 64바이트를 기록된 공개키로 `verify_strict` 한다(정규 S, 소수 위수 키 거부). 그 뒤는 [07] §13의 서명 후 검증(메시지 바이트 = 승인한 템플릿)을 그대로 거친다.
 - 표현(코어): 키 출처 `SolKeySource::Hardware(i)`(**tag 7**, 매개변수 `(i, 0)`, 경로 `m/44'/501'/i'/0'`, 경로 문구 "… (YubiKey PIV)"). 표준 경로이므로 비표준 경로 규칙([07] §3.3)은 적용되지 않는다. vault는 이 출처에 시드를 빌려 주지 않고(`with_ed25519_seed` → `RecordNotFound`), 공개키는 `Vault::sol_public_keys`가 tag 5 슬롯 표에서 답한다(니모닉 없는 YubiKey 지갑에서도).
 - 서명(코어): `sol::sign::sign_transfer_card(approved, consumed_at_ms, blockhash, now_ms, card)` — `sign_transfer`와 같은 기한·승인·수수료 규칙·메시지(파싱 + 재인코딩 동일) 검사 → 카드가 메시지 바이트 그대로 서명 → 같은 서명 후 검증(`verify_strict`, 조립, 재파싱). `sol::msgsign::sign_message_card(approved, card)` — `sign_message`와 같은 승인 검사와 거래 모양·잘못된 오프체인 메시지 거부(M01·M02)를 **카드에 묻기 전에** 하고, 카드 서명을 `verify_strict` 한다. 카드 클로저 형식은 `sol::sign::SolCardSigner`(`yubikey::sign::sign_sol`), 오류는 `SolCardSignError`·`SolMessageCardError`(`Sign`·`Card`).
+- dApp 거래(2026-11-12, D38, [07] §20.5): `sol::dapp::sign_txs_card(approved, card)`(서명만) — `sign_txs`와 같은 승인·파싱·동일성·사이트 서명 검사 뒤 거래마다 카드가 **메시지 바이트**(≤ 1,232, PIV `MAX_SIGN_MESSAGE` 2,048 안)에 서명하고 `verify_strict`, 우리 슬롯만 채운다. 터치는 거래 수만큼이다(창 안내 "YubiKey가 깜박일 때마다 터치하세요 — 모두 {n}회(거래마다 한 번)"). `sol::dapp::sign_send_card(approved, consumed_at_ms, now_ms, check, card)`(서명 후 전송) — 같은 검사에 마감·블록해시·조회 테이블 비교를 더하고 터치 1회. 소프트웨어 출처는 거부한다. 승인 종류의 카드 역할(`yubikey::role_of`)은 `SigningPayload::SolTx`의 `SolKeySource::Hardware(i)`면 `KeyRole::Sol { index: i }`다(이 갈래가 없으면 카드 단계가 시작하지 못하고 소프트웨어 경로가 YubiKey 키를 거부한다).
 
 ### 6.5 Zcash 서명 (2026-11-06)
 
@@ -324,8 +325,8 @@ n × 48:
 
 구현(2026-11-05, `app_card`):
 
-- 승인(consume) 뒤 서명자가 YubiKey 키인 승인(`EvmKeySource::Hardware`, `SolKeySource::Hardware`, `BtcAccountKey::Hardware` 계획, YubiKey 출처의 Solana·Bitcoin dApp 메시지)은 소프트웨어 작업(`SignEvm`·`SignMessage`·`SignChainMessage`·`SignSol`·`SignBtc`) 대신 **카드 단계**(`CardStep`, `Purpose::CardSign(id)`)에 보관되고 W11이 열린다. 소프트웨어 계정의 경로는 그대로다(같은 작업, 같은 순서).
-- PIN 제출 → `SignEvmCard`·`SignMessageCard`·`SignChainMessageCard`·`SignBtcCard`(입력마다 같은 PIN으로 카드 서명 1회) 또는 SOL은 blockhash 조회 뒤 `SignSolCard`(SOL 서명 기한 20초는 PIN 제출 시각부터 잰다). 결과는 기존 `SignedEvm`·`SignedMessage`·`SignedChainMessage`·`SignedSol`·`SignedBtc` 처리로 간다(실패 문구는 `CardJobError` 문구).
+- 승인(consume) 뒤 서명자가 YubiKey 키인 승인(`EvmKeySource::Hardware`, `SolKeySource::Hardware`, `BtcAccountKey::Hardware` 계획, YubiKey 출처의 Solana·Bitcoin dApp 메시지, YubiKey 출처의 Solana dApp 거래 — 2026-11-12)은 소프트웨어 작업(`SignEvm`·`SignMessage`·`SignChainMessage`·`SignSol`·`SignSolDapp`·`SignBtc`) 대신 **카드 단계**(`CardStep`, `Purpose::CardSign(id)`)에 보관되고 W11이 열린다. 소프트웨어 계정의 경로는 그대로다(같은 작업, 같은 순서).
+- PIN 제출 → `SignEvmCard`·`SignMessageCard`·`SignChainMessageCard`·`SignBtcCard`(입력마다 같은 PIN으로 카드 서명 1회) 또는 SOL은 blockhash 조회 뒤 `SignSolCard`(SOL 서명 기한 20초는 PIN 제출 시각부터 잰다). Solana dApp 거래(2026-11-12): 서명만은 `SignChainMessageCard`(거래마다 카드 서명·터치, 마감 없음), 서명 후 전송은 PIN 제출 뒤 서명 전 확인([07] §20.10) → `SignSolDappCard`(카드 단계 `CardJobKind::SolDappSend`, 기한 20초는 서명 전 확인 응답 시각부터 — PIN 뒤다). 결과는 기존 `SignedEvm`·`SignedMessage`·`SignedChainMessage`·`SignedSol`·`SignedBtc` 처리로 간다(실패 문구는 `CardJobError` 문구).
 - 키 작업자는 승인을 쓰기 **전에** 카드에서 PIN을 확인한다(`yubikey::sign::check_pin`: 일련번호·기록 공개키 확인 뒤 VERIFY 한 번, 쓰기·서명 명령·터치 없음). 틀린 PIN·다른 카드·카드 없음이면 쓰지 않은 승인을 돌려주고(`KeyOutcome::CardUnused`) 실패 결과를 보낸다. 앱은 카드 단계가 상한(승인 뒤 120초) 안이고 PIN이 잠기지 않았으면 그 실패를 보이지 않고 W11을 오류와 함께 다시 연다. 그 밖에는 승인을 버리고 실패를 보인다.
 - W11 취소·닫기·창이 열리지 못함(캡처 제외 거부 등)·120초 초과는 승인을 버린다(아무것도 서명하지 않음). dApp에는 4001(사용자 거부), 120초 초과는 -32603. 잠금은 보관 중인 승인과 PIN을 지우고 dApp에 4001을 보낸다.
 - **카드 단계는 한 번에 하나(2026-11-10)**: 다음 승인 창은 카드 단계와 상관없이 열리므로 카드 승인이 겹칠 수 있다. PIN을 기다리는 단계에 새 카드 승인이 오면 기다리던 단계는 위와 같이 취소(4001, 아무것도 서명하지 않음)되고 새 단계가 W11을 연다. PIN을 넣어 카드 작업이 도는 단계(터치 대기, SOL은 blockhash 대기 포함)는 **취소하지 않는다**: 그 작업은 서명·저널·전송까지 갈 수 있으므로 그 결과를 끝까지 처리하고 dApp에도 그 결과를 보낸다(이전에는 4001을 보내 놓고 거래는 전송되었다 — 재시도하면 두 번 실행, 송신 슬롯도 미리 풀림). 그동안 승인된 다른 카드 승인은 쓰지 않고 버린다: dApp에는 4001, 그 승인의 송신 슬롯만 해제(HyperCore 행은 "취소됨"), 배너 T-CARD-BUSY "다른 YubiKey 서명이 진행 중이어서 방금 승인한 요청은 서명하지 않았습니다. 진행 중인 서명이 끝난 뒤(YubiKey 터치) 다시 시도하세요." SOL·BTC·ZEC 보내기는 체인마다 송신 슬롯이 하나라 같은 체인의 카드 작업이 겹치지 않으므로, 카드 결과는 EVM·메시지는 티켓으로, SOL·BTC·ZEC는 종류로 맞춘다.
@@ -356,7 +357,7 @@ n × 48:
 | 승인 만료(D23, 120초) | 승인 클릭까지가 기존 규칙이다. 승인 뒤 카드 단계는 별도 상한 120초(PIN 입력·터치 포함), 넘으면 취소 |
 | Bitcoin 보내기 | 단일 주소 계정(§3.3). 입력마다 카드 서명, 수수료 서명 크기 72+1(§6.3). dApp 메시지 서명도 카드로 한다: BIP137(카드 DER → compact, 복구 id는 기록된 공개키를 복구하는 값, 헤더는 주소 형식), BIP322 simple(P2WPKH: `to_sign`의 BIP143 sighash를 카드로 서명한 witness)·full(P2SH-P2WPKH) — `btc::msgsign::sign_message_card`(vault 경로와 같은 승인 검사, 기존 검증기로 시험) |
 | 계정 목록 | EVM·Solana·Bitcoin 탭에 "[YubiKey]" 배지로 나온다(선택·이름 바꾸기·숨기기는 탭이 지원하는 만큼; Bitcoin 탭은 이름·숨김 없음). 받기 주소·QR은 기록된 공개키의 주소. "개인키 보기"는 없다(설정의 버튼도 YubiKey 계정이 선택되면 꺼짐). dApp 연결 목록(EVM `eth_requestAccounts`, Solana·Bitcoin 연결)에도 들어간다. 숨긴 YubiKey 계정은 그 키를 가진 카드를 다시 등록하면 다시 보인다 |
-| Solana 보내기·메시지 서명(SIWS 포함) | PIV Ed25519로 메시지 원문 서명(§5.3), 기존 템플릿·서명 후 검증 그대로 |
+| Solana 보내기·메시지 서명(SIWS 포함)·dApp 거래 | PIV Ed25519로 메시지 원문 서명(§5.3), 기존 템플릿·서명 후 검증 그대로. dApp 거래(2026-11-12, §6.4)는 거래 메시지마다 서명 1회·터치 1회(서명만 n건 = 터치 n회, 서명 후 전송 = PIN → 서명 전 확인 → 터치 1회) |
 | 키 전용 지갑·가져온 키 | 같은 vault에 공존. YubiKey 지갑에는 "계정 추가(파생)"·"복구 단어 보기"가 없다(`has_mnemonic = false`) |
 | 잠금·자동 잠금(D12) | 잠긴 동안 카드 작업 없음. 잠금은 진행 중인 카드 작업의 PIN 버퍼를 지우고 PC/SC 연결을 끊는다(이미 카드로 보낸 한 APDU는 끝까지 간다) |
 | 저널([02] §5.4) | 변화 없음(서명 결과만 저장) |
@@ -379,7 +380,7 @@ n × 48:
 
 - `yubikey::mock::MockCard`: OpenPGP(SELECT, F1, 6E, F9, VERIFY 81/82/83, C1–C3(RSA 2048·4096·secp256k1), D6–D8, 3FFF 가져오기, 47 81, PSO:CDS, INTERNAL AUTHENTICATE, CHANGE REFERENCE, TERMINATE E6·ACTIVATE 44)와 PIV(SELECT, FD, F8, F7, VERIFY, 87 관리 키·서명, FE, FF, 24, GET/PUT DATA `CB`/`DB` — ADMIN DATA·PRINTED, PRINTED 읽기는 VERIFY PIN 뒤에만, 쓰기는 관리 키 인증 뒤에만; `protect_management` = ykman `--generate --protect` 상태; RESET RETRY COUNTER 2C·PUK 횟수, DELETE KEY F6, RESET FB), 체이닝·`61xx`, PIN 횟수·잠김, PW1은 공장값처럼 서명 뒤에도 유효(`pw1_single_use`면 일회성), 웜 리셋(`warm_reset`: yw-app `MockSource`가 §5.1의 재설정 작업 끝에 부른다), PIN 정책 "항상", 터치 거부, high-s, 손상 서명. 관리 키 블록 암호는 테스트용 `ToyCipher`(AES가 아님 — 실제 AES·3DES는 yw-win CNG에서 FIPS-197·SP 800-67 벡터로 시험).
 - 벡터: `abandon`×11 `about`로 SIG = EVM 0 → `0x9858EfFD232B4033E47d90003D41EC34EcaEda94`, AUT = BIP84 0 → `bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu`, PIV 82 = Solana 0 → `HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk`, 지문 `73c5da0a`.
-- 서명: high-s 카드에서도 EVM 복구 주소 = 등록 주소, BIP143 P2WPKH sighash 서명 검증(low-s), Solana 1,000바이트 메시지(체이닝) `verify_strict`, 서명 흐름에 쓰기 명령 없음.
+- 서명: high-s 카드에서도 EVM 복구 주소 = 등록 주소, BIP143 P2WPKH sighash 서명 검증(low-s), Solana 1,000바이트 메시지(체이닝) `verify_strict`, 서명 흐름에 쓰기 명령 없음. Solana dApp 거래(2026-11-12): 에뮬레이터로 서명만 3건 = 카드 서명·터치 3회이고 우리 슬롯만 바뀜, 서명 후 전송 1회, 서명만 중 잠금 → 4001, `role_of`가 Hardware `SolTx` payload에 `KeyRole::Sol`.
 - 오류: 틀린 PIN(남은 횟수), 3회 → 잠김, 터치 없음, 손상 서명, 다른 일련번호(PIN 전 거부), 덮어쓴 슬롯, KDF, 구 펌웨어, 틀린 관리자 PIN·관리 키(쓰기 0), 애플릿 없음.
 - 작업 끝 재설정(§5.1): yw-app `yubikey::tests::a_card_job_that_verified_a_pin_leaves_nothing_verified` — 공장 PW1 카드에서 PIN 확인 작업 뒤에도, 서명 작업 뒤에도 다른 프로그램이 SELECT·VERIFY 없이 보낸 PSO:CDS가 서명을 받지 못한다.
 - 계획: 슬롯별 인덱스 선택·경로 문자열, 한 카드 안 같은 경로 거부(공유 키 변형 포함), 다른 카드와 같은 경로는 백업 표시가 있을 때만, 다른 니모닉 거부, 같은 카드 재등록 거부, 카드 3개가 EVM 0–5를 나눠 갖고 4번째가 #1의 백업인 슬롯 표와 라우팅(`slot_on_card`).

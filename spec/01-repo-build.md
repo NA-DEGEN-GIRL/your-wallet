@@ -168,6 +168,7 @@ docs/        install.ko.md(설치·업데이트·제거)  recovery-guide.ko.md  
 | `approval` | M2 | 승인 세션·digest·`Approved` 토큰·공통 표시 모델(필드, 위험, 금지 문자) | [03](03-evm.md) §11, [04](04-app-ui.md) |
 | `policy` | M2 | M2: `BrowserOrigin`(승인 모델이 쓴다, [03] §0·§11). M5: 나머지 — dApp 메서드 허용 목록·route, 연결 권한, 공급자 오류 코드(`ProviderError`) | [03](03-evm.md), [05](05-browser.md) |
 | `sol::*` | M7 | 주소, 메시지, 서명, 표시(base58은 `codec::base58`, 저널 레코드는 `journal::sol`) | [07](07-solana.md) |
+| `sol::dapp::{parse, alt, decode, diff, display, sign}` | M7.2 | Solana dApp 거래(2026-11-12, D38): legacy·v0 파서·인코더, 조회 테이블 해석, 명령 해석, 시뮬레이션 차이, 승인 요청 빌더, 서명기. 새 의존성 없음(기존 `ed25519-dalek`·`sha2`만) | [07](07-solana.md) §20 |
 | `btc::*` | M8 | 주소(bech32/bech32m; base58check는 `codec::base58`), 계정 형식(`account`: P2PKH·P2SH-P2WPKH·P2WPKH·P2TR), sighash(레거시·BIP143), `taproot`(BIP341 키 경로), tx, 수수료, 표시(저널 레코드는 `journal::btc`) | [08](08-bitcoin.md) |
 
 규칙: yw-core는 시간·파일·네트워크·스레드·환경 변수를 쓰지 않는다. 시각이 필요하면 호출자가 단조 `now_ms: u64`(yw-win `time::monotonic_ms`)나 벽시계 `now_unix_ms: u64`(유닉스 ms, yw-app이 구함)를 인자로 넘긴다. yw-core는 yw-json(의존성 0)에 의존한다. `evm::eip712`가 `yw_json::Value`를 입력으로 받기 때문이다([03](03-evm.md) §0). 외부 허용 목록은 바뀌지 않는다. RPC 응답은 여전히 yw-app이 yw-json으로 파싱해 yw-core 타입으로 넘기며 yw-core는 네트워크 데이터를 직접 받지 않는다.

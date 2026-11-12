@@ -4,7 +4,7 @@
 
 관련 문서: [01](01-repo-build.md)(크레이트·yw-json·yw-win·검사), [02](02-core-keys-vault.md)(meta 형식), [03](03-evm.md)(EVM 검증·서명·시뮬레이션·SIWE), [04](04-app-ui.md)(창·설정·파일 위치), [09](09-testing.md)(판정 기준).
 
-이 문서는 D3, D14(dApp 쪽 체인 규칙), D15–D16(dApp 응답 부분), D22–D24, D30(잠김 동작)을 구현 수준으로 정한다. 확장 코드는 `extension/`을 제자리에서 고친다(main과 `archive/spec-v2.4`의 `extension/`은 동일). 이식 출처는 `archive/spec-v2.4:<path>:<lines>`로 적는다.
+이 문서는 D3, D14(dApp 쪽 체인 규칙), D15–D16(dApp 응답 부분), D22–D24, D25·D27·D38(Solana dApp 연결·메시지·거래 서명의 와이어와 페이지 API), D30(잠김 동작)을 구현 수준으로 정한다. 확장 코드는 `extension/`을 제자리에서 고친다(main과 `archive/spec-v2.4`의 `extension/`은 동일). 이식 출처는 `archive/spec-v2.4:<path>:<lines>`로 적는다.
 
 ---
 
@@ -326,6 +326,8 @@ fn pinned_extension_id() -> Option<&'static str> {
 
 `RESPONSE`가 큰 이유: `eth_getLogs`·`eth_getBlockByNumber(…, true)` 결과는 1 MiB 안에서 노드가 수만 개다. 크기 상한(1 MiB)이 실제 비용 상한이다.
 
+요청별 상한(JSON 한도와 별개, 2026-11-12 Solana dApp 거래, D38): `sol_signAllTransactions`는 거래 ≤ 32건, 거래 하나는 ≤ 1,232 B(= 16진수 2,464자), 거래당 최상위 명령 ≤ 64개다(§3.6, [07] §20.11). 32건 × 2,464자 ≈ 79 KiB라 위 JSON 한도는 바뀌지 않는다. 넘으면 -32602.
+
 정의(`archive/spec-v2.4:crates/native-host/src/lib.rs:84-91,253-405`의 집계 방식과 같다):
 
 - **depth**: 스칼라 0, 컨테이너는 1 + 자식 최댓값. 루트 객체만 있으면 1. `depth > maxDepth`면 거부.
@@ -436,22 +438,22 @@ Object.defineProperty(window, "ethereum", { get: () => provider, set: (_ignored)
 - 짧은 팝업(2026-11-11, 두 번째 수정): 측정한 문서 높이가 1,149 px(팝업 최대 600 px)였다. 모드 카드를 한 줄에 나란히(`grid-auto-flow: column`) 두고 카드 안의 설명은 숨기며, 고른 모드의 한 줄 설명만 그 줄 아래 캡션(`mode-explain`·`sol-explain`·`btc-explain`)에 보인다(카드 구조 `label.mode` > 라디오 + 이름·설명은 그대로). 폭 360 px, 카드 여백·간격을 줄이고 안내 문구(`applyNote`·`chainNote`·상태 `unknown` 설명)를 줄여 약 700 px가 됐다. `popup.html`은 `shared.js`·`popup-core.js`·`popup.js` 세 모듈 스크립트를 나란히 적어 동시에 받는다(popup.js의 `import`와 같은 모듈 인스턴스; 이전에는 popup.js를 받은 뒤에야 나머지 둘을 받았다). 감사 규칙(모듈 스크립트만, 인라인 없음)은 그대로다.
 - 모양: 데스크톱 앱([04](04-app-ui.md))과 같은 라이트 테마 하나(다크 변형 없음). 배경 `#F3F4F6`, 카드 `#FFFFFF`·테두리 1px `#E1E4E8`·모서리 8px, 글자 `#1F1F1F`, 보조 글자 `#5F6368`, 강조(선택 카드 테두리·라디오) `#0F6CBD`, 글꼴 `"Malgun Gothic", "Segoe UI", system-ui`(본문 13px, 설명 12px, 제목 굵게 16px), 간격 4/8/12/16px. 상단에 앱 이름 머리글, 연결 상태는 색 알약(`connected` 성공 `#DFF6DD`/`#0E700E`, `unavailable` 고위험 `#FDE7E9`/`#A4262C`, 그 밖 정보 `#E8F1FB`/`#0F4C81`), 경고는 주의 색(`#FFF4CE`/`#7A5C00`). 원격 글꼴·이미지 없음(§2.11 검사).
 
-### 2.13 Solana·Bitcoin dApp 연결 (D22·D25·D26·D27: 소유 증명 전용)
-목적: Solana·Bitcoin dApp에서 **지갑 소유 증명**(연결 + 메시지 서명, Sign-In-With-Solana 포함)만 하게 한다. 거래·PSBT 서명과 dApp발 전송은 없다. 거래 메서드는 dApp이 지갑을 찾는 데 꼭 필요한 곳에만 두고 **항상** 4200 + 고정 문구 `이 지갑은 Solana에서 메시지 서명(소유 증명)만 지원합니다` / `이 지갑은 Bitcoin에서 메시지 서명(소유 증명)만 지원합니다`로 거부한다(페이지 쪽에서 즉시, 와이어로 보내지 않는다. 와이어에도 그런 메서드는 없다 — §3.2 `rejected`).
+### 2.13 Solana·Bitcoin dApp 연결 (D22·D25·D26·D27·D38: Solana 거래 서명, Bitcoin 소유 증명 전용)
+목적: Solana dApp에서는 연결, 메시지 서명(Sign-In-With-Solana 포함), **사이트가 만든 거래의 서명·전송**(2026-11-12, D38, [07] §20)을 하게 한다. Bitcoin dApp에서는 **지갑 소유 증명**(연결 + 메시지 서명)만 하게 한다. PSBT 서명과 Bitcoin dApp발 전송은 없다. Bitcoin 거래 메서드는 dApp이 지갑을 찾는 데 꼭 필요한 곳에만 두고 **항상** 4200 + 고정 문구 `이 지갑은 Bitcoin에서 메시지 서명(소유 증명)만 지원합니다`로 거부한다(페이지 쪽에서 즉시, 와이어로 보내지 않는다. 와이어에도 그런 메서드는 없다 — §3.2 `rejected`). Solana 거래는 와이어 메서드 `sol_signTransaction`·`sol_signAllTransactions`·`sol_signAndSendTransaction`(§3.6)으로 간다. 2026-11-12 전에는 Solana 거래 메서드도 페이지에서 4200 `이 지갑은 Solana에서 메시지 서명(소유 증명)만 지원합니다`였다.
 
 **저장과 전달**: 팝업이 `chrome.storage.local`의 `solCompatMode`(`"off"`·`"phantom"`)와 `btcCompatMode`(`"off"`·`"unisat"`·`"xverse"`)를 쓴다(EVM `compatMode`와 별개, 그 밖 값·없음은 `off`). content는 document_start에 세 키를 한 번에 읽고(`MODE_READ_TIMEOUT_MS`, 실패는 셋 다 `off`) `bridge-init`의 `solCompatMode`·`btcCompatMode`로 넘긴다. content→bg `request`의 `compatMode`는 **메서드 계열의** 모드다: `eth_*` 등은 `metamask`·`rabby`, `sol_*`는 `phantom`, `btc_*`는 `unisat`·`xverse`(그 계열이 `off`면 키 없음). 다른 계열의 모드가 붙은 content 메시지는 형식 오류, yw-app은 -32600(§6.1).
 
 | 계열·모드 | 페이지에 보이는 것 |
 |---|---|
-| Solana `off`(기본) | Wallet Standard 지갑 하나(이름 `Your Wallet (Solana)`, 2026-11-11 전 `Your Wallet`)만 등록. `window.phantom`·`window.solana` 없음. 이름을 EVM 알림(`Your Wallet`)과 다르게 둔 이유: 여러 체인 dApp은 같은 이름의 EVM·Solana 지갑을 한 항목으로 합친다 — Uniswap은 소문자로 바꾸고 끝의 " wallet"을 떼어 비교하고(`apps/web/src/connection/connectors/multiplatform.ts` `normalizeWalletName`, `accounts/provider.tsx` `deduplicationId`), 합친 항목을 누르면 EVM 연결 뒤 Solana 연결을 이어 한다(`services/multiplatformConnectionService.ts`, EVM이 거절·이미 연결 등으로 `connected: false`여도 Solana로 넘어감). 그래서 "Your Wallet"이 Solana 연결 창으로 이어졌다. 우리 Solana는 메시지 서명 전용이라 Uniswap의 Solana 스왑에 쓸 수도 없다. 이제 "Your Wallet"(EVM)과 "Your Wallet (Solana)"는 따로 보인다 |
+| Solana `off`(기본) | Wallet Standard 지갑 하나(이름 `Your Wallet (Solana)`, 2026-11-11 전 `Your Wallet`)만 등록. `window.phantom`·`window.solana` 없음. 이름을 EVM 알림(`Your Wallet`)과 다르게 둔 이유: 여러 체인 dApp은 같은 이름의 EVM·Solana 지갑을 한 항목으로 합친다 — Uniswap은 소문자로 바꾸고 끝의 " wallet"을 떼어 비교하고(`apps/web/src/connection/connectors/multiplatform.ts` `normalizeWalletName`, `accounts/provider.tsx` `deduplicationId`), 합친 항목을 누르면 EVM 연결 뒤 Solana 연결을 이어 한다(`services/multiplatformConnectionService.ts`, EVM이 거절·이미 연결 등으로 `connected: false`여도 Solana로 넘어감). 그래서 "Your Wallet"이 Solana 연결 창으로 이어졌다. 이제 "Your Wallet"(EVM)과 "Your Wallet (Solana)"는 따로 보인다 |
 | Solana `phantom` | Wallet Standard 지갑 이름 `Phantom`(아이콘은 우리 PNG, Phantom 로고를 쓰지 않는다) + `window.phantom.solana`(접근자로 차지·재차지, `window.ethereum` 호환 모드와 같은 규칙 §2.12) + `window.solana`(없을 때만 데이터 속성) |
 | Bitcoin `off`(기본) | **아무것도 주입하지 않는다**(Bitcoin dApp 지원은 호환 모드에서만). content의 `ContentBridge`도 이 문서의 `btc_*` 요청을 와이어로 보내지 않고 즉시 4200 `Unsupported method.`로 답한다(페이지가 채널 메시지를 직접 만들어도 같다). Solana `off`는 `Your Wallet` 지갑을 등록하므로 `sol_*`는 그대로 보낸다 |
 | Bitcoin `unisat` | `window.unisat`(접근자로 차지·재차지) |
 | Bitcoin `xverse` | `window.XverseProviders.BitcoinProvider`(차지·재차지) + `window.BitcoinProvider`(없을 때만) + `window.btc_providers`(WBIP004) 항목 `{ id: "XverseProviders.BitcoinProvider", name: "Xverse Wallet", icon: <우리 PNG>, methods }`(같은 id 항목이 있으면 교체) |
 
-Wallet Standard에는 숨기기가 없다: 실제 Phantom이 켜져 있으면 `Phantom` 이름 지갑이 둘 보일 수 있다. 팝업 경고: `Phantom처럼 보이기를 쓸 때는 실제 Phantom 확장을 꺼 두세요. Solana 지갑 목록(Wallet Standard)에서는 실제 Phantom을 숨길 수 없어 두 지갑이 함께 보일 수 있습니다.` Bitcoin: `UniSat·Xverse처럼 보이기를 쓸 때는 실제 UniSat·Xverse 확장을 꺼 두세요. 켜져 있으면 dApp이 그 지갑에 연결될 수 있습니다.` 공통 안내: `이 지갑은 Solana·Bitcoin에서 연결과 메시지 서명(소유 증명)만 지원합니다. 거래 서명과 전송은 할 수 없습니다.`
+Wallet Standard에는 숨기기가 없다: 실제 Phantom이 켜져 있으면 `Phantom` 이름 지갑이 둘 보일 수 있다. 팝업 경고: `Phantom처럼 보이기를 쓸 때는 실제 Phantom 확장을 꺼 두세요. Solana 지갑 목록(Wallet Standard)에서는 실제 Phantom을 숨길 수 없어 두 지갑이 함께 보일 수 있습니다.` Bitcoin: `UniSat·Xverse처럼 보이기를 쓸 때는 실제 UniSat·Xverse 확장을 꺼 두세요. 켜져 있으면 dApp이 그 지갑에 연결될 수 있습니다.` 공통 안내(2026-11-12, `popup-core.js` `chainNote`): `Bitcoin은 연결과 메시지 서명만 됩니다. Solana는 거래 서명·전송도 됩니다.` 그 전에는 `이 지갑은 Solana·Bitcoin에서 연결과 메시지 서명(소유 증명)만 지원합니다. 거래 서명과 전송은 할 수 없습니다.`였다.
 
-**Wallet Standard 지갑**(`provider-main.js`, 모드가 정해질 때 등록): `wallet-standard:register-wallet` 이벤트(`detail` = `({ register }) => register(wallet)`)를 한 번 보내고, `wallet-standard:app-ready`에는 그때마다 `detail.register(wallet)`로 답한다(모드 확정 전에 온 것은 확정 때 답한다, 최대 16개). `wallet = { version: "1.0.0", name, icon, chains: ["solana:mainnet","solana:devnet"], features, accounts }`(동결, `name`·`accounts`는 getter). 계정 `{ address, publicKey(32바이트 사본), chains, features: ["solana:signMessage","solana:signIn","solana:signTransaction"] }`.
+**Wallet Standard 지갑**(`provider-main.js`, 모드가 정해질 때 등록): `wallet-standard:register-wallet` 이벤트(`detail` = `({ register }) => register(wallet)`)를 한 번 보내고, `wallet-standard:app-ready`에는 그때마다 `detail.register(wallet)`로 답한다(모드 확정 전에 온 것은 확정 때 답한다, 최대 16개). `wallet = { version: "1.0.0", name, icon, chains: ["solana:mainnet","solana:devnet"], features, accounts }`(동결, `name`·`accounts`는 getter). 계정 `{ address, publicKey(32바이트 사본), chains, features: ["solana:signMessage","solana:signIn","solana:signTransaction","solana:signAndSendTransaction"] }`(`solana:signAndSendTransaction`은 2026-11-12).
 
 | feature | 동작 |
 |---|---|
@@ -460,9 +462,10 @@ Wallet Standard에는 숨기기가 없다: 실제 Phantom이 켜져 있으면 `P
 | `standard:events` `on("change", fn)` | 계정 변화마다 `fn({ accounts })`, 해제 함수 반환 |
 | `solana:signMessage` `(...inputs)` | 입력마다 `account`가 현재 계정이어야 함(아니면 4100, 와이어 없음) → `sol_signMessage` → `{ signedMessage, signature(64B), signatureType: "ed25519" }` |
 | `solana:signIn` `(...inputs)` | 연결 전이면 먼저 `sol_connect`(창) → `sol_signIn` → `{ account, signedMessage(앱이 만든 바이트), signature, signatureType }` |
-| `solana:signTransaction` `supportedTransactionVersions: ["legacy"]` | wallet-adapter 목록에 들기 위한 선언. **항상 4200**(위 문구) |
+| `solana:signTransaction` v1.0.0 `supportedTransactionVersions: ["legacy", 0]` | `signTransaction(...inputs)`(2026-11-12, 전에는 항상 4200). 입력 0개 → `[]`, 33개 이상 → -32602(와이어 없음). 입력마다 `account`가 현재 계정이어야 하고(아니면 4100, 와이어 없음), `chain`은 없거나(`undefined`·`null` 포함) `solana:mainnet`·`solana:devnet`이며 입력끼리 섞이면 -32602, `transaction`은 `Uint8Array`(≤ 1,232 B, 서명 배치 `shortvec(n ≥ 1) ‖ 64n ‖ 메시지`가 맞아야 함, 아니면 -32602), `options`는 무시한다(와이어에 넣지 않는다). 1개 → `sol_signTransaction`, N개 → `sol_signAllTransactions` 한 번(창 하나·승인 하나). 결과 `[{ signedTransaction: Uint8Array }]`(입력 순서). 앱 응답은 provider가 다시 확인한다: 길이·서명 배치가 같고, 서명 영역 밖 바이트가 같고, 바뀐 바이트가 모두 64바이트 슬롯 **하나** 안에 있어야 한다. 아니면 -32603 |
+| `solana:signAndSendTransaction` v1.0.0 `supportedTransactionVersions: ["legacy", 0]` | 2026-11-12 신규. 입력 검증은 `signTransaction`과 같고 모든 입력을 먼저 검증한 뒤 **순서대로 하나씩** `sol_signAndSendTransaction`을 보낸다(여러 건 와이어 메서드는 없다). `options`는 아는 키만 읽는다: `skipPreflight`(boolean, 아니면 -32602), `preflightCommitment`(별칭 `recent→processed`, `single`·`singleGossip→confirmed`, `root`·`max→finalized`, 모르는 값은 버림), `minContextSlot`(0 이상 안전 정수, 아니면 -32602). `undefined`·`null`은 없는 것으로 보고, `maxRetries`·`commitment`·`mode`를 포함한 그 밖 키는 무시한다. 결과 `[{ signature: Uint8Array(64) }]`(서명 0번 = 거래 ID). 중간 입력이 실패하면 이미 보낸 거래의 서명을 `data: { signatures: [base58…] }`에 담아 그 오류로 거부한다 |
 
-**Phantom shim** `window.phantom.solana`(멤버는 쓰기·재구성 불가): `isPhantom: true`, `publicKey`(getter, PublicKey 유사 객체 `{ toBase58, toString, toJSON, toBytes, toBuffer, equals }` 또는 `null`), `isConnected`, `connect({ onlyIfTrusted }?)` → `{ publicKey }`(`onlyIfTrusted`이고 연결 안 됨 → 4001, 창 없음), `disconnect()`, `signMessage(Uint8Array, display?)` → `{ signature, publicKey }`(연결 전 4100, `display`는 무시 — 표시는 앱이 정한다), `signIn(input?)` → `{ address: PublicKey, signedMessage, signature }`, `request({ method: "connect"|"disconnect"|"signMessage"|"signIn", params })`, 이벤트 `on`/`addListener`/`off`/`removeListener`/`removeAllListeners`(`connect`·`disconnect`·`accountChanged`). `signTransaction`·`signAllTransactions`·`signAndSendTransaction`·`signAndSendAllTransactions`·그 밖 `request` 메서드 → 4200.
+**Phantom shim** `window.phantom.solana`(멤버는 쓰기·재구성 불가): `isPhantom: true`, `publicKey`(getter, PublicKey 유사 객체 `{ toBase58, toString, toJSON, toBytes, toBuffer, equals }` 또는 `null`), `isConnected`, `connect({ onlyIfTrusted }?)` → `{ publicKey }`(`onlyIfTrusted`이고 연결 안 됨 → 4001, 창 없음), `disconnect()`, `signMessage(Uint8Array, display?)` → `{ signature, publicKey }`(연결 전 4100, `display`는 무시 — 표시는 앱이 정한다), `signIn(input?)` → `{ address: PublicKey, signedMessage, signature }`, `request({ method: "connect"|"disconnect"|"signMessage"|"signIn", params })`, 이벤트 `on`/`addListener`/`off`/`removeListener`/`removeAllListeners`(`connect`·`disconnect`·`accountChanged`). 거래(2026-11-12, 전에는 모두 4200): `signTransaction(tx)` → 페이지의 거래 클래스 인스턴스(`tx.constructor.deserialize`·`.from`으로 다시 만든다, 못 하면 -32603). `tx`가 `Uint8Array`류면 바이트 그대로, 아니면 `version`이 있으면 `tx.serialize()`, 없으면(legacy) `tx.serialize({ requireAllSignatures: false, verifySignatures: false })`(던지면 -32602, 와이어 없음). provider는 `addSignature`를 부르지 않는다. getter는 모두 `try` 안에서 읽는다. `signAllTransactions(txs)` → 같은 방식으로 승인 하나(`sol_signAllTransactions`). `signAndSendTransaction(tx, opts?)` → `{ signature: base58, publicKey: base58 }`(옵션은 Wallet Standard와 같은 규칙). `signAndSendAllTransactions(txs, opts?)` → 순서대로 하나씩, `{ signatures: [base58…], publicKey }`(중간 실패는 `data.signatures`). 연결 전이면 4100(와이어 없음). `request({ method, params })`는 `connect`·`disconnect`·`signMessage`·`signIn`에 더해 `signTransaction`·`signAllTransactions`·`signAndSendTransaction`·`signAndSendAllTransactions`(`params.transaction(s)`)를 받는다. **폐기된 `message` 형식**(`params: { message: base58 }`)도 받는다: provider가 base58을 풀어(≤ 1,232 B) 필요 서명 수 `required` = `msg[0]`(v0이면 `msg[1]`, ≤ 127, 아니면 -32602)로 `shortvec(required) ‖ 64·required 0바이트 ‖ message`를 만들어 같은 와이어 메서드를 부른다. 결과는 `signTransaction` → `{ publicKey, signature: base58(우리 서명) }`, `signAllTransactions` → `{ publicKey, signatures }`, `signAndSendTransaction` → `{ publicKey, signature: base58(서명 0번) }`. 그 밖 `request` 메서드 → 4200(중립 문구).
 
 **UniSat shim** `window.unisat`: `requestAccounts()` → `btc_requestAccounts [{ purposes: ["any"] }]` → 주소 배열, `getAccounts()`, `getNetwork()`(`"livenet"`·`"testnet"`), `getChain()`(`{ enum: "BITCOIN_MAINNET"|"BITCOIN_TESTNET4", name, network }`), `switchNetwork(n)`·`switchChain(c)`(현재 설정과 같을 때만 성공, 아니면 4200 `Bitcoin 네트워크는 Your Wallet 앱 설정에서만 바꿀 수 있습니다`), `getPublicKey()`, `signMessage(msg: string, type = "ecdsa"|"bip322-simple")` → base64 서명, `on`/`removeListener`(`accountsChanged`·`networkChanged`). `signPsbt`·`signPsbts`·`pushPsbt`·`pushTx`·`sendBitcoin`·`sendInscription`·`inscribeTransfer`·`sendRunes`·`getBalance`·`getInscriptions` → 4200.
 
@@ -474,7 +477,7 @@ Wallet Standard에는 숨기기가 없다: 실제 Phantom이 켜져 있으면 `P
 
 ## 3. 메서드 허용 목록
 - **기본 모드 이름에 체인 표시**(2026-11-11, 사용자 요청): 기본 모드의 EIP-6963 이름은 `Your Wallet (EVM)`, Wallet Standard 이름은 `Your Wallet (Solana)`다 — EVM·Solana를 함께 지원하는 dApp 목록에서 어느 쪽인지 바로 보인다. rdns·아이콘은 그대로. 팝업의 기본 모드 이름은 "기본 (Your Wallet EVM)"·"기본 (Your Wallet Solana)".
-### 3.1 허용 메서드 (37개 = 아래 27개 + §3.6의 Solana·Bitcoin 10개, 정본: JS `shared.js METHOD_ROUTE`, Rust `yw_core::policy::Method`)
+### 3.1 허용 메서드 (40개 = 아래 27개 + §3.6의 Solana·Bitcoin 13개, 정본: JS `shared.js METHOD_ROUTE`, Rust `yw_core::policy::Method`)
 `route`는 봉투 v1의 `"permission" | "read" | "signing"`이다. `permission`은 RPC 없이 yw-app이 답하는 메서드를 뜻한다.
 
 | 메서드 | route | 연결 필요 | 동작 | 결과 |
@@ -498,7 +501,7 @@ EIP-2255 권한 객체: `{ "invoker": "<origin>", "parentCapability": "eth_accou
 ### 3.2 명시적 거부 (4200 "Unsupported method.")
 허용 표에 없는 모든 메서드는 4200이다. 아래는 골든 파일의 `rejected` 목록으로 양쪽 테스트가 "허용 표에 없음"을 확인한다:
 
-`sol_signTransaction`, `sol_signAllTransactions`, `sol_signAndSendTransaction`, `btc_signPsbt`, `btc_sendBitcoin`, `btc_pushTx`, `btc_sendTransfer`(Solana·Bitcoin은 메시지 서명만, §3.6), `eth_sign`, `eth_signTransaction`, `eth_sendRawTransaction`, `eth_signTypedData`, `eth_signTypedData_v1`, `eth_signTypedData_v3`, `wallet_addEthereumChain`, `wallet_watchAsset`, `wallet_getCapabilities`, `wallet_sendCalls`, `wallet_getCallsStatus`, `wallet_showCallsStatus`, `wallet_registerOnboarding`, `wallet_scanQRCode`, `eth_subscribe`, `eth_unsubscribe`, `eth_newFilter`, `eth_newBlockFilter`, `eth_newPendingTransactionFilter`, `eth_getFilterChanges`, `eth_getFilterLogs`, `eth_uninstallFilter`, `eth_coinbase`, `eth_getEncryptionPublicKey`, `eth_decrypt`, `personal_ecRecover`, `personal_unlockAccount`, `personal_sendTransaction`, `eth_getProof`, `debug_traceCall`, `eth_simulateV1`.
+`btc_signPsbt`, `btc_sendBitcoin`, `btc_pushTx`, `btc_sendTransfer`(Bitcoin은 메시지 서명만, §3.6; Solana 거래 메서드 세 개는 2026-11-12에 §3.6 허용으로 옮겼다), `eth_sign`, `eth_signTransaction`, `eth_sendRawTransaction`, `eth_signTypedData`, `eth_signTypedData_v1`, `eth_signTypedData_v3`, `wallet_addEthereumChain`, `wallet_watchAsset`, `wallet_getCapabilities`, `wallet_sendCalls`, `wallet_getCallsStatus`, `wallet_showCallsStatus`, `wallet_registerOnboarding`, `wallet_scanQRCode`, `eth_subscribe`, `eth_unsubscribe`, `eth_newFilter`, `eth_newBlockFilter`, `eth_newPendingTransactionFilter`, `eth_getFilterChanges`, `eth_getFilterLogs`, `eth_uninstallFilter`, `eth_coinbase`, `eth_getEncryptionPublicKey`, `eth_decrypt`, `personal_ecRecover`, `personal_unlockAccount`, `personal_sendTransaction`, `eth_getProof`, `debug_traceCall`, `eth_simulateV1`.
 
 `eth_coinbase`는 계정 노출 경로를 줄이기 위해 지원하지 않는다. `wallet_addEthereumChain`은 D14에 따라 params와 무관하게(이미 등록된 체인이어도) 4200이다. 체인 추가는 yw-app 설정([04](04-app-ui.md) §6.1 `evmChains`)에서만 한다. dApp이 4902를 받은 뒤 이어 부르는 `wallet_addEthereumChain`도 4200이며 레지스트리는 바뀌지 않는다.
 
@@ -559,8 +562,8 @@ EIP-55 판정과 주소 파싱은 yw-core 함수를 쓴다(이름은 [03](03-evm
 - RPC 엔드포인트 없음(`endpoint(chain)` 없음: 그 체인의 `rpc:eip155:<chainId>` URL이 저장되지 않음), 체인 상태 `RpcMismatch`·`Unverified`([03] §1.4), 연결·TLS·시간 초과·HTTP 비-2xx(429 제외)·JSON 오류 → 4901 "Chain RPC is unavailable.". HTTP 429 → -32005 "Rate limit exceeded.".
 - 상위 JSON-RPC `error` 전달(revert 데이터를 dApp이 해석하도록): code가 `3`, −32099…−32000, −32600…−32603이면 유지하고 그 밖은 −32603. message는 0x20–0x7E 문자 1–256자면 유지, 아니면 `"RPC error."`. data는 `^0x([0-9a-fA-F]{2})*$`이고 ≤ 131,074자인 문자열이면 소문자로 유지, 아니면 생략. 이 문자열은 dApp에만 가고 yw-app 화면에는 표시하지 않는다.
 
-### 3.6 Solana·Bitcoin 메서드 (연결·메시지 서명만, D25–D27)
-10개. 거래·PSBT 메서드는 없다(§3.2 `rejected`의 `sol_signTransaction`·`sol_signAllTransactions`·`sol_signAndSendTransaction`·`btc_signPsbt`·`btc_sendBitcoin`·`btc_pushTx`·`btc_sendTransfer`, 페이지 shim은 §2.13대로 4200). 이름은 `^[A-Za-z0-9_]{1,96}$`.
+### 3.6 Solana·Bitcoin 메서드 (Solana 연결·메시지·거래 서명, Bitcoin 연결·메시지 서명, D25–D27·D38)
+13개. Bitcoin 거래·PSBT 메서드는 없다(§3.2 `rejected`의 `btc_signPsbt`·`btc_sendBitcoin`·`btc_pushTx`·`btc_sendTransfer`, 페이지 shim은 §2.13대로 4200). Solana 거래 메서드 세 개(2026-11-12)는 `signing` route다. 여러 거래를 보내는 와이어 메서드(`sol_signAndSendAllTransactions`)는 없다(provider의 순차 반복, §2.13). 이름은 `^[A-Za-z0-9_]{1,96}$`.
 
 | 메서드 | route | params(정확한 키) | 동작 | 결과 |
 |---|---|---|---|---|
@@ -569,6 +572,9 @@ EIP-55 판정과 주소 파싱은 yw-core 함수를 쓴다(이름은 [03](03-evm
 | `sol_accounts` | permission | `[]` | 연결·잠금 해제면 `[base58]`, 아니면 `[]` | 배열 |
 | `sol_signMessage` | signing | `[{ "publicKey": base58, "message": hex }]`(≤ 65,536 B) | grant 계정이어야 함(4100). 승인 창([07] §19) | `{ "publicKey", "signature": hex(64B) }` |
 | `sol_signIn` | signing | `[{ "publicKey": base58, "input": SolanaSignInInput }]` | `input` 키는 `domain address statement uri version chainId nonce issuedAt expirationTime notBefore requestId resources`의 부분집합(그 밖 키, 예 `useOffchainMessage` → -32602), 문자열 ≤ 1,024 B·제어 문자 없음, `resources` ≤ 32개. 빈 문자열은 없는 것으로 본다. 디스패처가 빠진 `domain`(origin의 `host[:port]`)·`address`(계정)를 채우고 [07] §19.4의 텍스트를 만든다(≤ 64 KiB) | `{ "publicKey", "signature", "signedMessage": hex }` |
+| `sol_signTransaction` | signing | `[{ "publicKey": base58, "transaction": hex, "chain"?: "solana:mainnet"\|"solana:devnet" }]` | grant 계정이어야 함(4100). 엔드포인트가 없으면 4901. `transaction`은 소문자로 바꾼 16진수 ≤ 2,464자이고 [07] §20.2 파서를 통과하며 `publicKey`가 서명자 슬롯 하나에 있어야 한다(아니면 -32602). `chain`이 있으면 settings 클러스터와 같아야 한다(-32602). 승인 창([07] §20, 서명만) | `{ "publicKey", "signedTransaction": hex }` |
+| `sol_signAllTransactions` | signing | `[{ "publicKey", "transactions": [hex] (1..=32), "chain"? }]` | `sol_signTransaction`과 같은 규칙을 거래마다. 창 하나·승인 하나 | `{ "publicKey", "signedTransactions": [hex] }`(같은 순서·개수) |
+| `sol_signAndSendTransaction` | signing | `[{ "publicKey", "transaction": hex, "chain"?, "options"?: { "skipPreflight"?: bool, "preflightCommitment"?: "processed"\|"confirmed"\|"finalized", "minContextSlot"?: u64 } }]` | `sol_signTransaction` 규칙에 더해: 우리 것이 아닌 필요 서명 슬롯이 모두 0이 아니고, durable nonce 거래가 아니어야 한다(-32602). `options`는 정확한 키(위 세 개의 부분집합), `minContextSlot`은 JSON 정수 ≤ 2^53−1. (클러스터, 서명 계정)의 Pending dApp 기록이 16건이면 -32002. 승인 창([07] §20, 서명 후 전송) → 저널 → 첫 전송 라운드 뒤 응답 | `{ "publicKey", "signature": hex(64B) }`(서명 0번 = 거래 ID) |
 | `btc_requestAccounts` | permission | `[{ "purposes": [...] }]` — `payment`·`ordinals` 1–2개(중복 없음) 또는 `["any"]`(UniSat) | 잠금 해제 grant가 요청 목적을 모두 갖고 있으면 창 없이 반환(요청 목적만). 그 밖은 연결 창(목적마다 주소 1개, §4.9) | `[{ "address", "publicKey": hex, "purpose", "addressType": "p2pkh"|"p2sh"|"p2wpkh"|"p2tr" }]` |
 | `btc_getAccounts` | permission | `[]` | 잠금 해제 grant(설정 네트워크와 같은 네트워크)의 주소, 아니면 `[]` | 같은 형식 |
 | `btc_disconnect` | permission | `[]` | `sol_disconnect`와 같은 규칙(`btcAccountsChanged([])`) | `null` |
@@ -670,7 +676,7 @@ dApp 요청으로 띄운 잠금 해제 창을 `나중에`로 닫으면 `UNLOCK_P
 - **연결 거부 알림(2026-11-10)**: 연결 요청(`eth_requestAccounts`·`wallet_requestPermissions`·`sol_connect`·`btc_requestAccounts`)이 사용자가 앱에서 고칠 수 있는 이유로 창 없이 거부되면(`BtcDisabled`, `NoBtcAccount`, `NoSolAccount`, `NoEvmAccount`, `TooManySites`) 앱에 알림(주의 띠) 한 줄을 띄운다: 사이트 origin, 이유, 할 일(설정 → Bitcoin에서 켜기, 없는 주소 형식 — `ordinals`는 "오디널스용 Taproot(P2TR) 주소", `payment`는 "결제용 SegWit(P2WPKH·P2SH-P2WPKH) 주소" — 의 계정 추가, Solana 계정 추가·개인키 가져오기, EVM 개인키 가져오기, 사이트 하나 해제). 같은 글의 알림이 이미 있으면 더하지 않는다(페이지가 다시 요청해도 늘지 않음). 서명 요청의 거부는 알리지 않는다.
 - **256개 한도**: 계열마다 grant ≤ 256(meta `sol_sites`·`btc_sites` 검증 한도). 새 origin의 연결은 잠금 해제 중 디스패처에서, 잠김 중 큐에 들어간 것은 꺼낼 때, 승인 때 한 번 더 4100 `TooManySites`로 거부하고 grant를 쓰지 않는다(이미 grant가 있는 origin은 교체).
 - 서명 요청은 grant의 계정·주소만(4100). 큐에서 꺼낼 때 그 계정이 지갑에서 사라졌으면 `Revoked`(4100).
-- **백업 확인 전 복구 단어의 계정(2026-11-10)**: 서명 요청(EVM `eth_sendTransaction`·`personal_sign`·`eth_signTypedData_v4`, `sol_signMessage`·`sol_signIn`, `btc_signMessage`)의 서명 키가 백업 확인 전 복구 단어의 것이면(추가한 복구 단어, 또는 키 전용·YubiKey 지갑의 나중 첫 복구 단어 — [02] §8.6, `App::mn_unconfirmed`) 큐에서 꺼낼 때 창을 열지 않고 4100 `BackupUnconfirmed`(§5)로 끝내고, 앱에 주의 알림 한 줄("{origin}의 서명 요청을 거부했습니다: '{라벨}'의 백업 확인 전이라 … 설정 → 복구 단어에서 '백업 확인'을 마치세요.", 같은 글은 한 번; WalletConnect 세션이면 {origin}은 내부 `….walletconnect.invalid` 주소가 아니라 dApp이 주장한 주소 라벨 — 세션이 이미 없으면 `WalletConnect dApp`, 연결 거부 알림과 같은 규칙, [13] §7, 2026-11-10)을 띄운다. 전에는 승인 뒤 vault가 E-VLT-009로 거부해 페이지는 -32603만 받고 앱에는 아무것도 없었다. 확인 문항을 통과한 순간부터는 정상 처리한다. EVM 메시지 서명이 그 밖의 이유로 vault·서명 단계에서 실패해도 앱에 이유 띠를 보인다(거래의 실패 띠와 같다).
+- **백업 확인 전 복구 단어의 계정(2026-11-10)**: 서명 요청(EVM `eth_sendTransaction`·`personal_sign`·`eth_signTypedData_v4`, `sol_signMessage`·`sol_signIn`·`sol_signTransaction`·`sol_signAllTransactions`·`sol_signAndSendTransaction`, `btc_signMessage`)의 서명 키가 백업 확인 전 복구 단어의 것이면(추가한 복구 단어, 또는 키 전용·YubiKey 지갑의 나중 첫 복구 단어 — [02] §8.6, `App::mn_unconfirmed`) 큐에서 꺼낼 때 창을 열지 않고 4100 `BackupUnconfirmed`(§5)로 끝내고, 앱에 주의 알림 한 줄("{origin}의 서명 요청을 거부했습니다: '{라벨}'의 백업 확인 전이라 … 설정 → 복구 단어에서 '백업 확인'을 마치세요.", 같은 글은 한 번; WalletConnect 세션이면 {origin}은 내부 `….walletconnect.invalid` 주소가 아니라 dApp이 주장한 주소 라벨 — 세션이 이미 없으면 `WalletConnect dApp`, 연결 거부 알림과 같은 규칙, [13] §7, 2026-11-10)을 띄운다. 전에는 승인 뒤 vault가 E-VLT-009로 거부해 페이지는 -32603만 받고 앱에는 아무것도 없었다. 확인 문항을 통과한 순간부터는 정상 처리한다. EVM 메시지 서명이 그 밖의 이유로 vault·서명 단계에서 실패해도 앱에 이유 띠를 보인다(거래의 실패 띠와 같다).
 - **공장 기본 PIN의 YubiKey 키(2026-11-10)**: 같은 서명 요청의 키가 `hw_accounts.defaults`에 있는 카드의 YubiKey 키면(카드 단계가 승인 뒤에야 거부할 것, [10] §9.3 `App::card_on_defaults`) 큐에서 꺼낼 때 창 없이 4100 `Unauthorized`로 거절하고 앱에 알림 한 줄 "{사이트}의 서명 요청을 거부했습니다: YubiKey #{n}의 PIN이 아직 공장 기본값이라 서명하지 않았습니다 — 설정 → YubiKey → PIN 설정"(같은 문구는 한 번만). PIN을 설정하면(카드가 defaults에서 빠지면) 정상 처리한다. 카드 단계의 검사는 마지막 방어선으로 그대로다.
 - **새 사이트의 기본 선택(2026-11-10)**: Solana·Bitcoin 연결 창도 EVM처럼 그 탭에서 고른 계정(Bitcoin은 그 계정의 안정 주소, 목적이 받는 형식일 때)을 기본으로 고른다. 기존 grant가 있으면 그 계정, 서명할 수 없는 계정(백업 확인 전·공장 기본 PIN)은 서명할 수 있는 다른 계정이 있으면 기본이 아니다.
 - 해제: `sol_disconnect`·`btc_disconnect`, 연결된 사이트 화면([04] §2.9)의 `연결 해제`. 그 계열의 대기 서명 항목만 `Revoked`. 잠김 중 해제는 디스패처가 (origin, 계열)을 메모리에 기억해(중복 없이 최대 1,024개, 넘치면 가장 오래된 것부터 버림) 잠금 해제 때 meta grant를 읽은 직후·계정 이벤트 전에 적용하고 meta를 쓴다. grant를 읽고 잠금 해제 상태가 되기 전 순간에 온 해제는 읽힌 grant에 바로 적용한다.
@@ -715,6 +721,16 @@ dApp 요청으로 띄운 잠금 해제 창을 `나중에`로 닫으면 `UNLOCK_P
 `InvalidTxParams` 문구(정본 `yw_core::policy::TxRule::message`, 모두 `Invalid params: `로 시작하는 ASCII ≤ 256자, 요청의 값은 넣지 않음, 2026-11-11): `expected exactly one transaction object.` · `unsupported key "<k>".`(k가 바이너리에 든 알려진 키 `UnsupportedTxKey`일 때만: `authorizationList` `blobVersionedHashes` `blobs` `maxFeePerBlobGas` `sidecars` `commitments` `proofs` `kzg` `customData` `ccipReadEnabled` 등) · `unsupported transaction key.`(그 밖 키, 이름을 되풀이하지 않음) · `"<field>" is not a hex quantity.`/`is not hex bytes.`/`is not a valid address (…).`/`is not a valid access list (…).` · `"from" is required.` · `"to" is required.` · `"to" must not be null (contract deployment is not supported).` · `transaction type is not supported (only 0 and 2).` · `gas exceeds 16777216.` · `"gas" and "gasLimit" differ.` · `"data" and "input" differ.` · `transaction data exceeds 131072 bytes.` · `chainId does not match the site's network.` · `nonce does not match the account's next nonce.`([03] §3.7 단계 4, 준비 중 창을 닫을 때) 앱 로그 `request.error`에는 같은 규칙의 단어(`rule=key_authorizationList`, `rule=gas_cap`, `rule=chain_id` 등)를 더한다.
 
 `eth_sendTransaction`의 dApp 응답(D15–D16, 상황별 매핑은 [03](03-evm.md) §11.6): 시뮬레이션 결과(성공·revert·RPC 오류·시간 초과·응답 이상·`simulation = unsupported`)는 승인 창의 경고와 고위험 확인에만 영향을 주고 **어떤 오류 코드로도 바꾸지 않는다**. 결과는 승인 → tx hash(브로드캐스트 결과가 불확실해도 hash), 확정적 브로드캐스트 거부 → -32603 `BroadcastFailed`, 거부·창 닫기·잠금(D16 차단 창 포함) → 4001, 창 표시 후 120 s → 4001 `Request expired.`, 요청 기한 → -32603 `Request timed out.`, 창 없는 사전 거부(§3.3–3.4, [03] §11.6) → -32602·4100·-32002 중 하나, 승인 전 사용자 체인 삭제 → 4901(§4.3)이다.
+
+Solana dApp 거래(§3.6, D38, [07] §20)의 응답. **새 `ProviderError` 변형은 없다**(위 표 그대로, R-ERR 표 24개 유지):
+
+- -32602 `InvalidParams`: 바이트 형식 오류(16진수·길이·[07] §20.2 파서), 버전 `0x81` 이상, `publicKey`가 서명자가 아님, `chain` ≠ settings 클러스터, durable nonce 거래의 전송, 전송인데 다른 필요 서명이 빠짐, 최상위 명령 64개 초과, 거래 32건 초과, `options` 형식 오류.
+- 4100 `Unauthorized`: grant 없음·다른 계정, 대기 중 연결 해제(`Revoked`), 서명한 바이트·전송 서명을 돌려주기 직전의 grant 재확인 실패(바이트는 버린다; 전송은 이미 저널에 있으므로 계속 전송되고 활동에 보인다). 백업 확인 전 키는 `BackupUnconfirmed`(§4.9).
+- 4901 `ChainUnavailable`: Solana 엔드포인트 없음(preflight, 창 없음).
+- -32002 `TransactionPending`: (클러스터, 서명 계정)의 Pending dApp 전송 기록이 이미 16건(D20 예외 상한).
+- -32603 `BroadcastFailed`: 서명 직전 블록해시 만료, 조회 테이블이 바뀜(`TablesChanged`), 결정적 preflight 오류([07] §15.3 1–6·9), RPC 이상값, 제네시스 불일치, 첫 라운드 전 만료. 일시 오류(시간 초과·`BlockhashNotFound`·상태 조회 실패)는 서명을 돌려주고 재전송을 이어 간다.
+- -32603 `Internal`: 서명·저널 쓰기 실패, 앱 응답이 provider 확인(§2.13: 서명 슬롯 하나만 바뀜)을 통과하지 못함.
+- 4001 `UserRejected`·`Expired`: 거부, 120 s 만료, 잠금(서명 전 대기 포함). 잠금 때 이미 저널에 기록된 전송은 4001이 아니라 그 서명으로 답한다([07] §20.8).
 
 ---
 
@@ -808,8 +824,8 @@ D23: 요청 기한은 읽기 60 s, 연결·서명 600 s(잠금 해제·승인 �
 ```rust
 // yw-core src/policy (플랫폼 독립, 시간·I/O 없음)
 pub enum Route { Permission, Read, Signing }
-pub enum Method { /* §3.1·§3.6의 37개 */ }
-impl Method { pub const ALL: [Method; 37]; pub fn parse(s: &str) -> Option<Method>;
+pub enum Method { /* §3.1·§3.6의 40개 */ }
+impl Method { pub const ALL: [Method; 40]; pub fn parse(s: &str) -> Option<Method>;
               pub fn as_str(self) -> &'static str; pub fn route(self) -> Route; }
 pub struct BrowserOrigin(/* §4.7 정규 문자열 */);
 impl BrowserOrigin { pub fn parse(s: &str) -> Option<Self>; pub fn is_http(&self) -> bool /* §4.6 토글 */; pub fn as_str(&self) -> &str; }
@@ -1094,7 +1110,7 @@ yw-host는 자기와 같은 폴더의 yw-app을 실행하므로 yw-app은 등록
 | C2 | 〃 | port 끊김 → pending 4900, IDLE. 다음 요청이 재연결해 성공 |
 | C3 | 〃 | `isContextValid() === false` → DEAD, page `disconnect` 1회, 이후 4900 "Wallet extension was reloaded." |
 | C4 | 〃 | `pagehide` 후 IDLE(DEAD 아님), 5 s 연결 시간 초과, 250 ms 재연결 간격, 미허용 메서드(`wallet_addEthereumChain` 포함)는 연결 없이 4200 |
-| C6 | 〃 (§2.13) | `btcCompatMode = "off"`: `btc_requestAccounts`·`btc_getAccounts`·`btc_getNetwork`·`btc_signMessage`·`btc_disconnect`는 연결 없이 4200; `solCompatMode = "off"`의 `sol_connect`는 그대로 전달(`compatMode` 없음); `unisat`·`xverse`는 `btc_*` 전달 |
+| C6 | 〃 (§2.13) | `btcCompatMode = "off"`: `btc_requestAccounts`·`btc_getAccounts`·`btc_getNetwork`·`btc_signMessage`·`btc_disconnect`는 연결 없이 4200; `solCompatMode = "off"`의 `sol_connect`·`sol_signTransaction`은 그대로 전달(`compatMode` 없음), `phantom`이면 `compatMode: "phantom"`으로 전달; `unisat`·`xverse`는 `btc_*` 전달 |
 | C5 | 〃 (§2.12) | `bridge-init`에 문서 모드, content→bg `request`에 호환 모드일 때만 `compatMode`(background 파서가 그대로 수락), 페이지 요청의 `compatMode` 키는 거부, 잘못된 모드로 `ContentBridge` 생성 시 TypeError; `loadCompatMode`: 유효 값 그대로, 없음·대소문자 다름·숫자·null·객체 아님 → `off`, 거부·예외 → `off`, 응답 없음 → 3 s에 `off`·늦은 응답 무시 |
 | E1 | `tests/compat-delivery.test.mjs`(신규) | 실제 `provider-main.js`(MAIN)와 `shared.js`·`content-core.js`·`content.js`(ISOLATED)를 두 VM world + 공유 postMessage로 실행: `chrome.storage.local.get("compatMode")` = metamask → 저장소 응답 전에는 기본 플래그·알림 없음 → 응답 후 MetaMask 알림 1개·`isMetaMask` true → `window.ethereum.request(eth_requestAccounts)` → content port 요청 `compatMode` → `BackgroundRouter` native 봉투 `context.compatMode = "metamask"`, `topOrigin` = sender origin, 10개 키 → 응답이 페이지까지 돌아옴 |
 | E2 | 〃 | 저장소 거부·`"MetaMask"` 값·예외 → 기본 신원, port 요청·봉투 context에 `compatMode` 없음(9개 키) |
@@ -1103,7 +1119,7 @@ yw-host는 자기와 같은 폴더의 yw-app을 실행하므로 yw-app은 등록
 | B2 | 〃 | 토큰 버킷: 81번째 즉시 요청 -32005, 1 s 뒤 회복 |
 | B3 | 〃 | 중복 pending id는 무시되고 activation 유지(261, 515 반전). 형식 오류 메시지가 activation을 끊지 않음 |
 | B4 | 〃 | native 프레임 오류·순번 건너뜀·`accountsChanged` 주소 17개 → native만 끊기고 pending 4900, activation 유지, 다음 요청이 새 세션으로 재연결. 주소 16개는 전달 |
-| B5 | 〃 | 기한 타이머: `eth_blockNumber` 60 s·`personal_sign` 600 s(봉투 `deadlineUnixMs`도 같은 값) → content에 -32603, native `cancel`이 `v1-cancel.golden.json` 형태 |
+| B5 | 〃 | 기한 타이머: `eth_blockNumber` 60 s·`personal_sign`·`sol_signAndSendTransaction` 600 s(봉투 `deadlineUnixMs`도 같은 값) → content에 -32603, native `cancel`이 `v1-cancel.golden.json` 형태 |
 | B6 | 〃 | native 끊김 후 backoff: 답 없이 끊기거나 `NATIVE_QUICK_UNAVAILABLE_MS` 뒤에 4900만 답한 연결 반복 시 1 s, 2 s, 4 s… 30 s 상한, 그동안 로컬 4900 "Wallet is unavailable."; 그 시간 안에 4900을 답하고 끊긴 연결은 몇 번이든 1 s 뒤 재연결(지수 구간 뒤에도 1 s로 복귀), `nativeStatus()`는 `unavailable` |
 | B7 | 〃 | `deriveSenderContext`: §2.4 표 전부 |
 | B8 | 〃 (§2.12) | content `compatMode` → 그 요청 봉투 `context.compatMode`만(activation context 불변, 기본 모드 9개 키), `"off"`·모르는 값·null·숫자는 무시(형식 오류); `nativeStatus()`: 처음 `unknown` → 요청 중 `checking` → 응답 `connected` → 정상 연결 종료 `unknown` → 4900만 받고 끊김 `unavailable`, 상태 조회가 native를 열지 않음; `popupStatusMessage` 형식; `isPopupSender`: 팝업 페이지만 허용, 탭·다른 확장·다른 페이지·웹 페이지 거부 |
@@ -1112,6 +1128,9 @@ yw-host는 자기와 같은 폴더의 yw-app을 실행하므로 yw-app은 등록
 | PO2 | 〃 | `popup.html`: `lang="ko"`, module script 하나(`../src/popup.js`), 인라인 코드·스타일·원격 URL 없음, `popup.js`가 쓰는 id가 모두 있음. `popup.css`: 라이트 전용(`prefers-color-scheme`·`@font-face` 없음), §2.12 모양의 토큰 값, ok → 성공·bad → 고위험·경고 → 주의 색 |
 | PO3 | 〃 | 가짜 DOM·`chrome`으로 `popup.js` 실행: 모드마다 카드(`label.mode` > 라디오 + 이름·한 줄 설명), 저장된 모드 선택 표시, 계열 경고는 모드가 `off`가 아닐 때만 보임(Bitcoin `off` → 숨김, `xverse` 선택 → 보임·`btc-saved`에 저장 문구), MetaMask 선택 시 `chrome.storage.local.set({ compatMode: "metamask" })`·저장 문구, 팝업 port `your-wallet-popup-v1`의 `connected` → "연결됨" 후 port 닫음 |
 | PO4 | 〃 (2026-11-11) | 저장소·background가 답하기 전(모듈 평가 직후)에 `localStorage`의 지난 모드·상태로 카드 선택·경고·`metamask-note`·상태 알약("지난번에 확인한…")이 그려짐, 그 사이 사용자가 바꾼 계열은 늦은 저장소 값이 덮지 않음, 저장소 값으로 다른 계열 갱신·캐시 갱신, 실제 상태 답이 오면 바꾸고 기억; 캐시 파서는 키·값이 틀리면 무시 |
+| S9 | `tests/shared.test.mjs` (2026-11-12) | `sol_signTransaction`·`sol_signAllTransactions`·`sol_signAndSendTransaction`의 route는 `"signing"`, 계열 `sol`. `sol_signAndSendAllTransactions`와 `btc_signPsbt` 등 Bitcoin 거래 메서드는 `null`(허용 표 밖). S1 개수: 허용 40, `rejected` 35 |
+| P13 | `tests/provider-main.test.mjs` (Wallet Standard 거래, 2026-11-12 재작성) | features에 `solana:signTransaction`·`solana:signAndSendTransaction`, 둘 다 `["legacy", 0]`; 입력 1개의 정확한 와이어 JSON, 입력 3개 → `sol_signAllTransactions` 한 번; 입력의 `options`·`chain: undefined` 키 허용; 다른 계정 → 4100·전송 0; 잘못된·섞인 `chain` → -32602; 33개·1,233 B·서명 수 0 → 로컬 -32602; 메시지 바이트·길이를 바꾸거나 슬롯 두 개를 바꾼 앱 응답 → -32603; 전송 옵션 정규화(`{preflightCommitment:"singleGossip", skipPreflight:true, maxRetries:undefined, mode:"parallel", foo:1}` → `{preflightCommitment:"confirmed", skipPreflight:true}`), `minContextSlot:-1` → -32602; signAndSend 입력 2개는 순서대로 전송, 두 번째 실패 → 첫 서명을 `data.signatures`에 담아 거부 |
+| P14 | 〃 (Phantom 거래, 2026-11-12 재작성) | 가짜 `Tx`·`VTx` 페이지 클래스(`vm.runInContext`): `signTransaction`이 페이지 클래스 인스턴스를 돌려주고 legacy serialize 옵션이 기록됨; signAll은 요청 하나; signAndSend는 base58 `{signature, publicKey}`; serialize가 던지면 -32602·전송 0; 미연결 → 4100; `request({method:"signTransaction", params:{transaction}})`; `params.message`(bs58)는 0 슬롯 n개로 감싸 `{publicKey, signature}`를 돌려줌. M01 짝: 거래 모양 바이트의 `signMessage`는 `sol_signMessage`만 보낸다 |
 | P17 | `tests/provider-main.test.mjs` (2026-11-11) | MetaMask 모드: `metamask-multichain-provider` 요청(정수·문자열 id)에 즉시 4200 답(정확한 모양, `targetOrigin`), wire 요청 0, 콘솔 경고 1회; 알림·`metamask-provider` substream·이상한 id·다른 origin·`metamask-inpage` 대상은 무시; Rabby·기본 모드와 실제 MetaMask 알림(모드 확정 전·후)이 있는 페이지는 답하지 않음 |
 | P18 | 〃 | 호환 모드의 `metamask_getProviderState` = `eth_accounts`·`eth_chainId`·`net_version` 세 요청으로 `{ accounts, chainId, isUnlocked, networkVersion }`, 오류는 그대로 거부; 기본 모드는 와이어로 그대로 |
 | N1 | `tests/native-contract.test.mjs`(갱신) | request·cancel 골든과 바이트-필드 일치, response·event·unavailable 골든을 받아 올바르게 전달, `validateNativeManifest` + 템플릿은 항상 무효 |
@@ -1144,6 +1163,7 @@ H1을 위해 yw-host는 **debug 빌드에서만**(`cfg!(debug_assertions)`) 환�
 | R-D4 | 〃 | origin당 승인 17번째·전체 65번째 → -32005, 연결 창 중복 → -32002 |
 | R-D5 | 〃 | `eth_getLogs` 태그 해석(§3.4, 가짜 RPC·시계): 캐시 12 s 이내면 `eth_blockNumber` 호출 0회, 12,001 ms 경과 또는 캐시 없음이면 1회 후 범위 검사, 둘 다 태그면 0회, `eth_blockNumber` 실패 → 4901, 전달된 params의 태그가 그대로임, 검사는 read 워커에서 실행(reader 스레드는 블록되지 않음) |
 | R-G1 | yw-app 권한 | grant 생성·해제·잠금·해제 시 이벤트 순서와 대상 문서, 잠김 동작 표(§4.4), 체인 캐시 병합 규칙(§4.3). 캐시에 없는 origin: `evmChainId` = 1이면 잠김·해제 모두 `eth_chainId` `"0x1"`, 그 뒤 `evmChainId`를 11155111로 바꿔도 같은 origin은 `"0x1"`·`chainChanged` 없음, 새 origin은 `"0xaa36a7"`. `BackupPending`에서 `eth_requestAccounts`·`personal_sign` → 4100. 확인되지 않은 passphrase 세션(`VaultView::PassphraseUnverified`)에서 연결·서명 5종 → 4100 `PassphraseUnverified`(창 없음), `eth_accounts` `[]`·`eth_chainId`·읽기는 정상. 한도(§4.1): 계정 16개 선택 → `연결` 활성·grant 저장·`accountsChanged` 16개, 17개 선택 → `연결` 비활성(grant 검증 함수도 17개 거부). grant 256개 → 기존 origin 재연결은 정상, 새 origin은 창 없이 4100 |
+| R-SOLTX | yw-app 디스패처·preflight (2026-11-12, `tests/browser_chain_dispatch.rs`·`app_chain_sites.rs`·`app_browser.rs`) | Solana 거래 3종: grant 없음 → 4100, grant → `SiteKind::SolTx`가 바이트·모드·batch·옵션과 함께 큐에 들어감, 다른 origin → 4100, params·`chain` 불일치 → -32602, 호환 모드 계열 규칙. preflight: `Revoked`, 백업·카드 게이트, 엔드포인트 없음 4901, Pending 16건 -32002. 응답: `chain_answer_value` 한 건·여러 건, `ChainAnswer::SolTx` 대기자의 `browser_sign_cancelled` → 4001, 응답 전 grant 해제 → 4100·바이트 없음, 전송 대기자는 첫 라운드·preflight 오류·만료·**잠금(서명으로 답함)**에 한 번 답함. Bitcoin 거래 메서드는 계속 4200(`btc_transaction_methods_are_unsupported`) |
 | R-G2 | yw-app 체인(§4.3, 가짜 레지스트리·체인 상태·RPC) | 사용자 체인(예 8453) 등록 후 `wallet_switchEthereumChain` `0x2105` → `null`, 그 origin 문서에만 `chainChanged("0x2105")`, `eth_chainId` `"0x2105"`·`net_version` `"8453"`, 연결·해제 상태면 grant `chain_id` 8453 저장, 같은 체인 재전환은 이벤트 없음. 내장 999 → `"0x3e7"`. 전환 후 read는 그 체인 엔드포인트(`rpc:eip155:<chainId>` URL)로만 전달. 차단 체인(`RpcMismatch`) 전환 → 4901, 캐시·grant·이벤트 불변, 상태 초기화 후 같은 전환 성공. `Unverified`·엔드포인트 없음 체인(`rpc:eip155:<chainId>` URL 없음, 템플릿 자격 정보만 있어도 같음)은 전환 성공 후 read 4901이고 RPC 호출 0회. 미등록 `0x89`·`0x0` → 4902. `wallet_addEthereumChain`(미등록·등록 chainId params 모두) → 4200(§6.2 6단계), 레지스트리 불변, 이어서 미등록 chainId 전환은 여전히 4902. 잠김: 전환은 캐시만 바꾸고 해제 시 grant 병합·`chainChanged`. 사용자 체인 삭제 → 그 체인 origin에 `chainChanged(evmChainId)`, 승인 전 signing 4901, 잠긴 동안 삭제된 grant 체인은 해제 시 `evmChainId`로 교체. 전환 판정 중 RPC 호출 0회 |
 
 ### 10.3 공유 골든 (`extension/native-host/`)
@@ -1154,7 +1174,7 @@ H1을 위해 yw-host는 **debug 빌드에서만**(`cfg!(debug_assertions)`) 환�
 | `v1-response-result.golden.json` | 신규(§6.1) | N1, R-E2 |
 | `v1-unavailable-response.golden.json` | 메시지를 `"Wallet is unavailable."`로 변경 | N1, R-H2 |
 | `v1-event.golden.json` | 신규(§6.1) | N1, R-E2 |
-| `v1-methods.golden.json` | 신규: `{ "permission": [9개], "read": [15개], "signing": [3개], "rejected": [§3.2] }`, 각 배열은 §3.1·3.2 순서 | S1, R-M1 |
+| `v1-methods.golden.json` | `{ "permission": [16개], "read": [15개], "signing": [9개], "rejected": [§3.2의 35개] }`, 각 배열은 §3.1·§3.6·§3.2 순서(Solana 거래 3개는 2026-11-12 `rejected`에서 `signing`의 `sol_signIn` 뒤로) | S1, R-M1 |
 | `v1-limits.golden.json` | 신규(아래) | S2, R-J1 |
 | `pipe-hello.golden.json`, `pipe-hello-ack.golden.json` | 신규(§8.2, ID 자리에 `abcdefghijklmnopabcdefghijklmnop`) | R-P1 |
 
@@ -1178,6 +1198,7 @@ response 프로필 사례: `array` n=262,141 ok, n=262,142 거부(nodes 262,145.
 6. `chrome://serviceworker-internals`에서 worker 중지 후 새로고침 없이 다음 요청 성공. 잠금·해제·연결 해제 시 `accountsChanged`. localhost 토글 꺼짐 → 4100.
 7. `chrome://flags#launch-windows-native-hosts-directly` 켬·끔 각각에서 1–2 반복.
 8. 호환 모드(§2.12): 팝업 상태·모드 저장, 모드마다 test-dapp C01–C05와 실제 MetaMask 전용 Sepolia dApp(연결·SIWE), 실제 MetaMask·Rabby를 끈 상태와 켠 상태 각각. 판정 절차는 [09](09-testing.md) §5.6 M5-15–M5-20.
+9. Solana dApp 거래(2026-11-12, D38, 판정 정본 [09](09-testing.md) M7-10 이후): devnet에서 wallet-adapter 데모(legacy·v0), v0+ALT 스왑(skipPreflight 포함), test-dapp의 다른 수수료 지불자 부분 서명, signAll ×3, signAndSend 착지와 활동 표시, durable nonce 서명만, YubiKey signTransaction(3회 터치)·signAndSend, Phantom 모드 사이트(`message` 형식 포함), 전송 중 잠금(서명 응답, 잠금 해제 뒤 재개), `signMessage`로 보낸 거래 바이트 → M01 차단.
 
 ---
 

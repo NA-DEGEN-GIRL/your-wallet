@@ -950,7 +950,10 @@ SIWE 표시 필드: 도메인, 주소, 설명(statement), URI, 체인 ID, nonce,
 ```rust
 #[repr(u8)] pub enum RiskLevel { Info = 0, Caution = 1, High = 2, Blocked = 3 }   // 정보 / 주의 / 고위험 / 차단
 pub struct Warning { pub rule: RuleId, pub level: RiskLevel, pub text: String }   // 경고별 체크 없음(D16)
-pub struct RuleId(pub u16);   // 상위 바이트 = 'E'(0x45)·'T'(0x54)·'P'(0x50)·'S'(0x53) EVM, 'L'(0x4C) SOL([07] §13.3), 'B'(0x42) BTC([08] §10); 하위 = 번호
+pub struct RuleId(pub u16);   // 상위 바이트 = 'E'(0x45)·'T'(0x54)·'P'(0x50)·'S'(0x53) EVM, 'M'(0x4D) 메시지 서명(SOL·BTC, [07] §19.2·[08] §17), 'W'(0x57) SIWS([07] §19.4),
+                              // 'H'(0x48) HyperCore([11] §6), 'C'(0x43) WalletConnect([13]), 'X'(0x58) Solana dApp 거래([07] §20.6, 2026-11-12),
+                              // 'L'(0x4C) SOL 보내기([07] §13.3), 'B'(0x42) BTC([08] §10), 'Z'(0x5A) ZEC([12]); 하위 = 번호.
+                              // 중앙 표 `evm/risk/rules.rs`: E·T·P·S·M·W·H·C·X. L·B·Z는 각 체인 모듈의 상수
 ```
 
 | 등급 | 승인 조작([04](04-app-ui.md) §3.4) |
@@ -1092,10 +1095,15 @@ pub enum ChainRef {                                   // chain_tag(§11.4)
 pub enum AccountRef { Evm(Address), Sol([u8; 32]) /* from 공개키 */,
     Bitcoin([u8; 33]) /* 계정 공개키 m/84'/c'/0' = [08] §12.3 account_pubkey */ }
 #[repr(u8)] pub enum ApprovalKind { EvmTransaction = 0x10, EvmSpeedUp = 0x11, EvmCancel = 0x12,
-    EvmPersonalSign = 0x13, EvmTypedData = 0x14, SolTransfer = 0x20, BtcSend = 0x30, BtcFeeBump = 0x31,
-    HyperCoreAction = 0x40 /* [11] §6, 2026-11-06 */ }
+    EvmPersonalSign = 0x13, EvmTypedData = 0x14, SolTransfer = 0x20,
+    SolMessage = 0x21, SolSignIn = 0x22 /* [07] §19 */, SolTransaction = 0x23 /* [07] §20, 2026-11-12 */,
+    BtcSend = 0x30, BtcFeeBump = 0x31, BtcMessage = 0x32 /* [08] §17 */,
+    HyperCoreAction = 0x40 /* [11] §6, 2026-11-06 */, ZecSend = 0x50 /* [12] */ }
+// is_chain_message() = SolMessage·SolSignIn·BtcMessage. is_sol_transaction() = SolTransaction(체인 메시지가 아니다)
 pub enum SigningPayload { EvmTx(Eip1559Tx), EvmPersonal(Vec<u8>), EvmTypedData([u8; 66]),
     SolTransfer(SolTransferIntent), Btc(Vec<u8>),
+    SolMessage(Box<SolMessagePayload>) /* [07] §19.1 */, BtcMessage(Box<BtcMessagePayload>) /* [08] §17 */,
+    SolTx(Box<SolTxPayload>) /* [07] §20.6, 2026-11-12 */, Zec(Vec<u8>) /* [12] */,
     HyperCore(Box<HcAction>) /* 서명 = 작업의 EIP-712 preimage, digest 바이트는 [11] §6 */ }    // 서명 대상 바이트는 §11.4 표
 pub enum Signer { Evm(EvmKeySource) /* [02] §10.3 */, FromPayload /* SOL intent source, BTC 입력별 경로 */ }
 pub struct ApprovalDisplay { pub title: String, pub fields: Vec<DisplayField>, pub warnings: Vec<Warning>,
@@ -1106,7 +1114,7 @@ pub struct SimBinding { pub number: u64, pub parent_hash: [u8; 32], pub timestam
 #[repr(u8)] pub enum SimNoneReason { Unsupported = 1 /* E36 */, Transport = 2, Timeout = 3, RateLimited = 4,
     RpcError = 5, Malformed = 6, TooLarge = 7, Skipped = 8 /* 차단으로 단계 8 전에 멈춤 */ }   // §6.3
 pub enum SimulationBinding {                          // sim_tag(§11.4)
-    NotApplicable,                                    // 0: 메시지·SOL·BTC
+    NotApplicable,                                    // 0: 메시지·SOL(dApp 거래 포함, 시뮬레이션은 표시 필드)·BTC
     Simulated { verdict: SimVerdict, block: SimBinding },   // 1: 시뮬레이션 블록 있음
     None { reason: SimNoneReason } }                  // 2: EVM 거래인데 결과 없음
 pub struct ApprovalDraft {                            // build_* 결과: 시각·digest 없음
@@ -1162,6 +1170,8 @@ critical = 승인 판단에 필요한 필드(창에서 접지 않음). volatile 
 | `0x0405`, `0x0406` | SIWS 필드(`sub_label`=필드 이름, [07] §19.4), 서명 방식(Bitcoin BIP137·BIP322 [08] §17.4, Solana 오프체인 메시지 [07] §19.2). 승인 창 라벨 `SIWS 필드`·`서명 방식`(코어가 받는 키는 모두 창 라벨이 있어야 한다: 없으면 E-UI-001로 창이 바로 닫힌다) | 예 | |
 | `0x0501`–`0x0505` | SOL([07] §13.3): 받는 주소, 자산·금액(SPL은 `sub_label` = 허용 목록 기호, v1.1), ATA 생성(SPL만), 수수료, 최대 총 차감 | 예 | |
 | `0x0506`–`0x0509` | SOL: 잔액(RPC 참고), 시뮬레이션(참고), 유효 시간, 감사(intent_hash) | | |
+| `0x0510`–`0x0516`, `0x0519` | Solana dApp 거래([07] §20.6, 2026-11-12, 거래마다 `sub_label` "거래 k/N"): 요청, 서명자·수수료 지불, 명령, 쓰기 가능한 계정, 조회 테이블(RPC), 자산·권한 변화(시뮬레이션 참고), 수수료, 전송 방식(전송만) | 예 | |
+| `0x0517`, `0x0518`, `0x051A`, `0x0540` | Solana dApp 거래: 시뮬레이션(참고), 유효 시간, 감사(메시지 SHA-256), 원본 메시지(hex) | | |
 | `0x0601`–`0x0607`, `0x0609` | BTC([08] §10): 받는 주소, 주소 종류, 금액, 잔돈, 입력, 수수료, 총 차감, 교체 대상(`BtcFeeBump`만) | 예 | |
 | `0x0608`, `0x0640` | BTC: 승인 후 잔액, 고급(version·nLockTime·RBF·vsize·weight·txid) | | |
 | `0x0701`–`0x0704` | HyperCore([11] §6): 작업, 받는 주소, 토큰·금액, 수수료 | ✓ | |
@@ -1211,6 +1221,7 @@ digest = SHA-256(T)
 | `EvmPersonal` | EIP-191 preimage 전체 |
 | `EvmTypedData` | 66바이트 `0x19 0x01 ‖ domainSeparator ‖ hashStruct` |
 | `SolTransfer` | [07] §13.2 intent transcript 바이트 전체(그 SHA-256 = `intent_hash`) |
+| `SolTx` | [07] §20.6 transcript `"your-wallet/v3/sol-tx"` v1: 출처 태그·인자(태그 8이면 니모닉 record id), 공개키, 모드, 전송 옵션(skipPreflight, commitment, minContextSlot), 거래 수, 거래마다 wire 바이트(사이트 서명 포함)·서명자 슬롯·해석한 조회 테이블 키(writable·readonly). 시뮬레이션·실행 전 상태는 표시 필드로 `display_digest`에 들어간다 |
 | `Btc` | [08] §10 `btc_payload`(network·`unsigned_tx`·입력 금액·경로·잔돈·수수료·교체 대상; `display_digest`는 위 공통 필드로 따로 들어간다) |
 
 시험: digest 입력 중 임의 1비트를 바꾸면 digest가 바뀐다(`archive/spec-v2.4:crates/wallet-protocol/src/approval.rs:708-765` 방식).

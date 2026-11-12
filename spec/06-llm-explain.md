@@ -57,7 +57,7 @@ AI 설명은 틀릴 수 있으며 승인 판단과 위험 표시에 쓰이지 �
 
 - dApp `eth_sendTransaction`: 코어 해석 완료 **그리고** 시뮬레이션 단계 종료(D15, [03](03-evm.md) §6) 뒤. 종료 = 시뮬레이션 상태가 정해짐(§4.3 `simulation.status` 5종 중 하나: 성공, 체인 `simulation = unsupported`라 호출하지 않음, 응답 없음·오류, revert, 결과 불완전). 성공이 아니어도 요청한다(D15: 시뮬레이션은 승인을 막지 않는다). 시뮬레이션이 진행 중이면 기다린다.
 - dApp `personal_sign`(D18)·`eth_signTypedData_v4`(D17): 코어 해석 완료 뒤. 시뮬레이션 대상이 아니다.
-- 요청하지 않음: 지갑 화면에서 만든 EVM·SOL·BTC 보내기(사용자가 만든 고정 템플릿, D27), 검증에서 거부된 요청.
+- 요청하지 않음: 지갑 화면에서 만든 EVM·SOL·BTC 보내기(사용자가 만든 고정 템플릿, D27), Solana dApp 거래(`sol_signTransaction`·`sol_signAllTransactions`·`sol_signAndSendTransaction`, `ai_kind = None`, 2026-11-12 D38 — [07] §20, 미결 9), 검증에서 거부된 요청.
 - 창은 열렸지만 승인할 수 없는 요청(위험 등급 `Blocked`, 시뮬레이션 전에 막힌 `Skipped`)과 준비가 실패한 요청(`Failed`)도 요청하지 않는다. 미리 확보한 패널은 자리를 지키고 그 사실 한 줄만 보인다(구현 상태 `Skipped`, 결과 0건).
 
 ### 3.2 동작

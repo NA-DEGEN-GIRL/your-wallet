@@ -70,7 +70,7 @@ UniSat·Xverse처럼 보이는 호환 모드가 있고, 확장 없이 WalletConn
 - **EVM** — Ethereum, Arbitrum One, Base, BNB Smart Chain, Robinhood Chain, HyperEVM, Sepolia, 그리고 직접 추가한
   EVM 체인(처음 쓸 때 genesis 해시 고정). 네이티브 코인과 ERC-20 토큰(기본 목록 + 직접 추가, 숨기기),
   체인별 수수료 상한(Base L1 데이터 수수료 포함).
-- **Solana** — SOL과 허용 목록의 USDC/USDT.
+- **Solana** — SOL과 허용 목록의 USDC/USDT(지갑 앱 보내기).
 - **Bitcoin** — 네이티브 세그윗(`bc1q`, 기본), 탭루트(`bc1p`), 호환 세그윗(`3…`), 레거시(`1…`). 기본은 계정마다
   고정 주소 하나(UniSat·Xverse 방식), 원하면 받을 때마다 새 주소(HD).
 - **Zcash** — 일반(transparent) 주소만. t-주소, TEX, 통합 주소(UA)의 일반 수신자로 보낼 수 있습니다.
@@ -84,9 +84,11 @@ UniSat·Xverse처럼 보이는 호환 모드가 있고, 확장 없이 WalletConn
 - vault: Argon2id(256 MiB) + XChaCha20-Poly1305. 데이터 폴더는 현재 Windows 사용자만 접근합니다.
 
 **서명과 dApp**
-- 승인 창: 코어가 직접 해석한 내용, 시뮬레이션(`eth_simulateV1`), 위험 규칙, 1회용 승인, 1초 대기·2초 누르기.
-- Chrome 확장: EVM은 EIP-1193/EIP-6963, Solana는 Wallet Standard, Bitcoin은 UniSat·Xverse 방식. Solana·Bitcoin dApp은
-  연결과 **메시지 서명(소유 증명)만** 됩니다.
+- 승인 창: 코어가 직접 해석한 내용, 시뮬레이션(EVM `eth_simulateV1`, Solana `simulateTransaction`), 위험 규칙,
+  1회용 승인, 1초 대기·2초 누르기.
+- Chrome 확장: EVM은 EIP-1193/EIP-6963, Solana는 Wallet Standard, Bitcoin은 UniSat·Xverse 방식. Solana dApp은 연결,
+  메시지 서명, **거래 서명·전송**(legacy·v0, 모든 프로그램 — 해석하지 못한 프로그램은 강한 경고)까지 됩니다.
+  Bitcoin dApp은 연결과 **메시지 서명(소유 증명)만** 됩니다.
 - WalletConnect v2(EVM): `wc:` 링크를 붙여넣거나 스크린샷의 QR을 읽어 연결.
 - 선택 기능: AI가 요청을 설명(OpenAI·Claude·OpenRouter·로컬 모델, 내 API 키; 판단은 하지 않음).
 
@@ -95,7 +97,7 @@ UniSat·Xverse처럼 보이는 호환 모드가 있고, 확장 없이 WalletConn
 - EVM 체인이 같이 쓰는 주소록과 즐겨찾기, 15초 잔액 갱신(창이 숨겨지면 멈춤).
 - QuickNode 주소 하나로 모든 체인 RPC 설정, 지갑 초기화(파일을 지우지 않고 옆으로 옮김).
 
-**하지 않는 것:** Windows 11 외 OS·모바일, 앱 안의 스왑·트레이딩, Solana·Bitcoin dApp의 거래 서명, Zcash 차폐 주소.
+**하지 않는 것:** Windows 11 외 OS·모바일, 앱 안의 스왑·트레이딩, Bitcoin dApp의 거래 서명, Zcash 차폐 주소.
 RPC는 직접 준비해야 합니다(QuickNode·Alchemy 무료 플랜으로 충분).
 
 ## 설치
@@ -212,7 +214,7 @@ See the images above and the full [screen tour](docs/screenshots/README.md) (Kor
 - **EVM** — Ethereum, Arbitrum One, Base, BNB Smart Chain, Robinhood Chain, HyperEVM, Sepolia, plus any EVM chain you
   add (genesis hash pinned on first use). Native coins and ERC-20 tokens (built-in list + your own, hide/show), per-chain
   fee caps (Base L1 data fee included).
-- **Solana** — SOL and allow-listed USDC/USDT.
+- **Solana** — SOL and allow-listed USDC/USDT (sends from the wallet app).
 - **Bitcoin** — native segwit (`bc1q`, default), taproot (`bc1p`), nested segwit (`3…`) and legacy (`1…`); one fixed
   address per account by default (UniSat/Xverse style) or a new address per receive (HD).
 - **Zcash** — transparent addresses only (send to t-addr, TEX and the transparent receiver of a unified address).
@@ -226,10 +228,12 @@ See the images above and the full [screen tour](docs/screenshots/README.md) (Kor
 - Vault: Argon2id (256 MiB) + XChaCha20-Poly1305; the data folder is locked to the current Windows user.
 
 **Signing and dApps**
-- Approval windows: the core's own decoding, simulation (`eth_simulateV1`), risk rules, one-shot approvals, 1 s arm
-  delay and 2 s hold.
-- Chrome extension: EIP-1193/EIP-6963 for EVM, Wallet Standard for Solana, UniSat/Xverse styles for Bitcoin. Solana and
-  Bitcoin dApps can connect and request **message signatures only** (proof of ownership).
+- Approval windows: the core's own decoding, simulation (EVM `eth_simulateV1`, Solana `simulateTransaction`), risk
+  rules, one-shot approvals, 1 s arm delay and 2 s hold.
+- Chrome extension: EIP-1193/EIP-6963 for EVM, Wallet Standard for Solana, UniSat/Xverse styles for Bitcoin. Solana
+  dApps can connect, request message signatures and **sign or send transactions** (legacy and v0, any program; programs
+  the wallet cannot decode get strong warnings). Bitcoin dApps can connect and request **message signatures only**
+  (proof of ownership).
 - WalletConnect v2 (EVM): paste a `wc:` link or read the QR from a screenshot.
 - Optional AI explanation of a request (OpenAI, Claude, OpenRouter or a local model, your own API key; it never decides).
 
@@ -238,7 +242,7 @@ See the images above and the full [screen tour](docs/screenshots/README.md) (Kor
 - An address book shared by all EVM chains, favourites, balances refreshed every 15 s (paused while the window is hidden).
 - RPC for every chain from one QuickNode URL; wallet reset that moves files aside instead of deleting them.
 
-**Not included:** other OSes or mobile, swaps or trading inside the app, transaction signing for Solana/Bitcoin dApps,
+**Not included:** other OSes or mobile, swaps or trading inside the app, transaction signing for Bitcoin dApps,
 Zcash shielded addresses. You bring your own RPC (QuickNode or Alchemy free plans are enough).
 
 ### Install

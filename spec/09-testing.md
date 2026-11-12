@@ -96,7 +96,8 @@
 | `sol_base58` | `codec::base58::base58_decode_32`(07 §5) | Ok → 인코드 == 입력 | 64 | 07 §17.2 |
 | `sol_shortvec` | `sol::shortvec::decode`(07 §6) | Ok → 인코드 == 소비한 바이트 | 8 | §3.9 표 |
 | `sol_tx` | `parse_transaction`(07 §9) | Ok → 재인코딩 == 입력 | 1,232 | T_SOL·T_SPL 골든 |
-| `sol_journal` | `journal::sol` 본문 디코더(07 §14.1 SOL body, 02 §5.4 `kind 0x02` entry의 body만) | 패닉 없음 | 2,048(02 §5.4 SOL 최대 본문보다 큼) | 왕복 테스트 출력 |
+| `sol_dapp_tx` | `sol::dapp::parse_wire_tx`·`parse_message_any`(07 §20.2, 2026-11-12) | 패닉 없음. Ok → 재인코딩 == 입력, `msgsign::looks_like_transaction` 참(M01 불변식) | 1,232 | 07 §20 legacy·v0(테이블 2개) 벡터, T_SOL·T_SPL 골든을 감싼 거래 |
+| `sol_journal` | `journal::sol` 본문 디코더(07 §14.1 SOL body, 02 §5.4 `kind 0x02` entry의 body만) | 패닉 없음 | 2,048(02 §5.4 SOL 최대 본문 1,629보다 큼) | 왕복 테스트 출력, 레코드 버전 3(dApp 전송, 256바이트 origin·태그 8 포함) |
 | `btc_tx` | `yw_core::btc::tx` 파서(08 §6.5) | Ok → 재직렬화 == 입력, txid 결정적 | 65,536 | BIP143 거래, Core `tx_valid.json` |
 | `btc_address` | `parse_address(s, Mainnet/Testnet4)`(08 §6.3) | Ok → `encode_address`가 소문자 정규형이고 재파싱이 같은 `ScriptKind` | 128 | BIP173/350·key_io |
 | `vault_header` | `peek_generation` + 디코드 1–7단계(02 §4.5) | 패닉 없음, Argon2 호출 0회 | 4,096 | §3.12 골든 |
@@ -563,6 +564,17 @@ Issued At: 2026-10-25T23:59:00Z
 | SOL-N3 | 자기 자신, small-order·비정규 점 수신자, rent0 미만 새 계정, 남는 잔액 0 < r < rent0, 제네시스 불일치 / 곡선 밖(off-curve) 수신자 | 차단 / 곡선 밖은 고위험 `L02`(차단 아님, 07 §12.1-6: PDA·토큰 계정일 수 있음) | 07 §11–§15 |
 | SOL-N4 | 공개 절반이 다른 64바이트 keypair | `from_keypair_bytes` 실패 | 07 §17.1 |
 | SOL-N5 | (v1.1) T_SPL 템플릿 밖(ATA Create·Transfer·Token-2022·계정·그룹·역할), 허용 목록 밖·다른 클러스터 mint, decimals 9, ATA 불일치, 곡선 밖·small-order 받는 지갑, 372바이트 각 비트 반전 / RPC가 mint decimals 9·다른 owner·81바이트 / ATA 자리에 다른 mint·owner·동결 / 모르는 토큰 | 거부(`NotAllowlisted`·`AtaMismatch`·`RecipientOffCurve` 등) / `RpcAnomaly`(메시지 decimals는 6 그대로) / `Invalid`·동결 차단 / 조회·표시 없음 | 07 §8.3, §9, §12.1-6, §15.4 |
+| SOL-N6 | (dApp 거래, 2026-11-12) 파서 음성: `0x81`·`0xff` 버전, header 부등식 각각, 키 257개, 정적 키 중복, 프로그램 인덱스 0·조회 키, 계정 인덱스 범위 밖, 빈 조회, 명령 65개, 남는 바이트, 서명 수 ≠ required, 비최소 shortvec, 1,233 B, 비트 반전 전수 | 거부 또는 동일성 실패, 받는 것은 모두 M01 | 07 §20.2 |
+| SOL-N7 | 조회 테이블: owner·판별자·길이 틀림, 257개, 인덱스 ≥ 사용 가능 길이(`last_extended_slot == current_slot`이면 `last_extended_start`), 정적·로드 키 중복 | 그 거래만 X01 차단(창은 열림) | 07 §20.3 |
+| SOL-N8 | 사이트 서명 1비트 변조 / 전송인데 다른 필요 서명 0 / 전송인데 durable nonce | X01 차단 / 파라미터 -32602 + X01 / -32602 | 07 §20.5, §20.8 |
+| SOL-N9 | 해석하지 않은 프로그램만 있는 거래 / 그 프로그램에 내 서명자·토큰 계정 | X02 고위험이지만 승인 가능 / X03 추가 | 07 §20.6 |
+| SOL-N10 | Approve·SetAuthority·Assign·Allocate·CloseAccount(내 토큰 계정), ATA 주소가 유도값과 다름 | X04–X07 고위험, ATA는 원본 + X02(차단 아님) | 07 §20.4, §20.6 |
+| SOL-N11 | 시뮬레이션 실패·결과 없음 / `BlockhashNotFound` 뒤 블록해시 바꾼 재시도 / 권한 변화 | X09 고위험 / X19 주의(nonce 거래는 재시도 없음) / X15 고위험 | 07 §20.7 |
+| SOL-N12 | 서명기: 승인과 다른 바이트, 다른 종류(`SolMessage` 승인을 `sign_txs`에, `SolTransaction` 승인을 `msgsign::sign_message`에), 우리 슬롯 밖이 바뀜 | `KindMismatch`·`EncodingMismatch`, 결과는 우리 슬롯 하나만 바뀜 | 07 §20.5 |
+| SOL-N13 | 전송 서명: 마감(20 s) 초과, 서명 전 블록해시가 승인과 다름, 테이블이 바뀜 | `DeadlineExceeded`·`EncodingMismatch`·`TablesChanged` → -32603 | 07 §20.10 |
+| SOL-N14 | 서명 전 확인: `isBlockhashValid` false / lvbh 범위 밖 / 두 호출의 commitment | `BlockhashExpired` / `RpcAnomaly` / 둘 다 `processed` | 07 §14.3, §20.10 |
+| SOL-N15 | 저널 v3: 잘못된 슬롯·내 서명·0 슬롯·플래그·nonce·origin 257바이트·비ASCII / 템플릿과 같은 v3 / Pending 17건째 / 같은 바이트 두 번 승인 | 본문 오류 / `core()` = `None` / -32002 / 레코드 하나, 둘 다 서명으로 답함 | 07 §14.1, §20.9 |
+| SOL-N16 | 응답 전 grant 해제 / 서명 전 대기 중 잠금 / 저널 뒤 잠금 / provider가 받은 응답의 메시지 바이트·슬롯 두 개 변경 | 4100·바이트 없음 / 4001 / 서명으로 답하고 잠금 해제 뒤 재개 / -32603 | 07 §20.8, §20.10, 05 §2.13 |
 | BTC-N1 | 이전 거래 금액 위조(출력 금액 1바이트 변경, txid는 원본) | `TxidMismatch`, 후보 제외 | 08 §14.2 |
 | BTC-N2 | 스크립트 불일치·vout 범위 밖·뒤 바이트·비정규 CompactSize | 각각 거부 | 08 §14.2 |
 | BTC-N3 | 기록 금액과 계획 금액 다름 | 서명 전 중단 | 08 §5 |
@@ -750,6 +762,12 @@ WETH = Sepolia `0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14`(03 §1.2, 구현 시
 - [ ] M7-7 (v1.1) 자동: SOL-N5, 07 §17.3 T_SPL 골든·PDA·ATA 벡터, 07 §17.4 SPL 항목(`sol::tests_spl`, `sol::token`, `tests/sol_spl_flow.rs`, `tests/sol_journal_worker.rs` SPL 사례), 퍼징 시드에 T_SPL 골든.
 - [ ] M7-8 (v1.1) §2.5 SOL 라이브에 SPL 항목: mint 확인(owner·82바이트·decimals 6), rent165, T_SPL `getFeeForMessage`, T_SPL CU 측정(새 ATA·기존 ATA 각 10회, 07 §10 bump 모델) → `SPL_TRANSFER_CU_LIMIT` 확정. 측정 전 mainnet SPL 전송 금지.
 - [ ] M7-9 (v1.1) devnet USDC E2E: 07 §17.6-8(faucet, 새 수신자 ATA 생성, 기존 ATA, 토큰 보내기 최대, 모르는 토큰 숨김, 곡선 밖 받는 주소 차단). USDT는 devnet 공식 mint가 없어 M9 mainnet 소액 체크리스트(07 미결 4).
+- [ ] M7-10 (M7.2 dApp 거래, D38) 자동: SOL-N6–N16, 07 §17.4 dApp 항목, 05 §10 S9·P13·P14·C6·B5·R-SOLTX, 04 §3.9 AP-SOLTX, fuzz-lite `fuzz_lite_sol_dapp_tx`, 키 작업자 emulator 시험(카드 서명만 3건 = 터치 3회, 카드 전송), `tests/sol_dapp_flow.rs`(서명만·전송·결정적 preflight·서명 전 만료).
+- [ ] M7-11 퍼징 `sol_dapp_tx` 600 s, `sol_journal`은 버전 3 씨앗을 더해 600 s.
+- [ ] M7-12 devnet E2E(기록 `docs/acceptance/sol-dapp-tx-<날짜>.md`): wallet-adapter 데모 legacy·v0, v0+ALT 스왑(skipPreflight 포함), test-dapp의 다른 수수료 지불자 부분 서명, signAll ×3, signAndSend 착지와 활동 행, durable nonce 서명만(전송은 -32602), 전송 직후 잠금 → 서명 응답·잠금 해제 뒤 재개, `signMessage`로 보낸 거래 바이트 → M01 차단.
+- [ ] M7-13 YubiKey(07 §20.5, 10 §5): signTransaction 거래 3건 = 터치 3회, signAndSend = PIN 뒤 서명 전 확인·터치 1회.
+- [ ] M7-14 Phantom 모드 사이트(05 §2.13): `signTransaction`·`signAndSendTransaction`의 결과 형태, 폐기된 `request({params:{message}})` 형식의 결과 `{publicKey, signature}`.
+- [ ] M7-15 mainnet: Jupiter 소액 스왑 1회(v0+ALT, 해석하지 않은 프로그램 X02 확인 후 승인).
 
 ### 5.10 M8 Bitcoin
 
