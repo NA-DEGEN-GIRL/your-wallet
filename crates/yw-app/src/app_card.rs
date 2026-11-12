@@ -550,7 +550,12 @@ impl App {
                 self.request_meta();
             }
             Err(error) => {
-                logging::info("app", "yubikey.enrol_failed", &[]);
+                match error {
+                    YubiKeyJobError::Card(card) => {
+                        logging::info("app", "yubikey.enrol_failed", &card.log_fields());
+                    }
+                    _ => logging::info("app", "yubikey.enrol_failed", &[]),
+                }
                 let mut text = job_error_text(error);
                 if matches!(
                     error,

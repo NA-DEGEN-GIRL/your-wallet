@@ -4197,16 +4197,16 @@ fn yubikey_backup_copy_removal_and_management_key() {
     h.app.yk_set_text(yk::SIG_INDEX_EDIT, "0".to_owned());
     h.app.on_command(yk::PLAN_NEXT);
     yk_pump(&mut h, &mut seen);
+    // A key card A holds is shown as such and does not stop the plan (2026-11-12; refused as
+    // `PathOnOtherCard` before).
     let preview = h.app.card.wizard.as_ref().unwrap().preview.clone().unwrap();
-    assert_eq!(
-        preview.plan,
-        Err(yw_core::yubikey::plan::PlanError::PathOnOtherCard(
-            yw_core::yubikey::plan::CardSlot::OpenPgp(yw_core::yubikey::plan::PgpKey::Sig)
-        ))
-    );
+    assert_eq!(preview.plan, Ok(()));
     h.app.on_command(yk::SAME_ACK);
-    assert!(!ctl(&h.app.items(), yk::CONFIRM_NEXT).unwrap().enabled);
-    assert!(has_text(&h.app.items(), "백업 복사본"));
+    // (`다음` itself stays off: the card on the reader is card A, already enrolled.)
+    assert!(h.app.card.wizard.as_ref().unwrap().can_continue());
+    assert!(h.app.items().iter().any(
+        |item| matches!(item, Item::Field(_, value) if value.starts_with("이미 다른 YubiKey에 있음"))
+    ));
     // The backup copy (the words are still held: no W05).
     h.app.on_command(yk::CONFIRM_BACK);
     h.app.on_command(yk::BACKUP_TOGGLE);

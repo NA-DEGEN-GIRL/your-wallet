@@ -221,6 +221,11 @@ fn scan_openpgp(
             .get(index)
             .cloned()
             .unwrap_or_default();
+        // The card's key information says the slot is empty (2026-11-12: some firmware answers
+        // READ PUBLIC KEY of an empty slot with a status other than 6A88).
+        if session.app.slot_without_key(key) == Some(true) {
+            continue;
+        }
         let public = match session.public_key(key) {
             Ok(public) => public,
             // Empty slot (or, for a key of another algorithm, nothing we can parse).

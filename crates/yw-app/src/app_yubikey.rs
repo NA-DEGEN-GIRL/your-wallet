@@ -1484,6 +1484,9 @@ impl App {
         {
             return;
         }
+        if let Err(error) = &result {
+            crate::logging::info("app", "yubikey.occupied_failed", &error.log_fields());
+        }
         wizard.occupied = Some(result.map_err(|error| error.to_string()));
         self.refresh();
     }
