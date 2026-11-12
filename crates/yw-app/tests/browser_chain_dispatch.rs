@@ -1,7 +1,9 @@
-//! Solana and Bitcoin dApp requests in the dispatcher (spec/05 §3.6, §4.9): connect and message
-//! signing only. Transaction methods are 4200, signing needs the per-chain grant of the origin,
-//! grants are forgotten while locked and come back at unlock with their events, the compat mode
-//! must match the method family, and a SIWS sign-in gets the origin's domain filled in.
+//! Solana and Bitcoin dApp requests in the dispatcher (spec/05 §3.6, §4.9): connect, message
+//! signing and Solana dApp transactions. Bitcoin transaction methods are 4200, signing needs the
+//! per-chain grant of the origin, a Solana transaction request reaches the queue with its bytes,
+//! mode and options (a `chain` other than the wallet's cluster is -32602), grants are forgotten
+//! while locked and come back at unlock with their events, the compat mode must match the method
+//! family, and a SIWS sign-in gets the origin's domain filled in.
 
 mod common;
 
@@ -13,6 +15,7 @@ use yw_core::btc::{BtcNetwork, BtcPubKey, ScriptType};
 use yw_core::policy::{
     BrowserOrigin, BtcGrant, BtcGrantAddress, BtcPurpose, ProviderError, SolGrant,
 };
+use yw_core::sol::dapp::{SolCommitment, SolTxMode};
 use yw_json::{Limits, Object, Value};
 
 const SITE: &str = "https://app.example";
@@ -76,12 +79,10 @@ fn sign_params() -> String {
 }
 
 #[test]
-fn transaction_methods_are_unsupported() -> TestResult {
+fn btc_transaction_methods_are_unsupported() -> TestResult {
     let mut h = Harness::new();
     for method in [
-        "sol_signTransaction",
-        "sol_signAllTransactions",
-        "sol_signAndSendTransaction",
+        "sol_signAndSendAllTransactions",
         "btc_signPsbt",
         "btc_sendBitcoin",
         "btc_pushTx",
@@ -171,6 +172,114 @@ fn signing_needs_the_origin_grant_and_connect_queues_a_window() -> TestResult {
     assert_eq!(single(&h, &elsewhere)?, Err(ProviderError::Unauthorized));
     let network = h.send(SITE, 1, "btc_getNetwork", json("[]"));
     assert_eq!(text(&single(&h, &network)?), "\"mainnet\"");
+    Ok(())
+}
+
+/// A legacy transaction (hex) the fixture key signs and pays for (one unknown-program
+/// instruction), with `tail` appended to the instruction data.
+fn tx_hex(tail: &[u8]) -> TestResult<String> {
+    let mut out = vec![1_u8];
+    out.extend_from_slice(&[0; 64]);
+    out.extend_from_slice(&[1, 0, 1, 2]);
+    out.extend_from_slice(&sol_public()?);
+    out.extend_from_slice(&[5; 32]);
+    out.extend_from_slice(&[7; 32]);
+    out.extend_from_slice(&[1, 1, 1, 0]);
+    out.push(u8::try_from(tail.len())?);
+    out.extend_from_slice(tail);
+    Ok(yw_core::hex::encode(&out))
+}
+
+/// spec/05 §3.6, §4.9: the three Solana transaction methods need the origin's grant of the
+/// signing key (4100 otherwise, per origin), reach the queue as `SiteKind::SolTx` with the exact
+/// bytes, mode, list flag and options, and a `chain` other than the wallet's cluster (the
+/// fixture view is mainnet) or bad params end -32602 before the queue.
+#[test]
+fn solana_transactions_need_the_grant_and_reach_the_queue() -> TestResult {
+    let mut h = Harness::new();
+    let one = tx_hex(&[1])?;
+    let sign = format!(r#"[{{"publicKey":"{SOL_KEY}","transaction":"{one}"}}]"#);
+    let refused = h.send(SITE, 1, "sol_signTransaction", json(&sign));
+    assert_eq!(single(&h, &refused)?, Err(ProviderError::Unauthorized));
+    h.core.upsert_sol_grant(sol_grant(SITE)?);
+    h.out.take();
+    h.sink.take();
+    let queued = h.send(SITE, 1, "sol_signTransaction", json(&sign));
+    assert!(h.take_response(&queued).is_empty());
+    let all = h.send(
+        SITE,
+        1,
+        "sol_signAllTransactions",
+        json(&format!(
+            r#"[{{"publicKey":"{SOL_KEY}","transactions":["{one}","{}"],"chain":"solana:mainnet"}}]"#,
+            tx_hex(&[2])?
+        )),
+    );
+    assert!(h.take_response(&all).is_empty());
+    let send = h.send(
+        SITE,
+        1,
+        "sol_signAndSendTransaction",
+        json(&format!(
+            r#"[{{"publicKey":"{SOL_KEY}","transaction":"{one}","options":{{"skipPreflight":true,"preflightCommitment":"finalized"}}}}]"#
+        )),
+    );
+    assert!(h.take_response(&send).is_empty());
+    let requests = h.sink.requests();
+    let kinds: Vec<&SiteKind> = requests.iter().map(|request| &request.kind).collect();
+    let [
+        SiteKind::SolTx {
+            public,
+            txs,
+            mode: SolTxMode::SignOnly,
+            batch: false,
+            ..
+        },
+        SiteKind::SolTx {
+            txs: listed,
+            mode: SolTxMode::SignOnly,
+            batch: true,
+            ..
+        },
+        SiteKind::SolTx {
+            mode: SolTxMode::SignAndSend,
+            batch: false,
+            options,
+            ..
+        },
+    ] = kinds.as_slice()
+    else {
+        return Err(format!("three transaction requests, got {kinds:?}").into());
+    };
+    assert_eq!(*public, sol_public()?);
+    assert_eq!(txs, &vec![yw_core::hex::decode(&one)?]);
+    assert_eq!(listed.len(), 2);
+    assert!(options.skip_preflight);
+    assert_eq!(options.preflight_commitment, Some(SolCommitment::Finalized));
+    assert_eq!(options.min_context_slot, None);
+    // Another origin has no grant; a devnet `chain` on the mainnet wallet and bad bytes are
+    // -32602 before the queue.
+    let elsewhere = h.send(OTHER, 2, "sol_signTransaction", json(&sign));
+    assert_eq!(single(&h, &elsewhere)?, Err(ProviderError::Unauthorized));
+    let devnet = h.send(
+        SITE,
+        1,
+        "sol_signTransaction",
+        json(&format!(
+            r#"[{{"publicKey":"{SOL_KEY}","transaction":"{one}","chain":"solana:devnet"}}]"#
+        )),
+    );
+    assert_eq!(single(&h, &devnet)?, Err(ProviderError::InvalidParams));
+    let garbage = h.send(
+        SITE,
+        1,
+        "sol_signTransaction",
+        json(&format!(
+            r#"[{{"publicKey":"{SOL_KEY}","transaction":"{one}00"}}]"#
+        )),
+    );
+    assert_eq!(single(&h, &garbage)?, Err(ProviderError::InvalidParams));
+    assert!(h.sink.requests().is_empty());
     Ok(())
 }
 
@@ -534,7 +643,9 @@ fn compat_mode_must_match_the_family() -> TestResult {
                 origin: SITE,
                 method,
                 params: json("[]"),
-                route: "permission",
+                // The method's own route: only the compat mode can refuse it.
+                route: yw_core::policy::Method::parse(method)
+                    .map_or("permission", |known| known.route().as_str()),
                 deadline: NOW_UNIX + 600_000,
             },
             mode,
@@ -543,6 +654,8 @@ fn compat_mode_must_match_the_family() -> TestResult {
     let cases = [
         ("sol_accounts", "phantom", true),
         ("sol_accounts", "metamask", false),
+        ("sol_signTransaction", "metamask", false),
+        ("sol_signAndSendTransaction", "unisat", false),
         ("btc_getNetwork", "unisat", true),
         ("btc_getNetwork", "xverse", true),
         ("btc_getNetwork", "phantom", false),

@@ -161,6 +161,23 @@ pub enum Validated {
         /// The validated sign-in input.
         input: Box<yw_core::sol::msgsign::SiwsMessage>,
     },
+    /// `sol_signTransaction` / `sol_signAllTransactions` / `sol_signAndSendTransaction`
+    /// (spec/05 §3.6, spec/07 §20): every transaction parses (§20.2) and has `public` in one
+    /// signer slot; a send also has every other required signature and no durable nonce.
+    SolTx {
+        /// Signing account.
+        public: [u8; 32],
+        /// The dApp's `chain` (`None`: absent); the dispatcher compares it with the cluster.
+        chain: Option<yw_core::sol::SolCluster>,
+        /// The wire transactions, in request order (one unless `batch`).
+        txs: Vec<Vec<u8>>,
+        /// Sign only or sign and send.
+        mode: yw_core::sol::dapp::SolTxMode,
+        /// `sol_signAllTransactions` (the answer is a list).
+        batch: bool,
+        /// Send options (default for sign-only).
+        options: yw_core::sol::dapp::SolSendOptions,
+    },
     /// `btc_requestAccounts`.
     BtcRequestAccounts(Vec<yw_core::policy::BtcPurpose>),
     /// `btc_signMessage`.
@@ -881,6 +898,9 @@ pub fn validate(method: Method, params: &Value) -> Result<Validated, ProviderErr
         Method::SolConnect => super::chain_params::sol_connect(values),
         Method::SolSignMessage => super::chain_params::sol_sign_message(values),
         Method::SolSignIn => super::chain_params::sol_sign_in(values),
+        Method::SolSignTransaction => super::chain_params::sol_sign_transaction(values),
+        Method::SolSignAllTransactions => super::chain_params::sol_sign_all_transactions(values),
+        Method::SolSignAndSendTransaction => super::chain_params::sol_sign_and_send(values),
         Method::BtcRequestAccounts => super::chain_params::btc_request_accounts(values),
         Method::BtcSignMessage => super::chain_params::btc_sign_message(values),
         Method::BlockNumber | Method::GasPrice | Method::MaxPriorityFeePerGas => {

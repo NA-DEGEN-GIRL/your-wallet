@@ -40,6 +40,9 @@
     "eth_signTypedData_v4",
     "sol_signMessage",
     "sol_signIn",
+    "sol_signTransaction",
+    "sol_signAllTransactions",
+    "sol_signAndSendTransaction",
     "btc_signMessage"
   ],
   "rejected": [
@@ -74,9 +77,6 @@
     "eth_getProof",
     "debug_traceCall",
     "eth_simulateV1",
-    "sol_signTransaction",
-    "sol_signAllTransactions",
-    "sol_signAndSendTransaction",
     "btc_signPsbt",
     "btc_sendBitcoin",
     "btc_pushTx",

@@ -146,6 +146,8 @@ pub enum RpcJob {
     },
     /// Solana step-2 preview.
     SolPreview(Box<PreviewJob>),
+    /// The preview of a dApp Solana transaction request (spec/07 §20.7).
+    SolDappPreview(Box<crate::sol::flow::DappPreviewJob>),
     /// Solana step-5 lookup (after approval, before signing).
     SolPreSign {
         /// Job.
@@ -201,6 +203,7 @@ impl RpcJob {
             Self::TypedFacts { .. } => "TypedFacts",
             Self::SolBalances { .. } => "SolBalances",
             Self::SolPreview(_) => "SolPreview",
+            Self::SolDappPreview(_) => "SolDappPreview",
             Self::SolPreSign { .. } => "SolPreSign",
             Self::SolTrack(_) => "SolTrack",
             Self::SolScan { .. } => "SolScan",
@@ -802,6 +805,25 @@ impl RpcWorker {
                     &[("net", Field::Net(sol_net(&preview_job.endpoint)))],
                 );
                 push(events, RpcEvent::SolPreviewed(Box::new(result)));
+            }
+            RpcJob::SolDappPreview(preview_job) => {
+                let result =
+                    crate::sol::flow::dapp_preview(&*transport, &preview_job, &*self.clock);
+                logging::info(
+                    "rpc",
+                    "sol.dapp_previewed",
+                    &[
+                        ("net", Field::Net(sol_net(&preview_job.endpoint))),
+                        (
+                            "result",
+                            Field::Word(if result.is_ok() { "ok" } else { "err" }),
+                        ),
+                    ],
+                );
+                push(
+                    events,
+                    RpcEvent::SolDappPreviewed(Box::new((preview_job.job, result))),
+                );
             }
             RpcJob::SolPreSign { job, endpoint } => {
                 let result = crate::sol::flow::pre_sign(&*transport, &endpoint);

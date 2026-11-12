@@ -1232,7 +1232,9 @@ pub fn connect_view(
         Block::Warning {
             text: match family {
                 Family::Evm => "이 사이트는 선택한 계정의 주소, 잔액, 거래 기록을 볼 수 있습니다. 서명과 전송은 매번 따로 승인합니다.",
-                Family::Solana | Family::Bitcoin => "이 사이트는 선택한 주소와 공개키를 볼 수 있습니다. 이 지갑은 Solana·Bitcoin에서 메시지 서명(소유 증명)만 지원하며, 거래 서명과 전송은 할 수 없습니다. 메시지 서명은 매번 따로 승인합니다.",
+                // spec/04 §3 (2026-11-12, D38): Solana dApps also get transaction signing.
+                Family::Solana => "이 사이트는 선택한 계정의 공개키를 볼 수 있습니다. 메시지 서명과 거래 서명·전송은 매번 따로 승인합니다.",
+                Family::Bitcoin => "이 사이트는 선택한 주소와 공개키를 볼 수 있습니다. 이 지갑은 Bitcoin에서 메시지 서명(소유 증명)만 지원하며, 거래 서명과 전송은 할 수 없습니다. 메시지 서명은 매번 따로 승인합니다.",
             }
             .to_owned(),
             tone: Tone::Plain,

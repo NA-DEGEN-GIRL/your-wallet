@@ -310,6 +310,20 @@ pub enum SiteKind {
         /// `sol_signIn`.
         sign_in: bool,
     },
+    /// `sol_signTransaction` / `sol_signAllTransactions` / `sol_signAndSendTransaction` (spec/07
+    /// §20): the dApp's transactions, already parsed with `public` as a signer.
+    SolTx {
+        /// Signing account (a granted one).
+        public: [u8; 32],
+        /// The wire transactions, in request order.
+        txs: Vec<Vec<u8>>,
+        /// Sign only or sign and send.
+        mode: yw_core::sol::dapp::SolTxMode,
+        /// `sol_signAllTransactions` (answered with a list).
+        batch: bool,
+        /// Send options (default for sign-only).
+        options: yw_core::sol::dapp::SolSendOptions,
+    },
     /// `btc_signMessage`.
     BtcSign {
         /// Signing address (a granted one).
@@ -338,7 +352,9 @@ impl SiteKind {
     #[must_use]
     pub const fn family(&self) -> yw_core::policy::Family {
         match self {
-            Self::SolConnect | Self::SolSign { .. } => yw_core::policy::Family::Solana,
+            Self::SolConnect | Self::SolSign { .. } | Self::SolTx { .. } => {
+                yw_core::policy::Family::Solana
+            }
             Self::BtcConnect(_) | Self::BtcSign { .. } => yw_core::policy::Family::Bitcoin,
             _ => yw_core::policy::Family::Evm,
         }
@@ -353,6 +369,7 @@ impl SiteKind {
                 | Self::PersonalSign { .. }
                 | Self::TypedData { .. }
                 | Self::SolSign { .. }
+                | Self::SolTx { .. }
                 | Self::BtcSign { .. }
         )
     }

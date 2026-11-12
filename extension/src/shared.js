@@ -55,8 +55,9 @@
     wallet_getPermissions: "permission",
     wallet_revokePermissions: "permission",
     web3_clientVersion: "permission",
-    // Solana and Bitcoin: connect and message signing only (spec/05 §3.6). No transaction or
-    // PSBT method exists on the wire; the page shims reject those locally with 4200.
+    // Solana: connect, message signing and dApp transactions (spec/05 §3.6, spec/07 §20).
+    // Bitcoin: connect and message signing only; no PSBT method exists on the wire and the
+    // page shims reject those locally with 4200.
     sol_connect: "permission",
     sol_disconnect: "permission",
     sol_accounts: "permission",
@@ -84,6 +85,9 @@
     eth_signTypedData_v4: "signing",
     sol_signMessage: "signing",
     sol_signIn: "signing",
+    sol_signTransaction: "signing",
+    sol_signAllTransactions: "signing",
+    sol_signAndSendTransaction: "signing",
     btc_signMessage: "signing"
   }));
 

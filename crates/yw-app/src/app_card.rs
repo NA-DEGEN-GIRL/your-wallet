@@ -135,13 +135,32 @@ pub const T_CARD_TOUCH: &str = "PIN을 확인하는 중… YubiKey가 깜박이�
 /// The cancel note of the card step.
 pub const T_CARD_CANCELLED: &str = "YubiKey 서명을 취소했습니다. 아무것도 서명하지 않았습니다.";
 
+/// The card signatures (touches) a card job needs (spec/10 §6.4): one per input of a Bitcoin or
+/// Zcash plan, one per transaction of a sign-only Solana dApp request, otherwise one.
+#[must_use]
+pub fn approval_touches(approved: &Approved, kind: &CardJobKind) -> u8 {
+    let count = match kind {
+        CardJobKind::Btc { plan, .. } => plan.inputs().len(),
+        CardJobKind::Zec { plan } => plan.inputs.len(),
+        CardJobKind::ChainMessage => match approved.payload() {
+            yw_core::approval::SigningPayload::SolTx(payload) => payload.items.len(),
+            _ => 1,
+        },
+        _ => 1,
+    };
+    u8::try_from(count).unwrap_or(u8::MAX)
+}
+
 /// The touch prompt of a card job of `touches` card signatures (Bitcoin and Zcash: one per
-/// input).
+/// input; a sign-only Solana dApp request: one per transaction).
 #[must_use]
 pub fn touch_text(kind: &CardJobKind, touches: u8) -> String {
     match kind {
         CardJobKind::Btc { .. } | CardJobKind::Zec { .. } => {
             format!("YubiKey가 깜박일 때마다 터치하세요 — 모두 {touches}회(입력마다 한 번)")
+        }
+        CardJobKind::ChainMessage if touches > 1 => {
+            format!("YubiKey가 깜박일 때마다 터치하세요 — 모두 {touches}회(거래마다 한 번)")
         }
         _ => T_CARD_TOUCH.to_owned(),
     }
@@ -619,11 +638,7 @@ impl App {
         let Some(role) = Self::card_role(&approved, &kind) else {
             return Err(Box::new(approved));
         };
-        let touches = match &kind {
-            CardJobKind::Btc { plan, .. } => u8::try_from(plan.inputs().len()).unwrap_or(u8::MAX),
-            CardJobKind::Zec { plan } => u8::try_from(plan.inputs.len()).unwrap_or(u8::MAX),
-            _ => 1,
-        };
+        let touches = approval_touches(&approved, &kind);
         self.card.next_id = self.card.next_id.wrapping_add(1);
         let step = CardStep {
             id: self.card.next_id,

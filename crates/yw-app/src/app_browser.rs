@@ -864,6 +864,7 @@ impl App {
             SiteKind::SolConnect
             | SiteKind::BtcConnect(_)
             | SiteKind::SolSign { .. }
+            | SiteKind::SolTx { .. }
             | SiteKind::BtcSign { .. } => Some(QueueOutcome::Revoked),
             SiteKind::RequestAccounts if grant.is_some() => {
                 let accounts: Vec<[u8; 20]> = grant

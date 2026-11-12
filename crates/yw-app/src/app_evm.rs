@@ -1013,6 +1013,7 @@ impl App {
             RpcEvent::Test { .. } => {}
             event @ (RpcEvent::SolBalances { .. }
             | RpcEvent::SolPreviewed(_)
+            | RpcEvent::SolDappPreviewed(_)
             | RpcEvent::SolPreSigned { .. }
             | RpcEvent::SolTracked(_)
             | RpcEvent::SolScanned { .. }) => self.sol_rpc_event(event),

@@ -972,8 +972,9 @@ impl KeyWorker {
         )
     }
 
-    /// `SignChainMessageCard` (spec/10 §10): a Solana message (PIV Ed25519) or a Bitcoin
-    /// message (BIP137 / BIP322 on `OpenPGP`) of a `YubiKey` account.
+    /// `SignChainMessageCard` (spec/10 §10): a Solana message or the transactions of a sign-only
+    /// dApp request (PIV Ed25519, one touch each) or a Bitcoin message (BIP137 / BIP322 on
+    /// `OpenPGP`) of a `YubiKey` account.
     fn sign_chain_message_card(
         &mut self,
         ticket: crate::events::SignTicket,
@@ -999,6 +1000,17 @@ impl KeyWorker {
             .and_then(|vault| Self::hardware_records(vault).ok());
         let cards = self.cards.as_mut();
         let result = match (role, records) {
+            (Some(KeyRole::Sol { index }), Some(records))
+                if approved.kind() == yw_core::approval::ApprovalKind::SolTransaction =>
+            {
+                // One card signature (touch) per transaction (spec/10 §6.4).
+                yw_core::sol::dapp::sign_txs_card(*approved, &mut |message: &[u8]| {
+                    crate::yubikey::sign_sol_message(cards, &records, index, pin, message)
+                        .map_err(|_| yw_core::yubikey::CardError::Internal)
+                })
+                .map(ChainSignature::SolTxs)
+                .map_err(|_| false)
+            }
             (Some(KeyRole::Sol { index }), Some(records)) => {
                 yw_core::sol::msgsign::sign_message_card(*approved, &mut |message: &[u8]| {
                     crate::yubikey::sign_sol_message(cards, &records, index, pin, message)
@@ -1884,6 +1896,16 @@ impl KeyWorker {
                                 .map(crate::events::ChainSignature::Btc)
                                 .map_err(|_| false)
                         }
+                        // A sign-only dApp Solana request (spec/07 §20.8): every approved
+                        // transaction in one key lending.
+                        Some(vault)
+                            if approved.kind()
+                                == yw_core::approval::ApprovalKind::SolTransaction =>
+                        {
+                            yw_core::sol::dapp::sign_txs(vault, *approved)
+                                .map(crate::events::ChainSignature::SolTxs)
+                                .map_err(|_| false)
+                        }
                         Some(vault) => yw_core::sol::msgsign::sign_message(vault, *approved)
                             .map(crate::events::ChainSignature::Sol)
                             .map_err(|_| false),
@@ -2598,6 +2620,161 @@ pub(crate) mod tests {
             cards.lock().unwrap().iter().all(|card| !card.saw_write()),
             "card signing sends no write"
         );
+        drop(worker);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// spec/07 §20.8, spec/10 §6.4: a sign-only dApp request of three transactions goes the
+    /// chain-message route — `SignChainMessageCard` on the emulator's PIV slot takes one touch
+    /// per transaction, `SignChainMessage` signs with the vault key; either way only our slot
+    /// changes and it verifies strictly. A wrong PIN signs nothing.
+    #[test]
+    #[allow(clippy::indexing_slicing, reason = "Solana wire offsets")]
+    #[allow(clippy::too_many_lines, reason = "one emulator scenario")]
+    fn sign_sol_dapp_transactions_on_the_card_and_in_software() {
+        use yw_core::approval::ApprovalStore;
+        use yw_core::bip32::path::AccountIndex;
+        use yw_core::secret::Zeroizing;
+        use yw_core::slip10::SolKeySource;
+        use yw_core::sol::SolCluster;
+        use yw_core::sol::dapp::{
+            SolSendOptions, SolTxFacts, SolTxItemFacts, SolTxMode, SolTxRequest,
+            build_sol_tx_request,
+        };
+        use yw_core::sol::display::SimSummary;
+
+        use crate::events::{ChainMessageSigned, ChainSignature, SignTicket};
+
+        const NOW: u64 = 1_800_000_000_000;
+        let public = yw_core::codec::base58::base58_decode_32(
+            "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk",
+        )
+        .unwrap();
+        // The wallet signs and pays; one unknown-program instruction each.
+        let tx = |tag: u8| {
+            let mut out = vec![1_u8];
+            out.extend_from_slice(&[0; 64]);
+            out.extend_from_slice(&[1, 0, 1, 2]);
+            out.extend_from_slice(&public);
+            out.extend_from_slice(&[5; 32]);
+            out.extend_from_slice(&[7; 32]);
+            out.extend_from_slice(&[1, 1, 1, 0, 1, tag]);
+            out
+        };
+        let txs: Vec<Vec<u8>> = (1..=3).map(tx).collect();
+        let (mut worker, cards, dir, _) = yubikey_wallet("sol-dapp");
+        let approve = |id: u8, source: SolKeySource| {
+            let item = SolTxItemFacts {
+                tables: Ok((0, Vec::new())),
+                pre: Vec::new(),
+                post: None,
+                sim: SimSummary::NoResult,
+                sim_replaced_blockhash: false,
+                rpc_fee: Some(5_000),
+                blockhash_valid: Some(true),
+            };
+            let request = SolTxRequest {
+                id: yw_core::approval::ApprovalId([id; 16]),
+                origin: yw_core::policy::BrowserOrigin::parse("https://app.example").unwrap(),
+                cluster: SolCluster::Devnet,
+                source,
+                public,
+                label: "Solana 1".to_owned(),
+                mode: SolTxMode::SignOnly,
+                options: SolSendOptions::default(),
+                txs: txs.clone(),
+            };
+            let facts = SolTxFacts {
+                items: vec![item; 3],
+                mints: Vec::new(),
+                unread_mints: Vec::new(),
+                known: Vec::new(),
+                fee_cap: 100_000,
+            };
+            let draft = build_sol_tx_request(&request, &facts).unwrap();
+            let mut store = ApprovalStore::new();
+            let request = store.issue(draft, 1, NOW).unwrap();
+            Box::new(store.consume(request.id, request.digest, 2).unwrap())
+        };
+        let check = |signed: &[Vec<u8>]| {
+            assert_eq!(signed.len(), 3);
+            for (signed, sent) in signed.iter().zip(&txs) {
+                assert_eq!(signed.len(), sent.len());
+                assert_eq!(signed[0], 1);
+                assert_eq!(&signed[65..], &sent[65..], "the message is untouched");
+                let signature: [u8; 64] = signed[1..65].try_into().unwrap();
+                assert!(yw_core::sol::keys::verify_strict(
+                    &public,
+                    &signed[65..],
+                    &signature
+                ));
+            }
+        };
+        let hardware = SolKeySource::Hardware(AccountIndex::ZERO);
+        let card = |worker: &mut KeyWorker, id: u8, pin: &str| {
+            worker.handle(KeyJob::SignChainMessageCard {
+                ticket: SignTicket(u64::from(id)),
+                approved: approve(id, hardware),
+                pin: Zeroizing::new(pin.as_bytes().to_vec()),
+            })
+        };
+        let touches = |cards: &std::sync::Mutex<Vec<yw_core::yubikey::mock::MockCard>>| {
+            cards
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|card| card.touches)
+                .sum::<u32>()
+        };
+        // The card step asks for one touch per transaction (E3).
+        let kind = crate::app_card::CardJobKind::ChainMessage;
+        let touch_count = crate::app_card::approval_touches(&approve(9, hardware), &kind);
+        assert_eq!(touch_count, 3);
+        assert_eq!(
+            crate::app_card::touch_text(&kind, touch_count),
+            "YubiKey가 깜박일 때마다 터치하세요 — 모두 3회(거래마다 한 번)"
+        );
+        assert_eq!(
+            crate::app_card::touch_text(&kind, 1),
+            crate::app_card::T_CARD_TOUCH
+        );
+        let refused = card(&mut worker, 1, "000000");
+        assert!(matches!(refused[0], KeyOutcome::CardUnused(_, _)));
+        assert!(matches!(
+            refused[1],
+            KeyOutcome::SignedChainMessage(ChainMessageSigned {
+                result: Err(false),
+                ..
+            })
+        ));
+        assert_eq!(touches(&cards), 0);
+        let signed = card(&mut worker, 2, "123456");
+        let [
+            KeyOutcome::SignedChainMessage(ChainMessageSigned {
+                ticket: SignTicket(2),
+                result: Ok(ChainSignature::SolTxs(list)),
+            }),
+        ] = signed.as_slice()
+        else {
+            unreachable!("card signed: {signed:?}");
+        };
+        check(list);
+        assert_eq!(touches(&cards), 3, "one touch per transaction");
+        let software = worker.handle(KeyJob::SignChainMessage {
+            ticket: SignTicket(3),
+            approved: approve(3, SolKeySource::Standard(AccountIndex::ZERO)),
+        });
+        let [
+            KeyOutcome::SignedChainMessage(ChainMessageSigned {
+                result: Ok(ChainSignature::SolTxs(list)),
+                ..
+            }),
+        ] = software.as_slice()
+        else {
+            unreachable!("software signed: {software:?}");
+        };
+        check(list);
+        assert_eq!(touches(&cards), 3);
         drop(worker);
         let _ = std::fs::remove_dir_all(&dir);
     }

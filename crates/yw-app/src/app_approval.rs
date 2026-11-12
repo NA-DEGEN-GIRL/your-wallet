@@ -410,6 +410,11 @@ impl ApprovalUi {
     pub(crate) const fn job(&self) -> u64 {
         self.job
     }
+
+    /// The queued item the window shows.
+    pub(crate) const fn item(&self) -> &QueuedItem {
+        &self.item
+    }
 }
 
 impl core::fmt::Debug for ApprovalUi {
@@ -1485,6 +1490,7 @@ impl App {
                 | SiteKind::SolConnect
                 | SiteKind::BtcConnect(_)
                 | SiteKind::SolSign { .. }
+                | SiteKind::SolTx { .. }
                 | SiteKind::BtcSign { .. } => None,
             },
             QueuedItem::App(_)
@@ -1819,6 +1825,7 @@ impl App {
                     self.on_typed_facts(job, &unlooked, None);
                 }
             }
+            SiteKind::SolTx { .. } => self.prepare_sol_dapp(job, site),
             SiteKind::SolSign { .. } | SiteKind::BtcSign { .. } => {
                 match self.chain_sign_draft(site) {
                     Some(draft) => self.show_ready_draft(draft, None),
@@ -2040,7 +2047,7 @@ impl App {
 
     /// Issues a draft at its first Ready display (spec/03 §11.5). Transactions keep their
     /// preparation (signing, journal, re-simulation); messages have none.
-    fn show_ready_draft(
+    pub(crate) fn show_ready_draft(
         &mut self,
         draft: yw_core::approval::ApprovalDraft,
         prepared: Option<Box<Prepared>>,
@@ -2382,6 +2389,16 @@ impl App {
                     self.finish_approval(QueueOutcome::Approved);
                     return;
                 }
+                // A dApp Solana transaction request (spec/07 §20.8): its own waiter and signer.
+                if request.kind == yw_core::approval::ApprovalKind::SolTransaction {
+                    let QueuedItem::Site(site) = &item else {
+                        self.show_failure(ErrorCode::App009, false, ErrorCode::App009.text());
+                        return;
+                    };
+                    self.sol_dapp_consumed(approved, site);
+                    self.finish_approval(QueueOutcome::Approved);
+                    return;
+                }
                 if request.kind.is_chain_message() {
                     let waiter = match &item {
                         QueuedItem::Site(site) => Self::chain_waiter(site, approved.payload()),
@@ -2658,9 +2675,13 @@ impl App {
                     crate::yubikey::zec_plan_role(&item.plan)?,
                     item.plan.inputs.len(),
                 ),
+                // A sign-only Solana dApp request: one touch per transaction.
                 (_, PrepareState::Ready(ReadyContent::Signing(request))) => (
                     crate::yubikey::role_of(&request.signer, &request.payload)?,
-                    1,
+                    match &request.payload {
+                        yw_core::approval::SigningPayload::SolTx(payload) => payload.items.len(),
+                        _ => 1,
+                    },
                 ),
                 _ => return None,
             };

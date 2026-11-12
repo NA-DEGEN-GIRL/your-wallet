@@ -1,5 +1,6 @@
 //! Solana and Bitcoin dApp connections on the UI thread (spec/05 §4.9, spec/07 §19, spec/08
-//! §17): ownership proof only — one account per connection, message signing, no transaction.
+//! §17): one account per connection and message signing; Solana dApp transactions (spec/07 §20)
+//! share the checks and the answer here, their preview and signing are `app_sol_dapp`.
 //! The account choices of the connect window, connect approval and grant persistence (meta
 //! `sol_sites`/`btc_sites`), the checks of a queued request, the approval draft and the answer of
 //! a finished signature.
@@ -55,6 +56,18 @@ pub enum ChainAnswer {
         address: String,
         /// Protocol used.
         protocol: BtcMessageProtocol,
+    },
+    /// `sol_signTransaction` / `sol_signAllTransactions` / `sol_signAndSendTransaction`.
+    SolTx {
+        /// Signing account.
+        public: [u8; 32],
+        /// The requesting site: its grant must still name `public` when the answer goes out
+        /// (spec/07 §20.10-4).
+        origin: BrowserOrigin,
+        /// `sol_signAllTransactions` (`signedTransactions`).
+        batch: bool,
+        /// `sol_signAndSendTransaction` (answered by the broadcast, not by signed bytes).
+        send: bool,
     },
 }
 
@@ -122,6 +135,32 @@ pub fn chain_answer_value(answer: &ChainAnswer, signature: &ChainSignature) -> O
                 members.push(("signedMessage", json_str(&yw_core::hex::encode(message))));
             }
             Some(json_object(members))
+        }
+        (
+            ChainAnswer::SolTx {
+                public,
+                batch,
+                send: false,
+                ..
+            },
+            ChainSignature::SolTxs(signed),
+        ) => {
+            let public = (
+                "publicKey",
+                json_str(&yw_core::codec::base58::base58_encode(public)),
+            );
+            let hex = |tx: &Vec<u8>| json_str(&yw_core::hex::encode(tx));
+            match (batch, signed.as_slice()) {
+                (true, list) if !list.is_empty() => Some(json_object(vec![
+                    public,
+                    (
+                        "signedTransactions",
+                        Value::Array(list.iter().map(hex).collect()),
+                    ),
+                ])),
+                (false, [one]) => Some(json_object(vec![public, ("signedTransaction", hex(one))])),
+                _ => None,
+            }
         }
         (ChainAnswer::Btc { address, protocol }, ChainSignature::Btc(signed)) => {
             Some(json_object(vec![
@@ -601,7 +640,7 @@ impl App {
                     None
                 }
             }
-            SiteKind::SolSign { public, .. } => {
+            SiteKind::SolSign { public, .. } | SiteKind::SolTx { public, .. } => {
                 let granted = core
                     .sol_grants()
                     .iter()
@@ -619,6 +658,11 @@ impl App {
                             Some(QueueOutcome::Cancelled)
                         } else if let Some(serial) = self.sol_card_gate(row.source) {
                             self.refuse_card_defaults(site, serial);
+                            Some(QueueOutcome::Cancelled)
+                        } else if let SiteKind::SolTx { mode, .. } = &site.kind
+                            && let Some(error) = self.sol_dapp_refusal(public, *mode)
+                        {
+                            self.respond(&site.reply, Err(error));
                             Some(QueueOutcome::Cancelled)
                         } else {
                             None
@@ -745,12 +789,32 @@ impl App {
         Some(SignWaiter::Chain(site.reply, Box::new(answer)))
     }
 
+    /// Whether the Solana grant of `origin` still names `public` (spec/07 §20.10-4: checked
+    /// again before signed transaction bytes leave the wallet).
+    pub(crate) fn sol_grant_holds(&self, origin: &BrowserOrigin, public: &[u8; 32]) -> bool {
+        self.browser.as_ref().is_some_and(|browser| {
+            browser
+                .core
+                .sol_grants()
+                .iter()
+                .any(|grant| grant.origin == *origin && grant.public == *public)
+        })
+    }
+
     /// `SignChainMessage` finished: the dApp gets the signature, 4001 after a lock, -32603
-    /// otherwise.
+    /// otherwise. Signed dApp transactions go out only while the origin's grant still names the
+    /// key; a site disconnected meanwhile gets 4100 and the bytes are dropped (spec/07 §20.10-4).
     pub(crate) fn browser_chain_message_signed(&mut self, signed: &ChainMessageSigned) {
         let Some(SignWaiter::Chain(reply, answer)) = self.take_sign_waiter(signed.ticket) else {
             return;
         };
+        if let (ChainAnswer::SolTx { public, origin, .. }, Ok(_)) = (&*answer, &signed.result)
+            && !self.sol_grant_holds(origin, public)
+        {
+            logging::info("browser", "sol_tx.grant_gone", &[]);
+            self.respond(&reply, Err(ProviderError::Unauthorized));
+            return;
+        }
         let body = match &signed.result {
             Ok(signature) => chain_answer_value(&answer, signature).ok_or(ProviderError::Internal),
             Err(true) => Err(ProviderError::UserRejected),
@@ -840,7 +904,7 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    use super::{ChainAnswer, ConnectChoice, chain_answer_value, default_protocol};
+    use super::{ChainAnswer, ConnectChoice, chain_answer_value, default_protocol, now_unix_ms};
     use crate::apikeys::ApiKeys;
     use crate::app::{App, Paths};
     use crate::app_approval::ConnectState;
@@ -1782,5 +1846,310 @@ mod tests {
             chain_answer_value(&btc, &ChainSignature::Sol([0; 64])),
             None
         );
+        // Solana dApp transactions (spec/05 §3.6): one hex string, or the list in order; a send
+        // is never answered with bytes, a count mismatch is no answer.
+        let tx = |batch: bool, send: bool| ChainAnswer::SolTx {
+            public: [1; 32],
+            origin: BrowserOrigin::parse("https://app.example").unwrap(),
+            batch,
+            send,
+        };
+        let text = |value: Option<yw_json::Value>| {
+            value.map(|value| String::from_utf8(yw_json::to_vec(&value)).unwrap())
+        };
+        let key = yw_core::codec::base58::base58_encode(&[1; 32]);
+        assert_eq!(
+            text(chain_answer_value(
+                &tx(false, false),
+                &ChainSignature::SolTxs(vec![vec![0xab, 1]])
+            )),
+            Some(format!(
+                r#"{{"publicKey":"{key}","signedTransaction":"ab01"}}"#
+            ))
+        );
+        assert_eq!(
+            text(chain_answer_value(
+                &tx(true, false),
+                &ChainSignature::SolTxs(vec![vec![1], vec![2]])
+            )),
+            Some(format!(
+                r#"{{"publicKey":"{key}","signedTransactions":["01","02"]}}"#
+            ))
+        );
+        for (answer, signed) in [
+            (tx(false, false), vec![vec![1], vec![2]]),
+            (tx(true, false), Vec::new()),
+            (tx(false, true), vec![vec![1]]),
+        ] {
+            assert_eq!(
+                chain_answer_value(&answer, &ChainSignature::SolTxs(signed)),
+                None
+            );
+        }
+        assert_eq!(
+            chain_answer_value(&tx(false, false), &ChainSignature::Sol([0; 64])),
+            None
+        );
+    }
+
+    /// A legacy transaction the fixture key signs and pays for (one unknown-program
+    /// instruction with data `[tag]`).
+    fn sol_tx(tag: u8) -> Vec<u8> {
+        let mut out = vec![1_u8];
+        out.extend_from_slice(&[0; 64]);
+        out.extend_from_slice(&[1, 0, 1, 2]);
+        out.extend_from_slice(&public());
+        out.extend_from_slice(&[5; 32]);
+        out.extend_from_slice(&[7; 32]);
+        out.extend_from_slice(&[1, 1, 1, 0, 1, tag]);
+        out
+    }
+
+    fn sol_tx_kind(mode: yw_core::sol::dapp::SolTxMode) -> SiteKind {
+        SiteKind::SolTx {
+            public: public(),
+            txs: vec![sol_tx(1)],
+            mode,
+            batch: false,
+            options: yw_core::sol::dapp::SolSendOptions::default(),
+        }
+    }
+
+    /// A `Pending` dApp send record of `public` on devnet (only the fields the caps read).
+    fn dapp_pending(public: [u8; 32]) -> yw_core::journal::sol::SolRecord {
+        yw_core::journal::sol::SolRecord {
+            state: yw_core::journal::sol::SolTxState::Pending,
+            cluster: yw_core::sol::SolCluster::Devnet,
+            source: yw_core::slip10::SolKeySource::Standard(
+                yw_core::bip32::path::AccountIndex::ZERO,
+            ),
+            intent_id: [0; 16],
+            intent_hash: [0; 32],
+            signed_at_ms: 1,
+            last_valid_block_height: 1,
+            terminal_slot: 0,
+            terminal_err: 0,
+            tx: sol_tx(1),
+            dapp: Some(yw_core::journal::sol::SolDappMeta {
+                public,
+                signer_slot: 0,
+                flags: 1,
+                origin: "https://app.example".to_owned(),
+            }),
+        }
+    }
+
+    /// spec/05 §3.6: a granted dApp transaction request opens its window only with an endpoint
+    /// (4901 otherwise); a send is refused at the pending caps (-32002: 16 of the signer, 32 in
+    /// the journal) and, until the send path exists, with 4200. Not granted: revoked (4100).
+    #[test]
+    fn sol_tx_preflight_refusals() {
+        use yw_core::sol::dapp::SolTxMode;
+        let mut app = app(true);
+        app.settings.solana.cluster = crate::network::SolCluster::Devnet;
+        let sign = site(sol_tx_kind(SolTxMode::SignOnly));
+        assert_eq!(
+            app.chain_site_preflight(&sign),
+            Some(Some(QueueOutcome::Revoked))
+        );
+        if let Some(browser) = app.browser.as_ref() {
+            browser
+                .core
+                .upsert_sol_grant(sol_grant("https://app.example", public()));
+        }
+        assert_eq!(
+            app.sol_dapp_refusal(&public(), SolTxMode::SignOnly),
+            Some(ProviderError::ChainUnavailable)
+        );
+        assert_eq!(
+            app.chain_site_preflight(&sign),
+            Some(Some(QueueOutcome::Cancelled))
+        );
+        let url = yw_win::http::HttpsUrl::parse("https://sol.example.test/").unwrap();
+        app.apikeys.set_rpc(
+            crate::network::NetworkId::Solana(crate::network::SolCluster::Devnet),
+            &url,
+        );
+        assert_eq!(app.sol_dapp_refusal(&public(), SolTxMode::SignOnly), None);
+        assert_eq!(app.chain_site_preflight(&sign), Some(None));
+        let send = site(sol_tx_kind(SolTxMode::SignAndSend));
+        assert_eq!(
+            app.sol_dapp_refusal(&public(), SolTxMode::SignAndSend),
+            Some(ProviderError::UnsupportedMethod)
+        );
+        assert_eq!(
+            app.chain_site_preflight(&send),
+            Some(Some(QueueOutcome::Cancelled))
+        );
+        // 15 pending sends of the key: still the step guard; the 16th is the cap.
+        let mut journal = crate::events::JournalView {
+            sol_records: vec![dapp_pending(public()); 15],
+            ..crate::events::JournalView::default()
+        };
+        app.evm.journal = Some(journal.clone());
+        assert_eq!(
+            app.sol_dapp_refusal(&public(), SolTxMode::SignAndSend),
+            Some(ProviderError::UnsupportedMethod)
+        );
+        journal.sol_records.push(dapp_pending(public()));
+        app.evm.journal = Some(journal.clone());
+        assert_eq!(
+            app.sol_dapp_refusal(&public(), SolTxMode::SignAndSend),
+            Some(ProviderError::TransactionPending)
+        );
+        // 32 pending sends of other keys: the whole-journal cap.
+        journal.sol_records = vec![dapp_pending([9; 32]); 32];
+        app.evm.journal = Some(journal);
+        assert_eq!(
+            app.sol_dapp_refusal(&public(), SolTxMode::SignAndSend),
+            Some(ProviderError::TransactionPending)
+        );
+        // Sign-only never counts pending sends.
+        assert_eq!(app.sol_dapp_refusal(&public(), SolTxMode::SignOnly), None);
+    }
+
+    /// A recorded connection on a fresh dispatcher of `app`, unlocked with the app's accounts
+    /// and the Solana grant of `https://app.example`: the queue its requests go to, the frames
+    /// it answers with, and the connection.
+    fn recorded(
+        app: &mut App,
+    ) -> (
+        Arc<EventQueue>,
+        std::sync::mpsc::Receiver<crate::browser::Outbound>,
+        crate::browser::ConnId,
+    ) {
+        let events = Arc::new(EventQueue::new(Box::new(|| {})));
+        let core = crate::browser::BrowserCore::new(
+            "abcdefghijklmnopabcdefghijklmnop",
+            Arc::clone(&events) as Arc<dyn crate::browser::DappSink>,
+            Arc::new(crate::flow::evm::SystemClock),
+        );
+        core.set_wallet(unlocked_view(app));
+        core.upsert_sol_grant(sol_grant("https://app.example", public()));
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let conn = core.open_connection(Box::new(sender));
+        if let Some(browser) = app.browser.as_mut() {
+            browser.core = core;
+        }
+        let _ = events.drain();
+        (events, receiver, conn)
+    }
+
+    /// Sends `sol_signTransaction` of [`sol_tx`] on `conn` and returns the queued request.
+    fn queued_sol_tx(app: &App, events: &EventQueue, conn: u64, n: u8) -> SiteRequest {
+        let deadline = now_unix_ms() + 600_000;
+        let frame = format!(
+            concat!(
+                r#"{{"namespace":"your-wallet","version":1,"role":"extension","kind":"request","#,
+                r#""sessionId":"{session}","sequence":{n},"deadlineUnixMs":{deadline},"#,
+                r#""profileInstallId":"{profile}","activationNonce":"{activation}","#,
+                r#""requestId":"{request}","method":"sol_signTransaction","#,
+                r#""params":[{{"publicKey":"{key}","transaction":"{tx}"}}],"route":"signing","#,
+                r#""context":{{"browserFamily":"chrome","extensionId":"abcdefghijklmnopabcdefghijklmnop","#,
+                r#""tabId":17,"frameId":0,"documentId":"document-17","topOrigin":"https://app.example","#,
+                r#""frameOrigin":"https://app.example","documentLifecycle":"active","#,
+                r#""channelNonce":"{channel}"}}}}"#
+            ),
+            n = n,
+            deadline = deadline,
+            session = "bb".repeat(32),
+            profile = "aa".repeat(32),
+            activation = format!("{}0c", "00".repeat(31)),
+            channel = format!("{}0d", "00".repeat(31)),
+            request = format!("{n:02x}").repeat(16),
+            key = SOL_KEY,
+            tx = yw_core::hex::encode(&sol_tx(n)),
+        );
+        core(app).handle_frame(conn, frame.as_bytes());
+        events
+            .drain()
+            .into_iter()
+            .find_map(|event| match event {
+                crate::events::UiEvent::Dapp(crate::browser::DappEvent::Request(request)) => {
+                    Some(*request)
+                }
+                _ => None,
+            })
+            .expect("queued")
+    }
+
+    /// The answers recorded since the last call.
+    fn answers(
+        frames: &std::sync::mpsc::Receiver<crate::browser::Outbound>,
+    ) -> Vec<Result<yw_json::Value, ProviderError>> {
+        frames
+            .try_iter()
+            .filter_map(|frame| match frame {
+                crate::browser::Outbound::Response { body, .. } => Some(body),
+                crate::browser::Outbound::Event { .. } => None,
+            })
+            .collect()
+    }
+
+    /// spec/07 §20.10-4 and E10: signed dApp transactions are answered `{publicKey,
+    /// signedTransaction}` while the origin's grant still names the key; a site disconnected
+    /// before the answer gets 4100 and no bytes; a waiter cancelled by the lock (or a
+    /// lock-cancelled job) gets 4001 like any chain message.
+    #[test]
+    fn signed_transactions_answer_only_while_the_grant_holds() {
+        use crate::app_browser::SignWaiter;
+        use crate::events::ChainMessageSigned;
+        let mut app = app(true);
+        let (events, frames, conn) = recorded(&mut app);
+        let waiter = |app: &mut App, site: &SiteRequest| {
+            app.push_sign_waiter(SignWaiter::Chain(
+                site.reply,
+                Box::new(ChainAnswer::SolTx {
+                    public: public(),
+                    origin: site.origin.clone(),
+                    batch: false,
+                    send: false,
+                }),
+            ))
+        };
+        let first = queued_sol_tx(&app, &events, conn, 1);
+        assert!(matches!(first.kind, SiteKind::SolTx { .. }));
+        let ticket = waiter(&mut app, &first);
+        app.browser_chain_message_signed(&ChainMessageSigned {
+            ticket,
+            result: Ok(ChainSignature::SolTxs(vec![vec![0xab]])),
+        });
+        let found = answers(&frames);
+        let [Ok(value)] = found.as_slice() else {
+            unreachable!("one answer");
+        };
+        let text = String::from_utf8(yw_json::to_vec(value)).unwrap();
+        assert_eq!(
+            text,
+            format!(r#"{{"publicKey":"{SOL_KEY}","signedTransaction":"ab"}}"#)
+        );
+        // Lock: the waiter itself (E10) and a lock-cancelled job.
+        let second = queued_sol_tx(&app, &events, conn, 2);
+        let ticket = waiter(&mut app, &second);
+        app.browser_sign_cancelled(ticket);
+        let third = queued_sol_tx(&app, &events, conn, 3);
+        let ticket = waiter(&mut app, &third);
+        app.browser_chain_message_signed(&ChainMessageSigned {
+            ticket,
+            result: Err(true),
+        });
+        assert_eq!(
+            answers(&frames),
+            vec![
+                Err(ProviderError::UserRejected),
+                Err(ProviderError::UserRejected)
+            ]
+        );
+        // Disconnected while the key worker signed: 4100, the bytes never leave.
+        let fourth = queued_sol_tx(&app, &events, conn, 4);
+        let ticket = waiter(&mut app, &fourth);
+        assert!(core(&app).remove_sol_grant(&fourth.origin));
+        assert!(!app.sol_grant_holds(&fourth.origin, &public()));
+        app.browser_chain_message_signed(&ChainMessageSigned {
+            ticket,
+            result: Ok(ChainSignature::SolTxs(vec![vec![0xab]])),
+        });
+        assert_eq!(answers(&frames), vec![Err(ProviderError::Unauthorized)]);
+        assert!(app.browser.as_ref().unwrap().waiters.is_empty());
     }
 }

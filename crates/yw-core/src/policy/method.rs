@@ -5,9 +5,10 @@
 //! Ported from `archive/spec-v2.4:crates/broker/src/lib.rs:50-225` (`ProviderMethod`,
 //! `ProviderRoute`) narrowed to the 27 v3 methods: `wallet_addEthereumChain`,
 //! `wallet_watchAsset` and `wallet_getCapabilities` are gone (D14, spec/05 §3.2) and
-//! `wallet_revokePermissions`, `web3_clientVersion` are added. The ten Solana (`sol_*`) and
-//! Bitcoin (`btc_*`) methods are connect and message signing only (spec.md D25–D27, spec/05
-//! §3.6): no transaction or PSBT method exists on the wire.
+//! `wallet_revokePermissions`, `web3_clientVersion` are added. The thirteen Solana (`sol_*`) and
+//! Bitcoin (`btc_*`) methods (spec.md D25–D27, D38, spec/05 §3.6): Solana has connect, message
+//! signing and dApp transactions (sign, sign all, sign and send; spec/07 §20); Bitcoin is
+//! connect and message signing only, no PSBT method exists on the wire.
 
 /// The envelope v1 route (spec/05 §6.1). `Permission` = answered by yw-app without RPC.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -45,7 +46,7 @@ impl Route {
 
 macro_rules! methods {
     ($($variant:ident => $name:literal, $route:ident;)*) => {
-        /// The 37 allowed dApp methods (spec/05 §3.1, §3.6). Anything else is 4200.
+        /// The 40 allowed dApp methods (spec/05 §3.1, §3.6). Anything else is 4200.
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
         pub enum Method {
             $(
@@ -56,7 +57,7 @@ macro_rules! methods {
 
         impl Method {
             /// Every method in spec/05 §3.1 order (permission, read, signing).
-            pub const ALL: [Self; 37] = [$(Self::$variant,)*];
+            pub const ALL: [Self; 40] = [$(Self::$variant,)*];
 
             /// Exact, case-sensitive name lookup.
             #[must_use]
@@ -123,6 +124,9 @@ methods! {
     SignTypedDataV4 => "eth_signTypedData_v4", Signing;
     SolSignMessage => "sol_signMessage", Signing;
     SolSignIn => "sol_signIn", Signing;
+    SolSignTransaction => "sol_signTransaction", Signing;
+    SolSignAllTransactions => "sol_signAllTransactions", Signing;
+    SolSignAndSendTransaction => "sol_signAndSendTransaction", Signing;
     BtcSignMessage => "btc_signMessage", Signing;
 }
 
@@ -147,7 +151,10 @@ impl Method {
             | Self::SolDisconnect
             | Self::SolAccounts
             | Self::SolSignMessage
-            | Self::SolSignIn => Family::Solana,
+            | Self::SolSignIn
+            | Self::SolSignTransaction
+            | Self::SolSignAllTransactions
+            | Self::SolSignAndSendTransaction => Family::Solana,
             Self::BtcRequestAccounts
             | Self::BtcGetAccounts
             | Self::BtcDisconnect

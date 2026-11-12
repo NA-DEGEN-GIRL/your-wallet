@@ -3,7 +3,9 @@
 //! `browser::params::validate`) and the meta `sol_sites`/`btc_sites` entry parsers
 //! (`browser::grants::{sol,btc}_site_from_value`) over 1,000,000 xorshift64* mutations of JSON
 //! seeds. Invariants: no panic; accepted params respect their limits (message sizes, SIWS fields
-//! without control characters, valid purposes); an accepted grant entry round-trips.
+//! without control characters, valid purposes; dApp transactions: 1..=32 of at most 1,232 bytes,
+//! each accepted by the strict parser with the key as a signer, a send of one only); an accepted
+//! grant entry round-trips.
 //! `scripts/check.ps1` runs 20,000 (well under 2 s in a debug build).
 //! Run with `cargo test --release -p yw-app --test fuzz_lite_chain_params -- --ignored`.
 
@@ -13,6 +15,7 @@ use yw_app::browser::grants::{
 use yw_app::browser::params::{Validated, validate};
 use yw_core::btc::msgsign::MAX_BTC_MESSAGE_BYTES;
 use yw_core::policy::{Method, btc_purposes_valid};
+use yw_core::sol::dapp::{SOL_TX_MAX_BATCH, SolTxMode, parse_wire_tx};
 use yw_core::sol::msgsign::{
     MAX_SIWS_FIELD_BYTES, MAX_SIWS_RESOURCES, MAX_SOL_MESSAGE_BYTES, SIWS_MARKER, SiwsMessage,
 };
@@ -80,8 +83,28 @@ fn runs() -> u32 {
         .unwrap_or(1_000_000)
 }
 
+/// A legacy transaction (hex) the fixture key signs and pays for: one instruction of an unknown
+/// program.
+fn tx_hex() -> String {
+    let key = yw_core::codec::base58::base58_decode_32(SOL_KEY).unwrap_or_default();
+    let mut out = vec![1_u8];
+    out.extend_from_slice(&[0; 64]);
+    out.extend_from_slice(&[1, 0, 1, 2]);
+    out.extend_from_slice(&key);
+    out.extend_from_slice(&[5; 32]);
+    out.extend_from_slice(&[7; 32]);
+    out.extend_from_slice(&[1, 1, 1, 0, 1, 9]);
+    yw_core::hex::encode(&out)
+}
+
 fn seeds() -> Vec<String> {
+    let tx = tx_hex();
     vec![
+        format!(r#"[{{"publicKey":"{SOL_KEY}","transaction":"{tx}","chain":"solana:mainnet"}}]"#),
+        format!(r#"[{{"publicKey":"{SOL_KEY}","transactions":["{tx}","{tx}"]}}]"#),
+        format!(
+            r#"[{{"publicKey":"{SOL_KEY}","transaction":"{tx}","options":{{"skipPreflight":true,"preflightCommitment":"processed","minContextSlot":5}}}}]"#
+        ),
         "[]".to_owned(),
         r#"[{"onlyIfTrusted":true}]"#.to_owned(),
         format!(r#"[{{"publicKey":"{SOL_KEY}","message":"48656c6c6f"}}]"#),
@@ -142,6 +165,9 @@ fn check_params(value: &Value) -> u32 {
         Method::SolConnect,
         Method::SolSignMessage,
         Method::SolSignIn,
+        Method::SolSignTransaction,
+        Method::SolSignAllTransactions,
+        Method::SolSignAndSendTransaction,
         Method::BtcRequestAccounts,
         Method::BtcSignMessage,
     ] {
@@ -157,6 +183,24 @@ fn check_params(value: &Value) -> u32 {
             Validated::SolSignIn { input, .. } => {
                 check_siws(&input);
                 method == Method::SolSignIn
+            }
+            Validated::SolTx {
+                public,
+                txs,
+                mode,
+                batch,
+                ..
+            } => {
+                let send = method == Method::SolSignAndSendTransaction;
+                (1..=SOL_TX_MAX_BATCH).contains(&txs.len())
+                    && batch == (method == Method::SolSignAllTransactions)
+                    && (mode == SolTxMode::SignAndSend) == send
+                    && (batch || txs.len() == 1)
+                    && txs.iter().all(|tx| {
+                        tx.len() <= 1_232
+                            && parse_wire_tx(tx)
+                                .is_ok_and(|wire| wire.message.signer_slot(&public).is_ok())
+                    })
             }
             Validated::BtcRequestAccounts(purposes) => btc_purposes_valid(&purposes),
             Validated::BtcSignMessage {

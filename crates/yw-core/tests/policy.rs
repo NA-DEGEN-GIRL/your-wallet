@@ -75,7 +75,7 @@ fn r_m1_method_table_matches_the_shared_golden() {
     }
     assert_eq!(expected.as_slice(), Method::ALL.as_slice());
     let rejected = names(&golden, "rejected");
-    assert_eq!(rejected.len(), 38);
+    assert_eq!(rejected.len(), 35);
     for name in rejected {
         assert_eq!(Method::parse(&name), None, "{name}");
     }

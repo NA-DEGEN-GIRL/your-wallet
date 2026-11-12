@@ -52,14 +52,14 @@ test("S1 METHOD_ROUTE equals v1-methods.golden.json and contains no rejected met
     Object.keys(shared.METHOD_ROUTE),
     [...methods.permission, ...methods.read, ...methods.signing]
   );
-  assert.equal(Object.keys(shared.METHOD_ROUTE).length, 37);
+  assert.equal(Object.keys(shared.METHOD_ROUTE).length, 40);
   assert.equal(Object.isFrozen(shared.METHOD_ROUTE), true);
   for (const [route, list] of Object.entries({ permission: methods.permission, read: methods.read, signing: methods.signing })) {
     for (const method of list) {
       assert.equal(shared.methodRoute(method), route, method);
     }
   }
-  assert.equal(methods.rejected.length, 38);
+  assert.equal(methods.rejected.length, 35);
   for (const method of methods.rejected) {
     assert.equal(Object.hasOwn(shared.METHOD_ROUTE, method), false, method);
     assert.equal(shared.methodRoute(method), null, method);
@@ -236,7 +236,13 @@ test("S9 Solana/Bitcoin: method families, wire compat modes and account events",
   assert.equal(shared.methodFamily("sol_connect"), "sol");
   assert.equal(shared.methodFamily("btc_signMessage"), "btc");
   assert.equal(shared.methodFamily("eth_chainId"), "evm");
-  for (const method of ["sol_signTransaction", "sol_signAndSendTransaction", "btc_signPsbt", "btc_sendBitcoin"]) {
+  // spec/05 §3.6: the three Solana transaction methods are signing methods of the sol family;
+  // the provider's serial `signAndSendAll` and Bitcoin PSBT/send stay off the wire.
+  for (const method of ["sol_signTransaction", "sol_signAllTransactions", "sol_signAndSendTransaction"]) {
+    assert.equal(shared.methodRoute(method), "signing", method);
+    assert.equal(shared.methodFamily(method), "sol", method);
+  }
+  for (const method of ["sol_signAndSendAllTransactions", "btc_signPsbt", "btc_sendBitcoin"]) {
     assert.equal(shared.methodRoute(method), null, method);
   }
   assert.equal(shared.normalizeSolCompatMode("phantom"), "phantom");

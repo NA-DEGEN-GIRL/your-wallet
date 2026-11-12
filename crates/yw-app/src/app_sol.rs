@@ -1256,6 +1256,10 @@ impl App {
                 self.refresh();
             }
             RpcEvent::SolPreviewed(result) => self.on_sol_previewed(*result),
+            RpcEvent::SolDappPreviewed(result) => {
+                let (job, result) = *result;
+                self.on_sol_dapp_previewed(job, result);
+            }
             RpcEvent::SolPreSigned { job, result } => self.on_sol_presigned(job, result),
             RpcEvent::SolTracked(result) => self.on_sol_tracked(&result),
             RpcEvent::SolScanned { job, result } => {

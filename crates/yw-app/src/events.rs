@@ -32,7 +32,7 @@ use crate::flow::evm::track::{BroadcastOutcome, TrackResult};
 use crate::flow::evm::user_chain::ProbeError;
 use crate::meta::{ActivityEntry, Meta};
 use crate::network::NetworkId;
-use crate::sol::flow::{PreSignError, PreviewResult, TrackResult as SolTrackResult};
+use crate::sol::flow::{DappPreview, PreSignError, PreviewResult, TrackResult as SolTrackResult};
 use crate::sol::scan::ScanRow;
 use crate::workers::journal::btc::{
     BtcJournalDone, BtcJournalOp, BtcKeyError, BtcMetaOp, BtcMetaUpdate, BtcSignFailure,
@@ -434,7 +434,8 @@ pub enum KeyJob {
         /// The card PIN for this one operation.
         pin: Zeroizing<Vec<u8>>,
     },
-    /// Sign an approved Solana or Bitcoin dApp message (spec/07 §19, spec/08 §17).
+    /// Sign an approved Solana or Bitcoin dApp message (spec/07 §19, spec/08 §17), or the
+    /// transactions of a sign-only Solana dApp request (spec/07 §20.8).
     SignChainMessage {
         /// Who answers the result.
         ticket: SignTicket,
@@ -581,11 +582,14 @@ pub struct MessageSigned {
     pub result: Result<[u8; 65], MessageSignFailure>,
 }
 
-/// A Solana or Bitcoin message signature.
+/// A Solana or Bitcoin message signature, or signed Solana dApp transactions.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ChainSignature {
     /// Ed25519 signature.
     Sol([u8; 64]),
+    /// The signed wire transactions of a sign-only dApp request, in request order (spec/07
+    /// §20.8: only our signature slot differs from the dApp's bytes).
+    SolTxs(Vec<Vec<u8>>),
     /// Base64 Bitcoin signature and the committed hash.
     Btc(yw_core::btc::msgsign::BtcMessageSignature),
 }
@@ -1255,6 +1259,9 @@ pub enum RpcEvent {
     },
     /// Solana preview finished.
     SolPreviewed(Box<PreviewResult>),
+    /// The preview of a dApp Solana transaction request finished (spec/07 §20.7): the job and
+    /// what the RPC said, or the failure of a required call.
+    SolDappPreviewed(Box<(u64, Result<DappPreview, ErrorCode>)>),
     /// Solana pre-sign lookup finished.
     SolPreSigned {
         /// Job.

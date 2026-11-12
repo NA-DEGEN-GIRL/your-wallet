@@ -106,8 +106,10 @@ fn card_title(origin: &BrowserOrigin, family: Family) -> String {
     format!("{}  ·  {}", origin.as_str(), family_name(family))
 }
 
-/// What a Solana or Bitcoin connection allows (spec/05 §4.9), on its own line of the card.
+/// What a Bitcoin connection allows (spec/05 §4.9), on its own line of the card.
 const T_PROOF_ONLY: &str = "메시지 서명·소유 증명만";
+/// What a Solana connection allows (spec/04 §2.9, 2026-11-12: dApp transactions, D38).
+const T_SOL_RIGHTS: &str = "연결·메시지 서명·거래 서명(매번 승인)";
 
 /// The family name of a card title and of the `연결 해제` notice.
 const fn family_name(family: Family) -> &'static str {
@@ -265,7 +267,7 @@ impl App {
                 crate::ui::badge::Badge::family(BookChain::Sol),
                 Box::new(Item::Field("네트워크".to_owned(), "Solana".to_owned())),
             ));
-            items.push(Item::Field("권한".to_owned(), T_PROOF_ONLY.to_owned()));
+            items.push(Item::Field("권한".to_owned(), T_SOL_RIGHTS.to_owned()));
             items.push(Item::Field(
                 "연결 시각".to_owned(),
                 local_time(grant.granted_at_unix_ms),

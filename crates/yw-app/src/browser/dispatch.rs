@@ -1556,6 +1556,32 @@ impl BrowserCore {
                         message,
                         protocol,
                     },
+                    (
+                        Method::SolSignTransaction
+                        | Method::SolSignAllTransactions
+                        | Method::SolSignAndSendTransaction,
+                        Validated::SolTx {
+                            public,
+                            chain,
+                            txs,
+                            mode,
+                            batch,
+                            options,
+                        },
+                    ) => {
+                        // spec/05 §3.6: a `chain` the dApp names must be the wallet's cluster.
+                        if chain.is_some_and(|chain| chain != state.wallet.sol_cluster) {
+                            immediate(&mut state, Err(ProviderError::InvalidParams));
+                            return;
+                        }
+                        SiteKind::SolTx {
+                            public,
+                            txs,
+                            mode,
+                            batch,
+                            options,
+                        }
+                    }
                     _ => {
                         immediate(&mut state, Err(ProviderError::Internal));
                         return;
@@ -1683,7 +1709,7 @@ impl BrowserCore {
                 }
                 // spec/05 §4.9: a signing request names a granted Solana key / Bitcoin address.
                 let chain_ok = match kind {
-                    SiteKind::SolSign { public, .. } => {
+                    SiteKind::SolSign { public, .. } | SiteKind::SolTx { public, .. } => {
                         admission.sol_grant.is_some_and(|g| g.public == *public)
                     }
                     SiteKind::BtcSign { address, .. } => admission
