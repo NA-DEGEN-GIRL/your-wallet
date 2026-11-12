@@ -116,6 +116,25 @@ rules! {
     W06 = b'W' 6, High, "SIWS 발급 시각이 현재 시각과 10분 넘게 다릅니다";
     W07 = b'W' 7, Blocked, "SIWS 형식이 올바르지 않습니다";
     W08 = b'W' 8, Info, "로그인 요청 (SIWS)";
+    X01 = b'X' 1, Blocked, "Solana 거래에 서명할 수 없습니다";
+    X02 = b'X' 2, High, "해석하지 않은 명령을 호출합니다 — 무엇을 하는지 지갑이 확인할 수 없습니다";
+    X03 = b'X' 3, High, "내 지갑(서명자)이나 내 토큰 계정이 해석하지 않은 명령에 전달됩니다 — 이 명령이 자산을 옮길 수 있습니다";
+    X04 = b'X' 4, High, "토큰 사용 권한 위임(Approve) — 위임받은 주소가 내 토큰을 옮길 수 있습니다";
+    X05 = b'X' 5, High, "계정 권한 변경(SetAuthority)";
+    X06 = b'X' 6, High, "내 지갑 계정의 소유 프로그램을 바꿉니다(Assign·Allocate)";
+    X07 = b'X' 7, High, "내 토큰 계정을 닫고 남은 SOL을 다른 주소로 보냅니다";
+    X08 = b'X' 8, High, "durable nonce 거래 — 만료되지 않아 나중에 언제든 처리될 수 있습니다";
+    X09 = b'X' 9, High, "시뮬레이션이 실패했거나 결과가 없습니다 — 실제 효과를 확인할 수 없습니다";
+    X10 = b'X' 10, Caution, "조회 테이블 주소는 RPC가 알려준 값입니다";
+    X11 = b'X' 11, Caution, "서명만 해서 사이트에 돌려줍니다 — 지갑은 전송·추적하지 않고 활동에 남지 않습니다";
+    X12 = b'X' 12, Caution, "Token-2022 전송 수수료가 있습니다(민트 TLV 1 TransferFeeConfig — 받는 쪽 금액이 줄 수 있습니다)";
+    X13 = b'X' 13, Info, "다른 계정이 수수료를 내거나 사이트가 넣은 서명이 있습니다";
+    X14 = b'X' 14, High, "수수료가 설정한 상한을 넘습니다";
+    X15 = b'X' 15, High, "시뮬레이션에서 위임·소유자·닫기 권한이 바뀌거나 지갑 소유 프로그램이 바뀝니다";
+    X16 = b'X' 16, High, "알고 있는 주소와 앞뒤가 같지만 다른 주소입니다 — 주소 오염 공격일 수 있습니다";
+    X17 = b'X' 17, High, "토큰에 영구 위임자 또는 전송 훅이 있습니다(Token-2022)";
+    X18 = b'X' 18, Caution, "런타임 한도에 걸려 실패할 수 있습니다 (계정 128개 초과·중복 ComputeBudget)";
+    X19 = b'X' 19, Caution, "블록해시를 바꿔 시뮬레이션했습니다 — 결과는 참고용입니다";
     H01 = b'H' 1, Info, "HyperCore 사용자 서명 작업입니다 — 서명하면 Hyperliquid가 바로 처리하며 되돌릴 수 없습니다";
     H02 = b'H' 2, Caution, "받는 주소가 주소록에 없습니다 — 주소 전체를 확인하세요";
     H03 = b'H' 3, High, "알고 있는 주소와 앞뒤가 같지만 다른 주소입니다 — 주소 오염 공격일 수 있습니다";
@@ -138,10 +157,10 @@ rules! {
     C04 = b'C' 4, Info, "WalletConnect 요청 — Verify 서버는 사이트가 주장한 주소와 일치한다고 알렸지만, 브라우저 밖에서 도는 dApp은 이 결과를 꾸밀 수 있습니다";
 }
 
-/// Simulation-status rules shown first within their level (spec/03 §10.1, D15).
+/// Simulation-status rules shown first within their level (spec/03 §10.1, D15; X09 spec/07 §20.6).
 #[must_use]
 pub fn is_simulation_status(rule: RuleId) -> bool {
-    [E01, E02, E03, E04, E07, E08, E09, E36, E37].contains(&rule)
+    [E01, E02, E03, E04, E07, E08, E09, E36, E37, X09].contains(&rule)
 }
 
 /// A warning with the rule's base text and an optional cause line (`base ‖ LF ‖ cause`).

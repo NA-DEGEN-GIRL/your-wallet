@@ -379,9 +379,10 @@ pub const fn pin_bounds(role: KeyRole) -> (u8, u8) {
 }
 
 /// The card key role of an approval signed on a `YubiKey` (spec/10 §10): an EVM approval of
-/// `EvmKeySource::Hardware`, a Solana transfer or message of `SolKeySource::Hardware`, a Bitcoin
-/// message of `BtcKeySource::Hardware`. `None` for a software approval (and for a Bitcoin send,
-/// whose key is the plan's account: [`btc_plan_role`]).
+/// `EvmKeySource::Hardware`, a Solana transfer, message or dApp transaction of
+/// `SolKeySource::Hardware`, a Bitcoin message of `BtcKeySource::Hardware`. `None` for a
+/// software approval (and for a Bitcoin send, whose key is the plan's account:
+/// [`btc_plan_role`]).
 #[must_use]
 pub fn approval_role(approved: &yw_core::approval::Approved) -> Option<KeyRole> {
     role_of(&approved.signer(), approved.payload())
@@ -406,6 +407,12 @@ pub fn role_of(
             _ => None,
         },
         SigningPayload::SolMessage(payload) => match payload.source {
+            SolKeySource::Hardware(index) => Some(KeyRole::Sol { index }),
+            _ => None,
+        },
+        // dApp transactions (spec/07 §20.5): without this arm `card_begin` would refuse the
+        // approval and the software path would refuse the hardware key.
+        SigningPayload::SolTx(payload) => match payload.source {
             SolKeySource::Hardware(index) => Some(KeyRole::Sol { index }),
             _ => None,
         },
@@ -1753,5 +1760,40 @@ mod tests {
             })
             .unwrap();
         assert!(!other_program_signs());
+    }
+
+    /// spec/07 §20.5 (E8): a dApp transaction of a `YubiKey` Solana account has the card's Solana
+    /// role, so `card_begin` takes it to the card; a software account has none.
+    #[test]
+    fn dapp_transactions_of_a_yubikey_account_go_to_the_card() {
+        use yw_core::approval::{Signer, SigningPayload};
+        use yw_core::bip32::path::AccountIndex;
+        use yw_core::slip10::SolKeySource;
+        use yw_core::sol::dapp::{SolSendOptions, SolTxMode, SolTxPayload};
+        use yw_core::yubikey::plan::KeyRole;
+        let index = AccountIndex::new(2).unwrap();
+        let payload = |source| {
+            SigningPayload::SolTx(Box::new(SolTxPayload {
+                source,
+                public: [7; 32],
+                mode: SolTxMode::SignOnly,
+                options: SolSendOptions::default(),
+                items: Vec::new(),
+            }))
+        };
+        assert_eq!(
+            super::role_of(
+                &Signer::FromPayload,
+                &payload(SolKeySource::Hardware(index))
+            ),
+            Some(KeyRole::Sol { index })
+        );
+        assert_eq!(
+            super::role_of(
+                &Signer::FromPayload,
+                &payload(SolKeySource::Standard(index))
+            ),
+            None
+        );
     }
 }

@@ -1091,7 +1091,7 @@ fn grouped_display_is_the_full_address() {
 // ---------------------------------------------------------------- imported keys (spec/02 §8.4)
 
 /// The spec/07 §17.1 standard-0 key imported as a Phantom-style base58 keypair.
-fn imported_vault() -> crate::vault::Vault {
+pub(super) fn imported_vault() -> crate::vault::Vault {
     let mut pair = secret().to_vec();
     pair.extend_from_slice(&addr(FROM).to_bytes());
     let key = crate::keyimport::ImportKey::parse(
@@ -1180,7 +1180,7 @@ fn imported_source_needs_the_matching_imported_key() {
 
 /// A card (emulator) with PIV 82 = Solana account 0 of `abandon`×11 `about`, and the unlocked
 /// `about` vault holding its tag-5 record.
-fn sol_card() -> (
+pub(super) fn sol_card() -> (
     crate::yubikey::mock::MockCard,
     crate::vault::Vault,
     crate::yubikey::sign::CardKey,

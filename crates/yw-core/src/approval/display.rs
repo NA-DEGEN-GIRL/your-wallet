@@ -105,6 +105,30 @@ impl FieldKey {
     pub const SOL_VALIDITY: Self = Self(0x0508);
     /// SOL 감사(`intent_hash`).
     pub const SOL_AUDIT: Self = Self(0x0509);
+    /// SOL dApp 거래: 요청(서명만·서명 후 전송, 거래 수; spec/07 §20.6).
+    pub const SOL_TX_SUMMARY: Self = Self(0x0510);
+    /// SOL dApp 거래: 서명자·수수료 지불.
+    pub const SOL_TX_SIGNERS: Self = Self(0x0511);
+    /// SOL dApp 거래: 명령(거래마다 여러 줄 값 하나).
+    pub const SOL_TX_INSTRUCTIONS: Self = Self(0x0512);
+    /// SOL dApp 거래: 쓰기 가능한 계정.
+    pub const SOL_TX_WRITABLE: Self = Self(0x0513);
+    /// SOL dApp 거래: 조회 테이블(RPC).
+    pub const SOL_TX_LOOKUPS: Self = Self(0x0514);
+    /// SOL dApp 거래: 자산·권한 변화(시뮬레이션 참고).
+    pub const SOL_TX_CHANGES: Self = Self(0x0515);
+    /// SOL dApp 거래: 수수료.
+    pub const SOL_TX_FEE: Self = Self(0x0516);
+    /// SOL dApp 거래: 시뮬레이션(참고).
+    pub const SOL_TX_SIMULATION: Self = Self(0x0517);
+    /// SOL dApp 거래: 유효 시간.
+    pub const SOL_TX_VALIDITY: Self = Self(0x0518);
+    /// SOL dApp 거래: 전송 방식(서명 후 전송만).
+    pub const SOL_TX_SEND_OPTIONS: Self = Self(0x0519);
+    /// SOL dApp 거래: 감사(메시지 SHA-256).
+    pub const SOL_TX_AUDIT: Self = Self(0x051A);
+    /// SOL dApp 거래: 원본 메시지(hex).
+    pub const SOL_TX_RAW: Self = Self(0x0540);
     /// BTC 받는 주소.
     pub const BTC_TO: Self = Self(0x0601);
     /// BTC 주소 종류.
@@ -170,6 +194,8 @@ impl FieldKey {
             | 0x0402
             | 0x0404..=0x0406
             | 0x0501..=0x0505
+            | 0x0510..=0x0516
+            | 0x0519
             | 0x0601..=0x0607
             | 0x0609
             | 0x0701..=0x0704
@@ -181,6 +207,10 @@ impl FieldKey {
             | 0x0141
             | 0x0403
             | 0x0506..=0x0509
+            | 0x0517
+            | 0x0518
+            | 0x051A
+            | 0x0540
             | 0x0608
             | 0x0640
             | 0x0705

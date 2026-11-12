@@ -19,7 +19,7 @@ pub const MAX_APPROVALS_GLOBAL: usize = 64;
 /// Ready display lifetime (D23).
 pub const APPROVAL_DISPLAY_MS: u64 = 120_000;
 
-/// yw-app's field label table (spec/03 §11.2, spec/07 §13.3 and spec/08 §10 names). Keys
+/// yw-app's field label table (spec/03 §11.2, spec/07 §13.3 and §20.6, spec/08 §10 names). Keys
 /// outside it are not displayed.
 #[must_use]
 pub const fn field_label(key: FieldKey) -> Option<&'static str> {
@@ -57,12 +57,21 @@ pub const fn field_label(key: FieldKey) -> Option<&'static str> {
         0x0501 | 0x0601 | 0x0702 | 0x0801 => "받는 주소",
         0x0502 => "자산·금액",
         0x0503 => "ATA 생성",
-        0x0504 | 0x0606 | 0x0704 | 0x0805 => "수수료",
+        0x0504 | 0x0516 | 0x0606 | 0x0704 | 0x0805 => "수수료",
         0x0505 => "최대 총 차감",
         0x0506 => "잔액 (RPC 참고)",
-        0x0507 => "시뮬레이션 (참고)",
-        0x0508 => "유효 시간",
+        0x0507 | 0x0517 => "시뮬레이션 (참고)",
+        0x0508 | 0x0518 => "유효 시간",
         0x0509 => "감사",
+        0x0510 => "요청",
+        0x0511 => "서명자·수수료 지불",
+        0x0512 => "명령",
+        0x0513 => "쓰기 가능한 계정",
+        0x0514 => "조회 테이블 (RPC)",
+        0x0515 => "자산·권한 변화 (시뮬레이션 참고)",
+        0x0519 => "전송 방식",
+        0x051A => "감사 (메시지 SHA-256)",
+        0x0540 => "원본 메시지",
         0x0602 | 0x0802 => "주소 종류",
         0x0603 | 0x0803 => "금액",
         0x0604 | 0x0804 => "잔돈",

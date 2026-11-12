@@ -206,13 +206,27 @@ const fn is_diff(key: FieldKey) -> bool {
 }
 
 const fn is_raw(field: &DisplayField) -> bool {
-    !field.critical && matches!(field.key.0, 0x0140..=0x014F | 0x0706)
+    !field.critical && matches!(field.key.0, 0x0140..=0x014F | 0x0540 | 0x0706)
 }
 
 const fn is_mono(key: FieldKey) -> bool {
     matches!(
         key.0,
-        0x0003 | 0x0101 | 0x0125 | 0x0140 | 0x0141 | 0x0501 | 0x0509 | 0x0601 | 0x0702 | 0x0706
+        0x0003
+            | 0x0101
+            | 0x0125
+            | 0x0140
+            | 0x0141
+            | 0x0501
+            | 0x0509
+            | 0x0511
+            | 0x0513
+            | 0x0514
+            | 0x051A
+            | 0x0540
+            | 0x0601
+            | 0x0702
+            | 0x0706
     )
 }
 
@@ -220,6 +234,12 @@ const fn is_mono(key: FieldKey) -> bool {
 /// 금액·수수료 행").
 const fn is_sol_money(key: FieldKey) -> bool {
     matches!(key.0, 0x0502..=0x0505)
+}
+
+/// The changes and fee rows of a dApp Solana transaction (spec/07 §20.6: the window shows them
+/// first, then the instructions).
+const fn is_sol_tx_money(key: FieldKey) -> bool {
+    matches!(key.0, 0x0515 | 0x0516)
 }
 
 /// BTC amount, change, inputs, fee and total rows (spec/08 §10: the asset-change area is
@@ -784,6 +804,29 @@ fn summary_value(request: &ApprovalRequest) -> (String, Option<&str>) {
             ),
             None,
         ),
+        // The mode and count come from the request row `0x0510` (spec/07 §20.6).
+        ApprovalKind::SolTransaction => {
+            let request_row = field_value(display, 0x0510).unwrap_or("");
+            if request_row.starts_with("서명 후 전송") {
+                (
+                    format!(
+                        "{place}사이트가 만든 Solana 거래에 서명하고 지갑이 바로 전송합니다. 되돌릴 수 없습니다."
+                    ),
+                    None,
+                )
+            } else {
+                let count = request_row
+                    .lines()
+                    .find_map(|line| line.strip_prefix("거래 ")?.strip_suffix("건"))
+                    .unwrap_or("1");
+                (
+                    format!(
+                        "{place}사이트가 만든 Solana 거래 {count}건에 서명해 사이트에 돌려줍니다. 지갑은 전송하지 않습니다."
+                    ),
+                    None,
+                )
+            }
+        }
     }
 }
 
@@ -916,6 +959,9 @@ pub fn signing_view(
     }
     let show_diff = matches!(state, Some(SimState::Ok | SimState::Incomplete));
     let sol = request.kind == yw_core::approval::ApprovalKind::SolTransfer;
+    // dApp Solana transactions (spec/07 §20.6): no EVM simulation card; the changes (a
+    // simulation reference) and the fee take the money area.
+    let sol_tx = request.kind.is_sol_transaction();
     let btc = request.kind.is_btc();
     // Message signatures move no assets: no "자산 변화" card (it would only say "no simulation").
     let message = matches!(
@@ -927,14 +973,20 @@ pub fn signing_view(
     let hc = request.kind == yw_core::approval::ApprovalKind::HyperCoreAction;
     let money = |key: FieldKey| {
         (sol && is_sol_money(key))
+            || (sol_tx && is_sol_tx_money(key))
             || (btc && is_btc_money(key))
             || (hc && matches!(key.0, 0x0703 | 0x0704))
     };
     // The EVM asset-change card ends with the fee (2026-11-10): the expected fee of the
     // simulation and the maximum, so they are not looked for below.
-    let fee_in_card = !(sol || btc || hc || message) && field_value(display, 0x0120).is_some();
-    if sol || btc || hc {
-        view.blocks.push(Block::Section("금액·수수료"));
+    let fee_in_card =
+        !(sol || sol_tx || btc || hc || message) && field_value(display, 0x0120).is_some();
+    if sol || sol_tx || btc || hc {
+        view.blocks.push(Block::Section(if sol_tx {
+            "자산 변화·수수료 (시뮬레이션 참고)"
+        } else {
+            "금액·수수료"
+        }));
         for field in display.fields.iter().filter(|field| money(field.key)) {
             view.blocks.push(Block::Field {
                 label: label_of(field),
@@ -1550,6 +1602,119 @@ mod tests {
             ),
             "{:?}",
             view.blocks.get(1)
+        );
+    }
+
+    /// A hand-assembled transfer of 1,000 lamports from `abandon`×11 `about` standard 0 (it pays
+    /// the fee, its slot still zero).
+    fn sol_dapp_request(mode: yw_core::sol::dapp::SolTxMode) -> yw_core::approval::ApprovalRequest {
+        use yw_core::sol::SolAddress;
+        use yw_core::sol::dapp::display::{SolTxFacts, SolTxItemFacts, SolTxRequest};
+        let wallet = SolAddress::parse("HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk").unwrap();
+        let mut message = vec![1, 0, 1, 3];
+        message.extend_from_slice(wallet.as_bytes());
+        message.extend_from_slice(&[0x22; 32]);
+        message.extend_from_slice(&[0; 32]);
+        message.extend_from_slice(&[7; 32]);
+        message.extend_from_slice(&[1, 2, 2, 0, 1, 12, 2, 0, 0, 0]);
+        message.extend_from_slice(&1_000_u64.to_le_bytes());
+        let mut wire = vec![1];
+        wire.extend_from_slice(&[0; 64]);
+        wire.extend_from_slice(&message);
+        let request = SolTxRequest {
+            id: ApprovalId([4; 16]),
+            origin: yw_core::policy::BrowserOrigin::parse("https://app.example").unwrap(),
+            cluster: yw_core::sol::SolCluster::Devnet,
+            source: yw_core::slip10::SolKeySource::Standard(AccountIndex::ZERO),
+            public: wallet.to_bytes(),
+            label: "Solana 1".to_owned(),
+            mode,
+            options: yw_core::sol::dapp::SolSendOptions::default(),
+            txs: vec![wire],
+        };
+        let facts = SolTxFacts {
+            items: vec![SolTxItemFacts {
+                tables: Ok((0, Vec::new())),
+                pre: Vec::new(),
+                post: None,
+                sim: yw_core::sol::display::SimSummary::Ok { units: 150 },
+                sim_replaced_blockhash: false,
+                rpc_fee: Some(5_000),
+                blockhash_valid: Some(true),
+            }],
+            mints: Vec::new(),
+            known: Vec::new(),
+            fee_cap: 100_000,
+        };
+        let draft = yw_core::sol::dapp::build_sol_tx_request(&request, &facts).unwrap();
+        ApprovalStore::new().issue(draft, 1, NOW).unwrap()
+    }
+
+    /// spec/07 §20.6: a dApp Solana transaction says whether the wallet sends it, its changes and
+    /// fee take the money area, the instructions are key fields, and the raw message folds into
+    /// `자세히` as raw data after the plain details.
+    #[test]
+    fn sol_dapp_transaction_view() {
+        use yw_core::sol::dapp::SolTxMode;
+        let request = sol_dapp_request(SolTxMode::SignOnly);
+        let (sentence, address) = summary(&request);
+        assert_eq!(
+            sentence,
+            "Solana devnet (테스트)에서 사이트가 만든 Solana 거래 1건에 서명해 사이트에 돌려줍니다. 지갑은 전송하지 않습니다."
+        );
+        assert_eq!(address, None);
+        let view = signing_view(&request, true, true, Vec::new(), true).unwrap();
+        let sections: Vec<&str> = view
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                Block::Section(title) => Some(*title),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            sections,
+            [
+                "자산 변화·수수료 (시뮬레이션 참고)",
+                "확인할 경고",
+                "핵심 정보"
+            ]
+        );
+        let labels: Vec<(&str, bool)> = view
+            .blocks
+            .iter()
+            .filter_map(|block| match block {
+                Block::Field { label, mono, .. } => Some((label.as_str(), *mono)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                ("자산·권한 변화 (시뮬레이션 참고)", false),
+                ("수수료", false),
+                ("요청", false),
+                ("명령", false),
+                ("쓰기 가능한 계정", true),
+                ("서명자·수수료 지불", true),
+                ("조회 테이블 (RPC)", true),
+                ("시뮬레이션 (참고)", false),
+                ("유효 시간", false),
+                ("감사 (메시지 SHA-256)", true),
+                ("원본 메시지", true),
+            ]
+        );
+        let send = sol_dapp_request(SolTxMode::SignAndSend);
+        assert_eq!(
+            summary(&send).0,
+            "Solana devnet (테스트)에서 사이트가 만든 Solana 거래에 서명하고 지갑이 바로 전송합니다. 되돌릴 수 없습니다."
+        );
+        assert!(
+            signing_view(&send, false, true, Vec::new(), true)
+                .unwrap()
+                .blocks
+                .iter()
+                .any(|block| matches!(block, Block::Field { label, .. } if label == "전송 방식"))
         );
     }
 }

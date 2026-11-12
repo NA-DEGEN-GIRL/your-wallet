@@ -4,8 +4,8 @@
 //! Ported from `archive/spec-v2.4:crates/wallet-protocol/src/approval.rs:16-22,163-189,466-541`
 //! (transcript digest, constant-time one-shot consume) without registry/ruleset/RPC-observation/
 //! protocol-validity bindings, and with the simulation state always bound (D15). Display rules
-//! come from `archive/spec-v2.4:crates/approval-wire/src/lib.rs:231-777,1212-1300`. SOL (M7) and
-//! BTC (M8) variants are included.
+//! come from `archive/spec-v2.4:crates/approval-wire/src/lib.rs:231-777,1212-1300`. SOL (M7, dApp
+//! transactions M7.2) and BTC (M8) variants are included.
 
 mod display;
 pub(crate) mod message;
@@ -26,6 +26,7 @@ pub use text::{
 };
 
 pub use crate::evm::display::{build_evm_tx_request, build_personal_request, build_typed_request};
+pub use crate::sol::dapp::{SolCommitment, SolSendOptions, SolTxItem, SolTxMode, SolTxPayload};
 
 /// The `요청 출처` value of every app-initiated approval (EVM, Solana and Bitcoin sends). It is
 /// display text and therefore part of `display_bytes` and the approval digest (spec/03 §11.3).
@@ -163,6 +164,9 @@ pub enum ApprovalKind {
     SolMessage = 0x21,
     /// dApp Sign-In-With-Solana (`sol_signIn`, spec/07 §19.4).
     SolSignIn = 0x22,
+    /// dApp Solana transactions (`sol_signTransaction`, `sol_signAllTransactions`,
+    /// `sol_signAndSendTransaction`, spec/07 §20; the mode is in the payload).
+    SolTransaction = 0x23,
     /// dApp Bitcoin message signature (`btc_signMessage`, spec/08 §17; ownership proof only).
     BtcMessage = 0x32,
     /// Zcash transparent send (spec/12 §9; origin is always the app).
@@ -190,6 +194,13 @@ impl ApprovalKind {
         matches!(self, Self::SolMessage | Self::SolSignIn | Self::BtcMessage)
     }
 
+    /// Whether this is a dApp Solana transaction (spec/07 §20). It is not a chain message: the
+    /// sign-only answer takes the chain-message route, the send its own (§20.8).
+    #[must_use]
+    pub const fn is_sol_transaction(self) -> bool {
+        matches!(self, Self::SolTransaction)
+    }
+
     /// Whether this is one of the three EVM transaction kinds.
     #[must_use]
     pub const fn is_evm_transaction(self) -> bool {
@@ -215,6 +226,9 @@ pub enum SigningPayload {
     Btc(Vec<u8>),
     /// A Solana message (signed as-is with Ed25519) and its key (spec/07 §19).
     SolMessage(Box<SolMessagePayload>),
+    /// dApp Solana transactions: the exact wire bytes, our signer slots and the resolved lookup
+    /// addresses, the mode and the send options (spec/07 §20.6).
+    SolTx(Box<SolTxPayload>),
     /// A Bitcoin message (BIP137 or BIP322) and its key (spec/08 §17).
     BtcMessage(Box<BtcMessagePayload>),
     /// The Zcash `zec_payload` bytes (spec/12 §9).
@@ -346,6 +360,7 @@ impl SigningPayload {
             Self::SolTransfer(intent) => intent.transcript(),
             Self::Btc(payload) | Self::Zec(payload) => payload.clone(),
             Self::SolMessage(payload) => payload.digest_bytes(),
+            Self::SolTx(payload) => payload.digest_bytes(),
             Self::BtcMessage(payload) => payload.digest_bytes(),
             Self::HyperCore(action) => action.digest_bytes(),
         }

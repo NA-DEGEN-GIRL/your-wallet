@@ -301,6 +301,7 @@ fn btc_draft_ok(draft: &ApprovalDraft) -> bool {
         })
 }
 
+#[expect(clippy::too_many_lines, reason = "one arm per approval kind")]
 fn check_draft(draft: &ApprovalDraft) -> Result<(), ApprovalError> {
     let binding_ok = if draft.kind.is_evm_transaction() {
         matches!(
@@ -366,6 +367,21 @@ fn check_draft(draft: &ApprovalDraft) -> Result<(), ApprovalError> {
                 ApprovalOrigin::Site(_),
                 Signer::FromPayload,
             ) if payload.public == *public && *genesis == cluster.genesis()
+        ),
+        // dApp Solana transactions (spec/07 §20.6): the same site/key/genesis rule, and a payload
+        // that passes its own checks (counts, parse, signer slots, resolved lookups, the send
+        // rules, no recovery-scan source).
+        ApprovalKind::SolTransaction => matches!(
+            (&draft.payload, &draft.chain, &draft.account, &draft.origin, &draft.signer),
+            (
+                SigningPayload::SolTx(payload),
+                ChainRef::Solana { cluster, genesis },
+                AccountRef::Sol(public),
+                ApprovalOrigin::Site(_),
+                Signer::FromPayload,
+            ) if payload.public == *public
+                && *genesis == cluster.genesis()
+                && payload.validate().is_ok()
         ),
         // HyperCore (spec/11 §6): app origin, an EVM key and account, and a valid action whose
         // network and signature chain id are the chain's.
