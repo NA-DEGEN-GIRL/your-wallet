@@ -64,6 +64,18 @@ impl DecodedIx {
                 }
         )
     }
+
+    /// The mint a token or ATA instruction names among its accounts (the mints the app reads
+    /// for the Token-2022 extension rules, spec/07 §20.6). `Transfer` and `Approve` name none:
+    /// their mint is the pre-state of the source account.
+    #[must_use]
+    pub const fn named_mint(&self) -> Option<SolAddress> {
+        match self {
+            Self::Token { ix, .. } => ix.named_mint(),
+            Self::Ata(AtaIx::Create { mint, .. }) => Some(*mint),
+            _ => None,
+        }
+    }
 }
 
 /// System program instructions (u32 LE tag, bincode layout).
@@ -497,6 +509,27 @@ impl TokenIx {
             Self::AmountToUiAmount { .. } => 23,
             Self::UiAmountToAmount { .. } => 24,
             Self::Extension { tag } => *tag,
+        }
+    }
+
+    /// The mint account the instruction names ([`DecodedIx::named_mint`]).
+    #[must_use]
+    pub const fn named_mint(&self) -> Option<SolAddress> {
+        match self {
+            Self::InitializeMint { mint, .. }
+            | Self::InitializeMint2 { mint, .. }
+            | Self::InitializeAccount { mint, .. }
+            | Self::InitializeAccount2 { mint, .. }
+            | Self::InitializeAccount3 { mint, .. }
+            | Self::MintTo { mint, .. }
+            | Self::Burn { mint, .. }
+            | Self::FreezeAccount { mint, .. }
+            | Self::ThawAccount { mint, .. }
+            | Self::TransferChecked { mint, .. }
+            | Self::ApproveChecked { mint, .. }
+            | Self::MintToChecked { mint, .. }
+            | Self::BurnChecked { mint, .. } => Some(*mint),
+            _ => None,
         }
     }
 }

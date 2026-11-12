@@ -1,14 +1,25 @@
 //! `sol::flow` (spec/07 §13–§14): the Solana pipelines that run on the `yw-rpc` worker — the
-//! step-2 preview (SOL and allowlisted SPL), the step-5 pre-sign lookup, one broadcast/expiry
-//! round, balances (SOL and the allowlisted tokens' derived ATAs) and the recovery scan. They
-//! never touch keys: the intent is built and issued on the UI thread at first Ready display,
-//! signing and journal commits happen on the key worker. Every pipeline checks `getGenesisHash`
-//! against the selected cluster first (spec/07 §15.1).
+//! step-2 preview (SOL and allowlisted SPL), the step-5 pre-sign lookup, the dApp transaction
+//! preview and pre-sign check (spec/07 §20), one broadcast/expiry round, balances (SOL and the
+//! allowlisted tokens' derived ATAs) and the recovery scan. They never touch keys: the intent is
+//! built and issued on the UI thread at first Ready display, signing and journal commits happen
+//! on the key worker. Every pipeline checks `getGenesisHash` against the selected cluster first
+//! (spec/07 §15.1).
 
 use yw_core::slip10::SolKeySource;
 use yw_core::sol::broadcast::{
-    LoopState, Observation, Outcome, PendingTx, RoundTimes, SigStatus, decide, note_round, plan,
-    wants_history,
+    LoopState, Observation, Outcome, PendingTx, RoundTimes, SigStatus, decide, err, note_round,
+    plan, wants_history,
+};
+use yw_core::sol::dapp::alt::{
+    LOOKUP_TABLE_MAX_DATA, SOL_DAPP_MAX_TABLES, full_keys, lookup_tables, parse_lookup_table,
+    resolve,
+};
+use yw_core::sol::dapp::decode::decode_message;
+use yw_core::sol::dapp::diff::watch_set;
+use yw_core::sol::dapp::{
+    AccountSnapshot, AltError, DecodedIx, KeyRole, LookupTable, PreSignCheck, ResolvedKeys,
+    SolTxFacts, SolTxItemFacts, SolTxMessage, SolWireTx, parse_wire_tx,
 };
 use yw_core::sol::display::{SimSummary, SolBlock, SolPreviewFacts, SplPreviewFacts, intent_flags};
 use yw_core::sol::fee::{
@@ -17,18 +28,18 @@ use yw_core::sol::fee::{
 use yw_core::sol::intent::SolTransferIntent;
 use yw_core::sol::message::{assemble_transaction, encode_message};
 use yw_core::sol::pda::associated_token_address;
-use yw_core::sol::recipient::{AccountClass, RecipientCheck, classify_account};
+use yw_core::sol::recipient::{AccountClass, KnownAddress, RecipientCheck, classify_account};
 use yw_core::sol::rent::{
     check_rent0, check_rent165, check_sol_send, check_spl_send, send_max_amount,
     spl_send_max_amount,
 };
 use yw_core::sol::sign::{SOL_MAX_LVBH_AHEAD, SOL_MIN_LVBH_AHEAD};
 use yw_core::sol::template::{SplAccounts, spl_entries};
-use yw_core::sol::token::{TokenHolding, check_mint, classify_holding};
+use yw_core::sol::token::{MintView, TokenHolding, check_mint, classify_holding, parse_mint_any};
 use yw_core::sol::{SolAddress, SolAsset, SolCluster, SolTransferCore, SplAllowEntry};
 use yw_win::http::HttpsUrl;
 
-use super::rpc::{self as sol_rpc, AccountData};
+use super::rpc::{self as sol_rpc, AccountData, SendConfig};
 use crate::errors::ErrorCode;
 use crate::flow::evm::Clock;
 use crate::rpc::{RpcClient, RpcFailure, Transport, classify};
@@ -495,6 +506,12 @@ pub enum PreSignError {
     ClusterMismatch,
     /// `lastValidBlockHeight` outside `h + 100..=h + 300`.
     RpcAnomaly,
+    /// A dApp send: `isBlockhashValid(processed)` says the transaction's blockhash is no longer
+    /// valid (spec/07 §20.10).
+    BlockhashExpired,
+    /// A dApp send: the lookup tables no longer resolve to the approved addresses (or not at
+    /// all).
+    TablesChanged,
 }
 
 /// Step 5 (spec/07 §13.1): genesis again, `getLatestBlockhash(confirmed)`,
@@ -524,6 +541,391 @@ pub fn pre_sign(
     Ok((blockhash, last_valid))
 }
 
+/// Budget of the dApp preview's reference calls (blockhash check, fee, simulation): later
+/// transactions keep no result (X09).
+pub const DAPP_PREVIEW_BUDGET_MS: u64 = 30_000;
+/// Most writable accounts whose pre-state is read for one transaction.
+pub const DAPP_MAX_PRE_STATE: usize = 128;
+/// Pre-state `dataSlice` length: a token account and the Token-2022 account-type byte
+/// (`data[165]`).
+pub const DAPP_PRE_STATE_SLICE: u64 = 166;
+/// Largest mint read whole (longer: no extension list, the mint is shown without one).
+pub const DAPP_MINT_MAX_DATA: usize = 16_384;
+
+/// The dApp preview input (spec/07 §20.7): the request's transactions, already validated by the
+/// params check.
+#[derive(Clone, Debug)]
+pub struct DappPreviewJob {
+    /// UI job id.
+    pub job: u64,
+    /// Endpoint.
+    pub endpoint: SolEndpoint,
+    /// The signing account.
+    pub wallet: SolAddress,
+    /// The wire transactions, in request order.
+    pub txs: Vec<Vec<u8>>,
+}
+
+/// What the RPC said about a dApp request: the RPC part of [`SolTxFacts`] (the UI thread adds
+/// the known addresses and the fee cap).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DappPreview {
+    /// One entry per transaction, in request order.
+    pub items: Vec<SolTxItemFacts>,
+    /// The mints read (Token-2022 extensions, decimals).
+    pub mints: Vec<(SolAddress, MintView)>,
+}
+
+impl DappPreview {
+    /// The builder's facts with the address book, own accounts and sent history and the user's
+    /// fee cap.
+    #[must_use]
+    pub fn into_facts(self, known: Vec<KnownAddress>, fee_cap: u64) -> SolTxFacts {
+        SolTxFacts {
+            items: self.items,
+            mints: self.mints,
+            known,
+            fee_cap,
+        }
+    }
+}
+
+/// A lookup table account as read: the table, or why it is not one.
+type TableRead = (SolAddress, Result<LookupTable, AltError>);
+
+/// `getMultipleAccounts` of `tables` (whole accounts up to the table maximum) → the lowest
+/// context slot and each table parsed.
+fn read_tables(
+    client: &RpcClient<'_>,
+    url: &HttpsUrl,
+    tables: &[SolAddress],
+) -> Result<(u64, Vec<TableRead>), RpcFailure> {
+    if tables.is_empty() {
+        return Ok((0, Vec::new()));
+    }
+    let (slot, accounts) =
+        sol_rpc::multiple_accounts(client, url, tables, LOOKUP_TABLE_MAX_DATA, None, None)?;
+    let read = tables
+        .iter()
+        .zip(accounts)
+        .map(|(table, account)| {
+            let parsed = match account {
+                None => Err(AltError::Missing(*table)),
+                Some(account) => parse_lookup_table(&account.owner, &account.data)
+                    .ok_or(AltError::NotTable(*table)),
+            };
+            (*table, parsed)
+        })
+        .collect();
+    Ok((slot, read))
+}
+
+/// The tables `message` looks up, from `read`. A table that was not read (past
+/// [`SOL_DAPP_MAX_TABLES`] in one request) counts as missing.
+fn message_tables(
+    message: &SolTxMessage,
+    read: &[TableRead],
+) -> Result<Vec<(SolAddress, LookupTable)>, AltError> {
+    lookup_tables(message)
+        .into_iter()
+        .map(
+            |table| match read.iter().find(|(address, _)| *address == table) {
+                Some((_, Ok(parsed))) => Ok((table, parsed.clone())),
+                Some((_, Err(error))) => Err(*error),
+                None => Err(AltError::Missing(table)),
+            },
+        )
+        .collect()
+}
+
+fn snapshot(account: AccountData) -> AccountSnapshot {
+    AccountSnapshot {
+        owner: account.owner,
+        lamports: account.lamports,
+        data: account.data,
+    }
+}
+
+/// One parsed transaction of the request with what the required lookups found.
+struct DappItem<'a> {
+    tx: &'a [u8],
+    wire: SolWireTx,
+    tables: Result<(u64, Vec<(SolAddress, LookupTable)>), AltError>,
+    roles: Vec<(SolAddress, KeyRole)>,
+    writable: Vec<SolAddress>,
+    pre: Vec<(SolAddress, Option<AccountSnapshot>)>,
+}
+
+/// Facts of a transaction the RPC could not be asked about (it does not parse, which the params
+/// check excludes; the builder refuses it).
+fn unasked() -> SolTxItemFacts {
+    SolTxItemFacts {
+        tables: Ok((0, Vec::new())),
+        pre: Vec::new(),
+        post: None,
+        sim: SimSummary::NoResult,
+        sim_replaced_blockhash: false,
+        rpc_fee: None,
+        blockhash_valid: None,
+    }
+}
+
+/// The dApp transaction preview (spec/07 §20.7), in this order: genesis → the request's lookup
+/// tables (at most [`SOL_DAPP_MAX_TABLES`], resolved per transaction at the answer's slot) →
+/// per transaction the pre-state of its writable accounts (`dataSlice 0/166`, at most
+/// [`DAPP_MAX_PRE_STATE`]) → the mints its token instructions name or its token accounts hold →
+/// then, within [`DAPP_PREVIEW_BUDGET_MS`], per transaction `isBlockhashValid(processed)` (not
+/// for a durable nonce), `getFeeForMessage` and `simulateTransaction` with the watched accounts
+/// (`replaceRecentBlockhash:false`; once more with `true` on `BlockhashNotFound`, never for a
+/// durable nonce). Tables, pre-state and mints are required (a failure fails the preview); an
+/// unresolvable table is that transaction's X01. The rest is reference: a failure or the spent
+/// budget leaves `None` / `NoResult` (X09).
+///
+/// # Errors
+///
+/// The classified transport/RPC failure of a required call, or E-RPC-006 for a genesis
+/// mismatch.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the spec/07 §20.7 call order in one place"
+)]
+pub fn dapp_preview(
+    transport: &dyn Transport,
+    job: &DappPreviewJob,
+    clock: &dyn Clock,
+) -> Result<DappPreview, ErrorCode> {
+    let client = RpcClient::new(transport);
+    let url = &job.endpoint.url;
+    let started = clock.now_ms();
+    if !check_genesis(&client, &job.endpoint)? {
+        return Err(ErrorCode::Rpc006);
+    }
+    let parsed: Vec<Option<(&[u8], SolWireTx)>> = job
+        .txs
+        .iter()
+        .map(|tx| parse_wire_tx(tx).ok().map(|wire| (tx.as_slice(), wire)))
+        .collect();
+    let mut tables: Vec<SolAddress> = Vec::new();
+    for (_, wire) in parsed.iter().flatten() {
+        for table in lookup_tables(&wire.message) {
+            if tables.len() < SOL_DAPP_MAX_TABLES && !tables.contains(&table) {
+                tables.push(table);
+            }
+        }
+    }
+    let (table_slot, table_read) = read_tables(&client, url, &tables).map_err(classify)?;
+    let mut items: Vec<Option<DappItem>> = Vec::with_capacity(parsed.len());
+    for entry in parsed {
+        let Some((tx, wire)) = entry else {
+            items.push(None);
+            continue;
+        };
+        let message = &wire.message;
+        let tables = message_tables(message, &table_read).map(|list| (table_slot, list));
+        let loaded = if message.lookups.is_empty() {
+            Some(ResolvedKeys::default())
+        } else {
+            tables
+                .as_ref()
+                .ok()
+                .and_then(|(slot, list)| resolve(message, list, *slot).ok())
+        };
+        let roles = full_keys(message, loaded.as_ref());
+        let writable: Vec<SolAddress> = roles
+            .iter()
+            .filter(|(_, role)| role.writable)
+            .map(|(key, _)| *key)
+            .take(DAPP_MAX_PRE_STATE)
+            .collect();
+        let pre = if writable.is_empty() {
+            Vec::new()
+        } else {
+            let (_, accounts) = sol_rpc::multiple_accounts(
+                &client,
+                url,
+                &writable,
+                usize::try_from(DAPP_PRE_STATE_SLICE).unwrap_or(usize::MAX),
+                Some((0, DAPP_PRE_STATE_SLICE)),
+                None,
+            )
+            .map_err(classify)?;
+            writable
+                .iter()
+                .zip(accounts)
+                .map(|(key, account)| (*key, account.map(snapshot)))
+                .collect()
+        };
+        items.push(Some(DappItem {
+            tx,
+            wire,
+            tables,
+            roles,
+            writable,
+            pre,
+        }));
+    }
+    // Mints: named by token and ATA instructions, or held by a pre-state token account.
+    let mut mint_keys: Vec<SolAddress> = Vec::new();
+    for item in items.iter().flatten() {
+        let named = decode_message(&item.wire.message, &item.roles)
+            .iter()
+            .filter_map(DecodedIx::named_mint)
+            .collect::<Vec<_>>();
+        let held = item
+            .pre
+            .iter()
+            .filter_map(|(_, snapshot)| snapshot.as_ref()?.token().map(|view| view.mint));
+        for mint in named.into_iter().chain(held) {
+            if !mint_keys.contains(&mint) {
+                mint_keys.push(mint);
+            }
+        }
+    }
+    let mints = if mint_keys.is_empty() {
+        Vec::new()
+    } else {
+        let (_, accounts) =
+            sol_rpc::multiple_accounts(&client, url, &mint_keys, DAPP_MINT_MAX_DATA, None, None)
+                .map_err(classify)?;
+        mint_keys
+            .iter()
+            .zip(accounts)
+            .filter_map(|(mint, account)| {
+                let account = account?;
+                parse_mint_any(&account.owner, &account.data).map(|view| (*mint, view))
+            })
+            .collect()
+    };
+    // References within the budget.
+    let in_budget = || clock.now_ms().saturating_sub(started) < DAPP_PREVIEW_BUDGET_MS;
+    let mut checked: Vec<([u8; 32], bool)> = Vec::new();
+    let mut facts = Vec::with_capacity(items.len());
+    for item in items {
+        let Some(item) = item else {
+            facts.push(unasked());
+            continue;
+        };
+        let nonce = item.wire.message.durable_nonce().is_some();
+        let blockhash = item.wire.message.blockhash;
+        let blockhash_valid = if nonce {
+            None
+        } else if let Some((_, valid)) = checked.iter().find(|(hash, _)| *hash == blockhash) {
+            Some(*valid)
+        } else if in_budget() {
+            sol_rpc::blockhash_valid(&client, url, &blockhash)
+                .ok()
+                .map(|(valid, _)| {
+                    checked.push((blockhash, valid));
+                    valid
+                })
+        } else {
+            None
+        };
+        let rpc_fee = if in_budget() {
+            sol_rpc::fee_for_message(&client, url, &item.wire.message_bytes)
+                .ok()
+                .flatten()
+        } else {
+            None
+        };
+        let keys: Vec<SolAddress> = item.roles.iter().map(|(key, _)| *key).collect();
+        let watch = watch_set(&job.wallet, &keys, &item.writable, &item.pre);
+        let mut sim = None;
+        let mut replaced = false;
+        if in_budget() {
+            let first = sol_rpc::simulate_dapp(&client, url, item.tx, &watch, false);
+            let stale = matches!(
+                first.summary,
+                SimSummary::Failed {
+                    err: err::BLOCKHASH_NOT_FOUND,
+                    ..
+                }
+            );
+            sim = Some(first);
+            if stale && !nonce && in_budget() {
+                sim = Some(sol_rpc::simulate_dapp(&client, url, item.tx, &watch, true));
+                replaced = true;
+            }
+        }
+        let (summary, post) = sim.map_or((SimSummary::NoResult, None), |sim| {
+            let post = sim.accounts.map(|accounts| {
+                watch
+                    .iter()
+                    .zip(accounts)
+                    .map(|(key, account)| (*key, account.map(snapshot)))
+                    .collect()
+            });
+            (sim.summary, post)
+        });
+        facts.push(SolTxItemFacts {
+            tables: item.tables,
+            pre: item.pre,
+            post,
+            sim: summary,
+            sim_replaced_blockhash: replaced,
+            rpc_fee,
+            blockhash_valid,
+        });
+    }
+    Ok(DappPreview {
+        items: facts,
+        mints,
+    })
+}
+
+/// The pre-sign check of a dApp send (spec/07 §20.10-2, §14.3), on the approved message:
+/// genesis → `isBlockhashValid(blockhash, processed)` (`false`:
+/// [`PreSignError::BlockhashExpired`]) → the lookup tables read and resolved again → at the
+/// validity answer's slot S `getLatestBlockhash({processed, minContextSlot: S})`, whose
+/// `lastValidBlockHeight` bounds the transaction's (its blockhash is not newer) →
+/// `getBlockHeight(confirmed)` with the range check of [`pre_sign`]. Both blockhash calls use
+/// `processed`, so `minContextSlot` cannot fail on a commitment gap. Returns the
+/// `lastValidBlockHeight` to journal and the check the signer compares with the approval.
+///
+/// # Errors
+///
+/// [`PreSignError`]; a table that is missing, not a table or does not resolve is
+/// [`PreSignError::TablesChanged`].
+pub fn pre_sign_dapp(
+    transport: &dyn Transport,
+    endpoint: &SolEndpoint,
+    message: &SolTxMessage,
+) -> Result<(u64, PreSignCheck), PreSignError> {
+    let client = RpcClient::new(transport);
+    let url = &endpoint.url;
+    let rpc = |failure: RpcFailure| PreSignError::Rpc(classify(failure));
+    if !check_genesis(&client, endpoint).map_err(PreSignError::Rpc)? {
+        return Err(PreSignError::ClusterMismatch);
+    }
+    let (valid, valid_slot) =
+        sol_rpc::blockhash_valid(&client, url, &message.blockhash).map_err(rpc)?;
+    if !valid {
+        return Err(PreSignError::BlockhashExpired);
+    }
+    let loaded = if message.lookups.is_empty() {
+        None
+    } else {
+        let (slot, read) = read_tables(&client, url, &lookup_tables(message)).map_err(rpc)?;
+        let tables = message_tables(message, &read).map_err(|_| PreSignError::TablesChanged)?;
+        Some(resolve(message, &tables, slot).map_err(|_| PreSignError::TablesChanged)?)
+    };
+    let (_, last_valid) =
+        sol_rpc::latest_blockhash_at(&client, url, "processed", Some(valid_slot)).map_err(rpc)?;
+    let height = sol_rpc::block_height(&client, url).map_err(rpc)?;
+    if last_valid < height.saturating_add(SOL_MIN_LVBH_AHEAD)
+        || last_valid > height.saturating_add(SOL_MAX_LVBH_AHEAD)
+    {
+        return Err(PreSignError::RpcAnomaly);
+    }
+    Ok((
+        last_valid,
+        PreSignCheck {
+            blockhash: message.blockhash,
+            loaded,
+        },
+    ))
+}
+
 /// One broadcast-loop round of a `Pending` record.
 #[derive(Clone, Debug)]
 pub struct TrackJob {
@@ -541,6 +943,9 @@ pub struct TrackJob {
     pub check_genesis: bool,
     /// The UI's endpoint generation when the round started (echoed in [`TrackResult`]).
     pub generation: u64,
+    /// The `sendTransaction` options of this round's sends (the wallet's default, or a dApp
+    /// record's `skipPreflight` and preflight commitment, spec/07 §20.8).
+    pub send: SendConfig,
 }
 
 /// A round's result.
@@ -601,9 +1006,9 @@ pub fn track_round(transport: &dyn Transport, job: &TrackJob, clock: &dyn Clock)
     let first = job.state.last_round_ms.is_none() && !job.state.stop_rebroadcast;
     let early = first.then(|| {
         result.sends = result.sends.saturating_add(1);
-        sol_rpc::send_transaction(&client, url, &job.tx, &signature_text)
+        sol_rpc::send_transaction_opts(&client, url, &job.tx, &signature_text, &job.send)
     });
-    let status = match sol_rpc::signature_status(&client, url, &signature_text, false, programs) {
+    let status = match sol_rpc::signature_status(&client, url, &signature_text, false, &programs) {
         Ok(status) => status,
         Err(failure) => {
             let mut state = job.state;
@@ -617,7 +1022,7 @@ pub fn track_round(transport: &dyn Transport, job: &TrackJob, clock: &dyn Clock)
     let send = early.or_else(|| {
         round.send.then(|| {
             result.sends = result.sends.saturating_add(1);
-            sol_rpc::send_transaction(&client, url, &job.tx, &signature_text)
+            sol_rpc::send_transaction_opts(&client, url, &job.tx, &signature_text, &job.send)
         })
     });
     let chain = if round.height {
@@ -626,7 +1031,7 @@ pub fn track_round(transport: &dyn Transport, job: &TrackJob, clock: &dyn Clock)
         None
     };
     let history = if status == SigStatus::NotFound && wants_history(&job.pending, chain) {
-        sol_rpc::signature_history(&client, url, &signature_text, programs).ok()
+        sol_rpc::signature_history(&client, url, &signature_text, &programs).ok()
     } else {
         None
     };

@@ -3,9 +3,14 @@
 //! fields are ignored; missing or mistyped required fields are `Malformed` (`RpcAnomaly`). RPC
 //! strings (`message`, logs) are never read or shown: errors are classified from their JSON
 //! structure only (spec/07 §15.3). Every request uses `"commitment":"confirmed"` (the configured RPC is trusted: confirmed
-//! is final, spec.md §2.2) and base64.
+//! is final, spec.md §2.2) and base64, except the dApp blockhash checks at `processed`
+//! (spec/07 §20.10).
 
+use yw_core::sol::address::{
+    ATA_PROGRAM, COMPUTE_BUDGET_PROGRAM, SYSTEM_PROGRAM, TOKEN_2022_PROGRAM, TOKEN_PROGRAM,
+};
 use yw_core::sol::broadcast::{ChainView, HistoryView, SendResult, SigStatus, err};
+use yw_core::sol::dapp::parse_wire_tx;
 use yw_core::sol::display::SimSummary;
 use yw_core::sol::template::T_SPL_HEADER;
 use yw_core::sol::{SolAddress, SolAsset};
@@ -22,8 +27,10 @@ pub enum IxProgram {
     ComputeBudget,
     /// System.
     System,
-    /// Token or ATA (v1.1).
+    /// Token, Token-2022 or ATA (v1.1).
     Token,
+    /// Any other program (a dApp transaction, spec/07 §20.8).
+    Other,
 }
 
 /// `T_SOL` instruction programs (limit, price, transfer).
@@ -50,14 +57,34 @@ pub const fn programs_for(asset: SolAsset) -> &'static [IxProgram] {
     }
 }
 
-/// The instruction programs of a wallet transaction (`01 ‖ signature ‖ message`) by its template
-/// header: `T_SPL` for `[1, 0, 6]`, otherwise `T_SOL`. Only the error class shown depends on it.
+/// The instruction programs of a transaction, in instruction order, read from its parsed
+/// message: a wallet template gives exactly [`T_SOL_PROGRAMS`] or [`T_SPL_PROGRAMS`], a dApp
+/// transaction [`IxProgram::Other`] for every program outside System, Token, Token-2022, ATA and
+/// `ComputeBudget`. Bytes that do not parse fall back to the template header: `T_SPL` for
+/// `[1, 0, 6]`, otherwise `T_SOL`. Only the error class shown depends on it.
 #[must_use]
-pub fn programs_of(tx: &[u8]) -> &'static [IxProgram] {
-    match tx.get(65..68) {
-        Some(header) if header == T_SPL_HEADER => &T_SPL_PROGRAMS,
-        _ => &T_SOL_PROGRAMS,
-    }
+pub fn programs_of(tx: &[u8]) -> Vec<IxProgram> {
+    let Ok(wire) = parse_wire_tx(tx) else {
+        return match tx.get(65..68) {
+            Some(header) if header == T_SPL_HEADER => T_SPL_PROGRAMS.to_vec(),
+            _ => T_SOL_PROGRAMS.to_vec(),
+        };
+    };
+    wire.message
+        .program_ids()
+        .iter()
+        .map(|program| {
+            if *program == SYSTEM_PROGRAM {
+                IxProgram::System
+            } else if *program == COMPUTE_BUDGET_PROGRAM {
+                IxProgram::ComputeBudget
+            } else if [TOKEN_PROGRAM, TOKEN_2022_PROGRAM, ATA_PROGRAM].contains(program) {
+                IxProgram::Token
+            } else {
+                IxProgram::Other
+            }
+        })
+        .collect()
 }
 
 const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -252,6 +279,9 @@ pub struct AccountData {
     pub lamports: u64,
     /// Raw data (strict base64).
     pub data: Vec<u8>,
+    /// The data was longer than the caller's bound and is left out (`data` empty; only from
+    /// [`multiple_accounts`] and [`simulate_dapp`]).
+    pub truncated: bool,
 }
 
 impl AccountData {
@@ -286,17 +316,38 @@ pub fn account_data(
         "getAccountInfo",
         Value::Array(vec![json_str(&address.to_base58()), config]),
     )?;
-    let value = context_value(&result)?;
+    account_of(context_value(&result)?, MAX_ACCOUNT_DATA)
+}
+
+/// What [`account_entry`] does with data longer than its bound.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Oversize {
+    /// `Malformed` (`getAccountInfo` of a mint or token account).
+    Refuse,
+    /// Kept without its data, `truncated` (dApp references: tables, mints, simulated accounts).
+    Truncate,
+}
+
+/// One account object of an RPC answer (`{data:[<base64>,"base64"], executable, lamports,
+/// owner, …}`) with at most `max_data` data bytes; `null` is a missing account.
+fn account_entry(
+    value: &Value,
+    max_data: usize,
+    oversize: Oversize,
+) -> Result<Option<AccountData>, RpcFailure> {
     if value.is_null() {
         return Ok(None);
     }
     let object = value.as_object().ok_or(RpcFailure::Malformed)?;
-    let data = match object.get("data").and_then(Value::as_array) {
+    let (data, truncated) = match object.get("data").and_then(Value::as_array) {
         Some([Value::String(text), Value::String(encoding)]) if encoding == "base64" => {
-            if text.len() > MAX_ACCOUNT_DATA.div_ceil(3).saturating_mul(4) {
+            if text.len() <= max_data.div_ceil(3).saturating_mul(4) {
+                (base64_decode(text).ok_or(RpcFailure::Malformed)?, false)
+            } else if oversize == Oversize::Truncate {
+                (Vec::new(), true)
+            } else {
                 return Err(RpcFailure::Malformed);
             }
-            base64_decode(text).ok_or(RpcFailure::Malformed)?
         }
         _ => return Err(RpcFailure::Malformed),
     };
@@ -308,7 +359,97 @@ pub fn account_data(
             .ok_or(RpcFailure::Malformed)?,
         lamports: u64_of(object.get("lamports").ok_or(RpcFailure::Malformed)?)?,
         data,
+        truncated,
     }))
+}
+
+/// An account of an RPC answer whose data must fit `max_data` bytes (`null`: missing).
+///
+/// # Errors
+///
+/// [`RpcFailure::Malformed`], also for longer data.
+pub fn account_of(value: &Value, max_data: usize) -> Result<Option<AccountData>, RpcFailure> {
+    account_entry(value, max_data, Oversize::Refuse)
+}
+
+/// An account of an RPC answer; data longer than `max_data` bytes is left out and marked
+/// `truncated` (`null`: missing).
+///
+/// # Errors
+///
+/// [`RpcFailure::Malformed`].
+pub fn account_of_capped(
+    value: &Value,
+    max_data: usize,
+) -> Result<Option<AccountData>, RpcFailure> {
+    account_entry(value, max_data, Oversize::Truncate)
+}
+
+/// Addresses per `getMultipleAccounts` call (the RPC's limit).
+pub const MULTIPLE_ACCOUNTS_CHUNK: usize = 100;
+
+/// Response bound of the dApp reference calls (a `getMultipleAccounts` chunk, a
+/// `simulateTransaction` with accounts): 4 MiB, as `eth_simulateV1` (spec/03 §1.4).
+pub const DAPP_MAX_RESPONSE: usize = 4 * 1_048_576;
+
+/// `getMultipleAccounts(addrs, {base64, confirmed, dataSlice?, minContextSlot?})` in chunks of
+/// [`MULTIPLE_ACCOUNTS_CHUNK`] (spec/07 §15.2) → the lowest `context.slot` of the chunks and one
+/// entry per address in order (`None`: missing). Data longer than `max_data` is `truncated`;
+/// `slice` is `(offset, length)`.
+///
+/// # Errors
+///
+/// [`RpcFailure`]; an answer with another number of entries than asked is `Malformed`.
+pub fn multiple_accounts(
+    client: &RpcClient<'_>,
+    url: &HttpsUrl,
+    addresses: &[SolAddress],
+    max_data: usize,
+    slice: Option<(u64, u64)>,
+    min_context_slot: Option<u64>,
+) -> Result<(u64, Vec<Option<AccountData>>), RpcFailure> {
+    let mut slot: Option<u64> = None;
+    let mut out = Vec::with_capacity(addresses.len());
+    for chunk in addresses.chunks(MULTIPLE_ACCOUNTS_CHUNK) {
+        let mut config = vec![
+            ("encoding", json_str("base64")),
+            ("commitment", json_str("confirmed")),
+        ];
+        if let Some((offset, length)) = slice {
+            config.push((
+                "dataSlice",
+                json_object(vec![
+                    ("offset", json_u64(offset)),
+                    ("length", json_u64(length)),
+                ]),
+            ));
+        }
+        if let Some(min) = min_context_slot {
+            config.push(("minContextSlot", json_u64(min)));
+        }
+        let keys = chunk
+            .iter()
+            .map(|address| json_str(&address.to_base58()))
+            .collect();
+        let result = client.call_limited(
+            url,
+            "getMultipleAccounts",
+            Value::Array(vec![Value::Array(keys), json_object(config)]),
+            DAPP_MAX_RESPONSE,
+        )?;
+        let list = context_value(&result)?
+            .as_array()
+            .ok_or(RpcFailure::Malformed)?;
+        if list.len() != chunk.len() {
+            return Err(RpcFailure::Malformed);
+        }
+        for entry in list {
+            out.push(account_of_capped(entry, max_data)?);
+        }
+        let at = context_slot(&result)?;
+        slot = Some(slot.map_or(at, |known| known.min(at)));
+    }
+    Ok((slot.unwrap_or(0), out))
 }
 
 /// `getMinimumBalanceForRentExemption(size, confirmed)`.
@@ -367,7 +508,31 @@ pub fn latest_blockhash(
     client: &RpcClient<'_>,
     url: &HttpsUrl,
 ) -> Result<([u8; 32], u64), RpcFailure> {
-    let result = client.call(url, "getLatestBlockhash", Value::Array(vec![confirmed()]))?;
+    latest_blockhash_at(client, url, "confirmed", None)
+}
+
+/// `getLatestBlockhash({commitment, minContextSlot?})` → `(blockhash, lastValidBlockHeight)`.
+/// A dApp send asks at `processed` with the slot of its `isBlockhashValid` answer (spec/07
+/// §20.10): one commitment for both calls, so `minContextSlot` cannot fail on a commitment gap.
+///
+/// # Errors
+///
+/// [`RpcFailure`].
+pub fn latest_blockhash_at(
+    client: &RpcClient<'_>,
+    url: &HttpsUrl,
+    commitment: &str,
+    min_context_slot: Option<u64>,
+) -> Result<([u8; 32], u64), RpcFailure> {
+    let mut config = vec![("commitment", json_str(commitment))];
+    if let Some(min) = min_context_slot {
+        config.push(("minContextSlot", json_u64(min)));
+    }
+    let result = client.call(
+        url,
+        "getLatestBlockhash",
+        Value::Array(vec![json_object(config)]),
+    )?;
     let value = context_value(&result)?
         .as_object()
         .ok_or(RpcFailure::Malformed)?;
@@ -388,6 +553,31 @@ pub fn latest_blockhash(
 pub fn block_height(client: &RpcClient<'_>, url: &HttpsUrl) -> Result<u64, RpcFailure> {
     let result = client.call(url, "getBlockHeight", Value::Array(vec![confirmed()]))?;
     u64_of(&result)
+}
+
+/// `isBlockhashValid(base58(hash), {commitment:"processed"})` → `(valid, context.slot)` (a dApp
+/// transaction's own blockhash, spec/07 §20.10; the RPC default would be `finalized`).
+///
+/// # Errors
+///
+/// [`RpcFailure`].
+pub fn blockhash_valid(
+    client: &RpcClient<'_>,
+    url: &HttpsUrl,
+    hash: &[u8; 32],
+) -> Result<(bool, u64), RpcFailure> {
+    let result = client.call(
+        url,
+        "isBlockhashValid",
+        Value::Array(vec![
+            json_str(&SolAddress::from_bytes(*hash).to_base58()),
+            json_object(vec![("commitment", json_str("processed"))]),
+        ]),
+    )?;
+    let valid = context_value(&result)?
+        .as_bool()
+        .ok_or(RpcFailure::Malformed)?;
+    Ok((valid, context_slot(&result)?))
 }
 
 /// `getEpochInfo(confirmed)` → `blockHeight` and `absoluteSlot` of the same answer (one RPC view
@@ -462,6 +652,7 @@ pub fn classify_tx_error(value: &Value, programs: &[IxProgram]) -> u16 {
             {
                 Some(IxProgram::System) => err::SYSTEM_INSTRUCTION,
                 Some(IxProgram::Token) => err::TOKEN_INSTRUCTION,
+                Some(IxProgram::Other) => err::PROGRAM_INSTRUCTION,
                 Some(IxProgram::ComputeBudget) | None => err::OTHER,
             }
         }
@@ -495,17 +686,121 @@ pub fn simulate(client: &RpcClient<'_>, url: &HttpsUrl, tx: &[u8]) -> SimSummary
     match value.get("err") {
         Some(Value::Null) => units.map_or(SimSummary::NoResult, |units| SimSummary::Ok { units }),
         Some(error) => SimSummary::Failed {
-            err: classify_tx_error(error, programs_of(tx)),
+            err: classify_tx_error(error, &programs_of(tx)),
             units,
         },
         None => SimSummary::NoResult,
     }
 }
 
+/// Largest data of an account the dApp simulation returns: longer data is left out
+/// (`truncated`); its owner and lamports are still compared.
+pub const DAPP_SIM_MAX_DATA: usize = 16_384;
+
+/// The simulation of a dApp transaction (spec/07 §20.7).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DappSim {
+    /// The verdict.
+    pub summary: SimSummary,
+    /// The post-state of the asked addresses, in order (`None`: absent from the answer, of
+    /// another length or malformed; an entry `None`: no account after the transaction).
+    pub accounts: Option<Vec<Option<AccountData>>>,
+}
+
+/// `simulateTransaction(base64(tx), {sigVerify:false, replaceRecentBlockhash:replace,
+/// commitment:confirmed, innerInstructions:false, accounts:{base64, addresses}})` of a dApp
+/// transaction (reference only, D27). `addresses` are keys of the transaction itself
+/// (`dapp::diff::watch_set`). Transport/RPC failures are `NoResult`; the logs are never read.
+#[must_use]
+pub fn simulate_dapp(
+    client: &RpcClient<'_>,
+    url: &HttpsUrl,
+    tx: &[u8],
+    addresses: &[SolAddress],
+    replace: bool,
+) -> DappSim {
+    let no_result = DappSim {
+        summary: SimSummary::NoResult,
+        accounts: None,
+    };
+    let keys = addresses
+        .iter()
+        .map(|address| json_str(&address.to_base58()))
+        .collect();
+    let config = json_object(vec![
+        ("encoding", json_str("base64")),
+        ("sigVerify", Value::Bool(false)),
+        ("replaceRecentBlockhash", Value::Bool(replace)),
+        ("commitment", json_str("confirmed")),
+        ("innerInstructions", Value::Bool(false)),
+        (
+            "accounts",
+            json_object(vec![
+                ("encoding", json_str("base64")),
+                ("addresses", Value::Array(keys)),
+            ]),
+        ),
+    ]);
+    let Ok(result) = client.call_limited(
+        url,
+        "simulateTransaction",
+        Value::Array(vec![json_str(&base64(tx)), config]),
+        DAPP_MAX_RESPONSE,
+    ) else {
+        return no_result;
+    };
+    let Some(value) = context_value(&result).ok().and_then(Value::as_object) else {
+        return no_result;
+    };
+    let units = value
+        .get("unitsConsumed")
+        .and_then(|units| u64_of(units).ok());
+    let summary = match value.get("err") {
+        Some(Value::Null) => units.map_or(SimSummary::NoResult, |units| SimSummary::Ok { units }),
+        Some(error) => SimSummary::Failed {
+            err: classify_tx_error(error, &programs_of(tx)),
+            units,
+        },
+        None => SimSummary::NoResult,
+    };
+    let accounts = value
+        .get("accounts")
+        .and_then(Value::as_array)
+        .filter(|list| list.len() == addresses.len())
+        .and_then(|list| {
+            list.iter()
+                .map(|entry| account_of_capped(entry, DAPP_SIM_MAX_DATA).ok())
+                .collect::<Option<Vec<_>>>()
+        });
+    DappSim { summary, accounts }
+}
+
+/// The `sendTransaction` options of a record (spec/07 §14.2, §20.8).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SendConfig {
+    /// `skipPreflight` (only a dApp send sets it).
+    pub skip_preflight: bool,
+    /// `preflightCommitment`.
+    pub preflight_commitment: &'static str,
+    /// `minContextSlot` (a dApp's first send only).
+    pub min_context_slot: Option<u64>,
+}
+
+impl Default for SendConfig {
+    /// The wallet's own sends: preflight at `confirmed`.
+    fn default() -> Self {
+        Self {
+            skip_preflight: false,
+            preflight_commitment: "confirmed",
+            min_context_slot: None,
+        }
+    }
+}
+
 /// `sendTransaction(base64(tx), {skipPreflight:false, preflightCommitment:confirmed,
 /// maxRetries:0})`, classified for the broadcast loop (spec/07 §14.2): a returned signature is
-/// compared with the local one; preflight errors with a deterministic structure (§15.3 codes 1–6)
-/// stop re-sending; everything else is transient.
+/// compared with the local one; preflight errors with a deterministic structure (§15.3 codes 1–6
+/// and 9) stop re-sending; everything else is transient.
 #[must_use]
 pub fn send_transaction(
     client: &RpcClient<'_>,
@@ -513,16 +808,32 @@ pub fn send_transaction(
     tx: &[u8],
     local_signature: &str,
 ) -> SendResult {
-    let config = json_object(vec![
+    send_transaction_opts(client, url, tx, local_signature, &SendConfig::default())
+}
+
+/// [`send_transaction`] with a record's options. `maxRetries` stays 0 (the loop re-sends);
+/// `minContextSlot` is added only when set, so the default request is the wallet's own.
+#[must_use]
+pub fn send_transaction_opts(
+    client: &RpcClient<'_>,
+    url: &HttpsUrl,
+    tx: &[u8],
+    local_signature: &str,
+    send: &SendConfig,
+) -> SendResult {
+    let mut config = vec![
         ("encoding", json_str("base64")),
-        ("skipPreflight", Value::Bool(false)),
-        ("preflightCommitment", json_str("confirmed")),
+        ("skipPreflight", Value::Bool(send.skip_preflight)),
+        ("preflightCommitment", json_str(send.preflight_commitment)),
         ("maxRetries", json_u64(0)),
-    ]);
+    ];
+    if let Some(min) = send.min_context_slot {
+        config.push(("minContextSlot", json_u64(min)));
+    }
     match client.call_detailed(
         url,
         "sendTransaction",
-        Value::Array(vec![json_str(&base64(tx)), config]),
+        Value::Array(vec![json_str(&base64(tx)), json_object(config)]),
         DEFAULT_MAX_RESPONSE,
     ) {
         Ok(Value::String(signature)) => SendResult::Accepted {
@@ -537,7 +848,7 @@ pub fn send_transaction(
                 .as_object()
                 .and_then(|object| object.get("err"))
                 .map_or(err::OTHER, |error| {
-                    classify_tx_error(error, programs_of(tx))
+                    classify_tx_error(error, &programs_of(tx))
                 });
             if err::is_deterministic(code) {
                 SendResult::Deterministic(code)
@@ -647,10 +958,16 @@ mod tests {
     use yw_core::sol::broadcast::err;
     use yw_json::Limits;
 
+    use yw_core::sol::address::{COMPUTE_BUDGET_PROGRAM, TOKEN_2022_PROGRAM};
+    use yw_core::sol::message::{assemble_transaction, encode_message};
+    use yw_core::sol::template::spl_entries;
+    use yw_core::sol::{SolAddress, SolAsset, SolCluster, SolTransferCore};
+
     use super::{
-        IxProgram, T_SOL_PROGRAMS, T_SPL_PROGRAMS, base64, base64_decode, classify_tx_error,
-        programs_of,
+        IxProgram, T_SOL_PROGRAMS, T_SPL_PROGRAMS, account_of, account_of_capped, base64,
+        base64_decode, classify_tx_error, programs_of,
     };
+    use crate::rpc::RpcFailure;
 
     fn json(text: &str) -> yw_json::Value {
         yw_json::parse(text.as_bytes(), &Limits::RESPONSE).unwrap()
@@ -688,6 +1005,84 @@ mod tests {
         ] {
             assert_eq!(base64_decode(bad), None, "{bad:?}");
         }
+    }
+
+    #[test]
+    fn programs_are_read_from_the_parsed_message() {
+        // Wallet templates parse to exactly their program arrays.
+        let core = |asset| SolTransferCore {
+            from: SolAddress::from_bytes([1; 32]),
+            to: SolAddress::from_bytes([2; 32]),
+            asset,
+            amount: 1,
+            cu_limit: 1,
+            cu_price_micro: 0,
+        };
+        let tx = |core: &SolTransferCore| {
+            assemble_transaction(&[0; 64], &encode_message(core, &[3; 32]))
+        };
+        assert_eq!(programs_of(&tx(&core(SolAsset::Sol))), &T_SOL_PROGRAMS);
+        let entry = spl_entries(SolCluster::Devnet).next();
+        assert!(entry.is_some());
+        if let Some(entry) = entry {
+            assert_eq!(
+                programs_of(&tx(&core(SolAsset::Spl(entry)))),
+                &T_SPL_PROGRAMS
+            );
+        }
+        // A dApp v0 message: ComputeBudget, an unknown program, Token-2022.
+        let mut message = vec![0x80, 1, 0, 3, 4];
+        for key in [
+            [9; 32],
+            COMPUTE_BUDGET_PROGRAM.to_bytes(),
+            [8; 32],
+            TOKEN_2022_PROGRAM.to_bytes(),
+        ] {
+            message.extend_from_slice(&key);
+        }
+        message.extend_from_slice(&[3; 32]);
+        message.extend_from_slice(&[3, 1, 0, 1, 2, 2, 1, 0, 0, 3, 1, 0, 0, 0]);
+        let mut wire = vec![1];
+        wire.extend_from_slice(&[0; 64]);
+        wire.extend_from_slice(&message);
+        let programs = programs_of(&wire);
+        assert_eq!(
+            programs,
+            [IxProgram::ComputeBudget, IxProgram::Other, IxProgram::Token]
+        );
+        // A failing instruction of another program is code 9 (deterministic).
+        assert_eq!(
+            classify_tx_error(
+                &json(r#"{"InstructionError":[1,{"Custom":6001}]}"#),
+                &programs
+            ),
+            err::PROGRAM_INSTRUCTION
+        );
+        assert!(err::is_deterministic(err::PROGRAM_INSTRUCTION));
+    }
+
+    #[test]
+    fn account_entries_refuse_or_truncate_long_data() {
+        let entry = json(
+            r#"{"data":["AQIDBA==","base64"],"executable":false,"lamports":7,"owner":"11111111111111111111111111111111","rentEpoch":0,"space":4}"#,
+        );
+        let full = account_of(&entry, 4).ok().flatten();
+        assert_eq!(
+            full.as_ref().map(|account| account.data.clone()),
+            Some(vec![1, 2, 3, 4])
+        );
+        assert_eq!(full.map(|account| account.truncated), Some(false));
+        assert_eq!(account_of(&entry, 2), Err(RpcFailure::Malformed));
+        let cut = account_of_capped(&entry, 2).ok().flatten();
+        assert_eq!(
+            cut.map(|account| (account.data.is_empty(), account.truncated, account.lamports)),
+            Some((true, true, 7))
+        );
+        assert_eq!(account_of_capped(&json("null"), 2), Ok(None));
+        assert_eq!(
+            account_of_capped(&json(r#"{"data":"AQ==","lamports":1}"#), 2),
+            Err(RpcFailure::Malformed)
+        );
     }
 
     #[test]

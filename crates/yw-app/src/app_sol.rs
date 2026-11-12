@@ -34,6 +34,7 @@ use crate::network::NetworkId;
 use crate::sol::flow::{
     PreSignError, PreviewJob, PreviewOutcome, PreviewResult, SolEndpoint, TrackJob, TrackResult,
 };
+use crate::sol::rpc::SendConfig;
 use crate::sol::scan::{ScanRow, scan_sources};
 use crate::text::is_valid_label;
 use crate::ui::approval::{QueueOutcome, QueueSource};
@@ -1796,7 +1797,10 @@ impl App {
                 let code = match error {
                     PreSignError::Rpc(code) => code,
                     PreSignError::ClusterMismatch => ErrorCode::Rpc006,
-                    PreSignError::RpcAnomaly => ErrorCode::Rpc005,
+                    // The dApp variants never come from a wallet send's lookup.
+                    PreSignError::RpcAnomaly
+                    | PreSignError::BlockhashExpired
+                    | PreSignError::TablesChanged => ErrorCode::Rpc005,
                 };
                 self.sol.slot = None;
                 self.sol_abort_message(code);
@@ -2011,6 +2015,16 @@ impl App {
                 state: state.state,
                 check_genesis: !state.genesis_checked,
                 generation: state.generation,
+                // A dApp record keeps its own preflight options on every send (spec/07 §20.8);
+                // `minContextSlot` of its first send is held by the browser answer (none yet).
+                send: record.send_flags().map_or_else(
+                    SendConfig::default,
+                    |(skip_preflight, commitment)| SendConfig {
+                        skip_preflight,
+                        preflight_commitment: commitment.as_str(),
+                        min_context_slot: None,
+                    },
+                ),
             };
             state.busy = true;
             if !self.rpc(RpcJob::SolTrack(Box::new(job)))

@@ -1170,29 +1170,13 @@ fn touched_mints(tx: &Tx<'_>, decoded: &[DecodedIx]) -> Vec<SolAddress> {
         }
     };
     for ix in decoded {
-        let mint = match ix {
-            DecodedIx::Token { ix, .. } => match ix {
-                TokenIx::InitializeMint { mint, .. }
-                | TokenIx::InitializeMint2 { mint, .. }
-                | TokenIx::InitializeAccount { mint, .. }
-                | TokenIx::InitializeAccount2 { mint, .. }
-                | TokenIx::InitializeAccount3 { mint, .. }
-                | TokenIx::MintTo { mint, .. }
-                | TokenIx::Burn { mint, .. }
-                | TokenIx::FreezeAccount { mint, .. }
-                | TokenIx::ThawAccount { mint, .. }
-                | TokenIx::TransferChecked { mint, .. }
-                | TokenIx::ApproveChecked { mint, .. }
-                | TokenIx::MintToChecked { mint, .. }
-                | TokenIx::BurnChecked { mint, .. } => Some(*mint),
-                TokenIx::Transfer { source, .. } | TokenIx::Approve { source, .. } => {
-                    tx.mint_of(source)
-                }
-                _ => None,
-            },
-            DecodedIx::Ata(AtaIx::Create { mint, .. }) => Some(*mint),
+        let mint = ix.named_mint().or_else(|| match ix {
+            DecodedIx::Token {
+                ix: TokenIx::Transfer { source, .. } | TokenIx::Approve { source, .. },
+                ..
+            } => tx.mint_of(source),
             _ => None,
-        };
+        });
         if let Some(mint) = mint {
             add(mint);
         }

@@ -12,7 +12,7 @@ use common::{Answer, FakeClock, FakeRpc, url};
 use yw_app::sol::flow::{
     PreviewJob, PreviewOutcome, SolEndpoint, SolPrepared, TrackJob, balances, preview, track_round,
 };
-use yw_app::sol::rpc::base64;
+use yw_app::sol::rpc::{SendConfig, base64};
 use yw_app::sol::scan::{SOL_SCAN_GAP, scan, scan_sources};
 use yw_core::bip32::path::AccountIndex;
 use yw_core::codec::base58::base58_encode;
@@ -567,6 +567,7 @@ fn spl_track_round_classifies_token_errors() {
         state: LoopState::default(),
         check_genesis: false,
         generation: 0,
+        send: SendConfig::default(),
     };
     let result = track_round(&*rpc, &job, &FakeClock::at(1_800_000_001_000));
     assert_eq!(
