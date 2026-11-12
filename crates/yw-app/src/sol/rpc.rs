@@ -341,12 +341,18 @@ fn account_entry(
     let object = value.as_object().ok_or(RpcFailure::Malformed)?;
     let (data, truncated) = match object.get("data").and_then(Value::as_array) {
         Some([Value::String(text), Value::String(encoding)]) if encoding == "base64" => {
-            if text.len() <= max_data.div_ceil(3).saturating_mul(4) {
-                (base64_decode(text).ok_or(RpcFailure::Malformed)?, false)
-            } else if oversize == Oversize::Truncate {
-                (Vec::new(), true)
+            // The text bound only skips decoding a far longer answer; the decoded length is the
+            // exact one (`dataSlice` answers are one byte past the bound when the account is
+            // longer).
+            let decoded = if text.len() <= max_data.div_ceil(3).saturating_mul(4) {
+                Some(base64_decode(text).ok_or(RpcFailure::Malformed)?)
             } else {
-                return Err(RpcFailure::Malformed);
+                None
+            };
+            match decoded {
+                Some(data) if data.len() <= max_data => (data, false),
+                _ if oversize == Oversize::Truncate => (Vec::new(), true),
+                _ => return Err(RpcFailure::Malformed),
             }
         }
         _ => return Err(RpcFailure::Malformed),
@@ -1077,6 +1083,18 @@ mod tests {
         assert_eq!(
             cut.map(|account| (account.data.is_empty(), account.truncated, account.lamports)),
             Some((true, true, 7))
+        );
+        // Five bytes encode in as many characters as four: the decoded length decides.
+        let five = json(
+            r#"{"data":["AQIDBAU=","base64"],"executable":false,"lamports":7,"owner":"11111111111111111111111111111111","rentEpoch":0,"space":5}"#,
+        );
+        assert_eq!(account_of(&five, 4), Err(RpcFailure::Malformed));
+        assert_eq!(
+            account_of_capped(&five, 4)
+                .ok()
+                .flatten()
+                .map(|account| (account.data.is_empty(), account.truncated)),
+            Some((true, true))
         );
         assert_eq!(account_of_capped(&json("null"), 2), Ok(None));
         assert_eq!(

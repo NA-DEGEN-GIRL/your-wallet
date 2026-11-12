@@ -651,7 +651,7 @@ pub const SOL_JOURNAL_MAX_RECORDS: usize = 64;
 | `getFeeForMessage` | `[base64(message), {"commitment":"confirmed"}]` → `{value: u64\|null}` | §10 교차 확인 | 참고(불일치는 차단 방향) | 20 |
 | `simulateTransaction` | `[base64(tx), {"encoding":"base64","sigVerify":false,"replaceRecentBlockhash":true,"commitment":"confirmed"}]` | 참고 표시 | 참고(D27) | 20 |
 | `sendTransaction` | `[base64(tx), {"encoding":"base64","skipPreflight":false,"preflightCommitment":"confirmed","maxRetries":0}]` → 서명 base58 | 브로드캐스트 | 반환 서명은 로컬과 대조 | 20 |
-| `getMultipleAccounts` (dApp, §20) | `[[addr…≤100], {"encoding":"base64","commitment":"confirmed", "dataSlice"?, "minContextSlot"?}]` → `{context:{slot}, value:[null \| account]}`(값 수 = 주소 수). 조회 테이블은 dataSlice 없이 ≤ 8,248 B, 실행 전 상태는 `dataSlice {offset:0, length:166}`(Token-2022 `data[165]` 계정 종류까지), 민트는 ≤ 16 KiB | 미리보기(§20.7), 서명 전 테이블 재해석(§20.10) | 표시용(digest에 묶임), 테이블은 전송 전 재확인 | 참고 |
+| `getMultipleAccounts` (dApp, §20) | `[[addr…≤100], {"encoding":"base64","commitment":"confirmed", "dataSlice"?, "minContextSlot"?}]` → `{context:{slot}, value:[null \| account]}`(값 수 = 주소 수). 조회 테이블은 `dataSlice {offset:0, length:8249}`(≤ 8,248 B, 더 길면 그 거래의 `NotTable`), 실행 전 상태는 `dataSlice {offset:0, length:166}`(Token-2022 `data[165]` 계정 종류까지), 민트는 `dataSlice {offset:0, length:16385}`(≤ 16 KiB, §20.7 ④). 한도보다 1바이트 더 읽어 긴 계정을 알아보고, 사이트가 고른 큰 계정이 4 MiB 응답 한도를 넘겨 요청 전체를 RPC 오류로 만들지 않게 한다 | 미리보기(§20.7), 서명 전 테이블 재해석(§20.10) | 표시용(digest에 묶임), 테이블은 전송 전 재확인 | 참고 |
 | `isBlockhashValid` (dApp) | `[blockhash_b58, {"commitment":"processed"}]` → `{context:{slot}, value: bool}` | 미리보기 유효 시간 표시, 서명 전 확인(§14.3 dApp lvbh) | 참고 / 만료면 전송 안 함 | 참고 |
 | `getLatestBlockhash` (dApp) | `[{"commitment":"processed","minContextSlot":S}]` | dApp lvbh(§14.3) | 범위 검사 | 20 |
 | `simulateTransaction` (dApp) | `[base64(tx), {"encoding":"base64","sigVerify":false,"replaceRecentBlockhash":false,"commitment":"confirmed","innerInstructions":false,"accounts":{"encoding":"base64","addresses":[…]}}]`, `BlockhashNotFound`(코드 7)이고 nonce 거래가 아니면 `replaceRecentBlockhash:true`로 한 번 더. `addresses`는 거래 자신의 계정 키(정적 + 해석한 키)의 부분집합, ≤ `min(64, 계정 수)`. 응답 상한 4 MiB, 로그는 읽지 않는다 | 참고 표시(§20.7) | 참고(X09·X19) | 참고 |
@@ -950,7 +950,7 @@ payload digest(transcript `"your-wallet/v3/sol-tx"`, `u16 1`): 출처 태그·�
 
 ### 20.7 시뮬레이션과 차이
 
-- 미리보기(`dapp_preview`, 30 s 예산, `preview` 순서): ① 제네시스(불일치 → `Rpc006`, 전송 오류 → 그 코드: 요청을 만들지 않고 승인 창 `Failed`([04] §3.5, 거부만, EVM 준비 실패와 같다 — X01이 아니다). 창을 닫으면 dApp에는 4001 `UserRejected`, [05] §5) ② 모든 조회 테이블(≤ 100) `getMultipleAccounts` → 거래마다 해석(결과는 거래별 `Result`) ③ 거래마다 쓰기 가능한 계정(정적 + 해석한 키, ≤ 128)의 실행 전 상태(`dataSlice 0/166`) ④ 그 토큰 계정과 토큰 명령의 민트(≤ 16 KiB, `parse_mint_any`, TLV ≤ 64개) ⑤ `isBlockhashValid(processed)`(nonce면 생략) ⑥ `getFeeForMessage` ⑦ `simulateTransaction`(§15.2, `replaceRecentBlockhash:false`, `BlockhashNotFound`이고 nonce가 아니면 `true`로 한 번 더 + X19). 예산 안에 끝나지 않은 거래는 시뮬레이션 결과 없음(X09).
+- 미리보기(`dapp_preview`, 30 s 예산, `preview` 순서): ① 제네시스(불일치 → `Rpc006`, 전송 오류 → 그 코드: 요청을 만들지 않고 승인 창 `Failed`([04] §3.5, 거부만, EVM 준비 실패와 같다 — X01이 아니다). 창을 닫으면 dApp에는 4001 `UserRejected`, [05] §5) ② 모든 조회 테이블(≤ 100) `getMultipleAccounts` → 거래마다 해석(결과는 거래별 `Result`) ③ 거래마다 쓰기 가능한 계정(정적 + 해석한 키, ≤ 128)의 실행 전 상태(`dataSlice 0/166`) ④ 그 토큰 계정과 토큰 명령의 민트(≤ 16 KiB, `parse_mint_any`, TLV ≤ 64개. Token-2022 소유인데 16 KiB를 넘거나 해석되지 않는 계정은 "읽지 못한 민트"로 모든 확장이 있는 것처럼 X17·X12를 낸다 — 참고는 차단 방향만, 조용히 빠지지 않는다. 없는 계정·다른 프로그램 소유는 민트가 아니어서 그 토큰 명령이 실패한다) ⑤ `isBlockhashValid(processed)`(nonce면 생략) ⑥ `getFeeForMessage` ⑦ `simulateTransaction`(§15.2, `replaceRecentBlockhash:false`, `BlockhashNotFound`이고 nonce가 아니면 `true`로 한 번 더 + X19). 예산 안에 끝나지 않은 거래는 시뮬레이션 결과 없음(X09).
 - 감시 집합(`watch_set`, 시뮬레이션 `accounts.addresses`): 지갑, 소유자·위임자·닫기 권한이 지갑인 쓰기 가능한 Token·Token-2022 계정, 실행 전 상태가 없는 쓰기 가능한 계정. 언제나 거래 자신의 키의 부분집합이고 `min(64, 키 수)` 이하.
 - 차이(`changes`): SOL 증감(지갑이 수수료를 내면 수수료 포함), 토큰 증감(민트·소수 자릿수), 권한 변화(소유자·위임자·닫기 권한·지갑의 소유 프로그램 → X15), 닫힌 계정, 만든 계정.
 - 시뮬레이션 묶음은 `NotApplicable`이다. 시뮬레이션·조회 테이블·실행 전 상태는 표시 필드라 표시 digest에 묶인다. 승인할 때와 서명 직전에 다시 시뮬레이션하지 않는다("더 나빠짐" 검사는 ExactOut 스왑·슬리피지를 거부하게 된다).
@@ -990,7 +990,7 @@ payload digest(transcript `"your-wallet/v3/sol-tx"`, `u16 1`): 출처 태그·�
 ### 20.11 상한
 
 - 한 요청 거래 ≤ 32건(`SOL_TX_MAX_BATCH`), 거래 ≤ 1,232 B(16진수 2,464자), 최상위 명령 ≤ 64개, 계정 키 ≤ 256(정적 + 로드), 조회 테이블 ≤ 100개(요청 합집합), 테이블 주소 ≤ 256개. 계정 128개 초과는 X18(차단 아님).
-- 서명 전 RPC 30 s 예산(미리보기), 시뮬레이션 응답 ≤ 4 MiB, 민트 데이터 ≤ 16 KiB, 실행 전 상태 쓰기 가능한 계정 ≤ 128개.
+- 서명 전 RPC 30 s 예산(미리보기), 시뮬레이션·`getMultipleAccounts` 응답 ≤ 4 MiB, 민트 데이터 ≤ 16 KiB(넘는 Token-2022 민트는 X17·X12, §20.7 ④), 실행 전 상태 쓰기 가능한 계정 ≤ 128개.
 - (클러스터, 서명 계정)당 Pending dApp 전송 ≤ 16(`SOL_DAPP_MAX_PENDING`), 저널 전체 ≤ 32(`SOL_DAPP_MAX_PENDING_TOTAL`, 지갑 앱 보내기 자리 32 보장).
 - 표시 필드 ≤ 325개(32건), 경고 ≤ 19개.
 

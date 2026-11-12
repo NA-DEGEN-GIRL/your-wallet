@@ -1643,6 +1643,7 @@ mod tests {
                 blockhash_valid: Some(true),
             }],
             mints: Vec::new(),
+            unread_mints: Vec::new(),
             known: Vec::new(),
             fee_cap: 100_000,
         };

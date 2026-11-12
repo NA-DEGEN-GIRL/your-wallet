@@ -70,6 +70,9 @@ pub struct SolTxFacts {
     pub items: Vec<SolTxItemFacts>,
     /// Mints read for the request (Token-2022 extensions, decimals).
     pub mints: Vec<(SolAddress, MintView)>,
+    /// Token-2022 accounts named as mints whose data was not read (over the 16 KiB bound) or
+    /// does not parse: X17 and X12 as if they had every extension (spec/07 §20.7 ④).
+    pub unread_mints: Vec<SolAddress>,
     /// Address book, own accounts and sent history (exact notes and X16).
     pub known: Vec<KnownAddress>,
     /// The user's fee cap in lamports (X14 when the wallet pays more).
@@ -1323,6 +1326,16 @@ fn build_item(
     instruction_rules(&tx, &wire, &decoded, &prefix, causes);
     // Mint extensions (Token-2022 TLV).
     for mint in touched_mints(&tx, &decoded) {
+        if facts.unread_mints.contains(&mint) {
+            let text = format!(
+                "{}mint {} · 확장을 읽지 못했습니다",
+                prefix(None),
+                mint.to_base58()
+            );
+            causes.add(X12, Some(text.clone()));
+            causes.add(X17, Some(text));
+            continue;
+        }
         let Some((_, view)) = facts.mints.iter().find(|(address, _)| *address == mint) else {
             continue;
         };

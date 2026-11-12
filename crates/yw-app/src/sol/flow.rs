@@ -7,6 +7,7 @@
 //! (spec/07 §15.1).
 
 use yw_core::slip10::SolKeySource;
+use yw_core::sol::address::TOKEN_2022_PROGRAM;
 use yw_core::sol::broadcast::{
     LoopState, Observation, Outcome, PendingTx, RoundTimes, SigStatus, decide, err, note_round,
     plan, wants_history,
@@ -549,8 +550,19 @@ pub const DAPP_MAX_PRE_STATE: usize = 128;
 /// Pre-state `dataSlice` length: a token account and the Token-2022 account-type byte
 /// (`data[165]`).
 pub const DAPP_PRE_STATE_SLICE: u64 = 166;
-/// Largest mint read whole (longer: no extension list, the mint is shown without one).
+/// Largest mint read whole. A Token-2022 account named as a mint that is longer (or does not
+/// parse) is unread: X17 and X12 as if it had every extension (spec/07 §20.7 ④).
 pub const DAPP_MINT_MAX_DATA: usize = 16_384;
+
+/// `dataSlice` of an account read bounded by `max` bytes: one byte past it, so a longer account
+/// is seen as such (`truncated`) and a `getMultipleAccounts` chunk of a site's large accounts
+/// stays far below [`sol_rpc::DAPP_MAX_RESPONSE`] instead of failing the whole request.
+fn slice_past(max: usize) -> (u64, u64) {
+    (
+        0,
+        u64::try_from(max).map_or(u64::MAX, |max| max.saturating_add(1)),
+    )
+}
 
 /// The dApp preview input (spec/07 §20.7): the request's transactions, already validated by the
 /// params check.
@@ -574,6 +586,8 @@ pub struct DappPreview {
     pub items: Vec<SolTxItemFacts>,
     /// The mints read (Token-2022 extensions, decimals).
     pub mints: Vec<(SolAddress, MintView)>,
+    /// Token-2022 accounts named as mints that were over [`DAPP_MINT_MAX_DATA`] or did not parse.
+    pub unread_mints: Vec<SolAddress>,
 }
 
 impl DappPreview {
@@ -584,6 +598,7 @@ impl DappPreview {
         SolTxFacts {
             items: self.items,
             mints: self.mints,
+            unread_mints: self.unread_mints,
             known,
             fee_cap,
         }
@@ -593,8 +608,8 @@ impl DappPreview {
 /// A lookup table account as read: the table, or why it is not one.
 type TableRead = (SolAddress, Result<LookupTable, AltError>);
 
-/// `getMultipleAccounts` of `tables` (whole accounts up to the table maximum) → the lowest
-/// context slot and each table parsed.
+/// `getMultipleAccounts` of `tables` (`dataSlice` one byte past the table maximum: a longer
+/// account is that transaction's `NotTable`) → the lowest context slot and each table parsed.
 fn read_tables(
     client: &RpcClient<'_>,
     url: &HttpsUrl,
@@ -603,8 +618,14 @@ fn read_tables(
     if tables.is_empty() {
         return Ok((0, Vec::new()));
     }
-    let (slot, accounts) =
-        sol_rpc::multiple_accounts(client, url, tables, LOOKUP_TABLE_MAX_DATA, None, None)?;
+    let (slot, accounts) = sol_rpc::multiple_accounts(
+        client,
+        url,
+        tables,
+        LOOKUP_TABLE_MAX_DATA,
+        Some(slice_past(LOOKUP_TABLE_MAX_DATA)),
+        None,
+    )?;
     let read = tables
         .iter()
         .zip(accounts)
@@ -673,7 +694,9 @@ fn unasked() -> SolTxItemFacts {
 /// The dApp transaction preview (spec/07 §20.7), in this order: genesis → the request's lookup
 /// tables (at most [`SOL_DAPP_MAX_TABLES`], resolved per transaction at the answer's slot) →
 /// per transaction the pre-state of its writable accounts (`dataSlice 0/166`, at most
-/// [`DAPP_MAX_PRE_STATE`]) → the mints its token instructions name or its token accounts hold →
+/// [`DAPP_MAX_PRE_STATE`]) → the mints its token instructions name or its token accounts hold
+/// (`dataSlice` one byte past [`DAPP_MINT_MAX_DATA`]; a Token-2022 account over it or not
+/// parsing is unread, which the builder treats as every extension: X17, X12) →
 /// then, within [`DAPP_PREVIEW_BUDGET_MS`], per transaction `isBlockhashValid(processed)` (not
 /// for a durable nonce), `getFeeForMessage` and `simulateTransaction` with the watched accounts
 /// (`replaceRecentBlockhash:false`; once more with `true` on `BlockhashNotFound`, never for a
@@ -781,21 +804,31 @@ pub fn dapp_preview(
             }
         }
     }
-    let mints = if mint_keys.is_empty() {
-        Vec::new()
-    } else {
-        let (_, accounts) =
-            sol_rpc::multiple_accounts(&client, url, &mint_keys, DAPP_MINT_MAX_DATA, None, None)
-                .map_err(classify)?;
-        mint_keys
-            .iter()
-            .zip(accounts)
-            .filter_map(|(mint, account)| {
-                let account = account?;
-                parse_mint_any(&account.owner, &account.data).map(|view| (*mint, view))
-            })
-            .collect()
-    };
+    let mut mints = Vec::new();
+    let mut unread_mints = Vec::new();
+    if !mint_keys.is_empty() {
+        let (_, accounts) = sol_rpc::multiple_accounts(
+            &client,
+            url,
+            &mint_keys,
+            DAPP_MINT_MAX_DATA,
+            Some(slice_past(DAPP_MINT_MAX_DATA)),
+            None,
+        )
+        .map_err(classify)?;
+        for (mint, account) in mint_keys.iter().zip(accounts) {
+            let Some(account) = account else {
+                continue;
+            };
+            // A missing account or one of another program is no mint (the token instruction
+            // fails); only Token-2022 can carry extensions, so its unread accounts fail closed.
+            match parse_mint_any(&account.owner, &account.data) {
+                Some(view) => mints.push((*mint, view)),
+                None if account.owner == TOKEN_2022_PROGRAM => unread_mints.push(*mint),
+                None => {}
+            }
+        }
+    }
     // References within the budget.
     let in_budget = || clock.now_ms().saturating_sub(started) < DAPP_PREVIEW_BUDGET_MS;
     let mut checked: Vec<([u8; 32], bool)> = Vec::new();
@@ -870,6 +903,7 @@ pub fn dapp_preview(
     Ok(DappPreview {
         items: facts,
         mints,
+        unread_mints,
     })
 }
 

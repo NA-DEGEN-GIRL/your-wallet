@@ -24,12 +24,15 @@ use yw_app::sol::flow::{
 };
 use yw_app::sol::rpc::{self as sol, SendConfig};
 use yw_app::sol::scan::{SOL_SCAN_GAP, scan, scan_sources};
-use yw_core::approval::{ApprovalId, SigningPayload};
+use yw_core::approval::{ApprovalId, RuleId, SigningPayload};
 use yw_core::bip32::path::AccountIndex;
 use yw_core::codec::base58::base58_encode;
+use yw_core::evm::risk::{X12, X17};
 use yw_core::policy::BrowserOrigin;
 use yw_core::slip10::SolKeySource;
-use yw_core::sol::address::{ADDRESS_LOOKUP_TABLE_PROGRAM, SYSTEM_PROGRAM, TOKEN_PROGRAM};
+use yw_core::sol::address::{
+    ADDRESS_LOOKUP_TABLE_PROGRAM, SYSTEM_PROGRAM, TOKEN_2022_PROGRAM, TOKEN_PROGRAM,
+};
 use yw_core::sol::broadcast::{LoopState, Outcome, PendingTx, err};
 use yw_core::sol::dapp::{
     AltError, PreSignCheck, ResolvedKeys, SolSendOptions, SolTxMessage, SolTxMode, SolTxRequest,
@@ -1368,10 +1371,11 @@ fn dapp_preview_calls_in_order_with_the_spec_config() -> TestResult {
             "simulateTransaction",
         ]
     );
-    // Tables whole, then the writable accounts' first 166 bytes, then the mints whole.
+    // Tables and mints one byte past their bound (8,248 and 16,384), the writable accounts'
+    // first 166 bytes.
     let multiple = rpc.params_of("getMultipleAccounts");
     assert_eq!(keys_param(&multiple[0]), [b58(&TABLE)]);
-    assert!(!multiple[0].contains("dataSlice"));
+    assert!(multiple[0].contains("\"dataSlice\":{\"offset\":0,\"length\":8249}"));
     assert_eq!(
         keys_param(&multiple[1]),
         [b58(&wallet_bytes()), b58(&LOADED_W)]
@@ -1379,6 +1383,7 @@ fn dapp_preview_calls_in_order_with_the_spec_config() -> TestResult {
     assert!(multiple[1].contains("\"dataSlice\":{\"offset\":0,\"length\":166}"));
     assert!(multiple[1].contains("\"commitment\":\"confirmed\""));
     assert_eq!(keys_param(&multiple[2]), [b58(&MINT)]);
+    assert!(multiple[2].contains("\"dataSlice\":{\"offset\":0,\"length\":16385}"));
     assert!(rpc.params_of("isBlockhashValid")[0].contains("\"commitment\":\"processed\""));
     let simulate = &rpc.params_of("simulateTransaction")[0];
     for part in [
@@ -1503,6 +1508,118 @@ fn dapp_preview_table_failures_stay_with_their_transaction() -> TestResult {
         _ => Answer::Status(503),
     });
     assert!(dapp_preview(&*rpc, &dapp_job(vec![alt_tx()]), &clock).is_err());
+    Ok(())
+}
+
+/// Legacy: the wallet's Token-2022 `TransferChecked` of `MINT` from `LOADED_W` to `LOADED_R`.
+fn transfer_checked_tx() -> Vec<u8> {
+    let mut data = vec![12];
+    data.extend_from_slice(&100_u64.to_le_bytes());
+    data.push(6);
+    wire(
+        &[[0; 64]],
+        &message(
+            [1, 0, 2],
+            &[
+                wallet_bytes(),
+                LOADED_W,
+                LOADED_R,
+                MINT,
+                TOKEN_2022_PROGRAM.to_bytes(),
+            ],
+            &[(4, &[1, 3, 2, 0], &data)],
+            None,
+        ),
+    )
+}
+
+/// A Token-2022 mint of `len` bytes: the base, account type `1` and a permanent delegate TLV.
+fn mint_2022_data(len: usize) -> Vec<u8> {
+    let mut data = mint_data(6);
+    data.resize(165, 0);
+    data.push(1);
+    data.extend_from_slice(&12_u16.to_le_bytes());
+    data.extend_from_slice(&32_u16.to_le_bytes());
+    data.extend_from_slice(&[0x99; 32]);
+    data.resize(len.max(data.len()), 0);
+    data
+}
+
+#[test]
+fn dapp_preview_fails_closed_on_an_unread_token_2022_mint() -> TestResult {
+    let clock = FakeClock::at(SIGNED_AT);
+    let origin = BrowserOrigin::parse("https://dapp.example").ok_or("origin")?;
+    let request = |txs| SolTxRequest {
+        id: ApprovalId([5; 16]),
+        origin: origin.clone(),
+        cluster: SolCluster::Devnet,
+        source: SolKeySource::Standard(AccountIndex::ZERO),
+        public: wallet_bytes(),
+        label: "Solana 1".to_owned(),
+        mode: SolTxMode::SignOnly,
+        options: SolSendOptions::default(),
+        txs,
+    };
+    let with_mint = |data: &[u8]| {
+        let mut world = DappWorld::default();
+        for (address, json) in &mut world.accounts {
+            if *address == b58(&MINT) {
+                *json = account_json(&TOKEN_2022_PROGRAM, 1, data);
+            }
+        }
+        world
+    };
+    let rules = |preview: yw_app::sol::flow::DappPreview| -> Result<Vec<RuleId>, String> {
+        let draft = build_sol_tx_request(
+            &request(vec![transfer_checked_tx()]),
+            &preview.into_facts(Vec::new(), 100_000),
+        )
+        .map_err(|error| format!("{error:?}"))?;
+        Ok(draft.display.warnings.iter().map(|w| w.rule).collect())
+    };
+    // Read within the bound: the permanent delegate is X17.
+    let preview = dapp_preview(
+        &*dapp_fake(with_mint(&mint_2022_data(16_384))),
+        &dapp_job(vec![transfer_checked_tx()]),
+        &clock,
+    )
+    .map_err(|code| code.code().to_owned())?;
+    assert_eq!(preview.mints.len(), 1);
+    assert!(preview.unread_mints.is_empty());
+    let found = rules(preview)?;
+    assert!(found.contains(&X17), "{found:?}");
+    assert!(!found.contains(&X12), "{found:?}");
+    // One byte longer (a site padding its metadata past 16 KiB, which the fake answers whole)
+    // and a Token-2022 account that is no mint: unread, X17 and X12 all the same.
+    for data in [
+        mint_2022_data(16_385),
+        token_data(&MINT, &wallet_bytes(), 1),
+    ] {
+        let preview = dapp_preview(
+            &*dapp_fake(with_mint(&data)),
+            &dapp_job(vec![transfer_checked_tx()]),
+            &clock,
+        )
+        .map_err(|code| code.code().to_owned())?;
+        assert!(preview.mints.is_empty());
+        assert_eq!(preview.unread_mints, [SolAddress::from_bytes(MINT)]);
+        let found = rules(preview)?;
+        assert!(found.contains(&X17) && found.contains(&X12), "{found:?}");
+    }
+    // An oversized account named as a lookup table stays that transaction's `NotTable`.
+    let mut world = DappWorld::default();
+    world.accounts[0].1 = account_json(&ADDRESS_LOOKUP_TABLE_PROGRAM, 1, &vec![0; 9_000]);
+    let preview = dapp_preview(
+        &*dapp_fake(world),
+        &dapp_job(vec![legacy_tx(), alt_tx()]),
+        &clock,
+    )
+    .map_err(|code| code.code().to_owned())?;
+    assert_eq!(preview.items[0].tables, Ok((7, Vec::new())));
+    assert_eq!(
+        preview.items[1].tables,
+        Err(AltError::NotTable(SolAddress::from_bytes(TABLE)))
+    );
     Ok(())
 }
 

@@ -199,6 +199,7 @@ fn facts(items: Vec<SolTxItemFacts>) -> SolTxFacts {
     SolTxFacts {
         items,
         mints: Vec::new(),
+        unread_mints: Vec::new(),
         known: Vec::new(),
         fee_cap: 100_000,
     }
@@ -754,6 +755,41 @@ fn mints_lookalikes_and_simulated_authority_changes() {
         writable.contains("[내 토큰 계정] [비슷한 주소 주의]"),
         "{writable}"
     );
+}
+
+#[test]
+fn an_unread_token_2022_mint_is_treated_as_having_every_extension() {
+    // The wallet's Token-2022 account holds a mint the app could not read (over 16 KiB or not
+    // parsing): X17 and X12 as if it had a permanent delegate, a hook and a fee.
+    let mint = key(0x56);
+    let mut item = ok_facts();
+    item.pre.push((
+        key(0x22),
+        Some(snapshot(
+            TOKEN_2022_PROGRAM,
+            2_039_280,
+            token_account(mint, wallet(), 50, None, None),
+        )),
+    ));
+    let tx = wire(&transfer_message(), &[]);
+    let draft = draft_of(tx.clone(), item.clone());
+    assert!(!rules(&draft).contains(&X17), "{:?}", rules(&draft));
+    let mut all = facts(vec![item]);
+    all.unread_mints = vec![mint];
+    let draft = build_sol_tx_request(&request(vec![tx], SolTxMode::SignOnly), &all).unwrap();
+    let found = rules(&draft);
+    for rule in [X12, X17] {
+        assert!(found.contains(&rule), "{rule:?} missing in {found:?}");
+        assert!(
+            text_of(&draft, rule).contains(&format!(
+                "mint {} · 확장을 읽지 못했습니다",
+                mint.to_base58()
+            )),
+            "{}",
+            text_of(&draft, rule)
+        );
+    }
+    assert_eq!(draft.display.risk, RiskLevel::High);
 }
 
 #[test]
