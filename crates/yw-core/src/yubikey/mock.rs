@@ -132,6 +132,11 @@ pub struct MockCard {
     pub pgp_keys: [Option<[u8; 32]>; 3],
     /// Algorithm attributes SIG, DEC, AUT.
     pub pgp_attributes: [Vec<u8>; 3],
+    /// Status word of READ PUBLIC KEY for an empty slot (`6A88`; a YubiKey 5.8.0 answered
+    /// something else, 2026-11-12).
+    pub pgp_empty_sw: u16,
+    /// Whether `6E` carries the key information `DE` (OpenPGP 3.3+).
+    pub pgp_key_info: bool,
     /// UIF SIG, DEC, AUT.
     pub pgp_uif: [u8; 3],
     /// PIV PIN.
@@ -204,6 +209,8 @@ impl MockCard {
                 RSA2048_ATTRIBUTES.to_vec(),
             ],
             pgp_uif: [0, 0, 0],
+            pgp_empty_sw: 0x6A88,
+            pgp_key_info: true,
             piv_pin: super::piv::DEFAULT_PIN.to_vec(),
             piv_retries: 3,
             piv_puk: super::piv::DEFAULT_PUK.to_vec(),
@@ -382,6 +389,20 @@ impl MockCard {
         ];
         let _ = tlv::push(&mut discretionary, 0xC4, &status);
         let _ = tlv::push(&mut discretionary, 0xC5, &[0; 60]);
+        if self.pgp_key_info {
+            let status = |index: usize| {
+                if self.pgp_keys.get(index).copied().flatten().is_some() {
+                    0x02
+                } else {
+                    0x00
+                }
+            };
+            let _ = tlv::push(
+                &mut discretionary,
+                0xDE,
+                &[0x01, status(0), 0x02, status(1), 0x03, status(2)],
+            );
+        }
         let mut body = Vec::new();
         let _ = tlv::push(&mut body, 0x4F, &aid);
         let _ = tlv::push(
@@ -656,7 +677,7 @@ impl MockCard {
                 let index = data.first().copied().and_then(Self::key_index);
                 match index.and_then(|index| self.pgp_public(index)) {
                     Some(public) => ok(public),
-                    None => sw(0x6A88),
+                    None => sw(self.pgp_empty_sw),
                 }
             }
             (0x2A, 0x9E, 0x9A) => self.pgp_sign(0, data),

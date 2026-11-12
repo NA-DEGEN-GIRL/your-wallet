@@ -1575,3 +1575,39 @@ fn enrolment_keeps_a_key_it_does_not_derive_and_resets_high_counters() {
     assert_eq!(card.pgp_keys, [None, None, None]);
     assert!(card.piv_keys.is_empty());
 }
+
+/// A card answering READ PUBLIC KEY of an empty slot with a status other than 6A88 (a YubiKey
+/// 5.8.0, 2026-11-12): the key information `DE` decides, so the pre-import check and the
+/// enrolment go on; without `DE` the status stays an error, now with its code in the text.
+#[test]
+fn empty_slot_answered_without_6a88_follows_the_key_information() {
+    let seed = seed_of(ABOUT);
+    for status in [0x6A80_u16, 0x6B00] {
+        let mut card = MockCard::new(41_000_001);
+        card.pgp_empty_sw = status;
+        let occupied = super::enrol::occupied_slots(
+            &mut card,
+            ApduMode::Short,
+            &seed,
+            &[sig(evm(0)), aut(btc(0))],
+            &[],
+        )
+        .unwrap();
+        assert!(occupied.is_empty(), "{status:04X}");
+        let mut card = MockCard::new(41_000_002);
+        card.pgp_empty_sw = status;
+        assert!(enrol(&mut card, ABOUT, &[sig(evm(0)), aut(btc(0))], &[]).is_ok());
+    }
+    let mut card = MockCard::new(41_000_003);
+    card.pgp_empty_sw = 0x6B00;
+    card.pgp_key_info = false;
+    let error =
+        super::enrol::occupied_slots(&mut card, ApduMode::Short, &seed, &[sig(evm(0))], &[])
+            .unwrap_err();
+    assert_eq!(error, EnrolError::Card(CardError::Status(0x6B00)));
+    assert_eq!(
+        CardError::Status(0x6B00).to_string(),
+        "YubiKey 작업 중 오류가 발생했습니다 (SW 6B00)."
+    );
+    assert_eq!(CardError::Status(0x6B00).status_word(), Some(0x6B00));
+}

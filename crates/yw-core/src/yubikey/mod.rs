@@ -217,6 +217,17 @@ impl CardError {
         }
     }
 
+    /// The status word behind the error, when there is one (logs, 2026-11-12).
+    #[must_use]
+    pub const fn status_word(self) -> Option<u16> {
+        match self {
+            Self::Status(sw) => Some(sw),
+            Self::WrongData => Some(0x6A80),
+            Self::NotFound => Some(0x6A88),
+            _ => None,
+        }
+    }
+
     /// A stable name for logs (D28: variant names only).
     #[must_use]
     pub const fn log_name(self) -> &'static str {
@@ -329,12 +340,23 @@ impl fmt::Display for CardError {
             Self::ManagementKeyUnknown => formatter.write_str(
                 "PIV 관리 키가 기본값도 PIN 보호도 아닙니다. 이 지갑의 'PIV 관리 키 자동 보호'가 중간에 멈췄다면 PIV PIN으로 그 작업을 다시 실행하면 복구됩니다. 직접 정한 키라면 'ykman piv access change-management-key --generate --protect'로 PIN 보호로 바꾼 뒤 다시 시도하세요.",
             ),
-            Self::WrongData
-            | Self::NotFound
-            | Self::Status(_)
-            | Self::Malformed
-            | Self::TooLarge
-            | Self::Internal => formatter.write_str("YubiKey 작업 중 오류가 발생했습니다."),
+            // The cause in brackets (2026-11-12: one sentence for all six hid it).
+            Self::Status(sw) => {
+                write!(formatter, "YubiKey 작업 중 오류가 발생했습니다 (SW {sw:04X}).")
+            }
+            Self::WrongData => {
+                formatter.write_str("YubiKey 작업 중 오류가 발생했습니다 (SW 6A80).")
+            }
+            Self::NotFound => formatter.write_str("YubiKey 작업 중 오류가 발생했습니다 (SW 6A88)."),
+            Self::Malformed => {
+                formatter.write_str("YubiKey 작업 중 오류가 발생했습니다 (응답 형식이 다름).")
+            }
+            Self::TooLarge => {
+                formatter.write_str("YubiKey 작업 중 오류가 발생했습니다 (명령이 너무 김).")
+            }
+            Self::Internal => {
+                formatter.write_str("YubiKey 작업 중 오류가 발생했습니다 (내부 오류).")
+            }
         }
     }
 }

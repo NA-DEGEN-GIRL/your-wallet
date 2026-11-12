@@ -175,6 +175,37 @@ pub enum CardJobError {
     Enrol(EnrolError),
 }
 
+impl CardJobError {
+    /// The card error inside, if any (logs).
+    #[must_use]
+    pub const fn card_error(self) -> Option<CardError> {
+        match self {
+            Self::Card(error)
+            | Self::Enrol(EnrolError::Card(error) | EnrolError::Partial(error)) => Some(error),
+            Self::NoCard | Self::Enrol(_) => None,
+        }
+    }
+
+    /// Log fields for a failed card job: the error's variant name and status word (D28: no
+    /// secrets).
+    #[must_use]
+    pub fn log_fields(self) -> [(&'static str, crate::logging::Field<'static>); 2] {
+        let card = self.card_error();
+        [
+            (
+                "error",
+                crate::logging::Field::Word(card.map_or("no_card_error", CardError::log_name)),
+            ),
+            (
+                "sw",
+                crate::logging::Field::Num(
+                    card.and_then(CardError::status_word).map_or(0, u64::from),
+                ),
+            ),
+        ]
+    }
+}
+
 impl core::fmt::Display for CardJobError {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {

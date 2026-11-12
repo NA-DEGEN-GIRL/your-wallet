@@ -343,6 +343,27 @@ pub struct AppData {
     pub retries: [u8; 3],
     /// Algorithm attributes of SIG, DEC, AUT (`C1`, `C2`, `C3`).
     pub attributes: [Vec<u8>; 3],
+    /// Key information `DE` (OpenPGP 3.3+: `<key ref> <status>` pairs, status `00` = no key,
+    /// `01` generated, `02` imported); empty when the card does not send it.
+    pub key_information: Vec<u8>,
+}
+
+impl AppData {
+    /// What `DE` says about `key`: `Some(true)` when it holds no key, `Some(false)` when it
+    /// holds one, `None` without `DE` or without an entry for `key`.
+    #[must_use]
+    pub fn slot_without_key(&self, key: PgpKey) -> Option<bool> {
+        let reference = match key {
+            PgpKey::Sig => 0x01,
+            PgpKey::Aut => 0x03,
+        };
+        self.key_information
+            .chunks_exact(2)
+            .find_map(|pair| match pair {
+                [entry, status] if *entry == reference => Some(*status == 0x00),
+                _ => None,
+            })
+    }
 }
 
 fn find_nested(bytes: &[u8], tag: u16) -> Option<&[u8]> {
@@ -396,6 +417,7 @@ pub fn parse_app_data(response: &[u8]) -> Result<AppData, CardError> {
             *status.get(6).ok_or(CardError::Malformed)?,
         ],
         attributes: [attribute(0xC1), attribute(0xC2), attribute(0xC3)],
+        key_information: attribute(0xDE),
     })
 }
 
@@ -627,14 +649,21 @@ impl<'t> OpenPgp<'t> {
     }
 
     /// What `key` holds now (`00 47 81 00`, read-only): nothing, a secp256k1 key, or another
-    /// key.
+    /// key. A YubiKey can answer READ PUBLIC KEY of an empty slot with a status other than
+    /// `6A88` (2026-11-12, a 5.8.0 card stopped the enrolment before the admin PIN): then the
+    /// card's own key information (`DE`) decides, and only "no key" turns the error into
+    /// [`SlotKey::Empty`].
     ///
     /// # Errors
     ///
-    /// Transport errors; status words other than `9000` / `6A88`.
+    /// Transport errors; status words other than `9000` / `6A88` unless `DE` says the slot is
+    /// empty.
     pub fn slot_key(&mut self, key: PgpKey) -> Result<SlotKey, CardError> {
         let response = exchange(self.transport, &read_public_key(key), self.mode)?;
-        parse_slot_key(response.sw, &response.data)
+        match parse_slot_key(response.sw, &response.data) {
+            Err(_) if self.app.slot_without_key(key) == Some(true) => Ok(SlotKey::Empty),
+            other => other,
+        }
     }
 
     /// The touch policy currently set for `key` (`GET DATA D6/D8`).
