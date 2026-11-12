@@ -336,8 +336,13 @@ pub fn steps<const N: usize>(labels: [&str; N], current: usize) -> Item {
 /// The `← 메인으로` link.
 #[must_use]
 pub fn back_main() -> Item {
-    Item::Row(vec![Ctl::link(ids::BACK_MAIN, "← 메인으로")])
+    Item::Row(vec![
+        Ctl::link(ids::BACK_MAIN, "← 메인으로").tip("메인으로 (Esc)"),
+    ])
 }
+
+/// The tooltip of a main card's `새로고침` (F5 presses the visible one).
+pub const T_REFRESH_TIP: &str = "새로고침 (F5)";
 
 /// S08 `QuickNode 주소`'s help (2026-11-10).
 pub const T_DONE_QUICKNODE: &str = "QuickNode 대시보드의 엔드포인트 주소(https://….quiknode.pro/…/)를 통째로 붙여넣으세요. 쓸 체인(Ethereum·Arbitrum·Base·Solana·Bitcoin 등)은 대시보드에서 그 엔드포인트에 켜 두어야 합니다. 입력은 가려지고, 이 Windows 사용자만 풀 수 있게 암호화해 저장합니다.";
@@ -918,8 +923,9 @@ impl App {
                         crate::ui::screens_sites::ids::SITES_OPEN,
                         "사이트·WalletConnect",
                     ),
-                    Ctl::button(ids::OPEN_SETTINGS, "설정"),
-                    Ctl::button(ids::LOCK, "잠금 (Ctrl+L)"),
+                    // Shortcuts in the tooltips (2026-11-12; "잠금 (Ctrl+L)" in the label before).
+                    Ctl::button(ids::OPEN_SETTINGS, "설정").tip("설정 (Ctrl+,)"),
+                    Ctl::button(ids::LOCK, "잠금").tip("잠금 (Ctrl+L)"),
                 ],
             ));
         }
@@ -1619,7 +1625,9 @@ impl App {
             Ctl::primary(crate::ui::screens_evm::ids::RECEIVE_OPEN, "받기"),
         ];
         if endpoint {
-            row.push(Ctl::link(crate::ui::screens_evm::ids::REFRESH, "새로고침"));
+            row.push(
+                Ctl::link(crate::ui::screens_evm::ids::REFRESH, "새로고침").tip(T_REFRESH_TIP),
+            );
         } else {
             // Nothing to refresh without an address: that network's row with its field open
             // (spec/04 §2.6, 2026-11-10).
@@ -2114,37 +2122,52 @@ impl App {
         items.push(Item::CardStart(Some("네트워크별 RPC 주소".to_owned())));
         self.rpc_summary_items(items);
         items.push(Item::Help(
-            "주소에는 토큰이 들어 있어 가린 형태로만 보입니다. '테스트'는 그 주소가 올바른 네트워크를 가리키는지 한 번 확인합니다."
+            "'테스트'는 그 주소가 올바른 네트워크를 가리키는지 한 번 확인합니다. 주소에는 토큰이 들어 있어 '교체'를 누르면 가린 형태로만 보입니다."
                 .to_owned(),
         ));
         let mut networks = self.url_networks();
         networks.truncate(usize::from(ids::ROW_SPAN / 3));
-        let last = networks.len().saturating_sub(1);
         // The note above an open field: the stored credentials can make the empty addresses.
         let template_name = match template {
             RpcTemplate::QuickNode => Some("QuickNode"),
             RpcTemplate::Alchemy => Some("알케미"),
             RpcTemplate::Manual => None,
         };
+        // One line per network (2026-11-12): its name, the three actions and its state as a tag
+        // on the same line; a full-width band only for a failure (it has the reason) and for
+        // `삭제`. 13 networks fit on one screen instead of three.
         for (row, network) in networks.into_iter().enumerate() {
             let url = self.apikeys.rpc_url(network);
-            let state = url.as_ref().map_or_else(
-                || "없음 — 이 네트워크는 아직 쓸 수 없습니다".to_owned(),
-                |url| format!("설정됨  {}", mask_url(url)),
-            );
-            items.push(Item::Subtitle(format!(
-                "{}  ({network})",
-                self.network_name(network)
-            )));
-            items.push(Item::Help(state));
             let base =
                 ids::ROW_BASE.saturating_add(u16::try_from(row).unwrap_or(0).saturating_mul(3));
-            items.push(Item::Row(vec![
-                Ctl::button(base, if url.is_some() { "교체" } else { "입력" }),
-                Ctl::button(base.saturating_add(1), "테스트"),
-                Ctl::danger(base.saturating_add(2), "삭제").enabled(url.is_some()),
-            ]));
+            items.push(Item::LabeledRow(
+                self.network_name(network),
+                vec![
+                    Ctl::button(base, if url.is_some() { "교체" } else { "입력" }).compact(),
+                    Ctl::button(base.saturating_add(1), "테스트")
+                        .compact()
+                        .enabled(url.is_some()),
+                    Ctl::danger(base.saturating_add(2), "삭제")
+                        .compact()
+                        .enabled(url.is_some()),
+                ],
+            ));
+            let message = self.rpc_messages.iter().find(|(id, _, _)| *id == network);
+            let pill = match (url.is_some(), message.map(|(_, _, state)| *state)) {
+                (false, _) => Some(("없음", Tone::Warn)),
+                (true, Some(TestState::Works)) => Some(("작동", Tone::Success)),
+                (true, Some(TestState::Failed)) => Some(("실패", Tone::Danger)),
+                (true, Some(TestState::Testing)) => Some(("테스트 중", Tone::Info)),
+                (true, None) => None,
+            };
+            if let Some((text, tone)) = pill {
+                items.push(Item::Pill(text.to_owned(), tone));
+            }
             if self.replace_target == Some(network) {
+                items.push(Item::Help(url.as_ref().map_or_else(
+                    || format!("{network} · 주소 없음"),
+                    |url| format!("{network} · 지금 주소 {}", mask_url(url)),
+                )));
                 if let Some(name) = template_name.filter(|_| {
                     stored && template_entry(template, network, &self.settings).is_some()
                 }) {
@@ -2162,19 +2185,14 @@ impl App {
                         .to_owned(),
                 ));
             }
-            if let Some((_, message, state)) =
-                self.rpc_messages.iter().find(|(id, _, _)| *id == network)
-            {
-                items.push(Item::Banner(message.clone(), state.tone()));
+            if let Some((_, message, TestState::Failed)) = message {
+                items.push(Item::Banner(message.clone(), Tone::Danger));
             }
             if self.rpc_removed == Some(crate::app::RpcRemoved::Url(network)) {
                 items.push(Item::Banner(
                     "RPC 주소를 지웠습니다.".to_owned(),
                     Tone::Success,
                 ));
-            }
-            if row != last {
-                items.push(Item::Rule);
             }
         }
         items.push(Item::CardEnd);

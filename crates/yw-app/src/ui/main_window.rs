@@ -359,6 +359,14 @@ impl Ctl {
         self
     }
 
+    /// A tooltip (2026-11-12: a shortcut — `잠금 (Ctrl+L)`, `새로고침 (F5)` — instead of spelling
+    /// it in the label). An enabled control shows it on hover.
+    #[must_use]
+    pub fn tip(mut self, text: &str) -> Self {
+        self.tip = Some(text.to_owned());
+        self
+    }
+
     /// Makes a button small (list-row actions, 2026-11-11).
     #[must_use]
     pub const fn compact(mut self) -> Self {

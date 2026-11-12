@@ -77,15 +77,33 @@ pub const T_EXPLORER_COPY: &str = "탐색기 링크 복사";
 pub const T_SAVE_ADDRESS: &str = "이 주소 저장";
 
 /// A transaction hash on its own line: a click copies it (`copy`; display-only without one),
-/// `actions` (the explorer icons) at the right end.
+/// `actions` (the explorer icons) right after it. Shown short (2026-11-12, [`short_hash`]: the
+/// whole 64–88 characters took a line or two of every activity row); the copy handlers copy
+/// the whole hash from the row, and the tooltip shows it.
 pub fn push_hash_line(items: &mut Vec<Item>, copy: Option<u16>, hash: &str, actions: Vec<Ctl>) {
     push_value_line(
         items,
         copy,
         T_HASH_COPY,
-        vec![(hash.to_owned(), false)],
+        vec![(short_hash(hash), false)],
         actions,
     );
+    if let Some(Item::CopyLine { value, .. }) = items.last_mut() {
+        value.tip = Some(format!("{T_HASH_COPY}: {hash}"));
+    }
+}
+
+/// A transaction hash as its first 10 and last 6 characters (`0x1234abcd…5678ef`); a short one
+/// whole. Display only — never for an address, and never where a hash is checked.
+#[must_use]
+pub fn short_hash(hash: &str) -> String {
+    let count = hash.chars().count();
+    if count <= 20 {
+        return hash.to_owned();
+    }
+    let head: String = hash.chars().take(10).collect();
+    let tail: String = hash.chars().skip(count.saturating_sub(6)).collect();
+    format!("{head}…{tail}")
 }
 
 /// An address whole, the 4 characters after its prefix and the last 4 emphasized like the

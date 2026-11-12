@@ -592,7 +592,9 @@ impl App {
             }
         }
         items.push(Item::Row(vec![if has_endpoint {
-            Ctl::link(ids::REFRESH, "새로고침").enabled(!self.zec.refreshing)
+            Ctl::link(ids::REFRESH, "새로고침")
+                .tip(crate::ui::screens::T_REFRESH_TIP)
+                .enabled(!self.zec.refreshing)
         } else {
             // Nothing to refresh without an address: this network's row (EVM·Solana alike).
             Ctl::button(crate::ui::screens::ids::ZEC_RPC_OPEN, "RPC 설정하기")
@@ -753,12 +755,13 @@ impl App {
             vec![
                 Ctl::edit(ids::SEND_AMOUNT_EDIT, &self.zec.amount_text, 200, false, 24)
                     .enabled(!self.zec.send_max),
-                Ctl::check(ids::SEND_MAX, "보내기 최대", self.zec.send_max),
+                // Like every chain's `최대` (2026-11-12): pressed while on.
+                Ctl::tab(ids::SEND_MAX, "최대", self.zec.send_max),
             ],
         ));
         if self.zec.send_max {
             items.push(Item::Help(format!(
-                "보내기 최대: 확인된 출력(최대 {}개)의 합에서 수수료를 뺀 금액을 보냅니다(승인 창에서 확인).",
+                "최대: 확인된 출력(최대 {}개)의 합에서 수수료를 뺀 금액을 보냅니다(승인 창에서 확인).",
                 yw_core::zec::ZEC_MAX_INPUTS
             )));
         }
@@ -832,16 +835,15 @@ impl App {
                 ZecTxState::Confirmed => format!("확인됨 (블록 {})", record.mined_height),
                 other => other.label().to_owned(),
             };
+            // The status at the end of the first line (2026-11-12: a line of its own before).
             items.push(Item::Text(format!(
-                "{} · 보냄 {} ZEC",
+                "{} · 보냄 {} ZEC · {state}",
                 local_time(record.signed_at_ms),
                 format_zec(record.amount)
             )));
-            items.push(Item::Help(if record.state.is_terminal() {
-                format!("상태: {state}")
-            } else {
-                format!("상태: {state} · 만료 높이 {}", record.expiry_height())
-            }));
+            if !record.state.is_terminal() {
+                items.push(Item::Help(format!("만료 높이 {}", record.expiry_height())));
+            }
             match record.recipient().map(|dest| dest.encode(network)) {
                 Some(to) => {
                     let name = own

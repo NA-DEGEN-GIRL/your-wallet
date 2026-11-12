@@ -937,13 +937,14 @@ impl App {
                     .unwrap_or(0)
                     .saturating_mul(ids::ACTIVITY_STRIDE),
             );
+            // The status at the end of the first line (2026-11-12: a line of its own before).
             items.push(Item::Text(format!(
-                "{} · {} · {}",
+                "{} · {} · {} · {}",
                 local_time(row.time_unix_ms),
                 active_label(ctx),
-                row.title
+                row.title,
+                row.status
             )));
-            items.push(Item::Muted(format!("상태: {}", row.status)));
             let lower = row.counterparty.to_ascii_lowercase();
             let name = known
                 .iter()
@@ -1228,6 +1229,7 @@ impl App {
         }
         actions.push(
             Ctl::link(ids::REFRESH, "새로고침")
+                .tip(crate::ui::screens::T_REFRESH_TIP)
                 .enabled(usable && !self.btc.refresh.busy && !self.btc.discovery.running),
         );
         items.push(Item::Row(actions));
@@ -1490,6 +1492,8 @@ impl App {
             vec![
                 Ctl::edit(ids::SEND_AMOUNT_EDIT, &form.amount_text, 220, false, 32)
                     .enabled(!form.send_max),
+                // Right after the field like every chain's `최대` (2026-11-12), then the unit.
+                Ctl::tab(ids::SEND_MAX, "최대", form.send_max),
                 Ctl::radio(
                     ids::UNIT_BTC,
                     "BTC",
@@ -1502,7 +1506,6 @@ impl App {
                     form.unit == crate::app_btc::BtcAmountUnit::Sats,
                     false,
                 ),
-                Ctl::check(ids::SEND_MAX, "보내기 최대", form.send_max),
             ],
         ));
         if let Some(error) = &form.amount_error {
@@ -1512,7 +1515,7 @@ impl App {
         }
         if form.send_max {
             items.push(Item::Help(
-                "보내기 최대: 동결되지 않은 확인된 UTXO(최대 100개)의 합에서 수수료를 뺀 금액을 보냅니다(승인 창에서 확인)."
+                "최대: 동결되지 않은 확인된 UTXO(최대 100개)의 합에서 수수료를 뺀 금액을 보냅니다(승인 창에서 확인)."
                     .to_owned(),
             ));
         }

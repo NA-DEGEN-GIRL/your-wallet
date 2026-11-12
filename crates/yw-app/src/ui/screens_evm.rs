@@ -736,8 +736,8 @@ impl App {
                     .unwrap_or(0)
                     .saturating_mul(ids::ACTIVITY_STRIDE),
             );
-            items.push(Item::Text(row.head));
-            items.push(Item::Help(format!("상태: {}", row.status)));
+            // The status at the end of the first line (2026-11-12: a line of its own before).
+            items.push(Item::Text(format!("{} · {}", row.head, row.status)));
             // 2026-11-11: the recipient whole (ends emphasized) and the hash on lines of their
             // own; a click copies either (the wallet's own signed journal — the received
             // history's senders never are), the explorer and address-book actions are icons

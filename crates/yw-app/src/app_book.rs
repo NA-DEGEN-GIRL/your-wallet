@@ -68,6 +68,10 @@ pub enum PromptPlace {
 
 /// The S14 add/edit form.
 #[derive(Clone, Debug, Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent states of one form (checks, ack, open)"
+)]
 pub struct BookForm {
     /// Family of a new entry (fixed while editing).
     pub chain: BookChain,
@@ -87,6 +91,8 @@ pub struct BookForm {
     pub ack: bool,
     /// Error message.
     pub message: Option<String>,
+    /// Opened with `＋ 주소 추가` (S14 shows the form only while it is in use).
+    pub open: bool,
 }
 
 /// The inline `주소록에 저장` prompt (label only; the address is fixed).
@@ -726,6 +732,10 @@ impl App {
                 self.refresh();
             }
             ids::SAVE => self.save_book_form(),
+            ids::ADD_OPEN => {
+                self.book.form.open = true;
+                self.refresh();
+            }
             ids::CANCEL => {
                 self.book.form = BookForm {
                     chain: self.book.form.chain,
@@ -819,6 +829,20 @@ impl App {
                     self.book.delete = Some((entry.chain, entry.address));
                     self.set_screen(Screen::Confirm(Confirm::BookDelete));
                 }
+            }
+            return true;
+        }
+        if let Some(row) = offset(id, ids::COPY_BASE, ids::COPY_SPAN) {
+            if let Some(entry) = self.book_rows().get(usize::from(row)) {
+                let text = match entry.chain {
+                    BookChain::Evm => yw_core::evm::address::parse_address(&entry.address)
+                        .map_or_else(
+                            |_| entry.address.clone(),
+                            yw_core::evm::Address::to_checksum,
+                        ),
+                    BookChain::Sol | BookChain::Btc => entry.address.clone(),
+                };
+                self.copy_address_text(&text);
             }
             return true;
         }

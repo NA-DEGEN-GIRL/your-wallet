@@ -50,6 +50,8 @@ pub mod ids {
     pub const RESULT_SAVE: u16 = 14_015;
     /// Bitcoin send form `주소록에서 선택`.
     pub const BTC_PICK: u16 = 14_016;
+    /// S14 `＋ 주소 추가`: opens the add form (2026-11-12: the list comes first).
+    pub const ADD_OPEN: u16 = 14_017;
     /// Favorite chips of the current send form.
     pub const FAV_BASE: u16 = 14_020;
     /// Favorite chips span (≥ `app_book::FAVORITE_CHIPS`).
@@ -68,6 +70,10 @@ pub mod ids {
     pub const ROW_STRIDE: u16 = 3;
     /// S14 rows span (500 rows × 3).
     pub const ROW_SPAN: u16 = 1_500;
+    /// S14 rows' address lines (2026-11-12): `COPY_BASE + row` copies that entry's address.
+    pub const COPY_BASE: u16 = 18_700;
+    /// Span of [`COPY_BASE`] (the address book's maximum).
+    pub const COPY_SPAN: u16 = 500;
 
     const _: () = assert!(FAV_BASE + FAV_SPAN <= BTC_PICK_BASE);
     const _: () = assert!(BTC_PICK_BASE + BTC_PICK_SPAN <= SOL_ACTIVITY_BASE);
@@ -92,6 +98,7 @@ pub mod ids {
         SEND_SAVE,
         RESULT_SAVE,
         BTC_PICK,
+        ADD_OPEN,
     ];
 }
 
@@ -157,8 +164,20 @@ impl App {
     pub fn book_screen(&self, items: &mut Vec<Item>) {
         items.push(crate::ui::screens::back_main());
         items.push(Item::Title("주소록".to_owned()));
-        self.book_form_card(items);
         let rows = self.book_rows();
+        // The saved addresses first (2026-11-12): the form only while it is in use, or while
+        // the book is empty.
+        let form = &self.book.form;
+        if form.open
+            || form.editing.is_some()
+            || form.message.is_some()
+            || !form.address.is_empty()
+            || rows.is_empty()
+        {
+            self.book_form_card(items);
+        } else {
+            items.push(Item::Row(vec![Ctl::primary(ids::ADD_OPEN, "＋ 주소 추가")]));
+        }
         let meta = self.meta.as_ref();
         let mut index = 0_u16;
         for chain in BookChain::ALL {
@@ -177,19 +196,19 @@ impl App {
             ));
             if entries.is_empty() {
                 items.push(Item::Help(format!(
-                    "{} 주소록이 비어 있습니다. 위에서 추가하거나, 보낸 뒤 '주소록에 저장'으로 넣을 수 있습니다.",
+                    "{} 주소록이 비어 있습니다.",
                     family_name(chain)
                 )));
             }
             let count = entries.len();
             for (position, entry) in entries.into_iter().enumerate() {
                 let base = ids::ROW_BASE.saturating_add(index.saturating_mul(ids::ROW_STRIDE));
+                let position_in_book = index;
                 index = index.saturating_add(1);
                 let favorite = meta.is_some_and(|meta| meta.is_favorite(chain, &entry.address));
                 let verified = if entry.verified { " ✓ 확인됨" } else { "" };
                 let star = if favorite { "★ " } else { "" };
                 items.push(Item::Text(format!("{star}{}{verified}", entry.label)));
-                items.push(Item::Mono(shown_address(chain, &entry.address)));
                 if chain == BookChain::Btc
                     && let Some(net) = crate::app_book::btc_network_of(&entry.address)
                 {
@@ -198,18 +217,32 @@ impl App {
                         Box::new(Item::Help(net.display_name().to_owned())),
                     ));
                 }
-                items.push(Item::Row(vec![
-                    Ctl::link(
+                // 2026-11-12: the address (still the grouped form of §3.3) is the copy button
+                // and the actions are icons right after it, not a row of buttons under it.
+                let actions = vec![
+                    Ctl::icon(
                         base,
+                        if favorite { "★" } else { "☆" },
                         if favorite {
-                            "★ 즐겨찾기 해제"
+                            "즐겨찾기 해제"
                         } else {
-                            "☆ 즐겨찾기"
+                            "즐겨찾기"
                         },
                     ),
-                    Ctl::button(base.saturating_add(1), "편집"),
-                    Ctl::danger(base.saturating_add(2), "삭제"),
-                ]));
+                    Ctl::icon(base.saturating_add(1), "✎", "편집"),
+                    Ctl::icon(base.saturating_add(2), "✕", "삭제"),
+                ];
+                let shown = shown_address(chain, &entry.address);
+                if position_in_book < ids::COPY_SPAN {
+                    items.push(crate::ui::screens::receive_address_row(
+                        &shown,
+                        ids::COPY_BASE.saturating_add(position_in_book),
+                        actions,
+                    ));
+                } else {
+                    items.push(Item::Mono(shown));
+                    items.push(Item::Row(actions));
+                }
                 if position.saturating_add(1) < count {
                     items.push(Item::Rule);
                 }
@@ -230,7 +263,7 @@ impl App {
             "주소 추가".to_owned()
         })));
         items.push(Item::Help(
-            "자주 보내는 주소에 이름을 붙여 두면 보내기와 승인 창에서 '주소록: 이름'으로 확인할 수 있고, 비슷하게 생긴 가짜 주소를 경고합니다. ★ 즐겨찾기는 보내기 화면 맨 위에 바로 고를 수 있게 나옵니다."
+            "이름을 붙인 주소는 보내기·승인 창에 '주소록: 이름'으로 나오고, 비슷하게 생긴 가짜 주소를 경고합니다. 보낸 뒤 '주소록에 저장'으로도 넣을 수 있습니다."
                 .to_owned(),
         ));
         if !editing {
@@ -247,7 +280,17 @@ impl App {
                 })
                 .collect();
             items.push(Item::LabeledRow("체인".to_owned(), tabs));
-            items.push(Item::Help(T_BOOK_SHARED.to_owned()));
+            // The sharing rule of the chosen family only (2026-11-12; all three before).
+            items.push(Item::Help(
+                match form.chain {
+                    BookChain::Evm => "EVM 주소 하나를 모든 EVM 체인에서 같이 씁니다.",
+                    BookChain::Sol => "Solana mainnet·devnet에서 같이 씁니다.",
+                    BookChain::Btc => {
+                        "Bitcoin 주소는 그 주소의 네트워크(mainnet bc1… · testnet4 tb1…) 보내기 화면에만 나옵니다."
+                    }
+                }
+                .to_owned(),
+            ));
         }
         let mut address = Ctl::edit(ids::ADDR_EDIT, &form.address, 430, false, 128);
         if editing {
@@ -260,12 +303,12 @@ impl App {
         ));
         items.push(Item::Row(vec![Ctl::check(
             ids::VERIFIED,
-            "다른 경로(전화·대면 등)로 이 주소를 확인했습니다",
+            "다른 경로(전화·대면 등)로 확인한 주소",
             form.verified,
         )]));
         items.push(Item::Row(vec![Ctl::check(
             ids::FAVORITE,
-            "★ 즐겨찾기 (보내기 화면 맨 위에 표시)",
+            "★ 즐겨찾기 (보내기 화면 맨 위에)",
             form.favorite,
         )]));
         if let Some(note) = &form.look_alike {
@@ -280,7 +323,7 @@ impl App {
             Ctl::primary(ids::SAVE, if editing { "저장" } else { "추가" })
                 .enabled(form.look_alike.is_none() || form.ack),
         ];
-        if editing {
+        if editing || form.open {
             row.push(Ctl::button(ids::CANCEL, "취소"));
         }
         items.push(Item::Row(row));

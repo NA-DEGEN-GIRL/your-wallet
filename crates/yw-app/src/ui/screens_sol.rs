@@ -484,7 +484,9 @@ impl App {
                     "RPC 설정하기",
                 ));
             } else {
-                row.push(Ctl::link(ids::REFRESH, "새로고침"));
+                row.push(
+                    Ctl::link(ids::REFRESH, "새로고침").tip(crate::ui::screens::T_REFRESH_TIP),
+                );
             }
             items.push(Item::Row(row));
             items.push(Item::CardEnd);
@@ -622,16 +624,14 @@ impl App {
                 continue;
             }
             let core = record.core();
+            // The status at the end of the first line (2026-11-12: a line of its own before).
             items.push(Item::Text(format!(
-                "{} · {} · {}",
+                "{} · {} · {} · {}",
                 local_time(record.signed_at_ms),
                 core.map_or_else(String::new, |core| self.sol_label(&core.from.to_base58())),
                 core.map_or_else(String::new, |core| {
                     yw_core::sol::display::transfer_title(record.cluster, &core)
-                })
-            )));
-            items.push(Item::Help(format!(
-                "상태: {}",
+                }),
                 self.sol_record_status(&record)
             )));
             if let Some(core) = core {
@@ -647,12 +647,12 @@ impl App {
                     break;
                 }
                 items.push(Item::Text(format!(
-                    "{} · {} · {}",
+                    "{} · {} · {} · {}",
                     local_time(entry.time_unix_ms),
                     self.sol_label(&entry.account),
-                    entry.title
+                    entry.title,
+                    status_word(&entry.status)
                 )));
-                items.push(Item::Help(format!("상태: {}", status_word(&entry.status))));
                 match SolAddress::parse(&entry.counterparty) {
                     Ok(address) => {
                         self.sol_recipient_items(shown, &address, &counterparties, items);
@@ -1058,7 +1058,9 @@ impl App {
                 .enabled(!form.send_max),
         ];
         if form.moving.is_none() {
-            amount_row.push(Ctl::check(ids::SEND_MAX, "보내기 최대", form.send_max));
+            // `최대` right after the field on every chain (2026-11-12: a check box here, a
+            // button on EVM); pressed while on.
+            amount_row.push(Ctl::tab(ids::SEND_MAX, "최대", form.send_max));
         }
         items.push(Item::LabeledRow(
             format!("금액 ({})", asset.symbol()),
@@ -1066,10 +1068,12 @@ impl App {
         ));
         if form.send_max {
             items.push(Item::Help(match asset {
-                SolAsset::Sol => "보내기 최대: 잔액 − 최대 수수료를 보내고 이 계정의 SOL 잔액은 0이 됩니다(승인 창에서 확인)."
-                    .to_owned(),
+                SolAsset::Sol => {
+                    "최대: 잔액 − 최대 수수료를 보내고 SOL 잔액은 0이 됩니다(승인 창에서 확인)."
+                        .to_owned()
+                }
                 SolAsset::Spl(entry) => format!(
-                    "보내기 최대: 이 계정의 {} 전부를 보냅니다. SOL에서는 수수료(와 필요하면 받는 토큰 계정 생성비)만 나갑니다(승인 창에서 확인).",
+                    "최대: {} 전부를 보냅니다. 수수료(와 필요하면 받는 토큰 계정 생성비)는 SOL로 냅니다.",
                     entry.symbol
                 ),
             }));

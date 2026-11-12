@@ -226,6 +226,13 @@ pub fn ranges() -> Vec<IdRange> {
             MAX_ADDRESS_BOOK,
         ),
         range(
+            "book.copy",
+            screens_book::ids::COPY_BASE,
+            screens_book::ids::COPY_SPAN,
+            1,
+            MAX_ADDRESS_BOOK,
+        ),
+        range(
             "book.favorites",
             screens_book::ids::FAV_BASE,
             screens_book::ids::FAV_SPAN,

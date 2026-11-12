@@ -115,8 +115,12 @@ pub enum NavKey {
         /// Home.
         top: bool,
     },
-    /// An arrow key (the dialog manager may move the focus within a group).
-    Arrow,
+    /// An arrow key (the dialog manager may move the focus within a group): Up (`up ==
+    /// Some(true)`), Down (`Some(false)`), Left or Right (`None`).
+    Arrow {
+        /// Up or Down.
+        up: Option<bool>,
+    },
 }
 
 impl NavKey {
@@ -134,7 +138,9 @@ impl NavKey {
             0x22 if !ctrl => Some(Self::Page { up: false }),
             0x24 => Some(Self::Edge { top: true }),
             0x23 => Some(Self::Edge { top: false }),
-            0x25..=0x28 if !ctrl => Some(Self::Arrow),
+            0x26 if !ctrl => Some(Self::Arrow { up: Some(true) }),
+            0x28 if !ctrl => Some(Self::Arrow { up: Some(false) }),
+            0x25 | 0x27 if !ctrl => Some(Self::Arrow { up: None }),
             _ => None,
         }
     }
@@ -149,7 +155,9 @@ impl NavKey {
             Self::Page { up: false } => 4,
             Self::Edge { top: true } => 5,
             Self::Edge { top: false } => 6,
-            Self::Arrow => 7,
+            Self::Arrow { up: None } => 7,
+            Self::Arrow { up: Some(true) } => 8,
+            Self::Arrow { up: Some(false) } => 9,
         }
     }
 
@@ -163,7 +171,9 @@ impl NavKey {
             4 => Self::Page { up: false },
             5 => Self::Edge { top: true },
             6 => Self::Edge { top: false },
-            7 => Self::Arrow,
+            7 => Self::Arrow { up: None },
+            8 => Self::Arrow { up: Some(true) },
+            9 => Self::Arrow { up: Some(false) },
             _ => return None,
         })
     }

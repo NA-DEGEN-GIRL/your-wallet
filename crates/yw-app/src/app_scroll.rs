@@ -125,9 +125,43 @@ pub struct MainScroll {
     wheel_rest: i32,
     /// A wheel glide in progress: target offset and ticks left.
     glide: Option<(i32, u8)>,
-    /// The command id of the control that had the focus when Tab was pressed (noted by the loop
-    /// observer before the dialog manager moved the focus).
+    /// The command id of the control that had the focus when Tab or an arrow key was pressed
+    /// (noted by the loop observer before the dialog manager moved the focus).
     tab_from: Option<u16>,
+}
+
+/// A control's place in an open drop-down: `Some(true)` its selector (open: ▴), `Some(false)`
+/// one of its entries, `None` anything else.
+fn menu_role(ctl: &crate::ui::main_window::Ctl) -> Option<bool> {
+    use crate::ui::main_window::{Face, GLYPH_UP};
+    match &ctl.face {
+        Some(Face::Entry(Some(glyph))) if *glyph == GLYPH_UP && ctl.checked.is_none() => Some(true),
+        Some(Face::Entry(_)) if ctl.checked.is_some() => Some(false),
+        _ => None,
+    }
+}
+
+/// Where Up (`up`) or Down moves the focus from control `from` of an open drop-down, given
+/// each control's [`menu_role`] in placed order: the selector and its entries in order, no
+/// wrap. `None` when `from` is not part of one or the move would leave it.
+#[must_use]
+pub fn menu_step(roles: &[Option<bool>], from: usize, up: bool) -> Option<usize> {
+    let order: Vec<usize> = roles
+        .iter()
+        .enumerate()
+        .filter_map(|(index, role)| role.map(|_| index))
+        .collect();
+    // Only while it is open: a selector with entries.
+    if !roles.contains(&Some(true)) || !roles.contains(&Some(false)) {
+        return None;
+    }
+    let position = order.iter().position(|index| *index == from)?;
+    let next = if up {
+        position.checked_sub(1)?
+    } else {
+        position.checked_add(1)?
+    };
+    order.get(next).copied()
 }
 
 /// The control Tab (Shift+Tab: `back`) reaches from the control at `from`, given whether each
@@ -378,7 +412,7 @@ impl App {
     /// The loop observer saw a navigation key, before the dialog manager handles it: Tab notes
     /// which control had the focus.
     pub fn note_nav_key(&mut self, key: NavKey) {
-        if let NavKey::Tab { .. } = key {
+        if let NavKey::Tab { .. } | NavKey::Arrow { .. } = key {
             self.scroll_state.tab_from = self
                 .controls
                 .focused()
@@ -440,8 +474,28 @@ impl App {
                     self.controls.focus_at(target);
                 }
             }
-            NavKey::Arrow => {
-                if let Some(now) = self.controls.focused() {
+            NavKey::Arrow { up } => {
+                let from = self.scroll_state.tab_from.take();
+                // An open drop-down (2026-11-12): Up and Down walk its selector and entries,
+                // whatever the dialog manager did with the key.
+                let roles: Vec<Option<bool>> = self
+                    .placed
+                    .controls
+                    .iter()
+                    .map(|(ctl, _)| menu_role(ctl))
+                    .collect();
+                let target = up.zip(from).and_then(|(up, id)| {
+                    let from = self
+                        .placed
+                        .controls
+                        .iter()
+                        .position(|(ctl, _)| ctl.id == id)?;
+                    menu_step(&roles, from, up)
+                });
+                if let Some(target) = target {
+                    self.reveal_control(target);
+                    self.controls.focus_at(target);
+                } else if let Some(now) = self.controls.focused() {
                     self.reveal_control(now);
                 }
             }
@@ -495,7 +549,31 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{glide_step, page_step, radio_entry, reveal_offset, tab_target};
+    use super::{glide_step, menu_step, page_step, radio_entry, reveal_offset, tab_target};
+
+    /// Up and Down walk an open drop-down's selector and entries without wrapping; elsewhere
+    /// (or with the list closed) they are left to the dialog manager.
+    #[test]
+    fn arrows_walk_an_open_drop_down() {
+        // 0 button, 1 selector (open), 2–4 entries, 5 button.
+        let roles = [
+            None,
+            Some(true),
+            Some(false),
+            Some(false),
+            Some(false),
+            None,
+        ];
+        assert_eq!(menu_step(&roles, 1, false), Some(2));
+        assert_eq!(menu_step(&roles, 2, false), Some(3));
+        assert_eq!(menu_step(&roles, 4, false), None);
+        assert_eq!(menu_step(&roles, 2, true), Some(1));
+        assert_eq!(menu_step(&roles, 1, true), None);
+        assert_eq!(menu_step(&roles, 0, false), None);
+        assert_eq!(menu_step(&roles, 5, true), None);
+        // Closed: no entries.
+        assert_eq!(menu_step(&[None, Some(true), None], 1, false), None);
+    }
     use crate::events::NavKey;
 
     /// Review 2026-11-10: Tab into S11's asset radios (ETH first, USDC checked) focused the
@@ -611,11 +689,15 @@ mod tests {
         assert_eq!(NavKey::of(0x23, false, true, false), None);
         assert_eq!(NavKey::of(0x22, false, true, false), None);
         assert_eq!(NavKey::of(0x09, true, false, false), None);
-        for code in 1..=7 {
+        for code in 1..=9 {
             let key = NavKey::from_code(code).unwrap();
             assert_eq!(key.code(), code);
         }
         assert_eq!(NavKey::from_code(0), None);
-        assert_eq!(NavKey::from_code(8), None);
+        assert_eq!(NavKey::from_code(10), None);
+        assert_eq!(
+            NavKey::of(0x28, false, false, false),
+            Some(NavKey::Arrow { up: Some(false) })
+        );
     }
 }
