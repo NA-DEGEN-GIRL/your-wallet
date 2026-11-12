@@ -37,7 +37,7 @@
 | `scripts/*.test.mjs` | privacy-scan, check-core-deps, audit-extension, strict-json, install(01 §9.4: Windows PowerShell 5.1로 `install.ps1 -NoBuild`·`uninstall.ps1`을 임시 폴더에 실행, §5.12 INS-1) | `node --test` |
 | `fuzz/` | 별도 워크스페이스(§2.4) | 수동 |
 | `tools/btc-oracle/`, `tools/sol-oracle/` | 차등 오라클(08 §14.3, 07 §17.3 교차 확인). 저장소 안의 별도 워크스페이스(각자 `[workspace]`·`Cargo.lock`), 루트 `Cargo.toml` `[workspace] exclude`(01 §3.1). 의존성 허용 목록·`check-core-deps.mjs`·check.ps1 대상이 아니고 어떤 배포 바이너리에도 들어가지 않는다 | 수동 |
-| `extension/test-dapp/` | M5 수동 E2E 페이지(§5.7) | 수동 |
+| `extension/test-dapp/` | M5 수동 E2E 페이지(§5.7), Solana dApp 거래 구역(`sol.js`, M7-12–M7-14) | 수동 |
 
 - yw-app·yw-host는 `src/lib.rs`(로직)와 `src/main.rs`(진입점)로 나눈다. 퍼징·통합 테스트가 파서를 직접 부르기 위해서다.
 - GUI(창·그리기)는 자동 테스트하지 않는다. 승인 창 A01은 렌더 하네스 `cargo test -p yw-app --lib app_approval::smoke -- --ignored`(픽스처 준비 결과를 실제 `App` 승인 경로에 넣어 몇 초 띄움, 네트워크·키 없음; `YW_SMOKE_FIXTURE`·`YW_SMOKE_HOLD_MS`)로 사람이 캡처해 확인한다(판정용 자동 테스트 아님). 같은 하네스의 `approval_hold_repaints_only_the_bottom_bar`(S3 고위험, 시험 전용 전경 간주)는 hold 1초 동안 A01의 `WM_PAINT` 갱신 영역이 아래 막대 안에만 있고 스크롤 패널은 다시 그려지지 않으며 놓으면 승인 없이 hold가 풀리는지 확인하고, `YW_SMOKE_OUT`이 있으면 프레임을 저장한다. 승인 상호작용·비밀 입력 버퍼·잠금 판정은 순수 상태 기계로 분리해 테스트한다([04](04-app-ui.md) §3.9, §4.10, §5.4).
@@ -765,9 +765,9 @@ WETH = Sepolia `0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14`(03 §1.2, 구현 시
 - [ ] M7-9 (v1.1) devnet USDC E2E: 07 §17.6-8(faucet, 새 수신자 ATA 생성, 기존 ATA, 토큰 보내기 최대, 모르는 토큰 숨김, 곡선 밖 받는 주소 차단). USDT는 devnet 공식 mint가 없어 M9 mainnet 소액 체크리스트(07 미결 4).
 - [ ] M7-10 (M7.2 dApp 거래, D38) 자동: SOL-N6–N17, 07 §17.4 dApp 항목, 05 §10 S9·P13·P14·C6·B5·R-SOLTX, 04 §3.9 AP-SOLTX, fuzz-lite `fuzz_lite_sol_dapp_tx`, 키 작업자 emulator 시험(카드 서명만 3건 = 터치 3회, 카드 전송), `tests/sol_dapp_flow.rs`(서명만·전송·결정적 preflight·서명 전 만료).
 - [ ] M7-11 퍼징 `sol_dapp_tx` 600 s, `sol_journal`은 버전 3 씨앗을 더해 600 s.
-- [ ] M7-12 devnet E2E(기록 `docs/acceptance/sol-dapp-tx-<날짜>.md`): wallet-adapter 데모 legacy·v0, v0+ALT 스왑(skipPreflight 포함), test-dapp의 다른 수수료 지불자 부분 서명, signAll ×3, signAndSend 착지와 활동 행, durable nonce 서명만(전송은 -32602), 전송 직후 잠금 → 서명 응답·잠금 해제 뒤 재개, `signMessage`로 보낸 거래 바이트 → M01 차단.
+- [ ] M7-12 devnet E2E(기록 `docs/acceptance/sol-dapp-tx-<날짜>.md`, test-dapp "Solana dApp 거래" 구역 S01–S10): wallet-adapter 데모 legacy·v0, v0+ALT 스왑(skipPreflight 포함), test-dapp의 다른 수수료 지불자 부분 서명, signAll ×3, signAndSend 착지와 활동 행, durable nonce 서명만(전송은 -32602), 전송 직후 잠금 → 서명 응답·잠금 해제 뒤 재개, `signMessage`로 보낸 거래 바이트 → M01 차단.
 - [ ] M7-13 YubiKey(07 §20.5, 10 §5): signTransaction 거래 3건 = 터치 3회, signAndSend = PIN 뒤 서명 전 확인·터치 1회.
-- [ ] M7-14 Phantom 모드 사이트(05 §2.13): `signTransaction`·`signAndSendTransaction`의 결과 형태, 폐기된 `request({params:{message}})` 형식의 결과 `{publicKey, signature}`.
+- [ ] M7-14 Phantom 모드 사이트(05 §2.13, test-dapp P01–P03): `signTransaction`·`signAndSendTransaction`의 결과 형태, 폐기된 `request({params:{message}})` 형식의 결과 `{publicKey, signature}`.
 - [ ] M7-15 mainnet: Jupiter 소액 스왑 1회(v0+ALT, 해석하지 않은 프로그램 X02 확인 후 승인).
 
 ### 5.10 M8 Bitcoin

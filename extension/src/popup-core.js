@@ -30,7 +30,8 @@
     })
   ]);
 
-  // spec/05 §2.13: Solana and Bitcoin modes (connect and message signing only).
+  // spec/05 §2.13: Solana and Bitcoin modes (Solana: connect, messages and transactions;
+  // Bitcoin: connect and messages).
   const SOL_MODE_OPTIONS = Object.freeze([
     Object.freeze({
       value: "off",
@@ -78,7 +79,7 @@
     btcHeading: "Bitcoin dApp에 보이는 지갑",
     solWarning: "Phantom처럼 보이기를 쓸 때는 실제 Phantom 확장을 꺼 두세요. Solana 지갑 목록(Wallet Standard)에서는 실제 Phantom을 숨길 수 없어 두 지갑이 함께 보일 수 있습니다.",
     btcWarning: "UniSat·Xverse처럼 보이기를 쓸 때는 실제 UniSat·Xverse 확장을 꺼 두세요. 켜져 있으면 dApp이 그 지갑에 연결될 수 있습니다.",
-    chainNote: "Solana·Bitcoin은 연결과 메시지 서명(소유 증명)만 됩니다. 거래 서명·전송은 없습니다."
+    chainNote: "Bitcoin은 연결과 메시지 서명만 됩니다. Solana는 거래 서명·전송도 됩니다."
   });
 
   const GROUPS = Object.freeze({

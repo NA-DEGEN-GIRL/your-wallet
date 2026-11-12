@@ -20,7 +20,7 @@
   </style>
 </head>
 <body>
-  <h1>Your Wallet test dApp (spec/09 §5.7)</h1>
+  <h1>Your Wallet test dApp (spec/09 §5.7, Solana: M7-12–M7-14)</h1>
   <p class="note">Serve with <code>node extension/test-dapp/serve.mjs</code> and open localhost:5173. Provider: EIP-6963 Your Wallet, else window.ethereum.</p>
 
   <fieldset>
@@ -92,8 +92,32 @@
   </div>
   <div id="picker" class="tests"></div>
 
+  <h2>Solana dApp 거래 (devnet, spec/09 M7-12–M7-14)</h2>
+  <p class="note">앱을 Solana devnet에 두고 S01로 연결한 뒤 쓰세요. 거래는 이 페이지가 직접 만듭니다(web3.js 없음). 블록해시는 1분쯤만 유효하니 매번 새로 붙여 넣으세요. S05–S07의 공동 서명자는 이 페이지에서 만든 Ed25519 키입니다. P01–P03은 확장 팝업에서 "Phantom처럼 보이기"를 고르고 새로고침한 뒤 씁니다.</p>
+  <fieldset>
+    <legend>Solana inputs</legend>
+    <label>Recent blockhash (devnet) <input id="solBlockhash" placeholder="base58, e.g. from solana block" autocomplete="off" spellcheck="false"></label>
+    <label>Recipient (S08) <input id="solRecipient" placeholder="base58 (empty = yourself)" autocomplete="off" spellcheck="false"></label>
+  </fieldset>
+  <div class="tests">
+    <button type="button" data-sol-test="S01">S01 Wallet Standard connect</button>
+    <button type="button" data-sol-test="S02">S02 signTransaction legacy memo</button>
+    <button type="button" data-sol-test="S03">S03 signTransaction v0 memo</button>
+    <button type="button" data-sol-test="S04">S04 signTransaction ×3 (one approval)</button>
+    <button type="button" data-sol-test="S05">S05 partial sign, site pays the fee</button>
+    <button type="button" data-sol-test="S06">S06 bad site signature → X01</button>
+    <button type="button" data-sol-test="S07">S07 durable nonce sign-only / send → -32602</button>
+    <button type="button" data-sol-test="S08">S08 signAndSend v0 transfer + memo</button>
+    <button type="button" data-sol-test="S09">S09 signAndSend skipPreflight</button>
+    <button type="button" data-sol-test="S10">S10 transaction bytes via signMessage → M01</button>
+    <button type="button" data-sol-test="P01">P01 Phantom signTransaction</button>
+    <button type="button" data-sol-test="P02">P02 Phantom signAndSendTransaction</button>
+    <button type="button" data-sol-test="P03">P03 Phantom request message form</button>
+  </div>
+
   <h2>Log</h2>
   <pre id="log"></pre>
   <script type="module" src="app.js"></script>
+  <script type="module" src="sol.js"></script>
 </body>
 </html>

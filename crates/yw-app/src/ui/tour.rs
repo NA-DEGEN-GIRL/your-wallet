@@ -11,7 +11,8 @@
 //!   balance, site and transaction shown is made up;
 //! - RPC URLs are `*.example.test` placeholders that are never contacted (EVM approval windows
 //!   are prepared against the fixture transport of `app_approval::smoke`, the Solana token
-//!   approval against `SolTourRpc`);
+//!   approval against `SolTourRpc`, the Solana dApp transaction windows against
+//!   `SolDappTourRpc`; nothing is signed or sent);
 //! - the AI explanation scene (M6) talks to a loopback mock on `127.0.0.1:<random port>` that the
 //!   tour itself serves with one fixed, made-up answer; no external endpoint or key is used;
 //! - the capture exclusion of the tour's own secret windows is lifted right before capture with
@@ -586,6 +587,392 @@ impl crate::rpc::Transport for SolTourRpc {
             .map_or_else(Vec::new, |object| yw_json::to_vec(&Value::Object(object)));
         Ok(crate::rpc::HttpReply { status: 200, body })
     }
+}
+
+/// The tour's Solana account 0 (`m/44'/501'/0'/0'` of the 12-word test mnemonic).
+const TOUR_SOL: &str = "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk";
+/// Made-up addresses of the dApp transaction scenes (shots 58–59): the site's program, the
+/// delegate it asks to approve, its lookup table with two pool accounts, and the site's fee payer.
+const TOUR_DAPP_PROGRAM: [u8; 32] = [0x5a; 32];
+const TOUR_DAPP_DELEGATE: [u8; 32] = [0xd1; 32];
+const TOUR_DAPP_TABLE: [u8; 32] = [0x7b; 32];
+const TOUR_DAPP_POOL: [u8; 32] = [0x3c; 32];
+const TOUR_DAPP_POOL_CONFIG: [u8; 32] = [0x3d; 32];
+const TOUR_DAPP_PAYER: [u8; 32] = [0xf3; 32];
+
+/// One account of a made-up `getMultipleAccounts` / `simulateTransaction` answer.
+fn tour_account(owner: &SolAddress, lamports: u64, data: &[u8]) -> String {
+    format!(
+        "{{\"data\":[\"{}\",\"base64\"],\"executable\":false,\"lamports\":{lamports},\"owner\":\"{}\",\"rentEpoch\":0,\"space\":{}}}",
+        crate::sol::rpc::base64(data),
+        owner.to_base58(),
+        data.len()
+    )
+}
+
+/// A Token account of `mint` held by `owner` (165 bytes, initialized), with an optional delegate.
+fn tour_token_account(
+    mint: &SolAddress,
+    owner: &SolAddress,
+    amount: u64,
+    delegate: Option<(&[u8; 32], u64)>,
+) -> Vec<u8> {
+    let mut data = vec![0_u8; 165];
+    data[0..32].copy_from_slice(mint.as_bytes());
+    data[32..64].copy_from_slice(owner.as_bytes());
+    data[64..72].copy_from_slice(&amount.to_le_bytes());
+    if let Some((key, delegated)) = delegate {
+        data[72] = 1;
+        data[76..108].copy_from_slice(key);
+        data[121..129].copy_from_slice(&delegated.to_le_bytes());
+    }
+    data[108] = 1;
+    data
+}
+
+/// A made-up devnet for the dApp transaction scenes (never contacted): accounts by base58
+/// address, every blockhash valid, a 5,000-lamport fee, and per transaction (by its base64) the
+/// simulated post-state over those accounts.
+struct SolDappTourRpc {
+    accounts: Vec<(String, String)>,
+    post: Vec<(String, Vec<(String, String)>)>,
+}
+
+impl crate::rpc::Transport for SolDappTourRpc {
+    fn post_json(
+        &self,
+        _url: &HttpsUrl,
+        body: &[u8],
+        _max_response: usize,
+    ) -> Result<crate::rpc::HttpReply, yw_win::http::HttpError> {
+        use yw_json::{Limits, Object, Value};
+        let request = yw_json::parse(body, &Limits::REQUEST)
+            .map_err(|_| yw_win::http::HttpError::InvalidUrl)?;
+        let object = request
+            .as_object()
+            .ok_or(yw_win::http::HttpError::InvalidUrl)?;
+        let id = object.get("id").cloned().unwrap_or(Value::Null);
+        let method = object.get("method").and_then(Value::as_str).unwrap_or("");
+        let params = object
+            .get("params")
+            .and_then(Value::as_array)
+            .unwrap_or_default();
+        let listed = |table: &[(String, String)], key: &str| {
+            table
+                .iter()
+                .find(|(known, _)| known == key)
+                .map(|(_, json)| json.clone())
+        };
+        let keys = |value: Option<&Value>| -> Vec<String> {
+            value
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let context = |value: &str| format!("{{\"context\":{{\"slot\":7}},\"value\":{value}}}");
+        let result = match method {
+            "getGenesisHash" => "\"EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG\"".to_owned(),
+            "getMultipleAccounts" => {
+                let entries: Vec<String> = keys(params.first())
+                    .iter()
+                    .map(|key| listed(&self.accounts, key).unwrap_or_else(|| "null".to_owned()))
+                    .collect();
+                context(&format!("[{}]", entries.join(",")))
+            }
+            "isBlockhashValid" => context("true"),
+            "getFeeForMessage" => context("5000"),
+            "simulateTransaction" => {
+                let tx = params.first().and_then(Value::as_str).unwrap_or("");
+                let post = self
+                    .post
+                    .iter()
+                    .find(|(known, _)| known == tx)
+                    .map(|(_, post)| post.as_slice())
+                    .unwrap_or_default();
+                let addresses = keys(
+                    params
+                        .get(1)
+                        .and_then(Value::as_object)
+                        .and_then(|config| config.get("accounts"))
+                        .and_then(Value::as_object)
+                        .and_then(|accounts| accounts.get("addresses")),
+                );
+                let entries: Vec<String> = addresses
+                    .iter()
+                    .map(|key| {
+                        listed(post, key)
+                            .or_else(|| listed(&self.accounts, key))
+                            .unwrap_or_else(|| "null".to_owned())
+                    })
+                    .collect();
+                context(&format!(
+                    "{{\"err\":null,\"logs\":[],\"accounts\":[{}],\"unitsConsumed\":48210,\"returnData\":null}}",
+                    entries.join(",")
+                ))
+            }
+            _ => "null".to_owned(),
+        };
+        let value = yw_json::parse(result.as_bytes(), &Limits::RESPONSE).unwrap_or(Value::Null);
+        let pairs = vec![
+            ("jsonrpc".to_owned(), Value::String("2.0".to_owned())),
+            ("id".to_owned(), id),
+            ("result".to_owned(), value),
+        ];
+        let body = Object::from_pairs(pairs)
+            .map_or_else(Vec::new, |object| yw_json::to_vec(&Value::Object(object)));
+        Ok(crate::rpc::HttpReply { status: 200, body })
+    }
+}
+
+/// A compiled instruction: program index, account indices, data.
+type TourIx<'a> = (u8, &'a [u8], &'a [u8]);
+/// A v0 table reference: table, writable indices, read-only indices.
+type TourLookup<'a> = ([u8; 32], &'a [u8], &'a [u8]);
+
+/// `shortvec(required) ‖ zero signatures ‖ message` (every count below 128); `lookups` makes it
+/// v0 (`0x80`, then the table references `(table, writable, readonly)`).
+fn tour_wire(
+    header: [u8; 3],
+    keys: &[[u8; 32]],
+    ixs: &[TourIx<'_>],
+    lookups: Option<&[TourLookup<'_>]>,
+) -> Vec<u8> {
+    let short = |len: usize| u8::try_from(len).unwrap();
+    let mut out = vec![header[0]];
+    out.extend(std::iter::repeat_n(0_u8, 64 * usize::from(header[0])));
+    if lookups.is_some() {
+        out.push(0x80);
+    }
+    out.extend_from_slice(&header);
+    out.push(short(keys.len()));
+    for key in keys {
+        out.extend_from_slice(key);
+    }
+    out.extend_from_slice(
+        SolAddress::parse("US517G5965aydkZ46HS38QLi7UQiSojurfbQfKCELFx")
+            .unwrap()
+            .as_bytes(),
+    );
+    out.push(short(ixs.len()));
+    for (program, accounts, data) in ixs {
+        out.push(*program);
+        out.push(short(accounts.len()));
+        out.extend_from_slice(accounts);
+        out.push(short(data.len()));
+        out.extend_from_slice(data);
+    }
+    if let Some(lookups) = lookups {
+        out.push(short(lookups.len()));
+        for (table, writable, readonly) in lookups {
+            out.extend_from_slice(table);
+            out.push(short(writable.len()));
+            out.extend_from_slice(writable);
+            out.push(short(readonly.len()));
+            out.extend_from_slice(readonly);
+        }
+    }
+    out
+}
+
+/// The tour's devnet USDC holding: the allowlist entry and account 0's token account.
+fn tour_usdc() -> (&'static yw_core::sol::SplAllowEntry, SolAddress) {
+    let wallet = SolAddress::parse(TOUR_SOL).unwrap();
+    let entry = yw_core::sol::template::spl_entries(yw_core::sol::SolCluster::Devnet)
+        .next()
+        .unwrap();
+    let ata =
+        yw_core::sol::pda::associated_token_address(&wallet, &entry.token_program, &entry.mint)
+            .unwrap()
+            .0;
+    (entry, ata)
+}
+
+/// The made-up USDC balance of the tour's account 0 (25.000000).
+const TOUR_USDC_BALANCE: u64 = 25_000_000;
+
+/// Shot 58: `signAndSendTransaction` of a v0 swap-like transaction — Token `Approve` of the
+/// whole USDC balance to a made-up delegate, then a call into an unknown program with the wallet
+/// and two pool accounts from a lookup table. Shot 59: `signAllTransactions` of three legacy
+/// transactions whose fee the site pays (two memos, one 0.01 SOL payment to the site).
+fn tour_dapp_txs() -> (Vec<u8>, Vec<Vec<u8>>) {
+    use yw_core::sol::address::{MEMO_PROGRAM_V2, SYSTEM_PROGRAM, TOKEN_PROGRAM};
+    let wallet = SolAddress::parse(TOUR_SOL).unwrap();
+    let (_, ata) = tour_usdc();
+    let balance = TOUR_USDC_BALANCE;
+    let mut approve = vec![4_u8];
+    approve.extend_from_slice(&balance.to_le_bytes());
+    let swap_data = [
+        0xe5, 0x17, 0xcb, 0x97, 0x7a, 0xe3, 0xad, 0x2a, 0x40, 0x42, 0x0f, 0, 0,
+    ];
+    let swap = tour_wire(
+        [1, 0, 3],
+        &[
+            *wallet.as_bytes(),
+            *ata.as_bytes(),
+            TOUR_DAPP_DELEGATE,
+            *TOKEN_PROGRAM.as_bytes(),
+            TOUR_DAPP_PROGRAM,
+        ],
+        &[(3, &[1, 2, 0], &approve), (4, &[0, 1, 5, 6], &swap_data)],
+        Some(&[(TOUR_DAPP_TABLE, &[0], &[1])]),
+    );
+    let memo = |text: &str| {
+        tour_wire(
+            [2, 1, 1],
+            &[
+                TOUR_DAPP_PAYER,
+                *wallet.as_bytes(),
+                *MEMO_PROGRAM_V2.as_bytes(),
+            ],
+            &[(2, &[1], text.as_bytes())],
+            None,
+        )
+    };
+    let mut pay = vec![2_u8, 0, 0, 0];
+    pay.extend_from_slice(&10_000_000_u64.to_le_bytes());
+    let payment = tour_wire(
+        [2, 0, 1],
+        &[
+            TOUR_DAPP_PAYER,
+            *wallet.as_bytes(),
+            *SYSTEM_PROGRAM.as_bytes(),
+        ],
+        &[(2, &[1, 0], &pay)],
+        None,
+    );
+    let batch = vec![
+        memo("app.example.org 주문 #1024 확인"),
+        payment,
+        memo("app.example.org 주문 #1025 확인"),
+    ];
+    (swap, batch)
+}
+
+/// The devnet of shots 58–59: the lookup table, the wallet's SOL and USDC, the pool, the site's
+/// fee payer; the simulated approval and the 0.01 SOL payment.
+fn tour_dapp_rpc(swap: &[u8], payment: &[u8]) -> SolDappTourRpc {
+    use yw_core::sol::address::{ADDRESS_LOOKUP_TABLE_PROGRAM, SYSTEM_PROGRAM};
+    let wallet = SolAddress::parse(TOUR_SOL).unwrap();
+    let (entry, ata) = tour_usdc();
+    let program = SolAddress::from_bytes(TOUR_DAPP_PROGRAM);
+    let payer = SolAddress::from_bytes(TOUR_DAPP_PAYER);
+    let balance = TOUR_USDC_BALANCE;
+    let mut table = vec![0_u8; 56];
+    table[0..4].copy_from_slice(&1_u32.to_le_bytes());
+    table[4..12].copy_from_slice(&u64::MAX.to_le_bytes());
+    table[12..20].copy_from_slice(&5_u64.to_le_bytes());
+    table.extend_from_slice(&TOUR_DAPP_POOL);
+    table.extend_from_slice(&TOUR_DAPP_POOL_CONFIG);
+    let mut mint = vec![0_u8; 82];
+    mint[44] = entry.decimals;
+    mint[45] = 1;
+    let sol = 1_000_000_000_u64;
+    let key = |bytes: &[u8; 32]| SolAddress::from_bytes(*bytes).to_base58();
+    let accounts = vec![
+        (
+            key(&TOUR_DAPP_TABLE),
+            tour_account(&ADDRESS_LOOKUP_TABLE_PROGRAM, 1_350_000, &table),
+        ),
+        (
+            wallet.to_base58(),
+            tour_account(&SYSTEM_PROGRAM, 2_500_000_000, &[]),
+        ),
+        (
+            ata.to_base58(),
+            tour_account(
+                &entry.token_program,
+                2_039_280,
+                &tour_token_account(&entry.mint, &wallet, balance, None),
+            ),
+        ),
+        (
+            entry.mint.to_base58(),
+            tour_account(&entry.token_program, 1_461_600, &mint),
+        ),
+        (
+            key(&TOUR_DAPP_POOL),
+            tour_account(&program, 8_000_000, &[7; 64]),
+        ),
+        (payer.to_base58(), tour_account(&SYSTEM_PROGRAM, sol, &[])),
+    ];
+    let post = vec![
+        (
+            crate::sol::rpc::base64(swap),
+            vec![
+                (
+                    wallet.to_base58(),
+                    tour_account(&SYSTEM_PROGRAM, 2_500_000_000 - 5_000, &[]),
+                ),
+                (
+                    ata.to_base58(),
+                    tour_account(
+                        &entry.token_program,
+                        2_039_280,
+                        &tour_token_account(
+                            &entry.mint,
+                            &wallet,
+                            balance,
+                            Some((&TOUR_DAPP_DELEGATE, balance)),
+                        ),
+                    ),
+                ),
+            ],
+        ),
+        (
+            crate::sol::rpc::base64(payment),
+            vec![(
+                wallet.to_base58(),
+                tour_account(&SYSTEM_PROGRAM, 2_500_000_000 - sol / 100, &[]),
+            )],
+        ),
+    ];
+    SolDappTourRpc { accounts, post }
+}
+
+/// A dApp transaction request from the connected `https://app.example.org`: its preview is
+/// answered by `rpc` as the RPC worker would deliver it (nothing is signed or sent).
+fn sol_dapp_approval(
+    app: &Rc<RefCell<App>>,
+    method: yw_core::policy::Method,
+    txs: Vec<Vec<u8>>,
+    mode: yw_core::sol::dapp::SolTxMode,
+    rpc: &SolDappTourRpc,
+) {
+    let (tx, rx) = mpsc::channel();
+    app.borrow_mut().rpc_tx = Some(tx);
+    dapp_request(
+        app,
+        "https://app.example.org",
+        method,
+        crate::browser::SiteKind::SolTx {
+            public: SolAddress::parse(TOUR_SOL).unwrap().to_bytes(),
+            cluster: yw_core::sol::SolCluster::Devnet,
+            batch: txs.len() > 1,
+            txs,
+            mode,
+            options: yw_core::sol::dapp::SolSendOptions::default(),
+        },
+    );
+    let job = loop {
+        match rx.try_recv() {
+            Ok(RpcJob::SolDappPreview(job)) => break job,
+            Ok(_) => {}
+            Err(_) => unreachable!("no Solana dApp preview job"),
+        }
+    };
+    let clock = FixtureClock {
+        now_ms: AtomicU64::new(0),
+    };
+    let result = crate::sol::flow::dapp_preview(rpc, &job, &clock);
+    app.borrow_mut()
+        .sol_rpc_event(crate::events::RpcEvent::SolDappPreviewed(Box::new((
+            job.job, result,
+        ))));
 }
 
 /// `검토` of the prepared Solana send form: the approval window opens and its step-2 preview is
@@ -1641,6 +2028,28 @@ fn screenshot_tour() {
         },
     );
     save(approval_hwnd(&app), "28-approval-sol-signin");
+    app.borrow_mut().tour_reject_approval();
+    // dApp transactions (spec/07 §20): a v0 send with a lookup table, an unknown program and a
+    // Token approval (high risk), then three sign-only transactions whose fee the site pays.
+    let (swap, batch) = tour_dapp_txs();
+    let dapp_rpc = tour_dapp_rpc(&swap, &batch[1]);
+    sol_dapp_approval(
+        &app,
+        yw_core::policy::Method::SolSignAndSendTransaction,
+        vec![swap],
+        yw_core::sol::dapp::SolTxMode::SignAndSend,
+        &dapp_rpc,
+    );
+    save(approval_hwnd(&app), "58-approval-sol-dapp-tx");
+    app.borrow_mut().tour_reject_approval();
+    sol_dapp_approval(
+        &app,
+        yw_core::policy::Method::SolSignAllTransactions,
+        batch,
+        yw_core::sol::dapp::SolTxMode::SignOnly,
+        &dapp_rpc,
+    );
+    save(approval_hwnd(&app), "59-approval-sol-dapp-batch");
     app.borrow_mut().tour_reject_approval();
     // Bitcoin message signing right after (the payment address of the site's grant).
     let payment = app

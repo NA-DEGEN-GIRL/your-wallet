@@ -455,7 +455,7 @@ test("B4 responses need matching activation, request id and requestSequence; onS
   assert.equal(native.connections.length, 2);
 });
 
-test("B5 deadline timers: eth_blockNumber 60 s, personal_sign 600 s; cancel has the v1-cancel golden shape", async () => {
+test("B5 deadline timers: eth_blockNumber 60 s, personal_sign and sol_signAndSendTransaction 600 s; cancel has the v1-cancel golden shape", async () => {
   const cancelGolden = JSON.parse(await readFile(new URL("../native-host/v1-cancel.golden.json", import.meta.url), "utf8"));
   const scripted = ["c".padStart(64, "0"), "d".padStart(64, "0"), SESSION_ID];
   const fallback = counterRandom(0x100);
@@ -491,6 +491,10 @@ test("B5 deadline timers: eth_blockNumber 60 s, personal_sign 600 s; cancel has 
 
   doc.request(rid(3), "eth_requestAccounts");
   assert.equal(native.last.sent[4].deadlineUnixMs, clock.now() + 600_000);
+  // A Solana dApp send waits for the approval like every signing route (spec/05 §3.6).
+  doc.request(rid(4), "sol_signAndSendTransaction", [{ publicKey: "x", transaction: "00" }]);
+  assert.equal(native.last.sent[5].route, "signing");
+  assert.equal(native.last.sent[5].deadlineUnixMs, clock.now() + 600_000);
 });
 
 test("B5 page cancel and content disconnect forward native cancels and clear deadlines", () => {

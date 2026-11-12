@@ -87,11 +87,30 @@
   let foreignMetaMaskSeen = false;
   let metaMaskConnectWarned = false;
 
-  // ----- Solana and Bitcoin (spec/05 §2.13): connect and message signing only ---------------
-  // The wire methods are sol_* / btc_* (shared.js METHOD_ROUTE). Transaction and PSBT methods
-  // exist only where dApps need them to detect a wallet and always reject locally with 4200.
+  // ----- Solana and Bitcoin (spec/05 §2.13) --------------------------------------------------
+  // The wire methods are sol_* / btc_* (shared.js METHOD_ROUTE). Solana: connect, messages and
+  // the site's own transactions (sol_signTransaction, sol_signAllTransactions,
+  // sol_signAndSendTransaction, spec.md D38). Bitcoin: connect and messages only; its PSBT and
+  // send methods exist only where dApps need them to detect a wallet and always reject locally
+  // with 4200.
   const SOL_CHAINS = Object.freeze(["solana:mainnet", "solana:devnet"]);
-  const SOL_TX_UNSUPPORTED = "이 지갑은 Solana에서 메시지 서명(소유 증명)만 지원합니다";
+  // Any other Phantom `request` method (neutral: Solana transactions are supported).
+  const SOL_REQUEST_UNSUPPORTED = "Unsupported method.";
+  // spec/05 §2.9: one transaction ≤ 1,232 bytes, ≤ 32 per approval.
+  const MAX_SOL_TX_BYTES = 1232;
+  const MAX_SOL_TX_BATCH = 32;
+  const SOL_TX_VERSIONS = Object.freeze(["legacy", 0]);
+  // web3.js commitments and their deprecated aliases (spec/05 §2.13); any other value is dropped.
+  const SOL_COMMITMENTS = Object.freeze({
+    processed: "processed",
+    confirmed: "confirmed",
+    finalized: "finalized",
+    recent: "processed",
+    single: "confirmed",
+    singleGossip: "confirmed",
+    root: "finalized",
+    max: "finalized"
+  });
   const BTC_TX_UNSUPPORTED = "이 지갑은 Bitcoin에서 메시지 서명(소유 증명)만 지원합니다";
   const BTC_NETWORK_FIXED = "Bitcoin 네트워크는 Your Wallet 앱 설정에서만 바꿀 수 있습니다";
   const SOL_MODES = new Set(["off", "phantom"]);
@@ -108,7 +127,9 @@
     "getInfo", "getAccounts", "signMessage", "wallet_connect", "wallet_disconnect",
     "wallet_getAccount", "wallet_getNetwork", "wallet_renouncePermissions"
   ]);
-  const SOL_ACCOUNT_FEATURES = Object.freeze(["solana:signMessage", "solana:signIn", "solana:signTransaction"]);
+  const SOL_ACCOUNT_FEATURES = Object.freeze([
+    "solana:signMessage", "solana:signIn", "solana:signTransaction", "solana:signAndSendTransaction"
+  ]);
   const HEX_PATTERN = /^(?:[0-9a-f]{2})*$/u;
   let solCompatMode = "off";
   let btcCompatMode = "off";
@@ -172,6 +193,38 @@
     }
     const out = Uint8Array.from(bytes.reverse());
     return out.length === 32 ? out : null;
+  }
+
+  // Any base58 text of at most MAX_SOL_TX_BYTES bytes (the Phantom `message` form); else null.
+  function base58Decode(text) {
+    // 1,232 bytes are at most 1,683 base58 characters.
+    if (typeof text !== "string" || text.length < 1 || text.length > 1683) {
+      return null;
+    }
+    let zeros = 0;
+    while (zeros < text.length && text[zeros] === "1") {
+      zeros += 1;
+    }
+    const bytes = [];
+    for (const character of text) {
+      const value = BASE58_ALPHABET.indexOf(character);
+      if (value < 0) {
+        return null;
+      }
+      let carry = value;
+      for (let index = 0; index < bytes.length; index += 1) {
+        carry += bytes[index] * 58;
+        bytes[index] = carry & 0xff;
+        carry >>= 8;
+      }
+      while (carry > 0) {
+        bytes.push(carry & 0xff);
+        carry >>= 8;
+      }
+    }
+    const out = new Uint8Array(zeros + bytes.length);
+    out.set(bytes.reverse(), zeros);
+    return out.length <= MAX_SOL_TX_BYTES ? out : null;
   }
 
   function toHex(bytes) {
@@ -360,8 +413,345 @@
     return { signature: fromHex(result.signature, 64), signedMessage: fromHex(result.signedMessage) };
   }
 
-  function solTxRejected() {
-    return Promise.reject(new ProviderRpcError(4200, SOL_TX_UNSUPPORTED));
+  // ----- Solana dApp transactions (spec/05 §2.13, spec/07 §20) -------------------------------
+  // The page's bytes go to the app as they are; the app parses, shows and signs them. The
+  // provider only checks the signature layout and, on the way back, that the app changed
+  // nothing but one 64-byte signature slot (spec/07 §20.10 step 4).
+
+  // `shortvec(count) ‖ 64·count signatures ‖ message`: the layout of a wire transaction, or null
+  // (count ≥ 1, compact-u16 of at most 3 bytes, a non-empty message after the signatures).
+  function solSigLayout(bytes) {
+    let count = 0;
+    let prefix = 0;
+    for (;;) {
+      if (prefix >= 3 || prefix >= bytes.length) {
+        return null;
+      }
+      const byte = bytes[prefix];
+      count |= (byte & 0x7f) << (7 * prefix);
+      prefix += 1;
+      if ((byte & 0x80) === 0) {
+        break;
+      }
+    }
+    const end = prefix + 64 * count;
+    return count >= 1 && end < bytes.length ? { prefix, count, end } : null;
+  }
+
+  // A page transaction as bytes (a copy): ≤ 1,232 bytes with a valid signature layout, else
+  // -32602.
+  function solTxBytes(value) {
+    const bytes = messageBytes(value);
+    if (bytes.length > MAX_SOL_TX_BYTES || solSigLayout(bytes) === null) {
+      throw invalidParams();
+    }
+    return bytes;
+  }
+
+  // The app's signed copy of `sent`: the same length and layout, the same bytes outside the
+  // signatures, and every changed byte inside one slot. Returns `{ bytes, slot }` (`slot` -1 when
+  // nothing changed); anything else is -32603.
+  function solSigned(sent, hex) {
+    const bytes = fromHex(hex);
+    const layout = solSigLayout(sent);
+    const back = bytes.length === sent.length ? solSigLayout(bytes) : null;
+    if (layout === null || back === null || back.prefix !== layout.prefix || back.count !== layout.count) {
+      throw internalError();
+    }
+    let slot = -1;
+    for (let index = 0; index < bytes.length; index += 1) {
+      if (bytes[index] === sent[index]) {
+        continue;
+      }
+      if (index < layout.prefix || index >= layout.end) {
+        throw internalError();
+      }
+      const changed = Math.floor((index - layout.prefix) / 64);
+      if (slot !== -1 && slot !== changed) {
+        throw internalError();
+      }
+      slot = changed;
+    }
+    return { bytes, slot };
+  }
+
+  // Wallet Standard / Phantom `chain`: absent (`undefined`, `null`) or one of SOL_CHAINS.
+  function solChain(value) {
+    if (value === undefined || value === null) {
+      return undefined;
+    }
+    if (!SOL_CHAINS.includes(value)) {
+      throw invalidParams();
+    }
+    return value;
+  }
+
+  // One chain for a batch: every given chain must be the same.
+  function solBatchChain(chains) {
+    const given = [...new Set(chains.filter((chain) => chain !== undefined))];
+    if (given.length > 1) {
+      throw invalidParams();
+    }
+    return given[0];
+  }
+
+  // Send options: only the three known keys are read; `undefined`/`null` is absent, every other
+  // key (maxRetries, commitment, mode, …) is ignored and never reaches the wire.
+  function solSendOptions(value) {
+    if (value === undefined || value === null) {
+      return {};
+    }
+    if (typeof value !== "object") {
+      throw invalidParams();
+    }
+    let skipPreflight;
+    let preflightCommitment;
+    let minContextSlot;
+    try {
+      ({ skipPreflight, preflightCommitment, minContextSlot } = value);
+    } catch (_error) {
+      throw invalidParams();
+    }
+    const options = {};
+    if (skipPreflight !== undefined && skipPreflight !== null) {
+      if (typeof skipPreflight !== "boolean") {
+        throw invalidParams();
+      }
+      options.skipPreflight = skipPreflight;
+    }
+    if (typeof preflightCommitment === "string" && Object.prototype.hasOwnProperty.call(SOL_COMMITMENTS, preflightCommitment)) {
+      options.preflightCommitment = SOL_COMMITMENTS[preflightCommitment];
+    }
+    if (minContextSlot !== undefined && minContextSlot !== null) {
+      if (!Number.isSafeInteger(minContextSlot) || minContextSlot < 0) {
+        throw invalidParams();
+      }
+      options.minContextSlot = minContextSlot;
+    }
+    return options;
+  }
+
+  // One approval for 1..=32 transactions: `sol_signTransaction` for one, `sol_signAllTransactions`
+  // for more. Returns `[{ bytes, slot }]` in input order.
+  async function solSignTransactions(list, chain) {
+    if (solKey === null) {
+      throw unauthorized();
+    }
+    if (list.length < 1 || list.length > MAX_SOL_TX_BATCH) {
+      throw invalidParams();
+    }
+    const publicKey = base58Encode(solKey);
+    const target = chain === undefined ? {} : { chain };
+    if (list.length === 1) {
+      const result = await request({
+        method: "sol_signTransaction",
+        params: [{ publicKey, transaction: toHex(list[0]), ...target }]
+      });
+      return [solSigned(list[0], isPlainObject(result) ? result.signedTransaction : undefined)];
+    }
+    const result = await request({
+      method: "sol_signAllTransactions",
+      params: [{ publicKey, transactions: list.map((bytes) => toHex(bytes)), ...target }]
+    });
+    const signed = isPlainObject(result) ? result.signedTransactions : undefined;
+    if (!Array.isArray(signed) || signed.length !== list.length) {
+      throw internalError();
+    }
+    return list.map((bytes, index) => solSigned(bytes, signed[index]));
+  }
+
+  // `sol_signAndSendTransaction`: the app signs, journals and sends; the answer is signature 0
+  // (the transaction id).
+  async function solSignAndSend(bytes, chain, options) {
+    if (solKey === null) {
+      throw unauthorized();
+    }
+    const params = { publicKey: base58Encode(solKey), transaction: toHex(bytes) };
+    if (chain !== undefined) {
+      params.chain = chain;
+    }
+    if (Object.keys(options).length > 0) {
+      params.options = options;
+    }
+    const result = await request({ method: "sol_signAndSendTransaction", params: [params] });
+    return fromHex(isPlainObject(result) ? result.signature : undefined, 64);
+  }
+
+  // Sends one after another (no multi-send wire method). A failure after the first rejects with
+  // the error of that send and `data: { signatures: [base58…] }` of those already sent.
+  async function solSendSerially(items) {
+    const signatures = [];
+    for (const item of items) {
+      try {
+        signatures.push(await solSignAndSend(item.bytes, item.chain, item.options));
+      } catch (error) {
+        if (signatures.length === 0) {
+          throw error;
+        }
+        const code = error instanceof ProviderRpcError ? error.code : -32603;
+        const message = error instanceof ProviderRpcError ? error.message : "Internal error.";
+        throw new ProviderRpcError(code, message, { signatures: signatures.map((signature) => base58Encode(signature)) });
+      }
+    }
+    return signatures;
+  }
+
+  // A Wallet Standard transaction input `{ account, chain?, transaction, options? }`: the
+  // current account (4100 otherwise, nothing posted), its chain and bytes. Getters are read once.
+  function solStandardInput(input) {
+    if (input === null || typeof input !== "object") {
+      throw invalidParams();
+    }
+    let account;
+    let chain;
+    let transaction;
+    let options;
+    try {
+      ({ account, chain, transaction, options } = input);
+    } catch (_error) {
+      throw invalidParams();
+    }
+    checkSolAccount(account);
+    return { chain: solChain(chain), bytes: solTxBytes(transaction), options };
+  }
+
+  function solStandardInputs(inputs) {
+    if (inputs.length > MAX_SOL_TX_BATCH) {
+      throw invalidParams();
+    }
+    return inputs.map((input) => solStandardInput(input));
+  }
+
+  // The `required` zero signatures in front of a bare message (the deprecated Phantom
+  // `params.message` form): `required` = msg[0], or msg[1] after the v0 prefix 0x80, ≤ 127.
+  function solWrapMessage(message) {
+    const versioned = message.length > 0 && (message[0] & 0x80) !== 0;
+    if (versioned && message[0] !== 0x80) {
+      throw invalidParams();
+    }
+    const required = versioned ? message[1] : message[0];
+    if (!Number.isInteger(required) || required < 1 || required > 127) {
+      throw invalidParams();
+    }
+    const out = new Uint8Array(1 + 64 * required + message.length);
+    out[0] = required;
+    out.set(message, 1 + 64 * required);
+    return solTxBytes(out);
+  }
+
+  // A Phantom page transaction (a web3.js `Transaction`/`VersionedTransaction` or bytes) as
+  // `{ bytes, rebuild }`: `rebuild(signed)` gives the page's own class again through its
+  // constructor's `deserialize` (versioned) or `from` (legacy). Legacy transactions serialize
+  // without requiring or verifying signatures (the wallet's slot is still empty). The provider
+  // never calls `addSignature` (our PublicKey look-alike is not web3.js's class).
+  function solPageTx(tx) {
+    if (ArrayBuffer.isView(tx)) {
+      return { bytes: solTxBytes(tx), rebuild: (signed) => signed };
+    }
+    if (tx === null || typeof tx !== "object") {
+      throw invalidParams();
+    }
+    let serialized;
+    let factory;
+    let owner;
+    try {
+      const versioned = "version" in tx;
+      serialized = versioned ? tx.serialize() : tx.serialize({ requireAllSignatures: false, verifySignatures: false });
+      owner = tx.constructor;
+      factory = owner === null || owner === undefined ? undefined : owner[versioned ? "deserialize" : "from"];
+    } catch (_error) {
+      throw invalidParams();
+    }
+    const bytes = solTxBytes(serialized);
+    if (typeof factory !== "function") {
+      throw internalError();
+    }
+    return {
+      bytes,
+      rebuild: (signed) => {
+        try {
+          return factory.call(owner, signed);
+        } catch (_error) {
+          throw internalError();
+        }
+      }
+    };
+  }
+
+  function solPageTxs(txs) {
+    if (!Array.isArray(txs)) {
+      throw invalidParams();
+    }
+    return txs.map((tx) => solPageTx(tx));
+  }
+
+  async function phantomSignAll(txs) {
+    if (solKey === null) {
+      throw unauthorized();
+    }
+    const pageTxs = solPageTxs(txs);
+    if (pageTxs.length === 0) {
+      return [];
+    }
+    const signed = await solSignTransactions(pageTxs.map((entry) => entry.bytes), undefined);
+    return signed.map((entry, index) => pageTxs[index].rebuild(entry.bytes));
+  }
+
+  async function phantomSendAll(txs, opts) {
+    if (solKey === null) {
+      throw unauthorized();
+    }
+    const pageTxs = solPageTxs(txs);
+    if (pageTxs.length > MAX_SOL_TX_BATCH) {
+      throw invalidParams();
+    }
+    const options = solSendOptions(opts);
+    const publicKey = base58Encode(solKey);
+    const signatures = await solSendSerially(pageTxs.map((entry) => ({ bytes: entry.bytes, chain: undefined, options })));
+    return { signatures: signatures.map((signature) => base58Encode(signature)), publicKey };
+  }
+
+  // Our signature out of a signed `message`-form transaction.
+  function ownSignature(signed) {
+    if (signed.slot < 0) {
+      throw internalError();
+    }
+    const start = solSigLayout(signed.bytes).prefix + 64 * signed.slot;
+    return base58Encode(signed.bytes.slice(start, start + 64));
+  }
+
+  function solMessageArgument(value) {
+    const message = base58Decode(value);
+    if (message === null) {
+      throw invalidParams();
+    }
+    return solWrapMessage(message);
+  }
+
+  // The deprecated `request({ method, params: { message(s): base58 } })` form (spec/05 §2.13).
+  async function phantomMessageRequest(method, params) {
+    if (solKey === null) {
+      throw unauthorized();
+    }
+    const publicKey = base58Encode(solKey);
+    if (method === "signTransaction") {
+      const [signed] = await solSignTransactions([solMessageArgument(params.message)], undefined);
+      return { publicKey, signature: ownSignature(signed) };
+    }
+    if (method === "signAllTransactions") {
+      if (!Array.isArray(params.messages)) {
+        throw invalidParams();
+      }
+      const list = params.messages.map((message) => solMessageArgument(message));
+      if (list.length === 0) {
+        return { publicKey, signatures: [] };
+      }
+      const signed = await solSignTransactions(list, undefined);
+      return { publicKey, signatures: signed.map((entry) => ownSignature(entry)) };
+    }
+    const options = solSendOptions(params.options);
+    const signature = await solSignAndSend(solMessageArgument(params.message), undefined, options);
+    return { publicKey, signature: base58Encode(signature) };
   }
 
   function checkSolAccount(account) {
@@ -377,8 +767,8 @@
   }
 
   // Wallet Standard features (`@wallet-standard/features`, `@solana/wallet-standard-features`).
-  // `solana:signTransaction` is declared because wallet adapters list only wallets with a
-  // transaction feature; it always rejects (spec.md D25).
+  // Transactions (spec.md D38): `solana:signTransaction` signs 1..=32 inputs in one approval,
+  // `solana:signAndSendTransaction` checks every input first and then sends them one by one.
   const solFeatures = Object.freeze({
     "standard:connect": Object.freeze({
       version: "1.0.0",
@@ -442,8 +832,28 @@
     }),
     "solana:signTransaction": Object.freeze({
       version: "1.0.0",
-      supportedTransactionVersions: Object.freeze(["legacy"]),
-      signTransaction: () => solTxRejected()
+      supportedTransactionVersions: SOL_TX_VERSIONS,
+      // `options` (preflightCommitment, minContextSlot) has no meaning for signing only and is
+      // never put on the wire.
+      signTransaction: async (...inputs) => {
+        const items = solStandardInputs(inputs);
+        if (items.length === 0) {
+          return [];
+        }
+        const chain = solBatchChain(items.map((item) => item.chain));
+        const signed = await solSignTransactions(items.map((item) => item.bytes), chain);
+        return signed.map((entry) => ({ signedTransaction: entry.bytes }));
+      }
+    }),
+    "solana:signAndSendTransaction": Object.freeze({
+      version: "1.0.0",
+      supportedTransactionVersions: SOL_TX_VERSIONS,
+      signAndSendTransaction: async (...inputs) => {
+        const items = solStandardInputs(inputs).map((item) => ({ ...item, options: solSendOptions(item.options) }));
+        solBatchChain(items.map((item) => item.chain));
+        const signatures = await solSendSerially(items);
+        return signatures.map((signature) => ({ signature }));
+      }
     })
   });
 
@@ -524,9 +934,22 @@
       return { address: makePublicKey(solKey), signedMessage: signed.signedMessage, signature: signed.signature };
     }
   });
-  for (const name of ["signTransaction", "signAllTransactions", "signAndSendTransaction", "signAndSendAllTransactions"]) {
-    defineOn(phantomSolana, name, { value: () => solTxRejected() });
-  }
+  // Transactions (spec/05 §2.13): the page's own class comes back for a class instance.
+  defineOn(phantomSolana, "signTransaction", {
+    value: async (tx) => {
+      const [signed] = await phantomSignAll([tx]);
+      return signed;
+    }
+  });
+  defineOn(phantomSolana, "signAllTransactions", { value: (txs) => phantomSignAll(txs) });
+  defineOn(phantomSolana, "signAndSendTransaction", {
+    value: async (tx, opts) => {
+      const { signatures, publicKey } = await phantomSendAll([tx], opts);
+      return { signature: signatures[0], publicKey };
+    }
+  });
+  defineOn(phantomSolana, "signAndSendAllTransactions", { value: (txs, opts) => phantomSendAll(txs, opts) });
+  const PHANTOM_TX_METHODS = new Set(["signTransaction", "signAllTransactions", "signAndSendTransaction", "signAndSendAllTransactions"]);
   defineOn(phantomSolana, "request", {
     value: async (args) => {
       const method = isPlainObject(args) ? args.method : undefined;
@@ -543,7 +966,23 @@
       if (method === "signIn") {
         return phantomSolana.signIn(params);
       }
-      throw new ProviderRpcError(4200, SOL_TX_UNSUPPORTED);
+      if (PHANTOM_TX_METHODS.has(method)) {
+        // The deprecated base58 `message(s)` form, else the transaction object(s).
+        if (method !== "signAndSendAllTransactions" && (params.message !== undefined || params.messages !== undefined)) {
+          return phantomMessageRequest(method, params);
+        }
+        if (method === "signTransaction") {
+          return phantomSolana.signTransaction(params.transaction);
+        }
+        if (method === "signAllTransactions") {
+          return phantomSolana.signAllTransactions(params.transactions);
+        }
+        if (method === "signAndSendTransaction") {
+          return phantomSolana.signAndSendTransaction(params.transaction, params.options);
+        }
+        return phantomSolana.signAndSendAllTransactions(params.transactions, params.options);
+      }
+      throw new ProviderRpcError(4200, SOL_REQUEST_UNSUPPORTED);
     }
   });
   for (const name of ["on", "addListener"]) {

@@ -1146,7 +1146,8 @@ test("P12 the legacy API exists in every mode (and before the mode is known), no
 
 const SOL_KEY = "FVen3X669xLzsi6N2V91DoiyzHzg1uAgqiT8jZ9nS96Z";
 const SOL_KEY_2 = "4Nd1mBQtrMJVYVfKf2PJy9NZUZdTAsp7D4xWLs4gDB4T";
-const SOL_UNSUPPORTED = "이 지갑은 Solana에서 메시지 서명(소유 증명)만 지원합니다";
+// A Phantom `request` method that is not supported (neutral text since 2026-11-12).
+const SOL_UNSUPPORTED = "Unsupported method.";
 const BTC_UNSUPPORTED = "이 지갑은 Bitcoin에서 메시지 서명(소유 증명)만 지원합니다";
 
 function lastRequest(page) {
@@ -1162,7 +1163,7 @@ function registeredWallets(page) {
   return wallets;
 }
 
-test("P13 Wallet Standard: 'Your Wallet (Solana)' in off mode, app-ready answered, features and tx rejection", async () => {
+test("P13 Wallet Standard: 'Your Wallet (Solana)' in off mode, app-ready answered, features", async () => {
   const page = createPage({ init: false });
   const early = [];
   page.context.dispatchEvent(new TestCustomEvent("wallet-standard:app-ready", { detail: { register: (wallet) => early.push(wallet) } }));
@@ -1181,11 +1182,16 @@ test("P13 Wallet Standard: 'Your Wallet (Solana)' in off mode, app-ready answere
   assert.match(wallet.icon, /^data:image\/png;base64,/u);
   assert.deepEqual(plain(wallet.chains), ["solana:mainnet", "solana:devnet"]);
   assert.deepEqual(Object.keys(wallet.features).sort(), [
-    "solana:signIn", "solana:signMessage", "solana:signTransaction",
+    "solana:signAndSendTransaction", "solana:signIn", "solana:signMessage", "solana:signTransaction",
     "standard:connect", "standard:disconnect", "standard:events"
   ]);
-  assert.deepEqual(plain(wallet.features["solana:signTransaction"].supportedTransactionVersions), ["legacy"]);
-  await assert.rejects(wallet.features["solana:signTransaction"].signTransaction({}), (error) => error.code === 4200 && error.message === SOL_UNSUPPORTED);
+  for (const name of ["solana:signTransaction", "solana:signAndSendTransaction"]) {
+    assert.equal(wallet.features[name].version, "1.0.0", name);
+    assert.deepEqual(plain(wallet.features[name].supportedTransactionVersions), ["legacy", 0], name);
+  }
+  // Not connected: a transaction input is refused locally.
+  await assert.rejects(wallet.features["solana:signTransaction"].signTransaction({}), (error) => error.code === 4100);
+  assert.equal(requests(page).length, 0);
   // Off modes expose no Phantom, UniSat or Xverse globals.
   for (const name of ["phantom", "solana", "unisat", "XverseProviders", "BitcoinProvider", "btc_providers"]) {
     assert.equal(name in page.context, false, name);
@@ -1205,6 +1211,9 @@ test("P13 Wallet Standard: 'Your Wallet (Solana)' in off mode, app-ready answere
   const connected = await connecting;
   assert.equal(connected.accounts[0].address, SOL_KEY);
   assert.equal(connected.accounts[0].publicKey.length, 32);
+  assert.deepEqual(plain(connected.accounts[0].features), [
+    "solana:signMessage", "solana:signIn", "solana:signTransaction", "solana:signAndSendTransaction"
+  ]);
   assert.deepEqual(changes, [1]);
   // signMessage: the exact bytes as hex, a 64-byte signature back.
   const message = vm.runInContext("new TextEncoder().encode('Prove it')", page.context);
@@ -1285,13 +1294,441 @@ test("P14 phantom mode: window.phantom.solana shim, 'Phantom' Wallet Standard na
   sendEvent(page, "solAccountsChanged", [SOL_KEY_2]);
   sendEvent(page, "solAccountsChanged", []);
   assert.deepEqual(events, [["connect", SOL_KEY], ["accountChanged", SOL_KEY_2], ["disconnect"]]);
-  for (const name of ["signTransaction", "signAllTransactions", "signAndSendTransaction", "signAndSendAllTransactions"]) {
-    await assert.rejects(phantom[name]({}), (error) => error.code === 4200 && error.message === SOL_UNSUPPORTED, name);
-  }
-  await assert.rejects(phantom.request(pageValue(page, { method: "signTransaction" })), (error) => error.code === 4200);
+  await assert.rejects(phantom.request(pageValue(page, { method: "signPayload" })), (error) => error.code === 4200 && error.message === SOL_UNSUPPORTED);
   const before = requests(page).length;
   await assert.rejects(phantom.signMessage(message), (error) => error.code === 4100);
   assert.equal(requests(page).length, before, "not connected: refused locally");
+});
+
+// ---------- spec/05 §2.13 Solana dApp transactions (P13–P14, 2026-11-12) ----------
+
+const B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+function b58(bytes) {
+  let value = 0n;
+  for (const byte of bytes) {
+    value = value * 256n + BigInt(byte);
+  }
+  let text = "";
+  while (value > 0n) {
+    text = B58[Number(value % 58n)] + text;
+    value /= 58n;
+  }
+  for (const byte of bytes) {
+    if (byte !== 0) {
+      break;
+    }
+    text = `1${text}`;
+  }
+  return text;
+}
+
+const hexOf = (bytes) => Buffer.from(bytes).toString("hex");
+
+// `count` empty signature slots in front of a small message (the provider checks the layout only).
+function wireTx(count, message = [count, 0, 1, 2, ...new Array(64).fill(7), 9]) {
+  return [count, ...new Array(64 * count).fill(0), ...message];
+}
+
+function pageBytes(page, bytes) {
+  return vm.runInContext(`new Uint8Array(${JSON.stringify(Array.from(bytes))})`, page.context);
+}
+
+// `bytes` with slot `slot` filled with `fill` (what the app answers after signing).
+function withSlot(bytes, slot, fill) {
+  const out = Array.from(bytes);
+  out.fill(fill, 1 + 64 * slot, 1 + 64 * (slot + 1));
+  return out;
+}
+
+async function solConnectedWallet(page) {
+  const [wallet] = registeredWallets(page);
+  const connecting = wallet.features["standard:connect"].connect();
+  respond(page, lastRequest(page).id, { result: { publicKey: SOL_KEY } });
+  await connecting;
+  return wallet;
+}
+
+test("P13 solana:signTransaction: one input → sol_signTransaction, several → one sol_signAllTransactions", async () => {
+  const page = createPage();
+  const wallet = await solConnectedWallet(page);
+  const sign = wallet.features["solana:signTransaction"].signTransaction;
+  const account = wallet.accounts[0];
+  const before = requests(page).length;
+  assert.deepEqual(plain(await sign()), [], "no input, no request");
+  assert.equal(requests(page).length, before);
+
+  // One input: `options` and `chain: undefined` are accepted and never reach the wire.
+  const tx = wireTx(2);
+  const input = { account, transaction: pageBytes(page, tx), chain: undefined, options: pageValue(page, { minContextSlot: 5 }) };
+  const signing = sign(input);
+  const wire = lastRequest(page);
+  assert.equal(wire.method, "sol_signTransaction");
+  assert.equal(JSON.stringify(wire.params), JSON.stringify([{ publicKey: SOL_KEY, transaction: hexOf(tx) }]));
+  const signed = withSlot(tx, 1, 0x11);
+  respond(page, wire.id, { result: { publicKey: SOL_KEY, signedTransaction: hexOf(signed) } });
+  const [output] = await signing;
+  assert.deepEqual(Object.keys(output), ["signedTransaction"]);
+  assert.deepEqual(Array.from(output.signedTransaction), signed);
+
+  // A chain goes to the wire as given.
+  const onDevnet = sign({ account, transaction: pageBytes(page, tx), chain: "solana:devnet" });
+  assert.equal(JSON.stringify(lastRequest(page).params), JSON.stringify([{ publicKey: SOL_KEY, transaction: hexOf(tx), chain: "solana:devnet" }]));
+  respond(page, lastRequest(page).id, { result: { publicKey: SOL_KEY, signedTransaction: hexOf(withSlot(tx, 0, 0x22)) } });
+  await onDevnet;
+
+  // Three inputs: one request (one window, one approval), answers in input order.
+  const txs = [wireTx(1), wireTx(2), wireTx(3)];
+  const batch = sign(...txs.map((item) => ({ account, transaction: pageBytes(page, item), chain: null })));
+  const batchWire = lastRequest(page);
+  assert.equal(batchWire.method, "sol_signAllTransactions");
+  assert.equal(JSON.stringify(batchWire.params), JSON.stringify([{ publicKey: SOL_KEY, transactions: txs.map(hexOf) }]));
+  const answers = txs.map((item, index) => withSlot(item, index, 0x30 + index));
+  respond(page, batchWire.id, { result: { publicKey: SOL_KEY, signedTransactions: answers.map(hexOf) } });
+  assert.deepEqual(Array.from(await batch, (entry) => Array.from(entry.signedTransaction)), answers);
+  assert.equal(requests(page).length, before + 3);
+});
+
+test("P13 transaction inputs are checked locally: account 4100, chain and bytes -32602, nothing posted", async () => {
+  const page = createPage();
+  const wallet = await solConnectedWallet(page);
+  const account = wallet.accounts[0];
+  const tx = pageBytes(page, wireTx(1));
+  const before = requests(page).length;
+  for (const name of ["solana:signTransaction", "solana:signAndSendTransaction"]) {
+    const call = (...inputs) => (name === "solana:signTransaction"
+      ? wallet.features[name].signTransaction(...inputs)
+      : wallet.features[name].signAndSendTransaction(...inputs));
+    await assert.rejects(call({ account: { address: SOL_KEY_2 }, transaction: tx }), (error) => error.code === 4100, name);
+    await assert.rejects(call({ account: null, transaction: tx }), (error) => error.code === 4100, name);
+    for (const [label, bad] of [
+      ["testnet", { account, transaction: tx, chain: "solana:testnet" }],
+      ["chain 1", { account, transaction: tx, chain: 1 }],
+      ["plain array", { account, transaction: Array.from(wireTx(1)) }],
+      ["1,233 bytes", { account, transaction: pageBytes(page, [1, ...new Array(1232).fill(1)]) }],
+      ["zero signatures", { account, transaction: pageBytes(page, [0, 1, 2, 3]) }],
+      ["no message", { account, transaction: pageBytes(page, wireTx(2).slice(0, 129)) }],
+      ["empty", { account, transaction: pageBytes(page, []) }]
+    ]) {
+      await assert.rejects(call(bad), (error) => error.code === -32602, `${name} ${label}`);
+    }
+    await assert.rejects(call(
+      { account, transaction: tx, chain: "solana:devnet" },
+      { account, transaction: tx, chain: "solana:mainnet" }
+    ), (error) => error.code === -32602, `${name} mixed chains`);
+    await assert.rejects(call(...new Array(33).fill({ account, transaction: tx })), (error) => error.code === -32602, `${name} 33`);
+    await assert.rejects(call(null), (error) => error.code === -32602, `${name} null`);
+  }
+  assert.equal(requests(page).length, before);
+});
+
+test("P13 the app's signed copy may change only one signature slot (else -32603)", async () => {
+  const page = createPage();
+  const wallet = await solConnectedWallet(page);
+  const account = wallet.accounts[0];
+  const sign = wallet.features["solana:signTransaction"].signTransaction;
+  const tx = wireTx(2);
+  const changedMessage = withSlot(tx, 1, 0x11);
+  changedMessage[changedMessage.length - 1] ^= 1;
+  const twoSlots = withSlot(withSlot(tx, 0, 0x11), 1, 0x22);
+  const changedCount = withSlot(tx, 1, 0x11);
+  changedCount[0] = 3;
+  for (const [label, answer] of [
+    ["message byte", hexOf(changedMessage)],
+    ["longer", `${hexOf(withSlot(tx, 1, 0x11))}00`],
+    ["shorter", hexOf(withSlot(tx, 1, 0x11)).slice(0, -2)],
+    ["two slots", hexOf(twoSlots)],
+    ["signature count", hexOf(changedCount)],
+    ["not hex", "zz"],
+    ["missing", undefined]
+  ]) {
+    const signing = sign({ account, transaction: pageBytes(page, tx) });
+    respond(page, lastRequest(page).id, { result: { publicKey: SOL_KEY, signedTransaction: answer } });
+    await assert.rejects(signing, (error) => error.code === -32603, label);
+  }
+  // A batch answer with fewer transactions than asked for.
+  const batch = sign({ account, transaction: pageBytes(page, tx) }, { account, transaction: pageBytes(page, tx) });
+  respond(page, lastRequest(page).id, { result: { publicKey: SOL_KEY, signedTransactions: [hexOf(withSlot(tx, 1, 0x11))] } });
+  await assert.rejects(batch, (error) => error.code === -32603);
+});
+
+test("P13 solana:signAndSendTransaction: options normalized, inputs sent one by one, partial failure carries data.signatures", async () => {
+  const page = createPage();
+  const wallet = await solConnectedWallet(page);
+  const account = wallet.accounts[0];
+  const send = wallet.features["solana:signAndSendTransaction"].signAndSendTransaction;
+  const tx = wireTx(1);
+  // Known keys only, aliases folded; maxRetries, mode, foo and undefined values are dropped.
+  const sending = send({
+    account,
+    transaction: pageBytes(page, tx),
+    options: vm.runInContext(
+      "({ preflightCommitment: 'singleGossip', skipPreflight: true, maxRetries: undefined, mode: 'parallel', foo: 1 })",
+      page.context
+    ),
+    chain: "solana:devnet"
+  });
+  const wire = lastRequest(page);
+  assert.equal(wire.method, "sol_signAndSendTransaction");
+  assert.deepEqual(plain(wire.params), [{
+    publicKey: SOL_KEY, transaction: hexOf(tx), chain: "solana:devnet",
+    options: { skipPreflight: true, preflightCommitment: "confirmed" }
+  }]);
+  respond(page, wire.id, { result: { publicKey: SOL_KEY, signature: "aa".repeat(64) } });
+  const [sent] = await sending;
+  assert.deepEqual(Object.keys(sent), ["signature"]);
+  assert.deepEqual(Array.from(sent.signature), new Array(64).fill(0xaa));
+  // The other aliases, `null` values and unknown commitments.
+  for (const [given, expected] of [
+    ["({ preflightCommitment: 'recent', maxRetries: 2, commitment: 'finalized' })", { preflightCommitment: "processed" }],
+    ["({ preflightCommitment: 'root', minContextSlot: 0 })", { preflightCommitment: "finalized", minContextSlot: 0 }],
+    [
+      "({ preflightCommitment: 'max', skipPreflight: false, minContextSlot: Number.MAX_SAFE_INTEGER })",
+      { skipPreflight: false, preflightCommitment: "finalized", minContextSlot: Number.MAX_SAFE_INTEGER }
+    ],
+    ["({ preflightCommitment: 'single', skipPreflight: null, minContextSlot: null })", { preflightCommitment: "confirmed" }],
+    ["({ preflightCommitment: 'nonsense' })", undefined],
+    ["null", undefined]
+  ]) {
+    const pending = send({ account, transaction: pageBytes(page, tx), options: vm.runInContext(given, page.context) });
+    assert.deepEqual(
+      plain(lastRequest(page).params),
+      [{ publicKey: SOL_KEY, transaction: hexOf(tx), ...(expected === undefined ? {} : { options: expected }) }],
+      given
+    );
+    respond(page, lastRequest(page).id, { result: { publicKey: SOL_KEY, signature: "ab".repeat(64) } });
+    await pending;
+  }
+  const before = requests(page).length;
+  for (const options of [
+    "({ minContextSlot: -1 })", "({ minContextSlot: 1.5 })", "({ minContextSlot: Number.MAX_SAFE_INTEGER + 1 })",
+    "({ minContextSlot: '5' })", "({ skipPreflight: 'yes' })", "('fast')"
+  ]) {
+    await assert.rejects(
+      send({ account, transaction: pageBytes(page, tx), options: vm.runInContext(options, page.context) }),
+      (error) => error.code === -32602,
+      options
+    );
+  }
+  // A bad second input refuses the whole call before the first is sent.
+  await assert.rejects(send(
+    { account, transaction: pageBytes(page, tx) },
+    { account, transaction: pageBytes(page, tx), options: pageValue(page, { minContextSlot: -1 }) }
+  ), (error) => error.code === -32602);
+  assert.equal(requests(page).length, before, "bad options are refused before anything is posted");
+
+  // Two inputs: the second goes out only after the first answered; a failure of the second
+  // rejects with that error and the first transaction's signature.
+  const other = wireTx(1, [1, 0, 0, 1, ...new Array(32).fill(5), ...new Array(32).fill(6), 0]);
+  const two = send({ account, transaction: pageBytes(page, tx) }, { account, transaction: pageBytes(page, other) });
+  assert.equal(requests(page).length, before + 1);
+  respond(page, lastRequest(page).id, { result: { publicKey: SOL_KEY, signature: "01".repeat(64) } });
+  await flush();
+  assert.equal(requests(page).length, before + 2);
+  assert.equal(lastRequest(page).params[0].transaction, hexOf(other));
+  respond(page, lastRequest(page).id, { error: { code: 4001, message: "User rejected the request." } });
+  await assert.rejects(two, (error) => error.code === 4001
+    && error.message === "User rejected the request."
+    && JSON.stringify(error.data) === JSON.stringify({ signatures: [b58(new Array(64).fill(1))] }));
+  // A failure of the first is passed on as it is, and nothing more is sent.
+  const first = send({ account, transaction: pageBytes(page, tx) }, { account, transaction: pageBytes(page, tx) });
+  respond(page, lastRequest(page).id, { error: { code: -32002, message: "Transaction pending." } });
+  await assert.rejects(first, (error) => error.code === -32002 && error.data === undefined);
+  await flush();
+  assert.equal(requests(page).length, before + 3);
+});
+
+test("P13 M01 half: transaction-shaped bytes through signMessage post only sol_signMessage", async () => {
+  const page = createPage();
+  const wallet = await solConnectedWallet(page);
+  const tx = wireTx(1);
+  const before = requests(page).length;
+  const signing = wallet.features["solana:signMessage"].signMessage({ account: wallet.accounts[0], message: pageBytes(page, tx) });
+  const wire = lastRequest(page);
+  assert.equal(wire.method, "sol_signMessage");
+  assert.equal(JSON.stringify(wire.params), JSON.stringify([{ publicKey: SOL_KEY, message: hexOf(tx) }]));
+  // The app blocks it (M01) and the page gets the rejection; no transaction method went out.
+  respond(page, wire.id, { error: { code: 4001, message: "User rejected the request." } });
+  await assert.rejects(signing, (error) => error.code === 4001);
+  assert.equal(requests(page).length, before + 1);
+});
+
+// Fake web3.js classes in the page realm: `Tx` (legacy: serialize(options), static from) and
+// `VTx` (versioned: `version`, serialize(), static deserialize). Serialize options are recorded.
+const PAGE_CLASSES = `
+  globalThis.serializeCalls = [];
+  globalThis.Tx = class Tx {
+    constructor(bytes) { this.bytes = Uint8Array.from(bytes); }
+    serialize(options) { serializeCalls.push(options === undefined ? "none" : JSON.stringify(options)); return this.bytes; }
+    static from(bytes) { return new Tx(bytes); }
+  };
+  globalThis.VTx = class VTx {
+    constructor(bytes) { this.bytes = Uint8Array.from(bytes); this.version = 0; }
+    serialize(options) { serializeCalls.push(options === undefined ? "none" : JSON.stringify(options)); return this.bytes; }
+    static deserialize(bytes) { return new VTx(bytes); }
+  };
+  globalThis.Unsigned = class Unsigned {
+    serialize() { throw new Error("Signature verification failed"); }
+    static from() { return null; }
+  };
+  globalThis.NoFactory = class NoFactory {
+    serialize() { return new Uint8Array([1, ...new Array(64).fill(0), 1, 0, 1, 2, ...new Array(64).fill(3), 0]); }
+  };
+`;
+
+async function phantomConnected(page) {
+  const phantom = page.context.phantom.solana;
+  const connecting = phantom.connect();
+  respond(page, lastRequest(page).id, { result: { publicKey: SOL_KEY } });
+  await connecting;
+  return phantom;
+}
+
+function pageTx(page, className, bytes) {
+  return vm.runInContext(`new ${className}(${JSON.stringify(Array.from(bytes))})`, page.context);
+}
+
+test("P14 phantom transactions: the page's own classes come back, signAll is one approval, sends answer base58", async () => {
+  const page = createPage({ init: false });
+  bridgeInit(page, CHANNEL, "off", "phantom", "off");
+  vm.runInContext(PAGE_CLASSES, page.context);
+  const phantom = page.context.phantom.solana;
+  // Not connected: refused locally.
+  for (const call of [
+    () => phantom.signTransaction(pageTx(page, "Tx", wireTx(1))),
+    () => phantom.signAllTransactions(vm.runInContext("[]", page.context)),
+    () => phantom.signAndSendTransaction(pageTx(page, "Tx", wireTx(1))),
+    () => phantom.signAndSendAllTransactions(vm.runInContext("[]", page.context)),
+    () => phantom.request(pageValue(page, { method: "signTransaction", params: { message: "2" } }))
+  ]) {
+    await assert.rejects(call(), (error) => error.code === 4100);
+  }
+  assert.equal(requests(page).length, 0);
+  await phantomConnected(page);
+
+  // Legacy: serialized without requiring or verifying signatures, rebuilt with Tx.from.
+  const legacy = wireTx(2);
+  const signing = phantom.signTransaction(pageTx(page, "Tx", legacy));
+  assert.deepEqual(Array.from(page.context.serializeCalls), [JSON.stringify({ requireAllSignatures: false, verifySignatures: false })]);
+  const wire = lastRequest(page);
+  assert.equal(JSON.stringify(wire.params), JSON.stringify([{ publicKey: SOL_KEY, transaction: hexOf(legacy) }]));
+  respond(page, wire.id, { result: { publicKey: SOL_KEY, signedTransaction: hexOf(withSlot(legacy, 1, 0x55)) } });
+  const signed = await signing;
+  assert.equal(signed.constructor, page.context.Tx);
+  assert.deepEqual(Array.from(signed.bytes), withSlot(legacy, 1, 0x55));
+
+  // Versioned: serialize() as is, rebuilt with VTx.deserialize.
+  const versioned = wireTx(1, [0x80, 1, 0, 1, 2, ...new Array(64).fill(7), 0, 0]);
+  const signingV0 = phantom.signTransaction(pageTx(page, "VTx", versioned));
+  assert.equal(page.context.serializeCalls.at(-1), "none");
+  respond(page, lastRequest(page).id, { result: { publicKey: SOL_KEY, signedTransaction: hexOf(withSlot(versioned, 0, 0x66)) } });
+  const signedV0 = await signingV0;
+  assert.equal(signedV0.constructor, page.context.VTx);
+  assert.equal(signedV0.version, 0);
+
+  // Raw bytes stay bytes.
+  const raw = phantom.signTransaction(pageBytes(page, legacy));
+  respond(page, lastRequest(page).id, { result: { publicKey: SOL_KEY, signedTransaction: hexOf(withSlot(legacy, 0, 0x12)) } });
+  assert.deepEqual(Array.from(await raw), withSlot(legacy, 0, 0x12));
+
+  // signAllTransactions: one request, each result in its own class.
+  const before = requests(page).length;
+  const all = phantom.signAllTransactions(vm.runInContext(`[new Tx(${JSON.stringify(legacy)}), new VTx(${JSON.stringify(versioned)})]`, page.context));
+  assert.equal(requests(page).length, before + 1);
+  assert.equal(lastRequest(page).method, "sol_signAllTransactions");
+  respond(page, lastRequest(page).id, {
+    result: { publicKey: SOL_KEY, signedTransactions: [hexOf(withSlot(legacy, 1, 0x01)), hexOf(withSlot(versioned, 0, 0x02))] }
+  });
+  const [first, second] = await all;
+  assert.equal(first.constructor, page.context.Tx);
+  assert.equal(second.constructor, page.context.VTx);
+
+  // signAndSendTransaction: base58 signature and key; options as in Wallet Standard.
+  const one = wireTx(1);
+  const sending = phantom.signAndSendTransaction(pageTx(page, "Tx", one), pageValue(page, { skipPreflight: true, preflightCommitment: "recent", maxRetries: 3 }));
+  assert.equal(lastRequest(page).method, "sol_signAndSendTransaction");
+  assert.deepEqual(plain(lastRequest(page).params), [{ publicKey: SOL_KEY, transaction: hexOf(one), options: { skipPreflight: true, preflightCommitment: "processed" } }]);
+  respond(page, lastRequest(page).id, { result: { publicKey: SOL_KEY, signature: "07".repeat(64) } });
+  assert.deepEqual(plain(await sending), { signature: b58(new Array(64).fill(7)), publicKey: SOL_KEY });
+
+  // signAndSendAllTransactions: one by one, every signature in base58.
+  const sendingAll = phantom.signAndSendAllTransactions(vm.runInContext(`[new Tx(${JSON.stringify(one)}), new Tx(${JSON.stringify(one)})]`, page.context));
+  respond(page, lastRequest(page).id, { result: { publicKey: SOL_KEY, signature: "08".repeat(64) } });
+  await flush();
+  respond(page, lastRequest(page).id, { result: { publicKey: SOL_KEY, signature: "09".repeat(64) } });
+  assert.deepEqual(plain(await sendingAll), { signatures: [b58(new Array(64).fill(8)), b58(new Array(64).fill(9))], publicKey: SOL_KEY });
+
+  // A legacy transaction that cannot serialize: -32602 with nothing posted; no factory: -32603.
+  const count = requests(page).length;
+  await assert.rejects(phantom.signTransaction(vm.runInContext("new Unsigned()", page.context)), (error) => error.code === -32602);
+  await assert.rejects(phantom.signTransaction(vm.runInContext("new NoFactory()", page.context)), (error) => error.code === -32603);
+  await assert.rejects(phantom.signTransaction(pageValue(page, { serialize: 1 })), (error) => error.code === -32602);
+  await assert.rejects(phantom.signAllTransactions(pageTx(page, "Tx", one)), (error) => error.code === -32602);
+  assert.equal(requests(page).length, count);
+});
+
+test("P14 phantom request(): transaction methods, the deprecated base58 message form and the neutral 4200", async () => {
+  const page = createPage({ init: false });
+  bridgeInit(page, CHANNEL, "off", "phantom", "off");
+  vm.runInContext(PAGE_CLASSES, page.context);
+  const phantom = await phantomConnected(page);
+  // request({ method: "signTransaction", params: { transaction } }) is signTransaction(tx).
+  const tx = wireTx(1);
+  const byRequest = phantom.request(vm.runInContext(`({ method: "signTransaction", params: { transaction: new Tx(${JSON.stringify(tx)}) } })`, page.context));
+  assert.equal(lastRequest(page).method, "sol_signTransaction");
+  respond(page, lastRequest(page).id, { result: { publicKey: SOL_KEY, signedTransaction: hexOf(withSlot(tx, 0, 0x21)) } });
+  assert.equal((await byRequest).constructor, page.context.Tx);
+
+  // The message form: base58 message → shortvec(required) ‖ 64·required zero bytes ‖ message.
+  const message = [2, 0, 1, 3, ...new Array(96).fill(5), ...new Array(32).fill(6), 0];
+  const wrapped = [2, ...new Array(128).fill(0), ...message];
+  const legacyForm = phantom.request(pageValue(page, { method: "signTransaction", params: { message: b58(message) } }));
+  assert.equal(JSON.stringify(lastRequest(page).params), JSON.stringify([{ publicKey: SOL_KEY, transaction: hexOf(wrapped) }]));
+  respond(page, lastRequest(page).id, { result: { publicKey: SOL_KEY, signedTransaction: hexOf(withSlot(wrapped, 1, 0x44)) } });
+  assert.deepEqual(plain(await legacyForm), { publicKey: SOL_KEY, signature: b58(new Array(64).fill(0x44)) });
+  // Leading zero bytes survive base58 (`1` characters).
+  const zeroForm = phantom.request(pageValue(page, { method: "signTransaction", params: { message: b58([1, 0, 0, 0]) } }));
+  assert.equal(lastRequest(page).params[0].transaction, hexOf([1, ...new Array(64).fill(0), 1, 0, 0, 0]));
+  respond(page, lastRequest(page).id, { result: { publicKey: SOL_KEY, signedTransaction: hexOf(withSlot([1, ...new Array(64).fill(0), 1, 0, 0, 0], 0, 0x49)) } });
+  assert.equal((await zeroForm).signature, b58(new Array(64).fill(0x49)));
+  // v0: the count is msg[1].
+  const v0 = [0x80, 1, 0, 1, 2, ...new Array(64).fill(5), ...new Array(32).fill(6), 0, 0];
+  const v0Wire = [1, ...new Array(64).fill(0), ...v0];
+  const v0Form = phantom.request(pageValue(page, { method: "signTransaction", params: { message: b58(v0) } }));
+  assert.equal(lastRequest(page).params[0].transaction, hexOf(v0Wire));
+  respond(page, lastRequest(page).id, { result: { publicKey: SOL_KEY, signedTransaction: hexOf(withSlot(v0Wire, 0, 0x45)) } });
+  assert.equal((await v0Form).signature, b58(new Array(64).fill(0x45)));
+  // signAllTransactions with `messages`: our signature per message, one request.
+  const allForm = phantom.request(pageValue(page, { method: "signAllTransactions", params: { messages: [b58(message), b58(message)] } }));
+  assert.equal(lastRequest(page).method, "sol_signAllTransactions");
+  respond(page, lastRequest(page).id, {
+    result: { publicKey: SOL_KEY, signedTransactions: [hexOf(withSlot(wrapped, 0, 0x46)), hexOf(withSlot(wrapped, 1, 0x47))] }
+  });
+  assert.deepEqual(plain(await allForm), { publicKey: SOL_KEY, signatures: [b58(new Array(64).fill(0x46)), b58(new Array(64).fill(0x47))] });
+  // signAndSendTransaction with a message: signature 0 of the sent transaction.
+  const single = [1, 0, 1, 2, ...new Array(64).fill(5), ...new Array(32).fill(6), 0];
+  const sendForm = phantom.request(pageValue(page, { method: "signAndSendTransaction", params: { message: b58(single), options: { skipPreflight: true } } }));
+  assert.deepEqual(plain(lastRequest(page).params), [{ publicKey: SOL_KEY, transaction: hexOf([1, ...new Array(64).fill(0), ...single]), options: { skipPreflight: true } }]);
+  respond(page, lastRequest(page).id, { result: { publicKey: SOL_KEY, signature: "48".repeat(64) } });
+  assert.deepEqual(plain(await sendForm), { publicKey: SOL_KEY, signature: b58(new Array(64).fill(0x48)) });
+
+  // Bad messages are refused locally.
+  const before = requests(page).length;
+  for (const bad of ["", "0OIl", b58([0x81, 1, 0, 0]), b58([0, 0, 0]), b58([0x80, 0, 0]), b58([0x80, 128, 0, 0]), 7]) {
+    await assert.rejects(
+      phantom.request(pageValue(page, { method: "signTransaction", params: { message: bad } })),
+      (error) => error.code === -32602,
+      String(bad)
+    );
+  }
+  await assert.rejects(
+    phantom.request(pageValue(page, { method: "signTransaction", params: { message: b58([100, ...new Array(1200).fill(1)]) } })),
+    (error) => error.code === -32602,
+    "too long"
+  );
+  await assert.rejects(phantom.request(pageValue(page, { method: "signAllTransactions", params: { messages: "x" } })), (error) => error.code === -32602);
+  assert.equal(requests(page).length, before);
+  await assert.rejects(phantom.request(pageValue(page, { method: "signAndSendAllTransactionsWithMemo" })), (error) => error.code === 4200 && error.message === SOL_UNSUPPORTED);
 });
 
 test("P15 unisat mode: window.unisat accounts, network, message signing; PSBT and sends reject", async () => {

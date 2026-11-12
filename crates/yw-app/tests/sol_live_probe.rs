@@ -10,6 +10,9 @@
 //! - v1.1: `T_SPL` CU measurement (senders = `getTokenLargestAccounts` holders whose token
 //!   account is their canonical ATA), rent165, `getFeeForMessage` of `T_SPL`, app SPL balances
 //!   and preview.
+//! - v1.2 (spec/07 §20): `isBlockhashValid(processed)`, `getLatestBlockhash(processed,
+//!   minContextSlot)`, the fee payer's simulated post-state (`simulateTransaction{accounts}`), and
+//!   a v0 transaction with a live lookup table through the app's dApp preview and pre-sign check.
 //! - Nothing is signed or sent: messages are unsigned (`simulateTransaction` with
 //!   `sigVerify:false`, `getFeeForMessage`), addresses are validator identities read from
 //!   `getVoteAccounts` and random addresses; no key is used.
@@ -21,13 +24,21 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use yw_app::flow::evm::SystemClock;
 use yw_app::rpc::{RpcClient, RpcFailure, classify};
-use yw_app::sol::flow::{PreviewJob, PreviewOutcome, SolEndpoint, balances, pre_sign, preview};
+use yw_app::sol::flow::{
+    DappPreviewJob, PreviewJob, PreviewOutcome, SolEndpoint, balances, dapp_preview, pre_sign,
+    pre_sign_dapp, preview,
+};
 use yw_app::sol::rpc as sol;
 use yw_core::bip32::path::AccountIndex;
 use yw_core::codec::base58::base58_encode;
 use yw_core::slip10::SolKeySource;
-use yw_core::sol::address::{CurveClass, curve_class};
+use yw_core::sol::address::{
+    ADDRESS_LOOKUP_TABLE_PROGRAM, CurveClass, SYSTEM_PROGRAM, curve_class,
+};
+use yw_core::sol::dapp::alt::{LOOKUP_TABLE_MAX_DATA, parse_lookup_table};
+use yw_core::sol::dapp::parse_wire_tx;
 use yw_core::sol::display::SimSummary;
 use yw_core::sol::fee::{SOL_TRANSFER_CU_LIMIT, SPL_TRANSFER_CU_LIMIT, max_fee};
 use yw_core::sol::message::{assemble_transaction, encode_message};
@@ -858,7 +869,279 @@ fn probe_cluster(report: &mut Report, cluster: SolCluster, url: &HttpsUrl) -> Te
         ),
         Err(error) => report.line(net, "app pre-sign lookup", false, &format!("{error:?}")),
     }
+    probe_dapp(report, &endpoint, &client, &transport, from);
     Ok(())
+}
+
+/// A lookup table some recent transaction created or extended: the first account of an ALT
+/// program instruction among the program's latest signatures, still active and not empty.
+fn recent_table(client: &RpcClient<'_>, url: &HttpsUrl) -> Option<(SolAddress, usize)> {
+    let program = ADDRESS_LOOKUP_TABLE_PROGRAM.to_base58();
+    let signatures = client
+        .call(
+            url,
+            "getSignaturesForAddress",
+            Value::Array(vec![text(&program), object(vec![("limit", number(20))])]),
+        )
+        .ok()?;
+    for entry in signatures.as_array()? {
+        let Some(signature) = entry
+            .as_object()
+            .and_then(|object| object.get("signature"))
+            .and_then(Value::as_str)
+        else {
+            continue;
+        };
+        let Ok(tx) = client.call(
+            url,
+            "getTransaction",
+            Value::Array(vec![
+                text(signature),
+                object(vec![
+                    ("encoding", text("json")),
+                    ("commitment", text("confirmed")),
+                    ("maxSupportedTransactionVersion", number(0)),
+                ]),
+            ]),
+        ) else {
+            continue;
+        };
+        if let Some(found) = table_of(client, url, &tx, &program) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// The first account of an ALT program instruction of `tx` (`getTransaction` JSON) when it is an
+/// active, non-empty lookup table now.
+fn table_of(
+    client: &RpcClient<'_>,
+    url: &HttpsUrl,
+    tx: &Value,
+    program: &str,
+) -> Option<(SolAddress, usize)> {
+    let message = tx
+        .as_object()
+        .and_then(|object| object.get("transaction"))
+        .and_then(Value::as_object)
+        .and_then(|object| object.get("message"))
+        .and_then(Value::as_object)?;
+    let keys: Vec<&str> = message
+        .get("accountKeys")
+        .and_then(Value::as_array)
+        .map(|keys| keys.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    let key_at = |value: Option<&Value>| {
+        u64_at(value)
+            .and_then(|index| usize::try_from(index).ok())
+            .and_then(|index| keys.get(index).copied())
+    };
+    for instruction in message.get("instructions").and_then(Value::as_array)? {
+        let instruction = instruction.as_object();
+        if key_at(instruction.and_then(|object| object.get("programIdIndex"))) != Some(program) {
+            continue;
+        }
+        let Some(table) = key_at(
+            instruction
+                .and_then(|object| object.get("accounts"))
+                .and_then(Value::as_array)
+                .and_then(|accounts| accounts.first()),
+        )
+        .and_then(|text| SolAddress::parse(text).ok()) else {
+            continue;
+        };
+        let Ok((_, accounts)) =
+            sol::multiple_accounts(client, url, &[table], LOOKUP_TABLE_MAX_DATA, None, None)
+        else {
+            continue;
+        };
+        let parsed = accounts
+            .into_iter()
+            .flatten()
+            .next()
+            .and_then(|account| parse_lookup_table(&account.owner, &account.data));
+        if let Some(parsed) = parsed
+            && parsed.deactivation_slot == u64::MAX
+            && !parsed.addresses.is_empty()
+        {
+            return Some((table, parsed.addresses.len()));
+        }
+    }
+    None
+}
+
+/// `shortvec(1) ‖ zero signature ‖ message`: `from` pays and moves 0 lamports to the account
+/// at `to` (an index into static + loaded keys); `lookup` makes it v0 with one table whose
+/// entry 0 is loaded writable.
+fn zero_transfer(
+    from: &SolAddress,
+    blockhash: &[u8; 32],
+    to: u8,
+    lookup: Option<&SolAddress>,
+) -> Vec<u8> {
+    let mut out = vec![1_u8];
+    out.extend_from_slice(&[0; 64]);
+    if lookup.is_some() {
+        out.push(0x80);
+    }
+    out.extend_from_slice(&[1, 0, 1, 2]);
+    out.extend_from_slice(from.as_bytes());
+    out.extend_from_slice(SYSTEM_PROGRAM.as_bytes());
+    out.extend_from_slice(blockhash);
+    out.extend_from_slice(&[1, 1, 2, 0, to, 12, 2, 0, 0, 0]);
+    out.extend_from_slice(&0_u64.to_le_bytes());
+    if let Some(table) = lookup {
+        out.push(1);
+        out.extend_from_slice(table.as_bytes());
+        out.extend_from_slice(&[1, 0, 0]);
+    }
+    out
+}
+
+/// spec/07 §20 (D38): the dApp transaction reads, read-only — `isBlockhashValid(processed)`,
+/// `getLatestBlockhash(processed, minContextSlot)`, the simulated fee-payer post-state through
+/// `simulateTransaction{accounts}`, and a v0 transaction with a live lookup table through the
+/// app's preview and pre-sign check. Nothing is signed (zero signature slots, `sigVerify:false`).
+fn probe_dapp(
+    report: &mut Report,
+    endpoint: &SolEndpoint,
+    client: &RpcClient<'_>,
+    transport: &Client,
+    from: SolAddress,
+) {
+    let net = endpoint.cluster.network_id();
+    let url = &endpoint.url;
+    let Ok((hash, _)) = sol::latest_blockhash(client, url) else {
+        report.line(net, "dapp blockhash", false, "getLatestBlockhash");
+        return;
+    };
+    let slot = match sol::blockhash_valid(client, url, &hash) {
+        Ok((valid, slot)) => {
+            report.line(
+                net,
+                "isBlockhashValid(processed)",
+                valid,
+                &format!("valid={valid}"),
+            );
+            slot
+        }
+        Err(failure) => {
+            report.line(
+                net,
+                "isBlockhashValid(processed)",
+                false,
+                &failure_kv(failure),
+            );
+            return;
+        }
+    };
+    match sol::latest_blockhash_at(client, url, "processed", Some(slot)) {
+        Ok((_, last_valid)) => report.line(
+            net,
+            "getLatestBlockhash(processed,min)",
+            last_valid > 0,
+            &format!("lvbh={last_valid}"),
+        ),
+        Err(failure) => report.line(
+            net,
+            "getLatestBlockhash(processed,min)",
+            false,
+            &failure_kv(failure),
+        ),
+    }
+    // The fee payer's post-state: its lamports after the fee (a 0-lamport self transfer).
+    let pre = sol::balance(client, url, &from).unwrap_or(0);
+    let legacy = zero_transfer(&from, &hash, 0, None);
+    let sim = sol::simulate_dapp(client, url, &legacy, &[from], false);
+    let post = sim
+        .accounts
+        .as_ref()
+        .and_then(|accounts| accounts.first().cloned().flatten());
+    report.line(
+        net,
+        "simulateTransaction{accounts}",
+        post.as_ref()
+            .is_some_and(|account| account.owner == SYSTEM_PROGRAM && account.lamports < pre),
+        &format!(
+            "{} fee_payer_delta={}",
+            sim_units(sim.summary),
+            post.map_or(0, |account| i128::from(account.lamports) - i128::from(pre))
+        ),
+    );
+    probe_dapp_alt(report, endpoint, client, transport, from, &hash);
+}
+
+/// v0 with a live lookup table: the app's preview resolves it, the pre-sign check re-reads it.
+fn probe_dapp_alt(
+    report: &mut Report,
+    endpoint: &SolEndpoint,
+    client: &RpcClient<'_>,
+    transport: &Client,
+    from: SolAddress,
+    hash: &[u8; 32],
+) {
+    let net = endpoint.cluster.network_id();
+    let url = &endpoint.url;
+    let Some((table, count)) = recent_table(client, url) else {
+        report.line(
+            net,
+            "dapp v0+ALT table",
+            false,
+            "no recent active table found",
+        );
+        return;
+    };
+    report.line(
+        net,
+        "dapp v0+ALT table",
+        true,
+        &format!("addresses={count}"),
+    );
+    let v0 = zero_transfer(&from, hash, 2, Some(&table));
+    let job = DappPreviewJob {
+        job: 1,
+        endpoint: endpoint.clone(),
+        wallet: from,
+        txs: vec![v0.clone()],
+    };
+    match dapp_preview(transport, &job, &SystemClock) {
+        Ok(preview) => {
+            let item = preview.items.first();
+            report.line(
+                net,
+                "app dapp preview v0+ALT",
+                item.is_some_and(|item| item.tables.is_ok() && item.sim != SimSummary::NoResult),
+                &format!(
+                    "tables_ok={} sim={} blockhash_valid={:?} rpc_fee={:?}",
+                    item.is_some_and(|item| item.tables.is_ok()),
+                    item.map_or_else(|| "none".to_owned(), |item| sim_units(item.sim)),
+                    item.and_then(|item| item.blockhash_valid),
+                    item.and_then(|item| item.rpc_fee)
+                ),
+            );
+        }
+        Err(code) => report.line(
+            net,
+            "app dapp preview v0+ALT",
+            false,
+            &format!("code={}", code.code()),
+        ),
+    }
+    match parse_wire_tx(&v0) {
+        Ok(wire) => match pre_sign_dapp(transport, endpoint, &wire.message) {
+            Ok((last_valid, check)) => report.line(
+                net,
+                "app dapp pre-sign check",
+                check.loaded.is_some(),
+                &format!("lvbh={last_valid}"),
+            ),
+            Err(error) => {
+                report.line(net, "app dapp pre-sign check", false, &format!("{error:?}"));
+            }
+        },
+        Err(error) => report.line(net, "app dapp pre-sign check", false, &format!("{error:?}")),
+    }
 }
 
 #[test]

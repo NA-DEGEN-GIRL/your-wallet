@@ -426,8 +426,11 @@ test("C6 Solana/Bitcoin modes go to bridge-init and only to requests of their ow
   h.request(rid(1), "eth_chainId");
   h.request(rid(2), "sol_connect");
   h.request(rid(3), "btc_getNetwork");
+  // Solana dApp transactions (2026-11-12) carry the Solana mode like every sol_* request.
+  h.request(rid(4), "sol_signTransaction", [{ publicKey: "x", transaction: "00" }]);
   h.ports[0].activate();
-  assert.deepEqual(h.ports[0].sent.map((message) => message.compatMode), ["metamask", "phantom", "xverse"]);
+  assert.deepEqual(h.ports[0].sent.map((message) => message.compatMode), ["metamask", "phantom", "xverse", "phantom"]);
+  assert.equal(h.ports[0].sent[3].method, "sol_signTransaction");
   for (const message of h.ports[0].sent) {
     assert.notEqual(shared.parseContentMessage(message, ACTIVATION), null);
   }
@@ -442,7 +445,7 @@ test("C6 Solana/Bitcoin modes go to bridge-init and only to requests of their ow
   }
 });
 
-test("C6 Bitcoin off: btc_* gets 4200 without connecting; Solana off still forwards sol_*", () => {
+test("C6 Bitcoin off: btc_* gets 4200 without connecting; Solana off still forwards sol_* (transactions too)", () => {
   const h = harness({ solCompatMode: "off", btcCompatMode: "off" });
   for (const [index, method] of ["btc_requestAccounts", "btc_getAccounts", "btc_getNetwork", "btc_signMessage", "btc_disconnect"].entries()) {
     assert.equal(h.request(rid(index + 1), method), false, method);
@@ -451,9 +454,11 @@ test("C6 Bitcoin off: btc_* gets 4200 without connecting; Solana off still forwa
   assert.equal(h.ports.length, 0);
   assert.equal(h.bridge.state, STATES.IDLE);
   assert.equal(h.request(rid(10), "sol_connect"), true);
+  assert.equal(h.request(rid(11), "sol_signTransaction", [{ publicKey: "x", transaction: "00" }]), true);
   h.ports[0].activate();
-  assert.deepEqual(h.ports[0].sent.map((message) => message.method), ["sol_connect"]);
+  assert.deepEqual(h.ports[0].sent.map((message) => message.method), ["sol_connect", "sol_signTransaction"]);
   assert.equal(h.ports[0].sent[0].compatMode, undefined);
+  assert.equal(h.ports[0].sent[1].compatMode, undefined);
   // Any Bitcoin mode forwards btc_*.
   for (const btcCompatMode of ["unisat", "xverse"]) {
     const on = harness({ btcCompatMode });
