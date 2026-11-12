@@ -4,8 +4,10 @@
 //! the same intent cannot be signed twice (`AlreadySigned`), a late approval is refused before
 //! any key use, and a `Landed` transition moves the record to meta `activity`. The v1.1 case
 //! signs a devnet USDC transfer (`T_SPL`, 526-byte body) and checks the activity `asset` = mint.
-//! The dApp case (spec/07 §20.8–§20.9) journals a site's send (version 3) before returning it,
-//! reuses the record of the same bytes, and refuses the 17th pending send of the account.
+//! The dApp cases (spec/07 §20.8–§20.9) journal a site's send (version 3) before returning it,
+//! track one whose write reported a failure but reached the disk, reuse the record of the same
+//! bytes, and refuse the 17th pending send of the account, the 33rd of the journal and a send
+//! into a journal of 64 pending records (`TooManyPending`, -32002).
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -17,7 +19,11 @@ use yw_app::workers::journal::{JournalState, SolDappSignJob, SolSignTimes};
 use yw_core::approval::{ApprovalId, ApprovalStore, Approved};
 use yw_core::bip32::path::AccountIndex;
 use yw_core::error::StorageError;
-use yw_core::journal::sol::{SolTransition, SolTxState};
+use yw_core::journal::JournalPlain;
+use yw_core::journal::sol::{
+    SOL_DAPP_MAX_PENDING_TOTAL, SOL_JOURNAL_MAX_RECORDS, SolRecord, SolTransition, SolTxState,
+    push_record,
+};
 use yw_core::password::VaultPassword;
 use yw_core::policy::BrowserOrigin;
 use yw_core::slip10::SolKeySource;
@@ -31,7 +37,9 @@ use yw_core::sol::display::{
 use yw_core::sol::intent::{SolTransferIntent, flags};
 use yw_core::sol::message::parse_transaction;
 use yw_core::sol::recipient::{AccountClass, check_recipient};
-use yw_core::sol::{SolAddress, SolAsset, SolCluster, SolSignError, SolTransferCore};
+use yw_core::sol::{
+    SolAddress, SolAsset, SolCluster, SolSignError, SolTransferCore, sign_transfer,
+};
 use yw_core::vault::{FileKind, Vault, VaultStorage};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -94,7 +102,7 @@ fn intent() -> TestResult<SolTransferIntent> {
 fn approve(intent: &SolTransferIntent) -> TestResult<Approved> {
     let facts = SolPreviewFacts {
         account_label: "Solana 1".to_owned(),
-        recipient: check_recipient(TO, &intent.core.from, &[])
+        recipient: check_recipient(&intent.core.to.to_base58(), &intent.core.from, &[])
             .map_err(|error| format!("{error:?}"))?,
         recipient_account: AccountClass::Missing,
         balance: 10_000_000_000,
@@ -293,20 +301,26 @@ impl VaultStorage for FlakyJournal {
     }
 }
 
+/// A throwaway vault on [`FlakyJournal`] storage and the switch of its next journal commit.
+fn flaky_vault(dir: &std::path::Path) -> TestResult<(Vault, Arc<Mutex<Option<bool>>>)> {
+    let next = Arc::new(Mutex::new(None));
+    let mut vault = Vault::load(Box::new(FlakyJournal {
+        inner: FileStorage::open(dir).map_err(|error| format!("{error:?}"))?,
+        next: Arc::clone(&next),
+    }))?;
+    let password = VaultPassword::new(b"m7-journal-test!").map_err(|error| format!("{error:?}"))?;
+    let slot = Box::new(LockedSlotBox::new().map_err(|error| format!("{error:?}"))?);
+    vault.import_mnemonic(&password, ABANDON, None, slot, 1_800_000_000)?;
+    Ok((vault, next))
+}
+
 /// spec/07 §13.1-7: a journal write that failed leaves nothing and returns no transaction; one
 /// that reached the disk but reported a failure is read back and tracked as written (it would be
 /// resumed after a restart, so it must never be reported as "not sent").
 #[test]
 fn pending_write_reported_failed_but_on_disk_is_tracked() -> TestResult {
     let dir = temp_dir("flaky")?;
-    let next = Arc::new(Mutex::new(None));
-    let mut vault = Vault::load(Box::new(FlakyJournal {
-        inner: FileStorage::open(&dir).map_err(|error| format!("{error:?}"))?,
-        next: Arc::clone(&next),
-    }))?;
-    let password = VaultPassword::new(b"m7-journal-test!").map_err(|error| format!("{error:?}"))?;
-    let slot = Box::new(LockedSlotBox::new().map_err(|error| format!("{error:?}"))?);
-    vault.import_mnemonic(&password, ABANDON, None, slot, 1_800_000_000)?;
+    let (mut vault, next) = flaky_vault(&dir)?;
     let mut state = JournalState::default();
     // Really failed: no transaction, nothing on disk.
     *next.lock().map_err(|_| "lock")? = Some(false);
@@ -423,27 +437,55 @@ fn spl_transfer_is_journaled_and_its_activity_names_the_mint() -> TestResult {
     Ok(())
 }
 
-/// A legacy dApp transaction account 0 signs and pays for: one unknown-program instruction
-/// with data `[tag]` (blockhash `[7; 32]`).
-fn dapp_tx(tag: u8) -> TestResult<Vec<u8>> {
+/// A legacy dApp transaction `public` signs and pays for: one unknown-program instruction with
+/// data `[tag]` (blockhash `[7; 32]`).
+fn dapp_tx_of(public: &[u8; 32], tag: u8) -> Vec<u8> {
     let mut out = vec![1_u8];
     out.extend_from_slice(&[0; 64]);
     out.extend_from_slice(&[1, 0, 1, 2]);
-    out.extend_from_slice(&addr(FROM)?.to_bytes());
+    out.extend_from_slice(public);
     out.extend_from_slice(&[5; 32]);
     out.extend_from_slice(&[7; 32]);
     out.extend_from_slice(&[1, 1, 1, 0, 1, tag]);
-    Ok(out)
+    out
+}
+
+/// [`dapp_tx_of`] account 0.
+fn dapp_tx(tag: u8) -> TestResult<Vec<u8>> {
+    Ok(dapp_tx_of(&addr(FROM)?.to_bytes(), tag))
+}
+
+/// Account `index` of the test mnemonic: its key source and public key.
+fn account(vault: &Vault, index: u32) -> TestResult<(SolKeySource, [u8; 32])> {
+    let source = SolKeySource::Standard(AccountIndex::new(index)?);
+    let public = *vault
+        .sol_public_keys(&[source])?
+        .first()
+        .ok_or("no public key")?;
+    Ok((source, public))
 }
 
 /// An approved `sol_signAndSendTransaction` of [`dapp_tx`]`(tag)` (approval id `[id; 16]`).
 fn approve_send(tag: u8, id: u8) -> TestResult<Approved> {
+    approve_send_as(
+        (
+            SolKeySource::Standard(AccountIndex::ZERO),
+            addr(FROM)?.to_bytes(),
+        ),
+        tag,
+        id,
+    )
+}
+
+/// [`approve_send`] for the account `signer` (its key source and public key).
+fn approve_send_as(signer: (SolKeySource, [u8; 32]), tag: u8, id: u8) -> TestResult<Approved> {
+    let (source, public) = signer;
     let request = SolTxRequest {
         id: ApprovalId([id; 16]),
         origin: BrowserOrigin::parse("https://app.example").ok_or("origin")?,
         cluster: SolCluster::Devnet,
-        source: SolKeySource::Standard(AccountIndex::ZERO),
-        public: addr(FROM)?.to_bytes(),
+        source,
+        public,
         label: "Solana 1".to_owned(),
         mode: SolTxMode::SignAndSend,
         options: SolSendOptions {
@@ -451,7 +493,7 @@ fn approve_send(tag: u8, id: u8) -> TestResult<Approved> {
             preflight_commitment: None,
             min_context_slot: Some(77),
         },
-        txs: vec![dapp_tx(tag)?],
+        txs: vec![dapp_tx_of(&public, tag)],
     };
     let facts = SolTxFacts {
         items: vec![SolTxItemFacts {
@@ -664,6 +706,143 @@ fn dapp_send_is_journaled_first_reused_and_capped() -> TestResult {
         "{}",
         entry.title
     );
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+/// The `SignedSolDapp` result of a `sign_sol_dapp`, if it is the first outcome.
+fn dapp_result(outcomes: &[KeyOutcome]) -> Option<&Result<SolDappSignedSummary, SolSignFailure>> {
+    match outcomes.first() {
+        Some(KeyOutcome::SignedSolDapp(SolDappSigned { result, .. })) => Some(result),
+        _ => None,
+    }
+}
+
+/// spec/07 §13.1-7, §20.9: as for a wallet send, a dApp send whose journal write failed returns
+/// no transaction and leaves nothing; one whose write reached the disk but reported a failure
+/// is tracked as written (it is broadcast after a restart: a -32603 here would let the site
+/// send it twice).
+#[test]
+fn dapp_pending_write_reported_failed_but_on_disk_is_tracked() -> TestResult {
+    let dir = temp_dir("dapp-flaky")?;
+    let (mut vault, next) = flaky_vault(&dir)?;
+    let mut state = JournalState::default();
+    // Really failed: no transaction, nothing on disk.
+    *next.lock().map_err(|_| "lock")? = Some(false);
+    let failed = sign_dapp(&mut state, &mut vault, 1, 1, yw_win::time::monotonic_ms())?;
+    assert!(matches!(
+        dapp_result(&failed),
+        Some(Err(SolSignFailure::JournalWrite(_)))
+    ));
+    assert!(JournalState::default().load(&vault)?.sol_records.is_empty());
+    // Written, but reported failed: tracked as written.
+    *next.lock().map_err(|_| "lock")? = Some(true);
+    let outcomes = sign_dapp(&mut state, &mut vault, 2, 2, yw_win::time::monotonic_ms())?;
+    let Some(Ok(summary)) = dapp_result(&outcomes) else {
+        return Err(format!("not tracked: {:?}", outcomes.first()).into());
+    };
+    assert!(!summary.reused);
+    let Some(KeyOutcome::Journal(Ok(view))) = outcomes.get(1) else {
+        return Err("no journal view".into());
+    };
+    assert_eq!(view.sol_records.len(), 1);
+    let on_disk = JournalState::default().load(&vault)?;
+    let record = on_disk.sol_records.first().ok_or("no record on disk")?;
+    assert_eq!(record.state, SolTxState::Pending);
+    assert!(record.dapp.is_some());
+    assert_eq!(record.signature(), summary.tx_id);
+    assert_eq!(view.sol_records.first(), Some(record));
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+/// spec/07 §20.9: 32 pending dApp sends in the journal (16 each of accounts 1 and 2) refuse a
+/// send of account 0, which has none, with `TooManyPending` before any key use or write.
+#[test]
+fn dapp_send_is_capped_journal_wide() -> TestResult {
+    let dir = temp_dir("dapp-total")?;
+    let mut vault = vault(&dir)?;
+    let mut state = JournalState::default();
+    let mut id = 0_u8;
+    for index in [1, 2] {
+        let signer = account(&vault, index)?;
+        for tag in 1..=16 {
+            id += 1;
+            let outcomes = state.sign_sol_dapp(
+                &mut vault,
+                Box::new(approve_send_as(signer, tag, id)?),
+                dapp_job(u64::from(id), yw_win::time::monotonic_ms()),
+                false,
+            );
+            assert!(
+                matches!(
+                    dapp_result(&outcomes),
+                    Some(Ok(SolDappSignedSummary { reused: false, .. }))
+                ),
+                "account {index} send {tag}"
+            );
+        }
+    }
+    assert_eq!(usize::from(id), SOL_DAPP_MAX_PENDING_TOTAL);
+    let before = std::fs::read(dir.join("journal.ywj"))?;
+    let refused = sign_dapp(&mut state, &mut vault, 1, 40, yw_win::time::monotonic_ms())?;
+    assert!(matches!(
+        dapp_result(&refused),
+        Some(Err(SolSignFailure::TooManyPending))
+    ));
+    assert_eq!(std::fs::read(dir.join("journal.ywj"))?, before);
+    let view = JournalState::default().load(&vault)?;
+    assert!(
+        view.sol_records
+            .iter()
+            .all(|record| record.dapp.is_some() && record.state == SolTxState::Pending)
+    );
+    assert_eq!(view.sol_records.len(), SOL_DAPP_MAX_PENDING_TOTAL);
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+/// spec/07 §20.9, §14.1: a journal of 64 pending records (a wallet transfer of each of accounts
+/// 0–63, nothing terminal to move out) refuses a dApp send with `TooManyPending` (-32002), not
+/// `JournalFull` or an internal error, before any key use or write.
+#[test]
+fn dapp_send_into_a_full_journal_is_too_many_pending() -> TestResult {
+    let dir = temp_dir("dapp-full")?;
+    let mut vault = vault(&dir)?;
+    let mut plain = JournalPlain::default();
+    for index in 0..u32::try_from(SOL_JOURNAL_MAX_RECORDS)? {
+        let (source, public) = account(&vault, index)?;
+        let mut transfer = intent()?;
+        transfer.id = [u8::try_from(index)?; 16];
+        transfer.source = source;
+        transfer.core.from = SolAddress::from_bytes(public);
+        if transfer.core.to == transfer.core.from {
+            // Account 1 is `TO` itself: it pays account 0 instead.
+            transfer.core.to = addr(FROM)?;
+        }
+        let now_ms = yw_win::time::monotonic_ms();
+        let signed = sign_transfer(&vault, approve(&transfer)?, now_ms, [7; 32], now_ms)
+            .map_err(|error| format!("{error:?}"))?;
+        push_record(
+            &mut plain,
+            &SolRecord::new_pending(&transfer, &signed, NOW, 1_150),
+        )?;
+    }
+    vault.save_sidecar(FileKind::Journal, &plain.encode()?)?;
+    let mut state = JournalState::default();
+    let view = state.load(&vault)?;
+    assert_eq!(view.sol_records.len(), SOL_JOURNAL_MAX_RECORDS);
+    assert!(!view.sol_room);
+    let before = std::fs::read(dir.join("journal.ywj"))?;
+    let refused = sign_dapp(&mut state, &mut vault, 1, 1, yw_win::time::monotonic_ms())?;
+    assert!(
+        matches!(
+            dapp_result(&refused),
+            Some(Err(SolSignFailure::TooManyPending))
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(std::fs::read(dir.join("journal.ywj"))?, before);
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }

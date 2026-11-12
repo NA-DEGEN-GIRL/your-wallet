@@ -2504,16 +2504,23 @@ mod tests {
         ));
         assert!(answers(&frames).is_empty());
         // The same bytes approved twice (the second found the record): both get the same id.
-        for (n, reused) in [(2, false), (3, true)] {
+        // The reused one's `minContextSlot` is dropped: that record was already sent.
+        for (n, reused, min_context_slot) in [(2, false, None), (3, true, Some(88))] {
             let site = queued_send(&app, &events, conn, n);
             let ticket = send_waiter(&mut app, &site);
             app.on_sol_dapp_signed(SolDappSigned {
                 ticket,
-                result: Ok(summary(tx_id, reused, None)),
+                result: Ok(summary(tx_id, reused, min_context_slot)),
             });
         }
         assert_eq!(pending(&app), 2);
         assert!(answers(&frames).is_empty());
+        assert_eq!(app.sol_dapp_min_context_slot(&tx_id), None);
+        app.sol_tick_tracking(u64::MAX);
+        let Some(RpcJob::SolTrack(job)) = jobs.try_iter().last() else {
+            unreachable!("the reused waiters' round");
+        };
+        assert_eq!(job.send.min_context_slot, None);
         app.sol_rpc_event(first_round(
             tx_id,
             LoopState::default(),

@@ -556,7 +556,13 @@ impl App {
                             reply,
                             public,
                             origin,
-                            min_context_slot: summary.min_context_slot,
+                            // A reused record's first send already happened: `minContextSlot`
+                            // is for that send only (spec/07 §20.8, Q11), never a re-send.
+                            min_context_slot: if summary.reused {
+                                None
+                            } else {
+                                summary.min_context_slot
+                            },
                         });
                 }
                 self.sol_tick_tracking(yw_win::time::monotonic_ms());
