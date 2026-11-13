@@ -11,9 +11,13 @@
 //!   `getrawtransaction <txid> 1` of txids not looked at before ([`ZEC_MEMPOOL_SCAN_MAX`] per
 //!   read), each checked for an output to our P2PKH script (verbose `vout`, else the `hex`
 //!   through `yw_core::zec::tx::transparent_parts`, v4/v5 only). A transaction spending one of
-//!   our known outputs, or whose inputs cannot be read, is never a deposit (fail closed).
-//! - `bb-rest`: no new request: the refresh snapshot's unconfirmed outputs (`height: None`) whose
-//!   txid is not one of our journal sends.
+//!   our known outputs or with an input whose `scriptSig` pushes our public key (our own send,
+//!   from this wallet or another one holding the key), or whose inputs cannot be read, is never
+//!   a deposit (fail closed). A rate limit or transport failure ends the scan for this read.
+//! - `bb-rest`: the refresh snapshot's unconfirmed outputs (`height: None`) whose txid is not
+//!   one of our journal sends, each new txid classified by the same `getrawtransaction <txid> 1`
+//!   (sharing the scan's count and time bounds; 2026-11-13 review — before, every such output
+//!   was a deposit, our change from a send made elsewhere with the same key included).
 //! - A pending row the source no longer has gets one `getrawtransaction <txid> 1`
 //!   ([`ZEC_PENDING_CHECK_MAX`] per read): mined → a confirmed row; `-5` → gone when the endpoint
 //!   can look up mined transactions (working deltas), else removed with neutral wording.
@@ -234,7 +238,10 @@ fn verbose_outputs(object: &Object) -> Option<Vec<(u64, Vec<u8>)>> {
         .collect()
 }
 
-fn verbose_inputs(object: &Object) -> Option<Vec<(String, u32)>> {
+/// A transparent input: the spent outpoint (display txid, index) and its `scriptSig`.
+type Spend = ((String, u32), Vec<u8>);
+
+fn verbose_inputs(object: &Object) -> Option<Vec<Spend>> {
     let mut out = Vec::new();
     for input in object.get("vin")?.as_array()? {
         let input = input.as_object()?;
@@ -247,14 +254,75 @@ fn verbose_inputs(object: &Object) -> Option<Vec<(String, u32)>> {
             .as_number()
             .and_then(Number::as_u64)
             .and_then(|index| u32::try_from(index).ok())?;
-        out.push((txid.to_ascii_lowercase(), index));
+        // Without its `scriptSig` an input cannot be told apart from our own spend: the `hex`
+        // is read instead (2026-11-13 review).
+        let script_sig = input
+            .get("scriptSig")?
+            .as_object()?
+            .get("hex")?
+            .as_str()
+            .filter(|hex| hex.len() <= MAX_SCRIPT_HEX)?;
+        out.push((
+            (txid.to_ascii_lowercase(), index),
+            yw_core::hex::decode(script_sig).ok()?,
+        ));
     }
     Some(out)
 }
 
+/// The 20-byte key hash of a P2PKH `scriptPubKey` (`76 a9 14 <hash> 88 ac`).
+fn p2pkh_hash(script: &[u8]) -> Option<&[u8]> {
+    script
+        .strip_prefix(&[0x76, 0xa9, 0x14])
+        .and_then(|rest| rest.strip_suffix(&[0x88, 0xac]))
+        .filter(|hash| hash.len() == 20)
+}
+
+/// Whether `script_sig` pushes a public key (33 or 65 bytes) whose HASH160 is `key_hash`: a
+/// P2PKH spend by our key, made by this wallet or by any other one holding the same key.
+#[must_use]
+pub fn pushes_key(script_sig: &[u8], key_hash: &[u8]) -> bool {
+    let mut rest = script_sig;
+    while let Some((&opcode, tail)) = rest.split_first() {
+        let (length, tail) = match opcode {
+            0x01..=0x4b => (usize::from(opcode), tail),
+            0x4c => match tail.split_first() {
+                Some((&length, tail)) => (usize::from(length), tail),
+                None => return false,
+            },
+            0x4d => match tail.split_first_chunk::<2>() {
+                Some((length, tail)) => (usize::from(u16::from_le_bytes(*length)), tail),
+                None => return false,
+            },
+            0x4e => match tail.split_first_chunk::<4>() {
+                Some((length, tail)) => match usize::try_from(u32::from_le_bytes(*length)) {
+                    Ok(length) => (length, tail),
+                    Err(_) => return false,
+                },
+                None => return false,
+            },
+            // Opcodes without data.
+            _ => (0, tail),
+        };
+        let Some((data, tail)) = tail.split_at_checked(length) else {
+            return false;
+        };
+        if matches!(data.len(), 33 | 65)
+            && yw_core::btc::address::hash160(data).as_slice() == key_hash
+        {
+            return true;
+        }
+        rest = tail;
+    }
+    false
+}
+
 /// Classifies a `getrawtransaction <txid> 1` answer for `txid` against our `script` and our
 /// known outputs `own` (`(display txid, index)`). Verbose fields first, the `hex` (v4/v5) for
-/// whatever they lack; anything unreadable is never a deposit.
+/// whatever they lack; anything unreadable is never a deposit. An input that spends one of `own`
+/// or whose `scriptSig` pushes our public key is our own spend (2026-11-13 review: before, only
+/// `own` was compared — the snapshot's UTXOs, which miss dust, unconfirmed and over-limit
+/// outputs and are empty after a failed lookup).
 #[must_use]
 pub fn look<S: core::hash::BuildHasher>(
     value: &Value,
@@ -303,7 +371,10 @@ pub fn look<S: core::hash::BuildHasher>(
                 parts
                     .inputs
                     .iter()
-                    .map(|point| (txid_display(&point.txid), point.index))
+                    .zip(parts.script_sigs)
+                    .map(|(point, script_sig)| {
+                        ((txid_display(&point.txid), point.index), script_sig)
+                    })
                     .collect(),
             )
         });
@@ -311,7 +382,10 @@ pub fn look<S: core::hash::BuildHasher>(
     let (Some(outputs), Some(inputs)) = (outputs, inputs) else {
         return Look::Unreadable;
     };
-    if inputs.iter().any(|input| own.contains(input)) {
+    let key_hash = p2pkh_hash(script);
+    if inputs.iter().any(|(point, script_sig)| {
+        own.contains(point) || key_hash.is_some_and(|hash| pushes_key(script_sig, hash))
+    }) {
         return Look::OwnSpend;
     }
     let ours: Vec<u64> = outputs
@@ -349,6 +423,9 @@ pub struct ZecReceivedWork {
     pub own_outpoints: Vec<(String, u32)>,
     /// The list's pending rows.
     pub pending: Vec<Incoming>,
+    /// Keys of the list's confirmed rows (a deposit back in the mempool after a reorg is not
+    /// fetched again on every read).
+    pub confirmed: Vec<String>,
     /// `bb-rest`: the snapshot's unconfirmed outputs summed per txid, journal txids removed.
     pub bb_pending: Vec<(String, u64)>,
     /// The user's `새로고침` (retries `getaddressdeltas` after a `-32601`).
@@ -381,7 +458,8 @@ pub struct ScanStats {
     pub failed: usize,
     /// Status checks of vanished rows.
     pub checked: usize,
-    /// Where the scan stopped early: `none`, `count` or `time`.
+    /// Where the scan stopped early: `none`, `count`, `time` or `failed` (a rate limit or
+    /// transport failure).
     pub cap: &'static str,
 }
 
@@ -434,11 +512,30 @@ struct Read<'a> {
     found: Found,
     stats: ScanStats,
     partial: bool,
+    /// A rate limit or transport failure: no more calls this read.
+    halted: bool,
+}
+
+/// A failure after which the read sends nothing more (429, `-32005`, any HTTP status other
+/// than 2xx, transport and deadline failures); a JSON-RPC error or a bad answer about one
+/// transaction is not.
+const fn halts(failure: RpcFailure) -> bool {
+    matches!(
+        failure,
+        RpcFailure::Http(_)
+            | RpcFailure::Late
+            | RpcFailure::Status(_)
+            | RpcFailure::Rpc(429 | -32_005)
+    )
 }
 
 impl Read<'_> {
-    /// The read's time budget is spent (checked before every call after the first).
+    /// The read's time budget is spent (checked before every call after the first), or a
+    /// failure halted it.
     fn spent(&mut self) -> bool {
+        if self.halted {
+            return true;
+        }
         let over = self.clock.now_ms().saturating_sub(self.started) >= ZEC_READ_BUDGET_MS;
         if over {
             self.partial = true;
@@ -495,10 +592,17 @@ impl Read<'_> {
                 }
                 // Left the mempool meanwhile.
                 Err(error) if error.failure == RpcFailure::Rpc(-5) => seen.push((*txid).clone()),
-                // Any other failure: not `seen`, asked again next read.
-                Err(_) => {
+                // Any other failure: not `seen`, asked again next read. A rate limit or a
+                // transport failure ends the read (before the 2026-11-13 review the scan went
+                // on to its 30 calls).
+                Err(error) => {
                     self.stats.failed = self.stats.failed.saturating_add(1);
                     self.partial = true;
+                    if halts(error.failure) {
+                        self.halted = true;
+                        self.stats.cap = "failed";
+                        break;
+                    }
                 }
             }
         }
@@ -536,6 +640,7 @@ pub fn fetch(
             ..ScanStats::default()
         },
         partial: false,
+        halted: false,
     };
     let mut note = None;
     let mut calls = 0_usize;
@@ -580,29 +685,35 @@ pub fn fetch(
         .map(|entry| entry.key.as_str())
         .collect();
     let own_txids: HashSet<&str> = work.own_txids.iter().map(String::as_str).collect();
+    let confirmed: HashSet<&str> = work.confirmed.iter().map(String::as_str).collect();
     let own: HashSet<(String, u32)> = work.own_outpoints.iter().cloned().collect();
+    let old: HashSet<&str> = old_seen.iter().map(String::as_str).collect();
+    // Txids worth a `getrawtransaction`: not looked at before, not a row, not our journal send.
+    let is_fresh = |txid: &str| {
+        !old.contains(txid)
+            && !pending_keys.contains(txid)
+            && !confirmed.contains(txid)
+            && !own_txids.contains(txid)
+    };
     // The unconfirmed set as the source sees it now (`None`: unknown this read).
     let mut view: Option<HashSet<String>> = None;
     let mut mempool: Option<Vec<String>> = None;
     let mut new_seen = Vec::new();
     match work.indexer {
         ZecIndexer::BbRest => {
-            let mut set = HashSet::new();
-            for (txid, zats) in &work.bb_pending {
-                if own_txids.contains(txid.as_str()) {
-                    continue;
-                }
-                set.insert(txid.clone());
-                if pending_keys.contains(txid.as_str()) {
-                    continue;
-                }
-                if *zats < DUST_ZEC_ZATS {
-                    read.found.dust.push(txid.clone());
-                } else {
-                    read.found.entries.push(row(txid, *zats, None));
-                }
-            }
-            view = Some(set);
+            // The snapshot's unconfirmed txids, each classified like a mempool transaction
+            // (2026-11-13 review: before, every one of them was a deposit without a request).
+            let list: Vec<String> = work
+                .bb_pending
+                .iter()
+                .map(|(txid, _)| txid.clone())
+                .filter(|txid| !own_txids.contains(txid.as_str()))
+                .collect();
+            read.stats.txids = list.len();
+            let fresh: Vec<&String> = list.iter().filter(|txid| is_fresh(txid)).collect();
+            new_seen = read.scan(&fresh, &own);
+            view = Some(list.iter().cloned().collect());
+            mempool = Some(list);
         }
         ZecIndexer::Node if calls > 0 && read.spent() => {}
         ZecIndexer::Node => {
@@ -625,15 +736,7 @@ pub fn fetch(
             }
             if let Some(list) = &mempool {
                 read.stats.txids = list.len();
-                let old: HashSet<&str> = old_seen.iter().map(String::as_str).collect();
-                let fresh: Vec<&String> = list
-                    .iter()
-                    .filter(|txid| {
-                        !old.contains(txid.as_str())
-                            && !pending_keys.contains(txid.as_str())
-                            && !own_txids.contains(txid.as_str())
-                    })
-                    .collect();
+                let fresh: Vec<&String> = list.iter().filter(|txid| is_fresh(txid)).collect();
                 new_seen = read.scan(&fresh, &own);
                 view = Some(list.iter().cloned().collect());
             }
@@ -678,8 +781,8 @@ pub fn fetch(
             }
         }
     }
-    // 4. Txids looked at for good: those still in the mempool plus the new ones (unchanged
-    // when there was no mempool list this read).
+    // 4. Txids looked at for good: those still in the mempool (the snapshot's unconfirmed set
+    // on `bb-rest`) plus the new ones (unchanged when there was no list this read).
     let mut seen: Vec<String> = match &mempool {
         Some(list) => {
             let current: HashSet<&str> = list.iter().map(String::as_str).collect();
@@ -697,7 +800,7 @@ pub fn fetch(
     if read.partial {
         note = note.or(Some(T_MEMPOOL_PARTIAL));
     }
-    if work.indexer == ZecIndexer::Node {
+    {
         let network_id = NetworkId::Zcash(work.network);
         crate::logging::info("rpc", "received.mempool", &read.stats.fields(network_id));
         if read.stats.cap != "none" {
@@ -938,7 +1041,9 @@ mod tests {
         fn verbose(txid: &str, outputs: &[(u64, &str)], inputs: &[(&str, u32)]) -> String {
             let vin: Vec<String> = inputs
                 .iter()
-                .map(|(txid, vout)| format!(r#"{{"txid":"{txid}","vout":{vout}}}"#))
+                .map(|(txid, vout)| {
+                    format!(r#"{{"txid":"{txid}","vout":{vout},"scriptSig":{{"hex":"51"}}}}"#)
+                })
                 .collect();
             let vout: Vec<String> = outputs
                 .iter()
@@ -977,6 +1082,7 @@ mod tests {
                 own_txids: Vec::new(),
                 own_outpoints: Vec::new(),
                 pending: Vec::new(),
+                confirmed: Vec::new(),
                 bb_pending: Vec::new(),
                 user: false,
             }
@@ -1334,23 +1440,206 @@ mod tests {
             assert_eq!(read.limited, None);
         }
 
-        /// `bb-rest`: the snapshot's unconfirmed outputs (journal sends already left out) become
-        /// pending rows without any new request; a row that left the snapshot gets one status
-        /// check (neutral words on `-5`: this source cannot look up mined transactions).
+        /// `bb-rest`: the snapshot's unconfirmed outputs (journal sends already left out) are
+        /// classified like mempool transactions, one `getrawtransaction` per new txid (2026-11-13
+        /// review: they were all deposits before — our change from a send made elsewhere with
+        /// the same key included); a row that left the snapshot gets one status check (neutral
+        /// words on `-5`: this source cannot look up mined transactions).
         #[test]
         fn blockbook_pending_from_the_snapshot() {
             let clock = clock();
-            let fake = Fake::new(&clock, 10, |_, _| Answer::Code(-5));
+            let key = own_key_script();
+            let script = yw_core::hex::encode(&key);
+            let fake = Fake::new(&clock, 10, move |method, params| {
+                let txid = txid_param(params);
+                match method {
+                    "getrawtransaction" if txid == id(1) => {
+                        Answer::Result(verbose(&txid, &[(50_000, &script)], &[(&id(9), 0)]))
+                    }
+                    "getrawtransaction" if txid == id(2) => {
+                        Answer::Result(verbose(&txid, &[(5_000, &script)], &[(&id(9), 1)]))
+                    }
+                    // Our own send from another wallet: its change comes back to us.
+                    "getrawtransaction" if txid == id(5) => Answer::Result(with_own_script_sig(
+                        &verbose(&txid, &[(80_000, &script)], &[(&id(9), 2)]),
+                    )),
+                    _ => Answer::Code(-5),
+                }
+            });
             let mut job = work(ZecIndexer::BbRest);
-            job.bb_pending = vec![(id(1), 50_000), (id(2), 5_000), (id(3), 70_000)];
+            job.script = key;
+            job.bb_pending = vec![
+                (id(1), 50_000),
+                (id(2), 5_000),
+                (id(3), 70_000),
+                (id(5), 80_000),
+            ];
             job.pending = vec![pending(&id(3)), pending(&id(4))];
             let read = fetch(&fake, &clock, &job, &Cursor::Start).unwrap();
-            assert_eq!(fake.methods(), ["getrawtransaction"]);
+            assert_eq!(
+                fake.count("getrawtransaction"),
+                4,
+                "1, 2, 5 and the vanished 4"
+            );
             assert_eq!(read.found.entries.len(), 1);
             assert_eq!(read.found.entries[0].key, id(1));
             assert_eq!(read.found.dust, [id(2)]);
             assert_eq!(read.dropped, [id(4)]);
             assert_eq!(read.limited, Some(T_NO_DELTAS_PENDING));
+            assert_eq!(seen_of(&read), [id(2), id(5)]);
+            // The next read asks about none of them again (rows, `seen`).
+            let mut again = job;
+            again.pending = vec![pending(&id(1)), pending(&id(3))];
+            let quiet = Fake::new(&clock, 10, |_, _| Answer::Fail);
+            let next = fetch(&quiet, &clock, &again, &read.cursor).unwrap();
+            assert_eq!(quiet.count("getrawtransaction"), 0);
+            assert!(next.found.entries.is_empty() && next.dropped.is_empty());
+        }
+
+        /// The P2PKH script of the secp256k1 generator's compressed public key (a public test
+        /// value, no one's address).
+        fn own_key_script() -> Vec<u8> {
+            let hash = yw_core::btc::address::hash160(&own_pubkey());
+            let mut script = vec![0x76, 0xa9, 0x14];
+            script.extend_from_slice(&hash);
+            script.extend_from_slice(&[0x88, 0xac]);
+            script
+        }
+
+        fn own_pubkey() -> Vec<u8> {
+            yw_core::hex::decode(
+                "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+            )
+            .unwrap()
+        }
+
+        /// A P2PKH `scriptSig` by that key: a 71-byte stand-in signature, then the key.
+        fn own_script_sig() -> String {
+            format!(
+                "47{}21{}",
+                "30".repeat(71),
+                yw_core::hex::encode(&own_pubkey())
+            )
+        }
+
+        /// A [`verbose`] answer whose inputs are signed by our key.
+        fn with_own_script_sig(text: &str) -> String {
+            text.replace(
+                "\"hex\":\"51\"",
+                &format!("\"hex\":\"{}\"", own_script_sig()),
+            )
+        }
+
+        /// 2026-11-13 review: a transaction whose input `scriptSig` pushes our public key is our
+        /// own spend even when the spent output is not in the snapshot (dust, unconfirmed, over
+        /// the UTXO limit, a failed lookup) — through the verbose `vin` and through the `hex`.
+        /// An input without `scriptSig` falls back to the `hex`; without it, unreadable.
+        #[test]
+        fn own_key_spends_are_never_deposits() {
+            use super::super::{Look, look, pushes_key};
+            use std::collections::HashSet;
+            let key = own_key_script();
+            let script = yw_core::hex::encode(&key);
+            let own: HashSet<(String, u32)> = HashSet::new();
+            let parse = |text: &str| yw_json::parse(text.as_bytes(), &Limits::RESPONSE).unwrap();
+            let theirs = verbose(&id(1), &[(60_000, &script)], &[(&id(9), 0)]);
+            assert_eq!(
+                look(&parse(&theirs), &id(1), &key, &own),
+                Look::Paid {
+                    zats: 60_000,
+                    mined: None
+                }
+            );
+            let ours = with_own_script_sig(&theirs);
+            assert_eq!(look(&parse(&ours), &id(1), &key, &own), Look::OwnSpend);
+            // No `scriptSig` and no `hex`: unreadable, never a deposit.
+            let bare = theirs.replace(",\"scriptSig\":{\"hex\":\"51\"}", "");
+            assert_ne!(bare, theirs);
+            assert_eq!(look(&parse(&bare), &id(1), &key, &own), Look::Unreadable);
+            // The `hex` path.
+            let tx = ZecTx {
+                branch_id: 0x4dec_4df0,
+                lock_time: 0,
+                expiry_height: 0,
+                inputs: vec![ZecTxIn {
+                    prevout: ZecOutPoint {
+                        txid: [9; 32],
+                        index: 3,
+                    },
+                    script_sig: yw_core::hex::decode(&own_script_sig()).unwrap(),
+                    sequence: u32::MAX,
+                }],
+                outputs: vec![ZecTxOut {
+                    value: 60_000,
+                    script_pubkey: key.clone(),
+                }],
+            };
+            let hex = format!(
+                "{{\"txid\":\"{}\",\"hex\":\"{}\"}}",
+                id(1),
+                yw_core::hex::encode(&serialize_tx(&tx))
+            );
+            assert_eq!(look(&parse(&hex), &id(1), &key, &own), Look::OwnSpend);
+            // The push reader: PUSHDATA1, opcodes without data, truncated pushes.
+            let hash = &key[3..23];
+            let pubkey = yw_core::hex::encode(&own_pubkey());
+            for (script_sig, expected) in [
+                (format!("00514c21{pubkey}"), true),
+                (format!("21{pubkey}"), true),
+                (format!("20{}", &pubkey[2..]), false),
+                (format!("21{}", &pubkey[..64]), false),
+                ("4c".to_owned(), false),
+                (String::new(), false),
+            ] {
+                let bytes = yw_core::hex::decode(&script_sig).unwrap();
+                assert_eq!(pushes_key(&bytes, hash), expected, "{script_sig}");
+            }
+        }
+
+        /// 2026-11-13 review: a rate limit or transport failure ends the scan (the rest is
+        /// asked next read, nothing `seen`); a deposit that is already a confirmed row (back
+        /// in the mempool after a reorg) is not fetched again.
+        #[test]
+        fn scan_stops_on_rate_limit_and_skips_confirmed_rows() {
+            let clock = clock();
+            let ids: Vec<String> = (1..=10).map(id).collect();
+            let answers = ids.clone();
+            let limited = Fake::new(&clock, 10, move |method, _| match method {
+                "getrawmempool" => Answer::Result(mempool_of(&answers)),
+                _ => Answer::Code(429),
+            });
+            let cursor = Cursor::Zec {
+                next: None,
+                deltas: false,
+                seen: Vec::new(),
+            };
+            let read = fetch(&limited, &clock, &work(ZecIndexer::Node), &cursor).unwrap();
+            assert_eq!(limited.count("getrawtransaction"), 1);
+            assert_eq!(read.note, Some(T_MEMPOOL_PARTIAL));
+            assert!(seen_of(&read).is_empty());
+            let failing = Fake::new(&clock, 10, {
+                let answers = ids.clone();
+                move |method, _| match method {
+                    "getrawmempool" => Answer::Result(mempool_of(&answers)),
+                    _ => Answer::Fail,
+                }
+            });
+            fetch(&failing, &clock, &work(ZecIndexer::Node), &cursor).unwrap();
+            assert_eq!(failing.count("getrawtransaction"), 1, "HTTP 502");
+            let answers = ids.clone();
+            let fake = Fake::new(&clock, 10, move |method, params| match method {
+                "getrawmempool" => Answer::Result(mempool_of(&answers[..1])),
+                _ => Answer::Result(verbose(
+                    &txid_param(params),
+                    &[(60_000, &script_hex("11"))],
+                    &[(&id(99), 0)],
+                )),
+            });
+            let mut job = work(ZecIndexer::Node);
+            job.confirmed = vec![ids[0].clone()];
+            let read = fetch(&fake, &clock, &job, &cursor).unwrap();
+            assert_eq!(fake.count("getrawtransaction"), 0);
+            assert!(read.found.entries.is_empty());
         }
 
         /// The scan's log fields are counts and fixed words only (no address, txid or amount).

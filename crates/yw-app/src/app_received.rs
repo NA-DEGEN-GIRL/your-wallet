@@ -15,8 +15,8 @@ use crate::app::{App, AppMode, Screen};
 use crate::meta::Tab;
 use crate::network::NetworkId;
 use crate::received::{
-    Cursor, Fetched, Incoming, JobKind, ListKey, MAX_DUST_KEYS, MAX_ENTRIES, REFRESH_MS,
-    ReceivedEvent, ReceivedJob, RecvChain, TokenRef,
+    Cursor, Fetched, Incoming, JobKind, ListKey, MAX_DUST_KEYS, MAX_ENTRIES, PENDING_MISS_MAX,
+    REFRESH_MS, ReceivedEvent, ReceivedJob, RecvChain, TokenRef,
 };
 use crate::workers::rpc::RpcJob;
 
@@ -53,6 +53,8 @@ pub struct RecvList {
     gone_keys: HashMap<String, bool>,
     /// Bitcoin: the receive indices the last read answered completely.
     pub covered: Vec<u32>,
+    /// Bitcoin: reads in a row that missed each pending row's status ([`Fetched::missed`]).
+    misses: HashMap<String, u8>,
 }
 
 impl RecvList {
@@ -62,12 +64,20 @@ impl RecvList {
     /// read names it in [`Fetched::gone`] or [`Fetched::dropped`] (counted once per key; a key
     /// that comes back later is taken off the count). Before 2026-11-13 a Bitcoin read dropped
     /// every pending row it did not list (`full_view`), even after an address had failed.
+    ///
+    /// 2026-11-13 review: a pending row named in [`Fetched::missed`] on [`PENDING_MISS_MAX`]
+    /// reads in a row (a listing reset the count) goes as `dropped`; an `unsupported` answer
+    /// takes the pending rows and the coverage away with the section (they fed the balance
+    /// card's "미확정 입금" line and hid the refresh banner before).
     pub fn apply(&mut self, fetched: Fetched) {
         self.loaded = true;
         self.error = None;
         self.note = fetched.note;
         if let Some(text) = fetched.unsupported {
             self.unsupported = Some(text);
+            self.entries.retain(|entry| !entry.pending);
+            self.covered.clear();
+            self.misses.clear();
             return;
         }
         self.unsupported = None;
@@ -79,12 +89,28 @@ impl RecvList {
                 self.dust = self.dust.saturating_add(1);
             }
         }
+        let mut dropped = fetched.dropped;
+        for key in fetched.missed {
+            if !self
+                .entries
+                .iter()
+                .any(|entry| entry.pending && entry.key == key)
+            {
+                continue;
+            }
+            let count = self.misses.entry(key.clone()).or_insert(0);
+            *count = count.saturating_add(1);
+            if *count >= PENDING_MISS_MAX {
+                dropped.push(key);
+            }
+        }
         let removals = fetched
             .gone
             .into_iter()
             .map(|key| (key, true))
-            .chain(fetched.dropped.into_iter().map(|key| (key, false)));
+            .chain(dropped.into_iter().map(|key| (key, false)));
         for (key, definitive) in removals {
+            self.misses.remove(&key);
             let before = self.entries.len();
             self.entries
                 .retain(|entry| !(entry.pending && entry.key == key));
@@ -101,6 +127,8 @@ impl RecvList {
             }
         }
         for mut entry in fetched.found.entries {
+            // Listed again: its misses start over.
+            self.misses.remove(&entry.key);
             // Back after all (another backend's mempool, or confirmed): off the count.
             match self.gone_keys.remove(&entry.key) {
                 Some(true) => self.gone = self.gone.saturating_sub(1),
@@ -139,6 +167,12 @@ impl RecvList {
                 .map(|entry| entry.amount_units)
                 .fold(0, u64::saturating_add),
         )
+    }
+
+    /// Whether the list has `key` as a row or counted it as gone or dropped.
+    #[must_use]
+    pub fn knows(&self, key: &str) -> bool {
+        self.gone_keys.contains_key(key) || self.entries.iter().any(|entry| entry.key == key)
     }
 
     /// The list's pending rows (what a read must resolve).
@@ -331,6 +365,10 @@ impl App {
             }
             RecvChain::Btc => {
                 let pending = self.received_pending(chain);
+                let rejected_before = self
+                    .received_key(chain)
+                    .and_then(|key| self.received.lists.get(&key))
+                    .is_some_and(|list| list.cursor == Cursor::BtcRejected);
                 let ctx = self.btc_ctx();
                 ctx.gate().ok()?;
                 let meta = ctx.btc_meta()?;
@@ -367,6 +405,7 @@ impl App {
                         change_count: meta.change_next(),
                         fetch,
                         pending,
+                        rejected_before,
                         chain: ctx.chain_input(),
                         trigger: if user {
                             crate::btc::Trigger::User
@@ -428,6 +467,17 @@ impl App {
                         },
                         own_txids,
                         pending: self.received_pending(chain),
+                        confirmed: self
+                            .received_key(chain)
+                            .and_then(|key| self.received.lists.get(&key))
+                            .map(|list| {
+                                list.entries
+                                    .iter()
+                                    .filter(|entry| !entry.pending)
+                                    .map(|entry| entry.key.clone())
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
                         user,
                     },
                 )))

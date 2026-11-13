@@ -9,11 +9,16 @@
 //!
 //! Unconfirmed (mempool) deposits (2026-11-13): listed as pending rows, display only. A pending
 //! row the read no longer lists is resolved only when every address that paid it got a complete
-//! answer, and then with one indexer `TxStatus` ([`BTC_PENDING_CHECK_MAX`] per read): confirmed →
-//! a confirmed row, not found → gone. Anything less keeps the row. Inputs the indexer could not
-//! resolve make that transaction unknown (never a row) and its address incomplete (fail closed:
-//! our own unconfirmed send must never look like a deposit of its change). Before 2026-11-13
-//! only Esplora was read (`bb-*` showed a fixed line) and only the newest 5 used addresses.
+//! answer, and then with one indexer `TxStatus` ([`BTC_PENDING_CHECK_MAX`] requests per read):
+//! confirmed → a confirmed row, not found → gone; Esplora's `{"confirmed":false}` (also its
+//! answer for an unknown txid) gets one `TxRaw` probe: 404 → gone, the raw transaction → kept.
+//! A status the indexer does not give (an error: `bb-rpc` has no recorded "not found" code) is
+//! [`Fetched::missed`]; [`crate::received::PENDING_MISS_MAX`] such reads in a row remove the row
+//! with neutral wording (2026-11-13 review: it stayed for good before). Anything less keeps the
+//! row. Inputs the indexer could not resolve make that transaction unknown (never a row) and its
+//! address incomplete (fail closed: our own unconfirmed send must never look like a deposit of
+//! its change). Before 2026-11-13 only Esplora was read (`bb-*` showed a fixed line) and only
+//! the newest 5 used addresses.
 
 use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasher;
@@ -46,10 +51,15 @@ pub const MAX_TXS: usize = 200;
 pub const ESPLORA_MEMPOOL_PAGE: usize = 50;
 /// Blockbook confirmed transactions per page (mempool ones come on top, all on page 1).
 pub const BB_PAGE_SIZE: u32 = 25;
-/// Most `TxStatus` checks of vanished pending rows per read.
+/// Most status requests (`TxStatus`, and Esplora's `TxRaw` probe) for vanished pending rows
+/// per read.
 pub const BTC_PENDING_CHECK_MAX: usize = 5;
-/// The card's line when a Blockbook indexer refuses `details=txs` for every address.
+/// The card's line when a Blockbook indexer refuses `details=txs` for every address on two
+/// reads in a row.
 pub const T_BB_NO_TXS: &str = "이 Bitcoin 인덱서(Blockbook)는 주소 거래 목록(details=txs)을 주지 않아 받은 내역을 표시하지 않습니다 — 탐색기에서 확인하세요. '새로고침'으로 다시 시도합니다.";
+/// The muted note of the first such read (a passing provider error looks the same on `bb-rpc`;
+/// 2026-11-13 review).
+pub const T_BB_NO_TXS_ONCE: &str = "이번 읽기에서 Bitcoin 인덱서(Blockbook)가 주소 거래 목록(details=txs)을 주지 않았습니다 — 다음 읽기에서 다시 시도합니다.";
 
 /// One transaction of an address's recent list, as much as the history needs (Esplora and
 /// Blockbook answers parse into this).
@@ -351,6 +361,8 @@ pub struct BtcReceivedWork {
     pub fetch: Vec<u32>,
     /// The list's pending rows (with the indices that paid them).
     pub pending: Vec<Incoming>,
+    /// The list's last read had every address refuse `details=txs` ([`Cursor::BtcRejected`]).
+    pub rejected_before: bool,
     /// Chain-check inputs.
     pub chain: ChainInput,
     /// Automatic (skipped during the cooldown) or the user's `새로고침`.
@@ -400,47 +412,78 @@ fn error_text(error: BtcError, indexer: BtcIndexer) -> String {
         .unwrap_or_else(|| "Bitcoin 조회를 잠시 멈췄습니다".to_owned())
 }
 
-/// The vanished pending rows: up to [`BTC_PENDING_CHECK_MAX`] `TxStatus` checks of the rows
-/// absent from `listed` whose addresses were all `covered`. Returns the confirmed rows and the
-/// gone keys; everything else stays.
+/// What [`resolve_vanished`] decided.
+#[derive(Default)]
+struct Resolved {
+    confirmed: Vec<Incoming>,
+    gone: Vec<String>,
+    missed: Vec<String>,
+}
+
+/// The vanished pending rows: those absent from `listed` whose addresses were all `covered`,
+/// with at most [`BTC_PENDING_CHECK_MAX`] status requests. `TxStatus` confirmed → a confirmed
+/// row; not found → gone; Esplora's `UnconfirmedOrUnknown` → one `TxRaw` probe (404 → gone,
+/// the raw transaction → kept: some backend still has it); Blockbook `Unconfirmed` → kept; no
+/// usable answer → missed. A row whose probe does not fit in the bound waits for the next read.
 fn resolve_vanished(
     client: &BtcClient<'_>,
     session: &ChainSession,
     pending: &[Incoming],
     listed: &HashSet<&str>,
     covered: &[u32],
-) -> (Vec<Incoming>, Vec<String>) {
-    let mut confirmed = Vec::new();
-    let mut gone = Vec::new();
+) -> Resolved {
+    let mut out = Resolved::default();
+    let mut requests = 0_usize;
     let candidates = pending.iter().filter(|row| {
         row.pending
             && !listed.contains(row.key.as_str())
             && !row.via.is_empty()
             && row.via.iter().all(|index| covered.contains(index))
     });
-    for row in candidates.take(BTC_PENDING_CHECK_MAX) {
+    for row in candidates {
+        if requests >= BTC_PENDING_CHECK_MAX {
+            break;
+        }
         let Ok(txid) = Txid::from_display_hex(&row.hash) else {
             continue;
         };
+        requests = requests.saturating_add(1);
         match address_request(client, session, &BtcIndexerReq::TxStatus(txid)) {
             Ok(BtcIndexerResp::TxStatus(TxSeen::Confirmed { height })) => {
-                confirmed.push(Incoming {
+                out.confirmed.push(Incoming {
                     pending: false,
                     block: Some(u64::from(height)),
                     time_ms: None,
                     ..row.clone()
                 });
             }
-            // The complete address lists no longer have it: replaced or dropped. Esplora also
-            // answers `{"confirmed":false}` for an unknown txid.
-            Ok(BtcIndexerResp::TxStatus(TxSeen::NotFound | TxSeen::UnconfirmedOrUnknown)) => {
-                gone.push(row.key.clone());
+            // The complete address lists no longer have it: replaced or dropped.
+            Ok(BtcIndexerResp::TxStatus(TxSeen::NotFound)) => out.gone.push(row.key.clone()),
+            // Esplora answers `{"confirmed":false}` for an unknown txid too, and a load-balanced
+            // Esplora may have listed the addresses from a lagging backend: one `TxRaw` tells
+            // them apart, as the tracker does (spec/08 §12.2 step 2). Before the 2026-11-13
+            // review this answer alone removed the row as gone.
+            Ok(BtcIndexerResp::TxStatus(TxSeen::UnconfirmedOrUnknown)) => {
+                if requests >= BTC_PENDING_CHECK_MAX {
+                    break;
+                }
+                requests = requests.saturating_add(1);
+                match address_request(client, session, &BtcIndexerReq::TxRaw(txid)) {
+                    Err(BtcError::Indexer(IndexerError::NotFound)) => {
+                        out.gone.push(row.key.clone());
+                    }
+                    Ok(BtcIndexerResp::TxRaw(_)) => {}
+                    _ => out.missed.push(row.key.clone()),
+                }
             }
-            // Blockbook still has it in its mempool, or no usable answer: decided next read.
-            _ => {}
+            // Blockbook still has it in its mempool: decided next read.
+            Ok(BtcIndexerResp::TxStatus(TxSeen::Unconfirmed)) => {}
+            // No usable answer; a `bb-rpc` `bb_getTx` error for an unknown txid lands here
+            // (spec/08 §4.5 B3 has no recorded "not found" code).
+            _ => out.missed.push(row.key.clone()),
         }
     }
-    (confirmed, gone)
+    out
 }
 
 /// One read on the session's request line.
@@ -524,7 +567,17 @@ pub fn fetch(
     }
     if answered == 0 {
         if indexer != BtcIndexer::Esplora && rejected == asked.len() {
-            // A Blockbook without `details=txs`: no more automatic reads (`새로고침` retries).
+            // A Blockbook without `details=txs`, on two reads in a row: no more automatic reads
+            // (`새로고침` retries). The first such read only notes it: `bb-rpc` maps every
+            // JSON-RPC code it does not know to `Rejected`, a passing provider error included
+            // (2026-11-13 review; one read was enough before).
+            if !work.rejected_before {
+                return Ok(Fetched {
+                    cursor: Cursor::BtcRejected,
+                    note: Some(T_BB_NO_TXS_ONCE),
+                    ..Fetched::default()
+                });
+            }
             return Ok(Fetched {
                 unsupported: Some(T_BB_NO_TXS),
                 ..Fetched::default()
@@ -539,12 +592,13 @@ pub fn fetch(
         entry.via = paid_at.get(&entry.key).cloned().unwrap_or_default();
     }
     let listed: HashSet<&str> = txs.iter().map(|tx| tx.txid.as_str()).collect();
-    let (confirmed, gone) = resolve_vanished(client, session, &work.pending, &listed, &covered);
-    found.entries.extend(confirmed);
+    let resolved = resolve_vanished(client, session, &work.pending, &listed, &covered);
+    found.entries.extend(resolved.confirmed);
     Ok(Fetched {
         found,
         cursor: Cursor::Start,
-        gone,
+        gone: resolved.gone,
+        missed: resolved.missed,
         covered,
         ..Fetched::default()
     })

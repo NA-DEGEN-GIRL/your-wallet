@@ -861,6 +861,12 @@ fn transparent_parts_v5_vectors() {
         assert_eq!(parts.outputs, tx.outputs);
         let prevouts: Vec<ZecOutPoint> = tx.inputs.iter().map(|input| input.prevout).collect();
         assert_eq!(parts.inputs, prevouts);
+        let script_sigs: Vec<Vec<u8>> = tx
+            .inputs
+            .iter()
+            .map(|input| input.script_sig.clone())
+            .collect();
+        assert_eq!(parts.script_sigs, script_sigs);
     }
     assert!(compared >= 3, "{compared}");
 }

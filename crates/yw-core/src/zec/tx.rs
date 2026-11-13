@@ -281,6 +281,9 @@ pub struct TransparentParts {
     pub version: u8,
     /// The spent outpoints.
     pub inputs: Vec<ZecOutPoint>,
+    /// Each input's `scriptSig`, in input order (2026-11-13 review: the received history tells
+    /// our own spends by the public key a P2PKH `scriptSig` pushes).
+    pub script_sigs: Vec<Vec<u8>>,
     /// The outputs.
     pub outputs: Vec<ZecTxOut>,
 }
@@ -314,10 +317,11 @@ pub fn transparent_parts(bytes: &[u8]) -> Result<TransparentParts, ZecTxError> {
         return Err(ZecTxError::Unsupported);
     }
     let mut inputs = Vec::with_capacity(input_count.min(1_000));
+    let mut script_sigs = Vec::with_capacity(input_count.min(1_000));
     for _ in 0..input_count {
         let txid = reader.array::<32>()?;
         let index = reader.u32()?;
-        reader.script()?;
+        script_sigs.push(reader.script()?.to_vec());
         // nSequence.
         reader.u32()?;
         inputs.push(ZecOutPoint { txid, index });
@@ -342,6 +346,7 @@ pub fn transparent_parts(bytes: &[u8]) -> Result<TransparentParts, ZecTxError> {
     Ok(TransparentParts {
         version,
         inputs,
+        script_sigs,
         outputs,
     })
 }

@@ -10,9 +10,13 @@ use btc_support::{
     CORE_URL, Call, Reply, Rig, TESTNET4_GENESIS, TestResult, Verb, account, chain_input, healthy,
     params, xpub,
 };
+use yw_app::app_received::RecvList;
 use yw_app::btc::{BtcClient, ChainSession, Trigger};
-use yw_app::received::Incoming;
-use yw_app::received::btc::{BtcReceivedWork, ESPLORA_MEMPOOL_PAGE, T_BB_NO_TXS, fetch};
+use yw_app::received::btc::{
+    BTC_PENDING_CHECK_MAX, BtcReceivedWork, ESPLORA_MEMPOOL_PAGE, T_BB_NO_TXS, T_BB_NO_TXS_ONCE,
+    fetch,
+};
+use yw_app::received::{Cursor, Fetched, Incoming, PENDING_MISS_MAX};
 use yw_app::settings::BtcIndexer;
 use yw_core::bip32::path::BtcChain;
 use yw_core::btc::BtcNetwork;
@@ -71,6 +75,7 @@ fn work(fetch: Vec<u32>, pending: Vec<Incoming>) -> BtcReceivedWork {
         change_count: 2,
         fetch,
         pending,
+        rejected_before: false,
         chain: chain_input(),
         trigger: Trigger::User,
     }
@@ -260,7 +265,9 @@ fn blockbook_rest_and_rpc_list_mempool_deposits() -> TestResult {
         yw_json::to_vec(&params(&call)),
         format!(r#"["{zero}",{{"details":"txs","page":1,"size":25}}]"#).into_bytes()
     );
-    // Refused for every address: the fixed line, no error.
+    // Refused for every address: a note and the `BtcRejected` cursor the first time (a passing
+    // provider error looks the same, 2026-11-13 review), the fixed line on the next read in a
+    // row; never an error.
     let refusing = Rig::new(BtcIndexer::BbRest, move |call: &Call| {
         if call.verb == Verb::Get && call.url == format!("{api}block-index/0") {
             Reply::json(&format!(r#"{{"blockHash":"{TESTNET4_GENESIS}"}}"#))
@@ -271,7 +278,173 @@ fn blockbook_rest_and_rpc_list_mempool_deposits() -> TestResult {
         }
     });
     let client = BtcClient::new(refusing.env(), &refusing.endpoint);
-    let fetched = fetch(&client, &mut session(), &work(vec![0, 1], Vec::new()))?;
-    assert_eq!(fetched.unsupported, Some(T_BB_NO_TXS));
+    let first = fetch(&client, &mut session(), &work(vec![0, 1], Vec::new()))?;
+    assert_eq!(first.unsupported, None);
+    assert_eq!(first.note, Some(T_BB_NO_TXS_ONCE));
+    assert_eq!(first.cursor, Cursor::BtcRejected);
+    let mut again = work(vec![0, 1], Vec::new());
+    again.rejected_before = true;
+    let second = fetch(&client, &mut session(), &again)?;
+    assert_eq!(second.unsupported, Some(T_BB_NO_TXS));
+    // A bb-rpc internal error (-32603) on every address is the same first strike only.
+    let rpc_failing = Rig::new(BtcIndexer::BbRpc, |call: &Call| {
+        if call.method == "bb_getAddress" {
+            Reply::RpcError(-32_603)
+        } else {
+            healthy(call)
+        }
+    });
+    let client = BtcClient::new(rpc_failing.env(), &rpc_failing.endpoint);
+    let first = fetch(&client, &mut session(), &work(vec![0], Vec::new()))?;
+    assert_eq!(first.unsupported, None);
+    assert_eq!(first.cursor, Cursor::BtcRejected);
+    Ok(())
+}
+
+/// A Blockbook page for `address` without the vanished deposit (its other transactions are
+/// irrelevant here).
+fn bb_empty(address: &str) -> String {
+    format!(r#"{{"page":1,"totalPages":1,"itemsOnPage":25,"address":"{address}","txs":0}}"#)
+}
+
+/// 2026-11-13 review (spec/08 §4.3 "미확정 행 정리"): a pending row that every address answered
+/// completely without listing. `bb-rest`: `tx/{t}` 404 → gone. `bb-rpc`: `bb_getTx` answers a
+/// JSON-RPC error (no "not found" code is recorded, §4.5 B3) → missed; after `PENDING_MISS_MAX`
+/// such reads in a row the list removes it with neutral wording and stops asking.
+#[test]
+fn blockbook_vanished_pending_rows() -> TestResult {
+    let zero = ours(0)?;
+    let gone = txid('a');
+    let api = format!("{}/api/v2/", CORE_URL.trim_end_matches('/'));
+    let (zero_c, api_c) = (zero.clone(), api.clone());
+    let rest = Rig::new(BtcIndexer::BbRest, move |call: &Call| {
+        if call.verb == Verb::Get && call.url == format!("{api_c}block-index/0") {
+            Reply::json(&format!(r#"{{"blockHash":"{TESTNET4_GENESIS}"}}"#))
+        } else if call.verb == Verb::Get && call.url.contains("details=txs") {
+            Reply::json(&bb_empty(&zero_c))
+        } else if call.verb == Verb::Get && call.url.starts_with(&format!("{api_c}tx/")) {
+            Reply::status(404)
+        } else {
+            healthy(call)
+        }
+    });
+    let client = BtcClient::new(rest.env(), &rest.endpoint);
+    let fetched = fetch(
+        &client,
+        &mut session(),
+        &work(vec![0], vec![pending_row(&gone, &[0])]),
+    )?;
+    assert_eq!(fetched.covered, [0]);
+    assert_eq!(fetched.gone, [gone.as_str()]);
+    assert!(fetched.missed.is_empty());
+    assert!(
+        rest.fake
+            .calls()
+            .iter()
+            .any(|call| call.url == format!("{api}tx/{gone}"))
+    );
+
+    let zero_c = zero.clone();
+    let rpc = Rig::new(BtcIndexer::BbRpc, move |call: &Call| {
+        match call.method.as_str() {
+            "bb_getAddress" => Reply::Result(bb_empty(&zero_c)),
+            "bb_getTx" => Reply::RpcError(-32_000),
+            _ => healthy(call),
+        }
+    });
+    let client = BtcClient::new(rpc.env(), &rpc.endpoint);
+    let bb_get_tx = || {
+        rpc.fake
+            .calls()
+            .iter()
+            .filter(|call| call.method == "bb_getTx")
+            .count()
+    };
+    let mut list = RecvList::default();
+    list.apply(Fetched {
+        found: yw_app::received::Found {
+            entries: vec![pending_row(&gone, &[0])],
+            dust: Vec::new(),
+        },
+        ..Fetched::default()
+    });
+    for read in 1..=PENDING_MISS_MAX {
+        assert_eq!(list.pending_sum(), Some(50_000), "read {read}");
+        let fetched = fetch(&client, &mut session(), &work(vec![0], list.pending_rows()))?;
+        assert!(fetched.gone.is_empty());
+        assert_eq!(fetched.missed, [gone.as_str()]);
+        list.apply(fetched);
+    }
+    assert_eq!(list.pending_sum(), None);
+    assert_eq!((list.gone, list.dropped), (0, 1));
+    // Nothing left to ask about: no more paid `bb_getTx` calls.
+    let before = bb_get_tx();
+    assert_eq!(before, usize::from(PENDING_MISS_MAX));
+    let fetched = fetch(&client, &mut session(), &work(vec![0], list.pending_rows()))?;
+    assert!(fetched.missed.is_empty());
+    assert_eq!(bb_get_tx(), before);
+    Ok(())
+}
+
+/// 2026-11-13 review: Esplora answers `{"confirmed":false}` for an unknown txid too, and a
+/// load-balanced Esplora can list the addresses from a lagging backend. One `/tx/{t}/hex`
+/// probe decides: 404 → gone, the raw transaction → kept. Status and probe requests together
+/// stay within `BTC_PENDING_CHECK_MAX` per read.
+#[test]
+fn esplora_unconfirmed_status_is_probed() -> TestResult {
+    let zero = ours(0)?;
+    let (kept, gone) = (txid('b'), txid('c'));
+    let (zero_c, kept_c) = (zero.clone(), kept.clone());
+    let rig = Rig::new(BtcIndexer::Esplora, move |call: &Call| {
+        let path = call.path();
+        if path == format!("/address/{zero_c}/txs") {
+            Reply::json("[]")
+        } else if path.ends_with("/status") {
+            Reply::json(r#"{"confirmed":false}"#)
+        } else if path == format!("/tx/{kept_c}/hex") {
+            Reply::text("0200")
+        } else if path.ends_with("/hex") {
+            Reply::status(404)
+        } else {
+            healthy(call)
+        }
+    });
+    let client = BtcClient::new(rig.env(), &rig.endpoint);
+    let fetched = fetch(
+        &client,
+        &mut session(),
+        &work(
+            vec![0],
+            vec![pending_row(&kept, &[0]), pending_row(&gone, &[0])],
+        ),
+    )?;
+    assert_eq!(fetched.gone, [gone.as_str()]);
+    assert!(fetched.missed.is_empty());
+    let probes: Vec<String> = rig
+        .fake
+        .get_paths()
+        .into_iter()
+        .filter(|path| path.starts_with("/tx/"))
+        .collect();
+    assert_eq!(
+        probes,
+        [
+            format!("/tx/{kept}/status"),
+            format!("/tx/{kept}/hex"),
+            format!("/tx/{gone}/status"),
+            format!("/tx/{gone}/hex"),
+        ]
+    );
+    // Many vanished rows: at most BTC_PENDING_CHECK_MAX requests, the rest wait.
+    let many: Vec<Incoming> = (0..10)
+        .map(|n| pending_row(&format!("{n:064x}"), &[0]))
+        .collect();
+    let before = rig.fake.get_paths().len();
+    fetch(&client, &mut session(), &work(vec![0], many))?;
+    let asked = rig.fake.get_paths()[before..]
+        .iter()
+        .filter(|path| path.starts_with("/tx/"))
+        .count();
+    assert_eq!(asked, BTC_PENDING_CHECK_MAX);
     Ok(())
 }

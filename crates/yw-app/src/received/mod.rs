@@ -19,7 +19,8 @@
 //! Unconfirmed rows (2026-11-13, Bitcoin and Zcash mempool, Solana `processed`) are display only:
 //! never in a balance, never spendable, never final (D32), and shown without a sender. A pending
 //! row leaves the list only when its source shows it confirmed (replaced in place) or gone
-//! ([`Fetched::gone`]); a read that could not see everything keeps it. Before 2026-11-13 a
+//! ([`Fetched::gone`]), or after [`PENDING_MISS_MAX`] reads in a row that could not get its
+//! status ([`Fetched::missed`]); a read that could not see everything keeps it. Before 2026-11-13 a
 //! Bitcoin read dropped every pending row it did not list, even when an address had failed.
 //!
 //! Address-poisoning defences (the reason the history was left out before): zero and dust
@@ -46,6 +47,10 @@ pub const MAX_ENTRIES: usize = 50;
 pub const REFRESH_MS: u64 = 60_000;
 /// Most dust keys remembered per list (only for counting each hidden transfer once).
 pub const MAX_DUST_KEYS: usize = 500;
+/// Reads in a row that may miss a pending row's status ([`Fetched::missed`]) before it is
+/// removed with neutral wording (2026-11-13 review: a source whose status lookup keeps failing,
+/// such as a `bb-rpc` `bb_getTx` error for a replaced txid, kept a ghost row for good).
+pub const PENDING_MISS_MAX: u8 = 3;
 
 // ----- dust thresholds ---------------------------------------------------------------------
 //
@@ -217,6 +222,9 @@ pub enum Cursor {
     Seen(Vec<String>),
     /// `HyperCore`: the newest ledger time seen (Unix ms).
     Time(u64),
+    /// Bitcoin: the last read had every asked address refuse `details=txs` (one more such read
+    /// makes the list unsupported; a transient provider error is not taken as permanent).
+    BtcRejected,
     /// Zcash: the next delta height, whether the endpoint has `getaddressdeltas`, and the
     /// mempool txids already looked at that were not deposits (bounded, oldest first).
     Zec {
@@ -251,6 +259,10 @@ pub struct Fetched {
     pub dropped: Vec<String>,
     /// Bitcoin: the receive indices this read answered completely.
     pub covered: Vec<u32>,
+    /// Bitcoin: keys of pending rows that every address answered completely without listing
+    /// them but whose status the indexer did not give; [`PENDING_MISS_MAX`] reads in a row
+    /// remove the row as [`Fetched::dropped`] (2026-11-13 review).
+    pub missed: Vec<String>,
 }
 
 /// An ERC-20 of the token card.

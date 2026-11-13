@@ -274,7 +274,9 @@ fn pending_rows_go_only_when_a_read_says_so() {
 
 /// spec/08 §4.7-2 (2026-11-13): the refresh banner points to the switch while the history is
 /// off, stays while the list has not covered every flagged address, and gives way to the
-/// "미확정 입금 {amount}" line when it has.
+/// "미확정 입금 {amount}" line (or the dust count) when it has. Review of the same day: coverage
+/// of the flagged addresses alone decides — a dust-only deposit (no pending row) no longer
+/// keeps the banner, and a pending row elsewhere no longer hides it.
 #[test]
 fn bitcoin_pending_banner_follows_the_history_coverage() {
     use crate::app_btc::{PENDING_INCOMING, PENDING_INCOMING_UNREAD};
@@ -290,20 +292,89 @@ fn bitcoin_pending_banner_follows_the_history_coverage() {
         pending_banner(true, &at, true, None),
         Some(PENDING_INCOMING_UNREAD)
     );
+    // A pending row on another, covered address does not count for address 3.
     assert_eq!(
-        pending_banner(true, &at, true, Some((&[0, 2], true))),
+        pending_banner(true, &at, true, Some(&[0, 2])),
         Some(PENDING_INCOMING_UNREAD)
     );
+    // Address 3 read completely: its deposit is a row, or dust only counted — no banner.
+    assert_eq!(pending_banner(true, &at, true, Some(&[3])), None);
+    let mut list = crate::app_received::RecvList::default();
+    list.apply(Fetched {
+        found: Found {
+            entries: Vec::new(),
+            dust: vec!["d".repeat(64)],
+        },
+        covered: vec![3],
+        ..Fetched::default()
+    });
+    assert_eq!(list.pending_sum(), None, "dust is no pending row");
+    assert_eq!(list.dust, 1);
     assert_eq!(
-        pending_banner(true, &at, true, Some((&[3], false))),
-        Some(PENDING_INCOMING_UNREAD)
+        pending_banner(true, &at, true, Some(list.covered.as_slice())),
+        None
     );
-    assert_eq!(pending_banner(true, &at, true, Some((&[3], true))), None);
     // A change address is never read by the history.
     assert_eq!(
-        pending_banner(true, &[(BtcChain::Change, 0)], true, Some((&[0], true))),
+        pending_banner(true, &[(BtcChain::Change, 0)], true, Some(&[0])),
         Some(PENDING_INCOMING_UNREAD)
     );
+}
+
+/// 2026-11-13 review: an `unsupported` answer (a Blockbook without `details=txs`) takes the
+/// pending rows and the coverage with it — they fed the card's "미확정 입금" line and hid the
+/// refresh banner while the section showed only the fixed line; confirmed rows stay.
+#[test]
+fn unsupported_read_drops_pending_rows_and_coverage() {
+    use crate::app_received::RecvList;
+    let a = pending_row("a", 50_000);
+    let b = confirmed(&pending_row("b", 70_000), 800);
+    let mut list = RecvList::default();
+    list.apply(Fetched {
+        covered: vec![0, 3],
+        ..read(vec![a, b], &[], &[])
+    });
+    assert_eq!(list.pending_sum(), Some(50_000));
+    list.apply(Fetched {
+        unsupported: Some(crate::received::btc::T_BB_NO_TXS),
+        ..Fetched::default()
+    });
+    assert_eq!(list.pending_sum(), None);
+    assert!(list.covered.is_empty());
+    assert_eq!(list.entries.len(), 1);
+    assert!(!list.entries[0].pending);
+    assert_eq!(list.unsupported, Some(crate::received::btc::T_BB_NO_TXS));
+}
+
+/// 2026-11-13 review (spec/04 §2.6): a pending row whose status the source keeps not giving
+/// (`Fetched::missed`, e.g. a `bb-rpc` `bb_getTx` error for a replaced txid) goes as `dropped`
+/// after `PENDING_MISS_MAX` reads in a row; a read listing it again starts the count over.
+#[test]
+fn missed_pending_rows_go_after_three_reads() {
+    use crate::app_received::RecvList;
+    use crate::received::PENDING_MISS_MAX;
+    let a = pending_row("a", 50_000);
+    let mut list = RecvList::default();
+    list.apply(read(vec![a.clone()], &[], &[]));
+    let miss = || Fetched {
+        missed: vec!["a".to_owned()],
+        ..Fetched::default()
+    };
+    for _ in 1..PENDING_MISS_MAX {
+        list.apply(miss());
+    }
+    // Listed again: the count starts over.
+    list.apply(read(vec![a], &[], &[]));
+    for _ in 1..PENDING_MISS_MAX {
+        list.apply(miss());
+    }
+    assert_eq!(list.pending_sum(), Some(50_000));
+    list.apply(miss());
+    assert_eq!(list.pending_sum(), None);
+    assert_eq!((list.gone, list.dropped), (0, 1));
+    // A missed key without a row changes nothing.
+    list.apply(miss());
+    assert_eq!(list.dropped, 1);
 }
 
 fn zec_snapshot(utxos: Vec<yw_core::zec::ZecUtxo>) -> crate::zec::work::ZecSnapshot {
@@ -326,8 +397,10 @@ fn zec_snapshot(utxos: Vec<yw_core::zec::ZecUtxo>) -> crate::zec::work::ZecSnaps
 }
 
 /// spec/12 §11 (2026-11-13) on the Zcash card: the confirmed balance has no "· 미확인" suffix
-/// any more; unconfirmed outputs of others are the "미확정 입금" line (from the `bb-rest`
-/// snapshot, or the history list while it is on), never part of the balance. With the switch
+/// any more; the history list's pending rows are the "미확정 입금" line and the snapshot's other
+/// unconfirmed outputs (history off, or not known to the list; dust left out) the neutral
+/// "미확정 출력" line (review of the same day: the snapshot sum was "미확정 입금" before), never
+/// part of the balance. With the switch
 /// off no read is queued; on, the read carries our script, our outputs and the snapshot pending
 /// set; pending rows show no sender and the 0-confirmation status; a gone row is counted.
 #[test]
@@ -367,11 +440,13 @@ fn zcash_unconfirmed_deposits_on_the_card() {
         Box::new(zec_snapshot(vec![
             utxo(1, 100_000_000, Some(4_469_000)),
             utxo(3, 50_000_000, None),
+            utxo(4, 9_999, None),
         ])),
     ));
     let deposit = yw_core::zec::tx::txid_display(&[3; 32]);
 
-    // Off: no read; the snapshot's unconfirmed deposit is its own line, not in the balance.
+    // Off: no read; the snapshot's unconfirmed output is the neutral line (its inputs were not
+    // looked at; the 9,999-zat dust one is left out), not in the balance.
     let now = yw_win::time::monotonic_ms();
     app.received_tick(now);
     assert!(received(&rx).is_empty(), "nothing while off");
@@ -383,8 +458,9 @@ fn zcash_unconfirmed_deposits_on_the_card() {
     assert!(!has_text(&items, "· 미확인"));
     assert!(has_text(
         &items,
-        "미확정 입금 0.50000000 ZEC (50,000,000 zats) (0 확인 — 바뀌거나 취소될 수 있습니다, 아직 쓸 수 없음)"
+        &crate::ui::screens_zec::unclassified_line("0.50000000 ZEC (50,000,000 zats)")
     ));
+    assert!(!has_text(&items, "미확정 입금 0."));
     assert!(items.iter().any(|item| matches!(
         item,
         Item::Field(_, value) if value.starts_with("미확정 (0 확인) · ")
@@ -397,8 +473,12 @@ fn zcash_unconfirmed_deposits_on_the_card() {
     let crate::received::JobKind::Zec(work) = &jobs[0].kind else {
         unreachable!("{:?}", jobs[0].kind);
     };
-    assert_eq!(work.bb_pending, [(deposit.clone(), 50_000_000)]);
-    assert_eq!(work.own_outpoints.len(), 2);
+    let dust = yw_core::zec::tx::txid_display(&[4; 32]);
+    assert_eq!(
+        work.bb_pending,
+        [(deposit.clone(), 50_000_000), (dust, 9_999)]
+    );
+    assert_eq!(work.own_outpoints.len(), 3);
     assert_eq!(work.script, account.script_pubkey());
     assert!(work.user && work.pending.is_empty());
 
@@ -421,6 +501,7 @@ fn zcash_unconfirmed_deposits_on_the_card() {
         &items,
         "미확정 입금 0.40000000 ZEC (40,000,000 zats)"
     ));
+    assert!(!has_text(&items, "미확정 출력"), "the list knows it");
     assert!(has_text(&items, "미확정 · 받음 0.40000000 ZEC"));
     assert!(has_text(
         &items,
@@ -449,6 +530,9 @@ fn zcash_unconfirmed_deposits_on_the_card() {
     let items = app.items();
     assert!(has_text(&items, &crate::ui::screens_received::gone_line(1)));
     assert!(!has_text(&items, "미확정 · 받음"));
+    // The (older) snapshot still has it: neither line, the list counted it as gone.
+    assert!(!has_text(&items, "미확정 입금 0."));
+    assert!(!has_text(&items, "미확정 출력"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 

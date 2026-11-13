@@ -33,15 +33,17 @@ pub fn pending_incoming_line(amount: &str) -> String {
 
 /// The refresh's "미확정 입금 있음" banner (spec/08 §4.7-2, 2026-11-13): shown while the refresh
 /// saw unconfirmed incoming funds (`flagged`, on the addresses `at`) unless the received history
-/// is on and its last read (`list`: the receive indices it answered completely and whether it
-/// has a pending row) covered every one of them — then the amount line says it instead. With
-/// the history off the banner points to the switch; on, it says the list has not found it all.
+/// is on and its last read (`covered`: the receive indices it answered completely) covered
+/// every one of them — then the list has the deposit as a row (with the amount line) or as
+/// counted dust. With the history off the banner points to the switch; on, it says the list has
+/// not found it all. Before the 2026-11-13 review the list also had to have a pending row (any,
+/// on any address), so a dust-only deposit kept the banner up while it sat in the mempool.
 #[must_use]
 pub fn pending_banner(
     flagged: bool,
     at: &[(BtcChain, u32)],
     history_on: bool,
-    list: Option<(&[u32], bool)>,
+    covered: Option<&[u32]>,
 ) -> Option<&'static str> {
     if !flagged {
         return None;
@@ -49,8 +51,8 @@ pub fn pending_banner(
     if !history_on {
         return Some(PENDING_INCOMING);
     }
-    let covered = list.is_some_and(|(covered, has_pending)| {
-        has_pending
+    let covered = covered.is_some_and(|covered| {
+        !at.is_empty()
             && at
                 .iter()
                 .all(|(chain, index)| *chain == BtcChain::Receive && covered.contains(index))
@@ -864,7 +866,7 @@ impl App {
             self.btc.pending_incoming,
             &self.btc.pending_incoming_at,
             self.settings.received_history,
-            list.map(|list| (list.covered.as_slice(), pending_sum.is_some())),
+            list.map(|list| list.covered.as_slice()),
         ) {
             items.push(Item::Banner(text.to_owned(), Tone::Warn));
         }
