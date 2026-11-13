@@ -1,0 +1,51 @@
+# Your Wallet
+
+> Your Wallet is a personal multichain software wallet for Windows 11 x64 and Chrome, distributed as source only.
+> A Rust desktop app (yw-app.exe) holds the keys in an Argon2id + XChaCha20-Poly1305 vault, shows every request in its own native approval window, and signs.
+> A Chrome MV3 extension holds no secrets and only relays dApp requests over native messaging and a per-user named pipe.
+> The approval window decodes the exact bytes to be signed, simulates EVM and Solana transactions, and applies risk rules: high-risk requests need a checkbox plus a 2-second hold, and some are blocked.
+> Supported: EVM (7 built-in chains plus user-added chains), Solana (including dApp transaction signing), Bitcoin (sending; dApps get message signing only), Zcash transparent, and Hyperliquid HyperCore transfers. YubiKey 5 signing and WalletConnect v2 (EVM) are optional.
+
+Notes:
+
+- The specs (spec.md, spec/*.md) are in Korean and are normative. spec.md wins over spec/*.md. Error codes are canonical in spec/05 §5, and the approval digest in spec/03 §11.
+- Status: implemented, manual verification pending. Personal-use scope; there is no third-party audit.
+- Build: Rust 1.95.0, Node.js 22+. `cargo build --release --locked` (on a fresh clone this also fetches the crates; drop `-Offline` from the gate until they are cached). Gate: `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1 -Offline`. No new crates, no `cargo update`, no npm dependencies.
+- dApp discovery:
+  - EVM: EIP-6963 "Your Wallet (EVM)".
+  - Solana: Wallet Standard "Your Wallet (Solana)".
+  - Bitcoin: only through the UniSat or Xverse compatibility modes in the extension popup.
+  - MetaMask, Rabby and Phantom look-alike modes also exist.
+
+## Docs
+
+- [README](README.md): What the wallet is, why to use it, features, limits, install and development (Korean and English)
+- [AGENTS.md](AGENTS.md): Guide for AI coding agents: repo map, build and gate commands, hard rules, conventions, where to start, security invariants
+- [dApp integration](docs/dapp-integration.md): Provider discovery, compatibility modes, EVM/Solana/Bitcoin methods with params and results, rejected methods, error codes, limits, WalletConnect v2
+- [Install guide (Korean)](docs/install.ko.md): Build from source with install.cmd, update, uninstall, load the extension
+- [First-use checklist (Korean)](docs/first-use-checklist.ko.md): Short real-network checklist to run with small amounts first
+- [Recovery guide (Korean)](docs/recovery-guide.ko.md): Backing up and restoring the wallet with recovery phrases
+
+## Specs
+
+- [spec.md](spec.md): Goals, threat model, decisions D1–D38, architecture, file layout, milestones
+- [spec/01-repo-build.md](spec/01-repo-build.md): Workspace and crates, dependency allowlist, lints, gate scripts, coding rules, yw-win API, source install
+- [spec/02-core-keys-vault.md](spec/02-core-keys-vault.md): Entropy, BIP39/BIP32/SLIP-0010, vault v3 byte format, meta and journal schemas, lock state machine, backup
+- [spec/03-evm.md](spec/03-evm.md): EVM chains, transactions, fees, simulation, calldata decoding, EIP-712, SIWE, risk rules E/T/P/S, approval model and digest
+- [spec/04-app-ui.md](spec/04-app-ui.md): App screens, approval window and its click-jacking defences, secret windows, auto-lock, settings, errors, logs, file locations, screenshot tour
+- [spec/05-browser.md](spec/05-browser.md): Chrome extension, provider API, compatibility modes, method allowlist, permissions, error codes, native envelope, yw-host, named pipe
+- [spec/06-llm-explain.md](spec/06-llm-explain.md): Optional AI explanation of EVM dApp requests (reference only, off by default)
+- [spec/07-solana.md](spec/07-solana.md): Solana sends (templates), dApp connect/message signing/SIWS (§19), dApp transaction signing and sending (§20, risk rules X01–X19)
+- [spec/08-bitcoin.md](spec/08-bitcoin.md): Bitcoin sends (P2WPKH, P2TR, P2SH-P2WPKH, P2PKH), indexers, dApp ownership proof (§17)
+- [spec/09-testing.md](spec/09-testing.md): Test placement, gate summary, fuzz-lite, live probes, known-answer vectors, milestone checklists
+- [spec/10-yubikey.md](spec/10-yubikey.md): YubiKey 5 accounts: OpenPGP secp256k1 (EVM/BTC/ZEC) and PIV Ed25519 (Solana), multiple cards
+- [spec/11-hypercore.md](spec/11-hypercore.md): Hyperliquid HyperCore balances and user-signed transfers (no trading), dApp Hyperliquid typed data
+- [spec/12-zcash.md](spec/12-zcash.md): Zcash transparent-only sends: addresses, v5 transactions, ZIP 244 signing, ZIP 317 fees
+- [spec/13-walletconnect.md](spec/13-walletconnect.md): WalletConnect v2 (Reown) wallet side, EVM only, claimed origin and Verify
+
+## Optional
+
+- [Native host README](extension/native-host/README.md): Native messaging host registration and the golden contract files
+- [Screen tour](docs/screenshots/README.md): Annotated screenshots of every main screen and approval window (fake data)
+- [Security review 2026-11-01](docs/security-review-20261101.md): Internal security review (Korean); features added later were reviewed per step only
+- [Solana dApp transaction acceptance record](docs/acceptance/sol-dapp-tx-20261113.md): Automated checks done and live checks still open for Solana dApp transactions
