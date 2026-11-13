@@ -368,7 +368,7 @@ S2(정본 형태, Sepolia, Glamsterdam 후, 새 계정으로 0.01 ETH):
 | S3c | S2에서 `status "0x0"`, logs `[]`, gasUsed `0x3aaa`, `returnData`·`error.data` `0xdeadbeef`, `error.code` 3(L-REVERT 형태) | [실행 실패] E02, "이유: 사용자 정의 오류 0xdeadbeef (4바이트)" |
 | S4h | 최상위 `error.code` -32003(L-HYPEREVM 형태) | S4와 같음 |
 | S16 | 요청 to = user, value 1 wei; 응답 logs `[]`, gasUsed `0x2ee0`(12,000, Sepolia 자기 자신 전송 실측) | 통과(E04 없음) |
-| S15 | (파일 없음, M4 `flow::evm` — X-24) S2 요청에서 chainId만 8453으로, 그 체인은 `simulation = unsupported`인 사용자 체인(이름 `Test L2`, 네이티브 `ETH`/18) | 준비 전 과정에서 가짜 전송의 `eth_simulateV1` 호출 0회, [미지원] E36 고위험(`None Unsupported`). 같은 체인을 `auto`로 등록하면 호출 1회 |
+| S15 | (파일 없음, M4 `flow::evm` — X-24) S2 요청에서 chainId만 10(`0xa`; 8453은 2026-11-06부터 내장 Base)으로, 그 체인은 `simulation = unsupported`인 사용자 체인(이름 `Test L2`, 네이티브 `ETH`/18) | 준비 전 과정에서 가짜 전송의 `eth_simulateV1` 호출 0회, [미지원] E36 고위험(`None Unsupported`). 같은 체인을 `auto`로 등록하면 호출 1회 |
 
 재시뮬레이션(03 §6.6, 단조 시계 주입): S2 응답 후 60 s에 클릭 → 재시뮬레이션 없음, 61 s → 재시뮬레이션. 새 응답이 S2와 `parentHash`만 다르면 `replace` 후 같은 클릭으로 소비, S10b처럼 안정 부분이 다르면 새 클릭 요구. 재시뮬레이션이 실패하면(S3·S4·S12 각각) 표시를 그 배너로 교체하고 그 클릭은 소비하지 않는다: 서명 0, 체크 해제, 새 체크 + 2초 누르기 뒤에만 `Approved`(차단 아님). -38012/-32005는 03 §6.6-3(수수료 재계산 후 새 클릭). S15 체인은 61 s 뒤 클릭에도 호출 0.
 
@@ -517,7 +517,7 @@ G1과 같은 절차로 고정한다: 테스트가 아래 입력으로 바이트�
 | X-18 | RPC가 다른 tx hash 반환 | 저널 `Signed` + `rpc_hash_mismatch`, 자동 재전송 없음 | 03 §4.4 |
 | X-19 | LLM: 꺼짐 / AI 상태 6종 / 날조된 주소·금액·숫자 | 전송 0회 / `can_approve`·digest·위험 동일 / `Mismatch`로 AI 텍스트 전부 숨김 | 06 §10 E1, E2, E4 |
 | X-20 | 표시 문자열에 U+202E·U+200B·U+FEFF·U+00A0·U+2007·U+3000·U+0336·U+2800·U+FFFC(토큰 심볼·typed data string·SIWE statement·메시지), typed data string·도메인 name의 LF | `[U+XXXX]` 이스케이프(LF는 `[U+000A]`), `DisplayField::new` 재검사 통과 | 03 §9.2, §11.2 |
-| X-21 | 사용자 체인 추가: 입력 chainId 8453, 가짜 RPC `eth_chainId` = `0x1` | 거부, 저장 0, 체인 목록 불변 | D14 |
+| X-21 | 사용자 체인 추가: 입력 chainId 10(8453은 내장 Base), 가짜 RPC `eth_chainId` = `0x1` | 거부, 저장 0, 체인 목록 불변 | D14 |
 | X-22 | 사용자 체인 추가: chainId 1·11155111·999 / 이미 추가한 사용자 체인과 같은 chainId | 각각 거부(RPC 호출 0), 기존 항목 불변 | D14 |
 | X-23 | 추가 시 블록 0 해시 H1 고정 → 재시작(또는 RPC URL 변경) 뒤 연결에서 (a) 블록 0 = H2 (b) `eth_chainId` ≠ 등록값 | (a) 그 체인 읽기·보내기·서명·dApp 읽기 전부 체인 불일치 오류. H2를 보여 주는 확인 창에서 사용자가 다시 고정해야만 해제(취소 → 계속 오류), 재고정 뒤 정상 (b) 같은 오류, 재고정 없이 URL을 고칠 때까지 유지. 기본 제공 체인은 §3.11 상수와 비교(03 §1.4) | D14 |
 | X-24 | `simulation = unsupported` 체인 보내기(§3.8 S15), 61 s 뒤 클릭 포함 | `eth_simulateV1` 호출 0, [미지원], 체크 + 2초 누르기로 서명·전송 | D14·D15 |

@@ -17,8 +17,8 @@ use yw_core::evm::chain::builtin_chain;
 use yw_core::secret::Zeroizing;
 use yw_win::http::HttpsUrl;
 
-use crate::network::{BtcNet, NetworkId, SolCluster};
-use crate::settings::{RpcTemplate, Settings};
+use crate::network::{BUILTIN_EVM, BtcNet, NetworkId, SolCluster};
+use crate::settings::{MAX_CUSTOM_EVM_CHAINS, RpcTemplate, Settings};
 use crate::text::{is_dns_label, is_token_text};
 
 /// DPAPI optional entropy.
@@ -27,10 +27,23 @@ pub const APIKEYS_ENTROPY: &[u8] = b"your-wallet/v3/apikeys";
 pub const APIKEYS_MAGIC: &[u8; 8] = b"YWAPIK01";
 /// Largest plaintext.
 pub const APIKEYS_MAX_PLAINTEXT: usize = 131_072;
-/// Largest entry count.
-pub const APIKEYS_MAX_ENTRIES: usize = 48;
+/// Largest entry count (2026-11-13: 56; before it was 48, below the 49 entries this version can
+/// write itself — [`APIKEYS_MAX_ACTIVE`] — so a full set was saved with `count` 49 and the next
+/// start rejected the whole file as E-KEY-001).
+pub const APIKEYS_MAX_ENTRIES: usize = 56;
+/// Most entries this version writes itself (spec/04 §6.3): `tpl:quicknode`, `tpl:alchemy`, `llm`,
+/// `llm:host`, and one `rpc:` per built-in EVM chain, user EVM chain, Solana cluster (2), Bitcoin
+/// network (2) and Zcash network (2). The rest of [`APIKEYS_MAX_ENTRIES`] is room for dormant
+/// entries (orphans, a newer version's names).
+pub const APIKEYS_MAX_ACTIVE: usize = 4 + BUILTIN_EVM.len() + MAX_CUSTOM_EVM_CHAINS + 2 + 2 + 2;
 const MAX_NAME: usize = 32;
 const MAX_VALUE: usize = 2_048;
+
+// Every entry this version can hold is written (`encode` drops only dormant ones), and a file
+// of `APIKEYS_MAX_ENTRIES` entries of the largest name and value stays under the plaintext bound.
+const _: () = assert!(APIKEYS_MAX_ACTIVE <= APIKEYS_MAX_ENTRIES);
+const _: () =
+    assert!(9 + APIKEYS_MAX_ENTRIES * (1 + MAX_NAME + 2 + MAX_VALUE) <= APIKEYS_MAX_PLAINTEXT);
 
 /// Entry name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -286,7 +299,8 @@ impl ApiKeys {
     }
 
     /// Builds the plaintext from the current entries followed by the dormant ones (spec/04 §6.6).
-    /// Dormant entries beyond the 48-entry bound are left out (the active entries always fit).
+    /// Dormant entries beyond the [`APIKEYS_MAX_ENTRIES`] bound are left out (the active entries
+    /// always fit: at most [`APIKEYS_MAX_ACTIVE`]).
     #[must_use]
     pub fn encode(&self) -> Zeroizing<Vec<u8>> {
         let dormant_room = APIKEYS_MAX_ENTRIES.saturating_sub(self.entries.len());

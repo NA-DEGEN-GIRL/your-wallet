@@ -126,8 +126,8 @@ fn prepare_happy_path_sepolia() -> TestResult {
 #[test]
 fn unsupported_chain_never_calls_simulate_and_is_high_risk() -> TestResult {
     let genesis = [0x11; 32];
-    let chain = user_chain(84_532, genesis, SimulationSupport::Unsupported);
-    let rpc = fake(world(84_532, genesis, Vec::new()));
+    let chain = user_chain(10, genesis, SimulationSupport::Unsupported);
+    let rpc = fake(world(10, genesis, Vec::new()));
     let clock = FakeClock::at(S2_UNIX_MS);
     let job = job(chain, address(USER)?, send_intent()?);
     let prepared = ready(
@@ -265,8 +265,8 @@ fn hyperevm_pins_on_first_use_and_compares_later() {
 
 #[test]
 fn user_chain_pinned_mismatch_blocks_sends() -> TestResult {
-    let chain = user_chain(8_453, [0x11; 32], SimulationSupport::Auto);
-    let rpc = fake(world(8_453, [0x22; 32], Vec::new()));
+    let chain = user_chain(10, [0x11; 32], SimulationSupport::Auto);
+    let rpc = fake(world(10, [0x22; 32], Vec::new()));
     let clock = FakeClock::at(S2_UNIX_MS);
     let job = job(chain, address(USER)?, send_intent()?);
     let PrepareOutcome::Failed(failure) = prepare(
@@ -1419,9 +1419,10 @@ fn user_chain_probe() {
         probe_chain(&rpc.shared(), &url(), 84_532, None, true),
         Ok(genesis)
     );
-    // X-21: 8453 entered, RPC says 0x1 → E-CHN-001 with the parsed value.
+    // X-21: 10 entered, RPC says 0x1 → E-CHN-001 with the parsed value (2026-11-13: 10, not
+    // 8453, which is the built-in Base since 2026-11-06).
     let rpc = fake(world(1, genesis, Vec::new()));
-    let error = probe_chain(&rpc.shared(), &url(), 8_453, None, true);
+    let error = probe_chain(&rpc.shared(), &url(), 10, None, true);
     assert_eq!(error, Err(ProbeError::ChainId { rpc: Some(1) }));
     assert!(
         error
