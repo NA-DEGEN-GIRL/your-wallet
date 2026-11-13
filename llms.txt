@@ -35,7 +35,7 @@ Notes:
 - [spec/04-app-ui.md](spec/04-app-ui.md): App screens, approval window and its click-jacking defences, secret windows, auto-lock, settings, errors, logs, file locations, screenshot tour
 - [spec/05-browser.md](spec/05-browser.md): Chrome extension, provider API, compatibility modes, method allowlist, permissions, error codes, native envelope, yw-host, named pipe
 - [spec/06-llm-explain.md](spec/06-llm-explain.md): Optional AI explanation of EVM dApp requests (reference only, off by default)
-- [spec/07-solana.md](spec/07-solana.md): Solana sends (templates), dApp connect/message signing/SIWS (§19), dApp transaction signing and sending (§20, risk rules X01–X19)
+- [spec/07-solana.md](spec/07-solana.md): Solana sends (templates), dApp connect/message signing/SIWS (§19), dApp transaction signing and sending (§20, risk rules X01–X20)
 - [spec/08-bitcoin.md](spec/08-bitcoin.md): Bitcoin sends (P2WPKH, P2TR, P2SH-P2WPKH, P2PKH), indexers, dApp ownership proof (§17)
 - [spec/09-testing.md](spec/09-testing.md): Test placement, gate summary, fuzz-lite, live probes, known-answer vectors, milestone checklists
 - [spec/10-yubikey.md](spec/10-yubikey.md): YubiKey 5 accounts: OpenPGP secp256k1 (EVM/BTC/ZEC) and PIV Ed25519 (Solana), multiple cards

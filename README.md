@@ -127,7 +127,7 @@ XChaCha20-Poly1305로 암호화합니다.
 
 **서명과 dApp**
 - 승인 창: 코어가 직접 해석한 내용, 시뮬레이션(EVM `eth_simulateV1`, Solana `simulateTransaction`), 위험 규칙(EVM E01–E43,
-  Solana X01–X19), 1회용 승인, 1초 대기·2초 누르기.
+  Solana X01–X20), 1회용 승인, 1초 대기·2초 누르기.
 - Chrome 확장: EVM은 EIP-1193/EIP-6963, Solana는 Wallet Standard(Phantom 호환 모드 포함). Bitcoin은 확장 팝업에서 UniSat·Xverse
   호환 모드를 켰을 때만 페이지에 보이며, 연결과 **메시지 서명(BIP137·BIP322, 소유 증명)만** 됩니다.
 - **Solana dApp 거래** — `signTransaction`, `signAllTransactions`(최대 32건을 창 하나·승인 한 번으로), `signAndSendTransaction`.
@@ -370,7 +370,7 @@ See the images above and the full [screen tour](docs/screenshots/README.md) (Kor
 
 **Signing and dApps**
 - Approval windows: the core's own decoding, simulation (EVM `eth_simulateV1`, Solana `simulateTransaction`), risk
-  rules (EVM E01–E43, Solana X01–X19), single-use approvals, 1 s arm delay and 2 s hold.
+  rules (EVM E01–E43, Solana X01–X20), single-use approvals, 1 s arm delay and 2 s hold.
 - Chrome extension: EIP-1193/EIP-6963 for EVM, Wallet Standard for Solana (plus a Phantom compatibility mode). Bitcoin
   appears on pages only after you pick the UniSat or Xverse compatibility mode in the extension popup, and supports
   connecting and **message signatures only** (BIP137 and BIP322, proof of ownership).

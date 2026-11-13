@@ -1,8 +1,8 @@
-//! dApp transaction approvals (spec/07 §20.5–§20.7, spec/09 SOL-N11–N13 core parts): the X rules
-//! from minimal fixtures, the payload digest and `check_draft`, the display fields (flags, the
-//! 32-transaction bound, whole addresses, escaping, per-transaction lookup errors), the
-//! simulation diff, and the sign-only signer with standard, imported, added-mnemonic and card
-//! keys, including the cross-kind refusals.
+//! dApp transaction approvals (spec/07 §20.4–§20.7, spec/09 SOL-N11–N13 and N18 core parts):
+//! the X rules from minimal fixtures, the payload digest and `check_draft`, the display fields
+//! (flags, the 32-transaction bound, whole addresses, escaping, per-transaction lookup errors),
+//! the fee range and its RPC check, the simulation diff, and the sign-only signer with standard,
+//! imported, added-mnemonic and card keys, including the cross-kind refusals.
 #![expect(
     clippy::indexing_slicing,
     reason = "test fixtures index buffers of known length"
@@ -29,7 +29,7 @@ use crate::approval::{
 use crate::bip32::path::AccountIndex;
 use crate::evm::risk::{
     X01, X02, X03, X04, X05, X06, X07, X08, X09, X10, X11, X12, X13, X14, X15, X16, X17, X18, X19,
-    is_simulation_status, level_of,
+    X20, is_simulation_status, level_of,
 };
 use crate::policy::BrowserOrigin;
 use crate::slip10::SolKeySource;
@@ -43,7 +43,9 @@ use crate::sol::message::CompiledIx;
 use crate::sol::msgsign::SolMessageError;
 use crate::sol::recipient::{KnownAddress, KnownKind};
 use crate::sol::shortvec;
-use crate::sol::template::{set_compute_unit_limit_data, spl_entries, system_transfer_data};
+use crate::sol::template::{
+    set_compute_unit_limit_data, set_compute_unit_price_data, spl_entries, system_transfer_data,
+};
 use crate::sol::token::MintView;
 use crate::vault::tests::unlocked_with;
 
@@ -286,6 +288,7 @@ fn rule_table_levels() {
         (X17, High),
         (X18, Caution),
         (X19, Caution),
+        (X20, High),
     ] {
         assert_eq!(level_of(rule), Some(level), "{rule:?}");
         assert_eq!(rule.family(), b'X');
@@ -353,10 +356,14 @@ fn unknown_programs_are_high_and_approvable() {
     let stake = crate::sol::address::STAKE_PROGRAM;
     let draft = draft_of(one_ix(stake, &[], &[1], &[2, 0, 0, 0]), ok_facts());
     assert!(text_of(&draft, X02).contains("Stake 프로그램"));
-    // A decoded precompile is not X02.
+    // A decoded precompile is not X02; its signature is part of the fee (5,000 + 5,000).
     let mut data = vec![1, 0];
     data.extend_from_slice(&[0; 14]);
-    let draft = draft_of(one_ix(ED25519_PRECOMPILE, &[], &[], &data), ok_facts());
+    let item = SolTxItemFacts {
+        rpc_fee: Some(10_000),
+        ..ok_facts()
+    };
+    let draft = draft_of(one_ix(ED25519_PRECOMPILE, &[], &[], &data), item);
     assert_eq!(rules(&draft), vec![X11]);
 }
 
@@ -510,27 +517,132 @@ fn durable_nonce_simulation_fee_and_runtime_rules() {
     };
     let draft = draft_of(wire(&transfer_message(), &[]), item.clone());
     assert!(text_of(&draft, X14).contains("200,000 lamports > 상한 100,000 lamports"));
+    // 200,000 is not the 5,000 the message costs either.
+    assert!(text_of(&draft, X20).contains("RPC 200,000 lamports · 계산값 5,000 lamports"));
     let foreign = legacy(
         [2, 0, 1],
         &[site_address(), wallet(), SYSTEM_PROGRAM],
         vec![ix(2, &[1, 0], &system_transfer_data(1))],
     );
     let draft = draft_of(wire(&foreign, &[]), item);
-    assert!(!rules(&draft).contains(&X14));
+    assert!(!rules(&draft).contains(&X14) && !rules(&draft).contains(&X20));
     assert!(rules(&draft).contains(&X13));
     assert!(field(&draft, FieldKey::SOL_TX_FEE).contains("수수료 지불: 다른 계정"));
-    // Without an RPC fee the local estimate is shown.
+    // Without an RPC fee only the computed fee is shown.
     let item = SolTxItemFacts {
         rpc_fee: None,
         ..ok_facts()
     };
     let draft = draft_of(wire(&transfer_message(), &[]), item);
-    assert!(field(&draft, FieldKey::SOL_TX_FEE).contains("계산값"));
+    assert!(field(&draft, FieldKey::SOL_TX_FEE).starts_with(
+        "RPC가 답하지 않음 (getFeeForMessage)
+계산값 5,000 lamports"
+    ));
+    assert!(!rules(&draft).contains(&X20));
     // Duplicate ComputeBudget.
     let keys = [wallet(), key(0x22), COMPUTE_BUDGET_PROGRAM];
     let cb = set_compute_unit_limit_data(1_000);
     let duplicate = legacy([1, 0, 2], &keys, vec![ix(2, &[], &cb), ix(2, &[], &cb)]);
     assert!(rules(&draft_of(wire(&duplicate, &[]), ok_facts())).contains(&X18));
+}
+
+#[test]
+fn fee_is_computed_from_the_message_and_checks_the_rpc() {
+    let keys = [wallet(), key(0x22), COMPUTE_BUDGET_PROGRAM, SYSTEM_PROGRAM];
+    let price = |micro| ix(2, &[], &set_compute_unit_price_data(micro));
+    let limit = |units| ix(2, &[], &set_compute_unit_limit_data(units));
+    let transfer = || ix(3, &[0, 1], &system_transfer_data(1_000));
+    let with_rpc = |rpc_fee| SolTxItemFacts {
+        rpc_fee,
+        ..ok_facts()
+    };
+    // An RPC that answers only the base fee of an expensive transaction (or under-reports on
+    // purpose) no longer hides X14: the computed fee is the floor, and the mismatch is X20.
+    let expensive = wire(
+        &legacy(
+            [1, 0, 2],
+            &keys,
+            vec![limit(200_000), price(1_000_000_000), transfer()],
+        ),
+        &[],
+    );
+    let draft = draft_of(expensive.clone(), with_rpc(Some(5_000)));
+    assert!(text_of(&draft, X14).contains("200,005,000 lamports > 상한 100,000 lamports"));
+    assert!(text_of(&draft, X20).contains("RPC 5,000 lamports · 계산값 200,005,000 lamports"));
+    assert_eq!(draft.display.risk, RiskLevel::High);
+    let fee = field(&draft, FieldKey::SOL_TX_FEE);
+    assert!(
+        fee.starts_with(
+            "5,000 lamports (RPC getFeeForMessage)\n계산값 200,005,000 lamports (거래 바이트로 계산)\n수수료 지불: 내 지갑"
+        ),
+        "{fee}"
+    );
+    // The exact RPC value, or none: X14 only.
+    for rpc in [Some(200_005_000), None] {
+        let found = rules(&draft_of(expensive.clone(), with_rpc(rpc)));
+        assert!(found.contains(&X14) && !found.contains(&X20), "{rpc:?}");
+    }
+    // An honest priority-fee transfer without a limit: two builtins × 3,000 CU at 1,000,000
+    // micro-lamports = 6,000, so 11,000 in all — no false X14 (the old estimate said 205,000).
+    let honest = wire(
+        &legacy([1, 0, 2], &keys, vec![price(1_000_000), transfer()]),
+        &[],
+    );
+    for rpc in [Some(11_000), None] {
+        assert_eq!(
+            rules(&draft_of(honest.clone(), with_rpc(rpc))),
+            vec![X11],
+            "{rpc:?}"
+        );
+    }
+    // Above the computed maximum is X20 as well.
+    let draft = draft_of(honest, with_rpc(Some(11_001)));
+    assert_eq!(rules(&draft), vec![X20, X11]);
+    assert!(text_of(&draft, X20).contains("RPC 11,001 lamports · 계산값 11,000 lamports"));
+    // Without a limit a migrating builtin (Stake) is bracketed: 3,000 or 200,000 CU.
+    let stake = wire(
+        &legacy(
+            [1, 0, 2],
+            &[
+                wallet(),
+                key(0x22),
+                COMPUTE_BUDGET_PROGRAM,
+                crate::sol::address::STAKE_PROGRAM,
+            ],
+            vec![price(1_000_000), ix(3, &[1], &[2, 0, 0, 0])],
+        ),
+        &[],
+    );
+    let draft = draft_of(stake.clone(), with_rpc(Some(100_000)));
+    assert!(!rules(&draft).contains(&X20) && !rules(&draft).contains(&X14));
+    assert!(
+        field(&draft, FieldKey::SOL_TX_FEE)
+            .contains("계산값 11,000–208,000 lamports (CU 한도가 없어 범위로 계산)")
+    );
+    let draft = draft_of(stake, with_rpc(Some(10_999)));
+    assert!(text_of(&draft, X20).contains("RPC 10,999 lamports · 계산값 11,000–208,000 lamports"));
+    // The wallet does not pay: neither X14 nor X20, whatever the RPC says.
+    let foreign = wire(
+        &legacy(
+            [2, 0, 2],
+            &[
+                site_address(),
+                wallet(),
+                COMPUTE_BUDGET_PROGRAM,
+                SYSTEM_PROGRAM,
+            ],
+            vec![
+                limit(200_000),
+                price(1_000_000_000),
+                ix(3, &[1, 0], &system_transfer_data(1)),
+            ],
+        ),
+        &[],
+    );
+    let draft = draft_of(foreign, with_rpc(Some(5_000)));
+    let found = rules(&draft);
+    assert!(found.contains(&X13) && !found.contains(&X14) && !found.contains(&X20));
+    assert!(field(&draft, FieldKey::SOL_TX_FEE).contains("계산값 200,010,000 lamports"));
 }
 
 #[test]

@@ -1,7 +1,7 @@
 //! dApp transactions (spec/07 §20.2–§20.4, spec/09 SOL-N6–N10 core parts): the legacy/v0 parser
 //! with every sanitize negative, re-encoding identity and the M01 invariant, signature slots,
 //! durable-nonce detection, lookup tables and their resolution, the instruction decoders with
-//! exact lengths, and the local fee estimate.
+//! exact lengths, and the fee range computed from the message.
 #![expect(
     clippy::indexing_slicing,
     reason = "test fixtures index buffers of known length"
@@ -28,7 +28,7 @@ use crate::sol::address::{
     SYSTEM_PROGRAM, SYSVAR_RECENT_BLOCKHASHES, SolAddress, TOKEN_2022_PROGRAM, TOKEN_PROGRAM,
     program_name,
 };
-use crate::sol::fee::{dapp_fee_estimate, max_fee};
+use crate::sol::fee::{DappFeeBounds, dapp_fee_bounds, max_fee};
 use crate::sol::message::CompiledIx;
 use crate::sol::msgsign::looks_like_transaction;
 use crate::sol::pda::associated_token_address;
@@ -661,12 +661,16 @@ fn precompile_signatures_and_compute_budget_duplicates() {
 }
 
 #[test]
-fn dapp_fee_estimates() {
+fn dapp_fee_bounds_follow_the_runtime() {
+    let exact = |fee: u128| DappFeeBounds {
+        low: fee,
+        high: fee,
+    };
     // T_SOL golden: one signature, limit 450, price 1,000 → the template formula.
     let golden = parse_message_any(&t_sol_message()).unwrap();
     assert_eq!(
-        dapp_fee_estimate(&golden),
-        u128::from(max_fee(450, 1_000).unwrap())
+        dapp_fee_bounds(&golden),
+        exact(u128::from(max_fee(450, 1_000).unwrap()))
     );
 
     let keys = [
@@ -675,46 +679,96 @@ fn dapp_fee_estimates() {
         MEMO_PROGRAM_V1,
         COMPUTE_BUDGET_PROGRAM,
         ED25519_PRECOMPILE,
+        SYSTEM_PROGRAM,
+        STAKE_PROGRAM,
+        SECP256R1_PRECOMPILE,
     ];
-    let estimate = |header: [u8; 3], instructions: Vec<CompiledIx>| {
-        dapp_fee_estimate(&parse_message_any(&legacy(header, &keys, instructions)).unwrap())
+    let bounds = |header: [u8; 3], instructions: Vec<CompiledIx>| {
+        dapp_fee_bounds(&parse_message_any(&legacy(header, &keys, instructions)).unwrap())
     };
     let memo = || ix(2, &[], b"m");
+    let transfer = || ix(5, &[0, 1], &system_transfer_data(1));
     let price = ix(3, &[], &set_compute_unit_price_data(1_000_000));
-    // No limit: 200,000 per instruction outside ComputeBudget, capped at 1,400,000.
+    // No limit: 3,000 per builtin instruction (ComputeBudget itself included), 200,000 for the
+    // others (Agave SIMD-0170). The old estimate gave 400,000 here, 3,000 CU too low.
     assert_eq!(
-        estimate([1, 0, 3], vec![price.clone(), memo(), memo()]),
-        5_000 + 400_000
+        bounds([1, 0, 6], vec![price.clone(), memo(), memo()]),
+        exact(5_000 + 403_000)
     );
+    // An honest priority-fee transfer without a limit: 2 × 3,000 CU, not 200,000.
+    assert_eq!(
+        bounds([1, 0, 6], vec![price.clone(), transfer()]),
+        exact(5_000 + 6_000)
+    );
+    // Capped at 1,400,000; no price, no priority fee whatever the limit.
     let mut eight = vec![price.clone()];
     eight.extend(std::iter::repeat_with(memo).take(8));
-    assert_eq!(estimate([1, 0, 3], eight), 5_000 + 1_400_000);
-    assert_eq!(estimate([1, 0, 3], vec![memo(); 8]), 5_000);
+    assert_eq!(bounds([1, 0, 6], eight), exact(5_000 + 1_400_000));
+    assert_eq!(bounds([1, 0, 6], vec![memo(); 8]), exact(5_000));
+    // A migrating builtin (Stake) is 3,000 before its Core BPF feature and 200,000 after it:
+    // the range brackets both.
+    let stake = bounds([1, 0, 6], vec![price.clone(), ix(6, &[], &[0; 4])]);
+    assert_eq!(
+        stake,
+        DappFeeBounds {
+            low: 5_000 + 6_000,
+            high: 5_000 + 203_000,
+        }
+    );
+    assert!(stake.contains(11_000) && stake.contains(208_000) && stake.contains(100_000));
+    assert!(!stake.contains(10_999) && !stake.contains(208_001));
+    // With a limit the range is exact again.
+    assert_eq!(
+        bounds(
+            [1, 0, 6],
+            vec![
+                ix(3, &[], &set_compute_unit_limit_data(50_000)),
+                price.clone(),
+                ix(6, &[], &[0; 4]),
+            ]
+        ),
+        exact(5_000 + 50_000)
+    );
     // A limit above the runtime maximum is capped; the first limit wins.
     assert_eq!(
-        estimate(
-            [1, 0, 3],
+        bounds(
+            [1, 0, 6],
             vec![
                 ix(3, &[], &set_compute_unit_limit_data(2_000_000)),
                 price.clone(),
                 ix(3, &[], &set_compute_unit_limit_data(10)),
             ]
         ),
-        5_000 + 1_400_000
+        exact(5_000 + 1_400_000)
     );
-    // Two signers plus two precompile signatures; the price rounds up.
+    // Two signers plus two Ed25519 and one Secp256r1 precompile signatures; the price rounds
+    // up.
     let mut ed25519 = vec![2, 0];
     ed25519.extend_from_slice(&[0; 28]);
+    let mut secp256r1 = vec![1, 0];
+    secp256r1.extend_from_slice(&[0; 14]);
     assert_eq!(
-        estimate(
-            [2, 0, 3],
+        bounds(
+            [2, 0, 6],
             vec![
                 ix(3, &[], &set_compute_unit_limit_data(3)),
                 ix(3, &[], &set_compute_unit_price_data(1)),
                 ix(4, &[], &ed25519),
+                ix(7, &[], &secp256r1),
             ]
         ),
-        4 * 5_000 + 1
+        exact(5 * 5_000 + 1)
+    );
+    // Without a limit Ed25519 is a builtin (3,000) and Secp256r1 is bracketed.
+    assert_eq!(
+        bounds(
+            [1, 0, 6],
+            vec![price, ix(4, &[], &ed25519), ix(7, &[], &secp256r1)]
+        ),
+        DappFeeBounds {
+            low: 4 * 5_000 + 9_000,
+            high: 4 * 5_000 + 206_000,
+        }
     );
 }
 
