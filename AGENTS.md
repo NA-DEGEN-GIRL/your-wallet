@@ -308,5 +308,7 @@ The specs were reconciled with the code on 2026-11-13. If you find stale spec te
 - `README.md`: product overview (Korean + English).
 - `docs/dapp-integration.md`: dApp-facing API reference (providers, methods, errors, limits).
 - `llms.txt`: index of all docs for LLMs.
+- `docs/llm-install-guide.md`, `docs/llm-verify-guide.md`, `docs/llm-user-faq.md`: guides for AI assistants helping an
+  owner install, review and use the wallet on their own PC (not for coding agents; coding agents never run `install.cmd`).
 - `docs/security-review-20261101.md`: internal security review. Features added after 2026-11-01 were reviewed only per step.
 - `docs/acceptance/`: per-milestone acceptance records.

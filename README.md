@@ -220,6 +220,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1 -Offline  
 AI·코딩 에이전트용: [AGENTS.md](AGENTS.md)(코딩 에이전트 작업 안내) · [llms.txt](llms.txt)(LLM용 문서 색인) ·
 [docs/dapp-integration.md](docs/dapp-integration.md)(dApp 연동 참고: 제공자 API, 메서드, 오류 코드).
 
+AI 비서에게 설치를 도와 달라고 할 때(영문): [docs/llm-install-guide.md](docs/llm-install-guide.md)(빌드·설치 안내) ·
+[docs/llm-verify-guide.md](docs/llm-verify-guide.md)(설치 전 코드 검토) · [docs/llm-user-faq.md](docs/llm-user-faq.md)(사용자
+질문 답변).
+
 | 문서 | 내용 |
 |---|---|
 | [spec.md](spec.md) | 목표, 위협 모델, 결정 사항, 아키텍처 |
@@ -475,6 +479,10 @@ Known limits:
 For AI and coding agents: [AGENTS.md](AGENTS.md) (guide for coding agents) · [llms.txt](llms.txt) (documentation index
 for LLMs) · [docs/dapp-integration.md](docs/dapp-integration.md) (dApp integration reference: provider API, methods,
 error codes).
+
+For an AI assistant helping someone install the wallet: [docs/llm-install-guide.md](docs/llm-install-guide.md) (build
+and install) · [docs/llm-verify-guide.md](docs/llm-verify-guide.md) (pre-install code review) ·
+[docs/llm-user-faq.md](docs/llm-user-faq.md) (answering user questions).
 
 The specs and docs listed in the Korean [문서](#문서) table above are in Korean: `spec.md` and `spec/` (01–13), install,
 first-use checklist, recovery guide, screen tour, security review, acceptance records, UX reviews and the Android

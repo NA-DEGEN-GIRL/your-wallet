@@ -17,6 +17,14 @@ Notes:
   - Bitcoin: only through the UniSat or Xverse compatibility modes in the extension popup.
   - MetaMask, Rabby and Phantom look-alike modes also exist.
 
+## Guides for AI assistants helping a person
+
+An assistant helping someone check, build or install this wallet on their own PC should start with docs/llm-install-guide.md. (Coding agents editing the repository use AGENTS.md instead.)
+
+- [Install guide for AI assistants](docs/llm-install-guide.md): Prerequisites, clone or ZIP, dry run, install.cmd, the Chrome extension, first run, update, uninstall, troubleshooting, and the safety rules (never ask for the recovery phrase, password, RPC URL or keys)
+- [Pre-install review guide for AI assistants](docs/llm-verify-guide.md): What to read and run to check the code before trusting it (network hosts, secrets, extension, approval path, dependencies), with expected results and honest limits
+- [User FAQ for AI assistants](docs/llm-user-faq.md): Answers to common user questions (chains, RPC, YubiKey, backups, approval warnings, error codes, privacy) with their sources
+
 ## Docs
 
 - [README](README.md): What the wallet is, why to use it, features, limits, install and development (Korean and English)
