@@ -341,11 +341,13 @@ Every method outside the allowlist (40 methods: 27 EVM + 13 Solana/Bitcoin) retu
 
 Messages are exact strings. Wallet-generated errors carry no `data`, except Solana partial sends (§4.1) and sanitized upstream read errors.
 
+**Grant re-check before every reply (spec/05 §4.5):** a signature (`personal_sign`, `eth_signTypedData_v4`, `sol_signMessage`, `sol_signIn`, Solana transaction signing, `btc_signMessage`) or an `eth_sendTransaction` hash is sent only while the site is still connected with that account. If the site was disconnected (by the user, by its own `wallet_revokePermissions` / `sol_disconnect` / `btc_disconnect`, or because the account was hidden) after the approval, the reply is 4100 and the signature is discarded. A transaction that was already signed and journaled is still broadcast. A YubiKey request still waiting for its PIN ends at once on a disconnect (4100) or when the page goes away (4001); nothing is signed.
+
 | Code | Message | Typical cause |
 |---|---|---|
 | 4001 | `User rejected the request.` | User rejected or closed the window, wallet locked, unlock window dismissed |
 | 4001 | `Request expired.` | Window open 120 s without a decision |
-| 4100 | `Unauthorized.` | Not connected, account not granted, localhost toggle off, no wallet, backup pending |
+| 4100 | `Unauthorized.` | Not connected, account not granted, localhost toggle off, no wallet, backup pending, disconnected after the approval but before the reply (see below) |
 | 4100 | `Unauthorized: …` | Reason variants: `PassphraseUnverified`, `NoEvmAccount`, `NoSolAccount`, `NoBtcAccount`, `BtcDisabled`, `BackupUnconfirmed`, `TooManySites` |
 | 4200 | `Unsupported method.` | Not in the allowlist, or a malformed method name |
 | 4900 | `Wallet is unavailable.` | App not running and auto-start off, or the native host failed |

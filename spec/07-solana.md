@@ -794,6 +794,7 @@ dApp은 Solana 계정을 **연결**하고 **메시지에 서명**(Sign-In-With-S
 ### 19.1 코어 (`yw_core::sol::msgsign`)
 - `ApprovalKind::SolMessage = 0x21`(`sol_signMessage`), `SolSignIn = 0x22`(`sol_signIn`). origin은 사이트, `ChainRef::Solana { cluster, genesis = 고정 제네시스 }`(settings 클러스터), `AccountRef::Sol(public)`, `Signer::FromPayload`, `SigningPayload::SolMessage { source, public, message }`(digest 바이트 = transcript `"your-wallet/v3/sol-message"` v1: 출처 태그·인자(태그 8이면 그 뒤 니모닉 record id `push_bytes` 16, §3.5), 공개키, 메시지). 승인 digest·일회 소비·120 s 만료는 [03] §11 그대로.
 - 서명(`sign_message(vault, approved)`): 종류·체인·계정·payload 일치 확인 → §19.2 규칙 재확인 → 표준 경로는 `with_ed25519_seed`, 가져온 키는 공개키로 `with_imported_ed25519_seed` → 파생 공개키 = 승인 계정 확인 → Ed25519로 **메시지 바이트 그대로** 서명 → `verify_strict`. 결과는 64바이트 서명.
+- 응답(2026-11-13, [05] §4.5): 보내기 직전에 출처의 Solana grant가 여전히 그 공개키를 가리켜야 한다. 아니면 서명을 버리고 4100(§20.8과 같다).
 
 ### 19.2 서명할 수 없는 바이트 (차단, `M01`·`M02`)
 - 길이 > 65,536 B.
@@ -968,7 +969,7 @@ payload digest(transcript `"your-wallet/v3/sol-tx"`, `u16 1`): 출처 태그·�
 | 잠금·취소 | 4001 | 서명 전 대기 → 4001. 저널에 기록된 뒤의 응답 대기 → 그 서명으로 답하고 잠금 해제 뒤 추적을 재개 |
 | 응답 | `{publicKey, signedTransaction(s)}` | 첫 라운드가 결정적 preflight 오류·이상값·제네시스 불일치·`Expired`면 -32603 `BroadcastFailed`, 그 밖(받아들여짐·상태 있음·착지·체인 실패·일시 오류)은 `{publicKey, signature}` |
 
-- 응답 직전(둘 다) 출처의 grant가 여전히 그 공개키를 가리켜야 한다. 아니면 바이트를 버리고 4100. 전송은 이미 저널에 있으므로 계속 전송되고 활동에 보인다.
+- 응답 직전(둘 다) 출처의 grant가 여전히 그 공개키를 가리켜야 한다. 아니면 바이트를 버리고 4100. 전송은 이미 저널에 있으므로 계속 전송되고 활동에 보인다. 2026-11-13부터 이 재확인은 모든 dApp 서명(§19 메시지·SIWS, EVM 메시지·거래 해시, Bitcoin 메시지)에 같고, YubiKey PIN을 기다리는 단계는 해제 때 바로 끝난다([05] §4.5, [10] §9.2).
 - 전송 옵션: `skipPreflight`는 그 레코드의 모든 전송(v3 플래그 bit2), `preflightCommitment`는 preflight 하는 모든 전송(bit3–4), `minContextSlot`은 첫 전송만(메모리). `maxRetries`는 늘 0.
 - 같은 서명 0번의 레코드가 이미 있으면(같은 바이트를 두 번 승인) 새 레코드를 만들지 않고 그 서명으로 답한다(멱등, `AlreadySigned` 오류가 아니다). 같은 `intent_hash`는 `AlreadySigned`.
 - 지갑은 dApp 거래를 다시 서명하지 않는다(새 블록해시 없음). 그래서 D20 한 건 규칙의 예외이고 상한은 §20.9의 (클러스터, 서명 계정)당 16건·전체 32건이다.

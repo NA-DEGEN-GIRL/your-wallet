@@ -317,7 +317,7 @@ S16 토큰 추가: 컨트랙트 주소(§2.15) → RPC `decimals()`·`symbol()`(
 - 맨 위 도움말 "연결된 사이트는 아래 계정의 주소를 볼 수 있고, EVM 사이트는 잔액과 거래 기록도 읽을 수 있습니다. 서명과 전송은 매번 이 앱의 확인 창에서 따로 승인합니다."와, 연결이 있으면 개수 줄 `연결 EVM {n}곳 · Solana {n}곳 · Bitcoin {n}곳`(0인 계열은 뺀다).
 - 2026-11-10: EVM 카드는 사이트가 기본으로 쓰는 계정(grant의 첫 계정, [05] §4.2의 연결 창 줄과 같음)을 알린다 — 2026-11-12부터 따로 둔 줄 대신, 계정이 둘 이상일 때 첫 계정의 이름 줄이 "{라벨} · 사이트가 기본으로 쓰는 계정"이다("볼 수 있는 계정 n개" 줄은 없앴다). 카드와 WalletConnect 세션 카드의 계정 이름은 [05] §4.2의 표시 이름(복구 단어가 둘 이상이면 "{라벨} ({복구 단어 라벨})").
 - 사이트마다 카드(제목 = `{origin 전체}  ·  {계열}`, 계열 `EVM`·`Solana`·`Bitcoin` — 한 사이트가 여러 체인에 연결되면 계열마다 카드가 하나씩이다): 네트워크, 연결 시각, 위험 버튼 `연결 해제`(작은 버튼; 2026-11-12부터 세 계열과 WalletConnect 세션 카드 모두 시각 줄 바로 아래 — 계정이 많아도 사이트 이름 가까이에 있다. 누르면 정보 띠 "{카드 제목} 연결을 해제했습니다."), 각 계정(라벨 + 전체 주소, 세 계열 모두 §3.3 주소 그리기). 맨 아래 위험 버튼 `모든 사이트 연결 해제`(확인 오버레이 `Confirm::DisconnectAll`; 2026-11-08부터 WalletConnect 세션이 있으면 문구가 "연결된 모든 사이트의 연결을 해제하고 WalletConnect 세션 n개도 끊습니다(dApp 쪽 연결도 끊깁니다). …"이고 세션마다 `wc_sessionDelete`를 보낸다, [13] §7). WalletConnect 세션 카드 아래 위험 버튼 `모든 WalletConnect 세션 끊기`도 2026-11-08부터 같은 확인 오버레이(`Confirm::WcDisconnectAll`: "WalletConnect 세션 n개를 모두 끊을까요? 다시 쓰려면 dApp마다 QR이나 링크로 새로 연결해야 합니다.", `모두 끊기`(위험)·`취소`)를 거친다(세션 하나의 `연결 해제`는 확인 없음). 연결이 없으면 카드 "연결된 사이트가 없습니다" + "dApp 사이트에서 '지갑 연결'을 누르고 이 앱의 연결 창에서 승인하면 여기에 표시됩니다."
-- `연결 해제`(행), `모든 사이트 연결 해제`(확인 오버레이) → [05] §4.5. 그 origin의 대기 항목은 `Revoked`(§3.7).
+- `연결 해제`(행), `모든 사이트 연결 해제`(확인 오버레이) → [05] §4.5. 그 origin의 대기 항목은 `Revoked`(§3.7). 승인된 그 사이트의 요청도 따른다(2026-11-13, [05] §4.5): W11이 열린 동안은 메인 창이 꺼져 있으므로 S13 해제는 YubiKey 터치 대기나 틀린 PIN 뒤의 짧은 사이에 일어나며, 그 결과(서명·거래 해시)는 사이트로 가지 않고 4100, 틀린 PIN 뒤의 W11은 다시 열리지 않는다(아무것도 서명하지 않음).
 - Solana·Bitcoin 연결(meta `sol_sites`·`btc_sites`, [05] §4.9)은 EVM 카드 다음에 같은 모양의 카드로 보인다: 네트워크(`Solana`, `Bitcoin 메인넷`), `권한` 줄(Solana "연결·메시지 서명·거래 서명(매번 승인)", Bitcoin "메시지 서명·소유 증명만"; 2026-11-12 — 이전에는 두 계열 모두 "메시지 서명·소유 증명만"이었고 그 전에는 네트워크 값의 괄호 안), 연결 시각, 위험 버튼 `연결 해제`, Solana는 계정 라벨(내 Solana 계정 목록에 있으면)과 base58 공개키, Bitcoin은 목적(`결제용 주소 (payment…)`·`오디널스용 주소 (ordinals…)`·`연결할 주소`)과 전체 주소. `연결 해제`는 그 계열 grant만 지우고 그 계열의 대기 서명 항목만 `Revoked`로 끝낸다. `모든 사이트 연결 해제`는 세 계열 모두 지운다.
 - 쪽: EVM·Solana·Bitcoin을 이은 목록(최대 3 × 256개)을 한 쪽에 50개씩 보인다(행 수 제한 없음). 쪽이 둘 이상이면 카드 아래에 `n / m쪽 (연결 k곳, 한 쪽에 50곳)`과 `이전 쪽`·`다음 쪽`(해당할 때만, id 6,702·6,703). 행 버튼 id(6,710 + 쪽 안 순번)는 그 화면을 그릴 때 기록한 **(origin, 계열)** 을 가리킨다(`app_browser::SiteRows`): 그린 뒤 목록이 바뀌어도(dApp의 해제 등) 버튼은 그려진 사이트만 해제하고 다른 사이트로 밀리지 않는다.
 
@@ -725,7 +725,7 @@ pub enum QueueOutcome {
 | `Expired` | 승인 창 내용 표시(Ready) 후 120 s(D23, [03] §11.5 `issue` 시점) | 4001 `Request expired.` |
 | `TimedOut` | dApp 요청 기한 만료([05] §6.4) | -32603 `Request timed out.` |
 | `Cancelled` | 확장 cancel·연결 끊김 | 응답 없음 |
-| `Revoked` | 대기 중 그 origin 연결 해제 | 4100 `Unauthorized.` |
+| `Revoked` | 대기 중 그 origin 연결 해제(승인 뒤 YubiKey PIN을 기다리는 요청과 응답 직전 재확인은 큐 밖의 같은 결과, 아래·[05] §4.5) | 4100 `Unauthorized.` |
 | `TooManyPending` | 큐 한도 초과 | -32005 `Too many pending requests.` |
 | `NotReady` | `BackupPending`에서 Site 서명·연결 요청([05] §4.2·§8.4) | 4100 `Unauthorized.`([05] §5) |
 | `PassphraseUnverified` | 잠김 중 큐에 들어간 Site 서명·연결 요청이 확인되지 않은 passphrase 세션(`App::passphrase_unverified()`, [02] §7.5)으로 풀림 | 4100 `ProviderError::PassphraseUnverified`(이유 메시지, [05] §5) |
@@ -861,7 +861,8 @@ pub fn can_approve(g: &ApprovalGate, now: Instant) -> bool {
 - `Locked`·`PassphraseRequired`·`Unlocking`: 꺼내지 않는다. 큐가 비어 있지 않으면 W02를 연다(§2.5). `BackupPending`: Site 서명·연결 항목은 즉시 `NotReady`([05] §4.2·§8.4).
 - 잠기는 순간 표시 중인 창은 닫고 `Rejected`([05] §4.4, [03] `invalidate_all`). 대기 중인 항목은 남아 잠금 해제를 기다린다(기한 유지).
 - dApp 취소([05] §8.4): 대기 중이면 제거, 표시 중이면 창을 바로 닫는다. 둘 다 `Cancelled`.
-- 연결 해제(S13, `wallet_revokePermissions`): 그 origin의 Site 서명 항목은 `Revoked`.
+- 연결 해제(S13, `wallet_revokePermissions`): 그 origin의 Site 서명 항목은 `Revoked`. 이미 승인되어 큐를 떠난 요청(2026-11-13, [05] §4.5): YubiKey PIN을 기다리는 카드 단계는 W11을 닫고 4100으로 끝나며(아무것도 서명하지 않음), 서명·전송이 끝난 요청은 응답 직전 grant 재확인에서 4100(서명은 버림, 저널에 쓴 거래는 계속 전송). 전에는 큐 항목만 끝냈다.
+- dApp 취소·연결 끊김으로 디스패처가 요청을 지우면 PIN을 기다리는 그 요청의 카드 단계도 끝난다(4001, 아무것도 서명하지 않음, 2026-11-13).
 - 대기 중 기한 만료 → `TimedOut`(꺼낼 때와 `MAIN_TIMER_MS`마다 검사).
 - `이 사이트의 대기 요청 모두 거부`: 표시 중 항목과 같은 origin의 대기 항목 모두 `Rejected`.
 
@@ -872,7 +873,7 @@ pub fn can_approve(g: &ApprovalGate, now: Instant) -> bool {
 - AP-1: 이식 `lib.rs:580-1006` 테스트 전부 통과(위험 사상 적용).
 - AP-2(빠른 클릭): armed 아님에서의 누름은 대기를 다시 시작한다(10,999 ms 누름 뒤 11,000 ms 클릭 무시, 12,000 ms 승인); 창 활성화도 다시 시작; 아무 누름 뒤 999 ms의 승인 누름(포인터·Enter·고위험 포인터·Space hold) 무시, 1,000 ms 수락; 오른쪽·가운데·X 버튼과 비클라이언트 누름도 대기 재시작·누름 간격에 들어감; 빠른 클릭 연속 + 자동 반복 Enter는 1초 멈춘 뒤의 누름만 승인.
 - AP-2: `armed=false`에서 Enter·클릭·2초 hold → `Pending`. 고위험 경고 2개: 체크박스는 1개, 체크 끔 + 2초 hold → `Pending`; 체크 켬 + 1.9초 / 2.0초 → `Pending` / `Approved`. `risk == High`인데 `ack_required == false`인 비정상 입력도 체크 필요(D16, 방어 중복). `Blocked` → 어떤 입력도 `Approved` 아님. `ready_at` + 999 ms 클릭 → 무시. 표시 교체 중 hold → 취소, 체크 해제.
-- AP-3: 같은 origin 17번째·전체 65번째 → `TooManyPending`. 남은 기한 4,999 ms → 창 없이 `TimedOut`. `Preparing` 30 s 뒤 Ready → `Expired`는 Ready 표시 + 120 s(준비 시간 불포함). App 항목 `Expired` → 폼 입력 유지, 다시 검토 시 새 승인 id(이전 id `consume` 실패). `Connect` 선택 16개 → `can_approve` 참, 17개 → 거짓. 표시 중 잠금 → `Rejected`, 대기 항목은 남음. 연결 해제 → 그 origin 대기 항목 `Revoked`.
+- AP-3: 같은 origin 17번째·전체 65번째 → `TooManyPending`. 남은 기한 4,999 ms → 창 없이 `TimedOut`. `Preparing` 30 s 뒤 Ready → `Expired`는 Ready 표시 + 120 s(준비 시간 불포함). App 항목 `Expired` → 폼 입력 유지, 다시 검토 시 새 승인 id(이전 id `consume` 실패). `Connect` 선택 16개 → `can_approve` 참, 17개 → 거짓. 표시 중 잠금 → `Rejected`, 대기 항목은 남음. 연결 해제 → 그 origin 대기 항목 `Revoked`. 승인 뒤(2026-11-13, `app_chain_sites::tests::a_card_step_waiting_for_its_pin_ends_when_its_site_goes`·`signatures_and_hashes_answer_only_while_the_grant_holds`): PIN을 기다리는 YubiKey 단계는 그 origin·계열의 해제에 4100, 페이지 cancel에 4001로 끝나고 W11·PIN 제출은 카드 작업을 만들지 않는다. 다른 origin·다른 계열의 해제와 앱 단계는 그대로, PIN 뒤의 카드 작업은 끝내지 않고 그 서명은 4100. 서명·해시 응답은 grant가 있으면 그대로, 없으면 4100(EVM·Solana·Bitcoin 메시지, EVM 해시는 잠금 해제 중만).
 - AP-4: 이스케이프되지 않은 U+202E, 라벨 표에 없는 `FieldKey` → 표시 없이 `Rejected` + E-UI-001. 270,000바이트 값과 공백 없는 3,000자 문자열 배치 → 줄 조각을 이으면 원문과 같음.
 - AP-5: `can_approve`에 AI 상태 인자가 없다([06] E2와 함께 확인).
 - AP-SOLTX(2026-11-12, [07] §20.6): 새 키 `0x0510`–`0x051A`·`0x0540`마다 라벨이 있다(없으면 AP-4대로 E-UI-001). `summary_value`의 서명만·서명 후 전송 문장, `is_raw`가 `0x0540`을 원본으로 다룬다, YubiKey 안내가 거래 n > 1이면 "모두 {n}회". X02(해석하지 않은 프로그램)만 있는 고위험 요청은 체크 + 2초 누르기로 `Approved`, X01이 있으면 어떤 입력도 `Approved` 아님.

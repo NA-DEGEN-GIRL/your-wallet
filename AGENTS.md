@@ -283,6 +283,10 @@ If a task seems to require breaking one of these, stop and ask the owner.
 - **The wallet computes fees** and ignores dApp fee values. EVM gas ≤ 16,777,216. EIP-1559 type 2 only.
 - **Simulation never changes the dApp response code.** A failed or missing simulation is High risk and is never hidden.
 - **Post-sign check:** EVM recovers the signer and requires it to equal the account. The journal is written before broadcast (spec/03 §4.3, §5.3; spec/07 §20.8).
+- **Grant re-check before every dApp answer** (spec/05 §4.5): a signature (any chain) or an EVM tx hash goes to the
+  site only while its grant still names the signer (4100 otherwise; a journaled tx is still broadcast). A `YubiKey`
+  step still waiting for its PIN ends on a revoke (4100) or page cancel (4001) via `App::card_site_check`; a card
+  job past its PIN is never aborted.
 - **Solana dApp tx** (spec/07 §20.5, §20.10):
   - Never change the blockhash. Fill only the wallet's own signer slot. Re-parse the **approved** bytes before signing.
   - Re-check the site's grant just before replying (4100 otherwise). The provider checks that exactly one 64-byte slot changed.

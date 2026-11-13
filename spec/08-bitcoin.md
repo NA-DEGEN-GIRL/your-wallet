@@ -1044,6 +1044,7 @@ dApp은 Bitcoin 주소를 **연결**하고 **메시지에 서명**하게 할 수
 ### 17.1 코어 (`yw_core::btc::msgsign`)
 - `ApprovalKind::BtcMessage = 0x32`, origin은 사이트, `ChainRef::Bitcoin { network, genesis = 고정 제네시스 }`, `AccountRef::Bitcoin(주소 공개키의 압축 형식)`, `Signer::FromPayload`, `SigningPayload::BtcMessage { network, source, pubkey, script_type, address, protocol, message }`(digest 바이트 = transcript `"your-wallet/v3/btc-message"` v1의 모든 필드; 추가한 니모닉의 HD 키는 출처 코드 6과 그 뒤 니모닉 record id `push_bytes` 16, 주 니모닉의 코드 1 바이트는 그대로, §3.5).
 - 서명(`sign_message(vault, approved)`): 종류·체인·계정 확인 → 메시지 ≤ 65,536 B이고 §17.2 차단 아님 → `address_of(network, script_type, pubkey)` = 승인 주소 → 키 출처의 형식 = 주소 형식 → `BtcKeys::with_btc_key`로 빌린 키의 공개키 = 승인 공개키 → 아래 방식으로 서명 → 즉시 검증.
+- 응답(2026-11-13, [05] §4.5): 보내기 직전에 출처의 Bitcoin grant가 여전히 그 주소를 가져야 한다. 아니면 서명을 버리고 4100.
 
 ### 17.2 방식과 인코딩
 | 주소 형식 | `ecdsa`(BIP137) | `bip322` |
