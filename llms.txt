@@ -45,6 +45,8 @@ Notes:
 
 ## Optional
 
+- [LICENSE-APACHE](LICENSE-APACHE): Apache License 2.0 text; the project is dual-licensed Apache-2.0 OR MIT at the user's option, with no warranty
+- [LICENSE-MIT](LICENSE-MIT): MIT License text (the other half of the Apache-2.0 OR MIT dual license)
 - [Native host README](extension/native-host/README.md): Native messaging host registration and the golden contract files
 - [Screen tour](docs/screenshots/README.md): Annotated screenshots of every main screen and approval window (fake data)
 - [Security review 2026-11-01](docs/security-review-20261101.md): Internal security review (Korean); features added later were reviewed per step only

@@ -233,6 +233,11 @@ AI·코딩 에이전트용: [AGENTS.md](AGENTS.md)(코딩 에이전트 작업 �
 | [docs/ux-review-20261109.md](docs/ux-review-20261109.md) | 최근 UI/UX 검토 |
 | [docs/android-feasibility-20261107.md](docs/android-feasibility-20261107.md) | Android 이식 타당성(조사만, 계획 없음) |
 
+## 라이선스
+
+누구나 쓸 수 있습니다. [Apache License 2.0](LICENSE-APACHE) 또는 [MIT License](LICENSE-MIT) 중 원하는 쪽을 골라 따르면 됩니다
+(`Apache-2.0 OR MIT`). 어떤 보증도 없이 "있는 그대로" 제공됩니다 — 자금 손실을 포함한 결과는 쓰는 사람의 책임입니다.
+
 ---
 
 ## English
@@ -474,3 +479,9 @@ error codes).
 The specs and docs listed in the Korean [문서](#문서) table above are in Korean: `spec.md` and `spec/` (01–13), install,
 first-use checklist, recovery guide, screen tour, security review, acceptance records, UX reviews and the Android
 feasibility study.
+
+### License
+
+Dual-licensed under the [Apache License 2.0](LICENSE-APACHE) or the [MIT License](LICENSE-MIT), at your option
+(`Apache-2.0 OR MIT`), so anyone may use, modify and redistribute it. It is provided "as is", without warranty of any
+kind; you are responsible for any outcome, including loss of funds.

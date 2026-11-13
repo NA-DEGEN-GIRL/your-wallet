@@ -21,7 +21,7 @@
 | `yw_core::codec::wif` | Bitcoin WIF 디코드·인코드(§8.4) |
 | `yw_core::keyimport` | 가져온 개인키의 형식 파서(`ImportKey::parse`), 주소 미리보기(`ImportPreview`). Bitcoin 키의 주소 형식은 계정과 같은 `btc::ScriptType`이고 출력·주소도 같은 코드(`btc::account::kind_for_key`, BIP86 tweak `btc::taproot`)로 계산한다(§8.4, [08] §3.5) |
 | `yw_core::vault` | KDF, v3 헤더·payload 코덱, 사이드카, `VaultStorage`, `LockedSlot`, `Vault` 상태 기계, 백업 확인 |
-| `yw_core::journal` (M4) | journal 평문 컨테이너 코덱(§5.4), `JournalError`(§10.2). 체인별 레코드 본문은 EVM `journal::evm`([03](03-evm.md) §5.1), SOL [07] §14.1, BTC [08] §12.4 |
+| `yw_core::journal` (M4) | journal 평문 컨테이너 코덱(§5.4), `JournalError`(§10.2). 체인별 레코드 본문은 EVM `journal::evm`([03](03-evm.md) §5.1), SOL [07] §14.1, BTC [08] §12.4, ZEC `journal::zec`([12](12-zcash.md) §12.1) |
 
 공통 규칙(반드시):
 
@@ -217,8 +217,9 @@ pub fn derive_public_child(parent: &AccountXpub, index: u32 /* 비강화만 */) 
 |---|---|---|---|---|
 | EVM (모든 EVM 체인 공통) | `m/44'/60'/0'/0/i` | `i` 0..=999 | `Bip32Path` | M1 |
 | Solana | `m/44'/501'/i'/0'` (`SolKeySource::Standard`; 복구 스캔용 비표준 출처는 §3.5) | `i` 0..=999 | `Slip10Path` | M7 |
-| Bitcoin mainnet | `m/84'/0'/0'/c/i` | `c` ∈ {0 수신, 1 잔돈}, `i` < 2^31(정책은 [08](08-bitcoin.md) §3) | `Bip32Path` | M8 |
-| Bitcoin testnet4 | `m/84'/1'/0'/c/i` | 같음. 지갑마다 네트워크 하나(D26) | `Bip32Path` | M8 |
+| Bitcoin mainnet | `m/{44\|49\|84\|86}'/0'/a'/c/i`(기본 계정 `m/84'/0'/0'`, D29) | `a` 0..=99(형식별 계정, [08] §3.5), `c` ∈ {0 수신, 1 잔돈}, `i` < 2^31(정책은 [08](08-bitcoin.md) §3) | `Bip32Path` | M8 |
+| Bitcoin testnet4 | `m/{44\|49\|84\|86}'/1'/a'/c/i` | 같음. 지갑마다 네트워크 하나(D26) | `Bip32Path` | M8 |
+| Zcash | `m/44'/{133\|1}'/a'/0/i`(기본 `m/44'/133'/0'/0/0`, testnet coin 1') | `a`·`i` < 2^31 | `Bip32Path` | D36 ([12] §2.2) |
 
 ```rust
 // yw_core::bip32::path
@@ -226,11 +227,15 @@ pub const MAX_ACCOUNT_INDEX: u32 = 999;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct AccountIndex(u32);
 impl AccountIndex { pub const fn new(i: u32) -> Result<Self, KeyError>; pub const fn get(self) -> u32; }
-pub enum BtcCoin { Mainnet, Test }            // 0' mainnet / 1' testnet4 (D29)
+pub enum BtcPurpose { Bip44, Bip49, Bip84, Bip86 }   // 44 P2PKH, 49 P2SH-P2WPKH, 84 P2WPKH, 86 P2TR
+pub struct BtcCoin { test: bool, purpose: BtcPurpose, account: u32 }   // 계정 노드 m/{purpose}'/{0|1}'/{account}'(D29)
+impl BtcCoin { pub const fn new(test: bool, purpose: BtcPurpose, account: u32) -> Result<Self, KeyError>;  // account ≥ 2^31 → InvalidPath
+               pub const Mainnet: Self; pub const Test: Self; }   // BIP84 계정 0(이전 enum 이름 유지)
 pub enum BtcChain { Receive, Change }         // 0 / 1
 pub fn evm_path(i: AccountIndex) -> Bip32Path;
 pub fn btc_path(coin: BtcCoin, chain: BtcChain, index: u32) -> Result<Bip32Path, KeyError>; // index ≥ 2^31 → InvalidPath
-pub fn btc_account_path(coin: BtcCoin) -> Bip32Path;                                    // m/84'/{0|1}'/0' (M8)
+pub fn btc_account_path(coin: BtcCoin) -> Bip32Path;     // m/{purpose}'/{0|1}'/{account}' (M8)
+pub fn zec_path(test: bool, account: u32, index: u32) -> Result<Bip32Path, KeyError>;  // m/44'/{133|1}'/a'/0/i (D36)
 pub fn sol_path(i: AccountIndex) -> Slip10Path;      // M7(`slip10`과 함께 추가)
 ```
 
@@ -403,7 +408,7 @@ payload_ct  = XChaCha20-Poly1305(key = DEK, nonce = payload_nonce, pt = payload 
 ```
 off len
 0   8   payload_magic   "YWPAY003"
-8   2   record_count    u16, 1..=61
+8   2   record_count    u16, 1..=76 (`MAX_RECORDS`)
 10  6   reserved        0
 16  …   records         record_count개, 정확히 끝까지 소비(남는 바이트 금지)
 ```
@@ -433,14 +438,14 @@ len field                                len field
                                          1   script: 1 = P2PKH, 2 = P2SH-P2WPKH, 3 = P2WPKH, 4 = P2TR
 ```
 
-- 순서 고정: `Bip39`(있으면 정확히 1개, 맨 앞) → `EvmRawKey`들 → `SolKey`들 → `BtcKey`들. 태그는 오름차순으로 묶이고 `tag 1`은 두 번 나올 수 없다. 각 가져온 키 태그(2·3·4)는 0–15개(체인별 상한, §8.4). `record_count ≥ 1`이므로 `Bip39`가 없으면 가져온 키가 최소 1개 있다.
+- 순서 고정: 태그 오름차순 — `Bip39`들(0–8개, 맨 앞, 첫 record가 주 니모닉, D37) → `EvmRawKey`들 → `SolKey`들 → `BtcKey`들 → `HwKey`들(tag 5, 0–8개) → `ZecKey`들(tag 6). 같은 태그는 이어서 반복할 수 있다. 각 가져온 키 태그(2·3·4·6)는 0–15개(체인별 상한, §8.4). `record_count ≥ 1`이므로 `Bip39`가 없으면 가져온 키나 `HwKey`가 최소 1개 있다.
 - **키 전용 vault**(복구 단어 없음, §8.5): `Bip39` record가 없는 payload. 잠금 해제하면 곧바로 `Unlocked { alt: false }`(passphrase·백업 확인 없음). 파생(`evm_addresses`의 인덱스, `btc_account_xpub`, `sol_public_keys`의 파생 출처), `reveal_mnemonic`, passphrase는 `NoMnemonic`이다.
 - `SolKey`: 디코드 때 `public`을 `seed`에서 다시 계산해 같아야 한다. 같은 `public` 두 개는 거부. `BtcKey`: `secret` 범위, `flags` 예약 비트 0, `network` ∈ {1,2}, `script` ∈ {1..4}, 압축하지 않은 키(bit0 = 0)는 `script = 1`(P2PKH)만. (`secret`, compressed, `network`, `script`)가 모두 같은 두 record는 거부(같은 secret을 다른 형식으로 쓰는 것은 다른 계정이라 허용).
 - 호환: `tag 1`·`tag 2`의 바이트 배치와 의미는 바뀌지 않았다(골든 G1–G5 그대로). 이 버전은 이전 버전이 쓴 vault를 그대로 연다. 이전 버전의 앱은 `tag 3`·`tag 4` record, `Bip39` 없는 payload, 2,048바이트를 넘는 `payload_ct_len`을 모르므로 그런 vault를 `PayloadCorrupt`(또는 구조 단계 `Malformed`)로 본다([04] §6.6: 되돌린 뒤 `.prev` 복구를 하지 말고 새 버전을 다시 설치한다). 이 버전부터는 인증된 payload의 디코드 실패가 `UnsupportedPayload`(§4.5 단계 10)라 같은 상황에서 `.prev` 복구를 제안하지 않는다.
 - **형식 확장 규칙(앞으로의 버전):** payload에는 별도 형식 버전 바이트가 없고, 호환은 **tag 집합**으로 정한다. 새 record 종류는 새 tag 번호(5 이상)로만 더하고, 기존 tag의 바이트 배치·의미는 바꾸지 않는다. 그러면 이 버전은 새 tag를 만나 `UnsupportedPayload`(업데이트 안내, `.prev` 제안 없음)로 멈추고, 파일은 그대로 남는다. 기존 tag의 의미를 바꿔야 하면 `VAULT_VERSION`을 올린다(`UnsupportedVersion`). 새 tag를 더하는 변경은 이 경로(`UnsupportedPayload` → E-VLT-014)를 시험에 넣는다(§11.6).
 - `addr0` = 그 passphrase로 파생한 EVM 계정 0(`m/44'/60'/0'/0/0`)의 20바이트 주소. 다른 passphrase도 유효한 다른 지갑을 열기 때문에 BIP39 자체로는 오타를 알 수 없다. 4바이트 확인값은 잠금 해제 때 오타를 잡는다(놓칠 확률 2^-32). 확인값은 암호화된 payload 안에 있어 vault 비밀번호 없이는 passphrase 추측에 쓸 수 없다(비밀번호를 가진 공격자는 어차피 체인 위 주소로 같은 추측을 할 수 있다).
 - 디코드 거부(`UnsupportedPayload`, 인증된 평문이므로 손상이 아니다 — §4.5 단계 10): magic 불일치, `record_count` 범위 밖, reserved ≠ 0, 알 수 없는 tag, 순서 위반, `record_id` 0 또는 (모든 tag를 통틀어) 중복, `entropy_len` 오류, flags 예약 비트, `passphrase_used = 0`인데 확인값 ≠ 0, `backup_state` ∉ {0,1}, `backup_state = 0`이면서 `passphrase_used = 1`(생성 지갑은 passphrase를 쓰지 않음, §8.1), raw key 범위 밖, 같은 raw key 중복, 체인별 16번째 가져온 키, `SolKey` 공개키 불일치·중복, `BtcKey` 값 규칙 위반·중복, 남는 바이트.
-- 최대 크기: 16 + `Bip39`(24단어) 64 + 15 × (57 + 89 + 60) = 3,170바이트 평문.
+- 최대 크기: 16 + 8 × 64(`Bip39`, 24단어) + 15 × (57 + 89 + 60) + 8 × 1,189(`HwKey`) + 15 × 58(`ZecKey`) = 14,000바이트 평문(`PAYLOAD_CT_MAX` 16,384 안; tag 1–4만 있던 판은 3,170).
 - **tag 5 `HwKey`(2026-11-04, D33):** YubiKey 하나의 슬롯 표(일련번호·펌웨어·마스터 지문·슬롯별 역할·경로 인덱스·정책·공개키, 비밀 없음), 0–8개, tag 4 뒤. 바이트 배치와 검사 규칙은 [10](10-yubikey.md) §8. 이에 따라 `MAX_RECORDS` = 54, `PAYLOAD_CT_MAX` = 16,384(최대 평문 3,170 + 8 × 1,189 = 12,682바이트). tag 5만 있는 payload는 니모닉 없는 **YubiKey 지갑**이다(§8.5와 같이 `has_mnemonic() = false`).
   - **경로를 모르는 슬롯(2026-11-07, [10] §7.6 "YubiKey 연결하기"):** 슬롯 항목의 예약 3바이트 중 첫 바이트가 flags가 되었다(`01` = 경로 모름). 그런 슬롯의 역할 인덱스는 900–999 대역(계정 번호일 뿐 경로가 아님), 모든 슬롯이 그런 record의 마스터 지문은 `00000000`이고 "한 니모닉" 규칙에서 빠진다. 경로를 아는 슬롯만 있는 record는 바이트가 그대로이고, flags가 있는 record는 이전 버전이 예약 바이트 ≠ 0으로 `UnsupportedPayload`로 멈춘다(손상으로 보지 않음).
 - **tag 6 `ZecKey`(2026-11-07, [12] §2.3):** 가져온 Zcash 일반(transparent) 개인키, 0–15개, tag 5 뒤. 58바이트: `tag = 6` 1 ‖ `record_id` 16 ‖ `created_unix` 8 ‖ `secret` 32(1 ≤ k < n) ‖ `network` 1(1 = mainnet, 2 = testnet, `ZecNetwork::id`). 공개키는 늘 압축(주소 하나, P2PKH). 디코드 거부: secret 범위 밖, network ∉ {1,2}, (secret, network)가 같은 두 record, 16번째. 이에 따라 `MAX_RECORDS` = 76(8 + 15 × 4 + 8), 최대 평문 13,130 + 15 × 58 = 14,000바이트(`PAYLOAD_CT_MAX` 그대로). 이전 버전은 tag 6을 모르는 tag로 보고 `UnsupportedPayload`(E-VLT-014)로 멈춘다. `import_key`는 tag 5 슬롯의 secp256k1 공개키(어떤 역할이든)와 주 니모닉의 표준 Zcash 키(`m/44'/{133|1}'/0'/0/0`)와 같은 키를 `DuplicateKey`로 거부한다. `reveal_imported_key`는 압축 WIF(`0x80`/`0xEF`), 서명 키는 `KeyRef::ZecImported { network, pubkey }`.
@@ -476,7 +481,7 @@ journal_key = HKDF-SHA256(salt = 없음,                   ikm = DEK, info = "yo
 
 ### 5.3 meta JSON (`schema = "yw-meta/3"`)
 
-최상위 객체. 중복 키·아래 키(선택 키 `btc_accounts`·`btc_accounts_ext`·`sol_sites`·`btc_sites`·`sol_raw_accounts`·`sol_raw_selected`·`security_settings`·`vault_generation_seen`·`journal_reset_at`·`token_view` 제외)의 누락은 거부한다. 아래 표에 없는 **최상위** 키는 같은 `schema`의 새 부 버전이 더한 키로 보고 보존해 다음 쓰기에서 알려진 키 뒤에 그대로 쓴다([04](04-app-ui.md) §6.6). 레코드·객체 안의 알 수 없는 키는 거부한다(`prefs`는 기본값으로 되돌림, [04] §6.4). 정수는 JSON 정수(소수·지수 금지), 64비트 금액은 10진 문자열(각 체인 문서).
+최상위 객체. 중복 키와 필수 키 10개(`schema`, `evm_accounts`, `evm_raw_accounts`, `sol_accounts`, `btc`, `address_book`, `connected_sites`, `tokens`, `activity`, `prefs`)의 누락은 거부한다. 나머지 키는 모두 선택 키다: 아래 표의 선택 키와, 다른 문서가 정한 `btc_accounts_ext`·`btc_accounts_mn`([08] §12.3b·§12.3c), `hw_accounts`([10](10-yubikey.md) §8), `zcash`([12](12-zcash.md) §12.3), `walletconnect`([13](13-walletconnect.md) §8). 아래 표에 없는 **최상위** 키는 같은 `schema`의 새 부 버전이 더한 키로 보고 보존해 다음 쓰기에서 알려진 키 뒤에 그대로 쓴다([04](04-app-ui.md) §6.6). 레코드·객체 안의 알 수 없는 키는 거부한다(`prefs`는 기본값으로 되돌림, [04] §6.4). 정수는 JSON 정수(소수·지수 금지), 64비트 금액은 10진 문자열(각 체인 문서).
 
 | 키 | 타입 | 규칙 |
 |---|---|---|
@@ -535,11 +540,11 @@ SecuritySettings = { "version": 1,
                                   "esploraMainnet": EsploraBaseUrl, "esploraTestnet4": EsploraBaseUrl } }
 Hash32   = "0x" + 소문자 hex 64자;  Dec = 숫자와 "." 1..=40자
 NetworkId = "eip155:" ChainIdDec | "solana:mainnet" | "solana:devnet"
-          | "bitcoin:mainnet" | "bitcoin:testnet4"   (SOL·BTC 추가는 해당 체인 문서가 정의)
+          | "bitcoin:mainnet" | "bitcoin:testnet4" | "zcash:mainnet" | "zcash:testnet"   (SOL·BTC·ZEC 값의 쓰임은 해당 체인 문서가 정의)
 ChainIdDec = u64 값 1..=2^64−1의 10진 표기, 앞자리 0 없음 (예 "eip155:1", "eip155:11155111", "eip155:999")
 ```
 
-- EVM 네트워크는 고정 목록이 아니다. 등록된 EVM 체인(D14: 내장 1·11155111·999 + `settings.json`에 정의된 사용자 추가 체인, [04](04-app-ui.md) §6.1)마다 `eip155:<chainId>` 하나다. 등록 가능한 chainId 범위·추가 시 검증은 [03](03-evm.md) §1이 정한다.
+- EVM 네트워크는 고정 목록이 아니다. 등록된 EVM 체인(D14: 내장 7개 1·11155111·999·42161·8453·56·4663 + `settings.json`에 정의된 사용자 추가 체인, [04](04-app-ui.md) §6.1)마다 `eip155:<chainId>` 하나다. 등록 가능한 chainId 범위·추가 시 검증은 [03](03-evm.md) §1이 정한다.
 - meta 검증은 `eip155:*` 키와 `ConnectedSite.chain_id`의 **형식만** 본다. 레지스트리(평문 settings, 잠긴 동안에도 바뀜)에 없는 chainId도 유효하다. 따라서 사용자 체인을 지워도 meta가 무효가 되지 않는다: `tokens`·`activity`의 그 네트워크 항목은 그대로 보존하고(화면은 등록된 체인만 보이며 같은 chainId를 다시 추가하면 다시 보인다, 전체 상한에는 포함), `connected_sites`의 미등록 `chain_id`는 [05](05-browser.md) §4.3 잠금 해제 규칙이 활성 체인으로 바꾼다.
 - 체인 수가 정해져 있지 않으므로 `tokens`·`activity`는 네트워크당 상한과 함께 전체 상한을 둔다. 최악 크기(`ActivityEntry` ≤ 약 1 KiB × 3,000, `TokenEntry` ≤ 약 210바이트 × 1,000)가 meta 평문 8 MiB(§5.2) 안에 든다.
 
@@ -550,7 +555,7 @@ ChainIdDec = u64 값 1..=2^64−1의 10진 표기, 앞자리 0 없음 (예 "eip1
 - 이전 버전 호환(확인함, `meta.rs` `valid_book_entry`): 이전 버전은 `AddressBookEntry`의 멤버가 정확히 5개이고 `chain`이 `"evm"|"sol"|"btc"`가 아니면 **meta 문서 전체를 거부**한다(E-VLT-006, `.prev` 복구 화면). 그래서 즐겨찾기를 항목 멤버로 넣지 않고 새 최상위 키 `address_book_favorites`에 두며, 새 `chain` 값(예 체인별 EVM 값, `"btc-testnet4"`)도 쓰지 않는다. 새 계열이 필요하면 `address_book`이 아닌 새 최상위 키로 더한다.
 - `ConnectedSite`의 의미와 `origin` 형식(≤ 256바이트 ASCII)은 [05](05-browser.md) §4.1·§4.7이다. 이 절의 상한이 정본이다(D31): `connected_sites` 0..=256개, `accounts` 1..=16개. `accounts`는 dApp에 돌려주는 순서이고 첫 항목이 선택 계정이다. 16개 상한이므로 연결 창([05] §4.2)은 17개 이상 선택하면 `연결`을 비활성화하고, `accountsChanged` payload도 최대 16개다. `granted_at_unix_ms`는 연결을 승인한 시각(Unix ms)이다.
 - `tokens`: 레지스트리 토큰([03] §1.2)은 넣지 않는다. 사용자가 S16([04] §2.6)에서 확인한 라벨만 저장한다.
-- `activity`: 이 지갑이 보낸 종결 거래만, 체인 문서가 종결 저널 레코드를 정리할 때 만든다. `account`·`counterparty`는 체인별 정규형(위 `address_book`과 같음, 받는 주소가 없으면 `""`; BTC는 계정 0 하나뿐이므로 `account` = `""`, [08] §12.3), `tx_id`는 EVM `0x`+소문자 hex 64, SOL base58 서명, BTC 소문자 hex txid(표시 순서). `title`은 서명 당시 승인 제목(≤ 256바이트, [03] §11.1·[07] §13.3·[08] §10), `asset`은 `"native"` 또는 토큰(EVM `EvmAddr`, SOL mint base58), `amount`는 최소 단위 10진 문자열(≤ 78자, 없으면 `"0"`), `time_unix_ms`는 종결 관측 시각. 상태: EVM `Finalized`(영수증 성공 `succeeded`, 실패 `failed`)·`Dropped`·`Replaced`, SOL `Landed`→`succeeded`·`FailedOnChain`→`failed`·`Expired`→`expired`, BTC `Confirmed`→`succeeded`·`Rejected`·`Replaced`·`Conflicted`·`Abandoned`(나머지는 같은 이름의 소문자). 화면은 표시 전용이다([04] §2.6).
+- `activity`: 이 지갑이 보낸 종결 거래만, 체인 문서가 종결 저널 레코드를 정리할 때 만든다. `account`·`counterparty`는 체인별 정규형(위 `address_book`과 같음, 받는 주소가 없으면 `""`; BTC는 `BtcAccountId::activity_tag()`(기본 계정 `""` — 이전과 같음, HD `p2tr/0` 꼴, 가져온 키 `imported/<id hex>` 등, [08] §12.3)), `tx_id`는 EVM `0x`+소문자 hex 64, SOL base58 서명, BTC 소문자 hex txid(표시 순서). `title`은 서명 당시 승인 제목(≤ 256바이트, [03] §11.1·[07] §13.3·[08] §10), `asset`은 `"native"` 또는 토큰(EVM `EvmAddr`, SOL mint base58), `amount`는 최소 단위 10진 문자열(≤ 78자, 없으면 `"0"`), `time_unix_ms`는 종결 관측 시각. 상태: EVM `Finalized`(영수증 성공 `succeeded`, 실패 `failed`)·`Dropped`·`Replaced`, SOL `Landed`→`succeeded`·`FailedOnChain`→`failed`·`Expired`→`expired`, BTC `Confirmed`→`succeeded`·`Rejected`·`Replaced`·`Conflicted`·`Abandoned`(나머지는 같은 이름의 소문자). 화면은 표시 전용이다([04] §2.6).
 - `ActivityEntry`는 모든 체인이 쓰는 유일한 스키마다. 체인 문서는 필드 대응만 정하고 별도 activity 스키마를 두지 않는다: EVM [03] §5.4; SOL [07] §14.1(`account` = 보낸 주소 from, `tx_id` = base58 서명, `asset` = `"native"`(SOL) 또는 mint base58, `amount` = lamports 또는 토큰 원시 단위, `counterparty` = 받는 주소 to; Solana dApp 전송(레코드 버전 3, 2026-11-12)은 `account` = 서명 계정, `tx_id` = base58(서명 0번), `title` = `[Solana {cluster}] 사이트 거래 · {origin}`, `asset` = `"native"`, `amount` = `"0"`, `counterparty` = `""`); BTC [08] §12.3.
 - meta가 없고 `.prev`도 없으면(첫 실행, 또는 사용자가 지움) 기본 meta(`evm_accounts = [{index 0, label "계정 1"}]`, 나머지 빈 값)로 시작한다. 키 전용 지갑의 기본 meta는 `evm_accounts = []`이고 가져온 키를 해당 목록에 넣는다(라벨 "가져온 계정 n"·"가져온 Solana n"; Bitcoin 키는 `btc_accounts`의 가져온 키 계정으로, 선택된 채).
 - 두 선택 키(`sol_raw_accounts`·`sol_raw_selected`)는 [04] §6.6의 "새 최상위 키" 규칙으로 더했다: 이 버전은 없으면 빈 값으로 읽고 항상 `prefs` 뒤에 쓴다. 이전 버전은 모르는 최상위 키로 보존한다. 가져온 Bitcoin 키(`BtcKey` record)는 따로 목록이 없고 선택 최상위 키 `btc_accounts`([08] §12.3a)의 가져온 키 계정(`BtcAccountKey::Single { id = record_id, script_type, pubkey }`, 그 키의 network)과 1:1이다. 잠금 해제 때 yw-app은 `imported_keys`(§10.3)로 가져온 키 목록의 주소 캐시를 다시 계산하고 vault에 없는 항목은 지우며 vault에만 있는 항목은 기본 라벨로 더한다; Bitcoin은 계정이 없는 `BtcKey` record에 계정을 더하고, record가 없거나 키·형식·network가 다른 가져온 키 계정을 지운다(`MetaAddressMismatch` 로그). 그래서 meta 쓰기가 vault 쓰기 뒤에 실패해도, 또는 계정 목록 없이 `BtcKey`만 있는 vault여도 다음 잠금 해제에서 맞춰진다. EVM 키 Bitcoin 계정(`BtcAccountKey::EvmShared { evm_index, script_type, pubkey }`, [08] §3.5)은 vault record가 아니라 이 맞춤의 대상이 아니다(`is_imported()`는 `Single`만): 공개키는 추가할 때 `evm_public_key`로 받아 캐시하고, 서명할 때 vault가 빌려 주는 EVM 키의 공개키와 같지 않으면 `KeyMismatch`로 멈춘다. HD 계정의 주소 방식(기본 고정 주소)의 HD 모드 표시와 EVM·YubiKey 키 Bitcoin 계정은 2026-11-07부터 선택 최상위 키 `btc_accounts_ext`([08] §12.3b)에 쓴다: 이전 앱 버전은 `btc`·`btc_accounts` 안의 모르는 멤버(`single_address`, `key.evm`, `key.yubikey`)를 보면 meta 문서를 거부하기 때문이다. 2026-11-05/06 빌드가 쓴 이전 배치는 읽고 다음 저장에서 옮긴다([04] §6.6).
@@ -570,11 +575,11 @@ kind  = 0x01 EVM ([03](03-evm.md) §5.1, body[0] = record_kind 0x01이어야 함
       | 0x04 ZEC ([12](12-zcash.md) §12.1) | 0x05–0xFF 나중 빌드의 체인(보존만, 아래)
 ```
 
-- 이 이진 컨테이너가 정본이다. `kind`가 유일한 체인 판별자이고(0x01 EVM, 0x02 SOL, 0x03 BTC), `body`는 체인 문서가 정한 이진 바이트 그대로다(JSON·hex 문자열로 감싸지 않는다). 본문 바이트 배치·상태 기계·종결 정의·정리 순서는 체인 문서가 정한다. entry 순서는 추가 순서이며 의미가 없다. 파일이 없으면 entry 0개다.
+- 이 이진 컨테이너가 정본이다. `kind`가 유일한 체인 판별자이고(0x01 EVM, 0x02 SOL, 0x03 BTC, 0x04 ZEC), `body`는 체인 문서가 정한 이진 바이트 그대로다(JSON·hex 문자열로 감싸지 않는다). 본문 바이트 배치·상태 기계·종결 정의·정리 순서는 체인 문서가 정한다. entry 순서는 추가 순서이며 의미가 없다. 파일이 없으면 entry 0개다.
 - **프레이밍 오류**(magic, `entry_count` 범위, reserved ≠ 0, `kind` 0, `body_len` 범위 밖·남은 길이 초과, 남는 바이트) → `VaultError::SidecarCorrupt(Journal)`(파일이 AEAD로 열렸으면 yw-app은 `SidecarUnsupported(Journal)`, §5.2), §6.3 선택 대화상자.
 - **모르는 kind**(0x05–0xFF, 2026-11-10): 나중 빌드가 더한 체인의 entry다. 바이트 그대로 보존하고(개수·용량 상한에는 들어간다) 어느 체인도 읽거나 정리하거나 지우지 않으며 다른 체인은 정상 동작한다(`EntryKind::Unknown`). 그래서 **새 kind는 새 체인에만** 쓴다: 기존 체인의 새 형식은 그 kind의 `record_version`으로만 더한다(이전 빌드에서는 본문 오류 — 그 체인의 보내기만 멈춤, 아래). 그 전 빌드는 모르는 kind를 프레이밍 오류로 봐서 새 kind 하나가 저널 전체(모든 체인의 진행 중 기록)를 열 수 없게 만들었다.
 - **본문 오류**: 프레이밍은 맞는데 체인 디코더가 본문을 거부하면 그 체인의 보내기만 끄고 "저널 손상"(E-VLT-006, [04] §2.6)을 표시한다([03] §5.1 규칙을 모든 체인에 적용). 자동 삭제하지 않고 다른 entry를 고쳐 쓸 때도 그 본문을 바이트 그대로 보존한다. 다른 체인은 정상 동작한다.
-- **개수 상한**: 전체 ≤ 256. SOL ≤ 64([07] §14.2 `SOL_JOURNAL_MAX_RECORDS`), BTC 종결 항목 ≤ 64(진행 중 BTC 항목은 지우지 않음), EVM은 나머지. EVM 몫은 등록된 EVM 체인 수와 무관하게 모든 체인이 함께 쓴다(체인은 본문 `chain_id`, [03](03-evm.md) §5.1). 컨테이너·본문 검증은 체인 레지스트리를 보지 않으므로 미등록 chainId의 레코드도 유효하다.
+- **개수 상한**: 전체 ≤ 256. SOL ≤ 64([07] §14.2 `SOL_JOURNAL_MAX_RECORDS`), BTC 종결 항목 ≤ 64(진행 중 BTC 항목은 지우지 않음), ZEC ≤ 80(`ZEC_JOURNAL_MAX_RECORDS`, [12] §12.1), EVM은 나머지. EVM 몫은 등록된 EVM 체인 수와 무관하게 모든 체인이 함께 쓴다(체인은 본문 `chain_id`, [03](03-evm.md) §5.1). 컨테이너·본문 검증은 체인 레지스트리를 보지 않으므로 미등록 chainId의 레코드도 유효하다.
 - **용량 상한**: 평문 ≤ 16 MiB(16,777,216바이트, §5.2). 체인별 최대 본문: EVM 131,761(172 + 255 + 2 + 256 + 4 + 131,072), SOL 1,629(레코드 버전 3 dApp 전송: 고정 헤더 89 + 니모닉 id 16 + 공개키 32 + 서명자 슬롯 1 + 플래그 1 + origin 길이 2 + origin 256 + 트랜잭션 1,232, 2026-11-12; 버전 2는 1,337, 버전 1은 1,321, [07] §14.1), ZEC 32,919(머리 135 + 니모닉 id 16 + 32,768; 버전 1은 32,903, [12](12-zcash.md) §12.1), BTC 37,940(238 + 18 + 16 + 49 × 100 + 32,768; 레코드 버전 1은 37,906, 버전 2는 37,924, [08] §12.4). 니모닉 id 16바이트는 추가한 니모닉 계정의 기록에만 있다(§8.6).
 - **추가 전 검사(서명 전)**: 새 레코드(EVM `Signed` 원본·SpeedUp·Cancel, SOL `Pending`, BTC `Signed`)를 만들 서명 전에 `entry_count + 1 ≤ 256`·체인 상한과 `현재 평문 길이 + 5 + 그 체인 최대 본문 ≤ 16 MiB`를 본다. 넘으면 종결 레코드를 체인 문서의 정리 순서대로(오래된 것부터, activity로 옮긴 뒤) 지우며 다시 보고, 그래도 넘으면 `journal::JournalError::Full`(§10.2)로 차단한다: 서명·전송 없음, 문구 "거래 저널 공간이 부족합니다"(앱의 E-TX-005는 2026-11-10부터 다음 행동 "진행 중인 거래가 확정되거나 폐기되면 공간이 생깁니다."를 덧붙인다, [04] §7 오류 표; EVM은 [03] §5.4의 E06 거부와 같은 경로).
 
@@ -684,8 +689,8 @@ yw-app이 yw-win 파일 함수로 구현한다(출처: 데모 원자적 쓰기, 
 ### 7.3 메모리 규칙 (D10)
 
 ```rust
-/// 배치: [0..32) DEK, [32] passphrase 존재 0/1, [33..35) passphrase 길이 u16 BE(0..=256),
-///       [35..291) passphrase 바이트, [291..320) 0
+/// 배치: [0..32) DEK, [32] 주 니모닉 passphrase 존재 0/1, [33..35) 길이 u16 BE(0..=256), [35..291) 바이트, [291..320) 0,
+///       [320..2245) 다른 니모닉 7개 × 275(존재 1 + record id 16 + 길이 2 + 256), [2245..2304) 0 (2026-11-07 전에는 320바이트)
 pub const SLOT_LEN: usize = 2_304;  // [0..32) DEK, [32..320) 주 니모닉 passphrase(존재 1 + 길이 2 + 256),
                                     // [320..2245) 다른 니모닉 7개 × 275(존재 1 + record id 16 + 길이 2 + 256), 나머지 0
 /// yw-app이 yw-win의 VirtualLock 페이지로 구현한다(어댑터 newtype; yw-win은 yw-core에 의존하지 않음).
@@ -744,19 +749,19 @@ pub trait LockedSlot: Send {
   - 입력 문자열 버퍼는 호출자(UI)가 `Zeroizing`으로 소유한다. 코어는 디코드한 32바이트를 `Zeroizing`에만 둔다.
 - `remove_evm_raw_key(password, id)`: `Unlocked`에서만, 비밀번호 재입력(KEK 파생으로 확인) 필요, `PayloadRewrite`. `Bip39` record는 삭제할 수 없다. EVM이 아닌 record id는 `RecordNotFound`, 키 전용 vault의 마지막 키는 `LastKey`(§8.4).
 
-### 8.4 가져온 개인키 (EVM·Solana·Bitcoin, D9)
+### 8.4 가져온 개인키 (EVM·Solana·Bitcoin·Zcash, D9)
 
 ```rust
 // yw_core::keyimport
-pub enum ImportChain { Evm, Sol, Btc }
-pub enum ImportSpec { Evm, Sol, Btc(btc::ScriptType) }   // ScriptType: P2pkh 1, P2shP2wpkh 2, P2wpkh 3, P2tr 4 ([08] §3.5)
+pub enum ImportChain { Evm, Sol, Btc, Zec }
+pub enum ImportSpec { Evm, Sol, Btc(btc::ScriptType), Zec(zec::ZecNetwork) }   // ScriptType: P2pkh 1, P2shP2wpkh 2, P2wpkh 3, P2tr 4 ([08] §3.5)
 pub struct ImportKey { /* Zeroizing 비밀, Clone 없음, Debug "ImportKey(<체인>, [REDACTED])" */ }
 impl ImportKey {
     pub fn parse(spec: ImportSpec, text: &str) -> Result<Self, KeyError>;
     pub fn chain(&self) -> ImportChain;
     pub fn preview(&self) -> Result<ImportPreview, KeyError>;   // 저장 없이 주소만
 }
-pub enum ImportPreview { Evm(Address), Sol(SolAddress), Btc(BtcKeyInfo) }
+pub enum ImportPreview { Evm(Address), Sol(SolAddress), Btc(BtcKeyInfo), Zec(ZecKeyInfo) }
 pub struct BtcKeyInfo { pub network: BtcNetwork, pub script: ScriptType, pub compressed: bool,
                         pub public_key: BtcPubKey /* 33 또는 65바이트 */, pub kind: ScriptKind, pub address: String }
 impl BtcKeyInfo { pub const fn account_key(&self, id: [u8; 16]) -> Result<BtcAccountKey, AccountKeyError>; } // Single
@@ -773,6 +778,7 @@ pub fn parse_wif(text: &str) -> Result<WifKey, KeyError>;   // compressed(), net
 | EVM | §8.2와 같음(선택 `0x` + hex 64자, 1 ≤ k < n) | `InvalidPrivateKey` |
 | Solana | base58 64바이트 keypair(`seed ‖ public`) 또는 `solana-keygen` JSON 배열(10진 0–255 정확히 64개), 텍스트 ≤ 640바이트 | 32바이트 → `SolKeyIsAddress`, 공개키 불일치 → `SolKeyMismatch`, 그 밖 → `SolKeyFormat` ([07] §3.4) |
 | Bitcoin | WIF: base58check 51자(`version ‖ secret`, 압축 안 함) 또는 52자(`version ‖ secret ‖ 01`, 압축). `version` 0x80 = mainnet, 0xef = 테스트넷(이 지갑에서는 testnet4). secret 1 ≤ k < n. 주소 형식은 사용자가 고른다(`btc::ScriptType`) | 길이·문자·체크섬·version·접미사·범위 → `WifFormat`; 압축 안 한 키 + P2PKH 외 형식 → `WifUncompressedScript` |
+| Zcash | 압축 WIF(`0x80` mainnet·`0xEF` testnet, Zcash 탭의 네트워크) 또는 16진수 64자리(`0x` 선택, 탭의 네트워크), 1 ≤ k < n([12] §2.3) | 형식 → `ZecKeyFormat`, 다른 네트워크의 WIF → `ZecKeyNetwork` |
 
 - Bitcoin 주소(`keyimport::btc`): P2PKH `HASH160(pubkey)`(압축 33 또는 비압축 65바이트), P2SH-P2WPKH `HASH160(00 14 ‖ HASH160(pubkey33))`, P2WPKH `HASH160(pubkey33)`, P2TR BIP86 key-path 출력 키 `x(P + H_TapTweak(x(P))·G)`(스크립트 트리 없음). 주소 문자열은 [08] `encode_address`. 64자 hex 원시 비밀은 네트워크를 알 수 없으므로 받지 않는다(WIF만).
 - `import_key(key, now_unix) -> RecordId`: `Unlocked`에서만(`BackupPending`은 `BackupNotConfirmed`), 비밀번호 재입력 없음, `PayloadRewrite`. 체인마다 15개(`RecordLimit`). 중복(`DuplicateKey`): EVM은 같은 키, Solana는 같은 공개키, Bitcoin은 (secret, compressed, network, script)가 모두 같을 때(같은 키를 다른 형식으로 다시 가져오는 것은 다른 주소의 다른 계정이다). 파생 계정과 같은 키를 가져오는 것은 막지 않는다. `import_evm_private_key(hex)`는 §8.2 형식 그대로 `import_key(Evm)`를 부른다.
@@ -832,7 +838,7 @@ pub struct BackupChallenge { pub id: ChallengeId, pub positions: [u8; 4] } // 1-
 |---|---|---|
 | `reveal_mnemonic(password)` | `BackupPending`, `Unlocked` | `SecretString`(`Debug` 가림, §10.3), 단어를 공백 하나로 연결 |
 | `reveal_evm_private_key(password, src)` | `Unlocked` | `SecretString`, 소문자 hex 64자, `0x` 없음 |
-| `reveal_imported_key(password, id)` | `Unlocked` | `(ImportChain, SecretString)`: EVM hex 64자, Solana base58 64바이트 keypair, Bitcoin WIF(§8.4) |
+| `reveal_imported_key(password, id)` | `Unlocked` | `(ImportChain, SecretString)`: EVM hex 64자, Solana base58 64바이트 keypair, Bitcoin WIF, Zcash 압축 WIF(`0x80`/`0xEF`)(§8.4) |
 | `reveal_evm_shared_wif(password, index, network)` | `Unlocked` | `SecretString`: EVM 계정 index의 키(m/44'/60'/0'/0/i)를 압축 WIF로(network 버전 바이트) — EVM 키 Bitcoin 계정의 `개인키 보기`([08] §3.5). 같은 비밀은 `reveal_evm_private_key`의 hex이기도 하다 |
 
 - 잠금 해제 상태여도 매번 비밀번호를 다시 받는다: 현재 vault 바이트의 `kdf_salt`로 Argon2 → KEK → `wrapped_dek` 복호화. 실패는 `UnlockFailed`(§7.4 규칙). 성공하면 풀린 DEK와 슬롯의 DEK를 상수 시간 비교하고, 다르면 `UnlockFailed`.
@@ -871,6 +877,7 @@ pub enum KeyError {
     InvalidExtendedKey,          // decode_xkey 거부(§3.4, 테스트용 API에서만)
     SolKeyFormat, SolKeyIsAddress, SolKeyMismatch,   // §8.4 Solana
     WifFormat, WifUncompressedScript,                // §8.4 Bitcoin
+    ZecKeyFormat, ZecKeyNetwork,                     // §8.4 Zcash([12] §2.3)
     Internal,                    // 라이브러리가 예상 밖 오류 반환, 단어 목록 분할 실패
 }
 
@@ -890,6 +897,7 @@ pub enum VaultError {
     RecordLimit, DuplicateKey, RecordNotFound,
     NoMnemonic,                  // 키 전용 vault(§8.5)에서 파생·복구 단어·passphrase
     LastKey,                     // 키 전용 vault의 마지막 키 삭제(§8.4)
+    PrimaryMnemonic,             // 주 니모닉 삭제 거부(§8.6)
 }
 
 // yw_core::journal (M4, §5.4)
@@ -911,10 +919,14 @@ pub enum VaultStatus {
     Unlocked { alt_passphrase: bool }, Corrupt { prev_available: bool }, MainMissing,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)] pub struct RecordId([u8; 16]);
-pub enum EvmKeySource { Derived(AccountIndex), Raw(RecordId) }
-pub enum KeyRef { Evm(EvmKeySource), Btc { coin: BtcCoin, chain: BtcChain, index: u32 } } // coin = 계정 노드([08] §3.1)
+pub enum EvmKeySource { Derived(AccountIndex), Mnemonic(RecordId, AccountIndex) /* §8.6 */, Raw(RecordId), Hardware(AccountIndex) /* YubiKey, [10] */ }
+pub enum KeyRef { Evm(EvmKeySource),
+                  Btc { mnemonic: Option<RecordId>, coin: BtcCoin, chain: BtcChain, index: u32 },   // coin = 계정 노드([08] §3.1)
+                  Zec { mnemonic: Option<RecordId>, test: bool, account: u32, index: u32 },          // [12] §2.4
+                  ZecImported { network: ZecNetwork, pubkey: [u8; 33] } }                         // tag 6
 pub struct ImportedKeys { pub has_mnemonic: bool, pub evm: Vec<(RecordId, Address)>,
-                          pub sol: Vec<(RecordId, [u8; 32])>, pub btc: Vec<(RecordId, BtcKeyInfo)> }
+                          pub sol: Vec<(RecordId, [u8; 32])>, pub btc: Vec<(RecordId, BtcKeyInfo)>,
+                          pub zec: Vec<(RecordId, ZecKeyInfo)> }
 
 pub struct Vault { /* storage, status, vault_bytes, slot: Option<Box<dyn LockedSlot>>, challenge */ }
 
@@ -966,7 +978,10 @@ impl Vault {
     pub fn pending_passphrase(&self) -> Option<PendingPassphrase>;                                 // §7.5
     pub fn imported_keys(&self) -> R<ImportedKeys>;                                                // §8.4
     pub fn sol_public_keys(&self, srcs: &[SolKeySource]) -> R<Vec<[u8; 32]>>;                    // M7, ≤ 128개, 입력 순서
-    pub fn btc_account_xpub(&self, coin: BtcCoin) -> R<AccountXpub>;                              // M8, m/84'/c'/0'
+    pub fn btc_account_xpub(&self, coin: BtcCoin) -> R<AccountXpub>;                              // M8, m/{purpose}'/{0|1}'/{account}'(주 니모닉)
+pub fn btc_account_xpub_of(&self, mnemonic: Option<RecordId>, coin: BtcCoin) -> R<AccountXpub>; // §8.6
+pub fn zec_public_key(&self, test: bool, account: u32, index: u32) -> R<[u8; 33]>;            // [12] §2.2
+pub fn zec_public_key_of(&self, mnemonic: Option<RecordId>, test: bool, account: u32, index: u32) -> R<[u8; 33]>; // §8.6
     pub fn btc_public_key(&self, coin: BtcCoin, chain: BtcChain, index: u32) -> R<[u8; 33]>;      // M8, 개인 파생 잎 공개키
     pub fn evm_public_key(&self, index: AccountIndex) -> R<[u8; 33]>;                            // m/44'/60'/0'/0/i 압축 공개키(EVM 키 BTC 계정, [08] §3.5)
 
@@ -997,7 +1012,7 @@ pub fn preview_evm_address(phrase: &str, passphrase: Option<&Bip39Passphrase>, i
 - `with_secp_key`·`with_ed25519_seed`는 `pub(crate)`이며 키를 클로저 밖으로 내보내는 반환 타입을 만들지 않는다. `imported_btc_secret`의 `ImportedBtcSecret`도 crate 내부 타입이고 비밀키를 읽는 접근자가 없다: `btc::sign`만 그 키를 서명 클로저에 빌려 준다(키를 빌려 주는 `BtcKeys`도 `pub(crate)`, crate 밖 서명은 `sign_plan(&Vault, ..)`뿐). 서명 API 자체는 [03](03-evm.md)·[07](07-solana.md)·[08](08-bitcoin.md)이 정의한다.
 - `with_ed25519_seed(src, f)`: §3.5 표대로 `src`의 32바이트 seed를 만들어 `f`에 빌려주고, 반환 직후 seed·64바이트 BIP39 시드·중간값을 소거한다(§7.3). 표준·비표준 다섯 출처 모두 이 함수 하나로만 서명 키를 얻는다([07] §3.1–§3.3).
 - `sol_public_keys(srcs)`: BIP39 시드를 한 번만 계산하고 각 출처의 seed로 `SigningKey::from_bytes(&k).verifying_key()`를 구해 입력 순서대로 32바이트 공개키를 돌려준다(seed는 출처마다 즉시 소거). 니모닉별 BIP39 시드 목록은 서로 다른 니모닉 수만큼 처음에 용량을 잡아 두어 늘어나지 않는다(늘어나는 `Vec`은 시드를 옮기며 옛 버퍼를 소거하지 않고 해제한다), 목록이 해제될 때 시드마다 소거한다. 계정 추가·주소 캐시 재계산·복구 스캔([07] §3.3)에 쓴다. 빈 목록은 빈 결과, 129개 이상은 `InvalidState`(호출자 오류)이며 아무것도 파생하지 않는다.
-- `btc_account_xpub(coin)`: `XPriv::from_seed` → `derive_path(m/84'/{coin}'/0')`(`BtcCoin::Mainnet` 0', `Test` 1', D29) → 그 노드의 압축 공개키와 chain code를 `AccountXpub`(§3.1)로 돌려준다. 개인키는 반환하지 않고 중간 `XPriv`·`SecretKey`·시드는 소거한다. 주소 발급은 이 값과 `bip32::derive_public_child`로 vault 없이 한다([08] §3.1). `btc_public_key`는 같은 잎을 개인 파생으로 계산한 값으로, CKDpub 결과와의 대조([08] §14.1)에 쓴다.
+- `btc_account_xpub(coin)`: `XPriv::from_seed` → `derive_path(btc_account_path(coin))` = `m/{purpose}'/{0|1}'/{account}'`(`BtcCoin::Mainnet`·`Test`는 BIP84 계정 0, D29) → 그 노드의 압축 공개키와 chain code를 `AccountXpub`(§3.1)로 돌려준다. 개인키는 반환하지 않고 중간 `XPriv`·`SecretKey`·시드는 소거한다. 주소 발급은 이 값과 `bip32::derive_public_child`로 vault 없이 한다([08] §3.1). `btc_public_key`는 같은 잎을 개인 파생으로 계산한 값으로, CKDpub 결과와의 대조([08] §14.1)에 쓴다.
 
 ## 11. 테스트 (판정은 [09](09-testing.md) §5.2 M1)
 
@@ -1099,7 +1114,7 @@ payload_nonce 707172…87   record_id 909192…9f   generation 1, backup_state 0
 - payload 코덱 거부 표(§4.6 목록 전부) + `Bip39` + `EvmRawKey` 15개 왕복, 16번째 `EvmRawKey` 거부(tag 3·4는 §11.9).
 - `PayloadRewrite`: KDF 호출 0회, `header[0..130]` 불변, `generation + 1`, `payload_nonce` 변경.
 - `change_password`: 이전 비밀번호 `UnlockFailed`, 새 비밀번호 성공(`Complete`), DEK 불변(사이드카가 계속 열림), 커밋 2회(`generation + 2`), `.prev`가 새 비밀번호로 열림. `Rewrap` 뒤 두 번째 커밋 실패 → `Ok(PrevNotRefreshed)`, 이후 이전 비밀번호 `UnlockFailed`·새 비밀번호로 잠금 해제(yw-app `tests/vault_edge_cases.rs`).
-- 새 버전 payload: 인증되는 payload에 모르는 tag 5 record → `unlock`은 `UnsupportedPayload`, 상태 `Locked`(`Corrupt` 아님), `recover_from_prev`도 `UnsupportedPayload`이고 격리·복원 없음; payload 바이트 변조(AEAD 실패)는 여전히 `PayloadCorrupt` → `Corrupt { prev_available }` → 복구 시 `quarantined_at`.
+- 새 버전 payload: 인증되는 payload에 모르는 tag 7 record(tag 5 `HwKey`·tag 6 `ZecKey`는 이미 아는 tag) → `unlock`은 `UnsupportedPayload`, 상태 `Locked`(`Corrupt` 아님), `recover_from_prev`도 `UnsupportedPayload`이고 격리·복원 없음; payload 바이트 변조(AEAD 실패)는 여전히 `PayloadCorrupt` → `Corrupt { prev_available }` → 복구 시 `quarantined_at`.
 - 자체 검사: 인코더가 손상된 바이트를 만들도록 주입하면 커밋 0회.
 
 ### 11.7 사이드카·저장소
