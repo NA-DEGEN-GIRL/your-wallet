@@ -76,6 +76,17 @@ fn now_unix() -> u64 {
         .map_or(0, |elapsed| elapsed.as_secs())
 }
 
+/// Whether this build can read a sidecar's plaintext: meta parses, the journal decodes. The
+/// `.prev` choice of E-VLT-006 and the password change (spec/02 §4.4 step 0) both ask this.
+#[must_use]
+pub fn sidecar_readable(kind: FileKind, plaintext: &[u8]) -> bool {
+    match kind {
+        FileKind::Meta => meta::parse(plaintext).is_ok(),
+        FileKind::Journal => yw_core::journal::JournalPlain::decode(plaintext).is_ok(),
+        FileKind::Vault => false,
+    }
+}
+
 fn ascii(bytes: &[u8]) -> Result<&str, KeyError> {
     core::str::from_utf8(bytes).map_err(|_| KeyError::MnemonicFormat)
 }
@@ -1546,12 +1557,7 @@ impl KeyWorker {
             .open_sidecar_prev(kind)
             .map_err(|_| SidecarRefusal::PrevUnreadable)?
             .ok_or(SidecarRefusal::NoPrev)?;
-        let readable = match kind {
-            FileKind::Meta => meta::parse(plaintext.expose()).is_ok(),
-            FileKind::Journal => yw_core::journal::JournalPlain::decode(plaintext.expose()).is_ok(),
-            FileKind::Vault => false,
-        };
-        if readable {
+        if sidecar_readable(kind, plaintext.expose()) {
             Ok(())
         } else {
             Err(SidecarRefusal::PrevUnreadable)
@@ -1892,7 +1898,9 @@ impl KeyWorker {
             KeyJob::ChangePassword { old, new } => KeyOutcome::PasswordChanged((|| {
                 let old = password(&old).map_err(|_| VaultError::UnlockFailed)?;
                 let new = password(&new)?;
-                self.vault()?.change_password(&old, &new)
+                // A meta or journal this build cannot read refuses the change (E-VLT-006):
+                // the rotation would push out its readable older `.prev` (spec/02 §4.4 step 0).
+                self.vault()?.change_password(&old, &new, &sidecar_readable)
             })()),
             KeyJob::ImportPrivateKey { hex } => KeyOutcome::RawKeyImported((|| {
                 let text = core::str::from_utf8(&hex)

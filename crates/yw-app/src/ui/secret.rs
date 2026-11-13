@@ -638,10 +638,11 @@ fn intro(kind: SecretKind, words: usize, address: bool) -> Vec<String> {
     match kind {
         SecretKind::SetPassword => vec![rule.to_owned()],
         // Review L1 (2026-11-13: the DEK rotates, spec/02 §4.4): later contents are out of reach
-        // of older copies, but those copies keep the old password and what they held.
+        // of older copies, but those copies keep the old password and what they held (and a
+        // weak old password can be cracked offline later).
         SecretKind::ChangePassword => vec![
             rule.to_owned(),
-            "비밀번호를 바꾸면 암호화 키도 새로 만들어, 바꾼 뒤의 내용은 예전 사본으로 열 수 없습니다. 바꾸기 전에 만든 지갑 파일 사본(백업한 vault.ywv 등)은 예전 비밀번호로 계속 열리고 그때의 내용이 드러납니다."
+            "비밀번호를 바꾸면 암호화 키도 새로 만들어, 바꾼 뒤의 내용은 예전 사본으로 열 수 없습니다. 바꾸기 전에 만든 지갑 파일 사본(백업한 vault.ywv 등)은 예전 비밀번호로 계속 열리고 그때의 내용이 드러납니다(예전 비밀번호가 약했다면 나중에 오프라인으로 풀릴 수 있습니다)."
                 .to_owned(),
         ],
         SecretKind::Unlock => vec!["지갑을 열려면 비밀번호를 입력하세요.".to_owned()],

@@ -53,6 +53,10 @@ struct Files {
     quarantined: Vec<(u64, Vec<u8>)>,
 }
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent fault switches of the test double"
+)]
 struct MemInner {
     vault: Files,
     meta: Files,
@@ -66,6 +70,11 @@ struct MemInner {
     /// `land_then_fail`, the commit at that count still lands but reports `Io(6)` first.
     fail_from: Option<usize>,
     land_then_fail: bool,
+    /// `load(Vault)` fails with `Io(7)` (the read-back after a failed `Rewrap`).
+    fail_vault_load: bool,
+    /// `replace_copy` fails with `Io(5)` without writing.
+    fail_copies: bool,
+    copy_writes: usize,
 }
 
 impl MemInner {
@@ -94,6 +103,9 @@ impl MemStorage {
             fail_after_write: false,
             fail_from: None,
             land_then_fail: false,
+            fail_vault_load: false,
+            fail_copies: false,
+            copy_writes: 0,
         })))
     }
 
@@ -133,6 +145,29 @@ impl MemStorage {
         self.with(|inner| inner.fail_after_write = fail);
     }
 
+    fn set_fail_vault_load(&self, fail: bool) {
+        self.with(|inner| inner.fail_vault_load = fail);
+    }
+
+    fn set_fail_copies(&self, fail: bool) {
+        self.with(|inner| inner.fail_copies = fail);
+    }
+
+    fn copy_writes(&self) -> usize {
+        self.with(|inner| inner.copy_writes)
+    }
+
+    /// E-VLT-006 "격리하고 새로 시작": main and `.prev` move aside (`quarantined`) at `now`.
+    fn set_aside(&self, kind: FileKind, now: u64) {
+        self.with(|inner| {
+            let file = inner.file(kind);
+            let main = file.main.take();
+            let prev = file.prev.take();
+            file.quarantined
+                .extend(main.into_iter().chain(prev).map(|bytes| (now, bytes)));
+        });
+    }
+
     fn set_fail_from(&self, from: Option<usize>, land_then_fail: bool) {
         self.with(|inner| {
             inner.fail_from = from;
@@ -143,6 +178,9 @@ impl MemStorage {
 
 impl VaultStorage for MemStorage {
     fn load(&self, kind: FileKind) -> Result<Option<Vec<u8>>, StorageError> {
+        if kind == FileKind::Vault && self.with(|inner| inner.fail_vault_load) {
+            return Err(StorageError::Io(7));
+        }
         Ok(self.main(kind))
     }
 
@@ -195,6 +233,60 @@ impl VaultStorage for MemStorage {
             let file = inner.file(kind);
             let main = file.main.take().ok_or(StorageError::NotFound)?;
             file.quarantined.push((now_unix, main));
+            Ok(())
+        })
+    }
+
+    /// `q<i>` for each set-aside file, `prev` for a `.prev` without a main file.
+    fn copies(&self, kind: FileKind) -> Result<Vec<String>, StorageError> {
+        self.with(|inner| {
+            let file = inner.file(kind);
+            let mut names: Vec<String> = (0..file.quarantined.len())
+                .map(|index| format!("q{index}"))
+                .collect();
+            if file.main.is_none() && file.prev.is_some() {
+                names.push("prev".to_owned());
+            }
+            Ok(names)
+        })
+    }
+
+    fn load_copy(&self, kind: FileKind, name: &str) -> Result<Option<Vec<u8>>, StorageError> {
+        self.with(|inner| {
+            let file = inner.file(kind);
+            Ok(match name.strip_prefix('q') {
+                Some(index) => file
+                    .quarantined
+                    .get(index.parse::<usize>().unwrap())
+                    .map(|(_, bytes)| bytes.clone()),
+                None => file.prev.clone(),
+            })
+        })
+    }
+
+    fn replace_copy(
+        &mut self,
+        kind: FileKind,
+        name: &str,
+        bytes: &[u8],
+    ) -> Result<(), StorageError> {
+        self.with(|inner| {
+            if inner.fail_copies {
+                return Err(StorageError::Io(5));
+            }
+            inner.copy_writes += 1;
+            let file = inner.file(kind);
+            let slot = match name.strip_prefix('q') {
+                Some(index) => {
+                    &mut file
+                        .quarantined
+                        .get_mut(index.parse::<usize>().unwrap())
+                        .unwrap()
+                        .1
+                }
+                None => file.prev.as_mut().unwrap(),
+            };
+            *slot = bytes.to_vec();
             Ok(())
         })
     }
@@ -293,6 +385,11 @@ fn created() -> (MemStorage, Vault, SecretString) {
         .create_wallet(&pw(PASSWORD), new_slot(), 1_790_000_000)
         .unwrap();
     (storage, vault, phrase)
+}
+
+/// The `change_password` check that reads every sidecar (core does not parse them).
+fn any_sidecar(_: FileKind, _: &[u8]) -> bool {
+    true
 }
 
 fn reload(storage: &MemStorage) -> Vault {
@@ -844,15 +941,23 @@ const JOURNAL_2: &[u8] = b"journal two";
 /// Commits of a complete change with both sidecars present: `Rewrap`, `PayloadRewrite`, meta ×2,
 /// journal ×2, two rewrites without `PrevDek`.
 const ROTATION_COMMITS: usize = 8;
+const ROTATION_PASSPHRASE: &str = "TREZOR";
 
 /// An imported wallet with one raw key and two saves of each sidecar (so every `.prev` exists).
 fn rotation_wallet() -> (MemStorage, Vault) {
-    let (storage, mut vault) = imported(None);
+    rotation_wallet_with(None, true)
+}
+
+/// [`rotation_wallet`] with a BIP39 passphrase and/or without a journal.
+fn rotation_wallet_with(passphrase: Option<&str>, journal: bool) -> (MemStorage, Vault) {
+    let (storage, mut vault) = imported(passphrase);
     vault.import_evm_private_key(&"07".repeat(32), 2).unwrap();
     vault.save_sidecar(FileKind::Meta, META_1).unwrap();
     vault.save_sidecar(FileKind::Meta, META_2).unwrap();
-    vault.save_sidecar(FileKind::Journal, JOURNAL_1).unwrap();
-    vault.save_sidecar(FileKind::Journal, JOURNAL_2).unwrap();
+    if journal {
+        vault.save_sidecar(FileKind::Journal, JOURNAL_1).unwrap();
+        vault.save_sidecar(FileKind::Journal, JOURNAL_2).unwrap();
+    }
     (storage, vault)
 }
 
@@ -919,7 +1024,8 @@ fn assert_old_password_reach(
     }
 }
 
-/// Nothing in the folder opens with `old_password` or under `old_dek`.
+/// Nothing in the folder (set-aside copies included) opens with `old_password` or under
+/// `old_dek`.
 fn assert_old_key_opens_nothing(
     storage: &MemStorage,
     vault_id: &[u8; 16],
@@ -948,7 +1054,8 @@ fn assert_old_key_opens_nothing(
 }
 
 /// The rotation is finished: `vault.ywv` and its `.prev` unwrap the session DEK with
-/// `password` and carry no `PrevDek`; meta, journal and their `.prev` open under it.
+/// `password` and carry no `PrevDek`; meta, journal and their `.prev` (those that exist) open
+/// under it.
 fn assert_rotated(storage: &MemStorage, vault: &Vault, password: &[u8], label: &str) {
     let dek = held_dek(vault);
     let vault_id = vault.vault_id().unwrap();
@@ -960,8 +1067,10 @@ fn assert_rotated(storage: &MemStorage, vault: &Vault, password: &[u8], label: &
         assert!(payload.prev_dek.is_none(), "{label}: PrevDek left behind");
     }
     for kind in [FileKind::Meta, FileKind::Journal] {
-        for bytes in [storage.main(kind), storage.prev(kind)] {
-            let bytes = bytes.unwrap();
+        for bytes in [storage.main(kind), storage.prev(kind)]
+            .into_iter()
+            .flatten()
+        {
             assert!(
                 format::open_sidecar(kind, &bytes, &vault_id, &dek).is_ok(),
                 "{label}: {kind:?}"
@@ -982,6 +1091,11 @@ fn sidecar_text(vault: &Vault, kind: FileKind, prev: bool) -> Vec<u8> {
 /// The wallet after a finished rotation: the raw key, and both sidecars with the content from
 /// before the change in the main file and in `.prev` (each re-sealed copy of the main file).
 fn assert_wallet_contents(vault: &Vault, label: &str) {
+    assert_wallet_contents_with(vault, true, label);
+}
+
+/// [`assert_wallet_contents`] for a wallet with or without a journal.
+fn assert_wallet_contents_with(vault: &Vault, journal: bool, label: &str) {
     assert_eq!(vault.raw_keys().unwrap().len(), 1, "{label}");
     assert_eq!(
         sidecar_text(vault, FileKind::Meta, false),
@@ -989,6 +1103,13 @@ fn assert_wallet_contents(vault: &Vault, label: &str) {
         "{label}"
     );
     assert_eq!(sidecar_text(vault, FileKind::Meta, true), META_2, "{label}");
+    if !journal {
+        assert!(
+            vault.open_sidecar(FileKind::Journal).unwrap().is_none(),
+            "{label}"
+        );
+        return;
+    }
     assert_eq!(
         sidecar_text(vault, FileKind::Journal, false),
         JOURNAL_2,
@@ -1010,14 +1131,14 @@ fn change_password_rotates_dek() {
     let generation = peek_generation_with(FileKind::Vault, &old_copy, &KDF_TEST).unwrap();
     let commits = storage.commits();
     assert_eq!(
-        vault.change_password(&pw(OTHER_PASSWORD), &pw(NEW_PASSWORD)),
+        vault.change_password(&pw(OTHER_PASSWORD), &pw(NEW_PASSWORD), &any_sidecar),
         Err(VaultError::UnlockFailed)
     );
     assert_eq!(storage.commits(), commits);
 
     let calls = kdf_calls();
     assert_eq!(
-        vault.change_password(&pw(PASSWORD), &pw(NEW_PASSWORD)),
+        vault.change_password(&pw(PASSWORD), &pw(NEW_PASSWORD), &any_sidecar),
         Ok(PasswordChange::Complete)
     );
     // Verify the old password + derive the new KEK: the rotation itself needs no Argon2.
@@ -1071,70 +1192,119 @@ fn change_password_rotates_dek() {
 /// A crash (every later commit fails, then the process restarts) after each commit of the
 /// change, and the same where that commit lands but reports a failure. The old password reaches
 /// only content from before the change at every point; once the `Rewrap` landed, the new
-/// password opens the wallet, the unlock finishes the rotation, and nothing is lost.
+/// password opens the wallet, the unlock finishes the rotation, and nothing is lost. Three
+/// wallets: both sidecars; a BIP39 passphrase (the unlock stops at `PassphraseRequired`, and the
+/// rotation is already finished there, spec/02 §4.4 "passphrase 입력 전 포함"); meta without a
+/// journal (6 commits).
 #[test]
 fn dek_rotation_survives_a_crash_after_every_commit() {
-    for land_then_fail in [false, true] {
-        for k in 0..=ROTATION_COMMITS {
-            let landed = k + usize::from(land_then_fail);
-            if landed > ROTATION_COMMITS {
-                continue;
-            }
-            let label = format!("crash after {landed} (land_then_fail {land_then_fail})");
-            let (storage, mut vault) = rotation_wallet();
-            let old_dek = held_dek(&vault);
-            let vault_id = vault.vault_id().unwrap();
-            let before = payload_encodings(&storage, &old_dek);
-            let base = storage.commits();
-            storage.set_fail_from(Some(base + k), land_then_fail);
-            let expected = match landed {
-                0 => Err(VaultError::Storage(StorageError::Io(5))),
-                ROTATION_COMMITS => Ok(PasswordChange::Complete),
-                _ => Ok(PasswordChange::PrevNotRefreshed),
-            };
-            assert_eq!(
-                vault.change_password(&pw(PASSWORD), &pw(NEW_PASSWORD)),
-                expected,
-                "{label}"
-            );
-            assert_eq!(storage.commits(), base + landed, "{label}");
-            drop(vault);
-            storage.set_fail_from(None, false);
-            assert_old_password_reach(&storage, &vault_id, &old_dek, &before, &label);
-
-            let mut vault = reload(&storage);
-            if landed == 0 {
-                assert_eq!(
-                    vault.unlock(&pw(NEW_PASSWORD), new_slot()),
-                    Err(VaultError::UnlockFailed),
-                    "{label}"
+    let setups = [
+        (None, true, ROTATION_COMMITS),
+        (Some(ROTATION_PASSPHRASE), true, ROTATION_COMMITS),
+        (None, false, ROTATION_COMMITS - 2),
+    ];
+    for (passphrase, journal, commits) in setups {
+        for land_then_fail in [false, true] {
+            for k in 0..=commits {
+                let landed = k + usize::from(land_then_fail);
+                if landed > commits {
+                    continue;
+                }
+                let label = format!(
+                    "crash after {landed} (land_then_fail {land_then_fail}, passphrase {},                      journal {journal})",
+                    passphrase.is_some()
                 );
-                vault.unlock(&pw(PASSWORD), new_slot()).unwrap();
-                assert_eq!(held_dek(&vault), old_dek, "{label}");
-                assert_eq!(sidecar_text(&vault, FileKind::Meta, true), META_1);
-                assert_eq!(sidecar_text(&vault, FileKind::Journal, true), JOURNAL_1);
-                continue;
+                crash_case(passphrase, journal, commits, k, land_then_fail, &label);
             }
+        }
+    }
+}
+
+/// One point of [`dek_rotation_survives_a_crash_after_every_commit`].
+fn crash_case(
+    passphrase: Option<&str>,
+    journal: bool,
+    commits: usize,
+    k: usize,
+    land_then_fail: bool,
+    label: &str,
+) {
+    let landed = k + usize::from(land_then_fail);
+    let (storage, mut vault) = rotation_wallet_with(passphrase, journal);
+    let old_dek = held_dek(&vault);
+    let vault_id = vault.vault_id().unwrap();
+    let before = payload_encodings(&storage, &old_dek);
+    let base = storage.commits();
+    storage.set_fail_from(Some(base + k), land_then_fail);
+    let expected = if landed == 0 {
+        Err(VaultError::Storage(StorageError::Io(5)))
+    } else if landed == commits {
+        Ok(PasswordChange::Complete)
+    } else {
+        Ok(PasswordChange::PrevNotRefreshed)
+    };
+    assert_eq!(
+        vault.change_password(&pw(PASSWORD), &pw(NEW_PASSWORD), &any_sidecar),
+        expected,
+        "{label}"
+    );
+    assert_eq!(storage.commits(), base + landed, "{label}");
+    drop(vault);
+    storage.set_fail_from(None, false);
+    assert_old_password_reach(&storage, &vault_id, &old_dek, &before, label);
+
+    let unlocked = Ok(if passphrase.is_some() {
+        VaultStatus::PassphraseRequired
+    } else {
+        VaultStatus::Unlocked {
+            alt_passphrase: false,
+        }
+    });
+    let enter = |vault: &mut Vault| {
+        if let Some(text) = passphrase {
             assert_eq!(
-                vault.unlock(&pw(PASSWORD), new_slot()),
-                Err(VaultError::UnlockFailed),
-                "{label}"
-            );
-            assert_eq!(
-                vault.unlock(&pw(NEW_PASSWORD), new_slot()),
+                vault.enter_passphrase(Bip39Passphrase::new(text).unwrap()),
                 Ok(VaultStatus::Unlocked {
                     alt_passphrase: false
                 }),
                 "{label}"
             );
-            assert_rotated(&storage, &vault, NEW_PASSWORD, &label);
-            assert_old_key_opens_nothing(&storage, &vault_id, PASSWORD, &old_dek, &label);
-            assert_wallet_contents(&vault, &label);
-            vault.import_evm_private_key(&"08".repeat(32), 3).unwrap();
-            vault.save_sidecar(FileKind::Meta, b"meta after").unwrap();
-            assert_old_key_opens_nothing(&storage, &vault_id, PASSWORD, &old_dek, &label);
         }
+    };
+    let mut vault = reload(&storage);
+    if landed == 0 {
+        assert_eq!(
+            vault.unlock(&pw(NEW_PASSWORD), new_slot()),
+            Err(VaultError::UnlockFailed),
+            "{label}"
+        );
+        assert_eq!(vault.unlock(&pw(PASSWORD), new_slot()), unlocked, "{label}");
+        assert_eq!(held_dek(&vault), old_dek, "{label}");
+        enter(&mut vault);
+        assert_eq!(sidecar_text(&vault, FileKind::Meta, true), META_1);
+        if journal {
+            assert_eq!(sidecar_text(&vault, FileKind::Journal, true), JOURNAL_1);
+        }
+        return;
     }
+    assert_eq!(
+        vault.unlock(&pw(PASSWORD), new_slot()),
+        Err(VaultError::UnlockFailed),
+        "{label}"
+    );
+    assert_eq!(
+        vault.unlock(&pw(NEW_PASSWORD), new_slot()),
+        unlocked,
+        "{label}"
+    );
+    // Finished by the unlock itself, before any passphrase is entered.
+    assert_rotated(&storage, &vault, NEW_PASSWORD, label);
+    assert_old_key_opens_nothing(&storage, &vault_id, PASSWORD, &old_dek, label);
+    enter(&mut vault);
+    assert_wallet_contents_with(&vault, journal, label);
+    vault.import_evm_private_key(&"08".repeat(32), 3).unwrap();
+    vault.save_sidecar(FileKind::Meta, b"meta after").unwrap();
+    assert_old_key_opens_nothing(&storage, &vault_id, PASSWORD, &old_dek, label);
 }
 
 /// Only the `Rewrap` landed: a sidecar save may not seal under the new DEK while
@@ -1148,7 +1318,7 @@ fn sidecar_save_finishes_the_rotation_and_never_runs_ahead_of_vault_prev() {
     let vault_id = vault.vault_id().unwrap();
     storage.set_fail_from(Some(storage.commits() + 1), false);
     assert_eq!(
-        vault.change_password(&pw(PASSWORD), &pw(NEW_PASSWORD)),
+        vault.change_password(&pw(PASSWORD), &pw(NEW_PASSWORD), &any_sidecar),
         Ok(PasswordChange::PrevNotRefreshed)
     );
     let meta = storage.main(FileKind::Meta);
@@ -1183,7 +1353,7 @@ fn prev_recovery_inside_the_rotation_window() {
         let vault_id = vault.vault_id().unwrap();
         storage.set_fail_from(Some(storage.commits() + landed), false);
         assert_eq!(
-            vault.change_password(&pw(PASSWORD), &pw(NEW_PASSWORD)),
+            vault.change_password(&pw(PASSWORD), &pw(NEW_PASSWORD), &any_sidecar),
             Ok(PasswordChange::PrevNotRefreshed),
             "{label}"
         );
@@ -1234,7 +1404,7 @@ fn change_password_refuses_while_a_sidecar_does_not_open() {
     let files = disk_files(&storage);
     let commits = storage.commits();
     assert_eq!(
-        vault.change_password(&pw(PASSWORD), &pw(NEW_PASSWORD)),
+        vault.change_password(&pw(PASSWORD), &pw(NEW_PASSWORD), &any_sidecar),
         Err(VaultError::SidecarCorrupt(FileKind::Journal))
     );
     assert_eq!(storage.commits(), commits);
@@ -1254,7 +1424,7 @@ fn change_password_refuses_while_a_sidecar_does_not_open() {
     let meta = storage.main(FileKind::Meta);
     storage.set_main(FileKind::Meta, Some(foreign));
     assert_eq!(
-        vault.change_password(&pw(PASSWORD), &pw(NEW_PASSWORD)),
+        vault.change_password(&pw(PASSWORD), &pw(NEW_PASSWORD), &any_sidecar),
         Err(VaultError::SidecarVaultMismatch(FileKind::Meta))
     );
     assert_eq!(storage.commits(), commits);
@@ -1263,7 +1433,7 @@ fn change_password_refuses_while_a_sidecar_does_not_open() {
 
     storage.set_main(FileKind::Meta, meta);
     assert_eq!(
-        vault.change_password(&pw(PASSWORD), &pw(NEW_PASSWORD)),
+        vault.change_password(&pw(PASSWORD), &pw(NEW_PASSWORD), &any_sidecar),
         Ok(PasswordChange::Complete)
     );
     assert_wallet_contents(&vault, "restored");
@@ -1278,13 +1448,13 @@ fn second_change_finishes_the_unfinished_rotation_first() {
     let vault_id = vault.vault_id().unwrap();
     storage.set_fail_from(Some(storage.commits() + 3), false);
     assert_eq!(
-        vault.change_password(&pw(PASSWORD), &pw(NEW_PASSWORD)),
+        vault.change_password(&pw(PASSWORD), &pw(NEW_PASSWORD), &any_sidecar),
         Ok(PasswordChange::PrevNotRefreshed)
     );
     storage.set_fail_from(None, false);
     let second = held_dek(&vault);
     assert_eq!(
-        vault.change_password(&pw(NEW_PASSWORD), &pw(b"third password 3")),
+        vault.change_password(&pw(NEW_PASSWORD), &pw(b"third password 3"), &any_sidecar),
         Ok(PasswordChange::Complete)
     );
     let third = held_dek(&vault);
@@ -1293,6 +1463,258 @@ fn second_change_finishes_the_unfinished_rotation_first() {
     assert_old_key_opens_nothing(&storage, &vault_id, PASSWORD, &first, "first");
     assert_old_key_opens_nothing(&storage, &vault_id, NEW_PASSWORD, &second, "second");
     assert_wallet_contents(&vault, "third");
+}
+
+/// A sidecar that opens but that the caller cannot read (yw-app: `SidecarUnsupported`, a newer
+/// build's format) refuses the change before anything is written: rotating would commit it twice
+/// and push out the older `.prev` this build can still read (the E-VLT-006 `.prev` choice).
+#[test]
+fn change_password_refuses_a_sidecar_the_caller_cannot_read() {
+    let (storage, mut vault) = rotation_wallet();
+    let files = disk_files(&storage);
+    let commits = storage.commits();
+    let json_meta =
+        |kind: FileKind, plain: &[u8]| kind != FileKind::Meta || plain.starts_with(b"{");
+    assert_eq!(
+        vault.change_password(&pw(PASSWORD), &pw(NEW_PASSWORD), &json_meta),
+        Err(VaultError::SidecarUnsupported(FileKind::Meta))
+    );
+    let journal_one =
+        |kind: FileKind, plain: &[u8]| kind != FileKind::Journal || plain == JOURNAL_1;
+    assert_eq!(
+        vault.change_password(&pw(PASSWORD), &pw(NEW_PASSWORD), &journal_one),
+        Err(VaultError::SidecarUnsupported(FileKind::Journal))
+    );
+    // A wrong old password is still reported first.
+    assert_eq!(
+        vault.change_password(&pw(OTHER_PASSWORD), &pw(NEW_PASSWORD), &json_meta),
+        Err(VaultError::UnlockFailed)
+    );
+    assert_eq!(storage.commits(), commits);
+    assert_eq!(disk_files(&storage), files);
+    // The readable older copy is still there for the `.prev` choice.
+    assert_eq!(sidecar_text(&vault, FileKind::Meta, true), META_1);
+    assert_eq!(
+        vault.change_password(&pw(PASSWORD), &pw(NEW_PASSWORD), &any_sidecar),
+        Ok(PasswordChange::Complete)
+    );
+}
+
+/// The `Rewrap` write reports a failure and `vault.ywv` cannot be read back: whether the change
+/// landed is unknown, so the session locks (nothing is sealed under either DEK) and the result
+/// is `Unconfirmed`, not "the old password still works". Landed: only the new password opens
+/// and its unlock finishes the rotation. Not landed: the old password opens everything as before.
+#[test]
+fn rewrap_with_an_unknown_outcome_locks_the_session() {
+    for landed in [true, false] {
+        let label = format!("landed {landed}");
+        let (storage, mut vault) = rotation_wallet();
+        let old_dek = held_dek(&vault);
+        let vault_id = vault.vault_id().unwrap();
+        let base = storage.commits();
+        storage.set_fail_vault_load(true);
+        if landed {
+            storage.set_fail_after_write(true);
+        } else {
+            storage.set_fail_commits(true);
+        }
+        assert_eq!(
+            vault.change_password(&pw(PASSWORD), &pw(NEW_PASSWORD), &any_sidecar),
+            Ok(PasswordChange::Unconfirmed),
+            "{label}"
+        );
+        assert_eq!(vault.status(), VaultStatus::Locked, "{label}");
+        assert!(vault.slot_bytes().is_none(), "{label}");
+        assert_eq!(
+            vault.save_sidecar(FileKind::Journal, b"after"),
+            Err(VaultError::InvalidState),
+            "{label}"
+        );
+        assert_eq!(storage.commits(), base + usize::from(landed), "{label}");
+        storage.set_fail_vault_load(false);
+        storage.set_fail_after_write(false);
+        storage.set_fail_commits(false);
+        let unlocked = Ok(VaultStatus::Unlocked {
+            alt_passphrase: false,
+        });
+        if landed {
+            assert_eq!(
+                vault.unlock(&pw(PASSWORD), new_slot()),
+                Err(VaultError::UnlockFailed),
+                "{label}"
+            );
+            assert_eq!(
+                vault.unlock(&pw(NEW_PASSWORD), new_slot()),
+                unlocked,
+                "{label}"
+            );
+            assert_rotated(&storage, &vault, NEW_PASSWORD, &label);
+            assert_old_key_opens_nothing(&storage, &vault_id, PASSWORD, &old_dek, &label);
+            assert_wallet_contents(&vault, &label);
+        } else {
+            assert_eq!(
+                vault.unlock(&pw(NEW_PASSWORD), new_slot()),
+                Err(VaultError::UnlockFailed),
+                "{label}"
+            );
+            assert_eq!(vault.unlock(&pw(PASSWORD), new_slot()), unlocked, "{label}");
+            assert_eq!(held_dek(&vault), old_dek, "{label}");
+            assert_eq!(sidecar_text(&vault, FileKind::Meta, true), META_1);
+            assert_eq!(sidecar_text(&vault, FileKind::Journal, true), JOURNAL_1);
+        }
+    }
+}
+
+/// The copies E-VLT-006 set aside for restoring by hand (`*.corrupt-*`, `*.prev.corrupt-*`) and
+/// a `.prev` without a main file are re-sealed under the new DEK (same generation and bytes), so
+/// a copy put back after the change still opens; a damaged copy is left as it is. A failed copy
+/// write keeps `PrevDek`, and the next unlock finishes it.
+#[test]
+fn set_aside_sidecar_copies_follow_the_rotation() {
+    for fail_copies in [false, true] {
+        let label = format!("fail_copies {fail_copies}");
+        let (storage, mut vault) = rotation_wallet();
+        let old_dek = held_dek(&vault);
+        let vault_id = vault.vault_id().unwrap();
+        let before = payload_encodings(&storage, &old_dek);
+        // Journal "격리하고 새로 시작": JOURNAL_2 and its `.prev` JOURNAL_1 move aside, and the
+        // fresh journal is saved (with JOURNAL_1 again, content the reach check knows).
+        storage.set_aside(FileKind::Journal, 5);
+        assert!(vault.open_sidecar(FileKind::Journal).unwrap().is_none());
+        assert_eq!(vault.save_sidecar(FileKind::Journal, JOURNAL_1), Ok(1));
+        // A damaged set-aside meta, and no meta.ywm, so its `.prev` (META_1) is left alone.
+        let mut damaged = storage.main(FileKind::Meta).unwrap();
+        *damaged.last_mut().unwrap() ^= 1;
+        storage.with(|inner| inner.meta.quarantined.push((6, damaged.clone())));
+        storage.set_main(FileKind::Meta, None);
+        assert!(vault.open_sidecar(FileKind::Meta).unwrap().is_none());
+        let base = storage.commits();
+        storage.set_fail_copies(fail_copies);
+        assert_eq!(
+            vault.change_password(&pw(PASSWORD), &pw(NEW_PASSWORD), &any_sidecar),
+            Ok(if fail_copies {
+                PasswordChange::PrevNotRefreshed
+            } else {
+                PasswordChange::Complete
+            }),
+            "{label}"
+        );
+        if fail_copies {
+            // Rewrap, PayloadRewrite, journal ×2; `PrevDek` stays.
+            assert_eq!(storage.commits(), base + 4, "{label}");
+            assert_eq!(storage.copy_writes(), 0, "{label}");
+            assert!(vault.payload().unwrap().prev_dek.is_some(), "{label}");
+            drop(vault);
+            storage.set_fail_copies(false);
+            assert_old_password_reach(&storage, &vault_id, &old_dek, &before, &label);
+            vault = reload(&storage);
+            assert_eq!(
+                vault.unlock(&pw(NEW_PASSWORD), new_slot()),
+                Ok(VaultStatus::Unlocked {
+                    alt_passphrase: false
+                }),
+                "{label}"
+            );
+        } else {
+            // Rewrap, PayloadRewrite, journal ×2 (meta has no main file), two rewrites.
+            assert_eq!(storage.commits(), base + 6, "{label}");
+        }
+        // The two set-aside journals and meta's lone `.prev`; the damaged meta is skipped.
+        assert_eq!(storage.copy_writes(), 3, "{label}");
+        assert!(vault.payload().unwrap().prev_dek.is_none(), "{label}");
+        assert_rotated(&storage, &vault, NEW_PASSWORD, &label);
+        assert_old_key_opens_nothing(&storage, &vault_id, PASSWORD, &old_dek, &label);
+        let dek = held_dek(&vault);
+        let journals: Vec<(u64, Vec<u8>)> = storage
+            .quarantined(FileKind::Journal)
+            .iter()
+            .map(|(_, bytes)| {
+                let (generation, plain) =
+                    format::open_sidecar(FileKind::Journal, bytes, &vault_id, &dek).unwrap();
+                (generation, plain.to_vec())
+            })
+            .collect();
+        assert_eq!(
+            journals,
+            [(2, JOURNAL_2.to_vec()), (1, JOURNAL_1.to_vec())],
+            "{label}"
+        );
+        assert_eq!(
+            storage.quarantined(FileKind::Meta),
+            [(6, damaged)],
+            "{label}"
+        );
+        assert_eq!(
+            sidecar_text(&vault, FileKind::Meta, true),
+            META_1,
+            "{label}"
+        );
+
+        // Put back by hand (recovery guide): the old journal opens with the new key.
+        vault.lock();
+        let (_, set_aside) = storage.quarantined(FileKind::Journal).swap_remove(0);
+        storage.set_main(FileKind::Journal, Some(set_aside));
+        vault.unlock(&pw(NEW_PASSWORD), new_slot()).unwrap();
+        assert_eq!(sidecar_text(&vault, FileKind::Journal, false), JOURNAL_2);
+        assert_eq!(vault.save_sidecar(FileKind::Journal, b"journal 3"), Ok(3));
+    }
+}
+
+/// A sidecar damaged while the rotation is pending (V1 and V2 landed, then a crash): the unlock
+/// re-seals meta but keeps `PrevDek` for the journal, whose `.prev` still opens under it; the
+/// E-VLT-006 `.prev` choice puts that old-DEK copy back, and the next save finishes the rotation.
+#[test]
+fn a_sidecar_damaged_inside_the_rotation_window() {
+    let (storage, mut vault) = rotation_wallet();
+    let old_dek = held_dek(&vault);
+    let vault_id = vault.vault_id().unwrap();
+    storage.set_fail_from(Some(storage.commits() + 2), false);
+    assert_eq!(
+        vault.change_password(&pw(PASSWORD), &pw(NEW_PASSWORD), &any_sidecar),
+        Ok(PasswordChange::PrevNotRefreshed)
+    );
+    drop(vault);
+    storage.set_fail_from(None, false);
+    let mut damaged = storage.main(FileKind::Journal).unwrap();
+    *damaged.last_mut().unwrap() ^= 1;
+    storage.set_main(FileKind::Journal, Some(damaged));
+
+    let mut vault = reload(&storage);
+    assert_eq!(
+        vault.unlock(&pw(NEW_PASSWORD), new_slot()),
+        Ok(VaultStatus::Unlocked {
+            alt_passphrase: false
+        })
+    );
+    assert!(vault.payload().unwrap().prev_dek.is_some());
+    let new_dek = held_dek(&vault);
+    let meta = storage.main(FileKind::Meta).unwrap();
+    assert!(format::open_sidecar(FileKind::Meta, &meta, &vault_id, &new_dek).is_ok());
+    assert_eq!(
+        vault
+            .open_sidecar(FileKind::Journal)
+            .map(|opened| opened.is_some()),
+        Err(VaultError::SidecarCorrupt(FileKind::Journal))
+    );
+    assert_eq!(sidecar_text(&vault, FileKind::Journal, true), JOURNAL_1);
+    assert_eq!(
+        vault.save_sidecar(FileKind::Journal, b"journal 3"),
+        Err(VaultError::SidecarCorrupt(FileKind::Journal))
+    );
+    // Meta saves go on (the rotation is past V2).
+    assert!(vault.save_sidecar(FileKind::Meta, META_2).is_ok());
+
+    // yw-app's `restore_prev`: the damaged file aside, the `.prev` bytes in its place.
+    let prev = storage.prev(FileKind::Journal).unwrap();
+    VaultStorage::quarantine(&mut storage.clone(), FileKind::Journal, 9).unwrap();
+    storage.set_main(FileKind::Journal, Some(prev));
+    assert_eq!(sidecar_text(&vault, FileKind::Journal, false), JOURNAL_1);
+    assert!(vault.save_sidecar(FileKind::Journal, b"journal 3").is_ok());
+    assert!(vault.payload().unwrap().prev_dek.is_none());
+    assert_rotated(&storage, &vault, NEW_PASSWORD, "restored");
+    assert_old_key_opens_nothing(&storage, &vault_id, PASSWORD, &old_dek, "restored");
+    assert_eq!(sidecar_text(&vault, FileKind::Journal, false), b"journal 3");
+    assert_eq!(sidecar_text(&vault, FileKind::Journal, true), JOURNAL_1);
 }
 
 /// The `PrevDek` block (tag 7, spec/02 §4.6): after the records, not counted, exactly one, a
@@ -1408,7 +1830,7 @@ fn storage_failure_keeps_state() {
     let (storage, mut vault) = imported(None);
     storage.set_fail_commits(true);
     assert_eq!(
-        vault.change_password(&pw(PASSWORD), &pw(b"new password 33")),
+        vault.change_password(&pw(PASSWORD), &pw(b"new password 33"), &any_sidecar),
         Err(VaultError::Storage(StorageError::Io(5)))
     );
     storage.set_fail_commits(false);
@@ -2552,7 +2974,7 @@ fn commit_that_lands_but_reports_failure_is_success() {
     assert_eq!(vault.raw_keys().unwrap().len(), 1);
     // The in-memory bytes followed the disk, so the next generation CAS still matches.
     vault
-        .change_password(&pw(PASSWORD), &pw(b"new password 33"))
+        .change_password(&pw(PASSWORD), &pw(b"new password 33"), &any_sidecar)
         .unwrap();
     assert_eq!(vault.save_sidecar(FileKind::Meta, b"meta-1"), Ok(1));
     assert_eq!(vault.save_sidecar(FileKind::Meta, b"meta-2"), Ok(2));

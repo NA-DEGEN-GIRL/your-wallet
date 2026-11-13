@@ -293,7 +293,7 @@ If a task seems to require breaking one of these, stop and ask the owner.
 - **Copying secrets is off by default.** When enabled, the copy is excluded from history and cloud sync and auto-clears after 30 s.
 - **The approval window is not capture-excluded,** because it holds no secret.
 - **Vault v3** (D7, spec/02 §4): Argon2id m = 256 MiB, t = 3, p = 4 → HKDF → KEK wraps a random DEK with XChaCha20-Poly1305 (header AAD). The pinned crypto crates and parameters do not change.
-- **Every password change rotates the DEK** (spec/02 §4.4): no file the old password opens may ever hold the new DEK. The old DEK lives only in the transient `PrevDek` block (payload tag 7) of new-password files until meta, journal and every `.prev` are re-sealed; an interrupted rotation resumes on the next unlock or sidecar save.
+- **Every password change rotates the DEK** (spec/02 §4.4): no file the old password opens may ever hold the new DEK. The old DEK lives only in the transient `PrevDek` block (payload tag 7) of new-password files until meta, journal, every `.prev` and the E-VLT-006 set-aside copies are re-sealed; an interrupted rotation resumes on the next unlock or sidecar save. A sidecar this build cannot read refuses the change, and an unconfirmable `Rewrap` locks the session.
 - **Memory:** only the DEK (and BIP39 passphrase) stays in a `VirtualLock` slot while unlocked. Everything else is derived per operation and zeroized.
 - **RNG** is OS CSPRNG, fail-closed. Secret comparisons are constant-time.
 - **Data folder:** protected DACL plus a Medium integrity label. Reparse points are rejected. Writes are atomic: temp → flush → `MoveFileExW` write-through.
