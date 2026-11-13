@@ -6,6 +6,11 @@
 //! own line, a click copying it, with the ↗ `탐색기에서 열기` icon), and the muted count of hidden
 //! dust transfers. One call per card:
 //! [`App::received_items`].
+//!
+//! Unconfirmed rows (2026-11-13: Bitcoin and Zcash mempool, Solana `processed`): "미확정 · 받음
+//! …", the status [`T_PENDING_STATUS`] and no sender until confirmed ([`T_PENDING_SENDER`]: a
+//! look-alike payment can be replaced back to its sender for the fee only). Before, the status
+//! read "상태: 대기 중 (아직 확인되지 않음)", the headline "시각 모름" and the sender was shown.
 
 use yw_core::evm::address::parse_address;
 use yw_core::evm::display::format_address;
@@ -75,6 +80,25 @@ pub fn dust_line(count: usize) -> String {
 }
 /// Rows shown before `더 보기`.
 pub const FIRST_ROWS: usize = 10;
+/// The status line of an unconfirmed row (2026-11-13).
+pub const T_PENDING_STATUS: &str = "상태: 미확정 (0 확인) — 바뀌거나 취소될 수 있습니다";
+/// The sender line of an unconfirmed row (2026-11-13).
+pub const T_PENDING_SENDER: &str = "보낸 주소: 확인된 뒤 표시합니다";
+/// The Bitcoin and Zcash cards' line under the help line (2026-11-13).
+pub const T_PENDING_HELP: &str =
+    "미확정 입금은 참고용입니다 — 확인(블록 1개) 전에는 잔액에 넣지 않고 보낼 때도 쓰지 않습니다.";
+/// The muted line of pending rows that went before confirming.
+#[must_use]
+pub fn gone_line(count: usize) -> String {
+    format!(
+        "확인되기 전에 사라진 미확정 입금 {count}건 — 다른 거래로 바뀌었거나 취소되었을 수 있습니다."
+    )
+}
+/// The muted line of pending rows removed without a definitive answer.
+#[must_use]
+pub fn dropped_line(count: usize) -> String {
+    format!("상태를 확인할 수 없어 목록에서 뺀 미확정 입금 {count}건 — 탐색기에서 확인하세요.")
+}
 
 fn local_time(unix_ms: u64) -> String {
     let wall = yw_win::time::local_wall_ms(unix_ms);
@@ -215,10 +239,10 @@ impl App {
 
     fn received_row(&self, chain: RecvChain, row: usize, entry: &Incoming, items: &mut Vec<Item>) {
         let when = entry.time_ms.map_or_else(
-            || {
-                entry
-                    .block
-                    .map_or_else(|| "시각 모름".to_owned(), |block| format!("블록 {block}"))
+            || match entry.block {
+                _ if entry.pending => "미확정".to_owned(),
+                Some(block) => format!("블록 {block}"),
+                None => "시각 모름".to_owned(),
             },
             local_time,
         );
@@ -227,13 +251,16 @@ impl App {
             entry.amount, entry.symbol
         )));
         items.push(Item::Help(match (entry.pending, entry.block) {
-            (true, _) => "상태: 대기 중 (아직 확인되지 않음)".to_owned(),
+            (true, _) => T_PENDING_STATUS.to_owned(),
             (false, Some(block)) if entry.time_ms.is_some() && chain != RecvChain::Sol => {
                 format!("상태: 확인됨 (블록 {block})")
             }
             (false, _) => "상태: 확인됨".to_owned(),
         }));
         match (&entry.from, entry.from_note) {
+            // No sender before the first confirmation (address poisoning by replaceable 0-conf
+            // payments; the confirmed row shows it with the look-alike check).
+            (Some(_), _) if entry.pending => items.push(Item::Help(T_PENDING_SENDER.to_owned())),
             (Some(from), _) => {
                 let note = self.sender_note(chain, from);
                 items.push(Item::Help(format!("보낸 주소{}", note.name)));
@@ -278,6 +305,7 @@ impl App {
     /// The `HyperCore` card has the section only (2026-11-12): it sits right above the EVM
     /// activity card, whose switch is the same setting and names it — two check boxes for one
     /// setting on one tab before.
+    #[expect(clippy::too_many_lines, reason = "the section top to bottom")]
     pub fn received_items(&self, chain: RecvChain, items: &mut Vec<Item>) {
         let on = self.settings.received_history;
         if chain == RecvChain::Hc {
@@ -308,6 +336,9 @@ impl App {
         if chain == RecvChain::Evm {
             items.push(Item::Muted(T_EVM_NATIVE.to_owned()));
         }
+        if matches!(chain, RecvChain::Btc | RecvChain::Zec) {
+            items.push(Item::Muted(T_PENDING_HELP.to_owned()));
+        }
         let list = self
             .received_key(chain)
             .and_then(|key| self.received.lists.get(&key));
@@ -320,6 +351,9 @@ impl App {
         if let Some(text) = list.unsupported {
             items.push(Item::Muted(text.to_owned()));
             return;
+        }
+        if let Some(text) = list.limited {
+            items.push(Item::Muted(text.to_owned()));
         }
         if let Some(error) = &list.error {
             items.push(Item::Banner(
@@ -369,6 +403,12 @@ impl App {
         }
         if list.dust > 0 {
             items.push(Item::Muted(dust_line(list.dust)));
+        }
+        if list.gone > 0 {
+            items.push(Item::Muted(gone_line(list.gone)));
+        }
+        if list.dropped > 0 {
+            items.push(Item::Muted(dropped_line(list.dropped)));
         }
     }
 }

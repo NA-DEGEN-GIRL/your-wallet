@@ -37,7 +37,7 @@ pub use address::{RecipientForm, ZecAddressError, ZecDest, ZecRecipient, parse_r
 pub use network::ZecNetwork;
 pub use plan::{ZecAmount, ZecPlan, ZecPlanError, ZecSendRequest, ZecUtxo, plan_send};
 pub use sign::{ZecSignError, ZecSignedTx, sign_plan, sign_plan_card, verify_signed};
-pub use tx::{ZecOutPoint, ZecTx};
+pub use tx::{TransparentParts, ZecOutPoint, ZecTx, transparent_parts};
 pub use upgrade::{ConsensusObservation, TxConsensus, UpgradeError, tx_consensus};
 
 /// Zatoshis per ZEC.

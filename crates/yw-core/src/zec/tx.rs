@@ -16,6 +16,11 @@
 //!
 //! The parser accepts exactly this shape: any shielded part is refused
 //! ([`ZecTxError::Shielded`]), because this wallet never builds or tracks one.
+//!
+//! [`transparent_parts`] (2026-11-13, the received history's mempool scan, spec/12 §4.1) is the
+//! other, lenient reader: only the transparent inputs and outputs of a v4 or v5 transaction of
+//! anyone, ignoring whatever follows them (shielded parts included). Its result is display data
+//! only and never signed or tracked.
 #![deny(clippy::indexing_slicing)]
 
 use core::fmt;
@@ -28,6 +33,16 @@ use crate::hex;
 pub const V5_HEADER: u32 = 0x8000_0005;
 /// v5 version group id (ZIP 225).
 pub const V5_VERSION_GROUP_ID: u32 = 0x26A7_270A;
+/// `fOverwintered | 4` (Sapling, ZIP 202 / ZIP 243 layout).
+pub const V4_HEADER: u32 = 0x8000_0004;
+/// v4 version group id (Sapling).
+pub const V4_VERSION_GROUP_ID: u32 = 0x892F_2085;
+/// [`transparent_parts`]: most bytes read, inputs and outputs counted, script bytes.
+pub const PARTS_MAX_BYTES: usize = 2 * 1_048_576;
+/// Most transparent inputs or outputs [`transparent_parts`] reads.
+pub const PARTS_MAX_ITEMS: usize = 10_000;
+/// Longest script [`transparent_parts`] reads.
+pub const PARTS_MAX_SCRIPT: usize = 10_000;
 /// Largest serialized size we parse (a v5 transparent transaction we build is far smaller).
 pub const MAX_TX_BYTES: usize = 100_000;
 /// Largest value of one output or of the sum (zatoshis; 21 million ZEC).
@@ -104,6 +119,8 @@ pub enum ZecTxError {
     Value,
     /// Bytes after the Orchard count, or more than [`MAX_TX_BYTES`].
     TrailingBytes,
+    /// [`transparent_parts`]: not a v4 or v5 header, or a count, script or size over its bound.
+    Unsupported,
 }
 
 impl fmt::Display for ZecTxError {
@@ -115,6 +132,7 @@ impl fmt::Display for ZecTxError {
             Self::Shielded => "transaction has a shielded part",
             Self::Value => "output value above MAX_MONEY",
             Self::TrailingBytes => "trailing bytes after the transaction",
+            Self::Unsupported => "unsupported transaction version or size",
         })
     }
 }
@@ -183,6 +201,15 @@ impl<'a> Reader<'a> {
         let length = self.compact_size()?;
         self.take(length)
     }
+
+    /// A script of at most [`PARTS_MAX_SCRIPT`] bytes.
+    fn script(&mut self) -> Result<&'a [u8], ZecTxError> {
+        let length = self.compact_size()?;
+        if length > PARTS_MAX_SCRIPT {
+            return Err(ZecTxError::Unsupported);
+        }
+        self.take(length)
+    }
 }
 
 /// Parses a transparent-only v5 transaction (strict: see the module table).
@@ -242,6 +269,78 @@ pub fn parse_tx(bytes: &[u8]) -> Result<ZecTx, ZecTxError> {
         branch_id,
         lock_time,
         expiry_height,
+        inputs,
+        outputs,
+    })
+}
+
+/// The transparent part of a v4 or v5 transaction (any shielded part after it is ignored).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TransparentParts {
+    /// 4 or 5.
+    pub version: u8,
+    /// The spent outpoints.
+    pub inputs: Vec<ZecOutPoint>,
+    /// The outputs.
+    pub outputs: Vec<ZecTxOut>,
+}
+
+/// Reads the transparent inputs and outputs of a v4 (`0x80000004` / `0x892F2085`) or v5
+/// (`0x80000005` / `0x26A7270A`) transaction: right after the 8-byte header in v4, after
+/// branch id, lock time and expiry in v5. The bytes after the outputs are not read. Bounds:
+/// [`PARTS_MAX_BYTES`], [`PARTS_MAX_ITEMS`] inputs and outputs each, [`PARTS_MAX_SCRIPT`] per
+/// script, every value and the sum within [`MAX_MONEY`], minimal `CompactSize`s. v6 (ZIP 230)
+/// and any other version are [`ZecTxError::Unsupported`].
+///
+/// # Errors
+///
+/// [`ZecTxError`].
+pub fn transparent_parts(bytes: &[u8]) -> Result<TransparentParts, ZecTxError> {
+    if bytes.len() > PARTS_MAX_BYTES {
+        return Err(ZecTxError::Unsupported);
+    }
+    let mut reader = Reader { bytes, position: 0 };
+    let version = match (reader.u32()?, reader.u32()?) {
+        (V4_HEADER, V4_VERSION_GROUP_ID) => 4,
+        (V5_HEADER, V5_VERSION_GROUP_ID) => {
+            // nConsensusBranchId, lock_time, nExpiryHeight.
+            reader.take(12)?;
+            5
+        }
+        _ => return Err(ZecTxError::Unsupported),
+    };
+    let input_count = reader.compact_size()?;
+    if input_count > PARTS_MAX_ITEMS {
+        return Err(ZecTxError::Unsupported);
+    }
+    let mut inputs = Vec::with_capacity(input_count.min(1_000));
+    for _ in 0..input_count {
+        let txid = reader.array::<32>()?;
+        let index = reader.u32()?;
+        reader.script()?;
+        // nSequence.
+        reader.u32()?;
+        inputs.push(ZecOutPoint { txid, index });
+    }
+    let output_count = reader.compact_size()?;
+    if output_count > PARTS_MAX_ITEMS {
+        return Err(ZecTxError::Unsupported);
+    }
+    let mut outputs = Vec::with_capacity(output_count.min(1_000));
+    let mut total = 0_u64;
+    for _ in 0..output_count {
+        let value = reader.u64()?;
+        total = total.checked_add(value).ok_or(ZecTxError::Value)?;
+        if value > MAX_MONEY || total > MAX_MONEY {
+            return Err(ZecTxError::Value);
+        }
+        outputs.push(ZecTxOut {
+            value,
+            script_pubkey: reader.script()?.to_vec(),
+        });
+    }
+    Ok(TransparentParts {
+        version,
         inputs,
         outputs,
     })

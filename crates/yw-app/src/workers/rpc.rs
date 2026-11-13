@@ -446,7 +446,8 @@ impl RpcWorker {
     }
 
     /// One received-history read (spec/04 §2.6): EVM after the cached chain check, Bitcoin on
-    /// its session; logs `received.read chain=… net=… result=… new=n dust=n` (counts only).
+    /// its session; logs `received.read chain=… net=… result=… new=n dust=n pending=n gone=n`
+    /// (counts only).
     fn received(
         &mut self,
         transport: &SharedTransport,
@@ -496,22 +497,32 @@ impl RpcWorker {
                 Field::Word(endpoint.network.as_str()),
                 crate::received::hc::fetch(&**transport, &endpoint, &account, &cursor, start_ms),
             ),
-            JobKind::Zec {
-                network,
-                url,
-                indexer,
-                address,
-                tip,
-            } => (
-                Field::Net(NetworkId::Zcash(network)),
-                crate::received::zec::fetch(&**transport, &url, indexer, &address, tip, &cursor),
+            // The worker clock bounds the whole Zcash read (mempool scan, 2026-11-13).
+            JobKind::Zec(work) => (
+                Field::Net(NetworkId::Zcash(work.network)),
+                crate::received::zec::fetch(&**transport, &*self.clock, &work, &cursor),
             ),
         };
         let count = |items: usize| Field::Num(u64::try_from(items).unwrap_or(u64::MAX));
-        let (word, new, dust) = match &result {
-            Ok(fetched) if fetched.unsupported.is_some() => ("unsupported", 0, 0),
-            Ok(fetched) => ("ok", fetched.found.entries.len(), fetched.found.dust.len()),
-            Err(_) => ("error", 0, 0),
+        let (word, new, dust, pending, gone) = match &result {
+            Ok(fetched) if fetched.unsupported.is_some() => ("unsupported", 0, 0, 0, 0),
+            Ok(fetched) => (
+                if fetched.limited.is_some() {
+                    "limited"
+                } else {
+                    "ok"
+                },
+                fetched.found.entries.len(),
+                fetched.found.dust.len(),
+                fetched
+                    .found
+                    .entries
+                    .iter()
+                    .filter(|entry| entry.pending)
+                    .count(),
+                fetched.gone.len().saturating_add(fetched.dropped.len()),
+            ),
+            Err(_) => ("error", 0, 0, 0, 0),
         };
         logging::info(
             "rpc",
@@ -522,6 +533,8 @@ impl RpcWorker {
                 ("result", Field::Word(word)),
                 ("new", count(new)),
                 ("dust", count(dust)),
+                ("pending", count(pending)),
+                ("gone", count(gone)),
             ],
         );
         crate::received::ReceivedEvent {

@@ -124,6 +124,7 @@ pub fn parse_ledger(value: &Value, account: &Address) -> Option<(Found, Option<u
                         (Some(_), false) => None,
                     },
                     pending: false,
+                    ..Incoming::default()
                 });
             }
         }

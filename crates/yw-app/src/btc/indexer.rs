@@ -4,9 +4,11 @@
 //! `<esploraBaseUrl>/address/{a}/utxo`, `/address/{a}`, `/tx/{t}/status`, `/tx/{t}/hex`,
 //! `/block-height/0`, `/blocks/tip/height` (no trailing `/`, no query); `bb-rpc` calls
 //! `bb_getUTXOs`, `bb_getAddress`, `bb_getTx`, `bb_getBlockHash` on the Core URL; `bb-rest` GETs
-//! `utxo/`, `address/`, `tx/`, `block-index/0` under `<Core URL>/api/v2/`. `TipHeight` and the
-//! opt-in received history's `AddressTxs` (`/address/{a}/txs`, spec/04 §2.6, 2026-11-11) exist
-//! for `esplora` only.
+//! `utxo/`, `address/`, `tx/`, `block-index/0` under `<Core URL>/api/v2/`. `TipHeight` exists
+//! for `esplora` only. The opt-in received history's `AddressTxs` (spec/04 §2.6) is Esplora
+//! `/address/{a}/txs` (2026-11-11) and, since 2026-11-13, Blockbook `details=txs` page 1
+//! (`bb-rest` `address/{a}?details=txs&page=1&pageSize=25`, `bb-rpc` `bb_getAddress` with
+//! `{"details":"txs","page":1,"size":25}`).
 //!
 //! The parsers are strict (spec/08 §4.1): Esplora integers are JSON integer tokens within the
 //! field bound, Blockbook amounts are decimal strings, txids and hashes are 64 lowercase hex,
@@ -28,7 +30,7 @@ use crate::errors::ErrorCode;
 use crate::logging::Field;
 use crate::rpc::{RpcFailure, classify};
 use crate::settings::{BtcIndexer, LogLevel};
-use crate::text::{json_object, json_str};
+use crate::text::{json_object, json_str, json_u64};
 
 /// `Utxo` response cap (1 MiB).
 pub const CAP_UTXO: usize = 1_048_576;
@@ -46,6 +48,9 @@ pub const CAP_GENESIS: usize = 4 * 1_024;
 pub const CAP_TIP: usize = 4 * 1_024;
 /// Esplora `/address/{a}/txs` cap (4 MiB: up to 50 mempool and 25 confirmed transactions).
 pub const CAP_ADDRESS_TXS: usize = 4 * 1_048_576;
+/// Blockbook `details=txs` page cap (4 MiB: every mempool transaction plus 25 confirmed ones; a
+/// mempool flood over it is `Malformed` and that address is skipped).
+pub const CAP_BB_ADDRESS_TXS: usize = 4 * 1_048_576;
 
 const U32_MAX: u64 = 4_294_967_295;
 const I64_MAX: u64 = 9_223_372_036_854_775_807;
@@ -65,8 +70,8 @@ pub enum BtcIndexerReq {
     GenesisHash,
     /// Indexer tip height (`esplora` only, spec/08 §2 step 4).
     TipHeight,
-    /// Recent transactions of one of our addresses (`esplora` only; the opt-in received
-    /// history, spec/04 §2.6).
+    /// Recent transactions of one of our addresses, mempool included (the opt-in received
+    /// history, spec/04 §2.6; every indexer since 2026-11-13).
     AddressTxs(BtcAddress),
 }
 
@@ -133,7 +138,7 @@ pub enum BtcIndexerResp {
     /// Indexer tip height.
     TipHeight(u32),
     /// Recent transactions of an address (the received history derives from them).
-    AddressTxs(Vec<crate::received::btc::EsploraTx>),
+    AddressTxs(Vec<crate::received::btc::AddrTx>),
 }
 
 /// Why an indexer request failed (spec/08 §4.3, spec/04 §7).
@@ -256,7 +261,16 @@ fn bb_rest_path(request: &BtcIndexerReq) -> Option<(String, &'static str, usize)
             (format!("tx/{}", txid.to_display_hex()), "tx", CAP_BB_TX)
         }
         BtcIndexerReq::GenesisHash => ("block-index/0".to_owned(), "block-index", CAP_GENESIS),
-        BtcIndexerReq::TipHeight | BtcIndexerReq::AddressTxs(_) => return None,
+        BtcIndexerReq::AddressTxs(address) => (
+            format!(
+                "address/{}?details=txs&page=1&pageSize={}",
+                address.as_str(),
+                crate::received::btc::BB_PAGE_SIZE
+            ),
+            "address-txs",
+            CAP_BB_ADDRESS_TXS,
+        ),
+        BtcIndexerReq::TipHeight => return None,
     })
 }
 
@@ -289,7 +303,23 @@ fn bb_rpc_call(request: &BtcIndexerReq) -> Option<(&'static str, Value, usize)> 
             Value::Array(vec![json_str("0")]),
             CAP_GENESIS,
         ),
-        BtcIndexerReq::TipHeight | BtcIndexerReq::AddressTxs(_) => return None,
+        // `size` in bb-rpc, `pageSize` in bb-rest (spec/08 §4.3).
+        BtcIndexerReq::AddressTxs(address) => (
+            "bb_getAddress",
+            Value::Array(vec![
+                json_str(address.as_str()),
+                json_object(vec![
+                    ("details", json_str("txs")),
+                    ("page", json_u64(1)),
+                    (
+                        "size",
+                        json_u64(u64::from(crate::received::btc::BB_PAGE_SIZE)),
+                    ),
+                ]),
+            ]),
+            CAP_BB_ADDRESS_TXS,
+        ),
+        BtcIndexerReq::TipHeight => return None,
     })
 }
 
@@ -397,9 +427,17 @@ pub fn fetch(
             };
             let result = client
                 .json_rpc(&endpoint.core_url, method, &params, cap, tag)
-                .map_err(|failure| match failure {
-                    RpcFailure::Http(error) => transport_error_of(request, error),
-                    other => bb_rpc_error(other),
+                .map_err(|failure| match (request, failure) {
+                    (_, RpcFailure::Http(error)) => transport_error_of(request, error),
+                    // A Blockbook that refuses `details=txs` for this address (2026-11-13):
+                    // that address is skipped; `-32601` (the add-on is off) and rate limits
+                    // keep their meaning.
+                    (BtcIndexerReq::AddressTxs(_), RpcFailure::Rpc(code))
+                        if !matches!(code, -32_601 | 429 | -32_005) =>
+                    {
+                        IndexerError::Rejected
+                    }
+                    (_, other) => bb_rpc_error(other),
                 })
                 .and_then(|value| parse_bb(request, &value));
             (result, tag)
@@ -828,12 +866,17 @@ pub fn parse_bb(request: &BtcIndexerReq, value: &Value) -> Result<BtcIndexerResp
             let object = value.as_object().ok_or(IndexerError::Malformed)?;
             hash_text(object.get("blockHash")).map(BtcIndexerResp::GenesisHash)
         }
-        BtcIndexerReq::TipHeight | BtcIndexerReq::AddressTxs(_) => Err(IndexerError::Refused),
+        BtcIndexerReq::AddressTxs(address) => {
+            crate::received::btc::parse_bb_txs(value, address.as_str())
+                .map(BtcIndexerResp::AddressTxs)
+        }
+        BtcIndexerReq::TipHeight => Err(IndexerError::Refused),
     }
 }
 
 /// Maps a `bb-rest` response: 200 → [`parse_bb`]; 401/403 → `Auth`; 404 → `NotFound` for
-/// `TxStatus` / `TxRaw`, `Malformed` otherwise; 429 → `RateLimited`; others → E-BTC-001.
+/// `TxStatus` / `TxRaw`; 400/404 → `Rejected` for `AddressTxs` (no `details=txs`, 2026-11-13),
+/// `Malformed` otherwise; 429 → `RateLimited`; others → E-BTC-001.
 ///
 /// # Errors
 ///
@@ -846,6 +889,7 @@ pub fn parse_bb_rest(
         (200, _) => {}
         (404, BtcIndexerReq::TxStatus(_)) => return Ok(BtcIndexerResp::TxStatus(TxSeen::NotFound)),
         (404, BtcIndexerReq::TxRaw(_)) => return Err(IndexerError::NotFound),
+        (400 | 404, BtcIndexerReq::AddressTxs(_)) => return Err(IndexerError::Rejected),
         (404, _) => return malformed(),
         (429, _) => return Err(IndexerError::RateLimited),
         (401 | 403, _) => return Err(IndexerError::Auth),

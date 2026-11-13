@@ -132,7 +132,7 @@
 | EVM | L-LIMITS, 03 §1.5 A1–A8·A9(c)–(e) (`live_probe`) | M4(`rpc::evm` 전송·호출 구현 후, M4-13 전; A6은 M4-2 전송 직후) | 03 §1.5 "다를 때" 열. `probe-rpc.mjs` 결과와 다르면 원인(공급자·엔드포인트 변경, 코드 차이)을 기록 |
 | EVM | L-ORIGIN: WinHTTP 요청(Origin·Referer 없음)이 엔드포인트의 리퍼러·도메인 허용 목록 거부(HTTP 401/403 또는 JSON-RPC 오류)를 받지 않음 | M3(엔드포인트 저장 직후, M3-8) | 공급자 대시보드에서 그 엔드포인트의 리퍼러·도메인 허용 목록 제거(토큰 인증·IP 허용 목록은 무방, D13) |
 | SOL | 07 §16 설정한 공급자 행(이력 검색, `getFeeForMessage` 우선 수수료 포함, `maxRetries:0`, dataSlice), 07 §10 CU 측정 | M7 착수 시 | 07 §16 "실패 시" |
-| BTC | 08 §4.5 E1–E3(Esplora, `curl.exe`)·C1–C3(Core, `probe-rpc.mjs`·`rpc.json`). B1–B4는 `bitcoin.indexer`를 `bb-rpc`·`bb-rest`로 쓰기로 한 경우만 | M8 착수 전, Esplora URL·공급자 변경 시 | 08 §4.5 판정·대안: mempool.space 실패면 다른 Esplora URL 또는 선택 인덱서. 쓸 수 있는 인덱서가 없거나 Core 원본·`TxRaw`가 모두 실패할 때만 M8 중단(D26). 애드온 미활성은 중단 사유가 아니다 |
+| BTC | 08 §4.5 E1–E3(Esplora, `curl.exe`)·C1–C3(Core, `probe-rpc.mjs`·`rpc.json`). B1–B4는 `bitcoin.indexer`를 `bb-rpc`·`bb-rest`로 쓰기로 한 경우만, B5(받은 내역 `details=txs`, 2026-11-13)는 그 인덱서로 받은 내역을 켤 때만 | M8 착수 전, Esplora URL·공급자 변경 시 | 08 §4.5 판정·대안: mempool.space 실패면 다른 Esplora URL 또는 선택 인덱서. 쓸 수 있는 인덱서가 없거나 Core 원본·`TxRaw`가 모두 실패할 때만 M8 중단(D26). 애드온 미활성은 중단 사유가 아니다 |
 
 ## 3. 기지 답(KAT) 벡터
 
@@ -584,6 +584,9 @@ Issued At: 2026-10-25T23:59:00Z
 | BTC-N6 | 서버 문자열(`message`, `reject-reason`, Esplora 오류 본문) | 화면 모델에 없음 | 08 §14.2 |
 | BTC-N7 | Esplora 응답 변조: `value` 소수·지수·문자열·음수·앞자리 0·`MAX_MONEY` 초과, `status` 모순(`confirmed:false` + 높이), `address` 반향 불일치, 개수 모순, text 경로 끝 `\n`·대문자 hex·잘못된 `Content-Type` | `MalformedResponse`(E-BTC-004), 후보·이력 반영 없음 | 08 §14.2 `esplora_*` |
 | BTC-N8 | 인덱서 제네시스가 testnet3·signet·다른 네트워크(`esploraBaseUrl` 오설정), 429 4회 연속 | E-BTC-003 차단·주소 요청 0회 / 백오프 2·4·8 s 뒤 E-BTC-002, 발견 미완료 | 08 §14.2 `chain_check_indexer_genesis`·`indexer_429_backoff` |
+| BTC-N9 | (받은 내역, 2026-11-13) Blockbook `details=txs` 변조: `address` 반향 불일치, `value` 숫자·음수·앞자리 0·`MAX_MONEY` 초과, `confirmations` 1 + `blockHeight` −1, `transactions`가 배열 아님·201개 / 풀지 못한 입력(Esplora `prevout` 없음·Blockbook 주소 없는 `vin`) / 모든 주소가 `details=txs` 거부 | `MalformedResponse` / 그 거래는 행·먼지 아님, 그 주소 미완료 / 고정 줄 `T_BB_NO_TXS`(오류 아님) | `received::btc::tests::blockbook_address_txs_*`, `tests/btc_received.rs` |
+| BTC-N10 | (받은 내역 미확정 입금, 2026-11-13) 미확정 행: 완전한 주소에서 사라지고 `TxStatus` 404 / 확정 높이 / 실패한 주소의 행 / Esplora 멤풀 50개 홍수 / 쿨다운·빈 주소 목록 / 같은 키 재등장 / 확정 뒤 미확정 답 / 행의 보낸 주소 | 사라짐(한 번 셈) / 제자리 확정 행 / 그대로·`TxStatus` 없음 / 그대로·확인 없음 / 요청 0·그대로 / 셈에서 뺌 / 확정 유지 / "보낸 주소: 확인된 뒤 표시합니다". 잔액·`사용 가능`·선택은 바뀌지 않고 합은 "미확정 입금 …" 줄에만 | `tests/btc_received.rs`, `app::tests::received::{pending_rows_go_only_when_a_read_says_so, bitcoin_pending_banner_follows_the_history_coverage, pending_rows_hide_the_sender}`, `received::btc::tests::read_indices_take_the_receive_address_first` |
+| ZEC-N1 | (받은 내역 미확정 입금, 2026-11-13) Zcash 멤풀 훑기: 100개 새 txid / 10초 걸리는 호출 / `getrawmempool` 상한 초과·5,001개 / txid 불일치·음수 `valueZat`·v6 hex / 우리 출력을 쓰는 거래·저널 txid / 실패한 `getrawtransaction` / 사라진 행 `-5`(deltas 있음·없음) | 30개만·나머지 다음 읽기 / 읽기 전체 5초에서 멈춤·행 유지 / 찾지 않음·`seen` 유지 / `unreadable` / 입금 아님·요청 없음 / `seen`에 넣지 않음 / 사라짐·중립 문구 | 12 §14.1 `received::zec::tests::mempool::*`, `app::tests::received::zcash_unconfirmed_deposits_on_the_card` |
 
 ## 5. 마일스톤 판정 체크리스트
 
