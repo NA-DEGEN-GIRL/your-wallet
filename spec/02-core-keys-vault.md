@@ -357,7 +357,7 @@ pub const MAX_RECORDS: usize = 76;           // Bip39 0–8개 + EvmRawKey·SolK
 pw_kek  = Argon2id(v0x13, password = VaultPassword 바이트, salt = kdf_salt,
                    m = 262144 KiB, t = 3, p = 4, secret 없음, ad 없음, out = 32)
 KEK     = HKDF-SHA256(salt = "your-wallet/v3/kdf", ikm = pw_kek, info = "your-wallet/v3/kek", L = 32)
-DEK     = 난수 32바이트 (생성 시 1회, 비밀번호 변경에도 유지)
+DEK     = 난수 32바이트 (생성 시, 그리고 비밀번호를 바꿀 때마다 새로; 2026-11-13 전에는 비밀번호 변경에도 유지)
 wrapped_dek = XChaCha20-Poly1305(key = KEK, nonce = wrap_nonce, pt = DEK, aad = header[0..82])
 payload_ct  = XChaCha20-Poly1305(key = DEK, nonce = payload_nonce, pt = payload 평문, aad = header[0..176])
 ```
@@ -374,12 +374,21 @@ payload_ct  = XChaCha20-Poly1305(key = DEK, nonce = payload_nonce, pt = payload 
 |---|---|---|---|---|
 | `Create` | 생성·가져오기 | `vault_id`, DEK, `kdf_salt`, `wrap_nonce`, `payload_nonce`; `generation = 1` | 1회 | — |
 | `PayloadRewrite` | 백업 확인, raw key 추가·삭제, `.prev` 복구 | `payload_nonce`; `generation + 1` | 0회 | `header[0..130]`(키 구간 전체) |
-| `Rewrap` | 비밀번호 변경 | `kdf_salt`, `wrap_nonce`, `wrapped_dek`, `payload_nonce`; `generation + 1` | 새 비밀번호 1회 | `vault_id`, DEK, payload 평문 |
+| `Rewrap` | 비밀번호 변경 | DEK(2026-11-13부터), `kdf_salt`, `wrap_nonce`, `wrapped_dek`, `payload_nonce`; `generation + 1` | 새 비밀번호 1회 | `vault_id`, payload 평문(+ 이전 DEK `PrevDek`, §4.6) |
 
-- `Rewrap` 직후 같은 내용으로 `PayloadRewrite`를 한 번 더 커밋한다(`generation + 2`). 그래야 `vault.ywv.prev`에도 새 비밀번호로 감싼 세대만 남는다(§6).
-- `Rewrap` 커밋이 반영된 뒤에는 비밀번호 변경이 **성공**이다. 이어지는 `PayloadRewrite`가 실패해도 오류가 아니라 `Ok(PasswordChange::PrevNotRefreshed)`를 돌려준다(이전 비밀번호는 이미 `vault.ywv`를 열지 못하므로 "실패"라고 알리면 틀린 안내가 된다). 이때 `vault.ywv.prev`는 이전 비밀번호로만 열릴 수 있고, 다음 쓰기(`PayloadRewrite`)가 새 비밀번호 세대로 바꾼다. 다 성공하면 `Ok(PasswordChange::Complete)`. `Rewrap` 자체가 실패하면 오류이고 이전 비밀번호가 그대로 유효하다. UI는 두 `Ok` 모두 "새 비밀번호가 적용됨"으로 알린다([04] §2.17).
-- 비밀번호 변경은 DEK를 바꾸지 않는다. 이전 비밀번호와 이전 파일을 함께 가진 사람은 DEK를 얻을 수 있다. 이것을 끊으려면 니모닉으로 새 vault를 만든다(새 DEK). 사용자가 따로 만든 파일 사본·섀도 복사본은 지갑이 지울 수 없다. yw-app은 이 사실을 비밀번호 변경 창(W04)·설정 → 보안 → 비밀번호·변경 완료 문구에 적고, `docs/recovery-guide.ko.md`가 대처를 안내한다(2026-11-01 검토 L1).
-- **DEK 회전을 하지 않는 이유(L1 검토 결론):** 사이드카 키(`meta_key`·`journal_key`, §5.1)가 DEK에서 나오므로 DEK를 바꾸면 `vault.ywv`·`meta.ywm`·`journal.ywj` 세 파일을 함께 다시 써야 한다. 세 파일은 따로 커밋되므로(§6.2) 그 사이 중단되면 새 DEK의 vault와 옛 DEK의 사이드카가 남아 사이드카가 `SidecarCorrupt`가 된다. 이를 안전하게 하려면 payload에 "이전 DEK" 레코드를 두는 2단계 이행(새 vault 커밋 → 사이드카 이행 → 이전 DEK 레코드 제거)과 그 형식·복구 규칙이 필요하다. 형식 변경 없이 충돌 안전을 보장할 수 없어 이번 판에서는 문서·화면 안내만 한다.
+- **비밀번호 변경은 DEK를 회전한다(2026-11-13, 항상 켜짐, 2026-11-01 검토 L1).** 2026-11-13 전에는 DEK를 그대로 두고 다시 감싸기만 했다(`Rewrap` + `PayloadRewrite` 2회 커밋). 그래서 이전 파일 사본과 이전 비밀번호를 함께 가진 사람이 DEK를 얻어 그 뒤의 `vault.ywv`·`meta.ywm`·`journal.ywj`까지 풀 수 있었다. 사이드카 키(§5.1)가 DEK에서 나오고 세 파일이 따로 커밋되므로(§6.2), 중단에 안전하게 바꾸려고 payload에 이전 DEK 블록(`PrevDek`, tag 7, §4.6)을 둔다.
+- **규칙:** 이전 비밀번호로 열리는 파일에는 새 DEK가 절대 들어가지 않는다. 이전 DEK는 새 비밀번호로만 열리는 파일 안에만 잠시 둔다.
+- **`change_password(old, new)` 순서**(키 작업자 호출 하나, Argon2는 이전과 같이 2회: 이전 비밀번호 확인 + 새 KEK):
+  0. `require_public`, 이전 비밀번호 확인(§9). 끝나지 않은 이전 회전이 있으면 먼저 마친다(`PrevDek`은 하나뿐). meta·journal 본 파일을 지금 DEK로 연다. 하나라도 열리지 않으면(`SidecarCorrupt`·`SidecarVaultMismatch`) **아무것도 쓰지 않고** 그 오류다: 회전하면 그 파일의 읽히는 이전 DEK `.prev`(E-VLT-006 (a))까지 아무도 모르는 키 뒤에 남는다. 파일이 없는 것은 괜찮다.
+  1. 새 DEK = `random_secret32_with`(고착 검사), 이전 DEK와 같으면 `RandomnessUnavailable`. **V1:** 새 비밀번호·새 DEK로 `Rewrap`, payload = 지금 payload + `PrevDek(이전 DEK)`, `generation + 1`, 자체 검사. 실패하면 오류이고 이전 비밀번호가 그대로 유효하다. 반영되면 슬롯의 DEK(바이트 `[0..32)`만, passphrase 칸은 그대로)를 새 DEK로 바꾼다. 이때부터 새 비밀번호가 유효하다.
+  2. **V2:** `PayloadRewrite`(`PrevDek` 유지) — `vault.ywv.prev`도 새 비밀번호·새 DEK + `PrevDek`이 된다. V2가 반영되기 전에는 사이드카를 건드리지 않는다: 그 전에 `.prev` 복구를 하면 이전 DEK뿐인 vault가 돌아오는데, 그 vault는 새 DEK 사이드카를 열지 못한다.
+  3. **사이드카:** meta·journal마다 평문을 해석하지 않는 바이트로 옮긴다(이 빌드가 읽지 못하는 새 버전 파일도 바이트 그대로). 본 파일이 이전 DEK면 새 DEK로 두 번 커밋(CAS, `generation + 2`)해 `<name>.prev`도 새 DEK가 되게 한다(두 사본 모두 지금 내용; 그 전 세대 `.prev` 내용은 일반 저장 두 번과 같이 밀려난다). 본 파일이 이미 새 DEK이고 `.prev`가 아니면 한 번, 둘 다 새 DEK이거나 `.prev`가 없으면 0번. 본 파일이 없으면 건너뛴다(본 파일 없이 남은 `.prev`는 옮기지 않는다). 어느 키로도 열리지 않는 파일은 `SidecarCorrupt`이고 그 파일의 저장을 막는 기존 흐름(§6.3)을 따르며 `PrevDek`은 남는다.
+  4. **V3·V4:** `PrevDek` 없이 `PayloadRewrite` 두 번 — 본 파일과 `vault.ywv.prev` 모두 이전 DEK를 담지 않는다. 사이드카 둘이 모두 끝난 뒤에만 `PrevDek`을 지운다.
+  - 커밋은 사이드카가 둘 다 있으면 8회(`vault_generation_seen`은 변경마다 4 오른다), Argon2 외 비용은 XChaCha20(meta ≤ 8 MiB, journal ≤ 16 MiB)과 원자적 커밋 몇 번이다. YubiKey record(tag 5)는 공개 데이터라 payload와 함께 다시 암호화될 뿐 카드 I/O·PIN과 무관하다. API 키는 DPAPI라 무관하다.
+- **결과:** V1이 반영된 뒤에는 비밀번호 변경이 **성공**이다(이전 비밀번호는 이미 `vault.ywv`를 열지 못하므로 "실패"라고 알리면 틀린 안내가 된다). 1–4가 다 반영되면 `Ok(PasswordChange::Complete)`. V1 뒤의 어느 단계(2–4)가 실패하면 `Ok(PasswordChange::PrevNotRefreshed)`: 새 비밀번호·새 DEK가 유효하지만 `vault.ywv.prev`가 아직 이전 비밀번호 파일이거나 meta·journal이 아직 이전 DEK다. 그 파일들에는 바꾸기 전 내용만 있다. `Rewrap` 자체가 실패하면 오류이고 이전 비밀번호가 그대로 유효하다. UI는 두 `Ok` 모두 "새 비밀번호가 적용됨"으로 알린다([04] §2.13).
+- **이어 하기(중단 뒤):** payload에 `PrevDek`이 있으면 잠금 해제(`unlock`·`recover_from_prev`, passphrase 입력 전 포함) 직후 2–4를 이어 한다. 비밀번호가 필요 없다(KDF 없음). 2는 `vault.ywv.prev`가 지금 DEK로 열리고 같은 `PrevDek`을 담을 때 건너뛴다. 실패해도 잠금 해제는 성공이고 회전은 남는다. 회전이 남은 동안: (i) `open_sidecar`·`open_sidecar_prev`는 지금 DEK로 열리지 않는 파일을 `PrevDek`으로 한 번 더 연다. (ii) `save_sidecar`는 먼저 이어 하기를 시도한다. 2가 아직 반영되지 않았으면(`vault.ywv.prev`가 이전 비밀번호 파일일 수 있음) 그 오류로 저장을 거부한다 — 새 DEK로 봉인한 사이드카가 이전 비밀번호 vault와 짝지어지지 않게. 2가 끝난 뒤의 실패(예: 다른 사이드카 손상)는 저장을 막지 않는다. (iii) 다른 vault 쓰기(`PayloadRewrite`)는 `PrevDek`을 그대로 옮기며, 반영되면 2와 같은 효과다. V3와 V4 사이에 중단되면 `PrevDek`은 `vault.ywv.prev`에만 남고(새 비밀번호 파일), 다음 잠금 해제가 한 번 더 다시 써서 지운다.
+- **회전 중 `.prev` 복구:** V2 전이면 `vault.ywv.prev`는 이전 비밀번호로만 열리고 그 vault는 손대지 않은 이전 DEK 사이드카와 맞는다. V2 뒤면 새 비밀번호로 열리고 `PrevDek`이 있어 복구 뒤 회전이 끝난다.
+- **남는 한계:** 바꾸기 전에 만든 사본(사용자 백업, Windows 파일 기록·섀도 복사본·클라우드 동기화, `vault.ywv.corrupt-*`, V2 전의 `vault.ywv.prev`)은 지갑이 지우거나 다시 쓸 수 없다. 그 사본은 이전 비밀번호로 계속 열리고 그 시점의 내용(니모닉·개인키 포함)을 모두 드러낸다 — 회전으로 바뀌지 않는다. 회전이 막는 것은 **바꾼 뒤에 더하거나 고친 내용**(새로 만들거나 가져온 니모닉·키, meta·journal의 새 내용)이다. 이전 비밀번호가 약했다면 그런 사본은 나중에라도 오프라인 추측(Argon2 비용만큼)으로 풀릴 수 있다. 그래서 이전 비밀번호와 사본이 함께 샜을 수 있으면 사본을 지우고 자산을 새로 만든 별도 지갑(새 복구 단어)으로 옮기는 것이 대처다. yw-app은 이것을 비밀번호 변경 창(W04)·설정 → 보안 → 비밀번호(`T_PASSWORD_OLD_COPIES`)·변경 완료 문구에 적고, `docs/recovery-guide.ko.md`가 대처를 안내한다.
 - 모든 쓰기는 커밋 전에 자체 검사를 한다: 새 바이트를 §4.5 순서로 디코드하고, DEK로 payload를 복호화해 원래 평문과 같은지 비교한다. `Create`·`Rewrap`은 손에 있는 KEK로 `wrapped_dek`를 풀어 DEK와 같은지도 비교한다(추가 Argon2 없음).
 
 ### 4.5 디코드 순서
@@ -445,7 +454,8 @@ len field                                len field
 - **형식 확장 규칙(앞으로의 버전):** payload에는 별도 형식 버전 바이트가 없고, 호환은 **tag 집합**으로 정한다. 새 record 종류는 새 tag 번호(5 이상)로만 더하고, 기존 tag의 바이트 배치·의미는 바꾸지 않는다. 그러면 이 버전은 새 tag를 만나 `UnsupportedPayload`(업데이트 안내, `.prev` 제안 없음)로 멈추고, 파일은 그대로 남는다. 기존 tag의 의미를 바꿔야 하면 `VAULT_VERSION`을 올린다(`UnsupportedVersion`). 새 tag를 더하는 변경은 이 경로(`UnsupportedPayload` → E-VLT-014)를 시험에 넣는다(§11.6).
 - `addr0` = 그 passphrase로 파생한 EVM 계정 0(`m/44'/60'/0'/0/0`)의 20바이트 주소. 다른 passphrase도 유효한 다른 지갑을 열기 때문에 BIP39 자체로는 오타를 알 수 없다. 4바이트 확인값은 잠금 해제 때 오타를 잡는다(놓칠 확률 2^-32). 확인값은 암호화된 payload 안에 있어 vault 비밀번호 없이는 passphrase 추측에 쓸 수 없다(비밀번호를 가진 공격자는 어차피 체인 위 주소로 같은 추측을 할 수 있다).
 - 디코드 거부(`UnsupportedPayload`, 인증된 평문이므로 손상이 아니다 — §4.5 단계 10): magic 불일치, `record_count` 범위 밖, reserved ≠ 0, 알 수 없는 tag, 순서 위반, `record_id` 0 또는 (모든 tag를 통틀어) 중복, `entropy_len` 오류, flags 예약 비트, `passphrase_used = 0`인데 확인값 ≠ 0, `backup_state` ∉ {0,1}, `backup_state = 0`이면서 `passphrase_used = 1`(생성 지갑은 passphrase를 쓰지 않음, §8.1), raw key 범위 밖, 같은 raw key 중복, 체인별 16번째 가져온 키, `SolKey` 공개키 불일치·중복, `BtcKey` 값 규칙 위반·중복, 남는 바이트.
-- 최대 크기: 16 + 8 × 64(`Bip39`, 24단어) + 15 × (57 + 89 + 60) + 8 × 1,189(`HwKey`) + 15 × 58(`ZecKey`) = 14,000바이트 평문(`PAYLOAD_CT_MAX` 16,384 안; tag 1–4만 있던 판은 3,170).
+- 최대 크기: 16 + 8 × 64(`Bip39`, 24단어) + 15 × (57 + 89 + 60) + 8 × 1,189(`HwKey`) + 15 × 58(`ZecKey`) = 14,000바이트 평문, DEK 회전 중이면 `PrevDek` 블록 33바이트를 더해 14,033바이트(`PAYLOAD_CT_MAX` 16,384 안; tag 1–4만 있던 판은 3,170).
+- **`PrevDek` 블록(tag 7, 2026-11-13, §4.4):** 비밀번호 변경의 DEK 회전 동안에만 있는 33바이트 `tag = 7` 1 ‖ 이전 DEK 32. record가 아니다: `record_id`가 없고 `record_count`에 세지 않으며, 마지막 record 뒤 payload 맨 끝에 0개 또는 1개만 둔다. 디코드 거부(`UnsupportedPayload`): 7이 아닌 tag, 32바이트보다 짧음, 두 번째 블록이나 그 뒤의 남는 바이트, 32바이트가 모두 같은 값, 그리고 인증 뒤 지금 DEK와 같은 값(`decrypt_payload`). record 자리(`record_count` 안)의 tag 7은 모르는 tag다. 이전 빌드는 record 뒤의 남는 바이트로 보고 `UnsupportedPayload`(E-VLT-014, `.prev` 제안 없음, 파일 보존)로 멈춘다 — 회전이 끝나 블록이 없는 파일은 바이트 배치가 이전과 같아 이전 빌드도 연다.
 - **tag 5 `HwKey`(2026-11-04, D33):** YubiKey 하나의 슬롯 표(일련번호·펌웨어·마스터 지문·슬롯별 역할·경로 인덱스·정책·공개키, 비밀 없음), 0–8개, tag 4 뒤. 바이트 배치와 검사 규칙은 [10](10-yubikey.md) §8. 이에 따라 `MAX_RECORDS` = 54, `PAYLOAD_CT_MAX` = 16,384(최대 평문 3,170 + 8 × 1,189 = 12,682바이트). tag 5만 있는 payload는 니모닉 없는 **YubiKey 지갑**이다(§8.5와 같이 `has_mnemonic() = false`).
   - **경로를 모르는 슬롯(2026-11-07, [10] §7.6 "YubiKey 연결하기"):** 슬롯 항목의 예약 3바이트 중 첫 바이트가 flags가 되었다(`01` = 경로 모름). 그런 슬롯의 역할 인덱스는 900–999 대역(계정 번호일 뿐 경로가 아님), 모든 슬롯이 그런 record의 마스터 지문은 `00000000`이고 "한 니모닉" 규칙에서 빠진다. 경로를 아는 슬롯만 있는 record는 바이트가 그대로이고, flags가 있는 record는 이전 버전이 예약 바이트 ≠ 0으로 `UnsupportedPayload`로 멈춘다(손상으로 보지 않음).
 - **tag 6 `ZecKey`(2026-11-07, [12] §2.3):** 가져온 Zcash 일반(transparent) 개인키, 0–15개, tag 5 뒤. 58바이트: `tag = 6` 1 ‖ `record_id` 16 ‖ `created_unix` 8 ‖ `secret` 32(1 ≤ k < n) ‖ `network` 1(1 = mainnet, 2 = testnet, `ZecNetwork::id`). 공개키는 늘 압축(주소 하나, P2PKH). 디코드 거부: secret 범위 밖, network ∉ {1,2}, (secret, network)가 같은 두 record, 16번째. 이에 따라 `MAX_RECORDS` = 76(8 + 15 × 4 + 8), 최대 평문 13,130 + 15 × 58 = 14,000바이트(`PAYLOAD_CT_MAX` 그대로). 이전 버전은 tag 6을 모르는 tag로 보고 `UnsupportedPayload`(E-VLT-014)로 멈춘다. `import_key`는 tag 5 슬롯의 secp256k1 공개키(어떤 역할이든)와 주 니모닉의 표준 Zcash 키(`m/44'/{133|1}'/0'/0/0`)와 같은 키를 `DuplicateKey`로 거부한다. `reveal_imported_key`는 압축 WIF(`0x80`/`0xEF`), 서명 키는 `KeyRef::ZecImported { network, pubkey }`.
@@ -461,7 +471,7 @@ meta_key    = HKDF-SHA256(salt = 없음(RFC 5869 기본 0), ikm = DEK, info = "y
 journal_key = HKDF-SHA256(salt = 없음,                   ikm = DEK, info = "your-wallet/v3/journal", L = 32)
 ```
 
-하위 키는 사용할 때마다 계산하고 즉시 소거한다.
+하위 키는 사용할 때마다 계산하고 즉시 소거한다. DEK가 바뀌면(비밀번호 변경, §4.4) 하위 키도 바뀌므로 회전이 meta·journal과 각 `.prev`를 새 DEK로 다시 봉인한다. 회전이 끝나기 전에는 `open_sidecar`·`open_sidecar_prev`가 지금 DEK로 열리지 않는 파일을 payload의 `PrevDek`으로 한 번 더 열어 본다(`vault_id`는 같아야 한다).
 
 ### 5.2 사이드카 형식 (`meta.ywm`, `journal.ywj`)
 
@@ -955,7 +965,7 @@ impl Vault {
     pub fn import_key(&mut self, key: ImportKey, now_unix: u64) -> R<RecordId>;                              // §8.4
     pub fn remove_imported_key(&mut self, password: Pw, id: RecordId) -> R<ImportChain>;                       // §8.4
     pub fn reveal_imported_key(&self, password: Pw, id: RecordId) -> R<(ImportChain, SecretString)>;           // §9
-    pub fn change_password(&mut self, old: Pw, new: Pw) -> R<PasswordChange>; // §4.4: Complete | PrevNotRefreshed
+    pub fn change_password(&mut self, old: Pw, new: Pw) -> R<PasswordChange>; // §4.4: DEK 회전, Complete | PrevNotRefreshed
     pub fn has_btc_key(&self, id: RecordId) -> R<bool>;                       // tag 4 record 존재(가져온 키 계정의 진실 원천)
     pub fn quarantined_at(&self) -> Option<u64>;                              // 마지막 `.prev` 복구가 본 파일을 옮긴 `now_unix`
     pub fn reveal_mnemonic(&self, password: Pw) -> R<SecretString>;
@@ -1113,8 +1123,9 @@ payload_nonce 707172…87   record_id 909192…9f   generation 1, backup_state 0
 - `KDF_TEST`로 만든 파일을 공개 API로 열면 `UnsupportedParams`.
 - payload 코덱 거부 표(§4.6 목록 전부) + `Bip39` + `EvmRawKey` 15개 왕복, 16번째 `EvmRawKey` 거부(tag 3·4는 §11.9).
 - `PayloadRewrite`: KDF 호출 0회, `header[0..130]` 불변, `generation + 1`, `payload_nonce` 변경.
-- `change_password`: 이전 비밀번호 `UnlockFailed`, 새 비밀번호 성공(`Complete`), DEK 불변(사이드카가 계속 열림), 커밋 2회(`generation + 2`), `.prev`가 새 비밀번호로 열림. `Rewrap` 뒤 두 번째 커밋 실패 → `Ok(PrevNotRefreshed)`, 이후 이전 비밀번호 `UnlockFailed`·새 비밀번호로 잠금 해제(yw-app `tests/vault_edge_cases.rs`).
-- 새 버전 payload: 인증되는 payload에 모르는 tag 7 record(tag 5 `HwKey`·tag 6 `ZecKey`는 이미 아는 tag) → `unlock`은 `UnsupportedPayload`, 상태 `Locked`(`Corrupt` 아님), `recover_from_prev`도 `UnsupportedPayload`이고 격리·복원 없음; payload 바이트 변조(AEAD 실패)는 여전히 `PayloadCorrupt` → `Corrupt { prev_available }` → 복구 시 `quarantined_at`.
+- `change_password`(2026-11-13 DEK 회전; 이전에는 "DEK 불변, 커밋 2회"를 요구했다): 틀린 이전 비밀번호 `UnlockFailed`·커밋 0회. 성공은 `Complete`, Argon2 2회, 커밋 8회(사이드카 둘 다 있을 때, vault `generation + 4`), 새 DEK ≠ 이전 DEK. `vault.ywv`·`.prev`는 새 비밀번호로 새 DEK가 풀리고 `PrevDek`이 없다. meta·journal·각 `.prev`는 새 DEK로 열리고 평문이 바이트 그대로(meta JSON이 아닌 바이트 포함). 폴더의 어떤 파일도 이전 비밀번호·이전 DEK로 열리지 않는다. 이전 사본은 이전 비밀번호로 열리지만 그 DEK는 지금 파일을 열지 못하고(`PayloadCorrupt`), 바꾼 뒤 더한 키·meta도 열지 못한다(`change_password_rotates_dek`).
+- 회전 충돌 안전(`dek_rotation_survives_a_crash_after_every_commit`): 커밋 k(0–8)번째 뒤 중단(이후 커밋 실패 → 재시작)과, 그 커밋이 반영된 뒤 실패를 보고하는 경우 모두. 매 지점에서 이전 비밀번호가 여는 vault 파일은 이전 DEK만 풀고 바꾸기 전 payload만 담으며, 이전 DEK가 여는 사이드카는 바꾸기 전 평문만 담는다. k = 0이면 이전 비밀번호로 그대로 열린다. k ≥ 1이면 이전 비밀번호 `UnlockFailed`, 새 비밀번호로 잠금 해제되고 그 잠금 해제가 회전을 마친다(위 조건 전부, raw key·meta·journal과 각 `.prev` 내용 보존). `Rewrap`만 반영된 상태의 사이드카 저장은 쓰기가 계속 실패하는 동안 거부되고 파일은 그대로이며, 쓰기가 되면 저장이 회전을 먼저 마친다(`sidecar_save_finishes_the_rotation_and_never_runs_ahead_of_vault_prev`). 회전 중 본 파일 손상: k = 1이면 `.prev`는 이전 비밀번호로만 복구되고 이전 DEK 사이드카가 그대로 맞으며, k ≥ 2이면 새 비밀번호로 복구되고 회전이 끝난다(`prev_recovery_inside_the_rotation_window`). 열리지 않는 사이드카(`SidecarCorrupt`·`SidecarVaultMismatch`)는 커밋 0회로 거부(`change_password_refuses_while_a_sidecar_does_not_open`). 끝나지 않은 회전 뒤의 두 번째 변경은 앞 회전을 먼저 마친다(`second_change_finishes_the_unfinished_rotation_first`). `PrevDek` 코덱 규칙(`prev_dek_block_codec`). `Rewrap` 뒤 두 번째 커밋 실패 → `Ok(PrevNotRefreshed)`, 이후 이전 비밀번호 `UnlockFailed`·새 비밀번호로 잠금 해제(yw-app `tests/vault_edge_cases.rs`).
+- 새 버전 payload: 인증되는 payload에 모르는 tag 8 record(tag 5 `HwKey`·tag 6 `ZecKey`는 이미 아는 tag, tag 7은 `PrevDek` 블록) → `unlock`은 `UnsupportedPayload`, 상태 `Locked`(`Corrupt` 아님), `recover_from_prev`도 `UnsupportedPayload`이고 격리·복원 없음; payload 바이트 변조(AEAD 실패)는 여전히 `PayloadCorrupt` → `Corrupt { prev_available }` → 복구 시 `quarantined_at`.
 - 자체 검사: 인코더가 손상된 바이트를 만들도록 주입하면 커밋 0회.
 
 ### 11.7 사이드카·저장소

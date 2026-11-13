@@ -237,7 +237,8 @@ impl VaultStorage for StopAfterPrev {
 }
 
 /// A password change whose follow-up rewrite fails after the `Rewrap` landed: the new password
-/// is in effect, so the result is success (with the `.prev` warning), never "failed".
+/// (and the new DEK, spec/02 §4.4) is in effect, so the result is success (with the `.prev`
+/// warning), never "failed"; the next unlock finishes the DEK rotation.
 #[test]
 fn password_change_after_landed_rewrap_reports_success() -> TestResult {
     let dir = temp_dir("pwchange")?;
@@ -246,7 +247,7 @@ fn password_change_after_landed_rewrap_reports_success() -> TestResult {
         inner: FileStorage::open(&dir).map_err(|e| format!("{e:?}"))?,
         dir: dir.clone(),
         vault_commits: Arc::clone(&commits),
-        fail_on: 3, // 1 = import_mnemonic, 2 = Rewrap, 3 = the follow-up PayloadRewrite
+        fail_on: 3, // 1 = import_mnemonic, 2 = Rewrap (new DEK), 3 = the follow-up PayloadRewrite
     }))?;
     let old = password(b"old-password-123")?;
     let new = password(b"new-password-456")?;

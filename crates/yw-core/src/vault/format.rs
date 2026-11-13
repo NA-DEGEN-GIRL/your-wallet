@@ -42,6 +42,11 @@ const TAG_BTC_KEY: u8 = 4;
 const TAG_HW_KEY: u8 = 5;
 /// Imported Zcash transparent key (spec/12 §2.3, spec/02 §4.6).
 const TAG_ZEC_KEY: u8 = 6;
+/// The previous DEK while a password change rotates the DEK (2026-11-13, spec/02 §4.4, §4.6):
+/// an optional block after the records (`tag ‖ DEK 32`), not counted in `record_count`.
+const TAG_PREV_DEK: u8 = 7;
+/// Length of the `PrevDek` block.
+const PREV_DEK_BLOCK_LEN: usize = 33;
 /// Record header of a tag-5 record: tag, record id, created.
 const HW_RECORD_HEAD_LEN: usize = 25;
 /// Enrolled `YubiKeys` (tag-5 records).
@@ -454,7 +459,8 @@ pub(crate) struct HwKeyEntry {
 /// Decoded payload: 0–8 BIP39 records (none in a key-only vault; the first is the primary
 /// mnemonic, spec/02 §4.6) followed by 0–15 imported keys of each chain, grouped by tag (2, then
 /// 3, then 4), then 0–8 hardware key references (tag 5, spec/10 §8), then 0–15 imported Zcash
-/// keys (tag 6, spec/12 §2.3).
+/// keys (tag 6, spec/12 §2.3); while a DEK rotation is unfinished, the previous DEK (tag 7 block,
+/// spec/02 §4.4).
 ///
 /// Each secret list is allocated with room for its maximum up front, so `push` never reallocates
 /// (a reallocation would free the old buffer with key copies in it). `retain` moves records down
@@ -467,6 +473,9 @@ pub(crate) struct Payload {
     pub(crate) btc_keys: Vec<BtcKeyRecord>,
     pub(crate) hw_keys: Vec<HwKeyEntry>,
     pub(crate) zec_keys: Vec<ZecKeyRecord>,
+    /// The DEK before the last password change, kept only until meta, journal and every `.prev`
+    /// are re-sealed under the new DEK (2026-11-13, spec/02 §4.4). Wiped on drop.
+    pub(crate) prev_dek: Option<Zeroizing<[u8; 32]>>,
 }
 
 impl Drop for Payload {
@@ -509,6 +518,7 @@ impl Payload {
             btc_keys: Vec::with_capacity(MAX_RAW_KEYS),
             hw_keys: Vec::with_capacity(MAX_HW_KEYS),
             zec_keys: Vec::with_capacity(MAX_RAW_KEYS),
+            prev_dek: None,
         }
     }
 
@@ -556,13 +566,19 @@ impl Payload {
             sum.checked_add(HW_RECORD_HEAD_LEN)?
                 .checked_add(entry.record.body_len())
         })?;
+        let prev = if self.prev_dek.is_some() {
+            PREV_DEK_BLOCK_LEN
+        } else {
+            0
+        };
         PAYLOAD_HEADER_LEN
             .checked_add(bip39)?
             .checked_add(raws)?
             .checked_add(sols)?
             .checked_add(btcs)?
             .checked_add(hws)?
-            .checked_add(zecs)
+            .checked_add(zecs)?
+            .checked_add(prev)
     }
 
     pub(crate) fn encode(&self) -> Result<Zeroizing<Vec<u8>>, VaultError> {
@@ -638,6 +654,10 @@ impl Payload {
             out.extend_from_slice(&zec.created_unix.to_be_bytes());
             out.extend_from_slice(zec.secret.as_slice());
             out.push(zec.network.id());
+        }
+        if let Some(prev_dek) = &self.prev_dek {
+            out.push(TAG_PREV_DEK);
+            out.extend_from_slice(prev_dek.as_slice());
         }
         if out.len() != len || out.capacity() != len {
             return Err(INTERNAL);
@@ -841,6 +861,19 @@ impl Payload {
                 _ => return None,
             }
         }
+        // The optional `PrevDek` block (2026-11-13): exactly `7 ‖ 32 bytes` after the records.
+        // Builds before it see trailing bytes and stop with `UnsupportedPayload`.
+        if !reader.is_empty() {
+            if reader.u8()? != TAG_PREV_DEK {
+                return None;
+            }
+            let prev_dek = Zeroizing::new(reader.array::<32>()?);
+            let first = prev_dek.first().copied()?;
+            if prev_dek.iter().all(|byte| *byte == first) {
+                return None;
+            }
+            payload.prev_dek = Some(prev_dek);
+        }
         reader.is_empty().then_some(payload)
     }
 }
@@ -926,7 +959,16 @@ pub(crate) fn decrypt_payload(
 ) -> Result<Payload, VaultError> {
     let header = decode_header(bytes, params)?;
     let plaintext = open_payload_plain(bytes, &header, dek).ok_or(VaultError::PayloadCorrupt)?;
-    Payload::decode(&plaintext)
+    let payload = Payload::decode(&plaintext)?;
+    // A previous DEK equal to the one in use is not a rotation any build writes.
+    if payload
+        .prev_dek
+        .as_ref()
+        .is_some_and(|prev| bool::from(prev.as_slice().ct_eq(dek.as_slice())))
+    {
+        return Err(VaultError::UnsupportedPayload);
+    }
+    Ok(payload)
 }
 
 /// Inputs of a write that derives a new KEK (`Create`, `Rewrap`).

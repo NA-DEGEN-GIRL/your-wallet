@@ -212,8 +212,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1 -Offline  
   없습니다(같은 키를 PC에서도 만들 수 있음, 마법사가 경고합니다). 키를 PC 밖에 두려면 YubiKey 지갑을 새로 만들고 복구
   단어는 종이에만 두세요.
 - **호환 모드**는 가능한 범위의 흉내입니다. 같은 계열의 실제 확장(MetaMask·Rabby·Phantom)은 꺼 두세요.
-- **비밀번호:** 시도 횟수 제한이 없어 오프라인 추측은 Argon2 비용으로만 막습니다. 비밀번호를 바꿔도 예전 vault 사본은 예전
-  비밀번호로 열립니다. 디스크에 남을 수 있는 메모리 흔적(최대 절전·페이지 파일)에 대비해 BitLocker를 권합니다.
+- **비밀번호:** 시도 횟수 제한이 없어 오프라인 추측은 Argon2 비용으로만 막습니다. 비밀번호를 바꾸면 암호화 키(DEK)도
+  새로 만들어 바꾼 뒤의 내용은 예전 사본으로 열 수 없지만, 바꾸기 전의 vault 사본은 예전 비밀번호로 계속 열리고 그때의
+  복구 단어·키를 드러냅니다(약한 예전 비밀번호는 나중에 오프라인으로 풀릴 수 있습니다). 예전 비밀번호와 사본이 함께
+  샜다면 새로 만든 별도 지갑으로 자산을 옮기세요. 디스크에 남을 수 있는 메모리 흔적(최대 절전·페이지 파일)에 대비해
+  BitLocker를 권합니다.
 
 ## 문서
 
@@ -467,8 +470,10 @@ Known limits:
   YubiKey wallet and keep the phrase only on paper.
 - **Compatibility modes** are best-effort. Turn off the real extension of the same kind (MetaMask, Rabby, Phantom).
 - **Password:** there is no retry lockout, so the Argon2 cost is the only defence against offline guessing. Changing the
-  password doesn't stop an old copy of the vault from opening with the old password. BitLocker is recommended against
-  memory remnants on disk (hibernation and page files).
+  password also replaces the data key (DEK), so what you add afterwards can't be read from an old copy. But an old copy of
+  the vault still opens with the old password and exposes the phrases and keys it held then (and a weak old password can
+  be cracked offline later). If an old password and a copy leaked together, move the funds to a new, separate wallet.
+  BitLocker is recommended against memory remnants on disk (hibernation and page files).
 
 ### Documents
 

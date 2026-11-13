@@ -810,24 +810,27 @@ impl core::fmt::Debug for App {
     }
 }
 
-/// The S-level notice after a password change (spec/04 §2.17): the new password is in effect in
-/// both cases.
+/// The S-level notice after a password change (spec/04 §2.13): the new password is in effect in
+/// both cases. 2026-11-13: the change also rotates the DEK (spec/02 §4.4), so what is added later
+/// is out of reach of old copies, but what an old copy already holds stays exposed.
 #[must_use]
 pub const fn password_changed_text(change: PasswordChange) -> &'static str {
     match change {
         PasswordChange::Complete => {
-            "비밀번호를 바꿨습니다. 이미 만들어 둔 지갑 파일 사본(백업한 vault.ywv, 이전 사본, 격리된 손상 파일)은 예전 비밀번호로 계속 열립니다 — 예전 비밀번호가 샜다면 그런 사본을 지우세요."
+            "비밀번호를 바꾸고 지갑의 암호화 키도 새로 만들었습니다. 이제부터 더하거나 고치는 내용은 바꾸기 전에 만든 지갑 파일 사본(백업한 vault.ywv, 격리된 손상 파일)과 예전 비밀번호로 열 수 없습니다. 그 사본 자체는 예전 비밀번호로 계속 열리고 그 안에 이미 있던 복구 단어·개인키가 드러납니다 — 예전 비밀번호와 사본이 함께 샜을 수 있다면 사본을 지우고 자산을 새로 만든 별도 지갑으로 옮기세요."
         }
         PasswordChange::PrevNotRefreshed => {
-            "비밀번호를 바꿨습니다. 지금부터는 새 비밀번호로 엽니다. 다만 이전 복사본(vault.ywv.prev)을 새 비밀번호로 다시 쓰지 못해, 그 복사본은 다음 저장 전까지 예전 비밀번호로만 열릴 수 있습니다. 이미 만들어 둔 지갑 파일 사본도 예전 비밀번호로 계속 열립니다."
+            "비밀번호를 바꿨습니다. 지금부터는 새 비밀번호로 엽니다. 다만 일부 파일(이전 복사본 vault.ywv.prev, meta.ywm, journal.ywj)을 새 암호화 키로 아직 다시 쓰지 못했습니다. 그 파일들에는 바꾸기 전 내용만 있고, 다음 잠금 해제나 저장 때 마저 바꿉니다. 이미 만들어 둔 지갑 파일 사본은 예전 비밀번호로 계속 열립니다."
         }
     }
 }
 
-/// The W04 / settings note on what a password change does not do (review L1): the data key
-/// (DEK) stays the same, so copies of the wallet file made before the change still open with the
-/// old password and, once opened, reveal everything in the current file too.
-pub const T_PASSWORD_OLD_COPIES: &str = "비밀번호를 바꿔도 지갑의 암호화 키는 그대로입니다. 바꾸기 전에 만든 지갑 파일 사본(백업해 둔 vault.ywv, vault.ywv.prev, vault.ywv.corrupt-…)은 예전 비밀번호로 계속 열리고, 그 사본과 예전 비밀번호를 함께 얻은 사람은 지금 파일도 풀 수 있습니다. 예전 비밀번호가 샜다면 그런 사본을 지우고, 자산을 새 지갑(새 복구 단어)으로 옮기는 것이 확실합니다.";
+/// The settings note on what a password change does and does not do (review L1). Before
+/// 2026-11-13 the data key (DEK) stayed the same, so an old copy plus the old password opened the
+/// current file too; now every change rotates it (spec/02 §4.4). An old copy still opens with the
+/// old password and reveals what it held then (a weak old password can be cracked offline later),
+/// so a leak of both still means moving the funds to a new, separate wallet.
+pub const T_PASSWORD_OLD_COPIES: &str = "비밀번호를 바꾸면 지갑의 암호화 키도 새로 만듭니다. 그래서 바꾼 뒤에 더하거나 고친 내용(새 복구 단어·가져온 키, 계정 이름·주소록·기록)은 예전 사본과 예전 비밀번호로 열 수 없습니다. 하지만 바꾸기 전에 만든 지갑 파일 사본(백업해 둔 vault.ywv, vault.ywv.corrupt-… 등)은 예전 비밀번호로 계속 열리고, 그 안에 이미 있던 복구 단어·개인키는 그대로 드러납니다. 예전 비밀번호가 약했다면 그런 사본은 나중에라도 오프라인으로 풀릴 수 있습니다. 예전 비밀번호와 사본이 함께 샜을 수 있다면 사본을 지우고, 새 복구 단어로 따로 만든 새 지갑으로 자산을 옮기세요.";
 
 /// T-PASTE-CLEARED (spec/04 §4.7-4).
 const PASTE_CLEARED: &str =
