@@ -206,6 +206,24 @@ async function main() {
     // method exists (-5 / -8), while -32601 means no address index.
     const u = await rpc(cfg[id], 'getaddressutxos', [{ addresses: [] }]);
     out(id, 'getaddressutxos', u.result !== undefined || (u.error && u.error.code !== -32601), u.result !== undefined ? { rows: u.result.length, ms: u.ms } : errKv(u));
+    // Received history mempool scan (spec/12 §4.1, 2026-11-13): counts and booleans only — no
+    // txid or address is printed.
+    const m = await rpc(cfg[id], 'getrawmempool', []);
+    const txids = Array.isArray(m.result) ? m.result : null;
+    out(id, 'getrawmempool', txids !== null, txids !== null ? { txids: txids.length, ms: m.ms } : errKv(m));
+    if (txids !== null && txids.length > 0 && typeof txids[0] === 'string') {
+      const t = await rpc(cfg[id], 'getrawtransaction', [txids[0], 1]);
+      const tx = t.result && typeof t.result === 'object' ? t.result : null;
+      const vout = tx && Array.isArray(tx.vout) ? tx.vout : null;
+      out(id, 'getrawtransaction verbose', tx !== null, tx !== null ? {
+        vout: vout !== null,
+        valueZat: vout !== null && vout.length > 0 && Number.isInteger(vout[0].valueZat),
+        scriptHex: vout !== null && vout.length > 0 && !!(vout[0].scriptPubKey && typeof vout[0].scriptPubKey.hex === 'string'),
+        vin: tx !== null && Array.isArray(tx.vin),
+        hex: tx !== null && typeof tx.hex === 'string',
+        ms: t.ms,
+      } : errKv(t));
+    }
   }
   console.log(`summary: ${failures === 0 ? 'all ok' : `${failures} check(s) not ok`}`);
   process.exit(failures === 0 ? 0 : 1);

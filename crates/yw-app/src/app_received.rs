@@ -15,8 +15,8 @@ use crate::app::{App, AppMode, Screen};
 use crate::meta::Tab;
 use crate::network::NetworkId;
 use crate::received::{
-    Cursor, Fetched, Incoming, JobKind, ListKey, MAX_DUST_KEYS, MAX_ENTRIES, REFRESH_MS,
-    ReceivedEvent, ReceivedJob, RecvChain, TokenRef,
+    Cursor, Fetched, Incoming, JobKind, ListKey, MAX_DUST_KEYS, MAX_ENTRIES, PENDING_MISS_MAX,
+    REFRESH_MS, ReceivedEvent, ReceivedJob, RecvChain, TokenRef,
 };
 use crate::workers::rpc::RpcJob;
 
@@ -42,47 +42,147 @@ pub struct RecvList {
     pub unsupported: Option<&'static str>,
     /// The last read's note.
     pub note: Option<&'static str>,
+    /// What this source cannot show (fixed muted line; automatic reads continue).
+    pub limited: Option<&'static str>,
+    /// Pending rows that went before confirming (replaced or dropped; each counted once).
+    pub gone: usize,
+    /// Pending rows removed without a definitive answer (neutral wording).
+    pub dropped: usize,
+    /// Keys counted in `gone` (`true`) or `dropped` (`false`), so a key that comes back is
+    /// taken off its count again.
+    gone_keys: HashMap<String, bool>,
+    /// Bitcoin: the receive indices the last read answered completely.
+    pub covered: Vec<u32>,
+    /// Bitcoin: reads in a row that missed each pending row's status ([`Fetched::missed`]).
+    misses: HashMap<String, u8>,
 }
 
 impl RecvList {
-    /// Takes a read in: new rows merged by key (a known row is replaced, e.g. pending →
-    /// confirmed), newest first, at most [`MAX_ENTRIES`]; dust counted once per key. With
-    /// `full_view` (Bitcoin re-reads the whole recent view each time) a pending row the read no
-    /// longer has (replaced or dropped from the mempool) goes.
-    pub fn apply(&mut self, fetched: Fetched, full_view: bool) {
+    /// Takes a read in (2026-11-13): new rows merged by key (a known row is replaced, e.g.
+    /// pending → confirmed; a confirmed row never turns back into a pending one), newest first,
+    /// at most [`MAX_ENTRIES`]; dust counted once per key. A pending row goes only when the
+    /// read names it in [`Fetched::gone`] or [`Fetched::dropped`] (counted once per key; a key
+    /// that comes back later is taken off the count). Before 2026-11-13 a Bitcoin read dropped
+    /// every pending row it did not list (`full_view`), even after an address had failed.
+    ///
+    /// 2026-11-13 review: a pending row named in [`Fetched::missed`] on [`PENDING_MISS_MAX`]
+    /// reads in a row (a listing reset the count) goes as `dropped`; an `unsupported` answer
+    /// takes the pending rows and the coverage away with the section (they fed the balance
+    /// card's "미확정 입금" line and hid the refresh banner before).
+    pub fn apply(&mut self, fetched: Fetched) {
         self.loaded = true;
         self.error = None;
         self.note = fetched.note;
         if let Some(text) = fetched.unsupported {
             self.unsupported = Some(text);
+            self.entries.retain(|entry| !entry.pending);
+            self.covered.clear();
+            self.misses.clear();
             return;
         }
         self.unsupported = None;
+        self.limited = fetched.limited;
         self.cursor = fetched.cursor;
+        self.covered = fetched.covered;
         for key in fetched.found.dust {
             if self.dust_keys.len() < MAX_DUST_KEYS && self.dust_keys.insert(key) {
                 self.dust = self.dust.saturating_add(1);
             }
         }
-        if full_view {
-            let fresh: HashSet<&str> = fetched
-                .found
+        let mut dropped = fetched.dropped;
+        for key in fetched.missed {
+            if !self
                 .entries
                 .iter()
-                .map(|entry| entry.key.as_str())
-                .collect();
-            self.entries
-                .retain(|entry| !entry.pending || fresh.contains(entry.key.as_str()));
+                .any(|entry| entry.pending && entry.key == key)
+            {
+                continue;
+            }
+            let count = self.misses.entry(key.clone()).or_insert(0);
+            *count = count.saturating_add(1);
+            if *count >= PENDING_MISS_MAX {
+                dropped.push(key);
+            }
         }
-        for entry in fetched.found.entries {
+        let removals = fetched
+            .gone
+            .into_iter()
+            .map(|key| (key, true))
+            .chain(dropped.into_iter().map(|key| (key, false)));
+        for (key, definitive) in removals {
+            self.misses.remove(&key);
+            let before = self.entries.len();
+            self.entries
+                .retain(|entry| !(entry.pending && entry.key == key));
+            if self.entries.len() == before {
+                continue;
+            }
+            if self.gone_keys.len() < MAX_DUST_KEYS && !self.gone_keys.contains_key(&key) {
+                self.gone_keys.insert(key, definitive);
+                if definitive {
+                    self.gone = self.gone.saturating_add(1);
+                } else {
+                    self.dropped = self.dropped.saturating_add(1);
+                }
+            }
+        }
+        for mut entry in fetched.found.entries {
+            // Listed again: its misses start over.
+            self.misses.remove(&entry.key);
+            // Back after all (another backend's mempool, or confirmed): off the count.
+            match self.gone_keys.remove(&entry.key) {
+                Some(true) => self.gone = self.gone.saturating_sub(1),
+                Some(false) => self.dropped = self.dropped.saturating_sub(1),
+                None => {}
+            }
             match self.entries.iter_mut().find(|known| known.key == entry.key) {
-                Some(known) => *known = entry,
+                // A lagging or forked view never turns a confirmed row back (D32).
+                Some(known) if !known.pending && entry.pending => {}
+                Some(known) => {
+                    if entry.pending {
+                        for index in &known.via {
+                            if !entry.via.contains(index) {
+                                entry.via.push(*index);
+                            }
+                        }
+                    }
+                    *known = entry;
+                }
                 None => self.entries.push(entry),
             }
         }
         self.entries
             .sort_by_key(|entry| core::cmp::Reverse(entry.order()));
         self.entries.truncate(MAX_ENTRIES);
+    }
+
+    /// The sum of the pending rows' amounts (sats, zats) for the "미확정 입금" line next to the
+    /// balance; `None` without pending rows. Display only: never part of a balance.
+    #[must_use]
+    pub fn pending_sum(&self) -> Option<u64> {
+        let mut pending = self.entries.iter().filter(|entry| entry.pending).peekable();
+        pending.peek()?;
+        Some(
+            pending
+                .map(|entry| entry.amount_units)
+                .fold(0, u64::saturating_add),
+        )
+    }
+
+    /// Whether the list has `key` as a row or counted it as gone or dropped.
+    #[must_use]
+    pub fn knows(&self, key: &str) -> bool {
+        self.gone_keys.contains_key(key) || self.entries.iter().any(|entry| entry.key == key)
+    }
+
+    /// The list's pending rows (what a read must resolve).
+    #[must_use]
+    pub fn pending_rows(&self) -> Vec<Incoming> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.pending)
+            .cloned()
+            .collect()
     }
 }
 
@@ -97,6 +197,28 @@ pub struct ReceivedUi {
     pub(crate) last_tab: Option<Tab>,
     /// `받은 내역 n건 더 보기` per chain slot (this run).
     pub(crate) expanded: [bool; 5],
+}
+
+/// A Zcash snapshot's unconfirmed outputs (`height: None`) summed per txid: those of others
+/// (deposits, txid not in `own_txids`) and the sum of our own (journal) ones, our change.
+#[must_use]
+pub fn zec_unconfirmed(
+    snapshot: &crate::zec::work::ZecSnapshot,
+    own_txids: &[String],
+) -> (Vec<(String, u64)>, u64) {
+    let mut others: Vec<(String, u64)> = Vec::new();
+    let mut own = 0_u64;
+    for utxo in snapshot.utxos.iter().filter(|utxo| utxo.height.is_none()) {
+        let txid = yw_core::zec::tx::txid_display(&utxo.outpoint.txid);
+        if own_txids.contains(&txid) {
+            own = own.saturating_add(utxo.value);
+        } else if let Some(slot) = others.iter_mut().find(|(known, _)| *known == txid) {
+            slot.1 = slot.1.saturating_add(utxo.value);
+        } else {
+            others.push((txid, utxo.value));
+        }
+    }
+    (others, own)
 }
 
 /// When a list that had nothing to ask is looked at again (no request in between).
@@ -222,6 +344,7 @@ impl App {
     }
 
     /// The chain part of a read of `chain`'s current list (`None`: no endpoint, no data yet).
+    #[expect(clippy::too_many_lines, reason = "one arm per chain")]
     fn received_kind(&self, chain: RecvChain, user: bool) -> Option<JobKind> {
         match chain {
             RecvChain::Evm => {
@@ -241,34 +364,55 @@ impl App {
                 })
             }
             RecvChain::Btc => {
+                let pending = self.received_pending(chain);
+                let rejected_before = self
+                    .received_key(chain)
+                    .and_then(|key| self.received.lists.get(&key))
+                    .is_some_and(|list| list.cursor == Cursor::BtcRejected);
                 let ctx = self.btc_ctx();
                 ctx.gate().ok()?;
                 let meta = ctx.btc_meta()?;
                 let mut target = ctx.target().ok()?;
                 target.meta_net = meta.network();
                 let next = meta.receive_next();
-                // The newest used receive addresses (a deposit to a new one shows after the
-                // Bitcoin refresh marks it used).
-                let fetch = meta.last_used_receive().map_or_else(Vec::new, |last| {
-                    (0..=last.min(next.saturating_sub(1)))
-                        .rev()
-                        .take(crate::received::btc::MAX_ADDRESSES)
-                        .collect()
-                });
+                // 2026-11-13: the 받기 address and the newest issued one (a first deposit to a
+                // new address shows before the refresh marks it used), the addresses the
+                // refresh saw pending deposits on and those of the pending rows, then the
+                // newest used ones. Before, only the newest 5 used addresses.
+                let flagged: Vec<u32> = self
+                    .btc
+                    .pending_incoming_at
+                    .iter()
+                    .filter(|(chain, _)| *chain == BtcChain::Receive)
+                    .map(|(_, index)| *index)
+                    .collect();
+                let via: Vec<u32> = pending
+                    .iter()
+                    .flat_map(|entry| entry.via.iter().copied())
+                    .collect();
+                let fetch = crate::received::btc::read_indices(
+                    next,
+                    meta.last_used_receive(),
+                    meta.fixed_address() || meta.is_single(),
+                    &flagged,
+                    &via,
+                );
                 Some(JobKind::Btc {
                     target,
-                    work: crate::received::btc::BtcReceivedWork {
+                    work: Box::new(crate::received::btc::BtcReceivedWork {
                         account: *meta.account(),
                         receive_count: next,
                         change_count: meta.change_next(),
                         fetch,
+                        pending,
+                        rejected_before,
                         chain: ctx.chain_input(),
                         trigger: if user {
                             crate::btc::Trigger::User
                         } else {
                             crate::btc::Trigger::Automatic
                         },
-                    },
+                    }),
                 })
             }
             RecvChain::Hc => {
@@ -285,22 +429,85 @@ impl App {
             }
             RecvChain::Zec => {
                 let account = self.zec_account()?;
-                // The tip of the last chain-checked refresh of this network.
-                let tip = self
+                // The last chain-checked refresh of this network (its tip and outputs).
+                let snapshot = self
                     .zec
                     .snapshot
                     .as_ref()
                     .filter(|(network, _)| *network == account.network)
-                    .map(|(_, snapshot)| snapshot.chain.tip)?;
-                Some(JobKind::Zec {
-                    network: account.network,
-                    url: self.apikeys.rpc_url(NetworkId::Zcash(account.network))?,
-                    indexer: self.settings.zcash.indexer,
-                    address: account.address(),
-                    tip,
-                })
+                    .map(|(_, snapshot)| snapshot)?;
+                let own_txids: Vec<String> = self
+                    .zec_records()
+                    .iter()
+                    .map(|record| record.txid_hex().to_ascii_lowercase())
+                    .collect();
+                let indexer = self.settings.zcash.indexer;
+                Some(JobKind::Zec(Box::new(
+                    crate::received::zec::ZecReceivedWork {
+                        network: account.network,
+                        url: self.apikeys.rpc_url(NetworkId::Zcash(account.network))?,
+                        indexer,
+                        address: account.address(),
+                        tip: snapshot.chain.tip,
+                        script: account.script_pubkey(),
+                        own_outpoints: snapshot
+                            .utxos
+                            .iter()
+                            .map(|utxo| {
+                                (
+                                    yw_core::zec::tx::txid_display(&utxo.outpoint.txid),
+                                    utxo.outpoint.index,
+                                )
+                            })
+                            .collect(),
+                        bb_pending: if indexer == crate::settings::ZecIndexer::BbRest {
+                            zec_unconfirmed(snapshot, &own_txids).0
+                        } else {
+                            Vec::new()
+                        },
+                        own_txids,
+                        pending: self.received_pending(chain),
+                        confirmed: self
+                            .received_key(chain)
+                            .and_then(|key| self.received.lists.get(&key))
+                            .map(|list| {
+                                list.entries
+                                    .iter()
+                                    .filter(|entry| !entry.pending)
+                                    .map(|entry| entry.key.clone())
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                        user,
+                    },
+                )))
             }
         }
+    }
+
+    /// The pending rows of `chain`'s current list (what the next read must resolve).
+    fn received_pending(&self, chain: RecvChain) -> Vec<Incoming> {
+        self.received_key(chain)
+            .and_then(|key| self.received.lists.get(&key))
+            .map(RecvList::pending_rows)
+            .unwrap_or_default()
+    }
+
+    /// `chain`'s current list while the switch is on.
+    #[must_use]
+    pub fn received_list(&self, chain: RecvChain) -> Option<&RecvList> {
+        if !self.settings.received_history {
+            return None;
+        }
+        self.received_key(chain)
+            .and_then(|key| self.received.lists.get(&key))
+    }
+
+    /// The pending sum of `chain`'s current list while the switch is on (`None`: off, no list or
+    /// no pending row).
+    #[must_use]
+    pub fn received_pending_sum(&self, chain: RecvChain) -> Option<u64> {
+        self.received_list(chain).and_then(RecvList::pending_sum)
     }
 
     /// Queues a read of `key` (its next automatic read is [`REFRESH_MS`] later either way).
@@ -389,7 +596,25 @@ impl App {
         }
         list.busy = None;
         match event.result {
-            Ok(fetched) => list.apply(fetched, event.key.chain == RecvChain::Btc),
+            Ok(fetched) => {
+                let removed = fetched.gone.len().saturating_add(fetched.dropped.len());
+                list.apply(fetched);
+                if removed > 0 {
+                    crate::logging::info(
+                        "app",
+                        "received.apply",
+                        &[
+                            ("chain", crate::logging::Field::Word(event.key.chain.word())),
+                            (
+                                "gone",
+                                crate::logging::Field::Num(
+                                    u64::try_from(removed).unwrap_or(u64::MAX),
+                                ),
+                            ),
+                        ],
+                    );
+                }
+            }
             Err(text) => list.error = Some(text),
         }
         self.refresh();

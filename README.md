@@ -61,7 +61,7 @@ Bitcoin·Zcash·HyperCore를 한 앱에서 다룹니다. 소스로만 공개하�
 - 승인·연결 창, 보내기, 받기, 주소록에서는 주소를 자르지 않고 전체로 보여 줍니다. 접두부 뒤 4자와 끝 4자를 강조하되,
   가운데까지 확인하라고 안내합니다.
 - 보이지 않는 문자나 글자 방향을 바꾸는 유니코드 문자는 `[U+XXXX]`로 드러내 보입니다.
-- 받은 내역은 기본으로 꺼져 있습니다. 켜도 0원·먼지 입금은 숨기고, 보낸 사람 주소는 복사할 수 없습니다.
+- 받은 내역은 기본으로 꺼져 있습니다. 켜도 0원·먼지 입금은 숨기고, 보낸 사람 주소는 복사할 수 없습니다. Bitcoin·Zcash의 아직 확인되지 않은(멤풀, 0 확인) 입금도 txid와 함께 "미확정"으로 보이지만, 잔액에 넣지 않고 보낼 때도 쓰지 않으며 확인될 때까지 보낸 주소를 보이지 않습니다.
 
 **8. 비밀은 화면과 클립보드에도 남기지 않습니다.** 복구 단어·개인키 창은 화면 캡처에서 제외되며, 제외할 수 없으면 아예
 보여 주지 않습니다. 비밀 복사는 기본으로 꺼져 있고, 켜도 클립보드 기록·클라우드 동기화에서 빠지며 그대로 두면 30초 뒤 지워집니다.
@@ -148,7 +148,7 @@ XChaCha20-Poly1305로 암호화합니다.
 **일상 기능**
 - 보내기 양식: 금액 칸 옆에 보낼 수 있는 잔액과 `최대` 버튼, 주소록 즐겨찾기 칩(EVM·Solana·Bitcoin).
 - 주소록: EVM 주소 하나는 모든 EVM 체인 공용, Solana는 mainnet·devnet 공용, Bitcoin은 네트워크별.
-- 이 지갑이 보낸 거래 활동과 받은 내역(선택). 주소·해시를 누르면 복사, 체인별 블록 탐색기 링크(설정에서 변경 가능).
+- 이 지갑이 보낸 거래 활동과 받은 내역(선택, Bitcoin·Zcash는 멤풀의 미확정 입금 포함). 주소·해시를 누르면 복사, 체인별 블록 탐색기 링크(설정에서 변경 가능).
 - 15초마다 잔액 갱신(EVM·Solana·HyperCore, 창이 숨겨지면 멈춤).
 - QuickNode 주소 하나로 모든 체인 RPC 설정(Alchemy·직접 입력도 가능), 지갑 초기화(파일을 지우지 않고 옆으로 옮김).
 
@@ -311,7 +311,7 @@ recover the same addresses. Several recovery phrases and key-only accounts are s
 - Approval and connect windows, send, receive and the address book show addresses whole, never shortened. The 4
   characters after the prefix and the last 4 are emphasized, with a reminder to check the middle too.
 - Invisible characters and Unicode direction overrides are revealed as `[U+XXXX]`.
-- Received history is off by default. When on, zero-value and dust deposits are hidden and senders can't be copied.
+- Received history is off by default. When on, zero-value and dust deposits are hidden and senders can't be copied. Bitcoin and Zcash deposits still in the mempool (0 confirmations) show with their txid, marked as unconfirmed; they are never counted in the balance or spent, and their sender is shown only once they confirm.
 
 **8. Secrets stay off the screen and the clipboard.** Recovery-phrase and private-key windows are excluded from screen
 capture, and if exclusion fails they show nothing. Copying secrets is off by default; when turned on, the copy is kept
@@ -397,7 +397,8 @@ See the images above and the full [screen tour](docs/screenshots/README.md) (Kor
   chips (EVM, Solana, Bitcoin).
 - Address book: one EVM entry serves every EVM chain, Solana entries cover mainnet and devnet, Bitcoin entries are per
   network.
-- Activity for transactions this wallet sent, optional received history. Click an address or hash to copy it;
+- Activity for transactions this wallet sent, optional received history (with mempool deposits for Bitcoin and
+  Zcash). Click an address or hash to copy it;
   per-chain block-explorer links (changeable in settings).
 - Balances refresh every 15 s (EVM, Solana, HyperCore; paused while the window is hidden).
 - RPC for every chain from one QuickNode URL (Alchemy or manual URLs also work); wallet reset that moves files aside

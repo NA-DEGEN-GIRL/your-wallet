@@ -831,3 +831,166 @@ fn added_mnemonic_send_signs_and_journals_as_version_2() {
     zero[135..151].fill(0);
     assert_eq!(zj::ZecRecord::decode(&zero), Err(zj::ZecRecordError::Value));
 }
+
+/// 2026-11-13 (spec/12 §4.1, the received history's mempool scan): `transparent_parts` reads the
+/// same transparent inputs and outputs as the full test-side v5 parser on every ZIP 244 vector
+/// whose output values are in range (Sapling and Orchard parts after them included); the
+/// others are refused as a whole.
+#[test]
+fn transparent_parts_v5_vectors() {
+    let mut compared = 0;
+    for row in rows(ZIP244) {
+        let raw = bytes(&row[0]).unwrap();
+        let (tx, _, _) = parse_full_v5(&raw);
+        // The vectors are random: some output values are above MAX_MONEY, which the reader
+        // refuses as a whole.
+        let total = tx
+            .outputs
+            .iter()
+            .try_fold(0_u64, |sum, output| sum.checked_add(output.value));
+        if total.is_none_or(|total| total > super::tx::MAX_MONEY) {
+            assert_eq!(
+                super::tx::transparent_parts(&raw),
+                Err(super::tx::ZecTxError::Value)
+            );
+            continue;
+        }
+        compared += 1;
+        let parts = super::tx::transparent_parts(&raw).unwrap();
+        assert_eq!(parts.version, 5);
+        assert_eq!(parts.outputs, tx.outputs);
+        let prevouts: Vec<ZecOutPoint> = tx.inputs.iter().map(|input| input.prevout).collect();
+        assert_eq!(parts.inputs, prevouts);
+        let script_sigs: Vec<Vec<u8>> = tx
+            .inputs
+            .iter()
+            .map(|input| input.script_sig.clone())
+            .collect();
+        assert_eq!(parts.script_sigs, script_sigs);
+    }
+    assert!(compared >= 3, "{compared}");
+}
+
+/// A hand-built v4 (Sapling-format) transaction: transparent part right after the header.
+fn v4_fixture(outputs: &[(u64, &[u8])]) -> Vec<u8> {
+    let mut raw = Vec::new();
+    raw.extend_from_slice(&super::tx::V4_HEADER.to_le_bytes());
+    raw.extend_from_slice(&super::tx::V4_VERSION_GROUP_ID.to_le_bytes());
+    raw.push(1);
+    raw.extend_from_slice(&[0xab; 32]);
+    raw.extend_from_slice(&7_u32.to_le_bytes());
+    raw.push(2);
+    raw.extend_from_slice(&[0x51, 0x51]);
+    raw.extend_from_slice(&u32::MAX.to_le_bytes());
+    raw.push(u8::try_from(outputs.len()).unwrap());
+    for (value, script) in outputs {
+        raw.extend_from_slice(&value.to_le_bytes());
+        raw.push(u8::try_from(script.len()).unwrap());
+        raw.extend_from_slice(script);
+    }
+    // lock_time, expiry, valueBalance, shielded counts, joinsplits: never read.
+    raw.extend_from_slice(&[0; 4 + 4 + 8 + 1 + 1 + 1]);
+    raw
+}
+
+#[test]
+fn transparent_parts_v4_fixture() {
+    let script = [0x76, 0xa9, 0x14, 1, 2, 3, 0x88, 0xac];
+    let raw = v4_fixture(&[(50_000, &script), (7, &[0x6a])]);
+    let parts = super::tx::transparent_parts(&raw).unwrap();
+    assert_eq!(parts.version, 4);
+    assert_eq!(
+        parts.inputs,
+        [ZecOutPoint {
+            txid: [0xab; 32],
+            index: 7
+        }]
+    );
+    assert_eq!(parts.outputs.len(), 2);
+    assert_eq!(parts.outputs[0].value, 50_000);
+    assert_eq!(parts.outputs[0].script_pubkey, script);
+}
+
+#[test]
+fn transparent_parts_rejects() {
+    use super::tx::{ZecTxError, transparent_parts};
+    let good = v4_fixture(&[(50_000, &[0x51])]);
+    // v6 (ZIP 230) and unknown headers.
+    for header in [0x8000_0006_u32, 0x8000_0003, 4] {
+        let mut bad = good.clone();
+        bad[..4].copy_from_slice(&header.to_le_bytes());
+        assert_eq!(transparent_parts(&bad), Err(ZecTxError::Unsupported));
+    }
+    let mut bad_group = good.clone();
+    bad_group[4] ^= 1;
+    assert_eq!(transparent_parts(&bad_group), Err(ZecTxError::Unsupported));
+    // Truncated at every field of the transparent part.
+    let transparent_end = 8 + 1 + 32 + 4 + 1 + 2 + 4 + 1 + 8 + 1 + 1;
+    for cut in 0..transparent_end {
+        assert!(transparent_parts(&good[..cut]).is_err(), "cut {cut}");
+    }
+    assert!(transparent_parts(&good[..transparent_end]).is_ok());
+    // An input count over the remaining length.
+    let mut many = good.clone();
+    many[8] = 0xfc;
+    assert!(transparent_parts(&many).is_err());
+    // A non-minimal CompactSize.
+    let mut wide = good[..8].to_vec();
+    wide.extend_from_slice(&[0xfd, 1, 0]);
+    wide.extend_from_slice(&good[9..]);
+    assert_eq!(transparent_parts(&wide), Err(ZecTxError::CompactSize));
+    // A value over MAX_MONEY.
+    let over = v4_fixture(&[(super::tx::MAX_MONEY + 1, &[0x51])]);
+    assert_eq!(transparent_parts(&over), Err(ZecTxError::Value));
+    // A script of 10,001 bytes.
+    let mut long = good[..8].to_vec();
+    long.push(0);
+    long.push(1);
+    long.extend_from_slice(&50_000_u64.to_le_bytes());
+    long.extend_from_slice(&[0xfd, 0x11, 0x27]);
+    long.extend_from_slice(&[0x51; 10_001]);
+    assert_eq!(transparent_parts(&long), Err(ZecTxError::Unsupported));
+}
+
+/// spec/09 §2.4 fuzz-lite: random and mutated bytes never panic `transparent_parts`
+/// (`YW_FUZZ_RUNS`, 1,000,000 by default; the gate runs 20,000).
+#[test]
+#[ignore = "fuzz-lite: run with --ignored fuzz_lite"]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the iteration count of a test tool; yw-core itself never reads the environment"
+)]
+fn fuzz_lite_zec_transparent_parts() {
+    let runs: u32 = std::env::var("YW_FUZZ_RUNS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|&runs| runs > 0)
+        .unwrap_or(1_000_000);
+    let seeds: Vec<Vec<u8>> = rows(ZIP244)
+        .iter()
+        .map(|row| bytes(&row[0]).unwrap())
+        .chain(core::iter::once(v4_fixture(&[(1, &[0x51])])))
+        .collect();
+    let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+    let mut next = || {
+        state ^= state >> 12;
+        state ^= state << 25;
+        state ^= state >> 27;
+        state.wrapping_mul(0x2545_f491_4f6c_dd1d)
+    };
+    for run in 0..runs {
+        let mut input = seeds[usize::try_from(run).unwrap() % seeds.len()].clone();
+        for _ in 0..=(next() % 4) {
+            let at = usize::try_from(next()).unwrap() % (input.len() + 1);
+            match next() % 4 {
+                0 if at < input.len() => input[at] ^= 1 << (next() % 8),
+                1 => input.insert(at, u8::try_from(next() & 0xff).unwrap()),
+                2 if at < input.len() => {
+                    input.remove(at);
+                }
+                _ => input.truncate(at),
+            }
+        }
+        let _ = super::tx::transparent_parts(&input);
+    }
+}

@@ -68,8 +68,13 @@ pub const BTC_TICK_MS: u64 = BTC_POLL_SECS * 1_000;
 pub const BTC_MAX_ACTIVITY_ROWS: usize = 50;
 /// "주소 검색 미완료" (spec/08 §3.4).
 pub const DISCOVERY_INCOMPLETE: &str = "주소 검색 미완료";
-/// "미확정 입금 있음(미검증, 교체될 수 있음)" (spec/08 §4.7-2).
-pub const PENDING_INCOMING: &str = "미확정 입금 있음(미검증, 교체될 수 있음)";
+/// The refresh's yes/no banner while the received history is off (spec/08 §4.7-2,
+/// 2026-11-13; "미확정 입금 있음(미검증, 교체될 수 있음)" before): the amount and txid are in the
+/// received history.
+pub const PENDING_INCOMING: &str = "미확정 입금 있음 (0 확인, 미검증 — 바뀌거나 취소될 수 있습니다). 금액과 txid는 '받은 내역도 보기'를 켜면 보입니다.";
+/// The same banner while the received history is on but its last read did not cover every
+/// address the refresh flagged (or found nothing).
+pub const PENDING_INCOMING_UNREAD: &str = "미확정 입금 있음 (0 확인, 미검증 — 바뀌거나 취소될 수 있습니다). 받은 내역에서 아직 다 찾지 못했습니다.";
 /// T-APPR-EXPIRED.
 pub const APPROVAL_EXPIRED: &str = "승인 시간이 지났습니다. 다시 검토하세요.";
 /// `검토`'s progress line (the plan job on the node), drawn next to the button.
@@ -1099,8 +1104,10 @@ pub struct BtcUi {
     pub status_error: Option<String>,
     /// The session is blocked (E-RPC-006 / E-BTC-003 text).
     pub blocked: Option<String>,
-    /// "미확정 입금 있음(미검증, 교체될 수 있음)".
+    /// The last refresh saw unconfirmed incoming funds ([`PENDING_INCOMING`]).
     pub pending_incoming: bool,
+    /// The addresses it saw them on (the received history reads these receive addresses too).
+    pub pending_incoming_at: Vec<(BtcChain, u32)>,
     /// "검증 실패 UTXO n개".
     pub verify_failures: u32,
     /// Outputs whose indexer value differed from the verified one ("서버 응답 불일치").
@@ -1178,6 +1185,7 @@ impl Default for BtcUi {
             status_error: None,
             blocked: None,
             pending_incoming: false,
+            pending_incoming_at: Vec::new(),
             verify_failures: 0,
             hint_mismatch: Vec::new(),
             indexer_only: Vec::new(),
@@ -2727,6 +2735,7 @@ impl BtcUi {
         self.receive = None;
         self.receive_message = None;
         self.pending_incoming = false;
+        self.pending_incoming_at.clear();
         self.verify_failures = 0;
         self.hint_mismatch.clear();
         self.indexer_only.clear();
@@ -3452,6 +3461,12 @@ impl BtcUi {
                         self.status_error = None;
                         self.note_chain(refreshed.chain.tip_height, refreshed.chain.lag_warning);
                         self.pending_incoming = refreshed.pending_incoming();
+                        self.pending_incoming_at = refreshed
+                            .addresses
+                            .iter()
+                            .filter(|state| state.pending_incoming)
+                            .map(|state| (state.chain, state.index))
+                            .collect();
                         self.verify_failures = refreshed.verify_failures();
                         self.hint_mismatch = refreshed
                             .verified

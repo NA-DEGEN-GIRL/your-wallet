@@ -245,6 +245,7 @@ pub fn incoming_of(
                 from,
                 from_note: None,
                 pending: info.processed,
+                ..Incoming::default()
             });
         }
     };

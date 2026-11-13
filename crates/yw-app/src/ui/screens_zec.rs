@@ -14,6 +14,20 @@ use crate::ui::badge::Badge;
 use crate::ui::main_window::{Ctl, Item, Tone};
 use crate::zec::rpc::ZecRpcError;
 
+/// The muted line of our own unconfirmed change (2026-11-13; spec/12 §11).
+#[must_use]
+pub fn own_change_line(amount: &str) -> String {
+    format!("확인 대기 {amount} (내 거래의 잔돈, 아직 쓸 수 없음)")
+}
+
+/// The muted line of unconfirmed outputs no read has classified as a deposit (2026-11-13
+/// review; spec/12 §11): the received history is off or has not read them, or found them to be
+/// a send by this key from elsewhere or unreadable.
+#[must_use]
+pub fn unclassified_line(amount: &str) -> String {
+    format!("미확정 출력 {amount} (0 확인 — 입금인지 확인하지 않았습니다, 아직 쓸 수 없음)")
+}
+
 /// Command ids of the Zcash tab (8,000–8,099; the map and its checks are `ui::command_ids`).
 pub mod ids {
     /// Tab `Zcash`.
@@ -532,27 +546,53 @@ impl App {
                     self.zec_source_label(account.source),
                     account.source.path_text(network)
                 )));
-                let (confirmed, pending) = snapshot.map_or((None, 0), |snapshot| {
-                    let reserved: Vec<_> = self
-                        .zec_records()
-                        .iter()
-                        .filter(|record| record.reserves_inputs())
-                        .flat_map(yw_core::journal::zec::ZecRecord::inputs)
-                        .collect();
-                    let mut confirmed = 0_u64;
-                    let mut pending = 0_u64;
-                    for utxo in &snapshot.utxos {
-                        if reserved.contains(&utxo.outpoint) {
-                            continue;
-                        }
-                        if utxo.height.is_some() {
-                            confirmed = confirmed.saturating_add(utxo.value);
-                        } else {
-                            pending = pending.saturating_add(utxo.value);
-                        }
-                    }
-                    (Some(confirmed), pending)
-                });
+                // 2026-11-13: the unconfirmed outputs are split into deposits ("미확정 입금"),
+                // our own change ("확인 대기") and, review of the same day, outputs nothing has
+                // classified ("미확정 출력"); before, one "· 미확인 …" suffix mixed them. None
+                // is ever part of the confirmed balance or spendable.
+                let (confirmed, others, own_change) =
+                    snapshot.map_or((None, Vec::new(), 0), |snapshot| {
+                        let records = self.zec_records();
+                        let reserved: Vec<_> = records
+                            .iter()
+                            .filter(|record| record.reserves_inputs())
+                            .flat_map(yw_core::journal::zec::ZecRecord::inputs)
+                            .collect();
+                        let own_txids: Vec<String> = records
+                            .iter()
+                            .map(|record| record.txid_hex().to_ascii_lowercase())
+                            .collect();
+                        let confirmed = snapshot
+                            .utxos
+                            .iter()
+                            .filter(|utxo| {
+                                utxo.height.is_some() && !reserved.contains(&utxo.outpoint)
+                            })
+                            .map(|utxo| utxo.value)
+                            .fold(0_u64, u64::saturating_add);
+                        let (others, own) =
+                            crate::app_received::zec_unconfirmed(snapshot, &own_txids);
+                        (Some(confirmed), others, own)
+                    });
+                // Only the received history's list (its read classified the inputs) says
+                // "미확정 입금"; the snapshot's other unconfirmed outputs the list does not know
+                // get the neutral line, dust left out (it is hidden in the list too). Before
+                // the 2026-11-13 review the snapshot sum was "미확정 입금" whenever the list had
+                // no pending row, dust and our change from a send made elsewhere included.
+                let list = self
+                    .received_list(crate::received::RecvChain::Zec)
+                    .filter(|list| list.loaded && list.unsupported.is_none());
+                let incoming = list
+                    .and_then(crate::app_received::RecvList::pending_sum)
+                    .unwrap_or(0);
+                let unclassified = others
+                    .iter()
+                    .filter(|(txid, zats)| {
+                        *zats >= crate::received::DUST_ZEC_ZATS
+                            && !list.is_some_and(|list| list.knows(txid))
+                    })
+                    .map(|(_, zats)| *zats)
+                    .fold(0_u64, u64::saturating_add);
                 spendable = confirmed;
                 // The other tabs' words when there is no balance yet (2026-11-11).
                 items.push(Item::Display(confirmed.map_or_else(
@@ -561,13 +601,8 @@ impl App {
                 )));
                 items.push(Item::Help(match confirmed {
                     Some(zats) => format!(
-                        "확인된 잔액 {} (서버 기준, 진행 중 거래의 입력 제외){}",
+                        "확인된 잔액 {} (서버 기준, 진행 중 거래의 입력 제외)",
                         format_zec_and_zats(zats),
-                        if pending > 0 {
-                            format!(" · 미확인 {}", format_zec_and_zats(pending))
-                        } else {
-                            String::new()
-                        }
                     ),
                     None if !has_endpoint => crate::ui::screens::no_endpoint_text(
                         &self.network_name(crate::network::NetworkId::Zcash(network)),
@@ -577,6 +612,21 @@ impl App {
                     }
                     None => crate::ui::screens::T_BALANCE_LOADING.to_owned(),
                 }));
+                if incoming > 0 {
+                    items.push(Item::Muted(crate::ui::screens_btc::pending_incoming_line(
+                        &format_zec_and_zats(incoming),
+                    )));
+                }
+                if unclassified > 0 {
+                    items.push(Item::Muted(unclassified_line(&format_zec_and_zats(
+                        unclassified,
+                    ))));
+                }
+                if own_change > 0 {
+                    items.push(Item::Muted(own_change_line(&format_zec_and_zats(
+                        own_change,
+                    ))));
+                }
                 // Not while a hardware account's key is missing or unchecked (like 받기).
                 if address_ok {
                     let address = account.address();
@@ -921,9 +971,10 @@ impl App {
                 )));
             }
             for utxo in snapshot.utxos.iter().take(50) {
-                let height = utxo
-                    .height
-                    .map_or_else(|| "미확인".to_owned(), |height| format!("블록 {height}"));
+                let height = utxo.height.map_or_else(
+                    || "미확정 (0 확인)".to_owned(),
+                    |height| format!("블록 {height}"),
+                );
                 items.push(Item::Field(
                     format!("{} ZEC", format_zec(utxo.value)),
                     format!(

@@ -5,6 +5,7 @@
 //! shown. Addresses are shown in full in 4-character groups, the first and last 6 characters
 //! bold (spec/04 §3.3); activity addresses have no copy or select buttons.
 
+use yw_core::bip32::path::BtcChain;
 use yw_core::btc::meta::FreezeReason;
 use yw_core::btc::policy::texts;
 use yw_core::btc::{BtcMeta, BtcNetwork, FeeRate, Sats, Txid, encode_address};
@@ -14,7 +15,7 @@ use crate::app::{App, AppMode};
 use crate::app_book::{BookTarget, PromptPlace};
 use crate::app_btc::{
     BtcCtx, BtcFeeChoice, BtcFeeForm, BtcFlowStage, BtcGate, BtcUi, DISCOVERY_INCOMPLETE,
-    PENDING_INCOMING, confirmations_text, record_status,
+    PENDING_INCOMING, PENDING_INCOMING_UNREAD, confirmations_text, record_status,
 };
 use crate::btc::work::FeeQuote;
 use crate::errors::ErrorCode;
@@ -22,6 +23,42 @@ use crate::meta::BookChain;
 use crate::settings::BtcIndexer;
 use crate::ui::badge::Badge;
 use crate::ui::main_window::{Ctl, Item, Tone};
+
+/// The muted line under the balance with the received history's unconfirmed deposits
+/// (2026-11-13; spec/04 §2.6, spec/08 §4.7-2). Shared with the Zcash card.
+#[must_use]
+pub fn pending_incoming_line(amount: &str) -> String {
+    format!("미확정 입금 {amount} (0 확인 — 바뀌거나 취소될 수 있습니다, 아직 쓸 수 없음)")
+}
+
+/// The refresh's "미확정 입금 있음" banner (spec/08 §4.7-2, 2026-11-13): shown while the refresh
+/// saw unconfirmed incoming funds (`flagged`, on the addresses `at`) unless the received history
+/// is on and its last read (`covered`: the receive indices it answered completely) covered
+/// every one of them — then the list has the deposit as a row (with the amount line) or as
+/// counted dust. With the history off the banner points to the switch; on, it says the list has
+/// not found it all. Before the 2026-11-13 review the list also had to have a pending row (any,
+/// on any address), so a dust-only deposit kept the banner up while it sat in the mempool.
+#[must_use]
+pub fn pending_banner(
+    flagged: bool,
+    at: &[(BtcChain, u32)],
+    history_on: bool,
+    covered: Option<&[u32]>,
+) -> Option<&'static str> {
+    if !flagged {
+        return None;
+    }
+    if !history_on {
+        return Some(PENDING_INCOMING);
+    }
+    let covered = covered.is_some_and(|covered| {
+        !at.is_empty()
+            && at
+                .iter()
+                .all(|(chain, index)| *chain == BtcChain::Receive && covered.contains(index))
+    });
+    (!covered).then_some(PENDING_INCOMING_UNREAD)
+}
 
 /// Command ids of the Bitcoin screens (9000–9899; the whole map is `ui::command_ids`).
 pub mod ids {
@@ -815,8 +852,23 @@ impl App {
             items.push(Item::Display("잔액 —".to_owned()));
             items.push(Item::Help("잔액 알 수 없음".to_owned()));
         }
-        if self.btc.pending_incoming {
-            items.push(Item::Banner(PENDING_INCOMING.to_owned(), Tone::Warn));
+        // 2026-11-13: the received history's unconfirmed deposits as an amount (display only,
+        // never in the balance above); the refresh's yes/no banner stays while that list does
+        // not account for every address the refresh flagged.
+        let list = self.received_list(crate::received::RecvChain::Btc);
+        let pending_sum = list.and_then(crate::app_received::RecvList::pending_sum);
+        if let Some(sats) = pending_sum {
+            items.push(Item::Muted(pending_incoming_line(&BtcUi::amount_text(
+                Sats::new(sats).unwrap_or(Sats::ZERO),
+            ))));
+        }
+        if let Some(text) = pending_banner(
+            self.btc.pending_incoming,
+            &self.btc.pending_incoming_at,
+            self.settings.received_history,
+            list.map(|list| list.covered.as_slice()),
+        ) {
+            items.push(Item::Banner(text.to_owned(), Tone::Warn));
         }
         if self.btc.verify_failures > 0 {
             items.push(Item::Banner(

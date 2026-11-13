@@ -315,7 +315,8 @@ pub struct AddressState {
     pub index: u32,
     /// Indexer summary (`tx_count > 0` = used).
     pub summary: AddrSummary,
-    /// Show "미확정 입금 있음(미검증, 교체될 수 있음)" (in-flight change excluded).
+    /// Show the "미확정 입금 있음" banner (`app_btc::PENDING_INCOMING`; in-flight change
+    /// excluded).
     pub pending_incoming: bool,
 }
 
@@ -474,7 +475,7 @@ impl RefreshResult {
         u32::try_from(self.skipped.len()).unwrap_or(u32::MAX)
     }
 
-    /// Whether any watched address shows "미확정 입금 있음(미검증, 교체될 수 있음)".
+    /// Whether any watched address shows the "미확정 입금 있음" banner.
     #[must_use]
     pub fn pending_incoming(&self) -> bool {
         self.addresses.iter().any(|state| state.pending_incoming)

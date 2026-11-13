@@ -8,10 +8,20 @@
 //!   not visible to standard RPC and are not shown.
 //! - Solana ([`sol`]): `getSignaturesForAddress` of the account and its allowlisted token
 //!   accounts, then `getTransaction` (jsonParsed) of new signatures only.
-//! - Bitcoin ([`btc`]): Esplora `/address/{a}/txs` of the newest used receive addresses, on the
+//! - Bitcoin ([`btc`]): the indexer's recent transactions of the 받기 address, the newest issued
+//!   ones and the newest used ones (Esplora `/address/{a}/txs`, Blockbook `details=txs`), on the
 //!   session's paced request line (429 back-off and cooldown included).
 //! - `HyperCore` ([`hc`]): `/info` `userNonFundingLedgerUpdates`.
-//! - Zcash ([`zec`]): the node's insight-style `getaddressdeltas`, when it has one.
+//! - Zcash ([`zec`]): the node's insight-style `getaddressdeltas`, when it has one, and the
+//!   node's mempool (`getrawmempool` + `getrawtransaction`) or the Blockbook snapshot for
+//!   unconfirmed deposits.
+//!
+//! Unconfirmed rows (2026-11-13, Bitcoin and Zcash mempool, Solana `processed`) are display only:
+//! never in a balance, never spendable, never final (D32), and shown without a sender. A pending
+//! row leaves the list only when its source shows it confirmed (replaced in place) or gone
+//! ([`Fetched::gone`]), or after [`PENDING_MISS_MAX`] reads in a row that could not get its
+//! status ([`Fetched::missed`]); a read that could not see everything keeps it. Before 2026-11-13 a
+//! Bitcoin read dropped every pending row it did not list, even when an address had failed.
 //!
 //! Address-poisoning defences (the reason the history was left out before): zero and dust
 //! transfers are never listed, only counted ([`DUST`]); tokens that are not on the token card or
@@ -26,7 +36,6 @@ pub mod zec;
 
 use yw_core::evm::address::Address;
 use yw_core::evm::amount::U256;
-use yw_win::http::HttpsUrl;
 
 use crate::flow::evm::ChainJob;
 use crate::hypercore::HcEndpoint;
@@ -38,6 +47,10 @@ pub const MAX_ENTRIES: usize = 50;
 pub const REFRESH_MS: u64 = 60_000;
 /// Most dust keys remembered per list (only for counting each hidden transfer once).
 pub const MAX_DUST_KEYS: usize = 500;
+/// Reads in a row that may miss a pending row's status ([`Fetched::missed`]) before it is
+/// removed with neutral wording (2026-11-13 review: a source whose status lookup keeps failing,
+/// such as a `bb-rpc` `bb_getTx` error for a replaced txid, kept a ghost row for good).
+pub const PENDING_MISS_MAX: u8 = 3;
 
 // ----- dust thresholds ---------------------------------------------------------------------
 //
@@ -141,7 +154,7 @@ pub struct ListKey {
 }
 
 /// One incoming transfer to the account.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Incoming {
     /// Unique within its list (the hash plus the log index, mint or kind when one transaction
     /// carries several transfers).
@@ -160,8 +173,15 @@ pub struct Incoming {
     pub from: Option<String>,
     /// A fixed line instead of a sender (a bridge deposit, a source without senders).
     pub from_note: Option<&'static str>,
-    /// Not confirmed yet (Bitcoin mempool, Solana `processed`).
+    /// Not confirmed yet (Bitcoin and Zcash mempool, Solana `processed`): 0 confirmations,
+    /// display only, never final, never spendable, no sender shown.
     pub pending: bool,
+    /// The amount in the chain's base unit (sats, zats) for the "미확정 입금" sum next to the
+    /// balance; 0 on chains that do not need it.
+    pub amount_units: u64,
+    /// Bitcoin: the receive indices that paid it (never shown; a pending row is resolved only
+    /// when every one of them was read completely).
+    pub via: Vec<u32>,
 }
 
 impl Incoming {
@@ -202,8 +222,19 @@ pub enum Cursor {
     Seen(Vec<String>),
     /// `HyperCore`: the newest ledger time seen (Unix ms).
     Time(u64),
-    /// Zcash: the next height to scan.
-    Height(u32),
+    /// Bitcoin: the last read had every asked address refuse `details=txs` (one more such read
+    /// makes the list unsupported; a transient provider error is not taken as permanent).
+    BtcRejected,
+    /// Zcash: the next delta height, whether the endpoint has `getaddressdeltas`, and the
+    /// mempool txids already looked at that were not deposits (bounded, oldest first).
+    Zec {
+        /// The next `getaddressdeltas` start (`None`: the first window).
+        next: Option<u32>,
+        /// `false` after a `-32601`: automatic reads stop asking for deltas.
+        deltas: bool,
+        /// Mempool txids already looked at.
+        seen: Vec<String>,
+    },
 }
 
 /// A finished read.
@@ -218,6 +249,20 @@ pub struct Fetched {
     pub unsupported: Option<&'static str>,
     /// A fixed muted line about this read (a skipped range), until the next read.
     pub note: Option<&'static str>,
+    /// A fixed muted line about what this source cannot show (automatic reads continue).
+    pub limited: Option<&'static str>,
+    /// Keys of pending rows the source showed are gone before confirming (replaced, dropped):
+    /// removed and counted.
+    pub gone: Vec<String>,
+    /// Keys of pending rows removed without a definitive answer (the endpoint cannot look up
+    /// mined transactions): removed and counted with neutral wording.
+    pub dropped: Vec<String>,
+    /// Bitcoin: the receive indices this read answered completely.
+    pub covered: Vec<u32>,
+    /// Bitcoin: keys of pending rows that every address answered completely without listing
+    /// them but whose status the indexer did not give; [`PENDING_MISS_MAX`] reads in a row
+    /// remove the row as [`Fetched::dropped`] (2026-11-13 review).
+    pub missed: Vec<String>,
 }
 
 /// An ERC-20 of the token card.
@@ -254,7 +299,7 @@ pub enum JobKind {
         /// Network and sources.
         target: crate::btc::work::BtcTarget,
         /// Account and addresses.
-        work: btc::BtcReceivedWork,
+        work: Box<btc::BtcReceivedWork>,
     },
     /// `HyperCore`.
     Hc {
@@ -266,18 +311,7 @@ pub enum JobKind {
         start_ms: u64,
     },
     /// Zcash.
-    Zec {
-        /// Network.
-        network: yw_core::zec::ZecNetwork,
-        /// Endpoint URL (secret).
-        url: HttpsUrl,
-        /// UTXO source (`bb-rest` has no address deltas here).
-        indexer: crate::settings::ZecIndexer,
-        /// Our transparent address.
-        address: String,
-        /// The node tip of the last refresh (already chain-checked).
-        tip: u32,
-    },
+    Zec(Box<zec::ZecReceivedWork>),
 }
 
 impl core::fmt::Debug for JobKind {
@@ -288,7 +322,7 @@ impl core::fmt::Debug for JobKind {
             Self::Sol { .. } => "JobKind::Sol",
             Self::Btc { .. } => "JobKind::Btc",
             Self::Hc { .. } => "JobKind::Hc",
-            Self::Zec { .. } => "JobKind::Zec",
+            Self::Zec(_) => "JobKind::Zec",
         })
     }
 }
@@ -366,6 +400,7 @@ mod tests {
             from: None,
             from_note: None,
             pending,
+            ..Incoming::default()
         };
         let mut rows = [row(false, Some(5)), row(true, None), row(false, Some(9))];
         rows.sort_by_key(|row| core::cmp::Reverse(row.order()));

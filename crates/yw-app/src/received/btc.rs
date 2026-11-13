@@ -1,39 +1,70 @@
-//! Bitcoin received history (spec/04 §2.6, spec/08, 2026-11-11): on the session's paced request
-//! line (`BtcClient`: ≥ 200 ms apart, 429 back-off, an automatic read skipped during the 300 s
-//! cooldown) and only after the session's chain check passed step 3, one Esplora
-//! `GET /address/{a}/txs` (up to 50 mempool and 25 confirmed transactions) for each of the
-//! newest used receive addresses of the selected account ([`MAX_ADDRESSES`]). A transaction is
-//! incoming when none of its inputs spends from the account's watch set (receive and change) and
-//! its outputs pay the account; the amount is the sum paid to the account. Other indexers
-//! (`bb-rpc`, `bb-rest`) are not used for this.
+//! Bitcoin received history (spec/04 §2.6, spec/08 §4.3, 2026-11-11): on the session's paced
+//! request line (`BtcClient`: ≥ 200 ms apart, 429 back-off, an automatic read skipped during the
+//! 300 s cooldown) and only after the session's chain check passed step 3, one `AddressTxs` per
+//! receive address the UI chose ([`BtcReceivedWork::fetch`]): Esplora `GET /address/{a}/txs` (up
+//! to 50 mempool and 25 confirmed transactions), Blockbook `details=txs` page 1 (every mempool
+//! transaction plus [`BB_PAGE_SIZE`] confirmed ones). A transaction is incoming when none of its
+//! inputs spends from the account's watch set (receive and change) and its outputs pay the
+//! account; the amount is the sum paid to the account.
+//!
+//! Unconfirmed (mempool) deposits (2026-11-13): listed as pending rows, display only. A pending
+//! row the read no longer lists is resolved only when every address that paid it got a complete
+//! answer, and then with one indexer `TxStatus` ([`BTC_PENDING_CHECK_MAX`] requests per read):
+//! confirmed → a confirmed row, not found → gone; Esplora's `{"confirmed":false}` (also its
+//! answer for an unknown txid) gets one `TxRaw` probe: 404 → gone, the raw transaction → kept.
+//! A status the indexer does not give (an error: `bb-rpc` has no recorded "not found" code) is
+//! [`Fetched::missed`]; [`crate::received::PENDING_MISS_MAX`] such reads in a row remove the row
+//! with neutral wording (2026-11-13 review: it stayed for good before). Anything less keeps the
+//! row. Inputs the indexer could not resolve make that transaction unknown (never a row) and its
+//! address incomplete (fail closed: our own unconfirmed send must never look like a deposit of
+//! its change). Before 2026-11-13 only Esplora was read (`bb-*` showed a fixed line) and only
+//! the newest 5 used addresses.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::hash::BuildHasher;
 
 use yw_core::bip32::path::BtcChain;
 use yw_core::btc::account::BtcAccountKey;
 use yw_core::btc::amount::format_btc;
-use yw_core::btc::{BTC_MAX_ADDRESS_INDEX, MAX_MONEY, Sats};
-use yw_json::{Object, Value};
+use yw_core::btc::{BTC_MAX_ADDRESS_INDEX, MAX_MONEY, Sats, Txid};
+use yw_json::{Number, Object, Value};
 
 use super::{Cursor, DUST_BTC_SATS, Fetched, Found, Incoming};
 use crate::btc::chain::{ChainInput, ChainSession, ensure_chain};
 use crate::btc::client::BtcClient;
 use crate::btc::flow::{address_request, cooldown_gate};
-use crate::btc::indexer::{BtcIndexerReq, BtcIndexerResp, IndexerError, esplora_uint};
+use crate::btc::indexer::{
+    BtcIndexerReq, BtcIndexerResp, IndexerError, TxSeen, bb_amount, esplora_uint,
+};
 use crate::btc::{BtcError, Trigger};
 use crate::settings::BtcIndexer;
 
-/// Most receive addresses read per refresh (the newest used ones).
+/// Most used receive addresses read (the newest ones).
 pub const MAX_ADDRESSES: usize = 5;
+/// Most receive addresses read per refresh: the 받기 address, the newest issued one, the
+/// addresses the refresh saw pending deposits on, those of the list's pending rows and the
+/// newest [`MAX_ADDRESSES`] used ones (2026-11-13; 5 used ones only before).
+pub const MAX_READ_ADDRESSES: usize = 12;
 /// Most transactions taken from one answer (Esplora sends at most 75).
 pub const MAX_TXS: usize = 200;
-/// The card's line when the indexer is not Esplora.
-pub const T_NOT_ESPLORA: &str = "Bitcoin 받은 내역은 Esplora 인덱서로만 읽습니다(설정 → Bitcoin의 인덱서). 지금 인덱서에서는 표시하지 않습니다 — 탐색기에서 확인하세요.";
+/// Esplora's mempool page: an answer with this many unconfirmed entries may hide more.
+pub const ESPLORA_MEMPOOL_PAGE: usize = 50;
+/// Blockbook confirmed transactions per page (mempool ones come on top, all on page 1).
+pub const BB_PAGE_SIZE: u32 = 25;
+/// Most status requests (`TxStatus`, and Esplora's `TxRaw` probe) for vanished pending rows
+/// per read.
+pub const BTC_PENDING_CHECK_MAX: usize = 5;
+/// The card's line when a Blockbook indexer refuses `details=txs` for every address on two
+/// reads in a row.
+pub const T_BB_NO_TXS: &str = "이 Bitcoin 인덱서(Blockbook)는 주소 거래 목록(details=txs)을 주지 않아 받은 내역을 표시하지 않습니다 — 탐색기에서 확인하세요. '새로고침'으로 다시 시도합니다.";
+/// The muted note of the first such read (a passing provider error looks the same on `bb-rpc`;
+/// 2026-11-13 review).
+pub const T_BB_NO_TXS_ONCE: &str = "이번 읽기에서 Bitcoin 인덱서(Blockbook)가 주소 거래 목록(details=txs)을 주지 않았습니다 — 다음 읽기에서 다시 시도합니다.";
 
-/// One transaction of `/address/{a}/txs`, as much as the history needs.
+/// One transaction of an address's recent list, as much as the history needs (Esplora and
+/// Blockbook answers parse into this).
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct EsploraTx {
+pub struct AddrTx {
     /// Txid (display hex).
     pub txid: String,
     /// `(height, block_time)` when confirmed.
@@ -42,14 +73,20 @@ pub struct EsploraTx {
     pub inputs: Vec<(Option<String>, u64)>,
     /// Each output: its address (`None`: no address form) and value.
     pub outputs: Vec<(Option<String>, u64)>,
+    /// An input the indexer could not resolve (no prevout, no address): the transaction is
+    /// never a row (it could be our own send) and its address answer is incomplete.
+    pub unknown_inputs: bool,
+}
+
+fn address_text(text: &str) -> Option<String> {
+    ((14..=90).contains(&text.len()) && text.is_ascii()).then(|| text.to_ascii_lowercase())
 }
 
 fn address_of(object: &Object) -> Option<String> {
     object
         .get("scriptpubkey_address")
         .and_then(Value::as_str)
-        .filter(|text| (14..=90).contains(&text.len()) && text.is_ascii())
-        .map(str::to_ascii_lowercase)
+        .and_then(address_text)
 }
 
 fn value_of(object: &Object) -> Result<u64, IndexerError> {
@@ -81,8 +118,8 @@ fn status_of(value: &Value) -> Result<Option<(u32, u64)>, IndexerError> {
     }
 }
 
-fn tx_of(object: &Object) -> Result<EsploraTx, IndexerError> {
-    let txid = object
+fn txid_of(object: &Object) -> Result<String, IndexerError> {
+    object
         .get("txid")
         .and_then(Value::as_str)
         .filter(|text| {
@@ -91,34 +128,45 @@ fn tx_of(object: &Object) -> Result<EsploraTx, IndexerError> {
                     .bytes()
                     .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
         })
-        .ok_or(IndexerError::Malformed)?
-        .to_owned();
-    let list = |key: &str| {
-        object
-            .get(key)
-            .and_then(Value::as_array)
-            .ok_or(IndexerError::Malformed)
-    };
+        .map(str::to_owned)
+        .ok_or(IndexerError::Malformed)
+}
+
+fn list<'v>(object: &'v Object, key: &str) -> Result<&'v [Value], IndexerError> {
+    object
+        .get(key)
+        .and_then(Value::as_array)
+        .ok_or(IndexerError::Malformed)
+}
+
+fn tx_of(object: &Object) -> Result<AddrTx, IndexerError> {
+    let txid = txid_of(object)?;
     let mut inputs = Vec::new();
-    for input in list("vin")? {
+    let mut unknown_inputs = false;
+    for input in list(object, "vin")? {
         let input = input.as_object().ok_or(IndexerError::Malformed)?;
         match input.get("prevout") {
             Some(Value::Object(prevout)) => inputs.push((address_of(prevout), value_of(prevout)?)),
-            // Coinbase.
-            Some(Value::Null) | None => inputs.push((None, 0)),
+            Some(Value::Null) | None => {
+                // Coinbase; any other input without its prevout is unknown (2026-11-13: it was
+                // read as a coinbase before).
+                unknown_inputs |= input.get("is_coinbase").and_then(Value::as_bool) != Some(true);
+                inputs.push((None, 0));
+            }
             Some(_) => return Err(IndexerError::Malformed),
         }
     }
     let mut outputs = Vec::new();
-    for output in list("vout")? {
+    for output in list(object, "vout")? {
         let output = output.as_object().ok_or(IndexerError::Malformed)?;
         outputs.push((address_of(output), value_of(output)?));
     }
-    Ok(EsploraTx {
+    Ok(AddrTx {
         txid,
         confirmed: status_of(object.get("status").ok_or(IndexerError::Malformed)?)?,
         inputs,
         outputs,
+        unknown_inputs,
     })
 }
 
@@ -127,7 +175,7 @@ fn tx_of(object: &Object) -> Result<EsploraTx, IndexerError> {
 /// # Errors
 ///
 /// [`IndexerError::Malformed`].
-pub fn parse_txs(value: &Value) -> Result<Vec<EsploraTx>, IndexerError> {
+pub fn parse_txs(value: &Value) -> Result<Vec<AddrTx>, IndexerError> {
     let list = value.as_array().ok_or(IndexerError::Malformed)?;
     if list.len() > MAX_TXS {
         return Err(IndexerError::Malformed);
@@ -137,15 +185,134 @@ pub fn parse_txs(value: &Value) -> Result<Vec<EsploraTx>, IndexerError> {
         .collect()
 }
 
-/// The incoming transactions of `txs` for the account whose watch-set addresses (lowercase) are
-/// `own`: no input from `own`, outputs paying `own`.
+/// A Blockbook `addresses` array: the address when it has exactly one usable entry.
+fn bb_address(object: &Object) -> Result<Option<String>, IndexerError> {
+    match object.get("addresses") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Array(items)) => Ok(match items.as_slice() {
+            [Value::String(text)] => address_text(text),
+            _ => None,
+        }),
+        Some(_) => Err(IndexerError::Malformed),
+    }
+}
+
+fn bb_u32(object: &Object, key: &str) -> Result<u32, IndexerError> {
+    esplora_uint(
+        object.get(key).ok_or(IndexerError::Malformed)?,
+        u64::from(u32::MAX),
+    )
+    .and_then(|value| u32::try_from(value).map_err(|_| IndexerError::Malformed))
+}
+
+fn bb_tx(object: &Object) -> Result<AddrTx, IndexerError> {
+    let txid = txid_of(object)?;
+    let confirmations = bb_u32(object, "confirmations")?;
+    // A mempool entry's `blockHeight` (−1 or 0) and first-seen `blockTime` are ignored.
+    let confirmed = if confirmations == 0 {
+        None
+    } else {
+        let height = object
+            .get("blockHeight")
+            .and_then(Value::as_number)
+            .and_then(Number::as_i64)
+            .and_then(|height| u32::try_from(height).ok())
+            .filter(|height| *height >= 1)
+            .ok_or(IndexerError::Malformed)?;
+        Some((height, u64::from(bb_u32(object, "blockTime")?)))
+    };
+    let mut inputs = Vec::new();
+    let mut unknown_inputs = false;
+    for input in list(object, "vin")? {
+        let input = input.as_object().ok_or(IndexerError::Malformed)?;
+        if input.get("coinbase").is_some() {
+            inputs.push((None, 0));
+            continue;
+        }
+        let value = match input.get("value") {
+            Some(value) => Some(bb_amount(Some(value), false)?.1),
+            None => None,
+        };
+        let address = bb_address(input)?;
+        let no_address = input.get("isAddress").and_then(Value::as_bool) == Some(false);
+        match (value, address) {
+            // A non-address script (never one of ours).
+            (Some(value), _) if no_address => inputs.push((None, value)),
+            (Some(value), Some(address)) => inputs.push((Some(address), value)),
+            // Unresolved (often a parent still in the mempool): fail closed.
+            _ => {
+                unknown_inputs = true;
+                inputs.push((None, 0));
+            }
+        }
+    }
+    let mut outputs = Vec::new();
+    for output in list(object, "vout")? {
+        let output = output.as_object().ok_or(IndexerError::Malformed)?;
+        let (_, value) = bb_amount(output.get("value"), false)?;
+        let address = bb_address(output)?
+            .filter(|_| output.get("isAddress").and_then(Value::as_bool) != Some(false));
+        outputs.push((address, value));
+    }
+    Ok(AddrTx {
+        txid,
+        confirmed,
+        inputs,
+        outputs,
+        unknown_inputs,
+    })
+}
+
+/// Parses a Blockbook `address/{a}?details=txs` answer (`bb-rest` body or `bb-rpc`
+/// `bb_getAddress` result): the address echo must match; `transactions` may be absent (none).
+///
+/// # Errors
+///
+/// [`IndexerError::Malformed`].
+pub fn parse_bb_txs(value: &Value, requested: &str) -> Result<Vec<AddrTx>, IndexerError> {
+    let object = value.as_object().ok_or(IndexerError::Malformed)?;
+    if object
+        .get("address")
+        .is_some_and(|echo| echo.as_str() != Some(requested))
+    {
+        return Err(IndexerError::Malformed);
+    }
+    let items = match object.get("transactions") {
+        None | Some(Value::Null) => return Ok(Vec::new()),
+        Some(Value::Array(items)) => items,
+        Some(_) => return Err(IndexerError::Malformed),
+    };
+    if items.len() > MAX_TXS {
+        return Err(IndexerError::Malformed);
+    }
+    items
+        .iter()
+        .map(|item| bb_tx(item.as_object().ok_or(IndexerError::Malformed)?))
+        .collect()
+}
+
+/// Whether one address's answer shows everything it has in the mempool: no transaction with
+/// unknown inputs and, on Esplora, fewer than [`ESPLORA_MEMPOOL_PAGE`] unconfirmed ones
+/// (Blockbook lists every mempool transaction on page 1; a flood is over the cap instead).
 #[must_use]
-pub fn derive<S: BuildHasher>(txs: &[EsploraTx], own: &HashSet<String, S>) -> Found {
+pub fn answer_complete(indexer: BtcIndexer, txs: &[AddrTx]) -> bool {
+    let mempool = txs.iter().filter(|tx| tx.confirmed.is_none()).count();
+    !txs.iter().any(|tx| tx.unknown_inputs)
+        && (indexer != BtcIndexer::Esplora || mempool < ESPLORA_MEMPOOL_PAGE)
+}
+
+/// The incoming transactions of `txs` for the account whose watch-set addresses (lowercase) are
+/// `own`: no input from `own`, outputs paying `own`, inputs all known.
+#[must_use]
+pub fn derive<S: BuildHasher>(txs: &[AddrTx], own: &HashSet<String, S>) -> Found {
     let mut found = Found::default();
     let mut seen = HashSet::new();
     let ours = |address: &Option<String>| address.as_ref().is_some_and(|text| own.contains(text));
     for tx in txs {
-        if !seen.insert(tx.txid.clone()) || tx.inputs.iter().any(|(address, _)| ours(address)) {
+        if !seen.insert(tx.txid.clone())
+            || tx.unknown_inputs
+            || tx.inputs.iter().any(|(address, _)| ours(address))
+        {
             continue;
         }
         let paid: u64 = tx
@@ -173,6 +340,8 @@ pub fn derive<S: BuildHasher>(txs: &[EsploraTx], own: &HashSet<String, S>) -> Fo
             from: tx.inputs.iter().find_map(|(address, _)| address.clone()),
             from_note: None,
             pending: tx.confirmed.is_none(),
+            amount_units: paid,
+            via: Vec::new(),
         });
     }
     found
@@ -187,18 +356,134 @@ pub struct BtcReceivedWork {
     pub receive_count: u32,
     /// Watch set change `[0, change_count)`.
     pub change_count: u32,
-    /// The receive indices to read, newest first (at most [`MAX_ADDRESSES`] are read).
+    /// The receive indices to read, in order (at most [`MAX_READ_ADDRESSES`], from
+    /// [`read_indices`]).
     pub fetch: Vec<u32>,
+    /// The list's pending rows (with the indices that paid them).
+    pub pending: Vec<Incoming>,
+    /// The list's last read had every address refuse `details=txs` ([`Cursor::BtcRejected`]).
+    pub rejected_before: bool,
     /// Chain-check inputs.
     pub chain: ChainInput,
     /// Automatic (skipped during the cooldown) or the user's `새로고침`.
     pub trigger: Trigger,
 }
 
+/// The receive indices a read asks for, in order (spec/04 §2.6, 2026-11-13): the 받기 address
+/// (`last_used + 1`, or 0; also 0 in fixed-address mode), the newest issued one, the indices the
+/// refresh saw a pending deposit on, those of the list's pending rows, then the newest
+/// [`MAX_ADDRESSES`] used ones; each below `receive_next`, once, at most [`MAX_READ_ADDRESSES`].
+/// Every one of them is already sent to the same indexer by the refresh (`[0, receive_next)`).
+#[must_use]
+pub fn read_indices(
+    receive_next: u32,
+    last_used: Option<u32>,
+    fixed: bool,
+    flagged: &[u32],
+    pending: &[u32],
+) -> Vec<u32> {
+    let start = last_used.map_or(0, |last| last.saturating_add(1));
+    let used = last_used.map_or_else(Vec::new, |last| {
+        (0..=last.min(receive_next.saturating_sub(1)))
+            .rev()
+            .take(MAX_ADDRESSES)
+            .collect::<Vec<u32>>()
+    });
+    let mut out: Vec<u32> = Vec::new();
+    let candidates = fixed
+        .then_some(0)
+        .into_iter()
+        .chain(core::iter::once(start))
+        .chain(receive_next.checked_sub(1))
+        .chain(flagged.iter().copied())
+        .chain(pending.iter().copied())
+        .chain(used);
+    for index in candidates {
+        if index < receive_next && !out.contains(&index) && out.len() < MAX_READ_ADDRESSES {
+            out.push(index);
+        }
+    }
+    out
+}
+
 fn error_text(error: BtcError, indexer: BtcIndexer) -> String {
     error
         .text(indexer)
         .unwrap_or_else(|| "Bitcoin 조회를 잠시 멈췄습니다".to_owned())
+}
+
+/// What [`resolve_vanished`] decided.
+#[derive(Default)]
+struct Resolved {
+    confirmed: Vec<Incoming>,
+    gone: Vec<String>,
+    missed: Vec<String>,
+}
+
+/// The vanished pending rows: those absent from `listed` whose addresses were all `covered`,
+/// with at most [`BTC_PENDING_CHECK_MAX`] status requests. `TxStatus` confirmed → a confirmed
+/// row; not found → gone; Esplora's `UnconfirmedOrUnknown` → one `TxRaw` probe (404 → gone,
+/// the raw transaction → kept: some backend still has it); Blockbook `Unconfirmed` → kept; no
+/// usable answer → missed. A row whose probe does not fit in the bound waits for the next read.
+fn resolve_vanished(
+    client: &BtcClient<'_>,
+    session: &ChainSession,
+    pending: &[Incoming],
+    listed: &HashSet<&str>,
+    covered: &[u32],
+) -> Resolved {
+    let mut out = Resolved::default();
+    let mut requests = 0_usize;
+    let candidates = pending.iter().filter(|row| {
+        row.pending
+            && !listed.contains(row.key.as_str())
+            && !row.via.is_empty()
+            && row.via.iter().all(|index| covered.contains(index))
+    });
+    for row in candidates {
+        if requests >= BTC_PENDING_CHECK_MAX {
+            break;
+        }
+        let Ok(txid) = Txid::from_display_hex(&row.hash) else {
+            continue;
+        };
+        requests = requests.saturating_add(1);
+        match address_request(client, session, &BtcIndexerReq::TxStatus(txid)) {
+            Ok(BtcIndexerResp::TxStatus(TxSeen::Confirmed { height })) => {
+                out.confirmed.push(Incoming {
+                    pending: false,
+                    block: Some(u64::from(height)),
+                    time_ms: None,
+                    ..row.clone()
+                });
+            }
+            // The complete address lists no longer have it: replaced or dropped.
+            Ok(BtcIndexerResp::TxStatus(TxSeen::NotFound)) => out.gone.push(row.key.clone()),
+            // Esplora answers `{"confirmed":false}` for an unknown txid too, and a load-balanced
+            // Esplora may have listed the addresses from a lagging backend: one `TxRaw` tells
+            // them apart, as the tracker does (spec/08 §12.2 step 2). Before the 2026-11-13
+            // review this answer alone removed the row as gone.
+            Ok(BtcIndexerResp::TxStatus(TxSeen::UnconfirmedOrUnknown)) => {
+                if requests >= BTC_PENDING_CHECK_MAX {
+                    break;
+                }
+                requests = requests.saturating_add(1);
+                match address_request(client, session, &BtcIndexerReq::TxRaw(txid)) {
+                    Err(BtcError::Indexer(IndexerError::NotFound)) => {
+                        out.gone.push(row.key.clone());
+                    }
+                    Ok(BtcIndexerResp::TxRaw(_)) => {}
+                    _ => out.missed.push(row.key.clone()),
+                }
+            }
+            // Blockbook still has it in its mempool: decided next read.
+            Ok(BtcIndexerResp::TxStatus(TxSeen::Unconfirmed)) => {}
+            // No usable answer; a `bb-rpc` `bb_getTx` error for an unknown txid lands here
+            // (spec/08 §4.5 B3 has no recorded "not found" code).
+            _ => out.missed.push(row.key.clone()),
+        }
+    }
+    out
 }
 
 /// One read on the session's request line.
@@ -212,12 +497,6 @@ pub fn fetch(
     work: &BtcReceivedWork,
 ) -> Result<Fetched, String> {
     let indexer = client.endpoint().indexer;
-    if indexer != BtcIndexer::Esplora {
-        return Ok(Fetched {
-            unsupported: Some(T_NOT_ESPLORA),
-            ..Fetched::default()
-        });
-    }
     if work.fetch.is_empty() {
         return Ok(Fetched::default());
     }
@@ -242,31 +521,85 @@ pub fn fetch(
             own.insert(address.as_str().to_ascii_lowercase());
         }
     }
-    let mut txs = Vec::new();
+    let mut txs: Vec<AddrTx> = Vec::new();
+    let mut paid_at: HashMap<String, Vec<u32>> = HashMap::new();
+    let mut covered = Vec::new();
+    let mut answered = 0_usize;
+    let mut rejected = 0_usize;
     let mut skipped = None;
-    for index in work.fetch.iter().take(MAX_ADDRESSES) {
+    // The UI bounds and orders the list ([`read_indices`]); before 2026-11-13 this loop cut it
+    // to the first `MAX_ADDRESSES`.
+    let asked: Vec<u32> = work
+        .fetch
+        .iter()
+        .copied()
+        .take(MAX_READ_ADDRESSES)
+        .collect();
+    for index in &asked {
         let address = work
             .account
             .address(net, BtcChain::Receive, *index)
             .map_err(|_| error_text(BtcError::Derivation, indexer))?;
         match address_request(client, session, &BtcIndexerReq::AddressTxs(address)) {
-            Ok(BtcIndexerResp::AddressTxs(list)) => txs.extend(list),
+            Ok(BtcIndexerResp::AddressTxs(list)) => {
+                answered = answered.saturating_add(1);
+                if answer_complete(indexer, &list) {
+                    covered.push(*index);
+                }
+                for tx in &list {
+                    let at = paid_at.entry(tx.txid.clone()).or_default();
+                    if !at.contains(index) {
+                        at.push(*index);
+                    }
+                }
+                txs.extend(list);
+            }
             Ok(_) => skipped = Some(BtcError::Indexer(IndexerError::Malformed)),
-            // One address the indexer cannot answer: the others still count.
-            Err(error @ BtcError::Indexer(IndexerError::Malformed | IndexerError::Rejected)) => {
+            // One address the indexer cannot answer: the others still count (that address is
+            // incomplete, so its pending rows stay).
+            Err(error @ BtcError::Indexer(IndexerError::Rejected)) => {
+                rejected = rejected.saturating_add(1);
                 skipped = Some(error);
             }
+            Err(error @ BtcError::Indexer(IndexerError::Malformed)) => skipped = Some(error),
             Err(error) => return Err(error_text(error, indexer)),
         }
     }
-    if txs.is_empty()
-        && let Some(error) = skipped
-    {
-        return Err(error_text(error, indexer));
+    if answered == 0 {
+        if indexer != BtcIndexer::Esplora && rejected == asked.len() {
+            // A Blockbook without `details=txs`, on two reads in a row: no more automatic reads
+            // (`새로고침` retries). The first such read only notes it: `bb-rpc` maps every
+            // JSON-RPC code it does not know to `Rejected`, a passing provider error included
+            // (2026-11-13 review; one read was enough before).
+            if !work.rejected_before {
+                return Ok(Fetched {
+                    cursor: Cursor::BtcRejected,
+                    note: Some(T_BB_NO_TXS_ONCE),
+                    ..Fetched::default()
+                });
+            }
+            return Ok(Fetched {
+                unsupported: Some(T_BB_NO_TXS),
+                ..Fetched::default()
+            });
+        }
+        if let Some(error) = skipped {
+            return Err(error_text(error, indexer));
+        }
     }
+    let mut found = derive(&txs, &own);
+    for entry in &mut found.entries {
+        entry.via = paid_at.get(&entry.key).cloned().unwrap_or_default();
+    }
+    let listed: HashSet<&str> = txs.iter().map(|tx| tx.txid.as_str()).collect();
+    let resolved = resolve_vanished(client, session, &work.pending, &listed, &covered);
+    found.entries.extend(resolved.confirmed);
     Ok(Fetched {
-        found: derive(&txs, &own),
+        found,
         cursor: Cursor::Start,
+        gone: resolved.gone,
+        missed: resolved.missed,
+        covered,
         ..Fetched::default()
     })
 }
@@ -277,7 +610,7 @@ mod tests {
 
     use yw_json::Limits;
 
-    use super::{derive, parse_txs};
+    use super::{derive, parse_txs, read_indices};
 
     const OURS: &str = "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq";
     const CHANGE: &str = "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu";
@@ -368,6 +701,191 @@ mod tests {
         ] {
             let value = yw_json::parse(format!("[{bad}]").as_bytes(), &Limits::RESPONSE).unwrap();
             assert!(parse_txs(&value).is_err(), "{bad}");
+        }
+    }
+
+    /// 2026-11-13 (spec/04 §2.6): the 받기 address and the newest issued one come first, then
+    /// the refresh-flagged and pending-row addresses, then the newest used ones; each once,
+    /// below `receive_next`, at most 12.
+    #[test]
+    fn read_indices_take_the_receive_address_first() {
+        assert_eq!(read_indices(3, None, false, &[], &[]), [0, 2]);
+        assert_eq!(
+            read_indices(12, Some(7), false, &[], &[]),
+            [8, 11, 7, 6, 5, 4, 3]
+        );
+        assert_eq!(
+            read_indices(12, Some(7), false, &[1, 40], &[0, 8]),
+            [8, 11, 1, 0, 7, 6, 5, 4, 3]
+        );
+        // Fixed-address mode: always index 0.
+        assert_eq!(read_indices(1, Some(0), true, &[], &[]), [0]);
+        assert!(read_indices(0, None, false, &[], &[]).is_empty());
+        let many: Vec<u32> = (20..40).collect();
+        assert_eq!(read_indices(100, Some(50), false, &many, &[]).len(), 12);
+    }
+
+    /// Fail closed: an Esplora input without its prevout that is not a coinbase makes the
+    /// transaction unknown (no row, no dust) and the answer incomplete; 50 unconfirmed entries
+    /// (Esplora's mempool page) are incomplete too.
+    #[test]
+    fn unknown_inputs_and_full_mempool_pages_are_incomplete() {
+        use super::{ESPLORA_MEMPOOL_PAGE, answer_complete};
+        use crate::settings::BtcIndexer;
+        let orphan = r#"{"txid":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","vout":0,"prevout":null,"is_coinbase":false}"#;
+        let text = format!("[{}]", tx('a', orphan, &output(OURS, 90_000), MEMPOOL));
+        let value = yw_json::parse(text.as_bytes(), &Limits::RESPONSE).unwrap();
+        let txs = parse_txs(&value).unwrap();
+        assert!(txs[0].unknown_inputs);
+        assert!(!answer_complete(BtcIndexer::Esplora, &txs));
+        let own: HashSet<String> = [OURS.to_owned()].into_iter().collect();
+        let found = derive(&txs, &own);
+        assert!(found.entries.is_empty() && found.dust.is_empty());
+        // A page of mempool entries.
+        let page: Vec<String> = (0..ESPLORA_MEMPOOL_PAGE)
+            .map(|n| {
+                format!(
+                    r#"{{"txid":"{n:064x}","vin":[{}],"vout":[{}],"status":{MEMPOOL}}}"#,
+                    input(THEIRS, 2_000),
+                    output(OURS, 1_000)
+                )
+            })
+            .collect();
+        let value = yw_json::parse(
+            format!("[{}]", page.join(",")).as_bytes(),
+            &Limits::RESPONSE,
+        )
+        .unwrap();
+        let txs = parse_txs(&value).unwrap();
+        assert!(!answer_complete(BtcIndexer::Esplora, &txs));
+        assert!(answer_complete(BtcIndexer::Esplora, &txs[1..]));
+        // Blockbook lists every mempool transaction on page 1: its size is no signal.
+        assert!(answer_complete(BtcIndexer::BbRest, &txs));
+    }
+
+    fn bb_tx(txid: char, confirmations: u32, vin: &str, vout: &str) -> String {
+        format!(
+            r#"{{"txid":"{}","version":2,"vin":[{vin}],"vout":[{vout}],"blockHash":"00","blockHeight":{},"confirmations":{confirmations},"blockTime":{},"value":"1","valueIn":"1","fees":"0"}}"#,
+            txid.to_string().repeat(64),
+            if confirmations == 0 { -1 } else { 870_000 },
+            if confirmations == 0 {
+                1_731_000_000
+            } else {
+                1_730_000_000
+            }
+        )
+    }
+
+    fn bb_in(address: &str, value: u64) -> String {
+        format!(
+            r#"{{"txid":"{}","vout":1,"n":0,"addresses":["{address}"],"isAddress":true,"value":"{value}"}}"#,
+            "e".repeat(64)
+        )
+    }
+
+    fn bb_out(address: &str, value: u64) -> String {
+        format!(r#"{{"value":"{value}","n":0,"addresses":["{address}"],"isAddress":true}}"#)
+    }
+
+    /// Blockbook `details=txs` (2026-11-13, spec/08 §4.3): a mempool deposit (its first-seen
+    /// `blockTime` ignored), a confirmed one, a coinbase, an `OP_RETURN` output, a
+    /// multi-address output, and an input Blockbook could not resolve (fail closed).
+    #[test]
+    fn blockbook_address_txs_become_rows() {
+        use super::parse_bb_txs;
+        let coinbase = r#"{"n":0,"coinbase":"03aabbcc","isAddress":false,"value":"0"}"#;
+        let op_return = r#"{"value":"0","n":1,"addresses":["OP_RETURN 6869"],"isAddress":false}"#;
+        let multi = r#"{"value":"5000","n":2,"addresses":["a1","b2"],"isAddress":true}"#;
+        let unresolved = format!(r#"{{"txid":"{}","vout":0,"n":0}}"#, "d".repeat(64));
+        let text = format!(
+            r#"{{"page":1,"totalPages":1,"itemsOnPage":25,"address":"{OURS}","balance":"0","txs":4,"transactions":[{},{},{},{}]}}"#,
+            bb_tx(
+                'a',
+                0,
+                &bb_in(THEIRS, 60_000),
+                &format!("{},{}", bb_out(OURS, 50_000), op_return)
+            ),
+            bb_tx(
+                'b',
+                3,
+                &bb_in(THEIRS, 30_000),
+                &format!("{},{multi}", bb_out(OURS, 25_000))
+            ),
+            bb_tx('c', 9, coinbase, &bb_out(OURS, 312_500_000)),
+            bb_tx('d', 0, &unresolved, &bb_out(OURS, 80_000)),
+        );
+        let value = yw_json::parse(text.as_bytes(), &Limits::RESPONSE).unwrap();
+        let txs = parse_bb_txs(&value, OURS).unwrap();
+        assert_eq!(txs.len(), 4);
+        assert_eq!(txs[0].confirmed, None);
+        assert_eq!(txs[1].confirmed, Some((870_000, 1_730_000_000)));
+        assert_eq!(txs[0].outputs[1].0, None, "OP_RETURN");
+        assert_eq!(txs[1].outputs[1].0, None, "two addresses");
+        assert!(txs[3].unknown_inputs);
+        let own: HashSet<String> = [OURS.to_owned()].into_iter().collect();
+        let found = derive(&txs, &own);
+        let rows: Vec<(&str, bool, u64)> = found
+            .entries
+            .iter()
+            .map(|row| (row.amount.as_str(), row.pending, row.amount_units))
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("0.00050000", true, 50_000),
+                ("0.00025000", false, 25_000),
+                ("3.12500000", false, 312_500_000),
+            ]
+        );
+        assert_eq!(found.entries[0].time_ms, None, "first-seen time ignored");
+        // No `transactions`: an empty list.
+        let empty = yw_json::parse(
+            format!(r#"{{"address":"{OURS}","txs":0}}"#).as_bytes(),
+            &Limits::RESPONSE,
+        )
+        .unwrap();
+        assert!(parse_bb_txs(&empty, OURS).unwrap().is_empty());
+    }
+
+    /// Tampered Blockbook answers are refused as a whole (spec/09 BTC-N9).
+    #[test]
+    fn blockbook_address_txs_malformed() {
+        use super::{MAX_TXS, parse_bb_txs};
+        let page =
+            |transactions: &str| format!(r#"{{"address":"{OURS}","transactions":{transactions}}}"#);
+        let deposit = |vout: &str| bb_tx('a', 0, &bb_in(THEIRS, 60_000), vout);
+        let too_many = format!(
+            "[{}]",
+            vec![deposit(&bb_out(OURS, 5_000)); MAX_TXS + 1].join(",")
+        );
+        for bad in [
+            format!(r#"{{"address":"{THEIRS}","transactions":[]}}"#),
+            page(&format!(
+                "[{}]",
+                deposit(r#"{"value":5000,"addresses":["x"]}"#)
+            )),
+            page(&format!(
+                "[{}]",
+                deposit(&bb_out(OURS, 5_000).replace("\"5000\"", "\"-5000\""))
+            )),
+            page(&format!(
+                "[{}]",
+                deposit(&bb_out(OURS, 5_000).replace("\"5000\"", "\"05000\""))
+            )),
+            page(&format!(
+                "[{}]",
+                deposit(&bb_out(OURS, 5_000).replace("\"5000\"", "\"2100000000000001\""))
+            )),
+            page(&format!(
+                "[{}]",
+                bb_tx('a', 1, &bb_in(THEIRS, 1), &bb_out(OURS, 5_000))
+                    .replace("\"blockHeight\":870000", "\"blockHeight\":-1")
+            )),
+            page(r#"{"x":1}"#),
+            page(&too_many),
+        ] {
+            let value = yw_json::parse(bad.as_bytes(), &Limits::RESPONSE).unwrap();
+            assert!(parse_bb_txs(&value, OURS).is_err(), "{bad}");
         }
     }
 }

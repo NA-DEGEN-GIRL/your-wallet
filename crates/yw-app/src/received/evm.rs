@@ -233,6 +233,7 @@ pub fn derive(logs: &[TransferLog], tokens: &[TokenRef]) -> Found {
             from: Some(log.from.to_lower_hex()),
             from_note: None,
             pending: false,
+            ..Incoming::default()
         });
     }
     found
@@ -327,7 +328,7 @@ pub fn fetch(
                 found: Found::default(),
                 cursor: cursor.clone(),
                 unsupported: Some(T_NO_GET_LOGS),
-                note: None,
+                ..Fetched::default()
             });
         }
         Err(LogsError::Failed(failure)) => return Err(classify(failure).text()),
