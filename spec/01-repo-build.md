@@ -113,9 +113,9 @@ install.cmd  uninstall.cmd         소스 설치·제거 진입점(더블클릭,
 crates/
   yw-core/   Cargo.toml  clippy.toml(§5.1)  src/  tests/{*.rs, vectors/}   (모듈 §2.2, 테스트 배치 [09](09-testing.md) §2.1)
   yw-json/   Cargo.toml  src/{lib.rs, parse.rs, value.rs, write.rs, frame.rs}  tests/
-  yw-win/    Cargo.toml  src/{lib.rs, error.rs, time.rs, mem.rs, file.rs, dpapi.rs, clipboard.rs,
-                              http.rs, pipe.rs, session.rs, process.rs, input.rs, ui/{mod.rs, window.rs,
-                              msg.rs, paint.rs, controls.rs, secure_text.rs}}  tests/   (API §7)
+  yw-win/    Cargo.toml  src/{lib.rs, error.rs, wide.rs, time.rs, mem.rs, file.rs, dpapi.rs, clipboard.rs,
+                              http.rs, ws.rs, pipe.rs, session.rs, process.rs, security.rs, input.rs, cng.rs, image.rs, pcsc.rs,
+                              ui/{mod.rs, window.rs, msg.rs, paint.rs, controls.rs, capture.rs(개발 빌드 전용), secure_text.rs}}  tests/   (API §7; pcsc·cng [10], ws·image·`cng::p256_verify` [13])
   yw-app/    Cargo.toml  build.rs(선택, [04](04-app-ui.md) §1.6)  yw-app.manifest  tests/
              icons/{yw-app.ico, yw-app.res}   (앱 아이콘, `scripts/make-icons.mjs`가 만들고 커밋, [04](04-app-ui.md) §1.7)
              src/{lib.rs, main.rs, app.rs, events.rs, errors.rs, settings.rs, apikeys.rs(네트워크별 RPC 엔드포인트 URL
@@ -140,7 +140,7 @@ scripts/     check.ps1  check-core-deps.mjs  privacy-scan.mjs  privacy-scan.test
 fuzz/        퍼징, 별도 워크스페이스·루트 exclude([09](09-testing.md) §2.4) — 아직 없음(만들 때 이 위치)
 tools/       btc-oracle/(M8, [08](08-bitcoin.md) §14.3)  sol-oracle/(M7, [07](07-solana.md) §17.3) — 개발 전용 차등 오라클. 각각 자체 [workspace]·Cargo.lock,
              루트 exclude(§3.1), check.ps1·허용 목록 대상 아님, 설치되지 않음 — 아직 없음(만들 때 이 위치)
-spec/        01 … 09
+spec/        01 … 13
 docs/        install.ko.md(설치·업데이트·제거)  recovery-guide.ko.md  acceptance/(체크리스트·라이브 확인 기록, [09](09-testing.md) §1·§2.5)
              icon-preview.png(아이콘 미리 보기, make-icons.mjs 출력)
 ```
@@ -164,12 +164,19 @@ docs/        install.ko.md(설치·업데이트·제거)  recovery-guide.ko.md  
 | `codec::transcript` | M2 | `Transcript` 정규 인코딩(승인·표시 digest) | [03](03-evm.md) |
 | `evm::address` | M1 | `Address`(`[u8; 20]`), EIP-55 파싱·표시 | [03](03-evm.md) |
 | `evm::{chain, amount, fee, rlp, tx, sign, abi, decode, eip191, eip712, siwe, simulate, risk, display}` | M2 | EVM 나머지. `amount`에 `U256`·`format_units`/`parse_units`, `fee`에 수수료·가스·대체 수수료 | [03](03-evm.md) |
-| `journal` (+`journal::{evm, sol, btc}`) | M4 | 체인 공통 이진 컨테이너 코덱(entry = `kind` u8 ‖ `body_len` u32 BE ‖ body)·`JournalError`([02] §5.4). 체인별 레코드 본문 코덱·상태 기계: `journal::evm`(M4, kind 0x01), `journal::sol`(M7, 0x02), `journal::btc`(M8, 0x03) | [02](02-core-keys-vault.md) §5.4, [03](03-evm.md) §5, [07](07-solana.md) §14, [08](08-bitcoin.md) §12.4 |
+| `journal` (+`journal::{evm, sol, btc, zec}`) | M4 | 체인 공통 이진 컨테이너 코덱(entry = `kind` u8 ‖ `body_len` u32 BE ‖ body)·`JournalError`([02] §5.4). 체인별 레코드 본문 코덱·상태 기계: `journal::evm`(M4, kind 0x01), `journal::sol`(M7, 0x02), `journal::btc`(M8, 0x03), `journal::zec`(2026-11-06, 0x04) | [02](02-core-keys-vault.md) §5.4, [03](03-evm.md) §5, [07](07-solana.md) §14, [08](08-bitcoin.md) §12.4, [12](12-zcash.md) §12.1 |
 | `approval` | M2 | 승인 세션·digest·`Approved` 토큰·공통 표시 모델(필드, 위험, 금지 문자) | [03](03-evm.md) §11, [04](04-app-ui.md) |
 | `policy` | M2 | M2: `BrowserOrigin`(승인 모델이 쓴다, [03] §0·§11). M5: 나머지 — dApp 메서드 허용 목록·route, 연결 권한, 공급자 오류 코드(`ProviderError`) | [03](03-evm.md), [05](05-browser.md) |
 | `sol::*` | M7 | 주소, 메시지, 서명, 표시(base58은 `codec::base58`, 저널 레코드는 `journal::sol`) | [07](07-solana.md) |
 | `sol::dapp::{parse, alt, decode, diff, display, sign}` | M7.2 | Solana dApp 거래(2026-11-12, D38): legacy·v0 파서·인코더, 조회 테이블 해석, 명령 해석, 시뮬레이션 차이, 승인 요청 빌더, 서명기. 새 의존성 없음(기존 `ed25519-dalek`·`sha2`만) | [07](07-solana.md) §20 |
 | `btc::*` | M8 | 주소(bech32/bech32m; base58check는 `codec::base58`), 계정 형식(`account`: P2PKH·P2SH-P2WPKH·P2WPKH·P2TR), sighash(레거시·BIP143), `taproot`(BIP341 키 경로), tx, 수수료, 표시(저널 레코드는 `journal::btc`) | [08](08-bitcoin.md) |
+| `codec::wif` | M8 | Bitcoin·Zcash WIF 디코드·인코드 | [02] §8.4 |
+| `codec::base64` | M8 | 표준 base64(RFC 4648, 패딩, 엄격 디코드): BTC 메시지 서명, Solana RPC | [08](08-bitcoin.md) §17, [07](07-solana.md) |
+| `keyimport` | M8 | 가져온 개인키 파서·주소 미리보기(EVM·Solana·Bitcoin·Zcash) | [02] §8.4 |
+| `yubikey` (+`yubikey::mock`) | 2026-11-04 | YubiKey 슬롯 표·계획·APDU, 에뮬레이터 | [10](10-yubikey.md) |
+| `hypercore` | 2026-11-06 | HyperCore 사용자 서명 작업·표시 | [11](11-hypercore.md) |
+| `zec` | 2026-11-06 | Zcash 일반 주소·v5 거래·ZIP 244·ZIP 317 | [12](12-zcash.md) |
+| `walletconnect` | 2026-11-06 | WalletConnect v2 URI·봉투·키 합의·릴레이 JWT | [13](13-walletconnect.md) |
 
 규칙: yw-core는 시간·파일·네트워크·스레드·환경 변수를 쓰지 않는다. 시각이 필요하면 호출자가 단조 `now_ms: u64`(yw-win `time::monotonic_ms`)나 벽시계 `now_unix_ms: u64`(유닉스 ms, yw-app이 구함)를 인자로 넘긴다. yw-core는 yw-json(의존성 0)에 의존한다. `evm::eip712`가 `yw_json::Value`를 입력으로 받기 때문이다([03](03-evm.md) §0). 외부 허용 목록은 바뀌지 않는다. RPC 응답은 여전히 yw-app이 yw-json으로 파싱해 yw-core 타입으로 넘기며 yw-core는 네트워크 데이터를 직접 받지 않는다.
 
@@ -242,6 +249,7 @@ secp256k1 = { version = "=0.31.1", default-features = false, features = ["alloc"
 sha2 = { version = "=0.10.9", default-features = false }
 sha3 = { version = "=0.10.8", default-features = false }
 ripemd = { version = "=0.1.3", default-features = false }   # BIP32 fingerprint(M1)·BTC HASH160(M8)
+blake2 = { version = "=0.10.6", default-features = false }   # ZEC ZIP 244 sighash·ZIP 316 F4Jumble (argon2 폐포에 이미 있음, spec/12 §6)
 hmac = { version = "=0.12.1", default-features = false }
 pbkdf2 = { version = "=0.12.2", default-features = false, features = ["hmac"] }
 hkdf = { version = "=0.12.4", default-features = false }
@@ -250,9 +258,9 @@ chacha20poly1305 = { version = "=0.10.1", default-features = false, features = [
 zeroize = { version = "=1.8.1", default-features = false, features = ["alloc"] }
 subtle = { version = "=2.6.1", default-features = false }
 getrandom = { version = "=0.3.3", default-features = false }
-# M7 Solana 단계 진입 커밋에서 주석 해제(§3.4):
-# ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["fast", "zeroize"] }
-# curve25519-dalek = { version = "=4.1.3", default-features = false, features = ["precomputed-tables", "zeroize"] }
+# Solana 단계(M7, spec/01 §3.4):
+ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["fast", "zeroize"] }
+curve25519-dalek = { version = "=4.1.3", default-features = false, features = ["precomputed-tables", "zeroize"] }
 qrcodegen = { version = "=1.8.0", default-features = false }
 windows-sys = { version = "=0.61.2", default-features = false }   # feature 목록은 crates/yw-win/Cargo.toml에만
 yw-core = { path = "crates/yw-core" }
@@ -302,7 +310,7 @@ debug = false
 
 | 크레이트 | `[dependencies]` |
 |---|---|
-| yw-core | argon2, chacha20poly1305, getrandom, hkdf, hmac, pbkdf2, ripemd, secp256k1, sha2, sha3, subtle, zeroize(서드파티 12), yw-json (+M7 ed25519-dalek, curve25519-dalek) |
+| yw-core | argon2, blake2(Zcash, [12] §6.1), chacha20poly1305, curve25519-dalek(M7), ed25519-dalek(M7), getrandom, hkdf, hmac, pbkdf2, ripemd, secp256k1, sha2, sha3, subtle, zeroize(서드파티 15), yw-json |
 | yw-json | 없음(빈 `[dependencies]`) |
 | yw-app | qrcodegen, yw-core, yw-json, yw-win |
 | yw-host | yw-json, yw-win |
@@ -312,12 +320,12 @@ debug = false
 [dependencies.windows-sys]
 workspace = true
 features = [
-    "Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Networking_WinHttp", "Win32_Security",
+    "Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Graphics_GdiPlus", "Win32_Networking_WinHttp", "Win32_Security",
     "Win32_Security_Authorization", "Win32_Security_Credentials", "Win32_Security_Cryptography",
     "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_DataExchange", "Win32_System_ErrorReporting", "Win32_System_IO",
     "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_Pipes",
     "Win32_System_RemoteDesktop", "Win32_System_SystemInformation", "Win32_System_Threading",
-    "Win32_UI_Controls", "Win32_UI_HiDpi", "Win32_UI_Input", "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Controls", "Win32_UI_HiDpi", "Win32_UI_Input", "Win32_UI_Input_Ime", "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
 ]
 
@@ -371,6 +379,8 @@ windows-sys feature 추가·삭제는 크레이트 수를 바꾸지 않지만 yw
 5. §3.6 절차로 lock 갱신. Cargo.lock에는 컴파일되지 않는 `curve25519-dalek-derive`·`fiat-crypto`·`proc-macro2`·`quote`·`syn`·`unicode-ident` 항목도 생긴다(lock은 cfg와 무관, 59개가 됨을 확인함). 허용 여부 판단은 검사 스크립트가 한다.
 
 **M8 (Bitcoin)** — 의존성·허용 목록·`PHASES` 변경 없음(`ripemd`는 M0부터 허용 목록에 있다, D5).
+
+**Zcash (D36)** — 허용 목록·`PHASES` 변경 없음. `blake2 =0.10.6`은 argon2 폐포로 M0부터 허용 목록에 있으므로 루트 `[workspace.dependencies]`에 `blake2 = { version = "=0.10.6", default-features = false }` 한 줄과 yw-core `blake2.workspace = true`만 더한다(ZIP 244 sighash·ZIP 316 F4Jumble, [12] §6.1).
 
 ### 3.5 feature 규칙
 
@@ -649,7 +659,7 @@ import { fileURLToPath } from "node:url";
 export const TARGET = "x86_64-pc-windows-msvc";
 export const CRATES_IO = "registry+https://github.com/rust-lang/crates.io-index";
 // 단계 진입 커밋에서만 바꾼다(spec/01 §3.4): M7 → "sol" 추가.
-export const PHASES = new Set([]);
+export const PHASES = new Set(["sol"]);
 
 // name=version:n (런타임에 링크) | :b (빌드 시에만 실행: build-dependency와 그 폐포)
 const table = (text) => Object.fromEntries(text.trim().split(/\s+/).map((entry) => entry.split(":")));
@@ -904,7 +914,7 @@ impl<const N: usize> SecretBytes<N> { pub fn new(src: &mut [u8; N]) -> Self /* s
 - 래퍼는 `Clone`·`Copy`·`Display`·`PartialEq`·serde 계열을 구현하지 않는다. 비교는 `subtle::ConstantTimeEq`. `Debug`는 `SecretBytes<32>([REDACTED])`처럼 길이 외 정보를 출력하지 않는다.
 - 비밀을 담은 일반 `[u8; N]`·`Vec`·`String` 지역 변수는 쓰고 난 즉시 `zeroize()`한다. 형 변환(UTF-16 ↔ UTF-8, hex 등)은 용량을 미리 정한 비밀 타입으로 직접 쓴다.
 - yw-win은 zeroize를 쓸 수 없으므로 자체 `mem::wipe(&mut [u8])`/`wipe_u16`(`write_volatile` + `compiler_fence(SeqCst)`)과 `mem::WipeBuf`(용량 고정, Drop에서 wipe)를 쓴다. yw-win → yw-core 경계는 `with_secret(|bytes| …)` 클로저로 넘겨 yw-core 비밀 타입에 바로 복사한다.
-- 잠금 해제 중 상주 지갑 비밀은 `yw_win::mem::LockedBox<320>` 하나(= [02](02-core-keys-vault.md) §7.3 `SLOT_LEN`, `LockedSlot` 배치: [0..32) DEK, `passphrase_used` vault이면 BIP39 passphrase)뿐이다(D10). RPC·LLM API 키는 지갑 비밀이 아니며 해당 작업 스레드가 `SecretString`으로 프로세스 수명 동안 보관할 수 있다(D10).
+- 잠금 해제 중 상주 지갑 비밀은 `yw_win::mem::LockedBox<SLOT_LEN>`(2,304바이트) 하나(= [02](02-core-keys-vault.md) §7.3 `SLOT_LEN`, `LockedSlot` 배치: [0..32) DEK, [32..320) 주 니모닉 passphrase, [320..2245) 다른 니모닉 7개의 record id·passphrase — 2026-11-07 D37 전에는 320바이트)뿐이다(D10). RPC·LLM API 키는 지갑 비밀이 아니며 해당 작업 스레드가 `SecretString`으로 프로세스 수명 동안 보관할 수 있다(D10).
 
 ### 5.4 로깅 (D28)
 
@@ -986,7 +996,7 @@ impl<const N: usize> SecretBytes<N> { pub fn new(src: &mut [u8; N]) -> Self /* s
 
 공통: `pub struct WinError { pub api: &'static str, pub code: u32 }`(Debug·Clone·Copy·Eq, `Display` = `"<api> failed: 0x<code:08X>"`). 실패 시 `GetLastError()`를 즉시 읽고 `FormatMessageW`는 쓰지 않는다. 문자열 인자는 내부에서 NUL 종료 UTF-16으로 바꾸며 내부 NUL은 오류다. 공개 API에는 원시 핸들·포인터가 없고 모든 핸들은 `Drop`에서 닫는다. `lib.rs`는 `pub use error::WinError; pub use process::{current_user_sid_string, spawn_detached, allow_set_foreground_window, StdIn, StdOut};`로 [05](05-browser.md) §7.8의 경로를 그대로 제공한다(M3는 `WinError`·`allow_set_foreground_window`만; `pipe`와 나머지 재수출은 M5에서 추가).
 
-feature 사용처: Foundation(핸들·오류·`LocalFree`), Graphics_Gdi(그리기), Networking_WinHttp(`http`), Security(`SECURITY_ATTRIBUTES`, `GetTokenInformation`, `CreateFileW`·`CreateNamedPipeW` 게이트), Security_Authorization(SDDL·SID 문자열), Security_Cryptography(DPAPI), Storage_FileSystem(`file`, 파이프 플래그, `GetFileType`), System_Console(`GetStdHandle`), System_DataExchange(클립보드), System_ErrorReporting(`WerAddExcludedApplication`), System_IO(`OVERLAPPED`, `GetOverlappedResult`, `CancelIoEx`), System_LibraryLoader(`GetModuleHandleW`, `SetDefaultDllDirectories`), System_Memory(`Virtual*`, `Global*`), System_Ole(`CF_UNICODETEXT`), System_Pipes, System_RemoteDesktop(`WTSRegisterSessionNotification`), System_SystemInformation(`GetTickCount64`, `GetTickCount`), System_Threading(뮤텍스·이벤트·`CreateProcessW`·`OpenProcessToken`), UI_Controls(`InitCommonControlsEx`), UI_HiDpi, UI_Input(`GetCurrentInputMessageSource`), UI_Input_KeyboardAndMouse(`GetAsyncKeyState`, `GetKeyState`, `GetLastInputInfo`, `SetCapture`), UI_WindowsAndMessaging(창·메시지·`SetWindowDisplayAffinity`·`AllowSetForegroundWindow`, `WTS_*` 세션 변경 값·`WM_QUERYENDSESSION`·`WM_ENDSESSION`도 여기에 있다(확인함), 따라서 §7.7 `Msg` 추가에 feature 변경 없음).
+feature 사용처: Foundation(핸들·오류·`LocalFree`), Graphics_Gdi(그리기), Graphics_GdiPlus(`image`, 이미지 파일 디코드, [13] §6), Networking_WinHttp(`http`), Security(`SECURITY_ATTRIBUTES`, `GetTokenInformation`, `CreateFileW`·`CreateNamedPipeW` 게이트), Security_Authorization(SDDL·SID 문자열), Security_Cryptography(DPAPI), Storage_FileSystem(`file`, 파이프 플래그, `GetFileType`), System_Console(`GetStdHandle`), System_DataExchange(클립보드), System_ErrorReporting(`WerAddExcludedApplication`), System_IO(`OVERLAPPED`, `GetOverlappedResult`, `CancelIoEx`), System_LibraryLoader(`GetModuleHandleW`, `SetDefaultDllDirectories`), System_Memory(`Virtual*`, `Global*`), System_Ole(`CF_UNICODETEXT`), System_Pipes, System_RemoteDesktop(`WTSRegisterSessionNotification`), System_SystemInformation(`GetTickCount64`, `GetTickCount`), System_Threading(뮤텍스·이벤트·`CreateProcessW`·`OpenProcessToken`), UI_Controls(`InitCommonControlsEx`), UI_HiDpi, UI_Input(`GetCurrentInputMessageSource`), UI_Input_Ime(`ImmAssociateContextEx`, `ui::window`), UI_Input_KeyboardAndMouse(`GetAsyncKeyState`, `GetKeyState`, `GetLastInputInfo`, `SetCapture`), UI_WindowsAndMessaging(창·메시지·`SetWindowDisplayAffinity`·`AllowSetForegroundWindow`, `WTS_*` 세션 변경 값·`WM_QUERYENDSESSION`·`WM_ENDSESSION`도 여기에 있다(확인함), 따라서 §7.7 `Msg` 추가에 feature 변경 없음).
 
 ### 7.1 `time`, `mem`
 
@@ -996,7 +1006,7 @@ pub fn system_idle_ms() -> Option<u64>;   // GetTickCount().wrapping_sub(LASTINP
                                            // 호출자는 앱 자체의 마지막 입력 시각으로 대신한다(0을 돌려주면 유휴 잠금이 영영 안 걸린다)
 pub fn local_wall_ms(unix_ms: u64) -> Option<u64>;   // FileTimeToLocalFileTime(현재 표준시간대 편차): 표시용 현지 시각(활동 행, [04] §2.6)
 
-pub struct LockedBox<const N: usize> { /* 페이지 1개; const 단언 1 ≤ N ≤ 4096; Send + Sync; Clone 없음 */ }   // yw-app: LockedBox<320> = [02] §7.3 슬롯
+pub struct LockedBox<const N: usize> { /* 페이지 1개; const 단언 1 ≤ N ≤ 4096; Send + Sync; Clone 없음 */ }   // yw-app: LockedBox<SLOT_LEN>(2,304) = [02] §7.3 슬롯
 impl<const N: usize> LockedBox<N> {
     pub fn new_zeroed() -> Result<Self, WinError>;  // VirtualAlloc(4096, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE) → VirtualLock
     pub fn expose(&self) -> &[u8; N];

@@ -35,8 +35,8 @@
 | `crates/yw-host/src/lib.rs` + `tests/` | 인자(R-H1)·UNAVAILABLE 응답기(R-H2)·중계·크기 초과 종료 코드(R-H3)·`auto_launch_enabled`와 연결 루프(R-H4) — 05 §10.2 R-H1–R-H4. 실제 프로세스 시험은 05 H1(`extension/tests/yw-host-process.test.mjs`) | `cargo test` |
 | `extension/tests/*.test.mjs` | node:test(05 §10.1) | `node --test` |
 | `scripts/*.test.mjs` | privacy-scan, check-core-deps, audit-extension, strict-json, install(01 §9.4: Windows PowerShell 5.1로 `install.ps1 -NoBuild`·`uninstall.ps1`을 임시 폴더에 실행, §5.12 INS-1) | `node --test` |
-| `fuzz/` | 별도 워크스페이스(§2.4) | 수동 |
-| `tools/btc-oracle/`, `tools/sol-oracle/` | 차등 오라클(08 §14.3, 07 §17.3 교차 확인). 저장소 안의 별도 워크스페이스(각자 `[workspace]`·`Cargo.lock`), 루트 `Cargo.toml` `[workspace] exclude`(01 §3.1). 의존성 허용 목록·`check-core-deps.mjs`·check.ps1 대상이 아니고 어떤 배포 바이너리에도 들어가지 않는다 | 수동 |
+| `fuzz/` | 별도 워크스페이스(§2.4) — 아직 없음(만들 때 이 위치, 01 §2.1). 지금 퍼징은 §2.4 대체 경로의 fuzz-lite `#[ignore]` 테스트(`fuzz_lite_*`; check.ps1 fuzz 단계는 20,000회 스모크)뿐이다 | 수동 |
+| `tools/btc-oracle/`, `tools/sol-oracle/` | 차등 오라클(08 §14.3, 07 §17.3 교차 확인). 아직 없음(만들 때 이 위치; M7-5·M8-3 미수행, docs/acceptance/m7-20261027.md·m8-20261027.md). 저장소 안의 별도 워크스페이스(각자 `[workspace]`·`Cargo.lock`), 루트 `Cargo.toml` `[workspace] exclude`(01 §3.1). 의존성 허용 목록·`check-core-deps.mjs`·check.ps1 대상이 아니고 어떤 배포 바이너리에도 들어가지 않는다 | 수동 |
 | `extension/test-dapp/` | M5 수동 E2E 페이지(§5.7), Solana dApp 거래 구역(`sol.js`, M7-12–M7-14) | 수동 |
 
 - yw-app·yw-host는 `src/lib.rs`(로직)와 `src/main.rs`(진입점)로 나눈다. 퍼징·통합 테스트가 파서를 직접 부르기 위해서다.
@@ -445,7 +445,7 @@ TEST 1024·SHA(abc)는 `rfc8032.json`에서 같은 방식으로 검사한다.
 | Bitcoin genesis | mainnet `000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f`, testnet4 `00000000da84f2bafbbc53dee25a72ae507ff4914b867c565be350b0da8bf043` | [공식] Core `chainparams.cpp` |
 | Solana genesis | §3.9 | [공식] |
 
-테스트는 코드 상수가 이 표와 같은지 본다(레지스트리 회귀, 03 EVM-V16 "내장 3체인 상수"). 기본 제공 EVM 체인은 정확히 1·11155111·999이고 각각 `simulation` 값을 가진다(D14 기본 `auto`, 999는 L-HYPEREVM 결과). 1·11155111은 `GenesisRule::Fixed`(위 해시), 999는 `PinOnFirstUse(None)`과 `small_block_gas_limit = Some(3_000_000)`, 나머지 둘은 `None`.
+테스트는 코드 상수가 이 표와 같은지 본다(레지스트리 회귀, 03 EVM-V16 "내장 7체인 상수"; `tests/evm_consts.rs`의 `builtin_chain_constants_spec_09_3_11`·`added_builtin_chains_spec_03_1_1`). 기본 제공 EVM 체인은 정확히 7개다. 순서대로 1·11155111·999·42161(Arbitrum One)·8453(Base)·56(BNB Smart Chain)·4663(Robinhood Chain)이고, 모두 `simulation = auto`다(D14; 999는 L-HYPEREVM 결과). 999만 `PinOnFirstUse(None)`과 `small_block_gas_limit = Some(3_000_000)`을 쓴다. 나머지 여섯은 `GenesisRule::Fixed`(1·11155111은 위 해시, 42161·8453·56·4663은 03 §1.1 표)와 `small_block_gas_limit = None`이다.
 
 ### 3.12 vault v3 골든 (M1, `src/vault/tests.rs`)
 
@@ -521,7 +521,7 @@ G1과 같은 절차로 고정한다: 테스트가 아래 입력으로 바이트�
 | X-22 | 사용자 체인 추가: chainId 1·11155111·999 / 이미 추가한 사용자 체인과 같은 chainId | 각각 거부(RPC 호출 0), 기존 항목 불변 | D14 |
 | X-23 | 추가 시 블록 0 해시 H1 고정 → 재시작(또는 RPC URL 변경) 뒤 연결에서 (a) 블록 0 = H2 (b) `eth_chainId` ≠ 등록값 | (a) 그 체인 읽기·보내기·서명·dApp 읽기 전부 체인 불일치 오류. H2를 보여 주는 확인 창에서 사용자가 다시 고정해야만 해제(취소 → 계속 오류), 재고정 뒤 정상 (b) 같은 오류, 재고정 없이 URL을 고칠 때까지 유지. 기본 제공 체인은 §3.11 상수와 비교(03 §1.4) | D14 |
 | X-24 | `simulation = unsupported` 체인 보내기(§3.8 S15), 61 s 뒤 클릭 포함 | `eth_simulateV1` 호출 0, [미지원], 체크 + 2초 누르기로 서명·전송 | D14·D15 |
-| X-25 | dApp `wallet_switchEthereumChain` 사용자 체인(8453) / 999 / 미등록 `0x89` / `wallet_addEthereumChain`(유효한 EIP-3085 파라미터) | `null` + `chainChanged` / 같음 / 4902 `UnrecognizedChain` / 4200 `UnsupportedMethod`, 창 없음, 체인 목록 불변 | D14, 05 §5 |
+| X-25 | dApp `wallet_switchEthereumChain` 사용자 체인(10, `0xa`; 8453은 내장 Base) / 999 / 미등록 `0x89` / `wallet_addEthereumChain`(유효한 EIP-3085 파라미터) | `null` + `chainChanged` / 같음 / 4902 `UnrecognizedChain` / 4200 `UnsupportedMethod`, 창 없음, 체인 목록 불변 | D14, 05 §5 |
 
 SIWE 기본형(LF 줄바꿈, 끝 LF 없음, 검사 시각 2026-10-26T00:00:00Z, 활성 체인 11155111, 서명 계정 ACC-1):
 
@@ -656,7 +656,7 @@ Issued At: 2026-10-25T23:59:00Z
 - [ ] M4-9 받기 QR을 휴대폰 카메라로 읽음 → `ethereum:<EIP-55 주소>@11155111`, 화면 문자열과 같음(UI-M4-08).
 - [ ] M4-10 Sepolia 수수료 상한을 설정 최솟값으로 낮춤 → E05 차단 → 원복.
 - [ ] M4-11 04 §10 UI-M4-07·10·11 수행(UI-M4-11: Sepolia 엔드포인트를 `eth_simulateV1` 미지원 엔드포인트로 재정의 → [결과 없음] E01 + 원인 → 체크 + 2초로 전송·확정 → 재정의 삭제).
-- [ ] M4-12 자동(`journal`·`journal::evm`·`flow::evm`과 `rpc::evm`의 전송·호출이 생기는 단계): 03 EVM-V13 전부(§3.13 V13 골든, 03 §5.2 상태 전이 표, 손상 레코드 거부, 자리 없음 → `journal::JournalError::Full` → E06 "거래 저널 공간이 부족합니다"), 03 EVM-V16 전부(내장 3체인 상수 §3.11, `validate_user_chain` 경계, 추가·재연결 체인 확인, `RpcMismatch` → E34·4901, 999 첫 연결 고정), 03 EVM-V17의 `flow::evm` 사례(`simulation = unsupported` → 가짜 전송 `eth_simulateV1` 0회·E36, 재시뮬레이션 실패 → `None`으로 `replace` + 새 클릭, 가스 추정 실패 → E37·대체 가스로 계속), 02 §11.7 journal 컨테이너 항목, X-5·X-17·X-18·X-21–X-24, 04 §3.9 AP-6, 04 §6.5 ST-1(`settings.json` `evmChains`·`evmGenesisPins`)·ST-3(S17 입력 판정) 통과.
+- [ ] M4-12 자동(`journal`·`journal::evm`·`flow::evm`과 `rpc::evm`의 전송·호출이 생기는 단계): 03 EVM-V13 전부(§3.13 V13 골든, 03 §5.2 상태 전이 표, 손상 레코드 거부, 자리 없음 → `journal::JournalError::Full` → E06 "거래 저널 공간이 부족합니다"), 03 EVM-V16 전부(내장 7체인 상수 §3.11·03 §1.1, `validate_user_chain` 경계, 추가·재연결 체인 확인, `RpcMismatch` → E34·4901, 999 첫 연결 고정), 03 EVM-V17의 `flow::evm` 사례(`simulation = unsupported` → 가짜 전송 `eth_simulateV1` 0회·E36, 재시뮬레이션 실패 → `None`으로 `replace` + 새 클릭, 가스 추정 실패 → E37·대체 가스로 계속), 02 §11.7 journal 컨테이너 항목, X-5·X-17·X-18·X-21–X-24, 04 §3.9 AP-6, 04 §6.5 ST-1(`settings.json` `evmChains`·`evmGenesisPins`)·ST-3(S17 입력 판정) 통과.
 - [ ] M4-13 HyperEVM(999) 소액 송금(계정 0 → 계정 1, UI-M4-13): 첫 연결에서 체인 확인(chainId `0x3e7`) 통과와 블록 0 해시 고정(T-GENESIS-PINNED, `evmGenesisPins["eip155:999"]` = §2.5 L-GENESIS 기록값), 승인 창 제목에 HyperEVM 네트워크 이름. 가스 한도가 `small_block_gas_limit` 3,000,000(§3.11, 03 §1.1) 이하이므로 E38 없음(초과 시 E38은 주의 등급이라 승인 조작을 바꾸지 않는다; 경계는 M2-1 EVM-V17). 999 기본 `simulation`이 `unsupported`면 맨 위 [미지원] E36(로그에 999 `eth_simulateV1` 줄 0) → 체크 없이 2초 누르기 → 승인 안 됨 → 체크 + 2초 → 영수증 status 1, HyperEVM 탐색기와 해시 일치. `auto`면 시뮬레이션 결과 표시로 같은 송금이 성공하고, [미지원] 절차는 M4-14 (d)에서 한다.
 - [ ] M4-14 사용자 체인(설정, D14, UI-M4-12·14·15): (a) chainId를 실제와 다르게 입력 → 거부(E-CHN-001), 목록 불변 (b) chainId 1·11155111·999 → 중복 거부 (c) 올바른 값 + `simulation = unsupported` → 추가(T-CHAIN-PIN) (d) (999가 `auto`일 때) 그 체인 소액 송금을 M4-13 절차로 → [미지원] E36, 확인 후 영수증 status 1 (e) 앱 재시작 → 그 체인 잔액 조회 정상(chainId·블록 0 재확인 통과) (f) `settings.json`의 그 체인 `genesisHash` 1자 변경 → E-CHN-008 차단(E34), `다시 고정` 후 정상(UI-M4-14) (g) 삭제: 활성 상태·미종결 거래 중 거부, 확정 후 삭제(UI-M4-15).
 - [ ] M4-15 §2.5 `live_probe`(L-LIMITS, 03 §1.5 A1–A8·A9(c)–(e); A6은 M4-2 전송 직후, A9는 M4-13 전) 기록. `probe-rpc.mjs` 결과와 다른 항목은 원인을 적는다.

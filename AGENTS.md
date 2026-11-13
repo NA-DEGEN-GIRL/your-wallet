@@ -17,6 +17,7 @@ Status (spec.md line 3): implemented, manual verification pending.
 | Path | What it is |
 |---|---|
 | `Cargo.toml` | Workspace: version 0.3.0, edition 2024, `rust-version = "1.95"`, `license = "Apache-2.0 OR MIT"`, `publish = false`, exact-pinned `[workspace.dependencies]`, `[workspace.lints]`, release profile (LTO fat, `overflow-checks = true`, `panic = "abort"`) |
+| `LICENSE-APACHE`, `LICENSE-MIT` | License texts. The project is dual-licensed `Apache-2.0 OR MIT` (user's choice), with no warranty. `extension/package.json` carries the same `license` |
 | `rust-toolchain.toml` | Pins toolchain `1.95.0` (+ clippy, rustfmt) |
 | `rustfmt.toml`, `clippy.toml`, `crates/yw-core/clippy.toml` | Formatting (edition 2024, Unix newlines). MSRV and test unwrap allowances. yw-core's disallowed types and methods (no time, file, network, threads or env) |
 | `.cargo/config.toml` | `--cfg curve25519_dalek_backend="serial"`, `/Brepro` (deterministic PE) |
@@ -298,11 +299,9 @@ If a task seems to require breaking one of these, stop and ask the owner.
 
 ---
 
-## 7. Known stale spec text (fix only when you are already editing that section)
+## 7. Spec text and the code
 
-- spec/05 §3.1, §4.3 and §5 say the built-in EVM chains are "내장 3개". There are 7 (spec/03 §1.1, D14).
-- `spec.md` D36 says Zcash WIF import is "phase 2". D9 says Zcash WIF/hex import is implemented.
-- spec/04 §2.10 (address book rows) mentions "4자 묶음". Addresses are now drawn whole (spec/04 §3.3).
+The specs were reconciled with the code on 2026-11-13. If you find stale spec text later, fix it in the same commit as the behaviour it describes.
 
 ## 8. More documentation
 

@@ -238,7 +238,7 @@ pub fn user_chain_info(i: &UserChainInput, genesis: [u8; 32]) -> ChainInfo;     
 ### 2.2 내부 표현·표시
 
 - 내부: `Address([u8;20])`. RPC·JSON 출력은 소문자 `0x…`.
-- 표시: EIP-55 체크섬 전체 주소를 4자 묶음으로: `"0x" + g1 + " " + g2 + … + " " + g10`. 예: `0x5aAe b605 3F3E 94C9 b9A0 9f33 6694 35E7 Ef1B eAed`. 승인 창에서 자르지 않는다.
+- 표시: EIP-55 체크섬 전체 주소. 표시 모델 문자열(`evm::display::format_address`, display 바이트·digest에 들어감)은 4자 묶음이다: `"0x" + g1 + " " + g2 + … + " " + g10`. 예: `0x5aAe b605 3F3E 94C9 b9A0 9f33 6694 35E7 Ef1B eAed`. 승인 창에서 자르지 않는다. 2026-11-12부터 승인 창을 포함한 모든 화면은 이 문자열을 묶음 없이 전체(체크섬 대소문자 그대로)로 그리고 `0x` 뒤 4자·끝 4자를 강조한다([04](04-app-ui.md) §3.3 주소 그리기). 표시 모델·digest 문자열은 묶음 그대로다.
 - 라벨: 레지스트리 `[Uniswap Permit2]`, 이 지갑의 계정 `[내 계정: {계정 이름}]`(서명 계정 줄 포함), 주소록 `[주소록: {이름}]`(이름은 §9.2 이스케이프; 사용자가 확인(verified)한 항목은 `[주소록: {이름} ✓ 확인됨]`, `ChainFacts::known`의 확인 표시로). 라벨은 주소를 대체하지 않는다.
 
 ### 2.3 U256
@@ -559,7 +559,7 @@ off  size  field
 1. 미종결 레코드의 nonce 그룹마다 모든 후보 영수증 조회 → §5.2.
 2. 영수증 없음, `latest nonce == nonce` → 그룹의 최신 후보 `raw`를 그대로 재전송(`eth_getTransactionByHash`가 null일 때만, 60 s에 최대 1회, 직전에 §1.4 체인 재확인). **다시 서명하지 않는다.**
 3. `rpc_hash_mismatch`·`manual_resend` 레코드는 자동 재전송하지 않는다(사용자 재전송 버튼만). `Broadcast`로 바뀌면(노드가 알게 되면) 두 플래그를 지운다.
-4. 정리·상한: 종결 레코드(`Finalized`/`Dropped`/`Replaced`)는 종결 후 7일 지나면 다음 저널 쓰기 때 [02](02-core-keys-vault.md) §5.3 `activity`로 옮긴 뒤 삭제한다. 개수·용량 상한은 EVM·SOL·BTC가 함께 쓰는 [02] §5.4 값(전체 ≤ 256, 평문 ≤ 16 MiB, EVM 최대 본문 131,761)이다. 새 레코드(`Signed` 원본·SpeedUp·Cancel)를 만들 서명 전(§3.7 단계 4, §4.6)에 [02] §5.4 추가 전 검사를 하고, 자리가 없으면 EVM 종결 레코드를 오래된 것부터(activity로 옮긴 뒤) 지운다. 다른 체인 항목은 그 문서 규칙으로만 지운다. 그래도 없으면 `journal::JournalError::Full` → E06 "거래 저널 공간이 부족합니다"(서명·전송 없음).
+4. 정리·상한: 종결 레코드(`Finalized`/`Dropped`/`Replaced`)는 종결 후 7일 지나면 다음 저널 쓰기 때 [02](02-core-keys-vault.md) §5.3 `activity`로 옮긴 뒤 삭제한다. 개수·용량 상한은 EVM·SOL·BTC·ZEC가 함께 쓰는 [02] §5.4 값(전체 ≤ 256, 평문 ≤ 16 MiB, EVM 최대 본문 131,761)이다. 새 레코드(`Signed` 원본·SpeedUp·Cancel)를 만들 서명 전(§3.7 단계 4, §4.6)에 [02] §5.4 추가 전 검사를 하고, 자리가 없으면 EVM 종결 레코드를 오래된 것부터(activity로 옮긴 뒤) 지운다. 다른 체인 항목은 그 문서 규칙으로만 지운다. 그래도 없으면 `journal::JournalError::Full` → E06 "거래 저널 공간이 부족합니다"(서명·전송 없음).
 
 **activity 대응(EVM, [02] §5.3).** 종결 레코드를 activity로 옮길 때: `account` = 레코드 계정(소문자 `0x` hex), `tx_id` = `0x`+최종 후보의 tx_hash, `title` = 서명 당시 승인 제목(§11.1). calldata가 ERC-20 `transfer`로 해석되면 `asset` = 토큰 주소, `amount` = 토큰 최소 단위 10진, `counterparty` = 받는 주소; 아니면 `asset` = `"native"`, `amount` = value(wei 10진, 0이면 `"0"`), `counterparty` = tx `to`. `status`: `Finalized` + 영수증 status 1 → `succeeded`, 0 → `failed`; `Dropped`(사용자 폐기 포함) → `dropped`; `Replaced` → `replaced`. `time_unix_ms` = 종결 관측 시각. SpeedUp은 원본과 한 행(확정된 후보의 해시), Cancel이 확정되면 원본 행은 `replaced`이고 취소 거래는 `title` "거래 취소"인 별도 행이다.
 
@@ -1080,7 +1080,7 @@ P01 UTF-8 아님(hex 표시) → 고위험(D18). P02 숨은·방향 제어 문�
 
 ## 11. 승인 요청 모델 (yw-core `approval`)
 
-D27·D31에 따라 이 절이 모든 체인(EVM·SOL·BTC)의 승인 요청 타입·태그·필드 키·digest의 정본이다. SOL·BTC 변형은 M7·M8에서 코드에 더하며, 값의 내용(intent·계획 바이트, 필드 문구)은 [07](07-solana.md) §13·[08](08-bitcoin.md) §10이 정한다.
+D27·D31에 따라 이 절이 모든 체인(EVM·SOL·BTC·ZEC·HyperCore)의 승인 요청 타입·태그·필드 키·digest의 정본이다. SOL·BTC 변형은 M7·M8에서 코드에 더했고, 값의 내용(intent·계획 바이트, 필드 문구)은 [07](07-solana.md) §13·§19·§20, [08](08-bitcoin.md) §10·§17, [11](11-hypercore.md) §6, [12](12-zcash.md) §9가 정한다.
 
 ### 11.1 타입
 
@@ -1091,9 +1091,11 @@ pub enum ChainRef {                                   // chain_tag(§11.4)
     Evm { chain_id: u64, genesis: [u8; 32] },         // 1, genesis = §1.4로 확인된 값(고정·최초 신뢰 고정 포함)
     Solana { cluster: SolCluster, genesis: [u8; 32] },// 2, cluster u8: 1 mainnet, 2 devnet ([07] §2)
     Bitcoin { network: u8, genesis: [u8; 32] },       // 3, network: 1 mainnet, 2 testnet4 ([08] §2)
+    Zcash { network: u8, genesis: [u8; 32] },         // 5, network: 1 mainnet, 2 testnet ([12] §2·§9)
     HyperCore { network: u8, signature_chain_id: u64 } } // 4, network: 1 mainnet, 2 testnet ([11] §6, 제네시스 없음)
 pub enum AccountRef { Evm(Address), Sol([u8; 32]) /* from 공개키 */,
-    Bitcoin([u8; 33]) /* 계정 공개키 m/84'/c'/0' = [08] §12.3 account_pubkey */ }
+    Bitcoin([u8; 33]) /* 계정 공개키 m/84'/c'/0' = [08] §12.3 account_pubkey */,
+    Zcash([u8; 33]) /* 압축 공개키, [12] §9 */ }
 #[repr(u8)] pub enum ApprovalKind { EvmTransaction = 0x10, EvmSpeedUp = 0x11, EvmCancel = 0x12,
     EvmPersonalSign = 0x13, EvmTypedData = 0x14, SolTransfer = 0x20,
     SolMessage = 0x21, SolSignIn = 0x22 /* [07] §19 */, SolTransaction = 0x23 /* [07] §20, 2026-11-12 */,
@@ -1142,13 +1144,13 @@ pub fn build_typed_request(/* 같은 앞 인수 */ t: &DecodedTypedData, facts: 
 ```
 
 - `warnings`는 §3.7 단계 1–7에서 생긴 경고다(차단 E05·E06·E10·E11·E34·E35, 고위험 E37, 주의 E38, 정보 E31). 차단이 있으면 `sim`은 `Unavailable { reason: Skipped }`이다. `simulation` 필드는 `sim.binding()`이다. 빌더의 `now_unix_ms`는 상대 시각 표시와 T12·S04·S07 판정용이며 만료와 무관하다.
-- `signer`는 yw-app이 서명 계정에서 정한다(meta `evm_accounts` → `Derived(index)`, `evm_raw_accounts` → `Raw(record_id)`, [02] §5.3). digest에 넣지 않는다: 다른 키로 서명하면 §4.3-5 복구 주소 검사가 막는다.
+- `signer`는 yw-app이 서명 계정에서 정한다(`App::account_source`: meta `evm_accounts` → `Derived(index)`, `evm_raw_accounts` → `Raw(record_id)`, 추가한 복구 단어의 계정 → `Mnemonic(record_id, index)`, YubiKey 계정(`hw_accounts.evm`) → `Hardware(index)`; [02] §5.3·§10.3, [10] §9.2). digest에 넣지 않는다: 다른 키로 서명하면 §4.3-5 복구 주소 검사가 막는다.
 - **`BrowserOrigin`**(`yw_core::policy::BrowserOrigin`, [01](01-repo-build.md) §2.2; `policy` 모듈은 승인 모델이 쓰는 이 타입으로 M2에 시작하고 나머지는 M5): [05](05-browser.md) §4.7 Origin 형식을 그대로 구현한 유일한 origin 타입이다. API는 [05] §6.5(`parse`, `is_http`, `as_str`)에 `effective_port(&self) -> u16`(https 443, http 80; §9.4 S05)을 더한다. `as_str()`이 직렬화(`origin_serialized`, §11.4)다: `https://host[:port]` 또는 허용된 `http://localhost|127.0.0.1[:port]`, port 규칙 포함. yw-app은 별도 origin 파서를 두지 않고 이 타입을 쓴다. localhost 허용 토글은 [05](05-browser.md) §4.6이 따로 판정한다. 이식: `archive/spec-v2.4:crates/wallet-model/src/context.rs:42-131`.
 - 제목 형식: `[{네트워크 이름}] {작업 제목}`(예: `[Sepolia 테스트넷] 토큰 전송: 10 USDC`). LLM 설명([06](06-llm-explain.md))은 이 타입에 들어가지 않는다(D21).
 
 ### 11.2 표시 필드 키 (`FieldKey`, u16, 표시 순서)
 
-critical = 승인 판단에 필요한 필드(창에서 접지 않음). volatile = 재시뮬레이션으로 바뀌어도 재승인을 요구하지 않는 필드(EVM 거래만; SOL·BTC는 `replace`를 쓰지 않으므로 없음). 범위: `0x00xx` 공통 헤더, `0x01xx` EVM 거래, `0x03xx` 타입 데이터, `0x04xx` 메시지, `0x05xx` SOL, `0x06xx` BTC. 표에 없는 키는 [04](04-app-ui.md) §3.2가 거부한다.
+critical = 승인 판단에 필요한 필드(창에서 접지 않음). volatile = 재시뮬레이션으로 바뀌어도 재승인을 요구하지 않는 필드(EVM 거래만; SOL·BTC는 `replace`를 쓰지 않으므로 없음). 범위: `0x00xx` 공통 헤더, `0x01xx` EVM 거래, `0x03xx` 타입 데이터, `0x04xx` 메시지, `0x05xx` SOL, `0x06xx` BTC, `0x07xx` HyperCore, `0x08xx` ZEC. 표에 없는 키는 [04](04-app-ui.md) §3.2가 거부한다.
 
 | 키 | 이름 | critical | volatile |
 |---|---|---|---|
@@ -1176,6 +1178,8 @@ critical = 승인 판단에 필요한 필드(창에서 접지 않음). volatile 
 | `0x0608`, `0x0640` | BTC: 승인 후 잔액, 고급(version·nLockTime·RBF·vsize·weight·txid) | | |
 | `0x0701`–`0x0704` | HyperCore([11] §6): 작업, 받는 주소, 토큰·금액, 수수료 | ✓ | |
 | `0x0705`, `0x0706` | HyperCore: nonce(time), 원본 typed data | | |
+| `0x0801`–`0x0807` | ZEC([12](12-zcash.md) §9): 받는 주소, 주소 형식(일반 주소 / TEX / UA의 일반 수신자), 금액, 잔돈, 수수료(ZIP 317), 합계, 만료 높이·네트워크 업그레이드 | 예 | |
+| `0x0808`, `0x0840` | ZEC: 입력(개수·합계), 고급([12] §9) | | |
 
 표시 문자열 규칙: LF 외 제어 문자·표시 금지 문자 없음(빌더가 §9.2로 이스케이프, `DisplayField::new`가 다시 검사), 앞뒤 공백 없음, 값 ≤ 270,000바이트, 필드 ≤ 1,024개, 경고 ≤ 64개.
 
@@ -1200,10 +1204,10 @@ T = Transcript::start_domain("your-wallet/v3/approval", 1)
 T.push_bytes(id)                                  // 16
 T.push_u8(kind)
 T.push_str(origin_serialized)                     // "yw-app" 또는 BrowserOrigin::as_str
-T.push_u8(chain_tag)                              // EVM 1, SOL 2, BTC 3, HyperCore 4 ([11] §6: u8 network ‖ u64 signatureChainId)
+T.push_u8(chain_tag)                              // EVM 1, SOL 2, BTC 3, HyperCore 4 ([11] §6: u8 network ‖ u64 signatureChainId), ZEC 5
 EVM: T.push_u64(chain_id); T.push_bytes(genesis)  / SOL: T.push_u8(cluster); T.push_bytes(genesis)
-                                                  / BTC: T.push_u8(network); T.push_bytes(genesis)
-T.push_bytes(account_bytes)                       // EVM 20, SOL 32, BTC 33바이트
+                                                  / BTC·ZEC: T.push_u8(network); T.push_bytes(genesis)
+T.push_bytes(account_bytes)                       // EVM 20, SOL 32, BTC·ZEC 33바이트
 T.push_bytes(signing_payload_bytes)               // 아래
 T.push_bytes(display_digest)                      // 32
 T.push_u8(sim_tag)                                // SimulationBinding: 0 NotApplicable, 1 Simulated, 2 None
@@ -1223,6 +1227,10 @@ digest = SHA-256(T)
 | `SolTransfer` | [07] §13.2 intent transcript 바이트 전체(그 SHA-256 = `intent_hash`) |
 | `SolTx` | [07] §20.6 transcript `"your-wallet/v3/sol-tx"` v1: 출처 태그·인자(태그 8이면 니모닉 record id), 공개키, 모드, 전송 옵션(skipPreflight, commitment, minContextSlot), 거래 수, 거래마다 wire 바이트(사이트 서명 포함)·서명자 슬롯·해석한 조회 테이블 키(writable·readonly). 시뮬레이션·실행 전 상태는 표시 필드로 `display_digest`에 들어간다 |
 | `Btc` | [08] §10 `btc_payload`(network·`unsigned_tx`·입력 금액·경로·잔돈·수수료·교체 대상; `display_digest`는 위 공통 필드로 따로 들어간다) |
+| `SolMessage` | [07] §19.1 transcript `"your-wallet/v3/sol-message"` v1(`SolMessage`·`SolSignIn` 공통) |
+| `BtcMessage` | [08] §17.1 transcript `"your-wallet/v3/btc-message"` v1 |
+| `Zec` | [12] §9 `zec_payload`(transcript `"your-wallet/v3/zec-send"` v1) 그대로 |
+| `HyperCore` | [11] §6 transcript `"your-wallet/v3/hypercore-action"` v1 |
 
 시험: digest 입력 중 임의 1비트를 바꾸면 digest가 바뀐다(`archive/spec-v2.4:crates/wallet-protocol/src/approval.rs:708-765` 방식).
 
