@@ -791,14 +791,21 @@ fn build_layout(
                     FontRole::Body
                 };
                 builder.gap(2);
-                let has_address = !*mono
-                    && value
-                        .split('\n')
-                        .any(|line| crate::ui::theme::whole_address(line).is_some());
+                let has_address = value.split('\n').any(|line| {
+                    crate::ui::theme::address_with_notes(line).is_some()
+                        || (!*mono && crate::ui::theme::whole_address(line).is_some())
+                });
                 if has_address {
                     // Addresses on their own lines of a text field (the SPL mint and token
-                    // accounts of `0x0502`) are drawn like address fields (spec/04 §3.3).
+                    // accounts of `0x0502`) are drawn like address fields, and an address with
+                    // its notes (`0x… [일반 계정(EOA)]`) is drawn whole with the notes on the
+                    // next line (spec/04 §3.3, 2026-11-14).
                     for line in value.split('\n') {
+                        if let Some((address, notes)) = crate::ui::theme::address_with_notes(line) {
+                            builder.text(address, FontRole::Mono, theme::TEXT, x, w);
+                            builder.text(notes, FontRole::Body, theme::TEXT, x, w);
+                            continue;
+                        }
                         let line_role = if crate::ui::theme::whole_address(line).is_some() {
                             FontRole::Mono
                         } else {

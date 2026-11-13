@@ -432,6 +432,18 @@ pub fn whole_address(text: &str) -> Option<(String, AddressKind)> {
     (grouped_form(&joined, kind) == text).then_some((joined, kind))
 }
 
+/// A line that is one address ([`whole_address`]) followed by its bracketed notes (the approval
+/// display model's `0x… [일반 계정(EOA)] [주소록: A]`): the address part and the notes, so the
+/// address is drawn whole on its own line (2026-11-14, spec/04 §3.3; before, the notes kept such
+/// a line in its 4-character groups).
+#[must_use]
+pub fn address_with_notes(text: &str) -> Option<(&str, &str)> {
+    let (address, notes) = text.split_once(" [")?;
+    whole_address(address)?;
+    (!notes.is_empty()).then_some(())?;
+    Some((address, text.get(address.len().saturating_add(1)..)?))
+}
+
 /// How every address line is drawn (2026-11-12, spec/04 §3.3): the [`own_address_spans`] of
 /// [`whole_address`]: the whole address without spaces, the 4 characters after its family's
 /// prefix and the last 4 emphasized. `None` for any other text.
@@ -564,8 +576,8 @@ pub fn paint_spans(
 #[cfg(test)]
 mod tests {
     use super::{
-        AddressKind, address_spans, direction_particle, object_particle, own_address_spans,
-        whole_address,
+        AddressKind, address_spans, address_with_notes, direction_particle, object_particle,
+        own_address_spans, whole_address,
     };
 
     /// `(joined text, emphasized pieces)` of an own-address line.
@@ -733,6 +745,24 @@ mod tests {
             "",
         ] {
             assert!(address_spans(text).is_none(), "{text}");
+        }
+        // An address with its notes (2026-11-14): the address part and the notes.
+        let grouped = "0xF990 0bb6 FF2D 2C67 858c 3468 d21c 5f10 3C4F f646";
+        assert_eq!(
+            address_with_notes(&format!("{grouped} [일반 계정(EOA)] [주소록: A]")),
+            Some((grouped, "[일반 계정(EOA)] [주소록: A]"))
+        );
+        assert_eq!(
+            address_with_notes(&format!("{evm} [컨트랙트]")),
+            Some((evm, "[컨트랙트]"))
+        );
+        for text in [
+            grouped,
+            "0xF990 0bb6 FF2D [일반 계정(EOA)]",
+            "새 계정 [일반 계정(EOA)]",
+            "",
+        ] {
+            assert!(address_with_notes(text).is_none(), "{text}");
         }
     }
 }
