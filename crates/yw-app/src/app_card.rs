@@ -313,6 +313,11 @@ pub struct CardUi {
     pub list_defaults: Vec<(u32, yw_core::yubikey::enrol::DefaultsSeen)>,
     /// The card step's touch prompt where it was placed (2026-11-10).
     pub notice: Option<CardNotice>,
+    /// The waiter ticket of a step [`App::card_site_check`] ended while the worker's failure of
+    /// its refused PIN was still to come (2026-11-13): that failure is dropped once, as the
+    /// step's own `swallow_failure` would have — the step ended because its site went away, and
+    /// no card error band is shown beside that notice.
+    ended_unused: Option<SignTicket>,
 }
 
 impl CardUi {
@@ -340,6 +345,7 @@ impl CardUi {
         self.list_protected.clear();
         self.list_defaults.clear();
         self.notice = None;
+        self.ended_unused = None;
     }
 
     /// The factory values seen for card `serial` in this session ([`CardUi::list_defaults`]).
@@ -1169,9 +1175,17 @@ impl App {
             ticket,
             kind,
             approved,
+            swallow_failure,
             ..
         } = step;
         drop(approved);
+        if swallow_failure {
+            // Ended between a refused PIN's returned approval and that job's failure (from
+            // `card_unused` itself, or a revoke in between): the failure still comes and is not
+            // shown (2026-11-13; before, it reached `on_signed`, whose red card-error band
+            // contradicted this notice).
+            self.card.ended_unused = ticket;
+        }
         if let Some(reply) = ticket
             .and_then(|ticket| self.take_sign_waiter(ticket))
             .and_then(|waiter| waiter.reply())
@@ -1418,6 +1432,20 @@ impl App {
         self.card_open_pin();
     }
 
+    /// The waiter ticket of a dApp signing outcome (EVM transaction or message, Solana or Bitcoin
+    /// message, Solana dApp send).
+    fn card_outcome_ticket(outcome: &KeyOutcome) -> Option<SignTicket> {
+        match outcome {
+            KeyOutcome::SignedEvm(EvmSigned { ticket, .. })
+            | KeyOutcome::SignedMessage(MessageSigned { ticket, .. })
+            | KeyOutcome::SignedChainMessage(ChainMessageSigned { ticket, .. })
+            | KeyOutcome::SignedSolDapp(crate::events::SolDappSigned { ticket, .. }) => {
+                Some(*ticket)
+            }
+            _ => None,
+        }
+    }
+
     /// Whether `outcome` is the final outcome of the card step's job.
     fn card_outcome_matches(step: &CardStep, outcome: &KeyOutcome) -> bool {
         match (&step.kind, outcome) {
@@ -1448,6 +1476,13 @@ impl App {
             // The card answered (the PIN is asked again or the step ends): no touch is due.
             self.card_notice_clear();
             self.card_unused(approved, error);
+            return None;
+        }
+        // The failure of a refused PIN whose step ended because its site went away (2026-11-13).
+        if self.card.ended_unused.is_some()
+            && Self::card_outcome_ticket(&outcome) == self.card.ended_unused
+        {
+            self.card.ended_unused = None;
             return None;
         }
         let Some(step) = self.card.step.as_ref() else {
