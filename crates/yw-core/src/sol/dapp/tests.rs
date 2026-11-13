@@ -653,11 +653,113 @@ fn precompile_signatures_and_compute_budget_duplicates() {
     let parsed = |instructions| parse_message_any(&legacy([1, 0, 3], &keys, instructions)).unwrap();
     let message = parsed(vec![ix(1, &[], &ed25519), ix(2, &[], &secp256k1)]);
     assert_eq!(message.precompile_signatures(), 3);
-    assert!(!message.duplicate_compute_budget());
+    assert!(!dapp_fee_bounds(&message).rejected);
     let limit = set_compute_unit_limit_data(1_000);
     let price = set_compute_unit_price_data(5);
-    assert!(!parsed(vec![ix(3, &[], &limit), ix(3, &[], &price)]).duplicate_compute_budget());
-    assert!(parsed(vec![ix(3, &[], &limit), ix(3, &[], &limit)]).duplicate_compute_budget());
+    assert!(!dapp_fee_bounds(&parsed(vec![ix(3, &[], &limit), ix(3, &[], &price)])).rejected);
+    assert!(dapp_fee_bounds(&parsed(vec![ix(3, &[], &limit), ix(3, &[], &limit)])).rejected);
+}
+
+/// The runtime's parse of `ComputeBudget` data (Agave `try_from_slice_unchecked`), not the
+/// strict display decoder, sets the fee (2026-11-13 review).
+#[test]
+fn dapp_fee_bounds_read_compute_budget_like_the_runtime() {
+    let keys = [key(0x11), COMPUTE_BUDGET_PROGRAM, SYSTEM_PROGRAM];
+    let bounds = |instructions: Vec<CompiledIx>| {
+        dapp_fee_bounds(&parse_message_any(&legacy([1, 0, 2], &keys, instructions)).unwrap())
+    };
+    let exact = |fee: u128| DappFeeBounds {
+        low: fee,
+        high: fee,
+        rejected: false,
+    };
+    let rejected = DappFeeBounds {
+        low: 5_000,
+        high: 5_000,
+        rejected: true,
+    };
+    let trailing = |mut data: Vec<u8>| {
+        data.push(0xff);
+        data
+    };
+    let transfer = || ix(2, &[0, 0], &system_transfer_data(1));
+    // A price with a trailing byte still charges: the display shows Unknown (X02), the fee
+    // does not drop to the base fee. Limit 1,400,000 × 10^12 micro-lamports.
+    let price = trailing(set_compute_unit_price_data(1_000_000_000_000));
+    assert!(matches!(
+        decode(&COMPUTE_BUDGET_PROGRAM, &[], &price),
+        DecodedIx::Unknown { .. }
+    ));
+    assert_eq!(
+        bounds(vec![
+            ix(1, &[], &set_compute_unit_limit_data(1_400_000)),
+            ix(1, &[], &price),
+            transfer(),
+        ]),
+        exact(5_000 + 1_400_000_000_000)
+    );
+    // Without a limit the default units still apply (2 builtins × 3,000).
+    assert_eq!(
+        bounds(vec![ix(1, &[], &price), transfer()]),
+        exact(5_000 + 6_000_000_000)
+    );
+    // A limit with a trailing byte is that limit, not the default.
+    assert_eq!(
+        bounds(vec![
+            ix(1, &[], &trailing(set_compute_unit_limit_data(1_400_000))),
+            ix(1, &[], &set_compute_unit_price_data(1_000_000)),
+            transfer(),
+        ]),
+        exact(5_000 + 1_400_000)
+    );
+    // A valid heap request and data-size limit, with trailing bytes, change nothing.
+    let mut heap = vec![1];
+    heap.extend_from_slice(&(32_u32 * 1_024).to_le_bytes());
+    let mut size = vec![4];
+    size.extend_from_slice(&1_u32.to_le_bytes());
+    assert_eq!(
+        bounds(vec![
+            ix(1, &[], &trailing(heap)),
+            ix(1, &[], &trailing(size)),
+            transfer()
+        ]),
+        exact(5_000)
+    );
+    // What the runtime rejects (no fee; getFeeForMessage answers the base fee): a short field,
+    // tag 0 (Unused) or 5, a duplicate kind, a bad heap request, a data-size limit of 0.
+    let price = || ix(1, &[], &set_compute_unit_price_data(1_000_000));
+    let heap = |bytes: u32| {
+        let mut data = vec![1];
+        data.extend_from_slice(&bytes.to_le_bytes());
+        ix(1, &[], &data)
+    };
+    for bad in [
+        ix(1, &[], &[3, 1, 2, 3, 4, 5, 6, 7]),
+        ix(1, &[], &[2, 1, 2, 3]),
+        ix(1, &[], &[]),
+        ix(1, &[], &[0]),
+        ix(1, &[], &[5, 0, 0, 0, 0]),
+        price(),
+        ix(1, &[], &set_compute_unit_price_data(7)),
+        heap(31 * 1_024),
+        heap(257 * 1_024),
+        heap(32 * 1_024 + 1),
+        ix(1, &[], &[4, 0, 0, 0, 0]),
+    ] {
+        assert_eq!(
+            bounds(vec![price(), bad.clone(), transfer()]),
+            rejected,
+            "{bad:?}"
+        );
+    }
+    assert_eq!(
+        bounds(vec![
+            ix(1, &[], &set_compute_unit_limit_data(10)),
+            price(),
+            ix(1, &[], &set_compute_unit_limit_data(10)),
+        ]),
+        rejected
+    );
 }
 
 #[test]
@@ -665,6 +767,7 @@ fn dapp_fee_bounds_follow_the_runtime() {
     let exact = |fee: u128| DappFeeBounds {
         low: fee,
         high: fee,
+        rejected: false,
     };
     // T_SOL golden: one signature, limit 450, price 1,000 → the template formula.
     let golden = parse_message_any(&t_sol_message()).unwrap();
@@ -713,6 +816,7 @@ fn dapp_fee_bounds_follow_the_runtime() {
         DappFeeBounds {
             low: 5_000 + 6_000,
             high: 5_000 + 203_000,
+            rejected: false,
         }
     );
     assert!(stake.contains(11_000) && stake.contains(208_000) && stake.contains(100_000));
@@ -729,14 +833,13 @@ fn dapp_fee_bounds_follow_the_runtime() {
         ),
         exact(5_000 + 50_000)
     );
-    // A limit above the runtime maximum is capped; the first limit wins.
+    // A limit above the runtime maximum is capped.
     assert_eq!(
         bounds(
             [1, 0, 6],
             vec![
                 ix(3, &[], &set_compute_unit_limit_data(2_000_000)),
                 price.clone(),
-                ix(3, &[], &set_compute_unit_limit_data(10)),
             ]
         ),
         exact(5_000 + 1_400_000)
@@ -768,6 +871,7 @@ fn dapp_fee_bounds_follow_the_runtime() {
         DappFeeBounds {
             low: 4 * 5_000 + 9_000,
             high: 4 * 5_000 + 206_000,
+            rejected: false,
         }
     );
 }

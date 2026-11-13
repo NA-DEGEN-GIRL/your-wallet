@@ -685,7 +685,17 @@ impl crate::rpc::Transport for SolDappTourRpc {
                 context(&format!("[{}]", entries.join(",")))
             }
             "isBlockhashValid" => context("true"),
-            "getFeeForMessage" => context("5000"),
+            // An honest RPC: the message's own fee (5,000 per required signature here), so the
+            // fee field's RPC value and "계산값" agree (spec/07 §20.4).
+            "getFeeForMessage" => {
+                let fee = params
+                    .first()
+                    .and_then(Value::as_str)
+                    .and_then(yw_core::codec::base64::decode)
+                    .and_then(|bytes| yw_core::sol::dapp::parse_message_any(&bytes).ok())
+                    .map(|message| yw_core::sol::fee::dapp_fee_bounds(&message).low);
+                context(&fee.map_or_else(|| "null".to_owned(), |fee| fee.to_string()))
+            }
             "simulateTransaction" => {
                 let tx = params.first().and_then(Value::as_str).unwrap_or("");
                 let post = self

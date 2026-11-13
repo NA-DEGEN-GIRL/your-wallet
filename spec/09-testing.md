@@ -576,7 +576,8 @@ Issued At: 2026-10-25T23:59:00Z
 | SOL-N15 | 저널 v3: 잘못된 슬롯·내 서명·0 슬롯·플래그·nonce(뒤 바이트 AdvanceNonce 포함)·origin 257바이트·비ASCII / 템플릿과 같은 v3 / (클러스터, 계정) Pending 17건째 / 계정 셋에 걸친 전체 Pending 33건째 / 전체 32건일 때 지갑 앱 T_SOL 보내기 / 같은 바이트 두 번 승인 | 본문 오류 / `core()` = `None` / -32002 / -32002 / 자리 있음(`Full` 아님) / 레코드 하나, 둘 다 서명으로 답함 | 07 §14.1, §20.9 |
 | SOL-N16 | 응답 전 grant 해제 / 서명 전 대기 중 잠금 / 저널 뒤 잠금 / provider가 받은 응답의 메시지 바이트·슬롯 두 개 변경 | 4100·바이트 없음 / 4001 / 서명으로 답하고 잠금 해제 뒤 재개 / -32603 | 07 §20.8, §20.10, 05 §2.13 |
 | SOL-N17 | 미리보기의 제네시스 불일치 / 미리보기 제네시스 확인의 전송 오류 | 요청 없이 승인 창 `Failed`(E-RPC-006, X01 아님), 닫으면 4001 / `Failed`(그 코드), 닫으면 4001 | 07 §20.7, 05 §5 |
-| SOL-N18 | (2026-11-13) 지갑이 내는 수수료: SetComputeUnitLimit 200,000·가격 10^9 micro-lamports인데 RPC가 5,000(기본 수수료만) / RPC 값이 정확함·RPC `null` / 한도 없는 우선 수수료 System 전송(RPC 정확·`null`) / 계산 최댓값보다 1 높은 RPC / 한도 없는 Stake 명령(범위) / 다른 계정이 내는 같은 거래 | X14 고위험(계산값 200,005,000) + X20 고위험 / X14만 / X14·X20 없음(11,000) / X20 / 범위 안 RPC는 경고 없음, 범위 밖은 X20 / X13만(X14·X20 없음) | 07 §20.4, §20.5 |
+| SOL-N18 | (2026-11-13) 지갑이 내는 수수료: SetComputeUnitLimit 200,000·가격 10^9 micro-lamports인데 RPC가 5,000(기본 수수료만) / RPC 값이 정확함·RPC `null` / 한도 없는 우선 수수료 System 전송(RPC 정확·`null`) / 계산 최댓값보다 1 높은 RPC / 한도 없는 Stake 명령(범위 11,000–208,000, 상한 100,000) / 다른 계정이 내는 같은 거래 | X14 고위험(계산값 200,005,000) + X20 고위험 / X14만 / X14·X20 없음(11,000) / X20 / 범위 안 RPC(최솟값·`null` 포함)는 X20 없이 X14 "최대 208,000", 범위 밖은 X20 / X13만(X14·X20 없음) | 07 §20.4, §20.5 |
+| SOL-N19 | (2026-11-13 검토) ComputeBudget의 런타임 해석: 한도 200,000 + 뒤 바이트 하나가 붙은 가격 10^9(RPC 5,000 또는 `null`) / 뒤 바이트가 붙은 한도 / 같은 SetComputeUnitPrice 두 번(RPC 5,000) / 짧은 값·태그 0·5·잘못된 힙·데이터 크기 0 | 수수료 200,005,000, X14 고위험 + X02(RPC 5,000이면 X20도) / 그 한도로 정확한 값 / X18 주의만(X14·X20 없음, 계산값 5,000 "런타임이 거부") / 서명 수수료만 + X18 | 07 §20.3, §20.4 |
 | BTC-N1 | 이전 거래 금액 위조(출력 금액 1바이트 변경, txid는 원본) | `TxidMismatch`, 후보 제외 | 08 §14.2 |
 | BTC-N2 | 스크립트 불일치·vout 범위 밖·뒤 바이트·비정규 CompactSize | 각각 거부 | 08 §14.2 |
 | BTC-N3 | 기록 금액과 계획 금액 다름 | 서명 전 중단 | 08 §5 |
@@ -783,7 +784,7 @@ WETH = Sepolia `0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14`(03 §1.2, 구현 시
 - [ ] M7-7 (v1.1) 자동: SOL-N5, 07 §17.3 T_SPL 골든·PDA·ATA 벡터, 07 §17.4 SPL 항목(`sol::tests_spl`, `sol::token`, `tests/sol_spl_flow.rs`, `tests/sol_journal_worker.rs` SPL 사례), 퍼징 시드에 T_SPL 골든.
 - [ ] M7-8 (v1.1) §2.5 SOL 라이브에 SPL 항목: mint 확인(owner·82바이트·decimals 6), rent165, T_SPL `getFeeForMessage`, T_SPL CU 측정(새 ATA·기존 ATA 각 10회, 07 §10 bump 모델) → `SPL_TRANSFER_CU_LIMIT` 확정. 측정 전 mainnet SPL 전송 금지.
 - [ ] M7-9 (v1.1) devnet USDC E2E: 07 §17.6-8(faucet, 새 수신자 ATA 생성, 기존 ATA, 토큰 보내기 최대, 모르는 토큰 숨김, 곡선 밖 받는 주소 차단). USDT는 devnet 공식 mint가 없어 M9 mainnet 소액 체크리스트(07 미결 4).
-- [ ] M7-10 (M7.2 dApp 거래, D38) 자동: SOL-N6–N18, 07 §17.4 dApp 항목, 05 §10 S9·P13·P14·C6·B5·R-SOLTX, 04 §3.9 AP-SOLTX, fuzz-lite `fuzz_lite_sol_dapp_tx`, 키 작업자 emulator 시험(카드 서명만 3건 = 터치 3회, 카드 전송), `tests/sol_dapp_flow.rs`(서명만·전송·결정적 preflight·서명 전 만료).
+- [ ] M7-10 (M7.2 dApp 거래, D38) 자동: SOL-N6–N19, 07 §17.4 dApp 항목, 05 §10 S9·P13·P14·C6·B5·R-SOLTX, 04 §3.9 AP-SOLTX, fuzz-lite `fuzz_lite_sol_dapp_tx`, 키 작업자 emulator 시험(카드 서명만 3건 = 터치 3회, 카드 전송), `tests/sol_dapp_flow.rs`(서명만·전송·결정적 preflight·서명 전 만료).
 - [ ] M7-11 퍼징 `sol_dapp_tx` 600 s, `sol_journal`은 버전 3 씨앗을 더해 600 s.
 - [ ] M7-12 devnet E2E(기록 `docs/acceptance/sol-dapp-tx-<날짜>.md`, test-dapp "Solana dApp 거래" 구역 S01–S10): wallet-adapter 데모 legacy·v0, v0+ALT 스왑(skipPreflight 포함), test-dapp의 다른 수수료 지불자 부분 서명, signAll ×3, signAndSend 착지와 활동 행, durable nonce 서명만(전송은 -32602), 전송 직후 잠금 → 서명 응답·잠금 해제 뒤 재개, `signMessage`로 보낸 거래 바이트 → M01 차단.
 - [ ] M7-13 YubiKey(07 §20.5, 10 §5): signTransaction 거래 3건 = 터치 3회, signAndSend = PIN 뒤 서명 전 확인·터치 1회.

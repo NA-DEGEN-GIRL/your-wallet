@@ -599,28 +599,6 @@ fn fee_is_computed_from_the_message_and_checks_the_rpc() {
     let draft = draft_of(honest, with_rpc(Some(11_001)));
     assert_eq!(rules(&draft), vec![X20, X11]);
     assert!(text_of(&draft, X20).contains("RPC 11,001 lamports · 계산값 11,000 lamports"));
-    // Without a limit a migrating builtin (Stake) is bracketed: 3,000 or 200,000 CU.
-    let stake = wire(
-        &legacy(
-            [1, 0, 2],
-            &[
-                wallet(),
-                key(0x22),
-                COMPUTE_BUDGET_PROGRAM,
-                crate::sol::address::STAKE_PROGRAM,
-            ],
-            vec![price(1_000_000), ix(3, &[1], &[2, 0, 0, 0])],
-        ),
-        &[],
-    );
-    let draft = draft_of(stake.clone(), with_rpc(Some(100_000)));
-    assert!(!rules(&draft).contains(&X20) && !rules(&draft).contains(&X14));
-    assert!(
-        field(&draft, FieldKey::SOL_TX_FEE)
-            .contains("계산값 11,000–208,000 lamports (CU 한도가 없어 범위로 계산)")
-    );
-    let draft = draft_of(stake, with_rpc(Some(10_999)));
-    assert!(text_of(&draft, X20).contains("RPC 10,999 lamports · 계산값 11,000–208,000 lamports"));
     // The wallet does not pay: neither X14 nor X20, whatever the RPC says.
     let foreign = wire(
         &legacy(
@@ -643,6 +621,111 @@ fn fee_is_computed_from_the_message_and_checks_the_rpc() {
     let found = rules(&draft);
     assert!(found.contains(&X13) && !found.contains(&X14) && !found.contains(&X20));
     assert!(field(&draft, FieldKey::SOL_TX_FEE).contains("계산값 200,010,000 lamports"));
+}
+
+/// X14 compares the highest fee the runtime can charge, and the fee reads `ComputeBudget` data
+/// as the runtime does (2026-11-13 review).
+#[test]
+fn fee_cap_uses_the_computed_maximum_and_the_runtime_parse() {
+    let keys = [wallet(), key(0x22), COMPUTE_BUDGET_PROGRAM, SYSTEM_PROGRAM];
+    let price = |micro| ix(2, &[], &set_compute_unit_price_data(micro));
+    let limit = |units| ix(2, &[], &set_compute_unit_limit_data(units));
+    let transfer = || ix(3, &[0, 1], &system_transfer_data(1_000));
+    let with_rpc = |rpc_fee| SolTxItemFacts {
+        rpc_fee,
+        ..ok_facts()
+    };
+    // Without a limit a migrating builtin (Stake) is bracketed: 3,000 or 200,000 CU.
+    let stake = wire(
+        &legacy(
+            [1, 0, 2],
+            &[
+                wallet(),
+                key(0x22),
+                COMPUTE_BUDGET_PROGRAM,
+                crate::sol::address::STAKE_PROGRAM,
+            ],
+            vec![price(1_000_000), ix(3, &[1], &[2, 0, 0, 0])],
+        ),
+        &[],
+    );
+    // An RPC value inside the range is no X20, but X14 compares the maximum: an RPC answering
+    // the minimum, or none, cannot hide a fee above the cap (2026-11-13 review).
+    for rpc in [Some(100_000), Some(11_000), None] {
+        let draft = draft_of(stake.clone(), with_rpc(rpc));
+        assert!(!rules(&draft).contains(&X20), "{rpc:?}");
+        assert!(
+            text_of(&draft, X14).contains("최대 208,000 lamports > 상한 100,000 lamports"),
+            "{rpc:?}"
+        );
+        assert!(
+            field(&draft, FieldKey::SOL_TX_FEE)
+                .contains("계산값 11,000–208,000 lamports (CU 한도가 없어 범위로 계산)")
+        );
+    }
+    let draft = draft_of(stake.clone(), with_rpc(Some(10_999)));
+    assert!(text_of(&draft, X20).contains("RPC 10,999 lamports · 계산값 11,000–208,000 lamports"));
+    // An RPC above the maximum raises the value checked, without "최대".
+    let draft = draft_of(stake, with_rpc(Some(300_000)));
+    let text = text_of(&draft, X14);
+    assert!(
+        text.contains("300,000 lamports > 상한 100,000 lamports"),
+        "{text}"
+    );
+    assert!(!text.contains("최대"), "{text}");
+    // A bracket whose maximum is under the cap: no X14.
+    let cheap = wire(
+        &legacy(
+            [1, 0, 2],
+            &[
+                wallet(),
+                key(0x22),
+                COMPUTE_BUDGET_PROGRAM,
+                crate::sol::address::STAKE_PROGRAM,
+            ],
+            vec![price(100_000), ix(3, &[1], &[2, 0, 0, 0])],
+        ),
+        &[],
+    );
+    assert!(!rules(&draft_of(cheap, with_rpc(None))).contains(&X14));
+    // A price with a trailing byte: the runtime charges it (Agave reads ComputeBudget data
+    // leniently) although the display shows the instruction as uninterpreted (X02). An RPC
+    // answering the base fee, or none, does not hide X14.
+    let mut lenient_price = set_compute_unit_price_data(1_000_000_000);
+    lenient_price.push(0);
+    let lenient = wire(
+        &legacy(
+            [1, 0, 2],
+            &keys,
+            vec![limit(200_000), ix(2, &[], &lenient_price), transfer()],
+        ),
+        &[],
+    );
+    for rpc in [Some(5_000), None] {
+        let draft = draft_of(lenient.clone(), with_rpc(rpc));
+        assert!(
+            text_of(&draft, X14).contains("200,005,000 lamports > 상한 100,000 lamports"),
+            "{rpc:?}"
+        );
+        let found = rules(&draft);
+        assert!(found.contains(&X02), "{rpc:?}");
+        assert_eq!(found.contains(&X20), rpc.is_some(), "{rpc:?}");
+    }
+    // Duplicate ComputeBudget instructions: the runtime rejects the transaction (no fee) and
+    // an honest getFeeForMessage answers the base fee — X18 only, no X14 or X20.
+    let duplicate = wire(
+        &legacy(
+            [1, 0, 2],
+            &keys,
+            vec![price(1_000_000_000), price(1_000_000_000), transfer()],
+        ),
+        &[],
+    );
+    let draft = draft_of(duplicate, with_rpc(Some(5_000)));
+    assert_eq!(rules(&draft), vec![X11, X18]);
+    assert!(field(&draft, FieldKey::SOL_TX_FEE).contains(
+        "계산값 5,000 lamports (ComputeBudget 명령을 런타임이 거부 — 처리되지 않으며 우선 수수료 없이 계산)"
+    ));
 }
 
 #[test]

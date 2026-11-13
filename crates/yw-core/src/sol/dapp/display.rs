@@ -58,7 +58,7 @@ pub struct SolTxItemFacts {
     /// The simulation replaced the blockhash (X19).
     pub sim_replaced_blockhash: bool,
     /// `getFeeForMessage` (`None`: only the fee computed from the message is shown). Checked
-    /// against that range (X20), never trusted below it (X14).
+    /// against that range (X20), never trusted below its maximum (X14).
     pub rpc_fee: Option<u64>,
     /// `isBlockhashValid(processed)` (`None`: not asked, e.g. a durable nonce).
     pub blockhash_valid: Option<bool>,
@@ -1067,7 +1067,12 @@ fn fee_text(
         Some(fee) => format!("{} lamports (RPC getFeeForMessage)", format_raw(fee)),
         None => "RPC가 답하지 않음 (getFeeForMessage)".to_owned(),
     }];
-    out.push(if bounds.low == bounds.high {
+    out.push(if bounds.rejected {
+        format!(
+            "계산값 {} (ComputeBudget 명령을 런타임이 거부 — 처리되지 않으며 우선 수수료 없이 계산)",
+            fee_range_text(bounds)
+        )
+    } else if bounds.low == bounds.high {
         format!("계산값 {} (거래 바이트로 계산)", fee_range_text(bounds))
     } else {
         format!(
@@ -1433,7 +1438,8 @@ fn build_item(
             );
         }
     }
-    if message.account_count() > RUNTIME_ACCOUNT_LIMIT || message.duplicate_compute_budget() {
+    let bounds = dapp_fee_bounds(message);
+    if message.account_count() > RUNTIME_ACCOUNT_LIMIT || bounds.rejected {
         causes.add(
             X18,
             (count > 1).then(|| prefix(None).trim_end_matches(": ").to_owned()),
@@ -1441,17 +1447,24 @@ fn build_item(
     }
     // Fee: the range computed from the message is exact with a limit; the RPC value is a
     // reference that may raise the fee checked against the cap but never lower it below the
-    // computed minimum (2026-11-13: before, an RPC value replaced the computed one, so an RPC
-    // that under-reported the fee hid X14). Both rules only when the wallet pays.
-    let bounds = dapp_fee_bounds(message);
+    // computed maximum. 2026-11-13: before, an RPC value replaced the computed one, so an RPC
+    // that under-reported the fee hid X14; then (same day) the computed minimum was the floor,
+    // so inside a bracket (no limit, a Stake·Config·ALT·… instruction) an RPC answering the
+    // minimum, or no answer, still hid up to 197,000 CU × price per such instruction. Both
+    // rules only when the wallet pays.
     let payer = message.fee_payer().ok_or(DisplayError::InvalidText)?;
     if slot == 0 {
-        let fee = item_facts.rpc_fee.map_or(0, u128::from).max(bounds.low);
+        let fee = item_facts.rpc_fee.map_or(0, u128::from).max(bounds.high);
         if fee > u128::from(facts.fee_cap) {
+            let most = if bounds.low < bounds.high && fee == bounds.high {
+                "최대 "
+            } else {
+                ""
+            };
             causes.add(
                 X14,
                 Some(format!(
-                    "{}{} lamports > 상한 {} lamports",
+                    "{}{most}{} lamports > 상한 {} lamports",
                     prefix(None),
                     format_raw(u64::try_from(fee).unwrap_or(u64::MAX)),
                     format_raw(facts.fee_cap)

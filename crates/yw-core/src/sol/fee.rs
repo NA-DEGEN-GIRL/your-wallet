@@ -223,6 +223,11 @@ pub struct DappFeeBounds {
     /// The highest fee the runtime can charge (`low` when the transaction sets a limit or no
     /// price).
     pub high: u128,
+    /// The runtime rejects the transaction for its `ComputeBudget` instructions
+    /// ([`runtime_compute_budget`]): it is never processed and pays nothing, and
+    /// `getFeeForMessage` prices it without a priority fee, so `low == high` is the signature
+    /// fee (X18).
+    pub rejected: bool,
 }
 
 impl DappFeeBounds {
@@ -233,54 +238,108 @@ impl DappFeeBounds {
     }
 }
 
+/// Smallest heap frame the runtime accepts (Agave `MIN_HEAP_FRAME_BYTES`).
+const MIN_HEAP_FRAME_BYTES: u32 = 32 * 1_024;
+/// Largest heap frame the runtime accepts (Agave `MAX_HEAP_FRAME_BYTES`).
+const MAX_HEAP_FRAME_BYTES: u32 = 256 * 1_024;
+
+/// A little-endian `u32` at the start of `bytes` (later bytes ignored).
+fn le_u32(bytes: &[u8]) -> Option<u32> {
+    bytes.get(..4)?.try_into().ok().map(u32::from_le_bytes)
+}
+
+/// A little-endian `u64` at the start of `bytes` (later bytes ignored).
+fn le_u64(bytes: &[u8]) -> Option<u64> {
+    bytes.get(..8)?.try_into().ok().map(u64::from_le_bytes)
+}
+
+/// The compute-unit limit and price the runtime takes from a message's `ComputeBudget`
+/// instructions, or `None` when it rejects the transaction for them (Agave
+/// `ComputeBudgetInstructionDetails::try_from` and `sanitize_and_convert_to_compute_budget_limits`;
+/// `getFeeForMessage` then uses `unwrap_or_default()`: no priority fee):
+/// - the data is the Borsh enum read with `try_from_slice_unchecked`: the tag byte, then the
+///   little-endian field, and bytes after the field are ignored. The strict display decoder
+///   shows such an instruction as `Unknown` (X02), but the runtime applies it (the
+///   `ComputeBudget` program itself does nothing), so the fee must use this parse;
+/// - a short field, tag 0 (`Unused`) or a tag above 4 is `InvalidInstructionData`, and a second
+///   instruction of the same kind is `DuplicateInstruction`;
+/// - a heap request outside 32..=256 KiB or not a multiple of 1 KiB, and a loaded-accounts
+///   data-size limit of 0, are rejected as well.
+fn runtime_compute_budget(
+    message: &super::dapp::SolTxMessage,
+) -> Option<(Option<u32>, Option<u64>)> {
+    let (mut heap, mut limit, mut price, mut size) = (None, None, None, None);
+    for index in 0..message.instruction_count() {
+        let Some((program, _, data)) = message.instruction(index) else {
+            continue;
+        };
+        if *program != COMPUTE_BUDGET_PROGRAM {
+            continue;
+        }
+        let (tag, field) = data.split_first()?;
+        let duplicate = match tag {
+            1 => heap.replace(le_u32(field)?).is_some(),
+            2 => limit.replace(le_u32(field)?).is_some(),
+            3 => price.replace(le_u64(field)?).is_some(),
+            4 => size.replace(le_u32(field)?).is_some(),
+            _ => return None,
+        };
+        if duplicate {
+            return None;
+        }
+    }
+    let bad_heap = heap.is_some_and(|bytes: u32| {
+        !(MIN_HEAP_FRAME_BYTES..=MAX_HEAP_FRAME_BYTES).contains(&bytes)
+            || !bytes.is_multiple_of(1_024)
+    });
+    (!bad_heap && size != Some(0)).then_some((limit, price))
+}
+
 /// The fee of a dApp transaction from its message (spec/07 §20.4, Agave fee rules):
 /// `5_000 × (required signatures + precompile signatures) + ceil(price × limit / 1_000_000)`,
-/// where the price is the first `SetComputeUnitPrice` (0 without one) and the limit the first
-/// `SetComputeUnitLimit` capped at 1,400,000 — exact, `low == high`. Without a limit the runtime
-/// uses `min(Σ default units, 1,400,000)` with the per-instruction defaults of
-/// [`default_units`]; `low` and `high` bracket it where a program's builtin status depends on
-/// the cluster. `u128`: no overflow. [`max_fee`] stays the template formula.
+/// where the price is the `SetComputeUnitPrice` (0 without one) and the limit the
+/// `SetComputeUnitLimit` capped at 1,400,000 — exact, `low == high` — both read as the runtime
+/// reads them ([`runtime_compute_budget`]). Without a limit the runtime uses
+/// `min(Σ default units, 1,400,000)` with the per-instruction defaults of [`default_units`];
+/// `low` and `high` bracket it where a program's builtin status depends on the cluster. When the
+/// runtime rejects the `ComputeBudget` instructions the range is the signature fee alone
+/// (`rejected`). `u128`: no overflow. [`max_fee`] stays the template formula.
 ///
 /// 2026-11-13: this replaces `dapp_fee_estimate` (200,000 per instruction outside
 /// `ComputeBudget`), which was shown only when `getFeeForMessage` gave no value. It was far too
 /// high for builtins and 3,000 CU per `ComputeBudget` instruction too low, so it could not check
-/// the RPC value, and an RPC that under-reported the fee hid X14.
+/// the RPC value, and an RPC that under-reported the fee hid X14. Later the same day (review):
+/// the limit and price were read through the strict display decoder, so one byte after a
+/// `SetComputeUnitPrice` made the wallet price it at 0 while the runtime charged it, and the
+/// first of two duplicate instructions was used although the runtime rejects the transaction.
 #[must_use]
 pub fn dapp_fee_bounds(message: &super::dapp::SolTxMessage) -> DappFeeBounds {
-    use super::dapp::decode::{CbIx, DecodedIx, decode};
-    let (mut limit, mut price) = (None, None);
-    let (mut low_units, mut high_units) = (0_u32, 0_u32);
-    for index in 0..message.instruction_count() {
-        // The parser makes every program a static key; an unresolved one is bracketed.
-        let Some((program, _, data)) = message.instruction(index) else {
-            low_units = low_units.saturating_add(BUILTIN_IX_COMPUTE_UNITS);
-            high_units = high_units.saturating_add(DEFAULT_IX_COMPUTE_UNITS);
-            continue;
-        };
-        let (low, high) = default_units(program);
-        low_units = low_units.saturating_add(low);
-        high_units = high_units.saturating_add(high);
-        if *program != COMPUTE_BUDGET_PROGRAM {
-            continue;
-        }
-        match decode(program, &[], data) {
-            DecodedIx::ComputeBudget(CbIx::SetComputeUnitLimit(units)) => {
-                limit.get_or_insert(units);
-            }
-            DecodedIx::ComputeBudget(CbIx::SetComputeUnitPrice(micro)) => {
-                price.get_or_insert(micro);
-            }
-            _ => {}
-        }
-    }
-    let max = super::template::SOL_MAX_COMPUTE_UNITS;
-    let (low_limit, high_limit) = limit
-        .map_or((low_units.min(max), high_units.min(max)), |units| {
-            (units.min(max), units.min(max))
-        });
     let signatures = u128::from(message.header.required)
         .saturating_add(u128::from(message.precompile_signatures()));
     let base = u128::from(SOL_BASE_FEE_LAMPORTS_PER_SIG).saturating_mul(signatures);
+    let Some((limit, price)) = runtime_compute_budget(message) else {
+        return DappFeeBounds {
+            low: base,
+            high: base,
+            rejected: true,
+        };
+    };
+    let max = super::template::SOL_MAX_COMPUTE_UNITS;
+    let (low_limit, high_limit) = if let Some(units) = limit {
+        (units.min(max), units.min(max))
+    } else {
+        let (mut low_units, mut high_units) = (0_u32, 0_u32);
+        for index in 0..message.instruction_count() {
+            // The parser makes every program a static key; an unresolved one is bracketed.
+            let (low, high) = message.instruction(index).map_or(
+                (BUILTIN_IX_COMPUTE_UNITS, DEFAULT_IX_COMPUTE_UNITS),
+                |(program, _, _)| default_units(program),
+            );
+            low_units = low_units.saturating_add(low);
+            high_units = high_units.saturating_add(high);
+        }
+        (low_units.min(max), high_units.min(max))
+    };
     let fee = |limit: u32| {
         base.saturating_add(
             u128::from(price.unwrap_or(0))
@@ -291,6 +350,7 @@ pub fn dapp_fee_bounds(message: &super::dapp::SolTxMessage) -> DappFeeBounds {
     DappFeeBounds {
         low: fee(low_limit),
         high: fee(high_limit),
+        rejected: false,
     }
 }
 

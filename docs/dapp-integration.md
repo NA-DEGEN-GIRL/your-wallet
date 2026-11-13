@@ -267,8 +267,8 @@ Notes:
   - Durable-nonce transactions and transactions missing other required signatures are refused with -32602.
   - At most 16 pending sends per (cluster, signer) and 32 in total. Beyond that, -32002.
 - **Durable nonce:** allowed for sign-only (high risk X08), refused for send.
-- **Fee:** the wallet computes the fee from the transaction bytes (exact when the transaction sets a compute-unit limit, otherwise a range from the runtime's default limits) and shows it next to the RPC's `getFeeForMessage` value.
-- **Fee cap:** a fee above the user's cap (default 100,000 lamports) is high risk X14, only when the wallet pays. It is not blocked. The fee checked is the RPC value or the computed minimum, whichever is higher, so an RPC that under-reports cannot hide X14.
+- **Fee:** the wallet computes the fee from the transaction bytes (exact when the transaction sets a compute-unit limit, otherwise a range from the runtime's default limits) and shows it next to the RPC's `getFeeForMessage` value. It reads `ComputeBudget` instruction data the way the runtime does (bytes after the value are ignored), so the fee counts a price or limit that the instruction list shows as uninterpreted.
+- **Fee cap:** a fee above the user's cap (default 100,000 lamports) is high risk X14, only when the wallet pays. It is not blocked. The fee checked is the RPC value or the computed maximum, whichever is higher, so an RPC that under-reports cannot hide X14. When the fee is a range, the warning says "최대" (maximum).
 - **Fee mismatch:** an RPC fee outside the computed range is high risk X20, only when the wallet pays. It is not blocked.
 - **Grant re-check:** just before the reply the wallet checks the site's grant again. If the site was disconnected, the reply is 4100 and the bytes are discarded.
 

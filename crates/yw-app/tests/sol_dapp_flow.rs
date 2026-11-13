@@ -138,7 +138,24 @@ fn rpc() -> std::sync::Arc<FakeRpc> {
             "getGenesisHash" => Answer::Result(format!("\"{DEVNET}\"")),
             "getMultipleAccounts" => ctx(&nulls(params.as_array().and_then(|items| items.first()))),
             "isBlockhashValid" => ctx("true"),
-            "getFeeForMessage" => ctx("5000"),
+            // An honest RPC for these fixtures (no ComputeBudget, no precompile): 5,000 per
+            // required signature, read from the message header (legacy byte 0, v0 byte 1).
+            "getFeeForMessage" => {
+                let message = params
+                    .as_array()
+                    .and_then(|items| items.first())
+                    .and_then(Value::as_str)
+                    .and_then(yw_core::codec::base64::decode)
+                    .unwrap_or_default();
+                let required = match message.first() {
+                    Some(prefix) if prefix & 0x80 != 0 => message.get(1),
+                    first => first,
+                };
+                ctx(&required.map_or_else(
+                    || "null".to_owned(),
+                    |required| 5_000_u64.saturating_mul(u64::from(*required)).to_string(),
+                ))
+            }
             "simulateTransaction" => {
                 let addresses = config
                     .and_then(|object| object.get("accounts"))
