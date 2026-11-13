@@ -283,6 +283,10 @@ If a task seems to require breaking one of these, stop and ask the owner.
 - **The wallet computes fees** and ignores dApp fee values. EVM gas ≤ 16,777,216. EIP-1559 type 2 only.
 - **Simulation never changes the dApp response code.** A failed or missing simulation is High risk and is never hidden.
 - **Post-sign check:** EVM recovers the signer and requires it to equal the account. The journal is written before broadcast (spec/03 §4.3, §5.3; spec/07 §20.8).
+- **Grant re-check before every dApp answer** (spec/05 §4.5): a signature (any chain) or an EVM tx hash goes to the
+  site only while its grant still names the signer (4100 otherwise; a journaled tx is still broadcast). A `YubiKey`
+  step still waiting for its PIN ends on a revoke (4100) or page cancel (4001) via `App::card_site_check`; a card
+  job past its PIN is never aborted.
 - **Solana dApp tx** (spec/07 §20.5, §20.10):
   - Never change the blockhash. Fill only the wallet's own signer slot. Re-parse the **approved** bytes before signing.
   - Re-check the site's grant just before replying (4100 otherwise). The provider checks that exactly one 64-byte slot changed.
@@ -293,6 +297,7 @@ If a task seems to require breaking one of these, stop and ask the owner.
 - **Copying secrets is off by default.** When enabled, the copy is excluded from history and cloud sync and auto-clears after 30 s.
 - **The approval window is not capture-excluded,** because it holds no secret.
 - **Vault v3** (D7, spec/02 §4): Argon2id m = 256 MiB, t = 3, p = 4 → HKDF → KEK wraps a random DEK with XChaCha20-Poly1305 (header AAD). The pinned crypto crates and parameters do not change.
+- **Every password change rotates the DEK** (spec/02 §4.4): no file the old password opens may ever hold the new DEK. The old DEK lives only in the transient `PrevDek` block (payload tag 7) of new-password files until meta, journal, every `.prev` and the E-VLT-006 set-aside copies are re-sealed; an interrupted rotation resumes on the next unlock or sidecar save. A sidecar this build cannot read refuses the change, and an unconfirmable `Rewrap` locks the session.
 - **Memory:** only the DEK (and BIP39 passphrase) stays in a `VirtualLock` slot while unlocked. Everything else is derived per operation and zeroized.
 - **RNG** is OS CSPRNG, fail-closed. Secret comparisons are constant-time.
 - **Data folder:** protected DACL plus a Medium integrity label. Reparse points are rejected. Writes are atomic: temp → flush → `MoveFileExW` write-through.

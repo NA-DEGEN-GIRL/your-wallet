@@ -7,8 +7,7 @@
 use core::fmt;
 
 use crate::sol::address::{
-    COMPUTE_BUDGET_PROGRAM, ED25519_PRECOMPILE, SECP256K1_PRECOMPILE, SECP256R1_PRECOMPILE,
-    SYSTEM_PROGRAM, SolAddress,
+    ED25519_PRECOMPILE, SECP256K1_PRECOMPILE, SECP256R1_PRECOMPILE, SYSTEM_PROGRAM, SolAddress,
 };
 use crate::sol::keys::verify_strict;
 use crate::sol::message::{CompiledIx, encode_legacy_message};
@@ -531,24 +530,6 @@ impl SolTxMessage {
             })
             .map(|(_, _, data)| u64::from(data.first().copied().unwrap_or(0)))
             .sum()
-    }
-
-    /// Whether two `ComputeBudget` instructions share a tag (the runtime fails the transaction).
-    #[must_use]
-    pub fn duplicate_compute_budget(&self) -> bool {
-        let mut seen = Vec::new();
-        for index in 0..self.instructions.len() {
-            if let Some((program, _, data)) = self.instruction(index)
-                && *program == COMPUTE_BUDGET_PROGRAM
-                && let Some(tag) = data.first()
-            {
-                if seen.contains(tag) {
-                    return true;
-                }
-                seen.push(*tag);
-            }
-        }
-        false
     }
 }
 

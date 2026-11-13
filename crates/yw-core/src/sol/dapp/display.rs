@@ -1,5 +1,5 @@
 //! The approval request of dApp Solana transactions (spec/07 §20.6): the payload, the display
-//! fields `0x0510`–`0x051A` and `0x0540`, and the `X01`–`X19` warnings. The builder parses every
+//! fields `0x0510`–`0x051A` and `0x0540`, and the `X01`–`X20` warnings. The builder parses every
 //! transaction itself (never a structure from the app), resolves its lookups from the RPC tables,
 //! decodes every instruction and checks the site's signatures; RPC facts (tables, pre-state,
 //! simulation, mints, fee) are shown as references and bound only through the display digest.
@@ -21,7 +21,7 @@ use crate::approval::{
 };
 use crate::evm::risk::{
     self, X01, X02, X03, X04, X05, X06, X07, X08, X09, X10, X11, X12, X13, X14, X15, X16, X17, X18,
-    X19,
+    X19, X20,
 };
 use crate::policy::BrowserOrigin;
 use crate::slip10::SolKeySource;
@@ -30,7 +30,7 @@ use crate::sol::address::{
 };
 use crate::sol::broadcast::err;
 use crate::sol::display::SimSummary;
-use crate::sol::fee::dapp_fee_estimate;
+use crate::sol::fee::{DappFeeBounds, dapp_fee_bounds};
 use crate::sol::recipient::{KnownAddress, KnownKind, is_lookalike};
 use crate::sol::rent::{format_amount, format_raw};
 use crate::sol::template::spl_entry;
@@ -57,7 +57,8 @@ pub struct SolTxItemFacts {
     pub sim: SimSummary,
     /// The simulation replaced the blockhash (X19).
     pub sim_replaced_blockhash: bool,
-    /// `getFeeForMessage` (`None`: the local estimate is shown).
+    /// `getFeeForMessage` (`None`: only the fee computed from the message is shown). Checked
+    /// against that range (X20), never trusted below its maximum (X14).
     pub rpc_fee: Option<u64>,
     /// `isBlockhashValid(processed)` (`None`: not asked, e.g. a durable nonce).
     pub blockhash_valid: Option<bool>,
@@ -1039,16 +1040,46 @@ fn sim_text(sim: SimSummary, replaced: bool) -> String {
     text
 }
 
-fn fee_text(tx: &Tx<'_>, fee: u128, from_rpc: bool, payer: &SolAddress, cap: u64) -> String {
-    let mut out = vec![format!(
-        "{} lamports ({})",
-        format_raw(u64::try_from(fee).unwrap_or(u64::MAX)),
-        if from_rpc {
-            "RPC getFeeForMessage"
-        } else {
-            "계산값 — RPC가 답하지 않음"
-        }
-    )];
+/// `low` or `low–high` lamports (u128 shown saturated at `u64::MAX`).
+fn fee_range_text(bounds: DappFeeBounds) -> String {
+    let lamports = |fee: u128| format_raw(u64::try_from(fee).unwrap_or(u64::MAX));
+    if bounds.low == bounds.high {
+        format!("{} lamports", lamports(bounds.low))
+    } else {
+        format!(
+            "{}–{} lamports",
+            lamports(bounds.low),
+            lamports(bounds.high)
+        )
+    }
+}
+
+/// The RPC value and the range computed from the message (spec/07 §20.4): both are shown, the
+/// RPC value never replaces the computed one.
+fn fee_text(
+    tx: &Tx<'_>,
+    rpc: Option<u64>,
+    bounds: DappFeeBounds,
+    payer: &SolAddress,
+    cap: u64,
+) -> String {
+    let mut out = vec![match rpc {
+        Some(fee) => format!("{} lamports (RPC getFeeForMessage)", format_raw(fee)),
+        None => "RPC가 답하지 않음 (getFeeForMessage)".to_owned(),
+    }];
+    out.push(if bounds.rejected {
+        format!(
+            "계산값 {} (ComputeBudget 명령을 런타임이 거부 — 처리되지 않으며 우선 수수료 없이 계산)",
+            fee_range_text(bounds)
+        )
+    } else if bounds.low == bounds.high {
+        format!("계산값 {} (거래 바이트로 계산)", fee_range_text(bounds))
+    } else {
+        format!(
+            "계산값 {} (CU 한도가 없어 범위로 계산)",
+            fee_range_text(bounds)
+        )
+    });
     if *payer == tx.wallet {
         out.push("수수료 지불: 내 지갑".to_owned());
         out.push(format!("사용자 상한 {} lamports", format_raw(cap)));
@@ -1407,28 +1438,52 @@ fn build_item(
             );
         }
     }
-    if message.account_count() > RUNTIME_ACCOUNT_LIMIT || message.duplicate_compute_budget() {
+    let bounds = dapp_fee_bounds(message);
+    if message.account_count() > RUNTIME_ACCOUNT_LIMIT || bounds.rejected {
         causes.add(
             X18,
             (count > 1).then(|| prefix(None).trim_end_matches(": ").to_owned()),
         );
     }
-    // Fee.
-    let (fee, from_rpc) = item_facts.rpc_fee.map_or_else(
-        || (dapp_fee_estimate(message), false),
-        |fee| (u128::from(fee), true),
-    );
+    // Fee: the range computed from the message is exact with a limit; the RPC value is a
+    // reference that may raise the fee checked against the cap but never lower it below the
+    // computed maximum. 2026-11-13: before, an RPC value replaced the computed one, so an RPC
+    // that under-reported the fee hid X14; then (same day) the computed minimum was the floor,
+    // so inside a bracket (no limit, a Stake·Config·ALT·… instruction) an RPC answering the
+    // minimum, or no answer, still hid up to 197,000 CU × price per such instruction. Both
+    // rules only when the wallet pays.
     let payer = message.fee_payer().ok_or(DisplayError::InvalidText)?;
-    if slot == 0 && fee > u128::from(facts.fee_cap) {
-        causes.add(
-            X14,
-            Some(format!(
-                "{}{} lamports > 상한 {} lamports",
-                prefix(None),
-                format_raw(u64::try_from(fee).unwrap_or(u64::MAX)),
-                format_raw(facts.fee_cap)
-            )),
-        );
+    if slot == 0 {
+        let fee = item_facts.rpc_fee.map_or(0, u128::from).max(bounds.high);
+        if fee > u128::from(facts.fee_cap) {
+            let most = if bounds.low < bounds.high && fee == bounds.high {
+                "최대 "
+            } else {
+                ""
+            };
+            causes.add(
+                X14,
+                Some(format!(
+                    "{}{most}{} lamports > 상한 {} lamports",
+                    prefix(None),
+                    format_raw(u64::try_from(fee).unwrap_or(u64::MAX)),
+                    format_raw(facts.fee_cap)
+                )),
+            );
+        }
+        if let Some(rpc) = item_facts.rpc_fee
+            && !bounds.contains(u128::from(rpc))
+        {
+            causes.add(
+                X20,
+                Some(format!(
+                    "{}RPC {} lamports · 계산값 {}",
+                    prefix(None),
+                    format_raw(rpc),
+                    fee_range_text(bounds)
+                )),
+            );
+        }
     }
     // Fields in the window's order: changes, fee, instructions, writable, signers, tables,
     // simulation, validity, audit, raw.
@@ -1458,7 +1513,7 @@ fn build_item(
         DisplayField::new(
             FieldKey::SOL_TX_FEE,
             sub.clone(),
-            fee_text(&tx, fee, from_rpc, &payer, facts.fee_cap),
+            fee_text(&tx, item_facts.rpc_fee, bounds, &payer, facts.fee_cap),
         )?,
         DisplayField::new(
             FieldKey::SOL_TX_INSTRUCTIONS,

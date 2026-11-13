@@ -45,6 +45,9 @@ pub enum ChainAnswer {
     Sol {
         /// Signing account.
         public: [u8; 32],
+        /// The requesting site: its grant must still name `public` when the answer goes out
+        /// (spec/05 §4.5, 2026-11-13).
+        origin: BrowserOrigin,
         /// The signed bytes (returned as `signedMessage` for a sign-in).
         message: Vec<u8>,
         /// `sol_signIn`.
@@ -54,6 +57,9 @@ pub enum ChainAnswer {
     Btc {
         /// Signing address.
         address: String,
+        /// The requesting site: its grant must still list `address` when the answer goes out
+        /// (spec/05 §4.5, 2026-11-13).
+        origin: BrowserOrigin,
         /// Protocol used.
         protocol: BtcMessageProtocol,
     },
@@ -121,6 +127,7 @@ pub fn chain_answer_value(answer: &ChainAnswer, signature: &ChainSignature) -> O
                 public,
                 message,
                 sign_in,
+                ..
             },
             ChainSignature::Sol(bytes),
         ) => {
@@ -162,17 +169,20 @@ pub fn chain_answer_value(answer: &ChainAnswer, signature: &ChainSignature) -> O
                 _ => None,
             }
         }
-        (ChainAnswer::Btc { address, protocol }, ChainSignature::Btc(signed)) => {
-            Some(json_object(vec![
-                ("address", json_str(address)),
-                ("signature", json_str(&signed.signature)),
-                (
-                    "messageHash",
-                    json_str(&yw_core::hex::encode(&signed.message_hash)),
-                ),
-                ("protocol", json_str(protocol.as_str())),
-            ]))
-        }
+        (
+            ChainAnswer::Btc {
+                address, protocol, ..
+            },
+            ChainSignature::Btc(signed),
+        ) => Some(json_object(vec![
+            ("address", json_str(address)),
+            ("signature", json_str(&signed.signature)),
+            (
+                "messageHash",
+                json_str(&yw_core::hex::encode(&signed.message_hash)),
+            ),
+            ("protocol", json_str(protocol.as_str())),
+        ])),
         _ => None,
     }
 }
@@ -775,12 +785,14 @@ impl App {
                 SigningPayload::SolMessage(_),
             ) => ChainAnswer::Sol {
                 public: *public,
+                origin: site.origin.clone(),
                 message: message.clone(),
                 sign_in: *sign_in,
             },
             (SiteKind::BtcSign { address, .. }, SigningPayload::BtcMessage(payload)) => {
                 ChainAnswer::Btc {
                     address: address.clone(),
+                    origin: site.origin.clone(),
                     protocol: payload.protocol,
                 }
             }
@@ -801,17 +813,45 @@ impl App {
         })
     }
 
+    /// Whether the Bitcoin grant of `origin` still lists `address` (spec/05 §4.5: checked again
+    /// before a message signature leaves the wallet, 2026-11-13).
+    pub(crate) fn btc_grant_holds(&self, origin: &BrowserOrigin, address: &str) -> bool {
+        self.browser.as_ref().is_some_and(|browser| {
+            browser.core.btc_grants().iter().any(|grant| {
+                grant.origin == *origin && grant.addresses.iter().any(|e| e.address == address)
+            })
+        })
+    }
+
+    /// Whether the site of a chain answer may still get the signature: its grant names the
+    /// signing key or address (spec/05 §4.5, spec/07 §20.10-4).
+    pub(crate) fn chain_grant_holds(&self, answer: &ChainAnswer) -> bool {
+        match answer {
+            ChainAnswer::Sol { public, origin, .. } | ChainAnswer::SolTx { public, origin, .. } => {
+                self.sol_grant_holds(origin, public)
+            }
+            ChainAnswer::Btc {
+                address, origin, ..
+            } => self.btc_grant_holds(origin, address),
+        }
+    }
+
     /// `SignChainMessage` finished: the dApp gets the signature, 4001 after a lock, -32603
-    /// otherwise. Signed dApp transactions go out only while the origin's grant still names the
-    /// key; a site disconnected meanwhile gets 4100 and the bytes are dropped (spec/07 §20.10-4).
+    /// otherwise. A signature (message, sign-in or signed dApp transactions) goes out only while
+    /// the origin's grant still names the key or address; a site disconnected meanwhile gets 4100
+    /// and the signature or bytes are dropped (spec/07 §20.10-4; messages since 2026-11-13,
+    /// spec/05 §4.5).
     pub(crate) fn browser_chain_message_signed(&mut self, signed: &ChainMessageSigned) {
         let Some(SignWaiter::Chain(reply, answer)) = self.take_sign_waiter(signed.ticket) else {
             return;
         };
-        if let (ChainAnswer::SolTx { public, origin, .. }, Ok(_)) = (&*answer, &signed.result)
-            && !self.sol_grant_holds(origin, public)
-        {
-            logging::info("browser", "sol_tx.grant_gone", &[]);
+        if signed.result.is_ok() && !self.chain_grant_holds(&answer) {
+            let event = if matches!(*answer, ChainAnswer::SolTx { .. }) {
+                "sol_tx.grant_gone"
+            } else {
+                "site.grant_gone"
+            };
+            logging::info("browser", event, &[]);
             self.respond(&reply, Err(ProviderError::Unauthorized));
             return;
         }
@@ -1826,6 +1866,7 @@ mod tests {
         );
         let sol = ChainAnswer::Sol {
             public: [1; 32],
+            origin: BrowserOrigin::parse("https://app.example").unwrap(),
             message: b"hi".to_vec(),
             sign_in: true,
         };
@@ -1834,6 +1875,7 @@ mod tests {
         assert!(text.contains(r#""signedMessage":"6869""#), "{text}");
         let btc = ChainAnswer::Btc {
             address: "bc1q".to_owned(),
+            origin: BrowserOrigin::parse("https://app.example").unwrap(),
             protocol: BtcMessageProtocol::Bip322,
         };
         let signed = ChainSignature::Btc(BtcMessageSignature {
@@ -2825,5 +2867,677 @@ mod tests {
         });
         assert_eq!(answers(&frames), vec![Err(ProviderError::Unauthorized)]);
         assert!(app.browser.as_ref().unwrap().waiters.is_empty());
+    }
+
+    /// The EVM account the grant tests sign with.
+    fn evm_account() -> yw_core::evm::address::Address {
+        yw_core::evm::address::Address::from_bytes([0x6f; 20])
+    }
+
+    /// The EVM grant of `https://app.example` naming [`evm_account`].
+    fn evm_grant() -> yw_core::policy::ConnectedSite {
+        yw_core::policy::ConnectedSite::new(
+            BrowserOrigin::parse("https://app.example").unwrap(),
+            vec![evm_account()],
+            yw_core::evm::chain::SEPOLIA,
+            1,
+        )
+        .unwrap()
+    }
+
+    /// [`evm_account`] signing for `https://app.example`.
+    fn evm_signer() -> crate::app_browser::SiteSigner {
+        crate::app_browser::SiteSigner {
+            origin: BrowserOrigin::parse("https://app.example").unwrap(),
+            account: evm_account(),
+        }
+    }
+
+    /// The names of the key jobs queued since the last call (`pop` blocks on an empty queue).
+    fn job_names(app: &App) -> Vec<&'static str> {
+        std::iter::from_fn(|| {
+            (!app.key_queue.is_empty())
+                .then(|| app.key_queue.pop())
+                .flatten()
+        })
+        .map(|(_, job)| job.name())
+        .collect()
+    }
+
+    /// spec/05 §4.5 (2026-11-13): every dApp signature and EVM transaction hash is answered only
+    /// while the origin's grant still names the signer — EVM `personal_sign` and
+    /// `eth_signTypedData_v4`, Solana messages and sign-ins, Bitcoin messages like Solana
+    /// transactions; a site disconnected between the approval and the answer gets 4100 and the
+    /// signature is dropped, and so does one whose grant stays but no longer lists the account
+    /// (hidden). The hash of a broadcast transaction (journaled and sent all the same) is checked
+    /// only while unlocked, like a Solana send's.
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one answer per family, held and gone"
+    )]
+    fn signatures_and_hashes_answer_only_while_the_grant_holds() {
+        use crate::app_browser::SignWaiter;
+        use crate::events::{ChainMessageSigned, MessageSigned};
+        use crate::flow::evm::track::BroadcastOutcome;
+        let mut app = app(true);
+        let (events, frames, conn) = recorded(&mut app);
+        let origin = BrowserOrigin::parse("https://app.example").unwrap();
+        let btc_address = "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu";
+        let core = core(&app);
+        core.upsert_grant(evm_grant());
+        assert!(core.upsert_btc_grant(yw_core::policy::BtcGrant {
+            origin: origin.clone(),
+            network: yw_core::btc::BtcNetwork::Mainnet,
+            addresses: vec![BtcGrantAddress {
+                purpose: BtcPurpose::Payment,
+                address: btc_address.to_owned(),
+                pubkey: BtcPubKey::Compressed([2; 33]),
+                script_type: ScriptType::P2wpkh,
+            }],
+            granted_at_unix_ms: 1,
+        }));
+        let mut n = 0_u8;
+        let mut reply = |app: &App| {
+            n += 1;
+            queued_sol_tx(app, &events, conn, n).reply
+        };
+        let sol = |sign_in: bool| ChainAnswer::Sol {
+            public: public(),
+            origin: origin.clone(),
+            message: b"hi".to_vec(),
+            sign_in,
+        };
+        let btc = || ChainAnswer::Btc {
+            address: btc_address.to_owned(),
+            origin: origin.clone(),
+            protocol: BtcMessageProtocol::Ecdsa,
+        };
+        let btc_signature = || {
+            ChainSignature::Btc(BtcMessageSignature {
+                signature: "AA==".to_owned(),
+                message_hash: [0; 32],
+            })
+        };
+        // Every grant holds: each answer goes out (`personal_sign` and `eth_signTypedData_v4`
+        // share the message waiter; `sol_signMessage` and `sol_signIn` the Solana one).
+        for _ in ["personal_sign", "eth_signTypedData_v4"] {
+            let ticket = app.push_sign_waiter(SignWaiter::Message(reply(&app), evm_signer()));
+            app.browser_message_signed(MessageSigned {
+                ticket,
+                result: Ok([1; 65]),
+            });
+        }
+        for sign_in in [false, true] {
+            let ticket =
+                app.push_sign_waiter(SignWaiter::Chain(reply(&app), Box::new(sol(sign_in))));
+            app.browser_chain_message_signed(&ChainMessageSigned {
+                ticket,
+                result: Ok(ChainSignature::Sol([2; 64])),
+            });
+        }
+        let ticket = app.push_sign_waiter(SignWaiter::Chain(reply(&app), Box::new(btc())));
+        app.browser_chain_message_signed(&ChainMessageSigned {
+            ticket,
+            result: Ok(btc_signature()),
+        });
+        app.mode = crate::app::AppMode::Unlocked {
+            alt_passphrase: false,
+        };
+        let ticket = app.push_sign_waiter(SignWaiter::Tx(reply(&app), evm_signer()));
+        app.browser_tx_signed(ticket, Ok([0x11; 32]));
+        app.browser_broadcast([0x11; 32], BroadcastOutcome::Sent);
+        let found = answers(&frames);
+        assert_eq!(found.len(), 6);
+        assert!(found.iter().all(Result::is_ok), "{found:?}");
+        // Each family disconnected after the approval: 4100, nothing sent.
+        let mut messages = Vec::new();
+        for _ in 0..2 {
+            let message = reply(&app);
+            messages.push(app.push_sign_waiter(SignWaiter::Message(message, evm_signer())));
+        }
+        let mut sol_messages = Vec::new();
+        for sign_in in [false, true] {
+            let sol_message = reply(&app);
+            sol_messages
+                .push(app.push_sign_waiter(SignWaiter::Chain(sol_message, Box::new(sol(sign_in)))));
+        }
+        let btc_message = reply(&app);
+        let tx = reply(&app);
+        let btc_message = app.push_sign_waiter(SignWaiter::Chain(btc_message, Box::new(btc())));
+        let tx = app.push_sign_waiter(SignWaiter::Tx(tx, evm_signer()));
+        app.browser_tx_signed(tx, Ok([0x22; 32]));
+        assert!(core.remove_grant(&origin));
+        assert!(core.remove_sol_grant(&origin));
+        assert!(core.remove_btc_grant(&origin));
+        for ticket in messages {
+            app.browser_message_signed(MessageSigned {
+                ticket,
+                result: Ok([1; 65]),
+            });
+        }
+        for ticket in sol_messages {
+            app.browser_chain_message_signed(&ChainMessageSigned {
+                ticket,
+                result: Ok(ChainSignature::Sol([2; 64])),
+            });
+        }
+        app.browser_chain_message_signed(&ChainMessageSigned {
+            ticket: btc_message,
+            result: Ok(btc_signature()),
+        });
+        app.browser_broadcast([0x22; 32], BroadcastOutcome::Sent);
+        assert_eq!(answers(&frames), vec![Err(ProviderError::Unauthorized); 6]);
+        assert!(app.browser.as_ref().unwrap().waiters.is_empty());
+        assert!(app.browser.as_ref().unwrap().broadcasts.is_empty());
+        // The account hidden: the grant stays for the site's other account, but neither a
+        // message nor a transaction hash of the hidden one is answered.
+        core.upsert_sol_grant(sol_grant("https://app.example", public()));
+        let other = yw_core::evm::address::Address::from_bytes([0x70; 20]);
+        core.upsert_grant(
+            yw_core::policy::ConnectedSite::new(
+                origin.clone(),
+                vec![evm_account(), other],
+                yw_core::evm::chain::SEPOLIA,
+                1,
+            )
+            .unwrap(),
+        );
+        let message = reply(&app);
+        let message = app.push_sign_waiter(SignWaiter::Message(message, evm_signer()));
+        let tx = reply(&app);
+        let tx = app.push_sign_waiter(SignWaiter::Tx(tx, evm_signer()));
+        app.browser_tx_signed(tx, Ok([0x24; 32]));
+        let _ = core.remove_account(&evm_account());
+        assert!(
+            app.browser_grants()
+                .iter()
+                .any(|grant| grant.origin == origin && grant.allows(&other))
+        );
+        app.browser_message_signed(MessageSigned {
+            ticket: message,
+            result: Ok([1; 65]),
+        });
+        app.browser_broadcast([0x24; 32], BroadcastOutcome::Sent);
+        assert_eq!(answers(&frames), vec![Err(ProviderError::Unauthorized); 2]);
+        assert!(core.remove_grant(&origin));
+        // Locked (the grants put away): a broadcast hash is answered as before.
+        let tx = reply(&app);
+        let tx = app.push_sign_waiter(SignWaiter::Tx(tx, evm_signer()));
+        app.browser_tx_signed(tx, Ok([0x33; 32]));
+        app.mode = crate::app::AppMode::Locked;
+        app.browser_broadcast([0x33; 32], BroadcastOutcome::Sent);
+        let found = answers(&frames);
+        assert!(matches!(found.as_slice(), [Ok(_)]), "{found:?}");
+    }
+
+    /// A consumed `personal_sign` approval of the `YubiKey` EVM account 1 for
+    /// `https://app.example`.
+    fn approved_card_message() -> yw_core::approval::Approved {
+        use yw_core::approval::{ApprovalId, ApprovalKind, ApprovalOrigin, ApprovalStore};
+        let draft = yw_core::approval::build_personal_request(
+            ApprovalId::random().unwrap(),
+            ApprovalOrigin::Site(BrowserOrigin::parse("https://app.example").unwrap()),
+            yw_core::vault::EvmKeySource::Hardware(
+                yw_core::bip32::path::AccountIndex::new(1).unwrap(),
+            ),
+            evm_account(),
+            ApprovalKind::EvmPersonalSign,
+            &yw_core::evm::chain::sepolia(),
+            &yw_core::evm::eip191::decode_personal_message(b"hi".to_vec()),
+            1_790_000_000_000,
+        )
+        .unwrap();
+        let mut store = ApprovalStore::new();
+        let request = store.issue(draft, 0, 1_790_000_000_000).unwrap();
+        store.consume(request.id, request.digest, 1).unwrap()
+    }
+
+    /// spec/05 §4.5, spec/10 §9.2 (2026-11-13): an approved `YubiKey` request still waiting for
+    /// its PIN ends when its site is disconnected (4100) or its page goes away (4001): W11 is
+    /// gone, nothing is signed, the PIN is never sent, the header band says why. Another site's
+    /// or another family's disconnect and an app step leave it alone; a grant removed without
+    /// the hook (the retry gap) is caught at PIN submission; a step past its PIN finishes and its
+    /// signature is answered 4100 once the site is gone, or as usual while the grant holds.
+    #[test]
+    fn a_card_step_waiting_for_its_pin_ends_when_its_site_goes() {
+        use crate::app_browser::SignWaiter;
+        use crate::app_card::{CardJobKind, T_CARD_SITE_GONE, T_CARD_SITE_REVOKED};
+        use crate::events::MessageSigned;
+        use yw_core::secret::Zeroizing;
+        let mut app = app(true);
+        let (events, frames, conn) = recorded(&mut app);
+        let origin = BrowserOrigin::parse("https://app.example").unwrap();
+        let core = core(&app);
+        core.upsert_grant(evm_grant());
+        let pin = || Zeroizing::new(b"135790".to_vec());
+        let mut n = 0_u8;
+        // A YubiKey `personal_sign` approved for a live request: the step waits for its PIN.
+        let mut begin = |app: &mut App| {
+            n += 1;
+            let site = queued_sol_tx(app, &events, conn, n);
+            let ticket = app.push_sign_waiter(SignWaiter::Message(site.reply, evm_signer()));
+            assert!(
+                app.card_begin(
+                    approved_card_message(),
+                    CardJobKind::EvmMessage { typed: false },
+                    Some(ticket),
+                )
+                .is_ok()
+            );
+            assert!(job_names(app).contains(&"YkCounters"));
+            (app.card_waiting_id().unwrap(), ticket)
+        };
+        // An app step (no site) is never ended by a disconnect.
+        let own = app.push_sign_waiter(SignWaiter::App);
+        assert!(
+            app.card_begin(
+                approved_card_message(),
+                CardJobKind::EvmMessage { typed: false },
+                Some(own),
+            )
+            .is_ok()
+        );
+        let id = app.card_waiting_id().unwrap();
+        app.disconnect_site(&origin);
+        assert!(app.card_waiting(id));
+        app.card_cancel(id);
+        core.upsert_grant(evm_grant());
+        let _ = job_names(&app);
+
+        // Another origin's disconnect and this origin's Solana disconnect leave it waiting; the
+        // EVM disconnect ends it: 4100, nothing signed, the PIN never sent.
+        let (id, _) = begin(&mut app);
+        app.disconnect_site(&BrowserOrigin::parse("https://other.example").unwrap());
+        app.disconnect_chain_site(&origin, Family::Solana);
+        assert!(app.card_waiting(id));
+        core.upsert_sol_grant(sol_grant("https://app.example", public()));
+        assert!(answers(&frames).is_empty());
+        app.disconnect_site(&origin);
+        assert_eq!(app.card_waiting_id(), None);
+        assert!(app.card.step.is_none());
+        assert_eq!(answers(&frames), vec![Err(ProviderError::Unauthorized)]);
+        assert!(app.browser.as_ref().unwrap().waiters.is_empty());
+        assert_eq!(app.info.as_deref(), Some(T_CARD_SITE_REVOKED));
+        app.card_submit(id, pin());
+        assert!(!job_names(&app).contains(&"SignMessageCard"));
+        assert!(answers(&frames).is_empty());
+
+        // The grant gone without the hook (a revoke during a refused PIN's round trip): PIN
+        // submission ends the step instead of signing.
+        core.upsert_grant(evm_grant());
+        let (id, _) = begin(&mut app);
+        assert!(core.remove_grant(&origin));
+        assert!(app.card_waiting(id));
+        app.card_submit(id, pin());
+        assert!(app.card.step.is_none());
+        assert!(!job_names(&app).contains(&"SignMessageCard"));
+        assert_eq!(answers(&frames), vec![Err(ProviderError::Unauthorized)]);
+
+        // The grant holds: the PIN goes to the card and the signature is answered as before.
+        core.upsert_grant(evm_grant());
+        let (id, ticket) = begin(&mut app);
+        app.card_submit(id, pin());
+        assert!(job_names(&app).contains(&"SignMessageCard"));
+        app.card.step = None;
+        app.browser_message_signed(MessageSigned {
+            ticket,
+            result: Ok([1; 65]),
+        });
+        let found = answers(&frames);
+        assert!(matches!(found.as_slice(), [Ok(_)]), "{found:?}");
+
+        // Past its PIN the card job is not cancelled by a disconnect; its signature is not sent.
+        let (id, ticket) = begin(&mut app);
+        app.card_submit(id, pin());
+        assert!(job_names(&app).contains(&"SignMessageCard"));
+        app.disconnect_site(&origin);
+        assert!(app.card.step.as_ref().is_some_and(|step| step.id == id));
+        app.card.step = None;
+        app.browser_message_signed(MessageSigned {
+            ticket,
+            result: Ok([1; 65]),
+        });
+        assert_eq!(answers(&frames), vec![Err(ProviderError::Unauthorized)]);
+
+        // The page goes away (the connection closes, the dispatcher cancels the request): the
+        // step waiting for its PIN ends as cancelled (4001, the answer has nowhere to go).
+        core.upsert_grant(evm_grant());
+        let (id, _) = begin(&mut app);
+        core.close_connection(conn);
+        for event in events.drain() {
+            if let crate::events::UiEvent::Dapp(event) = event {
+                app.on_dapp_event(event);
+            }
+        }
+        assert!(!app.card_waiting(id));
+        assert!(app.card.step.is_none());
+        assert!(app.browser.as_ref().unwrap().waiters.is_empty());
+        assert_eq!(app.info.as_deref(), Some(T_CARD_SITE_GONE));
+        app.card_submit(id, pin());
+        assert!(!job_names(&app).contains(&"SignMessageCard"));
+    }
+
+    /// A consumed transaction approval of the `YubiKey` EVM account 1 for `https://app.example`
+    /// (Sepolia, 1000 wei to a public test address; no simulation).
+    fn approved_card_tx() -> yw_core::approval::Approved {
+        use yw_core::approval::{ApprovalId, ApprovalKind, ApprovalOrigin, ApprovalStore};
+        use yw_core::evm::amount::U256;
+        use yw_core::evm::decode::{DecodedTx, decode_call};
+        let chain = yw_core::evm::chain::sepolia();
+        let tx = yw_core::evm::tx::Eip1559Tx {
+            chain_id: yw_core::evm::chain::SEPOLIA,
+            nonce: 0,
+            max_priority_fee_per_gas: U256::from_u64(1_000_000_000),
+            max_fee_per_gas: U256::from_u64(2_000_000_000),
+            gas_limit: 21_000,
+            to: yw_core::evm::address::Address::from_bytes([0x70; 20]),
+            value: U256::from_u64(1_000),
+            data: Vec::new(),
+            access_list: Vec::new(),
+        };
+        let decoded = DecodedTx {
+            call: decode_call(&chain, &tx.to, &tx.data),
+            tx,
+        };
+        let draft = yw_core::approval::build_evm_tx_request(
+            ApprovalId::random().unwrap(),
+            ApprovalOrigin::Site(BrowserOrigin::parse("https://app.example").unwrap()),
+            yw_core::vault::EvmKeySource::Hardware(
+                yw_core::bip32::path::AccountIndex::new(1).unwrap(),
+            ),
+            evm_account(),
+            ApprovalKind::EvmTransaction,
+            &chain,
+            &decoded,
+            &yw_core::evm::simulate::SimResult::skipped(),
+            &yw_core::approval::ChainFacts::default(),
+            Vec::new(),
+            1_790_000_000_000,
+        )
+        .unwrap();
+        let mut store = ApprovalStore::new();
+        let request = store.issue(draft, 0, 1_790_000_000_000).unwrap();
+        store.consume(request.id, request.digest, 1).unwrap()
+    }
+
+    /// The record fields of [`approved_card_tx`].
+    fn card_tx_info() -> crate::events::SignInfo {
+        crate::events::SignInfo {
+            origin: "https://app.example".to_owned(),
+            label: "dApp 거래".to_owned(),
+            role: yw_core::journal::evm::Role::Original,
+            now_unix_ms: 1_790_000_000_000,
+        }
+    }
+
+    /// spec/05 §4.5, spec/10 §9.2 (2026-11-13), per card step kind and per trigger: an EVM
+    /// transaction waiting for its PIN ends on the dApp's own `wallet_revokePermissions` (4100,
+    /// its send slot released so the account can send again, no `SignEvmCard`); an EVM message
+    /// whose account is hidden ends although the grant stays for another account; Solana
+    /// message and sign-in steps end on `disconnect_chain_site`, on the dApp's `sol_disconnect`
+    /// and on the account being hidden; a Bitcoin message step on the dApp's `btc_disconnect`
+    /// and on its address leaving the wallet; a Solana dApp send on a Solana disconnect (no
+    /// pre-sign entry kept). Each step outlives another family's disconnect of the same origin.
+    #[test]
+    #[expect(clippy::too_many_lines, reason = "one case per card kind and trigger")]
+    fn each_card_step_kind_ends_on_its_own_familys_revoke() {
+        use crate::app_browser::SignWaiter;
+        use crate::app_card::{CardJobKind, T_CARD_SITE_REVOKED};
+        use crate::browser::{DappEvent, GrantChange};
+        let mut app = app(true);
+        let (events, frames, conn) = recorded(&mut app);
+        let origin = BrowserOrigin::parse("https://app.example").unwrap();
+        let btc_address = "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu";
+        let core = core(&app);
+        let btc_grant = || yw_core::policy::BtcGrant {
+            origin: origin.clone(),
+            network: yw_core::btc::BtcNetwork::Mainnet,
+            addresses: vec![BtcGrantAddress {
+                purpose: BtcPurpose::Payment,
+                address: btc_address.to_owned(),
+                pubkey: BtcPubKey::Compressed([2; 33]),
+                script_type: ScriptType::P2wpkh,
+            }],
+            granted_at_unix_ms: 1,
+        };
+        let mut n = 0_u8;
+        let mut reply = |app: &App| {
+            n += 1;
+            queued_sol_tx(app, &events, conn, n).reply
+        };
+        // The step's held approval: the site check reads only the waiter and the kind, so the
+        // chain-message and dApp-send steps hold the EVM card message as a stand-in.
+        let begin = |app: &mut App, waiter: SignWaiter, kind: CardJobKind| {
+            let ticket = app.push_sign_waiter(waiter);
+            assert!(
+                app.card_begin(approved_card_message(), kind, Some(ticket))
+                    .is_ok()
+            );
+            let _ = job_names(app);
+            (app.card_waiting_id().unwrap(), ticket)
+        };
+        let ended = |app: &mut App, id: u64| {
+            assert!(!app.card_waiting(id));
+            assert!(app.card.step.is_none());
+            assert_eq!(app.info.as_deref(), Some(T_CARD_SITE_REVOKED));
+            assert!(app.browser.as_ref().unwrap().waiters.is_empty());
+            let jobs = job_names(app);
+            assert!(
+                !jobs.iter().any(|job| job.starts_with("Sign")),
+                "nothing goes to the card: {jobs:?}"
+            );
+            app.info = None;
+        };
+
+        // EVM transaction: the slot preflight took and the signing job's entry are released.
+        core.upsert_grant(evm_grant());
+        let tx_reply = reply(&app);
+        let ticket = app.push_sign_waiter(SignWaiter::Tx(tx_reply, evm_signer()));
+        app.evm
+            .slots
+            .push((yw_core::evm::chain::SEPOLIA, evm_account()));
+        app.dispatch_evm_sign(ticket, approved_card_tx(), card_tx_info(), false);
+        let id = app.card_waiting_id().unwrap();
+        assert!(app.evm.signing.contains_key(&ticket));
+        let _ = job_names(&app);
+        app.disconnect_chain_site(&origin, Family::Solana);
+        assert!(app.card_waiting(id));
+        assert!(core.remove_grant(&origin));
+        app.on_dapp_event(DappEvent::GrantChanged {
+            origin: origin.clone(),
+            change: GrantChange::Revoked,
+        });
+        ended(&mut app, id);
+        assert_eq!(answers(&frames), vec![Err(ProviderError::Unauthorized)]);
+        assert!(app.evm.signing.is_empty());
+        assert!(app.evm.slots.is_empty());
+
+        // EVM message, account hidden: the grant stays for the other account.
+        let other = yw_core::evm::address::Address::from_bytes([0x70; 20]);
+        core.upsert_grant(
+            yw_core::policy::ConnectedSite::new(
+                origin.clone(),
+                vec![evm_account(), other],
+                yw_core::evm::chain::SEPOLIA,
+                1,
+            )
+            .unwrap(),
+        );
+        let message = reply(&app);
+        let (id, _) = begin(
+            &mut app,
+            SignWaiter::Message(message, evm_signer()),
+            CardJobKind::EvmMessage { typed: true },
+        );
+        app.account_removed_from_sites(&evm_account());
+        assert!(
+            app.browser_grants()
+                .iter()
+                .any(|grant| grant.origin == origin && grant.allows(&other))
+        );
+        ended(&mut app, id);
+        assert_eq!(answers(&frames), vec![Err(ProviderError::Unauthorized)]);
+
+        // Solana message and sign-in: S13, the dApp's `sol_disconnect`, the account hidden.
+        let sol = |sign_in: bool| ChainAnswer::Sol {
+            public: public(),
+            origin: origin.clone(),
+            message: b"hi".to_vec(),
+            sign_in,
+        };
+        for (sign_in, trigger) in [(false, 0), (true, 1), (true, 2)] {
+            core.upsert_sol_grant(sol_grant("https://app.example", public()));
+            let message = reply(&app);
+            let (id, _) = begin(
+                &mut app,
+                SignWaiter::Chain(message, Box::new(sol(sign_in))),
+                CardJobKind::ChainMessage,
+            );
+            app.disconnect_site(&origin);
+            app.disconnect_chain_site(&origin, Family::Bitcoin);
+            assert!(app.card_waiting(id));
+            match trigger {
+                0 => app.disconnect_chain_site(&origin, Family::Solana),
+                1 => {
+                    assert!(core.remove_sol_grant(&origin));
+                    app.on_dapp_event(DappEvent::GrantChanged {
+                        origin: origin.clone(),
+                        change: GrantChange::SolRevoked,
+                    });
+                }
+                _ => {
+                    app.meta.as_mut().unwrap().sol_accounts[0].hidden = true;
+                    app.sol_account_removed_from_sites(&public());
+                    app.meta.as_mut().unwrap().sol_accounts[0].hidden = false;
+                }
+            }
+            ended(&mut app, id);
+            assert_eq!(answers(&frames), vec![Err(ProviderError::Unauthorized)]);
+        }
+
+        // Bitcoin message: the dApp's `btc_disconnect`, the address leaving the wallet.
+        let btc = || ChainAnswer::Btc {
+            address: btc_address.to_owned(),
+            origin: origin.clone(),
+            protocol: BtcMessageProtocol::Ecdsa,
+        };
+        for removed in [false, true] {
+            assert!(core.upsert_btc_grant(btc_grant()));
+            let message = reply(&app);
+            let (id, _) = begin(
+                &mut app,
+                SignWaiter::Chain(message, Box::new(btc())),
+                CardJobKind::ChainMessage,
+            );
+            app.disconnect_site(&origin);
+            app.disconnect_chain_site(&origin, Family::Solana);
+            assert!(app.card_waiting(id));
+            if removed {
+                app.btc_addresses_removed_from_sites(&[btc_address.to_owned()]);
+            } else {
+                assert!(core.remove_btc_grant(&origin));
+                app.on_dapp_event(DappEvent::GrantChanged {
+                    origin: origin.clone(),
+                    change: GrantChange::BtcRevoked,
+                });
+            }
+            ended(&mut app, id);
+            assert_eq!(answers(&frames), vec![Err(ProviderError::Unauthorized)]);
+        }
+
+        // Solana dApp send (it used to keep W11 open): a Solana disconnect ends it.
+        core.upsert_sol_grant(sol_grant("https://app.example", public()));
+        let send = reply(&app);
+        let (id, ticket) = begin(
+            &mut app,
+            SignWaiter::Chain(
+                send,
+                Box::new(ChainAnswer::SolTx {
+                    public: public(),
+                    origin: origin.clone(),
+                    batch: false,
+                    send: true,
+                }),
+            ),
+            CardJobKind::SolDappSend {
+                cluster: yw_core::sol::SolCluster::Devnet,
+            },
+        );
+        app.disconnect_site(&origin);
+        assert!(app.card_waiting(id));
+        app.disconnect_chain_site(&origin, Family::Solana);
+        ended(&mut app, id);
+        assert_eq!(answers(&frames), vec![Err(ProviderError::Unauthorized)]);
+        assert!(
+            !app.sol
+                .dapp_presign
+                .values()
+                .any(|pending| pending.ticket == ticket)
+        );
+    }
+
+    /// spec/10 §9.2 (2026-11-13): a PIN refused by the card after the site was disconnected —
+    /// the grant gone during the card's round trip, no hook ran — ends the step instead of
+    /// opening W11 again (4100, the send slot released), and the job's trailing failure shows
+    /// no card-error band beside the site notice (it used to reach `on_signed`).
+    #[test]
+    fn a_refused_pin_after_the_site_went_ends_the_step_quietly() {
+        use crate::app::Purpose;
+        use crate::app_browser::SignWaiter;
+        use crate::app_card::T_CARD_SITE_REVOKED;
+        use crate::events::{EvmSigned, KeyJob, KeyOutcome, KeyResult, SignFailure};
+        use crate::yubikey::CardJobError;
+        use yw_core::yubikey::CardError;
+        let mut app = app(true);
+        let (events, frames, conn) = recorded(&mut app);
+        let origin = BrowserOrigin::parse("https://app.example").unwrap();
+        let core = core(&app);
+        core.upsert_grant(evm_grant());
+        let site = queued_sol_tx(&app, &events, conn, 1);
+        let ticket = app.push_sign_waiter(SignWaiter::Tx(site.reply, evm_signer()));
+        app.evm
+            .slots
+            .push((yw_core::evm::chain::SEPOLIA, evm_account()));
+        app.dispatch_evm_sign(ticket, approved_card_tx(), card_tx_info(), false);
+        let id = app.card_waiting_id().unwrap();
+        let _ = job_names(&app);
+        app.card_submit(id, yw_core::secret::Zeroizing::new(b"135790".to_vec()));
+        let approved = std::iter::from_fn(|| {
+            (!app.key_queue.is_empty())
+                .then(|| app.key_queue.pop())
+                .flatten()
+        })
+        .find_map(|(_, job)| match job {
+            KeyJob::SignEvmCard { approved, .. } => Some(approved),
+            _ => None,
+        })
+        .expect("SignEvmCard");
+        // The grant goes while the card checks the PIN (no hook: the step is past its PIN).
+        assert!(core.remove_grant(&origin));
+        let banners = app.banners.len();
+        let wrong = CardJobError::Card(CardError::WrongPin { retries: 2 });
+        let epoch = app.lock_epoch;
+        app.on_key_result(KeyResult {
+            epoch,
+            outcome: KeyOutcome::CardUnused(approved, wrong),
+        });
+        assert_ne!(app.secret_purpose(), Some(Purpose::CardSign(id)));
+        assert!(app.card.step.is_none());
+        assert_eq!(answers(&frames), vec![Err(ProviderError::Unauthorized)]);
+        assert!(app.evm.signing.is_empty());
+        assert!(app.evm.slots.is_empty());
+        assert_eq!(app.info.as_deref(), Some(T_CARD_SITE_REVOKED));
+        app.on_key_result(KeyResult {
+            epoch,
+            outcome: KeyOutcome::SignedEvm(EvmSigned {
+                ticket,
+                result: Err(SignFailure::Card(wrong)),
+            }),
+        });
+        assert_eq!(app.banners.len(), banners, "no card-error band");
+        assert_eq!(app.info.as_deref(), Some(T_CARD_SITE_REVOKED));
+        assert!(answers(&frames).is_empty());
+        assert!(job_names(&app).is_empty());
     }
 }

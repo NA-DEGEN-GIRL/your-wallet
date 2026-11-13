@@ -267,7 +267,9 @@ Notes:
   - Durable-nonce transactions and transactions missing other required signatures are refused with -32602.
   - At most 16 pending sends per (cluster, signer) and 32 in total. Beyond that, -32002.
 - **Durable nonce:** allowed for sign-only (high risk X08), refused for send.
-- **Fee cap:** a fee above the user's cap (default 100,000 lamports) is high risk X14, only when the wallet pays. It is not blocked.
+- **Fee:** the wallet computes the fee from the transaction bytes (exact when the transaction sets a compute-unit limit, otherwise a range from the runtime's default limits) and shows it next to the RPC's `getFeeForMessage` value. It reads `ComputeBudget` instruction data the way the runtime does (bytes after the value are ignored), so the fee counts a price or limit that the instruction list shows as uninterpreted.
+- **Fee cap:** a fee above the user's cap (default 100,000 lamports) is high risk X14, only when the wallet pays. It is not blocked. The fee checked is the RPC value or the computed maximum, whichever is higher, so an RPC that under-reports cannot hide X14. When the fee is a range, the warning says "최대" (maximum).
+- **Fee mismatch:** an RPC fee outside the computed range is high risk X20, only when the wallet pays. It is not blocked.
 - **Grant re-check:** just before the reply the wallet checks the site's grant again. If the site was disconnected, the reply is 4100 and the bytes are discarded.
 
 ### 4.4 Solana-specific responses (spec/05 §5)
@@ -341,11 +343,13 @@ Every method outside the allowlist (40 methods: 27 EVM + 13 Solana/Bitcoin) retu
 
 Messages are exact strings. Wallet-generated errors carry no `data`, except Solana partial sends (§4.1) and sanitized upstream read errors.
 
+**Grant re-check before every reply (spec/05 §4.5):** a signature (`personal_sign`, `eth_signTypedData_v4`, `sol_signMessage`, `sol_signIn`, Solana transaction signing, `btc_signMessage`) or an `eth_sendTransaction` hash is sent only while the site is still connected with that account. If the site was disconnected (by the user, by its own `wallet_revokePermissions` / `sol_disconnect` / `btc_disconnect`, or because the account was hidden) after the approval, the reply is 4100 and the signature is discarded. A transaction that was already signed and journaled is still broadcast. A YubiKey request still waiting for its PIN ends at once on a disconnect (4100) or when the page goes away (4001); nothing is signed.
+
 | Code | Message | Typical cause |
 |---|---|---|
 | 4001 | `User rejected the request.` | User rejected or closed the window, wallet locked, unlock window dismissed |
 | 4001 | `Request expired.` | Window open 120 s without a decision |
-| 4100 | `Unauthorized.` | Not connected, account not granted, localhost toggle off, no wallet, backup pending |
+| 4100 | `Unauthorized.` | Not connected, account not granted, localhost toggle off, no wallet, backup pending, disconnected after the approval but before the reply (see below) |
 | 4100 | `Unauthorized: …` | Reason variants: `PassphraseUnverified`, `NoEvmAccount`, `NoSolAccount`, `NoBtcAccount`, `BtcDisabled`, `BackupUnconfirmed`, `TooManySites` |
 | 4200 | `Unsupported method.` | Not in the allowlist, or a malformed method name |
 | 4900 | `Wallet is unavailable.` | App not running and auto-start off, or the native host failed |

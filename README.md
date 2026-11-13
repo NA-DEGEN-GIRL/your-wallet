@@ -2,9 +2,10 @@
 
 **한국어** · **[English](#english)**
 
-Windows 11 PC 한 대에서 쓰는 개인용 멀티체인 지갑입니다. 키와 서명은 브라우저 밖의 데스크톱 앱(또는 YubiKey)이 맡고,
-Chrome 확장은 dApp 요청을 앱으로 전달만 합니다. 서명할 데이터는 앱이 직접 해석해 별도 창에 보여 주고, EVM·Solana·
-Bitcoin·Zcash·HyperCore를 한 앱에서 다룹니다. 소스로만 공개하며, 각자 자기 PC에서 직접 빌드해 설치합니다.
+Windows 11 PC 한 대에서 쓰는 개인용 멀티체인 지갑입니다. 키와 서명은 브라우저 밖의 데스크톱 앱이 맡고(원하면 YubiKey
+안에서 서명 — 등록과 거래 내용 확인은 PC를 믿어야 합니다), Chrome 확장은 dApp 요청을 앱으로 전달만 합니다. 서명할
+데이터는 앱이 직접 해석해 별도 창에 보여 주고, EVM·Solana·Bitcoin·Zcash·HyperCore를 한 앱에서 다룹니다. 소스로만
+공개하며, 각자 자기 PC에서 직접 빌드해 설치합니다.
 
 <p align="center">
   <img src="docs/screenshots/10-main-evm.png" width="49%" alt="메인 화면(EVM)">
@@ -21,7 +22,7 @@ Bitcoin·Zcash·HyperCore를 한 앱에서 다룹니다. 소스로만 공개하�
 |---|---|---|
 | 키가 있는 곳 | 브라우저 확장의 저장소 | 브라우저 밖 데스크톱 앱의 암호화 vault, 또는 YubiKey 안 |
 | 서명을 확인하는 곳 | 브라우저 확장 팝업 | 항상 위에 뜨는 별도 Windows 창 — 서명할 바이트를 앱이 직접 해석하고, EVM 거래와 Solana dApp 거래는 시뮬레이션까지 |
-| 하드웨어 서명 | 별도 하드웨어 지갑 | YubiKey 5로 EVM·Bitcoin·Zcash·Solana 서명, 여러 장을 서로의 백업으로 |
+| 하드웨어 서명 | 화면이 있는 별도 하드웨어 지갑 | YubiKey 5가 카드 안에서 서명(EVM·Bitcoin·Zcash·Solana), 여러 장을 서로의 백업으로. 화면이 없어 등록과 거래 내용 확인은 PC를 믿음 |
 | 체인 | 지갑마다 다름 | EVM 7개 + 직접 추가, Solana(dApp 거래 포함), Bitcoin(주소 형식 4가지), Zcash, HyperCore |
 | 배포 | 스토어에서 받는 바이너리 | 소스만 — 직접 빌드, 의존성 고정, 확장은 npm 패키지 0개 |
 
@@ -43,9 +44,11 @@ Bitcoin·Zcash·HyperCore를 한 앱에서 다룹니다. 소스로만 공개하�
 누르기가 필요하고 Enter로는 승인되지 않습니다. 창에 보내지거나 흉내 낸 Enter 키로는 승인되지 않습니다(같은 PC의
 악성 프로그램을 막는 장치는 아닙니다).
 
-**4. YubiKey를 하드웨어 서명 장치로.** 'YubiKey 지갑'(복구 단어를 PC에 저장하지 않는 지갑)을 만들면 복구 단어에서 고른
-키는 YubiKey 5에만 들어가고 PC에는 공개키만 남습니다. 서명할 때마다 카드가 PIN(기억해 두지 않음)과, 기본 설정에서는
-터치를 요구합니다. EVM·Bitcoin·Zcash는 OpenPGP secp256k1, Solana는 PIV Ed25519로
+**4. YubiKey 안에서 서명합니다.** 'YubiKey 지갑'(복구 단어를 PC에 저장하지 않는 지갑)을 만들면 복구 단어에서 고른 키를
+YubiKey 5에 넣고, 그 뒤 PC에는 공개키와 슬롯 표만 남습니다. 서명은 카드 안에서 하며, 승인한 요청마다 PIN(기억해 두지
+않음)을 입력하고 기본 설정에서는 서명마다 터치가 필요합니다. 다만 등록할 때 복구 단어와 키가 한 번 PC 메모리를 거치고,
+카드에는 화면이 없어 무엇에 서명하는지는 PC 승인 창으로만 확인합니다. 화면이 있는 하드웨어 지갑처럼 PC를 믿지 않아도
+되는 장치는 아닙니다([한계](#보안-범위)). EVM·Bitcoin·Zcash는 OpenPGP secp256k1, Solana는 PIV Ed25519로
 서명하며, HyperCore·WalletConnect·Solana dApp 거래도 YubiKey로 서명합니다. 같은 복구 단어의 키를 최대 8장의 카드에 넣어
 서로의 백업으로 쓰고, 한 카드에 다른 카드 키의 사본과 새 키를 함께 둘 수도 있습니다.
 
@@ -127,7 +130,7 @@ XChaCha20-Poly1305로 암호화합니다.
 
 **서명과 dApp**
 - 승인 창: 코어가 직접 해석한 내용, 시뮬레이션(EVM `eth_simulateV1`, Solana `simulateTransaction`), 위험 규칙(EVM E01–E43,
-  Solana X01–X19), 1회용 승인, 1초 대기·2초 누르기.
+  Solana X01–X20), 1회용 승인, 1초 대기·2초 누르기.
 - Chrome 확장: EVM은 EIP-1193/EIP-6963, Solana는 Wallet Standard(Phantom 호환 모드 포함). Bitcoin은 확장 팝업에서 UniSat·Xverse
   호환 모드를 켰을 때만 페이지에 보이며, 연결과 **메시지 서명(BIP137·BIP322, 소유 증명)만** 됩니다.
 - **Solana dApp 거래** — `signTransaction`, `signAllTransactions`(최대 32건을 창 하나·승인 한 번으로), `signAndSendTransaction`.
@@ -191,7 +194,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1 -Offline  
 
 방어 대상과 비목표는 [spec.md](spec.md) §2에 있습니다. 범위 안: 보이는 것과 다른 서명, 악성 사이트와 WalletConnect 상대,
 같은 PC의 다른 사용자, 키 분실, 버전 간 데이터 손실. 내 Windows 사용자 권한으로 도는 악성코드, 관리자·커널 장악, PC에 대한
-물리 공격은 범위 밖입니다 — PC가 장악되면 지갑도 장악된 것으로 봅니다(YubiKey 지갑을 쓰면 키 자체는 PC 밖에 남습니다). 올바르게
+물리 공격은 범위 밖입니다 — PC가 장악되면 지갑도 장악된 것으로 봅니다(YubiKey 지갑이면 깨끗한 PC에서 등록한 키는 PC
+밖에 남지만, 장악된 PC가 다른 내용에 서명을 받아낼 수는 있습니다). 올바르게
 표시된 악성 거래를 직접 승인하는 것도 막을 수 없습니다.
 
 알아 둘 한계:
@@ -207,13 +211,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1 -Offline  
 - **YubiKey:** 카드에는 화면이 없어 무엇에 서명하는지는 PC 창으로만 확인합니다. PC가 장악되면 다른 내용에 대한 터치를 받아낼
   수 있습니다. 키는 등록할 때 PC에서 복구 단어로 한 번 계산해 넣습니다(카드 안에서 만들지 않음). 터치를 "15초 유지"로 두면
   그동안의 추가 서명에는 터치가 필요 없습니다. 복구 단어 없이 연결하거나 "가져오기 없이 등록"한 카드는 카드에 이미 있는
-  터치 정책을 그대로 쓰며, 그 정책이 "터치 없음"일 수도 있습니다.
+  터치 정책을 그대로 쓰며, 그 정책이 "터치 없음"일 수도 있습니다. PIN은 승인 한 번에 한 번 입력하며, 입력이 여러 개인
+  보내기나 여러 건을 한꺼번에 서명할 때는 그 PIN 하나로 카드가 여러 번 서명합니다.
 - **YubiKey와 같은 복구 단어:** 카드에 넣은 키의 복구 단어가 이 PC의 vault에도 저장되어 있으면 YubiKey는 보안 이득이
   없습니다(같은 키를 PC에서도 만들 수 있음, 마법사가 경고합니다). 키를 PC 밖에 두려면 YubiKey 지갑을 새로 만들고 복구
   단어는 종이에만 두세요.
 - **호환 모드**는 가능한 범위의 흉내입니다. 같은 계열의 실제 확장(MetaMask·Rabby·Phantom)은 꺼 두세요.
-- **비밀번호:** 시도 횟수 제한이 없어 오프라인 추측은 Argon2 비용으로만 막습니다. 비밀번호를 바꿔도 예전 vault 사본은 예전
-  비밀번호로 열립니다. 디스크에 남을 수 있는 메모리 흔적(최대 절전·페이지 파일)에 대비해 BitLocker를 권합니다.
+- **비밀번호:** 시도 횟수 제한이 없어 오프라인 추측은 Argon2 비용으로만 막습니다. 비밀번호를 바꾸면 암호화 키(DEK)도
+  새로 만들어 바꾼 뒤의 내용은 예전 사본으로 열 수 없지만, 바꾸기 전의 vault 사본은 예전 비밀번호로 계속 열리고 그때의
+  복구 단어·키를 드러냅니다(약한 예전 비밀번호는 나중에 오프라인으로 풀릴 수 있습니다). 2026-11-13 이전 버전에서 바꾼
+  비밀번호는 키를 그대로 두었으니 한 번 더 바꾸세요. 예전 비밀번호와 사본이 함께 샜다면 새로 만든 별도 지갑으로 자산을
+  옮기세요. 디스크에 남을 수 있는 메모리 흔적(최대 절전·페이지 파일)에 대비해
+  BitLocker를 권합니다.
 
 ## 문서
 
@@ -248,10 +257,10 @@ AI 비서에게 설치를 도와 달라고 할 때(영문): [docs/llm-install-gu
 
 [↑ 한국어](#your-wallet)
 
-A personal multi-chain wallet for one Windows 11 PC. Keys and signing live in a desktop app outside the browser (or on
-a YubiKey); the Chrome extension only forwards dApp requests to it. The app decodes what you are about to sign and
-shows it in its own window, and one app covers EVM, Solana, Bitcoin, Zcash and HyperCore. Published as source only —
-you build and install it yourself.
+A personal multi-chain wallet for one Windows 11 PC. Keys and signing live in a desktop app outside the browser
+(optionally signing inside a YubiKey — enrolment and transaction review still trust the PC); the Chrome extension
+only forwards dApp requests to it. The app decodes what you are about to sign and shows it in its own window, and one
+app covers EVM, Solana, Bitcoin, Zcash and HyperCore. Published as source only — you build and install it yourself.
 
 > **Status:** every planned feature is implemented and the full repository gate (`scripts/check.ps1`) passes;
 > manual per-milestone verification ([docs/acceptance/](docs/acceptance/)) is still in progress. It is a personal
@@ -264,7 +273,7 @@ you build and install it yourself.
 |---|---|---|
 | Where keys live | Browser extension storage | Encrypted vault of a desktop app outside the browser, or inside a YubiKey |
 | Where you review a signature | Extension popup | A separate always-on-top Windows window — the app decodes the exact bytes, and simulates EVM transactions and Solana dApp transactions |
-| Hardware signing | A separate hardware wallet | A YubiKey 5 signs for EVM, Bitcoin, Zcash and Solana; several cards back each other up |
+| Hardware signing | A separate hardware wallet with its own screen | A YubiKey 5 signs inside the card (EVM, Bitcoin, Zcash, Solana); several cards back each other up. No screen, so enrolment and transaction review trust the PC |
 | Chains | Varies by wallet | 7 EVM chains + your own, Solana (dApp transactions included), Bitcoin (4 address types), Zcash, HyperCore |
 | Distribution | Store binary | Source only — you build it; pinned dependencies; zero npm packages in the extension |
 
@@ -290,12 +299,14 @@ approve button arms only a second after the window comes to the front, and any c
 the wait. Risky requests need a confirmation tick and a 2-second hold, and Enter never approves them. A posted or
 injected Enter key never approves (a consistency check, not a defence against malware on the PC).
 
-**4. A YubiKey as your hardware signer.** With a "YubiKey wallet" (one that never stores the recovery phrase on the
-PC), keys from your phrase go only onto a YubiKey 5 and the PC keeps only the public keys. Every signature needs the
-PIN (never cached) and, by default, a touch. EVM, Bitcoin and Zcash use OpenPGP
-secp256k1; Solana uses PIV Ed25519. HyperCore, WalletConnect and Solana dApp transactions can be signed with the card
-too. Keys from the same phrase can go on up to 8 cards as backups of each other, and one card can hold copies of
-another card's keys alongside new ones.
+**4. Signing inside a YubiKey.** With a "YubiKey wallet" (one that never stores the recovery phrase on the PC), keys
+from your phrase are put onto a YubiKey 5, and afterwards the PC keeps only the public keys and a slot table. Signing
+happens on the card: each approved request needs the PIN (never cached) and, by default, a touch per signature. The
+phrase and keys do pass through PC memory once at enrolment, and the card has no screen, so the PC window is the only
+place to check what you sign. It is not a hardware wallet with a screen that lets you distrust the PC
+([limits](#security-model)). EVM, Bitcoin and Zcash use OpenPGP secp256k1; Solana uses PIV Ed25519. HyperCore,
+WalletConnect and Solana dApp transactions can be signed with the card too. Keys from the same phrase can go on up to
+8 cards as backups of each other, and one card can hold copies of another card's keys alongside new ones.
 
 **5. One wallet for many chains.** Seven EVM chains plus any you add, Solana, Bitcoin, Zcash and Hyperliquid HyperCore
 from one app and one recovery phrase. Solana dApps can connect, request message signatures and now **sign or send
@@ -370,7 +381,7 @@ See the images above and the full [screen tour](docs/screenshots/README.md) (Kor
 
 **Signing and dApps**
 - Approval windows: the core's own decoding, simulation (EVM `eth_simulateV1`, Solana `simulateTransaction`), risk
-  rules (EVM E01–E43, Solana X01–X19), single-use approvals, 1 s arm delay and 2 s hold.
+  rules (EVM E01–E43, Solana X01–X20), single-use approvals, 1 s arm delay and 2 s hold.
 - Chrome extension: EIP-1193/EIP-6963 for EVM, Wallet Standard for Solana (plus a Phantom compatibility mode). Bitcoin
   appears on pages only after you pick the UniSat or Xverse compatibility mode in the extension popup, and supports
   connecting and **message signatures only** (BIP137 and BIP322, proof of ownership).
@@ -447,8 +458,9 @@ with an AI coding agent, have it read [AGENTS.md](AGENTS.md) first (repository r
 What is and isn't defended is in [spec.md](spec.md) §2. In scope: signing something other than what is shown,
 malicious sites and WalletConnect peers, other users on the PC, key loss, and data loss across versions. Malware running
 as your Windows user, an administrator/kernel compromise and physical attacks on the PC are out of scope — if the PC is
-compromised the wallet is too (a YubiKey wallet still keeps the keys themselves off the PC). Nor can the wallet stop you from
-approving a malicious transaction that is displayed correctly.
+compromised the wallet is too (with a YubiKey wallet, keys enrolled on a clean PC stay off it, but a compromised PC can
+still get you to sign something else). Nor can the wallet stop you from approving a malicious transaction that is
+displayed correctly.
 
 Known limits:
 - **Audit:** there has been no third-party security audit. There is an
@@ -466,14 +478,18 @@ Known limits:
   get your touch for something else. Keys are computed once on the PC from your phrase at enrolment, not generated on
   the card. With the "15 s cached" touch policy, further signatures within that window need no touch. A card connected
   without a recovery phrase, or registered "without import", keeps the touch policy already on the card, which can
-  be "no touch".
+  be "no touch". The PIN is entered once per approval; a send with several inputs, or a batch signed together, is
+  signed several times on the card with that one PIN.
 - **YubiKey and the same recovery phrase:** if the phrase behind the card's keys is also stored in this PC's vault, the
   YubiKey adds no protection (the PC can derive the same keys; the wizard warns you). To keep keys off the PC, create a
   YubiKey wallet and keep the phrase only on paper.
 - **Compatibility modes** are best-effort. Turn off the real extension of the same kind (MetaMask, Rabby, Phantom).
 - **Password:** there is no retry lockout, so the Argon2 cost is the only defence against offline guessing. Changing the
-  password doesn't stop an old copy of the vault from opening with the old password. BitLocker is recommended against
-  memory remnants on disk (hibernation and page files).
+  password also replaces the data key (DEK), so what you add afterwards can't be read from an old copy. But an old copy of
+  the vault still opens with the old password and exposes the phrases and keys it held then (and a weak old password can
+  be cracked offline later). A change made with a build from before 2026-11-13 kept the key, so change the password once
+  more. If an old password and a copy leaked together, move the funds to a new, separate wallet.
+  BitLocker is recommended against memory remnants on disk (hibernation and page files).
 
 ### Documents
 

@@ -1,7 +1,13 @@
 //! Fees (spec/07 §10): the maximum fee of a template, the CU price choice and the
-//! `getFeeForMessage` cross-check; the local fee estimate of a dApp transaction (§20.4).
+//! `getFeeForMessage` cross-check; the exact fee range of a dApp transaction (§20.4).
 
 use core::fmt;
+
+use super::address::{
+    ADDRESS_LOOKUP_TABLE_PROGRAM, BPF_LOADER, BPF_LOADER_DEPRECATED, BPF_LOADER_UPGRADEABLE,
+    COMPUTE_BUDGET_PROGRAM, CONFIG_PROGRAM, ED25519_PRECOMPILE, SECP256K1_PRECOMPILE,
+    SECP256R1_PRECOMPILE, STAKE_PROGRAM, SYSTEM_PROGRAM, SolAddress, VOTE_PROGRAM,
+};
 
 /// Base fee per signature (protocol value, cross-checked with `getFeeForMessage`).
 pub const SOL_BASE_FEE_LAMPORTS_PER_SIG: u64 = 5_000;
@@ -143,52 +149,209 @@ pub fn check_rpc_fee(
     }
 }
 
-/// Compute units assumed per instruction outside `ComputeBudget` when a dApp transaction sets no
-/// limit (Agave `DEFAULT_INSTRUCTION_COMPUTE_UNIT_LIMIT`; builtins are given less, so the
-/// estimate errs high).
+/// Default compute units of an instruction whose program is not a builtin (or a builtin already
+/// migrated to Core BPF) when a dApp transaction sets no limit (Agave
+/// `DEFAULT_INSTRUCTION_COMPUTE_UNIT_LIMIT`).
 pub const DEFAULT_IX_COMPUTE_UNITS: u32 = 200_000;
+/// Default compute units of a builtin instruction (`ComputeBudget` itself included) when a dApp
+/// transaction sets no limit (Agave `MAX_BUILTIN_ALLOCATION_COMPUTE_UNIT_LIMIT`, SIMD-0170
+/// `reserve_minimal_cus_for_builtin_instructions`, active on mainnet and devnet).
+pub const BUILTIN_IX_COMPUTE_UNITS: u32 = 3_000;
 
-/// The fee of a dApp transaction computed locally (spec/07 §20.4), shown only when
-/// `getFeeForMessage` gives no value: `5_000 × (required signatures + precompile signatures) +
-/// ceil(price × limit / 1_000_000)`, where the price and limit are the first
-/// `SetComputeUnitPrice`/`SetComputeUnitLimit` (the limit capped at 1,400,000) and the limit
-/// otherwise `min(200_000 × n, 1_400_000)` for the `n` instructions outside `ComputeBudget`.
-/// `u128`: no overflow. [`max_fee`] stays the template formula.
-#[must_use]
-pub fn dapp_fee_estimate(message: &super::dapp::SolTxMessage) -> u128 {
-    use super::dapp::decode::{CbIx, DecodedIx, decode};
-    let (mut limit, mut price, mut others) = (None, None, 0_u32);
+/// Loader v4 `LoaderV411111111111111111111111111111111111` (a builtin whose cost-table entry
+/// varies by release, so it is bracketed).
+const LOADER_V4: SolAddress = SolAddress::from_bytes([
+    0x05, 0x12, 0xb4, 0x11, 0x51, 0x51, 0xe3, 0x7a, 0xad, 0x0a, 0x8b, 0xc5, 0xd3, 0x88, 0x2e, 0x7b,
+    0x7f, 0xda, 0x4c, 0xf3, 0xd2, 0xc0, 0x28, 0xc8, 0xcf, 0x83, 0x36, 0x18, 0x00, 0x00, 0x00, 0x00,
+]);
+/// ZK `ElGamal` proof program `ZkE1Gama1Proof11111111111111111111111111111` (bracketed).
+const ZK_ELGAMAL_PROOF: SolAddress = SolAddress::from_bytes([
+    0x08, 0x63, 0x75, 0xac, 0xe2, 0xae, 0xea, 0x28, 0x1a, 0x6b, 0x37, 0x4d, 0x68, 0x1b, 0xa7, 0x6a,
+    0x53, 0xcc, 0xf6, 0x38, 0xc0, 0x74, 0x55, 0x93, 0x6c, 0x05, 0xd0, 0x65, 0x40, 0x00, 0x00, 0x00,
+]);
+/// ZK token proof program `ZkTokenProof1111111111111111111111111111111` (bracketed).
+const ZK_TOKEN_PROOF: SolAddress = SolAddress::from_bytes([
+    0x08, 0x63, 0xba, 0x8d, 0xd9, 0xc4, 0xc2, 0xfb, 0x17, 0x4a, 0x05, 0xcb, 0xa2, 0x7e, 0x2a, 0x2c,
+    0xd6, 0x23, 0x57, 0x3d, 0x79, 0xe9, 0x0b, 0x35, 0xb5, 0x79, 0xfc, 0x0d, 0x00, 0x00, 0x00, 0x00,
+]);
+/// Builtins that are not migrating: 3,000 CU each without a limit.
+const BUILTIN_PROGRAMS: [SolAddress; 8] = [
+    SYSTEM_PROGRAM,
+    VOTE_PROGRAM,
+    COMPUTE_BUDGET_PROGRAM,
+    BPF_LOADER_DEPRECATED,
+    BPF_LOADER,
+    BPF_LOADER_UPGRADEABLE,
+    ED25519_PRECOMPILE,
+    SECP256K1_PRECOMPILE,
+];
+/// Programs that are 3,000 or 200,000 CU depending on the cluster's features and release.
+const BRACKETED_PROGRAMS: [SolAddress; 7] = [
+    STAKE_PROGRAM,
+    CONFIG_PROGRAM,
+    ADDRESS_LOOKUP_TABLE_PROGRAM,
+    LOADER_V4,
+    SECP256R1_PRECOMPILE,
+    ZK_ELGAMAL_PROOF,
+    ZK_TOKEN_PROOF,
+];
+
+/// The default compute units `(low, high)` of one instruction of `program` when the transaction
+/// sets no limit (Agave `ComputeBudgetInstructionDetails::calculate_default_compute_unit_limit`
+/// with SIMD-0170; program kinds from `solana-builtins-default-costs`):
+/// - builtins that are not migrating (System, Vote, `ComputeBudget`, the three BPF loaders, the
+///   Ed25519 and Secp256k1 precompiles) are 3,000 in both;
+/// - builtins migrating to Core BPF (Stake, Config, ALT: 3,000 before their feature, 200,000
+///   after it and once dropped from the table) and programs whose builtin status varies by
+///   release (Loader v4, Secp256r1, the ZK proof programs) are 3,000 low and 200,000 high;
+/// - every other program is 200,000 in both.
+fn default_units(program: &SolAddress) -> (u32, u32) {
+    if BUILTIN_PROGRAMS.contains(program) {
+        (BUILTIN_IX_COMPUTE_UNITS, BUILTIN_IX_COMPUTE_UNITS)
+    } else if BRACKETED_PROGRAMS.contains(program) {
+        (BUILTIN_IX_COMPUTE_UNITS, DEFAULT_IX_COMPUTE_UNITS)
+    } else {
+        (DEFAULT_IX_COMPUTE_UNITS, DEFAULT_IX_COMPUTE_UNITS)
+    }
+}
+
+/// The exact range of a dApp transaction's fee, computed from its message alone (spec/07 §20.4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DappFeeBounds {
+    /// The lowest fee the runtime can charge.
+    pub low: u128,
+    /// The highest fee the runtime can charge (`low` when the transaction sets a limit or no
+    /// price).
+    pub high: u128,
+    /// The runtime rejects the transaction for its `ComputeBudget` instructions
+    /// ([`runtime_compute_budget`]): it is never processed and pays nothing, and
+    /// `getFeeForMessage` prices it without a priority fee, so `low == high` is the signature
+    /// fee (X18).
+    pub rejected: bool,
+}
+
+impl DappFeeBounds {
+    /// Whether `fee` lies in `[low, high]`.
+    #[must_use]
+    pub const fn contains(&self, fee: u128) -> bool {
+        self.low <= fee && fee <= self.high
+    }
+}
+
+/// Smallest heap frame the runtime accepts (Agave `MIN_HEAP_FRAME_BYTES`).
+const MIN_HEAP_FRAME_BYTES: u32 = 32 * 1_024;
+/// Largest heap frame the runtime accepts (Agave `MAX_HEAP_FRAME_BYTES`).
+const MAX_HEAP_FRAME_BYTES: u32 = 256 * 1_024;
+
+/// A little-endian `u32` at the start of `bytes` (later bytes ignored).
+fn le_u32(bytes: &[u8]) -> Option<u32> {
+    bytes.get(..4)?.try_into().ok().map(u32::from_le_bytes)
+}
+
+/// A little-endian `u64` at the start of `bytes` (later bytes ignored).
+fn le_u64(bytes: &[u8]) -> Option<u64> {
+    bytes.get(..8)?.try_into().ok().map(u64::from_le_bytes)
+}
+
+/// The compute-unit limit and price the runtime takes from a message's `ComputeBudget`
+/// instructions, or `None` when it rejects the transaction for them (Agave
+/// `ComputeBudgetInstructionDetails::try_from` and `sanitize_and_convert_to_compute_budget_limits`;
+/// `getFeeForMessage` then uses `unwrap_or_default()`: no priority fee):
+/// - the data is the Borsh enum read with `try_from_slice_unchecked`: the tag byte, then the
+///   little-endian field, and bytes after the field are ignored. The strict display decoder
+///   shows such an instruction as `Unknown` (X02), but the runtime applies it (the
+///   `ComputeBudget` program itself does nothing), so the fee must use this parse;
+/// - a short field, tag 0 (`Unused`) or a tag above 4 is `InvalidInstructionData`, and a second
+///   instruction of the same kind is `DuplicateInstruction`;
+/// - a heap request outside 32..=256 KiB or not a multiple of 1 KiB, and a loaded-accounts
+///   data-size limit of 0, are rejected as well.
+fn runtime_compute_budget(
+    message: &super::dapp::SolTxMessage,
+) -> Option<(Option<u32>, Option<u64>)> {
+    let (mut heap, mut limit, mut price, mut size) = (None, None, None, None);
     for index in 0..message.instruction_count() {
         let Some((program, _, data)) = message.instruction(index) else {
             continue;
         };
-        if *program != super::address::COMPUTE_BUDGET_PROGRAM {
-            others = others.saturating_add(1);
+        if *program != COMPUTE_BUDGET_PROGRAM {
             continue;
         }
-        match decode(program, &[], data) {
-            DecodedIx::ComputeBudget(CbIx::SetComputeUnitLimit(units)) => {
-                limit.get_or_insert(units);
-            }
-            DecodedIx::ComputeBudget(CbIx::SetComputeUnitPrice(micro)) => {
-                price.get_or_insert(micro);
-            }
-            _ => {}
+        let (tag, field) = data.split_first()?;
+        let duplicate = match tag {
+            1 => heap.replace(le_u32(field)?).is_some(),
+            2 => limit.replace(le_u32(field)?).is_some(),
+            3 => price.replace(le_u64(field)?).is_some(),
+            4 => size.replace(le_u32(field)?).is_some(),
+            _ => return None,
+        };
+        if duplicate {
+            return None;
         }
     }
-    let max = super::template::SOL_MAX_COMPUTE_UNITS;
-    let limit = limit.map_or_else(
-        || DEFAULT_IX_COMPUTE_UNITS.saturating_mul(others).min(max),
-        |units| units.min(max),
-    );
+    let bad_heap = heap.is_some_and(|bytes: u32| {
+        !(MIN_HEAP_FRAME_BYTES..=MAX_HEAP_FRAME_BYTES).contains(&bytes)
+            || !bytes.is_multiple_of(1_024)
+    });
+    (!bad_heap && size != Some(0)).then_some((limit, price))
+}
+
+/// The fee of a dApp transaction from its message (spec/07 §20.4, Agave fee rules):
+/// `5_000 × (required signatures + precompile signatures) + ceil(price × limit / 1_000_000)`,
+/// where the price is the `SetComputeUnitPrice` (0 without one) and the limit the
+/// `SetComputeUnitLimit` capped at 1,400,000 — exact, `low == high` — both read as the runtime
+/// reads them ([`runtime_compute_budget`]). Without a limit the runtime uses
+/// `min(Σ default units, 1,400,000)` with the per-instruction defaults of [`default_units`];
+/// `low` and `high` bracket it where a program's builtin status depends on the cluster. When the
+/// runtime rejects the `ComputeBudget` instructions the range is the signature fee alone
+/// (`rejected`). `u128`: no overflow. [`max_fee`] stays the template formula.
+///
+/// 2026-11-13: this replaces `dapp_fee_estimate` (200,000 per instruction outside
+/// `ComputeBudget`), which was shown only when `getFeeForMessage` gave no value. It was far too
+/// high for builtins and 3,000 CU per `ComputeBudget` instruction too low, so it could not check
+/// the RPC value, and an RPC that under-reported the fee hid X14. Later the same day (review):
+/// the limit and price were read through the strict display decoder, so one byte after a
+/// `SetComputeUnitPrice` made the wallet price it at 0 while the runtime charged it, and the
+/// first of two duplicate instructions was used although the runtime rejects the transaction.
+#[must_use]
+pub fn dapp_fee_bounds(message: &super::dapp::SolTxMessage) -> DappFeeBounds {
     let signatures = u128::from(message.header.required)
         .saturating_add(u128::from(message.precompile_signatures()));
-    let priority = u128::from(price.unwrap_or(0))
-        .saturating_mul(u128::from(limit))
-        .div_ceil(1_000_000);
-    u128::from(SOL_BASE_FEE_LAMPORTS_PER_SIG)
-        .saturating_mul(signatures)
-        .saturating_add(priority)
+    let base = u128::from(SOL_BASE_FEE_LAMPORTS_PER_SIG).saturating_mul(signatures);
+    let Some((limit, price)) = runtime_compute_budget(message) else {
+        return DappFeeBounds {
+            low: base,
+            high: base,
+            rejected: true,
+        };
+    };
+    let max = super::template::SOL_MAX_COMPUTE_UNITS;
+    let (low_limit, high_limit) = if let Some(units) = limit {
+        (units.min(max), units.min(max))
+    } else {
+        let (mut low_units, mut high_units) = (0_u32, 0_u32);
+        for index in 0..message.instruction_count() {
+            // The parser makes every program a static key; an unresolved one is bracketed.
+            let (low, high) = message.instruction(index).map_or(
+                (BUILTIN_IX_COMPUTE_UNITS, DEFAULT_IX_COMPUTE_UNITS),
+                |(program, _, _)| default_units(program),
+            );
+            low_units = low_units.saturating_add(low);
+            high_units = high_units.saturating_add(high);
+        }
+        (low_units.min(max), high_units.min(max))
+    };
+    let fee = |limit: u32| {
+        base.saturating_add(
+            u128::from(price.unwrap_or(0))
+                .saturating_mul(u128::from(limit))
+                .div_ceil(1_000_000),
+        )
+    };
+    DappFeeBounds {
+        low: fee(low_limit),
+        high: fee(high_limit),
+        rejected: false,
+    }
 }
 
 #[cfg(test)]
@@ -245,6 +408,41 @@ mod tests {
         assert!(max_fee(600, price).unwrap() <= 10_000);
         assert!(max_fee(600, price + 1).unwrap() > 10_000);
         assert_eq!(choose_cu_price(9, 9, 4_000, 600), 0);
+    }
+
+    #[test]
+    fn default_units_by_program_kind() {
+        use super::{
+            BRACKETED_PROGRAMS, BUILTIN_PROGRAMS, LOADER_V4, SolAddress, ZK_ELGAMAL_PROOF,
+            ZK_TOKEN_PROOF, default_units,
+        };
+        for (constant, text) in [
+            (LOADER_V4, "LoaderV411111111111111111111111111111111111"),
+            (
+                ZK_ELGAMAL_PROOF,
+                "ZkE1Gama1Proof11111111111111111111111111111",
+            ),
+            (
+                ZK_TOKEN_PROOF,
+                "ZkTokenProof1111111111111111111111111111111",
+            ),
+        ] {
+            assert_eq!(SolAddress::parse(text).unwrap(), constant, "{text}");
+        }
+        for program in BUILTIN_PROGRAMS {
+            assert_eq!(default_units(&program), (3_000, 3_000));
+            assert!(!BRACKETED_PROGRAMS.contains(&program));
+        }
+        for program in BRACKETED_PROGRAMS {
+            assert_eq!(default_units(&program), (3_000, 200_000));
+        }
+        for program in [
+            crate::sol::address::TOKEN_PROGRAM,
+            crate::sol::address::MEMO_PROGRAM_V2,
+            SolAddress::from_bytes([9; 32]),
+        ] {
+            assert_eq!(default_units(&program), (200_000, 200_000));
+        }
     }
 
     #[test]

@@ -4,11 +4,12 @@
 //! Names, tokens and keys are fake; URLs are assembled at run time.
 
 use yw_app::apikeys::{
-    APIKEYS_ENTROPY, ApiKeys, KeyName, TemplateCred, TemplateEntry, mask_url, template_entry,
-    template_url,
+    APIKEYS_ENTROPY, APIKEYS_MAX_ACTIVE, APIKEYS_MAX_ENTRIES, ApiKeys, KeyName, TemplateCred,
+    TemplateEntry, is_registered, mask_url, template_entry, template_url,
 };
 use yw_app::network::{BtcNet, NetworkId, SolCluster};
-use yw_app::settings::{RpcTemplate, Settings};
+use yw_app::settings::{EvmChainDef, MAX_CUSTOM_EVM_CHAINS, RpcTemplate, Settings};
+use yw_core::evm::chain::SimulationSupport;
 use yw_core::secret::Zeroizing;
 use yw_win::http::HttpsUrl;
 
@@ -84,13 +85,104 @@ fn forty_two_entries_round_trip() {
     assert!(decoded.keys.has(KeyName::TplQuickNode));
 }
 
+/// Settings with the most user EVM chains a user can register (spec/04 §2.17).
+fn settings_with_all_user_chains() -> Settings {
+    let evm_chains = (100_000_u64..)
+        .zip(0..MAX_CUSTOM_EVM_CHAINS)
+        .map(|(chain_id, index)| EvmChainDef {
+            chain_id,
+            name: format!("Chain {index}"),
+            symbol: "ETH".to_owned(),
+            decimals: 18,
+            quicknode_subdomain: None,
+            alchemy_label: None,
+            explorer: None,
+            simulation: SimulationSupport::Auto,
+            genesis_hash: [0x11; 32],
+        })
+        .collect();
+    Settings {
+        evm_chains,
+        ..Settings::default()
+    }
+}
+
+#[test]
+fn every_entry_a_user_can_store_is_read_back() {
+    // 2026-11-13: the bound was 48, below this full set (49), so the file written for it was
+    // rejected as a whole (E-KEY-001) at the next start.
+    let settings = settings_with_all_user_chains();
+    let registered = |network: NetworkId| is_registered(&settings, network);
+    let mut networks: Vec<NetworkId> = settings
+        .registered_evm()
+        .into_iter()
+        .map(NetworkId::Eip155)
+        .collect();
+    networks.extend([
+        NetworkId::Solana(SolCluster::Mainnet),
+        NetworkId::Solana(SolCluster::Devnet),
+        NetworkId::Bitcoin(BtcNet::Mainnet),
+        NetworkId::Bitcoin(BtcNet::Testnet4),
+        NetworkId::Zcash(yw_core::zec::ZecNetwork::Mainnet),
+        NetworkId::Zcash(yw_core::zec::ZecNetwork::Testnet),
+    ]);
+    let mut keys = ApiKeys::default();
+    keys.set_quicknode(NAME, TOKEN);
+    keys.set_alchemy(KEY);
+    keys.set_llm("local-model-key", Some("llm.example:8443"));
+    for (index, network) in networks.iter().enumerate() {
+        keys.set_rpc(*network, &HttpsUrl::parse(&long_url(index)).unwrap());
+    }
+    assert_eq!(keys.names().len(), APIKEYS_MAX_ACTIVE);
+    assert_eq!(APIKEYS_MAX_ACTIVE, 49);
+    let bytes = keys.encode();
+    assert_eq!(usize::from(bytes[8]), APIKEYS_MAX_ACTIVE);
+    assert!(bytes.len() < 131_072);
+    let decoded = ApiKeys::decode(&bytes, &registered).unwrap();
+    assert!(decoded.orphans.is_empty());
+    assert_eq!(decoded.keys.names().len(), APIKEYS_MAX_ACTIVE);
+    assert_eq!(decoded.keys.endpoints().len(), networks.len());
+    assert_eq!(decoded.keys.llm_host(), Some("llm.example:8443"));
+    assert_eq!(decoded.keys.encode().as_slice(), bytes.as_slice());
+
+    // The rest of the bound keeps dormant entries (an orphan and a newer version's names) next to
+    // the full set; past it the last dormant ones are left out, never an active one.
+    let mut grown = bytes.to_vec();
+    let dormant = APIKEYS_MAX_ENTRIES - APIKEYS_MAX_ACTIVE;
+    grown[8] = u8::try_from(APIKEYS_MAX_ENTRIES).unwrap();
+    grown.extend(entry("rpc:eip155:84532", &long_url(90)));
+    for index in 1..dormant {
+        grown.extend(entry(&format!("tpl:future{index}"), KEY));
+    }
+    assert!(grown.len() < 131_072);
+    let mut kept = ApiKeys::decode(&grown, &registered).unwrap().keys;
+    assert_eq!(kept.dormant_names().len(), dormant);
+    assert_eq!(kept.encode().as_slice(), grown.as_slice());
+    let mut over = grown.clone();
+    over[8] = u8::try_from(APIKEYS_MAX_ENTRIES + 1).unwrap();
+    over.extend(entry("tpl:future99", KEY));
+    assert!(ApiKeys::decode(&over, &registered).is_err());
+    kept.remove(KeyName::Llm);
+    kept.set_llm("local-model-key", Some("llm.example:8443"));
+    kept.set_rpc(
+        NetworkId::Eip155(100_000),
+        &HttpsUrl::parse("https://replaced.example/").unwrap(),
+    );
+    let rewritten = kept.encode();
+    assert_eq!(usize::from(rewritten[8]), APIKEYS_MAX_ENTRIES);
+    let again = ApiKeys::decode(&rewritten, &registered).unwrap().keys;
+    assert_eq!(again.names().len(), APIKEYS_MAX_ACTIVE);
+    assert_eq!(again.dormant_names().len(), dormant);
+}
+
 #[test]
 fn format_errors_reject_everything() {
     let good = full_set();
     let mut cases: Vec<Vec<u8>> = Vec::new();
-    let mut count_49 = plaintext(&good[..1]);
-    count_49[8] = 49;
-    cases.push(count_49);
+    // 2026-11-13: the bound is 56 (48 before).
+    let mut count_57 = plaintext(&good[..1]);
+    count_57[8] = 57;
+    cases.push(count_57);
     cases.push(plaintext(&[
         ("llm".to_owned(), "a".to_owned()),
         ("llm".to_owned(), "b".to_owned()),
@@ -222,18 +314,18 @@ fn unknown_entry_names_are_kept_verbatim() {
     );
     assert_eq!(decoded.keys.names().len(), 10);
     assert_eq!(decoded.keys.encode().as_slice(), bytes.as_slice());
-    // Dormant entries give way to the 48-entry bound; the active entries always fit.
+    // Dormant entries give way to the 56-entry bound; the active entries always fit.
     let mut keys = ApiKeys::decode(&bytes, &all_registered).unwrap().keys;
-    for index in 0..38_u64 {
+    for index in 0..46_u64 {
         keys.set_rpc(
             NetworkId::Eip155(20_000 + index),
             &HttpsUrl::parse(&format!("https://h{index}.example/")).unwrap(),
         );
     }
     let capped = keys.encode();
-    assert_eq!(capped[8], 48);
+    assert_eq!(usize::from(capped[8]), APIKEYS_MAX_ENTRIES);
     let again = ApiKeys::decode(&capped, &all_registered).unwrap();
-    assert_eq!(again.keys.names().len(), 48);
+    assert_eq!(again.keys.names().len(), APIKEYS_MAX_ENTRIES);
     assert!(again.keys.dormant_names().is_empty());
 }
 

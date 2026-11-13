@@ -15,8 +15,8 @@ mod session;
 
 pub use format::{check_vault_header, peek_generation};
 pub use session::{
-    HardwareKey, ImportedKeys, MnemonicInfo, PasswordChange, PendingPassphrase, SidecarContents,
-    Vault,
+    HardwareKey, ImportedKeys, MnemonicInfo, PasswordChange, PendingPassphrase, SidecarCheck,
+    SidecarContents, Vault,
 };
 
 /// `vault.ywv` magic.
@@ -50,7 +50,8 @@ pub const PAYLOAD_CT_MIN: u32 = 80;
 /// Largest payload ciphertext: 16 + 8 × 64 (24-word `Bip39` records, spec/02 §4.6 "여러 복구
 /// 단어") + 15 × (57 + 89 + 60) imported keys plus 8 × (25 + 12 + 24 × 48) hardware key
 /// references (spec/10 §8) plus the 16-byte tag is 13,146 bytes, plus 15 × 58 imported Zcash
-/// keys (tag 6, spec/12 §2.3) = 14,016; files written before key import never exceed 2,048,
+/// keys (tag 6, spec/12 §2.3) = 14,016, plus the 33-byte `PrevDek` block while a DEK rotation is
+/// unfinished (spec/02 §4.4) = 14,049; files written before key import never exceed 2,048,
 /// before hardware keys 4,096.
 pub const PAYLOAD_CT_MAX: u32 = 16_384;
 /// Recovery phrases (`Bip39` records) in one vault (2026-11-07: several mnemonics).
@@ -130,6 +131,44 @@ pub trait VaultStorage: Send {
     ///
     /// A [`StorageError`] for I/O failures.
     fn quarantine(&mut self, kind: FileKind, now_unix: u64) -> Result<(), StorageError>;
+    /// The other copies of a sidecar (`Meta`/`Journal`) in the folder that the app keeps for
+    /// restoring by hand: the set-aside `<name>.corrupt-<t>` and `<name>.prev.corrupt-<t>`
+    /// (spec/02 §6.3 E-VLT-006), and a `<name>.prev` left without a main file. A DEK rotation
+    /// re-seals the ones that open under the previous DEK (spec/02 §4.4 step 3, 2026-11-13), so
+    /// a copy restored after a password change still opens. The names are the storage's own;
+    /// the default (a storage without such copies) has none.
+    ///
+    /// # Errors
+    ///
+    /// A [`StorageError`] when the folder cannot be listed.
+    fn copies(&self, kind: FileKind) -> Result<Vec<String>, StorageError> {
+        let _ = kind;
+        Ok(Vec::new())
+    }
+    /// Reads one copy named by [`VaultStorage::copies`], `None` if it is gone.
+    ///
+    /// # Errors
+    ///
+    /// A [`StorageError`] for I/O failures (`TooLarge` above the sidecar bound).
+    fn load_copy(&self, kind: FileKind, name: &str) -> Result<Option<Vec<u8>>, StorageError> {
+        let _ = (kind, name);
+        Ok(None)
+    }
+    /// Atomically replaces one copy named by [`VaultStorage::copies`] with `bytes` (temporary
+    /// file → flush → replace → folder flush; never a main file or the `.prev` of one).
+    ///
+    /// # Errors
+    ///
+    /// A [`StorageError`]; on failure the copy is either the old or the new bytes.
+    fn replace_copy(
+        &mut self,
+        kind: FileKind,
+        name: &str,
+        bytes: &[u8],
+    ) -> Result<(), StorageError> {
+        let _ = (kind, name, bytes);
+        Err(StorageError::NotFound)
+    }
 }
 
 /// The single resident secret buffer (D10), backed by a `VirtualLock` page in yw-app.

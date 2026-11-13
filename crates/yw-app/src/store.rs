@@ -58,6 +58,22 @@ fn with_suffix(dir: &Path, kind: FileKind, suffix: &str) -> PathBuf {
     dir.join(format!("{}{suffix}", file_name(kind)))
 }
 
+/// Temporary file of [`VaultStorage::replace_copy`] (removed as an orphan on open).
+const COPY_TMP: &str = ".copy.tmp";
+
+/// Whether `name` is a set-aside copy of `kind` (`<name>.corrupt-<digits>` or
+/// `<name>.prev.corrupt-<digits>`, spec/02 §6.3), so a name from the folder listing never
+/// reaches another file.
+fn is_set_aside(kind: FileKind, name: &str) -> bool {
+    let Some(rest) = name.strip_prefix(file_name(kind)) else {
+        return false;
+    };
+    let digits = rest
+        .strip_prefix(".corrupt-")
+        .or_else(|| rest.strip_prefix(".prev.corrupt-"));
+    digits.is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+}
+
 /// Whether `<name>.prev` exists in `dir` (a metadata check only, no read; the UI uses it to offer
 /// `.prev` recovery, spec/04 §2.5 S07/S09).
 #[must_use]
@@ -106,6 +122,7 @@ impl FileStorage {
         for kind in [FileKind::Vault, FileKind::Meta, FileKind::Journal] {
             remove_if_present(&with_suffix(dir, kind, ".tmp"))?;
             remove_if_present(&with_suffix(dir, kind, ".prev.tmp"))?;
+            remove_if_present(&with_suffix(dir, kind, COPY_TMP))?;
         }
         Ok(Self {
             dir: dir.to_path_buf(),
@@ -299,6 +316,71 @@ impl VaultStorage for FileStorage {
     fn quarantine(&mut self, kind: FileKind, now_unix: u64) -> Result<(), StorageError> {
         let target = with_suffix(&self.dir, kind, &format!(".corrupt-{now_unix}"));
         rename_no_replace(&self.path(kind), &target).map_err(storage_error)
+    }
+
+    /// The set-aside `<name>.corrupt-<t>` / `<name>.prev.corrupt-<t>` files of a sidecar, and
+    /// `<name>.prev` when there is no main file (2026-11-13, spec/02 §4.4 step 3). Links and
+    /// other reparse points are left out (never followed, review L8).
+    fn copies(&self, kind: FileKind) -> Result<Vec<String>, StorageError> {
+        if kind == FileKind::Vault {
+            return Ok(Vec::new());
+        }
+        let mut names = Vec::new();
+        for entry in fs::read_dir(&self.dir).map_err(|error| storage_error(error.into()))? {
+            let entry = entry.map_err(|error| storage_error(error.into()))?;
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                continue;
+            };
+            if is_set_aside(kind, &name) && reject_reparse_point(&entry.path()).is_ok() {
+                names.push(name);
+            }
+        }
+        names.sort();
+        let prev = with_suffix(&self.dir, kind, ".prev");
+        if !self.path(kind).exists() && prev.is_file() && reject_reparse_point(&prev).is_ok() {
+            names.push(format!("{}.prev", file_name(kind)));
+        }
+        Ok(names)
+    }
+
+    fn load_copy(&self, kind: FileKind, name: &str) -> Result<Option<Vec<u8>>, StorageError> {
+        Self::read(&self.copy_path(kind, name)?, kind)
+    }
+
+    fn replace_copy(
+        &mut self,
+        kind: FileKind,
+        name: &str,
+        bytes: &[u8],
+    ) -> Result<(), StorageError> {
+        if u64::try_from(bytes.len()).map_or(true, |len| len > max_size(kind)) {
+            return Err(StorageError::TooLarge);
+        }
+        let target = self.copy_path(kind, name)?;
+        reject_reparse_point(&self.dir).map_err(storage_error)?;
+        reject_reparse_point(&target).map_err(storage_error)?;
+        if !target.is_file() {
+            return Err(StorageError::NotFound);
+        }
+        let tmp = with_suffix(&self.dir, kind, COPY_TMP);
+        remove_if_present(&tmp)?;
+        write_new_synced(&tmp, bytes).map_err(storage_error)?;
+        if let Err(error) = replace_file(&tmp, &target) {
+            let _ = fs::remove_file(&tmp);
+            return Err(storage_error(error));
+        }
+        flush_dir(&self.dir).map_err(storage_error)
+    }
+}
+
+impl FileStorage {
+    /// The path of a copy named by [`VaultStorage::copies`]; any other name is refused.
+    fn copy_path(&self, kind: FileKind, name: &str) -> Result<PathBuf, StorageError> {
+        let lone_prev = format!("{}.prev", file_name(kind));
+        if kind == FileKind::Vault || !(is_set_aside(kind, name) || name == lone_prev) {
+            return Err(StorageError::NotFound);
+        }
+        Ok(self.dir.join(name))
     }
 }
 

@@ -1,5 +1,6 @@
 //! Regressions from adversarial review: a deleted imported Bitcoin key whose follow-up meta write
-//! fails, and a password change whose follow-up rewrite fails after the `Rewrap` landed.
+//! fails, a password change whose follow-up rewrite fails after the `Rewrap` landed, and the DEK
+//! rotation around sidecars this build cannot read or that E-VLT-006 set aside.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -10,6 +11,7 @@ use yw_app::meta;
 use yw_app::store::{FileStorage, LockedSlotBox};
 use yw_app::workers::journal::JournalState;
 use yw_app::workers::journal::btc::{BtcKeyError, BtcMetaOp};
+use yw_app::workers::key::sidecar_readable;
 use yw_core::btc::{BtcAccounts, BtcNetwork, ScriptType};
 use yw_core::error::{StorageError, VaultError};
 use yw_core::keyimport::{ImportChain, ImportKey, ImportSpec};
@@ -237,7 +239,8 @@ impl VaultStorage for StopAfterPrev {
 }
 
 /// A password change whose follow-up rewrite fails after the `Rewrap` landed: the new password
-/// is in effect, so the result is success (with the `.prev` warning), never "failed".
+/// (and the new DEK, spec/02 §4.4) is in effect, so the result is success (with the `.prev`
+/// warning), never "failed"; the next unlock finishes the DEK rotation.
 #[test]
 fn password_change_after_landed_rewrap_reports_success() -> TestResult {
     let dir = temp_dir("pwchange")?;
@@ -246,14 +249,14 @@ fn password_change_after_landed_rewrap_reports_success() -> TestResult {
         inner: FileStorage::open(&dir).map_err(|e| format!("{e:?}"))?,
         dir: dir.clone(),
         vault_commits: Arc::clone(&commits),
-        fail_on: 3, // 1 = import_mnemonic, 2 = Rewrap, 3 = the follow-up PayloadRewrite
+        fail_on: 3, // 1 = import_mnemonic, 2 = Rewrap (new DEK), 3 = the follow-up PayloadRewrite
     }))?;
     let old = password(b"old-password-123")?;
     let new = password(b"new-password-456")?;
     vault.import_mnemonic(&old, ABANDON, None, slot()?, 1_793_000_000)?;
 
     assert_eq!(
-        vault.change_password(&old, &new),
+        vault.change_password(&old, &new, &sidecar_readable),
         Ok(PasswordChange::PrevNotRefreshed)
     );
     assert!(
@@ -262,12 +265,122 @@ fn password_change_after_landed_rewrap_reports_success() -> TestResult {
     );
     // The new password is the one in effect, in this session and after a restart.
     assert_eq!(
-        vault.change_password(&old, &new),
+        vault.change_password(&old, &new, &sidecar_readable),
         Err(VaultError::UnlockFailed)
     );
     vault.lock();
     assert_eq!(vault.unlock(&old, slot()?), Err(VaultError::UnlockFailed));
     assert!(vault.unlock(&new, slot()?).is_ok());
+    drop(vault);
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+/// Every file in the data folder with its bytes, sorted by name.
+fn folder(dir: &std::path::Path) -> TestResult<Vec<(String, Vec<u8>)>> {
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        files.push((name, std::fs::read(entry.path())?));
+    }
+    files.sort();
+    Ok(files)
+}
+
+/// A meta this build cannot read (a newer build's format) with a readable older `.prev`: the
+/// password change is refused with E-VLT-006 before anything is written (the rotation would push
+/// that `.prev` out), and the `.prev` choice still finds a readable copy. A newer journal the same.
+#[test]
+fn password_change_refuses_a_newer_format_sidecar() -> TestResult {
+    let dir = temp_dir("pwnewer")?;
+    let mut vault = Vault::load(Box::new(
+        FileStorage::open(&dir).map_err(|e| format!("{e:?}"))?,
+    ))?;
+    let old = password(b"old-password-123")?;
+    let new = password(b"new-password-456")?;
+    vault.import_mnemonic(&old, ABANDON, None, slot()?, 1_793_000_000)?;
+    vault.save_sidecar(FileKind::Meta, &meta::Meta::default().to_json())?;
+    vault.save_sidecar(FileKind::Meta, b"\x00a newer meta format")?;
+    let journal = yw_core::journal::JournalPlain::default()
+        .encode()
+        .map_err(|e| format!("{e:?}"))?;
+    vault.save_sidecar(FileKind::Journal, &journal)?;
+    let before = folder(&dir)?;
+
+    assert_eq!(
+        vault.change_password(&old, &new, &sidecar_readable),
+        Err(VaultError::SidecarUnsupported(FileKind::Meta))
+    );
+    assert_eq!(folder(&dir)?, before);
+    let (_, prev) = vault
+        .open_sidecar_prev(FileKind::Meta)?
+        .ok_or("no meta .prev")?;
+    assert!(sidecar_readable(FileKind::Meta, prev.expose()));
+
+    // Meta readable again, a newer journal: refused the same way.
+    vault.save_sidecar(FileKind::Meta, &meta::Meta::default().to_json())?;
+    vault.save_sidecar(FileKind::Journal, b"\x00a newer journal format")?;
+    let before = folder(&dir)?;
+    assert_eq!(
+        vault.change_password(&old, &new, &sidecar_readable),
+        Err(VaultError::SidecarUnsupported(FileKind::Journal))
+    );
+    assert_eq!(folder(&dir)?, before);
+    vault.lock();
+    assert!(vault.unlock(&old, slot()?).is_ok());
+    drop(vault);
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+/// E-VLT-006 "격리하고 새로 시작" moved meta and its `.prev` aside before a password change: the
+/// change re-seals those copies under the new key, so putting one back by hand (recovery guide
+/// "옮겨 둔 meta·저널을 직접 되돌리기") still opens after the change.
+#[test]
+fn set_aside_meta_still_restores_after_a_password_change() -> TestResult {
+    let dir = temp_dir("pwaside")?;
+    let mut vault = Vault::load(Box::new(
+        FileStorage::open(&dir).map_err(|e| format!("{e:?}"))?,
+    ))?;
+    let old = password(b"old-password-123")?;
+    let new = password(b"new-password-456")?;
+    vault.import_mnemonic(&old, ABANDON, None, slot()?, 1_793_000_000)?;
+    let mut first = meta::Meta::default();
+    first.security.vault_generation_seen = 7;
+    vault.save_sidecar(FileKind::Meta, &first.to_json())?;
+    vault.save_sidecar(FileKind::Meta, b"\x00a newer meta format")?;
+    // The key worker's E-VLT-006 fresh start (its own `FileStorage` on the same folder).
+    let mut side = FileStorage::open(&dir).map_err(|e| format!("{e:?}"))?;
+    let main_name = side
+        .quarantine_main(FileKind::Meta, 1_793_000_100)
+        .map_err(|e| format!("{e:?}"))?
+        .ok_or("no meta")?;
+    let prev_name = side
+        .set_prev_aside(FileKind::Meta, 1_793_000_100)
+        .map_err(|e| format!("{e:?}"))?
+        .ok_or("no meta .prev")?;
+    assert!(vault.open_sidecar(FileKind::Meta)?.is_none());
+    vault.save_sidecar(FileKind::Meta, &meta::Meta::default().to_json())?;
+
+    assert_eq!(
+        vault.change_password(&old, &new, &sidecar_readable),
+        Ok(PasswordChange::Complete)
+    );
+    vault.lock();
+    // Put the newer-format copy back, then the readable older one.
+    for (name, expected) in [
+        (&main_name, b"\x00a newer meta format".to_vec()),
+        (&prev_name, first.to_json()),
+    ] {
+        std::fs::remove_file(dir.join("meta.ywm"))?;
+        std::fs::rename(dir.join(name), dir.join("meta.ywm"))?;
+        assert!(vault.unlock(&new, slot()?).is_ok());
+        let (_, plain) = vault.open_sidecar(FileKind::Meta)?.ok_or("no meta")?;
+        assert_eq!(plain.expose(), expected.as_slice());
+        vault.lock();
+    }
+    assert_eq!(vault.unlock(&old, slot()?), Err(VaultError::UnlockFailed));
     drop(vault);
     let _ = std::fs::remove_dir_all(&dir);
     Ok(())

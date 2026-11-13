@@ -2353,13 +2353,20 @@ impl App {
                     "approval.consumed",
                     &[("net", Field::Net(item.network()))],
                 );
-                let reply = match &item {
-                    QueuedItem::Site(site) => Some(site.reply),
-                    QueuedItem::App(_)
-                    | QueuedItem::Sol(_)
-                    | QueuedItem::Btc(_)
-                    | QueuedItem::Zec(_)
-                    | QueuedItem::HyperCore(_) => None,
+                // An EVM dApp request's answer and the grant it needs: the signature or hash goes
+                // to the site only while its grant still names the signing account (spec/05
+                // §4.5, 2026-11-13).
+                let site_answer = match (&item, approved.account()) {
+                    (QueuedItem::Site(site), yw_core::approval::AccountRef::Evm(account)) => {
+                        Some((
+                            site.reply,
+                            crate::app_browser::SiteSigner {
+                                origin: site.origin.clone(),
+                                account,
+                            },
+                        ))
+                    }
+                    _ => None,
                 };
                 if let QueuedItem::Sol(sol) = &item
                     && request.kind == yw_core::approval::ApprovalKind::SolTransfer
@@ -2426,10 +2433,20 @@ impl App {
                         kind @ (yw_core::approval::ApprovalKind::EvmPersonalSign
                         | yw_core::approval::ApprovalKind::EvmTypedData),
                     ) => {
-                        let waiter = reply.map_or(
-                            crate::app_browser::SignWaiter::App,
-                            crate::app_browser::SignWaiter::Message,
-                        );
+                        let waiter = match (&item, site_answer) {
+                            (QueuedItem::Site(_), Some((reply, signer))) => {
+                                crate::app_browser::SignWaiter::Message(reply, signer)
+                            }
+                            (QueuedItem::Site(_), None) => {
+                                self.show_failure(
+                                    ErrorCode::App009,
+                                    false,
+                                    ErrorCode::App009.text(),
+                                );
+                                return;
+                            }
+                            _ => crate::app_browser::SignWaiter::App,
+                        };
                         let ticket = self.push_sign_waiter(waiter);
                         let typed = kind == yw_core::approval::ApprovalKind::EvmTypedData;
                         // A YubiKey account signs on the card after its PIN (spec/10 §9.2).
@@ -2447,10 +2464,20 @@ impl App {
                     }
                     (Some(prepared), _) => {
                         let (origin, waiter) = match &item {
-                            QueuedItem::Site(site) => (
-                                self.site_origin_text(site),
-                                crate::app_browser::SignWaiter::Tx(site.reply),
-                            ),
+                            QueuedItem::Site(site) => {
+                                let Some((reply, signer)) = site_answer else {
+                                    self.show_failure(
+                                        ErrorCode::App009,
+                                        false,
+                                        ErrorCode::App009.text(),
+                                    );
+                                    return;
+                                };
+                                (
+                                    self.site_origin_text(site),
+                                    crate::app_browser::SignWaiter::Tx(reply, signer),
+                                )
+                            }
                             QueuedItem::App(_)
                             | QueuedItem::Sol(_)
                             | QueuedItem::Btc(_)

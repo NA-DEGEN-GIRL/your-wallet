@@ -18,6 +18,7 @@
 //! flows through the existing signing outcomes.
 
 use yw_core::approval::Approved;
+use yw_core::policy::ProviderError;
 use yw_core::secret::Zeroizing;
 use yw_core::yubikey::CardError;
 use yw_core::yubikey::plan::{KeyRole, PlannedSlot};
@@ -140,6 +141,12 @@ pub struct CardNotice {
 pub const T_CARD_TOUCH: &str = "PIN을 확인하는 중… YubiKey가 깜박이면 15초 안에 터치하세요";
 /// The cancel note of the card step.
 pub const T_CARD_CANCELLED: &str = "YubiKey 서명을 취소했습니다. 아무것도 서명하지 않았습니다.";
+/// A dApp request waiting for its PIN whose site was disconnected (spec/10 §9.2, 2026-11-13).
+pub const T_CARD_SITE_REVOKED: &str =
+    "사이트 연결이 해제되어 YubiKey 서명을 취소했습니다. 아무것도 서명하지 않았습니다.";
+/// A dApp request waiting for its PIN that its page ended — closed, reloaded or cancelled
+/// (spec/10 §9.2, 2026-11-13).
+pub const T_CARD_SITE_GONE: &str = "사이트의 요청이 끝나(페이지를 닫았거나 이동함) YubiKey 서명을 취소했습니다. 아무것도 서명하지 않았습니다.";
 
 /// The card signatures (touches) a card job needs (spec/10 §6.4): one per input of a Bitcoin or
 /// Zcash plan, one per transaction of a sign-only Solana dApp request, otherwise one.
@@ -306,6 +313,11 @@ pub struct CardUi {
     pub list_defaults: Vec<(u32, yw_core::yubikey::enrol::DefaultsSeen)>,
     /// The card step's touch prompt where it was placed (2026-11-10).
     pub notice: Option<CardNotice>,
+    /// The waiter ticket of a step [`App::card_site_check`] ended while the worker's failure of
+    /// its refused PIN was still to come (2026-11-13): that failure is dropped once, as the
+    /// step's own `swallow_failure` would have — the step ended because its site went away, and
+    /// no card error band is shown beside that notice.
+    ended_unused: Option<SignTicket>,
 }
 
 impl CardUi {
@@ -333,6 +345,7 @@ impl CardUi {
         self.list_protected.clear();
         self.list_defaults.clear();
         self.notice = None;
+        self.ended_unused = None;
     }
 
     /// The factory values seen for card `serial` in this session ([`CardUi::list_defaults`]).
@@ -992,9 +1005,16 @@ impl App {
             .map(|step| step.id)
     }
 
-    /// W11 submitted: the PIN (moved) and the held approval go to the card job.
+    /// W11 submitted: the PIN (moved) and the held approval go to the card job — unless the
+    /// step's dApp request can no longer be answered (its page went away or its site's grant no
+    /// longer names the signer, [`Self::card_site_check`]): then the PIN is wiped unused and
+    /// nothing is signed.
     pub(crate) fn card_submit(&mut self, id: u64, pin: Zeroizing<Vec<u8>>) {
         self.close_secret();
+        if self.card_waiting(id) && self.card_site_check() {
+            drop(pin);
+            return;
+        }
         let now = now_ms();
         let Some(step) = self.card.step.as_mut().filter(|step| step.id == id) else {
             drop(pin);
@@ -1107,6 +1127,80 @@ impl App {
         self.card_resolve_cancelled(step);
         self.card_notice_set(form, T_CARD_CANCELLED.to_owned(), false);
         self.refresh();
+    }
+
+    /// Why the dApp request of the card step waiting for its PIN can no longer be signed for
+    /// (spec/05 §4.5, spec/10 §9.2, 2026-11-13): its page went away — closed, reloaded,
+    /// navigated or the request cancelled, so the dispatcher no longer holds it — (4001), or its
+    /// site's grant no longer names the signer — a disconnect in S13 or by the dApp itself
+    /// (`wallet_revokePermissions`, `sol_disconnect`, `btc_disconnect`), a `WalletConnect`
+    /// session ended, the account hidden or removed — (4100). `None` for an app send, a step
+    /// past its PIN, or a request that can still be answered.
+    fn card_site_gone(&self) -> Option<ProviderError> {
+        let ticket = self
+            .card
+            .step
+            .as_ref()
+            .filter(|step| step.approved.is_some())?
+            .ticket?;
+        let browser = self.browser.as_ref()?;
+        let waiter = browser.waiters.get(&ticket)?;
+        let reply = waiter.reply()?;
+        if !browser.core.is_pending(&reply) {
+            return Some(ProviderError::UserRejected);
+        }
+        (!self.waiter_grant_holds(waiter)).then_some(ProviderError::Unauthorized)
+    }
+
+    /// Ends the card step waiting for its PIN when its dApp request can no longer be answered
+    /// ([`Self::card_site_gone`]): W11 closes, the held approval is dropped (nothing is signed),
+    /// the waiter gets 4100 (grant gone) or 4001 (page gone), the step's send slot is released
+    /// and the header band says why. Returns whether it ended. A step past its PIN is left alone:
+    /// its card job finishes (an APDU already sent completes, spec/10 §10) and its answer checks
+    /// the grant again (spec/05 §4.5). Called on every revoke, account removal and page cancel,
+    /// at PIN submission and before W11 opens again after a refused PIN.
+    pub(crate) fn card_site_check(&mut self) -> bool {
+        let Some(error) = self.card_site_gone() else {
+            return false;
+        };
+        let Some(step) = self.card.step.take() else {
+            return false;
+        };
+        if self.secret_purpose() == Some(Purpose::CardSign(step.id)) {
+            self.close_secret();
+        }
+        logging::info("app", "card.site_ended", &[]);
+        self.card_notice_clear();
+        let CardStep {
+            ticket,
+            kind,
+            approved,
+            swallow_failure,
+            ..
+        } = step;
+        drop(approved);
+        if swallow_failure {
+            // Ended between a refused PIN's returned approval and that job's failure (from
+            // `card_unused` itself, or a revoke in between): the failure still comes and is not
+            // shown (2026-11-13; before, it reached `on_signed`, whose red card-error band
+            // contradicted this notice).
+            self.card.ended_unused = ticket;
+        }
+        if let Some(reply) = ticket
+            .and_then(|ticket| self.take_sign_waiter(ticket))
+            .and_then(|waiter| waiter.reply())
+        {
+            self.respond(&reply, Err(error.clone()));
+        }
+        self.card_release(&kind, ticket);
+        let text = if error == ProviderError::Unauthorized {
+            T_CARD_SITE_REVOKED
+        } else {
+            T_CARD_SITE_GONE
+        };
+        self.card_notice_set(CardForm::Site, text.to_owned(), false);
+        self.refresh();
+        true
     }
 
     /// The form that opened a step of `kind` (its waiter `ticket`).
@@ -1330,7 +1424,26 @@ impl App {
             crate::yubikey::PinContext::of(&self.card.records, serial, kind)
         });
         step.error = Some(error.text_for_in(kind, &context));
+        // A site disconnected (or a page gone) while the card checked the PIN: the step ends
+        // here instead of asking for the PIN again (2026-11-13).
+        if self.card_site_check() {
+            return;
+        }
         self.card_open_pin();
+    }
+
+    /// The waiter ticket of a dApp signing outcome (EVM transaction or message, Solana or Bitcoin
+    /// message, Solana dApp send).
+    fn card_outcome_ticket(outcome: &KeyOutcome) -> Option<SignTicket> {
+        match outcome {
+            KeyOutcome::SignedEvm(EvmSigned { ticket, .. })
+            | KeyOutcome::SignedMessage(MessageSigned { ticket, .. })
+            | KeyOutcome::SignedChainMessage(ChainMessageSigned { ticket, .. })
+            | KeyOutcome::SignedSolDapp(crate::events::SolDappSigned { ticket, .. }) => {
+                Some(*ticket)
+            }
+            _ => None,
+        }
     }
 
     /// Whether `outcome` is the final outcome of the card step's job.
@@ -1363,6 +1476,13 @@ impl App {
             // The card answered (the PIN is asked again or the step ends): no touch is due.
             self.card_notice_clear();
             self.card_unused(approved, error);
+            return None;
+        }
+        // The failure of a refused PIN whose step ended because its site went away (2026-11-13).
+        if self.card.ended_unused.is_some()
+            && Self::card_outcome_ticket(&outcome) == self.card.ended_unused
+        {
+            self.card.ended_unused = None;
             return None;
         }
         let Some(step) = self.card.step.as_ref() else {

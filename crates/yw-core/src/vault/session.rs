@@ -79,16 +79,30 @@ pub struct ImportedKeys {
     pub zec: Vec<(RecordId, crate::keyimport::ZecKeyInfo)>,
 }
 
-/// A password change that took effect (spec/02 §4.4): the `Rewrap` commit landed, so the new
-/// password is the one that opens `vault.ywv` from now on.
+/// The outcome of a password change that did not fail cleanly (spec/02 §4.4). `Complete` and
+/// `PrevNotRefreshed`: the `Rewrap` commit with the new password and a new DEK landed, so the new
+/// password is the one that opens `vault.ywv` from now on. `Unconfirmed`: it is unknown whether
+/// it landed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PasswordChange {
-    /// The follow-up `PayloadRewrite` also landed: `vault.ywv.prev` uses the new password too.
+    /// Every follow-up step landed: `vault.ywv.prev`, meta, journal, their `.prev` and the copies
+    /// the app set aside use the new DEK, and no sidecar in the folder opens with the old one.
     Complete,
-    /// The follow-up `PayloadRewrite` failed: the new password is in effect, but
-    /// `vault.ywv.prev` may still open only with the OLD password (a later save refreshes it).
+    /// A follow-up step failed: the new password and DEK are in effect, but `vault.ywv.prev`
+    /// may still open only with the OLD password, or meta/journal may still be sealed under the
+    /// old DEK. Those files hold only what was there before the change; the next unlock or
+    /// sidecar save finishes the rotation (2026-11-13).
     PrevNotRefreshed,
+    /// The `Rewrap` write reported a failure and `vault.ywv` could not be read back, so whether
+    /// the new password took effect is unknown (2026-11-13). The vault is now `Locked`, so
+    /// nothing is sealed under either DEK on a guess: the new password opens it if the change
+    /// landed, the old one if it did not, and an unlock with the new one finishes the rotation.
+    Unconfirmed,
 }
+
+/// The caller's check of a sidecar's plaintext before a password change (spec/02 §4.4 step 0):
+/// `false` for a file this build cannot read (yw-app: `SidecarUnsupported`, E-VLT-006).
+pub type SidecarCheck<'a> = &'a dyn Fn(FileKind, &[u8]) -> bool;
 
 /// One recovery phrase of the vault (`Bip39` record, spec/02 §4.6): public facts only. The label
 /// is meta's (yw-app); the record id is the stable mnemonic id.
@@ -154,6 +168,20 @@ impl Known {
     }
 }
 
+/// Progress of a DEK rotation (2026-11-13, spec/02 §4.4). Set while the held payload carries the
+/// previous DEK (`PrevDek`); not secret.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Rotation {
+    /// No previous DEK in the payload.
+    Idle,
+    /// The payload carries the previous DEK, and `vault.ywv.prev` may still be the file from
+    /// before the change (old password, old DEK). Meta and journal are not re-sealed yet: a
+    /// `.prev` recovery could bring that vault back, and it cannot open new-DEK sidecars.
+    VaultPrev,
+    /// `vault.ywv.prev` also holds the new DEK and the previous one: meta and journal move next.
+    Sidecars,
+}
+
 /// The wallet vault. `Send` but not `Sync`: yw-app drives it from one key-worker thread.
 pub struct Vault {
     storage: Box<dyn VaultStorage>,
@@ -179,6 +207,8 @@ pub struct Vault {
     passphrase_target: Option<[u8; 16]>,
     /// A mismatched passphrase was accepted for some mnemonic in this session.
     alt_passphrase: bool,
+    /// An unfinished DEK rotation (spec/02 §4.4).
+    rotation: Rotation,
 }
 
 impl fmt::Debug for Vault {
@@ -597,6 +627,7 @@ impl Vault {
             quarantined_at: None,
             passphrase_target: None,
             alt_passphrase: false,
+            rotation: Rotation::Idle,
         })
     }
 
@@ -793,7 +824,11 @@ impl Vault {
         Ok((bytes, header.vault_id, dek, next, target))
     }
 
-    /// Opens the session on an opened file.
+    /// Opens the session on an opened file. A DEK rotation that a crash or a failed write left
+    /// unfinished (the payload still carries `PrevDek`) resumes here; it needs no KDF, and when it
+    /// fails again it stays pending for the next sidecar save (spec/02 §4.4). A crash between the
+    /// last two rewrites left `PrevDek` only in `vault.ywv.prev`: one more rewrite replaces it.
+    /// Neither is an unlock failure: the session is open either way.
     fn finish_open(&mut self, slot: Slot, opened: Opened) -> Result<VaultStatus, VaultError> {
         let (bytes, vault_id, dek, next, target) = opened;
         self.open_session(slot, &dek, None)?;
@@ -801,6 +836,20 @@ impl Vault {
         self.id = Some(vault_id);
         self.status = next;
         self.passphrase_target = target;
+        let Ok(payload) = self.payload() else {
+            return Ok(next);
+        };
+        if payload.prev_dek.is_some() {
+            drop(payload);
+            self.rotation = Rotation::VaultPrev;
+            if self.resume_rotation().is_err() {
+                return Ok(next);
+            }
+        } else if matches!(self.vault_prev_dek(), Ok(Some(_)))
+            && self.rewrite_payload(&payload).is_err()
+        {
+            return Ok(next);
+        }
         Ok(next)
     }
 
@@ -816,7 +865,225 @@ impl Vault {
             nonce,
             &self.kdf,
         )?;
-        self.commit_vault(Some(generation), bytes)
+        self.commit_vault(Some(generation), bytes)?;
+        // The replaced main file (new DEK + `PrevDek`) is now `vault.ywv.prev`.
+        if self.rotation == Rotation::VaultPrev {
+            self.rotation = Rotation::Sidecars;
+        }
+        Ok(())
+    }
+
+    /// Finishes a DEK rotation (spec/02 §4.4 steps 2–4), idempotent and KDF-free: `vault.ywv.prev`
+    /// to the new DEK first, then meta and journal and their `.prev`, then the copies set aside
+    /// for restoring by hand, then two rewrites without `PrevDek` so neither `vault.ywv` nor its
+    /// `.prev` keeps the old DEK.
+    fn resume_rotation(&mut self) -> Result<(), VaultError> {
+        if self.rotation == Rotation::Idle {
+            return Ok(());
+        }
+        let mut payload = self.payload()?;
+        let Some(previous) = payload.prev_dek.as_ref().map(|dek| Zeroizing::new(**dek)) else {
+            self.rotation = Rotation::Idle;
+            return Ok(());
+        };
+        if self.rotation == Rotation::VaultPrev {
+            if !self.vault_prev_rotated(&previous)? {
+                self.rewrite_payload(&payload)?;
+            }
+            self.rotation = Rotation::Sidecars;
+        }
+        let meta = self.rotate_sidecar(FileKind::Meta, &previous);
+        let journal = self.rotate_sidecar(FileKind::Journal, &previous);
+        meta?;
+        journal?;
+        // The copies set aside for restoring by hand (2026-11-13 review): without this they
+        // would open under no key the wallet keeps once `PrevDek` is gone.
+        self.rotate_copies(FileKind::Meta, &previous)?;
+        self.rotate_copies(FileKind::Journal, &previous)?;
+        payload.prev_dek = None;
+        self.rewrite_payload(&payload)?;
+        self.rotation = Rotation::Idle;
+        self.rewrite_payload(&payload)
+    }
+
+    /// Whether `vault.ywv.prev` opens with the session DEK and carries `previous` as its
+    /// `PrevDek` (so a `.prev` recovery keeps both keys). No KDF: the DEK is in the slot.
+    fn vault_prev_rotated(&self, previous: &[u8; 32]) -> Result<bool, VaultError> {
+        Ok(self
+            .vault_prev_dek()?
+            .is_some_and(|held| bool::from(held.as_slice().ct_eq(previous.as_slice()))))
+    }
+
+    /// The `PrevDek` of `vault.ywv.prev` when that file opens with the session DEK.
+    fn vault_prev_dek(&self) -> Result<Option<Zeroizing<[u8; 32]>>, VaultError> {
+        let Some(prev) = self
+            .storage
+            .load_prev(FileKind::Vault)
+            .map_err(VaultError::Storage)?
+        else {
+            return Ok(None);
+        };
+        let dek = slot_dek(self.slot.as_ref())?;
+        Ok(format::decrypt_payload(&prev, dek, &self.kdf)
+            .ok()
+            .and_then(|mut payload| payload.prev_dek.take()))
+    }
+
+    /// Re-seals one sidecar under the session DEK (spec/02 §4.4 step 3). The plaintext moves as
+    /// opaque bytes, so a file a newer build wrote stays byte for byte. A main file under the
+    /// previous DEK is committed twice (so `<name>.prev` is the new DEK too); a main file already
+    /// under the new DEK whose `.prev` is not, once. A file that opens under neither key is
+    /// `SidecarCorrupt` (E-VLT-006) and keeps the rotation pending.
+    fn rotate_sidecar(&mut self, kind: FileKind, previous: &[u8; 32]) -> Result<(), VaultError> {
+        let index = sidecar_index(kind)?;
+        if let Some(Known::Failed(error)) = self.sidecar_generations.get().get(index).copied() {
+            return Err(error);
+        }
+        let vault_id = self.id.ok_or(VaultError::InvalidState)?;
+        let Some(bytes) = self.storage.load(kind).map_err(VaultError::Storage)? else {
+            self.set_known(index, Known::Absent);
+            return Ok(());
+        };
+        let dek = Zeroizing::new(*slot_dek(self.slot.as_ref())?);
+        let (mut generation, plaintext, commits) =
+            match format::open_sidecar(kind, &bytes, &vault_id, &dek) {
+                Ok((generation, plaintext)) => {
+                    let prev_rotated =
+                        match self.storage.load_prev(kind).map_err(VaultError::Storage)? {
+                            None => true,
+                            Some(prev) => {
+                                format::open_sidecar(kind, &prev, &vault_id, &dek).is_ok()
+                            }
+                        };
+                    (generation, plaintext, u8::from(!prev_rotated))
+                }
+                Err(VaultError::SidecarCorrupt(_)) => {
+                    match format::open_sidecar(kind, &bytes, &vault_id, previous) {
+                        Ok((generation, plaintext)) => (generation, plaintext, 2),
+                        Err(error) => return Err(self.sidecar_failed(index, error)),
+                    }
+                }
+                Err(error) => return Err(self.sidecar_failed(index, error)),
+            };
+        self.set_known(index, Known::Generation(generation));
+        for _ in 0..commits {
+            let next = generation.checked_add(1).ok_or(INTERNAL)?;
+            let nonce = random_array_with::<24>(&mut OsRandom)?;
+            let sealed = format::seal_sidecar(kind, &vault_id, next, &nonce, &dek, &plaintext)?;
+            commit_landed(self.storage.as_mut(), kind, Some(generation), &sealed)
+                .map_err(VaultError::Storage)?;
+            generation = next;
+            self.set_known(index, Known::Generation(generation));
+        }
+        Ok(())
+    }
+
+    /// Re-seals the copies of a sidecar that the app set aside (`<name>.corrupt-<t>`,
+    /// `<name>.prev.corrupt-<t>`, a `.prev` without a main file; [`VaultStorage::copies`]) and
+    /// that open under the previous DEK: same generation, same plaintext byte for byte, the
+    /// session DEK. A copy already under the session DEK is skipped, and so is one that opens
+    /// under neither key (damage, another vault, above the size bound): no key the wallet keeps
+    /// reads it either way. Idempotent; a failed write keeps the rotation pending.
+    fn rotate_copies(&mut self, kind: FileKind, previous: &[u8; 32]) -> Result<(), VaultError> {
+        let vault_id = self.id.ok_or(VaultError::InvalidState)?;
+        let dek = Zeroizing::new(*slot_dek(self.slot.as_ref())?);
+        for name in self.storage.copies(kind).map_err(VaultError::Storage)? {
+            let bytes = match self.storage.load_copy(kind, &name) {
+                Ok(Some(bytes)) => bytes,
+                Ok(None) | Err(StorageError::TooLarge) => continue,
+                Err(error) => return Err(VaultError::Storage(error)),
+            };
+            if format::open_sidecar(kind, &bytes, &vault_id, &dek).is_ok() {
+                continue;
+            }
+            let Ok((generation, plaintext)) =
+                format::open_sidecar(kind, &bytes, &vault_id, previous)
+            else {
+                continue;
+            };
+            let nonce = random_array_with::<24>(&mut OsRandom)?;
+            let sealed =
+                format::seal_sidecar(kind, &vault_id, generation, &nonce, &dek, &plaintext)?;
+            self.storage
+                .replace_copy(kind, &name, &sealed)
+                .map_err(VaultError::Storage)?;
+        }
+        Ok(())
+    }
+
+    /// Remembers a sidecar that failed to open (structure, authentication, other vault) so
+    /// nothing is sealed over it, and returns the error.
+    fn sidecar_failed(&self, index: usize, error: VaultError) -> VaultError {
+        if matches!(
+            error,
+            VaultError::SidecarCorrupt(_) | VaultError::SidecarVaultMismatch(_)
+        ) {
+            self.set_known(index, Known::Failed(error));
+        }
+        error
+    }
+
+    /// Opens sidecar bytes with the session DEK and, while a rotation is unfinished, with the
+    /// previous DEK from the payload (a file not re-sealed yet).
+    fn open_sidecar_bytes(
+        &self,
+        kind: FileKind,
+        bytes: &[u8],
+        vault_id: &[u8; 16],
+    ) -> Result<(u64, Zeroizing<Vec<u8>>), VaultError> {
+        let opened = format::open_sidecar(kind, bytes, vault_id, slot_dek(self.slot.as_ref())?);
+        match opened {
+            Err(VaultError::SidecarCorrupt(_)) if self.rotation != Rotation::Idle => {
+                let payload = self.payload()?;
+                match payload.prev_dek.as_deref() {
+                    Some(previous) => format::open_sidecar(kind, bytes, vault_id, previous)
+                        .map_err(|_| VaultError::SidecarCorrupt(kind)),
+                    None => opened,
+                }
+            }
+            other => other,
+        }
+    }
+
+    /// Before a sidecar save while a rotation is unfinished: try to finish it. A save never seals
+    /// under the new DEK while `vault.ywv.prev` may still be the old-password file (a `.prev`
+    /// recovery would bring back a vault that cannot open it): that case refuses.
+    fn continue_rotation(&mut self) -> Result<(), VaultError> {
+        if self.rotation == Rotation::Idle {
+            return Ok(());
+        }
+        match self.resume_rotation() {
+            Err(error) if self.rotation == Rotation::VaultPrev => Err(error),
+            _ => Ok(()),
+        }
+    }
+
+    /// Opens meta and journal with the session DEK before a password change writes anything
+    /// (spec/02 §4.4 step 0). A file that does not open (`SidecarCorrupt`, `SidecarVaultMismatch`)
+    /// refuses the change: re-sealing around it would also leave its old-DEK `.prev` (the
+    /// E-VLT-006 choice (a)) under a key the vault no longer keeps. So does a file that opens but
+    /// that `readable` rejects (`SidecarUnsupported`, 2026-11-13 review): the rotation would
+    /// commit it twice and push out the older `.prev` this build can still read, the E-VLT-006
+    /// choice that the app keeps unsaved-over while it is open.
+    fn check_sidecars(&self, readable: SidecarCheck<'_>) -> Result<(), VaultError> {
+        let vault_id = self.id.ok_or(VaultError::InvalidState)?;
+        let dek = slot_dek(self.slot.as_ref())?;
+        for kind in [FileKind::Meta, FileKind::Journal] {
+            let index = sidecar_index(kind)?;
+            match self.storage.load(kind).map_err(VaultError::Storage)? {
+                None => self.set_known(index, Known::Absent),
+                Some(bytes) => {
+                    let (generation, plaintext) =
+                        format::open_sidecar(kind, &bytes, &vault_id, dek)
+                            .map_err(|error| self.sidecar_failed(index, error))?;
+                    self.set_known(index, Known::Generation(generation));
+                    if !readable(kind, &plaintext) {
+                        return Err(VaultError::SidecarUnsupported(kind));
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Re-derives the KEK from `password` and compares the unwrapped DEK with the slot (§9).
@@ -850,6 +1117,7 @@ impl Vault {
         self.passphrase_target = None;
         self.alt_passphrase = false;
         self.sidecar_generations.set([Known::Unknown; 2]);
+        self.rotation = Rotation::Idle;
         Ok(())
     }
 
@@ -1186,6 +1454,7 @@ impl Vault {
         self.passphrase_target = None;
         self.alt_passphrase = false;
         self.sidecar_generations.set([Known::Unknown; 2]);
+        self.rotation = Rotation::Idle;
         if matches!(
             self.status,
             VaultStatus::PassphraseRequired
@@ -1550,32 +1819,58 @@ impl Vault {
         Ok(chain)
     }
 
-    /// `Rewrap` with the new password, then one more `PayloadRewrite` so `.prev` also uses the
-    /// new password (spec/02 §4.4). The DEK is unchanged.
+    /// Changes the password and rotates the DEK (spec/02 §4.4, 2026-11-13; before that date the
+    /// DEK was kept and only re-wrapped). The rule: no file the OLD password can open ever holds
+    /// the NEW DEK.
     ///
-    /// Once the `Rewrap` commit has landed the change is in effect and this returns `Ok`: a
-    /// failed follow-up rewrite is [`PasswordChange::PrevNotRefreshed`], never an error (the
-    /// old password no longer opens `vault.ywv`, so "failed" would be false).
+    /// 0. Meta and journal must open and pass `readable` (else their error, nothing written); an
+    ///    unfinished earlier rotation is finished first.
+    /// 1. `Rewrap` under the new password with a new random DEK; the payload carries the old DEK
+    ///    as `PrevDek`. Once it lands the new password and DEK are in effect (slot updated).
+    /// 2. `PayloadRewrite` so `vault.ywv.prev` holds the new DEK and `PrevDek` too.
+    /// 3. Meta and journal re-sealed under the new DEK (twice each, so their `.prev` too), then
+    ///    the copies the app set aside — only after step 2, so a `.prev` recovery never brings
+    ///    back a vault that cannot open them.
+    /// 4. Two `PayloadRewrite`s without `PrevDek`.
+    ///
+    /// A crash or a failed write after step 1 leaves `PrevDek` in the payload: the next unlock or
+    /// sidecar save resumes where it stopped (KDF-free). Once step 1 has landed the change is in
+    /// effect and this returns `Ok`: an unfinished rest is [`PasswordChange::PrevNotRefreshed`],
+    /// never an error (the old password no longer opens `vault.ywv`, so "failed" would be false).
+    /// When the step 1 write fails and `vault.ywv` cannot be read back, nobody knows which file is
+    /// on disk: the session locks and this returns [`PasswordChange::Unconfirmed`].
     ///
     /// # Errors
     ///
-    /// `InvalidState`, `UnlockFailed` for a wrong old password, `OutOfMemory` or `Storage` —
-    /// all with the old password still in effect.
+    /// `InvalidState`, `UnlockFailed` for a wrong old password, `SidecarCorrupt` /
+    /// `SidecarVaultMismatch` for a sidecar that does not open, `SidecarUnsupported` for one that
+    /// `readable` rejects, `RandomnessUnavailable`, `OutOfMemory` or `Storage` — all with the old
+    /// password still in effect.
     pub fn change_password(
         &mut self,
         old: &VaultPassword,
         new: &VaultPassword,
+        readable: SidecarCheck<'_>,
     ) -> Result<PasswordChange, VaultError> {
         self.require_public()?;
         self.verify_password(old)?;
-        let payload = self.payload()?;
+        // One previous DEK at a time.
+        self.resume_rotation()?;
+        self.check_sidecars(readable)?;
+        let mut payload = self.payload()?;
         let current = self.current_bytes()?;
         let header = format::decode_header(current, &self.kdf)?;
         let mut rng = OsRandom;
+        let old_dek = Zeroizing::new(*slot_dek(self.slot.as_ref())?);
+        let new_dek = random_secret32_with(&mut rng)?;
+        if bool::from(new_dek.as_slice().ct_eq(old_dek.as_slice())) {
+            return Err(KeyError::RandomnessUnavailable.into());
+        }
+        payload.prev_dek = Some(old_dek);
         let material = SealMaterial {
             password: new,
             vault_id: header.vault_id,
-            dek: slot_dek(self.slot.as_ref())?,
+            dek: &new_dek,
             kdf_salt: random_array_with::<16>(&mut rng)?,
             wrap_nonce: random_array_with::<24>(&mut rng)?,
             payload_nonce: random_array_with::<24>(&mut rng)?,
@@ -1583,8 +1878,37 @@ impl Vault {
             payload: &payload,
         };
         let bytes = format::seal_create_with(&material, &self.kdf)?;
-        self.commit_vault(Some(header.generation), bytes)?;
-        Ok(match self.rewrite_payload(&payload) {
+        drop(payload);
+        // Not `commit_vault`: a failure whose re-read fails too leaves the outcome unknown, and
+        // that must not read as "the old password still works" (2026-11-13 review).
+        if let Err(error) = self
+            .storage
+            .commit(FileKind::Vault, Some(header.generation), &bytes)
+        {
+            match self.storage.load(FileKind::Vault) {
+                Ok(Some(current)) if current == bytes => {}
+                Ok(_) => return Err(VaultError::Storage(error)),
+                Err(_) => {
+                    // Neither DEK may seal anything now: under the old one, content would stay
+                    // readable with the old password if the change landed; under the new one,
+                    // it would be lost if it did not. The next unlock reads the disk again.
+                    self.lock();
+                    return Ok(PasswordChange::Unconfirmed);
+                }
+            }
+        }
+        self.ciphertext = Some(bytes);
+        // Landed: the held bytes are under the new DEK, so the slot follows at once.
+        if let Some(held) = self
+            .slot
+            .as_mut()
+            .and_then(|slot| slot.bytes_mut().first_chunk_mut::<SLOT_DEK_END>())
+        {
+            held.copy_from_slice(new_dek.as_slice());
+        }
+        drop(new_dek);
+        self.rotation = Rotation::VaultPrev;
+        Ok(match self.resume_rotation() {
             Ok(()) => PasswordChange::Complete,
             Err(_) => PasswordChange::PrevNotRefreshed,
         })
@@ -2340,10 +2664,9 @@ impl Vault {
         self.require_public()?;
         let index = sidecar_index(kind)?;
         let vault_id = self.id.ok_or(VaultError::InvalidState)?;
-        let dek = slot_dek(self.slot.as_ref())?;
         let opened = match self.storage.load(kind).map_err(VaultError::Storage)? {
             None => None,
-            Some(bytes) => match format::open_sidecar(kind, &bytes, &vault_id, dek) {
+            Some(bytes) => match self.open_sidecar_bytes(kind, &bytes, &vault_id) {
                 Ok((generation, plaintext)) => {
                     Some((generation, SecretVec::from_zeroizing(plaintext)))
                 }
@@ -2377,11 +2700,10 @@ impl Vault {
         self.require_public()?;
         sidecar_index(kind)?;
         let vault_id = self.id.ok_or(VaultError::InvalidState)?;
-        let dek = slot_dek(self.slot.as_ref())?;
         match self.storage.load_prev(kind).map_err(VaultError::Storage)? {
             None => Ok(None),
             Some(bytes) => {
-                let (generation, plaintext) = format::open_sidecar(kind, &bytes, &vault_id, dek)?;
+                let (generation, plaintext) = self.open_sidecar_bytes(kind, &bytes, &vault_id)?;
                 Ok(Some((generation, SecretVec::from_zeroizing(plaintext))))
             }
         }
@@ -2399,6 +2721,7 @@ impl Vault {
     pub fn save_sidecar(&mut self, kind: FileKind, plaintext: &[u8]) -> Result<u64, VaultError> {
         self.require_public()?;
         let index = sidecar_index(kind)?;
+        self.continue_rotation()?;
         let vault_id = self.id.ok_or(VaultError::InvalidState)?;
         let known = self.sidecar_generations.get();
         let expected = match known.get(index).copied().unwrap_or(Known::Unknown) {

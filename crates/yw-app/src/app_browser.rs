@@ -80,6 +80,17 @@ impl HardwareSiteAccounts {
     }
 }
 
+/// The site an EVM dApp signing job answers and the account it signs with: its grant must still
+/// name the account when the signature or transaction hash goes out (spec/05 §4.5, 2026-11-13 —
+/// before, only Solana dApp transactions were checked again, spec/07 §20.10-4).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SiteSigner {
+    /// The requesting origin (a `WalletConnect` session's origin included).
+    pub origin: BrowserOrigin,
+    /// The signing account.
+    pub account: Address,
+}
+
 /// What answers a signing job when the key worker finishes it, found by the job's
 /// [`SignTicket`] (never by queue order, spec/04 §1.2).
 #[derive(Clone, Debug)]
@@ -87,11 +98,22 @@ pub enum SignWaiter {
     /// An app send (no dApp answer).
     App,
     /// A dApp transaction: answered with the hash after the broadcast.
-    Tx(Reply),
+    Tx(Reply, SiteSigner),
     /// A dApp message: answered with the signature.
-    Message(Reply),
+    Message(Reply, SiteSigner),
     /// A Solana/Bitcoin dApp message (spec/07 §19, spec/08 §17).
     Chain(Reply, Box<crate::app_chain_sites::ChainAnswer>),
+}
+
+impl SignWaiter {
+    /// The dApp request answered (`None`: an app send).
+    #[must_use]
+    pub const fn reply(&self) -> Option<Reply> {
+        match self {
+            Self::App => None,
+            Self::Tx(reply, _) | Self::Message(reply, _) | Self::Chain(reply, _) => Some(*reply),
+        }
+    }
 }
 
 /// The UI side of the browser bridge.
@@ -111,8 +133,8 @@ pub struct BrowserUi {
     pub connections: usize,
     /// Pending signing jobs by ticket.
     pub waiters: HashMap<SignTicket, SignWaiter>,
-    /// dApp transactions waiting for their broadcast.
-    pub broadcasts: HashMap<[u8; 32], Reply>,
+    /// dApp transactions waiting for their broadcast (the answer checks the signer's grant).
+    pub broadcasts: HashMap<[u8; 32], (Reply, SiteSigner)>,
     /// Solana dApp sends waiting for their first broadcast round, by transaction id
     /// (signature 0; several when the same bytes were approved twice, spec/07 §20.8).
     pub sol_broadcasts: HashMap<[u8; 64], Vec<crate::app_sol_dapp::SolBroadcast>>,
@@ -807,6 +829,9 @@ impl App {
         if shown {
             self.show_next_approval();
         }
+        // An approved request still waiting for its YubiKey PIN ends too (4001, nothing signed;
+        // spec/10 §9.2, 2026-11-13).
+        self.card_site_check();
         self.refresh();
     }
 
@@ -961,7 +986,9 @@ impl App {
     }
 
     /// Waiting signing items of `origin` and `family` end `Revoked` (4100, spec/05 §4.5); a shown
-    /// one closes.
+    /// one closes, and so does an approved request still waiting for its `YubiKey` PIN whose grant
+    /// is gone (2026-11-13, [`Self::card_site_check`]; a card job past its PIN finishes and its
+    /// answer checks the grant again).
     pub(crate) fn revoke_waiting(
         &mut self,
         origin: &BrowserOrigin,
@@ -987,6 +1014,7 @@ impl App {
             }
             self.show_next_approval();
         }
+        self.card_site_check();
     }
 
     /// Disconnects a site (S13 `연결 해제`, `wallet_revokePermissions` after unlock).
@@ -1018,7 +1046,8 @@ impl App {
 
     /// An account was hidden or its raw key removed: it leaves every grant (spec/05 §4.1), and
     /// dApp signing requests for it — waiting or shown — end `Revoked` (4100) like a revoked
-    /// grant's (security review L4(b); the shown window closes, as on a chain deletion).
+    /// grant's (security review L4(b); the shown window closes, as on a chain deletion), and so
+    /// does an approved one still waiting for its `YubiKey` PIN (2026-11-13).
     pub fn account_removed_from_sites(&mut self, account: &Address) {
         if let Some(browser) = self.browser.as_ref() {
             browser.core.remove_account(account);
@@ -1051,6 +1080,7 @@ impl App {
             }
             self.show_next_approval();
         }
+        self.card_site_check();
     }
 
     /// A removed imported EVM key or recovery phrase took `accounts` with it: each address
@@ -1229,13 +1259,33 @@ impl App {
             .and_then(|browser| browser.waiters.remove(&ticket))
     }
 
+    /// Whether the EVM grant of `signer.origin` still names `signer.account` (spec/05 §4.5: a
+    /// signature or transaction hash goes to the site only then; empty while locked).
+    pub(crate) fn evm_grant_holds(&self, signer: &SiteSigner) -> bool {
+        self.grant_of(&signer.origin)
+            .is_some_and(|grant| grant.allows(&signer.account))
+    }
+
+    /// Whether the site `waiter` answers may still get a signature from the signer it names
+    /// (spec/05 §4.5, 2026-11-13: every dApp signature, not only Solana transactions); an app
+    /// send has no site.
+    pub(crate) fn waiter_grant_holds(&self, waiter: &SignWaiter) -> bool {
+        match waiter {
+            SignWaiter::App => true,
+            SignWaiter::Tx(_, signer) | SignWaiter::Message(_, signer) => {
+                self.evm_grant_holds(signer)
+            }
+            SignWaiter::Chain(_, answer) => self.chain_grant_holds(answer),
+        }
+    }
+
     /// `SignEvm` finished: a dApp transaction waits for its broadcast; a failure answers -32603.
     pub(crate) fn browser_tx_signed(&mut self, ticket: SignTicket, result: Result<[u8; 32], ()>) {
-        if let Some(SignWaiter::Tx(reply)) = self.take_sign_waiter(ticket) {
+        if let Some(SignWaiter::Tx(reply, signer)) = self.take_sign_waiter(ticket) {
             match result {
                 Ok(hash) => {
                     if let Some(browser) = self.browser.as_mut() {
-                        browser.broadcasts.insert(hash, reply);
+                        browser.broadcasts.insert(hash, (reply, signer));
                     }
                 }
                 Err(()) => self.respond(&reply, Err(ProviderError::Internal)),
@@ -1243,7 +1293,10 @@ impl App {
         }
     }
 
-    /// `SignMessage` finished (a lock-cancelled one answers 4001, spec/04 §1.2).
+    /// `SignMessage` finished (a lock-cancelled one answers 4001, spec/04 §1.2). The signature
+    /// goes out only while the site's grant still names the account; a site disconnected (or the
+    /// account hidden) meanwhile gets 4100 and the signature is dropped (spec/05 §4.5,
+    /// 2026-11-13).
     pub(crate) fn browser_message_signed(&mut self, signed: MessageSigned) {
         if self.hc_message_signed(&signed) {
             return;
@@ -1252,8 +1305,12 @@ impl App {
             self.evm_sign_locked(signed.ticket);
             return;
         }
-        if let Some(SignWaiter::Message(reply)) = self.take_sign_waiter(signed.ticket) {
+        if let Some(SignWaiter::Message(reply, signer)) = self.take_sign_waiter(signed.ticket) {
             match signed.result {
+                Ok(_) if !self.evm_grant_holds(&signer) => {
+                    logging::info("browser", "site.grant_gone", &[]);
+                    self.respond(&reply, Err(ProviderError::Unauthorized));
+                }
                 Ok(signature) => self.respond(&reply, Ok(hex_signature(&signature))),
                 Err(failure) => {
                     self.respond(&reply, Err(ProviderError::Internal));
@@ -1284,28 +1341,36 @@ impl App {
             let _ = self.take_sign_waiter(ticket);
             return;
         }
-        match self.take_sign_waiter(ticket) {
-            Some(
-                SignWaiter::Tx(reply) | SignWaiter::Message(reply) | SignWaiter::Chain(reply, _),
-            ) => {
-                self.respond(&reply, Err(ProviderError::UserRejected));
-            }
-            Some(SignWaiter::App) | None => {}
+        if let Some(reply) = self
+            .take_sign_waiter(ticket)
+            .and_then(|waiter| waiter.reply())
+        {
+            self.respond(&reply, Err(ProviderError::UserRejected));
         }
     }
 
     /// The broadcast of a dApp transaction finished (spec/05 §5, spec/03 §4.4, §11.6): the hash
     /// when the node has it or an automatic re-broadcast follows; -32603 `Transaction broadcast
     /// failed.` only when nothing will send it without the user (refused, other hash, chain
-    /// mismatch — all journaled as manual-resend-only).
+    /// mismatch — all journaled as manual-resend-only). While unlocked the answer needs the
+    /// signer's grant: a site disconnected (or the account hidden) since the approval gets 4100
+    /// instead of the hash — the journaled transaction is sent all the same, like a Solana dApp
+    /// send (spec/05 §4.5, spec/07 §20.8; 2026-11-13). While locked the grants are put away and
+    /// nothing is checked (as for Solana, spec/07 §20.10-5).
     pub(crate) fn browser_broadcast(&mut self, tx_hash: [u8; 32], outcome: BroadcastOutcome) {
-        let Some(reply) = self
+        let Some((reply, signer)) = self
             .browser
             .as_mut()
             .and_then(|browser| browser.broadcasts.remove(&tx_hash))
         else {
             return;
         };
+        let unlocked = matches!(self.mode, AppMode::Unlocked { .. });
+        if unlocked && !self.evm_grant_holds(&signer) {
+            logging::info("browser", "site.grant_gone", &[]);
+            self.respond(&reply, Err(ProviderError::Unauthorized));
+            return;
+        }
         self.respond(&reply, broadcast_answer(tx_hash, outcome));
     }
 
@@ -1414,7 +1479,15 @@ mod tests {
     fn broadcast_reply(app: &App, hash: [u8; 32]) -> Option<Reply> {
         app.browser
             .as_ref()
-            .and_then(|browser| browser.broadcasts.get(&hash).copied())
+            .and_then(|browser| browser.broadcasts.get(&hash).map(|(reply, _)| *reply))
+    }
+
+    /// `account` signing for `https://app.example`.
+    fn signer(account: [u8; 20]) -> super::SiteSigner {
+        super::SiteSigner {
+            origin: yw_core::policy::BrowserOrigin::parse("https://app.example").unwrap(),
+            account: yw_core::evm::address::Address::from_bytes(account),
+        }
     }
 
     /// C2: signing results are matched to their waiters by ticket, so a result for a later job
@@ -1423,8 +1496,8 @@ mod tests {
     #[test]
     fn signing_results_answer_their_own_ticket() {
         let mut app = app();
-        let first = app.push_sign_waiter(SignWaiter::Tx(reply(1)));
-        let message = app.push_sign_waiter(SignWaiter::Message(reply(2)));
+        let first = app.push_sign_waiter(SignWaiter::Tx(reply(1), signer([1; 20])));
+        let message = app.push_sign_waiter(SignWaiter::Message(reply(2), signer([1; 20])));
         let sol = app.push_sign_waiter(SignWaiter::Chain(
             reply(4),
             Box::new(crate::app_chain_sites::ChainAnswer::SolTx {
@@ -1434,7 +1507,7 @@ mod tests {
                 send: false,
             }),
         ));
-        let second = app.push_sign_waiter(SignWaiter::Tx(reply(3)));
+        let second = app.push_sign_waiter(SignWaiter::Tx(reply(3), signer([1; 20])));
         let own = app.push_sign_waiter(SignWaiter::App);
         assert!(first != message && message != sol && sol != second && second != own);
         // Out of queue order: the second transaction finishes first.
