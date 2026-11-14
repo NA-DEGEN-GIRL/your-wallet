@@ -752,9 +752,11 @@ fn signed_send(
 }
 
 /// SHA-256 of the `Signed` record body of the `mocked_end_to_end_send` flow (primary mnemonic,
-/// `m/44'/1'/0'/0/0`) as encoded by main `0834dfb`: the version 1 bytes are unchanged.
+/// `m/44'/1'/0'/0/0`) as encoded by main `0834dfb`: the version 1 layout is unchanged.
+/// (2026-11-14: re-pinned — the body stores the consumed approval digest, which changed with the
+/// display bytes `YWDSP004` (language byte, spec/03 §11.3); before: `d4f8fe88…0221e8`.)
 const PRIMARY_RECORD_SHA256: &str =
-    "d4f8fe883f993b68ac6d3c4305ef76699c196b73969f80c4eaacce21e30221e8";
+    "ca38b986f21334d740f16f5d71ca9f3001284eb5d62690011f52e6de84f36f89";
 
 #[test]
 fn primary_record_bytes_are_unchanged() {

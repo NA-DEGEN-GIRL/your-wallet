@@ -9,8 +9,8 @@ use crate::codec::transcript::Transcript;
 use crate::evm::risk::{request_risk, sort_warnings};
 use crate::lang::Lang;
 
-/// Display bytes magic.
-pub const DISPLAY_MAGIC: &[u8; 8] = b"YWDSP003";
+/// Display bytes magic (2026-11-14: `YWDSP004` adds the language byte; `YWDSP003` had none).
+pub const DISPLAY_MAGIC: &[u8; 8] = b"YWDSP004";
 /// Display digest transcript domain.
 pub const DISPLAY_DOMAIN: &str = "your-wallet/v3/display";
 /// Maximum bytes of one value.
@@ -377,6 +377,8 @@ impl ApprovalDisplay {
         let mut out = Vec::new();
         out.extend_from_slice(DISPLAY_MAGIC);
         out.extend_from_slice(&1_u16.to_be_bytes());
+        // The language every text was built in and the window draws its labels in (spec/14 §3).
+        out.push(self.lang.code());
         out.push(self.risk.code());
         out.push(u8::from(self.ack_required));
         out.extend_from_slice(&length(&self.title)?.to_be_bytes());
@@ -402,7 +404,7 @@ impl ApprovalDisplay {
         Ok(out)
     }
 
-    /// Canonical display bytes (`YWDSP003…`, spec/03 §11.3).
+    /// Canonical display bytes (`YWDSP004…`, spec/03 §11.3).
     ///
     /// # Errors
     ///
@@ -502,6 +504,21 @@ mod tests {
             }],
         );
         assert_eq!(bad, Err(DisplayError::InvalidText));
+    }
+
+    /// spec/03 §11.3 (2026-11-14): the language byte follows the version; the same display in
+    /// another language has other bytes and another digest.
+    #[test]
+    fn the_language_is_part_of_the_bytes() {
+        use crate::lang::Lang;
+        let korean =
+            ApprovalDisplay::new(Lang::Ko, "[t] x".to_owned(), Vec::new(), Vec::new()).unwrap();
+        let mut english = korean.clone();
+        english.lang = Lang::En;
+        let bytes = korean.bytes().unwrap();
+        assert_eq!(bytes.get(..11), Some(&b"YWDSP004 "[..]));
+        assert_eq!(english.bytes().unwrap().get(10), Some(&2));
+        assert_ne!(korean.digest().unwrap(), english.digest().unwrap());
     }
 
     #[test]

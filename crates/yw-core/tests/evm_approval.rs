@@ -407,6 +407,15 @@ fn replace_keeps_times_and_requires_the_shown_digest() {
             .unwrap_err(),
         ApprovalError::ReplaceMismatch
     );
+    // spec/03 §11.5 (2026-11-14): a re-simulation never switches the display language.
+    let mut other_language = fresh.clone();
+    other_language.display.lang = yw_core::lang::Lang::En;
+    assert_eq!(
+        store
+            .replace(request.id, request.digest, other_language)
+            .unwrap_err(),
+        ApprovalError::ReplaceMismatch
+    );
     let replaced = store.replace(request.id, request.digest, fresh).unwrap();
     assert_ne!(replaced.digest, request.digest);
     assert_eq!(replaced.created_unix_ms, request.created_unix_ms);

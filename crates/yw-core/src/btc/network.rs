@@ -197,12 +197,8 @@ impl BtcNetwork {
 
     /// The banner in `lang` (spec/08 §2; English spec/14 §2).
     #[must_use]
-    pub const fn banner_in(self, lang: crate::lang::Lang) -> &'static str {
-        match (self, lang) {
-            (Self::Mainnet, _) => "BITCOIN MAINNET",
-            (Self::Testnet4, crate::lang::Lang::Ko) => self.banner(),
-            (Self::Testnet4, crate::lang::Lang::En) => "BITCOIN TESTNET4 — no value",
-        }
+    pub fn banner_in(self, lang: crate::lang::Lang) -> &'static str {
+        crate::btc::text::network_banner(lang, self)
     }
 
     /// Default `esploraBaseUrl` of this network.

@@ -40,7 +40,7 @@ pub enum ApprovalError {
     Expired,
     /// The shown digest differs (the request is now `Invalidated`).
     DigestMismatch,
-    /// `replace` with a different id, kind, origin, chain, account or signer.
+    /// `replace` with a different id, kind, origin, chain, account, signer or display language.
     ReplaceMismatch,
     /// The request is blocked (`risk == Blocked`): approve is disabled.
     Blocked,
@@ -538,6 +538,7 @@ impl ApprovalStore {
             || new.chain != current.chain
             || new.account != current.account
             || new.signer != current.signer
+            || new.display.lang != current.display.lang
         {
             return Err(ApprovalError::ReplaceMismatch);
         }

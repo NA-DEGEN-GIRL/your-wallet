@@ -24,8 +24,9 @@
 ## 3. 승인 표시의 언어 ("보는 것이 서명하는 것", 언어별)
 
 - `ApprovalDisplay`에 `lang`이 있다. 제목·필드 값·sub_label·경고 문구는 모두 그 언어로 만들어진다. 승인 창은 필드 이름(`field_label(key, display.lang)`, §5 `yw_app::ui::approval::labels`), 등급 이름, 확인 체크박스, 버튼, 상태 줄을 그 언어로만 그린다. 창의 모든 글자가 (key, `display.lang`)과 표시 바이트에서 정해진다.
-- 2026-11-14 첫 단계: `lang`은 표시 모델에만 있고 display 바이트는 `YWDSP003` 그대로다(한국어 표시 바이트·digest가 이 변경 전과 같다는 것을 기존 골든이 증명한다). 같은 날 다음 단계에서 `lang`을 display 바이트에 묶는다([03] §11.3).
-- 재시뮬레이션(`replace`)은 요청의 원래 언어로 다시 만든다.
+- display 바이트는 `"YWDSP004" ‖ u16 1 ‖ lang u8 ‖ …`([03] §11.3): 언어가 display digest와 승인 digest에 들어간다. 같은 요청을 한국어와 영어로 만들면 두 digest가 모두 다르고, `consume`은 보인 표시의 digest로만 승인하므로 다른 언어로 만든 표시를 승인할 수 없다.
+- 순서(2026-11-14): 먼저 `lang`을 표시 모델에만 두고 `YWDSP003` 골든이 그대로 통과함을 확인한 뒤(한국어 문구 불변), 같은 날 다음 커밋에서 바이트에 묶었다. 새 한국어 골든은 이전 골든에 magic과 `lang` 바이트만 바뀐 값임을 `korean_bytes_are_v3_with_the_language_byte`가 대조한다.
+- 재시뮬레이션(`replace`)은 요청의 원래 언어로 다시 만들고, 스토어도 언어가 같을 때만 교체한다([03] §11.5).
 
 ## 4. 시험
 
@@ -510,7 +511,7 @@
 |---|---|---|
 | APP_ORIGIN | Your Wallet 앱 | Your Wallet app |
 | BTC_MAINNET | BITCOIN MAINNET | BITCOIN MAINNET |
-| BTC_TESTNET4 | BITCOIN TESTNET4 — 가치 없음 | BITCOIN TESTNET4 — no value |
+| BTC_TESTNET4 | BITCOIN TESTNET4 — 가치 없음 | BITCOIN TESTNET4 — NO VALUE |
 
 <!-- catalogue: yw_core::evm::risk::text -->
 

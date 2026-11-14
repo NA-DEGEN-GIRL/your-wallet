@@ -134,7 +134,7 @@ impl BtcBanner {
 
     /// The fixed text (spec/08 §2; English spec/14 §2).
     #[must_use]
-    pub const fn text(self, lang: Lang) -> &'static str {
+    pub fn text(self, lang: Lang) -> &'static str {
         match self {
             Self::Mainnet => yw_core::btc::BtcNetwork::Mainnet.banner_in(lang),
             Self::Testnet4 => yw_core::btc::BtcNetwork::Testnet4.banner_in(lang),
