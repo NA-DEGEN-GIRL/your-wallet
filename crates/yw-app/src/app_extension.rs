@@ -115,9 +115,21 @@ fn dev_repo() -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
+#[cfg(test)]
+thread_local! {
+    /// The screenshot tour's stand-in folder: a generic path, never the build tree's
+    /// (2026-11-14: shot 45 showed the checkout's folder).
+    pub static TOUR_EXTENSION_DIR: core::cell::RefCell<Option<PathBuf>> =
+        const { core::cell::RefCell::new(None) };
+}
+
 /// The extension folder of this installation (see the module docs).
 #[must_use]
 pub fn extension_dir() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(dir) = TOUR_EXTENSION_DIR.with(|dir| dir.borrow().clone()) {
+        return Some(dir);
+    }
     let exe = std::env::current_exe().ok();
     resolve_extension_dir(&extension_candidates(exe.as_deref(), dev_repo().as_deref()))
 }

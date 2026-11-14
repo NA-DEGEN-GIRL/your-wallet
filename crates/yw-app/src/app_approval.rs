@@ -3439,8 +3439,6 @@ impl App {
         let mut y = margin;
         // Header: one row per field (muted label column, value), then the badges as pills. A
         // grouped Solana address line is Consolas with bold middle groups (spec/07 §12.3).
-        let label_w = px(84);
-        let value_w = width.saturating_sub(label_w).max(px(60));
         let mut rows: Vec<(String, String, FontRole)> = Vec::new();
         for (label, value) in &ui.view.header {
             let mut first = true;
@@ -3476,6 +3474,16 @@ impl App {
                 FontRole::Body,
             ));
         }
+        // The label column fits its widest label (2026-11-14: English labels such as
+        // "Requested by" are wider than the Korean ones, which keep the 84 px column).
+        dc.select_font(&fonts.body);
+        let widest = rows
+            .iter()
+            .map(|(label, _, _)| dc.measure(&wide(label), i32::MAX).1)
+            .max()
+            .unwrap_or(0);
+        let label_w = px(84).max(widest.saturating_add(px(10))).min(width / 3);
+        let value_w = width.saturating_sub(label_w).max(px(60));
         let mut badges: Vec<String> = Vec::new();
         if let Some(banner) = ui.view.btc_banner
             && !rows
@@ -3625,7 +3633,11 @@ impl App {
         let mut retry = None;
         if let Some(band) = ui.view.band.clone() {
             let pad = px(12);
-            let tag_w = px(56);
+            // The tag fits its word (2026-11-14: "High risk" is wider than "고위험"; the Korean
+            // tag keeps its 56 px).
+            dc.select_font(&fonts.body_bold);
+            let (_, level_w) = dc.measure(&wide(text::LEVEL_HIGH.get(ui.lang)), i32::MAX);
+            let tag_w = px(56).max(level_w.saturating_add(px(16)));
             let inner = width
                 .saturating_sub(pad.saturating_mul(2))
                 .saturating_sub(tag_w)

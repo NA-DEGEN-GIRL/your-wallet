@@ -2184,9 +2184,16 @@ fn screenshot_tour() {
     set_screen(&app, UNLOCKED, Screen::Settings(SettingsSection::Other));
     save(main_hwnd(&app), "50-settings-browser");
     // S23 Chrome 확장 설치 (from settings → 브라우저·정보).
+    // The shown folder is the installed location, never this checkout's path (2026-11-14).
+    crate::app_extension::TOUR_EXTENSION_DIR.with(|dir| {
+        *dir.borrow_mut() = Some(std::path::PathBuf::from(
+            r"%LOCALAPPDATA%\Programs\YourWallet\extension",
+        ));
+    });
     set_screen(&app, UNLOCKED, Screen::Settings(SettingsSection::Other));
     app.borrow_mut().open_extension_help();
     save(main_hwnd(&app), "45-chrome-extension");
+    crate::app_extension::TOUR_EXTENSION_DIR.with(|dir| *dir.borrow_mut() = None);
     // A new site asks to connect (EVM): the account chooser of the connect window.
     set_screen(&app, UNLOCKED, Screen::Main);
     dapp_request(

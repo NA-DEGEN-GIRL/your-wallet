@@ -162,9 +162,9 @@ pub const KEY_START_STEPS: [Text; 3] = [text::STEP_PASSWORD, text::STEP_KEY, tex
 /// The imported-key flow texts (spec/04 §2.18).
 pub mod text {
     yw_core::texts! {
-        STEP_PASSWORD = "비밀번호 정하기" / "Set a password";
-        STEP_KEY = "개인키 입력" / "Enter the private key";
-        STEP_ADDRESS = "주소 확인" / "Check the address";
+        STEP_PASSWORD = "비밀번호 정하기" / "Password";
+        STEP_KEY = "개인키 입력" / "Private key";
+        STEP_ADDRESS = "주소 확인" / "Address";
         CHECKING = "확인 중…" / "Checking…";
         CREATING = "지갑을 만드는 중입니다. 몇 초 걸립니다."
             / "Creating the wallet. This takes a few seconds.";

@@ -2,16 +2,16 @@
 
 yw_core::texts! {
     // ----- shared helpers (used by the chain screens too) -----
-    /// Create/import flow step.
-    STEP_PASSWORD = "비밀번호 정하기" / "Set a password";
+    /// Create/import flow step (English kept short: the step bar of a 640 px secret window).
+    STEP_PASSWORD = "비밀번호 정하기" / "Password";
     /// Create flow step.
-    STEP_WRITE_WORDS = "복구 단어 적기" / "Write down the recovery words";
+    STEP_WRITE_WORDS = "복구 단어 적기" / "Recovery words";
     /// Create flow step.
-    STEP_BACKUP_CHECK = "백업 확인" / "Check the backup";
+    STEP_BACKUP_CHECK = "백업 확인" / "Backup check";
     /// Import flow step.
-    STEP_ENTER_WORDS = "복구 단어 입력" / "Enter the recovery words";
+    STEP_ENTER_WORDS = "복구 단어 입력" / "Enter words";
     /// Import flow step.
-    STEP_FIRST_ADDRESS = "첫 주소 확인" / "Check the first address";
+    STEP_FIRST_ADDRESS = "첫 주소 확인" / "First address";
     /// The `← 메인으로` link.
     BACK_MAIN = "← 메인으로" / "← Back to main";
     /// Its tooltip.

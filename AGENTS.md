@@ -89,7 +89,7 @@ Not run by the gate and only run on request (spec/09 §2.2, §2.5):
 
 | What | Command |
 |---|---|
-| Screenshot tour (throwaway data, public test mnemonic, never the real data dir) | `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/screenshot-tour.ps1 [-OutDir <folder>] [-SkipApp] [-SkipPopup]` |
+| Screenshot tour (throwaway data, public test mnemonic, never the real data dir) | `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/screenshot-tour.ps1 [-Lang ko\|en] [-OutDir <folder>] [-SkipApp] [-SkipPopup]` (`-Lang en` → `docs/screenshots/en/`) |
 | Scroll artefact check | `cargo test -p yw-app --lib ui::tour::scroll -- --ignored --nocapture` |
 | Approval window render harness (no network, no keys) | `cargo test -p yw-app --lib app_approval::smoke -- --ignored` (`YW_SMOKE_FIXTURE`, `YW_SMOKE_HOLD_MS`) |
 | Live RPC probes (**owner only**: they read `YW_RPC_JSON` or `%USERPROFILE%\.yw-dev\rpc.json`) | `node scripts/probe-rpc.mjs`, `cargo test -p yw-app --test live_probe -- --ignored --test-threads=1 --nocapture` |

@@ -1540,9 +1540,9 @@
 
 | 이름 | 한국어 | English |
 |---|---|---|
-| STEP_PASSWORD | 비밀번호 정하기 | Set a password |
-| STEP_KEY | 개인키 입력 | Enter the private key |
-| STEP_ADDRESS | 주소 확인 | Check the address |
+| STEP_PASSWORD | 비밀번호 정하기 | Password |
+| STEP_KEY | 개인키 입력 | Private key |
+| STEP_ADDRESS | 주소 확인 | Address |
 | CHECKING | 확인 중… | Checking… |
 | CREATING | 지갑을 만드는 중입니다. 몇 초 걸립니다. | Creating the wallet. This takes a few seconds. |
 | BTC_OTHER_NETWORK | 가져온 키는 {0} 키입니다. 지금 Bitcoin 네트워크가 {1}라 계정 목록에 보이지 않습니다. 설정 → Bitcoin에서 네트워크를 바꾸면 보입니다. | The imported key is a {0} key. The Bitcoin network is {1} now, so it does not appear in the account list. It appears when you switch the network in Settings → Bitcoin. |
@@ -2347,11 +2347,11 @@
 
 | 이름 | 한국어 | English |
 |---|---|---|
-| STEP_PASSWORD | 비밀번호 정하기 | Set a password |
-| STEP_WRITE_WORDS | 복구 단어 적기 | Write down the recovery words |
-| STEP_BACKUP_CHECK | 백업 확인 | Check the backup |
-| STEP_ENTER_WORDS | 복구 단어 입력 | Enter the recovery words |
-| STEP_FIRST_ADDRESS | 첫 주소 확인 | Check the first address |
+| STEP_PASSWORD | 비밀번호 정하기 | Password |
+| STEP_WRITE_WORDS | 복구 단어 적기 | Recovery words |
+| STEP_BACKUP_CHECK | 백업 확인 | Backup check |
+| STEP_ENTER_WORDS | 복구 단어 입력 | Enter words |
+| STEP_FIRST_ADDRESS | 첫 주소 확인 | First address |
 | BACK_MAIN | ← 메인으로 | ← Back to main |
 | BACK_MAIN_TIP | 메인으로 (Esc) | Back to main (Esc) |
 | T_REFRESH_TIP | 새로고침 (F5) | Refresh (F5) |
@@ -3640,7 +3640,7 @@
 | STEP_PLAN | 키·슬롯 고르기 | Choose keys and slots |
 | STEP_CREDENTIALS | 자격 정보 | Credentials |
 | STEP_PASSWORD | 비밀번호 | Password |
-| STEP_WRITE_WORDS | 복구 단어 적기 | Write down recovery words |
+| STEP_WRITE_WORDS | 복구 단어 적기 | Recovery words |
 | STEP_BACKUP_CHECK | 백업 확인 | Backup check |
 | STEP_SET_PIN | PIN 정하기 | Choose PIN |
 | STEP_CONNECT_READ | YubiKey 읽기·키 고르기 | Read YubiKey and choose keys |

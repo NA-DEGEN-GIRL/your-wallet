@@ -164,6 +164,7 @@ Solana dApp 거래도 YubiKey로 서명합니다. 같은 복구 단어의 키를
 - 이 지갑이 보낸 거래 활동과 받은 내역(선택, Bitcoin·Zcash는 멤풀의 미확정 입금 포함). 주소·해시를 누르면 복사, 체인별 블록 탐색기 링크(설정에서 변경 가능).
 - 15초마다 잔액 갱신(EVM·Solana·HyperCore, 창이 숨겨지면 멈춤).
 - QuickNode 주소 하나로 모든 체인 RPC 설정(Alchemy·직접 입력도 가능), 지갑 초기화(파일을 지우지 않고 옆으로 옮김).
+- 화면 언어: 한국어(기본)와 영어. 설정 → 보안의 `언어 · Language`에서 바꾸면 모든 화면·승인 창·비밀 창·오류 문구가 그 언어가 되고, 확장 팝업은 자기 `한국어 | English` 토글을 씁니다. 승인 창의 언어는 서명 승인 digest에 묶입니다.
 
 **하지 않는 것:** Windows 11 외 OS·모바일, 앱 안의 스왑·트레이딩, Bitcoin dApp의 거래 서명(PSBT), 멀티시그, Zcash 차폐 주소,
 지갑 앱의 Token-2022·NFT 보내기. RPC는 직접 준비해야 합니다(QuickNode·Alchemy 무료 플랜으로 충분).
@@ -364,12 +365,25 @@ WalletConnect and Solana dApp transactions can be signed with the card too. Keys
 
 ### Screenshots
 
-See the images above. Top: a request marked high risk because simulation returned no result (approving needs a tick
+<p align="center">
+  <img src="docs/screenshots/en/13-approval-no-simulation.png" width="49%" alt="High-risk request: tick the warnings box and hold for 2 seconds">
+  <img src="docs/screenshots/en/58-approval-sol-dapp-tx.png" width="49%" alt="A site-built Solana transaction decoded by the wallet, warning about a delegation">
+</p>
+<p align="center">
+  <img src="docs/screenshots/en/26-approval-connect.png" width="49%" alt="Connect window: choose which accounts the site sees">
+  <img src="docs/screenshots/en/55-main-evm-activity.png" width="49%" alt="Activity card showing whole addresses">
+</p>
+<p align="center">
+  <img src="docs/screenshots/en/15-main-solana.png" width="49%" alt="Solana tab">
+  <img src="docs/screenshots/en/16-main-bitcoin.png" width="49%" alt="Bitcoin tab">
+</p>
+
+Top: a request marked high risk because simulation returned no result (approving needs a tick
 confirming you read the warnings and a 2-second hold), and a site-built Solana transaction that the wallet decoded
 itself, flagging a token delegation (Approve) and an undecoded program. Middle: the connect window, where you pick
 which accounts the site sees, and the activity card, which shows addresses whole with the first and last 4
 characters emphasized. Bottom: the Solana and Bitcoin tabs. The full [screen tour](docs/screenshots/README.md) has
-every screen (Korean UI, test values only).
+every screen with test values only, in Korean and in [English](docs/screenshots/en/).
 
 ### Features
 
@@ -427,8 +441,8 @@ every screen (Korean UI, test values only).
   never affects risk or approval.
 
 **Everyday**
-- Send forms show the spendable balance next to the amount with a `최대` (max) button, and address-book favourites as
-  chips (EVM, Solana, Bitcoin).
+- Send forms show the spendable balance next to the amount with a `Max` button, and address-book favourites as chips
+  (EVM, Solana, Bitcoin).
 - Address book: one EVM entry serves every EVM chain, Solana entries cover mainnet and devnet, Bitcoin entries are per
   network.
 - Activity for transactions this wallet sent, optional received history (with mempool deposits for Bitcoin and
@@ -437,6 +451,9 @@ every screen (Korean UI, test values only).
 - Balances refresh every 15 s (EVM, Solana, HyperCore; paused while the window is hidden).
 - RPC for every chain from one QuickNode URL (Alchemy or manual URLs also work); wallet reset that moves files aside
   instead of deleting them.
+- Korean (default) or English UI: Settings → Security → `언어 · Language` switches every screen, approval window,
+  secret window and error text; the extension popup has its own `한국어 | English` toggle. An approval window's
+  language is bound into the approval digest.
 
 **Not included:** other OSes or mobile, swaps or trading inside the app, transaction signing (PSBT) for Bitcoin
 dApps, multisig, Zcash shielded addresses, Token-2022 or NFT sends from the wallet app. You bring your own RPC (QuickNode

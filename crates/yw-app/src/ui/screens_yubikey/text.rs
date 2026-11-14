@@ -107,7 +107,7 @@ yw_core::texts! {
     STEP_PLAN = "키·슬롯 고르기" / "Choose keys and slots";
     STEP_CREDENTIALS = "자격 정보" / "Credentials";
     STEP_PASSWORD = "비밀번호" / "Password";
-    STEP_WRITE_WORDS = "복구 단어 적기" / "Write down recovery words";
+    STEP_WRITE_WORDS = "복구 단어 적기" / "Recovery words";
     STEP_BACKUP_CHECK = "백업 확인" / "Backup check";
     STEP_SET_PIN = "PIN 정하기" / "Choose PIN";
     STEP_CONNECT_READ = "YubiKey 읽기·키 고르기" / "Read YubiKey and choose keys";
