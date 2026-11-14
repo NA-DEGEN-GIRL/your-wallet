@@ -209,7 +209,7 @@ impl App {
                     public: address.to_bytes(),
                     source: id.source()?,
                     label,
-                    path: id.path_text(),
+                    path: id.path_text_in(self.settings.language),
                 })
             })
             .collect()
@@ -234,7 +234,13 @@ impl App {
                     },
                     source: account.key_source(BtcChain::Receive, 0),
                     label: self.btc_account_label(account),
-                    path: account.path_text(net, BtcChain::Receive, 0),
+                    path: yw_core::btc::text::path_text(
+                        self.approval_lang(),
+                        account,
+                        net,
+                        BtcChain::Receive,
+                        0,
+                    ),
                 })
             })
             .collect()
@@ -352,7 +358,7 @@ impl App {
                     "{}{}{}\n{}",
                     row.label,
                     self.mn_connect_tag(phrase),
-                    Self::card_connect_tag(serial),
+                    self.card_connect_tag(serial),
                     row.path
                 ),
                 yw_core::codec::base58::base58_encode(&row.public),
@@ -363,7 +369,9 @@ impl App {
         (
             choices,
             selected,
-            self.sol_cluster().display_name().to_owned(),
+            self.sol_cluster()
+                .display_name_in(self.approval_lang())
+                .to_owned(),
         )
     }
 
@@ -435,8 +443,8 @@ impl App {
                 .or_else(|| (0..members.len()).find(|index| can_sign(*index)))
                 .unwrap_or(0);
             let prefix = match purpose {
-                BtcPurpose::Payment => "[결제용] ",
-                BtcPurpose::Ordinals => "[오디널스용] ",
+                BtcPurpose::Payment => text::TAG_PAYMENT.get(self.approval_lang()),
+                BtcPurpose::Ordinals => text::TAG_ORDINALS.get(self.approval_lang()),
                 BtcPurpose::Any => "",
             };
             for ((index, row), (phrase, serial)) in members
@@ -452,7 +460,7 @@ impl App {
                         "{prefix}{}{}{}\n{}",
                         row.label,
                         self.mn_connect_tag(phrase),
-                        Self::card_connect_tag(serial),
+                        self.card_connect_tag(serial),
                         row.path
                     ),
                     row.entry.address.clone(),
@@ -461,7 +469,11 @@ impl App {
                 selected.push(index == pick);
             }
         }
-        (choices, selected, net.display_name().to_owned())
+        (
+            choices,
+            selected,
+            yw_core::btc::text::network_name(self.approval_lang(), net).to_owned(),
+        )
     }
 
     /// Whether the chosen accounts are still the wallet's on the settings network (the window
@@ -940,6 +952,16 @@ impl App {
         self.write_grants();
         logging::info("browser", "site.disconnected", &[]);
         self.refresh();
+    }
+}
+
+/// Connect-window texts of Solana and Bitcoin sites (spec/05 §4; English spec/14 §5).
+pub mod text {
+    yw_core::texts! {
+        /// The prefix of a Bitcoin `payment` choice.
+        TAG_PAYMENT = "[결제용] " / "[payment] ";
+        /// The prefix of a Bitcoin `ordinals` choice.
+        TAG_ORDINALS = "[오디널스용] " / "[ordinals] ";
     }
 }
 

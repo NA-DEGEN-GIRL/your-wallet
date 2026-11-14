@@ -124,27 +124,40 @@ pub enum SolTxError {
     NotSigner,
 }
 
+impl SolTxError {
+    /// The fixed text in `lang` (`Display` is the Korean one).
+    #[must_use]
+    pub fn text_in(self, lang: crate::lang::Lang) -> String {
+        use super::text as t;
+        let version;
+        let reason = match self {
+            Self::Empty => t::PARSE_EMPTY.get(lang),
+            Self::TooLarge => t::PARSE_TOO_LARGE.get(lang),
+            Self::ShortVec => t::PARSE_SHORT_VEC.get(lang),
+            Self::Truncated => t::PARSE_TRUNCATED.get(lang),
+            Self::Version(prefix) => {
+                version = t::PARSE_VERSION.fill(lang, [&format!("{prefix:#04x}")]);
+                version.as_str()
+            }
+            Self::Header => t::PARSE_HEADER.get(lang),
+            Self::TooManyKeys => t::PARSE_TOO_MANY_KEYS.get(lang),
+            Self::DuplicateKey => t::PARSE_DUPLICATE_KEY.get(lang),
+            Self::ProgramIndex => t::PARSE_PROGRAM_INDEX.get(lang),
+            Self::AccountIndex => t::PARSE_ACCOUNT_INDEX.get(lang),
+            Self::EmptyLookup => t::PARSE_EMPTY_LOOKUP.get(lang),
+            Self::TooManyInstructions => t::PARSE_TOO_MANY_IX.get(lang),
+            Self::SignatureCount => t::PARSE_SIGNATURE_COUNT.get(lang),
+            Self::TrailingBytes => t::PARSE_TRAILING.get(lang),
+            Self::Encoding => t::PARSE_ENCODING.get(lang),
+            Self::NotSigner => t::PARSE_NOT_SIGNER.get(lang),
+        };
+        t::PARSE_ERROR.fill(lang, [reason])
+    }
+}
+
 impl fmt::Display for SolTxError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("사이트 거래 형식이 올바르지 않습니다: ")?;
-        match self {
-            Self::Empty => formatter.write_str("비어 있음"),
-            Self::TooLarge => formatter.write_str("1,232바이트를 넘음"),
-            Self::ShortVec => formatter.write_str("길이 표기(compact-u16)가 잘못됨"),
-            Self::Truncated => formatter.write_str("중간에 끝남"),
-            Self::Version(prefix) => write!(formatter, "지원하지 않는 메시지 버전({prefix:#04x})"),
-            Self::Header => formatter.write_str("header 값이 계정 키와 맞지 않음"),
-            Self::TooManyKeys => formatter.write_str("계정 키가 256개를 넘음"),
-            Self::DuplicateKey => formatter.write_str("같은 계정 키가 두 번 있음"),
-            Self::ProgramIndex => formatter.write_str("프로그램 인덱스가 잘못됨"),
-            Self::AccountIndex => formatter.write_str("계정 인덱스가 범위 밖"),
-            Self::EmptyLookup => formatter.write_str("주소를 하나도 읽지 않는 조회 테이블 항목"),
-            Self::TooManyInstructions => formatter.write_str("명령이 64개를 넘음"),
-            Self::SignatureCount => formatter.write_str("서명 수가 필요한 서명자 수와 다름"),
-            Self::TrailingBytes => formatter.write_str("끝에 남는 바이트가 있음"),
-            Self::Encoding => formatter.write_str("다시 인코딩한 바이트가 다름"),
-            Self::NotSigner => formatter.write_str("이 계정은 거래의 서명자가 아님"),
-        }
+        formatter.write_str(&self.text_in(crate::lang::Lang::Ko))
     }
 }
 

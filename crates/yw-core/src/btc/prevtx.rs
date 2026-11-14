@@ -40,16 +40,26 @@ pub enum PrevTxError {
     ZeroValue,
 }
 
+impl PrevTxError {
+    /// The fixed text in `lang` (`Display` is the Korean one).
+    #[must_use]
+    pub const fn text_in(self, lang: crate::lang::Lang) -> &'static str {
+        use super::text as t;
+        match self {
+            Self::TooLarge => t::PREV_TOO_LARGE,
+            Self::Malformed(_) => t::PREV_MALFORMED,
+            Self::TxidMismatch => t::PREV_TXID_MISMATCH,
+            Self::VoutOutOfRange => t::PREV_VOUT,
+            Self::ScriptMismatch => t::PREV_SCRIPT,
+            Self::ZeroValue => t::PREV_ZERO,
+        }
+        .get(lang)
+    }
+}
+
 impl fmt::Display for PrevTxError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            Self::TooLarge => "검증 불가 UTXO",
-            Self::Malformed(_) => "이전 거래 형식이 올바르지 않습니다",
-            Self::TxidMismatch => "이전 거래 해시가 일치하지 않습니다",
-            Self::VoutOutOfRange => "이전 거래에 해당 출력이 없습니다",
-            Self::ScriptMismatch => "이전 거래 출력이 이 지갑의 주소가 아닙니다",
-            Self::ZeroValue => "이전 거래 출력 금액이 0입니다",
-        })
+        formatter.write_str(self.text_in(crate::lang::Lang::Ko))
     }
 }
 

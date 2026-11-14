@@ -11,6 +11,7 @@ use yw_core::btc::address::{
 use yw_core::btc::network::BtcNetwork;
 use yw_core::codec::base58;
 use yw_core::hex;
+use yw_core::lang::Lang;
 use yw_json::{Limits, Value};
 
 const KEY_IO_VALID: &str = include_str!("vectors/btc/key_io_valid.json");
@@ -617,7 +618,7 @@ fn script_kinds_round_trip() {
         let spk = script_pubkey(kind);
         assert_eq!(spk.len(), length);
         assert_eq!(kind_from_script(&spk), Some(*kind));
-        assert_eq!(kind.type_label(), label);
+        assert_eq!(kind.type_label_in(Lang::Ko), label);
         for net in both() {
             let text = encode_address(kind, net);
             assert_eq!(parse_address(&text, net), Ok(*kind), "{text}");
@@ -732,16 +733,16 @@ fn error_texts() {
     ];
     for (error, text) in table {
         for net in both() {
-            assert_eq!(error.text(net), text);
+            assert_eq!(error.text_in(Lang::Ko, net), text);
         }
         assert_eq!(error.to_string(), text);
     }
     assert_eq!(
-        AddressError::WrongNetwork.text(Mainnet),
+        AddressError::WrongNetwork.text_in(Lang::Ko, Mainnet),
         "다른 네트워크의 주소입니다(지갑: MAINNET)"
     );
     assert_eq!(
-        AddressError::WrongNetwork.text(Testnet4),
+        AddressError::WrongNetwork.text_in(Lang::Ko, Testnet4),
         "다른 네트워크의 주소입니다(지갑: TESTNET4)"
     );
 }

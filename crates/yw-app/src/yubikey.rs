@@ -7,6 +7,7 @@
 //! the job owns and wipes when it finishes (no caching between operations, spec/10 §9.1).
 
 use yw_core::bip32::path::AccountIndex;
+use yw_core::lang::Lang;
 use yw_core::secret::Zeroizing;
 use yw_core::yubikey::apdu::ApduMode;
 use yw_core::yubikey::enrol::{EnrolAuth, EnrolError, Enrolled, enrol_card, identify};
@@ -206,13 +207,79 @@ impl CardJobError {
     }
 }
 
+/// Fixed texts of the card glue: PIN names, counters, blocked-PIN advice (spec/10 §9.1;
+/// English spec/14). The W12 windows keep their own copies of the [`PinTarget`] texts
+/// (`ui::secret_text`); a test compares them.
+pub mod text {
+    yw_core::texts! {
+        NAME_OPENPGP_ADMIN = "OpenPGP 관리자 PIN" / "OpenPGP admin PIN";
+        NAME_PIV_MANAGEMENT = "PIV 관리 키(PIN 보호)" / "PIV management key (PIN-protected)";
+        TITLE_CHANGE_OPENPGP_PIN = "OpenPGP PIN 바꾸기" / "Change OpenPGP PIN";
+        TITLE_CHANGE_ADMIN_PIN = "OpenPGP 관리자 PIN 바꾸기" / "Change OpenPGP admin PIN";
+        TITLE_CHANGE_PIV_PIN = "PIV PIN 바꾸기" / "Change PIV PIN";
+        TITLE_CHANGE_PIV_PUK = "PIV PUK 바꾸기" / "Change PIV PUK";
+        RULE_OPENPGP_PIN = "영문·숫자·기호(ASCII) 6–127자입니다(공장 기본값 123456)."
+            / "Letters, digits and symbols (ASCII), 6–127 characters (factory default 123456).";
+        RULE_ADMIN_PIN = "영문·숫자·기호(ASCII) 8–127자입니다(공장 기본값 12345678)."
+            / "Letters, digits and symbols (ASCII), 8–127 characters (factory default 12345678).";
+        RULE_PIV_PIN = "영문·숫자·기호(ASCII) 6–8자입니다(공장 기본값 123456)."
+            / "Letters, digits and symbols (ASCII), 6–8 characters (factory default 123456).";
+        RULE_PIV_PUK = "영문·숫자·기호(ASCII) 6–8자입니다(공장 기본값 12345678)."
+            / "Letters, digits and symbols (ASCII), 6–8 characters (factory default 12345678).";
+        /// `{0}`: the secret's name.
+        WRONG_LAST(1) = "{0}이 틀렸습니다. 남은 시도 1회 — 한 번 더 틀리면 잠깁니다."
+            / "Wrong {0}. 1 try left — one more mistake locks it.";
+        /// `{0}`: the secret's name, `{1}`: tries left.
+        WRONG(2) = "{0}이 틀렸습니다. 남은 시도 {1}회." / "Wrong {0}. {1} tries left.";
+        COUNTER_LOCKED(1) = "{0}: 잠김 — 남은 시도가 없습니다." / "{0}: locked — no tries left.";
+        COUNTER_LAST(1) = "{0}: 남은 시도 1회 — 한 번 더 틀리면 잠깁니다."
+            / "{0}: 1 try left — one more mistake locks it.";
+        COUNTER(2) = "{0}: 남은 시도 {1}회" / "{0}: {1} tries left";
+        BLOCKED_PW1 = "OpenPGP PIN이 잠겼습니다. 관리자 PIN으로 풀 수 있습니다(ykman openpgp access unblock-pin). 관리자 PIN도 모르면 설정 → YubiKey의 'YubiKey의 키 지우기…'에서 OpenPGP 애플릿 초기화 뒤 다시 등록하세요."
+            / "The OpenPGP PIN is locked. You can unlock it with the admin PIN (ykman openpgp access unblock-pin). If you do not know the admin PIN either, reset the OpenPGP applet in Settings → YubiKey → 'Erase keys on the YubiKey…' and enrol again.";
+        BLOCKED_PW3 = "OpenPGP 관리자 PIN이 잠겼습니다. 서명은 지금처럼 OpenPGP PIN으로 됩니다. 키 넣기·슬롯 구성 바꾸기·PIN 풀기만 막히며, 다시 쓰려면 OpenPGP 초기화(그 애플릿의 키가 지워짐)가 필요합니다."
+            / "The OpenPGP admin PIN is locked. Signing still works with the OpenPGP PIN. Only importing keys, changing the slot layout and unlocking PINs are blocked; using them again needs an OpenPGP reset (which erases that applet's keys).";
+        BLOCKED_PIV_PIN = "PIV PIN이 잠겼습니다. PUK로 풀 수 있습니다(ykman piv access unblock-pin)."
+            / "The PIV PIN is locked. You can unlock it with the PUK (ykman piv access unblock-pin).";
+        BLOCKED_PUK = "PIV PUK이 잠겼습니다. 이제 PIV PIN이 잠기면 PIV 초기화 말고는 방법이 없으니 PIV PIN을 잊지 마세요."
+            / "The PIV PUK is locked. If the PIV PIN now locks, only a PIV reset is left, so do not forget the PIV PIN.";
+        /// `{0}`: `#serial` list, `{1}`: its Korean particle (English omits it).
+        BACKUP_SIGNS(2) = "백업 YubiKey {0}{1} 계속 서명할 수 있습니다."
+            / "Backup YubiKey {0} can keep signing.";
+        BLOCKED_PW3_ONLY_HERE = "OpenPGP 관리자 PIN이 잠겼습니다. 서명은 지금처럼 OpenPGP PIN으로 됩니다. 키 넣기·슬롯 구성 바꾸기·PIN 풀기만 막힙니다. 다시 쓰려면 OpenPGP 초기화(그 애플릿의 키가 지워짐)가 필요하지만, 이 카드의 키는 복구 단어가 없어 초기화하면 영구히 사라지니 초기화하지 마세요."
+            / "The OpenPGP admin PIN is locked. Signing still works with the OpenPGP PIN. Only importing keys, changing the slot layout and unlocking PINs are blocked. Using them again needs an OpenPGP reset (which erases that applet's keys), but this card's keys have no recovery words and a reset would lose them for good, so do not reset.";
+        BLOCKED_PW1_ONLY_HERE = "OpenPGP PIN이 잠겼습니다. 이 키는 복구 단어가 없어 초기화하면 영구히 사라집니다. 관리자 PIN으로 PIN을 푸는 방법(ykman openpgp access unblock-pin)만 쓰고 초기화하지 마세요."
+            / "The OpenPGP PIN is locked. This key has no recovery words, so a reset would lose it for good. Only unlock the PIN with the admin PIN (ykman openpgp access unblock-pin); do not reset.";
+        BLOCKED_PW1_WORDS = "OpenPGP PIN이 잠겼습니다. 관리자 PIN으로 풀 수 있습니다(ykman openpgp access unblock-pin). 관리자 PIN도 모르면 OpenPGP 초기화 뒤 같은 복구 단어로 다시 등록하세요."
+            / "The OpenPGP PIN is locked. You can unlock it with the admin PIN (ykman openpgp access unblock-pin). If you do not know the admin PIN either, reset OpenPGP and enrol again with the same recovery words.";
+        BLOCKED_PW1_PLAIN = "OpenPGP PIN이 잠겼습니다. 관리자 PIN으로 풀 수 있습니다(ykman openpgp access unblock-pin)."
+            / "The OpenPGP PIN is locked. You can unlock it with the admin PIN (ykman openpgp access unblock-pin).";
+        BLOCKED_PIV_ONLY_HERE = "PIV PIN이 잠겼습니다. 이 Solana 키는 복구 단어가 없어 PIV 초기화하면 영구히 사라집니다. PUK로 PIN을 푸는 방법(ykman piv access unblock-pin)만 쓰고 초기화하지 마세요."
+            / "The PIV PIN is locked. This Solana key has no recovery words, so a PIV reset would lose it for good. Only unlock the PIN with the PUK (ykman piv access unblock-pin); do not reset.";
+        BLOCKED_PIV_WORDS = "PIV PIN이 잠겼습니다. PUK로 풀 수 있습니다(ykman piv access unblock-pin). PUK도 잠기면 PIV 초기화(Solana 키 삭제) 뒤 같은 복구 단어로 다시 등록하세요."
+            / "The PIV PIN is locked. You can unlock it with the PUK (ykman piv access unblock-pin). If the PUK is locked too, reset PIV (erases the Solana keys) and enrol again with the same recovery words.";
+        BLOCKED_PUK_ONLY_HERE = "PIV PUK이 잠겼습니다. 이제 PIV PIN까지 잠기면 PIV 초기화(Solana 키 삭제)밖에 없고, 이 Solana 키는 복구 단어가 없어 그때 영구히 사라집니다. PIV PIN을 잊지 마세요."
+            / "The PIV PUK is locked. If the PIV PIN now locks too, only a PIV reset (erases the Solana keys) is left, and this Solana key has no recovery words, so it would then be lost for good. Do not forget the PIV PIN.";
+        BLOCKED_PUK_RESET = "PIV PUK이 잠겼습니다. 이제 PIV PIN이 잠기면 PIV 초기화(Solana 키 삭제) 말고는 방법이 없으니 PIV PIN을 잊지 마세요."
+            / "The PIV PUK is locked. If the PIV PIN now locks, only a PIV reset (erases the Solana keys) is left, so do not forget the PIV PIN.";
+    }
+}
+
+impl CardJobError {
+    /// The user-facing text in `lang`; `Display` is the Korean text.
+    #[must_use]
+    pub fn text_in(self, lang: Lang) -> String {
+        match self {
+            Self::NoCard => CardError::Transport(TransportFault::NoCard).text_in(lang),
+            Self::Card(error) => error.text_in(lang),
+            Self::Enrol(error) => error.text_in(lang),
+        }
+    }
+}
+
 impl core::fmt::Display for CardJobError {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::NoCard => CardError::Transport(TransportFault::NoCard).fmt(formatter),
-            Self::Card(error) => error.fmt(formatter),
-            Self::Enrol(error) => error.fmt(formatter),
-        }
+        formatter.write_str(&self.text_in(Lang::Ko))
     }
 }
 
@@ -536,40 +603,33 @@ pub enum PinKind {
 impl PinKind {
     /// The name in sentences.
     #[must_use]
-    pub const fn name(self) -> &'static str {
+    pub const fn name(self, lang: Lang) -> &'static str {
         match self {
             Self::OpenPgpUser => "OpenPGP PIN",
-            Self::OpenPgpAdmin => "OpenPGP 관리자 PIN",
+            Self::OpenPgpAdmin => text::NAME_OPENPGP_ADMIN.get(lang),
             Self::PivPin => "PIV PIN",
             Self::PivPuk => "PIV PUK",
         }
     }
 
     /// What a blocked secret means and how it is unblocked.
-    const fn blocked(self) -> &'static str {
+    const fn blocked(self, lang: Lang) -> &'static str {
         match self {
-            Self::OpenPgpUser => {
-                "OpenPGP PIN이 잠겼습니다. 관리자 PIN으로 풀 수 있습니다(ykman openpgp access unblock-pin). 관리자 PIN도 모르면 설정 → YubiKey의 'YubiKey의 키 지우기…'에서 OpenPGP 애플릿 초기화 뒤 다시 등록하세요."
-            }
+            Self::OpenPgpUser => text::BLOCKED_PW1,
             // Signing goes on with the user PIN (2026-11-10: it never said so).
-            Self::OpenPgpAdmin => {
-                "OpenPGP 관리자 PIN이 잠겼습니다. 서명은 지금처럼 OpenPGP PIN으로 됩니다. 키 넣기·슬롯 구성 바꾸기·PIN 풀기만 막히며, 다시 쓰려면 OpenPGP 초기화(그 애플릿의 키가 지워짐)가 필요합니다."
-            }
-            Self::PivPin => {
-                "PIV PIN이 잠겼습니다. PUK로 풀 수 있습니다(ykman piv access unblock-pin)."
-            }
-            Self::PivPuk => {
-                "PIV PUK이 잠겼습니다. 이제 PIV PIN이 잠기면 PIV 초기화 말고는 방법이 없으니 PIV PIN을 잊지 마세요."
-            }
+            Self::OpenPgpAdmin => text::BLOCKED_PW3,
+            Self::PivPin => text::BLOCKED_PIV_PIN,
+            Self::PivPuk => text::BLOCKED_PUK,
         }
+        .get(lang)
     }
 
     /// What a blocked secret means for the card's keys (spec/10 §9.1, 2026-11-10): whether they
     /// come back from recovery words — a key without words that only this card holds must never
     /// be reset away — and which backup card keeps signing. Unknown context: [`Self::blocked`].
-    fn blocked_in(self, context: &PinContext) -> String {
+    fn blocked_in(self, lang: Lang, context: &PinContext) -> String {
         let Some(words) = context.words else {
-            return self.blocked().to_owned();
+            return self.blocked(lang).to_owned();
         };
         let backup = if context.backups.is_empty() {
             String::new()
@@ -580,68 +640,45 @@ impl PinKind {
                 .map(|serial| format!("#{serial}"))
                 .collect();
             let cards = list.join("·");
-            format!(
-                " 백업 YubiKey {cards}{} 계속 서명할 수 있습니다.",
-                crate::ui::theme::direction_particle(&cards)
-            )
+            let particle = crate::ui::theme::direction_particle(&cards);
+            format!(" {}", text::BACKUP_SIGNS.fill(lang, [&cards, particle]))
         };
         let only_here = !words && context.backups.is_empty();
-        let text = match (self, only_here, words) {
-            (Self::OpenPgpAdmin, true, _) => {
-                "OpenPGP 관리자 PIN이 잠겼습니다. 서명은 지금처럼 OpenPGP PIN으로 됩니다. 키 넣기·슬롯 구성 바꾸기·PIN 풀기만 막힙니다. 다시 쓰려면 OpenPGP 초기화(그 애플릿의 키가 지워짐)가 필요하지만, 이 카드의 키는 복구 단어가 없어 초기화하면 영구히 사라지니 초기화하지 마세요."
-            }
-            (Self::OpenPgpAdmin, false, _) => {
-                "OpenPGP 관리자 PIN이 잠겼습니다. 서명은 지금처럼 OpenPGP PIN으로 됩니다. 키 넣기·슬롯 구성 바꾸기·PIN 풀기만 막히며, 다시 쓰려면 OpenPGP 초기화(그 애플릿의 키가 지워짐)가 필요합니다."
-            }
-            (Self::OpenPgpUser, true, _) => {
-                "OpenPGP PIN이 잠겼습니다. 이 키는 복구 단어가 없어 초기화하면 영구히 사라집니다. 관리자 PIN으로 PIN을 푸는 방법(ykman openpgp access unblock-pin)만 쓰고 초기화하지 마세요."
-            }
-            (Self::OpenPgpUser, false, true) => {
-                "OpenPGP PIN이 잠겼습니다. 관리자 PIN으로 풀 수 있습니다(ykman openpgp access unblock-pin). 관리자 PIN도 모르면 OpenPGP 초기화 뒤 같은 복구 단어로 다시 등록하세요."
-            }
-            (Self::OpenPgpUser, false, false) => {
-                "OpenPGP PIN이 잠겼습니다. 관리자 PIN으로 풀 수 있습니다(ykman openpgp access unblock-pin)."
-            }
-            (Self::PivPin, true, _) => {
-                "PIV PIN이 잠겼습니다. 이 Solana 키는 복구 단어가 없어 PIV 초기화하면 영구히 사라집니다. PUK로 PIN을 푸는 방법(ykman piv access unblock-pin)만 쓰고 초기화하지 마세요."
-            }
-            (Self::PivPin, false, true) => {
-                "PIV PIN이 잠겼습니다. PUK로 풀 수 있습니다(ykman piv access unblock-pin). PUK도 잠기면 PIV 초기화(Solana 키 삭제) 뒤 같은 복구 단어로 다시 등록하세요."
-            }
-            (Self::PivPin, false, false) => {
-                "PIV PIN이 잠겼습니다. PUK로 풀 수 있습니다(ykman piv access unblock-pin)."
-            }
-            (Self::PivPuk, true, _) => {
-                "PIV PUK이 잠겼습니다. 이제 PIV PIN까지 잠기면 PIV 초기화(Solana 키 삭제)밖에 없고, 이 Solana 키는 복구 단어가 없어 그때 영구히 사라집니다. PIV PIN을 잊지 마세요."
-            }
-            (Self::PivPuk, false, _) => {
-                "PIV PUK이 잠겼습니다. 이제 PIV PIN이 잠기면 PIV 초기화(Solana 키 삭제) 말고는 방법이 없으니 PIV PIN을 잊지 마세요."
-            }
+        let sentence = match (self, only_here, words) {
+            (Self::OpenPgpAdmin, true, _) => text::BLOCKED_PW3_ONLY_HERE,
+            (Self::OpenPgpAdmin, false, _) => text::BLOCKED_PW3,
+            (Self::OpenPgpUser, true, _) => text::BLOCKED_PW1_ONLY_HERE,
+            (Self::OpenPgpUser, false, true) => text::BLOCKED_PW1_WORDS,
+            (Self::OpenPgpUser, false, false) => text::BLOCKED_PW1_PLAIN,
+            (Self::PivPin, true, _) => text::BLOCKED_PIV_ONLY_HERE,
+            (Self::PivPin, false, true) => text::BLOCKED_PIV_WORDS,
+            (Self::PivPin, false, false) => text::BLOCKED_PIV_PIN,
+            (Self::PivPuk, true, _) => text::BLOCKED_PUK_ONLY_HERE,
+            (Self::PivPuk, false, _) => text::BLOCKED_PUK_RESET,
         };
-        format!("{text}{backup}")
+        format!("{}{backup}", sentence.get(lang))
     }
 
     /// The text of a card error of an operation that sent this secret (spec/10 §9.1): a wrong
     /// or blocked value names this secret with the tries left; any other error keeps its text.
     #[must_use]
-    pub fn error_text(self, error: CardError) -> String {
-        self.error_text_in(error, &PinContext::default())
+    pub fn error_text(self, lang: Lang, error: CardError) -> String {
+        self.error_text_in(lang, error, &PinContext::default())
     }
 
     /// [`Self::error_text`] with what the card's keys are ([`PinContext`]): a blocked secret
     /// says what is safe to do for those keys (W11, W12, the `YubiKey` list's results).
     #[must_use]
-    pub fn error_text_in(self, error: CardError, context: &PinContext) -> String {
+    pub fn error_text_in(self, lang: Lang, error: CardError, context: &PinContext) -> String {
         match error {
-            CardError::WrongPin { retries: 1 } => format!(
-                "{}이 틀렸습니다. 남은 시도 1회 — 한 번 더 틀리면 잠깁니다.",
-                self.name()
-            ),
+            CardError::WrongPin { retries: 1 } => text::WRONG_LAST.fill(lang, [self.name(lang)]),
             CardError::WrongPin {
                 retries: retries @ 2..,
-            } => format!("{}이 틀렸습니다. 남은 시도 {retries}회.", self.name()),
-            CardError::WrongPin { retries: 0 } | CardError::PinBlocked => self.blocked_in(context),
-            other => other.to_string(),
+            } => text::WRONG.fill(lang, [self.name(lang), &retries.to_string()]),
+            CardError::WrongPin { retries: 0 } | CardError::PinBlocked => {
+                self.blocked_in(lang, context)
+            }
+            other => other.text_in(lang),
         }
     }
 }
@@ -701,7 +738,7 @@ impl PinCounters {
     /// The tries-left lines of `kinds` that were read (spec/10 §9.1: shown before the PIN is
     /// entered; one try left warns that the next mistake blocks it).
     #[must_use]
-    pub fn lines(self, kinds: &[PinKind]) -> Vec<String> {
+    pub fn lines(self, lang: Lang, kinds: &[PinKind]) -> Vec<String> {
         kinds
             .iter()
             .filter_map(|kind| {
@@ -711,11 +748,11 @@ impl PinCounters {
                     PinKind::PivPin => self.piv_pin,
                     PinKind::PivPuk => self.puk,
                 };
-                let name = kind.name();
+                let name = kind.name(lang);
                 Some(match left? {
-                    0 => format!("{name}: 잠김 — 남은 시도가 없습니다."),
-                    1 => format!("{name}: 남은 시도 1회 — 한 번 더 틀리면 잠깁니다."),
-                    left => format!("{name}: 남은 시도 {left}회"),
+                    0 => text::COUNTER_LOCKED.fill(lang, [name]),
+                    1 => text::COUNTER_LAST.fill(lang, [name]),
+                    left => text::COUNTER.fill(lang, [name, &left.to_string()]),
                 })
             })
             .collect()
@@ -743,19 +780,19 @@ impl CardJobError {
 
     /// The text of this failure of an operation that sent `kind` ([`PinKind::error_text`]).
     #[must_use]
-    pub fn text_for(self, kind: PinKind) -> String {
-        self.text_for_in(kind, &PinContext::default())
+    pub fn text_for(self, lang: Lang, kind: PinKind) -> String {
+        self.text_for_in(lang, kind, &PinContext::default())
     }
 
     /// [`Self::text_for`] with the card's [`PinContext`] (2026-11-10).
     #[must_use]
-    pub fn text_for_in(self, kind: PinKind, context: &PinContext) -> String {
+    pub fn text_for_in(self, lang: Lang, kind: PinKind, context: &PinContext) -> String {
         match self {
-            Self::Card(error) => kind.error_text_in(error, context),
+            Self::Card(error) => kind.error_text_in(lang, error, context),
             Self::Enrol(EnrolError::Card(error) | EnrolError::Partial(error)) => {
-                kind.error_text_in(error, context)
+                kind.error_text_in(lang, error, context)
             }
-            Self::NoCard | Self::Enrol(_) => self.to_string(),
+            Self::NoCard | Self::Enrol(_) => self.text_in(lang),
         }
     }
 }
@@ -1002,10 +1039,10 @@ impl PinTarget {
 
     /// The secret's name in sentences.
     #[must_use]
-    pub const fn name(self) -> &'static str {
+    pub const fn name(self, lang: Lang) -> &'static str {
         match self {
             Self::OpenPgpUser => "OpenPGP PIN",
-            Self::OpenPgpAdmin => "OpenPGP 관리자 PIN",
+            Self::OpenPgpAdmin => text::NAME_OPENPGP_ADMIN.get(lang),
             Self::PivPin => "PIV PIN",
             Self::PivPuk => "PIV PUK",
         }
@@ -1013,24 +1050,26 @@ impl PinTarget {
 
     /// The W12 title.
     #[must_use]
-    pub const fn change_title(self) -> &'static str {
+    pub const fn change_title(self, lang: Lang) -> &'static str {
         match self {
-            Self::OpenPgpUser => "OpenPGP PIN 바꾸기",
-            Self::OpenPgpAdmin => "OpenPGP 관리자 PIN 바꾸기",
-            Self::PivPin => "PIV PIN 바꾸기",
-            Self::PivPuk => "PIV PUK 바꾸기",
+            Self::OpenPgpUser => text::TITLE_CHANGE_OPENPGP_PIN,
+            Self::OpenPgpAdmin => text::TITLE_CHANGE_ADMIN_PIN,
+            Self::PivPin => text::TITLE_CHANGE_PIV_PIN,
+            Self::PivPuk => text::TITLE_CHANGE_PIV_PUK,
         }
+        .get(lang)
     }
 
     /// The length rule and the factory value.
     #[must_use]
-    pub const fn rule(self) -> &'static str {
+    pub const fn rule(self, lang: Lang) -> &'static str {
         match self {
-            Self::OpenPgpUser => "영문·숫자·기호(ASCII) 6–127자입니다(공장 기본값 123456).",
-            Self::OpenPgpAdmin => "영문·숫자·기호(ASCII) 8–127자입니다(공장 기본값 12345678).",
-            Self::PivPin => "영문·숫자·기호(ASCII) 6–8자입니다(공장 기본값 123456).",
-            Self::PivPuk => "영문·숫자·기호(ASCII) 6–8자입니다(공장 기본값 12345678).",
+            Self::OpenPgpUser => text::RULE_OPENPGP_PIN,
+            Self::OpenPgpAdmin => text::RULE_ADMIN_PIN,
+            Self::PivPin => text::RULE_PIV_PIN,
+            Self::PivPuk => text::RULE_PIV_PUK,
         }
+        .get(lang)
     }
 
     const fn applets(self) -> (bool, bool) {
@@ -1229,12 +1268,12 @@ pub enum DefaultsStep {
 impl DefaultsStep {
     /// The name in sentences.
     #[must_use]
-    pub const fn name(self) -> &'static str {
+    pub const fn name(self, lang: Lang) -> &'static str {
         match self {
             Self::PivPin => "PIV PIN",
             Self::PivPuk => "PIV PUK",
-            Self::PivManagement => "PIV 관리 키(PIN 보호)",
-            Self::OpenPgpAdmin => "OpenPGP 관리자 PIN",
+            Self::PivManagement => text::NAME_PIV_MANAGEMENT.get(lang),
+            Self::OpenPgpAdmin => text::NAME_OPENPGP_ADMIN.get(lang),
             Self::OpenPgpUser => "OpenPGP PIN",
         }
     }
@@ -1688,6 +1727,7 @@ impl CardSource for MockSource {
 mod tests {
     use std::sync::{Arc, Mutex};
 
+    use yw_core::lang::Lang;
     use yw_core::yubikey::mock::MockCard;
     use yw_core::yubikey::openpgp::{self, OpenPgp};
     use yw_core::yubikey::plan::PgpKey;
@@ -1707,7 +1747,7 @@ mod tests {
 
         use super::{PinContext, PinKind};
         fn kind_text(kind: PinKind, context: &PinContext) -> String {
-            kind.error_text_in(CardError::PinBlocked, context)
+            kind.error_text_in(Lang::Ko, CardError::PinBlocked, context)
         }
         let record = |serial: u32, index: u32, known: bool| HwKeyRecord {
             serial,
@@ -1746,9 +1786,81 @@ mod tests {
         );
         // Without a context (a card not enrolled) the general sentence stays.
         assert_eq!(
-            PinKind::OpenPgpUser.error_text(CardError::PinBlocked),
+            PinKind::OpenPgpUser.error_text(Lang::Ko, CardError::PinBlocked),
             kind_text(PinKind::OpenPgpUser, &PinContext::default())
         );
+        // English (spec/14): no Hangul, the backup card still named.
+        let english = PinKind::OpenPgpUser.error_text_in(
+            Lang::En,
+            CardError::PinBlocked,
+            &PinContext::of(&backed, 7_700_001, PinKind::OpenPgpUser),
+        );
+        assert!(
+            english.ends_with(" Backup YubiKey #7700002 can keep signing."),
+            "{english}"
+        );
+        assert!(!yw_core::lang::has_hangul(&english));
+    }
+
+    /// Every catalogue entry of the card glue keeps its placeholders and has English without
+    /// Hangul; the PIN counter lines and errors have no Hangul in English (spec/14).
+    #[test]
+    fn english_card_glue_texts_have_no_korean() {
+        use super::{PinCounters, PinKind, PinTarget};
+        use yw_core::lang::{has_hangul, placeholders};
+        use yw_core::yubikey::CardError;
+        for entry in super::text::ALL {
+            assert!(!has_hangul(entry.en), "{}", entry.name);
+            for index in 0..entry.args {
+                assert!(
+                    placeholders(entry.ko).contains(&index)
+                        || placeholders(entry.en).contains(&index),
+                    "{}",
+                    entry.name
+                );
+            }
+        }
+        let counters = PinCounters {
+            serial: 7,
+            pw1: Some(0),
+            pw3: Some(1),
+            piv_pin: Some(3),
+            puk: Some(2),
+        };
+        let kinds = [
+            PinKind::OpenPgpUser,
+            PinKind::OpenPgpAdmin,
+            PinKind::PivPin,
+            PinKind::PivPuk,
+        ];
+        for line in counters.lines(Lang::En, &kinds) {
+            assert!(!has_hangul(&line), "{line}");
+        }
+        assert_eq!(
+            counters.lines(Lang::En, &[PinKind::PivPin]),
+            vec!["PIV PIN: 3 tries left".to_owned()]
+        );
+        for kind in kinds {
+            for error in [
+                CardError::WrongPin { retries: 1 },
+                CardError::WrongPin { retries: 2 },
+                CardError::PinBlocked,
+                CardError::MultipleCards,
+            ] {
+                assert!(!has_hangul(&kind.error_text(Lang::En, error)));
+            }
+        }
+        for target in [
+            PinTarget::OpenPgpUser,
+            PinTarget::OpenPgpAdmin,
+            PinTarget::PivPin,
+            PinTarget::PivPuk,
+        ] {
+            assert!(!has_hangul(target.name(Lang::En)));
+            assert!(!has_hangul(target.change_title(Lang::En)));
+            assert!(!has_hangul(target.rule(Lang::En)));
+        }
+        assert!(!has_hangul(&super::CardJobError::NoCard.text_in(Lang::En)));
     }
 
     /// spec/10 §5.1: the PIN check is a card job of its own before the signing job. A program

@@ -63,16 +63,22 @@ impl From<PlanError> for EnrolError {
     }
 }
 
+impl EnrolError {
+    /// The user-facing text in `lang`; `Display` is the Korean text.
+    #[must_use]
+    pub fn text_in(self, lang: crate::lang::Lang) -> String {
+        match self {
+            Self::Plan(error) => error.text_in(lang),
+            Self::Card(error) | Self::Partial(error) => error.text_in(lang),
+            Self::Key(error) => error.to_string(),
+            Self::SerialMismatch => super::text::ENROL_SERIAL_MISMATCH.get(lang).to_owned(),
+        }
+    }
+}
+
 impl core::fmt::Display for EnrolError {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Plan(error) => error.fmt(formatter),
-            Self::Card(error) | Self::Partial(error) => error.fmt(formatter),
-            Self::Key(error) => error.fmt(formatter),
-            Self::SerialMismatch => {
-                formatter.write_str("YubiKey 일련번호를 확인하지 못했습니다. 하나만 연결하세요.")
-            }
-        }
+        formatter.write_str(&self.text_in(crate::lang::Lang::Ko))
     }
 }
 
@@ -173,7 +179,7 @@ pub fn preview(
             let public = derive_public(ctx, seed, planned.role)?;
             Ok(PreviewLine {
                 planned: *planned,
-                path: planned.role.path_text(),
+                path: planned.role.path_text_in(crate::lang::Lang::Ko),
                 public,
                 addresses: super::plan::addresses(ctx, planned.role, &public)?,
             })

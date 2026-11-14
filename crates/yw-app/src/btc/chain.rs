@@ -98,22 +98,20 @@ impl BtcBlock {
         }
     }
 
-    /// The fixed text.
+    /// The fixed text in `lang`.
     #[must_use]
-    pub fn text(self) -> String {
+    pub fn text(self, lang: yw_core::lang::Lang) -> String {
         match self.code() {
-            Some(code) => code.text(),
-            None => "BTC 네트워크 설정이 지갑 데이터와 다릅니다".to_owned(),
+            Some(code) => code.text_in(lang),
+            None => super::text::NETWORK_MISMATCH.get(lang).to_owned(),
         }
     }
 }
 
-/// W-BTC-IDX-LAG (spec/04 §2.16).
+/// W-BTC-IDX-LAG in `lang` (spec/04 §2.16).
 #[must_use]
-pub fn lag_warning_text(blocks: u32) -> String {
-    format!(
-        "인덱서와 노드의 블록 높이가 {blocks} 차이 납니다. 잔액·확인 수가 늦게 반영될 수 있습니다"
-    )
+pub fn lag_warning_text(lang: yw_core::lang::Lang, blocks: u32) -> String {
+    super::text::LAG_WARNING.fill(lang, [&blocks.to_string()])
 }
 
 /// The chain facts a job uses.

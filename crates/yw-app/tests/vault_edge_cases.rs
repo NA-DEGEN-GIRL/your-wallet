@@ -260,8 +260,11 @@ fn password_change_after_landed_rewrap_reports_success() -> TestResult {
         Ok(PasswordChange::PrevNotRefreshed)
     );
     assert!(
-        yw_app::app::password_changed_text(PasswordChange::PrevNotRefreshed)
-            .starts_with("비밀번호를 바꿨습니다.")
+        yw_app::app::password_changed_text(
+            yw_core::lang::Lang::Ko,
+            PasswordChange::PrevNotRefreshed
+        )
+        .starts_with("비밀번호를 바꿨습니다.")
     );
     // The new password is the one in effect, in this session and after a restart.
     assert_eq!(

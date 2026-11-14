@@ -3,7 +3,7 @@
 // extension/src)의 한글 문자열 리터럴은 문구 카탈로그(`texts!`·`rules!` 블록, `ko:` 필드) 안에만
 // 있어야 한다. 아직 옮기지 않은 파일은 scripts/i18n-allowlist.txt에 적고(3단계에서 비운다),
 // 목록에 있는데 더는 한글 리터럴이 없는 파일도 실패로 본다(목록이 줄어들기만 하게).
-// 주석, #[cfg(test)] 모듈(파일 끝), tests 파일은 보지 않는다.
+// 주석, #[cfg(test)] 항목(모듈·선언·단일 항목), tests 파일은 보지 않는다.
 
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
@@ -33,26 +33,25 @@ function walk(directory, out) {
   }
 }
 
-// The source up to the first top-level `#[cfg(test)]` test module (this repository keeps unit
-// tests at the end of a file).
-function withoutTestModule(text) {
-  const match = /^#\[cfg\(test\)\]\s*\n(?:#\[[^\n]*\]\s*\n)*mod\s/mu.exec(text);
-  return match === null ? text : text.slice(0, match.index);
-}
-
-// String literals of Rust or JavaScript source with their offsets; comments are skipped.
-export function stringLiterals(text, rust) {
+// String literals ({ start, end, value }) and comment spans ([start, end)) of Rust or JavaScript
+// source.
+function lex(text, rust) {
   const literals = [];
+  const comments = [];
   let index = 0;
   while (index < text.length) {
     const character = text[index];
     const next = text[index + 1];
     if (character === "/" && next === "/") {
       const end = text.indexOf("\n", index);
-      index = end === -1 ? text.length : end;
+      const stop = end === -1 ? text.length : end;
+      comments.push([index, stop]);
+      index = stop;
     } else if (character === "/" && next === "*") {
       const end = text.indexOf("*/", index + 2);
-      index = end === -1 ? text.length : end + 2;
+      const stop = end === -1 ? text.length : end + 2;
+      comments.push([index, stop]);
+      index = stop;
     } else if (rust && character === "r" && (next === "\"" || next === "#") && !/[\w]/u.test(text[index - 1] ?? "")) {
       let hashes = 0;
       let cursor = index + 1;
@@ -67,8 +66,8 @@ export function stringLiterals(text, rust) {
       const close = "\"" + "#".repeat(hashes);
       const end = text.indexOf(close, cursor + 1);
       const stop = end === -1 ? text.length : end;
-      literals.push({ start: index, value: text.slice(cursor + 1, stop) });
-      index = stop + close.length;
+      index = Math.min(text.length, stop + close.length);
+      literals.push({ start: cursor - hashes - 1, end: index, value: text.slice(cursor + 1, stop) });
     } else if (character === "\"" || (!rust && (character === "'" || character === "`"))) {
       let cursor = index + 1;
       let value = "";
@@ -81,8 +80,9 @@ export function stringLiterals(text, rust) {
           cursor += 1;
         }
       }
-      literals.push({ start: index, value });
-      index = cursor + 1;
+      const start = index;
+      index = Math.min(text.length, cursor + 1);
+      literals.push({ start, end: index, value });
     } else if (rust && character === "'") {
       // A char literal ('x', '\n', '\u{..}') or a lifetime.
       const match = /^'(?:\\u\{[0-9a-fA-F]+\}|\\.|[^\\'])'/u.exec(text.slice(index, index + 12));
@@ -91,7 +91,66 @@ export function stringLiterals(text, rust) {
       index += 1;
     }
   }
-  return literals;
+  return { literals, comments };
+}
+
+// String literals of Rust or JavaScript source with their offsets; comments are skipped.
+export function stringLiterals(text, rust) {
+  return lex(text, rust).literals;
+}
+
+function blank(text) {
+  return text.replace(/[^\n]/gu, " ");
+}
+
+// Rust source with its literals and comments blanked (same offsets and lines).
+function maskRust(text) {
+  const { literals, comments } = lex(text, true);
+  const spans = [...literals.map(({ start, end }) => [start, end]), ...comments].sort((x, y) => x[0] - y[0]);
+  let masked = "";
+  let at = 0;
+  for (const [begin, end] of spans) {
+    if (begin >= at) {
+      masked += text.slice(at, begin) + blank(text.slice(begin, end));
+      at = end;
+    }
+  }
+  return masked + text.slice(at);
+}
+
+// The source with every `#[cfg(test)]` item blanked out: a test module block, a `mod tests;`
+// declaration or a single test-only item, at any indentation and visibility. Braces and
+// semicolons inside literals and comments do not count. (2026-11-14: before, everything after
+// the first top-level `#[cfg(test)] mod` was skipped, which hid the rest of a file whose test
+// module is declared near the top, and missed `pub(crate) mod tests`.)
+function withoutTestItems(text) {
+  const masked = maskRust(text);
+  const attribute = /^[ \t]*#\[cfg\(test\)\]/gmu;
+  let out = "";
+  let kept = 0;
+  for (let match = attribute.exec(masked); match !== null; match = attribute.exec(masked)) {
+    let depth = 0;
+    let cursor = match.index + match[0].length;
+    for (; cursor < masked.length; cursor += 1) {
+      const character = masked[cursor];
+      if (character === "{" || character === "[" || character === "(") {
+        depth += 1;
+      } else if (character === "]" || character === ")") {
+        depth -= 1;
+      } else if (character === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          break;
+        }
+      } else if (character === ";" && depth === 0) {
+        break;
+      }
+    }
+    out += text.slice(kept, match.index) + blank(text.slice(match.index, cursor + 1));
+    kept = Math.min(text.length, cursor + 1);
+    attribute.lastIndex = kept;
+  }
+  return out + text.slice(kept);
 }
 
 // [start, end) offsets of every `texts! { … }` / `rules! { … }` block.
@@ -125,7 +184,7 @@ function catalogueSpans(text) {
 
 // Hangul literals outside catalogues (`ko:` struct fields count as catalogue entries).
 export function violations(text, rust) {
-  const source = rust ? withoutTestModule(text) : text;
+  const source = rust ? withoutTestItems(text) : text;
   const spans = catalogueSpans(source);
   return stringLiterals(source, rust).filter(({ start, value }) => {
     if (!HANGUL.test(value) || ALLOWED_LITERALS.has(value)) {
@@ -158,6 +217,111 @@ export function scan(repositoryRoot) {
   return offending;
 }
 
+// spec/14 §4 (2026-11-14): every `texts!` block outside test code is listed, by its module path,
+// in its crate's catalogue registry, so `tests/lang_spec.rs` compares it with the spec tables.
+const REGISTRIES = [
+  { crate: "yw_core", lib: "crates/yw-core/src/lib.rs", registry: "crates/yw-core/src/lang.rs" },
+  { crate: "yw_app", lib: "crates/yw-app/src/lib.rs", registry: "crates/yw-app/src/catalogues.rs" },
+];
+
+// The source files of a crate's module tree from its lib.rs: [{ file, path: ["yw_app", …] }],
+// following `mod name;` and `#[path = "…"] mod name;`; modules declared `#[cfg(test)]` and their
+// children are left out.
+function moduleFiles(repositoryRoot, crate, lib) {
+  const out = [];
+  const visit = (file, path) => {
+    out.push({ file, path });
+    const masked = withoutTestItems(readFileSync(join(repositoryRoot, file), "utf8"));
+    const source = readFileSync(join(repositoryRoot, file), "utf8");
+    const directory = file.split("/").slice(0, -1).join("/");
+    const stem = file.split("/").pop().replace(/\.rs$/u, "");
+    const own = ["lib", "main", "mod"].includes(stem) ? directory : `${directory}/${stem}`;
+    const declaration = /^[ \t]*(?:pub(?:\([\w:]+\))?\s+)?mod\s+(\w+)\s*;/gmu;
+    for (let match = declaration.exec(masked); match !== null; match = declaration.exec(masked)) {
+      const before = source.slice(0, match.index).split("\n").slice(-4).join("\n");
+      const attribute = /#\[path\s*=\s*"([^"]+)"\]\s*$/u.exec(before);
+      const name = match[1];
+      const candidates = attribute === null
+        ? [`${own}/${name}.rs`, `${own}/${name}/mod.rs`]
+        : [`${directory}/${attribute[1]}`];
+      const found = candidates.find((candidate) => {
+        try {
+          return statSync(join(repositoryRoot, candidate)).isFile();
+        } catch {
+          return false;
+        }
+      });
+      if (found !== undefined) {
+        visit(found, [...path, name]);
+      }
+    }
+  };
+  visit(lib, [crate]);
+  return out;
+}
+
+// [start, end) offsets and names of the inline `mod name { … }` blocks of masked source.
+function inlineModules(masked) {
+  const modules = [];
+  const opening = /(?:pub(?:\([\w:]+\))?\s+)?mod\s+(\w+)\s*\{/gu;
+  for (let match = opening.exec(masked); match !== null; match = opening.exec(masked)) {
+    let depth = 0;
+    let cursor = match.index + match[0].length - 1;
+    for (; cursor < masked.length; cursor += 1) {
+      if (masked[cursor] === "{") {
+        depth += 1;
+      } else if (masked[cursor] === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          break;
+        }
+      }
+    }
+    modules.push({ start: match.index, end: cursor, name: match[1] });
+  }
+  return modules;
+}
+
+// The module paths of every non-test `texts!` block of a crate.
+export function cataloguePaths(repositoryRoot, crate, lib) {
+  const paths = [];
+  for (const { file, path } of moduleFiles(repositoryRoot, crate, lib)) {
+    const masked = withoutTestItems(readFileSync(join(repositoryRoot, file), "utf8"));
+    const modules = inlineModules(masked);
+    const invocation = /\btexts!\s*\{/gu;
+    for (let match = invocation.exec(masked); match !== null; match = invocation.exec(masked)) {
+      const inner = modules
+        .filter(({ start, end }) => start < match.index && match.index < end)
+        .sort((a, b) => a.start - b.start)
+        .map(({ name }) => name);
+      paths.push([...path, ...inner].join("::"));
+    }
+  }
+  return paths;
+}
+
+export function registryProblems(repositoryRoot) {
+  const problems = [];
+  for (const { crate, lib, registry } of REGISTRIES) {
+    const listed = new Set(
+      [...readFileSync(join(repositoryRoot, registry), "utf8").matchAll(/"((?:yw_core|yw_app)::[\w:]+)",/gu)]
+        .map((match) => match[1]),
+    );
+    const found = new Set(cataloguePaths(repositoryRoot, crate, lib));
+    for (const path of found) {
+      if (!listed.has(path)) {
+        problems.push(`${path}: texts! 카탈로그가 ${registry}에 없습니다`);
+      }
+    }
+    for (const path of listed) {
+      if (!found.has(path)) {
+        problems.push(`${path}: ${registry}에 있지만 그런 texts! 카탈로그가 없습니다`);
+      }
+    }
+  }
+  return problems;
+}
+
 export function readAllowlist(repositoryRoot) {
   return readFileSync(join(repositoryRoot, "scripts/i18n-allowlist.txt"), "utf8")
     .split(/\r?\n/u)
@@ -180,6 +344,7 @@ export function check(repositoryRoot) {
       problems.push(`${path}: 한글 리터럴이 없습니다 — scripts/i18n-allowlist.txt에서 지우세요`);
     }
   }
+  problems.push(...registryProblems(repositoryRoot));
   return problems;
 }
 

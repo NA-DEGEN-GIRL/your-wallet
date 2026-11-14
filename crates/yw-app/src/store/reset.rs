@@ -19,6 +19,7 @@
 use std::path::{Path, PathBuf};
 
 use yw_core::error::StorageError;
+use yw_core::lang::Lang;
 use yw_win::file::{
     FileError, flush_dir, reject_reparse_point, rename_no_replace, write_new_synced,
 };
@@ -160,14 +161,25 @@ fn create_folder(dir: &Path, stamp: &str) -> Result<PathBuf, StorageError> {
     Err(StorageError::Io(183))
 }
 
-fn readme(moved: &[String]) -> String {
-    let mut text = String::from(
-        "Your Wallet — 지갑 초기화로 옮긴 파일\r\n\r\n\
+/// The fixed texts of `README-reset.txt` (spec/14).
+pub mod text {
+    yw_core::texts! {
+        /// `README-reset.txt` before the list of moved files (CRLF line ends, a plain text file).
+        README_HEAD = "Your Wallet — 지갑 초기화로 옮긴 파일\r\n\r\n\
          이 폴더의 파일은 '지갑 초기화' 때 데이터 폴더에서 옮겨 온 것입니다. 지우지 않았습니다.\r\n\
          되돌리려면: 앱을 완전히 종료하고, 데이터 폴더(이 폴더의 상위 폴더)에 새로 생긴 vault.ywv·meta.ywm·journal.ywj가 있으면\r\n\
          먼저 다른 폴더로 옮긴 뒤, 아래 파일을 이 폴더에서 데이터 폴더로 옮기세요. 예전 비밀번호로 열립니다.\r\n\
-         자세한 방법: docs/recovery-guide.ko.md '지갑 초기화 되돌리기'.\r\n\r\n옮긴 파일:\r\n",
-    );
+         자세한 방법: docs/recovery-guide.ko.md '지갑 초기화 되돌리기'.\r\n\r\n옮긴 파일:\r\n"
+            / "Your Wallet — files moved by a wallet reset\r\n\r\n\
+         The files in this folder were moved here from the data folder by 'Reset wallet'. Nothing was deleted.\r\n\
+         To undo: quit the app completely; if the data folder (the parent of this folder) has a new vault.ywv, meta.ywm or journal.ywj,\r\n\
+         first move those to another folder, then move the files below from this folder back to the data folder. They open with the old password.\r\n\
+         Details: docs/recovery-guide.ko.md (undoing a wallet reset).\r\n\r\nMoved files:\r\n";
+    }
+}
+
+fn readme(lang: Lang, moved: &[String]) -> String {
+    let mut text = String::from(text::README_HEAD.get(lang));
     for name in moved {
         text.push_str("  ");
         text.push_str(name);
@@ -185,6 +197,7 @@ pub fn move_wallet_files(
     dir: &Path,
     stamp: &str,
     include_settings: bool,
+    lang: Lang,
 ) -> Result<ResetReport, ResetError> {
     reject_reparse_point(dir).map_err(|error| ResetError::Folder(storage(error)))?;
     let names = candidates(dir, include_settings).map_err(ResetError::Folder)?;
@@ -211,7 +224,7 @@ pub fn move_wallet_files(
     }
     let _ = flush_dir(dir);
     // The note is a convenience: a failure to write it does not undo the moves.
-    let _ = write_new_synced(&folder.join(README_NAME), readme(&moved).as_bytes());
+    let _ = write_new_synced(&folder.join(README_NAME), readme(lang, &moved).as_bytes());
     let _ = flush_dir(&folder);
     let settings_moved = moved
         .iter()
@@ -280,7 +293,8 @@ mod tests {
         ] {
             std::fs::write(dir.join(name), name.as_bytes()).unwrap();
         }
-        let report = move_wallet_files(&dir, "20261105T091530Z", false).unwrap();
+        let report =
+            move_wallet_files(&dir, "20261105T091530Z", false, yw_core::lang::Lang::Ko).unwrap();
         let folder = report.folder.clone().unwrap();
         assert_eq!(folder, dir.join("reset-20261105T091530Z"));
         assert_eq!(report.moved.first().map(String::as_str), Some("vault.ywv"));
@@ -301,7 +315,8 @@ mod tests {
 
         // Same second again (a name clash), now with the settings: `-2`.
         std::fs::write(dir.join("vault.ywv"), b"second").unwrap();
-        let again = move_wallet_files(&dir, "20261105T091530Z", true).unwrap();
+        let again =
+            move_wallet_files(&dir, "20261105T091530Z", true, yw_core::lang::Lang::Ko).unwrap();
         assert_eq!(
             again.folder.as_deref(),
             Some(dir.join("reset-20261105T091530Z-2").as_path())
@@ -315,7 +330,8 @@ mod tests {
             b"vault.ywv"
         );
         // Nothing left: no new folder.
-        let empty = move_wallet_files(&dir, "20261105T091531Z", true).unwrap();
+        let empty =
+            move_wallet_files(&dir, "20261105T091531Z", true, yw_core::lang::Lang::Ko).unwrap();
         assert_eq!(empty.folder, None);
         assert!(!dir.join("reset-20261105T091531Z").exists());
         let _ = std::fs::remove_dir_all(dir);

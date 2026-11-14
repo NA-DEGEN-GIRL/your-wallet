@@ -286,6 +286,8 @@ pub enum JobKind {
         owner: Address,
         /// The chain's token-card tokens that are not hidden.
         tokens: Vec<TokenRef>,
+        /// The app language of the read's error and "unsupported" texts.
+        lang: yw_core::lang::Lang,
     },
     /// Solana.
     Sol {
@@ -293,6 +295,8 @@ pub enum JobKind {
         endpoint: SolEndpoint,
         /// The selected account.
         owner: yw_core::sol::SolAddress,
+        /// The app language of the read's error texts.
+        lang: yw_core::lang::Lang,
     },
     /// Bitcoin (on the worker's Bitcoin session).
     Btc {

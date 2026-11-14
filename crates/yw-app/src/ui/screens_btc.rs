@@ -9,6 +9,7 @@ use yw_core::bip32::path::BtcChain;
 use yw_core::btc::meta::FreezeReason;
 use yw_core::btc::policy::texts;
 use yw_core::btc::{BtcMeta, BtcNetwork, FeeRate, Sats, Txid, encode_address};
+use yw_core::lang::{Lang, Text};
 
 use crate::apikeys::KeyName;
 use crate::app::{App, AppMode};
@@ -24,11 +25,15 @@ use crate::settings::BtcIndexer;
 use crate::ui::badge::Badge;
 use crate::ui::main_window::{Ctl, Item, Tone};
 
+pub mod text;
+
+pub use text::T_BTC_ESPLORA_NOTE;
+
 /// The muted line under the balance with the received history's unconfirmed deposits
 /// (2026-11-13; spec/04 §2.6, spec/08 §4.7-2). Shared with the Zcash card.
 #[must_use]
-pub fn pending_incoming_line(amount: &str) -> String {
-    format!("미확정 입금 {amount} (0 확인 — 바뀌거나 취소될 수 있습니다, 아직 쓸 수 없음)")
+pub fn pending_incoming_line(lang: Lang, amount: &str) -> String {
+    text::PENDING_LINE.fill(lang, [amount])
 }
 
 /// The refresh's "미확정 입금 있음" banner (spec/08 §4.7-2, 2026-11-13): shown while the refresh
@@ -44,7 +49,7 @@ pub fn pending_banner(
     at: &[(BtcChain, u32)],
     history_on: bool,
     covered: Option<&[u32]>,
-) -> Option<&'static str> {
+) -> Option<Text> {
     if !flagged {
         return None;
     }
@@ -299,18 +304,6 @@ pub mod ids {
     ];
 }
 
-/// T-BTC-ESPLORA-NOTE (spec/04 §2.16).
-pub const T_BTC_ESPLORA_NOTE: &str = "인덱서(Esplora 서버)는 조회하는 주소와 이 PC의 IP를 봅니다. 기본값은 mempool.space이며 자체 Esplora 서버로 바꿀 수 있습니다. mempool.space에 연결되지 않으면 아래 Esplora URL을 https://blockstream.info/api (testnet4는 https://blockstream.info/testnet4/api)로 바꾸고 테스트하세요. Esplora URL은 평문으로 저장되므로 토큰·API 키가 들어 있는 URL은 넣지 마세요.";
-/// The testnet band of S10/S11 (spec/04 §2.6).
-/// The testnet badge of S12 (spec/04 §2.8).
-/// Journal damage of the BTC entries (spec/08 §12.4, E-VLT-006).
-const JOURNAL_DAMAGED: &str =
-    "거래 저널의 Bitcoin 기록이 손상되어 Bitcoin 보내기를 멈췄습니다. (E-VLT-006)";
-/// Help under the account list (spec/04 §2.6 Bitcoin).
-const ACCOUNTS_HELP: &str = "주소 형식은 계정마다 고정입니다(BIP44·49·84·86). 다른 지갑에서 복구할 때 같은 형식을 고르세요.";
-/// Help of the add-account chooser.
-const ADD_ACCOUNT_HELP: &str = "잘 모르면 네이티브 세그윗을 고르세요. 탭루트 주소로는 일부 거래소가 보내 주지 않습니다. 레거시·호환 세그윗은 오래된 서비스용입니다.";
-
 /// The fee choices in radio order.
 const FEE_CHOICES: [BtcFeeChoice; 4] = [
     BtcFeeChoice::Fast,
@@ -384,21 +377,21 @@ pub const fn esplora_ids(net: BtcNetwork) -> (u16, u16, u16, u16) {
     }
 }
 
-/// The settings name with its Korean particle (`mainnet으로`, `testnet4로`).
-fn with_particle(net: BtcNetwork) -> String {
+/// The settings name with its Korean particle (`mainnet으로`, `testnet4로`; English: the name).
+fn with_particle(lang: Lang, net: BtcNetwork) -> String {
     match net {
-        BtcNetwork::Mainnet => format!("{}으로", net.settings_name()),
-        BtcNetwork::Testnet4 => format!("{}로", net.settings_name()),
+        BtcNetwork::Mainnet => text::WITH_EURO.fill(lang, [net.settings_name()]),
+        BtcNetwork::Testnet4 => text::WITH_RO.fill(lang, [net.settings_name()]),
     }
 }
 
-/// The two mismatch buttons (spec/08 §2): [설정을 {`BtcMeta` 값}으로 되돌리기] /
+/// The two mismatch buttons in `lang` (spec/08 §2): [설정을 {`BtcMeta` 값}으로 되돌리기] /
 /// [{settings 값}으로 바꾸기].
 #[must_use]
-pub fn mismatch_labels(meta: BtcNetwork, settings: BtcNetwork) -> (String, String) {
+pub fn mismatch_labels(lang: Lang, meta: BtcNetwork, settings: BtcNetwork) -> (String, String) {
     (
-        format!("설정을 {} 되돌리기", with_particle(meta)),
-        format!("{} 바꾸기", with_particle(settings)),
+        text::MISMATCH_KEEP.fill(lang, [&with_particle(lang, meta)]),
+        text::MISMATCH_USE.fill(lang, [&with_particle(lang, settings)]),
     )
 }
 
@@ -413,8 +406,11 @@ pub const fn network_tone(net: BtcNetwork) -> Tone {
 
 /// The network banner (spec/08 §2). Testnet4 shows only `BITCOIN TESTNET4 — 가치 없음` (it already
 /// says the coins have no value; a second generic testnet band under it was noise).
-fn network_banners(net: BtcNetwork, items: &mut Vec<Item>) {
-    items.push(Item::Banner(net.banner().to_owned(), network_tone(net)));
+fn network_banners(lang: Lang, net: BtcNetwork, items: &mut Vec<Item>) {
+    items.push(Item::Banner(
+        net.banner_in(lang).to_owned(),
+        network_tone(net),
+    ));
 }
 
 /// `YYYY-MM-DD HH:MM` in local time (spec/04 §2.6); UTC with a suffix if the conversion fails.
@@ -449,30 +445,33 @@ fn quoted_rate(choice: BtcFeeChoice, quote: Option<&FeeQuote>) -> Option<FeeRate
 
 /// A send-form fee radio (2026-11-10): "빠름 · 약 20분 · 12 sat/vB" — the usual wait of 2·6·24
 /// blocks — with "· 추정 없음" when the node gave none, the name and wait alone before the preview.
-fn fee_choice_label(choice: BtcFeeChoice, quote: Option<&FeeQuote>) -> String {
+fn fee_choice_label(lang: Lang, choice: BtcFeeChoice, quote: Option<&FeeQuote>) -> String {
     let wait = match choice {
-        BtcFeeChoice::Fast => "약 20분",
-        BtcFeeChoice::Normal => "약 1시간",
-        BtcFeeChoice::Slow => "약 4시간",
-        BtcFeeChoice::Manual => return choice.label().to_owned(),
-    };
+        BtcFeeChoice::Fast => text::WAIT_FAST,
+        BtcFeeChoice::Normal => text::WAIT_NORMAL,
+        BtcFeeChoice::Slow => text::WAIT_SLOW,
+        BtcFeeChoice::Manual => return choice.label(lang).to_owned(),
+    }
+    .get(lang);
+    let label = choice.label(lang);
     match (quote, quoted_rate(choice, quote)) {
-        (Some(_), Some(rate)) => format!("{} · {wait} · {rate}", choice.label()),
-        (Some(_), None) => format!("{} · {wait} · 추정 없음", choice.label()),
-        (None, _) => format!("{} · {wait}", choice.label()),
+        (Some(_), Some(rate)) => format!("{label} · {wait} · {rate}"),
+        (Some(_), None) => format!("{label} · {wait} · {}", text::NO_ESTIMATE.get(lang)),
+        (None, _) => format!("{label} · {wait}"),
     }
 }
 
 /// The plain name of a recipient's address type before its technical name (2026-11-10:
 /// "네이티브 세그윗 (P2WPKH)"; the approval window keeps `ScriptKind::type_label`).
-const fn kind_text(kind: &yw_core::btc::ScriptKind) -> &'static str {
+const fn kind_text(lang: Lang, kind: &yw_core::btc::ScriptKind) -> &'static str {
     match kind {
-        yw_core::btc::ScriptKind::P2pkh(_) => "레거시 (P2PKH)",
-        yw_core::btc::ScriptKind::P2sh(_) => "호환 세그윗·스크립트 (P2SH)",
-        yw_core::btc::ScriptKind::P2wpkh(_) => "네이티브 세그윗 (P2WPKH)",
-        yw_core::btc::ScriptKind::P2wsh(_) => "스크립트 세그윗 (P2WSH)",
-        yw_core::btc::ScriptKind::P2tr(_) => "탭루트 (P2TR)",
+        yw_core::btc::ScriptKind::P2pkh(_) => text::KIND_P2PKH,
+        yw_core::btc::ScriptKind::P2sh(_) => text::KIND_P2SH,
+        yw_core::btc::ScriptKind::P2wpkh(_) => text::KIND_P2WPKH,
+        yw_core::btc::ScriptKind::P2wsh(_) => text::KIND_P2WSH,
+        yw_core::btc::ScriptKind::P2tr(_) => text::KIND_P2TR,
     }
+    .get(lang)
 }
 
 /// `X sat/vB` of a recorded fee and vsize (rounded up like spec/08 §8.3 `rate_kvb`).
@@ -487,8 +486,8 @@ fn record_rate(fee: Sats, vsize: u32) -> String {
 /// The selected account's name (`네이티브 세그윗 계정 0`), `Bitcoin 계정` before BTC has one.
 fn active_label(ctx: &BtcCtx<'_>) -> String {
     ctx.btc_meta().map_or_else(
-        || "Bitcoin 계정".to_owned(),
-        |meta| crate::app_btc::account_label(meta.account()),
+        || text::ACCOUNT_FALLBACK.get(ctx.lang).to_owned(),
+        |meta| crate::app_btc::account_label(ctx.lang, meta.account()),
     )
 }
 
@@ -499,17 +498,17 @@ fn active_detail(ctx: &BtcCtx<'_>) -> String {
     ctx.btc_meta().map_or_else(String::new, |meta| {
         format!(
             "{} · {}",
-            meta.account().node_text(net),
-            crate::app_btc::account_type_text(meta.account(), net)
+            meta.account().node_text_in(ctx.lang, net),
+            crate::app_btc::account_type_text(ctx.lang, meta.account(), net)
         )
     })
 }
 
-fn flow_stage_text(stage: BtcFlowStage) -> Option<&'static str> {
+fn flow_stage_text(lang: Lang, stage: BtcFlowStage) -> Option<&'static str> {
     match stage {
-        BtcFlowStage::Prechecking => Some("노드 사전 검사(testmempoolaccept) 중…"),
-        BtcFlowStage::Applying => Some("저널에 기록하는 중…"),
-        BtcFlowStage::Sending => Some("전송 중…"),
+        BtcFlowStage::Prechecking => Some(text::STAGE_PRECHECK.get(lang)),
+        BtcFlowStage::Applying => Some(text::STAGE_APPLYING.get(lang)),
+        BtcFlowStage::Sending => Some(text::STAGE_SENDING.get(lang)),
         BtcFlowStage::Waiting | BtcFlowStage::Done => None,
     }
 }
@@ -527,31 +526,31 @@ impl App {
     }
 
     /// The gate reason of the tab (disabled is handled by the caller).
-    fn btc_gate_items(gate: BtcGate, items: &mut Vec<Item>) {
+    fn btc_gate_items(lang: Lang, gate: BtcGate, items: &mut Vec<Item>) {
         match gate {
             // NoAccount: the account card says it, next to `개인키 가져오기`.
             BtcGate::Disabled | BtcGate::NoAccount => {}
             BtcGate::Locked | BtcGate::NoMeta | BtcGate::JournalLoading => {
-                items.push(Item::Muted(gate.text()));
+                items.push(Item::Muted(gate.text(lang)));
             }
-            BtcGate::JournalClosed => items.push(Item::Banner(gate.text(), Tone::Blocked)),
+            BtcGate::JournalClosed => items.push(Item::Banner(gate.text(lang), Tone::Blocked)),
             BtcGate::Mismatch { meta, settings } => {
-                items.push(Item::Banner(gate.text(), Tone::Danger));
-                Self::btc_mismatch_row(meta, settings, items);
+                items.push(Item::Banner(gate.text(lang), Tone::Danger));
+                Self::btc_mismatch_row(lang, meta, settings, items);
             }
             BtcGate::NoEndpoint => {
-                items.push(Item::Banner(gate.text(), Tone::Danger));
+                items.push(Item::Banner(gate.text(lang), Tone::Danger));
                 // That network's row with its field open (2026-11-10).
                 items.push(Item::Row(vec![Ctl::button(
                     crate::ui::screens::ids::BTC_RPC_OPEN,
-                    "RPC 설정하기",
+                    text::RPC_SETUP.get(lang),
                 )]));
             }
         }
     }
 
-    fn btc_mismatch_row(meta: BtcNetwork, settings: BtcNetwork, items: &mut Vec<Item>) {
-        let (keep, change) = mismatch_labels(meta, settings);
+    fn btc_mismatch_row(lang: Lang, meta: BtcNetwork, settings: BtcNetwork, items: &mut Vec<Item>) {
+        let (keep, change) = mismatch_labels(lang, meta, settings);
         items.push(Item::Row(vec![
             Ctl::button(ids::MISMATCH_KEEP_META, &keep),
             Ctl::button(ids::MISMATCH_USE_SETTINGS, &change),
@@ -561,40 +560,50 @@ impl App {
     /// The S10 status line of the Bitcoin tab (network id and indexer name only, spec/04 §1.9).
     fn btc_status_line(&self, ctx: &BtcCtx<'_>) -> String {
         let net = ctx.net();
+        let lang = ctx.lang;
         let rpc = if ctx.core_url(net).is_none() {
-            "RPC 주소 없음 (E-KEY-005)".to_owned()
+            text::STATUS_NO_RPC.get(lang).to_owned()
         } else if self.btc.blocked.is_some() {
-            "차단됨".to_owned()
+            text::STATUS_BLOCKED.get(lang).to_owned()
         } else if let Some(tip) = self.btc.tip {
-            format!("연결됨 · 블록 높이 {tip} (서버 기준)")
+            text::STATUS_CONNECTED.fill(lang, [&tip.to_string()])
         } else {
-            "확인 전".to_owned()
+            text::STATUS_UNCHECKED.get(lang).to_owned()
         };
         let indexer = crate::btc::indexer_display(ctx.settings.indexer);
         let checked = if self.btc.indexer_verified {
-            "genesis 확인됨"
+            text::STATUS_GENESIS_OK
         } else {
-            "확인 전"
+            text::STATUS_UNCHECKED
         };
-        format!(
-            "Core RPC ({}): {rpc}   ·   인덱서: {indexer} ({checked})",
-            crate::btc::network_id(net)
+        text::STATUS_LINE.fill(
+            lang,
+            [
+                &crate::btc::network_id(net).to_string(),
+                &rpc,
+                indexer,
+                checked.get(lang),
+            ],
         )
     }
 
     fn btc_discovery_items(&self, ctx: &BtcCtx<'_>, items: &mut Vec<Item>) {
         let discovery = &self.btc.discovery;
+        let lang = ctx.lang;
         if discovery.running {
-            items.push(Item::Muted(format!(
-                "{} 검사한 주소 {}개",
-                if discovery.more {
-                    "주소를 더 찾는 중…"
-                } else {
-                    "주소를 찾는 중…"
-                },
-                discovery.checked
-            )));
-            items.push(Item::Row(vec![Ctl::button(ids::DISCOVER_CANCEL, "취소")]));
+            let doing = if discovery.more {
+                text::DISCOVERY_MORE
+            } else {
+                text::DISCOVERY_RUNNING
+            };
+            items.push(Item::Muted(
+                text::DISCOVERY_PROGRESS
+                    .fill(lang, [doing.get(lang), &discovery.checked.to_string()]),
+            ));
+            items.push(Item::Row(vec![Ctl::button(
+                ids::DISCOVER_CANCEL,
+                text::CANCEL.get(lang),
+            )]));
             return;
         }
         let incomplete = ctx.btc_meta().is_some_and(|meta| !meta.discovery_done());
@@ -602,10 +611,10 @@ impl App {
             let text = discovery
                 .error
                 .clone()
-                .unwrap_or_else(|| DISCOVERY_INCOMPLETE.to_owned());
+                .unwrap_or_else(|| DISCOVERY_INCOMPLETE.get(lang).to_owned());
             items.push(Item::Banner(text, Tone::Warn));
             items.push(Item::Row(vec![
-                Ctl::button(ids::DISCOVER_RETRY, "다시 시도").enabled(ctx.gate().is_ok()),
+                Ctl::button(ids::DISCOVER_RETRY, text::RETRY.get(lang)).enabled(ctx.gate().is_ok()),
             ]));
         }
     }
@@ -618,7 +627,7 @@ impl App {
         let single = ctx.btc_meta().is_some_and(BtcMeta::is_single);
         if discovery_done && !single && !self.btc.discovery.running {
             items.push(Item::Row(vec![
-                Ctl::button(ids::DISCOVER_MORE, "더 찾기").enabled(usable),
+                Ctl::button(ids::DISCOVER_MORE, text::FIND_MORE.get(ctx.lang)).enabled(usable),
             ]));
         }
     }
@@ -629,7 +638,8 @@ impl App {
     /// selected imported account, `개인키 가져오기`).
     fn btc_account_items(&self, ctx: &BtcCtx<'_>, items: &mut Vec<Item>) {
         let net = ctx.net();
-        items.push(Item::Subtitle("Bitcoin 계정".to_owned()));
+        let lang = ctx.lang;
+        items.push(Item::Subtitle(text::ACCOUNTS_TITLE.get(lang).to_owned()));
         let usable = ctx.gate().is_ok() && !self.btc.slot;
         let rows = self.btc.account_rows(ctx);
         if rows.is_empty() {
@@ -637,9 +647,12 @@ impl App {
                 .meta
                 .is_none_or(|meta| meta.btc_accounts.accounts.is_empty());
             items.push(Item::Muted(if none_at_all {
-                crate::ui::screens_keys::no_accounts_text(yw_core::keyimport::ImportChain::Btc)
+                crate::ui::screens_keys::no_accounts_text(
+                    self.settings.language,
+                    yw_core::keyimport::ImportChain::Btc,
+                )
             } else {
-                BtcGate::NoAccount.text()
+                BtcGate::NoAccount.text(lang)
             }));
         }
         // A drop-down like the network's (2026-11-11): the selected account on its button, the
@@ -650,8 +663,11 @@ impl App {
             let hardware = matches!(row.id, yw_core::btc::BtcAccountId::Hardware { .. });
             let badge = match (row.imported, row.evm_shared) {
                 _ if hardware => " · YubiKey".to_owned(),
-                (true, _) => " · 가져온 키".to_owned(),
-                (false, Some(evm_index)) => format!(" · EVM 계정 {evm_index} 키"),
+                (true, _) => format!(" · {}", text::BADGE_IMPORTED.get(lang)),
+                (false, Some(evm_index)) => format!(
+                    " · {}",
+                    text::BADGE_EVM_KEY.fill(lang, [&evm_index.to_string()])
+                ),
                 (false, None) => String::new(),
             };
             // HD rows name their mnemonic with several (spec/02 §8.6).
@@ -661,7 +677,8 @@ impl App {
                     script_type,
                     account,
                 } => {
-                    let name = format!("{} 계정 {account}", script_type.name());
+                    let name = yw_core::btc::text::ACCOUNT_HD
+                        .fill(lang, [script_type.name_in(lang), &account.to_string()]);
                     self.mnemonic_tag(mnemonic.map(|id| *id.as_bytes()))
                         .map_or_else(|| name.clone(), |tag| format!("{name} · {tag}"))
                 }
@@ -691,24 +708,24 @@ impl App {
             return;
         }
         if self.btc.add_account_open {
-            items.push(Item::Help(ADD_ACCOUNT_HELP.to_owned()));
+            items.push(Item::Help(text::ADD_ACCOUNT_HELP.get(lang).to_owned()));
             self.btc_add_source_items(ctx, usable, items);
             for (offset, script_type) in yw_core::btc::ScriptType::CHOICES.iter().enumerate() {
                 let id = ids::ACCOUNT_ADD_TYPE.saturating_add(u16::try_from(offset).unwrap_or(0));
                 items.push(Item::Row(vec![
-                    Ctl::button(id, &script_type.label(net)).enabled(usable),
+                    Ctl::button(id, &script_type.label_in(lang, net)).enabled(usable),
                 ]));
             }
             items.push(Item::Row(vec![Ctl::button(
                 ids::ACCOUNT_ADD_CANCEL,
-                "취소",
+                text::CANCEL.get(lang),
             )]));
         } else {
             items.push(Item::Row(vec![
-                Ctl::button(ids::ACCOUNT_ADD, "계정 추가").enabled(usable),
+                Ctl::button(ids::ACCOUNT_ADD, text::ADD_ACCOUNT.get(lang)).enabled(usable),
             ]));
         }
-        items.push(Item::Help(ACCOUNTS_HELP.to_owned()));
+        items.push(Item::Help(text::ACCOUNTS_HELP.get(lang).to_owned()));
         self.btc_imported_items(ctx, items);
     }
 
@@ -719,14 +736,15 @@ impl App {
             return;
         };
         let fixed = meta.fixed_address();
-        items.push(Item::Text(format!(
-            "주소 방식 — {}",
-            crate::app_btc::account_label(meta.account())
+        let lang = ctx.lang;
+        items.push(Item::Text(text::ADDRESS_MODE.fill(
+            lang,
+            [&crate::app_btc::account_label(lang, meta.account())],
         )));
         items.push(Item::Row(vec![
             Ctl::radio(
                 ids::ADDRESS_MODE_SINGLE,
-                crate::app_btc::T_BTC_MODE_SINGLE,
+                crate::app_btc::T_BTC_MODE_SINGLE.get(lang),
                 fixed,
                 true,
             )
@@ -735,22 +753,25 @@ impl App {
         items.push(Item::Row(vec![
             Ctl::radio(
                 ids::ADDRESS_MODE_HD,
-                crate::app_btc::T_BTC_MODE_HD,
+                crate::app_btc::T_BTC_MODE_HD.get(lang),
                 !fixed,
                 false,
             )
             .enabled(usable),
         ]));
-        items.push(Item::Help(crate::app_btc::T_BTC_MODE_HELP.to_owned()));
+        items.push(Item::Help(
+            crate::app_btc::T_BTC_MODE_HELP.get(lang).to_owned(),
+        ));
     }
 
     /// The add-account key source (spec/08 §3.5): the standard BTC path (default) or the key of
     /// an EVM account (warning and the EVM account radios; adding asks for confirmation).
     fn btc_add_source_items(&self, ctx: &BtcCtx<'_>, usable: bool, items: &mut Vec<Item>) {
         let evm = self.btc.add_source == crate::app_btc::BtcAddSource::EvmShared;
+        let lang = ctx.lang;
         if self.several_mnemonics() {
             // Which recovery phrase the standard-path account comes from (spec/02 §8.6).
-            items.push(Item::Text("복구 단어".to_owned()));
+            items.push(Item::Text(text::MNEMONIC.get(lang).to_owned()));
             for (row, info) in self.mn.infos.iter().enumerate() {
                 let chosen = if info.primary {
                     self.btc.add_mnemonic.is_none()
@@ -764,30 +785,29 @@ impl App {
                 ]));
             }
             if self.btc.add_mnemonic.is_some() {
-                items.push(Item::Help(
-                    "추가한 복구 단어의 표준 경로 m/{44·49·84·86}'/{코인}'/{계정}'에서 만듭니다(계정 0부터)."
-                        .to_owned(),
-                ));
+                items.push(Item::Help(text::ADDED_MNEMONIC_HELP.get(lang).to_owned()));
                 return;
             }
         }
-        items.push(Item::Text("키 출처".to_owned()));
+        items.push(Item::Text(text::KEY_SOURCE.get(lang).to_owned()));
         items.push(Item::Row(vec![
             Ctl::radio(
                 ids::ACCOUNT_SOURCE_STANDARD,
-                crate::app_btc::T_BTC_SOURCE_STANDARD,
+                crate::app_btc::T_BTC_SOURCE_STANDARD.get(lang),
                 !evm,
                 true,
             )
             .enabled(usable),
         ]));
         items.push(Item::Help(
-            crate::app_btc::T_BTC_SOURCE_STANDARD_HELP.to_owned(),
+            crate::app_btc::T_BTC_SOURCE_STANDARD_HELP
+                .get(lang)
+                .to_owned(),
         ));
         items.push(Item::Row(vec![
             Ctl::radio(
                 ids::ACCOUNT_SOURCE_EVM,
-                crate::app_btc::T_BTC_SOURCE_EVM,
+                crate::app_btc::T_BTC_SOURCE_EVM.get(lang),
                 evm,
                 false,
             )
@@ -797,12 +817,12 @@ impl App {
             return;
         }
         items.push(Item::Banner(
-            crate::app_btc::T_BTC_EVM_SHARED.to_owned(),
+            crate::app_btc::T_BTC_EVM_SHARED.get(lang).to_owned(),
             Tone::Warn,
         ));
         let accounts = ctx.evm_accounts();
         if accounts.is_empty() {
-            items.push(Item::Muted("EVM 계정이 없습니다".to_owned()));
+            items.push(Item::Muted(text::NO_EVM_ACCOUNTS.get(lang).to_owned()));
         }
         for (row, (index, label, address)) in accounts
             .iter()
@@ -818,13 +838,11 @@ impl App {
                 Ctl::radio(id, &text, self.btc.add_evm_index == *index, row == 0).enabled(usable),
             ]));
         }
-        items.push(Item::Help(
-            "주소 형식을 누르면 확인 창이 열립니다. 그 EVM 계정의 키로 주소 하나를 만듭니다."
-                .to_owned(),
-        ));
+        items.push(Item::Help(text::EVM_PICK_HELP.get(lang).to_owned()));
     }
 
     fn btc_balance_items(&self, ctx: &BtcCtx<'_>, items: &mut Vec<Item>) {
+        let lang = ctx.lang;
         items.push(Item::Subtitle(active_label(ctx)));
         items.push(Item::Help(active_detail(ctx)));
         // U7, as on the EVM and Solana tabs: the account's phrase waits for its backup quiz;
@@ -835,22 +853,20 @@ impl App {
             items.push(Item::Display(BtcUi::amount_text(balance.available)));
             // One status line, like the other tabs (the UTXO explanation is the UTXO card's,
             // 2026-11-11).
-            items.push(Item::Help("사용 가능 (확인 1 이상, 서버 기준)".to_owned()));
+            items.push(Item::Help(text::AVAILABLE_NOTE.get(lang).to_owned()));
             if balance.frozen.get() > 0 {
-                items.push(Item::Muted(format!(
-                    "동결 {}",
-                    BtcUi::amount_text(balance.frozen)
-                )));
+                items.push(Item::Muted(
+                    text::FROZEN.fill(lang, [&BtcUi::amount_text(balance.frozen)]),
+                ));
             }
             if balance.pending.get() > 0 {
-                items.push(Item::Muted(format!(
-                    "확인 대기 {} (아직 쓸 수 없음)",
-                    BtcUi::amount_text(balance.pending)
-                )));
+                items.push(Item::Muted(
+                    text::PENDING_BALANCE.fill(lang, [&BtcUi::amount_text(balance.pending)]),
+                ));
             }
         } else {
-            items.push(Item::Display("잔액 —".to_owned()));
-            items.push(Item::Help("잔액 알 수 없음".to_owned()));
+            items.push(Item::Display(text::BALANCE_DASH.get(lang).to_owned()));
+            items.push(Item::Help(text::BALANCE_UNKNOWN.get(lang).to_owned()));
         }
         // 2026-11-13: the received history's unconfirmed deposits as an amount (display only,
         // never in the balance above); the refresh's yes/no banner stays while that list does
@@ -858,9 +874,10 @@ impl App {
         let list = self.received_list(crate::received::RecvChain::Btc);
         let pending_sum = list.and_then(crate::app_received::RecvList::pending_sum);
         if let Some(sats) = pending_sum {
-            items.push(Item::Muted(pending_incoming_line(&BtcUi::amount_text(
-                Sats::new(sats).unwrap_or(Sats::ZERO),
-            ))));
+            items.push(Item::Muted(pending_incoming_line(
+                lang,
+                &BtcUi::amount_text(Sats::new(sats).unwrap_or(Sats::ZERO)),
+            )));
         }
         if let Some(text) = pending_banner(
             self.btc.pending_incoming,
@@ -868,111 +885,102 @@ impl App {
             self.settings.received_history,
             list.map(|list| list.covered.as_slice()),
         ) {
-            items.push(Item::Banner(text.to_owned(), Tone::Warn));
+            items.push(Item::Banner(text.get(lang).to_owned(), Tone::Warn));
         }
         if self.btc.verify_failures > 0 {
             items.push(Item::Banner(
-                format!("검증 실패 UTXO {}개", self.btc.verify_failures),
+                text::VERIFY_FAILURES.fill(lang, [&self.btc.verify_failures.to_string()]),
                 Tone::Warn,
             ));
         }
         if self.btc.skipped_addresses > 0 {
             items.push(Item::Banner(
-                format!(
-                    "UTXO가 너무 많아 목록을 받지 못한 주소 {}개 — 그 주소의 UTXO는 지난번에 확인한 그대로 두며 이미 쓰였을 수 있습니다",
-                    self.btc.skipped_addresses
-                ),
+                text::SKIPPED_ADDRESSES.fill(lang, [&self.btc.skipped_addresses.to_string()]),
                 Tone::Warn,
             ));
         }
         if !self.btc.hint_mismatch.is_empty() {
             items.push(Item::Banner(
-                format!(
-                    "서버 응답 불일치 UTXO {}개 (검증한 값을 씁니다)",
-                    self.btc.hint_mismatch.len()
-                ),
+                text::HINT_MISMATCH.fill(lang, [&self.btc.hint_mismatch.len().to_string()]),
                 Tone::Warn,
             ));
         }
         if self.btc.auto_frozen > 0 {
             items.push(Item::Banner(
-                format!(
-                    "작은 입금 자동 동결(먼지 공격 방지) {}개",
-                    self.btc.auto_frozen
-                ),
+                text::AUTO_FROZEN.fill(lang, [&self.btc.auto_frozen.to_string()]),
                 Tone::Info,
             ));
         }
     }
 
     fn btc_utxo_items(&self, ctx: &BtcCtx<'_>, items: &mut Vec<Item>) {
-        items.push(Item::Subtitle("UTXO (검증됨)".to_owned()));
-        items.push(Item::Help(
-            "UTXO는 받은 돈 한 건 한 건입니다. 작은 입금은 먼지 공격을 막으려고 자동으로 동결합니다. 위 계정 카드의 잔액은 이전 거래로 검증한 UTXO 가운데 확인 수 1 이상(서버 기준)인 것의 합이고, 진행 중 거래가 쓰는 UTXO는 빠집니다."
-                .to_owned(),
-        ));
+        let lang = ctx.lang;
+        items.push(Item::Subtitle(text::UTXO_TITLE.get(lang).to_owned()));
+        items.push(Item::Help(text::UTXO_HELP.get(lang).to_owned()));
         let utxos = self.btc.utxos(ctx);
         if utxos.is_empty() {
-            items.push(Item::Help("검증된 UTXO가 없습니다.".to_owned()));
+            items.push(Item::Help(text::NO_UTXOS.get(lang).to_owned()));
         }
         let can_freeze = self.btc_unlocked() && ctx.mismatch().is_none();
         for (row, utxo) in utxos.iter().take(usize::from(ids::UTXO_SPAN)).enumerate() {
             let mut line = format!(
                 "{} · {}",
                 BtcUi::amount_text(utxo.value),
-                confirmations_text(utxo.confirmations)
+                confirmations_text(lang, utxo.confirmations)
             );
+            let mut mark = |text: Text| {
+                line.push_str(" · ");
+                line.push_str(text.get(lang));
+            };
             match utxo.frozen {
-                Some(FreezeReason::User) => line.push_str(" · 동결"),
-                Some(FreezeReason::Auto) => {
-                    line.push_str(" · 자동 동결(작은 입금, 먼지 공격 방지)");
-                }
+                Some(FreezeReason::User) => mark(text::UTXO_FROZEN),
+                Some(FreezeReason::Auto) => mark(text::UTXO_AUTO_FROZEN),
                 None => {}
             }
             if utxo.in_flight {
-                line.push_str(" · 진행 중 거래가 사용");
+                mark(text::UTXO_IN_FLIGHT);
             }
             if utxo.own {
-                line.push_str(" · 내 잔돈");
+                mark(text::UTXO_OWN);
             }
             if utxo.hint_mismatch {
-                line.push_str(" · 서버 응답 불일치");
+                mark(text::UTXO_HINT);
             }
             if utxo.indexer_only {
-                line.push_str(" · ");
-                line.push_str(crate::app_btc::INDEXER_ONLY);
+                mark(crate::app_btc::INDEXER_ONLY);
             }
             items.push(Item::Text(line));
             items.push(Item::Mono(utxo.outpoint.to_string()));
             let id = ids::UTXO_BASE.saturating_add(u16::try_from(row).unwrap_or(0));
             let label = if utxo.frozen.is_some() {
-                "해제"
+                text::UNFREEZE
             } else {
-                "동결"
-            };
+                text::FREEZE
+            }
+            .get(lang);
             items.push(Item::Row(vec![
                 Ctl::button(id, label).enabled(can_freeze && !utxo.in_flight),
             ]));
         }
         let hidden = utxos.len().saturating_sub(usize::from(ids::UTXO_SPAN));
         if hidden > 0 {
-            items.push(Item::Muted(format!(
-                "UTXO {hidden}개는 목록에 표시하지 않았습니다(표시 상한 {}개).",
-                ids::UTXO_SPAN
-            )));
+            items.push(Item::Muted(
+                text::UTXO_HIDDEN.fill(lang, [&hidden.to_string(), &ids::UTXO_SPAN.to_string()]),
+            ));
         }
     }
 
     #[expect(clippy::too_many_lines, reason = "one block per activity button")]
     fn btc_activity_items(&self, ctx: &BtcCtx<'_>, items: &mut Vec<Item>) {
+        let lang = ctx.lang;
         items.push(Item::Badged(
             Badge::bitcoin(ctx.net()),
-            Box::new(Item::Subtitle("보낸 거래".to_owned())),
+            Box::new(Item::Subtitle(text::ACTIVITY_TITLE.get(lang).to_owned())),
         ));
         let mut prompt_drawn = false;
         let rows = self.btc.activity_rows(ctx);
         if rows.is_empty() {
-            items.push(Item::Help("아직 보낸 거래가 없습니다.".to_owned()));
+            items.push(Item::Help(text::NO_ACTIVITY.get(lang).to_owned()));
         }
         let usable = ctx.gate().is_ok();
         let unlocked = self.btc_unlocked();
@@ -1003,21 +1011,20 @@ impl App {
                 .filter(|entry| entry.address == lower)
                 .find_map(|entry| match &entry.source {
                     crate::app_btc::BtcKnownSource::Book { label, .. } => {
-                        Some(format!(" → 주소록: {label}"))
+                        Some(format!(" {}", text::TO_BOOK.fill(lang, [label])))
                     }
                     crate::app_btc::BtcKnownSource::Own { account } => {
-                        Some(format!(" → 내 계정: {account}"))
+                        Some(format!(" {}", text::TO_OWN.fill(lang, [account])))
                     }
                     crate::app_btc::BtcKnownSource::Sent => None,
                 })
                 .unwrap_or_default();
             if let Some(amount) = row.amount {
-                items.push(Item::Muted(format!(
-                    "받는 금액 {} · 받는 주소{name}",
-                    BtcUi::amount_text(amount)
-                )));
+                items.push(Item::Muted(
+                    text::ROW_AMOUNT_TO.fill(lang, [&BtcUi::amount_text(amount), &name]),
+                ));
             } else if !row.counterparty.is_empty() {
-                items.push(Item::Muted(format!("받는 주소{name}")));
+                items.push(Item::Muted(text::ROW_TO.fill(lang, [&name])));
             }
             // 2026-11-11: the recipient whole (ends emphasized) and the txid on lines of their
             // own; a click copies either (the wallet's own signed journal — the received
@@ -1025,10 +1032,14 @@ impl App {
             // the right end of their line.
             if !row.counterparty.is_empty() {
                 let save = self.offer_save(BookChain::Btc, &row.counterparty).then(|| {
-                    crate::ui::screens_links::save_icon(base.saturating_add(ids::ACT_SAVE))
+                    crate::ui::screens_links::save_icon(
+                        self.settings.language,
+                        base.saturating_add(ids::ACT_SAVE),
+                    )
                 });
                 crate::ui::screens_links::push_address_line(
                     items,
+                    self.settings.language,
                     crate::ui::screens_links::ids::row_id(
                         crate::ui::screens_links::ids::BTC_TO_BASE,
                         crate::ui::screens_links::ids::BTC_TO_SPAN,
@@ -1041,6 +1052,7 @@ impl App {
             }
             crate::ui::screens_links::push_hash_line(
                 items,
+                self.settings.language,
                 Some(base.saturating_add(ids::ACT_COPY)),
                 &row.txid,
                 self.explorer_tx_icons(
@@ -1056,8 +1068,8 @@ impl App {
             let flow = Txid::from_display_hex(&row.txid)
                 .ok()
                 .and_then(|txid| self.btc.flow(&txid));
-            if let Some(text) = flow.and_then(|flow| flow_stage_text(flow.stage)) {
-                items.push(Item::Muted(text.to_owned()));
+            if let Some(stage) = flow.and_then(|flow| flow_stage_text(lang, flow.stage)) {
+                items.push(Item::Muted(stage.to_owned()));
             }
             if let Some(note) = &row.note {
                 let waiting = flow.is_some_and(|flow| flow.stage == BtcFlowStage::Waiting);
@@ -1069,7 +1081,7 @@ impl App {
             let mut buttons = Vec::new();
             if row.can_bump {
                 buttons.push(
-                    Ctl::button(base.saturating_add(ids::ACT_BUMP), "수수료 올리기")
+                    Ctl::button(base.saturating_add(ids::ACT_BUMP), text::BUMP_FEE.get(lang))
                         .enabled(usable),
                 );
             }
@@ -1077,20 +1089,27 @@ impl App {
                 buttons.push(
                     Ctl::button(
                         base.saturating_add(ids::ACT_REBROADCAST),
-                        "같은 바이트 다시 전송",
+                        text::REBROADCAST.get(lang),
                     )
                     .enabled(usable),
                 );
             }
             if row.can_abandon {
                 buttons.push(
-                    Ctl::button(base.saturating_add(ids::ACT_ABANDON), "포기").enabled(unlocked),
+                    Ctl::button(
+                        base.saturating_add(ids::ACT_ABANDON),
+                        text::ABANDON.get(lang),
+                    )
+                    .enabled(unlocked),
                 );
             }
             if row.can_esplora {
                 buttons.push(
-                    Ctl::button(base.saturating_add(ids::ACT_ESPLORA), "Esplora로 전송")
-                        .enabled(usable),
+                    Ctl::button(
+                        base.saturating_add(ids::ACT_ESPLORA),
+                        text::ESPLORA_SEND.get(lang),
+                    )
+                    .enabled(usable),
                 );
             }
             if row.can_continue {
@@ -1099,15 +1118,17 @@ impl App {
                     Ctl::button(
                         base.saturating_add(ids::ACT_CONTINUE),
                         if retry {
-                            "다시 시도"
+                            text::RETRY
                         } else {
-                            "전송 계속"
-                        },
+                            text::CONTINUE_SEND
+                        }
+                        .get(lang),
                     )
                     .enabled(usable),
                 );
                 buttons.push(
-                    Ctl::button(base.saturating_add(ids::ACT_CANCEL), "취소").enabled(unlocked),
+                    Ctl::button(base.saturating_add(ids::ACT_CANCEL), text::CANCEL.get(lang))
+                        .enabled(unlocked),
                 );
             }
             if !buttons.is_empty() {
@@ -1128,18 +1149,21 @@ impl App {
     /// The tab while Bitcoin is off (`설정 → Bitcoin`; a key-only wallet without a Bitcoin key
     /// may import one now).
     fn btc_disabled_items(&self, ctx: &BtcCtx<'_>, items: &mut Vec<Item>) {
+        let lang = ctx.lang;
         items.push(Item::CardStart(Some("Bitcoin".to_owned())));
-        items.push(Item::Text(BtcGate::Disabled.text()));
-        items.push(Item::Help(if ctx.has_mnemonic {
-                "설정 → Bitcoin에서 켜면 네이티브 세그윗(bc1q…) 계정 0의 주소를 찾아 잔액을 보여줍니다. 다른 주소 형식(탭루트·호환 세그윗·레거시)은 켠 뒤 [계정 추가]로 더하고, 다른 지갑의 WIF 개인키는 [개인키 가져오기]로 더합니다. 먼저 네트워크(RPC)에 bitcoin 주소가 있어야 합니다."
-                    .to_owned()
+        items.push(Item::Text(BtcGate::Disabled.text(lang)));
+        items.push(Item::Help(
+            if ctx.has_mnemonic {
+                text::DISABLED_HELP_MNEMONIC
             } else {
-                "설정 → Bitcoin에서 켜면 가져온 Bitcoin 개인키의 잔액을 보여주고 받기·보내기를 할 수 있습니다. 먼저 네트워크(RPC)에 bitcoin 주소가 있어야 합니다."
-                    .to_owned()
-            }));
+                text::DISABLED_HELP_KEYS
+            }
+            .get(lang)
+            .to_owned(),
+        ));
         items.push(Item::Row(vec![Ctl::primary(
             ids::SECTION_BTC,
-            "Bitcoin 설정",
+            text::BTC_SETTINGS.get(lang),
         )]));
         items.push(Item::CardEnd);
         if !ctx.has_mnemonic
@@ -1157,6 +1181,7 @@ impl App {
     pub fn btc_main_screen(&self, items: &mut Vec<Item>) {
         let ctx = self.btc_ctx();
         let net = ctx.net();
+        let lang = ctx.lang;
         if !ctx.settings.enabled {
             self.btc_disabled_items(&ctx, items);
             return;
@@ -1164,32 +1189,38 @@ impl App {
         items.push(Item::CardStart(None));
         // The network as a small tag on a `네트워크` line like the other tabs (2026-11-11; the
         // send, receive and result screens keep the full band of spec/08 §2).
-        items.push(Item::LabeledRow("네트워크".to_owned(), Vec::new()));
-        items.push(Item::Pill(net.banner().to_owned(), network_tone(net)));
+        items.push(Item::LabeledRow(
+            text::NETWORK.get(lang).to_owned(),
+            Vec::new(),
+        ));
+        items.push(Item::Pill(
+            net.banner_in(lang).to_owned(),
+            network_tone(net),
+        ));
         let gate = ctx.gate();
         if let Err(reason) = gate {
-            Self::btc_gate_items(reason, items);
+            Self::btc_gate_items(lang, reason, items);
         }
         let mismatch = matches!(gate, Err(BtcGate::Mismatch { .. }));
         if ctx.journal_damaged() {
-            items.push(Item::Banner(JOURNAL_DAMAGED.to_owned(), Tone::Blocked));
+            items.push(Item::Banner(
+                text::JOURNAL_DAMAGED.get(lang).to_owned(),
+                Tone::Blocked,
+            ));
         }
         if let Some(text) = self.btc.blocked.as_ref().filter(|_| !mismatch) {
             items.push(Item::Banner(text.clone(), Tone::Blocked));
             if self.btc.tip_regressed {
-                items.push(Item::Help(
-                    "노드 블록 높이가 이 지갑이 전에 본 높이보다 6블록 넘게 낮습니다. 노드(RPC)를 바꿨거나 이전 노드가 잘못된 높이를 알려 준 경우에만 기록을 초기화하세요."
-                        .to_owned(),
-                ));
+                items.push(Item::Help(text::TIP_REGRESSED_HELP.get(lang).to_owned()));
                 items.push(Item::Row(vec![
-                    Ctl::button(ids::RESET_TIP, "블록 높이 기록 초기화")
+                    Ctl::button(ids::RESET_TIP, text::RESET_TIP.get(lang))
                         .enabled(self.btc_unlocked()),
                 ]));
             }
         }
         if let Some(lag) = self.btc.lag_warning {
             items.push(Item::Banner(
-                crate::btc::chain::lag_warning_text(lag),
+                crate::btc::chain::lag_warning_text(lang, lag),
                 Tone::Warn,
             ));
         }
@@ -1200,9 +1231,7 @@ impl App {
         let signed = self.btc.signed_records(&ctx).len();
         if signed > 0 {
             items.push(Item::Banner(
-                format!(
-                    "서명했지만 보내지 않은 Bitcoin 거래가 {signed}건 있습니다. 아래 활동에서 [전송 계속] 또는 [취소]를 고르세요."
-                ),
+                text::SIGNED_PENDING.fill(lang, [&signed.to_string()]),
                 Tone::Warn,
             ));
         }
@@ -1248,10 +1277,12 @@ impl App {
     /// The selected account card, in one layout with the other tabs (2026-11-11): name, path
     /// and type, balance, status, the address with `주소 복사`, then 보내기 · 받기 · 새로고침.
     fn btc_selected_card(&self, ctx: &BtcCtx<'_>, usable: bool, items: &mut Vec<Item>) {
+        let lang = ctx.lang;
         items.push(Item::CardStart(None));
         self.btc_balance_items(ctx, items);
         if let Some(address) = self.btc_card_address() {
             items.push(crate::ui::screens::own_address_row(
+                self.settings.language,
                 &address,
                 crate::ui::theme::AddressKind::Bitcoin,
                 ids::CARD_COPY,
@@ -1264,32 +1295,30 @@ impl App {
             ));
         } else if usable && ctx.btc_meta().is_some() {
             // HD mode with every issued address used: `받기` issues the next one.
-            items.push(Item::Help(
-                "받을 주소는 '받기'를 누르면 새로 만듭니다.".to_owned(),
-            ));
+            items.push(Item::Help(text::RECEIVE_HINT.get(lang).to_owned()));
         }
         let send_block = self.btc.send_block(ctx);
         let mut actions = vec![
-            Ctl::primary(ids::SEND_OPEN, "보내기").enabled(send_block.is_none()),
-            Ctl::primary(ids::RECEIVE_OPEN, "받기").enabled(self.btc_unlocked()),
+            Ctl::primary(ids::SEND_OPEN, text::SEND.get(lang)).enabled(send_block.is_none()),
+            Ctl::primary(ids::RECEIVE_OPEN, text::RECEIVE.get(lang)).enabled(self.btc_unlocked()),
         ];
         if BtcUi::bump_target(ctx).is_some() {
             actions.push(
-                Ctl::button(ids::BUMP_OPEN, "수수료 올리기")
+                Ctl::button(ids::BUMP_OPEN, text::BUMP_FEE.get(lang))
                     .enabled(usable && !self.btc.slot && !ctx.journal_damaged()),
             );
         }
         actions.push(
-            Ctl::link(ids::REFRESH, "새로고침")
-                .tip(crate::ui::screens::T_REFRESH_TIP)
+            Ctl::link(ids::REFRESH, text::REFRESH.get(lang))
+                .tip(crate::ui::screens::T_REFRESH_TIP.get(self.settings.language))
                 .enabled(usable && !self.btc.refresh.busy && !self.btc.discovery.running),
         );
         items.push(Item::Row(actions));
         if self.btc.refresh.busy {
-            items.push(Item::Help("새로고침 중…".to_owned()));
+            items.push(Item::Help(text::REFRESHING.get(lang).to_owned()));
         }
         if let Some(reason) = send_block {
-            items.push(Item::Help(format!("보내기: {reason}")));
+            items.push(Item::Help(text::SEND_BLOCKED.fill(lang, [&reason])));
         }
         items.push(Item::CardEnd);
     }
@@ -1316,6 +1345,7 @@ impl App {
             choice => quoted_rate(choice, quote),
         };
         let ctx = self.btc_ctx();
+        let lang = ctx.lang;
         let (Some(rate), Some(meta)) = (rate, ctx.btc_meta()) else {
             return;
         };
@@ -1336,22 +1366,21 @@ impl App {
         };
         // A label-value row and one muted line (2026-11-12, was a three-sentence paragraph).
         items.push(Item::Field(
-            "예상 수수료".to_owned(),
-            format!(
-                "약 {} sats ({} BTC)",
-                yw_core::btc::amount::format_sats_grouped(estimate.get()),
-                yw_core::btc::amount::format_btc(estimate)
+            text::EXPECTED_FEE.get(lang).to_owned(),
+            text::FEE_ABOUT.fill(
+                lang,
+                [
+                    &yw_core::btc::amount::format_sats_grouped(estimate.get()),
+                    &yw_core::btc::amount::format_btc(estimate),
+                ],
             ),
         ));
-        items.push(Item::Help(
-            "입력 1개·출력 2개 기준 — UTXO를 여러 개 쓰면 늘어납니다. 검토에서 다시 계산합니다."
-                .to_owned(),
-        ));
+        items.push(Item::Help(text::FEE_ESTIMATE_HELP.get(lang).to_owned()));
         if rate.sat_per_kvb() > yw_core::btc::BTC_FEE_RATE_CAP
             || estimate.get() > yw_core::btc::BTC_FEE_ABS_CAP
         {
             items.push(Item::Banner(
-                "이 수수료율은 상한을 넘어 검토 뒤 수수료(sats)를 직접 입력해야 합니다.".to_owned(),
+                text::FEE_OVER_CAP.get(lang).to_owned(),
                 Tone::Warn,
             ));
         }
@@ -1362,6 +1391,7 @@ impl App {
     /// sat/vB" (the floor when the estimate is below it), "· 추정 없음", or a loading line.
     fn btc_fee_items(&self, fee: &BtcFeeForm, bump: bool, items: &mut Vec<Item>) {
         let radio_ids = fee_ids(bump);
+        let lang = self.settings.language;
         let net = self.btc_ctx().net();
         let quote = if bump {
             None
@@ -1375,16 +1405,16 @@ impl App {
             .enumerate()
             .map(|(index, (choice, id))| {
                 let label = if bump {
-                    choice.label().to_owned()
+                    choice.label(lang).to_owned()
                 } else {
-                    fee_choice_label(*choice, quote.as_ref())
+                    fee_choice_label(lang, *choice, quote.as_ref())
                 };
                 Ctl::radio(id, &label, fee.choice == *choice, index == 0)
             })
             .collect();
-        items.push(Item::LabeledRow("수수료".to_owned(), radios));
+        items.push(Item::LabeledRow(text::FEE.get(lang).to_owned(), radios));
         if loading {
-            items.push(Item::Help("수수료 추정을 불러오는 중…".to_owned()));
+            items.push(Item::Help(text::FEE_LOADING.get(lang).to_owned()));
         }
         // The send form's radios say the wait and the rate themselves: the note only when one
         // of them has no estimate (2026-11-12). The bump form's radios are bare.
@@ -1392,10 +1422,7 @@ impl App {
             *choice != BtcFeeChoice::Manual && quoted_rate(*choice, quote.as_ref()).is_none()
         });
         if bump || (missing && !loading) {
-            items.push(Item::Help(
-                "빠름·보통·느림 = 노드 추정(2·6·24블록). 추정이 없으면(testnet4에서 흔함) 직접 입력만 됩니다."
-                    .to_owned(),
-            ));
+            items.push(Item::Help(text::FEE_CHOICE_HELP.get(lang).to_owned()));
         }
         if fee.choice == BtcFeeChoice::Manual {
             let id = if bump {
@@ -1404,7 +1431,7 @@ impl App {
                 ids::FEE_MANUAL_EDIT
             };
             items.push(Item::LabeledRow(
-                "수수료율 (sat/vB)".to_owned(),
+                text::FEE_RATE_LABEL.get(lang).to_owned(),
                 vec![Ctl::edit(id, &fee.manual_text, 160, false, 12)],
             ));
         }
@@ -1419,11 +1446,8 @@ impl App {
         });
         if bump || fee.choice == BtcFeeChoice::Manual || floored {
             items.push(Item::Help(match floor {
-                Some(floor) => format!(
-                    "수수료 하한 {floor} (노드 기준): 추정이 하한보다 낮으면 하한을 적용합니다(하한 적용). 직접 입력은 하한 이상이어야 합니다."
-                ),
-                None => "수수료 하한(1 sat/vB와 노드 최소값 중 큰 값)은 검토할 때 노드에서 확인합니다."
-                    .to_owned(),
+                Some(floor) => text::FLOOR_NOTE.fill(lang, [&floor.to_string()]),
+                None => text::FLOOR_UNKNOWN.get(lang).to_owned(),
             }));
         }
         if !bump {
@@ -1434,10 +1458,7 @@ impl App {
         }
         if let Some(planned) = fee.needs_typed {
             items.push(Item::Banner(
-                format!(
-                    "수수료(sats)를 정확히 입력해 상한 해제 — 계획 수수료 {}",
-                    BtcUi::amount_text(planned)
-                ),
+                text::TYPED_FEE_BANNER.fill(lang, [&BtcUi::amount_text(planned)]),
                 Tone::Warn,
             ));
             let id = if bump {
@@ -1446,7 +1467,7 @@ impl App {
                 ids::TYPED_FEE_EDIT
             };
             items.push(Item::LabeledRow(
-                "수수료(sats)".to_owned(),
+                text::TYPED_FEE_LABEL.get(lang).to_owned(),
                 vec![Ctl::edit(id, &fee.typed_text, 200, false, 20)],
             ));
         }
@@ -1457,12 +1478,15 @@ impl App {
     pub fn btc_send_screen(&self, items: &mut Vec<Item>) {
         let ctx = self.btc_ctx();
         let net = ctx.net();
-        items.push(crate::ui::screens::back_main());
+        let lang = ctx.lang;
+        items.push(crate::ui::screens::back_main(self.settings.language));
         items.push(Item::Badged(
             Badge::bitcoin(net),
-            Box::new(Item::Title(format!("보내기 — {}", net.display_name()))),
+            Box::new(Item::Title(
+                text::SEND_TITLE.fill(lang, [net.display_name_in(lang)]),
+            )),
         ));
-        network_banners(net, items);
+        network_banners(lang, net, items);
         let form = &self.btc.send;
         // Why the form cannot send at all is said first; what `검토` ended with is said next
         // to the button (below).
@@ -1471,56 +1495,66 @@ impl App {
             items.push(Item::Banner(reason.clone(), Tone::Warn));
         }
         if ctx.journal_damaged() {
-            items.push(Item::Banner(JOURNAL_DAMAGED.to_owned(), Tone::Blocked));
+            items.push(Item::Banner(
+                text::JOURNAL_DAMAGED.get(lang).to_owned(),
+                Tone::Blocked,
+            ));
         }
-        items.push(Item::CardStart(Some("보내는 계정".to_owned())));
+        items.push(Item::CardStart(Some(
+            text::FROM_ACCOUNT.get(lang).to_owned(),
+        )));
         items.push(Item::Text(active_label(&ctx)));
         items.push(Item::Help(active_detail(&ctx)));
         if let Some(balance) = self.btc.balance(&ctx) {
-            items.push(Item::Help(format!(
-                "사용 가능 {} (검증됨, 확인 1 이상 서버 기준)",
-                BtcUi::amount_text(balance.available)
-            )));
+            items.push(Item::Help(
+                text::AVAILABLE_VERIFIED.fill(lang, [&BtcUi::amount_text(balance.available)]),
+            ));
         }
         self.mn_signing_banner(self.btc_backup_gate(), items);
         self.card_pin_banner(self.btc_selected_card_gate(), items);
         items.push(Item::CardEnd);
-        items.push(Item::CardStart(Some("받는 사람".to_owned())));
+        items.push(Item::CardStart(Some(
+            text::RECIPIENT_CARD.get(lang).to_owned(),
+        )));
         let target = BookTarget::Btc(net);
         self.favorite_chip_items(target, items);
         items.push(Item::LabeledRow(
-            "받는 주소".to_owned(),
+            text::RECIPIENT_ADDRESS.get(lang).to_owned(),
             vec![
                 Ctl::edit(ids::SEND_TO_EDIT, &form.to_text, 430, false, 128),
-                Ctl::button(crate::ui::screens_book::ids::BTC_PICK, "주소록에서 선택"),
+                Ctl::button(
+                    crate::ui::screens_book::ids::BTC_PICK,
+                    text::PICK_FROM_BOOK.get(lang),
+                ),
             ],
         ));
         // The format hint only until the address is valid (2026-11-12); the reminder to check
         // all of it then sits under the grouped address.
         if form.recipient.is_none() || form.recipient_error.is_some() {
-            items.push(Item::Help("bc1…·tb1… 등 Bitcoin 주소".to_owned()));
+            items.push(Item::Help(text::ADDRESS_HINT.get(lang).to_owned()));
         }
         self.btc_picker_items(target, items);
         if let Some(error) = &form.recipient_error {
             items.push(Item::Banner(error.clone(), Tone::Danger));
         } else if let Some(kind) = form.recipient {
-            items.push(Item::Help(format!("주소 종류: {}", kind_text(&kind))));
+            items.push(Item::Help(
+                text::ADDRESS_KIND.fill(lang, [kind_text(lang, &kind)]),
+            ));
             let address = encode_address(&kind, net);
             items.push(Item::Mono(grouped(&address)));
-            items.push(Item::Help(
-                "강조된 앞뒤 4자만 보지 말고 가운데까지 주소 전체를 확인하세요.".to_owned(),
-            ));
+            items.push(Item::Help(text::CHECK_WHOLE.get(lang).to_owned()));
             let entry = self
                 .meta
                 .as_ref()
                 .and_then(|meta| meta.contact(BookChain::Btc, &address));
             if let Some(entry) = &entry {
+                let verified = if entry.verified {
+                    format!(" {}", text::VERIFIED.get(lang))
+                } else {
+                    String::new()
+                };
                 items.push(Item::Banner(
-                    format!(
-                        "주소록: {}{}",
-                        entry.label,
-                        if entry.verified { " ✓ 확인됨" } else { "" }
-                    ),
+                    text::BOOK_ENTRY.fill(lang, [&entry.label, &verified]),
                     Tone::Info,
                 ));
             }
@@ -1528,29 +1562,35 @@ impl App {
                 items.push(Item::Banner(note.clone(), Tone::HighRisk));
                 items.push(Item::Row(vec![Ctl::check(
                     ids::SEND_ADDR_ACK,
-                    "주소 전체를 직접 확인했습니다",
+                    text::ADDR_ACK.get(lang),
                     form.ack,
                 )]));
                 if entry.as_ref().is_some_and(|entry| !entry.verified) {
-                    items.push(Item::Help(crate::app_book::T_BOOK_VERIFY_HINT.to_owned()));
+                    items.push(Item::Help(
+                        crate::app_book::text::BOOK_VERIFY_HINT
+                            .get(self.settings.language)
+                            .to_owned(),
+                    ));
                 }
             }
             self.recipient_save_items(target, items);
         }
         items.push(Item::CardEnd);
-        items.push(Item::CardStart(Some("금액과 수수료".to_owned())));
+        items.push(Item::CardStart(Some(
+            text::AMOUNT_CARD.get(lang).to_owned(),
+        )));
         // What `최대` can send, next to the amount (2026-11-12; only in the sender card before).
         items.push(Item::Help(self.btc.balance(&ctx).map_or_else(
-            || "사용 가능: 잔액을 아직 읽지 못했습니다".to_owned(),
-            |balance| format!("사용 가능 {}", BtcUi::amount_text(balance.available)),
+            || text::AVAILABLE_UNREAD.get(lang).to_owned(),
+            |balance| text::AVAILABLE.fill(lang, [&BtcUi::amount_text(balance.available)]),
         )));
         items.push(Item::LabeledRow(
-            "금액".to_owned(),
+            text::AMOUNT.get(lang).to_owned(),
             vec![
                 Ctl::edit(ids::SEND_AMOUNT_EDIT, &form.amount_text, 220, false, 32)
                     .enabled(!form.send_max),
                 // Right after the field like every chain's `최대` (2026-11-12), then the unit.
-                Ctl::tab(ids::SEND_MAX, "최대", form.send_max),
+                Ctl::tab(ids::SEND_MAX, text::MAX.get(lang), form.send_max),
                 Ctl::radio(
                     ids::UNIT_BTC,
                     "BTC",
@@ -1571,16 +1611,11 @@ impl App {
             items.push(Item::Help(BtcUi::amount_text(amount)));
         }
         if form.send_max {
-            items.push(Item::Help(
-                "최대: 동결되지 않은 확인된 UTXO(최대 100개)의 합에서 수수료를 뺀 금액을 보냅니다(승인 창에서 확인)."
-                    .to_owned(),
-            ));
+            items.push(Item::Help(text::MAX_HELP.get(lang).to_owned()));
         }
         // Only until the amount is valid (2026-11-12).
         if !form.send_max && form.amount.is_none() {
-            items.push(Item::Help(
-                "BTC는 소수 8자리까지(예 0.0012) · sats는 정수(예 120000)".to_owned(),
-            ));
+            items.push(Item::Help(text::AMOUNT_HINT.get(lang).to_owned()));
         }
         items.push(Item::Rule);
         self.btc_fee_items(&form.fee, false, items);
@@ -1594,7 +1629,7 @@ impl App {
         {
             items.push(Item::Banner(
                 info.clone(),
-                if info.as_str() == crate::app_btc::BTC_PREPARING {
+                if info.as_str() == crate::app_btc::BTC_PREPARING.get(lang) {
                     Tone::Info
                 } else {
                     Tone::Warn
@@ -1605,12 +1640,12 @@ impl App {
         self.journal_send_items(crate::app_sidecar::SendChain::Btc, items);
         let blocker = self.btc_review_blocker();
         items.push(Item::Row(vec![
-            Ctl::primary(ids::SEND_REVIEW, "검토").enabled(blocker.is_none()),
-            Ctl::button(ids::SEND_CANCEL, "취소"),
+            Ctl::primary(ids::SEND_REVIEW, text::REVIEW.get(lang)).enabled(blocker.is_none()),
+            Ctl::button(ids::SEND_CANCEL, text::CANCEL.get(lang)),
         ]));
         // What `검토` waits for, or that it sends nothing yet (2026-11-12).
         items.push(Item::Help(
-            crate::app_sol::ReviewBlocker::line(blocker).to_owned(),
+            crate::app_sol::ReviewBlocker::line(self.settings.language, blocker).to_owned(),
         ));
     }
 
@@ -1656,107 +1691,113 @@ impl App {
     pub fn btc_bump_screen(&self, items: &mut Vec<Item>) {
         let ctx = self.btc_ctx();
         let net = ctx.net();
-        items.push(crate::ui::screens::back_main());
-        items.push(Item::Title(format!(
-            "수수료 올리기 — {}",
-            net.display_name()
-        )));
-        network_banners(net, items);
+        let lang = ctx.lang;
+        items.push(crate::ui::screens::back_main(self.settings.language));
+        items.push(Item::Title(
+            text::BUMP_TITLE.fill(lang, [net.display_name_in(lang)]),
+        ));
+        network_banners(lang, net, items);
         let form = &self.btc.bump;
         if let Some(info) = &form.info {
             items.push(Item::Banner(info.clone(), Tone::Warn));
         }
         if ctx.journal_damaged() {
-            items.push(Item::Banner(JOURNAL_DAMAGED.to_owned(), Tone::Danger));
+            items.push(Item::Banner(
+                text::JOURNAL_DAMAGED.get(lang).to_owned(),
+                Tone::Danger,
+            ));
         }
         let target = form
             .target
             .and_then(|txid| ctx.record(&txid))
             .or_else(|| BtcUi::bump_target(&ctx));
         if let Some(record) = target {
-            items.push(Item::Text("교체 대상 거래".to_owned()));
+            items.push(Item::Text(text::REPLACED_TX.get(lang).to_owned()));
             items.push(Item::Mono(record.txid.to_display_hex()));
-            items.push(Item::Muted(format!(
-                "상태: {}",
-                record_status(&record, self.btc_tip(&ctx))
-            )));
-            items.push(Item::Muted(format!(
-                "현재 수수료 {} · {}",
-                BtcUi::amount_text(record.fee),
-                record_rate(record.fee, record.vsize)
+            items.push(Item::Muted(
+                text::STATUS.fill(lang, [&record_status(lang, &record, self.btc_tip(&ctx))]),
+            ));
+            items.push(Item::Muted(text::CURRENT_FEE.fill(
+                lang,
+                [
+                    &BtcUi::amount_text(record.fee),
+                    &record_rate(record.fee, record.vsize),
+                ],
             )));
             if let Some(amount) = record.recipient_amount() {
-                items.push(Item::Muted(format!(
-                    "받는 금액 {}{} · 받는 주소:",
-                    BtcUi::amount_text(amount),
-                    if record.send_max {
-                        " (보내기 최대: 수수료가 오른 만큼 받는 금액이 줄어듭니다)"
-                    } else {
-                        ""
-                    }
-                )));
+                let note = if record.send_max {
+                    format!(" {}", text::BUMP_SEND_MAX_NOTE.get(lang))
+                } else {
+                    String::new()
+                };
+                items.push(Item::Muted(
+                    text::BUMP_AMOUNT.fill(lang, [&BtcUi::amount_text(amount), &note]),
+                ));
             }
             if let Some(address) = record.recipient_address() {
                 items.push(Item::Mono(grouped(&address)));
             }
         } else {
-            items.push(Item::Muted(texts::NOT_BUMPABLE.to_owned()));
+            items.push(Item::Muted(texts::NOT_BUMPABLE.get(lang).to_owned()));
         }
-        items.push(Item::Muted(
-            "새 수수료는 이전 수수료 + 노드 최소 증분 이상이고 수수료율이 더 높아야 합니다. 받는 주소·금액은 그대로이고(보내기 최대 거래는 받는 금액이 줄어듭니다) 매번 새로 승인합니다."
-                .to_owned(),
-        ));
+        items.push(Item::Muted(text::BUMP_HELP.get(lang).to_owned()));
         self.btc_fee_items(&form.fee, true, items);
         items.push(Item::Row(vec![
-            Ctl::primary(ids::BUMP_REVIEW, "검토").enabled(self.btc_can_review_bump()),
-            Ctl::button(ids::BUMP_CANCEL, "취소"),
+            Ctl::primary(ids::BUMP_REVIEW, text::REVIEW.get(lang))
+                .enabled(self.btc_can_review_bump()),
+            Ctl::button(ids::BUMP_CANCEL, text::CANCEL.get(lang)),
         ]));
     }
 
     /// The S11 result for Bitcoin: the local txid, status and the post-sign flow.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the result rows and buttons in order"
+    )]
     pub fn btc_send_result_screen(&self, items: &mut Vec<Item>) {
         let ctx = self.btc_ctx();
         let net = ctx.net();
+        let lang = ctx.lang;
         let record = self.btc.result.and_then(|txid| ctx.record(&txid));
         let bump = record
             .as_ref()
             .is_some_and(|record| record.replaces.is_some());
         items.push(Item::Title(
             if bump {
-                "수수료 올리기 결과"
+                text::RESULT_BUMP
             } else {
-                "보내기 결과"
+                text::RESULT_SEND
             }
+            .get(lang)
             .to_owned(),
         ));
-        network_banners(net, items);
+        network_banners(lang, net, items);
         let Some(txid) = self.btc.result else {
-            items.push(Item::Muted("표시할 결과가 없습니다.".to_owned()));
+            items.push(Item::Muted(text::NO_RESULT.get(lang).to_owned()));
             items.push(Item::Row(vec![Ctl::button(
                 crate::ui::screens::ids::BACK_MAIN,
-                "메인으로",
+                text::BACK_MAIN.get(lang),
             )]));
             return;
         };
         items.push(Item::Banner(
-            "서명하고 저널에 기록했습니다. 아래 해시는 이 지갑이 계산한 값입니다.".to_owned(),
+            text::SIGNED_BANNER.get(lang).to_owned(),
             Tone::Success,
         ));
         items.push(Item::Mono(txid.to_display_hex()));
         let status = record.as_ref().map_or_else(
-            || "종결 (활동 참고)".to_owned(),
-            |record| record_status(record, self.btc_tip(&ctx)),
+            || text::FINISHED_SEE_ACTIVITY.get(lang).to_owned(),
+            |record| record_status(lang, record, self.btc_tip(&ctx)),
         );
         items.push(Item::Badged(
             Badge::bitcoin(net),
-            Box::new(Item::Muted(format!(
-                "상태: {status} ({})",
-                net.display_name()
-            ))),
+            Box::new(Item::Muted(
+                text::RESULT_STATUS.fill(lang, [&status, net.display_name_in(lang)]),
+            )),
         ));
         let flow = self.btc.flow(&txid);
-        if let Some(text) = flow.and_then(|flow| flow_stage_text(flow.stage)) {
-            items.push(Item::Muted(text.to_owned()));
+        if let Some(stage) = flow.and_then(|flow| flow_stage_text(lang, flow.stage)) {
+            items.push(Item::Muted(stage.to_owned()));
         }
         if let Some(note) = flow.and_then(|flow| flow.note.clone()) {
             let waiting = flow.is_some_and(|flow| flow.stage == BtcFlowStage::Waiting);
@@ -1765,7 +1806,7 @@ impl App {
                 if waiting { Tone::Warn } else { Tone::Info },
             ));
         }
-        let mut row = vec![Ctl::button(ids::RESULT_COPY, "해시 복사")];
+        let mut row = vec![Ctl::button(ids::RESULT_COPY, text::COPY_HASH.get(lang))];
         // 2026-11-11: the txid on the network's explorer (also before the broadcast is known:
         // the page then says it does not know the transaction yet).
         row.extend(self.explorer_tx_buttons(
@@ -1782,7 +1823,9 @@ impl App {
         if signed
             && flow.is_some_and(|flow| flow.retry_precheck && flow.stage == BtcFlowStage::Waiting)
         {
-            row.push(Ctl::button(ids::RESULT_RETRY, "다시 시도").enabled(ctx.gate().is_ok()));
+            row.push(
+                Ctl::button(ids::RESULT_RETRY, text::RETRY.get(lang)).enabled(ctx.gate().is_ok()),
+            );
         }
         let rejected = record
             .as_ref()
@@ -1790,17 +1833,26 @@ impl App {
         if let Some(rejected) = rejected
             && !bump
         {
-            items.push(Item::Muted(if rejected.disclosed {
-                yw_core::btc::policy::texts::REJECTED_DISCLOSED.to_owned()
-            } else {
-                "전송하지 않았습니다. 입력은 보내기 화면에 남아 있으니 수수료를 바꿔 다시 검토하세요."
-                    .to_owned()
-            }));
-            row.push(Ctl::button(ids::RESULT_TO_SEND, "보내기 화면으로"));
+            items.push(Item::Muted(
+                if rejected.disclosed {
+                    yw_core::btc::policy::texts::REJECTED_DISCLOSED
+                } else {
+                    text::NOT_SENT_KEPT
+                }
+                .get(lang)
+                .to_owned(),
+            ));
+            row.push(Ctl::button(
+                ids::RESULT_TO_SEND,
+                text::TO_SEND_SCREEN.get(lang),
+            ));
         }
         row.insert(
             0,
-            Ctl::primary(crate::ui::screens::ids::BACK_MAIN, "메인으로"),
+            Ctl::primary(
+                crate::ui::screens::ids::BACK_MAIN,
+                text::BACK_MAIN.get(lang),
+            ),
         );
         items.push(Item::Row(row));
         if !bump {
@@ -1816,12 +1868,15 @@ impl App {
             .receive
             .as_ref()
             .map_or_else(|| ctx.net(), |view| view.network);
-        items.push(crate::ui::screens::back_main());
+        let lang = ctx.lang;
+        items.push(crate::ui::screens::back_main(self.settings.language));
         items.push(Item::Badged(
             Badge::bitcoin(net),
-            Box::new(Item::Title(format!("받기 — {}", net.display_name()))),
+            Box::new(Item::Title(
+                text::RECEIVE_TITLE.fill(lang, [net.display_name_in(lang)]),
+            )),
         ));
-        network_banners(net, items);
+        network_banners(lang, net, items);
         if let Some(message) = &self.btc.receive_message {
             items.push(Item::Banner(message.clone(), Tone::Danger));
         }
@@ -1829,22 +1884,22 @@ impl App {
         self.mn_receive_banner(self.btc_backup_gate(), items);
         let Some(view) = &self.btc.receive else {
             if self.btc.receive_message.is_none() {
-                items.push(Item::Muted("주소를 준비하는 중…".to_owned()));
+                items.push(Item::Muted(text::PREPARING_ADDRESS.get(lang).to_owned()));
             }
             return;
         };
         items.push(Item::CardStart(Some(if view.single_key {
             view.account.clone()
         } else if view.fixed {
-            format!("{} · 고정 주소", view.account)
+            text::FIXED_ADDRESS.fill(lang, [&view.account])
         } else {
-            format!("{} · 받기 주소 {}번", view.account, view.index)
+            text::RECEIVE_INDEX.fill(lang, [&view.account, &view.index.to_string()])
         })));
-        items.push(Item::Text(format!("주소 형식: {}", view.kind)));
+        items.push(Item::Text(text::ADDRESS_FORMAT.fill(lang, [&view.kind])));
         if view.fixed && !view.single_key {
             // An HD account in fixed-address mode (spec/08 §3.5): said before the QR.
             items.push(Item::Banner(
-                crate::app_btc::T_BTC_FIXED_RECEIVE.to_owned(),
+                crate::app_btc::T_BTC_FIXED_RECEIVE.get(lang).to_owned(),
                 Tone::Info,
             ));
         }
@@ -1853,12 +1908,13 @@ impl App {
         let mut actions = Vec::new();
         if !view.fixed {
             actions.push(
-                Ctl::button(ids::NEW_ADDRESS, "새 주소")
+                Ctl::button(ids::NEW_ADDRESS, text::NEW_ADDRESS.get(lang))
                     .compact()
                     .enabled(ctx.gate().is_ok()),
             );
         }
         items.push(crate::ui::screens::receive_address_row(
+            self.settings.language,
             &grouped(&view.address),
             ids::COPY_ADDRESS,
             actions,
@@ -1875,17 +1931,20 @@ impl App {
         let ctx = self.btc_ctx();
         let settings = ctx.settings;
         let net = ctx.net();
+        let lang = ctx.lang;
         if let Some(message) = &self.btc.settings_message {
             items.push(Item::Banner(message.clone(), Tone::Danger));
         }
-        items.push(Item::CardStart(Some("Bitcoin 사용과 네트워크".to_owned())));
+        items.push(Item::CardStart(Some(
+            text::SETTINGS_CARD.get(lang).to_owned(),
+        )));
         items.push(Item::Row(vec![Ctl::check(
             ids::ENABLE,
-            "Bitcoin 사용",
+            text::ENABLE.get(lang),
             settings.enabled,
         )]));
         items.push(Item::LabeledRow(
-            "네트워크".to_owned(),
+            text::NETWORK.get(lang).to_owned(),
             vec![
                 Ctl::radio(
                     ids::SET_MAINNET,
@@ -1895,44 +1954,48 @@ impl App {
                 ),
                 Ctl::radio(
                     ids::SET_TESTNET4,
-                    "testnet4 (테스트, 가치 없음)",
+                    text::TESTNET4_RADIO.get(lang),
                     net == BtcNetwork::Testnet4,
                     false,
                 ),
             ],
         ));
         if settings.enabled {
-            items.push(Item::Banner(net.banner().to_owned(), network_tone(net)));
+            items.push(Item::Banner(
+                net.banner_in(lang).to_owned(),
+                network_tone(net),
+            ));
             if let Some((meta, current)) = ctx.mismatch() {
                 items.push(Item::Banner(
-                    texts::NETWORK_MISMATCH.to_owned(),
+                    texts::NETWORK_MISMATCH.get(lang).to_owned(),
                     Tone::Danger,
                 ));
-                Self::btc_mismatch_row(meta, current, items);
+                Self::btc_mismatch_row(lang, meta, current, items);
             }
         }
-        items.push(Item::Help(
-            "켤 때 고른 네트워크의 BIP84 주소를 찾습니다. 켠 뒤 네트워크를 바꾸면(진행 중 거래가 없을 때만) 주소 인덱스·UTXO 캐시·동결·보낸 주소 기록을 새로 시작하고 다시 찾습니다. 끄면 데이터는 남습니다."
-                .to_owned(),
-        ));
+        items.push(Item::Help(text::ENABLE_HELP.get(lang).to_owned()));
         for known in BtcNetwork::ALL {
             let network = crate::btc::network_id(known);
             let state = if self.apikeys.has(KeyName::Rpc(network)) {
-                "설정됨".to_owned()
+                text::RPC_SET.get(lang).to_owned()
             } else {
-                format!("없음 — {}", ErrorCode::Key005.code())
+                text::RPC_NONE.fill(lang, [ErrorCode::Key005.code()])
             };
-            items.push(Item::Help(format!("Core RPC 주소 {network}: {state}")));
+            items.push(Item::Help(
+                text::RPC_LINE.fill(lang, [&network.to_string(), &state]),
+            ));
         }
         items.push(Item::Row(vec![Ctl::button(
             crate::ui::screens::ids::GO_NETWORK,
-            "네트워크(RPC) 설정으로",
+            text::GO_NETWORK.get(lang),
         )]));
         items.push(Item::CardEnd);
-        items.push(Item::CardStart(Some("주소 조회 서버(인덱서)".to_owned())));
+        items.push(Item::CardStart(Some(
+            text::INDEXER_CARD.get(lang).to_owned(),
+        )));
         let indexer = settings.indexer;
         items.push(Item::LabeledRow(
-            "인덱서".to_owned(),
+            text::INDEXER.get(lang).to_owned(),
             vec![
                 Ctl::radio(
                     ids::IDX_ESPLORA,
@@ -1954,11 +2017,8 @@ impl App {
                 ),
             ],
         ));
-        items.push(Item::Help(T_BTC_ESPLORA_NOTE.to_owned()));
-        items.push(Item::Help(
-            "Esplora: 무료·키 없음(기본 mempool.space). bb-rpc: Core URL의 bb_* (QuickNode BTC Blockbook 유료 애드온). bb-rest: Core URL의 /api/v2/ (알케미 UTXO API)."
-                .to_owned(),
-        ));
+        items.push(Item::Help(T_BTC_ESPLORA_NOTE.get(lang).to_owned()));
+        items.push(Item::Help(text::INDEXER_HELP.get(lang).to_owned()));
         items.push(Item::CardEnd);
         items.push(Item::CardStart(Some("Esplora URL".to_owned())));
         for known in BtcNetwork::ALL {
@@ -1971,9 +2031,9 @@ impl App {
             items.push(Item::Mono(value.to_owned()));
             items.push(Item::Row(vec![Ctl::edit(edit, value, 420, false, 256)]));
             items.push(Item::Row(vec![
-                Ctl::button(save, "저장"),
-                Ctl::button(default, "기본값으로"),
-                Ctl::button(test, "테스트"),
+                Ctl::button(save, text::SAVE.get(lang)),
+                Ctl::button(default, text::DEFAULT.get(lang)),
+                Ctl::button(test, text::TEST.get(lang)),
             ]));
             if let Some((_, message, state)) = self
                 .btc
@@ -1984,10 +2044,7 @@ impl App {
                 items.push(Item::Banner(message.clone(), state.tone()));
             }
         }
-        items.push(Item::Help(
-            "`테스트`는 입력 칸의 값(비어 있으면 저장된 값)으로 GET /block-height/0을 한 번 보냅니다. 주소를 보내지 않으므로 잠긴 상태에서도 됩니다. `저장`은 테스트를 요구하지 않으며 쓰기 전에 연결 검사가 다시 확인합니다."
-                .to_owned(),
-        ));
+        items.push(Item::Help(text::ESPLORA_TEST_HELP.get(lang).to_owned()));
         items.push(Item::CardEnd);
     }
 }
@@ -2013,6 +2070,7 @@ mod tests {
     use crate::settings::Settings;
     use crate::ui::main_window::{Ctl, Item, Tone};
     use crate::ui::theme::address_spans;
+    use yw_core::lang::Lang;
 
     /// A compressed account public key (the `meta.rs` test value; never derived from here).
     const TESTNET_ACCOUNT: &str =
@@ -2163,7 +2221,7 @@ mod tests {
             Some("mainnet으로 바꾸기".to_owned())
         );
         assert_eq!(
-            mismatch_labels(BtcNetwork::Mainnet, BtcNetwork::Testnet4),
+            mismatch_labels(Lang::Ko, BtcNetwork::Mainnet, BtcNetwork::Testnet4),
             (
                 "설정을 mainnet으로 되돌리기".to_owned(),
                 "testnet4로 바꾸기".to_owned()
@@ -2265,14 +2323,14 @@ mod tests {
             assert_eq!(evm.text, "EVM 계정과 같은 키");
             assert_eq!(evm.checked, Some(false));
             assert!(control(&items, ids::EVM_ACCOUNT_BASE).is_none());
-            assert!(!has_text(&items, crate::app_btc::T_BTC_EVM_SHARED));
+            assert!(!has_text(&items, crate::app_btc::T_BTC_EVM_SHARED.ko));
             app.btc.add_source = crate::app_btc::BtcAddSource::EvmShared;
             let items = app.items();
             assert_eq!(
                 control(&items, ids::ACCOUNT_SOURCE_EVM).and_then(|ctl| ctl.checked),
                 Some(true)
             );
-            assert!(has_text(&items, crate::app_btc::T_BTC_EVM_SHARED));
+            assert!(has_text(&items, crate::app_btc::T_BTC_EVM_SHARED.ko));
             let first = control(&items, ids::EVM_ACCOUNT_BASE).expect("EVM account 0");
             assert!(first.text.ends_with("m/44'/60'/0'/0/0"), "{}", first.text);
             assert_eq!(first.checked, Some(true));
@@ -2293,12 +2351,12 @@ mod tests {
         let hd = control(&items, ids::ADDRESS_MODE_HD).expect("hd radio");
         assert_eq!(hd.text, "받을 때마다 새 주소 (HD, 프라이버시↑)");
         assert_eq!(hd.checked, Some(false));
-        assert!(has_text(&items, crate::app_btc::T_BTC_MODE_HELP));
+        assert!(has_text(&items, crate::app_btc::T_BTC_MODE_HELP.ko));
         let meta = app.btc_ctx().btc_meta().cloned().unwrap();
-        app.btc.receive = crate::app_btc::BtcUi::receive_view(&meta, 0);
+        app.btc.receive = crate::app_btc::BtcUi::receive_view(Lang::Ko, &meta, 0);
         app.screen = Screen::BtcReceive;
         let items = app.items();
-        assert!(has_text(&items, crate::app_btc::T_BTC_FIXED_RECEIVE));
+        assert!(has_text(&items, crate::app_btc::T_BTC_FIXED_RECEIVE.ko));
         assert!(has_text(&items, "m/84'/1'/0'/0/0"));
         assert!(control(&items, ids::NEW_ADDRESS).is_none());
         assert!(control(&items, ids::COPY_ADDRESS).is_some());
@@ -2308,9 +2366,9 @@ mod tests {
         if let Some(document) = app.meta.as_mut() {
             document.btc = Some(Box::new(hd_meta.clone()));
         }
-        app.btc.receive = crate::app_btc::BtcUi::receive_view(&hd_meta, 3);
+        app.btc.receive = crate::app_btc::BtcUi::receive_view(Lang::Ko, &hd_meta, 3);
         let items = app.items();
-        assert!(!has_text(&items, crate::app_btc::T_BTC_FIXED_RECEIVE));
+        assert!(!has_text(&items, crate::app_btc::T_BTC_FIXED_RECEIVE.ko));
         assert!(has_text(&items, "m/84'/1'/0'/0/3"));
         assert!(control(&items, ids::NEW_ADDRESS).is_some());
         // The address is one copy line before the QR (2026-11-12), whole (§3.3), with
@@ -2387,7 +2445,10 @@ mod tests {
         // No endpoint: E-KEY-005 and `RPC 설정하기` (that network's row).
         let app_no_url = app(true, BtcNet::Testnet4, Some(BtcNetwork::Testnet4), false);
         let items = app_no_url.items();
-        assert!(has_text(&items, &ErrorCode::Key005.text()));
+        assert!(has_text(
+            &items,
+            &ErrorCode::Key005.text_in(yw_core::lang::Lang::Ko)
+        ));
         assert!(control(&items, crate::ui::screens::ids::BTC_RPC_OPEN).is_some());
         assert!(items.iter().any(|item| matches!(
             item,
@@ -2450,7 +2511,10 @@ mod tests {
         );
         // The line under it says why: the address search has not run (the band at the top).
         assert_eq!(app.btc_review_blocker(), Some(ReviewBlocker::Held));
-        assert!(has_text(&items, ReviewBlocker::Held.text()));
+        assert!(has_text(
+            &items,
+            ReviewBlocker::Held.text_in(yw_core::lang::Lang::Ko)
+        ));
         app.btc.send.fee.choice = BtcFeeChoice::Manual;
         app.btc.send.fee.needs_typed = Sats::new(600_000);
         let items = app.items();
@@ -2495,7 +2559,7 @@ mod tests {
             control(&items, ids::ENABLE).and_then(|ctl| ctl.checked),
             Some(false)
         );
-        assert!(has_text(&items, T_BTC_ESPLORA_NOTE));
+        assert!(has_text(&items, T_BTC_ESPLORA_NOTE.ko));
         assert!(has_text(&items, "https://mempool.space/testnet4/api"));
         assert_eq!(
             control(&items, ids::ESPLORA_MAINNET_EDIT).map(|ctl| ctl.text),
@@ -2512,10 +2576,177 @@ mod tests {
             Some(true)
         );
         app.screen = Screen::ImportIntro;
-        assert!(has_text(&app.items(), BTC_IMPORT_NOTE));
+        assert!(has_text(&app.items(), BTC_IMPORT_NOTE.ko));
         app.screen = Screen::Settings(SettingsSection::Network);
         let items = app.items();
         assert!(!has_text(&items, "M8"));
         assert!(has_text(&items, "(bitcoin:testnet4)"));
+    }
+
+    /// Every text of an item and its controls (labels, values, tooltips are not drawn here).
+    fn all_texts(items: &[Item]) -> Vec<String> {
+        let mut out: Vec<String> = items
+            .iter()
+            .filter_map(|item| match item {
+                Item::Title(text)
+                | Item::Text(text)
+                | Item::Muted(text)
+                | Item::Help(text)
+                | Item::Subtitle(text)
+                | Item::Display(text)
+                | Item::Banner(text, _)
+                | Item::Pill(text, _)
+                | Item::LabeledRow(text, _) => Some(text.clone()),
+                Item::Field(label, value) => Some(format!("{label} {value}")),
+                Item::CardStart(Some(title)) => Some(title.clone()),
+                _ => None,
+            })
+            .collect();
+        out.extend(controls(items).into_iter().map(|ctl| ctl.text));
+        out
+    }
+
+    /// spec/14 (Step 3): the Bitcoin screens built in English show none of the Bitcoin
+    /// catalogues' Korean texts, and every Bitcoin control (ids 9000–9899) has a Hangul-free label.
+    #[test]
+    fn english_bitcoin_screens_have_no_korean_btc_text() {
+        use yw_core::lang::has_hangul;
+        let korean: Vec<&str> = super::text::ALL
+            .iter()
+            .chain(crate::app_btc::text::ALL)
+            .chain(crate::btc::text::ALL)
+            .map(|entry| entry.ko)
+            .filter(|ko| has_hangul(ko) && ko.chars().count() >= 4 && !ko.contains("{0}"))
+            .collect();
+        let check = |items: &[Item], screen: &str| {
+            for text in all_texts(items) {
+                for ko in &korean {
+                    assert!(!text.contains(ko), "{screen}: {text}");
+                }
+            }
+            for ctl in controls(items) {
+                if (9_000..9_900).contains(&ctl.id) {
+                    assert!(!has_hangul(&ctl.text), "{screen}: {}", ctl.text);
+                }
+            }
+        };
+        // Disabled tab, mismatch, the normal tab and its forms, receive, settings.
+        let mut off = app(false, BtcNet::Mainnet, None, true);
+        off.settings.language = Lang::En;
+        check(&off.items(), "disabled");
+        let mut mismatch = app(true, BtcNet::Mainnet, Some(BtcNetwork::Testnet4), true);
+        mismatch.settings.language = Lang::En;
+        let items = mismatch.items();
+        check(&items, "mismatch");
+        assert_eq!(
+            control(&items, ids::MISMATCH_KEEP_META).map(|ctl| ctl.text),
+            Some("Set the setting back to testnet4".to_owned())
+        );
+        let mut app = app(true, BtcNet::Testnet4, Some(BtcNetwork::Testnet4), true);
+        app.settings.language = Lang::En;
+        app.btc.add_account_open = true;
+        app.btc.verify_failures = 1;
+        app.btc.auto_frozen = 2;
+        let items = app.items();
+        check(&items, "tab");
+        assert!(items.iter().any(|item| matches!(
+            item,
+            Item::Pill(text, Tone::BtcTestnet4) if text == "BITCOIN TESTNET4 — NO VALUE"
+        )));
+        for screen in [
+            Screen::BtcSend,
+            Screen::BtcBump,
+            Screen::BtcSendResult,
+            Screen::Settings(SettingsSection::Bitcoin),
+        ] {
+            let name = format!("{screen:?}");
+            app.screen = screen;
+            check(&app.items(), &name);
+        }
+        let meta = app.btc_ctx().btc_meta().cloned().unwrap();
+        app.btc.receive = crate::app_btc::BtcUi::receive_view(Lang::En, &meta, 0);
+        app.screen = Screen::BtcReceive;
+        let items = app.items();
+        check(&items, "receive");
+        let view = app.btc.receive.as_ref().unwrap();
+        assert!(!has_hangul(&view.note) && !has_hangul(&view.kind) && !has_hangul(&view.account));
+    }
+
+    /// spec/14: every confirmation overlay, the fee radios, statuses and the W-ADDR-3 ends in
+    /// English are Hangul-free; the Korean ones keep their text.
+    #[test]
+    fn english_bitcoin_confirmations_and_statuses() {
+        use crate::app_btc::BtcConfirm;
+        use yw_core::lang::has_hangul;
+        let txid = yw_core::btc::Txid::from_bytes([1; 32]);
+        for confirm in [
+            BtcConfirm::NetworkChange {
+                to: BtcNetwork::Mainnet,
+            },
+            BtcConfirm::IndexerOptIn {
+                indexer: crate::settings::BtcIndexer::BbRpc,
+            },
+            BtcConfirm::GapWarning { unused: 20 },
+            BtcConfirm::Abandon { txid },
+            BtcConfirm::CancelSigned {
+                txid,
+                disclosed: false,
+            },
+            BtcConfirm::CancelSigned {
+                txid,
+                disclosed: true,
+            },
+            BtcConfirm::EsploraBroadcast { txid },
+            BtcConfirm::ResetTip,
+            BtcConfirm::AddEvmShared {
+                script_type: yw_core::btc::ScriptType::P2tr,
+                evm_index: 3,
+            },
+        ] {
+            let (title, body, yes) = confirm.texts(Lang::En);
+            assert!(
+                !has_hangul(title) && !has_hangul(&body) && !has_hangul(yes),
+                "{body}"
+            );
+            assert!(!has_hangul(confirm.no_label(Lang::En)));
+            let (_, korean, _) = confirm.texts(Lang::Ko);
+            assert!(has_hangul(&korean));
+        }
+        for choice in super::FEE_CHOICES {
+            assert!(!has_hangul(choice.label(Lang::En)));
+        }
+        for confirmations in [0, 1, 6] {
+            assert!(!has_hangul(&crate::app_btc::confirmations_text(
+                Lang::En,
+                confirmations
+            )));
+        }
+        assert_eq!(
+            crate::app_btc::ends_text(Lang::En, (4, 4)),
+            "first 4 and last 4 characters"
+        );
+        assert_eq!(crate::app_btc::ends_text(Lang::Ko, (0, 5)), "끝 5자");
+    }
+
+    /// spec/14: the screen catalogue keeps the catalogue invariants.
+    #[test]
+    fn bitcoin_screen_catalogues_are_well_formed() {
+        use yw_core::lang::{has_hangul, placeholders};
+        for entry in super::text::ALL
+            .iter()
+            .chain(crate::app_btc::text::ALL)
+            .chain(crate::btc::text::ALL)
+            .chain(crate::received::btc::text::ALL)
+            .chain(crate::workers::journal::btc::text::ALL)
+        {
+            let expected: Vec<usize> = (0..entry.args).collect();
+            for template in [entry.ko, entry.en] {
+                let mut found = placeholders(template);
+                found.sort_unstable();
+                found.dedup();
+                assert_eq!(found, expected, "{}", entry.name);
+            }
+            assert!(!has_hangul(entry.en), "{}", entry.name);
+        }
     }
 }

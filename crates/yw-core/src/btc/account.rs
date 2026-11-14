@@ -29,6 +29,7 @@ use crate::bip32::path::{BtcChain, BtcCoin, BtcPurpose};
 use crate::bip32::{AccountXpub, HARDENED, derive_public_child_with};
 use crate::entropy::{OsRandom, secp_context};
 use crate::error::KeyError;
+use crate::lang::Lang;
 use crate::vault::RecordId;
 
 /// Largest HD account number a new BTC account may get (`m/{p}'/{c}'/0'` … `/99'`).
@@ -81,15 +82,10 @@ impl ScriptType {
         }
     }
 
-    /// Plain Korean name (account rows, receive screen).
+    /// Plain name in `lang` (account rows, receive screen; `레거시`, `탭루트`, …).
     #[must_use]
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::P2pkh => "레거시",
-            Self::P2shP2wpkh => "호환 세그윗",
-            Self::P2wpkh => "네이티브 세그윗",
-            Self::P2tr => "탭루트",
-        }
+    pub const fn name_in(self, lang: Lang) -> &'static str {
+        super::text::script_name(lang, self)
     }
 
     /// The address prefix on `net` (`bc1q…`, `bc1p…`, `3…`, `1…`; testnet4 `tb1q…`, `tb1p…`,
@@ -110,11 +106,13 @@ impl ScriptType {
 
     /// The add-account choice text: `네이티브 세그윗 (bc1q…, 권장)`, `탭루트 (bc1p…)`,
     /// `호환 세그윗 (3…)`, `레거시 (1…)` (testnet4 prefixes `tb1q`/`tb1p`/`2`/`m·n`).
+    /// In `lang` (English: `Native SegWit (bc1q…, recommended)`).
     #[must_use]
-    pub fn label(self, net: BtcNetwork) -> String {
+    pub fn label_in(self, lang: Lang, net: BtcNetwork) -> String {
         match self {
-            Self::P2wpkh => format!("{} ({}, 권장)", self.name(), self.prefix(net)),
-            _ => format!("{} ({})", self.name(), self.prefix(net)),
+            Self::P2wpkh => super::text::SCRIPT_CHOICE_RECOMMENDED
+                .fill(lang, [self.name_in(lang), self.prefix(net)]),
+            _ => format!("{} ({})", self.name_in(lang), self.prefix(net)),
         }
     }
 
@@ -210,8 +208,9 @@ impl ScriptType {
 }
 
 impl fmt::Display for ScriptType {
+    /// The Korean name (logs and tests; screens use [`ScriptType::name_in`]).
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.name())
+        formatter.write_str(self.name_in(Lang::Ko))
     }
 }
 
@@ -228,14 +227,24 @@ pub enum AccountKeyError {
     HardwareTaproot,
 }
 
+impl AccountKeyError {
+    /// The fixed text in `lang` (`Display` is the Korean one).
+    #[must_use]
+    pub const fn text_in(self, lang: Lang) -> &'static str {
+        use super::text as t;
+        match self {
+            Self::PublicKey => t::ERR_PUBLIC_KEY,
+            Self::UncompressedNotP2pkh => t::ERR_UNCOMPRESSED_NOT_P2PKH,
+            Self::Account => t::ERR_ACCOUNT_RANGE,
+            Self::HardwareTaproot => t::ERR_HARDWARE_TAPROOT,
+        }
+        .get(lang)
+    }
+}
+
 impl fmt::Display for AccountKeyError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            Self::PublicKey => "공개키 형식이 올바르지 않습니다",
-            Self::UncompressedNotP2pkh => "비압축 키는 레거시(P2PKH) 주소로만 쓸 수 있습니다",
-            Self::Account => "계정 번호가 범위를 벗어났습니다",
-            Self::HardwareTaproot => "YubiKey에는 탭루트 키를 둘 수 없습니다",
-        })
+        formatter.write_str(self.text_in(Lang::Ko))
     }
 }
 
@@ -1049,7 +1058,7 @@ impl BtcAccountKey {
     /// The path text of `(chain, index)` on `net`: `m/86'/0'/0'/0/5`, `m/44'/60'/0'/0/3` for an
     /// EVM account's key, or `가져온 키` for an imported key.
     #[must_use]
-    pub fn path_text(&self, net: BtcNetwork, chain: BtcChain, index: u32) -> String {
+    pub fn path_text_in(&self, lang: Lang, net: BtcNetwork, chain: BtcChain, index: u32) -> String {
         match self {
             Self::Hd {
                 script_type,
@@ -1061,18 +1070,18 @@ impl BtcAccountKey {
                 net.coin_number(),
                 chain.index()
             ),
-            Self::Single { .. } => "가져온 키".to_owned(),
+            Self::Single { .. } => super::text::PATH_IMPORTED.get(lang).to_owned(),
             Self::EvmShared { evm_index, .. } => format!("m/44'/60'/0'/0/{evm_index}"),
             Self::Hardware {
                 key, script_type, ..
-            } => hardware_path_text(*key, *script_type, net),
+            } => hardware_path_text(lang, *key, *script_type, net),
         }
     }
 
     /// The account node text: `m/86'/0'/0'`, `m/44'/60'/0'/0/3` for an EVM account's key, or
     /// `가져온 키` for an imported key.
     #[must_use]
-    pub fn node_text(&self, net: BtcNetwork) -> String {
+    pub fn node_text_in(&self, lang: Lang, net: BtcNetwork) -> String {
         match self {
             Self::Hd {
                 script_type,
@@ -1083,49 +1092,20 @@ impl BtcAccountKey {
                 script_type.purpose().number(),
                 net.coin_number()
             ),
-            Self::Single { .. } => "가져온 키".to_owned(),
+            Self::Single { .. } => super::text::PATH_IMPORTED.get(lang).to_owned(),
             Self::EvmShared { evm_index, .. } => format!("m/44'/60'/0'/0/{evm_index}"),
             Self::Hardware {
                 key, script_type, ..
-            } => hardware_path_text(*key, *script_type, net),
+            } => hardware_path_text(lang, *key, *script_type, net),
         }
     }
 
-    /// The display name: `네이티브 세그윗 계정 0`, `탭루트 계정 2`, `가져온 키 · 레거시`,
+    /// The display name in `lang`: `네이티브 세그윗 계정 0`, `탭루트 계정 2`, `가져온 키 · 레거시`,
     /// `EVM 계정 3 키 · 탭루트`; an added mnemonic's HD account says so (`… 계정 0 (추가한 복구
     /// 단어)`; the app shows the mnemonic's label instead where it has it).
     #[must_use]
-    pub fn display_name(&self) -> String {
-        match self {
-            Self::Hd {
-                mnemonic: None,
-                script_type,
-                account,
-                ..
-            } => format!("{} 계정 {account}", script_type.name()),
-            Self::Hd {
-                mnemonic: Some(_),
-                script_type,
-                account,
-                ..
-            } => format!("{} 계정 {account} (추가한 복구 단어)", script_type.name()),
-            Self::Single { script_type, .. } => format!("가져온 키 · {}", script_type.name()),
-            Self::EvmShared {
-                evm_index,
-                script_type,
-                ..
-            } => format!("EVM 계정 {evm_index} 키 · {}", script_type.name()),
-            Self::Hardware {
-                key: HwBtcKey::Address(index),
-                script_type,
-                ..
-            } => format!("YubiKey · {} 주소 {index}", script_type.name()),
-            Self::Hardware {
-                key: HwBtcKey::Evm(index),
-                script_type,
-                ..
-            } => format!("YubiKey EVM 계정 {index} 키 · {}", script_type.name()),
-        }
+    pub fn display_name_in(&self, lang: Lang) -> String {
+        super::text::account_name(lang, self)
     }
 
     /// A deriver for many `(chain, index)` with one context.
@@ -1172,12 +1152,17 @@ impl BtcAccountKey {
 }
 
 /// The path text of a `YubiKey` key: `m/84'/1'/0'/0/3 (YubiKey)` or `m/44'/60'/0'/0/3 (YubiKey)`.
-fn hardware_path_text(key: HwBtcKey, script_type: ScriptType, net: BtcNetwork) -> String {
+fn hardware_path_text(
+    lang: Lang,
+    key: HwBtcKey,
+    script_type: ScriptType,
+    net: BtcNetwork,
+) -> String {
     // A key connected without recovery words (spec/10 §7.6): its index is not a path.
     if let HwBtcKey::Address(index) | HwBtcKey::Evm(index) = key
         && crate::yubikey::plan::is_unknown_index(index)
     {
-        return format!("{} (YubiKey)", crate::yubikey::plan::T_UNKNOWN_PATH);
+        return super::text::PATH_UNKNOWN_YUBIKEY.get(lang).to_owned();
     }
     match key {
         HwBtcKey::Address(index) => format!(

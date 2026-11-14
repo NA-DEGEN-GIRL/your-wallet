@@ -797,12 +797,6 @@ impl ChainInfo {
         self.weth().is_some_and(|token| token.address == *address)
     }
 
-    /// The registry label of `address` (contract label or token symbol).
-    #[must_use]
-    pub fn label(&self, address: &Address) -> Option<&'static str> {
-        self.label_in(address, Lang::Ko)
-    }
-
     /// The registry label of `address` as displayed in `lang`.
     #[must_use]
     pub fn label_in(&self, address: &Address, lang: Lang) -> Option<&'static str> {
@@ -867,18 +861,42 @@ pub enum ChainConfigError {
     DecimalsInvalid,
 }
 
+impl ChainConfigError {
+    /// The S17 form text in `lang` (`Display` is the Korean one).
+    #[must_use]
+    pub const fn text_in(self, lang: Lang) -> &'static str {
+        use config_text as t;
+        match self {
+            Self::ChainIdOutOfRange => t::CHAIN_ID_OUT_OF_RANGE,
+            Self::ChainIdRegistered => t::CHAIN_ID_REGISTERED,
+            Self::NameInvalid => t::NAME_INVALID,
+            Self::NameReserved => t::NAME_RESERVED,
+            Self::SymbolInvalid => t::SYMBOL_INVALID,
+            Self::DecimalsInvalid => t::DECIMALS_INVALID,
+        }
+        .get(lang)
+    }
+}
+
 impl fmt::Display for ChainConfigError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            Self::ChainIdOutOfRange => {
-                "체인 ID는 1 이상 9,223,372,036,854,775,771 이하여야 합니다."
-            }
-            Self::ChainIdRegistered => "이미 등록된 체인 ID입니다.",
-            Self::NameInvalid => "체인 이름은 앞뒤 공백·제어 문자 없이 1–32자여야 합니다.",
-            Self::NameReserved => "기본 제공 체인과 같은 이름은 쓸 수 없습니다.",
-            Self::SymbolInvalid => "심볼은 공백 없는 ASCII 1–16자여야 합니다.",
-            Self::DecimalsInvalid => "소수 자릿수는 0–36이어야 합니다.",
-        })
+        formatter.write_str(self.text_in(Lang::Ko))
+    }
+}
+
+/// User chain definition errors shown on the S17 form (spec/03 §1.6; English spec/14 §5).
+pub mod config_text {
+    crate::texts! {
+        CHAIN_ID_OUT_OF_RANGE = "체인 ID는 1 이상 9,223,372,036,854,775,771 이하여야 합니다."
+            / "The chain ID must be between 1 and 9,223,372,036,854,775,771.";
+        CHAIN_ID_REGISTERED = "이미 등록된 체인 ID입니다." / "This chain ID is already registered.";
+        NAME_INVALID = "체인 이름은 앞뒤 공백·제어 문자 없이 1–32자여야 합니다."
+            / "The chain name must be 1–32 characters with no leading/trailing spaces or control characters.";
+        NAME_RESERVED = "기본 제공 체인과 같은 이름은 쓸 수 없습니다."
+            / "A built-in chain already uses this name.";
+        SYMBOL_INVALID = "심볼은 공백 없는 ASCII 1–16자여야 합니다."
+            / "The symbol must be 1–16 ASCII characters without spaces.";
+        DECIMALS_INVALID = "소수 자릿수는 0–36이어야 합니다." / "Decimals must be 0–36.";
     }
 }
 

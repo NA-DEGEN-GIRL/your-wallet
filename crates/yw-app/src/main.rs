@@ -17,6 +17,7 @@ use yw_app::app::{
 };
 use yw_app::app_approval::{APPROVAL_CLASS, PANEL_CLASS};
 use yw_app::app_browser::BrowserUi;
+use yw_app::build_info::start_text;
 use yw_app::errors::ErrorCode;
 use yw_app::events::{
     EventQueue, KeyJob, NavKey, Shortcut, UiEvent, WM_YW_ACTIVATE, WM_YW_EVENTS,
@@ -27,6 +28,7 @@ use yw_app::rpc::{RPC_TIMEOUTS, Transport};
 use yw_app::settings::LogLevel;
 use yw_app::workers::key::{KeyWorker, run as run_key_worker};
 use yw_app::workers::rpc::{RpcWorker, run as run_rpc_worker};
+use yw_core::lang::Lang;
 use yw_win::clipboard::SecretClip;
 use yw_win::input::{is_down, is_down_in_message};
 use yw_win::process::{InstanceError, SingleInstance};
@@ -120,6 +122,12 @@ fn fail(text: &str) -> ExitCode {
     ExitCode::from(EXIT_INIT)
 }
 
+/// A failure before settings are read, when the language is not known yet: Korean, then English
+/// (spec/14 §1).
+fn fail_both(text: impl Fn(Lang) -> String) -> ExitCode {
+    fail(&format!("{}\n\n{}", text(Lang::Ko), text(Lang::En)))
+}
+
 /// The panic hook (spec/04 §1.5-6). A panic on any thread aborts the process (`panic = "abort"`,
 /// D28) without the orderly exit, so this is the last code of ours to run: one `app.panic` line
 /// with where it happened (never the message) flushed with the lines buffered before it, one
@@ -158,40 +166,31 @@ fn main() -> ExitCode {
     };
     let session = yw_win::security::current_session_id().unwrap_or(0);
     let instance_name = format!("{INSTANCE_MUTEX}.{session}");
-    let _instance = match SingleInstance::acquire_private(
-        INSTANCE_BOUNDARY,
-        INSTANCE_ALIAS,
-        &instance_name,
-    ) {
-        Ok(instance) => instance,
-        Err(InstanceError::AlreadyRunning) => {
-            if !background && !hand_off() {
-                return fail(
-                    "실행 중인 Your Wallet 창을 확인하지 못했습니다. 같은 이름의 창이 이 실행 파일이 아닌 다른 프로그램(또는 다른 위치의 Your Wallet)에 속해 있어 전환하지 않았습니다. 작업 표시줄에서 Your Wallet을 직접 여세요.",
-                );
+    let _instance =
+        match SingleInstance::acquire_private(INSTANCE_BOUNDARY, INSTANCE_ALIAS, &instance_name) {
+            Ok(instance) => instance,
+            Err(InstanceError::AlreadyRunning) => {
+                if !background && !hand_off() {
+                    return fail_both(|lang| start_text::NOT_OURS.get(lang).to_owned());
+                }
+                return ExitCode::SUCCESS;
             }
-            return ExitCode::SUCCESS;
-        }
-        Err(InstanceError::Os(_)) => {
-            return fail("Your Wallet을 시작하지 못했습니다. (단일 인스턴스)");
-        }
-    };
+            Err(InstanceError::Os(_)) => {
+                return fail_both(|lang| start_text::INSTANCE_FAILED.get(lang).to_owned());
+            }
+        };
 
     // 3. Data folder.
     let (paths, dir_reports) = match data_paths() {
         Ok(found) => found,
         Err(DataDirError::Untrusted) => {
-            return fail(
-                "데이터 폴더(%LOCALAPPDATA%\\YourWallet)를 열지 않았습니다. 이 폴더나 안의 파일이 다른 계정의 소유이거나, 이 사용자가 고칠 수 없는 방식으로 다른 계정에 열려 있습니다. 지갑 파일을 보호하기 위해 시작을 멈춥니다.",
-            );
+            return fail_both(|lang| start_text::DATA_UNTRUSTED.get(lang).to_owned());
         }
         Err(DataDirError::Unavailable) => {
-            return fail("데이터 폴더를 만들지 못했습니다. LOCALAPPDATA 경로와 권한을 확인하세요.");
+            return fail_both(|lang| start_text::DATA_UNAVAILABLE.get(lang).to_owned());
         }
         Err(DataDirError::NotPlain(shown)) => {
-            return fail(&format!(
-                "다음 데이터 폴더가 링크(정션·심볼릭 링크)이거나 폴더가 아닌 파일입니다: {shown}\n\n지갑 파일을 보호하기 위해 링크된 데이터 폴더는 쓰지 않습니다. 다른 드라이브로 옮기고 링크를 만들었다면 링크만 지우고(대상 폴더의 지갑 파일은 지우지 마세요) 옮긴 폴더를 원래 자리로 되돌린 뒤 다시 시작하세요."
-            ));
+            return fail_both(|lang| start_text::DATA_NOT_PLAIN.fill(lang, [shown]));
         }
     };
 
@@ -244,6 +243,8 @@ fn main() -> ExitCode {
     let loaded = load_settings(&paths);
     logging::set_level(loaded.settings.log_level);
     let (apikeys, apikeys_unreadable) = load_apikeys(&paths, &loaded.settings);
+    // The language of everything shown from here on (spec/14 §1: read before unlocking).
+    let lang = loaded.settings.language;
     let app = Rc::new(RefCell::new(App::new(
         paths.clone(),
         background,
@@ -260,7 +261,7 @@ fn main() -> ExitCode {
             );
             state.banner(
                 Some(ErrorCode::App001),
-                ErrorCode::App001.render(&loaded.banners.join(", ")),
+                ErrorCode::App001.render_in(lang, &loaded.banners.join(", ")),
             );
         }
         if apikeys_unreadable {
@@ -269,7 +270,7 @@ fn main() -> ExitCode {
                 "apikeys.unreadable",
                 &[("code", Field::Code(ErrorCode::Key001))],
             );
-            state.banner(Some(ErrorCode::Key001), ErrorCode::Key001.text());
+            state.banner(Some(ErrorCode::Key001), ErrorCode::Key001.text_in(lang));
         } else {
             // Networks added since the addresses were made get the template's address.
             state.fill_template_gaps();
@@ -310,16 +311,16 @@ fn main() -> ExitCode {
         },
     ] {
         if ui::register_class(&spec).is_err() {
-            return fail("창 클래스를 등록하지 못했습니다.");
+            return fail(start_text::CLASS_FAILED.get(lang));
         }
     }
     if App::create_main_window(&app).is_err() {
-        return fail("주 창을 만들지 못했습니다.");
+        return fail(start_text::MAIN_WINDOW_FAILED.get(lang));
     }
     // Where it was last (window.json), also for --background (spec/04 §1.7).
     app.borrow_mut().place_main_window();
     let Some(poster) = app.borrow().main_poster() else {
-        return fail("주 창을 만들지 못했습니다.");
+        return fail(start_text::MAIN_WINDOW_FAILED.get(lang));
     };
     {
         let mut state = app.borrow_mut();
@@ -369,11 +370,13 @@ fn main() -> ExitCode {
             (Ok(key_thread), Ok(rpc_thread)) => {
                 state.attach_workers(Arc::clone(&events), vec![key_thread, rpc_thread], rpc_tx);
             }
-            _ => return fail("작업 스레드를 시작하지 못했습니다."),
+            _ => return fail(start_text::THREADS_FAILED.get(lang)),
         }
         // Browser bridge: dispatcher, read workers, pipe server (spec/05 §8.1, within 2 s).
         state.attach_browser(BrowserUi::start(&events, transport));
-        // 8. Classify the vault.
+        // 8. Classify the vault. The key worker first learns the language: the default labels of
+        // a new or imported wallet are written in it (spec/14 §1).
+        state.key(KeyJob::SetLanguage(lang));
         state.key(KeyJob::Load);
         // 9. Show unless started for the browser.
         if !background {

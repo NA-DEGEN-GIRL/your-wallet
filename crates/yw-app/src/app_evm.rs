@@ -21,9 +21,7 @@ use yw_win::clipboard;
 
 use crate::apikeys::{KeyName, mask_url};
 use crate::app::{App, AppMode, Confirm, Screen, SettingsSection};
-use crate::app_sol::{
-    ReviewBlocker, ReviewRefusal, SOL_REVIEW_CHANGED_TEXT as REVIEW_CHANGED_TEXT,
-};
+use crate::app_sol::{ReviewBlocker, ReviewRefusal};
 use crate::errors::ErrorCode;
 use crate::events::{
     BalanceSnapshot, EvmSigned, JournalView, KeyJob, KeyOutcome, RpcEvent, SignFailure,
@@ -62,9 +60,40 @@ pub const SEND_QUOTE_PAUSE_MS: u64 = 250;
 pub(crate) const SEND_TIMER_ID: usize = 21;
 /// Activity rows shown.
 pub const MAX_ACTIVITY_ROWS: usize = 50;
-/// `수수료 올리기`·`취소` of a group whose account has no key in this wallet any more
-/// (spec/03 §4.6).
-pub const T_REPLACE_NO_KEY: &str = "이 거래를 보낸 계정의 키가 이 지갑에 없어 수수료 올리기·취소를 할 수 없습니다. 그 키를 다시 가져오거나 YubiKey를 다시 연결한 뒤 시도하세요.";
+/// EVM flow texts of the app (spec/03 §4, spec/04 §2.7, §2.16, §2.17; English spec/14 §5).
+pub mod text {
+    yw_core::texts! {
+        /// `수수료 올리기`·`취소` of a group whose account has no key in this wallet any more
+        /// (spec/03 §4.6).
+        REPLACE_NO_KEY = "이 거래를 보낸 계정의 키가 이 지갑에 없어 수수료 올리기·취소를 할 수 없습니다. 그 키를 다시 가져오거나 YubiKey를 다시 연결한 뒤 시도하세요."
+            / "The key of the account that sent this transaction is no longer in this wallet, so it cannot be sped up or cancelled. Import that key again or reconnect the YubiKey, then try again.";
+        JOURNAL_CORRUPT = "거래 저널이 손상되어 보내기를 멈췄습니다. (E-VLT-006)"
+            / "The transaction journal is damaged, so sending has stopped. (E-VLT-006)";
+        /// `{0}` = the E-VLT-003 text.
+        JOURNAL_WRITE_FAILED(1) = "저널 저장 실패 — {0}" / "Journal save failed — {0}";
+        /// `{0}` network, `{1}` hash.
+        GENESIS_PINNED(2) = "{0}의 제네시스 해시를 첫 연결에서 고정했습니다: {1}"
+            / "Pinned the genesis hash of {0} on first connection: {1}";
+        HASH_MISMATCH = "RPC가 다른 거래 해시를 반환했습니다. 자동으로 다시 보내지 않습니다. 활동에서 확인하세요."
+            / "The RPC returned a different transaction hash. It is not sent again automatically. Check Activity.";
+        /// `{0}` = the E-TX-004 text.
+        REJECTED_UNKNOWN(1) = "{0} (재전송·폐기)" / "{0} (rebroadcast/drop)";
+        APPROVAL_EXPIRED = "승인 시간이 지났습니다. 다시 검토하세요."
+            / "The approval time ran out. Review again.";
+        LOOKING_UP = "조회 중…" / "Looking up…";
+        NO_DECIMALS = "decimals를 읽지 못해 추가할 수 없습니다. (E25)"
+            / "Cannot add: decimals could not be read. (E25)";
+        TOKEN_DUPLICATE = "이미 추가한 토큰입니다." / "This token is already added.";
+        TOKEN_FULL = "토큰은 네트워크당 100개, 전체 1,000개까지입니다."
+            / "Up to 100 tokens per network and 1,000 in total.";
+        CHECKING_CHAIN = "체인을 확인하는 중…" / "Checking the chain…";
+        SAVED = "저장했습니다." / "Saved.";
+        CAPS_RANGE = "maxFee 상한 1–10,000 gwei, tip 상한 0.01–10,000 gwei(maxFee 상한 이하), 총 상한 0.0001–10 범위로 입력하세요."
+            / "Enter a maxFee cap of 1–10,000 gwei, a tip cap of 0.01–10,000 gwei (at most the maxFee cap) and a total cap of 0.0001–10.";
+        ENDPOINT_NONE = "없음" / "None";
+        ENDPOINT_SET(1) = "설정됨 {0}" / "Set {0}";
+    }
+}
 
 /// The asset being sent.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -80,7 +109,7 @@ pub enum SendAsset {
 #[derive(Clone, Debug, Default)]
 #[expect(
     clippy::struct_excessive_bools,
-    reason = "independent states of one form (ack, picker, quote in flight, `최대` waiting)"
+    reason = "independent states of one form (ack, picker, quote in flight, max amount waiting)"
 )]
 pub struct SendForm {
     /// Asset.
@@ -765,23 +794,15 @@ impl App {
     pub fn evm_key_outcome(&mut self, outcome: KeyOutcome) {
         match outcome {
             KeyOutcome::Journal(Ok(view)) => {
+                let corrupt = text::JOURNAL_CORRUPT.get(self.settings.language);
                 if view.corrupt > 0 {
-                    self.banner(
-                        Some(ErrorCode::Vlt006),
-                        "거래 저널이 손상되어 보내기를 멈췄습니다. (E-VLT-006)".to_owned(),
-                    );
+                    self.banner(Some(ErrorCode::Vlt006), corrupt.to_owned());
                 }
                 if view.sol_corrupt > 0 {
-                    self.banner(
-                        Some(ErrorCode::Vlt006),
-                        "거래 저널이 손상되어 보내기를 멈췄습니다. (E-VLT-006)".to_owned(),
-                    );
+                    self.banner(Some(ErrorCode::Vlt006), corrupt.to_owned());
                 }
                 if view.btc_corrupt > 0 {
-                    self.banner(
-                        Some(ErrorCode::Vlt006),
-                        "거래 저널이 손상되어 보내기를 멈췄습니다. (E-VLT-006)".to_owned(),
-                    );
+                    self.banner(Some(ErrorCode::Vlt006), corrupt.to_owned());
                 }
                 seed_notes(&mut self.evm.notes, &view.records);
                 self.evm.journal = Some(view);
@@ -858,6 +879,7 @@ impl App {
             Err(failure) => {
                 let account = self.evm.signing.get(&ticket).map(|slot| slot.account);
                 self.release_signing(ticket);
+                let lang = self.settings.language;
                 let message = match failure {
                     // Which phrase, and where its backup quiz is finished (the form's `검토`
                     // is off while the app knows; this is the vault's last word).
@@ -867,14 +889,14 @@ impl App {
                         account.and_then(|account| self.evm_account_unconfirmed(&account)),
                     ),
                     SignFailure::Sign(yw_core::evm::sign::SignError::Vault(error)) => {
-                        crate::errors::vault_code(error).text()
+                        crate::errors::vault_code(error).text_in(lang)
                     }
-                    SignFailure::Sign(_) => ErrorCode::Tx003.text(),
-                    SignFailure::JournalFull => ErrorCode::Tx005.text(),
+                    SignFailure::Sign(_) => ErrorCode::Tx003.text_in(lang),
+                    SignFailure::JournalFull => ErrorCode::Tx005.text_in(lang),
                     SignFailure::JournalWrite(_) => {
-                        format!("저널 저장 실패 — {}", ErrorCode::Vlt003.text())
+                        text::JOURNAL_WRITE_FAILED.fill(lang, [&ErrorCode::Vlt003.text_in(lang)])
                     }
-                    SignFailure::Locked => ErrorCode::App009.text(),
+                    SignFailure::Locked => ErrorCode::App009.text_in(lang),
                     SignFailure::Card(error) => error.to_string(),
                 };
                 logging::warn("app", "sign.failed", &[]);
@@ -961,7 +983,9 @@ impl App {
                             self.evm.token.found = Some((token, meta));
                             self.evm.token.message = None;
                         }
-                        Err(code) => self.evm.token.message = Some(code.text()),
+                        Err(code) => {
+                            self.evm.token.message = Some(code.text_in(self.settings.language));
+                        }
                     }
                     self.refresh();
                 }
@@ -1085,10 +1109,7 @@ impl App {
             );
             let name = self.network_name(NetworkId::Eip155(chain_id));
             self.notice(
-                format!(
-                    "{name}의 제네시스 해시를 첫 연결에서 고정했습니다: {}",
-                    hash32_text(&genesis)
-                ),
+                text::GENESIS_PINNED.fill(self.settings.language, [&name, &hash32_text(&genesis)]),
                 crate::ui::main_window::Tone::Info,
             );
         }
@@ -1320,11 +1341,14 @@ impl App {
         match outcome {
             BroadcastOutcome::HashMismatch => self.banner(
                 None,
-                "RPC가 다른 거래 해시를 반환했습니다. 자동으로 다시 보내지 않습니다. 활동에서 확인하세요."
-                    .to_owned(),
+                text::HASH_MISMATCH.get(self.settings.language).to_owned(),
             ),
             BroadcastOutcome::Rejected { known: false } => {
-                self.banner(None, format!("{} (재전송·폐기)", ErrorCode::Tx004.text()));
+                let lang = self.settings.language;
+                self.banner(
+                    None,
+                    text::REJECTED_UNKNOWN.fill(lang, [&ErrorCode::Tx004.text_in(lang)]),
+                );
             }
             BroadcastOutcome::ChainMismatch => self.error_banner(ErrorCode::Rpc006),
             _ => {}
@@ -1810,7 +1834,11 @@ impl App {
         match self.review_item() {
             Ok(item) => self.enqueue_app(item),
             Err(ReviewRefusal::Changed) => {
-                self.evm.send.info = Some(REVIEW_CHANGED_TEXT.to_owned());
+                self.evm.send.info = Some(
+                    crate::app_sol::text::REVIEW_CHANGED
+                        .get(self.settings.language)
+                        .to_owned(),
+                );
                 self.refresh();
             }
             Err(ReviewRefusal::NotReady) => {}
@@ -1825,7 +1853,7 @@ impl App {
             .iter()
             .any(|(chain, held)| *chain == item.chain_id && *held == item.account)
         {
-            self.evm.send.info = Some(ErrorCode::Tx002.text());
+            self.evm.send.info = Some(ErrorCode::Tx002.text_in(self.settings.language));
             self.refresh();
             return;
         }
@@ -1840,7 +1868,7 @@ impl App {
             self.evm.send.info = None;
             self.show_next_approval();
         } else {
-            self.evm.send.info = Some(ErrorCode::App005.text());
+            self.evm.send.info = Some(ErrorCode::App005.text_in(self.settings.language));
             self.refresh();
         }
     }
@@ -1881,7 +1909,11 @@ impl App {
             self.release_slot(item.chain_id, &item.account);
         }
         if outcome == QueueOutcome::Expired {
-            self.evm.send.info = Some("승인 시간이 지났습니다. 다시 검토하세요.".to_owned());
+            self.evm.send.info = Some(
+                text::APPROVAL_EXPIRED
+                    .get(self.settings.language)
+                    .to_owned(),
+            );
         }
         logging::info(
             "app",
@@ -1902,7 +1934,7 @@ impl App {
         };
         let Some(signer) = self.account_source(&key.account) else {
             self.notice(
-                T_REPLACE_NO_KEY.to_owned(),
+                text::REPLACE_NO_KEY.get(self.settings.language).to_owned(),
                 crate::ui::main_window::Tone::Warn,
             );
             self.refresh();
@@ -2000,7 +2032,7 @@ impl App {
 
     fn copy(&mut self, text: &str, address: bool) {
         if let Some(main) = self.main.as_ref() {
-            let failed = ErrorCode::Sec002.text();
+            let failed = ErrorCode::Sec002.text_in(self.settings.language);
             if clipboard::set_text(main, text).is_ok() {
                 self.copied = Some(Copied {
                     id: self.command,
@@ -2034,7 +2066,7 @@ impl App {
         let chain_id = self.settings.evm_chain_id;
         let text = self.evm.token.address.trim().to_owned();
         let Ok(token) = yw_core::evm::address::parse_address(&text) else {
-            self.evm.token.message = Some(ErrorCode::Inp009.text());
+            self.evm.token.message = Some(ErrorCode::Inp009.text_in(self.settings.language));
             self.refresh();
             return;
         };
@@ -2043,10 +2075,11 @@ impl App {
                 let job = self.evm.job();
                 self.evm.token.job = job;
                 self.evm.token.found = None;
-                self.evm.token.message = Some("조회 중…".to_owned());
+                self.evm.token.message =
+                    Some(text::LOOKING_UP.get(self.settings.language).to_owned());
                 let _ = self.rpc(RpcJob::TokenMeta { job, chain, token });
             }
-            Err(code) => self.evm.token.message = Some(code.text()),
+            Err(code) => self.evm.token.message = Some(code.text_in(self.settings.language)),
         }
         self.refresh();
     }
@@ -2058,14 +2091,13 @@ impl App {
             return;
         };
         let Some(decimals) = meta_found.decimals else {
-            self.evm.token.message =
-                Some("decimals를 읽지 못해 추가할 수 없습니다. (E25)".to_owned());
+            self.evm.token.message = Some(text::NO_DECIMALS.get(self.settings.language).to_owned());
             self.refresh();
             return;
         };
         let label = self.evm.token.label.clone();
         if !is_valid_label(&label) {
-            self.evm.token.message = Some(ErrorCode::Inp017.text());
+            self.evm.token.message = Some(ErrorCode::Inp017.text_in(self.settings.language));
             self.refresh();
             return;
         }
@@ -2086,12 +2118,13 @@ impl App {
                 self.refresh_balances();
             }
             Err(ListError::Duplicate) => {
-                self.evm.token.message = Some("이미 추가한 토큰입니다.".to_owned());
+                self.evm.token.message =
+                    Some(text::TOKEN_DUPLICATE.get(self.settings.language).to_owned());
                 self.refresh();
             }
             Err(ListError::Full) => {
                 self.evm.token.message =
-                    Some("토큰은 네트워크당 100개, 전체 1,000개까지입니다.".to_owned());
+                    Some(text::TOKEN_FULL.get(self.settings.language).to_owned());
                 self.refresh();
             }
         }
@@ -2104,7 +2137,7 @@ impl App {
         if editing.is_none()
             && self.settings.evm_chains.len() >= crate::settings::MAX_CUSTOM_EVM_CHAINS
         {
-            self.info = Some(ErrorCode::Chn006.text());
+            self.info = Some(ErrorCode::Chn006.text_in(self.settings.language));
             self.refresh();
             return;
         }
@@ -2152,7 +2185,7 @@ impl App {
         let valid = match validate_chain_form(&input, &self.settings, &self.apikeys, form.editing) {
             Ok(valid) => valid,
             Err(error) => {
-                self.set_chain_message(error.message());
+                self.set_chain_message(error.message_in(self.settings.language));
                 return;
             }
         };
@@ -2171,7 +2204,8 @@ impl App {
                 if let Some(state) = self.evm.chain_form.as_mut() {
                     state.job = job;
                     state.pending = Some((valid, None));
-                    state.message = Some("체인을 확인하는 중…".to_owned());
+                    state.message =
+                        Some(text::CHECKING_CHAIN.get(self.settings.language).to_owned());
                 }
                 let _ = self.rpc(RpcJob::Probe {
                     job,
@@ -2193,6 +2227,7 @@ impl App {
     }
 
     fn on_probe(&mut self, job: u64, result: Result<[u8; 32], ProbeError>) {
+        let lang = self.settings.language;
         // A check that answers after the user left its screen (or after a lock, which also
         // drops the forms) changes nothing: never a chain confirmation over the lock screen or
         // another screen, never a chain saved without the user on S17.
@@ -2230,11 +2265,11 @@ impl App {
                     self.set_screen(Screen::Confirm(Confirm::ChainRepin));
                 }
                 Err(ProbeError::ChainId { .. }) => {
-                    repin.message = Some(ErrorCode::Rpc006.text());
+                    repin.message = Some(ErrorCode::Rpc006.text_in(lang));
                     self.refresh();
                 }
                 Err(error) => {
-                    repin.message = Some(error.message());
+                    repin.message = Some(error.message_in(lang));
                     self.refresh();
                 }
             }
@@ -2261,7 +2296,7 @@ impl App {
             }
             Err(error) => {
                 state.pending = None;
-                state.message = Some(error.message());
+                state.message = Some(error.message_in(lang));
                 self.refresh();
             }
         }
@@ -2348,7 +2383,7 @@ impl App {
             chain_id: valid.chain_id,
         });
         self.evm.chain_form = None;
-        self.info = Some("저장했습니다.".to_owned());
+        self.info = Some(text::SAVED.get(self.settings.language).to_owned());
         self.set_screen(Screen::Settings(SettingsSection::Chains));
     }
 
@@ -2366,7 +2401,7 @@ impl App {
             sending,
         );
         if let Err(code) = check {
-            self.info = Some(code.text());
+            self.info = Some(code.text_in(self.settings.language));
             self.refresh();
             return;
         }
@@ -2396,7 +2431,7 @@ impl App {
     /// `다시 고정` (spec/04 §2.17.4): fetch the new block-0 hash.
     pub fn start_repin(&mut self, chain_id: u64) {
         let Some(url) = self.apikeys.rpc_url(NetworkId::Eip155(chain_id)) else {
-            self.info = Some(ErrorCode::Key005.text());
+            self.info = Some(ErrorCode::Key005.text_in(self.settings.language));
             self.refresh();
             return;
         };
@@ -2406,7 +2441,7 @@ impl App {
             new: None,
             job,
             checked: false,
-            message: Some("체인을 확인하는 중…".to_owned()),
+            message: Some(text::CHECKING_CHAIN.get(self.settings.language).to_owned()),
         });
         let _ = self.rpc(RpcJob::Probe {
             job,
@@ -2517,10 +2552,7 @@ impl App {
             .filter(|caps| parse_caps(caps, chain.native_decimals).is_some());
         let Some(valid) = valid else {
             if let Some(caps) = self.evm.caps.as_mut() {
-                caps.message = Some(
-                    "maxFee 상한 1–10,000 gwei, tip 상한 0.01–10,000 gwei(maxFee 상한 이하), 총 상한 0.0001–10 범위로 입력하세요."
-                        .to_owned(),
-                );
+                caps.message = Some(text::CAPS_RANGE.get(self.settings.language).to_owned());
             }
             self.refresh();
             return;
@@ -2532,8 +2564,9 @@ impl App {
         }
         self.save_settings(settings, "feeCaps");
         self.select_caps_chain(form.chain_id);
+        let saved = text::SAVED.get(self.settings.language);
         if let Some(caps) = self.evm.caps.as_mut() {
-            caps.message = Some("저장했습니다.".to_owned());
+            caps.message = Some(saved.to_owned());
         }
         self.refresh();
     }
@@ -2555,8 +2588,8 @@ impl App {
         self.apikeys
             .rpc_url(NetworkId::Eip155(chain_id))
             .map_or_else(
-                || "없음".to_owned(),
-                |url| format!("설정됨 {}", mask_url(&url)),
+                || text::ENDPOINT_NONE.get(self.settings.language).to_owned(),
+                |url| text::ENDPOINT_SET.fill(self.settings.language, [&mask_url(&url)]),
             )
     }
 
@@ -2908,7 +2941,7 @@ mod tests {
         use yw_core::bip32::path::AccountIndex;
         use yw_core::vault::EvmKeySource;
 
-        use super::{QueuedItem, ReplaceMode, T_REPLACE_NO_KEY};
+        use super::{QueuedItem, ReplaceMode};
         use crate::apikeys::ApiKeys;
         use crate::app::{App, AppMode, Paths};
         use crate::events::JournalView;
@@ -2941,7 +2974,7 @@ mod tests {
         assert!(
             app.banners
                 .iter()
-                .any(|banner| banner.text == T_REPLACE_NO_KEY)
+                .any(|banner| banner.text == super::text::REPLACE_NO_KEY.ko)
         );
         // The sender is YubiKey EVM account 3.
         app.meta.as_mut().unwrap().hw_accounts.evm = vec![Account {

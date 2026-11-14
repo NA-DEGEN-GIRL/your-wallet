@@ -175,10 +175,13 @@ fn chain_check_genesis() {
         assert_eq!(rig.fake.methods(), ["getblockhash"]);
         assert_eq!(session.blocked(), Some(blocked));
         assert_eq!(blocked.code(), Some(ErrorCode::Rpc006));
-        assert_eq!(blocked.text(), ErrorCode::Rpc006.text());
+        assert_eq!(
+            blocked.text(yw_core::lang::Lang::Ko),
+            ErrorCode::Rpc006.text_in(yw_core::lang::Lang::Ko)
+        );
         assert!(
             blocked
-                .text()
+                .text(yw_core::lang::Lang::Ko)
                 .starts_with("RPC가 다른 네트워크를 가리킵니다. 작업을 중단했습니다.")
         );
         every_pipeline_blocked(&rig, &mut session, blocked);
@@ -373,7 +376,7 @@ fn chain_check_indexer_genesis() -> TestResult {
         assert!(session.indexer_verified());
     }
     assert_eq!(
-        lag_warning_text(4),
+        lag_warning_text(yw_core::lang::Lang::Ko, 4),
         "인덱서와 노드의 블록 높이가 4 차이 납니다. 잔액·확인 수가 늦게 반영될 수 있습니다"
     );
     let rig = Rig::new(BtcIndexer::Esplora, |call| {
@@ -408,7 +411,7 @@ fn network_mismatch_blocks() {
     let mut session = ChainSession::new(BtcNetwork::Testnet4, BtcNetwork::Mainnet);
     assert_eq!(session.blocked(), Some(BtcBlock::NetworkMismatch));
     assert_eq!(
-        BtcBlock::NetworkMismatch.text(),
+        BtcBlock::NetworkMismatch.text(yw_core::lang::Lang::Ko),
         "BTC 네트워크 설정이 지갑 데이터와 다릅니다"
     );
     every_pipeline_blocked(&rig, &mut session, BtcBlock::NetworkMismatch);

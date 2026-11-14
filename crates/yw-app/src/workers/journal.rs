@@ -115,7 +115,7 @@ pub fn view_of(plain: &JournalPlain) -> JournalView {
         room: room_after_cleanup(plain),
         sol_records: sol.records(),
         sol_corrupt: sol.corrupt,
-        sol_room: sol_make_room(&mut trial, 0).is_ok(),
+        sol_room: sol_make_room(yw_core::lang::Lang::Ko, &mut trial, 0).is_ok(),
         btc_records: btc.records(),
         btc_corrupt: btc.corrupt,
         btc_room: yw_core::journal::btc::has_room(plain),
@@ -346,7 +346,7 @@ impl JournalState {
             return Err(SolSignFailure::Sign(SolSignError::PendingExists));
         }
         if !sol_has_room(&trial) {
-            let rows = sol_make_room(&mut trial, times.now_unix_ms)
+            let rows = sol_make_room(self.lang, &mut trial, times.now_unix_ms)
                 .map_err(|_| SolSignFailure::JournalFull)?;
             match self.persist_sol_activity(vault, &rows, alt) {
                 Ok(moved) if !moved.is_empty() => out.push(KeyOutcome::ActivityMoved(moved)),
@@ -480,7 +480,7 @@ impl JournalState {
         }
         if !sol_has_room(&trial) {
             // A journal full of pending records is the dApp's -32002, not an internal error.
-            let rows = sol_make_room(&mut trial, job.now_unix_ms)
+            let rows = sol_make_room(self.lang, &mut trial, job.now_unix_ms)
                 .map_err(|_| SolSignFailure::TooManyPending)?;
             match self.persist_sol_activity(vault, &rows, alt) {
                 Ok(moved) if !moved.is_empty() => out.push(KeyOutcome::ActivityMoved(moved)),
@@ -567,7 +567,7 @@ impl JournalState {
             ],
         );
         let mut pruned = next.clone();
-        let rows = take_terminal(&mut pruned, now_unix_ms);
+        let rows = take_terminal(self.lang, &mut pruned, now_unix_ms);
         let mut moved = Vec::new();
         if !rows.is_empty()
             && let Ok(rows_moved) = self.persist_sol_activity(vault, &rows, alt)

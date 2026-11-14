@@ -62,6 +62,9 @@ pub struct KeyWorker {
     /// until a load succeeds, so a document the UI queued before is never sealed over it (the
     /// vault itself only refuses a file that failed to open, spec/02 §6.3).
     meta_unreadable: bool,
+    /// The app language (`KeyJob::SetLanguage`, spec/14 §1): the default labels this worker
+    /// writes (`계정 1` / `Account 1` …). Korean until the app says otherwise.
+    lang: yw_core::lang::Lang,
 }
 
 impl core::fmt::Debug for KeyWorker {
@@ -183,7 +186,7 @@ fn reconcile_btc_accounts(document: &mut Meta, keys: &ImportedKeys) -> bool {
 /// Reconciles the meta imported-key lists with the vault (labels kept by record id, address
 /// caches recomputed; Bitcoin keys as accounts of `btc_accounts`); returns whether anything
 /// changed.
-fn reconcile_imported(document: &mut Meta, keys: &ImportedKeys) -> bool {
+fn reconcile_imported(document: &mut Meta, keys: &ImportedKeys, lang: yw_core::lang::Lang) -> bool {
     let mut changed = false;
     let mut evm: Vec<RawAccount> = Vec::with_capacity(keys.evm.len());
     for (id, address) in &keys.evm {
@@ -201,7 +204,8 @@ fn reconcile_imported(document: &mut Meta, keys: &ImportedKeys) -> bool {
                 || {
                     let labels = document.evm_raw_accounts.iter().chain(&evm);
                     meta::next_imported_label(
-                        meta::EVM_IMPORTED_PREFIX,
+                        lang,
+                        meta::EVM_IMPORTED_LABEL,
                         labels.map(|raw| raw.label.as_str()),
                     )
                 },
@@ -226,7 +230,8 @@ fn reconcile_imported(document: &mut Meta, keys: &ImportedKeys) -> bool {
                 || {
                     let labels = document.sol_raw_accounts.iter().chain(&sol);
                     meta::next_imported_label(
-                        meta::SOL_IMPORTED_PREFIX,
+                        lang,
+                        meta::SOL_IMPORTED_LABEL,
                         labels.map(|raw| raw.label.as_str()),
                     )
                 },
@@ -252,21 +257,35 @@ fn reconcile_imported(document: &mut Meta, keys: &ImportedKeys) -> bool {
     changed
 }
 
+/// The default `YubiKey` account labels (spec/14; stored data, written in the app language of the
+/// moment like `meta::text`).
+pub mod text {
+    yw_core::texts! {
+        /// An EVM key connected without recovery words: {0} number.
+        HW_EVM_CARD_KEY(1) = "YubiKey 카드 키 {0}" / "YubiKey card key {0}";
+        /// A Solana key connected without recovery words: {0} number.
+        HW_SOL_CARD_KEY(1) = "YubiKey Solana 카드 키 {0}" / "YubiKey Solana card key {0}";
+        /// An EVM `YubiKey` account: {0} number.
+        HW_EVM_ACCOUNT(1) = "YubiKey 계정 {0}" / "YubiKey account {0}";
+    }
+}
+
 /// The default label of a `YubiKey` account (`YubiKey 계정 1`, `YubiKey Solana 1`).
-fn hw_label(evm: bool, index: u32) -> String {
+fn hw_label(lang: yw_core::lang::Lang, evm: bool, index: u32) -> String {
     // A key connected without recovery words (spec/10 §7.6): its index is an account number.
     if yw_core::yubikey::plan::is_unknown_index(index) {
         let number = index
             .saturating_sub(yw_core::yubikey::plan::UNKNOWN_PATH_FIRST)
-            .saturating_add(1);
+            .saturating_add(1)
+            .to_string();
         return if evm {
-            format!("YubiKey 카드 키 {number}")
+            text::HW_EVM_CARD_KEY.fill(lang, [&number])
         } else {
-            format!("YubiKey Solana 카드 키 {number}")
+            text::HW_SOL_CARD_KEY.fill(lang, [&number])
         };
     }
     if evm {
-        format!("YubiKey 계정 {}", index.saturating_add(1))
+        text::HW_EVM_ACCOUNT.fill(lang, [&index.saturating_add(1).to_string()])
     } else {
         format!("YubiKey Solana {}", index.saturating_add(1))
     }
@@ -278,14 +297,17 @@ fn hw_list(
     old: &[Account],
     found: impl Iterator<Item = (u32, String)>,
     evm: bool,
+    lang: yw_core::lang::Lang,
 ) -> (Vec<Account>, bool) {
     let mut list: Vec<Account> = found
         .map(|(index, address)| {
             let existing = old.iter().find(|account| account.index == index);
             Account {
                 index,
-                label: existing
-                    .map_or_else(|| hw_label(evm, index), |account| account.label.clone()),
+                label: existing.map_or_else(
+                    || hw_label(lang, evm, index),
+                    |account| account.label.clone(),
+                ),
                 address,
                 hidden: existing.is_some_and(|account| account.hidden),
             }
@@ -341,7 +363,11 @@ fn hw_btc_expected(
 /// # Errors
 ///
 /// The vault's slot map is not readable (locked).
-fn reconcile_hardware(document: &mut Meta, vault: &Vault) -> Result<bool, VaultError> {
+fn reconcile_hardware(
+    document: &mut Meta,
+    vault: &Vault,
+    lang: yw_core::lang::Lang,
+) -> Result<bool, VaultError> {
     use yw_core::yubikey::plan::{KeyRole, accounts, evm_address, sol_address};
     let records = KeyWorker::hardware_records(vault)?;
     let found = accounts(&records);
@@ -354,6 +380,7 @@ fn reconcile_hardware(document: &mut Meta, vault: &Vault) -> Result<bool, VaultE
             KeyRole::Btc { .. } | KeyRole::Sol { .. } | KeyRole::Zec { .. } => None,
         }),
         true,
+        lang,
     );
     let (sol, sol_changed) = hw_list(
         &document.hw_accounts.sol,
@@ -364,6 +391,7 @@ fn reconcile_hardware(document: &mut Meta, vault: &Vault) -> Result<bool, VaultE
             KeyRole::Evm { .. } | KeyRole::Btc { .. } | KeyRole::Zec { .. } => None,
         }),
         false,
+        lang,
     );
     let mut changed = evm_changed || sol_changed;
     document.hw_accounts.evm = evm;
@@ -530,6 +558,7 @@ impl KeyWorker {
             journal: JournalState::default(),
             cards: Box::new(crate::yubikey::PcscSource),
             meta_unreadable: false,
+            lang: yw_core::lang::Lang::Ko,
         }
     }
 
@@ -903,7 +932,6 @@ impl KeyWorker {
 
     /// A Zcash step (spec/12 §10–§12).
     fn zec_job(&mut self, job: crate::workers::journal::zec::ZecKeyJob) -> Vec<KeyOutcome> {
-        use crate::workers::journal::JournalState;
         use crate::workers::journal::zec::{ZecKeyJob, ZecKeyOutcome, ZecSignFailure};
         let locked = || {
             vec![KeyOutcome::Zec(Box::new(ZecKeyOutcome::Signed(Err(
@@ -912,7 +940,7 @@ impl KeyWorker {
         };
         match job {
             ZecKeyJob::PublicKey { network, source } => match self.vault.as_ref() {
-                Some(vault) => JournalState::zec_public_key(vault, network, source),
+                Some(vault) => self.journal.zec_public_key(vault, network, source),
                 None => vec![KeyOutcome::Zec(Box::new(ZecKeyOutcome::PublicKey(Err(
                     VaultError::InvalidState.to_string(),
                 ))))],
@@ -1177,8 +1205,12 @@ impl KeyWorker {
         }
     }
 
-    fn write_default_meta(vault: &mut Vault, address: &yw_core::evm::address::Address) {
-        let mut document = Meta::default();
+    fn write_default_meta(
+        vault: &mut Vault,
+        address: &yw_core::evm::address::Address,
+        lang: yw_core::lang::Lang,
+    ) {
+        let mut document = Meta::new_in(lang);
         if let Some(first) = document.evm_accounts.first_mut() {
             first.address = address.to_lower_hex();
         }
@@ -1197,10 +1229,11 @@ impl KeyWorker {
     ) -> Result<(SecretString, yw_core::evm::address::Address), VaultError> {
         let password = password(password_bytes)?;
         let slot = new_slot()?;
+        let lang = self.lang;
         let vault = self.vault()?;
         let phrase = vault.create_wallet(&password, slot, now_unix())?;
         let address = vault.evm_address(EvmKeySource::Derived(AccountIndex::ZERO))?;
-        Self::write_default_meta(vault, &address);
+        Self::write_default_meta(vault, &address, lang);
         Ok((phrase, address))
     }
 
@@ -1238,10 +1271,11 @@ impl KeyWorker {
             .transpose()
             .map_err(VaultError::Key)?;
         let slot = new_slot()?;
+        let lang = self.lang;
         let vault = self.vault()?;
         vault.import_mnemonic(&password, phrase, passphrase, slot, now_unix())?;
         let address = vault.evm_address(EvmKeySource::Derived(AccountIndex::ZERO))?;
-        Self::write_default_meta(vault, &address);
+        Self::write_default_meta(vault, &address, lang);
         Ok(())
     }
 
@@ -1254,10 +1288,14 @@ impl KeyWorker {
     /// The default meta of a new key-only wallet: no derived account, the imported key in its
     /// list (a Bitcoin key as the single-key account of its network in `btc_accounts`, selected),
     /// its chain tab selected.
-    fn write_key_only_meta(vault: &mut Vault, chain: ImportChain) -> Result<(), VaultError> {
+    fn write_key_only_meta(
+        vault: &mut Vault,
+        chain: ImportChain,
+        lang: yw_core::lang::Lang,
+    ) -> Result<(), VaultError> {
         let keys = vault.imported_keys()?;
         let mut document = Meta::key_only();
-        reconcile_imported(&mut document, &keys);
+        reconcile_imported(&mut document, &keys, lang);
         if let Some(raw) = document.evm_raw_accounts.first() {
             document.prefs.evm_account = EvmAccountPref::Record(raw.record_id);
         }
@@ -1288,9 +1326,10 @@ impl KeyWorker {
         let password = password(&held)?;
         let key = parse_key(pending.spec, &pending.key)?;
         let slot = new_slot()?;
+        let lang = self.lang;
         let vault = self.vault()?;
         vault.create_with_key(&password, key, slot, now_unix())?;
-        Self::write_key_only_meta(vault, pending.spec.chain())
+        Self::write_key_only_meta(vault, pending.spec.chain(), lang)
     }
 
     fn import_chain_key(
@@ -1428,9 +1467,9 @@ impl KeyWorker {
     /// back. The file opened with this wallet's key, so some build of this app wrote it: a
     /// document this build cannot read is `SidecarUnsupported` (a newer format, not damage,
     /// spec/02 §6.3).
-    fn read_meta(vault: &Vault) -> Result<(Meta, bool), VaultError> {
+    fn read_meta(vault: &Vault, lang: yw_core::lang::Lang) -> Result<(Meta, bool), VaultError> {
         match vault.open_sidecar(FileKind::Meta)? {
-            None => Ok((Meta::default(), false)),
+            None => Ok((Meta::new_in(lang), false)),
             Some((_, plaintext)) => meta::parse(plaintext.expose())
                 .map(|parsed| (parsed.meta, parsed.prefs_reset))
                 .map_err(|_| VaultError::SidecarUnsupported(FileKind::Meta)),
@@ -1439,10 +1478,11 @@ impl KeyWorker {
 
     fn load_meta(&mut self) -> Result<MetaLoaded, VaultError> {
         let alt = self.is_alt();
+        let lang = self.lang;
         let read = if alt {
-            Ok((Meta::default(), false))
+            Ok((Meta::new_in(lang), false))
         } else {
-            Self::read_meta(self.vault()?)
+            Self::read_meta(self.vault()?, lang)
         };
         // Nothing is sealed over a meta that could not be read until a load succeeds (the vault
         // itself refuses only a file that failed to open; T-META-FAILED keeps the UI's copy away).
@@ -1459,7 +1499,7 @@ impl KeyWorker {
         } else if document.evm_accounts.is_empty() {
             // A mnemonic wallet always lists account 0.
             mismatch = true;
-            document.evm_accounts = Meta::default().evm_accounts;
+            document.evm_accounts = Meta::new_in(lang).evm_accounts;
         }
         let indices: Vec<AccountIndex> = document
             .evm_accounts
@@ -1474,8 +1514,8 @@ impl KeyWorker {
                 account.address = text;
             }
         }
-        mismatch |= reconcile_imported(&mut document, &keys);
-        mismatch |= reconcile_hardware(&mut document, vault)?;
+        mismatch |= reconcile_imported(&mut document, &keys, lang);
+        mismatch |= reconcile_hardware(&mut document, vault, lang)?;
         // A Zcash account on an imported key whose record is gone falls back to the default
         // key (spec/12 §12.3: the network's account is made again).
         for network in yw_core::zec::ZecNetwork::ALL {
@@ -1491,7 +1531,7 @@ impl KeyWorker {
                 mismatch = true;
             }
         }
-        mismatch |= mnemonics::reconcile_mnemonics(&mut document, vault)?;
+        mismatch |= mnemonics::reconcile_mnemonics(&mut document, vault, lang)?;
         mismatch |= mnemonics::reconcile_mnemonic_chains(&mut document, vault)?;
         let mnemonic_infos = vault.mnemonics()?;
         let sol_sources: Vec<SolKeySource> = document
@@ -1624,6 +1664,7 @@ impl KeyWorker {
         let alt = self.is_alt();
         match job {
             KeyJob::SetLanguage(lang) => {
+                self.lang = lang;
                 self.journal.set_lang(lang);
                 Vec::new()
             }
@@ -2007,6 +2048,7 @@ impl KeyWorker {
             KeyJob::ResetWallet {
                 stamp,
                 include_settings,
+                lang,
             } => {
                 // No unlock: the files are moved as they are. Every vault write runs on this
                 // thread, so nothing writes them while (or after) they move.
@@ -2016,6 +2058,7 @@ impl KeyWorker {
                     &self.dir,
                     &stamp,
                     include_settings,
+                    lang,
                 ))
             }
             KeyJob::YubiKey(job) => self.yubikey_job(job),
@@ -2090,10 +2133,15 @@ impl KeyWorker {
 /// one above the highest `계정 N` of every recovery phrase (`Meta::next_evm_number`, 2026-11-10;
 /// before, `index + 1` repeated `계정 1` once per phrase).
 #[must_use]
-pub fn new_account(index: u32, number: usize, address: &yw_core::evm::address::Address) -> Account {
+pub fn new_account(
+    lang: yw_core::lang::Lang,
+    index: u32,
+    number: usize,
+    address: &yw_core::evm::address::Address,
+) -> Account {
     Account {
         index,
-        label: format!("{}{number}", crate::meta::EVM_ACCOUNT_PREFIX),
+        label: crate::meta::EVM_ACCOUNT_LABEL.fill(lang, [&number.to_string()]),
         address: address.to_lower_hex(),
         hidden: false,
     }
@@ -2649,7 +2697,9 @@ pub(crate) mod tests {
             let password =
                 yw_core::password::VaultPassword::new(b"yubikey wallet password").unwrap();
             vault.remove_hardware_key(&password, keys[1].id).unwrap();
-            assert!(super::reconcile_hardware(&mut document, vault).unwrap());
+            assert!(
+                super::reconcile_hardware(&mut document, vault, yw_core::lang::Lang::Ko).unwrap()
+            );
         }
         assert!(document.btc_accounts.get(BtcNetwork::Mainnet, id).is_none());
         assert_eq!(document.hw_accounts.evm.len(), 2);

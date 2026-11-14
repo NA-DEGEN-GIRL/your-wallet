@@ -78,6 +78,7 @@ fn work(fetch: Vec<u32>, pending: Vec<Incoming>) -> BtcReceivedWork {
         rejected_before: false,
         chain: chain_input(),
         trigger: Trigger::User,
+        lang: yw_core::lang::Lang::Ko,
     }
 }
 
@@ -280,12 +281,12 @@ fn blockbook_rest_and_rpc_list_mempool_deposits() -> TestResult {
     let client = BtcClient::new(refusing.env(), &refusing.endpoint);
     let first = fetch(&client, &mut session(), &work(vec![0, 1], Vec::new()))?;
     assert_eq!(first.unsupported, None);
-    assert_eq!(first.note, Some(T_BB_NO_TXS_ONCE));
+    assert_eq!(first.note, Some(T_BB_NO_TXS_ONCE.ko));
     assert_eq!(first.cursor, Cursor::BtcRejected);
     let mut again = work(vec![0, 1], Vec::new());
     again.rejected_before = true;
     let second = fetch(&client, &mut session(), &again)?;
-    assert_eq!(second.unsupported, Some(T_BB_NO_TXS));
+    assert_eq!(second.unsupported, Some(T_BB_NO_TXS.ko));
     // A bb-rpc internal error (-32603) on every address is the same first strike only.
     let rpc_failing = Rig::new(BtcIndexer::BbRpc, |call: &Call| {
         if call.method == "bb_getAddress" {

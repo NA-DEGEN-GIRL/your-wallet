@@ -18,6 +18,7 @@
 //! flows through the existing signing outcomes.
 
 use yw_core::approval::Approved;
+use yw_core::lang::Lang;
 use yw_core::policy::ProviderError;
 use yw_core::secret::Zeroizing;
 use yw_core::yubikey::CardError;
@@ -137,16 +138,87 @@ pub struct CardNotice {
     pub form: CardForm,
 }
 
-/// W11's touch prompt after the PIN (2026-11-10): one touch.
-pub const T_CARD_TOUCH: &str = "PIN을 확인하는 중… YubiKey가 깜박이면 15초 안에 터치하세요";
-/// The cancel note of the card step.
-pub const T_CARD_CANCELLED: &str = "YubiKey 서명을 취소했습니다. 아무것도 서명하지 않았습니다.";
-/// A dApp request waiting for its PIN whose site was disconnected (spec/10 §9.2, 2026-11-13).
-pub const T_CARD_SITE_REVOKED: &str =
-    "사이트 연결이 해제되어 YubiKey 서명을 취소했습니다. 아무것도 서명하지 않았습니다.";
-/// A dApp request waiting for its PIN that its page ended — closed, reloaded or cancelled
-/// (spec/10 §9.2, 2026-11-13).
-pub const T_CARD_SITE_GONE: &str = "사이트의 요청이 끝나(페이지를 닫았거나 이동함) YubiKey 서명을 취소했습니다. 아무것도 서명하지 않았습니다.";
+/// Fixed texts of the card signing step and the enrolment result (spec/10 §9, §10; English
+/// spec/14).
+pub mod text {
+    yw_core::texts! {
+        /// W11's touch prompt after the PIN (2026-11-10): one touch.
+        CARD_TOUCH = "PIN을 확인하는 중… YubiKey가 깜박이면 15초 안에 터치하세요"
+            / "Checking the PIN… When the YubiKey blinks, touch it within 15 s";
+        /// The cancel note of the card step.
+        CARD_CANCELLED = "YubiKey 서명을 취소했습니다. 아무것도 서명하지 않았습니다."
+            / "YubiKey signing cancelled. Nothing was signed.";
+        /// A dApp request waiting for its PIN whose site was disconnected (spec/10 §9.2,
+        /// 2026-11-13).
+        CARD_SITE_REVOKED = "사이트 연결이 해제되어 YubiKey 서명을 취소했습니다. 아무것도 서명하지 않았습니다."
+            / "The site was disconnected, so YubiKey signing was cancelled. Nothing was signed.";
+        /// A dApp request waiting for its PIN that its page ended — closed, reloaded or
+        /// cancelled (spec/10 §9.2, 2026-11-13).
+        CARD_SITE_GONE = "사이트의 요청이 끝나(페이지를 닫았거나 이동함) YubiKey 서명을 취소했습니다. 아무것도 서명하지 않았습니다."
+            / "The site's request ended (the page was closed or left), so YubiKey signing was cancelled. Nothing was signed.";
+        TOUCH_PER_INPUT(1) = "YubiKey가 깜박일 때마다 터치하세요 — 모두 {0}회(입력마다 한 번)"
+            / "Touch the YubiKey each time it blinks — {0} times in all (once per input)";
+        TOUCH_PER_TX(1) = "YubiKey가 깜박일 때마다 터치하세요 — 모두 {0}회(거래마다 한 번)"
+            / "Touch the YubiKey each time it blinks — {0} times in all (once per transaction)";
+        DEFAULT_ADMIN = "OpenPGP 관리자 PIN이 기본값(12345678)입니다. 사용자 PIN(기본 123456)과 함께 바꾸세요."
+            / "The OpenPGP admin PIN is the default (12345678). Change it together with the user PIN (default 123456).";
+        DEFAULT_PIV_PIN = "PIV PIN이 기본값(123456)입니다. PIN과 PUK를 바꾸세요."
+            / "The PIV PIN is the default (123456). Change the PIN and the PUK.";
+        DEFAULT_PIV_MANAGEMENT = "PIV 관리 키가 기본값입니다. 'PIN 설정'이 새 관리 키를 자동으로 만들어 PIN으로 보호합니다(적거나 입력할 필요 없음)."
+            / "The PIV management key is the default. 'Set PIN' makes a new management key automatically and protects it with the PIN (nothing to write down or enter).";
+        /// The refusal of a card signing while the card uses factory PINs (spec/10 §9.3).
+        FACTORY_PIN = "이 YubiKey는 아직 공장 기본 PIN을 쓰고 있어 서명하지 않았습니다. 먼저 'PIN 설정'으로 PIN을 바꾸세요 (설정 → YubiKey). 아무것도 서명하지 않았습니다."
+            / "This YubiKey still uses its factory default PIN, so it did not sign. First change the PIN with 'Set PIN' (Settings → YubiKey). Nothing was signed.";
+        /// A card approval while another card signature is in progress (spec/10 §9.2).
+        BUSY = "다른 YubiKey 서명이 진행 중이어서 방금 승인한 요청은 서명하지 않았습니다. 진행 중인 서명이 끝난 뒤(YubiKey 터치) 다시 시도하세요."
+            / "Another YubiKey signature is in progress, so the request you just approved was not signed. Try again after the running signature finishes (YubiKey touch).";
+        /// `{0}` serial, `{1}` slot count.
+        ENROLLED(2) = "YubiKey #{0}을(를) 등록했습니다 (슬롯 {1}개)." / "YubiKey #{0} enrolled ({1} slots).";
+        /// The tag of a dApp connect-window row (after two spaces).
+        CONNECT_TAG(1) = "[YubiKey #{0} PIN 설정 전 — 서명 불가]" / "[YubiKey #{0} PIN not set — cannot sign]";
+        PIN_BANNER(1) = "YubiKey #{0} PIN 설정 전 — 이 계정은 받기만 되고, 보내기·서명은 PIN을 바꾼 뒤에 됩니다."
+            / "YubiKey #{0} PIN not set — this account can only receive; sending and signing work after the PIN is changed.";
+        /// The `PIN 설정` button (the `YubiKey` list's action of the same name).
+        SET_PIN = "PIN 설정" / "Set PIN";
+        /// `{0}` the site, `{1}` the serial.
+        REFUSE_DEFAULTS(2) = "{0}의 서명 요청을 거부했습니다: YubiKey #{1}의 PIN이 아직 공장 기본값이라 서명하지 않았습니다 — 설정 → YubiKey → PIN 설정"
+            / "Refused the signature request of {0}: YubiKey #{1} still has its factory default PIN, so nothing was signed — Settings → YubiKey → Set PIN";
+        /// `{0}` the connected serial, `{1}` the wanted cards (`#…`), `{2}` its particle, `{3}`
+        /// the wanted cards with `YubiKey` (English).
+        PRESENCE_OTHER_CARD(4) = "연결된 YubiKey(#{0})에는 이 키가 없습니다 — {1}{2} 연결하세요"
+            / "The connected YubiKey (#{0}) does not hold this key — connect {3}";
+        /// `{0}` the wanted cards, `{1}` its particle.
+        PRESENCE_NOT_FOUND(2) = "{0}{1} 찾지 못했습니다 — 연결한 뒤 PIN을 입력하세요"
+            / "{0} not found — connect it, then enter the PIN";
+        PRESENCE_BUSY = "다른 프로그램(gpg-agent 등)이 YubiKey를 쓰고 있습니다 — 그 프로그램을 닫은 뒤 확인을 누르세요"
+            / "Another program (gpg-agent, …) is using the YubiKey — close that program, then press OK";
+        /// `{0}` the wanted cards (`#…`), `{1}` its particle, `{2}` with `YubiKey` (English).
+        PRESENCE_WRONG_CARD(3) = "연결된 YubiKey에는 이 키가 없습니다 — {0}{1} 연결하세요"
+            / "The connected YubiKey does not hold this key — connect {2}";
+        /// `{0}` the key's title, `{1}` its path.
+        DETAIL_KEY(2) = "서명할 키: {0} ({1})" / "Key to sign with: {0} ({1})";
+        DETAIL_NO_RECORDS = "이 키를 가진 YubiKey 기록을 아직 불러오지 못했습니다."
+            / "The records of the YubiKeys holding this key have not loaded yet.";
+        DETAIL_HOLDERS(1) = "이 키를 가진 YubiKey: {0}" / "YubiKeys holding this key: {0}";
+        STEP_EXPIRED = "YubiKey 단계 시간(120초)이 지나 서명하지 않았습니다."
+            / "The YubiKey step time (120 s) ran out, so nothing was signed.";
+        STEP_EXPIRED_CANCELLED = "YubiKey 단계 시간(120초)이 지나 서명을 취소했습니다."
+            / "The YubiKey step time (120 s) ran out, so signing was cancelled.";
+    }
+}
+
+/// W11's touch prompt after the PIN, Korean (tests).
+#[cfg(test)]
+pub const T_CARD_TOUCH: &str = text::CARD_TOUCH.ko;
+/// The cancel note of the card step, Korean (tests).
+#[cfg(test)]
+pub const T_CARD_CANCELLED: &str = text::CARD_CANCELLED.ko;
+/// A dApp request waiting for its PIN whose site was disconnected, Korean (tests).
+#[cfg(test)]
+pub const T_CARD_SITE_REVOKED: &str = text::CARD_SITE_REVOKED.ko;
+/// A dApp request waiting for its PIN that its page ended, Korean (tests).
+#[cfg(test)]
+pub const T_CARD_SITE_GONE: &str = text::CARD_SITE_GONE.ko;
 
 /// The card signatures (touches) a card job needs (spec/10 §6.4): one per input of a Bitcoin or
 /// Zcash plan, one per transaction of a sign-only Solana dApp request, otherwise one.
@@ -167,16 +239,23 @@ pub fn approval_touches(approved: &Approved, kind: &CardJobKind) -> u8 {
 /// The touch prompt of a card job of `touches` card signatures (Bitcoin and Zcash: one per
 /// input; a sign-only Solana dApp request: one per transaction).
 #[must_use]
-pub fn touch_text(kind: &CardJobKind, touches: u8) -> String {
+pub fn touch_text_in(lang: Lang, kind: &CardJobKind, touches: u8) -> String {
     match kind {
         CardJobKind::Btc { .. } | CardJobKind::Zec { .. } => {
-            format!("YubiKey가 깜박일 때마다 터치하세요 — 모두 {touches}회(입력마다 한 번)")
+            text::TOUCH_PER_INPUT.fill(lang, [&touches.to_string()])
         }
         CardJobKind::ChainMessage if touches > 1 => {
-            format!("YubiKey가 깜박일 때마다 터치하세요 — 모두 {touches}회(거래마다 한 번)")
+            text::TOUCH_PER_TX.fill(lang, [&touches.to_string()])
         }
-        _ => T_CARD_TOUCH.to_owned(),
+        _ => text::CARD_TOUCH.get(lang).to_owned(),
     }
+}
+
+/// [`touch_text_in`] in Korean (tests).
+#[cfg(test)]
+#[must_use]
+pub fn touch_text(kind: &CardJobKind, touches: u8) -> String {
+    touch_text_in(Lang::Ko, kind, touches)
 }
 
 impl core::fmt::Debug for CardStep {
@@ -402,22 +481,16 @@ impl CardUi {
 
 /// The defaults-to-change lines of an enrolment (spec/10 §9.3).
 #[must_use]
-pub fn defaults_lines(defaults: yw_core::yubikey::enrol::DefaultsSeen) -> Vec<String> {
+pub fn defaults_lines(lang: Lang, defaults: yw_core::yubikey::enrol::DefaultsSeen) -> Vec<String> {
     let mut lines = Vec::new();
     if defaults.openpgp_admin {
-        lines.push(
-            "OpenPGP 관리자 PIN이 기본값(12345678)입니다. 사용자 PIN(기본 123456)과 함께 바꾸세요."
-                .to_owned(),
-        );
+        lines.push(text::DEFAULT_ADMIN.get(lang).to_owned());
     }
     if defaults.piv_pin {
-        lines.push("PIV PIN이 기본값(123456)입니다. PIN과 PUK를 바꾸세요.".to_owned());
+        lines.push(text::DEFAULT_PIV_PIN.get(lang).to_owned());
     }
     if defaults.piv_management {
-        lines.push(
-            "PIV 관리 키가 기본값입니다. 'PIN 설정'이 새 관리 키를 자동으로 만들어 PIN으로 보호합니다(적거나 입력할 필요 없음)."
-                .to_owned(),
-        );
+        lines.push(text::DEFAULT_PIV_MANAGEMENT.get(lang).to_owned());
     }
     lines
 }
@@ -444,12 +517,12 @@ pub fn card_badge(
     badge
 }
 
-fn job_error_text(error: YubiKeyJobError) -> String {
+fn job_error_text(lang: Lang, error: YubiKeyJobError) -> String {
     match error {
-        YubiKeyJobError::Key(error) => crate::errors::key_code(error).text(),
-        YubiKeyJobError::Vault(error) => crate::errors::vault_code(error).text(),
-        YubiKeyJobError::Card(error) => error.to_string(),
-        YubiKeyJobError::Busy => crate::app_yubikey::T_YK_BUSY.to_owned(),
+        YubiKeyJobError::Key(error) => crate::errors::key_code(error).text_in(lang),
+        YubiKeyJobError::Vault(error) => crate::errors::vault_code(error).text_in(lang),
+        YubiKeyJobError::Card(error) => error.text_in(lang),
+        YubiKeyJobError::Busy => crate::app_yubikey::text::YK_BUSY.get(lang).to_owned(),
     }
 }
 
@@ -463,14 +536,12 @@ const fn retryable(error: CardJobError) -> bool {
     }
 }
 
-/// The refusal of a card signing while the card uses factory PINs (spec/10 §9.3). Since
-/// 2026-11-10 the yellow T-YK-PIN-NEEDED band (with `PIN 설정`) says it instead; this text is
-/// left for a factory value typed for a key no enrolled card holds (no card to point to).
-pub const T_CARD_FACTORY_PIN: &str = "이 YubiKey는 아직 공장 기본 PIN을 쓰고 있어 서명하지 않았습니다. 먼저 'PIN 설정'으로 PIN을 바꾸세요 (설정 → YubiKey). 아무것도 서명하지 않았습니다.";
-
-/// A card approval while another card signature is in progress (its PIN entered, waiting for
-/// the touch): the new one is not signed, the running one continues (spec/10 §9.2).
-pub const T_CARD_BUSY: &str = "다른 YubiKey 서명이 진행 중이어서 방금 승인한 요청은 서명하지 않았습니다. 진행 중인 서명이 끝난 뒤(YubiKey 터치) 다시 시도하세요.";
+// The refusal of a card signing while the card uses factory PINs ([`text::FACTORY_PIN`],
+// spec/10 §9.3): since 2026-11-10 the yellow T-YK-PIN-NEEDED band (with `PIN 설정`) says it
+// instead; the text is left for a factory value typed for a key no enrolled card holds (no card
+// to point to). A card approval while another card signature is in progress (its PIN entered,
+// waiting for the touch) is not signed, the running one continues ([`text::BUSY`], spec/10
+// §9.2).
 
 fn now_ms() -> u64 {
     yw_win::time::monotonic_ms()
@@ -524,7 +595,7 @@ impl App {
         match result {
             Ok((_, enrolled)) => {
                 let serial = enrolled.record.serial;
-                let defaults = defaults_lines(enrolled.defaults);
+                let defaults = defaults_lines(self.settings.language, enrolled.defaults);
                 if !defaults.is_empty() && self.meta.is_none() {
                     self.card.pending_default = Some(serial);
                 }
@@ -552,9 +623,12 @@ impl App {
                     slots: enrolled.record.slots.len(),
                     defaults: defaults.clone(),
                 });
-                let mut text = format!(
-                    "YubiKey #{serial}을(를) 등록했습니다 (슬롯 {}개).",
-                    enrolled.record.slots.len()
+                let mut text = text::ENROLLED.fill(
+                    self.settings.language,
+                    [
+                        &serial.to_string(),
+                        &enrolled.record.slots.len().to_string(),
+                    ],
                 );
                 for line in &defaults {
                     text.push(' ');
@@ -573,7 +647,7 @@ impl App {
                     }
                     _ => logging::info("app", "yubikey.enrol_failed", &[]),
                 }
-                let mut text = job_error_text(error);
+                let mut text = job_error_text(self.settings.language, error);
                 if matches!(
                     error,
                     YubiKeyJobError::Card(CardJobError::Enrol(
@@ -581,7 +655,7 @@ impl App {
                     ))
                 ) {
                     text.push(' ');
-                    text.push_str(crate::app_yubikey::T_YK_PARTIAL);
+                    text.push_str(crate::app_yubikey::text::YK_PARTIAL.get(self.settings.language));
                 }
                 self.card.enrol = Some(EnrolState::Failed(text.clone()));
                 // The wizard's result screen shows it (with the §7.4 note).
@@ -691,7 +765,7 @@ impl App {
                 self.card.step = Some(previous);
                 logging::info("app", "card.busy_refused", &[]);
                 self.card_resolve_cancelled(step);
-                self.banner(None, T_CARD_BUSY.to_owned());
+                self.banner(None, text::BUSY.get(self.settings.language).to_owned());
                 self.refresh();
                 return Ok(());
             }
@@ -805,9 +879,12 @@ impl App {
 
     /// The tag of a dApp connect-window row whose `YubiKey` is still on its factory PINs.
     #[must_use]
-    pub(crate) fn card_connect_tag(serial: Option<u32>) -> String {
+    pub(crate) fn card_connect_tag(&self, serial: Option<u32>) -> String {
         serial.map_or_else(String::new, |serial| {
-            format!("  [YubiKey #{serial} PIN 설정 전 — 서명 불가]")
+            format!(
+                "  {}",
+                text::CONNECT_TAG.fill(self.settings.language, [&serial.to_string()])
+            )
         })
     }
 
@@ -823,10 +900,9 @@ impl App {
         let Some(serial) = serial else {
             return;
         };
+        let lang = self.settings.language;
         items.push(Item::Banner(
-            format!(
-                "YubiKey #{serial} PIN 설정 전 — 이 계정은 받기만 되고, 보내기·서명은 PIN을 바꾼 뒤에 됩니다."
-            ),
+            text::PIN_BANNER.fill(lang, [&serial.to_string()]),
             Tone::Warn,
         ));
         if let Some(row) = self
@@ -839,7 +915,7 @@ impl App {
         {
             items.push(Item::Row(vec![Ctl::button(
                 crate::ui::screens_yubikey::ids::PIN_GATE_BASE + row,
-                "PIN 설정",
+                text::SET_PIN.get(lang),
             )]));
         }
     }
@@ -848,9 +924,9 @@ impl App {
     /// any window (the card step would refuse it only after the approval), and one notice
     /// saying where the PIN is set.
     pub(crate) fn refuse_card_defaults(&mut self, site: &crate::browser::SiteRequest, serial: u32) {
-        let text = format!(
-            "{}의 서명 요청을 거부했습니다: YubiKey #{serial}의 PIN이 아직 공장 기본값이라 서명하지 않았습니다 — 설정 → YubiKey → PIN 설정",
-            self.origin_display(&site.origin)
+        let text = text::REFUSE_DEFAULTS.fill(
+            self.settings.language,
+            [&self.origin_display(&site.origin), &serial.to_string()],
         );
         if !self.banners.iter().any(|banner| banner.text == text) {
             self.notice(text, crate::ui::main_window::Tone::Warn);
@@ -871,6 +947,7 @@ impl App {
         role: KeyRole,
         result: Result<crate::yubikey::PinCounters, CardJobError>,
     ) {
+        let lang = self.settings.language;
         let holders = crate::yubikey::holders(&self.card.records, role);
         let wanted = if holders.is_empty() {
             "YubiKey".to_owned()
@@ -892,9 +969,9 @@ impl App {
             }
             // The only card connected (read for its serial) does not hold this key.
             Ok(counters) => {
-                step.presence = Some(format!(
-                    "연결된 YubiKey(#{})에는 이 키가 없습니다 — {card}{card_object} 연결하세요",
-                    counters.serial
+                step.presence = Some(text::PRESENCE_OTHER_CARD.fill(
+                    lang,
+                    [&counters.serial.to_string(), card, card_object, &wanted],
                 ));
             }
             Err(
@@ -904,25 +981,19 @@ impl App {
                     | yw_core::yubikey::TransportFault::NoCard,
                 )),
             ) => {
-                step.presence = Some(format!(
-                    "{wanted}{wanted_object} 찾지 못했습니다 — 연결한 뒤 PIN을 입력하세요"
-                ));
+                step.presence = Some(text::PRESENCE_NOT_FOUND.fill(lang, [&wanted, wanted_object]));
             }
             Err(CardJobError::Card(CardError::Transport(
                 yw_core::yubikey::TransportFault::Busy,
             ))) => {
-                step.presence = Some(
-                    "다른 프로그램(gpg-agent 등)이 YubiKey를 쓰고 있습니다 — 그 프로그램을 닫은 뒤 확인을 누르세요"
-                        .to_owned(),
-                );
+                step.presence = Some(text::PRESENCE_BUSY.get(lang).to_owned());
             }
             Err(CardJobError::Card(CardError::WrongCard)) => {
-                step.presence = Some(format!(
-                    "연결된 YubiKey에는 이 키가 없습니다 — {card}{card_object} 연결하세요"
-                ));
+                step.presence =
+                    Some(text::PRESENCE_WRONG_CARD.fill(lang, [card, card_object, &wanted]));
             }
             Err(error @ CardJobError::Card(CardError::Transport(_) | CardError::CardRemoved)) => {
-                step.presence = Some(error.to_string());
+                step.presence = Some(error.text_in(lang));
             }
             Err(_) => return,
         }
@@ -938,17 +1009,17 @@ impl App {
     /// The non-secret lines of the PIN window: the cards holding the key, the last error and
     /// the last-try warning.
     fn card_details(&self, step: &CardStep) -> Vec<String> {
+        let lang = self.settings.language;
         let serials = crate::yubikey::holders(&self.card.records, step.role);
-        let mut lines = vec![format!(
-            "서명할 키: {} ({})",
-            step.role.title(),
-            step.role.path_text()
+        let mut lines = vec![text::DETAIL_KEY.fill(
+            lang,
+            [&step.role.title_in(lang), &step.role.path_text_in(lang)],
         )];
         if serials.is_empty() {
-            lines.push("이 키를 가진 YubiKey 기록을 아직 불러오지 못했습니다.".to_owned());
+            lines.push(text::DETAIL_NO_RECORDS.get(lang).to_owned());
         } else {
             let list: Vec<String> = serials.iter().map(|serial| format!("#{serial}")).collect();
-            lines.push(format!("이 키를 가진 YubiKey: {}", list.join(", ")));
+            lines.push(text::DETAIL_HOLDERS.fill(lang, [&list.join(", ")]));
         }
         if let Some(presence) = &step.presence {
             lines.push(presence.clone());
@@ -958,7 +1029,7 @@ impl App {
                 yw_core::yubikey::plan::Curve::Secp256k1 => crate::yubikey::PinKind::OpenPgpUser,
                 yw_core::yubikey::plan::Curve::Ed25519 => crate::yubikey::PinKind::PivPin,
             };
-            for line in counters.lines(&[kind]) {
+            for line in counters.lines(lang, &[kind]) {
                 lines.push(format!("YubiKey #{} {line}", counters.serial));
             }
         }
@@ -1040,7 +1111,11 @@ impl App {
                 logging::info("app", "card.factory_pin_refused", &[]);
                 // The yellow T-YK-PIN-NEEDED band with `PIN 설정` says it (one band); a key no
                 // enrolled card holds has no such band, so the red text says it.
-                let text = self.card.pin_needed.is_none().then_some(T_CARD_FACTORY_PIN);
+                let text = self
+                    .card
+                    .pin_needed
+                    .is_none()
+                    .then_some(text::FACTORY_PIN.get(self.settings.language));
                 self.card_resolve_failed(step, text);
             }
             return;
@@ -1051,7 +1126,7 @@ impl App {
             if let Some(step) = self.card.step.take() {
                 self.card_resolve_failed(
                     step,
-                    Some("YubiKey 단계 시간(120초)이 지나 서명하지 않았습니다."),
+                    Some(text::STEP_EXPIRED.get(self.settings.language)),
                 );
             }
             return;
@@ -1060,7 +1135,7 @@ impl App {
         step.presence = None;
         let ticket = step.ticket;
         let kind = step.kind.clone();
-        let touch = touch_text(&kind, step.touches);
+        let touch = touch_text_in(self.settings.language, &kind, step.touches);
         let form = self.card_form(&kind, ticket);
         match kind {
             CardJobKind::EvmTx { info } => self.key(KeyJob::SignEvmCard {
@@ -1129,7 +1204,8 @@ impl App {
         }
         let form = self.card_form(&step.kind, step.ticket);
         self.card_resolve_cancelled(step);
-        self.card_notice_set(form, T_CARD_CANCELLED.to_owned(), false);
+        let cancelled = text::CARD_CANCELLED.get(self.settings.language);
+        self.card_notice_set(form, cancelled.to_owned(), false);
         self.refresh();
     }
 
@@ -1197,12 +1273,13 @@ impl App {
             self.respond(&reply, Err(error.clone()));
         }
         self.card_release(&kind, ticket);
-        let text = if error == ProviderError::Unauthorized {
-            T_CARD_SITE_REVOKED
+        let ended = if error == ProviderError::Unauthorized {
+            text::CARD_SITE_REVOKED
         } else {
-            T_CARD_SITE_GONE
+            text::CARD_SITE_GONE
         };
-        self.card_notice_set(CardForm::Site, text.to_owned(), false);
+        let ended = ended.get(self.settings.language);
+        self.card_notice_set(CardForm::Site, ended.to_owned(), false);
         self.refresh();
         true
     }
@@ -1427,7 +1504,7 @@ impl App {
         let context = serial.map_or_else(crate::yubikey::PinContext::default, |serial| {
             crate::yubikey::PinContext::of(&self.card.records, serial, kind)
         });
-        step.error = Some(error.text_for_in(kind, &context));
+        step.error = Some(error.text_for_in(self.settings.language, kind, &context));
         // A site disconnected (or a page gone) while the card checked the PIN: the step ends
         // here instead of asking for the PIN again (2026-11-13).
         if self.card_site_check() {
@@ -1533,7 +1610,7 @@ impl App {
             if expired {
                 self.card_resolve_failed(
                     step,
-                    Some("YubiKey 단계 시간(120초)이 지나 서명을 취소했습니다."),
+                    Some(text::STEP_EXPIRED_CANCELLED.get(self.settings.language)),
                 );
             } else {
                 self.card_resolve_cancelled(step);

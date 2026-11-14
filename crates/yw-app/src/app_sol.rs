@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use yw_core::approval::Approved;
 use yw_core::bip32::path::AccountIndex;
 use yw_core::journal::sol::{SolRecord, SolTransition, SolTxState};
+use yw_core::lang::Lang;
 use yw_core::slip10::SolKeySource;
 use yw_core::sol::broadcast::{LoopState, Outcome, PendingTx, SOL_POLL_INTERVAL_MS};
 use yw_core::sol::display::build_sol_transfer_request;
@@ -169,9 +170,62 @@ impl SolSendForm {
     }
 }
 
-/// Shown when the validation at `검토` differs from the one on screen (spec/07 §13.1-1).
-pub const SOL_REVIEW_CHANGED_TEXT: &str =
-    "입력이 바뀌어 다시 확인했습니다. 받는 주소·자산·금액을 확인한 뒤 다시 검토하세요.";
+/// Fixed texts of the Solana tab controller and the shared `검토` line (spec/07 §13, spec/14).
+pub mod text {
+    yw_core::texts! {
+        /// Shown when the validation at `검토` differs from the one on screen (spec/07 §13.1-1).
+        REVIEW_CHANGED = "입력이 바뀌어 다시 확인했습니다. 받는 주소·자산·금액을 확인한 뒤 다시 검토하세요."
+            / "The input changed and was checked again. Check the recipient·asset·amount, then review again.";
+        /// Under an enabled `검토`: pressing it sends nothing.
+        REVIEW_READY = "검토를 눌러도 아직 보내지 않습니다 — 승인 창에서 최종 확인합니다."
+            / "Review does not send yet — you confirm in the approval window.";
+        /// `ReviewBlocker` lines.
+        BLOCK_LOCKED = "잠금 해제가 필요합니다" / "Unlock the wallet first";
+        BLOCK_IN_FLIGHT = "앞선 전송이 끝난 뒤 다시 시도하세요" / "Try again after the previous send ends";
+        BLOCK_HELD = "지금은 보낼 수 없습니다 — 위 안내를 확인하세요"
+            / "Cannot send now — see the notice above";
+        BLOCK_CHECKING = "입력을 확인하는 중…" / "Checking the input…";
+        BLOCK_NO_RECIPIENT = "받는 주소를 입력하세요" / "Enter the recipient address";
+        BLOCK_INPUT_ERROR = "위 오류를 먼저 고치세요" / "Fix the error above first";
+        BLOCK_NEEDS_ACK = "위 '주소 전체를 직접 확인했습니다'에 체크하세요"
+            / "Tick 'I checked the whole address myself' above";
+        BLOCK_NO_AMOUNT = "금액을 입력하세요" / "Enter an amount";
+        BLOCK_NO_FEE = "수수료 계산 중…" / "Working out the fee…";
+        BLOCK_NO_FEE_RATE = "수수료율을 입력하세요" / "Enter a fee rate";
+        /// Journal writes of a final state.
+        SAVING = "결과를 거래 저널에 저장하는 중" / "Saving the result to the transaction journal";
+        SAVE_FAILED = "결과를 거래 저널에 저장하지 못했습니다. 다시 확인해 저장합니다 (E-VLT-003)"
+            / "The result could not be saved to the transaction journal. It is checked and saved again (E-VLT-003)";
+        /// The recovery scan.
+        SCAN_RECONFIRM = "클러스터가 바뀌었습니다. 이 클러스터의 RPC 공급자에 대한 안내를 다시 확인하세요."
+            / "The cluster changed. Confirm the notice about this cluster's RPC provider again.";
+        SCAN_NO_TARGET = "받을 계정이 없습니다. 비표준 경로 자금은 주 복구 단어의 표준 계정(m/44'/501'/i'/0')으로만 옮길 수 있습니다 — Solana 탭에서 그 계정을 추가하거나 숨김을 해제하세요."
+            / "There is no receiving account. Non-standard path funds can only move to a standard account of the primary recovery phrase (m/44'/501'/i'/0') — add that account or unhide it in the Solana tab.";
+        MOVE_TARGET = "비표준 경로 자금은 주 복구 단어의 표준 계정으로만 옮길 수 있습니다. 다른 경로 스캔에서 다시 '표준 계정으로 이동'을 누르세요."
+            / "Non-standard path funds can only move to a standard account of the primary recovery phrase. Press 'Move to standard account' again in the other-path scan.";
+        /// Account path texts.
+        PATH_IMPORTED = "가져온 개인키 (복구 단어로 복구되지 않음)"
+            / "Imported private key (not restored by the recovery phrase)";
+        NONSTANDARD_PATH(1) = "비표준 경로 {0}" / "Non-standard path {0}";
+        /// The send flow.
+        APPROVAL_EXPIRED = "승인 시간이 지났습니다. 다시 검토하세요."
+            / "The approval time ran out. Review again.";
+        /// Record status.
+        STATUS_PROCESSING = "처리 중 (confirmed 대기)" / "Processing (waiting for confirmed)";
+        STATUS_CONFIRMING = "전송 확인 중" / "Confirming the send";
+        STATUS_RESEND_STOPPED(1) = "재전송 중지: {0}" / "resending stopped: {0}";
+        STATUS_ANOMALY = "RPC가 다른 서명을 반환함(RpcAnomaly)"
+            / "the RPC returned another signature (RpcAnomaly)";
+        STATUS_QUERY_FAILED(1) = "조회 실패 {0}" / "lookup failed {0}";
+        STATUS_LANDED = "성공" / "Succeeded";
+        STATUS_FAILED(1) = "실패: {0}" / "Failed: {0}";
+        STATUS_EXPIRED = "만료 (전송되지 않음)" / "Expired (not sent)";
+    }
+}
+
+/// [`text::REVIEW_CHANGED`] in Korean (tests).
+#[cfg(test)]
+pub const SOL_REVIEW_CHANGED_TEXT: &str = text::REVIEW_CHANGED.ko;
 
 /// Why `검토` did not queue an approval.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -210,33 +264,31 @@ pub enum ReviewBlocker {
     NoFeeRate,
 }
 
-/// Under an enabled `검토`: pressing it sends nothing.
-const REVIEW_READY_TEXT: &str = "검토를 눌러도 아직 보내지 않습니다 — 승인 창에서 최종 확인합니다.";
-
 impl ReviewBlocker {
-    /// The line.
+    /// The line in `lang`.
     #[must_use]
-    pub const fn text(self) -> &'static str {
+    pub const fn text_in(self, lang: Lang) -> &'static str {
         match self {
-            Self::Locked => "잠금 해제가 필요합니다",
-            Self::InFlight => "앞선 전송이 끝난 뒤 다시 시도하세요",
-            Self::Held => "지금은 보낼 수 없습니다 — 위 안내를 확인하세요",
-            Self::Checking => "입력을 확인하는 중…",
-            Self::NoRecipient => "받는 주소를 입력하세요",
-            Self::InputError => "위 오류를 먼저 고치세요",
-            Self::NeedsAck => "위 '주소 전체를 직접 확인했습니다'에 체크하세요",
-            Self::NoAmount => "금액을 입력하세요",
-            Self::NoFee => "수수료 계산 중…",
-            Self::NoFeeRate => "수수료율을 입력하세요",
+            Self::Locked => text::BLOCK_LOCKED,
+            Self::InFlight => text::BLOCK_IN_FLIGHT,
+            Self::Held => text::BLOCK_HELD,
+            Self::Checking => text::BLOCK_CHECKING,
+            Self::NoRecipient => text::BLOCK_NO_RECIPIENT,
+            Self::InputError => text::BLOCK_INPUT_ERROR,
+            Self::NeedsAck => text::BLOCK_NEEDS_ACK,
+            Self::NoAmount => text::BLOCK_NO_AMOUNT,
+            Self::NoFee => text::BLOCK_NO_FEE,
+            Self::NoFeeRate => text::BLOCK_NO_FEE_RATE,
         }
+        .get(lang)
     }
 
-    /// The line under `검토`: the blocker, or that the button sends nothing yet.
+    /// The line under `검토` in `lang`: the blocker, or that the button sends nothing yet.
     #[must_use]
-    pub const fn line(blocker: Option<Self>) -> &'static str {
+    pub const fn line(lang: Lang, blocker: Option<Self>) -> &'static str {
         match blocker {
-            Some(blocker) => blocker.text(),
-            None => REVIEW_READY_TEXT,
+            Some(blocker) => blocker.text_in(lang),
+            None => text::REVIEW_READY.get(lang),
         }
     }
 }
@@ -265,11 +317,13 @@ impl ReviewInputs {
 /// write: the loop resumes, observes the final state again and asks to write it again.
 pub const SOL_APPLY_RETRY_MS: u64 = 10_000;
 
-/// Fixed text while a final state is being written to the journal.
-pub const SOL_SAVING_TEXT: &str = "결과를 거래 저널에 저장하는 중";
-/// Fixed text after a final state could not be written to the journal (the loop retries).
-pub const SOL_SAVE_FAILED_TEXT: &str =
-    "결과를 거래 저널에 저장하지 못했습니다. 다시 확인해 저장합니다 (E-VLT-003)";
+/// Fixed text while a final state is being written to the journal ([`text::SAVING`] in Korean).
+#[cfg(test)]
+pub const SOL_SAVING_TEXT: &str = text::SAVING.ko;
+/// Fixed text after a final state could not be written to the journal (the loop retries;
+/// [`text::SAVE_FAILED`] in Korean).
+#[cfg(test)]
+pub const SOL_SAVE_FAILED_TEXT: &str = text::SAVE_FAILED.ko;
 
 /// Why a record's loop is stopped.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -343,16 +397,15 @@ pub enum ScanStage {
     Done,
 }
 
-/// Shown when the selected cluster is not the one whose scan notice was confirmed.
-pub const SOL_SCAN_RECONFIRM_TEXT: &str =
-    "클러스터가 바뀌었습니다. 이 클러스터의 RPC 공급자에 대한 안내를 다시 확인하세요.";
+/// Shown when the selected cluster is not the one whose scan notice was confirmed
+/// ([`text::SCAN_RECONFIRM`] in Korean).
+#[cfg(test)]
+pub const SOL_SCAN_RECONFIRM_TEXT: &str = text::SCAN_RECONFIRM.ko;
 
-/// Shown when no standard account of the primary recovery phrase can receive a scan move.
-pub const SOL_SCAN_NO_TARGET_TEXT: &str = "받을 계정이 없습니다. 비표준 경로 자금은 주 복구 단어의 표준 계정(m/44'/501'/i'/0')으로만 옮길 수 있습니다 — Solana 탭에서 그 계정을 추가하거나 숨김을 해제하세요.";
-
-/// Shown in a move form whose recipient is not a standard account of the primary recovery phrase
-/// (signing would refuse it, spec/07 §13.1-6).
-pub const SOL_MOVE_TARGET_TEXT: &str = "비표준 경로 자금은 주 복구 단어의 표준 계정으로만 옮길 수 있습니다. 다른 경로 스캔에서 다시 '표준 계정으로 이동'을 누르세요.";
+/// Shown when no standard account of the primary recovery phrase can receive a scan move
+/// ([`text::SCAN_NO_TARGET`] in Korean).
+#[cfg(test)]
+pub const SOL_SCAN_NO_TARGET_TEXT: &str = text::SCAN_NO_TARGET.ko;
 
 /// Recovery scan state.
 #[derive(Clone, Debug, Default)]
@@ -403,14 +456,17 @@ impl SolAccountId {
         }
     }
 
-    /// The path text shown under the account (`m/44'/501'/i'/0'` or the import note).
+    /// The path text shown under the account in `lang` (`m/44'/501'/i'/0'` or the import note).
     #[must_use]
-    pub fn path_text(self) -> String {
+    pub fn path_text_in(self, lang: Lang) -> String {
         match self {
             Self::Derived(index) | Self::Mnemonic(_, index) => format!("m/44'/501'/{index}'/0'"),
-            Self::Imported(_) => "가져온 개인키 (복구 단어로 복구되지 않음)".to_owned(),
+            Self::Imported(_) => text::PATH_IMPORTED.get(lang).to_owned(),
             Self::Hardware(index) if yw_core::yubikey::plan::is_unknown_index(index) => {
-                format!("{} (YubiKey PIV)", yw_core::yubikey::plan::T_UNKNOWN_PATH)
+                format!(
+                    "{} (YubiKey PIV)",
+                    yw_core::yubikey::text::UNKNOWN_PATH.get(lang)
+                )
             }
             Self::Hardware(index) => format!("m/44'/501'/{index}'/0' (YubiKey PIV)"),
         }
@@ -870,7 +926,10 @@ impl App {
         };
         let label = label.trim();
         if !is_valid_label(label) {
-            self.banner(Some(ErrorCode::Inp017), ErrorCode::Inp017.text());
+            self.banner(
+                Some(ErrorCode::Inp017),
+                ErrorCode::Inp017.text_in(self.settings.language),
+            );
             self.refresh();
             return;
         }
@@ -945,7 +1004,7 @@ impl App {
                 self.sol_account_removed_from_sites(&address.to_bytes());
             }
             self.notice(
-                crate::app_hidden::hidden_note(&label),
+                crate::app_hidden::hidden_note(self.settings.language, &label),
                 crate::ui::main_window::Tone::Info,
             );
             self.refresh();
@@ -970,7 +1029,7 @@ impl App {
                 self.sol_account_removed_from_sites(&address.to_bytes());
             }
             self.notice(
-                crate::app_hidden::hidden_note(&label),
+                crate::app_hidden::hidden_note(self.settings.language, &label),
                 crate::ui::main_window::Tone::Info,
             );
             self.refresh();
@@ -1000,7 +1059,7 @@ impl App {
             self.sol_account_removed_from_sites(&address.to_bytes());
         }
         self.notice(
-            crate::app_hidden::hidden_note(&label),
+            crate::app_hidden::hidden_note(self.settings.language, &label),
             crate::ui::main_window::Tone::Info,
         );
         self.refresh();
@@ -1095,7 +1154,7 @@ impl App {
                 }
                 if self.sol.scan.cluster != Some(cluster) {
                     self.sol.scan = SolScanState {
-                        message: Some(SOL_SCAN_RECONFIRM_TEXT.to_owned()),
+                        message: Some(text::SCAN_RECONFIRM.get(self.settings.language).to_owned()),
                         ..SolScanState::default()
                     };
                     self.refresh();
@@ -1115,7 +1174,7 @@ impl App {
                     }
                     Err(code) => {
                         self.sol.scan.stage = ScanStage::Notice;
-                        self.sol.scan.message = Some(code.text());
+                        self.sol.scan.message = Some(code.text_in(self.settings.language));
                     }
                 }
                 self.refresh();
@@ -1280,7 +1339,7 @@ impl App {
                     }
                     Err(code) => {
                         self.sol.scan.stage = ScanStage::Notice;
-                        self.sol.scan.message = Some(code.text());
+                        self.sol.scan.message = Some(code.text_in(self.settings.language));
                     }
                 }
                 self.refresh();
@@ -1389,7 +1448,9 @@ impl App {
     #[must_use]
     pub fn sol_form_sender(&self) -> Option<(SolKeySource, SolAddress, String)> {
         if let Some((source, from)) = self.sol.send.moving {
-            return Some((source, from, format!("비표준 경로 {}", source.path_text())));
+            let lang = self.settings.language;
+            let label = text::NONSTANDARD_PATH.fill(lang, [&source.path_text_in(lang)]);
+            return Some((source, from, label));
         }
         let (id, label, address) = self.sol_selected()?;
         let label = if id.is_imported() || id.is_hardware() {
@@ -1585,7 +1646,8 @@ impl App {
         let item = match self.sol_review_item() {
             Ok(item) => item,
             Err(ReviewRefusal::Changed) => {
-                self.sol.send.info = Some(SOL_REVIEW_CHANGED_TEXT.to_owned());
+                self.sol.send.info =
+                    Some(text::REVIEW_CHANGED.get(self.settings.language).to_owned());
                 self.refresh();
                 return;
             }
@@ -1602,7 +1664,7 @@ impl App {
             self.sol.send.info = None;
             self.show_next_approval();
         } else {
-            self.sol.send.info = Some(ErrorCode::App005.text());
+            self.sol.send.info = Some(ErrorCode::App005.text_in(self.settings.language));
             self.refresh();
         }
     }
@@ -1613,7 +1675,11 @@ impl App {
             self.sol.slot = None;
         }
         if outcome == QueueOutcome::Expired {
-            self.sol.send.info = Some("승인 시간이 지났습니다. 다시 검토하세요.".to_owned());
+            self.sol.send.info = Some(
+                text::APPROVAL_EXPIRED
+                    .get(self.settings.language)
+                    .to_owned(),
+            );
         }
         logging::info(
             "app",
@@ -1633,7 +1699,7 @@ impl App {
         let endpoint = match self.sol_endpoint(item.cluster) {
             Ok(endpoint) => endpoint,
             Err(code) => {
-                self.show_failure(code, false, code.text());
+                self.show_failure(code, false, code.text_in(self.approval_lang()));
                 return;
             }
         };
@@ -1657,7 +1723,11 @@ impl App {
             journal_room,
         })));
         if !sent {
-            self.show_failure(ErrorCode::Rpc001, true, ErrorCode::Rpc001.text());
+            self.show_failure(
+                ErrorCode::Rpc001,
+                true,
+                ErrorCode::Rpc001.text_in(self.approval_lang()),
+            );
         }
     }
 
@@ -1673,17 +1743,18 @@ impl App {
         match result.outcome {
             PreviewOutcome::Failed { code, retryable } => {
                 logging::warn("app", "sol.preview_failed", &[("code", Field::Code(code))]);
-                self.show_failure(code, retryable, code.text());
+                self.show_failure(code, retryable, code.text_in(self.approval_lang()));
             }
             PreviewOutcome::Ready(prepared) => {
+                let lang = self.approval_lang();
                 let Ok(id) = Self::new_approval_id() else {
-                    self.show_failure(ErrorCode::Vlt005, false, ErrorCode::Vlt005.text());
+                    self.show_failure(ErrorCode::Vlt005, false, ErrorCode::Vlt005.text_in(lang));
                     return;
                 };
                 let now_unix = now_unix_ms();
                 let intent = prepared.intent(id.0, now_unix);
                 if prepared.core.cu_limit != template_cu_limit(prepared.core.asset) {
-                    self.show_failure(ErrorCode::App009, false, ErrorCode::App009.text());
+                    self.show_failure(ErrorCode::App009, false, ErrorCode::App009.text_in(lang));
                     return;
                 }
                 match build_sol_transfer_request(
@@ -1694,7 +1765,11 @@ impl App {
                 ) {
                     Ok(draft) => self.show_ready_draft_at(draft, None, now_unix),
                     Err(_) => {
-                        self.show_failure(ErrorCode::App009, false, ErrorCode::App009.text());
+                        self.show_failure(
+                            ErrorCode::App009,
+                            false,
+                            ErrorCode::App009.text_in(lang),
+                        );
                     }
                 }
             }
@@ -1760,7 +1835,12 @@ impl App {
     fn sol_abort_message(&mut self, cause: ErrorCode) {
         // A YubiKey transfer whose blockhash step failed never reaches the card.
         self.card_abandon_sol();
-        let message = format!("{} — {}", ErrorCode::Sol004.text(), cause.text());
+        let lang = self.settings.language;
+        let message = format!(
+            "{} — {}",
+            ErrorCode::Sol004.text_in(lang),
+            cause.text_in(lang)
+        );
         logging::warn("app", "sol.sign_aborted", &[("code", Field::Code(cause))]);
         self.sol_send_failed(message);
     }
@@ -1896,7 +1976,12 @@ impl App {
                     SolSignFailure::JournalFull => ErrorCode::Tx005,
                     SolSignFailure::JournalWrite(_) => ErrorCode::Vlt003,
                     SolSignFailure::Card(error) | SolSignFailure::DappCard(error) => {
-                        let message = format!("{} — {error}", ErrorCode::Sol004.text());
+                        let lang = self.settings.language;
+                        let message = format!(
+                            "{} — {}",
+                            ErrorCode::Sol004.text_in(lang),
+                            error.text_in(lang)
+                        );
                         logging::warn(
                             "app",
                             "sol.sign_aborted",
@@ -2130,46 +2215,52 @@ impl App {
     /// The status text of a pending record.
     #[must_use]
     pub fn sol_record_status(&self, record: &SolRecord) -> String {
+        let lang = self.settings.language;
         match record.state {
             SolTxState::Pending => {
                 let state = self.sol.tracking.get(&record.signature());
-                let mut text = if state.is_some_and(|state| state.state.processing) {
-                    "처리 중 (confirmed 대기)".to_owned()
+                let mut out = if state.is_some_and(|state| state.state.processing) {
+                    text::STATUS_PROCESSING.get(lang).to_owned()
                 } else {
-                    "전송 확인 중".to_owned()
+                    text::STATUS_CONFIRMING.get(lang).to_owned()
                 };
                 if let Some(state) = state {
                     if let Some(code) = state.state.preflight_err {
+                        let reason = yw_core::sol::broadcast::err::text_in(code, lang);
                         let _ = write!(
-                            text,
-                            " — 재전송 중지: {}",
-                            yw_core::sol::broadcast::err::text(code)
+                            out,
+                            " — {}",
+                            text::STATUS_RESEND_STOPPED.fill(lang, [reason])
                         );
                     }
                     if state.state.anomaly {
-                        text.push_str(" — RPC가 다른 서명을 반환함(RpcAnomaly)");
+                        let _ = write!(out, " — {}", text::STATUS_ANOMALY.get(lang));
                     }
                     if state.halt == Some(SolHalt::ClusterMismatch) {
-                        let _ = write!(text, " — {}", ErrorCode::Rpc006.text());
+                        let _ = write!(out, " — {}", ErrorCode::Rpc006.text_in(lang));
                     } else if state.save_failed {
-                        let _ = write!(text, " — {SOL_SAVE_FAILED_TEXT}");
+                        let _ = write!(out, " — {}", text::SAVE_FAILED.get(lang));
                     } else if state.halt.is_some() {
-                        let _ = write!(text, " — {SOL_SAVING_TEXT}");
+                        let _ = write!(out, " — {}", text::SAVING.get(lang));
                     } else if let Some(code) = state.error {
-                        let _ = write!(text, " — 조회 실패 {}", code.code());
+                        let failed = text::STATUS_QUERY_FAILED.fill(lang, [code.code()]);
+                        let _ = write!(out, " — {failed}");
                     }
                     if state.notice {
-                        let _ = write!(text, " — {}", ErrorCode::Sol005.text());
+                        let _ = write!(out, " — {}", ErrorCode::Sol005.text_in(lang));
                     }
                 }
-                text
+                out
             }
-            SolTxState::Landed => "성공".to_owned(),
-            SolTxState::FailedOnChain => format!(
-                "실패: {}",
-                yw_core::sol::broadcast::err::text(record.terminal_err)
+            SolTxState::Landed => text::STATUS_LANDED.get(lang).to_owned(),
+            SolTxState::FailedOnChain => text::STATUS_FAILED.fill(
+                lang,
+                [yw_core::sol::broadcast::err::text_in(
+                    record.terminal_err,
+                    lang,
+                )],
             ),
-            SolTxState::Expired => "만료 (전송되지 않음)".to_owned(),
+            SolTxState::Expired => text::STATUS_EXPIRED.get(lang).to_owned(),
         }
     }
 
@@ -2277,7 +2368,7 @@ impl App {
         }
         let cluster = self.sol_cluster();
         if self.sol_endpoint(cluster).is_err() {
-            self.sol.scan.message = Some(ErrorCode::Key005.text());
+            self.sol.scan.message = Some(ErrorCode::Key005.text_in(self.settings.language));
             self.refresh();
             return;
         }
@@ -2358,7 +2449,8 @@ impl App {
             return;
         }
         let Some((_, _, target)) = self.sol_scan_target() else {
-            self.sol.scan.message = Some(SOL_SCAN_NO_TARGET_TEXT.to_owned());
+            self.sol.scan.message =
+                Some(text::SCAN_NO_TARGET.get(self.settings.language).to_owned());
             self.refresh();
             return;
         };
@@ -2538,7 +2630,7 @@ mod tests {
         let pending = app.sol_records().remove(0);
         assert!(
             app.sol_record_status(&pending)
-                .contains(ErrorCode::Rpc006.text().as_str())
+                .contains(ErrorCode::Rpc006.text_in(yw_core::lang::Lang::Ko).as_str())
         );
         // A URL change lifts the mismatch halt.
         app.sol_url_changed(crate::network::SolCluster::Mainnet);
@@ -2554,7 +2646,10 @@ mod tests {
         let pending = app.sol_records().remove(0);
         let text = app.sol_record_status(&pending);
         assert!(text.contains(SOL_SAVING_TEXT), "{text}");
-        assert!(!text.contains(ErrorCode::Rpc006.text().as_str()), "{text}");
+        assert!(
+            !text.contains(ErrorCode::Rpc006.text_in(yw_core::lang::Lang::Ko).as_str()),
+            "{text}"
+        );
         // Still `Pending` in the journal long after `SolApply`: the write failed. The loop
         // resumes (to observe and save again) and says so.
         app.sol_tick_tracking(now_ms().saturating_add(SOL_APPLY_RETRY_MS));
@@ -2563,7 +2658,10 @@ mod tests {
         assert!(state.save_failed);
         let text = app.sol_record_status(&pending);
         assert!(text.contains(SOL_SAVE_FAILED_TEXT), "{text}");
-        assert!(!text.contains(ErrorCode::Rpc006.text().as_str()), "{text}");
+        assert!(
+            !text.contains(ErrorCode::Rpc006.text_in(yw_core::lang::Lang::Ko).as_str()),
+            "{text}"
+        );
         // Once the journal has the final state, the record leaves tracking.
         app.evm.journal = Some(JournalView {
             sol_records: vec![record(SolCluster::Mainnet, SolTxState::Landed, TO_A, 0x5a)],

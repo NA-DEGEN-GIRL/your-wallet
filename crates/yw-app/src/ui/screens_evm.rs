@@ -2,13 +2,12 @@
 //! balance, token and activity sections, S11 send, S12 receive, S14 address book, S16 token add,
 //! the S15 `EVM 체인` section with fee caps, S17 chain add/edit and their confirmation texts.
 
-use core::fmt::Write as _;
-
 use yw_core::evm::address::{Address, parse_address};
 use yw_core::evm::amount::{U256, format_amount, format_units};
 use yw_core::evm::chain::{HYPEREVM_MAINNET, SEPOLIA, builtin_chain};
 use yw_core::evm::display::format_address;
 use yw_core::journal::evm::{EvmRecord, ReceiptStatus, TxState, groups};
+use yw_core::lang::Lang;
 
 use crate::app::{App, AppMode};
 use crate::app_book::{BookTarget, PromptPlace};
@@ -26,9 +25,7 @@ use crate::ui::badge::Badge;
 use crate::ui::main_window::{Ctl, Item, Tone};
 use crate::ui::qr::{EvmQrKind, RECEIVE_SHARED_ADDRESS_NOTE};
 
-/// T-TOKEN-HIDDEN: the note above the hidden token rows (spec/04 §2.6).
-pub const T_TOKEN_HIDDEN_NOTE: &str =
-    "숨긴 토큰은 이 목록과 보내기 화면의 자산 선택에서만 빠집니다. 자산은 그대로입니다.";
+pub mod text;
 
 /// T-CUSTOM-CHAIN (spec/04 §2.16): the user-chain badge of S10, S15 and the A01 header.
 #[must_use]
@@ -37,14 +34,11 @@ pub fn custom_chain_badge(lang: yw_core::lang::Lang, chain_id: u64) -> String {
 }
 
 /// The S15 `EVM 체인` add note and button (spec/04 §2.11): any other L1/L2 is a user chain.
-fn chain_add_row(items: &mut Vec<Item>) {
-    items.push(Item::Help(
-        "다른 EVM 체인(L1·L2)은 여기서 추가합니다 — chainId·RPC 주소를 넣으면 chainId와 블록 0을 확인해 등록합니다."
-            .to_owned(),
-    ));
+fn chain_add_row(lang: Lang, items: &mut Vec<Item>) {
+    items.push(Item::Help(text::CHAIN_ADD_HELP.get(lang).to_owned()));
     items.push(Item::Row(vec![Ctl::button(
         ids::CHAIN_ADD,
-        "EVM 체인 추가",
+        text::CHAIN_ADD.get(lang),
     )]));
 }
 
@@ -279,17 +273,18 @@ pub mod ids {
 }
 
 /// Status words of activity rows.
-fn activity_status(word: &str) -> &'static str {
+fn activity_status(lang: Lang, word: &str) -> &'static str {
     match word {
-        "succeeded" => "성공",
-        "failed" => "실패",
-        "dropped" => "폐기됨",
-        "replaced" => "대체됨",
-        "expired" => "만료",
-        "rejected" => "거부됨",
-        "conflicted" => "충돌",
-        _ => "중단됨",
+        "succeeded" => text::STATUS_SUCCEEDED,
+        "failed" => text::STATUS_FAILED,
+        "dropped" => text::STATUS_DROPPED,
+        "replaced" => text::STATUS_REPLACED,
+        "expired" => text::STATUS_EXPIRED,
+        "rejected" => text::STATUS_REJECTED,
+        "conflicted" => text::STATUS_CONFLICTED,
+        _ => text::STATUS_STOPPED,
     }
+    .get(lang)
 }
 
 /// One activity row of the S10 list.
@@ -315,6 +310,7 @@ impl App {
     /// on its own copy line (2026-11-11: sent rows come only from the wallet's own signed
     /// journal, so their recipient may be copied; the received history's senders never are).
     fn recipient_items(&self, address: &Address, items: &mut Vec<Item>) {
+        let lang = self.settings.language;
         let lower = address.to_lower_hex();
         let name = self
             .meta
@@ -324,17 +320,17 @@ impl App {
                     .into_iter()
                     .find(|contact| contact.address == lower)
             })
-            .map(|contact| format!(" → 주소록: {}", contact.label))
+            .map(|contact| text::TO_BOOK.fill(lang, [&contact.label]))
             .or_else(|| {
                 self.account_rows()
                     .into_iter()
                     .find(|(_, _, shown, _)| shown.eq_ignore_ascii_case(&lower))
                     .map(|(pref, label, _, _)| {
-                        format!(" → 내 계정: {}", self.evm_pref_title(pref, &label))
+                        text::TO_MINE.fill(lang, [&self.evm_pref_title(pref, &label)])
                     })
             })
             .unwrap_or_default();
-        items.push(Item::Help(format!("받는 주소{name}")));
+        items.push(Item::Help(text::RECIPIENT.fill(lang, [&name])));
     }
 
     /// An account row's name with its recovery phrase while the wallet has several.
@@ -359,36 +355,36 @@ impl App {
     }
 
     fn record_status(&self, record: &EvmRecord) -> String {
+        let lang = self.settings.language;
         let note = self.evm.notes.get(&record.tx_hash).copied();
         match record.state {
             TxState::Signed => match note {
-                Some(BroadcastOutcome::HashMismatch) => {
-                    "RPC가 다른 거래 해시를 반환했습니다 (재전송·폐기)".to_owned()
-                }
-                Some(BroadcastOutcome::Rejected { known: false }) => {
-                    "전송 실패 — 재전송하거나 폐기하세요".to_owned()
-                }
-                Some(BroadcastOutcome::Unconfirmed { .. }) | None => "전송 확인 중".to_owned(),
-                _ => "서명됨".to_owned(),
-            },
-            TxState::Broadcast => "전송됨".to_owned(),
+                Some(BroadcastOutcome::HashMismatch) => text::REC_HASH_MISMATCH,
+                Some(BroadcastOutcome::Rejected { known: false }) => text::REC_SEND_FAILED,
+                Some(BroadcastOutcome::Unconfirmed { .. }) | None => text::REC_CONFIRMING,
+                _ => text::REC_SIGNED,
+            }
+            .get(lang)
+            .to_owned(),
+            TxState::Broadcast => text::REC_BROADCAST.get(lang).to_owned(),
             // One confirmation is final; `Included` only remains in records of older builds
             // until the next tracking round finalizes them.
             TxState::Included | TxState::Finalized => {
                 if record.receipt_status == ReceiptStatus::Failure {
-                    format!("확정 (실행 실패, 블록 {})", record.included_block_number)
+                    text::REC_FINAL_FAILED
                 } else {
-                    format!("확정 (블록 {})", record.included_block_number)
+                    text::REC_FINAL
                 }
+                .fill(lang, [&record.included_block_number.to_string()])
             }
             TxState::Dropped => {
                 if record.has_flag(yw_core::journal::evm::FLAG_USER_DISCARDED) {
-                    "폐기됨".to_owned()
+                    text::STATUS_DROPPED.get(lang).to_owned()
                 } else {
-                    "다른 거래가 이 nonce를 사용".to_owned()
+                    text::REC_NONCE_USED.get(lang).to_owned()
                 }
             }
-            TxState::Replaced => "대체됨".to_owned(),
+            TxState::Replaced => text::STATUS_REPLACED.get(lang).to_owned(),
         }
     }
 
@@ -465,6 +461,7 @@ impl App {
     }
 
     fn meta_activity_row(&self, entry: &ActivityEntry, chain_id: u64) -> ActivityRowView {
+        let lang = self.settings.language;
         let amount = U256::from_decimal_str(&entry.amount).unwrap_or(U256::ZERO);
         let mut value = if entry.asset == "native" {
             self.native_text(chain_id, &amount)
@@ -477,13 +474,13 @@ impl App {
                         .find(|(address, ..)| *address == token)
                 })
                 .map_or_else(
-                    || format!("{} (원시 단위)", amount.to_decimal_string()),
+                    || text::RAW_UNITS.fill(lang, [&amount.to_decimal_string()]),
                     |(_, symbol, decimals, _)| format_amount(&amount, decimals, &symbol),
                 )
         };
         // History stays visible for hidden tokens, tagged so the row is not a surprise.
         if parse_address(&entry.asset).is_ok_and(|token| self.evm_token_hidden(chain_id, &token)) {
-            value.push_str(" · [숨긴 토큰]");
+            value.push_str(text::HIDDEN_TOKEN_TAG.get(lang));
         }
         ActivityRowView {
             head: format!(
@@ -492,7 +489,7 @@ impl App {
                 self.account_label(&entry.account),
                 entry.title
             ),
-            status: activity_status(&entry.status).to_owned(),
+            status: activity_status(lang, &entry.status).to_owned(),
             hash: entry.tx_id.clone(),
             open: None,
             manual: false,
@@ -505,11 +502,12 @@ impl App {
     pub fn evm_status_line(&self) -> String {
         let chain_id = self.settings.evm_chain_id;
         let network = NetworkId::Eip155(chain_id);
-        let browser = crate::app_browser::status_text(self.browser.as_ref());
+        let lang = self.settings.language;
+        let browser = crate::app_browser::status_text(lang, self.browser.as_ref());
         let rpc = if !self.apikeys.has(crate::apikeys::KeyName::Rpc(network)) {
-            "RPC 주소 없음 (E-KEY-005)"
+            text::RPC_NO_ADDRESS.get(lang)
         } else if let Some(kind) = self.evm.blocked(chain_id) {
-            return format!("RPC: 차단 {}   ·   {browser}", kind.code().code());
+            return text::RPC_BLOCKED.fill(lang, [kind.code().code(), &browser]);
         } else if self
             .evm
             .balances
@@ -520,9 +518,9 @@ impl App {
             // not said again here (2026-11-12; "오류 E-RPC-003 · 인증 거부" before).
             return browser;
         } else if self.evm.chain_checks.contains_key(&chain_id) {
-            "연결됨"
+            text::CONNECTED.get(lang)
         } else {
-            "확인 전"
+            text::UNCHECKED.get(lang)
         };
         format!("RPC: {rpc}   ·   {browser}")
     }
@@ -541,7 +539,7 @@ impl App {
             name.push_str(&custom_chain_badge(self.settings.language, chain_id));
         }
         if self.evm.blocked(chain_id).is_some() {
-            name.push_str(" (차단됨)");
+            name.push_str(text::BLOCKED_TAG.get(self.settings.language));
         }
         name
     }
@@ -551,10 +549,13 @@ impl App {
     /// `Sepolia 테스트넷` and `Ethereum 메인넷` already do; user chains carry no such flag).
     #[must_use]
     pub fn network_choice_label(&self, chain_id: u64) -> String {
+        let lang = self.settings.language;
         let name = self.network_name(NetworkId::Eip155(chain_id));
         let label = self.network_label(chain_id);
-        if yw_core::evm::chain::is_builtin_mainnet(chain_id) && !name.contains("메인넷") {
-            label.replacen(&name, &format!("{name} (메인넷)"), 1)
+        if yw_core::evm::chain::is_builtin_mainnet(chain_id)
+            && !name.contains(text::MAINNET_WORD.get(lang))
+        {
+            label.replacen(&name, &text::MAINNET_SUFFIX.fill(lang, [&name]), 1)
         } else {
             label
         }
@@ -569,18 +570,19 @@ impl App {
     /// The blocked-chain banner and the journal banner of S10.
     pub fn evm_banners(&self, items: &mut Vec<Item>) {
         let chain_id = self.settings.evm_chain_id;
+        let lang = self.settings.language;
         if let Some(kind) = self.evm.blocked(chain_id) {
-            items.push(Item::Banner(kind.code().text(), Tone::Blocked));
+            items.push(Item::Banner(kind.code().text_in(lang), Tone::Blocked));
             if matches!(kind, MismatchKind::PinnedGenesis { .. }) {
                 items.push(Item::Row(vec![Ctl::primary(
                     ids::REPIN_SETTINGS,
-                    "설정에서 다시 고정",
+                    text::REPIN_IN_SETTINGS.get(lang),
                 )]));
             }
         }
         if self.evm.journal_damaged() {
             items.push(Item::Banner(
-                "거래 저널이 손상되어 보내기를 멈췄습니다. (E-VLT-006)".to_owned(),
+                crate::app_evm::text::JOURNAL_CORRUPT.get(lang).to_owned(),
                 Tone::Blocked,
             ));
         }
@@ -606,7 +608,7 @@ impl App {
             return;
         }
         items.push(Item::Banner(
-            crate::ui::screens::balance_failure_text(code),
+            crate::ui::screens::balance_failure_text(self.settings.language, code),
             Tone::Danger,
         ));
         self.rpc_failure_buttons(
@@ -627,9 +629,12 @@ impl App {
     ) {
         let testing =
             self.rpc_tests.running == Some(network) || self.rpc_tests.waiting.contains(&network);
+        let lang = self.settings.language;
         items.push(Item::Row(vec![
-            Ctl::button(test, "RPC 테스트").compact().enabled(!testing),
-            Ctl::button(open, "RPC 설정").compact(),
+            Ctl::button(test, text::RPC_TEST.get(lang))
+                .compact()
+                .enabled(!testing),
+            Ctl::button(open, text::RPC_SETTINGS.get(lang)).compact(),
         ]));
         if let Some((_, message, state)) = self.rpc_messages.iter().find(|(id, ..)| *id == network)
         {
@@ -671,10 +676,13 @@ impl App {
                 self.mnemonic_label(id),
                 index.get()
             ),
-            yw_core::vault::EvmKeySource::Raw(_) => "가져온 개인키".to_owned(),
+            yw_core::vault::EvmKeySource::Raw(_) => {
+                text::IMPORTED_KEY.get(self.settings.language).to_owned()
+            }
             yw_core::vault::EvmKeySource::Hardware(index) => format!(
                 "YubiKey · {}",
-                yw_core::yubikey::plan::KeyRole::Evm { index, btc: None }.path_text()
+                yw_core::yubikey::plan::KeyRole::Evm { index, btc: None }
+                    .path_text_in(self.settings.language)
             ),
         }
     }
@@ -687,31 +695,37 @@ impl App {
         let balance = self.native_balance(chain_id, &address)?;
         let state = self.evm.balances.get(&chain_id)?;
         let block = state.snapshot.as_ref()?.block;
-        let mut text = format!(
-            "잔액 {} (블록 {block})",
-            self.native_text(chain_id, &balance)
+        let lang = self.settings.language;
+        let mut line = text::BALANCE_AT_BLOCK.fill(
+            lang,
+            [&self.native_text(chain_id, &balance), &block.to_string()],
         );
         if let Some(code) = state.error {
-            let _ = write!(text, " — 갱신 실패 {}", code.code());
+            line.push_str(&text::REFRESH_FAILED.fill(lang, [code.code()]));
         }
-        Some(text)
+        Some(line)
     }
 
     /// Tokens and activity sections of S10.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the activity rows with their lines and buttons"
+    )]
     pub fn evm_main_sections(&self, items: &mut Vec<Item>) {
         let chain_id = self.settings.evm_chain_id;
+        let lang = self.settings.language;
         self.evm_token_card(items, chain_id);
         self.hc_card(items);
         items.push(Item::CardStart(None));
         items.push(Item::Badged(
             self.evm_badge(chain_id),
-            Box::new(Item::Subtitle("보낸 거래".to_owned())),
+            Box::new(Item::Subtitle(text::SENT_TITLE.get(lang).to_owned())),
         ));
         let rows = self.activity_rows();
         if rows.is_empty() {
             // One line (2026-11-12): the title says these are sent ones, and the switch for
             // received ones is right below.
-            items.push(Item::Help("아직 보낸 거래가 없습니다.".to_owned()));
+            items.push(Item::Help(text::SENT_NONE.get(lang).to_owned()));
         }
         // The latest rows first; the rest behind a link (this run only). A row still in flight
         // (speed-up, cancel, a broadcast that needs a resend) is never folded away; its buttons
@@ -747,10 +761,16 @@ impl App {
                 let save = counterparty
                     .as_ref()
                     .filter(|lower| self.offer_save(BookChain::Evm, lower))
-                    .map(|_| crate::ui::screens_links::save_icon(base.saturating_add(6)));
+                    .map(|_| {
+                        crate::ui::screens_links::save_icon(
+                            self.settings.language,
+                            base.saturating_add(6),
+                        )
+                    });
                 self.recipient_items(address, items);
                 crate::ui::screens_links::push_address_line(
                     items,
+                    self.settings.language,
                     crate::ui::screens_links::ids::row_id(
                         crate::ui::screens_links::ids::EVM_TO_BASE,
                         crate::ui::screens_links::ids::EVM_TO_SPAN,
@@ -765,6 +785,7 @@ impl App {
             // 탐색기" — built-in, the user chain's `explorer`, or the user's override).
             crate::ui::screens_links::push_hash_line(
                 items,
+                self.settings.language,
                 Some(base),
                 &row.hash,
                 self.explorer_tx_icons(
@@ -776,12 +797,18 @@ impl App {
             let mut buttons = Vec::new();
             if row.open.is_some() {
                 // Replace-by-fee has one name on every chain (Bitcoin's `수수료 올리기`).
-                buttons.push(Ctl::button(base.saturating_add(1), "수수료 올리기"));
-                buttons.push(Ctl::button(base.saturating_add(2), "취소"));
+                buttons.push(Ctl::button(
+                    base.saturating_add(1),
+                    text::SPEED_UP.get(lang),
+                ));
+                buttons.push(Ctl::button(
+                    base.saturating_add(2),
+                    text::CANCEL_TX.get(lang),
+                ));
                 if row.manual {
-                    buttons.push(Ctl::button(base.saturating_add(3), "재전송"));
+                    buttons.push(Ctl::button(base.saturating_add(3), text::RESEND.get(lang)));
                 }
-                buttons.push(Ctl::danger(base.saturating_add(4), "폐기"));
+                buttons.push(Ctl::danger(base.saturating_add(4), text::DISCARD.get(lang)));
             }
             if !buttons.is_empty() {
                 items.push(Item::Row(buttons));
@@ -800,9 +827,9 @@ impl App {
             items.push(Item::Row(vec![Ctl::link(
                 ids::ACTIVITY_MORE,
                 &if self.activity_all {
-                    "이전 활동 접기 ▾".to_owned()
+                    text::ACTIVITY_FOLD.get(lang).to_owned()
                 } else {
-                    format!("이전 활동 {foldable}건 더 보기 ▸")
+                    text::ACTIVITY_MORE.fill(lang, [&foldable.to_string()])
                 },
             )]));
         }
@@ -814,7 +841,10 @@ impl App {
     /// tokens), then one footer row (2026-11-12) — `토큰 추가`, `잔액 0 숨기기` with the count
     /// it hides, and `숨긴 토큰 n개 ▸` listing the hidden rows dimmed with `다시 보이기`.
     fn evm_token_card(&self, items: &mut Vec<Item>, chain_id: u64) {
-        items.push(Item::CardStart(Some("토큰".to_owned())));
+        let lang = self.settings.language;
+        items.push(Item::CardStart(Some(
+            text::TOKENS_TITLE.get(lang).to_owned(),
+        )));
         let rows = self.evm_token_rows(chain_id);
         let shown: Vec<&EvmTokenRow> = rows
             .iter()
@@ -829,14 +859,9 @@ impl App {
             .filter(|row| row.place == RowPlace::ZeroHidden)
             .count();
         if rows.is_empty() {
-            items.push(Item::Help(
-                "표시할 토큰이 없습니다. '토큰 추가'로 컨트랙트 주소를 넣으면 잔액을 함께 봅니다."
-                    .to_owned(),
-            ));
+            items.push(Item::Help(text::TOKENS_NONE.get(lang).to_owned()));
         } else if shown.is_empty() {
-            items.push(Item::Help(
-                "보이는 토큰이 없습니다. 숨긴 토큰은 아래에서 다시 볼 수 있습니다.".to_owned(),
-            ));
+            items.push(Item::Help(text::TOKENS_NONE_SHOWN.get(lang).to_owned()));
         }
         let can_send = matches!(self.mode, AppMode::Unlocked { .. })
             && self
@@ -846,19 +871,19 @@ impl App {
             if position > 0 {
                 items.push(Item::Rule);
             }
-            Self::evm_token_row(items, row, false, can_send);
+            Self::evm_token_row(lang, items, row, false, can_send);
         }
         // The footer in one row (2026-11-12; four stacked lines before): the action first,
         // the count of tucked-away zero rows in the check box's label, the hidden rows' link.
-        let mut footer = vec![Ctl::button(ids::TOKEN_OPEN, "토큰 추가").compact()];
+        let mut footer = vec![Ctl::button(ids::TOKEN_OPEN, text::TOKEN_ADD.get(lang)).compact()];
         if !rows.is_empty() {
             items.push(Item::Rule);
             footer.push(Ctl::check(
                 ids::TOKEN_HIDE_ZERO,
                 &if zero > 0 {
-                    format!("잔액 0 숨기기 ({zero}개)")
+                    text::HIDE_ZERO_COUNT.fill(lang, [&zero.to_string()])
                 } else {
-                    "잔액 0 숨기기".to_owned()
+                    text::HIDE_ZERO.get(lang).to_owned()
                 },
                 self.evm_hide_zero(),
             ));
@@ -869,20 +894,21 @@ impl App {
             footer.push(Ctl::link(
                 ids::TOKEN_HIDDEN_TOGGLE,
                 &if open {
-                    format!("숨긴 토큰 {count}개 접기 ▾")
+                    text::HIDDEN_FOLD_COUNT
                 } else {
-                    format!("숨긴 토큰 {count}개 보기 ▸")
-                },
+                    text::HIDDEN_SHOW_COUNT
+                }
+                .fill(lang, [&count.to_string()]),
             ));
         }
         items.push(Item::Row(footer));
         if open {
-            items.push(Item::Help(T_TOKEN_HIDDEN_NOTE.to_owned()));
+            items.push(Item::Help(text::TOKEN_HIDDEN_NOTE.get(lang).to_owned()));
             for (position, row) in hidden.into_iter().enumerate() {
                 if position > 0 {
                     items.push(Item::Rule);
                 }
-                Self::evm_token_row(items, row, true, false);
+                Self::evm_token_row(lang, items, row, true, false);
             }
         }
         items.push(Item::CardEnd);
@@ -895,17 +921,23 @@ impl App {
     /// actions — `보내기` (a visible row with a balance, like the Solana token card) and
     /// `숨기기`/`다시 보이기`; user tokens also `삭제`. Hidden rows are muted, their note ending
     /// in `숨김`.
-    fn evm_token_row(items: &mut Vec<Item>, row: &EvmTokenRow, hidden: bool, can_send: bool) {
+    fn evm_token_row(
+        lang: Lang,
+        items: &mut Vec<Item>,
+        row: &EvmTokenRow,
+        hidden: bool,
+        can_send: bool,
+    ) {
         use ids::{TokenAction, token_row_id};
         let balance = row.balance.map_or_else(
-            || "잔액 알 수 없음".to_owned(),
+            || text::BALANCE_UNKNOWN.get(lang).to_owned(),
             |value| format_units(&value, row.decimals),
         );
         let note = match (row.name.is_empty(), hidden) {
             (true, false) => String::new(),
-            (true, true) => "숨김".to_owned(),
+            (true, true) => text::HIDDEN.get(lang).to_owned(),
             (false, false) => row.name.clone(),
-            (false, true) => format!("{} · 숨김", row.name),
+            (false, true) => text::NAME_HIDDEN.fill(lang, [&row.name]),
         };
         items.push(Item::ListRow {
             title: row.ticker.clone(),
@@ -917,9 +949,12 @@ impl App {
         let mut buttons = Vec::new();
         if !hidden && let Some(offset) = offset.filter(|offset| *offset < ids::TOKEN_SEND_SPAN) {
             buttons.push(
-                Ctl::link(ids::TOKEN_SEND_BASE.saturating_add(offset), "보내기")
-                    .compact()
-                    .enabled(can_send && row.balance.is_some_and(|value| !value.is_zero())),
+                Ctl::link(
+                    ids::TOKEN_SEND_BASE.saturating_add(offset),
+                    text::SEND.get(lang),
+                )
+                .compact()
+                .enabled(can_send && row.balance.is_some_and(|value| !value.is_zero())),
             );
         }
         if let Some(id) = token_row_id(TokenAction::ToggleHidden(row.index)) {
@@ -927,9 +962,9 @@ impl App {
                 Ctl::link(
                     id,
                     if hidden {
-                        "다시 보이기"
+                        text::UNHIDE.get(lang)
                     } else {
-                        "숨기기"
+                        text::HIDE.get(lang)
                     },
                 )
                 .compact(),
@@ -938,10 +973,11 @@ impl App {
         if !row.registered
             && let Some(id) = token_row_id(TokenAction::Delete(row.index))
         {
-            buttons.push(Ctl::danger(id, "삭제").compact());
+            buttons.push(Ctl::danger(id, text::DELETE.get(lang)).compact());
         }
         crate::ui::screens_links::push_address_line(
             items,
+            lang,
             offset
                 .filter(|offset| *offset < ids::TOKEN_COPY_SPAN)
                 .map(|offset| ids::TOKEN_COPY_BASE.saturating_add(offset)),
@@ -966,6 +1002,7 @@ impl App {
     /// included), the ones the user hid apart. Radio ids follow the `App::chain_tokens` index.
     #[must_use]
     pub fn send_asset_rows(&self, chain_id: u64) -> (Vec<Ctl>, Vec<Ctl>) {
+        let lang = self.settings.language;
         let asset = self.evm.send.asset;
         let mut visible = Vec::new();
         let mut hidden = Vec::new();
@@ -980,11 +1017,11 @@ impl App {
             let name = if row.registered {
                 row.symbol.clone()
             } else {
-                format!("{} (사용자 추가)", row.symbol)
+                text::USER_TOKEN.fill(lang, [&row.symbol])
             };
             // The holding next to the name (2026-11-08): the form shows what can be sent.
             let text = row.balance.map_or_else(
-                || format!("{name} · 잔액 모름"),
+                || text::NAME_BALANCE_UNKNOWN.fill(lang, [&name]),
                 |value| format!("{name} · {}", format_units(&value, row.decimals)),
             );
             let radio = Ctl::radio(id, &text, asset == SendAsset::Token(row.address), false);
@@ -1001,31 +1038,30 @@ impl App {
     #[expect(clippy::too_many_lines, reason = "the S11 fields in order")]
     pub fn send_screen(&self, items: &mut Vec<Item>) {
         let chain_id = self.settings.evm_chain_id;
-        items.push(crate::ui::screens::back_main());
+        let lang = self.settings.language;
+        items.push(crate::ui::screens::back_main(lang));
         items.push(Item::Badged(
             self.evm_badge(chain_id),
-            Box::new(Item::Title(format!(
-                "보내기 — {}",
-                self.network_name(NetworkId::Eip155(chain_id))
-            ))),
+            Box::new(Item::Title(
+                text::SEND_TITLE.fill(lang, [&self.network_name(NetworkId::Eip155(chain_id))]),
+            )),
         ));
         if chain_id == SEPOLIA {
             items.push(Item::Banner(
-                "테스트넷 — 실제 자산이 아닙니다".to_owned(),
+                text::TESTNET_BAND.get(lang).to_owned(),
                 Tone::Testnet,
             ));
         } else if yw_core::evm::chain::is_builtin_mainnet(chain_id) {
             // The main tab's mainnet band on S11 too (2026-11-08; Bitcoin shows it everywhere).
             items.push(Item::Banner(
-                crate::ui::screens::T_MAINNET.to_owned(),
+                crate::ui::screens::T_MAINNET.get(lang).to_owned(),
                 Tone::BtcMainnet,
             ));
         }
         let form = &self.evm.send;
         if let Some(record) = self.send_in_flight() {
             items.push(Item::Banner(
-                "이 계정의 이전 거래가 아직 확정되지 않았습니다. 확정된 뒤 보낼 수 있습니다."
-                    .to_owned(),
+                text::IN_FLIGHT.get(lang).to_owned(),
                 Tone::Warn,
             ));
             items.push(Item::Help(format!(
@@ -1036,11 +1072,13 @@ impl App {
             items.push(Item::Mono(hash_text(&record.tx_hash)));
         }
         if let Some((account, source, label)) = self.selected_account() {
-            items.push(Item::CardStart(Some("보내는 계정".to_owned())));
+            items.push(Item::CardStart(Some(
+                text::FROM_ACCOUNT.get(lang).to_owned(),
+            )));
             let balance = self
                 .native_balance(chain_id, &account)
                 .map_or_else(String::new, |value| {
-                    format!(" · 잔액 {}", self.native_text(chain_id, &value))
+                    text::BALANCE_SUFFIX.fill(lang, [&self.native_text(chain_id, &value)])
                 });
             items.push(Item::Text(format!(
                 "{}{balance}",
@@ -1053,41 +1091,41 @@ impl App {
             self.card_pin_banner(self.evm_card_gate(source), items);
             items.push(Item::Row(vec![Ctl::link(
                 crate::ui::screens::ids::SWITCH_ACCOUNT,
-                "다른 계정으로 바꾸기 (메인)",
+                text::SWITCH_ACCOUNT.get(lang),
             )]));
             items.push(Item::CardEnd);
         }
-        items.push(Item::CardStart(Some("받는 사람".to_owned())));
+        items.push(Item::CardStart(Some(
+            text::RECIPIENT_CARD.get(lang).to_owned(),
+        )));
         self.favorite_chip_items(BookTarget::Evm, items);
         items.push(Item::LabeledRow(
-            "받는 주소".to_owned(),
+            text::RECIPIENT_FIELD.get(lang).to_owned(),
             vec![
                 Ctl::edit(ids::SEND_TO_EDIT, &form.to_text, 430, false, 64),
-                Ctl::button(ids::SEND_PICK, "주소록에서 선택"),
+                Ctl::button(ids::SEND_PICK, text::PICK_FROM_BOOK.get(lang)),
             ],
         ));
         // The format hint only until the address is valid (2026-11-12); the reminder to check
         // all of it then sits under the grouped address.
         if form.recipient.is_none() {
-            items.push(Item::Help("0x로 시작하는 42자 주소".to_owned()));
+            items.push(Item::Help(text::ADDRESS_FORMAT.get(lang).to_owned()));
         }
         if form.picker {
             self.picker_rows(items);
         }
         if let Some(code) = form.recipient_error {
-            items.push(Item::Banner(code.text(), Tone::Danger));
+            items.push(Item::Banner(code.text_in(lang), Tone::Danger));
         }
         if let Some(text) = &form.system_error {
             items.push(Item::Banner(text.clone(), Tone::Blocked));
         }
         if let Some((address, notes)) = &form.recipient {
             items.push(Item::Mono(format_address(address)));
-            items.push(Item::Help(
-                "앞뒤만이 아니라 주소 전체를 확인하세요.".to_owned(),
-            ));
+            items.push(Item::Help(text::CHECK_WHOLE.get(lang).to_owned()));
             for note in notes {
                 items.push(Item::Banner(
-                    note.text(),
+                    note.text_in(lang),
                     if note.needs_ack() {
                         Tone::HighRisk
                     } else if note.is_warning() {
@@ -1099,7 +1137,7 @@ impl App {
             }
             if form.contract == Some(true) && form.asset == SendAsset::Native {
                 items.push(Item::Banner(
-                    crate::flow::evm::form::AddressNote::Contract.text(),
+                    crate::flow::evm::form::AddressNote::Contract.text_in(lang),
                     Tone::Warn,
                 ));
             }
@@ -1109,7 +1147,7 @@ impl App {
             {
                 items.push(Item::Row(vec![Ctl::check(
                     ids::SEND_ACK,
-                    "주소 전체를 직접 확인했습니다",
+                    text::ACK_WHOLE.get(lang),
                     form.ack,
                 )]));
                 if notes.iter().any(|note| {
@@ -1121,13 +1159,15 @@ impl App {
                         }
                     )
                 }) {
-                    items.push(Item::Help(crate::app_book::T_BOOK_VERIFY_HINT.to_owned()));
+                    items.push(Item::Help(
+                        crate::app_book::text::BOOK_VERIFY_HINT.get(lang).to_owned(),
+                    ));
                 }
             }
             self.recipient_save_items(BookTarget::Evm, items);
         }
         items.push(Item::CardEnd);
-        items.push(Item::CardStart(Some("보낼 자산과 금액".to_owned())));
+        items.push(Item::CardStart(Some(text::ASSET_CARD.get(lang).to_owned())));
         let mut assets = Vec::new();
         let (native_symbol, native_decimals) = self.active_chain().map_or_else(
             || ("ETH".to_owned(), 18),
@@ -1140,7 +1180,7 @@ impl App {
         assets.push(Ctl::radio(
             ids::SEND_ASSET_BASE,
             &native_held.map_or_else(
-                || format!("{native_symbol} · 잔액 모름"),
+                || text::NAME_BALANCE_UNKNOWN.fill(lang, [&native_symbol]),
                 |value| {
                     format!(
                         "{native_symbol} · {}",
@@ -1153,7 +1193,7 @@ impl App {
         ));
         let (visible, hidden) = self.send_asset_rows(chain_id);
         assets.extend(visible);
-        items.push(Item::LabeledRow("자산".to_owned(), assets));
+        items.push(Item::LabeledRow(text::ASSET.get(lang).to_owned(), assets));
         if !hidden.is_empty() {
             // The selected asset is never tucked away.
             let selected = hidden.iter().any(|ctl| ctl.checked == Some(true));
@@ -1162,15 +1202,18 @@ impl App {
                 Ctl::link(
                     ids::SEND_HIDDEN_TOGGLE,
                     &if open {
-                        "숨긴 토큰 접기 ▾".to_owned()
+                        text::HIDDEN_FOLD.get(lang).to_owned()
                     } else {
-                        format!("숨긴 토큰 {}개 보기 ▸", hidden.len())
+                        text::HIDDEN_SHOW_COUNT.fill(lang, [&hidden.len().to_string()])
                     },
                 )
                 .enabled(!selected),
             ]));
             if open {
-                items.push(Item::LabeledRow("숨긴 토큰".to_owned(), hidden));
+                items.push(Item::LabeledRow(
+                    text::HIDDEN_TOKENS.get(lang).to_owned(),
+                    hidden,
+                ));
             }
         }
         if let SendAsset::Token(token) = form.asset {
@@ -1184,40 +1227,40 @@ impl App {
                     .balances
                     .get(&chain_id)
                     .and_then(|state| state.snapshot.as_ref())
-                    .map(|snapshot| format!(" (블록 {} 기준)", snapshot.block))
+                    .map(|snapshot| text::AT_BLOCK.fill(lang, [&snapshot.block.to_string()]))
                     .unwrap_or_default();
                 items.push(Item::Text(row.balance.map_or_else(
-                    || format!("보유 {}: 잔액을 아직 읽지 못했습니다", row.symbol),
+                    || text::HELD_UNREAD.fill(lang, [&row.symbol]),
                     |value| {
-                        format!(
-                            "보유 {}{block}",
-                            format_amount(&value, row.decimals, &row.symbol)
+                        text::HELD.fill(
+                            lang,
+                            [&format_amount(&value, row.decimals, &row.symbol), &block],
                         )
                     },
                 )));
             }
-            items.push(Item::Help(format!("토큰 컨트랙트 {}", token.to_checksum())));
+            items.push(Item::Help(
+                text::TOKEN_CONTRACT.fill(lang, [&token.to_checksum()]),
+            ));
         }
         // The unit next to the field and a `최대` note for the chosen asset (2026-11-10).
         let (_, asset_symbol) = self.send_asset_meta();
         items.push(Item::LabeledRow(
-            format!("금액 ({asset_symbol})"),
+            text::AMOUNT_FIELD.fill(lang, [&asset_symbol]),
             vec![
                 Ctl::edit(ids::SEND_AMOUNT_EDIT, &form.amount_text, 260, false, 128),
-                Ctl::button(ids::SEND_MAX, "최대"),
+                Ctl::button(ids::SEND_MAX, text::MAX.get(lang)),
             ],
         ));
         // Only until the amount is valid (2026-11-12).
         if form.amount.is_none() {
             items.push(Item::Help(match form.asset {
-                SendAsset::Native => "예: 0.01 · '최대'는 수수료를 뺀 잔액 전부입니다.".to_owned(),
-                SendAsset::Token(_) => format!(
-                    "예: 0.01 · '최대'는 이 토큰 잔액 전부입니다. 수수료는 {native_symbol}로 따로 냅니다."
-                ),
+                SendAsset::Native => text::AMOUNT_HINT_NATIVE.get(lang).to_owned(),
+                SendAsset::Token(_) => text::AMOUNT_HINT_TOKEN.fill(lang, [&native_symbol]),
             }));
         }
         if let Some(code) = form.amount_error {
-            items.push(Item::Banner(code.text(), Tone::Danger));
+            items.push(Item::Banner(code.text_in(lang), Tone::Danger));
             // E-INP-012 of a token send whose amount the token balance covers: the native fee is
             // what is missing (2026-11-10; the text and code stay §7's).
             if let SendAsset::Token(token) = form.asset
@@ -1226,13 +1269,11 @@ impl App {
                     (form.amount, self.token_balance(chain_id, &token))
                 && amount <= held
             {
-                items.push(Item::Help(format!(
-                    "수수료를 낼 {native_symbol}이(가) 부족합니다 — 이 계정에 {native_symbol}을(를) 먼저 받으세요."
-                )));
+                items.push(Item::Help(text::NO_FEE_ASSET.fill(lang, [&native_symbol])));
             }
         }
         if let (Some(quote), Some(chain)) = (&form.quote, self.active_chain()) {
-            let line = quote.line(&chain);
+            let line = quote.line_in(lang, &chain);
             let (summary, detail) = line
                 .split_once(" (")
                 .map_or((line.as_str(), None), |(head, tail)| {
@@ -1242,25 +1283,28 @@ impl App {
                 SendAsset::Native => items.push(Item::Text(summary.to_owned())),
                 // A token send pays its fee in the native asset: what it costs and what the
                 // account holds of it, side by side.
-                SendAsset::Token(_) => items.push(Item::Text(format!(
-                    "{summary} (보유 {})",
-                    native_held.map_or_else(
-                        || "잔액 모름".to_owned(),
-                        |value| format_amount(&value, native_decimals, &native_symbol)
-                    )
+                SendAsset::Token(_) => items.push(Item::Text(text::FEE_HELD.fill(
+                    lang,
+                    [
+                        summary,
+                        &native_held.map_or_else(
+                            || text::BALANCE_UNKNOWN_SHORT.get(lang).to_owned(),
+                            |value| format_amount(&value, native_decimals, &native_symbol),
+                        ),
+                    ],
                 ))),
             }
             if self.show_advanced
                 && let Some(detail) = detail
             {
-                items.push(Item::Help(format!("계산: {detail}")));
+                items.push(Item::Help(text::FEE_DETAIL.fill(lang, [detail])));
             }
             items.push(Item::Row(vec![Ctl::link(
                 crate::ui::screens::ids::ADVANCED_TOGGLE,
                 if self.show_advanced {
-                    "수수료 계산 숨기기 ▾"
+                    text::FEE_DETAIL_HIDE.get(lang)
                 } else {
-                    "수수료 계산 보기 (가스 한도·gwei) ▸"
+                    text::FEE_DETAIL_SHOW.get(lang)
                 },
             )]));
             if let Some(violation) = &quote.cap_violation {
@@ -1268,13 +1312,13 @@ impl App {
             }
             if quote.estimate_failed {
                 items.push(Item::Banner(
-                    "가스 추정 실패 — 거래가 실패할 수 있습니다 (승인 창에서 확인)".to_owned(),
+                    text::ESTIMATE_FAILED.get(lang).to_owned(),
                     Tone::Warn,
                 ));
             }
         }
         if let Some(code) = form.quote_error {
-            items.push(Item::Banner(code.text(), Tone::Danger));
+            items.push(Item::Banner(code.text_in(lang), Tone::Danger));
         }
         // What `검토`, the approval or the signature ended with, next to the button.
         if let Some(info) = &form.info {
@@ -1284,16 +1328,17 @@ impl App {
         self.journal_send_items(crate::app_sidecar::SendChain::Evm, items);
         let blocker = self.review_blocker();
         items.push(Item::Row(vec![
-            Ctl::primary(ids::SEND_REVIEW, "검토").enabled(blocker.is_none()),
-            Ctl::button(ids::SEND_CANCEL, "취소"),
+            Ctl::primary(ids::SEND_REVIEW, text::REVIEW.get(lang)).enabled(blocker.is_none()),
+            Ctl::button(ids::SEND_CANCEL, text::CANCEL.get(lang)),
         ]));
         // What `검토` waits for, or that it sends nothing yet (2026-11-12).
         items.push(Item::Help(
-            crate::app_sol::ReviewBlocker::line(blocker).to_owned(),
+            crate::app_sol::ReviewBlocker::line(lang, blocker).to_owned(),
         ));
     }
 
     fn picker_rows(&self, items: &mut Vec<Item>) {
+        let lang = self.settings.language;
         let mut shown = 0_u16;
         for entry in self.picker_known() {
             let hex = entry.address.to_lower_hex();
@@ -1303,24 +1348,21 @@ impl App {
                     .as_ref()
                     .is_some_and(|meta| meta.is_favorite(BookChain::Evm, &hex));
             let prefix = if entry.mine {
-                "내 계정"
+                text::PICK_MINE
             } else if favorite {
-                "★ 주소록"
+                text::PICK_FAVORITE
             } else {
-                "주소록"
+                text::PICK_BOOK
             };
             items.push(Item::Row(vec![Ctl::button(
                 ids::SEND_PICK_BASE.saturating_add(shown),
-                &format!("{prefix}: {}", entry.name),
+                &prefix.fill(lang, [&entry.name]),
             )]));
             items.push(Item::Mono(format_address(&entry.address)));
             shown = shown.saturating_add(1);
         }
         if shown == 0 {
-            items.push(Item::Help(
-                "일치하는 주소록 항목이 없습니다. 주소록에 저장하면 여기에서 고를 수 있습니다."
-                    .to_owned(),
-            ));
+            items.push(Item::Help(text::PICK_NONE.get(lang).to_owned()));
         }
     }
 
@@ -1355,10 +1397,11 @@ impl App {
 
     /// S11 result.
     pub fn send_result_screen(&self, items: &mut Vec<Item>) {
-        items.push(Item::Title("보내기 결과".to_owned()));
+        let lang = self.settings.language;
+        items.push(Item::Title(text::RESULT_TITLE.get(lang).to_owned()));
         if let Some(sent) = self.evm.sent {
             items.push(Item::Banner(
-                "전송했습니다. 블록에 포함되면(확인 1) 활동에 '확정'으로 표시됩니다.".to_owned(),
+                text::RESULT_SENT.get(lang).to_owned(),
                 Tone::Success,
             ));
             items.push(Item::CardStart(None));
@@ -1368,20 +1411,23 @@ impl App {
                 .iter()
                 .find(|record| record.tx_hash == sent.tx_hash)
                 .map_or_else(
-                    || "전송 확인 중".to_owned(),
+                    || text::REC_CONFIRMING.get(lang).to_owned(),
                     |record| self.record_status(record),
                 );
             items.push(Item::Badged(
                 self.evm_badge(sent.chain_id),
                 Box::new(Item::Field(
-                    "상태".to_owned(),
+                    text::STATE.get(lang).to_owned(),
                     format!(
                         "{status} ({})",
                         self.network_name(NetworkId::Eip155(sent.chain_id))
                     ),
                 )),
             ));
-            items.push(Item::Field("거래 해시".to_owned(), String::new()));
+            items.push(Item::Field(
+                text::TX_HASH.get(lang).to_owned(),
+                String::new(),
+            ));
             let hash = hash_text(&sent.tx_hash);
             items.push(Item::Mono(hash.clone()));
             // 2026-11-11: the transaction on the chain's explorer (no row without a page).
@@ -1401,24 +1447,24 @@ impl App {
         }
         items.push(Item::Row(vec![Ctl::primary(
             crate::ui::screens::ids::BACK_MAIN,
-            "메인으로",
+            text::BACK_MAIN.get(lang),
         )]));
     }
 
     /// S12.
     pub fn receive_screen(&self, items: &mut Vec<Item>) {
         let chain_id = self.settings.evm_chain_id;
-        items.push(crate::ui::screens::back_main());
+        let lang = self.settings.language;
+        items.push(crate::ui::screens::back_main(lang));
         items.push(Item::Badged(
             self.evm_badge(chain_id),
-            Box::new(Item::Title(format!(
-                "받기 — {}",
-                self.network_name(NetworkId::Eip155(chain_id))
-            ))),
+            Box::new(Item::Title(
+                text::RECEIVE_TITLE.fill(lang, [&self.network_name(NetworkId::Eip155(chain_id))]),
+            )),
         ));
         if self.mode == AppMode::BackupPending {
             items.push(Item::Banner(
-                "백업 확인 전입니다. 확인을 마치기 전에는 큰 금액을 받지 마세요.".to_owned(),
+                text::BACKUP_PENDING.get(lang).to_owned(),
                 Tone::Warn,
             ));
         }
@@ -1431,23 +1477,23 @@ impl App {
         items.push(Item::Subtitle(self.evm_account_title(source, &label)));
         if chain_id == SEPOLIA {
             items.push(Item::Banner(
-                "테스트넷 주소입니다.".to_owned(),
+                text::TESTNET_ADDRESS.get(lang).to_owned(),
                 Tone::Testnet,
             ));
         } else if yw_core::evm::chain::is_builtin_mainnet(chain_id) {
             items.push(Item::Banner(
-                crate::ui::screens::T_MAINNET.to_owned(),
+                crate::ui::screens::T_MAINNET.get(lang).to_owned(),
                 Tone::BtcMainnet,
             ));
         }
         self.mn_receive_banner(self.evm_backup_gate(source), items);
-        items.push(Item::Help(format!(
-            "{} 네트워크의 자산만 이 주소로 받으세요.",
-            self.network_name(NetworkId::Eip155(chain_id))
-        )));
+        items.push(Item::Help(
+            text::RECEIVE_ONLY.fill(lang, [&self.network_name(NetworkId::Eip155(chain_id))]),
+        ));
         // The address on its copy line, then the QR (2026-11-12: one line of help above and
         // no button row, so the QR comes that much earlier; the other notes follow the QR).
         items.push(crate::ui::screens::receive_address_row(
+            self.settings.language,
             &format_address(&address),
             ids::COPY_ADDRESS,
             Vec::new(),
@@ -1456,27 +1502,30 @@ impl App {
         items.push(Item::Row(vec![
             Ctl::radio(
                 ids::QR_EIP681,
-                EvmQrKind::Eip681.label(),
+                EvmQrKind::Eip681.label(self.settings.language),
                 kind == EvmQrKind::Eip681,
                 true,
             ),
             Ctl::radio(
                 ids::QR_PLAIN,
-                EvmQrKind::PlainAddress.label(),
+                EvmQrKind::PlainAddress.label(self.settings.language),
                 kind == EvmQrKind::PlainAddress,
                 false,
             ),
         ]));
         if kind == EvmQrKind::PlainAddress {
-            items.push(Item::Help(format!(
-                "주소만 담은 QR에는 네트워크 정보가 없습니다. 보내는 쪽(거래소 출금 화면 등)에서 네트워크를 {}(으)로 직접 고르세요.",
-                self.network_name(NetworkId::Eip155(chain_id))
-            )));
+            items.push(Item::Help(
+                text::PLAIN_QR.fill(lang, [&self.network_name(NetworkId::Eip155(chain_id))]),
+            ));
         }
         items.push(Item::Qr(crate::ui::qr::evm_receive_payload(
             &address, chain_id, kind,
         )));
-        items.push(Item::Help(RECEIVE_SHARED_ADDRESS_NOTE.to_owned()));
+        items.push(Item::Help(
+            RECEIVE_SHARED_ADDRESS_NOTE
+                .get(self.settings.language)
+                .to_owned(),
+        ));
         items.push(Item::Help(self.evm_path_text(source)));
         items.push(Item::CardEnd);
     }
@@ -1484,43 +1533,39 @@ impl App {
     /// S16.
     pub fn token_screen(&self, items: &mut Vec<Item>) {
         let chain_id = self.settings.evm_chain_id;
-        items.push(crate::ui::screens::back_main());
-        items.push(Item::Title(format!(
-            "토큰 추가 — {}",
-            self.network_name(NetworkId::Eip155(chain_id))
-        )));
+        let lang = self.settings.language;
+        items.push(crate::ui::screens::back_main(lang));
+        items.push(Item::Title(
+            text::TOKEN_TITLE.fill(lang, [&self.network_name(NetworkId::Eip155(chain_id))]),
+        ));
         let form = &self.evm.token;
         if let Some(message) = &form.message {
             items.push(Item::Banner(message.clone(), Tone::Info));
         }
         items.push(Item::CardStart(None));
         items.push(Item::LabeledRow(
-            "컨트랙트 주소".to_owned(),
+            text::CONTRACT_ADDRESS.get(lang).to_owned(),
             vec![
                 Ctl::edit(ids::TOKEN_ADDR_EDIT, &form.address, 430, false, 64),
-                Ctl::button(ids::TOKEN_LOOKUP, "조회"),
+                Ctl::button(ids::TOKEN_LOOKUP, text::LOOKUP.get(lang)),
             ],
         ));
-        items.push(Item::Help(
-            "토큰의 컨트랙트 주소를 넣고 '조회'를 누르면 체인에서 소수 자릿수와 기호를 읽습니다. 공식 사이트나 탐색기에서 확인한 주소만 쓰세요."
-                .to_owned(),
-        ));
+        items.push(Item::Help(text::TOKEN_HELP.get(lang).to_owned()));
         if let Some((token, meta)) = &form.found {
-            let decimals = meta
-                .decimals
-                .map_or_else(|| "읽을 수 없음".to_owned(), |value| value.to_string());
+            let decimals = meta.decimals.map_or_else(
+                || text::UNREADABLE.get(lang).to_owned(),
+                |value| value.to_string(),
+            );
             let symbol = meta
                 .symbol
                 .as_deref()
                 .filter(|symbol| crate::text::is_symbol(symbol))
-                .unwrap_or("(표시할 수 없는 기호)");
+                .unwrap_or(text::SYMBOL_UNSHOWABLE.get(lang));
             items.push(Item::Rule);
             items.push(Item::Mono(format_address(token)));
-            items.push(Item::Text(format!(
-                "decimals: {decimals}, 체인에서 읽은 기호: {symbol}"
-            )));
+            items.push(Item::Text(text::TOKEN_META.fill(lang, [&decimals, symbol])));
             items.push(Item::LabeledRow(
-                "라벨".to_owned(),
+                text::LABEL.get(lang).to_owned(),
                 vec![Ctl::edit(
                     ids::TOKEN_LABEL_EDIT,
                     &form.label,
@@ -1529,10 +1574,11 @@ impl App {
                     64,
                 )],
             ));
-            items.push(Item::Help(
-                "목록과 승인 창에 보일 이름입니다. 컨트랙트 주소와 함께 표시됩니다.".to_owned(),
-            ));
-            items.push(Item::Row(vec![Ctl::primary(ids::TOKEN_SAVE, "저장")]));
+            items.push(Item::Help(text::LABEL_HELP.get(lang).to_owned()));
+            items.push(Item::Row(vec![Ctl::primary(
+                ids::TOKEN_SAVE,
+                text::SAVE.get(lang),
+            )]));
         }
         items.push(Item::CardEnd);
     }
@@ -1543,11 +1589,11 @@ impl App {
         reason = "one card per chain row with its badge, identifiers and caps"
     )]
     pub fn chains_section(&self, items: &mut Vec<Item>) {
-        items.push(Item::CardStart(Some("EVM 체인".to_owned())));
-        items.push(Item::Help(
-            "기본 체인 7개(Ethereum·Sepolia·HyperEVM·Arbitrum One·Base·BNB Smart Chain·Robinhood Chain)와 직접 추가한 체인입니다. 체인마다 RPC 주소가 있어야 쓸 수 있고, 연결할 때마다 chainId와 첫 블록(제네시스)을 다시 확인합니다."
-                .to_owned(),
-        ));
+        let lang = self.settings.language;
+        items.push(Item::CardStart(Some(
+            text::CHAINS_TITLE.get(lang).to_owned(),
+        )));
+        items.push(Item::Help(text::CHAINS_HELP.get(lang).to_owned()));
         let mut chains = self.settings.registered_evm();
         chains.truncate(usize::from(ids::CHAIN_ROW_SPAN / 3));
         let count = chains.len();
@@ -1567,11 +1613,13 @@ impl App {
                     )
                 });
             let state = match self.evm.chain_checks.get(&chain_id) {
-                Some(crate::flow::evm::ChainCheck::Verified { .. }) => "연결됨".to_owned(),
-                Some(crate::flow::evm::ChainCheck::Mismatch(kind)) => {
-                    format!("차단 {}", kind.code().code())
+                Some(crate::flow::evm::ChainCheck::Verified { .. }) => {
+                    text::CONNECTED.get(lang).to_owned()
                 }
-                _ => "확인 전".to_owned(),
+                Some(crate::flow::evm::ChainCheck::Mismatch(kind)) => {
+                    text::BLOCKED_CODE.fill(lang, [kind.code().code()])
+                }
+                _ => text::UNCHECKED.get(lang).to_owned(),
             };
             items.push(Item::Badged(
                 self.evm_badge(chain_id),
@@ -1580,9 +1628,15 @@ impl App {
                     self.network_name(NetworkId::Eip155(chain_id))
                 ))),
             ));
-            items.push(Item::Help(format!(
-                "{symbol}, 소수 {decimals} · 시뮬레이션 {simulation} · {state} · RPC 주소: {}",
-                self.endpoint_text(chain_id)
+            items.push(Item::Help(text::CHAIN_LINE.fill(
+                lang,
+                [
+                    &symbol,
+                    &decimals.to_string(),
+                    simulation,
+                    &state,
+                    &self.endpoint_text(chain_id),
+                ],
             )));
             if let Some(def) = user {
                 items.push(Item::Help(custom_chain_badge(
@@ -1591,13 +1645,13 @@ impl App {
                 )));
                 let mut ids_text = Vec::new();
                 if let Some(subdomain) = &def.quicknode_subdomain {
-                    ids_text.push(format!("QuickNode 서브도메인 {subdomain}"));
+                    ids_text.push(text::QUICKNODE_ENTRY.fill(lang, [subdomain]));
                 }
                 if let Some(label) = &def.alchemy_label {
-                    ids_text.push(format!("알케미 라벨 {label}"));
+                    ids_text.push(text::ALCHEMY_ENTRY.fill(lang, [label]));
                 }
                 if let Some(explorer) = &def.explorer {
-                    ids_text.push(format!("탐색기 {explorer}"));
+                    ids_text.push(text::EXPLORER_ENTRY.fill(lang, [explorer]));
                 }
                 if !ids_text.is_empty() {
                     items.push(Item::Help(ids_text.join(" · ")));
@@ -1605,7 +1659,7 @@ impl App {
             }
             if self.show_advanced {
                 let genesis = self.pinned_genesis(chain_id).map_or_else(
-                    || "첫 연결 때 고정".to_owned(),
+                    || text::PIN_ON_FIRST.get(lang).to_owned(),
                     |hash| crate::text::hash32_text(&hash),
                 );
                 items.push(Item::Mono(format!("genesis {genesis}")));
@@ -1614,9 +1668,9 @@ impl App {
                 .saturating_add(u16::try_from(index).unwrap_or(0).saturating_mul(3));
             let mut row = Vec::new();
             if user.is_some() {
-                row.push(Ctl::button(base, "편집"));
+                row.push(Ctl::button(base, text::EDIT.get(lang)));
                 row.push(
-                    Ctl::danger(base.saturating_add(1), "삭제")
+                    Ctl::danger(base.saturating_add(1), text::DELETE.get(lang))
                         .enabled(matches!(self.mode, AppMode::Unlocked { .. })),
                 );
             }
@@ -1625,7 +1679,7 @@ impl App {
                 Some(MismatchKind::PinnedGenesis { .. })
             ) && (user.is_some() || chain_id == HYPEREVM_MAINNET)
             {
-                row.push(Ctl::primary(base.saturating_add(2), "다시 고정"));
+                row.push(Ctl::primary(base.saturating_add(2), text::REPIN.get(lang)));
             }
             if !row.is_empty() {
                 items.push(Item::Row(row));
@@ -1639,7 +1693,7 @@ impl App {
         {
             items.push(Item::Banner(message.clone(), Tone::Info));
         }
-        chain_add_row(items);
+        chain_add_row(lang, items);
         items.push(Item::CardEnd);
         self.hc_settings_section(items);
         if self.show_advanced {
@@ -1649,11 +1703,9 @@ impl App {
     }
 
     fn caps_section(&self, items: &mut Vec<Item>) {
-        items.push(Item::CardStart(Some("EVM 수수료 상한 (고급)".to_owned())));
-        items.push(Item::Help(
-            "지갑이 계산한 수수료가 이 값을 넘으면 보내기를 막습니다(잘못된 RPC가 수수료를 부풀리는 것을 막는 안전장치). 보통은 바꿀 필요가 없습니다."
-                .to_owned(),
-        ));
+        let lang = self.settings.language;
+        items.push(Item::CardStart(Some(text::CAPS_TITLE.get(lang).to_owned())));
+        items.push(Item::Help(text::CAPS_HELP.get(lang).to_owned()));
         let selected = self.evm.caps.as_ref().map(|caps| caps.chain_id);
         let radios: Vec<Ctl> = self
             .settings
@@ -1670,9 +1722,9 @@ impl App {
                 )
             })
             .collect();
-        items.push(Item::LabeledRow("체인".to_owned(), radios));
+        items.push(Item::LabeledRow(text::CHAIN.get(lang).to_owned(), radios));
         let Some(caps) = &self.evm.caps else {
-            items.push(Item::Help("상한을 바꿀 체인을 고르세요.".to_owned()));
+            items.push(Item::Help(text::CAPS_PICK.get(lang).to_owned()));
             items.push(Item::CardEnd);
             return;
         };
@@ -1682,25 +1734,22 @@ impl App {
         let symbol = crate::flow::evm::chain_info(&self.settings, caps.chain_id)
             .map_or_else(String::new, |chain| chain.native_symbol);
         items.push(Item::LabeledRow(
-            "maxFee 상한 (gwei)".to_owned(),
+            text::CAPS_FEE.get(lang).to_owned(),
             vec![Ctl::edit(ids::CAPS_FEE_EDIT, &caps.fee, 160, false, 32)],
         ));
         items.push(Item::LabeledRow(
-            "tip 상한 (gwei)".to_owned(),
+            text::CAPS_TIP.get(lang).to_owned(),
             vec![Ctl::edit(ids::CAPS_TIP_EDIT, &caps.tip, 160, false, 32)],
         ));
         items.push(Item::LabeledRow(
-            format!("총 최대 수수료 ({symbol})"),
+            text::CAPS_TOTAL.fill(lang, [&symbol]),
             vec![Ctl::edit(ids::CAPS_TOTAL_EDIT, &caps.total, 160, false, 40)],
         ));
         items.push(Item::Row(vec![
-            Ctl::primary(ids::CAPS_SAVE, "저장"),
-            Ctl::button(ids::CAPS_DEFAULT, "기본값으로"),
+            Ctl::primary(ids::CAPS_SAVE, text::SAVE.get(lang)),
+            Ctl::button(ids::CAPS_DEFAULT, text::DEFAULTS.get(lang)),
         ]));
-        items.push(Item::Help(
-            "범위: maxFee 1–10,000 gwei, tip 0.01–10,000 gwei(maxFee 상한 이하), 총 0.0001–10. 다음 준비부터 적용됩니다."
-                .to_owned(),
-        ));
+        items.push(Item::Help(text::CAPS_RANGE.get(lang).to_owned()));
         items.push(Item::CardEnd);
     }
 
@@ -1710,11 +1759,16 @@ impl App {
         let Some(form) = &self.evm.chain_form else {
             return;
         };
-        items.push(Item::Title(if form.editing.is_some() {
-            "EVM 체인 편집".to_owned()
-        } else {
-            "EVM 체인 추가".to_owned()
-        }));
+        let lang = self.settings.language;
+        items.push(Item::Title(
+            if form.editing.is_some() {
+                text::CHAIN_EDIT_TITLE
+            } else {
+                text::CHAIN_ADD
+            }
+            .get(lang)
+            .to_owned(),
+        ));
         if let Some(message) = &form.message {
             items.push(Item::Banner(message.clone(), Tone::Info));
         }
@@ -1724,15 +1778,15 @@ impl App {
             chain_id = chain_id.readonly();
         }
         items.push(Item::LabeledRow("chainId".to_owned(), vec![chain_id]));
-        items.push(Item::Help(
-            "체인 고유 번호입니다(10진수). 체인 공식 문서나 chainlist에서 확인하세요.".to_owned(),
-        ));
+        items.push(Item::Help(text::CHAIN_ID_HELP.get(lang).to_owned()));
         items.push(Item::LabeledRow(
-            "이름".to_owned(),
+            text::NAME.get(lang).to_owned(),
             vec![Ctl::edit(ids::CHAIN_NAME_EDIT, &form.name, 260, false, 64)],
         ));
         items.push(Item::LabeledRow(
-            "네이티브 심볼".to_owned(),
+            crate::flow::evm::user_chain::text::ITEM_SYMBOL
+                .get(lang)
+                .to_owned(),
             vec![Ctl::edit(
                 ids::CHAIN_SYMBOL_EDIT,
                 &form.symbol,
@@ -1742,7 +1796,9 @@ impl App {
             )],
         ));
         items.push(Item::LabeledRow(
-            "소수 자릿수".to_owned(),
+            crate::flow::evm::user_chain::text::ITEM_DECIMALS
+                .get(lang)
+                .to_owned(),
             vec![Ctl::edit(
                 ids::CHAIN_DECIMALS_EDIT,
                 &form.decimals,
@@ -1751,33 +1807,35 @@ impl App {
                 2,
             )],
         ));
-        items.push(Item::Help(
-            "수수료를 내는 기본 자산의 기호와 소수 자릿수입니다(대부분 18).".to_owned(),
-        ));
+        items.push(Item::Help(text::NATIVE_HELP.get(lang).to_owned()));
         let template = self.settings.rpc_template;
         let credential = self.apikeys.credential(template).is_some();
+        let credential = if credential {
+            text::CREDENTIAL_SET
+        } else {
+            text::CREDENTIAL_NONE
+        }
+        .get(lang);
         let hint = match template {
-            crate::settings::RpcTemplate::QuickNode => format!(
-                "https:// 주소 또는 QuickNode 서브도메인(예 base-sepolia). 자격 정보: {}",
-                if credential { "설정됨" } else { "없음" }
-            ),
-            crate::settings::RpcTemplate::Alchemy => format!(
-                "https:// 주소 또는 알케미 라벨(예 base-sepolia). 자격 정보: {}",
-                if credential { "설정됨" } else { "없음" }
-            ),
-            crate::settings::RpcTemplate::Manual => "https:// 주소 (직접 입력 템플릿)".to_owned(),
+            crate::settings::RpcTemplate::QuickNode => {
+                text::RPC_HINT_QUICKNODE.fill(lang, [credential])
+            }
+            crate::settings::RpcTemplate::Alchemy => {
+                text::RPC_HINT_ALCHEMY.fill(lang, [credential])
+            }
+            crate::settings::RpcTemplate::Manual => text::RPC_HINT_MANUAL.get(lang).to_owned(),
         };
         items.push(Item::LabeledRow(
-            "RPC 주소".to_owned(),
+            text::RPC_ADDRESS.get(lang).to_owned(),
             vec![Ctl::edit(ids::CHAIN_RPC_EDIT, "", 430, true, 2_048)],
         ));
         items.push(Item::Help(if form.editing.is_some() {
-            format!("{hint} · 비워 두면 기존 주소를 유지합니다.")
+            text::RPC_KEEP.fill(lang, [&hint])
         } else {
             hint
         }));
         items.push(Item::LabeledRow(
-            "탐색기 URL(선택)".to_owned(),
+            text::EXPLORER_OPTIONAL.get(lang).to_owned(),
             vec![Ctl::edit(
                 ids::CHAIN_EXPLORER_EDIT,
                 &form.explorer,
@@ -1787,30 +1845,27 @@ impl App {
             )],
         ));
         items.push(Item::LabeledRow(
-            "시뮬레이션".to_owned(),
+            text::SIMULATION.get(lang).to_owned(),
             vec![
                 Ctl::radio(
                     ids::CHAIN_SIM_AUTO,
-                    "auto (항상 시도)",
+                    text::SIM_AUTO.get(lang),
                     !form.unsupported,
                     true,
                 ),
                 Ctl::radio(
                     ids::CHAIN_SIM_UNSUPPORTED,
-                    "unsupported (호출하지 않음)",
+                    text::SIM_UNSUPPORTED.get(lang),
                     form.unsupported,
                     false,
                 ),
             ],
         ));
-        items.push(Item::Help(
-            "승인 전에 거래 결과를 미리 실행해 보는 기능입니다. RPC가 지원하지 않으면 unsupported를 고르세요. 그 체인의 승인은 언제나 고위험 경고와 함께 표시됩니다."
-                .to_owned(),
-        ));
+        items.push(Item::Help(text::SIM_HELP.get(lang).to_owned()));
         items.push(Item::CardEnd);
         items.push(Item::Row(vec![
-            Ctl::primary(ids::CHAIN_SAVE, "저장").enabled(form.pending.is_none()),
-            Ctl::button(ids::CHAIN_CANCEL, "취소"),
+            Ctl::primary(ids::CHAIN_SAVE, text::SAVE.get(lang)).enabled(form.pending.is_none()),
+            Ctl::button(ids::CHAIN_CANCEL, text::CANCEL.get(lang)),
         ]));
     }
 
@@ -1825,21 +1880,27 @@ impl App {
         else {
             return String::new();
         };
+        let lang = self.settings.language;
         let rpc = match &valid.rpc {
             crate::flow::evm::user_chain::RpcSpec::Template {
                 template, entry, ..
             } => match template {
-                crate::settings::RpcTemplate::QuickNode => format!("QuickNode 서브도메인 {entry}"),
-                _ => format!("알케미 라벨 {entry}"),
+                crate::settings::RpcTemplate::QuickNode => {
+                    text::QUICKNODE_ENTRY.fill(lang, [entry])
+                }
+                _ => text::ALCHEMY_ENTRY.fill(lang, [entry]),
             },
             crate::flow::evm::user_chain::RpcSpec::Url(url) => crate::apikeys::mask_url(url),
             crate::flow::evm::user_chain::RpcSpec::Keep => String::new(),
         };
-        format!(
-            "이 체인의 제네시스 해시를 지금 받은 값으로 고정합니다. 이후 연결할 때마다 chainId와 이 값을 비교하고, 다르면 이 체인을 쓰지 않습니다. 해시가 공식 자료(체인 문서·탐색기)의 값과 같은지 확인하세요.\nchainId {}\n이름 {}\nRPC {rpc}\n제네시스 {}",
-            valid.chain_id,
-            valid.name,
-            crate::text::hash32_text(&genesis)
+        text::CHAIN_PIN.fill(
+            lang,
+            [
+                &valid.chain_id.to_string(),
+                &valid.name,
+                &rpc,
+                &crate::text::hash32_text(&genesis),
+            ],
         )
     }
 
@@ -1855,9 +1916,7 @@ impl App {
         let new = repin
             .new
             .map_or_else(String::new, |hash| crate::text::hash32_text(&hash));
-        format!(
-            "고정된 제네시스 해시와 RPC가 알려준 값이 다릅니다. RPC가 다른 체인을 가리키거나 체인이 새로 시작되었을 수 있습니다. 새 값을 공식 자료로 확인한 경우에만 다시 고정하세요.\n고정된 값 {old}\n새 값     {new}"
-        )
+        text::CHAIN_REPIN.fill(self.settings.language, [&old, &new])
     }
 
     /// The default label of a built-in chain (for tests and the network list).
@@ -1874,7 +1933,7 @@ impl App {
 
     /// The fixed E-KEY-005 text (S10 without endpoint).
     #[must_use]
-    pub fn no_endpoint_text() -> String {
-        ErrorCode::Key005.text()
+    pub fn no_endpoint_text(lang: Lang) -> String {
+        ErrorCode::Key005.text_in(lang)
     }
 }

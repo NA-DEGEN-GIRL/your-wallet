@@ -42,9 +42,9 @@ pub fn level_of(rule: RuleId) -> Option<RiskLevel> {
     })
 }
 
-/// Fixed texts (spec/08 §10, §12.1, §13). The `B` warning texts are bilingual [`Text`]s of the
-/// btc catalogue (`btc::text`, spec/14; 2026-11-14: they were Korean `&str` before); the other
-/// texts here are not approval display and stay Korean.
+/// Fixed texts (spec/08 §10, §12.1, §13): bilingual [`Text`]s of the btc catalogue (`btc::text`,
+/// spec/14). 2026-11-14: the `B` warning texts were Korean `&str` before Step 2, the error and
+/// confirmation texts before Step 3 (same Korean bytes).
 ///
 /// [`Text`]: crate::lang::Text
 pub mod texts {
@@ -68,55 +68,52 @@ pub mod texts {
     /// B08 (P2SH, P2WSH).
     pub const SCRIPT_RECIPIENT: Text = text::B08_SCRIPT_RECIPIENT;
     /// D20 in-flight refusal (spec/08 §12.1).
-    pub const IN_FLIGHT: &str =
-        "진행 중인 Bitcoin 거래가 확인된 뒤 보낼 수 있습니다. 수수료 올리기는 가능합니다";
+    pub const IN_FLIGHT: Text = text::IN_FLIGHT;
     /// A plan input is used by an in-flight journal entry (spec/08 §5).
-    pub const INPUT_IN_FLIGHT: &str = "진행 중인 거래가 쓰는 입력은 다시 쓸 수 없습니다";
+    pub const INPUT_IN_FLIGHT: Text = text::INPUT_IN_FLIGHT;
     /// The fee-bump target is not replaceable.
-    pub const NOT_BUMPABLE: &str = "수수료를 올릴 수 있는 거래가 아닙니다";
+    pub const NOT_BUMPABLE: Text = text::NOT_BUMPABLE;
     /// Change derivation failed.
-    pub const DERIVATION_FAILED: &str = "주소 파생에 실패했습니다";
+    pub const DERIVATION_FAILED: Text = text::DERIVATION_FAILED;
     /// Plan arithmetic overflow.
-    pub const PLAN_OVERFLOW: &str = "거래 크기 또는 금액 계산 범위를 넘었습니다";
+    pub const PLAN_OVERFLOW: Text = text::PLAN_OVERFLOW;
     /// `NetworkMismatch` (spec/08 §2, §13).
-    pub const NETWORK_MISMATCH: &str = "BTC 네트워크 설정이 지갑 데이터와 다릅니다";
+    pub const NETWORK_MISMATCH: Text = text::NETWORK_MISMATCH;
     /// `KeyMismatch` (spec/08 §3.1, §13).
-    pub const KEY_MISMATCH: &str = "파생한 키가 계정 공개키와 다릅니다. 서명을 중단했습니다";
+    pub const KEY_MISMATCH: Text = text::KEY_MISMATCH;
     /// `AmountRecordMismatch` (spec/08 §5, §13).
-    pub const AMOUNT_RECORD_MISMATCH: &str =
-        "기록된 입력 금액과 계획 금액이 다릅니다. 서명을 중단했습니다";
+    pub const AMOUNT_RECORD_MISMATCH: Text = text::AMOUNT_RECORD_MISMATCH;
     /// The approval does not match the plan.
-    pub const APPROVAL_MISMATCH: &str = "승인한 내용과 서명할 거래가 다릅니다. 서명하지 않았습니다";
+    pub const APPROVAL_MISMATCH: Text = text::APPROVAL_MISMATCH;
     /// Internal signing check failure.
-    pub const SIGN_INTERNAL: &str = "내부 검증에 실패해 서명하지 않았습니다.";
+    pub const SIGN_INTERNAL: Text = text::SIGN_INTERNAL;
     /// Post-sign verification failure (spec/08 §11.2).
-    pub const POST_SIGN: &str = "서명 검증 실패(내부 오류). 거래를 폐기했습니다";
+    pub const POST_SIGN: Text = text::POST_SIGN;
     /// `testmempoolaccept` differs from the local values (spec/08 §11.3).
-    pub const PRECHECK_MISMATCH: &str = "노드 검사 결과가 로컬 계산과 다릅니다";
+    pub const PRECHECK_MISMATCH: Text = text::PRECHECK_MISMATCH;
     /// `sendrawtransaction` returned another txid (spec/08 §11.3).
-    pub const TXID_MISMATCH: &str = "응답 txid 불일치";
+    pub const TXID_MISMATCH: Text = text::TXID_MISMATCH;
     /// Unknown `reject-reason` token (spec/08 §13).
-    pub const UNKNOWN_REJECT: &str = "알 수 없는 거부 사유";
+    pub const UNKNOWN_REJECT: Text = text::UNKNOWN_REJECT;
     /// RPC `-25`.
-    pub const RPC_MISSING_INPUTS: &str = "입력이 없거나 이미 사용되었습니다";
+    pub const RPC_MISSING_INPUTS: Text = text::RPC_MISSING_INPUTS;
     /// RPC `-26`.
-    pub const RPC_REJECTED: &str = "노드가 거래를 거부했습니다";
+    pub const RPC_REJECTED: Text = text::RPC_REJECTED;
     /// `Abandoned` confirmation (spec/08 §12.1).
-    pub const ABANDON_CONFIRM: &str = "이 거래는 이미 다른 노드에 퍼졌다면 나중에 확정될 수 있습니다. 포기한 뒤 같은 사람에게 다시 보내면 두 거래가 모두 확정되어 두 번 지불될 수 있습니다. 그래서 다음 보내기는 이 거래의 입력을 하나 이상 다시 써서, 둘 중 하나만 확정되게 합니다(30일 동안).";
+    pub const ABANDON_CONFIRM: Text = text::ABANDON_CONFIRM;
     /// [취소] of a `Signed` record whose bytes were already handed to the RPC (journal flags
     /// bit7, spec/08 §12.1 "공개된 거래").
-    pub const CANCEL_DISCLOSED_CONFIRM: &str = "서명한 거래를 취소합니다. 이 거래는 이미 노드(RPC)에 전달되었을 수 있어, 그 노드가 퍼뜨렸다면 나중에 확정될 수 있습니다. 두 번 지불되지 않도록 다음 보내기는 이 거래의 입력을 하나 이상 다시 써서 이 거래를 무효로 만듭니다(30일 동안).";
+    pub const CANCEL_DISCLOSED_CONFIRM: Text = text::CANCEL_DISCLOSED_CONFIRM;
     /// The result screen of a `Rejected` record whose bytes the RPC received (spec/08 §12.1).
-    pub const REJECTED_DISCLOSED: &str = "노드가 거부했습니다. 다만 노드(RPC)가 이 거래를 이미 받았으므로, 다음 보내기는 이 거래의 입력을 하나 이상 다시 써서 둘 중 하나만 확정되게 합니다(30일 동안). 입력은 보내기 화면에 남아 있으니 수수료를 바꿔 다시 검토하세요.";
+    pub const REJECTED_DISCLOSED: Text = text::REJECTED_DISCLOSED;
     /// A live abandoned transaction cannot be conflicted by the new send (spec/08 §12.1).
-    pub const ABANDONED_NOT_CONFLICTED: &str = "포기한 거래의 입력을 이번 보내기에 쓸 수 없어 보내지 않았습니다(두 번 지불 방지). 그 입력의 동결을 풀거나, 포기한 거래가 확정·충돌로 끝나거나 30일이 지난 뒤 다시 하세요";
+    pub const ABANDONED_NOT_CONFLICTED: Text = text::ABANDONED_NOT_CONFLICTED;
     /// A Core tip at or above 500,000,000 (spec/08 §2 step 2).
-    pub const TIP_IMPLAUSIBLE: &str = "노드가 알려준 블록 높이가 올바르지 않아 보내지 않았습니다";
+    pub const TIP_IMPLAUSIBLE: Text = text::TIP_IMPLAUSIBLE;
     /// The change chain is exhausted (spec/08 §3.2).
-    pub const CHANGE_INDEX_EXHAUSTED: &str =
-        "잔돈 주소 인덱스를 모두 써서 잔돈이 있는 거래를 만들 수 없습니다";
+    pub const CHANGE_INDEX_EXHAUSTED: Text = text::CHANGE_INDEX_EXHAUSTED;
     /// A planned input is no longer recorded (a refresh during the approval removed it).
-    pub const INPUT_NOT_RECORDED: &str = "승인하는 동안 입력 UTXO가 검증 목록에서 빠졌습니다(이미 사용되었거나 인덱서 목록에서 사라짐). 서명하지 않았습니다. 다시 검토하세요";
+    pub const INPUT_NOT_RECORDED: Text = text::INPUT_NOT_RECORDED;
 }
 
 fn warning(rule: RuleId, text: String) -> Warning {
@@ -237,33 +234,32 @@ pub fn known_reject_token(token: &str) -> Option<&'static str> {
     REJECT_TOKENS.iter().copied().find(|known| *known == token)
 }
 
-/// The fixed text of a Core `reject-reason` token (spec/08 §13): exact token match only, anything
-/// else is "알 수 없는 거부 사유". The token itself is for logs only.
+/// The fixed text of a Core `reject-reason` token in `lang` (spec/08 §13): exact token match only,
+/// anything else is "알 수 없는 거부 사유". The token itself is for logs only.
 #[must_use]
-pub fn reject_reason_text(token: &str) -> &'static str {
+pub fn reject_reason_text(lang: Lang, token: &str) -> &'static str {
     match token {
-        "min relay fee not met" | "mempool min fee not met" => {
-            "수수료율이 노드 최소값보다 낮습니다"
-        }
-        "insufficient fee" => "교체 수수료가 부족합니다",
-        "txn-mempool-conflict" => "다른 미확정 거래와 충돌합니다",
+        "min relay fee not met" | "mempool min fee not met" => btc_text::REJECT_MIN_FEE,
+        "insufficient fee" => btc_text::REJECT_INSUFFICIENT_FEE,
+        "txn-mempool-conflict" => btc_text::REJECT_CONFLICT,
         "missing-inputs" | "bad-txns-inputs-missingorspent" => texts::RPC_MISSING_INPUTS,
-        "non-final" => "잠금 시간이 아직 지나지 않았습니다(노드 높이 확인)",
-        "dust" => "먼지 출력이 있습니다",
-        "max-fee-exceeded" => "수수료 상한을 넘었습니다",
-        "txn-already-in-mempool" | "txn-already-known" => "이미 전송된 거래입니다",
+        "non-final" => btc_text::REJECT_NON_FINAL,
+        "dust" => btc_text::REJECT_DUST,
+        "max-fee-exceeded" => btc_text::REJECT_MAX_FEE,
+        "txn-already-in-mempool" | "txn-already-known" => btc_text::REJECT_ALREADY_SENT,
         _ => texts::UNKNOWN_REJECT,
     }
+    .get(lang)
 }
 
-/// The fixed text of a Core JSON-RPC error code (spec/08 §13): `-25`, `-26`, or
+/// The fixed text of a Core JSON-RPC error code in `lang` (spec/08 §13): `-25`, `-26`, or
 /// "RPC 오류(코드 {n})". `error.message` is never shown.
 #[must_use]
-pub fn rpc_error_text(code: i64) -> String {
+pub fn rpc_error_text(lang: Lang, code: i64) -> String {
     match code {
-        -25 => texts::RPC_MISSING_INPUTS.to_owned(),
-        -26 => texts::RPC_REJECTED.to_owned(),
-        other => format!("RPC 오류(코드 {other})"),
+        -25 => texts::RPC_MISSING_INPUTS.get(lang).to_owned(),
+        -26 => texts::RPC_REJECTED.get(lang).to_owned(),
+        other => btc_text::RPC_ERROR_CODE.fill(lang, [&other.to_string()]),
     }
 }
 
@@ -329,9 +325,13 @@ const ALREADY_KNOWN_TOKENS: [&str; 2] = ["txn-already-in-mempool", "txn-already-
 /// Compares a `testmempoolaccept` result with the local transaction: `allowed == false` →
 /// [`PrecheckOutcome::AlreadyKnown`] for an already-known token with our `txid` and `wtxid`,
 /// else the `reject-reason` text; otherwise `txid`, `wtxid`, `vsize` and `fees.base` must all
-/// equal the local values, else "노드 검사 결과가 로컬 계산과 다릅니다".
+/// equal the local values, else "노드 검사 결과가 로컬 계산과 다릅니다". Texts are in `lang`.
 #[must_use]
-pub fn check_mempool_accept(result: &MempoolAccept, local: &LocalTx) -> PrecheckOutcome {
+pub fn check_mempool_accept(
+    lang: Lang,
+    result: &MempoolAccept,
+    local: &LocalTx,
+) -> PrecheckOutcome {
     if !result.allowed {
         if let Some(token) = result
             .reject_reason
@@ -340,11 +340,11 @@ pub fn check_mempool_accept(result: &MempoolAccept, local: &LocalTx) -> Precheck
         {
             return if result.txid == local.txid && result.wtxid == local.wtxid {
                 PrecheckOutcome::AlreadyKnown {
-                    text: reject_reason_text(token),
+                    text: reject_reason_text(lang, token),
                 }
             } else {
                 PrecheckOutcome::Rejected {
-                    text: texts::PRECHECK_MISMATCH,
+                    text: texts::PRECHECK_MISMATCH.get(lang),
                 }
             };
         }
@@ -352,7 +352,9 @@ pub fn check_mempool_accept(result: &MempoolAccept, local: &LocalTx) -> Precheck
             text: result
                 .reject_reason
                 .as_deref()
-                .map_or(texts::UNKNOWN_REJECT, reject_reason_text),
+                .map_or(texts::UNKNOWN_REJECT.get(lang), |token| {
+                    reject_reason_text(lang, token)
+                }),
         };
     }
     if result.txid == local.txid
@@ -363,7 +365,7 @@ pub fn check_mempool_accept(result: &MempoolAccept, local: &LocalTx) -> Precheck
         PrecheckOutcome::Accepted
     } else {
         PrecheckOutcome::Rejected {
-            text: texts::PRECHECK_MISMATCH,
+            text: texts::PRECHECK_MISMATCH.get(lang),
         }
     }
 }
@@ -410,23 +412,27 @@ pub enum BroadcastOutcome {
     },
 }
 
-/// Maps a `sendrawtransaction` result to the next state (spec/08 §11.3).
+/// Maps a `sendrawtransaction` result to the next state (spec/08 §11.3); texts in `lang`.
 #[must_use]
-pub fn broadcast_outcome(result: &SendRawResult, local_txid: &Txid) -> BroadcastOutcome {
+pub fn broadcast_outcome(
+    lang: Lang,
+    result: &SendRawResult,
+    local_txid: &Txid,
+) -> BroadcastOutcome {
     match result {
         SendRawResult::Txid(txid) if txid == local_txid => BroadcastOutcome::Submitted,
         SendRawResult::Txid(_) | SendRawResult::NotTxid => BroadcastOutcome::BroadcastUnknown {
-            text: Some(texts::TXID_MISMATCH.to_owned()),
+            text: Some(texts::TXID_MISMATCH.get(lang).to_owned()),
             comm_failure: false,
         },
         SendRawResult::RpcError { code: -27 } => BroadcastOutcome::Submitted,
         SendRawResult::RpcError {
             code: code @ (-25 | -26),
         } => BroadcastOutcome::Rejected {
-            text: rpc_error_text(*code),
+            text: rpc_error_text(lang, *code),
         },
         SendRawResult::RpcError { code } => BroadcastOutcome::BroadcastUnknown {
-            text: Some(rpc_error_text(*code)),
+            text: Some(rpc_error_text(lang, *code)),
             comm_failure: false,
         },
         SendRawResult::Timeout | SendRawResult::Transport => BroadcastOutcome::BroadcastUnknown {

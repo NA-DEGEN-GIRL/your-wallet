@@ -177,27 +177,16 @@ impl BtcNetwork {
         }
     }
 
-    /// Network name in titles (`[Bitcoin 메인넷] 보내기: …`, spec/08 §10).
+    /// Network name in titles in `lang` (`[Bitcoin 메인넷] 보내기: …`, spec/08 §10; English
+    /// spec/14).
     #[must_use]
-    pub const fn display_name(self) -> &'static str {
-        match self {
-            Self::Mainnet => "Bitcoin 메인넷",
-            Self::Testnet4 => "Bitcoin testnet4",
-        }
+    pub const fn display_name_in(self, lang: crate::lang::Lang) -> &'static str {
+        crate::btc::text::network_name(lang, self)
     }
 
-    /// Banner text (spec/08 §2; mainnet on red, testnet4 on orange).
+    /// The banner in `lang` (spec/08 §2: mainnet on red, testnet4 on orange; English spec/14).
     #[must_use]
-    pub const fn banner(self) -> &'static str {
-        match self {
-            Self::Mainnet => "BITCOIN MAINNET",
-            Self::Testnet4 => "BITCOIN TESTNET4 — 가치 없음",
-        }
-    }
-
-    /// The banner in `lang` (spec/08 §2; English spec/14 §2).
-    #[must_use]
-    pub fn banner_in(self, lang: crate::lang::Lang) -> &'static str {
+    pub const fn banner_in(self, lang: crate::lang::Lang) -> &'static str {
         crate::btc::text::network_banner(lang, self)
     }
 

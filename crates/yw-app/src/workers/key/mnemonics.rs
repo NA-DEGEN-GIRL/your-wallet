@@ -303,10 +303,10 @@ impl KeyWorker {
     }
 }
 
-/// The default label of the `n`-th recovery phrase (`니모닉 n`).
+/// The default label of the `n`-th recovery phrase in `lang` (`복구 단어 n`).
 #[must_use]
-pub fn default_label(n: usize) -> String {
-    format!("{}{n}", meta::MNEMONIC_LABEL_PREFIX)
+pub fn default_label(lang: yw_core::lang::Lang, n: usize) -> String {
+    meta::MNEMONIC_LABEL.fill(lang, [&n.to_string()])
 }
 
 /// Reconciles the Solana, Bitcoin and Zcash accounts of added mnemonics with the vault's
@@ -475,7 +475,11 @@ fn reconcile_btc(
 /// # Errors
 ///
 /// The vault is locked, or a derivation failed.
-pub(super) fn reconcile_mnemonics(document: &mut Meta, vault: &Vault) -> Result<bool, VaultError> {
+pub(super) fn reconcile_mnemonics(
+    document: &mut Meta,
+    vault: &Vault,
+    lang: yw_core::lang::Lang,
+) -> Result<bool, VaultError> {
     let infos = vault.mnemonics()?;
     let mut entries: Vec<MnemonicEntry> = Vec::with_capacity(infos.len());
     for info in &infos {
@@ -498,7 +502,7 @@ pub(super) fn reconcile_mnemonics(document: &mut Meta, vault: &Vault) -> Result<
                     .filter_map(|entry| meta::default_mnemonic_number(&entry.label))
                     .max()
                     .unwrap_or(0);
-                default_label(highest.saturating_add(1))
+                default_label(lang, highest.saturating_add(1))
             },
             |entry| entry.label.clone(),
         );
@@ -509,7 +513,7 @@ pub(super) fn reconcile_mnemonics(document: &mut Meta, vault: &Vault) -> Result<
                 // `계정 N` one above the highest of every phrase, the entries made so far
                 // included (2026-11-10: each added phrase's first account was `계정 1`).
                 let number = meta::next_label_number(
-                    meta::EVM_ACCOUNT_PREFIX,
+                    meta::EVM_ACCOUNT_LABEL,
                     document.evm_labels().chain(
                         entries
                             .iter()
@@ -521,7 +525,7 @@ pub(super) fn reconcile_mnemonics(document: &mut Meta, vault: &Vault) -> Result<
                     0,
                     Account {
                         index: 0,
-                        label: format!("{}{number}", meta::EVM_ACCOUNT_PREFIX),
+                        label: meta::EVM_ACCOUNT_LABEL.fill(lang, [&number.to_string()]),
                         address: String::new(),
                         hidden: false,
                     },

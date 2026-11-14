@@ -582,6 +582,8 @@ pub enum KeyJob {
         stamp: String,
         /// Also move `settings.json` and `apikeys.dpapi`.
         include_settings: bool,
+        /// The language of `README-reset.txt` (the app language at the reset).
+        lang: yw_core::lang::Lang,
     },
     /// A Zcash step (spec/12).
     Zec(Box<crate::workers::journal::zec::ZecKeyJob>),

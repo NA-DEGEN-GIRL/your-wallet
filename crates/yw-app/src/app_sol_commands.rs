@@ -8,6 +8,14 @@ use crate::ui::screens_sol::ids;
 
 const TEXT_MAX: usize = 256;
 
+/// Fixed texts of the Solana commands (spec/07, spec/14).
+pub(crate) mod text {
+    yw_core::texts! {
+        FEE_RANGE = "Solana 수수료 설정 범위를 벗어났습니다(수수료 상한 10,000–10,000,000, CU 가격 상한 0–100,000,000)."
+            / "The Solana fee settings are out of range (fee cap 10,000–10,000,000, CU price cap 0–100,000,000).";
+    }
+}
+
 fn offset(id: u16, base: u16, span: u16) -> Option<u16> {
     id.checked_sub(base).filter(|offset| *offset < span)
 }
@@ -76,10 +84,7 @@ impl App {
                     (fee, price)
                 }
                 _ => {
-                    self.info = Some(
-                        "Solana 수수료 설정 범위를 벗어났습니다(수수료 상한 10,000–10,000,000, CU 가격 상한 0–100,000,000)."
-                            .to_owned(),
-                    );
+                    self.info = Some(text::FEE_RANGE.get(self.settings.language).to_owned());
                     self.refresh();
                     return;
                 }
@@ -419,5 +424,37 @@ mod tests {
         assert_eq!(app.screen, Screen::SolScan);
         assert_eq!(app.sol.scan.message.as_deref(), Some(text));
         assert!(app.sol.send.moving.is_none());
+    }
+
+    /// spec/14 (Step 3): the Solana screens (main, send, result, receive, settings, scan) and the
+    /// Zcash tab (off and on) in English carry no Hangul (the labels here are ASCII data), and the
+    /// same screens in Korean still do.
+    #[test]
+    fn english_sol_and_zec_screens_have_no_korean() {
+        use yw_core::lang::{Lang, has_hangul};
+        let render = |app: &App| {
+            let mut items = Vec::new();
+            app.sol_main_screen(&mut items);
+            app.sol_send_screen(&mut items);
+            app.sol_send_result_screen(&mut items);
+            app.sol_receive_screen(&mut items);
+            app.sol_settings_section(&mut items);
+            app.sol_scan_screen(&mut items);
+            app.zec_main_screen(&mut items);
+            items
+        };
+        let mut app = scanned_app();
+        app.show_advanced = true;
+        app.sol.send.send_max = true;
+        let korean = render(&app);
+        assert!(korean.iter().any(|item| has_hangul(&format!("{item:?}"))));
+        app.settings.language = Lang::En;
+        for zcash in [false, true] {
+            app.settings.zcash.enabled = zcash;
+            for item in render(&app) {
+                let shown = format!("{item:?}");
+                assert!(!has_hangul(&shown), "{shown}");
+            }
+        }
     }
 }

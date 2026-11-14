@@ -245,9 +245,21 @@ pub enum AmountError {
     Overflow,
 }
 
+impl AmountError {
+    /// The fixed text in `lang` (`Display` is the Korean one).
+    #[must_use]
+    #[expect(
+        clippy::unused_self,
+        reason = "every amount format error shows the same text"
+    )]
+    pub const fn text_in(self, lang: crate::lang::Lang) -> &'static str {
+        super::text::AMOUNT_FORMAT.get(lang)
+    }
+}
+
 impl fmt::Display for AmountError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("금액 형식이 올바르지 않습니다.")
+        formatter.write_str(self.text_in(crate::lang::Lang::Ko))
     }
 }
 

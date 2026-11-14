@@ -1090,15 +1090,21 @@ fn zec_english_display_has_no_hangul() {
         ZecKeySource::Imported,
     ];
     for source in sources {
-        assert_eq!(text::source_label(Lang::Ko, source), source.label());
+        assert_eq!(
+            text::source_label(Lang::Ko, source),
+            source.label_in(Lang::Ko)
+        );
         assert!(!has_hangul(&text::source_label(Lang::En, source)));
         for network in [ZecNetwork::Mainnet, ZecNetwork::Testnet] {
             assert_eq!(
                 text::path_text(Lang::Ko, source, network),
-                source.path_text(network)
+                source.path_text_in(Lang::Ko, network)
             );
             assert!(!has_hangul(&text::path_text(Lang::En, source, network)));
-            assert_eq!(text::network_banner(Lang::Ko, network), network.banner());
+            assert_eq!(
+                text::network_banner(Lang::Ko, network),
+                network.banner_in(Lang::Ko)
+            );
             assert!(!has_hangul(text::network_banner(Lang::En, network)));
         }
     }
@@ -1107,13 +1113,16 @@ fn zec_english_display_has_no_hangul() {
         RecipientForm::Tex,
         RecipientForm::Unified,
     ] {
-        assert_eq!(text::form_label(Lang::Ko, form), form.label());
+        assert_eq!(text::form_label(Lang::Ko, form), form.label_in(Lang::Ko));
     }
-    assert_eq!(text::FORM_TEX.ko, RecipientForm::Tex.label());
-    assert_eq!(text::SOURCE_IMPORTED.ko, ZecKeySource::Imported.label());
+    assert_eq!(text::FORM_TEX.ko, RecipientForm::Tex.label_in(Lang::Ko));
+    assert_eq!(
+        text::SOURCE_IMPORTED.ko,
+        ZecKeySource::Imported.label_in(Lang::Ko)
+    );
     assert_eq!(
         text::PATH_IMPORTED.ko,
-        ZecKeySource::Imported.path_text(ZecNetwork::Testnet)
+        ZecKeySource::Imported.path_text_in(Lang::Ko, ZecNetwork::Testnet)
     );
     let mut plans = Vec::new();
     for (step, source) in sources.into_iter().enumerate() {
@@ -1185,4 +1194,56 @@ fn zec_english_display_has_no_hangul() {
     };
     assert!(title(Lang::Ko).starts_with("[Zcash testnet] 보내기: "));
     assert_eq!(title(Lang::En), title(Lang::Ko).replace("보내기", "Send"));
+}
+
+/// spec/14 (Step 3): the Zcash error and journal texts in English have no Hangul, the Korean
+/// texts are unchanged, and the ZEC journal catalogue keeps the catalogue rules.
+#[test]
+fn english_zec_error_texts_have_no_korean() {
+    use crate::journal::zec::{ZecJournalBlock, ZecRecordError, ZecTxState};
+    use crate::lang::{Lang, has_hangul};
+    for entry in crate::journal::zec::text::ALL {
+        assert!(!has_hangul(entry.en), "{}", entry.name);
+        assert!(
+            crate::approval::is_valid_display_text(
+                entry.en,
+                crate::approval::MAX_DISPLAY_VALUE_BYTES,
+                true
+            ),
+            "{}",
+            entry.name
+        );
+    }
+    let mismatch = super::upgrade::UpgradeError::BranchMismatch {
+        node: 0xc8e7_1055,
+        table: 0x4dec_4df0,
+    };
+    assert_eq!(
+        mismatch.to_string(),
+        "노드의 네트워크 업그레이드(branch id c8e71055)가 지갑의 표(4dec4df0)와 다릅니다. 노드나 지갑 버전을 확인하세요."
+    );
+    let plan = super::plan::ZecPlanError::Insufficient {
+        available: 1,
+        needed: 2,
+    };
+    assert!(
+        plan.to_string()
+            .starts_with("확인된 잔액이 부족합니다: 필요 ")
+    );
+    let texts = [
+        mismatch.text_in(Lang::En),
+        plan.text_in(Lang::En),
+        super::plan::ZecPlanError::TooManyInputs.text_in(Lang::En),
+        super::address::ZecAddressError::UnifiedUnsupported
+            .text_in(Lang::En)
+            .to_owned(),
+        super::sign::ZecSignError::KeyMismatch.text_in(Lang::En),
+        ZecJournalBlock::InFlight.text_in(Lang::En).to_owned(),
+        ZecRecordError::Tx.text_in(Lang::En).to_owned(),
+        ZecTxState::InputsSpent.label_in(Lang::En).to_owned(),
+    ];
+    for text in texts {
+        assert!(!text.is_empty() && !has_hangul(&text), "{text}");
+    }
+    assert_eq!(ZecTxState::Signed.label_in(Lang::Ko), "서명됨 (전송 전)");
 }

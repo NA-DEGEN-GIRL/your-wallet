@@ -46,11 +46,12 @@ impl KeyWorker {
                 .ok_or(YubiKeyJobError::Vault(VaultError::InvalidState))?;
             let password = password(held).map_err(YubiKeyJobError::Vault)?;
             let slot = new_slot().map_err(YubiKeyJobError::Vault)?;
+            let lang = self.lang;
             let vault = self.vault().map_err(YubiKeyJobError::Vault)?;
             let id = vault
                 .create_with_hardware(&password, enrolled.record.clone(), slot, now_unix())
                 .map_err(YubiKeyJobError::Vault)?;
-            super::write_yubikey_meta(vault).map_err(YubiKeyJobError::Vault)?;
+            super::write_yubikey_meta(vault, lang).map_err(YubiKeyJobError::Vault)?;
             // The wallet exists: the password is not needed again.
             self.connect_password = None;
             logging::info("key", "yubikey.wallet_connected", &[]);

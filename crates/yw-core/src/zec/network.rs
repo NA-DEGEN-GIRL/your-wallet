@@ -146,12 +146,12 @@ impl ZecNetwork {
         }
     }
 
-    /// Display name of the network banner.
+    /// Display name of the network banner in `lang`.
     #[must_use]
-    pub const fn banner(self) -> &'static str {
+    pub const fn banner_in(self, lang: crate::lang::Lang) -> &'static str {
         match self {
             Self::Mainnet => "ZCASH MAINNET",
-            Self::Testnet => "ZCASH TESTNET — 가치 없음",
+            Self::Testnet => super::text::BANNER_TESTNET.get(lang),
         }
     }
 

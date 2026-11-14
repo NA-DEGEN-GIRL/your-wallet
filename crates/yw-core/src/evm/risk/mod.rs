@@ -638,7 +638,7 @@ pub fn tx_rules(input: &TxRiskInput<'_>) -> Vec<Warning> {
             warnings.push(warning(lang, E30, None));
             continue;
         }
-        let registered = chain.label(&intent.spender).is_some();
+        let registered = chain.label_in(&intent.spender, Lang::Ko).is_some();
         match facts.code_of(&intent.spender) {
             Some(CodeKind::Eoa | CodeKind::Delegated7702 { .. }) => {
                 warnings.push(warning(lang, E16, None));
@@ -832,7 +832,7 @@ fn spender_rule(chain: &ChainInfo, facts: &ChainFacts, spender: Option<Address>)
     let spender = spender?;
     match facts.code_of(&spender) {
         Some(CodeKind::Eoa | CodeKind::Delegated7702 { .. }) => Some(T09),
-        Some(CodeKind::Unknown) if chain.label(&spender).is_none() => Some(T18),
+        Some(CodeKind::Unknown) if chain.label_in(&spender, Lang::Ko).is_none() => Some(T18),
         _ => None,
     }
 }

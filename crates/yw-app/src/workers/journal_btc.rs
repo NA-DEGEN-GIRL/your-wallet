@@ -29,6 +29,7 @@ use yw_core::journal::btc::{
     prune_finished, push_record, recorded_amounts, refresh_keep_outpoints, related_records,
     set_disclosed, set_last_send_comm_failure, set_state_entry, take_finished_duplicates,
 };
+use yw_core::lang::Lang;
 use yw_core::vault::{FileKind, RecordId, Vault};
 
 use super::{JournalState, fault_point, view_of};
@@ -302,20 +303,34 @@ pub enum BtcKeyError {
     KeyRemoved,
 }
 
+/// The fixed texts of the BTC key-worker errors (spec/08 §12, spec/14; 2026-11-14: Korean
+/// literals before).
+pub mod text {
+    yw_core::texts! {
+        /// `BtcKeyError::NoMeta`, `BtcSignFailure::NoMeta`.
+        NO_META = "Bitcoin이 켜져 있지 않습니다" / "Bitcoin is not turned on";
+        /// `BtcKeyError::KeyRemoved`.
+        KEY_REMOVED = "이 계정의 개인키는 지갑에서 삭제되었습니다. 이 계정의 주소로 받지 마세요."
+            / "This account's private key was deleted from the wallet. Do not receive to this account's addresses.";
+        /// `BtcSignFailure::JournalDamaged`.
+        JOURNAL_DAMAGED = "거래 저널이 손상되어 보내기를 멈췄습니다. (E-VLT-006)"
+            / "The transaction journal is damaged, so sending is stopped. (E-VLT-006)";
+        /// `BtcSignFailure::JournalWrite` (`{0}` the E-VLT-003 text).
+        JOURNAL_WRITE(1) = "저널 저장 실패 — {0}" / "Journal save failed — {0}";
+    }
+}
+
 impl BtcKeyError {
-    /// Fixed text.
+    /// Fixed text in `lang`.
     #[must_use]
-    pub fn text(self) -> String {
+    pub fn text(self, lang: Lang) -> String {
         match self {
-            Self::NoMeta => "Bitcoin이 켜져 있지 않습니다".to_owned(),
-            Self::Meta(error) => error.to_string(),
-            Self::Vault(error) => crate::errors::vault_code(error).text(),
-            Self::Journal(error) => error.to_string(),
-            Self::Internal => crate::errors::ErrorCode::Tx003.text(),
-            Self::KeyRemoved => {
-                "이 계정의 개인키는 지갑에서 삭제되었습니다. 이 계정의 주소로 받지 마세요."
-                    .to_owned()
-            }
+            Self::NoMeta => text::NO_META.get(lang).to_owned(),
+            Self::Meta(error) => error.text_in(lang).to_owned(),
+            Self::Vault(error) => crate::errors::vault_code(error).text_in(lang),
+            Self::Journal(error) => error.text_in(lang).to_owned(),
+            Self::Internal => crate::errors::ErrorCode::Tx003.text_in(lang),
+            Self::KeyRemoved => text::KEY_REMOVED.get(lang).to_owned(),
         }
     }
 }
@@ -381,28 +396,23 @@ impl BtcSignFailure {
         )
     }
 
-    /// Fixed text.
+    /// Fixed text in `lang`.
     #[must_use]
-    pub fn text(self) -> String {
+    pub fn text(self, lang: Lang) -> String {
         use yw_core::btc::policy::texts;
         match self {
-            Self::NoMeta => "Bitcoin이 켜져 있지 않습니다".to_owned(),
-            Self::NetworkMismatch => texts::NETWORK_MISMATCH.to_owned(),
-            Self::JournalDamaged => {
-                "거래 저널이 손상되어 보내기를 멈췄습니다. (E-VLT-006)".to_owned()
-            }
-            Self::JournalFull => crate::errors::ErrorCode::Tx005.text(),
-            Self::DuplicateTx => BtcPushError::Duplicate.to_string(),
-            Self::Plan(error) => error.to_string(),
-            Self::Sign(error) => error.to_string(),
-            Self::PostSign(_) | Self::Record(_) => texts::POST_SIGN.to_owned(),
+            Self::NoMeta => text::NO_META.get(lang).to_owned(),
+            Self::NetworkMismatch => texts::NETWORK_MISMATCH.get(lang).to_owned(),
+            Self::JournalDamaged => text::JOURNAL_DAMAGED.get(lang).to_owned(),
+            Self::JournalFull => crate::errors::ErrorCode::Tx005.text_in(lang),
+            Self::DuplicateTx => BtcPushError::Duplicate.text_in(lang).to_owned(),
+            Self::Plan(error) => error.text_in(lang),
+            Self::Sign(error) => error.text_in(lang),
+            Self::PostSign(_) | Self::Record(_) => texts::POST_SIGN.get(lang).to_owned(),
             Self::JournalWrite(_) => {
-                format!(
-                    "저널 저장 실패 — {}",
-                    crate::errors::ErrorCode::Vlt003.text()
-                )
+                text::JOURNAL_WRITE.fill(lang, [&crate::errors::ErrorCode::Vlt003.text_in(lang)])
             }
-            Self::Card(error) => error.to_string(),
+            Self::Card(error) => error.text_in(lang),
         }
     }
 }
@@ -1601,7 +1611,7 @@ impl JournalState {
                 // The RPC answered about these bytes, so it has them (normally already set by
                 // `Disclose`; kept for every outcome, `Rejected` included).
                 set_disclosed(&mut next, network, &entry).map_err(BtcKeyError::Journal)?;
-                match check_mempool_accept(&accept, &local) {
+                match check_mempool_accept(self.lang, &accept, &local) {
                     PrecheckOutcome::Accepted => {
                         let tx = signed_ref(&record).ok_or(BtcKeyError::Internal)?;
                         self.raise_change_next(vault, network, &record, alt, out)?;
@@ -1656,7 +1666,7 @@ impl JournalState {
             } => {
                 let record = find_record(&next, network, &txid)
                     .ok_or(BtcKeyError::Journal(TransitionError::UnknownTx))?;
-                let outcome = broadcast_outcome(&result, &txid);
+                let outcome = broadcast_outcome(self.lang, &result, &txid);
                 let (target, comm_failure) = match &outcome {
                     BroadcastOutcome::Submitted => (BtcTxState::Submitted, false),
                     BroadcastOutcome::BroadcastUnknown { comm_failure, .. } => {

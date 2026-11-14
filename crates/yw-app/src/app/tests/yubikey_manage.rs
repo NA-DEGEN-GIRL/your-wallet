@@ -427,3 +427,158 @@ fn yubikey_clear_our_slots_and_applet_resets() {
     }
     assert!(h.app.card.records.is_empty());
 }
+
+/// Every fixed text of a `YubiKey` screen: item texts, labels, card titles, steps and controls.
+fn english_texts(items: &[crate::ui::main_window::Item]) -> Vec<String> {
+    use crate::ui::main_window::Item;
+    let mut all = super::texts(items);
+    for item in items {
+        match item {
+            Item::LabeledRow(label, _) => all.push(label.clone()),
+            Item::Field(label, value) => {
+                all.push(label.clone());
+                all.push(value.clone());
+            }
+            Item::CardStart(Some(title)) => all.push(title.clone()),
+            Item::Steps(labels, _) => all.extend(labels.iter().cloned()),
+            _ => {}
+        }
+    }
+    all.extend(super::controls(items).into_iter().map(|ctl| ctl.text));
+    all
+}
+
+fn assert_english(items: &[crate::ui::main_window::Item], screen: &str) {
+    let texts = english_texts(items);
+    assert!(!texts.is_empty(), "{screen}");
+    for text in texts {
+        assert!(
+            !yw_core::lang::has_hangul(&text),
+            "{screen}: Hangul in English UI: {text}"
+        );
+    }
+}
+
+/// spec/14 (2026-11-14): with `Lang::En` the enrolment wizard (plan, confirmation, credentials,
+/// result), the `YubiKey` list, the PIN card and the two card actions draw no Hangul; Korean
+/// stays the catalogue's Korean.
+#[test]
+fn english_yubikey_screens_have_no_korean() {
+    use yw_core::lang::Lang;
+    let (mut h, _cards) = card_harness("yk-english", 8_900_031);
+    let mut seen = YkSeen::default();
+    about_wallet(&mut h);
+    h.app.settings.language = Lang::En;
+    h.app.on_command(yk::SECTION_YUBIKEY);
+    h.pump();
+    let mut items = Vec::new();
+    h.app.yk_settings_section(&mut items);
+    assert_english(&items, "list (empty)");
+    h.app.on_command(yk::ENROL_START);
+    let mut items = Vec::new();
+    h.app.yk_wizard_screen(&mut items);
+    assert_english(&items, "plan");
+    // The shared key and its warning, then back to Bitcoin.
+    h.app.on_command(pgp_id(
+        PgpKey::Aut,
+        PgpAction::Kind(crate::app_yubikey::PgpKind::Shared),
+    ));
+    let mut items = Vec::new();
+    h.app.yk_wizard_screen(&mut items);
+    assert_english(&items, "plan (shared key)");
+    assert!(super::has_text(
+        &items,
+        crate::app_yubikey::text::YK_SHARED.en
+    ));
+    h.app.on_command(pgp_id(
+        PgpKey::Aut,
+        PgpAction::Kind(crate::app_yubikey::PgpKind::Btc),
+    ));
+    h.app.on_command(yk::PLAN_NEXT);
+    h.submit(Purpose::YubiKey(YkPurpose::Mnemonic), &[ABOUT.as_bytes()]);
+    yk_pump(&mut h, &mut seen);
+    let mut items = Vec::new();
+    h.app.yk_wizard_screen(&mut items);
+    assert_english(&items, "confirm");
+    assert!(all_text(&items).iter().any(|text| text == BIP84_0));
+    h.app.on_command(yk::SAME_ACK);
+    h.app.on_command(yk::CONFIRM_NEXT);
+    yk_pump(&mut h, &mut seen);
+    let mut items = Vec::new();
+    h.app.yk_wizard_screen(&mut items);
+    assert_english(&items, "credentials");
+    h.app.on_command(yk::IMPORT);
+    h.submit(Purpose::YubiKey(YkPurpose::AdminPin), &[ADMIN]);
+    yk_pump(&mut h, &mut seen);
+    h.app.on_command(yk::RESULT_DETAILS);
+    h.app.on_command(yk::PIN_GUIDE);
+    let mut items = Vec::new();
+    h.app.yk_wizard_screen(&mut items);
+    assert_english(&items, "result");
+    h.app.on_command(yk::PINS_SEPARATE);
+    let mut items = Vec::new();
+    h.app.yk_pin_items(8_900_031, &mut items);
+    assert_english(&items, "PIN card (one at a time)");
+    finish_result(&mut h, yk::FINISH);
+    yk_pump(&mut h, &mut seen);
+    let mut items = Vec::new();
+    h.app.yk_settings_section(&mut items);
+    assert_english(&items, "list");
+    assert!(super::has_text(
+        &items,
+        crate::ui::screens_yubikey::text::YK_LIST.en
+    ));
+    h.app.on_command(yk::RESLOT_BASE);
+    let mut items = Vec::new();
+    h.app.yk_settings_section(&mut items);
+    assert_english(&items, "re-slot");
+    h.app.on_command(yk::MANAGE_CANCEL);
+    h.app.on_command(yk::CLEAR_BASE);
+    let mut items = Vec::new();
+    h.app.yk_settings_section(&mut items);
+    assert_english(&items, "clear");
+    h.app.on_command(yk::MANAGE_CANCEL);
+    // Korean is the catalogue's Korean.
+    h.app.settings.language = Lang::Ko;
+    let mut items = Vec::new();
+    h.app.yk_settings_section(&mut items);
+    assert!(super::has_text(
+        &items,
+        crate::ui::screens_yubikey::text::YK_LIST.ko
+    ));
+}
+
+/// Every catalogue of the `YubiKey` app screens keeps its placeholders (each index used by at
+/// least one language) and has English without Hangul (spec/14 §4).
+#[test]
+fn yubikey_app_catalogues_are_complete() {
+    use yw_core::lang::{has_hangul, placeholders};
+    for (name, all) in [
+        ("screens_yubikey", crate::ui::screens_yubikey::text::ALL),
+        ("app_yubikey", crate::app_yubikey::text::ALL),
+        (
+            "app_yubikey::connect",
+            crate::app_yubikey::connect::text::ALL,
+        ),
+        ("app_yubikey::manage", crate::app_yubikey::manage::text::ALL),
+        ("app_card", crate::app_card::text::ALL),
+        ("yubikey", crate::yubikey::text::ALL),
+    ] {
+        for entry in all {
+            assert!(!has_hangul(entry.en), "{name}::{}", entry.name);
+            let (ko, en) = (placeholders(entry.ko), placeholders(entry.en));
+            for index in 0..entry.args {
+                assert!(
+                    ko.contains(&index) || en.contains(&index),
+                    "{name}::{}",
+                    entry.name
+                );
+            }
+            assert!(
+                ko.iter().chain(&en).all(|index| *index < entry.args),
+                "{name}::{}",
+                entry.name
+            );
+        }
+    }
+}

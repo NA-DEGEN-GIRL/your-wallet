@@ -733,7 +733,7 @@ pub trait LockedSlot: Send {
 
 ### 7.4 잠금 해제 실패
 
-- `UnlockFailed`의 화면 문구는 하나다: **"비밀번호가 올바르지 않거나 vault 파일이 손상되었습니다."** 비밀번호 오류와 키 구간 변조를 구분하지 않는다.
+- `UnlockFailed`의 화면 문구는 하나다: **"비밀번호가 올바르지 않거나 vault 파일이 손상되었습니다."** / **"The password is wrong or the vault file is damaged."** 비밀번호 오류와 키 구간 변조를 구분하지 않는다.
 - 실패 후 1초 동안 yw-app이 입력과 확인 버튼을 비활성화한다([04](04-app-ui.md) §2.5; 코어는 시간을 다루지 않는다). `reveal_*`·`change_password`·`remove_evm_raw_key`의 비밀번호 확인 실패에도 같다.
 - **실패 횟수 제한·잠금 카운터는 두지 않는다.** 방어 대상인 디스크 도난 공격자는 파일을 복사해 오프라인으로 시도하므로 앱 안의 카운터를 거치지 않고, 그 비용은 Argon2(256 MiB, t=3)가 정한다. 같은 사용자 악성코드는 §2.2 비목표다. 디스크에 둔 카운터는 파일 접근자가 되돌릴 수 있고, 정상 사용자만 잠가 버린다.
 - Argon2 1회 시간은 release 빌드에서 대상 PC로 측정해 [09](09-testing.md) 기록에 남긴다(구현 시 확인; argon2 0.5.3는 `parallel` 기능 없이 lane을 순차 계산한다).
@@ -820,8 +820,8 @@ pub fn parse_wif(text: &str) -> Result<WifKey, KeyError>;   // compressed(), net
 `Unlocked`에서만(`BackupPending`이면 `BackupNotConfirmed`). 모두 `PayloadRewrite`(§4.4)이며 비밀번호를 다시 받는다(Argon2 1회). `add_mnemonic`·`generate_mnemonic`·`remove_mnemonic`은 확인값과 맞지 않는 passphrase로 연 세션(`Unlocked { alt: true }`, §7.5)에서 `InvalidState`다(2026-11-10): 그 세션의 니모닉 시드는 다른 passphrase의 것이라 중복 검사가 같은 단어를 못 알아보고, meta(이름·계정·연결 정리)는 저장되지 않는다. 앱은 세 버튼을 끄고 T-MN-ALT-PASS를 보인다([04] §2.24).
 
 - `mnemonics() -> Vec<MnemonicInfo>`(`BackupPending`·`Unlocked`): record id·생성 시각·단어 수·passphrase 사용·백업 확인·주 니모닉 여부(첫 record), payload 순서.
-- `add_mnemonic(password, phrase, passphrase: Option, now_unix) -> RecordId` ("복구 단어 추가 가져오기"): 엄격 파싱(§2.4), 8개면 `RecordLimit`. 새 시드(단어 + passphrase)를 vault의 각 니모닉 시드(슬롯의 passphrase로)와 **상수 시간**으로 비교해 같으면 `DuplicateKey`(같은 단어라도 passphrase가 다르면 다른 지갑이라 받는다). 백업은 확인된 것으로 친다. passphrase가 있으면 §4.6 확인값을 저장하고 이 세션의 슬롯 칸에 둔다(다음 잠금 해제부터 §7.5 순서로 묻는다). 키 전용·YubiKey vault의 첫 니모닉은 주 니모닉이 된다.
-- `generate_mnemonic(password, now_unix) -> (RecordId, SecretString)` ("새 복구 단어 만들기 (추가)"): 24단어, passphrase 없음, 백업 확인 전. 단어는 W08 첫 표시에만 돌려준다.
+- `add_mnemonic(password, phrase, passphrase: Option, now_unix) -> RecordId` ("복구 단어 추가 가져오기" / "Import another recovery phrase"): 엄격 파싱(§2.4), 8개면 `RecordLimit`. 새 시드(단어 + passphrase)를 vault의 각 니모닉 시드(슬롯의 passphrase로)와 **상수 시간**으로 비교해 같으면 `DuplicateKey`(같은 단어라도 passphrase가 다르면 다른 지갑이라 받는다). 백업은 확인된 것으로 친다. passphrase가 있으면 §4.6 확인값을 저장하고 이 세션의 슬롯 칸에 둔다(다음 잠금 해제부터 §7.5 순서로 묻는다). 키 전용·YubiKey vault의 첫 니모닉은 주 니모닉이 된다.
+- `generate_mnemonic(password, now_unix) -> (RecordId, SecretString)` ("새 복구 단어 만들기 (추가)" / "Create another recovery phrase"): 24단어, passphrase 없음, 백업 확인 전. 단어는 W08 첫 표시에만 돌려준다.
 - `backup_challenge_for(id)`·`confirm_backup_for(id, challenge, words)`: §8.3과 같은 4단어 확인을 그 니모닉에 한다(`Unlocked`, 또는 `BackupPending`이면 주 니모닉만). 기존 `backup_challenge`·`confirm_backup`은 주 니모닉의 것이다.
 - **백업 확인 전 니모닉의 키로는 서명하지 않는다**: `with_secp_key`·`with_ed25519_seed`·`reveal_evm_private_key`·`reveal_evm_shared_wif`는 그 키의 니모닉(`Mnemonic(id, _)`은 `id`, `Derived`·BTC·ZEC·Solana 파생은 주 니모닉)이 백업 확인 전이면 `BackupNotConfirmed`. 주소 계산(받기)은 된다. 지갑 단위 `BackupPending`은 만든 지갑(주 니모닉이 유일한 record)에만 남는다: 키 전용·YubiKey vault에서 `generate_mnemonic`으로 생긴 첫(주) 니모닉은 잠금 해제 뒤에도 `Unlocked`이고 그 니모닉의 키만 이 규칙으로 막힌다(가져온 키·YubiKey는 계속 서명, 2026-11-10). 그 계정의 받기·서명 화면은 추가한 니모닉과 같은 띠와 `지금 백업 확인`을 보인다([04] §2.24).
 - `reveal_mnemonic_of(password, id)`: 그 니모닉의 단어(§9 규칙, W08).
@@ -830,7 +830,7 @@ pub fn parse_wif(text: &str) -> Result<WifKey, KeyError>;   // compressed(), net
 - **Solana·Bitcoin·Zcash 계정(2026-11-08).** 추가한 니모닉도 세 체인의 표준 경로 계정을 만든다. 키 출처는 니모닉 id를 가진다(없으면 주 니모닉 — 이전과 같은 값·바이트): `SolKeySource::Mnemonic(id, i)`(태그 8, `m/44'/501'/i'/0'`, [07] §3.5), `BtcAccountKey::Hd`·`BtcAccountId::Hd`·`BtcKeySource::Derived`·`KeyRef::Btc`의 `mnemonic: Option<RecordId>`([08] §3.5), `ZecKeySource::Mnemonic { mnemonic, account, index }`(코드 5)·`KeyRef::Zec { mnemonic }`([12] §2.4). 공개 정보: `sol_public_keys`(니모닉마다 시드 한 번), `btc_account_xpub_of(Option<RecordId>, BtcCoin)`, `zec_public_key_of(Option<RecordId>, test, account, index)` — 없는 id는 `RecordNotFound`. 서명(`with_ed25519_seed`·`with_secp_key`)은 위 백업 규칙대로 그 니모닉의 백업 확인 전이면 `BackupNotConfirmed`. 그 니모닉의 passphrase는 §7.5대로 잠금 해제 때 받은 것을 쓴다.
 - 저널·승인: 그런 계정의 기록은 새 레코드 버전(SOL 2, BTC 3, ZEC 2: 헤더 뒤 record id 16바이트, §5.4)이고, 승인 transcript(SOL intent·메시지, BTC 보내기 payload·메시지, ZEC payload)는 그 출처에서만 record id를 더 묶는다. 주 니모닉·가져온 키·YubiKey 계정의 기록·digest 바이트는 바뀌지 않는다. 이전 빌드는 새 버전 기록을 본문 오류로 보아 그 체인의 보내기만 멈춘다([04] §6.6).
 - `remove_mnemonic` 앞의 앱 규칙([04] §2.24): 그 니모닉 계정의 SOL·BTC·ZEC 기록이 아직 확정될 수 있거나 BTC 승인이 열려 있으면 지우지 않는다(가져온 키 삭제와 같음). 지운 뒤 그 니모닉 계정의 기록(모두 종결)은 저널에서 지운다.
-- **백업 확인 전 니모닉 지우기(2026-11-08):** 단어가 PC 어디에도 남지 않게 되므로 그 계정으로 받은 자산을 잃을 수 있다. 앱은 T-MN-REMOVE-UNCONFIRMED("백업하지 않은 복구 단어입니다…")를 보이고, 이번 지우기 안에서 `단어 보기`(W03 → W08, 2초 `다 적었습니다` 누르기 끝까지)와 입력란의 정확한 `백업 없이 지우기`가 있어야 W03(지우기 비밀번호)을 연다. 그 니모닉 계정의 받기 화면(EVM·Solana·Bitcoin·Zcash)은 확인 문항을 통과할 때까지 T-MN-RECEIVE-UNCONFIRMED(위험 띠)를 보인다([04] §2.24).
+- **백업 확인 전 니모닉 지우기(2026-11-08):** 단어가 PC 어디에도 남지 않게 되므로 그 계정으로 받은 자산을 잃을 수 있다. 앱은 T-MN-REMOVE-UNCONFIRMED("백업하지 않은 복구 단어입니다…" / "This recovery phrase has not been backed up…")를 보이고, 이번 지우기 안에서 `단어 보기`(W03 → W08, 2초 `다 적었습니다` 누르기 끝까지)와 입력란의 정확한 `백업 없이 지우기`(영어 화면은 `delete without backup`)가 있어야 W03(지우기 비밀번호)을 연다. 그 니모닉 계정의 받기 화면(EVM·Solana·Bitcoin·Zcash)은 확인 문항을 통과할 때까지 T-MN-RECEIVE-UNCONFIRMED(위험 띠)를 보인다([04] §2.24).
 - **지운 뒤 dApp 연결(2026-11-08, [05] §4.9):** EVM 계정은 모든 연결에서 빠진다(`account_removed_from_sites`). Solana·Bitcoin은 앱이 먼저 그 니모닉의 계정을 meta에서 뺀 뒤(`mnemonic_accounts.remove_mnemonic`, `btc_accounts.remove_mnemonic`) Solana 공개키마다 `sol_account_removed_from_sites`, Bitcoin 계정마다 receive/0 주소로 `btc_addresses_removed_from_sites`를 부른다(가져온 키 삭제와 같은 순서 — 아직 계정인 키·주소는 연결을 지키므로). 같은 단어를 다시 더하면 계정은 돌아오지만 연결은 돌아오지 않는다. 세션이 정리하지 못한 연결(지우는 중 잠금, meta를 읽지 못한 세션)은 다음 meta 읽기(`LoadMeta`)가 지운다: 계정 정리 뒤 지갑에 없는 EVM 주소·Solana 키·Bitcoin 안정 주소를 가리키는 grant를 지우고 저장한다([05] §4.9, 2026-11-10).
 - **YubiKey의 단어(2026-11-08, [10] §7.1):** "복구 단어 추가 가져오기"의 미리보기는 새 시드의 마스터 지문이 경로를 아는 등록 YubiKey record의 지문과 같으면 그 카드와 T-YK-SAME을 보이고 확인 체크 전에는 저장(W03)으로 넘어가지 않는다.
 
@@ -928,7 +928,7 @@ pub enum JournalError {
 
 - journal 프레이밍 오류는 `VaultError::SidecarCorrupt(Journal)`, 본문 오류는 체인 디코더 오류로 처리하므로(§5.4) `JournalError`에 없다.
 
-`Display`는 `thiserror` 없이 직접 구현하고 고정 한국어 문장만 쓴다. 문장 표는 [04](04-app-ui.md) §7이 가지며, 이 문서가 고정하는 문장은 `UnlockFailed`(§7.4)와 `JournalError::Full` **"거래 저널 공간이 부족합니다"**(§5.4) 둘이다. [04] §7 표에도 같은 문장으로 두고, 앱의 E-TX-005는 그 뒤에 다음 행동 한 문장("진행 중인 거래가 확정되거나 폐기되면 공간이 생깁니다.", 2026-11-10)을 붙인다 — 코어의 고정 문장(승인 창 경고 E06 등)은 그대로다.
+`Display`는 `thiserror` 없이 직접 구현하고 고정 한국어 문장만 쓴다. 2026-11-14부터 같은 문장의 영어가 `KeyError`·`StorageError`·`VaultError::text_in(lang)`(카탈로그 `yw_core::error::text`, [14])에 있고 화면은 앱 언어로 그것을 쓴다(`Display`는 한국어 그대로). 문장 표는 [04](04-app-ui.md) §7이 가지며(한국어·English 열), 이 문서가 고정하는 문장은 `UnlockFailed`(§7.4)와 `JournalError::Full` **"거래 저널 공간이 부족합니다"** / **"The transaction journal is full"**(§5.4) 둘이다. [04] §7 표에도 같은 문장으로 두고, 앱의 E-TX-005는 그 뒤에 다음 행동 한 문장("진행 중인 거래가 확정되거나 폐기되면 공간이 생깁니다.", 2026-11-10)을 붙인다 — 코어의 고정 문장(승인 창 경고 E06 등)은 그대로다.
 
 ### 10.3 `Vault`
 

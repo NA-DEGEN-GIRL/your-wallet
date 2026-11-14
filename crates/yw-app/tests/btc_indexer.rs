@@ -869,18 +869,19 @@ fn esplora_http_status() -> TestResult {
         assert_eq!(rig.fake.count(), 1, "{request:?}");
         assert!(!format!("{result:?}").contains(SERVER_STRING));
         if let Err(error) = result {
-            let shown = error.text(BtcIndexer::Esplora);
+            let shown = error.text(yw_core::lang::Lang::Ko, BtcIndexer::Esplora);
             assert!(!shown.contains(SERVER_STRING));
             assert!(shown.contains(error.code().code()));
         }
         rig.log.assert_no_url();
     }
     assert_eq!(
-        IndexerError::Unreachable(Some(ErrorCode::Rpc002)).text(BtcIndexer::Esplora),
+        IndexerError::Unreachable(Some(ErrorCode::Rpc002))
+            .text(yw_core::lang::Lang::Ko, BtcIndexer::Esplora),
         "Bitcoin 인덱서(Esplora)에 연결할 수 없습니다. 잠시 후 다시 시도하거나 설정 → Bitcoin에서 인덱서를 바꾸세요. (E-BTC-001, E-RPC-002)"
     );
     assert_eq!(
-        IndexerError::Unreachable(None).text(BtcIndexer::BbRest),
+        IndexerError::Unreachable(None).text(yw_core::lang::Lang::Ko, BtcIndexer::BbRest),
         "Bitcoin 인덱서(Blockbook REST)에 연결할 수 없습니다. 잠시 후 다시 시도하거나 설정 → Bitcoin에서 인덱서를 바꾸세요. (E-BTC-001)"
     );
     assert_eq!(IndexerError::Rejected.code(), ErrorCode::Btc005);

@@ -9,6 +9,7 @@ use yw_core::btc::{BtcNetwork, ScriptType};
 use yw_core::error::{KeyError, VaultError};
 use yw_core::evm::address::Address;
 use yw_core::keyimport::{ImportChain, ImportPreview, ImportSpec};
+use yw_core::lang::Text;
 use yw_core::secret::Zeroizing;
 use yw_core::vault::RecordId;
 
@@ -156,7 +157,22 @@ impl Default for KeysUi {
 }
 
 /// Steps of "개인키로 시작하기" (S18 → W01 → W07 → S19).
-pub const KEY_START_STEPS: [&str; 3] = ["비밀번호 정하기", "개인키 입력", "주소 확인"];
+pub const KEY_START_STEPS: [Text; 3] = [text::STEP_PASSWORD, text::STEP_KEY, text::STEP_ADDRESS];
+
+/// The imported-key flow texts (spec/04 §2.18).
+pub mod text {
+    yw_core::texts! {
+        STEP_PASSWORD = "비밀번호 정하기" / "Set a password";
+        STEP_KEY = "개인키 입력" / "Enter the private key";
+        STEP_ADDRESS = "주소 확인" / "Check the address";
+        CHECKING = "확인 중…" / "Checking…";
+        CREATING = "지갑을 만드는 중입니다. 몇 초 걸립니다."
+            / "Creating the wallet. This takes a few seconds.";
+        BTC_OTHER_NETWORK(2) = "가져온 키는 {0} 키입니다. 지금 Bitcoin 네트워크가 {1}라 계정 목록에 보이지 않습니다. 설정 → Bitcoin에서 네트워크를 바꾸면 보입니다."
+            / "The imported key is a {0} key. The Bitcoin network is {1} now, so it does not appear in the account list. It appears when you switch the network in Settings → Bitcoin.";
+        ZEC_IMPORTED(1) = "Zcash 가져온 키 ({0})" / "Zcash imported key ({0})";
+    }
+}
 
 /// Imported Bitcoin keys: the single-key accounts of both networks (one per vault tag-4 record).
 fn btc_imported_count(meta: &crate::meta::Meta) -> usize {
@@ -301,7 +317,9 @@ impl App {
             self.keys.start.password_held = true;
             self.keys.start.password.take()
         };
-        self.set_screen(Screen::Processing("확인 중…"));
+        self.set_screen(Screen::Processing(
+            text::CHECKING.get(self.settings.language),
+        ));
         self.key(KeyJob::PreviewKeyStart {
             password,
             spec: self.keys.start.spec(),
@@ -318,7 +336,7 @@ impl App {
                 self.set_screen(Screen::KeyStartAddress(view));
             }
             Err(error) => {
-                let message = key_code(error).text();
+                let message = key_code(error).text_in(self.settings.language);
                 self.set_screen(Screen::KeyStartIntro);
                 self.open_input(
                     SecretKind::PrivateKey {
@@ -336,7 +354,7 @@ impl App {
     /// S19 `맞습니다`.
     pub fn key_start_commit(&mut self) {
         self.set_screen(Screen::Processing(
-            "지갑을 만드는 중입니다. 몇 초 걸립니다.",
+            text::CREATING.get(self.settings.language),
         ));
         self.key(KeyJob::CommitKeyStart);
     }
@@ -356,10 +374,10 @@ impl App {
         let account = match result {
             Ok(account) => account,
             Err(error) => {
-                let code = vault_code(error);
+                let message = vault_code(error).text_in(self.settings.language);
                 self.with_form(|form| {
                     form.set_busy(false);
-                    form.set_error(Some(code.text()));
+                    form.set_error(Some(message));
                 });
                 return;
             }
@@ -369,7 +387,8 @@ impl App {
             match &account {
                 ImportedAccount::Evm(id, address) => {
                     let label = crate::meta::next_imported_label(
-                        crate::meta::EVM_IMPORTED_PREFIX,
+                        self.settings.language,
+                        crate::meta::EVM_IMPORTED_LABEL,
                         meta.evm_raw_accounts.iter().map(|raw| raw.label.as_str()),
                     );
                     meta.evm_raw_accounts.push(RawAccount {
@@ -380,7 +399,8 @@ impl App {
                 }
                 ImportedAccount::Sol(id, address) => {
                     let label = crate::meta::next_imported_label(
-                        crate::meta::SOL_IMPORTED_PREFIX,
+                        self.settings.language,
+                        crate::meta::SOL_IMPORTED_LABEL,
                         meta.sol_raw_accounts.iter().map(|raw| raw.label.as_str()),
                     );
                     meta.sol_raw_accounts.push(SolRawAccount {
@@ -418,10 +438,13 @@ impl App {
             }
             let settings_net = crate::btc::core_network(self.settings.bitcoin.network);
             if info.network != settings_net {
-                self.info = Some(format!(
-                    "가져온 키는 {} 키입니다. 지금 Bitcoin 네트워크가 {}라 계정 목록에 보이지 않습니다. 설정 → Bitcoin에서 네트워크를 바꾸면 보입니다.",
-                    info.network.display_name(),
-                    settings_net.display_name()
+                let lang = self.settings.language;
+                self.info = Some(text::BTC_OTHER_NETWORK.fill(
+                    lang,
+                    [
+                        info.network.display_name_in(lang),
+                        settings_net.display_name_in(lang),
+                    ],
                 ));
             }
         }
@@ -490,9 +513,9 @@ impl App {
         let zec = self.keys.zec_keys.iter().any(|(record, _)| *record == id);
         let text = if zec {
             self.zec_remove_block(*id.as_bytes())
-                .unwrap_or(crate::app_zec::ZEC_REMOVE_BUSY)
+                .unwrap_or(crate::app_zec::text::REMOVE_BUSY.get(self.settings.language))
         } else {
-            crate::app_btc::REMOVE_BUSY_IN_FLIGHT
+            crate::app_btc::REMOVE_BUSY_IN_FLIGHT.get(self.settings.language)
         };
         self.with_form(|form| {
             form.set_busy(false);
@@ -545,7 +568,7 @@ impl App {
                 .address(yw_core::bip32::path::BtcChain::Receive, 0)
                 .ok()?;
             return Some((
-                crate::app_btc::account_label(account.account()),
+                crate::app_btc::account_label(self.settings.language, account.account()),
                 address.as_str().to_owned(),
             ));
         }
@@ -566,7 +589,7 @@ impl App {
                     .address(yw_core::bip32::path::BtcChain::Receive, 0)
                     .ok()?;
                 Some((
-                    crate::app_btc::account_label(account.account()),
+                    crate::app_btc::account_label(self.settings.language, account.account()),
                     address.as_str().to_owned(),
                 ))
             })
@@ -577,7 +600,7 @@ impl App {
                     .iter()
                     .find(|(record, _)| *record.as_bytes() == id)?;
                 Some((
-                    format!("Zcash 가져온 키 ({})", info.network.display_name()),
+                    text::ZEC_IMPORTED.fill(self.settings.language, [info.network.display_name()]),
                     info.address.clone(),
                 ))
             })
@@ -602,7 +625,7 @@ impl App {
                 .address(yw_core::bip32::path::BtcChain::Receive, 0)
                 .ok()?;
             return Some(self.btc_removed(
-                crate::app_btc::account_label(account.account()),
+                crate::app_btc::account_label(self.settings.language, account.account()),
                 address.as_str(),
                 true,
             ));
@@ -613,7 +636,7 @@ impl App {
             .iter()
             .find(|(record, _)| *record.as_bytes() == id)?;
         Some(self.zec_removed(
-            format!("Zcash 가져온 키 ({})", info.network.display_name()),
+            text::ZEC_IMPORTED.fill(self.settings.language, [info.network.display_name()]),
             &info.address,
             true,
         ))

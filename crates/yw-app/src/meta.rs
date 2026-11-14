@@ -14,6 +14,7 @@
 
 pub use yw_core::btc::meta::BTC_ACCOUNTS_EXT_KEY;
 use yw_core::btc::meta::{BtcAccounts, BtcMeta, btc_meta_from_values, btc_meta_values};
+use yw_core::lang::{Lang, Tpl};
 use yw_json::{Limits, Number, Object, Value};
 
 use crate::network::NetworkId;
@@ -108,20 +109,55 @@ const HW_KEYS: [&str; 4] = ["evm", "sol", "sol_selected", "defaults"];
 /// `hw_accounts` (an invalid value rejects the document).
 pub const MNEMONICS_KEY: &str = "mnemonics";
 const MNEMONIC_KEYS: [&str; 3] = ["record_id", "label", "evm"];
-/// Default label prefix of a recovery phrase (`니모닉 N`).
-pub const MNEMONIC_LABEL_PREFIX: &str = "복구 단어 ";
-/// The default-label prefix before 2026-11-08 (stored labels keep it; both count as default).
-pub const LEGACY_MNEMONIC_LABEL_PREFIX: &str = "니모닉 ";
+/// The default account and recovery-phrase labels (spec/14, 2026-11-14). Labels are stored
+/// data: a default label is written in the app language of the moment and never translated later
+/// (the user may rename it); when numbering, the default labels of both languages count.
+pub mod text {
+    yw_core::texts! {
+        /// Default label of a recovery phrase: {0} its number.
+        MNEMONIC_LABEL(1) = "복구 단어 {0}" / "Recovery words {0}";
+        /// Default label of an imported EVM key: {0} number.
+        EVM_IMPORTED_LABEL(1) = "가져온 계정 {0}" / "Imported account {0}";
+        /// Default label of an imported Solana key: {0} number.
+        SOL_IMPORTED_LABEL(1) = "가져온 Solana {0}" / "Imported Solana {0}";
+        /// Default label of a new EVM account of any recovery phrase: {0} number.
+        EVM_ACCOUNT_LABEL(1) = "계정 {0}" / "Account {0}";
+        /// Default label of a new Solana account of any recovery phrase: {0} number.
+        SOL_ACCOUNT_LABEL(1) = "Solana {0}" / "Solana {0}";
+    }
+}
 
-/// `N` of a default recovery-phrase label (`복구 단어 N`, or `니모닉 N` written by earlier
-/// versions); `None` for a label the user chose.
+pub use text::{
+    EVM_ACCOUNT_LABEL, EVM_IMPORTED_LABEL, MNEMONIC_LABEL, SOL_ACCOUNT_LABEL, SOL_IMPORTED_LABEL,
+};
+
+/// The default-label prefix before 2026-11-08, `니모닉 ` (stored labels keep it; it counts as
+/// default). Recognised only, never written, so it is not a catalogue text.
+pub const LEGACY_MNEMONIC_LABEL_PREFIX: &str = "\u{B2C8}\u{BAA8}\u{B2C9} ";
+
+/// `N` of a label written from the default template `label` in either language; `None` for a
+/// label the user chose.
+#[must_use]
+pub fn label_number(label: Tpl<1>, text: &str) -> Option<usize> {
+    Lang::ALL.into_iter().find_map(|lang| {
+        let (prefix, suffix) = label.template(lang).split_once("{0}")?;
+        text.strip_prefix(prefix)?
+            .strip_suffix(suffix)?
+            .parse()
+            .ok()
+    })
+}
+
+/// `N` of a default recovery-phrase label (`복구 단어 N`, `Recovery words N`, or `니모닉 N`
+/// written by earlier versions); `None` for a label the user chose.
 #[must_use]
 pub fn default_mnemonic_number(label: &str) -> Option<usize> {
-    label
-        .strip_prefix(MNEMONIC_LABEL_PREFIX)
-        .or_else(|| label.strip_prefix(LEGACY_MNEMONIC_LABEL_PREFIX))?
-        .parse()
-        .ok()
+    label_number(MNEMONIC_LABEL, label).or_else(|| {
+        label
+            .strip_prefix(LEGACY_MNEMONIC_LABEL_PREFIX)?
+            .parse()
+            .ok()
+    })
 }
 
 /// One recovery phrase of meta `mnemonics`.
@@ -534,33 +570,29 @@ pub struct Account {
     pub hidden: bool,
 }
 
-/// Default label prefix of an imported EVM key (`가져온 계정 N`).
-pub const EVM_IMPORTED_PREFIX: &str = "가져온 계정 ";
-/// Default label prefix of an imported Solana key (`가져온 Solana N`).
-pub const SOL_IMPORTED_PREFIX: &str = "가져온 Solana ";
-
-/// The default label for the next imported key: `prefix` + one more than the highest number
-/// among the existing default labels (`len + 1` repeated a number after a removal).
+/// The default label in `lang` for the next imported key (or account): the template `label`
+/// with one more than the highest number among the existing default labels of either language
+/// (`len + 1` repeated a number after a removal).
 #[must_use]
-pub fn next_imported_label<'a>(prefix: &str, labels: impl IntoIterator<Item = &'a str>) -> String {
-    format!("{prefix}{}", next_label_number(prefix, labels))
+pub fn next_imported_label<'a>(
+    lang: Lang,
+    label: Tpl<1>,
+    labels: impl IntoIterator<Item = &'a str>,
+) -> String {
+    label.fill(lang, [&next_label_number(label, labels).to_string()])
 }
 
-/// One more than the highest `N` of the labels `prefix` + `N` (1 when there is none).
+/// One more than the highest `N` of the labels written from the template `label` in either
+/// language (1 when there is none).
 #[must_use]
-pub fn next_label_number<'a>(prefix: &str, labels: impl IntoIterator<Item = &'a str>) -> usize {
+pub fn next_label_number<'a>(label: Tpl<1>, labels: impl IntoIterator<Item = &'a str>) -> usize {
     labels
         .into_iter()
-        .filter_map(|label| label.strip_prefix(prefix)?.parse::<usize>().ok())
+        .filter_map(|text| label_number(label, text))
         .max()
         .unwrap_or(0)
         .saturating_add(1)
 }
-
-/// Default label prefix of a new EVM account of any recovery phrase (`계정 N`).
-pub const EVM_ACCOUNT_PREFIX: &str = "계정 ";
-/// Default label prefix of a new Solana account of any recovery phrase (`Solana N`).
-pub const SOL_ACCOUNT_PREFIX: &str = "Solana ";
 
 /// An imported raw EVM key (`RawAccount`).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -707,12 +739,26 @@ pub struct Meta {
     pub unknown: Vec<(String, Value)>,
 }
 
+impl Meta {
+    /// The default document with account 0 named in `lang` (`계정 1` / `Account 1`).
+    #[must_use]
+    pub fn new_in(lang: Lang) -> Self {
+        let mut document = Self::default();
+        for account in &mut document.evm_accounts {
+            account.label = EVM_ACCOUNT_LABEL.fill(lang, ["1"]);
+        }
+        document
+    }
+}
+
 impl Default for Meta {
+    /// The default document (account 0 named in Korean, the default language; see
+    /// [`Meta::new_in`]).
     fn default() -> Self {
         Self {
             evm_accounts: vec![Account {
                 index: 0,
-                label: "계정 1".to_owned(),
+                label: EVM_ACCOUNT_LABEL.fill(Lang::Ko, ["1"]),
                 address: String::new(),
                 hidden: false,
             }],
@@ -1571,7 +1617,7 @@ impl Meta {
     /// same name appeared once per phrase). Stored names are never changed.
     #[must_use]
     pub fn next_evm_number(&self) -> usize {
-        next_label_number(EVM_ACCOUNT_PREFIX, self.evm_labels())
+        next_label_number(EVM_ACCOUNT_LABEL, self.evm_labels())
     }
 
     /// Every Solana account label (all phrases, imported keys, `YubiKey` accounts).
@@ -1590,10 +1636,10 @@ impl Meta {
     }
 
     /// The default label of a new Solana account: `Solana N`, one above the highest of every
-    /// recovery phrase (like [`Meta::next_evm_number`]).
+    /// recovery phrase (like [`Meta::next_evm_number`]; the same in both languages).
     #[must_use]
     pub fn next_sol_label(&self) -> String {
-        next_imported_label(SOL_ACCOUNT_PREFIX, self.sol_labels())
+        next_imported_label(Lang::Ko, SOL_ACCOUNT_LABEL, self.sol_labels())
     }
 
     /// The next Solana standard index (largest + 1, or 0 for the first account), `None` at the
@@ -2169,6 +2215,30 @@ mod tests {
         Account, BOOK_FAVORITES_KEY, BookChain, Contact, EvmAccountPref, LIMITS, Meta, RawAccount,
         SolBookEntry, SolRawAccount, Tab, parse,
     };
+
+    /// spec/14: default labels are written in the app language; both languages (and the legacy
+    /// `니모닉 N`) count as default when numbering.
+    #[test]
+    fn default_labels_in_both_languages() {
+        use super::{EVM_ACCOUNT_LABEL, default_mnemonic_number, label_number, next_label_number};
+        use yw_core::lang::{Lang, has_hangul};
+        assert_eq!(Meta::default().evm_accounts[0].label, "계정 1");
+        assert_eq!(Meta::new_in(Lang::Ko), Meta::default());
+        let english = Meta::new_in(Lang::En);
+        assert_eq!(english.evm_accounts[0].label, "Account 1");
+        assert!(!has_hangul(&english.evm_accounts[0].label));
+        assert_eq!(label_number(EVM_ACCOUNT_LABEL, "계정 3"), Some(3));
+        assert_eq!(label_number(EVM_ACCOUNT_LABEL, "Account 4"), Some(4));
+        assert_eq!(label_number(EVM_ACCOUNT_LABEL, "My account 5"), None);
+        assert_eq!(
+            next_label_number(EVM_ACCOUNT_LABEL, ["계정 2", "Account 6"]),
+            7
+        );
+        assert_eq!(default_mnemonic_number("복구 단어 2"), Some(2));
+        assert_eq!(default_mnemonic_number("Recovery words 3"), Some(3));
+        assert_eq!(default_mnemonic_number("니모닉 4"), Some(4));
+        assert_eq!(default_mnemonic_number("여행용"), None);
+    }
     use yw_core::btc::{BtcAccountKey, BtcMeta, BtcNetwork, BtcPubKey, ScriptType};
 
     /// The BIP84 test vector key (abandon `m/84'/0'/0'/0/0`) as an imported single-key account.

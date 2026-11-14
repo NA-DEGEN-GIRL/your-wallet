@@ -10,6 +10,24 @@ use core::fmt;
 
 use zeroize::Zeroizing;
 
+use crate::lang::Lang;
+
+/// The paste field's texts (spec/13 §6; English spec/14).
+pub mod text {
+    crate::texts! {
+        NOT_WALLETCONNECT = "WalletConnect 연결 주소(wc:로 시작)가 아닙니다. dApp의 WalletConnect 창에서 '링크 복사'를 누른 뒤 붙여 넣으세요."
+            / "Not a WalletConnect link (starting with wc:). Press 'Copy link' in the dApp's WalletConnect window, then paste it.";
+        VERSION1 = "WalletConnect v1 주소입니다. v1은 종료되어 지원하지 않습니다."
+            / "This is a WalletConnect v1 link. v1 has been shut down and is not supported.";
+        UNSUPPORTED_VERSION = "지원하지 않는 WalletConnect 버전입니다(v2만 지원)."
+            / "Unsupported WalletConnect version (only v2 is supported).";
+        MALFORMED = "WalletConnect 연결 주소의 형식이 올바르지 않습니다. 다시 복사해 주세요."
+            / "The WalletConnect link is malformed. Copy it again.";
+        BAD_RELAY = "지원하지 않는 릴레이 방식입니다(irn만 지원)."
+            / "Unsupported relay protocol (only irn is supported).";
+    }
+}
+
 /// Longest pairing URI accepted (bytes).
 pub const MAX_URI_BYTES: usize = 2_048;
 
@@ -70,26 +88,23 @@ pub enum UriError {
 }
 
 impl UriError {
-    /// The Korean message for the paste field.
+    /// The message for the paste field.
     #[must_use]
-    pub const fn message(self) -> &'static str {
+    pub const fn message(self, lang: Lang) -> &'static str {
         match self {
-            Self::NotWalletConnect => {
-                "WalletConnect 연결 주소(wc:로 시작)가 아닙니다. dApp의 WalletConnect 창에서 '링크 복사'를 누른 뒤 붙여 넣으세요."
-            }
-            Self::Version1 => "WalletConnect v1 주소입니다. v1은 종료되어 지원하지 않습니다.",
-            Self::UnsupportedVersion => "지원하지 않는 WalletConnect 버전입니다(v2만 지원).",
-            Self::BadTopic | Self::BadSymKey | Self::Malformed => {
-                "WalletConnect 연결 주소의 형식이 올바르지 않습니다. 다시 복사해 주세요."
-            }
-            Self::BadRelay => "지원하지 않는 릴레이 방식입니다(irn만 지원).",
+            Self::NotWalletConnect => text::NOT_WALLETCONNECT,
+            Self::Version1 => text::VERSION1,
+            Self::UnsupportedVersion => text::UNSUPPORTED_VERSION,
+            Self::BadTopic | Self::BadSymKey | Self::Malformed => text::MALFORMED,
+            Self::BadRelay => text::BAD_RELAY,
         }
+        .get(lang)
     }
 }
 
 impl fmt::Display for UriError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.message())
+        formatter.write_str(self.message(Lang::Ko))
     }
 }
 

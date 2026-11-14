@@ -435,7 +435,7 @@ fn unverified_passphrase_blocks_receive_and_shows_the_banner_everywhere() {
         let items = app.items();
         assert!(
             items.iter().any(
-                |item| matches!(item, Item::Banner(text, Tone::HighRisk) if text == T_ALT_PASS)
+                |item| matches!(item, Item::Banner(text, Tone::HighRisk) if text == T_ALT_PASS.ko)
             ),
             "{tab:?}"
         );
@@ -452,13 +452,13 @@ fn unverified_passphrase_blocks_receive_and_shows_the_banner_everywhere() {
         Screen::AddressBook,
     ] {
         app.screen = screen.clone();
-        assert!(has_text(&app.items(), T_ALT_PASS), "{screen:?}");
+        assert!(has_text(&app.items(), T_ALT_PASS.ko), "{screen:?}");
     }
     app.screen = Screen::Main;
     for id in RECEIVE_IDS {
         app.on_command(id);
         assert_eq!(app.screen, Screen::Main, "{id}");
-        assert_eq!(app.info.as_deref(), Some(T_ALT_PASS_RECEIVE));
+        assert_eq!(app.info.as_deref(), Some(T_ALT_PASS_RECEIVE.ko));
     }
     assert!(app.key_queue.is_empty(), "no BTC address was derived");
     for screen in [Screen::Receive, Screen::SolReceive, Screen::BtcReceive] {
@@ -470,7 +470,7 @@ fn unverified_passphrase_blocks_receive_and_shows_the_banner_everywhere() {
     let (mut app, other) = unlocked_app("verified", false);
     assert!(!app.passphrase_unverified());
     let items = app.items();
-    assert!(!has_text(&items, T_ALT_PASS));
+    assert!(!has_text(&items, T_ALT_PASS.ko));
     assert!(
         controls(&items)
             .iter()
@@ -488,7 +488,7 @@ fn unverified_passphrase_blocks_receive_and_shows_the_banner_everywhere() {
 /// password only after its words were held to the end (W08) and `백업 없이 지우기` was typed.
 #[test]
 fn unconfirmed_added_phrase_receive_banner_and_guarded_removal() {
-    use crate::app_mnemonics::{MnPurpose, T_MN_RECEIVE_UNCONFIRMED, T_MN_REMOVE_WORD};
+    use crate::app_mnemonics::{MnPurpose, text as mn_text};
     use crate::ui::screens_mnemonics::ids as mn;
     use yw_core::vault::{MnemonicInfo, RecordId};
     let (mut app, dir) = unlocked_app("mn-unconfirmed", false);
@@ -517,7 +517,7 @@ fn unconfirmed_added_phrase_receive_banner_and_guarded_removal() {
     );
     meta.mnemonic_accounts.sol_selected = Some((*id.as_bytes(), 0));
     app.screen = Screen::SolReceive;
-    assert!(has_text(&app.items(), T_MN_RECEIVE_UNCONFIRMED));
+    assert!(has_text(&app.items(), mn_text::RECEIVE_UNCONFIRMED.ko));
 
     app.screen = Screen::Settings(super::SettingsSection::Mnemonics);
     app.on_command(mn::REMOVE_BASE + 1);
@@ -537,13 +537,13 @@ fn unconfirmed_added_phrase_receive_banner_and_guarded_removal() {
         app.mn.remove_error.is_some(),
         "the phrase must be typed exactly"
     );
-    app.mn_set_remove_typed(T_MN_REMOVE_WORD.to_owned());
+    app.mn_set_remove_typed(mn_text::REMOVE_WORD.ko.to_owned());
     app.on_command(mn::REMOVE_CONFIRM);
     assert!(app.mn.remove_error.is_none());
     // The quiz passed: the receive banner goes.
     app.mn.infos[1].backup_confirmed = true;
     app.screen = Screen::SolReceive;
-    assert!(!has_text(&app.items(), T_MN_RECEIVE_UNCONFIRMED));
+    assert!(!has_text(&app.items(), mn_text::RECEIVE_UNCONFIRMED.ko));
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -622,9 +622,9 @@ fn backup_discard_mainnet_and_done_texts() {
     // (2026-11-12); the reminder comes with an imported key (below).
     app.settings.evm_chain_id = 11_155_111;
     let items = app.items();
-    assert!(!has_text(&items, T_ACCOUNTS_BACKUP));
+    assert!(!has_text(&items, T_ACCOUNTS_BACKUP.ko));
     assert!(!has_text(&items, "모든 계정은 같은 복구 단어로 복구됩니다"));
-    assert!(!has_text(&items, T_MAINNET), "Sepolia is a testnet");
+    assert!(!has_text(&items, T_MAINNET.ko), "Sepolia is a testnet");
     // Mainnet badges: Ethereum, HyperEVM, Solana mainnet; none on Solana devnet. Exactly one
     // per screen (2026-11-10: Solana mainnet's S10 drew two since 11-08), and on S10 it is the
     // network card's small tag, not a full-width band (2026-11-11).
@@ -632,12 +632,14 @@ fn backup_discard_mainnet_and_done_texts() {
         assert!(
             !items
                 .iter()
-                .any(|item| matches!(item, Item::Banner(text, _) if text == T_MAINNET)),
+                .any(|item| matches!(item, Item::Banner(text, _) if text == T_MAINNET.ko)),
             "S10 draws no full-width mainnet band"
         );
         items
             .iter()
-            .filter(|item| matches!(item, Item::Pill(text, Tone::BtcMainnet) if text == T_MAINNET))
+            .filter(
+                |item| matches!(item, Item::Pill(text, Tone::BtcMainnet) if text == T_MAINNET.ko),
+            )
             .count()
     };
     for chain in [1, 999] {
@@ -650,7 +652,7 @@ fn backup_discard_mainnet_and_done_texts() {
     app.settings.solana.cluster = crate::network::SolCluster::Mainnet;
     assert_eq!(mainnet_bands(&app.items()), 1, "Solana mainnet");
     app.settings.solana.cluster = crate::network::SolCluster::Devnet;
-    assert!(!has_text(&app.items(), T_MAINNET));
+    assert!(!has_text(&app.items(), T_MAINNET.ko));
     if let Some(meta) = app.meta.as_mut() {
         meta.prefs.tab = Tab::Evm;
     }
@@ -658,8 +660,8 @@ fn backup_discard_mainnet_and_done_texts() {
     // EVM `폐기`: paying twice.
     app.set_screen(Screen::Confirm(Confirm::Discard));
     let items = app.items();
-    assert!(has_text(&items, T_DISCARD));
-    assert!(T_DISCARD.contains("두 번 지불"));
+    assert!(has_text(&items, T_DISCARD.ko));
+    assert!(T_DISCARD.ko.contains("두 번 지불"));
 
     // Imported key removal: export first, and the balance check.
     let raw = "0x6fac4d18c912343bf86fa7049364dd4e424ab9c0";
@@ -675,7 +677,7 @@ fn backup_discard_mainnet_and_done_texts() {
     app.settings.evm_chain_id = 11_155_111;
     app.screen = Screen::Main;
     assert!(
-        has_text(&app.items(), T_ACCOUNTS_BACKUP),
+        has_text(&app.items(), T_ACCOUNTS_BACKUP.ko),
         "imported keys are not covered by the recovery words"
     );
     app.on_command(ids::REMOVE_KEY);
@@ -770,8 +772,14 @@ fn quicknode_fields_accept_a_pasted_endpoint_url() {
     use crate::apikeys::QuickNodeField;
     const TOKEN: &str = "abcdef0123456789abcdef0123456789";
     let url = format!("https://My-Node.base-sepolia.quiknode.pro/{TOKEN}/");
-    assert_eq!(super::quicknode_input("", ""), Ok(None));
-    assert_eq!(super::quicknode_input("  ", " "), Ok(None));
+    assert_eq!(
+        super::quicknode_input(yw_core::lang::Lang::Ko, "", ""),
+        Ok(None)
+    );
+    assert_eq!(
+        super::quicknode_input(yw_core::lang::Lang::Ko, "  ", " "),
+        Ok(None)
+    );
     for (name, token) in [
         (url.as_str(), ""),
         ("", url.as_str()),
@@ -779,26 +787,35 @@ fn quicknode_fields_accept_a_pasted_endpoint_url() {
         ("my-node", TOKEN),
         (url.as_str(), TOKEN),
     ] {
-        let (parsed_name, parsed_token) = super::quicknode_input(name, token)
-            .unwrap()
-            .expect("both fields filled");
+        let (parsed_name, parsed_token) =
+            super::quicknode_input(yw_core::lang::Lang::Ko, name, token)
+                .unwrap()
+                .expect("both fields filled");
         assert_eq!(parsed_name, "my-node");
         assert_eq!(parsed_token.as_str(), TOKEN);
     }
-    let name_error = super::quicknode_input("my node", TOKEN).unwrap_err();
+    let name_error = super::quicknode_input(yw_core::lang::Lang::Ko, "my node", TOKEN).unwrap_err();
     assert!(
-        name_error.ends_with(&format!(" ({}) (E-KEY-002)", QuickNodeField::Name.label())),
+        name_error.ends_with(&format!(
+            " ({}) (E-KEY-002)",
+            QuickNodeField::Name.label(yw_core::lang::Lang::Ko)
+        )),
         "{name_error}"
     );
-    let token_error = super::quicknode_input("my-node", "short").unwrap_err();
+    let token_error =
+        super::quicknode_input(yw_core::lang::Lang::Ko, "my-node", "short").unwrap_err();
     assert!(
-        token_error.ends_with(&format!(" ({}) (E-KEY-002)", QuickNodeField::Token.label())),
+        token_error.ends_with(&format!(
+            " ({}) (E-KEY-002)",
+            QuickNodeField::Token.label(yw_core::lang::Lang::Ko)
+        )),
         "{token_error}"
     );
     // A URL in one field and a different token in the other is the token field's error.
-    let mismatch = super::quicknode_input(&url, "zzzzzzzzzzzzzzzzzzzz").unwrap_err();
+    let mismatch =
+        super::quicknode_input(yw_core::lang::Lang::Ko, &url, "zzzzzzzzzzzzzzzzzzzz").unwrap_err();
     assert!(
-        mismatch.contains(QuickNodeField::Token.label()),
+        mismatch.contains(QuickNodeField::Token.label(yw_core::lang::Lang::Ko)),
         "{mismatch}"
     );
 }
@@ -957,7 +974,7 @@ fn evm_receive_qr_toggles_to_the_plain_address() {
         qr(&items),
         Some(format!("ethereum:{}@11155111", address.to_checksum()))
     );
-    assert!(has_text(&items, RECEIVE_SHARED_ADDRESS_NOTE));
+    assert!(has_text(&items, RECEIVE_SHARED_ADDRESS_NOTE.ko));
     assert!(!has_text(&items, "네트워크 정보가 없습니다"));
     // The address is the copy line (2026-11-12): whole (§3.3), before the QR.
     assert_eq!(
@@ -973,7 +990,7 @@ fn evm_receive_qr_toggles_to_the_plain_address() {
     assert_eq!(app.evm.receive_qr, EvmQrKind::PlainAddress);
     assert_eq!(qr(&items), Some(address.to_checksum()));
     assert!(has_text(&items, "네트워크 정보가 없습니다"));
-    assert!(has_text(&items, RECEIVE_SHARED_ADDRESS_NOTE));
+    assert!(has_text(&items, RECEIVE_SHARED_ADDRESS_NOTE.ko));
     let radios: Vec<Ctl> = controls(&items)
         .into_iter()
         .filter(|ctl| ctl.id == evm_ids::QR_EIP681 || ctl.id == evm_ids::QR_PLAIN)
@@ -1021,7 +1038,7 @@ fn key_start_creates_a_key_only_wallet() {
     assert!(control_ids(&h.app.items()).contains(&key_ids::FIRST_KEY));
     h.app.on_command(key_ids::FIRST_KEY);
     assert_eq!(h.app.screen, Screen::KeyStartIntro);
-    assert!(has_text(&h.app.items(), keys_ui::T_KEY_START_BACKUP));
+    assert!(has_text(&h.app.items(), keys_ui::text::KEY_START_BACKUP.ko));
     h.app.on_command(key_ids::START_CHAIN_SOL);
     assert_eq!(h.app.keys.start.chain, ImportChain::Sol);
     // W01, then W07 with an address instead of a key: back to S18 with W07 (headless: refused).
@@ -1040,7 +1057,7 @@ fn key_start_creates_a_key_only_wallet() {
         unreachable!("S19 expected, got {:?}", h.app.screen);
     };
     assert_eq!(view.address, SOL_ADDRESS);
-    assert!(has_text(&h.app.items(), keys_ui::T_KEY_START_BACKUP));
+    assert!(has_text(&h.app.items(), keys_ui::text::KEY_START_BACKUP.ko));
     h.app.on_command(key_ids::START_CORRECT);
     h.pump();
     assert_eq!(
@@ -1050,7 +1067,7 @@ fn key_start_creates_a_key_only_wallet() {
         }
     );
     assert_eq!(h.app.screen, Screen::Done);
-    assert!(has_text(&h.app.items(), keys_ui::T_KEY_START_OK));
+    assert!(has_text(&h.app.items(), keys_ui::text::KEY_START_OK.ko));
     h.app.on_command(ids::DONE_CONTINUE);
     assert_eq!(h.app.screen, Screen::Main);
     assert!(h.app.key_only());
@@ -1081,7 +1098,7 @@ fn key_start_creates_a_key_only_wallet() {
     let items = h.app.items();
     assert!(has_text(
         &items,
-        &keys_ui::no_accounts_text(ImportChain::Evm)
+        &keys_ui::no_accounts_text(yw_core::lang::Lang::Ko, ImportChain::Evm)
     ));
     assert!(control_ids(&items).contains(&ids::IMPORT_KEY));
     assert!(!control_ids(&items).contains(&ids::ADD_ACCOUNT));
@@ -1089,7 +1106,7 @@ fn key_start_creates_a_key_only_wallet() {
     let items = h.app.items();
     assert!(has_text(
         &items,
-        &keys_ui::no_accounts_text(ImportChain::Btc)
+        &keys_ui::no_accounts_text(yw_core::lang::Lang::Ko, ImportChain::Btc)
     ));
     // Settings: no recovery-word reveal.
     h.app
@@ -1151,7 +1168,7 @@ fn key_start_creates_a_key_only_wallet() {
     h.app.sol_select_tab(Tab::Sol);
     h.app.on_command(key_ids::SOL_REMOVE);
     assert_eq!(h.app.screen, Screen::Confirm(Confirm::RemoveImported));
-    assert!(has_text(&h.app.items(), keys_ui::T_REMOVE_IMPORTED));
+    assert!(has_text(&h.app.items(), keys_ui::text::REMOVE_IMPORTED.ko));
     let record = yw_core::vault::RecordId::from_bytes(meta.sol_raw_accounts[0].record_id);
     h.app.on_command(ids::CONFIRM_YES);
     h.submit(
@@ -1333,7 +1350,7 @@ fn key_start_with_a_bitcoin_key() {
     let items = h.app.items();
     assert!(has_text(
         &items,
-        &keys_ui::no_accounts_text(ImportChain::Evm)
+        &keys_ui::no_accounts_text(yw_core::lang::Lang::Ko, ImportChain::Evm)
     ));
     assert!(control_ids(&items).contains(&ids::IMPORT_KEY));
     // A dApp connect: 4100 `NoEvmAccount` at once, never queued.
@@ -1408,21 +1425,36 @@ fn imported_labels_never_collide_after_removal() {
 
 #[test]
 fn next_imported_label_is_one_above_the_highest_default_number() {
-    use crate::meta::{EVM_IMPORTED_PREFIX, SOL_IMPORTED_PREFIX, next_imported_label};
+    use crate::meta::{EVM_IMPORTED_LABEL, SOL_IMPORTED_LABEL, next_imported_label};
+    use yw_core::lang::Lang;
     assert_eq!(
-        next_imported_label(EVM_IMPORTED_PREFIX, []),
+        next_imported_label(Lang::Ko, EVM_IMPORTED_LABEL, []),
         "가져온 계정 1"
     );
     assert_eq!(
         next_imported_label(
-            EVM_IMPORTED_PREFIX,
+            Lang::Ko,
+            EVM_IMPORTED_LABEL,
             ["가져온 계정 2", "내 지갑", "가져온 계정 7"]
         ),
         "가져온 계정 8"
     );
     assert_eq!(
-        next_imported_label(SOL_IMPORTED_PREFIX, ["가져온 계정 4", "가져온 Solana 1"]),
+        next_imported_label(
+            Lang::Ko,
+            SOL_IMPORTED_LABEL,
+            ["가져온 계정 4", "가져온 Solana 1"]
+        ),
         "가져온 Solana 2"
+    );
+    // spec/14: written in the app language, numbered after the default labels of both.
+    assert_eq!(
+        next_imported_label(
+            Lang::En,
+            EVM_IMPORTED_LABEL,
+            ["가져온 계정 2", "Imported account 5"]
+        ),
+        "Imported account 6"
     );
 }
 
@@ -1766,7 +1798,7 @@ fn llm_endpoint_swapped_in_the_file_needs_a_new_consent() {
     assert!(
         app.banners
             .iter()
-            .any(|banner| banner.text == crate::settings::LLM_FORCED_OFF_TEXT)
+            .any(|banner| banner.text == crate::settings::LLM_FORCED_OFF_TEXT.ko)
     );
     // The snapshot keeps the old consent; a new key and consent for the new host in the UI
     // switch it on and move the consent.
@@ -1840,7 +1872,7 @@ fn settings_changed_outside_the_app_banner_accept_and_restore() {
         assert!(app.guard.pending.is_some());
         app.set_screen(Screen::Main);
         let items = app.items();
-        assert!(has_text(&items, crate::settings::SETTINGS_TAMPERED_TEXT));
+        assert!(has_text(&items, crate::settings::SETTINGS_TAMPERED_TEXT.ko));
         // 2026-11-08: each difference in plain words with both values.
         assert!(has_text(&items, "자동 잠금: 지금 10분 → 파일 60분"));
         assert!(has_text(&items, "EVM 수수료 상한 — "));
@@ -1876,7 +1908,7 @@ fn settings_changed_outside_the_app_banner_accept_and_restore() {
         assert!(app.guard.pending.is_none());
         assert!(!has_text(
             &app.items(),
-            crate::settings::SETTINGS_TAMPERED_TEXT
+            crate::settings::SETTINGS_TAMPERED_TEXT.ko
         ));
         // A second check (next unlock) finds nothing.
         app.verify_settings();
@@ -1958,7 +1990,7 @@ fn vault_generation_going_backwards_is_flagged() {
     h.app.set_screen(Screen::Main);
     assert!(has_text(
         &h.app.items(),
-        &crate::ui::screens::rollback_text(now + 3, now)
+        &crate::ui::screens::rollback_text(yw_core::lang::Lang::Ko, now + 3, now)
     ));
     h.app.guard.vault_file = super::vault_file_info(&h.app.paths.data);
     h.app.set_screen(Screen::Locked);
@@ -2279,8 +2311,9 @@ fn token_balances_of_another_owner_are_unknown() {
 #[test]
 fn the_hypercore_card_folds_next_to_other_chains() {
     use crate::received::RecvChain;
-    use crate::ui::screens_hypercore::{T_HC_MAINNET, ids as hc};
-    use crate::ui::screens_received::{T_RECEIVED_TOGGLE, T_RECEIVED_TOGGLE_HC, ids as received};
+    use crate::ui::screens_hypercore::{ids as hc, text::HC_MAINNET};
+    use crate::ui::screens_received::ids as received;
+    use crate::ui::screens_received::text::{RECEIVED_TOGGLE, RECEIVED_TOGGLE_HC};
     // The tab's one `받은 내역도 보기` (2026-11-12): the EVM activity card's.
     let switch = |items: &[Item]| {
         assert!(ctl(items, received::toggle(RecvChain::Hc)).is_none());
@@ -2291,20 +2324,20 @@ fn the_hypercore_card_folds_next_to_other_chains() {
     app.settings.hypercore.network = yw_core::hypercore::HcNetwork::Mainnet;
     app.settings.evm_chain_id = 11_155_111;
     let items = app.items();
-    assert!(!has_text(&items, T_HC_MAINNET));
+    assert!(!has_text(&items, HC_MAINNET.ko));
     assert!(ctl(&items, hc::OPEN_SEND).is_none());
     assert!(ctl(&items, hc::EXPAND).is_some());
-    assert_eq!(switch(&items).as_deref(), Some(T_RECEIVED_TOGGLE));
+    assert_eq!(switch(&items).as_deref(), Some(RECEIVED_TOGGLE.ko));
     app.settings.evm_chain_id = 999;
     let items = app.items();
-    assert!(has_text(&items, T_HC_MAINNET));
+    assert!(has_text(&items, HC_MAINNET.ko));
     assert!(ctl(&items, hc::OPEN_SEND).is_some());
     assert!(ctl(&items, hc::COLLAPSE).is_none(), "always whole here");
-    assert_eq!(switch(&items).as_deref(), Some(T_RECEIVED_TOGGLE_HC));
+    assert_eq!(switch(&items).as_deref(), Some(RECEIVED_TOGGLE_HC.ko));
     app.settings.evm_chain_id = 11_155_111;
     app.on_command(hc::EXPAND);
     let items = app.items();
-    assert!(has_text(&items, T_HC_MAINNET));
+    assert!(has_text(&items, HC_MAINNET.ko));
     assert!(ctl(&items, hc::OPEN_SEND).is_some());
     assert!(ctl(&items, hc::COLLAPSE).is_some());
     let _ = std::fs::remove_dir_all(dir);
@@ -2325,7 +2358,7 @@ fn walletconnect_panel_asks_for_the_project_id_first() {
     assert!(ctl(&items, wc::REOWN_COPY).is_some());
     assert!(has_text(
         &items,
-        crate::ui::screens_walletconnect::T_WC_SETUP_INTRO
+        crate::ui::screens_walletconnect::text::WC_SETUP_INTRO.ko
     ));
     assert!(!has_text(&items, "단계"));
     assert!(
@@ -2559,7 +2592,7 @@ fn rpc_failure_is_said_once() {
             .any(|item| matches!(item, Item::DisplayMuted(_)))
     );
     assert!(has_text(&items, "블록 7 기준 · 갱신 실패"));
-    assert!(!has_text(&items, T_BALANCE_FAILED));
+    assert!(!has_text(&items, T_BALANCE_FAILED.ko));
     assert_eq!(ctl(&items, ids::EVM_RPC_TEST).unwrap().text, "RPC 테스트");
     assert_eq!(ctl(&items, ids::EVM_RPC_ROW).unwrap().text, "RPC 설정");
     let _ = std::fs::remove_dir_all(dir);
@@ -2594,7 +2627,7 @@ fn zcash_missing_endpoint_is_one_line_with_the_next_step() {
     let (mut app, dir) = unlocked_app("zec-endpoint", false);
     app.meta.as_mut().unwrap().prefs.tab = Tab::Zec;
     app.settings.zcash.enabled = true;
-    let missing = crate::errors::ErrorCode::Key005.text();
+    let missing = crate::errors::ErrorCode::Key005.text_in(yw_core::lang::Lang::Ko);
     app.zec.error = Some(missing.clone());
     let items = app.items();
     assert!(!texts(&items).contains(&missing));
@@ -2629,7 +2662,7 @@ fn zcash_review_result_is_drawn_next_to_the_button() {
         });
     // No `zcash:testnet` URL: `검토`'s node check cannot start, and says so by the button.
     app.on_command(zec::SEND_REVIEW);
-    let missing = crate::errors::ErrorCode::Key005.text();
+    let missing = crate::errors::ErrorCode::Key005.text_in(yw_core::lang::Lang::Ko);
     assert_eq!(app.zec.send_error.as_deref(), Some(missing.as_str()));
     assert_eq!(app.zec.send_info, None);
     let line_above_review = |items: &[Item]| {
@@ -2693,7 +2726,9 @@ fn settings_sections_point_elsewhere_without_listing_their_cards() {
         app.screen = Screen::Settings(section);
         let items = app.items();
         assert!(!has_text(&items, "이 구역"), "{section:?}");
-        if let Some(elsewhere) = crate::ui::screens::settings_elsewhere(section) {
+        if let Some(elsewhere) =
+            crate::ui::screens::settings_elsewhere(yw_core::lang::Lang::Ko, section)
+        {
             assert!(has_text(&items, elsewhere), "{section:?}");
         }
         unique_ids(&items);
@@ -2774,7 +2809,7 @@ fn copy_is_answered_at_its_control_and_expires() {
     app.copied = Some(copied);
     assert!(matches!(
         face(&app),
-        Some(Face::Copied(_, T_COPIED_ADDRESS))
+        Some(Face::Copied(_, note)) if note == T_COPIED_ADDRESS.ko
     ));
     assert_eq!(ids(&app), plain);
     assert_eq!(app.info, None);
@@ -2795,7 +2830,7 @@ fn copy_is_answered_at_its_control_and_expires() {
     app.copied = Some(copied);
     assert!(matches!(
         face(&app),
-        Some(Face::Copied(_, T_COPIED_ADDRESS))
+        Some(Face::Copied(_, note)) if note == T_COPIED_ADDRESS.ko
     ));
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -2865,7 +2900,7 @@ fn evm_token_rows_hide_unhide_and_zero_balance() {
     ));
     assert!(has_text(
         &items,
-        crate::ui::screens_evm::T_TOKEN_HIDDEN_NOTE
+        crate::ui::screens_evm::text::TOKEN_HIDDEN_NOTE.ko
     ));
     let again = ctl(
         &items,
@@ -3029,7 +3064,7 @@ fn user_token_delete_confirms_with_label_and_address() {
     app.on_command(token_row_id(TokenAction::Delete(scam)).unwrap());
     assert_eq!(app.screen, Screen::Confirm(Confirm::TokenDelete));
     let items = app.items();
-    assert!(has_text(&items, crate::ui::screens::T_TOKEN_DELETE));
+    assert!(has_text(&items, crate::ui::screens::T_TOKEN_DELETE.ko));
     assert!(items.iter().any(
         |item| matches!(item, Item::Field(label, value) if label == "토큰" && value == "SCAM")
     ));
@@ -3678,6 +3713,9 @@ mod yubikey_manage;
 
 /// The opt-in received history (spec/04 §2.6).
 mod received;
+
+/// English key, recovery-phrase, side-file and `rpc.json` screens (spec/14).
+mod lang_keys;
 
 /// spec/10 §9.2 (2026-11-10): once the PIN is in, the touch prompt is the S11 form's line next to
 /// `검토` (a dApp request: the header band), and it is gone once the card answered — signed or
@@ -4859,7 +4897,7 @@ fn backup_pending_after_restart_shows_s04_and_receive() {
     again.app.wait_tick(since + WAIT_TIMEOUT_MS);
     assert!(again.app.wait.stalled);
     let items = again.app.items();
-    assert!(has_text(&items, T_WAIT_STALLED));
+    assert!(has_text(&items, T_WAIT_STALLED.ko));
     let shown = control_ids(&items);
     assert!(shown.contains(&crate::ui::screens_reset::ids::WAIT_RETRY));
     assert!(shown.contains(&ids::LOCK));
@@ -4875,7 +4913,7 @@ fn backup_pending_after_restart_shows_s04_and_receive() {
     again.app.set_screen(Screen::Processing("불러오는 중…"));
     let since = again.app.wait.since.unwrap();
     again.app.wait_tick(since + WAIT_TIMEOUT_MS);
-    assert!(has_text(&again.app.items(), T_WAIT_STALLED));
+    assert!(has_text(&again.app.items(), T_WAIT_STALLED.ko));
 }
 
 /// A failed meta load (here the reconcile write: disk full) puts no default meta in memory, so
@@ -4902,7 +4940,7 @@ fn failed_meta_load_never_saves_a_default_over_the_real_meta() {
         "no default meta stands in for the real one"
     );
     let items = h.app.items();
-    assert!(has_text(&items, T_META_FAILED), "{:?}", texts(&items));
+    assert!(has_text(&items, T_META_FAILED.ko), "{:?}", texts(&items));
     assert!(control_ids(&items).contains(&reset_ids::WAIT_RETRY));
     // A save and the main timer write nothing and do not ask again on their own.
     h.app.save_meta();
@@ -4923,7 +4961,7 @@ fn failed_meta_load_never_saves_a_default_over_the_real_meta() {
         "저축 계정"
     );
     assert!(h.app.wait.meta_failed.is_none());
-    assert!(!has_text(&h.app.items(), T_META_FAILED));
+    assert!(!has_text(&h.app.items(), T_META_FAILED.ko));
 }
 
 /// S22 `지갑 초기화` from the lock screen without the password: the files move into
@@ -5016,7 +5054,8 @@ fn lock_during_wallet_reset_still_reaches_first_run() {
     h.app.lock(LockReason::Manual);
     h.pump();
     h.app.open_reset();
-    h.app.reset_phrase_changed(crate::app_reset::RESET_PHRASE);
+    h.app
+        .reset_phrase_changed(crate::app_reset::RESET_PHRASE.ko);
     h.app.reset_execute();
     assert!(h.app.reset.running);
     h.app.lock(LockReason::SessionLock);
@@ -5252,11 +5291,9 @@ fn hidden_account_comes_back_with_show_again() {
             .any(|row| row.0 == EvmAccountPref::Index(1))
     };
     assert!(!shown(&app));
-    assert!(
-        app.banners
-            .iter()
-            .any(|banner| banner.text == crate::app_hidden::hidden_note("저축"))
-    );
+    assert!(app.banners.iter().any(
+        |banner| banner.text == crate::app_hidden::hidden_note(yw_core::lang::Lang::Ko, "저축")
+    ));
     assert!(
         controls(&app.items())
             .iter()
@@ -5486,4 +5523,144 @@ fn unreadable_meta_is_never_overwritten_and_prev_is_checked_before_anything_move
             && banner.text.contains(&quarantined[0])
             && banner.text.contains(&prev[0])
     }));
+}
+
+/// Every text of the core screens' items, labels and control texts and tips included (the
+/// English UI test below).
+fn all_item_texts(items: &[Item]) -> Vec<String> {
+    let mut out = texts(items);
+    for item in items {
+        match item {
+            Item::LabeledRow(label, _) | Item::Toolbar(label, _) => out.push(label.clone()),
+            Item::CardStart(Some(title)) => out.push(title.clone()),
+            Item::Field(label, value) => {
+                out.push(label.clone());
+                out.push(value.clone());
+            }
+            Item::Steps(labels, _) => out.extend(labels.iter().cloned()),
+            _ => {}
+        }
+    }
+    for ctl in controls(items) {
+        out.push(ctl.text.clone());
+        out.extend(ctl.tip.clone());
+    }
+    out
+}
+
+/// spec/14 (2026-11-14): the core screens S01–S09, S15 (security, network, browser · info) and
+/// their overlays have no Korean in English, except the language card's two fixed texts and the
+/// user's data (account labels made before, folder paths).
+#[test]
+fn english_core_screens_have_no_korean() {
+    use yw_core::lang::{Lang, has_hangul};
+    let (mut app, dir) = unlocked_app("english-core", false);
+    app.settings.language = Lang::En;
+    app.meta = Some(Meta::new_in(Lang::En));
+    let allowed = [
+        crate::ui::screens::LANGUAGE_TITLE,
+        crate::ui::screens::LANGUAGE_KOREAN,
+    ];
+    let data = app.paths.data.display().to_string();
+    let check = |app: &App, name: &str| {
+        for text in all_item_texts(&app.items()) {
+            if allowed.contains(&text.as_str()) || text == data {
+                continue;
+            }
+            assert!(!has_hangul(&text), "{name}: {text}");
+        }
+    };
+    for (screen, name) in [
+        (
+            Screen::Settings(super::SettingsSection::Security),
+            "S15 security",
+        ),
+        (
+            Screen::Settings(super::SettingsSection::Network),
+            "S15 network",
+        ),
+        (Screen::Settings(super::SettingsSection::Other), "S15 other"),
+        (Screen::Done, "S08"),
+        (Screen::Confirm(Confirm::CopyOn), "copy overlay"),
+        (Screen::Confirm(Confirm::Generate), "generate overlay"),
+        (
+            Screen::Confirm(Confirm::DisconnectAll),
+            "disconnect overlay",
+        ),
+        (Screen::Confirm(Confirm::TemplateDelete), "template overlay"),
+    ] {
+        app.screen = screen;
+        check(&app, name);
+    }
+    app.mode = AppMode::Locked;
+    for (screen, name) in [
+        (Screen::FirstRun, "S01"),
+        (Screen::CreateIntro, "S02"),
+        (Screen::BackupPending, "S04"),
+        (Screen::ImportIntro, "S05"),
+        (
+            Screen::ImportAddress("0x9858EfFD232B4033E47d90003D41EC34EcaEda94".to_owned()),
+            "S06",
+        ),
+        (Screen::Locked, "S07"),
+        (Screen::PassMismatch, "T-PASS-MISMATCH"),
+        (Screen::Starting, "starting"),
+    ] {
+        app.screen = screen;
+        check(&app, name);
+    }
+    app.mode = AppMode::Corrupt {
+        prev_available: true,
+    };
+    app.screen = Screen::Recovery;
+    check(&app, "S09");
+    // The helpers the chain screens share.
+    for text in [
+        crate::ui::screens::balance_read_text(Lang::En, Some(7), Some(0)),
+        crate::ui::screens::balance_stale_text(Lang::En, Some(7), None),
+        crate::ui::screens::no_endpoint_text(Lang::En, "Base"),
+        crate::ui::screens::backup_retry_text(Lang::En, [1, 2, 3, 4], true),
+        crate::ui::screens::rollback_text(Lang::En, 3, 2),
+        crate::ui::screens::vault_file_text(Lang::En, 3, 0),
+    ] {
+        assert!(!has_hangul(&text), "{text}");
+    }
+    // Korean stays as it was.
+    assert_eq!(
+        crate::ui::screens::balance_read_text(Lang::Ko, Some(7), None),
+        "블록 7 기준"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// The catalogues of the core screens keep the catalogue rules (spec/14 §4): placeholders in
+/// `0..N` and each used, no Hangul in English, display characters only.
+#[test]
+fn core_screen_catalogues_keep_their_invariants() {
+    use yw_core::lang::{has_hangul, placeholders};
+    for (name, entries) in [
+        ("screens", crate::ui::screens::text::ALL),
+        ("app", super::text::ALL),
+        ("main_window", crate::ui::main_window::text::ALL),
+        ("screens_links", crate::ui::screens_links::text::ALL),
+    ] {
+        for entry in entries {
+            let ko = placeholders(entry.ko);
+            let en = placeholders(entry.en);
+            assert!(
+                ko.iter().chain(&en).all(|index| *index < entry.args)
+                    && (0..entry.args).all(|index| ko.contains(&index) || en.contains(&index)),
+                "{name}::{}",
+                entry.name
+            );
+            assert!(!has_hangul(entry.en), "{name}::{}", entry.name);
+            for text in [entry.ko, entry.en] {
+                assert!(
+                    yw_core::approval::is_valid_display_text(&format!("a{text}a"), 270_000, false),
+                    "{name}::{}",
+                    entry.name
+                );
+            }
+        }
+    }
 }

@@ -832,10 +832,82 @@ fn added_builtin_chains_spec_03_1_1() {
             (token.symbol, token.decimals, token.role),
             (symbol, decimals, role)
         );
-        assert_eq!(chain.label(&parsed), Some(label));
+        assert_eq!(
+            chain.label_in(&parsed, yw_core::lang::Lang::Ko),
+            Some(label)
+        );
     }
     assert_eq!(arbitrum_one().tokens.len(), 3);
     assert_eq!(base_mainnet().tokens.len(), 2);
     assert_eq!(bsc_mainnet().tokens.len(), 3);
     assert_eq!(robinhood_mainnet().tokens.len(), 2);
+}
+
+/// spec/14 (2026-11-14): the EVM error and connect texts exist in English without Hangul, keep
+/// their placeholders and pass the display-text rule; Korean `Display` is unchanged.
+#[test]
+fn english_evm_error_texts() {
+    use yw_core::approval::{MAX_DISPLAY_VALUE_BYTES, is_valid_display_text};
+    use yw_core::evm::amount::AmountError;
+    use yw_core::evm::chain::ChainConfigError;
+    use yw_core::evm::sign::SignError;
+    use yw_core::journal::evm::RecordError;
+    use yw_core::lang::{Entry, Lang, has_hangul, placeholders};
+    use yw_core::policy::BtcPurpose;
+
+    let catalogues: [&[Entry]; 6] = [
+        yw_core::evm::address::text::ALL,
+        yw_core::evm::amount::text::ALL,
+        yw_core::evm::chain::config_text::ALL,
+        yw_core::evm::sign::text::ALL,
+        yw_core::journal::evm::text::ALL,
+        yw_core::policy::chain_grant_text::ALL,
+    ];
+    for entry in catalogues.into_iter().flatten() {
+        for template in [entry.ko, entry.en] {
+            let mut used = placeholders(template);
+            used.sort_unstable();
+            used.dedup();
+            assert_eq!(used, (0..entry.args).collect::<Vec<_>>(), "{}", entry.name);
+            assert!(
+                is_valid_display_text(template, MAX_DISPLAY_VALUE_BYTES, true),
+                "{}",
+                entry.name
+            );
+        }
+        assert!(!has_hangul(entry.en), "{}", entry.name);
+    }
+    let english = [
+        AddressError::InvalidFormat.text_in(Lang::En).to_owned(),
+        AddressError::BadChecksum.text_in(Lang::En).to_owned(),
+        AmountError::Format.text_in(Lang::En).to_owned(),
+        AmountError::TooManyDecimals.text_in(Lang::En).to_owned(),
+        AmountError::Overflow.text_in(Lang::En).to_owned(),
+        ChainConfigError::ChainIdOutOfRange
+            .text_in(Lang::En)
+            .to_owned(),
+        ChainConfigError::NameReserved.text_in(Lang::En).to_owned(),
+        SignError::KindMismatch.text_in(Lang::En),
+        SignError::PostSignVerification.text_in(Lang::En),
+        RecordError::Hash.text_in(Lang::En).to_owned(),
+        BtcPurpose::Payment.label_in(Lang::En).to_owned(),
+        BtcPurpose::Ordinals.label_in(Lang::En).to_owned(),
+        BtcPurpose::Any.label_in(Lang::En).to_owned(),
+    ];
+    for text in &english {
+        assert!(!has_hangul(text) && !text.is_empty(), "{text}");
+    }
+    assert_eq!(
+        AddressError::BadChecksum.to_string(),
+        AddressError::BadChecksum.text_in(Lang::Ko)
+    );
+    assert_eq!(
+        ChainConfigError::DecimalsInvalid.to_string(),
+        "소수 자릿수는 0–36이어야 합니다."
+    );
+    assert_eq!(
+        SignError::RecoveryId.to_string(),
+        "내부 오류가 발생했습니다. 로그를 확인하세요."
+    );
+    assert_eq!(RecordError::Signer.to_string(), "저널 손상");
 }

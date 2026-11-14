@@ -18,6 +18,16 @@ use crate::network::NetworkId;
 use crate::settings::{LogLevel, RpcTemplate};
 use crate::ui::main_window::{Ctl, Item, Tone};
 use crate::ui::theme::AddressKind;
+use yw_core::lang::{Lang, Text};
+
+pub mod text;
+
+pub use text::{
+    T_ACCOUNTS_BACKUP, T_ACCOUNTS_IMPORTED, T_ACCOUNTS_KEY_ONLY, T_ACCOUNTS_YUBIKEY,
+    T_ACCOUNTS_YUBIKEY_WORDS, T_ACTIVITY_RECEIVED, T_ALT_PASS, T_ALT_PASS_RECEIVE,
+    T_BALANCE_FAILED, T_BALANCE_LOADING, T_DISCARD, T_MAINNET, T_REFRESH_TIP, T_REMOVE_KEY,
+    T_TOKEN_DELETE, T_WER_UNPROTECTED,
+};
 
 /// Command ids (never 1/2, which `IsDialogMessageW` uses for Enter/Esc).
 pub mod ids {
@@ -326,9 +336,17 @@ pub mod ids {
 }
 
 /// Steps of the create flow (S02 → W01 → W08 → W10, spec/04 §2.3).
-pub const CREATE_STEPS: [&str; 3] = ["비밀번호 정하기", "복구 단어 적기", "백업 확인"];
+pub const CREATE_STEPS: [Text; 3] = [
+    text::STEP_PASSWORD,
+    text::STEP_WRITE_WORDS,
+    text::STEP_BACKUP_CHECK,
+];
 /// Steps of the import flow (S05 → W01 → W05 → S06, spec/04 §2.4).
-pub const IMPORT_STEPS: [&str; 3] = ["비밀번호 정하기", "복구 단어 입력", "첫 주소 확인"];
+pub const IMPORT_STEPS: [Text; 3] = [
+    text::STEP_PASSWORD,
+    text::STEP_ENTER_WORDS,
+    text::STEP_FIRST_ADDRESS,
+];
 
 /// The step indicator item of a flow.
 #[must_use]
@@ -341,14 +359,11 @@ pub fn steps<const N: usize>(labels: [&str; N], current: usize) -> Item {
 
 /// The `← 메인으로` link.
 #[must_use]
-pub fn back_main() -> Item {
+pub fn back_main(lang: Lang) -> Item {
     Item::Row(vec![
-        Ctl::link(ids::BACK_MAIN, "← 메인으로").tip("메인으로 (Esc)"),
+        Ctl::link(ids::BACK_MAIN, text::BACK_MAIN.get(lang)).tip(text::BACK_MAIN_TIP.get(lang)),
     ])
 }
-
-/// The tooltip of a main card's `새로고침` (F5 presses the visible one).
-pub const T_REFRESH_TIP: &str = "새로고침 (F5)";
 
 /// The `언어 · Language` card title: the same in both languages (spec/14 §1), like the `한국어`
 /// option, so either reader finds the setting.
@@ -356,53 +371,29 @@ pub const LANGUAGE_TITLE: &str = "언어 · Language";
 /// The `한국어` option of the language card (the language's own name in both languages).
 pub const LANGUAGE_KOREAN: &str = "한국어";
 
-yw_core::texts! {
-    /// The language card's help line (spec/04 §2.11).
-    LANGUAGE_HELP = "앱 화면과 승인 창의 언어입니다. 바꾸면 바로 적용되고, 이미 열린 승인 창은 처음 언어로 남습니다."
-        / "The language of the app screens and approval windows. A change applies at once; an approval window that is already open keeps its language.";
-}
-
-/// S08 `QuickNode 주소`'s help (2026-11-10).
-pub const T_DONE_QUICKNODE: &str = "QuickNode 대시보드의 엔드포인트 주소(https://….quiknode.pro/…/)를 통째로 붙여넣으세요. 쓸 체인(Ethereum·Arbitrum·Base·Solana·Bitcoin 등)은 대시보드에서 그 엔드포인트에 켜 두어야 합니다. 입력은 가려지고, 이 Windows 사용자만 풀 수 있게 암호화해 저장합니다.";
-/// The `RPC 공급자` card's `QuickNode` note (2026-11-10): a chain not enabled on the endpoint
-/// fails its test.
-pub const T_QUICKNODE_CHAINS: &str = "QuickNode는 대시보드에서 쓸 체인(Ethereum·Arbitrum·Base·Solana·Bitcoin 등)을 엔드포인트에 하나씩 켜야 그 네트워크가 작동합니다.";
-
 /// T-FIRST-1 (S01, three plain sentences).
-pub const T_FIRST: [&str; 3] = [
-    "Your Wallet은 이 PC에서만 쓰는 개인용 암호화폐 지갑입니다.",
-    "돈을 보내거나 사이트에 서명할 때는 언제나 이 앱의 확인 창에서 내용을 보고 직접 승인합니다.",
-    "지갑을 만들 때 받는 복구 단어 24개가 유일한 백업입니다. 종이에 적어 안전한 곳에 보관하세요.",
-];
+pub const T_FIRST: [Text; 3] = [text::T_FIRST_1, text::T_FIRST_2, text::T_FIRST_3];
 
 /// T-BACKUP-FAIL (W10 after a wrong answer, spec/04 §2.3): the same four positions are asked
 /// again, and the paper may be what is wrong. `words_again`: closing W10 leads back to the words
 /// (S04 or the recovery-phrase list); the new `YubiKey` wallet's W10 has no way back to them.
 #[must_use]
-pub fn backup_retry_text(positions: [u8; 4], words_again: bool) -> String {
-    let [a, b, c, d] = positions;
+pub fn backup_retry_text(lang: Lang, positions: [u8; 4], words_again: bool) -> String {
+    let [a, b, c, d] = positions.map(|position| position.to_string());
     let next = if words_again {
-        "종이에 잘못 적었을 수 있으니, 이 창을 닫고 복구 단어를 다시 보면서 이 네 단어를 종이와 대조해 고치세요."
+        text::BACKUP_RETRY_WORDS_AGAIN
     } else {
-        "종이의 이 네 단어를 다시 확인하세요. 종이가 틀렸는지 알 수 없다면 이 창을 닫아 만들기를 취소하고(단어는 지워집니다) 처음부터 다시 만드세요."
+        text::BACKUP_RETRY_NO_WORDS
     };
-    format!(
-        "입력한 단어 중 종이와 다른 것이 있습니다. 같은 위치({a}·{b}·{c}·{d}번째)를 다시 묻습니다. {next}"
-    )
+    text::BACKUP_RETRY.fill(lang, [&a, &b, &c, &d, next.get(lang)])
 }
 
 /// The selected-account card of a network without an RPC address (spec/04 §2.6, 2026-11-08):
 /// why there is no balance, in place of "RPC 연결을 확인하고 새로고침하세요".
 #[must_use]
-pub fn no_endpoint_text(network: &str) -> String {
-    format!("이 네트워크({network})의 RPC 주소가 아직 없어 잔액을 읽을 수 없습니다.")
+pub fn no_endpoint_text(lang: Lang, network: &str) -> String {
+    text::NO_ENDPOINT.fill(lang, [network])
 }
-
-/// The selected-account card while its balance read failed and there is no earlier value
-/// (2026-11-10; 2026-11-12 without the pointer to the network card, whose band says why).
-pub const T_BALANCE_FAILED: &str = "잔액을 읽지 못했습니다.";
-/// Under the big balance while the first read of the network is on its way.
-pub const T_BALANCE_LOADING: &str = "잔액을 불러오는 중…";
 
 /// `HH:MM` in local time (UTC with a suffix if the conversion fails).
 #[must_use]
@@ -420,11 +411,11 @@ pub fn local_hh_mm(unix_ms: u64) -> String {
 /// The line under a balance read successfully: "블록 N 기준 · HH:MM 갱신" (EVM) or
 /// "HH:MM 갱신" (no block number).
 #[must_use]
-pub fn balance_read_text(block: Option<u64>, at_unix_ms: Option<u64>) -> String {
-    let when = at_unix_ms.map(|at| format!("{} 갱신", local_hh_mm(at)));
+pub fn balance_read_text(lang: Lang, block: Option<u64>, at_unix_ms: Option<u64>) -> String {
+    let when = at_unix_ms.map(|at| text::UPDATED_AT.fill(lang, [&local_hh_mm(at)]));
     match (block, when) {
-        (Some(block), Some(when)) => format!("블록 {block} 기준 · {when}"),
-        (Some(block), None) => format!("블록 {block} 기준"),
+        (Some(block), Some(when)) => text::AT_BLOCK_WHEN.fill(lang, [&block.to_string(), &when]),
+        (Some(block), None) => text::AT_BLOCK.fill(lang, [&block.to_string()]),
         (None, Some(when)) => when,
         (None, None) => String::new(),
     }
@@ -434,13 +425,13 @@ pub fn balance_read_text(block: Option<u64>, at_unix_ms: Option<u64>) -> String 
 /// from — "블록 N 기준 · HH:MM 이후 갱신 실패" (EVM), "HH:MM 이후 갱신 실패" (no block number).
 /// Why it failed is the network card's band.
 #[must_use]
-pub fn balance_stale_text(block: Option<u64>, at_unix_ms: Option<u64>) -> String {
+pub fn balance_stale_text(lang: Lang, block: Option<u64>, at_unix_ms: Option<u64>) -> String {
     let since = at_unix_ms.map_or_else(
-        || "갱신 실패".to_owned(),
-        |at| format!("{} 이후 갱신 실패", local_hh_mm(at)),
+        || text::UPDATE_FAILED.get(lang).to_owned(),
+        |at| text::UPDATE_FAILED_SINCE.fill(lang, [&local_hh_mm(at)]),
     );
     match block {
-        Some(block) => format!("블록 {block} 기준 · {since}"),
+        Some(block) => text::AT_BLOCK_WHEN.fill(lang, [&block.to_string(), &since]),
         None => since,
     }
 }
@@ -450,48 +441,13 @@ pub fn balance_stale_text(block: Option<u64>, at_unix_ms: Option<u64>) -> String
 /// and the code's whole §7 text is the answer of `RPC 테스트` and of settings. A code without
 /// a short name keeps its whole text.
 #[must_use]
-pub fn balance_failure_text(code: ErrorCode) -> String {
-    match code.short_name() {
-        Some(name) => format!(
-            "RPC {name} ({}) — 잔액을 갱신하지 못했습니다. 'RPC 테스트'로 원인을 확인하세요.",
-            code.code()
-        ),
-        None => code.text(),
+pub fn balance_failure_text(lang: Lang, code: ErrorCode) -> String {
+    match code.short_name_in(lang) {
+        Some(name) => text::BALANCE_FAILURE.fill(lang, [name, code.code()]),
+        None => code.text_in(lang),
     }
 }
 
-/// The empty Zcash activity card (2026-11-08; 2026-11-11 the opt-in switch): received deposits
-/// are not in the sent list (spec/04 §2.6). The other chains' cards are titled `보낸 거래` and
-/// say only that there is none yet (2026-11-12).
-pub const T_ACTIVITY_RECEIVED: &str = "받은 입금은 이 목록(보낸 거래)에 나오지 않습니다. 아래 '받은 내역도 보기'를 켜면 최근 받은 내역을 따로 보여 줍니다(기본 꺼짐).";
-
-/// T-ALT-PASS (every screen while `App::passphrase_unverified`, spec/04 §2.1): not dismissible.
-pub const T_ALT_PASS: &str = "passphrase 확인값과 맞지 않는 passphrase로 연 지갑입니다. 오타라면 이 지갑은 원래 지갑이 아닌 다른(빈) 지갑이고, 여기로 받은 자산은 지금 입력한 passphrase와 대소문자·공백까지 정확히 같은 값을 다시 넣어야만 꺼낼 수 있습니다. 그래서 받기와 사이트 연결·서명을 막았습니다. 추가한 계정·계정 이름·주소록·연결 기록도 저장되지 않습니다. 잘못 입력했다면 잠그고 다시 여세요.";
-/// Shown when `받기` is pressed in that mode.
-pub const T_ALT_PASS_RECEIVE: &str = "확인되지 않은 passphrase로 연 지갑에서는 받기를 쓸 수 없습니다. 잠그고 passphrase를 다시 입력하세요.";
-/// T-MAINNET: the main-screen badge of a network with real assets (EVM mainnets, Solana mainnet;
-/// Bitcoin shows `BITCOIN MAINNET`, spec/08 §2).
-pub const T_MAINNET: &str = "메인넷 — 실제 자산";
-/// The `내 계정` / `내 Solana 계정` help of a wallet with recovery words, shown only while it
-/// has an imported key (2026-11-12): only derived accounts come back from the words.
-pub const T_ACCOUNTS_BACKUP: &str =
-    "'가져온 개인키' 계정은 복구 단어로 복구되지 않습니다 — 그 개인키를 따로 백업하세요.";
-/// That help of a key-only wallet (no recovery words).
-pub const T_ACCOUNTS_KEY_ONLY: &str = "이 지갑은 개인키로 시작해 복구 단어가 없습니다. 모든 계정은 '가져온 키'이며 각각의 원래 개인키가 유일한 백업입니다.";
-/// The `내 계정` / `내 Solana 계정` help of a wallet without recovery words that has `YubiKey`
-/// cards (2026-11-10: not the key-only text, which says the wallet started from a key).
-pub const T_ACCOUNTS_YUBIKEY: &str = "이 지갑은 복구 단어를 저장하지 않습니다. [YubiKey] 계정의 키는 카드 안에만 있고, 백업은 등록할 때 적은 복구 단어입니다(복구 단어 없이 연결한 키는 그 카드와 같은 키를 가진 백업 카드).";
-/// Its last sentence when the wallet also has imported keys.
-pub const T_ACCOUNTS_IMPORTED: &str = "[가져온 키]는 원래 개인키가 백업입니다.";
-/// Added to T-ACCOUNTS-BACKUP when a wallet with recovery words has `YubiKey` accounts.
-pub const T_ACCOUNTS_YUBIKEY_WORDS: &str = "[YubiKey] 계정은 YubiKey를 등록할 때 쓴 복구 단어로 복구됩니다(이 지갑의 복구 단어와 다를 수 있음).";
-/// The imported-key removal confirmation (export first: imported keys are not in the 24 words).
-pub const T_REMOVE_KEY: &str = "선택한 가져온 개인키 계정을 이 지갑에서 지웁니다. 가져온 개인키는 복구 단어로 복구되지 않으므로, 지우고 나면 원래 개인키 없이는 이 계정의 자산에 다시 접근할 수 없습니다. 지우기 전에 설정 → 보안 → '개인키 보기'로 개인키를 내보내 안전하게 보관했는지 확인하세요. 계속하려면 비밀번호를 입력하세요.";
-/// The EVM `폐기` confirmation: discarding only stops tracking; a resend may pay twice.
-pub const T_DISCARD: &str = "폐기는 이 앱에서 추적만 멈추고 '폐기됨'으로 표시합니다. 네트워크에서 거래를 취소하지는 않습니다. 이미 전파된 거래라면 나중에 처리될 수 있고, 그 사이 같은 송금을 다시 보내면 두 거래가 모두 처리되어 두 번 지불될 수 있습니다. 확실히 막으려면 폐기 대신 '취소'(같은 nonce의 취소 거래)를 쓰고, 다시 보내기 전에 탐색기에서 이 거래가 사라졌는지 확인하세요.";
-/// T-TOKEN-DELETE: `삭제` of a user-added EVM token (spec/04 §2.6); the label and the full
-/// contract address follow it.
-pub const T_TOKEN_DELETE: &str = "이 토큰을 이 네트워크의 토큰 목록에서 지웁니다. 토큰이나 잔액은 그대로이며 블록체인에는 아무것도 보내지 않습니다. 같은 컨트랙트 주소로 언제든 다시 추가할 수 있습니다. 지운 뒤 이 토큰의 활동 기록은 원시 단위로 보입니다.";
 /// Every chain's `받기` (S12) command, and every `주소 복사` on S10 (2026-11-11: the account
 /// cards' address line and the Zcash 받기 card) — an unverified passphrase's addresses belong
 /// to another wallet, so they are not handed out from the main screen either.
@@ -514,6 +470,7 @@ pub const RECEIVE_IDS: [u16; 8] = [
 /// at the right end. Recipient checks (approval, send, receive) keep the grouped form of §3.3.
 #[must_use]
 pub fn own_address_row(
+    lang: Lang,
     address: &str,
     kind: AddressKind,
     copy: u16,
@@ -523,7 +480,7 @@ pub fn own_address_row(
     Item::CopyLine {
         value: Ctl::value(
             copy,
-            crate::ui::screens_links::T_ADDRESS_COPY,
+            crate::ui::screens_links::T_ADDRESS_COPY.get(lang),
             crate::ui::theme::own_address_spans(address, kind, false),
         )
         .enabled(enabled),
@@ -537,11 +494,15 @@ pub fn own_address_row(
 /// the address of before; the command still copies the address itself — and `actions`
 /// (Bitcoin's `새 주소`) at the right end.
 #[must_use]
-pub fn receive_address_row(shown: &str, copy: u16, actions: Vec<Ctl>) -> Item {
+pub fn receive_address_row(lang: Lang, shown: &str, copy: u16, actions: Vec<Ctl>) -> Item {
     let spans =
         crate::ui::theme::address_spans(shown).unwrap_or_else(|| vec![(shown.to_owned(), false)]);
     Item::CopyLine {
-        value: Ctl::value(copy, crate::ui::screens_links::T_ADDRESS_COPY, spans),
+        value: Ctl::value(
+            copy,
+            crate::ui::screens_links::T_ADDRESS_COPY.get(lang),
+            spans,
+        ),
         actions,
     }
 }
@@ -566,7 +527,7 @@ fn disable_receive(items: &mut [Item]) {
 /// The `vault.ywv` facts line (review L17): generation and last write time, so a file swapped
 /// for an older copy is noticeable.
 #[must_use]
-pub fn vault_file_text(generation: u64, written_unix_ms: u64) -> String {
+pub fn vault_file_text(lang: Lang, generation: u64, written_unix_ms: u64) -> String {
     let wall = yw_win::time::local_wall_ms(written_unix_ms);
     let text = crate::logging::format_utc(wall.unwrap_or(written_unix_ms));
     let short = text.get(..16).unwrap_or(&text).replace('T', " ");
@@ -575,25 +536,22 @@ pub fn vault_file_text(generation: u64, written_unix_ms: u64) -> String {
     } else {
         format!("{short} UTC")
     };
-    format!(
-        "지갑 파일(vault.ywv): 저장 횟수(세대) {generation} · 마지막 저장 {when}. 기억하는 것보다 작거나 이전 시각이면 파일이 예전 사본으로 바뀌었을 수 있습니다."
-    )
+    text::VAULT_FILE.fill(lang, [&generation.to_string(), &when])
 }
 
 /// The banner when the meta remembers a newer `vault.ywv` generation (review L17).
 #[must_use]
-pub fn rollback_text(seen: u64, found: u64) -> String {
-    format!(
-        "지갑 파일(vault.ywv)이 예전 사본으로 바뀌었을 수 있습니다: 이 지갑은 세대 {seen}까지 저장했는데 지금 파일은 세대 {found}입니다. 직접 백업에서 되돌린 것이 아니라면 지운 계정·키가 다시 나타나거나 최근 변경이 사라졌을 수 있으니 확인하세요."
-    )
+pub fn rollback_text(lang: Lang, seen: u64, found: u64) -> String {
+    text::ROLLBACK.fill(lang, [&seen.to_string(), &found.to_string()])
 }
 
-/// The banner when the crash-report exclusion failed at startup (review L9).
-pub const T_WER_UNPROTECTED: &str = "Windows 오류 보고(WER) 제외 등록에 실패했습니다. 이 앱이 비정상 종료되면 메모리 덤프가 남을 수 있고, 덤프에는 잠금 해제 중인 지갑 키가 들어 있을 수 있습니다.";
-
 fn header(app: &App, items: &mut Vec<Item>) {
+    let lang = app.settings.language;
     if app.passphrase_unverified() {
-        items.push(Item::Banner(T_ALT_PASS.to_owned(), Tone::HighRisk));
+        items.push(Item::Banner(
+            T_ALT_PASS.get(lang).to_owned(),
+            Tone::HighRisk,
+        ));
     }
     app.meta_failed_items(items);
     app.journal_closed_items(items);
@@ -601,18 +559,19 @@ fn header(app: &App, items: &mut Vec<Item>) {
         // What differs, in plain words with both values (2026-11-08); the safe choice is the
         // primary button and `파일 값 사용…` asks once more (spec/04 §6.7).
         items.push(Item::Banner(
-            format!(
-                "{}. 지금은 앱에 저장된 값을 씁니다. 직접 바꾼 것이 아니라면 '앱에 저장된 값으로 되돌리기'를 누르세요.",
-                crate::settings::SETTINGS_TAMPERED_TEXT
-            ),
+            text::SETTINGS_TAMPERED_BANNER
+                .fill(lang, [crate::settings::SETTINGS_TAMPERED_TEXT.get(lang)]),
             Tone::Warn,
         ));
         for line in app.settings_file_lines() {
             items.push(Item::Help(line));
         }
         items.push(Item::Row(vec![
-            Ctl::primary(ids::SETTINGS_RESTORE, "앱에 저장된 값으로 되돌리기"),
-            Ctl::button(ids::SETTINGS_ACCEPT_FILE, "파일 값 사용…"),
+            Ctl::primary(ids::SETTINGS_RESTORE, text::SETTINGS_RESTORE.get(lang)),
+            Ctl::button(
+                ids::SETTINGS_ACCEPT_FILE,
+                text::SETTINGS_ACCEPT_FILE.get(lang),
+            ),
         ]));
     }
     for banner in &app.banners {
@@ -625,7 +584,7 @@ fn header(app: &App, items: &mut Vec<Item>) {
     if !app.banners.is_empty() || app.info.is_some() {
         items.push(Item::Row(vec![Ctl::link(
             ids::DISMISS_BANNERS,
-            "알림 닫기",
+            text::DISMISS_BANNERS.get(lang),
         )]));
     }
 }
@@ -638,8 +597,12 @@ fn indexer_name(indexer: crate::settings::BtcIndexer) -> &'static str {
     }
 }
 
-fn cap_value(text: &str) -> &str {
-    if text.is_empty() { "기본값" } else { text }
+fn cap_value(lang: Lang, value: &str) -> &str {
+    if value.is_empty() {
+        text::DEFAULT_VALUE.get(lang)
+    } else {
+        value
+    }
 }
 
 impl App {
@@ -653,12 +616,16 @@ impl App {
         };
         let (file, differing) = (&pending.0, &pending.1);
         let current = &self.settings;
+        let lang = current.language;
         let mut lines = Vec::new();
         for kind in differing {
             match kind {
-                crate::settings::Differing::AutoLock => lines.push(format!(
-                    "자동 잠금: 지금 {}분 → 파일 {}분 (autoLockMinutes)",
-                    current.auto_lock_minutes, file.auto_lock_minutes
+                crate::settings::Differing::AutoLock => lines.push(text::DIFF_AUTO_LOCK.fill(
+                    lang,
+                    [
+                        &current.auto_lock_minutes.to_string(),
+                        &file.auto_lock_minutes.to_string(),
+                    ],
                 )),
                 crate::settings::Differing::FeeCaps => {
                     let mut chains: Vec<u64> = current
@@ -683,17 +650,22 @@ impl App {
                         }
                         let part = |caps: Option<&crate::settings::FeeCapsText>,
                                     pick: fn(&crate::settings::FeeCapsText) -> &str| {
-                            caps.map_or("기본값", |caps| cap_value(pick(caps))).to_owned()
+                            caps.map_or(text::DEFAULT_VALUE.get(lang), |caps| {
+                                cap_value(lang, pick(caps))
+                            })
+                            .to_owned()
                         };
-                        lines.push(format!(
-                            "EVM 수수료 상한 — {}: maxFee {} → {} gwei · 우선 수수료 {} → {} gwei · 총 {} → {} (feeCaps)",
-                            self.network_name(NetworkId::Eip155(id)),
-                            part(now.as_ref(), |caps| &caps.max_fee_per_gas_gwei),
-                            part(then.as_ref(), |caps| &caps.max_fee_per_gas_gwei),
-                            part(now.as_ref(), |caps| &caps.max_priority_fee_per_gas_gwei),
-                            part(then.as_ref(), |caps| &caps.max_priority_fee_per_gas_gwei),
-                            part(now.as_ref(), |caps| &caps.max_total_fee),
-                            part(then.as_ref(), |caps| &caps.max_total_fee),
+                        lines.push(text::DIFF_FEE_CAPS.fill(
+                            lang,
+                            [
+                                &self.network_name(NetworkId::Eip155(id)),
+                                &part(now.as_ref(), |caps| &caps.max_fee_per_gas_gwei),
+                                &part(then.as_ref(), |caps| &caps.max_fee_per_gas_gwei),
+                                &part(now.as_ref(), |caps| &caps.max_priority_fee_per_gas_gwei),
+                                &part(then.as_ref(), |caps| &caps.max_priority_fee_per_gas_gwei),
+                                &part(now.as_ref(), |caps| &caps.max_total_fee),
+                                &part(then.as_ref(), |caps| &caps.max_total_fee),
+                            ],
                         ));
                     }
                 }
@@ -702,15 +674,14 @@ impl App {
                         format!(
                             "{} (mainnet {} · testnet4 {})",
                             indexer_name(bitcoin.indexer),
-                            cap_value(&bitcoin.esplora_mainnet),
-                            cap_value(&bitcoin.esplora_testnet4)
+                            cap_value(lang, &bitcoin.esplora_mainnet),
+                            cap_value(lang, &bitcoin.esplora_testnet4)
                         )
                     };
-                    lines.push(format!(
-                        "Bitcoin 주소 조회 서버: 지금 {} → 파일 {} (bitcoin.indexer/esploraBaseUrl) — 파일 값을 쓰면 주소 조회가 그 서버로 갑니다",
-                        server(&current.bitcoin),
-                        server(&file.bitcoin)
-                    ));
+                    lines.push(
+                        text::DIFF_INDEXER
+                            .fill(lang, [&server(&current.bitcoin), &server(&file.bitcoin)]),
+                    );
                 }
                 crate::settings::Differing::NewChains => {
                     for chain in file.evm_chains.iter().filter(|chain| {
@@ -719,10 +690,10 @@ impl App {
                             .iter()
                             .any(|known| known.chain_id == chain.chain_id)
                     }) {
-                        lines.push(format!(
-                            "새 사용자 체인: {} (chainId {}) — 앱이 제네시스를 고정한 적 없음 (evmChains)",
-                            chain.name, chain.chain_id
-                        ));
+                        lines.push(
+                            text::DIFF_NEW_CHAIN
+                                .fill(lang, [&chain.name, &chain.chain_id.to_string()]),
+                        );
                     }
                 }
             }
@@ -735,44 +706,39 @@ impl App {
     /// The recovery card of a wallet with recovery words (settings → 보안): the backup status
     /// when the first phrase is not the only backup (2026-11-08), and the reveal buttons.
     fn backup_card_rows(&self, unlocked: bool, public: bool, items: &mut Vec<Item>) {
+        let lang = self.settings.language;
         let lines = self.backup_status_lines();
         if lines.is_empty() {
-            items.push(Item::Help(
-                "복구 단어(니모닉)는 지갑 전체의 백업입니다. 보기 전에 비밀번호를 다시 묻고, 화면 캡처에서 제외된 창에 보여줍니다."
-                    .to_owned(),
-            ));
+            items.push(Item::Help(text::BACKUP_CARD_HELP.get(lang).to_owned()));
         } else {
             // Several backups (2026-11-08): the first recovery phrase is no longer the
             // whole wallet's backup, so say what each part needs (status only, no values).
             items.push(Item::Subtitle(
-                "백업 현황 — 이 지갑을 다시 열려면".to_owned(),
+                text::BACKUP_STATUS_TITLE.get(lang).to_owned(),
             ));
             for line in lines {
                 items.push(Item::Text(line));
             }
-            items.push(Item::Help(
-                "이 PC의 비밀번호는 백업이 아닙니다. 보기 전에 비밀번호를 다시 묻고, 화면 캡처에서 제외된 창에 보여줍니다."
-                    .to_owned(),
-            ));
+            items.push(Item::Help(text::BACKUP_STATUS_HELP.get(lang).to_owned()));
         }
         let several = self.several_mnemonics();
         let mut row = vec![
             Ctl::button(
                 ids::REVEAL_MNEMONIC,
                 if several {
-                    "첫 복구 단어 보기"
+                    text::REVEAL_FIRST_MNEMONIC.get(lang)
                 } else {
-                    "복구 단어 보기"
+                    text::REVEAL_MNEMONIC.get(lang)
                 },
             )
             .enabled(public),
-            Ctl::button(ids::REVEAL_KEY, "개인키 보기")
+            Ctl::button(ids::REVEAL_KEY, text::REVEAL_KEY.get(lang))
                 .enabled(unlocked && !self.hardware_selected()),
         ];
         if several {
             row.push(Ctl::link(
                 crate::ui::screens_mnemonics::ids::MAIN_LINK,
-                "복구 단어 관리 ▸",
+                text::MANAGE_MNEMONICS.get(lang),
             ));
         }
         items.push(Item::Row(row));
@@ -785,20 +751,29 @@ impl App {
     /// always gets its reminder, and a wallet of derived accounts only has no paragraph.
     #[must_use]
     pub(crate) fn accounts_help(&self, has_card: bool, imported: bool) -> Option<String> {
+        let lang = self.settings.language;
         if self.key_only() && !self.card.records.is_empty() {
             return Some(if imported {
-                format!("{T_ACCOUNTS_YUBIKEY} {T_ACCOUNTS_IMPORTED}")
+                format!(
+                    "{} {}",
+                    T_ACCOUNTS_YUBIKEY.get(lang),
+                    T_ACCOUNTS_IMPORTED.get(lang)
+                )
             } else {
-                T_ACCOUNTS_YUBIKEY.to_owned()
+                T_ACCOUNTS_YUBIKEY.get(lang).to_owned()
             });
         }
         if self.key_only() {
-            return Some(T_ACCOUNTS_KEY_ONLY.to_owned());
+            return Some(T_ACCOUNTS_KEY_ONLY.get(lang).to_owned());
         }
         match (imported, has_card) {
-            (true, true) => Some(format!("{T_ACCOUNTS_BACKUP} {T_ACCOUNTS_YUBIKEY_WORDS}")),
-            (true, false) => Some(T_ACCOUNTS_BACKUP.to_owned()),
-            (false, true) => Some(T_ACCOUNTS_YUBIKEY_WORDS.to_owned()),
+            (true, true) => Some(format!(
+                "{} {}",
+                T_ACCOUNTS_BACKUP.get(lang),
+                T_ACCOUNTS_YUBIKEY_WORDS.get(lang)
+            )),
+            (true, false) => Some(T_ACCOUNTS_BACKUP.get(lang).to_owned()),
+            (false, true) => Some(T_ACCOUNTS_YUBIKEY_WORDS.get(lang).to_owned()),
             (false, false) => None,
         }
     }
@@ -836,34 +811,35 @@ impl App {
     /// settings → 보안 and S22 show it always, 2026-11-10).
     #[must_use]
     pub fn backup_status_all(&self) -> Vec<String> {
+        let lang = self.settings.language;
         let imported = self.imported_key_count();
         let mut lines = Vec::new();
         for info in &self.mn.infos {
-            lines.push(format!(
-                "· {} · {}단어{}{} · {}",
-                self.mnemonic_label(info.id),
-                info.words,
-                if info.passphrase_used {
-                    " + passphrase"
-                } else {
-                    ""
-                },
-                if info.primary {
-                    " (첫 복구 단어)"
-                } else {
-                    ""
-                },
-                if info.backup_confirmed {
-                    "백업 확인됨 ✓"
-                } else {
-                    "백업 확인 전 ⚠ — 설정 → 복구 단어에서 '백업 확인'"
-                }
+            lines.push(text::BACKUP_STATUS_PHRASE.fill(
+                lang,
+                [
+                    &self.mnemonic_label(info.id),
+                    &info.words.to_string(),
+                    if info.passphrase_used {
+                        " + passphrase"
+                    } else {
+                        ""
+                    },
+                    if info.primary {
+                        text::BACKUP_STATUS_FIRST.get(lang)
+                    } else {
+                        ""
+                    },
+                    if info.backup_confirmed {
+                        text::BACKUP_CONFIRMED.get(lang)
+                    } else {
+                        text::BACKUP_NOT_CONFIRMED.get(lang)
+                    },
+                ],
             ));
         }
         if imported > 0 {
-            lines.push(format!(
-                "· 가져온 개인키 {imported}개 — 복구 단어로 되찾을 수 없고, 각각 원래 개인키가 백업입니다"
-            ));
+            lines.push(text::BACKUP_STATUS_IMPORTED.fill(lang, [&imported.to_string()]));
         }
         // One line per card key (2026-11-10): where it is, and whether recovery words make it
         // again (a key connected without words is only on its cards).
@@ -880,16 +856,16 @@ impl App {
                     .map(|serial| format!("#{serial}"))
                     .collect();
                 let cards = holders.join("·");
-                let title = slot.role.title();
+                let title = slot.role.title_in(lang);
                 lines.push(
                     if yw_core::yubikey::plan::is_unknown_index(slot.role.index()) {
                         if holders.len() > 1 {
-                            format!("· {title} — 복구 단어 없음, {cards}에 있음")
+                            text::BACKUP_STATUS_CARD_ON.fill(lang, [&title, &cards])
                         } else {
-                            format!("· {title} — 복구 단어 없음, {cards}에만 있음 ⚠")
+                            text::BACKUP_STATUS_CARD_ONLY.fill(lang, [&title, &cards])
                         }
                     } else {
-                        format!("· {title} — YubiKey {cards} · 복구 단어로 다시 만들 수 있음")
+                        text::BACKUP_STATUS_CARD_WORDS.fill(lang, [&title, &cards])
                     },
                 );
             }
@@ -902,22 +878,19 @@ impl App {
 /// lives elsewhere (spec/04 §2.11). The list of the section's cards that used to open every
 /// section ("이 구역: …") repeated the card headings right below it and is gone (2026-11-12).
 #[must_use]
-pub const fn settings_elsewhere(section: SettingsSection) -> Option<&'static str> {
-    match section {
-        SettingsSection::Security => {
-            Some("복구 단어별 보기·백업 확인은 '복구 단어' 탭에 있습니다.")
-        }
-        SettingsSection::Chains => Some("토큰 추가는 메인 화면의 '토큰' 카드에 있습니다."),
-        SettingsSection::Bitcoin => {
-            Some("Bitcoin 계정과 주소 방식은 메인 화면의 Bitcoin 탭에 있습니다.")
-        }
-        SettingsSection::YubiKey => Some("서명할 때는 승인 뒤 PIN 창이 저절로 열립니다."),
-        SettingsSection::Other => Some("Zcash는 메인 화면의 Zcash 탭에서 켭니다."),
+pub const fn settings_elsewhere(lang: Lang, section: SettingsSection) -> Option<&'static str> {
+    let text = match section {
+        SettingsSection::Security => text::ELSEWHERE_SECURITY,
+        SettingsSection::Chains => text::ELSEWHERE_CHAINS,
+        SettingsSection::Bitcoin => text::ELSEWHERE_BITCOIN,
+        SettingsSection::YubiKey => text::ELSEWHERE_YUBIKEY,
+        SettingsSection::Other => text::ELSEWHERE_OTHER,
         SettingsSection::Network
         | SettingsSection::Solana
         | SettingsSection::Ai
-        | SettingsSection::Mnemonics => None,
-    }
+        | SettingsSection::Mnemonics => return None,
+    };
+    Some(text.get(lang))
 }
 
 /// The items of the current screen.
@@ -925,43 +898,48 @@ impl App {
     /// Builds the current screen.
     #[must_use]
     pub fn items(&self) -> Vec<Item> {
+        let lang = self.settings.language;
         let mut items = Vec::new();
         if self.screen == Screen::Main {
             items.push(Item::Toolbar(
                 "Your Wallet".to_owned(),
                 vec![
-                    Ctl::button(crate::ui::screens_evm::ids::BOOK_OPEN, "주소록"),
+                    Ctl::button(
+                        crate::ui::screens_evm::ids::BOOK_OPEN,
+                        text::ADDRESS_BOOK.get(lang),
+                    ),
                     Ctl::button(
                         crate::ui::screens_sites::ids::SITES_OPEN,
-                        "사이트·WalletConnect",
+                        text::SITES_WC.get(lang),
                     ),
                     // Shortcuts in the tooltips (2026-11-12; "잠금 (Ctrl+L)" in the label before).
-                    Ctl::button(ids::OPEN_SETTINGS, "설정").tip("설정 (Ctrl+,)"),
-                    Ctl::button(ids::LOCK, "잠금").tip("잠금 (Ctrl+L)"),
+                    Ctl::button(ids::OPEN_SETTINGS, text::SETTINGS.get(lang))
+                        .tip(text::SETTINGS_TIP.get(lang)),
+                    Ctl::button(ids::LOCK, text::LOCK.get(lang)).tip(text::LOCK_TIP.get(lang)),
                 ],
             ));
         }
         header(self, &mut items);
         match &self.screen {
-            Screen::Starting => items.push(Item::Muted("지갑을 불러오는 중…".to_owned())),
+            Screen::Starting => items.push(Item::Muted(text::STARTING.get(lang).to_owned())),
             Screen::FirstRun => self.first_run(&mut items),
-            Screen::CreateIntro => Self::create_intro(&mut items),
+            Screen::CreateIntro => Self::create_intro(lang, &mut items),
             Screen::Processing(text) => {
                 items.push(Item::Gap(40));
                 items.push(Item::CardStart(None));
-                items.push(Item::Subtitle("잠시만 기다려 주세요".to_owned()));
+                items.push(Item::Subtitle(text::PLEASE_WAIT.get(lang).to_owned()));
                 items.push(Item::Text((*text).to_owned()));
                 items.push(Item::CardEnd);
                 if self.wait.stalled {
                     self.wait_stalled(&mut items);
                 }
             }
-            Screen::BackupPending => Self::backup_pending(&mut items),
+            Screen::BackupPending => Self::backup_pending(lang, &mut items),
             Screen::Reset => self.reset_screen(&mut items),
             Screen::Extension => self.extension_screen(&mut items),
             Screen::HyperCore => self.hc_screen(&mut items),
-            Screen::ImportIntro => Self::import_intro(&mut items),
-            Screen::ImportAddress(address) => Self::import_address(address, &mut items),
+            Screen::ImportIntro => Self::import_intro(lang, &mut items),
+            Screen::ImportAddress(address) => Self::import_address(lang, address, &mut items),
             Screen::Locked => self.locked(&mut items),
             Screen::PassMismatch => self.pass_mismatch(&mut items),
             Screen::Done => self.done(&mut items),
@@ -985,184 +963,177 @@ impl App {
             Screen::BtcBump => self.btc_bump_screen(&mut items),
             Screen::BtcReceive => self.btc_receive_screen(&mut items),
             Screen::KeyStartIntro => self.key_start_intro(&mut items),
-            Screen::KeyStartAddress(view) => Self::key_start_address(view, &mut items),
+            Screen::KeyStartAddress(view) => self.key_start_address(view, &mut items),
             Screen::YubiKey => self.yk_wizard_screen(&mut items),
-            Screen::YubiKeyWalletIntro => Self::yk_wallet_intro(&mut items),
+            Screen::YubiKeyWalletIntro => self.yk_wallet_intro(&mut items),
         }
         if self.passphrase_unverified() {
             disable_receive(&mut items);
         }
         // The copy just made says so at its own control (2026-11-12, `App::copy_text`).
         if let Some(copied) = self.copied {
-            crate::ui::main_window::mark_copied(&mut items, copied.id, copied.address);
+            crate::ui::main_window::mark_copied(lang, &mut items, copied.id, copied.address);
         }
         items
     }
 
     fn first_run(&self, items: &mut Vec<Item>) {
+        let lang = self.settings.language;
         items.push(Item::Gap(24));
         items.push(Item::Display("Your Wallet".to_owned()));
         items.push(Item::Gap(4));
         // The first two sentences are true for every path; the third (24 words are the only
         // backup) belongs to the new-wallet card (2026-11-08).
         for sentence in &T_FIRST[..2] {
-            items.push(Item::Text((*sentence).to_owned()));
+            items.push(Item::Text(sentence.get(lang).to_owned()));
         }
         items.push(Item::Gap(8));
         if self.leftover {
             items.push(Item::Banner(
-                "이전 지갑의 파일이 데이터 폴더에 남아 있습니다. 앱을 종료하고 파일을 다른 곳으로 옮긴 뒤 다시 실행하세요.".to_owned(),
+                text::LEFTOVER.get(lang).to_owned(),
                 Tone::Warn,
             ));
             items.push(Item::Mono(self.paths.data.display().to_string()));
             items.push(Item::Row(vec![
-                Ctl::button(ids::OPEN_DATA_FOLDER, "폴더 열기"),
+                Ctl::button(ids::OPEN_DATA_FOLDER, text::OPEN_FOLDER.get(lang)),
                 Ctl::link(
                     crate::ui::screens_reset::ids::RESET_OPEN,
-                    "남은 파일을 reset- 폴더로 옮기기…",
+                    text::LEFTOVER_MOVE.get(lang),
                 ),
             ]));
         }
         // Two groups (2026-11-08): start something new, or bring back a wallet already used;
         // all five ways are on the first view of the default window.
         let enabled = !self.leftover;
-        items.push(Item::CardStart(Some("새로 시작합니다".to_owned())));
-        items.push(Item::Text(
-            "새 지갑을 만들고 복구 단어 24개를 종이에 적습니다. 5분쯤 걸립니다.".to_owned(),
-        ));
-        items.push(Item::Help(T_FIRST[2].to_owned()));
+        items.push(Item::CardStart(Some(
+            text::FIRST_NEW_TITLE.get(lang).to_owned(),
+        )));
+        items.push(Item::Text(text::FIRST_NEW_TEXT.get(lang).to_owned()));
+        items.push(Item::Help(T_FIRST[2].get(lang).to_owned()));
         items.push(Item::Row(vec![
-            Ctl::primary(ids::FIRST_CREATE, "새 지갑 만들기").enabled(enabled),
+            Ctl::primary(ids::FIRST_CREATE, text::CREATE_WALLET.get(lang)).enabled(enabled),
             Ctl::button(
                 crate::ui::screens_yubikey::ids::NEW_WALLET,
-                "YubiKey에 보관하는 새 지갑",
+                text::FIRST_YK_WALLET.get(lang),
             )
             .enabled(enabled),
         ]));
-        items.push(Item::Help(format!(
-            "YubiKey에 보관하는 새 지갑: {} YubiKey 5(펌웨어 5.2.3 이상, Solana 계정은 5.7.4 이상)가 필요합니다.",
-            crate::app_yubikey::T_YK_WALLET
-        )));
+        items.push(Item::Help(
+            text::FIRST_YK_WALLET_HELP.fill(lang, [crate::app_yubikey::text::YK_WALLET.get(lang)]),
+        ));
         items.push(Item::CardEnd);
         items.push(Item::CardStart(Some(
-            "이미 쓰던 지갑이 있습니다".to_owned(),
+            text::FIRST_EXISTING_TITLE.get(lang).to_owned(),
         )));
         items.push(Item::Row(vec![
-            Ctl::button(ids::FIRST_IMPORT, "복구 단어로 가져오기").enabled(enabled),
-            Ctl::button(crate::ui::screens_keys::ids::FIRST_KEY, "개인키로 시작하기")
-                .enabled(enabled),
+            Ctl::button(ids::FIRST_IMPORT, text::FIRST_IMPORT.get(lang)).enabled(enabled),
+            Ctl::button(
+                crate::ui::screens_keys::ids::FIRST_KEY,
+                text::FIRST_KEY.get(lang),
+            )
+            .enabled(enabled),
             Ctl::button(
                 crate::ui::screens_yubikey::ids::CONNECT_NEW_WALLET,
-                "YubiKey 연결하기 (복구 단어 없이)",
+                text::FIRST_YK_CONNECT.get(lang),
             )
             .enabled(enabled),
         ]));
         for line in [
-            "· 복구 단어로 가져오기: 다른 지갑에서 쓰던 영어 복구 단어(니모닉) 12·15·18·21·24개로 그 지갑을 그대로 가져옵니다.".to_owned(),
-            format!("· 개인키로 시작하기: {}", crate::ui::screens_keys::T_KEY_START_CARD),
-            "· YubiKey 연결하기: 이미 키가 들어 있는 YubiKey(새 PC, 다시 설치)를 복구 단어 없이 연결합니다. 카드의 공개키만 읽고 아무것도 쓰지 않습니다.".to_owned(),
+            text::FIRST_IMPORT_HELP.get(lang).to_owned(),
+            text::FIRST_KEY_HELP.fill(
+                lang,
+                [crate::ui::screens_keys::text::KEY_START_CARD.get(lang)],
+            ),
+            text::FIRST_YK_CONNECT_HELP.get(lang).to_owned(),
         ] {
             items.push(Item::Help(line));
         }
         items.push(Item::CardEnd);
     }
 
-    fn create_intro(items: &mut Vec<Item>) {
-        items.push(Item::Title("새 지갑 만들기".to_owned()));
-        items.push(steps(CREATE_STEPS, 0));
-        items.push(Item::CardStart(Some("시작하기 전에".to_owned())));
+    fn create_intro(lang: Lang, items: &mut Vec<Item>) {
+        items.push(Item::Title(text::CREATE_WALLET.get(lang).to_owned()));
+        items.push(steps(CREATE_STEPS.map(|step| step.get(lang)), 0));
+        items.push(Item::CardStart(Some(
+            text::BEFORE_START.get(lang).to_owned(),
+        )));
         for line in [
-            "· 종이와 펜을 준비하세요. 다음 화면들에서 복구 단어 24개와 첫 주소를 적습니다.",
-            "· 복구 단어는 종이(또는 금속)에만 적고 사진·클라우드·메신저에 남기지 마세요.",
-            "· 화면 공유·녹화를 끄고 주변에 사람이나 카메라가 없는지 확인하세요.",
+            text::CREATE_INTRO_1,
+            text::CREATE_INTRO_2,
+            text::CREATE_INTRO_3,
         ] {
-            items.push(Item::Text(line.to_owned()));
+            items.push(Item::Text(line.get(lang).to_owned()));
         }
-        items.push(Item::Help(
-            "복구 단어를 아는 사람은 누구든 지갑의 자산을 옮길 수 있습니다. 이 앱도 복구 단어를 대신 보관하거나 되찾아 주지 못합니다."
-                .to_owned(),
-        ));
+        items.push(Item::Help(text::CREATE_INTRO_HELP.get(lang).to_owned()));
         items.push(Item::CardEnd);
         items.push(Item::Row(vec![
-            Ctl::primary(ids::CREATE_NEXT, "시작하기"),
-            Ctl::button(ids::INTRO_CANCEL, "취소"),
+            Ctl::primary(ids::CREATE_NEXT, text::START.get(lang)),
+            Ctl::button(ids::INTRO_CANCEL, text::CANCEL.get(lang)),
         ]));
     }
 
-    fn backup_pending(items: &mut Vec<Item>) {
-        items.push(Item::Title("백업 확인이 필요합니다".to_owned()));
+    fn backup_pending(lang: Lang, items: &mut Vec<Item>) {
+        items.push(Item::Title(text::BACKUP_PENDING_TITLE.get(lang).to_owned()));
         items.push(Item::Banner(
-            "백업 확인이 끝나지 않았습니다. 확인 전에는 보내기·서명·dApp 승인을 쓸 수 없습니다."
-                .to_owned(),
+            text::BACKUP_PENDING_BANNER.get(lang).to_owned(),
             Tone::Warn,
         ));
         items.push(Item::CardStart(None));
-        items.push(Item::Text(
-            "복구 단어를 다시 보고, 그중 단어 4개를 입력해 종이에 바르게 적었는지 확인합니다."
-                .to_owned(),
-        ));
+        items.push(Item::Text(text::BACKUP_PENDING_TEXT.get(lang).to_owned()));
         items.push(Item::Row(vec![
-            Ctl::primary(ids::BACKUP_CHECK, "복구 단어 보고 백업 확인"),
-            Ctl::button(crate::ui::screens_evm::ids::RECEIVE_OPEN, "받기"),
-            Ctl::button(ids::LOCK, "잠금"),
+            Ctl::primary(ids::BACKUP_CHECK, text::BACKUP_CHECK.get(lang)),
+            Ctl::button(
+                crate::ui::screens_evm::ids::RECEIVE_OPEN,
+                text::RECEIVE.get(lang),
+            ),
+            Ctl::button(ids::LOCK, text::LOCK.get(lang)),
         ]));
         items.push(Item::CardEnd);
-        Self::reset_link(
-            items,
-            "복구 단어를 적지 못했거나 잃어버렸다면, 이 지갑에 자산을 받기 전에 초기화하고 새로 만드세요.",
-        );
+        Self::reset_link(lang, items, text::BACKUP_PENDING_RESET.get(lang));
     }
 
-    fn import_intro(items: &mut Vec<Item>) {
-        items.push(Item::Title("기존 지갑 가져오기".to_owned()));
-        items.push(steps(IMPORT_STEPS, 0));
-        items.push(Item::CardStart(Some("준비할 것".to_owned())));
+    fn import_intro(lang: Lang, items: &mut Vec<Item>) {
+        items.push(Item::Title(text::IMPORT_WALLET.get(lang).to_owned()));
+        items.push(steps(IMPORT_STEPS.map(|step| step.get(lang)), 0));
+        items.push(Item::CardStart(Some(
+            text::IMPORT_NEED_TITLE.get(lang).to_owned(),
+        )));
+        items.push(Item::Text(text::IMPORT_NEED_WORDS.get(lang).to_owned()));
         items.push(Item::Text(
-            "· 다른 지갑에서 쓰던 영어 복구 단어(BIP39 니모닉) 12·15·18·21·24개".to_owned(),
+            text::IMPORT_NEED_PASSPHRASE.get(lang).to_owned(),
         ));
-        items.push(Item::Text(
-            "· 그 지갑에서 BIP39 passphrase(25번째 단어)를 썼다면 그 passphrase".to_owned(),
-        ));
+        items.push(Item::Help(text::IMPORT_KEY_HINT.get(lang).to_owned()));
         items.push(Item::Help(
-            "복구 단어 없이 개인키(EVM·Solana·Bitcoin)만 있다면 첫 화면의 '개인키로 시작하기'를 쓰세요. 이미 지갑이 있다면 메인 화면의 '개인키 가져오기'로 더할 수 있습니다."
-                .to_owned(),
+            crate::app_btc::BTC_IMPORT_NOTE.get(lang).to_owned(),
         ));
-        items.push(Item::Help(crate::app_btc::BTC_IMPORT_NOTE.to_owned()));
         items.push(Item::CardEnd);
         items.push(Item::Row(vec![
-            Ctl::primary(ids::IMPORT_NEXT, "시작하기"),
-            Ctl::button(ids::INTRO_CANCEL, "취소"),
+            Ctl::primary(ids::IMPORT_NEXT, text::START.get(lang)),
+            Ctl::button(ids::INTRO_CANCEL, text::CANCEL.get(lang)),
         ]));
     }
 
-    fn import_address(address: &str, items: &mut Vec<Item>) {
-        items.push(Item::Title("첫 주소 확인".to_owned()));
-        items.push(steps(IMPORT_STEPS, 3));
+    fn import_address(lang: Lang, address: &str, items: &mut Vec<Item>) {
+        items.push(Item::Title(text::STEP_FIRST_ADDRESS.get(lang).to_owned()));
+        items.push(steps(IMPORT_STEPS.map(|step| step.get(lang)), 3));
         items.push(Item::CardStart(None));
-        items.push(Item::Text(
-            "가져온 지갑의 첫 주소입니다. 이전 지갑에서 쓰던 주소와 전체가 같은지 확인하세요."
-                .to_owned(),
-        ));
+        items.push(Item::Text(text::IMPORT_ADDRESS_TEXT.get(lang).to_owned()));
         let shown = yw_core::evm::address::parse_address(address)
             .map_or_else(|_| address.to_owned(), |parsed| format_address(&parsed));
         items.push(Item::Mono(shown));
         items.push(Item::CardEnd);
         items.push(Item::Row(vec![
-            Ctl::primary(ids::IMPORT_CORRECT, "맞습니다"),
-            Ctl::button(ids::IMPORT_WRONG, "다릅니다"),
+            Ctl::primary(ids::IMPORT_CORRECT, text::IMPORT_CORRECT.get(lang)),
+            Ctl::button(ids::IMPORT_WRONG, text::IMPORT_WRONG.get(lang)),
         ]));
-        items.push(Item::Help(
-            "다르면 복구 단어의 순서·철자나 passphrase를 확인하세요. '다릅니다'를 누르면 복구 단어를 다시 입력합니다."
-                .to_owned(),
-        ));
+        items.push(Item::Help(text::IMPORT_ADDRESS_HELP.get(lang).to_owned()));
     }
 
     fn locked(&self, items: &mut Vec<Item>) {
+        let lang = self.settings.language;
         items.push(Item::Gap(48));
-        items.push(Item::Display("지갑이 잠겨 있습니다".to_owned()));
-        items.push(Item::Text(
-            "계정과 잔액을 보려면 비밀번호로 잠금을 해제하세요.".to_owned(),
-        ));
+        items.push(Item::Display(text::LOCKED_TITLE.get(lang).to_owned()));
+        items.push(Item::Text(text::LOCKED_TEXT.get(lang).to_owned()));
         if let Some(pending) = self.unlock_pending_text() {
             items.push(Item::Banner(pending, Tone::Info));
         }
@@ -1170,101 +1141,100 @@ impl App {
         // is a single row at the bottom (2026-11-12).
         items.push(Item::Gap(4));
         items.push(Item::Row(vec![
-            Ctl::primary(ids::UNLOCK, "잠금 해제").width(160),
+            Ctl::primary(ids::UNLOCK, text::UNLOCK.get(lang)).width(160),
         ]));
-        items.push(Item::Help(format!(
-            "{}분 동안 쓰지 않거나, Windows를 잠그거나 절전에 들어가면 지갑이 자동으로 잠깁니다.",
-            self.settings.auto_lock_minutes
-        )));
+        items.push(Item::Help(
+            text::LOCKED_AUTO_LOCK.fill(lang, [&self.settings.auto_lock_minutes.to_string()]),
+        ));
         if let Some((generation, written)) = self.guard.vault_file {
-            items.push(Item::Muted(vault_file_text(generation, written)));
+            items.push(Item::Muted(vault_file_text(lang, generation, written)));
         }
         if self.unlock_failed && self.prev_on_disk && self.mode == AppMode::Locked {
             // spec/02 §6.3: a damaged key section is indistinguishable from a wrong password.
             items.push(Item::Gap(8));
-            items.push(Item::Help(
-                "비밀번호가 맞는데도 계속 열리지 않으면 지갑 파일이 손상되었을 수 있습니다. 같은 비밀번호로 이전 사본(.prev) 복구를 시도할 수 있습니다. 지갑 파일이 정상이면 복구하지 않고 그대로 엽니다."
-                    .to_owned(),
-            ));
+            items.push(Item::Help(text::LOCKED_DAMAGED.get(lang).to_owned()));
             items.push(Item::Row(vec![Ctl::link(
                 ids::RECOVER,
-                "이전 사본(.prev)으로 복구",
+                text::RECOVER_PREV.get(lang),
             )]));
         }
         // What a reset does (the files are moved, not deleted) is the first band of S22.
         items.push(Item::Gap(16));
         items.push(Item::LabeledRow(
-            "비밀번호를 잊었나요?".to_owned(),
+            text::FORGOT_PASSWORD.get(lang).to_owned(),
             vec![Ctl::link(
                 crate::ui::screens_reset::ids::RESET_OPEN,
-                "지갑 초기화…",
+                text::RESET_WALLET.get(lang),
             )],
         ));
     }
 
     fn pass_mismatch(&self, items: &mut Vec<Item>) {
-        items.push(Item::Title("passphrase 확인".to_owned()));
+        let lang = self.settings.language;
+        items.push(Item::Title(text::MISMATCH_TITLE.get(lang).to_owned()));
         items.push(Item::Banner(
-            "passphrase가 다를 수 있습니다. 다른 passphrase는 다른(빈) 지갑을 엽니다.".to_owned(),
+            text::MISMATCH_BANNER.get(lang).to_owned(),
             Tone::Warn,
         ));
         items.push(Item::CardStart(None));
         items.push(Item::Row(vec![Ctl::check(
             ids::MISMATCH_CHECK,
-            "다른 passphrase는 다른(빈) 지갑을 엽니다",
+            text::MISMATCH_CHECK.get(lang),
             self.mismatch_checked,
         )]));
         items.push(Item::Row(vec![
-            Ctl::primary(ids::MISMATCH_RETRY, "다시 입력"),
-            Ctl::button(ids::MISMATCH_CONTINUE, "이 passphrase로 계속")
+            Ctl::primary(ids::MISMATCH_RETRY, text::MISMATCH_RETRY.get(lang)),
+            Ctl::button(ids::MISMATCH_CONTINUE, text::MISMATCH_CONTINUE.get(lang))
                 .enabled(self.mismatch_checked),
         ]));
         items.push(Item::CardEnd);
     }
 
     fn done(&self, items: &mut Vec<Item>) {
-        items.push(Item::Title("준비되었습니다".to_owned()));
+        let lang = self.settings.language;
+        items.push(Item::Title(text::DONE_TITLE.get(lang).to_owned()));
         if let Some(done) = self.done_yubikey {
-            let (text, backup) = match done {
+            let (banner, backup) = match done {
                 crate::app_yubikey::YkDone::Created(serial) => (
-                    format!("YubiKey 지갑을 만들었습니다 (YubiKey #{serial})."),
-                    "이 지갑의 백업은 방금 적은 복구 단어 24개입니다. 이 PC에는 저장하지 않았으니 종이를 안전하게 보관하세요.",
+                    text::DONE_YK_CREATED.fill(lang, [&serial.to_string()]),
+                    text::DONE_YK_CREATED_BACKUP,
                 ),
                 crate::app_yubikey::YkDone::Connected(serial) => (
-                    format!("YubiKey를 연결했습니다 (YubiKey #{serial})."),
-                    "복구 단어 없이 카드의 공개키로 연결했습니다. 이 PC에는 개인키도 복구 단어도 없어 카드가 그 키의 유일한 사본일 수 있습니다 — 카드를 잃었을 때를 대비해 원래 백업(복구 단어 등)이 있는지 확인하세요.",
+                    text::DONE_YK_CONNECTED.fill(lang, [&serial.to_string()]),
+                    text::DONE_YK_CONNECTED_BACKUP,
                 ),
             };
-            items.push(Item::Banner(text, Tone::Success));
-            items.push(Item::Help(backup.to_owned()));
+            items.push(Item::Banner(banner, Tone::Success));
+            items.push(Item::Help(backup.get(lang).to_owned()));
         } else if self.keys.done_start {
             items.push(Item::Banner(
-                crate::ui::screens_keys::T_KEY_START_OK.to_owned(),
+                crate::ui::screens_keys::text::KEY_START_OK
+                    .get(self.settings.language)
+                    .to_owned(),
                 Tone::Success,
             ));
             items.push(Item::Banner(
-                crate::ui::screens_keys::T_KEY_START_BACKUP.to_owned(),
+                crate::ui::screens_keys::text::KEY_START_BACKUP
+                    .get(self.settings.language)
+                    .to_owned(),
                 Tone::Warn,
             ));
         } else if self.done_imported {
             // No backup check runs on import: the words came from the user's existing backup.
             items.push(Item::Banner(
-                "지갑을 가져왔습니다. 이제 지갑을 쓸 수 있습니다.".to_owned(),
+                text::DONE_IMPORTED.get(lang).to_owned(),
                 Tone::Success,
             ));
-            items.push(Item::Help(
-                "이 지갑의 백업은 방금 입력한 복구 단어(와 passphrase)입니다. 그 종이 백업을 계속 안전하게 보관하세요."
-                    .to_owned(),
-            ));
+            items.push(Item::Help(text::DONE_IMPORTED_BACKUP.get(lang).to_owned()));
         } else {
             items.push(Item::Banner(
-                "백업을 확인했습니다. 이제 지갑을 쓸 수 있습니다.".to_owned(),
+                text::DONE_BACKUP_OK.get(lang).to_owned(),
                 Tone::Success,
             ));
         }
         // One '처음 설정' card (2026-11-10): RPC, the optional dApp connection, a first small
         // deposit; `지갑 열기` always below it.
-        items.push(Item::CardStart(Some("처음 설정".to_owned())));
+        items.push(Item::CardStart(Some(text::DONE_SETUP.get(lang).to_owned())));
         self.done_rpc_items(items);
         items.push(Item::Rule);
         self.done_dapp_items(items);
@@ -1276,53 +1246,60 @@ impl App {
         }
         items.push(Item::Row(vec![Ctl::primary(
             ids::DONE_CONTINUE,
-            "지갑 열기",
+            text::DONE_OPEN_WALLET.get(lang),
         )]));
     }
 
     /// S08 ① 블록체인 연결(RPC): the `QuickNode` address field while there is no address, the
     /// results of `연결하기`, or how many addresses there are and this run's tests.
     fn done_rpc_items(&self, items: &mut Vec<Item>) {
-        items.push(Item::Subtitle("① 블록체인 연결(RPC)".to_owned()));
+        let lang = self.settings.language;
+        items.push(Item::Subtitle(text::DONE_RPC_TITLE.get(lang).to_owned()));
         if !self.done_tested.is_empty() {
             self.done_results(items);
             return;
         }
         if !self.apikeys.endpoints().is_empty() {
             let (configured, _, works, failed, _) = self.rpc_summary();
-            items.push(Item::Text(format!(
-                "RPC 주소 {configured}개 · 이번 실행 테스트: 작동 {works} · 실패 {failed}"
+            items.push(Item::Text(text::DONE_RPC_SUMMARY.fill(
+                lang,
+                [
+                    &configured.to_string(),
+                    &works.to_string(),
+                    &failed.to_string(),
+                ],
             )));
-            items.push(Item::Row(vec![Ctl::button(ids::DONE_RPC, "RPC 설정 열기")]));
+            items.push(Item::Row(vec![Ctl::button(
+                ids::DONE_RPC,
+                text::OPEN_RPC_SETTINGS.get(lang),
+            )]));
             return;
         }
-        items.push(Item::Text(
-            "잔액을 보고 돈을 보내려면 블록체인 노드에 연결할 RPC 주소가 필요합니다.".to_owned(),
-        ));
+        items.push(Item::Text(text::DONE_RPC_NEED.get(lang).to_owned()));
         if self.settings.rpc_template == RpcTemplate::QuickNode {
             items.push(Item::LabeledRow(
-                "QuickNode 주소".to_owned(),
+                text::QUICKNODE_ADDRESS.get(lang).to_owned(),
                 vec![Ctl::edit(ids::DONE_QN_EDIT, "", 520, true, 256)],
             ));
-            items.push(Item::Help(T_DONE_QUICKNODE.to_owned()));
+            items.push(Item::Help(text::T_DONE_QUICKNODE.get(lang).to_owned()));
             if let Some(error) = &self.done_error {
                 items.push(Item::Banner(error.clone(), Tone::Danger));
             }
             items.push(Item::Row(vec![
-                Ctl::primary(ids::DONE_CONNECT, "연결하기"),
-                Ctl::link(ids::DONE_RPC, "알케미·직접 입력은 설정에서 ▸"),
+                Ctl::primary(ids::DONE_CONNECT, text::DONE_CONNECT.get(lang)),
+                Ctl::link(ids::DONE_RPC, text::DONE_OTHER_PROVIDERS.get(lang)),
             ]));
         } else {
-            items.push(Item::Help(
-                "선택한 RPC 공급자의 자격 정보나 주소는 설정 → 네트워크(RPC)에서 넣습니다."
-                    .to_owned(),
-            ));
-            items.push(Item::Row(vec![Ctl::button(ids::DONE_RPC, "RPC 설정하기")]));
+            items.push(Item::Help(text::DONE_PROVIDER_HELP.get(lang).to_owned()));
+            items.push(Item::Row(vec![Ctl::button(
+                ids::DONE_RPC,
+                text::DONE_SET_RPC.get(lang),
+            )]));
         }
         if crate::app_rpc_import::rpc_json_path().is_some_and(|path| path.is_file()) {
             items.push(Item::Row(vec![Ctl::link(
                 ids::DONE_RPC_JSON,
-                "rpc.json이 있습니다 — 설정에서 가져오기 ▸",
+                text::DONE_RPC_JSON.get(lang),
             )]));
         }
     }
@@ -1331,6 +1308,7 @@ impl App {
     /// its row / … testing), then the count — with how many are still being tested, so a short
     /// count while the queue runs does not read as failures.
     fn done_results(&self, items: &mut Vec<Item>) {
+        let lang = self.settings.language;
         let networks = self.url_networks();
         let mut works = 0_usize;
         let mut testing = 0_usize;
@@ -1358,70 +1336,76 @@ impl App {
                     {
                         items.push(Item::Row(vec![Ctl::link(
                             ids::RPC_ROW_OPEN_BASE.saturating_add(row),
-                            &format!("{name} 행 열기 ▸"),
+                            &text::OPEN_ROW.fill(lang, [&name]),
                         )]));
                     }
                 }
                 Some((_, TestState::Testing)) | None => {
                     testing = testing.saturating_add(1);
-                    items.push(Item::Muted(format!("… {name} 테스트 중")));
+                    items.push(Item::Muted(text::TESTING_NAME.fill(lang, [&name])));
                 }
             }
         }
         let total = self.done_tested.len();
+        let (total, works) = (total.to_string(), works.to_string());
         items.push(Item::Subtitle(if testing == 0 {
-            format!("{total}개 중 {works}개 작동")
+            text::WORKS_OF.fill(lang, [&total, &works])
         } else {
-            format!("{total}개 중 {works}개 작동 · {testing}개 테스트 중")
+            text::WORKS_OF_TESTING.fill(lang, [&total, &works, &testing.to_string()])
         }));
         if failed {
-            items.push(Item::Help(
-                "QuickNode 대시보드에서 그 체인을 켰는지 확인한 뒤 설정 → 네트워크(RPC)의 “모두 테스트”로 다시 확인하세요. 나머지는 지금 쓸 수 있습니다."
-                    .to_owned(),
-            ));
+            items.push(Item::Help(text::DONE_FAILED_HELP.get(lang).to_owned()));
         }
-        items.push(Item::Row(vec![Ctl::button(ids::DONE_RPC, "RPC 설정 열기")]));
+        items.push(Item::Row(vec![Ctl::button(
+            ids::DONE_RPC,
+            text::OPEN_RPC_SETTINGS.get(lang),
+        )]));
     }
 
     /// S08 ② dApp 연결 (선택): the Chrome extension or `WalletConnect`.
     fn done_dapp_items(&self, items: &mut Vec<Item>) {
-        items.push(Item::Subtitle("② dApp 연결 (선택, 둘 중 하나)".to_owned()));
-        items.push(Item::Text(format!(
-            "Chrome 확장: {}",
-            self.extension_status().text()
-        )));
+        let lang = self.settings.language;
+        items.push(Item::Subtitle(text::DONE_DAPP_TITLE.get(lang).to_owned()));
+        items.push(Item::Text(
+            text::CHROME_EXTENSION_STATUS.fill(lang, [self.extension_status().text_in(lang)]),
+        ));
         items.push(Item::Row(vec![Ctl::button(
             crate::ui::screens_reset::ids::EXT_OPEN,
-            "설치 방법",
+            text::HOW_TO_INSTALL.get(lang),
         )]));
         items.push(Item::Text(format!(
             "WalletConnect: {}",
             if self.settings.walletconnect_project.is_empty() {
-                "Project ID 없음"
+                text::NO_PROJECT_ID.get(lang)
             } else {
-                "설정됨"
+                text::CONFIGURED.get(lang)
             }
         )));
-        items.push(Item::Row(vec![Ctl::button(ids::DONE_WC, "설정")]));
+        items.push(Item::Row(vec![Ctl::button(
+            ids::DONE_WC,
+            text::SETTINGS.get(lang),
+        )]));
     }
 
     /// S08 ③ 첫 입금 시험: receive on the wallet's first chain (EVM when it has an account).
     fn done_deposit_items(&self, items: &mut Vec<Item>) {
-        items.push(Item::Subtitle("③ 첫 입금 시험".to_owned()));
+        let lang = self.settings.language;
+        items.push(Item::Subtitle(
+            text::DONE_DEPOSIT_TITLE.get(lang).to_owned(),
+        ));
         let evm = self.selected_account().is_some();
-        let mut text = "실제 자산은 소액으로 받기 → 보내기를 한 번 해 보세요.".to_owned();
+        let mut line = text::DONE_DEPOSIT_TEXT.get(lang).to_owned();
         if evm {
             if self.settings.evm_chain_id == SEPOLIA {
-                text.push_str(" EVM 탭은 Sepolia 테스트넷으로 시작합니다.");
+                line.push_str(text::DONE_DEPOSIT_SEPOLIA.get(lang));
             } else {
-                let _ = write!(
-                    text,
-                    " 지금 EVM 네트워크: {}.",
-                    self.network_name(NetworkId::Eip155(self.settings.evm_chain_id))
-                );
+                line.push_str(&text::DONE_DEPOSIT_NETWORK.fill(
+                    lang,
+                    [&self.network_name(NetworkId::Eip155(self.settings.evm_chain_id))],
+                ));
             }
         }
-        items.push(Item::Text(text));
+        items.push(Item::Text(line));
         let receive = if evm {
             Some(crate::ui::screens_evm::ids::RECEIVE_OPEN)
         } else if self.sol_selected().is_some() {
@@ -1432,62 +1416,56 @@ impl App {
             None
         };
         if let Some(id) = receive {
-            items.push(Item::Row(vec![Ctl::button(id, "받기")]));
+            items.push(Item::Row(vec![Ctl::button(id, text::RECEIVE.get(lang))]));
         }
     }
 
     /// S08 after an import or "개인키로 시작하기": why a wallet that held funds may show none
     /// (the network, accounts not searched, chains off).
     fn done_balance_card(&self, items: &mut Vec<Item>) {
+        let lang = self.settings.language;
         let mut lines: Vec<Item> = Vec::new();
         if self.selected_account().is_some() {
             if self.settings.evm_chain_id == SEPOLIA {
-                lines.push(Item::Text(
-                    "· EVM 탭은 Sepolia 테스트넷으로 시작합니다 — 쓰던 네트워크를 고르세요"
-                        .to_owned(),
-                ));
+                lines.push(Item::Text(text::DONE_BALANCE_SEPOLIA.get(lang).to_owned()));
                 lines.push(Item::Row(vec![Ctl::button(
                     ids::DONE_MAINNET,
-                    "Ethereum 메인넷으로 보기",
+                    text::DONE_SHOW_MAINNET.get(lang),
                 )]));
             } else {
-                lines.push(Item::Text(format!(
-                    "· EVM 탭은 지금 {}입니다 — 다른 네트워크는 메인 화면의 네트워크 칩에서 고르세요",
-                    self.network_name(NetworkId::Eip155(self.settings.evm_chain_id))
+                lines.push(Item::Text(text::DONE_BALANCE_NETWORK.fill(
+                    lang,
+                    [&self.network_name(NetworkId::Eip155(self.settings.evm_chain_id))],
                 )));
             }
         }
         if self.done_imported {
-            lines.push(Item::Text(
-                "· 계정은 자동으로 찾지 않습니다. 이전 지갑에서 계정을 여러 개 썼다면 “내 계정 → 계정 추가”를 차례로 누르세요. Solana의 다른 경로는 Solana 탭 “다른 경로 스캔”."
-                    .to_owned(),
-            ));
+            lines.push(Item::Text(text::DONE_BALANCE_ACCOUNTS.get(lang).to_owned()));
             let bitcoin = !self.settings.bitcoin.enabled;
             let zcash = !self.settings.zcash.enabled;
             let off = match (bitcoin, zcash) {
-                (true, true) => Some(
-                    "· Bitcoin·Zcash는 꺼져 있습니다 — 설정 → Bitcoin, Zcash 탭에서 켜면 보입니다(Bitcoin은 네이티브 세그윗 계정 0부터).",
-                ),
-                (true, false) => Some(
-                    "· Bitcoin은 꺼져 있습니다 — 설정 → Bitcoin에서 켜면 보입니다(네이티브 세그윗 계정 0부터).",
-                ),
-                (false, true) => Some("· Zcash는 꺼져 있습니다 — Zcash 탭에서 켜면 보입니다."),
+                (true, true) => Some(text::DONE_OFF_BOTH),
+                (true, false) => Some(text::DONE_OFF_BITCOIN),
+                (false, true) => Some(text::DONE_OFF_ZCASH),
                 (false, false) => None,
             };
             if let Some(line) = off {
-                lines.push(Item::Text(line.to_owned()));
+                lines.push(Item::Text(line.get(lang).to_owned()));
             }
         }
         if lines.is_empty() {
             return;
         }
-        items.push(Item::CardStart(Some("잔액이 안 보이면".to_owned())));
+        items.push(Item::CardStart(Some(
+            text::DONE_NO_BALANCE.get(lang).to_owned(),
+        )));
         items.extend(lines);
         items.push(Item::CardEnd);
     }
 
     fn recovery(&self, items: &mut Vec<Item>) {
-        items.push(Item::Title("지갑 파일 복구".to_owned()));
+        let lang = self.settings.language;
+        items.push(Item::Title(text::RECOVERY_TITLE.get(lang).to_owned()));
         items.push(Item::CardStart(None));
         let prev = match self.mode {
             AppMode::Corrupt { prev_available } => {
@@ -1496,47 +1474,46 @@ impl App {
                 } else {
                     ErrorCode::Vlt002
                 };
-                items.push(Item::Banner(code.text(), Tone::Danger));
+                items.push(Item::Banner(code.text_in(lang), Tone::Danger));
                 prev_available
             }
             AppMode::MainMissing => {
-                items.push(Item::Text(
-                    "지갑 파일이 없고 이전 사본(.prev)이 있습니다.".to_owned(),
-                ));
+                items.push(Item::Text(text::RECOVERY_MISSING.get(lang).to_owned()));
                 true
             }
             _ => false,
         };
         if prev {
-            items.push(Item::Help(
-                "이전 사본으로 복구하면 마지막 변경(예: 가져온 개인키)이 사라질 수 있습니다. 지금 파일은 지우지 않고 데이터 폴더에 vault.ywv.corrupt-<시각> 이름으로 옮겨 두며, 복구 뒤 그 이름을 알려 드립니다(직접 되돌리는 방법: 복구 안내)."
-                    .to_owned(),
-            ));
+            items.push(Item::Help(text::RECOVERY_PREV_HELP.get(lang).to_owned()));
         }
         items.push(Item::Field(
-            "데이터 폴더".to_owned(),
+            text::DATA_FOLDER.get(lang).to_owned(),
             self.paths.data.display().to_string(),
         ));
         let mut row = Vec::new();
         if prev {
-            row.push(Ctl::primary(ids::RECOVER, "이전 사본으로 복구"));
+            row.push(Ctl::primary(ids::RECOVER, text::RECOVERY_RESTORE.get(lang)));
         }
-        row.push(Ctl::button(ids::OPEN_DATA_FOLDER, "폴더 열기"));
-        row.push(Ctl::button(ids::EXIT, "종료"));
+        row.push(Ctl::button(
+            ids::OPEN_DATA_FOLDER,
+            text::OPEN_FOLDER.get(lang),
+        ));
+        row.push(Ctl::button(ids::EXIT, text::EXIT.get(lang)));
         items.push(Item::Row(row));
         items.push(Item::CardEnd);
         items.push(Item::Help(
-            "앱은 지갑 파일을 지우거나 덮어쓰지 않습니다. 복구 단어가 있으면 언제든 새로 가져올 수 있습니다."
-                .to_owned(),
+            text::RECOVERY_NEVER_DELETES.get(lang).to_owned(),
         ));
-        Self::reset_link(
-            items,
-            "복구할 수 없다면: 지갑 파일을 데이터 폴더 안의 reset- 폴더로 옮겨 두고 처음부터 시작합니다.",
-        );
+        Self::reset_link(lang, items, text::RECOVERY_RESET.get(lang));
     }
 
     /// The selected EVM account's hero card: name, big balance, address, 보내기 / 받기.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the hero card's balance states in order"
+    )]
     fn evm_hero(&self, items: &mut Vec<Item>) {
+        let lang = self.settings.language;
         let chain_id = self.settings.evm_chain_id;
         let Some((address, source, label)) = self.selected_account() else {
             return;
@@ -1561,10 +1538,9 @@ impl App {
                 // A blocked chain keeps its band and this caption (U17 and E-RPC-006 as before).
                 items.push(Item::Display(self.native_text(chain_id, &value)));
                 if let Some(block) = block {
-                    items.push(Item::Help(format!(
-                        "블록 {block} 기준 · 갱신 실패 {}",
-                        code.code()
-                    )));
+                    items.push(Item::Help(
+                        text::AT_BLOCK_FAILED.fill(lang, [&block.to_string(), code.code()]),
+                    ));
                 }
             }
             (Some(value), Some(_)) => {
@@ -1572,6 +1548,7 @@ impl App {
                 // 읽지 못했습니다" under a balance).
                 items.push(Item::DisplayMuted(self.native_text(chain_id, &value)));
                 items.push(Item::Help(balance_stale_text(
+                    lang,
                     block,
                     state.and_then(|state| state.updated_unix_ms),
                 )));
@@ -1580,30 +1557,30 @@ impl App {
                 items.push(Item::Display(self.native_text(chain_id, &value)));
                 if let Some(block) = block {
                     items.push(Item::Help(balance_read_text(
+                        lang,
                         Some(block),
                         state.and_then(|state| state.updated_unix_ms),
                     )));
                 }
             }
             (None, _) if !endpoint => {
-                items.push(Item::Display("잔액 —".to_owned()));
+                items.push(Item::Display(text::BALANCE_NONE.get(lang).to_owned()));
                 items.push(Item::Help(no_endpoint_text(
+                    lang,
                     &self.network_name(NetworkId::Eip155(chain_id)),
                 )));
             }
             (None, Some(_)) if !blocked => {
-                items.push(Item::Display("잔액 —".to_owned()));
-                items.push(Item::Help(T_BALANCE_FAILED.to_owned()));
+                items.push(Item::Display(text::BALANCE_NONE.get(lang).to_owned()));
+                items.push(Item::Help(T_BALANCE_FAILED.get(lang).to_owned()));
             }
             (None, Some(_)) => {
-                items.push(Item::Display("잔액 —".to_owned()));
-                items.push(Item::Help(
-                    "잔액을 아직 읽지 못했습니다. RPC 연결을 확인하고 새로고침하세요.".to_owned(),
-                ));
+                items.push(Item::Display(text::BALANCE_NONE.get(lang).to_owned()));
+                items.push(Item::Help(text::BALANCE_NOT_YET.get(lang).to_owned()));
             }
             (None, None) => {
-                items.push(Item::Display("잔액 —".to_owned()));
-                items.push(Item::Help(T_BALANCE_LOADING.to_owned()));
+                items.push(Item::Display(text::BALANCE_NONE.get(lang).to_owned()));
+                items.push(Item::Help(T_BALANCE_LOADING.get(lang).to_owned()));
             }
         }
         // The visible tokens with a balance, like the Solana tab's one-line summary.
@@ -1619,7 +1596,9 @@ impl App {
             .take(4)
             .collect();
         if !tokens.is_empty() {
-            items.push(Item::Help(format!("토큰: {}", tokens.join(" · "))));
+            items.push(Item::Help(
+                text::TOKENS_LINE.fill(lang, [&tokens.join(" · ")]),
+            ));
         }
         // The own address whole, its ends emphasized, with `주소 복사` on the same line
         // (2026-11-11; recipient checks elsewhere keep the grouped form).
@@ -1633,17 +1612,25 @@ impl App {
         ));
         let unlocked = matches!(self.mode, AppMode::Unlocked { .. });
         let mut row = vec![
-            Ctl::primary(crate::ui::screens_evm::ids::SEND_OPEN, "보내기").enabled(unlocked),
-            Ctl::primary(crate::ui::screens_evm::ids::RECEIVE_OPEN, "받기"),
+            Ctl::primary(crate::ui::screens_evm::ids::SEND_OPEN, text::SEND.get(lang))
+                .enabled(unlocked),
+            Ctl::primary(
+                crate::ui::screens_evm::ids::RECEIVE_OPEN,
+                text::RECEIVE.get(lang),
+            ),
         ];
         if endpoint {
             row.push(
-                Ctl::link(crate::ui::screens_evm::ids::REFRESH, "새로고침").tip(T_REFRESH_TIP),
+                Ctl::link(
+                    crate::ui::screens_evm::ids::REFRESH,
+                    text::REFRESH.get(lang),
+                )
+                .tip(T_REFRESH_TIP.get(lang)),
             );
         } else {
             // Nothing to refresh without an address: that network's row with its field open
             // (spec/04 §2.6, 2026-11-10).
-            row.push(Ctl::button(ids::EVM_RPC_OPEN, "RPC 설정하기"));
+            row.push(Ctl::button(ids::EVM_RPC_OPEN, text::DONE_SET_RPC.get(lang)));
         }
         items.push(Item::Row(row));
         items.push(Item::CardEnd);
@@ -1651,6 +1638,7 @@ impl App {
 
     #[expect(clippy::too_many_lines, reason = "the S10 sections in order")]
     fn main_screen(&self, items: &mut Vec<Item>) {
+        let lang = self.settings.language;
         // T-ALT-PASS is drawn by `header` on every screen.
         self.tab_row(items);
         if self.sol_tab_active() {
@@ -1682,7 +1670,7 @@ impl App {
             .map(|chain_id| self.network_choice_label(*chain_id))
             .collect();
         items.push(Item::LabeledRow(
-            "네트워크".to_owned(),
+            text::NETWORK.get(lang).to_owned(),
             vec![
                 Ctl::picker(
                     crate::ui::screens_evm::ids::NETWORK_PICKER,
@@ -1695,12 +1683,12 @@ impl App {
         ));
         if selected == SEPOLIA {
             items.push(Item::Pill(
-                "테스트넷 — 실제 자산이 아닙니다".to_owned(),
+                text::TESTNET_PILL.get(lang).to_owned(),
                 Tone::Testnet,
             ));
         } else if yw_core::evm::chain::is_builtin_mainnet(selected) {
             // The built-in mainnets (user chains carry no testnet flag, so no tag).
-            items.push(Item::Pill(T_MAINNET.to_owned(), Tone::BtcMainnet));
+            items.push(Item::Pill(T_MAINNET.get(lang).to_owned(), Tone::BtcMainnet));
         }
         if open {
             items.push(Item::Menu(
@@ -1728,7 +1716,9 @@ impl App {
             return;
         }
         self.evm_hero(items);
-        items.push(Item::CardStart(Some("내 계정".to_owned())));
+        items.push(Item::CardStart(Some(
+            text::MY_ACCOUNTS.get(lang).to_owned(),
+        )));
         let selected = self.selected_pref();
         let rows = self.account_rows();
         let has_card = rows
@@ -1754,7 +1744,7 @@ impl App {
         {
             let is_selected = selected == Some(pref);
             let tag = match pref {
-                EvmAccountPref::Record(_) => Some("가져온 키".to_owned()),
+                EvmAccountPref::Record(_) => Some(text::IMPORTED_KEY_TAG.get(lang).to_owned()),
                 EvmAccountPref::Hardware(_) => Some("YubiKey".to_owned()),
                 EvmAccountPref::Index(_) => self.mnemonic_tag(None),
                 EvmAccountPref::Mnemonic(id, _) => self.mnemonic_tag(Some(id)),
@@ -1776,22 +1766,22 @@ impl App {
             if self.rename == Some(pref) {
                 items.push(Item::Row(vec![
                     Ctl::edit(ids::RENAME_EDIT, &label, 260, false, 64),
-                    Ctl::primary(ids::RENAME_SAVE, "저장"),
-                    Ctl::button(ids::RENAME_CANCEL, "취소"),
+                    Ctl::primary(ids::RENAME_SAVE, text::SAVE.get(lang)),
+                    Ctl::button(ids::RENAME_CANCEL, text::CANCEL.get(lang)),
                 ]));
             } else {
-                let mut row_ctls = vec![Ctl::button(ids::RENAME, "이름 바꾸기").compact()];
+                let mut row_ctls = vec![Ctl::button(ids::RENAME, text::RENAME.get(lang)).compact()];
                 match pref {
                     // A recovery phrase's first account (…/0) cannot be hidden: no button
                     // (2026-11-12; an off button and a line saying why before).
                     EvmAccountPref::Index(index) | EvmAccountPref::Mnemonic(_, index) => {
                         if index != 0 {
-                            row_ctls.push(Ctl::button(ids::HIDE, "숨기기").compact());
+                            row_ctls.push(Ctl::button(ids::HIDE, text::HIDE.get(lang)).compact());
                         }
                     }
                     EvmAccountPref::Record(_) => {
                         row_ctls.push(
-                            Ctl::danger(ids::REMOVE_KEY, "삭제")
+                            Ctl::danger(ids::REMOVE_KEY, text::DELETE.get(lang))
                                 .compact()
                                 .enabled(self.can_remove_imported()),
                         );
@@ -1799,7 +1789,7 @@ impl App {
                     // A YubiKey account (spec/10 §13): no "개인키 보기" (the key is on the card
                     // only); hidden until a card with its key is enrolled again.
                     EvmAccountPref::Hardware(_) => {
-                        row_ctls.push(Ctl::button(ids::HIDE, "숨기기").compact());
+                        row_ctls.push(Ctl::button(ids::HIDE, text::HIDE.get(lang)).compact());
                     }
                 }
                 items.push(Item::Row(row_ctls));
@@ -1810,20 +1800,20 @@ impl App {
         let mut actions = Vec::new();
         if !self.key_only() {
             actions.push(
-                Ctl::button(ids::ADD_ACCOUNT, "계정 추가")
+                Ctl::button(ids::ADD_ACCOUNT, text::ADD_ACCOUNT.get(lang))
                     .compact()
                     .enabled(self.can_add_account()),
             );
         }
         actions.push(
-            Ctl::button(ids::IMPORT_KEY, "개인키 가져오기")
+            Ctl::button(ids::IMPORT_KEY, text::IMPORT_KEY.get(lang))
                 .compact()
                 .enabled(self.can_import(yw_core::keyimport::ImportChain::Evm)),
         );
         actions.push(
             Ctl::link(
                 crate::ui::screens_mnemonics::ids::MAIN_LINK,
-                "복구 단어 추가·관리",
+                text::ADD_MANAGE_MNEMONICS.get(lang),
             )
             .compact(),
         );
@@ -1837,20 +1827,22 @@ impl App {
     /// '처음 설정' card ([`App::done_return`], spec/04 §2.3), else `← 메인으로`.
     #[must_use]
     pub fn back_row(&self) -> Item {
+        let lang = self.settings.language;
         if self.done_return {
-            Item::Row(vec![Ctl::link(ids::BACK_DONE, "← 처음 설정으로")])
+            Item::Row(vec![Ctl::link(ids::BACK_DONE, text::BACK_DONE.get(lang))])
         } else {
-            back_main()
+            back_main(lang)
         }
     }
 
     fn settings_screen(&self, section: SettingsSection, items: &mut Vec<Item>) {
+        let lang = self.settings.language;
         items.push(self.back_row());
-        items.push(Item::Title("설정".to_owned()));
+        items.push(Item::Title(text::SETTINGS.get(lang).to_owned()));
         items.push(Item::Row(vec![
             Ctl::tab(
                 ids::SECTION_SECURITY,
-                "보안",
+                text::TAB_SECURITY.get(lang),
                 section == SettingsSection::Security,
             )
             .width(68),
@@ -1858,7 +1850,7 @@ impl App {
             // at the default 960 DIP window.
             Ctl::tab(
                 crate::ui::screens_mnemonics::ids::SECTION_MNEMONICS,
-                "복구 단어",
+                text::TAB_MNEMONICS.get(lang),
                 section == SettingsSection::Mnemonics,
             )
             .width(88),
@@ -1870,13 +1862,13 @@ impl App {
             .width(84),
             Ctl::tab(
                 ids::SECTION_NETWORK,
-                "네트워크(RPC)",
+                text::TAB_NETWORK.get(lang),
                 section == SettingsSection::Network,
             )
             .width(120),
             Ctl::tab(
                 crate::ui::screens_evm::ids::SECTION_CHAINS,
-                "EVM 체인",
+                text::TAB_CHAINS.get(lang),
                 section == SettingsSection::Chains,
             )
             .width(92),
@@ -1894,18 +1886,18 @@ impl App {
             .width(76),
             Ctl::tab(
                 crate::ui::screens_llm::ids::SECTION_AI,
-                "AI 설명",
+                text::TAB_AI.get(lang),
                 section == SettingsSection::Ai,
             )
             .width(80),
             Ctl::tab(
                 ids::SECTION_OTHER,
-                "브라우저·정보",
+                text::TAB_OTHER.get(lang),
                 section == SettingsSection::Other,
             )
             .width(108),
         ]));
-        if let Some(elsewhere) = settings_elsewhere(section) {
+        if let Some(elsewhere) = settings_elsewhere(lang, section) {
             items.push(Item::Help(elsewhere.to_owned()));
         }
         match section {
@@ -1923,25 +1915,26 @@ impl App {
 
     /// The `고급 설정 보기 ▸` / `고급 설정 숨기기 ▾` link.
     pub(crate) fn advanced_toggle(&self, items: &mut Vec<Item>) {
+        let lang = self.settings.language;
         items.push(Item::Row(vec![Ctl::link(
             ids::ADVANCED_TOGGLE,
             if self.show_advanced {
-                "고급 설정 숨기기 ▾"
+                text::ADVANCED_HIDE.get(lang)
             } else {
-                "고급 설정 보기 ▸"
+                text::ADVANCED_SHOW.get(lang)
             },
         )]));
     }
 
     fn security_section(&self, items: &mut Vec<Item>) {
+        let lang = self.settings.language;
         self.language_card(items);
-        items.push(Item::CardStart(Some("자동 잠금".to_owned())));
-        items.push(Item::Help(
-            "정한 시간 동안 쓰지 않으면 지갑을 잠급니다. Windows를 잠그거나 절전에 들어갈 때도 잠깁니다."
-                .to_owned(),
-        ));
+        items.push(Item::CardStart(Some(
+            text::AUTO_LOCK_TITLE.get(lang).to_owned(),
+        )));
+        items.push(Item::Help(text::AUTO_LOCK_HELP.get(lang).to_owned()));
         items.push(Item::LabeledRow(
-            "잠그기까지(분, 1–60)".to_owned(),
+            text::AUTO_LOCK_LABEL.get(lang).to_owned(),
             vec![
                 Ctl::edit(
                     ids::AUTOLOCK_EDIT,
@@ -1950,79 +1943,73 @@ impl App {
                     false,
                     2,
                 ),
-                Ctl::button(ids::AUTOLOCK_SAVE, "저장"),
+                Ctl::button(ids::AUTOLOCK_SAVE, text::SAVE.get(lang)),
             ],
         ));
         items.push(Item::CardEnd);
         let unlocked = matches!(self.mode, AppMode::Unlocked { .. });
         let public = unlocked || self.mode == AppMode::BackupPending;
-        items.push(Item::CardStart(Some("복구 단어·개인키".to_owned())));
+        items.push(Item::CardStart(Some(
+            text::SECRETS_TITLE.get(lang).to_owned(),
+        )));
         if self.key_only() {
             // No recovery words: what brings this wallet back is said anyway (2026-11-10).
             let lines = self.backup_status_all();
             if !lines.is_empty() {
                 items.push(Item::Subtitle(
-                    "백업 현황 — 이 지갑을 다시 열려면".to_owned(),
+                    text::BACKUP_STATUS_TITLE.get(lang).to_owned(),
                 ));
                 for line in lines {
                     items.push(Item::Text(line));
                 }
             }
-            items.push(Item::Help(
-                "이 지갑은 개인키로 시작해 복구 단어가 없습니다. 각 계정의 백업은 그 원래 개인키이며, 보기 전에 비밀번호를 다시 묻고 화면 캡처에서 제외된 창에 보여줍니다."
-                    .to_owned(),
-            ));
+            items.push(Item::Help(text::SECRETS_KEY_ONLY.get(lang).to_owned()));
             items.push(Item::Row(vec![
-                Ctl::button(ids::REVEAL_KEY, "개인키 보기").enabled(
+                Ctl::button(ids::REVEAL_KEY, text::REVEAL_KEY.get(lang)).enabled(
                     unlocked && self.selected_account().is_some() && !self.hardware_selected(),
                 ),
             ]));
         } else {
             self.backup_card_rows(unlocked, public, items);
         }
-        items.push(Item::Help(
-            "개인키 보기는 메인 화면에서 선택한 EVM 계정의 키를 보여줍니다. Solana·Bitcoin의 가져온 개인키는 각 탭의 계정에서 '개인키 보기'를 누르세요."
-                .to_owned(),
-        ));
+        items.push(Item::Help(text::SECRETS_KEY_NOTE.get(lang).to_owned()));
         items.push(Item::Row(vec![Ctl::check(
             ids::COPY_TOGGLE,
-            "복구 단어·개인키 복사 허용",
+            text::ALLOW_COPY.get(lang),
             self.settings.allow_secret_copy,
         )]));
-        items.push(Item::Help(
-            "기본은 꺼짐입니다. 켜면 복사한 값은 클립보드 기록에 남지 않고 30초 뒤 지워집니다."
-                .to_owned(),
-        ));
+        items.push(Item::Help(text::ALLOW_COPY_HELP.get(lang).to_owned()));
         items.push(Item::CardEnd);
-        items.push(Item::CardStart(Some("비밀번호".to_owned())));
+        items.push(Item::CardStart(Some(
+            text::PASSWORD_TITLE.get(lang).to_owned(),
+        )));
+        items.push(Item::Help(text::PASSWORD_HELP.get(lang).to_owned()));
         items.push(Item::Help(
-            "이 PC에서 지갑을 열 때 쓰는 비밀번호입니다. 바꿔도 복구 단어와 주소는 그대로입니다."
-                .to_owned(),
+            crate::app::T_PASSWORD_OLD_COPIES.get(lang).to_owned(),
         ));
-        items.push(Item::Help(crate::app::T_PASSWORD_OLD_COPIES.to_owned()));
         items.push(Item::Row(vec![
-            Ctl::button(ids::CHANGE_PASSWORD, "비밀번호 변경").enabled(public),
+            Ctl::button(ids::CHANGE_PASSWORD, text::CHANGE_PASSWORD.get(lang)).enabled(public),
         ]));
         items.push(Item::CardEnd);
-        items.push(Item::CardStart(Some("지갑 파일과 보호 상태".to_owned())));
+        items.push(Item::CardStart(Some(
+            text::FILE_PROTECTION_TITLE.get(lang).to_owned(),
+        )));
         if let Some((generation, written)) = self.guard.vault_file {
-            items.push(Item::Text(vault_file_text(generation, written)));
+            items.push(Item::Text(vault_file_text(lang, generation, written)));
         }
         items.push(Item::Help(if self.guard.wer_unprotected {
-            T_WER_UNPROTECTED.to_owned()
+            T_WER_UNPROTECTED.get(lang).to_owned()
         } else {
-            "Windows 오류 보고(WER)에서 이 앱을 제외했습니다: 비정상 종료 때 메모리 덤프를 남기지 않습니다."
-                .to_owned()
+            text::WER_PROTECTED.get(lang).to_owned()
         }));
         items.push(Item::CardEnd);
-        items.push(Item::CardStart(Some("지갑 초기화".to_owned())));
-        items.push(Item::Help(
-            "이 PC의 지갑 파일을 데이터 폴더 안의 reset- 폴더로 옮기고(지우지 않음) 처음 화면으로 돌아갑니다. 다시 쓰려면 복구 단어·원래 개인키, 또는 YubiKey(“YubiKey 연결하기 (복구 단어 없이)”)가 필요합니다."
-                .to_owned(),
-        ));
+        items.push(Item::CardStart(Some(
+            text::RESET_TITLE.get(lang).to_owned(),
+        )));
+        items.push(Item::Help(text::RESET_CARD_HELP.get(lang).to_owned()));
         items.push(Item::Row(vec![Ctl::danger(
             crate::ui::screens_reset::ids::RESET_OPEN,
-            "지갑 초기화…",
+            text::RESET_WALLET.get(lang),
         )]));
         items.push(Item::CardEnd);
     }
@@ -2031,12 +2018,9 @@ impl App {
     /// its title and options in both languages so a user who cannot read the current one still
     /// finds it. The change applies at once (an approval window already open keeps its language).
     fn language_card(&self, items: &mut Vec<Item>) {
-        use yw_core::lang::Lang;
-        items.push(Item::CardStart(Some(LANGUAGE_TITLE.to_owned())));
-        items.push(Item::Help(
-            LANGUAGE_HELP.get(self.settings.language).to_owned(),
-        ));
         let lang = self.settings.language;
+        items.push(Item::CardStart(Some(LANGUAGE_TITLE.to_owned())));
+        items.push(Item::Help(text::LANGUAGE_HELP.get(lang).to_owned()));
         items.push(Item::Row(vec![
             Ctl::radio(ids::LANG_KO, LANGUAGE_KOREAN, lang == Lang::Ko, true),
             Ctl::radio(ids::LANG_EN, "English", lang == Lang::En, false),
@@ -2049,118 +2033,100 @@ impl App {
         reason = "the RPC provider form and the URL rows"
     )]
     fn network_section(&self, items: &mut Vec<Item>) {
+        let lang = self.settings.language;
         // A pending rpc.json import review stays first (it waits for a decision), and so does the
         // advice to delete the plaintext file right after an import.
         if self.rpc_import.on_top() {
             self.rpc_import_section(items);
         }
-        items.push(Item::CardStart(Some("RPC 공급자".to_owned())));
+        items.push(Item::CardStart(Some(
+            text::RPC_PROVIDER_TITLE.get(lang).to_owned(),
+        )));
         if !self.rpc_import.on_top()
             && crate::app_rpc_import::rpc_json_path().is_some_and(|path| path.is_file())
         {
-            items.push(Item::Text(
-                "rpc.json이 있습니다 — 맨 아래 “rpc.json에서 가져오기”로 한 번에 넣을 수 있습니다."
-                    .to_owned(),
-            ));
+            items.push(Item::Text(text::RPC_JSON_FOUND.get(lang).to_owned()));
         }
-        items.push(Item::Help(
-            "RPC는 지갑이 블록체인에서 잔액을 읽고 거래를 보낼 때 쓰는 연결 주소입니다. QuickNode나 알케미 계정 정보를 한 번 넣으면 아래 모든 네트워크의 주소를 자동으로 만들 수 있습니다."
-                .to_owned(),
-        ));
+        items.push(Item::Help(text::RPC_PROVIDER_HELP.get(lang).to_owned()));
         let template = self.settings.rpc_template;
         items.push(Item::Row(vec![
             Ctl::radio(
                 ids::TPL_QUICKNODE,
-                "QuickNode 멀티체인",
+                text::TPL_QUICKNODE.get(lang),
                 template == RpcTemplate::QuickNode,
                 true,
             ),
             Ctl::radio(
                 ids::TPL_ALCHEMY,
-                "알케미",
+                text::ALCHEMY.get(lang),
                 template == RpcTemplate::Alchemy,
                 false,
             ),
             Ctl::radio(
                 ids::TPL_MANUAL,
-                "직접 입력",
+                text::TPL_MANUAL.get(lang),
                 template == RpcTemplate::Manual,
                 false,
             ),
         ]));
         let stored = self.template_stored();
-        let status = if stored { "설정됨" } else { "없음" };
+        let status = if stored {
+            text::CONFIGURED.get(lang)
+        } else {
+            text::NONE.get(lang)
+        };
         match template {
             RpcTemplate::QuickNode => {
-                items.push(Item::Help(format!(
-                    "저장된 QuickNode 자격 정보: {status} (저장된 값은 다시 보이지 않습니다)"
-                )));
+                items.push(Item::Help(text::QN_STORED.fill(lang, [status])));
                 items.push(Item::LabeledRow(
-                    "엔드포인트 이름".to_owned(),
+                    text::QN_NAME.get(lang).to_owned(),
                     vec![Ctl::edit(ids::QN_NAME_EDIT, "", 320, true, 256)],
                 ));
-                items.push(Item::Help(
-                    "QuickNode 엔드포인트 주소 https://<이름>.quiknode.pro/… 의 <이름> 부분입니다. 대시보드의 주소 전체를 이 칸이나 토큰 칸에 붙여넣어도 됩니다(이름과 토큰을 알아서 나눕니다)."
-                        .to_owned(),
-                ));
+                items.push(Item::Help(text::QN_NAME_HELP.get(lang).to_owned()));
                 items.push(Item::LabeledRow(
-                    "토큰".to_owned(),
+                    text::QN_TOKEN.get(lang).to_owned(),
                     vec![Ctl::edit(ids::QN_TOKEN_EDIT, "", 320, true, 256)],
                 ));
-                items.push(Item::Help(
-                    "주소 끝의 긴 문자열입니다. 입력한 값은 가려지고, 저장하면 Windows가 이 사용자 계정에서만 풀 수 있게 암호화합니다."
-                        .to_owned(),
-                ));
-                items.push(Item::Help(T_QUICKNODE_CHAINS.to_owned()));
+                items.push(Item::Help(text::QN_TOKEN_HELP.get(lang).to_owned()));
+                items.push(Item::Help(text::T_QUICKNODE_CHAINS.get(lang).to_owned()));
             }
             RpcTemplate::Alchemy => {
-                items.push(Item::Help(format!(
-                    "저장된 알케미 키: {status} (저장된 값은 다시 보이지 않습니다)"
-                )));
+                items.push(Item::Help(text::ALCHEMY_STORED.fill(lang, [status])));
                 items.push(Item::LabeledRow(
-                    "API 키".to_owned(),
+                    text::API_KEY.get(lang).to_owned(),
                     vec![Ctl::edit(ids::ALCHEMY_KEY_EDIT, "", 320, true, 256)],
                 ));
-                items.push(Item::Help(
-                    "알케미 대시보드의 API Key입니다. 입력한 값은 가려집니다.".to_owned(),
-                ));
+                items.push(Item::Help(text::ALCHEMY_KEY_HELP.get(lang).to_owned()));
             }
             RpcTemplate::Manual => {
-                items.push(Item::Help(
-                    "직접 입력: 아래 '네트워크별 RPC 주소'에서 네트워크마다 '입력'으로 https:// 주소를 넣으세요."
-                        .to_owned(),
-                ));
+                items.push(Item::Help(text::MANUAL_HELP.get(lang).to_owned()));
             }
         }
         let manual = template == RpcTemplate::Manual;
         items.push(Item::Row(vec![
-            Ctl::primary(ids::GENERATE, "저장하고 RPC 주소 만들기").enabled(!manual),
-            Ctl::button(ids::TPL_SAVE, "자격 정보만 저장").enabled(!manual),
-            Ctl::danger(ids::TPL_DELETE, "자격 정보 삭제").enabled(!manual && stored),
+            Ctl::primary(ids::GENERATE, text::GENERATE.get(lang)).enabled(!manual),
+            Ctl::button(ids::TPL_SAVE, text::TPL_SAVE.get(lang)).enabled(!manual),
+            Ctl::danger(ids::TPL_DELETE, text::TPL_DELETE.get(lang)).enabled(!manual && stored),
         ]));
         if self.rpc_removed == Some(crate::app::RpcRemoved::Template) {
             items.push(Item::Banner(
-                "자격 정보를 지웠습니다. 이미 만든 네트워크별 RPC 주소는 그대로입니다.".to_owned(),
+                text::TPL_DELETED.get(lang).to_owned(),
                 Tone::Success,
             ));
         }
-        items.push(Item::Help(
-            "'저장하고 RPC 주소 만들기'는 위 칸의 자격 정보를 저장하고 아래 목록의 주소를 한 번에 만든 뒤 하나씩 테스트합니다. 이미 있는 주소는 덮어쓸지 따로 묻습니다."
-                .to_owned(),
-        ));
+        items.push(Item::Help(text::GENERATE_HELP.get(lang).to_owned()));
         items.push(Item::CardEnd);
-        items.push(Item::CardStart(Some("네트워크별 RPC 주소".to_owned())));
+        items.push(Item::CardStart(Some(
+            text::RPC_LIST_TITLE.get(lang).to_owned(),
+        )));
         self.rpc_summary_items(items);
-        items.push(Item::Help(
-            "'테스트'는 그 주소가 올바른 네트워크를 가리키는지 한 번 확인합니다. 주소에는 토큰이 들어 있어 '교체'를 누르면 가린 형태로만 보입니다."
-                .to_owned(),
-        ));
+        items.push(Item::Help(text::RPC_LIST_HELP.get(lang).to_owned()));
         let mut networks = self.url_networks();
         networks.truncate(usize::from(ids::ROW_SPAN / 3));
         // The note above an open field: the stored credentials can make the empty addresses.
         let template_name = match template {
             RpcTemplate::QuickNode => Some("QuickNode"),
-            RpcTemplate::Alchemy => Some("알케미"),
+            RpcTemplate::Alchemy => Some(text::ALCHEMY.get(lang)),
             RpcTemplate::Manual => None,
         };
         // One line per network (2026-11-12): its name, the three actions and its state as a tag
@@ -2173,54 +2139,57 @@ impl App {
             items.push(Item::LabeledRow(
                 self.network_name(network),
                 vec![
-                    Ctl::button(base, if url.is_some() { "교체" } else { "입력" }).compact(),
-                    Ctl::button(base.saturating_add(1), "테스트")
+                    Ctl::button(
+                        base,
+                        if url.is_some() {
+                            text::REPLACE.get(lang)
+                        } else {
+                            text::ENTER.get(lang)
+                        },
+                    )
+                    .compact(),
+                    Ctl::button(base.saturating_add(1), text::TEST.get(lang))
                         .compact()
                         .enabled(url.is_some()),
-                    Ctl::danger(base.saturating_add(2), "삭제")
+                    Ctl::danger(base.saturating_add(2), text::DELETE.get(lang))
                         .compact()
                         .enabled(url.is_some()),
                 ],
             ));
             let message = self.rpc_messages.iter().find(|(id, _, _)| *id == network);
             let pill = match (url.is_some(), message.map(|(_, _, state)| *state)) {
-                (false, _) => Some(("없음", Tone::Warn)),
-                (true, Some(TestState::Works)) => Some(("작동", Tone::Success)),
-                (true, Some(TestState::Failed)) => Some(("실패", Tone::Danger)),
-                (true, Some(TestState::Testing)) => Some(("테스트 중", Tone::Info)),
+                (false, _) => Some((text::NONE, Tone::Warn)),
+                (true, Some(TestState::Works)) => Some((text::WORKS, Tone::Success)),
+                (true, Some(TestState::Failed)) => Some((text::FAILED, Tone::Danger)),
+                (true, Some(TestState::Testing)) => Some((text::TESTING, Tone::Info)),
                 (true, None) => None,
             };
-            if let Some((text, tone)) = pill {
-                items.push(Item::Pill(text.to_owned(), tone));
+            if let Some((label, tone)) = pill {
+                items.push(Item::Pill(label.get(lang).to_owned(), tone));
             }
             if self.replace_target == Some(network) {
                 items.push(Item::Help(url.as_ref().map_or_else(
-                    || format!("{network} · 주소 없음"),
-                    |url| format!("{network} · 지금 주소 {}", mask_url(url)),
+                    || text::ROW_NO_ADDRESS.fill(lang, [&network.to_string()]),
+                    |url| text::ROW_ADDRESS.fill(lang, [&network.to_string(), &mask_url(url)]),
                 )));
                 if let Some(name) = template_name.filter(|_| {
                     stored && template_entry(template, network, &self.settings).is_some()
                 }) {
-                    items.push(Item::Help(format!(
-                        "{name} 자격 정보가 저장되어 있습니다 — 위 “저장하고 RPC 주소 만들기”로 비어 있는 주소를 한 번에 만들 수 있습니다."
-                    )));
+                    items.push(Item::Help(text::ROW_TEMPLATE_STORED.fill(lang, [name])));
                 }
                 items.push(Item::Row(vec![
                     Ctl::edit(ids::REPLACE_EDIT, "", 420, true, 2_048),
-                    Ctl::primary(ids::REPLACE_SAVE, "저장"),
-                    Ctl::button(ids::REPLACE_CANCEL, "취소"),
+                    Ctl::primary(ids::REPLACE_SAVE, text::SAVE.get(lang)),
+                    Ctl::button(ids::REPLACE_CANCEL, text::CANCEL.get(lang)),
                 ]));
-                items.push(Item::Help(
-                    "https:// 로 시작하는 전체 주소를 붙여넣으세요. 저장 전에 형식을 검사하고, 저장하면 바로 테스트합니다."
-                        .to_owned(),
-                ));
+                items.push(Item::Help(text::ROW_PASTE_HELP.get(lang).to_owned()));
             }
             if let Some((_, message, TestState::Failed)) = message {
                 items.push(Item::Banner(message.clone(), Tone::Danger));
             }
             if self.rpc_removed == Some(crate::app::RpcRemoved::Url(network)) {
                 items.push(Item::Banner(
-                    "RPC 주소를 지웠습니다.".to_owned(),
+                    text::RPC_URL_DELETED.get(lang).to_owned(),
                     Tone::Success,
                 ));
             }
@@ -2230,14 +2199,15 @@ impl App {
         self.explorer_settings_card(items);
         let dormant = self.apikeys.dormant_names();
         if !dormant.is_empty() {
-            items.push(Item::CardStart(Some("보관 중인 항목".to_owned())));
-            items.push(Item::Help(format!(
-                "이 버전에서 쓰지 않는 RPC 항목 {}개를 지우지 않고 보관하고 있습니다(등록되지 않은 체인의 주소나 다른 버전의 앱이 쓴 항목). 체인을 다시 추가하거나 다른 버전으로 돌아가면 다시 쓰입니다.",
-                dormant.len()
+            items.push(Item::CardStart(Some(
+                text::DORMANT_TITLE.get(lang).to_owned(),
             )));
+            items.push(Item::Help(
+                text::DORMANT_HELP.fill(lang, [&dormant.len().to_string()]),
+            ));
             items.push(Item::Row(vec![Ctl::danger(
                 ids::PRUNE_DORMANT,
-                "보관 항목 삭제",
+                text::DORMANT_DELETE.get(lang),
             )]));
             items.push(Item::CardEnd);
         }
@@ -2276,9 +2246,17 @@ impl App {
     /// The head of "네트워크별 RPC 주소" (2026-11-10): how many addresses there are, this run's
     /// tests, the failed networks as links to their rows, and `모두 테스트`.
     fn rpc_summary_items(&self, items: &mut Vec<Item>) {
+        let lang = self.settings.language;
         let (configured, total, works, failed, untested) = self.rpc_summary();
-        items.push(Item::Text(format!(
-            "RPC 주소 {configured}/{total}개 설정 · 이번 실행 테스트: 작동 {works} · 실패 {failed} · 안 함 {untested}"
+        items.push(Item::Text(text::RPC_LIST_SUMMARY.fill(
+            lang,
+            [
+                &configured.to_string(),
+                &total.to_string(),
+                &works.to_string(),
+                &failed.to_string(),
+                &untested.to_string(),
+            ],
         )));
         let links: Vec<Ctl> = self
             .url_networks()
@@ -2302,17 +2280,26 @@ impl App {
             })
             .collect();
         if !links.is_empty() {
-            items.push(Item::LabeledRow("실패한 네트워크".to_owned(), links));
+            items.push(Item::LabeledRow(
+                text::FAILED_NETWORKS.get(lang).to_owned(),
+                links,
+            ));
         }
         let tests = &self.rpc_tests;
         let label = if tests.busy() {
-            format!(
-                "테스트 중 {}/{}",
-                tests.done.saturating_add(1).min(tests.total.max(1)),
-                tests.total.max(1)
+            text::TESTING_PROGRESS.fill(
+                lang,
+                [
+                    &tests
+                        .done
+                        .saturating_add(1)
+                        .min(tests.total.max(1))
+                        .to_string(),
+                    &tests.total.max(1).to_string(),
+                ],
             )
         } else {
-            "모두 테스트".to_owned()
+            text::TEST_ALL.get(lang).to_owned()
         };
         items.push(Item::Row(vec![
             Ctl::button(ids::TEST_ALL, &label).enabled(configured > 0 && !tests.busy()),
@@ -2320,67 +2307,65 @@ impl App {
     }
 
     fn other_section(&self, items: &mut Vec<Item>) {
-        items.push(Item::CardStart(Some("브라우저 확장".to_owned())));
-        items.push(Item::Text(self.extension_status().text().to_owned()));
+        let lang = self.settings.language;
+        items.push(Item::CardStart(Some(
+            text::EXTENSION_TITLE.get(lang).to_owned(),
+        )));
+        items.push(Item::Text(self.extension_status().text_in(lang).to_owned()));
         items.push(Item::Help(
-            crate::ui::screens_reset::T_EXT_COMPAT_SHORT.to_owned(),
+            crate::ui::screens_reset::T_EXT_COMPAT_SHORT
+                .get(lang)
+                .to_owned(),
         ));
         items.push(Item::Row(vec![Ctl::button(
             crate::ui::screens_reset::ids::EXT_OPEN,
-            "Chrome 확장 설치 방법·폴더",
+            text::EXTENSION_OPEN.get(lang),
         )]));
         items.push(Item::CardEnd);
         items.push(Item::CardStart(Some("WalletConnect".to_owned())));
-        items.push(Item::Help(
-            "확장 없이 dApp의 WalletConnect QR·링크로 연결합니다(EVM). 처음 한 번 Reown Project ID가 필요하고, 연결·세션 관리는 '연결된 사이트 · WalletConnect' 화면에서 합니다."
-                .to_owned(),
-        ));
+        items.push(Item::Help(text::WC_HELP.get(lang).to_owned()));
         items.push(Item::Field(
-            "상태".to_owned(),
+            text::STATUS.get(lang).to_owned(),
             if self.settings.walletconnect_project.is_empty() {
-                "Project ID 없음 — 꺼져 있음".to_owned()
+                text::WC_OFF.get(lang).to_owned()
             } else {
-                format!("Project ID 설정됨 · 세션 {}개", self.wc.sessions.len())
+                text::WC_ON.fill(lang, [&self.wc.sessions.len().to_string()])
             },
         ));
         items.push(Item::Row(vec![Ctl::button(
             crate::ui::screens_sites::ids::SITES_OPEN,
-            "연결된 사이트 · WalletConnect 열기",
+            text::WC_OPEN_SITES.get(lang),
         )]));
         items.push(Item::CardEnd);
-        items.push(Item::CardStart(Some("브라우저 연결".to_owned())));
-        items.push(Item::Help(
-            "Chrome 확장과 이 앱을 잇는 설정입니다. 사이트의 연결·서명 요청은 언제나 이 앱의 승인 창에서 확인합니다."
-                .to_owned(),
-        ));
+        items.push(Item::CardStart(Some(
+            text::BROWSER_LINK_TITLE.get(lang).to_owned(),
+        )));
+        items.push(Item::Help(text::BROWSER_LINK_HELP.get(lang).to_owned()));
         items.push(Item::Row(vec![Ctl::check(
             ids::AUTOLAUNCH_TOGGLE,
-            "dApp 요청 시 앱 자동 실행",
+            text::AUTOLAUNCH.get(lang),
             self.settings.browser_auto_launch,
         )]));
-        items.push(Item::Help(
-            "끄면 앱이 꺼져 있을 때 사이트의 지갑 요청은 실패합니다.".to_owned(),
-        ));
+        items.push(Item::Help(text::AUTOLAUNCH_HELP.get(lang).to_owned()));
         items.push(Item::Row(vec![Ctl::check(
             ids::LOCALHOST_TOGGLE,
-            "localhost dApp 허용 (개발용)",
+            text::LOCALHOST.get(lang),
             self.settings.allow_localhost_dapps,
         )]));
-        items.push(Item::Help(
-            "dApp을 직접 개발할 때만 켜세요. http://localhost·127.0.0.1 페이지가 연결을 요청할 수 있게 됩니다."
-                .to_owned(),
-        ));
+        items.push(Item::Help(text::LOCALHOST_HELP.get(lang).to_owned()));
         items.push(Item::CardEnd);
-        items.push(Item::CardStart(Some("진단".to_owned())));
-        items.push(Item::Help("로그에는 비밀번호·니모닉·개인키·API 키·RPC 엔드포인트 URL이 없습니다. 주소와 거래 해시는 있을 수 있습니다.".to_owned()));
+        items.push(Item::CardStart(Some(
+            text::DIAGNOSTICS_TITLE.get(lang).to_owned(),
+        )));
+        items.push(Item::Help(text::DIAGNOSTICS_HELP.get(lang).to_owned()));
         items.push(Item::Row(vec![Ctl::button(
             ids::OPEN_LOG_FOLDER,
-            "로그 폴더 열기",
+            text::OPEN_LOG_FOLDER.get(lang),
         )]));
         if self.show_advanced {
             let level = self.settings.log_level;
             items.push(Item::LabeledRow(
-                "로그 수준".to_owned(),
+                text::LOG_LEVEL.get(lang).to_owned(),
                 vec![
                     Ctl::radio(ids::LOG_ERROR, "error", level == LogLevel::Error, true),
                     Ctl::radio(ids::LOG_WARN, "warn", level == LogLevel::Warn, false),
@@ -2388,30 +2373,29 @@ impl App {
                     Ctl::radio(ids::LOG_DEBUG, "debug", level == LogLevel::Debug, false),
                 ],
             ));
-            items.push(Item::Help(
-                "문제를 조사할 때만 debug로 바꾸세요. 기본값은 info입니다.".to_owned(),
-            ));
+            items.push(Item::Help(text::LOG_LEVEL_HELP.get(lang).to_owned()));
         }
         self.advanced_toggle(items);
         items.push(Item::CardEnd);
-        items.push(Item::CardStart(Some("정보".to_owned())));
+        items.push(Item::CardStart(Some(
+            text::ABOUT_TITLE.get(lang).to_owned(),
+        )));
         // The installed commit says which build runs (2026-11-10, `build_info`).
         items.push(Item::Field(
-            "버전".to_owned(),
-            crate::build_info::version_text(self.install_commit.as_deref()),
+            text::VERSION.get(lang).to_owned(),
+            crate::build_info::version_text(lang, self.install_commit.as_deref()),
         ));
         items.push(Item::Field(
-            "데이터 폴더".to_owned(),
+            text::DATA_FOLDER.get(lang).to_owned(),
             self.paths.data.display().to_string(),
         ));
         items.push(Item::Row(vec![Ctl::button(
             ids::OPEN_DATA_FOLDER,
-            "폴더 열기",
+            text::OPEN_FOLDER.get(lang),
         )]));
         items.push(Item::Field(
-            "단축키".to_owned(),
-            "Ctrl+L 잠금 · Ctrl+1 / 2 / 3 / 4 체인 탭(EVM·Solana·Bitcoin·Zcash) · F5 새로고침 · Ctrl+, 설정 · Esc 뒤로·취소 · Tab 다음 칸 · PgUp / PgDn 한 쪽 스크롤 · Ctrl+Home / End 맨 위·맨 아래"
-                .to_owned(),
+            text::SHORTCUTS.get(lang).to_owned(),
+            text::SHORTCUTS_TEXT.get(lang).to_owned(),
         ));
         items.push(Item::CardEnd);
     }
@@ -2427,124 +2411,149 @@ impl App {
             self.journal_overlay(items);
             return;
         }
+        let lang = self.settings.language;
         let btc = self.btc.confirm;
         let (title, text, yes) = match kind {
-            Confirm::Btc => btc.map_or(("Bitcoin", String::new(), "확인"), |confirm| {
-                confirm.texts()
+            Confirm::Btc => btc.map_or(("Bitcoin", String::new(), text::OK.get(lang)), |confirm| {
+                confirm.texts(lang)
             }),
             Confirm::CopyOn => (
-                "복사 허용",
-                "복사를 허용하면 복구 단어(니모닉)·개인키를 클립보드에 넣을 수 있습니다. 클립보드 기록·클라우드 동기화에서는 제외하고 30초 뒤 지우지만, 그 사이에는 다른 프로그램이 읽을 수 있습니다. 그 전에 앱이 비정상 종료되면 다음에 앱을 열 때 지우며, 그때까지는 클립보드에 남습니다.".to_owned(),
-                "허용",
+                text::C_COPY_TITLE.get(lang),
+                text::C_COPY_TEXT.get(lang).to_owned(),
+                text::C_ALLOW.get(lang),
             ),
             Confirm::LocalhostOn => (
-                "localhost dApp 허용",
-                "개발용 설정입니다. 켜면 http://localhost 와 http://127.0.0.1 페이지가 지갑 연결을 요청할 수 있습니다.".to_owned(),
-                "켜기",
+                text::C_LOCALHOST_TITLE.get(lang),
+                text::C_LOCALHOST_TEXT.get(lang).to_owned(),
+                text::C_TURN_ON.get(lang),
             ),
             Confirm::RevealMnemonic | Confirm::RevealKey => (
-                if kind == Confirm::RevealMnemonic { "복구 단어 보기" } else { "개인키 보기" },
-                "화면 근처의 사람이나 카메라가 볼 수 있습니다. 계속하려면 비밀번호를 입력하세요.".to_owned(),
-                "계속",
+                if kind == Confirm::RevealMnemonic {
+                    text::REVEAL_MNEMONIC.get(lang)
+                } else {
+                    text::REVEAL_KEY.get(lang)
+                },
+                text::C_REVEAL_TEXT.get(lang).to_owned(),
+                text::C_CONTINUE.get(lang),
             ),
-            Confirm::Generate => ("RPC 주소 만들기", self.generate_text(), "만들기"),
+            Confirm::Generate => (
+                text::C_GENERATE_TITLE.get(lang),
+                self.generate_text(),
+                text::C_CREATE.get(lang),
+            ),
             Confirm::RpcUrlDelete(network) => (
-                "RPC 주소 지우기",
+                text::C_RPC_DELETE_TITLE.get(lang),
                 self.rpc_delete_text(network),
-                "지우기",
+                text::C_REMOVE.get(lang),
             ),
-            Confirm::TemplateDelete => ("자격 정보 지우기", self.template_delete_text(), "지우기"),
+            Confirm::TemplateDelete => (
+                text::C_TPL_DELETE_TITLE.get(lang),
+                self.template_delete_text(),
+                text::C_REMOVE.get(lang),
+            ),
             Confirm::LlmKeyDelete => (
-                "AI API 키 지우기",
-                "저장된 AI 설명용 API 키를 지웁니다. 저장된 키는 다시 볼 수 없어, AI 설명을 다시 쓰려면 키를 다시 넣어야 합니다.".to_owned(),
-                "지우기",
+                text::C_LLM_KEY_TITLE.get(lang),
+                text::C_LLM_KEY_TEXT.get(lang).to_owned(),
+                text::C_REMOVE.get(lang),
             ),
             Confirm::YkAbandon => (
-                "YubiKey 지갑 만들기를 그만둘까요?",
-                crate::app_yubikey::T_YK_ABANDON.to_owned(),
-                "그만두기",
+                text::C_YK_ABANDON_TITLE.get(lang),
+                crate::app_yubikey::text::YK_ABANDON.get(lang).to_owned(),
+                text::C_YK_ABANDON_YES.get(lang),
             ),
             Confirm::YkPinLater => (
-                "PIN을 나중에 설정할까요?",
-                "PIN을 설정하기 전에는 이 YubiKey로 서명하지 않습니다. 나중에 설정 → YubiKey에서 바꿀 수 있습니다."
-                    .to_owned(),
-                "나중에",
+                text::C_PIN_LATER_TITLE.get(lang),
+                text::C_PIN_LATER_TEXT.get(lang).to_owned(),
+                text::C_PIN_LATER_YES.get(lang),
             ),
             // Drawn above.
             Confirm::SidecarCorrupt | Confirm::JournalCorrupt => ("", String::new(), ""),
             Confirm::RemoveKey => (
-                "가져온 개인키 삭제",
-                T_REMOVE_KEY.to_owned(),
-                "계속",
+                text::C_REMOVE_KEY_TITLE.get(lang),
+                T_REMOVE_KEY.get(lang).to_owned(),
+                text::C_CONTINUE.get(lang),
             ),
             Confirm::RemoveImported => (
-                "가져온 개인키 삭제",
-                crate::ui::screens_keys::T_REMOVE_IMPORTED.to_owned(),
-                "계속",
+                text::C_REMOVE_KEY_TITLE.get(lang),
+                crate::ui::screens_keys::text::REMOVE_IMPORTED
+                    .get(lang)
+                    .to_owned(),
+                text::C_CONTINUE.get(lang),
             ),
-            Confirm::RemoveYubiKey => ("YubiKey 기록 삭제", self.yk_remove_text(), "계속"),
+            Confirm::RemoveYubiKey => (
+                text::C_REMOVE_YK_TITLE.get(lang),
+                self.yk_remove_text(),
+                text::C_CONTINUE.get(lang),
+            ),
             Confirm::RevealImported => (
-                "개인키 보기",
-                "화면 근처의 사람이나 카메라가 볼 수 있습니다. 계속하려면 비밀번호를 입력하세요.".to_owned(),
-                "계속",
+                text::REVEAL_KEY.get(lang),
+                text::C_REVEAL_TEXT.get(lang).to_owned(),
+                text::C_CONTINUE.get(lang),
             ),
-            Confirm::ChainPin => ("체인 추가 — 제네시스 고정", self.chain_pin_text(), "고정하고 저장"),
-            Confirm::ChainRepin => ("다시 고정", self.chain_repin_text(), "다시 고정"),
+            Confirm::ChainPin => (
+                text::C_CHAIN_PIN_TITLE.get(lang),
+                self.chain_pin_text(),
+                text::C_CHAIN_PIN_YES.get(lang),
+            ),
+            Confirm::ChainRepin => (
+                text::C_REPIN.get(lang),
+                self.chain_repin_text(),
+                text::C_REPIN.get(lang),
+            ),
             Confirm::ChainDelete => (
-                "체인 삭제",
-                "체인 정의, RPC 주소, 수수료 상한을 지웁니다. 이 체인의 토큰·활동 기록은 남고, 같은 chainId를 다시 추가하면 다시 보입니다.".to_owned(),
-                "삭제",
+                text::C_CHAIN_DELETE_TITLE.get(lang),
+                text::C_CHAIN_DELETE_TEXT.get(lang).to_owned(),
+                text::DELETE.get(lang),
             ),
             Confirm::BookDelete => (
-                "주소록 항목 삭제",
+                text::C_BOOK_DELETE_TITLE.get(lang),
                 self.book_delete_text(),
-                "삭제",
+                text::DELETE.get(lang),
             ),
             Confirm::TokenDelete => (
-                "토큰 삭제",
-                T_TOKEN_DELETE.to_owned(),
-                "삭제",
+                text::C_TOKEN_DELETE_TITLE.get(lang),
+                T_TOKEN_DELETE.get(lang).to_owned(),
+                text::DELETE.get(lang),
             ),
             Confirm::DisconnectAll => (
-                "모든 사이트 연결 해제",
+                text::C_DISCONNECT_TITLE.get(lang),
                 if self.wc.sessions.is_empty() {
-                    "연결된 모든 사이트의 연결을 해제합니다. 사이트는 다시 연결을 요청해야 계정을 볼 수 있습니다.".to_owned()
+                    text::C_DISCONNECT_TEXT.get(lang).to_owned()
                 } else {
-                    format!(
-                        "연결된 모든 사이트의 연결을 해제하고 WalletConnect 세션 {}개도 끊습니다(dApp 쪽 연결도 끊깁니다). 사이트는 다시 연결을 요청해야 계정을 볼 수 있습니다.",
-                        self.wc.sessions.len()
-                    )
+                    text::C_DISCONNECT_WC_TEXT.fill(lang, [&self.wc.sessions.len().to_string()])
                 },
-                "모두 해제",
+                text::C_DISCONNECT_YES.get(lang),
             ),
             Confirm::SettingsFile => (
-                "설정 파일 값 사용",
-                "settings.json의 아래 값을 그대로 씁니다. 이 PC에서 직접 바꾼 경우에만 고르세요. 모르는 변경이면 '취소'를 누른 뒤 '앱에 저장된 값으로 되돌리기'를 누르세요."
-                    .to_owned(),
-                "파일 값 사용",
+                text::C_SETTINGS_FILE_TITLE.get(lang),
+                text::C_SETTINGS_FILE_TEXT.get(lang).to_owned(),
+                text::C_SETTINGS_FILE_YES.get(lang),
             ),
             Confirm::WcDisconnectAll => (
-                "모든 WalletConnect 세션 끊기",
-                format!(
-                    "WalletConnect 세션 {}개를 모두 끊을까요? 다시 쓰려면 dApp마다 QR이나 링크로 새로 연결해야 합니다.",
-                    self.wc.sessions.len()
-                ),
-                "모두 끊기",
+                text::C_WC_DISCONNECT_TITLE.get(lang),
+                text::C_WC_DISCONNECT_TEXT.fill(lang, [&self.wc.sessions.len().to_string()]),
+                text::C_WC_DISCONNECT_YES.get(lang),
             ),
-            Confirm::Discard => ("거래 폐기", T_DISCARD.to_owned(), "폐기"),
+            Confirm::Discard => (
+                text::C_DISCARD_TITLE.get(lang),
+                T_DISCARD.get(lang).to_owned(),
+                text::C_DISCARD_YES.get(lang),
+            ),
             Confirm::LlmOn => (
-                "AI 설명 켜기",
+                text::C_LLM_ON_TITLE.get(lang),
                 self.llm_notice_text().unwrap_or_default(),
-                "켜기",
+                text::C_TURN_ON.get(lang),
             ),
             Confirm::PruneDormant => (
-                "보관 항목 삭제",
-                format!(
-                    "이 버전에서 쓰지 않는 항목 {}개({})를 apikeys.dpapi에서 지웁니다. 나중에 그 체인을 다시 추가하거나 다른 버전의 앱을 쓰면 주소·자격 정보를 다시 입력해야 합니다.",
-                    self.apikeys.dormant_names().len(),
-                    self.apikeys.dormant_names().join(", ")
+                text::DORMANT_DELETE.get(lang),
+                text::C_PRUNE_TEXT.fill(
+                    lang,
+                    [
+                        &self.apikeys.dormant_names().len().to_string(),
+                        &self.apikeys.dormant_names().join(", "),
+                    ],
                 ),
-                "삭제",
+                text::DELETE.get(lang),
             ),
         };
         let destructive = matches!(
@@ -2575,8 +2584,8 @@ impl App {
                     self.imported_removed()
                 };
                 let inside = account.map_or_else(Vec::new, |account| {
-                    items.push(Item::Subtitle("지워지는 계정".to_owned()));
-                    crate::ui::removed::removed_items(&[account], items)
+                    items.push(Item::Subtitle(text::C_REMOVED_ACCOUNT.get(lang).to_owned()));
+                    crate::ui::removed::removed_items(lang, &[account], items)
                 });
                 let mut band = inside.join(" ");
                 if !band.is_empty() {
@@ -2599,20 +2608,20 @@ impl App {
         if kind == Confirm::TokenDelete
             && let Some((label, address)) = self.token_delete_target()
         {
-            items.push(Item::Field("토큰".to_owned(), label));
-            items.push(Item::Help("컨트랙트 주소".to_owned()));
+            items.push(Item::Field(text::C_TOKEN.get(lang).to_owned(), label));
+            items.push(Item::Help(text::C_CONTRACT_ADDRESS.get(lang).to_owned()));
             items.push(Item::Mono(yw_core::evm::display::format_address(&address)));
         }
         if kind == Confirm::RevealImported
             && let Some((label, address)) = self.imported_target_text()
         {
-            items.push(Item::Field("계정".to_owned(), label));
+            items.push(Item::Field(text::C_ACCOUNT.get(lang).to_owned(), label));
             items.push(Item::Mono(address));
         }
         if kind == Confirm::Generate {
             items.push(Item::Row(vec![Ctl::check(
                 ids::OVERWRITE_CHECK,
-                "기존 주소 덮어쓰기",
+                text::C_OVERWRITE.get(lang),
                 self.overwrite_checked,
             )]));
         }
@@ -2620,20 +2629,20 @@ impl App {
             let (check_id, check_text, checked) = if kind == Confirm::LlmOn {
                 (
                     crate::ui::screens_llm::ids::NOTICE_CHECK,
-                    "이해했습니다",
+                    text::C_UNDERSTOOD.get(lang),
                     self.llm_ui.notice_checked,
                 )
             } else {
                 (
                     crate::ui::screens_evm::ids::REPIN_CHECK,
-                    "새 제네시스 해시를 공식 자료로 확인했습니다",
+                    text::C_REPIN_CHECK.get(lang),
                     self.evm.repin.as_ref().is_some_and(|repin| repin.checked),
                 )
             };
             items.push(Item::Row(vec![Ctl::check(check_id, check_text, checked)]));
             items.push(Item::Row(vec![
                 Ctl::primary(ids::CONFIRM_YES, yes).enabled(checked),
-                Ctl::button(ids::CONFIRM_NO, "취소"),
+                Ctl::button(ids::CONFIRM_NO, text::CANCEL.get(lang)),
             ]));
             items.push(Item::CardEnd);
             return;
@@ -2641,7 +2650,7 @@ impl App {
         if kind == Confirm::YkAbandon {
             // Going on is the main choice; giving up discards the words (spec/10 §7.1-1).
             items.push(Item::Row(vec![
-                Ctl::primary(ids::CONFIRM_NO, "계속 만들기"),
+                Ctl::primary(ids::CONFIRM_NO, text::C_KEEP_CREATING.get(lang)),
                 Ctl::danger(ids::CONFIRM_YES, yes),
             ]));
             items.push(Item::CardEnd);
@@ -2650,15 +2659,15 @@ impl App {
         if kind == Confirm::YkPinLater {
             // Setting the PIN now is the main choice (back to the result and its PIN card).
             items.push(Item::Row(vec![
-                Ctl::primary(ids::CONFIRM_NO, "지금 PIN 설정"),
+                Ctl::primary(ids::CONFIRM_NO, text::C_PIN_NOW.get(lang)),
                 Ctl::button(ids::CONFIRM_YES, yes),
             ]));
             items.push(Item::CardEnd);
             return;
         }
         let no = match (kind, btc) {
-            (Confirm::Btc, Some(confirm)) => confirm.no_label(),
-            _ => "취소",
+            (Confirm::Btc, Some(confirm)) => confirm.no_label(lang),
+            _ => text::CANCEL.get(lang),
         };
         items.push(Item::Row(vec![
             if destructive {
@@ -2689,69 +2698,76 @@ impl App {
     /// `RpcUrlDelete`'s text (2026-11-10): the address cannot be shown again, how it comes back,
     /// and what stops meanwhile.
     fn rpc_delete_text(&self, network: NetworkId) -> String {
+        let lang = self.settings.language;
         let again = match self.settings.rpc_template {
-            RpcTemplate::Manual => "“입력”으로 다시 넣어야 합니다".to_owned(),
-            template => format!(
-                "“저장하고 RPC 주소 만들기”({} 자격 정보: {}) 또는 “입력”으로 다시 넣어야 합니다",
-                if template == RpcTemplate::QuickNode {
-                    "QuickNode"
-                } else {
-                    "알케미"
-                },
-                if self.template_stored() {
-                    "설정됨"
-                } else {
-                    "없음"
-                }
+            RpcTemplate::Manual => text::C_RPC_AGAIN_MANUAL.get(lang).to_owned(),
+            template => text::C_RPC_AGAIN_TEMPLATE.fill(
+                lang,
+                [
+                    if template == RpcTemplate::QuickNode {
+                        "QuickNode"
+                    } else {
+                        text::ALCHEMY.get(lang)
+                    },
+                    if self.template_stored() {
+                        text::CONFIGURED.get(lang)
+                    } else {
+                        text::NONE.get(lang)
+                    },
+                ],
             ),
         };
         // A stored template credential fills an empty network at the next start (2026-11-11).
         let refill = if self.template_stored()
             && template_entry(self.settings.rpc_template, network, &self.settings).is_some()
         {
-            " 공급자 템플릿의 자격 정보가 저장돼 있어 다음 실행 때 템플릿 주소로 다시 채워집니다. 다른 주소를 쓰려면 지우지 말고 “교체”하세요."
+            text::C_RPC_REFILL.get(lang)
         } else {
             ""
         };
-        format!(
-            "{} ({network})의 RPC 주소를 지웁니다. 저장된 주소는 다시 볼 수 없어, 다시 쓰려면 {again}.{refill} 이 네트워크에 확정 전 거래가 있으면 주소를 다시 넣을 때까지 상태 확인이 멈춥니다.",
-            self.network_name(network)
+        text::C_RPC_DELETE_TEXT.fill(
+            lang,
+            [
+                &self.network_name(network),
+                &network.to_string(),
+                &again,
+                refill,
+            ],
         )
     }
 
     /// `TemplateDelete`'s text (2026-11-10).
     fn template_delete_text(&self) -> String {
-        let what = if self.settings.rpc_template == RpcTemplate::Alchemy {
-            "알케미 API 키"
+        let lang = self.settings.language;
+        if self.settings.rpc_template == RpcTemplate::Alchemy {
+            text::C_TPL_DELETE_ALCHEMY.get(lang).to_owned()
         } else {
-            "QuickNode 자격 정보(엔드포인트 이름·토큰)"
-        };
-        format!(
-            "저장된 {what}를 지웁니다. 저장된 값은 다시 볼 수 없습니다. 이미 만든 네트워크별 RPC 주소는 그대로이고, 새 체인 주소를 만들 때 다시 넣어야 합니다."
-        )
+            text::C_TPL_DELETE_QUICKNODE.get(lang).to_owned()
+        }
     }
 
     fn generate_text(&self) -> String {
+        let lang = self.settings.language;
         let (targets, skipped) = self.generation_plan();
-        let mut text = "선택한 템플릿으로 아래 네트워크의 RPC 주소를 만듭니다. 이미 주소가 있는 네트워크는 '기존 주소 덮어쓰기'를 켰을 때만 바꿉니다.".to_owned();
+        let mut out = text::C_GENERATE_TEXT.get(lang).to_owned();
         for network in targets {
             let existing = if self.apikeys.has(KeyName::Rpc(network)) {
-                " — 기존 주소 있음"
+                text::C_GENERATE_EXISTING.get(lang)
             } else {
                 ""
             };
             let _ = write!(
-                text,
+                out,
                 "\n· {} ({network}){existing}",
                 self.network_name(network)
             );
         }
         if !skipped.is_empty() {
-            text.push_str("\n건너뜀(템플릿 항목 없음):");
+            out.push_str(text::C_GENERATE_SKIPPED.get(lang));
             for network in skipped {
-                let _ = write!(text, "\n· {} ({network})", self.network_name(network));
+                let _ = write!(out, "\n· {} ({network})", self.network_name(network));
             }
         }
-        text
+        out
     }
 }

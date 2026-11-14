@@ -35,6 +35,7 @@ use yw_core::journal::btc::{
     bump_target, check_can_send, confirmed_inputs, current_record, in_flight, in_flight_outpoints,
     in_flight_replacements, of_account, related_records, track_mode, unspendable_outpoints,
 };
+use yw_core::lang::Lang;
 use yw_win::http::HttpsUrl;
 
 use crate::apikeys::ApiKeys;
@@ -60,56 +61,24 @@ use crate::workers::journal::btc::{
 };
 use crate::workers::rpc::RpcJob;
 
-/// Fixed text of the import screen (spec/08 §1.2).
-pub const BTC_IMPORT_NOTE: &str = "Bitcoin은 네이티브 세그윗(bc1q…, BIP84) 계정 0을 먼저 찾습니다. 탭루트·호환 세그윗·레거시 주소는 Bitcoin 탭의 “계정 추가”로 더하세요.";
+pub mod text;
+
+/// The bilingual fixed texts other modules read by their old names (spec/14; 2026-11-14:
+/// Korean `&str` constants before).
+pub use text::{
+    ACCOUNT_SWITCH_BUSY, ADDRESS_MODE_BUSY, APPROVAL_EXPIRED, BTC_IMPORT_NOTE, BTC_PREPARING,
+    DISCOVERY_INCOMPLETE, INDEXER_ONLY, NOT_SENT, PENDING_INCOMING, PENDING_INCOMING_UNREAD,
+    REMOVE_BUSY_APPROVAL, REMOVE_BUSY_IN_FLIGHT, RESET_TIP_TEXT, SERVER_BASED, T_BTC_EVM_SHARED,
+    T_BTC_FIXED_RECEIVE, T_BTC_MODE_HD, T_BTC_MODE_HELP, T_BTC_MODE_SINGLE, T_BTC_SOURCE_EVM,
+    T_BTC_SOURCE_STANDARD, T_BTC_SOURCE_STANDARD_HELP,
+};
+
 /// Refresh / tracking period while unlocked (spec/08 §4.7, §12.2).
 pub const BTC_TICK_MS: u64 = BTC_POLL_SECS * 1_000;
 /// Activity rows shown.
 pub const BTC_MAX_ACTIVITY_ROWS: usize = 50;
-/// "주소 검색 미완료" (spec/08 §3.4).
-pub const DISCOVERY_INCOMPLETE: &str = "주소 검색 미완료";
-/// The refresh's yes/no banner while the received history is off (spec/08 §4.7-2,
-/// 2026-11-13; "미확정 입금 있음(미검증, 교체될 수 있음)" before): the amount and txid are in the
-/// received history.
-pub const PENDING_INCOMING: &str = "미확정 입금 있음 (0 확인, 미검증 — 바뀌거나 취소될 수 있습니다). 금액과 txid는 '받은 내역도 보기'를 켜면 보입니다.";
-/// The same banner while the received history is on but its last read did not cover every
-/// address the refresh flagged (or found nothing).
-pub const PENDING_INCOMING_UNREAD: &str = "미확정 입금 있음 (0 확인, 미검증 — 바뀌거나 취소될 수 있습니다). 받은 내역에서 아직 다 찾지 못했습니다.";
-/// T-APPR-EXPIRED.
-pub const APPROVAL_EXPIRED: &str = "승인 시간이 지났습니다. 다시 검토하세요.";
-/// `검토`'s progress line (the plan job on the node), drawn next to the button.
-pub const BTC_PREPARING: &str = "수수료를 계산하는 중…";
 /// A fee preview this old is asked again when a fee radio changes (spec/08 §8, 2026-11-10).
 pub const FEE_QUOTE_FRESH_MS: u64 = 60_000;
-/// "(서버 기준)" suffix of confirmations (spec/08 §12.2-4).
-pub const SERVER_BASED: &str = "(서버 기준)";
-/// The "블록 높이 기록 초기화" confirmation (spec/08 §2 step 2).
-pub const RESET_TIP_TEXT: &str = "이 지갑이 기록한 가장 높은 블록 높이를 지웁니다. 노드(RPC)가 전에 잘못된(너무 높은) 높이를 알려 줘 지금 연결 검사가 계속 실패하는 경우에만 하세요. 노드가 오래된 체인을 보여 주는 경우라면 초기화하지 말고 노드 설정을 확인하세요. 초기화할까요?";
-/// UTXO mark of a candidate Core's `gettxout` did not confirm this refresh.
-pub const INDEXER_ONLY: &str = "인덱서만 확인(노드 미확인)";
-
-/// Account switch / add refused while a BTC approval is open.
-pub const ACCOUNT_SWITCH_BUSY: &str =
-    "Bitcoin 승인이 진행 중이라 계정을 바꾸거나 추가할 수 없습니다";
-/// Address-mode switch refused while a BTC approval is open.
-pub const ADDRESS_MODE_BUSY: &str = "Bitcoin 승인이 진행 중이라 주소 방식을 바꿀 수 없습니다";
-
-/// The address-mode radio of an HD account: fixed address (spec/08 §3.5, the default).
-pub const T_BTC_MODE_SINGLE: &str = "고정 주소 하나만 사용 (UniSat·Xverse 방식)";
-/// The address-mode radio of an HD account: a new address each time.
-pub const T_BTC_MODE_HD: &str = "받을 때마다 새 주소 (HD, 프라이버시↑)";
-/// One-line trade-off under the address-mode radios.
-pub const T_BTC_MODE_HELP: &str = "고정 주소는 받기·잔돈이 늘 같은 주소(…/0/0)라 관리와 소유 증명이 쉽지만, 누구나 그 주소의 잔액과 거래를 모두 볼 수 있습니다. 새 주소 방식은 프라이버시가 낫지만 주소가 계속 바뀝니다.";
-/// The receive note of an HD account in fixed-address mode (spec/04 §2.8).
-pub const T_BTC_FIXED_RECEIVE: &str = "이 계정은 주소 하나만 씁니다. 같은 복구 단어를 Electrum/Sparrow/UniSat에 넣으면 같은 주소가 나옵니다.";
-/// The key-source radio of `계정 추가`: the standard BTC path (default).
-pub const T_BTC_SOURCE_STANDARD: &str = "BTC 표준 경로 (권장, 기본값)";
-/// The key-source radio of `계정 추가`: the key of an EVM account.
-pub const T_BTC_SOURCE_EVM: &str = "EVM 계정과 같은 키";
-/// Help under the standard key source.
-pub const T_BTC_SOURCE_STANDARD_HELP: &str = "m/{44·49·84·86}'/{코인}'/{계정}'/0/0 — 같은 복구 단어를 다른 Bitcoin 지갑에 넣어도 같은 주소가 나옵니다.";
-/// The warning of an account on an EVM account's key (spec/08 §3.5).
-pub const T_BTC_EVM_SHARED: &str = "같은 키를 쓰면 EVM 주소와 BTC 주소의 공개키가 같아져, 누구나 두 주소가 같은 사람 것임을 알 수 있습니다. 다른 BTC 지갑(Electrum·Sparrow)에 복구 단어만 넣으면 이 주소가 보이지 않습니다(복구는 이 지갑이나 개인키 내보내기로).";
 
 /// The key source chosen in `계정 추가` (spec/08 §3.5).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -120,11 +89,6 @@ pub enum BtcAddSource {
     /// The key of an EVM account (`m/44'/60'/0'/0/i`), explicit choice and confirmation.
     EvmShared,
 }
-
-/// Account delete refused while a BTC approval is open (spec/04 §2.18).
-pub const REMOVE_BUSY_APPROVAL: &str = "Bitcoin 승인이 진행 중이라 이 가져온 키를 지울 수 없습니다. 승인을 끝내거나 거절한 뒤 다시 하세요";
-/// Account delete refused while the account has an in-flight transaction (spec/04 §2.18).
-pub const REMOVE_BUSY_IN_FLIGHT: &str = "이 가져온 키의 주소로 보낸 거래가 아직 확정될 수 있습니다(진행 중, 또는 포기·거절 뒤 30일 이내). 추적과 이중 지불 방지에 이 키가 필요하므로, 거래가 확정되거나 끝난 뒤(포기·거절한 거래는 30일 뒤)에 지울 수 있습니다";
 
 /// One row of the Bitcoin account list (spec/04 §2.6 Bitcoin).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -160,17 +124,21 @@ pub fn short_address(address: &str) -> String {
     format!("{head}…{tail}")
 }
 
-/// `네이티브 세그윗 계정 0` / `가져온 키 · 레거시`.
+/// `네이티브 세그윗 계정 0` / `가져온 키 · 레거시` in `lang`.
 #[must_use]
-pub fn account_label(account: &BtcAccountKey) -> String {
-    account.display_name()
+pub fn account_label(lang: Lang, account: &BtcAccountKey) -> String {
+    account.display_name_in(lang)
 }
 
-/// The address type with its prefix: `탭루트 (bc1p…)`, `레거시 (m·n…)`.
+/// The address type with its prefix in `lang`: `탭루트 (bc1p…)`, `레거시 (m·n…)`.
 #[must_use]
-pub fn account_type_text(account: &BtcAccountKey, net: BtcNetwork) -> String {
+pub fn account_type_text(lang: Lang, account: &BtcAccountKey, net: BtcNetwork) -> String {
     let script_type = account.script_type();
-    format!("{} ({})", script_type.name(), script_type.prefix(net))
+    format!(
+        "{} ({})",
+        script_type.name_in(lang),
+        script_type.prefix(net)
+    )
 }
 
 /// The active account of `net` in a persisted update (`BtcAccounts::active_on`: the selected
@@ -241,26 +209,20 @@ pub enum BtcGate {
 }
 
 impl BtcGate {
-    /// Fixed text.
+    /// Fixed text in `lang`.
     #[must_use]
-    pub fn text(self) -> String {
-        match self {
-            Self::Disabled => {
-                "Bitcoin이 꺼져 있습니다. 설정 → Bitcoin에서 켤 수 있습니다.".to_owned()
-            }
-            Self::Locked => "잠금을 해제하세요.".to_owned(),
-            Self::NoMeta => "Bitcoin 계정을 준비하는 중입니다…".to_owned(),
-            Self::NoAccount => {
-                "이 네트워크에는 가져온 Bitcoin 개인키가 없습니다. 개인키를 가져오세요.".to_owned()
-            }
-            Self::Mismatch { .. } => texts::NETWORK_MISMATCH.to_owned(),
-            Self::NoEndpoint => ErrorCode::Key005.text(),
-            Self::JournalLoading => "불러오는 중…".to_owned(),
-            Self::JournalClosed => {
-                "거래 저널을 열지 못해 Bitcoin 조회·보내기를 멈췄습니다. 맨 위 안내의 '선택 다시 보기'에서 고르세요."
-                    .to_owned()
-            }
-        }
+    pub fn text(self, lang: Lang) -> String {
+        let fixed = match self {
+            Self::Disabled => text::GATE_DISABLED,
+            Self::Locked => text::GATE_LOCKED,
+            Self::NoMeta => text::GATE_NO_META,
+            Self::NoAccount => text::GATE_NO_ACCOUNT,
+            Self::Mismatch { .. } => texts::NETWORK_MISMATCH,
+            Self::NoEndpoint => return ErrorCode::Key005.text_in(lang),
+            Self::JournalLoading => text::GATE_LOADING,
+            Self::JournalClosed => text::GATE_JOURNAL_CLOSED,
+        };
+        fixed.get(lang).to_owned()
     }
 }
 
@@ -512,7 +474,7 @@ impl BtcCtx<'_> {
         let account = BtcAccountId::Imported { id };
         let selected = self.selected_imported() == Some(id);
         if slot && selected {
-            return Some(REMOVE_BUSY_APPROVAL);
+            return Some(REMOVE_BUSY_APPROVAL.get(self.lang));
         }
         let now_unix = self.now_unix_ms / 1_000;
         BtcNetwork::ALL
@@ -529,7 +491,7 @@ impl BtcCtx<'_> {
                     .chain(&related)
                     .any(|record| record.may_still_confirm(now_unix))
             })
-            .then_some(REMOVE_BUSY_IN_FLIGHT)
+            .then_some(REMOVE_BUSY_IN_FLIGHT.get(self.lang))
     }
 
     /// The records of `meta`'s network touching its account under any identity (spec/08 §12.1
@@ -683,15 +645,16 @@ pub enum BtcFeeChoice {
 }
 
 impl BtcFeeChoice {
-    /// The label.
+    /// The label in `lang`.
     #[must_use]
-    pub const fn label(self) -> &'static str {
+    pub const fn label(self, lang: Lang) -> &'static str {
         match self {
-            Self::Fast => "빠름",
-            Self::Normal => "보통",
-            Self::Slow => "느림",
-            Self::Manual => "직접 입력",
+            Self::Fast => text::FEE_FAST,
+            Self::Normal => text::FEE_NORMAL,
+            Self::Slow => text::FEE_SLOW,
+            Self::Manual => text::FEE_MANUAL,
         }
+        .get(lang)
     }
 
     const fn target(self) -> Option<u32> {
@@ -742,12 +705,12 @@ impl BtcFeeForm {
         }
     }
 
-    fn validate(&mut self) {
+    fn validate(&mut self, lang: Lang) {
         self.error = None;
         if self.choice == BtcFeeChoice::Manual {
             self.manual = parse_user_sat_per_vb(self.manual_text.trim()).ok();
             if self.manual.is_none() {
-                self.error = Some("수수료율 형식이 올바르지 않습니다(sat/vB).".to_owned());
+                self.error = Some(text::FEE_RATE_FORMAT.get(lang).to_owned());
             }
         }
         let typed = self.typed_text.trim();
@@ -757,7 +720,7 @@ impl BtcFeeForm {
             parse_user_sats(typed).ok()
         };
         if !typed.is_empty() && self.typed.is_none() {
-            self.error = Some("수수료(sats) 형식이 올바르지 않습니다.".to_owned());
+            self.error = Some(text::FEE_SATS_FORMAT.get(lang).to_owned());
         }
     }
 }
@@ -951,70 +914,82 @@ pub enum BtcConfirm {
 }
 
 impl BtcConfirm {
-    /// `(title, text, yes label)` of the overlay.
+    /// `(title, text, yes label)` of the overlay in `lang`.
     #[must_use]
-    pub fn texts(self) -> (&'static str, String, &'static str) {
-        match self {
+    pub fn texts(self, lang: Lang) -> (&'static str, String, &'static str) {
+        let (title, body, yes) = match self {
             Self::NetworkChange { to } => (
-                "Bitcoin 네트워크 바꾸기",
-                format!(
-                    "Bitcoin 네트워크를 {}로 바꿉니다. 주소 인덱스·UTXO 캐시·동결·보낸 주소 기록을 새로 시작하고 주소를 다시 찾습니다. 다른 네트워크의 거래 기록은 보존합니다.",
-                    to.display_name()
-                ),
-                "바꾸기",
+                text::CONFIRM_NETWORK_TITLE,
+                text::CONFIRM_NETWORK_TEXT.fill(lang, [to.display_name_in(lang)]),
+                text::CONFIRM_NETWORK_YES,
             ),
             Self::IndexerOptIn { .. } => (
-                "Blockbook 인덱서",
-                "Blockbook 인덱서는 Bitcoin RPC 엔드포인트에 인덱서 기능이 켜져 있어야 합니다(QuickNode: 유료 BTC Blockbook 애드온, 알케미: UTXO API). 켜져 있지 않으면 Bitcoin 조회가 실패합니다(E-BTC-007). 계속할까요?".to_owned(),
-                "계속",
+                text::CONFIRM_INDEXER_TITLE,
+                text::CONFIRM_INDEXER_TEXT.get(lang).to_owned(),
+                text::CONFIRM_CONTINUE,
             ),
             Self::GapWarning { .. } => (
-                "새 주소",
-                "미사용 주소가 20개를 넘으면 다른 지갑으로 복구할 때 이후 입금이 보이지 않을 수 있습니다".to_owned(),
-                "그래도 발급",
+                text::CONFIRM_GAP_TITLE,
+                yw_core::btc::text::META_GAP_WARNING.get(lang).to_owned(),
+                text::CONFIRM_GAP_YES,
             ),
-            Self::Abandon { .. } => ("거래 포기", texts::ABANDON_CONFIRM.to_owned(), "포기"),
-            Self::CancelSigned { disclosed: false, .. } => (
-                "서명한 거래 취소",
-                "서명했지만 보내지 않은 거래를 취소합니다. 이 거래는 전송하지 않습니다.".to_owned(),
-                "취소하기",
+            Self::Abandon { .. } => (
+                text::CONFIRM_ABANDON_TITLE,
+                texts::ABANDON_CONFIRM.get(lang).to_owned(),
+                text::CONFIRM_ABANDON_YES,
             ),
-            Self::CancelSigned { disclosed: true, .. } => (
-                "서명한 거래 취소",
-                texts::CANCEL_DISCLOSED_CONFIRM.to_owned(),
-                "취소하기",
+            Self::CancelSigned {
+                disclosed: false, ..
+            } => (
+                text::CONFIRM_CANCEL_TITLE,
+                text::CONFIRM_CANCEL_TEXT.get(lang).to_owned(),
+                text::CONFIRM_CANCEL_YES,
+            ),
+            Self::CancelSigned {
+                disclosed: true, ..
+            } => (
+                text::CONFIRM_CANCEL_TITLE,
+                texts::CANCEL_DISCLOSED_CONFIRM.get(lang).to_owned(),
+                text::CONFIRM_CANCEL_YES,
             ),
             Self::EsploraBroadcast { .. } => (
-                "Esplora로 전송",
-                "Bitcoin 노드(RPC)로 보낸 결과를 확인하지 못했습니다. 같은 서명 거래를 설정한 Esplora 서버로 보냅니다. 거래 내용은 어차피 네트워크에 공개되지만, 그 서버는 이 PC의 IP가 이 거래를 보냈다는 것을 알 수 있습니다. 보낼까요?".to_owned(),
-                "보내기",
+                text::CONFIRM_ESPLORA_TITLE,
+                text::CONFIRM_ESPLORA_TEXT.get(lang).to_owned(),
+                text::CONFIRM_SEND_YES,
             ),
             Self::ResetTip => (
-                "블록 높이 기록 초기화",
-                RESET_TIP_TEXT.to_owned(),
-                "초기화",
+                text::CONFIRM_RESET_TIP_TITLE,
+                RESET_TIP_TEXT.get(lang).to_owned(),
+                text::CONFIRM_RESET_YES,
             ),
             Self::AddEvmShared {
                 script_type,
                 evm_index,
             } => (
-                "EVM 계정과 같은 키로 Bitcoin 계정 만들기",
-                format!(
-                    "EVM 계정 {evm_index}의 키(m/44'/60'/0'/0/{evm_index})로 {} 주소 하나를 만듭니다. 받기와 잔돈은 늘 이 주소입니다. {T_BTC_EVM_SHARED} 그래도 만들까요?",
-                    script_type.name()
+                text::CONFIRM_EVM_SHARED_TITLE,
+                text::CONFIRM_EVM_SHARED_TEXT.fill(
+                    lang,
+                    [
+                        &evm_index.to_string(),
+                        &format!("m/44'/60'/0'/0/{evm_index}"),
+                        script_type.name_in(lang),
+                        T_BTC_EVM_SHARED.get(lang),
+                    ],
                 ),
-                "같은 키로 만들기",
+                text::CONFIRM_EVM_SHARED_YES,
             ),
-        }
+        };
+        (title.get(lang), body, yes.get(lang))
     }
 
-    /// The no-button label.
+    /// The no-button label in `lang`.
     #[must_use]
-    pub const fn no_label(self) -> &'static str {
+    pub const fn no_label(self, lang: Lang) -> &'static str {
         match self {
-            Self::GapWarning { .. } => "이전 주소 사용",
-            _ => "취소",
+            Self::GapWarning { .. } => text::CONFIRM_NO_GAP,
+            _ => text::CONFIRM_NO,
         }
+        .get(lang)
     }
 }
 
@@ -1242,35 +1217,37 @@ fn with_settings(
     BtcAction::SaveSettings(Box::new(settings), key)
 }
 
-/// The status text of a journal record (spec/08 §12.1–§12.2-4).
+/// The status text of a journal record in `lang` (spec/08 §12.1–§12.2-4).
 #[must_use]
-pub fn record_status(record: &BtcRecord, tip_height: u32) -> String {
-    match record.state {
-        BtcTxState::Signed => "서명됨(전송 전)".to_owned(),
-        BtcTxState::Broadcasting => "전송 중".to_owned(),
-        BtcTxState::Submitted | BtcTxState::InMempool => format!("확인 대기 {SERVER_BASED}"),
-        BtcTxState::BroadcastUnknown => "전송 결과 확인 필요".to_owned(),
-        BtcTxState::Confirmed => confirmations_text(record.confirmations(tip_height)),
-        BtcTxState::Rejected => "거부됨".to_owned(),
-        BtcTxState::Replaced => "교체됨".to_owned(),
-        BtcTxState::Conflicted => "충돌(다른 거래가 확정됨)".to_owned(),
-        BtcTxState::Abandoned => "포기함".to_owned(),
-    }
+pub fn record_status(lang: Lang, record: &BtcRecord, tip_height: u32) -> String {
+    let fixed = match record.state {
+        BtcTxState::Signed => text::STATUS_SIGNED,
+        BtcTxState::Broadcasting => text::STATUS_BROADCASTING,
+        BtcTxState::Submitted | BtcTxState::InMempool => {
+            return text::STATUS_WAITING.fill(lang, [SERVER_BASED.get(lang)]);
+        }
+        BtcTxState::BroadcastUnknown => text::STATUS_UNKNOWN,
+        BtcTxState::Confirmed => {
+            return confirmations_text(lang, record.confirmations(tip_height));
+        }
+        BtcTxState::Rejected => text::STATUS_REJECTED,
+        BtcTxState::Replaced => text::STATUS_REPLACED,
+        BtcTxState::Conflicted => text::STATUS_CONFLICTED,
+        BtcTxState::Abandoned => text::STATUS_ABANDONED,
+    };
+    fixed.get(lang).to_owned()
 }
 
-/// `확인 대기` / `확정` with "(서버 기준)" (spec/08 §12.2-4): one confirmation is final.
+/// `확인 대기` / `확정` with "(서버 기준)" in `lang` (spec/08 §12.2-4): one confirmation is
+/// final.
 #[must_use]
-pub fn confirmations_text(confirmations: u32) -> String {
+pub fn confirmations_text(lang: Lang, confirmations: u32) -> String {
     if confirmations >= BTC_FINAL_CONFIRMATIONS {
-        format!("확정 {SERVER_BASED}")
+        text::STATUS_CONFIRMED.fill(lang, [SERVER_BASED.get(lang)])
     } else {
-        format!("확인 대기 {SERVER_BASED}")
+        text::STATUS_WAITING.fill(lang, [SERVER_BASED.get(lang)])
     }
 }
-
-/// "보내지 않았습니다" of a send stopped by the chain check.
-pub const NOT_SENT: &str =
-    "전송 직전 연결 검사에 실패해 보내지 않았습니다. [같은 바이트 다시 전송]으로 다시 시도하세요";
 
 /// A known Bitcoin address of one network for W-ADDR-3 (lowercase).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1327,7 +1304,7 @@ pub fn known_addresses_on(ctx: &BtcCtx<'_>, net: BtcNetwork) -> Vec<BtcKnown> {
             }
             out.push(BtcKnown {
                 address: entry.address.to_ascii_lowercase(),
-                name: format!("주소록: {}", entry.label),
+                name: text::KNOWN_BOOK.fill(ctx.lang, [&entry.label]),
                 source: BtcKnownSource::Book {
                     label: entry.label,
                     verified: entry.verified,
@@ -1339,12 +1316,13 @@ pub fn known_addresses_on(ctx: &BtcCtx<'_>, net: BtcNetwork) -> Vec<BtcKnown> {
         let Ok(watch) = meta.watch_set() else {
             continue;
         };
-        let account = account_label(meta.account());
+        let account = account_label(ctx.lang, meta.account());
         for (chain, index, address) in watch {
-            let name = match chain {
-                BtcChain::Receive => format!("내 계정 '{account}'의 받기 주소 #{index}"),
-                BtcChain::Change => format!("내 계정 '{account}'의 잔돈 주소 #{index}"),
+            let template = match chain {
+                BtcChain::Receive => text::KNOWN_OWN_RECEIVE,
+                BtcChain::Change => text::KNOWN_OWN_CHANGE,
             };
+            let name = template.fill(ctx.lang, [&account, &index.to_string()]);
             out.push(BtcKnown {
                 address: address.as_str().to_ascii_lowercase(),
                 name,
@@ -1359,7 +1337,7 @@ pub fn known_addresses_on(ctx: &BtcCtx<'_>, net: BtcNetwork) -> Vec<BtcKnown> {
             if !entry.counterparty.is_empty() {
                 out.push(BtcKnown {
                     address: entry.counterparty.to_ascii_lowercase(),
-                    name: "이전에 보낸 주소".to_owned(),
+                    name: text::KNOWN_SENT.get(ctx.lang).to_owned(),
                     source: BtcKnownSource::Sent,
                 });
             }
@@ -1390,13 +1368,13 @@ pub fn btc_look_alike<'k>(
     })
 }
 
-/// `앞 P자·끝 S자` (a zero side left out), the equal ends of a W-ADDR-3 note.
+/// `앞 P자·끝 S자` (a zero side left out) in `lang`, the equal ends of a W-ADDR-3 note.
 #[must_use]
-pub fn ends_text((prefix, suffix): (usize, usize)) -> String {
+pub fn ends_text(lang: Lang, (prefix, suffix): (usize, usize)) -> String {
     match (prefix, suffix) {
-        (0, suffix) => format!("끝 {suffix}자"),
-        (prefix, 0) => format!("앞 {prefix}자"),
-        (prefix, suffix) => format!("앞 {prefix}자·끝 {suffix}자"),
+        (0, suffix) => text::ENDS_SUFFIX.fill(lang, [&suffix.to_string()]),
+        (prefix, 0) => text::ENDS_PREFIX.fill(lang, [&prefix.to_string()]),
+        (prefix, suffix) => text::ENDS_BOTH.fill(lang, [&prefix.to_string(), &suffix.to_string()]),
     }
 }
 
@@ -1405,23 +1383,20 @@ pub fn ends_text((prefix, suffix): (usize, usize)) -> String {
 fn look_alike_note(ctx: &BtcCtx<'_>, net: BtcNetwork, address: &str) -> Option<String> {
     let known = known_addresses_on(ctx, net);
     btc_look_alike(&known, address).map(|(entry, ends)| {
-        format!(
-            "'{}'과 {}가 같지만 다른 주소입니다. 주소 오염 공격일 수 있습니다.",
-            entry.name,
-            ends_text(ends)
-        )
+        text::LOOK_ALIKE.fill(ctx.lang, [&entry.name, &ends_text(ctx.lang, ends)])
     })
 }
 
-fn activity_status(status: &str) -> String {
-    match status {
-        "succeeded" => format!("확정 {SERVER_BASED}"),
-        "rejected" => "거부됨".to_owned(),
-        "replaced" => "교체됨".to_owned(),
-        "conflicted" => "충돌(다른 거래가 확정됨)".to_owned(),
-        "abandoned" => "포기함".to_owned(),
-        _ => "종결".to_owned(),
-    }
+fn activity_status(lang: Lang, status: &str) -> String {
+    let fixed = match status {
+        "succeeded" => return text::STATUS_CONFIRMED.fill(lang, [SERVER_BASED.get(lang)]),
+        "rejected" => text::STATUS_REJECTED,
+        "replaced" => text::STATUS_REPLACED,
+        "conflicted" => text::STATUS_CONFLICTED,
+        "abandoned" => text::STATUS_ABANDONED,
+        _ => text::STATUS_FINISHED,
+    };
+    fixed.get(lang).to_owned()
 }
 
 impl BtcUi {
@@ -1483,7 +1458,7 @@ impl BtcUi {
         }
         if ctx.primary_meta().is_none() {
             if ctx.core_url(ctx.net()).is_none() {
-                self.status_error = Some(ErrorCode::Key005.text());
+                self.status_error = Some(ErrorCode::Key005.text_in(ctx.lang));
                 return Vec::new();
             }
             return vec![key_job(KeyJob::BtcMeta {
@@ -1491,7 +1466,7 @@ impl BtcUi {
             })];
         }
         if let Some((meta, _)) = ctx.mismatch() {
-            self.blocked = Some(texts::NETWORK_MISMATCH.to_owned());
+            self.blocked = Some(texts::NETWORK_MISMATCH.get(ctx.lang).to_owned());
             logging::warn(
                 "app",
                 "btc.network_mismatch",
@@ -1592,7 +1567,7 @@ impl BtcUi {
     pub fn enable(&mut self, ctx: &BtcCtx<'_>, network: BtcNetwork) -> Vec<BtcAction> {
         self.settings_message = None;
         if ctx.core_url(network).is_none() {
-            self.settings_message = Some(ErrorCode::Key005.text());
+            self.settings_message = Some(ErrorCode::Key005.text_in(ctx.lang));
             return Vec::new();
         }
         // A key-only wallet keeps its imported accounts on both networks: only a network change
@@ -1604,7 +1579,7 @@ impl BtcUi {
             network == ctx.net()
         };
         if !keep && ctx.any_in_flight() {
-            self.settings_message = Some(texts::IN_FLIGHT.to_owned());
+            self.settings_message = Some(texts::IN_FLIGHT.get(ctx.lang).to_owned());
             return Vec::new();
         }
         let mut actions = vec![
@@ -1623,7 +1598,7 @@ impl BtcUi {
         }
         if keep {
             if ctx.btc_meta().is_some_and(|meta| !meta.discovery_done()) {
-                self.discovery.error = Some(DISCOVERY_INCOMPLETE.to_owned());
+                self.discovery.error = Some(DISCOVERY_INCOMPLETE.get(ctx.lang).to_owned());
             }
         } else if ctx.has_mnemonic {
             actions.push(key_job(KeyJob::BtcMeta {
@@ -1636,7 +1611,7 @@ impl BtcUi {
     /// BTC 끄기 (spec/08 §2): only without an in-flight record; meta `btc` is kept.
     pub fn disable(&mut self, ctx: &BtcCtx<'_>) -> Vec<BtcAction> {
         if ctx.any_in_flight() {
-            self.settings_message = Some("진행 중인 Bitcoin 거래가 있어 끌 수 없습니다".to_owned());
+            self.settings_message = Some(text::DISABLE_IN_FLIGHT.get(ctx.lang).to_owned());
             return Vec::new();
         }
         let mut actions = self.lock();
@@ -1654,11 +1629,11 @@ impl BtcUi {
             return Vec::new();
         }
         if ctx.any_in_flight() {
-            self.settings_message = Some(texts::IN_FLIGHT.to_owned());
+            self.settings_message = Some(texts::IN_FLIGHT.get(ctx.lang).to_owned());
             return Vec::new();
         }
         if ctx.core_url(network).is_none() {
-            self.settings_message = Some(ErrorCode::Key005.text());
+            self.settings_message = Some(ErrorCode::Key005.text_in(ctx.lang));
             return Vec::new();
         }
         self.confirm = Some(BtcConfirm::NetworkChange { to: network });
@@ -1752,7 +1727,7 @@ impl BtcUi {
         if let Some(value) = validate_esplora_url(text.trim()) {
             self.esplora_saved(ctx, net, value)
         } else {
-            self.settings_message = Some(ErrorCode::Btc006.text());
+            self.settings_message = Some(ErrorCode::Btc006.text_in(ctx.lang));
             Vec::new()
         }
     }
@@ -1778,12 +1753,24 @@ impl BtcUi {
         };
         let base = validate_esplora_url(candidate).and_then(|value| HttpsUrl::parse(&value).ok());
         let Some(base) = base else {
-            self.set_esplora_test(net, ErrorCode::Btc006.text(), crate::app::TestState::Failed);
+            self.set_esplora_test(
+                net,
+                ErrorCode::Btc006.text_in(ctx.lang),
+                crate::app::TestState::Failed,
+            );
             return Vec::new();
         };
         // An information band while it runs, not an error (2026-11-10).
-        self.set_esplora_test(net, "테스트 중…".to_owned(), crate::app::TestState::Testing);
-        vec![btc_job(BtcRpcJob::EsploraTest { net, base })]
+        self.set_esplora_test(
+            net,
+            text::TESTING.get(ctx.lang).to_owned(),
+            crate::app::TestState::Testing,
+        );
+        vec![btc_job(BtcRpcJob::EsploraTest {
+            net,
+            base,
+            lang: ctx.lang,
+        })]
     }
 
     fn set_esplora_test(&mut self, net: BtcNetwork, message: String, state: crate::app::TestState) {
@@ -1806,7 +1793,7 @@ impl BtcUi {
         match confirm {
             BtcConfirm::NetworkChange { to } => {
                 if ctx.any_in_flight() {
-                    self.settings_message = Some(texts::IN_FLIGHT.to_owned());
+                    self.settings_message = Some(texts::IN_FLIGHT.get(ctx.lang).to_owned());
                     return vec![BtcAction::Screen(BtcScreen::Back)];
                 }
                 let mut actions = self.lock();
@@ -1916,7 +1903,7 @@ impl BtcUi {
         if ctx.btc_meta().is_some_and(BtcMeta::discovery_done) {
             actions.extend(self.refresh(ctx, Trigger::User));
         } else if self.discovery.error.is_none() {
-            self.discovery.error = Some(DISCOVERY_INCOMPLETE.to_owned());
+            self.discovery.error = Some(DISCOVERY_INCOMPLETE.get(ctx.lang).to_owned());
         }
         self.track.next_ms = ctx.now_ms;
         actions
@@ -1969,7 +1956,7 @@ impl BtcUi {
     ) -> Vec<BtcAction> {
         self.receive_message = None;
         if let Err(gate) = ctx.gate() {
-            self.receive_message = Some(gate.text());
+            self.receive_message = Some(gate.text(ctx.lang));
             return Vec::new();
         }
         self.receive_pending = true;
@@ -2026,45 +2013,37 @@ impl BtcUi {
             .map(|address| address.as_str().to_owned())
     }
 
-    /// The S12 view of `meta`'s receive address `index` (address, path, mode and explanation).
+    /// The S12 view of `meta`'s receive address `index` (address, path, mode and explanation)
+    /// in `lang`.
     #[must_use]
-    pub fn receive_view(meta: &BtcMeta, index: u32) -> Option<BtcReceiveView> {
+    pub fn receive_view(lang: Lang, meta: &BtcMeta, index: u32) -> Option<BtcReceiveView> {
         let address = meta.address(BtcChain::Receive, index).ok()?;
         let network = meta.network();
         // Exactly as encoded: bech32 is lowercase already, base58 is case-sensitive.
         let text = address.as_str().to_owned();
         let account = meta.account();
-        let path = account.path_text(network, BtcChain::Receive, index);
+        let path = account.path_text_in(lang, network, BtcChain::Receive, index);
         let note = match account {
-            BtcAccountKey::Single { .. } => {
-                "가져온 키 계정은 주소가 하나입니다. 주소를 복사한 뒤 붙여넣은 곳에서 주소 전체를 확인하세요."
-                    .to_owned()
-            }
-            BtcAccountKey::Hardware { .. } => {
-                "YubiKey 계정은 주소가 하나입니다. 주소를 복사한 뒤 붙여넣은 곳에서 주소 전체를 확인하세요."
-                    .to_owned()
-            }
-            BtcAccountKey::EvmShared { evm_index, .. } => format!(
-                "이 계정은 주소 하나만 씁니다. EVM 계정 {evm_index}과 같은 키({path})입니다. {T_BTC_EVM_SHARED}"
+            BtcAccountKey::Single { .. } => text::RECEIVE_NOTE_IMPORTED.get(lang).to_owned(),
+            BtcAccountKey::Hardware { .. } => text::RECEIVE_NOTE_YUBIKEY.get(lang).to_owned(),
+            BtcAccountKey::EvmShared { evm_index, .. } => text::RECEIVE_NOTE_EVM.fill(
+                lang,
+                [&evm_index.to_string(), &path, T_BTC_EVM_SHARED.get(lang)],
             ),
             BtcAccountKey::Hd { .. } if account.fixed_address() => {
-                "받은 돈과 보내고 남은 잔돈이 모두 이 주소로 옵니다(새 주소 없음). 받을 때마다 새 주소를 쓰려면 Bitcoin 탭의 계정 목록 아래 '주소 방식'에서 바꾸세요. 주소를 복사한 뒤 붙여넣은 곳에서 주소 전체를 확인하세요."
-                    .to_owned()
+                text::RECEIVE_NOTE_FIXED.get(lang).to_owned()
             }
-            BtcAccountKey::Hd { .. } => {
-                "주소를 복사한 뒤 붙여넣은 곳에서 주소 전체를 확인하세요. 새 주소는 아직 쓰지 않은 주소가 20개 이상이면 경고하고 100개면 발급하지 않습니다."
-                    .to_owned()
-            }
+            BtcAccountKey::Hd { .. } => text::RECEIVE_NOTE_HD.get(lang).to_owned(),
         };
         Some(BtcReceiveView {
             network,
             index,
             path,
-            account: account_label(account),
-            kind: account_type_text(account, network),
+            account: account_label(lang, account),
+            kind: account_type_text(lang, account, network),
             qr: format!("bitcoin:{text}"),
             address: text,
-            banner: network.banner(),
+            banner: network.banner_in(lang),
             fixed: account.fixed_address(),
             single_key: account.is_single(),
             note,
@@ -2077,19 +2056,19 @@ impl BtcUi {
     #[must_use]
     pub fn send_block(&self, ctx: &BtcCtx<'_>) -> Option<String> {
         if let Err(gate) = ctx.gate() {
-            return Some(gate.text());
+            return Some(gate.text(ctx.lang));
         }
         if ctx.journal_damaged() {
-            return Some("거래 저널이 손상되어 보내기를 멈췄습니다. (E-VLT-006)".to_owned());
+            return Some(text::JOURNAL_DAMAGED.get(ctx.lang).to_owned());
         }
         if !ctx.btc_meta().is_some_and(BtcMeta::discovery_done) {
-            return Some(DISCOVERY_INCOMPLETE.to_owned());
+            return Some(DISCOVERY_INCOMPLETE.get(ctx.lang).to_owned());
         }
         if let Err(error) = check_can_send(&ctx.records(), ctx.net()) {
-            return Some(error.to_string());
+            return Some(error.text_in(ctx.lang));
         }
         if self.slot {
-            return Some("다른 Bitcoin 승인이 진행 중입니다".to_owned());
+            return Some(text::OTHER_APPROVAL.get(ctx.lang).to_owned());
         }
         None
     }
@@ -2160,7 +2139,7 @@ impl BtcUi {
                 }
                 Err(error) => {
                     form.recipient = None;
-                    form.recipient_error = Some(error.text(net).to_owned());
+                    form.recipient_error = Some(error.text_in(ctx.lang, net).to_owned());
                 }
             }
         }
@@ -2186,11 +2165,11 @@ impl BtcUi {
                 }
                 Ok(_) | Err(_) => {
                     form.amount = None;
-                    form.amount_error = Some(ErrorCode::Inp011.text());
+                    form.amount_error = Some(ErrorCode::Inp011.text_in(ctx.lang));
                 }
             }
         }
-        form.fee.validate();
+        form.fee.validate(ctx.lang);
     }
 
     /// Sets the recipient text.
@@ -2241,14 +2220,14 @@ impl BtcUi {
         };
         fee.choice = choice;
         fee.needs_typed = None;
-        fee.validate();
+        fee.validate(ctx.lang);
         if !bump {
             self.validate(ctx);
         }
     }
 
     /// Manual sat/vB text.
-    pub fn set_manual_rate(&mut self, text: &str, bump: bool) {
+    pub fn set_manual_rate(&mut self, lang: Lang, text: &str, bump: bool) {
         let fee = if bump {
             &mut self.bump.fee
         } else {
@@ -2256,18 +2235,18 @@ impl BtcUi {
         };
         text.clone_into(&mut fee.manual_text);
         fee.needs_typed = None;
-        fee.validate();
+        fee.validate(lang);
     }
 
     /// The exact fee typed to lift the cap.
-    pub fn set_typed_fee(&mut self, text: &str, bump: bool) {
+    pub fn set_typed_fee(&mut self, lang: Lang, text: &str, bump: bool) {
         let fee = if bump {
             &mut self.bump.fee
         } else {
             &mut self.send.fee
         };
         text.clone_into(&mut fee.typed_text);
-        fee.validate();
+        fee.validate(lang);
     }
 
     /// Whether `검토` is enabled.
@@ -2383,7 +2362,7 @@ impl BtcUi {
         ) {
             Some((job, action)) => {
                 self.send.preparing = Some(job);
-                self.send.info = Some(BTC_PREPARING.to_owned());
+                self.send.info = Some(BTC_PREPARING.get(ctx.lang).to_owned());
                 vec![action]
             }
             None => Vec::new(),
@@ -2402,9 +2381,9 @@ impl BtcUi {
         self.bump = BtcBumpForm {
             target,
             info: if target.is_none() {
-                Some(texts::NOT_BUMPABLE.to_owned())
+                Some(texts::NOT_BUMPABLE.get(ctx.lang).to_owned())
             } else {
-                ctx.gate().err().map(BtcGate::text)
+                ctx.gate().err().map(|gate| gate.text(ctx.lang))
             },
             ..BtcBumpForm::default()
         };
@@ -2413,23 +2392,23 @@ impl BtcUi {
 
     /// The fee-bump form's `검토`.
     pub fn review_bump(&mut self, ctx: &BtcCtx<'_>, layout_seed: [u8; 32]) -> Vec<BtcAction> {
-        self.bump.fee.validate();
+        self.bump.fee.validate(ctx.lang);
         if let Err(gate) = ctx.gate() {
-            self.bump.info = Some(gate.text());
+            self.bump.info = Some(gate.text(ctx.lang));
             return Vec::new();
         }
         if ctx.journal_damaged() || self.slot || self.bump.preparing.is_some() {
             return Vec::new();
         }
         let (Some(record), Some(meta)) = (Self::bump_target(ctx), ctx.btc_meta()) else {
-            self.bump.info = Some(texts::NOT_BUMPABLE.to_owned());
+            self.bump.info = Some(texts::NOT_BUMPABLE.get(ctx.lang).to_owned());
             return Vec::new();
         };
         if self.bump.target != Some(record.txid) {
             self.bump.target = Some(record.txid);
         }
         let Some(source) = record.bump_source(meta.account()) else {
-            self.bump.info = Some(texts::NOT_BUMPABLE.to_owned());
+            self.bump.info = Some(texts::NOT_BUMPABLE.get(ctx.lang).to_owned());
             return Vec::new();
         };
         if self.bump.fee.error.is_some() {
@@ -2446,7 +2425,7 @@ impl BtcUi {
         ) {
             Some((job, action)) => {
                 self.bump.preparing = Some(job);
-                self.bump.info = Some(BTC_PREPARING.to_owned());
+                self.bump.info = Some(BTC_PREPARING.get(ctx.lang).to_owned());
                 vec![action]
             }
             None => Vec::new(),
@@ -2470,15 +2449,15 @@ impl BtcUi {
     }
 
     /// An approval ended (any outcome; inputs are kept, spec/04 §3.1).
-    pub fn approval_finished(&mut self, item: &BtcApprovalItem, outcome: QueueOutcome) {
+    pub fn approval_finished(&mut self, lang: Lang, item: &BtcApprovalItem, outcome: QueueOutcome) {
         if outcome != QueueOutcome::Approved {
             self.slot = false;
         }
         if outcome == QueueOutcome::Expired {
             if item.is_bump() {
-                self.bump.info = Some(APPROVAL_EXPIRED.to_owned());
+                self.bump.info = Some(APPROVAL_EXPIRED.get(lang).to_owned());
             } else {
-                self.send.info = Some(APPROVAL_EXPIRED.to_owned());
+                self.send.info = Some(APPROVAL_EXPIRED.get(lang).to_owned());
             }
         }
     }
@@ -2532,7 +2511,7 @@ impl BtcUi {
             if let Some(flow) = self.flow_mut(&txid) {
                 flow.stage = BtcFlowStage::Waiting;
                 flow.retry_precheck = true;
-                flow.note = Some(ErrorCode::Key005.text());
+                flow.note = Some(ErrorCode::Key005.text_in(ctx.lang));
             }
             return Vec::new();
         };
@@ -2708,16 +2687,16 @@ impl BtcUi {
                 };
                 let name = if meta.is_single() {
                     meta.address(BtcChain::Receive, 0).map_or_else(
-                        |_| account_label(meta.account()),
+                        |_| account_label(ctx.lang, meta.account()),
                         |address| short_address(address.as_str()),
                     )
                 } else {
-                    account_label(meta.account())
+                    account_label(ctx.lang, meta.account())
                 };
                 BtcAccountRow {
                     id: meta.id(),
                     name,
-                    kind: account_type_text(meta.account(), net),
+                    kind: account_type_text(ctx.lang, meta.account(), net),
                     available: meta
                         .balance(tip, &unspendable_outpoints(&records, net))
                         .available,
@@ -2755,14 +2734,14 @@ impl BtcUi {
     pub fn select_account(&mut self, ctx: &BtcCtx<'_>, account: BtcAccountId) -> Vec<BtcAction> {
         self.account_message = None;
         if let Err(gate) = ctx.gate() {
-            self.account_message = Some(gate.text());
+            self.account_message = Some(gate.text(ctx.lang));
             return Vec::new();
         }
         if account == ctx.active_id() {
             return Vec::new();
         }
         if self.slot {
-            self.account_message = Some(ACCOUNT_SWITCH_BUSY.to_owned());
+            self.account_message = Some(ACCOUNT_SWITCH_BUSY.get(ctx.lang).to_owned());
             return Vec::new();
         }
         vec![key_job(KeyJob::BtcMeta {
@@ -2778,9 +2757,9 @@ impl BtcUi {
     /// at the standard BTC path; the EVM-shared key is an explicit choice (spec/08 §3.5).
     pub fn open_add_account(&mut self, ctx: &BtcCtx<'_>) {
         self.account_message = if ctx.has_mnemonic {
-            ctx.gate().err().map(BtcGate::text)
+            ctx.gate().err().map(|gate| gate.text(ctx.lang))
         } else {
-            Some(yw_core::error::VaultError::NoMnemonic.to_string())
+            Some(yw_core::error::VaultError::NoMnemonic.text_in(ctx.lang))
         };
         self.add_account_open = self.account_message.is_none();
         self.add_source = BtcAddSource::Standard;
@@ -2821,11 +2800,11 @@ impl BtcUi {
     /// sets the reason and closes the chooser.
     fn add_refused(&mut self, ctx: &BtcCtx<'_>) -> bool {
         let reason = if !ctx.has_mnemonic {
-            Some(yw_core::error::VaultError::NoMnemonic.to_string())
+            Some(yw_core::error::VaultError::NoMnemonic.text_in(ctx.lang))
         } else if let Err(gate) = ctx.gate() {
-            Some(gate.text())
+            Some(gate.text(ctx.lang))
         } else if self.slot {
-            Some(ACCOUNT_SWITCH_BUSY.to_owned())
+            Some(ACCOUNT_SWITCH_BUSY.get(ctx.lang).to_owned())
         } else {
             None
         };
@@ -2847,7 +2826,7 @@ impl BtcUi {
         }
         if self.add_source == BtcAddSource::EvmShared {
             if !ctx.evm_indices().contains(&self.add_evm_index) {
-                self.account_message = Some("EVM 계정을 고르세요".to_owned());
+                self.account_message = Some(text::PICK_EVM.get(ctx.lang).to_owned());
                 return Vec::new();
             }
             self.confirm = Some(BtcConfirm::AddEvmShared {
@@ -2905,11 +2884,11 @@ impl BtcUi {
             return Vec::new();
         }
         if let Err(gate) = ctx.gate() {
-            self.account_message = Some(gate.text());
+            self.account_message = Some(gate.text(ctx.lang));
             return Vec::new();
         }
         if self.slot {
-            self.account_message = Some(ADDRESS_MODE_BUSY.to_owned());
+            self.account_message = Some(ADDRESS_MODE_BUSY.get(ctx.lang).to_owned());
             return Vec::new();
         }
         vec![key_job(KeyJob::BtcMeta {
@@ -2989,7 +2968,7 @@ impl BtcUi {
                             self.receive_pending = false;
                             self.receive = active
                                 .as_ref()
-                                .and_then(|meta| Self::receive_view(meta, index));
+                                .and_then(|meta| Self::receive_view(ctx.lang, meta, index));
                             if issued {
                                 logging::info(
                                     "app",
@@ -3022,7 +3001,7 @@ impl BtcUi {
             Err(error) => {
                 if self.add_account_open {
                     self.add_account_open = false;
-                    self.account_message = Some(error.text());
+                    self.account_message = Some(error.text(ctx.lang));
                     return Vec::new();
                 }
                 if self.receive_pending {
@@ -3031,13 +3010,13 @@ impl BtcUi {
                         self.confirm = Some(BtcConfirm::GapWarning { unused });
                         return vec![BtcAction::Confirm];
                     }
-                    self.receive_message = Some(error.text());
+                    self.receive_message = Some(error.text(ctx.lang));
                     return Vec::new();
                 }
                 if let BtcKeyError::Meta(MetaError::NetworkMismatch) = error {
-                    self.blocked = Some(texts::NETWORK_MISMATCH.to_owned());
+                    self.blocked = Some(texts::NETWORK_MISMATCH.get(ctx.lang).to_owned());
                 }
-                self.status_error = Some(error.text());
+                self.status_error = Some(error.text(ctx.lang));
                 Vec::new()
             }
         }
@@ -3184,7 +3163,7 @@ impl BtcUi {
                 actions.push(BtcAction::Screen(BtcScreen::SendResult));
                 actions
             }
-            Err(failure) => self.sign_failed(failure.text()),
+            Err(failure) => self.sign_failed(failure.text(ctx.lang)),
         }
     }
 
@@ -3284,11 +3263,12 @@ impl BtcUi {
                     flow.stage = BtcFlowStage::Done;
                     match outcome {
                         BroadcastOutcome::Submitted => {
-                            flow.note = Some("전송했습니다".to_owned());
+                            flow.note = Some(text::SENT.get(ctx.lang).to_owned());
                             flow.comm_failure = false;
                         }
                         BroadcastOutcome::BroadcastUnknown { text, comm_failure } => {
-                            flow.note = Some(text.unwrap_or_else(|| ErrorCode::Tx004.text()));
+                            flow.note =
+                                Some(text.unwrap_or_else(|| ErrorCode::Tx004.text_in(ctx.lang)));
                             flow.comm_failure = comm_failure;
                         }
                         BroadcastOutcome::Rejected { text } => flow.note = Some(text),
@@ -3300,7 +3280,7 @@ impl BtcUi {
             Ok(BtcJournalDone::EsploraNoted { txid }) => {
                 if let Some(flow) = self.flow_mut(&txid) {
                     flow.stage = BtcFlowStage::Done;
-                    flow.note = Some("Esplora로 전송했습니다".to_owned());
+                    flow.note = Some(text::SENT_ESPLORA.get(ctx.lang).to_owned());
                     flow.comm_failure = false;
                 }
                 self.track.next_ms = ctx.now_ms;
@@ -3342,10 +3322,10 @@ impl BtcUi {
                     if flow.stage == BtcFlowStage::Applying {
                         flow.stage = BtcFlowStage::Waiting;
                         flow.retry_precheck = true;
-                        flow.note = Some(error.text());
+                        flow.note = Some(error.text(ctx.lang));
                     }
                 }
-                self.status_error = Some(error.text());
+                self.status_error = Some(error.text(ctx.lang));
                 Vec::new()
             }
         }
@@ -3376,7 +3356,7 @@ impl BtcUi {
             if let Some(flow) = self.flow_mut(&txid) {
                 flow.stage = BtcFlowStage::Waiting;
                 flow.retry_precheck = true;
-                flow.note = Some(ErrorCode::Key005.text());
+                flow.note = Some(ErrorCode::Key005.text_in(ctx.lang));
             }
             return Vec::new();
         };
@@ -3445,9 +3425,9 @@ impl BtcUi {
                     Err(error) => {
                         self.discovery.running = false;
                         self.note_error(ctx, error);
-                        let text = error.text(ctx.settings.indexer).map_or_else(
-                            || DISCOVERY_INCOMPLETE.to_owned(),
-                            |text| format!("{DISCOVERY_INCOMPLETE} — {text}"),
+                        let text = error.text(ctx.lang, ctx.settings.indexer).map_or_else(
+                            || DISCOVERY_INCOMPLETE.get(ctx.lang).to_owned(),
+                            |text| format!("{} — {text}", DISCOVERY_INCOMPLETE.get(ctx.lang)),
                         );
                         self.discovery.error = Some(text);
                         Vec::new()
@@ -3535,7 +3515,7 @@ impl BtcUi {
                             (&mut self.send.fee, &mut self.send.info)
                         };
                         if self.slot {
-                            *info = Some("다른 Bitcoin 승인이 진행 중입니다".to_owned());
+                            *info = Some(text::OTHER_APPROVAL.get(ctx.lang).to_owned());
                             return Vec::new();
                         }
                         fee.needs_typed = None;
@@ -3566,7 +3546,7 @@ impl BtcUi {
                         actions
                     }
                     Err(error) => {
-                        let text = error.text(ctx.settings.indexer);
+                        let text = error.text(ctx.lang, ctx.settings.indexer);
                         let (fee, info) = if bump {
                             (&mut self.bump.fee, &mut self.bump.info)
                         } else {
@@ -3581,7 +3561,7 @@ impl BtcUi {
                                     .to_string()
                                     .trim_end_matches(" sat/vB")
                                     .clone_into(&mut fee.manual_text);
-                                fee.validate();
+                                fee.validate(ctx.lang);
                                 *info = Some(text);
                             }
                             PrepareError::ManualBelowFloor { .. } => fee.error = Some(text),
@@ -3628,8 +3608,8 @@ impl BtcUi {
                     }
                     Err(error) => {
                         let text = error
-                            .text(ctx.settings.indexer)
-                            .unwrap_or_else(|| ErrorCode::Rpc001.text());
+                            .text(ctx.lang, ctx.settings.indexer)
+                            .unwrap_or_else(|| ErrorCode::Rpc001.text_in(ctx.lang));
                         if let Some(flow) = self.flow_mut(&txid) {
                             flow.stage = BtcFlowStage::Waiting;
                             flow.retry_precheck = true;
@@ -3656,9 +3636,9 @@ impl BtcUi {
                         // was sent. Not `BroadcastUnknown`: the record stays `Broadcasting`
                         // and [같은 바이트 다시 전송] retries (a restart makes it
                         // `BroadcastUnknown`, spec/08 §12.1).
-                        let text = error.text(ctx.settings.indexer).map_or_else(
-                            || NOT_SENT.to_owned(),
-                            |text| format!("{NOT_SENT} — {text}"),
+                        let text = error.text(ctx.lang, ctx.settings.indexer).map_or_else(
+                            || NOT_SENT.get(ctx.lang).to_owned(),
+                            |text| format!("{} — {text}", NOT_SENT.get(ctx.lang)),
                         );
                         if let Some(flow) = self.flow_mut(&txid) {
                             flow.stage = BtcFlowStage::Waiting;
@@ -3670,7 +3650,7 @@ impl BtcUi {
                     }
                 };
                 if let BroadcastOutcome::BroadcastUnknown { comm_failure, .. } =
-                    broadcast_outcome(&result, &txid)
+                    broadcast_outcome(ctx.lang, &result, &txid)
                     && let Some(flow) = self.flow_mut(&txid)
                 {
                     flow.comm_failure = comm_failure;
@@ -3738,14 +3718,14 @@ impl BtcUi {
                     Ok(outcome) => {
                         if let Some(flow) = self.flow_mut(&txid) {
                             flow.stage = BtcFlowStage::Done;
-                            flow.note = Some(outcome.text());
+                            flow.note = Some(outcome.text(ctx.lang));
                         }
                         Vec::new()
                     }
                     Err(error) => {
                         if let Some(flow) = self.flow_mut(&txid) {
                             flow.stage = BtcFlowStage::Done;
-                            flow.note = error.text(ctx.settings.indexer);
+                            flow.note = error.text(ctx.lang, ctx.settings.indexer);
                         }
                         Vec::new()
                     }
@@ -3764,12 +3744,12 @@ impl BtcUi {
     fn note_error(&mut self, ctx: &BtcCtx<'_>, error: BtcError) {
         match error {
             BtcError::Blocked(block) => {
-                self.blocked = Some(block.text());
+                self.blocked = Some(block.text(ctx.lang));
                 self.indexer_verified = false;
                 self.tip_regressed = block == BtcBlock::Core(CoreCheckFailure::TipRegressed);
             }
             BtcError::Cooldown | BtcError::Cancelled => {}
-            other => self.status_error = other.text(ctx.settings.indexer),
+            other => self.status_error = other.text(ctx.lang, ctx.settings.indexer),
         }
     }
 
@@ -3842,7 +3822,7 @@ impl BtcUi {
                     title: record.title(ctx.lang),
                     amount: record.recipient_amount(),
                     counterparty: record.recipient_address().unwrap_or_default(),
-                    status: record_status(record, tip),
+                    status: record_status(ctx.lang, record, tip),
                     time_unix_ms: record.updated_at_unix.saturating_mul(1_000),
                     journal: true,
                     can_bump: bump == Some(record.txid) && !self.slot,
@@ -3872,7 +3852,7 @@ impl BtcUi {
                     txid: entry.tx_id,
                     title: entry.title,
                     counterparty: entry.counterparty,
-                    status: activity_status(&entry.status),
+                    status: activity_status(ctx.lang, &entry.status),
                     time_unix_ms: entry.time_unix_ms,
                     journal: false,
                     can_bump: false,
@@ -3907,7 +3887,7 @@ impl BtcUi {
     /// The network banner of the settings network (spec/08 §2 table).
     #[must_use]
     pub fn banner(ctx: &BtcCtx<'_>) -> &'static str {
-        ctx.net().banner()
+        ctx.net().banner_in(ctx.lang)
     }
 }
 
@@ -3975,7 +3955,8 @@ impl crate::app::App {
                 BtcAction::Key(job) => self.key(*job),
                 BtcAction::Rpc(job) => {
                     if !self.rpc(*job) {
-                        self.btc.status_error = Some(ErrorCode::Rpc001.text());
+                        self.btc.status_error =
+                            Some(ErrorCode::Rpc001.text_in(self.settings.language));
                     }
                 }
                 BtcAction::SetMeta(btc, accounts) => {
@@ -4013,7 +3994,8 @@ impl crate::app::App {
                         self.show_next_approval();
                     } else {
                         self.btc.slot = false;
-                        self.btc.send.info = Some(ErrorCode::App005.text());
+                        self.btc.send.info =
+                            Some(ErrorCode::App005.text_in(self.settings.language));
                     }
                 }
                 BtcAction::SaveSettings(bitcoin, key) => {
@@ -4283,7 +4265,7 @@ impl crate::app::App {
             return;
         }
         let Some(seed) = layout_seed() else {
-            self.btc.send.info = Some(ErrorCode::Vlt005.text());
+            self.btc.send.info = Some(ErrorCode::Vlt005.text_in(self.settings.language));
             self.refresh();
             return;
         };
@@ -4298,7 +4280,7 @@ impl crate::app::App {
     /// `검토` of the fee-bump form.
     pub fn btc_review_bump(&mut self) {
         let Some(seed) = layout_seed() else {
-            self.btc.bump.info = Some(ErrorCode::Vlt005.text());
+            self.btc.bump.info = Some(ErrorCode::Vlt005.text_in(self.settings.language));
             self.refresh();
             return;
         };
@@ -4348,12 +4330,16 @@ impl crate::app::App {
     /// A1 "prepare" of a BTC item: the draft from the queued plan (no network call).
     pub(crate) fn prepare_btc(&mut self, item: &BtcApprovalItem) {
         let Ok(id) = Self::new_approval_id() else {
-            self.show_failure(ErrorCode::Vlt005, false, ErrorCode::Vlt005.text());
+            self.show_failure(
+                ErrorCode::Vlt005,
+                false,
+                ErrorCode::Vlt005.text_in(self.approval_lang()),
+            );
             return;
         };
         match BtcUi::draft(self.approval_lang(), item, id) {
             Ok(draft) => self.show_ready_draft_at(draft, None, now_unix_ms()),
-            Err(code) => self.show_failure(code, false, code.text()),
+            Err(code) => self.show_failure(code, false, code.text_in(self.approval_lang())),
         }
     }
 
@@ -4377,7 +4363,8 @@ impl crate::app::App {
 
     /// A BTC approval ended.
     pub(crate) fn btc_approval_finished(&mut self, item: &BtcApprovalItem, outcome: QueueOutcome) {
-        self.btc.approval_finished(item, outcome);
+        self.btc
+            .approval_finished(self.settings.language, item, outcome);
         logging::info(
             "app",
             "approval.finished",
@@ -4403,10 +4390,16 @@ impl crate::app::App {
                 account: number,
                 ..
             } => self.mnemonic_tagged(
-                &format!("{} 계정 {number}", script_type.name()),
+                &yw_core::btc::text::ACCOUNT_HD.fill(
+                    self.settings.language,
+                    [
+                        script_type.name_in(self.settings.language),
+                        &number.to_string(),
+                    ],
+                ),
                 mnemonic.map(|id| *id.as_bytes()),
             ),
-            other => account_label(other),
+            other => account_label(self.settings.language, other),
         }
     }
 

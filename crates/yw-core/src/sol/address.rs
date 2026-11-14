@@ -269,14 +269,8 @@ impl SolCluster {
         }
     }
 
-    /// The display name used in titles and the network field (devnet marked as a test network),
-    /// in Korean; [`Self::display_name_in`] for a language.
-    #[must_use]
-    pub const fn display_name(self) -> &'static str {
-        self.display_name_in(crate::lang::Lang::Ko)
-    }
-
-    /// The display name in `lang` (spec/14).
+    /// The display name used in titles and the network field in `lang` (devnet marked as a test
+    /// network; spec/14). 2026-11-14 (Step 3): the Korean-only `display_name` is gone.
     #[must_use]
     pub const fn display_name_in(self, lang: crate::lang::Lang) -> &'static str {
         match self {

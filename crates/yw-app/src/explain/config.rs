@@ -4,10 +4,11 @@
 //! whether it is usable. A feature that is switched on but has an invalid endpoint or model, or
 //! whose accepted notice is older than [`PRIVACY_NOTICE_VERSION`], counts as off (no request).
 
+use yw_core::lang::Lang;
 use yw_core::secret::Zeroizing;
 use yw_win::http::EndpointUrl;
 
-use super::ExplainError;
+use super::{ExplainError, text};
 use crate::settings::LlmSettings;
 
 /// The privacy notice version that enabling stores (§2.2). Bump it when the text changes.
@@ -22,8 +23,7 @@ pub const API_KEY_MAX_BYTES: usize = 512;
 pub const MAX_TOKENS_LIMIT: u16 = 4_096;
 /// What the connection test and `켜기` say when the stored key is bound to another endpoint host
 /// (spec/06 §2.1): the key is not sent until it is entered again for the current endpoint.
-pub const KEY_REENTER_TEXT: &str =
-    "API 키를 다시 입력하세요. 저장된 키는 다른 엔드포인트 주소에서 입력한 것이라 보내지 않습니다.";
+pub const KEY_REENTER_TEXT: yw_core::lang::Text = text::KEY_REENTER;
 /// The host of the `OpenAI` API itself: the request never carries `max_tokens` there (its
 /// reasoning models reject it with HTTP 400; spec/06 §4.1, 2026-11-11).
 pub const OPENAI_HOST: &str = "api.openai.com";
@@ -201,31 +201,31 @@ pub fn effectively_enabled(settings: &LlmSettings) -> bool {
         && settings.privacy_notice_version >= u64::from(PRIVACY_NOTICE_VERSION)
 }
 
-/// The `{host}` phrase of the notice and the panel footer: loopback endpoints read
-/// "이 PC의 로컬 서버(host)".
+/// The `{host}` phrase of the notice and the settings status: loopback endpoints read
+/// "이 PC의 로컬 서버(host)" / "the local server on this PC (host)".
 #[must_use]
-pub fn host_phrase(endpoint: &Endpoint) -> String {
+pub fn host_phrase(lang: Lang, endpoint: &Endpoint) -> String {
     if endpoint.loopback {
-        format!("이 PC의 로컬 서버({})", endpoint.host)
+        text::LOCAL_HOST.fill(lang, [&endpoint.host])
     } else {
         endpoint.host.clone()
     }
 }
 
-/// The privacy notice of §2.2 for `endpoint` (version [`PRIVACY_NOTICE_VERSION`]).
+/// The privacy notice of §2.2 for `endpoint` (version [`PRIVACY_NOTICE_VERSION`]; the English
+/// text is the same notice, so it has the same version).
 #[must_use]
-pub fn privacy_notice(endpoint: &Endpoint) -> String {
-    let host = host_phrase(endpoint);
+pub fn privacy_notice(lang: Lang, endpoint: &Endpoint) -> String {
+    let host = host_phrase(lang, endpoint);
     [
-        format!("AI 설명을 켜면 dApp 요청마다 다음 정보가 {host}(으)로 전송됩니다."),
-        "- 내 계정 주소와 체인, 요청한 사이트 주소(origin)".to_owned(),
-        "- 받는 주소·컨트랙트 주소·금액·토큰 이름과 심볼".to_owned(),
-        "- 시뮬레이션 상태와, 성공했을 때 그 결과(자산 변화, 권한 변경)".to_owned(),
-        "- 서명 요청 내용(personal_sign 텍스트, 로그인(SIWE) 문구, 타입 데이터 필드)".to_owned(),
-        "공급자는 이 정보와 IP 주소를 기록·보관할 수 있고, 내 주소와 거래 활동을 연결할 수 있습니다."
-            .to_owned(),
-        "니모닉·개인키·비밀번호·RPC 접속 주소(토큰)는 보내지 않습니다.".to_owned(),
-        "AI 설명은 틀릴 수 있으며 승인 판단과 위험 표시에 쓰이지 않습니다.".to_owned(),
+        text::NOTICE_1.fill(lang, [&host]),
+        text::NOTICE_2.get(lang).to_owned(),
+        text::NOTICE_3.get(lang).to_owned(),
+        text::NOTICE_4.get(lang).to_owned(),
+        text::NOTICE_5.get(lang).to_owned(),
+        text::NOTICE_6.get(lang).to_owned(),
+        text::NOTICE_7.get(lang).to_owned(),
+        text::NOTICE_8.get(lang).to_owned(),
     ]
     .join("\n")
 }
@@ -472,6 +472,8 @@ impl LlmConfig {
 
 #[cfg(test)]
 mod tests {
+    use yw_core::lang::Lang;
+
     use super::{
         LlmConfig, ReasoningEffort, effectively_enabled, endpoint_path_hint, parse_endpoint,
         privacy_notice, valid_api_key, valid_model,
@@ -567,10 +569,19 @@ mod tests {
     #[test]
     fn notice_names_the_host() {
         let remote = parse_endpoint("https://api.example.org/v1/chat/completions").unwrap();
-        let text = privacy_notice(&remote);
+        let text = privacy_notice(Lang::Ko, &remote);
         assert!(text.starts_with("AI 설명을 켜면 dApp 요청마다 다음 정보가 api.example.org(으)로"));
         assert!(text.contains("니모닉·개인키·비밀번호·RPC 접속 주소(토큰)는 보내지 않습니다."));
         let local = parse_endpoint("http://127.0.0.1:11434/v1/chat/completions").unwrap();
-        assert!(privacy_notice(&local).contains("이 PC의 로컬 서버(127.0.0.1:11434)(으)로"));
+        assert!(
+            privacy_notice(Lang::Ko, &local).contains("이 PC의 로컬 서버(127.0.0.1:11434)(으)로")
+        );
+        // spec/14: the English notice names the same host and has no Hangul.
+        let english = privacy_notice(Lang::En, &local);
+        assert!(english.starts_with(
+            "When AI explanations are on, the following is sent to the local server on this PC (127.0.0.1:11434)"
+        ));
+        assert_eq!(english.lines().count(), 8);
+        assert!(!yw_core::lang::has_hangul(&english));
     }
 }

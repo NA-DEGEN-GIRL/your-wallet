@@ -7,6 +7,34 @@ use crate::app::App;
 use crate::app_sol::SolAccountId;
 use crate::meta::EvmAccountPref;
 use crate::ui::main_window::{Ctl, Item, Tone};
+use yw_core::lang::Lang;
+
+/// The fixed texts of the hidden-account rows (spec/14).
+pub mod text {
+    yw_core::texts! {
+        /// The note after `숨기기`: {0} the account's label.
+        HIDDEN_NOTE(1) = "'{0}'을(를) 숨겼습니다. 이 계정의 사이트 연결도 해제했습니다. '내 계정' 아래 '숨긴 계정'에서 다시 볼 수 있습니다."
+            / "'{0}' is hidden. Its site connections were removed too. You can see it again under 'Hidden accounts' in 'My accounts'.";
+        /// The opened toggle: {0} count.
+        TOGGLE_CLOSE(1) = "숨긴 계정 {0}개 접기 ▾" / "Hide hidden accounts ({0}) ▾";
+        /// The closed toggle: {0} count.
+        TOGGLE_OPEN(1) = "숨긴 계정 {0}개 보기 ▸" / "Show hidden accounts ({0}) ▸";
+        /// The help line of the opened list.
+        HIDDEN_HELP = "숨긴 계정은 목록·보내기·사이트 연결에서 빠질 뿐 블록체인의 자산은 그대로입니다. '다시 보이기'를 누르면 목록으로 돌아옵니다(사이트 연결은 dApp에서 다시 하세요)."
+            / "Hidden accounts are only left out of the list, sending and site connections; their assets on the blockchain stay as they are. 'Unhide' brings an account back to the list (connect it to sites again from the dApp).";
+        /// A hidden row's title: {0} label, {1} source.
+        HIDDEN_ROW(2) = "{0} · {1} · 숨김" / "{0} · {1} · hidden";
+        /// A Solana balance: {0} amount.
+        BALANCE(1) = "잔액 {0}" / "Balance {0}";
+        /// The last-read balance line: {0} the balance text.
+        LAST_READ(1) = "마지막으로 읽은 {0}" / "{0} (last read)";
+        /// The row button.
+        UNHIDE = "다시 보이기" / "Unhide";
+        /// The note after `다시 보이기`: {0} label.
+        UNHIDDEN_NOTE(1) = "'{0}'을(를) 다시 보이게 했습니다. 사이트에서 쓰려면 dApp에서 다시 연결하세요."
+            / "'{0}' is visible again. To use it on a site, connect again from the dApp.";
+    }
+}
 
 /// Command ids (block 16,200–16,599 of `ui::command_ids`).
 pub mod ids {
@@ -57,10 +85,8 @@ pub struct HiddenRow {
 
 /// The note after `숨기기` (the way back is in the same card).
 #[must_use]
-pub fn hidden_note(label: &str) -> String {
-    format!(
-        "'{label}'을(를) 숨겼습니다. 이 계정의 사이트 연결도 해제했습니다. '내 계정' 아래 '숨긴 계정'에서 다시 볼 수 있습니다."
-    )
+pub fn hidden_note(lang: Lang, label: &str) -> String {
+    text::HIDDEN_NOTE.fill(lang, [label])
 }
 
 impl App {
@@ -109,7 +135,8 @@ impl App {
                         id: HiddenId::Sol(SolAccountId::Derived(account.index)),
                         label: account.label.clone(),
                         address: account.address.clone(),
-                        source: SolAccountId::Derived(account.index).path_text(),
+                        source: SolAccountId::Derived(account.index)
+                            .path_text_in(self.settings.language),
                     });
                 }
                 for (id, account) in meta
@@ -123,7 +150,8 @@ impl App {
                         .iter()
                         .find(|entry| entry.record_id == *id)
                         .map(|entry| entry.label.clone());
-                    let path = SolAccountId::Mnemonic(*id, account.index).path_text();
+                    let path = SolAccountId::Mnemonic(*id, account.index)
+                        .path_text_in(self.settings.language);
                     rows.push(HiddenRow {
                         id: HiddenId::Sol(SolAccountId::Mnemonic(*id, account.index)),
                         label: account.label.clone(),
@@ -156,32 +184,29 @@ impl App {
             Family::Evm => (ids::EVM_TOGGLE, ids::EVM_ROW_BASE),
             Family::Sol => (ids::SOL_TOGGLE, ids::SOL_ROW_BASE),
         };
+        let lang = self.settings.language;
         let open = self.hidden_open;
-        let count = rows.len();
+        let count = rows.len().to_string();
         items.push(Item::Row(vec![Ctl::link(
             toggle,
             &if open {
-                format!("숨긴 계정 {count}개 접기 ▾")
+                text::TOGGLE_CLOSE.fill(lang, [&count])
             } else {
-                format!("숨긴 계정 {count}개 보기 ▸")
+                text::TOGGLE_OPEN.fill(lang, [&count])
             },
         )]));
         if !open {
             return;
         }
-        items.push(Item::Help(
-            "숨긴 계정은 목록·보내기·사이트 연결에서 빠질 뿐 블록체인의 자산은 그대로입니다. '다시 보이기'를 누르면 목록으로 돌아옵니다(사이트 연결은 dApp에서 다시 하세요)."
-                .to_owned(),
-        ));
+        items.push(Item::Help(text::HIDDEN_HELP.get(lang).to_owned()));
         for (row, hidden) in rows
             .into_iter()
             .take(usize::from(ids::ROW_SPAN))
             .enumerate()
         {
-            items.push(Item::Muted(format!(
-                "{} · {} · 숨김",
-                hidden.label, hidden.source
-            )));
+            items.push(Item::Muted(
+                text::HIDDEN_ROW.fill(lang, [&hidden.label, &hidden.source]),
+            ));
             let (shown, balance) = match family {
                 Family::Evm => (
                     yw_core::evm::address::parse_address(&hidden.address).map_or_else(
@@ -195,16 +220,16 @@ impl App {
                     yw_core::sol::SolAddress::parse(&hidden.address)
                         .ok()
                         .and_then(|address| self.sol_balance(&address))
-                        .map(|lamports| format!("잔액 {}", Self::sol_text(lamports))),
+                        .map(|lamports| text::BALANCE.fill(lang, [&Self::sol_text(lamports)])),
                 ),
             };
             items.push(Item::Mono(shown));
             if let Some(balance) = balance {
-                items.push(Item::Help(format!("마지막으로 읽은 {balance}")));
+                items.push(Item::Help(text::LAST_READ.fill(lang, [&balance])));
             }
             items.push(Item::Row(vec![Ctl::button(
                 base.saturating_add(u16::try_from(row).unwrap_or(u16::MAX)),
-                "다시 보이기",
+                text::UNHIDE.get(lang),
             )]));
         }
     }
@@ -280,10 +305,7 @@ impl App {
         }
         self.save_meta();
         self.notice(
-            format!(
-                "'{}'을(를) 다시 보이게 했습니다. 사이트에서 쓰려면 dApp에서 다시 연결하세요.",
-                hidden.label
-            ),
+            text::UNHIDDEN_NOTE.fill(self.settings.language, [&hidden.label]),
             Tone::Info,
         );
         self.refresh();

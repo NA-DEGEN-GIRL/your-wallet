@@ -3,7 +3,6 @@
 //! handler that cannot borrow it (re-entrant synchronous message) falls back to the default
 //! processing, and the yw-win trampoline has already applied the secret-message block list.
 
-use core::fmt::Write as _;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -51,6 +50,7 @@ use crate::ui::secret::{
 use crate::ui::theme::{FontCache, FontRole, wide};
 use crate::workers::key::new_account;
 use crate::workers::rpc::RpcJob;
+use yw_core::lang::{Lang, Text};
 
 /// Main window class.
 pub const MAIN_CLASS: &str = "YourWalletV3Main";
@@ -74,11 +74,10 @@ pub const SECRET_CLIPBOARD_RETRY_MS: u64 = 300_000;
 pub const SECRET_CLIPBOARD_NOTICE_MS: u64 = 5_000;
 /// At shutdown (no later tick): retries of a busy clear for about this long.
 const SECRET_CLIPBOARD_EXIT_MS: u64 = 1_000;
-/// T-CLIP-NOT-CLEARED (spec/04 §4.8): the main-window banner while a secret copy could not be
-/// cleared.
-pub const T_CLIP_NOT_CLEARED: &str = "복사한 복구 단어·개인키를 클립보드에서 지우지 못했습니다(다른 프로그램이 클립보드를 쓰고 있습니다). 아직 클립보드에 남아 있을 수 있으니 다른 텍스트를 복사해 덮어쓰세요.";
-/// The banner after a clear that succeeded only on a retry.
-const T_CLIP_CLEARED_LATE: &str = "클립보드에 남아 있던 복구 단어·개인키를 지웠습니다.";
+pub mod text;
+
+use text::{PASTE_CLEARED, T_CLIP_CLEARED_LATE};
+pub use text::{PASTE_EDGE_SPACE, T_CLIP_NOT_CLEARED, T_PASSWORD_OLD_COPIES};
 const MAIN_TIMER_ID: usize = 1;
 const LOG_FLUSH_MS: u64 = 2_000;
 const SESSION_RETRY_MS: u64 = 1_000;
@@ -816,42 +815,28 @@ impl core::fmt::Debug for App {
 /// weak old password can be cracked offline later). `Unconfirmed` (review of the rotation): the
 /// `Rewrap` write could not be confirmed and the wallet locked itself.
 #[must_use]
-pub const fn password_changed_text(change: PasswordChange) -> &'static str {
+pub const fn password_changed_text(lang: Lang, change: PasswordChange) -> &'static str {
     match change {
-        PasswordChange::Complete => {
-            "비밀번호를 바꾸고 지갑의 암호화 키도 새로 만들었습니다. 이제부터 더하거나 고치는 내용은 바꾸기 전에 만든 지갑 파일 사본(백업한 vault.ywv, 격리된 손상 파일)과 예전 비밀번호로 열 수 없습니다. 그 사본 자체는 예전 비밀번호로 계속 열리고 그 안에 이미 있던 복구 단어·개인키가 드러납니다. 예전 비밀번호가 약했다면 그 사본은 나중에 오프라인으로 풀릴 수 있습니다 — 예전 비밀번호와 사본이 함께 샜을 수 있다면 사본을 지우고 자산을 새로 만든 별도 지갑으로 옮기세요."
-        }
-        PasswordChange::PrevNotRefreshed => {
-            "비밀번호를 바꿨습니다. 지금부터는 새 비밀번호로 엽니다. 다만 일부 파일(이전 복사본 vault.ywv.prev, meta.ywm, journal.ywj)을 새 암호화 키로 아직 다시 쓰지 못했습니다. 그 파일들에는 바꾸기 전 내용만 있고, 다음 잠금 해제나 저장 때 마저 바꿉니다. 그때까지 vault.ywv.prev는 예전 비밀번호로 열릴 수 있습니다. 이미 만들어 둔 지갑 파일 사본은 예전 비밀번호로 계속 열리고(예전 비밀번호가 약했다면 나중에 오프라인으로 풀릴 수 있습니다), 예전 비밀번호와 사본이 함께 샜을 수 있다면 자산을 새로 만든 별도 지갑으로 옮기세요."
-        }
-        PasswordChange::Unconfirmed => {
-            "비밀번호 변경이 저장됐는지 확인하지 못해 지갑을 잠갔습니다. 새 비밀번호로 열어 보고, 열리지 않으면 예전 비밀번호로 여세요. 새 비밀번호로 열리면 변경이 적용된 것이고 남은 단계는 그 잠금 해제가 마칩니다."
-        }
+        PasswordChange::Complete => text::PASSWORD_CHANGED.get(lang),
+        PasswordChange::PrevNotRefreshed => text::PASSWORD_CHANGED_PREV.get(lang),
+        PasswordChange::Unconfirmed => text::PASSWORD_UNCONFIRMED.get(lang),
     }
 }
 
-/// The settings note on what a password change does and does not do (review L1). Before
-/// 2026-11-13 the data key (DEK) stayed the same, so an old copy plus the old password opened the
-/// current file too; now every change rotates it (spec/02 §4.4), and a change made with an older
-/// build is worth repeating. An old copy still opens with the old password and reveals what it
-/// held then (a weak old password can be cracked offline later), so a leak of both still means
-/// moving the funds to a new, separate wallet.
-pub const T_PASSWORD_OLD_COPIES: &str = "비밀번호를 바꾸면 지갑의 암호화 키도 새로 만듭니다. 그래서 바꾼 뒤에 더하거나 고친 내용(새 복구 단어·가져온 키, 계정 이름·주소록·기록)은 예전 사본과 예전 비밀번호로 열 수 없습니다. 2026-11-13 이전 버전에서 바꾼 비밀번호는 키를 그대로 두었으니, 그때 바꿨다면 지금 한 번 더 바꾸세요. 하지만 바꾸기 전에 만든 지갑 파일 사본(백업해 둔 vault.ywv, vault.ywv.corrupt-… 등)은 예전 비밀번호로 계속 열리고, 그 안에 이미 있던 복구 단어·개인키는 그대로 드러납니다. 예전 비밀번호가 약했다면 그런 사본은 나중에라도 오프라인으로 풀릴 수 있습니다. 예전 비밀번호와 사본이 함께 샜을 수 있다면 사본을 지우고, 새 복구 단어로 따로 만든 새 지갑으로 자산을 옮기세요.";
-
-/// T-PASTE-CLEARED (spec/04 §4.7-4).
-const PASTE_CLEARED: &str =
-    "붙여넣은 뒤 클립보드를 비웠습니다. Windows 클립보드 기록(Win+V)을 쓴다면 그 항목도 지우세요.";
-/// T-PASTE-EDGE-SPACE (spec/04 §4.7-3): a pasted password/passphrase starts or ends with a space.
-pub const PASTE_EDGE_SPACE: &str =
-    "앞/뒤 공백이 포함되어 있습니다. 공백도 그대로 비밀번호·passphrase의 일부가 됩니다.";
+// The settings note on what a password change does and does not do (review L1) is
+// [`T_PASSWORD_OLD_COPIES`]. Before 2026-11-13 the data key (DEK) stayed the same, so an old copy
+// plus the old password opened the current file too; now every change rotates it (spec/02 §4.4),
+// and a change made with an older build is worth repeating. An old copy still opens with the old
+// password and reveals what it held then (a weak old password can be cracked offline later), so a
+// leak of both still means moving the funds to a new, separate wallet.
 
 /// The information line after an accepted paste: the edge-space notice first, then the
 /// clipboard note.
-fn paste_notice(edge_space: bool, cleared: Option<String>) -> Option<String> {
+fn paste_notice(lang: Lang, edge_space: bool, cleared: Option<String>) -> Option<String> {
     match (edge_space, cleared) {
         (false, cleared) => cleared,
-        (true, None) => Some(PASTE_EDGE_SPACE.to_owned()),
-        (true, Some(cleared)) => Some(format!("{PASTE_EDGE_SPACE} {cleared}")),
+        (true, None) => Some(PASTE_EDGE_SPACE.get(lang).to_owned()),
+        (true, Some(cleared)) => Some(format!("{} {cleared}", PASTE_EDGE_SPACE.get(lang))),
     }
 }
 
@@ -861,34 +846,59 @@ fn now_ms() -> u64 {
 
 /// The step indicator of the create and import flows shown in their secret windows
 /// (spec/04 §2.3–§2.4).
-fn flow_step(purpose: Purpose) -> Option<SecretStep> {
+/// The labels of `steps` in `lang`, as a constant (the secret window keeps `&'static` labels).
+const fn step_labels<const N: usize>(steps: [Text; N], lang: Lang) -> [&'static str; N] {
+    let mut labels = [""; N];
+    let mut index = 0;
+    while index < N {
+        labels[index] = steps[index].get(lang);
+        index += 1;
+    }
+    labels
+}
+
+/// The step labels of the flows shown in secret windows, per language.
+mod flow_labels {
+    use super::step_labels;
+    use crate::app_keys::KEY_START_STEPS;
     use crate::ui::screens::{CREATE_STEPS, IMPORT_STEPS};
     use crate::ui::screens_yubikey::YK_WALLET_STEPS;
-    let (flow, labels, current): (&str, &'static [&'static str], usize) = match purpose {
-        Purpose::CreatePassword => ("새 지갑 만들기", &CREATE_STEPS, 1),
-        Purpose::ShowForBackup => ("새 지갑 만들기", &CREATE_STEPS, 2),
-        Purpose::Backup => ("새 지갑 만들기", &CREATE_STEPS, 3),
-        Purpose::ImportPassword => ("기존 지갑 가져오기", &IMPORT_STEPS, 1),
-        Purpose::ImportMnemonic | Purpose::ImportPassphrase => {
-            ("기존 지갑 가져오기", &IMPORT_STEPS, 2)
-        }
-        Purpose::KeyStartPassword => ("개인키로 시작하기", &crate::app_keys::KEY_START_STEPS, 1),
-        Purpose::KeyStartKey => ("개인키로 시작하기", &crate::app_keys::KEY_START_STEPS, 2),
+    use yw_core::lang::Lang;
+
+    pub const CREATE_KO: [&str; CREATE_STEPS.len()] = step_labels(CREATE_STEPS, Lang::Ko);
+    pub const CREATE_EN: [&str; CREATE_STEPS.len()] = step_labels(CREATE_STEPS, Lang::En);
+    pub const IMPORT_KO: [&str; IMPORT_STEPS.len()] = step_labels(IMPORT_STEPS, Lang::Ko);
+    pub const IMPORT_EN: [&str; IMPORT_STEPS.len()] = step_labels(IMPORT_STEPS, Lang::En);
+    pub const KEY_KO: [&str; KEY_START_STEPS.len()] = step_labels(KEY_START_STEPS, Lang::Ko);
+    pub const KEY_EN: [&str; KEY_START_STEPS.len()] = step_labels(KEY_START_STEPS, Lang::En);
+    pub const YK_KO: [&str; YK_WALLET_STEPS.len()] = step_labels(YK_WALLET_STEPS, Lang::Ko);
+    pub const YK_EN: [&str; YK_WALLET_STEPS.len()] = step_labels(YK_WALLET_STEPS, Lang::En);
+}
+
+fn flow_step(lang: Lang, purpose: Purpose) -> Option<SecretStep> {
+    use flow_labels::{CREATE_EN, CREATE_KO, IMPORT_EN, IMPORT_KO, KEY_EN, KEY_KO, YK_EN, YK_KO};
+    use text::{FLOW_CREATE, FLOW_IMPORT, FLOW_KEY_START, FLOW_YK_WALLET};
+    let create: &'static [&'static str] = lang.pick(&CREATE_KO, &CREATE_EN);
+    let import: &'static [&'static str] = lang.pick(&IMPORT_KO, &IMPORT_EN);
+    let key: &'static [&'static str] = lang.pick(&KEY_KO, &KEY_EN);
+    let yk: &'static [&'static str] = lang.pick(&YK_KO, &YK_EN);
+    let (flow, labels, current): (Text, &'static [&'static str], usize) = match purpose {
+        Purpose::CreatePassword => (FLOW_CREATE, create, 1),
+        Purpose::ShowForBackup => (FLOW_CREATE, create, 2),
+        Purpose::Backup => (FLOW_CREATE, create, 3),
+        Purpose::ImportPassword => (FLOW_IMPORT, import, 1),
+        Purpose::ImportMnemonic | Purpose::ImportPassphrase => (FLOW_IMPORT, import, 2),
+        Purpose::KeyStartPassword => (FLOW_KEY_START, key, 1),
+        Purpose::KeyStartKey => (FLOW_KEY_START, key, 2),
         // The new YubiKey wallet has five steps: the wizard is 4 and its PIN setup 5
         // (2026-11-10; it showed n/3 and seemed to end at the backup check).
-        Purpose::YubiKey(crate::app_yubikey::YkPurpose::NewPassword) => {
-            ("YubiKey 지갑 만들기", &YK_WALLET_STEPS, 1)
-        }
-        Purpose::YubiKey(crate::app_yubikey::YkPurpose::ShowWords) => {
-            ("YubiKey 지갑 만들기", &YK_WALLET_STEPS, 2)
-        }
-        Purpose::YubiKey(crate::app_yubikey::YkPurpose::Backup) => {
-            ("YubiKey 지갑 만들기", &YK_WALLET_STEPS, 3)
-        }
+        Purpose::YubiKey(crate::app_yubikey::YkPurpose::NewPassword) => (FLOW_YK_WALLET, yk, 1),
+        Purpose::YubiKey(crate::app_yubikey::YkPurpose::ShowWords) => (FLOW_YK_WALLET, yk, 2),
+        Purpose::YubiKey(crate::app_yubikey::YkPurpose::Backup) => (FLOW_YK_WALLET, yk, 3),
         _ => return None,
     };
     Some(SecretStep {
-        flow,
+        flow: flow.get(lang),
         labels,
         current,
     })
@@ -896,17 +906,14 @@ fn flow_step(purpose: Purpose) -> Option<SecretStep> {
 
 /// What W08's countdown adds on a first display (`다 적었습니다`, spec/04 §4.9): where the words
 /// can be seen again after the window closes, or that they are wiped (a new `YubiKey` wallet).
-const fn timeout_note(purpose: Purpose) -> Option<&'static str> {
-    match purpose {
-        Purpose::ShowForBackup => {
-            Some("(닫혀도 “복구 단어 보고 백업 확인”으로 다시 볼 수 있습니다)")
-        }
-        Purpose::YubiKey(crate::app_yubikey::YkPurpose::ShowWords) => {
-            Some("(닫히면 이 단어는 지워집니다)")
-        }
-        Purpose::Mnemonics(_) => Some("(설정 → 복구 단어에서 다시 볼 수 있습니다)"),
-        _ => None,
-    }
+const fn timeout_note(lang: Lang, purpose: Purpose) -> Option<&'static str> {
+    let note = match purpose {
+        Purpose::ShowForBackup => text::TIMEOUT_BACKUP,
+        Purpose::YubiKey(crate::app_yubikey::YkPurpose::ShowWords) => text::TIMEOUT_YK_WORDS,
+        Purpose::Mnemonics(_) => text::TIMEOUT_MNEMONICS,
+        _ => return None,
+    };
+    Some(note.get(lang))
 }
 
 fn eip55(address: &Address) -> String {
@@ -954,9 +961,9 @@ fn enter_primary(edit: u16) -> Option<u16> {
 }
 
 /// E-KEY-002 with the item name before the code (spec/04 §2.11, §7).
-fn key002_text(item: &str) -> String {
+fn key002_text(lang: Lang, item: &str) -> String {
     ErrorCode::Key002
-        .text()
+        .text_in(lang)
         .replace(" (E-KEY-002)", &format!(" ({item}) (E-KEY-002)"))
 }
 
@@ -964,13 +971,17 @@ fn key002_text(item: &str) -> String {
 /// either field may hold the whole endpoint URL pasted from the dashboard
 /// ([`quicknode_credentials`]) — or the E-KEY-002 text naming the wrong field
 /// (`QuickNodeField::label`).
-fn quicknode_input(name: &str, token: &str) -> Result<Option<(String, Zeroizing<String>)>, String> {
+fn quicknode_input(
+    lang: Lang,
+    name: &str,
+    token: &str,
+) -> Result<Option<(String, Zeroizing<String>)>, String> {
     if name.trim().is_empty() && token.trim().is_empty() {
         return Ok(None);
     }
     quicknode_credentials(name, token)
         .map(Some)
-        .map_err(|field| key002_text(field.label()))
+        .map_err(|field| key002_text(lang, field.label(lang)))
 }
 
 /// Loads `settings.json` (spec/04 §6.2).
@@ -1124,7 +1135,12 @@ impl App {
     /// settings → 보안 for the rest of the run.
     pub fn note_wer_unprotected(&mut self) {
         self.guard.wer_unprotected = true;
-        self.banner(None, crate::ui::screens::T_WER_UNPROTECTED.to_owned());
+        self.banner(
+            None,
+            crate::ui::screens::T_WER_UNPROTECTED
+                .get(self.settings.language)
+                .to_owned(),
+        );
     }
 
     /// Adds a banner once per code; a codeless one once per text (a failure repeated while its
@@ -1155,8 +1171,9 @@ impl App {
     }
 
     pub(crate) fn error_banner(&mut self, code: ErrorCode) {
+        let lang = self.settings.language;
         logging::warn("app", "error", &[("code", Field::Code(code))]);
-        self.banner(Some(code), code.text());
+        self.banner(Some(code), code.text_in(lang));
     }
 
     /// Creates the main window and stores it.
@@ -1189,9 +1206,10 @@ impl App {
 
     /// Attaches the started browser bridge (spec/05 §8.1).
     pub fn attach_browser(&mut self, browser: crate::app_browser::BrowserUi) {
+        let lang = self.settings.language;
         // The failure was logged by `BrowserUi::start`.
         if let Some(code) = browser.pipe_error {
-            self.banner(Some(code), code.text());
+            self.banner(Some(code), code.text_in(lang));
         }
         self.browser = Some(browser);
     }
@@ -1315,7 +1333,11 @@ impl App {
                 Screen::Receive | Screen::SolReceive | Screen::BtcReceive
             )
         {
-            self.info = Some(crate::ui::screens::T_ALT_PASS_RECEIVE.to_owned());
+            self.info = Some(
+                crate::ui::screens::T_ALT_PASS_RECEIVE
+                    .get(self.settings.language)
+                    .to_owned(),
+            );
             self.refresh();
             return;
         }
@@ -1413,11 +1435,27 @@ impl App {
             .0
         };
         self.scroll_memory.layout_dpi = dpi;
-        let mut placed = layout(&items, client.w, dpi, self.scroll, &measure, &label);
+        let mut placed = layout(
+            &items,
+            self.settings.language,
+            client.w,
+            dpi,
+            self.scroll,
+            &measure,
+            &label,
+        );
         let max_scroll = placed.content_height.saturating_sub(client.h).max(0);
         if self.scroll > max_scroll {
             self.scroll = max_scroll;
-            placed = layout(&items, client.w, dpi, self.scroll, &measure, &label);
+            placed = layout(
+                &items,
+                self.settings.language,
+                client.w,
+                dpi,
+                self.scroll,
+                &measure,
+                &label,
+            );
         }
         self.controls.sync(main, &placed, fonts, client);
         main.set_vscroll_content(self.scroll, client.h, placed.content_height);
@@ -1882,10 +1920,7 @@ impl App {
         ));
         self.card.wizard = None;
         self.idle.input(now);
-        self.info = Some(
-            "오래 입력이 없어 입력하던 비밀번호·복구 단어·개인키를 지웠습니다. 처음부터 다시 진행하세요."
-                .to_owned(),
-        );
+        self.info = Some(text::IDLE_WIPED.get(self.settings.language).to_owned());
         // Words already shown on W08: their paper belongs to no wallet now.
         self.yk_words_dropped();
         self.set_screen(Screen::FirstRun);
@@ -1929,7 +1964,10 @@ impl App {
                 if pending.retry.noticed {
                     self.drop_clip_notice();
                     if cleared {
-                        self.notice(T_CLIP_CLEARED_LATE.to_owned(), Tone::Info);
+                        self.notice(
+                            T_CLIP_CLEARED_LATE.get(self.settings.language).to_owned(),
+                            Tone::Info,
+                        );
                     }
                     self.refresh();
                 }
@@ -1937,7 +1975,10 @@ impl App {
             ClipStep::Retry(notice) => {
                 self.secret_clip = Some(pending);
                 if notice {
-                    self.notice(T_CLIP_NOT_CLEARED.to_owned(), Tone::Warn);
+                    self.notice(
+                        T_CLIP_NOT_CLEARED.get(self.settings.language).to_owned(),
+                        Tone::Warn,
+                    );
                     self.refresh();
                 }
             }
@@ -1945,7 +1986,10 @@ impl App {
             // slept through the whole retry period.)
             ClipStep::GiveUp => {
                 if !pending.retry.noticed {
-                    self.notice(T_CLIP_NOT_CLEARED.to_owned(), Tone::Warn);
+                    self.notice(
+                        T_CLIP_NOT_CLEARED.get(self.settings.language).to_owned(),
+                        Tone::Warn,
+                    );
                     self.refresh();
                 }
             }
@@ -1970,7 +2014,10 @@ impl App {
             // The usual start: nothing left behind (not logged).
             ClipStep::Done(false) => return,
             ClipStep::Done(true) => {
-                self.notice(T_CLIP_CLEARED_LATE.to_owned(), Tone::Info);
+                self.notice(
+                    T_CLIP_CLEARED_LATE.get(self.settings.language).to_owned(),
+                    Tone::Info,
+                );
                 "yes"
             }
             ClipStep::Retry(_) | ClipStep::GiveUp => {
@@ -2018,8 +2065,9 @@ impl App {
 
     /// Removes [`T_CLIP_NOT_CLEARED`] (the caller refreshes).
     fn drop_clip_notice(&mut self) {
-        self.banners
-            .retain(|banner| banner.text != T_CLIP_NOT_CLEARED);
+        self.banners.retain(|banner| {
+            banner.text != T_CLIP_NOT_CLEARED.ko && banner.text != T_CLIP_NOT_CLEARED.en
+        });
     }
 
     // ----- lock and shutdown -------------------------------------------------------------
@@ -2219,6 +2267,7 @@ impl App {
 
     #[expect(clippy::too_many_lines, reason = "one arm per key outcome")]
     pub(crate) fn on_key_result(&mut self, result: KeyResult) {
+        let lang = self.settings.language;
         if !accept_result(&result, self.lock_epoch) {
             return;
         }
@@ -2296,9 +2345,9 @@ impl App {
                 let code = key_code(error);
                 let message = match error {
                     yw_core::error::KeyError::MnemonicUnknownWord { position } => {
-                        code.render(&position.to_string())
+                        code.render_in(lang, &position.to_string())
                     }
-                    _ => code.text(),
+                    _ => code.text_in(lang),
                 };
                 self.import.phrase = None;
                 self.set_screen(Screen::ImportIntro);
@@ -2407,14 +2456,13 @@ impl App {
             KeyOutcome::Challenge(Ok(challenge)) => {
                 self.challenge = Some(challenge);
                 if self.secret_purpose() == Some(Purpose::Backup) {
+                    let retry = crate::ui::screens::backup_retry_text(
+                        self.settings.language,
+                        challenge.positions,
+                        true,
+                    );
                     self.with_form(|form| {
-                        form.reset_backup(
-                            challenge.positions,
-                            Some(crate::ui::screens::backup_retry_text(
-                                challenge.positions,
-                                true,
-                            )),
-                        );
+                        form.reset_backup(challenge.positions, Some(retry));
                     });
                 } else {
                     self.open_input(
@@ -2451,7 +2499,7 @@ impl App {
             KeyOutcome::BackupConfirmed(Err(error)) => {
                 self.with_form(|form| {
                     form.set_busy(false);
-                    form.set_error(Some(vault_code(error).text()));
+                    form.set_error(Some(vault_code(error).text_in(lang)));
                 });
             }
             KeyOutcome::Revealed(Ok((what, secret, address))) => {
@@ -2499,7 +2547,10 @@ impl App {
                     &[("prev", Field::Word("unconfirmed"))],
                 );
                 self.lock(LockReason::Manual);
-                self.info = Some(password_changed_text(PasswordChange::Unconfirmed).to_owned());
+                self.info = Some(
+                    password_changed_text(self.settings.language, PasswordChange::Unconfirmed)
+                        .to_owned(),
+                );
                 self.refresh();
             }
             KeyOutcome::PasswordChanged(Ok(change)) => {
@@ -2510,7 +2561,7 @@ impl App {
                     "password.changed",
                     &[("prev", Field::Word(if complete { "ok" } else { "stale" }))],
                 );
-                self.info = Some(password_changed_text(change).to_owned());
+                self.info = Some(password_changed_text(self.settings.language, change).to_owned());
                 // Review L17: the meta remembers the new vault generation.
                 self.save_meta();
                 self.refresh();
@@ -2519,7 +2570,8 @@ impl App {
                 self.close_secret();
                 if let Some(meta) = self.meta.as_mut() {
                     let label = crate::meta::next_imported_label(
-                        crate::meta::EVM_IMPORTED_PREFIX,
+                        self.settings.language,
+                        crate::meta::EVM_IMPORTED_LABEL,
                         meta.evm_raw_accounts.iter().map(|raw| raw.label.as_str()),
                     );
                     meta.evm_raw_accounts.push(RawAccount {
@@ -2540,7 +2592,7 @@ impl App {
             KeyOutcome::RawKeyImported(Err(error)) => {
                 self.with_form(|form| {
                     form.set_busy(false);
-                    form.set_error(Some(vault_code(error).text()));
+                    form.set_error(Some(vault_code(error).text_in(lang)));
                 });
             }
             KeyOutcome::RawKeyRemoved(Ok(id)) => self.on_evm_raw_key_removed(id),
@@ -2640,7 +2692,12 @@ impl App {
                             .any(|account| account.index == index)
                         {
                             let number = meta.next_evm_number();
-                            meta.evm_accounts.push(new_account(index, number, &address));
+                            meta.evm_accounts.push(new_account(
+                                self.settings.language,
+                                index,
+                                number,
+                                &address,
+                            ));
                         }
                     }
                     meta.evm_accounts.sort_by_key(|account| account.index);
@@ -2652,6 +2709,7 @@ impl App {
         }
     }
 
+    #[expect(clippy::too_many_lines, reason = "one arm per vault status")]
     fn on_status(&mut self, result: Result<VaultStatus, VaultError>, now: u64) {
         let recovering = self.recover_return;
         match result {
@@ -2668,7 +2726,11 @@ impl App {
                     self.unlock_failed = false;
                     self.recover_return = None;
                     if let Some(from) = recovering {
-                        self.info = Some(Self::recovered_text(from, self.quarantined.as_deref()));
+                        self.info = Some(Self::recovered_text(
+                            self.settings.language,
+                            from,
+                            self.quarantined.as_deref(),
+                        ));
                     }
                 }
                 self.set_mode(AppMode::from_status(status));
@@ -2683,10 +2745,12 @@ impl App {
                         );
                         // Several mnemonics use a passphrase: say which one is asked for.
                         if let Some((position, count)) = self.mn.passphrase_for.take() {
+                            let info = text::PASSPHRASE_FOR.fill(
+                                self.settings.language,
+                                [&count.to_string(), &position.to_string()],
+                            );
                             self.with_form(|form| {
-                                form.set_info(Some(format!(
-                                    "복구 단어 {count}개 중 {position}번째의 passphrase를 입력하세요."
-                                )));
+                                form.set_info(Some(info));
                             });
                         }
                     }
@@ -2713,7 +2777,9 @@ impl App {
                             logging::warn("app", "unlock.alt_passphrase", &[]);
                         }
                         self.request_meta();
-                        self.set_screen(Screen::Processing("불러오는 중…"));
+                        self.set_screen(Screen::Processing(
+                            text::LOADING.get(self.settings.language),
+                        ));
                     }
                     VaultStatus::Corrupt { .. } | VaultStatus::MainMissing => {
                         self.close_secret();
@@ -2765,30 +2831,28 @@ impl App {
     /// later step such as the address lookup failed), so the state is reloaded from the files —
     /// S07 when a vault exists, S01 when not — instead of assuming first run.
     fn reload_after_failed_start(&mut self) {
-        self.set_screen(Screen::Processing("불러오는 중…"));
+        self.set_screen(Screen::Processing(
+            text::LOADING.get(self.settings.language),
+        ));
         self.key(KeyJob::Load);
     }
 
     /// The S10 note after a successful `.prev` recovery started from `from`, naming the file
     /// the damaged `vault.ywv` was moved to when there was one.
-    fn recovered_text(from: AppMode, quarantined: Option<&str>) -> String {
-        let kept = quarantined.map(|name| {
-            format!(
-                " 열리지 않던 지갑 파일은 데이터 폴더에 {name} 이름으로 옮겨 두었습니다. 직접 되돌리는 방법은 복구 안내(recovery-guide)를 보세요."
-            )
-        });
+    fn recovered_text(lang: Lang, from: AppMode, quarantined: Option<&str>) -> String {
+        let kept = quarantined.map(|name| text::RECOVERED_KEPT.fill(lang, [name]));
         match (from, kept) {
-            (AppMode::Corrupt { .. } | AppMode::MainMissing, kept) => format!(
-                "이전 사본(.prev)으로 복구했습니다. 마지막 변경(예: 가져온 개인키)이 빠졌을 수 있으니 확인하세요.{}",
-                kept.unwrap_or_default()
-            ),
-            (_, Some(kept)) => format!("이전 사본(.prev)으로 복구했습니다.{kept}"),
-            (_, None) => "지갑을 열었습니다.".to_owned(),
+            (AppMode::Corrupt { .. } | AppMode::MainMissing, kept) => {
+                text::RECOVERED_CHECK.fill(lang, [&kept.unwrap_or_default()])
+            }
+            (_, Some(kept)) => text::RECOVERED.fill(lang, [&kept]),
+            (_, None) => text::OPENED.get(lang).to_owned(),
         }
     }
 
     /// A failed `.prev` recovery: the W03 window stays open for another try.
     fn recovery_failure(&mut self, error: VaultError, now: u64) {
+        let lang = self.settings.language;
         let text = match error {
             VaultError::UnlockFailed => {
                 logging::info("app", "recover.failed", &[]);
@@ -2796,12 +2860,10 @@ impl App {
                 return;
             }
             VaultError::Storage(yw_core::error::StorageError::NotFound) => {
-                "이전 사본(.prev)이 없어 복구할 수 없습니다. 복구 단어로 지갑을 다시 가져오세요. 데이터 폴더의 파일은 그대로 두었습니다.".to_owned()
+                text::RECOVERY_NO_PREV.get(lang).to_owned()
             }
-            VaultError::PayloadCorrupt => {
-                "이전 사본(.prev)도 손상되어 복구할 수 없습니다. 복구 단어로 지갑을 다시 가져오세요. 데이터 폴더의 파일은 그대로 두었습니다.".to_owned()
-            }
-            other => vault_code(other).text(),
+            VaultError::PayloadCorrupt => text::RECOVERY_PREV_DAMAGED.get(lang).to_owned(),
+            other => vault_code(other).text_in(lang),
         };
         logging::warn(
             "app",
@@ -2820,6 +2882,7 @@ impl App {
     }
 
     pub(crate) fn password_failure(&mut self, error: VaultError, now: u64) {
+        let lang = self.settings.language;
         if error == VaultError::UnlockFailed {
             logging::info("app", "unlock.failed", &[]);
             self.with_form(|form| form.fail_password(now));
@@ -2828,7 +2891,7 @@ impl App {
             logging::warn("app", "key.error", &[("code", Field::Code(code))]);
             self.with_form(|form| {
                 form.set_busy(false);
-                form.set_error(Some(code.text()));
+                form.set_error(Some(code.text_in(lang)));
             });
             if self.secret.is_none() {
                 self.error_banner(code);
@@ -2915,7 +2978,7 @@ impl App {
                     CaptureDecision::Show { warning } => {
                         let mut form =
                             SecretForm::new(kind, self.settings.language, now_ms(), !warning);
-                        form.set_step(flow_step(purpose));
+                        form.set_step(flow_step(self.settings.language, purpose));
                         self.show_secret(serial, window, form, purpose);
                     }
                     CaptureDecision::Refuse(code) => {
@@ -2950,8 +3013,8 @@ impl App {
         match (decision, created) {
             (CaptureDecision::Show { .. }, Ok(window)) => {
                 let mut form = SecretForm::display(kind, self.settings.language, now_ms(), display);
-                form.set_step(flow_step(purpose));
-                form.set_timeout_note(timeout_note(purpose));
+                form.set_step(flow_step(self.settings.language, purpose));
+                form.set_timeout_note(timeout_note(self.settings.language, purpose));
                 self.show_secret(serial, window, form, purpose);
             }
             (CaptureDecision::Refuse(code), _) => {
@@ -3097,7 +3160,7 @@ impl App {
                 ) && self.yk_words != crate::app_yubikey::YkWords::None;
                 self.on_cancel(purpose);
                 if timed_out && !words_band {
-                    self.info = Some("시간이 지나 창을 닫았습니다.".to_owned());
+                    self.info = Some(text::TIMED_OUT.get(self.settings.language).to_owned());
                     self.refresh();
                 }
             }
@@ -3122,6 +3185,7 @@ impl App {
     }
 
     fn paste(&mut self) {
+        let lang = self.settings.language;
         let Some(secret) = self.secret.as_mut() else {
             return;
         };
@@ -3133,23 +3197,23 @@ impl App {
                 let applied = secret.form.apply_paste(units.as_slice());
                 drop(units);
                 let cleared = match clipboard::clear_if_unchanged(&secret.window, seq) {
-                    Ok(true) => Some(PASTE_CLEARED.to_owned()),
+                    Ok(true) => Some(PASTE_CLEARED.get(lang).to_owned()),
                     Ok(false) => None,
-                    Err(_) => Some(ErrorCode::Sec002.text()),
+                    Err(_) => Some(ErrorCode::Sec002.text_in(lang)),
                 };
                 match applied {
-                    Ok(edge_space) => paste_notice(edge_space, cleared),
+                    Ok(edge_space) => paste_notice(lang, edge_space, cleared),
                     Err(code) => {
-                        secret.form.set_error(Some(code.text()));
+                        secret.form.set_error(Some(code.text_in(lang)));
                         cleared
                     }
                 }
             }
             Err(ClipError::TooLong) => {
-                secret.form.set_error(Some(ErrorCode::Inp018.text()));
+                secret.form.set_error(Some(ErrorCode::Inp018.text_in(lang)));
                 None
             }
-            Err(ClipError::Busy | ClipError::Os(_)) => Some(ErrorCode::Sec002.text()),
+            Err(ClipError::Busy | ClipError::Os(_)) => Some(ErrorCode::Sec002.text_in(lang)),
         };
         logging::info(
             "secret",
@@ -3163,14 +3227,15 @@ impl App {
     }
 
     fn copy_secret(&mut self) {
+        let lang = self.settings.language;
         let allowed = self.settings.allow_secret_copy;
         let Some(secret) = self.secret.as_mut() else {
             return;
         };
         if !allowed {
-            secret.form.set_info(Some(
-                "복사가 꺼져 있습니다. 설정에서 바꿀 수 있습니다.".to_owned(),
-            ));
+            secret
+                .form
+                .set_info(Some(text::COPY_OFF.get(lang).to_owned()));
             secret.window.invalidate();
             return;
         }
@@ -3181,16 +3246,16 @@ impl App {
         match clipboard::set_secret_text(&secret.window, &units) {
             Ok(clip) => {
                 replaced = self.secret_clip.replace(PendingClip::new(clip, now_ms()));
-                secret.form.set_info(Some(
-                    "클립보드에 복사했습니다. 30초 뒤 지웁니다.".to_owned(),
-                ));
+                secret
+                    .form
+                    .set_info(Some(text::COPIED_SECRET.get(lang).to_owned()));
                 logging::info(
                     "secret",
                     "clipboard.secret_copy",
                     &[("window", Field::Word(secret.form.kind().id()))],
                 );
             }
-            Err(_) => secret.form.set_error(Some(ErrorCode::Sec002.text())),
+            Err(_) => secret.form.set_error(Some(ErrorCode::Sec002.text_in(lang))),
         }
         secret.window.invalidate();
         // This copy replaced the earlier one whose clear was still being retried.
@@ -3217,7 +3282,7 @@ impl App {
                 let password = next();
                 self.close_secret();
                 self.set_screen(Screen::Processing(
-                    "지갑을 만드는 중입니다. 몇 초 걸립니다.",
+                    text::CREATING.get(self.settings.language),
                 ));
                 self.key(KeyJob::CreateWallet { password });
             }
@@ -3347,7 +3412,9 @@ impl App {
             self.import.password_sent = true;
             self.import.password.take()
         };
-        self.set_screen(Screen::Processing("확인 중…"));
+        self.set_screen(Screen::Processing(
+            text::CHECKING.get(self.settings.language),
+        ));
         self.key(KeyJob::PreviewImport {
             password,
             phrase,
@@ -3445,7 +3512,14 @@ impl App {
                 logging::set_level(settings.log_level);
             }
             if settings.language != self.settings.language {
+                // spec/14 §1 (2026-11-14): the main window is rebuilt from `items()` by the
+                // `refresh` below, so every fixed text (and the banner tags and copy captions the
+                // renderer adds) follows at once. The window title is the product name in both
+                // languages and there is no tray icon (spec/04 §1). The last notice was written
+                // in the old language and goes; banners and RPC test lines keep the language they
+                // were written in until they are replaced.
                 self.key(KeyJob::SetLanguage(settings.language));
+                self.info = None;
             }
             let memory_only = settings.read_only().is_some();
             self.settings = settings;
@@ -3552,7 +3626,12 @@ impl App {
         }
         if outcome.llm_forced_off {
             logging::warn("app", "settings.llm_consent_missing", &[]);
-            self.banner(None, crate::settings::LLM_FORCED_OFF_TEXT.to_owned());
+            self.banner(
+                None,
+                crate::settings::LLM_FORCED_OFF_TEXT
+                    .get(self.settings.language)
+                    .to_owned(),
+            );
         }
         for id in &outcome.pins_restored {
             logging::warn(
@@ -3562,7 +3641,12 @@ impl App {
             );
         }
         if !outcome.pins_restored.is_empty() {
-            self.banner(None, crate::settings::PIN_RESTORED_TEXT.to_owned());
+            self.banner(
+                None,
+                crate::settings::PIN_RESTORED_TEXT
+                    .get(self.settings.language)
+                    .to_owned(),
+            );
         }
         if !outcome.differing.is_empty() {
             logging::warn(
@@ -3607,7 +3691,10 @@ impl App {
             let seen = meta.security.vault_generation_seen;
             if found < seen {
                 self.guard.rollback = Some((seen, found));
-                self.banner(None, crate::ui::screens::rollback_text(seen, found));
+                self.banner(
+                    None,
+                    crate::ui::screens::rollback_text(self.settings.language, seen, found),
+                );
                 logging::warn(
                     "app",
                     "vault.generation_backwards",
@@ -3702,7 +3789,7 @@ impl App {
             }
             ids::IMPORT_CORRECT => {
                 self.set_screen(Screen::Processing(
-                    "지갑을 가져오는 중입니다. 몇 초 걸립니다.",
+                    text::IMPORTING.get(self.settings.language),
                 ));
                 self.key(KeyJob::CommitImport);
             }
@@ -3739,7 +3826,9 @@ impl App {
                     }
                 } else {
                     self.request_meta();
-                    self.set_screen(Screen::Processing("불러오는 중…"));
+                    self.set_screen(Screen::Processing(
+                        text::LOADING.get(self.settings.language),
+                    ));
                 }
             }
             ids::RECOVER => {
@@ -3942,14 +4031,13 @@ impl App {
             }
             ids::TPL_SAVE => {
                 if self.save_template_credentials() == Ok(true) {
-                    let mut text = "템플릿 자격 정보를 저장했습니다.".to_owned();
+                    let lang = self.settings.language;
+                    let mut info = text::TPL_SAVED.get(lang).to_owned();
                     if !self.template_addresses() {
                         // Saved, but nothing uses the credentials yet (2026-11-10).
-                        text.push_str(
-                            " RPC 주소는 아직 없습니다 — “저장하고 RPC 주소 만들기”를 누르세요.",
-                        );
+                        info.push_str(text::TPL_SAVED_NO_ADDRESS.get(lang));
                     }
-                    self.info = Some(text);
+                    self.info = Some(info);
                 }
                 self.refresh();
             }
@@ -4006,7 +4094,11 @@ impl App {
                     && crate::ui::screens::RECEIVE_IDS.contains(&receive) =>
             {
                 // Before any chain handler runs (BTC would derive and store a new address).
-                self.info = Some(crate::ui::screens::T_ALT_PASS_RECEIVE.to_owned());
+                self.info = Some(
+                    crate::ui::screens::T_ALT_PASS_RECEIVE
+                        .get(self.settings.language)
+                        .to_owned(),
+                );
                 self.refresh();
             }
             other => {
@@ -4134,12 +4226,14 @@ impl App {
         match network {
             NetworkId::Eip155(id) => self
                 .settings
-                .evm_chain_name(id)
+                .evm_chain_name_in(self.settings.language, id)
                 .unwrap_or_else(|| format!("chainId {id}")),
             NetworkId::Solana(cluster) => crate::app_sol::core_cluster(cluster)
-                .display_name()
+                .display_name_in(self.settings.language)
                 .to_owned(),
-            NetworkId::Bitcoin(net) => crate::btc::core_network(net).display_name().to_owned(),
+            NetworkId::Bitcoin(net) => crate::btc::core_network(net)
+                .display_name_in(self.settings.language)
+                .to_owned(),
             NetworkId::Zcash(net) => net.display_name().to_owned(),
         }
     }
@@ -4186,7 +4280,9 @@ impl App {
                 EvmAccountPref::Record(raw.record_id),
                 raw.label.clone(),
                 checksum(&raw.address),
-                "가져온 개인키".to_owned(),
+                text::IMPORTED_PRIVATE_KEY
+                    .get(self.settings.language)
+                    .to_owned(),
             )
         }));
         // YubiKey accounts (spec/10 §13): the address of the slot map's public key.
@@ -4201,7 +4297,10 @@ impl App {
                         account.label.clone(),
                         checksum(&account.address),
                         if yw_core::yubikey::plan::is_unknown_index(account.index) {
-                            format!("{} (YubiKey)", yw_core::yubikey::plan::T_UNKNOWN_PATH)
+                            format!(
+                                "{} (YubiKey)",
+                                yw_core::yubikey::text::UNKNOWN_PATH.get(self.settings.language)
+                            )
                         } else {
                             format!("m/44'/60'/0'/0/{} (YubiKey)", account.index)
                         },
@@ -4225,9 +4324,10 @@ impl App {
 
     fn save_rename(&mut self) {
         use crate::ui::screens::ids;
+        let lang = self.settings.language;
         let label = self.controls.text(ids::RENAME_EDIT, 64).unwrap_or_default();
         if !is_valid_label(&label) {
-            self.info = Some(ErrorCode::Inp017.text());
+            self.info = Some(ErrorCode::Inp017.text_in(lang));
             self.refresh();
             return;
         }
@@ -4301,7 +4401,7 @@ impl App {
                 self.account_removed_from_sites(&address);
             }
             self.notice(
-                crate::app_hidden::hidden_note(&label),
+                crate::app_hidden::hidden_note(self.settings.language, &label),
                 crate::ui::main_window::Tone::Info,
             );
             self.refresh();
@@ -4323,7 +4423,7 @@ impl App {
                 self.account_removed_from_sites(&address);
             }
             self.notice(
-                crate::app_hidden::hidden_note(&label),
+                crate::app_hidden::hidden_note(self.settings.language, &label),
                 crate::ui::main_window::Tone::Info,
             );
             self.refresh();
@@ -4346,7 +4446,7 @@ impl App {
                 self.account_removed_from_sites(&address);
             }
             self.notice(
-                crate::app_hidden::hidden_note(&label),
+                crate::app_hidden::hidden_note(self.settings.language, &label),
                 crate::ui::main_window::Tone::Info,
             );
         }
@@ -4363,11 +4463,13 @@ impl App {
             Ok(minutes) if (1..=60).contains(&minutes) => {
                 let mut settings = self.settings.clone();
                 settings.auto_lock_minutes = minutes;
-                self.info = Some(format!("자동 잠금을 {minutes}분으로 저장했습니다."));
+                self.info = Some(
+                    text::AUTO_LOCK_SAVED.fill(self.settings.language, [&minutes.to_string()]),
+                );
                 self.save_settings(settings, "autoLockMinutes");
             }
             _ => {
-                self.info = Some("자동 잠금은 1–60분입니다.".to_owned());
+                self.info = Some(text::AUTO_LOCK_RANGE.get(self.settings.language).to_owned());
                 self.refresh();
             }
         }
@@ -4395,7 +4497,7 @@ impl App {
             RpcTemplate::QuickNode => {
                 let name = self.read_wiping(ids::QN_NAME_EDIT, TOKEN_MAX_UNITS);
                 let token = self.read_wiping(ids::QN_TOKEN_EDIT, TOKEN_MAX_UNITS);
-                match quicknode_input(&name, &token) {
+                match quicknode_input(self.settings.language, &name, &token) {
                     Ok(None) => return Ok(false),
                     Ok(Some((name, token))) => self.apikeys.set_quicknode(&name, &token),
                     Err(text) => {
@@ -4410,7 +4512,8 @@ impl App {
                     return Ok(false);
                 }
                 if !valid_provider_token(key.trim()) {
-                    self.info = Some(key002_text("알케미 키"));
+                    let lang = self.settings.language;
+                    self.info = Some(key002_text(lang, text::ALCHEMY_KEY.get(lang)));
                     return Err(ErrorCode::Key002);
                 }
                 self.apikeys.set_alchemy(key.trim());
@@ -4444,7 +4547,7 @@ impl App {
                 "apikeys.pruned",
                 &[("count", Field::Num(u64::try_from(removed).unwrap_or(0)))],
             );
-            self.info = Some(format!("보관 항목 {removed}개를 지웠습니다."));
+            self.info = Some(text::PRUNED.fill(self.settings.language, [&removed.to_string()]));
         }
     }
 
@@ -4516,10 +4619,11 @@ impl App {
             // Nothing typed and nothing stored: what to type, not E-KEY-004.
             self.info = Some(
                 if self.settings.rpc_template == RpcTemplate::Alchemy {
-                    "위 칸에 알케미 API 키를 넣으세요."
+                    text::ENTER_ALCHEMY
                 } else {
-                    "위 칸에 엔드포인트 이름과 토큰(또는 주소 전체)을 넣으세요."
+                    text::ENTER_QUICKNODE
                 }
+                .get(self.settings.language)
                 .to_owned(),
             );
             self.refresh();
@@ -4540,37 +4644,34 @@ impl App {
         let Some(written) = self.generate() else {
             return;
         };
+        let lang = self.settings.language;
         let skipped = self.generation_plan().1;
-        let mut text = if written.is_empty() {
-            "새로 만든 RPC 주소가 없습니다. 이미 주소가 있는 네트워크는 '기존 주소 덮어쓰기'를 켰을 때만 바꿉니다.".to_owned()
+        let mut info = if written.is_empty() {
+            text::GENERATED_NONE.get(lang).to_owned()
         } else {
-            format!(
-                "RPC 주소 {}개를 만들었습니다. 연결을 확인하는 중입니다 — 결과는 아래 각 행에 나옵니다.",
-                written.len()
-            )
+            text::GENERATED.fill(lang, [&written.len().to_string()])
         };
         if !skipped.is_empty() {
             let names: Vec<String> = skipped
                 .iter()
                 .map(|network| self.network_name(*network))
                 .collect();
-            let _ = write!(
-                text,
-                " 템플릿 항목이 없는 {}개는 직접 입력하세요: {}",
-                skipped.len(),
-                names.join(", ")
+            info.push_str(
+                &text::GENERATED_SKIPPED
+                    .fill(lang, [&skipped.len().to_string(), &names.join(", ")]),
             );
         }
-        self.info = Some(text);
+        self.info = Some(info);
     }
 
     /// Writes the template addresses of the generation targets (a target with an address only
     /// when `overwrite_checked`) and queues their tests: the written networks, or `None` when
     /// nothing was saved (no credential: E-KEY-004; E-APP-002).
     fn generate(&mut self) -> Option<Vec<NetworkId>> {
+        let lang = self.settings.language;
         let template = self.settings.rpc_template;
         let Some(credential) = self.apikeys.credential(template) else {
-            self.info = Some(ErrorCode::Key004.text());
+            self.info = Some(ErrorCode::Key004.text_in(lang));
             return None;
         };
         let (targets, _) = self.generation_plan();
@@ -4624,6 +4725,7 @@ impl App {
 
     fn save_replacement(&mut self) {
         use crate::ui::screens::ids;
+        let lang = self.settings.language;
         let Some(network) = self.replace_target else {
             return;
         };
@@ -4644,7 +4746,9 @@ impl App {
                 self.controls.clear_text(ids::REPLACE_EDIT);
                 self.replace_target = None;
             }
-            Err(_) => self.set_rpc_message(network, ErrorCode::Key003.text(), TestState::Failed),
+            Err(_) => {
+                self.set_rpc_message(network, ErrorCode::Key003.text_in(lang), TestState::Failed);
+            }
         }
         self.refresh();
     }
@@ -4670,7 +4774,11 @@ impl App {
             }
             self.rpc_tests.waiting.push_back(*network);
             self.rpc_tests.total = self.rpc_tests.total.saturating_add(1);
-            self.set_rpc_message(*network, "테스트 중…".to_owned(), TestState::Testing);
+            self.set_rpc_message(
+                *network,
+                text::TESTING.get(self.settings.language).to_owned(),
+                TestState::Testing,
+            );
         }
         self.next_rpc_test();
     }
@@ -4691,7 +4799,12 @@ impl App {
                 continue;
             };
             let name = self.network_name(network);
-            if self.rpc(RpcJob::Test { network, name, url }) {
+            if self.rpc(RpcJob::Test {
+                network,
+                name,
+                url,
+                lang: self.settings.language,
+            }) {
                 self.rpc_tests.running = Some(network);
             } else {
                 // No RPC worker: nothing will answer, so no row keeps "테스트 중…".
@@ -4720,6 +4833,7 @@ impl App {
     /// goes first in the queue.
     fn test_network(&mut self, network: NetworkId) {
         use crate::ui::screens::ids;
+        let lang = self.settings.language;
         let typed = if self.replace_target == Some(network) {
             self.read_wiping(ids::REPLACE_EDIT, URL_MAX_UNITS)
         } else {
@@ -4734,7 +4848,7 @@ impl App {
                     "rpc.test",
                     &[("net", Field::Net(network)), ("result", Field::Code(code))],
                 );
-                self.set_rpc_message(network, code.text(), TestState::Failed);
+                self.set_rpc_message(network, code.text_in(lang), TestState::Failed);
                 self.refresh();
                 return;
             }
@@ -4750,15 +4864,28 @@ impl App {
                     self.rpc_tests.total = self.rpc_tests.total.saturating_add(1);
                 }
                 self.rpc_tests.waiting.push_front(network);
-                self.set_rpc_message(network, "테스트 중…".to_owned(), TestState::Testing);
+                self.set_rpc_message(
+                    network,
+                    text::TESTING.get(self.settings.language).to_owned(),
+                    TestState::Testing,
+                );
                 self.next_rpc_test();
             }
             self.refresh();
             return;
         }
         let name = self.network_name(network);
-        if self.rpc(RpcJob::Test { network, name, url }) {
-            self.set_rpc_message(network, "테스트 중…".to_owned(), TestState::Testing);
+        if self.rpc(RpcJob::Test {
+            network,
+            name,
+            url,
+            lang: self.settings.language,
+        }) {
+            self.set_rpc_message(
+                network,
+                text::TESTING.get(self.settings.language).to_owned(),
+                TestState::Testing,
+            );
         }
         self.refresh();
     }
@@ -4830,9 +4957,9 @@ impl App {
         if self.settings.rpc_template != RpcTemplate::QuickNode {
             return;
         }
-        match quicknode_input(text, "") {
+        match quicknode_input(self.settings.language, text, "") {
             Ok(None) => {
-                self.done_error = Some("주소를 붙여넣으세요.".to_owned());
+                self.done_error = Some(text::PASTE_ADDRESS.get(self.settings.language).to_owned());
                 self.refresh();
                 return;
             }
@@ -4916,10 +5043,7 @@ impl App {
                 let source = match self.selected_pref() {
                     Some(EvmAccountPref::Hardware(_)) => {
                         // The key of a YubiKey account never leaves the card (spec/10 §1).
-                        self.info = Some(
-                            "YubiKey 계정의 개인키는 YubiKey 밖으로 나오지 않습니다. 백업은 등록할 때 쓴 복구 단어입니다."
-                                .to_owned(),
-                        );
+                        self.info = Some(text::YK_KEY_STAYS.get(self.settings.language).to_owned());
                         self.refresh();
                         return;
                     }

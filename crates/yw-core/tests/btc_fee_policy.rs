@@ -127,7 +127,7 @@ fn fee_floor_raises_estimate() {
             source: FeeSource::Floor
         }
     );
-    assert_eq!(raised.source.text(), "하한 적용");
+    assert_eq!(raised.source.text_in(Lang::Ko), "하한 적용");
     let estimate = choose_fee_rate(
         FeeSelection::Estimate {
             target: 2,
@@ -137,17 +137,20 @@ fn fee_floor_raises_estimate() {
     )
     .unwrap();
     assert_eq!(estimate.rate, kvb(3_210));
-    assert_eq!(estimate.source.text(), "노드 추정(빠름, 2블록 목표)");
     assert_eq!(
-        FeeSource::Estimate { target: 6 }.text(),
+        estimate.source.text_in(Lang::Ko),
+        "노드 추정(빠름, 2블록 목표)"
+    );
+    assert_eq!(
+        FeeSource::Estimate { target: 6 }.text_in(Lang::Ko),
         "노드 추정(보통, 6블록 목표)"
     );
     assert_eq!(
-        FeeSource::Estimate { target: 24 }.text(),
+        FeeSource::Estimate { target: 24 }.text_in(Lang::Ko),
         "노드 추정(느림, 24블록 목표)"
     );
     assert_eq!(
-        FeeSource::Estimate { target: 3 }.text(),
+        FeeSource::Estimate { target: 3 }.text_in(Lang::Ko),
         "노드 추정(3블록 목표)"
     );
     assert_eq!(
@@ -434,7 +437,7 @@ fn reject_reason_and_rpc_tables() {
         ("txn-already-known", "이미 전송된 거래입니다"),
     ];
     for (token, text) in table {
-        assert_eq!(reject_reason_text(token), text);
+        assert_eq!(reject_reason_text(Lang::Ko, token), text);
     }
     for unknown in [
         "Dust",
@@ -444,11 +447,17 @@ fn reject_reason_and_rpc_tables() {
         "",
         "insufficient fee, rejecting replacement",
     ] {
-        assert_eq!(reject_reason_text(unknown), "알 수 없는 거부 사유");
+        assert_eq!(
+            reject_reason_text(Lang::Ko, unknown),
+            "알 수 없는 거부 사유"
+        );
     }
-    assert_eq!(rpc_error_text(-25), "입력이 없거나 이미 사용되었습니다");
-    assert_eq!(rpc_error_text(-26), "노드가 거래를 거부했습니다");
-    assert_eq!(rpc_error_text(-8), "RPC 오류(코드 -8)");
+    assert_eq!(
+        rpc_error_text(Lang::Ko, -25),
+        "입력이 없거나 이미 사용되었습니다"
+    );
+    assert_eq!(rpc_error_text(Lang::Ko, -26), "노드가 거래를 거부했습니다");
+    assert_eq!(rpc_error_text(Lang::Ko, -8), "RPC 오류(코드 -8)");
 }
 
 fn local() -> LocalTx {
@@ -476,7 +485,7 @@ fn accepted() -> MempoolAccept {
 fn testmempoolaccept_mismatch_rejects() {
     let local = local();
     assert_eq!(
-        check_mempool_accept(&accepted(), &local),
+        check_mempool_accept(Lang::Ko, &accepted(), &local),
         PrecheckOutcome::Accepted
     );
     let mismatch = PrecheckOutcome::Rejected {
@@ -503,7 +512,7 @@ fn testmempoolaccept_mismatch_rejects() {
     cases.push(answer);
     for answer in cases {
         assert_eq!(
-            check_mempool_accept(&answer, &local),
+            check_mempool_accept(Lang::Ko, &answer, &local),
             mismatch,
             "{answer:?}"
         );
@@ -512,21 +521,21 @@ fn testmempoolaccept_mismatch_rejects() {
     refused.allowed = false;
     refused.reject_reason = Some("insufficient fee".to_owned());
     assert_eq!(
-        check_mempool_accept(&refused, &local),
+        check_mempool_accept(Lang::Ko, &refused, &local),
         PrecheckOutcome::Rejected {
             text: "교체 수수료가 부족합니다"
         }
     );
     refused.reject_reason = Some("server says: send to bc1q...".to_owned());
     assert_eq!(
-        check_mempool_accept(&refused, &local),
+        check_mempool_accept(Lang::Ko, &refused, &local),
         PrecheckOutcome::Rejected {
             text: "알 수 없는 거부 사유"
         }
     );
     refused.reject_reason = None;
     assert_eq!(
-        check_mempool_accept(&refused, &local),
+        check_mempool_accept(Lang::Ko, &refused, &local),
         PrecheckOutcome::Rejected {
             text: "알 수 없는 거부 사유"
         }
@@ -546,7 +555,7 @@ fn already_known_precheck_is_not_rejected() {
         answer.fee_base = None;
         answer.reject_reason = Some(token.to_owned());
         assert_eq!(
-            check_mempool_accept(&answer, &local),
+            check_mempool_accept(Lang::Ko, &answer, &local),
             PrecheckOutcome::AlreadyKnown {
                 text: "이미 전송된 거래입니다"
             },
@@ -561,7 +570,7 @@ fn already_known_precheck_is_not_rejected() {
                 other.wtxid = [3; 32];
             }
             assert_eq!(
-                check_mempool_accept(&other, &local),
+                check_mempool_accept(Lang::Ko, &other, &local),
                 PrecheckOutcome::Rejected {
                     text: "노드 검사 결과가 로컬 계산과 다릅니다"
                 },
@@ -574,7 +583,7 @@ fn already_known_precheck_is_not_rejected() {
     refused.allowed = false;
     refused.reject_reason = Some("txn-mempool-conflict".to_owned());
     assert_eq!(
-        check_mempool_accept(&refused, &local),
+        check_mempool_accept(Lang::Ko, &refused, &local),
         PrecheckOutcome::Rejected {
             text: "다른 미확정 거래와 충돌합니다"
         }
@@ -586,34 +595,38 @@ fn already_known_precheck_is_not_rejected() {
 fn sendrawtransaction_outcomes() {
     let ours = Txid::from_bytes([1; 32]);
     assert_eq!(
-        broadcast_outcome(&SendRawResult::Txid(ours), &ours),
+        broadcast_outcome(Lang::Ko, &SendRawResult::Txid(ours), &ours),
         BroadcastOutcome::Submitted
     );
     assert_eq!(
-        broadcast_outcome(&SendRawResult::Txid(Txid::from_bytes([2; 32])), &ours),
+        broadcast_outcome(
+            Lang::Ko,
+            &SendRawResult::Txid(Txid::from_bytes([2; 32])),
+            &ours
+        ),
         BroadcastOutcome::BroadcastUnknown {
             text: Some("응답 txid 불일치".to_owned()),
             comm_failure: false
         }
     );
     assert_eq!(
-        broadcast_outcome(&SendRawResult::RpcError { code: -27 }, &ours),
+        broadcast_outcome(Lang::Ko, &SendRawResult::RpcError { code: -27 }, &ours),
         BroadcastOutcome::Submitted
     );
     assert_eq!(
-        broadcast_outcome(&SendRawResult::RpcError { code: -26 }, &ours),
+        broadcast_outcome(Lang::Ko, &SendRawResult::RpcError { code: -26 }, &ours),
         BroadcastOutcome::Rejected {
             text: "노드가 거래를 거부했습니다".to_owned()
         }
     );
     assert_eq!(
-        broadcast_outcome(&SendRawResult::RpcError { code: -25 }, &ours),
+        broadcast_outcome(Lang::Ko, &SendRawResult::RpcError { code: -25 }, &ours),
         BroadcastOutcome::Rejected {
             text: "입력이 없거나 이미 사용되었습니다".to_owned()
         }
     );
     assert_eq!(
-        broadcast_outcome(&SendRawResult::RpcError { code: -32603 }, &ours),
+        broadcast_outcome(Lang::Ko, &SendRawResult::RpcError { code: -32603 }, &ours),
         BroadcastOutcome::BroadcastUnknown {
             text: Some("RPC 오류(코드 -32603)".to_owned()),
             comm_failure: false
@@ -621,7 +634,7 @@ fn sendrawtransaction_outcomes() {
     );
     for result in [SendRawResult::Timeout, SendRawResult::Transport] {
         assert_eq!(
-            broadcast_outcome(&result, &ours),
+            broadcast_outcome(Lang::Ko, &result, &ours),
             BroadcastOutcome::BroadcastUnknown {
                 text: None,
                 comm_failure: true
@@ -629,14 +642,14 @@ fn sendrawtransaction_outcomes() {
         );
     }
     assert_eq!(
-        broadcast_outcome(&SendRawResult::NotTxid, &ours),
+        broadcast_outcome(Lang::Ko, &SendRawResult::NotTxid, &ours),
         BroadcastOutcome::BroadcastUnknown {
             text: Some("응답 txid 불일치".to_owned()),
             comm_failure: false
         }
     );
     assert_eq!(
-        broadcast_outcome(&SendRawResult::Refused, &ours),
+        broadcast_outcome(Lang::Ko, &SendRawResult::Refused, &ours),
         BroadcastOutcome::BroadcastUnknown {
             text: None,
             comm_failure: false
@@ -645,6 +658,6 @@ fn sendrawtransaction_outcomes() {
     assert_eq!(known_reject_token("dust"), Some("dust"));
     assert_eq!(known_reject_token("Dust"), None);
     for token in REJECT_TOKENS {
-        assert_ne!(reject_reason_text(token), "알 수 없는 거부 사유");
+        assert_ne!(reject_reason_text(Lang::Ko, token), "알 수 없는 거부 사유");
     }
 }

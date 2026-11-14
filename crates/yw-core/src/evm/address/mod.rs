@@ -25,12 +25,30 @@ pub enum AddressError {
     BadChecksum,
 }
 
+impl AddressError {
+    /// The fixed text in `lang` (`Display` is the Korean one).
+    #[must_use]
+    pub const fn text_in(self, lang: crate::lang::Lang) -> &'static str {
+        match self {
+            Self::InvalidFormat => text::INVALID_FORMAT,
+            Self::BadChecksum => text::BAD_CHECKSUM,
+        }
+        .get(lang)
+    }
+}
+
 impl fmt::Display for AddressError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            Self::InvalidFormat => "주소 형식이 올바르지 않습니다.",
-            Self::BadChecksum => "주소의 대소문자 체크섬이 맞지 않습니다. 주소를 다시 확인하세요.",
-        })
+        formatter.write_str(self.text_in(crate::lang::Lang::Ko))
+    }
+}
+
+/// Address parsing texts (spec/03 §2.2; English spec/14 §5).
+pub mod text {
+    crate::texts! {
+        INVALID_FORMAT = "주소 형식이 올바르지 않습니다." / "The address format is invalid.";
+        BAD_CHECKSUM = "주소의 대소문자 체크섬이 맞지 않습니다. 주소를 다시 확인하세요."
+            / "The address's upper/lower-case checksum does not match. Check the address again.";
     }
 }
 

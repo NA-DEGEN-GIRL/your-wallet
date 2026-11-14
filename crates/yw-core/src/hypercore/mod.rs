@@ -136,12 +136,12 @@ impl HcNetwork {
         }
     }
 
-    /// Display name.
+    /// Korean display name (`text::network_label` gives either language).
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Mainnet => "HyperCore 메인넷",
-            Self::Testnet => "HyperCore 테스트넷",
+            Self::Mainnet => text::NETWORK_MAINNET.ko,
+            Self::Testnet => text::NETWORK_TESTNET.ko,
         }
     }
 }
@@ -437,17 +437,8 @@ impl HcKind {
         .find(|kind| kind.primary_type() == primary)
     }
 
-    /// Korean action name (approval, activity).
-    #[must_use]
-    pub const fn korean(self) -> &'static str {
-        match self {
-            Self::UsdSend => "USDC 보내기 (HyperCore)",
-            Self::SpotSend => "현물 토큰 보내기 (HyperCore)",
-            Self::Withdraw => "Arbitrum으로 USDC 출금",
-            Self::UsdClassTransfer => "현물↔선물 USDC 이동",
-            Self::SendAsset => "HyperEVM으로 이동",
-        }
-    }
+    // 2026-11-14: `korean()` (the Korean action name) moved to the catalogue,
+    // `text::kind_name(lang, kind)`, when the activity rows became bilingual (spec/14).
 }
 
 /// A field value of the typed data.

@@ -19,10 +19,11 @@ use super::{
 };
 use crate::approval::MAX_TITLE_BYTES;
 use crate::codec::base58::base58_encode;
+use crate::lang::Lang;
 use crate::policy::MAX_ORIGIN_BYTES;
 use crate::slip10::SolKeySource;
 use crate::sol::dapp::{SignedSolDappTx, SolCommitment, SolTxError, SolTxPayload, parse_wire_tx};
-use crate::sol::display::transfer_title;
+use crate::sol::display::transfer_title_in;
 use crate::sol::intent::SolTransferIntent;
 use crate::sol::keys::verify_strict;
 use crate::sol::message::{SolParseError, encode_message, parse_transaction};
@@ -170,9 +171,31 @@ pub enum SolRecordError {
     Signature,
 }
 
+/// The fixed texts of SOL journal records and rows (spec/07 §14.1, spec/14).
+pub mod text {
+    crate::texts! {
+        /// `SolRecordError`.
+        CORRUPT = "저널 손상" / "Journal damaged";
+        /// The activity title of a dApp send (cluster name, origin).
+        DAPP_TITLE(2) = "[{0}] 사이트 거래 · {1}" / "[{0}] Site transaction · {1}";
+    }
+}
+
+impl SolRecordError {
+    /// The fixed text in `lang` (`Display` is the Korean one).
+    #[must_use]
+    #[expect(
+        clippy::unused_self,
+        reason = "every damaged SOL record shows the same text"
+    )]
+    pub const fn text_in(self, lang: Lang) -> &'static str {
+        text::CORRUPT.get(lang)
+    }
+}
+
 impl fmt::Display for SolRecordError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("저널 손상")
+        formatter.write_str(self.text_in(Lang::Ko))
     }
 }
 
@@ -694,9 +717,10 @@ pub struct SolActivityRow {
     pub time_unix_ms: u64,
 }
 
-/// `[Solana {cluster}] 사이트 거래 · {origin}`, cut on a character boundary to 256 bytes.
-fn dapp_title(cluster: SolCluster, origin: &str) -> String {
-    let mut title = format!("[{}] 사이트 거래 · {origin}", cluster.display_name());
+/// `[Solana {cluster}] 사이트 거래 · {origin}` in `lang`, cut on a character boundary to 256
+/// bytes.
+fn dapp_title(lang: Lang, cluster: SolCluster, origin: &str) -> String {
+    let mut title = text::DAPP_TITLE.fill(lang, [cluster.display_name_in(lang), origin]);
     let mut end = title.len().min(MAX_TITLE_BYTES);
     while !title.is_char_boundary(end) {
         end = end.saturating_sub(1);
@@ -708,14 +732,14 @@ fn dapp_title(cluster: SolCluster, origin: &str) -> String {
 /// The activity row of a terminal record (`None` for `Pending`). A dApp send (version 3) always
 /// has one: its signer, no counterparty, amount `"0"` and the site title (spec/07 §14.1).
 #[must_use]
-pub fn activity_row(record: &SolRecord, time_unix_ms: u64) -> Option<SolActivityRow> {
+pub fn activity_row(lang: Lang, record: &SolRecord, time_unix_ms: u64) -> Option<SolActivityRow> {
     let status = record.state.activity_status()?;
     if let Some(dapp) = &record.dapp {
         return Some(SolActivityRow {
             cluster: record.cluster,
             account: SolAddress::from_bytes(dapp.public).to_base58(),
             tx_id: record.tx_id(),
-            title: dapp_title(record.cluster, &dapp.origin),
+            title: dapp_title(lang, record.cluster, &dapp.origin),
             asset: "native".to_owned(),
             amount: "0".to_owned(),
             counterparty: String::new(),
@@ -728,7 +752,7 @@ pub fn activity_row(record: &SolRecord, time_unix_ms: u64) -> Option<SolActivity
         cluster: record.cluster,
         account: core.from.to_base58(),
         tx_id: record.tx_id(),
-        title: transfer_title(record.cluster, &core),
+        title: transfer_title_in(lang, record.cluster, &core),
         asset: match core.asset {
             SolAsset::Sol => "native".to_owned(),
             SolAsset::Spl(entry) => entry.mint.to_base58(),
@@ -821,7 +845,11 @@ pub fn apply(plain: &mut JournalPlain, transition: &SolTransition) -> bool {
 
 /// Removes every decodable terminal SOL record and returns their activity rows (moved to meta
 /// first by the caller, then committed without them).
-pub fn take_terminal(plain: &mut JournalPlain, time_unix_ms: u64) -> Vec<SolActivityRow> {
+pub fn take_terminal(
+    lang: Lang,
+    plain: &mut JournalPlain,
+    time_unix_ms: u64,
+) -> Vec<SolActivityRow> {
     let mut rows = Vec::new();
     plain.entries.retain(|entry| {
         if entry.kind != EntryKind::Sol {
@@ -829,7 +857,7 @@ pub fn take_terminal(plain: &mut JournalPlain, time_unix_ms: u64) -> Vec<SolActi
         }
         match SolRecord::decode(&entry.body) {
             Ok(record) if record.is_terminal() => {
-                if let Some(row) = activity_row(&record, time_unix_ms) {
+                if let Some(row) = activity_row(lang, &record, time_unix_ms) {
                     rows.push(row);
                 }
                 false
@@ -848,6 +876,7 @@ pub fn take_terminal(plain: &mut JournalPlain, time_unix_ms: u64) -> Vec<SolActi
 ///
 /// [`JournalError::Full`] when even all terminal SOL records are not enough (`plain` unchanged).
 pub fn make_room(
+    lang: Lang,
     plain: &mut JournalPlain,
     time_unix_ms: u64,
 ) -> Result<Vec<SolActivityRow>, JournalError> {
@@ -878,7 +907,7 @@ pub fn make_room(
             }
         });
         if let Some(record) = removed
-            && let Some(row) = activity_row(&record, time_unix_ms)
+            && let Some(row) = activity_row(lang, &record, time_unix_ms)
         {
             rows.push(row);
         }

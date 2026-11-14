@@ -76,25 +76,29 @@ pub enum SolSignError {
     PendingExists,
 }
 
-impl fmt::Display for SolSignError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Vault(error) => error.fmt(formatter),
-            Self::DeadlineExceeded => {
-                formatter.write_str("승인 후 서명 기한(20초)이 지났습니다. 다시 검토하세요.")
-            }
+impl SolSignError {
+    /// The fixed text in `lang` (`Display` is the Korean one).
+    #[must_use]
+    pub fn text_in(self, lang: crate::lang::Lang) -> String {
+        use super::text as t;
+        let text = match self {
+            Self::Vault(error) => return error.text_in(lang),
+            Self::DeadlineExceeded => t::SIGN_DEADLINE,
             Self::KindMismatch
             | Self::Parse(_)
             | Self::EncodingMismatch
             | Self::KeyMismatch
-            | Self::PolicyMismatch => {
-                formatter.write_str("내부 검증에 실패해 서명하지 않았습니다.")
-            }
-            Self::PostSignVerification => formatter.write_str("서명 검증 실패(내부 오류)"),
-            Self::PendingExists => {
-                formatter.write_str("이 계정의 이전 전송을 확인 중이라 서명하지 않았습니다.")
-            }
-        }
+            | Self::PolicyMismatch => t::SIGN_INTERNAL,
+            Self::PostSignVerification => t::SIGN_POST,
+            Self::PendingExists => t::SIGN_PENDING,
+        };
+        text.get(lang).to_owned()
+    }
+}
+
+impl fmt::Display for SolSignError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.text_in(crate::lang::Lang::Ko))
     }
 }
 

@@ -13,6 +13,7 @@ use yw_core::journal::sol::{
     SOL_DAPP_MAX_PENDING, SOL_DAPP_MAX_PENDING_TOTAL, SolRecord, SolTxState, pending_dapp_count,
     pending_dapp_total,
 };
+use yw_core::lang::Lang;
 use yw_core::policy::{BrowserOrigin, ProviderError};
 use yw_core::sol::broadcast::Outcome;
 use yw_core::sol::dapp::{
@@ -34,6 +35,23 @@ use crate::logging::{self, Field};
 use crate::sol::flow::{DappPreview, DappPreviewJob, PreSignError, TrackResult};
 use crate::text::{json_object, json_str};
 use crate::workers::rpc::RpcJob;
+
+/// Fixed texts of the dApp Solana sends on the UI thread (spec/07 §20, spec/14).
+pub(crate) mod text {
+    yw_core::texts! {
+        /// S10 title of a journaled dApp send (origin).
+        TITLE_PENDING(1) = "사이트 거래 진행 중 · {0}" / "Site transaction in progress · {0}";
+        TITLE(1) = "사이트 거래 · {0}" / "Site transaction · {0}";
+        /// Pre-sign check reasons.
+        BLOCKHASH_EXPIRED = "거래의 블록해시가 만료되었습니다. 사이트에서 다시 요청하세요"
+            / "The transaction's blockhash has expired. Request it again from the site";
+        TABLES_CHANGED = "조회 테이블 주소가 승인한 값과 달라졌습니다. 서명하지 않았습니다"
+            / "The lookup table addresses changed from the approved ones. Nothing was signed";
+        /// Bands (reason).
+        SEND_FAILED(1) = "사이트 거래를 보내지 못했습니다: {0}" / "Could not send the site transaction: {0}";
+        SIGN_FAILED(1) = "사이트 거래에 서명하지 못했습니다: {0}" / "Could not sign the site transaction: {0}";
+    }
+}
 
 /// An approved dApp send waiting for its pre-sign check (spec/07 §20.10-2).
 #[derive(Debug)]
@@ -92,46 +110,42 @@ pub fn sol_round_failed(result: &TrackResult) -> bool {
 /// The S10 title of a journaled dApp send (spec/07 §20.9): "사이트 거래 진행 중 · origin" while
 /// it is `Pending`, then "사이트 거래 · origin" as its activity row says; empty for a wallet send.
 #[must_use]
-pub fn dapp_record_title(record: &SolRecord) -> String {
+pub fn dapp_record_title(lang: Lang, record: &SolRecord) -> String {
     match &record.dapp {
         Some(dapp) if record.state == SolTxState::Pending => {
-            format!("사이트 거래 진행 중 · {}", dapp.origin)
+            text::TITLE_PENDING.fill(lang, [&dapp.origin])
         }
-        Some(dapp) => format!("사이트 거래 · {}", dapp.origin),
+        Some(dapp) => text::TITLE.fill(lang, [&dapp.origin]),
         None => String::new(),
     }
 }
 
 /// The reason of a failed pre-sign check, after "사이트 거래를 보내지 못했습니다: ".
-fn presign_reason(error: PreSignError) -> String {
+fn presign_reason(lang: Lang, error: PreSignError) -> String {
     match error {
-        PreSignError::BlockhashExpired => {
-            "거래의 블록해시가 만료되었습니다. 사이트에서 다시 요청하세요".to_owned()
-        }
-        PreSignError::TablesChanged => {
-            "조회 테이블 주소가 승인한 값과 달라졌습니다. 서명하지 않았습니다".to_owned()
-        }
-        PreSignError::ClusterMismatch => ErrorCode::Rpc006.text(),
-        PreSignError::RpcAnomaly => ErrorCode::Rpc005.text(),
-        PreSignError::Rpc(code) => code.text(),
+        PreSignError::BlockhashExpired => text::BLOCKHASH_EXPIRED.get(lang).to_owned(),
+        PreSignError::TablesChanged => text::TABLES_CHANGED.get(lang).to_owned(),
+        PreSignError::ClusterMismatch => ErrorCode::Rpc006.text_in(lang),
+        PreSignError::RpcAnomaly => ErrorCode::Rpc005.text_in(lang),
+        PreSignError::Rpc(code) => code.text_in(lang),
     }
 }
 
 /// The reason of a dApp send that was not signed or journaled, after "사이트 거래에 서명하지
 /// 못했습니다: ".
-fn sign_reason(failure: SolSignFailure) -> String {
+fn sign_reason(lang: Lang, failure: SolSignFailure) -> String {
     match failure {
         SolSignFailure::DappSign(SolTxSignError::Vault(error)) => {
-            crate::errors::vault_code(error).text()
+            crate::errors::vault_code(error).text_in(lang)
         }
-        SolSignFailure::DappSign(error) => error.to_string(),
-        SolSignFailure::DappCard(error) | SolSignFailure::Card(error) => error.to_string(),
-        SolSignFailure::JournalFull => ErrorCode::Tx005.text(),
-        SolSignFailure::JournalWrite(_) => ErrorCode::Vlt003.text(),
+        SolSignFailure::DappSign(error) => error.text_in(lang),
+        SolSignFailure::DappCard(error) | SolSignFailure::Card(error) => error.text_in(lang),
+        SolSignFailure::JournalFull => ErrorCode::Tx005.text_in(lang),
+        SolSignFailure::JournalWrite(_) => ErrorCode::Vlt003.text_in(lang),
         SolSignFailure::Sign(_)
         | SolSignFailure::AlreadySigned
         | SolSignFailure::Locked
-        | SolSignFailure::TooManyPending => ErrorCode::Tx003.text(),
+        | SolSignFailure::TooManyPending => ErrorCode::Tx003.text_in(lang),
     }
 }
 
@@ -174,7 +188,11 @@ impl App {
             ..
         } = &site.kind
         else {
-            self.show_failure(ErrorCode::App009, false, ErrorCode::App009.text());
+            self.show_failure(
+                ErrorCode::App009,
+                false,
+                ErrorCode::App009.text_in(self.approval_lang()),
+            );
             return;
         };
         // The request's cluster, never the one shown now: the preview facts, the draft and the
@@ -182,7 +200,7 @@ impl App {
         let endpoint = match self.sol_endpoint(*cluster) {
             Ok(endpoint) => endpoint,
             Err(code) => {
-                self.show_failure(code, false, code.text());
+                self.show_failure(code, false, code.text_in(self.approval_lang()));
                 return;
             }
         };
@@ -193,7 +211,11 @@ impl App {
             txs: txs.clone(),
         })));
         if !sent {
-            self.show_failure(ErrorCode::Rpc001, true, ErrorCode::Rpc001.text());
+            self.show_failure(
+                ErrorCode::Rpc001,
+                true,
+                ErrorCode::Rpc001.text_in(self.approval_lang()),
+            );
         }
     }
 
@@ -213,7 +235,9 @@ impl App {
         };
         match self.sol_dapp_draft(&site, result) {
             Ok(draft) => self.show_ready_draft(draft, None),
-            Err((code, retryable)) => self.show_failure(code, retryable, code.text()),
+            Err((code, retryable)) => {
+                self.show_failure(code, retryable, code.text_in(self.approval_lang()));
+            }
         }
     }
 
@@ -358,7 +382,7 @@ impl App {
                 self.sol_dapp_send_failed(
                     ticket,
                     ProviderError::ChainUnavailable,
-                    Some(code.text()),
+                    Some(code.text_in(self.settings.language)),
                 );
                 return;
             }
@@ -383,7 +407,7 @@ impl App {
             self.sol_dapp_send_failed(
                 ticket,
                 ProviderError::Internal,
-                Some(ErrorCode::Rpc001.text()),
+                Some(ErrorCode::Rpc001.text_in(self.settings.language)),
             );
         }
     }
@@ -451,7 +475,7 @@ impl App {
                 self.sol_dapp_send_failed(
                     ticket,
                     ProviderError::BroadcastFailed,
-                    Some(presign_reason(error)),
+                    Some(presign_reason(self.settings.language, error)),
                 );
             }
         }
@@ -470,7 +494,8 @@ impl App {
             self.respond(&reply, Err(error));
         }
         if let Some(reason) = reason {
-            self.banner(None, format!("사이트 거래를 보내지 못했습니다: {reason}"));
+            let text = text::SEND_FAILED.fill(self.settings.language, [&reason]);
+            self.banner(None, text);
         }
         self.refresh();
     }
@@ -575,13 +600,9 @@ impl App {
             Err(failure) => {
                 logging::warn("app", "sol.dapp_sign_failed", &[]);
                 self.respond(&reply, Err(ProviderError::Internal));
-                self.banner(
-                    None,
-                    format!(
-                        "사이트 거래에 서명하지 못했습니다: {}",
-                        sign_reason(failure)
-                    ),
-                );
+                let lang = self.settings.language;
+                let reason = sign_reason(lang, failure);
+                self.banner(None, text::SIGN_FAILED.fill(lang, [&reason]));
                 self.refresh();
             }
         }
@@ -657,6 +678,8 @@ impl App {
 mod tests {
     use yw_core::journal::sol::{SolDappMeta, SolRecord, SolTxState};
     use yw_core::sol::broadcast::{LoopState, Outcome};
+
+    use yw_core::lang::Lang;
 
     use super::{dapp_record_title, sol_round_failed, sol_send_answer};
     use crate::errors::ErrorCode;
@@ -769,15 +792,19 @@ mod tests {
             }),
         };
         assert_eq!(
-            dapp_record_title(&record),
+            dapp_record_title(Lang::Ko, &record),
             "사이트 거래 진행 중 · https://app.example"
         );
         record.state = SolTxState::Landed;
         assert_eq!(
-            dapp_record_title(&record),
+            dapp_record_title(Lang::Ko, &record),
             "사이트 거래 · https://app.example"
         );
+        assert_eq!(
+            dapp_record_title(Lang::En, &record),
+            "Site transaction · https://app.example"
+        );
         record.dapp = None;
-        assert_eq!(dapp_record_title(&record), "");
+        assert_eq!(dapp_record_title(Lang::Ko, &record), "");
     }
 }

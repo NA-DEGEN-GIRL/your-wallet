@@ -178,14 +178,14 @@ impl IndexerError {
         }
     }
 
-    /// The fixed text, E-BTC-001 with the indexer name and its cause code.
+    /// The fixed text in `lang`, E-BTC-001 with the indexer name and its cause code.
     #[must_use]
-    pub fn text(self, indexer: BtcIndexer) -> String {
+    pub fn text(self, lang: yw_core::lang::Lang, indexer: BtcIndexer) -> String {
         match self {
             Self::Unreachable(cause) => {
-                ErrorCode::Btc001.render_with_cause(indexer_display(indexer), cause)
+                ErrorCode::Btc001.render_with_cause_in(lang, indexer_display(indexer), cause)
             }
-            other => other.code().text(),
+            other => other.code().text_in(lang),
         }
     }
 }

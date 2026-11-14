@@ -19,6 +19,7 @@ pub mod flow;
 pub mod indexer;
 pub mod pace;
 pub mod rpc;
+pub mod text;
 pub mod work;
 
 use yw_core::btc::BtcNetwork;
@@ -187,14 +188,14 @@ impl BtcError {
         }
     }
 
-    /// The fixed display text (never a server string); `None` when nothing is shown.
+    /// The fixed display text in `lang` (never a server string); `None` when nothing is shown.
     #[must_use]
-    pub fn text(self, indexer: BtcIndexer) -> Option<String> {
+    pub fn text(self, lang: yw_core::lang::Lang, indexer: BtcIndexer) -> Option<String> {
         match self {
-            Self::Blocked(block) => Some(block.text()),
-            Self::Core(failure) => Some(classify(failure).text()),
-            Self::Indexer(error) => Some(error.text(indexer)),
-            Self::Derivation => Some(ErrorCode::App009.text()),
+            Self::Blocked(block) => Some(block.text(lang)),
+            Self::Core(failure) => Some(classify(failure).text_in(lang)),
+            Self::Indexer(error) => Some(error.text(lang, indexer)),
+            Self::Derivation => Some(ErrorCode::App009.text_in(lang)),
             Self::Cancelled | Self::Cooldown => None,
         }
     }

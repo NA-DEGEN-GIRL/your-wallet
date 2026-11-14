@@ -127,15 +127,27 @@ fn enrol_recommended_plan_and_public_keys_match_known_vectors() {
     assert_eq!(lines[0], ["0x9858EfFD232B4033E47d90003D41EC34EcaEda94"]);
     assert_eq!(lines[1], ["bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu"]);
     assert_eq!(lines[2], ["HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk"]);
-    assert_eq!(record.slots[0].role.path_text(), "m/44'/60'/0'/0/0");
-    assert_eq!(record.slots[1].role.path_text(), "m/84'/0'/0'/0/0");
-    assert_eq!(record.slots[2].role.path_text(), "m/44'/501'/0'/0'");
-    assert_eq!(record.slots[3].role.path_text(), "m/44'/501'/1'/0'");
+    assert_eq!(
+        record.slots[0].role.path_text_in(crate::lang::Lang::Ko),
+        "m/44'/60'/0'/0/0"
+    );
+    assert_eq!(
+        record.slots[1].role.path_text_in(crate::lang::Lang::Ko),
+        "m/84'/0'/0'/0/0"
+    );
+    assert_eq!(
+        record.slots[2].role.path_text_in(crate::lang::Lang::Ko),
+        "m/44'/501'/0'/0'"
+    );
+    assert_eq!(
+        record.slots[3].role.path_text_in(crate::lang::Lang::Ko),
+        "m/44'/501'/1'/0'"
+    );
     // The preview (no card) shows the same keys.
     let shown = preview(&ctx, &seed_of(ABOUT), &recommended_plan()).unwrap();
     for (line, slot) in shown.iter().zip(&record.slots) {
         assert_eq!(line.public, slot.public);
-        assert_eq!(line.path, slot.role.path_text());
+        assert_eq!(line.path, slot.role.path_text_in(crate::lang::Lang::Ko));
     }
     // The card holds what was planned: secp256k1 attributes, fixed touch, PIV policies.
     assert_eq!(
@@ -442,21 +454,36 @@ fn path_selection_and_duplicate_refusal() {
     // Any index per slot.
     let plan = [sig(evm(7)), aut(btc(19)), piv(0x9A, sol(4))];
     validate_plan(&plan).unwrap();
-    assert_eq!(plan[0].role.path_text(), "m/44'/60'/0'/0/7");
-    assert_eq!(plan[1].role.path_text(), "m/84'/0'/0'/0/19");
-    assert_eq!(plan[2].role.path_text(), "m/44'/501'/4'/0'");
+    assert_eq!(
+        plan[0].role.path_text_in(crate::lang::Lang::Ko),
+        "m/44'/60'/0'/0/7"
+    );
+    assert_eq!(
+        plan[1].role.path_text_in(crate::lang::Lang::Ko),
+        "m/84'/0'/0'/0/19"
+    );
+    assert_eq!(
+        plan[2].role.path_text_in(crate::lang::Lang::Ko),
+        "m/44'/501'/4'/0'"
+    );
     let legacy = KeyRole::Btc {
         network: BtcNetwork::Testnet4,
         script: ScriptType::P2pkh,
         index: 3,
     };
-    assert_eq!(legacy.path_text(), "m/44'/1'/0'/0/3");
+    assert_eq!(
+        legacy.path_text_in(crate::lang::Lang::Ko),
+        "m/44'/1'/0'/0/3"
+    );
     let nested = KeyRole::Btc {
         network: BtcNetwork::Mainnet,
         script: ScriptType::P2shP2wpkh,
         index: 0,
     };
-    assert_eq!(nested.path_text(), "m/49'/0'/0'/0/0");
+    assert_eq!(
+        nested.path_text_in(crate::lang::Lang::Ko),
+        "m/49'/0'/0'/0/0"
+    );
     // Same path twice on one card (also with the shared-BTC variant of the same EVM key).
     let shared = KeyRole::Evm {
         index: AccountIndex::new(7).unwrap(),
@@ -1129,8 +1156,11 @@ fn connect_without_words_and_sign_every_chain() {
             address_texts(slot.role, &slot.public),
             address_texts(before.role, &before.public)
         );
-        assert_eq!(slot.path_text(), T_UNKNOWN_PATH);
-        assert_eq!(slot.role.path_text(), T_UNKNOWN_PATH);
+        assert_eq!(slot.path_text_in(crate::lang::Lang::Ko), T_UNKNOWN_PATH);
+        assert_eq!(
+            slot.role.path_text_in(crate::lang::Lang::Ko),
+            T_UNKNOWN_PATH
+        );
     }
     // A use of the other curve, or a slot the scan did not find, is refused.
     assert_eq!(
@@ -1610,4 +1640,131 @@ fn empty_slot_answered_without_6a88_follows_the_key_information() {
         "YubiKey 작업 중 오류가 발생했습니다 (SW 6B00)."
     );
     assert_eq!(CardError::Status(0x6B00).status_word(), Some(0x6B00));
+}
+
+/// Every `YubiKey` catalogue entry keeps its placeholders, has no Hangul in English and passes the
+/// display-text rule (spec/14 §4).
+#[test]
+fn yubikey_catalogue_is_complete() {
+    use crate::approval::{MAX_DISPLAY_VALUE_BYTES, is_valid_display_text};
+    use crate::lang::{has_hangul, placeholders};
+    for entry in super::text::ALL {
+        let expected: Vec<usize> = (0..entry.args).collect();
+        for template in [entry.ko, entry.en] {
+            let mut found = placeholders(template);
+            found.sort_unstable();
+            found.dedup();
+            assert_eq!(found, expected, "{}: {template}", entry.name);
+        }
+        assert!(!has_hangul(entry.en), "{}", entry.name);
+        assert!(
+            is_valid_display_text(entry.en, MAX_DISPLAY_VALUE_BYTES, true),
+            "{}",
+            entry.name
+        );
+    }
+}
+
+/// Korean texts stay those of `Display`; English card, plan, slot, role and scan texts have no
+/// Hangul (spec/14).
+#[test]
+fn english_yubikey_texts_have_no_korean() {
+    use super::TransportFault;
+    use super::connect::ScanNote;
+    use crate::lang::{Lang, has_hangul};
+    let errors = [
+        CardError::Transport(TransportFault::NoService),
+        CardError::Transport(TransportFault::NoCard),
+        CardError::Transport(TransportFault::Busy),
+        CardError::Transport(TransportFault::Io),
+        CardError::CardRemoved,
+        CardError::AppletMissing,
+        CardError::WrongPin { retries: 0 },
+        CardError::WrongPin { retries: 1 },
+        CardError::WrongPin { retries: 2 },
+        CardError::PinBlocked,
+        CardError::SecurityStatus,
+        CardError::Conditions,
+        CardError::WrongData,
+        CardError::NotSupported,
+        CardError::NotFound,
+        CardError::Status(0x6B00),
+        CardError::Malformed,
+        CardError::TooLarge,
+        CardError::ManagementKeyMismatch,
+        CardError::ManagementKeyProtected,
+        CardError::ManagementKeyUnknown,
+        CardError::FirmwareTooOld,
+        CardError::KdfEnabled,
+        CardError::KeyMismatch,
+        CardError::ForeignKey,
+        CardError::WrongCard,
+        CardError::BadSignature,
+        CardError::PinFormat,
+        CardError::Ed25519ImportRefused,
+        CardError::AdminLastTry,
+        CardError::MultipleCards,
+        CardError::DefaultPin,
+        CardError::NotBlocked,
+        CardError::PukLastTry,
+        CardError::Internal,
+    ];
+    for error in errors {
+        assert_eq!(error.text_in(Lang::Ko), error.to_string());
+        assert!(!has_hangul(&error.text_in(Lang::En)), "{error:?}");
+    }
+    assert_eq!(
+        CardError::Status(0x6B00).text_in(Lang::En),
+        "A YubiKey operation failed (SW 6B00)."
+    );
+    let retired = CardSlot::Piv(PivSlot::retired(0).unwrap());
+    let plans = [
+        PlanError::SlotCount,
+        PlanError::DuplicateSlot(retired),
+        PlanError::DuplicatePath(CardSlot::OpenPgp(PgpKey::Sig)),
+        PlanError::WrongApplet(CardSlot::OpenPgp(PgpKey::Aut)),
+        PlanError::UnsupportedRole(retired),
+        PlanError::Policy(retired),
+        PlanError::CardAlreadyEnrolled,
+        PlanError::TooManyCards,
+        PlanError::NotACopy(retired),
+        PlanError::DifferentMnemonic,
+    ];
+    for error in plans {
+        assert_eq!(error.text_in(Lang::Ko), error.to_string());
+        assert!(!has_hangul(&error.text_in(Lang::En)), "{error:?}");
+        let enrol = EnrolError::Plan(error);
+        assert_eq!(enrol.text_in(Lang::Ko), enrol.to_string());
+    }
+    assert!(!has_hangul(&EnrolError::SerialMismatch.text_in(Lang::En)));
+    assert_eq!(retired.label_in(Lang::En), "PIV 82 (retired 1)");
+    let shared = KeyRole::Evm {
+        index: AccountIndex::new(2).unwrap(),
+        btc: Some(BtcUse {
+            network: BtcNetwork::Mainnet,
+            script: ScriptType::P2wpkh,
+        }),
+    };
+    let unknown = btc(0).with_index(super::plan::UNKNOWN_PATH_FIRST).unwrap();
+    for role in [evm(3), btc(0), sol(1), shared, unknown] {
+        assert!(!has_hangul(&role.title_in(Lang::En)), "{role:?}");
+        assert!(!has_hangul(&role.path_text_in(Lang::En)), "{role:?}");
+    }
+    assert_eq!(evm(3).title_in(Lang::En), "EVM account 3");
+    assert_eq!(unknown.path_text_in(Lang::En), "Path unknown");
+    for touch in [
+        TouchPolicy::Never,
+        TouchPolicy::Always,
+        TouchPolicy::Cached,
+        TouchPolicy::AlwaysFixed,
+        TouchPolicy::CachedFixed,
+    ] {
+        assert!(!has_hangul(touch.label_in(Lang::En)));
+    }
+    let note = ScanNote {
+        piv: true,
+        reason: super::text::NOTE_APPLET_MISSING,
+    };
+    assert_eq!(note.text(Lang::Ko), "PIV(Solana 키): 애플릿이 없습니다");
+    assert_eq!(note.text(Lang::En), "PIV (Solana keys): No applet");
 }

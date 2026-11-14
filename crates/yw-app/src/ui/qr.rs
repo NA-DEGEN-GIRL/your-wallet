@@ -8,6 +8,7 @@
 
 use qrcodegen::{QrCode, QrCodeEcc};
 use yw_core::evm::address::Address;
+use yw_core::lang::Lang;
 use yw_win::ui::{Color, PaintDc, Rect};
 
 /// Quiet zone in modules.
@@ -32,17 +33,29 @@ pub enum EvmQrKind {
 impl EvmQrKind {
     /// The choice label for the receive screen.
     #[must_use]
-    pub const fn label(self) -> &'static str {
+    pub const fn label(self, lang: Lang) -> &'static str {
         match self {
-            Self::Eip681 => "지갑 앱용 QR (네트워크 포함)",
-            Self::PlainAddress => "주소만 QR (거래소 앱용)",
+            Self::Eip681 => text::QR_WALLET_APP.get(lang),
+            Self::PlainAddress => text::QR_ADDRESS_ONLY.get(lang),
         }
     }
 }
 
-/// Receive-screen note: one EVM address serves every EVM chain, but the screen shows only the
-/// selected network's assets.
-pub const RECEIVE_SHARED_ADDRESS_NOTE: &str = "이 주소는 다른 EVM 체인(예: Ethereum·Base·Arbitrum)에서도 같은 주소이지만, 여기에는 선택한 네트워크의 자산만 보입니다. 다른 체인으로 받은 자산은 그 체인을 추가·선택해야 보입니다.";
+/// The fixed texts of the receive QR (spec/14).
+pub mod text {
+    yw_core::texts! {
+        /// The EIP-681 choice.
+        QR_WALLET_APP = "지갑 앱용 QR (네트워크 포함)" / "QR for wallet apps (with network)";
+        /// The bare-address choice.
+        QR_ADDRESS_ONLY = "주소만 QR (거래소 앱용)" / "Address-only QR (for exchange apps)";
+        /// Receive-screen note: one EVM address serves every EVM chain, but the screen shows only
+        /// the selected network's assets.
+        RECEIVE_SHARED_ADDRESS_NOTE = "이 주소는 다른 EVM 체인(예: Ethereum·Base·Arbitrum)에서도 같은 주소이지만, 여기에는 선택한 네트워크의 자산만 보입니다. 다른 체인으로 받은 자산은 그 체인을 추가·선택해야 보입니다."
+            / "This address is the same on other EVM chains (e.g. Ethereum, Base, Arbitrum), but only the selected network's assets are shown here. Assets received on another chain appear after you add and select that chain.";
+    }
+}
+
+pub use text::RECEIVE_SHARED_ADDRESS_NOTE;
 
 /// The EVM receive payload (EIP-681).
 #[must_use]
@@ -137,6 +150,7 @@ pub fn paint(dc: &mut PaintDc<'_>, x: i32, y: i32, code: &QrCode, layout: &QrLay
 mod tests {
     use super::{EvmQrKind, encode, evm_payload, evm_receive_payload, layout, preferred_module};
     use yw_core::evm::address::parse_address;
+    use yw_core::lang::Lang;
 
     #[test]
     fn plain_address_payload_is_the_bare_eip55_address() {
@@ -155,7 +169,10 @@ mod tests {
         );
         let code = encode(&plain).unwrap();
         assert!(code.size() >= 21);
-        assert_ne!(EvmQrKind::Eip681.label(), EvmQrKind::PlainAddress.label());
+        assert_ne!(
+            EvmQrKind::Eip681.label(Lang::Ko),
+            EvmQrKind::PlainAddress.label(Lang::Ko)
+        );
     }
 
     /// The archive matrix digest: SHA-256 of `size` (i32 BE) and one byte per module, row-major.
@@ -190,6 +207,22 @@ mod tests {
         // The payload is parameterised by the chain id.
         let other = evm_payload(&address, 84_532);
         assert!(other.ends_with("@84532"));
+    }
+
+    #[test]
+    fn english_labels_have_no_hangul() {
+        use yw_core::lang::has_hangul;
+        for kind in [EvmQrKind::Eip681, EvmQrKind::PlainAddress] {
+            assert!(!has_hangul(kind.label(Lang::En)));
+            assert!(!kind.label(Lang::Ko).is_empty());
+        }
+        assert!(!has_hangul(
+            super::RECEIVE_SHARED_ADDRESS_NOTE.get(Lang::En)
+        ));
+        assert_eq!(
+            EvmQrKind::Eip681.label(Lang::Ko),
+            "지갑 앱용 QR (네트워크 포함)"
+        );
     }
 
     #[test]

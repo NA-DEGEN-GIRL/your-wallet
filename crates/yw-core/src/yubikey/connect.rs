@@ -25,10 +25,12 @@ use super::plan::{
     TouchPolicy, UNKNOWN_PATH_FIRST, is_unknown_index,
 };
 use super::record::{HwKeyRecord, HwPublicKey, RecordedSlot, records_consistent};
+use super::text as t;
 use super::{CardError, CardTransport, Firmware};
 use crate::bip32::path::AccountIndex;
 use crate::btc::account::ScriptType;
 use crate::btc::network::BtcNetwork;
+use crate::lang::{Lang, Text};
 use crate::zec::ZecNetwork;
 
 /// One key found on the card (no PIN was needed to read it).
@@ -44,6 +46,28 @@ pub struct FoundKey {
     pub pin: PinPolicy,
 }
 
+/// An applet the scan could not read, with the reason (shown in the app language).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScanNote {
+    /// `true` for PIV (Solana keys), `false` for `OpenPGP` (EVM, Bitcoin, Zcash keys).
+    pub piv: bool,
+    /// Why it could not be read.
+    pub reason: Text,
+}
+
+impl ScanNote {
+    /// The note in `lang`, e.g. `PIV(Solana 키): 애플릿이 없습니다`.
+    #[must_use]
+    pub fn text(self, lang: Lang) -> String {
+        let template = if self.piv {
+            t::NOTE_PIV
+        } else {
+            t::NOTE_OPENPGP
+        };
+        template.fill(lang, [self.reason.get(lang)])
+    }
+}
+
 /// What a scan saw on the card.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CardScan {
@@ -54,9 +78,9 @@ pub struct CardScan {
     /// Usable keys in slot order (`OpenPGP` SIG, AUT, then PIV `9A 9C 9D 9E 82–95`).
     pub keys: Vec<FoundKey>,
     /// Slots holding a key this wallet cannot use, with the reason (RSA, another curve, …).
-    pub unsupported: Vec<(CardSlot, &'static str)>,
+    pub unsupported: Vec<(CardSlot, Text)>,
     /// Applets that could not be read, with the reason.
-    pub notes: Vec<String>,
+    pub notes: Vec<ScanNote>,
     /// `OpenPGP` PIN (PW1) tries left.
     pub pgp_pin_retries: Option<u8>,
     /// PIV PIN tries left.
@@ -192,12 +216,12 @@ fn is_secp256k1_attributes(attributes: &[u8]) -> bool {
     }
 }
 
-const fn attributes_name(attributes: &[u8]) -> &'static str {
+const fn attributes_name(attributes: &[u8]) -> Text {
     match attributes.first() {
-        Some(0x01) => "RSA 키 — 이 지갑은 쓸 수 없습니다",
-        Some(0x16) => "OpenPGP Ed25519 키 — Solana는 PIV 슬롯의 Ed25519 키만 씁니다",
-        Some(0x12 | 0x13) => "secp256k1이 아닌 곡선의 키 — 이 지갑은 쓸 수 없습니다",
-        _ => "이 지갑이 모르는 키 — 쓸 수 없습니다",
+        Some(0x01) => t::SCAN_RSA,
+        Some(0x16) => t::SCAN_PGP_ED25519,
+        Some(0x12 | 0x13) => t::SCAN_OTHER_CURVE,
+        _ => t::SCAN_UNKNOWN_KEY,
     }
 }
 
@@ -237,8 +261,7 @@ fn scan_openpgp(
             // An answer that is not a key (some firmware answers an empty slot with an empty
             // point): shown, not fatal. Reader and card failures stop the scan.
             Err(CardError::Malformed | CardError::KeyMismatch | CardError::WrongData) => {
-                scan.unsupported
-                    .push((slot, "공개키를 읽지 못했습니다 — 빈 슬롯일 수 있습니다"));
+                scan.unsupported.push((slot, t::SCAN_NO_PUBLIC));
                 continue;
             }
             Err(error) => return Err(error),
@@ -289,33 +312,24 @@ fn scan_piv(
             Ok(metadata) => metadata,
             Err(CardError::NotFound) => continue,
             Err(CardError::Malformed | CardError::NotSupported | CardError::WrongData) => {
-                scan.unsupported.push((
-                    slot,
-                    "메타데이터를 읽지 못했습니다 — 이 지갑은 쓸 수 없습니다",
-                ));
+                scan.unsupported.push((slot, t::SCAN_NO_METADATA));
                 continue;
             }
             Err(error) => return Err(error),
         };
         if metadata.algorithm != ALG_ED25519 {
-            scan.unsupported.push((
-                slot,
-                "Ed25519가 아닌 키(P-256·RSA 등) — 이 지갑은 쓸 수 없습니다",
-            ));
+            scan.unsupported.push((slot, t::SCAN_NOT_ED25519));
             continue;
         }
         let (Some(public), Some((pin, touch))) = (
             metadata.public,
             piv_policies(metadata.pin_policy, metadata.touch_policy),
         ) else {
-            scan.unsupported.push((
-                slot,
-                "PIN 정책 '없음' 등 이 지갑이 쓰지 않는 정책의 키입니다",
-            ));
+            scan.unsupported.push((slot, t::SCAN_POLICY));
             continue;
         };
         if ed25519_dalek::VerifyingKey::from_bytes(&public).is_err() {
-            scan.unsupported.push((slot, "올바르지 않은 공개키"));
+            scan.unsupported.push((slot, t::SCAN_BAD_PUBLIC));
             continue;
         }
         scan.keys.push(FoundKey {
@@ -328,12 +342,12 @@ fn scan_piv(
     Ok(Some(identity))
 }
 
-const fn applet_note(error: CardError) -> &'static str {
+const fn applet_note(error: CardError) -> Text {
     match error {
-        CardError::AppletMissing => "애플릿이 없습니다",
-        CardError::FirmwareTooOld => "펌웨어가 오래되어 쓸 수 없습니다",
-        CardError::KdfEnabled => "PIN KDF가 켜져 있어 이 지갑은 쓸 수 없습니다",
-        _ => "읽지 못했습니다",
+        CardError::AppletMissing => t::NOTE_APPLET_MISSING,
+        CardError::FirmwareTooOld => t::NOTE_FIRMWARE,
+        CardError::KdfEnabled => t::NOTE_KDF,
+        _ => t::NOTE_UNREADABLE,
     }
 }
 
@@ -367,14 +381,16 @@ pub fn scan_card(
         _ => return Err(EnrolError::Card(CardError::Internal)),
     };
     if let Err(error) = pgp {
-        scan.notes.push(format!(
-            "OpenPGP(EVM·Bitcoin·Zcash 키): {}",
-            applet_note(error)
-        ));
+        scan.notes.push(ScanNote {
+            piv: false,
+            reason: applet_note(error),
+        });
     }
     if let Err(error) = piv {
-        scan.notes
-            .push(format!("PIV(Solana 키): {}", applet_note(error)));
+        scan.notes.push(ScanNote {
+            piv: true,
+            reason: applet_note(error),
+        });
     }
     (scan.serial, scan.firmware) = identity;
     Ok(scan)

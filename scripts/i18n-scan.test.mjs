@@ -27,6 +27,23 @@ test("Hangul literals outside the catalogues are found; comments, catalogues and
   assert.deepEqual(found, ["보이는 문구", "원시 \"문자열\""]);
 });
 
+test("every #[cfg(test)] item is skipped, wherever it is and however it is declared", () => {
+  const source = [
+    "#[cfg(test)]",
+    "pub(crate) mod tests;",
+    "const A: &str = \"선언 뒤의 문구\";",
+    "    #[cfg(test)]",
+    "    const B: &str = \"시험 전용 {;\";",
+    "#[cfg(test)]",
+    "pub(crate) mod helpers {",
+    "    fn f() { let _ = \"시험 }\"; }",
+    "}",
+    "const C: &str = \"끝의 문구\";",
+  ].join("\n");
+  const found = violations(source, true).map(({ value }) => value);
+  assert.deepEqual(found, ["선언 뒤의 문구", "끝의 문구"]);
+});
+
 test("JavaScript strings of every quote kind are literals", () => {
   const values = stringLiterals("const a = \"하나\"; const b = '둘'; const c = `셋`; // 넷", false)
     .map(({ value }) => value);

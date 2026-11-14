@@ -130,16 +130,20 @@ fn look_alike_splits_total_six_or_more() -> TestResult {
     );
     assert!(notes[0].needs_ack());
     assert!(
-        notes[0].text().contains("앞 3자·끝 3자"),
+        notes[0]
+            .text_in(yw_core::lang::Lang::Ko)
+            .contains("앞 3자·끝 3자"),
         "{}",
-        notes[0].text()
+        notes[0].text_in(yw_core::lang::Lang::Ko)
     );
     let typed = poisoned(0, 6)?.to_lower_hex();
     let (_, notes) = check_recipient(&typed, &sender, None, &book).map_err(ErrorCode::code)?;
     assert!(
-        notes[0].text().starts_with("'거래소'과 끝 6자가"),
+        notes[0]
+            .text_in(yw_core::lang::Lang::Ko)
+            .starts_with("'거래소'과 끝 6자가"),
         "{}",
-        notes[0].text()
+        notes[0].text_in(yw_core::lang::Lang::Ko)
     );
     let typed = poisoned(2, 3)?.to_lower_hex();
     let (_, notes) = check_recipient(&typed, &sender, None, &book).map_err(ErrorCode::code)?;
@@ -234,7 +238,13 @@ fn past_recipients_become_history_entries() -> TestResult {
         }]
     );
     assert!(notes[0].needs_ack());
-    assert!(notes[0].text().contains("보낸 내역"), "{}", notes[0].text());
+    assert!(
+        notes[0]
+            .text_in(yw_core::lang::Lang::Ko)
+            .contains("보낸 내역"),
+        "{}",
+        notes[0].text_in(yw_core::lang::Lang::Ko)
+    );
     Ok(())
 }
 
@@ -307,7 +317,10 @@ fn recipient_rules_and_notes() -> TestResult {
             verified: true
         }]
     );
-    assert_eq!(notes[0].text(), "주소록: 거래소 ✓ 확인됨");
+    assert_eq!(
+        notes[0].text_in(yw_core::lang::Lang::Ko),
+        "주소록: 거래소 ✓ 확인됨"
+    );
     // Own account = sender: both notes.
     let (_, notes) = check(USER).map_err(ErrorCode::code)?;
     assert_eq!(
@@ -331,7 +344,11 @@ fn recipient_rules_and_notes() -> TestResult {
         }]
     );
     assert!(notes[0].needs_ack() && notes[0].is_warning());
-    assert!(notes[0].text().contains("주소 오염 공격"));
+    assert!(
+        notes[0]
+            .text_in(yw_core::lang::Lang::Ko)
+            .contains("주소 오염 공격")
+    );
     let (_, notes) =
         check("0xF278cF59F82eDcf871d630F28EcC8056f25C1cdb").map_err(ErrorCode::code)?;
     assert_eq!(notes, vec![AddressNote::NotInBook]);
@@ -410,7 +427,7 @@ fn fee_quote_uses_the_gas_plan_and_caps() -> TestResult {
     assert_eq!(quoted.max_total, U256::from_u64(515_592_000_000_000));
     assert_eq!(quoted.cap_violation, None);
     assert!(!quoted.estimate_failed);
-    let line = quoted.line(&chain);
+    let line = quoted.line_in(yw_core::lang::Lang::Ko, &chain);
     assert!(line.starts_with("예상 최대 수수료: "), "{line}");
     assert!(line.contains("2.1 gwei"), "{line}");
     assert_eq!(rpc.count("eth_simulateV1"), 0, "the quote never simulates");
@@ -471,7 +488,11 @@ fn st3_chain_form_rules() -> TestResult {
             (ErrorCode::Chn004, Some("chainId")),
             "{bad}"
         );
-        assert!(error.message().contains("chainId"));
+        assert!(
+            error
+                .message_in(yw_core::lang::Lang::Ko)
+                .contains("chainId")
+        );
     }
     assert_eq!(
         code_of(validate_chain_form(
@@ -492,7 +513,7 @@ fn st3_chain_form_rules() -> TestResult {
         Some(ErrorCode::Chn003)
     );
     let ok = validate_chain_form(&form("84532", "Base Sepolia", url), &settings, &none, None)
-        .map_err(|error| error.message())?;
+        .map_err(|error| error.message_in(yw_core::lang::Lang::Ko))?;
     assert_eq!(ok.chain_id, 84_532);
     assert!(matches!(ok.rpc, RpcSpec::Url(_)));
     // Manual template + a bare label → E-KEY-003; `http://` → E-KEY-003; empty → E-KEY-003.
@@ -527,7 +548,7 @@ fn st3_chain_form_rules() -> TestResult {
         &keys,
         None,
     )
-    .map_err(|error| error.message())?;
+    .map_err(|error| error.message_in(yw_core::lang::Lang::Ko))?;
     let RpcSpec::Template {
         template,
         entry,
@@ -553,7 +574,11 @@ fn st3_chain_form_rules() -> TestResult {
     .err()
     .ok_or("accepted")?;
     assert_eq!(dotted.code, ErrorCode::Chn004);
-    assert!(dotted.message().contains("QuickNode 서브도메인"));
+    assert!(
+        dotted
+            .message_in(yw_core::lang::Lang::Ko)
+            .contains("QuickNode 서브도메인")
+    );
     // Alchemy template.
     settings.rpc_template = RpcTemplate::Alchemy;
     keys.set_alchemy("test-key-1");
@@ -563,7 +588,7 @@ fn st3_chain_form_rules() -> TestResult {
         &keys,
         None,
     )
-    .map_err(|error| error.message())?;
+    .map_err(|error| error.message_in(yw_core::lang::Lang::Ko))?;
     let RpcSpec::Template { entry, url, .. } = valid.rpc else {
         return Err("template expected".into());
     };
@@ -663,7 +688,7 @@ fn st3_names_symbols_decimals_explorer_and_limits() -> TestResult {
         &none,
         None,
     )
-    .map_err(|error| error.message())?;
+    .map_err(|error| error.message_in(yw_core::lang::Lang::Ko))?;
     assert_eq!(
         valid.explorer.as_deref(),
         Some("https://sepolia.basescan.org")
@@ -691,7 +716,7 @@ fn st3_names_symbols_decimals_explorer_and_limits() -> TestResult {
         &none,
         Some(84_532),
     )
-    .map_err(|error| error.message())?;
+    .map_err(|error| error.message_in(yw_core::lang::Lang::Ko))?;
     assert!(matches!(edited.rpc, RpcSpec::Keep));
     assert_eq!(
         code_of(validate_chain_form(&base, &settings, &none, None)),
@@ -729,7 +754,7 @@ fn st3_mock_rpc_checks() -> TestResult {
         .ok_or("accepted")?;
     assert_eq!(error, ProbeError::ChainId { rpc: Some(8_453) });
     assert_eq!(error.code(), ErrorCode::Chn001);
-    assert!(error.message().contains("8453"));
+    assert!(error.message_in(yw_core::lang::Lang::Ko).contains("8453"));
     // Pinned hash differs while editing → E-CHN-008, nothing returned to save.
     let rpc = fake(world(8_453, genesis, Vec::new()));
     let error = probe_chain(

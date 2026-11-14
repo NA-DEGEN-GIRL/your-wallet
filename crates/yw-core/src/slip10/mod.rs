@@ -289,13 +289,8 @@ impl SolKeySource {
         )
     }
 
-    /// The path text shown to the user (`m/44'/501'/0'/0'`, `BIP39 seed[0..32]`, …), Korean.
-    #[must_use]
-    pub fn path_text(self) -> String {
-        self.path_text_in(Lang::Ko)
-    }
-
-    /// [`Self::path_text`] in `lang` (approval displays, spec/14 §5 `PATH_*`).
+    /// The path text shown to the user in `lang` (`m/44'/501'/0'/0'`, `BIP39 seed[0..32]`, …;
+    /// spec/14 §5 `PATH_*`).
     #[must_use]
     pub fn path_text_in(self, lang: Lang) -> String {
         match self {

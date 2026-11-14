@@ -15,6 +15,7 @@
 
 use yw_core::bip32::path::AccountIndex;
 use yw_core::btc::{BtcNetwork, ScriptType};
+use yw_core::lang::Lang;
 use yw_core::secret::Zeroizing;
 use yw_core::yubikey::manage::{ClearMethod, ClearPlan};
 use yw_core::yubikey::plan::{
@@ -34,45 +35,93 @@ use crate::workers::key::yubikey::manage::{Cleared, ManageJob, ManageOutcome, Re
 use crate::yubikey::PinKind;
 use yw_core::yubikey::enrol::Enrolled;
 
-/// The word typed to confirm "`YubiKey`의 키 지우기" (2026-11-10: the title's and the button's
-/// word).
-pub const CLEAR_WORD: &str = "지우기";
-/// T-YK-RESLOT-WORDS: what happens to the recovery words.
-pub const T_YK_RESLOT_WORDS: &str = "새 키를 만들려면 복구 단어가 한 번 필요합니다. 비밀 입력 창에서 받아 키를 만드는 데만 쓰고 저장하지 않으며, 이 작업(백업 YubiKey 적용 포함)을 마치거나 취소하거나 지갑이 잠기면 바로 지웁니다.";
-/// T-YK-RESLOT-REMOVED: the accounts this card stops holding (shown only when one of them has a
-/// known path, spec/10 §15.1).
-pub const T_YK_RESLOT_REMOVED: &str = "카드에서 빠지는 체인은 바꾼 뒤 이 YubiKey로 서명할 수 없습니다. 자금은 체인에 그대로 있고(복구 단어로 언제든 복구), 나중에 같은 구성으로 다시 바꾸면 같은 주소가 그대로 돌아옵니다.";
-/// T-YK-KEY-LOST: a key connected without recovery words that no other enrolled card holds is
-/// overwritten or cleared (spec/10 §15): it cannot be made again.
-pub const T_YK_KEY_LOST: &str = "이 키는 복구 단어가 없습니다 — 지우면 영구히 사라지고 이 주소의 자산을 다시 쓸 수 없습니다. 잔액이 있으면 먼저 다른 주소로 옮기세요.";
-/// The phrase typed to confirm that such a key is lost for good.
-pub const LOSS_WORD: &str = "영구 삭제";
-/// The checkbox of [`T_YK_KEY_LOST`].
-pub const T_YK_KEY_LOST_ACK: &str =
-    "이해했습니다: 복구 단어가 없는 이 키는 영구히 사라지고 그 주소의 자산을 다시 쓸 수 없습니다";
-/// T-YK-RESLOT-BACKUP: backup cards should get the same change.
-pub const T_YK_RESLOT_BACKUP: &str = "이 YubiKey의 백업 YubiKey가 있으면 같은 구성으로 바꾸세요. 그렇지 않으면 백업 YubiKey에는 예전 키가 남아 같은 계정을 대신 서명할 수 없습니다.";
-/// T-YK-CLEAR-FUNDS (shown only when a cleared slot has a known path).
-pub const T_YK_CLEAR_FUNDS: &str = "지우면 아래 계정은 이 YubiKey로 서명할 수 없습니다. 자금은 체인에 그대로 있고 복구 단어로 언제든 복구할 수 있습니다(같은 키를 다시 넣거나 다른 지갑에서).";
-/// What "이 지갑의 키만 지우기" of `OpenPGP` does (2026-11-10: the result first; how is under
-/// '어떻게 지우나요 ▸').
-pub const T_YK_CLEAR_PGP_OURS_RESULT: &str = "이 지갑이 넣은 키만 지웁니다. 같은 YubiKey의 GPG 키·PIN·FIDO2(패스키)는 그대로입니다. 관리자 PIN이 필요합니다.";
-/// What "`OpenPGP` 전체 초기화" does.
-pub const T_YK_CLEAR_PGP_RESET_RESULT: &str = "OpenPGP 기능 전체를 공장 상태로 되돌립니다. 이 지갑 키뿐 아니라 GPG 등 다른 키도 모두 지워지고 PIN은 123456, 관리자 PIN은 12345678이 됩니다. PIN 없이 되며 되돌릴 수 없습니다.";
-/// What "Solana 키만 지우기" (PIV) does.
-pub const T_YK_CLEAR_PIV_OURS_RESULT: &str = "이 지갑이 넣은 Solana 키만 지웁니다. 같은 YubiKey의 다른 PIV 키·인증서·PIN·FIDO2(패스키)는 그대로입니다. PIV PIN이 필요합니다.";
-/// What "PIV 전체 초기화" does.
-pub const T_YK_CLEAR_PIV_RESET_RESULT: &str = "PIV 기능 전체를 공장 상태로 되돌립니다. 이 지갑 키뿐 아니라 인증서 등 다른 키도 모두 지워지고 PIN은 123456, PUK는 12345678이 됩니다. PIN 없이 되며 되돌릴 수 없습니다.";
-/// T-YK-CLEAR-PGP-OURS (how; under '어떻게 지우나요 ▸').
-pub const T_YK_CLEAR_PGP_OURS: &str = "OpenPGP에는 '키 삭제' 명령이 없습니다. yubikey-manager의 delete_key와 같이 SIG/AUT 슬롯의 알고리즘 속성을 두 번 바꿔(RSA 4096 → RSA 2048) 그 슬롯의 키를 지웁니다. PIN과 다른 슬롯(DEC)은 그대로이고, '고정' 터치 정책은 남습니다(지우려면 초기화). 관리자 PIN이 필요합니다.";
-/// T-YK-CLEAR-PGP-RESET.
-pub const T_YK_CLEAR_PGP_RESET: &str = "OpenPGP 애플릿 전체를 공장 상태로 되돌립니다(Yubico 절차: PIN·관리자 PIN을 틀린 값으로 잠근 뒤 TERMINATE·ACTIVATE). 세 슬롯의 모든 키(GPG 등 다른 용도 포함)가 지워지고 PIN은 123456, 관리자 PIN은 12345678로 돌아갑니다. PIN이 필요 없습니다.";
-/// T-YK-CLEAR-PIV-OURS.
-pub const T_YK_CLEAR_PIV_OURS: &str = "이 지갑이 쓴 PIV 슬롯만 DELETE KEY로 지웁니다(펌웨어 5.7 이상; Yubico 문서는 5.7.4부터). 이 지갑은 PIV 인증서를 쓰지 않으므로 지울 인증서는 없습니다. PIV PIN이 필요하고, 관리 키는 공장 기본값이거나 PIN으로 보호된 경우만 됩니다.";
-/// T-YK-CLEAR-PIV-RESET.
-pub const T_YK_CLEAR_PIV_RESET: &str = "PIV 애플릿 전체를 공장 상태로 되돌립니다(PIN과 PUK를 틀린 값으로 잠근 뒤 RESET). 모든 PIV 키·인증서(다른 용도 포함)가 지워지고 PIN 123456, PUK 12345678, 관리 키가 공장 기본값으로 돌아갑니다. PIN이 필요 없습니다.";
-/// T-YK-CLEAR-SCOPE.
-pub const T_YK_CLEAR_SCOPE: &str = "FIDO2·패스키, OTP, OATH는 건드리지 않습니다.";
+/// Fixed texts of the card list's `슬롯 구성 바꾸기` and `YubiKey의 키 지우기` (spec/10 §15;
+/// English spec/14).
+pub mod text {
+    yw_core::texts! {
+        /// The word typed to confirm "`YubiKey`의 키 지우기" (2026-11-10: the title's and the
+        /// button's word).
+        CLEAR_WORD = "지우기" / "erase";
+        /// The phrase typed to confirm that a key without recovery words is lost for good.
+        LOSS_WORD = "영구 삭제" / "erase forever";
+        /// T-YK-RESLOT-WORDS: what happens to the recovery words.
+        YK_RESLOT_WORDS = "새 키를 만들려면 복구 단어가 한 번 필요합니다. 비밀 입력 창에서 받아 키를 만드는 데만 쓰고 저장하지 않으며, 이 작업(백업 YubiKey 적용 포함)을 마치거나 취소하거나 지갑이 잠기면 바로 지웁니다."
+            / "Making the new keys needs the recovery words once. They are taken in the secret input window, used only to make the keys and not stored, and wiped as soon as this task (including applying it to backup YubiKeys) finishes or is cancelled, or the wallet locks.";
+        /// T-YK-RESLOT-REMOVED: the accounts this card stops holding (shown only when one of
+        /// them has a known path, spec/10 §15.1).
+        YK_RESLOT_REMOVED = "카드에서 빠지는 체인은 바꾼 뒤 이 YubiKey로 서명할 수 없습니다. 자금은 체인에 그대로 있고(복구 단어로 언제든 복구), 나중에 같은 구성으로 다시 바꾸면 같은 주소가 그대로 돌아옵니다."
+            / "After the change, chains removed from the card can no longer be signed with this YubiKey. The funds stay on the chain (recoverable any time with the recovery words), and changing back to the same layout later brings the same addresses back.";
+        /// T-YK-KEY-LOST: a key connected without recovery words that no other enrolled card
+        /// holds is overwritten or cleared (spec/10 §15): it cannot be made again.
+        YK_KEY_LOST = "이 키는 복구 단어가 없습니다 — 지우면 영구히 사라지고 이 주소의 자산을 다시 쓸 수 없습니다. 잔액이 있으면 먼저 다른 주소로 옮기세요."
+            / "This key has no recovery words — erasing it loses it for good, and the assets of this address can no longer be used. If there is a balance, move it to another address first.";
+        /// The checkbox of [`YK_KEY_LOST`].
+        YK_KEY_LOST_ACK = "이해했습니다: 복구 단어가 없는 이 키는 영구히 사라지고 그 주소의 자산을 다시 쓸 수 없습니다"
+            / "I understand: this key without recovery words is lost for good, and the assets of its address can no longer be used";
+        /// T-YK-RESLOT-BACKUP: backup cards should get the same change.
+        YK_RESLOT_BACKUP = "이 YubiKey의 백업 YubiKey가 있으면 같은 구성으로 바꾸세요. 그렇지 않으면 백업 YubiKey에는 예전 키가 남아 같은 계정을 대신 서명할 수 없습니다."
+            / "If this YubiKey has backup YubiKeys, change them to the same layout. Otherwise the backup YubiKeys keep the old keys and cannot sign for the same accounts instead.";
+        /// T-YK-CLEAR-FUNDS (shown only when a cleared slot has a known path).
+        YK_CLEAR_FUNDS = "지우면 아래 계정은 이 YubiKey로 서명할 수 없습니다. 자금은 체인에 그대로 있고 복구 단어로 언제든 복구할 수 있습니다(같은 키를 다시 넣거나 다른 지갑에서)."
+            / "After erasing, the accounts below can no longer be signed with this YubiKey. The funds stay on the chain and can be recovered any time with the recovery words (by putting the same keys back, or in another wallet).";
+        /// What "이 지갑의 키만 지우기" of `OpenPGP` does (2026-11-10: the result first; how is
+        /// under '어떻게 지우나요 ▸').
+        YK_CLEAR_PGP_OURS_RESULT = "이 지갑이 넣은 키만 지웁니다. 같은 YubiKey의 GPG 키·PIN·FIDO2(패스키)는 그대로입니다. 관리자 PIN이 필요합니다."
+            / "Erases only the keys this wallet put there. The YubiKey's GPG keys, PINs and FIDO2 (passkeys) stay. Needs the admin PIN.";
+        /// What "`OpenPGP` 전체 초기화" does.
+        YK_CLEAR_PGP_RESET_RESULT = "OpenPGP 기능 전체를 공장 상태로 되돌립니다. 이 지갑 키뿐 아니라 GPG 등 다른 키도 모두 지워지고 PIN은 123456, 관리자 PIN은 12345678이 됩니다. PIN 없이 되며 되돌릴 수 없습니다."
+            / "Returns the whole OpenPGP function to factory state. Not only this wallet's keys but all other keys such as GPG keys are erased, and the PIN becomes 123456 and the admin PIN 12345678. It works without a PIN and cannot be undone.";
+        /// What "Solana 키만 지우기" (PIV) does.
+        YK_CLEAR_PIV_OURS_RESULT = "이 지갑이 넣은 Solana 키만 지웁니다. 같은 YubiKey의 다른 PIV 키·인증서·PIN·FIDO2(패스키)는 그대로입니다. PIV PIN이 필요합니다."
+            / "Erases only the Solana keys this wallet put there. The YubiKey's other PIV keys, certificates, PINs and FIDO2 (passkeys) stay. Needs the PIV PIN.";
+        /// What "PIV 전체 초기화" does.
+        YK_CLEAR_PIV_RESET_RESULT = "PIV 기능 전체를 공장 상태로 되돌립니다. 이 지갑 키뿐 아니라 인증서 등 다른 키도 모두 지워지고 PIN은 123456, PUK는 12345678이 됩니다. PIN 없이 되며 되돌릴 수 없습니다."
+            / "Returns the whole PIV function to factory state. Not only this wallet's keys but all other keys such as certificates are erased, and the PIN becomes 123456 and the PUK 12345678. It works without a PIN and cannot be undone.";
+        /// T-YK-CLEAR-PGP-OURS (how; under '어떻게 지우나요 ▸').
+        YK_CLEAR_PGP_OURS = "OpenPGP에는 '키 삭제' 명령이 없습니다. yubikey-manager의 delete_key와 같이 SIG/AUT 슬롯의 알고리즘 속성을 두 번 바꿔(RSA 4096 → RSA 2048) 그 슬롯의 키를 지웁니다. PIN과 다른 슬롯(DEC)은 그대로이고, '고정' 터치 정책은 남습니다(지우려면 초기화). 관리자 PIN이 필요합니다."
+            / "OpenPGP has no 'delete key' command. Like yubikey-manager's delete_key, the wallet changes the algorithm attributes of the SIG/AUT slots twice (RSA 4096 → RSA 2048), which erases the slot's key. The PIN and the other slot (DEC) stay, and a 'fixed' touch policy remains (a reset removes it). Needs the admin PIN.";
+        /// T-YK-CLEAR-PGP-RESET.
+        YK_CLEAR_PGP_RESET = "OpenPGP 애플릿 전체를 공장 상태로 되돌립니다(Yubico 절차: PIN·관리자 PIN을 틀린 값으로 잠근 뒤 TERMINATE·ACTIVATE). 세 슬롯의 모든 키(GPG 등 다른 용도 포함)가 지워지고 PIN은 123456, 관리자 PIN은 12345678로 돌아갑니다. PIN이 필요 없습니다."
+            / "Returns the whole OpenPGP applet to factory state (Yubico's procedure: lock the PIN and admin PIN with wrong values, then TERMINATE and ACTIVATE). All keys in the three slots (including those for other uses such as GPG) are erased, and the PIN returns to 123456 and the admin PIN to 12345678. No PIN is needed.";
+        /// T-YK-CLEAR-PIV-OURS.
+        YK_CLEAR_PIV_OURS = "이 지갑이 쓴 PIV 슬롯만 DELETE KEY로 지웁니다(펌웨어 5.7 이상; Yubico 문서는 5.7.4부터). 이 지갑은 PIV 인증서를 쓰지 않으므로 지울 인증서는 없습니다. PIV PIN이 필요하고, 관리 키는 공장 기본값이거나 PIN으로 보호된 경우만 됩니다."
+            / "Erases only the PIV slots this wallet used, with DELETE KEY (firmware 5.7 or later; Yubico documents it from 5.7.4). This wallet uses no PIV certificates, so there are none to erase. Needs the PIV PIN, and works only when the management key is the factory default or PIN-protected.";
+        /// T-YK-CLEAR-PIV-RESET.
+        YK_CLEAR_PIV_RESET = "PIV 애플릿 전체를 공장 상태로 되돌립니다(PIN과 PUK를 틀린 값으로 잠근 뒤 RESET). 모든 PIV 키·인증서(다른 용도 포함)가 지워지고 PIN 123456, PUK 12345678, 관리 키가 공장 기본값으로 돌아갑니다. PIN이 필요 없습니다."
+            / "Returns the whole PIV applet to factory state (lock the PIN and PUK with wrong values, then RESET). All PIV keys and certificates (including those for other uses) are erased, and the PIN returns to 123456, the PUK to 12345678 and the management key to the factory default. No PIN is needed.";
+        /// T-YK-CLEAR-SCOPE.
+        YK_CLEAR_SCOPE = "FIDO2·패스키, OTP, OATH는 건드리지 않습니다." / "FIDO2/passkeys, OTP and OATH are not touched.";
+        PRESET_CUSTOM = "직접 고르기" / "Choose per slot";
+        CHAIN_EVM = "EVM 계정" / "EVM account";
+        CHAIN_BTC = "Bitcoin 주소" / "Bitcoin address";
+        CHAIN_ZEC = "Zcash 주소" / "Zcash address";
+        CHAIN_SHARED = "EVM 공유 키 (고급)" / "EVM shared key (advanced)";
+        /// `{0}` the word to type.
+        TYPE_TO_CONFIRM(1) = "확인하려면 입력란에 '{0}'를 정확히 입력하세요." / "To confirm, type '{0}' exactly in the box.";
+        /// `{0}` the word to type ([`LOSS_WORD`]).
+        TYPE_LOSS_TO_ERASE(1) = "복구 단어가 없는 키를 지우려면 입력란에 '{0}'를 정확히 입력하세요."
+            / "To erase a key without recovery words, type '{0}' exactly in the box.";
+        RESLOTTED(1) = "YubiKey #{0}의 슬롯 구성을 바꿨습니다." / "The slot layout of YubiKey #{0} was changed.";
+        RESLOT_PARTIAL = "일부 슬롯에 새 키가 이미 들어갔을 수 있습니다. 지갑의 슬롯 표는 바꾸지 않았습니다. 다시 시도하면 덮어씁니다."
+            / "New keys may already be in some slots. The wallet's slot table was not changed. Trying again overwrites them.";
+    }
+}
+
+/// The typed clear word, Korean (tests).
+#[cfg(test)]
+pub const CLEAR_WORD: &str = text::CLEAR_WORD.ko;
+/// The typed loss word, Korean (tests).
+#[cfg(test)]
+pub const LOSS_WORD: &str = text::LOSS_WORD.ko;
+/// T-YK-RESLOT-WORDS, Korean (tests).
+#[cfg(test)]
+pub const T_YK_RESLOT_WORDS: &str = text::YK_RESLOT_WORDS.ko;
+/// T-YK-KEY-LOST, Korean (tests).
+#[cfg(test)]
+pub const T_YK_KEY_LOST: &str = text::YK_KEY_LOST.ko;
+/// T-YK-CLEAR-FUNDS, Korean (tests).
+#[cfg(test)]
+pub const T_YK_CLEAR_FUNDS: &str = text::YK_CLEAR_FUNDS.ko;
 
 /// A preset of the two `OpenPGP` slots.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -101,13 +150,13 @@ impl Preset {
 
     /// Display label.
     #[must_use]
-    pub const fn label(self) -> &'static str {
+    pub const fn label(self, lang: Lang) -> &'static str {
         match self {
             Self::EvmBtc => "EVM + Bitcoin",
             Self::EvmZec => "EVM + Zcash",
             Self::BtcZec => "Bitcoin + Zcash",
             Self::EvmEvm => "EVM + EVM",
-            Self::Custom => "직접 고르기",
+            Self::Custom => text::PRESET_CUSTOM.get(lang),
         }
     }
 }
@@ -131,13 +180,14 @@ impl Chain {
 
     /// Display label.
     #[must_use]
-    pub const fn label(self) -> &'static str {
+    pub const fn label(self, lang: Lang) -> &'static str {
         match self {
-            Self::Evm => "EVM 계정",
-            Self::Btc => "Bitcoin 주소",
-            Self::Zec => "Zcash 주소",
-            Self::Shared => "EVM 공유 키 (고급)",
+            Self::Evm => text::CHAIN_EVM,
+            Self::Btc => text::CHAIN_BTC,
+            Self::Zec => text::CHAIN_ZEC,
+            Self::Shared => text::CHAIN_SHARED,
         }
+        .get(lang)
     }
 }
 
@@ -199,9 +249,9 @@ pub struct ReslotFlow {
     pub shared_ack: bool,
     /// The removed-chains warning was acknowledged.
     pub removed_ack: bool,
-    /// The [`T_YK_KEY_LOST`] checkbox (a key without recovery words is overwritten).
+    /// The [`text::YK_KEY_LOST`] checkbox (a key without recovery words is overwritten).
     pub loss_ack: bool,
-    /// The typed [`LOSS_WORD`] (checked when `YubiKey에 넣기` is pressed).
+    /// The typed [`text::LOSS_WORD`] (checked when `YubiKey에 넣기` is pressed).
     pub loss_typed: String,
     /// The T-YK-SAME checkbox: a card connected without recovery words gets words this PC also
     /// holds ([`ReslotPreview::same_as_vault`]).
@@ -257,9 +307,9 @@ pub struct ClearFlow {
     pub failure: Option<String>,
     /// Input error of the choose step (the word not typed).
     pub error: Option<String>,
-    /// The [`T_YK_KEY_LOST`] checkbox (a key without recovery words is cleared).
+    /// The [`text::YK_KEY_LOST`] checkbox (a key without recovery words is cleared).
     pub loss_ack: bool,
-    /// The typed [`LOSS_WORD`] (checked when `이 YubiKey의 키 지우기` is pressed).
+    /// The typed [`text::LOSS_WORD`] (checked when `이 YubiKey의 키 지우기` is pressed).
     pub loss_typed: String,
     /// '어떻게 지우나요 ▸' is open (this run's memory).
     pub how_open: bool,
@@ -320,12 +370,13 @@ impl core::fmt::Debug for ClearFlow {
 /// number of keys connected without recovery words, never a path (spec/10 §7.6).
 pub const MAX_RESLOT_INDEX: u32 = UNKNOWN_PATH_FIRST - 1;
 
-fn parse_index(text: &str, label: &str) -> Result<u32, String> {
-    text.trim()
+fn parse_index(lang: Lang, input: &str, label: &str) -> Result<u32, String> {
+    input
+        .trim()
         .parse::<u32>()
         .ok()
         .filter(|value| *value <= MAX_RESLOT_INDEX)
-        .ok_or_else(|| format!("{label}: 0–{MAX_RESLOT_INDEX} 사이의 숫자를 넣으세요."))
+        .ok_or_else(|| super::text::INDEX_NUMBER.fill(lang, [label, &MAX_RESLOT_INDEX.to_string()]))
 }
 
 /// The EVM account index of the card's first EVM slot with a known path (the presets' default;
@@ -377,7 +428,7 @@ pub fn dropped_roles(
 }
 
 /// The slots of `dropped` whose key is lost for good: connected without recovery words and held
-/// by no other enrolled card (spec/10 §15: [`T_YK_KEY_LOST`]).
+/// by no other enrolled card (spec/10 §15: [`text::YK_KEY_LOST`]).
 #[must_use]
 pub fn lost_slots(dropped: &[(RecordedSlot, Vec<u32>)]) -> Vec<RecordedSlot> {
     dropped
@@ -480,11 +531,17 @@ impl ReslotFlow {
     /// # Errors
     ///
     /// The text to show.
-    pub fn planned(&self, key: PgpKey, network: BtcNetwork) -> Result<PlannedSlot, String> {
+    pub fn planned(
+        &self,
+        lang: Lang,
+        key: PgpKey,
+        network: BtcNetwork,
+    ) -> Result<PlannedSlot, String> {
         let form = self.form(key);
-        let label = CardSlot::OpenPgp(key).label();
-        let index = parse_index(&form.index_text, &label)?;
-        let account = || AccountIndex::new(index).map_err(|_| format!("{label}: 인덱스 범위"));
+        let label = CardSlot::OpenPgp(key).label_in(lang);
+        let index = parse_index(lang, &form.index_text, &label)?;
+        let account =
+            || AccountIndex::new(index).map_err(|_| super::text::INDEX_RANGE.fill(lang, [&label]));
         let role = match form.chain {
             Chain::Evm => KeyRole::Evm {
                 index: account()?,
@@ -521,15 +578,15 @@ impl ReslotFlow {
     /// # Errors
     ///
     /// The text to show.
-    pub fn plan(&self, network: BtcNetwork) -> Result<Vec<PlannedSlot>, String> {
+    pub fn plan(&self, lang: Lang, network: BtcNetwork) -> Result<Vec<PlannedSlot>, String> {
         let slots = vec![
-            self.planned(PgpKey::Sig, network)?,
-            self.planned(PgpKey::Aut, network)?,
+            self.planned(lang, PgpKey::Sig, network)?,
+            self.planned(lang, PgpKey::Aut, network)?,
         ];
         if self.uses_shared() && !self.shared_ack {
-            return Err("EVM 공유 키의 안내를 읽고 확인란을 체크하세요.".to_owned());
+            return Err(super::text::SHARED_ACK_NEEDED.get(lang).to_owned());
         }
-        validate_plan(&slots).map_err(|error| error.to_string())?;
+        validate_plan(&slots).map_err(|error| error.text_in(lang))?;
         Ok(slots)
     }
 
@@ -548,7 +605,7 @@ impl ReslotFlow {
         dropped_roles(before, &after, others)
     }
 
-    /// Whether the confirmation allows the import (the typed [`LOSS_WORD`] is checked when
+    /// Whether the confirmation allows the import (the typed [`text::LOSS_WORD`] is checked when
     /// `YubiKey에 넣기` is pressed).
     #[must_use]
     pub fn can_import(&self, others: &[HwKeyRecord]) -> bool {
@@ -560,8 +617,9 @@ impl ReslotFlow {
     }
 
     /// Whether the typed word of a lost key is right (or no key is lost).
-    fn loss_word_ok(&self, others: &[HwKeyRecord]) -> bool {
-        lost_slots(&self.dropped(others)).is_empty() || self.loss_typed.trim() == LOSS_WORD
+    fn loss_word_ok(&self, lang: Lang, others: &[HwKeyRecord]) -> bool {
+        lost_slots(&self.dropped(others)).is_empty()
+            || self.loss_typed.trim() == text::LOSS_WORD.get(lang)
     }
 }
 
@@ -656,10 +714,11 @@ impl App {
     /// Choose `다음`: the plan, then W05 (or straight to the preview when the words are held).
     pub fn yk_reslot_next(&mut self) {
         let network = self.yk_network();
+        let lang = self.settings.language;
         let Some(flow) = self.reslot() else {
             return;
         };
-        match flow.plan(network) {
+        match flow.plan(lang, network) {
             Err(text) => flow.error = Some(text),
             Ok(slots) => {
                 flow.error = None;
@@ -707,7 +766,7 @@ impl App {
         self.refresh();
     }
 
-    /// Confirm `가져오기`: the typed [`LOSS_WORD`] when a key without recovery words is
+    /// Confirm `가져오기`: the typed [`text::LOSS_WORD`] when a key without recovery words is
     /// overwritten, then W12 admin PIN.
     pub fn yk_reslot_import(&mut self) {
         let others = self
@@ -715,13 +774,12 @@ impl App {
             .map(|flow| flow.serial)
             .map(|serial| self.yk_other_records(serial))
             .unwrap_or_default();
+        let lang = self.settings.language;
         let Some(flow) = self.reslot().filter(|flow| flow.can_import(&others)) else {
             return;
         };
-        if !flow.loss_word_ok(&others) {
-            flow.error = Some(format!(
-                "확인하려면 입력란에 '{LOSS_WORD}'를 정확히 입력하세요."
-            ));
+        if !flow.loss_word_ok(lang, &others) {
+            flow.error = Some(text::TYPE_TO_CONFIRM.fill(lang, [text::LOSS_WORD.get(lang)]));
             self.refresh();
             return;
         }
@@ -734,6 +792,7 @@ impl App {
     /// card (its own touch policies), with the held words.
     pub fn yk_reslot_backup(&mut self, row: usize) {
         let network = self.yk_network();
+        let lang = self.settings.language;
         let Some(record) = self.yk_manage_record(row) else {
             return;
         };
@@ -752,7 +811,7 @@ impl App {
         flow.loss_ack = false;
         flow.loss_typed.clear();
         flow.same_ack = false;
-        match flow.plan(network) {
+        match flow.plan(lang, network) {
             Ok(slots) => {
                 flow.slots.clone_from(&slots);
                 flow.step = ReslotStep::Confirm;
@@ -822,23 +881,22 @@ impl App {
             ),
             _ => (false, false),
         };
+        let lang = self.settings.language;
         let Some(flow) = self.clear_flow() else {
             return;
         };
         if !ready {
             return;
         }
-        if flow.typed.trim() != CLEAR_WORD {
-            flow.error = Some(format!(
-                "확인하려면 입력란에 '{CLEAR_WORD}'를 정확히 입력하세요."
-            ));
+        let clear_word = text::CLEAR_WORD.get(lang);
+        if flow.typed.trim() != clear_word {
+            flow.error = Some(text::TYPE_TO_CONFIRM.fill(lang, [clear_word]));
             self.refresh();
             return;
         }
-        if lost && flow.loss_typed.trim() != LOSS_WORD {
-            flow.error = Some(format!(
-                "복구 단어가 없는 키를 지우려면 입력란에 '{LOSS_WORD}'를 정확히 입력하세요."
-            ));
+        let loss_word = text::LOSS_WORD.get(lang);
+        if lost && flow.loss_typed.trim() != loss_word {
+            flow.error = Some(text::TYPE_LOSS_TO_ERASE.fill(lang, [loss_word]));
             self.refresh();
             return;
         }
@@ -994,6 +1052,7 @@ impl App {
     }
 
     fn on_reslot_preview(&mut self, serial: u32, result: Result<ReslotPreview, YubiKeyJobError>) {
+        let lang = self.settings.language;
         match result {
             Ok(preview) => {
                 if let Some(flow) = self.reslot().filter(|flow| flow.serial == serial) {
@@ -1006,9 +1065,9 @@ impl App {
                 let code = crate::errors::key_code(error);
                 let message = match error {
                     yw_core::error::KeyError::MnemonicUnknownWord { position } => {
-                        code.render(&position.to_string())
+                        code.render_in(self.settings.language, &position.to_string())
                     }
-                    _ => code.text(),
+                    _ => code.text_in(self.settings.language),
                 };
                 self.open_input(
                     SecretKind::Mnemonic,
@@ -1020,7 +1079,7 @@ impl App {
             Err(error) => {
                 if let Some(flow) = self.reslot() {
                     flow.step = ReslotStep::Choose;
-                    flow.error = Some(failure_text(error));
+                    flow.error = Some(failure_text(lang, error));
                 }
             }
         }
@@ -1036,6 +1095,7 @@ impl App {
         let away = self.screen != Screen::Settings(SettingsSection::YubiKey);
         let admin_context =
             crate::yubikey::PinContext::of(&self.card.records, serial, PinKind::OpenPgpAdmin);
+        let lang = self.settings.language;
         let Some(flow) = self.reslot().filter(|flow| flow.serial == serial) else {
             return;
         };
@@ -1063,7 +1123,7 @@ impl App {
                 }
                 self.key(KeyJob::HardwareKeys);
                 self.request_meta();
-                format!("YubiKey #{serial}의 슬롯 구성을 바꿨습니다.")
+                text::RESLOTTED.fill(lang, [&serial.to_string()])
             }
             Err(error) => {
                 // A slot holding another key or a wrong admin PIN stops before anything is
@@ -1074,21 +1134,19 @@ impl App {
                         yw_core::yubikey::enrol::EnrolError::Partial(_)
                     ))
                 );
-                let mut text = match error {
+                let mut failure = match error {
                     YubiKeyJobError::Card(error) => {
-                        error.text_for_in(PinKind::OpenPgpAdmin, &admin_context)
+                        error.text_for_in(lang, PinKind::OpenPgpAdmin, &admin_context)
                     }
-                    other => failure_text_for(other, PinKind::OpenPgpAdmin),
+                    other => failure_text_for(lang, other, PinKind::OpenPgpAdmin),
                 };
                 if partial {
-                    text.push(' ');
-                    text.push_str(
-                        "일부 슬롯에 새 키가 이미 들어갔을 수 있습니다. 지갑의 슬롯 표는 바꾸지 않았습니다. 다시 시도하면 덮어씁니다.",
-                    );
+                    failure.push(' ');
+                    failure.push_str(text::RESLOT_PARTIAL.get(lang));
                 }
-                flow.failure = Some(text.clone());
+                flow.failure = Some(failure.clone());
                 flow.result = None;
-                text
+                failure
             }
         };
         if away {
@@ -1114,6 +1172,7 @@ impl App {
         if let Err(YubiKeyJobError::Card(error)) = &result {
             self.yk_note_last_try(serial, *error);
         }
+        let lang = self.settings.language;
         let Some(flow) = self.clear_flow().filter(|flow| flow.serial == serial) else {
             return;
         };
@@ -1137,7 +1196,7 @@ impl App {
                 self.request_meta();
             }
             Err(error) => {
-                flow.failure = Some(failure_text(error));
+                flow.failure = Some(failure_text(lang, error));
                 flow.result = None;
             }
         }

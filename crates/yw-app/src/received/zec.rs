@@ -30,6 +30,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 
+use yw_core::lang::Lang;
 use yw_core::zec::format_zec;
 use yw_core::zec::tx::{MAX_MONEY, transparent_parts, txid_display};
 use yw_json::{Number, Object, Value};
@@ -64,24 +65,49 @@ pub const MAX_TX_RESPONSE: usize = 1_048_576;
 /// Longest verbose `scriptPubKey.hex` read.
 const MAX_SCRIPT_HEX: usize = 20_000;
 
-/// The card's line when the node or source has no address deltas (before 2026-11-13 it ended the
-/// reads; kept for that meaning, no longer returned).
-pub const T_NO_DELTAS: &str = "이 Zcash 엔드포인트는 주소 내역 조회(getaddressdeltas)를 지원하지 않아 받은 내역을 표시하지 않습니다 — 탐색기에서 확인하세요.";
-/// The muted `limited` line of a source without deltas (Zebra, `bb-rest`).
-pub const T_NO_DELTAS_PENDING: &str = "이 Zcash 엔드포인트는 주소 내역 조회(getaddressdeltas)를 지원하지 않아 확인된 받은 내역은 표시하지 않습니다 — 미확정 입금과, 여기서 미확정으로 본 뒤 채굴된 입금만 보입니다.";
-/// The mempool was too large to scan this read.
-pub const T_MEMPOOL_BIG: &str = "멤풀 거래가 너무 많아 이번에는 미확정 입금을 찾지 않았습니다.";
-/// The node has no `getrawmempool`.
-pub const T_MEMPOOL_NONE: &str = "이 Zcash 엔드포인트는 멤풀 조회(getrawmempool)를 지원하지 않아 미확정 입금을 표시하지 않습니다.";
-/// `getrawmempool` failed this read.
-pub const T_MEMPOOL_ERR: &str = "이번에는 멤풀을 읽지 못해 미확정 입금을 갱신하지 않았습니다.";
-/// The scan stopped at its count or time bound.
-pub const T_MEMPOOL_PARTIAL: &str =
-    "멤풀 거래가 많아 일부만 확인했습니다 — 나머지는 다음 읽기에서 확인합니다.";
-/// The sender line of every row (the deltas carry only our own address).
-pub const T_NO_SENDER: &str = "보낸 주소: 노드 응답에 없어 표시하지 않습니다";
-/// The error when the answer is over its bound (a dust flood): that range is skipped.
-pub const T_TOO_MANY: &str = "이 범위의 주소 내역이 너무 많아(먼지 입금 등) 건너뛰었습니다";
+/// Zcash received-history texts (spec/12 §4, spec/04 §2.6; English spec/14 §5).
+pub mod text {
+    yw_core::texts! {
+        /// The card's line when the node or source has no address deltas (before 2026-11-13 it
+        /// ended the reads; kept for that meaning, no longer returned).
+        NO_DELTAS = "이 Zcash 엔드포인트는 주소 내역 조회(getaddressdeltas)를 지원하지 않아 받은 내역을 표시하지 않습니다 — 탐색기에서 확인하세요."
+            / "This Zcash endpoint does not support address history lookups (getaddressdeltas), so received history is not shown — check the explorer.";
+        /// The muted `limited` line of a source without deltas (Zebra, `bb-rest`).
+        NO_DELTAS_PENDING = "이 Zcash 엔드포인트는 주소 내역 조회(getaddressdeltas)를 지원하지 않아 확인된 받은 내역은 표시하지 않습니다 — 미확정 입금과, 여기서 미확정으로 본 뒤 채굴된 입금만 보입니다."
+            / "This Zcash endpoint does not support address history lookups (getaddressdeltas), so confirmed deposits are not shown — only unconfirmed deposits, and those seen here as unconfirmed and mined later, appear.";
+        /// The mempool was too large to scan this read.
+        MEMPOOL_BIG = "멤풀 거래가 너무 많아 이번에는 미확정 입금을 찾지 않았습니다."
+            / "The mempool has too many transactions, so unconfirmed deposits were not searched this time.";
+        /// The node has no `getrawmempool`.
+        MEMPOOL_NONE = "이 Zcash 엔드포인트는 멤풀 조회(getrawmempool)를 지원하지 않아 미확정 입금을 표시하지 않습니다."
+            / "This Zcash endpoint does not support mempool lookups (getrawmempool), so unconfirmed deposits are not shown.";
+        /// `getrawmempool` failed this read.
+        MEMPOOL_ERR = "이번에는 멤풀을 읽지 못해 미확정 입금을 갱신하지 않았습니다."
+            / "The mempool could not be read this time, so unconfirmed deposits were not updated.";
+        /// The scan stopped at its count or time bound.
+        MEMPOOL_PARTIAL = "멤풀 거래가 많아 일부만 확인했습니다 — 나머지는 다음 읽기에서 확인합니다."
+            / "The mempool has many transactions, so only some were checked — the rest are checked on the next read.";
+        /// The sender line of every row (the deltas carry only our own address).
+        NO_SENDER = "보낸 주소: 노드 응답에 없어 표시하지 않습니다"
+            / "Sender: not in the node's answer, so not shown";
+        /// The error when the answer is over its bound (a dust flood): that range is skipped.
+        TOO_MANY = "이 범위의 주소 내역이 너무 많아(먼지 입금 등) 건너뛰었습니다"
+            / "This range had too much address history (dust deposits etc.), so it was skipped";
+    }
+}
+
+/// The Korean texts under their earlier names (tests).
+#[cfg(test)]
+pub const T_NO_DELTAS_PENDING: &str = text::NO_DELTAS_PENDING.ko;
+/// [`text::MEMPOOL_BIG`] in Korean.
+#[cfg(test)]
+pub const T_MEMPOOL_BIG: &str = text::MEMPOOL_BIG.ko;
+/// [`text::MEMPOOL_PARTIAL`] in Korean.
+#[cfg(test)]
+pub const T_MEMPOOL_PARTIAL: &str = text::MEMPOOL_PARTIAL.ko;
+/// [`text::NO_SENDER`] in Korean.
+#[cfg(test)]
+pub const T_NO_SENDER: &str = text::NO_SENDER.ko;
 
 /// One `getaddressdeltas` row.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -131,7 +157,7 @@ pub fn parse_deltas(result: &Value) -> Result<Vec<Delta>, RpcFailure> {
 }
 
 /// A row of `zats` paid by `txid`: pending unless `mined`.
-fn row(txid: &str, zats: u64, mined: Option<u32>) -> Incoming {
+fn row(lang: Lang, txid: &str, zats: u64, mined: Option<u32>) -> Incoming {
     Incoming {
         key: txid.to_owned(),
         hash: txid.to_owned(),
@@ -140,7 +166,7 @@ fn row(txid: &str, zats: u64, mined: Option<u32>) -> Incoming {
         amount: format_zec(zats),
         symbol: "ZEC".to_owned(),
         from: None,
-        from_note: Some(T_NO_SENDER),
+        from_note: Some(text::NO_SENDER.get(lang)),
         pending: mined.is_none(),
         amount_units: zats,
         via: Vec::new(),
@@ -148,8 +174,9 @@ fn row(txid: &str, zats: u64, mined: Option<u32>) -> Incoming {
 }
 
 /// The incoming transactions of `deltas`: every delta of the txid positive (a zero sum is dust).
+/// The sender lines are in `lang`.
 #[must_use]
-pub fn derive(deltas: &[Delta]) -> Found {
+pub fn derive(lang: Lang, deltas: &[Delta]) -> Found {
     let mut by_tx: BTreeMap<&str, (i128, bool, u64)> = BTreeMap::new();
     for delta in deltas {
         let slot = by_tx.entry(&delta.txid).or_insert((0, false, delta.height));
@@ -170,7 +197,7 @@ pub fn derive(deltas: &[Delta]) -> Found {
         found.entries.push(Incoming {
             block: Some(height),
             pending: false,
-            ..row(txid, zats, None)
+            ..row(lang, txid, zats, None)
         });
     }
     found
@@ -430,6 +457,8 @@ pub struct ZecReceivedWork {
     pub bb_pending: Vec<(String, u64)>,
     /// The user's `새로고침` (retries `getaddressdeltas` after a `-32601`).
     pub user: bool,
+    /// The app language of the read's notes and errors (spec/14).
+    pub lang: Lang,
 }
 
 impl core::fmt::Debug for ZecReceivedWork {
@@ -579,7 +608,9 @@ impl Read<'_> {
                         }
                         Look::Paid { zats, mined } => {
                             self.stats.found = self.stats.found.saturating_add(1);
-                            self.found.entries.push(row(txid, zats, mined));
+                            self.found
+                                .entries
+                                .push(row(self.work.lang, txid, zats, mined));
                             // A deposit is not `seen`: it is a list row from now on.
                             continue;
                         }
@@ -660,8 +691,11 @@ pub fn fetch(
                 MAX_RESPONSE,
             ) {
                 Ok(result) => {
-                    read.found =
-                        derive(&parse_deltas(&result).map_err(|failure| classify(failure).text())?);
+                    read.found = derive(
+                        work.lang,
+                        &parse_deltas(&result)
+                            .map_err(|failure| classify(failure).text_in(work.lang))?,
+                    );
                     next = Some(work.tip.saturating_add(1));
                     deltas = true;
                 }
@@ -670,13 +704,14 @@ pub fn fetch(
                 Err(error) if error.over_limit => {
                     next = Some(work.tip.saturating_add(1));
                     deltas = true;
-                    note = Some(T_TOO_MANY);
+                    note = Some(text::TOO_MANY.get(work.lang));
                 }
-                Err(error) => return Err(classify(error.failure).text()),
+                Err(error) => return Err(classify(error.failure).text_in(work.lang)),
             }
         }
     }
-    let limited = (work.indexer != ZecIndexer::Node || !deltas).then_some(T_NO_DELTAS_PENDING);
+    let limited = (work.indexer != ZecIndexer::Node || !deltas)
+        .then_some(text::NO_DELTAS_PENDING.get(work.lang));
     // 2. Unconfirmed deposits.
     let pending_keys: HashSet<&str> = work
         .pending
@@ -725,14 +760,16 @@ pub fn fetch(
             ) {
                 Ok(value) => match parse_mempool(&value) {
                     Some(list) if list.len() <= ZEC_MEMPOOL_MAX_TXIDS => mempool = Some(list),
-                    Some(_) => note = note.or(Some(T_MEMPOOL_BIG)),
-                    None => note = note.or(Some(T_MEMPOOL_ERR)),
+                    Some(_) => note = note.or(Some(text::MEMPOOL_BIG.get(work.lang))),
+                    None => note = note.or(Some(text::MEMPOOL_ERR.get(work.lang))),
                 },
-                Err(error) if error.over_limit => note = note.or(Some(T_MEMPOOL_BIG)),
-                Err(error) if error.failure == RpcFailure::Rpc(-32_601) => {
-                    note = note.or(Some(T_MEMPOOL_NONE));
+                Err(error) if error.over_limit => {
+                    note = note.or(Some(text::MEMPOOL_BIG.get(work.lang)));
                 }
-                Err(_) => note = note.or(Some(T_MEMPOOL_ERR)),
+                Err(error) if error.failure == RpcFailure::Rpc(-32_601) => {
+                    note = note.or(Some(text::MEMPOOL_NONE.get(work.lang)));
+                }
+                Err(_) => note = note.or(Some(text::MEMPOOL_ERR.get(work.lang))),
             }
             if let Some(list) = &mempool {
                 read.stats.txids = list.len();
@@ -798,7 +835,7 @@ pub fn fetch(
         seen.drain(..seen.len().saturating_sub(ZEC_SEEN_MAX));
     }
     if read.partial {
-        note = note.or(Some(T_MEMPOOL_PARTIAL));
+        note = note.or(Some(text::MEMPOOL_PARTIAL.get(work.lang)));
     }
     {
         let network_id = NetworkId::Zcash(work.network);
@@ -850,11 +887,17 @@ mod tests {
         let value = yw_json::parse(text.as_bytes(), &Limits::RESPONSE).unwrap();
         let deltas = parse_deltas(&value).unwrap();
         assert_eq!(deltas.len(), 5);
-        let found = derive(&deltas);
+        let found = derive(yw_core::lang::Lang::Ko, &deltas);
         assert_eq!(found.entries.len(), 1);
         assert_eq!(found.entries[0].amount, "0.00200000");
         assert_eq!(found.entries[0].block, Some(2_800_000));
         assert_eq!(found.entries[0].from_note, Some(T_NO_SENDER));
+        let english = derive(yw_core::lang::Lang::En, &deltas);
+        assert!(
+            !yw_core::lang::has_hangul(english.entries[0].from_note.unwrap()),
+            "{:?}",
+            english.entries[0].from_note
+        );
         assert_eq!(found.dust, [c]);
         let wrapped = yw_json::parse(
             format!(r#"{{"deltas":{text}}}"#).as_bytes(),
@@ -1085,6 +1128,7 @@ mod tests {
                 confirmed: Vec::new(),
                 bb_pending: Vec::new(),
                 user: false,
+                lang: yw_core::lang::Lang::Ko,
             }
         }
 

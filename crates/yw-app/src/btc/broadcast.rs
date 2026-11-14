@@ -139,14 +139,14 @@ pub enum EsploraPostOutcome {
 }
 
 impl EsploraPostOutcome {
-    /// The fixed text.
+    /// The fixed text in `lang`.
     #[must_use]
-    pub fn text(self) -> String {
+    pub fn text(self, lang: yw_core::lang::Lang) -> String {
         match self {
             Self::Submitted => String::new(),
-            Self::TxidMismatch => "응답 txid 불일치".to_owned(),
-            Self::Rejected => crate::errors::ErrorCode::Btc008.text(),
-            Self::Failed(error) => error.text(BtcIndexer::Esplora),
+            Self::TxidMismatch => super::text::TXID_MISMATCH.get(lang).to_owned(),
+            Self::Rejected => crate::errors::ErrorCode::Btc008.text_in(lang),
+            Self::Failed(error) => error.text(lang, BtcIndexer::Esplora),
         }
     }
 }

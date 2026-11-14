@@ -1160,7 +1160,7 @@ impl SecretForm {
         self.active = 0;
         self.busy = false;
         self.disabled_until = now_ms.saturating_add(UNLOCK_FAIL_DISABLE_MS);
-        self.error = Some(ErrorCode::Vlt001.text());
+        self.error = Some(ErrorCode::Vlt001.text_in(self.lang));
     }
 
     /// A new backup challenge (T-BACKUP-FAIL): new positions, empty fields.
@@ -1246,41 +1246,41 @@ impl SecretForm {
         match self.kind {
             SecretKind::SetPassword => {
                 if !password_ok(0) {
-                    return Err(ErrorCode::Inp001.text());
+                    return Err(ErrorCode::Inp001.text_in(self.lang));
                 }
                 if !equal(0, 1) {
-                    return Err(ErrorCode::Inp002.text());
+                    return Err(ErrorCode::Inp002.text_in(self.lang));
                 }
             }
             SecretKind::ChangePassword => {
                 if !password_ok(1) {
-                    return Err(ErrorCode::Inp001.text());
+                    return Err(ErrorCode::Inp001.text_in(self.lang));
                 }
                 if !equal(1, 2) {
-                    return Err(ErrorCode::Inp002.text());
+                    return Err(ErrorCode::Inp002.text_in(self.lang));
                 }
             }
             SecretKind::Passphrase { confirm: true } if !equal(0, 1) => {
-                return Err(ErrorCode::Inp002.text());
+                return Err(ErrorCode::Inp002.text_in(self.lang));
             }
             SecretKind::PrivateKey {
                 chain: ImportChain::Evm,
                 ..
             } => {
                 if let Some(slot) = self.slots.first() {
-                    finalize_private_key(&slot.field).map_err(ErrorCode::text)?;
+                    finalize_private_key(&slot.field).map_err(|code| code.text_in(self.lang))?;
                 }
             }
             SecretKind::PrivateKey {
                 chain: ImportChain::Btc,
                 ..
             } if self.slots.iter().any(|slot| slot.field.len() < slot.min) => {
-                return Err(ErrorCode::Inp023.text());
+                return Err(ErrorCode::Inp023.text_in(self.lang));
             }
             SecretKind::Backup { .. }
                 if self.slots.iter().any(|slot| slot.field.len() < slot.min) =>
             {
-                return Err(ErrorCode::Inp013.text());
+                return Err(ErrorCode::Inp013.text_in(self.lang));
             }
             SecretKind::CardPin { min, max, .. }
                 if self.slots.iter().any(|slot| {
@@ -1378,8 +1378,8 @@ impl SecretForm {
             .any(|slot| slot.field.len() < slot.min.min(1))
         {
             return Err(match self.kind {
-                SecretKind::Passphrase { .. } => ErrorCode::Inp019.text(),
-                _ => ErrorCode::Inp001.text(),
+                SecretKind::Passphrase { .. } => ErrorCode::Inp019.text_in(self.lang),
+                _ => ErrorCode::Inp001.text_in(self.lang),
             });
         }
         Ok(())
@@ -1397,11 +1397,10 @@ impl SecretForm {
             if self.kind == SecretKind::Mnemonic {
                 let (count, unknown, _) = self.mnemonic_status();
                 self.error = Some(match unknown {
-                    Some(position) => {
-                        ErrorCode::Inp004.render(&position.saturating_add(1).to_string())
-                    }
-                    None if !valid_word_count(count) => ErrorCode::Inp003.text(),
-                    None => ErrorCode::Inp005.text(),
+                    Some(position) => ErrorCode::Inp004
+                        .render_in(self.lang, &position.saturating_add(1).to_string()),
+                    None if !valid_word_count(count) => ErrorCode::Inp003.text_in(self.lang),
+                    None => ErrorCode::Inp005.text_in(self.lang),
                 });
                 return FormAction::Redraw;
             }
@@ -1479,7 +1478,7 @@ impl SecretForm {
 
     fn non_ascii(&mut self, now_ms: u64) -> FormAction {
         self.transient = Some((
-            ErrorCode::Inp008.text(),
+            ErrorCode::Inp008.text_in(self.lang),
             now_ms.saturating_add(INPUT_ERROR_MS),
         ));
         FormAction::Redraw

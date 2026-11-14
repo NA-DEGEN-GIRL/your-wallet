@@ -143,4 +143,25 @@ crate::texts! {
     MESSAGE_ERR_INTERNAL = "내부 검증에 실패해 서명하지 않았습니다."
         / "Internal verification failed, so nothing was signed.";
     MESSAGE_ERR_SIGNING = "서명하지 못했습니다(내부 오류)" / "Could not sign (internal error)";
+
+    // ----- template, recipient, amount and signer errors ---------------------------------------
+    TEMPLATE_MISMATCH = "Solana 메시지가 지갑 템플릿과 다릅니다"
+        / "The Solana message differs from the wallet template";
+    RECIPIENT_FORMAT = "주소 형식이 올바르지 않습니다." / "The address format is invalid.";
+    RECIPIENT_PROGRAM = "받는 주소가 프로그램·시스템·토큰 mint 주소입니다. 보내면 잃습니다."
+        / "The recipient is a program·system·token mint address. Funds sent there are lost.";
+    RECIPIENT_UNSPENDABLE = "받는 주소는 아무도 쓸 수 없는 주소입니다. 보내면 잃습니다."
+        / "Nobody can spend from the recipient address. Funds sent there are lost.";
+    RECIPIENT_SELF = "보내는 계정과 같은 주소로는 보낼 수 없습니다."
+        / "You cannot send to the sending account itself.";
+    RECIPIENT_OFF_CURVE = "토큰은 일반 지갑 주소로만 보낼 수 있습니다. 이 주소는 프로그램 소유 주소(PDA)나 토큰 계정이라 받은 토큰을 옮길 수 없습니다."
+        / "Tokens can only be sent to a regular wallet address. This address is a program-owned address (PDA) or a token account, so received tokens could never be moved.";
+    AMOUNT_FORMAT = "금액 형식이 올바르지 않습니다." / "The amount format is invalid.";
+    SIGN_DEADLINE = "승인 후 서명 기한(20초)이 지났습니다. 다시 검토하세요."
+        / "The signing deadline after approval (20 s) has passed. Review again.";
+    SIGN_INTERNAL = "내부 검증에 실패해 서명하지 않았습니다."
+        / "Internal verification failed, so nothing was signed.";
+    SIGN_POST = "서명 검증 실패(내부 오류)" / "Signature verification failed (internal error)";
+    SIGN_PENDING = "이 계정의 이전 전송을 확인 중이라 서명하지 않았습니다."
+        / "A previous transfer from this account is still being confirmed, so nothing was signed.";
 }

@@ -36,6 +36,7 @@ pub mod app_zec;
 pub mod browser;
 pub mod btc;
 pub mod build_info;
+pub mod catalogues;
 pub mod errors;
 pub mod events;
 pub mod explain;

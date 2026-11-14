@@ -19,6 +19,7 @@ use yw_core::hypercore::{
     HcAction, HcExchangeReply, HcKind, HcNetwork, HcPayload, HcToken, USD_DECIMALS,
     WITHDRAW_FEE_USDC, parse_amount,
 };
+use yw_core::lang::Lang;
 use yw_core::vault::EvmKeySource;
 
 use crate::app::{App, AppMode, Screen};
@@ -35,12 +36,57 @@ use crate::workers::rpc::RpcJob;
 pub const HC_REFRESH_MS: u64 = 15_000;
 /// Session activity rows kept.
 const MAX_ACTIVITY: usize = 50;
-/// S-HC while the balances load (a status, not an input error).
-pub const HC_LOADING_TEXT: &str = "HyperCore 잔액을 불러오는 중입니다";
-/// A withdrawal to the signing account itself (the form's default): information, not the
-/// "보내는 계정과 같은 주소" warning of a send.
-pub const HC_WITHDRAW_OWN_TEXT: &str =
-    "서명 계정과 같은 주소 — Arbitrum One의 내 주소로 출금합니다.";
+
+/// The `HyperCore` form and activity texts (spec/11 §8; English spec/14).
+pub mod text {
+    yw_core::texts! {
+        /// S-HC while the balances load (a status, not an input error).
+        LOADING = "HyperCore 잔액을 불러오는 중입니다" / "Loading the HyperCore balances";
+        /// A withdrawal to the signing account itself (the form's default): information, not
+        /// the "보내는 계정과 같은 주소" warning of a send.
+        WITHDRAW_OWN = "서명 계정과 같은 주소 — Arbitrum One의 내 주소로 출금합니다."
+            / "Same address as the signing account — withdraws to your own address on Arbitrum One.";
+        STATUS_SIGNING = "서명 중" / "Signing";
+        STATUS_SUBMITTING = "전송 중" / "Sending";
+        STATUS_OK = "성공 (Hyperliquid status ok)" / "Succeeded (Hyperliquid status ok)";
+        STATUS_REJECTED(1) = "거부됨 (status err): {0}" / "Rejected (status err): {0}";
+        STATUS_UNKNOWN(1) = "결과 불명 — 잔액을 확인하세요 ({0})"
+            / "Outcome unknown — check the balances ({0})";
+        STATUS_NOT_SIGNED(1) = "서명하지 않음 — {0}" / "Not signed — {0}";
+        LOCK_CANCELLED = "잠겨서 취소됨" / "cancelled by the lock";
+        CANCELLED = "취소됨" / "cancelled";
+        NO_RPC_WORKER = "RPC 작업자를 사용할 수 없습니다" / "The RPC worker is not available";
+        SELECT_ACCOUNT = "계정을 선택하세요" / "Select an account";
+        LOAD_FAILED = "HyperCore 잔액을 불러오지 못했습니다 — 위의 '새로고침'을 누르세요"
+            / "Could not load the HyperCore balances — press 'Refresh' above";
+        NO_SPOT_META = "토큰 정보(spotMeta)를 확인할 수 없습니다"
+            / "The token information (spotMeta) cannot be checked";
+        NOT_LINKED = "이 토큰은 HyperEVM에 연결되어 있지 않습니다"
+            / "This token is not linked to HyperEVM";
+        PICK_TOKEN = "HyperEVM으로 옮길 토큰을 고르세요" / "Choose the token to move to HyperEVM";
+        SYSTEM_RECIPIENT = "HyperEVM 시스템 주소입니다 — HyperEVM으로 옮기려면 'HyperEVM으로 이동'을 쓰세요"
+            / "This is a HyperEVM system address — to move to HyperEVM, use 'Move to HyperEVM'";
+        ENTER_AMOUNT = "금액을 입력하세요" / "Enter an amount";
+        BAD_AMOUNT(1) = "금액 형식이 올바르지 않습니다 (소수 {0}자리까지)"
+            / "Invalid amount (up to {0} decimals)";
+        NO_BALANCE = "잔액을 확인할 수 없습니다" / "The balance cannot be checked";
+        BELOW_FEE(1) = "출금 금액은 수수료 {0} USDC보다 커야 합니다"
+            / "The withdrawal amount must be more than the {0} USDC fee";
+        INSUFFICIENT = "잔액이 부족합니다" / "Insufficient balance";
+        BAD_ACTION = "작업 형식이 올바르지 않습니다" / "The action is malformed";
+        EXPIRED = "승인 시간이 지났습니다. 다시 검토하세요." / "The approval timed out. Review again.";
+        NO_HYPEREVM(1) = "HyperEVM(chainId {0})이 등록되어 있지 않습니다. 설정 → EVM 체인에서 추가하세요."
+            / "HyperEVM (chainId {0}) is not registered. Add it in Settings → EVM chains.";
+        HYPE_ONLY_2222 = "HYPE는 0x2222…2222로만 HyperCore로 옮길 수 있습니다 — 이 시스템 주소로 보내면 잃을 수 있습니다"
+            / "HYPE moves to HyperCore only through 0x2222…2222 — sending it to this system address may lose it";
+        ADDRESS_2222_HYPE = "0x2222…2222는 HYPE 전용 시스템 주소입니다 — 토큰을 보내면 잃을 수 있습니다"
+            / "0x2222…2222 is the system address for HYPE only — tokens sent there may be lost";
+        NO_TOKEN_INFO = "HyperCore 토큰 정보를 확인할 수 없어 시스템 주소를 검증하지 못했습니다 — EVM 탭의 HyperCore 카드에서 새로고침하세요"
+            / "The HyperCore token information cannot be checked, so the system address was not verified — refresh on the HyperCore card of the EVM tab";
+        WRONG_SYSTEM(1) = "이 시스템 주소(토큰 index {0})에 연결된 토큰이 아닙니다 — 보내면 잃을 수 있습니다"
+            / "This token is not the one linked to this system address (token index {0}) — sending it may lose it";
+    }
+}
 
 /// What the S-HC form does.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -109,23 +155,31 @@ pub enum HcStatus {
     Rejected(String),
     /// No answer (the action may still have been processed — check the balances).
     Unknown(String),
-    /// Not signed (lock, card failure, error).
+    /// Not signed (card failure, error).
     NotSigned(String),
+    /// Not signed: the wallet locked first.
+    NotSignedLocked,
+    /// Not signed: the signing step was cancelled.
+    NotSignedCancelled,
 }
 
 impl HcStatus {
     /// Display text.
     #[must_use]
-    pub fn text(&self) -> String {
+    pub fn text(&self, lang: Lang) -> String {
         match self {
-            Self::Signing => "서명 중".to_owned(),
-            Self::Submitting => "전송 중".to_owned(),
-            Self::Ok => "성공 (Hyperliquid status ok)".to_owned(),
-            Self::Rejected(message) => format!("거부됨 (status err): {message}"),
-            Self::Unknown(message) => {
-                format!("결과 불명 — 잔액을 확인하세요 ({message})")
+            Self::Signing => text::STATUS_SIGNING.get(lang).to_owned(),
+            Self::Submitting => text::STATUS_SUBMITTING.get(lang).to_owned(),
+            Self::Ok => text::STATUS_OK.get(lang).to_owned(),
+            Self::Rejected(message) => text::STATUS_REJECTED.fill(lang, [message]),
+            Self::Unknown(message) => text::STATUS_UNKNOWN.fill(lang, [message]),
+            Self::NotSigned(message) => text::STATUS_NOT_SIGNED.fill(lang, [message]),
+            Self::NotSignedLocked => {
+                text::STATUS_NOT_SIGNED.fill(lang, [text::LOCK_CANCELLED.get(lang)])
             }
-            Self::NotSigned(message) => format!("서명하지 않음 — {message}"),
+            Self::NotSignedCancelled => {
+                text::STATUS_NOT_SIGNED.fill(lang, [text::CANCELLED.get(lang)])
+            }
         }
     }
 }
@@ -209,7 +263,7 @@ impl HcUi {
                 .iter_mut()
                 .find(|row| row.network == action.network && row.nonce == action.nonce)
             {
-                row.status = HcStatus::NotSigned("잠겨서 취소됨".to_owned());
+                row.status = HcStatus::NotSignedLocked;
             }
         }
     }
@@ -282,7 +336,10 @@ impl App {
             .map(|(_, notes)| HcRecipient {
                 look_alike: notes.iter().any(AddressNote::needs_ack),
                 not_in_book: notes.contains(&AddressNote::NotInBook),
-                notes: notes.iter().map(AddressNote::text).collect(),
+                notes: notes
+                    .iter()
+                    .map(|note| note.text_in(self.approval_lang()))
+                    .collect(),
             });
         Some(HlSiteFacts {
             recipient,
@@ -310,6 +367,7 @@ impl App {
         HcEndpoint {
             network,
             api: self.settings.hypercore_api(network),
+            lang: self.settings.language,
         }
     }
 
@@ -344,7 +402,7 @@ impl App {
         };
         if !self.rpc(RpcJob::HyperCore(Box::new(job))) {
             self.hypercore.loading = false;
-            self.hypercore.error = Some("RPC 작업자를 사용할 수 없습니다".to_owned());
+            self.hypercore.error = Some(text::NO_RPC_WORKER.get(self.settings.language).to_owned());
         }
     }
 
@@ -578,15 +636,17 @@ impl App {
         reason = "one block per form kind of spec/11 §8"
     )]
     fn hc_build(&self) -> Result<(HcPayload, Option<HcToken>, HcRecipient), String> {
+        let lang = self.settings.language;
+        let err = |text: yw_core::lang::Text| text.get(lang).to_owned();
         let form = &self.hypercore.form;
         let (sender, ..) = self
             .selected_account()
-            .ok_or_else(|| "계정을 선택하세요".to_owned())?;
+            .ok_or_else(|| err(text::SELECT_ACCOUNT))?;
         if self.hc_balances().is_none() {
             return Err(if self.hypercore.loading {
-                HC_LOADING_TEXT.to_owned()
+                err(text::LOADING)
             } else {
-                "HyperCore 잔액을 불러오지 못했습니다 — 위의 '새로고침'을 누르세요".to_owned()
+                err(text::LOAD_FAILED)
             });
         }
         let network = self.hc_network();
@@ -595,31 +655,28 @@ impl App {
                 self.hypercore
                     .token(network, index)
                     .cloned()
-                    .ok_or_else(|| "토큰 정보(spotMeta)를 확인할 수 없습니다".to_owned())?,
+                    .ok_or_else(|| err(text::NO_SPOT_META))?,
             ),
             HcAsset::PerpUsdc => None,
         };
         let decimals = match (form.kind, &token) {
             (HcFormKind::ToEvm, Some(token)) => token
                 .evm_transfer_decimals()
-                .ok_or_else(|| "이 토큰은 HyperEVM에 연결되어 있지 않습니다".to_owned())?,
+                .ok_or_else(|| err(text::NOT_LINKED))?,
             (HcFormKind::Send, Some(token)) => token.wei_decimals,
-            (HcFormKind::ToEvm, None) => return Err("HyperEVM으로 옮길 토큰을 고르세요".to_owned()),
+            (HcFormKind::ToEvm, None) => return Err(err(text::PICK_TOKEN)),
             _ => USD_DECIMALS,
         };
         let recipient_of = |text: &str| -> Result<(Address, HcRecipient), String> {
             let known = self.known_addresses();
-            let (address, notes) = check_recipient(text, &sender, None, &known)
-                .map_err(crate::errors::ErrorCode::text)?;
+            let (address, notes) =
+                check_recipient(text, &sender, None, &known).map_err(|code| code.text_in(lang))?;
             // A system address only moves its own token to HyperEVM; Send/Withdraw to one
             // loses the funds (spec/11 §5).
             if yw_core::hypercore::system_address_index(&address).is_some()
                 || address == yw_core::hypercore::HYPE_SYSTEM_ADDRESS
             {
-                return Err(
-                    "HyperEVM 시스템 주소입니다 — HyperEVM으로 옮기려면 'HyperEVM으로 이동'을 쓰세요"
-                        .to_owned(),
-                );
+                return Err(err(text::SYSTEM_RECIPIENT));
             }
             Ok((
                 address,
@@ -632,9 +689,9 @@ impl App {
                             if form.kind == HcFormKind::Withdraw
                                 && *note == AddressNote::SameAsSender
                             {
-                                HC_WITHDRAW_OWN_TEXT.to_owned()
+                                err(text::WITHDRAW_OWN)
                             } else {
-                                note.text()
+                                note.text_in(lang)
                             }
                         })
                         .collect(),
@@ -642,35 +699,33 @@ impl App {
             ))
         };
         let (units, amount) = if form.amount_text.trim().is_empty() {
-            return Err("금액을 입력하세요".to_owned());
+            return Err(err(text::ENTER_AMOUNT));
         } else {
             parse_amount(&form.amount_text, decimals)
-                .map_err(|_| format!("금액 형식이 올바르지 않습니다 (소수 {decimals}자리까지)"))?
+                .map_err(|_| text::BAD_AMOUNT.fill(lang, [&decimals.to_string()]))?
         };
         let (available, available_decimals) = self
             .hc_available(form.kind, form.asset, form.to_perp)
-            .ok_or_else(|| "잔액을 확인할 수 없습니다".to_owned())?;
+            .ok_or_else(|| err(text::NO_BALANCE))?;
         // The amount is parsed at the form's decimals (fewer for HyperEVM moves), the balance at
         // weiDecimals: compare in the balance's units.
         let units_at_balance = available_decimals
             .checked_sub(decimals)
             .and_then(U256::checked_pow10)
             .and_then(|scale| units.checked_mul(scale))
-            .ok_or_else(|| "잔액을 확인할 수 없습니다".to_owned())?;
+            .ok_or_else(|| err(text::NO_BALANCE))?;
         let fee = if form.kind == HcFormKind::Withdraw {
             parse_units(WITHDRAW_FEE_USDC, USD_DECIMALS).unwrap_or(U256::ZERO)
         } else {
             U256::ZERO
         };
         if form.kind == HcFormKind::Withdraw && units <= fee {
-            return Err(format!(
-                "출금 금액은 수수료 {WITHDRAW_FEE_USDC} USDC보다 커야 합니다"
-            ));
+            return Err(text::BELOW_FEE.fill(lang, [WITHDRAW_FEE_USDC]));
         }
         // The withdrawal fee comes out of the amount itself (Arbitrum receives amount − fee),
         // so the whole withdrawable balance can be withdrawn.
         if units_at_balance > available {
-            return Err("잔액이 부족합니다".to_owned());
+            return Err(err(text::INSUFFICIENT));
         }
         let payload = match (form.kind, &token) {
             (HcFormKind::Send, None) => {
@@ -718,7 +773,7 @@ impl App {
                 token: token.wire(),
                 amount,
             },
-            (HcFormKind::ToEvm, None) => return Err("HyperEVM으로 옮길 토큰을 고르세요".to_owned()),
+            (HcFormKind::ToEvm, None) => return Err(err(text::PICK_TOKEN)),
         };
         Ok((payload, token, HcRecipient::default()))
     }
@@ -796,7 +851,8 @@ impl App {
         };
         let action = HcAction::new(self.hc_network(), now_unix_ms(), payload);
         if action.validate().is_err() {
-            self.hypercore.form.error = Some("작업 형식이 올바르지 않습니다".to_owned());
+            self.hypercore.form.error =
+                Some(text::BAD_ACTION.get(self.settings.language).to_owned());
             self.refresh();
             return;
         }
@@ -816,7 +872,8 @@ impl App {
             self.hypercore.form.info = None;
             self.show_next_approval();
         } else {
-            self.hypercore.form.info = Some(crate::errors::ErrorCode::App005.text());
+            self.hypercore.form.info =
+                Some(crate::errors::ErrorCode::App005.text_in(self.settings.language));
             self.refresh();
         }
     }
@@ -827,7 +884,7 @@ impl App {
             self.show_failure(
                 crate::errors::ErrorCode::Vlt005,
                 false,
-                crate::errors::ErrorCode::Vlt005.text(),
+                crate::errors::ErrorCode::Vlt005.text_in(self.approval_lang()),
             );
             return;
         };
@@ -844,7 +901,7 @@ impl App {
             Err(_) => self.show_failure(
                 crate::errors::ErrorCode::App009,
                 false,
-                crate::errors::ErrorCode::App009.text(),
+                crate::errors::ErrorCode::App009.text_in(self.approval_lang()),
             ),
         }
     }
@@ -932,17 +989,17 @@ impl App {
                 let status = if self.rpc(RpcJob::HyperCore(Box::new(job))) {
                     HcStatus::Submitting
                 } else {
-                    HcStatus::Unknown("RPC 작업자를 사용할 수 없습니다".to_owned())
+                    HcStatus::Unknown(text::NO_RPC_WORKER.get(self.settings.language).to_owned())
                 };
                 self.hc_set_status(action.network, action.nonce, status);
             }
             Err(failure) => {
-                let text = match failure {
-                    MessageSignFailure::Locked => "잠겨서 취소됨".to_owned(),
-                    MessageSignFailure::Card(error) => error.to_string(),
-                    MessageSignFailure::Sign(error) => error.to_string(),
+                let status = match failure {
+                    MessageSignFailure::Locked => HcStatus::NotSignedLocked,
+                    MessageSignFailure::Card(error) => HcStatus::NotSigned(error.to_string()),
+                    MessageSignFailure::Sign(error) => HcStatus::NotSigned(error.to_string()),
                 };
-                self.hc_set_status(action.network, action.nonce, HcStatus::NotSigned(text));
+                self.hc_set_status(action.network, action.nonce, status);
             }
         }
         self.refresh();
@@ -957,18 +1014,14 @@ impl App {
         if self.hypercore.card_ticket == Some(ticket) {
             self.hypercore.card_ticket = None;
         }
-        self.hc_set_status(
-            action.network,
-            action.nonce,
-            HcStatus::NotSigned("취소됨".to_owned()),
-        );
+        self.hc_set_status(action.network, action.nonce, HcStatus::NotSignedCancelled);
         true
     }
 
     /// An approval ended.
     pub(crate) fn hc_approval_finished(&mut self, outcome: QueueOutcome) {
         if outcome == QueueOutcome::Expired {
-            self.hypercore.form.info = Some("승인 시간이 지났습니다. 다시 검토하세요.".to_owned());
+            self.hypercore.form.info = Some(text::EXPIRED.get(self.settings.language).to_owned());
         }
         logging::info(
             "app",
@@ -987,9 +1040,7 @@ impl App {
         let chain_id = self.hc_network().hyperevm_chain_id();
         if !self.settings.registered_evm().contains(&chain_id) {
             self.notice(
-                format!(
-                    "HyperEVM(chainId {chain_id})이 등록되어 있지 않습니다. 설정 → EVM 체인에서 추가하세요."
-                ),
+                text::NO_HYPEREVM.fill(self.settings.language, [&chain_id.to_string()]),
                 crate::ui::main_window::Tone::Warn,
             );
             return;
@@ -1020,6 +1071,7 @@ impl App {
         recipient: &Address,
         asset: SendAsset,
     ) -> Option<String> {
+        let lang = self.settings.language;
         let network = [HcNetwork::Mainnet, HcNetwork::Testnet]
             .into_iter()
             .find(|network| network.hyperevm_chain_id() == chain_id)?;
@@ -1030,24 +1082,14 @@ impl App {
         }
         match (asset, hype, index) {
             (SendAsset::Native, true, _) | (SendAsset::Token(_), false, None) => None,
-            (SendAsset::Native, false, _) => Some(
-                "HYPE는 0x2222…2222로만 HyperCore로 옮길 수 있습니다 — 이 시스템 주소로 보내면 잃을 수 있습니다".to_owned(),
-            ),
-            (SendAsset::Token(_), true, _) => Some(
-                "0x2222…2222는 HYPE 전용 시스템 주소입니다 — 토큰을 보내면 잃을 수 있습니다".to_owned(),
-            ),
+            (SendAsset::Native, false, _) => Some(text::HYPE_ONLY_2222.get(lang).to_owned()),
+            (SendAsset::Token(_), true, _) => Some(text::ADDRESS_2222_HYPE.get(lang).to_owned()),
             (SendAsset::Token(token), false, Some(index)) => {
                 let Some(linked) = self.hypercore.token(network, index) else {
-                    return Some(
-                        "HyperCore 토큰 정보를 확인할 수 없어 시스템 주소를 검증하지 못했습니다 — EVM 탭의 HyperCore 카드에서 새로고침하세요".to_owned(),
-                    );
+                    return Some(text::NO_TOKEN_INFO.get(lang).to_owned());
                 };
                 let ok = linked.evm.is_some_and(|link| link.address == token);
-                (!ok).then(|| {
-                    format!(
-                        "이 시스템 주소(토큰 index {index})에 연결된 토큰이 아닙니다 — 보내면 잃을 수 있습니다"
-                    )
-                })
+                (!ok).then(|| text::WRONG_SYSTEM.fill(lang, [&index.to_string()]))
             }
         }
     }
@@ -1058,7 +1100,7 @@ mod tests {
     use yw_core::evm::address::{Address, parse_address};
     use yw_core::hypercore::{HcEvmLink, HcKind, HcNetwork, HcPerpState, HcSpotBalance, HcToken};
 
-    use super::{HC_WITHDRAW_OWN_TEXT, HcActivity, HcAsset, HcForm, HcFormKind, HcStatus};
+    use super::{HcActivity, HcAsset, HcForm, HcFormKind, HcStatus, text};
     use crate::apikeys::ApiKeys;
     use crate::app::{App, AppMode, Paths, Screen};
     use crate::flow::evm::form::AddressNote;
@@ -1262,7 +1304,7 @@ mod tests {
         assert!(app.hypercore.form.error.is_none() && app.hc_can_review());
         let items = shown(&app, false);
         assert!(
-            banners(&items).contains(&(HC_WITHDRAW_OWN_TEXT.to_owned(), Tone::Info)),
+            banners(&items).contains(&(text::WITHDRAW_OWN.ko.to_owned(), Tone::Info)),
             "{:?}",
             banners(&items)
         );

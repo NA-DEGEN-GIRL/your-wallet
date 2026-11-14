@@ -41,6 +41,7 @@ mod llm {
     use yw_core::approval::{ApprovalStore, ChainFacts};
     use yw_core::evm::amount::U256;
     use yw_core::evm::chain::{SEPOLIA_GENESIS, SimulationSupport, sepolia};
+    use yw_core::lang::Lang;
     use yw_json::{Limits, Number, Object, Value};
 
     const KEY: &str = "test-key-01";
@@ -216,6 +217,11 @@ mod llm {
 
     /// 0.01 `SepoliaETH` from `USER` to `NEW`, simulation unsupported (a hand-made decoding).
     fn native_input() -> ExplainInput {
+        native_input_in(Lang::Ko)
+    }
+
+    /// [`native_input`] in `lang` (spec/14).
+    fn native_input_in(lang: Lang) -> ExplainInput {
         let tx = yw_core::evm::tx::Eip1559Tx {
             chain_id: 11_155_111,
             nonce: 5,
@@ -232,6 +238,7 @@ mod llm {
             tx,
         };
         build_input(
+            lang,
             &ExplainSource::EvmTx(&decoded, ExplainSim::Unsupported),
             "https://app.example.org",
             &address(USER).unwrap(),
@@ -384,6 +391,7 @@ mod llm {
         let inputs = [
             native_input(),
             build_input(
+                Lang::Ko,
                 &ExplainSource::PersonalSign(&message),
                 "https://app.example.org",
                 &user,
@@ -392,6 +400,7 @@ mod llm {
             )
             .unwrap(),
             build_input(
+                Lang::Ko,
                 &ExplainSource::TypedData(&typed),
                 "https://app.example.org",
                 &user,
@@ -401,7 +410,7 @@ mod llm {
             .unwrap(),
         ];
         for input in inputs {
-            let mut panel = AiPanel::new(false);
+            let mut panel = AiPanel::new(false, Lang::Ko);
             let (ended, dispatch) = panel.set_input(0, input, false);
             assert!(ended.is_none() && dispatch.is_none());
             assert_eq!(panel.state(), &AiPanelState::Off);
@@ -488,6 +497,7 @@ mod llm {
             .issue(prepared.draft.clone(), 1, S2_UNIX_MS)
             .unwrap();
         let input = transaction_input(
+            Lang::Ko,
             &prepared,
             "https://app.example.org",
             &address(USER).unwrap(),
@@ -495,8 +505,8 @@ mod llm {
         .unwrap()
         .unwrap();
         // Six panels: Off, Requesting forever, Shown, Hidden, Mismatch, Failed(Timeout).
-        let mut panels = vec![AiPanel::new(false)];
-        let mut requesting = AiPanel::new(true);
+        let mut panels = vec![AiPanel::new(false, Lang::Ko)];
+        let mut requesting = AiPanel::new(true, Lang::Ko);
         let _ = requesting.set_input(0, input.clone(), false);
         panels.push(requesting);
         for result in [
@@ -508,12 +518,12 @@ mod llm {
             Err(ExplainError::Hidden(HiddenReason::Verdict)),
             Err(ExplainError::Mismatch(MismatchReason::HexToken)),
         ] {
-            let mut panel = AiPanel::new(true);
+            let mut panel = AiPanel::new(true, Lang::Ko);
             let (_, dispatch) = panel.set_input(0, input.clone(), false);
             panel.on_result(10, dispatch.unwrap().generation, result);
             panels.push(panel);
         }
-        let mut timed_out = AiPanel::new(true);
+        let mut timed_out = AiPanel::new(true, Lang::Ko);
         let _ = timed_out.set_input(0, input, false);
         let _ = timed_out.tick(10_000, true);
         assert_eq!(
@@ -585,6 +595,36 @@ mod llm {
             assert!(!body.contains(KEY));
             assert!(yw_json::parse(body.as_bytes(), &LIMITS).is_ok());
         }
+    }
+
+    /// spec/06 §4.2 and §5.2 with spec/14 over loopback: an English input sends the English
+    /// prompt and labels, an English answer is shown, and a Korean answer to it is hidden.
+    #[test]
+    fn english_request_and_answer_over_loopback() {
+        const SUMMARY_EN: &str = "If executed, 0.01 SepoliaETH moves from your account to 0xF278cF59F82eDcf871d630F28EcC8056f25C1cdb. This chain is not simulated.";
+        let english = completion(
+            &content(SUMMARY_EN, &[["send", "native", "0.01", USER, NEW]]),
+            0,
+        );
+        let mock = serve(move |_| json(english.clone()));
+        let cfg = config(&mock, None);
+        let transport = WinHttpTransport::new(cfg.endpoint()).unwrap();
+        let shown = explain_once(&transport, &cfg, &native_input_in(Lang::En))
+            .0
+            .unwrap();
+        assert_eq!(shown.summary, SUMMARY_EN);
+        let captured = mock.captured();
+        let body = String::from_utf8(captured[0].body.clone()).unwrap();
+        assert!(body.contains("Write in English"), "{body}");
+        assert!(body.contains("Send SepoliaETH"), "{body}");
+        assert!(!yw_core::lang::has_hangul(&body), "{body}");
+        let korean = serve(|_| json(valid()));
+        let cfg = config(&korean, None);
+        let transport = WinHttpTransport::new(cfg.endpoint()).unwrap();
+        assert_eq!(
+            explain_once(&transport, &cfg, &native_input_in(Lang::En)).0,
+            Err(ExplainError::Hidden(HiddenReason::ForbiddenChar))
+        );
     }
 
     #[test]
@@ -711,7 +751,7 @@ mod llm {
         });
         let error = run(&mock, None).unwrap_err();
         assert_eq!(error, ExplainError::Http(302));
-        assert_eq!(error.panel_text(), "AI 공급자 오류(HTTP 302)");
+        assert_eq!(error.panel_text(Lang::Ko), "AI 공급자 오류(HTTP 302)");
         std::thread::sleep(Duration::from_millis(200));
         assert_eq!(mock.accepts(), 1, "the redirect was not followed");
     }
@@ -809,7 +849,7 @@ mod llm {
             let _ = tx.send(done);
         });
         let service = ExplainService::start(config(&mock, None), sink).unwrap();
-        let mut panel = AiPanel::new(true);
+        let mut panel = AiPanel::new(true, Lang::Ko);
         let transition = drive(&mut panel, &service, &results, Instant::now());
         assert_eq!(panel.state(), &AiPanelState::Failed(ExplainError::Timeout));
         assert!(
@@ -858,7 +898,7 @@ mod llm {
         });
         let service =
             ExplainService::start_with(config(&mock, None), Box::new(Slow), sink).unwrap();
-        let mut panel = AiPanel::new(true);
+        let mut panel = AiPanel::new(true, Lang::Ko);
         let started = Instant::now();
         let transition = drive(&mut panel, &service, &results, started);
         assert!(
@@ -928,7 +968,7 @@ mod llm {
         let cfg = config(&mock, None);
         let transport = WinHttpTransport::new(cfg.endpoint()).unwrap();
         for (status, prepared) in &cases {
-            let input = transaction_input(prepared, "https://app.example.org", &user)
+            let input = transaction_input(Lang::Ko, prepared, "https://app.example.org", &user)
                 .unwrap()
                 .unwrap();
             assert_eq!(input.kind(), RequestKind::EvmTx);
@@ -971,7 +1011,7 @@ mod llm {
         }
         // The successful simulation carries its diff (and the diff amount is then trusted).
         let success = s2_prepared(None, None);
-        let input = transaction_input(&success, "https://app.example.org", &user)
+        let input = transaction_input(Lang::Ko, &success, "https://app.example.org", &user)
             .unwrap()
             .unwrap();
         let json = String::from_utf8(input.json().to_vec()).unwrap();

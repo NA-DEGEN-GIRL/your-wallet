@@ -12,6 +12,7 @@ use core::fmt;
 use super::{
     ENTRY_HEADER_LEN, Entry, EntryKind, JournalError, JournalPlain, MAX_ENTRIES, MAX_PLAINTEXT,
 };
+use crate::lang::Lang;
 use crate::zec::account::{ZecAccount, ZecKeySource};
 use crate::zec::address::ZecDest;
 use crate::zec::network::ZecNetwork;
@@ -87,18 +88,19 @@ impl ZecTxState {
         )
     }
 
-    /// Display label.
+    /// Display label in `lang`.
     #[must_use]
-    pub const fn label(self) -> &'static str {
+    pub const fn label_in(self, lang: Lang) -> &'static str {
         match self {
-            Self::Signed => "서명됨 (전송 전)",
-            Self::Broadcast => "전송됨 (확인 대기)",
-            Self::Confirmed => "확인됨",
-            Self::Expired => "만료됨 (포함되지 않음)",
-            Self::Rejected => "노드가 거부함 (만료까지 대기)",
-            Self::Discarded => "폐기됨 (전송 안 함)",
-            Self::InputsSpent => "입력이 사용됨 — 포함되었을 수 있음",
+            Self::Signed => text::STATE_SIGNED,
+            Self::Broadcast => text::STATE_BROADCAST,
+            Self::Confirmed => text::STATE_CONFIRMED,
+            Self::Expired => text::STATE_EXPIRED,
+            Self::Rejected => text::STATE_REJECTED,
+            Self::Discarded => text::STATE_DISCARDED,
+            Self::InputsSpent => text::STATE_INPUTS_SPENT,
         }
+        .get(lang)
     }
 
     /// Fixed name for logs.
@@ -116,6 +118,29 @@ impl ZecTxState {
     }
 }
 
+/// The fixed texts of ZEC journal records (spec/12, spec/14).
+pub mod text {
+    crate::texts! {
+        /// `ZecTxState::label_in`.
+        STATE_SIGNED = "서명됨 (전송 전)" / "Signed (not sent yet)";
+        STATE_BROADCAST = "전송됨 (확인 대기)" / "Sent (awaiting confirmation)";
+        STATE_CONFIRMED = "확인됨" / "Confirmed";
+        STATE_EXPIRED = "만료됨 (포함되지 않음)" / "Expired (not included)";
+        STATE_REJECTED = "노드가 거부함 (만료까지 대기)" / "Rejected by the node (waiting for expiry)";
+        STATE_DISCARDED = "폐기됨 (전송 안 함)" / "Discarded (not sent)";
+        STATE_INPUTS_SPENT = "입력이 사용됨 — 포함되었을 수 있음"
+            / "Inputs spent — it may have been included";
+        /// `ZecRecordError`.
+        CORRUPT = "저널 손상" / "Journal damaged";
+        /// `ZecJournalBlock::text_in`.
+        BLOCK_CORRUPT = "Zcash 거래 저널이 손상되어 보내기를 막았습니다."
+            / "The Zcash transaction journal is damaged, so sending is blocked.";
+        BLOCK_IN_FLIGHT = "이 계정의 이전 Zcash 거래가 아직 확인되지 않았습니다. 확인되거나 만료된 뒤에 다시 보내세요."
+            / "A previous Zcash transaction from this account is not confirmed yet. Send again after it confirms or expires.";
+        BLOCK_FULL = "거래 저널 공간이 부족합니다." / "The transaction journal is full.";
+    }
+}
+
 /// A body the ZEC decoder rejects ("저널 손상": ZEC sending stops, the bytes are kept).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ZecRecordError {
@@ -129,9 +154,21 @@ pub enum ZecRecordError {
     Tx,
 }
 
+impl ZecRecordError {
+    /// The fixed text in `lang` (`Display` is the Korean one).
+    #[must_use]
+    #[expect(
+        clippy::unused_self,
+        reason = "every damaged ZEC record shows the same text"
+    )]
+    pub const fn text_in(self, lang: Lang) -> &'static str {
+        text::CORRUPT.get(lang)
+    }
+}
+
 impl fmt::Display for ZecRecordError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("저널 손상")
+        formatter.write_str(self.text_in(Lang::Ko))
     }
 }
 
@@ -503,16 +540,15 @@ pub enum ZecJournalBlock {
 }
 
 impl ZecJournalBlock {
-    /// The fixed Korean text.
+    /// The fixed text in `lang`.
     #[must_use]
-    pub const fn text(self) -> &'static str {
+    pub const fn text_in(self, lang: Lang) -> &'static str {
         match self {
-            Self::Corrupt => "Zcash 거래 저널이 손상되어 보내기를 막았습니다.",
-            Self::InFlight => {
-                "이 계정의 이전 Zcash 거래가 아직 확인되지 않았습니다. 확인되거나 만료된 뒤에 다시 보내세요."
-            }
-            Self::Full => "거래 저널 공간이 부족합니다.",
+            Self::Corrupt => text::BLOCK_CORRUPT,
+            Self::InFlight => text::BLOCK_IN_FLIGHT,
+            Self::Full => text::BLOCK_FULL,
         }
+        .get(lang)
     }
 }
 

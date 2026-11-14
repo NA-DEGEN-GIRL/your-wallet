@@ -4,11 +4,13 @@
 
 use std::sync::mpsc::Receiver;
 
+use yw_core::lang::Lang;
+
 use super::{controls, ctl, has_text, unlocked_app};
 use crate::network::NetworkId;
 use crate::received::{Cursor, Fetched, Found, Incoming, ReceivedEvent, ReceivedJob, RecvChain};
 use crate::ui::main_window::{Item, Tone};
-use crate::ui::screens_received::{T_EVM_NATIVE, T_RECEIVED_HELP, dust_line, ids};
+use crate::ui::screens_received::{dust_line, ids, text as recv_text};
 use crate::workers::rpc::RpcJob;
 
 fn received(rx: &Receiver<RpcJob>) -> Vec<ReceivedJob> {
@@ -59,7 +61,7 @@ fn switch_off_queues_nothing_and_on_reads_the_shown_card() {
         ctl(&items, ids::toggle(RecvChain::Evm)).map(|ctl| ctl.checked),
         Some(Some(false))
     );
-    assert!(!has_text(&items, T_RECEIVED_HELP));
+    assert!(!has_text(&items, recv_text::RECEIVED_HELP.ko));
 
     // On: saved, and the EVM card's list is read at once with the token-card tokens.
     app.on_command(ids::toggle(RecvChain::Evm));
@@ -79,8 +81,8 @@ fn switch_off_queues_nothing_and_on_reads_the_shown_card() {
     app.received_tick(now + 120_000);
     assert!(received(&rx).is_empty());
     let items = app.items();
-    assert!(has_text(&items, T_RECEIVED_HELP));
-    assert!(has_text(&items, T_EVM_NATIVE));
+    assert!(has_text(&items, recv_text::RECEIVED_HELP.ko));
+    assert!(has_text(&items, recv_text::EVM_NATIVE.ko));
     assert!(has_text(&items, "받은 내역을 불러오는 중…"));
 
     // The answer: one row from a stranger, one imitating our own account, two dust transfers.
@@ -106,7 +108,7 @@ fn switch_off_queues_nothing_and_on_reads_the_shown_card() {
     });
     let items = app.items();
     assert!(has_text(&items, "받음 12.5 USDC"));
-    assert!(has_text(&items, &dust_line(2)));
+    assert!(has_text(&items, &dust_line(Lang::Ko, 2)));
     assert!(items.iter().any(|item| matches!(
         item,
         Item::Pill(text, Tone::HighRisk) if text.contains("주소 오염 의심") && text.contains("내 계정")
@@ -174,7 +176,7 @@ fn switch_off_queues_nothing_and_on_reads_the_shown_card() {
             ..Fetched::default()
         }),
     });
-    assert!(has_text(&app.items(), &dust_line(2)));
+    assert!(has_text(&app.items(), &dust_line(Lang::Ko, 2)));
 
     // Another screen than the main one: no reads.
     app.screen = crate::app::Screen::Settings(crate::app::SettingsSection::Security);
@@ -336,14 +338,14 @@ fn unsupported_read_drops_pending_rows_and_coverage() {
     });
     assert_eq!(list.pending_sum(), Some(50_000));
     list.apply(Fetched {
-        unsupported: Some(crate::received::btc::T_BB_NO_TXS),
+        unsupported: Some(crate::received::btc::T_BB_NO_TXS.ko),
         ..Fetched::default()
     });
     assert_eq!(list.pending_sum(), None);
     assert!(list.covered.is_empty());
     assert_eq!(list.entries.len(), 1);
     assert!(!list.entries[0].pending);
-    assert_eq!(list.unsupported, Some(crate::received::btc::T_BB_NO_TXS));
+    assert_eq!(list.unsupported, Some(crate::received::btc::T_BB_NO_TXS.ko));
 }
 
 /// 2026-11-13 review (spec/04 §2.6): a pending row whose status the source keeps not giving
@@ -458,7 +460,10 @@ fn zcash_unconfirmed_deposits_on_the_card() {
     assert!(!has_text(&items, "· 미확인"));
     assert!(has_text(
         &items,
-        &crate::ui::screens_zec::unclassified_line("0.50000000 ZEC (50,000,000 zats)")
+        &crate::ui::screens_zec::unclassified_line(
+            yw_core::lang::Lang::Ko,
+            "0.50000000 ZEC (50,000,000 zats)"
+        )
     ));
     assert!(!has_text(&items, "미확정 입금 0."));
     assert!(items.iter().any(|item| matches!(
@@ -503,14 +508,8 @@ fn zcash_unconfirmed_deposits_on_the_card() {
     ));
     assert!(!has_text(&items, "미확정 출력"), "the list knows it");
     assert!(has_text(&items, "미확정 · 받음 0.40000000 ZEC"));
-    assert!(has_text(
-        &items,
-        crate::ui::screens_received::T_PENDING_STATUS
-    ));
-    assert!(has_text(
-        &items,
-        crate::ui::screens_received::T_PENDING_HELP
-    ));
+    assert!(has_text(&items, recv_text::PENDING_STATUS.ko));
+    assert!(has_text(&items, recv_text::PENDING_HELP.ko));
     assert!(has_text(&items, crate::received::zec::T_NO_DELTAS_PENDING));
 
     // The next automatic read carries the pending row; the row goes, counted.
@@ -528,7 +527,10 @@ fn zcash_unconfirmed_deposits_on_the_card() {
         result: Ok(read(Vec::new(), &[&deposit], &[])),
     });
     let items = app.items();
-    assert!(has_text(&items, &crate::ui::screens_received::gone_line(1)));
+    assert!(has_text(
+        &items,
+        &crate::ui::screens_received::gone_line(Lang::Ko, 1)
+    ));
     assert!(!has_text(&items, "미확정 · 받음"));
     // The (older) snapshot still has it: neither line, the list counted it as gone.
     assert!(!has_text(&items, "미확정 입금 0."));
@@ -552,19 +554,13 @@ fn pending_rows_hide_the_sender() {
         .or_default()
         .apply(read(vec![processed], &[], &[]));
     let items = app.items();
-    assert!(has_text(
-        &items,
-        crate::ui::screens_received::T_PENDING_SENDER
-    ));
+    assert!(has_text(&items, recv_text::PENDING_SENDER.ko));
     assert!(!has_text(&items, "5a5a 5a5a"));
     app.received
         .lists
         .get_mut(&key)
         .unwrap()
         .apply(read(vec![row("p", stranger)], &[], &[]));
-    assert!(!has_text(
-        &app.items(),
-        crate::ui::screens_received::T_PENDING_SENDER
-    ));
+    assert!(!has_text(&app.items(), recv_text::PENDING_SENDER.ko));
     let _ = std::fs::remove_dir_all(&dir);
 }

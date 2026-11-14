@@ -17,6 +17,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 
 use yw_core::evm::address::{Address, parse_address};
+use yw_core::lang::Lang;
 use yw_core::policy::{BrowserOrigin, Method, ProviderError};
 use yw_core::secret::Zeroizing;
 use yw_json::{Limits, Value};
@@ -166,16 +167,55 @@ pub enum RelayStatus {
 impl RelayStatus {
     /// The status line.
     #[must_use]
-    pub fn text(&self) -> String {
+    pub fn text(&self, lang: Lang) -> String {
         match self {
-            Self::NoProject => "Reown Project ID가 없어 WalletConnect가 꺼져 있습니다".to_owned(),
-            Self::Idle => "대기 중 (연결된 세션 없음)".to_owned(),
-            Self::Connecting => "릴레이에 연결하는 중…".to_owned(),
-            Self::Connected => "릴레이에 연결됨".to_owned(),
-            Self::Unauthorized(code) => format!(
-                "릴레이가 Project ID를 거부했습니다 (HTTP {code}) — dashboard.reown.com에서 ID와 허용 출처 설정을 확인하세요"
-            ),
-            Self::Offline => "릴레이에 연결할 수 없습니다 — 다시 시도하는 중".to_owned(),
+            Self::NoProject => text::RELAY_NO_PROJECT.get(lang).to_owned(),
+            Self::Idle => text::RELAY_IDLE.get(lang).to_owned(),
+            Self::Connecting => text::RELAY_CONNECTING.get(lang).to_owned(),
+            Self::Connected => text::RELAY_CONNECTED.get(lang).to_owned(),
+            Self::Unauthorized(code) => text::RELAY_UNAUTHORIZED.fill(lang, [&code.to_string()]),
+            Self::Offline => text::RELAY_OFFLINE.get(lang).to_owned(),
+        }
+    }
+}
+
+/// A message for the `WalletConnect` panel, worded on the UI thread in the app language
+/// ([`WcNotice::text`]; 2026-11-14: the worker sent finished Korean text before).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WcNotice {
+    /// The pasted text is not a usable pairing URI.
+    Uri(yw_core::walletconnect::UriError),
+    /// No Reown project id saved.
+    NoProject,
+    /// The wallet is locked.
+    Locked,
+    /// The pairing URI expired.
+    Expired,
+    /// Paired; waiting for the dApp's proposal.
+    Waiting,
+    /// An engine notice with the registry names of the chains it lists.
+    Engine(Notice, Vec<(u64, String)>),
+}
+
+impl WcNotice {
+    /// The panel text.
+    #[must_use]
+    pub fn text(&self, lang: Lang) -> String {
+        match self {
+            Self::Uri(error) => error.message(lang).to_owned(),
+            Self::NoProject => text::PAIR_NO_PROJECT.get(lang).to_owned(),
+            Self::Locked => text::PAIR_LOCKED.get(lang).to_owned(),
+            Self::Expired => text::PAIR_EXPIRED.get(lang).to_owned(),
+            Self::Waiting => text::PAIR_WAITING.get(lang).to_owned(),
+            Self::Engine(notice, labels) => {
+                let label = |id: u64| {
+                    labels
+                        .iter()
+                        .find(|(chain, _)| *chain == id)
+                        .map_or_else(|| format!("eip155:{id}"), |(_, name)| name.clone())
+                };
+                notice_text(lang, notice, &label)
+            }
         }
     }
 }
@@ -232,7 +272,7 @@ pub enum WcEvent {
     /// A session ended: the UI removes its grant and its waiting requests.
     Ended(BrowserOrigin),
     /// A message for the `WalletConnect` panel (pairing errors, refused proposals etc.).
-    Notice(String),
+    Notice(WcNotice),
     /// Connect and signing requests refused (4100) while the wallet was locked, reported once
     /// at the next unlock (no window was opened for them).
     RefusedWhileLocked(u32),
@@ -360,15 +400,14 @@ pub fn valid_project_id(text: &str) -> bool {
 /// The panel's words for an engine [`Notice`]: wallet text only (nothing the dApp sent is
 /// repeated), chains by `label` (this wallet's registry name, else `eip155:N`).
 #[must_use]
-pub fn notice_text(notice: &Notice, label: &dyn Fn(u64) -> String) -> String {
-    const ADD_CHAIN: &str =
-        "설정 → EVM 체인에서 그 네트워크를 추가하거나 RPC를 확인한 뒤 dApp에서 다시 연결하세요.";
-    const EVM_ONLY: &str = "이 지갑의 WalletConnect는 EVM 네트워크만 지원합니다.";
-    const NEW_LINK: &str = "dApp에서 새 QR/링크를 받아 다시 연결하세요.";
+pub fn notice_text(lang: Lang, notice: &Notice, label: &dyn Fn(u64) -> String) -> String {
+    let add_chain = text::HINT_ADD_CHAIN.get(lang);
+    let evm_only = text::HINT_EVM_ONLY.get(lang);
+    let new_link = text::HINT_NEW_LINK.get(lang);
     let list = |chains: &[u64]| {
         let mut parts: Vec<String> = chains.iter().take(4).map(|id| label(*id)).collect();
         if chains.len() > 4 {
-            parts.push(format!("외 {}개", chains.len() - 4));
+            parts.push(text::MORE_CHAINS.fill(lang, [&(chains.len() - 4).to_string()]));
         }
         parts.join(", ")
     };
@@ -379,46 +418,84 @@ pub fn notice_text(notice: &Notice, label: &dyn Fn(u64) -> String) -> String {
                 parts.push(list(chains));
             }
             if *non_evm {
-                parts.push("EVM이 아닌 네트워크(Solana·Bitcoin 등)".to_owned());
+                parts.push(text::NON_EVM_NETWORKS.get(lang).to_owned());
             }
-            let hint = if chains.is_empty() { EVM_ONLY } else { ADD_CHAIN };
-            format!(
-                "연결 요청을 거절했습니다: dApp이 이 지갑에서 쓸 수 없는 네트워크를 필수로 요구합니다 — {}. {hint}",
-                parts.join(", ")
-            )
+            let hint = if chains.is_empty() {
+                evm_only
+            } else {
+                add_chain
+            };
+            text::REFUSED_MISSING.fill(lang, [&parts.join(", "), hint])
         }
-        Notice::NonEvmOnly => format!(
-            "연결 요청을 거절했습니다: dApp이 EVM이 아닌 네트워크(Solana·Bitcoin 등)만 요청했습니다. {EVM_ONLY}"
-        ),
+        Notice::NonEvmOnly => text::REFUSED_NON_EVM_ONLY.fill(lang, [evm_only]),
         Notice::NoChains(chains) if chains.is_empty() => {
-            "연결 요청을 거절했습니다: dApp이 연결할 EVM 네트워크를 지정하지 않았습니다.".to_owned()
+            text::REFUSED_NO_CHAIN.get(lang).to_owned()
         }
-        Notice::NoChains(chains) => format!(
-            "연결 요청을 거절했습니다: dApp이 요청한 네트워크({}) 중 이 지갑에서 쓸 수 있는 것이 없습니다. {ADD_CHAIN}",
-            list(chains)
-        ),
-        Notice::Malformed => {
-            "연결 요청을 거절했습니다: dApp이 보낸 연결 요청의 형식이 올바르지 않습니다.".to_owned()
+        Notice::NoChains(chains) => {
+            text::REFUSED_NONE_USABLE.fill(lang, [&list(chains), add_chain])
         }
-        Notice::Cooling => format!(
-            "방금 거절했거나 시간이 지난 연결 요청과 같은 연결 주소라 {}초 동안은 새 요청을 받지 않습니다. 잠시 뒤 dApp에서 다시 연결하세요.",
-            super::engine::PROPOSAL_COOLDOWN_S
-        ),
-        Notice::PairingUsed => format!("이 연결 주소(QR/링크)는 이미 쓰였습니다. {NEW_LINK}"),
-        Notice::Busy => {
-            "처리하지 않은 연결 요청이 많아 새 요청을 거절했습니다. 열린 연결 창부터 처리하세요."
-                .to_owned()
+        Notice::Malformed => text::REFUSED_MALFORMED.get(lang).to_owned(),
+        Notice::Cooling => {
+            text::COOLING.fill(lang, [&super::engine::PROPOSAL_COOLDOWN_S.to_string()])
         }
-        Notice::PairingExpired => {
-            format!("dApp의 연결 요청이 오지 않은 채 연결 주소가 만료되었습니다. {NEW_LINK}")
-        }
-        Notice::SettleRefused => {
-            "dApp이 방금 승인한 연결을 받아들이지 않아 그 WalletConnect 세션을 지웠습니다. dApp에서 다시 연결하세요."
-                .to_owned()
-        }
-        Notice::Unconfirmed => format!(
-            "dApp이 WalletConnect 연결을 확인하지 않아 세션을 끊었습니다(dApp 창이 닫혔을 수 있습니다). 필요하면 {NEW_LINK}"
-        ),
+        Notice::PairingUsed => text::PAIRING_USED.fill(lang, [new_link]),
+        Notice::Busy => text::BUSY.get(lang).to_owned(),
+        Notice::PairingExpired => text::PAIRING_EXPIRED.fill(lang, [new_link]),
+        Notice::SettleRefused => text::SETTLE_REFUSED.get(lang).to_owned(),
+        Notice::Unconfirmed => text::UNCONFIRMED.fill(lang, [new_link]),
+    }
+}
+
+/// The worker's panel texts (spec/13 §6; English spec/14).
+pub mod text {
+    yw_core::texts! {
+        RELAY_NO_PROJECT = "Reown Project ID가 없어 WalletConnect가 꺼져 있습니다"
+            / "WalletConnect is off: no Reown Project ID";
+        RELAY_IDLE = "대기 중 (연결된 세션 없음)" / "Idle (no connected session)";
+        RELAY_CONNECTING = "릴레이에 연결하는 중…" / "Connecting to the relay…";
+        RELAY_CONNECTED = "릴레이에 연결됨" / "Connected to the relay";
+        RELAY_UNAUTHORIZED(1) = "릴레이가 Project ID를 거부했습니다 (HTTP {0}) — dashboard.reown.com에서 ID와 허용 출처 설정을 확인하세요"
+            / "The relay refused the Project ID (HTTP {0}) — check the ID and the allowed origins at dashboard.reown.com";
+        RELAY_OFFLINE = "릴레이에 연결할 수 없습니다 — 다시 시도하는 중"
+            / "Cannot connect to the relay — retrying";
+        HINT_ADD_CHAIN = "설정 → EVM 체인에서 그 네트워크를 추가하거나 RPC를 확인한 뒤 dApp에서 다시 연결하세요."
+            / "Add that network or check its RPC in Settings → EVM chains, then connect again from the dApp.";
+        HINT_EVM_ONLY = "이 지갑의 WalletConnect는 EVM 네트워크만 지원합니다."
+            / "This wallet's WalletConnect supports EVM networks only.";
+        HINT_NEW_LINK = "dApp에서 새 QR/링크를 받아 다시 연결하세요."
+            / "Get a new QR code or link from the dApp and connect again.";
+        MORE_CHAINS(1) = "외 {0}개" / "and {0} more";
+        NON_EVM_NETWORKS = "EVM이 아닌 네트워크(Solana·Bitcoin 등)"
+            / "non-EVM networks (Solana, Bitcoin, etc.)";
+        REFUSED_MISSING(2) = "연결 요청을 거절했습니다: dApp이 이 지갑에서 쓸 수 없는 네트워크를 필수로 요구합니다 — {0}. {1}"
+            / "Connection request refused: the dApp requires networks this wallet cannot use — {0}. {1}";
+        REFUSED_NON_EVM_ONLY(1) = "연결 요청을 거절했습니다: dApp이 EVM이 아닌 네트워크(Solana·Bitcoin 등)만 요청했습니다. {0}"
+            / "Connection request refused: the dApp asked only for non-EVM networks (Solana, Bitcoin, etc.). {0}";
+        REFUSED_NO_CHAIN = "연결 요청을 거절했습니다: dApp이 연결할 EVM 네트워크를 지정하지 않았습니다."
+            / "Connection request refused: the dApp named no EVM network to connect to.";
+        REFUSED_NONE_USABLE(2) = "연결 요청을 거절했습니다: dApp이 요청한 네트워크({0}) 중 이 지갑에서 쓸 수 있는 것이 없습니다. {1}"
+            / "Connection request refused: none of the networks the dApp asked for ({0}) can be used in this wallet. {1}";
+        REFUSED_MALFORMED = "연결 요청을 거절했습니다: dApp이 보낸 연결 요청의 형식이 올바르지 않습니다."
+            / "Connection request refused: the dApp's connection request is malformed.";
+        COOLING(1) = "방금 거절했거나 시간이 지난 연결 요청과 같은 연결 주소라 {0}초 동안은 새 요청을 받지 않습니다. 잠시 뒤 dApp에서 다시 연결하세요."
+            / "Same link as a connection request just refused or timed out: no new request is taken for {0} s. Connect again from the dApp in a moment.";
+        PAIRING_USED(1) = "이 연결 주소(QR/링크)는 이미 쓰였습니다. {0}"
+            / "This link (QR/link) was already used. {0}";
+        BUSY = "처리하지 않은 연결 요청이 많아 새 요청을 거절했습니다. 열린 연결 창부터 처리하세요."
+            / "Too many connection requests are pending, so the new one was refused. Handle the open connection windows first.";
+        PAIRING_EXPIRED(1) = "dApp의 연결 요청이 오지 않은 채 연결 주소가 만료되었습니다. {0}"
+            / "The link expired before the dApp sent a connection request. {0}";
+        SETTLE_REFUSED = "dApp이 방금 승인한 연결을 받아들이지 않아 그 WalletConnect 세션을 지웠습니다. dApp에서 다시 연결하세요."
+            / "The dApp did not accept the connection just approved, so that WalletConnect session was removed. Connect again from the dApp.";
+        UNCONFIRMED(1) = "dApp이 WalletConnect 연결을 확인하지 않아 세션을 끊었습니다(dApp 창이 닫혔을 수 있습니다). 필요하면 {0}"
+            / "The dApp did not confirm the WalletConnect connection, so the session was disconnected (the dApp window may have closed). If needed: {0}";
+        PAIR_NO_PROJECT = "먼저 Reown Project ID를 저장하세요 (연결된 사이트 → WalletConnect)."
+            / "Save a Reown Project ID first (Connected sites → WalletConnect).";
+        PAIR_LOCKED = "지갑 잠금을 해제한 뒤 다시 시도하세요." / "Unlock the wallet, then try again.";
+        PAIR_EXPIRED = "연결 주소가 만료되었습니다. dApp에서 새 WalletConnect 주소를 받으세요."
+            / "The link has expired. Get a new WalletConnect link from the dApp.";
+        PAIR_WAITING = "dApp의 연결 요청을 기다리는 중입니다…"
+            / "Waiting for the dApp's connection request…";
     }
 }
 
@@ -646,34 +723,26 @@ impl Worker {
         let uri = match yw_core::walletconnect::parse_pairing_uri(text) {
             Ok(uri) => uri,
             Err(error) => {
-                self.sink.push(WcEvent::Notice(error.message().to_owned()));
+                self.sink.push(WcEvent::Notice(WcNotice::Uri(error)));
                 return;
             }
         };
         if self.project_id.is_none() {
-            self.sink.push(WcEvent::Notice(
-                "먼저 Reown Project ID를 저장하세요 (연결된 사이트 → WalletConnect).".to_owned(),
-            ));
+            self.sink.push(WcEvent::Notice(WcNotice::NoProject));
             return;
         }
         if !self.loaded || self.client_seed.is_none() {
-            self.sink.push(WcEvent::Notice(
-                "지갑 잠금을 해제한 뒤 다시 시도하세요.".to_owned(),
-            ));
+            self.sink.push(WcEvent::Notice(WcNotice::Locked));
             return;
         }
         let now = self.now_s();
         if uri.expired(now) {
-            self.sink.push(WcEvent::Notice(
-                "연결 주소가 만료되었습니다. dApp에서 새 WalletConnect 주소를 받으세요.".to_owned(),
-            ));
+            self.sink.push(WcEvent::Notice(WcNotice::Expired));
             return;
         }
         let outs = self.engine.pair(&uri, now);
         self.apply(outs);
-        self.sink.push(WcEvent::Notice(
-            "dApp의 연결 요청을 기다리는 중입니다…".to_owned(),
-        ));
+        self.sink.push(WcEvent::Notice(WcNotice::Waiting));
     }
 
     // ----- relay connection ------------------------------------------------------------
@@ -936,18 +1005,22 @@ impl Worker {
                 }
                 Out::Notice(notice) => {
                     let wallet = self.core.wallet();
-                    let label = |id: u64| {
-                        wallet
-                            .chains
-                            .iter()
-                            .find(|entry| entry.info.chain_id == id)
-                            .map_or_else(
-                                || format!("eip155:{id}"),
-                                |entry| format!("{} (eip155:{id})", entry.info.name),
-                            )
+                    let ids: &[u64] = match &notice {
+                        Notice::MissingChains { chains, .. } | Notice::NoChains(chains) => chains,
+                        _ => &[],
                     };
+                    let labels = ids
+                        .iter()
+                        .filter_map(|id| {
+                            wallet
+                                .chains
+                                .iter()
+                                .find(|entry| entry.info.chain_id == *id)
+                                .map(|entry| (*id, format!("{} (eip155:{id})", entry.info.name)))
+                        })
+                        .collect();
                     self.sink
-                        .push(WcEvent::Notice(notice_text(&notice, &label)));
+                        .push(WcEvent::Notice(WcNotice::Engine(notice, labels)));
                 }
             }
         }

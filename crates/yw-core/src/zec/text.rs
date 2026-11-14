@@ -1,9 +1,9 @@
 //! The Zcash approval texts in Korean and English (spec/12 §9, spec/14).
 //!
 //! The names of other zec modules that reach the approval display (the testnet banner, the
-//! recipient form label, the key source label and path text) are mapped here per language; the
-//! Korean side delegates to the original function, so its bytes cannot drift (the catalogue
-//! copies are checked against it in the tests).
+//! recipient form label, the key source label and path text) and the fixed error texts of the
+//! zec modules (address, plan, signer, upgrade) are here too (2026-11-14, Step 3: the modules
+//! read this catalogue for both languages; their Korean-only methods are gone).
 
 use super::account::ZecKeySource;
 use super::address::RecipientForm;
@@ -78,76 +78,73 @@ crate::texts! {
         / "v5 transaction (ZIP 225), transparent inputs·outputs only\nnLockTime 0 · sequence 0xFFFFFFFF\nSIGHASH_ALL (ZIP 244)\n{0}";
     ADVANCED_SEND_MAX = "보내기 최대: 모든 확인된 잔액 − 수수료" / "Send max: all confirmed balance − fee";
     ADVANCED_FIXED = "지정 금액" / "Specified amount";
+
+    // ----- ZecAddressError (spec/12 §11) --------------------------------------------------------
+    ADDR_EMPTY = "받는 주소를 입력하세요." / "Enter the recipient address.";
+    ADDR_NOT_ZCASH = "Zcash 주소가 아닙니다." / "This is not a Zcash address.";
+    ADDR_CHECKSUM = "주소의 체크섬이 맞지 않습니다. 주소를 다시 확인하세요."
+        / "The address checksum does not match. Check the address again.";
+    ADDR_WRONG_NETWORK = "다른 Zcash 네트워크의 주소입니다."
+        / "This address is for the other Zcash network.";
+    ADDR_SHIELDED = "비공개(shielded) 주소로는 보낼 수 없습니다. 이 지갑은 일반(transparent) 전송만 합니다."
+        / "Cannot send to a shielded address. This wallet only makes transparent sends.";
+    ADDR_UA_NO_TRANSPARENT = "이 통합 주소(UA)에는 일반(transparent) 수신자가 없습니다. 받는 사람에게 t 주소나 TEX 주소를 요청하세요."
+        / "This unified address (UA) has no transparent receiver. Ask the recipient for a t address or a TEX address.";
+    ADDR_UA_INVALID = "통합 주소(UA) 형식이 올바르지 않습니다."
+        / "The unified address (UA) is malformed.";
+    ADDR_UA_UNSUPPORTED = "이 통합 주소(UA) 형식(revision 1 또는 메타데이터)은 아직 지원하지 않습니다. t 주소나 TEX 주소를 요청하세요."
+        / "This unified address (UA) format (revision 1 or metadata) is not supported yet. Ask for a t address or a TEX address.";
+
+    // ----- ZecPlanError -------------------------------------------------------------------------
+    PLAN_AMOUNT(1) = "보낼 금액이 올바르지 않습니다 (최소 {0} ZEC)."
+        / "The amount to send is invalid (minimum {0} ZEC).";
+    PLAN_INSUFFICIENT(2) = "확인된 잔액이 부족합니다: 필요 {0} (수수료 포함), 사용 가능 {1}."
+        / "Not enough confirmed balance: needed {0} (fee included), available {1}.";
+    PLAN_TOO_MANY_INPUTS(1) = "입력이 {0}개를 넘어야 해서 한 번에 보낼 수 없습니다. 금액을 나눠 보내세요."
+        / "This would need more than {0} inputs, so it cannot be sent at once. Send the amount in parts.";
+    PLAN_FEE_HIGH = "수수료가 상한을 넘습니다." / "The fee exceeds the cap.";
+    PLAN_NO_FUNDS = "보낼 수 있는 확인된 잔액이 없습니다." / "There is no confirmed balance to send.";
+
+    // ----- ZecSignError -------------------------------------------------------------------------
+    SIGN_APPROVAL_MISMATCH = "승인 내용과 서명할 거래가 다릅니다."
+        / "The transaction to sign differs from what was approved.";
+    SIGN_KEY_MISMATCH = "서명 키가 이 Zcash 계정의 키와 다릅니다. 서명을 멈췄습니다."
+        / "The signing key differs from this Zcash account's key. Signing stopped.";
+    SIGN_VERIFY = "Zcash 거래 서명 검증에 실패해 폐기했습니다."
+        / "The Zcash transaction failed signature verification and was discarded.";
+
+    // ----- UpgradeError (spec/12 §11) -----------------------------------------------------------
+    UPGRADE_UNKNOWN(1) = "노드가 이 지갑이 모르는 네트워크 업그레이드(branch id {0})를 알려 주었습니다. 지갑을 업데이트하기 전에는 보낼 수 없습니다."
+        / "The node reported a network upgrade this wallet does not know (branch id {0}). You cannot send until the wallet is updated.";
+    UPGRADE_NOT_V5(1) = "현재 네트워크 업그레이드(branch id {0})에서는 이 지갑의 거래 형식(v5)을 쓸 수 없습니다."
+        / "This wallet's transaction format (v5) cannot be used under the current network upgrade (branch id {0}).";
+    UPGRADE_MISMATCH(2) = "노드의 네트워크 업그레이드(branch id {0})가 지갑의 표({1})와 다릅니다. 노드나 지갑 버전을 확인하세요."
+        / "The node's network upgrade (branch id {0}) differs from the wallet's table ({1}). Check the node or wallet version.";
+    UPGRADE_TOO_CLOSE(1) = "네트워크 업그레이드가 곧(블록 {0}) 활성화됩니다. 활성화된 뒤에 다시 보내세요."
+        / "A network upgrade activates soon (block {0}). Send again after it activates.";
+    UPGRADE_TIP = "노드의 블록 높이가 올바르지 않습니다." / "The node's block height is invalid.";
 }
 
 /// The network banner (field `0x0002`).
 #[must_use]
-pub fn network_banner(lang: Lang, network: ZecNetwork) -> &'static str {
-    match (lang, network) {
-        (Lang::Ko, _) | (_, ZecNetwork::Mainnet) => network.banner(),
-        (Lang::En, ZecNetwork::Testnet) => BANNER_TESTNET.en,
-    }
+pub const fn network_banner(lang: Lang, network: ZecNetwork) -> &'static str {
+    network.banner_in(lang)
 }
 
-/// The recipient form label (`RecipientForm::label`).
+/// The recipient form label.
 #[must_use]
-pub fn form_label(lang: Lang, form: RecipientForm) -> &'static str {
-    match lang {
-        Lang::Ko => form.label(),
-        Lang::En => match form {
-            RecipientForm::Transparent => FORM_TRANSPARENT.en,
-            RecipientForm::Tex => FORM_TEX.en,
-            RecipientForm::Unified => FORM_UNIFIED.en,
-        },
-    }
+pub const fn form_label(lang: Lang, form: RecipientForm) -> &'static str {
+    form.label_in(lang)
 }
 
-/// The key source label (`ZecKeySource::label`).
+/// The key source label.
 #[must_use]
 pub fn source_label(lang: Lang, source: ZecKeySource) -> String {
-    use crate::yubikey::plan::{UNKNOWN_PATH_FIRST, is_unknown_index};
-    if lang == Lang::Ko {
-        return source.label();
-    }
-    match source {
-        ZecKeySource::Derived {
-            account: 0,
-            index: 0,
-        } => SOURCE_STANDARD.get(lang).to_owned(),
-        ZecKeySource::Derived { account, index } => {
-            SOURCE_PATH.fill(lang, [&account.to_string(), &index.to_string()])
-        }
-        ZecKeySource::Mnemonic {
-            account: 0,
-            index: 0,
-            ..
-        } => SOURCE_STANDARD_ADDED.get(lang).to_owned(),
-        ZecKeySource::Mnemonic { account, index, .. } => {
-            SOURCE_PATH_ADDED.fill(lang, [&account.to_string(), &index.to_string()])
-        }
-        ZecKeySource::EvmShared { evm_index } => SOURCE_EVM.fill(lang, [&evm_index.to_string()]),
-        ZecKeySource::Hardware { index } if is_unknown_index(index) => SOURCE_YUBIKEY_CARD.fill(
-            lang,
-            [&index
-                .saturating_sub(UNKNOWN_PATH_FIRST)
-                .saturating_add(1)
-                .to_string()],
-        ),
-        ZecKeySource::Hardware { index } => SOURCE_YUBIKEY.fill(lang, [&index.to_string()]),
-        ZecKeySource::Imported => SOURCE_IMPORTED.get(lang).to_owned(),
-    }
+    source.label_in(lang)
 }
 
-/// The key source path text (`ZecKeySource::path_text`).
+/// The key source path text.
 #[must_use]
 pub fn path_text(lang: Lang, source: ZecKeySource, network: ZecNetwork) -> String {
-    match (lang, source) {
-        (Lang::En, ZecKeySource::Imported) => PATH_IMPORTED.en.to_owned(),
-        (Lang::En, ZecKeySource::Hardware { index })
-            if crate::yubikey::plan::is_unknown_index(index) =>
-        {
-            PATH_UNKNOWN.en.to_owned()
-        }
-        _ => source.path_text(network),
-    }
+    source.path_text_in(lang, network)
 }

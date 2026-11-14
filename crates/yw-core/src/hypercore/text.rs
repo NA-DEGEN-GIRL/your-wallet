@@ -1,8 +1,9 @@
 //! The `HyperCore 전송` approval texts in Korean and English (spec/11 §6, spec/14).
 //!
-//! The network label and the action name (`HcNetwork::label`, `HcKind::korean`) reach the
-//! approval display; they are mapped here per language, the Korean side delegating to the
-//! original function (the catalogue copies are checked against it in the tests).
+//! The network label (`HcNetwork::label`) and the action name reach the approval display and the
+//! activity rows; they are mapped here per language. The network's Korean side delegates to the
+//! original function (the catalogue copy is checked against it in the tests); the action name
+//! lives only here (2026-11-14: `HcKind::korean` removed).
 
 use super::{HcKind, HcNetwork};
 use crate::lang::Lang;
@@ -11,7 +12,7 @@ crate::texts! {
     /// `HcNetwork::label`.
     NETWORK_MAINNET = "HyperCore 메인넷" / "HyperCore mainnet";
     NETWORK_TESTNET = "HyperCore 테스트넷" / "HyperCore testnet";
-    /// `HcKind::korean`.
+    /// The action name ([`kind_name`]).
     KIND_USD_SEND = "USDC 보내기 (HyperCore)" / "Send USDC (HyperCore)";
     KIND_SPOT_SEND = "현물 토큰 보내기 (HyperCore)" / "Send spot token (HyperCore)";
     KIND_WITHDRAW = "Arbitrum으로 USDC 출금" / "Withdraw USDC to Arbitrum";
@@ -51,26 +52,21 @@ crate::texts! {
 /// The network label (`HcNetwork::label`).
 #[must_use]
 pub fn network_label(lang: Lang, network: HcNetwork) -> &'static str {
-    match lang {
-        Lang::Ko => network.label(),
-        Lang::En => match network {
-            HcNetwork::Mainnet => NETWORK_MAINNET.en,
-            HcNetwork::Testnet => NETWORK_TESTNET.en,
-        },
+    match network {
+        HcNetwork::Mainnet => NETWORK_MAINNET.get(lang),
+        HcNetwork::Testnet => NETWORK_TESTNET.get(lang),
     }
 }
 
-/// The action name (`HcKind::korean`).
+/// The action name (approval, activity).
 #[must_use]
-pub fn kind_name(lang: Lang, kind: HcKind) -> &'static str {
-    match lang {
-        Lang::Ko => kind.korean(),
-        Lang::En => match kind {
-            HcKind::UsdSend => KIND_USD_SEND.en,
-            HcKind::SpotSend => KIND_SPOT_SEND.en,
-            HcKind::Withdraw => KIND_WITHDRAW.en,
-            HcKind::UsdClassTransfer => KIND_USD_CLASS_TRANSFER.en,
-            HcKind::SendAsset => KIND_SEND_ASSET.en,
-        },
+pub const fn kind_name(lang: Lang, kind: HcKind) -> &'static str {
+    match kind {
+        HcKind::UsdSend => KIND_USD_SEND,
+        HcKind::SpotSend => KIND_SPOT_SEND,
+        HcKind::Withdraw => KIND_WITHDRAW,
+        HcKind::UsdClassTransfer => KIND_USD_CLASS_TRANSFER,
+        HcKind::SendAsset => KIND_SEND_ASSET,
     }
+    .get(lang)
 }

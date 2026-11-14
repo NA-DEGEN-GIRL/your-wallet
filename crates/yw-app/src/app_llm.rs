@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use yw_core::approval::ChainFacts;
 use yw_core::evm::address::Address;
+use yw_core::lang::{Lang, Text};
 
 use crate::apikeys::{ApiKeys, KeyName};
 use crate::app::{App, Confirm, Screen, SettingsSection};
@@ -37,6 +38,34 @@ pub const SHUTDOWN_WAIT_MS: u64 = 2_000;
 pub const SAMPLE_FROM: &str = "0x000000000000000000000000000000000000dEaD";
 /// The connection-test sample recipient.
 pub const SAMPLE_TO: &str = "0x000000000000000000000000000000000000beef";
+
+/// The S15 messages (spec/06 §2; English spec/14).
+pub mod text {
+    yw_core::texts! {
+        SAVE_FIRST = "먼저 엔드포인트와 모델을 입력하고 '저장'하세요. 그다음 켤 수 있습니다."
+            / "Enter the endpoint and the model and press 'Save' first. Then it can be turned on.";
+        TURNED_OFF = "AI 설명을 껐습니다. 외부로 아무것도 보내지 않습니다."
+            / "AI explanations are off. Nothing is sent out.";
+        TURNED_ON = "AI 설명을 켰습니다. 다음 dApp 요청부터 승인 창에 참고 설명이 붙습니다."
+            / "AI explanations are on. From the next dApp request, the approval window shows a reference explanation.";
+        SAVE_FAILED = "설정을 저장하지 못했습니다." / "Could not save the settings.";
+        BAD_ENDPOINT = "엔드포인트 형식이 올바르지 않습니다. https://…/chat/completions 또는 http://127.0.0.1(localhost·[::1])…/chat/completions 형식이어야 하고 사용자 이름·?·#를 넣을 수 없습니다."
+            / "Invalid endpoint. It must look like https://…/chat/completions or http://127.0.0.1 (localhost, [::1])…/chat/completions, without a user name, ? or #.";
+        BAD_MODEL = "모델 이름은 영문·숫자와 . _ : / @ + - 만 1–128자로 쓸 수 있습니다."
+            / "A model name is 1–128 characters of letters, digits and . _ : / @ + - only.";
+        BAD_MAX_TOKENS = "max_tokens는 0–4096 사이의 정수여야 합니다."
+            / "max_tokens must be a whole number from 0 to 4096.";
+        SAVED_TURNED_OFF = "저장했습니다. 엔드포인트가 바뀌어 AI 설명을 껐습니다. 다시 켜면 새 주소로 보낸다는 안내를 보여줍니다."
+            / "Saved. The endpoint changed, so AI explanations were turned off. Turning them on again shows the notice for the new address.";
+        SAVED = "저장했습니다." / "Saved.";
+        BAD_KEY = "API 키는 공백 없는 영문·숫자·기호(0x21–0x7E) 1–512자여야 합니다."
+            / "An API key is 1–512 letters, digits and symbols (0x21–0x7E) without spaces.";
+        KEY_SAVED = "API 키를 저장했습니다." / "API key saved.";
+        TEST_FAILED(1) = "연결 테스트 실패: {0}" / "Connection test failed: {0}";
+        TEST_OK = "연결 테스트 성공: 표본 요청에 대한 AI 설명을 받았고 형식 검사를 통과했습니다."
+            / "Connection test passed: an AI explanation of the sample request arrived and passed the format checks.";
+    }
+}
 
 /// The S15 `AI 설명` form (drafts until `저장`).
 #[derive(Clone, Debug)]
@@ -84,12 +113,13 @@ impl Default for LlmUi {
 }
 
 /// The connection-test sample (spec/06 §2.2 `SAMPLE_INPUT`): 0.01 `SepoliaETH` from `0x…dEaD`
-/// to `0x…beef`, simulation `unsupported`, origin `https://example.org`.
+/// to `0x…beef`, simulation `unsupported`, origin `https://example.org`, in `lang` (the app
+/// language: the test checks the prompt and the answer rules of that language).
 ///
 /// # Errors
 ///
 /// [`ExplainError`] from [`build_input`] (never for this fixed sample).
-pub fn sample_input() -> Result<crate::explain::ExplainInput, ExplainError> {
+pub fn sample_input(lang: Lang) -> Result<crate::explain::ExplainInput, ExplainError> {
     let parse =
         |text: &str| yw_core::evm::address::parse_address(text).map_err(|_| ExplainError::Schema);
     let from: Address = parse(SAMPLE_FROM)?;
@@ -111,6 +141,7 @@ pub fn sample_input() -> Result<crate::explain::ExplainInput, ExplainError> {
         tx,
     };
     build_input(
+        lang,
         &ExplainSource::EvmTx(&decoded, ExplainSim::Unsupported),
         "https://example.org",
         &from,
@@ -122,9 +153,10 @@ pub fn sample_input() -> Result<crate::explain::ExplainInput, ExplainError> {
 /// The AI input of a prepared dApp transaction (spec/06 §3.1, §4.3): the wallet's own decoding
 /// (R4 resolved with the simulation logs when usable) and the simulation status, with the diff
 /// only after a successful simulation. `None` for a request blocked before the simulation step
-/// (`Skipped`), which is not explained.
+/// (`Skipped`), which is not explained. `lang` is the approval window's.
 #[must_use]
 pub fn transaction_input(
+    lang: Lang,
     prepared: &crate::flow::evm::prepare::Prepared,
     origin: &str,
     user: &Address,
@@ -140,6 +172,7 @@ pub fn transaction_input(
         call,
     };
     Some(build_input(
+        lang,
         &ExplainSource::EvmTx(&decoded, sim),
         origin,
         user,
@@ -271,8 +304,8 @@ impl App {
         true
     }
 
-    fn llm_message(&mut self, text: &str, ok: bool) {
-        self.llm_ui.message = Some((text.to_owned(), ok));
+    fn llm_message(&mut self, text: Text, ok: bool) {
+        self.llm_ui.message = Some((text.get(self.settings.language).to_owned(), ok));
         self.refresh();
     }
 
@@ -356,10 +389,7 @@ impl App {
         if checked && !enabled {
             let saved = &self.settings.llm_explain;
             if parse_endpoint(&saved.endpoint).is_none() || !valid_model(&saved.model) {
-                self.llm_message(
-                    "먼저 엔드포인트와 모델을 입력하고 '저장'하세요. 그다음 켤 수 있습니다.",
-                    false,
-                );
+                self.llm_message(text::SAVE_FIRST, false);
                 return;
             }
             if self.llm_key_withheld() {
@@ -373,7 +403,7 @@ impl App {
             settings.llm_explain.enabled = false;
             self.save_settings(settings, "llm_explain");
             self.llm_reconfigure();
-            self.llm_message("AI 설명을 껐습니다. 외부로 아무것도 보내지 않습니다.", true);
+            self.llm_message(text::TURNED_OFF, true);
         } else {
             self.refresh();
         }
@@ -407,12 +437,12 @@ impl App {
         self.screen = Screen::Settings(SettingsSection::Ai);
         self.save_settings(settings, "llm_explain");
         self.llm_reconfigure();
-        let text = if self.settings.llm_explain.enabled {
-            "AI 설명을 켰습니다. 다음 dApp 요청부터 승인 창에 참고 설명이 붙습니다."
+        let message = if self.settings.llm_explain.enabled {
+            text::TURNED_ON
         } else {
-            "설정을 저장하지 못했습니다."
+            text::SAVE_FAILED
         };
-        self.llm_message(text, self.settings.llm_explain.enabled);
+        self.llm_message(message, self.settings.llm_explain.enabled);
     }
 
     /// `저장` of the S15 form with the current drafts.
@@ -420,17 +450,11 @@ impl App {
         let endpoint = self.llm_ui.endpoint_text.trim().to_owned();
         let model = self.llm_ui.model_text.trim().to_owned();
         if !endpoint.is_empty() && parse_endpoint(&endpoint).is_none() {
-            self.llm_message(
-                "엔드포인트 형식이 올바르지 않습니다. https://…/chat/completions 또는 http://127.0.0.1(localhost·[::1])…/chat/completions 형식이어야 하고 사용자 이름·?·#를 넣을 수 없습니다.",
-                false,
-            );
+            self.llm_message(text::BAD_ENDPOINT, false);
             return;
         }
         if !model.is_empty() && !valid_model(&model) {
-            self.llm_message(
-                "모델 이름은 영문·숫자와 . _ : / @ + - 만 1–128자로 쓸 수 있습니다.",
-                false,
-            );
+            self.llm_message(text::BAD_MODEL, false);
             return;
         }
         let max_tokens = match self.llm_ui.max_tokens_text.trim() {
@@ -438,7 +462,7 @@ impl App {
             text => text.parse::<u64>().ok().filter(|value| *value <= 4_096),
         };
         let Some(max_tokens) = max_tokens else {
-            self.llm_message("max_tokens는 0–4096 사이의 정수여야 합니다.", false);
+            self.llm_message(text::BAD_MAX_TOKENS, false);
             return;
         };
         let mut settings = self.settings.clone();
@@ -459,13 +483,13 @@ impl App {
             // The stored key stays bound to the old host: write that binding (an older
             // version's key is bound only in memory at load) before the endpoint changes.
             if self.apikeys.llm_host().is_some() && !self.save_apikeys() {
-                self.llm_message("설정을 저장하지 못했습니다.", false);
+                self.llm_message(text::SAVE_FAILED, false);
                 return;
             }
         }
         self.save_settings(settings.clone(), "llm_explain");
         if self.settings != settings {
-            self.llm_message("설정을 저장하지 못했습니다.", false);
+            self.llm_message(text::SAVE_FAILED, false);
             return;
         }
         // A key entered before any endpoint was saved is bound to the first one saved (a key
@@ -479,12 +503,12 @@ impl App {
             let _ = self.save_apikeys();
         }
         self.llm_reconfigure();
-        let text = if changed_endpoint && was_enabled {
-            "저장했습니다. 엔드포인트가 바뀌어 AI 설명을 껐습니다. 다시 켜면 새 주소로 보낸다는 안내를 보여줍니다."
+        let message = if changed_endpoint && was_enabled {
+            text::SAVED_TURNED_OFF
         } else {
-            "저장했습니다."
+            text::SAVED
         };
-        self.llm_message(text, true);
+        self.llm_message(message, true);
     }
 
     fn llm_save_key(&mut self) {
@@ -501,10 +525,7 @@ impl App {
     /// unbound when no valid endpoint is saved yet: it is bound by the next `저장`).
     pub(crate) fn llm_store_key(&mut self, key: &str) {
         if !valid_api_key(key) {
-            self.llm_message(
-                "API 키는 공백 없는 영문·숫자·기호(0x21–0x7E) 1–512자여야 합니다.",
-                false,
-            );
+            self.llm_message(text::BAD_KEY, false);
             return;
         }
         let host =
@@ -514,7 +535,7 @@ impl App {
             logging::info("llm", "llm.key_set", &[]);
             self.llm_ui.key_deleted = false;
             self.llm_reconfigure();
-            self.llm_message("API 키를 저장했습니다.", true);
+            self.llm_message(text::KEY_SAVED, true);
         } else {
             self.refresh();
         }
@@ -523,17 +544,20 @@ impl App {
     /// `연결 테스트` (spec/06 §2.2): the fixed sample through §4–§5 once with the saved settings
     /// and key, on a short-lived thread; only the resulting state is shown.
     pub(crate) fn llm_test(&mut self) {
+        let lang = self.settings.language;
         let config =
             LlmConfig::from_settings(&self.settings.llm_explain, stored_llm_key(&self.apikeys));
         let Ok(config) = config else {
-            self.llm_ui.test_result = Some((ExplainError::NotConfigured.panel_text(), false));
+            self.llm_ui.test_result = Some((ExplainError::NotConfigured.panel_text(lang), false));
             self.refresh();
             return;
         };
         if config.key_withheld() {
             // spec/06 §2.1: nothing is sent; the key must be entered again for this endpoint.
-            self.llm_ui.test_result =
-                Some((format!("연결 테스트 실패: {KEY_REENTER_TEXT}"), false));
+            self.llm_ui.test_result = Some((
+                text::TEST_FAILED.fill(lang, [KEY_REENTER_TEXT.get(lang)]),
+                false,
+            ));
             logging::info(
                 "llm",
                 "llm.test_done",
@@ -550,7 +574,7 @@ impl App {
         let spawned = std::thread::Builder::new()
             .name("yw-llm-test".to_owned())
             .spawn(move || {
-                let result = sample_input().and_then(|input| {
+                let result = sample_input(lang).and_then(|input| {
                     let transport = crate::explain::WinHttpTransport::new(config.endpoint())
                         .map_err(|_| ExplainError::Network)?;
                     explain_once(&transport, &config, &input).0.map(|_| ())
@@ -566,14 +590,14 @@ impl App {
 
     /// The connection test finished.
     pub fn on_llm_test(&mut self, result: Result<(), ExplainError>) {
+        let lang = self.settings.language;
         self.llm_ui.test_running = false;
         self.llm_ui.test_result = Some(match result {
-            Ok(()) => (
-                "연결 테스트 성공: 표본 요청에 대한 AI 설명을 받았고 형식 검사를 통과했습니다."
-                    .to_owned(),
-                true,
+            Ok(()) => (text::TEST_OK.get(lang).to_owned(), true),
+            Err(error) => (
+                text::TEST_FAILED.fill(lang, [&error.panel_text(lang)]),
+                false,
             ),
-            Err(error) => (format!("연결 테스트 실패: {}", error.panel_text()), false),
         });
         logging::info(
             "llm",

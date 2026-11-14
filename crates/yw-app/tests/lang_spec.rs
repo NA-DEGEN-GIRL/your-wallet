@@ -1,17 +1,34 @@
-//! spec/14 (2026-11-14): the English texts of the approval displays, the approval window, the risk
-//! rules and the secret windows are fixed in `spec/14-language.md`. These tests read that file and
-//! require every listed catalogue to match it exactly in both languages (no entry missing, none
-//! extra), and check the catalogue invariants (placeholders, no Hangul in English, valid display
-//! text). `print_spec14_tables` (`--ignored --exact --nocapture`) prints the tables from the code.
+//! spec/14 (2026-11-14): every user-visible text of the app is in a catalogue with its English
+//! form, fixed in `spec/14-language.md` §5 (the error-code texts in spec/04 §7, D31). These tests
+//! read those files and require every catalogue to match them exactly in both languages (no entry
+//! missing, none extra), and check the catalogue invariants (placeholders, no Hangul in English,
+//! valid display text). `print_spec14_tables` (`--ignored --exact --nocapture`) prints the spec/14
+//! tables from the code. `scripts/i18n-scan.mjs` checks that the catalogue registries
+//! (`yw_core::lang::catalogues`, `yw_app::catalogues::catalogues`) list every `texts!` block.
 
 use core::fmt::Write as _;
 
+use yw_app::errors::ErrorCode;
 use yw_core::approval::{MAX_DISPLAY_VALUE_BYTES, is_valid_display_text};
 use yw_core::lang::{Entry, Lang, has_hangul, placeholders};
 
 const SPEC: &str = include_str!("../../../spec/14-language.md");
+const SPEC04: &str = include_str!("../../../spec/04-app-ui.md");
 
-/// Every catalogue spec/14 lists, by the name its table carries.
+/// The error-code catalogue: its canonical table is spec/04 §7 (D31), not spec/14.
+const ERRORS: &str = "yw_app::errors::text";
+
+/// Every catalogue of both crates with its entries.
+fn registered() -> Vec<(&'static str, Vec<Entry>)> {
+    yw_core::lang::catalogues()
+        .into_iter()
+        .chain(yw_app::catalogues::catalogues())
+        .map(|(name, entries)| (name, entries.to_vec()))
+        .collect()
+}
+
+/// Every catalogue spec/14 lists, by the name its table carries: the registered ones except the
+/// error codes, and the fixed display texts that are not in a `texts!` block.
 fn catalogues() -> Vec<(&'static str, Vec<Entry>)> {
     let extra = vec![
         entry(
@@ -33,62 +50,12 @@ fn catalogues() -> Vec<(&'static str, Vec<Entry>)> {
             0,
         ),
     ];
-    vec![
-        (
-            "yw_app::ui::approval::labels",
-            yw_app::ui::approval::labels::ALL.to_vec(),
-        ),
-        (
-            "yw_app::ui::approval_text",
-            yw_app::ui::approval_text::ALL.to_vec(),
-        ),
-        (
-            "yw_app::walletconnect::text",
-            yw_app::walletconnect::text::ALL.to_vec(),
-        ),
-        (
-            "yw_app::flow::evm::prepare",
-            yw_app::flow::evm::prepare::ALL.to_vec(),
-        ),
-        (
-            "yw_app::ui::secret_text",
-            yw_app::ui::secret_text::ALL.to_vec(),
-        ),
-        ("display-fixed", extra),
-        (
-            "yw_core::evm::risk::text",
-            yw_core::evm::risk::text::ALL.to_vec(),
-        ),
-        ("yw_core::evm::text", yw_core::evm::text::ALL.to_vec()),
-        (
-            "yw_core::evm::display::text",
-            yw_core::evm::display::text::ALL.to_vec(),
-        ),
-        (
-            "yw_core::evm::display::time",
-            yw_core::evm::display::time::ALL.to_vec(),
-        ),
-        (
-            "yw_core::journal::evm::text",
-            yw_core::journal::evm::text::ALL.to_vec(),
-        ),
-        (
-            "yw_core::approval::message_text",
-            yw_core::approval::message_text::ALL.to_vec(),
-        ),
-        ("yw_core::sol::text", yw_core::sol::text::ALL.to_vec()),
-        (
-            "yw_core::sol::dapp::text",
-            yw_core::sol::dapp::text::ALL.to_vec(),
-        ),
-        ("yw_core::btc::text", yw_core::btc::text::ALL.to_vec()),
-        ("yw_core::zec::text", yw_core::zec::text::ALL.to_vec()),
-        (
-            "yw_core::hypercore::text",
-            yw_core::hypercore::text::ALL.to_vec(),
-        ),
-        ("yw_core::slip10::text", yw_core::slip10::text::ALL.to_vec()),
-    ]
+    let mut all: Vec<_> = registered()
+        .into_iter()
+        .filter(|(name, _)| *name != ERRORS)
+        .collect();
+    all.push(("display-fixed", extra));
+    all
 }
 
 const fn entry(name: &'static str, ko: &'static str, en: &'static str, args: usize) -> Entry {
@@ -121,9 +88,10 @@ fn rule_rows() -> Vec<[String; 4]> {
         .collect()
 }
 
-/// `\` → `\\`, LF → `\n`, `|` → `\|` (a table cell on one line).
+/// `\` → `\\`, CR → `\r`, LF → `\n`, `|` → `\|` (a table cell on one line).
 fn escape(text: &str) -> String {
     text.replace('\\', "\\\\")
+        .replace('\r', "\\r")
         .replace('\n', "\\n")
         .replace('|', "\\|")
 }
@@ -135,6 +103,7 @@ fn unescape(cell: &str) -> String {
         if character == '\\' {
             match chars.next() {
                 Some('n') => out.push('\n'),
+                Some('r') => out.push('\r'),
                 Some(other) => out.push(other),
                 None => out.push('\\'),
             }
@@ -258,14 +227,19 @@ fn every_catalogue_keeps_its_invariants() {
             problems.push(format!("{name}::{}: Hangul in English", entry.name));
         }
         // Fragments may start or end with a space or LF (they are joined into a value); every
-        // character must still pass the display rules.
+        // character must still pass the display rules. CRLF is a line break of a text written
+        // to a file for Notepad (the reset folder's README).
         for text in [entry.ko, entry.en] {
+            let text = text.replace("\r\n", "\n");
             if !is_valid_display_text(&format!("a{text}a"), MAX_DISPLAY_VALUE_BYTES, false) {
                 problems.push(format!("{name}::{}: not valid display text", entry.name));
             }
         }
     };
-    for (name, entries) in catalogues() {
+    for (name, entries) in catalogues()
+        .into_iter()
+        .chain(registered().into_iter().filter(|(name, _)| *name == ERRORS))
+    {
         for entry in &entries {
             check(name, entry);
         }
@@ -273,6 +247,78 @@ fn every_catalogue_keeps_its_invariants() {
     for row in rule_rows() {
         if has_hangul(&row[3]) || row[3].is_empty() {
             problems.push(format!("rule {}: English missing or Korean", row[0]));
+        }
+    }
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+/// A spec/04 table row's cells as written (`\|` is a pipe inside a cell; nothing else is
+/// unescaped, so paths keep their backslashes).
+fn raw_cells(line: &str) -> Vec<String> {
+    let inner = line.trim().trim_start_matches('|');
+    let inner = inner.strip_suffix('|').unwrap_or(inner);
+    let mut out = Vec::new();
+    let mut current = String::new();
+    let mut previous = ' ';
+    for character in inner.chars() {
+        if character == '|' && previous != '\\' {
+            out.push(current.trim().replace("\\|", "|"));
+            current.clear();
+        } else {
+            current.push(character);
+        }
+        previous = character;
+    }
+    out.push(current.trim().replace("\\|", "|"));
+    out
+}
+
+/// Every `{…}` placeholder as `{}` (the spec names them, the code numbers them).
+fn placeholders_blank(text: &str) -> String {
+    let mut out = String::new();
+    let mut inside = false;
+    for character in text.chars() {
+        match character {
+            '{' => {
+                inside = true;
+                out.push_str("{}");
+            }
+            '}' if inside => inside = false,
+            _ if inside => {}
+            _ => out.push(character),
+        }
+    }
+    out
+}
+
+/// spec/04 §7 (2026-11-14): the 문구 and English columns of every error code hold the code's
+/// fixed sentences (the spec may add the parenthesised value the code appends).
+#[test]
+fn spec04_lists_every_error_text_in_both_languages() {
+    let section = SPEC04
+        .split("## 7. ")
+        .nth(1)
+        .and_then(|rest| rest.split("\n## ").next())
+        .unwrap_or("");
+    let mut problems = Vec::new();
+    for code in ErrorCode::ALL {
+        let prefix = format!("| {} |", code.code());
+        let Some(row) = section.lines().find(|line| line.starts_with(&prefix)) else {
+            problems.push(format!("{}: no row in spec/04 §7", code.code()));
+            continue;
+        };
+        let cells = raw_cells(row);
+        for (column, lang) in [(2, Lang::Ko), (3, Lang::En)] {
+            let listed = cells
+                .get(column)
+                .map_or_else(String::new, |cell| placeholders_blank(cell));
+            if !listed.contains(&placeholders_blank(code.message_in(lang))) {
+                problems.push(format!(
+                    "{} {}: differs from spec/04 §7",
+                    code.code(),
+                    lang.tag()
+                ));
+            }
         }
     }
     assert!(problems.is_empty(), "{}", problems.join("\n"));

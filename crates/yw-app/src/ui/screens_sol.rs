@@ -7,6 +7,7 @@
 
 use core::fmt::Write as _;
 
+use yw_core::lang::Lang;
 use yw_core::sol::address::grouped;
 use yw_core::sol::recipient::KnownKind;
 use yw_core::sol::rent::{format_amount, format_raw};
@@ -20,6 +21,197 @@ use crate::app_sol::SolAccountId;
 use crate::meta::{BookChain, Tab};
 use crate::ui::badge::Badge;
 use crate::ui::main_window::{Ctl, Item, Tone};
+
+/// Fixed texts of the Solana screens (spec/04 §2.6–§2.11, spec/07 §3.3, §12.3; English spec/14
+/// §5). Recipient notes shared with the approval come from `yw_core::sol::text`.
+pub mod text {
+    yw_core::texts! {
+        // ----- token holdings, activity status -------------------------------------------------
+        RAW_FINALIZED(2) = "{0} 원시 단위 · decimals {1} · RPC finalized 기준(참고)"
+            / "{0} raw units · decimals {1} · RPC finalized (reference)";
+        BALANCE_UNKNOWN = "잔액 알 수 없음" / "Balance unknown";
+        NOT_READ = "아직 읽지 못했습니다. RPC 연결을 확인하고 새로고침하세요."
+            / "Not read yet. Check the RPC connection and refresh.";
+        NO_ATA(1) = "이 계정에는 아직 {0} 토큰 계정(ATA)이 없습니다. 받으면 보내는 쪽이 만듭니다."
+            / "This account has no {0} token account (ATA) yet. The sender creates it when you receive.";
+        FROZEN(1) = "{0} — 토큰 발행자가 이 토큰 계정을 동결해 보내거나 받을 수 없습니다."
+            / "{0} — the token issuer froze this token account, so it cannot send or receive.";
+        CANNOT_CHECK = "확인할 수 없음" / "Cannot check";
+        INVALID_ACCOUNT = "RPC가 돌려준 계정이 이 토큰의 토큰 계정 형식과 달라 잔액을 표시하지 않습니다."
+            / "The account the RPC returned is not in this token's token account format, so no balance is shown.";
+        STATUS_SUCCEEDED = "성공" / "Succeeded";
+        STATUS_FAILED = "실패" / "Failed";
+        STATUS_EXPIRED = "만료 (전송되지 않음)" / "Expired (not sent)";
+        STATUS_ENDED = "종결" / "Ended";
+
+        // ----- S10 -----------------------------------------------------------------------------
+        TAB_EVM = "EVM (이더리움 등)" / "EVM (Ethereum etc.)";
+        DEVNET_PILL = "테스트넷 — 실제 자산이 아닙니다" / "Testnet — not real assets";
+        DEVNET_BANNER = "Solana devnet (테스트) — 실제 자산이 아닙니다"
+            / "Solana devnet (test) — not real assets";
+        NETWORK = "네트워크" / "Network";
+        JOURNAL_DAMAGED = "거래 저널의 Solana 기록이 손상되어 Solana 보내기를 멈췄습니다. (E-VLT-006)"
+            / "The Solana records of the transaction journal are damaged, so Solana sending is stopped. (E-VLT-006)";
+        RPC_NONE = "RPC 주소 없음 (E-KEY-005)" / "No RPC address (E-KEY-005)";
+        RPC_CONNECTED = "연결됨 (genesis 확인)" / "Connected (genesis verified)";
+        RPC_UNCHECKED = "확인 전" / "Not checked yet";
+        LAMPORTS_FINALIZED(1) = "{0} lamports · RPC finalized 기준(참고)"
+            / "{0} lamports · RPC finalized (reference)";
+        LAMPORTS_FINALIZED_READ(2) = "{0} lamports · RPC finalized 기준(참고) · {1}"
+            / "{0} lamports · RPC finalized (reference) · {1}";
+        BALANCE_DASH = "잔액 —" / "Balance —";
+        TOKEN_UNCHECKED(1) = "{0} 확인할 수 없음" / "{0} cannot be checked";
+        TOKENS(1) = "토큰: {0}" / "Tokens: {0}";
+        SEND = "보내기" / "Send";
+        RECEIVE = "받기" / "Receive";
+        RPC_SETUP = "RPC 설정하기" / "Set up RPC";
+        REFRESH = "새로고침" / "Refresh";
+        MY_ACCOUNTS = "내 Solana 계정" / "My Solana accounts";
+        CREATING = "Solana 계정을 만드는 중…" / "Creating a Solana account…";
+        NO_ACCOUNTS = "Solana 계정이 없습니다." / "There is no Solana account.";
+        LABEL_IMPORTED(1) = "{0} · 가져온 키" / "{0} · imported key";
+        SAVE = "저장" / "Save";
+        CANCEL = "취소" / "Cancel";
+        RENAME = "이름 바꾸기" / "Rename";
+        HIDE = "숨기기" / "Hide";
+        REVEAL_KEY = "개인키 보기" / "Show private key";
+        DELETE = "삭제" / "Delete";
+        IMPORT_KEY = "개인키 가져오기" / "Import private key";
+        ADD_ACCOUNT = "계정 추가" / "Add account";
+        SCAN = "다른 경로 스캔" / "Scan other paths";
+        SCAN_HINT = "안 보이는 계정은 '다른 경로 스캔'으로 찾습니다."
+            / "Find accounts that are not shown with 'Scan other paths'.";
+        SENT_TXS = "보낸 거래" / "Sent transactions";
+        TO_RAW(1) = "받는 주소 {0}" / "Recipient {0}";
+        NO_SENT = "아직 보낸 거래가 없습니다." / "No sent transactions yet.";
+        TO_LINE = "받는 주소" / "Recipient";
+        TO_LINE_BOOK(1) = "받는 주소 → 주소록: {0}" / "Recipient → address book: {0}";
+        TO_LINE_OWN(1) = "받는 주소 → 내 계정: {0}" / "Recipient → my account: {0}";
+
+        // ----- token card ----------------------------------------------------------------------
+        TOKENS_TITLE = "토큰" / "Tokens";
+        ALLOWLIST_ONLY(1) = "허용 목록 토큰만 표시합니다 ({0}). 다른 토큰·NFT는 보이지 않고 보낼 수 없습니다."
+            / "Only allowlisted tokens are shown ({0}). Other tokens·NFTs are not shown and cannot be sent.";
+        NO_VISIBLE_TOKENS = "보이는 토큰이 없습니다. 숨긴 토큰은 아래에서 다시 볼 수 있습니다."
+            / "No visible tokens. Hidden tokens can be shown again below.";
+        HIDDEN_COLLAPSE(1) = "숨긴 토큰 {0}개 접기 ▾" / "Collapse hidden tokens ({0}) ▾";
+        HIDDEN_SHOW(1) = "숨긴 토큰 {0}개 보기 ▸" / "Show hidden tokens ({0}) ▸";
+        HIDE_NOTE = "숨기기는 이 카드에서만 감춥니다. 보내기 화면의 자산 선택, 승인 창의 확인, 활동 기록은 그대로입니다."
+            / "Hiding applies to this card only. The asset choice on the send screen, the checks in the approval window and the activity stay the same.";
+        HIDDEN = "숨김" / "Hidden";
+        UNHIDE = "다시 보이기" / "Show again";
+
+        // ----- send form -----------------------------------------------------------------------
+        SEND_TITLE(1) = "보내기 — {0}" / "Send — {0}";
+        PENDING_SEND = "이 계정의 이전 전송을 확인 중입니다. 확정된 뒤 보낼 수 있습니다."
+            / "A previous send from this account is being confirmed. You can send once it is final.";
+        FROM_ACCOUNT = "보내는 계정" / "From account";
+        PATH_BALANCE(2) = "{0} · 잔액 {1} (RPC 참고)" / "{0} · balance {1} (RPC, reference)";
+        RECIPIENT_CARD = "받는 사람" / "Recipient";
+        MOVE_NOTE = "비표준 경로 계정의 자금을 내 표준 계정으로 옮깁니다. 받는 주소와 '보내기 최대'는 바꿀 수 없습니다."
+            / "Moves the funds of a non-standard path account to your standard account. The recipient and 'Send max' cannot be changed.";
+        PICK_BOOK = "주소록에서 선택" / "Choose from address book";
+        ADDRESS_HINT = "Solana 주소 (base58)" / "Solana address (base58)";
+        TOKEN_ADDRESS_HINT(1) = "{0}을(를) 받을 사람의 지갑 주소를 넣으세요 ({0} 토큰 계정(ATA) 주소가 아닙니다)."
+            / "Enter the wallet address of the person receiving {0} (not a {0} token account (ATA) address).";
+        CHECK_WHOLE = "강조된 앞뒤 4자만 보지 말고 가운데까지 주소 전체를 확인하세요."
+            / "Do not check only the highlighted first and last 4 characters — check the whole address, the middle too.";
+        LOOKALIKE_BOOK(1) = "주소록 '{0}'" / "address book '{0}'";
+        LOOKALIKE_OWN(1) = "내 계정 '{0}'" / "my account '{0}'";
+        LOOKALIKE_SENT = "보낸 내역의 주소" / "an address in your send history";
+        LOOKALIKE(1) = "{0}와(과) 앞 3자 또는 뒤 3자가 같지만 다른 주소입니다. 주소 오염 공격일 수 있습니다. (승인 창 고위험 L03)"
+            / "Same first 3 or last 3 characters as {0}, but a different address. This may be an address poisoning attack. (approval window high risk L03)";
+        OFF_CURVE = "일반 지갑이 아님: 프로그램 소유 주소(PDA)나 토큰 계정일 수 있음 (승인 창 고위험 L02)"
+            / "Not a regular wallet: may be a program-owned address (PDA) or a token account (approval window high risk L02)";
+        REVIEW = "검토" / "Review";
+        ASSET_CARD = "보낼 자산과 금액" / "Asset and amount to send";
+        ASSET = "자산" / "Asset";
+        SOL_HOLDING_UNREAD = "SOL · 보유: 잔액을 아직 읽지 못했습니다" / "SOL · held: balance not read yet";
+        SOL_HOLDING(1) = "SOL · 보유 {0} (RPC 참고)" / "SOL · held {0} (RPC, reference)";
+        SPL_HOLDING(2) = "{0} · SPL Token · 보유 {1}" / "{0} · SPL Token · held {1}";
+        MINT_PINNED = "mint (허용 목록 고정)" / "mint (pinned in the allowlist)";
+        MAX = "최대" / "Max";
+        AMOUNT(1) = "금액 ({0})" / "Amount ({0})";
+        MAX_SOL = "최대: 잔액 − 최대 수수료를 보내고 SOL 잔액은 0이 됩니다(승인 창에서 확인)."
+            / "Max: sends the balance − the max fee, and the SOL balance becomes 0 (confirmed in the approval window).";
+        MAX_SPL(1) = "최대: {0} 전부를 보냅니다. 수수료(와 필요하면 받는 토큰 계정 생성비)는 SOL로 냅니다."
+            / "Max: sends all {0}. The fee (and the receiving token account's creation cost when needed) is paid in SOL.";
+        FEE_ESTIMATE(2) = "예상 수수료 약 {0} (최대 {1}) — 최종 수수료는 승인 창에서 확인합니다."
+            / "Expected fee about {0} (max {1}) — the final fee is shown in the approval window.";
+        FEE_CALC(2) = "계산: 기본 5,000 lamports + 우선 수수료(CU 한도 {0}), 상한 {1} lamports."
+            / "Calculation: base 5,000 lamports + priority fee (CU limit {0}), cap {1} lamports.";
+        FEE_HIDE = "수수료 계산 숨기기 ▾" / "Hide fee calculation ▾";
+        FEE_SHOW = "수수료 계산 보기 (lamports·CU) ▸" / "Show fee calculation (lamports·CU) ▸";
+        ATA_NOTE(1) = "받는 사람에게 {0} 토큰 계정이 없으면 이 거래가 만들고, 생성 비용(rent)을 보내는 계정의 SOL로 냅니다. 금액은 승인 창에서 확인하세요. 보낸 뒤에도 SOL이 조금 남아야 합니다."
+            / "If the recipient has no {0} token account, this transaction creates it and the sending account pays its creation cost (rent) in SOL. Check the amount in the approval window. Some SOL must remain after sending.";
+        NO_MATCH = "일치하는 주소록·내 계정이 없습니다." / "No matching address book entry·own account.";
+        PICK_BOOK_ENTRY(1) = "주소록: {0}" / "Address book: {0}";
+        PICK_OWN(1) = "내 계정: {0}" / "My account: {0}";
+
+        // ----- result, resend ------------------------------------------------------------------
+        RESULT_TITLE = "보내기 결과" / "Send result";
+        RESULT_SENT = "서명하고 저널에 기록한 뒤 전송했습니다." / "Signed, recorded in the journal, then sent.";
+        RESULT_ENDED = "종결 (활동 참고)" / "Ended (see activity)";
+        STATUS = "상태" / "Status";
+        SIGNATURE = "서명(거래 ID)" / "Signature (transaction ID)";
+        COPY_HASH = "해시 복사" / "Copy hash";
+        BACK_MAIN = "메인으로" / "Back to main";
+        SCAN_BACK = "스캔 결과로" / "Back to scan results";
+        SEND_AGAIN = "다시 보내기" / "Send again";
+        SEND_AGAIN_NOTE = "같은 받는 주소·금액으로 보내기 화면을 다시 엽니다. 새로 검토하고 새로 승인해야 합니다(이전 승인은 쓰지 않음)."
+            / "Opens the send screen again with the same recipient·amount. You review and approve again (the earlier approval is not used).";
+        SEND_NOW = "지금 다시 전송" / "Resend now";
+        SEND_NOW_NOTE = "서명한 같은 거래를 바로 다시 보냅니다. 서명이 같아 한 번만 처리됩니다. 블록해시가 만료된 것이 RPC로 확인되면 새로 서명해 다시 보낼 수 있습니다."
+            / "Sends the same signed transaction again right away. The signature is the same, so it is processed only once. Once the RPC shows the blockhash expired, you can sign again and resend.";
+
+        // ----- receive -------------------------------------------------------------------------
+        RECEIVE_TITLE(1) = "받기 — {0}" / "Receive — {0}";
+        BACKUP_PENDING = "백업 확인 전입니다. 확인을 마치기 전에는 큰 금액을 받지 마세요."
+            / "The backup is not confirmed yet. Do not receive large amounts until it is.";
+        DEVNET_ADDRESS = "devnet(테스트) 주소입니다. 주소 자체는 mainnet과 같습니다."
+            / "This is a devnet (test) address. The address itself is the same as on mainnet.";
+        RECEIVE_ONLY(1) = "SOL과 허용 목록 토큰({0})만 받으세요. 다른 토큰은 이 지갑에 보이지 않고 보낼 수 없습니다."
+            / "Receive only SOL and allowlisted tokens ({0}). Other tokens are not shown in this wallet and cannot be sent.";
+        TOKEN_RECEIVE_NOTE = "토큰을 보내는 쪽에도 이 지갑 주소를 알려주면 됩니다(토큰 계정 주소는 상대 지갑이 계산합니다)."
+            / "For tokens, give the sender this wallet address too (the sender's wallet computes the token account address).";
+
+        // ----- S15 Solana section --------------------------------------------------------------
+        SETTINGS_TITLE = "Solana 네트워크" / "Solana network";
+        SETTINGS_HELP = "메인 화면 Solana 탭에서 쓸 네트워크입니다. devnet은 시험용이며 실제 자산이 아닙니다."
+            / "The network of the Solana tab on the main screen. devnet is for testing and holds no real assets.";
+        CLUSTER = "클러스터" / "Cluster";
+        DEVNET_RADIO = "devnet (테스트)" / "devnet (test)";
+        RPC_ROWS = "RPC 주소는 '네트워크(RPC)' 구역의 solana:mainnet·solana:devnet 행에 있습니다."
+            / "The RPC addresses are in the solana:mainnet·solana:devnet rows of the 'Networks (RPC)' section.";
+        SCAN_SETTINGS_HELP = "다른 지갑(Ledger Live, solana-keygen 등)에서 쓰던 경로의 계정을 찾습니다."
+            / "Finds accounts on the paths other wallets use (Ledger Live, solana-keygen etc.).";
+        FEE_CAP_TITLE = "Solana 수수료 상한 (고급)" / "Solana fee cap (advanced)";
+        FEE_CAP_HELP = "지갑이 계산한 수수료가 이 값을 넘으면 보내기를 막습니다. 보통은 바꿀 필요가 없습니다."
+            / "Sending is blocked when the fee the wallet computes exceeds this value. Usually there is no need to change it.";
+        FEE_CAP_LABEL = "수수료 상한 (lamports)" / "Fee cap (lamports)";
+        CU_CAP_LABEL = "CU 가격 상한 (micro-lamports/CU)" / "CU price cap (micro-lamports/CU)";
+        DEFAULTS = "기본값으로" / "Defaults";
+        FEE_RANGE_HELP = "수수료 상한 10,000–10,000,000, CU 가격 상한 0–100,000,000. 우선 수수료 가격은 최근 값의 p75와 두 상한 중 작은 값입니다."
+            / "Fee cap 10,000–10,000,000, CU price cap 0–100,000,000. The priority fee price is the smaller of the recent p75 and the two caps.";
+
+        // ----- recovery scan -------------------------------------------------------------------
+        SCAN_TITLE(1) = "다른 경로 스캔 — {0}" / "Scan other paths — {0}";
+        SCAN_NOTICE = "다른 지갑(Ledger Live, solana-keygen 등)의 경로 m/44'/501'/i', m/44'/501', BIP39 seed[0..32]와 표준 경로 m/44'/501'/i'/0'의 계정 0–49를 조회합니다(연속 5개가 비면 중단). 읽기 전용이며 서명하지 않습니다."
+            / "Looks up accounts 0–49 on the paths of other wallets (Ledger Live, solana-keygen etc.) m/44'/501'/i', m/44'/501', BIP39 seed[0..32] and the standard path m/44'/501'/i'/0' (stops after 5 empty in a row). Read only; nothing is signed.";
+        SCAN_PRIVACY(1) = "조회하는 모든 주소가 RPC 공급자(설정한 {0} 엔드포인트의 운영자)에 전달되어 서로 연결될 수 있습니다."
+            / "Every address looked up goes to the RPC provider (the operator of the {0} endpoint you set) and can be linked together.";
+        SCAN_START = "알겠습니다 — 스캔 시작" / "Understood — start scan";
+        SCANNING = "조회하는 중…" / "Looking up…";
+        SCAN_EMPTY = "잔액이 있는 다른 경로 계정이나 추가할 표준 계정이 없습니다."
+            / "There is no other-path account with a balance and no standard account to add.";
+        MOVE_TARGET_LABEL = "옮겨 받을 계정" / "Receiving account";
+        RPC_REFERENCE = "(RPC 참고)" / "(RPC, reference)";
+        MOVE_TO_STANDARD = "표준 계정으로 이동" / "Move to standard account";
+        SCAN_MOVE_NOTE = "비표준 경로 자금은 주 복구 단어의 표준 계정으로 '보내기 최대'만 할 수 있습니다(승인 창 L07). 자산마다 한 번씩 옮기며, 이 결과는 클러스터를 바꾸거나 잠글 때까지 남습니다. 다른 표준 계정으로 받으려면 Solana 탭에서 그 계정을 고르세요."
+            / "Non-standard path funds can only go to a standard account of the primary recovery phrase with 'Send max' (approval window L07). Each asset moves once, and these results stay until you change the cluster or lock. To receive on another standard account, choose it in the Solana tab.";
+        SCAN_AGAIN = "다시 스캔" / "Scan again";
+    }
+}
 
 /// Command ids of the Solana screens (7000–7909 and the account radios at 12,000; the whole
 /// map and its checks are in `ui::command_ids`).
@@ -222,59 +414,48 @@ fn local_time(unix_ms: u64) -> String {
 
 /// `(value, note)` of a token holding: the balance with the pinned decimals and symbol, and what
 /// it means (RPC reference; missing account; frozen; unreadable).
-fn token_holding_text(entry: &SplAllowEntry, holding: Option<TokenHolding>) -> (String, String) {
+fn token_holding_text(
+    lang: Lang,
+    entry: &SplAllowEntry,
+    holding: Option<TokenHolding>,
+) -> (String, String) {
     let amount = |raw: u64| format_amount(raw, entry.decimals);
-    let raw = |raw: u64| {
-        format!(
-            "{} 원시 단위 · decimals {} · RPC finalized 기준(참고)",
-            format_raw(raw),
-            entry.decimals
-        )
-    };
+    let raw =
+        |raw: u64| text::RAW_FINALIZED.fill(lang, [&format_raw(raw), &entry.decimals.to_string()]);
     match holding {
         None => (
-            "잔액 알 수 없음".to_owned(),
-            "아직 읽지 못했습니다. RPC 연결을 확인하고 새로고침하세요.".to_owned(),
+            text::BALANCE_UNKNOWN.get(lang).to_owned(),
+            text::NOT_READ.get(lang).to_owned(),
         ),
-        Some(TokenHolding::Missing) => (
-            amount(0),
-            format!(
-                "이 계정에는 아직 {} 토큰 계정(ATA)이 없습니다. 받으면 보내는 쪽이 만듭니다.",
-                entry.symbol
-            ),
-        ),
+        Some(TokenHolding::Missing) => (amount(0), text::NO_ATA.fill(lang, [entry.symbol])),
         Some(TokenHolding::Active(value)) => (amount(value), raw(value)),
-        Some(TokenHolding::Frozen(value)) => (
-            amount(value),
-            format!(
-                "{} — 토큰 발행자가 이 토큰 계정을 동결해 보내거나 받을 수 없습니다.",
-                raw(value)
-            ),
-        ),
+        Some(TokenHolding::Frozen(value)) => {
+            (amount(value), text::FROZEN.fill(lang, [&raw(value)]))
+        }
         Some(TokenHolding::Invalid) => (
-            "확인할 수 없음".to_owned(),
-            "RPC가 돌려준 계정이 이 토큰의 토큰 계정 형식과 달라 잔액을 표시하지 않습니다."
-                .to_owned(),
+            text::CANNOT_CHECK.get(lang).to_owned(),
+            text::INVALID_ACCOUNT.get(lang).to_owned(),
         ),
     }
 }
 
-fn status_word(word: &str) -> &'static str {
+fn status_word(lang: Lang, word: &str) -> &'static str {
     match word {
-        "succeeded" => "성공",
-        "failed" => "실패",
-        "expired" => "만료 (전송되지 않음)",
-        _ => "종결",
+        "succeeded" => text::STATUS_SUCCEEDED,
+        "failed" => text::STATUS_FAILED,
+        "expired" => text::STATUS_EXPIRED,
+        _ => text::STATUS_ENDED,
     }
+    .get(lang)
 }
 
 impl App {
     /// The chain tab row of S10 (spec/04 §2.6).
     pub fn tab_row(&self, items: &mut Vec<Item>) {
         let tab = self.meta.as_ref().map_or(Tab::Evm, |meta| meta.prefs.tab);
+        let evm = format!("  {}  ", text::TAB_EVM.get(self.settings.language));
         items.push(Item::Row(vec![
-            Ctl::tab(ids::TAB_EVM, "  EVM (이더리움 등)  ", tab == Tab::Evm)
-                .badge(Badge::family(BookChain::Evm)),
+            Ctl::tab(ids::TAB_EVM, &evm, tab == Tab::Evm).badge(Badge::family(BookChain::Evm)),
             Ctl::tab(ids::TAB_SOL, "  Solana  ", tab == Tab::Sol)
                 .badge(Badge::family(BookChain::Sol)),
             Ctl::tab(
@@ -295,35 +476,41 @@ impl App {
     /// The cluster band: a full band on S11 (`pill == false`), a small tag after the S10
     /// cluster chips (2026-11-11, like the EVM network card).
     fn sol_cluster_banner(&self, items: &mut Vec<Item>, pill: bool) {
-        let (text, tone) = if self.sol_cluster() == SolCluster::Devnet {
+        let lang = self.settings.language;
+        let (shown, tone) = if self.sol_cluster() == SolCluster::Devnet {
             // The tag sits after the `Solana devnet (테스트)` chip: the EVM tag's words.
             (
                 if pill {
-                    "테스트넷 — 실제 자산이 아닙니다"
+                    text::DEVNET_PILL
                 } else {
-                    "Solana devnet (테스트) — 실제 자산이 아닙니다"
+                    text::DEVNET_BANNER
                 }
+                .get(lang)
                 .to_owned(),
                 Tone::Testnet,
             )
         } else {
             // Like the EVM mainnets (2026-11-08): S10, S11 and S12 say real assets move.
-            (crate::ui::screens::T_MAINNET.to_owned(), Tone::BtcMainnet)
+            (
+                crate::ui::screens::T_MAINNET.get(lang).to_owned(),
+                Tone::BtcMainnet,
+            )
         };
         items.push(if pill {
-            Item::Pill(text, tone)
+            Item::Pill(shown, tone)
         } else {
-            Item::Banner(text, tone)
+            Item::Banner(shown, tone)
         });
     }
 
     /// The S10 Solana tab.
     #[expect(clippy::too_many_lines, reason = "the S10 Solana sections in order")]
     pub fn sol_main_screen(&self, items: &mut Vec<Item>) {
+        let lang = self.settings.language;
         let cluster = self.sol_cluster();
         items.push(Item::CardStart(None));
         items.push(Item::LabeledRow(
-            "네트워크".to_owned(),
+            text::NETWORK.get(lang).to_owned(),
             vec![
                 Ctl::tab(
                     ids::CLUSTER_MAINNET,
@@ -333,7 +520,7 @@ impl App {
                 .badge(Badge::solana(SolCluster::Mainnet)),
                 Ctl::tab(
                     ids::CLUSTER_DEVNET,
-                    "Solana devnet (테스트)",
+                    SolCluster::Devnet.display_name_in(lang),
                     cluster == SolCluster::Devnet,
                 )
                 .badge(Badge::solana(SolCluster::Devnet)),
@@ -342,8 +529,7 @@ impl App {
         self.sol_cluster_banner(items, true);
         if self.sol_journal_damaged() {
             items.push(Item::Banner(
-                "거래 저널의 Solana 기록이 손상되어 Solana 보내기를 멈췄습니다. (E-VLT-006)"
-                    .to_owned(),
+                text::JOURNAL_DAMAGED.get(lang).to_owned(),
                 Tone::Blocked,
             ));
         }
@@ -355,7 +541,7 @@ impl App {
         // The failed read, said once with what to do (2026-11-10, like the EVM network card).
         if let Some(code) = failure {
             items.push(Item::Banner(
-                crate::ui::screens::balance_failure_text(code),
+                crate::ui::screens::balance_failure_text(self.settings.language, code),
                 Tone::Danger,
             ));
             self.rpc_failure_buttons(
@@ -368,12 +554,13 @@ impl App {
         // The status line, unless the band above has just said the failure (2026-11-12).
         if failure.is_none() {
             let rpc = if no_endpoint {
-                "RPC 주소 없음 (E-KEY-005)"
+                text::RPC_NONE
             } else if self.sol.balances.keys().any(|(known, _)| *known == cluster) {
-                "연결됨 (genesis 확인)"
+                text::RPC_CONNECTED
             } else {
-                "확인 전"
-            };
+                text::RPC_UNCHECKED
+            }
+            .get(lang);
             items.push(Item::Help(format!("RPC ({network}): {rpc}")));
         }
         items.push(Item::CardEnd);
@@ -386,7 +573,7 @@ impl App {
         if let Some((id, label, address)) = &selected {
             items.push(Item::CardStart(None));
             items.push(Item::Subtitle(self.sol_title(*id, label)));
-            items.push(Item::Help(id.path_text()));
+            items.push(Item::Help(id.path_text_in(lang)));
             self.mn_signing_banner(
                 self.mn_backup_gate(
                     id.mnemonic().map(yw_core::vault::RecordId::from_bytes),
@@ -405,6 +592,7 @@ impl App {
                     // The earlier value, dimmed, and since when (2026-11-12, like EVM).
                     items.push(Item::DisplayMuted(App::sol_text(lamports)));
                     items.push(Item::Help(crate::ui::screens::balance_stale_text(
+                        self.settings.language,
                         None,
                         self.sol.balance_at.get(&cluster).copied(),
                     )));
@@ -412,34 +600,34 @@ impl App {
                 (Some(lamports), None) => {
                     items.push(Item::Display(App::sol_text(lamports)));
                     let read = crate::ui::screens::balance_read_text(
+                        self.settings.language,
                         None,
                         self.sol.balance_at.get(&cluster).copied(),
                     );
                     items.push(Item::Help(if read.is_empty() {
-                        format!(
-                            "{} lamports · RPC finalized 기준(참고)",
-                            format_raw(lamports)
-                        )
+                        text::LAMPORTS_FINALIZED.fill(lang, [&format_raw(lamports)])
                     } else {
-                        format!(
-                            "{} lamports · RPC finalized 기준(참고) · {read}",
-                            format_raw(lamports)
-                        )
+                        text::LAMPORTS_FINALIZED_READ.fill(lang, [&format_raw(lamports), &read])
                     }));
                 }
                 (None, _) if no_endpoint => {
-                    items.push(Item::Display("잔액 —".to_owned()));
+                    items.push(Item::Display(text::BALANCE_DASH.get(lang).to_owned()));
                     items.push(Item::Help(crate::ui::screens::no_endpoint_text(
+                        self.settings.language,
                         &self.network_name(network),
                     )));
                 }
                 (None, Some(_)) => {
-                    items.push(Item::Display("잔액 —".to_owned()));
-                    items.push(Item::Help(crate::ui::screens::T_BALANCE_FAILED.to_owned()));
+                    items.push(Item::Display(text::BALANCE_DASH.get(lang).to_owned()));
+                    items.push(Item::Help(
+                        crate::ui::screens::T_BALANCE_FAILED.get(lang).to_owned(),
+                    ));
                 }
                 (None, None) => {
-                    items.push(Item::Display("잔액 —".to_owned()));
-                    items.push(Item::Help(crate::ui::screens::T_BALANCE_LOADING.to_owned()));
+                    items.push(Item::Display(text::BALANCE_DASH.get(lang).to_owned()));
+                    items.push(Item::Help(
+                        crate::ui::screens::T_BALANCE_LOADING.get(lang).to_owned(),
+                    ));
                 }
             }
             if let Some(holdings) = self.sol_token_holdings(address) {
@@ -448,7 +636,7 @@ impl App {
                     .filter(|(entry, _)| !self.sol_token_hidden(entry))
                     .map(|(entry, holding)| {
                         holding.balance().map_or_else(
-                            || format!("{} 확인할 수 없음", entry.symbol),
+                            || text::TOKEN_UNCHECKED.fill(lang, [entry.symbol]),
                             |raw| {
                                 format!("{} {}", format_amount(raw, entry.decimals), entry.symbol)
                             },
@@ -456,12 +644,13 @@ impl App {
                     })
                     .collect();
                 if !tokens.is_empty() {
-                    items.push(Item::Help(format!("토큰: {}", tokens.join(" · "))));
+                    items.push(Item::Help(text::TOKENS.fill(lang, [&tokens.join(" · ")])));
                 }
             }
             // The own address whole with its ends emphasized and `주소 복사` (2026-11-11).
             let text = address.to_base58();
             items.push(crate::ui::screens::own_address_row(
+                self.settings.language,
                 &text,
                 crate::ui::theme::AddressKind::Solana,
                 ids::COPY_ADDRESS,
@@ -473,25 +662,28 @@ impl App {
                 ),
             ));
             let mut row = vec![
-                Ctl::primary(ids::SEND_OPEN, "보내기").enabled(unlocked),
-                Ctl::primary(ids::RECEIVE_OPEN, "받기"),
+                Ctl::primary(ids::SEND_OPEN, text::SEND.get(lang)).enabled(unlocked),
+                Ctl::primary(ids::RECEIVE_OPEN, text::RECEIVE.get(lang)),
             ];
             if no_endpoint {
                 // The same next step as every tab (2026-11-08): no refresh without an address;
                 // it opens this cluster's row with its field (2026-11-10).
                 row.push(Ctl::button(
                     crate::ui::screens::ids::SOL_RPC_OPEN,
-                    "RPC 설정하기",
+                    text::RPC_SETUP.get(lang),
                 ));
             } else {
                 row.push(
-                    Ctl::link(ids::REFRESH, "새로고침").tip(crate::ui::screens::T_REFRESH_TIP),
+                    Ctl::link(ids::REFRESH, text::REFRESH.get(lang))
+                        .tip(crate::ui::screens::T_REFRESH_TIP.get(lang)),
                 );
             }
             items.push(Item::Row(row));
             items.push(Item::CardEnd);
         }
-        items.push(Item::CardStart(Some("내 Solana 계정".to_owned())));
+        items.push(Item::CardStart(Some(
+            text::MY_ACCOUNTS.get(lang).to_owned(),
+        )));
         let rows = self.sol_account_rows();
         // The same help as `내 계정` (2026-11-12; the path is the hero card's second line).
         if let Some(help) = self.accounts_help(
@@ -501,11 +693,15 @@ impl App {
             items.push(Item::Help(help));
         }
         if rows.is_empty() {
-            items.push(Item::Muted(if self.sol.creating {
-                "Solana 계정을 만드는 중…".to_owned()
-            } else {
-                "Solana 계정이 없습니다.".to_owned()
-            }));
+            items.push(Item::Muted(
+                if self.sol.creating {
+                    text::CREATING
+                } else {
+                    text::NO_ACCOUNTS
+                }
+                .get(lang)
+                .to_owned(),
+            ));
         }
         let selected = selected.map(|(id, ..)| id);
         let removable = self.can_remove_imported();
@@ -522,7 +718,7 @@ impl App {
         {
             let is_selected = selected == Some(id);
             let shown_label = if id.is_imported() {
-                format!("{label} · 가져온 키")
+                text::LABEL_IMPORTED.fill(lang, [&label])
             } else if id.is_hardware() {
                 format!("{label} · YubiKey")
             } else {
@@ -547,32 +743,38 @@ impl App {
             if self.sol.rename == Some(id) {
                 items.push(Item::Row(vec![
                     Ctl::edit(ids::RENAME_EDIT, &label, 260, false, 64),
-                    Ctl::primary(ids::RENAME_SAVE, "저장"),
-                    Ctl::button(ids::RENAME_CANCEL, "취소"),
+                    Ctl::primary(ids::RENAME_SAVE, text::SAVE.get(lang)),
+                    Ctl::button(ids::RENAME_CANCEL, text::CANCEL.get(lang)),
                 ]));
             } else {
-                let mut row_ctls = vec![Ctl::button(ids::RENAME, "이름 바꾸기").compact()];
+                let mut row_ctls = vec![Ctl::button(ids::RENAME, text::RENAME.get(lang)).compact()];
                 match id {
                     // No `숨기기` for a recovery phrase's first account (2026-11-12, as EVM).
                     SolAccountId::Derived(index) | SolAccountId::Mnemonic(_, index) => {
                         if index != 0 {
-                            row_ctls.push(Ctl::button(ids::HIDE, "숨기기").compact());
+                            row_ctls.push(Ctl::button(ids::HIDE, text::HIDE.get(lang)).compact());
                         }
                     }
                     // A YubiKey account: no "개인키 보기" (the key is on the card only).
                     SolAccountId::Hardware(_) => {
-                        row_ctls.push(Ctl::button(ids::HIDE, "숨기기").compact());
+                        row_ctls.push(Ctl::button(ids::HIDE, text::HIDE.get(lang)).compact());
                     }
                     SolAccountId::Imported(_) => {
                         row_ctls.push(
-                            Ctl::button(crate::ui::screens_keys::ids::SOL_REVEAL, "개인키 보기")
-                                .compact()
-                                .enabled(unlocked),
+                            Ctl::button(
+                                crate::ui::screens_keys::ids::SOL_REVEAL,
+                                text::REVEAL_KEY.get(lang),
+                            )
+                            .compact()
+                            .enabled(unlocked),
                         );
                         row_ctls.push(
-                            Ctl::danger(crate::ui::screens_keys::ids::SOL_REMOVE, "삭제")
-                                .compact()
-                                .enabled(unlocked && removable),
+                            Ctl::danger(
+                                crate::ui::screens_keys::ids::SOL_REMOVE,
+                                text::DELETE.get(lang),
+                            )
+                            .compact()
+                            .enabled(unlocked && removable),
                         );
                     }
                 }
@@ -581,14 +783,17 @@ impl App {
         }
         self.hidden_items(crate::app_hidden::Family::Sol, items);
         items.push(Item::Rule);
-        let import = Ctl::button(crate::ui::screens_keys::ids::SOL_IMPORT, "개인키 가져오기")
-            .compact()
-            .enabled(self.can_import(yw_core::keyimport::ImportChain::Sol));
+        let import = Ctl::button(
+            crate::ui::screens_keys::ids::SOL_IMPORT,
+            text::IMPORT_KEY.get(lang),
+        )
+        .compact()
+        .enabled(self.can_import(yw_core::keyimport::ImportChain::Sol));
         if self.key_only() {
             items.push(Item::Row(vec![import]));
         } else {
             items.push(Item::Row(vec![
-                Ctl::button(ids::ADD_ACCOUNT, "계정 추가")
+                Ctl::button(ids::ADD_ACCOUNT, text::ADD_ACCOUNT.get(lang))
                     .compact()
                     .enabled(
                         !self.sol.creating
@@ -599,13 +804,11 @@ impl App {
                                     .and_then(crate::meta::Meta::next_sol_index)
                                     .is_some()),
                     ),
-                Ctl::button(ids::SCAN_OPEN, "다른 경로 스캔").compact(),
+                Ctl::button(ids::SCAN_OPEN, text::SCAN.get(lang)).compact(),
                 import,
             ]));
             self.sol_pick_row(items);
-            items.push(Item::Help(
-                "안 보이는 계정은 '다른 경로 스캔'으로 찾습니다.".to_owned(),
-            ));
+            items.push(Item::Help(text::SCAN_HINT.get(lang).to_owned()));
         }
         items.push(Item::CardEnd);
         if let Some((_, _, address)) = self.sol_selected() {
@@ -614,7 +817,7 @@ impl App {
         items.push(Item::CardStart(None));
         items.push(Item::Badged(
             Badge::solana(cluster),
-            Box::new(Item::Subtitle("보낸 거래".to_owned())),
+            Box::new(Item::Subtitle(text::SENT_TXS.get(lang).to_owned())),
         ));
         let mut shown = 0_usize;
         let mut prompt_drawn = false;
@@ -629,11 +832,11 @@ impl App {
             let (from, title) = match (core, record.dapp.as_ref()) {
                 (Some(core), _) => (
                     self.sol_label(&core.from.to_base58()),
-                    yw_core::sol::display::transfer_title(record.cluster, &core),
+                    yw_core::sol::display::transfer_title_in(lang, record.cluster, &core),
                 ),
                 (None, Some(dapp)) => (
                     self.sol_label(&SolAddress::from_bytes(dapp.public).to_base58()),
-                    crate::app_sol_dapp::dapp_record_title(&record),
+                    crate::app_sol_dapp::dapp_record_title(lang, &record),
                 ),
                 (None, None) => (String::new(), String::new()),
             };
@@ -662,13 +865,15 @@ impl App {
                     local_time(entry.time_unix_ms),
                     self.sol_label(&entry.account),
                     entry.title,
-                    status_word(&entry.status)
+                    status_word(lang, &entry.status)
                 )));
                 match SolAddress::parse(&entry.counterparty) {
                     Ok(address) => {
                         self.sol_recipient_items(shown, &address, &counterparties, items);
                     }
-                    Err(_) => items.push(Item::Help(format!("받는 주소 {}", entry.counterparty))),
+                    Err(_) => {
+                        items.push(Item::Help(text::TO_RAW.fill(lang, [&entry.counterparty])));
+                    }
                 }
                 self.sol_activity_actions(
                     shown,
@@ -681,7 +886,7 @@ impl App {
             }
         }
         if shown == 0 {
-            items.push(Item::Help("아직 보낸 거래가 없습니다.".to_owned()));
+            items.push(Item::Help(text::NO_SENT.get(lang).to_owned()));
         }
         self.received_items(crate::received::RecvChain::Sol, items);
         items.push(Item::CardEnd);
@@ -699,38 +904,42 @@ impl App {
         counterparties: &[String],
         items: &mut Vec<Item>,
     ) {
-        let text = address.to_base58();
-        let name = self
+        let lang = self.settings.language;
+        let shown = address.to_base58();
+        let line = self
             .meta
             .as_ref()
-            .and_then(|meta| meta.contact(BookChain::Sol, &text))
-            .map(|contact| format!(" → 주소록: {}", contact.label))
+            .and_then(|meta| meta.contact(BookChain::Sol, &shown))
+            .map(|contact| text::TO_LINE_BOOK.fill(lang, [&contact.label]))
             .or_else(|| {
                 self.sol_account_rows()
                     .into_iter()
                     .find(|(_, _, known)| known == address)
-                    .map(|(id, label, _)| format!(" → 내 계정: {}", self.sol_title(id, &label)))
+                    .map(|(id, label, _)| {
+                        text::TO_LINE_OWN.fill(lang, [&self.sol_title(id, &label)])
+                    })
             })
-            .unwrap_or_default();
-        items.push(Item::Help(format!("받는 주소{name}")));
+            .unwrap_or_else(|| text::TO_LINE.get(lang).to_owned());
+        items.push(Item::Help(line));
         // The save icon only for the row's own counterparty (the list `이 주소 저장` reads).
         let save = counterparties
             .get(row)
-            .filter(|known| **known == text && self.offer_save(BookChain::Sol, known))
+            .filter(|known| **known == shown && self.offer_save(BookChain::Sol, known))
             .and(crate::ui::screens_links::ids::row_id(
                 crate::ui::screens_book::ids::SOL_ACTIVITY_BASE,
                 crate::ui::screens_book::ids::SOL_ACTIVITY_SPAN,
                 row,
             ))
-            .map(crate::ui::screens_links::save_icon);
+            .map(|id| crate::ui::screens_links::save_icon(self.settings.language, id));
         crate::ui::screens_links::push_address_line(
             items,
+            self.settings.language,
             crate::ui::screens_links::ids::row_id(
                 crate::ui::screens_links::ids::SOL_TO_BASE,
                 crate::ui::screens_links::ids::SOL_TO_SPAN,
                 row,
             ),
-            &text,
+            &shown,
             crate::ui::theme::AddressKind::Solana,
             save.into_iter().collect(),
         );
@@ -740,21 +949,21 @@ impl App {
     /// cluster for the selected account. Balances are read only from each token's derived ATA,
     /// so other tokens and NFTs are never fetched or shown.
     fn sol_token_card(&self, items: &mut Vec<Item>, address: &SolAddress, can_send: bool) {
+        let lang = self.settings.language;
         let entries: Vec<&'static SplAllowEntry> = spl_entries(self.sol_cluster()).collect();
         let symbols: Vec<&str> = entries.iter().map(|entry| entry.symbol).collect();
-        items.push(Item::CardStart(Some("토큰".to_owned())));
-        items.push(Item::Help(format!(
-            "허용 목록 토큰만 표시합니다 ({}). 다른 토큰·NFT는 보이지 않고 보낼 수 없습니다.",
-            symbols.join("·")
+        items.push(Item::CardStart(Some(
+            text::TOKENS_TITLE.get(lang).to_owned(),
         )));
+        items.push(Item::Help(
+            text::ALLOWLIST_ONLY.fill(lang, [&symbols.join("·")]),
+        ));
         let (hidden, shown): (Vec<_>, Vec<_>) = entries
             .into_iter()
             .enumerate()
             .partition(|(_, entry)| self.sol_token_hidden(entry));
         if shown.is_empty() {
-            items.push(Item::Help(
-                "보이는 토큰이 없습니다. 숨긴 토큰은 아래에서 다시 볼 수 있습니다.".to_owned(),
-            ));
+            items.push(Item::Help(text::NO_VISIBLE_TOKENS.get(lang).to_owned()));
         }
         // The EVM token card's list rows (2026-11-11): symbol and balance on one line, then
         // the pinned mint whole (a click copies it) with `보내기`·`숨기기` at the right end.
@@ -766,7 +975,7 @@ impl App {
                 items.push(Item::Rule);
             }
             let holding = self.sol_token_holding(address, entry);
-            let (value, note) = token_holding_text(entry, holding);
+            let (value, note) = token_holding_text(lang, entry, holding);
             items.push(Item::ListRow {
                 title: entry.symbol.to_owned(),
                 note: String::new(),
@@ -778,16 +987,17 @@ impl App {
             }
             let id = ids::TOKEN_SEND_BASE.saturating_add(u16::try_from(index).unwrap_or(0));
             let mut row = vec![
-                Ctl::link(id, "보내기").compact().enabled(
+                Ctl::link(id, text::SEND.get(lang)).compact().enabled(
                     can_send
                         && holding
                             .and_then(TokenHolding::balance)
                             .is_some_and(|raw| raw > 0),
                 ),
             ];
-            row.extend(Self::sol_token_hide_button(index, false));
+            row.extend(Self::sol_token_hide_button(lang, index, false));
             crate::ui::screens_links::push_address_line(
                 items,
+                self.settings.language,
                 Self::sol_token_copy_id(index),
                 &entry.mint.to_base58(),
                 crate::ui::theme::AddressKind::Solana,
@@ -800,34 +1010,33 @@ impl App {
             items.push(Item::Row(vec![Ctl::link(
                 ids::TOKEN_HIDDEN_TOGGLE,
                 &if open {
-                    format!("숨긴 토큰 {count}개 접기 ▾")
+                    text::HIDDEN_COLLAPSE
                 } else {
-                    format!("숨긴 토큰 {count}개 보기 ▸")
-                },
+                    text::HIDDEN_SHOW
+                }
+                .fill(lang, [&count.to_string()]),
             )]));
             if open {
-                items.push(Item::Help(
-                    "숨기기는 이 카드에서만 감춥니다. 보내기 화면의 자산 선택, 승인 창의 확인, 활동 기록은 그대로입니다."
-                        .to_owned(),
-                ));
+                items.push(Item::Help(text::HIDE_NOTE.get(lang).to_owned()));
                 for (position, (index, entry)) in hidden.into_iter().enumerate() {
                     if position > 0 {
                         items.push(Item::Rule);
                     }
                     let (value, _) =
-                        token_holding_text(entry, self.sol_token_holding(address, entry));
+                        token_holding_text(lang, entry, self.sol_token_holding(address, entry));
                     items.push(Item::ListRow {
                         title: entry.symbol.to_owned(),
-                        note: "숨김".to_owned(),
+                        note: text::HIDDEN.get(lang).to_owned(),
                         value,
                         dim: true,
                     });
                     crate::ui::screens_links::push_address_line(
                         items,
+                        self.settings.language,
                         Self::sol_token_copy_id(index),
                         &entry.mint.to_base58(),
                         crate::ui::theme::AddressKind::Solana,
-                        Self::sol_token_hide_button(index, true),
+                        Self::sol_token_hide_button(lang, index, true),
                     );
                 }
             }
@@ -844,18 +1053,14 @@ impl App {
     }
 
     /// `숨기기` / `다시 보이기` of allowlist row `index` (none beyond the id span).
-    fn sol_token_hide_button(index: usize, hidden: bool) -> Vec<Ctl> {
+    fn sol_token_hide_button(lang: Lang, index: usize, hidden: bool) -> Vec<Ctl> {
         u16::try_from(index)
             .ok()
             .filter(|offset| *offset < ids::TOKEN_HIDE_SPAN)
             .map(|offset| {
                 Ctl::link(
                     ids::TOKEN_HIDE_BASE.saturating_add(offset),
-                    if hidden {
-                        "다시 보이기"
-                    } else {
-                        "숨기기"
-                    },
+                    if hidden { text::UNHIDE } else { text::HIDE }.get(lang),
                 )
                 .compact()
             })
@@ -866,18 +1071,20 @@ impl App {
     /// The SOL/SPL send form.
     #[expect(clippy::too_many_lines, reason = "the send-form fields in order")]
     pub fn sol_send_screen(&self, items: &mut Vec<Item>) {
+        let lang = self.settings.language;
         let cluster = self.sol_cluster();
-        items.push(crate::ui::screens::back_main());
+        items.push(crate::ui::screens::back_main(lang));
         items.push(Item::Badged(
             Badge::solana(cluster),
-            Box::new(Item::Title(format!("보내기 — {}", cluster.display_name()))),
+            Box::new(Item::Title(
+                text::SEND_TITLE.fill(lang, [cluster.display_name_in(lang)]),
+            )),
         ));
         self.sol_cluster_banner(items, false);
         let form = &self.sol.send;
         if self.sol_journal_damaged() {
             items.push(Item::Banner(
-                "거래 저널의 Solana 기록이 손상되어 Solana 보내기를 멈췄습니다. (E-VLT-006)"
-                    .to_owned(),
+                text::JOURNAL_DAMAGED.get(lang).to_owned(),
                 Tone::Blocked,
             ));
         }
@@ -887,32 +1094,34 @@ impl App {
         };
         if let Some(record) = self.sol_pending(cluster, &from) {
             items.push(Item::Banner(
-                "이 계정의 이전 전송을 확인 중입니다. 확정된 뒤 보낼 수 있습니다.".to_owned(),
+                text::PENDING_SEND.get(lang).to_owned(),
                 Tone::Warn,
             ));
             items.push(Item::Help(self.sol_record_status(&record)));
             items.push(Item::Mono(record.tx_id()));
             self.sol_send_now_row(items);
         }
-        items.push(Item::CardStart(Some("보내는 계정".to_owned())));
+        items.push(Item::CardStart(Some(
+            text::FROM_ACCOUNT.get(lang).to_owned(),
+        )));
         items.push(Item::Text(label));
         items.push(Item::Mono(grouped(&from)));
-        let balance = self
-            .sol_balance(&from)
-            .map_or_else(String::new, |lamports| {
-                format!(" · 잔액 {} (RPC 참고)", App::sol_text(lamports))
-            });
-        items.push(Item::Help(format!("{}{balance}", source.path_text())));
+        let path = source.path_text_in(lang);
+        items.push(Item::Help(self.sol_balance(&from).map_or_else(
+            || path.clone(),
+            |lamports| text::PATH_BALANCE.fill(lang, [&path, &App::sol_text(lamports)]),
+        )));
         // U7: `검토` stays off while the phrase waits for its backup quiz, and while the
         // YubiKey is still on its factory PINs (spec/10 §9.3).
         self.mn_signing_banner(self.sol_backup_gate(source), items);
         self.card_pin_banner(self.sol_card_gate(source), items);
         items.push(Item::CardEnd);
-        items.push(Item::CardStart(Some("받는 사람".to_owned())));
+        items.push(Item::CardStart(Some(
+            text::RECIPIENT_CARD.get(lang).to_owned(),
+        )));
         if form.moving.is_some() {
             items.push(Item::Banner(
-                "비표준 경로 계정의 자금을 내 표준 계정으로 옮깁니다. 받는 주소와 '보내기 최대'는 바꿀 수 없습니다."
-                    .to_owned(),
+                text::MOVE_NOTE.get(lang).to_owned(),
                 Tone::Warn,
             ));
         }
@@ -926,88 +1135,79 @@ impl App {
             to_row.push(to_edit);
         } else {
             to_row.push(to_edit);
-            to_row.push(Ctl::button(ids::SEND_PICK, "주소록에서 선택"));
+            to_row.push(Ctl::button(ids::SEND_PICK, text::PICK_BOOK.get(lang)));
         }
-        items.push(Item::LabeledRow("받는 주소".to_owned(), to_row));
+        items.push(Item::LabeledRow(text::TO_LINE.get(lang).to_owned(), to_row));
         // The format hint only until the address is valid (2026-11-12); the reminder to check
         // all of it then sits under the grouped address.
         if form.check.is_none() {
             items.push(Item::Help(form.token.map_or_else(
-                || "Solana 주소 (base58)".to_owned(),
-                |entry| {
-                    format!(
-                        "{0}을(를) 받을 사람의 지갑 주소를 넣으세요 ({0} 토큰 계정(ATA) 주소가 아닙니다).",
-                        entry.symbol
-                    )
-                },
+                || text::ADDRESS_HINT.get(lang).to_owned(),
+                |entry| text::TOKEN_ADDRESS_HINT.fill(lang, [entry.symbol]),
             )));
         }
         if form.picker && form.moving.is_none() {
             self.sol_picker_rows(items);
         }
         if let Some(code) = form.recipient_error {
-            items.push(Item::Banner(code.text(), Tone::Danger));
+            items.push(Item::Banner(code.text_in(lang), Tone::Danger));
         }
         if form.check.is_some() && !self.sol_move_target_ok() {
             items.push(Item::Banner(
-                crate::app_sol::SOL_MOVE_TARGET_TEXT.to_owned(),
+                crate::app_sol::text::MOVE_TARGET.get(lang).to_owned(),
                 Tone::Danger,
             ));
         }
         if let Some(check) = &form.check {
+            use yw_core::sol::text as core_text;
             items.push(Item::Mono(grouped(&check.to)));
-            items.push(Item::Help(
-                "강조된 앞뒤 4자만 보지 말고 가운데까지 주소 전체를 확인하세요.".to_owned(),
-            ));
+            items.push(Item::Help(text::CHECK_WHOLE.get(lang).to_owned()));
             if let Some(exact) = &check.exact {
+                let label = exact.label.as_str();
                 let note = match exact.kind {
-                    KnownKind::Book { verified } => format!(
-                        "주소록: {}{}",
-                        exact.label,
-                        if verified { " ✓ 확인됨" } else { "" }
-                    ),
-                    KnownKind::Own { index } => {
-                        format!("내 계정 #{}: {}", index.saturating_add(1), exact.label)
+                    KnownKind::Book { verified: true } => {
+                        core_text::RECIPIENT_BOOK_VERIFIED.fill(lang, [label])
                     }
-                    KnownKind::OwnImported => format!("내 계정(가져온 개인키): {}", exact.label),
-                    KnownKind::OwnHardware => format!("내 계정(YubiKey): {}", exact.label),
-                    KnownKind::OwnMnemonic => {
-                        format!("내 계정(추가한 복구 단어): {}", exact.label)
+                    KnownKind::Book { verified: false } => {
+                        core_text::RECIPIENT_BOOK.fill(lang, [label])
                     }
-                    KnownKind::Sent | KnownKind::History => "보낸 적 있는 주소".to_owned(),
+                    KnownKind::Own { index } => core_text::RECIPIENT_OWN
+                        .fill(lang, [&index.saturating_add(1).to_string(), label]),
+                    KnownKind::OwnImported => core_text::RECIPIENT_OWN_IMPORTED.fill(lang, [label]),
+                    KnownKind::OwnHardware => core_text::RECIPIENT_OWN_HARDWARE.fill(lang, [label]),
+                    KnownKind::OwnMnemonic => core_text::RECIPIENT_OWN_MNEMONIC.fill(lang, [label]),
+                    KnownKind::Sent | KnownKind::History => {
+                        core_text::RECIPIENT_SENT.get(lang).to_owned()
+                    }
                 };
                 items.push(Item::Banner(note, Tone::Info));
             }
             for lookalike in &check.lookalikes {
                 let name = match lookalike.kind {
-                    KnownKind::Book { .. } => format!("주소록 '{}'", lookalike.label),
+                    KnownKind::Book { .. } => text::LOOKALIKE_BOOK.fill(lang, [&lookalike.label]),
                     KnownKind::Own { .. }
                     | KnownKind::OwnImported
                     | KnownKind::OwnHardware
-                    | KnownKind::OwnMnemonic => {
-                        format!("내 계정 '{}'", lookalike.label)
+                    | KnownKind::OwnMnemonic => text::LOOKALIKE_OWN.fill(lang, [&lookalike.label]),
+                    KnownKind::Sent | KnownKind::History => {
+                        text::LOOKALIKE_SENT.get(lang).to_owned()
                     }
-                    KnownKind::Sent | KnownKind::History => "보낸 내역의 주소".to_owned(),
                 };
                 items.push(Item::Banner(
-                    format!(
-                        "{name}와(과) 앞 3자 또는 뒤 3자가 같지만 다른 주소입니다. 주소 오염 공격일 수 있습니다. (승인 창 고위험 L03)"
-                    ),
+                    text::LOOKALIKE.fill(lang, [&name]),
                     Tone::HighRisk,
                 ));
                 items.push(Item::Mono(grouped(&lookalike.address)));
             }
             if check.off_curve {
                 items.push(Item::Banner(
-                    "일반 지갑이 아님: 프로그램 소유 주소(PDA)나 토큰 계정일 수 있음 (승인 창 고위험 L02)"
-                        .to_owned(),
+                    text::OFF_CURVE.get(lang).to_owned(),
                     Tone::HighRisk,
                 ));
             }
             if check.first_time {
                 items.push(Item::Banner(
-                    "처음 보내는 주소입니다. 주소 전체를 확인하고, 큰 금액은 소액 시험 송금 뒤 보내세요."
-                        .to_owned(),
+                    core_text::L06_TEXT.get(lang).to_owned(),
                     Tone::Warn,
                 ));
             }
@@ -1024,21 +1224,22 @@ impl App {
         self.journal_send_items(crate::app_sidecar::SendChain::Sol, items);
         let blocker = self.sol_review_blocker();
         items.push(Item::Row(vec![
-            Ctl::primary(ids::SEND_REVIEW, "검토").enabled(blocker.is_none()),
-            Ctl::button(ids::SEND_CANCEL, "취소"),
+            Ctl::primary(ids::SEND_REVIEW, text::REVIEW.get(lang)).enabled(blocker.is_none()),
+            Ctl::button(ids::SEND_CANCEL, text::CANCEL.get(lang)),
         ]));
         // What `검토` waits for, or that it sends nothing yet (2026-11-12).
         items.push(Item::Help(
-            crate::app_sol::ReviewBlocker::line(blocker).to_owned(),
+            crate::app_sol::ReviewBlocker::line(lang, blocker).to_owned(),
         ));
     }
 
     /// The "보낼 자산과 금액" card: asset radios (SOL and the cluster's allowlisted tokens), the
     /// token's pinned facts and balance, the amount in the asset's decimals, send max and fees.
     fn sol_asset_amount_card(&self, items: &mut Vec<Item>, from: &SolAddress) {
+        let lang = self.settings.language;
         let form = &self.sol.send;
         let asset = form.asset();
-        items.push(Item::CardStart(Some("보낼 자산과 금액".to_owned())));
+        items.push(Item::CardStart(Some(text::ASSET_CARD.get(lang).to_owned())));
         let radios: Vec<Ctl> = self
             .sol_assets()
             .into_iter()
@@ -1053,23 +1254,23 @@ impl App {
                 )
             })
             .collect();
-        items.push(Item::LabeledRow("자산".to_owned(), radios));
+        items.push(Item::LabeledRow(text::ASSET.get(lang).to_owned(), radios));
         // The SOL holding next to the amount like a token's (2026-11-12; only in the sender
         // card before).
         if asset == SolAsset::Sol {
             items.push(Item::Help(self.sol_balance(from).map_or_else(
-                || "SOL · 보유: 잔액을 아직 읽지 못했습니다".to_owned(),
-                |lamports| format!("SOL · 보유 {} (RPC 참고)", App::sol_text(lamports)),
+                || text::SOL_HOLDING_UNREAD.get(lang).to_owned(),
+                |lamports| text::SOL_HOLDING.fill(lang, [&App::sol_text(lamports)]),
             )));
         }
         if let SolAsset::Spl(entry) = asset {
-            let (value, note) = token_holding_text(entry, self.sol_token_holding(from, entry));
-            items.push(Item::Help(format!(
-                "{} · SPL Token · 보유 {value}",
-                entry.symbol
-            )));
+            let (value, note) =
+                token_holding_text(lang, entry, self.sol_token_holding(from, entry));
+            items.push(Item::Help(
+                text::SPL_HOLDING.fill(lang, [entry.symbol, &value]),
+            ));
             items.push(Item::Help(note));
-            items.push(Item::Help("mint (허용 목록 고정)".to_owned()));
+            items.push(Item::Help(text::MINT_PINNED.get(lang).to_owned()));
             items.push(Item::Mono(grouped(&entry.mint)));
         }
         let mut amount_row = vec![
@@ -1079,54 +1280,50 @@ impl App {
         if form.moving.is_none() {
             // `최대` right after the field on every chain (2026-11-12: a check box here, a
             // button on EVM); pressed while on.
-            amount_row.push(Ctl::tab(ids::SEND_MAX, "최대", form.send_max));
+            amount_row.push(Ctl::tab(ids::SEND_MAX, text::MAX.get(lang), form.send_max));
         }
         items.push(Item::LabeledRow(
-            format!("금액 ({})", asset.symbol()),
+            text::AMOUNT.fill(lang, [asset.symbol()]),
             amount_row,
         ));
         if form.send_max {
             items.push(Item::Help(match asset {
-                SolAsset::Sol => {
-                    "최대: 잔액 − 최대 수수료를 보내고 SOL 잔액은 0이 됩니다(승인 창에서 확인)."
-                        .to_owned()
-                }
-                SolAsset::Spl(entry) => format!(
-                    "최대: {} 전부를 보냅니다. 수수료(와 필요하면 받는 토큰 계정 생성비)는 SOL로 냅니다.",
-                    entry.symbol
-                ),
+                SolAsset::Sol => text::MAX_SOL.get(lang).to_owned(),
+                SolAsset::Spl(entry) => text::MAX_SPL.fill(lang, [entry.symbol]),
             }));
         }
         if let Some(code) = form.amount_error {
-            items.push(Item::Banner(code.text(), Tone::Danger));
+            items.push(Item::Banner(code.text_in(lang), Tone::Danger));
         }
         // In SOL first (2026-11-08, like the EVM form's "예상 최대 수수료"); lamports and the CU
         // limit behind `수수료 계산 보기`. The caps and the approval window are unchanged.
-        items.push(Item::Text(format!(
-            "예상 수수료 약 {} (최대 {}) — 최종 수수료는 승인 창에서 확인합니다.",
-            App::sol_text(5_000),
-            App::sol_text(self.settings.solana.max_fee_lamports)
+        items.push(Item::Text(text::FEE_ESTIMATE.fill(
+            lang,
+            [
+                &App::sol_text(5_000),
+                &App::sol_text(self.settings.solana.max_fee_lamports),
+            ],
         )));
         if self.show_advanced {
-            items.push(Item::Help(format!(
-                "계산: 기본 5,000 lamports + 우선 수수료(CU 한도 {}), 상한 {} lamports.",
-                format_raw(u64::from(yw_core::sol::fee::template_cu_limit(asset))),
-                format_raw(self.settings.solana.max_fee_lamports)
+            items.push(Item::Help(text::FEE_CALC.fill(
+                lang,
+                [
+                    &format_raw(u64::from(yw_core::sol::fee::template_cu_limit(asset))),
+                    &format_raw(self.settings.solana.max_fee_lamports),
+                ],
             )));
         }
         items.push(Item::Row(vec![Ctl::link(
             crate::ui::screens::ids::ADVANCED_TOGGLE,
             if self.show_advanced {
-                "수수료 계산 숨기기 ▾"
+                text::FEE_HIDE
             } else {
-                "수수료 계산 보기 (lamports·CU) ▸"
-            },
+                text::FEE_SHOW
+            }
+            .get(lang),
         )]));
         if let SolAsset::Spl(entry) = asset {
-            items.push(Item::Help(format!(
-                "받는 사람에게 {} 토큰 계정이 없으면 이 거래가 만들고, 생성 비용(rent)을 보내는 계정의 SOL로 냅니다. 금액은 승인 창에서 확인하세요. 보낸 뒤에도 SOL이 조금 남아야 합니다.",
-                entry.symbol
-            )));
+            items.push(Item::Help(text::ATA_NOTE.fill(lang, [entry.symbol])));
         }
         items.push(Item::CardEnd);
     }
@@ -1135,7 +1332,7 @@ impl App {
         let entries = self.sol_picker_entries();
         if entries.is_empty() {
             items.push(Item::Muted(
-                "일치하는 주소록·내 계정이 없습니다.".to_owned(),
+                text::NO_MATCH.get(self.settings.language).to_owned(),
             ));
         }
         for (index, (label, address)) in entries.into_iter().enumerate() {
@@ -1150,6 +1347,7 @@ impl App {
     /// Picker entries: address book and own accounts only (spec/07 §12.3), filtered by the text.
     #[must_use]
     pub fn sol_picker_entries(&self) -> Vec<(String, SolAddress)> {
+        let lang = self.settings.language;
         let filter = self.sol.send.to_text.trim().to_owned();
         self.sol_known()
             .into_iter()
@@ -1159,13 +1357,16 @@ impl App {
                         meta.is_favorite(BookChain::Sol, &entry.address.to_base58())
                     });
                     let star = if favorite { "★ " } else { "" };
-                    Some((format!("{star}주소록: {}", entry.label), entry.address))
+                    Some((
+                        format!("{star}{}", text::PICK_BOOK_ENTRY.fill(lang, [&entry.label])),
+                        entry.address,
+                    ))
                 }
                 KnownKind::Own { .. }
                 | KnownKind::OwnImported
                 | KnownKind::OwnHardware
                 | KnownKind::OwnMnemonic => {
-                    Some((format!("내 계정: {}", entry.label), entry.address))
+                    Some((text::PICK_OWN.fill(lang, [&entry.label]), entry.address))
                 }
                 KnownKind::Sent | KnownKind::History => None,
             })
@@ -1180,10 +1381,11 @@ impl App {
 
     /// The SOL send result.
     pub fn sol_send_result_screen(&self, items: &mut Vec<Item>) {
-        items.push(Item::Title("보내기 결과".to_owned()));
+        let lang = self.settings.language;
+        items.push(Item::Title(text::RESULT_TITLE.get(lang).to_owned()));
         if let Some((cluster, signature)) = self.sol.sent {
             items.push(Item::Banner(
-                "서명하고 저널에 기록한 뒤 전송했습니다.".to_owned(),
+                text::RESULT_SENT.get(lang).to_owned(),
                 Tone::Success,
             ));
             items.push(Item::CardStart(None));
@@ -1192,22 +1394,25 @@ impl App {
                 .iter()
                 .find(|record| record.signature() == signature)
                 .map_or_else(
-                    || "종결 (활동 참고)".to_owned(),
+                    || text::RESULT_ENDED.get(lang).to_owned(),
                     |record| self.sol_record_status(record),
                 );
             items.push(Item::Badged(
                 Badge::solana(cluster),
                 Box::new(Item::Field(
-                    "상태".to_owned(),
-                    format!("{status} ({})", cluster.display_name()),
+                    text::STATUS.get(lang).to_owned(),
+                    format!("{status} ({})", cluster.display_name_in(lang)),
                 )),
             ));
-            items.push(Item::Field("서명(거래 ID)".to_owned(), String::new()));
+            items.push(Item::Field(
+                text::SIGNATURE.get(lang).to_owned(),
+                String::new(),
+            ));
             items.push(Item::Mono(yw_core::codec::base58::base58_encode(
                 &signature,
             )));
             // For checking on an explorer: 88 characters are not retyped by hand.
-            let mut buttons = vec![Ctl::button(ids::RESULT_COPY, "해시 복사")];
+            let mut buttons = vec![Ctl::button(ids::RESULT_COPY, text::COPY_HASH.get(lang))];
             buttons.extend(self.explorer_tx_buttons(
                 crate::network::NetworkId::Solana(crate::app_explorer::app_cluster(cluster)),
                 &yw_core::codec::base58::base58_encode(&signature),
@@ -1221,7 +1426,10 @@ impl App {
             self.sol_send_now_row(items);
             self.result_save_items(BookTarget::Sol, items);
         }
-        let mut row = vec![Ctl::primary(crate::ui::screens::ids::BACK_MAIN, "메인으로")];
+        let mut row = vec![Ctl::primary(
+            crate::ui::screens::ids::BACK_MAIN,
+            text::BACK_MAIN.get(lang),
+        )];
         // A scan move: the kept results, for the account's other assets (spec/07 §3.3).
         let moved = self
             .sol
@@ -1229,13 +1437,11 @@ impl App {
             .as_ref()
             .is_some_and(|(form, _)| form.moving.is_some());
         if moved && self.sol.scan.stage == crate::app_sol::ScanStage::Done {
-            row.push(Ctl::button(ids::SCAN_BACK, "스캔 결과로"));
+            row.push(Ctl::button(ids::SCAN_BACK, text::SCAN_BACK.get(lang)));
         }
         if self.sol_can_resend() {
-            row.push(Ctl::button(ids::SEND_AGAIN, "다시 보내기"));
-            items.push(Item::Help(
-                "같은 받는 주소·금액으로 보내기 화면을 다시 엽니다. 새로 검토하고 새로 승인해야 합니다(이전 승인은 쓰지 않음).".to_owned(),
-            ));
+            row.push(Ctl::button(ids::SEND_AGAIN, text::SEND_AGAIN.get(lang)));
+            items.push(Item::Help(text::SEND_AGAIN_NOTE.get(lang).to_owned()));
         }
         items.push(Item::Row(row));
     }
@@ -1247,28 +1453,27 @@ impl App {
         if self.sol_send_now_target().is_none() {
             return;
         }
+        let lang = self.settings.language;
         items.push(Item::Row(vec![Ctl::button(
             ids::SEND_NOW,
-            "지금 다시 전송",
+            text::SEND_NOW.get(lang),
         )]));
-        items.push(Item::Help(
-            "서명한 같은 거래를 바로 다시 보냅니다. 서명이 같아 한 번만 처리됩니다. 블록해시가 만료된 것이 RPC로 확인되면 새로 서명해 다시 보낼 수 있습니다.".to_owned(),
-        ));
+        items.push(Item::Help(text::SEND_NOW_NOTE.get(lang).to_owned()));
     }
 
     /// S12 for Solana: full address, QR = the base58 text, path, cluster.
     pub fn sol_receive_screen(&self, items: &mut Vec<Item>) {
-        items.push(crate::ui::screens::back_main());
+        let lang = self.settings.language;
+        items.push(crate::ui::screens::back_main(lang));
         items.push(Item::Badged(
             Badge::solana(self.sol_cluster()),
-            Box::new(Item::Title(format!(
-                "받기 — {}",
-                self.sol_cluster().display_name()
-            ))),
+            Box::new(Item::Title(
+                text::RECEIVE_TITLE.fill(lang, [self.sol_cluster().display_name_in(lang)]),
+            )),
         ));
         if self.mode == AppMode::BackupPending {
             items.push(Item::Banner(
-                "백업 확인 전입니다. 확인을 마치기 전에는 큰 금액을 받지 마세요.".to_owned(),
+                text::BACKUP_PENDING.get(lang).to_owned(),
                 Tone::Warn,
             ));
         }
@@ -1281,12 +1486,12 @@ impl App {
         items.push(Item::Subtitle(self.sol_title(index, &label)));
         if self.sol_cluster() == SolCluster::Devnet {
             items.push(Item::Banner(
-                "devnet(테스트) 주소입니다. 주소 자체는 mainnet과 같습니다.".to_owned(),
+                text::DEVNET_ADDRESS.get(lang).to_owned(),
                 Tone::Testnet,
             ));
         } else {
             items.push(Item::Banner(
-                crate::ui::screens::T_MAINNET.to_owned(),
+                crate::ui::screens::T_MAINNET.get(lang).to_owned(),
                 Tone::BtcMainnet,
             ));
         }
@@ -1300,36 +1505,33 @@ impl App {
         let tokens: Vec<&str> = spl_entries(self.sol_cluster())
             .map(|entry| entry.symbol)
             .collect();
-        items.push(Item::Help(format!(
-            "SOL과 허용 목록 토큰({})만 받으세요. 다른 토큰은 이 지갑에 보이지 않고 보낼 수 없습니다.",
-            tokens.join("·")
-        )));
+        items.push(Item::Help(
+            text::RECEIVE_ONLY.fill(lang, [&tokens.join("·")]),
+        ));
         // The address on its copy line, then the QR (2026-11-12, all chains: the notes that
         // are not needed to copy follow the QR).
         items.push(crate::ui::screens::receive_address_row(
+            self.settings.language,
             &grouped(&address),
             ids::COPY_ADDRESS,
             Vec::new(),
         ));
         items.push(Item::Qr(address.to_base58()));
-        items.push(Item::Help(
-            "토큰을 보내는 쪽에도 이 지갑 주소를 알려주면 됩니다(토큰 계정 주소는 상대 지갑이 계산합니다)."
-                .to_owned(),
-        ));
-        items.push(Item::Help(index.path_text()));
+        items.push(Item::Help(text::TOKEN_RECEIVE_NOTE.get(lang).to_owned()));
+        items.push(Item::Help(index.path_text_in(lang)));
         items.push(Item::CardEnd);
     }
 
     /// S15 Solana section (spec/07 §10, §3.3).
     pub fn sol_settings_section(&self, items: &mut Vec<Item>) {
+        let lang = self.settings.language;
         let solana = &self.settings.solana;
-        items.push(Item::CardStart(Some("Solana 네트워크".to_owned())));
-        items.push(Item::Help(
-            "메인 화면 Solana 탭에서 쓸 네트워크입니다. devnet은 시험용이며 실제 자산이 아닙니다."
-                .to_owned(),
-        ));
+        items.push(Item::CardStart(Some(
+            text::SETTINGS_TITLE.get(lang).to_owned(),
+        )));
+        items.push(Item::Help(text::SETTINGS_HELP.get(lang).to_owned()));
         items.push(Item::LabeledRow(
-            "클러스터".to_owned(),
+            text::CLUSTER.get(lang).to_owned(),
             vec![
                 Ctl::radio(
                     ids::SET_MAINNET,
@@ -1339,35 +1541,27 @@ impl App {
                 ),
                 Ctl::radio(
                     ids::SET_DEVNET,
-                    "devnet (테스트)",
+                    text::DEVNET_RADIO.get(lang),
                     solana.cluster == crate::network::SolCluster::Devnet,
                     false,
                 ),
             ],
         ));
-        items.push(Item::Help(
-            "RPC 주소는 '네트워크(RPC)' 구역의 solana:mainnet·solana:devnet 행에 있습니다."
-                .to_owned(),
-        ));
+        items.push(Item::Help(text::RPC_ROWS.get(lang).to_owned()));
         items.push(Item::Rule);
         items.push(Item::Row(vec![Ctl::button(
             ids::SCAN_OPEN,
-            "다른 경로 스캔",
+            text::SCAN.get(lang),
         )]));
-        items.push(Item::Help(
-            "다른 지갑(Ledger Live, solana-keygen 등)에서 쓰던 경로의 계정을 찾습니다.".to_owned(),
-        ));
+        items.push(Item::Help(text::SCAN_SETTINGS_HELP.get(lang).to_owned()));
         items.push(Item::CardEnd);
         if self.show_advanced {
             items.push(Item::CardStart(Some(
-                "Solana 수수료 상한 (고급)".to_owned(),
+                text::FEE_CAP_TITLE.get(lang).to_owned(),
             )));
-            items.push(Item::Help(
-                "지갑이 계산한 수수료가 이 값을 넘으면 보내기를 막습니다. 보통은 바꿀 필요가 없습니다."
-                    .to_owned(),
-            ));
+            items.push(Item::Help(text::FEE_CAP_HELP.get(lang).to_owned()));
             items.push(Item::LabeledRow(
-                "수수료 상한 (lamports)".to_owned(),
+                text::FEE_CAP_LABEL.get(lang).to_owned(),
                 vec![Ctl::edit(
                     ids::FEE_CAP_EDIT,
                     &solana.max_fee_lamports.to_string(),
@@ -1377,7 +1571,7 @@ impl App {
                 )],
             ));
             items.push(Item::LabeledRow(
-                "CU 가격 상한 (micro-lamports/CU)".to_owned(),
+                text::CU_CAP_LABEL.get(lang).to_owned(),
                 vec![Ctl::edit(
                     ids::CU_PRICE_EDIT,
                     &solana.max_cu_price_micro.to_string(),
@@ -1387,13 +1581,10 @@ impl App {
                 )],
             ));
             items.push(Item::Row(vec![
-                Ctl::primary(ids::FEE_SAVE, "저장"),
-                Ctl::button(ids::FEE_DEFAULT, "기본값으로"),
+                Ctl::primary(ids::FEE_SAVE, text::SAVE.get(lang)),
+                Ctl::button(ids::FEE_DEFAULT, text::DEFAULTS.get(lang)),
             ]));
-            items.push(Item::Help(
-                "수수료 상한 10,000–10,000,000, CU 가격 상한 0–100,000,000. 우선 수수료 가격은 최근 값의 p75와 두 상한 중 작은 값입니다."
-                    .to_owned(),
-            ));
+            items.push(Item::Help(text::FEE_RANGE_HELP.get(lang).to_owned()));
             items.push(Item::CardEnd);
         }
         self.advanced_toggle(items);
@@ -1402,42 +1593,34 @@ impl App {
     /// The recovery scan screen (spec/07 §3.3).
     pub fn sol_scan_screen(&self, items: &mut Vec<Item>) {
         use crate::app_sol::ScanStage;
-        items.push(crate::ui::screens::back_main());
-        items.push(Item::Title(format!(
-            "다른 경로 스캔 — {}",
-            self.sol_cluster().display_name()
-        )));
+        let lang = self.settings.language;
+        items.push(crate::ui::screens::back_main(lang));
+        items.push(Item::Title(
+            text::SCAN_TITLE.fill(lang, [self.sol_cluster().display_name_in(lang)]),
+        ));
         let scan = &self.sol.scan;
         if let Some(message) = &scan.message {
             items.push(Item::Banner(message.clone(), Tone::Danger));
         }
         match scan.stage {
             ScanStage::Notice => {
-                items.push(Item::Text(
-                    "다른 지갑(Ledger Live, solana-keygen 등)의 경로 m/44'/501'/i', m/44'/501', BIP39 seed[0..32]와 표준 경로 m/44'/501'/i'/0'의 계정 0–49를 조회합니다(연속 5개가 비면 중단). 읽기 전용이며 서명하지 않습니다."
-                        .to_owned(),
-                ));
+                items.push(Item::Text(text::SCAN_NOTICE.get(lang).to_owned()));
                 items.push(Item::Banner(
-                    format!(
-                        "조회하는 모든 주소가 RPC 공급자(설정한 {} 엔드포인트의 운영자)에 전달되어 서로 연결될 수 있습니다.",
-                        self.sol_cluster().network_id()
-                    ),
+                    text::SCAN_PRIVACY.fill(lang, [self.sol_cluster().network_id()]),
                     Tone::Warn,
                 ));
                 items.push(Item::Row(vec![
-                    Ctl::button(ids::SCAN_START, "알겠습니다 — 스캔 시작")
+                    Ctl::button(ids::SCAN_START, text::SCAN_START.get(lang))
                         .enabled(matches!(self.mode, AppMode::Unlocked { .. })),
                 ]));
             }
             ScanStage::Deriving | ScanStage::Running => {
-                items.push(Item::Muted("조회하는 중…".to_owned()));
+                items.push(Item::Muted(text::SCANNING.get(lang).to_owned()));
             }
             ScanStage::Done => {
                 let rows = self.sol_scan_rows();
                 if rows.is_empty() {
-                    items.push(Item::Muted(
-                        "잔액이 있는 다른 경로 계정이나 추가할 표준 계정이 없습니다.".to_owned(),
-                    ));
+                    items.push(Item::Muted(text::SCAN_EMPTY.get(lang).to_owned()));
                 }
                 // Where `표준 계정으로 이동` sends: only a standard account of the primary phrase
                 // passes the signing check (spec/07 §3.3, §13.1-6).
@@ -1445,11 +1628,11 @@ impl App {
                 if rows.iter().any(|row| !row.source.is_standard()) {
                     match &target {
                         Some((id, label, _)) => items.push(Item::Field(
-                            "옮겨 받을 계정".to_owned(),
-                            format!("{label} · {}", id.path_text()),
+                            text::MOVE_TARGET_LABEL.get(lang).to_owned(),
+                            format!("{label} · {}", id.path_text_in(lang)),
                         )),
                         None => items.push(Item::Banner(
-                            crate::app_sol::SOL_SCAN_NO_TARGET_TEXT.to_owned(),
+                            crate::app_sol::text::SCAN_NO_TARGET.get(lang).to_owned(),
                             Tone::Warn,
                         )),
                     }
@@ -1458,36 +1641,42 @@ impl App {
                 let shown = usize::from(ids::SCAN_ROW_SPAN / ids::SCAN_ROW_STRIDE);
                 for (index, row) in rows.iter().take(shown).enumerate() {
                     let (balance, tokens) = self.sol_scan_balances(row);
-                    let mut text =
-                        format!("{} · {}", row.source.path_text(), App::sol_text(balance));
+                    let mut line = format!(
+                        "{} · {}",
+                        row.source.path_text_in(lang),
+                        App::sol_text(balance)
+                    );
                     for (entry, holding) in &tokens {
                         if let Some(raw) = holding.balance().filter(|raw| *raw > 0) {
                             let _ = write!(
-                                text,
+                                line,
                                 " · {} {}",
                                 format_amount(raw, entry.decimals),
                                 entry.symbol
                             );
                         }
                     }
-                    text.push_str(" (RPC 참고)");
-                    items.push(Item::Text(text));
+                    let _ = write!(line, " {}", text::RPC_REFERENCE.get(lang));
+                    items.push(Item::Text(line));
                     items.push(Item::Mono(grouped(&row.address)));
                     if row.source.is_standard() {
                         if let Some(id) = ids::scan_row_id(ids::ScanAction::Add(index)) {
-                            items.push(Item::Row(vec![Ctl::button(id, "계정 추가")]));
+                            items.push(Item::Row(vec![Ctl::button(
+                                id,
+                                text::ADD_ACCOUNT.get(lang),
+                            )]));
                         }
                     } else if let Some(id) = ids::scan_row_id(ids::ScanAction::Move(index)) {
                         items.push(Item::Row(vec![
-                            Ctl::button(id, "표준 계정으로 이동").enabled(movable),
+                            Ctl::button(id, text::MOVE_TO_STANDARD.get(lang)).enabled(movable),
                         ]));
                     }
                 }
-                items.push(Item::Muted(
-                    "비표준 경로 자금은 주 복구 단어의 표준 계정으로 '보내기 최대'만 할 수 있습니다(승인 창 L07). 자산마다 한 번씩 옮기며, 이 결과는 클러스터를 바꾸거나 잠글 때까지 남습니다. 다른 표준 계정으로 받으려면 Solana 탭에서 그 계정을 고르세요."
-                        .to_owned(),
-                ));
-                items.push(Item::Row(vec![Ctl::button(ids::SCAN_AGAIN, "다시 스캔")]));
+                items.push(Item::Muted(text::SCAN_MOVE_NOTE.get(lang).to_owned()));
+                items.push(Item::Row(vec![Ctl::button(
+                    ids::SCAN_AGAIN,
+                    text::SCAN_AGAIN.get(lang),
+                )]));
             }
         }
     }
@@ -1561,6 +1750,7 @@ impl App {
         };
         crate::ui::screens_links::push_hash_line(
             items,
+            self.settings.language,
             crate::ui::screens_links::ids::row_id(
                 ids::ACTIVITY_COPY_BASE,
                 ids::ACTIVITY_COPY_SPAN,

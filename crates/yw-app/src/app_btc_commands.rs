@@ -51,10 +51,10 @@ impl App {
             match id {
                 ids::SEND_TO_EDIT => ui.set_recipient(ctx, text),
                 ids::SEND_AMOUNT_EDIT => ui.set_amount(ctx, text),
-                ids::FEE_MANUAL_EDIT => ui.set_manual_rate(text, false),
-                ids::TYPED_FEE_EDIT => ui.set_typed_fee(text, false),
-                ids::BUMP_MANUAL_EDIT => ui.set_manual_rate(text, true),
-                ids::BUMP_TYPED_EDIT => ui.set_typed_fee(text, true),
+                ids::FEE_MANUAL_EDIT => ui.set_manual_rate(ctx.lang, text, false),
+                ids::TYPED_FEE_EDIT => ui.set_typed_fee(ctx.lang, text, false),
+                ids::BUMP_MANUAL_EDIT => ui.set_manual_rate(ctx.lang, text, true),
+                ids::BUMP_TYPED_EDIT => ui.set_typed_fee(ctx.lang, text, true),
                 _ => {}
             }
             Vec::new()
@@ -77,7 +77,7 @@ impl App {
             &self.btc.send.fee
         };
         if fee.needs_typed.is_none() && !fee.typed_text.is_empty() {
-            self.btc.set_typed_fee("", bump);
+            self.btc.set_typed_fee(self.settings.language, "", bump);
         }
     }
 
@@ -462,7 +462,10 @@ mod tests {
         // No `rpc:bitcoin:testnet4`: E-KEY-005, nothing written or queued.
         assert!(app.on_btc_command(ids::ENABLE));
         assert!(!app.settings.bitcoin.enabled);
-        assert_eq!(app.btc.settings_message, Some(ErrorCode::Key005.text()));
+        assert_eq!(
+            app.btc.settings_message,
+            Some(ErrorCode::Key005.text_in(yw_core::lang::Lang::Ko))
+        );
         assert!(key_jobs(&app).is_empty());
         // With the URL: enabled, sessions reset, BtcMeta created for testnet4.
         testnet_url(&mut app);
@@ -497,7 +500,10 @@ mod tests {
         assert_eq!(app.settings.bitcoin.indexer, BtcIndexer::Esplora);
         // Esplora `저장` with an empty edit: E-BTC-006, the value stays.
         assert!(app.on_btc_command(ids::ESPLORA_TESTNET4_SAVE));
-        assert_eq!(app.btc.settings_message, Some(ErrorCode::Btc006.text()));
+        assert_eq!(
+            app.btc.settings_message,
+            Some(ErrorCode::Btc006.text_in(yw_core::lang::Lang::Ko))
+        );
         assert_eq!(
             app.settings.bitcoin.esplora_testnet4,
             "https://mempool.space/testnet4/api"

@@ -10,6 +10,8 @@ use yw_core::sol::SolAddress;
 use yw_core::yubikey::plan::KeyRole;
 use yw_core::yubikey::record::{HwKeyRecord, RecordedSlot};
 
+use yw_core::lang::Lang;
+
 use crate::app::App;
 use crate::ui::main_window::{Item, Tone};
 
@@ -52,27 +54,49 @@ pub struct RemovedAccount {
     pub kept: bool,
 }
 
-/// The unknown-balance sentence.
-pub const T_BALANCE_UNKNOWN: &str = "잔액을 확인하지 못했습니다(이 네트워크를 연 적 없음).";
-/// The block's last line while an account leaves the wallet: what the balances above cover
-/// (the EVM imported-key confirmation said it before the block, 2026-11-10).
-pub const T_BALANCE_SCOPE: &str = "위 잔액은 지금 네트워크의 기본 자산만 마지막으로 읽은 값입니다 — 다른 네트워크와 토큰 잔액은 확인하지 않았습니다.";
+/// The fixed texts of the removal block (spec/14).
+pub mod text {
+    yw_core::texts! {
+        /// The unknown-balance sentence.
+        T_BALANCE_UNKNOWN = "잔액을 확인하지 못했습니다(이 네트워크를 연 적 없음)."
+            / "The balance could not be checked (this network was never opened).";
+        /// The block's last line while an account leaves the wallet: what the balances above
+        /// cover (the EVM imported-key confirmation said it before the block, 2026-11-10).
+        T_BALANCE_SCOPE = "위 잔액은 지금 네트워크의 기본 자산만 마지막으로 읽은 값입니다 — 다른 네트워크와 토큰 잔액은 확인하지 않았습니다."
+            / "The balances above are only the last-read native asset of the current network — other networks and token balances were not checked.";
+        /// A positive balance: {0} amount, {1} network.
+        BALANCE_POSITIVE(2) = "이 계정에 잔액이 있습니다: {0} ({1}). 지우기 전에 다른 계정으로 옮기세요."
+            / "This account has a balance: {0} ({1}). Move it to another account before removing.";
+        /// The last-read balance line: {0} amount, {1} network.
+        LAST_READ(2) = "마지막으로 읽은 잔액: {0} ({1})" / "Last read balance: {0} ({1})";
+        /// A card key no other card holds.
+        CANNOT_SIGN = "이 지갑에서 서명 불가" / "Cannot sign in this wallet";
+        /// The cards that still sign: {0} `#serial·#serial`, {1} the Korean particle.
+        STILL_SIGNS(2) = "YubiKey {0}{1} 계속 서명" / "YubiKey {0} keeps signing";
+    }
+}
+
+pub use text::{T_BALANCE_SCOPE, T_BALANCE_UNKNOWN};
 
 /// The balance sentence of an account about to be removed (none for zero).
 #[must_use]
-pub fn balance_sentence(balance: &LastBalance) -> Option<String> {
+pub fn balance_sentence(lang: Lang, balance: &LastBalance) -> Option<String> {
     match balance {
-        LastBalance::Positive { text, network } => Some(format!(
-            "이 계정에 잔액이 있습니다: {text} ({network}). 지우기 전에 다른 계정으로 옮기세요."
-        )),
-        LastBalance::Unknown => Some(T_BALANCE_UNKNOWN.to_owned()),
+        LastBalance::Positive { text, network } => {
+            Some(text::BALANCE_POSITIVE.fill(lang, [text, network]))
+        }
+        LastBalance::Unknown => Some(T_BALANCE_UNKNOWN.get(lang).to_owned()),
         LastBalance::Zero { .. } => None,
     }
 }
 
 /// Pushes the block of `accounts`. Returns the balance sentences of the accounts lost for good:
 /// the caller puts them inside its own band (T-YK-KEY-LOST, the imported-key band).
-pub fn removed_items(accounts: &[RemovedAccount], items: &mut Vec<Item>) -> Vec<String> {
+pub fn removed_items(
+    lang: Lang,
+    accounts: &[RemovedAccount],
+    items: &mut Vec<Item>,
+) -> Vec<String> {
     let mut inside = Vec::new();
     for account in accounts {
         items.push(Item::Text(format!("{} · {}", account.label, account.chain)));
@@ -82,14 +106,12 @@ pub fn removed_items(accounts: &[RemovedAccount], items: &mut Vec<Item>) -> Vec<
         if let Some(note) = &account.note {
             items.push(Item::Help(note.clone()));
         }
-        match (&account.balance, balance_sentence(&account.balance)) {
+        match (&account.balance, balance_sentence(lang, &account.balance)) {
             (LastBalance::Zero { network }, _) => {
-                items.push(Item::Help(format!("마지막으로 읽은 잔액: 0 ({network})")));
+                items.push(Item::Help(text::LAST_READ.fill(lang, ["0", network])));
             }
             (LastBalance::Positive { text, network }, _) if account.kept => {
-                items.push(Item::Help(format!(
-                    "마지막으로 읽은 잔액: {text} ({network})"
-                )));
+                items.push(Item::Help(text::LAST_READ.fill(lang, [text, network])));
             }
             (LastBalance::Unknown, _) if account.kept => {}
             (_, Some(sentence)) if account.lost => inside.push(sentence),
@@ -103,7 +125,7 @@ pub fn removed_items(accounts: &[RemovedAccount], items: &mut Vec<Item>) -> Vec<
     // Only the shown network's native balance was looked at: said once, while an account
     // leaves the wallet (not when every key stays on another card).
     if accounts.iter().any(|account| !account.kept) {
-        items.push(Item::Help(T_BALANCE_SCOPE.to_owned()));
+        items.push(Item::Help(T_BALANCE_SCOPE.get(lang).to_owned()));
     }
     inside
 }
@@ -138,7 +160,10 @@ impl App {
     /// The SOL balance of `address` on the cluster shown now, as last read.
     #[must_use]
     pub fn sol_last_balance(&self, address: &SolAddress) -> LastBalance {
-        let network = self.sol_cluster().display_name().to_owned();
+        let network = self
+            .sol_cluster()
+            .display_name_in(self.settings.language)
+            .to_owned();
         match self.sol_balance(address) {
             Some(0) => LastBalance::Zero { network },
             Some(lamports) => LastBalance::Positive {
@@ -154,7 +179,7 @@ impl App {
     #[must_use]
     pub fn btc_last_balance(&self, address: &str) -> LastBalance {
         let ctx = self.btc_ctx();
-        let network = ctx.net().display_name().to_owned();
+        let network = ctx.net().display_name_in(self.settings.language).to_owned();
         let meta = ctx.accounts().into_iter().find(|meta| {
             meta.address(yw_core::bip32::path::BtcChain::Receive, 0)
                 .is_ok_and(|own| own.as_str() == address)
@@ -301,19 +326,17 @@ impl App {
             })
             .collect();
         let holders = crate::yubikey::holders(others, slot.role);
+        let lang = self.settings.language;
         let note = if holders.is_empty() {
-            "이 지갑에서 서명 불가".to_owned()
+            text::CANNOT_SIGN.get(lang).to_owned()
         } else {
             let list: Vec<String> = holders.iter().map(|serial| format!("#{serial}")).collect();
             let cards = list.join("·");
             // The particle follows how the last digit is read (#…2 → 로, #…3 → 으로).
-            format!(
-                "YubiKey {cards}{} 계속 서명",
-                crate::ui::theme::direction_particle(&cards)
-            )
+            text::STILL_SIGNS.fill(lang, [&cards, crate::ui::theme::direction_particle(&cards)])
         };
         RemovedAccount {
-            label: format!("{} ({})", slot.role.title(), slot.path_text()),
+            label: format!("{} ({})", slot.role.title_in(lang), slot.path_text_in(lang)),
             chain: role_chain(slot.role),
             addresses,
             balance,
@@ -328,6 +351,40 @@ impl App {
 mod tests {
     use super::{LastBalance, RemovedAccount, T_BALANCE_SCOPE, T_BALANCE_UNKNOWN, removed_items};
     use crate::ui::main_window::{Item, Tone};
+    use yw_core::lang::{Lang, has_hangul};
+
+    /// The English block: every text but the (data) label is free of Hangul.
+    #[test]
+    fn english_removed_block() {
+        let mut items = Vec::new();
+        let mut kept = account(
+            LastBalance::Positive {
+                text: "1 ETH".to_owned(),
+                network: "Sepolia".to_owned(),
+            },
+            false,
+        );
+        kept.label = "Account 2".to_owned();
+        kept.kept = true;
+        let mut lost = kept.clone();
+        lost.kept = false;
+        lost.balance = LastBalance::Unknown;
+        let inside = removed_items(Lang::En, &[kept, lost.clone(), lost], &mut items);
+        assert!(!items.is_empty());
+        for item in &items {
+            let (Item::Text(text) | Item::Help(text) | Item::Banner(text, _) | Item::Mono(text)) =
+                item
+            else {
+                continue;
+            };
+            assert!(!has_hangul(text), "{text}");
+        }
+        assert!(inside.is_empty());
+        assert_eq!(
+            super::text::STILL_SIGNS.fill(Lang::En, ["#1·#2", ""]),
+            "YubiKey #1·#2 keeps signing"
+        );
+    }
 
     fn account(balance: LastBalance, lost: bool) -> RemovedAccount {
         RemovedAccount {
@@ -348,6 +405,7 @@ mod tests {
     fn removed_accounts_say_their_last_balance() {
         let mut items = Vec::new();
         let inside = removed_items(
+            Lang::Ko,
             &[
                 account(
                     LastBalance::Positive {
@@ -381,16 +439,16 @@ mod tests {
                     "이 계정에 잔액이 있습니다: 1.25 SepoliaETH (Sepolia 테스트넷). 지우기 전에 다른 계정으로 옮기세요.",
                     Tone::HighRisk
                 ),
-                (T_BALANCE_UNKNOWN, Tone::Warn),
+                (T_BALANCE_UNKNOWN.ko, Tone::Warn),
             ]
         );
         assert!(items.iter().any(|item| matches!(
             item,
             Item::Help(text) if text == "마지막으로 읽은 잔액: 0 (Sepolia 테스트넷)"
         )));
-        assert_eq!(inside, [T_BALANCE_UNKNOWN]);
+        assert_eq!(inside, [T_BALANCE_UNKNOWN.ko]);
         // What the balances cover, once, at the end.
-        assert!(matches!(items.last(), Some(Item::Help(text)) if text == T_BALANCE_SCOPE));
+        assert!(matches!(items.last(), Some(Item::Help(text)) if text == T_BALANCE_SCOPE.ko));
         assert_eq!(
             items
                 .iter()

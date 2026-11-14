@@ -2,6 +2,7 @@
 //! before saving (chain id, block-0 hash pinned on first trust, EIP-1559 base fee).
 
 use yw_core::evm::chain::{MAX_CHAIN_ID, SimulationSupport, builtin_chains};
+use yw_core::lang::Lang;
 use yw_win::http::HttpsUrl;
 
 use super::SharedTransport;
@@ -85,8 +86,34 @@ pub struct ValidChainForm {
 pub struct FormError {
     /// Code.
     pub code: ErrorCode,
-    /// Item for `{항목}`.
+    /// Item for `{항목}`: `chainId` or the Korean side of a [`text`] `ITEM_*` entry
+    /// ([`FormError::message_in`] shows the entry in the language asked for).
     pub item: Option<&'static str>,
+}
+
+/// S17 item names of E-CHN-004 (spec/04 §2.17.1; English spec/14 §5).
+pub mod text {
+    yw_core::texts! {
+        ITEM_QUICKNODE = "QuickNode 서브도메인" / "QuickNode subdomain";
+        ITEM_ALCHEMY = "알케미 라벨" / "Alchemy label";
+        ITEM_SYMBOL = "네이티브 심볼" / "Native symbol";
+        ITEM_DECIMALS = "소수 자릿수" / "Decimals";
+        ITEM_EXPLORER = "탐색기 URL" / "Explorer URL";
+    }
+}
+
+/// The item name of `item` in `lang` (`chainId` is the same in both).
+fn item_in(item: &'static str, lang: Lang) -> &'static str {
+    [
+        text::ITEM_QUICKNODE,
+        text::ITEM_ALCHEMY,
+        text::ITEM_SYMBOL,
+        text::ITEM_DECIMALS,
+        text::ITEM_EXPLORER,
+    ]
+    .into_iter()
+    .find(|entry| entry.ko == item)
+    .map_or(item, |entry| entry.get(lang))
 }
 
 impl FormError {
@@ -101,12 +128,12 @@ impl FormError {
         }
     }
 
-    /// The fixed message.
+    /// The fixed message in `lang`.
     #[must_use]
-    pub fn message(&self) -> String {
+    pub fn message_in(&self, lang: Lang) -> String {
         match self.item {
-            Some(item) => self.code.render(item),
-            None => self.code.text(),
+            Some(item) => self.code.render_in(lang, item_in(item, lang)),
+            None => self.code.text_in(lang),
         }
     }
 }
@@ -135,7 +162,7 @@ fn validate_rpc(
     let (entry, item, entry_of): (&str, &'static str, fn(String) -> TemplateEntry) = match template
     {
         RpcTemplate::Manual => return Err(FormError::new(ErrorCode::Key003)),
-        RpcTemplate::QuickNode => (lowered.as_str(), "QuickNode 서브도메인", |entry| {
+        RpcTemplate::QuickNode => (lowered.as_str(), text::ITEM_QUICKNODE.ko, |entry| {
             TemplateEntry::QuickNode {
                 subdomain: Some(entry),
                 path: None,
@@ -143,7 +170,7 @@ fn validate_rpc(
         }),
         RpcTemplate::Alchemy => (
             lowered.strip_suffix(".g.alchemy.com").unwrap_or(&lowered),
-            "알케미 라벨",
+            text::ITEM_ALCHEMY.ko,
             |label| TemplateEntry::Alchemy { label },
         ),
     };
@@ -203,7 +230,7 @@ pub fn validate_chain_form(
         return Err(FormError::new(ErrorCode::Chn005));
     }
     if !is_symbol(form.symbol) {
-        return Err(FormError::item("네이티브 심볼"));
+        return Err(FormError::item(text::ITEM_SYMBOL.ko));
     }
     let decimals = form
         .decimals
@@ -211,13 +238,13 @@ pub fn validate_chain_form(
         .parse::<u8>()
         .ok()
         .filter(|decimals| *decimals <= 36 && !form.decimals.trim().starts_with('+'))
-        .ok_or(FormError::item("소수 자릿수"))?;
+        .ok_or(FormError::item(text::ITEM_DECIMALS.ko))?;
     let explorer_text = form.explorer.trim();
     let explorer = if explorer_text.is_empty() {
         None
     } else {
         let stripped = explorer_text.strip_suffix('/').unwrap_or(explorer_text);
-        Some(validate_explorer(stripped).ok_or(FormError::item("탐색기 URL"))?)
+        Some(validate_explorer(stripped).ok_or(FormError::item(text::ITEM_EXPLORER.ko))?)
     };
     let rpc = validate_rpc(form.rpc, settings, apikeys, editing.is_some())?;
     Ok(ValidChainForm {
@@ -250,25 +277,25 @@ pub enum ProbeError {
 }
 
 impl ProbeError {
-    /// The fixed message (only parsed values from the RPC, spec/04 §7).
+    /// The fixed message in `lang` (only parsed values from the RPC, spec/04 §7).
     #[must_use]
-    pub fn message(&self) -> String {
+    pub fn message_in(&self, lang: Lang) -> String {
         match self {
             Self::Rpc(code) => format!(
                 "{} ({}, {})",
-                ErrorCode::Chn002.message(),
+                ErrorCode::Chn002.message_in(lang),
                 ErrorCode::Chn002.code(),
                 code.code()
             ),
-            Self::ChainId { rpc: Some(id) } => ErrorCode::Chn001.render(&id.to_string()),
+            Self::ChainId { rpc: Some(id) } => ErrorCode::Chn001.render_in(lang, &id.to_string()),
             Self::ChainId { rpc: None } | Self::NoBlockZero => format!(
                 "{} ({}, {})",
-                ErrorCode::Chn002.message(),
+                ErrorCode::Chn002.message_in(lang),
                 ErrorCode::Chn002.code(),
                 ErrorCode::Rpc005.code()
             ),
-            Self::GenesisMismatch => ErrorCode::Chn008.text(),
-            Self::NoBaseFee => ErrorCode::Chn010.text(),
+            Self::GenesisMismatch => ErrorCode::Chn008.text_in(lang),
+            Self::NoBaseFee => ErrorCode::Chn010.text_in(lang),
         }
     }
 

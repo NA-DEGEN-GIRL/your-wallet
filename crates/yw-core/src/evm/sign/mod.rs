@@ -32,15 +32,40 @@ pub enum SignError {
     PostSignVerification,
 }
 
+impl SignError {
+    /// The text in `lang` (`Display` is the Korean one). A vault refusal keeps the vault's own
+    /// text (yw-app maps it to its error code before showing it).
+    #[must_use]
+    pub fn text_in(self, lang: crate::lang::Lang) -> String {
+        match self {
+            Self::Vault(error) => error.to_string(),
+            Self::KindMismatch | Self::RecoveryId => text::INTERNAL.get(lang).to_owned(),
+            Self::PostSignVerification => text::POST_SIGN_VERIFICATION.get(lang).to_owned(),
+        }
+    }
+}
+
 impl fmt::Display for SignError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Vault(error) => error.fmt(formatter),
             Self::KindMismatch | Self::RecoveryId => {
-                formatter.write_str("내부 오류가 발생했습니다. 로그를 확인하세요.")
+                formatter.write_str(text::INTERNAL.get(crate::lang::Lang::Ko))
             }
-            Self::PostSignVerification => formatter.write_str("서명 검증 실패(내부 오류)"),
+            Self::PostSignVerification => {
+                formatter.write_str(text::POST_SIGN_VERIFICATION.get(crate::lang::Lang::Ko))
+            }
         }
+    }
+}
+
+/// Signing failure texts (spec/03 §4.3; English spec/14 §5).
+pub mod text {
+    crate::texts! {
+        INTERNAL = "내부 오류가 발생했습니다. 로그를 확인하세요."
+            / "An internal error occurred. Check the log.";
+        POST_SIGN_VERIFICATION = "서명 검증 실패(내부 오류)"
+            / "Signature verification failed (internal error)";
     }
 }
 

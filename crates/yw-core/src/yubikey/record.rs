@@ -98,13 +98,13 @@ impl RecordedSlot {
         }
     }
 
-    /// The path text of the slot (`m/…`, or "경로를 알 수 없음").
+    /// [`Self::path_text`] in `lang`.
     #[must_use]
-    pub fn path_text(&self) -> String {
+    pub fn path_text_in(&self, lang: crate::lang::Lang) -> String {
         if self.path_known {
-            self.role.path_text()
+            self.role.path_text_in(lang)
         } else {
-            super::plan::T_UNKNOWN_PATH.to_owned()
+            super::text::UNKNOWN_PATH.get(lang).to_owned()
         }
     }
 }

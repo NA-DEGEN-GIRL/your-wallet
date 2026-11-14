@@ -20,6 +20,58 @@ use crate::walletconnect::worker::{
 };
 use crate::walletconnect::{Metadata, VerifyStatus, is_session_origin};
 
+/// The panel texts of the UI side (spec/13 §6; English spec/14).
+pub mod text {
+    yw_core::texts! {
+        PROPOSAL_ARRIVED = "연결 요청이 도착했습니다 — 연결 창을 확인하세요."
+            / "A connection request arrived — check the connection window.";
+        REFUSED_WHILE_LOCKED(1) = "지갑이 잠겨 있는 동안 WalletConnect 요청 {0}개를 거절했습니다(잠금 해제 창은 열지 않습니다). 필요하면 dApp에서 다시 요청하세요."
+            / "Refused {0} WalletConnect requests while the wallet was locked (no unlock window is opened). Request again from the dApp if needed.";
+        END_CONNECTED = "연결을 승인했습니다. 아래 WalletConnect 세션 카드에서 확인하세요."
+            / "Connection approved. See the WalletConnect session card below.";
+        END_TOO_LATE = "연결 요청이 그 사이 만료되어 연결하지 않았습니다. dApp에서 다시 연결하세요."
+            / "The connection request expired in the meantime, so nothing was connected. Connect again from the dApp.";
+        END_LOCKED = "지갑이 잠겨 있어 연결 요청을 거절했습니다(잠금 해제 창은 열지 않습니다). 잠금을 해제한 뒤 dApp에서 다시 연결하세요."
+            / "The connection request was refused because the wallet is locked (no unlock window is opened). Unlock, then connect again from the dApp.";
+        END_REJECTED = "연결 요청을 거절했습니다." / "Connection request rejected.";
+        END_EXPIRED = "연결 창의 시간이 지나 연결하지 않았습니다. dApp에서 다시 연결하세요."
+            / "The connection window timed out, so nothing was connected. Connect again from the dApp.";
+        END_NO_EVM = "지갑에 EVM 계정이 없어 연결할 수 없습니다. EVM 개인키를 가져온 뒤 dApp에서 다시 연결하세요."
+            / "The wallet has no EVM account, so it cannot connect. Import an EVM private key, then connect again from the dApp.";
+        END_PASSPHRASE = "확인되지 않은 passphrase로 연 지갑이라 연결할 수 없습니다. 잠근 뒤 올바른 passphrase로 다시 여세요."
+            / "The wallet was opened with an unverified passphrase, so it cannot connect. Lock it and open it again with the correct passphrase.";
+        END_TOO_MANY_SITES = "연결된 사이트가 이미 256개라 연결하지 않았습니다. 연결된 사이트에서 하나를 해제한 뒤 dApp에서 다시 연결하세요."
+            / "256 sites are already connected, so nothing was connected. Disconnect one in Connected sites, then connect again from the dApp.";
+        END_FAILED(1) = "연결 요청을 처리하지 못했습니다 (코드 {0}). dApp에서 다시 연결하세요."
+            / "The connection request could not be handled (code {0}). Connect again from the dApp.";
+        PAIR_NO_PROJECT = "먼저 Reown Project ID를 저장하세요. dashboard.reown.com에서 무료 프로젝트를 만들면 ID를 받을 수 있습니다."
+            / "Save a Reown Project ID first. You get one by creating a free project at dashboard.reown.com.";
+        PAIR_LOCKED = "지갑 잠금을 해제한 뒤 연결하세요." / "Unlock the wallet, then connect.";
+        QR_NOT_WC = "QR을 읽었지만 WalletConnect 연결 주소(wc:)가 아닙니다."
+            / "The QR code was read, but it is not a WalletConnect link (wc:).";
+        QR_NOT_FOUND = "이미지에서 QR 코드를 찾지 못했습니다. QR 전체가 보이게 캡처했는지 확인하세요."
+            / "No QR code was found in the image. Check that the capture shows the whole QR code.";
+        CLIPBOARD_FORMAT = "클립보드 이미지 형식을 읽을 수 없습니다."
+            / "The clipboard image format cannot be read.";
+        CLIPBOARD_NO_IMAGE = "클립보드에 이미지가 없습니다. Win+Shift+S로 QR 부분을 캡처한 뒤 다시 누르세요."
+            / "There is no image on the clipboard. Capture the QR code with Win+Shift+S, then press again.";
+        CLIPBOARD_OPEN = "클립보드를 열 수 없습니다. 잠시 후 다시 시도하세요."
+            / "Cannot open the clipboard. Try again in a moment.";
+        FILE_EMPTY = "이미지 파일 경로를 입력하세요." / "Enter the image file path.";
+        FILE_KIND = "PNG·JPEG·BMP·GIF 이미지 파일만 읽을 수 있습니다 (64 MB 이하)."
+            / "Only PNG, JPEG, BMP and GIF image files can be read (64 MB or less).";
+        FILE_OPEN = "이미지 파일을 열 수 없습니다 (PNG·JPEG·BMP·GIF)."
+            / "Cannot open the image file (PNG, JPEG, BMP, GIF).";
+        PROJECT_FORMAT = "Project ID는 32자리 16진수입니다(dashboard.reown.com 프로젝트의 Project ID)."
+            / "The Project ID is 32 hex digits (the Project ID of your dashboard.reown.com project).";
+        PROJECT_CLEARED = "Project ID를 지웠습니다. WalletConnect가 꺼집니다."
+            / "Project ID removed. WalletConnect turns off.";
+        PROJECT_SAVED = "Project ID를 저장했습니다." / "Project ID saved.";
+        CLIPBOARD_LINK = "클립보드의 연결 주소(wc:)로 연결합니다."
+            / "Connecting with the link (wc:) on the clipboard.";
+    }
+}
+
 /// The starts of a `WalletConnect` pairing link: `wc:`, or the whole link percent-encoded
 /// (`wc%3A…`, which the URI parser also takes); ASCII case ignored.
 const PAIRING_LINK_STARTS: [&str; 2] = ["wc:", "wc%3a"];
@@ -166,10 +218,12 @@ impl App {
             .chains
             .iter()
             .map(|id| {
-                self.settings.evm_chain_name(*id).map_or_else(
-                    || format!("eip155:{id}"),
-                    |name| format!("{name} (eip155:{id})"),
-                )
+                self.settings
+                    .evm_chain_name_in(self.settings.language, *id)
+                    .map_or_else(
+                        || format!("eip155:{id}"),
+                        |name| format!("{name} (eip155:{id})"),
+                    )
             })
             .collect();
         Some(ConnectPatch {
@@ -401,7 +455,9 @@ impl App {
     pub(crate) fn on_wc_event(&mut self, event: WcEvent) {
         match event {
             WcEvent::Status(status) => self.wc.status = status,
-            WcEvent::Notice(text) => self.wc.notice = Some(text),
+            WcEvent::Notice(notice) => {
+                self.wc.notice = Some(notice.text(self.settings.language));
+            }
             WcEvent::Proposal(view) => {
                 self.wc
                     .proposals
@@ -410,8 +466,11 @@ impl App {
                     self.wc.proposals.remove(0);
                 }
                 self.wc.proposals.push(*view);
-                self.wc.notice =
-                    Some("연결 요청이 도착했습니다 — 연결 창을 확인하세요.".to_owned());
+                self.wc.notice = Some(
+                    text::PROPOSAL_ARRIVED
+                        .get(self.settings.language)
+                        .to_owned(),
+                );
             }
             WcEvent::ProposalDone(topic, end) => {
                 self.wc.proposals.retain(|p| p.session_topic != topic);
@@ -420,9 +479,8 @@ impl App {
                 self.wc.notice = Some(self.wc_proposal_end_text(&end));
             }
             WcEvent::RefusedWhileLocked(count) => {
-                let text = format!(
-                    "지갑이 잠겨 있는 동안 WalletConnect 요청 {count}개를 거절했습니다(잠금 해제 창은 열지 않습니다). 필요하면 dApp에서 다시 요청하세요."
-                );
+                let text =
+                    text::REFUSED_WHILE_LOCKED.fill(self.settings.language, [&count.to_string()]);
                 if !self.banners.iter().any(|banner| banner.text == text) {
                     self.notice(text, crate::ui::main_window::Tone::Info);
                 }
@@ -449,39 +507,27 @@ impl App {
 
     /// The panel line after a proposal's connect request ended (wallet text only).
     fn wc_proposal_end_text(&self, end: &ProposalEnd) -> String {
-        let text = match end {
-            ProposalEnd::Connected => {
-                "연결을 승인했습니다. 아래 WalletConnect 세션 카드에서 확인하세요."
-            }
-            ProposalEnd::TooLate => {
-                "연결 요청이 그 사이 만료되어 연결하지 않았습니다. dApp에서 다시 연결하세요."
-            }
-            ProposalEnd::Locked => {
-                "지갑이 잠겨 있어 연결 요청을 거절했습니다(잠금 해제 창은 열지 않습니다). 잠금을 해제한 뒤 dApp에서 다시 연결하세요."
-            }
-            ProposalEnd::Refused(ProviderError::UserRejected) => "연결 요청을 거절했습니다.",
+        let lang = self.settings.language;
+        let fixed = match end {
+            ProposalEnd::Connected => text::END_CONNECTED,
+            ProposalEnd::TooLate => text::END_TOO_LATE,
+            ProposalEnd::Locked => text::END_LOCKED,
+            ProposalEnd::Refused(ProviderError::UserRejected) => text::END_REJECTED,
             ProposalEnd::Refused(ProviderError::Expired | ProviderError::TimedOut) => {
-                "연결 창의 시간이 지나 연결하지 않았습니다. dApp에서 다시 연결하세요."
+                text::END_EXPIRED
             }
-            ProposalEnd::Refused(ProviderError::NoEvmAccount) => {
-                "지갑에 EVM 계정이 없어 연결할 수 없습니다. EVM 개인키를 가져온 뒤 dApp에서 다시 연결하세요."
-            }
-            ProposalEnd::Refused(ProviderError::PassphraseUnverified) => {
-                "확인되지 않은 passphrase로 연 지갑이라 연결할 수 없습니다. 잠근 뒤 올바른 passphrase로 다시 여세요."
-            }
+            ProposalEnd::Refused(ProviderError::NoEvmAccount) => text::END_NO_EVM,
+            ProposalEnd::Refused(ProviderError::PassphraseUnverified) => text::END_PASSPHRASE,
             ProposalEnd::Refused(ProviderError::Unauthorized)
                 if self.browser_grants().len() >= yw_core::policy::MAX_GRANTS =>
             {
-                "연결된 사이트가 이미 256개라 연결하지 않았습니다. 연결된 사이트에서 하나를 해제한 뒤 dApp에서 다시 연결하세요."
+                text::END_TOO_MANY_SITES
             }
             ProposalEnd::Refused(error) => {
-                return format!(
-                    "연결 요청을 처리하지 못했습니다 (코드 {}). dApp에서 다시 연결하세요.",
-                    error.code()
-                );
+                return text::END_FAILED.fill(lang, [&error.code().to_string()]);
             }
         };
-        text.to_owned()
+        fixed.get(lang).to_owned()
     }
 
     /// Whether a worker snapshot belongs to the loaded wallet: its relay key is the one in this
@@ -533,24 +579,25 @@ impl App {
     /// Pairs with a pasted or decoded URI.
     pub(crate) fn wc_pair(&mut self, text: &str) {
         if self.settings.walletconnect_project.is_empty() {
-            self.wc.notice = Some(
-                "먼저 Reown Project ID를 저장하세요. dashboard.reown.com에서 무료 프로젝트를 만들면 ID를 받을 수 있습니다."
-                    .to_owned(),
-            );
+            self.wc_notice(text::PAIR_NO_PROJECT);
             return;
         }
         if self.vault_view() != VaultView::Unlocked {
-            self.wc.notice = Some("지갑 잠금을 해제한 뒤 연결하세요.".to_owned());
+            self.wc_notice(text::PAIR_LOCKED);
             return;
         }
         if let Err(error) = yw_core::walletconnect::parse_pairing_uri(text) {
-            self.wc.notice = Some(error.message().to_owned());
+            self.wc.notice = Some(error.message(self.settings.language).to_owned());
             return;
         }
         self.wc_after_unlock();
         self.wc_send(WcCommand::Pair(text.trim().to_owned()));
         self.wc.uri_text.clear();
         logging::info("walletconnect", "pair", &[]);
+    }
+
+    fn wc_notice(&mut self, text: yw_core::lang::Text) {
+        self.wc.notice = Some(text.get(self.settings.language).to_owned());
     }
 
     /// Decodes a QR from BGRA pixels and pairs with it.
@@ -564,16 +611,8 @@ impl App {
                 );
                 self.wc_pair(&text);
             }
-            Some(_) => {
-                self.wc.notice =
-                    Some("QR을 읽었지만 WalletConnect 연결 주소(wc:)가 아닙니다.".to_owned());
-            }
-            None => {
-                self.wc.notice = Some(
-                    "이미지에서 QR 코드를 찾지 못했습니다. QR 전체가 보이게 캡처했는지 확인하세요."
-                        .to_owned(),
-                );
-            }
+            Some(_) => self.wc_notice(text::QR_NOT_WC),
+            None => self.wc_notice(text::QR_NOT_FOUND),
         }
     }
 
@@ -587,20 +626,10 @@ impl App {
                 Some((width, height, pixels)) => {
                     self.wc_pair_pixels(width, height, &pixels, "clipboard");
                 }
-                None => {
-                    self.wc.notice = Some("클립보드 이미지 형식을 읽을 수 없습니다.".to_owned());
-                }
+                None => self.wc_notice(text::CLIPBOARD_FORMAT),
             },
-            Ok(None) => {
-                self.wc.notice = Some(
-                    "클립보드에 이미지가 없습니다. Win+Shift+S로 QR 부분을 캡처한 뒤 다시 누르세요."
-                        .to_owned(),
-                );
-            }
-            Err(_) => {
-                self.wc.notice =
-                    Some("클립보드를 열 수 없습니다. 잠시 후 다시 시도하세요.".to_owned());
-            }
+            Ok(None) => self.wc_notice(text::CLIPBOARD_NO_IMAGE),
+            Err(_) => self.wc_notice(text::CLIPBOARD_OPEN),
         }
     }
 
@@ -609,22 +638,18 @@ impl App {
     pub(crate) fn wc_file_qr(&mut self) {
         let path = self.wc.file_text.trim().trim_matches('"').to_owned();
         if path.is_empty() {
-            self.wc.notice = Some("이미지 파일 경로를 입력하세요.".to_owned());
+            self.wc_notice(text::FILE_EMPTY);
             return;
         }
         // Only the four formats are handed to GDI+ (no EMF/WMF/TIFF/ICO codecs on untrusted
         // files), and only files of a screenshot's size.
         if !image_file_acceptable(std::path::Path::new(&path)) {
-            self.wc.notice =
-                Some("PNG·JPEG·BMP·GIF 이미지 파일만 읽을 수 있습니다 (64 MB 이하).".to_owned());
+            self.wc_notice(text::FILE_KIND);
             return;
         }
         match yw_win::image::decode_file(std::path::Path::new(&path)) {
             Ok(image) => self.wc_pair_pixels(image.width, image.height, &image.pixels, "file"),
-            Err(_) => {
-                self.wc.notice =
-                    Some("이미지 파일을 열 수 없습니다 (PNG·JPEG·BMP·GIF).".to_owned());
-            }
+            Err(_) => self.wc_notice(text::FILE_OPEN),
         }
     }
 
@@ -638,10 +663,7 @@ impl App {
             .trim()
             .to_ascii_lowercase();
         if !text.is_empty() && !crate::walletconnect::worker::valid_project_id(&text) {
-            self.wc.notice = Some(
-                "Project ID는 32자리 16진수입니다(dashboard.reown.com 프로젝트의 Project ID)."
-                    .to_owned(),
-            );
+            self.wc_notice(text::PROJECT_FORMAT);
             return;
         }
         let mut settings = self.settings.clone();
@@ -649,10 +671,10 @@ impl App {
         self.save_settings(settings, "walletconnect");
         self.wc.project_text = None;
         self.wc.project_open = false;
-        self.wc.notice = Some(if text.is_empty() {
-            "Project ID를 지웠습니다. WalletConnect가 꺼집니다.".to_owned()
+        self.wc_notice(if text.is_empty() {
+            text::PROJECT_CLEARED
         } else {
-            "Project ID를 저장했습니다.".to_owned()
+            text::PROJECT_SAVED
         });
         if self.wc.handle.is_some() || !text.is_empty() {
             self.wc_after_unlock();
@@ -696,7 +718,7 @@ impl App {
                 "clipboard.link",
                 &[("source", Field::Word("text"))],
             );
-            self.wc.notice = Some("클립보드의 연결 주소(wc:)로 연결합니다.".to_owned());
+            self.wc_notice(text::CLIPBOARD_LINK);
             self.wc_pair(text.trim());
             return;
         }

@@ -187,30 +187,27 @@ pub enum UpgradeError {
 }
 
 impl UpgradeError {
-    /// The fixed Korean text (spec/12 §11).
+    /// The fixed text in `lang` (spec/12 §11; `Display` is the Korean one).
     #[must_use]
-    pub fn text(self) -> String {
+    pub fn text_in(self, lang: crate::lang::Lang) -> String {
+        use super::text as t;
         match self {
-            Self::UnknownBranch(id) => format!(
-                "노드가 이 지갑이 모르는 네트워크 업그레이드(branch id {id:08x})를 알려 주었습니다. 지갑을 업데이트하기 전에는 보낼 수 없습니다."
-            ),
-            Self::NotV5(id) => format!(
-                "현재 네트워크 업그레이드(branch id {id:08x})에서는 이 지갑의 거래 형식(v5)을 쓸 수 없습니다."
-            ),
-            Self::BranchMismatch { node, table } => format!(
-                "노드의 네트워크 업그레이드(branch id {node:08x})가 지갑의 표({table:08x})와 다릅니다. 노드나 지갑 버전을 확인하세요."
-            ),
-            Self::UpgradeTooClose { height } => format!(
-                "네트워크 업그레이드가 곧(블록 {height}) 활성화됩니다. 활성화된 뒤에 다시 보내세요."
-            ),
-            Self::TipImplausible => "노드의 블록 높이가 올바르지 않습니다.".to_owned(),
+            Self::UnknownBranch(id) => t::UPGRADE_UNKNOWN.fill(lang, [&format!("{id:08x}")]),
+            Self::NotV5(id) => t::UPGRADE_NOT_V5.fill(lang, [&format!("{id:08x}")]),
+            Self::BranchMismatch { node, table } => {
+                t::UPGRADE_MISMATCH.fill(lang, [&format!("{node:08x}"), &format!("{table:08x}")])
+            }
+            Self::UpgradeTooClose { height } => {
+                t::UPGRADE_TOO_CLOSE.fill(lang, [&height.to_string()])
+            }
+            Self::TipImplausible => t::UPGRADE_TIP.get(lang).to_owned(),
         }
     }
 }
 
 impl fmt::Display for UpgradeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.text())
+        formatter.write_str(&self.text_in(crate::lang::Lang::Ko))
     }
 }
 

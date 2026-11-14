@@ -174,31 +174,36 @@ pub enum PrepareError {
 }
 
 impl PrepareError {
-    /// The fixed form text (never a server string).
+    /// The fixed form text in `lang` (never a server string). 2026-11-14: the B01/B02 texts
+    /// were pinned to Korean (`.ko`) before Step 3.
     #[must_use]
-    pub fn text(self, indexer: BtcIndexer) -> String {
+    pub fn text(self, lang: yw_core::lang::Lang, indexer: BtcIndexer) -> String {
+        use super::text as t;
+        use yw_core::btc::policy::texts;
         match self {
             Self::Btc(error) => error
-                .text(indexer)
-                .unwrap_or_else(|| "작업을 취소했습니다".to_owned()),
-            Self::NoEstimate { floor } => {
-                format!("노드가 수수료 추정을 주지 않았습니다. 직접 입력하세요(하한 {floor})")
-            }
-            Self::ManualBelowFloor { floor } => {
-                format!("수수료율이 노드 하한({floor})보다 낮습니다")
-            }
-            Self::FeeOverflow => yw_core::btc::policy::texts::PLAN_OVERFLOW.to_owned(),
-            Self::Plan(error) => error.to_string(),
-            Self::NeedsTypedFee { fee, .. } => format!(
-                "{} 상한을 풀려면 수수료(sats)를 정확히 입력하세요: {} sats",
-                yw_core::btc::policy::texts::FEE_CAP_BLOCKED.ko,
-                yw_core::btc::amount::format_sats_grouped(fee.get())
+                .text(lang, indexer)
+                .unwrap_or_else(|| t::CANCELLED.get(lang).to_owned()),
+            Self::NoEstimate { floor } => t::NO_ESTIMATE.fill(lang, [&floor.to_string()]),
+            Self::ManualBelowFloor { floor } => t::BELOW_FLOOR.fill(lang, [&floor.to_string()]),
+            Self::FeeOverflow => texts::PLAN_OVERFLOW.get(lang).to_owned(),
+            Self::Plan(error) => error.text_in(lang),
+            Self::NeedsTypedFee { fee, .. } => t::NEEDS_TYPED_FEE.fill(
+                lang,
+                [
+                    texts::FEE_CAP_BLOCKED.get(lang),
+                    &yw_core::btc::amount::format_sats_grouped(fee.get()),
+                ],
             ),
-            Self::FeeUnoverridable => yw_core::btc::policy::texts::FEE_UNOVERRIDABLE.ko.to_owned(),
-            Self::Derivation => yw_core::btc::policy::texts::DERIVATION_FAILED.to_owned(),
-            Self::TipAhead { core, indexer } => format!(
-                "노드 블록 높이({core})가 인덱서({indexer})보다 {}블록 넘게 앞서 보내기를 멈췄습니다. 잠시 뒤 다시 검토하거나 노드(RPC) 설정을 확인하세요",
-                yw_core::btc::BTC_PLAN_TIP_AHEAD_MAX
+            Self::FeeUnoverridable => texts::FEE_UNOVERRIDABLE.get(lang).to_owned(),
+            Self::Derivation => texts::DERIVATION_FAILED.get(lang).to_owned(),
+            Self::TipAhead { core, indexer } => t::TIP_AHEAD.fill(
+                lang,
+                [
+                    &core.to_string(),
+                    &indexer.to_string(),
+                    &yw_core::btc::BTC_PLAN_TIP_AHEAD_MAX.to_string(),
+                ],
             ),
         }
     }
@@ -236,6 +241,8 @@ pub enum BtcRpcJob {
         net: BtcNetwork,
         /// Base URL (EDIT value or saved).
         base: HttpsUrl,
+        /// The language of the result message.
+        lang: yw_core::lang::Lang,
     },
     /// Forget every session (lock, URL / indexer / Esplora / network change, mismatch).
     Reset,
@@ -735,11 +742,11 @@ impl BtcWorker {
         let log = self.log;
         match job {
             BtcRpcJob::Reset => self.reset(),
-            BtcRpcJob::EsploraTest { net, base } => {
+            BtcRpcJob::EsploraTest { net, base, lang } => {
                 let outcome = esplora_test(transport, clock, log, net, &base);
                 emit(BtcRpcEvent::EsploraTest {
                     net,
-                    message: outcome.message(net),
+                    message: outcome.message(lang, net),
                     ok: outcome == super::flow::EsploraTestOutcome::Ok,
                 });
             }

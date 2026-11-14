@@ -260,30 +260,32 @@ pub enum MetaError {
     Key(KeyError),
 }
 
+impl MetaError {
+    /// The fixed text in `lang` (`Display` is the Korean one).
+    #[must_use]
+    pub const fn text_in(self, lang: crate::lang::Lang) -> &'static str {
+        use super::text as t;
+        match self {
+            Self::NetworkMismatch => t::NETWORK_MISMATCH,
+            Self::GapWarning { .. } => t::META_GAP_WARNING,
+            Self::GapHardLimit => t::META_GAP_LIMIT,
+            Self::IndexExhausted => t::META_INDEX_EXHAUSTED,
+            Self::OutOfRange => t::META_OUT_OF_RANGE,
+            Self::TipRegression { .. } => t::META_TIP_REGRESSION,
+            Self::TipImplausible => t::TIP_IMPLAUSIBLE,
+            Self::NotVerified => t::META_NOT_VERIFIED,
+            Self::Full => t::META_FULL,
+            Self::DiscoveryIncomplete => t::META_DISCOVERY_INCOMPLETE,
+            Self::SingleAddress => t::META_SINGLE_ADDRESS,
+            Self::Key(_) => t::DERIVATION_FAILED,
+        }
+        .get(lang)
+    }
+}
+
 impl fmt::Display for MetaError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NetworkMismatch => formatter.write_str(super::policy::texts::NETWORK_MISMATCH),
-            Self::GapWarning { .. } => formatter.write_str(
-                "미사용 주소가 20개를 넘으면 다른 지갑으로 복구할 때 이후 입금이 보이지 않을 수 있습니다",
-            ),
-            Self::GapHardLimit => {
-                formatter.write_str("미사용 주소가 100개 이상이라 새 주소를 발급할 수 없습니다")
-            }
-            Self::IndexExhausted => formatter.write_str("더 발급할 주소 인덱스가 없습니다"),
-            Self::OutOfRange => formatter.write_str("발급하지 않은 주소입니다"),
-            Self::TipRegression { .. } => {
-                formatter.write_str("노드 블록 높이가 이전에 본 값보다 낮습니다")
-            }
-            Self::TipImplausible => formatter.write_str(super::policy::texts::TIP_IMPLAUSIBLE),
-            Self::NotVerified => formatter.write_str("검증된 UTXO가 아닙니다"),
-            Self::Full => formatter.write_str("BTC 데이터 공간이 부족합니다"),
-            Self::DiscoveryIncomplete => formatter.write_str("주소 검색 미완료"),
-            Self::SingleAddress => {
-                formatter.write_str("이 계정은 주소 하나만 써서 새 주소를 만들 수 없습니다")
-            }
-            Self::Key(_) => formatter.write_str(super::policy::texts::DERIVATION_FAILED),
-        }
+        formatter.write_str(self.text_in(crate::lang::Lang::Ko))
     }
 }
 

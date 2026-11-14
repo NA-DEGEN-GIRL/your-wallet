@@ -198,6 +198,73 @@ macro_rules! texts {
     };
 }
 
+/// Every text catalogue of yw-core with its module path (spec/14 §5). `scripts/i18n-scan.mjs`
+/// checks that each `texts!` block of the source is listed here, and yw-app's
+/// `tests/lang_spec.rs` that each one is in the spec tables.
+#[must_use]
+pub fn catalogues() -> Vec<(&'static str, &'static [Entry])> {
+    CATALOGUES.to_vec()
+}
+
+const CATALOGUES: &[(&str, &[Entry])] = &[
+    (
+        "yw_core::approval::message::text",
+        crate::approval::message_text::ALL,
+    ),
+    ("yw_core::btc::text", crate::btc::text::ALL),
+    ("yw_core::error::text", crate::error::text::ALL),
+    (
+        "yw_core::evm::address::text",
+        crate::evm::address::text::ALL,
+    ),
+    ("yw_core::evm::amount::text", crate::evm::amount::text::ALL),
+    (
+        "yw_core::evm::chain::config_text",
+        crate::evm::chain::config_text::ALL,
+    ),
+    (
+        "yw_core::evm::display::text",
+        crate::evm::display::text::ALL,
+    ),
+    (
+        "yw_core::evm::display::time",
+        crate::evm::display::time::ALL,
+    ),
+    ("yw_core::evm::risk::text", crate::evm::risk::text::ALL),
+    ("yw_core::evm::sign::text", crate::evm::sign::text::ALL),
+    ("yw_core::evm::text", crate::evm::text::ALL),
+    ("yw_core::hypercore::text", crate::hypercore::text::ALL),
+    (
+        "yw_core::journal::btc::text",
+        crate::journal::btc::text::ALL,
+    ),
+    (
+        "yw_core::journal::evm::text",
+        crate::journal::evm::text::ALL,
+    ),
+    (
+        "yw_core::journal::sol::text",
+        crate::journal::sol::text::ALL,
+    ),
+    (
+        "yw_core::journal::zec::text",
+        crate::journal::zec::text::ALL,
+    ),
+    (
+        "yw_core::policy::chain_grant::text",
+        crate::policy::chain_grant_text::ALL,
+    ),
+    ("yw_core::slip10::text", crate::slip10::text::ALL),
+    ("yw_core::sol::dapp::text", crate::sol::dapp::text::ALL),
+    ("yw_core::sol::text", crate::sol::text::ALL),
+    (
+        "yw_core::walletconnect::uri::text",
+        crate::walletconnect::uri::text::ALL,
+    ),
+    ("yw_core::yubikey::text", crate::yubikey::text::ALL),
+    ("yw_core::zec::text", crate::zec::text::ALL),
+];
+
 #[cfg(test)]
 mod tests {
     use super::{Lang, Text, Tpl, has_hangul, placeholders};

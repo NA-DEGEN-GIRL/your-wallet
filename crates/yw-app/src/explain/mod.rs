@@ -1,7 +1,8 @@
 //! Optional LLM transaction explanation (M6, spec/06, D21).
 //!
 //! The approval window may show a separate, clearly labelled panel "AI 설명 (참고용, 틀릴 수
-//! 있음)" with a Korean explanation written by an OpenAI-compatible endpoint the user configured.
+//! 있음)" with an explanation written by an OpenAI-compatible endpoint the user configured, in the
+//! language of the approval window (Korean or English, spec/14; [`text`] holds both).
 //! The explanation is reference text only: it is never an input of the risk level, the warnings,
 //! the approval gate (`ui::interaction::can_approve`) or the approval digest, and the approval
 //! never waits for it (spec/06 §1).
@@ -26,11 +27,14 @@ pub mod request;
 pub mod response;
 #[cfg(test)]
 mod tests;
+pub mod text;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
+
+use yw_core::lang::Lang;
 
 pub use config::{LlmConfig, PRIVACY_NOTICE_VERSION, ReasoningEffort, ResponseFormatMode};
 pub use input::{ExplainInput, ExplainSim, ExplainSource, build_input};
@@ -170,24 +174,23 @@ impl ExplainError {
 
     /// The one-line panel text (§7).
     #[must_use]
-    pub fn panel_text(self) -> String {
-        match self {
-            Self::NotConfigured => "AI 설명 설정이 완료되지 않았습니다".to_owned(),
-            Self::InputTooLarge => "요청 데이터가 커서 AI 설명을 건너뜁니다".to_owned(),
-            Self::Timeout => "AI 응답 시간 초과(10초)".to_owned(),
-            Self::Network | Self::Tls => "AI 공급자에 연결할 수 없습니다".to_owned(),
-            Self::Http(401 | 403) => "AI API 키가 거부되었습니다".to_owned(),
-            Self::Http(429) => "AI 요청 한도를 초과했습니다".to_owned(),
-            Self::Http(code) => format!("AI 공급자 오류(HTTP {code})"),
-            Self::TooLarge => "AI 응답이 너무 큽니다".to_owned(),
-            Self::Envelope | Self::Schema | Self::Truncated => {
-                "AI 응답 형식이 올바르지 않습니다".to_owned()
-            }
-            Self::Refusal => "AI가 설명을 거부했습니다".to_owned(),
-            Self::Hidden(_) => "AI 설명에 허용되지 않는 내용이 있어 숨겼습니다".to_owned(),
-            Self::Mismatch(_) => "AI 설명이 실제 데이터와 다릅니다".to_owned(),
-            Self::LimitReached => "AI 설명 요청 횟수를 모두 사용했습니다".to_owned(),
-        }
+    pub fn panel_text(self, lang: Lang) -> String {
+        let fixed = match self {
+            Self::NotConfigured => text::ERR_NOT_CONFIGURED,
+            Self::InputTooLarge => text::ERR_INPUT_TOO_LARGE,
+            Self::Timeout => text::ERR_TIMEOUT,
+            Self::Network | Self::Tls => text::ERR_NETWORK,
+            Self::Http(401 | 403) => text::ERR_KEY,
+            Self::Http(429) => text::ERR_RATE,
+            Self::Http(code) => return text::ERR_HTTP.fill(lang, [&code.to_string()]),
+            Self::TooLarge => text::ERR_TOO_LARGE,
+            Self::Envelope | Self::Schema | Self::Truncated => text::ERR_FORMAT,
+            Self::Refusal => text::ERR_REFUSAL,
+            Self::Hidden(_) => text::ERR_HIDDEN,
+            Self::Mismatch(_) => text::ERR_MISMATCH,
+            Self::LimitReached => text::ERR_LIMIT,
+        };
+        fixed.get(lang).to_owned()
     }
 }
 

@@ -194,9 +194,18 @@ pub enum RecordError {
     Signer,
 }
 
+impl RecordError {
+    /// The text in `lang` (`Display` is the Korean one).
+    #[must_use]
+    #[expect(clippy::unused_self, reason = "every record error shows the same text")]
+    pub const fn text_in(self, lang: Lang) -> &'static str {
+        text::RECORD_CORRUPT.get(lang)
+    }
+}
+
 impl fmt::Display for RecordError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("저널 손상")
+        formatter.write_str(self.text_in(Lang::Ko))
     }
 }
 
@@ -627,6 +636,7 @@ pub mod text {
             / "A pending transaction was sent from this account elsewhere";
         JOURNAL_FULL = "거래 저널 공간이 부족합니다" / "The transaction journal is full";
         CANCEL_ROW = "거래 취소" / "Transaction cancelled";
+        RECORD_CORRUPT = "저널 손상" / "Journal damaged";
     }
 }
 

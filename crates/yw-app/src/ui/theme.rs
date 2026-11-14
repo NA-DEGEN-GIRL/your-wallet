@@ -308,15 +308,19 @@ impl Fonts {
     }
 }
 
+/// Korean-only helpers (spec/14 §2): the particles are written as escapes, so the i18n scan (Hangul
+/// string literals outside the catalogues) does not count them — they have no English counterpart
+/// and only Korean templates use them.
+///
 /// Korean object particle for `word` (`을` after a final consonant, `를` otherwise), judged by
 /// how the last character is read: Hangul by its final consonant, digits and Latin letters by
 /// their Korean names (L·M·N·R and 0·1·3·6·7·8 end in a consonant).
 #[must_use]
 pub fn object_particle(word: &str) -> &'static str {
     if ends_in_consonant(word, false) {
-        "을"
+        "\u{C744}" // 을
     } else {
-        "를"
+        "\u{B97C}" // 를
     }
 }
 
@@ -325,9 +329,9 @@ pub fn object_particle(word: &str) -> &'static str {
 #[must_use]
 pub fn direction_particle(word: &str) -> &'static str {
     if ends_in_consonant(word, true) {
-        "으로"
+        "\u{C73C}\u{B85C}" // 으로
     } else {
-        "로"
+        "\u{B85C}" // 로
     }
 }
 

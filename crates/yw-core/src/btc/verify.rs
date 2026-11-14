@@ -152,9 +152,21 @@ pub enum PostSignError {
     Derivation,
 }
 
+impl PostSignError {
+    /// The fixed text in `lang` (`Display` is the Korean one).
+    #[must_use]
+    #[expect(
+        clippy::unused_self,
+        reason = "every check failure has the same fixed text"
+    )]
+    pub const fn text_in(self, lang: crate::lang::Lang) -> &'static str {
+        super::policy::texts::POST_SIGN.get(lang)
+    }
+}
+
 impl fmt::Display for PostSignError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(super::policy::texts::POST_SIGN)
+        formatter.write_str(self.text_in(crate::lang::Lang::Ko))
     }
 }
 

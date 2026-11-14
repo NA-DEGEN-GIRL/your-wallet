@@ -156,19 +156,27 @@ pub enum SolTxPayloadError {
     Source,
 }
 
+impl SolTxPayloadError {
+    /// The fixed text in `lang` (`Display` is the Korean one).
+    #[must_use]
+    pub fn text_in(self, lang: crate::lang::Lang) -> String {
+        use text as t;
+        let text = match self {
+            Self::Count => t::PAYLOAD_COUNT,
+            Self::Parse(error) => return error.text_in(lang),
+            Self::Slot => t::PAYLOAD_SLOT,
+            Self::Loaded => t::PAYLOAD_LOADED,
+            Self::MissingSignature => t::PAYLOAD_MISSING_SIGNATURE,
+            Self::DurableNonce => t::PAYLOAD_DURABLE_NONCE,
+            Self::Source => t::PAYLOAD_SOURCE,
+        };
+        text.get(lang).to_owned()
+    }
+}
+
 impl fmt::Display for SolTxPayloadError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Count => formatter.write_str("사이트 거래 수가 맞지 않습니다"),
-            Self::Parse(error) => error.fmt(formatter),
-            Self::Slot => formatter.write_str("서명자 슬롯이 맞지 않습니다"),
-            Self::Loaded => formatter.write_str("조회 테이블 주소 수가 맞지 않습니다"),
-            Self::MissingSignature => formatter.write_str("전송하려면 다른 서명이 모두 필요합니다"),
-            Self::DurableNonce => {
-                formatter.write_str("durable nonce 거래는 지갑이 전송하지 않습니다")
-            }
-            Self::Source => formatter.write_str("복구 스캔 계정으로는 서명하지 않습니다"),
-        }
+        formatter.write_str(&self.text_in(crate::lang::Lang::Ko))
     }
 }
 

@@ -22,6 +22,7 @@
 //!   account blocks the next nonce (`plan_nonce`, `ExternalPending`).
 
 use yw_core::error::VaultError;
+use yw_core::lang::{Lang, Text};
 use yw_core::vault::FileKind;
 
 use crate::app::{App, AppMode, Confirm, Screen};
@@ -55,30 +56,86 @@ pub const SOL_RESET_WAIT_SECS: u64 = 180;
 /// of 25 s from NU7) after it was signed, about 50 minutes; two hours leave room for slow blocks.
 pub const ZEC_RESET_WAIT_SECS: u64 = 2 * 3_600;
 
-/// T-JOURNAL-RESET: what starting the journal over loses.
-pub const T_JOURNAL_RESET: &str = "새로 시작하면: 보낸 뒤 아직 확정되지 않았거나 '포기'한 거래는 기록만 사라지고, 블록체인에서는 나중에 확정될 수 있습니다. 블록 탐색기에서 확인하기 전에 같은 송금을 다시 보내면 두 번 지불될 수 있습니다. 그 거래의 수수료 올리기·취소·폐기·재전송도 더는 할 수 없습니다. 읽을 수 없는 파일과 이전 사본은 지우지 않고 journal.ywj.corrupt-<시각>, journal.ywj.prev.corrupt-<시각>으로 옮겨 둡니다(복구 안내).";
-/// The journal overlay of a file that does not open.
-const T_JOURNAL_DAMAGED: &str = "거래 저널(journal.ywj: 보낸 뒤 아직 끝나지 않은 거래의 기록)을 열 수 없습니다. 파일이 손상되었거나 다른 지갑의 파일입니다. 저널을 열기 전에는 EVM·Solana·Bitcoin·Zcash 보내기를 멈춥니다.";
-/// The journal overlay of a file this build cannot read.
-const T_JOURNAL_NEWER: &str = "거래 저널(journal.ywj)은 이 지갑의 키로 열리지만 이 버전이 모르는 형식입니다. 대개 더 새로운 버전의 앱이 저장한 파일입니다(새 버전을 쓰다가 이 버전으로 되돌린 경우). 파일은 바꾸지 않았고 EVM·Solana·Bitcoin·Zcash 보내기를 멈췄습니다. 앱을 최신 버전으로 업데이트하세요.";
-/// The band of a journal whose choice was closed (every screen of the session).
-pub const T_JOURNAL_CLOSED: &str = "거래 저널을 열지 못해 EVM·Solana·Bitcoin·Zcash 보내기를 멈췄습니다(Bitcoin은 조회도). 앱을 업데이트했거나 파일을 직접 되돌렸다면 잠근 뒤 다시 잠금 해제하세요. 아니면 '선택 다시 보기'에서 고르세요.";
-/// The approval window's failure while the journal's choice is closed.
-pub const T_JOURNAL_CLOSED_SEND: &str = "보내지 않았습니다: 거래 저널을 열지 못해 보내기를 멈췄습니다. 지갑 화면 맨 위의 '선택 다시 보기'에서 고르세요.";
-/// The meta overlay of a file that does not open.
-const T_META_DAMAGED: &str = "meta 파일(meta.ywm: 계정 이름·주소록·사이트 연결·활동 기록 등)을 열 수 없습니다. 파일이 손상되었거나 다른 지갑의 파일입니다. 복구 단어·개인키와 자산은 이 파일에 없어 그대로입니다. 고를 때까지 이 파일에 아무것도 쓰지 않습니다.";
-/// The meta overlay of a file this build cannot read.
-const T_META_NEWER: &str = "meta 파일(meta.ywm)은 이 지갑의 키로 열리지만 이 버전이 모르는 형식입니다. 대개 더 새로운 버전의 앱이 저장한 파일입니다(새 버전을 쓰다가 이 버전으로 되돌린 경우). 파일은 그대로 두었고, 고를 때까지 아무것도 쓰지 않습니다. 앱을 최신 버전으로 업데이트하세요.";
-/// The warning above the destructive choices of a newer-format file.
-const T_NEWER_ADVANCED: &str = "되돌리거나 새로 시작하면 새 버전에서 만든 내용(계정·라벨·연결, 저널이면 진행 중 거래 기록)이 사라지고, 새 버전으로 돌아가도 돌아오지 않습니다. 앱을 업데이트할 수 없을 때만 고르세요.";
-/// `이전 사본(.prev) 사용` of meta.
-const T_META_PREV: &str = "이전 사본(.prev) 사용: 이전 사본을 먼저 열어 보고, 열리지 않으면 아무것도 바꾸지 않습니다. 마지막 저장 하나가 되돌아갑니다 — 예: 방금 끊은 사이트 연결, 숨긴 계정, 지운 주소록 항목이 다시 생길 수 있습니다. 지금 파일은 지우지 않고 meta.ywm.corrupt-<시각>으로 옮겨 둡니다.";
-/// `격리하고 새로 시작` of meta: what resets, in plain words.
-const T_META_FRESH: &str = "격리하고 새로 시작: 다음이 처음 상태가 됩니다 — 계정 이름과 숨김 표시, 추가한 EVM·Solana 계정('계정 추가'로 다시 만들 수 있음), 주소록과 즐겨찾기, 사이트 연결(Solana·Bitcoin 포함)과 WalletConnect 세션, 추가한 토큰과 토큰 숨김, 기본 계정 외 Bitcoin 계정(EVM 키·YubiKey 키 계정 포함)과 주소 방식, Bitcoin 동결 표시(동결한 UTXO가 다시 쓰일 수 있음), 활동 기록과 비슷한 주소 경고가 비교하는 이전 받는 주소, 설정 파일 보호 기록. 복구 단어·가져온 개인키·YubiKey 등록과 자산은 그대로입니다. 지금 파일과 이전 사본은 지우지 않고 meta.ywm.corrupt-<시각>, meta.ywm.prev.corrupt-<시각>으로 옮겨 둡니다.";
-/// `닫기` of meta.
-const T_META_CLOSE: &str = "닫기: 아무것도 바꾸지 않습니다. 계정 목록 없이 열리고 보내기는 멈춥니다. 앱을 업데이트했거나 파일을 직접 되돌렸다면 '다시 불러오기'로 다시 읽습니다.";
-/// T-META-FAILED in its E-VLT-006 form: the meta choice was closed.
-pub const T_META_CLOSED: &str = "meta 파일(meta.ywm)을 읽을 수 없어 아무것도 바꾸지 않았습니다. 계정 이름·주소록·연결한 사이트 없이 열려 있고 보내기는 멈춥니다. 고를 때까지 이 파일에 아무것도 쓰지 않습니다. 앱을 업데이트했거나 파일을 직접 되돌렸다면 '다시 불러오기'를 누르세요. 여전히 읽을 수 없으면 고르는 화면이 다시 열립니다.";
+/// The overlay texts (spec/04 §2.5, T-JOURNAL-RESET, T-JOURNAL-CLOSED, T-META-CLOSED).
+pub mod text {
+    yw_core::texts! {
+        /// T-JOURNAL-RESET: what starting the journal over loses.
+        JOURNAL_RESET = "새로 시작하면: 보낸 뒤 아직 확정되지 않았거나 '포기'한 거래는 기록만 사라지고, 블록체인에서는 나중에 확정될 수 있습니다. 블록 탐색기에서 확인하기 전에 같은 송금을 다시 보내면 두 번 지불될 수 있습니다. 그 거래의 수수료 올리기·취소·폐기·재전송도 더는 할 수 없습니다. 읽을 수 없는 파일과 이전 사본은 지우지 않고 journal.ywj.corrupt-<시각>, journal.ywj.prev.corrupt-<시각>으로 옮겨 둡니다(복구 안내)."
+            / "If you start over: transactions sent but not yet final, or 'abandoned', lose only their record and can still confirm on the blockchain later. Sending the same transfer again before checking a block explorer can pay twice. Raising the fee, cancelling, discarding or resending those transactions is no longer possible. The unreadable file and the previous copy are not deleted but moved to journal.ywj.corrupt-<time> and journal.ywj.prev.corrupt-<time> (recovery guide).";
+        /// The journal overlay of a file that does not open.
+        JOURNAL_DAMAGED = "거래 저널(journal.ywj: 보낸 뒤 아직 끝나지 않은 거래의 기록)을 열 수 없습니다. 파일이 손상되었거나 다른 지갑의 파일입니다. 저널을 열기 전에는 EVM·Solana·Bitcoin·Zcash 보내기를 멈춥니다."
+            / "The transaction journal (journal.ywj: the record of sent transactions that are not finished yet) cannot be opened. The file is damaged or belongs to another wallet. EVM, Solana, Bitcoin and Zcash sends stop until the journal opens.";
+        /// The journal overlay of a file this build cannot read.
+        JOURNAL_NEWER = "거래 저널(journal.ywj)은 이 지갑의 키로 열리지만 이 버전이 모르는 형식입니다. 대개 더 새로운 버전의 앱이 저장한 파일입니다(새 버전을 쓰다가 이 버전으로 되돌린 경우). 파일은 바꾸지 않았고 EVM·Solana·Bitcoin·Zcash 보내기를 멈췄습니다. 앱을 최신 버전으로 업데이트하세요."
+            / "The transaction journal (journal.ywj) opens with this wallet's key, but this version does not know its format. Usually a newer version of the app saved it (you used a newer version and went back to this one). The file was not changed, and EVM, Solana, Bitcoin and Zcash sends are stopped. Update the app to the latest version.";
+        /// T-JOURNAL-CLOSED: the band of a journal whose choice was closed (every screen).
+        JOURNAL_CLOSED = "거래 저널을 열지 못해 EVM·Solana·Bitcoin·Zcash 보내기를 멈췄습니다(Bitcoin은 조회도). 앱을 업데이트했거나 파일을 직접 되돌렸다면 잠근 뒤 다시 잠금 해제하세요. 아니면 '선택 다시 보기'에서 고르세요."
+            / "The transaction journal did not open, so EVM, Solana, Bitcoin and Zcash sends are stopped (Bitcoin lookups too). If you updated the app or restored the file yourself, lock and unlock again. Otherwise choose under 'Show choices again'.";
+        /// The approval window's failure while the journal's choice is closed.
+        JOURNAL_CLOSED_SEND = "보내지 않았습니다: 거래 저널을 열지 못해 보내기를 멈췄습니다. 지갑 화면 맨 위의 '선택 다시 보기'에서 고르세요."
+            / "Not sent: the transaction journal did not open, so sends are stopped. Choose under 'Show choices again' at the top of the wallet screen.";
+        /// The meta overlay of a file that does not open.
+        META_DAMAGED = "meta 파일(meta.ywm: 계정 이름·주소록·사이트 연결·활동 기록 등)을 열 수 없습니다. 파일이 손상되었거나 다른 지갑의 파일입니다. 복구 단어·개인키와 자산은 이 파일에 없어 그대로입니다. 고를 때까지 이 파일에 아무것도 쓰지 않습니다."
+            / "The meta file (meta.ywm: account names, address book, site connections, activity and more) cannot be opened. The file is damaged or belongs to another wallet. Your recovery words, private keys and assets are not in this file and are unchanged. Nothing is written to this file until you choose.";
+        /// The meta overlay of a file this build cannot read.
+        META_NEWER = "meta 파일(meta.ywm)은 이 지갑의 키로 열리지만 이 버전이 모르는 형식입니다. 대개 더 새로운 버전의 앱이 저장한 파일입니다(새 버전을 쓰다가 이 버전으로 되돌린 경우). 파일은 그대로 두었고, 고를 때까지 아무것도 쓰지 않습니다. 앱을 최신 버전으로 업데이트하세요."
+            / "The meta file (meta.ywm) opens with this wallet's key, but this version does not know its format. Usually a newer version of the app saved it (you used a newer version and went back to this one). The file was left as is, and nothing is written until you choose. Update the app to the latest version.";
+        /// The warning above the destructive choices of a newer-format file.
+        NEWER_ADVANCED = "되돌리거나 새로 시작하면 새 버전에서 만든 내용(계정·라벨·연결, 저널이면 진행 중 거래 기록)이 사라지고, 새 버전으로 돌아가도 돌아오지 않습니다. 앱을 업데이트할 수 없을 때만 고르세요."
+            / "Restoring or starting over removes what the newer version created (accounts, labels, connections; for the journal, records of transactions in progress), and it does not come back when you return to the newer version. Choose this only if you cannot update the app.";
+        /// `이전 사본(.prev) 사용` of meta.
+        META_PREV = "이전 사본(.prev) 사용: 이전 사본을 먼저 열어 보고, 열리지 않으면 아무것도 바꾸지 않습니다. 마지막 저장 하나가 되돌아갑니다 — 예: 방금 끊은 사이트 연결, 숨긴 계정, 지운 주소록 항목이 다시 생길 수 있습니다. 지금 파일은 지우지 않고 meta.ywm.corrupt-<시각>으로 옮겨 둡니다."
+            / "Use previous copy (.prev): the previous copy is opened first, and if it does not open nothing changes. The last save is undone — for example, a site connection you just removed, an account you hid or an address book entry you deleted may come back. The current file is not deleted but moved to meta.ywm.corrupt-<time>.";
+        /// `격리하고 새로 시작` of meta: what resets, in plain words.
+        META_FRESH = "격리하고 새로 시작: 다음이 처음 상태가 됩니다 — 계정 이름과 숨김 표시, 추가한 EVM·Solana 계정('계정 추가'로 다시 만들 수 있음), 주소록과 즐겨찾기, 사이트 연결(Solana·Bitcoin 포함)과 WalletConnect 세션, 추가한 토큰과 토큰 숨김, 기본 계정 외 Bitcoin 계정(EVM 키·YubiKey 키 계정 포함)과 주소 방식, Bitcoin 동결 표시(동결한 UTXO가 다시 쓰일 수 있음), 활동 기록과 비슷한 주소 경고가 비교하는 이전 받는 주소, 설정 파일 보호 기록. 복구 단어·가져온 개인키·YubiKey 등록과 자산은 그대로입니다. 지금 파일과 이전 사본은 지우지 않고 meta.ywm.corrupt-<시각>, meta.ywm.prev.corrupt-<시각>으로 옮겨 둡니다."
+            / "Quarantine and start over: these go back to their initial state — account names and hidden marks, added EVM and Solana accounts (you can recreate them with 'Add account'), the address book and favorites, site connections (including Solana and Bitcoin) and WalletConnect sessions, added tokens and hidden tokens, Bitcoin accounts other than the default one (including EVM-key and YubiKey-key accounts) and their address types, Bitcoin freeze marks (frozen UTXOs may be spent again), activity and the earlier recipients the similar-address warning compares against, and the settings-file protection record. Recovery words, imported private keys, YubiKey enrolment and assets stay. The current file and the previous copy are not deleted but moved to meta.ywm.corrupt-<time> and meta.ywm.prev.corrupt-<time>.";
+        /// `닫기` of meta.
+        META_CLOSE = "닫기: 아무것도 바꾸지 않습니다. 계정 목록 없이 열리고 보내기는 멈춥니다. 앱을 업데이트했거나 파일을 직접 되돌렸다면 '다시 불러오기'로 다시 읽습니다."
+            / "Close: nothing changes. The wallet opens without the account list and sends stop. If you updated the app or restored the file yourself, 'Reload' reads it again.";
+        /// T-META-CLOSED: T-META-FAILED in its E-VLT-006 form (the meta choice was closed).
+        META_CLOSED = "meta 파일(meta.ywm)을 읽을 수 없어 아무것도 바꾸지 않았습니다. 계정 이름·주소록·연결한 사이트 없이 열려 있고 보내기는 멈춥니다. 고를 때까지 이 파일에 아무것도 쓰지 않습니다. 앱을 업데이트했거나 파일을 직접 되돌렸다면 '다시 불러오기'를 누르세요. 여전히 읽을 수 없으면 고르는 화면이 다시 열립니다."
+            / "The meta file (meta.ywm) could not be read, so nothing was changed. The wallet is open without account names, the address book or connected sites, and sends stop. Nothing is written to this file until you choose. If you updated the app or restored the file yourself, press 'Reload'. If it still cannot be read, the choice screen opens again.";
+        REFUSAL_NO_PREV(1) = "이전 사본({0}.prev)이 없습니다. 아무 파일도 바꾸지 않았습니다."
+            / "There is no previous copy ({0}.prev). No file was changed.";
+        REFUSAL_PREV_UNREADABLE(1) = "이전 사본({0}.prev)도 열리지 않거나 이 버전이 읽을 수 없습니다. 아무 파일도 바꾸지 않았습니다. 다른 선택을 고르거나, 앱을 최신 버전으로 업데이트하세요."
+            / "The previous copy ({0}.prev) does not open either, or this version cannot read it. No file was changed. Choose another option, or update the app to the latest version.";
+        REFUSAL_FAILED(2) = "파일을 옮기거나 쓰지 못했습니다. 데이터 폴더의 {0} 파일들(.prev, .corrupt-…)은 지우지 않았습니다. 다른 프로그램이 파일을 쓰고 있지 않은지 확인하고 다시 고르세요. ({1})"
+            / "The files could not be moved or written. The {0} files in the data folder (.prev, .corrupt-…) were not deleted. Check that no other program is using the files, then choose again. ({1})";
+        MOVED_QUARANTINED(1) = "읽을 수 없던 파일은 {0}" / "the unreadable file to {0}";
+        MOVED_PREV(1) = "이전 사본은 {0}" / "the previous copy to {0}";
+        MOVED_WHERE(1) = " {0}(으)로 옮겨 두었습니다(지우지 않음, 되돌리는 방법은 복구 안내)."
+            / " Moved {0} (not deleted; the recovery guide explains how to undo it).";
+        RESOLVED_META_PREV(1) = "meta를 이전 사본(.prev)으로 되돌렸습니다.{0} 마지막 저장 하나가 빠졌을 수 있습니다: 사이트·WalletConnect에서 끊었던 연결이 다시 생겼는지, 숨긴 계정·지운 주소록 항목이 돌아왔는지 확인하세요. '설정 파일이 앱 밖에서 바뀌었습니다' 띠가 보이면 되돌린 사본의 기록 때문일 수 있습니다 — 직접 바꾼 값이면 '파일 값 사용'을 누르세요."
+            / "The meta file was restored from the previous copy (.prev).{0} The last save may be missing: check whether connections you removed in Sites or WalletConnect came back, and whether hidden accounts or deleted address book entries returned. If the 'The settings file was changed outside the app' band appears, it may come from the restored copy's record — if you changed the value yourself, press 'Use file value'.";
+        RESOLVED_META_FRESH(1) = "meta를 새로 시작했습니다.{0} 추가했던 계정은 '계정 추가'로 다시 만들고, 사이트는 dApp에서 다시 연결하세요. 비슷한 주소 경고가 비교할 이전 받는 주소 기록도 없으니 받는 주소를 처음부터 끝까지 확인하세요."
+            / "The meta file was started over.{0} Recreate added accounts with 'Add account' and reconnect sites from the dApp. The similar-address warning has no earlier recipients to compare against either, so check each recipient address from start to end.";
+        RESOLVED_JOURNAL(1) = "거래 저널을 새로 시작했습니다.{0} 그 전에 보낸 거래 중 확정되지 않았던 것은 기록 없이 블록체인에서 확정될 수 있습니다. 같은 송금을 다시 보내기 전에 블록 탐색기에서 보낸 주소의 거래를 확인하세요."
+            / "The transaction journal was started over.{0} Transactions sent before that which were not final may confirm on the blockchain without a record. Before sending the same transfer again, check the sending address's transactions in a block explorer.";
+        CHECKING_PREV = "이전 사본을 확인하는 중…" / "Checking the previous copy…";
+        MOVING_FILES = "파일을 옮기는 중…" / "Moving files…";
+        LOADING = "불러오는 중…" / "Loading…";
+        SEND_STOPPED = "보내기 멈춤: 거래 저널을 열지 못했습니다(맨 위 안내의 '선택 다시 보기')."
+            / "Sending stopped: the transaction journal did not open ('Show choices again' in the notice at the top).";
+        BTC_RESET(1) = "거래 저널을 {0}에 새로 시작했습니다. 그 전에 보낸 Bitcoin 거래 중 확정되지 않았거나 '포기'한 것은 기록 없이 나중에 확정될 수 있고, 이 앱은 그 거래가 쓴 UTXO를 더는 피하지 않습니다. 잔액이 줄었는데 활동에 없으면 그 거래일 수 있습니다. 같은 송금을 다시 보내기 전에 블록 탐색기에서 보내는 주소의 거래를 확인하세요."
+            / "The transaction journal was started over at {0}. Bitcoin transactions sent before that which were not final or were 'abandoned' may confirm later without a record, and this app no longer avoids the UTXOs they spent. If your balance went down and nothing in Activity explains it, it may be one of them. Before sending the same transfer again, check the sending address's transactions in a block explorer.";
+        BTC_RESET_ACK = "블록 탐색기에서 이전 거래를 확인했습니다"
+            / "I checked earlier transactions in a block explorer";
+        RESET_WAIT(2) = "{0} 보내기는 {1}부터 됩니다. 거래 저널을 새로 시작하기 전에 보낸 거래가 아직 처리 중이면 그때까지 확정될 수 있어, 같은 송금이 두 번 나가지 않도록 기다립니다."
+            / "{0} sends are possible from {1}. A transaction sent before the journal was started over may still confirm until then, so the wallet waits to keep the same transfer from going out twice.";
+        SHOW_CHOICES = "선택 다시 보기" / "Show choices again";
+        ADVANCED_HIDE = "고급: 되돌리기·새로 시작 숨기기 ▾" / "Advanced: hide restore and start over ▾";
+        ADVANCED_SHOW = "고급: 그래도 되돌리거나 새로 시작하기 ▸" / "Advanced: restore or start over anyway ▸";
+        META_NEWER_TITLE = "새 버전 앱이 저장한 meta 파일" / "Meta file saved by a newer app version";
+        META_DAMAGED_TITLE = "meta 파일을 열 수 없음" / "The meta file cannot be opened";
+        CLOSE_UNCHANGED = "닫기 (아무것도 바꾸지 않음)" / "Close (change nothing)";
+        LOCK = "잠금" / "Lock";
+        USE_PREV = "이전 사본(.prev) 사용" / "Use previous copy (.prev)";
+        QUARANTINE = "격리하고 새로 시작" / "Quarantine and start over";
+        JOURNAL_NEWER_TITLE = "새 버전 앱이 저장한 거래 저널" / "Transaction journal saved by a newer app version";
+        JOURNAL_DAMAGED_TITLE = "거래 저널을 열 수 없음" / "The transaction journal cannot be opened";
+        CLOSE_SENDS_STOP = "닫기 (보내기 멈춤)" / "Close (sends stop)";
+    }
+}
 
 /// The overlay state (this session).
 #[derive(Debug, Default)]
@@ -154,50 +211,34 @@ const fn overlay_of(kind: FileKind) -> Confirm {
 
 /// What the overlay says when a choice changed nothing (or not everything).
 #[must_use]
-pub fn refusal_text(kind: FileKind, refusal: SidecarRefusal) -> String {
+pub fn refusal_text(lang: Lang, kind: FileKind, refusal: SidecarRefusal) -> String {
     let name = crate::store::file_name(kind);
     match refusal {
-        SidecarRefusal::NoPrev => {
-            format!("이전 사본({name}.prev)이 없습니다. 아무 파일도 바꾸지 않았습니다.")
-        }
-        SidecarRefusal::PrevUnreadable => format!(
-            "이전 사본({name}.prev)도 열리지 않거나 이 버전이 읽을 수 없습니다. 아무 파일도 바꾸지 않았습니다. 다른 선택을 고르거나, 앱을 최신 버전으로 업데이트하세요."
-        ),
-        SidecarRefusal::Failed(code) => format!(
-            "파일을 옮기거나 쓰지 못했습니다. 데이터 폴더의 {name} 파일들(.prev, .corrupt-…)은 지우지 않았습니다. 다른 프로그램이 파일을 쓰고 있지 않은지 확인하고 다시 고르세요. ({})",
-            code.code()
-        ),
+        SidecarRefusal::NoPrev => text::REFUSAL_NO_PREV.fill(lang, [name]),
+        SidecarRefusal::PrevUnreadable => text::REFUSAL_PREV_UNREADABLE.fill(lang, [name]),
+        SidecarRefusal::Failed(code) => text::REFUSAL_FAILED.fill(lang, [name, code.code()]),
     }
 }
 
 /// The notice after a choice: what happened, where the moved files are, what to check.
 #[must_use]
-pub fn resolved_text(kind: FileKind, use_prev: bool, moves: &SidecarMoves) -> String {
+pub fn resolved_text(lang: Lang, kind: FileKind, use_prev: bool, moves: &SidecarMoves) -> String {
     let mut names = Vec::new();
     if let Some(name) = &moves.quarantined {
-        names.push(format!("읽을 수 없던 파일은 {name}"));
+        names.push(text::MOVED_QUARANTINED.fill(lang, [name]));
     }
     if let Some(name) = &moves.prev {
-        names.push(format!("이전 사본은 {name}"));
+        names.push(text::MOVED_PREV.fill(lang, [name]));
     }
     let where_to = if names.is_empty() {
         String::new()
     } else {
-        format!(
-            " {}(으)로 옮겨 두었습니다(지우지 않음, 되돌리는 방법은 복구 안내).",
-            names.join(", ")
-        )
+        text::MOVED_WHERE.fill(lang, [&names.join(", ")])
     };
     match (kind, use_prev) {
-        (FileKind::Meta, true) => format!(
-            "meta를 이전 사본(.prev)으로 되돌렸습니다.{where_to} 마지막 저장 하나가 빠졌을 수 있습니다: 사이트·WalletConnect에서 끊었던 연결이 다시 생겼는지, 숨긴 계정·지운 주소록 항목이 돌아왔는지 확인하세요. '설정 파일이 앱 밖에서 바뀌었습니다' 띠가 보이면 되돌린 사본의 기록 때문일 수 있습니다 — 직접 바꾼 값이면 '파일 값 사용'을 누르세요."
-        ),
-        (FileKind::Meta | FileKind::Vault, _) => format!(
-            "meta를 새로 시작했습니다.{where_to} 추가했던 계정은 '계정 추가'로 다시 만들고, 사이트는 dApp에서 다시 연결하세요. 비슷한 주소 경고가 비교할 이전 받는 주소 기록도 없으니 받는 주소를 처음부터 끝까지 확인하세요."
-        ),
-        (FileKind::Journal, _) => format!(
-            "거래 저널을 새로 시작했습니다.{where_to} 그 전에 보낸 거래 중 확정되지 않았던 것은 기록 없이 블록체인에서 확정될 수 있습니다. 같은 송금을 다시 보내기 전에 블록 탐색기에서 보낸 주소의 거래를 확인하세요."
-        ),
+        (FileKind::Meta, true) => text::RESOLVED_META_PREV.fill(lang, [&where_to]),
+        (FileKind::Meta | FileKind::Vault, _) => text::RESOLVED_META_FRESH.fill(lang, [&where_to]),
+        (FileKind::Journal, _) => text::RESOLVED_JOURNAL.fill(lang, [&where_to]),
     }
 }
 
@@ -248,10 +289,11 @@ impl App {
     /// `이전 사본(.prev) 사용` / `격리하고 새로 시작` of either overlay.
     pub(crate) fn choose_sidecar(&mut self, kind: FileKind, use_prev: bool) {
         self.sidecar.refusal = None;
+        let lang = self.settings.language;
         self.set_screen(Screen::Processing(if use_prev {
-            "이전 사본을 확인하는 중…"
+            text::CHECKING_PREV.get(lang)
         } else {
-            "파일을 옮기는 중…"
+            text::MOVING_FILES.get(lang)
         }));
         self.key(KeyJob::ResolveSidecar { kind, use_prev });
     }
@@ -278,7 +320,7 @@ impl App {
             Err(refusal) => {
                 // Back to the same choice, saying why; a load would only find the same file (or,
                 // after a half-done move, quietly start from a default).
-                self.sidecar.refusal = Some(refusal_text(kind, refusal));
+                self.sidecar.refusal = Some(refusal_text(self.settings.language, kind, refusal));
                 self.set_screen(Screen::Confirm(overlay_of(kind)));
                 return;
             }
@@ -288,7 +330,8 @@ impl App {
             .retain(|banner| banner.code != Some(ErrorCode::Vlt006));
         self.sidecar.refusal = None;
         self.sidecar.advanced = false;
-        let text = resolved_text(kind, use_prev, &moves);
+        let lang = self.settings.language;
+        let notice = resolved_text(lang, kind, use_prev, &moves);
         if kind == FileKind::Journal {
             self.sidecar.journal_closed = false;
             self.sidecar.journal_newer = false;
@@ -300,14 +343,14 @@ impl App {
                 }
                 self.save_meta();
             }
-            self.notice(text, Tone::Warn);
+            self.notice(notice, Tone::Warn);
         } else {
             self.sidecar.meta_newer = false;
-            self.notice(text, Tone::Info);
+            self.notice(notice, Tone::Info);
         }
         self.evm.journal = None;
         self.request_meta();
-        self.set_screen(Screen::Processing("불러오는 중…"));
+        self.set_screen(Screen::Processing(text::LOADING.get(lang)));
     }
 
     /// Commands of the two overlays, the closed journal's band and the reset check; `false` when
@@ -379,11 +422,9 @@ impl App {
     /// Above a send form's `검토`: why the journal holds it — closed (one line; the header band
     /// has the reason and `선택 다시 보기`), or the wait or the check after a journal reset.
     pub(crate) fn journal_send_items(&self, chain: SendChain, items: &mut Vec<Item>) {
+        let lang = self.settings.language;
         if self.sidecar.journal_closed {
-            items.push(Item::Help(
-                "보내기 멈춤: 거래 저널을 열지 못했습니다(맨 위 안내의 '선택 다시 보기')."
-                    .to_owned(),
-            ));
+            items.push(Item::Help(text::SEND_STOPPED.get(lang).to_owned()));
             return;
         }
         let name = match chain {
@@ -393,15 +434,12 @@ impl App {
             SendChain::Btc => {
                 if let Some((at, _)) = self.reset_elapsed(RESET_WATCH_SECS, now_unix()) {
                     items.push(Item::Banner(
-                        format!(
-                            "거래 저널을 {}에 새로 시작했습니다. 그 전에 보낸 Bitcoin 거래 중 확정되지 않았거나 '포기'한 것은 기록 없이 나중에 확정될 수 있고, 이 앱은 그 거래가 쓴 UTXO를 더는 피하지 않습니다. 잔액이 줄었는데 활동에 없으면 그 거래일 수 있습니다. 같은 송금을 다시 보내기 전에 블록 탐색기에서 보내는 주소의 거래를 확인하세요.",
-                            local_time(at)
-                        ),
+                        text::BTC_RESET.fill(lang, [&local_time(at)]),
                         Tone::HighRisk,
                     ));
                     items.push(Item::Row(vec![Ctl::check(
                         ids::RESET_ACK,
-                        "블록 탐색기에서 이전 거래를 확인했습니다",
+                        text::BTC_RESET_ACK.get(lang),
                         self.sidecar.reset_ack,
                     )]));
                 }
@@ -410,10 +448,7 @@ impl App {
         };
         if let Some(JournalHold::Wait(until)) = self.journal_hold(chain) {
             items.push(Item::Banner(
-                format!(
-                    "{name} 보내기는 {}부터 됩니다. 거래 저널을 새로 시작하기 전에 보낸 거래가 아직 처리 중이면 그때까지 확정될 수 있어, 같은 송금이 두 번 나가지 않도록 기다립니다.",
-                    local_time(until)
-                ),
+                text::RESET_WAIT.fill(lang, [name, &local_time(until)]),
                 Tone::Warn,
             ));
         }
@@ -427,13 +462,18 @@ impl App {
         {
             return;
         }
+        let lang = self.settings.language;
         items.push(Item::Banner(
-            format!("{T_JOURNAL_CLOSED} ({})", ErrorCode::Vlt006.code()),
+            format!(
+                "{} ({})",
+                text::JOURNAL_CLOSED.get(lang),
+                ErrorCode::Vlt006.code()
+            ),
             Tone::Blocked,
         ));
         items.push(Item::Row(vec![Ctl::button(
             ids::JOURNAL_REOPEN,
-            "선택 다시 보기",
+            text::SHOW_CHOICES.get(lang),
         )]));
     }
 
@@ -447,10 +487,11 @@ impl App {
         items.push(Item::Row(vec![Ctl::link(
             ids::ADVANCED,
             if self.sidecar.advanced {
-                "고급: 되돌리기·새로 시작 숨기기 ▾"
+                text::ADVANCED_HIDE
             } else {
-                "고급: 그래도 되돌리거나 새로 시작하기 ▸"
-            },
+                text::ADVANCED_SHOW
+            }
+            .get(self.settings.language),
         )]));
     }
 
@@ -459,49 +500,50 @@ impl App {
         use crate::ui::screens::ids as core;
         let prev = crate::store::prev_exists(&self.paths.data, FileKind::Meta);
         let newer = self.sidecar.meta_newer;
-        items.push(Item::Title(
-            if newer {
-                "새 버전 앱이 저장한 meta 파일"
-            } else {
-                "meta 파일을 열 수 없음"
-            }
-            .to_owned(),
-        ));
+        let lang = self.settings.language;
+        let t = |entry: Text| entry.get(lang).to_owned();
+        items.push(Item::Title(t(if newer {
+            text::META_NEWER_TITLE
+        } else {
+            text::META_DAMAGED_TITLE
+        })));
         items.push(Item::CardStart(None));
-        items.push(Item::Text(
-            if newer { T_META_NEWER } else { T_META_DAMAGED }.to_owned(),
-        ));
+        items.push(Item::Text(t(if newer {
+            text::META_NEWER
+        } else {
+            text::META_DAMAGED
+        })));
         self.refusal_items(items);
         if newer {
             items.push(Item::Row(vec![
-                Ctl::primary(ids::SIDECAR_CLOSE, "닫기 (아무것도 바꾸지 않음)"),
-                Ctl::button(core::LOCK, "잠금"),
+                Ctl::primary(ids::SIDECAR_CLOSE, text::CLOSE_UNCHANGED.get(lang)),
+                Ctl::button(core::LOCK, text::LOCK.get(lang)),
             ]));
             self.advanced_link(items);
             if !self.sidecar.advanced {
                 items.push(Item::CardEnd);
                 return;
             }
-            items.push(Item::Banner(T_NEWER_ADVANCED.to_owned(), Tone::HighRisk));
+            items.push(Item::Banner(t(text::NEWER_ADVANCED), Tone::HighRisk));
         }
         if prev {
-            items.push(Item::Help(T_META_PREV.to_owned()));
+            items.push(Item::Help(t(text::META_PREV)));
         }
-        items.push(Item::Help(T_META_FRESH.to_owned()));
+        items.push(Item::Help(t(text::META_FRESH)));
         let mut row = Vec::new();
         if prev {
             row.push(if newer {
-                Ctl::button(core::SIDECAR_PREV, "이전 사본(.prev) 사용")
+                Ctl::button(core::SIDECAR_PREV, text::USE_PREV.get(lang))
             } else {
-                Ctl::primary(core::SIDECAR_PREV, "이전 사본(.prev) 사용")
+                Ctl::primary(core::SIDECAR_PREV, text::USE_PREV.get(lang))
             });
         }
-        row.push(Ctl::danger(core::SIDECAR_FRESH, "격리하고 새로 시작"));
+        row.push(Ctl::danger(core::SIDECAR_FRESH, text::QUARANTINE.get(lang)));
         if !newer {
-            items.push(Item::Help(T_META_CLOSE.to_owned()));
+            items.push(Item::Help(t(text::META_CLOSE)));
             row.push(Ctl::button(
                 ids::SIDECAR_CLOSE,
-                "닫기 (아무것도 바꾸지 않음)",
+                text::CLOSE_UNCHANGED.get(lang),
             ));
         }
         items.push(Item::Row(row));
@@ -512,43 +554,39 @@ impl App {
     pub(crate) fn journal_overlay(&self, items: &mut Vec<Item>) {
         use crate::ui::screens::ids as core;
         let newer = self.sidecar.journal_newer;
-        items.push(Item::Title(
-            if newer {
-                "새 버전 앱이 저장한 거래 저널"
-            } else {
-                "거래 저널을 열 수 없음"
-            }
-            .to_owned(),
-        ));
+        let lang = self.settings.language;
+        let t = |entry: Text| entry.get(lang).to_owned();
+        items.push(Item::Title(t(if newer {
+            text::JOURNAL_NEWER_TITLE
+        } else {
+            text::JOURNAL_DAMAGED_TITLE
+        })));
         items.push(Item::CardStart(None));
-        items.push(Item::Text(
-            if newer {
-                T_JOURNAL_NEWER
-            } else {
-                T_JOURNAL_DAMAGED
-            }
-            .to_owned(),
-        ));
+        items.push(Item::Text(t(if newer {
+            text::JOURNAL_NEWER
+        } else {
+            text::JOURNAL_DAMAGED
+        })));
         self.refusal_items(items);
         if newer {
             items.push(Item::Row(vec![
-                Ctl::primary(core::CONFIRM_NO, "닫기 (보내기 멈춤)"),
-                Ctl::button(core::LOCK, "잠금"),
+                Ctl::primary(core::CONFIRM_NO, text::CLOSE_SENDS_STOP.get(lang)),
+                Ctl::button(core::LOCK, text::LOCK.get(lang)),
             ]));
             self.advanced_link(items);
             if self.sidecar.advanced {
-                items.push(Item::Banner(T_NEWER_ADVANCED.to_owned(), Tone::HighRisk));
-                items.push(Item::Banner(T_JOURNAL_RESET.to_owned(), Tone::HighRisk));
+                items.push(Item::Banner(t(text::NEWER_ADVANCED), Tone::HighRisk));
+                items.push(Item::Banner(t(text::JOURNAL_RESET), Tone::HighRisk));
                 items.push(Item::Row(vec![Ctl::danger(
                     core::CONFIRM_YES,
-                    "격리하고 새로 시작",
+                    text::QUARANTINE.get(lang),
                 )]));
             }
         } else {
-            items.push(Item::Banner(T_JOURNAL_RESET.to_owned(), Tone::HighRisk));
+            items.push(Item::Banner(t(text::JOURNAL_RESET), Tone::HighRisk));
             items.push(Item::Row(vec![
-                Ctl::danger(core::CONFIRM_YES, "격리하고 새로 시작"),
-                Ctl::button(core::CONFIRM_NO, "닫기 (보내기 멈춤)"),
+                Ctl::danger(core::CONFIRM_YES, text::QUARANTINE.get(lang)),
+                Ctl::button(core::CONFIRM_NO, text::CLOSE_SENDS_STOP.get(lang)),
             ]));
         }
         items.push(Item::CardEnd);

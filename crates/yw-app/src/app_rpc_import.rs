@@ -21,6 +21,7 @@
 use core::fmt::{self, Write as _};
 use std::path::{Path, PathBuf};
 
+use yw_core::lang::{Lang, Text};
 use yw_core::secret::Zeroizing;
 use yw_win::file::read_limited_no_reparse;
 use yw_win::http::HttpsUrl;
@@ -46,18 +47,73 @@ const LIMITS: yw_json::Limits = yw_json::Limits {
     max_items: 256,
 };
 
-/// The persistence note of the import result (the data folder survives `install.cmd`,
-/// `uninstall.cmd` without `-RemoveWalletData`, and a default `지갑 초기화`).
-pub const T_IMPORT_KEPT: &str = "주소는 %LOCALAPPDATA%\\YourWallet\\v3\\apikeys.dpapi에 이 Windows 사용자만 풀 수 있게 암호화해 저장했습니다. 재설치해도 유지됩니다. 지갑 초기화 때 '설정과 API 키도 함께 옮기기'를 켜지 않으면 그대로 남습니다.";
-
-/// The card's note on the source file (before an import).
-pub const T_JSON_PLAINTEXT: &str = "이 파일에는 RPC 주소와 그 토큰이 암호화되지 않은 채 들어 있어, 이 Windows 사용자로 도는 다른 프로그램도 읽을 수 있습니다. 가져온 뒤 개발 스크립트에 더 쓰지 않으면 지우세요.";
-
-/// The card's warning right after an import.
-pub const T_JSON_LEFT: &str = "가져오기를 마쳤습니다. 앱에는 암호화해 저장했지만 rpc.json에는 같은 주소·토큰이 암호화되지 않은 채 남아 있습니다. 개발 스크립트(probe-rpc 등)에 더 쓰지 않으면 지우세요.";
-
-/// The delete confirmation.
-pub const T_JSON_DELETE_CONFIRM: &str = "rpc.json을 지웁니다. 휴지통으로 가지 않아 되돌릴 수 없습니다. 앱에 저장한 RPC 주소는 그대로이고, 개발 스크립트가 이 파일을 쓴다면 scripts\\dev-rpc-setup.ps1로 다시 만들어야 합니다.";
+/// The S15 `rpc.json에서 가져오기` texts (spec/04 §2.11).
+pub mod text {
+    yw_core::texts! {
+        /// The persistence note of the import result (the data folder survives `install.cmd`,
+        /// `uninstall.cmd` without `-RemoveWalletData`, and a default `지갑 초기화`).
+        IMPORT_KEPT = "주소는 %LOCALAPPDATA%\\YourWallet\\v3\\apikeys.dpapi에 이 Windows 사용자만 풀 수 있게 암호화해 저장했습니다. 재설치해도 유지됩니다. 지갑 초기화 때 '설정과 API 키도 함께 옮기기'를 켜지 않으면 그대로 남습니다."
+            / "The addresses are saved in %LOCALAPPDATA%\\YourWallet\\v3\\apikeys.dpapi, encrypted so that only this Windows user can open them. They stay after a reinstall. A wallet reset leaves them in place unless 'Also move settings and API keys' is on.";
+        /// The card's note on the source file (before an import).
+        JSON_PLAINTEXT = "이 파일에는 RPC 주소와 그 토큰이 암호화되지 않은 채 들어 있어, 이 Windows 사용자로 도는 다른 프로그램도 읽을 수 있습니다. 가져온 뒤 개발 스크립트에 더 쓰지 않으면 지우세요."
+            / "This file holds RPC addresses and their tokens unencrypted, so other programs running as this Windows user can read it. After importing, delete it unless development scripts still need it.";
+        /// The card's warning right after an import.
+        JSON_LEFT = "가져오기를 마쳤습니다. 앱에는 암호화해 저장했지만 rpc.json에는 같은 주소·토큰이 암호화되지 않은 채 남아 있습니다. 개발 스크립트(probe-rpc 등)에 더 쓰지 않으면 지우세요."
+            / "Import finished. The app saved them encrypted, but rpc.json still holds the same addresses and tokens unencrypted. Delete it unless development scripts (probe-rpc and others) still need it.";
+        /// The delete confirmation.
+        JSON_DELETE_CONFIRM = "rpc.json을 지웁니다. 휴지통으로 가지 않아 되돌릴 수 없습니다. 앱에 저장한 RPC 주소는 그대로이고, 개발 스크립트가 이 파일을 쓴다면 scripts\\dev-rpc-setup.ps1로 다시 만들어야 합니다."
+            / "rpc.json will be deleted. It does not go to the Recycle Bin, so this cannot be undone. The RPC addresses saved in the app stay; if development scripts use this file, recreate it with scripts\\dev-rpc-setup.ps1.";
+        UNREADABLE = "rpc.json을 읽을 수 없습니다. 파일이 없거나, 64 KiB보다 크거나, 바로가기·링크입니다."
+            / "rpc.json cannot be read. The file is missing, larger than 64 KiB, or a shortcut or link.";
+        FORMAT = "rpc.json 형식이 올바르지 않습니다. UTF-8 JSON 객체 하나({\"eip155:1\": \"https://…\", …} 모양, 같은 키 두 번 금지)여야 합니다."
+            / "rpc.json is not in the right format. It must be one UTF-8 JSON object (shaped like {\"eip155:1\": \"https://…\", …}, no key twice).";
+        ALCHEMY = "알케미" / "Alchemy";
+        DELETED = "rpc.json을 지웠습니다. 앱에 저장한 RPC 주소는 그대로입니다."
+            / "rpc.json was deleted. The RPC addresses saved in the app stay.";
+        DELETE_LINK = "rpc.json이 링크(심볼릭 링크)이거나 파일이 아니라 지우지 않았습니다. 링크가 가리키는 파일에 토큰이 있으니 탐색기에서 확인해 직접 지우세요."
+            / "rpc.json is a link (symbolic link) or not a file, so it was not deleted. The file the link points to holds the tokens; check it in Explorer and delete it yourself.";
+        DELETE_FAILED = "rpc.json을 지우지 못했습니다. 다른 프로그램이 열고 있거나 권한이 없습니다. 탐색기에서 직접 지우세요."
+            / "rpc.json could not be deleted. Another program has it open or there is no permission. Delete it yourself in Explorer.";
+        NOTHING_TO_IMPORT = "rpc.json에 가져올 수 있는 RPC 주소가 없습니다."
+            / "rpc.json has no RPC addresses that can be imported.";
+        IMPORTED(1) = "rpc.json에서 RPC 주소 {0}개를 가져왔습니다"
+            / "Imported {0} RPC addresses from rpc.json";
+        IMPORTED_KEPT(1) = "(이미 주소가 있는 {0}개는 그대로 두었습니다)"
+            / " ({0} that already had an address were left as is)";
+        IMPORTED_TEMPLATE = " 모두 같은 QuickNode 엔드포인트라 RPC 공급자를 'QuickNode 멀티체인'으로 하고 이름·토큰을 템플릿 자격 정보로 저장했습니다."
+            / " They all use the same QuickNode endpoint, so the RPC provider was set to 'QuickNode multichain' and the name and token were saved as the template credentials.";
+        FILLED(1) = " 파일에 없던 {0}개 네트워크는 저장된 RPC 공급자 템플릿으로 주소를 만들었습니다."
+            / " For {0} networks not in the file, addresses were made from the saved RPC provider template.";
+        TESTING = " 연결을 확인하는 중입니다 — 결과는 아래 각 행에 나옵니다."
+            / " Checking the connections — the results appear in each row below.";
+        REJECTED(1) = "\n가져오지 않음(https QuickNode·알케미 주소가 아니거나 형식 오류): {0}"
+            / "\nNot imported (not an https QuickNode or Alchemy address, or a format error): {0}";
+        IGNORED(1) = "\n이 앱의 네트워크 목록에 없는 키 {0}개는 건너뜁니다."
+            / "\n{0} keys that are not in this app's network list are skipped.";
+        CARD_TITLE = "rpc.json에서 가져오기" / "Import from rpc.json";
+        CARD_HELP = "개발용 설정 파일(%USERPROFILE%\\.yw-dev\\rpc.json)에 있는 RPC 주소를 읽어 위 '네트워크별 RPC 주소' 목록에 넣습니다. 저장하기 전에 가린 목록으로 한 번 더 확인합니다."
+            / "Reads the RPC addresses in the development settings file (%USERPROFILE%\\.yw-dev\\rpc.json) into the 'RPC address per network' list above. A masked list is shown for one more check before saving.";
+        DELETE = "지우기" / "Delete";
+        CANCEL = "취소" / "Cancel";
+        IMPORT_BUTTON = "rpc.json에서 가져오기" / "Import from rpc.json";
+        DELETE_FILE = "rpc.json 지우기…" / "Delete rpc.json…";
+        CONFIRM_TITLE = "rpc.json에서 가져오기 — 확인" / "Import from rpc.json — confirm";
+        CONFIRM_LEAD = "다음 RPC 주소를 가져옵니다(주소에는 토큰이 있어 가린 형태로만 보입니다):"
+            / "These RPC addresses will be imported (they contain tokens, so they are shown masked only):";
+        HAS_ADDRESS = " — 기존 주소 있음" / " — has an address already";
+        OFF_TEMPLATE = " — 템플릿과 다른 주소(이 네트워크에 그대로 저장)"
+            / " — differs from the template (saved as is for this network)";
+        SAME_ENDPOINT = "모든 주소가 같은 QuickNode 엔드포인트(이름·토큰)입니다. RPC 공급자를 'QuickNode 멀티체인'으로 바꾸고 이름·토큰을 템플릿 자격 정보로 함께 저장합니다."
+            / "All addresses use the same QuickNode endpoint (name and token). The RPC provider is changed to 'QuickNode multichain' and the name and token are saved as the template credentials too.";
+        EXISTING(1) = "이미 주소가 있는 네트워크가 {0}개 있습니다. 덮어쓰거나, 비어 있는 네트워크에만 넣을 수 있습니다."
+            / "{0} networks already have an address. You can overwrite them or fill only the empty networks.";
+        OVERWRITE = "덮어쓰기" / "Overwrite";
+        FILL_EMPTY = "비어 있는 네트워크만" / "Empty networks only";
+        IMPORT = "가져오기" / "Import";
+        SAVE_NOTE = "저장은 '교체'와 같습니다: Windows가 이 사용자 계정에서만 풀 수 있게 암호화해 apikeys.dpapi에 둡니다."
+            / "Saving works like 'Replace': Windows encrypts it so only this user account can open it, in apikeys.dpapi.";
+    }
+}
 
 /// Why `rpc.json 지우기` did not delete the file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -108,17 +164,14 @@ pub enum ImportError {
 }
 
 impl ImportError {
-    /// The S15 text.
+    /// The S15 text in `lang`.
     #[must_use]
-    pub const fn text(self) -> &'static str {
+    pub const fn text(self, lang: Lang) -> &'static str {
         match self {
-            Self::Unreadable => {
-                "rpc.json을 읽을 수 없습니다. 파일이 없거나, 64 KiB보다 크거나, 바로가기·링크입니다."
-            }
-            Self::Format => {
-                "rpc.json 형식이 올바르지 않습니다. UTF-8 JSON 객체 하나({\"eip155:1\": \"https://…\", …} 모양, 같은 키 두 번 금지)여야 합니다."
-            }
+            Self::Unreadable => text::UNREADABLE,
+            Self::Format => text::FORMAT,
         }
+        .get(lang)
     }
 }
 
@@ -132,10 +185,10 @@ pub enum Provider {
 }
 
 impl Provider {
-    const fn label(self) -> &'static str {
+    const fn label(self, lang: Lang) -> &'static str {
         match self {
             Self::QuickNode => "QuickNode",
-            Self::Alchemy => "알케미",
+            Self::Alchemy => text::ALCHEMY.get(lang),
         }
     }
 }
@@ -354,25 +407,21 @@ impl App {
     /// `rpc.json 지우기` confirmed: deletes the file (never a link) and says what happened.
     pub(crate) fn delete_rpc_json(&mut self, path: &Path) {
         self.rpc_import.confirm_delete = false;
-        let text = match delete_file(path) {
+        let message = match delete_file(path) {
             Ok(()) => {
                 logging::info("app", "rpc.import_file_deleted", &[]);
                 self.rpc_import.imported = false;
-                "rpc.json을 지웠습니다. 앱에 저장한 RPC 주소는 그대로입니다."
+                text::DELETED
             }
             Err(error) => {
                 logging::info("app", "rpc.import_file_delete_failed", &[]);
                 match error {
-                    DeleteError::NotPlainFile => {
-                        "rpc.json이 링크(심볼릭 링크)이거나 파일이 아니라 지우지 않았습니다. 링크가 가리키는 파일에 토큰이 있으니 탐색기에서 확인해 직접 지우세요."
-                    }
-                    DeleteError::Failed => {
-                        "rpc.json을 지우지 못했습니다. 다른 프로그램이 열고 있거나 권한이 없습니다. 탐색기에서 직접 지우세요."
-                    }
+                    DeleteError::NotPlainFile => text::DELETE_LINK,
+                    DeleteError::Failed => text::DELETE_FAILED,
                 }
             }
         };
-        self.info = Some(text.to_owned());
+        self.info = Some(message.get(self.settings.language).to_owned());
         self.refresh();
     }
 
@@ -391,9 +440,11 @@ impl App {
                     ],
                 );
                 if plan.entries.is_empty() {
-                    let mut text = "rpc.json에 가져올 수 있는 RPC 주소가 없습니다.".to_owned();
-                    self.push_rejected(&mut text, &plan);
-                    self.info = Some(text);
+                    let mut message = text::NOTHING_TO_IMPORT
+                        .get(self.settings.language)
+                        .to_owned();
+                    self.push_rejected(&mut message, &plan);
+                    self.info = Some(message);
                 } else {
                     self.info = None;
                     self.rpc_import.plan = Some(plan);
@@ -401,7 +452,7 @@ impl App {
             }
             Err(error) => {
                 logging::info("app", "rpc.import_failed", &[]);
-                self.info = Some(error.text().to_owned());
+                self.info = Some(error.text(self.settings.language).to_owned());
             }
         }
         self.refresh();
@@ -430,20 +481,14 @@ impl App {
                 &[("template", Field::Word(RpcTemplate::QuickNode.as_str()))],
             );
         }
-        let mut text = format!(
-            "rpc.json에서 RPC 주소 {}개를 가져왔습니다",
-            applied.written.len()
-        );
+        let lang = self.settings.language;
+        let mut message = text::IMPORTED.fill(lang, [&applied.written.len().to_string()]);
         if !applied.kept.is_empty() {
-            let _ = write!(
-                text,
-                "(이미 주소가 있는 {}개는 그대로 두었습니다)",
-                applied.kept.len()
-            );
+            message.push_str(&text::IMPORTED_KEPT.fill(lang, [&applied.kept.len().to_string()]));
         }
-        text.push('.');
+        message.push('.');
         if applied.template {
-            text.push_str(" 모두 같은 QuickNode 엔드포인트라 RPC 공급자를 'QuickNode 멀티체인'으로 하고 이름·토큰을 템플릿 자격 정보로 저장했습니다.");
+            message.push_str(text::IMPORTED_TEMPLATE.get(lang));
         }
         if applied.template && self.settings.rpc_template != RpcTemplate::QuickNode {
             let mut settings = self.settings.clone();
@@ -454,19 +499,15 @@ impl App {
         // QuickNode URL is enough for every chain.
         let filled = self.fill_template_gaps();
         if !filled.is_empty() {
-            let _ = write!(
-                text,
-                " 파일에 없던 {}개 네트워크는 저장된 RPC 공급자 템플릿으로 주소를 만들었습니다.",
-                filled.len()
-            );
+            message.push_str(&text::FILLED.fill(lang, [&filled.len().to_string()]));
         }
         // Every imported or made address is tested in turn (2026-11-10).
         if !applied.written.is_empty() || !filled.is_empty() {
-            text.push_str(" 연결을 확인하는 중입니다 — 결과는 아래 각 행에 나옵니다.");
+            message.push_str(text::TESTING.get(lang));
         }
-        text.push(' ');
-        text.push_str(T_IMPORT_KEPT);
-        self.info = Some(text);
+        message.push(' ');
+        message.push_str(text::IMPORT_KEPT.get(lang));
+        self.info = Some(message);
         self.queue_rpc_tests(&applied.written);
         self.queue_rpc_tests(&filled);
         // The plaintext source is still there: the card moves up and recommends deleting it.
@@ -474,25 +515,18 @@ impl App {
         self.refresh();
     }
 
-    fn push_rejected(&self, text: &mut String, plan: &ImportPlan) {
+    fn push_rejected(&self, message: &mut String, plan: &ImportPlan) {
+        let lang = self.settings.language;
         if !plan.rejected.is_empty() {
             let names: Vec<String> = plan
                 .rejected
                 .iter()
                 .map(|network| format!("{} ({network})", self.network_name(*network)))
                 .collect();
-            let _ = write!(
-                text,
-                "\n가져오지 않음(https QuickNode·알케미 주소가 아니거나 형식 오류): {}",
-                names.join(", ")
-            );
+            message.push_str(&text::REJECTED.fill(lang, [&names.join(", ")]));
         }
         if plan.ignored > 0 {
-            let _ = write!(
-                text,
-                "\n이 앱의 네트워크 목록에 없는 키 {}개는 건너뜁니다.",
-                plan.ignored
-            );
+            message.push_str(&text::IGNORED.fill(lang, [&plan.ignored.to_string()]));
         }
     }
 
@@ -500,40 +534,36 @@ impl App {
     /// shown only when the file exists or a plan waits for confirmation.
     pub(crate) fn rpc_import_section(&self, items: &mut Vec<Item>) {
         use crate::ui::screens::ids;
+        let lang = self.settings.language;
+        let t = |entry: Text| entry.get(lang).to_owned();
         let Some(plan) = self.rpc_import.plan.as_ref() else {
             if rpc_json_path().is_some_and(|path| path.is_file()) {
-                items.push(Item::CardStart(Some("rpc.json에서 가져오기".to_owned())));
+                items.push(Item::CardStart(Some(t(text::CARD_TITLE))));
                 if !self.rpc_import.imported {
-                    items.push(Item::Help(
-                        "개발용 설정 파일(%USERPROFILE%\\.yw-dev\\rpc.json)에 있는 RPC 주소를 읽어 위 '네트워크별 RPC 주소' 목록에 넣습니다. 저장하기 전에 가린 목록으로 한 번 더 확인합니다."
-                            .to_owned(),
-                    ));
-                    items.push(Item::Help(T_JSON_PLAINTEXT.to_owned()));
+                    items.push(Item::Help(t(text::CARD_HELP)));
+                    items.push(Item::Help(t(text::JSON_PLAINTEXT)));
                 }
                 if self.rpc_import.confirm_delete {
-                    items.push(Item::Banner(T_JSON_DELETE_CONFIRM.to_owned(), Tone::Warn));
+                    items.push(Item::Banner(t(text::JSON_DELETE_CONFIRM), Tone::Warn));
                     items.push(Item::Row(vec![
-                        Ctl::danger(ids::RPC_JSON_DELETE_CONFIRM, "지우기"),
-                        Ctl::button(ids::RPC_JSON_DELETE_CANCEL, "취소"),
+                        Ctl::danger(ids::RPC_JSON_DELETE_CONFIRM, text::DELETE.get(lang)),
+                        Ctl::button(ids::RPC_JSON_DELETE_CANCEL, text::CANCEL.get(lang)),
                     ]));
                 } else {
                     if self.rpc_import.imported {
-                        items.push(Item::Banner(T_JSON_LEFT.to_owned(), Tone::Warn));
+                        items.push(Item::Banner(t(text::JSON_LEFT), Tone::Warn));
                     }
                     items.push(Item::Row(vec![
-                        Ctl::button(ids::RPC_IMPORT, "rpc.json에서 가져오기"),
-                        Ctl::button(ids::RPC_JSON_DELETE, "rpc.json 지우기…"),
+                        Ctl::button(ids::RPC_IMPORT, text::IMPORT_BUTTON.get(lang)),
+                        Ctl::button(ids::RPC_JSON_DELETE, text::DELETE_FILE.get(lang)),
                     ]));
                 }
                 items.push(Item::CardEnd);
             }
             return;
         };
-        items.push(Item::CardStart(Some(
-            "rpc.json에서 가져오기 — 확인".to_owned(),
-        )));
-        let mut text =
-            "다음 RPC 주소를 가져옵니다(주소에는 토큰이 있어 가린 형태로만 보입니다):".to_owned();
+        items.push(Item::CardStart(Some(t(text::CONFIRM_TITLE))));
+        let mut list = t(text::CONFIRM_LEAD);
         let mut existing = 0_usize;
         for entry in &plan.entries {
             let has = self.apikeys.has(KeyName::Rpc(entry.network));
@@ -541,49 +571,41 @@ impl App {
                 existing = existing.saturating_add(1);
             }
             let _ = write!(
-                text,
+                list,
                 "\n· {} ({}) — {} …/****{}{}",
                 self.network_name(entry.network),
                 entry.network,
-                entry.provider.label(),
-                if has { " — 기존 주소 있음" } else { "" },
+                entry.provider.label(lang),
+                if has { text::HAS_ADDRESS.get(lang) } else { "" },
                 if plan.quicknode.is_some() && !entry.fits_template {
-                    " — 템플릿과 다른 주소(이 네트워크에 그대로 저장)"
+                    text::OFF_TEMPLATE.get(lang)
                 } else {
                     ""
                 },
             );
         }
-        self.push_rejected(&mut text, plan);
-        items.push(Item::Text(text));
+        self.push_rejected(&mut list, plan);
+        items.push(Item::Text(list));
         if plan.quicknode.is_some() {
-            items.push(Item::Help(
-                "모든 주소가 같은 QuickNode 엔드포인트(이름·토큰)입니다. RPC 공급자를 'QuickNode 멀티체인'으로 바꾸고 이름·토큰을 템플릿 자격 정보로 함께 저장합니다."
-                    .to_owned(),
-            ));
+            items.push(Item::Help(t(text::SAME_ENDPOINT)));
         }
         if existing > 0 {
             items.push(Item::Banner(
-                format!(
-                    "이미 주소가 있는 네트워크가 {existing}개 있습니다. 덮어쓰거나, 비어 있는 네트워크에만 넣을 수 있습니다."
-                ),
+                text::EXISTING.fill(lang, [&existing.to_string()]),
                 Tone::Warn,
             ));
             items.push(Item::Row(vec![
-                Ctl::button(ids::RPC_IMPORT_OVERWRITE, "덮어쓰기"),
-                Ctl::button(ids::RPC_IMPORT_FILL, "비어 있는 네트워크만"),
-                Ctl::button(ids::RPC_IMPORT_CANCEL, "취소"),
+                Ctl::button(ids::RPC_IMPORT_OVERWRITE, text::OVERWRITE.get(lang)),
+                Ctl::button(ids::RPC_IMPORT_FILL, text::FILL_EMPTY.get(lang)),
+                Ctl::button(ids::RPC_IMPORT_CANCEL, text::CANCEL.get(lang)),
             ]));
         } else {
             items.push(Item::Row(vec![
-                Ctl::button(ids::RPC_IMPORT_OVERWRITE, "가져오기"),
-                Ctl::button(ids::RPC_IMPORT_CANCEL, "취소"),
+                Ctl::button(ids::RPC_IMPORT_OVERWRITE, text::IMPORT.get(lang)),
+                Ctl::button(ids::RPC_IMPORT_CANCEL, text::CANCEL.get(lang)),
             ]));
         }
-        items.push(Item::Help(
-            "저장은 '교체'와 같습니다: Windows가 이 사용자 계정에서만 풀 수 있게 암호화해 apikeys.dpapi에 둡니다."
-                .to_owned(),
-        ));
+        items.push(Item::Help(t(text::SAVE_NOTE)));
         items.push(Item::CardEnd);
     }
 }

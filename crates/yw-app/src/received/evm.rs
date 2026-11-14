@@ -14,6 +14,7 @@ use std::collections::HashSet;
 use yw_core::evm::abi::{TOPIC_TRANSFER, pad_address};
 use yw_core::evm::address::Address;
 use yw_core::evm::amount::{U256, format_units};
+use yw_core::lang::Lang;
 use yw_json::{Object, Value};
 use yw_win::http::{HttpError, HttpsUrl};
 
@@ -33,8 +34,17 @@ pub const MAX_LOGS_RESPONSE: usize = 2 * 1_048_576;
 /// Most logs taken from one answer.
 pub const MAX_LOGS: usize = 1_000;
 
-/// The line of the card when `eth_getLogs` is missing on the endpoint.
-pub const T_NO_GET_LOGS: &str = "이 RPC는 eth_getLogs를 지원하지 않아 받은 토큰 내역을 표시하지 않습니다 — 탐색기에서 확인하세요.";
+/// EVM received-history texts (spec/04 §2.6; English spec/14 §5).
+pub mod text {
+    yw_core::texts! {
+        /// The line of the card when `eth_getLogs` is missing on the endpoint.
+        NO_GET_LOGS = "이 RPC는 eth_getLogs를 지원하지 않아 받은 토큰 내역을 표시하지 않습니다 — 탐색기에서 확인하세요."
+            / "This RPC does not support eth_getLogs, so received tokens are not listed — check the explorer.";
+        /// The read error when even a 1-block range gets no answer.
+        TOO_LARGE = "RPC가 eth_getLogs 범위를 1블록으로 줄여도 답하지 않았습니다"
+            / "The RPC did not answer eth_getLogs even for a 1-block range";
+    }
+}
 
 /// One parsed `Transfer` log to the owner.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -297,13 +307,14 @@ pub fn scan(
 ///
 /// # Errors
 ///
-/// A fixed error text.
+/// A fixed error text in `lang`.
 pub fn fetch(
     transport: &dyn Transport,
     url: &HttpsUrl,
     owner: &Address,
     tokens: &[TokenRef],
     cursor: &Cursor,
+    lang: Lang,
 ) -> Result<Fetched, String> {
     if tokens.is_empty() {
         return Ok(Fetched {
@@ -312,7 +323,8 @@ pub fn fetch(
         });
     }
     let client = RpcClient::new(transport);
-    let latest = crate::rpc::evm::block_number(&client, url).map_err(|f| classify(f).text())?;
+    let latest =
+        crate::rpc::evm::block_number(&client, url).map_err(|f| classify(f).text_in(lang))?;
     let (from, span) = start(cursor, latest);
     if from > latest {
         return Ok(Fetched {
@@ -327,14 +339,12 @@ pub fn fetch(
             return Ok(Fetched {
                 found: Found::default(),
                 cursor: cursor.clone(),
-                unsupported: Some(T_NO_GET_LOGS),
+                unsupported: Some(text::NO_GET_LOGS.get(lang)),
                 ..Fetched::default()
             });
         }
-        Err(LogsError::Failed(failure)) => return Err(classify(failure).text()),
-        Err(LogsError::TooLarge) => {
-            return Err("RPC가 eth_getLogs 범위를 1블록으로 줄여도 답하지 않았습니다".to_owned());
-        }
+        Err(LogsError::Failed(failure)) => return Err(classify(failure).text_in(lang)),
+        Err(LogsError::TooLarge) => return Err(text::TOO_LARGE.get(lang).to_owned()),
     };
     let mut found = derive(&logs, tokens);
     // Times of the listed rows without `blockTimestamp` (a few headers per read).

@@ -54,12 +54,24 @@ pub const BB_PAGE_SIZE: u32 = 25;
 /// Most status requests (`TxStatus`, and Esplora's `TxRaw` probe) for vanished pending rows
 /// per read.
 pub const BTC_PENDING_CHECK_MAX: usize = 5;
-/// The card's line when a Blockbook indexer refuses `details=txs` for every address on two
-/// reads in a row.
-pub const T_BB_NO_TXS: &str = "이 Bitcoin 인덱서(Blockbook)는 주소 거래 목록(details=txs)을 주지 않아 받은 내역을 표시하지 않습니다 — 탐색기에서 확인하세요. '새로고침'으로 다시 시도합니다.";
-/// The muted note of the first such read (a passing provider error looks the same on `bb-rpc`;
-/// 2026-11-13 review).
-pub const T_BB_NO_TXS_ONCE: &str = "이번 읽기에서 Bitcoin 인덱서(Blockbook)가 주소 거래 목록(details=txs)을 주지 않았습니다 — 다음 읽기에서 다시 시도합니다.";
+/// The fixed texts of the Bitcoin received history (spec/04 §2.6, spec/14; 2026-11-14: Korean
+/// `&str` before).
+pub mod text {
+    yw_core::texts! {
+        /// The card's line when a Blockbook indexer refuses `details=txs` for every address on
+        /// two reads in a row.
+        T_BB_NO_TXS = "이 Bitcoin 인덱서(Blockbook)는 주소 거래 목록(details=txs)을 주지 않아 받은 내역을 표시하지 않습니다 — 탐색기에서 확인하세요. '새로고침'으로 다시 시도합니다."
+            / "This Bitcoin indexer (Blockbook) gives no address transaction list (details=txs), so the received history is not shown — check it in the explorer. 'Refresh' tries again.";
+        /// The muted note of the first such read (a passing provider error looks the same on
+        /// `bb-rpc`; 2026-11-13 review).
+        T_BB_NO_TXS_ONCE = "이번 읽기에서 Bitcoin 인덱서(Blockbook)가 주소 거래 목록(details=txs)을 주지 않았습니다 — 다음 읽기에서 다시 시도합니다."
+            / "On this read the Bitcoin indexer (Blockbook) gave no address transaction list (details=txs) — the next read tries again.";
+        /// A read stopped without an error code (cancel, cooldown).
+        PAUSED = "Bitcoin 조회를 잠시 멈췄습니다" / "Bitcoin lookups are paused for a moment";
+    }
+}
+
+pub use text::{T_BB_NO_TXS, T_BB_NO_TXS_ONCE};
 
 /// One transaction of an address's recent list, as much as the history needs (Esplora and
 /// Blockbook answers parse into this).
@@ -367,6 +379,8 @@ pub struct BtcReceivedWork {
     pub chain: ChainInput,
     /// Automatic (skipped during the cooldown) or the user's `새로고침`.
     pub trigger: Trigger,
+    /// The app language of the read's notes and errors (spec/14).
+    pub lang: yw_core::lang::Lang,
 }
 
 /// The receive indices a read asks for, in order (spec/04 §2.6, 2026-11-13): the 받기 address
@@ -406,10 +420,10 @@ pub fn read_indices(
     out
 }
 
-fn error_text(error: BtcError, indexer: BtcIndexer) -> String {
+fn error_text(lang: yw_core::lang::Lang, error: BtcError, indexer: BtcIndexer) -> String {
     error
-        .text(indexer)
-        .unwrap_or_else(|| "Bitcoin 조회를 잠시 멈췄습니다".to_owned())
+        .text(lang, indexer)
+        .unwrap_or_else(|| text::PAUSED.get(lang).to_owned())
 }
 
 /// What [`resolve_vanished`] decided.
@@ -497,16 +511,17 @@ pub fn fetch(
     work: &BtcReceivedWork,
 ) -> Result<Fetched, String> {
     let indexer = client.endpoint().indexer;
+    let lang = work.lang;
     if work.fetch.is_empty() {
         return Ok(Fetched::default());
     }
     match cooldown_gate(client, work.trigger) {
         // An automatic read during the 429 cooldown: nothing asked, nothing changes.
         Err(BtcError::Cooldown) => return Ok(Fetched::default()),
-        Err(error) => return Err(error_text(error, indexer)),
+        Err(error) => return Err(error_text(lang, error, indexer)),
         Ok(()) => {}
     }
-    ensure_chain(client, session, work.chain, false).map_err(|e| error_text(e, indexer))?;
+    ensure_chain(client, session, work.chain, false).map_err(|e| error_text(lang, e, indexer))?;
     let net = session.network();
     let mut own = HashSet::new();
     for (chain, count) in [
@@ -517,7 +532,7 @@ pub fn fetch(
             let address = work
                 .account
                 .address(net, chain, index)
-                .map_err(|_| error_text(BtcError::Derivation, indexer))?;
+                .map_err(|_| error_text(lang, BtcError::Derivation, indexer))?;
             own.insert(address.as_str().to_ascii_lowercase());
         }
     }
@@ -539,7 +554,7 @@ pub fn fetch(
         let address = work
             .account
             .address(net, BtcChain::Receive, *index)
-            .map_err(|_| error_text(BtcError::Derivation, indexer))?;
+            .map_err(|_| error_text(lang, BtcError::Derivation, indexer))?;
         match address_request(client, session, &BtcIndexerReq::AddressTxs(address)) {
             Ok(BtcIndexerResp::AddressTxs(list)) => {
                 answered = answered.saturating_add(1);
@@ -562,7 +577,7 @@ pub fn fetch(
                 skipped = Some(error);
             }
             Err(error @ BtcError::Indexer(IndexerError::Malformed)) => skipped = Some(error),
-            Err(error) => return Err(error_text(error, indexer)),
+            Err(error) => return Err(error_text(lang, error, indexer)),
         }
     }
     if answered == 0 {
@@ -574,17 +589,17 @@ pub fn fetch(
             if !work.rejected_before {
                 return Ok(Fetched {
                     cursor: Cursor::BtcRejected,
-                    note: Some(T_BB_NO_TXS_ONCE),
+                    note: Some(T_BB_NO_TXS_ONCE.get(lang)),
                     ..Fetched::default()
                 });
             }
             return Ok(Fetched {
-                unsupported: Some(T_BB_NO_TXS),
+                unsupported: Some(T_BB_NO_TXS.get(lang)),
                 ..Fetched::default()
             });
         }
         if let Some(error) = skipped {
-            return Err(error_text(error, indexer));
+            return Err(error_text(lang, error, indexer));
         }
     }
     let mut found = derive(&txs, &own);

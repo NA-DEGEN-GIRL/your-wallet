@@ -277,19 +277,46 @@ impl BrowserUi {
     }
 }
 
-/// The status-line text (spec/04 §2.6).
+/// The status-line text (spec/04 §2.6) in `lang`.
 #[must_use]
-pub fn status_text(browser: Option<&BrowserUi>) -> String {
+pub fn status_text(lang: yw_core::lang::Lang, browser: Option<&BrowserUi>) -> String {
     match browser {
         Some(browser) if browser.server.is_some() => match browser.connections {
-            0 => "브라우저: 연결 없음".to_owned(),
-            count => format!("브라우저: 연결 {count}개"),
+            0 => text::STATUS_NONE.get(lang).to_owned(),
+            count => text::STATUS_CONNECTED.fill(lang, [&count.to_string()]),
         },
-        Some(browser) => format!(
-            "브라우저: 사용 불가 {}",
-            browser.pipe_error.unwrap_or(ErrorCode::Pipe001).code()
+        Some(browser) => text::STATUS_UNAVAILABLE.fill(
+            lang,
+            [browser.pipe_error.unwrap_or(ErrorCode::Pipe001).code()],
         ),
-        None => format!("브라우저: 사용 불가 {}", ErrorCode::Pipe001.code()),
+        None => text::STATUS_UNAVAILABLE.fill(lang, [ErrorCode::Pipe001.code()]),
+    }
+}
+
+/// Browser status line and connect-refusal notices (spec/04 §2.6, spec/05 §4.9; English
+/// spec/14 §5).
+pub mod text {
+    yw_core::texts! {
+        STATUS_NONE = "브라우저: 연결 없음" / "Browser: not connected";
+        STATUS_CONNECTED(1) = "브라우저: 연결 {0}개" / "Browser: {0} connected";
+        STATUS_UNAVAILABLE(1) = "브라우저: 사용 불가 {0}" / "Browser: unavailable {0}";
+        /// `{0}` = the site.
+        REFUSED_BTC_OFF(1) = "{0}의 Bitcoin 연결 요청을 거부했습니다: Bitcoin이 꺼져 있습니다. 설정 → Bitcoin에서 켠 뒤 다시 연결하세요."
+            / "Refused the Bitcoin connect request of {0}: Bitcoin is turned off. Turn it on in Settings → Bitcoin, then connect again.";
+        KIND_ORDINALS = "오디널스용 Taproot(P2TR) 주소" / "ordinals Taproot (P2TR) address";
+        KIND_PAYMENT = "결제용 SegWit(P2WPKH·P2SH-P2WPKH) 주소" / "payment SegWit (P2WPKH·P2SH-P2WPKH) address";
+        KIND_ANY = "Bitcoin 주소" / "Bitcoin address";
+        /// `{0}` site, `{1}` network, `{2}` a `KIND_*` text.
+        REFUSED_NO_BTC(3) = "{0}의 Bitcoin 연결 요청을 거부했습니다: 지갑에 {1} {2}가 없습니다. Bitcoin 탭에서 그 형식의 계정을 추가한 뒤 다시 연결하세요."
+            / "Refused the Bitcoin connect request of {0}: the wallet has no {1} {2}. Add an account of that type in the Bitcoin tab, then connect again.";
+        REFUSED_NO_SOL(1) = "{0}의 Solana 연결 요청을 거부했습니다: 지갑에 Solana 계정이 없습니다. Solana 탭에서 계정을 추가하거나 개인키를 가져온 뒤 다시 연결하세요."
+            / "Refused the Solana connect request of {0}: the wallet has no Solana account. Add an account or import a private key in the Solana tab, then connect again.";
+        REFUSED_NO_EVM(1) = "{0}의 연결 요청을 거부했습니다: 지갑에 EVM 계정이 없습니다. EVM 개인키를 가져온 뒤 다시 연결하세요."
+            / "Refused the connect request of {0}: the wallet has no EVM account. Import an EVM private key, then connect again.";
+        REFUSED_TOO_MANY(1) = "{0}의 연결 요청을 거부했습니다: 이 체인에 연결된 사이트가 이미 256개입니다. 연결된 사이트 화면에서 하나를 해제한 뒤 다시 연결하세요."
+            / "Refused the connect request of {0}: 256 sites are already connected on this chain. Disconnect one on the Connected sites screen, then connect again.";
+        /// `{0}` = why.
+        MESSAGE_SIGN_FAILED(1) = "사이트의 메시지에 서명하지 못했습니다: {0}" / "Could not sign the site's message: {0}";
     }
 }
 
@@ -675,10 +702,9 @@ impl App {
         // A WalletConnect session's synthetic origin means nothing to the user: its claimed
         // origin label instead (spec/13 §7).
         let site = self.origin_display(origin);
+        let lang = self.settings.language;
         let text = match error {
-            ProviderError::BtcDisabled => format!(
-                "{site}의 Bitcoin 연결 요청을 거부했습니다: Bitcoin이 꺼져 있습니다. 설정 → Bitcoin에서 켠 뒤 다시 연결하세요."
-            ),
+            ProviderError::BtcDisabled => text::REFUSED_BTC_OFF.fill(lang, [&site]),
             ProviderError::NoBtcAccount => {
                 let rows = self.btc_dapp_rows();
                 let missing = purposes.iter().find(|purpose| {
@@ -687,24 +713,22 @@ impl App {
                         .any(|row| purpose.accepts(row.entry.script_type))
                 });
                 let address = match missing {
-                    Some(BtcPurpose::Ordinals) => "오디널스용 Taproot(P2TR) 주소",
-                    Some(BtcPurpose::Payment) => "결제용 SegWit(P2WPKH·P2SH-P2WPKH) 주소",
-                    _ => "Bitcoin 주소",
+                    Some(BtcPurpose::Ordinals) => text::KIND_ORDINALS,
+                    Some(BtcPurpose::Payment) => text::KIND_PAYMENT,
+                    _ => text::KIND_ANY,
                 };
-                format!(
-                    "{site}의 Bitcoin 연결 요청을 거부했습니다: 지갑에 {} {address}가 없습니다. Bitcoin 탭에서 그 형식의 계정을 추가한 뒤 다시 연결하세요.",
-                    self.btc_network_now().display_name()
+                text::REFUSED_NO_BTC.fill(
+                    lang,
+                    [
+                        &site,
+                        yw_core::btc::text::network_name(lang, self.btc_network_now()),
+                        address.get(lang),
+                    ],
                 )
             }
-            ProviderError::NoSolAccount => format!(
-                "{site}의 Solana 연결 요청을 거부했습니다: 지갑에 Solana 계정이 없습니다. Solana 탭에서 계정을 추가하거나 개인키를 가져온 뒤 다시 연결하세요."
-            ),
-            ProviderError::NoEvmAccount => format!(
-                "{site}의 연결 요청을 거부했습니다: 지갑에 EVM 계정이 없습니다. EVM 개인키를 가져온 뒤 다시 연결하세요."
-            ),
-            ProviderError::TooManySites => format!(
-                "{site}의 연결 요청을 거부했습니다: 이 체인에 연결된 사이트가 이미 256개입니다. 연결된 사이트 화면에서 하나를 해제한 뒤 다시 연결하세요."
-            ),
+            ProviderError::NoSolAccount => text::REFUSED_NO_SOL.fill(lang, [&site]),
+            ProviderError::NoEvmAccount => text::REFUSED_NO_EVM.fill(lang, [&site]),
+            ProviderError::TooManySites => text::REFUSED_TOO_MANY.fill(lang, [&site]),
             _ => return,
         };
         if self.banners.iter().any(|banner| banner.text == text) {
@@ -1318,16 +1342,14 @@ impl App {
                     // was signed (the page only gets -32603). A card failure has the card
                     // step's own banner.
                     if let MessageSignFailure::Sign(error) = failure {
+                        let lang = self.settings.language;
                         let reason = match error {
                             yw_core::evm::sign::SignError::Vault(error) => {
-                                crate::errors::vault_code(error).text()
+                                crate::errors::vault_code(error).text_in(lang)
                             }
-                            other => other.to_string(),
+                            other => other.text_in(lang),
                         };
-                        self.banner(
-                            None,
-                            format!("사이트의 메시지에 서명하지 못했습니다: {reason}"),
-                        );
+                        self.banner(None, text::MESSAGE_SIGN_FAILED.fill(lang, [&reason]));
                         self.refresh();
                     }
                 }
@@ -1741,8 +1763,10 @@ mod tests {
         assert_eq!(state.chain_id, yw_core::evm::chain::ETHEREUM_MAINNET);
         assert_eq!(
             Some(state.chain_name),
-            app.settings
-                .evm_chain_name(yw_core::evm::chain::ETHEREUM_MAINNET)
+            app.settings.evm_chain_name_in(
+                yw_core::lang::Lang::Ko,
+                yw_core::evm::chain::ETHEREUM_MAINNET
+            )
         );
     }
 

@@ -12,6 +12,7 @@
 //! (closing every secret and approval window, like `잠금`), then the key worker drops the vault
 //! and moves the files (`store::reset`), and the app reloads into S01.
 
+use yw_core::lang::Lang;
 use yw_core::vault::FileKind;
 
 use crate::app::{App, AppMode, Screen};
@@ -24,8 +25,35 @@ use crate::ui::secret::{BACKUP_ACK_HOLD_MS, HoldGate};
 
 /// A wait longer than this shows T-WAIT-STALLED.
 pub const WAIT_TIMEOUT_MS: u64 = 30_000;
-/// What the user types to enable the reset hold.
-pub const RESET_PHRASE: &str = "초기화";
+/// The fixed texts of S22's flow (spec/14).
+pub mod text {
+    yw_core::texts! {
+        /// What the user types to enable the reset hold (in the app language, so it can be typed
+        /// with the keyboard layout of that language).
+        RESET_PHRASE = "초기화" / "reset";
+        /// T-RESET-DONE: {0} number of files, {1} the new folder.
+        RESET_DONE(2) = "지갑을 초기화했습니다. 지갑 파일 {0}개를 지우지 않고 {1} 폴더로 옮겼습니다. 그 지갑을 다시 쓰려면 복구 단어·원래 개인키, 또는 YubiKey(“YubiKey 연결하기 (복구 단어 없이)”)가 필요합니다. 옮긴 파일은 예전 비밀번호로 열립니다(되돌리는 방법: 복구 안내)."
+            / "The wallet was reset. {0} wallet files were moved, not deleted, to the folder {1}. To use that wallet again you need its recovery words or original private keys, or a YubiKey (“Connect a YubiKey (no recovery words)”). The moved files open with the old password (how to undo: recovery guide).";
+        /// T-RESET-DONE when nothing was there.
+        RESET_NOTHING = "옮길 지갑 파일이 없었습니다. 처음 화면입니다."
+            / "There were no wallet files to move. This is the first screen.";
+        /// The new folder could not be created.
+        RESET_FOLDER_FAILED = "지갑 파일을 옮길 폴더를 만들지 못했습니다. 아무 파일도 옮기지 않았습니다. 앱을 다시 실행한 뒤 다시 시도하거나, 앱을 종료하고 데이터 폴더의 파일을 직접 옮기세요(복구 안내)."
+            / "The folder for the wallet files could not be created. No file was moved. Restart the app and try again, or quit the app and move the files of the data folder yourself (recovery guide).";
+        /// A move failed: {0} the file, {1} number moved before, {2} the new folder.
+        RESET_MOVE_FAILED(3) = "{0} 파일을 옮기지 못했습니다. 먼저 옮긴 {1}개는 {2} 폴더에 있습니다. 다른 프로그램이 파일을 쓰고 있지 않은지 확인하고 다시 시도하세요."
+            / "The file {0} could not be moved. The {1} files moved before it are in the folder {2}. Check that no other program is using the files and try again.";
+        /// Added to T-RESET-DONE when sends were in flight (leading space).
+        RESET_IN_FLIGHT_AFTER = " 보내던 거래는 블록체인에서 계속 처리됩니다. 결과는 블록 탐색기에서 확인하세요."
+            / " Transactions that were being sent are still processed on the blockchain. Check their results in a block explorer.";
+        /// The processing screen while the files move.
+        MOVING = "지갑 파일을 옮기는 중…" / "Moving the wallet files…";
+        /// The processing screen while the files load.
+        LOADING = "불러오는 중…" / "Loading…";
+    }
+}
+
+pub use text::RESET_PHRASE;
 
 /// The timed waits (monotonic ms).
 #[derive(Debug, Default)]
@@ -98,8 +126,8 @@ pub struct ResetUi {
 
 /// Whether the confirmation field's text is the phrase (surrounding spaces ignored).
 #[must_use]
-pub fn phrase_matches(text: &str) -> bool {
-    text.trim() == RESET_PHRASE
+pub fn phrase_matches(lang: Lang, text: &str) -> bool {
+    text.trim() == RESET_PHRASE.get(lang)
 }
 
 fn now_unix_ms() -> u64 {
@@ -112,26 +140,36 @@ fn now_unix_ms() -> u64 {
 
 /// T-RESET-DONE.
 #[must_use]
-pub fn reset_done_text(report: &ResetReport) -> String {
+pub fn reset_done_text(lang: Lang, report: &ResetReport) -> String {
     match &report.folder {
-        Some(folder) => format!(
-            "지갑을 초기화했습니다. 지갑 파일 {}개를 지우지 않고 {} 폴더로 옮겼습니다. 그 지갑을 다시 쓰려면 복구 단어·원래 개인키, 또는 YubiKey(“YubiKey 연결하기 (복구 단어 없이)”)가 필요합니다. 옮긴 파일은 예전 비밀번호로 열립니다(되돌리는 방법: 복구 안내).",
-            report.moved.len(),
-            folder.display()
+        Some(folder) => text::RESET_DONE.fill(
+            lang,
+            [
+                &report.moved.len().to_string(),
+                &folder.display().to_string(),
+            ],
         ),
-        None => "옮길 지갑 파일이 없었습니다. 처음 화면입니다.".to_owned(),
+        None => text::RESET_NOTHING.get(lang).to_owned(),
     }
 }
 
 /// The text of a failed reset.
 #[must_use]
-pub fn reset_failed_text(error: &ResetError) -> String {
+pub fn reset_failed_text(lang: Lang, error: &ResetError) -> String {
     match error {
-        ResetError::Folder(_) => "지갑 파일을 옮길 폴더를 만들지 못했습니다. 아무 파일도 옮기지 않았습니다. 앱을 다시 실행한 뒤 다시 시도하거나, 앱을 종료하고 데이터 폴더의 파일을 직접 옮기세요(복구 안내).".to_owned(),
-        ResetError::Move { folder, moved, failed, .. } => format!(
-            "{failed} 파일을 옮기지 못했습니다. 먼저 옮긴 {}개는 {} 폴더에 있습니다. 다른 프로그램이 파일을 쓰고 있지 않은지 확인하고 다시 시도하세요.",
-            moved.len(),
-            folder.display()
+        ResetError::Folder(_) => text::RESET_FOLDER_FAILED.get(lang).to_owned(),
+        ResetError::Move {
+            folder,
+            moved,
+            failed,
+            ..
+        } => text::RESET_MOVE_FAILED.fill(
+            lang,
+            [
+                failed,
+                &moved.len().to_string(),
+                &folder.display().to_string(),
+            ],
         ),
     }
 }
@@ -260,7 +298,7 @@ impl App {
 
     /// The confirmation field changed.
     pub(crate) fn reset_phrase_changed(&mut self, text: &str) {
-        let ok = phrase_matches(text);
+        let ok = phrase_matches(self.settings.language, text);
         if ok != self.reset.phrase_ok {
             self.reset.phrase_ok = ok;
             self.reset.gate.cancel();
@@ -313,10 +351,11 @@ impl App {
             warned_in_flight: in_flight,
             ..ResetUi::default()
         };
-        self.set_screen(Screen::Processing("지갑 파일을 옮기는 중…"));
+        self.set_screen(Screen::Processing(text::MOVING.get(self.settings.language)));
         self.key(KeyJob::ResetWallet {
             stamp: crate::store::reset::stamp(now_unix_ms()),
             include_settings,
+            lang: self.settings.language,
         });
     }
 
@@ -364,19 +403,22 @@ impl App {
                 self.guard.rollback = None;
                 self.guard.vault_file = None;
                 self.forget_vault_state();
-                let mut text = reset_done_text(&report);
+                let lang = self.settings.language;
+                let mut done = reset_done_text(lang, &report);
                 if in_flight {
-                    text.push_str(" 보내던 거래는 블록체인에서 계속 처리됩니다. 결과는 블록 탐색기에서 확인하세요.");
+                    done.push_str(text::RESET_IN_FLIGHT_AFTER.get(lang));
                 }
-                self.info = Some(text);
+                self.info = Some(done);
             }
             Err(error) => {
                 logging::warn("app", "reset.failed", &[]);
-                self.banner(None, reset_failed_text(&error));
+                self.banner(None, reset_failed_text(self.settings.language, &error));
             }
         }
         // S01 (nothing left) or, after a partial move, whatever the files now say.
-        self.set_screen(Screen::Processing("불러오는 중…"));
+        self.set_screen(Screen::Processing(
+            text::LOADING.get(self.settings.language),
+        ));
         self.key(KeyJob::Load);
     }
 

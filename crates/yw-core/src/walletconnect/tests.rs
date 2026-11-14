@@ -68,6 +68,28 @@ fn bad_pairing_uris_are_refused() {
     );
 }
 
+/// spec/14: every paste-field message exists in both languages; the Korean one is the `Display`.
+#[test]
+fn uri_messages_in_both_languages() {
+    use crate::lang::{Lang, has_hangul};
+    for error in [
+        UriError::NotWalletConnect,
+        UriError::Version1,
+        UriError::UnsupportedVersion,
+        UriError::BadTopic,
+        UriError::BadSymKey,
+        UriError::BadRelay,
+        UriError::Malformed,
+    ] {
+        assert_eq!(error.to_string(), error.message(Lang::Ko));
+        assert!(has_hangul(error.message(Lang::Ko)));
+        assert!(!has_hangul(error.message(Lang::En)), "{error:?}");
+    }
+    for entry in uri::text::ALL {
+        assert!(!has_hangul(entry.en), "{}", entry.name);
+    }
+}
+
 /// The test case of `clients/core/crypto/crypto-authentication.md` (seed, sub, aud, iat, ttl
 /// 86400 → the published JWT).
 #[test]

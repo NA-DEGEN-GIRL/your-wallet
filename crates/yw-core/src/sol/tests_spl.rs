@@ -14,7 +14,7 @@ use super::address::{
 };
 use super::display::{
     L08, SimSummary, SolPreviewFacts, SplPreviewFacts, build_sol_transfer_request, max_sol_debit,
-    transfer_title,
+    transfer_title_in,
 };
 use super::fee::{SOL_TRANSFER_CU_LIMIT, SPL_TRANSFER_CU_LIMIT, max_fee};
 use super::intent::{SolTransferIntent, flags};
@@ -653,7 +653,7 @@ fn spl_signing_matches_the_reference_key_and_journals_526_bytes() {
     let mut landed = record;
     landed.state = crate::journal::sol::SolTxState::Landed;
     landed.terminal_slot = 9;
-    let row = activity_row(&landed, 77).unwrap();
+    let row = activity_row(crate::lang::Lang::Ko, &landed, 77).unwrap();
     assert_eq!(row.asset, "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
     assert_eq!(row.amount, "1000000");
     assert_eq!(row.counterparty, TO);
@@ -732,7 +732,7 @@ fn spl_approval_fields_rent_display_and_send_max() {
     );
     assert_eq!(
         draft.display.title,
-        transfer_title(SolCluster::Mainnet, &template_core())
+        transfer_title_in(Lang::Ko, SolCluster::Mainnet, &template_core())
     );
     let keys: Vec<u16> = draft
         .display

@@ -256,4 +256,48 @@ crate::texts! {
         / "Sign only — the signed transactions go back to the site (the wallet does not send them)\nTransactions: {0}";
     SUMMARY_SEND = "서명 후 전송 — 지갑이 서명하고 바로 전송합니다\n거래 1건"
         / "Sign and send — the wallet signs and sends right away\nTransactions: 1";
+
+    // ----- payload errors (SolTxPayloadError) --------------------------------------------------
+    PAYLOAD_COUNT = "사이트 거래 수가 맞지 않습니다" / "The number of site transactions is wrong";
+    PAYLOAD_SLOT = "서명자 슬롯이 맞지 않습니다" / "The signer slot does not match";
+    PAYLOAD_LOADED = "조회 테이블 주소 수가 맞지 않습니다"
+        / "The number of lookup table addresses does not match";
+    PAYLOAD_MISSING_SIGNATURE = "전송하려면 다른 서명이 모두 필요합니다"
+        / "Sending needs all other signatures";
+    PAYLOAD_DURABLE_NONCE = "durable nonce 거래는 지갑이 전송하지 않습니다"
+        / "The wallet does not send durable nonce transactions";
+    PAYLOAD_SOURCE = "복구 스캔 계정으로는 서명하지 않습니다"
+        / "Recovery scan accounts do not sign";
+
+    // ----- parse errors (SolTxError: PARSE_ERROR with one reason) ------------------------------
+    PARSE_ERROR(1) = "사이트 거래 형식이 올바르지 않습니다: {0}" / "The site transaction is malformed: {0}";
+    PARSE_EMPTY = "비어 있음" / "empty";
+    PARSE_TOO_LARGE = "1,232바이트를 넘음" / "over 1,232 bytes";
+    PARSE_SHORT_VEC = "길이 표기(compact-u16)가 잘못됨" / "invalid length prefix (compact-u16)";
+    PARSE_TRUNCATED = "중간에 끝남" / "ends early";
+    PARSE_VERSION(1) = "지원하지 않는 메시지 버전({0})" / "unsupported message version ({0})";
+    PARSE_HEADER = "header 값이 계정 키와 맞지 않음" / "header values do not match the account keys";
+    PARSE_TOO_MANY_KEYS = "계정 키가 256개를 넘음" / "more than 256 account keys";
+    PARSE_DUPLICATE_KEY = "같은 계정 키가 두 번 있음" / "an account key appears twice";
+    PARSE_PROGRAM_INDEX = "프로그램 인덱스가 잘못됨" / "invalid program index";
+    PARSE_ACCOUNT_INDEX = "계정 인덱스가 범위 밖" / "account index out of range";
+    PARSE_EMPTY_LOOKUP = "주소를 하나도 읽지 않는 조회 테이블 항목"
+        / "a lookup table entry that loads no address";
+    PARSE_TOO_MANY_IX = "명령이 64개를 넘음" / "more than 64 instructions";
+    PARSE_SIGNATURE_COUNT = "서명 수가 필요한 서명자 수와 다름"
+        / "the signature count differs from the required signers";
+    PARSE_TRAILING = "끝에 남는 바이트가 있음" / "trailing bytes";
+    PARSE_ENCODING = "다시 인코딩한 바이트가 다름" / "re-encoded bytes differ";
+    PARSE_NOT_SIGNER = "이 계정은 거래의 서명자가 아님" / "this account is not a signer of the transaction";
+
+    // ----- signer errors (SolTxSignError) ------------------------------------------------------
+    SIGN_DEADLINE = "승인 후 서명까지 시간이 너무 오래 걸려 서명하지 않았습니다"
+        / "Too much time passed between approval and signing, so nothing was signed";
+    SIGN_TABLES_CHANGED = "조회 테이블 주소가 승인한 값과 달라 서명하지 않았습니다"
+        / "The lookup table addresses differ from the approved ones, so nothing was signed";
+    SIGN_FOREIGN = "사이트가 넣은 서명이 맞지 않아 서명하지 않았습니다"
+        / "A signature added by the site is invalid, so nothing was signed";
+    SIGN_INTERNAL = "내부 검증에 실패해 서명하지 않았습니다."
+        / "Internal verification failed, so nothing was signed.";
+    SIGN_POST = "서명하지 못했습니다(내부 오류)" / "Could not sign (internal error)";
 }

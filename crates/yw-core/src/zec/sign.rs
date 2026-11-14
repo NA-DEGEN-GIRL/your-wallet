@@ -98,19 +98,25 @@ pub enum ZecSignError {
     PostSign(PostSignError),
 }
 
+impl ZecSignError {
+    /// The fixed text in `lang` (`Display` is the Korean one).
+    #[must_use]
+    pub fn text_in(self, lang: crate::lang::Lang) -> String {
+        use super::text as t;
+        let text = match self {
+            Self::Vault(error) => return error.text_in(lang),
+            Self::Card(error) => return error.text_in(lang),
+            Self::ApprovalMismatch => t::SIGN_APPROVAL_MISMATCH,
+            Self::KeyMismatch => t::SIGN_KEY_MISMATCH,
+            Self::PlanInconsistent | Self::Signature(_) | Self::PostSign(_) => t::SIGN_VERIFY,
+        };
+        text.get(lang).to_owned()
+    }
+}
+
 impl fmt::Display for ZecSignError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Vault(error) => error.fmt(formatter),
-            Self::Card(error) => error.fmt(formatter),
-            Self::ApprovalMismatch => formatter.write_str("승인 내용과 서명할 거래가 다릅니다."),
-            Self::KeyMismatch => {
-                formatter.write_str("서명 키가 이 Zcash 계정의 키와 다릅니다. 서명을 멈췄습니다.")
-            }
-            Self::PlanInconsistent | Self::Signature(_) | Self::PostSign(_) => {
-                formatter.write_str("Zcash 거래 서명 검증에 실패해 폐기했습니다.")
-            }
-        }
+        formatter.write_str(&self.text_in(crate::lang::Lang::Ko))
     }
 }
 

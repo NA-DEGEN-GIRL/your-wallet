@@ -74,31 +74,31 @@ pub enum ZecPlanError {
 }
 
 impl ZecPlanError {
-    /// The fixed Korean text.
+    /// The fixed text in `lang` (`Display` is the Korean one).
     #[must_use]
-    pub fn text(self) -> String {
+    pub fn text_in(self, lang: crate::lang::Lang) -> String {
+        use super::text as t;
         match self {
-            Self::AmountInvalid => format!(
-                "보낼 금액이 올바르지 않습니다 (최소 {} ZEC).",
-                format_zec(ZEC_DUST)
+            Self::AmountInvalid => t::PLAN_AMOUNT.fill(lang, [&format_zec(ZEC_DUST)]),
+            Self::Insufficient { available, needed } => t::PLAN_INSUFFICIENT.fill(
+                lang,
+                [
+                    &format_zec_and_zats(needed),
+                    &format_zec_and_zats(available),
+                ],
             ),
-            Self::Insufficient { available, needed } => format!(
-                "확인된 잔액이 부족합니다: 필요 {} (수수료 포함), 사용 가능 {}.",
-                format_zec_and_zats(needed),
-                format_zec_and_zats(available)
-            ),
-            Self::TooManyInputs => format!(
-                "입력이 {ZEC_MAX_INPUTS}개를 넘어야 해서 한 번에 보낼 수 없습니다. 금액을 나눠 보내세요."
-            ),
-            Self::FeeTooHigh => "수수료가 상한을 넘습니다.".to_owned(),
-            Self::NoFunds => "보낼 수 있는 확인된 잔액이 없습니다.".to_owned(),
+            Self::TooManyInputs => {
+                t::PLAN_TOO_MANY_INPUTS.fill(lang, [&ZEC_MAX_INPUTS.to_string()])
+            }
+            Self::FeeTooHigh => t::PLAN_FEE_HIGH.get(lang).to_owned(),
+            Self::NoFunds => t::PLAN_NO_FUNDS.get(lang).to_owned(),
         }
     }
 }
 
 impl fmt::Display for ZecPlanError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.text())
+        formatter.write_str(&self.text_in(crate::lang::Lang::Ko))
     }
 }
 

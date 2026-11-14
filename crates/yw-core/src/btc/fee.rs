@@ -8,8 +8,8 @@ use core::fmt;
 
 use super::amount::{AmountError, Sats, format_btc, parse_btc_decimal};
 use super::{
-    BTC_CONF_TARGETS, BTC_FEE_ABS_CAP, BTC_FEE_FLOOR_DEFAULT, BTC_FEE_RATE_CAP,
-    BTC_FEE_RATE_UNOVERRIDABLE, BTC_FEE_RATIO_CONFIRM,
+    BTC_FEE_ABS_CAP, BTC_FEE_FLOOR_DEFAULT, BTC_FEE_RATE_CAP, BTC_FEE_RATE_UNOVERRIDABLE,
+    BTC_FEE_RATIO_CONFIRM,
 };
 
 /// sat/kvB per sat/vB.
@@ -165,22 +165,10 @@ pub enum FeeSource {
 }
 
 impl FeeSource {
-    /// The fixed source text of field `0x0606`.
+    /// The fixed source text of field `0x0606` in `lang` (`노드 추정(빠름, 2블록 목표)`, …).
     #[must_use]
-    pub fn text(self) -> String {
-        match self {
-            Self::Estimate { target } => {
-                let speed = match BTC_CONF_TARGETS {
-                    [fast, _, _] if target == fast => "빠름, ",
-                    [_, normal, _] if target == normal => "보통, ",
-                    [_, _, slow] if target == slow => "느림, ",
-                    _ => "",
-                };
-                format!("노드 추정({speed}{target}블록 목표)")
-            }
-            Self::Manual => "직접 입력".to_owned(),
-            Self::Floor => "하한 적용".to_owned(),
-        }
+    pub fn text_in(self, lang: crate::lang::Lang) -> String {
+        super::text::fee_source_text(lang, self)
     }
 }
 
@@ -224,15 +212,22 @@ pub enum FeeError {
     Overflow,
 }
 
+impl FeeError {
+    /// The fixed text in `lang` (`Display` is the Korean one).
+    #[must_use]
+    pub fn text_in(self, lang: crate::lang::Lang) -> String {
+        use super::text as t;
+        match self {
+            Self::NoEstimate => t::FEE_NO_ESTIMATE.get(lang).to_owned(),
+            Self::ManualBelowFloor { floor } => t::FEE_BELOW_FLOOR.fill(lang, [&floor.to_string()]),
+            Self::Overflow => t::FEE_OVERFLOW.get(lang).to_owned(),
+        }
+    }
+}
+
 impl fmt::Display for FeeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NoEstimate => formatter.write_str("수수료 추정이 없습니다. 직접 입력하세요"),
-            Self::ManualBelowFloor { floor } => {
-                write!(formatter, "수수료율이 노드 하한({floor})보다 낮습니다")
-            }
-            Self::Overflow => formatter.write_str("수수료 계산 범위를 넘었습니다"),
-        }
+        formatter.write_str(&self.text_in(crate::lang::Lang::Ko))
     }
 }
 

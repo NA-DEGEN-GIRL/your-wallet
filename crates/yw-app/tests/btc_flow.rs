@@ -1199,17 +1199,17 @@ fn esplora_settings_test() -> TestResult {
         // Exactly one GET of `/block-height/0`, no retry, no address.
         assert_eq!(rig.fake.get_paths(), ["/block-height/0"]);
         assert!(rig.clock.sleeps().is_empty());
-        let message = outcome.message(BtcNetwork::Testnet4);
+        let message = outcome.message(yw_core::lang::Lang::Ko, BtcNetwork::Testnet4);
         assert!(!message.contains(SERVER_STRING));
         rig.log.assert_no_url();
         assert!(rig.log.lines()[0].contains("net=bitcoin:testnet4 idx=esplora path=block-height"));
     }
     assert_eq!(
-        EsploraTestOutcome::Ok.message(BtcNetwork::Testnet4),
+        EsploraTestOutcome::Ok.message(yw_core::lang::Lang::Ko, BtcNetwork::Testnet4),
         "Esplora 서버가 작동합니다. (Bitcoin testnet4, genesis 일치)"
     );
     assert_eq!(
-        EsploraTestOutcome::Mismatch.message(BtcNetwork::Testnet4),
+        EsploraTestOutcome::Mismatch.message(yw_core::lang::Lang::Ko, BtcNetwork::Testnet4),
         "Bitcoin 인덱서가 다른 네트워크를 가리킵니다. 설정 → Bitcoin에서 인덱서와 Esplora URL을 확인하세요. (E-BTC-003)"
     );
     // The mainnet line with the mainnet genesis passes.
@@ -1261,7 +1261,7 @@ fn esplora_broadcast_manual_only() -> TestResult {
     let sent = send_raw_transaction(&client, &mut session, &raw, "0.00002000", &local, input)?;
     assert_eq!(sent, SendRawResult::Transport);
     let comm_failure = matches!(
-        broadcast_outcome(&sent, &local),
+        broadcast_outcome(yw_core::lang::Lang::Ko, &sent, &local),
         BroadcastOutcome::BroadcastUnknown {
             comm_failure: true,
             ..
@@ -1297,7 +1297,7 @@ fn esplora_broadcast_manual_only() -> TestResult {
         SendRawResult::NotTxid,
     ] {
         assert!(!matches!(
-            broadcast_outcome(&result, &local),
+            broadcast_outcome(yw_core::lang::Lang::Ko, &result, &local),
             BroadcastOutcome::BroadcastUnknown {
                 comm_failure: true,
                 ..
@@ -1379,11 +1379,15 @@ fn esplora_broadcast_manual_only() -> TestResult {
         let outcome = esplora_broadcast_confirmed(&client, &session, gate, &raw, &local)?;
         assert_eq!(outcome, expected);
         assert_eq!(post_rig.fake.count_verb(Verb::PostText), 1);
-        assert!(!outcome.text().contains(SERVER_STRING));
+        assert!(
+            !outcome
+                .text(yw_core::lang::Lang::Ko)
+                .contains(SERVER_STRING)
+        );
         post_rig.log.assert_no_url();
     }
     assert_eq!(
-        EsploraPostOutcome::Rejected.text(),
+        EsploraPostOutcome::Rejected.text(yw_core::lang::Lang::Ko),
         "Esplora 서버가 거래 전송을 거부했습니다. 활동에서 상태를 확인하고 필요하면 수수료를 올리세요. (E-BTC-008)"
     );
     Ok(())

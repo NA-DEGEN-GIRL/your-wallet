@@ -37,19 +37,33 @@ pub enum ExtensionStatus {
 }
 
 impl ExtensionStatus {
-    /// The status line.
+    /// The status line in `lang`.
     #[must_use]
-    pub const fn text(self) -> &'static str {
+    pub const fn text_in(self, lang: yw_core::lang::Lang) -> &'static str {
         match self {
-            Self::Connected => "확장이 지금 이 앱에 연결되어 있습니다.",
-            Self::ConnectedBefore => "확장이 연결된 적 있음 (연결된 사이트가 있습니다).",
-            Self::Never => {
-                "아직 연결되지 않음 — 확장을 설치한 뒤 dApp 사이트에서 '지갑 연결'을 누르면 연결됩니다."
-            }
-            Self::Unknown => {
-                "지금은 연결되어 있지 않습니다. 연결 기록(연결된 사이트)은 잠금을 해제하면 보입니다."
-            }
+            Self::Connected => text::CONNECTED,
+            Self::ConnectedBefore => text::CONNECTED_BEFORE,
+            Self::Never => text::NEVER,
+            Self::Unknown => text::UNKNOWN,
         }
+        .get(lang)
+    }
+}
+
+/// S23 texts (spec/04 §2.21; English spec/14 §5).
+pub mod text {
+    yw_core::texts! {
+        CONNECTED = "확장이 지금 이 앱에 연결되어 있습니다." / "The extension is connected to this app now.";
+        CONNECTED_BEFORE = "확장이 연결된 적 있음 (연결된 사이트가 있습니다)."
+            / "The extension has connected before (there are connected sites).";
+        NEVER = "아직 연결되지 않음 — 확장을 설치한 뒤 dApp 사이트에서 '지갑 연결'을 누르면 연결됩니다."
+            / "Not connected yet — after installing the extension, press 'Connect wallet' on a dApp site.";
+        UNKNOWN = "지금은 연결되어 있지 않습니다. 연결 기록(연결된 사이트)은 잠금을 해제하면 보입니다."
+            / "Not connected now. The connection record (connected sites) shows after you unlock.";
+        PATH_COPIED = "경로를 복사했습니다. 폴더 선택 창 위쪽 주소 칸에 Ctrl+V 하세요."
+            / "Path copied. Press Ctrl+V in the address box at the top of the folder picker.";
+        URL_COPIED = "chrome://extensions 주소를 복사했습니다. Chrome 주소창에 붙여넣으세요."
+            / "Copied chrome://extensions. Paste it into the Chrome address bar.";
     }
 }
 
@@ -168,7 +182,11 @@ impl App {
                     Self::open_folder(&dir);
                 } else {
                     logging::info("app", "extension.folder_missing", &[]);
-                    self.info = Some(crate::ui::screens_reset::T_EXT_MISSING.to_owned());
+                    self.info = Some(
+                        crate::ui::screens_reset::T_EXT_MISSING
+                            .get(self.settings.language)
+                            .to_owned(),
+                    );
                     self.refresh();
                 }
             }
@@ -177,10 +195,7 @@ impl App {
                     self.copy_text(&dir.display().to_string());
                     // A setup step: its instruction stays a band (not the mark at the button).
                     if self.copied.take().is_some() {
-                        self.info = Some(
-                            "경로를 복사했습니다. 폴더 선택 창 위쪽 주소 칸에 Ctrl+V 하세요."
-                                .to_owned(),
-                        );
+                        self.info = Some(text::PATH_COPIED.get(self.settings.language).to_owned());
                         self.refresh();
                     }
                 }
@@ -188,10 +203,7 @@ impl App {
             ids::EXT_COPY_URL => {
                 self.copy_text(CHROME_EXTENSIONS_URL);
                 if self.copied.take().is_some() {
-                    self.info = Some(
-                        "chrome://extensions 주소를 복사했습니다. Chrome 주소창에 붙여넣으세요."
-                            .to_owned(),
-                    );
+                    self.info = Some(text::URL_COPIED.get(self.settings.language).to_owned());
                     self.refresh();
                 }
             }

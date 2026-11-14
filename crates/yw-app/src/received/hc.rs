@@ -10,6 +10,7 @@
 
 use yw_core::evm::address::{Address, parse_address};
 use yw_core::hypercore::{HYPE_SYSTEM_ADDRESS, system_address_index};
+use yw_core::lang::Lang;
 use yw_json::{Number, Object, Value};
 
 use super::{Cursor, DUST_HC, Fetched, Found, Incoming, decimal_text};
@@ -19,10 +20,18 @@ use crate::text::{json_object, json_str, json_u64};
 
 /// How far back the first read looks (30 days).
 pub const FIRST_WINDOW_MS: u64 = 30 * 24 * 60 * 60 * 1_000;
-/// The sender line of a bridge deposit.
-pub const T_DEPOSIT: &str = "보낸 곳: Arbitrum 브리지 입금 (보낸 주소 없음)";
-/// The sender line of a transfer from a `HyperEVM` system address (a move from `HyperEVM`).
-pub const T_FROM_EVM: &str = "보낸 곳: HyperEVM에서 이동 (시스템 주소)";
+/// `HyperCore` received-history texts (spec/04 §2.6; English spec/14 §5).
+pub mod text {
+    yw_core::texts! {
+        /// The sender line of a bridge deposit.
+        DEPOSIT = "보낸 곳: Arbitrum 브리지 입금 (보낸 주소 없음)"
+            / "From: Arbitrum bridge deposit (no sender address)";
+        /// The sender line of a transfer from a `HyperEVM` system address (a move from
+        /// `HyperEVM`).
+        FROM_EVM = "보낸 곳: HyperEVM에서 이동 (시스템 주소)"
+            / "From: moved from HyperEVM (system address)";
+    }
+}
 
 /// The `/info` body.
 #[must_use]
@@ -53,9 +62,9 @@ fn listed(token: &str, amount: &str) -> Result<Option<String>, ()> {
 
 /// The listed rows and dust keys of a `userNonFundingLedgerUpdates` answer for `account`, and
 /// the newest `time` in it; `None` when the answer is not an array (entries of another shape are
-/// skipped).
+/// skipped). The sender lines are in `lang`.
 #[must_use]
-pub fn parse_ledger(value: &Value, account: &Address) -> Option<(Found, Option<u64>)> {
+pub fn parse_ledger(value: &Value, account: &Address, lang: Lang) -> Option<(Found, Option<u64>)> {
     let list = value.as_array()?;
     let mut found = Found::default();
     let mut newest: Option<u64> = None;
@@ -119,8 +128,8 @@ pub fn parse_ledger(value: &Value, account: &Address) -> Option<(Found, Option<u
                     symbol: token.to_owned(),
                     from: from.filter(|_| !system).map(Address::to_lower_hex),
                     from_note: match (from, system) {
-                        (None, _) => Some(T_DEPOSIT),
-                        (Some(_), true) => Some(T_FROM_EVM),
+                        (None, _) => Some(text::DEPOSIT.get(lang)),
+                        (Some(_), true) => Some(text::FROM_EVM.get(lang)),
                         (Some(_), false) => None,
                     },
                     pending: false,
@@ -136,7 +145,7 @@ pub fn parse_ledger(value: &Value, account: &Address) -> Option<(Found, Option<u
 ///
 /// # Errors
 ///
-/// A fixed error text.
+/// A fixed error text in the endpoint's language.
 pub fn fetch(
     transport: &dyn Transport,
     endpoint: &HcEndpoint,
@@ -155,8 +164,8 @@ pub fn fetch(
         &body(account, start),
         MAX_INFO_RESPONSE,
     )?;
-    let (found, newest) = parse_ledger(&value, account)
-        .ok_or_else(|| "Hyperliquid API 응답 형식이 올바르지 않습니다".to_owned())?;
+    let (found, newest) = parse_ledger(&value, account, endpoint.lang)
+        .ok_or_else(|| crate::hypercore::shape(endpoint.lang))?;
     let cursor = match newest.max(previous) {
         Some(time) => Cursor::Time(time),
         None => Cursor::Time(start.saturating_sub(1)),
@@ -173,7 +182,9 @@ mod tests {
     use yw_core::evm::address::Address;
     use yw_json::Limits;
 
-    use super::{T_DEPOSIT, T_FROM_EVM, body, parse_ledger};
+    use yw_core::lang::Lang;
+
+    use super::{body, parse_ledger, text};
 
     const ME: &str = "0x9858effd232b4033e47d90003d41ec34ecaeda94";
     const THEM: &str = "0x5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a";
@@ -201,7 +212,7 @@ mod tests {
         ]"#
         );
         let value = yw_json::parse(text.as_bytes(), &Limits::RESPONSE).unwrap();
-        let (found, newest) = parse_ledger(&value, &me()).unwrap();
+        let (found, newest) = parse_ledger(&value, &me(), Lang::Ko).unwrap();
         assert_eq!(newest, Some(1_700_000_000_010));
         let rows: Vec<(&str, &str)> = found
             .entries
@@ -218,15 +229,22 @@ mod tests {
             ]
         );
         assert_eq!(found.entries[0].from, None);
-        assert_eq!(found.entries[0].from_note, Some(T_DEPOSIT));
+        assert_eq!(found.entries[0].from_note, Some(text::DEPOSIT.ko));
         assert_eq!(found.entries[1].from.as_deref(), Some(THEM));
         assert_eq!(found.entries[1].hash, hash);
         assert_eq!(found.entries[3].from, None);
-        assert_eq!(found.entries[3].from_note, Some(T_FROM_EVM));
+        assert_eq!(found.entries[3].from_note, Some(text::FROM_EVM.ko));
         // 0.001 USDC (below 0.01) and a 0 USDC `send`: dust. PURR (not allowlisted), our own
         // outgoing transfer, funding and class transfers: not listed, not counted.
         assert_eq!(found.dust.len(), 2);
-        assert!(parse_ledger(&yw_json::Value::Null, &me()).is_none());
+        assert!(parse_ledger(&yw_json::Value::Null, &me(), Lang::Ko).is_none());
+        // spec/14: the same rows in English carry English sender lines.
+        let (english, _) = parse_ledger(&value, &me(), Lang::En).unwrap();
+        assert_eq!(english.entries[0].from_note, Some(text::DEPOSIT.en));
+        assert_eq!(english.entries[3].from_note, Some(text::FROM_EVM.en));
+        for entry in text::ALL {
+            assert!(!yw_core::lang::has_hangul(entry.en), "{}", entry.name);
+        }
         let sent = String::from_utf8(body(&me(), 5)).unwrap();
         assert_eq!(
             sent,

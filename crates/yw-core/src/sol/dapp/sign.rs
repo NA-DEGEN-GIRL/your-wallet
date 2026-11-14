@@ -50,27 +50,29 @@ pub enum SolTxSignError {
     Vault(VaultError),
 }
 
-impl fmt::Display for SolTxSignError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::DeadlineExceeded => {
-                formatter.write_str("승인 후 서명까지 시간이 너무 오래 걸려 서명하지 않았습니다")
-            }
-            Self::TablesChanged => {
-                formatter.write_str("조회 테이블 주소가 승인한 값과 달라 서명하지 않았습니다")
-            }
-            Self::ForeignSignature | Self::MissingSignature => {
-                formatter.write_str("사이트가 넣은 서명이 맞지 않아 서명하지 않았습니다")
-            }
-            Self::Vault(error) => error.fmt(formatter),
+impl SolTxSignError {
+    /// The fixed text in `lang` (`Display` is the Korean one).
+    #[must_use]
+    pub fn text_in(self, lang: crate::lang::Lang) -> String {
+        use super::text as t;
+        let text = match self {
+            Self::DeadlineExceeded => t::SIGN_DEADLINE,
+            Self::TablesChanged => t::SIGN_TABLES_CHANGED,
+            Self::ForeignSignature | Self::MissingSignature => t::SIGN_FOREIGN,
+            Self::Vault(error) => return error.text_in(lang),
             Self::KindMismatch
             | Self::EncodingMismatch
             | Self::KeyMismatch
-            | Self::PolicyMismatch => {
-                formatter.write_str("내부 검증에 실패해 서명하지 않았습니다.")
-            }
-            Self::PostSignVerification => formatter.write_str("서명하지 못했습니다(내부 오류)"),
-        }
+            | Self::PolicyMismatch => t::SIGN_INTERNAL,
+            Self::PostSignVerification => t::SIGN_POST,
+        };
+        text.get(lang).to_owned()
+    }
+}
+
+impl fmt::Display for SolTxSignError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.text_in(crate::lang::Lang::Ko))
     }
 }
 
@@ -94,6 +96,17 @@ pub enum SolTxCardError {
     Sign(SolTxSignError),
     /// The card operation failed.
     Card(crate::yubikey::CardError),
+}
+
+impl SolTxCardError {
+    /// The text in `lang` (`Display` is the Korean one).
+    #[must_use]
+    pub fn text_in(self, lang: crate::lang::Lang) -> String {
+        match self {
+            Self::Sign(error) => error.text_in(lang),
+            Self::Card(error) => error.text_in(lang),
+        }
+    }
 }
 
 impl fmt::Display for SolTxCardError {

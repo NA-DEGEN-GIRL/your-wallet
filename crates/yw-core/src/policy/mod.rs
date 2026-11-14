@@ -16,7 +16,7 @@ mod method;
 
 pub use chain_grant::{
     BtcGrant, BtcGrantAddress, BtcPurpose, MAX_CHAIN_GRANTS, SolGrant, btc_address_type,
-    btc_purposes_valid,
+    btc_purposes_valid, text as chain_grant_text,
 };
 pub use error::{ProviderError, TxField, TxRule, UnsupportedTxKey};
 pub use grant::{ConnectedSite, MAX_GRANT_ACCOUNTS, MAX_GRANTS, valid_selection};

@@ -6,6 +6,7 @@
 use yw_core::approval::Approved;
 use yw_core::journal::zec::{ZecRecord, ZecTransition, ZecTxState};
 use yw_core::keyimport::ZecKeyInfo;
+use yw_core::lang::Lang;
 use yw_core::zec::address::parse_recipient;
 use yw_core::zec::upgrade::tx_consensus;
 use yw_core::zec::{
@@ -23,8 +24,72 @@ use crate::workers::rpc::RpcJob;
 use crate::zec::rpc::{SendOutcome, TxStatus, ZecRpcError};
 use crate::zec::work::{ZecRpcEvent, ZecRpcJob, ZecSnapshot};
 
-/// The banner of a hardware account whose key no enrolled card holds any more.
-pub const T_ZEC_HW_MISSING: &str = "이 Zcash 계정의 YubiKey 키를 등록된 YubiKey에서 찾을 수 없습니다 (슬롯을 바꾸었거나 비웠습니다). 받기와 보내기를 멈췄습니다. 그 키가 있는 YubiKey를 다시 등록하거나, 원하면 키 출처를 '표준'으로 바꾸세요(다른 주소가 됩니다).";
+/// Fixed texts of the Zcash tab controller (spec/12 §11, spec/14).
+pub mod text {
+    yw_core::texts! {
+        /// The banner of a hardware account whose key no enrolled card holds any more.
+        HW_MISSING = "이 Zcash 계정의 YubiKey 키를 등록된 YubiKey에서 찾을 수 없습니다 (슬롯을 바꾸었거나 비웠습니다). 받기와 보내기를 멈췄습니다. 그 키가 있는 YubiKey를 다시 등록하거나, 원하면 키 출처를 '표준'으로 바꾸세요(다른 주소가 됩니다)."
+            / "The YubiKey key of this Zcash account is not on any enrolled YubiKey (the slot was changed or emptied). Receiving and sending are stopped. Enroll the YubiKey that has the key again, or switch the key source to 'Standard' if you want (that is a different address).";
+        /// `삭제` of an imported Zcash key while a transaction of its account may still confirm.
+        REMOVE_BUSY = "진행 중인 Zcash 거래가 이 키를 쓰고 있어 지울 수 없습니다. 확인되거나 만료된 뒤에 지우세요."
+            / "A Zcash transaction in progress uses this key, so it cannot be deleted. Delete it after the transaction confirms or expires.";
+        /// `삭제` of an imported Zcash key while its transactions cannot be checked.
+        REMOVE_UNCHECKED = "Zcash 거래 기록을 아직 읽지 못했거나 손상된 Zcash 기록이 있어, 이 키로 보낸 거래가 끝났는지 확인할 수 없습니다. 기록을 읽은 뒤(손상은 복구한 뒤) 다시 지우세요."
+            / "The Zcash transaction records are not read yet or a Zcash record is damaged, so it cannot be checked whether the transactions sent with this key have ended. Delete it again after the records are read (and any damage is repaired).";
+        /// W-ADDR-3 note (name, equal ends).
+        LOOK_ALIKE(2) = "'{0}'과 {1}가 같지만 다른 주소입니다. 주소 오염 공격일 수 있습니다."
+            / "Same {1} as '{0}', but a different address. This may be an address poisoning attack.";
+        ENDS_TAIL(1) = "끝 {0}자" / "last {0} characters";
+        ENDS_HEAD(1) = "앞 {0}자" / "first {0} characters";
+        ENDS_BOTH(2) = "앞 {0}자·끝 {1}자" / "first {0} and last {1} characters";
+        /// Names of known addresses.
+        KNOWN_ACCOUNT = "내 Zcash 계정" / "My Zcash account";
+        KNOWN_IMPORTED = "내 Zcash 가져온 키" / "My imported Zcash key";
+        KNOWN_SENT = "이전에 보낸 주소" / "Address sent to before";
+        /// Refusals while a transaction is in flight.
+        SOURCE_BUSY = "진행 중인 Zcash 거래가 있어 키 출처를 바꿀 수 없습니다."
+            / "A Zcash transaction is in progress, so the key source cannot be changed.";
+        NETWORK_BUSY = "진행 중인 Zcash 거래가 있어 네트워크를 바꿀 수 없습니다."
+            / "A Zcash transaction is in progress, so the network cannot be changed.";
+        DISABLE_BUSY = "진행 중인 Zcash 거래가 있어 끌 수 없습니다."
+            / "A Zcash transaction is in progress, so Zcash cannot be turned off.";
+        NO_HW_KEY = "이 네트워크의 Zcash 키가 등록된 YubiKey가 없습니다."
+            / "No enrolled YubiKey has a Zcash key for this network.";
+        IMPORTED_USED = "가져온 키를 이 네트워크의 Zcash 계정으로 씁니다."
+            / "The imported key is now this network's Zcash account.";
+        IMPORTED_LISTED(1) = "가져온 키를 목록에 더했습니다 ({0}). 그 네트워크에서 '이 키 사용'으로 고르세요."
+            / "The imported key was added to the list ({0}). Choose it with 'Use this key' on that network.";
+        /// The send form.
+        APPROVAL_BUSY = "Zcash 승인이 이미 진행 중입니다." / "A Zcash approval is already in progress.";
+        CHECKING_NODE = "Zcash 노드를 확인하는 중…" / "Checking the Zcash node…";
+        NO_ACCOUNT = "Zcash 계정을 아직 불러오지 못했습니다." / "The Zcash account is not loaded yet.";
+        LOOK_ALIKE_ACK = "받는 주소가 아는 주소와 앞뒤가 비슷합니다. 주소 전체를 확인했으면 '주소 전체를 직접 확인했습니다'를 체크한 뒤 다시 검토하세요."
+            / "The recipient's start and end look like a known address. If you checked the whole address, tick 'I checked the whole address myself' and review again.";
+        AMOUNT_INVALID = "보낼 금액(ZEC)을 올바르게 입력하세요." / "Enter a valid amount (ZEC) to send.";
+        HW_CHECKING = "YubiKey 정보를 확인하는 중입니다. 잠시 후 다시 시도하세요."
+            / "Checking the YubiKey information. Try again in a moment.";
+        SIGNED_SENDING = "서명했습니다. Zcash 노드로 보내는 중…" / "Signed. Sending to the Zcash node…";
+        JOURNAL_FAILED = "거래 기록을 저장하지 못해 아직 보내지 않았습니다. 다음 새로고침 때 다시 시도합니다."
+            / "The transaction record could not be saved, so it was not sent yet. It is tried again on the next refresh.";
+        NO_ENDPOINT = "엔드포인트가 없어 아직 보내지 못했습니다. 다음 새로고침 때 다시 보냅니다."
+            / "There is no endpoint, so it was not sent yet. It is sent again on the next refresh.";
+        ACCOUNT_CHANGED = "검토하는 동안 Zcash 계정이 바뀌었습니다. 다시 검토하세요."
+            / "The Zcash account changed during the review. Review again.";
+        REJECTED(1) = "Zcash 노드가 거래를 거부했습니다 (코드 {0}). 만료 높이가 지나면 입력이 풀립니다."
+            / "The Zcash node rejected the transaction (code {0}). The inputs are released after the expiry height.";
+        UNKNOWN_RESULT(1) = "전송 결과를 알 수 없습니다 ({0}). 새로고침 때 다시 확인하고 보냅니다."
+            / "The send result is unknown ({0}). It is checked and sent again on refresh.";
+    }
+}
+
+/// The equal ends of a W-ADDR-3 note in `lang` (`앞 P자·끝 S자`, a zero side left out).
+fn ends_text(lang: Lang, (prefix, suffix): (usize, usize)) -> String {
+    match (prefix, suffix) {
+        (0, suffix) => text::ENDS_TAIL.fill(lang, [&suffix.to_string()]),
+        (prefix, 0) => text::ENDS_HEAD.fill(lang, [&prefix.to_string()]),
+        (prefix, suffix) => text::ENDS_BOTH.fill(lang, [&prefix.to_string(), &suffix.to_string()]),
+    }
+}
 
 /// Automatic refresh period while the tab is shown (and while a transaction is in flight).
 const REFRESH_MS: u64 = yw_core::zec::ZEC_POLL_SECS * 1_000;
@@ -32,11 +97,6 @@ const REFRESH_MS: u64 = yw_core::zec::ZEC_POLL_SECS * 1_000;
 /// blocks until it expires (spec/12 §12.2): the same bytes were just refused, and resending on
 /// every 30 s refresh only repeats the answer.
 const REJECTED_RESEND_BLOCKS: u32 = 10;
-/// `삭제` of an imported Zcash key while a transaction of its account may still confirm.
-pub const ZEC_REMOVE_BUSY: &str =
-    "진행 중인 Zcash 거래가 이 키를 쓰고 있어 지울 수 없습니다. 확인되거나 만료된 뒤에 지우세요.";
-/// `삭제` of an imported Zcash key while its transactions cannot be checked.
-pub const ZEC_REMOVE_UNCHECKED: &str = "Zcash 거래 기록을 아직 읽지 못했거나 손상된 Zcash 기록이 있어, 이 키로 보낸 거래가 끝났는지 확인할 수 없습니다. 기록을 읽은 뒤(손상은 복구한 뒤) 다시 지우세요.";
 
 /// The key source the account card offers (spec/12 §2.2).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -73,9 +133,10 @@ struct ZecKnown {
     confirmed: bool,
 }
 
-/// The W-ADDR-3 note of `address` among `known`: the first look-alike, unless `address` is
-/// exactly one of our own addresses (an earlier recipient does not silence the check).
-fn zec_look_alike_note(known: &[ZecKnown], address: &str) -> Option<String> {
+/// The W-ADDR-3 note of `address` among `known` in `lang`: the first look-alike, unless
+/// `address` is exactly one of our own addresses (an earlier recipient does not silence the
+/// check).
+fn zec_look_alike_note(lang: Lang, known: &[ZecKnown], address: &str) -> Option<String> {
     if known
         .iter()
         .any(|entry| entry.own && entry.address == address)
@@ -83,13 +144,8 @@ fn zec_look_alike_note(known: &[ZecKnown], address: &str) -> Option<String> {
         return None;
     }
     known.iter().find_map(|entry| {
-        yw_core::zec::address::look_alike_ends(&entry.address, address).map(|ends| {
-            format!(
-                "'{}'과 {}가 같지만 다른 주소입니다. 주소 오염 공격일 수 있습니다.",
-                entry.name,
-                crate::app_btc::ends_text(ends)
-            )
-        })
+        yw_core::zec::address::look_alike_ends(&entry.address, address)
+            .map(|ends| text::LOOK_ALIKE.fill(lang, [&entry.name, &ends_text(lang, ends)]))
     })
 }
 
@@ -271,6 +327,7 @@ impl App {
     /// wallet's account and imported keys, then the recipients of its earlier sends (every
     /// account's journal records of the network).
     fn zec_known(&self, network: ZecNetwork) -> Vec<ZecKnown> {
+        let lang = self.settings.language;
         let mut out = Vec::new();
         if let Some(account) = self
             .zec_account()
@@ -278,7 +335,7 @@ impl App {
         {
             out.push(ZecKnown {
                 address: account.address(),
-                name: "내 Zcash 계정".to_owned(),
+                name: text::KNOWN_ACCOUNT.get(lang).to_owned(),
                 own: true,
                 confirmed: false,
             });
@@ -287,7 +344,7 @@ impl App {
             if info.network == network {
                 out.push(ZecKnown {
                     address: info.address,
-                    name: "내 Zcash 가져온 키".to_owned(),
+                    name: text::KNOWN_IMPORTED.get(lang).to_owned(),
                     own: true,
                     confirmed: false,
                 });
@@ -301,7 +358,7 @@ impl App {
                 if let Some(dest) = record.recipient() {
                     out.push(ZecKnown {
                         address: dest.encode(network),
-                        name: "이전에 보낸 주소".to_owned(),
+                        name: text::KNOWN_SENT.get(lang).to_owned(),
                         own: false,
                         confirmed: record.state == ZecTxState::Confirmed,
                     });
@@ -319,9 +376,9 @@ impl App {
         let address = parse_recipient(&self.zec.to_text, network)
             .ok()
             .map(|recipient| recipient.dest.encode(network));
-        let note = address
-            .as_deref()
-            .and_then(|address| zec_look_alike_note(&self.zec_known(network), address));
+        let note = address.as_deref().and_then(|address| {
+            zec_look_alike_note(self.settings.language, &self.zec_known(network), address)
+        });
         let changed = address != self.zec.checked || note != self.zec.look_alike;
         if address != self.zec.checked {
             self.zec.ack = false;
@@ -379,8 +436,7 @@ impl App {
         };
         self.zec.confirm_shared = false;
         if self.zec.busy || !self.zec_records().iter().all(ZecRecord::is_terminal) {
-            self.zec.error =
-                Some("진행 중인 Zcash 거래가 있어 키 출처를 바꿀 수 없습니다.".to_owned());
+            self.zec.error = Some(text::SOURCE_BUSY.get(self.settings.language).to_owned());
             self.refresh();
             return;
         }
@@ -453,8 +509,7 @@ impl App {
     /// Uses the `YubiKey` Zcash slot `index` of the current network as the account (spec/10).
     pub fn zec_use_hardware(&mut self, index: u32) {
         if !self.zec_all_terminal() {
-            self.zec.error =
-                Some("진행 중인 Zcash 거래가 있어 키 출처를 바꿀 수 없습니다.".to_owned());
+            self.zec.error = Some(text::SOURCE_BUSY.get(self.settings.language).to_owned());
             self.refresh();
             return;
         }
@@ -469,7 +524,7 @@ impl App {
             .find(|slot| slot.role.key_identity() == identity)
             .map(|slot| slot.public);
         let Some(yw_core::yubikey::record::HwPublicKey::Secp256k1(pubkey)) = public else {
-            self.zec.error = Some("이 네트워크의 Zcash 키가 등록된 YubiKey가 없습니다.".to_owned());
+            self.zec.error = Some(text::NO_HW_KEY.get(self.settings.language).to_owned());
             self.refresh();
             return;
         };
@@ -509,8 +564,7 @@ impl App {
     /// (spec/02 §8.6; refused while a transaction is in flight, like every source change).
     pub fn zec_use_mnemonic(&mut self, id: yw_core::vault::RecordId) {
         if !self.zec_all_terminal() {
-            self.zec.error =
-                Some("진행 중인 Zcash 거래가 있어 키 출처를 바꿀 수 없습니다.".to_owned());
+            self.zec.error = Some(text::SOURCE_BUSY.get(self.settings.language).to_owned());
             self.refresh();
             return;
         }
@@ -538,9 +592,9 @@ impl App {
             } => format!(
                 "[{}] {}",
                 self.mnemonic_label(mnemonic),
-                ZecKeySource::Derived { account, index }.label()
+                ZecKeySource::Derived { account, index }.label_in(self.settings.language)
             ),
-            other => other.label(),
+            other => other.label_in(self.settings.language),
         }
     }
 
@@ -550,8 +604,7 @@ impl App {
             return;
         };
         if !self.zec_all_terminal() {
-            self.zec.error =
-                Some("진행 중인 Zcash 거래가 있어 키 출처를 바꿀 수 없습니다.".to_owned());
+            self.zec.error = Some(text::SOURCE_BUSY.get(self.settings.language).to_owned());
             self.refresh();
             return;
         }
@@ -563,12 +616,11 @@ impl App {
     pub fn zec_imported(&mut self, info: &ZecKeyInfo) {
         if info.network == self.zec_network() && self.zec_all_terminal() {
             self.zec_set_account(info.account());
-            self.zec.info = Some("가져온 키를 이 네트워크의 Zcash 계정으로 씁니다.".to_owned());
+            self.zec.info = Some(text::IMPORTED_USED.get(self.settings.language).to_owned());
         } else {
-            self.zec.info = Some(format!(
-                "가져온 키를 목록에 더했습니다 ({}). 그 네트워크에서 '이 키 사용'으로 고르세요.",
-                info.network.display_name()
-            ));
+            self.zec.info = Some(
+                text::IMPORTED_LISTED.fill(self.settings.language, [info.network.display_name()]),
+            );
         }
     }
 
@@ -589,7 +641,7 @@ impl App {
             .as_ref()
             .filter(|journal| journal.zec_corrupt == 0)
         else {
-            return Some(ZEC_REMOVE_UNCHECKED);
+            return Some(text::REMOVE_UNCHECKED.get(self.settings.language));
         };
         let busy = journal.zec_records.iter().any(|record| {
             record.account.network == info.network
@@ -601,7 +653,7 @@ impl App {
                 && self
                     .zec_selected_imported()
                     .is_some_and(|key| *key.as_bytes() == id)))
-        .then_some(ZEC_REMOVE_BUSY)
+        .then_some(text::REMOVE_BUSY.get(self.settings.language))
     }
 
     /// An imported Zcash key left the vault: the list drops it, and an account on it goes back
@@ -646,8 +698,7 @@ impl App {
         }
         // A switch away would stop tracking the in-flight record of this network.
         if network != self.zec_network() && !self.zec_all_terminal() {
-            self.zec.error =
-                Some("진행 중인 Zcash 거래가 있어 네트워크를 바꿀 수 없습니다.".to_owned());
+            self.zec.error = Some(text::NETWORK_BUSY.get(self.settings.language).to_owned());
             self.refresh();
             return;
         }
@@ -664,7 +715,7 @@ impl App {
     /// Turns Zcash off (only without a transaction in flight).
     pub fn zec_disable(&mut self) {
         if self.zec.busy || !self.zec_records().iter().all(ZecRecord::is_terminal) {
-            self.zec.error = Some("진행 중인 Zcash 거래가 있어 끌 수 없습니다.".to_owned());
+            self.zec.error = Some(text::DISABLE_BUSY.get(self.settings.language).to_owned());
             self.refresh();
             return;
         }
@@ -699,9 +750,9 @@ impl App {
             Ok(url) => url,
             Err(code) => {
                 if review {
-                    self.zec.send_error = Some(code.text());
+                    self.zec.send_error = Some(code.text_in(self.settings.language));
                 } else {
-                    self.zec.error = Some(code.text());
+                    self.zec.error = Some(code.text_in(self.settings.language));
                 }
                 self.zec.review_after = false;
                 self.refresh();
@@ -785,14 +836,14 @@ impl App {
     /// said in the 보내기 card next to the button ([`ZecUi::send_error`], [`ZecUi::send_info`]).
     pub fn zec_review(&mut self) {
         if self.zec.busy {
-            self.zec.send_error = Some("Zcash 승인이 이미 진행 중입니다.".to_owned());
+            self.zec.send_error = Some(text::APPROVAL_BUSY.get(self.settings.language).to_owned());
             self.refresh();
             return;
         }
         if self.zec_journal_damaged() {
             self.zec.send_error = Some(
                 yw_core::journal::zec::ZecJournalBlock::Corrupt
-                    .text()
+                    .text_in(self.settings.language)
                     .to_owned(),
             );
             self.refresh();
@@ -816,61 +867,57 @@ impl App {
         self.zec.info = None;
         self.zec.sent = None;
         self.zec.send_error = None;
-        self.zec.send_info = Some("Zcash 노드를 확인하는 중…".to_owned());
+        self.zec.send_info = Some(text::CHECKING_NODE.get(self.settings.language).to_owned());
         if !self.zec_refresh(true) {
             self.zec.send_info = None;
             if self.zec.send_error.is_none() {
-                self.zec.send_error = Some(ErrorCode::Rpc001.text());
+                self.zec.send_error = Some(ErrorCode::Rpc001.text_in(self.settings.language));
             }
         }
         self.refresh();
     }
 
     fn zec_plan(&self, snapshot: &ZecSnapshot) -> Result<ZecPlan, String> {
+        let lang = self.settings.language;
         let account = self
             .zec_account()
-            .ok_or_else(|| "Zcash 계정을 아직 불러오지 못했습니다.".to_owned())?;
+            .ok_or_else(|| text::NO_ACCOUNT.get(lang).to_owned())?;
         let records = self.zec_records();
         if records.iter().any(ZecRecord::may_still_confirm) {
             return Err(yw_core::journal::zec::ZecJournalBlock::InFlight
-                .text()
+                .text_in(lang)
                 .to_owned());
         }
         let recipient = parse_recipient(&self.zec.to_text, account.network)
-            .map_err(|error| error.text().to_owned())?;
+            .map_err(|error| error.text_in(lang).to_owned())?;
         // W-ADDR-3 (spec/12 §11): a look-alike needs the acknowledgement for this very address.
         let address = recipient.dest.encode(account.network);
-        if zec_look_alike_note(&self.zec_known(account.network), &address).is_some()
+        if zec_look_alike_note(lang, &self.zec_known(account.network), &address).is_some()
             && !(self.zec.ack && self.zec.checked.as_deref() == Some(address.as_str()))
         {
-            return Err(
-                "받는 주소가 아는 주소와 앞뒤가 비슷합니다. 주소 전체를 확인했으면 '주소 전체를 직접 확인했습니다'를 체크한 뒤 다시 검토하세요."
-                    .to_owned(),
-            );
+            return Err(text::LOOK_ALIKE_ACK.get(lang).to_owned());
         }
         let amount = if self.zec.send_max {
             ZecAmount::Max
         } else {
             ZecAmount::Exact(
                 parse_user_zec(&self.zec.amount_text)
-                    .map_err(|_| "보낼 금액(ZEC)을 올바르게 입력하세요.".to_owned())?,
+                    .map_err(|_| text::AMOUNT_INVALID.get(lang).to_owned())?,
             )
         };
         // Over the limits only part is shown, but that part can still be sent from.
         if let Some(error) = snapshot.utxo_error
             && error != ZecRpcError::TooMany
         {
-            return Err(error.text());
+            return Err(error.text_in(lang));
         }
         match self.zec_hw_state() {
             ZecHwState::NotHardware | ZecHwState::Present => {}
-            ZecHwState::Unchecked => {
-                return Err("YubiKey 정보를 확인하는 중입니다. 잠시 후 다시 시도하세요.".to_owned());
-            }
-            ZecHwState::Missing => return Err(T_ZEC_HW_MISSING.to_owned()),
+            ZecHwState::Unchecked => return Err(text::HW_CHECKING.get(lang).to_owned()),
+            ZecHwState::Missing => return Err(text::HW_MISSING.get(lang).to_owned()),
         }
         let consensus = tx_consensus(account.network, &snapshot.chain.consensus)
-            .map_err(yw_core::zec::UpgradeError::text)?;
+            .map_err(|error| error.text_in(lang))?;
         let reserved = self
             .evm
             .journal
@@ -896,14 +943,14 @@ impl App {
                 consensus,
             },
         )
-        .map_err(yw_core::zec::ZecPlanError::text)
+        .map_err(|error| error.text_in(lang))
     }
 
     fn zec_enqueue(&mut self, plan: ZecPlan) {
         let network = plan.account.network;
         let address = plan.recipient.dest.encode(network);
         let known = self.zec_known(network);
-        let look_alike = zec_look_alike_note(&known, &address);
+        let look_alike = zec_look_alike_note(self.settings.language, &known, &address);
         let first_time = !known
             .iter()
             .any(|entry| entry.address == address && (entry.own || entry.confirmed));
@@ -925,14 +972,18 @@ impl App {
             self.zec.send_info = None;
             self.show_next_approval();
         } else {
-            self.zec.send_error = Some(ErrorCode::App005.text());
+            self.zec.send_error = Some(ErrorCode::App005.text_in(self.settings.language));
         }
     }
 
     /// The approval draft of a queued item (no network call).
     pub(crate) fn prepare_zec(&mut self, item: &ZecApprovalItem) {
         let Ok(id) = yw_core::approval::ApprovalId::random() else {
-            self.show_failure(ErrorCode::Vlt005, false, ErrorCode::Vlt005.text());
+            self.show_failure(
+                ErrorCode::Vlt005,
+                false,
+                ErrorCode::Vlt005.text_in(self.approval_lang()),
+            );
             return;
         };
         match yw_core::zec::display::build_zec_request_with(
@@ -942,7 +993,11 @@ impl App {
             item.first_time,
         ) {
             Ok(draft) => self.show_ready_draft_at(draft, None, now_unix_ms()),
-            Err(_) => self.show_failure(ErrorCode::App009, false, ErrorCode::App009.text()),
+            Err(_) => self.show_failure(
+                ErrorCode::App009,
+                false,
+                ErrorCode::App009.text_in(self.approval_lang()),
+            ),
         }
     }
 
@@ -975,7 +1030,11 @@ impl App {
             self.zec.busy = false;
         }
         if outcome == crate::ui::approval::QueueOutcome::Expired {
-            self.zec.send_error = Some(crate::app_btc::APPROVAL_EXPIRED.to_owned());
+            self.zec.send_error = Some(
+                crate::app_btc::APPROVAL_EXPIRED
+                    .get(self.settings.language)
+                    .to_owned(),
+            );
         }
         logging::info(
             "app",
@@ -1010,7 +1069,8 @@ impl App {
                 Ok(summary) => {
                     self.zec.send_error = None;
                     self.zec.sent = None;
-                    self.zec.send_info = Some("서명했습니다. Zcash 노드로 보내는 중…".to_owned());
+                    self.zec.send_info =
+                        Some(text::SIGNED_SENDING.get(self.settings.language).to_owned());
                     self.zec.to_text.clear();
                     self.zec.amount_text.clear();
                     self.zec.send_max = false;
@@ -1034,7 +1094,7 @@ impl App {
                         ) {
                             self.backup_refused_text(self.mn_unconfirmed(self.zec_backup_gate()))
                         } else {
-                            failure.text()
+                            failure.text_in(self.settings.language)
                         },
                     );
                 }
@@ -1073,10 +1133,8 @@ impl App {
                     .is_some_and(|pending| pending.txid == txid)
                 {
                     self.zec.send_info = None;
-                    self.zec.send_error = Some(
-                        "거래 기록을 저장하지 못해 아직 보내지 않았습니다. 다음 새로고침 때 다시 시도합니다."
-                            .to_owned(),
-                    );
+                    self.zec.send_error =
+                        Some(text::JOURNAL_FAILED.get(self.settings.language).to_owned());
                 }
             }
         }
@@ -1086,10 +1144,7 @@ impl App {
     fn zec_send(&mut self, network: ZecNetwork, raw: Vec<u8>, txid: [u8; 32]) {
         let Ok(url) = self.zec_url() else {
             self.zec.send_info = None;
-            self.zec.send_error = Some(
-                "엔드포인트가 없어 아직 보내지 못했습니다. 다음 새로고침 때 다시 보냅니다."
-                    .to_owned(),
-            );
+            self.zec.send_error = Some(text::NO_ENDPOINT.get(self.settings.language).to_owned());
             return;
         };
         let _ = self.rpc(RpcJob::Zec(Box::new(ZecRpcJob::Send {
@@ -1143,9 +1198,8 @@ impl App {
                     // Not the current account's answer (it changed meanwhile): nothing of it is
                     // shown, planned from or sent as known; the next tick asks again.
                     if review {
-                        self.zec.send_error = Some(
-                            "검토하는 동안 Zcash 계정이 바뀌었습니다. 다시 검토하세요.".to_owned(),
-                        );
+                        self.zec.send_error =
+                            Some(text::ACCOUNT_CHANGED.get(self.settings.language).to_owned());
                     }
                     self.zec.next_refresh_ms = 0;
                     self.refresh();
@@ -1153,7 +1207,8 @@ impl App {
                 }
                 match result {
                     Ok(snapshot) => {
-                        self.zec.error = snapshot.utxo_error.map(ZecRpcError::text);
+                        let lang = self.settings.language;
+                        self.zec.error = snapshot.utxo_error.map(|error| error.text_in(lang));
                         self.zec_track(&snapshot);
                         if review {
                             match self.zec_plan(&snapshot) {
@@ -1164,8 +1219,10 @@ impl App {
                         self.zec.snapshot = Some((network, snapshot));
                     }
                     // `검토`'s own node check failed: said next to the button.
-                    Err(error) if review => self.zec.send_error = Some(error.text()),
-                    Err(error) => self.zec.error = Some(error.text()),
+                    Err(error) if review => {
+                        self.zec.send_error = Some(error.text_in(self.settings.language));
+                    }
+                    Err(error) => self.zec.error = Some(error.text_in(self.settings.language)),
                 }
             }
             // The outcome of handing a transaction to the node is the 보내기 card's line, next
@@ -1179,9 +1236,8 @@ impl App {
                 }
                 SendOutcome::Rejected(code) => {
                     self.zec.send_info = None;
-                    self.zec.send_error = Some(format!(
-                        "Zcash 노드가 거래를 거부했습니다 (코드 {code}). 만료 높이가 지나면 입력이 풀립니다."
-                    ));
+                    self.zec.send_error =
+                        Some(text::REJECTED.fill(self.settings.language, [&code.to_string()]));
                     // The resend backoff starts now (not on the next 30 s refresh).
                     let tip = self
                         .zec
@@ -1193,10 +1249,8 @@ impl App {
                 }
                 SendOutcome::Unknown(code) => {
                     self.zec.send_info = None;
-                    self.zec.send_error = Some(format!(
-                        "전송 결과를 알 수 없습니다 ({}). 새로고침 때 다시 확인하고 보냅니다.",
-                        code.code()
-                    ));
+                    self.zec.send_error =
+                        Some(text::UNKNOWN_RESULT.fill(self.settings.language, [code.code()]));
                 }
             },
         }

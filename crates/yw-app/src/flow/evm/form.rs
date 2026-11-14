@@ -14,6 +14,7 @@ use yw_core::evm::fee::{
     suggest_fees,
 };
 use yw_core::evm::tx::Eip1559Tx;
+use yw_core::lang::Lang;
 
 use super::prepare::SendIntent;
 use super::{ChainCache, ChainCheck, ChainJob, Clock, SharedTransport};
@@ -56,19 +57,19 @@ pub enum AddressNote {
 }
 
 impl AddressNote {
-    /// The fixed sentence (names are user-entered labels).
+    /// The fixed sentence in `lang` (names are user-entered labels, never translated).
     #[must_use]
-    pub fn text(&self) -> String {
+    pub fn text_in(&self, lang: Lang) -> String {
         match self {
-            Self::SameAsSender => "보내는 계정과 같은 주소입니다.".to_owned(),
+            Self::SameAsSender => text::SAME_AS_SENDER.get(lang).to_owned(),
             Self::Book { name, verified } => {
                 if *verified {
-                    format!("주소록: {name} ✓ 확인됨")
+                    text::BOOK_VERIFIED.fill(lang, [name])
                 } else {
-                    format!("주소록: {name}")
+                    text::BOOK.fill(lang, [name])
                 }
             }
-            Self::Mine { label } => format!("내 계정: {label}"),
+            Self::Mine { label } => text::MINE.fill(lang, [label]),
             Self::LookAlike {
                 name,
                 history,
@@ -76,21 +77,21 @@ impl AddressNote {
                 suffix,
             } => {
                 let ends = match (*prefix, *suffix) {
-                    (0, suffix) => format!("끝 {suffix}자"),
-                    (prefix, 0) => format!("앞 {prefix}자"),
-                    (prefix, suffix) => format!("앞 {prefix}자·끝 {suffix}자"),
+                    (0, suffix) => text::ENDS_SUFFIX.fill(lang, [&suffix.to_string()]),
+                    (prefix, 0) => text::ENDS_PREFIX.fill(lang, [&prefix.to_string()]),
+                    (prefix, suffix) => {
+                        text::ENDS_BOTH.fill(lang, [&prefix.to_string(), &suffix.to_string()])
+                    }
                 };
                 let whom = if *history {
-                    format!("보낸 내역에 있는 주소({name})와")
+                    text::WHOM_SENT.fill(lang, [name])
                 } else {
-                    format!("'{name}'과")
+                    text::WHOM_NAMED.fill(lang, [name])
                 };
-                format!("{whom} {ends}가 같지만 다른 주소입니다. 주소 오염 공격일 수 있습니다.")
+                text::LOOK_ALIKE.fill(lang, [&whom, &ends])
             }
-            Self::NotInBook => "주소록에 없는 주소입니다. 주소 전체를 확인하세요.".to_owned(),
-            Self::Contract => {
-                "컨트랙트 주소입니다. 받는 쪽이 이 자산을 처리할 수 있는지 확인하세요.".to_owned()
-            }
+            Self::NotInBook => text::NOT_IN_BOOK.get(lang).to_owned(),
+            Self::Contract => text::CONTRACT.get(lang).to_owned(),
         }
     }
 
@@ -265,23 +266,50 @@ pub struct Quote {
 }
 
 impl Quote {
-    /// The fixed line.
+    /// The fixed line in `lang`.
     #[must_use]
-    pub fn line(&self, chain: &ChainInfo) -> String {
+    pub fn line_in(&self, lang: Lang, chain: &ChainInfo) -> String {
         let native =
             |value: &U256| format_amount(value, chain.native_decimals, &chain.native_symbol);
         let l1 = max_total_fee(self.gas_limit, &self.max_fee_per_gas)
             .and_then(|l2| self.max_total.checked_sub(l2))
             .filter(|l1| !l1.is_zero());
-        let l1_text = l1.map_or_else(String::new, |l1| {
-            format!(" + L1 데이터 수수료 최대 {}", native(&l1))
-        });
-        format!(
-            "예상 최대 수수료: {} (가스 한도 {} × 최대 {}{l1_text})",
-            native(&self.max_total),
-            format_units(&U256::from_u64(self.gas_limit), 0),
-            format_gwei(&self.max_fee_per_gas)
+        let l1_text = l1.map_or_else(String::new, |l1| text::QUOTE_L1.fill(lang, [&native(&l1)]));
+        text::QUOTE.fill(
+            lang,
+            [
+                &native(&self.max_total),
+                &format_units(&U256::from_u64(self.gas_limit), 0),
+                &format_gwei(&self.max_fee_per_gas),
+                &l1_text,
+            ],
         )
+    }
+}
+
+/// Send-form notes and the fee line (spec/04 §2.7, §2.15; English spec/14 §5).
+pub mod text {
+    yw_core::texts! {
+        SAME_AS_SENDER = "보내는 계정과 같은 주소입니다." / "Same address as the sending account.";
+        BOOK_VERIFIED(1) = "주소록: {0} ✓ 확인됨" / "Address book: {0} ✓ verified";
+        BOOK(1) = "주소록: {0}" / "Address book: {0}";
+        MINE(1) = "내 계정: {0}" / "My account: {0}";
+        ENDS_SUFFIX(1) = "끝 {0}자" / "last {0} characters";
+        ENDS_PREFIX(1) = "앞 {0}자" / "first {0} characters";
+        ENDS_BOTH(2) = "앞 {0}자·끝 {1}자" / "first {0} and last {1} characters";
+        WHOM_SENT(1) = "보낸 내역에 있는 주소({0})와" / "an address in your sent history ({0})";
+        WHOM_NAMED(1) = "'{0}'과" / "'{0}'";
+        /// `{0}` = `WHOM_*`, `{1}` = `ENDS_*`.
+        LOOK_ALIKE(2) = "{0} {1}가 같지만 다른 주소입니다. 주소 오염 공격일 수 있습니다."
+            / "Same {1} as {0}, but a different address. It may be an address-poisoning attack.";
+        NOT_IN_BOOK = "주소록에 없는 주소입니다. 주소 전체를 확인하세요."
+            / "This address is not in your address book. Check the whole address.";
+        CONTRACT = "컨트랙트 주소입니다. 받는 쪽이 이 자산을 처리할 수 있는지 확인하세요."
+            / "This is a contract address. Check that the recipient can handle this asset.";
+        /// `{0}` max total, `{1}` gas limit, `{2}` max fee per gas, `{3}` the `QUOTE_L1` part.
+        QUOTE(4) = "예상 최대 수수료: {0} (가스 한도 {1} × 최대 {2}{3})"
+            / "Expected max fee: {0} (gas limit {1} × max {2}{3})";
+        QUOTE_L1(1) = " + L1 데이터 수수료 최대 {0}" / " + L1 data fee up to {0}";
     }
 }
 
@@ -342,7 +370,11 @@ pub fn quote(
         .err()
         .map(|violation| {
             let text = violation.warning(lang, &chain.info).text;
-            format!("{} {}", ErrorCode::Tx001.text(), text.replace('\n', " · "))
+            format!(
+                "{} {}",
+                ErrorCode::Tx001.text_in(lang),
+                text.replace('\n', " · ")
+            )
         });
     Ok(Quote {
         gas_limit: plan.gas_limit,

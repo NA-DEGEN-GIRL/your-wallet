@@ -140,7 +140,9 @@ pub fn job(chain: ChainInfo, account: Address, intent: SendIntent) -> PrepareJob
 pub fn ready(outcome: PrepareOutcome) -> TestResult<Prepared> {
     match outcome {
         PrepareOutcome::Ready(prepared) => Ok(*prepared),
-        PrepareOutcome::Failed(failure) => Err(format!("failed: {}", failure.message()).into()),
+        PrepareOutcome::Failed(failure) => {
+            Err(format!("failed: {}", failure.message(yw_core::lang::Lang::Ko)).into())
+        }
     }
 }
 

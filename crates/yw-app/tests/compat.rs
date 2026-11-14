@@ -102,7 +102,10 @@ fn settings_of_a_newer_minor_version_keep_unknown_keys_on_write() {
 #[test]
 fn settings_of_a_newer_major_version_open_read_only() {
     let loaded = load(Some(SETTINGS_V2));
-    assert_eq!(loaded.banners, [newer_version_banner(2)]);
+    assert_eq!(
+        loaded.banners,
+        [newer_version_banner(yw_core::lang::Lang::Ko, 2)]
+    );
     assert!(loaded.banners[0].contains("읽기 전용"));
     let settings = loaded.settings;
     assert_eq!(settings.read_only(), Some(2));

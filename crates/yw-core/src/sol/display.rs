@@ -81,12 +81,6 @@ pub enum SolBlock {
 }
 
 impl SolBlock {
-    /// Fixed reason text in Korean ([`Self::text_in`] for a language).
-    #[must_use]
-    pub fn text(self) -> String {
-        self.text_in(Lang::Ko)
-    }
-
     /// Fixed reason text in `lang`.
     #[must_use]
     pub fn text_in(self, lang: Lang) -> String {
@@ -247,13 +241,9 @@ pub fn asset_amount_text(asset: SolAsset, raw: u64) -> String {
 
 /// The approval title of a transfer (`[Solana devnet (테스트)] SOL 전송: 1.000000000 SOL`,
 /// `[Solana mainnet] 토큰 전송: 1.000000 USDC`). The journal activity rebuilds the same string
-/// from the transaction bytes (spec/07 §14.1). Korean; [`transfer_title_in`] for a language.
-#[must_use]
-pub fn transfer_title(cluster: SolCluster, core: &SolTransferCore) -> String {
-    transfer_title_in(Lang::Ko, cluster, core)
-}
-
-/// [`transfer_title`] in `lang` (`[Solana devnet (test)] SOL transfer: 1.000000000 SOL`).
+/// from the transaction bytes (spec/07 §14.1). In `lang`
+/// (`[Solana devnet (test)] SOL transfer: 1.000000000 SOL`); 2026-11-14 (Step 3): the
+/// Korean-only `transfer_title` is gone.
 #[must_use]
 pub fn transfer_title_in(lang: Lang, cluster: SolCluster, core: &SolTransferCore) -> String {
     let kind = match core.asset {

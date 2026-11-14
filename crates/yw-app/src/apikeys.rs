@@ -754,11 +754,21 @@ pub enum QuickNodeField {
 impl QuickNodeField {
     /// The item name shown in E-KEY-002.
     #[must_use]
-    pub const fn label(self) -> &'static str {
+    pub const fn label(self, lang: yw_core::lang::Lang) -> &'static str {
         match self {
-            Self::Name => "엔드포인트 이름",
-            Self::Token => "토큰",
+            Self::Name => text::FIELD_ENDPOINT_NAME.get(lang),
+            Self::Token => text::FIELD_TOKEN.get(lang),
         }
+    }
+}
+
+/// The fixed texts of this module (spec/14).
+pub mod text {
+    yw_core::texts! {
+        /// The S15 `QuickNode` endpoint-name field (E-KEY-002 `{항목}`).
+        FIELD_ENDPOINT_NAME = "엔드포인트 이름" / "Endpoint name";
+        /// The S15 `QuickNode` token field.
+        FIELD_TOKEN = "토큰" / "Token";
     }
 }
 

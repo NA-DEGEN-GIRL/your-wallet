@@ -124,7 +124,7 @@ pub enum JournalError {
 impl fmt::Display for JournalError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
-            Self::Full => "거래 저널 공간이 부족합니다",
+            Self::Full => evm::text::JOURNAL_FULL.ko,
         })
     }
 }

@@ -19,6 +19,10 @@
   const SOL_COMPAT_MODES = Object.freeze(["off", "phantom"]);
   const BTC_COMPAT_MODE_STORAGE_KEY = "btcCompatMode";
   const BTC_COMPAT_MODES = Object.freeze(["off", "unisat", "xverse"]);
+  // spec/05 §2.12 (2026-11-14): the popup's own language toggle, independent of the app's
+  // `settings.json` language (spec/14 §1). Only the popup reads it; `ko` is the default.
+  const LANGUAGE_STORAGE_KEY = "yourWalletLanguage";
+  const LANGUAGES = Object.freeze(["ko", "en"]);
   // Every non-off mode a content→background request may carry, by method family.
   const WIRE_COMPAT_MODES = Object.freeze({
     evm: Object.freeze(["metamask", "rabby"]),
@@ -219,6 +223,11 @@
     return typeof value === "string" && BTC_COMPAT_MODES.includes(value) ? value : "off";
   }
 
+  // Anything but "ko" or "en" (missing, corrupted) is Korean.
+  function normalizeLanguage(value) {
+    return typeof value === "string" && LANGUAGES.includes(value) ? value : "ko";
+  }
+
   // `sol` for sol_*, `btc` for btc_*, `evm` for everything else.
   function methodFamily(method) {
     if (typeof method === "string" && method.startsWith("sol_")) return "sol";
@@ -403,6 +412,8 @@
     SOL_COMPAT_MODES,
     BTC_COMPAT_MODE_STORAGE_KEY,
     BTC_COMPAT_MODES,
+    LANGUAGE_STORAGE_KEY,
+    LANGUAGES,
     WIRE_COMPAT_MODES,
     REQUEST_LIMITS,
     RESPONSE_LIMITS,
@@ -422,6 +433,7 @@
     methodRoute,
     normalizeBtcCompatMode,
     normalizeCompatMode,
+    normalizeLanguage,
     normalizeSolCompatMode,
     parseBackgroundMessage,
     parseContentMessage,

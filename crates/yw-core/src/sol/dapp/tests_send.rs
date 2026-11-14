@@ -647,7 +647,7 @@ fn version_3_activity_transitions_room_and_counts() {
         SolSendOptions::default(),
         ORIGIN,
     );
-    assert!(activity_row(&record, 0).is_none());
+    assert!(activity_row(crate::lang::Lang::Ko, &record, 0).is_none());
     let mut plain = JournalPlain::default();
     push_record(&mut plain, &record).unwrap();
     let signature = record.signature();
@@ -673,25 +673,31 @@ fn version_3_activity_transitions_room_and_counts() {
         assert!(apply(&mut copy, &transition));
         let terminal = SolEntries::from_plain(&copy).records().remove(0);
         assert!(terminal.dapp.is_some());
-        let row = activity_row(&terminal, 9_999).unwrap();
+        let row = activity_row(crate::lang::Lang::Ko, &terminal, 9_999).unwrap();
         assert_eq!(row.status, status);
         assert_eq!(row.account, wallet().to_base58());
         assert_eq!(row.tx_id, record.tx_id());
         assert_eq!(
             row.title,
-            format!("[{}] 사이트 거래 · {ORIGIN}", CLUSTER.display_name())
+            format!(
+                "[{}] 사이트 거래 · {ORIGIN}",
+                CLUSTER.display_name_in(crate::lang::Lang::Ko)
+            )
         );
         assert_eq!((row.asset.as_str(), row.amount.as_str()), ("native", "0"));
         assert!(row.counterparty.is_empty());
         // `take_terminal` removes it and keeps its row.
-        assert_eq!(take_terminal(&mut copy, 9_999), vec![row]);
+        assert_eq!(
+            take_terminal(crate::lang::Lang::Ko, &mut copy, 9_999),
+            vec![row]
+        );
         assert!(copy.entries.is_empty());
     }
     // A long origin is cut to 256 bytes on a character boundary.
     let mut long = record.clone();
     long.state = SolTxState::Landed;
     long.dapp.as_mut().unwrap().origin = longest_origin();
-    let title = activity_row(&long, 0).unwrap().title;
+    let title = activity_row(crate::lang::Lang::Ko, &long, 0).unwrap().title;
     assert_eq!(title.len(), MAX_TITLE_BYTES);
     assert!(title.starts_with("[Solana devnet (테스트)] 사이트 거래 · https://aaa"));
     // Pending counts: per (cluster, signer) and in total; template sends do not count, and a
@@ -789,12 +795,18 @@ fn template_shaped_dapp_send_is_not_a_wallet_send() {
 fn program_instruction_errors_are_deterministic() {
     assert_eq!(err::PROGRAM_INSTRUCTION, 9);
     assert!(err::is_deterministic(err::PROGRAM_INSTRUCTION));
-    assert_eq!(err::text(9), "프로그램 명령이 실패했습니다");
+    assert_eq!(
+        err::text_in(9, crate::lang::Lang::Ko),
+        "프로그램 명령이 실패했습니다"
+    );
     for code in 1..=6 {
         assert!(err::is_deterministic(code));
     }
     for code in [0, 7, 8, 10, err::OTHER] {
         assert!(!err::is_deterministic(code));
     }
-    assert_eq!(err::text(10), "알 수 없는 거래 오류");
+    assert_eq!(
+        err::text_in(10, crate::lang::Lang::Ko),
+        "알 수 없는 거래 오류"
+    );
 }

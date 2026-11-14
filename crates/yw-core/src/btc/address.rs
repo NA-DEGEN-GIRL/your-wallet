@@ -20,6 +20,7 @@ use crate::bip32::{AccountXpub, derive_public_child_with};
 use crate::codec::base58::{self, Base58Error};
 use crate::entropy::{OsRandom, secp_context};
 use crate::error::KeyError;
+use crate::lang::Lang;
 
 /// base58check payload length of an address (version 1 + hash 20).
 const BASE58_PAYLOAD_LEN: usize = 21;
@@ -68,20 +69,15 @@ impl fmt::Debug for ScriptKind {
 }
 
 impl ScriptKind {
-    /// The approval field `0x0602` text (spec/08 §10).
+    /// The approval field `0x0602` text in `lang` (spec/08 §10; `P2PKH(레거시)`, `P2TR`, …).
     #[must_use]
-    pub const fn type_label(&self) -> &'static str {
-        match self {
-            Self::P2pkh(_) => "P2PKH(레거시)",
-            Self::P2sh(_) => "P2SH(스크립트)",
-            Self::P2wpkh(_) => "P2WPKH",
-            Self::P2wsh(_) => "P2WSH(스크립트)",
-            Self::P2tr(_) => "P2TR",
-        }
+    pub const fn type_label_in(&self, lang: Lang) -> &'static str {
+        super::text::type_label(lang, self)
     }
 }
 
-/// Address input rejection (spec/08 §6.1–§6.3). [`AddressError::text`] gives the fixed §13 text.
+/// Address input rejection (spec/08 §6.1–§6.3). [`AddressError::text_in`] gives the fixed §13
+/// text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AddressError {
     /// Nothing left after trimming.
@@ -127,42 +123,45 @@ pub enum AddressError {
 }
 
 impl AddressError {
-    /// The fixed Korean text of spec/08 §13 for a wallet on `net`.
+    /// The fixed text of spec/08 §13 in `lang` for a wallet on `net`.
     #[must_use]
-    pub const fn text(self, net: BtcNetwork) -> &'static str {
+    pub const fn text_in(self, lang: Lang, net: BtcNetwork) -> &'static str {
+        use super::text as t;
         match self {
-            Self::Empty => "주소를 입력하세요",
-            Self::InvalidCharacter => "허용되지 않는 문자가 있습니다",
-            Self::NotBitcoinAddress => "Bitcoin 주소가 아닙니다",
-            Self::MixedCase => "대소문자가 섞인 bech32 주소는 받지 않습니다",
-            Self::Bech32Checksum | Self::Base58Checksum => "주소 체크섬이 틀립니다(오타 확인)",
+            Self::Empty => t::ADDR_EMPTY,
+            Self::InvalidCharacter => t::ADDR_INVALID_CHARACTER,
+            Self::NotBitcoinAddress => t::ADDR_NOT_BITCOIN,
+            Self::MixedCase => t::ADDR_MIXED_CASE,
+            Self::Bech32Checksum | Self::Base58Checksum => t::ADDR_CHECKSUM,
             Self::WrongChecksumVariant
             | Self::InvalidPadding
             | Self::InvalidProgramLength
             | Self::InvalidWitnessVersion
-            | Self::Base58Length => "주소 형식이 올바르지 않습니다",
+            | Self::Base58Length => t::ADDR_FORMAT,
             Self::WrongNetwork => match net {
-                BtcNetwork::Mainnet => "다른 네트워크의 주소입니다(지갑: MAINNET)",
-                BtcNetwork::Testnet4 => "다른 네트워크의 주소입니다(지갑: TESTNET4)",
+                BtcNetwork::Mainnet => t::ADDR_WRONG_NETWORK_MAINNET,
+                BtcNetwork::Testnet4 => t::ADDR_WRONG_NETWORK_TESTNET4,
             },
-            Self::UnknownVersion => "지원하지 않는 주소 버전입니다",
-            Self::PayToAnchor => "P2A 앵커 출력은 누구나 가져갈 수 있어 보낼 수 없습니다",
-            Self::InvalidTaprootKey => "유효하지 않은 Taproot 키입니다. 보내면 잃습니다",
-            Self::UnsupportedWitnessVersion => "지원하지 않는 세그윗 버전(v2–v16) 주소입니다",
-            Self::SilentPayment => "사일런트 페이먼트 미지원",
-            Self::Lightning => "라이트닝 미지원",
-            Self::UriNotSupported => "주소만 붙여넣으세요",
-            Self::LooksLikePrivateKey => "개인키처럼 보입니다. 다른 곳에 붙여넣지 마세요",
+            Self::UnknownVersion => t::ADDR_UNKNOWN_VERSION,
+            Self::PayToAnchor => t::ADDR_PAY_TO_ANCHOR,
+            Self::InvalidTaprootKey => t::ADDR_INVALID_TAPROOT_KEY,
+            Self::UnsupportedWitnessVersion => t::ADDR_UNSUPPORTED_WITNESS,
+            Self::SilentPayment => t::ADDR_SILENT_PAYMENT,
+            Self::Lightning => t::ADDR_LIGHTNING,
+            Self::UriNotSupported => t::ADDR_URI,
+            Self::LooksLikePrivateKey => t::ADDR_PRIVATE_KEY,
         }
+        .get(lang)
     }
 }
 
 impl fmt::Display for AddressError {
-    /// The §13 text; `WrongNetwork` without the wallet network (use [`AddressError::text`]).
+    /// The Korean §13 text; `WrongNetwork` without the wallet network (use
+    /// [`AddressError::text_in`]).
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::WrongNetwork => formatter.write_str("다른 네트워크의 주소입니다"),
-            other => formatter.write_str(other.text(BtcNetwork::Mainnet)),
+            Self::WrongNetwork => formatter.write_str(super::text::ADDR_WRONG_NETWORK.ko),
+            other => formatter.write_str(other.text_in(Lang::Ko, BtcNetwork::Mainnet)),
         }
     }
 }

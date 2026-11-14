@@ -54,7 +54,7 @@ pub struct MnUi {
     /// The words of [`MnUi::confirm_remove`] were shown and held to the end in this removal
     /// (required before removing a phrase whose backup is not confirmed).
     pub remove_revealed: bool,
-    /// The typed [`T_MN_REMOVE_WORD`] of an unconfirmed phrase's removal.
+    /// The typed [`text::REMOVE_WORD`] of an unconfirmed phrase's removal.
     pub remove_typed: String,
     /// Input error of the removal warning.
     pub remove_error: Option<String>,
@@ -80,23 +80,54 @@ impl core::fmt::Debug for MnUi {
     }
 }
 
-/// T-MN-INTRO.
-pub const T_MN_INTRO: &str = "지갑에 복구 단어(니모닉)를 여러 개(최대 8개) 둘 수 있습니다. 복구 단어마다 계정이 따로 생기고, 각 복구 단어는 따로 적어 두어야 합니다 — 한 복구 단어로 다른 복구 단어의 계정을 되찾을 수 없습니다.";
-/// T-MN-REMOVE.
-pub const T_MN_REMOVE: &str = "이 복구 단어와 그 계정이 지갑에서 사라집니다. 자금은 체인에 그대로 남지만, 이 복구 단어를 따로 적어 두지 않았다면 다시는 그 계정을 열 수 없습니다. 먼저 '단어 보기'로 적어 둔 단어와 같은지 확인하세요.";
-/// T-MN-BUSY: removal refused while a transaction of the mnemonic's accounts may still confirm.
-pub const T_MN_BUSY: &str = "이 복구 단어의 Solana·Bitcoin·Zcash 계정에서 보낸 거래가 아직 확정될 수 있어(진행 중, 공개된 거래 또는 승인 중) 지울 수 없습니다. 거래가 확정되거나 만료된 뒤에 다시 시도하세요. 거래 저널에 손상된 Solana·Bitcoin·Zcash 기록이 있으면 어느 계정의 거래인지 확인할 수 없어 지우지 않습니다.";
-/// T-MN-UNCONFIRMED.
-pub const T_MN_UNCONFIRMED: &str = "백업 확인 전입니다. 이 복구 단어의 계정은 받기만 되고 서명(보내기·연결 승인)은 백업 확인 뒤에 됩니다.";
-/// T-MN-REMOVE-UNCONFIRMED: removal of a phrase whose backup is not confirmed.
-pub const T_MN_REMOVE_UNCONFIRMED: &str = "백업하지 않은 복구 단어입니다. 지우면 이 PC 어디에도 단어가 남지 않아, 이 단어의 계정으로 받은 자산은 단어를 적어 두지 않았다면 영구히 잃습니다. 먼저 '단어 보기'로 단어를 끝까지 보고 적어 둔 뒤, 아래에 확인 문구를 입력해야 지울 수 있습니다.";
-/// The phrase typed to remove a phrase whose backup is not confirmed.
-pub const T_MN_REMOVE_WORD: &str = "백업 없이 지우기";
-/// T-MN-RECEIVE-UNCONFIRMED: the receive screens of an unconfirmed phrase's accounts.
-pub const T_MN_RECEIVE_UNCONFIRMED: &str = "백업하지 않은 복구 단어의 계정입니다. 이 주소로 받은 자산은 백업 확인 전에는 보낼 수 없고, 단어를 적어 두지 않은 채 잃으면 영구히 잃습니다. 받기 전에 설정 → 복구 단어에서 '백업 확인'을 마치세요.";
-/// T-MN-ALT-PASS: phrases are not added, made or removed in a session opened with an
-/// unverified passphrase (the vault refuses it too, spec/02 §7.5, §8.6).
-pub const T_MN_ALT_PASS: &str = "확인되지 않은 passphrase로 연 지갑에서는 복구 단어를 더하거나 새로 만들거나 지울 수 없습니다(이 세션의 변경은 저장되지 않고, 같은 복구 단어가 두 번 들어갈 수 있습니다). 잠그고 passphrase를 다시 입력하세요.";
+/// The recovery-phrase texts (spec/04 §2.24, T-MN-*).
+pub mod text {
+    yw_core::texts! {
+        /// T-MN-INTRO.
+        INTRO = "지갑에 복구 단어(니모닉)를 여러 개(최대 8개) 둘 수 있습니다. 복구 단어마다 계정이 따로 생기고, 각 복구 단어는 따로 적어 두어야 합니다 — 한 복구 단어로 다른 복구 단어의 계정을 되찾을 수 없습니다."
+            / "A wallet can hold several recovery phrases (mnemonics, up to 8). Each recovery phrase gets its own accounts, and each must be written down separately — one recovery phrase cannot recover the accounts of another.";
+        /// T-MN-REMOVE.
+        REMOVE = "이 복구 단어와 그 계정이 지갑에서 사라집니다. 자금은 체인에 그대로 남지만, 이 복구 단어를 따로 적어 두지 않았다면 다시는 그 계정을 열 수 없습니다. 먼저 '단어 보기'로 적어 둔 단어와 같은지 확인하세요."
+            / "This recovery phrase and its accounts are removed from the wallet. The funds stay on the chain, but unless you wrote this recovery phrase down separately you can never open those accounts again. First use 'Show words' to check that they match the words you wrote down.";
+        /// T-MN-BUSY: removal refused while a transaction of the phrase's accounts may confirm.
+        BUSY = "이 복구 단어의 Solana·Bitcoin·Zcash 계정에서 보낸 거래가 아직 확정될 수 있어(진행 중, 공개된 거래 또는 승인 중) 지울 수 없습니다. 거래가 확정되거나 만료된 뒤에 다시 시도하세요. 거래 저널에 손상된 Solana·Bitcoin·Zcash 기록이 있으면 어느 계정의 거래인지 확인할 수 없어 지우지 않습니다."
+            / "This recovery phrase cannot be deleted because transactions sent from its Solana, Bitcoin or Zcash accounts may still confirm (in progress, published or awaiting approval). Try again after they confirm or expire. If the transaction journal has damaged Solana, Bitcoin or Zcash records, the wallet cannot tell whose transactions they are, so it does not delete the phrase.";
+        /// T-MN-UNCONFIRMED.
+        UNCONFIRMED = "백업 확인 전입니다. 이 복구 단어의 계정은 받기만 되고 서명(보내기·연결 승인)은 백업 확인 뒤에 됩니다."
+            / "The backup is not confirmed yet. This recovery phrase's accounts can only receive; signing (sending, approving connections) works after the backup check.";
+        /// T-MN-REMOVE-UNCONFIRMED: removal of a phrase whose backup is not confirmed.
+        REMOVE_UNCONFIRMED = "백업하지 않은 복구 단어입니다. 지우면 이 PC 어디에도 단어가 남지 않아, 이 단어의 계정으로 받은 자산은 단어를 적어 두지 않았다면 영구히 잃습니다. 먼저 '단어 보기'로 단어를 끝까지 보고 적어 둔 뒤, 아래에 확인 문구를 입력해야 지울 수 있습니다."
+            / "This recovery phrase has not been backed up. Once deleted, the words are nowhere on this PC, so assets received by its accounts are lost forever unless you wrote the words down. First use 'Show words' to see the words to the end and write them down, then type the confirmation phrase below to delete it.";
+        /// The phrase typed to remove a phrase whose backup is not confirmed.
+        REMOVE_WORD = "백업 없이 지우기" / "delete without backup";
+        /// T-MN-RECEIVE-UNCONFIRMED: the receive screens of an unconfirmed phrase's accounts.
+        RECEIVE_UNCONFIRMED = "백업하지 않은 복구 단어의 계정입니다. 이 주소로 받은 자산은 백업 확인 전에는 보낼 수 없고, 단어를 적어 두지 않은 채 잃으면 영구히 잃습니다. 받기 전에 설정 → 복구 단어에서 '백업 확인'을 마치세요."
+            / "This account belongs to a recovery phrase that has not been backed up. Assets received at this address cannot be sent before the backup check, and are lost forever if the words are lost without being written down. Before receiving, finish 'Backup check' in Settings → Recovery words.";
+        /// T-MN-ALT-PASS: phrases are not added, made or removed in a session opened with an
+        /// unverified passphrase (the vault refuses it too, spec/02 §7.5, §8.6).
+        ALT_PASS = "확인되지 않은 passphrase로 연 지갑에서는 복구 단어를 더하거나 새로 만들거나 지울 수 없습니다(이 세션의 변경은 저장되지 않고, 같은 복구 단어가 두 번 들어갈 수 있습니다). 잠그고 passphrase를 다시 입력하세요."
+            / "In a wallet opened with an unverified passphrase, recovery phrases cannot be added, created or deleted (changes in this session are not saved, and the same recovery phrase could be added twice). Lock and enter the passphrase again.";
+        SITE_REFUSED(2) = "{0}의 서명 요청을 거부했습니다: '{1}'의 백업 확인 전이라 이 계정은 받기만 되고 서명은 안 됩니다. 설정 → 복구 단어에서 '백업 확인'을 마치세요."
+            / "Refused the signature request from {0}: the backup of '{1}' is not confirmed yet, so this account can only receive, not sign. Finish 'Backup check' in Settings → Recovery words.";
+        REFUSED_WHICH = "복구 단어가 백업 확인 전이라" / "the recovery phrase's backup is not confirmed yet, so";
+        REFUSED_WHICH_NAMED(1) = "'{0}'의 백업 확인 전이라" / "the backup of '{0}' is not confirmed yet, so";
+        NOT_SIGNED(2) = "서명하지 않았습니다: {0} 이 계정은 받기만 되고 서명은 안 됩니다. 설정 → 복구 단어에서 '백업 확인'을 마치세요. ({1})"
+            / "Not signed: {0} this account can only receive, not sign. Finish 'Backup check' in Settings → Recovery words. ({1})";
+        CONNECT_TAG(1) = "  [{0} 백업 확인 전 — 받기만, 서명 불가]"
+            / "  [{0} backup not confirmed — receive only, cannot sign]";
+        REVEAL_FIRST = "먼저 '단어 보기'로 이 복구 단어를 끝까지 보고 적어 두세요."
+            / "First use 'Show words' to see this recovery phrase to the end and write it down.";
+        TYPE_EXACTLY(1) = "지우려면 입력란에 '{0}'를 정확히 입력하세요."
+            / "To delete it, type '{0}' exactly in the field.";
+        SIGNING_BANNER(1) = "'{0}' 백업 확인 전 — 이 계정은 받기만 되고, 보내기·서명은 백업 확인 뒤에 됩니다."
+            / "'{0}' backup not confirmed — this account can only receive; sending and signing work after the backup check.";
+        BACKUP_NOW = "지금 백업 확인" / "Check backup now";
+        ADDED = "복구 단어를 추가했습니다. 그 계정 0이 계정 목록에 생겼습니다."
+            / "The recovery phrase was added. Its account 0 now appears in the account list.";
+        BACKUP_CONFIRMED(1) = "{0}의 백업을 확인했습니다. 이제 그 계정으로 서명할 수 있습니다."
+            / "The backup of {0} is confirmed. Its accounts can sign now.";
+    }
+}
 
 impl App {
     /// The label of mnemonic `id` (meta `mnemonics`; `니모닉 N` by vault position otherwise).
@@ -115,7 +146,10 @@ impl App {
             .iter()
             .position(|info| info.id == id)
             .unwrap_or(0);
-        crate::workers::key::mnemonics::default_label(position.saturating_add(1))
+        crate::workers::key::mnemonics::default_label(
+            self.settings.language,
+            position.saturating_add(1),
+        )
     }
 
     /// The label of the primary mnemonic.
@@ -390,7 +424,7 @@ impl App {
     }
 
     /// Whether recovery phrases may be added, made or removed now: unlocked, and not a session
-    /// opened with an unverified passphrase ([`T_MN_ALT_PASS`]; like a key import).
+    /// opened with an unverified passphrase ([`text::ALT_PASS`]; like a key import).
     #[must_use]
     pub fn mn_phrases_editable(&self) -> bool {
         self.unlocked() && !self.passphrase_unverified()
@@ -524,10 +558,12 @@ impl App {
     ) {
         // A WalletConnect session is named by the address its dApp claimed, never by its
         // internal `….walletconnect.invalid` origin (spec/13 §7).
-        let text = format!(
-            "{}의 서명 요청을 거부했습니다: '{}'의 백업 확인 전이라 이 계정은 받기만 되고 서명은 안 됩니다. 설정 → 복구 단어에서 '백업 확인'을 마치세요.",
-            self.origin_display(&site.origin),
-            self.mnemonic_label(phrase)
+        let text = text::SITE_REFUSED.fill(
+            self.settings.language,
+            [
+                &self.origin_display(&site.origin),
+                &self.mnemonic_label(phrase),
+            ],
         );
         if !self.banners.iter().any(|banner| banner.text == text) {
             self.notice(text, Tone::Warn);
@@ -547,14 +583,12 @@ impl App {
     /// as the dApp refusal says ([`Self::refuse_unconfirmed`]).
     #[must_use]
     pub(crate) fn backup_refused_text(&self, phrase: Option<RecordId>) -> String {
+        let lang = self.settings.language;
         let which = phrase.map_or_else(
-            || "복구 단어가 백업 확인 전이라".to_owned(),
-            |id| format!("'{}'의 백업 확인 전이라", self.mnemonic_label(id)),
+            || text::REFUSED_WHICH.get(lang).to_owned(),
+            |id| text::REFUSED_WHICH_NAMED.fill(lang, [&self.mnemonic_label(id)]),
         );
-        format!(
-            "서명하지 않았습니다: {which} 이 계정은 받기만 되고 서명은 안 됩니다. 설정 → 복구 단어에서 '백업 확인'을 마치세요. ({})",
-            crate::errors::ErrorCode::Vlt009.code()
-        )
+        text::NOT_SIGNED.fill(lang, [&which, crate::errors::ErrorCode::Vlt009.code()])
     }
 
     /// The send forms' check before `검토` (S11, Solana, Bitcoin, the Zcash 보내기 card, S-HC):
@@ -567,14 +601,12 @@ impl App {
         self.mn_unconfirmed(gate).is_some()
     }
 
-    /// The tag of a dApp connect-window row whose account cannot sign yet.
+    /// The tag of a dApp connect-window row whose account cannot sign yet (in the approval
+    /// window's language).
     #[must_use]
     pub(crate) fn mn_connect_tag(&self, phrase: Option<RecordId>) -> String {
         phrase.map_or_else(String::new, |id| {
-            format!(
-                "  [{} 백업 확인 전 — 받기만, 서명 불가]",
-                self.mnemonic_label(id)
-            )
+            text::CONNECT_TAG.fill(self.approval_lang(), [&self.mnemonic_label(id)])
         })
     }
 
@@ -701,11 +733,14 @@ impl App {
 
     /// `지우기` of a mnemonic card: the warning, unless a transaction of its accounts may still
     /// confirm (T-MN-BUSY). The primary mnemonic has no `지우기`; nothing is removed in a session
-    /// opened with an unverified passphrase ([`T_MN_ALT_PASS`]).
+    /// opened with an unverified passphrase ([`text::ALT_PASS`]).
     fn mn_remove_clicked(&mut self, info: MnemonicInfo) {
         if !info.primary && self.mn_phrases_editable() {
             if self.mnemonic_busy(info.id) {
-                self.notice(T_MN_BUSY.to_owned(), Tone::Warn);
+                self.notice(
+                    text::BUSY.get(self.settings.language).to_owned(),
+                    Tone::Warn,
+                );
             } else {
                 self.mn_remove_reset(Some(info.id));
             }
@@ -756,22 +791,22 @@ impl App {
     }
 
     /// The warning's `이 복구 단어 지우기`: W03. A phrase whose backup is not confirmed needs its
-    /// words shown to the end in this removal (`단어 보기`) and [`T_MN_REMOVE_WORD`] typed first.
+    /// words shown to the end in this removal (`단어 보기`) and [`text::REMOVE_WORD`] (in the app
+    /// language) typed first.
     fn mn_remove_confirmed(&mut self) {
         let Some(target) = self.mn.confirm_remove else {
             return;
         };
         if self.mn_remove_unconfirmed() {
+            let lang = self.settings.language;
             if !self.mn.remove_revealed {
-                self.mn.remove_error =
-                    Some("먼저 '단어 보기'로 이 복구 단어를 끝까지 보고 적어 두세요.".to_owned());
+                self.mn.remove_error = Some(text::REVEAL_FIRST.get(lang).to_owned());
                 self.refresh();
                 return;
             }
-            if self.mn.remove_typed.trim() != T_MN_REMOVE_WORD {
-                self.mn.remove_error = Some(format!(
-                    "지우려면 입력란에 '{T_MN_REMOVE_WORD}'를 정확히 입력하세요."
-                ));
+            let word = text::REMOVE_WORD.get(lang);
+            if self.mn.remove_typed.trim() != word {
+                self.mn.remove_error = Some(text::TYPE_EXACTLY.fill(lang, [word]));
                 self.refresh();
                 return;
             }
@@ -813,7 +848,11 @@ impl App {
             .any(|info| info.id == id && !info.backup_confirmed)
         {
             items.push(Item::Banner(
-                format!("{}: {T_MN_RECEIVE_UNCONFIRMED}", self.mnemonic_label(id)),
+                format!(
+                    "{}: {}",
+                    self.mnemonic_label(id),
+                    text::RECEIVE_UNCONFIRMED.get(self.settings.language)
+                ),
                 Tone::HighRisk,
             ));
             self.mn_backup_now(id, items);
@@ -836,10 +875,7 @@ impl App {
             .any(|info| info.id == id && !info.backup_confirmed)
         {
             items.push(Item::Banner(
-                format!(
-                    "'{}' 백업 확인 전 — 이 계정은 받기만 되고, 보내기·서명은 백업 확인 뒤에 됩니다.",
-                    self.mnemonic_label(id)
-                ),
+                text::SIGNING_BANNER.fill(self.settings.language, [&self.mnemonic_label(id)]),
                 Tone::Warn,
             ));
             self.mn_backup_now(id, items);
@@ -862,7 +898,7 @@ impl App {
         {
             items.push(Item::Row(vec![Ctl::button(
                 ids::BACKUP_BASE.saturating_add(offset),
-                "지금 백업 확인",
+                text::BACKUP_NOW.get(self.settings.language),
             )]));
         }
     }
@@ -904,7 +940,7 @@ impl App {
     fn save_mnemonic_label(&mut self) {
         let label = self.controls.text(ids::RENAME_EDIT, 64).unwrap_or_default();
         if !is_valid_label(&label) {
-            self.info = Some(crate::errors::ErrorCode::Inp017.text());
+            self.info = Some(crate::errors::ErrorCode::Inp017.text_in(self.settings.language));
             self.refresh();
             return;
         }
@@ -924,6 +960,7 @@ impl App {
                     meta.mnemonics.push(crate::meta::MnemonicEntry {
                         record_id: *info.id.as_bytes(),
                         label: crate::workers::key::mnemonics::default_label(
+                            self.settings.language,
                             position.saturating_add(1),
                         ),
                         evm: Vec::new(),
@@ -1032,7 +1069,10 @@ impl App {
             }
             MnPurpose::Backup(_) | MnPurpose::ShowWords(..) => {
                 self.mn.challenge = None;
-                self.notice(T_MN_UNCONFIRMED.to_owned(), Tone::Warn);
+                self.notice(
+                    text::UNCONFIRMED.get(self.settings.language).to_owned(),
+                    Tone::Warn,
+                );
             }
             // `ImportPassword`: the preview stays, `가져오기` asks for the password again.
             MnPurpose::ImportPassword
@@ -1117,11 +1157,12 @@ impl App {
             }
             MnOutcome::Preview(Err(error)) => {
                 let code = key_code(error);
+                let lang = self.settings.language;
                 let message = match error {
                     yw_core::error::KeyError::MnemonicUnknownWord { position } => {
-                        code.render(&position.to_string())
+                        code.render_in(lang, &position.to_string())
                     }
-                    _ => code.text(),
+                    _ => code.text_in(lang),
                 };
                 self.open_mn_input(SecretKind::Mnemonic, MnPurpose::ImportWords);
                 self.with_form(|form| form.set_error(Some(message)));
@@ -1132,7 +1173,7 @@ impl App {
                 self.mn.preview = None;
                 logging::info("app", "mnemonic.added", &[]);
                 self.notice(
-                    "복구 단어를 추가했습니다. 그 계정 0이 계정 목록에 생겼습니다.".to_owned(),
+                    text::ADDED.get(self.settings.language).to_owned(),
                     Tone::Info,
                 );
                 self.after_change();
@@ -1155,10 +1196,12 @@ impl App {
             MnOutcome::Challenge(Ok((id, challenge))) => {
                 self.mn.challenge = Some((id, challenge));
                 if self.secret_purpose() == Some(Purpose::Mnemonics(MnPurpose::Backup(id))) {
+                    let lang = self.settings.language;
                     self.with_form(|form| {
                         form.reset_backup(
                             challenge.positions,
                             Some(crate::ui::screens::backup_retry_text(
+                                lang,
                                 challenge.positions,
                                 true,
                             )),
@@ -1183,10 +1226,7 @@ impl App {
                 }
                 logging::info("app", "mnemonic.backup_confirmed", &[]);
                 self.notice(
-                    format!(
-                        "{}의 백업을 확인했습니다. 이제 그 계정으로 서명할 수 있습니다.",
-                        self.mnemonic_label(id)
-                    ),
+                    text::BACKUP_CONFIRMED.fill(self.settings.language, [&self.mnemonic_label(id)]),
                     Tone::Info,
                 );
                 self.after_change();
@@ -1266,9 +1306,12 @@ impl App {
                         .find(|entry| entry.record_id == *id.as_bytes())
                 }) && !entry.evm.iter().any(|account| account.index == index)
                 {
-                    entry
-                        .evm
-                        .push(crate::workers::key::new_account(index, number, &address));
+                    entry.evm.push(crate::workers::key::new_account(
+                        self.settings.language,
+                        index,
+                        number,
+                        &address,
+                    ));
                     entry.evm.sort_by_key(|account| account.index);
                     if let Some(meta) = self.meta.as_mut() {
                         meta.prefs.evm_account = EvmAccountPref::Mnemonic(*id.as_bytes(), index);
@@ -1281,7 +1324,10 @@ impl App {
             MnOutcome::Busy(_) => {
                 self.close_secret();
                 self.mn_remove_reset(None);
-                self.notice(T_MN_BUSY.to_owned(), Tone::Warn);
+                self.notice(
+                    text::BUSY.get(self.settings.language).to_owned(),
+                    Tone::Warn,
+                );
                 self.refresh();
             }
             MnOutcome::PassphraseFor(position, count) => {

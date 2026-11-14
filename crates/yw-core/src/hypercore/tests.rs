@@ -753,8 +753,7 @@ fn hypercore_catalogue_entries_are_well_formed() {
         (HcKind::UsdClassTransfer, text::KIND_USD_CLASS_TRANSFER),
         (HcKind::SendAsset, text::KIND_SEND_ASSET),
     ] {
-        assert_eq!(catalogue.ko, kind.korean());
-        assert_eq!(text::kind_name(Lang::Ko, kind), kind.korean());
+        assert_eq!(text::kind_name(Lang::Ko, kind), catalogue.ko);
         assert_eq!(text::kind_name(Lang::En, kind), catalogue.en);
     }
 }

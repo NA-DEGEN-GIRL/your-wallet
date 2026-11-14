@@ -60,10 +60,23 @@ fn evm_network(chain_id: u64) -> String {
     NetworkId::Eip155(chain_id).to_string()
 }
 
-fn limit_text() -> String {
-    format!(
-        "더 숨길 수 없습니다(네트워크당 {MAX_HIDDEN_PER_NETWORK}개, 전체 {MAX_HIDDEN_TOTAL}개까지)."
+fn limit_text(lang: yw_core::lang::Lang) -> String {
+    text::HIDE_LIMIT.fill(
+        lang,
+        [
+            &MAX_HIDDEN_PER_NETWORK.to_string(),
+            &MAX_HIDDEN_TOTAL.to_string(),
+        ],
     )
+}
+
+/// Token-row texts (spec/04 §2.6; English spec/14 §5).
+pub mod text {
+    yw_core::texts! {
+        HIDE_LIMIT(2) = "더 숨길 수 없습니다(네트워크당 {0}개, 전체 {1}개까지)."
+            / "No more tokens can be hidden (up to {0} per network, {1} in total).";
+        USER_ADDED = "사용자 추가" / "Added by you";
+    }
 }
 
 impl App {
@@ -102,7 +115,10 @@ impl App {
                 let (ticker, name) = match known {
                     Some(token) => (token.symbol.to_owned(), token_note(token)),
                     None if registered => (symbol.clone(), String::new()),
-                    None => (symbol.clone(), "사용자 추가".to_owned()),
+                    None => (
+                        symbol.clone(),
+                        text::USER_ADDED.get(self.settings.language).to_owned(),
+                    ),
                 };
                 EvmTokenRow {
                     index,
@@ -142,7 +158,7 @@ impl App {
             }
             self.save_meta();
         } else {
-            self.info = Some(limit_text());
+            self.info = Some(limit_text(self.settings.language));
         }
         self.refresh();
     }
@@ -242,7 +258,7 @@ impl App {
             }
             self.save_meta();
         } else {
-            self.info = Some(limit_text());
+            self.info = Some(limit_text(self.settings.language));
         }
         self.refresh();
     }

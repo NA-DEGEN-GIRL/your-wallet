@@ -19,9 +19,10 @@ use yw_core::evm::decode::{AMOUNT_OR_TOKEN_ID, DecodedCall, DecodedTx, MAX_MULTI
 use yw_core::evm::eip191::DecodedPersonalMessage;
 use yw_core::evm::eip712::{DecodedTypedData, KnownSchema, TdNode, TdValue};
 use yw_core::evm::simulate::{ApprovalKindEvm, AssetId, SimResult, SimulationDiff};
+use yw_core::lang::Lang;
 use yw_json::{Number, Value};
 
-use super::{ExplainError, UNTRUSTED_TOTAL_SCALARS};
+use super::{ExplainError, UNTRUSTED_TOTAL_SCALARS, text};
 use crate::text::{json_object, json_str};
 
 /// Schema tag of the input.
@@ -40,7 +41,6 @@ const CAP_SIWE: usize = 256;
 const CAP_DOMAIN: usize = 64;
 const CAP_PATH: usize = 128;
 const CAP_STRING: usize = 128;
-const UNLIMITED: &str = "무제한";
 
 /// The simulation status of an EVM transaction (§4.3 `simulation.status`).
 #[derive(Clone, Copy, Debug)]
@@ -152,15 +152,16 @@ pub enum CriticalAction {
 }
 
 impl CriticalAction {
-    /// The Korean name shown in the inconsistency notice.
+    /// The name shown in the inconsistency notice.
     #[must_use]
-    pub const fn label(self) -> &'static str {
+    pub const fn label(self, lang: Lang) -> &'static str {
         match self {
-            Self::Approval => "토큰 사용 승인",
-            Self::Permit => "권한 서명(permit)",
-            Self::ApprovalForAll => "전체 승인(setApprovalForAll)",
-            Self::Transfer => "자산 전송",
+            Self::Approval => text::CRITICAL_APPROVAL,
+            Self::Permit => text::CRITICAL_PERMIT,
+            Self::ApprovalForAll => text::CRITICAL_APPROVAL_FOR_ALL,
+            Self::Transfer => text::CRITICAL_TRANSFER,
         }
+        .get(lang)
     }
 }
 
@@ -171,7 +172,7 @@ pub struct TrustedSets {
     pub(crate) addresses: BTreeSet<[u8; 20]>,
     /// `H`: other hex values (lowercase, `0x` prefix).
     pub(crate) hex: BTreeSet<String>,
-    /// `M`: `norm` of every Amount `raw`/`display`, and `무제한`.
+    /// `M`: `norm` of every Amount `raw`/`display`, and `무제한` (`unlimited` in English).
     pub(crate) amounts: BTreeSet<String>,
     /// `D`: `tokens()` of every trusted string and number.
     pub(crate) numbers: BTreeSet<String>,
@@ -241,6 +242,7 @@ pub struct ExplainInput {
     trusted: TrustedSets,
     kind: RequestKind,
     critical: Vec<CriticalAction>,
+    lang: Lang,
 }
 
 impl core::fmt::Debug for ExplainInput {
@@ -248,6 +250,7 @@ impl core::fmt::Debug for ExplainInput {
         formatter
             .debug_struct("ExplainInput")
             .field("kind", &self.kind)
+            .field("lang", &self.lang)
             .field("json_bytes", &self.json.len())
             .field("trusted", &self.trusted)
             .field("critical", &self.critical)
@@ -271,6 +274,7 @@ impl ExplainInput {
             },
             kind,
             critical: Vec::new(),
+            lang: Lang::Ko,
         }
     }
 }
@@ -292,6 +296,13 @@ impl ExplainInput {
     #[must_use]
     pub const fn kind(&self) -> RequestKind {
         self.kind
+    }
+
+    /// The language of the labels, of the system prompt and of the answer (the approval
+    /// window's, spec/14).
+    #[must_use]
+    pub const fn lang(&self) -> Lang {
+        self.lang
     }
 
     /// The effects the AI text must mention (sorted, no duplicates).
@@ -435,6 +446,7 @@ struct Asset {
 }
 
 struct Builder<'a> {
+    lang: Lang,
     chain: &'a ChainInfo,
     facts: &'a ChainFacts,
     trusted: TrustedSets,
@@ -446,8 +458,9 @@ struct Builder<'a> {
 }
 
 impl<'a> Builder<'a> {
-    fn new(chain: &'a ChainInfo, facts: &'a ChainFacts, user: &Address) -> Self {
+    fn new(lang: Lang, chain: &'a ChainInfo, facts: &'a ChainFacts, user: &Address) -> Self {
         Self {
+            lang,
             chain,
             facts,
             trusted: TrustedSets::default(),
@@ -507,7 +520,7 @@ impl<'a> Builder<'a> {
         };
         let raw = format!("{sign}{digits}");
         let display = if unlimited {
-            UNLIMITED.to_owned()
+            text::UNLIMITED.get(self.lang).to_owned()
         } else {
             let plain = decimals.map_or_else(|| digits.clone(), |d| plain_units(value, d));
             format!("{sign}{plain}")
@@ -818,7 +831,7 @@ impl<'a> Builder<'a> {
         }
         match call {
             DecodedCall::NativeTransfer => {
-                let label = self.label("{native} 보내기");
+                let label = self.label(text::LABEL_NATIVE_SEND.get(self.lang));
                 json_object(vec![
                     ("kind", self.text("native_transfer")),
                     ("label", label),
@@ -841,7 +854,7 @@ impl<'a> Builder<'a> {
                 } else {
                     Some(*to)
                 };
-                let label = self.label(title.ko);
+                let label = self.label(title.get(self.lang));
                 let args = args
                     .iter()
                     .map(|(name, value)| self.arg(kind, name, value, token.as_ref()))
@@ -853,7 +866,7 @@ impl<'a> Builder<'a> {
                 ])
             }
             DecodedCall::Multicall { kind, head, .. } => {
-                let label = self.label("묶음 호출");
+                let label = self.label(text::LABEL_MULTICALL.get(self.lang));
                 let args = head
                     .iter()
                     .map(|(name, value)| self.arg(kind, name, value, Some(to)))
@@ -1335,19 +1348,21 @@ impl<'a> Builder<'a> {
 
 /// Builds the input of §4.3 for `src` from the requesting `origin` (shown as untrusted), the
 /// signing account `user`, the request's chain and the facts the display used (RPC token
-/// metadata). The registry of `chain` decides which symbols are trusted.
+/// metadata). The registry of `chain` decides which symbols are trusted. The labels and the
+/// unlimited amount are in `lang`, which also selects the prompt and the answer rules.
 ///
 /// # Errors
 ///
 /// [`ExplainError::InputTooLarge`] when the JSON alone exceeds the request body bound.
 pub fn build_input(
+    lang: Lang,
     src: &ExplainSource<'_>,
     origin: &str,
     user: &Address,
     chain: &ChainInfo,
     facts: &ChainFacts,
 ) -> Result<ExplainInput, ExplainError> {
-    let mut builder = Builder::new(chain, facts, user);
+    let mut builder = Builder::new(lang, chain, facts, user);
     let kind = match src {
         ExplainSource::EvmTx(..) => RequestKind::EvmTx,
         ExplainSource::PersonalSign(_) => RequestKind::PersonalSign,
@@ -1355,7 +1370,7 @@ pub fn build_input(
     };
     let chain_value = json_object(vec![
         ("id", builder.number(chain.chain_id)),
-        ("name", builder.text(&chain.name)),
+        ("name", builder.text(chain.display_name(lang))),
         ("native_symbol", builder.text(&chain.native_symbol)),
     ]);
     let origin_value = builder.untrusted(origin, CAP_ORIGIN);
@@ -1401,5 +1416,6 @@ pub fn build_input(
         trusted: builder.trusted,
         kind,
         critical: builder.critical.into_iter().collect(),
+        lang,
     })
 }

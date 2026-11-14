@@ -747,7 +747,7 @@ fn send_form(harness: &mut Harness, amount_sats: &str, rate: &str) {
         ui.set_unit(ctx, BtcAmountUnit::Sats);
         ui.set_amount(ctx, amount_sats);
         ui.set_fee_choice(ctx, BtcFeeChoice::Manual, false);
-        ui.set_manual_rate(rate, false);
+        ui.set_manual_rate(yw_core::lang::Lang::Ko, rate, false);
         Vec::new()
     });
 }
@@ -850,7 +850,7 @@ fn testnet4_send_end_to_end() -> TestResult {
     // D20: no second send while in flight; the fee bump is allowed.
     assert_eq!(
         harness.ui.send_block(&harness.ctx()).as_deref(),
-        Some(yw_core::btc::policy::texts::IN_FLIGHT)
+        Some(yw_core::btc::policy::texts::IN_FLIGHT.ko)
     );
     send_form(&mut harness, "10000", "2");
     let before = harness.fake.count();
@@ -861,7 +861,7 @@ fn testnet4_send_end_to_end() -> TestResult {
     assert_eq!(harness.ui.bump.target, Some(sent_txid));
     harness.run(|ui, ctx| {
         ui.set_fee_choice(ctx, BtcFeeChoice::Manual, true);
-        ui.set_manual_rate("5", true);
+        ui.set_manual_rate(yw_core::lang::Lang::Ko, "5", true);
         Vec::new()
     });
     harness.run(|ui, ctx| ui.review_bump(ctx, [9; 32]));
@@ -870,7 +870,11 @@ fn testnet4_send_end_to_end() -> TestResult {
     assert_eq!(bump.plan.replaces(), Some(sent_txid));
     assert!(bump.plan.fee().get() > record.fee.get());
     harness.run(|ui, _| {
-        ui.approval_finished(&bump, yw_app::ui::approval::QueueOutcome::Rejected);
+        ui.approval_finished(
+            yw_core::lang::Lang::Ko,
+            &bump,
+            yw_app::ui::approval::QueueOutcome::Rejected,
+        );
         Vec::new()
     });
     assert!(!harness.ui.slot);
@@ -1031,7 +1035,7 @@ fn send_stopped_by_chain_check_stays_broadcasting() -> TestResult {
     assert!(
         flow.note
             .as_deref()
-            .is_some_and(|note| note.starts_with(yw_app::app_btc::NOT_SENT))
+            .is_some_and(|note| note.starts_with(yw_app::app_btc::NOT_SENT.ko))
     );
     let view = view_of(&harness, &record.txid)?;
     assert!(view.can_rebroadcast && !view.can_abandon);
@@ -1739,7 +1743,10 @@ fn every_address_type_end_to_end() -> TestResult {
         harness.run(BtcUi::open_receive);
         let view = harness.ui.receive.clone().ok_or("receive view")?;
         assert_eq!(view.address, address.as_str());
-        assert!(view.kind.starts_with(script_type.name()));
+        assert!(
+            view.kind
+                .starts_with(script_type.name_in(yw_core::lang::Lang::Ko))
+        );
         assert_eq!(
             view.path,
             format!("m/{}'/1'/{number}'/0/0", script_type.purpose().number())
@@ -1786,7 +1793,11 @@ fn every_address_type_end_to_end() -> TestResult {
         assert_eq!(rows[0].id, BtcAccountId::PRIMARY);
         assert!(rows[1].selected && rows[1].id == expected_id);
         assert_eq!(rows[1].available.get(), FUNDING_VALUE);
-        assert!(rows[1].kind.starts_with(script_type.name()));
+        assert!(
+            rows[1]
+                .kind
+                .starts_with(script_type.name_in(yw_core::lang::Lang::Ko))
+        );
         // Send through the RPC worker and the key worker.
         send_form(&mut harness, "30000", "2");
         harness.run(|ui, ctx| ui.review(ctx, [salt; 32]));
@@ -1992,7 +2003,10 @@ fn imported_round(key_only: bool, salt: u8, wif: &str, script_type: ScriptType) 
     let row = rows.iter().find(|row| row.imported).ok_or("imported row")?;
     assert!(row.selected && row.id == account.id());
     assert_eq!(row.name, yw_app::app_btc::short_address(&info.address));
-    assert!(row.kind.starts_with(script_type.name()));
+    assert!(
+        row.kind
+            .starts_with(script_type.name_in(yw_core::lang::Lang::Ko))
+    );
     assert_eq!(row.available.get(), FUNDING_VALUE);
     if key_only {
         // No BIP84 account 0: the imported key is the only account and holds the tip.
@@ -2011,7 +2025,10 @@ fn imported_round(key_only: bool, salt: u8, wif: &str, script_type: ScriptType) 
     let view = harness.ui.receive.clone().ok_or("receive view")?;
     assert_eq!(view.address, info.address);
     assert_eq!(view.path, "가져온 키");
-    assert!(view.kind.starts_with(script_type.name()));
+    assert!(
+        view.kind
+            .starts_with(script_type.name_in(yw_core::lang::Lang::Ko))
+    );
     // Send through the RPC worker and the key worker.
     send_form(&mut harness, "30000", "2");
     harness.run(|ui, ctx| ui.review(ctx, [salt; 32]));
@@ -2062,7 +2079,7 @@ fn imported_round(key_only: bool, salt: u8, wif: &str, script_type: ScriptType) 
     // D20 per account: no second send while in flight.
     assert_eq!(
         harness.ui.send_block(&harness.ctx()).as_deref(),
-        Some(yw_core::btc::policy::texts::IN_FLIGHT)
+        Some(yw_core::btc::policy::texts::IN_FLIGHT.ko)
     );
     // Tracking to one confirmation (final): the change is inserted into the imported account.
     harness.clock.advance(60_000);
@@ -2244,13 +2261,13 @@ fn imported_key_removal() -> TestResult {
     assert!(harness.ui.slot);
     assert_eq!(
         harness.ctx().remove_block(id, harness.ui.slot),
-        Some(yw_app::app_btc::REMOVE_BUSY_APPROVAL)
+        Some(yw_app::app_btc::REMOVE_BUSY_APPROVAL.ko)
     );
     harness.approve()?;
     // In flight: the UI and the key worker both refuse; nothing is removed.
     assert_eq!(
         harness.ctx().remove_block(id, harness.ui.slot),
-        Some(yw_app::app_btc::REMOVE_BUSY_IN_FLIGHT)
+        Some(yw_app::app_btc::REMOVE_BUSY_IN_FLIGHT.ko)
     );
     let outcomes = harness.key.handle(KeyJob::RemoveImportedKey {
         password: Zeroizing::new(PASSWORD.to_vec()),
@@ -2479,8 +2496,15 @@ fn cancel_after_precheck_failure_constrains_next_send() -> TestResult {
     assert!(harness.ui.flow(&txid).ok_or("flow")?.retry_precheck);
     // [취소]: the text says the RPC may have it and the next send reuses an input.
     harness.run(|ui, ctx| ui.cancel_signed(ctx, txid));
-    let (_, text, _) = harness.ui.confirm.ok_or("confirm")?.texts();
-    assert_eq!(text, yw_core::btc::policy::texts::CANCEL_DISCLOSED_CONFIRM);
+    let (_, text, _) = harness
+        .ui
+        .confirm
+        .ok_or("confirm")?
+        .texts(yw_core::lang::Lang::Ko);
+    assert_eq!(
+        text,
+        yw_core::btc::policy::texts::CANCEL_DISCLOSED_CONFIRM.ko
+    );
     harness.run(BtcUi::confirm_yes);
     let cancelled = harness.records()[0].clone();
     assert_eq!(cancelled.state, BtcTxState::Abandoned);
@@ -2514,7 +2538,11 @@ fn undisclosed_signed_cancel_has_no_constraint() -> TestResult {
             .contains(&"testmempoolaccept".to_owned())
     );
     harness.run(|ui, ctx| ui.cancel_signed(ctx, txid));
-    let (_, text, _) = harness.ui.confirm.ok_or("confirm")?.texts();
+    let (_, text, _) = harness
+        .ui
+        .confirm
+        .ok_or("confirm")?
+        .texts(yw_core::lang::Lang::Ko);
     assert_eq!(
         text,
         "서명했지만 보내지 않은 거래를 취소합니다. 이 거래는 전송하지 않습니다."
@@ -2637,7 +2665,7 @@ fn reimported_key_must_conflict_with_its_abandoned_send() -> TestResult {
     // It may still confirm: the key stays (UI before the password, and the key worker).
     assert_eq!(
         harness.ctx().remove_block(id, harness.ui.slot),
-        Some(yw_app::app_btc::REMOVE_BUSY_IN_FLIGHT)
+        Some(yw_app::app_btc::REMOVE_BUSY_IN_FLIGHT.ko)
     );
     let record_id = yw_core::vault::RecordId::from_bytes(id);
     let outcomes = harness.key.handle(KeyJob::RemoveImportedKey {
@@ -2681,7 +2709,7 @@ fn reimported_key_must_conflict_with_its_abandoned_send() -> TestResult {
             },
             harness.ui.slot
         ),
-        Some(yw_app::app_btc::REMOVE_BUSY_IN_FLIGHT)
+        Some(yw_app::app_btc::REMOVE_BUSY_IN_FLIGHT.ko)
     );
     // Unconstrained, the smallest sufficient input (60,000) would be chosen.
     send_form(&mut harness, "20000", "3");
@@ -2891,7 +2919,7 @@ fn fixed_address_mode_end_to_end() -> TestResult {
     harness.run(|ui, ctx| ui.set_address_mode(ctx, true));
     assert_eq!(
         harness.ui.account_message.as_deref(),
-        Some(yw_app::app_btc::ADDRESS_MODE_BUSY)
+        Some(yw_app::app_btc::ADDRESS_MODE_BUSY.ko)
     );
     assert!(!harness.btc_meta().ok_or("meta")?.fixed_address());
     harness.ui.slot = false;
@@ -2962,7 +2990,11 @@ fn evm_shared_account_end_to_end() -> TestResult {
             harness.ctx().accounts().iter().all(|meta| meta.id() != id),
             "nothing before the confirmation"
         );
-        let (_, text, _) = harness.ui.confirm.ok_or("confirm")?.texts();
+        let (_, text, _) = harness
+            .ui
+            .confirm
+            .ok_or("confirm")?
+            .texts(yw_core::lang::Lang::Ko);
         assert!(text.contains("m/44'/60'/0'/0/0") && text.contains("공개키가 같아져"));
         harness.run(BtcUi::confirm_yes);
         let account = harness.ctx().btc_meta().ok_or("active")?.clone();

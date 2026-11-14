@@ -19,11 +19,23 @@ use crate::logging::{self, Field};
 use crate::network::{NetworkId, SolCluster};
 use crate::ui::screens_explorer::ids;
 
-/// The information band when a network has no template of that kind.
-pub const T_EXPLORER_NONE: &str = "이 네트워크에는 탐색기 주소가 없습니다. 설정 → 네트워크(RPC) → 블록 탐색기에서 넣을 수 있습니다.";
-/// The band when `explorer.exe` could not be started.
-pub const T_EXPLORER_FAILED: &str =
-    "브라우저를 열지 못했습니다. '탐색기 링크 복사'로 주소를 복사해 브라우저에 붙여넣으세요.";
+/// Explorer link texts (spec/04 §2.11, §2.14; English spec/14 §5).
+pub mod text {
+    yw_core::texts! {
+        /// The information band when a network has no template of that kind.
+        EXPLORER_NONE = "이 네트워크에는 탐색기 주소가 없습니다. 설정 → 네트워크(RPC) → 블록 탐색기에서 넣을 수 있습니다."
+            / "This network has no explorer address. You can add one in Settings → Networks (RPC) → Block explorer.";
+        /// The band when `explorer.exe` could not be started.
+        EXPLORER_FAILED = "브라우저를 열지 못했습니다. '탐색기 링크 복사'로 주소를 복사해 브라우저에 붙여넣으세요."
+            / "Could not open the browser. Copy the address with 'Copy explorer link' and paste it into your browser.";
+        OPENED = "브라우저에서 탐색기를 열었습니다." / "Opened the explorer in your browser.";
+        OPENED_HOST(1) = "브라우저에서 {0} 페이지를 열었습니다. 주소창의 사이트 이름이 맞는지 확인하세요."
+            / "Opened a {0} page in your browser. Check that the site name in the address bar is right.";
+        SAVED(1) = "{0}의 블록 탐색기 주소를 저장했습니다." / "Saved the block explorer address of {0}.";
+        RESET(1) = "{0}의 블록 탐색기 주소를 기본값으로 되돌렸습니다."
+            / "Reset the block explorer address of {0} to the default.";
+    }
+}
 
 const TEXT_MAX: usize = 512;
 
@@ -181,14 +193,14 @@ impl App {
         if let Some(url) = self.explorer_tx_url(network, hash) {
             self.copy_text(&url);
         } else {
-            self.info = Some(T_EXPLORER_NONE.to_owned());
+            self.info = Some(text::EXPLORER_NONE.get(self.settings.language).to_owned());
             self.refresh();
         }
     }
 
     fn open_explorer(&mut self, net: ExplorerNet, kind: LinkKind, value: &str) {
         let Some(url) = self.explorer_url(net, kind, value) else {
-            self.info = Some(T_EXPLORER_NONE.to_owned());
+            self.info = Some(text::EXPLORER_NONE.get(self.settings.language).to_owned());
             self.refresh();
             return;
         };
@@ -209,17 +221,14 @@ impl App {
                 ("ok", Field::Word(if ok { "yes" } else { "no" })),
             ],
         );
+        let lang = self.settings.language;
         self.info = Some(if ok {
             explorer::url_host(&url).map_or_else(
-                || "브라우저에서 탐색기를 열었습니다.".to_owned(),
-                |host| {
-                    format!(
-                        "브라우저에서 {host} 페이지를 열었습니다. 주소창의 사이트 이름이 맞는지 확인하세요."
-                    )
-                },
+                || text::OPENED.get(lang).to_owned(),
+                |host| text::OPENED_HOST.fill(lang, [&host]),
             )
         } else {
-            T_EXPLORER_FAILED.to_owned()
+            text::EXPLORER_FAILED.get(lang).to_owned()
         });
         self.refresh();
     }
@@ -248,7 +257,10 @@ impl App {
     pub fn explorer_net_name(&self, net: ExplorerNet) -> String {
         match (net.network_id(), net) {
             (Some(id), _) => self.network_name(id),
-            (None, ExplorerNet::HyperCore(network)) => format!("Hyperliquid {}", network.label()),
+            (None, ExplorerNet::HyperCore(network)) => format!(
+                "Hyperliquid {}",
+                yw_core::hypercore::text::network_label(self.settings.language, network)
+            ),
             (None, _) => net.to_string(),
         }
     }
@@ -330,7 +342,9 @@ impl App {
             let checked = match validate_template(&text, kind) {
                 Ok(checked) => checked,
                 Err(error) => {
-                    self.explorer_ui.message = Some(format!("{}: {}", kind.label(), error.text()));
+                    let lang = self.settings.language;
+                    self.explorer_ui.message =
+                        Some(format!("{}: {}", kind.label_in(lang), error.text_in(lang)));
                     self.refresh();
                     return;
                 }
@@ -352,10 +366,7 @@ impl App {
             return;
         }
         self.explorer_store(net, entry);
-        self.info = Some(format!(
-            "{}의 블록 탐색기 주소를 저장했습니다.",
-            self.explorer_net_name(net)
-        ));
+        self.info = Some(text::SAVED.fill(self.settings.language, [&self.explorer_net_name(net)]));
         self.refresh();
     }
 
@@ -369,10 +380,7 @@ impl App {
             self.explorer_ui.message = None;
         }
         self.explorer_store(net, None);
-        self.info = Some(format!(
-            "{}의 블록 탐색기 주소를 기본값으로 되돌렸습니다.",
-            self.explorer_net_name(net)
-        ));
+        self.info = Some(text::RESET.fill(self.settings.language, [&self.explorer_net_name(net)]));
         self.refresh();
     }
 
@@ -612,7 +620,7 @@ mod tests {
         app.open_explorer_tx(NetworkId::Eip155(77), HASH);
         assert_eq!(
             app.info.as_deref(),
-            Some(crate::app_explorer::T_EXPLORER_NONE)
+            Some(crate::app_explorer::text::EXPLORER_NONE.ko)
         );
         app.open_explorer_address(
             ExplorerNet::HyperCore(yw_core::hypercore::HcNetwork::Testnet),
@@ -697,6 +705,119 @@ mod tests {
         // Activity, result and card ids that name nothing do nothing.
         assert!(app.on_explorer_command(ids::BTC_ACTIVITY_BASE));
         assert!(app.on_explorer_command(ids::RESULT_ZEC_OPEN));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// spec/14 (2026-11-14): group B's fixed texts in English carry no Hangul — the S15
+    /// explorer card and form, S17, the send-form notes, the site and extension lines — and
+    /// every catalogue keeps its placeholders.
+    #[test]
+    #[expect(clippy::too_many_lines, reason = "one check per group B text source")]
+    fn english_explorer_chain_and_site_texts() {
+        use yw_core::lang::{Entry, Lang, has_hangul, placeholders};
+
+        use crate::ui::main_window::Item;
+
+        fn strings(items: &[Item], out: &mut Vec<String>) {
+            for item in items {
+                match item {
+                    Item::Help(text) | Item::Banner(text, _) | Item::Title(text) => {
+                        out.push(text.clone());
+                    }
+                    Item::CardStart(Some(text)) => out.push(text.clone()),
+                    Item::LabeledRow(label, ctls) => {
+                        out.push(label.clone());
+                        out.extend(ctls.iter().map(|ctl| ctl.text.clone()));
+                    }
+                    Item::Row(ctls) => out.extend(ctls.iter().map(|ctl| ctl.text.clone())),
+                    Item::Badged(_, inner) => strings(core::slice::from_ref(&**inner), out),
+                    _ => {}
+                }
+            }
+        }
+
+        let dir = temp_dir("explorer-english");
+        let mut settings = Settings {
+            language: Lang::En,
+            ..Settings::default()
+        };
+        settings
+            .evm_chains
+            .push(user_chain(Some("https://scan.example")));
+        let mut app = app(&dir, settings);
+        let mut items = Vec::new();
+        app.explorer_settings_card(&mut items);
+        app.open_chain_form(None);
+        app.chain_edit_screen(&mut items);
+        let mut texts = Vec::new();
+        strings(&items, &mut texts);
+        assert!(texts.len() > 20, "{texts:?}");
+        for text in &texts {
+            assert!(!has_hangul(text), "{text}");
+        }
+        let notes = [
+            crate::flow::evm::form::AddressNote::SameAsSender,
+            crate::flow::evm::form::AddressNote::Book {
+                name: "Alice".to_owned(),
+                verified: true,
+            },
+            crate::flow::evm::form::AddressNote::LookAlike {
+                name: "Alice".to_owned(),
+                history: false,
+                prefix: 3,
+                suffix: 4,
+            },
+            crate::flow::evm::form::AddressNote::NotInBook,
+            crate::flow::evm::form::AddressNote::Contract,
+        ];
+        let mut lines: Vec<String> = notes.iter().map(|note| note.text_in(Lang::En)).collect();
+        lines.push(crate::app_book::look_alike_note(
+            Lang::En,
+            &crate::app_book::Resembles::Sent("0x5290".to_owned()),
+        ));
+        lines.push(crate::app_browser::status_text(Lang::En, None));
+        lines.push(crate::explorer::TemplateError::Placeholder(LinkKind::Tx).text_in(Lang::En));
+        lines.push(app.unlock_pending_text().unwrap_or_default());
+        lines.push(
+            crate::app_extension::ExtensionStatus::Never
+                .text_in(Lang::En)
+                .to_owned(),
+        );
+        for line in &lines {
+            assert!(!has_hangul(line), "{line}");
+        }
+        assert_eq!(
+            notes[2].text_in(yw_core::lang::Lang::Ko),
+            "'Alice'과 앞 3자·끝 4자가 같지만 다른 주소입니다. 주소 오염 공격일 수 있습니다."
+        );
+        let catalogues: [&[Entry]; 13] = [
+            crate::app_book::text::ALL,
+            crate::app_browser::text::ALL,
+            crate::app_chain_sites::text::ALL,
+            crate::app_evm::text::ALL,
+            crate::app_explorer::text::ALL,
+            crate::app_extension::text::ALL,
+            crate::app_tokens::text::ALL,
+            crate::explorer::text::ALL,
+            crate::flow::evm::form::text::ALL,
+            crate::flow::evm::user_chain::text::ALL,
+            crate::received::evm::text::ALL,
+            crate::ui::screens_book::text::ALL,
+            crate::ui::screens_evm::text::ALL,
+        ];
+        let more: [&[Entry]; 2] = [
+            crate::ui::screens_explorer::text::ALL,
+            crate::ui::screens_sites::text::ALL,
+        ];
+        for entry in catalogues.into_iter().chain(more).flatten() {
+            for template in [entry.ko, entry.en] {
+                let mut used = placeholders(template);
+                used.sort_unstable();
+                used.dedup();
+                assert_eq!(used, (0..entry.args).collect::<Vec<_>>(), "{}", entry.name);
+            }
+            assert!(!has_hangul(entry.en), "{}", entry.name);
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

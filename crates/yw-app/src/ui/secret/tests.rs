@@ -663,9 +663,11 @@ fn pin_target_texts_match_the_korean_originals() {
         PinTarget::PivPin,
         PinTarget::PivPuk,
     ] {
-        assert_eq!(super::target_name(target, Lang::Ko), target.name());
-        assert_eq!(super::target_title(target, Lang::Ko), target.change_title());
-        assert_eq!(super::target_rule(target, Lang::Ko), target.rule());
+        for lang in Lang::ALL {
+            assert_eq!(super::target_name(target, lang), target.name(lang));
+            assert_eq!(super::target_title(target, lang), target.change_title(lang));
+            assert_eq!(super::target_rule(target, lang), target.rule(lang));
+        }
     }
 }
 

@@ -51,13 +51,32 @@ pub enum AmountError {
     Overflow,
 }
 
+impl AmountError {
+    /// The fixed text in `lang` (`Display` is the Korean one).
+    #[must_use]
+    pub const fn text_in(self, lang: crate::lang::Lang) -> &'static str {
+        match self {
+            Self::Format => text::FORMAT,
+            Self::TooManyDecimals => text::TOO_MANY_DECIMALS,
+            Self::Overflow => text::OVERFLOW,
+        }
+        .get(lang)
+    }
+}
+
 impl fmt::Display for AmountError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            Self::Format => "금액 형식이 올바르지 않습니다.",
-            Self::TooManyDecimals => "소수점 아래 자릿수가 너무 많습니다.",
-            Self::Overflow => "금액이 너무 큽니다.",
-        })
+        formatter.write_str(self.text_in(crate::lang::Lang::Ko))
+    }
+}
+
+/// Amount input texts (`parse_units`; English spec/14 §5).
+pub mod text {
+    crate::texts! {
+        FORMAT = "금액 형식이 올바르지 않습니다." / "The amount format is invalid.";
+        TOO_MANY_DECIMALS = "소수점 아래 자릿수가 너무 많습니다."
+            / "Too many digits after the decimal point.";
+        OVERFLOW = "금액이 너무 큽니다." / "The amount is too large.";
     }
 }
 

@@ -65,9 +65,21 @@ pub enum SolParseError {
     TooLarge,
 }
 
+impl SolParseError {
+    /// The fixed text in `lang` (`Display` is the Korean one).
+    #[must_use]
+    #[expect(
+        clippy::unused_self,
+        reason = "every template mismatch shows the same text"
+    )]
+    pub const fn text_in(self, lang: crate::lang::Lang) -> &'static str {
+        super::text::TEMPLATE_MISMATCH.get(lang)
+    }
+}
+
 impl fmt::Display for SolParseError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("Solana 메시지가 지갑 템플릿과 다릅니다")
+        formatter.write_str(self.text_in(crate::lang::Lang::Ko))
     }
 }
 

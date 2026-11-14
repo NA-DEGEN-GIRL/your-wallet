@@ -1,10 +1,11 @@
 //! Response validation (spec/06 §5): HTTP and envelope, the strict content schema, forbidden
 //! content, and the consistency check against the trusted sets of the input. Pure (no network).
 
+use yw_core::lang::{Lang, Text};
 use yw_json::{Limits, Object, Value};
 
 use super::input::{CriticalAction, ExplainInput, TrustedSets, hex_tokens, norm, number_tokens};
-use super::{ExplainError, HiddenReason, MAX_RESPONSE_BODY, MismatchReason};
+use super::{ExplainError, HiddenReason, MAX_RESPONSE_BODY, MismatchReason, text};
 
 const ENVELOPE_LIMITS: Limits = Limits {
     max_bytes: MAX_RESPONSE_BODY,
@@ -18,37 +19,19 @@ const UNKNOWN_MAX: usize = 200;
 const ACTIONS_MAX: usize = 8;
 const ASSET_MAX_BYTES: usize = 42;
 const AMOUNT_MAX_BYTES: usize = 80;
-/// Verdict and reassurance expressions (§5.2), already in [`verdict_norm`] form: they are
-/// matched against the normalized text (whitespace and punctuation removed, lowercase), so
-/// `안 전`, `S.A.F.E` or `no-risk` match too. This is a safety filter: a false positive only
-/// hides the reference text.
-const VERDICTS: [&str; 25] = [
-    "안전",
-    "정상",
-    "신뢰",
-    "믿을수",
-    "문제없",
-    "괜찮",
-    "승인해도",
-    "승인하세요",
-    "승인하십시오",
-    "서명해도",
-    "서명하세요",
-    "위험이없",
-    "위험없",
-    "위험하지않",
-    "무해",
-    "안심",
-    "검증된",
-    "공식",
-    "safe",
-    "harmless",
-    "legit",
-    "trusted",
-    "verified",
-    "norisk",
-    "risk free",
-];
+/// Verdict and reassurance expressions (§5.2): [`text::VERDICTS`], already in [`verdict_norm`]
+/// form. They are matched against the normalized text (whitespace and punctuation removed,
+/// lowercase), so `안 전`, `S.A.F.E` or `no-risk` match too. This is a safety filter: a false
+/// positive only hides the reference text. Both language columns apply to every answer.
+const VERDICTS: Text = text::VERDICTS;
+
+/// The words of a word-list entry: both language columns, space separated.
+fn words(list: Text) -> impl Iterator<Item = &'static str> {
+    list.ko
+        .split(' ')
+        .chain(list.en.split(' '))
+        .filter(|word| !word.is_empty())
+}
 
 /// The action type enum (§4.5).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,21 +75,22 @@ impl ActionType {
         })
     }
 
-    /// The fixed Korean label (§6).
+    /// The fixed label (§6).
     #[must_use]
-    pub const fn label(self) -> &'static str {
+    pub const fn label(self, lang: Lang) -> &'static str {
         match self {
-            Self::Send => "보냄",
-            Self::Receive => "받음",
-            Self::Approve => "사용 권한 부여",
-            Self::RevokeApproval => "권한 취소",
-            Self::ApproveAll => "전체 권한 부여",
-            Self::Permit => "권한 서명(permit)",
-            Self::SignIn => "로그인 서명",
-            Self::SignMessage => "메시지 서명",
-            Self::ContractCall => "컨트랙트 호출",
-            Self::Other => "기타",
+            Self::Send => text::ACTION_SEND,
+            Self::Receive => text::ACTION_RECEIVE,
+            Self::Approve => text::ACTION_APPROVE,
+            Self::RevokeApproval => text::ACTION_REVOKE,
+            Self::ApproveAll => text::ACTION_APPROVE_ALL,
+            Self::Permit => text::ACTION_PERMIT,
+            Self::SignIn => text::ACTION_SIGN_IN,
+            Self::SignMessage => text::ACTION_SIGN_MESSAGE,
+            Self::ContractCall => text::ACTION_CONTRACT_CALL,
+            Self::Other => text::ACTION_OTHER,
         }
+        .get(lang)
     }
 }
 
@@ -117,7 +101,7 @@ pub struct ExplainAction {
     pub kind: ActionType,
     /// `""`, `native` or a lowercase token address (∈ `S`).
     pub asset: String,
-    /// `norm(amount)` (∈ `M`), `무제한`, or `""`.
+    /// `norm(amount)` (∈ `M`), `무제한` / `unlimited`, or `""`.
     pub amount: String,
     /// Sender (∈ `A`).
     pub from: Option<[u8; 20]>,
@@ -301,24 +285,28 @@ fn schema(content: &str) -> Result<(String, Vec<RawAction>, Vec<String>), Explai
     Ok((summary, actions, unknowns))
 }
 
-/// The output character allowlist (§5.2): U+0020–U+007E, Hangul syllables, and a few
-/// punctuation marks; LF only in the summary.
-fn allowed(character: char, summary: bool) -> bool {
-    matches!(
-        character,
-        '\u{20}'..='\u{7E}'
-            | '\u{AC00}'..='\u{D7A3}'
-            | '\u{B7}'
-            | '\u{2013}'
-            | '\u{2014}'
-            | '\u{2018}'
-            | '\u{2019}'
-            | '\u{201C}'
-            | '\u{201D}'
-            | '\u{2026}'
-            | '\u{2190}'
-            | '\u{2192}'
-    ) || (summary && character == '\n')
+/// The output character allowlist (§5.2): U+0020–U+007E, Hangul syllables (Korean answers
+/// only; 2026-11-14: an English answer with Hangul is hidden), and a few punctuation marks; LF
+/// only in the summary.
+fn allowed(lang: Lang, character: char, summary: bool) -> bool {
+    let hangul = lang == Lang::Ko && matches!(character, '\u{AC00}'..='\u{D7A3}');
+    hangul
+        || matches!(
+            character,
+            '\u{20}'
+                ..='\u{7E}'
+                    | '\u{B7}'
+                    | '\u{2013}'
+                    | '\u{2014}'
+                    | '\u{2018}'
+                    | '\u{2019}'
+                    | '\u{201C}'
+                    | '\u{201D}'
+                    | '\u{2026}'
+                    | '\u{2190}'
+                    | '\u{2192}'
+        )
+        || (summary && character == '\n')
 }
 
 fn has_link(text: &str) -> bool {
@@ -338,13 +326,12 @@ pub fn verdict_norm(text: &str) -> String {
 
 fn has_verdict(text: &str) -> bool {
     let normalized = verdict_norm(text);
-    VERDICTS
-        .iter()
-        .any(|word| normalized.contains(&verdict_norm(word)))
+    words(VERDICTS).any(|word| normalized.contains(&verdict_norm(word)))
 }
 
-/// §5.2 second paragraph.
+/// §5.2 second paragraph (the character allowlist of `lang`).
 fn forbidden(
+    lang: Lang,
     summary: &str,
     actions: &[RawAction],
     unknowns: &[String],
@@ -357,12 +344,17 @@ fn forbidden(
             action.to.as_str(),
         ]
     });
-    let summary_ok = summary.chars().all(|character| allowed(character, true));
+    let summary_ok = summary
+        .chars()
+        .all(|character| allowed(lang, character, true));
     let others_ok = unknowns
         .iter()
         .map(String::as_str)
         .chain(action_strings)
-        .all(|text| text.chars().all(|character| allowed(character, false)));
+        .all(|text| {
+            text.chars()
+                .all(|character| allowed(lang, character, false))
+        });
     if !summary_ok || !others_ok {
         return Err(HiddenReason::ForbiddenChar);
     }
@@ -461,38 +453,14 @@ const fn mentioning_types(critical: CriticalAction) -> &'static [ActionType] {
     }
 }
 
-/// Summary words (in [`verdict_norm`] form) that count as mentioning `critical`.
-const fn mentioning_words(critical: CriticalAction) -> &'static [&'static str] {
+/// Summary words (in [`verdict_norm`] form, both language columns) that count as mentioning
+/// `critical`.
+const fn mentioning_words(critical: CriticalAction) -> Text {
     match critical {
-        CriticalAction::Approval => &["승인", "허용", "권한", "허가", "approv", "allowance"],
-        CriticalAction::Permit => &[
-            "permit",
-            "서명허가",
-            "허가",
-            "권한",
-            "승인",
-            "허용",
-            "approv",
-            "allowance",
-        ],
-        CriticalAction::ApprovalForAll => &[
-            "setapprovalforall",
-            "approvalforall",
-            "approveall",
-            "전체승인",
-            "전체권한",
-            "컬렉션전체",
-            "모든nft",
-            "전체nft",
-            "모든토큰",
-            "모든자산",
-            "모든권한",
-            "allnft",
-        ],
-        CriticalAction::Transfer => &[
-            "전송", "이체", "보내", "보냅", "보낸", "보낼", "송금", "이동", "출금", "지불", "나갑",
-            "transfer", "send", "sent", "pay",
-        ],
+        CriticalAction::Approval => text::MENTION_APPROVAL,
+        CriticalAction::Permit => text::MENTION_PERMIT,
+        CriticalAction::ApprovalForAll => text::MENTION_APPROVAL_FOR_ALL,
+        CriticalAction::Transfer => text::MENTION_TRANSFER,
     }
 }
 
@@ -512,9 +480,7 @@ pub fn omitted_actions(input: &ExplainInput, explanation: &Explanation) -> Vec<C
                 .actions
                 .iter()
                 .any(|action| mentioning_types(*critical).contains(&action.kind));
-            let by_word = mentioning_words(*critical)
-                .iter()
-                .any(|word| summary.contains(word));
+            let by_word = words(mentioning_words(*critical)).any(|word| summary.contains(word));
             !by_type && !by_word
         })
         .collect()
@@ -533,7 +499,7 @@ pub fn parse_response(
 ) -> Result<Explanation, ExplainError> {
     let content = envelope_content(status, content_type, body)?;
     let (summary, actions, unknowns) = schema(&content)?;
-    forbidden(&summary, &actions, &unknowns).map_err(ExplainError::Hidden)?;
+    forbidden(input.lang(), &summary, &actions, &unknowns).map_err(ExplainError::Hidden)?;
     let actions = consistent(input.trusted(), &summary, actions, &unknowns)
         .map_err(ExplainError::Mismatch)?;
     Ok(Explanation {

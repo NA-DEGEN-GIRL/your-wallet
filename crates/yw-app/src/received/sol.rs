@@ -17,6 +17,7 @@ use crate::errors::ErrorCode;
 use crate::rpc::{RpcClient, Transport, classify};
 use crate::sol::flow::{SolEndpoint, check_genesis};
 use crate::text::{json_object, json_str, json_u64};
+use yw_core::lang::Lang;
 
 /// Signatures asked per address.
 pub const SIG_LIMIT: u64 = 20;
@@ -344,10 +345,11 @@ pub fn fetch(
     endpoint: &SolEndpoint,
     owner: &SolAddress,
     cursor: &Cursor,
+    lang: Lang,
 ) -> Result<Fetched, String> {
     let client = RpcClient::new(transport);
-    if !check_genesis(&client, endpoint).map_err(ErrorCode::text)? {
-        return Err(ErrorCode::Rpc006.text());
+    if !check_genesis(&client, endpoint).map_err(|code| code.text_in(lang))? {
+        return Err(ErrorCode::Rpc006.text_in(lang));
     }
     let mut seen: Vec<String> = match cursor {
         Cursor::Seen(list) => list.clone(),
@@ -355,7 +357,7 @@ pub fn fetch(
     };
     let mut infos: Vec<SigInfo> = Vec::new();
     for address in addresses(owner, endpoint.cluster) {
-        for info in signatures(&client, endpoint, &address).map_err(ErrorCode::text)? {
+        for info in signatures(&client, endpoint, &address).map_err(|code| code.text_in(lang))? {
             if !infos.iter().any(|known| known.signature == info.signature) {
                 infos.push(info);
             }
@@ -400,7 +402,7 @@ pub fn fetch(
         && looked.is_empty()
         && found.entries.is_empty()
     {
-        return Err(code.text());
+        return Err(code.text_in(lang));
     }
     looked.append(&mut seen);
     looked.truncate(MAX_SEEN);

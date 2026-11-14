@@ -111,8 +111,11 @@
     root: "finalized",
     max: "finalized"
   });
-  const BTC_TX_UNSUPPORTED = "이 지갑은 Bitcoin에서 메시지 서명(소유 증명)만 지원합니다";
-  const BTC_NETWORK_FIXED = "Bitcoin 네트워크는 Your Wallet 앱 설정에서만 바꿀 수 있습니다";
+  // spec/05 §2.13, §5: fixed English like every other dApp-facing message (2026-11-14: Korean
+  // before — "이 지갑은 Bitcoin에서 메시지 서명(소유 증명)만 지원합니다" and "Bitcoin 네트워크는
+  // Your Wallet 앱 설정에서만 바꿀 수 있습니다").
+  const BTC_TX_UNSUPPORTED = "This wallet supports only message signing (proof of ownership) on Bitcoin.";
+  const BTC_NETWORK_FIXED = "The Bitcoin network can only be changed in the Your Wallet app settings.";
   const SOL_MODES = new Set(["off", "phantom"]);
   // spec/05 §2.13 (2026-11-11): the default-mode names say which chain they are — the EIP-6963
   // announcement is "Your Wallet (EVM)" and the Wallet Standard wallet "Your Wallet (Solana)". Multi-chain dApps merge wallets of the same name into one entry

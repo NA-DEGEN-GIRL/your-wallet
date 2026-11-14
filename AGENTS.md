@@ -27,7 +27,7 @@ Status (spec.md line 3): implemented, manual verification pending.
 | `crates/yw-app` | The wallet binary (`windows_subsystem = "windows"`). `browser/` (dApp dispatcher, envelope v1, params, grants, pipe server), `walletconnect/`, `rpc/`, `flow/evm`, `sol/`, `btc/`, `zec/`, `explain/` (optional LLM explanation), `workers/`, `ui/` (main window, `approval.rs`, `approval_view.rs`, `interaction.rs`, `screens_*.rs`, `secret/`, `tour.rs`), `app_*.rs` feature glue, `settings.rs`, `apikeys.rs` (DPAPI), `logging.rs` |
 | `crates/yw-host` | Chrome native-messaging host: a secret-less relay between stdio and the named pipe. Auto-starts yw-app when `browserAutoLaunch` is on |
 | `crates/*/tests/` | Integration tests. Test placement rules: spec/09 §2.1. `#[ignore]` tests include fuzz-lite, live probes, the screenshot tour and the render harness |
-| `extension/` | MV3 extension, **zero npm deps**. `manifest.json`. `src/provider-main.js` (MAIN world: EIP-1193, EIP-6963, Wallet Standard, Phantom/UniSat/Xverse shims). `src/shared.js` (the JS method table `METHOD_ROUTE`, JSON limits, origin rules). `src/content*.js`, `src/background*.js` (router, rate limits, deadlines). `src/popup*.js` + `popup/` (Korean compatibility-mode popup) |
+| `extension/` | MV3 extension, **zero npm deps**. `manifest.json`. `src/provider-main.js` (MAIN world: EIP-1193, EIP-6963, Wallet Standard, Phantom/UniSat/Xverse shims). `src/shared.js` (the JS method table `METHOD_ROUTE`, JSON limits, origin rules). `src/content*.js`, `src/background*.js` (router, rate limits, deadlines). `src/popup*.js` + `popup/` (compatibility-mode popup with its own 한국어/English toggle) |
 | `extension/native-host/` | Golden JSON contracts shared by JS and Rust tests (`v1-methods`, `v1-request`, `v1-response-result`, `v1-event`, `v1-cancel`, `v1-limits`, `v1-origins`, `pipe-hello(-ack)` …), the host manifest template and `validate-manifest.mjs` |
 | `extension/test-dapp/` | Manual E2E page (`serve.mjs` binds 127.0.0.1:5173 and [::1]:5173 only) |
 | `extension/tests/` | `node --test` suites |
@@ -149,7 +149,13 @@ These are not style preferences. Breaking one is a failed change.
 - **Dated rationale comments.** When a rule changes, say when and why, in code and spec, for example
   `(2026-11-12: …)` or `2026-11-12 전에는 …`. Keep the old behaviour visible in the note, not in dead code.
 - **Language.**
-  - UI strings (app windows, popup, page shim messages) are Korean.
+  - UI strings come in Korean and English (spec/14, D39): every user-visible fixed text of the app is in a
+    `texts!` catalogue (`NAME = "한국어" / "English";`) next to the module that uses it, registered in
+    `yw_core::lang::catalogues()` or `yw_app::catalogues::catalogues()`, and shown with the app language
+    (`settings.language`; an approval window uses its own `lang`). `scripts/i18n-scan.mjs` fails on a Hangul
+    string literal outside a catalogue in non-test code and on an unregistered catalogue. After changing a
+    text, regenerate the spec/14 §5 tables with `print_spec14_tables` (`tests/lang_spec.rs`); error-code
+    texts are listed in spec/04 §7 instead. The popup has its own toggle. Page shim messages are fixed English.
   - dApp-facing JSON-RPC error messages are fixed English strings, copied exactly from spec/05 §5.
   - Code comments are mostly English. Scripts and specs are Korean.
 - **Lints** (`[workspace.lints]`):
@@ -212,7 +218,7 @@ The Solana dApp transaction series (`git log --grep=sol-dapp`, steps 1–8) is a
 - Check visually with the render harness or the screenshot tour.
 
 ### Add a risk rule
-- **One central table:** the `rules!` macro in `crates/yw-core/src/evm/risk/rules.rs`. Each entry has an id, family byte, level (`Info`, `Caution`, `High`, `Blocked`) and Korean base text.
+- **One central table:** the `rules!` macro in `crates/yw-core/src/evm/risk/rules.rs`. Each entry has an id, family byte, level (`Info`, `Caution`, `High`, `Blocked`) and Korean / English base text (spec/14 §5 lists the English).
 - **Families and where each is evaluated:**
 
   | Family | Covers | Evaluated in |

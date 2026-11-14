@@ -4,25 +4,26 @@
 //! warnings or the digest (spec/06 §1, E2).
 
 use yw_core::approval::RiskLevel;
+use yw_core::lang::{Lang, Text};
 
 use super::input::{CriticalAction, ExplainInput, TrustedSets};
 use super::response::{ExplainAction, Explanation, omitted_actions};
 use super::{
     ExplainError, HiddenReason, MAX_REQUESTS_PER_APPROVAL, MismatchReason, REQUEST_DEADLINE_MS,
+    text,
 };
 
 /// The panel title (§6).
-pub const PANEL_TITLE: &str = "AI 설명 (참고용, 틀릴 수 있음)";
+pub const PANEL_TITLE: Text = text::PANEL_TITLE;
 /// The retry button text.
-pub const RETRY_LABEL: &str = "다시 요청";
+pub const RETRY_LABEL: Text = text::RETRY;
 /// Body lines reserved when the window is created (§6: 10 lines, scrolled inside when longer).
 pub const BODY_LINES: i32 = 10;
 /// The label of an explanation that leaves out an approval, permit, `setApprovalForAll` or
 /// outgoing transfer the wallet's own decoding found (its body is folded away).
-pub const INCONSISTENT_LABEL: &str = "설명 불일치 — 무시하세요";
+pub const INCONSISTENT_LABEL: Text = text::INCONSISTENT_LABEL;
 /// What a High-risk request's panel shows until `위 경고를 모두 확인했습니다` is checked.
-pub const HELD_TEXT: &str =
-    "위험도가 높은 요청입니다. 위 경고를 모두 확인했다고 표시하면 AI 설명을 보여줍니다.";
+pub const HELD_TEXT: Text = text::HELD;
 
 /// Whether the AI panel body waits for the warning acknowledgement: a High-risk request whose
 /// `위 경고를 모두 확인했습니다` is not checked (the warnings come first; spec/04 §3.8).
@@ -121,13 +122,15 @@ pub struct AiPanel {
     expanded: bool,
     /// The body waits for the warning acknowledgement ([`held_for_ack`]).
     held: bool,
+    /// The approval window's language: the panel's fixed texts (spec/14).
+    lang: Lang,
 }
 
 impl AiPanel {
-    /// A panel for a window: `Waiting` when the feature is on and the request is a target
-    /// (§3.1), otherwise `Off`.
+    /// A panel for a window in `lang`: `Waiting` when the feature is on and the request is a
+    /// target (§3.1), otherwise `Off`.
     #[must_use]
-    pub const fn new(target: bool) -> Self {
+    pub const fn new(target: bool, lang: Lang) -> Self {
         Self {
             state: if target {
                 AiPanelState::Waiting
@@ -141,7 +144,14 @@ impl AiPanel {
             omitted: Vec::new(),
             expanded: false,
             held: false,
+            lang,
         }
+    }
+
+    /// The language of the panel's fixed texts.
+    #[must_use]
+    pub const fn lang(&self) -> Lang {
+        self.lang
     }
 
     /// Effects the shown explanation leaves out (empty unless it is inconsistent).
@@ -437,10 +447,11 @@ fn address_text(bytes: &[u8; 20]) -> String {
     yw_core::evm::address::Address::from_bytes(*bytes).to_checksum()
 }
 
-/// `<유형> · <자산> <금액> · <from> → <to>` from validated values only (§6).
+/// `<유형> · <자산> <금액> · <from> → <to>` from validated values only (§6), the fixed words in
+/// `lang`.
 #[must_use]
-pub fn action_line(action: &ExplainAction, trusted: &TrustedSets) -> String {
-    let mut parts = vec![action.kind.label().to_owned()];
+pub fn action_line(lang: Lang, action: &ExplainAction, trusted: &TrustedSets) -> String {
+    let mut parts = vec![action.kind.label(lang).to_owned()];
     let asset = if action.asset.is_empty() {
         String::new()
     } else if let Some(symbol) = trusted.symbol(&action.asset) {
@@ -450,7 +461,7 @@ pub fn action_line(action: &ExplainAction, trusted: &TrustedSets) -> String {
             |_| action.asset.clone(),
             yw_core::evm::address::Address::to_checksum,
         );
-        format!("미확인 토큰 {full}")
+        text::UNVERIFIED_TOKEN.fill(lang, [&full])
     };
     let asset_amount = [asset.as_str(), action.amount.as_str()]
         .into_iter()
@@ -474,18 +485,19 @@ pub fn action_line(action: &ExplainAction, trusted: &TrustedSets) -> String {
 
 /// The lines of a validated explanation (summary, action lines, unknowns).
 fn explanation_lines(panel: &AiPanel, explanation: &Explanation, lines: &mut Vec<PanelLine>) {
+    let lang = panel.lang;
     lines.push(PanelLine::Text(explanation.summary.replace('\n', " ")));
     if let Some(trusted) = panel.trusted()
         && !explanation.actions.is_empty()
     {
         lines.push(PanelLine::Gap);
         for action in &explanation.actions {
-            lines.push(PanelLine::Action(action_line(action, trusted)));
+            lines.push(PanelLine::Action(action_line(lang, action, trusted)));
         }
     }
     if !explanation.unknowns.is_empty() {
         lines.push(PanelLine::Gap);
-        lines.push(PanelLine::Heading("AI가 판단하지 못한 것:".to_owned()));
+        lines.push(PanelLine::Heading(text::UNKNOWNS.get(lang).to_owned()));
         for unknown in &explanation.unknowns {
             lines.push(PanelLine::Bullet(format!(
                 "• {}",
@@ -500,27 +512,31 @@ fn explanation_lines(panel: &AiPanel, explanation: &Explanation, lines: &mut Vec
 /// [`INCONSISTENT_LABEL`] and stays folded until the user opens it.
 #[must_use]
 pub fn body_lines(panel: &AiPanel, now_ms: u64, host: &str, model: &str) -> Vec<PanelLine> {
+    let lang = panel.lang;
     let footer = |ms: Option<u64>| {
         PanelLine::Footer(match ms {
-            Some(ms) => format!("{host} · {model} · {}초", seconds_text(ms)),
+            Some(ms) => text::FOOTER.fill(lang, [host, model, &seconds_text(ms)]),
             None => format!("{host} · {model}"),
         })
     };
     if panel.held() && !matches!(panel.state(), AiPanelState::Off | AiPanelState::Skipped(_)) {
-        return vec![PanelLine::Notice(HELD_TEXT.to_owned()), footer(None)];
+        return vec![
+            PanelLine::Notice(HELD_TEXT.get(lang).to_owned()),
+            footer(None),
+        ];
     }
     match panel.state() {
         AiPanelState::Off => Vec::new(),
         AiPanelState::Waiting => vec![
-            PanelLine::Notice("요청 해석과 시뮬레이션이 끝나면 AI 설명을 요청합니다.".to_owned()),
+            PanelLine::Notice(text::WAITING.get(lang).to_owned()),
             footer(None),
         ],
         AiPanelState::Requesting { started_at_ms, .. } => vec![
-            PanelLine::Notice(format!(
-                "AI 설명을 요청하는 중… ({}초)",
-                now_ms.saturating_sub(*started_at_ms) / 1_000
+            PanelLine::Notice(text::REQUESTING.fill(
+                lang,
+                [&(now_ms.saturating_sub(*started_at_ms) / 1_000).to_string()],
             )),
-            PanelLine::Text("설명을 기다리지 않고 바로 승인하거나 거부해도 됩니다.".to_owned()),
+            PanelLine::Text(text::NO_NEED_TO_WAIT.get(lang).to_owned()),
             footer(None),
         ],
         AiPanelState::Shown(explanation) => {
@@ -529,18 +545,20 @@ pub fn body_lines(panel: &AiPanel, now_ms: u64, host: &str, model: &str) -> Vec<
                 let names = panel
                     .omitted()
                     .iter()
-                    .map(|critical| critical.label())
+                    .map(|critical| critical.label(lang))
                     .collect::<Vec<_>>()
                     .join(", ");
-                lines.push(PanelLine::Notice(INCONSISTENT_LABEL.to_owned()));
-                lines.push(PanelLine::Text(format!(
-                    "AI 설명이 이 요청의 {names}을(를) 언급하지 않습니다. 위의 지갑 해석과 경고를 따르세요."
-                )));
-                lines.push(PanelLine::Text(if panel.expanded() {
-                    "▾ 접기 (이 영역을 클릭)".to_owned()
-                } else {
-                    "▸ 무시할 설명 펼쳐 보기 (이 영역을 클릭)".to_owned()
-                }));
+                lines.push(PanelLine::Notice(INCONSISTENT_LABEL.get(lang).to_owned()));
+                lines.push(PanelLine::Text(text::OMITTED.fill(lang, [&names])));
+                lines.push(PanelLine::Text(
+                    if panel.expanded() {
+                        text::FOLD
+                    } else {
+                        text::UNFOLD
+                    }
+                    .get(lang)
+                    .to_owned(),
+                ));
                 if panel.expanded() {
                     lines.push(PanelLine::Gap);
                     explanation_lines(panel, explanation, &mut lines);
@@ -553,15 +571,15 @@ pub fn body_lines(panel: &AiPanel, now_ms: u64, host: &str, model: &str) -> Vec<
             lines
         }
         AiPanelState::Hidden(reason) => vec![
-            PanelLine::Notice(ExplainError::Hidden(*reason).panel_text()),
+            PanelLine::Notice(ExplainError::Hidden(*reason).panel_text(lang)),
             footer(panel.elapsed_ms()),
         ],
         AiPanelState::Mismatch(reason) => vec![
-            PanelLine::Notice(ExplainError::Mismatch(*reason).panel_text()),
+            PanelLine::Notice(ExplainError::Mismatch(*reason).panel_text(lang)),
             footer(panel.elapsed_ms()),
         ],
         AiPanelState::Failed(error) => vec![
-            PanelLine::Notice(error.panel_text()),
+            PanelLine::Notice(error.panel_text(lang)),
             footer(panel.elapsed_ms()),
         ],
         AiPanelState::Skipped(text) => vec![PanelLine::Notice((*text).to_owned())],

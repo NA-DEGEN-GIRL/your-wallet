@@ -354,6 +354,7 @@ impl App {
                     chain: Box::new(self.chain_job(chain_id).ok()?),
                     owner,
                     tokens: self.received_tokens(chain_id),
+                    lang: self.settings.language,
                 })
             }
             RecvChain::Sol => {
@@ -361,6 +362,7 @@ impl App {
                 Some(JobKind::Sol {
                     endpoint: self.sol_endpoint(self.sol_cluster()).ok()?,
                     owner,
+                    lang: self.settings.language,
                 })
             }
             RecvChain::Btc => {
@@ -412,6 +414,7 @@ impl App {
                         } else {
                             crate::btc::Trigger::Automatic
                         },
+                        lang: ctx.lang,
                     }),
                 })
             }
@@ -422,6 +425,7 @@ impl App {
                     endpoint: crate::hypercore::HcEndpoint {
                         network,
                         api: self.settings.hypercore_api(network),
+                        lang: self.settings.language,
                     },
                     account,
                     start_ms: now_unix_ms().saturating_sub(crate::received::hc::FIRST_WINDOW_MS),
@@ -479,6 +483,7 @@ impl App {
                             })
                             .unwrap_or_default(),
                         user,
+                        lang: self.settings.language,
                     },
                 )))
             }

@@ -34,6 +34,7 @@ use yw_core::bip32::path::AccountIndex;
 use yw_core::evm::address::Address;
 use yw_core::evm::amount::U256;
 use yw_core::evm::chain::SEPOLIA;
+use yw_core::lang::Lang;
 use yw_core::sol::SolAddress;
 use yw_core::vault::EvmKeySource;
 use yw_win::http::HttpsUrl;
@@ -171,9 +172,51 @@ fn eth(milli: u64) -> U256 {
         .unwrap()
 }
 
+/// The tour's language: `YW_TOUR_LANG=en` for English scenes, Korean otherwise (spec/14).
+fn tour_lang() -> Lang {
+    std::env::var("YW_TOUR_LANG")
+        .ok()
+        .and_then(|tag| Lang::from_tag(&tag))
+        .unwrap_or(Lang::Ko)
+}
+
+/// The tour's made-up scene data and the app texts it injects, in both languages.
+mod text {
+    yw_core::texts! {
+        ACCOUNT_1 = "계정 1" / "Account 1";
+        SAVINGS = "저축" / "Savings";
+        TEST_RECIPIENT = "테스트 받는 사람" / "Test recipient";
+        TEST_BURN = "시험용 소각 주소" / "Test burn address";
+        BIP173_EXAMPLE = "BIP173 예시 주소" / "BIP173 example address";
+        MEMO_1024 = "app.example.org 주문 #1024 확인" / "app.example.org order #1024 confirmation";
+        MEMO_1025 = "app.example.org 주문 #1025 확인" / "app.example.org order #1025 confirmation";
+        AI_SAMPLE(2) = "표본 요청입니다. 실행되면 {0}에서 0.01 SepoliaETH가 {1}로 이동합니다. 이 요청에는 시뮬레이션 결과가 없습니다."
+            / "This is a sample request. If executed, 0.01 SepoliaETH moves from {0} to {1}. This request has no simulation result.";
+        AI_SEND(2) = "이 거래가 실행되면 내 계정 {0}에서 0.01 SepoliaETH가 받는 주소 {1}로 이동합니다. 시뮬레이션에서도 내 SepoliaETH 잔액이 0.01 줄어들었고, 토큰 권한이 바뀌는 내용은 없습니다."
+            / "If this transaction is executed, 0.01 SepoliaETH moves from my account {0} to the recipient {1}. In the simulation my SepoliaETH balance also dropped by 0.01, and no token permissions change.";
+        AI_UNKNOWN = "받는 주소의 주인이 누구인지는 입력 데이터만으로 알 수 없습니다."
+            / "Who owns the recipient address cannot be known from the input data alone.";
+        TESTING = "테스트 중…" / "Testing…";
+        RPC_WORKS(1) = "RPC 주소가 작동합니다. ({0}, 확인됨)" / "The RPC address works. ({0}, verified)";
+        KEY_MATCHES(1) = "{0} — 공개키가 기록과 같습니다 ✓" / "{0} — the public key matches the record ✓";
+        CARD_KEY = "서명할 키: EVM 계정 0 (m/44'/60'/0'/0/0)" / "Key to sign with: EVM account 0 (m/44'/60'/0'/0/0)";
+        CARD_SERIAL = "이 키를 가진 YubiKey: #12345678" / "YubiKey holding this key: #12345678";
+        CREATING = "지갑을 만드는 중입니다. 몇 초 걸립니다." / "Creating the wallet. This takes a few seconds.";
+        SEND_TITLE = "SepoliaETH 보내기" / "Send SepoliaETH";
+        SOL_SIGN_IN = "app.example.org 로그인: 이 지갑의 소유를 확인합니다. (nonce 7f3a91)"
+            / "app.example.org sign-in: confirms that you own this wallet. (nonce 7f3a91)";
+        SIWS_STATEMENT = "app.example.org에 로그인합니다." / "Sign in to app.example.org.";
+        BTC_SIGN_IN = "app.example.org 로그인: 이 주소의 소유를 확인합니다. (nonce 7f3a91)"
+            / "app.example.org sign-in: confirms that you own this address. (nonce 7f3a91)";
+        /// The scroll check's made-up test answer: {0} the round.
+        PROBE_TEST(1) = "연결 확인 {0}" / "Connection check {0}";
+    }
+}
+
 fn tour_settings() -> Settings {
     let mut settings = Settings {
         evm_chain_id: SEPOLIA,
+        language: tour_lang(),
         ..Settings::default()
     };
     settings.solana.cluster = SolCluster::Devnet;
@@ -206,13 +249,13 @@ fn tour_meta() -> Meta {
         evm_accounts: vec![
             Account {
                 index: 0,
-                label: "계정 1".to_owned(),
+                label: text::ACCOUNT_1.get(tour_lang()).to_owned(),
                 address: evm_address(0).to_lower_hex(),
                 hidden: false,
             },
             Account {
                 index: 1,
-                label: "저축".to_owned(),
+                label: text::SAVINGS.get(tour_lang()).to_owned(),
                 address: evm_address(1).to_lower_hex(),
                 hidden: false,
             },
@@ -227,13 +270,13 @@ fn tour_meta() -> Meta {
     };
     let _ = meta.add_book(&crate::meta::BookEntry {
         address: recipient().to_lower_hex(),
-        label: "테스트 받는 사람".to_owned(),
+        label: text::TEST_RECIPIENT.get(tour_lang()).to_owned(),
         verified: true,
         added_at_unix_ms: 1_793_000_000_000,
     });
     let _ = meta.add_sol_book(&crate::meta::SolBookEntry {
         address: SOL_RECIPIENT.to_owned(),
-        label: "테스트 받는 사람".to_owned(),
+        label: text::TEST_RECIPIENT.get(tour_lang()).to_owned(),
         verified: true,
         added_at_unix_ms: 1_793_000_000_000,
     });
@@ -244,12 +287,12 @@ fn tour_meta() -> Meta {
         (
             crate::meta::BookChain::Evm,
             "0x000000000000000000000000000000000000dead",
-            "시험용 소각 주소",
+            text::TEST_BURN.get(tour_lang()),
         ),
         (
             crate::meta::BookChain::Btc,
             "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx",
-            "BIP173 예시 주소",
+            text::BIP173_EXAMPLE.get(tour_lang()),
         ),
     ];
     for (chain, address, label) in extra {
@@ -856,9 +899,9 @@ fn tour_dapp_txs() -> (Vec<u8>, Vec<Vec<u8>>) {
         None,
     );
     let batch = vec![
-        memo("app.example.org 주문 #1024 확인"),
+        memo(text::MEMO_1024.get(tour_lang())),
         payment,
-        memo("app.example.org 주문 #1025 확인"),
+        memo(text::MEMO_1025.get(tour_lang())),
     ];
     (swap, batch)
 }
@@ -1068,20 +1111,18 @@ fn tour_llm_answer(request: &[u8]) -> Vec<u8> {
         (
             crate::app_llm::SAMPLE_FROM.to_ascii_lowercase(),
             crate::app_llm::SAMPLE_TO.to_owned(),
-            format!(
-                "표본 요청입니다. 실행되면 {}에서 0.01 SepoliaETH가 {}로 이동합니다. 이 요청에는 시뮬레이션 결과가 없습니다.",
-                crate::app_llm::SAMPLE_FROM,
-                crate::app_llm::SAMPLE_TO
+            text::AI_SAMPLE.fill(
+                tour_lang(),
+                [crate::app_llm::SAMPLE_FROM, crate::app_llm::SAMPLE_TO],
             ),
         )
     } else {
         (
             evm_address(0).to_lower_hex(),
             recipient().to_lower_hex(),
-            format!(
-                "이 거래가 실행되면 내 계정 {}에서 0.01 SepoliaETH가 받는 주소 {}로 이동합니다. 시뮬레이션에서도 내 SepoliaETH 잔액이 0.01 줄어들었고, 토큰 권한이 바뀌는 내용은 없습니다.",
-                evm_address(0).to_checksum(),
-                recipient().to_checksum()
+            text::AI_SEND.fill(
+                tour_lang(),
+                [&evm_address(0).to_checksum(), &recipient().to_checksum()],
             ),
         )
     };
@@ -1099,9 +1140,7 @@ fn tour_llm_answer(request: &[u8]) -> Vec<u8> {
         ),
         (
             "unknowns",
-            yw_json::Value::Array(vec![json_str(
-                "받는 주소의 주인이 누구인지는 입력 데이터만으로 알 수 없습니다.",
-            )]),
+            yw_json::Value::Array(vec![json_str(text::AI_UNKNOWN.get(tour_lang()))]),
         ),
     ]);
     let content = String::from_utf8(yw_json::to_vec(&content)).unwrap();
@@ -1347,15 +1386,15 @@ fn tour_first_setup(app: &Rc<RefCell<App>>) {
         state.apikeys = keys;
         for network in &networks {
             let (message, test) = match network {
-                NetworkId::Eip155(8_453) => (ErrorCode::Rpc003.text(), TestState::Failed),
-                NetworkId::Zcash(yw_core::zec::ZecNetwork::Testnet) => {
-                    ("테스트 중…".to_owned(), TestState::Testing)
+                NetworkId::Eip155(8_453) => {
+                    (ErrorCode::Rpc003.text_in(tour_lang()), TestState::Failed)
                 }
+                NetworkId::Zcash(yw_core::zec::ZecNetwork::Testnet) => (
+                    text::TESTING.get(tour_lang()).to_owned(),
+                    TestState::Testing,
+                ),
                 _ => (
-                    format!(
-                        "RPC 주소가 작동합니다. ({}, 확인됨)",
-                        state.network_name(*network)
-                    ),
+                    text::RPC_WORKS.fill(tour_lang(), [&state.network_name(*network)]),
                     TestState::Works,
                 ),
             };
@@ -1504,7 +1543,7 @@ fn tour_yubikey(app: &Rc<RefCell<App>>) {
             record
                 .slots
                 .iter()
-                .map(|slot| format!("{} — 공개키가 기록과 같습니다 ✓", slot.slot.label()))
+                .map(|slot| text::KEY_MATCHES.fill(tour_lang(), [&slot.slot.label_in(tour_lang())]))
                 .collect(),
         );
     });
@@ -1527,8 +1566,8 @@ fn tour_yubikey(app: &Rc<RefCell<App>>) {
     );
     app.borrow_mut().with_form(|form| {
         form.set_details(vec![
-            "서명할 키: EVM 계정 0 (m/44'/60'/0'/0/0)".to_owned(),
-            "이 키를 가진 YubiKey: #12345678".to_owned(),
+            text::CARD_KEY.get(tour_lang()).to_owned(),
+            text::CARD_SERIAL.get(tour_lang()).to_owned(),
         ]);
     });
     app.borrow_mut().tour_type("123456");
@@ -1582,7 +1621,7 @@ fn screenshot_tour() {
     set_screen(
         &app,
         AppMode::BackupPending,
-        Screen::Processing("지갑을 만드는 중입니다. 몇 초 걸립니다."),
+        Screen::Processing(text::CREATING.get(tour_lang())),
     );
     app.borrow_mut().tour_open_display(
         SecretKind::ShowMnemonic { create: true },
@@ -1673,9 +1712,10 @@ fn screenshot_tour() {
         .map(str::to_owned)
         .to_vec();
         state.refresh();
-        state
-            .controls
-            .set_text(crate::ui::screens_reset::ids::RESET_PHRASE, "초기화");
+        state.controls.set_text(
+            crate::ui::screens_reset::ids::RESET_PHRASE,
+            crate::app_reset::RESET_PHRASE.get(tour_lang()),
+        );
         state.reset.phrase_ok = true;
         state.refresh();
         tour_data
@@ -1716,7 +1756,7 @@ fn screenshot_tour() {
         }
         state.set_rpc_message(
             NetworkId::Eip155(SEPOLIA),
-            "테스트 중…".to_owned(),
+            text::TESTING.get(tour_lang()).to_owned(),
             crate::app::TestState::Testing,
         );
         state.refresh();
@@ -1825,7 +1865,7 @@ fn screenshot_tour() {
                     &crate::meta::ActivityEntry {
                         account: account.clone(),
                         tx_id: format!("0x{:064x}", 0x7a11_u64 + index),
-                        title: "SepoliaETH 보내기".to_owned(),
+                        title: text::SEND_TITLE.get(tour_lang()).to_owned(),
                         asset: "native".to_owned(),
                         amount: eth(milli).to_decimal_string(),
                         counterparty: to,
@@ -1860,7 +1900,7 @@ fn screenshot_tour() {
         state.evm.send.recipient = Some((
             recipient(),
             vec![crate::flow::evm::form::AddressNote::Book {
-                name: "테스트 받는 사람".to_owned(),
+                name: text::TEST_RECIPIENT.get(tour_lang()).to_owned(),
                 verified: true,
             }],
         ));
@@ -1959,7 +1999,9 @@ fn screenshot_tour() {
             .meta
             .as_ref()
             .and_then(|meta| meta.btc.as_deref().cloned());
-        state.btc.receive = primary.and_then(|meta| crate::app_btc::BtcUi::receive_view(&meta, 0));
+        let lang = state.settings.language;
+        state.btc.receive =
+            primary.and_then(|meta| crate::app_btc::BtcUi::receive_view(lang, &meta, 0));
     }
     set_screen(&app, UNLOCKED, Screen::BtcReceive);
     save(main_hwnd(&app), "34-receive-bitcoin");
@@ -2014,9 +2056,7 @@ fn screenshot_tour() {
             public: SolAddress::parse("HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk")
                 .unwrap()
                 .to_bytes(),
-            message: "app.example.org 로그인: 이 지갑의 소유를 확인합니다. (nonce 7f3a91)"
-                .as_bytes()
-                .to_vec(),
+            message: text::SOL_SIGN_IN.get(tour_lang()).as_bytes().to_vec(),
             sign_in: false,
         },
     );
@@ -2026,7 +2066,7 @@ fn screenshot_tour() {
     let siws = yw_core::sol::msgsign::SiwsMessage {
         domain: "app.example.org".to_owned(),
         address: "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk".to_owned(),
-        statement: Some("app.example.org에 로그인합니다.".to_owned()),
+        statement: Some(text::SIWS_STATEMENT.get(tour_lang()).to_owned()),
         uri: Some("https://app.example.org/login".to_owned()),
         version: Some("1".to_owned()),
         chain_id: Some("devnet".to_owned()),
@@ -2083,9 +2123,7 @@ fn screenshot_tour() {
         yw_core::policy::Method::BtcSignMessage,
         crate::browser::SiteKind::BtcSign {
             address: payment,
-            message: "app.example.org 로그인: 이 주소의 소유를 확인합니다. (nonce 7f3a91)"
-                .as_bytes()
-                .to_vec(),
+            message: text::BTC_SIGN_IN.get(tour_lang()).as_bytes().to_vec(),
             protocol: None,
         },
     );

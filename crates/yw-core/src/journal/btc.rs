@@ -297,9 +297,36 @@ pub enum BtcRecordError {
     Outputs,
 }
 
+/// The fixed texts of BTC journal errors (spec/08 §12, spec/14).
+pub mod text {
+    crate::texts! {
+        /// `BtcRecordError`, `TransitionError::Encode`.
+        CORRUPT = "저널 손상" / "Journal damaged";
+        /// `TransitionError`.
+        UNKNOWN_TX = "저널에 없는 거래입니다" / "The transaction is not in the journal";
+        NOT_ALLOWED = "허용되지 않는 거래 상태 변경입니다" / "Transaction state change not allowed";
+        /// `BtcPushError`.
+        PUSH_FULL = "거래 저널 공간이 부족합니다" / "Not enough space in the transaction journal";
+        PUSH_DUPLICATE = "같은 거래가 이미 저널에 있습니다. 그 거래의 상태를 확인하세요"
+            / "The same transaction is already in the journal. Check its status";
+    }
+}
+
+impl BtcRecordError {
+    /// The fixed text in `lang` (`Display` is the Korean one).
+    #[must_use]
+    #[expect(
+        clippy::unused_self,
+        reason = "every record defect has the same fixed text"
+    )]
+    pub const fn text_in(self, lang: crate::lang::Lang) -> &'static str {
+        text::CORRUPT.get(lang)
+    }
+}
+
 impl fmt::Display for BtcRecordError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("저널 손상")
+        formatter.write_str(self.text_in(crate::lang::Lang::Ko))
     }
 }
 
@@ -1705,13 +1732,22 @@ pub enum TransitionError {
     Encode(BtcRecordError),
 }
 
+impl TransitionError {
+    /// The fixed text in `lang` (`Display` is the Korean one).
+    #[must_use]
+    pub const fn text_in(self, lang: crate::lang::Lang) -> &'static str {
+        match self {
+            Self::UnknownTx => text::UNKNOWN_TX,
+            Self::NotAllowed { .. } => text::NOT_ALLOWED,
+            Self::Encode(_) => text::CORRUPT,
+        }
+        .get(lang)
+    }
+}
+
 impl fmt::Display for TransitionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            Self::UnknownTx => "저널에 없는 거래입니다",
-            Self::NotAllowed { .. } => "허용되지 않는 거래 상태 변경입니다",
-            Self::Encode(_) => "저널 손상",
-        })
+        formatter.write_str(self.text_in(crate::lang::Lang::Ko))
     }
 }
 
@@ -2566,12 +2602,21 @@ pub enum BtcPushError {
     Duplicate,
 }
 
+impl BtcPushError {
+    /// The fixed text in `lang` (`Display` is the Korean one).
+    #[must_use]
+    pub const fn text_in(self, lang: crate::lang::Lang) -> &'static str {
+        match self {
+            Self::Full => text::PUSH_FULL,
+            Self::Duplicate => text::PUSH_DUPLICATE,
+        }
+        .get(lang)
+    }
+}
+
 impl fmt::Display for BtcPushError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            Self::Full => "거래 저널 공간이 부족합니다",
-            Self::Duplicate => "같은 거래가 이미 저널에 있습니다. 그 거래의 상태를 확인하세요",
-        })
+        formatter.write_str(self.text_in(crate::lang::Lang::Ko))
     }
 }
 

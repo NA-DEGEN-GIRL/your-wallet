@@ -12,6 +12,7 @@ use yw_core::btc::network::{
 };
 use yw_core::btc::{self, MAX_MONEY, conf};
 use yw_core::hex;
+use yw_core::lang::Lang;
 
 #[test]
 fn network_table() {
@@ -79,11 +80,14 @@ fn network_table() {
         ("mainnet", "testnet4")
     );
     assert_eq!(
-        (Mainnet.display_name(), Testnet4.display_name()),
+        (
+            Mainnet.display_name_in(Lang::Ko),
+            Testnet4.display_name_in(Lang::Ko)
+        ),
         ("Bitcoin 메인넷", "Bitcoin testnet4")
     );
     assert_eq!(
-        (Mainnet.banner(), Testnet4.banner()),
+        (Mainnet.banner_in(Lang::Ko), Testnet4.banner_in(Lang::Ko)),
         ("BITCOIN MAINNET", "BITCOIN TESTNET4 — 가치 없음")
     );
     assert_eq!(

@@ -8,6 +8,7 @@ use yw_core::hypercore::{
     info_spot_meta_body, info_spot_state_body, parse_exchange_reply, parse_perp_state,
     parse_spot_meta, parse_spot_state,
 };
+use yw_core::lang::Lang;
 use yw_json::{Limits, Value};
 use yw_win::http::{HttpError, HttpsUrl};
 
@@ -32,6 +33,9 @@ pub struct HcEndpoint {
     pub network: HcNetwork,
     /// API base (`https://…`, no trailing `/`).
     pub api: String,
+    /// The language of the error texts the worker returns (the app language when the job was
+    /// made).
+    pub lang: Lang,
 }
 
 /// A `HyperCore` job of the RPC worker.
@@ -96,10 +100,10 @@ pub enum HcEvent {
     },
 }
 
-fn failure_text(error: &HttpError) -> String {
+fn failure_text(lang: Lang, error: &HttpError) -> String {
     match error {
-        HttpError::Timeout => "Hyperliquid API 응답 시간이 초과되었습니다".to_owned(),
-        _ => "Hyperliquid API에 연결할 수 없습니다".to_owned(),
+        HttpError::Timeout => text::API_TIMEOUT.get(lang).to_owned(),
+        _ => text::API_UNREACHABLE.get(lang).to_owned(),
     }
 }
 
@@ -110,22 +114,34 @@ pub(crate) fn post(
     body: &[u8],
     max_response: usize,
 ) -> Result<Value, String> {
+    let lang = endpoint.lang;
     let url = HttpsUrl::parse(&format!("{}{path}", endpoint.api))
-        .map_err(|_| "Hyperliquid API 주소가 올바르지 않습니다".to_owned())?;
+        .map_err(|_| text::API_BAD_URL.get(lang).to_owned())?;
     let reply = transport
         .post_json(&url, body, max_response)
-        .map_err(|error| failure_text(&error))?;
+        .map_err(|error| failure_text(lang, &error))?;
     if reply.status != 200 {
-        return Err(format!(
-            "Hyperliquid API가 HTTP {}로 응답했습니다",
-            reply.status
-        ));
+        return Err(text::API_HTTP.fill(lang, [&reply.status.to_string()]));
     }
-    yw_json::parse(&reply.body, &INFO_LIMITS)
-        .map_err(|_| "Hyperliquid API 응답 형식이 올바르지 않습니다".to_owned())
+    yw_json::parse(&reply.body, &INFO_LIMITS).map_err(|_| shape(lang))
 }
 
-const SHAPE: &str = "Hyperliquid API 응답 형식이 올바르지 않습니다";
+/// The malformed-answer text.
+#[must_use]
+pub fn shape(lang: Lang) -> String {
+    text::API_SHAPE.get(lang).to_owned()
+}
+
+/// The `HyperCore` API error texts (spec/11 §8; English spec/14).
+pub mod text {
+    yw_core::texts! {
+        API_TIMEOUT = "Hyperliquid API 응답 시간이 초과되었습니다" / "The Hyperliquid API timed out";
+        API_UNREACHABLE = "Hyperliquid API에 연결할 수 없습니다" / "Cannot connect to the Hyperliquid API";
+        API_BAD_URL = "Hyperliquid API 주소가 올바르지 않습니다" / "The Hyperliquid API address is invalid";
+        API_HTTP(1) = "Hyperliquid API가 HTTP {0}로 응답했습니다" / "The Hyperliquid API answered HTTP {0}";
+        API_SHAPE = "Hyperliquid API 응답 형식이 올바르지 않습니다" / "The Hyperliquid API answer is malformed";
+    }
+}
 
 /// Runs one job.
 #[must_use]
@@ -145,7 +161,7 @@ pub fn run(transport: &dyn Transport, job: HcRpcJob) -> HcEvent {
                     &info_spot_meta_body(),
                     MAX_INFO_RESPONSE,
                 )
-                .and_then(|value| parse_spot_meta(&value).map_err(|_| SHAPE.to_owned()))
+                .and_then(|value| parse_spot_meta(&value).map_err(|_| shape(endpoint.lang)))
             });
             let balances = post(
                 transport,
@@ -154,7 +170,7 @@ pub fn run(transport: &dyn Transport, job: HcRpcJob) -> HcEvent {
                 &info_spot_state_body(&account),
                 MAX_INFO_RESPONSE,
             )
-            .and_then(|value| parse_spot_state(&value).map_err(|_| SHAPE.to_owned()))
+            .and_then(|value| parse_spot_state(&value).map_err(|_| shape(endpoint.lang)))
             .and_then(|spot| {
                 post(
                     transport,
@@ -163,7 +179,7 @@ pub fn run(transport: &dyn Transport, job: HcRpcJob) -> HcEvent {
                     &info_perp_state_body(&account),
                     MAX_INFO_RESPONSE,
                 )
-                .and_then(|value| parse_perp_state(&value).map_err(|_| SHAPE.to_owned()))
+                .and_then(|value| parse_perp_state(&value).map_err(|_| shape(endpoint.lang)))
                 .map(|perp| HcBalances { spot, perp })
             });
             logging::info(
@@ -197,7 +213,7 @@ pub fn run(transport: &dyn Transport, job: HcRpcJob) -> HcEvent {
                 &body,
                 MAX_EXCHANGE_RESPONSE,
             )
-            .and_then(|value| parse_exchange_reply(&value).map_err(|_| SHAPE.to_owned()));
+            .and_then(|value| parse_exchange_reply(&value).map_err(|_| shape(endpoint.lang)));
             logging::info(
                 "rpc",
                 "hypercore.submit",
@@ -271,6 +287,7 @@ mod tests {
         let endpoint = HcEndpoint {
             network: HcNetwork::Testnet,
             api: TESTNET_API.to_owned(),
+            lang: yw_core::lang::Lang::Ko,
         };
         let event = run(
             &fake,

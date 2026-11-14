@@ -462,7 +462,7 @@ pub struct SignedTx { pub raw: Vec<u8>, pub tx_hash: [u8; 32], pub tx: Eip1559Tx
 5. `recover(hash, sig)`의 주소 == 승인 계정.
 6. `tx_hash = keccak256(raw)`.
 
-하나라도 실패 → `SignError::PostSignVerification`, 저장·전송 없음, 창에 "서명 검증 실패(내부 오류)"(이식 `archive/spec-v2.4:crates/key-agent/src/lib.rs:325-353,607-797`).
+하나라도 실패 → `SignError::PostSignVerification`, 저장·전송 없음, 창에 "서명 검증 실패(내부 오류)" / "Signature verification failed (internal error)"(이식 `archive/spec-v2.4:crates/key-agent/src/lib.rs:325-353,607-797`).
 
 ### 4.4 전송
 
@@ -478,8 +478,8 @@ pub struct SignedTx { pub raw: Vec<u8>, pub tx_hash: [u8; 32], pub tx: Eip1559Tx
 | 결과 | 저널 | dApp 응답 | 앱 표시 |
 |---|---|---|---|
 | 반환 해시 == `tx_hash` | `Broadcast` | `tx_hash` | 전송됨 |
-| 반환 해시 ≠ `tx_hash` | `Signed` 유지, `flags.rpc_hash_mismatch` | -32603 `BroadcastFailed` | 고위험 알림 "RPC가 다른 거래 해시를 반환했습니다". 자동 재전송 안 함 |
-| JSON-RPC 오류 | `eth_getTransactionByHash(tx_hash)` 존재 → `Broadcast`; 없음 → `Signed` 유지 + `flags.manual_resend` | 존재 시 `tx_hash`, 없으면 -32603 `BroadcastFailed` | 재전송·폐기 버튼. 자동 재전송 안 함(재시작 후에도) |
+| 반환 해시 ≠ `tx_hash` | `Signed` 유지, `flags.rpc_hash_mismatch` | -32603 `BroadcastFailed` | 고위험 알림 "RPC가 다른 거래 해시를 반환했습니다. …" / "The RPC returned a different transaction hash. …". 자동 재전송 안 함 |
+| JSON-RPC 오류 | `eth_getTransactionByHash(tx_hash)` 존재 → `Broadcast`; 없음 → `Signed` 유지 + `flags.manual_resend` | 존재 시 `tx_hash`, 없으면 -32603 `BroadcastFailed` | 재전송·폐기 버튼(`재전송` / `Rebroadcast`·`폐기` / `Discard`). 자동 재전송 안 함(재시작 후에도) |
 | 시간 초과·전송 오류 | 2 s, 5 s 뒤 같은 바이트 재전송 후 `eth_getTransactionByHash`; 존재 → `Broadcast`; 없음 → `Signed` 유지 | `tx_hash` | "전송 확인 중", §5.4 자동 재전송 |
 
 dApp에 실패(`BroadcastFailed`)를 알린 거래는 자동으로 보내지 않는다: 그 레코드에 `manual_resend`(또는 `rpc_hash_mismatch`)를 커밋해 앱을 다시 시작해도 사용자의 `재전송`만 보낸다. 자동 재전송이 이어지는 경우에만 tx hash를 돌려준다. 어떤 경우에도 자동으로 다시 서명하지 않는다.
@@ -534,7 +534,7 @@ off  size  field
 +4   L3    raw                    서명된 거래 0x02 ‖ rlp
 ```
 
-읽기 검증: body 길이 == 필드 합(최대 131,761), `record_kind == 0x01`, 알려진 버전·enum 값, `flags` 미사용 비트 0, `keccak256(raw)==tx_hash`, `decode_signed(raw)` 성공, 디코드한 `chain_id`·`nonce` 일치, 복구 주소 == `account`. 실패 → [02] §5.4 본문 오류: EVM 보내기 비활성 + "저널 손상" 표시(자동 삭제 금지, 바이트 보존, [04]).
+읽기 검증: body 길이 == 필드 합(최대 131,761), `record_kind == 0x01`, 알려진 버전·enum 값, `flags` 미사용 비트 0, `keccak256(raw)==tx_hash`, `decode_signed(raw)` 성공, 디코드한 `chain_id`·`nonce` 일치, 복구 주소 == `account`. 실패 → [02] §5.4 본문 오류: EVM 보내기 비활성 + "저널 손상" / "Journal damaged" 표시(자동 삭제 금지, 바이트 보존, [04]).
 
 ### 5.2 상태 기계
 

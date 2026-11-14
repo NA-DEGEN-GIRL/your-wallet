@@ -10,6 +10,7 @@
 use core::fmt;
 
 use yw_core::hypercore::HcNetwork;
+use yw_core::lang::Lang;
 use yw_core::zec::ZecNetwork;
 use yw_json::Value;
 use yw_win::http::HttpsUrl;
@@ -136,13 +137,14 @@ impl LinkKind {
         }
     }
 
-    /// The field name on S15.
+    /// The field name on S15 in `lang`.
     #[must_use]
-    pub const fn label(self) -> &'static str {
+    pub const fn label_in(self, lang: Lang) -> &'static str {
         match self {
-            Self::Tx => "거래 페이지",
-            Self::Address => "주소 페이지",
+            Self::Tx => text::TX_PAGE,
+            Self::Address => text::ADDRESS_PAGE,
         }
+        .get(lang)
     }
 }
 
@@ -287,27 +289,42 @@ pub enum TemplateError {
 }
 
 impl TemplateError {
-    /// The user text.
+    /// The user text in `lang`.
     #[must_use]
-    pub fn text(self) -> String {
+    pub fn text_in(self, lang: Lang) -> String {
         match self {
-            Self::TooLong => format!("{TEMPLATE_MAX_BYTES}자를 넘습니다."),
-            Self::NotHttps => "https:// 로 시작해야 합니다.".to_owned(),
-            Self::Fragment => "# 뒤 부분(fragment)은 넣을 수 없습니다.".to_owned(),
-            Self::Userinfo => "사용자 정보(…@)는 넣을 수 없습니다.".to_owned(),
-            Self::Placeholder(kind) => format!(
-                "{}를 정확히 한 번 넣고, 다른 {{…}}는 넣지 마세요.",
-                kind.placeholder()
-            ),
-            Self::PlaceholderInHost(kind) => format!(
-                "{}는 호스트 이름 뒤(경로나 ? 뒤)에 있어야 합니다.",
-                kind.placeholder()
-            ),
-            Self::Character => {
-                "쓸 수 없는 문자가 있습니다(영문·숫자와 - . _ ~ : / ? & = + 만).".to_owned()
+            Self::TooLong => text::TOO_LONG.fill(lang, [&TEMPLATE_MAX_BYTES.to_string()]),
+            Self::NotHttps => text::NOT_HTTPS.get(lang).to_owned(),
+            Self::Fragment => text::FRAGMENT.get(lang).to_owned(),
+            Self::Userinfo => text::USERINFO.get(lang).to_owned(),
+            Self::Placeholder(kind) => text::PLACEHOLDER.fill(lang, [kind.placeholder()]),
+            Self::PlaceholderInHost(kind) => {
+                text::PLACEHOLDER_IN_HOST.fill(lang, [kind.placeholder()])
             }
-            Self::Url => "올바른 https 주소가 아닙니다(호스트 이름을 확인하세요).".to_owned(),
+            Self::Character => text::CHARACTER.get(lang).to_owned(),
+            Self::Url => text::URL.get(lang).to_owned(),
         }
+    }
+}
+
+/// Explorer template texts of S15 (spec/04 §2.11; English spec/14 §5).
+pub mod text {
+    yw_core::texts! {
+        TX_PAGE = "거래 페이지" / "Transaction page";
+        ADDRESS_PAGE = "주소 페이지" / "Address page";
+        TOO_LONG(1) = "{0}자를 넘습니다." / "Longer than {0} characters.";
+        NOT_HTTPS = "https:// 로 시작해야 합니다." / "Must start with https://.";
+        FRAGMENT = "# 뒤 부분(fragment)은 넣을 수 없습니다."
+            / "A part after # (fragment) is not allowed.";
+        USERINFO = "사용자 정보(…@)는 넣을 수 없습니다." / "User info (…@) is not allowed.";
+        PLACEHOLDER(1) = "{0}를 정확히 한 번 넣고, 다른 {…}는 넣지 마세요."
+            / "Put {0} in exactly once, and no other {…}.";
+        PLACEHOLDER_IN_HOST(1) = "{0}는 호스트 이름 뒤(경로나 ? 뒤)에 있어야 합니다."
+            / "{0} must come after the host name (in the path or after ?).";
+        CHARACTER = "쓸 수 없는 문자가 있습니다(영문·숫자와 - . _ ~ : / ? & = + 만)."
+            / "Contains characters that are not allowed (only letters, digits and - . _ ~ : / ? & = +).";
+        URL = "올바른 https 주소가 아닙니다(호스트 이름을 확인하세요)."
+            / "Not a valid https address (check the host name).";
     }
 }
 

@@ -69,7 +69,9 @@ compatibility mode (§2.4). The scope is proof of ownership only: connect and me
 **How the user turns them on:** in the Your Wallet extension popup, pick a mode per family. The choice is stored in
 `chrome.storage.local` under the keys `compatMode`, `solCompatMode` and `btcCompatMode`. It applies on
 the **next page load**: reload open dApp tabs. The popup tells the user to disable the real extension
-while a look-alike mode is on (spec/05 §2.12–2.13, D22).
+while a look-alike mode is on (spec/05 §2.12–2.13, D22). The popup has its own `한국어 | English` toggle
+(`yourWalletLanguage` in `chrome.storage.local`); it changes only the popup's text. Every message a page sees is
+English in both languages.
 
 | Family | Mode | What the page sees |
 |---|---|---|
@@ -288,7 +290,8 @@ Notes:
 ## 5. Bitcoin API (compatibility modes only; spec/05 §2.13, §3.6; spec/08 §17)
 
 The scope is **proof of ownership**: connect and message signing. PSBT signing and sending are **never**
-supported. The page shims answer them with 4200 and the message `이 지갑은 Bitcoin에서 메시지 서명(소유 증명)만 지원합니다`.
+supported. The page shims answer them with 4200 and the message `This wallet supports only message signing (proof of ownership) on Bitcoin.`
+(English since 2026-11-14; it was Korean before).
 
 **UniSat mode** (`window.unisat`)
 
@@ -299,7 +302,7 @@ supported. The page shims answer them with 4200 and the message `이 지갑은 B
 | `getPublicKey()` | Public key |
 | `getNetwork()` | `"livenet"` or `"testnet"` |
 | `getChain()` | `{ enum: "BITCOIN_MAINNET" \| "BITCOIN_TESTNET4", name, network }` |
-| `switchNetwork` / `switchChain` | Succeed only for the current network; the network can be changed only in the app |
+| `switchNetwork` / `switchChain` | Succeed only for the current network; any other network is 4200 `The Bitcoin network can only be changed in the Your Wallet app settings.` |
 | `signMessage(msg, "ecdsa" \| "bip322-simple")` | Base64 signature |
 | `on` / `removeListener` | `accountsChanged`, `networkChanged` |
 | `signPsbt`, `signPsbts`, `pushPsbt`, `pushTx`, `sendBitcoin`, `sendInscription`, `inscribeTransfer`, `sendRunes`, `getBalance`, `getInscriptions` | 4200 |
@@ -352,6 +355,8 @@ Messages are exact strings. Wallet-generated errors carry no `data`, except Sola
 | 4100 | `Unauthorized.` | Not connected, account not granted, localhost toggle off, no wallet, backup pending, disconnected after the approval but before the reply (see below) |
 | 4100 | `Unauthorized: …` | Reason variants: `PassphraseUnverified`, `NoEvmAccount`, `NoSolAccount`, `NoBtcAccount`, `BtcDisabled`, `BackupUnconfirmed`, `TooManySites` |
 | 4200 | `Unsupported method.` | Not in the allowlist, or a malformed method name |
+| 4200 | `This wallet supports only message signing (proof of ownership) on Bitcoin.` | Bitcoin transaction, PSBT or balance methods of the UniSat and Xverse shims (Xverse: -32001); answered in the page |
+| 4200 | `The Bitcoin network can only be changed in the Your Wallet app settings.` | UniSat `switchNetwork` / `switchChain` to another network; answered in the page |
 | 4900 | `Wallet is unavailable.` | App not running and auto-start off, or the native host failed |
 | 4900 | `Wallet connection closed.` | Native connection dropped mid-request |
 | 4900 | `Wallet extension was reloaded.` | Extension context invalidated |

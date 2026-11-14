@@ -95,14 +95,16 @@ impl RecipientForm {
         }
     }
 
-    /// Display label of the approval window (spec/12 §9).
+    /// Display label of the approval window in `lang` (spec/12 §9).
     #[must_use]
-    pub const fn label(self) -> &'static str {
+    pub const fn label_in(self, lang: crate::lang::Lang) -> &'static str {
+        use super::text as t;
         match self {
-            Self::Transparent => "일반(transparent) 주소",
-            Self::Tex => "TEX 주소 (ZIP 320, 일반 주소로만 보냄)",
-            Self::Unified => "통합 주소(UA)의 일반(transparent) 수신자",
+            Self::Transparent => t::FORM_TRANSPARENT,
+            Self::Tex => t::FORM_TEX,
+            Self::Unified => t::FORM_UNIFIED,
         }
+        .get(lang)
     }
 }
 
@@ -141,31 +143,27 @@ pub enum ZecAddressError {
 }
 
 impl ZecAddressError {
-    /// The fixed Korean text (spec/12 §11).
+    /// The fixed text in `lang` (spec/12 §11; `Display` is the Korean one).
     #[must_use]
-    pub const fn text(self) -> &'static str {
+    pub const fn text_in(self, lang: crate::lang::Lang) -> &'static str {
+        use super::text as t;
         match self {
-            Self::Empty => "받는 주소를 입력하세요.",
-            Self::Format | Self::Unknown => "Zcash 주소가 아닙니다.",
-            Self::Checksum => "주소의 체크섬이 맞지 않습니다. 주소를 다시 확인하세요.",
-            Self::WrongNetwork => "다른 Zcash 네트워크의 주소입니다.",
-            Self::Shielded => {
-                "비공개(shielded) 주소로는 보낼 수 없습니다. 이 지갑은 일반(transparent) 전송만 합니다."
-            }
-            Self::UnifiedNoTransparent => {
-                "이 통합 주소(UA)에는 일반(transparent) 수신자가 없습니다. 받는 사람에게 t 주소나 TEX 주소를 요청하세요."
-            }
-            Self::UnifiedInvalid => "통합 주소(UA) 형식이 올바르지 않습니다.",
-            Self::UnifiedUnsupported => {
-                "이 통합 주소(UA) 형식(revision 1 또는 메타데이터)은 아직 지원하지 않습니다. t 주소나 TEX 주소를 요청하세요."
-            }
+            Self::Empty => t::ADDR_EMPTY,
+            Self::Format | Self::Unknown => t::ADDR_NOT_ZCASH,
+            Self::Checksum => t::ADDR_CHECKSUM,
+            Self::WrongNetwork => t::ADDR_WRONG_NETWORK,
+            Self::Shielded => t::ADDR_SHIELDED,
+            Self::UnifiedNoTransparent => t::ADDR_UA_NO_TRANSPARENT,
+            Self::UnifiedInvalid => t::ADDR_UA_INVALID,
+            Self::UnifiedUnsupported => t::ADDR_UA_UNSUPPORTED,
         }
+        .get(lang)
     }
 }
 
 impl fmt::Display for ZecAddressError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.text())
+        formatter.write_str(self.text_in(crate::lang::Lang::Ko))
     }
 }
 

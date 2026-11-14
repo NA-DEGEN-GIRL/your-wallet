@@ -45,12 +45,6 @@ pub mod err {
         matches!(code, 1..=6 | 9)
     }
 
-    /// Fixed Korean text of a code (never the RPC message); [`text_in`] for a language.
-    #[must_use]
-    pub const fn text(code: u16) -> &'static str {
-        text_in(code, crate::lang::Lang::Ko)
-    }
-
     /// Fixed text of a code in `lang` (never the RPC message).
     #[must_use]
     pub const fn text_in(code: u16, lang: crate::lang::Lang) -> &'static str {

@@ -23,6 +23,7 @@
 
 use yw_core::bip32::path::AccountIndex;
 use yw_core::btc::{BtcNetwork, ScriptType};
+use yw_core::lang::Lang;
 use yw_core::secret::Zeroizing;
 use yw_core::vault::RecordId;
 use yw_core::yubikey::enrol::{DefaultsSeen, Enrolled};
@@ -50,31 +51,111 @@ pub const MAX_PIV_ACCOUNTS: u32 = 20;
 /// keys connected without them (spec/10 §7.6, `plan::UNKNOWN_PATH_FIRST`).
 pub const MAX_ACCOUNT_INDEX: u32 = yw_core::yubikey::plan::UNKNOWN_PATH_FIRST - 1;
 
-/// T-YK-SAME (spec/10 §7.1-2, user decision 2026-11-05): the entered words are this vault's.
-pub const T_YK_SAME: &str = "이 복구 단어는 이 PC의 vault에도 저장되어 있습니다. 복구 단어가 이 PC에 남아 있는 동안 YubiKey는 보안 이득이 없습니다(같은 키를 PC에서도 만들 수 있음). 키를 PC 밖에 두려면 'YubiKey 지갑'(복구 단어를 저장하지 않는 지갑)을 새로 만드세요.";
-/// T-YK-SAME-WORDS (spec/10 §7.1-2): the same words are on this PC with another passphrase.
-pub const T_YK_SAME_WORDS: &str = "이 복구 단어는 이 PC의 vault에도 저장되어 있습니다(passphrase만 다름). 이 PC의 복구 단어를 손에 넣은 사람에게는 passphrase만이 이 YubiKey의 키를 지킵니다. 키를 PC 밖에 두려면 'YubiKey 지갑'(복구 단어를 저장하지 않는 지갑)을 새로 만들거나 다른 복구 단어를 쓰세요.";
-/// T-YK-SHARED (spec/10 §3.2): the two sentences of the shared-key choice.
-pub const T_YK_SHARED: &str = "EVM 공유 키는 EVM 주소와 Bitcoin 주소가 같은 공개키에서 나옵니다. Bitcoin에서 그 주소로 한 번이라도 보내면 누구나 그 공개키에서 EVM 주소를 계산할 수 있어 두 체인의 신원이 연결됩니다. 또 표준 Bitcoin 지갑은 이 주소를 찾지 못합니다(경로가 m/44'/60'/…): 복구는 이 지갑으로 같은 복구 단어·같은 인덱스를 다시 등록하거나 그 EVM 개인키를 WIF로 가져와야 합니다.";
-/// T-YK-OVERWRITE (spec/10 §7.4).
-pub const T_YK_OVERWRITE: &str = "가져오기는 고른 슬롯(OpenPGP SIG/AUT, PIV 82…)에 키를 씁니다. 그 슬롯에 이번에 넣을 키가 아닌 다른 키가 있으면 가져오기 전에 그 키와 주소를 보여 드리고, 지워도 된다고 확인해야만 덮어씁니다. 다른 용도(GPG 등)로 쓰는 슬롯이면 고르지 마세요.";
-/// T-YK-OCCUPIED (spec/10 §7.4): planned slots hold keys the enrolment would destroy.
-pub const T_YK_OCCUPIED: &str = "이 YubiKey의 아래 슬롯에는 이미 다른 키가 있습니다(이번에 넣을 키가 아님). 가져오면 그 키는 카드에서 영구히 지워지고, 그 키를 다시 만들 복구 단어나 백업이 없으면 그 주소의 자산을 다시 쓸 수 없습니다. 잔액이 있으면 먼저 옮기고, 다른 용도(GPG 등)의 키라면 다른 슬롯을 고르세요.";
-/// The checkbox of [`T_YK_OCCUPIED`].
-pub const T_YK_OCCUPIED_ACK: &str =
-    "이해했습니다: 이 슬롯의 키는 영구히 지워지고 그 주소의 자산을 다시 쓸 수 없을 수 있습니다";
-/// The hint after an enrolment refused for a key already in a slot.
-pub const T_YK_OCCUPIED_RETRY: &str =
-    "'다시 시도'를 누르면 그 슬롯의 키를 보여 드리고, 지워도 된다고 확인한 뒤에만 덮어씁니다.";
-/// T-YK-BACKUP-UNKNOWN (spec/10 §7.6): a card connected without recovery words cannot be
-/// copied.
-pub const T_YK_BACKUP_UNKNOWN: &str = "복구 단어 없이 연결한 키는 경로를 몰라 복구 단어로 다른 YubiKey에 똑같이 넣을 수 없습니다. 백업 복사본은 복구 단어로 등록한 YubiKey에서만 만들 수 있습니다.";
-/// T-YK-PARTIAL (spec/10 §7.4).
-pub const T_YK_PARTIAL: &str = "일부 슬롯에 키가 이미 들어갔을 수 있습니다. 다시 시도하면 덮어씁니다. 지갑에는 아무것도 기록하지 않았습니다.";
-/// T-YK-PIV-FIRMWARE (spec/10 §2, user decision 2026-11-05).
-pub const T_YK_PIV_FIRMWARE: &str = "Solana(PIV Ed25519) 키 가져오기는 펌웨어 5.7.4 이상에서 문서화되어 있습니다. 5.7.0–5.7.3 YubiKey는 가져오기를 거부할 수 있고(그때 \"이 펌웨어는 Ed25519 가져오기를 거부했습니다\"), 5.7.0 미만은 PIV 슬롯을 쓸 수 없습니다.";
-/// T-YK-WALLET (S01 card, spec/10 §7.1-1).
-pub const T_YK_WALLET: &str = "새 복구 단어 24개를 만들어 종이에 적고, 그 단어에서 만든 키를 YubiKey에 넣습니다. 이 PC에는 복구 단어를 저장하지 않고 공개키·주소만 둡니다. 서명은 YubiKey에서 PIN과 터치로 합니다.";
+/// Fixed texts of the enrolment wizard and the card list (spec/10 §7, §9, §15; English
+/// spec/14).
+pub mod text {
+    yw_core::texts! {
+        /// T-YK-SAME (spec/10 §7.1-2, user decision 2026-11-05): the entered words are this
+        /// vault's.
+        YK_SAME = "이 복구 단어는 이 PC의 vault에도 저장되어 있습니다. 복구 단어가 이 PC에 남아 있는 동안 YubiKey는 보안 이득이 없습니다(같은 키를 PC에서도 만들 수 있음). 키를 PC 밖에 두려면 'YubiKey 지갑'(복구 단어를 저장하지 않는 지갑)을 새로 만드세요."
+            / "These recovery words are also stored in this PC's vault. While the recovery words stay on this PC, the YubiKey adds no security (the PC can make the same keys). To keep the keys off the PC, create a new 'YubiKey wallet' (a wallet that does not store recovery words).";
+        /// T-YK-SAME-WORDS (spec/10 §7.1-2): the same words are on this PC with another
+        /// passphrase.
+        YK_SAME_WORDS = "이 복구 단어는 이 PC의 vault에도 저장되어 있습니다(passphrase만 다름). 이 PC의 복구 단어를 손에 넣은 사람에게는 passphrase만이 이 YubiKey의 키를 지킵니다. 키를 PC 밖에 두려면 'YubiKey 지갑'(복구 단어를 저장하지 않는 지갑)을 새로 만들거나 다른 복구 단어를 쓰세요."
+            / "These recovery words are also stored in this PC's vault (only the passphrase differs). Against anyone who gets this PC's recovery words, only the passphrase protects this YubiKey's keys. To keep the keys off the PC, create a new 'YubiKey wallet' (a wallet that does not store recovery words) or use other recovery words.";
+        /// T-YK-SHARED (spec/10 §3.2): the two sentences of the shared-key choice.
+        YK_SHARED = "EVM 공유 키는 EVM 주소와 Bitcoin 주소가 같은 공개키에서 나옵니다. Bitcoin에서 그 주소로 한 번이라도 보내면 누구나 그 공개키에서 EVM 주소를 계산할 수 있어 두 체인의 신원이 연결됩니다. 또 표준 Bitcoin 지갑은 이 주소를 찾지 못합니다(경로가 m/44'/60'/…): 복구는 이 지갑으로 같은 복구 단어·같은 인덱스를 다시 등록하거나 그 EVM 개인키를 WIF로 가져와야 합니다."
+            / "With the EVM shared key, the EVM address and the Bitcoin address come from the same public key. Once that address sends on Bitcoin even once, anyone can compute the EVM address from that public key, which links your identities on the two chains. Standard Bitcoin wallets also cannot find this address (its path is m/44'/60'/…): to recover it, enrol the same recovery words with the same index in this wallet again, or import that EVM private key as WIF.";
+        /// T-YK-OVERWRITE (spec/10 §7.4).
+        YK_OVERWRITE = "가져오기는 고른 슬롯(OpenPGP SIG/AUT, PIV 82…)에 키를 씁니다. 그 슬롯에 이번에 넣을 키가 아닌 다른 키가 있으면 가져오기 전에 그 키와 주소를 보여 드리고, 지워도 된다고 확인해야만 덮어씁니다. 다른 용도(GPG 등)로 쓰는 슬롯이면 고르지 마세요."
+            / "Importing writes keys into the chosen slots (OpenPGP SIG/AUT, PIV 82…). If a slot holds a key other than the one being imported, that key and its address are shown before the import, and it is overwritten only after you confirm that it may be erased. Do not choose a slot used for something else (GPG, …).";
+        /// T-YK-OCCUPIED (spec/10 §7.4): planned slots hold keys the enrolment would destroy.
+        YK_OCCUPIED = "이 YubiKey의 아래 슬롯에는 이미 다른 키가 있습니다(이번에 넣을 키가 아님). 가져오면 그 키는 카드에서 영구히 지워지고, 그 키를 다시 만들 복구 단어나 백업이 없으면 그 주소의 자산을 다시 쓸 수 없습니다. 잔액이 있으면 먼저 옮기고, 다른 용도(GPG 등)의 키라면 다른 슬롯을 고르세요."
+            / "The slots of this YubiKey below already hold other keys (not the ones being imported). Importing erases those keys from the card for good, and without recovery words or a backup to make them again, the assets of their addresses can no longer be used. If there is a balance, move it first; if a key is used for something else (GPG, …), choose another slot.";
+        /// The checkbox of [`YK_OCCUPIED`].
+        YK_OCCUPIED_ACK = "이해했습니다: 이 슬롯의 키는 영구히 지워지고 그 주소의 자산을 다시 쓸 수 없을 수 있습니다"
+            / "I understand: the keys in these slots are erased for good, and the assets of their addresses may no longer be usable";
+        /// The hint after an enrolment refused for a key already in a slot.
+        YK_OCCUPIED_RETRY = "'다시 시도'를 누르면 그 슬롯의 키를 보여 드리고, 지워도 된다고 확인한 뒤에만 덮어씁니다."
+            / "Press 'Try again' to see the keys in those slots; they are overwritten only after you confirm that they may be erased.";
+        /// T-YK-BACKUP-UNKNOWN (spec/10 §7.6): a card connected without recovery words cannot
+        /// be copied.
+        YK_BACKUP_UNKNOWN = "복구 단어 없이 연결한 키는 경로를 몰라 복구 단어로 다른 YubiKey에 똑같이 넣을 수 없습니다. 백업 복사본은 복구 단어로 등록한 YubiKey에서만 만들 수 있습니다."
+            / "A key connected without recovery words has no known path, so recovery words cannot put the same key on another YubiKey. Backup copies can be made only from a YubiKey enrolled with recovery words.";
+        /// T-YK-PARTIAL (spec/10 §7.4).
+        YK_PARTIAL = "일부 슬롯에 키가 이미 들어갔을 수 있습니다. 다시 시도하면 덮어씁니다. 지갑에는 아무것도 기록하지 않았습니다."
+            / "Keys may already be in some slots. Trying again overwrites them. Nothing was recorded in the wallet.";
+        /// T-YK-PIV-FIRMWARE (spec/10 §2, user decision 2026-11-05).
+        YK_PIV_FIRMWARE = "Solana(PIV Ed25519) 키 가져오기는 펌웨어 5.7.4 이상에서 문서화되어 있습니다. 5.7.0–5.7.3 YubiKey는 가져오기를 거부할 수 있고(그때 \"이 펌웨어는 Ed25519 가져오기를 거부했습니다\"), 5.7.0 미만은 PIV 슬롯을 쓸 수 없습니다."
+            / "Importing Solana (PIV Ed25519) keys is documented for firmware 5.7.4 and later. A 5.7.0–5.7.3 YubiKey may refuse the import (then \"This YubiKey firmware refused the Ed25519 key import\"), and below 5.7.0 PIV slots cannot be used.";
+        /// T-YK-WALLET (S01 card, spec/10 §7.1-1).
+        YK_WALLET = "새 복구 단어 24개를 만들어 종이에 적고, 그 단어에서 만든 키를 YubiKey에 넣습니다. 이 PC에는 복구 단어를 저장하지 않고 공개키·주소만 둡니다. 서명은 YubiKey에서 PIN과 터치로 합니다."
+            / "Makes 24 new recovery words for you to write on paper and puts the keys made from them on the YubiKey. This PC keeps only public keys and addresses, not the recovery words. Signing happens on the YubiKey with the PIN and a touch.";
+        /// T-YK-ABANDON: the new `YubiKey` wallet's wizard `취소` after the words were shown
+        /// (2026-11-10).
+        YK_ABANDON = "지금 그만두면 방금 적은 복구 단어 24개는 지워지고 이 지갑에 쓰이지 않습니다."
+            / "If you stop now, the 24 recovery words you just wrote down are erased and not used for this wallet.";
+        /// T-YK-WORDS-UNUSED: S01's band once a new `YubiKey` wallet's shown words were
+        /// discarded.
+        YK_WORDS_UNUSED = "방금 적은 복구 단어 종이는 어느 지갑에도 쓰이지 않습니다. 다시 시작하면 새 단어가 나오니 그 종이에 “사용 안 함”이라고 적거나 폐기하세요."
+            / "The recovery-word paper you just wrote is not used by any wallet. Starting again gives new words, so write “not used” on that paper or destroy it.";
+        /// Added to [`YK_WORDS_UNUSED`] when a card job may have written keys from those words.
+        YK_WORDS_ON_CARD = "(YubiKey에 이미 넣은 키는 이 종이의 단어로 만든 것입니다.)"
+            / "(Keys already put on the YubiKey were made from the words on this paper.)";
+        /// A card record's removal, clear or re-slot refused: it holds the last key of an
+        /// account whose transaction may still confirm (spec/10 §15).
+        YK_BUSY = "이 YubiKey의 키로만 서명하는 계정에서 보낸 거래가 아직 확정될 수 있어(진행 중, 또는 Bitcoin은 포기·거절 뒤 30일 이내) 카드와 지갑의 기록을 바꾸지 않았습니다. 거래가 확정되거나 만료된 뒤에 다시 시도하세요. 거래 저널에 손상된 기록이 있으면 어느 계정의 거래인지 확인할 수 없어 바꾸지 않습니다."
+            / "A transaction sent from an account that signs only with this YubiKey's keys may still confirm (in progress, or for Bitcoin within 30 days after it was abandoned or rejected), so the card and wallet records were not changed. Try again after the transaction confirms or expires. If the transaction journal has a damaged record, the wallet cannot tell whose transaction it is, so nothing is changed.";
+        /// T-YK-ENROL-FOREIGN (spec/10 §7.4): an enrolment stopped at a key it does not derive.
+        YK_ENROL_FOREIGN = "이 YubiKey의 고른 슬롯에 이번에 넣을 키가 아닌 다른 키가 있어 아무것도 쓰지 않았습니다."
+            / "A chosen slot of this YubiKey holds a key other than the one being imported, so nothing was written.";
+        /// `{0}` the field, `{1}` the highest value.
+        INDEX_NUMBER(2) = "{0}: 0–{1} 사이의 숫자를 넣으세요." / "{0}: enter a number from 0 to {1}.";
+        INDEX_RANGE(1) = "{0}: 인덱스 범위" / "{0}: index out of range";
+        BACKUP_RECORD_MISSING = "복사할 YubiKey 기록을 찾지 못했습니다." / "The record of the YubiKey to copy was not found.";
+        SOL_COUNT = "Solana 계정 수" / "Number of Solana accounts";
+        SOL_START = "첫 Solana 계정" / "First Solana account";
+        SOL_INDEX_MAX(1) = "Solana 계정 인덱스는 {0}까지입니다." / "Solana account indices go up to {0}.";
+        PIV_SLOTS_MAX = "PIV 슬롯은 20개까지입니다." / "There are at most 20 PIV slots.";
+        SOL_INDEX_RANGE = "Solana 계정 인덱스 범위" / "Solana account index out of range";
+        NO_KEYS = "YubiKey에 넣을 키를 하나 이상 고르세요." / "Choose at least one key to put on the YubiKey.";
+        SHARED_ACK_NEEDED = "EVM 공유 키의 안내를 읽고 확인란을 체크하세요."
+            / "Read the EVM shared key note and tick the checkbox.";
+        /// `{0}` the typed word ([`super::manage::text::LOSS_WORD`]).
+        TYPE_LOSS_WORD(1) = "다른 키를 지우고 가져오려면 입력란에 '{0}'를 정확히 입력하세요."
+            / "To erase the other keys and import, type '{0}' exactly in the box.";
+        GENERATING = "새 복구 단어를 만드는 중…" / "Making new recovery words…";
+        MANAGEMENT_KEY_FORMAT = "관리 키는 16진수 48자리입니다." / "The management key is 48 hex digits.";
+        MANAGEMENT_PROTECTED = "PIV 관리 키를 새로 만들어 PIN으로 보호했습니다. 관리 키는 입력할 필요가 없습니다(다음 등록에는 PIV PIN만 묻습니다)."
+            / "A new PIV management key was made and protected with the PIN. You do not need to enter the management key (the next enrolment asks only for the PIV PIN).";
+        NOTHING_CHANGED(1) = "바꾼 것 없음. {0}" / "Nothing changed. {0}";
+        PINS_CHANGED(1) = "바꾼 것: {0}." / "Changed: {0}.";
+        PINS_SKIPPED(1) = "건너뜀: {0}." / "Skipped: {0}.";
+        /// `{0}` the step, `{1}` why (a full sentence).
+        PINS_FAILED(2) = "실패: {0} — {1} 그 뒤 항목은 바꾸지 않았습니다."
+            / "Failed: {0} — {1} The items after it were not changed.";
+        PINS_REMEMBER = "새 PIN은 이 지갑에 저장하지 않으니 따로 기억해 두세요."
+            / "This wallet does not store the new PIN, so remember it yourself.";
+        RECORD_REMOVED = "YubiKey 기록을 지웠습니다." / "The YubiKey record was removed.";
+        CHECK_OK(1) = "{0} — 공개키가 기록과 같습니다 ✓" / "{0} — the public key matches the record ✓";
+        CHECK_NO_RECORD = "이 YubiKey의 기록을 찾지 못했습니다." / "No record of this YubiKey was found.";
+        CHECK_ERROR(1) = "확인하지 못했습니다: {0}" / "Could not check: {0}";
+        PIN_CHANGED(1) = "{0}을(를) 바꿨습니다." / "{0} changed.";
+    }
+}
+
+/// T-YK-SAME, Korean (tests).
+#[cfg(test)]
+pub const T_YK_SAME: &str = text::YK_SAME.ko;
+/// T-YK-OCCUPIED, Korean (tests).
+#[cfg(test)]
+pub const T_YK_OCCUPIED: &str = text::YK_OCCUPIED.ko;
+/// T-YK-WALLET, Korean (tests).
+#[cfg(test)]
+pub const T_YK_WALLET: &str = text::YK_WALLET.ko;
+/// T-YK-WORDS-UNUSED, Korean (tests).
+#[cfg(test)]
+pub const T_YK_WORDS_UNUSED: &str = text::YK_WORDS_UNUSED.ko;
 
 /// What an `OpenPGP` slot of the plan holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -127,14 +208,6 @@ pub fn zec_network_for(network: BtcNetwork) -> yw_core::zec::ZecNetwork {
         yw_core::zec::ZecNetwork::Mainnet
     }
 }
-
-/// T-YK-ABANDON: the new `YubiKey` wallet's wizard `취소` after the words were shown (2026-11-10).
-pub const T_YK_ABANDON: &str =
-    "지금 그만두면 방금 적은 복구 단어 24개는 지워지고 이 지갑에 쓰이지 않습니다.";
-/// T-YK-WORDS-UNUSED: S01's band once a new `YubiKey` wallet's shown words were discarded.
-pub const T_YK_WORDS_UNUSED: &str = "방금 적은 복구 단어 종이는 어느 지갑에도 쓰이지 않습니다. 다시 시작하면 새 단어가 나오니 그 종이에 “사용 안 함”이라고 적거나 폐기하세요.";
-/// Added to [`T_YK_WORDS_UNUSED`] when a card job may have written keys from those words.
-pub const T_YK_WORDS_ON_CARD: &str = "(YubiKey에 이미 넣은 키는 이 종이의 단어로 만든 것입니다.)";
 
 /// How far a new `YubiKey` wallet got with its words, for S01's band when they are discarded
 /// before a wallet is made from them (spec/10 §7.1-1, 2026-11-10).
@@ -287,11 +360,11 @@ pub struct YkWizard {
     /// The planned slots of the identified card holding a key the held words do not derive,
     /// read at step (d) (`YkJob::Occupied`; `None` while reading, `Err` when it could not be
     /// read): an import overwrites them only after [`YkWizard::overwrite_ack`] and the typed
-    /// [`manage::LOSS_WORD`] (spec/10 §7.4).
+    /// [`manage::text::LOSS_WORD`] (spec/10 §7.4).
     pub occupied: Option<Result<Vec<yw_core::yubikey::enrol::Occupant>, String>>,
-    /// The [`T_YK_OCCUPIED`] checkbox.
+    /// The [`text::YK_OCCUPIED`] checkbox.
     pub overwrite_ack: bool,
-    /// The typed [`manage::LOSS_WORD`] (checked when `가져오기` is pressed).
+    /// The typed [`manage::text::LOSS_WORD`] (checked when `가져오기` is pressed).
     pub overwrite_typed: String,
     /// The admin PIN between W12 and the job (wiped on drop).
     admin_pin: Option<Zeroizing<Vec<u8>>>,
@@ -329,12 +402,13 @@ impl core::fmt::Debug for YkWizard {
     }
 }
 
-fn parse_index(text: &str, max: u32, what: &str) -> Result<u32, String> {
-    text.trim()
+fn parse_index(lang: Lang, input: &str, max: u32, what: &str) -> Result<u32, String> {
+    input
+        .trim()
         .parse::<u32>()
         .ok()
         .filter(|value| *value <= max)
-        .ok_or_else(|| format!("{what}: 0–{max} 사이의 숫자를 넣으세요."))
+        .ok_or_else(|| text::INDEX_NUMBER.fill(lang, [what, &max.to_string()]))
 }
 
 impl YkWizard {
@@ -415,17 +489,18 @@ impl YkWizard {
     ///
     /// The index text is not a number in range.
     pub fn pgp_preview(
+        lang: Lang,
         form: &PgpForm,
         key: PgpKey,
         network: BtcNetwork,
     ) -> Result<Option<PlannedSlot>, String> {
-        let label = CardSlot::OpenPgp(key).label();
+        let label = CardSlot::OpenPgp(key).label_in(lang);
         let role = match form.kind {
             PgpKind::None => return Ok(None),
             PgpKind::Evm | PgpKind::Shared => {
-                let index = parse_index(&form.index_text, MAX_ACCOUNT_INDEX, &label)?;
+                let index = parse_index(lang, &form.index_text, MAX_ACCOUNT_INDEX, &label)?;
                 let index =
-                    AccountIndex::new(index).map_err(|_| format!("{label}: 인덱스 범위"))?;
+                    AccountIndex::new(index).map_err(|_| text::INDEX_RANGE.fill(lang, [&label]))?;
                 KeyRole::Evm {
                     index,
                     btc: (form.kind == PgpKind::Shared).then_some(BtcUse {
@@ -437,11 +512,11 @@ impl YkWizard {
             PgpKind::Btc => KeyRole::Btc {
                 network,
                 script: form.script,
-                index: parse_index(&form.index_text, MAX_ACCOUNT_INDEX, &label)?,
+                index: parse_index(lang, &form.index_text, MAX_ACCOUNT_INDEX, &label)?,
             },
             PgpKind::Zec => KeyRole::Zec {
                 network: form.zec,
-                index: parse_index(&form.index_text, MAX_ACCOUNT_INDEX, &label)?,
+                index: parse_index(lang, &form.index_text, MAX_ACCOUNT_INDEX, &label)?,
             },
         };
         Ok(Some(PlannedSlot {
@@ -461,6 +536,7 @@ impl YkWizard {
     /// The text to show on the plan screen.
     pub fn plan(
         &self,
+        lang: Lang,
         records: &[HwKeyRecord],
         network: BtcNetwork,
     ) -> Result<Vec<PlannedSlot>, String> {
@@ -468,7 +544,7 @@ impl YkWizard {
             let record = records
                 .iter()
                 .find(|record| record.serial == serial)
-                .ok_or_else(|| "복사할 YubiKey 기록을 찾지 못했습니다.".to_owned())?;
+                .ok_or_else(|| text::BACKUP_RECORD_MISSING.get(lang).to_owned())?;
             // A key connected without recovery words has no path: the words cannot make it again
             // (spec/10 §7.6), so only the slots with a known path are copied.
             let copied: Vec<PlannedSlot> = record
@@ -481,30 +557,38 @@ impl YkWizard {
                 })
                 .collect();
             if copied.is_empty() {
-                return Err(T_YK_BACKUP_UNKNOWN.to_owned());
+                return Err(text::YK_BACKUP_UNKNOWN.get(lang).to_owned());
             }
             copied
         } else {
             let mut slots = Vec::new();
             for key in [PgpKey::Sig, PgpKey::Aut] {
-                if let Some(slot) = Self::pgp_preview(self.pgp(key), key, network)? {
+                if let Some(slot) = Self::pgp_preview(lang, self.pgp(key), key, network)? {
                     slots.push(slot);
                 }
             }
-            let count = parse_index(&self.sol_count_text, MAX_PIV_ACCOUNTS, "Solana 계정 수")?;
-            let start = parse_index(&self.sol_start_text, MAX_ACCOUNT_INDEX, "첫 Solana 계정")?;
+            let count = parse_index(
+                lang,
+                &self.sol_count_text,
+                MAX_PIV_ACCOUNTS,
+                text::SOL_COUNT.get(lang),
+            )?;
+            let start = parse_index(
+                lang,
+                &self.sol_start_text,
+                MAX_ACCOUNT_INDEX,
+                text::SOL_START.get(lang),
+            )?;
             if count > 0 && start.saturating_add(count - 1) > MAX_ACCOUNT_INDEX {
-                return Err(format!(
-                    "Solana 계정 인덱스는 {MAX_ACCOUNT_INDEX}까지입니다."
-                ));
+                return Err(text::SOL_INDEX_MAX.fill(lang, [&MAX_ACCOUNT_INDEX.to_string()]));
             }
             for n in 0..count {
                 let slot = u8::try_from(n)
                     .ok()
                     .and_then(PivSlot::retired)
-                    .ok_or_else(|| "PIV 슬롯은 20개까지입니다.".to_owned())?;
+                    .ok_or_else(|| text::PIV_SLOTS_MAX.get(lang).to_owned())?;
                 let index = AccountIndex::new(start.saturating_add(n))
-                    .map_err(|_| "Solana 계정 인덱스 범위".to_owned())?;
+                    .map_err(|_| text::SOL_INDEX_RANGE.get(lang).to_owned())?;
                 slots.push(PlannedSlot {
                     slot: CardSlot::Piv(slot),
                     role: KeyRole::Sol { index },
@@ -516,12 +600,12 @@ impl YkWizard {
             slots
         };
         if slots.is_empty() {
-            return Err("YubiKey에 넣을 키를 하나 이상 고르세요.".to_owned());
+            return Err(text::NO_KEYS.get(lang).to_owned());
         }
         if self.uses_shared() && !self.shared_ack {
-            return Err("EVM 공유 키의 안내를 읽고 확인란을 체크하세요.".to_owned());
+            return Err(text::SHARED_ACK_NEEDED.get(lang).to_owned());
         }
-        validate_plan(&slots).map_err(|error| error.to_string())?;
+        validate_plan(&slots).map_err(|error| error.text_in(lang))?;
         Ok(slots)
     }
 
@@ -591,7 +675,7 @@ impl YkWizard {
     }
 
     /// Whether `가져오기` may go on: no key would be destroyed, or the user checked
-    /// [`T_YK_OCCUPIED_ACK`] (the typed word is checked when it is pressed).
+    /// [`text::YK_OCCUPIED_ACK`] (the typed word is checked when it is pressed).
     #[must_use]
     pub fn can_import(&self) -> bool {
         self.occupants().is_empty() || self.overwrite_ack
@@ -605,44 +689,40 @@ impl YkWizard {
     }
 }
 
-/// A card record's removal, clear or re-slot refused: it holds the last key of an account whose
-/// transaction may still confirm (spec/10 §15).
-pub const T_YK_BUSY: &str = "이 YubiKey의 키로만 서명하는 계정에서 보낸 거래가 아직 확정될 수 있어(진행 중, 또는 Bitcoin은 포기·거절 뒤 30일 이내) 카드와 지갑의 기록을 바꾸지 않았습니다. 거래가 확정되거나 만료된 뒤에 다시 시도하세요. 거래 저널에 손상된 기록이 있으면 어느 계정의 거래인지 확인할 수 없어 바꾸지 않습니다.";
-
 /// The text of an enrolment failure.
-fn failure_text(error: YubiKeyJobError) -> String {
+fn failure_text(lang: Lang, error: YubiKeyJobError) -> String {
     match error {
-        YubiKeyJobError::Key(error) => crate::errors::key_code(error).text(),
-        YubiKeyJobError::Vault(error) => crate::errors::vault_code(error).text(),
-        YubiKeyJobError::Card(error) => error.to_string(),
-        YubiKeyJobError::Busy => T_YK_BUSY.to_owned(),
+        YubiKeyJobError::Key(error) => crate::errors::key_code(error).text_in(lang),
+        YubiKeyJobError::Vault(error) => crate::errors::vault_code(error).text_in(lang),
+        YubiKeyJobError::Card(error) => error.text_in(lang),
+        YubiKeyJobError::Busy => text::YK_BUSY.get(lang).to_owned(),
     }
 }
 
 /// [`failure_text`] of a job that sent the card secret `kind`: a wrong or blocked value names
 /// that secret (spec/10 §9.1).
-fn failure_text_for(error: YubiKeyJobError, kind: PinKind) -> String {
+fn failure_text_for(lang: Lang, error: YubiKeyJobError, kind: PinKind) -> String {
     match error {
-        YubiKeyJobError::Card(error) => error.text_for(kind),
-        other => failure_text(other),
+        YubiKeyJobError::Card(error) => error.text_for(lang, kind),
+        other => failure_text(lang, other),
     }
 }
-
-/// T-YK-ENROL-FOREIGN (spec/10 §7.4): an enrolment stopped at a key it does not derive.
-pub const T_YK_ENROL_FOREIGN: &str =
-    "이 YubiKey의 고른 슬롯에 이번에 넣을 키가 아닌 다른 키가 있어 아무것도 쓰지 않았습니다.";
 
 /// The wizard's text of an enrolment (or connect) failure: the secret a wrong PIN was (the admin
 /// PIN before any write of a plan with `OpenPGP` slots, else the PIV PIN), a key found in a slot
 /// with how to see it, and the partial-write note only once an import started (spec/10 §7.4).
-fn enrol_failure_text(error: YubiKeyJobError, openpgp: bool) -> String {
+fn enrol_failure_text(lang: Lang, error: YubiKeyJobError, openpgp: bool) -> String {
     use yw_core::yubikey::enrol::EnrolError;
     let enrol = match error {
         YubiKeyJobError::Card(CardJobError::Enrol(enrol)) => Some(enrol),
         _ => None,
     };
     if enrol == Some(EnrolError::Card(yw_core::yubikey::CardError::ForeignKey)) {
-        return format!("{T_YK_ENROL_FOREIGN} {T_YK_OCCUPIED_RETRY}");
+        return format!(
+            "{} {}",
+            text::YK_ENROL_FOREIGN.get(lang),
+            text::YK_OCCUPIED_RETRY.get(lang)
+        );
     }
     let partial = matches!(enrol, Some(EnrolError::Partial(_)));
     let kind = if openpgp && !partial {
@@ -650,12 +730,12 @@ fn enrol_failure_text(error: YubiKeyJobError, openpgp: bool) -> String {
     } else {
         PinKind::PivPin
     };
-    let mut text = failure_text_for(error, kind);
+    let mut out = failure_text_for(lang, error, kind);
     if partial {
-        text.push(' ');
-        text.push_str(T_YK_PARTIAL);
+        out.push(' ');
+        out.push_str(text::YK_PARTIAL.get(lang));
     }
-    text
+    out
 }
 
 /// Command ids of the wizard's touch radios: `(policy, id offset)`.
@@ -742,10 +822,12 @@ impl App {
         if words == YkWords::None {
             return;
         }
+        let lang = self.settings.language;
+        let unused = text::YK_WORDS_UNUSED.get(lang);
         let text = if words == YkWords::OnCard {
-            format!("{T_YK_WORDS_UNUSED} {T_YK_WORDS_ON_CARD}")
+            format!("{unused} {}", text::YK_WORDS_ON_CARD.get(lang))
         } else {
-            T_YK_WORDS_UNUSED.to_owned()
+            unused.to_owned()
         };
         if !self.banners.iter().any(|banner| banner.text == text) {
             self.notice(text, Tone::Warn);
@@ -800,10 +882,11 @@ impl App {
     pub fn yk_plan_next(&mut self) {
         let records = self.card.records.clone();
         let network = self.yk_network();
+        let lang = self.settings.language;
         let Some(wizard) = self.yk_wizard() else {
             return;
         };
-        match wizard.plan(&records, network) {
+        match wizard.plan(lang, &records, network) {
             Err(text) => {
                 wizard.error = Some(text);
                 self.refresh();
@@ -860,6 +943,7 @@ impl App {
     /// key in a planned slot that the words do not derive is overwritten only after its
     /// checkbox and the typed `영구 삭제` (spec/10 §7.4).
     pub fn yk_import(&mut self, adopt: bool) {
+        let lang = self.settings.language;
         let Some(wizard) = self.card.wizard.as_mut() else {
             return;
         };
@@ -870,11 +954,9 @@ impl App {
             if !wizard.overwrite_ack {
                 return;
             }
-            if wizard.overwrite_typed.trim() != manage::LOSS_WORD {
-                wizard.error = Some(format!(
-                    "다른 키를 지우고 가져오려면 입력란에 '{}'를 정확히 입력하세요.",
-                    manage::LOSS_WORD
-                ));
+            let loss_word = manage::text::LOSS_WORD.get(lang);
+            if wizard.overwrite_typed.trim() != loss_word {
+                wizard.error = Some(text::TYPE_LOSS_WORD.fill(lang, [loss_word]));
                 self.refresh();
                 return;
             }
@@ -980,6 +1062,7 @@ impl App {
             return;
         };
         let admin_last_try = self.yk_take_last_try(serial);
+        let lang = self.settings.language;
         let Some(wizard) = self.card.wizard.as_mut() else {
             return;
         };
@@ -993,7 +1076,7 @@ impl App {
         // The keys shown at step (d) were confirmed for destruction (checked in `yk_import`).
         let overwrite = !wizard.adopt
             && wizard.overwrite_ack
-            && wizard.overwrite_typed.trim() == manage::LOSS_WORD;
+            && wizard.overwrite_typed.trim() == manage::text::LOSS_WORD.get(lang);
         let job = YkJob::Enrol {
             serial,
             slots: wizard.slots.clone(),
@@ -1058,7 +1141,9 @@ impl App {
             YkPurpose::NewPassword => {
                 let password = next();
                 self.close_secret();
-                self.set_screen(Screen::Processing("새 복구 단어를 만드는 중…"));
+                self.set_screen(Screen::Processing(
+                    text::GENERATING.get(self.settings.language),
+                ));
                 self.key(KeyJob::YubiKey(YkJob::Generate { password }));
             }
             YkPurpose::Backup => {
@@ -1120,8 +1205,9 @@ impl App {
             YkPurpose::ManagementKey => {
                 let text = next();
                 let Some(key) = Self::yk_key_bytes(&text) else {
+                    let error = text::MANAGEMENT_KEY_FORMAT.get(self.settings.language);
                     self.with_form(|form| {
-                        form.set_error(Some("관리 키는 16진수 48자리입니다.".to_owned()));
+                        form.set_error(Some(error.to_owned()));
                     });
                     return;
                 };
@@ -1326,7 +1412,7 @@ impl App {
         if self.secret_purpose() != Some(Purpose::YubiKey(purpose)) {
             return;
         }
-        let lines = counters.lines(Self::yk_counter_kinds(purpose));
+        let lines = counters.lines(self.settings.language, Self::yk_counter_kinds(purpose));
         if !lines.is_empty() {
             self.with_form(|form| form.set_details(lines));
         }
@@ -1409,6 +1495,7 @@ impl App {
     /// card's management key state and the keys already in the planned slots are read next
     /// (read-only).
     fn on_yk_identified(&mut self, result: Result<crate::yubikey::CardFacts, CardJobError>) {
+        let lang = self.settings.language;
         let Some(wizard) = self.card.wizard.as_mut() else {
             return;
         };
@@ -1435,7 +1522,7 @@ impl App {
             }
             Err(error) => {
                 wizard.card = None;
-                wizard.card_error = Some(error.to_string());
+                wizard.card_error = Some(error.text_in(lang));
             }
         }
         self.refresh();
@@ -1447,6 +1534,7 @@ impl App {
         serial: u32,
         result: Result<Vec<yw_core::yubikey::enrol::Occupant>, CardJobError>,
     ) {
+        let lang = self.settings.language;
         let Some(wizard) = self.card.wizard.as_mut() else {
             return;
         };
@@ -1458,7 +1546,7 @@ impl App {
         if let Err(error) = &result {
             crate::logging::info("app", "yubikey.occupied_failed", &error.log_fields());
         }
-        wizard.occupied = Some(result.map_err(|error| error.to_string()));
+        wizard.occupied = Some(result.map_err(|error| error.text_in(lang)));
         self.refresh();
     }
 
@@ -1538,13 +1626,15 @@ impl App {
                     wizard.defaults.piv_management_protected = true;
                 }
                 self.yk_note(
-                    "PIV 관리 키를 새로 만들어 PIN으로 보호했습니다. 관리 키는 입력할 필요가 없습니다(다음 등록에는 PIV PIN만 묻습니다)."
+                    text::MANAGEMENT_PROTECTED
+                        .get(self.settings.language)
                         .to_owned(),
                 );
                 self.yk_defaults_done(serial);
             }
             Err(error) => {
                 let text = error.text_for_in(
+                    self.settings.language,
                     PinKind::PivPin,
                     &crate::yubikey::PinContext::of(&self.card.records, serial, PinKind::PivPin),
                 );
@@ -1569,6 +1659,7 @@ impl App {
 
         use crate::yubikey::DefaultsStep;
         use yw_core::yubikey::CardError;
+        let lang = self.settings.language;
         // The guards of the last tries refuse before anything is sent: the consents of this
         // card stay (and the refused one is added). Any other result used or did not need them.
         let guarded = matches!(
@@ -1591,25 +1682,27 @@ impl App {
                     self.yk_note_last_try(serial, CardJobError::Card(error));
                 }
                 let records = &self.card.records;
-                let text = report
+                let reason = report
                     .failed
                     .map(|(step, error)| {
                         step.kind().error_text_in(
+                            lang,
                             error,
                             &crate::yubikey::PinContext::of(records, serial, step.kind()),
                         )
                     })
                     .unwrap_or_default();
+                let error = text::NOTHING_CHANGED.fill(lang, [&reason]);
                 self.with_form(|form| {
                     form.set_busy(false);
-                    form.set_error(Some(format!("바꾼 것 없음. {text}")));
+                    form.set_error(Some(error));
                 });
                 return;
             }
             Err(error) => {
                 self.with_form(|form| {
                     form.set_busy(false);
-                    form.set_error(Some(error.to_string()));
+                    form.set_error(Some(error.text_in(lang)));
                 });
                 return;
             }
@@ -1618,26 +1711,32 @@ impl App {
         let names = |steps: &[DefaultsStep]| {
             steps
                 .iter()
-                .map(|step| step.name())
+                .map(|step| step.name(lang))
                 .collect::<Vec<_>>()
                 .join(", ")
         };
-        let mut text = format!("바꾼 것: {}.", names(&report.done));
+        let mut note = text::PINS_CHANGED.fill(lang, [&names(&report.done)]);
         if !report.skipped.is_empty() {
-            let _ = write!(text, " 건너뜀: {}.", names(&report.skipped));
+            let _ = write!(
+                note,
+                " {}",
+                text::PINS_SKIPPED.fill(lang, [&names(&report.skipped)])
+            );
         }
         if let Some((step, error)) = report.failed {
+            let reason = step.kind().error_text_in(
+                lang,
+                error,
+                &crate::yubikey::PinContext::of(&self.card.records, serial, step.kind()),
+            );
             let _ = write!(
-                text,
-                " 실패: {} — {} 그 뒤 항목은 바꾸지 않았습니다.",
-                step.name(),
-                step.kind().error_text_in(
-                    error,
-                    &crate::yubikey::PinContext::of(&self.card.records, serial, step.kind())
-                )
+                note,
+                " {}",
+                text::PINS_FAILED.fill(lang, [step.name(lang), &reason])
             );
         } else {
-            text.push_str(" 새 PIN은 이 지갑에 저장하지 않으니 따로 기억해 두세요.");
+            note.push(' ');
+            note.push_str(text::PINS_REMEMBER.get(lang));
         }
         let has = |step| report.done.contains(&step) || report.skipped.contains(&step);
         if let Some(wizard) = self.card.wizard.as_mut() {
@@ -1660,7 +1759,7 @@ impl App {
                 wizard.pins_set = true;
             }
         }
-        self.yk_note(text);
+        self.yk_note(note);
         if report.failed.is_none() {
             self.card.pin_needed = self.card.pin_needed.filter(|other| *other != serial);
             self.card
@@ -1723,16 +1822,18 @@ impl App {
                 }
             }
             YkOutcome::Words(Err(error)) => {
-                self.banner(None, failure_text(error));
+                self.banner(None, failure_text(self.settings.language, error));
                 self.set_screen(Screen::YubiKeyWalletIntro);
             }
             YkOutcome::Challenge(Ok(positions)) => {
                 if self.secret_purpose() == Some(Purpose::YubiKey(YkPurpose::Backup)) {
+                    let retry = crate::ui::screens::backup_retry_text(
+                        self.settings.language,
+                        positions,
+                        false,
+                    );
                     self.with_form(|form| {
-                        form.reset_backup(
-                            positions,
-                            Some(crate::ui::screens::backup_retry_text(positions, false)),
-                        );
+                        form.reset_backup(positions, Some(retry));
                     });
                 } else {
                     self.open_input(
@@ -1744,7 +1845,7 @@ impl App {
             }
             YkOutcome::Challenge(Err(error)) | YkOutcome::WordsConfirmed(Err(error)) => {
                 self.close_secret();
-                self.banner(None, failure_text(error));
+                self.banner(None, failure_text(self.settings.language, error));
                 self.refresh();
             }
             YkOutcome::WordsConfirmed(Ok(true)) => {
@@ -1770,7 +1871,7 @@ impl App {
             YkOutcome::PinsSet(serial, result) => self.on_yk_pins_set(serial, result),
             YkOutcome::Removed(Ok(_)) => {
                 self.close_secret();
-                self.info = Some("YubiKey 기록을 지웠습니다.".to_owned());
+                self.info = Some(text::RECORD_REMOVED.get(self.settings.language).to_owned());
                 self.key(KeyJob::HardwareKeys);
                 self.request_meta();
                 self.refresh();
@@ -1780,9 +1881,10 @@ impl App {
             }
             YkOutcome::RemoveBusy(_) => {
                 // W03 shows why; nothing was removed.
+                let busy = text::YK_BUSY.get(self.settings.language);
                 self.with_form(|form| {
                     form.set_busy(false);
-                    form.set_error(Some(T_YK_BUSY.to_owned()));
+                    form.set_error(Some(busy.to_owned()));
                 });
                 self.refresh();
             }
@@ -1803,6 +1905,7 @@ impl App {
     }
 
     fn on_yk_preview(&mut self, result: Result<YkPreview, YubiKeyJobError>) {
+        let lang = self.settings.language;
         match result {
             Ok(preview) => {
                 if let Some(wizard) = self.card.wizard.as_mut() {
@@ -1817,9 +1920,9 @@ impl App {
                 let code = crate::errors::key_code(error);
                 let message = match error {
                     yw_core::error::KeyError::MnemonicUnknownWord { position } => {
-                        code.render(&position.to_string())
+                        code.render_in(self.settings.language, &position.to_string())
                     }
-                    _ => code.text(),
+                    _ => code.text_in(self.settings.language),
                 };
                 self.open_input(
                     SecretKind::Mnemonic,
@@ -1832,7 +1935,7 @@ impl App {
             Err(error) => {
                 if let Some(wizard) = self.card.wizard.as_mut() {
                     wizard.step = WizardStep::Plan;
-                    wizard.error = Some(failure_text(error));
+                    wizard.error = Some(failure_text(lang, error));
                 }
                 self.refresh();
             }
@@ -1841,6 +1944,7 @@ impl App {
 
     /// The wizard's part of `on_yubikey_enrolled`.
     pub(crate) fn yk_enrolled(&mut self, result: &Result<(RecordId, Enrolled), YubiKeyJobError>) {
+        let lang = self.settings.language;
         let created = match (result, self.card.wizard.as_ref()) {
             (Ok(_), Some(wizard)) => wizard.origin == WizardOrigin::NewWallet && !wizard.created,
             _ => false,
@@ -1921,9 +2025,9 @@ impl App {
             }
             Err(error) => {
                 wizard.failure = Some(if wizard.adopt {
-                    failure_text(*error)
+                    failure_text(lang, *error)
                 } else {
-                    enrol_failure_text(*error, wizard.applets().0)
+                    enrol_failure_text(lang, *error, wizard.applets().0)
                 });
                 wizard.enrolled = None;
             }
@@ -1942,18 +2046,21 @@ impl App {
             .iter()
             .find(|record| record.serial == serial)
             .cloned();
+        let lang = self.settings.language;
         let lines = match (result, record) {
             (Ok(results), Some(record)) => record
                 .slots
                 .iter()
                 .zip(results)
                 .map(|(slot, result)| match result {
-                    Ok(()) => format!("{} — 공개키가 기록과 같습니다 ✓", slot.slot.label()),
-                    Err(error) => format!("{} — {error}", slot.slot.label()),
+                    Ok(()) => text::CHECK_OK.fill(lang, [&slot.slot.label_in(lang)]),
+                    Err(error) => {
+                        format!("{} — {}", slot.slot.label_in(lang), error.text_in(lang))
+                    }
                 })
                 .collect(),
-            (Ok(_), None) => vec!["이 YubiKey의 기록을 찾지 못했습니다.".to_owned()],
-            (Err(error), _) => vec![format!("확인하지 못했습니다: {error}")],
+            (Ok(_), None) => vec![text::CHECK_NO_RECORD.get(lang).to_owned()],
+            (Err(error), _) => vec![text::CHECK_ERROR.fill(lang, [&error.text_in(lang)])],
         };
         if let Some(wizard) = self.card.wizard.as_mut() {
             wizard.check = Some(lines);
@@ -1987,13 +2094,15 @@ impl App {
                         wizard.defaults.piv_pin = false;
                     }
                 }
-                self.yk_note(format!("{}을(를) 바꿨습니다.", target.name()));
+                let lang = self.settings.language;
+                self.yk_note(text::PIN_CHANGED.fill(lang, [target.name(lang)]));
                 self.yk_defaults_done(serial);
             }
             Err(error) => {
                 // A wrong value's text names the secret and carries the tries left (one left:
                 // "한 번 더 틀리면 잠깁니다", spec/10 §9.1).
                 let text = error.text_for_in(
+                    self.settings.language,
                     target.kind(),
                     &crate::yubikey::PinContext::of(&self.card.records, serial, target.kind()),
                 );
@@ -2196,6 +2305,7 @@ impl App {
                     .iter()
                     .find(|record| record.has_known_path())
                     .map(|record| record.serial);
+                let lang = self.settings.language;
                 if let Some(wizard) = self.yk_wizard() {
                     if wizard.backup_of.is_some() {
                         wizard.backup_of = None;
@@ -2204,7 +2314,7 @@ impl App {
                         wizard.backup_of = first;
                         wizard.error = None;
                     } else {
-                        wizard.error = Some(T_YK_BACKUP_UNKNOWN.to_owned());
+                        wizard.error = Some(text::YK_BACKUP_UNKNOWN.get(lang).to_owned());
                     }
                 }
                 self.refresh();

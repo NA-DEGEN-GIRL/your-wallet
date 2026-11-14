@@ -836,7 +836,7 @@ fn end_to_end_testnet4_core() {
         reject_reason: None,
     };
     assert_eq!(
-        check_mempool_accept(&answer, &local),
+        check_mempool_accept(Lang::Ko, &answer, &local),
         PrecheckOutcome::Accepted
     );
     set_state(
@@ -856,7 +856,7 @@ fn end_to_end_testnet4_core() {
     assert_eq!(fixture.meta.change_next(), 2);
     // sendrawtransaction → Submitted.
     assert_eq!(
-        broadcast_outcome(&SendRawResult::Txid(local.txid), &local.txid),
+        broadcast_outcome(Lang::Ko, &SendRawResult::Txid(local.txid), &local.txid),
         BroadcastOutcome::Submitted
     );
     set_state(
@@ -1093,7 +1093,7 @@ fn evm_shared_addresses_match_vectors() {
             assert!(key.address(NET, BtcChain::Receive, 1).is_err());
             assert!(key.address(NET, BtcChain::Change, 0).is_err());
             assert_eq!(
-                key.path_text(NET, BtcChain::Receive, 0),
+                key.path_text_in(Lang::Ko, NET, BtcChain::Receive, 0),
                 format!("m/44'/60'/0'/0/{evm_index}")
             );
         }
@@ -1366,7 +1366,7 @@ fn yubikey_single_address_send_every_type() {
             assert!(!account.is_imported() && !account.is_evm_shared());
             assert!(
                 account
-                    .path_text(NET, BtcChain::Receive, 0)
+                    .path_text_in(Lang::Ko, NET, BtcChain::Receive, 0)
                     .ends_with("(YubiKey)")
             );
             assert_eq!(account.input_weight(), script_type.card_input_weight());

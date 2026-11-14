@@ -150,30 +150,40 @@ pub enum PlanError {
     ChangeIndexExhausted,
 }
 
+impl PlanError {
+    /// The fixed text in `lang` (`Display` is the Korean one).
+    #[must_use]
+    pub fn text_in(self, lang: crate::lang::Lang) -> String {
+        use super::text as t;
+        let fixed = match self {
+            Self::DustAmount { threshold } => {
+                return t::PLAN_DUST.fill(lang, [&format_sats_grouped(threshold.get())]);
+            }
+            Self::InsufficientFunds { available, needed } => {
+                return t::PLAN_INSUFFICIENT.fill(
+                    lang,
+                    [
+                        &format_sats_grouped(needed.get()),
+                        &format_sats_grouped(available.get()),
+                    ],
+                );
+            }
+            Self::InFlight => t::IN_FLIGHT,
+            Self::InputInFlight => t::INPUT_IN_FLIGHT,
+            Self::NotBumpable => t::NOT_BUMPABLE,
+            Self::Key(_) => t::DERIVATION_FAILED,
+            Self::Overflow => t::PLAN_OVERFLOW,
+            Self::AbandonedNotConflicted => t::ABANDONED_NOT_CONFLICTED,
+            Self::TipImplausible => t::TIP_IMPLAUSIBLE,
+            Self::ChangeIndexExhausted => t::CHANGE_INDEX_EXHAUSTED,
+        };
+        fixed.get(lang).to_owned()
+    }
+}
+
 impl fmt::Display for PlanError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use super::policy::texts;
-        match self {
-            Self::DustAmount { threshold } => write!(
-                formatter,
-                "받는 금액이 최소값({} sats) 미만입니다",
-                format_sats_grouped(threshold.get())
-            ),
-            Self::InsufficientFunds { available, needed } => write!(
-                formatter,
-                "잔액이 부족합니다(필요 {} sats, 사용 가능 {} sats)",
-                format_sats_grouped(needed.get()),
-                format_sats_grouped(available.get())
-            ),
-            Self::InFlight => formatter.write_str(texts::IN_FLIGHT),
-            Self::InputInFlight => formatter.write_str(texts::INPUT_IN_FLIGHT),
-            Self::NotBumpable => formatter.write_str(texts::NOT_BUMPABLE),
-            Self::Key(_) => formatter.write_str(texts::DERIVATION_FAILED),
-            Self::Overflow => formatter.write_str(texts::PLAN_OVERFLOW),
-            Self::AbandonedNotConflicted => formatter.write_str(texts::ABANDONED_NOT_CONFLICTED),
-            Self::TipImplausible => formatter.write_str(texts::TIP_IMPLAUSIBLE),
-            Self::ChangeIndexExhausted => formatter.write_str(texts::CHANGE_INDEX_EXHAUSTED),
-        }
+        formatter.write_str(&self.text_in(crate::lang::Lang::Ko))
     }
 }
 

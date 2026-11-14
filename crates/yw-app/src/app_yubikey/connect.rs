@@ -12,6 +12,7 @@
 //! wizard's result screen ("PIN 설정" and "다시 확인" as after an enrolment).
 
 use yw_core::btc::{BtcNetwork, ScriptType};
+use yw_core::lang::Lang;
 use yw_core::secret::Zeroizing;
 use yw_core::yubikey::connect::{CardScan, KeyUse, connect_record};
 use yw_core::yubikey::plan::{CardSlot, Curve, MAX_CARDS};
@@ -26,10 +27,32 @@ use crate::ui::secret::{CardSecretKind, SecretKind};
 use crate::workers::key::yubikey::YkJob;
 use crate::yubikey::CardJobError;
 
-/// T-YK-UNKNOWN-PATH: the note of every address of a connected key (spec/10 §7.6).
-pub const T_YK_UNKNOWN_PATH: &str = "경로를 알 수 없음 — 이 키는 카드에서 가져왔습니다. 같은 주소가 맞는지 이전에 쓰던 지갑과 비교하세요.";
-/// T-YK-CONNECT: what the flow does (S01 card, settings, the scan screen).
-pub const T_YK_CONNECT: &str = "이미 키가 들어 있는 YubiKey를 복구 단어 없이 연결합니다. PIN 없이 읽을 수 있는 공개키만 읽고(카드에 아무것도 쓰지 않음) 각 키가 무엇인지 고르면 그 주소를 보여 드립니다. 서명은 지금처럼 YubiKey에서 PIN과 터치로 합니다.";
+/// Fixed texts of "`YubiKey` 연결하기 (복구 단어 없이)" (spec/10 §7.6; English spec/14).
+pub mod text {
+    yw_core::texts! {
+        /// T-YK-UNKNOWN-PATH: the note of every address of a connected key (spec/10 §7.6).
+        YK_UNKNOWN_PATH = "경로를 알 수 없음 — 이 키는 카드에서 가져왔습니다. 같은 주소가 맞는지 이전에 쓰던 지갑과 비교하세요."
+            / "Path unknown — this key was taken from the card. Compare with the wallet you used before that the address is the same.";
+        /// T-YK-CONNECT: what the flow does (S01 card, settings, the scan screen).
+        YK_CONNECT = "이미 키가 들어 있는 YubiKey를 복구 단어 없이 연결합니다. PIN 없이 읽을 수 있는 공개키만 읽고(카드에 아무것도 쓰지 않음) 각 키가 무엇인지 고르면 그 주소를 보여 드립니다. 서명은 지금처럼 YubiKey에서 PIN과 터치로 합니다."
+            / "Connects a YubiKey that already holds keys, without recovery words. Only the public keys readable without a PIN are read (nothing is written to the card); choose what each key is and its address is shown. Signing happens on the YubiKey with the PIN and a touch, as before.";
+        CHOICE_SKIP = "연결하지 않음" / "Do not connect";
+        CHOICE_EVM = "EVM 계정" / "EVM account";
+        CHOICE_ZEC = "Zcash 일반 주소" / "Zcash transparent address";
+        CHOICE_SOL = "Solana 계정" / "Solana account";
+        ALREADY_ENROLLED = "이 YubiKey는 이미 이 지갑에 등록되어 있습니다. 다시 연결하려면 설정 → YubiKey에서 그 기록을 먼저 지우세요."
+            / "This YubiKey is already enrolled in this wallet. To connect it again, first remove its record in Settings → YubiKey.";
+        NO_CHOICE = "연결할 키를 하나 이상 고르세요." / "Choose at least one key to connect.";
+        FACTORY_PIN = "공장 기본값(123456·12345678)으로는 확인하지 않습니다. 이 YubiKey가 아직 기본 PIN이면 연결한 뒤 'PIN 설정'으로 바꾸세요."
+            / "Factory defaults (123456 or 12345678) are not checked. If this YubiKey still has its default PIN, change it with 'Set PIN' after connecting.";
+        PIN_OK = "PIN이 맞습니다 — 이 YubiKey의 PIN을 알고 있습니다. (PIN은 저장하지 않았습니다)"
+            / "The PIN is correct — you know this YubiKey's PIN. (The PIN was not stored)";
+    }
+}
+
+/// T-YK-UNKNOWN-PATH, Korean (tests).
+#[cfg(test)]
+pub const T_YK_UNKNOWN_PATH: &str = text::YK_UNKNOWN_PATH.ko;
 
 /// What the user says a found key is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,13 +84,15 @@ pub const ED_CHOICES: [Choice; 2] = [Choice::Sol, Choice::Skip];
 impl Choice {
     /// Radio label.
     #[must_use]
-    pub fn label(self) -> String {
+    pub fn label(self, lang: Lang) -> String {
         match self {
-            Self::Skip => "연결하지 않음".to_owned(),
-            Self::Evm => "EVM 계정".to_owned(),
-            Self::Btc(script) => format!("Bitcoin {} ({})", script.name(), script.technical()),
-            Self::Zec => "Zcash 일반 주소".to_owned(),
-            Self::Sol => "Solana 계정".to_owned(),
+            Self::Skip => text::CHOICE_SKIP.get(lang).to_owned(),
+            Self::Evm => text::CHOICE_EVM.get(lang).to_owned(),
+            Self::Btc(script) => {
+                format!("Bitcoin {} ({})", script.name_in(lang), script.technical())
+            }
+            Self::Zec => text::CHOICE_ZEC.get(lang).to_owned(),
+            Self::Sol => text::CHOICE_SOL.get(lang).to_owned(),
         }
     }
 
@@ -215,6 +240,7 @@ impl App {
         result: Result<yw_core::yubikey::connect::CardScan, CardJobError>,
     ) {
         let records = self.card.records.clone();
+        let lang = self.settings.language;
         let Some(form) = self.yk_connect_form() else {
             return;
         };
@@ -229,13 +255,10 @@ impl App {
                 form.error = records
                     .iter()
                     .any(|record| record.serial == scan.serial)
-                    .then(|| {
-                        "이 YubiKey는 이미 이 지갑에 등록되어 있습니다. 다시 연결하려면 설정 → YubiKey에서 그 기록을 먼저 지우세요."
-                            .to_owned()
-                    });
+                    .then(|| text::ALREADY_ENROLLED.get(lang).to_owned());
                 form.scan = Some(scan);
             }
-            Err(error) => form.scan_error = Some(error.to_string()),
+            Err(error) => form.scan_error = Some(error.text_in(lang)),
         }
         self.refresh();
     }
@@ -255,6 +278,7 @@ impl App {
     pub fn yk_connect_next(&mut self) {
         let (btc, zec) = self.yk_connect_networks();
         let records = self.card.records.clone();
+        let lang = self.settings.language;
         let Some(wizard) = self.card.wizard.as_mut() else {
             return;
         };
@@ -266,7 +290,7 @@ impl App {
         };
         let uses = form.uses(btc, zec);
         if uses.is_empty() {
-            form.error = Some("연결할 키를 하나 이상 고르세요.".to_owned());
+            form.error = Some(text::NO_CHOICE.get(lang).to_owned());
             self.refresh();
             return;
         }
@@ -277,7 +301,7 @@ impl App {
                 form.pin_note = None;
                 wizard.step = WizardStep::Confirm;
             }
-            Err(error) => form.error = Some(error.to_string()),
+            Err(error) => form.error = Some(error.text_in(lang)),
         }
         self.refresh();
     }
@@ -336,11 +360,14 @@ impl App {
             piv_pin: scan.piv_pin_retries,
             puk: None,
         };
-        counters.lines(&[if piv {
-            crate::yubikey::PinKind::PivPin
-        } else {
-            crate::yubikey::PinKind::OpenPgpUser
-        }])
+        counters.lines(
+            self.settings.language,
+            &[if piv {
+                crate::yubikey::PinKind::PivPin
+            } else {
+                crate::yubikey::PinKind::OpenPgpUser
+            }],
+        )
     }
 
     /// W12 of the PIN check submitted.
@@ -366,11 +393,9 @@ impl App {
         };
         let serial = record.serial;
         if yw_core::yubikey::is_factory_secret(&pin) {
+            let error = text::FACTORY_PIN.get(self.settings.language);
             self.with_form(|form| {
-                form.set_error(Some(
-                    "공장 기본값(123456·12345678)으로는 확인하지 않습니다. 이 YubiKey가 아직 기본 PIN이면 연결한 뒤 'PIN 설정'으로 바꾸세요."
-                        .to_owned(),
-                ));
+                form.set_error(Some(error.to_owned()));
             });
             return;
         }
@@ -400,15 +425,12 @@ impl App {
         if let Some(form) = self.yk_connect_form() {
             form.busy = false;
         }
+        let lang = self.settings.language;
         match result {
             Ok(()) => {
                 self.close_secret();
                 if let Some(form) = self.yk_connect_form() {
-                    form.pin_note = Some((
-                        true,
-                        "PIN이 맞습니다 — 이 YubiKey의 PIN을 알고 있습니다. (PIN은 저장하지 않았습니다)"
-                            .to_owned(),
-                    ));
+                    form.pin_note = Some((true, text::PIN_OK.get(lang).to_owned()));
                 }
             }
             Err(error) => {
@@ -419,7 +441,7 @@ impl App {
                             | yw_core::yubikey::CardError::WrongPin { retries: 0 }
                     )
                 );
-                let text = error.text_for(kind);
+                let text = error.text_for(lang, kind);
                 if retry {
                     self.with_form(|form| {
                         form.set_busy(false);

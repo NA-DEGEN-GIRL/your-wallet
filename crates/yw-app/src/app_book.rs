@@ -17,6 +17,7 @@
 
 use yw_core::btc::BtcNetwork;
 use yw_core::evm::address::{Address, AddressError, parse_address};
+use yw_core::lang::Lang;
 use yw_core::sol::SolAddress;
 
 use crate::app::{App, Confirm, Screen};
@@ -28,9 +29,24 @@ use crate::ui::screens_book::ids;
 /// Favorite chips shown above a recipient field.
 pub const FAVORITE_CHIPS: usize = 5;
 
-/// Under a W-ADDR-3 note whose recipient is itself an unverified book entry: how the user who
-/// checked the entry out of band stops the warning (spec/04 §2.15 row 6).
-pub const T_BOOK_VERIFY_HINT: &str = "이 주소록 항목을 다른 경로(전화·대면 등)로 확인했다면 주소록 → 편집에서 확인 표시를 하세요. 확인한 항목으로 보낼 때는 이 경고가 나오지 않습니다.";
+/// Address-book texts (spec/04 §2.10, §2.15; English spec/14 §5).
+pub mod text {
+    yw_core::texts! {
+        /// Under a W-ADDR-3 note whose recipient is itself an unverified book entry: how the
+        /// user who checked the entry out of band stops the warning (spec/04 §2.15 row 6).
+        BOOK_VERIFY_HINT = "이 주소록 항목을 다른 경로(전화·대면 등)로 확인했다면 주소록 → 편집에서 확인 표시를 하세요. 확인한 항목으로 보낼 때는 이 경고가 나오지 않습니다."
+            / "If you checked this address-book entry another way (phone, in person, …), mark it verified in Address book → Edit. Sending to a verified entry shows no such warning.";
+        /// The look-alike note of a new entry (`{0}` = one of the `WHOM_*` texts).
+        LOOK_ALIKE(1) = "{0} 앞·끝 글자가 같지만 다른 주소입니다. 주소 오염 공격일 수 있으니 주소 전체를 확인한 뒤 저장하세요."
+            / "Same first and last characters as {0}, but a different address. It may be an address-poisoning attack; check the whole address before saving.";
+        WHOM_BOOK(1) = "주소록의 '{0}'과" / "'{0}' in your address book";
+        WHOM_OWN(1) = "내 계정 '{0}'과" / "your account '{0}'";
+        WHOM_SENT(1) = "보낸 내역에 있는 주소({0})와" / "an address in your sent history ({0})";
+        ACK_FIRST = "주소 전체를 확인했으면 체크한 뒤 저장하세요."
+            / "If you checked the whole address, tick the box, then save.";
+        BOOK_FULL = "주소록은 최대 500개입니다." / "The address book holds at most 500 entries.";
+    }
+}
 
 /// The address family a send form takes (and the Bitcoin network that filters its entries).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -129,22 +145,22 @@ pub struct BookUi {
     pub saved: Option<(BookChain, String)>,
 }
 
-/// The canonical form of an address typed for `chain`, or the error text.
+/// The canonical form of an address typed for `chain`, or the error code.
 ///
 /// # Errors
 ///
 /// E-INP-009 (format) or E-INP-010 (EVM checksum).
-pub fn canonical(chain: BookChain, text: &str) -> Result<String, String> {
+pub fn canonical(chain: BookChain, text: &str) -> Result<String, ErrorCode> {
     let text = text.trim();
     match chain {
         BookChain::Evm => match parse_address(text) {
             Ok(address) => Ok(address.to_lower_hex()),
-            Err(AddressError::BadChecksum) => Err(ErrorCode::Inp010.text()),
-            Err(_) => Err(ErrorCode::Inp009.text()),
+            Err(AddressError::BadChecksum) => Err(ErrorCode::Inp010),
+            Err(_) => Err(ErrorCode::Inp009),
         },
         BookChain::Sol => SolAddress::parse_input(text)
             .map(SolAddress::to_base58)
-            .map_err(|_| ErrorCode::Inp009.text()),
+            .map_err(|_| ErrorCode::Inp009),
         BookChain::Btc => BtcNetwork::ALL
             .iter()
             .find_map(|net| {
@@ -152,7 +168,7 @@ pub fn canonical(chain: BookChain, text: &str) -> Result<String, String> {
                     .ok()
                     .map(|kind| yw_core::btc::address::encode_address(&kind, *net))
             })
-            .ok_or_else(|| ErrorCode::Inp009.text()),
+            .ok_or(ErrorCode::Inp009),
     }
 }
 
@@ -213,15 +229,13 @@ pub enum Resembles {
 
 /// The W-ADDR-3-style note of a new entry that looks like a known address (spec/04 §2.10).
 #[must_use]
-pub fn look_alike_note(known: &Resembles) -> String {
+pub fn look_alike_note(lang: Lang, known: &Resembles) -> String {
     let whom = match known {
-        Resembles::Book(label) => format!("주소록의 '{label}'과"),
-        Resembles::Own(label) => format!("내 계정 '{label}'과"),
-        Resembles::Sent(address) => format!("보낸 내역에 있는 주소({address})와"),
+        Resembles::Book(label) => text::WHOM_BOOK.fill(lang, [label]),
+        Resembles::Own(label) => text::WHOM_OWN.fill(lang, [label]),
+        Resembles::Sent(address) => text::WHOM_SENT.fill(lang, [address]),
     };
-    format!(
-        "{whom} 앞·끝 글자가 같지만 다른 주소입니다. 주소 오염 공격일 수 있으니 주소 전체를 확인한 뒤 저장하세요."
-    )
+    text::LOOK_ALIKE.fill(lang, [&whom])
 }
 
 fn now_unix_ms() -> u64 {
@@ -301,7 +315,7 @@ impl App {
                 }
             }
         };
-        Some(look_alike_note(&resembles))
+        Some(look_alike_note(self.settings.language, &resembles))
     }
 
     /// The send form of `target` shows a W-ADDR-3 note for its recipient (`＋ 이 주소를 주소록에
@@ -492,6 +506,7 @@ impl App {
     }
 
     fn save_prompt(&mut self) {
+        let lang = self.settings.language;
         let label = self
             .controls
             .text(ids::PROMPT_LABEL_EDIT, 512)
@@ -502,12 +517,12 @@ impl App {
         prompt.label.clone_from(&label);
         let label = label.trim().to_owned();
         if !is_valid_label(&label) {
-            prompt.message = Some(ErrorCode::Inp017.text());
+            prompt.message = Some(ErrorCode::Inp017.text_in(lang));
             self.refresh();
             return;
         }
         if prompt.look_alike.is_some() && !prompt.ack {
-            prompt.message = Some("주소 전체를 확인했으면 체크한 뒤 저장하세요.".to_owned());
+            prompt.message = Some(text::ACK_FIRST.get(lang).to_owned());
             self.refresh();
             return;
         }
@@ -535,7 +550,7 @@ impl App {
             }
             Err(error) => {
                 if let Some(prompt) = self.book.prompt.as_mut() {
-                    prompt.message = Some(list_error_text(error));
+                    prompt.message = Some(list_error_text(lang, error));
                 }
             }
         }
@@ -554,8 +569,8 @@ impl App {
             Some(address) => address.clone(),
             None => match canonical(form.chain, &form.address) {
                 Ok(address) => address,
-                Err(message) => {
-                    self.book.form.message = Some(message);
+                Err(code) => {
+                    self.book.form.message = Some(code.text_in(self.settings.language));
                     self.refresh();
                     return;
                 }
@@ -563,7 +578,7 @@ impl App {
         };
         let label = form.label.trim().to_owned();
         if !is_valid_label(&label) {
-            self.book.form.message = Some(ErrorCode::Inp017.text());
+            self.book.form.message = Some(ErrorCode::Inp017.text_in(self.settings.language));
             self.refresh();
             return;
         }
@@ -577,7 +592,7 @@ impl App {
         };
         if form.editing.is_none() {
             if meta.contact(form.chain, &address).is_some() {
-                self.book.form.message = Some(ErrorCode::Inp016.text());
+                self.book.form.message = Some(ErrorCode::Inp016.text_in(self.settings.language));
                 self.refresh();
                 return;
             }
@@ -618,7 +633,9 @@ impl App {
                 self.controls.clear_text(ids::LABEL_EDIT);
                 self.save_meta();
             }
-            Err(error) => self.book.form.message = Some(list_error_text(error)),
+            Err(error) => {
+                self.book.form.message = Some(list_error_text(self.settings.language, error));
+            }
         }
         self.refresh();
     }
@@ -869,10 +886,10 @@ impl App {
     }
 }
 
-fn list_error_text(error: ListError) -> String {
+fn list_error_text(lang: Lang, error: ListError) -> String {
     match error {
-        ListError::Duplicate => ErrorCode::Inp016.text(),
-        ListError::Full => "주소록은 최대 500개입니다.".to_owned(),
+        ListError::Duplicate => ErrorCode::Inp016.text_in(lang),
+        ListError::Full => text::BOOK_FULL.get(lang).to_owned(),
     }
 }
 

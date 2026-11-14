@@ -30,6 +30,8 @@
 
 use core::fmt;
 
+use crate::lang::Lang;
+
 pub mod apdu;
 pub mod connect;
 pub mod enrol;
@@ -41,6 +43,7 @@ pub mod plan;
 pub mod record;
 pub mod sig;
 pub mod sign;
+pub mod text;
 pub mod tlv;
 
 #[cfg(test)]
@@ -270,94 +273,54 @@ impl CardError {
     }
 }
 
-impl fmt::Display for CardError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Transport(TransportFault::NoService) => {
-                formatter.write_str("스마트 카드 서비스가 실행 중이 아닙니다.")
-            }
-            Self::Transport(TransportFault::NoReader | TransportFault::NoCard) => {
-                formatter.write_str("YubiKey를 찾을 수 없습니다. 연결한 뒤 다시 시도하세요.")
-            }
-            Self::Transport(TransportFault::Busy) => formatter.write_str(
-                "다른 프로그램이 YubiKey를 쓰고 있습니다. 그 프로그램을 닫고 다시 시도하세요.",
-            ),
-            Self::Transport(TransportFault::Io) | Self::CardRemoved => {
-                formatter.write_str("YubiKey와 통신하지 못했습니다. 다시 연결하고 시도하세요.")
-            }
-            Self::AppletMissing => {
-                formatter.write_str("이 장치에는 필요한 기능(OpenPGP 또는 PIV)이 없습니다.")
-            }
-            Self::WrongPin { retries: 1 } => formatter
-                .write_str("PIN이 틀렸습니다. 남은 시도 1회 — 한 번 더 틀리면 잠깁니다."),
+impl CardError {
+    /// The user-facing text in `lang` (spec/10, spec/14 `yw_core::yubikey::text`). `Display` is
+    /// the Korean text.
+    #[must_use]
+    pub fn text_in(self, lang: Lang) -> String {
+        let text = match self {
+            Self::Transport(TransportFault::NoService) => text::ERR_NO_SERVICE,
+            Self::Transport(TransportFault::NoReader | TransportFault::NoCard) => text::ERR_NO_CARD,
+            Self::Transport(TransportFault::Busy) => text::ERR_BUSY,
+            Self::Transport(TransportFault::Io) | Self::CardRemoved => text::ERR_IO,
+            Self::AppletMissing => text::ERR_APPLET_MISSING,
+            Self::WrongPin { retries: 1 } => text::ERR_WRONG_PIN_LAST,
             Self::WrongPin {
                 retries: retries @ 2..,
-            } => {
-                write!(formatter, "PIN이 틀렸습니다. 남은 시도 {retries}회.")
-            }
-            Self::AdminLastTry => formatter.write_str(
-                "OpenPGP 관리자 PIN 시도가 1회 남았습니다. 한 번 더 틀리면 잠깁니다(잠기면 'YubiKey의 키 지우기'의 OpenPGP 애플릿 초기화 뒤 다시 등록해야 합니다). 정확한 관리자 PIN이 확실하면 다시 입력해 제출하세요 — 그때는 마지막 시도로 카드에 보냅니다.",
-            ),
-            Self::MultipleCards => formatter.write_str(
-                "YubiKey가 둘 이상 연결되어 있습니다. YubiKey를 하나만 연결하세요.",
-            ),
-            Self::DefaultPin => formatter.write_str(
-                "공장 기본값(123456·12345678)은 새 PIN으로 쓸 수 없습니다 — YubiKey를 가진 사람이 그 값으로 바로 서명할 수 있습니다. 다른 값을 고르세요.",
-            ),
-            Self::NotBlocked => formatter.write_str(
-                "애플릿 초기화를 멈췄습니다: PIN이 카드가 알려 준 횟수 안에 잠기지 않았습니다. 키는 지우지 않았습니다(PIN 남은 시도는 줄었을 수 있습니다). YubiKey를 다시 연결하고 한 번 더 시도하세요.",
-            ),
-            Self::PukLastTry => formatter.write_str(
-                "PIV PUK 시도가 1회 남았습니다. 한 번 더 틀리면 PUK가 잠기고, 그 뒤 PIV PIN까지 잠기면 PIV 초기화밖에 방법이 없습니다(복구 단어 없이 연결한 Solana 키는 그때 영구히 사라집니다). 정확한 PUK가 확실하면 다시 입력해 제출하세요 — 그때는 마지막 시도로 카드에 보냅니다.",
-            ),
-            Self::WrongPin { retries: 0 } | Self::PinBlocked => formatter.write_str(
-                "PIN이 잠겼습니다. PUK(또는 관리자 PIN)로 풀거나 복구 단어로 다시 등록하세요.",
-            ),
-            Self::SecurityStatus | Self::Conditions => formatter.write_str(
-                "YubiKey가 작업을 거부했습니다. PIN 확인과 터치(시간 안에)를 다시 시도하세요.",
-            ),
-            Self::FirmwareTooOld | Self::NotSupported => {
-                formatter.write_str("이 YubiKey 펌웨어는 이 기능을 지원하지 않습니다.")
-            }
-            Self::KdfEnabled => formatter
-                .write_str("OpenPGP PIN KDF가 켜진 YubiKey는 지원하지 않습니다(spec/10 §11)."),
-            Self::KeyMismatch => formatter
-                .write_str("YubiKey의 공개키가 기록과 다릅니다. 등록한 YubiKey인지 확인하세요."),
-            Self::ForeignKey => formatter.write_str(
-                "이 슬롯에는 지갑이 기록한 키가 아닌 다른 키가 있습니다. 다른 프로그램(GPG 등)이 넣은 키일 수 있어 이 애플릿에서는 아무것도 지우거나 덮어쓰지 않았습니다. 그 키가 필요 없다는 것이 확실하면 그 프로그램으로 지우거나 'YubiKey의 키 지우기'의 애플릿 초기화를 쓰세요.",
-            ),
-            Self::WrongCard => formatter
-                .write_str("이 YubiKey에는 이 계정의 키가 없습니다. 등록한 YubiKey를 연결하세요."),
-            Self::BadSignature => formatter.write_str("서명 검증 실패(YubiKey 응답 오류)"),
-            Self::PinFormat => formatter.write_str("PIN 길이가 맞지 않습니다."),
-            Self::Ed25519ImportRefused => formatter.write_str(
-                "이 YubiKey 펌웨어(5.7.0–5.7.3)는 Ed25519 키 가져오기를 거부했습니다. Yubico는 5.7.4부터 지원한다고 안내합니다. Solana 슬롯 없이 등록하거나 5.7.4 이상의 YubiKey를 쓰세요.",
-            ),
-            Self::ManagementKeyMismatch => formatter.write_str("PIV 관리 키가 맞지 않습니다."),
-            Self::ManagementKeyProtected => formatter.write_str(
-                "이 YubiKey의 PIV 관리 키는 PIN으로 보호되어 있습니다. PIV PIN을 입력해 다시 시도하세요.",
-            ),
-            Self::ManagementKeyUnknown => formatter.write_str(
-                "PIV 관리 키가 기본값도 PIN 보호도 아닙니다. 이 지갑의 'PIV 관리 키 자동 보호'가 중간에 멈췄다면 PIV PIN으로 그 작업을 다시 실행하면 복구됩니다. 직접 정한 키라면 'ykman piv access change-management-key --generate --protect'로 PIN 보호로 바꾼 뒤 다시 시도하세요.",
-            ),
+            } => return text::ERR_WRONG_PIN.fill(lang, [&retries.to_string()]),
+            Self::AdminLastTry => text::ERR_ADMIN_LAST_TRY,
+            Self::MultipleCards => text::ERR_MULTIPLE_CARDS,
+            Self::DefaultPin => text::ERR_DEFAULT_PIN,
+            Self::NotBlocked => text::ERR_NOT_BLOCKED,
+            Self::PukLastTry => text::ERR_PUK_LAST_TRY,
+            Self::WrongPin { retries: 0 } | Self::PinBlocked => text::ERR_PIN_BLOCKED,
+            Self::SecurityStatus | Self::Conditions => text::ERR_REFUSED,
+            Self::FirmwareTooOld | Self::NotSupported => text::ERR_NOT_SUPPORTED,
+            Self::KdfEnabled => text::ERR_KDF,
+            Self::KeyMismatch => text::ERR_KEY_MISMATCH,
+            Self::ForeignKey => text::ERR_FOREIGN_KEY,
+            Self::WrongCard => text::ERR_WRONG_CARD,
+            Self::BadSignature => text::ERR_BAD_SIGNATURE,
+            Self::PinFormat => text::ERR_PIN_FORMAT,
+            Self::Ed25519ImportRefused => text::ERR_ED25519_IMPORT,
+            Self::ManagementKeyMismatch => text::ERR_MGMT_MISMATCH,
+            Self::ManagementKeyProtected => text::ERR_MGMT_PROTECTED,
+            Self::ManagementKeyUnknown => text::ERR_MGMT_UNKNOWN,
             // The cause in brackets (2026-11-12: one sentence for all six hid it).
-            Self::Status(sw) => {
-                write!(formatter, "YubiKey 작업 중 오류가 발생했습니다 (SW {sw:04X}).")
-            }
-            Self::WrongData => {
-                formatter.write_str("YubiKey 작업 중 오류가 발생했습니다 (SW 6A80).")
-            }
-            Self::NotFound => formatter.write_str("YubiKey 작업 중 오류가 발생했습니다 (SW 6A88)."),
-            Self::Malformed => {
-                formatter.write_str("YubiKey 작업 중 오류가 발생했습니다 (응답 형식이 다름).")
-            }
-            Self::TooLarge => {
-                formatter.write_str("YubiKey 작업 중 오류가 발생했습니다 (명령이 너무 김).")
-            }
-            Self::Internal => {
-                formatter.write_str("YubiKey 작업 중 오류가 발생했습니다 (내부 오류).")
-            }
-        }
+            Self::Status(sw) => return text::ERR_STATUS.fill(lang, [&format!("{sw:04X}")]),
+            Self::WrongData => return text::ERR_STATUS.fill(lang, ["6A80"]),
+            Self::NotFound => return text::ERR_STATUS.fill(lang, ["6A88"]),
+            Self::Malformed => text::ERR_MALFORMED,
+            Self::TooLarge => text::ERR_TOO_LARGE,
+            Self::Internal => text::ERR_INTERNAL,
+        };
+        text.get(lang).to_owned()
+    }
+}
+
+impl fmt::Display for CardError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.text_in(Lang::Ko))
     }
 }
 

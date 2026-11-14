@@ -6,6 +6,7 @@ use yw_core::approval::Approved;
 use yw_core::journal::zec::{
     ZecJournalBlock, ZecRecord, ZecTransition, ZecTxState, apply, check_plan_allowed, push_record,
 };
+use yw_core::lang::Lang;
 use yw_core::vault::{FileKind, Vault};
 use yw_core::zec::{ZecAccount, ZecKeySource, ZecNetwork, ZecPlan, ZecSignError, ZecSignedTx};
 
@@ -95,17 +96,27 @@ pub enum ZecSignFailure {
     JournalWrite,
 }
 
+/// Fixed texts of the Zcash key-worker jobs (spec/12 §10, spec/14).
+pub mod text {
+    yw_core::texts! {
+        JOURNAL_WRITE = "거래 저널을 쓰지 못해 서명을 버렸습니다. 아무것도 보내지 않았습니다."
+            / "The transaction journal could not be written, so the signature was dropped. Nothing was sent.";
+        HARDWARE_KEY = "YubiKey 키는 등록된 슬롯에서 가져옵니다."
+            / "A YubiKey key is taken from its enrolled slot.";
+        IMPORTED_KEY = "가져온 키는 그 키의 목록에서 고릅니다."
+            / "An imported key is chosen from its list.";
+    }
+}
+
 impl ZecSignFailure {
-    /// The fixed Korean text.
+    /// The fixed text in `lang`.
     #[must_use]
-    pub fn text(&self) -> String {
+    pub fn text_in(&self, lang: Lang) -> String {
         match self {
-            Self::Blocked(block) => block.text().to_owned(),
-            Self::Sign(error) => error.to_string(),
-            Self::Card(error) => error.to_string(),
-            Self::JournalWrite => {
-                "거래 저널을 쓰지 못해 서명을 버렸습니다. 아무것도 보내지 않았습니다.".to_owned()
-            }
+            Self::Blocked(block) => block.text_in(lang).to_owned(),
+            Self::Sign(error) => error.text_in(lang),
+            Self::Card(error) => error.text_in(lang),
+            Self::JournalWrite => text::JOURNAL_WRITE.get(lang).to_owned(),
         }
     }
 }
@@ -142,8 +153,9 @@ impl ZecKeyOutcome {
     }
 }
 
-/// The public key of a vault source.
+/// The public key of a vault source (errors in `lang`).
 fn public_key(
+    lang: Lang,
     vault: &Vault,
     network: ZecNetwork,
     source: ZecKeySource,
@@ -151,7 +163,7 @@ fn public_key(
     let pubkey = match source {
         ZecKeySource::Derived { account, index } => vault
             .zec_public_key(network == ZecNetwork::Testnet, account, index)
-            .map_err(|error| error.to_string())?,
+            .map_err(|error| error.text_in(lang))?,
         // An added mnemonic's standard key (spec/02 §8.6).
         ZecKeySource::Mnemonic {
             mnemonic,
@@ -164,19 +176,19 @@ fn public_key(
                 account,
                 index,
             )
-            .map_err(|error| error.to_string())?,
+            .map_err(|error| error.text_in(lang))?,
         ZecKeySource::EvmShared { evm_index } => {
             let index = yw_core::bip32::path::AccountIndex::new(evm_index)
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| error.text_in(lang))?;
             vault
                 .evm_public_key(index)
-                .map_err(|error| error.to_string())?
+                .map_err(|error| error.text_in(lang))?
         }
         ZecKeySource::Hardware { .. } => {
-            return Err("YubiKey 키는 등록된 슬롯에서 가져옵니다.".to_owned());
+            return Err(text::HARDWARE_KEY.get(lang).to_owned());
         }
         ZecKeySource::Imported => {
-            return Err("가져온 키는 그 키의 목록에서 고릅니다.".to_owned());
+            return Err(text::IMPORTED_KEY.get(lang).to_owned());
         }
     };
     Ok(ZecAccount {
@@ -191,15 +203,16 @@ pub type ZecSigner<'a> =
     dyn FnMut(&Vault, Approved, &ZecPlan) -> Result<ZecSignedTx, ZecSignFailure> + 'a;
 
 impl JournalState {
-    /// [`ZecKeyJob::PublicKey`].
+    /// [`ZecKeyJob::PublicKey`] (errors in the journal's language).
     #[must_use]
     pub fn zec_public_key(
+        &self,
         vault: &Vault,
         network: ZecNetwork,
         source: ZecKeySource,
     ) -> Vec<KeyOutcome> {
         vec![KeyOutcome::Zec(Box::new(ZecKeyOutcome::PublicKey(
-            public_key(vault, network, source),
+            public_key(self.lang, vault, network, source),
         )))]
     }
 

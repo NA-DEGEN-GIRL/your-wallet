@@ -174,32 +174,35 @@ fn purposes_paths_and_codes() {
     );
     // Plain labels with the address prefix (spec/04 BTC 계정 추가).
     assert_eq!(
-        ScriptType::P2wpkh.label(BtcNetwork::Mainnet),
+        ScriptType::P2wpkh.label_in(Lang::Ko, BtcNetwork::Mainnet),
         "네이티브 세그윗 (bc1q…, 권장)"
     );
     assert_eq!(
-        ScriptType::P2tr.label(BtcNetwork::Mainnet),
+        ScriptType::P2tr.label_in(Lang::Ko, BtcNetwork::Mainnet),
         "탭루트 (bc1p…)"
     );
     assert_eq!(
-        ScriptType::P2shP2wpkh.label(BtcNetwork::Mainnet),
+        ScriptType::P2shP2wpkh.label_in(Lang::Ko, BtcNetwork::Mainnet),
         "호환 세그윗 (3…)"
     );
-    assert_eq!(ScriptType::P2pkh.label(BtcNetwork::Mainnet), "레거시 (1…)");
     assert_eq!(
-        ScriptType::P2wpkh.label(BtcNetwork::Testnet4),
+        ScriptType::P2pkh.label_in(Lang::Ko, BtcNetwork::Mainnet),
+        "레거시 (1…)"
+    );
+    assert_eq!(
+        ScriptType::P2wpkh.label_in(Lang::Ko, BtcNetwork::Testnet4),
         "네이티브 세그윗 (tb1q…, 권장)"
     );
     assert_eq!(
-        ScriptType::P2tr.label(BtcNetwork::Testnet4),
+        ScriptType::P2tr.label_in(Lang::Ko, BtcNetwork::Testnet4),
         "탭루트 (tb1p…)"
     );
     assert_eq!(
-        ScriptType::P2shP2wpkh.label(BtcNetwork::Testnet4),
+        ScriptType::P2shP2wpkh.label_in(Lang::Ko, BtcNetwork::Testnet4),
         "호환 세그윗 (2…)"
     );
     assert_eq!(
-        ScriptType::P2pkh.label(BtcNetwork::Testnet4),
+        ScriptType::P2pkh.label_in(Lang::Ko, BtcNetwork::Testnet4),
         "레거시 (m·n…)"
     );
 }
@@ -1552,10 +1555,10 @@ fn key_sources() {
         "m/49'/0'/4'/1/9"
     );
     assert_eq!(
-        account.path_text(BtcNetwork::Mainnet, BtcChain::Change, 9),
+        account.path_text_in(Lang::Ko, BtcNetwork::Mainnet, BtcChain::Change, 9),
         "m/49'/0'/4'/1/9"
     );
-    assert_eq!(account.display_name(), "호환 세그윗 계정 4");
+    assert_eq!(account.display_name_in(Lang::Ko), "호환 세그윗 계정 4");
     let ctx = secp_context(&mut OsRandom).unwrap();
     let public = PublicKey::from_secret_key(&ctx, &SecretKey::from_byte_array([4; 32]).unwrap());
     let single = BtcAccountKey::single(
@@ -1583,7 +1586,7 @@ fn key_sources() {
     assert!(single.kind(BtcChain::Receive, 1).is_err());
     assert!(single.kind(BtcChain::Change, 0).is_err());
     assert_eq!(single.change_path(7), (BtcChain::Receive, 0));
-    assert_eq!(single.display_name(), "가져온 키 · 레거시");
+    assert_eq!(single.display_name_in(Lang::Ko), "가져온 키 · 레거시");
     assert_eq!(BtcAccountId::PRIMARY.activity_tag(), "");
     assert_eq!(account.id().activity_tag(), "p2sh-p2wpkh/4");
     assert_eq!(
@@ -1718,11 +1721,14 @@ fn btc_mapped_names_match_the_korean_originals() {
         TYPE_P2WSH, fee_source_text, network_banner, network_name, script_name, type_label,
     };
     use crate::lang::has_hangul;
-    assert_eq!(NETWORK_MAINNET.ko, BtcNetwork::Mainnet.display_name());
-    assert_eq!(BANNER_TESTNET4.ko, BtcNetwork::Testnet4.banner());
+    assert_eq!(
+        NETWORK_MAINNET.ko,
+        BtcNetwork::Mainnet.display_name_in(Lang::Ko)
+    );
+    assert_eq!(BANNER_TESTNET4.ko, BtcNetwork::Testnet4.banner_in(Lang::Ko));
     for net in BtcNetwork::ALL {
-        assert_eq!(network_name(Lang::Ko, net), net.display_name());
-        assert_eq!(network_banner(Lang::Ko, net), net.banner());
+        assert_eq!(network_name(Lang::Ko, net), net.display_name_in(Lang::Ko));
+        assert_eq!(network_banner(Lang::Ko, net), net.banner_in(Lang::Ko));
         assert!(!has_hangul(network_name(Lang::En, net)));
         assert!(!has_hangul(network_banner(Lang::En, net)));
     }
@@ -1732,17 +1738,20 @@ fn btc_mapped_names_match_the_korean_originals() {
         (ScriptType::P2wpkh, SCRIPT_P2WPKH),
         (ScriptType::P2tr, SCRIPT_P2TR),
     ] {
-        assert_eq!(text.ko, script_type.name());
-        assert_eq!(script_name(Lang::Ko, script_type), script_type.name());
+        assert_eq!(text.ko, script_type.name_in(Lang::Ko));
+        assert_eq!(
+            script_name(Lang::Ko, script_type),
+            script_type.name_in(Lang::Ko)
+        );
         assert_eq!(script_name(Lang::En, script_type), text.en);
     }
     for kind in recipients() {
-        assert_eq!(type_label(Lang::Ko, &kind), kind.type_label());
+        assert_eq!(type_label(Lang::Ko, &kind), kind.type_label_in(Lang::Ko));
         assert!(!has_hangul(type_label(Lang::En, &kind)));
     }
-    assert_eq!(TYPE_P2PKH.ko, recipients()[0].type_label());
-    assert_eq!(TYPE_P2SH.ko, recipients()[1].type_label());
-    assert_eq!(TYPE_P2WSH.ko, recipients()[3].type_label());
+    assert_eq!(TYPE_P2PKH.ko, recipients()[0].type_label_in(Lang::Ko));
+    assert_eq!(TYPE_P2SH.ko, recipients()[1].type_label_in(Lang::Ko));
+    assert_eq!(TYPE_P2WSH.ko, recipients()[3].type_label_in(Lang::Ko));
     let speeds = [FEE_SPEED_FAST, FEE_SPEED_NORMAL, FEE_SPEED_SLOW];
     for source in [
         FeeSource::Estimate { target: 2 },
@@ -1766,8 +1775,8 @@ fn btc_mapped_names_match_the_korean_originals() {
             FeeSource::Manual => FEE_SOURCE_MANUAL.ko.to_owned(),
             FeeSource::Floor => FEE_SOURCE_FLOOR.ko.to_owned(),
         };
-        assert_eq!(rebuilt, source.text());
-        assert_eq!(fee_source_text(Lang::Ko, source), source.text());
+        assert_eq!(rebuilt, source.text_in(Lang::Ko));
+        assert_eq!(fee_source_text(Lang::Ko, source), source.text_in(Lang::Ko));
         assert!(!has_hangul(&fee_source_text(Lang::En, source)));
     }
     assert_eq!(
@@ -1830,16 +1839,12 @@ fn btc_english_send_display_has_no_hangul() {
             BtcAccountKey::hardware(HwBtcKey::Address(900), ScriptType::P2pkh, compressed).unwrap(),
         ),
     ];
+    // 2026-11-14 (Step 3): the Korean side is the same catalogue now (no separate original).
     for (net, account) in accounts {
-        assert_eq!(account_name(Lang::Ko, &account), account.display_name());
+        assert!(has_hangul(&account_name(Lang::Ko, &account)));
         assert!(!has_hangul(&account_name(Lang::En, &account)));
-        assert_eq!(node_text(Lang::Ko, &account, net), account.node_text(net));
         assert!(!has_hangul(&node_text(Lang::En, &account, net)));
         for chain in [BtcChain::Receive, BtcChain::Change] {
-            assert_eq!(
-                path_text(Lang::Ko, &account, net, chain, 0),
-                account.path_text(net, chain, 0)
-            );
             assert!(!has_hangul(&path_text(Lang::En, &account, net, chain, 0)));
         }
         let meta = funded_meta(net, account);
@@ -1883,5 +1888,243 @@ fn btc_english_send_display_has_no_hangul() {
                 assert_eq!(en.payload, ko.payload);
             }
         }
+    }
+}
+
+/// The Korean text is the `Display` text and has Hangul; the English text has none.
+fn check_bilingual(ko: &str, en: &str, display: &str) {
+    assert_eq!(ko, display);
+    assert!(crate::lang::has_hangul(ko), "{ko}");
+    assert!(!crate::lang::has_hangul(en), "{en}");
+}
+
+/// spec/14 (Step 3): every btc error and fixed text has an English text without Hangul, and
+/// its Korean text is the `Display` text (byte-identical to the Korean literals before).
+#[test]
+fn btc_error_texts_are_bilingual() {
+    use super::account::AccountKeyError;
+    use super::address::AddressError;
+    use super::amount::AmountError;
+    use super::fee::FeeError;
+    use super::meta::MetaError;
+    use super::msgsign::BtcMessageError;
+
+    for error in [
+        AccountKeyError::PublicKey,
+        AccountKeyError::UncompressedNotP2pkh,
+        AccountKeyError::Account,
+        AccountKeyError::HardwareTaproot,
+    ] {
+        check_bilingual(
+            error.text_in(Lang::Ko),
+            error.text_in(Lang::En),
+            &error.to_string(),
+        );
+    }
+    for error in [
+        AddressError::Empty,
+        AddressError::MixedCase,
+        AddressError::Bech32Checksum,
+        AddressError::InvalidPadding,
+        AddressError::UnknownVersion,
+        AddressError::PayToAnchor,
+        AddressError::InvalidTaprootKey,
+        AddressError::UnsupportedWitnessVersion,
+        AddressError::SilentPayment,
+        AddressError::Lightning,
+        AddressError::UriNotSupported,
+        AddressError::LooksLikePrivateKey,
+        AddressError::NotBitcoinAddress,
+    ] {
+        check_bilingual(
+            error.text_in(Lang::Ko, BtcNetwork::Mainnet),
+            error.text_in(Lang::En, BtcNetwork::Testnet4),
+            &error.to_string(),
+        );
+    }
+    assert_eq!(
+        AddressError::WrongNetwork.text_in(Lang::En, BtcNetwork::Testnet4),
+        "Address of another network (wallet: TESTNET4)"
+    );
+    for error in [AmountError::InvalidFormat, AmountError::AboveMaxMoney] {
+        check_bilingual(
+            error.text_in(Lang::Ko),
+            error.text_in(Lang::En),
+            &error.to_string(),
+        );
+    }
+    for error in [
+        FeeError::NoEstimate,
+        FeeError::ManualBelowFloor {
+            floor: FeeRate::from_sat_per_kvb(1_000),
+        },
+        FeeError::Overflow,
+    ] {
+        check_bilingual(
+            &error.text_in(Lang::Ko),
+            &error.text_in(Lang::En),
+            &error.to_string(),
+        );
+    }
+    for error in [
+        MetaError::NetworkMismatch,
+        MetaError::GapWarning { unused: 20 },
+        MetaError::GapHardLimit,
+        MetaError::IndexExhausted,
+        MetaError::OutOfRange,
+        MetaError::TipImplausible,
+        MetaError::NotVerified,
+        MetaError::Full,
+        MetaError::DiscoveryIncomplete,
+        MetaError::SingleAddress,
+    ] {
+        check_bilingual(
+            error.text_in(Lang::Ko),
+            error.text_in(Lang::En),
+            &error.to_string(),
+        );
+    }
+    for error in [BtcMessageError::KindMismatch, BtcMessageError::Signing] {
+        check_bilingual(
+            error.text_in(Lang::Ko),
+            error.text_in(Lang::En),
+            &error.to_string(),
+        );
+    }
+}
+
+/// spec/14 (Step 3): the plan, sign, journal and RPC texts of btc in both languages.
+#[test]
+fn btc_plan_and_rpc_texts_are_bilingual() {
+    use super::prevtx::PrevTxError;
+    use super::select::PlanError;
+    use super::sign::SignError;
+    use super::verify::PostSignError;
+    use crate::journal::btc::{BtcPushError, BtcRecordError, TransitionError};
+    for error in [
+        PrevTxError::TooLarge,
+        PrevTxError::TxidMismatch,
+        PrevTxError::VoutOutOfRange,
+        PrevTxError::ScriptMismatch,
+        PrevTxError::ZeroValue,
+    ] {
+        check_bilingual(
+            error.text_in(Lang::Ko),
+            error.text_in(Lang::En),
+            &error.to_string(),
+        );
+    }
+    for error in [
+        PlanError::DustAmount {
+            threshold: Sats::new(546).unwrap(),
+        },
+        PlanError::InsufficientFunds {
+            available: Sats::new(1_000).unwrap(),
+            needed: Sats::new(2_000_000).unwrap(),
+        },
+        PlanError::InFlight,
+        PlanError::InputInFlight,
+        PlanError::NotBumpable,
+        PlanError::Overflow,
+        PlanError::AbandonedNotConflicted,
+        PlanError::TipImplausible,
+        PlanError::ChangeIndexExhausted,
+    ] {
+        check_bilingual(
+            &error.text_in(Lang::Ko),
+            &error.text_in(Lang::En),
+            &error.to_string(),
+        );
+    }
+    assert_eq!(
+        PlanError::InsufficientFunds {
+            available: Sats::new(1_000).unwrap(),
+            needed: Sats::new(2_000_000).unwrap(),
+        }
+        .text_in(Lang::En),
+        "Insufficient balance (needed 2,000,000 sats, available 1,000 sats)"
+    );
+    for error in [
+        SignError::ApprovalMismatch,
+        SignError::KeyMismatch { input: 0 },
+        SignError::AmountRecordMismatch,
+        SignError::InputNotRecorded,
+        SignError::Derivation,
+    ] {
+        check_bilingual(
+            &error.text_in(Lang::Ko),
+            &error.text_in(Lang::En),
+            &error.to_string(),
+        );
+    }
+    check_bilingual(
+        PostSignError::Vsize.text_in(Lang::Ko),
+        PostSignError::Vsize.text_in(Lang::En),
+        &PostSignError::Vsize.to_string(),
+    );
+    check_bilingual(
+        BtcRecordError::Raw.text_in(Lang::Ko),
+        BtcRecordError::Raw.text_in(Lang::En),
+        &BtcRecordError::Raw.to_string(),
+    );
+    for error in [
+        TransitionError::UnknownTx,
+        TransitionError::Encode(BtcRecordError::Raw),
+    ] {
+        check_bilingual(
+            error.text_in(Lang::Ko),
+            error.text_in(Lang::En),
+            &error.to_string(),
+        );
+    }
+    for error in [BtcPushError::Full, BtcPushError::Duplicate] {
+        check_bilingual(
+            error.text_in(Lang::Ko),
+            error.text_in(Lang::En),
+            &error.to_string(),
+        );
+    }
+}
+
+/// spec/14 (Step 3): the reject-reason, RPC, confirmation and address-type choice texts.
+#[test]
+fn btc_rpc_and_choice_texts_are_bilingual() {
+    use super::policy::{REJECT_TOKENS, reject_reason_text, rpc_error_text, texts};
+    use crate::lang::has_hangul;
+    for token in REJECT_TOKENS.iter().copied().chain(["something else"]) {
+        assert!(!has_hangul(reject_reason_text(Lang::En, token)));
+    }
+    assert_eq!(rpc_error_text(Lang::En, -8), "RPC error (code -8)");
+    for text in [
+        texts::ABANDON_CONFIRM,
+        texts::CANCEL_DISCLOSED_CONFIRM,
+        texts::REJECTED_DISCLOSED,
+    ] {
+        assert!(!has_hangul(text.en));
+    }
+    for script_type in ScriptType::CHOICES {
+        for net in BtcNetwork::ALL {
+            assert!(!has_hangul(&script_type.label_in(Lang::En, net)));
+        }
+    }
+    assert_eq!(
+        ScriptType::P2wpkh.label_in(Lang::En, BtcNetwork::Mainnet),
+        "Native SegWit (bc1q…, recommended)"
+    );
+}
+
+/// The journal catalogue keeps the catalogue invariants (placeholders, Hangul-free English).
+#[test]
+fn btc_journal_catalogue_entries_are_well_formed() {
+    use crate::approval::{MAX_DISPLAY_VALUE_BYTES, is_valid_display_text};
+    use crate::lang::{has_hangul, placeholders};
+    for entry in crate::journal::btc::text::ALL {
+        assert!(placeholders(entry.ko).is_empty() && placeholders(entry.en).is_empty());
+        assert!(!has_hangul(entry.en), "{}", entry.name);
+        assert!(is_valid_display_text(
+            entry.en,
+            MAX_DISPLAY_VALUE_BYTES,
+            true
+        ));
     }
 }

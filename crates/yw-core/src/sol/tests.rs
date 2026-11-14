@@ -10,7 +10,7 @@ use super::address::{COMPUTE_BUDGET_PROGRAM, SYSTEM_PROGRAM, SolAddress, SolClus
 use super::broadcast::err;
 use super::display::{
     L01, L02, L03, L06, L07, L08, SimSummary, SolBlock, SolPreviewFacts,
-    build_sol_transfer_request, intent_flags, transfer_title,
+    build_sol_transfer_request, intent_flags, transfer_title_in,
 };
 use super::fee::{FeeError, SOL_TRANSFER_CU_LIMIT, max_fee};
 use super::intent::{SolTransferIntent, flags};
@@ -1051,7 +1051,7 @@ fn journal_transitions_activity_and_room() {
         assert!(!apply(&mut copy, &transition), "only Pending moves");
         let record = SolEntries::from_plain(&copy).records().remove(0);
         assert_eq!(record.state, state);
-        let row = activity_row(&record, 9_999).unwrap();
+        let row = activity_row(crate::lang::Lang::Ko, &record, 9_999).unwrap();
         assert_eq!(row.status, status);
         assert_eq!(row.account, FROM);
         assert_eq!(row.counterparty, TO);
@@ -1060,14 +1060,14 @@ fn journal_transitions_activity_and_room() {
         assert_eq!(row.tx_id, pending.tx_id());
         assert_eq!(
             row.title,
-            transfer_title(SolCluster::Devnet, &template_core())
+            transfer_title_in(Lang::Ko, SolCluster::Devnet, &template_core())
         );
         assert_eq!(row.time_unix_ms, 9_999);
-        let rows = take_terminal(&mut copy, 9_999);
+        let rows = take_terminal(crate::lang::Lang::Ko, &mut copy, 9_999);
         assert_eq!(rows, vec![row]);
         assert!(copy.entries.is_empty());
     }
-    assert!(activity_row(&pending, 0).is_none());
+    assert!(activity_row(crate::lang::Lang::Ko, &pending, 0).is_none());
     // 64-record cap: terminal records make room oldest first; Pending ones never move.
     let mut full = JournalPlain::default();
     let mut terminal = pending.clone();
@@ -1079,7 +1079,7 @@ fn journal_transitions_activity_and_room() {
     }
     assert!(!has_room(&full));
     assert_eq!(push_record(&mut full, &pending), Err(JournalError::Full));
-    let rows = make_room(&mut full, 5).unwrap();
+    let rows = make_room(crate::lang::Lang::Ko, &mut full, 5).unwrap();
     assert_eq!(rows.len(), 1);
     assert!(has_room(&full));
     let mut all_pending = JournalPlain::default();
@@ -1087,7 +1087,10 @@ fn journal_transitions_activity_and_room() {
         all_pending.entries.push(sol_entry(&pending));
     }
     let before = all_pending.clone();
-    assert_eq!(make_room(&mut all_pending, 5), Err(JournalError::Full));
+    assert_eq!(
+        make_room(crate::lang::Lang::Ko, &mut all_pending, 5),
+        Err(JournalError::Full)
+    );
     assert_eq!(all_pending, before);
     // EVM entries are never removed for SOL room, and count toward the global bound.
     let mut crowded = JournalPlain::default();
@@ -1098,7 +1101,10 @@ fn journal_transitions_activity_and_room() {
         });
     }
     assert!(!has_room(&crowded));
-    assert_eq!(make_room(&mut crowded, 0), Err(JournalError::Full));
+    assert_eq!(
+        make_room(crate::lang::Lang::Ko, &mut crowded, 0),
+        Err(JournalError::Full)
+    );
     assert_eq!(crowded.entries.len(), 256);
 }
 
@@ -1264,7 +1270,10 @@ fn hardware_source_tag_and_vault_refusal() {
     assert!(SolKeySource::from_parts(7, 1_000, 0).is_err());
     assert!(hw.is_hardware() && !hw.is_standard() && !hw.is_imported());
     assert!(!hw.needs_move_rule());
-    assert_eq!(hw.path_text(), "m/44'/501'/3'/0' (YubiKey PIV)");
+    assert_eq!(
+        hw.path_text_in(crate::lang::Lang::Ko),
+        "m/44'/501'/3'/0' (YubiKey PIV)"
+    );
     let (_, vault, _) = sol_card();
     let hw0 = SolKeySource::Hardware(AccountIndex::ZERO);
     // The public key comes from the slot map (= the standard derivation of the same path).
@@ -1714,13 +1723,58 @@ fn english_transfer_display_has_no_korean() {
     };
     assert_eq!(rules(&korean), rules(&english));
     // The Korean texts of the shared reasons are unchanged.
-    assert_eq!(err::text(6), err::text_in(6, Lang::Ko));
+    assert_eq!(err::text_in(6, Lang::Ko), "계산 한도(CU)를 넘었습니다");
     assert_eq!(
         err::text_in(6, Lang::En),
         "The compute limit (CU) was exceeded"
     );
     assert_eq!(
-        SolBlock::Fee(FeeError::AboveCap).text(),
+        SolBlock::Fee(FeeError::AboveCap).text_in(Lang::Ko),
         "수수료가 설정한 상한을 넘습니다"
+    );
+}
+
+/// spec/14 (Step 3): the Solana error texts in English have no Hangul, the Korean `Display` is
+/// unchanged, and the SOL journal catalogue keeps the catalogue rules.
+#[test]
+fn english_error_texts_have_no_korean() {
+    use crate::lang::{Lang, has_hangul};
+    use crate::sol::dapp::{SolTxError, SolTxPayloadError, SolTxSignError};
+    assert_catalogue(crate::journal::sol::text::ALL);
+    assert_eq!(
+        SolTxError::Version(0x81).to_string(),
+        "사이트 거래 형식이 올바르지 않습니다: 지원하지 않는 메시지 버전(0x81)"
+    );
+    assert_eq!(
+        SolTxError::Version(0x81).text_in(Lang::En),
+        "The site transaction is malformed: unsupported message version (0x81)"
+    );
+    let texts = [
+        SolTxError::NotSigner.text_in(Lang::En),
+        SolTxPayloadError::Parse(SolTxError::Empty).text_in(Lang::En),
+        SolTxPayloadError::DurableNonce.text_in(Lang::En),
+        SolTxSignError::TablesChanged.text_in(Lang::En),
+        SolTxSignError::Vault(crate::error::VaultError::Malformed).text_in(Lang::En),
+        SolSignError::DeadlineExceeded.text_in(Lang::En),
+        SolSignError::PendingExists.text_in(Lang::En),
+        crate::sol::message::SolParseError::TooLarge
+            .text_in(Lang::En)
+            .to_owned(),
+        crate::sol::recipient::RecipientBlock::OffCurveOwner
+            .text_in(Lang::En)
+            .to_owned(),
+        crate::sol::rent::AmountError::Format
+            .text_in(Lang::En)
+            .to_owned(),
+        crate::journal::sol::SolRecordError::Identity
+            .text_in(Lang::En)
+            .to_owned(),
+    ];
+    for text in texts {
+        assert!(!text.is_empty() && !has_hangul(&text), "{text}");
+    }
+    assert_eq!(
+        SolSignError::DeadlineExceeded.to_string(),
+        "승인 후 서명 기한(20초)이 지났습니다. 다시 검토하세요."
     );
 }

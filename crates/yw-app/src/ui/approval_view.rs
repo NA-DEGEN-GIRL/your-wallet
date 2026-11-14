@@ -1216,7 +1216,7 @@ pub fn view(
             testnet,
             blocked: true,
             blocks: vec![Block::Warning {
-                text: failure.map_or_else(|| code.text(), str::to_owned),
+                text: failure.map_or_else(|| code.text_in(lang), str::to_owned),
                 tone: Tone::Danger,
             }],
             ..ApprovalView::default()

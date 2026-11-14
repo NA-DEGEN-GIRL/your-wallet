@@ -212,7 +212,7 @@ fn scenes(env: &'static str) -> Vec<String> {
         events
             .push(UiEvent::Rpc(RpcEvent::Test {
                 network: *network,
-                message: format!("연결 확인 {round}"),
+                message: super::text::PROBE_TEST.fill(super::tour_lang(), [&round.to_string()]),
                 ok: round % 2 == 0,
             }))
             .unwrap();

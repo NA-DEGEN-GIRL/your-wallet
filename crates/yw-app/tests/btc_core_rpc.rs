@@ -96,7 +96,10 @@ fn recorded_core_fixtures_parse() -> TestResult {
         txid("ac7570a8996b6cf9cdc579c0e8cef0ce87a93988f7158a03fd5f9a29cc5f028a")?
     );
     assert_eq!(
-        accept.reject_reason.as_deref().map(reject_reason_text),
+        accept
+            .reject_reason
+            .as_deref()
+            .map(|token| reject_reason_text(yw_core::lang::Lang::Ko, token)),
         Some("입력이 없거나 이미 사용되었습니다")
     );
 
@@ -437,7 +440,7 @@ fn testmempoolaccept_mismatch_rejects() -> TestResult {
     ))?;
     assert_eq!(params, "[[\"abababababababababab\"],0.00012000]");
     assert_eq!(
-        check_mempool_accept(&accept, &local),
+        check_mempool_accept(yw_core::lang::Lang::Ko, &accept, &local),
         PrecheckOutcome::Accepted
     );
     for body in [
@@ -448,7 +451,7 @@ fn testmempoolaccept_mismatch_rejects() -> TestResult {
     ] {
         let (accept, _) = run(body)?;
         assert_eq!(
-            check_mempool_accept(&accept, &local),
+            check_mempool_accept(yw_core::lang::Lang::Ko, &accept, &local),
             PrecheckOutcome::Rejected {
                 text: "노드 검사 결과가 로컬 계산과 다릅니다"
             }
@@ -514,7 +517,10 @@ fn testmempoolaccept_mismatch_rejects() -> TestResult {
         } else {
             PrecheckOutcome::Rejected { text }
         };
-        assert_eq!(check_mempool_accept(&accept, &local), expected);
+        assert_eq!(
+            check_mempool_accept(yw_core::lang::Lang::Ko, &accept, &local),
+            expected
+        );
         assert!(!format!("{accept:?}").contains(SERVER_STRING));
     }
     // An already-known answer about another transaction is a mismatch.
@@ -527,7 +533,7 @@ fn testmempoolaccept_mismatch_rejects() -> TestResult {
         "txn-already-in-mempool",
     ))?;
     assert_eq!(
-        check_mempool_accept(&accept, &local),
+        check_mempool_accept(yw_core::lang::Lang::Ko, &accept, &local),
         PrecheckOutcome::Rejected {
             text: "노드 검사 결과가 로컬 계산과 다릅니다"
         }
@@ -627,7 +633,7 @@ fn sendrawtransaction_outcomes() -> TestResult {
         assert_eq!(outcome, expected);
         // yw-core decides the state and whether it was a communication failure.
         let comm_failure = matches!(
-            broadcast_outcome(&outcome, &local),
+            broadcast_outcome(yw_core::lang::Lang::Ko, &outcome, &local),
             BroadcastOutcome::BroadcastUnknown {
                 comm_failure: true,
                 ..
@@ -734,7 +740,9 @@ fn server_strings_never_rendered() -> TestResult {
         accept
             .reject_reason
             .as_deref()
-            .map_or("", reject_reason_text)
+            .map_or("", |token| {
+                reject_reason_text(yw_core::lang::Lang::Ko, token)
+            })
             .to_owned(),
     );
     let tx = txid(REAL_TXID)?;
@@ -742,7 +750,7 @@ fn server_strings_never_rendered() -> TestResult {
     rendered.push(format!("{sent:?}"));
     let failure = get_raw_transaction(&client, &tx).err().ok_or("rpc error")?;
     rendered.push(format!("{failure:?}"));
-    rendered.push(classify(failure).text());
+    rendered.push(classify(failure).text_in(yw_core::lang::Lang::Ko));
     for text in &rendered {
         assert!(!text.contains(SERVER_STRING), "{text}");
         assert!(!text.contains("evil"), "{text}");

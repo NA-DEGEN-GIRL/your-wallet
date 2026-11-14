@@ -194,7 +194,7 @@ impl PrepareFailure {
         let cause = if code == ErrorCode::Key005 {
             NO_ENDPOINT.get(lang).to_owned()
         } else {
-            code.text()
+            code.text_in(lang)
         };
         Self::new(warning(lang, E35, Some(&cause)), code)
     }
@@ -216,10 +216,10 @@ impl PrepareFailure {
         Self::e35(lang, ErrorCode::Key005)
     }
 
-    /// The text shown in the approval window.
+    /// The text shown in the approval window (in its language).
     #[must_use]
-    pub fn message(&self) -> String {
-        format!("{}\n{}", self.warning.text, self.code.text())
+    pub fn message(&self, lang: Lang) -> String {
+        format!("{}\n{}", self.warning.text, self.code.text_in(lang))
     }
 
     /// The blocking rule.
@@ -522,7 +522,7 @@ fn gather_facts(
         }
     }
     for address in addresses.iter().take(address_slots) {
-        if chain.label(address).is_some() || facts.code_of(address).is_some() {
+        if chain.label_in(address, Lang::Ko).is_some() || facts.code_of(address).is_some() {
             continue;
         }
         if budget.over() {
@@ -931,7 +931,7 @@ fn finish(
     };
     let Ok(draft) = draft else {
         return PrepareOutcome::Failed(PrepareFailure::new(
-            warning(job.lang, E35, Some(&ErrorCode::Ui001.text())),
+            warning(job.lang, E35, Some(&ErrorCode::Ui001.text_in(job.lang))),
             ErrorCode::Ui001,
         ));
     };
@@ -1500,7 +1500,7 @@ pub fn typed_spender_unknown_unless_classified(
         .root
         .field("spender")
         .and_then(yw_core::evm::eip712::TdNode::address)
-        && chain.label(&spender).is_none()
+        && chain.label_in(&spender, Lang::Ko).is_none()
         && facts.code_of(&spender).is_none()
     {
         facts.code.push((spender, CodeKind::Unknown));
@@ -1576,7 +1576,7 @@ pub fn typed_facts(
         facts.tokens.push((*token, meta));
     }
     for address in addresses.iter().take(address_slots) {
-        if chain.info.label(address).is_some() || facts.code_of(address).is_some() {
+        if chain.info.label_in(address, Lang::Ko).is_some() || facts.code_of(address).is_some() {
             continue;
         }
         if over() {

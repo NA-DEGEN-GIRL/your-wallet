@@ -111,14 +111,23 @@ pub enum BtcMessageError {
     Signing,
 }
 
+impl BtcMessageError {
+    /// The fixed text in `lang` (`Display` is the Korean one).
+    #[must_use]
+    pub const fn text_in(self, lang: crate::lang::Lang) -> &'static str {
+        match self {
+            Self::KindMismatch | Self::Unsupported | Self::KeyMismatch => {
+                super::text::SIGN_INTERNAL
+            }
+            Self::Signing => super::text::MESSAGE_ERR_SIGNING,
+        }
+        .get(lang)
+    }
+}
+
 impl fmt::Display for BtcMessageError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            Self::KindMismatch | Self::Unsupported | Self::KeyMismatch => {
-                "내부 검증에 실패해 서명하지 않았습니다."
-            }
-            Self::Signing => "서명하지 못했습니다(내부 오류)",
-        })
+        formatter.write_str(self.text_in(crate::lang::Lang::Ko))
     }
 }
 

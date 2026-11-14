@@ -136,51 +136,56 @@ impl ZecKeySource {
         }
     }
 
-    /// The derivation path text on `network`.
+    /// The derivation path text on `network` in `lang`.
     #[must_use]
-    pub fn path_text(self, network: ZecNetwork) -> String {
+    pub fn path_text_in(self, lang: crate::lang::Lang, network: ZecNetwork) -> String {
+        use super::text as t;
         match self {
             Self::Hardware { index } if crate::yubikey::plan::is_unknown_index(index) => {
-                crate::yubikey::plan::T_UNKNOWN_PATH.to_owned()
+                t::PATH_UNKNOWN.get(lang).to_owned()
             }
             Self::Derived { account, index } | Self::Mnemonic { account, index, .. } => {
                 format!("m/44'/{}'/{account}'/0/{index}", network.coin_type())
             }
             Self::EvmShared { evm_index } => format!("m/44'/60'/0'/0/{evm_index}"),
             Self::Hardware { index } => format!("m/44'/{}'/0'/0/{index}", network.coin_type()),
-            Self::Imported => "가져온 개인키 (복구 단어 밖)".to_owned(),
+            Self::Imported => t::PATH_IMPORTED.get(lang).to_owned(),
         }
     }
 
-    /// Display name of the source.
+    /// Display name of the source in `lang`.
     #[must_use]
-    pub fn label(self) -> String {
+    pub fn label_in(self, lang: crate::lang::Lang) -> String {
+        use super::text as t;
         match self {
             Self::Derived {
                 account: 0,
                 index: 0,
-            } => "Zcash 표준 경로".to_owned(),
+            } => t::SOURCE_STANDARD.get(lang).to_owned(),
             Self::Derived { account, index } => {
-                format!("Zcash 경로 (계정 {account}, 주소 {index})")
+                t::SOURCE_PATH.fill(lang, [&account.to_string(), &index.to_string()])
             }
             // The app names the mnemonic by its label instead ("[니모닉 2] Zcash 표준 경로").
             Self::Mnemonic {
                 account: 0,
                 index: 0,
                 ..
-            } => "Zcash 표준 경로 (추가한 복구 단어)".to_owned(),
+            } => t::SOURCE_STANDARD_ADDED.get(lang).to_owned(),
             Self::Mnemonic { account, index, .. } => {
-                format!("Zcash 경로 (계정 {account}, 주소 {index}, 추가한 복구 단어)")
+                t::SOURCE_PATH_ADDED.fill(lang, [&account.to_string(), &index.to_string()])
             }
-            Self::EvmShared { evm_index } => format!("EVM 계정 {evm_index} 키"),
-            Self::Hardware { index } if crate::yubikey::plan::is_unknown_index(index) => format!(
-                "YubiKey (카드 키 {})",
-                index
-                    .saturating_sub(crate::yubikey::plan::UNKNOWN_PATH_FIRST)
-                    .saturating_add(1)
-            ),
-            Self::Hardware { index } => format!("YubiKey (주소 {index})"),
-            Self::Imported => "가져온 키".to_owned(),
+            Self::EvmShared { evm_index } => t::SOURCE_EVM.fill(lang, [&evm_index.to_string()]),
+            Self::Hardware { index } if crate::yubikey::plan::is_unknown_index(index) => {
+                t::SOURCE_YUBIKEY_CARD.fill(
+                    lang,
+                    [&index
+                        .saturating_sub(crate::yubikey::plan::UNKNOWN_PATH_FIRST)
+                        .saturating_add(1)
+                        .to_string()],
+                )
+            }
+            Self::Hardware { index } => t::SOURCE_YUBIKEY.fill(lang, [&index.to_string()]),
+            Self::Imported => t::SOURCE_IMPORTED.get(lang).to_owned(),
         }
     }
 }

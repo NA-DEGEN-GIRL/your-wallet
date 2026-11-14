@@ -746,7 +746,9 @@ fn accounts_are_stored_selected_and_imported_keys_need_their_record() -> TestRes
         .ok_or("nested account")?;
     assert!(!added.discovery_done());
     assert_eq!(
-        added.account().node_text(BtcNetwork::Testnet4),
+        added
+            .account()
+            .node_text_in(yw_core::lang::Lang::Ko, BtcNetwork::Testnet4),
         "m/49'/1'/0'"
     );
     assert_eq!(meta_on_disk(&fixture.vault)?, Some(primary.clone()));

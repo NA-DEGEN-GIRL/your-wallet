@@ -37,20 +37,35 @@ pub enum ZecRpcError {
     TooMany,
 }
 
+/// Fixed texts of the Zcash calls (spec/12 §4, spec/14).
+pub mod text {
+    yw_core::texts! {
+        WRONG_CHAIN = "RPC가 다른 네트워크를 가리킵니다 (Zcash genesis 또는 chain 불일치)."
+            / "The RPC points to another network (Zcash genesis or chain mismatch).";
+        NOT_SYNCED = "Zcash 노드가 동기화 중이거나 블록 높이가 올바르지 않습니다."
+            / "The Zcash node is syncing or its block height is invalid.";
+        MALFORMED = "Zcash 노드 응답 형식이 올바르지 않습니다."
+            / "The Zcash node's answer is malformed.";
+        NO_ADDRESS_INDEX = "이 Zcash 엔드포인트는 주소 조회(getaddressutxos)를 지원하지 않습니다. 설정에서 UTXO 원천을 Blockbook으로 바꾸세요."
+            / "This Zcash endpoint does not support address lookups (getaddressutxos). Switch the UTXO source to Blockbook in Settings.";
+        TOO_MANY = "UTXO가 너무 많아 일부만 표시합니다 (아주 작은 출력이 많아 응답 한도 4 MiB를 넘었습니다). 이미 알고 있던 출력만 표시하고 보낼 수 있습니다."
+            / "Too many UTXOs, so only some are shown (many tiny outputs pushed the answer over the 4 MiB limit). Only outputs already known are shown and can be sent.";
+    }
+}
+
 impl ZecRpcError {
-    /// The fixed Korean text.
+    /// The fixed text in `lang`.
     #[must_use]
-    pub fn text(self) -> String {
-        match self {
-            Self::Rpc(code) => code.text(),
-            Self::WrongChain => {
-                "RPC가 다른 네트워크를 가리킵니다 (Zcash genesis 또는 chain 불일치).".to_owned()
-            }
-            Self::NotSynced => "Zcash 노드가 동기화 중이거나 블록 높이가 올바르지 않습니다.".to_owned(),
-            Self::Malformed => "Zcash 노드 응답 형식이 올바르지 않습니다.".to_owned(),
-            Self::NoAddressIndex => "이 Zcash 엔드포인트는 주소 조회(getaddressutxos)를 지원하지 않습니다. 설정에서 UTXO 원천을 Blockbook으로 바꾸세요.".to_owned(),
-            Self::TooMany => "UTXO가 너무 많아 일부만 표시합니다 (아주 작은 출력이 많아 응답 한도 4 MiB를 넘었습니다). 이미 알고 있던 출력만 표시하고 보낼 수 있습니다.".to_owned(),
-        }
+    pub fn text_in(self, lang: yw_core::lang::Lang) -> String {
+        let text = match self {
+            Self::Rpc(code) => return code.text_in(lang),
+            Self::WrongChain => text::WRONG_CHAIN,
+            Self::NotSynced => text::NOT_SYNCED,
+            Self::Malformed => text::MALFORMED,
+            Self::NoAddressIndex => text::NO_ADDRESS_INDEX,
+            Self::TooMany => text::TOO_MANY,
+        };
+        text.get(lang).to_owned()
     }
 }
 

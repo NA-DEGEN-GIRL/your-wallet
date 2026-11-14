@@ -39,6 +39,8 @@ pub enum RpcJob {
         name: String,
         /// URL (secret).
         url: HttpsUrl,
+        /// The message's language (the app language when the test was started).
+        lang: yw_core::lang::Lang,
     },
     /// Forget a chain's verification (URL or definition changed, spec/04 §1.9).
     ResetChain {
@@ -236,6 +238,7 @@ pub fn run_test(
     network: NetworkId,
     name: &str,
     url: &HttpsUrl,
+    lang: yw_core::lang::Lang,
 ) -> RpcEvent {
     let client = RpcClient::new(transport);
     let outcome = test_endpoint(&client, network, url);
@@ -249,7 +252,7 @@ pub fn run_test(
     );
     RpcEvent::Test {
         network,
-        message: outcome.message(name),
+        message: outcome.message(lang, name),
         ok: matches!(outcome, TestOutcome::Ok(_)),
     }
 }
@@ -468,6 +471,7 @@ impl RpcWorker {
                 chain,
                 owner,
                 tokens,
+                lang,
             } => {
                 let net = Field::Net(NetworkId::Eip155(chain.info.chain_id));
                 let result = match self.ensure(transport, &chain, events) {
@@ -477,14 +481,19 @@ impl RpcWorker {
                         &owner,
                         &tokens,
                         &cursor,
+                        lang,
                     ),
-                    other => Err(other.code().unwrap_or(ErrorCode::App009).text()),
+                    other => Err(other.code().unwrap_or(ErrorCode::App009).text_in(lang)),
                 };
                 (net, result)
             }
-            JobKind::Sol { endpoint, owner } => (
+            JobKind::Sol {
+                endpoint,
+                owner,
+                lang,
+            } => (
                 Field::Net(sol_net(&endpoint)),
-                crate::received::sol::fetch(&**transport, &endpoint, &owner, &cursor),
+                crate::received::sol::fetch(&**transport, &endpoint, &owner, &cursor, lang),
             ),
             JobKind::Btc { target, work } => (
                 Field::Net(crate::btc::network_id(target.endpoint.net)),
@@ -570,8 +579,13 @@ impl RpcWorker {
                 let event = self.received(&transport, *job, events);
                 push(events, RpcEvent::Received(Box::new(event)));
             }
-            RpcJob::Test { network, name, url } => {
-                push(events, run_test(&*transport, network, &name, &url));
+            RpcJob::Test {
+                network,
+                name,
+                url,
+                lang,
+            } => {
+                push(events, run_test(&*transport, network, &name, &url, lang));
             }
             RpcJob::ResetChain { chain_id } => self.cache.reset(chain_id),
             RpcJob::TypedFacts {

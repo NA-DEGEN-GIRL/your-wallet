@@ -28,17 +28,25 @@ pub enum RecipientBlock {
     OffCurveOwner,
 }
 
+impl RecipientBlock {
+    /// The fixed text in `lang` (`Display` is the Korean one).
+    #[must_use]
+    pub const fn text_in(self, lang: crate::lang::Lang) -> &'static str {
+        use super::text as t;
+        match self {
+            Self::Format(_) => t::RECIPIENT_FORMAT,
+            Self::IsProgram => t::RECIPIENT_PROGRAM,
+            Self::Unspendable => t::RECIPIENT_UNSPENDABLE,
+            Self::SelfSend => t::RECIPIENT_SELF,
+            Self::OffCurveOwner => t::RECIPIENT_OFF_CURVE,
+        }
+        .get(lang)
+    }
+}
+
 impl fmt::Display for RecipientBlock {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            Self::Format(_) => "주소 형식이 올바르지 않습니다.",
-            Self::IsProgram => "받는 주소가 프로그램·시스템·토큰 mint 주소입니다. 보내면 잃습니다.",
-            Self::Unspendable => "받는 주소는 아무도 쓸 수 없는 주소입니다. 보내면 잃습니다.",
-            Self::SelfSend => "보내는 계정과 같은 주소로는 보낼 수 없습니다.",
-            Self::OffCurveOwner => {
-                "토큰은 일반 지갑 주소로만 보낼 수 있습니다. 이 주소는 프로그램 소유 주소(PDA)나 토큰 계정이라 받은 토큰을 옮길 수 없습니다."
-            }
-        })
+        formatter.write_str(self.text_in(crate::lang::Lang::Ko))
     }
 }
 

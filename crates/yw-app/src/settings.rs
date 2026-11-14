@@ -376,12 +376,33 @@ impl SettingsCompat {
     }
 }
 
-/// The E-APP-001 banner entry of a newer-version file (spec/04 §6.6).
+/// The fixed texts of the settings banners (spec/14).
+pub mod text {
+    yw_core::texts! {
+        /// The E-APP-001 banner entry of a newer-version file: {0} the file's version.
+        NEWER_VERSION(1) = "settings.json은 더 새로운 버전({0})의 앱이 쓴 파일입니다 — 읽기 전용으로 열었고 이번 실행의 설정 변경은 저장되지 않습니다. 앱을 최신 버전으로 업데이트하세요"
+            / "settings.json was written by a newer app version ({0}) — it was opened read-only and settings changes in this run are not saved. Update the app to the latest version";
+        /// The E-APP-001-style banner of a settings file changed outside the app.
+        SETTINGS_TAMPERED_TEXT = "설정 파일이 앱 밖에서 바뀌었습니다 — 확인하세요"
+            / "The settings file was changed outside the app — check it";
+        /// The banner when the AI explanation was on in `settings.json` without the user's
+        /// consent for that endpoint host in the snapshot.
+        LLM_FORCED_OFF_TEXT = "AI 설명 설정이 앱 밖에서 바뀌어(동의한 주소와 다름) AI 설명을 껐습니다. 아무것도 보내지 않습니다. 쓰려면 설정 → AI 설명에서 주소를 확인하고 다시 켜세요."
+            / "The AI explanation settings were changed outside the app (a different address than the one you agreed to), so AI explanation was turned off. Nothing is sent. To use it, check the address in Settings → AI explanation and turn it on again.";
+        /// The banner when a genesis pin was missing or changed in `settings.json`.
+        PIN_RESTORED_TEXT = "설정 파일의 체인 genesis 고정값이 앱 밖에서 지워지거나 바뀌어, 앱에 저장된 값으로 되돌렸습니다."
+            / "A chain genesis pin in the settings file was removed or changed outside the app, so it was restored to the value saved in the app.";
+    }
+}
+
+pub use text::{LLM_FORCED_OFF_TEXT, PIN_RESTORED_TEXT, SETTINGS_TAMPERED_TEXT};
+
+/// The E-APP-001 banner entry of a newer-version file (spec/04 §6.6). [`load`] builds it in
+/// Korean: the values of a newer file are not read (defaults for this run), so its `language` is
+/// not known — and the default language is Korean.
 #[must_use]
-pub fn newer_version_banner(version: u64) -> String {
-    format!(
-        "settings.json은 더 새로운 버전({version})의 앱이 쓴 파일입니다 — 읽기 전용으로 열었고 이번 실행의 설정 변경은 저장되지 않습니다. 앱을 최신 버전으로 업데이트하세요"
-    )
+pub fn newer_version_banner(lang: yw_core::lang::Lang, version: u64) -> String {
+    text::NEWER_VERSION.fill(lang, [&version.to_string()])
 }
 
 /// The whole settings file.
@@ -868,9 +889,10 @@ pub fn load(bytes: Option<&[u8]>) -> SettingsLoad {
         Some(newer) if newer > SETTINGS_VERSION => {
             // Read-only: defaults for this run, the newer file is kept byte for byte (§6.6).
             settings.compat.newer = Some((newer, bytes.to_vec()));
+            let banner = newer_version_banner(settings.language, newer);
             return SettingsLoad {
                 settings,
-                banners: vec![newer_version_banner(newer)],
+                banners: vec![banner],
             };
         }
         _ => {
@@ -1120,11 +1142,12 @@ impl Settings {
             .collect()
     }
 
-    /// Display name of a registered EVM chain.
+    /// Display name of a registered EVM chain in `lang` (spec/14: a built-in chain with a Korean
+    /// name has an English one; a user chain's name is data and stays as typed).
     #[must_use]
-    pub fn evm_chain_name(&self, chain_id: u64) -> Option<String> {
+    pub fn evm_chain_name_in(&self, lang: yw_core::lang::Lang, chain_id: u64) -> Option<String> {
         if let Some(chain) = yw_core::evm::chain::builtin_chain(chain_id) {
-            return Some(chain.name);
+            return Some(chain.display_name(lang).to_owned());
         }
         self.evm_chains
             .iter()
@@ -1370,13 +1393,6 @@ fn language_member(settings: &Settings) -> Option<(&'static str, Value)> {
 pub const SNAPSHOT_VERSION: u64 = 1;
 /// The `App::save_settings` key of `파일 값 사용` (accepting every differing file value).
 pub const ACCEPT_FILE_KEY: &str = "settingsFileAccepted";
-/// The E-APP-001-style banner of a settings file changed outside the app.
-pub const SETTINGS_TAMPERED_TEXT: &str = "설정 파일이 앱 밖에서 바뀌었습니다 — 확인하세요";
-/// The banner when the AI explanation was on in `settings.json` without the user's consent for
-/// that endpoint host in the snapshot.
-pub const LLM_FORCED_OFF_TEXT: &str = "AI 설명 설정이 앱 밖에서 바뀌어(동의한 주소와 다름) AI 설명을 껐습니다. 아무것도 보내지 않습니다. 쓰려면 설정 → AI 설명에서 주소를 확인하고 다시 켜세요.";
-/// The banner when a genesis pin was missing or changed in `settings.json`.
-pub const PIN_RESTORED_TEXT: &str = "설정 파일의 체인 genesis 고정값이 앱 밖에서 지워지거나 바뀌어, 앱에 저장된 값으로 되돌렸습니다.";
 
 /// The consent part of `llm_explain` the user last gave through the app (spec/06 §2.1-2.2).
 #[derive(Clone, Debug, PartialEq, Eq)]

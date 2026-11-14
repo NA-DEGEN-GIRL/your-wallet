@@ -90,12 +90,21 @@ pub enum AmountError {
     AboveMaxMoney,
 }
 
+impl AmountError {
+    /// The fixed text in `lang` (`Display` is the Korean one).
+    #[must_use]
+    pub const fn text_in(self, lang: crate::lang::Lang) -> &'static str {
+        match self {
+            Self::InvalidFormat => super::text::AMOUNT_FORMAT,
+            Self::AboveMaxMoney => super::text::AMOUNT_ABOVE_MAX,
+        }
+        .get(lang)
+    }
+}
+
 impl fmt::Display for AmountError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            Self::InvalidFormat => "금액 형식이 올바르지 않습니다",
-            Self::AboveMaxMoney => "금액이 최대값(21,000,000 BTC)을 넘습니다",
-        })
+        formatter.write_str(self.text_in(crate::lang::Lang::Ko))
     }
 }
 

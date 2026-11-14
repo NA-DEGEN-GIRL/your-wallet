@@ -13,6 +13,7 @@ use crate::app::App;
 use crate::explorer::ExplorerNet;
 use crate::ui::main_window::{Ctl, GLYPH_LINK, GLYPH_OPEN, GLYPH_SAVE, Item};
 use crate::ui::theme::{AddressKind, own_address_spans};
+use yw_core::lang::Lang;
 
 /// Command ids (18,400–18,659; the whole map is `ui::command_ids`).
 pub mod ids {
@@ -65,31 +66,43 @@ pub mod ids {
     }
 }
 
-/// The accessible name and tooltip of a copyable hash.
-pub const T_HASH_COPY: &str = "해시 복사";
-/// The accessible name and tooltip of a copyable address.
-pub const T_ADDRESS_COPY: &str = "주소 복사";
-/// `탐색기에서 열기` (↗).
-pub const T_EXPLORER_OPEN: &str = "탐색기에서 열기";
-/// `탐색기 링크 복사` (🔗).
-pub const T_EXPLORER_COPY: &str = "탐색기 링크 복사";
-/// `이 주소 저장` (☆).
-pub const T_SAVE_ADDRESS: &str = "이 주소 저장";
+/// The fixed texts of this module (spec/14).
+pub mod text {
+    yw_core::texts! {
+        /// The accessible name and tooltip of a copyable hash.
+        T_HASH_COPY = "해시 복사" / "Copy hash";
+        /// The accessible name and tooltip of a copyable address.
+        T_ADDRESS_COPY = "주소 복사" / "Copy address";
+        /// `탐색기에서 열기` (↗).
+        T_EXPLORER_OPEN = "탐색기에서 열기" / "Open in explorer";
+        /// `탐색기 링크 복사` (🔗).
+        T_EXPLORER_COPY = "탐색기 링크 복사" / "Copy explorer link";
+        /// `이 주소 저장` (☆).
+        T_SAVE_ADDRESS = "이 주소 저장" / "Save this address";
+        /// The account drop-down before an account is chosen.
+        PICK_ACCOUNT = "계정을 고르세요" / "Choose an account";
+        /// The account drop-down's label.
+        ACCOUNT = "계정" / "Account";
+    }
+}
+
+pub use text::{T_ADDRESS_COPY, T_EXPLORER_COPY, T_EXPLORER_OPEN, T_HASH_COPY, T_SAVE_ADDRESS};
 
 /// A transaction hash on its own line: a click copies it (`copy`; display-only without one),
 /// `actions` (the explorer icons) right after it. Shown short (2026-11-12, [`short_hash`]: the
 /// whole 64–88 characters took a line or two of every activity row); the copy handlers copy
 /// the whole hash from the row, and the tooltip shows it.
-pub fn push_hash_line(items: &mut Vec<Item>, copy: Option<u16>, hash: &str, actions: Vec<Ctl>) {
-    push_value_line(
-        items,
-        copy,
-        T_HASH_COPY,
-        vec![(short_hash(hash), false)],
-        actions,
-    );
+pub fn push_hash_line(
+    items: &mut Vec<Item>,
+    lang: Lang,
+    copy: Option<u16>,
+    hash: &str,
+    actions: Vec<Ctl>,
+) {
+    let label = T_HASH_COPY.get(lang);
+    push_value_line(items, copy, label, vec![(short_hash(hash), false)], actions);
     if let Some(Item::CopyLine { value, .. }) = items.last_mut() {
-        value.tip = Some(format!("{T_HASH_COPY}: {hash}"));
+        value.tip = Some(format!("{label}: {hash}"));
     }
 }
 
@@ -110,6 +123,7 @@ pub fn short_hash(hash: &str) -> String {
 /// account card's: a click copies it (`copy`), `actions` at the right end.
 pub fn push_address_line(
     items: &mut Vec<Item>,
+    lang: Lang,
     copy: Option<u16>,
     address: &str,
     kind: AddressKind,
@@ -118,7 +132,7 @@ pub fn push_address_line(
     push_value_line(
         items,
         copy,
-        T_ADDRESS_COPY,
+        T_ADDRESS_COPY.get(lang),
         own_address_spans(address, kind, false),
         actions,
     );
@@ -149,8 +163,8 @@ fn push_value_line(
 
 /// The `☆ 이 주소 저장` icon.
 #[must_use]
-pub fn save_icon(id: u16) -> Ctl {
-    Ctl::icon(id, GLYPH_SAVE, T_SAVE_ADDRESS)
+pub fn save_icon(lang: Lang, id: u16) -> Ctl {
+    Ctl::icon(id, GLYPH_SAVE, T_SAVE_ADDRESS.get(lang))
 }
 
 /// One entry of an account drop-down: its id, label, whether it is the selected account, and
@@ -177,10 +191,11 @@ impl App {
         hash: &str,
         ids: Option<(u16, u16)>,
     ) -> Vec<Ctl> {
+        let lang = self.settings.language;
         match ids {
             Some((open, copy)) if self.explorer_tx_url(network, hash).is_some() => vec![
-                Ctl::icon(open, GLYPH_OPEN, T_EXPLORER_OPEN),
-                Ctl::icon(copy, GLYPH_LINK, T_EXPLORER_COPY),
+                Ctl::icon(open, GLYPH_OPEN, T_EXPLORER_OPEN.get(lang)),
+                Ctl::icon(copy, GLYPH_LINK, T_EXPLORER_COPY.get(lang)),
             ],
             _ => Vec::new(),
         }
@@ -190,13 +205,14 @@ impl App {
     /// naming the selected account and ▾ (`picker`), and while open the accounts under it, one
     /// per line (each entry keeps the id its radio had, so the same handler selects it).
     pub fn push_account_picker(&self, items: &mut Vec<Item>, picker: u16, entries: &[PickerEntry]) {
+        let lang = self.settings.language;
         let open = self.account_menu == Some(picker);
         let selected = entries
             .iter()
             .find(|entry| entry.selected)
-            .map_or("계정을 고르세요", |entry| entry.label.as_str());
+            .map_or(text::PICK_ACCOUNT.get(lang), |entry| entry.label.as_str());
         items.push(Item::LabeledRow(
-            "계정".to_owned(),
+            text::ACCOUNT.get(lang).to_owned(),
             vec![
                 Ctl::picker(picker, selected, open)
                     .fit(entries.iter().map(|entry| entry.label.as_str())),

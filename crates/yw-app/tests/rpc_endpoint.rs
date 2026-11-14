@@ -68,13 +68,14 @@ fn evm_chain_id_match_and_mismatch() {
         }
     );
     assert_eq!(
-        outcome.message("Ethereum 메인넷"),
+        outcome.message(yw_core::lang::Lang::Ko, "Ethereum 메인넷"),
         "엔드포인트 테스트 실패: chainId 불일치 — 다른 네트워크의 URL입니다. (RPC chainId 8453) (E-RPC-010)"
     );
     let sepolia_on_mainnet = fake(200, r#""0x1""#);
     let client = RpcClient::new(&sepolia_on_mainnet);
     assert_eq!(
-        test_endpoint(&client, NetworkId::Eip155(11_155_111), &url()).message("Sepolia 테스트넷"),
+        test_endpoint(&client, NetworkId::Eip155(11_155_111), &url())
+            .message(yw_core::lang::Lang::Ko, "Sepolia 테스트넷"),
         "엔드포인트 테스트 실패: chainId 불일치 — 다른 네트워크의 URL입니다. (RPC chainId 1) (E-RPC-010)"
     );
     let garbage = fake(200, r#""zz""#);
@@ -98,7 +99,7 @@ fn solana_and_bitcoin_mismatches() {
     );
     assert_eq!(
         test_endpoint(&client, NetworkId::Solana(SolCluster::Devnet), &url()),
-        TestOutcome::Ok("genesis 일치".to_owned())
+        TestOutcome::Ok(yw_app::rpc::GENESIS_ITEM.to_owned())
     );
     let test_chain = fake(200, r#"{"chain":"test","blocks":1}"#);
     let client = RpcClient::new(&test_chain);
@@ -165,7 +166,7 @@ fn messages_and_log_lines_never_contain_the_url() {
     let base = fake(200, r#""0x2105""#);
     let client = RpcClient::new(&base);
     let outcome = test_endpoint(&client, NetworkId::Eip155(1), &url());
-    let message = outcome.message("Ethereum 메인넷");
+    let message = outcome.message(yw_core::lang::Lang::Ko, "Ethereum 메인넷");
     let line = format_line(
         0,
         LogLevel::Info,
@@ -183,4 +184,27 @@ fn messages_and_log_lines_never_contain_the_url() {
     }
     assert!(line.contains("net=eip155:1"));
     assert!(line.contains("result=E-RPC-010"));
+}
+
+/// spec/14: the English test answers carry no Hangul (the network name is the caller's).
+#[test]
+fn english_test_messages() {
+    use yw_core::lang::{Lang, has_hangul};
+    let ok = TestOutcome::Ok(yw_app::rpc::GENESIS_ITEM.to_owned());
+    assert_eq!(
+        ok.message(Lang::Ko, "Solana devnet"),
+        "RPC 주소가 작동합니다. (Solana devnet, genesis 일치)"
+    );
+    assert_eq!(
+        ok.message(Lang::En, "Solana devnet"),
+        "The RPC address works. (Solana devnet, genesis matches)"
+    );
+    let mismatch = TestOutcome::Mismatch {
+        item: "chainId",
+        rpc_chain_id: Some(8_453),
+    };
+    for outcome in [mismatch, TestOutcome::Failed(ErrorCode::Rpc001)] {
+        let message = outcome.message(Lang::En, "Ethereum");
+        assert!(!has_hangul(&message), "{message}");
+    }
 }

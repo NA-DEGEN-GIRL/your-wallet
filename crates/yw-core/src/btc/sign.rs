@@ -263,19 +263,32 @@ pub enum SignError {
     Vault(VaultError),
 }
 
-impl fmt::Display for SignError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Vault(error) => error.fmt(formatter),
-            Self::ApprovalMismatch => formatter.write_str(texts::APPROVAL_MISMATCH),
-            Self::KeyMismatch { .. } => formatter.write_str(texts::KEY_MISMATCH),
-            Self::AmountRecordMismatch => formatter.write_str(texts::AMOUNT_RECORD_MISMATCH),
-            Self::InputNotRecorded => formatter.write_str(texts::INPUT_NOT_RECORDED),
+impl SignError {
+    /// The fixed text in `lang` (`Display` is the Korean one; a vault refusal is the vault's
+    /// own text).
+    #[must_use]
+    pub fn text_in(self, lang: crate::lang::Lang) -> String {
+        let fixed = match self {
+            Self::Vault(error) => return error.text_in(lang),
+            Self::ApprovalMismatch => texts::APPROVAL_MISMATCH,
+            Self::KeyMismatch { .. } => texts::KEY_MISMATCH,
+            Self::AmountRecordMismatch => texts::AMOUNT_RECORD_MISMATCH,
+            Self::InputNotRecorded => texts::INPUT_NOT_RECORDED,
             Self::PlanInconsistent
             | Self::Derivation
             | Self::Witness(_)
             | Self::Taproot(_)
-            | Self::Randomness => formatter.write_str(texts::SIGN_INTERNAL),
+            | Self::Randomness => texts::SIGN_INTERNAL,
+        };
+        fixed.get(lang).to_owned()
+    }
+}
+
+impl fmt::Display for SignError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Vault(error) => error.fmt(formatter),
+            other => formatter.write_str(&other.text_in(crate::lang::Lang::Ko)),
         }
     }
 }

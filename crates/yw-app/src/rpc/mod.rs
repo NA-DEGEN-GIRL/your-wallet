@@ -358,10 +358,24 @@ pub const fn bitcoin_chain(net: BtcNet) -> &'static str {
     }
 }
 
+/// The fixed texts of the endpoint test (spec/14).
+pub mod text {
+    yw_core::texts! {
+        /// T-RPC-OK: {0} network name, {1} the checked item.
+        RPC_OK(2) = "RPC 주소가 작동합니다. ({0}, {1})" / "The RPC address works. ({0}, {1})";
+        /// The checked item of a genesis-pinned network.
+        GENESIS_MATCH = "genesis 일치" / "genesis matches";
+    }
+}
+
+/// The [`TestOutcome::Ok`] item of a matching genesis hash (shown as [`text::GENESIS_MATCH`]).
+pub const GENESIS_ITEM: &str = "genesis";
+
 /// Result of an endpoint test.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TestOutcome {
-    /// Matches; the checked item (`chainId 1`, `genesis 일치`, `chain main`).
+    /// Matches; the checked item (`chainId 1`, [`GENESIS_ITEM`] — shown as `genesis 일치` —,
+    /// `chain main`).
     Ok(String),
     /// Answered for another network: the item name and, for EVM, the RPC chain id.
     Mismatch {
@@ -385,22 +399,29 @@ impl TestOutcome {
         }
     }
 
-    /// The fixed message (T-RPC-OK or the error text), never including remote strings.
+    /// The fixed message (T-RPC-OK or the error text) in `lang`, never including remote strings.
     #[must_use]
-    pub fn message(&self, network_name: &str) -> String {
+    pub fn message(&self, lang: yw_core::lang::Lang, network_name: &str) -> String {
         match self {
-            Self::Ok(item) => format!("RPC 주소가 작동합니다. ({network_name}, {item})"),
+            Self::Ok(item) => {
+                let item = if item == GENESIS_ITEM {
+                    text::GENESIS_MATCH.get(lang)
+                } else {
+                    item.as_str()
+                };
+                text::RPC_OK.fill(lang, [network_name, item])
+            }
             Self::Mismatch {
                 item,
                 rpc_chain_id: Some(id),
             } => {
-                let base = ErrorCode::Rpc010.render(item);
+                let base = ErrorCode::Rpc010.render_in(lang, item);
                 let code = format!(" ({})", ErrorCode::Rpc010.code());
                 let head = base.strip_suffix(&code).unwrap_or(&base);
                 format!("{head} (RPC chainId {id}){code}")
             }
-            Self::Mismatch { item, .. } => ErrorCode::Rpc010.render(item),
-            Self::Failed(code) => code.text(),
+            Self::Mismatch { item, .. } => ErrorCode::Rpc010.render_in(lang, item),
+            Self::Failed(code) => code.text_in(lang),
         }
     }
 }
@@ -438,7 +459,7 @@ pub fn test_endpoint(client: &RpcClient<'_>, network: NetworkId, url: &HttpsUrl)
         },
         NetworkId::Solana(cluster) => match client.call(url, "getGenesisHash", empty) {
             Ok(Value::String(hash)) if hash == solana_genesis(cluster) => {
-                TestOutcome::Ok("genesis 일치".to_owned())
+                TestOutcome::Ok(GENESIS_ITEM.to_owned())
             }
             Ok(Value::String(_)) => TestOutcome::Mismatch {
                 item: "genesis",
@@ -469,7 +490,7 @@ pub fn test_endpoint(client: &RpcClient<'_>, network: NetworkId, url: &HttpsUrl)
                 Value::Array(vec![Value::Number(yw_json::Number::from_u64(0))]),
             ) {
                 Ok(Value::String(hash)) if hash == net.genesis_hex() => {
-                    TestOutcome::Ok("genesis 일치".to_owned())
+                    TestOutcome::Ok(GENESIS_ITEM.to_owned())
                 }
                 Ok(Value::String(_)) => TestOutcome::Mismatch {
                     item: "genesis",

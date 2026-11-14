@@ -299,6 +299,7 @@ fn a_worker_without_client_answers_every_job() -> TestResult {
             network: yw_app::network::NetworkId::Eip155(11_155_111),
             name: "Sepolia".to_owned(),
             url: url(),
+            lang: yw_core::lang::Lang::Ko,
         },
         &queue,
     );

@@ -1456,7 +1456,7 @@ impl App {
                         format!(
                             "{label}{}{}\n{path}",
                             self.mn_connect_tag(phrase),
-                            Self::card_connect_tag(serial)
+                            self.card_connect_tag(serial)
                         ),
                         address.to_checksum(),
                         0,
@@ -1480,7 +1480,7 @@ impl App {
 
     fn evm_chain_label(&self, chain_id: u64) -> String {
         self.settings
-            .evm_chain_name(chain_id)
+            .evm_chain_name_in(self.approval_lang(), chain_id)
             .unwrap_or_else(|| format!("chainId {chain_id}"))
     }
 
@@ -1599,7 +1599,7 @@ impl App {
                 let body = create_window(&body_spec, body_handler).map_err(|_| ())?;
                 self.llm_ui.next_window = self.llm_ui.next_window.saturating_add(1);
                 Some(AiUi {
-                    panel: AiPanel::new(true),
+                    panel: AiPanel::new(true, lang),
                     serial: self.llm_ui.next_window,
                     body,
                     scroll: 0,
@@ -1696,7 +1696,9 @@ impl App {
             self.show_failure(
                 ErrorCode::Vlt006,
                 false,
-                crate::app_sidecar::T_JOURNAL_CLOSED_SEND.to_owned(),
+                crate::app_sidecar::text::JOURNAL_CLOSED_SEND
+                    .get(self.approval_lang())
+                    .to_owned(),
             );
             return;
         }
@@ -1711,13 +1713,17 @@ impl App {
             Err(code) => {
                 let failure =
                     crate::flow::evm::prepare::PrepareFailure::no_endpoint(self.approval_lang());
-                let message = failure.message();
+                let message = failure.message(self.approval_lang());
                 self.show_failure(code, false, message);
                 return;
             }
         };
         let Ok(id) = Self::new_approval_id() else {
-            self.show_failure(ErrorCode::Vlt005, false, ErrorCode::Vlt005.text());
+            self.show_failure(
+                ErrorCode::Vlt005,
+                false,
+                ErrorCode::Vlt005.text_in(self.approval_lang()),
+            );
             return;
         };
         let address_book = self.address_book_facts();
@@ -1748,7 +1754,11 @@ impl App {
             limits: Limits::PRODUCTION,
         })));
         if !sent {
-            self.show_failure(ErrorCode::Rpc001, true, ErrorCode::Rpc001.text());
+            self.show_failure(
+                ErrorCode::Rpc001,
+                true,
+                ErrorCode::Rpc001.text_in(self.approval_lang()),
+            );
         }
     }
 
@@ -1782,7 +1792,11 @@ impl App {
             }
             SiteKind::Send(tx) => {
                 let Some(signer) = self.account_source(&tx.from) else {
-                    self.show_failure(ErrorCode::App009, false, ErrorCode::App009.text());
+                    self.show_failure(
+                        ErrorCode::App009,
+                        false,
+                        ErrorCode::App009.text_in(self.approval_lang()),
+                    );
                     return;
                 };
                 let item = AppApproval {
@@ -1806,7 +1820,7 @@ impl App {
             {
                 // L12: a chain known to answer for another chain blocks signatures too (E34).
                 if let Some(failure) = self.message_chain_failure(site.chain_id) {
-                    self.show_failure(failure.code, false, failure.message());
+                    self.show_failure(failure.code, false, failure.message(self.approval_lang()));
                 }
             }
             SiteKind::PersonalSign { account, message } => {
@@ -1832,7 +1846,11 @@ impl App {
                         self.show_ready_draft(draft, None);
                         self.ai_ready_message();
                     }
-                    None => self.show_failure(ErrorCode::App009, false, ErrorCode::App009.text()),
+                    None => self.show_failure(
+                        ErrorCode::App009,
+                        false,
+                        ErrorCode::App009.text_in(self.approval_lang()),
+                    ),
                 }
             }
             SiteKind::TypedData {
@@ -1896,7 +1914,11 @@ impl App {
             SiteKind::SolSign { .. } | SiteKind::BtcSign { .. } => {
                 match self.chain_sign_draft(site) {
                     Some(draft) => self.show_ready_draft(draft, None),
-                    None => self.show_failure(ErrorCode::App009, false, ErrorCode::App009.text()),
+                    None => self.show_failure(
+                        ErrorCode::App009,
+                        false,
+                        ErrorCode::App009.text_in(self.approval_lang()),
+                    ),
                 }
             }
             SiteKind::Revoke => self.finish_approval(QueueOutcome::Cancelled),
@@ -1968,7 +1990,7 @@ impl App {
             _ => self.message_chain_failure(site.chain_id),
         };
         if let Some(failure) = mismatch {
-            self.show_failure(failure.code, false, failure.message());
+            self.show_failure(failure.code, false, failure.message(self.approval_lang()));
             return;
         }
         // A Hyperliquid transfer gets the S-HC recipient and spotMeta checks (spec/11 §7); a
@@ -1999,7 +2021,11 @@ impl App {
                 self.show_ready_draft(draft, None);
                 self.ai_ready_typed(facts);
             }
-            None => self.show_failure(ErrorCode::App009, false, ErrorCode::App009.text()),
+            None => self.show_failure(
+                ErrorCode::App009,
+                false,
+                ErrorCode::App009.text_in(self.approval_lang()),
+            ),
         }
     }
 
@@ -2112,7 +2138,7 @@ impl App {
                     self.finish_approval(QueueOutcome::Cancelled);
                     return;
                 }
-                let text = failure.message();
+                let text = failure.message(self.approval_lang());
                 self.show_failure(failure.code, failure.retryable, text);
             }
             PrepareOutcome::Ready(prepared) => {
@@ -2158,7 +2184,11 @@ impl App {
             return;
         }
         let Ok(request) = self.evm.store.issue(draft, now, now_unix) else {
-            self.show_failure(ErrorCode::App009, false, ErrorCode::App009.text());
+            self.show_failure(
+                ErrorCode::App009,
+                false,
+                ErrorCode::App009.text_in(self.approval_lang()),
+            );
             return;
         };
         if crate::ui::approval::validate_for_display(&request.display).is_err() {
@@ -2210,7 +2240,7 @@ impl App {
                 ui.status = None;
                 ui.resim_click = false;
             }
-            self.show_failure(failure.code, false, failure.message());
+            self.show_failure(failure.code, false, failure.message(self.approval_lang()));
             return;
         }
         let Some(prepared) = result.prepared else {
@@ -2256,7 +2286,11 @@ impl App {
         };
         let replaced = self.evm.store.replace(old.id, old.digest, draft);
         let Ok(request) = replaced else {
-            self.show_failure(ErrorCode::App009, false, ErrorCode::App009.text());
+            self.show_failure(
+                ErrorCode::App009,
+                false,
+                ErrorCode::App009.text_in(self.approval_lang()),
+            );
             return;
         };
         let now = now_ms();
@@ -2394,7 +2428,7 @@ impl App {
             Err(code) => {
                 let failure =
                     crate::flow::evm::prepare::PrepareFailure::no_endpoint(self.approval_lang());
-                self.show_failure(code, false, failure.message());
+                self.show_failure(code, false, failure.message(self.approval_lang()));
                 return;
             }
         };
@@ -2413,7 +2447,7 @@ impl App {
                 // terminal `Approved` status must not dispatch it again on the next tick.
                 let _ = ui.session.restart_interaction(now_ms());
             } else {
-                ui.status = Some(ErrorCode::Rpc001.text());
+                ui.status = Some(ErrorCode::Rpc001.text_in(ui.lang));
                 ui.resim_click = false;
                 let prepare = ui.session.gate.prepare.clone();
                 let _ = ui.session.replace_content(now_ms(), prepare);
@@ -2489,7 +2523,11 @@ impl App {
                 // A dApp Solana transaction request (spec/07 §20.8): its own waiter and signer.
                 if request.kind == yw_core::approval::ApprovalKind::SolTransaction {
                     let QueuedItem::Site(site) = &item else {
-                        self.show_failure(ErrorCode::App009, false, ErrorCode::App009.text());
+                        self.show_failure(
+                            ErrorCode::App009,
+                            false,
+                            ErrorCode::App009.text_in(self.approval_lang()),
+                        );
                         return;
                     };
                     self.sol_dapp_consumed(approved, site);
@@ -2502,7 +2540,11 @@ impl App {
                         _ => None,
                     };
                     let Some(waiter) = waiter else {
-                        self.show_failure(ErrorCode::App009, false, ErrorCode::App009.text());
+                        self.show_failure(
+                            ErrorCode::App009,
+                            false,
+                            ErrorCode::App009.text_in(self.approval_lang()),
+                        );
                         return;
                     };
                     let ticket = self.push_sign_waiter(waiter);
@@ -2531,7 +2573,7 @@ impl App {
                                 self.show_failure(
                                     ErrorCode::App009,
                                     false,
-                                    ErrorCode::App009.text(),
+                                    ErrorCode::App009.text_in(self.approval_lang()),
                                 );
                                 return;
                             }
@@ -2559,7 +2601,7 @@ impl App {
                                     self.show_failure(
                                         ErrorCode::App009,
                                         false,
-                                        ErrorCode::App009.text(),
+                                        ErrorCode::App009.text_in(self.approval_lang()),
                                     );
                                     return;
                                 };
@@ -2589,14 +2631,22 @@ impl App {
                         self.dispatch_evm_sign(ticket, approved, info, form);
                     }
                     (None, _) => {
-                        self.show_failure(ErrorCode::App009, false, ErrorCode::App009.text());
+                        self.show_failure(
+                            ErrorCode::App009,
+                            false,
+                            ErrorCode::App009.text_in(self.approval_lang()),
+                        );
                         return;
                     }
                 }
                 self.finish_approval(QueueOutcome::Approved);
             }
             Err(_) => {
-                self.show_failure(ErrorCode::App009, false, ErrorCode::App009.text());
+                self.show_failure(
+                    ErrorCode::App009,
+                    false,
+                    ErrorCode::App009.text_in(self.approval_lang()),
+                );
             }
         }
     }
@@ -3821,7 +3871,7 @@ impl App {
                 dc.select_font(&fonts.body_bold);
                 dc.set_text_color(theme::TEXT);
                 dc.draw_text(
-                    &wide(PANEL_TITLE),
+                    &wide(PANEL_TITLE.get(ai.panel.lang())),
                     Rect::new(
                         margin,
                         top.saturating_add(pad),
@@ -3852,7 +3902,11 @@ impl App {
                     dc.round_rect(rect, radius, fill, border);
                     dc.select_font(&fonts.body);
                     dc.set_text_color(text);
-                    dc.draw_text(&wide(RETRY_LABEL), rect, DrawFlags::CENTER);
+                    dc.draw_text(
+                        &wide(RETRY_LABEL.get(ai.panel.lang())),
+                        rect,
+                        DrawFlags::CENTER,
+                    );
                 }
                 let body = Rect::new(
                     margin,
@@ -4136,11 +4190,16 @@ impl App {
             if request.display.risk == RiskLevel::Blocked {
                 AiReady::Skip(SKIP_BLOCKED.get(self.approval_lang()))
             } else {
-                crate::app_llm::transaction_input(prepared, &self.site_origin_text(site), &user)
-                    .map_or(
-                        AiReady::Skip(SKIP_BLOCKED.get(self.approval_lang())),
-                        AiReady::Input,
-                    )
+                crate::app_llm::transaction_input(
+                    self.approval_lang(),
+                    prepared,
+                    &self.site_origin_text(site),
+                    &user,
+                )
+                .map_or(
+                    AiReady::Skip(SKIP_BLOCKED.get(self.approval_lang())),
+                    AiReady::Input,
+                )
             }
         };
         self.ai_ready(ready);
@@ -4170,6 +4229,7 @@ impl App {
             Some(chain) => {
                 let decoded = yw_core::evm::eip191::decode_personal_message(message.clone());
                 AiReady::Input(build_input(
+                    self.approval_lang(),
                     &ExplainSource::PersonalSign(&decoded),
                     &self.site_origin_text(&site),
                     account,
@@ -4203,6 +4263,7 @@ impl App {
         let ready = match self.message_chain(site.chain_id) {
             _ if blocked => AiReady::Skip(SKIP_BLOCKED.get(self.approval_lang())),
             Some(chain) => AiReady::Input(build_input(
+                self.approval_lang(),
                 &ExplainSource::TypedData(&typed),
                 &self.site_origin_text(&site),
                 account,

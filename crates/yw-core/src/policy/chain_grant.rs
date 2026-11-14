@@ -65,14 +65,25 @@ impl BtcPurpose {
         }
     }
 
-    /// The connect-window heading.
+    /// The connect-window heading in `lang`.
     #[must_use]
-    pub const fn label(self) -> &'static str {
+    pub const fn label_in(self, lang: crate::lang::Lang) -> &'static str {
         match self {
-            Self::Payment => "결제용 주소 (payment: P2WPKH·P2SH-P2WPKH)",
-            Self::Ordinals => "오디널스용 주소 (ordinals: P2TR)",
-            Self::Any => "연결할 주소",
+            Self::Payment => text::PURPOSE_PAYMENT,
+            Self::Ordinals => text::PURPOSE_ORDINALS,
+            Self::Any => text::PURPOSE_ANY,
         }
+        .get(lang)
+    }
+}
+
+/// Bitcoin connect-window headings (spec/08 §17; English spec/14 §5).
+pub mod text {
+    crate::texts! {
+        PURPOSE_PAYMENT = "결제용 주소 (payment: P2WPKH·P2SH-P2WPKH)"
+            / "Payment address (payment: P2WPKH·P2SH-P2WPKH)";
+        PURPOSE_ORDINALS = "오디널스용 주소 (ordinals: P2TR)" / "Ordinals address (ordinals: P2TR)";
+        PURPOSE_ANY = "연결할 주소" / "Address to connect";
     }
 }
 

@@ -18,12 +18,14 @@ use secp256k1::{PublicKey, Secp256k1, Verification};
 
 use super::CardError;
 use super::record::{HwKeyRecord, HwPublicKey};
+use super::text as t;
 use crate::bip32::Bip32Path;
 use crate::bip32::path::{AccountIndex, BtcChain, BtcCoin, btc_path, evm_path};
 use crate::btc::account::{ScriptType, kind_for_compressed};
 use crate::btc::address::encode_address;
 use crate::btc::network::BtcNetwork;
 use crate::evm::address::Address;
+use crate::lang::Lang;
 use crate::slip10::{Slip10Path, sol_path};
 use crate::sol::SolAddress;
 
@@ -39,8 +41,10 @@ pub const MAX_BTC_INDEX: u32 = 999;
 /// keeps it apart from enrolled keys — never a path. Every hardware path text of an index in this
 /// band says "경로를 알 수 없음" instead of a path (the record marks the slot as well).
 pub const UNKNOWN_PATH_FIRST: u32 = 900;
-/// The path text of a key connected without recovery words.
-pub const T_UNKNOWN_PATH: &str = "경로를 알 수 없음";
+/// The path text of a key connected without recovery words, Korean ([`t::UNKNOWN_PATH`] for a
+/// language; tests).
+#[cfg(test)]
+pub const T_UNKNOWN_PATH: &str = t::UNKNOWN_PATH.ko;
 
 /// Whether `index` is in the band of keys connected without recovery words.
 #[must_use]
@@ -90,11 +94,17 @@ impl PivSlot {
         (n < 20).then(|| Self(0x82_u8.wrapping_add(n)))
     }
 
-    /// Display label, e.g. `PIV 9a`, `PIV 82 (보관 1)`.
+    /// [`Self::label`] in `lang` (`PIV 82 (retired 1)`).
     #[must_use]
-    pub fn label(self) -> String {
+    pub fn label_in(self, lang: Lang) -> String {
         if (0x82..=0x95).contains(&self.0) {
-            format!("PIV {:02x} (보관 {})", self.0, self.0.wrapping_sub(0x81))
+            t::SLOT_PIV_RETIRED.fill(
+                lang,
+                [
+                    &format!("{:02x}", self.0),
+                    &self.0.wrapping_sub(0x81).to_string(),
+                ],
+            )
         } else {
             format!("PIV {:02x}", self.0)
         }
@@ -133,13 +143,13 @@ impl CardSlot {
         }
     }
 
-    /// Display label.
+    /// Display label in `lang`.
     #[must_use]
-    pub fn label(self) -> String {
+    pub fn label_in(self, lang: Lang) -> String {
         match self {
-            Self::OpenPgp(PgpKey::Sig) => "OpenPGP 서명(SIG)".to_owned(),
-            Self::OpenPgp(PgpKey::Aut) => "OpenPGP 인증(AUT)".to_owned(),
-            Self::Piv(slot) => slot.label(),
+            Self::OpenPgp(PgpKey::Sig) => t::SLOT_PGP_SIG.get(lang).to_owned(),
+            Self::OpenPgp(PgpKey::Aut) => t::SLOT_PGP_AUT.get(lang).to_owned(),
+            Self::Piv(slot) => slot.label_in(lang),
         }
     }
 
@@ -326,15 +336,16 @@ impl KeyRole {
         role.validate().ok().map(|()| role)
     }
 
-    /// The path text shown before import (`m/44'/60'/0'/0/3`); [`T_UNKNOWN_PATH`] for a key
-    /// connected without recovery words (index band [`UNKNOWN_PATH_FIRST`]..).
+    /// [`Self::path_text`] in `lang`.
     #[must_use]
-    pub fn path_text(self) -> String {
+    pub fn path_text_in(self, lang: Lang) -> String {
         if is_unknown_index(self.index()) {
-            return T_UNKNOWN_PATH.to_owned();
+            return t::UNKNOWN_PATH.get(lang).to_owned();
         }
-        self.path()
-            .map_or_else(|_| "(지원하지 않는 경로)".to_owned(), |path| path.text())
+        self.path().map_or_else(
+            |_| t::UNSUPPORTED_PATH.get(lang).to_owned(),
+            |path| path.text(),
+        )
     }
 
     /// Path identity (scheme + components) used by the duplicate rules: two roles are the same
@@ -350,48 +361,48 @@ impl KeyRole {
         (self.curve(), components)
     }
 
-    /// Short title for lists (`EVM 계정 3`, `Bitcoin P2WPKH 주소 0`, `Solana 계정 1`).
+    /// [`Self::title`] in `lang` (`EVM account 3`).
     #[must_use]
-    pub fn title(self) -> String {
+    pub fn title_in(self, lang: Lang) -> String {
         if is_unknown_index(self.index()) {
             let number = self
                 .index()
                 .saturating_sub(UNKNOWN_PATH_FIRST)
-                .saturating_add(1);
+                .saturating_add(1)
+                .to_string();
             return match self {
-                Self::Evm { .. } => format!("EVM 계정 (카드 키 {number})"),
+                Self::Evm { .. } => t::TITLE_EVM_CARD.fill(lang, [&number]),
                 Self::Btc { script, .. } => {
-                    format!("Bitcoin {} 주소 (카드 키 {number})", script_name(script))
+                    t::TITLE_BTC_CARD.fill(lang, [script_name(script).get(lang), &number])
                 }
-                Self::Sol { .. } => format!("Solana 계정 (카드 키 {number})"),
-                Self::Zec { .. } => format!("Zcash 일반(transparent) 주소 (카드 키 {number})"),
+                Self::Sol { .. } => t::TITLE_SOL_CARD.fill(lang, [&number]),
+                Self::Zec { .. } => t::TITLE_ZEC_CARD.fill(lang, [&number]),
             };
         }
         match self {
-            Self::Evm { index, btc: None } => format!("EVM 계정 {}", index.get()),
+            Self::Evm { index, btc: None } => t::TITLE_EVM.fill(lang, [&index.get().to_string()]),
             Self::Evm {
                 index,
                 btc: Some(use_),
-            } => format!(
-                "EVM 계정 {} + Bitcoin {} (공유 키)",
-                index.get(),
-                script_name(use_.script)
+            } => t::TITLE_EVM_SHARED.fill(
+                lang,
+                [&index.get().to_string(), script_name(use_.script).get(lang)],
             ),
             Self::Btc { script, index, .. } => {
-                format!("Bitcoin {} 주소 {index}", script_name(script))
+                t::TITLE_BTC.fill(lang, [script_name(script).get(lang), &index.to_string()])
             }
-            Self::Sol { index } => format!("Solana 계정 {}", index.get()),
-            Self::Zec { index, .. } => format!("Zcash 일반(transparent) 주소 {index}"),
+            Self::Sol { index } => t::TITLE_SOL.fill(lang, [&index.get().to_string()]),
+            Self::Zec { index, .. } => t::TITLE_ZEC.fill(lang, [&index.to_string()]),
         }
     }
 }
 
-const fn script_name(script: ScriptType) -> &'static str {
+const fn script_name(script: ScriptType) -> crate::lang::Text {
     match script {
-        ScriptType::P2pkh => "레거시(P2PKH)",
-        ScriptType::P2shP2wpkh => "호환 세그윗(P2SH-P2WPKH)",
-        ScriptType::P2wpkh => "네이티브 세그윗(P2WPKH)",
-        ScriptType::P2tr => "탭루트(미지원)",
+        ScriptType::P2pkh => t::SCRIPT_P2PKH,
+        ScriptType::P2shP2wpkh => t::SCRIPT_P2SH_P2WPKH,
+        ScriptType::P2wpkh => t::SCRIPT_P2WPKH,
+        ScriptType::P2tr => t::SCRIPT_P2TR,
     }
 }
 
@@ -451,16 +462,17 @@ impl TouchPolicy {
         }
     }
 
-    /// Display label.
+    /// Display label in `lang`.
     #[must_use]
-    pub const fn label(self) -> &'static str {
+    pub const fn label_in(self, lang: Lang) -> &'static str {
         match self {
-            Self::Never => "터치 없음",
-            Self::Always => "항상 터치",
-            Self::Cached => "터치 후 15초 유지",
-            Self::AlwaysFixed => "항상 터치(고정)",
-            Self::CachedFixed => "터치 후 15초 유지(고정)",
+            Self::Never => t::TOUCH_NEVER,
+            Self::Always => t::TOUCH_ALWAYS,
+            Self::Cached => t::TOUCH_CACHED,
+            Self::AlwaysFixed => t::TOUCH_ALWAYS_FIXED,
+            Self::CachedFixed => t::TOUCH_CACHED_FIXED,
         }
+        .get(lang)
     }
 }
 
@@ -559,45 +571,31 @@ pub enum PlanError {
     DifferentMnemonic,
 }
 
+impl PlanError {
+    /// The user-facing text in `lang`; `Display` is the Korean text.
+    #[must_use]
+    pub fn text_in(self, lang: Lang) -> String {
+        let with_slot = |template: crate::lang::Tpl<1>, slot: CardSlot| {
+            template.fill(lang, [&slot.label_in(lang)])
+        };
+        match self {
+            Self::SlotCount => t::PLAN_SLOT_COUNT.get(lang).to_owned(),
+            Self::DuplicateSlot(slot) => with_slot(t::PLAN_DUPLICATE_SLOT, slot),
+            Self::DuplicatePath(slot) => with_slot(t::PLAN_DUPLICATE_PATH, slot),
+            Self::WrongApplet(slot) => with_slot(t::PLAN_WRONG_APPLET, slot),
+            Self::UnsupportedRole(slot) => with_slot(t::PLAN_UNSUPPORTED_ROLE, slot),
+            Self::Policy(slot) => with_slot(t::PLAN_POLICY, slot),
+            Self::CardAlreadyEnrolled => t::PLAN_ALREADY_ENROLLED.get(lang).to_owned(),
+            Self::TooManyCards => t::PLAN_TOO_MANY_CARDS.get(lang).to_owned(),
+            Self::NotACopy(slot) => with_slot(t::PLAN_NOT_A_COPY, slot),
+            Self::DifferentMnemonic => t::PLAN_DIFFERENT_MNEMONIC.get(lang).to_owned(),
+        }
+    }
+}
+
 impl core::fmt::Display for PlanError {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::SlotCount => formatter.write_str("슬롯을 1개 이상 24개 이하로 고르세요."),
-            Self::DuplicateSlot(slot) => {
-                write!(formatter, "{} 슬롯을 두 번 골랐습니다.", slot.label())
-            }
-            Self::DuplicatePath(slot) => write!(
-                formatter,
-                "{}: 같은 경로의 키가 이 YubiKey의 다른 슬롯에 이미 있습니다.",
-                slot.label()
-            ),
-            Self::WrongApplet(slot) => write!(
-                formatter,
-                "{}: 이 슬롯에는 그 종류의 키를 넣을 수 없습니다(OpenPGP = secp256k1, PIV = Ed25519).",
-                slot.label()
-            ),
-            Self::UnsupportedRole(slot) => write!(
-                formatter,
-                "{}: 지원하지 않는 키입니다(탭루트 불가, 인덱스 범위 확인).",
-                slot.label()
-            ),
-            Self::Policy(slot) => write!(
-                formatter,
-                "{}: 터치·PIN 정책이 맞지 않습니다.",
-                slot.label()
-            ),
-            Self::CardAlreadyEnrolled => formatter.write_str(
-                "이 YubiKey는 이미 등록되어 있습니다. 다시 등록하려면 먼저 등록을 지우세요.",
-            ),
-            Self::TooManyCards => formatter.write_str("YubiKey는 최대 8개까지 등록할 수 있습니다."),
-            Self::NotACopy(slot) => write!(
-                formatter,
-                "{}: '백업 복사본'으로 골랐지만 다른 YubiKey에 같은 키가 없습니다.",
-                slot.label()
-            ),
-            Self::DifferentMnemonic => formatter
-                .write_str("입력한 복구 단어가 이미 등록한 YubiKey의 복구 단어와 다릅니다."),
-        }
+        formatter.write_str(&self.text_in(Lang::Ko))
     }
 }
 

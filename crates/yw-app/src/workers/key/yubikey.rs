@@ -349,9 +349,9 @@ fn job_key(error: KeyError) -> YubiKeyJobError {
 /// The default meta of a new `YubiKey` wallet: no derived account, the slot map's accounts
 /// (`hw_accounts`, Bitcoin `key.yubikey` accounts), the first of each selected, the tab of the
 /// first key.
-fn write_yubikey_meta(vault: &mut Vault) -> Result<(), VaultError> {
+fn write_yubikey_meta(vault: &mut Vault, lang: yw_core::lang::Lang) -> Result<(), VaultError> {
     let mut document = Meta::key_only();
-    reconcile_hardware(&mut document, vault)?;
+    reconcile_hardware(&mut document, vault, lang)?;
     if let Some(first) = document.hw_accounts.evm.first() {
         document.prefs.evm_account = EvmAccountPref::Hardware(first.index);
     }
@@ -861,11 +861,12 @@ impl KeyWorker {
                 .ok_or(YubiKeyJobError::Vault(VaultError::InvalidState))?;
             let password = password(held).map_err(YubiKeyJobError::Vault)?;
             let slot = new_slot().map_err(YubiKeyJobError::Vault)?;
+            let lang = self.lang;
             let vault = self.vault().map_err(YubiKeyJobError::Vault)?;
             let id = vault
                 .create_with_hardware(&password, enrolled.record.clone(), slot, now_unix())
                 .map_err(YubiKeyJobError::Vault)?;
-            write_yubikey_meta(vault).map_err(YubiKeyJobError::Vault)?;
+            write_yubikey_meta(vault, lang).map_err(YubiKeyJobError::Vault)?;
             // The wallet exists: the password is not needed again. The words stay held for a
             // backup YubiKey until the wizard ends (`Discard`) or the wallet locks.
             self.pending_password = None;

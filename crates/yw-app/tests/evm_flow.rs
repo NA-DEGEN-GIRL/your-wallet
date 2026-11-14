@@ -1428,7 +1428,7 @@ fn user_chain_probe() {
     assert!(
         error
             .err()
-            .map(|error| error.message())
+            .map(|error| error.message_in(yw_core::lang::Lang::Ko))
             .is_some_and(|text| text.contains("(1)"))
     );
     assert_eq!(rpc.count("eth_getBlockByNumber"), 0);
@@ -1446,7 +1446,7 @@ fn user_chain_probe() {
     assert!(
         error
             .err()
-            .map(|e| e.message())
+            .map(|e| e.message_in(yw_core::lang::Lang::Ko))
             .is_some_and(|text| text.contains("E-CHN-002") && text.contains("E-RPC-005"))
     );
     // Edit with another genesis → E-CHN-008, nothing to save.

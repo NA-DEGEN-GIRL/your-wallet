@@ -1148,7 +1148,9 @@ const SOL_KEY = "FVen3X669xLzsi6N2V91DoiyzHzg1uAgqiT8jZ9nS96Z";
 const SOL_KEY_2 = "4Nd1mBQtrMJVYVfKf2PJy9NZUZdTAsp7D4xWLs4gDB4T";
 // A Phantom `request` method that is not supported (neutral text since 2026-11-12).
 const SOL_UNSUPPORTED = "Unsupported method.";
-const BTC_UNSUPPORTED = "이 지갑은 Bitcoin에서 메시지 서명(소유 증명)만 지원합니다";
+// Fixed English since 2026-11-14 (spec/05 §2.13, §5; Korean before).
+const BTC_UNSUPPORTED = "This wallet supports only message signing (proof of ownership) on Bitcoin.";
+const BTC_NETWORK_FIXED = "The Bitcoin network can only be changed in the Your Wallet app settings.";
 
 function lastRequest(page) {
   const all = requests(page);
@@ -1797,7 +1799,7 @@ test("P15 unisat mode: window.unisat accounts, network, message signing; PSBT an
   const switching = unisat.switchNetwork("testnet");
   await flush();
   respond(page, lastRequest(page).id, { result: "mainnet" });
-  await assert.rejects(switching, (error) => error.code === 4200);
+  await assert.rejects(switching, (error) => error.code === 4200 && error.message === BTC_NETWORK_FIXED);
   const signing = unisat.signMessage("hello", "bip322-simple");
   await flush();
   const sign = lastRequest(page);

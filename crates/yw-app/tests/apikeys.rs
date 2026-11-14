@@ -381,7 +381,7 @@ fn pasted_quicknode_urls_give_name_and_token() {
         quicknode_credentials(NAME, &TOKEN[..15]),
         Err(QuickNodeField::Token)
     );
-    assert_eq!(QuickNodeField::Token.label(), "토큰");
+    assert_eq!(QuickNodeField::Token.label(yw_core::lang::Lang::Ko), "토큰");
 }
 
 #[test]

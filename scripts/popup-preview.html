@@ -3,8 +3,8 @@
   DEV ONLY: the extension popup outside Chrome for the screenshot tour (scripts/screenshot-tour.ps1).
   The markup is extension/popup/popup.html's body; the real popup.css and popup.js are loaded
   unchanged. `chrome` is a stub: the background answers "connected" and the stored modes are
-  EVM "metamask", Solana and Bitcoin "off". Nothing here is part of the extension or reaches a
-  wallet. scripts/popup-preview.test.mjs keeps the body equal to popup.html's.
+  EVM "metamask", Solana and Bitcoin "off", the language Korean (`?lang=en`: English). Nothing
+  here is part of the extension or reaches a wallet. scripts/popup-preview.test.mjs keeps the body equal to popup.html's.
 -->
 <html lang="ko">
 <head>
@@ -36,7 +36,11 @@
       },
       storage: {
         local: {
-          async get() { return { compatMode: "metamask", solCompatMode: "off", btcCompatMode: "off" }; },
+          async get() {
+            // `?lang=en` previews the English popup (2026-11-14); Korean otherwise.
+            const language = new URLSearchParams(location.search).get("lang") === "en" ? "en" : "ko";
+            return { compatMode: "metamask", solCompatMode: "off", btcCompatMode: "off", yourWalletLanguage: language };
+          },
           async set() {}
         }
       }
@@ -46,6 +50,11 @@
 <body>
   <header class="app-header">
     <h1 id="title">Your Wallet</h1>
+    <div class="lang-toggle" role="group" aria-label="언어 · Language">
+      <button type="button" id="lang-ko" class="lang-option" lang="ko" aria-pressed="true">한국어</button>
+      <span class="lang-separator" aria-hidden="true">|</span>
+      <button type="button" id="lang-en" class="lang-option" lang="en" aria-pressed="false">English</button>
+    </div>
   </header>
   <main class="content">
     <section class="card" aria-labelledby="status-heading">

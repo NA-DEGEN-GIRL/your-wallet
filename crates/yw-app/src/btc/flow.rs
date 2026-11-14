@@ -66,16 +66,13 @@ pub enum EsploraTestOutcome {
 }
 
 impl EsploraTestOutcome {
-    /// The fixed message.
+    /// The fixed message in `lang`.
     #[must_use]
-    pub fn message(self, net: BtcNetwork) -> String {
+    pub fn message(self, lang: yw_core::lang::Lang, net: BtcNetwork) -> String {
         match self {
-            Self::Ok => format!(
-                "Esplora 서버가 작동합니다. ({}, genesis 일치)",
-                net.display_name()
-            ),
-            Self::Mismatch => ErrorCode::Btc003.text(),
-            Self::Failed(error) => error.text(BtcIndexer::Esplora),
+            Self::Ok => super::text::ESPLORA_OK.fill(lang, [net.display_name_in(lang)]),
+            Self::Mismatch => ErrorCode::Btc003.text_in(lang),
+            Self::Failed(error) => error.text(lang, BtcIndexer::Esplora),
         }
     }
 

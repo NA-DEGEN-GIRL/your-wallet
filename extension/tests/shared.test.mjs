@@ -232,6 +232,17 @@ test("S4 compatibility mode values, normalization and the optional content→bac
   assert.equal(shared.parsePageMessage({ namespace: "your-wallet", version: 1, kind: "request", channel, id: "01".repeat(16), method: "eth_chainId", params: [], compatMode: "metamask" }, channel), null);
 });
 
+test("S10 popup language: storage key and a normalizer that accepts only ko and en", () => {
+  // spec/05 §2.12 (2026-11-14): the popup's own toggle; anything else is Korean.
+  assert.equal(shared.LANGUAGE_STORAGE_KEY, "yourWalletLanguage");
+  assert.deepEqual([...shared.LANGUAGES], ["ko", "en"]);
+  assert.equal(shared.normalizeLanguage("ko"), "ko");
+  assert.equal(shared.normalizeLanguage("en"), "en");
+  for (const value of ["EN", "Ko", "en-US", "ko-KR", "english", "", " en", null, undefined, 1, true, {}, ["en"]]) {
+    assert.equal(shared.normalizeLanguage(value), "ko", String(value));
+  }
+});
+
 test("S9 Solana/Bitcoin: method families, wire compat modes and account events", () => {
   assert.equal(shared.methodFamily("sol_connect"), "sol");
   assert.equal(shared.methodFamily("btc_signMessage"), "btc");

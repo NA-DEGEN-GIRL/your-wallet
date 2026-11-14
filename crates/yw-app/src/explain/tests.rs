@@ -11,6 +11,7 @@ use yw_core::evm::chain::sepolia;
 use yw_core::evm::decode::{DecodedTx, decode_call};
 use yw_core::evm::simulate::{AssetChange, AssetId, SimulationDiff, TransferRow};
 use yw_core::evm::tx::Eip1559Tx;
+use yw_core::lang::Lang;
 use yw_json::{Limits, Value};
 
 use yw_core::approval::RiskLevel;
@@ -127,6 +128,7 @@ fn usdc_diff() -> SimulationDiff {
 fn usdc_input(sim: ExplainSim<'_>) -> ExplainInput {
     let tx = decoded(USDC, 0, erc20_transfer(RECIPIENT, 1_500_000));
     build_input(
+        Lang::Ko,
         &ExplainSource::EvmTx(&tx, sim),
         "https://app.example.org",
         &address(USER),
@@ -199,9 +201,12 @@ fn send_action() -> [&'static str; 5] {
 
 #[test]
 fn prompt_and_schema_are_the_spec_texts() {
-    assert_eq!(SYSTEM_PROMPT_V1, spec_block("### 4.2", "```text"));
+    assert_eq!(SYSTEM_PROMPT_V1.ko, spec_block("### 4.2", "```text"));
+    // spec/14: the English prompt is the block after the Korean one.
+    assert_eq!(SYSTEM_PROMPT_V1.en, spec_block("영어 프롬프트", "```text"));
+    assert!(!SYSTEM_PROMPT_V1.en.ends_with('\n'));
     assert_eq!(RESPONSE_FORMAT_SCHEMA, spec_block("### 4.5", "```json"));
-    assert!(!SYSTEM_PROMPT_V1.ends_with('\n'));
+    assert!(!SYSTEM_PROMPT_V1.ko.ends_with('\n'));
 }
 
 #[test]
@@ -238,10 +243,10 @@ fn e3_a_valid_answer_is_shown_with_local_action_lines() {
     assert_eq!(explanation.actions[0].kind, ActionType::Send);
     // The line is rebuilt from validated values: registry symbol, normalized amount, EIP-55.
     assert_eq!(
-        action_line(&explanation.actions[0], input.trusted()),
+        action_line(Lang::Ko, &explanation.actions[0], input.trusted()),
         "보냄 · USDC 1.5 · 0x9858EfFD232B4033E47d90003D41EC34EcaEda94 → 0xF278cF59F82eDcf871d630F28EcC8056f25C1cdb"
     );
-    let mut panel = AiPanel::new(true);
+    let mut panel = AiPanel::new(true, Lang::Ko);
     let (_, dispatch) = panel.set_input(0, input, false);
     let dispatch = dispatch.unwrap();
     let ended = panel.on_result(1_200, dispatch.generation, Ok(explanation));
@@ -297,6 +302,7 @@ fn e4_fabricated_values_are_mismatches() {
     };
     let tx = decoded(SCAM_TOKEN, 0, erc20_transfer(RECIPIENT, 1_500_000));
     let scam = build_input(
+        Lang::Ko,
         &ExplainSource::EvmTx(&tx, ExplainSim::Unavailable),
         "https://app.example.org",
         &address(USER),
@@ -459,6 +465,7 @@ fn e7_injected_strings_stay_untrusted() {
     };
     let tx = decoded(SCAM_TOKEN, 0, erc20_transfer(RECIPIENT, 42));
     let input = build_input(
+        Lang::Ko,
         &ExplainSource::EvmTx(&tx, ExplainSim::Unsupported),
         "https://app.example.org",
         &address(USER),
@@ -490,6 +497,7 @@ fn e7_injected_strings_stay_untrusted() {
     let value = yw_json::parse(source, &LIMITS).unwrap();
     let typed = yw_core::evm::eip712::validate_typed_data_v4(source, &value, 11_155_111).unwrap();
     let input = build_input(
+        Lang::Ko,
         &ExplainSource::TypedData(&typed),
         "https://app.example.org",
         &address(USER),
@@ -523,6 +531,7 @@ fn e7_injected_strings_stay_untrusted() {
     let decoded = yw_core::evm::eip191::decode_personal_message(siwe(&long).into_bytes());
     assert!(decoded.siwe.is_some());
     let input = build_input(
+        Lang::Ko,
         &ExplainSource::PersonalSign(&decoded),
         "https://app.example.org",
         &address(USER),
@@ -551,6 +560,7 @@ fn e7_injected_strings_stay_untrusted() {
     let bidi = format!("{}\u{202E}{}", "b".repeat(500), "c".repeat(499));
     let decoded = yw_core::evm::eip191::decode_personal_message(siwe(&bidi).into_bytes());
     let input = build_input(
+        Lang::Ko,
         &ExplainSource::PersonalSign(&decoded),
         "https://app.example.org",
         &address(USER),
@@ -569,6 +579,7 @@ fn e7_injected_strings_stay_untrusted() {
     );
     let decoded = yw_core::evm::eip191::decode_personal_message(text.into_bytes());
     let input = build_input(
+        Lang::Ko,
         &ExplainSource::PersonalSign(&decoded),
         "https://app.example.org",
         &address(USER),
@@ -611,6 +622,7 @@ fn uninterpreted_hyperliquid_names_stay_untrusted() {
             .is_some_and(yw_core::evm::eip712::KnownSchema::is_uninterpreted)
     );
     let input = build_input(
+        Lang::Ko,
         &ExplainSource::TypedData(&typed),
         "https://app.example.org",
         &address(USER),
@@ -640,7 +652,7 @@ fn e9_http_status_refusal_and_truncation() {
     ] {
         let error = parse_response(status, Some("application/json"), &ok_body, &input).unwrap_err();
         assert_eq!(error, ExplainError::Http(status));
-        assert_eq!(error.panel_text(), text);
+        assert_eq!(error.panel_text(Lang::Ko), text);
     }
     assert_eq!(
         parse_response(200, Some("text/html"), &ok_body, &input),
@@ -669,7 +681,7 @@ fn e9_http_status_refusal_and_truncation() {
         Err(ExplainError::Truncated)
     );
     assert_eq!(
-        ExplainError::Truncated.panel_text(),
+        ExplainError::Truncated.panel_text(Lang::Ko),
         "AI 응답 형식이 올바르지 않습니다"
     );
 }
@@ -679,7 +691,7 @@ fn e10_panel_generations_close_and_limit() {
     let diff = usdc_diff();
     let first = usdc_input(ExplainSim::Success(&diff));
     let second = usdc_input(ExplainSim::Unavailable);
-    let mut panel = AiPanel::new(true);
+    let mut panel = AiPanel::new(true, Lang::Ko);
     assert_eq!(panel.state(), &AiPanelState::Waiting);
     // Busy worker: the request waits, then starts on a tick.
     let (_, dispatch) = panel.set_input(0, first.clone(), true);
@@ -733,7 +745,7 @@ fn e10_panel_generations_close_and_limit() {
     );
     assert!(!panel.retry_offered());
     // Closing the window drops a request in flight.
-    let mut panel = AiPanel::new(true);
+    let mut panel = AiPanel::new(true, Lang::Ko);
     let (_, dispatch) = panel.set_input(0, second, false);
     let generation = dispatch.unwrap().generation;
     assert_eq!(panel.close(500).unwrap().result, "Discarded");
@@ -744,7 +756,7 @@ fn e10_panel_generations_close_and_limit() {
     );
     assert_eq!(panel.state(), &AiPanelState::Off);
     // A feature that is off has no panel and never requests.
-    let mut off = AiPanel::new(false);
+    let mut off = AiPanel::new(false, Lang::Ko);
     let input = usdc_input(ExplainSim::Unsupported);
     assert!(matches!(off.set_input(0, input, false), (None, None)));
     assert!(matches!(off.tick(1, false), (None, None)));
@@ -1126,6 +1138,7 @@ fn approval_for_all_data(operator: &str, approved: bool) -> Vec<u8> {
 fn tx_input(to: &str, value: u64, data: Vec<u8>) -> ExplainInput {
     let tx = decoded(to, value, data);
     build_input(
+        Lang::Ko,
         &ExplainSource::EvmTx(&tx, ExplainSim::Unsupported),
         "https://app.example.org",
         &address(USER),
@@ -1174,6 +1187,7 @@ fn critical_effects_come_from_the_wallet_decoding() {
     let typed = yw_core::evm::eip712::validate_typed_data_v4(permit.as_bytes(), &value, 11_155_111)
         .unwrap();
     let input = build_input(
+        Lang::Ko,
         &ExplainSource::TypedData(&typed),
         "https://app.example.org",
         &address(USER),
@@ -1184,6 +1198,7 @@ fn critical_effects_come_from_the_wallet_decoding() {
     assert_eq!(input.critical(), [Permit]);
     let message = yw_core::evm::eip191::decode_personal_message(b"hello".to_vec());
     let signing = build_input(
+        Lang::Ko,
         &ExplainSource::PersonalSign(&message),
         "https://app.example.org",
         &address(USER),
@@ -1241,21 +1256,24 @@ fn an_explanation_that_leaves_out_an_effect_is_folded() {
     assert!(omitted_actions(&transfer, &sent).is_empty());
 
     // The panel labels it, folds the body, offers a retry and opens on a click.
-    let mut panel = AiPanel::new(true);
+    let mut panel = AiPanel::new(true, Lang::Ko);
     let (_, dispatch) = panel.set_input(0, approve.clone(), false);
     let ended = panel
         .on_result(500, dispatch.unwrap().generation, Ok(shown))
         .unwrap();
     assert_eq!((ended.result, ended.reason), ("Shown", "Inconsistent"));
     assert!(panel.inconsistent());
-    assert_eq!(INCONSISTENT_LABEL, "설명 불일치 — 무시하세요");
+    assert_eq!(INCONSISTENT_LABEL.ko, "설명 불일치 — 무시하세요");
     let folded = body_lines(&panel, 600, "h", "m");
-    assert_eq!(folded[0], PanelLine::Notice(INCONSISTENT_LABEL.to_owned()));
+    assert_eq!(
+        folded[0],
+        PanelLine::Notice(INCONSISTENT_LABEL.ko.to_owned())
+    );
     assert!(!folded.contains(&PanelLine::Text(plain.to_owned())));
     assert!(panel.retry_offered());
     assert!(panel.toggle_expanded());
     let open = body_lines(&panel, 600, "h", "m");
-    assert_eq!(open[0], PanelLine::Notice(INCONSISTENT_LABEL.to_owned()));
+    assert_eq!(open[0], PanelLine::Notice(INCONSISTENT_LABEL.ko.to_owned()));
     assert!(open.contains(&PanelLine::Text(plain.to_owned())));
     assert!(panel.toggle_expanded());
     assert!(!body_lines(&panel, 600, "h", "m").contains(&PanelLine::Text(plain.to_owned())));
@@ -1286,10 +1304,10 @@ fn high_risk_panels_wait_for_the_acknowledgement() {
     let diff = usdc_diff();
     let input = usdc_input(ExplainSim::Success(&diff));
     let held_lines = vec![
-        PanelLine::Notice(HELD_TEXT.to_owned()),
+        PanelLine::Notice(HELD_TEXT.ko.to_owned()),
         PanelLine::Footer("h · m".to_owned()),
     ];
-    let mut panel = AiPanel::new(true);
+    let mut panel = AiPanel::new(true, Lang::Ko);
     assert!(panel.set_held(true));
     assert!(!panel.set_held(true));
     // Waiting, requesting and shown alike: only the hold notice.
@@ -1309,14 +1327,14 @@ fn high_risk_panels_wait_for_the_acknowledgement() {
     );
     // An inconsistent explanation cannot be opened while held.
     let approve = tx_input(USDC, 0, approve_data(STRANGER, U256::MAX));
-    let mut panel = AiPanel::new(true);
+    let mut panel = AiPanel::new(true, Lang::Ko);
     let (_, dispatch) = panel.set_input(0, approve.clone(), false);
     let shown = check(&content("USDC 컨트랙트를 호출합니다.", &[], &[]), &approve).unwrap();
     panel.on_result(10, dispatch.unwrap().generation, Ok(shown));
     panel.set_held(true);
     assert!(!panel.toggle_expanded());
     // A skipped panel keeps its sentence.
-    let mut skipped = AiPanel::new(true);
+    let mut skipped = AiPanel::new(true, Lang::Ko);
     skipped.skip(0, "차단된 요청은 설명하지 않습니다.");
     skipped.set_held(true);
     assert_eq!(
@@ -1325,4 +1343,280 @@ fn high_risk_panels_wait_for_the_acknowledgement() {
             "차단된 요청은 설명하지 않습니다.".to_owned()
         )]
     );
+}
+
+/// The English counterpart of `usdc_input` (spec/14: the approval window's language).
+fn usdc_input_en(sim: ExplainSim<'_>) -> ExplainInput {
+    let tx = decoded(USDC, 0, erc20_transfer(RECIPIENT, 1_500_000));
+    build_input(
+        Lang::En,
+        &ExplainSource::EvmTx(&tx, sim),
+        "https://app.example.org",
+        &address(USER),
+        &sepolia(),
+        &ChainFacts::default(),
+    )
+    .unwrap()
+}
+
+const SUMMARY_EN: &str = "If executed, 1.5 USDC moves from your account to the recipient 0xF278cF59F82eDcf871d630F28EcC8056f25C1cdb.";
+
+/// The system message of a request body.
+fn system_message(body: &[u8]) -> String {
+    let root = yw_json::parse(body, &LIMITS).unwrap();
+    root.as_object()
+        .and_then(|object| object.get("messages"))
+        .and_then(Value::as_array)
+        .and_then(|messages| messages.first())
+        .and_then(Value::as_object)
+        .and_then(|message| message.get("content"))
+        .and_then(Value::as_str)
+        .unwrap()
+        .to_owned()
+}
+
+/// spec/06 §4.2–§4.3 (2026-11-14): an English input asks for an English answer with English
+/// labels; the Korean input keeps its Korean prompt and labels.
+#[test]
+fn english_input_uses_the_english_prompt_and_labels() {
+    let cfg = test_config(None);
+    let english = usdc_input_en(ExplainSim::Unsupported);
+    assert_eq!(english.lang(), Lang::En);
+    let body = build_body(&cfg, &english).unwrap();
+    assert_eq!(system_message(&body), SYSTEM_PROMPT_V1.en);
+    let english_json = String::from_utf8_lossy(english.json()).into_owned();
+    assert!(!yw_core::lang::has_hangul(&english_json), "{english_json}");
+    let korean = usdc_input(ExplainSim::Unsupported);
+    assert_eq!(korean.lang(), Lang::Ko);
+    assert_eq!(
+        system_message(&build_body(&cfg, &korean).unwrap()),
+        SYSTEM_PROMPT_V1.ko
+    );
+    // A native send and an unlimited approval: `Send SepoliaETH`, `unlimited` (in `M`).
+    let native = build_input(
+        Lang::En,
+        &ExplainSource::EvmTx(&decoded(RECIPIENT, 10, Vec::new()), ExplainSim::Unsupported),
+        "https://app.example.org",
+        &address(USER),
+        &sepolia(),
+        &ChainFacts::default(),
+    )
+    .unwrap();
+    assert!(occurs(
+        &user_message(&build_body(&cfg, &native).unwrap()),
+        "Send SepoliaETH"
+    ));
+    // A transfer of the type maximum: the amount is shown as unlimited.
+    let mut data = erc20_transfer(RECIPIENT, 0);
+    data.truncate(36);
+    data.extend_from_slice(&U256::MAX.to_be_bytes());
+    let tx = decoded(USDC, 0, data);
+    let approve = build_input(
+        Lang::En,
+        &ExplainSource::EvmTx(&tx, ExplainSim::Unsupported),
+        "https://app.example.org",
+        &address(USER),
+        &sepolia(),
+        &ChainFacts::default(),
+    )
+    .unwrap();
+    assert!(occurs(
+        &user_message(&build_body(&cfg, &approve).unwrap()),
+        "unlimited"
+    ));
+    assert!(approve.trusted().has_amount("unlimited"));
+    assert!(!approve.trusted().has_amount("무제한"));
+    assert!(!yw_core::lang::has_hangul(&String::from_utf8_lossy(
+        approve.json()
+    )));
+}
+
+/// spec/06 §5.2 (2026-11-14): an English answer passes the same checks without Hangul; Hangul in
+/// it is a forbidden character, while a Korean answer keeps the Korean allowlist.
+#[test]
+fn english_answers_exclude_hangul() {
+    let diff = usdc_diff();
+    let input = usdc_input_en(ExplainSim::Success(&diff));
+    let explanation = check(
+        &content(
+            SUMMARY_EN,
+            &[send_action()],
+            &["Who owns the recipient address cannot be told from the input."],
+        ),
+        &input,
+    )
+    .unwrap();
+    assert_eq!(explanation.summary, SUMMARY_EN);
+    for (summary, unknowns) in [
+        ("1.5 USDC를 보냅니다.", Vec::new()),
+        (SUMMARY_EN, vec!["주인은 알 수 없습니다."]),
+    ] {
+        assert_eq!(
+            check(&content(summary, &[send_action()], &unknowns), &input),
+            Err(ExplainError::Hidden(HiddenReason::ForbiddenChar)),
+            "{summary}"
+        );
+    }
+    // The verdict filter covers the English words (old and new).
+    for verdict in [
+        "This transfer is safe.",
+        "The recipient looks trustworthy.",
+        "This is the official USDC contract.",
+        "You can approve this.",
+    ] {
+        assert_eq!(
+            check(&content(verdict, &[], &[]), &input),
+            Err(ExplainError::Hidden(HiddenReason::Verdict)),
+            "{verdict}"
+        );
+    }
+    // The Korean input still takes Hangul.
+    let korean = usdc_input(ExplainSim::Success(&diff));
+    assert!(check(&content(SUMMARY, &[send_action()], &[]), &korean).is_ok());
+}
+
+/// The text of a panel line (`None` for a gap).
+fn line_text(line: &PanelLine) -> Option<&str> {
+    match line {
+        PanelLine::Text(text)
+        | PanelLine::Action(text)
+        | PanelLine::Heading(text)
+        | PanelLine::Bullet(text)
+        | PanelLine::Footer(text)
+        | PanelLine::Notice(text) => Some(text),
+        PanelLine::Gap => None,
+    }
+}
+
+fn assert_no_hangul(lines: &[PanelLine]) {
+    for text in lines.iter().filter_map(line_text) {
+        assert!(!yw_core::lang::has_hangul(text), "{text}");
+    }
+}
+
+/// spec/06 §6–§7 and spec/14: an English panel (the approval window's language) draws no Hangul
+/// in its fixed texts, action lines, notices and footer.
+#[test]
+fn english_panel_lines_have_no_hangul() {
+    let diff = usdc_diff();
+    let input = usdc_input_en(ExplainSim::Success(&diff));
+    let explanation = check(
+        &content(
+            SUMMARY_EN,
+            &[send_action()],
+            &["Who owns the recipient address cannot be told from the input."],
+        ),
+        &input,
+    )
+    .unwrap();
+    assert_eq!(
+        action_line(Lang::En, &explanation.actions[0], input.trusted()),
+        "Send · USDC 1.5 · 0x9858EfFD232B4033E47d90003D41EC34EcaEda94 → 0xF278cF59F82eDcf871d630F28EcC8056f25C1cdb"
+    );
+    let mut panel = AiPanel::new(true, Lang::En);
+    assert_eq!(panel.lang(), Lang::En);
+    assert_no_hangul(&body_lines(&panel, 0, "h", "m"));
+    let (_, dispatch) = panel.set_input(0, input, false);
+    assert_no_hangul(&body_lines(&panel, 2_500, "h", "m"));
+    panel.on_result(1_200, dispatch.unwrap().generation, Ok(explanation));
+    let lines = body_lines(&panel, 1_300, "api.example.org", "test-model");
+    assert!(lines.contains(&PanelLine::Heading(
+        "What the AI could not determine:".to_owned()
+    )));
+    assert_eq!(
+        lines.last(),
+        Some(&PanelLine::Footer(
+            "api.example.org · test-model · 1.2 s".to_owned()
+        ))
+    );
+    assert_no_hangul(&lines);
+    panel.set_held(true);
+    assert_no_hangul(&body_lines(&panel, 1_300, "h", "m"));
+    // An inconsistent English explanation: the notice names the omitted effect in English.
+    let approve = build_input(
+        Lang::En,
+        &ExplainSource::EvmTx(
+            &decoded(USDC, 0, approve_data(STRANGER, U256::MAX)),
+            ExplainSim::Unsupported,
+        ),
+        "https://app.example.org",
+        &address(USER),
+        &sepolia(),
+        &ChainFacts::default(),
+    )
+    .unwrap();
+    let mut panel = AiPanel::new(true, Lang::En);
+    let (_, dispatch) = panel.set_input(0, approve.clone(), false);
+    let shown = check(&content("Calls the USDC contract.", &[], &[]), &approve).unwrap();
+    panel.on_result(10, dispatch.unwrap().generation, Ok(shown));
+    assert!(panel.inconsistent());
+    let lines = body_lines(&panel, 20, "h", "m");
+    assert_eq!(
+        lines[0],
+        PanelLine::Notice(INCONSISTENT_LABEL.en.to_owned())
+    );
+    assert!(matches!(&lines[1], PanelLine::Text(text) if text.contains("token spending approval")));
+    assert_no_hangul(&lines);
+    // Every error text in English.
+    for error in [
+        ExplainError::NotConfigured,
+        ExplainError::InputTooLarge,
+        ExplainError::Timeout,
+        ExplainError::Network,
+        ExplainError::Http(401),
+        ExplainError::Http(429),
+        ExplainError::Http(500),
+        ExplainError::TooLarge,
+        ExplainError::Schema,
+        ExplainError::Refusal,
+        ExplainError::Hidden(HiddenReason::Link),
+        ExplainError::Mismatch(MismatchReason::HexToken),
+        ExplainError::LimitReached,
+    ] {
+        assert!(
+            !yw_core::lang::has_hangul(&error.panel_text(Lang::En)),
+            "{error:?}"
+        );
+    }
+    // An English mention of an approval counts (§5.4 word lists, both columns).
+    let mentioned = check(
+        &content(
+            "Gives the spender an unlimited allowance of USDC.",
+            &[],
+            &[],
+        ),
+        &approve,
+    )
+    .unwrap();
+    assert!(omitted_actions(&approve, &mentioned).is_empty());
+}
+
+/// spec/14 §4: the explain catalogue keeps its invariants (placeholders, no Hangul in English)
+/// and the word lists are in `verdict_norm` form.
+#[test]
+fn explain_catalogue_invariants() {
+    use yw_core::lang::placeholders;
+    for entry in super::text::ALL {
+        let mut ko = placeholders(entry.ko);
+        let mut en = placeholders(entry.en);
+        ko.sort_unstable();
+        ko.dedup();
+        en.sort_unstable();
+        en.dedup();
+        let all: Vec<usize> = (0..entry.args).collect();
+        assert_eq!(ko, all, "{}", entry.name);
+        assert_eq!(en, all, "{}", entry.name);
+        assert!(!yw_core::lang::has_hangul(entry.en), "{}", entry.name);
+    }
+    for list in [
+        super::text::VERDICTS,
+        super::text::MENTION_APPROVAL,
+        super::text::MENTION_PERMIT,
+        super::text::MENTION_APPROVAL_FOR_ALL,
+        super::text::MENTION_TRANSFER,
+    ] {
+        for word in list.ko.split(' ').chain(list.en.split(' ')) {
+            assert_eq!(verdict_norm(word), word);
+        }
+    }
 }

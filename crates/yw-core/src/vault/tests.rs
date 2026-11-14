@@ -4208,7 +4208,8 @@ fn unknown_path_card_vault_accounts_and_zcash_collision() {
         )
         .unwrap();
     assert!(
-        btc.path_text(
+        btc.path_text_in(
+            crate::lang::Lang::Ko,
             crate::btc::BtcNetwork::Testnet4,
             crate::bip32::path::BtcChain::Receive,
             0
@@ -4217,7 +4218,7 @@ fn unknown_path_card_vault_accounts_and_zcash_collision() {
     );
     assert!(
         crate::slip10::SolKeySource::Hardware(index(900))
-            .path_text()
+            .path_text_in(crate::lang::Lang::Ko)
             .starts_with(crate::yubikey::plan::T_UNKNOWN_PATH)
     );
     // A Zcash key that a card holds is refused; another one is imported next to the card.
