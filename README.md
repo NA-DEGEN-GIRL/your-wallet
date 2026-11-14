@@ -2,10 +2,13 @@
 
 **한국어** · **[English](#english)**
 
-Windows 11 PC 한 대에서 쓰는 개인용 멀티체인 지갑입니다. 키와 서명은 브라우저 밖의 데스크톱 앱이 맡고(원하면 YubiKey
-안에서 서명 — 등록과 거래 내용 확인은 PC를 믿어야 합니다), Chrome 확장은 dApp 요청을 앱으로 전달만 합니다. 서명할
-데이터는 앱이 직접 해석해 별도 창에 보여 주고, EVM·Solana·Bitcoin·Zcash·HyperCore를 한 앱에서 다룹니다. 소스로만
-공개하며, 각자 자기 PC에서 직접 빌드해 설치합니다.
+Windows 11 PC 한 대에서 쓰는 개인용 멀티체인 지갑으로, 무엇보다 보안을 앞에 두고 만들었습니다. 키와 서명은
+브라우저 밖(데스크톱 앱, 원하면 YubiKey)에만 있고, Chrome 확장은 비밀을 하나도 갖지 않은 채 dApp 요청을 앱으로
+전달만 합니다. 서명 요청은 모두 사이트가 붙인 설명이 아니라 앱이 서명할 바이트를 직접 해석한 결과로 앱의 승인
+창에 보여 주고, 해석하지 못한 부분은 경고합니다. 아무 데이터에나 서명하는 블라인드 서명(`eth_sign`)은 지원하지
+않습니다. YubiKey가 있다면 하드웨어 지갑처럼 쓸 수도 있습니다(선택 — 카드에 화면이 없어 등록과 거래 내용 확인은
+PC를 믿어야 합니다). EVM·Solana·Bitcoin·Zcash·HyperCore를 한 앱에서 다루고, 호환 모드로 기존 dApp에도
+연결됩니다. 소스로만 공개하며, 각자 자기 PC에서 직접 빌드해 설치합니다.
 
 <p align="center">
   <img src="docs/screenshots/10-main-evm.png" width="49%" alt="메인 화면(EVM)">
@@ -20,9 +23,9 @@ Windows 11 PC 한 대에서 쓰는 개인용 멀티체인 지갑입니다. 키�
 
 | | 일반적인 브라우저 확장 지갑 | Your Wallet |
 |---|---|---|
-| 키가 있는 곳 | 브라우저 확장의 저장소 | 브라우저 밖 데스크톱 앱의 암호화 vault, 또는 YubiKey 안 |
+| 키가 있는 곳 | 브라우저 확장의 저장소 | 브라우저 밖 데스크톱 앱의 암호화 vault, 또는 (선택) YubiKey 안 |
 | 서명을 확인하는 곳 | 브라우저 확장 팝업 | 항상 위에 뜨는 별도 Windows 창 — 서명할 바이트를 앱이 직접 해석하고, EVM 거래와 Solana dApp 거래는 시뮬레이션까지 |
-| 하드웨어 서명 | 화면이 있는 별도 하드웨어 지갑 | YubiKey 5가 카드 안에서 서명(EVM·Bitcoin·Zcash·Solana), 여러 장을 서로의 백업으로. 화면이 없어 등록과 거래 내용 확인은 PC를 믿음 |
+| 하드웨어 서명 (선택) | 화면이 있는 별도 하드웨어 지갑 | YubiKey 5가 있다면 카드 안에서 서명(EVM·Bitcoin·Zcash·Solana), 여러 장을 서로의 백업으로. 화면이 없어 등록과 거래 내용 확인은 PC를 믿음 |
 | 체인 | 지갑마다 다름 | EVM 7개 + 직접 추가, Solana(dApp 거래 포함), Bitcoin(주소 형식 4가지), Zcash, HyperCore |
 | 배포 | 스토어에서 받는 바이너리 | 소스만 — 직접 빌드, 의존성 고정, 확장은 npm 패키지 0개 |
 
@@ -44,62 +47,67 @@ Windows 11 PC 한 대에서 쓰는 개인용 멀티체인 지갑입니다. 키�
 누르기가 필요하고 Enter로는 승인되지 않습니다. 창에 보내지거나 흉내 낸 Enter 키로는 승인되지 않습니다(같은 PC의
 악성 프로그램을 막는 장치는 아닙니다).
 
-**4. YubiKey 안에서 서명합니다.** 'YubiKey 지갑'(복구 단어를 PC에 저장하지 않는 지갑)을 만들면 복구 단어에서 고른 키를
-YubiKey 5에 넣고, 그 뒤 PC에는 공개키와 슬롯 표만 남습니다. 서명은 카드 안에서 하며, 승인한 요청마다 PIN(기억해 두지
-않음)을 입력하고 기본 설정에서는 서명마다 터치가 필요합니다. 다만 등록할 때 복구 단어와 키가 한 번 PC 메모리를 거치고,
-카드에는 화면이 없어 무엇에 서명하는지는 PC 승인 창으로만 확인합니다. 화면이 있는 하드웨어 지갑처럼 PC를 믿지 않아도
-되는 장치는 아닙니다([한계](#보안-범위)). EVM·Bitcoin·Zcash는 OpenPGP secp256k1, Solana는 PIV Ed25519로
-서명하며, HyperCore·WalletConnect·Solana dApp 거래도 YubiKey로 서명합니다. 같은 복구 단어의 키를 최대 8장의 카드에 넣어
-서로의 백업으로 쓰고, 한 카드에 다른 카드 키의 사본과 새 키를 함께 둘 수도 있습니다.
+**4. 체인마다 지갑을 바꿀 필요가 없습니다.** EVM 7개와 직접 추가한 EVM 체인, Solana, Bitcoin, Zcash, Hyperliquid HyperCore를
+한 앱과 한 복구 단어로 다룹니다. Solana dApp은 연결·메시지 서명과 거래 서명·전송(legacy·v0, 주소 조회 테이블, 여러 건 한
+번에)이 되며, 사이트가 만든 거래도 지갑이 직접 해석해 EVM과 같은 승인 창·위험 규칙·시뮬레이션을 거칩니다(수수료도 RPC
+답만 믿지 않고 거래 바이트에서 직접 계산).
 
-**5. 체인마다 지갑을 바꿀 필요가 없습니다.** EVM 7개와 직접 추가한 EVM 체인, Solana, Bitcoin, Zcash, Hyperliquid HyperCore를
-한 앱과 한 복구 단어로 다룹니다. Solana dApp은 연결·메시지 서명에 더해 **거래 서명·전송**(legacy·v0, 주소 조회 테이블, 여러
-건 한 번에)까지 되고, EVM과 같은 승인 창·위험 규칙·시뮬레이션을 거칩니다.
-
-**6. 표준 복구.** BIP39 복구 단어와 표준 경로(BIP44/49/84/86, Solana `m/44'/501'`)를 쓰므로 다른 지갑에서도 같은 주소를
+**5. 표준 복구.** BIP39 복구 단어와 표준 경로(BIP44/49/84/86, Solana `m/44'/501'`)를 쓰므로 다른 지갑에서도 같은 주소를
 복구할 수 있습니다. 복구 단어를 여러 개 두거나 개인키만 가져와 쓸 수도 있습니다.
 
-**7. 주소 오염·피싱 대비.**
+**6. 주소 오염·피싱 대비.**
 - 주소록·내 계정·보낸 내역의 주소와 앞뒤만 비슷한 주소를 경고하고 확인을 받습니다(앱 보내기, dApp, WalletConnect).
 - 승인·연결 창, 보내기, 받기, 주소록에서는 주소를 자르지 않고 전체로 보여 줍니다. 접두부 뒤 4자와 끝 4자를 강조하되,
   가운데까지 확인하라고 안내합니다.
 - 보이지 않는 문자나 글자 방향을 바꾸는 유니코드 문자는 `[U+XXXX]`로 드러내 보입니다.
 - 받은 내역은 기본으로 꺼져 있습니다. 켜도 0원·먼지 입금은 숨기고, 보낸 사람 주소는 복사할 수 없습니다. Bitcoin·Zcash의 아직 확인되지 않은(멤풀, 0 확인) 입금도 txid와 함께 "미확정"으로 보이지만, 잔액에 넣지 않고 보낼 때도 쓰지 않으며 확인될 때까지 보낸 주소를 보이지 않습니다.
 
-**8. 비밀은 화면과 클립보드에도 남기지 않습니다.** 복구 단어·개인키 창은 화면 캡처에서 제외되며, 제외할 수 없으면 아예
+**7. 비밀은 화면과 클립보드에도 남기지 않습니다.** 복구 단어·개인키 창은 화면 캡처에서 제외되며, 제외할 수 없으면 아예
 보여 주지 않습니다. 비밀 복사는 기본으로 꺼져 있고, 켜도 클립보드 기록·클라우드 동기화에서 빠지며 그대로 두면 30초 뒤 지워집니다.
 자리를 비운 지 10분(1–60분 조절), Windows 잠금, 절전 때 자동으로 잠깁니다. vault는 Argon2id(256 MiB) +
 XChaCha20-Poly1305로 암호화합니다.
 
-**9. 프라이버시.** 텔레메트리, 충돌 보고 업로드, 지갑 자체 서버가 없습니다. 앱이 연결하는 곳은 내가 설정한 RPC와 기능에
+**8. 프라이버시.** 텔레메트리, 충돌 보고 업로드, 지갑 자체 서버가 없습니다. 앱이 연결하는 곳은 내가 설정한 RPC와 기능에
 필요한 곳뿐입니다: Bitcoin 주소 조회(기본 mempool.space의 Esplora, 바꿀 수 있음), HyperCore(Hyperliquid 공식 API), 켰을
 때의 WalletConnect 릴레이와 AI 설명 공급자. 로그에는 비밀번호·복구 단어·키·API 키·RPC 주소·금액·사이트 주소를 남기지
 않습니다(내 주소와 거래 해시는 남을 수 있습니다).
 
-**10. 기존 dApp과 호환.** 기본 이름(`Your Wallet (EVM)`·`Your Wallet (Solana)`) 외에 MetaMask·Rabby·Phantom·UniSat·Xverse처럼
+**9. 기존 dApp과 호환.** 기본 이름(`Your Wallet (EVM)`·`Your Wallet (Solana)`) 외에 MetaMask·Rabby·Phantom·UniSat·Xverse처럼
 보이는 호환 모드가 있고, 확장 없이 WalletConnect v2(QR·링크)로도 연결합니다.
 
-**11. 검토할 수 있는 공급망.** Rust 외부 크레이트는 54개이고 `Cargo.lock` 체크섬으로 고정해 `--locked`로 빌드합니다.
+**10. 검토할 수 있는 공급망.** Rust 외부 크레이트는 54개이고 `Cargo.lock` 체크섬으로 고정해 `--locked`로 빌드합니다.
 크레이트마다 의존성 허용 목록이 있어 새 크레이트는 검사 스크립트가 막고, 확장은 npm 패키지를 하나도 쓰지 않습니다. 서명·해시·
 암호화 같은 암호 기본 요소는 직접 구현하지 않고 널리 쓰이는 크레이트를 고정 버전으로 씁니다. `unsafe`는 Windows API를 감싸는
 크레이트 하나에서만 허용하고, 게이트는 1,400개가 넘는 테스트와 fuzz-lite 대상 22개, 개인정보 검사, 확장 정적 감사를 매번
 실행합니다.
 
+**11. YubiKey가 있다면 하드웨어 지갑처럼 (선택).** YubiKey는 없어도 되지만, 있다면 하드웨어 지갑처럼 쓸 수 있습니다.
+'YubiKey 지갑'(복구 단어를 PC에 저장하지 않는 지갑)을 만들면 복구 단어에서 고른 키를 YubiKey 5에 넣고, 그 뒤 PC에는
+공개키와 슬롯 표만 남습니다. 서명은 카드 안에서 하며, 승인한 요청마다 PIN(기억해 두지 않음)을 입력하고 기본 설정에서는
+서명마다 터치가 필요합니다. 다만 등록할 때 복구 단어와 키가 한 번 PC 메모리를 거치고, 카드에는 화면이 없어 무엇에
+서명하는지는 PC 승인 창으로만 확인합니다. 화면이 있는 하드웨어 지갑처럼 PC를 믿지 않아도 되는 장치는 아닙니다
+([한계](#보안-범위)). EVM·Bitcoin·Zcash는 OpenPGP secp256k1, Solana는 PIV Ed25519로 서명하며, HyperCore·WalletConnect·
+Solana dApp 거래도 YubiKey로 서명합니다. 같은 복구 단어의 키를 최대 8장의 카드에 넣어 서로의 백업으로 쓰고, 한 카드에
+다른 카드 키의 사본과 새 키를 함께 둘 수도 있습니다.
+
 ## 화면
 
 <p align="center">
-  <img src="docs/screenshots/55-main-evm-activity.png" width="49%" alt="토큰·활동 카드">
-  <img src="docs/screenshots/41-yubikey-result.png" width="49%" alt="YubiKey 등록">
+  <img src="docs/screenshots/13-approval-no-simulation.png" width="49%" alt="고위험 요청: 경고 확인 체크와 2초 누르기">
+  <img src="docs/screenshots/58-approval-sol-dapp-tx.png" width="49%" alt="사이트가 만든 Solana 거래를 지갑이 해석해 위임을 경고">
+</p>
+<p align="center">
+  <img src="docs/screenshots/26-approval-connect.png" width="49%" alt="사이트 연결 창: 보여 줄 계정을 직접 고름">
+  <img src="docs/screenshots/55-main-evm-activity.png" width="49%" alt="주소를 자르지 않고 전체로 보이는 활동 카드">
 </p>
 <p align="center">
   <img src="docs/screenshots/15-main-solana.png" width="49%" alt="Solana 탭">
   <img src="docs/screenshots/16-main-bitcoin.png" width="49%" alt="Bitcoin 탭">
 </p>
-<p align="center">
-  <img src="docs/screenshots/58-approval-sol-dapp-tx.png" width="49%" alt="Solana dApp 거래 승인 창">
-  <img src="docs/screenshots/59-approval-sol-dapp-batch.png" width="49%" alt="Solana dApp 거래 여러 건 승인 창">
-</p>
 
+위: 시뮬레이션 결과가 없어 고위험으로 표시된 요청(경고를 읽었다는 체크와 2초 누르기가 있어야 승인), 사이트가 만든 Solana
+거래를 지갑이 직접 해석해 토큰 위임(Approve)과 해석하지 않은 프로그램을 경고하는 승인 창. 가운데: 사이트에 보여 줄 계정을
+직접 고르는 연결 창, 주소를 자르지 않고 앞뒤 4자를 강조하는 활동 카드. 아래: Solana·Bitcoin 탭.
 모든 화면은 시험용 값입니다. 전체 화면 투어: [docs/screenshots](docs/screenshots/README.md).
 
 ## 기능
@@ -133,13 +141,15 @@ XChaCha20-Poly1305로 암호화합니다.
   Solana X01–X20), 1회용 승인, 1초 대기·2초 누르기.
 - Chrome 확장: EVM은 EIP-1193/EIP-6963, Solana는 Wallet Standard(Phantom 호환 모드 포함). Bitcoin은 확장 팝업에서 UniSat·Xverse
   호환 모드를 켰을 때만 페이지에 보이며, 연결과 **메시지 서명(BIP137·BIP322, 소유 증명)만** 됩니다.
-- **Solana dApp 거래** — `signTransaction`, `signAllTransactions`(최대 32건을 창 하나·승인 한 번으로), `signAndSendTransaction`.
+- Solana dApp 거래 — 사이트가 만든 거래를 지갑이 직접 해석해 같은 승인 창에 보여 줍니다. `signTransaction`,
+  `signAllTransactions`(최대 32건을 창 하나·승인 한 번으로), `signAndSendTransaction`.
   - legacy·v0 거래와 주소 조회 테이블(ALT), 사이트가 먼저 넣은 서명, 지갑이 아닌 수수료 지불자를 지원합니다. 지갑은
     blockhash를 바꾸지 않고 내 서명 칸만 채웁니다.
   - System·Token·Token-2022·ATA·ComputeBudget·Memo 명령을 해석해 보여 줍니다. 해석하지 못한 프로그램은 막지 않고
     고위험으로 경고하며, 판단은 사용자가 합니다. 위임(Approve), 권한 변경, 다른 주소로 계정 닫기, Token-2022의
     PermanentDelegate·TransferHook도 고위험입니다.
-  - durable nonce 거래는 서명만 됩니다(전송은 거부). 지갑이 수수료를 낼 때 상한(기본 100,000 lamports)을 넘으면 고위험입니다.
+  - durable nonce 거래는 서명만 됩니다(전송은 거부). 수수료는 거래 바이트에서 직접 계산하며, 지갑이 수수료를 낼 때 상한(기본
+    100,000 lamports)을 넘거나 RPC가 알려준 값이 계산과 다르면 고위험입니다.
   - 시뮬레이션은 내 RPC가 답한 참고 정보입니다. 서명만 해 준 거래는 지갑이 보내지 않으므로 활동에 남지 않습니다.
 - WalletConnect v2(EVM만): `wc:` 링크를 붙여넣거나 스크린샷·이미지 파일의 QR을 읽어 연결합니다. 켜려면
   `dashboard.reown.com`에서 받은 **내 Reown Project ID**가 필요합니다(기본값 없음). 확장과 같은 승인 창·위험 규칙·시뮬레이션을
@@ -257,10 +267,14 @@ AI 비서에게 설치를 도와 달라고 할 때(영문): [docs/llm-install-gu
 
 [↑ 한국어](#your-wallet)
 
-A personal multi-chain wallet for one Windows 11 PC. Keys and signing live in a desktop app outside the browser
-(optionally signing inside a YubiKey — enrolment and transaction review still trust the PC); the Chrome extension
-only forwards dApp requests to it. The app decodes what you are about to sign and shows it in its own window, and one
-app covers EVM, Solana, Bitcoin, Zcash and HyperCore. Published as source only — you build and install it yourself.
+A personal multi-chain wallet for one Windows 11 PC, built security-first. Keys and signing never live in the
+browser — only in a desktop app outside it (or optionally a YubiKey); the Chrome extension holds no secret at all
+and only forwards dApp requests to the app. Every signing request is shown in the app's own approval window as the
+app decoded it from the exact bytes to be signed, never the site's own description, and anything it can't decode is
+flagged. Blind signing of arbitrary data (`eth_sign`) is not supported. If you have a YubiKey, you can optionally use
+it like a hardware wallet (the card has no screen, so enrolment and transaction review still trust the PC). One app
+covers EVM, Solana, Bitcoin, Zcash and HyperCore, and compatibility modes connect it to existing dApps. Published as
+source only — you build and install it yourself.
 
 > **Status:** every planned feature is implemented and the full repository gate (`scripts/check.ps1`) passes;
 > manual per-milestone verification ([docs/acceptance/](docs/acceptance/)) is still in progress. It is a personal
@@ -271,9 +285,9 @@ app covers EVM, Solana, Bitcoin, Zcash and HyperCore. Published as source only �
 
 | | Typical browser-extension wallet | Your Wallet |
 |---|---|---|
-| Where keys live | Browser extension storage | Encrypted vault of a desktop app outside the browser, or inside a YubiKey |
+| Where keys live | Browser extension storage | Encrypted vault of a desktop app outside the browser, or optionally inside a YubiKey |
 | Where you review a signature | Extension popup | A separate always-on-top Windows window — the app decodes the exact bytes, and simulates EVM transactions and Solana dApp transactions |
-| Hardware signing | A separate hardware wallet with its own screen | A YubiKey 5 signs inside the card (EVM, Bitcoin, Zcash, Solana); several cards back each other up. No screen, so enrolment and transaction review trust the PC |
+| Hardware signing (optional) | A separate hardware wallet with its own screen | With a YubiKey 5, signing happens inside the card (EVM, Bitcoin, Zcash, Solana); several cards back each other up. No screen, so enrolment and transaction review trust the PC |
 | Chains | Varies by wallet | 7 EVM chains + your own, Solana (dApp transactions included), Bitcoin (4 address types), Zcash, HyperCore |
 | Distribution | Store binary | Source only — you build it; pinned dependencies; zero npm packages in the extension |
 
@@ -299,7 +313,47 @@ approve button arms only a second after the window comes to the front, and any c
 the wait. Risky requests need a confirmation tick and a 2-second hold, and Enter never approves them. A posted or
 injected Enter key never approves (a consistency check, not a defence against malware on the PC).
 
-**4. Signing inside a YubiKey.** With a "YubiKey wallet" (one that never stores the recovery phrase on the PC), keys
+**4. One wallet for many chains.** Seven EVM chains plus any you add, Solana, Bitcoin, Zcash and Hyperliquid HyperCore
+from one app and one recovery phrase. Solana dApps can connect, request message signatures and sign or send
+transactions (legacy and v0, address lookup tables, several at once); site-built transactions are parsed by the wallet
+itself and go through the same approval window, risk rules and simulation as EVM (the fee, too, is computed from the
+transaction bytes rather than taken on the RPC's word).
+
+**5. Standard recovery.** BIP39 phrases and standard paths (BIP44/49/84/86, Solana `m/44'/501'`) mean other wallets
+recover the same addresses. Several recovery phrases and key-only accounts are supported.
+
+**6. Address-poisoning and phishing defences.**
+- Addresses that only share the start and end with an address-book entry, one of your accounts or a past recipient
+  are flagged and need confirmation (app sends, dApps and WalletConnect).
+- Approval and connect windows, send, receive and the address book show addresses whole, never shortened. The 4
+  characters after the prefix and the last 4 are emphasized, with a reminder to check the middle too.
+- Invisible characters and Unicode direction overrides are revealed as `[U+XXXX]`.
+- Received history is off by default. When on, zero-value and dust deposits are hidden and senders can't be copied. Bitcoin and Zcash deposits still in the mempool (0 confirmations) show with their txid, marked as unconfirmed; they are never counted in the balance or spent, and their sender is shown only once they confirm.
+
+**7. Secrets stay off the screen and the clipboard.** Recovery-phrase and private-key windows are excluded from screen
+capture, and if exclusion fails they show nothing. Copying secrets is off by default; when turned on, the copy is kept
+out of clipboard history and cloud sync and cleared after 30 seconds if left untouched. The wallet locks after 10 idle minutes
+(adjustable from 1 to 60), on Windows lock and on sleep. The vault is encrypted with Argon2id (256 MiB) +
+XChaCha20-Poly1305.
+
+**8. Privacy.** No telemetry, no crash upload, no wallet server. The app talks only to the RPC you configure and to
+services a feature needs: Bitcoin address lookups (mempool.space's Esplora by default, changeable), HyperCore (the
+official Hyperliquid API), and — when you turn them on — the WalletConnect relay and your AI provider. Logs never
+contain passwords, recovery phrases, keys, API keys, RPC URLs, amounts or site origins (your addresses and transaction
+hashes may appear).
+
+**9. Works with existing dApps.** Besides the default names (`Your Wallet (EVM)`, `Your Wallet (Solana)`) there are
+compatibility modes that look like MetaMask, Rabby, Phantom, UniSat or Xverse, and WalletConnect v2 (QR or link)
+without the extension.
+
+**10. A supply chain you can review.** There are 54 third-party Rust crates, pinned with checksums in `Cargo.lock` and
+built with `--locked`. A per-crate dependency allowlist makes a check script reject any new crate, and the extension
+uses no npm packages. Cryptographic primitives (signatures, hashes, encryption) are never hand-rolled; they come from
+widely used crates at pinned versions. `unsafe` is allowed only in the one crate that wraps the Windows API, and the
+gate runs more than 1,400 tests, 22 fuzz-lite targets, a privacy scan and an extension static audit every time.
+
+**11. Have a YubiKey? Use it like a hardware wallet (optional).** A YubiKey is not required, but if you have one you
+can use it like a hardware wallet. With a "YubiKey wallet" (one that never stores the recovery phrase on the PC), keys
 from your phrase are put onto a YubiKey 5, and afterwards the PC keeps only the public keys and a slot table. Signing
 happens on the card: each approved request needs the PIN (never cached) and, by default, a touch per signature. The
 phrase and keys do pass through PC memory once at enrolment, and the card has no screen, so the PC window is the only
@@ -308,47 +362,14 @@ place to check what you sign. It is not a hardware wallet with a screen that let
 WalletConnect and Solana dApp transactions can be signed with the card too. Keys from the same phrase can go on up to
 8 cards as backups of each other, and one card can hold copies of another card's keys alongside new ones.
 
-**5. One wallet for many chains.** Seven EVM chains plus any you add, Solana, Bitcoin, Zcash and Hyperliquid HyperCore
-from one app and one recovery phrase. Solana dApps can connect, request message signatures and now **sign or send
-transactions** (legacy and v0, address lookup tables, several at once) through the same approval window, risk rules and
-simulation as EVM.
-
-**6. Standard recovery.** BIP39 phrases and standard paths (BIP44/49/84/86, Solana `m/44'/501'`) mean other wallets
-recover the same addresses. Several recovery phrases and key-only accounts are supported.
-
-**7. Address-poisoning and phishing defences.**
-- Addresses that only share the start and end with an address-book entry, one of your accounts or a past recipient
-  are flagged and need confirmation (app sends, dApps and WalletConnect).
-- Approval and connect windows, send, receive and the address book show addresses whole, never shortened. The 4
-  characters after the prefix and the last 4 are emphasized, with a reminder to check the middle too.
-- Invisible characters and Unicode direction overrides are revealed as `[U+XXXX]`.
-- Received history is off by default. When on, zero-value and dust deposits are hidden and senders can't be copied. Bitcoin and Zcash deposits still in the mempool (0 confirmations) show with their txid, marked as unconfirmed; they are never counted in the balance or spent, and their sender is shown only once they confirm.
-
-**8. Secrets stay off the screen and the clipboard.** Recovery-phrase and private-key windows are excluded from screen
-capture, and if exclusion fails they show nothing. Copying secrets is off by default; when turned on, the copy is kept
-out of clipboard history and cloud sync and cleared after 30 seconds if left untouched. The wallet locks after 10 idle minutes
-(adjustable from 1 to 60), on Windows lock and on sleep. The vault is encrypted with Argon2id (256 MiB) +
-XChaCha20-Poly1305.
-
-**9. Privacy.** No telemetry, no crash upload, no wallet server. The app talks only to the RPC you configure and to
-services a feature needs: Bitcoin address lookups (mempool.space's Esplora by default, changeable), HyperCore (the
-official Hyperliquid API), and — when you turn them on — the WalletConnect relay and your AI provider. Logs never
-contain passwords, recovery phrases, keys, API keys, RPC URLs, amounts or site origins (your addresses and transaction
-hashes may appear).
-
-**10. Works with existing dApps.** Besides the default names (`Your Wallet (EVM)`, `Your Wallet (Solana)`) there are
-compatibility modes that look like MetaMask, Rabby, Phantom, UniSat or Xverse, and WalletConnect v2 (QR or link)
-without the extension.
-
-**11. A supply chain you can review.** There are 54 third-party Rust crates, pinned with checksums in `Cargo.lock` and
-built with `--locked`. A per-crate dependency allowlist makes a check script reject any new crate, and the extension
-uses no npm packages. Cryptographic primitives (signatures, hashes, encryption) are never hand-rolled; they come from
-widely used crates at pinned versions. `unsafe` is allowed only in the one crate that wraps the Windows API, and the
-gate runs more than 1,400 tests, 22 fuzz-lite targets, a privacy scan and an extension static audit every time.
-
 ### Screenshots
 
-See the images above and the full [screen tour](docs/screenshots/README.md) (Korean UI, test values only).
+See the images above. Top: a request marked high risk because simulation returned no result (approving needs a tick
+confirming you read the warnings and a 2-second hold), and a site-built Solana transaction that the wallet decoded
+itself, flagging a token delegation (Approve) and an undecoded program. Middle: the connect window, where you pick
+which accounts the site sees, and the activity card, which shows addresses whole with the first and last 4
+characters emphasized. Bottom: the Solana and Bitcoin tabs. The full [screen tour](docs/screenshots/README.md) has
+every screen (Korean UI, test values only).
 
 ### Features
 
@@ -385,15 +406,17 @@ See the images above and the full [screen tour](docs/screenshots/README.md) (Kor
 - Chrome extension: EIP-1193/EIP-6963 for EVM, Wallet Standard for Solana (plus a Phantom compatibility mode). Bitcoin
   appears on pages only after you pick the UniSat or Xverse compatibility mode in the extension popup, and supports
   connecting and **message signatures only** (BIP137 and BIP322, proof of ownership).
-- **Solana dApp transactions** — `signTransaction`, `signAllTransactions` (up to 32 in one window with one approval)
-  and `signAndSendTransaction`.
+- Solana dApp transactions — site-built transactions are decoded by the wallet itself and shown in the same approval
+  window. `signTransaction`, `signAllTransactions` (up to 32 in one window with one approval) and
+  `signAndSendTransaction`.
   - Legacy and v0 transactions with address lookup tables, signatures the site has already added, and a fee payer other
     than the wallet. The wallet never changes the blockhash and fills only its own signature slot.
   - System, Token, Token-2022, ATA, ComputeBudget and Memo instructions are decoded and shown. Programs the wallet
     can't decode are not blocked but flagged high risk, and the call is yours. Delegation (Approve), authority changes,
     closing an account to another address, and Token-2022 PermanentDelegate/TransferHook are high risk too.
-  - Durable-nonce transactions can be signed but not sent. A fee above the cap (100,000 lamports by default) is high
-    risk when the wallet pays it.
+  - Durable-nonce transactions can be signed but not sent. The fee is computed from the transaction bytes; when the
+    wallet pays it, a fee above the cap (100,000 lamports by default) or an RPC fee that disagrees with the computed
+    one is high risk.
   - Simulation is reference information from your RPC. Sign-only transactions are not sent by the wallet, so they
     don't appear in activity.
 - WalletConnect v2 (EVM only): paste a `wc:` link or read the QR from a screenshot or image file. It needs **your own
