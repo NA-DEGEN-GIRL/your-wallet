@@ -3296,24 +3296,30 @@ impl App {
         let value_w = width.saturating_sub(label_w).max(px(60));
         let mut rows: Vec<(String, String, FontRole)> = Vec::new();
         for (label, value) in &ui.view.header {
-            for (index, line) in value.split('\n').enumerate() {
+            let mut first = true;
+            for line in value.split('\n') {
                 // An address on a line of its own is drawn whole with its ends emphasized
-                // (spec/04 §3.3, 2026-11-12).
-                let (text, role) = if let Some((address, _)) = crate::ui::theme::whole_address(line)
-                {
-                    (address, FontRole::Mono)
+                // (spec/04 §3.3, 2026-11-12); an address with notes (`0x… [내 계정: 계정 1]`)
+                // too, the notes on the next row (2026-11-14).
+                let mut pieces: Vec<(String, FontRole)> = Vec::with_capacity(2);
+                if let Some((address, notes)) = crate::ui::theme::address_with_notes(line) {
+                    if let Some((address, _)) = crate::ui::theme::whole_address(address) {
+                        pieces.push((address, FontRole::Mono));
+                    }
+                    pieces.push((notes.to_owned(), FontRole::Body));
+                } else if let Some((address, _)) = crate::ui::theme::whole_address(line) {
+                    pieces.push((address, FontRole::Mono));
                 } else {
-                    (line.to_owned(), FontRole::Body)
-                };
-                rows.push((
-                    if index == 0 {
-                        label.clone()
-                    } else {
-                        String::new()
-                    },
-                    text,
-                    role,
-                ));
+                    pieces.push((line.to_owned(), FontRole::Body));
+                }
+                for (text, role) in pieces {
+                    rows.push((
+                        if first { label.clone() } else { String::new() },
+                        text,
+                        role,
+                    ));
+                    first = false;
+                }
             }
         }
         if rows.is_empty() {
