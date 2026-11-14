@@ -8,6 +8,7 @@ use std::collections::VecDeque;
 use yw_core::approval::{
     ApprovalDisplay, FieldKey, MAX_DISPLAY_VALUE_BYTES, MAX_TITLE_BYTES, is_valid_display_text,
 };
+use yw_core::lang::{Lang, Text};
 
 use crate::errors::ErrorCode;
 use crate::ui::interaction::MIN_REMAINING_TO_SHOW_MS;
@@ -19,74 +20,150 @@ pub const MAX_APPROVALS_GLOBAL: usize = 64;
 /// Ready display lifetime (D23).
 pub const APPROVAL_DISPLAY_MS: u64 = 120_000;
 
-/// yw-app's field label table (spec/03 §11.2, spec/07 §13.3 and §20.6, spec/08 §10 names). Keys
-/// outside it are not displayed.
+/// yw-app's field label table (spec/03 §11.2, spec/07 §13.3 and §20.6, spec/08 §10 names; English
+/// spec/14 §2) in the display's own language. Keys outside it are not displayed.
 #[must_use]
-pub const fn field_label(key: FieldKey) -> Option<&'static str> {
+pub const fn field_label(key: FieldKey, lang: Lang) -> Option<&'static str> {
+    match field_label_text(key) {
+        Some(text) => Some(text.get(lang)),
+        None => None,
+    }
+}
+
+/// Both languages of a field label (tests, spec/14 §2).
+#[must_use]
+pub const fn field_label_text(key: FieldKey) -> Option<Text> {
     Some(match key.0 {
-        0x0001 => "요청 출처",
-        0x0002 => "네트워크",
-        0x0003 => "서명 계정",
-        0x0101 => "받는 주소/컨트랙트",
-        0x0102 => "보내는 금액",
-        0x0103 => "호출 내용",
-        0x0104 => "호출 인수",
-        0x0110 => "보냄",
-        0x0111 => "받음",
-        0x0112 => "승인 변경",
-        0x0113 => "기타 이벤트",
-        0x0120 => "최대 수수료",
-        0x0121 => "예상 수수료",
-        0x0122 => "maxFee/tip",
-        0x0123 => "가스 한도",
-        0x0124 => "nonce",
-        0x0125 => "대체 대상 거래",
-        0x0130 => "시뮬레이션 기준",
-        0x0140 => "액세스 리스트",
-        0x0141 => "calldata",
-        0x0301 => "도메인",
-        0x0302 => "형식",
-        0x0303 => "구조화 필드",
-        0x0304 => "필드 트리",
-        0x0401 => "메시지 텍스트",
-        0x0402 => "메시지 hex",
-        0x0403 => "바이트 수",
-        0x0404 => "SIWE 필드",
-        0x0405 => "SIWS 필드",
-        0x0406 => "서명 방식",
-        0x0501 | 0x0601 | 0x0702 | 0x0801 => "받는 주소",
-        0x0502 => "자산·금액",
-        0x0503 => "ATA 생성",
-        0x0504 | 0x0516 | 0x0606 | 0x0704 | 0x0805 => "수수료",
-        0x0505 => "최대 총 차감",
-        0x0506 => "잔액 (RPC 참고)",
-        0x0507 | 0x0517 => "시뮬레이션 (참고)",
-        0x0508 | 0x0518 => "유효 시간",
-        0x0509 => "감사",
-        0x0510 => "요청",
-        0x0511 => "서명자·수수료 지불",
-        0x0512 => "명령",
-        0x0513 => "쓰기 가능한 계정",
-        0x0514 => "조회 테이블 (RPC)",
-        0x0515 => "자산·권한 변화 (시뮬레이션 참고)",
-        0x0519 => "전송 방식",
-        0x051A => "감사 (메시지 SHA-256)",
-        0x0540 => "원본 메시지",
-        0x0602 | 0x0802 => "주소 종류",
-        0x0603 | 0x0803 => "금액",
-        0x0604 | 0x0804 => "잔돈",
-        0x0605 | 0x0808 => "입력",
-        0x0607 | 0x0806 => "총 차감",
-        0x0807 => "만료 높이",
-        0x0608 => "승인 후 잔액",
-        0x0609 => "교체 대상",
-        0x0640 | 0x0840 => "고급",
-        0x0701 => "작업",
-        0x0703 => "토큰·금액",
-        0x0705 => "nonce (time)",
-        0x0706 => "원본 typed data (EIP-712)",
+        0x0001 => labels::ORIGIN,
+        0x0002 => labels::NETWORK,
+        0x0003 => labels::ACCOUNT,
+        0x0101 => labels::TO,
+        0x0102 => labels::VALUE,
+        0x0103 => labels::CALL,
+        0x0104 => labels::CALL_ARG,
+        0x0110 => labels::SENT,
+        0x0111 => labels::RECEIVED,
+        0x0112 => labels::APPROVAL,
+        0x0113 => labels::OTHER_EVENTS,
+        0x0120 => labels::MAX_FEE,
+        0x0121 => labels::EXPECTED_FEE,
+        0x0122 => labels::FEE_PARAMS,
+        0x0123 => labels::GAS_LIMIT,
+        0x0124 => labels::NONCE,
+        0x0125 => labels::REPLACES_TX,
+        0x0130 => labels::SIMULATION,
+        0x0140 => labels::ACCESS_LIST,
+        0x0141 => labels::CALLDATA,
+        0x0301 => labels::DOMAIN,
+        0x0302 => labels::SCHEMA,
+        0x0303 => labels::TD_FIELD,
+        0x0304 => labels::TD_TREE,
+        0x0401 => labels::MESSAGE_TEXT,
+        0x0402 => labels::MESSAGE_HEX,
+        0x0403 => labels::MESSAGE_BYTES,
+        0x0404 => labels::SIWE_FIELD,
+        0x0405 => labels::SIWS_FIELD,
+        0x0406 => labels::MESSAGE_FORMAT,
+        0x0501 | 0x0601 | 0x0702 | 0x0801 => labels::RECIPIENT,
+        0x0502 => labels::ASSET_AMOUNT,
+        0x0503 => labels::ATA,
+        0x0504 | 0x0516 | 0x0606 | 0x0704 | 0x0805 => labels::FEE,
+        0x0505 => labels::MAX_TOTAL,
+        0x0506 => labels::BALANCE_RPC,
+        0x0507 | 0x0517 => labels::SIMULATION_REFERENCE,
+        0x0508 | 0x0518 => labels::VALIDITY,
+        0x0509 => labels::AUDIT,
+        0x0510 => labels::REQUEST,
+        0x0511 => labels::SIGNERS,
+        0x0512 => labels::INSTRUCTIONS,
+        0x0513 => labels::WRITABLE,
+        0x0514 => labels::LOOKUPS,
+        0x0515 => labels::CHANGES,
+        0x0519 => labels::SEND_OPTIONS,
+        0x051A => labels::AUDIT_MESSAGE,
+        0x0540 => labels::RAW_MESSAGE,
+        0x0602 | 0x0802 => labels::ADDRESS_TYPE,
+        0x0603 | 0x0803 => labels::AMOUNT,
+        0x0604 | 0x0804 => labels::CHANGE,
+        0x0605 | 0x0808 => labels::INPUTS,
+        0x0607 | 0x0806 => labels::TOTAL,
+        0x0807 => labels::EXPIRY_HEIGHT,
+        0x0608 => labels::BALANCE_AFTER,
+        0x0609 => labels::REPLACES,
+        0x0640 | 0x0840 => labels::ADVANCED,
+        0x0701 => labels::ACTION,
+        0x0703 => labels::TOKEN_AMOUNT,
+        0x0705 => labels::HC_NONCE,
+        0x0706 => labels::HC_TYPED,
         _ => return None,
     })
+}
+
+/// The field labels (spec/03 §11.2; English spec/14 §2).
+pub mod labels {
+    yw_core::texts! {
+        ORIGIN = "요청 출처" / "Requested by";
+        NETWORK = "네트워크" / "Network";
+        ACCOUNT = "서명 계정" / "Signing account";
+        TO = "받는 주소/컨트랙트" / "To (address/contract)";
+        VALUE = "보내는 금액" / "Amount sent";
+        CALL = "호출 내용" / "Call";
+        CALL_ARG = "호출 인수" / "Call argument";
+        SENT = "보냄" / "You send";
+        RECEIVED = "받음" / "You receive";
+        APPROVAL = "승인 변경" / "Approval change";
+        OTHER_EVENTS = "기타 이벤트" / "Other events";
+        MAX_FEE = "최대 수수료" / "Max fee";
+        EXPECTED_FEE = "예상 수수료" / "Expected fee";
+        FEE_PARAMS = "maxFee/tip" / "maxFee/tip";
+        GAS_LIMIT = "가스 한도" / "Gas limit";
+        NONCE = "nonce" / "nonce";
+        REPLACES_TX = "대체 대상 거래" / "Replaces transaction";
+        SIMULATION = "시뮬레이션 기준" / "Simulated at";
+        ACCESS_LIST = "액세스 리스트" / "Access list";
+        CALLDATA = "calldata" / "calldata";
+        DOMAIN = "도메인" / "Domain";
+        SCHEMA = "형식" / "Format";
+        TD_FIELD = "구조화 필드" / "Field";
+        TD_TREE = "필드 트리" / "Field tree";
+        MESSAGE_TEXT = "메시지 텍스트" / "Message text";
+        MESSAGE_HEX = "메시지 hex" / "Message hex";
+        MESSAGE_BYTES = "바이트 수" / "Bytes";
+        SIWE_FIELD = "SIWE 필드" / "SIWE field";
+        SIWS_FIELD = "SIWS 필드" / "SIWS field";
+        MESSAGE_FORMAT = "서명 방식" / "Signature format";
+        RECIPIENT = "받는 주소" / "Recipient";
+        ASSET_AMOUNT = "자산·금액" / "Asset · amount";
+        ATA = "ATA 생성" / "Create token account (ATA)";
+        FEE = "수수료" / "Fee";
+        MAX_TOTAL = "최대 총 차감" / "Max total deducted";
+        BALANCE_RPC = "잔액 (RPC 참고)" / "Balance (RPC, reference)";
+        SIMULATION_REFERENCE = "시뮬레이션 (참고)" / "Simulation (reference)";
+        VALIDITY = "유효 시간" / "Valid until";
+        AUDIT = "감사" / "Audit";
+        REQUEST = "요청" / "Request";
+        SIGNERS = "서명자·수수료 지불" / "Signers · fee payer";
+        INSTRUCTIONS = "명령" / "Instructions";
+        WRITABLE = "쓰기 가능한 계정" / "Writable accounts";
+        LOOKUPS = "조회 테이블 (RPC)" / "Lookup tables (RPC)";
+        CHANGES = "자산·권한 변화 (시뮬레이션 참고)" / "Asset and authority changes (simulation, reference)";
+        SEND_OPTIONS = "전송 방식" / "Send options";
+        AUDIT_MESSAGE = "감사 (메시지 SHA-256)" / "Audit (message SHA-256)";
+        RAW_MESSAGE = "원본 메시지" / "Raw message";
+        ADDRESS_TYPE = "주소 종류" / "Address type";
+        AMOUNT = "금액" / "Amount";
+        CHANGE = "잔돈" / "Change";
+        INPUTS = "입력" / "Inputs";
+        TOTAL = "총 차감" / "Total deducted";
+        EXPIRY_HEIGHT = "만료 높이" / "Expiry height";
+        BALANCE_AFTER = "승인 후 잔액" / "Balance after approval";
+        REPLACES = "교체 대상" / "Replaces";
+        ADVANCED = "고급" / "Advanced";
+        ACTION = "작업" / "Action";
+        TOKEN_AMOUNT = "토큰·금액" / "Token · amount";
+        HC_NONCE = "nonce (time)" / "nonce (time)";
+        HC_TYPED = "원본 typed data (EIP-712)" / "Raw typed data (EIP-712)";
+    }
 }
 
 /// Re-checks a display before drawing (spec/04 §3.3, defence in depth): every key must be in the
@@ -99,7 +176,7 @@ pub const fn field_label(key: FieldKey) -> Option<&'static str> {
 pub fn validate_for_display(display: &ApprovalDisplay) -> Result<(), ErrorCode> {
     let ok = is_valid_display_text(&display.title, MAX_TITLE_BYTES, false)
         && display.fields.iter().all(|field| {
-            field_label(field.key).is_some()
+            field_label(field.key, display.lang).is_some()
                 && is_valid_display_text(&field.sub_label, MAX_DISPLAY_VALUE_BYTES, true)
                 && is_valid_display_text(&field.value, MAX_DISPLAY_VALUE_BYTES, false)
         })

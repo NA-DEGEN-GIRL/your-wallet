@@ -935,7 +935,12 @@ impl App {
             self.show_failure(ErrorCode::Vlt005, false, ErrorCode::Vlt005.text());
             return;
         };
-        match yw_core::zec::display::build_zec_request_with(id, &item.plan, item.first_time) {
+        match yw_core::zec::display::build_zec_request_with(
+            self.approval_lang(),
+            id,
+            &item.plan,
+            item.first_time,
+        ) {
             Ok(draft) => self.show_ready_draft_at(draft, None, now_unix_ms()),
             Err(_) => self.show_failure(ErrorCode::App009, false, ErrorCode::App009.text()),
         }

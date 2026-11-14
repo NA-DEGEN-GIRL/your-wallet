@@ -34,6 +34,7 @@ use crate::bip32::path::AccountIndex;
 use crate::codec::base58::base58_encode;
 use crate::hex;
 use crate::journal::sol::{SOL_JOURNAL_HEADER_LEN, SolRecord, SolRecordError, activity_row};
+use crate::lang::Lang;
 use crate::slip10::SolKeySource;
 use crate::vault::tests::unlocked_with;
 
@@ -595,6 +596,7 @@ fn spl_signing_matches_the_reference_key_and_journals_526_bytes() {
     let vault = unlocked_with(ABOUT);
     let intent = spl_intent(template_core(), SolCluster::Mainnet, flags::FIRST_TIME);
     let draft = build_sol_transfer_request(
+        Lang::Ko,
         &intent,
         &SolCluster::Mainnet.genesis(),
         &spl_facts(&intent, false),
@@ -615,6 +617,7 @@ fn spl_signing_matches_the_reference_key_and_journals_526_bytes() {
     let golden = spl_intent(golden_core(), SolCluster::Mainnet, flags::FIRST_TIME);
     assert!(
         build_sol_transfer_request(
+            Lang::Ko,
             &golden,
             &SolCluster::Mainnet.genesis(),
             &spl_facts(&golden, false)
@@ -721,7 +724,8 @@ fn spl_approval_fields_rent_display_and_send_max() {
     );
     let facts = spl_facts(&intent, false);
     let draft =
-        build_sol_transfer_request(&intent, &SolCluster::Mainnet.genesis(), &facts).unwrap();
+        build_sol_transfer_request(Lang::Ko, &intent, &SolCluster::Mainnet.genesis(), &facts)
+            .unwrap();
     assert_eq!(
         draft.display.title,
         "[Solana mainnet] 토큰 전송: 1.000000 USDC"
@@ -799,7 +803,8 @@ fn spl_approval_fields_rent_display_and_send_max() {
     // Existing destination ATA: no rent in the total.
     let existing = spl_facts(&intent, true);
     let draft =
-        build_sol_transfer_request(&intent, &SolCluster::Mainnet.genesis(), &existing).unwrap();
+        build_sol_transfer_request(Lang::Ko, &intent, &SolCluster::Mainnet.genesis(), &existing)
+            .unwrap();
     let ata = draft
         .display
         .fields
@@ -812,7 +817,8 @@ fn spl_approval_fields_rent_display_and_send_max() {
     let mut missing = spl_facts(&intent, false);
     missing.spl = None;
     assert_eq!(
-        build_sol_transfer_request(&intent, &SolCluster::Mainnet.genesis(), &missing).unwrap_err(),
+        build_sol_transfer_request(Lang::Ko, &intent, &SolCluster::Mainnet.genesis(), &missing)
+            .unwrap_err(),
         DisplayError::InvalidText
     );
     // The SOL draft has no 0x0503.
@@ -828,7 +834,8 @@ fn spl_approval_fields_rent_display_and_send_max() {
     let mut sol_facts = spl_facts(&sol, false);
     sol_facts.spl = None;
     let draft =
-        build_sol_transfer_request(&sol, &SolCluster::Mainnet.genesis(), &sol_facts).unwrap();
+        build_sol_transfer_request(Lang::Ko, &sol, &SolCluster::Mainnet.genesis(), &sol_facts)
+            .unwrap();
     assert!(
         draft
             .display
@@ -858,4 +865,28 @@ fn spl_template_instruction_data() {
     assert_eq!(keys[4], COMPUTE_BUDGET_PROGRAM.to_bytes());
     assert_eq!(keys[5], TOKEN_PROGRAM.to_bytes());
     assert_eq!(keys[6], ATA_PROGRAM.to_bytes());
+}
+
+#[test]
+fn english_spl_display_has_no_korean() {
+    let intent = spl_intent(
+        template_core(),
+        SolCluster::Mainnet,
+        flags::FIRST_TIME | flags::SEND_MAX,
+    );
+    for (to_ata_exists, token_balance) in [(false, Some(5_000_000)), (true, Some(1)), (false, None)]
+    {
+        let mut facts = spl_facts(&intent, to_ata_exists);
+        if let Some(spl) = facts.spl.as_mut() {
+            spl.token_balance = token_balance;
+        }
+        let draft =
+            build_sol_transfer_request(Lang::En, &intent, &SolCluster::Mainnet.genesis(), &facts)
+                .unwrap();
+        assert_eq!(
+            draft.display.title,
+            "[Solana mainnet] Token transfer: 1.000000 USDC"
+        );
+        super::tests::assert_english(&draft.display);
+    }
 }

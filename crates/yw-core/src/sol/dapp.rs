@@ -14,6 +14,7 @@ pub mod diff;
 pub mod display;
 pub mod parse;
 pub mod sign;
+pub mod text;
 
 use core::fmt;
 

@@ -97,6 +97,8 @@ pub struct JournalState {
     btc: Option<yw_core::btc::BtcMeta>,
     btc_accounts: yw_core::btc::BtcAccounts,
     btc_loaded: bool,
+    /// The app language: the titles of the activity rows the journal writes (spec/14 §1).
+    lang: yw_core::lang::Lang,
 }
 
 /// The view sent to the UI.
@@ -161,6 +163,11 @@ pub fn sol_activity(row: &SolActivityRow) -> (NetworkId, ActivityEntry) {
 }
 
 impl JournalState {
+    /// Sets the language of the activity titles written from now on.
+    pub const fn set_lang(&mut self, lang: yw_core::lang::Lang) {
+        self.lang = lang;
+    }
+
     /// Forgets everything (lock).
     pub fn clear(&mut self) {
         self.plain = None;
@@ -771,7 +778,7 @@ impl JournalState {
         alt: bool,
     ) -> Result<(JournalView, Vec<(NetworkId, ActivityEntry)>), VaultError> {
         let mut pruned = next.clone();
-        let rows = take_expired(&mut pruned, now_unix_ms);
+        let rows = take_expired(self.lang, &mut pruned, now_unix_ms);
         let (next, moved) = if rows.is_empty() || alt {
             (next, Vec::new())
         } else {
@@ -885,10 +892,10 @@ impl JournalState {
         let mut rows = if alt {
             Vec::new()
         } else {
-            take_expired(&mut trial, info.now_unix_ms)
+            take_expired(self.lang, &mut trial, info.now_unix_ms)
         };
         let retention_only = rows.len();
-        rows.extend(make_room(&mut trial).map_err(|_| SignFailure::JournalFull)?);
+        rows.extend(make_room(self.lang, &mut trial).map_err(|_| SignFailure::JournalFull)?);
         if !rows.is_empty() {
             match self.persist_activity(vault, &rows, alt) {
                 Ok(moved) if !moved.is_empty() => out.push(KeyOutcome::ActivityMoved(moved)),

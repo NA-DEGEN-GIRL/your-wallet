@@ -56,16 +56,24 @@ pub enum FeeError {
     AboveCap,
 }
 
+impl FeeError {
+    /// The fixed text in `lang` (`Display` is the Korean one).
+    #[must_use]
+    pub const fn text_in(self, lang: crate::lang::Lang) -> &'static str {
+        use super::text as t;
+        match self {
+            Self::Overflow => t::FEE_OVERFLOW,
+            Self::FeeQueryFailed => t::FEE_QUERY_FAILED,
+            Self::FeeFormulaChanged => t::FEE_FORMULA_CHANGED,
+            Self::AboveCap => t::FEE_ABOVE_CAP,
+        }
+        .get(lang)
+    }
+}
+
 impl fmt::Display for FeeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            Self::Overflow => "수수료 계산이 범위를 넘습니다",
-            Self::FeeQueryFailed => "RPC에서 수수료를 확인하지 못했습니다",
-            Self::FeeFormulaChanged => {
-                "RPC 수수료가 지갑 계산과 다릅니다 — 수수료 공식이 바뀌었을 수 있습니다"
-            }
-            Self::AboveCap => "수수료가 설정한 상한을 넘습니다",
-        })
+        formatter.write_str(self.text_in(crate::lang::Lang::Ko))
     }
 }
 

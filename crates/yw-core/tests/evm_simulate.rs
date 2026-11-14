@@ -249,6 +249,7 @@ fn v09_diff_classes() {
         ),
     ];
     let result = interpret(
+        yw_core::lang::Lang::Ko,
         &chain,
         &tx(TOKEN, 0, vec![1, 2, 3, 4]),
         &USER,
@@ -337,7 +338,14 @@ fn e08_row_limit_and_e09_overflow() {
             )
         })
         .collect();
-    let result = interpret(&chain, &tx(OTHER, 0, vec![]), &USER, &ok(logs), NOW);
+    let result = interpret(
+        yw_core::lang::Lang::Ko,
+        &chain,
+        &tx(OTHER, 0, vec![]),
+        &USER,
+        &ok(logs),
+        NOW,
+    );
     let (verdict, diff, warnings) = simulated(&result);
     assert_eq!(verdict, SimVerdict::Incomplete);
     assert_eq!(diff.changes.len(), 64);
@@ -353,7 +361,14 @@ fn e08_row_limit_and_e09_overflow() {
         transfer(TOKEN, OTHER, USER, U256::MAX),
         transfer(TOKEN, OTHER, USER, U256::ONE),
     ];
-    let result = interpret(&chain, &tx(OTHER, 0, vec![]), &USER, &ok(logs), NOW);
+    let result = interpret(
+        yw_core::lang::Lang::Ko,
+        &chain,
+        &tx(OTHER, 0, vec![]),
+        &USER,
+        &ok(logs),
+        NOW,
+    );
     let (verdict, diff, warnings) = simulated(&result);
     assert_eq!(verdict, SimVerdict::Incomplete);
     assert_eq!(diff.changes[0].delta, None);
@@ -368,7 +383,14 @@ fn native_log_shape_violation_is_malformed() {
         vec![TOPIC_TRANSFER, pad_address(&USER)],
         uword(1).to_vec(),
     );
-    let result = interpret(&chain, &tx(OTHER, 1, vec![]), &USER, &ok(vec![bad]), NOW);
+    let result = interpret(
+        yw_core::lang::Lang::Ko,
+        &chain,
+        &tx(OTHER, 1, vec![]),
+        &USER,
+        &ok(vec![bad]),
+        NOW,
+    );
     assert_eq!(
         result.binding(),
         SimulationBinding::None {
@@ -380,7 +402,14 @@ fn native_log_shape_violation_is_malformed() {
         vec![TOPIC_TRANSFER, [0xff; 32], pad_address(&OTHER)],
         uword(1).to_vec(),
     );
-    let result = interpret(&chain, &tx(OTHER, 1, vec![]), &USER, &ok(vec![dirty]), NOW);
+    let result = interpret(
+        yw_core::lang::Lang::Ko,
+        &chain,
+        &tx(OTHER, 1, vec![]),
+        &USER,
+        &ok(vec![dirty]),
+        NOW,
+    );
     assert_eq!(
         result.binding(),
         SimulationBinding::None {
@@ -421,8 +450,9 @@ fn try_request(
     facts: &ChainFacts,
     pre: Vec<Warning>,
 ) -> Fallible<ApprovalDraft> {
-    let sim = interpret(chain, tx, &USER, outcome, NOW);
+    let sim = interpret(yw_core::lang::Lang::Ko, chain, tx, &USER, outcome, NOW);
     Ok(build_evm_tx_request(
+        yw_core::lang::Lang::Ko,
         ApprovalId([1; 16]),
         origin,
         EvmKeySource::Derived(AccountIndex::ZERO),
@@ -771,6 +801,7 @@ fn v17_e12_with_e01_single_acknowledgement_and_order() {
     let chain = sepolia();
     let unknown = tx(OTHER, 0, vec![0xde, 0xad, 0xbe, 0xef, 0]);
     let gas_failure = plan_gas_limit(
+        yw_core::lang::Lang::Ko,
         GasEstimate::Failed { revert_data: None },
         None,
         &Fees {
@@ -1172,7 +1203,7 @@ fn x4_dapp_fee_fields_are_ignored_with_e31() {
         &ok(vec![native(ERC7528_NATIVE, USER, OTHER, 5)]),
         site,
         &facts(),
-        vec![risk::warning(risk::E31, None)],
+        vec![risk::warning(yw_core::lang::Lang::Ko, risk::E31, None)],
     )
     .unwrap();
     let e31 = draft
@@ -1264,6 +1295,7 @@ fn x20_token_symbol_is_escaped() {
         ..ChainFacts::default()
     };
     let text = yw_core::evm::display::format_token_amount(
+        yw_core::lang::Lang::Ko,
         &sepolia(),
         &zero,
         &TOKEN,
@@ -2010,7 +2042,14 @@ fn c8_junk_rows_do_not_hide_verified_rows() {
     ));
     logs.push(native(ERC7528_NATIVE, USER, OTHER, 5));
     let value_tx = tx(OTHER, 5, vec![1, 2, 3, 4]);
-    let result = interpret(&chain, &value_tx, &USER, &ok(logs.clone()), NOW);
+    let result = interpret(
+        yw_core::lang::Lang::Ko,
+        &chain,
+        &value_tx,
+        &USER,
+        &ok(logs.clone()),
+        NOW,
+    );
     let (verdict, diff, warnings) = simulated(&result);
     assert_eq!(verdict, SimVerdict::Incomplete);
     assert_eq!(warnings[0].rule, risk::E08);
@@ -2054,12 +2093,20 @@ fn c15_sim_digest_binds_the_transaction() {
     );
     let chain = sepolia();
     let a = interpret(
+        yw_core::lang::Lang::Ko,
         &chain,
         &first,
         &USER,
         &SimOutcome::Block(block.clone()),
         NOW,
     );
-    let b = interpret(&chain, &second, &USER, &SimOutcome::Block(block), NOW);
+    let b = interpret(
+        yw_core::lang::Lang::Ko,
+        &chain,
+        &second,
+        &USER,
+        &SimOutcome::Block(block),
+        NOW,
+    );
     assert_ne!(a.binding(), b.binding());
 }

@@ -121,14 +121,23 @@ pub enum AltError {
     Duplicate,
 }
 
+impl AltError {
+    /// The fixed text in `lang` (`Display` is the Korean one).
+    #[must_use]
+    pub fn text_in(self, lang: crate::lang::Lang) -> String {
+        use super::text as t;
+        match self {
+            Self::Missing(table) => t::ALT_MISSING.fill(lang, [&table.to_string()]),
+            Self::NotTable(table) => t::ALT_NOT_TABLE.fill(lang, [&table.to_string()]),
+            Self::Index => t::ALT_INDEX.get(lang).to_owned(),
+            Self::Duplicate => t::ALT_DUPLICATE.get(lang).to_owned(),
+        }
+    }
+}
+
 impl fmt::Display for AltError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Missing(table) => write!(formatter, "조회 테이블이 없습니다: {table}"),
-            Self::NotTable(table) => write!(formatter, "조회 테이블이 아닙니다: {table}"),
-            Self::Index => formatter.write_str("조회 테이블 인덱스가 범위 밖입니다"),
-            Self::Duplicate => formatter.write_str("조회한 주소가 다른 계정 키와 겹칩니다"),
-        }
+        formatter.write_str(&self.text_in(crate::lang::Lang::Ko))
     }
 }
 

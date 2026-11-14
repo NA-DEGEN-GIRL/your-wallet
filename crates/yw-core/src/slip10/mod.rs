@@ -5,6 +5,7 @@
 //! `ed25519_dalek::SigningKey::from_bytes` inside `Vault::with_ed25519_seed` /
 //! `Vault::sol_public_keys`; no public API returns it.
 
+use crate::lang::Lang;
 use core::fmt;
 use core::str::FromStr;
 
@@ -288,20 +289,26 @@ impl SolKeySource {
         )
     }
 
-    /// The path text shown to the user (`m/44'/501'/0'/0'`, `BIP39 seed[0..32]`, …).
+    /// The path text shown to the user (`m/44'/501'/0'/0'`, `BIP39 seed[0..32]`, …), Korean.
     #[must_use]
     pub fn path_text(self) -> String {
+        self.path_text_in(Lang::Ko)
+    }
+
+    /// [`Self::path_text`] in `lang` (approval displays, spec/14 §5 `PATH_*`).
+    #[must_use]
+    pub fn path_text_in(self, lang: Lang) -> String {
         match self {
             Self::Standard(index) | Self::Mnemonic(_, index) => {
                 format!("m/44'/501'/{}'/0'", index.get())
             }
             Self::Bip44Account(index) => format!("m/44'/501'/{}'", index.get()),
             Self::Bip44Root => "m/44'/501'".to_owned(),
-            Self::RawSeed => "BIP39 seed[0..32] (파생 없음)".to_owned(),
+            Self::RawSeed => text::PATH_RAW_SEED.get(lang).to_owned(),
             Self::SolletLegacy { wallet, account } => format!("m/501'/{wallet}'/0/{account}"),
-            Self::Imported => "가져온 개인키 (복구 단어 밖)".to_owned(),
+            Self::Imported => text::PATH_IMPORTED.get(lang).to_owned(),
             Self::Hardware(index) if crate::yubikey::plan::is_unknown_index(index.get()) => {
-                format!("{} (YubiKey PIV)", crate::yubikey::plan::T_UNKNOWN_PATH)
+                format!("{} (YubiKey PIV)", text::PATH_UNKNOWN.get(lang))
             }
             Self::Hardware(index) => format!("m/44'/501'/{}'/0' (YubiKey PIV)", index.get()),
         }
@@ -331,6 +338,15 @@ impl SolKeySource {
             }
         };
         slip10_ed25519(seed, &path)
+    }
+}
+
+/// Path notes of non-derived Solana sources (spec/07 §13.3; English spec/14 §5).
+pub mod text {
+    crate::texts! {
+        PATH_RAW_SEED = "BIP39 seed[0..32] (파생 없음)" / "BIP39 seed[0..32] (not derived)";
+        PATH_IMPORTED = "가져온 개인키 (복구 단어 밖)" / "Imported private key (outside the recovery words)";
+        PATH_UNKNOWN = "경로를 알 수 없음" / "Unknown path";
     }
 }
 

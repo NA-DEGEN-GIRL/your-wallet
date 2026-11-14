@@ -12,16 +12,19 @@
 
 use yw_core::bip39::{is_word, is_word_prefix};
 use yw_core::keyimport::ImportChain;
+use yw_core::lang::Lang;
 use yw_core::password::VaultPassword;
 use yw_core::secret::{SecretString, Zeroizing};
 use yw_win::ui::{DrawFlags, PaintDc, Rect, scale};
 
 use crate::errors::ErrorCode;
+use crate::ui::secret_text as text;
 use crate::ui::secure_field::{
     Charset, PushResult, RejectReason, SecretField, finalize_private_key, has_edge_space,
     mnemonic_words, normalize_paste,
 };
 use crate::ui::theme::{self, Fonts, wide};
+use crate::yubikey::PinTarget;
 
 /// Inactivity (input windows) or display (W08/W09) lifetime.
 pub const SECRET_WINDOW_TIMEOUT_MS: u64 = 300_000;
@@ -39,46 +42,48 @@ pub const SECRET_TIMER_ID: usize = 1;
 pub const SECRET_TIMER_MS: u32 = 50;
 /// Mnemonic entry buffer (24 × 8 + 23 + 1).
 pub const MNEMONIC_TEXT_MAX: usize = 216;
-/// T-IMPORTED-KEY (W07, spec/04 §2.16): imported keys are not covered by the recovery words.
-pub const T_IMPORTED_KEY_BACKUP: &str = "주의: 가져온 개인키는 이 지갑의 복구 단어(24단어)로 복구되지 않습니다. 이 PC나 지갑 파일을 잃으면 이 계정은 원래 개인키로만 되살릴 수 있으니, 원래 개인키를 따로 안전하게 보관하세요.";
-/// T-KEY-ONLY (W07 of a wallet without recovery words, spec/04 §2.16).
-pub const T_KEY_ONLY_BACKUP: &str = "주의: 이 지갑에는 복구 단어가 없습니다. 이 계정의 백업은 지금 입력하는 원래 개인키뿐입니다. 이 PC나 지갑 파일을 잃으면 원래 개인키로만 되살릴 수 있으니, 원래 개인키를 종이 등 안전한 곳에 따로 보관하세요.";
-/// W11 (spec/10 §9.2): the card step after approval, after its three steps
-/// ([`card_pin_steps`]).
-pub const T_CARD_PIN: &str = "PIN은 이 서명 한 번에만 쓰고 바로 지웁니다.";
-
 /// W11's steps (2026-11-10): which card to connect, the PIN, the touch — and the bounds.
+/// The card step after approval follows them ([`text::CARD_PIN`], spec/10 §9.2).
 #[must_use]
-pub fn card_pin_steps(serial: u32) -> String {
+pub fn card_pin_steps(lang: Lang, serial: u32) -> String {
     let card = if serial == 0 {
         "YubiKey".to_owned()
     } else {
         format!("YubiKey #{serial}")
     };
-    format!(
-        "1. {card} 연결 → 2. PIN 입력 후 확인 → 3. 깜박이면 15초 안에 터치 (승인 뒤 120초 안에)"
-    )
+    text::CARD_PIN_STEPS.fill(lang, [&card])
 }
-/// W12 admin PIN (spec/10 §7.3).
-pub const T_CARD_ADMIN_PIN: &str = "YubiKey를 하나만 연결하고 OpenPGP 관리자 PIN(PW3, 8–127자, 공장 기본값 12345678)을 입력하세요. 키를 가져오는 동안 한 번만 쓰고 바로 지웁니다.";
-/// W12 management key (spec/10 §7.3).
-pub const T_CARD_MANAGEMENT_KEY: &str = "YubiKey의 PIV 관리 키를 16진수 48자리로 입력하세요(ykman이 보여주는 형식). 이 지갑은 관리 키를 저장하지 않으며, 이번 작업에만 쓰고 바로 지웁니다.";
-/// W12 of the optional ownership check of "`YubiKey` 연결하기" (spec/10 §7.6).
-pub const T_CARD_USER_PIN: &str = "선택 사항입니다: 이 YubiKey의 PIN을 한 번 확인해 카드가 내 것인지 봅니다(VERIFY 한 번 — 서명·터치·쓰기 없음). 틀리면 남은 시도가 하나 줄어듭니다. 공장 기본 PIN(123456)은 보내지 않습니다. 확인하지 않아도 연결할 수 있고, 서명할 때는 언제나 PIN과 터치가 필요합니다.";
-/// W12 PIV PIN (spec/10 §7.3, §9.3).
-pub const T_CARD_PIV_PIN: &str = "YubiKey를 하나만 연결하고 PIV PIN(6–8자, 공장 기본값 123456)을 입력하세요. PIN으로 보호된 PIV 관리 키를 꺼내는 데 한 번만 쓰고 바로 지웁니다.";
-/// W12 "PIN 하나로 통일" (spec/10 §9.3).
-pub const T_CARD_SET_PINS: &str = "YubiKey를 하나만 연결하세요. 새 8자 PIN 하나를 OpenPGP PIN·OpenPGP 관리자 PIN·PIV PIN·PIV PUK에 똑같이 넣고, PIV 관리 키는 자동으로 새로 만들어 PIN으로 보호합니다. 현재 값이 공장 기본값이면 '현재 PIN'을 비워 두고, 전에 하나로 통일했다면 그 8자를 넣으세요. 공장 기본값(12345678)은 새 PIN으로 쓸 수 없습니다. 중간에 실패하면 거기서 멈추고 바뀐 것만 알려 드립니다.";
-/// The unified W12's warning (2026-11-10): one current value is sent to all four secrets.
-pub const T_CARD_SET_PINS_SAME: &str = "지금 네 값이 모두 같을 때만(공장값이거나 전에 통일한 값) 쓰세요. 다르면 “하나씩 따로”를 쓰세요. 틀린 현재 값은 그 PIN의 남은 시도를 1회 줄입니다.";
-/// W12: a new PIN / PUK / admin PIN that is a factory value (spec/10 §9.3).
-pub const T_CARD_NEW_FACTORY: &str = "공장 기본값(123456·12345678)은 새 PIN으로 쓸 수 없습니다 — YubiKey를 가진 사람이 그 값으로 바로 서명할 수 있습니다. 다른 값을 고르세요.";
-/// W07 help of a Solana key (spec/04 §2.18).
-pub const T_SOL_KEY_INPUT: &str = "Phantom·Solflare의 '개인키 내보내기'로 받은 base58 문자열(64바이트 keypair) 또는 solana-keygen JSON 파일의 내용([숫자 64개])을 붙여넣으세요. 주소(32바이트)는 개인키가 아닙니다.";
-/// W07 help of a Zcash key (spec/12 §2.3).
-pub const T_ZEC_KEY_INPUT: &str = "Zcash 개인키를 붙여넣으세요: 압축 WIF(K·L로 시작하면 mainnet, c로 시작하면 testnet — Zcash 탭의 네트워크와 같아야 함) 또는 16진수 64자리(지금 Zcash 탭의 네트워크로 씀). 일반(transparent) 주소 하나로 씁니다.";
-/// W07 help of a Bitcoin key (spec/04 §2.18).
-pub const T_BTC_KEY_INPUT: &str = "WIF 형식 개인키(5·K·L로 시작하면 mainnet, 9·c로 시작하면 testnet4)를 붙여넣으세요. 주소 형식은 앞 화면에서 고른 것으로 만듭니다.";
+
+/// A PIN target's name in labels and sentences (`PinTarget::name` in `lang`).
+const fn target_name(target: PinTarget, lang: Lang) -> &'static str {
+    match target {
+        PinTarget::OpenPgpUser => "OpenPGP PIN",
+        PinTarget::OpenPgpAdmin => text::NAME_OPENPGP_ADMIN.get(lang),
+        PinTarget::PivPin => "PIV PIN",
+        PinTarget::PivPuk => "PIV PUK",
+    }
+}
+
+/// A PIN target's W12 title (`PinTarget::change_title` in `lang`).
+const fn target_title(target: PinTarget, lang: Lang) -> &'static str {
+    match target {
+        PinTarget::OpenPgpUser => text::TITLE_CHANGE_OPENPGP_PIN.get(lang),
+        PinTarget::OpenPgpAdmin => text::TITLE_CHANGE_ADMIN_PIN.get(lang),
+        PinTarget::PivPin => text::TITLE_CHANGE_PIV_PIN.get(lang),
+        PinTarget::PivPuk => text::TITLE_CHANGE_PIV_PUK.get(lang),
+    }
+}
+
+/// A PIN target's length rule and factory value (`PinTarget::rule` in `lang`).
+fn target_rule(target: PinTarget, lang: Lang) -> String {
+    let (min, max) = target.bounds();
+    let factory = match target {
+        PinTarget::OpenPgpUser | PinTarget::PivPin => "123456",
+        PinTarget::OpenPgpAdmin | PinTarget::PivPuk => "12345678",
+    };
+    text::PIN_RULE.fill(lang, [&min.to_string(), &max.to_string(), factory])
+}
+
 const VK_TAB: u16 = 0x09;
 const VK_ESCAPE: u16 = 0x1B;
 const VK_INSERT: u16 = 0x2D;
@@ -171,14 +176,14 @@ pub enum CardSecretKind {
 impl CardSecretKind {
     /// Title.
     #[must_use]
-    pub const fn title(self) -> &'static str {
+    pub const fn title(self, lang: Lang) -> &'static str {
         match self {
-            Self::AdminPin => "YubiKey 관리자 PIN",
-            Self::ManagementKey => "YubiKey PIV 관리 키",
-            Self::ChangePin(target) => target.change_title(),
+            Self::AdminPin => text::TITLE_ADMIN_PIN.get(lang),
+            Self::ManagementKey => text::TITLE_MANAGEMENT_KEY.get(lang),
+            Self::ChangePin(target) => target_title(target, lang),
             Self::PivPin => "YubiKey PIV PIN",
-            Self::SetPins => "YubiKey PIN 하나로 통일",
-            Self::UserPin { .. } => "YubiKey PIN 확인 (선택)",
+            Self::SetPins => text::TITLE_SET_PINS.get(lang),
+            Self::UserPin { .. } => text::TITLE_USER_PIN.get(lang),
         }
     }
 }
@@ -240,20 +245,20 @@ impl SecretKind {
 
     /// Window title (never secret).
     #[must_use]
-    pub const fn title(self) -> &'static str {
+    pub const fn title(self, lang: Lang) -> &'static str {
         match self {
-            Self::SetPassword => "비밀번호 정하기",
-            Self::Unlock => "잠금 해제",
-            Self::ConfirmPassword => "비밀번호 확인",
-            Self::ChangePassword => "비밀번호 변경",
-            Self::Mnemonic => "복구 단어 입력",
-            Self::Passphrase { .. } => "passphrase 입력",
-            Self::PrivateKey { .. } => "개인키 가져오기",
-            Self::ShowMnemonic { .. } => "복구 단어 (니모닉)",
-            Self::ShowKey => "개인키 보기",
-            Self::Backup { .. } => "백업 확인",
+            Self::SetPassword => text::TITLE_SET_PASSWORD.get(lang),
+            Self::Unlock => text::UNLOCK.get(lang),
+            Self::ConfirmPassword => text::TITLE_CONFIRM_PASSWORD.get(lang),
+            Self::ChangePassword => text::TITLE_CHANGE_PASSWORD.get(lang),
+            Self::Mnemonic => text::TITLE_MNEMONIC.get(lang),
+            Self::Passphrase { .. } => text::TITLE_PASSPHRASE.get(lang),
+            Self::PrivateKey { .. } => text::TITLE_PRIVATE_KEY.get(lang),
+            Self::ShowMnemonic { .. } => text::TITLE_SHOW_MNEMONIC.get(lang),
+            Self::ShowKey => text::TITLE_SHOW_KEY.get(lang),
+            Self::Backup { .. } => text::TITLE_BACKUP.get(lang),
             Self::CardPin { .. } => "YubiKey PIN",
-            Self::CardSecret(what) => what.title(),
+            Self::CardSecret(what) => what.title(lang),
         }
     }
 
@@ -418,6 +423,9 @@ enum Button {
     Checkbox,
 }
 
+/// One group of the button row: each button with its label.
+type ButtonLabels = Vec<(Button, String)>;
+
 #[derive(Debug, Default)]
 struct Layout {
     fields: Vec<Rect>,
@@ -431,6 +439,8 @@ struct Layout {
 )]
 pub struct SecretForm {
     kind: SecretKind,
+    /// The app language the window's texts are drawn in (`Settings::language`).
+    lang: Lang,
     slots: Vec<Slot>,
     active: usize,
     checkbox: Option<(&'static str, bool)>,
@@ -504,22 +514,58 @@ fn slot(label: &str, charset: Charset, min: usize, max: usize, masked: bool) -> 
 }
 
 #[expect(clippy::too_many_lines, reason = "one arm per window kind")]
-fn slots_for(kind: SecretKind) -> Vec<Slot> {
+fn slots_for(kind: SecretKind, lang: Lang) -> Vec<Slot> {
     let slots = match kind {
         SecretKind::SetPassword => vec![
-            slot("비밀번호", Charset::Printable, 12, 128, true),
-            slot("비밀번호 확인", Charset::Printable, 12, 128, true),
+            slot(
+                text::LABEL_PASSWORD.get(lang),
+                Charset::Printable,
+                12,
+                128,
+                true,
+            ),
+            slot(
+                text::LABEL_PASSWORD_AGAIN.get(lang),
+                Charset::Printable,
+                12,
+                128,
+                true,
+            ),
         ],
         SecretKind::Unlock | SecretKind::ConfirmPassword => {
-            vec![slot("비밀번호", Charset::Printable, 1, 128, true)]
+            vec![slot(
+                text::LABEL_PASSWORD.get(lang),
+                Charset::Printable,
+                1,
+                128,
+                true,
+            )]
         }
         SecretKind::ChangePassword => vec![
-            slot("현재 비밀번호", Charset::Printable, 1, 128, true),
-            slot("새 비밀번호", Charset::Printable, 12, 128, true),
-            slot("새 비밀번호 확인", Charset::Printable, 12, 128, true),
+            slot(
+                text::LABEL_CURRENT_PASSWORD.get(lang),
+                Charset::Printable,
+                1,
+                128,
+                true,
+            ),
+            slot(
+                text::LABEL_NEW_PASSWORD.get(lang),
+                Charset::Printable,
+                12,
+                128,
+                true,
+            ),
+            slot(
+                text::LABEL_NEW_PASSWORD_AGAIN.get(lang),
+                Charset::Printable,
+                12,
+                128,
+                true,
+            ),
         ],
         SecretKind::Mnemonic => vec![slot(
-            "복구 단어",
+            text::LABEL_WORDS.get(lang),
             Charset::MnemonicText,
             1,
             MNEMONIC_TEXT_MAX,
@@ -527,7 +573,13 @@ fn slots_for(kind: SecretKind) -> Vec<Slot> {
         )],
         SecretKind::Passphrase { confirm: true } => vec![
             slot("passphrase", Charset::Printable, 1, 256, true),
-            slot("passphrase 확인", Charset::Printable, 1, 256, true),
+            slot(
+                text::LABEL_PASSPHRASE_AGAIN.get(lang),
+                Charset::Printable,
+                1,
+                256,
+                true,
+            ),
         ],
         SecretKind::Passphrase { confirm: false } => {
             vec![slot("passphrase", Charset::Printable, 1, 256, true)]
@@ -536,7 +588,7 @@ fn slots_for(kind: SecretKind) -> Vec<Slot> {
             chain: ImportChain::Evm,
             ..
         } => vec![slot(
-            "개인키 (16진수 64자리)",
+            text::LABEL_EVM_KEY.get(lang),
             Charset::PrivateKeyHex,
             64,
             66,
@@ -546,7 +598,7 @@ fn slots_for(kind: SecretKind) -> Vec<Slot> {
             chain: ImportChain::Sol,
             ..
         } => vec![slot(
-            "Solana 개인키 (base58 keypair 또는 JSON 배열)",
+            text::LABEL_SOL_KEY.get(lang),
             Charset::KeyText,
             1,
             yw_core::keyimport::SOL_KEY_TEXT_MAX,
@@ -555,12 +607,18 @@ fn slots_for(kind: SecretKind) -> Vec<Slot> {
         SecretKind::PrivateKey {
             chain: ImportChain::Btc,
             ..
-        } => vec![slot("Bitcoin 개인키 (WIF)", Charset::Base58, 51, 52, false)],
+        } => vec![slot(
+            text::LABEL_BTC_KEY.get(lang),
+            Charset::Base58,
+            51,
+            52,
+            false,
+        )],
         SecretKind::PrivateKey {
             chain: ImportChain::Zec,
             ..
         } => vec![slot(
-            "Zcash 개인키 (압축 WIF 또는 16진수 64자리)",
+            text::LABEL_ZEC_KEY.get(lang),
             Charset::KeyText,
             52,
             66,
@@ -574,10 +632,16 @@ fn slots_for(kind: SecretKind) -> Vec<Slot> {
             true,
         )],
         SecretKind::CardSecret(CardSecretKind::AdminPin) => {
-            vec![slot("OpenPGP 관리자 PIN", Charset::Printable, 8, 127, true)]
+            vec![slot(
+                text::NAME_OPENPGP_ADMIN.get(lang),
+                Charset::Printable,
+                8,
+                127,
+                true,
+            )]
         }
         SecretKind::CardSecret(CardSecretKind::ManagementKey) => vec![slot(
-            "PIV 관리 키 (16진수 48자리)",
+            text::LABEL_MANAGEMENT_KEY.get(lang),
             Charset::PrivateKeyHex,
             48,
             48,
@@ -586,12 +650,24 @@ fn slots_for(kind: SecretKind) -> Vec<Slot> {
         SecretKind::CardSecret(CardSecretKind::ChangePin(target)) => {
             let (min, max) = target.bounds();
             let (min, max) = (usize::from(min), usize::from(max));
-            let name = target.name();
+            let name = target_name(target, lang);
             vec![
-                slot(&format!("현재 {name}"), Charset::Printable, min, max, true),
-                slot(&format!("새 {name}"), Charset::Printable, min, max, true),
                 slot(
-                    &format!("새 {name} 확인"),
+                    &text::LABEL_CURRENT.fill(lang, [name]),
+                    Charset::Printable,
+                    min,
+                    max,
+                    true,
+                ),
+                slot(
+                    &text::LABEL_NEW.fill(lang, [name]),
+                    Charset::Printable,
+                    min,
+                    max,
+                    true,
+                ),
+                slot(
+                    &text::LABEL_NEW_AGAIN.fill(lang, [name]),
                     Charset::Printable,
                     min,
                     max,
@@ -607,20 +683,32 @@ fn slots_for(kind: SecretKind) -> Vec<Slot> {
         }
         SecretKind::CardSecret(CardSecretKind::SetPins) => vec![
             slot(
-                "현재 PIN (공장 기본값이면 비워 두기)",
+                text::LABEL_SET_PINS_CURRENT.get(lang),
                 Charset::Printable,
                 0,
                 8,
                 true,
             ),
-            slot("새 PIN (8자)", Charset::Printable, 8, 8, true),
-            slot("새 PIN 확인", Charset::Printable, 8, 8, true),
+            slot(
+                text::LABEL_SET_PINS_NEW.get(lang),
+                Charset::Printable,
+                8,
+                8,
+                true,
+            ),
+            slot(
+                text::LABEL_SET_PINS_AGAIN.get(lang),
+                Charset::Printable,
+                8,
+                8,
+                true,
+            ),
         ],
         SecretKind::Backup { positions } => positions
             .iter()
             .map(|position| {
                 slot(
-                    &format!("{position}번째 단어"),
+                    &text::LABEL_WORD.fill(lang, [&position.to_string()]),
                     Charset::BackupWord,
                     1,
                     8,
@@ -633,8 +721,8 @@ fn slots_for(kind: SecretKind) -> Vec<Slot> {
     slots.into_iter().flatten().collect()
 }
 
-fn intro(kind: SecretKind, words: usize, address: bool) -> Vec<String> {
-    let rule = "비밀번호는 영문·숫자·기호(ASCII) 12–128자입니다. 단어 4개 이상을 이은 긴 문장을 권장합니다. 잊으면 복구 단어(니모닉)로만 복구할 수 있습니다.";
+fn intro(kind: SecretKind, lang: Lang, words: usize, address: bool) -> Vec<String> {
+    let rule = text::PASSWORD_RULE.get(lang);
     match kind {
         SecretKind::SetPassword => vec![rule.to_owned()],
         // Review L1 (2026-11-13: the DEK rotates, spec/02 §4.4): later contents are out of reach
@@ -642,65 +730,72 @@ fn intro(kind: SecretKind, words: usize, address: bool) -> Vec<String> {
         // weak old password can be cracked offline later).
         SecretKind::ChangePassword => vec![
             rule.to_owned(),
-            "비밀번호를 바꾸면 암호화 키도 새로 만들어, 바꾼 뒤의 내용은 예전 사본으로 열 수 없습니다. 바꾸기 전에 만든 지갑 파일 사본(백업한 vault.ywv 등)은 예전 비밀번호로 계속 열리고 그때의 내용이 드러납니다(예전 비밀번호가 약했다면 나중에 오프라인으로 풀릴 수 있습니다)."
-                .to_owned(),
+            text::CHANGE_PASSWORD_NOTE.get(lang).to_owned(),
         ],
-        SecretKind::Unlock => vec!["지갑을 열려면 비밀번호를 입력하세요.".to_owned()],
-        SecretKind::ConfirmPassword => {
-            vec!["계속하려면 비밀번호를 다시 입력하세요.".to_owned()]
+        SecretKind::Unlock => vec![text::UNLOCK_INTRO.get(lang).to_owned()],
+        SecretKind::ConfirmPassword => vec![text::CONFIRM_INTRO.get(lang).to_owned()],
+        SecretKind::Mnemonic => vec![text::MNEMONIC_INTRO.get(lang).to_owned()],
+        SecretKind::Passphrase { confirm: true } => {
+            vec![text::PASSPHRASE_CONFIRM_INTRO.get(lang).to_owned()]
         }
-        SecretKind::Mnemonic => vec![
-            "다른 지갑에서 쓰던 영어 복구 단어(BIP39 니모닉) 12·15·18·21·24개를 순서대로 입력하세요. 공백 또는 Tab으로 다음 칸으로 넘어갑니다. 목록에 없는 단어는 빨간색으로 표시합니다.".to_owned(),
-        ],
-        SecretKind::Passphrase { confirm: true } => vec![
-            "이전 지갑에서 쓰던 BIP39 passphrase를 두 번 입력하세요. ASCII만 지원합니다.".to_owned(),
-        ],
         SecretKind::Passphrase { confirm: false } => {
-            vec!["이 지갑의 BIP39 passphrase를 입력하세요.".to_owned()]
+            vec![text::PASSPHRASE_INTRO.get(lang).to_owned()]
         }
         SecretKind::PrivateKey { chain, no_words } => vec![
             match chain {
-                ImportChain::Evm => {
-                    "가져올 EVM 개인키(16진수 64자리, 0x 선택)를 입력하세요.".to_owned()
-                }
-                ImportChain::Sol => T_SOL_KEY_INPUT.to_owned(),
-                ImportChain::Btc => T_BTC_KEY_INPUT.to_owned(),
-                ImportChain::Zec => T_ZEC_KEY_INPUT.to_owned(),
-            },
+                ImportChain::Evm => text::EVM_KEY_INPUT,
+                ImportChain::Sol => text::SOL_KEY_INPUT,
+                ImportChain::Btc => text::BTC_KEY_INPUT,
+                ImportChain::Zec => text::ZEC_KEY_INPUT,
+            }
+            .get(lang)
+            .to_owned(),
             if no_words {
-                T_KEY_ONLY_BACKUP.to_owned()
+                text::KEY_ONLY_BACKUP
             } else {
-                T_IMPORTED_KEY_BACKUP.to_owned()
-            },
+                text::IMPORTED_KEY_BACKUP
+            }
+            .get(lang)
+            .to_owned(),
         ],
         // Without a known first address (an added phrase whose meta has none) only the words.
-        SecretKind::ShowMnemonic { .. } => vec![format!(
-            "아래 {words}단어{}를 순서대로 종이에 적으세요. 이 단어들이 지갑의 유일한 백업이며, 아는 사람은 누구든 자산을 옮길 수 있습니다. 이 창은 화면 캡처에서 제외됩니다.",
-            if address { "와 첫 주소" } else { "" }
+        SecretKind::ShowMnemonic { .. } => vec![text::SHOW_WORDS.fill(
+            lang,
+            [
+                &words.to_string(),
+                if address {
+                    text::WITH_ADDRESS.get(lang)
+                } else {
+                    ""
+                },
+            ],
         )],
-        SecretKind::ShowKey => vec![
-            "개인키입니다. 다른 사람에게 보여주거나 사진·클라우드에 남기지 마세요. 이 창은 화면 캡처에서 제외됩니다.".to_owned(),
-        ],
-        SecretKind::Backup { positions } => vec![format!(
-            "적은 종이를 보고 {}, {}, {}, {}번째 단어를 입력하세요.",
-            positions[0], positions[1], positions[2], positions[3]
-        )],
-        SecretKind::CardSecret(CardSecretKind::AdminPin) => vec![T_CARD_ADMIN_PIN.to_owned()],
-        SecretKind::CardSecret(CardSecretKind::ManagementKey) => {
-            vec![T_CARD_MANAGEMENT_KEY.to_owned()]
+        SecretKind::ShowKey => vec![text::SHOW_KEY_INTRO.get(lang).to_owned()],
+        SecretKind::Backup { positions } => {
+            let [first, second, third, fourth] = positions.map(|position| position.to_string());
+            vec![text::BACKUP_INTRO.fill(lang, [&first, &second, &third, &fourth])]
         }
-        SecretKind::CardSecret(CardSecretKind::ChangePin(target)) => vec![format!(
-            "YubiKey를 하나만 연결하고 현재 {name}과(와) 새 {name}을(를) 입력하세요. {rule} 이 지갑은 PIN을 저장하지 않으니 새 {name}을(를) 따로 기억해 두세요.",
-            name = target.name(),
-            rule = target.rule()
-        )],
-        SecretKind::CardSecret(CardSecretKind::PivPin) => vec![T_CARD_PIV_PIN.to_owned()],
+        SecretKind::CardSecret(CardSecretKind::AdminPin) => {
+            vec![text::CARD_ADMIN_PIN.get(lang).to_owned()]
+        }
+        SecretKind::CardSecret(CardSecretKind::ManagementKey) => {
+            vec![text::CARD_MANAGEMENT_KEY.get(lang).to_owned()]
+        }
+        SecretKind::CardSecret(CardSecretKind::ChangePin(target)) => {
+            vec![text::CHANGE_PIN_INTRO.fill(
+                lang,
+                [target_name(target, lang), &target_rule(target, lang)],
+            )]
+        }
+        SecretKind::CardSecret(CardSecretKind::PivPin) => {
+            vec![text::CARD_PIV_PIN.get(lang).to_owned()]
+        }
         SecretKind::CardSecret(CardSecretKind::SetPins) => vec![
-            T_CARD_SET_PINS.to_owned(),
-            T_CARD_SET_PINS_SAME.to_owned(),
+            text::CARD_SET_PINS.get(lang).to_owned(),
+            text::CARD_SET_PINS_SAME.get(lang).to_owned(),
         ],
         SecretKind::CardSecret(CardSecretKind::UserPin { .. }) => {
-            vec![T_CARD_USER_PIN.to_owned()]
+            vec![text::CARD_USER_PIN.get(lang).to_owned()]
         }
         SecretKind::CardPin {
             touches,
@@ -708,16 +803,18 @@ fn intro(kind: SecretKind, words: usize, address: bool) -> Vec<String> {
             serial,
             ..
         } => {
-            let mut lines = vec![format!("{}. {T_CARD_PIN}", card_pin_steps(serial))];
+            let mut lines = vec![format!(
+                "{}. {}",
+                card_pin_steps(lang, serial),
+                text::CARD_PIN.get(lang)
+            )];
             if touches > 1 {
-                let (unit, topic) = if per_tx {
-                    ("거래", "거래는")
+                let line = if per_tx {
+                    text::CARD_TOUCHES_PER_TX
                 } else {
-                    ("입력", "입력은")
+                    text::CARD_TOUCHES_PER_INPUT
                 };
-                lines.push(format!(
-                    "YubiKey 터치 {touches}회가 필요합니다 ({unit}마다 한 번, 15초 유지 정책이면 첫 터치 뒤 15초 안의 {topic} 터치 없이 서명됩니다)."
-                ));
+                lines.push(line.fill(lang, [&touches.to_string()]));
             }
             lines
         }
@@ -729,19 +826,20 @@ fn intro(kind: SecretKind, words: usize, address: bool) -> Vec<String> {
 /// "being the same is wrong", 2026-11-12). The fields take only 0x20–0x7E and at most 128
 /// characters, so the rule fails only by being short.
 const fn password_status(
+    lang: Lang,
     rule: Option<bool>,
     same: Option<bool>,
 ) -> [(&'static str, yw_win::ui::Color); 2] {
     [
         match rule {
-            Some(true) => ("✓ 12–128자", theme::SUCCESS_TEXT),
-            Some(false) => ("✗ 12자 이상 필요", theme::DANGER_TEXT),
-            None => ("· 12–128자", theme::MUTED),
+            Some(true) => (text::PW_RULE_OK.get(lang), theme::SUCCESS_TEXT),
+            Some(false) => (text::PW_RULE_SHORT.get(lang), theme::DANGER_TEXT),
+            None => (text::PW_RULE_EMPTY.get(lang), theme::MUTED),
         },
         match same {
-            Some(true) => ("✓ 두 칸이 같음", theme::SUCCESS_TEXT),
-            Some(false) => ("✗ 두 칸이 다름", theme::DANGER_TEXT),
-            None => ("· 확인 칸에 한 번 더 입력", theme::MUTED),
+            Some(true) => (text::PW_SAME.get(lang), theme::SUCCESS_TEXT),
+            Some(false) => (text::PW_DIFFERENT.get(lang), theme::DANGER_TEXT),
+            None => (text::PW_AGAIN.get(lang), theme::MUTED),
         },
     ]
 }
@@ -753,9 +851,11 @@ pub const fn valid_word_count(count: usize) -> bool {
 }
 
 /// Draws the flow name, `n/{steps}단계` and the step dots of a secret window; returns the new y.
+#[expect(clippy::too_many_arguments, reason = "plain layout helpers")]
 fn paint_steps(
     dc: &mut PaintDc<'_>,
     fonts: &Fonts,
+    lang: Lang,
     step: SecretStep,
     margin: i32,
     y: i32,
@@ -765,11 +865,13 @@ fn paint_steps(
     dc.select_font(&fonts.caption);
     dc.set_text_color(theme::MUTED);
     dc.draw_text(
-        &wide(&format!(
-            "{} · {}/{}단계",
-            step.flow,
-            step.current,
-            step.labels.len()
+        &wide(&text::STEPS.fill(
+            lang,
+            [
+                step.flow,
+                &step.current.to_string(),
+                &step.labels.len().to_string(),
+            ],
         )),
         Rect::new(margin, y, width, px(18)),
         DrawFlags::LINE,
@@ -832,14 +934,16 @@ fn paint_steps(
 }
 
 impl SecretForm {
-    /// An input window (W01–W07, W10).
+    /// An input window (W01–W07, W10) whose texts are in `lang`.
     #[must_use]
-    pub fn new(kind: SecretKind, now_ms: u64, capture_excluded: bool) -> Self {
+    pub fn new(kind: SecretKind, lang: Lang, now_ms: u64, capture_excluded: bool) -> Self {
         Self {
             kind,
-            slots: slots_for(kind),
+            lang,
+            slots: slots_for(kind, lang),
             active: 0,
-            checkbox: matches!(kind, SecretKind::Mnemonic).then_some(("BIP39 passphrase 사용", false)),
+            checkbox: matches!(kind, SecretKind::Mnemonic)
+                .then_some((text::PASSPHRASE_CHECKBOX.get(lang), false)),
             display: None,
             error: None,
             transient: None,
@@ -859,16 +963,15 @@ impl SecretForm {
             timeout_note: None,
             countdown_secs: 0,
             backup_left: false,
-            note: matches!(kind, SecretKind::Mnemonic).then(|| {
-                "이전 지갑에서 BIP39 passphrase(25번째 단어)를 썼을 때만 켜세요. ASCII만 지원합니다.".to_owned()
-            }),
+            note: matches!(kind, SecretKind::Mnemonic)
+                .then(|| text::PASSPHRASE_NOTE.get(lang).to_owned()),
         }
     }
 
     /// A display window (W08/W09). Capture exclusion is required, so it is always excluded.
     #[must_use]
-    pub fn display(kind: SecretKind, now_ms: u64, secret: DisplaySecret) -> Self {
-        let mut form = Self::new(kind, now_ms, true);
+    pub fn display(kind: SecretKind, lang: Lang, now_ms: u64, secret: DisplaySecret) -> Self {
+        let mut form = Self::new(kind, lang, now_ms, true);
         form.display = Some(secret);
         form
     }
@@ -951,7 +1054,7 @@ impl SecretForm {
     ) -> i32 {
         dc.select_font(&fonts.body);
         if let Some((rule, same)) = self.password_checks() {
-            let [(rule, rule_color), (same, same_color)] = password_status(rule, same);
+            let [(rule, rule_color), (same, same_color)] = password_status(self.lang, rule, same);
             let mut x = margin;
             for (text, color) in [
                 (rule, rule_color),
@@ -973,9 +1076,7 @@ impl SecretForm {
         let mut lines: Vec<(String, yw_win::ui::Color)> = Vec::new();
         if let Some(position) = self.unlisted_position() {
             lines.push((
-                format!(
-                    "{position}번째 칸의 단어가 BIP39 단어 목록에 없습니다. 오타인지, 종이의 철자를 다시 보세요."
-                ),
+                text::UNLISTED_WORD.fill(self.lang, [&position.to_string()]),
                 theme::DANGER_TEXT,
             ));
         }
@@ -983,15 +1084,18 @@ impl SecretForm {
             let left = SECRET_WINDOW_TIMEOUT_MS
                 .saturating_sub(now_ms.saturating_sub(self.started_ms))
                 .div_ceil(1_000);
-            let mut text = format!("{}:{:02} 남음 — 지나면 창이 닫힙니다", left / 60, left % 60);
+            let mut line = text::COUNTDOWN.fill(
+                self.lang,
+                [&(left / 60).to_string(), &format!("{:02}", left % 60)],
+            );
             if let Some(note) = self.timeout_note {
-                text.push(' ');
-                text.push_str(note);
+                line.push(' ');
+                line.push_str(note);
             }
-            lines.push((text, theme::MUTED));
+            lines.push((line, theme::MUTED));
         }
-        for (text, color) in lines {
-            let units = wide(&text);
+        for (line, color) in lines {
+            let units = wide(&line);
             dc.set_text_color(color);
             let height = dc.measure_wrapped(&units, width, DrawFlags::WRAP);
             dc.draw_text(&units, Rect::new(margin, y, width, height), DrawFlags::WRAP);
@@ -1062,7 +1166,7 @@ impl SecretForm {
     /// A new backup challenge (T-BACKUP-FAIL): new positions, empty fields.
     pub fn reset_backup(&mut self, positions: [u8; 4], message: Option<String>) {
         self.kind = SecretKind::Backup { positions };
-        self.slots = slots_for(self.kind);
+        self.slots = slots_for(self.kind, self.lang);
         self.active = 0;
         self.busy = false;
         self.backup_left = false;
@@ -1183,7 +1287,9 @@ impl SecretForm {
                     !(usize::from(min)..=usize::from(max)).contains(&slot.field.len())
                 }) =>
             {
-                return Err(format!("PIN은 영문·숫자·기호(ASCII) {min}–{max}자입니다."));
+                return Err(
+                    text::ERR_CARD_PIN.fill(self.lang, [&min.to_string(), &max.to_string()])
+                );
             }
             SecretKind::CardSecret(CardSecretKind::AdminPin)
                 if self
@@ -1191,7 +1297,7 @@ impl SecretForm {
                     .iter()
                     .any(|slot| !(8..=127).contains(&slot.field.len())) =>
             {
-                return Err("관리자 PIN은 영문·숫자·기호(ASCII) 8–127자입니다.".to_owned());
+                return Err(text::ERR_ADMIN_PIN.get(self.lang).to_owned());
             }
             SecretKind::CardSecret(CardSecretKind::ManagementKey)
                 if self.slots.iter().any(|slot| {
@@ -1199,7 +1305,7 @@ impl SecretForm {
                         || !slot.field.as_bytes().iter().all(u8::is_ascii_hexdigit)
                 }) =>
             {
-                return Err("관리 키는 16진수(0–9, a–f) 48자리입니다.".to_owned());
+                return Err(text::ERR_MANAGEMENT_KEY.get(self.lang).to_owned());
             }
             SecretKind::CardSecret(
                 CardSecretKind::PivPin | CardSecretKind::UserPin { piv: true },
@@ -1208,7 +1314,7 @@ impl SecretForm {
                 .iter()
                 .any(|slot| !(6..=8).contains(&slot.field.len())) =>
             {
-                return Err("PIV PIN은 영문·숫자·기호(ASCII) 6–8자입니다.".to_owned());
+                return Err(text::ERR_PIV_PIN.get(self.lang).to_owned());
             }
             SecretKind::CardSecret(CardSecretKind::UserPin { piv: false })
                 if self
@@ -1216,27 +1322,24 @@ impl SecretForm {
                     .iter()
                     .any(|slot| !(6..=127).contains(&slot.field.len())) =>
             {
-                return Err("OpenPGP PIN은 영문·숫자·기호(ASCII) 6–127자입니다.".to_owned());
+                return Err(text::ERR_OPENPGP_PIN.get(self.lang).to_owned());
             }
             SecretKind::CardSecret(CardSecretKind::SetPins) => {
                 let current = self.slots.first().map_or(0, |slot| slot.field.len());
                 if current != 0 && current != 8 {
-                    return Err(
-                        "현재 PIN은 비워 두거나(공장 기본값) 전에 통일한 8자를 넣으세요."
-                            .to_owned(),
-                    );
+                    return Err(text::ERR_SET_PINS_CURRENT.get(self.lang).to_owned());
                 }
                 if self.slots.iter().skip(1).any(|slot| slot.field.len() != 8) {
-                    return Err("새 PIN은 영문·숫자·기호(ASCII) 정확히 8자입니다.".to_owned());
+                    return Err(text::ERR_SET_PINS_NEW.get(self.lang).to_owned());
                 }
                 if !equal(1, 2) {
-                    return Err("새 PIN 두 칸이 서로 다릅니다.".to_owned());
+                    return Err(text::ERR_SET_PINS_DIFFER.get(self.lang).to_owned());
                 }
                 if equal(0, 1) {
-                    return Err("새 PIN이 현재 값과 같습니다.".to_owned());
+                    return Err(text::ERR_SET_PINS_SAME.get(self.lang).to_owned());
                 }
                 if factory(1) {
-                    return Err(T_CARD_NEW_FACTORY.to_owned());
+                    return Err(text::CARD_NEW_FACTORY.get(self.lang).to_owned());
                 }
             }
             SecretKind::CardSecret(CardSecretKind::ChangePin(target)) => {
@@ -1247,16 +1350,24 @@ impl SecretForm {
                     .iter()
                     .any(|slot| !range.contains(&slot.field.len()))
                 {
-                    return Err(format!("{}: {}", target.name(), target.rule()));
+                    return Err(format!(
+                        "{}: {}",
+                        target_name(target, self.lang),
+                        target_rule(target, self.lang)
+                    ));
                 }
                 if !equal(1, 2) {
-                    return Err(format!("새 {} 두 칸이 서로 다릅니다.", target.name()));
+                    return Err(
+                        text::ERR_NEW_DIFFER.fill(self.lang, [target_name(target, self.lang)])
+                    );
                 }
                 if equal(0, 1) {
-                    return Err(format!("새 {}이(가) 현재 값과 같습니다.", target.name()));
+                    return Err(
+                        text::ERR_NEW_SAME.fill(self.lang, [target_name(target, self.lang)])
+                    );
                 }
                 if factory(1) {
-                    return Err(T_CARD_NEW_FACTORY.to_owned());
+                    return Err(text::CARD_NEW_FACTORY.get(self.lang).to_owned());
                 }
             }
             _ => {}
@@ -1731,11 +1842,10 @@ impl SecretForm {
         dc.fill_rect(client, theme::BG);
 
         if !self.capture_excluded {
-            let text = wide(
-                "화면 캡처 제외가 적용되지 않았습니다. 화면 공유·녹화 중이면 입력하지 마세요.",
-            );
+            let warning = wide(text::CAPTURE_WARN.get(self.lang));
             dc.select_font(&fonts.body_bold);
-            let height = dc.measure_wrapped(&text, width.saturating_sub(px(20)), DrawFlags::WRAP);
+            let height =
+                dc.measure_wrapped(&warning, width.saturating_sub(px(20)), DrawFlags::WRAP);
             let banner = Rect::new(margin, y, width, height.saturating_add(px(20)));
             dc.round_rect(
                 banner,
@@ -1744,17 +1854,17 @@ impl SecretForm {
                 theme::DANGER_ACCENT,
             );
             dc.set_text_color(theme::DANGER_TEXT);
-            dc.draw_text(&text, banner.inset(px(10)), DrawFlags::WRAP);
+            dc.draw_text(&warning, banner.inset(px(10)), DrawFlags::WRAP);
             y = banner.bottom().saturating_add(px(12));
         }
 
         if let Some(step) = self.step {
-            y = paint_steps(dc, fonts, step, margin, y, width, &px);
+            y = paint_steps(dc, fonts, self.lang, step, margin, y, width, &px);
         }
 
         dc.select_font(&fonts.title);
         dc.set_text_color(theme::TEXT);
-        let title = wide(self.kind.title());
+        let title = wide(self.kind.title(self.lang));
         let title_h = dc.measure_wrapped(&title, width, DrawFlags::WRAP);
         dc.draw_text(
             &title,
@@ -1773,10 +1883,13 @@ impl SecretForm {
             .display
             .as_ref()
             .is_some_and(|display| display.address.is_some());
-        for paragraph in intro(self.kind, words, address).iter().chain(&self.details) {
-            let text = wide(paragraph);
-            let height = dc.measure_wrapped(&text, width, DrawFlags::WRAP);
-            dc.draw_text(&text, Rect::new(margin, y, width, height), DrawFlags::WRAP);
+        for paragraph in intro(self.kind, self.lang, words, address)
+            .iter()
+            .chain(&self.details)
+        {
+            let units = wide(paragraph);
+            let height = dc.measure_wrapped(&units, width, DrawFlags::WRAP);
+            dc.draw_text(&units, Rect::new(margin, y, width, height), DrawFlags::WRAP);
             y = y.saturating_add(height).saturating_add(px(8));
         }
 
@@ -1843,10 +1956,10 @@ impl SecretForm {
             if checked && let Some(note) = &self.note {
                 dc.set_text_color(theme::MUTED);
                 dc.select_font(&fonts.caption);
-                let text = wide(note);
-                let height = dc.measure_wrapped(&text, inner_w, DrawFlags::WRAP);
+                let units = wide(note);
+                let height = dc.measure_wrapped(&units, inner_w, DrawFlags::WRAP);
                 dc.draw_text(
-                    &text,
+                    &units,
                     Rect::new(inner_x, y, inner_w, height),
                     DrawFlags::WRAP,
                 );
@@ -1863,14 +1976,17 @@ impl SecretForm {
                 theme::DANGER_TEXT,
             ),
             (self.info.as_deref(), theme::MUTED),
-            (self.busy.then_some("확인 중…"), theme::MUTED),
+            (
+                self.busy.then_some(text::CHECKING.get(self.lang)),
+                theme::MUTED,
+            ),
         ] {
             if let Some(message) = message {
-                let text = wide(message);
+                let units = wide(message);
                 dc.set_text_color(color);
-                let height = dc.measure_wrapped(&text, inner_w, DrawFlags::WRAP);
+                let height = dc.measure_wrapped(&units, inner_w, DrawFlags::WRAP);
                 dc.draw_text(
-                    &text,
+                    &units,
                     Rect::new(inner_x, y, inner_w, height),
                     DrawFlags::WRAP,
                 );
@@ -1900,7 +2016,7 @@ impl SecretForm {
             dc.set_text_color(theme::MUTED);
             dc.select_font(&fonts.body);
             dc.draw_text(
-                &wide("창이 비활성화되어 내용을 가렸습니다. 창을 클릭하면 다시 표시합니다."),
+                &wide(text::MASKED.get(self.lang)),
                 card.inset(margin),
                 DrawFlags::WRAP_CENTER,
             );
@@ -1990,7 +2106,7 @@ impl SecretForm {
             dc.select_font(&fonts.body_bold);
             dc.set_text_color(theme::TEXT);
             dc.draw_text(
-                &wide("첫 주소 (계정 1) — 함께 적어 두면 복구할 때 맞는지 확인할 수 있습니다"),
+                &wide(text::FIRST_ADDRESS.get(self.lang)),
                 Rect::new(margin, y, width, px(22)),
                 DrawFlags::LINE,
             );
@@ -2013,11 +2129,9 @@ impl SecretForm {
         if display.passphrase_note {
             dc.select_font(&fonts.body);
             dc.set_text_color(theme::WARN_TEXT);
-            let text = wide(
-                "이 지갑은 passphrase를 사용합니다. passphrase는 저장되지 않으므로 따로 보관해야 합니다.",
-            );
-            let height = dc.measure_wrapped(&text, width, DrawFlags::WRAP);
-            dc.draw_text(&text, Rect::new(margin, y, width, height), DrawFlags::WRAP);
+            let note = wide(text::PASSPHRASE_REVEAL_NOTE.get(self.lang));
+            let height = dc.measure_wrapped(&note, width, DrawFlags::WRAP);
+            dc.draw_text(&note, Rect::new(margin, y, width, height), DrawFlags::WRAP);
             y = y.saturating_add(height).saturating_add(px(6));
         }
         y
@@ -2088,10 +2202,13 @@ impl SecretForm {
         dc.set_text_color(theme::MUTED);
         let (count, _, _) = self.mnemonic_status();
         dc.draw_text(
-            &wide(&format!(
-                "{count}단어 입력 · {}/{}",
-                slot.field.len(),
-                slot.field.limit()
+            &wide(&text::WORDS_TYPED.fill(
+                self.lang,
+                [
+                    &count.to_string(),
+                    &slot.field.len().to_string(),
+                    &slot.field.limit().to_string(),
+                ],
             )),
             Rect::new(margin, y, width, px(20)),
             DrawFlags::LINE,
@@ -2126,8 +2243,11 @@ impl SecretForm {
             let (right, color) = if matches!(self.kind, SecretKind::Backup { .. }) {
                 match self.word_mark(index) {
                     WordMark::None => (String::new(), theme::MUTED),
-                    WordMark::Listed => ("목록에 있음".to_owned(), theme::MUTED),
-                    WordMark::Unlisted => ("목록에 없는 단어".to_owned(), theme::DANGER_TEXT),
+                    WordMark::Listed => (text::WORD_LISTED.get(self.lang).to_owned(), theme::MUTED),
+                    WordMark::Unlisted => (
+                        text::WORD_UNLISTED.get(self.lang).to_owned(),
+                        theme::DANGER_TEXT,
+                    ),
                 }
             } else {
                 (
@@ -2194,12 +2314,71 @@ impl SecretForm {
                 } else {
                     theme::DISABLED_TEXT
                 });
-                dc.draw_text(&wide("보기"), reveal, DrawFlags::CENTER);
+                dc.draw_text(
+                    &wide(text::REVEAL.get(self.lang)),
+                    reveal,
+                    DrawFlags::CENTER,
+                );
                 layout.buttons.push((Button::Reveal(index), reveal));
             }
             y = y.saturating_add(px(48));
         }
         y
+    }
+
+    /// The button row in `lang`: the right group (cancel, primary) and the left group (clear all
+    /// or copy).
+    fn button_labels(&self, now_ms: u64) -> (ButtonLabels, ButtonLabels) {
+        let lang = self.lang;
+        let primary_label = match self.kind {
+            SecretKind::ShowMnemonic { create: true } => {
+                if self.hold.active() {
+                    let seconds = format!(
+                        "{:.1}",
+                        f64::from(u32::try_from(self.hold.remaining_ms(now_ms)).unwrap_or(0))
+                            / 1_000.0
+                    );
+                    text::HOLD_PROGRESS.fill(lang, [&seconds])
+                } else {
+                    text::HOLD.get(lang).to_owned()
+                }
+            }
+            SecretKind::ShowMnemonic { create: false } | SecretKind::ShowKey => {
+                text::CLOSE.get(lang).to_owned()
+            }
+            SecretKind::Unlock => text::UNLOCK.get(lang).to_owned(),
+            SecretKind::ChangePassword => text::CHANGE.get(lang).to_owned(),
+            SecretKind::Mnemonic | SecretKind::SetPassword => text::NEXT.get(lang).to_owned(),
+            SecretKind::PrivateKey { .. } => text::IMPORT.get(lang).to_owned(),
+            _ => text::OK.get(lang).to_owned(),
+        };
+        let mut right: Vec<(Button, String)> = vec![(Button::Primary, primary_label)];
+        if self.display.is_none() {
+            right.insert(
+                0,
+                (
+                    Button::Cancel,
+                    if self.kind == SecretKind::Unlock {
+                        text::LATER
+                    } else {
+                        text::CANCEL
+                    }
+                    .get(lang)
+                    .to_owned(),
+                ),
+            );
+        }
+        let mut left: Vec<(Button, String)> = Vec::new();
+        if self.display.is_none() {
+            left.push((Button::ClearAll, text::CLEAR_ALL.get(lang).to_owned()));
+        } else if self
+            .display
+            .as_ref()
+            .is_some_and(|display| display.copy_allowed)
+        {
+            left.push((Button::Copy, text::COPY.get(lang).to_owned()));
+        }
+        (right, left)
     }
 
     #[expect(clippy::too_many_arguments, reason = "plain layout helpers")]
@@ -2215,50 +2394,7 @@ impl SecretForm {
         layout: &mut Layout,
         now_ms: u64,
     ) {
-        let primary_label = match self.kind {
-            SecretKind::ShowMnemonic { create: true } => {
-                if self.hold.active() {
-                    format!(
-                        "다 적었습니다 ({:.1}초)",
-                        f64::from(u32::try_from(self.hold.remaining_ms(now_ms)).unwrap_or(0))
-                            / 1_000.0
-                    )
-                } else {
-                    "다 적었습니다 (2초 길게 누르기)".to_owned()
-                }
-            }
-            SecretKind::ShowMnemonic { create: false } | SecretKind::ShowKey => "닫기".to_owned(),
-            SecretKind::Unlock => "잠금 해제".to_owned(),
-            SecretKind::ChangePassword => "변경".to_owned(),
-            SecretKind::Mnemonic | SecretKind::SetPassword => "다음".to_owned(),
-            SecretKind::PrivateKey { .. } => "가져오기".to_owned(),
-            _ => "확인".to_owned(),
-        };
-        let mut right: Vec<(Button, String)> = vec![(Button::Primary, primary_label)];
-        if self.display.is_none() {
-            right.insert(
-                0,
-                (
-                    Button::Cancel,
-                    if self.kind == SecretKind::Unlock {
-                        "나중에"
-                    } else {
-                        "취소"
-                    }
-                    .to_owned(),
-                ),
-            );
-        }
-        let mut left: Vec<(Button, String)> = Vec::new();
-        if self.display.is_none() {
-            left.push((Button::ClearAll, "모두 지우기".to_owned()));
-        } else if self
-            .display
-            .as_ref()
-            .is_some_and(|display| display.copy_allowed)
-        {
-            left.push((Button::Copy, "복사".to_owned()));
-        }
+        let (right, left) = self.button_labels(now_ms);
         dc.select_font(&fonts.body);
         let mut x = client.w.saturating_sub(margin);
         for (button, label) in right.iter().rev() {

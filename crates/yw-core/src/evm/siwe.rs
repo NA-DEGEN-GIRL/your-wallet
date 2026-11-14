@@ -10,6 +10,7 @@ use super::address::{Address, AddressError, parse_address};
 use super::display::time::{days_from_civil, valid_date};
 use super::risk::{self, S01, S02, S03, S04, S05, S06, S07, S08, S09};
 use crate::approval::Warning;
+use crate::lang::{Lang, Text, Tpl};
 use crate::policy::BrowserOrigin;
 
 const MARKER: &str = " wants you to sign in with your Ethereum account:";
@@ -455,6 +456,8 @@ impl SiweMessage {
 /// Inputs of the §9.4 checks.
 #[derive(Clone, Copy, Debug)]
 pub struct SiweContext<'a> {
+    /// Display language of the warning texts.
+    pub lang: Lang,
     /// Requesting site; `None` for the app itself (domain checks then fail closed).
     pub origin: Option<&'a BrowserOrigin>,
     /// Signing account.
@@ -509,23 +512,27 @@ pub fn marker_authority(text: &str) -> Option<SiweAuthority> {
 }
 
 /// S01, S02 and S05 of an authority against the requesting site (`None` = the app: S01).
-fn domain_warnings(authority: &SiweAuthority, origin: Option<&BrowserOrigin>) -> Vec<Warning> {
+fn domain_warnings(
+    lang: Lang,
+    authority: &SiweAuthority,
+    origin: Option<&BrowserOrigin>,
+) -> Vec<Warning> {
     let mut warnings = Vec::new();
     match origin {
         Some(origin) => {
             if authority.host != origin.host() {
-                warnings.push(risk::warning(S01, None));
+                warnings.push(risk::warning(lang, S01, None));
             }
             if authority.scheme != origin.scheme() || authority.has_userinfo {
-                warnings.push(risk::warning(S02, None));
+                warnings.push(risk::warning(lang, S02, None));
             }
             if let Some(port) = authority.port
                 && port != origin.effective_port()
             {
-                warnings.push(risk::warning(S05, None));
+                warnings.push(risk::warning(lang, S05, None));
             }
         }
-        None => warnings.push(risk::warning(S01, None)),
+        None => warnings.push(risk::warning(lang, S01, None)),
     }
     warnings
 }
@@ -534,13 +541,11 @@ fn domain_warnings(authority: &SiweAuthority, origin: Option<&BrowserOrigin>) ->
 /// its first-line authority, or S01 (blocked) when no authority can be read.
 #[must_use]
 pub fn check_marker_only(text: &str, context: &SiweContext<'_>) -> Vec<Warning> {
-    let mut warnings = vec![marker_only_warning()];
+    let lang = context.lang;
+    let mut warnings = vec![marker_only_warning(lang)];
     match marker_authority(text) {
-        Some(authority) => warnings.extend(domain_warnings(&authority, context.origin)),
-        None => warnings.push(risk::warning(
-            S01,
-            Some("SIWE 형식의 첫 줄에서 도메인을 읽을 수 없습니다"),
-        )),
+        Some(authority) => warnings.extend(domain_warnings(lang, &authority, context.origin)),
+        None => warnings.push(risk::warning(lang, S01, Some(NO_DOMAIN.get(lang)))),
     }
     warnings
 }
@@ -548,8 +553,10 @@ pub fn check_marker_only(text: &str, context: &SiweContext<'_>) -> Vec<Warning> 
 /// The §9.4 warnings (S01–S07, S09) of a parsed message.
 #[must_use]
 pub fn check_siwe(message: &SiweMessage, context: &SiweContext<'_>) -> Vec<Warning> {
+    let lang = context.lang;
     let now = now_ms_i128(context.now_unix_ms);
     let mut warnings = domain_warnings(
+        lang,
         &SiweAuthority {
             scheme: message.scheme.clone(),
             host: message.domain_host.clone(),
@@ -560,29 +567,35 @@ pub fn check_siwe(message: &SiweMessage, context: &SiweContext<'_>) -> Vec<Warni
     );
     let checksum = parse_address(&message.address_text);
     if checksum == Err(AddressError::BadChecksum) || message.address != *context.account {
-        warnings.push(risk::warning(S03, None));
+        warnings.push(risk::warning(lang, S03, None));
     }
     if let Some(expiration) = message.expiration_time
         && seconds_ms(expiration) <= now
     {
-        warnings.push(risk::warning(S04, None));
+        warnings.push(risk::warning(lang, S04, None));
     }
     if message.chain_id != context.active_chain_id {
-        warnings.push(risk::warning(S06, None));
+        warnings.push(risk::warning(lang, S06, None));
     }
     if let Some(not_before) = message.not_before
         && seconds_ms(not_before) > now
     {
-        warnings.push(risk::warning(S07, None));
+        warnings.push(risk::warning(lang, S07, None));
     }
     if warnings.is_empty() {
-        warnings.push(risk::warning(S09, None));
+        warnings.push(risk::warning(lang, S09, None));
     }
     warnings
 }
 
 /// The S08 warning for marker-only messages.
 #[must_use]
-pub fn marker_only_warning() -> Warning {
-    risk::warning(S08, None)
+pub fn marker_only_warning(lang: Lang) -> Warning {
+    risk::warning(lang, S08, None)
 }
+
+/// The S01 cause when the first line of a marker-only message has no readable domain.
+const NO_DOMAIN: Text = Tpl {
+    ko: "SIWE 형식의 첫 줄에서 도메인을 읽을 수 없습니다",
+    en: "The domain cannot be read from the first line of the SIWE-style message",
+};

@@ -3336,6 +3336,7 @@ fn yubikey_accounts_and_the_card_step() {
             tx: tx.clone(),
         };
         let draft = yw_core::approval::build_evm_tx_request(
+            yw_core::lang::Lang::Ko,
             ApprovalId::random().unwrap(),
             ApprovalOrigin::App,
             source,
@@ -3730,6 +3731,7 @@ fn the_touch_prompt_is_gone_once_the_card_answers() {
             tx: tx.clone(),
         };
         let draft = yw_core::approval::build_evm_tx_request(
+            yw_core::lang::Lang::Ko,
             ApprovalId::random().unwrap(),
             ApprovalOrigin::App,
             source,
@@ -4673,11 +4675,11 @@ fn yubikey_badge_is_chrome_and_the_solana_note() {
         btc: None,
     };
     assert_eq!(
-        crate::app_card::card_badge(&records, role, 1),
+        crate::app_card::card_badge(yw_core::lang::Lang::Ko, &records, role, 1),
         "YubiKey로 서명 · #7700011 · 터치 1회"
     );
     assert_eq!(
-        crate::app_card::card_badge(&[], role, 3),
+        crate::app_card::card_badge(yw_core::lang::Lang::Ko, &[], role, 3),
         "YubiKey로 서명 · 터치 3회"
     );
     let chain = yw_core::evm::chain::sepolia();
@@ -4693,6 +4695,7 @@ fn yubikey_badge_is_chrome_and_the_solana_note() {
         access_list: Vec::new(),
     };
     let draft = yw_core::approval::build_evm_tx_request(
+        yw_core::lang::Lang::Ko,
         ApprovalId::random().unwrap(),
         ApprovalOrigin::App,
         EvmKeySource::Hardware(AccountIndex::ZERO),

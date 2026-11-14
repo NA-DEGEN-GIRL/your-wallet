@@ -101,7 +101,8 @@ fn resigned_identical_transaction() {
         push_record(&mut journal, &new),
         Err(BtcPushError::Duplicate)
     );
-    let rows = take_finished_duplicates(&mut journal, &new, TIP, 10, 99).unwrap();
+    let rows =
+        take_finished_duplicates(yw_core::lang::Lang::Ko, &mut journal, &new, TIP, 10, 99).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].status, "rejected");
     assert_eq!(rows[0].tx_id, txid.to_display_hex());
@@ -118,7 +119,7 @@ fn resigned_identical_transaction() {
     let again = with_id(record(&plan, BtcTxState::Signed, 6), 3);
     let mut trial = tracked.clone();
     assert_eq!(
-        take_finished_duplicates(&mut trial, &again, TIP, 12, 99),
+        take_finished_duplicates(yw_core::lang::Lang::Ko, &mut trial, &again, TIP, 12, 99),
         Err(BtcPushError::Duplicate)
     );
     assert_eq!(trial, tracked);
@@ -151,7 +152,7 @@ fn resigned_identical_transaction() {
     assert_eq!(records[1].state, BtcTxState::Confirmed);
     assert_eq!(check_can_send(&records, NET), Ok(()));
     // Only the current record produces the activity row of the txid.
-    let rows = finished_rows(&legacy, NET, TIP + 10, 30, 1);
+    let rows = finished_rows(yw_core::lang::Lang::Ko, &legacy, NET, TIP + 10, 30, 1);
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].status, "succeeded");
     assert_eq!(
@@ -162,7 +163,8 @@ fn resigned_identical_transaction() {
     let mut abandoned = with_id(record(&plan, BtcTxState::Abandoned, 1), 1);
     abandoned.not_found_count = 10;
     let mut journal = legacy_plain(&[abandoned]);
-    let rows = take_finished_duplicates(&mut journal, &new, TIP, 10, 99).unwrap();
+    let rows =
+        take_finished_duplicates(yw_core::lang::Lang::Ko, &mut journal, &new, TIP, 10, 99).unwrap();
     assert_eq!(rows[0].status, "abandoned");
     push_record(&mut journal, &new).unwrap();
     assert_eq!(records_of(&journal).len(), 1);
@@ -782,7 +784,15 @@ fn disclosed_rejected_or_cancelled_must_be_conflicted() {
     let mut journal = legacy_plain(&[with_id(rejected, 6)]);
     let again = with_id(record(&first_plan, BtcTxState::Signed, 3_000), 8);
     assert!(disclosed_duplicate(&journal, &again));
-    let rows = take_finished_duplicates(&mut journal, &again, TIP, 3_000, 99).unwrap();
+    let rows = take_finished_duplicates(
+        yw_core::lang::Lang::Ko,
+        &mut journal,
+        &again,
+        TIP,
+        3_000,
+        99,
+    )
+    .unwrap();
     assert_eq!(rows[0].status, "rejected");
     push_record(&mut journal, &again).unwrap();
     assert_eq!(records_of(&journal).len(), 1);

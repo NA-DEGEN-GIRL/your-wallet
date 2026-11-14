@@ -326,3 +326,36 @@ fn received_history_is_an_optional_top_level_key() {
         "{text}"
     );
 }
+
+/// spec/04 §6.1, spec/14 §1 (2026-11-14): `language` is an optional top-level string, `"ko"`
+/// (default, not written) or `"en"`, written last among the known keys; anything else is Korean
+/// with a banner. Not in the security snapshot.
+#[test]
+fn language_is_an_optional_top_level_key() {
+    use yw_core::lang::Lang;
+    assert_eq!(Settings::default().language, Lang::Ko);
+    let loaded = with(r#""receivedHistory":true,"language":"en""#);
+    assert!(loaded.banners.is_empty(), "{:?}", loaded.banners);
+    assert_eq!(loaded.settings.language, Lang::En);
+    assert!(loaded.settings.compat.unknown_keys().is_empty());
+    let bytes = loaded.settings.to_json();
+    let text = String::from_utf8(bytes.clone()).unwrap();
+    assert!(
+        text.ends_with(r#""receivedHistory":true,"language":"en"}"#),
+        "{text}"
+    );
+    let again = load(Some(&bytes));
+    assert!(again.banners.is_empty());
+    assert_eq!(again.settings.to_json(), bytes);
+    let korean = with(r#""language":"ko""#);
+    assert!(korean.banners.is_empty());
+    assert_eq!(korean.settings.language, Lang::Ko);
+    let text = String::from_utf8(korean.settings.to_json()).unwrap();
+    assert!(!text.contains("language"), "{text}");
+    for bad in [r#""EN""#, r#""fr""#, "1", "null", "true"] {
+        let loaded = with(&format!(r#""language":{bad}"#));
+        assert_eq!(loaded.settings.language, Lang::Ko, "{bad}");
+        assert_eq!(loaded.banners, ["language"], "{bad}");
+        assert!(loaded.settings.compat.unknown_keys().is_empty(), "{bad}");
+    }
+}

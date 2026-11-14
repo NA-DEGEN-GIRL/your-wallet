@@ -290,7 +290,12 @@ impl Quote {
 /// # Errors
 ///
 /// The classified RPC error, E-RPC-006/E-CHN-008 for a mismatch, E-RPC-005 for bad fee history.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the worker's transport, cache, clock and limits plus the form's language and intent"
+)]
 pub fn quote(
+    lang: yw_core::lang::Lang,
     transport: &SharedTransport,
     cache: &mut ChainCache,
     chain: &ChainJob,
@@ -325,7 +330,7 @@ pub fn quote(
             revert_data: revert_data.as_deref(),
         },
     };
-    let plan = plan_gas_limit(gas, intent.dapp_gas, &fees, &chain.caps, &chain.info);
+    let plan = plan_gas_limit(lang, gas, intent.dapp_gas, &fees, &chain.caps, &chain.info);
     let quoted = Eip1559Tx {
         gas_limit: plan.gas_limit,
         ..probe
@@ -336,7 +341,7 @@ pub fn quote(
     let cap_violation = check_caps_with_l1(&fees, plan.gas_limit, &l1_max, &chain.caps)
         .err()
         .map(|violation| {
-            let text = violation.warning(&chain.info).text;
+            let text = violation.warning(lang, &chain.info).text;
             format!("{} {}", ErrorCode::Tx001.text(), text.replace('\n', " · "))
         });
     Ok(Quote {

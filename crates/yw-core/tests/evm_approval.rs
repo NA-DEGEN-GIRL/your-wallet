@@ -36,6 +36,7 @@ fn tx() -> Eip1559Tx {
 
 fn try_display(value: &str, warnings: Vec<Warning>) -> Result<ApprovalDisplay, DisplayError> {
     ApprovalDisplay::new(
+        yw_core::lang::Lang::Ko,
         "[Sepolia 테스트넷] 테스트".to_owned(),
         vec![
             DisplayField::new(FieldKey::TO, "", value)?,
@@ -49,6 +50,7 @@ fn display(value: &str, warnings: Vec<Warning>) -> ApprovalDisplay {
     match try_display(value, warnings) {
         Ok(display) => display,
         Err(_) => ApprovalDisplay {
+            lang: yw_core::lang::Lang::Ko,
             title: String::new(),
             fields: Vec::new(),
             warnings: Vec::new(),
@@ -347,7 +349,14 @@ fn issue_checks() {
 fn blocked_requests_cannot_be_consumed_and_high_risk_can() {
     let mut store = ApprovalStore::new();
     let mut blocked = draft();
-    blocked.display = display("a", vec![warning(E05, Some("최대 수수료 > 상한"))]);
+    blocked.display = display(
+        "a",
+        vec![warning(
+            yw_core::lang::Lang::Ko,
+            E05,
+            Some("최대 수수료 > 상한"),
+        )],
+    );
     assert_eq!(blocked.display.risk, RiskLevel::Blocked);
     assert!(!blocked.display.ack_required);
     let request = store.issue(blocked, 0, 0).unwrap();
@@ -357,7 +366,10 @@ fn blocked_requests_cannot_be_consumed_and_high_risk_can() {
     );
     let mut high = draft();
     high.id = ApprovalId([1; 16]);
-    high.display = display("a", vec![warning(E01, Some("원인"))]);
+    high.display = display(
+        "a",
+        vec![warning(yw_core::lang::Lang::Ko, E01, Some("원인"))],
+    );
     assert_eq!(high.display.risk, RiskLevel::High);
     assert!(high.display.ack_required);
     let request = store.issue(high, 0, 0).unwrap();
@@ -416,7 +428,11 @@ fn replace_keeps_times_and_requires_the_shown_digest() {
     };
     none.display = display(
         "a",
-        vec![warning(E01, Some("시뮬레이션 응답이 없습니다(10초)"))],
+        vec![warning(
+            yw_core::lang::Lang::Ko,
+            E01,
+            Some("시뮬레이션 응답이 없습니다(10초)"),
+        )],
     );
     let replaced = store.replace(request.id, request.digest, none).unwrap();
     assert_eq!(

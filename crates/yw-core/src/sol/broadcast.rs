@@ -45,21 +45,29 @@ pub mod err {
         matches!(code, 1..=6 | 9)
     }
 
-    /// Fixed Korean text of a code (never the RPC message).
+    /// Fixed Korean text of a code (never the RPC message); [`text_in`] for a language.
     #[must_use]
     pub const fn text(code: u16) -> &'static str {
+        text_in(code, crate::lang::Lang::Ko)
+    }
+
+    /// Fixed text of a code in `lang` (never the RPC message).
+    #[must_use]
+    pub const fn text_in(code: u16, lang: crate::lang::Lang) -> &'static str {
+        use crate::sol::text as t;
         match code {
-            1 => "수수료를 낼 잔액이 부족합니다",
-            2 => "rent 기준을 채우지 못했습니다",
-            3 => "계정을 찾을 수 없습니다",
-            4 => "System 명령이 실패했습니다",
-            5 => "토큰 명령이 실패했습니다",
-            6 => "계산 한도(CU)를 넘었습니다",
-            7 => "블록해시를 찾을 수 없습니다(일시적)",
-            8 => "이미 처리된 거래입니다",
-            9 => "프로그램 명령이 실패했습니다",
-            _ => "알 수 없는 거래 오류",
+            1 => t::ERR_FEE_BALANCE,
+            2 => t::ERR_RENT,
+            3 => t::ERR_ACCOUNT_NOT_FOUND,
+            4 => t::ERR_SYSTEM,
+            5 => t::ERR_TOKEN,
+            6 => t::ERR_CU,
+            7 => t::ERR_BLOCKHASH,
+            8 => t::ERR_ALREADY,
+            9 => t::ERR_PROGRAM,
+            _ => t::ERR_UNKNOWN,
         }
+        .get(lang)
     }
 }
 

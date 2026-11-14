@@ -917,6 +917,7 @@ fn typed_facts_failed_code_lookup_is_unknown_and_t18() -> TestResult {
     let rules_of = |facts: &yw_core::approval::ChainFacts| {
         typed_rules(
             &TypedRiskInput {
+                lang: yw_core::lang::Lang::Ko,
                 chain: &chain.info,
                 account: &account,
                 typed: &typed,

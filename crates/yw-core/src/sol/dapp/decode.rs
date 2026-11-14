@@ -6,6 +6,7 @@
 
 use super::alt::KeyRole;
 use super::parse::SolTxMessage;
+use crate::lang::Text;
 use crate::sol::address::{
     ATA_PROGRAM, COMPUTE_BUDGET_PROGRAM, ED25519_PRECOMPILE, MEMO_PROGRAM_V1, MEMO_PROGRAM_V2,
     SECP256K1_PRECOMPILE, SECP256R1_PRECOMPILE, SYSTEM_PROGRAM, SolAddress, TOKEN_2022_PROGRAM,
@@ -14,11 +15,11 @@ use crate::sol::address::{
 use crate::sol::pda::{MAX_SEED_LEN, associated_token_address};
 
 /// `Unknown` reason: the data length, tag or account count does not fit the program.
-pub const MALFORMED: &str = "형식이 맞지 않음";
+pub const MALFORMED: Text = super::text::MALFORMED;
 /// `Unknown` reason: an ATA instruction whose token account is not the derived address.
-pub const ATA_MISMATCH: &str = "ATA 주소가 유도값과 다릅니다";
+pub const ATA_MISMATCH: Text = super::text::ATA_MISMATCH;
 /// `Unknown` reason: an account comes from a lookup table that could not be resolved.
-pub const UNRESOLVED: &str = "조회 테이블을 해석하지 못함";
+pub const UNRESOLVED: Text = super::text::UNRESOLVED;
 
 /// A decoded instruction.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -45,8 +46,8 @@ pub enum DecodedIx {
     },
     /// Not decoded: shown raw with X02. `None` for a program the wallet does not interpret.
     Unknown {
-        /// Why a known program's instruction was not decoded.
-        reason: Option<&'static str>,
+        /// Why a known program's instruction was not decoded (shown in the approval's language).
+        reason: Option<Text>,
     },
 }
 

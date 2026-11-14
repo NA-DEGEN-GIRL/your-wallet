@@ -25,6 +25,7 @@ fn now_ms() -> u64 {
 
 fn try_request(message: &str, origin: &str) -> Fallible<ApprovalDraft> {
     Ok(build_personal_request(
+        yw_core::lang::Lang::Ko,
         ApprovalId([2; 16]),
         ApprovalOrigin::Site(BrowserOrigin::parse(origin).ok_or("origin")?),
         EvmKeySource::Derived(AccountIndex::ZERO),
@@ -206,6 +207,7 @@ fn x10_x20_personal_messages() {
         vec![0xff, 0x00, 0xfe]
     );
     let hex = build_personal_request(
+        yw_core::lang::Lang::Ko,
         ApprovalId([3; 16]),
         ApprovalOrigin::Site(BrowserOrigin::parse("https://app.example").unwrap()),
         EvmKeySource::Derived(AccountIndex::ZERO),

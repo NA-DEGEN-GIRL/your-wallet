@@ -4,16 +4,17 @@
 
 use super::{
     HYPE_SYSTEM_ADDRESS, HcAction, HcKind, HcNetwork, HcPayload, HcToken, WITHDRAW_FEE_USDC,
-    system_address_index,
+    system_address_index, text,
 };
 use crate::approval::{
-    APP_ORIGIN_TEXT, AccountRef, ApprovalDisplay, ApprovalDraft, ApprovalId, ApprovalKind,
+    APP_ORIGIN, AccountRef, ApprovalDisplay, ApprovalDraft, ApprovalId, ApprovalKind,
     ApprovalOrigin, ChainRef, DisplayError, DisplayField, FieldKey, RuleId, Signer, SigningPayload,
     SimulationBinding, Warning, escape_untrusted,
 };
 use crate::evm::address::{Address, parse_address};
 use crate::evm::eip712::TdNode;
 use crate::evm::risk::{H01, H02, H03, H04, H05, H10, H11, H12, H13, H14, sort_warnings, warning};
+use crate::lang::Lang;
 use crate::vault::EvmKeySource;
 
 /// What the app checked about the recipient (spec/04 §2.15 notes of the send form).
@@ -146,26 +147,31 @@ pub struct HcApprovalInput<'a> {
     pub recipient: HcRecipient,
 }
 
-/// Network field text.
+/// Network field text in `lang`.
 #[must_use]
-pub fn network_text(network: HcNetwork, signature_chain_id: u64) -> String {
-    format!(
-        "Hyperliquid {} (chainId {signature_chain_id}로 서명 · hyperliquidChain {})",
-        network.label(),
-        network.chain_name()
+pub fn network_text(lang: Lang, network: HcNetwork, signature_chain_id: u64) -> String {
+    text::NETWORK.fill(
+        lang,
+        [
+            text::network_label(lang, network),
+            &signature_chain_id.to_string(),
+            network.chain_name(),
+        ],
     )
 }
 
-fn token_text(token: Option<&HcToken>, wire: &str) -> String {
+fn token_text(lang: Lang, token: Option<&HcToken>, wire: &str) -> String {
     token.map_or_else(
         || escape_untrusted(wire).text,
         |token| {
-            format!(
-                "{} (토큰 index {}, tokenId {}, 소수 {}자리)",
-                escape_untrusted(&token.name).text,
-                token.index,
-                token.token_id,
-                token.wei_decimals
+            text::TOKEN.fill(
+                lang,
+                [
+                    &escape_untrusted(&token.name).text,
+                    &token.index.to_string(),
+                    &token.token_id,
+                    &token.wei_decimals.to_string(),
+                ],
             )
         },
     )
@@ -190,7 +196,8 @@ fn push(fields: &mut Vec<DisplayField>, key: FieldKey, value: String) -> Result<
     Ok(())
 }
 
-/// Builds the `HyperCore 전송` draft (app origin, [`ChainRef::HyperCore`], no simulation).
+/// Builds the `HyperCore 전송` draft in `lang` (app origin, [`ChainRef::HyperCore`], no
+/// simulation; spec/14).
 ///
 /// # Errors
 ///
@@ -200,31 +207,36 @@ fn push(fields: &mut Vec<DisplayField>, key: FieldKey, value: String) -> Result<
     reason = "one block per display field of spec/11 §6"
 )]
 pub fn build_hypercore_request(
+    lang: Lang,
     id: ApprovalId,
     input: &HcApprovalInput<'_>,
 ) -> Result<ApprovalDraft, DisplayError> {
     let action = input.action;
     let kind = action.kind();
+    let kind_name = text::kind_name(lang, kind);
     let mut fields = Vec::new();
-    let mut warnings: Vec<Warning> = vec![warning(H01, None)];
-    push(&mut fields, FieldKey::ORIGIN, APP_ORIGIN_TEXT.to_owned())?;
+    let mut warnings: Vec<Warning> = vec![warning(lang, H01, None)];
+    push(
+        &mut fields,
+        FieldKey::ORIGIN,
+        APP_ORIGIN.get(lang).to_owned(),
+    )?;
     push(
         &mut fields,
         FieldKey::NETWORK,
-        network_text(action.network, action.signature_chain_id),
+        network_text(lang, action.network, action.signature_chain_id),
     )?;
     push(&mut fields, FieldKey::ACCOUNT, input.account.to_checksum())?;
     let action_text = match &action.payload {
-        HcPayload::UsdClassTransfer { to_perp, .. } => format!(
-            "{}\n방향: {}",
-            kind.korean(),
-            if *to_perp {
-                "현물(spot) → 선물(perp)"
+        HcPayload::UsdClassTransfer { to_perp, .. } => {
+            let direction = if *to_perp {
+                text::SPOT_TO_PERP
             } else {
-                "선물(perp) → 현물(spot)"
-            }
-        ),
-        _ => kind.korean().to_owned(),
+                text::PERP_TO_SPOT
+            };
+            text::DIRECTION.fill(lang, [kind_name, direction.get(lang)])
+        }
+        _ => kind_name.to_owned(),
     };
     push(
         &mut fields,
@@ -232,7 +244,7 @@ pub fn build_hypercore_request(
         format!("{action_text}\n(type {})", kind.wire_type()),
     )?;
     if let Some(destination) = action.destination() {
-        let mut text = destination.to_checksum();
+        let mut value = destination.to_checksum();
         match kind {
             // The move note only when the destination is the system address of the spotMeta
             // token linked to HyperEVM and the move is spot → spot; anything else is high risk
@@ -242,7 +254,7 @@ pub fn build_hypercore_request(
                     token.evm.is_some() && token.system_address() == destination
                 }) =>
             {
-                warnings.push(warning(H13, None));
+                warnings.push(warning(lang, H13, None));
             }
             HcKind::SendAsset
                 if matches!(
@@ -251,32 +263,33 @@ pub fn build_hypercore_request(
                         if source_dex == SPOT_DEX && destination_dex == SPOT_DEX
                 ) =>
             {
-                text.push_str(
-                    "\nHyperEVM 시스템 주소 — 토큰은 HyperEVM의 같은 주소(서명 계정)로 들어갑니다",
-                );
-                warnings.push(warning(H04, None));
+                value.push('\n');
+                value.push_str(text::NOTE_EVM_SYSTEM.get(lang));
+                warnings.push(warning(lang, H04, None));
             }
-            HcKind::SendAsset => warnings.push(warning(H14, None)),
+            HcKind::SendAsset => warnings.push(warning(lang, H14, None)),
             HcKind::Withdraw => {
-                text.push_str("\nArbitrum One의 이 주소로 USDC가 들어갑니다");
+                value.push('\n');
+                value.push_str(text::NOTE_WITHDRAW.get(lang));
             }
             _ => {}
         }
         if kind != HcKind::SendAsset {
             for note in &input.recipient.notes {
-                text.push('\n');
-                text.push_str(&escape_untrusted(note).text);
+                value.push('\n');
+                value.push_str(&escape_untrusted(note).text);
             }
             if input.recipient.look_alike {
-                warnings.push(warning(H03, None));
+                warnings.push(warning(lang, H03, None));
             } else if input.recipient.not_in_book {
-                warnings.push(warning(H02, None));
+                warnings.push(warning(lang, H02, None));
             }
         }
         if destination == input.account && kind != HcKind::SendAsset && kind != HcKind::Withdraw {
-            text.push_str("\n보내는 계정과 같은 주소입니다");
+            value.push('\n');
+            value.push_str(text::NOTE_SAME_ACCOUNT.get(lang));
         }
-        push(&mut fields, FieldKey::HC_TO, text)?;
+        push(&mut fields, FieldKey::HC_TO, value)?;
     }
     let amount = match &action.payload {
         HcPayload::SpotSend { token, amount, .. } | HcPayload::SendAsset { token, amount, .. } => {
@@ -284,12 +297,14 @@ pub fn build_hypercore_request(
                 || "?".to_owned(),
                 |token| escape_untrusted(&token.name).text,
             );
-            format!("{amount} {symbol}\n{}", token_text(input.token, token))
+            format!(
+                "{amount} {symbol}\n{}",
+                token_text(lang, input.token, token)
+            )
         }
-        HcPayload::Withdraw { amount, .. } => format!(
-            "{amount} USDC\nArbitrum 도착 = 금액 − {WITHDRAW_FEE_USDC} USDC = {} USDC",
-            withdraw_arrival(amount)
-        ),
+        HcPayload::Withdraw { amount, .. } => {
+            text::WITHDRAW_AMOUNT.fill(lang, [amount, WITHDRAW_FEE_USDC, &withdraw_arrival(amount)])
+        }
         HcPayload::UsdSend { amount, .. } | HcPayload::UsdClassTransfer { amount, .. } => {
             format!("{amount} USDC")
         }
@@ -297,17 +312,17 @@ pub fn build_hypercore_request(
     push(&mut fields, FieldKey::HC_AMOUNT, amount)?;
     let fee = match kind {
         HcKind::Withdraw => {
-            warnings.push(warning(H05, None));
-            format!("{WITHDRAW_FEE_USDC} USDC (고정 출금 수수료, HyperCore에서 차감)")
+            warnings.push(warning(lang, H05, None));
+            text::FEE_WITHDRAW.fill(lang, [WITHDRAW_FEE_USDC])
         }
-        HcKind::SendAsset => "HyperCore에서 HYPE로 HyperEVM 가스(200k gas)를 냅니다".to_owned(),
-        _ => "없음 (HyperCore 사용자 서명 작업)".to_owned(),
+        HcKind::SendAsset => text::FEE_SEND_ASSET.get(lang).to_owned(),
+        _ => text::FEE_NONE.get(lang).to_owned(),
     };
     push(&mut fields, FieldKey::HC_FEE, fee)?;
     push(
         &mut fields,
         FieldKey::HC_NONCE,
-        format!("{} (unix ms, 서명 시각)", action.nonce),
+        text::NONCE.fill(lang, [&action.nonce.to_string()]),
     )?;
     push(
         &mut fields,
@@ -315,12 +330,8 @@ pub fn build_hypercore_request(
         String::from_utf8_lossy(&yw_json::to_vec(&action.typed_data_json())).into_owned(),
     )?;
     sort_warnings(&mut warnings);
-    let title = format!(
-        "[{}] HyperCore 전송: {}",
-        action.network.label(),
-        kind.korean()
-    );
-    let display = ApprovalDisplay::new(title, fields, warnings)?;
+    let title = text::TITLE.fill(lang, [text::network_label(lang, action.network), kind_name]);
+    let display = ApprovalDisplay::new(lang, title, fields, warnings)?;
     Ok(ApprovalDraft {
         id,
         origin: ApprovalOrigin::App,

@@ -278,8 +278,13 @@ fn spl_preview_calls_in_spec_order_and_builds_the_core() -> TestResult {
     assert_eq!(prepared.flags, flags::FIRST_TIME);
     // The approval draft: 0x0503 shows the rent the sender pays.
     let intent = prepared.intent([1; 16], 1_800_000_000_000);
-    let draft = build_sol_transfer_request(&intent, &prepared.genesis, &prepared.facts)
-        .map_err(|error| format!("{error:?}"))?;
+    let draft = build_sol_transfer_request(
+        yw_core::lang::Lang::Ko,
+        &intent,
+        &prepared.genesis,
+        &prepared.facts,
+    )
+    .map_err(|error| format!("{error:?}"))?;
     let ata_field = draft
         .display
         .fields

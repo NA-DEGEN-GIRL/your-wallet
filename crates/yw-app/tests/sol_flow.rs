@@ -1354,6 +1354,10 @@ fn resolved() -> ResolvedKeys {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the spec/07 §20.4 call sequence in order"
+)]
 fn dapp_preview_calls_in_order_with_the_spec_config() -> TestResult {
     let rpc = dapp_fake(DappWorld::default());
     let clock = FakeClock::at(SIGNED_AT);
@@ -1440,8 +1444,12 @@ fn dapp_preview_calls_in_order_with_the_spec_config() -> TestResult {
         options: SolSendOptions::default(),
         txs: vec![alt_tx()],
     };
-    let draft = build_sol_tx_request(&request, &preview.into_facts(Vec::new(), 100_000))
-        .map_err(|error| format!("{error:?}"))?;
+    let draft = build_sol_tx_request(
+        yw_core::lang::Lang::Ko,
+        &request,
+        &preview.into_facts(Vec::new(), 100_000),
+    )
+    .map_err(|error| format!("{error:?}"))?;
     let SigningPayload::SolTx(payload) = &draft.payload else {
         return Err("payload".into());
     };
@@ -1571,6 +1579,7 @@ fn dapp_preview_fails_closed_on_an_unread_token_2022_mint() -> TestResult {
     };
     let rules = |preview: yw_app::sol::flow::DappPreview| -> Result<Vec<RuleId>, String> {
         let draft = build_sol_tx_request(
+            yw_core::lang::Lang::Ko,
             &request(vec![transfer_checked_tx()]),
             &preview.into_facts(Vec::new(), 100_000),
         )

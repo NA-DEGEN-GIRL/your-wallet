@@ -32,8 +32,8 @@ pub const T_TOKEN_HIDDEN_NOTE: &str =
 
 /// T-CUSTOM-CHAIN (spec/04 §2.16): the user-chain badge of S10, S15 and the A01 header.
 #[must_use]
-pub fn custom_chain_badge(chain_id: u64) -> String {
-    format!("사용자 추가 체인 (chainId {chain_id})")
+pub fn custom_chain_badge(lang: yw_core::lang::Lang, chain_id: u64) -> String {
+    crate::ui::approval_text::BADGE_CUSTOM_CHAIN.fill(lang, [&chain_id.to_string()])
 }
 
 /// The S15 `EVM 체인` add note and button (spec/04 §2.11): any other L1/L2 is a user chain.
@@ -538,7 +538,7 @@ impl App {
             .any(|def| def.chain_id == chain_id)
         {
             name.push_str(" · ");
-            name.push_str(&custom_chain_badge(chain_id));
+            name.push_str(&custom_chain_badge(self.settings.language, chain_id));
         }
         if self.evm.blocked(chain_id).is_some() {
             name.push_str(" (차단됨)");
@@ -1538,6 +1538,10 @@ impl App {
     }
 
     /// The S15 `EVM 체인` section with fee caps.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one card per chain row with its badge, identifiers and caps"
+    )]
     pub fn chains_section(&self, items: &mut Vec<Item>) {
         items.push(Item::CardStart(Some("EVM 체인".to_owned())));
         items.push(Item::Help(
@@ -1581,7 +1585,10 @@ impl App {
                 self.endpoint_text(chain_id)
             )));
             if let Some(def) = user {
-                items.push(Item::Help(custom_chain_badge(chain_id)));
+                items.push(Item::Help(custom_chain_badge(
+                    self.settings.language,
+                    chain_id,
+                )));
                 let mut ids_text = Vec::new();
                 if let Some(subdomain) = &def.quicknode_subdomain {
                     ids_text.push(format!("QuickNode 서브도메인 {subdomain}"));

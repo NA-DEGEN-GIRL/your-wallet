@@ -898,7 +898,8 @@ fn hypercore_actions_through_the_approval_store() {
                 not_in_book: true,
             },
         };
-        let draft = build_hypercore_request(ApprovalId([index; 16]), &input).unwrap();
+        let draft = build_hypercore_request(crate::lang::Lang::Ko, ApprovalId([index; 16]), &input)
+            .unwrap();
         assert_eq!(draft.kind, ApprovalKind::HyperCoreAction);
         let request = store.issue(draft.clone(), 0, 1_790_000_000_000).unwrap();
         let approved = store.consume(request.id, request.digest, 1).unwrap();

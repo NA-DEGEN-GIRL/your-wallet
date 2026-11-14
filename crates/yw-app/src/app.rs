@@ -2851,7 +2851,10 @@ impl App {
             SECRET_INPUT_CLASS
         };
         let spec = WindowSpec::new(class, WindowKind::Owned { owner })
-            .title(&format!("Your Wallet — {}", kind.title()))
+            .title(&format!(
+                "Your Wallet — {}",
+                kind.title(self.settings.language)
+            ))
             .size(w, h)
             .topmost(topmost);
         let handler = Box::new(Forward {
@@ -2910,7 +2913,8 @@ impl App {
                 Self::log_capture(kind, excluded);
                 match capture_decision(kind, Ok(excluded)) {
                     CaptureDecision::Show { warning } => {
-                        let mut form = SecretForm::new(kind, now_ms(), !warning);
+                        let mut form =
+                            SecretForm::new(kind, self.settings.language, now_ms(), !warning);
                         form.set_step(flow_step(purpose));
                         self.show_secret(serial, window, form, purpose);
                     }
@@ -2945,7 +2949,7 @@ impl App {
         let decision = capture_decision(kind, excluded);
         match (decision, created) {
             (CaptureDecision::Show { .. }, Ok(window)) => {
-                let mut form = SecretForm::display(kind, now_ms(), display);
+                let mut form = SecretForm::display(kind, self.settings.language, now_ms(), display);
                 form.set_step(flow_step(purpose));
                 form.set_timeout_note(timeout_note(purpose));
                 self.show_secret(serial, window, form, purpose);
@@ -3440,6 +3444,9 @@ impl App {
             if settings.log_level != self.settings.log_level {
                 logging::set_level(settings.log_level);
             }
+            if settings.language != self.settings.language {
+                self.key(KeyJob::SetLanguage(settings.language));
+            }
             let memory_only = settings.read_only().is_some();
             self.settings = settings;
             logging::info(
@@ -3910,6 +3917,18 @@ impl App {
                 let mut settings = self.settings.clone();
                 settings.log_level = level;
                 self.save_settings(settings, "logLevel");
+            }
+            ids::LANG_KO | ids::LANG_EN => {
+                let language = if id == ids::LANG_EN {
+                    yw_core::lang::Lang::En
+                } else {
+                    yw_core::lang::Lang::Ko
+                };
+                if language != self.settings.language {
+                    let mut settings = self.settings.clone();
+                    settings.language = language;
+                    self.save_settings(settings, crate::settings::LANGUAGE_KEY);
+                }
             }
             ids::TPL_QUICKNODE | ids::TPL_ALCHEMY | ids::TPL_MANUAL => {
                 let template = match id {

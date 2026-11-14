@@ -190,9 +190,12 @@ fn zec_draft_is_displayable() {
         },
     )
     .unwrap();
-    let draft =
-        yw_core::zec::display::build_zec_request(yw_core::approval::ApprovalId([3; 16]), &plan)
-            .unwrap();
+    let draft = yw_core::zec::display::build_zec_request(
+        yw_core::lang::Lang::Ko,
+        yw_core::approval::ApprovalId([3; 16]),
+        &plan,
+    )
+    .unwrap();
     assert!(yw_app::ui::approval::validate_for_display(&draft.display).is_ok());
 }
 

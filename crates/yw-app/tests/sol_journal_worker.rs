@@ -116,8 +116,13 @@ fn approve(intent: &SolTransferIntent) -> TestResult<Approved> {
         }),
         blocks: Vec::new(),
     };
-    let draft = build_sol_transfer_request(intent, &intent.cluster.genesis(), &facts)
-        .map_err(|error| format!("{error:?}"))?;
+    let draft = build_sol_transfer_request(
+        yw_core::lang::Lang::Ko,
+        intent,
+        &intent.cluster.genesis(),
+        &facts,
+    )
+    .map_err(|error| format!("{error:?}"))?;
     let mut store = ApprovalStore::new();
     let request = store.issue(draft, 1, NOW)?;
     Ok(store.consume(request.id, request.digest, 2)?)
@@ -510,7 +515,8 @@ fn approve_send_as(signer: (SolKeySource, [u8; 32]), tag: u8, id: u8) -> TestRes
         known: Vec::new(),
         fee_cap: 100_000,
     };
-    let draft = build_sol_tx_request(&request, &facts).map_err(|error| format!("{error:?}"))?;
+    let draft = build_sol_tx_request(yw_core::lang::Lang::Ko, &request, &facts)
+        .map_err(|error| format!("{error:?}"))?;
     let mut store = ApprovalStore::new();
     let issued = store.issue(draft, 1, NOW)?;
     Ok(store.consume(issued.id, issued.digest, 2)?)

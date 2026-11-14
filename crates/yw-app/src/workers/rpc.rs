@@ -62,6 +62,8 @@ pub enum RpcJob {
     Quote {
         /// Job.
         job: u64,
+        /// The send form's language (the cap-violation text).
+        lang: yw_core::lang::Lang,
         /// Chain.
         chain: ChainJob,
         /// Sender.
@@ -628,11 +630,13 @@ impl RpcWorker {
             }
             RpcJob::Quote {
                 job,
+                lang,
                 chain,
                 from,
                 intent,
             } => {
                 let result = quote(
+                    lang,
                     &transport,
                     &mut self.cache,
                     &chain,

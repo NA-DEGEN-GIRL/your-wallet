@@ -10,12 +10,12 @@
 //! approve/reject controls) on yw-win instead of `windows`, with the app's single message loop
 //! and owner-drawn content instead of a read-only EDIT.
 
-use core::fmt::Write as _;
 use std::collections::HashMap;
 
 use yw_core::approval::{ApprovalRequest, RiskLevel};
 use yw_core::evm::chain::SEPOLIA;
 use yw_core::evm::simulate::needs_resimulation;
+use yw_core::lang::{Lang, Text};
 use yw_win::input::is_down;
 use yw_win::ui::{
     Color, DrawFlags, Handler, Msg, PaintDc, Rect, Reply, Window, WindowKind, WindowSpec,
@@ -42,6 +42,7 @@ use crate::flow::evm::prepare::{
 };
 use crate::logging::{self, Field};
 use crate::ui::approval::QueueOutcome;
+use crate::ui::approval_text as text;
 use crate::ui::approval_view::{ApprovalView, Block, Tone, escape_spans, view};
 use crate::ui::badge::{BADGE_DIP, BADGE_GAP_DIP, Badge};
 use crate::ui::interaction::{
@@ -64,8 +65,8 @@ const SB_ENDSCROLL: u16 = 8;
 /// Extra window height (DIP) when the AI panel is reserved (spec/06 §6: ten body lines plus the
 /// title row), so the core content area keeps the size it has without the panel.
 const AI_PANEL_EXTRA_DIP: i32 = 240;
-const SKIP_BLOCKED: &str = "승인할 수 없는 요청이라 AI 설명을 요청하지 않았습니다.";
-const SKIP_FAILED: &str = "요청을 준비하지 못해 AI 설명을 요청하지 않았습니다.";
+const SKIP_BLOCKED: Text = text::AI_SKIP_BLOCKED;
+const SKIP_FAILED: Text = text::AI_SKIP_FAILED;
 const VK_LBUTTON: u16 = 0x01;
 const VK_TAB: u16 = 0x09;
 const VK_RETURN: u16 = 0x0D;
@@ -254,62 +255,53 @@ struct BarState {
 }
 
 /// T-SIM-CHANGED (spec/04 §7): the fact, and what to do when no next step says it.
-pub const T_SIM_CHANGED: &str = "시뮬레이션 결과가 바뀌었습니다";
-const T_SIM_CHANGED_STEP: &str = ". 다시 확인하세요";
-/// T-SIM-RESIM-FAILED (spec/04 §7): the fact, and what to do when no next step says it.
-pub const T_SIM_RESIM_FAILED: &str = "다시 실행한 시뮬레이션이 성공하지 못했습니다";
-const T_SIM_RESIM_FAILED_STEP: &str = ". 경고를 확인하고 다시 승인하세요.";
-
 /// The status message on the status line: while a next step is shown, a message that also
-/// says what to do keeps only its fact (the step says the rest, once).
-fn status_fact(message: &str, step_shown: bool) -> &str {
+/// says what to do (T-SIM-CHANGED, T-SIM-RESIM-FAILED, spec/04 §7) keeps only its fact (the step
+/// says the rest, once).
+fn status_fact(lang: Lang, message: &str, step_shown: bool) -> &str {
     if !step_shown {
         return message;
     }
-    [T_SIM_CHANGED, T_SIM_RESIM_FAILED]
+    [text::SIM_CHANGED, text::SIM_RESIM_FAILED]
         .into_iter()
+        .map(|fact| fact.get(lang))
         .find(|fact| message.starts_with(fact))
         .unwrap_or(message)
 }
 
-/// The status-line note while the approve button waits for its 1 s arm delay (spec/04 §3.4-2).
-pub const T_ARM_WAIT: &str = "잠시 뒤 버튼이 켜집니다 (실수 클릭을 막는 1초 대기)";
-/// The same while another window is in front.
-pub const T_ARM_WAIT_BACKGROUND: &str = "이 창을 클릭해 앞으로 가져오면 1초 뒤 버튼이 켜집니다";
-/// The status line of a high-risk window whose acknowledgement box is unchecked (2026-11-08).
-pub const T_ACK_FIRST: &str = "경고를 읽고 아래 '위 경고를 모두 확인했습니다'에 체크하세요";
-/// The same once the high-risk window is armed.
-pub const T_HOLD_NOW: &str = "'승인'을 2초 동안 누르고 있으세요";
-/// The same after a hold was let go before 2 s (until the next press).
-pub const T_HOLD_EARLY: &str = "2초가 되기 전에 놓았습니다 — 다시 2초 동안 누르세요";
-/// The status line of a connect window with no account selected.
-pub const T_CONNECT_PICK: &str = "연결할 계정을 하나 이상 고르세요";
-
 /// The user's next step on the status line (display only; the gate is unchanged): what is still
-/// to do, then why the button waits, then how to approve a high-risk request.
+/// to do, then why the button waits (the 1 s arm delay, spec/04 §3.4-2), then how to approve a
+/// high-risk request.
 fn next_step(ui: &ApprovalUi, held: bool, now: u64) -> Option<&'static str> {
     let gate = &ui.session.gate;
     if ui.view.blocked || held || gate.submitting || now >= gate.deadline_ms {
         return None;
     }
-    if ui.session.connect_empty() {
-        return Some(T_CONNECT_PICK);
-    }
-    if ui.session.ack_missing() {
-        return Some(T_ACK_FIRST);
-    }
-    if ui.early_release {
-        return Some(T_HOLD_EARLY);
-    }
-    if ui.session.arm_waiting(now) {
+    let step = if ui.session.connect_empty() {
+        text::CONNECT_PICK
+    } else if ui.session.ack_missing() {
+        text::ACK_FIRST
+    } else if ui.early_release {
+        text::HOLD_EARLY
+    } else if ui.session.arm_waiting(now) {
         // Why the button is grey (review 2026-11-07 F7); the arm delay itself is unchanged.
-        return Some(if gate.is_foreground {
-            T_ARM_WAIT
+        if gate.is_foreground {
+            text::ARM_WAIT
         } else {
-            T_ARM_WAIT_BACKGROUND
-        });
-    }
-    (ui.view.high && ui.session.approve_ready(now)).then_some(T_HOLD_NOW)
+            text::ARM_WAIT_BACKGROUND
+        }
+    } else if ui.view.high && ui.session.approve_ready(now) {
+        text::HOLD_NOW
+    } else {
+        return None;
+    };
+    Some(step.get(ui.lang))
+}
+
+/// Whether a status message says a simulation is under way or just changed the content.
+fn simulating_status(lang: Lang, status: &str) -> bool {
+    status.starts_with(text::SIMULATING_BUTTON.get(lang).trim_end_matches('…'))
+        || status.starts_with(text::SIM_CHANGED.get(lang))
 }
 
 fn bar_state(ui: &ApprovalUi, waiting: usize, now: u64) -> BarState {
@@ -320,6 +312,7 @@ fn bar_state(ui: &ApprovalUi, waiting: usize, now: u64) -> BarState {
         .interaction()
         .hold_remaining_ms(now)
         .map(|left| HIGH_RISK_HOLD_MS.saturating_sub(left));
+    let lang = ui.lang;
     let step = next_step(ui, held_ms.is_some(), now);
     let mut status = String::new();
     let mut urgent = None;
@@ -330,20 +323,29 @@ fn bar_state(ui: &ApprovalUi, waiting: usize, now: u64) -> BarState {
         status.push_str(text);
     };
     if matches!(gate.prepare, PrepareState::Ready(_)) {
-        let _ = write!(status, "남은 시간 {}", remaining_text(remaining));
+        status.push_str(&text::REMAINING.fill(lang, [&remaining_text(remaining)]));
         // The last 30 s are drawn in the caution color.
         urgent = (remaining <= 30_000).then_some(status.len());
     }
     if waiting > 0 {
-        part(&mut status, &format!("대기 {waiting}건"));
+        part(
+            &mut status,
+            &text::WAITING.fill(lang, [&waiting.to_string()]),
+        );
     }
     if let Some(message) = &ui.status {
-        part(&mut status, status_fact(message, step.is_some()));
+        part(&mut status, status_fact(lang, message, step.is_some()));
     }
     if let Some(done) = held_ms {
         part(
             &mut status,
-            &format!("{}.{}초", done / 1_000, (done % 1_000) / 100),
+            &text::HELD.fill(
+                lang,
+                [
+                    &(done / 1_000).to_string(),
+                    &((done % 1_000) / 100).to_string(),
+                ],
+            ),
         );
     }
     let simulating = matches!(
@@ -353,18 +355,19 @@ fn bar_state(ui: &ApprovalUi, waiting: usize, now: u64) -> BarState {
         && ui
             .status
             .as_deref()
-            .is_some_and(|s| s.starts_with("시뮬레이션")));
+            .is_some_and(|status| simulating_status(lang, status)));
     let label = if ui.connect.is_some() {
-        "연결"
+        text::CONNECT
     } else if ui.view.blocked {
-        "승인할 수 없음"
+        text::CANNOT_APPROVE
     } else if simulating {
-        "시뮬레이션 중…"
+        text::SIMULATING_BUTTON
     } else if ui.view.high {
-        "승인 (2초 길게 누르기)"
+        text::APPROVE_HOLD
     } else {
-        "승인"
-    };
+        text::APPROVE
+    }
+    .get(lang);
     BarState {
         status,
         urgent,
@@ -378,6 +381,9 @@ fn bar_state(ui: &ApprovalUi, waiting: usize, now: u64) -> BarState {
 
 /// The open approval window and its flow state.
 pub struct ApprovalUi {
+    /// The window's language: the app language when it opened. The request is built in it, so
+    /// the display (digested with its language, spec/03 §11.3) and the chrome always match.
+    lang: Lang,
     window: Window,
     panel: Window,
     item: QueuedItem,
@@ -494,6 +500,7 @@ fn line_height(dc: &mut PaintDc<'_>, fonts: &Fonts, role: FontRole) -> i32 {
 }
 
 struct Builder<'a, 'd> {
+    lang: Lang,
     dc: &'a mut PaintDc<'d>,
     fonts: &'a Fonts,
     cache: &'a mut HashMap<(FontRole, char), i32>,
@@ -596,22 +603,38 @@ impl Builder<'_, '_> {
             Tone::Danger => (
                 theme::DANGER_BG,
                 theme::DANGER_TEXT,
-                Some(("고위험", theme::DANGER_ACCENT, theme::CARD)),
+                Some((
+                    text::LEVEL_HIGH.get(self.lang),
+                    theme::DANGER_ACCENT,
+                    theme::CARD,
+                )),
             ),
             Tone::Blocked => (
                 theme::BLOCKED_BG,
                 theme::BLOCKED_TEXT,
-                Some(("차단", theme::CARD, theme::BLOCKED_BG)),
+                Some((
+                    text::LEVEL_BLOCKED.get(self.lang),
+                    theme::CARD,
+                    theme::BLOCKED_BG,
+                )),
             ),
             Tone::Warn => (
                 theme::WARN_BG,
                 theme::WARN_TEXT,
-                Some(("주의", theme::WARN_ACCENT, theme::CARD)),
+                Some((
+                    text::LEVEL_CAUTION.get(self.lang),
+                    theme::WARN_ACCENT,
+                    theme::CARD,
+                )),
             ),
             Tone::Plain => (
                 theme::INFO_BG,
                 theme::INFO_TEXT,
-                Some(("정보", theme::INFO_ACCENT, theme::CARD)),
+                Some((
+                    text::LEVEL_INFO.get(self.lang),
+                    theme::INFO_ACCENT,
+                    theme::CARD,
+                )),
             ),
         };
         let top = self.y;
@@ -673,6 +696,7 @@ fn build_layout(
 ) -> PanelLayout {
     let margin = yw_win::ui::scale(16, dpi);
     let mut builder = Builder {
+        lang: view.lang,
         dc,
         fonts,
         cache,
@@ -699,7 +723,8 @@ fn build_layout(
             } => {
                 builder.open_card(theme::INFO_BG, theme::INFO_ACCENT);
                 let (x, w) = (builder.x, builder.w);
-                builder.text("요약", FontRole::Caption, theme::INFO_TEXT, x, w);
+                let summary = text::SUMMARY.get(builder.lang);
+                builder.text(summary, FontRole::Caption, theme::INFO_TEXT, x, w);
                 builder.gap(2);
                 builder.text(sentence, FontRole::ApprovalTitle, theme::TEXT, x, w);
                 if let Some(address) = address {
@@ -758,7 +783,7 @@ fn build_layout(
                         .push((rect, "✓".to_owned(), theme::PRIMARY_TEXT));
                 }
                 builder.text(
-                    "위 경고를 모두 확인했습니다",
+                    text::ACK.get(builder.lang),
                     FontRole::BodyBold,
                     theme::TEXT,
                     x.saturating_add(size).saturating_add(builder.px(8)),
@@ -827,12 +852,13 @@ fn build_layout(
                 builder.close_card();
                 let top = builder.y;
                 let (x, w) = (builder.x, builder.w);
+                let toggle = if *open {
+                    text::DETAILS_OPEN
+                } else {
+                    text::DETAILS_CLOSED
+                };
                 builder.text(
-                    if *open {
-                        "자세히 ▾  (나머지 항목·원본 데이터)"
-                    } else {
-                        "자세히 ▸  (나머지 항목·원본 데이터)"
-                    },
+                    toggle.get(builder.lang),
                     FontRole::BodyBold,
                     theme::FOCUS,
                     x,
@@ -1033,50 +1059,74 @@ fn status_action(
 /// networks. User chains have no testnet classification and get neither; Bitcoin has its own
 /// network banner. Returns the text and whether it is the testnet coloring.
 fn network_badge(
+    lang: Lang,
     evm_chain: Option<u64>,
     sol: Option<yw_core::sol::SolCluster>,
 ) -> Option<(&'static str, bool)> {
     use yw_core::evm::chain::is_builtin_mainnet;
     use yw_core::sol::SolCluster;
     match (evm_chain, sol) {
-        (_, Some(SolCluster::Devnet)) => {
-            Some(("Solana devnet (테스트) — 실제 자산이 아닙니다", true))
+        (_, Some(SolCluster::Devnet)) => Some((text::BADGE_DEVNET.get(lang), true)),
+        (_, Some(SolCluster::Mainnet)) => Some((text::BADGE_MAINNET.get(lang), false)),
+        (Some(chain), None) if is_builtin_mainnet(chain) => {
+            Some((text::BADGE_MAINNET.get(lang), false))
         }
-        (_, Some(SolCluster::Mainnet)) => Some((MAINNET_BADGE, false)),
-        (Some(chain), None) if is_builtin_mainnet(chain) => Some((MAINNET_BADGE, false)),
-        (Some(SEPOLIA), None) => Some(("테스트넷 — 실제 자산이 아닙니다", true)),
+        (Some(SEPOLIA), None) => Some((text::BADGE_TESTNET.get(lang), true)),
         _ => None,
     }
 }
 
-/// The mainnet header badge.
-const MAINNET_BADGE: &str = "메인넷 — 실제 자산";
+/// Whether `badge` is `text` in either language (the badge order and colors do not depend on
+/// the window's language).
+fn is_badge(badge: &str, text: Text) -> bool {
+    Lang::ALL.iter().any(|lang| badge == text.get(*lang))
+}
+
+/// Whether `badge` starts with the fixed part of `text` (before any `{0}`) in either language.
+fn badge_starts<const N: usize>(badge: &str, text: yw_core::lang::Tpl<N>) -> bool {
+    Lang::ALL.iter().any(|lang| {
+        let template = text.template(*lang);
+        badge.starts_with(template.split('{').next().unwrap_or(template))
+    })
+}
 
 /// Where a header badge goes (spec/04 §3.2, 2026-11-10): the network first (mainnet / testnet),
 /// then the origin's risk (punycode, http), the compatibility mode and the `WalletConnect`
 /// session, the user chain, and last the signer (`YubiKey`) and the Verify state. Signing,
 /// connect and `WalletConnect` connect windows use the same order. The badges are app chrome
 /// outside the digested display.
-fn badge_rank(text: &str) -> u8 {
-    if text == MAINNET_BADGE
-        || text.contains("실제 자산이 아닙니다")
-        || text == yw_core::btc::BtcNetwork::Mainnet.banner()
-        || text == yw_core::btc::BtcNetwork::Testnet4.banner()
+fn badge_rank(badge: &str) -> u8 {
+    if [
+        text::BADGE_MAINNET,
+        text::BADGE_TESTNET,
+        text::BADGE_DEVNET,
+        text::BADGE_HC_TESTNET,
+    ]
+    .into_iter()
+    .any(|text| is_badge(badge, text))
+        || Lang::ALL.iter().any(|lang| {
+            [
+                yw_core::btc::BtcNetwork::Mainnet,
+                yw_core::btc::BtcNetwork::Testnet4,
+            ]
+            .iter()
+            .any(|network| badge == network.banner_in(*lang))
+        })
     {
         0
-    } else if text.starts_with("국제화 도메인(punycode)") {
+    } else if badge_starts(badge, text::BADGE_PUNYCODE) {
         1
-    } else if text.starts_with("로컬 개발 사이트(http)") {
+    } else if badge_starts(badge, text::BADGE_HTTP) {
         2
-    } else if text.starts_with("호환 모드:") {
+    } else if badge_starts(badge, text::BADGE_COMPAT) {
         3
-    } else if text == "WalletConnect 세션" {
+    } else if is_badge(badge, text::BADGE_WALLETCONNECT) {
         4
-    } else if text.starts_with("사용자 추가 체인") {
+    } else if badge_starts(badge, text::BADGE_CUSTOM_CHAIN) {
         5
-    } else if text.starts_with("YubiKey로 서명") {
+    } else if badge_starts(badge, text::BADGE_YUBIKEY) {
         6
-    } else if text.starts_with("Verify ") {
+    } else if badge.starts_with("Verify ") {
         7
     } else {
         8
@@ -1102,8 +1152,8 @@ struct Pill {
 /// mainnet) is filled with `DANGER_ACCENT` and lettered white like the 고위험 tag, so a
 /// real-asset window stands out at least as much as a testnet one; every other badge keeps the
 /// white pill.
-fn badge_colors(text: &str) -> (Color, Color, Color) {
-    if text == MAINNET_BADGE {
+fn badge_colors(badge: &str) -> (Color, Color, Color) {
+    if is_badge(badge, text::BADGE_MAINNET) {
         (theme::DANGER_ACCENT, theme::DANGER_ACCENT, theme::CARD)
     } else {
         (theme::CARD, theme::CARD_BORDER, theme::TEXT)
@@ -1479,11 +1529,13 @@ impl App {
             app: self.self_ref.clone(),
             target: Target::Approval,
         });
+        let lang = self.settings.language;
         let title = if connect.is_some() {
-            "Your Wallet — 사이트 연결"
+            text::TITLE_CONNECT
         } else {
-            "Your Wallet — 승인 요청"
-        };
+            text::TITLE_APPROVAL
+        }
+        .get(lang);
         // spec/06 §3.1: dApp transactions, personal_sign and typed data, only while the worker
         // exists (feature effectively on). The panel's height is reserved now (§6).
         let ai_kind = match &item {
@@ -1584,6 +1636,7 @@ impl App {
         }
         window.set_focus();
         self.evm.window = Some(ApprovalUi {
+            lang,
             window,
             panel,
             item,
@@ -1656,9 +1709,10 @@ impl App {
         let chain = match self.chain_job(item.chain_id) {
             Ok(chain) => chain,
             Err(code) => {
-                let failure = crate::flow::evm::prepare::PrepareFailure::no_endpoint();
-                let text = failure.message();
-                self.show_failure(code, false, text);
+                let failure =
+                    crate::flow::evm::prepare::PrepareFailure::no_endpoint(self.approval_lang());
+                let message = failure.message();
+                self.show_failure(code, false, message);
                 return;
             }
         };
@@ -1668,11 +1722,16 @@ impl App {
         };
         let address_book = self.address_book_facts();
         let (origin, extra_warnings) = match site {
-            Some(site) => (self.site_approval_origin(site), site_fee_warning(site)),
+            Some(site) => (
+                self.site_approval_origin(site),
+                site_fee_warning(self.approval_lang(), site),
+            ),
             None => (yw_core::approval::ApprovalOrigin::App, Vec::new()),
         };
+        let lang = self.approval_lang();
         let sent = self.rpc(RpcJob::Prepare(Box::new(PrepareJob {
             job,
+            lang,
             chain,
             id,
             origin,
@@ -1756,6 +1815,7 @@ impl App {
                     let signer = self.account_source(account)?;
                     let id = Self::new_approval_id().ok()?;
                     yw_core::evm::display::build_personal_request(
+                        self.approval_lang(),
                         id,
                         self.site_approval_origin(site),
                         signer,
@@ -1850,9 +1910,19 @@ impl App {
         &self,
         chain_id: u64,
     ) -> Option<crate::flow::evm::prepare::PrepareFailure> {
+        let lang = self.approval_lang();
         self.evm
             .blocked(chain_id)
-            .map(crate::flow::evm::prepare::PrepareFailure::chain_mismatch)
+            .map(|kind| crate::flow::evm::prepare::PrepareFailure::chain_mismatch(lang, kind))
+    }
+
+    /// The language of the open approval window (the app language before it opens): every
+    /// display, warning and failure of its request is built in it (spec/14 §2).
+    pub(crate) fn approval_lang(&self) -> Lang {
+        self.evm
+            .window
+            .as_ref()
+            .map_or(self.settings.language, |ui| ui.lang)
     }
 
     /// The chain of a message signature: the registered definition with the verified genesis
@@ -1889,9 +1959,12 @@ impl App {
             return;
         };
         let mismatch = match check {
-            Some(crate::flow::evm::ChainCheck::Mismatch(kind)) => Some(
-                crate::flow::evm::prepare::PrepareFailure::chain_mismatch(kind),
-            ),
+            Some(crate::flow::evm::ChainCheck::Mismatch(kind)) => {
+                Some(crate::flow::evm::prepare::PrepareFailure::chain_mismatch(
+                    self.approval_lang(),
+                    kind,
+                ))
+            }
             _ => self.message_chain_failure(site.chain_id),
         };
         if let Some(failure) = mismatch {
@@ -1908,6 +1981,7 @@ impl App {
             let signer = self.account_source(account)?;
             let id = Self::new_approval_id().ok()?;
             yw_core::evm::display::build_typed_request(
+                self.approval_lang(),
                 id,
                 self.site_approval_origin(&site),
                 signer,
@@ -1936,7 +2010,7 @@ impl App {
                 .session
                 .replace_content(now_ms(), PrepareState::Failed { code, retryable });
         }
-        self.ai_ready(AiReady::Skip(SKIP_FAILED));
+        self.ai_ready(AiReady::Skip(SKIP_FAILED.get(self.approval_lang())));
         self.rebuild_view();
     }
 
@@ -2141,7 +2215,11 @@ impl App {
         }
         let Some(prepared) = result.prepared else {
             if let Some(ui) = self.evm.window.as_mut() {
-                ui.status = Some(format!("{T_SIM_RESIM_FAILED}{T_SIM_RESIM_FAILED_STEP}"));
+                ui.status = Some(format!(
+                    "{}{}",
+                    text::SIM_RESIM_FAILED.get(ui.lang),
+                    text::SIM_RESIM_FAILED_STEP.get(ui.lang)
+                ));
                 ui.resim_click = false;
                 // Same content, but a new approval (checkbox, arm delay, fresh interaction).
                 let prepare = ui.session.gate.prepare.clone();
@@ -2194,12 +2272,16 @@ impl App {
         if let Some(ui) = self.evm.window.as_mut() {
             ui.status = match kind {
                 ResimKind::Same => None,
-                ResimKind::Changed | ResimKind::Blocked | ResimKind::Failed => {
-                    Some(format!("{T_SIM_CHANGED}{T_SIM_CHANGED_STEP}"))
-                }
-                ResimKind::NoResult => {
-                    Some(format!("{T_SIM_RESIM_FAILED}{T_SIM_RESIM_FAILED_STEP}"))
-                }
+                ResimKind::Changed | ResimKind::Blocked | ResimKind::Failed => Some(format!(
+                    "{}{}",
+                    text::SIM_CHANGED.get(ui.lang),
+                    text::SIM_CHANGED_STEP.get(ui.lang)
+                )),
+                ResimKind::NoResult => Some(format!(
+                    "{}{}",
+                    text::SIM_RESIM_FAILED.get(ui.lang),
+                    text::SIM_RESIM_FAILED_STEP.get(ui.lang)
+                )),
             };
             let _ = ui.session.replace_content(
                 now,
@@ -2273,7 +2355,7 @@ impl App {
             return;
         }
         ui.session.gate.submitting = true;
-        ui.status = Some("확인 중…".to_owned());
+        ui.status = Some(text::CHECKING.get(ui.lang).to_owned());
         let received = ui
             .prepared
             .as_ref()
@@ -2297,10 +2379,10 @@ impl App {
         ui.job = job;
         ui.resim_click = click;
         ui.session.gate.submitting = true;
-        ui.status = Some("시뮬레이션 중… (0/10초)".to_owned());
+        ui.status = Some(text::SIMULATING_START.get(ui.lang).to_owned());
         let chain_id = ui.item.chain_id();
         let extra_warnings = match &ui.item {
-            QueuedItem::Site(site) => site_fee_warning(site),
+            QueuedItem::Site(site) => site_fee_warning(ui.lang, site),
             QueuedItem::App(_)
             | QueuedItem::Sol(_)
             | QueuedItem::Btc(_)
@@ -2310,7 +2392,8 @@ impl App {
         let chain = match self.chain_job(chain_id) {
             Ok(chain) => chain,
             Err(code) => {
-                let failure = crate::flow::evm::prepare::PrepareFailure::no_endpoint();
+                let failure =
+                    crate::flow::evm::prepare::PrepareFailure::no_endpoint(self.approval_lang());
                 self.show_failure(code, false, failure.message());
                 return;
             }
@@ -2653,7 +2736,13 @@ impl App {
                 .iter()
                 .any(|def| def.chain_id == chain_id)
         {
-            badges.push(crate::ui::screens_evm::custom_chain_badge(chain_id));
+            badges.push(crate::ui::screens_evm::custom_chain_badge(
+                self.evm
+                    .window
+                    .as_ref()
+                    .map_or(self.settings.language, |ui| ui.lang),
+                chain_id,
+            ));
         }
         let (evm_chain, sol_cluster) = match (self.evm.window.as_ref().map(|ui| &ui.item), family) {
             (Some(QueuedItem::Sol(item)), _) => (None, Some(item.cluster)),
@@ -2686,17 +2775,22 @@ impl App {
             }),
         };
         let mut testnet = false;
-        if let Some((text, test)) = network_badge(evm_chain, sol_cluster) {
+        let lang = self
+            .evm
+            .window
+            .as_ref()
+            .map_or(self.settings.language, |ui| ui.lang);
+        if let Some((badge, test)) = network_badge(lang, evm_chain, sol_cluster) {
             testnet = test;
-            badges.push(text.to_owned());
+            badges.push(badge.to_owned());
         }
         // HyperCore (spec/11 §6): the same mainnet / testnet badges as the EVM chains.
         if let Some(QueuedItem::HyperCore(item)) = self.evm.window.as_ref().map(|ui| &ui.item) {
             if item.action.network == yw_core::hypercore::HcNetwork::Testnet {
                 testnet = true;
-                badges.push("HyperCore 테스트넷 — 실제 자산이 아닙니다".to_owned());
+                badges.push(text::BADGE_HC_TESTNET.get(lang).to_owned());
             } else {
-                badges.push(MAINNET_BADGE.to_owned());
+                badges.push(text::BADGE_MAINNET.get(lang).to_owned());
             }
         }
         // spec/10 §10: a YubiKey signer adds the "YubiKey로 서명" badge (app chrome only: the
@@ -2722,6 +2816,7 @@ impl App {
                 _ => return None,
             };
             Some(crate::app_card::card_badge(
+                lang,
                 &self.card.records,
                 role,
                 touches,
@@ -2739,11 +2834,11 @@ impl App {
         let wide_layout = ui.window.client_rect().w >= ui.window.px(80 * 8);
         if let QueuedItem::Site(site) = &ui.item {
             if crate::walletconnect::is_session_origin(&site.origin) {
-                badges.insert(0, "WalletConnect 세션".to_owned());
+                badges.insert(0, text::BADGE_WALLETCONNECT.get(lang).to_owned());
             }
             // spec/05 §2.12: after the http/punycode badges, connect and approval views alike.
             if let Some(mode) = site.compat_mode {
-                badges.insert(0, crate::ui::approval_view::compat_mode_badge(mode));
+                badges.insert(0, crate::ui::approval_view::compat_mode_badge(lang, mode));
             }
             if let (Some(connect), PrepareState::Ready(ReadyContent::Connect(_))) =
                 (&ui.connect, &ui.session.gate.prepare)
@@ -2754,6 +2849,7 @@ impl App {
                     .map(|(_, label, address, _)| (label.clone(), address.clone()))
                     .collect();
                 let mut connect_view = crate::ui::approval_view::connect_view(
+                    lang,
                     site.origin.as_str(),
                     site.origin.is_http(),
                     &accounts,
@@ -2776,7 +2872,7 @@ impl App {
             }
             let mut site_badges = Vec::new();
             if site.origin.is_http() {
-                site_badges.push("로컬 개발 사이트(http)".to_owned());
+                site_badges.push(text::BADGE_HTTP.get(lang).to_owned());
             }
             if site
                 .origin
@@ -2784,7 +2880,7 @@ impl App {
                 .split('.')
                 .any(|label| label.starts_with("xn--"))
             {
-                site_badges.push("국제화 도메인(punycode)".to_owned());
+                site_badges.push(text::BADGE_PUNYCODE.get(lang).to_owned());
             }
             site_badges.extend(badges);
             badges = site_badges;
@@ -2798,6 +2894,7 @@ impl App {
             | QueuedItem::HyperCore(_) => None,
         };
         match view(
+            lang,
             &ui.session.gate.prepare,
             now,
             ui.raw_open,
@@ -2820,7 +2917,7 @@ impl App {
                     | QueuedItem::HyperCore(_) => None,
                 };
                 if let Some(note) = note {
-                    crate::ui::approval_view::attach_address_note(&mut view, note);
+                    crate::ui::approval_view::attach_address_note(&mut view, lang, note);
                 }
                 if !force && view == ui.view {
                     return;
@@ -3324,8 +3421,8 @@ impl App {
         }
         if rows.is_empty() {
             rows.push((
-                "요청 출처".to_owned(),
-                yw_core::approval::APP_ORIGIN_TEXT.to_owned(),
+                crate::ui::approval::labels::ORIGIN.get(ui.lang).to_owned(),
+                yw_core::approval::APP_ORIGIN.get(ui.lang).to_owned(),
                 FontRole::Body,
             ));
         }
@@ -3333,16 +3430,18 @@ impl App {
         if let Some(banner) = ui.view.btc_banner
             && !rows
                 .iter()
-                .any(|(_, value, _)| value.contains(banner.text()))
+                .any(|(_, value, _)| value.contains(banner.text(ui.lang)))
         {
-            badges.push(banner.text().to_owned());
+            badges.push(banner.text(ui.lang).to_owned());
         }
         badges.extend(ui.view.badges.iter().cloned());
         // The chain badge goes before the first `네트워크` value line (app chrome, spec/04 §3.2).
         let badge_size = px(BADGE_DIP);
         let badge_row = ui.view.chain.and_then(|badge| {
             rows.iter()
-                .position(|(label, _, _)| label == "네트워크")
+                .position(|(label, _, _)| {
+                    label == crate::ui::approval::labels::NETWORK.get(ui.lang)
+                })
                 .map(|row| (row, badge))
         });
         let badge_indent = |row: usize| {
@@ -3368,7 +3467,9 @@ impl App {
             dc.measure(&wide(text), i32::MAX).1
         });
         header_height += badge_rows.saturating_mul(px(BADGE_ROW_DIP));
-        let mainnet = badges.iter().any(|badge| badge == MAINNET_BADGE);
+        let mainnet = badges
+            .iter()
+            .any(|badge| is_badge(badge, text::BADGE_MAINNET));
         let (header_fill, header_text, header_muted) = match ui.view.btc_banner {
             Some(crate::ui::approval_view::BtcBanner::Mainnet) => (
                 theme::BTC_MAINNET_BG,
@@ -3508,7 +3609,7 @@ impl App {
             dc.round_rect(tag, px(11), theme::DANGER_ACCENT, theme::DANGER_ACCENT);
             dc.select_font(&fonts.body_bold);
             dc.set_text_color(theme::CARD);
-            dc.draw_text(&wide("고위험"), tag, DrawFlags::CENTER);
+            dc.draw_text(&wide(text::LEVEL_HIGH.get(ui.lang)), tag, DrawFlags::CENTER);
             dc.set_text_color(theme::DANGER_TEXT);
             dc.draw_text(
                 &wide(&band.head),
@@ -3530,7 +3631,11 @@ impl App {
                     theme::DANGER_ACCENT,
                 );
                 dc.set_text_color(theme::DANGER_TEXT);
-                dc.draw_text(&wide("시뮬레이션 다시 시도"), button, DrawFlags::CENTER);
+                dc.draw_text(
+                    &wide(text::RETRY_SIMULATION.get(ui.lang)),
+                    button,
+                    DrawFlags::CENTER,
+                );
                 retry = Some(button);
             }
             y = y.saturating_add(height).saturating_add(px(8));
@@ -3657,7 +3762,7 @@ impl App {
         let radius = px(theme::RADIUS_CONTROL);
         dc.round_rect(reject, radius, theme::CARD, theme::BUTTON_SECONDARY.border);
         dc.set_text_color(theme::TEXT);
-        dc.draw_text(&wide("거부"), reject, DrawFlags::CENTER);
+        dc.draw_text(&wide(text::REJECT.get(ui.lang)), reject, DrawFlags::CENTER);
         let armed = bar.armed;
         let label = bar.label;
         let (fill, text_color) = if armed {
@@ -4029,10 +4134,13 @@ impl App {
                 return;
             };
             if request.display.risk == RiskLevel::Blocked {
-                AiReady::Skip(SKIP_BLOCKED)
+                AiReady::Skip(SKIP_BLOCKED.get(self.approval_lang()))
             } else {
                 crate::app_llm::transaction_input(prepared, &self.site_origin_text(site), &user)
-                    .map_or(AiReady::Skip(SKIP_BLOCKED), AiReady::Input)
+                    .map_or(
+                        AiReady::Skip(SKIP_BLOCKED.get(self.approval_lang())),
+                        AiReady::Input,
+                    )
             }
         };
         self.ai_ready(ready);
@@ -4058,7 +4166,7 @@ impl App {
             .as_ref()
             .is_some_and(|request| request.display.risk == RiskLevel::Blocked);
         let ready = match self.message_chain(site.chain_id) {
-            _ if blocked => AiReady::Skip(SKIP_BLOCKED),
+            _ if blocked => AiReady::Skip(SKIP_BLOCKED.get(self.approval_lang())),
             Some(chain) => {
                 let decoded = yw_core::evm::eip191::decode_personal_message(message.clone());
                 AiReady::Input(build_input(
@@ -4069,7 +4177,7 @@ impl App {
                     &yw_core::approval::ChainFacts::default(),
                 ))
             }
-            None => AiReady::Skip(SKIP_FAILED),
+            None => AiReady::Skip(SKIP_FAILED.get(self.approval_lang())),
         };
         self.ai_ready(ready);
     }
@@ -4093,7 +4201,7 @@ impl App {
             .as_ref()
             .is_some_and(|request| request.display.risk == RiskLevel::Blocked);
         let ready = match self.message_chain(site.chain_id) {
-            _ if blocked => AiReady::Skip(SKIP_BLOCKED),
+            _ if blocked => AiReady::Skip(SKIP_BLOCKED.get(self.approval_lang())),
             Some(chain) => AiReady::Input(build_input(
                 &ExplainSource::TypedData(&typed),
                 &self.site_origin_text(&site),
@@ -4101,7 +4209,7 @@ impl App {
                 &chain,
                 facts,
             )),
-            None => AiReady::Skip(SKIP_FAILED),
+            None => AiReady::Skip(SKIP_FAILED.get(self.approval_lang())),
         };
         self.ai_ready(ready);
     }
@@ -4282,10 +4390,14 @@ impl App {
 }
 
 /// E31 for a dApp transaction that carried fee fields (spec/03 §3.4, values ignored).
-fn site_fee_warning(site: &SiteRequest) -> Vec<yw_core::approval::Warning> {
+fn site_fee_warning(lang: Lang, site: &SiteRequest) -> Vec<yw_core::approval::Warning> {
     match &site.kind {
         SiteKind::Send(tx) if tx.fee_fields => {
-            vec![yw_core::evm::risk::warning(yw_core::evm::risk::E31, None)]
+            vec![yw_core::evm::risk::warning(
+                lang,
+                yw_core::evm::risk::E31,
+                None,
+            )]
         }
         _ => Vec::new(),
     }
@@ -4300,9 +4412,13 @@ mod tests {
     use yw_core::sol::SolCluster;
 
     use super::{
-        BarMetrics, MAINNET_BADGE, StatusAction, T_ACK_FIRST, T_SIM_RESIM_FAILED, bar_layout,
-        layout_badges, network_badge, order_badges, status_action,
+        BarMetrics, StatusAction, bar_layout, layout_badges, network_badge, order_badges,
+        status_action,
     };
+
+    const MAINNET_BADGE: &str = crate::ui::approval_text::BADGE_MAINNET.ko;
+    const T_ACK_FIRST: &str = crate::ui::approval_text::ACK_FIRST.ko;
+    const T_SIM_RESIM_FAILED: &str = crate::ui::approval_text::SIM_RESIM_FAILED.ko;
     use crate::ui::interaction::InteractionStatus;
     use crate::ui::theme;
 
@@ -4440,21 +4556,24 @@ mod tests {
             ROBINHOOD_MAINNET,
         ] {
             assert_eq!(
-                network_badge(Some(chain), None),
+                network_badge(yw_core::lang::Lang::Ko, Some(chain), None),
                 Some((MAINNET_BADGE, false))
             );
         }
         assert_eq!(
-            network_badge(None, Some(SolCluster::Mainnet)),
+            network_badge(yw_core::lang::Lang::Ko, None, Some(SolCluster::Mainnet)),
             Some((MAINNET_BADGE, false))
         );
         assert_eq!(
-            network_badge(Some(SEPOLIA), None),
+            network_badge(yw_core::lang::Lang::Ko, Some(SEPOLIA), None),
             Some(("테스트넷 — 실제 자산이 아닙니다", true))
         );
-        assert!(network_badge(None, Some(SolCluster::Devnet)).is_some_and(|(_, test)| test));
+        assert!(
+            network_badge(yw_core::lang::Lang::Ko, None, Some(SolCluster::Devnet))
+                .is_some_and(|(_, test)| test)
+        );
         // User chains have no testnet classification; Bitcoin has its own banner.
-        assert_eq!(network_badge(Some(10), None), None);
-        assert_eq!(network_badge(None, None), None);
+        assert_eq!(network_badge(yw_core::lang::Lang::Ko, Some(10), None), None);
+        assert_eq!(network_badge(yw_core::lang::Lang::Ko, None, None), None);
     }
 }

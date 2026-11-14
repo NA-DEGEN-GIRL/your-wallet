@@ -65,6 +65,7 @@ use crate::codec::base58;
 use crate::entropy::{OsRandom, secp_context};
 use crate::hex;
 use crate::journal::btc::BtcRecord;
+use crate::lang::Lang;
 use crate::password::Bip39Passphrase;
 
 const TIP: u32 = 150_000;
@@ -828,7 +829,14 @@ fn plan_for(meta: &BtcMeta, recipient: ScriptKind, amount: SendAmount, seed: u8)
 /// Draft → store issue → consume (the real approval path).
 fn approve(meta: &BtcMeta, plan: &SendPlan) -> Approved {
     let facts = meta.send_facts(plan, TIP, &[]).unwrap();
-    let draft = build_btc_request(ApprovalId([0x5c; 16]), plan, meta.account(), &facts).unwrap();
+    let draft = build_btc_request(
+        Lang::Ko,
+        ApprovalId([0x5c; 16]),
+        plan,
+        meta.account(),
+        &facts,
+    )
+    .unwrap();
     let mut store = ApprovalStore::new();
     let request = store.issue(draft, NOW_MS, NOW_UNIX_MS).unwrap();
     store
@@ -1674,4 +1682,206 @@ fn accounts_without_primary() {
             .is_none()
     );
     assert_eq!(accounts.accounts.len(), 1);
+}
+
+/// spec/14: every entry of the btc catalogue has the placeholders `0..args` in both languages,
+/// and its English text is Hangul-free and a valid display text.
+#[test]
+fn btc_catalogue_entries_are_well_formed() {
+    use crate::approval::{MAX_DISPLAY_VALUE_BYTES, is_valid_display_text};
+    use crate::lang::{has_hangul, placeholders};
+    for entry in super::text::ALL {
+        let expected: Vec<usize> = (0..entry.args).collect();
+        for template in [entry.ko, entry.en] {
+            let mut found = placeholders(template);
+            found.sort_unstable();
+            assert_eq!(found, expected, "{}", entry.name);
+        }
+        assert!(!has_hangul(entry.en), "{}", entry.name);
+        assert!(
+            is_valid_display_text(entry.en, MAX_DISPLAY_VALUE_BYTES, true),
+            "{}",
+            entry.name
+        );
+    }
+}
+
+/// The catalogue copies of the names other btc modules give (network, address type, recipient
+/// type, fee source) are those modules' Korean texts; the mapped Korean output is the original
+/// function's and the English output is Hangul-free.
+#[test]
+fn btc_mapped_names_match_the_korean_originals() {
+    use super::text::{
+        BANNER_TESTNET4, FEE_SOURCE_ESTIMATE, FEE_SOURCE_ESTIMATE_SPEED, FEE_SOURCE_FLOOR,
+        FEE_SOURCE_MANUAL, FEE_SPEED_FAST, FEE_SPEED_NORMAL, FEE_SPEED_SLOW, NETWORK_MAINNET,
+        SCRIPT_P2PKH, SCRIPT_P2SH_P2WPKH, SCRIPT_P2TR, SCRIPT_P2WPKH, TYPE_P2PKH, TYPE_P2SH,
+        TYPE_P2WSH, fee_source_text, network_banner, network_name, script_name, type_label,
+    };
+    use crate::lang::has_hangul;
+    assert_eq!(NETWORK_MAINNET.ko, BtcNetwork::Mainnet.display_name());
+    assert_eq!(BANNER_TESTNET4.ko, BtcNetwork::Testnet4.banner());
+    for net in BtcNetwork::ALL {
+        assert_eq!(network_name(Lang::Ko, net), net.display_name());
+        assert_eq!(network_banner(Lang::Ko, net), net.banner());
+        assert!(!has_hangul(network_name(Lang::En, net)));
+        assert!(!has_hangul(network_banner(Lang::En, net)));
+    }
+    for (script_type, text) in [
+        (ScriptType::P2pkh, SCRIPT_P2PKH),
+        (ScriptType::P2shP2wpkh, SCRIPT_P2SH_P2WPKH),
+        (ScriptType::P2wpkh, SCRIPT_P2WPKH),
+        (ScriptType::P2tr, SCRIPT_P2TR),
+    ] {
+        assert_eq!(text.ko, script_type.name());
+        assert_eq!(script_name(Lang::Ko, script_type), script_type.name());
+        assert_eq!(script_name(Lang::En, script_type), text.en);
+    }
+    for kind in recipients() {
+        assert_eq!(type_label(Lang::Ko, &kind), kind.type_label());
+        assert!(!has_hangul(type_label(Lang::En, &kind)));
+    }
+    assert_eq!(TYPE_P2PKH.ko, recipients()[0].type_label());
+    assert_eq!(TYPE_P2SH.ko, recipients()[1].type_label());
+    assert_eq!(TYPE_P2WSH.ko, recipients()[3].type_label());
+    let speeds = [FEE_SPEED_FAST, FEE_SPEED_NORMAL, FEE_SPEED_SLOW];
+    for source in [
+        FeeSource::Estimate { target: 2 },
+        FeeSource::Estimate { target: 6 },
+        FeeSource::Estimate { target: 24 },
+        FeeSource::Estimate { target: 3 },
+        FeeSource::Manual,
+        FeeSource::Floor,
+    ] {
+        // The catalogue templates rebuild the original Korean text.
+        let rebuilt = match source {
+            FeeSource::Estimate { target } => {
+                let target_text = target.to_string();
+                match super::BTC_CONF_TARGETS.iter().position(|t| *t == target) {
+                    Some(index) => {
+                        FEE_SOURCE_ESTIMATE_SPEED.fill(Lang::Ko, [speeds[index].ko, &target_text])
+                    }
+                    None => FEE_SOURCE_ESTIMATE.fill(Lang::Ko, [&target_text]),
+                }
+            }
+            FeeSource::Manual => FEE_SOURCE_MANUAL.ko.to_owned(),
+            FeeSource::Floor => FEE_SOURCE_FLOOR.ko.to_owned(),
+        };
+        assert_eq!(rebuilt, source.text());
+        assert_eq!(fee_source_text(Lang::Ko, source), source.text());
+        assert!(!has_hangul(&fee_source_text(Lang::En, source)));
+    }
+    assert_eq!(
+        fee_source_text(Lang::En, FeeSource::Estimate { target: 2 }),
+        "Node estimate (fast, 2-block target)"
+    );
+}
+
+/// spec/14: a send of every account kind (HD, added mnemonic, imported key, EVM key, `YubiKey`
+/// address and EVM keys, a `YubiKey` key without a path) to every recipient type, built in
+/// English: no Hangul in the title, any field or warning; the mapped Korean account name and
+/// path notes are the original functions' text, and both drafts have the same fields, rules
+/// and payload.
+#[test]
+fn btc_english_send_display_has_no_hangul() {
+    use super::account::HwBtcKey;
+    use super::display::BtcSendFacts;
+    use super::text::{account_name, node_text, path_text};
+    use crate::lang::has_hangul;
+    use crate::vault::RecordId;
+
+    let seed = about_seed();
+    let ctx = secp_context(&mut OsRandom).unwrap();
+    let point = PublicKey::from_secret_key(&ctx, &SecretKey::from_byte_array([7; 32]).unwrap());
+    let compressed = point.serialize();
+    let hd = hd_key(&seed, BtcNetwork::Testnet4, ScriptType::P2wpkh, 1);
+    let accounts = [
+        (
+            BtcNetwork::Mainnet,
+            hd_key(&seed, BtcNetwork::Mainnet, ScriptType::P2tr, 0),
+        ),
+        (BtcNetwork::Testnet4, hd),
+        (
+            BtcNetwork::Testnet4,
+            hd.with_mnemonic(Some(RecordId::from_bytes([3; 16]))),
+        ),
+        (
+            BtcNetwork::Testnet4,
+            BtcAccountKey::single(
+                [1; 16],
+                ScriptType::P2pkh,
+                BtcPubKey::of_point(&point, true),
+            )
+            .unwrap(),
+        ),
+        (
+            BtcNetwork::Testnet4,
+            BtcAccountKey::evm_shared(2, ScriptType::P2shP2wpkh, compressed).unwrap(),
+        ),
+        (
+            BtcNetwork::Testnet4,
+            BtcAccountKey::hardware(HwBtcKey::Address(4), ScriptType::P2wpkh, compressed).unwrap(),
+        ),
+        (
+            BtcNetwork::Testnet4,
+            BtcAccountKey::hardware(HwBtcKey::Evm(5), ScriptType::P2wpkh, compressed).unwrap(),
+        ),
+        (
+            BtcNetwork::Testnet4,
+            BtcAccountKey::hardware(HwBtcKey::Address(900), ScriptType::P2pkh, compressed).unwrap(),
+        ),
+    ];
+    for (net, account) in accounts {
+        assert_eq!(account_name(Lang::Ko, &account), account.display_name());
+        assert!(!has_hangul(&account_name(Lang::En, &account)));
+        assert_eq!(node_text(Lang::Ko, &account, net), account.node_text(net));
+        assert!(!has_hangul(&node_text(Lang::En, &account, net)));
+        for chain in [BtcChain::Receive, BtcChain::Change] {
+            assert_eq!(
+                path_text(Lang::Ko, &account, net, chain, 0),
+                account.path_text(net, chain, 0)
+            );
+            assert!(!has_hangul(&path_text(Lang::En, &account, net, chain, 0)));
+        }
+        let meta = funded_meta(net, account);
+        let mut plans: Vec<SendPlan> = recipients()
+            .into_iter()
+            .enumerate()
+            .map(|(seed_byte, recipient)| {
+                plan_for(
+                    &meta,
+                    recipient,
+                    SendAmount::Exact(Sats::new(70_000).unwrap()),
+                    u8::try_from(seed_byte).unwrap(),
+                )
+            })
+            .collect();
+        plans.push(plan_for(&meta, recipients()[4], SendAmount::Max, 9));
+        for plan in &plans {
+            for facts in [
+                BtcSendFacts::default(),
+                BtcSendFacts {
+                    verified_balance: Sats::new(1_000).unwrap(),
+                    min_confirmations: Some(2),
+                    first_time_recipient: true,
+                    own_recipient: Some((BtcChain::Change, 3)),
+                },
+            ] {
+                let build =
+                    |lang| build_btc_request(lang, ApprovalId([1; 16]), plan, &account, &facts);
+                let (en, ko) = (build(Lang::En).unwrap(), build(Lang::Ko).unwrap());
+                assert_eq!(en.display.lang, Lang::En);
+                assert!(!has_hangul(&en.display.title), "{}", en.display.title);
+                for field in &en.display.fields {
+                    assert!(!has_hangul(&field.value), "{:?}", field.value);
+                    assert!(!has_hangul(&field.sub_label), "{:?}", field.sub_label);
+                }
+                for warning in &en.display.warnings {
+                    assert!(!has_hangul(&warning.text), "{:?}", warning.text);
+                }
+                assert_eq!(en.display.fields.len(), ko.display.fields.len());
+                assert_eq!(en.display.warnings.len(), ko.display.warnings.len());
+                assert_eq!(en.payload, ko.payload);
+            }
+        }
+    }
 }

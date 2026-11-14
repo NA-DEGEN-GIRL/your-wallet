@@ -197,7 +197,8 @@ fn testnet_info_shapes_and_signer_recovery() -> TestResult {
             token: None,
             recipient: HcRecipient::default(),
         };
-        let draft = build_hypercore_request(ApprovalId::random()?, &input)?;
+        let draft =
+            build_hypercore_request(yw_core::lang::Lang::Ko, ApprovalId::random()?, &input)?;
         let request = store.issue(draft, 0, now_ms()?)?;
         let approved = store.consume(request.id, request.digest, 1)?;
         let signature = yw_core::evm::sign::sign_typed_data(&vault, approved)?;

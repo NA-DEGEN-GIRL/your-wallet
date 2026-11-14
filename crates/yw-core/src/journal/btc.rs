@@ -949,10 +949,11 @@ impl BtcRecord {
         Some(encode_address(&self.recipient_kind()?, self.network))
     }
 
-    /// The approval title rebuilt from the record (spec/08 §10).
+    /// The approval title rebuilt from the record (spec/08 §10), in `lang`.
     #[must_use]
-    pub fn title(&self) -> String {
+    pub fn title(&self, lang: crate::lang::Lang) -> String {
         btc_title(
+            lang,
             self.network,
             self.replaces.is_some(),
             self.recipient_amount().unwrap_or(Sats::ZERO),
@@ -2368,14 +2369,18 @@ pub struct BtcActivityRow {
     pub time_unix_ms: u64,
 }
 
-/// The activity row of a record in a row-producing state.
+/// The activity row of a record in a row-producing state (its title in `lang`).
 #[must_use]
-pub fn activity_row(record: &BtcRecord, time_unix_ms: u64) -> Option<BtcActivityRow> {
+pub fn activity_row(
+    lang: crate::lang::Lang,
+    record: &BtcRecord,
+    time_unix_ms: u64,
+) -> Option<BtcActivityRow> {
     Some(BtcActivityRow {
         network: record.network,
         account: record.account.activity_tag(),
         tx_id: record.txid.to_display_hex(),
-        title: record.title(),
+        title: record.title(lang),
         asset: "native".to_owned(),
         amount: record.recipient_amount()?.get().to_string(),
         counterparty: record.recipient_address()?,
@@ -2393,6 +2398,7 @@ fn tip_for(record: &BtcRecord, network: BtcNetwork, tip_height: u32) -> Option<u
 /// duplicate of an old journal ([`current_record`]) produces no row.
 #[must_use]
 pub fn finished_rows(
+    lang: crate::lang::Lang,
     plain: &JournalPlain,
     network: BtcNetwork,
     tip_height: u32,
@@ -2411,18 +2417,19 @@ pub fn finished_rows(
                     now_unix,
                 )
         })
-        .filter_map(|record| activity_row(record, time_unix_ms))
+        .filter_map(|record| activity_row(lang, record, time_unix_ms))
         .collect()
 }
 
 /// The activity row of a removed finished record, `None` for a superseded duplicate.
 fn removed_row(
+    lang: crate::lang::Lang,
     record: &BtcRecord,
     records: &[BtcRecord],
     time_unix_ms: u64,
 ) -> Option<BtcActivityRow> {
     if is_current(record, records) {
-        activity_row(record, time_unix_ms)
+        activity_row(lang, record, time_unix_ms)
     } else {
         None
     }
@@ -2480,6 +2487,7 @@ fn remove_record(plain: &mut JournalPlain, record: &BtcRecord) -> bool {
 /// commits the journal (meta write → journal delete). Tracked records are never removed;
 /// undecodable entries are kept.
 pub fn prune_finished(
+    lang: crate::lang::Lang,
     plain: &mut JournalPlain,
     network: BtcNetwork,
     tip_height: u32,
@@ -2492,7 +2500,7 @@ pub fn prune_finished(
     let mut rows = Vec::new();
     for record in finished.iter().take(excess) {
         if remove_record(plain, record)
-            && let Some(row) = removed_row(record, &records, time_unix_ms)
+            && let Some(row) = removed_row(lang, record, &records, time_unix_ms)
         {
             rows.push(row);
         }
@@ -2521,6 +2529,7 @@ pub fn has_room(plain: &JournalPlain) -> bool {
 /// [`JournalError::Full`] when even every finished BTC record is not enough (`plain`
 /// unchanged): no signing, no sending.
 pub fn make_room(
+    lang: crate::lang::Lang,
     plain: &mut JournalPlain,
     network: BtcNetwork,
     tip_height: u32,
@@ -2535,7 +2544,7 @@ pub fn make_room(
     let mut rows = Vec::new();
     for record in finished_oldest_first(&trial, network, tip_height, now_unix) {
         if remove_record(&mut trial, &record)
-            && let Some(row) = removed_row(&record, &records, time_unix_ms)
+            && let Some(row) = removed_row(lang, &record, &records, time_unix_ms)
         {
             rows.push(row);
         }
@@ -2588,6 +2597,7 @@ impl From<JournalError> for BtcPushError {
 ///
 /// [`BtcPushError::Duplicate`].
 pub fn take_finished_duplicates(
+    lang: crate::lang::Lang,
     plain: &mut JournalPlain,
     record: &BtcRecord,
     tip_height: u32,
@@ -2611,7 +2621,7 @@ pub fn take_finished_duplicates(
     let mut rows = Vec::new();
     for old in same {
         if remove_record(&mut trial, old)
-            && let Some(row) = removed_row(old, &records, time_unix_ms)
+            && let Some(row) = removed_row(lang, old, &records, time_unix_ms)
         {
             rows.push(row);
         }

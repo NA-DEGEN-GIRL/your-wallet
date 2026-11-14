@@ -117,7 +117,7 @@ impl App {
         }
         self.wc_peer_of(origin).map_or_else(
             || "WalletConnect dApp".to_owned(),
-            |(peer, _)| crate::walletconnect::origin_label(&peer),
+            |(peer, _)| crate::walletconnect::origin_label(self.approval_lang(), &peer),
         )
     }
 
@@ -125,7 +125,7 @@ impl App {
     pub(crate) fn site_origin_text(&self, site: &SiteRequest) -> String {
         self.wc_peer_of(&site.origin).map_or_else(
             || site.origin.as_str().to_owned(),
-            |(peer, _)| crate::walletconnect::origin_label(&peer),
+            |(peer, _)| crate::walletconnect::origin_label(self.approval_lang(), &peer),
         )
     }
 
@@ -208,7 +208,8 @@ fn image_file_acceptable(path: &std::path::Path) -> bool {
 /// [`App::wc_decorate_draft`] for a known peer.
 #[must_use]
 pub fn decorate(draft: &mut ApprovalDraft, peer: &Metadata, verify: VerifyStatus) -> bool {
-    let label = crate::walletconnect::origin_label(peer);
+    let lang = draft.display.lang;
+    let label = crate::walletconnect::origin_label(lang, peer);
     let Ok(origin_field) = DisplayField::new(FieldKey::ORIGIN, "", label) else {
         return false;
     };
@@ -222,8 +223,13 @@ pub fn decorate(draft: &mut ApprovalDraft, peer: &Metadata, verify: VerifyStatus
         yw_core::evm::risk::sort_warnings(&mut warnings);
         warnings.truncate(MAX_DISPLAY_WARNINGS - 1);
     }
-    warnings.push(crate::walletconnect::verify_warning(verify));
-    match ApprovalDisplay::new(draft.display.title.clone(), fields, warnings) {
+    warnings.push(crate::walletconnect::verify_warning(lang, verify));
+    match ApprovalDisplay::new(
+        draft.display.lang,
+        draft.display.title.clone(),
+        fields,
+        warnings,
+    ) {
         Ok(display) => {
             draft.display = display;
             true
@@ -243,67 +249,61 @@ impl ConnectPatch {
     /// Rewrites a connect view.
     pub fn apply(&self, view: &mut crate::ui::approval_view::ApprovalView) {
         use crate::ui::approval_view::{Block, Tone};
+        use crate::walletconnect::text as wc_text;
+        let lang = view.lang;
         let proposal = &self.proposal;
         // The origin line and title carry wallet-normalized text only; the self-claimed name
         // gets its own labelled field, and the Verify state only the badge and warning below.
-        let label = crate::walletconnect::origin_label(&proposal.peer);
-        view.header = vec![("요청 출처".to_owned(), label.clone())];
+        let label = crate::walletconnect::origin_label(lang, &proposal.peer);
+        view.header = vec![(
+            crate::ui::approval_text::CONNECT_ORIGIN
+                .get(lang)
+                .to_owned(),
+            label.clone(),
+        )];
         if let Some(Block::Title(title)) = view.blocks.first_mut() {
             title.clone_from(&label);
         }
         let (text, tone) = match proposal.verify {
             // What the Verify server reported, not a proof (a dApp outside a browser can obtain
             // it, spec/13 §7): a mild caution, never the plain "confirmed" tone.
-            VerifyStatus::Valid => (
-                "WalletConnect 연결입니다. Verify 서버는 이 연결이 사이트가 주장한 주소에서 시작되었다고 알렸습니다. 다만 브라우저 밖에서 도는 dApp은 이 결과를 꾸밀 수 있으니, 지금 직접 연 사이트에서 연결했는지 확인하세요.".to_owned(),
-                Tone::Warn,
-            ),
-            VerifyStatus::Unknown => (
-                "WalletConnect 연결입니다. 사이트 이름과 주소는 사이트가 스스로 주장한 값이며 확인되지 않았습니다. 지금 연결하려던 사이트가 맞는지 확인하세요.".to_owned(),
-                Tone::Warn,
-            ),
-            VerifyStatus::Invalid => (
-                "위험: WalletConnect Verify 결과, 사이트가 주장한 주소와 실제 주소가 다릅니다. 피싱일 수 있습니다. 연결하지 마세요.".to_owned(),
-                Tone::Danger,
-            ),
-            VerifyStatus::Scam => (
-                "위험: WalletConnect Verify가 이 사이트를 알려진 사기 사이트로 표시했습니다. 연결하지 마세요.".to_owned(),
-                Tone::Danger,
-            ),
+            VerifyStatus::Valid => (wc_text::CONNECT_VALID, Tone::Warn),
+            VerifyStatus::Unknown => (wc_text::CONNECT_UNKNOWN, Tone::Warn),
+            VerifyStatus::Invalid => (wc_text::CONNECT_INVALID, Tone::Danger),
+            VerifyStatus::Scam => (wc_text::CONNECT_SCAM, Tone::Danger),
         };
+        let text = text.get(lang).to_owned();
         let at = view.blocks.len().min(1);
         view.blocks.insert(at, Block::Warning { text, tone });
         view.blocks.insert(
             at + 1,
             Block::Field {
-                label: "사이트 이름 (사이트가 주장)".to_owned(),
-                value: proposal.peer.display_name(),
+                label: wc_text::SITE_NAME.get(lang).to_owned(),
+                value: proposal.peer.display_name(lang),
                 mono: false,
             },
         );
         for block in &mut view.blocks {
             if let Block::Field { label, value, .. } = block
-                && label == "현재 네트워크"
+                && label == crate::ui::approval_text::CONNECT_NETWORK.get(lang)
             {
-                "연결할 네트워크 (WalletConnect)".clone_into(label);
+                wc_text::NETWORKS.get(lang).clone_into(label);
                 value.clone_from(&self.chains);
             }
         }
         if !proposal.unsupported_methods.is_empty() {
-            view.blocks.push(Block::Muted(format!(
-                "이 지갑이 지원하지 않는 요청은 거부됩니다: {}",
-                proposal.unsupported_methods.join(", ")
-            )));
+            view.blocks.push(Block::Muted(
+                wc_text::UNSUPPORTED.fill(lang, [&proposal.unsupported_methods.join(", ")]),
+            ));
         }
         if proposal.dropped_names > 0 {
             // Only a count: the names themselves are dApp text the wallet does not know.
-            view.blocks.push(Block::Muted(format!(
-                "사이트가 요구한 알 수 없는 요청·이벤트 이름 {}개는 세션에서 뺐습니다.",
-                proposal.dropped_names
-            )));
+            view.blocks.push(Block::Muted(
+                wc_text::DROPPED.fill(lang, [&proposal.dropped_names.to_string()]),
+            ));
         }
         view.badges
-            .push(format!("Verify {}", proposal.verify.label()));
+            .push(format!("Verify {}", proposal.verify.label(lang)));
     }
 }
 

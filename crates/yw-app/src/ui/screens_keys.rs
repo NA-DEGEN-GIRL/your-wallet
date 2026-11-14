@@ -307,9 +307,13 @@ impl App {
         let unlocked = matches!(self.mode, crate::app::AppMode::Unlocked { .. });
         if ctx.selected_imported().is_some() {
             items.push(Item::Help(if self.key_only() {
-                crate::ui::secret::T_KEY_ONLY_BACKUP.to_owned()
+                crate::ui::secret_text::KEY_ONLY_BACKUP
+                    .get(self.settings.language)
+                    .to_owned()
             } else {
-                crate::ui::secret::T_IMPORTED_KEY_BACKUP.to_owned()
+                crate::ui::secret_text::IMPORTED_KEY_BACKUP
+                    .get(self.settings.language)
+                    .to_owned()
             }));
             items.push(Item::Row(vec![
                 Ctl::button(ids::BTC_REVEAL, "개인키 보기").enabled(unlocked),

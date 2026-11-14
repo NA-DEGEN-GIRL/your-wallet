@@ -200,11 +200,14 @@ impl App {
         for session in &self.wc.sessions {
             items.push(Item::CardStart(Some(format!(
                 "{}  ·  WalletConnect 세션",
-                session.peer.display_name()
+                session.peer.display_name(self.settings.language)
             ))));
             items.push(Item::Field(
                 "사이트 주소".to_owned(),
-                format!("{} (사이트가 주장한 주소)", session.peer.display_url()),
+                format!(
+                    "{} (사이트가 주장한 주소)",
+                    session.peer.display_url(self.settings.language)
+                ),
             ));
             if !session.acknowledged {
                 // Approved here, not yet confirmed by the dApp (spec/13 §5.3): never shown as
@@ -220,12 +223,12 @@ impl App {
                 VerifyStatus::Unknown => Some(Tone::Warn),
                 VerifyStatus::Invalid | VerifyStatus::Scam => Some(Tone::HighRisk),
             };
-            let verify = format!("Verify: {}", session.verify.label());
+            let verify = format!("Verify: {}", session.verify.label(self.settings.language));
             match tone {
                 Some(tone) => items.push(Item::Banner(verify, tone)),
                 None => items.push(Item::Field(
                     "Verify".to_owned(),
-                    session.verify.label().to_owned(),
+                    session.verify.label(self.settings.language).to_owned(),
                 )),
             }
             let chains: Vec<String> = session

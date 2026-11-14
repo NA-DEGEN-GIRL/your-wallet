@@ -114,6 +114,7 @@ pub fn send_intent() -> TestResult<SendIntent> {
 
 pub fn job(chain: ChainInfo, account: Address, intent: SendIntent) -> PrepareJob {
     PrepareJob {
+        lang: yw_core::lang::Lang::Ko,
         job: 1,
         chain: ChainJob {
             caps: chain.default_caps,

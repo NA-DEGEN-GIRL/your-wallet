@@ -16,6 +16,7 @@ use ed25519_dalek::Signer as _;
 use super::address::{SolAddress, SolCluster};
 use super::keys::{signing_key, verify_strict};
 use super::shortvec;
+use super::text as t;
 use crate::approval::message::{inline_value, push_message_body};
 use crate::approval::{
     AccountRef, ApprovalDisplay, ApprovalDraft, ApprovalId, ApprovalKind, ApprovalOrigin, Approved,
@@ -24,6 +25,7 @@ use crate::approval::{
 };
 use crate::evm::risk::{self, M01, M02, M04, M05, W01, W02, W03, W04, W05, W06, W07, W08};
 use crate::evm::siwe::parse_date_time;
+use crate::lang::Lang;
 use crate::policy::BrowserOrigin;
 use crate::slip10::SolKeySource;
 use crate::vault::Vault;
@@ -445,81 +447,82 @@ fn ms_of(seconds: i64) -> i128 {
     i128::from(seconds) * 1_000
 }
 
-/// The W01–W08 warnings of a SIWS message (spec/07 §19.4).
+/// The W01–W08 warnings of a SIWS message (spec/07 §19.4), in `lang`.
 #[must_use]
-pub fn check_siws(message: &SiwsMessage, context: &SiwsContext<'_>) -> Vec<Warning> {
+pub fn check_siws(lang: Lang, message: &SiwsMessage, context: &SiwsContext<'_>) -> Vec<Warning> {
     let now = i128::from(context.now_unix_ms);
     let mut warnings = Vec::new();
     if !domain_matches(&message.domain, context.origin) {
-        warnings.push(risk::warning(W01, None));
+        warnings.push(risk::warning(lang, W01, None));
     }
     if message.address != context.account {
-        warnings.push(risk::warning(W02, None));
+        warnings.push(risk::warning(lang, W02, None));
     }
     if let Some(chain) = &message.chain_id
         && !chain_matches(chain, context.cluster)
     {
-        warnings.push(risk::warning(W03, None));
+        warnings.push(risk::warning(lang, W03, None));
     }
     if message
         .version
         .as_deref()
         .is_some_and(|version| version != "1")
     {
-        warnings.push(risk::warning(W07, Some("Version은 1이어야 합니다")));
+        warnings.push(risk::warning(lang, W07, Some(t::W07_VERSION.get(lang))));
     }
     let time = |text: &Option<String>| text.as_deref().map(parse_date_time);
     match time(&message.issued_at) {
-        Some(None) => warnings.push(risk::warning(W07, Some("Issued At 시각 형식이 틀립니다"))),
+        Some(None) => warnings.push(risk::warning(lang, W07, Some(t::W07_ISSUED_AT.get(lang)))),
         Some(Some(seconds)) if (ms_of(seconds) - now).abs() > SIWS_ISSUED_AT_SKEW_MS => {
-            warnings.push(risk::warning(W06, None));
+            warnings.push(risk::warning(lang, W06, None));
         }
         _ => {}
     }
     match time(&message.expiration_time) {
-        Some(None) => warnings.push(risk::warning(
-            W07,
-            Some("Expiration Time 시각 형식이 틀립니다"),
-        )),
+        Some(None) => warnings.push(risk::warning(lang, W07, Some(t::W07_EXPIRATION.get(lang)))),
         Some(Some(seconds)) if ms_of(seconds) <= now => {
-            warnings.push(risk::warning(W04, None));
+            warnings.push(risk::warning(lang, W04, None));
         }
         _ => {}
     }
     match time(&message.not_before) {
-        Some(None) => warnings.push(risk::warning(W07, Some("Not Before 시각 형식이 틀립니다"))),
+        Some(None) => warnings.push(risk::warning(lang, W07, Some(t::W07_NOT_BEFORE.get(lang)))),
         Some(Some(seconds)) if ms_of(seconds) > now => {
-            warnings.push(risk::warning(W05, None));
+            warnings.push(risk::warning(lang, W05, None));
         }
         _ => {}
     }
     if warnings.is_empty() {
-        warnings.push(risk::warning(W08, None));
+        warnings.push(risk::warning(lang, W08, None));
     }
     warnings
 }
 
-fn siws_fields(fields: &mut Vec<DisplayField>, message: &SiwsMessage) -> Result<(), DisplayError> {
+fn siws_fields(
+    lang: Lang,
+    fields: &mut Vec<DisplayField>,
+    message: &SiwsMessage,
+) -> Result<(), DisplayError> {
     let mut push = |label: &str, value: &str| -> Result<(), DisplayError> {
         fields.push(DisplayField::new(
             FieldKey::SIWS_FIELD,
             label,
-            inline_value(value),
+            inline_value(lang, value),
         )?);
         Ok(())
     };
-    push("도메인", &message.domain)?;
-    push("주소", &message.address)?;
+    push(t::SIWS_DOMAIN.get(lang), &message.domain)?;
+    push(t::SIWS_ADDRESS.get(lang), &message.address)?;
     for (label, value) in [
-        ("설명", &message.statement),
+        (t::SIWS_STATEMENT.get(lang), &message.statement),
         ("URI", &message.uri),
-        ("버전", &message.version),
+        (t::SIWS_VERSION.get(lang), &message.version),
         ("Chain ID", &message.chain_id),
         ("Nonce", &message.nonce),
-        ("발급 시각", &message.issued_at),
-        ("만료 시각", &message.expiration_time),
-        ("유효 시작", &message.not_before),
-        ("요청 ID", &message.request_id),
+        (t::SIWS_ISSUED_AT.get(lang), &message.issued_at),
+        (t::SIWS_EXPIRATION.get(lang), &message.expiration_time),
+        (t::SIWS_NOT_BEFORE.get(lang), &message.not_before),
+        (t::SIWS_REQUEST_ID.get(lang), &message.request_id),
     ] {
         if let Some(value) = value.as_deref().filter(|text| !text.is_empty()) {
             push(label, value)?;
@@ -527,15 +530,19 @@ fn siws_fields(fields: &mut Vec<DisplayField>, message: &SiwsMessage) -> Result<
     }
     if let Some(resources) = &message.resources {
         let value = if resources.is_empty() {
-            "(없음)".to_owned()
+            t::NONE.get(lang).to_owned()
         } else {
             resources
                 .iter()
-                .map(|resource| inline_value(resource))
+                .map(|resource| inline_value(lang, resource))
                 .collect::<Vec<_>>()
                 .join("\n")
         };
-        fields.push(DisplayField::new(FieldKey::SIWS_FIELD, "리소스", value)?);
+        fields.push(DisplayField::new(
+            FieldKey::SIWS_FIELD,
+            t::SIWS_RESOURCES.get(lang),
+            value,
+        )?);
     }
     Ok(())
 }
@@ -563,34 +570,34 @@ pub struct SolMessageRequest {
     pub sign_in: bool,
 }
 
-fn title(cluster: SolCluster, action: &str) -> String {
-    let full = format!("[{}] {action}", cluster.display_name());
+fn title(lang: Lang, cluster: SolCluster, action: &str) -> String {
+    let network = cluster.display_name_in(lang);
+    let full = format!("[{network}] {action}");
     if full.len() <= MAX_TITLE_BYTES {
         full
     } else {
-        format!("[{}] 메시지 서명", cluster.display_name())
+        format!("[{network}] {}", t::MESSAGE_TITLE_SHORT.get(lang))
     }
 }
 
 /// M01 when the bytes are or begin like a transaction message (a later message version gets
 /// its own detail line).
-fn transaction_warning(bytes: &[u8]) -> Option<Warning> {
+fn transaction_warning(lang: Lang, bytes: &[u8]) -> Option<Warning> {
     if looks_like_versioned_message(bytes) {
-        Some(risk::warning(
-            M01,
-            Some("버전이 붙은 Solana 거래 메시지처럼 시작합니다"),
-        ))
+        Some(risk::warning(lang, M01, Some(t::M01_VERSIONED.get(lang))))
     } else {
-        looks_like_transaction(bytes).then(|| risk::warning(M01, None))
+        looks_like_transaction(bytes).then(|| risk::warning(lang, M01, None))
     }
 }
 
-/// Builds the approval draft of a Solana message or sign-in request (spec/07 §19.3).
+/// Builds the approval draft of a Solana message or sign-in request (spec/07 §19.3) with every
+/// fixed text in `lang`.
 ///
 /// # Errors
 ///
 /// [`DisplayError`] (defensive).
 pub fn build_sol_message_request(
+    lang: Lang,
     request: &SolMessageRequest,
     now_unix_ms: u64,
 ) -> Result<ApprovalDraft, DisplayError> {
@@ -600,47 +607,44 @@ pub fn build_sol_message_request(
         DisplayField::new(
             FieldKey::NETWORK,
             "",
-            request.cluster.display_name().to_owned(),
+            request.cluster.display_name_in(lang).to_owned(),
         )?,
         DisplayField::new(
             FieldKey::ACCOUNT,
             "",
             format!(
                 "{}\n{}\n{address}",
-                inline_value(&request.label),
-                request.source.path_text()
+                inline_value(lang, &request.label),
+                request.source.path_text_in(lang)
             ),
         )?,
     ];
-    let mut warnings = vec![risk::warning(M04, None)];
+    let mut warnings = vec![risk::warning(lang, M04, None)];
     let bytes = &request.message;
     let mut body: &[u8] = bytes;
     if bytes.len() > MAX_SOL_MESSAGE_BYTES {
-        warnings.push(risk::warning(M01, Some("64KiB를 넘는 메시지입니다")));
+        warnings.push(risk::warning(lang, M01, Some(t::M01_TOO_LONG.get(lang))));
     }
-    warnings.extend(transaction_warning(bytes));
+    warnings.extend(transaction_warning(lang, bytes));
     let offchain = parse_offchain(bytes);
     if bytes.starts_with(OFFCHAIN_DOMAIN) {
         match &offchain {
             Some(parsed) => {
-                warnings.push(risk::warning(M05, None));
+                warnings.push(risk::warning(lang, M05, None));
                 if !parsed.signers.is_empty() && !parsed.signers.contains(&request.public) {
-                    warnings.push(risk::warning(M02, Some("서명자 목록에 이 계정이 없습니다")));
+                    warnings.push(risk::warning(lang, M02, Some(t::M02_NOT_SIGNER.get(lang))));
                 }
                 fields.push(DisplayField::new(
                     FieldKey::MESSAGE_FORMAT,
                     "",
-                    format!(
-                        "Solana 오프체인 메시지 v0 (형식 {}) — 아래는 머리글을 뺀 본문",
-                        parsed.format
-                    ),
+                    t::OFFCHAIN_FORMAT.fill(lang, [&parsed.format.to_string()]),
                 )?);
                 body = &parsed.message;
             }
-            None => warnings.push(risk::warning(M02, None)),
+            None => warnings.push(risk::warning(lang, M02, None)),
         }
     }
-    push_message_body(&mut fields, &mut warnings, body)?;
+    push_message_body(lang, &mut fields, &mut warnings, body)?;
     let siws = core::str::from_utf8(body)
         .ok()
         .filter(|text| has_siws_marker(text));
@@ -648,8 +652,9 @@ pub fn build_sol_message_request(
         Some(text) => {
             match SiwsMessage::parse(text) {
                 Some(message) => {
-                    siws_fields(&mut fields, &message)?;
+                    siws_fields(lang, &mut fields, &message)?;
                     warnings.extend(check_siws(
+                        lang,
                         &message,
                         &SiwsContext {
                             origin: &request.origin,
@@ -659,13 +664,18 @@ pub fn build_sol_message_request(
                         },
                     ));
                 }
-                None => warnings.push(risk::warning(W07, None)),
+                None => warnings.push(risk::warning(lang, W07, None)),
             }
-            "로그인 요청 (SIWS)"
+            t::ACTION_SIWS
         }
-        None => "메시지 서명 (소유 증명)",
+        None => t::ACTION_MESSAGE,
     };
-    let display = ApprovalDisplay::new(title(request.cluster, action), fields, warnings)?;
+    let display = ApprovalDisplay::new(
+        lang,
+        title(lang, request.cluster, action.get(lang)),
+        fields,
+        warnings,
+    )?;
     Ok(ApprovalDraft {
         id: request.id,
         origin: ApprovalOrigin::Site(request.origin.clone()),
@@ -705,14 +715,21 @@ pub enum SolMessageError {
     Signing,
 }
 
+impl SolMessageError {
+    /// The fixed text in `lang` (`Display` is the Korean one).
+    #[must_use]
+    pub const fn text_in(self, lang: Lang) -> &'static str {
+        match self {
+            Self::KindMismatch | Self::Refused | Self::KeyMismatch => t::MESSAGE_ERR_INTERNAL,
+            Self::Signing => t::MESSAGE_ERR_SIGNING,
+        }
+        .get(lang)
+    }
+}
+
 impl fmt::Display for SolMessageError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            Self::KindMismatch | Self::Refused | Self::KeyMismatch => {
-                "내부 검증에 실패해 서명하지 않았습니다."
-            }
-            Self::Signing => "서명하지 못했습니다(내부 오류)",
-        })
+        formatter.write_str(self.text_in(Lang::Ko))
     }
 }
 

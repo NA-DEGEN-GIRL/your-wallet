@@ -15,8 +15,10 @@ use super::amount::{U256, format_amount, format_gwei};
 use super::chain::ChainInfo;
 use super::decode::revert_reason;
 use super::risk::{self, E05, E10, E37, E38};
+use super::text;
 use super::tx::{Eip1559Tx, TX_GAS_CAP};
 use crate::approval::Warning;
+use crate::lang::Lang;
 
 /// `eth_feeHistory` result as passed by yw-app (spec/03 §3.4).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -102,28 +104,21 @@ pub struct CapViolation {
 impl CapViolation {
     /// The E05 warning with the computed value and the cap.
     #[must_use]
-    pub fn warning(&self, chain: &ChainInfo) -> Warning {
+    pub fn warning(&self, lang: Lang, chain: &ChainInfo) -> Warning {
         let native =
             |value: &U256| format_amount(value, chain.native_decimals, &chain.native_symbol);
-        let cause = match self.kind {
-            CapKind::PriorityFee => format!(
-                "우선 수수료 {} > 상한 {}",
-                format_gwei(&self.value),
-                format_gwei(&self.cap)
-            ),
-            CapKind::MaxFee => format!(
-                "최대 가스 가격 {} > 상한 {}",
-                format_gwei(&self.value),
-                format_gwei(&self.cap)
-            ),
-            CapKind::TotalFee => format!(
-                "최대 수수료 {} > 상한 {}",
-                native(&self.value),
-                native(&self.cap)
-            ),
-            CapKind::Overflow => "수수료 계산이 범위를 넘었습니다".to_owned(),
-        };
-        risk::warning(E05, Some(&cause))
+        let cause =
+            match self.kind {
+                CapKind::PriorityFee => text::CAP_PRIORITY
+                    .fill(lang, [&format_gwei(&self.value), &format_gwei(&self.cap)]),
+                CapKind::MaxFee => text::CAP_MAX_FEE
+                    .fill(lang, [&format_gwei(&self.value), &format_gwei(&self.cap)]),
+                CapKind::TotalFee => {
+                    text::CAP_TOTAL.fill(lang, [&native(&self.value), &native(&self.cap)])
+                }
+                CapKind::Overflow => text::CAP_OVERFLOW.get(lang).to_owned(),
+            };
+        risk::warning(lang, E05, Some(&cause))
     }
 }
 
@@ -239,6 +234,7 @@ pub struct GasPlan {
 /// the total cap.
 #[must_use]
 pub fn plan_gas_limit(
+    lang: Lang,
     estimate: GasEstimate<'_>,
     dapp_gas: Option<u64>,
     fees: &Fees,
@@ -249,7 +245,7 @@ pub fn plan_gas_limit(
     let gas_limit = match estimate {
         GasEstimate::Estimated(estimate) => {
             if estimate > TX_GAS_CAP {
-                warnings.push(risk::warning(E10, None));
+                warnings.push(risk::warning(lang, E10, None));
             }
             let margin = U256::from_u64(estimate)
                 .ceil_mul_div_u64(12, NonZeroU64::new(10).unwrap_or(NonZeroU64::MIN))
@@ -258,8 +254,9 @@ pub fn plan_gas_limit(
             dapp_gas.unwrap_or(0).max(margin).min(TX_GAS_CAP)
         }
         GasEstimate::Failed { revert_data } => {
-            let cause = revert_data.map(|data| format!("이유: {}", revert_reason(data)));
-            warnings.push(risk::warning(E37, cause.as_deref()));
+            let cause =
+                revert_data.map(|data| text::SIM_REASON.fill(lang, [&revert_reason(lang, data)]));
+            warnings.push(risk::warning(lang, E37, cause.as_deref()));
             dapp_gas.unwrap_or_else(|| {
                 let affordable =
                     divide(caps.max_total_fee, fees.max_fee_per_gas).unwrap_or(TX_GAS_CAP);
@@ -274,9 +271,9 @@ pub fn plan_gas_limit(
     {
         warnings.push(risk::warning_text(
             E38,
-            format!(
-                "HyperEVM 작은 블록 한도({})를 넘는 거래입니다 — 계정에 큰 블록 사용이 켜져 있지 않으면 포함되지 않을 수 있습니다",
-                super::amount::format_units(&U256::from_u64(small), 0)
+            text::SMALL_BLOCK.fill(
+                lang,
+                [&super::amount::format_units(&U256::from_u64(small), 0)],
             ),
         ));
     }
@@ -583,7 +580,12 @@ mod tests {
         assert_eq!(check_caps(&ok, 21_000, &chain.default_caps), Ok(()));
         let violation = check_caps(&ok, 3_000_000, &chain.default_caps).unwrap_err();
         assert_eq!(violation.kind, CapKind::TotalFee);
-        assert!(violation.warning(&chain).text.contains("상한"));
+        assert!(
+            violation
+                .warning(crate::lang::Lang::Ko, &chain)
+                .text
+                .contains("상한")
+        );
         let tip = Fees {
             max_priority_fee_per_gas: gwei_milli(6_000),
             ..ok
@@ -612,7 +614,14 @@ mod tests {
         let hyper = hyperevm_mainnet();
         let any_fee = fees(gwei_milli(25_000));
         let plan = |estimate, dapp, chain: &crate::evm::chain::ChainInfo, fee: &Fees| {
-            plan_gas_limit(estimate, dapp, fee, &chain.default_caps, chain)
+            plan_gas_limit(
+                crate::lang::Lang::Ko,
+                estimate,
+                dapp,
+                fee,
+                &chain.default_caps,
+                chain,
+            )
         };
         let estimated = |gas| GasEstimate::Estimated(gas);
         assert_eq!(
@@ -817,7 +826,11 @@ mod tests {
         let over = check_caps_with_l1(&fees, 25_200, &quote.max, &caps).unwrap_err();
         assert_eq!(over.kind, CapKind::TotalFee);
         assert_eq!(over.value, U256::from_u64(2_402_400_000_000));
-        assert!(over.warning(&chain).text.contains("상한"));
+        assert!(
+            over.warning(crate::lang::Lang::Ko, &chain)
+                .text
+                .contains("상한")
+        );
     }
 
     #[test]

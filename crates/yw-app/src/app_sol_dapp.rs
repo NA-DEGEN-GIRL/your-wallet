@@ -268,7 +268,8 @@ impl App {
             txs: txs.clone(),
         };
         let facts = preview.into_facts(self.sol_known(), self.settings.solana.max_fee_lamports);
-        build_sol_tx_request(&request, &facts).map_err(|_| (ErrorCode::App009, false))
+        build_sol_tx_request(self.approval_lang(), &request, &facts)
+            .map_err(|_| (ErrorCode::App009, false))
     }
 
     /// An approved dApp transaction request (spec/07 §20.8): the waiter that answers it, then a

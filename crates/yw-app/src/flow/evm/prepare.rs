@@ -36,6 +36,7 @@ use yw_core::journal::evm::{
     EvmRecord, MAX_CANDIDATES, NonceBlock, Role, Transition, apply, groups, in_flight,
     journal_full_warning, latest_candidate, plan_nonce,
 };
+use yw_core::lang::Lang;
 use yw_core::vault::EvmKeySource;
 use yw_win::http::HttpsUrl;
 
@@ -88,6 +89,8 @@ pub struct ReplaceTarget {
 pub struct PrepareJob {
     /// UI job id (late results with another id are dropped).
     pub job: u64,
+    /// The approval window's language: the display and every warning are built in it.
+    pub lang: Lang,
     /// Chain and endpoint.
     pub chain: ChainJob,
     /// Approval id.
@@ -122,6 +125,8 @@ pub struct PrepareJob {
 /// What preparation found besides the display (kept for signing, the journal and re-simulation).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TxContext {
+    /// The display language (a re-simulation rebuilds in it).
+    pub lang: Lang,
     /// The transaction to sign.
     pub tx: Eip1559Tx,
     /// Approval kind.
@@ -185,30 +190,30 @@ impl PrepareFailure {
         }
     }
 
-    fn e35(code: ErrorCode) -> Self {
+    fn e35(lang: Lang, code: ErrorCode) -> Self {
         let cause = if code == ErrorCode::Key005 {
-            "RPC 주소 없음 — 설정 → 네트워크(RPC)에서 이 네트워크의 RPC 주소를 넣으세요".to_owned()
+            NO_ENDPOINT.get(lang).to_owned()
         } else {
             code.text()
         };
-        Self::new(warning(E35, Some(&cause)), code)
+        Self::new(warning(lang, E35, Some(&cause)), code)
     }
 
-    fn rpc(failure: RpcFailure) -> Self {
-        Self::e35(classify(failure))
+    fn rpc(lang: Lang) -> impl Fn(RpcFailure) -> Self {
+        move |failure| Self::e35(lang, classify(failure))
     }
 
     /// The chain is known to answer for another chain (`RpcMismatch`): E34, blocked (spec/03
     /// §1.4 — sends and signatures alike).
     #[must_use]
-    pub fn chain_mismatch(kind: super::MismatchKind) -> Self {
-        Self::new(blocked(None, E34), kind.code())
+    pub fn chain_mismatch(lang: Lang, kind: super::MismatchKind) -> Self {
+        Self::new(blocked(lang, None, E34), kind.code())
     }
 
     /// No endpoint for the chain: E35 without any call (spec/04 §1.9).
     #[must_use]
-    pub fn no_endpoint() -> Self {
-        Self::e35(ErrorCode::Key005)
+    pub fn no_endpoint(lang: Lang) -> Self {
+        Self::e35(lang, ErrorCode::Key005)
     }
 
     /// The text shown in the approval window.
@@ -302,18 +307,33 @@ pub fn simulate_bounded(
 }
 
 fn fresh_fees(
+    lang: Lang,
     client: &RpcClient<'_>,
     url: &HttpsUrl,
     chain: &ChainInfo,
 ) -> Result<Fees, PrepareFailure> {
-    let history = rpc::fee_history(client, url, 10).map_err(PrepareFailure::rpc)?;
+    let history = rpc::fee_history(client, url, 10).map_err(PrepareFailure::rpc(lang))?;
     suggest_fees(&history, chain).map_err(|error| match error {
-        FeeError::InvalidHistory => PrepareFailure::e35(ErrorCode::Rpc005),
-        FeeError::Overflow => PrepareFailure::new(
-            warning(E05, Some("수수료 계산이 범위를 넘었습니다")),
-            ErrorCode::Tx001,
-        ),
+        FeeError::InvalidHistory => PrepareFailure::e35(lang, ErrorCode::Rpc005),
+        FeeError::Overflow => fee_overflow(lang),
     })
+}
+
+/// E05 for a fee computation out of range (spec/03 §3.4).
+fn fee_overflow(lang: Lang) -> PrepareFailure {
+    PrepareFailure::new(
+        warning(lang, E05, Some(FEE_OVERFLOW.get(lang))),
+        ErrorCode::Tx001,
+    )
+}
+
+yw_core::texts! {
+    NO_ENDPOINT = "RPC 주소 없음 — 설정 → 네트워크(RPC)에서 이 네트워크의 RPC 주소를 넣으세요"
+        / "No RPC address — enter this network's RPC address in Settings → Network (RPC)";
+    FEE_OVERFLOW = "수수료 계산이 범위를 넘었습니다" / "The fee calculation is out of range";
+    DAPP_NONCE = "dApp이 지정한 nonce가 지갑의 nonce와 다릅니다" / "The nonce set by the dApp differs from the wallet's nonce";
+    REPLACED_DONE(1) = "대체할 거래가 이미 처리되었습니다 (nonce {0})" / "The transaction to replace was already processed (nonce {0})";
+    REPLACE_LIMIT(2) = "같은 nonce의 대체 거래는 최대 {0} 번입니다 (nonce {1})" / "At most {0} replacements per nonce (nonce {1})";
 }
 
 fn gas_estimate(outcome: &EstimateOutcome) -> GasEstimate<'_> {
@@ -515,14 +535,14 @@ fn gather_facts(
 }
 
 /// Step 9 warnings of `gaps` added to `warnings` (once each).
-fn gap_warnings(gaps: FactGaps, warnings: &mut Vec<Warning>) {
+fn gap_warnings(lang: Lang, gaps: FactGaps, warnings: &mut Vec<Warning>) {
     if gaps.limited {
-        push_unique(warnings, warning(E27, None));
+        push_unique(warnings, warning(lang, E27, None));
     }
 }
 
-fn blocked(text: Option<&str>, rule: RuleId) -> Warning {
-    warning(rule, text)
+fn blocked(lang: Lang, text: Option<&str>, rule: RuleId) -> Warning {
+    warning(lang, rule, text)
 }
 
 /// The L1 data fee lookup of a built transaction (spec/03 §3.4a).
@@ -618,7 +638,8 @@ fn build_new(
     chain: &ChainInfo,
     nonce: u64,
 ) -> Result<Built, PrepareFailure> {
-    let fees = fresh_fees(client, url, chain)?;
+    let lang = job.lang;
+    let fees = fresh_fees(lang, client, url, chain)?;
     let provisional = Eip1559Tx {
         chain_id: chain.chain_id,
         nonce,
@@ -632,6 +653,7 @@ fn build_new(
     };
     let estimate = rpc::estimate_gas(client, url, &job.account, &provisional);
     let plan = plan_gas_limit(
+        lang,
         gas_estimate(&estimate),
         job.intent.dapp_gas,
         &fees,
@@ -648,10 +670,10 @@ fn build_new(
     let mut pre = pre;
     let l1 = l1_fee_lookup(client, url, chain, &tx);
     if l1 == L1Lookup::Failed {
-        pre.push(warning(E41, None));
+        pre.push(warning(lang, E41, None));
     }
     if let Err(violation) = check_caps_with_l1(&fees, tx.gas_limit, &l1.max(), &job.chain.caps) {
-        blocking.push(violation.warning(chain));
+        blocking.push(violation.warning(lang, chain));
     }
     Ok(Built {
         tx,
@@ -673,16 +695,12 @@ fn build_replacement(
     mode: ReplaceMode,
     latest: &EvmRecord,
 ) -> Result<Built, PrepareFailure> {
+    let lang = job.lang;
     let old = latest
         .tx()
-        .ok_or_else(|| PrepareFailure::new(journal_full_warning(), ErrorCode::App009))?;
-    let fees = fresh_fees(client, url, chain)?;
-    let overflow = |_| {
-        PrepareFailure::new(
-            warning(E05, Some("수수료 계산이 범위를 넘었습니다")),
-            ErrorCode::Tx001,
-        )
-    };
+        .ok_or_else(|| PrepareFailure::new(journal_full_warning(lang), ErrorCode::App009))?;
+    let fees = fresh_fees(lang, client, url, chain)?;
+    let overflow = |_| fee_overflow(lang);
     let mut pre = Vec::new();
     let mut blocking = Vec::new();
     let tx = match mode {
@@ -696,7 +714,14 @@ fn build_replacement(
                 ..old.clone()
             };
             let estimate = rpc::estimate_gas(client, url, &job.account, &probe);
-            let plan = plan_gas_limit(gas_estimate(&estimate), None, &fees, &job.chain.caps, chain);
+            let plan = plan_gas_limit(
+                lang,
+                gas_estimate(&estimate),
+                None,
+                &fees,
+                &job.chain.caps,
+                chain,
+            );
             for warning in plan.warnings {
                 if warning.level == RiskLevel::Blocked {
                     blocking.push(warning);
@@ -709,7 +734,7 @@ fn build_replacement(
     };
     let l1 = l1_fee_lookup(client, url, chain, &tx);
     if l1 == L1Lookup::Failed {
-        pre.push(warning(E41, None));
+        pre.push(warning(lang, E41, None));
     }
     if let Err(violation) = check_caps_with_l1(
         &fees_of(&tx, fees.base_fee_next),
@@ -717,7 +742,7 @@ fn build_replacement(
         &l1.max(),
         &job.chain.caps,
     ) {
-        blocking.push(violation.warning(chain));
+        blocking.push(violation.warning(lang, chain));
     }
     let (role, kind) = match mode {
         ReplaceMode::SpeedUp => (Role::SpeedUp, ApprovalKind::EvmSpeedUp),
@@ -798,24 +823,25 @@ fn nonce_step(
     job: &PrepareJob,
     records: &[EvmRecord],
 ) -> Result<(u64, Option<EvmRecord>), PrepareFailure> {
-    let latest =
-        rpc::transaction_count(client, url, &job.account, "latest").map_err(PrepareFailure::rpc)?;
+    let lang = job.lang;
+    let latest = rpc::transaction_count(client, url, &job.account, "latest")
+        .map_err(PrepareFailure::rpc(lang))?;
     let Some(target) = &job.replace else {
         let pending = rpc::transaction_count(client, url, &job.account, "pending")
-            .map_err(PrepareFailure::rpc)?;
+            .map_err(PrepareFailure::rpc(lang))?;
         let nonce = plan_nonce(
             in_flight(records, job.chain.info.chain_id, &job.account),
             latest,
             pending,
         )
-        .map_err(|block| PrepareFailure::new(block.warning(), ErrorCode::Tx002))?;
+        .map_err(|block| PrepareFailure::new(block.warning(lang), ErrorCode::Tx002))?;
         if job
             .intent
             .dapp_nonce
             .is_some_and(|requested| requested != nonce)
         {
             let mut failure = PrepareFailure::new(
-                warning(E35, Some("dApp이 지정한 nonce가 지갑의 nonce와 다릅니다")),
+                warning(lang, E35, Some(DAPP_NONCE.get(lang))),
                 ErrorCode::Tx002,
             );
             failure.invalid_params = true;
@@ -827,18 +853,15 @@ fn nonce_step(
         .group
         .first()
         .map(EvmRecord::key)
-        .ok_or_else(|| PrepareFailure::new(journal_full_warning(), ErrorCode::App009))?;
+        .ok_or_else(|| PrepareFailure::new(journal_full_warning(lang), ErrorCode::App009))?;
     let current: Vec<&EvmRecord> = records
         .iter()
         .filter(|record| record.key() == key)
         .collect();
     let resolved = PrepareFailure::new(
         NonceBlock::InFlight { nonce: key.nonce }
-            .warning()
-            .with_text(format!(
-                "대체할 거래가 이미 처리되었습니다 (nonce {})",
-                key.nonce
-            )),
+            .warning(lang)
+            .with_text(REPLACED_DONE.fill(lang, [&key.nonce.to_string()])),
         ErrorCode::Tx002,
     );
     let Some(latest_record) = latest_candidate(&current) else {
@@ -850,11 +873,10 @@ fn nonce_step(
     if current.len() >= MAX_CANDIDATES {
         return Err(PrepareFailure::new(
             NonceBlock::InFlight { nonce: key.nonce }
-                .warning()
-                .with_text(format!(
-                    "같은 nonce의 대체 거래는 최대 {} 번입니다 (nonce {})",
-                    MAX_CANDIDATES - 1,
-                    key.nonce
+                .warning(lang)
+                .with_text(REPLACE_LIMIT.fill(
+                    lang,
+                    [&(MAX_CANDIDATES - 1).to_string(), &key.nonce.to_string()],
                 )),
             ErrorCode::Tx002,
         ));
@@ -890,6 +912,7 @@ fn finish(
     warnings.extend(built.pre_warnings.iter().cloned());
     warnings.extend(built.blocking.iter().cloned());
     let draft = build_evm_tx_request(
+        job.lang,
         job.id,
         job.origin.clone(),
         job.signer,
@@ -908,7 +931,7 @@ fn finish(
     };
     let Ok(draft) = draft else {
         return PrepareOutcome::Failed(PrepareFailure::new(
-            warning(E35, Some(&ErrorCode::Ui001.text())),
+            warning(job.lang, E35, Some(&ErrorCode::Ui001.text())),
             ErrorCode::Ui001,
         ));
     };
@@ -923,6 +946,7 @@ fn finish(
     PrepareOutcome::Ready(Box::new(Prepared {
         draft,
         context: TxContext {
+            lang: job.lang,
             tx: built.tx,
             kind: built.kind,
             role: built.role,
@@ -953,6 +977,7 @@ pub fn prepare(
     clock: &dyn Clock,
     on_simulating: &dyn Fn(u64),
 ) -> PrepareResult {
+    let lang = job.lang;
     let client = RpcClient::new(&**transport);
     let url = &job.chain.url;
     let budget = Budget {
@@ -962,7 +987,7 @@ pub fn prepare(
     };
     let mut result = PrepareResult {
         job: job.job,
-        outcome: PrepareOutcome::Failed(PrepareFailure::e35(ErrorCode::App009)),
+        outcome: PrepareOutcome::Failed(PrepareFailure::e35(lang, ErrorCode::App009)),
         transitions: Vec::new(),
         chain_events: Vec::new(),
     };
@@ -985,9 +1010,11 @@ pub fn prepare(
     let chain = match check {
         ChainCheck::Verified { genesis, .. } => with_genesis(&job.chain.info, genesis),
         ChainCheck::Mismatch(kind) => {
-            return fail(result, PrepareFailure::new(blocked(None, E34), kind.code()));
+            return fail(result, PrepareFailure::chain_mismatch(lang, kind));
         }
-        ChainCheck::Unverified(failure) => return fail(result, PrepareFailure::rpc(failure)),
+        ChainCheck::Unverified(failure) => {
+            return fail(result, PrepareFailure::rpc(lang)(failure));
+        }
     };
     // Step 4: account code, reconcile, nonce, journal room.
     let mut facts = ChainFacts {
@@ -998,7 +1025,7 @@ pub fn prepare(
     };
     match rpc::code(&client, url, &job.account) {
         Ok(code) => facts.account_code = CodeKind::from_code(&code),
-        Err(failure) => return fail(result, PrepareFailure::rpc(failure)),
+        Err(failure) => return fail(result, PrepareFailure::rpc(lang)(failure)),
     }
     let reconciled = reconcile_account(transport, url, &chain, job, clock);
     result.transitions = reconciled.transitions;
@@ -1009,7 +1036,7 @@ pub fn prepare(
             chain_id: job.chain.info.chain_id,
             check,
         });
-        return fail(result, PrepareFailure::new(blocked(None, E34), kind.code()));
+        return fail(result, PrepareFailure::chain_mismatch(lang, kind));
     }
     let records = reconciled.records;
     let (nonce, latest) = match nonce_step(&client, url, job, &records) {
@@ -1019,11 +1046,11 @@ pub fn prepare(
     if !job.journal_room {
         return fail(
             result,
-            PrepareFailure::new(journal_full_warning(), ErrorCode::Tx005),
+            PrepareFailure::new(journal_full_warning(lang), ErrorCode::Tx005),
         );
     }
     if budget.over() {
-        return fail(result, PrepareFailure::e35(ErrorCode::Rpc002));
+        return fail(result, PrepareFailure::e35(lang, ErrorCode::Rpc002));
     }
     // Steps 5–7: fees, gas, transaction.
     let built = match (&job.replace, latest) {
@@ -1045,10 +1072,10 @@ pub fn prepare(
             .saturating_add(SIGNATURE_OVERHEAD)
             > MAX_SIGNED_TX_BYTES
     {
-        built.blocking.push(warning(E11, None));
+        built.blocking.push(warning(lang, E11, None));
     }
     if budget.over() {
-        return fail(result, PrepareFailure::e35(ErrorCode::Rpc002));
+        return fail(result, PrepareFailure::e35(lang, ErrorCode::Rpc002));
     }
     let now_unix = clock.now_unix_ms();
     if !built.blocking.is_empty() {
@@ -1081,6 +1108,7 @@ pub fn prepare(
     };
     let sim_received_ms = clock.now_ms();
     let sim = interpret(
+        lang,
         &chain,
         &built.tx,
         &job.account,
@@ -1102,7 +1130,7 @@ pub fn prepare(
         &mut facts,
         &budget,
     );
-    gap_warnings(gaps, &mut built.pre_warnings);
+    gap_warnings(lang, gaps, &mut built.pre_warnings);
     // Step 10: draft.
     result.outcome = finish(
         job,
@@ -1187,7 +1215,7 @@ fn refeed(
     context: &TxContext,
     caps: &FeeCaps,
 ) -> Option<(Eip1559Tx, Option<Warning>)> {
-    let fresh = fresh_fees(client, url, &context.chain).ok()?;
+    let fresh = fresh_fees(context.lang, client, url, &context.chain).ok()?;
     let tx = &context.tx;
     let (tip, max_fee) = match context.kind {
         ApprovalKind::EvmSpeedUp | ApprovalKind::EvmCancel => {
@@ -1208,7 +1236,7 @@ fn refeed(
     let used = fees_of(&refed, fresh.base_fee_next);
     let violation = check_caps_with_l1(&used, refed.gas_limit, &l1_max, caps)
         .err()
-        .map(|violation| violation.warning(&context.chain));
+        .map(|violation| violation.warning(context.lang, &context.chain));
     Some((refed, violation))
 }
 
@@ -1226,6 +1254,7 @@ fn rebuild(
     };
     let prepare_job = PrepareJob {
         job: job.job,
+        lang: job.context.lang,
         chain: job.chain.clone(),
         id: job.request.id,
         origin: job.request.origin.clone(),
@@ -1300,7 +1329,7 @@ fn reclassify(
         &mut context.facts,
         budget,
     );
-    gap_warnings(gaps, &mut context.pre_warnings);
+    gap_warnings(context.lang, gaps, &mut context.pre_warnings);
 }
 
 /// A blocked request is never re-simulated: it cannot be approved, and the rebuilt draft keeps
@@ -1363,7 +1392,7 @@ pub fn resimulate(
         // A chain mismatch blocks: it is never an approvable "no simulation" warning.
         ChainCheck::Mismatch(kind) => {
             result.kind = ResimKind::Failed;
-            result.failure = Some(PrepareFailure::new(blocked(None, E34), kind.code()));
+            result.failure = Some(PrepareFailure::chain_mismatch(job.context.lang, kind));
             return result;
         }
         ChainCheck::Unverified(_) => SimOutcome::Transport(TransportKind::Other),
@@ -1402,6 +1431,7 @@ pub fn resimulate(
     }
     let received = clock.now_ms();
     let sim = interpret(
+        job.context.lang,
         &context.chain,
         &context.tx,
         &account,

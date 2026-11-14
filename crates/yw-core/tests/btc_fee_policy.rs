@@ -28,6 +28,7 @@ use yw_core::btc::policy::{
 };
 use yw_core::btc::select::{SendAmount, SendRequest, plan_send};
 use yw_core::btc::tx::Txid;
+use yw_core::lang::Lang;
 
 fn sats(value: u64) -> Sats {
     Sats::new(value).unwrap()
@@ -195,7 +196,7 @@ fn fee_floor_raises_estimate() {
 }
 
 fn warnings_of(plan: &yw_core::btc::select::SendPlan) -> Vec<yw_core::approval::RuleId> {
-    plan_warnings(plan, &BtcSendFacts::default())
+    plan_warnings(Lang::Ko, plan, &BtcSendFacts::default())
         .iter()
         .map(|warning| warning.rule)
         .collect()
@@ -274,6 +275,7 @@ fn fee_caps_and_typed_override() {
     assert_eq!(warnings_of(&huge_typed), vec![B01, B04]);
     // Blocked requests are issued but cannot be consumed (no approve button).
     let draft = build_btc_request(
+        Lang::Ko,
         ApprovalId([3; 16]),
         &over,
         &account(),
@@ -288,6 +290,7 @@ fn fee_caps_and_typed_override() {
         Err(yw_core::approval::ApprovalError::Blocked)
     );
     let draft = build_btc_request(
+        Lang::Ko,
         ApprovalId([4; 16]),
         &typed,
         &account(),
@@ -326,6 +329,7 @@ fn fee_ratio_confirm() {
     .unwrap();
     assert_eq!(warnings_of(&smaller), vec![B04]);
     let draft = build_btc_request(
+        Lang::Ko,
         ApprovalId([5; 16]),
         &smaller,
         &account(),
@@ -333,7 +337,10 @@ fn fee_ratio_confirm() {
     )
     .unwrap();
     assert_eq!(draft.display.risk, RiskLevel::High);
-    assert_eq!(draft.display.warnings[0].text, texts::FEE_RATIO);
+    assert_eq!(
+        draft.display.warnings[0].text,
+        texts::FEE_RATIO.get(Lang::Ko)
+    );
 }
 
 /// The §10 table: rule ids, levels and fixed texts.
@@ -357,7 +364,7 @@ fn b_rule_levels_and_texts() {
     }
     assert_eq!(level_of(yw_core::approval::RuleId::new(b'B', 9)), None);
     assert_eq!(
-        BtcWarning::UtxosExcluded { count: 3 }.text(),
+        BtcWarning::UtxosExcluded { count: 3 }.text(Lang::Ko),
         "UTXO 3개는 포함되지 않음(입력 최대 100개)"
     );
     assert_eq!(
@@ -367,7 +374,7 @@ fn b_rule_levels_and_texts() {
             chain: BtcChain::Change,
             index: 4
         }
-        .text(),
+        .text(Lang::Ko),
         "이 지갑의 주소입니다 (m/84'/1'/0'/1/4)"
     );
     for warning in [
@@ -387,7 +394,7 @@ fn b_rule_levels_and_texts() {
         BtcWarning::LegacyRecipient,
         BtcWarning::ScriptRecipient,
     ] {
-        let shown = warning.warning();
+        let shown = warning.warning(Lang::Ko);
         assert_eq!(shown.rule, warning.rule());
         assert_eq!(Some(shown.level), level_of(shown.rule));
         assert!(yw_core::approval::is_valid_display_text(

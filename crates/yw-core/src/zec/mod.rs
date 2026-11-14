@@ -29,6 +29,7 @@ pub mod network;
 pub mod plan;
 pub mod sighash;
 pub mod sign;
+pub mod text;
 pub mod tx;
 pub mod upgrade;
 

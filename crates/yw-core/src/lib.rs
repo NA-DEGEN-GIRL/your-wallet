@@ -16,6 +16,7 @@ pub mod hex;
 pub mod hypercore;
 pub mod journal;
 pub mod keyimport;
+pub mod lang;
 pub mod password;
 pub mod policy;
 pub mod secret;

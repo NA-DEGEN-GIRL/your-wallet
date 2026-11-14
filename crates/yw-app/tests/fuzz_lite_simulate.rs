@@ -116,12 +116,20 @@ fn fuzz_lite_simulate() {
     for _ in 0..runs() {
         let input = mutator.mutate(&seeds);
         let outcome = parse_simulate_response(&input, 1);
-        let sim = interpret(&chain, &tx, &user, &outcome, 1_791_381_228_000);
+        let sim = interpret(
+            yw_core::lang::Lang::Ko,
+            &chain,
+            &tx,
+            &user,
+            &outcome,
+            1_791_381_228_000,
+        );
         assert!(sim.warnings().iter().all(|w| w.level == RiskLevel::High));
         if let SimResult::Simulated { .. } = sim {
             simulated += 1;
         }
         let draft = build_evm_tx_request(
+            yw_core::lang::Lang::Ko,
             ApprovalId([1; 16]),
             ApprovalOrigin::App,
             EvmKeySource::Derived(AccountIndex::ZERO),

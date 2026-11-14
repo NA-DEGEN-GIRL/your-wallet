@@ -50,39 +50,34 @@ pub enum RentError {
     },
 }
 
+impl RentError {
+    /// The fixed text in `lang` (`Display` is the Korean one).
+    #[must_use]
+    pub fn text_in(self, lang: crate::lang::Lang) -> String {
+        use super::text as t;
+        match self {
+            Self::BelowRentForNewAccount { rent0 } => {
+                t::RENT_NEW_ACCOUNT.fill(lang, [&format_amount(rent0, 9)])
+            }
+            Self::RecipientBelowRent { needed, rent0 } => t::RENT_RECIPIENT_BELOW
+                .fill(lang, [&format_amount(rent0, 9), &format_amount(needed, 9)]),
+            Self::SenderDust { rent0 } => {
+                t::RENT_SENDER_DUST.fill(lang, [&format_amount(rent0, 9)])
+            }
+            Self::InsufficientBalance => t::RENT_INSUFFICIENT.get(lang).to_owned(),
+            Self::ZeroAmount => t::RENT_ZERO.get(lang).to_owned(),
+            Self::RpcAnomaly => t::RPC_ANOMALY.get(lang).to_owned(),
+            Self::NoTokenAccount => t::RENT_NO_TOKEN_ACCOUNT.get(lang).to_owned(),
+            Self::InsufficientTokens => t::RENT_INSUFFICIENT_TOKENS.get(lang).to_owned(),
+            Self::SolReserve { needed, rent0 } => t::RENT_SOL_RESERVE
+                .fill(lang, [&format_amount(rent0, 9), &format_amount(needed, 9)]),
+        }
+    }
+}
+
 impl fmt::Display for RentError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::BelowRentForNewAccount { rent0 } => write!(
-                formatter,
-                "새 계정에는 최소 {} SOL을 보내야 합니다",
-                format_amount(*rent0, 9)
-            ),
-            Self::RecipientBelowRent { needed, rent0 } => write!(
-                formatter,
-                "받는 계정의 잔액이 rent 기준({} SOL)보다 적어 최소 {} SOL을 보내야 합니다",
-                format_amount(*rent0, 9),
-                format_amount(*needed, 9)
-            ),
-            Self::SenderDust { rent0 } => write!(
-                formatter,
-                "보낸 뒤 남는 잔액은 0이거나 {} SOL 이상이어야 합니다",
-                format_amount(*rent0, 9)
-            ),
-            Self::InsufficientBalance => formatter.write_str("잔액이 부족합니다(수수료 포함)"),
-            Self::ZeroAmount => formatter.write_str("0은 보낼 수 없습니다"),
-            Self::RpcAnomaly => formatter.write_str("RPC 응답 값이 비정상입니다"),
-            Self::NoTokenAccount => {
-                formatter.write_str("보내는 계정에 이 토큰의 토큰 계정(ATA)이 없습니다(잔액 0)")
-            }
-            Self::InsufficientTokens => formatter.write_str("토큰 잔액이 부족합니다"),
-            Self::SolReserve { needed, rent0 } => write!(
-                formatter,
-                "SOL이 부족합니다: 수수료와 받는 토큰 계정 생성비(필요할 때)를 내고도 {} SOL이 남아야 합니다(필요 {} SOL)",
-                format_amount(*rent0, 9),
-                format_amount(*needed, 9)
-            ),
-        }
+        formatter.write_str(&self.text_in(crate::lang::Lang::Ko))
     }
 }
 

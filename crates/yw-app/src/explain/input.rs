@@ -841,7 +841,7 @@ impl<'a> Builder<'a> {
                 } else {
                     Some(*to)
                 };
-                let label = self.label(title);
+                let label = self.label(title.ko);
                 let args = args
                     .iter()
                     .map(|(name, value)| self.arg(kind, name, value, token.as_ref()))

@@ -26,6 +26,7 @@ use crate::entropy::{OsRandom, secp_context};
 use crate::hex;
 use crate::journal::JournalPlain;
 use crate::journal::zec::{self as zj, ZecTransition, ZecTxState};
+use crate::lang::Lang;
 
 const F4: &str = include_str!("../../tests/vectors/zec/f4jumble.json");
 const UA: &str = include_str!("../../tests/vectors/zec/unified_address.json");
@@ -544,7 +545,7 @@ fn mocked_end_to_end_send() {
     assert_eq!(plan.tx.outputs[1].script_pubkey, account.script_pubkey());
 
     let id = crate::approval::ApprovalId([5; 16]);
-    let draft = display::build_zec_request(id, &plan).unwrap();
+    let draft = display::build_zec_request(Lang::Ko, id, &plan).unwrap();
     let mut store = ApprovalStore::new();
     let issued = store.issue(draft, 1_000, 1_700_000_000_000).unwrap();
     let approved = store.consume(issued.id, issued.digest, 1_001).unwrap();
@@ -740,7 +741,8 @@ fn signed_send(
         consensus,
     };
     let plan = plan_send(&account, &request).unwrap();
-    let draft = display::build_zec_request(crate::approval::ApprovalId([5; 16]), &plan).unwrap();
+    let draft =
+        display::build_zec_request(Lang::Ko, crate::approval::ApprovalId([5; 16]), &plan).unwrap();
     let mut store = ApprovalStore::new();
     let issued = store.issue(draft, 1_000, 1_700_000_000_000).unwrap();
     let approved = store.consume(issued.id, issued.digest, 1_001).unwrap();
@@ -799,8 +801,12 @@ fn added_mnemonic_send_signs_and_journals_as_version_2() {
     assert_ne!(sign::zec_payload(&primary_plan), sign::zec_payload(&plan));
     // The primary mnemonic's key is not this account's key.
     let mut store = ApprovalStore::new();
-    let draft =
-        display::build_zec_request(crate::approval::ApprovalId([6; 16]), &primary_plan).unwrap();
+    let draft = display::build_zec_request(
+        Lang::Ko,
+        crate::approval::ApprovalId([6; 16]),
+        &primary_plan,
+    )
+    .unwrap();
     let issued = store.issue(draft, 1_000, 1_700_000_000_000).unwrap();
     let approved = store.consume(issued.id, issued.digest, 1_001).unwrap();
     assert_eq!(
@@ -993,4 +999,188 @@ fn fuzz_lite_zec_transparent_parts() {
         }
         let _ = super::tx::transparent_parts(&input);
     }
+}
+
+/// spec/14: every entry of the zec catalogue has the placeholders `0..args` in both languages,
+/// and its English text is Hangul-free and a valid display text.
+#[test]
+fn zec_catalogue_entries_are_well_formed() {
+    use crate::approval::{MAX_DISPLAY_VALUE_BYTES, is_valid_display_text};
+    use crate::lang::{has_hangul, placeholders};
+    for entry in super::text::ALL {
+        let expected: Vec<usize> = (0..entry.args).collect();
+        for template in [entry.ko, entry.en] {
+            let mut found = placeholders(template);
+            found.sort_unstable();
+            assert_eq!(found, expected, "{}", entry.name);
+        }
+        assert!(!has_hangul(entry.en), "{}", entry.name);
+        assert!(
+            is_valid_display_text(entry.en, MAX_DISPLAY_VALUE_BYTES, true),
+            "{}",
+            entry.name
+        );
+    }
+}
+
+/// spec/14: the Zcash send approval in English for every key source, recipient form and
+/// optional line (Z01–Z06, change, folded change, no change, excluded inputs, next upgrade,
+/// send max): no Hangul in the title, fields or warnings; the mapped Korean names are the
+/// original functions' text and both drafts have the same fields, rules and payload.
+#[test]
+fn zec_english_display_has_no_hangul() {
+    use super::text;
+    use crate::lang::has_hangul;
+    use crate::vault::RecordId;
+
+    let pubkey = crate::vault::tests::unlocked_with(ABOUT)
+        .zec_public_key(true, 0, 0)
+        .unwrap();
+    let account = ZecAccount {
+        network: ZecNetwork::Testnet,
+        source: ZecKeySource::DEFAULT,
+        pubkey,
+    };
+    let consensus = tx_consensus(
+        ZecNetwork::Testnet,
+        &ConsensusObservation {
+            tip: 4_470_000,
+            next_branch: 0x7719_0AD9,
+            upgrades: vec![(0x7719_0AD9, 4_465_026)],
+        },
+    )
+    .unwrap();
+    let recipient = parse_recipient(
+        &encode_tex(&[0x42; 20], ZecNetwork::Testnet),
+        ZecNetwork::Testnet,
+    )
+    .unwrap();
+    let base = plan_send(
+        &account,
+        &ZecSendRequest {
+            recipient,
+            amount: ZecAmount::Exact(150_000),
+            utxos: vec![utxo(1, 100_000), utxo(2, 80_000), utxo(3, 5_000)],
+            reserved: Vec::new(),
+            consensus,
+        },
+    )
+    .unwrap();
+    let sources = [
+        ZecKeySource::DEFAULT,
+        ZecKeySource::Derived {
+            account: 1,
+            index: 2,
+        },
+        ZecKeySource::Mnemonic {
+            mnemonic: RecordId::from_bytes([3; 16]),
+            account: 0,
+            index: 0,
+        },
+        ZecKeySource::Mnemonic {
+            mnemonic: RecordId::from_bytes([3; 16]),
+            account: 1,
+            index: 0,
+        },
+        ZecKeySource::EvmShared { evm_index: 4 },
+        ZecKeySource::Hardware { index: 5 },
+        ZecKeySource::Hardware { index: 901 },
+        ZecKeySource::Imported,
+    ];
+    for source in sources {
+        assert_eq!(text::source_label(Lang::Ko, source), source.label());
+        assert!(!has_hangul(&text::source_label(Lang::En, source)));
+        for network in [ZecNetwork::Mainnet, ZecNetwork::Testnet] {
+            assert_eq!(
+                text::path_text(Lang::Ko, source, network),
+                source.path_text(network)
+            );
+            assert!(!has_hangul(&text::path_text(Lang::En, source, network)));
+            assert_eq!(text::network_banner(Lang::Ko, network), network.banner());
+            assert!(!has_hangul(text::network_banner(Lang::En, network)));
+        }
+    }
+    for form in [
+        RecipientForm::Transparent,
+        RecipientForm::Tex,
+        RecipientForm::Unified,
+    ] {
+        assert_eq!(text::form_label(Lang::Ko, form), form.label());
+    }
+    assert_eq!(text::FORM_TEX.ko, RecipientForm::Tex.label());
+    assert_eq!(text::SOURCE_IMPORTED.ko, ZecKeySource::Imported.label());
+    assert_eq!(
+        text::PATH_IMPORTED.ko,
+        ZecKeySource::Imported.path_text(ZecNetwork::Testnet)
+    );
+    let mut plans = Vec::new();
+    for (step, source) in sources.into_iter().enumerate() {
+        let mut plan = base.clone();
+        plan.account.source = source;
+        match step % 4 {
+            0 => plan.recipient.form = RecipientForm::Unified,
+            1 => {
+                plan.recipient.form = RecipientForm::Transparent;
+                plan.change = 0;
+                plan.excluded_inputs = 2;
+                plan.send_max = true;
+                plan.consensus.next_upgrade_height =
+                    Some(plan.consensus.expiry_height.saturating_add(1));
+            }
+            2 => {
+                plan.change = 0;
+                plan.fee = plan.conventional_fee;
+            }
+            _ => plan.recipient.dest = plan.account.dest(),
+        }
+        plans.push(plan);
+    }
+    for plan in &plans {
+        for first_time in [false, true] {
+            let build = |lang| {
+                display::build_zec_request_with(
+                    lang,
+                    crate::approval::ApprovalId([7; 16]),
+                    plan,
+                    first_time,
+                )
+                .unwrap()
+            };
+            let (en, ko) = (build(Lang::En), build(Lang::Ko));
+            assert_eq!(en.display.lang, Lang::En);
+            assert!(!has_hangul(&en.display.title), "{}", en.display.title);
+            for field in &en.display.fields {
+                assert!(!has_hangul(&field.value), "{:?}", field.value);
+            }
+            for warning in &en.display.warnings {
+                assert!(!has_hangul(&warning.text), "{:?}", warning.text);
+            }
+            let keys = |draft: &crate::approval::ApprovalDraft| {
+                (
+                    draft
+                        .display
+                        .fields
+                        .iter()
+                        .map(|f| f.key)
+                        .collect::<Vec<_>>(),
+                    draft
+                        .display
+                        .warnings
+                        .iter()
+                        .map(|w| w.rule)
+                        .collect::<Vec<_>>(),
+                )
+            };
+            assert_eq!(keys(&en), keys(&ko));
+            assert_eq!(en.payload, ko.payload);
+        }
+    }
+    let title = |lang| {
+        display::build_zec_request(lang, crate::approval::ApprovalId([7; 16]), &base)
+            .unwrap()
+            .display
+            .title
+    };
+    assert!(title(Lang::Ko).starts_with("[Zcash testnet] 보내기: "));
+    assert_eq!(title(Lang::En), title(Lang::Ko).replace("보내기", "Send"));
 }

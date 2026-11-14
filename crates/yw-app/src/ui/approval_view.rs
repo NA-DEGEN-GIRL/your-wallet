@@ -5,9 +5,12 @@
 use core::fmt::Write as _;
 
 use yw_core::approval::{ApprovalRequest, DisplayField, FieldKey, RiskLevel, RuleId, Warning};
+use yw_core::evm::display::text as evm_text;
 use yw_core::evm::risk::{
     E01, E02, E03, E04, E07, E08, E09, E28, E29, E36, H01, M04, P03, S09, W08,
 };
+use yw_core::evm::text as call_text;
+use yw_core::lang::{Lang, Text, Tpl};
 
 /// Information lines that restate the summary (`HyperCore` user action, ownership proof, SIWE,
 /// SIWS, message signature): one muted line of the summary card instead of their own boxes
@@ -16,6 +19,7 @@ const RESTATING: [RuleId; 5] = [H01, M04, S09, W08, P03];
 
 use crate::errors::ErrorCode;
 use crate::ui::approval::{field_label, validate_for_display};
+use crate::ui::approval_text as text;
 use crate::ui::interaction::{
     PrepareStage, PrepareState, ReadyContent, SIM_WAIT_MAX_MS, SimState, ack_needed, sim_state,
 };
@@ -128,12 +132,12 @@ impl BtcBanner {
         }
     }
 
-    /// The fixed text (spec/08 §2).
+    /// The fixed text (spec/08 §2; English spec/14 §2).
     #[must_use]
-    pub const fn text(self) -> &'static str {
+    pub const fn text(self, lang: Lang) -> &'static str {
         match self {
-            Self::Mainnet => yw_core::btc::BtcNetwork::Mainnet.banner(),
-            Self::Testnet4 => yw_core::btc::BtcNetwork::Testnet4.banner(),
+            Self::Mainnet => yw_core::btc::BtcNetwork::Mainnet.banner_in(lang),
+            Self::Testnet4 => yw_core::btc::BtcNetwork::Testnet4.banner_in(lang),
         }
     }
 }
@@ -145,6 +149,9 @@ impl BtcBanner {
     reason = "independent display flags of one window"
 )]
 pub struct ApprovalView {
+    /// The language of every fixed text of the window: the request's display language
+    /// (digested) for a signing request, the app language for the connect and preparing views.
+    pub lang: Lang,
     /// Header rows (`요청 출처`, `네트워크`, `서명 계정`).
     pub header: Vec<(String, String)>,
     /// Header badges (user chain, testnet).
@@ -248,8 +255,8 @@ const fn is_btc_money(key: FieldKey) -> bool {
     matches!(key.0, 0x0603..=0x0607)
 }
 
-fn label_of(field: &DisplayField) -> String {
-    let name = field_label(field.key).unwrap_or("?");
+fn label_of(lang: Lang, field: &DisplayField) -> String {
+    let name = field_label(field.key, lang).unwrap_or("?");
     if field.sub_label.is_empty() {
         name.to_owned()
     } else {
@@ -376,18 +383,45 @@ fn td_field<'d>(display: &'d yw_core::approval::ApprovalDisplay, label: &str) ->
 }
 
 /// The chain's own label of an address value (a token symbol, `Uniswap Permit2`): its first
-/// bracketed note that is not the account kind nor the wallet's own or book name.
-fn chain_label(value: &str) -> Option<&str> {
+/// bracketed note that is not the account kind nor the wallet's own or book name (the core's
+/// notes in the display's language).
+fn chain_label(lang: Lang, value: &str) -> Option<&str> {
+    let kinds = [
+        evm_text::NOTE_CONTRACT,
+        evm_text::NOTE_EOA,
+        evm_text::NOTE_KIND_UNKNOWN,
+    ];
+    let prefixes = [
+        evm_text::NOTE_DELEGATED,
+        evm_text::NOTE_MINE,
+        evm_text::NOTE_BOOK,
+    ];
     first_line(value)
         .split(" [")
         .skip(1)
         .map(|note| note.trim_end().trim_end_matches(']'))
         .find(|note| {
-            !matches!(*note, "컨트랙트" | "일반 계정(EOA)" | "계정 종류 확인 불가")
-                && !note.starts_with("위임된 계정")
-                && !note.starts_with("내 계정")
-                && !note.starts_with("주소록")
+            !kinds.iter().any(|kind| *note == kind.get(lang))
+                && !prefixes
+                    .iter()
+                    .any(|prefix| note.starts_with(prefix.get(lang).trim_end()))
         })
+}
+
+/// The fixed parts before and after `{0}` of a one-argument template.
+fn around_arg(template: Tpl<1>, lang: Lang) -> (&'static str, &'static str) {
+    template
+        .template(lang)
+        .split_once("{0}")
+        .unwrap_or((template.template(lang), ""))
+}
+
+/// Whether `value` is an instance of the one-argument template.
+fn matches_template(value: &str, template: Tpl<1>, lang: Lang) -> bool {
+    let (head, tail) = around_arg(template, lang);
+    value.len() > head.len().saturating_add(tail.len())
+        && value.starts_with(head)
+        && value.ends_with(tail)
 }
 
 /// An amount display that is zero (`0 USDC`, `0 (원시 단위) …`).
@@ -396,38 +430,40 @@ fn is_zero_amount(amount: &str) -> bool {
 }
 
 /// `{amount}을(를)` with the token named once: "무제한" says which token
-/// (`USDC를 무제한으로`), an amount that already ends in the token's name stands alone.
-fn amount_object(token: &str, amount: &str) -> String {
+/// (`USDC를 무제한으로`), an amount that already ends in the token's name stands alone. In
+/// English the object has no particle (`an unlimited amount of USDC`, `USDC 10`).
+fn amount_object(lang: Lang, token: &str, amount: &str) -> String {
     let amount = first_line(amount).trim();
-    if amount == "무제한" {
-        return format!(
-            "{token}{} 무제한으로",
-            crate::ui::theme::object_particle(token)
-        );
+    let particle = |what: &str| match lang {
+        Lang::Ko => crate::ui::theme::object_particle(what),
+        Lang::En => "",
+    };
+    if amount == evm_text::UNLIMITED.get(lang) {
+        return text::UNLIMITED_OBJECT.fill(lang, [token, particle(token)]);
     }
     let what = if amount.contains(token) {
         amount.to_owned()
     } else {
         format!("{token} {amount}")
     };
-    format!("{what}{}", crate::ui::theme::object_particle(&what))
+    format!("{what}{}", particle(&what))
 }
 
-/// "…까지" of an allowance expiry (`만료 없음` → `기한 없이`).
-fn until(expiration: &str) -> String {
+/// "…까지" of an allowance expiry (`만료 없음` → `기한 없이`; English `until …`).
+fn until(lang: Lang, expiration: &str) -> String {
     let expiration = first_line(expiration).trim();
-    if expiration == "만료 없음" {
-        "기한 없이".to_owned()
+    if expiration == evm_text::NO_EXPIRY.get(lang) {
+        text::NO_TIME_LIMIT.get(lang).to_owned()
     } else if expiration.starts_with(|character: char| character.is_ascii_digit()) {
-        format!("{expiration}까지")
+        text::UNTIL.fill(lang, [expiration])
     } else {
         format!("({expiration})")
     }
 }
 
 /// `{place}아래 주소의 권한을 거둡니다(승인 해제).`
-fn revoke_sentence(place: &str) -> String {
-    format!("{place}아래 주소의 권한을 거둡니다(승인 해제).")
+fn revoke_sentence(lang: Lang, place: &str) -> String {
+    text::REVOKE.fill(lang, [place])
 }
 
 /// The summary of a permission a transaction gives (spec/04 §3.2 요약, 2026-11-10): who gets
@@ -438,83 +474,78 @@ fn grant_summary<'d>(
     call: &str,
     place: &str,
 ) -> Option<(String, Option<&'d str>)> {
+    let lang = display.lang;
     let token = || {
         field_value(display, 0x0101)
-            .and_then(chain_label)
-            .unwrap_or("토큰")
+            .and_then(|value| chain_label(lang, value))
+            .unwrap_or(text::TOKEN.get(lang))
             .to_owned()
     };
+    let is = |title: Text| call == title.get(lang);
+    if is(call_text::TITLE_TOKEN_APPROVE) {
+        let spender = call_arg(display, "spender")?;
+        let amount = call_arg(display, "amount")?;
+        return Some(if is_zero_amount(amount) {
+            (revoke_sentence(lang, place), Some(spender))
+        } else {
+            (
+                text::GRANT_TOKEN.fill(lang, [place, &token(), first_line(amount).trim()]),
+                Some(spender),
+            )
+        });
+    }
     match call {
-        "토큰 사용 승인" => {
-            let spender = call_arg(display, "spender")?;
-            let amount = call_arg(display, "amount")?;
-            Some(if is_zero_amount(amount) {
-                (revoke_sentence(place), Some(spender))
-            } else {
-                (
-                    format!(
-                        "{place}아래 주소에 {} 사용 권한을 줍니다: {}.",
-                        token(),
-                        first_line(amount).trim()
-                    ),
-                    Some(spender),
-                )
-            })
-        }
         // `increaseAllowance` adds to what the spender may already use (security review
         // 2026-11-10): its amount is the increase, not the new total, and 0 changes nothing —
         // never "승인 해제", which a revoke-looking site could otherwise show for a no-op.
-        "토큰 승인 증가" => {
+        _ if is(call_text::TITLE_ALLOWANCE_INCREASE) => {
             let spender = call_arg(display, "spender")?;
             let added = first_line(call_arg(display, "added")?).trim();
             let sentence = if is_zero_amount(added) {
-                format!(
-                    "{place}아래 주소의 {} 사용 권한을 늘리는 거래이지만 늘리는 양이 0이라 이미 준 권한은 그대로입니다(승인 해제가 아닙니다).",
-                    token()
-                )
+                text::GRANT_INCREASE_ZERO.fill(lang, [place, &token()])
             } else {
-                format!(
-                    "{place}아래 주소의 {} 사용 권한을 늘립니다: +{added} (이미 준 권한에 더해집니다).",
-                    token()
-                )
+                text::GRANT_INCREASE.fill(lang, [place, &token(), added])
             };
             Some((sentence, Some(spender)))
         }
-        "컬렉션 전체 권한" => {
+        _ if is(call_text::TITLE_APPROVAL_FOR_ALL) => {
             let operator = call_arg(display, "operator")?;
-            Some(match call_arg(display, "approved") {
-                Some("예") => (
-                    format!("{place}아래 주소에 이 컬렉션 NFT 전체를 옮길 권한을 줍니다."),
-                    Some(operator),
-                ),
-                Some("아니오") => (revoke_sentence(place), Some(operator)),
-                _ => return None,
+            let approved = call_arg(display, "approved")?;
+            Some(if approved == evm_text::YES.get(lang) {
+                (text::GRANT_FOR_ALL.fill(lang, [place]), Some(operator))
+            } else if approved == evm_text::NO.get(lang) {
+                (revoke_sentence(lang, place), Some(operator))
+            } else {
+                return None;
             })
         }
-        "Permit2 승인" => {
+        _ if is(call_text::TITLE_PERMIT2_APPROVE) => {
             let spender = call_arg(display, "spender")?;
             let amount = call_arg(display, "amount")?;
             if is_zero_amount(amount) {
-                return Some((revoke_sentence(place), Some(spender)));
+                return Some((revoke_sentence(lang, place), Some(spender)));
             }
             let token = call_arg(display, "token")
-                .and_then(chain_label)
-                .unwrap_or("토큰");
+                .and_then(|value| chain_label(lang, value))
+                .unwrap_or(text::TOKEN.get(lang));
             let expiration = call_arg(display, "expiration")?;
             Some((
-                format!(
-                    "{place}아래 주소가 {} {} 쓸 수 있게 하는 거래입니다.",
-                    amount_object(token, amount),
-                    until(expiration)
+                text::GRANT_PERMIT2_TX.fill(
+                    lang,
+                    [
+                        place,
+                        &amount_object(lang, token, amount),
+                        &until(lang, expiration),
+                    ],
                 ),
                 Some(spender),
             ))
         }
-        "Permit2 승인 해제" => {
+        _ if is(call_text::TITLE_PERMIT2_LOCKDOWN) => {
             // The first pair's spender (`token → spender` lines).
             let pairs = call_arg(display, "pairs")?;
             let spender = first_line(pairs).split(" → ").nth(1)?;
-            Some((revoke_sentence(place), Some(spender)))
+            Some((revoke_sentence(lang, place), Some(spender)))
         }
         _ => None,
     }
@@ -527,94 +558,107 @@ fn permit_summary<'d>(
     action: &str,
     place: &str,
 ) -> Option<(String, Option<&'d str>)> {
-    let token = |label: &str| {
-        td_field(display, label)
-            .and_then(chain_label)
-            .unwrap_or("토큰")
+    let lang = display.lang;
+    let label = |text: Text| text.get(lang);
+    let token = || {
+        td_field(display, label(evm_text::TD_TOKEN))
+            .and_then(|value| chain_label(lang, value))
+            .unwrap_or(text::TOKEN.get(lang))
             .to_owned()
     };
     // A batch names how many tokens (`항목 n 토큰`) instead of one amount.
+    let (item_head, _) = around_arg(evm_text::TD_ITEM, lang);
+    let token_tail = format!(" {}", label(evm_text::TD_TOKEN));
     let batch = display
         .fields
         .iter()
         .filter(|field| {
             field.key == FieldKey::TD_FIELD
-                && field.sub_label.starts_with("항목 ")
-                && field.sub_label.ends_with(" 토큰")
+                && field.sub_label.starts_with(item_head)
+                && field.sub_label.ends_with(&token_tail)
         })
         .count();
-    match action {
-        "토큰 사용 허가 서명 (permit)" => {
-            let spender = td_field(display, "사용자")?;
-            let amount = td_field(display, "금액")?;
-            Some(if is_zero_amount(amount) {
-                (revoke_sentence(place), Some(spender))
-            } else {
-                (
-                    format!(
-                        "{place}아래 주소가 {} 가져갈 수 있게 하는 서명입니다. 거래 없이 서명만으로 쓰일 수 있습니다.",
-                        amount_object(&token("토큰"), amount)
-                    ),
-                    Some(spender),
-                )
-            })
-        }
-        "DAI 사용 허가 서명" => {
-            let spender = td_field(display, "사용자")?;
-            Some(match td_field(display, "허용")? {
-                "무제한 허용" => (
-                    format!(
-                        "{place}아래 주소가 {} 가져갈 수 있게 하는 서명입니다. 거래 없이 서명만으로 쓰일 수 있습니다.",
-                        amount_object("DAI", "무제한")
-                    ),
-                    Some(spender),
-                ),
-                _ => (revoke_sentence(place), Some(spender)),
-            })
-        }
-        "Permit2 승인 서명" => {
-            let spender = td_field(display, "사용자")?;
-            if batch > 0 {
-                return Some((
-                    format!("{place}아래 주소가 토큰 {batch}종을 쓸 수 있게 하는 서명입니다."),
-                    Some(spender),
-                ));
-            }
-            let amount = td_field(display, "금액")?;
-            if is_zero_amount(amount) {
-                return Some((revoke_sentence(place), Some(spender)));
-            }
-            Some((
-                format!(
-                    "{place}아래 주소가 {} {} 쓸 수 있게 하는 서명입니다.",
-                    amount_object(&token("토큰"), amount),
-                    until(td_field(display, "허용 만료")?)
-                ),
+    let is = |title: Text| action == title.get(lang);
+    let spender = || td_field(display, label(evm_text::TD_SPENDER));
+    let amount = || td_field(display, label(evm_text::TD_AMOUNT));
+    if is(evm_text::ACTION_PERMIT) {
+        let spender = spender()?;
+        let amount = amount()?;
+        return Some(if is_zero_amount(amount) {
+            (revoke_sentence(lang, place), Some(spender))
+        } else {
+            (
+                text::PERMIT_SIG.fill(lang, [place, &amount_object(lang, &token(), amount)]),
                 Some(spender),
-            ))
-        }
-        "Permit2 즉시 이체 서명" | "Permit2 즉시 이체 서명(조건 포함)" => {
-            let spender = td_field(display, "사용자")?;
-            let what = if batch > 0 {
-                format!("토큰 {batch}종을")
-            } else {
-                let amount = first_line(td_field(display, "금액")?).trim();
-                format!("{amount}{}", crate::ui::theme::object_particle(amount))
-            };
-            Some((
-                format!("{place}아래 주소가 {what} 바로 가져갈 수 있게 하는 서명입니다."),
-                Some(spender),
-            ))
-        }
-        "Hyperliquid 거래 권한 위임 서명" => {
-            let agent = td_field(display, "agentAddress")?;
-            Some((
-                format!("{place}아래 주소(API 지갑)에 내 계정으로 주문·취소할 권한을 줍니다."),
-                Some(agent),
-            ))
-        }
-        _ => None,
+            )
+        });
     }
+    if is(evm_text::ACTION_DAI_PERMIT) {
+        let spender = spender()?;
+        let allowed = td_field(display, label(evm_text::TD_ALLOWED))?;
+        return Some(if allowed == evm_text::DAI_ALLOWED.get(lang) {
+            (
+                text::PERMIT_SIG.fill(
+                    lang,
+                    [
+                        place,
+                        &amount_object(lang, "DAI", evm_text::UNLIMITED.get(lang)),
+                    ],
+                ),
+                Some(spender),
+            )
+        } else {
+            (revoke_sentence(lang, place), Some(spender))
+        });
+    }
+    if is(evm_text::ACTION_PERMIT2) {
+        let spender = spender()?;
+        if batch > 0 {
+            return Some((
+                text::PERMIT2_BATCH.fill(lang, [place, &batch.to_string()]),
+                Some(spender),
+            ));
+        }
+        let amount = amount()?;
+        if is_zero_amount(amount) {
+            return Some((revoke_sentence(lang, place), Some(spender)));
+        }
+        return Some((
+            text::PERMIT2_SIG.fill(
+                lang,
+                [
+                    place,
+                    &amount_object(lang, &token(), amount),
+                    &until(
+                        lang,
+                        td_field(display, label(evm_text::TD_ALLOWANCE_EXPIRY))?,
+                    ),
+                ],
+            ),
+            Some(spender),
+        ));
+    }
+    if is(evm_text::ACTION_PERMIT2_TRANSFER) || is(evm_text::ACTION_PERMIT2_WITNESS) {
+        let spender = spender()?;
+        let what = if batch > 0 {
+            text::TOKEN_KINDS.fill(lang, [&batch.to_string()])
+        } else {
+            let amount = first_line(amount()?).trim();
+            match lang {
+                Lang::Ko => format!("{amount}{}", crate::ui::theme::object_particle(amount)),
+                Lang::En => amount.to_owned(),
+            }
+        };
+        return Some((
+            text::PERMIT2_TRANSFER.fill(lang, [place, &what]),
+            Some(spender),
+        ));
+    }
+    if is(evm_text::ACTION_HL_AGENT) {
+        let agent = td_field(display, "agentAddress")?;
+        return Some((text::HL_AGENT.fill(lang, [place]), Some(agent)));
+    }
+    None
 }
 
 /// The action of `[{network}] {action}`.
@@ -629,23 +673,16 @@ fn title_action(title: &str) -> &str {
 /// log-in and the domain the message names (a domain other than the requesting site is S01,
 /// blocked); any other message keeps the general sentence.
 fn personal_sign_summary(display: &yw_core::approval::ApprovalDisplay, place: &str) -> String {
+    let lang = display.lang;
     let siwe_domain = display
         .fields
         .iter()
-        .find(|field| field.key.0 == 0x0404 && field.sub_label == "도메인")
+        .find(|field| field.key.0 == 0x0404 && field.sub_label == evm_text::SIWE_DOMAIN.get(lang))
         .map(|field| first_line(&field.value).trim().to_owned())
-        .filter(|_| title_action(&display.title) == "로그인 요청 (SIWE)");
+        .filter(|_| title_action(&display.title) == evm_text::SIWE_TITLE.get(lang));
     siwe_domain.map_or_else(
-        || {
-            format!(
-                "{place}메시지에 서명합니다. 거래를 보내지는 않지만, 서명은 로그인이나 권한 확인에 쓰일 수 있습니다."
-            )
-        },
-        |domain| {
-            format!(
-                "{place}{domain} 사이트 로그인(Sign-In with Ethereum) 메시지에 서명합니다. 거래를 보내지는 않습니다."
-            )
-        },
+        || text::PERSONAL.fill(lang, [place]),
+        |domain| text::SIWE.fill(lang, [place, &domain]),
     )
 }
 
@@ -653,15 +690,12 @@ fn personal_sign_summary(display: &yw_core::approval::ApprovalDisplay, place: &s
 /// (permit)', 'Permit2 즉시 이체 서명', 'NFT 마켓 주문 서명') and the summary repeats it
 /// (2026-11-08); an unknown one keeps the general sentence.
 fn typed_data_summary(display: &yw_core::approval::ApprovalDisplay, place: &str) -> String {
+    let lang = display.lang;
     let action = title_action(&display.title);
-    if action.is_empty() || action == "타입 데이터 서명" {
-        format!(
-            "{place}구조화된 데이터(EIP-712)에 서명합니다. 토큰 사용 권한(permit) 같은 권한을 줄 수 있으니 아래 내용을 확인하세요."
-        )
+    if action.is_empty() || action == evm_text::TYPED_TITLE.get(lang) {
+        text::TYPED_GENERIC.fill(lang, [place])
     } else {
-        format!(
-            "{place}'{action}'에 서명합니다(EIP-712). 서명만으로 권한이나 자산이 넘어갈 수 있으니 아래 경고와 내용을 확인하세요."
-        )
+        text::TYPED_ACTION.fill(lang, [place, action])
     }
 }
 
@@ -681,29 +715,37 @@ pub fn summary(request: &ApprovalRequest) -> (String, Option<String>) {
 }
 
 /// `{place}{amount}을(를) 아래 주소로 보냅니다.`
-fn send_sentence(place: &str, amount: &str) -> String {
+fn send_sentence(lang: Lang, place: &str, amount: &str) -> String {
     let amount = first_line(amount).trim();
-    format!(
-        "{place}{amount}{} 아래 주소로 보냅니다.",
-        crate::ui::theme::object_particle(amount)
-    )
+    let particle = match lang {
+        Lang::Ko => crate::ui::theme::object_particle(amount),
+        Lang::En => "",
+    };
+    text::SEND.fill(lang, [place, amount, particle])
+}
+
+/// Whether `sentence` is a [`send_sentence`] (its recipient notes go right under the summary).
+fn is_send_sentence(lang: Lang, sentence: &str) -> bool {
+    let template = text::SEND.template(lang);
+    let tail = template.rsplit_once('}').map_or(template, |(_, tail)| tail);
+    sentence.ends_with(tail)
 }
 
 /// [`summary`] with the whole display value of the address (the address and its bracketed
 /// notes).
-#[expect(clippy::too_many_lines, reason = "one arm per approval kind")]
 fn summary_value(request: &ApprovalRequest) -> (String, Option<&str>) {
     use yw_core::approval::ApprovalKind;
     let display = &request.display;
+    let lang = display.lang;
     let network = network_name(display);
     let place = if network.is_empty() {
         String::new()
     } else {
-        format!("{network}에서 ")
+        text::PLACE.fill(lang, [&network])
     };
-    let send = |amount: Option<&str>, asset: &str| match amount {
-        Some(amount) => send_sentence(&place, amount),
-        None => format!("{place}{asset} 보냅니다."),
+    let send = |amount: Option<&str>, asset: Text| match amount {
+        Some(amount) => send_sentence(lang, &place, amount),
+        None => text::SEND_ASSET.fill(lang, [&place, asset.get(lang)]),
     };
     // A Sign-In-With-Bitcoin message (yw-core `SIWB_MARKER` on its first line) says it is a site
     // log-in and which domain it names (2026-11-10).
@@ -714,26 +756,21 @@ fn summary_value(request: &ApprovalRequest) -> (String, Option<&str>) {
                 .filter(|domain| !domain.is_empty())
         })
     {
-        return (
-            format!(
-                "{place}{domain} 사이트 로그인(Sign-In with Bitcoin) 메시지에 서명합니다. 거래 서명이나 전송은 하지 않습니다."
-            ),
-            None,
-        );
+        return (text::SIWB.fill(lang, [&place, domain]), None);
     }
     match request.kind {
         ApprovalKind::EvmTransaction => {
             // The core names a plain native transfer "{symbol} 보내기" (spec/03 §9) and gives it
             // no call arguments.
             let call = field_value(display, 0x0103).map(first_line);
-            let plain = call.is_none_or(|call| call.ends_with(" 보내기"))
+            let plain = call.is_none_or(|call| matches_template(call, evm_text::SEND_NATIVE, lang))
                 && field_value(display, 0x0104).is_none();
             // A strict ERC-20 `transfer` ("토큰 전송") without native value: the tokens go to the
             // decoded `to` (its row carries the account kind and book notes), not to the token
             // contract of `0x0101` — the address a user checks must be the recipient's.
             let no_value = field_value(display, 0x0102)
                 .is_some_and(|value| first_line(value).split(' ').next() == Some("0"));
-            let token = (call == Some("토큰 전송") && no_value)
+            let token = (call == Some(call_text::TITLE_TOKEN_TRANSFER.get(lang)) && no_value)
                 .then(|| call_arg(display, "amount").zip(call_arg(display, "to")))
                 .flatten();
             // A permission (approve, increaseAllowance, setApprovalForAll, Permit2) names who
@@ -742,89 +779,68 @@ fn summary_value(request: &ApprovalRequest) -> (String, Option<&str>) {
                 return grant;
             }
             match (plain, field_value(display, 0x0102), token) {
-                (true, Some(amount), _) => {
-                    (send_sentence(&place, amount), field_value(display, 0x0101))
-                }
-                (_, _, Some((amount, to))) => (send_sentence(&place, amount), Some(to)),
+                (true, Some(amount), _) => (
+                    send_sentence(lang, &place, amount),
+                    field_value(display, 0x0101),
+                ),
+                (_, _, Some((amount, to))) => (send_sentence(lang, &place, amount), Some(to)),
                 _ => (
-                    format!(
-                        "{place}컨트랙트를 호출합니다: {}. 아래 자산 변화와 경고를 확인하세요.",
-                        title_action(&display.title)
-                    ),
+                    text::CONTRACT_CALL.fill(lang, [&place, title_action(&display.title)]),
                     field_value(display, 0x0101),
                 ),
             }
         }
-        ApprovalKind::EvmSpeedUp => (
-            format!("{place}아직 확정되지 않은 거래를 더 높은 수수료로 다시 보냅니다(가속)."),
-            None,
-        ),
-        ApprovalKind::EvmCancel => (
-            format!("{place}아직 확정되지 않은 거래를 취소합니다(같은 nonce로 0을 보내는 거래)."),
-            None,
-        ),
+        ApprovalKind::EvmSpeedUp => (text::SPEED_UP.fill(lang, [&place]), None),
+        ApprovalKind::EvmCancel => (text::CANCEL.fill(lang, [&place]), None),
         ApprovalKind::EvmPersonalSign => (personal_sign_summary(display, &place), None),
         ApprovalKind::EvmTypedData => permit_summary(display, title_action(&display.title), &place)
             .unwrap_or_else(|| (typed_data_summary(display, &place), None)),
         ApprovalKind::SolTransfer => {
             let amount = field_value(display, 0x0502);
             let to = amount.and(field_value(display, 0x0501));
-            (send(amount, "SOL을"), to)
+            (send(amount, text::ASSET_SOL), to)
         }
         ApprovalKind::BtcSend => {
             let amount = field_value(display, 0x0603);
             let to = amount.and(field_value(display, 0x0601));
-            (send(amount, "BTC를"), to)
+            (send(amount, text::ASSET_BTC), to)
         }
         ApprovalKind::ZecSend => {
             let amount = field_value(display, 0x0803);
             let to = amount.and(field_value(display, 0x0801));
-            (send(amount, "ZEC를"), to)
+            (send(amount, text::ASSET_ZEC), to)
         }
-        ApprovalKind::BtcFeeBump => (
-            format!("{place}아직 확정되지 않은 거래의 수수료를 올려 다시 보냅니다."),
-            None,
-        ),
-        ApprovalKind::SolMessage | ApprovalKind::BtcMessage => (
-            format!(
-                "{place}메시지에 서명해 이 주소의 소유를 증명합니다. 거래 서명이나 전송은 하지 않습니다."
-            ),
-            None,
-        ),
+        ApprovalKind::BtcFeeBump => (text::FEE_BUMP.fill(lang, [&place]), None),
+        ApprovalKind::SolMessage | ApprovalKind::BtcMessage => {
+            (text::OWNERSHIP.fill(lang, [&place]), None)
+        }
         ApprovalKind::HyperCoreAction => (
-            format!(
-                "{place}Hyperliquid HyperCore 작업에 서명합니다: {}. 서명하면 Hyperliquid가 바로 처리하며 되돌릴 수 없습니다.",
-                field_value(display, 0x0701).map_or("", first_line)
+            text::HYPERCORE.fill(
+                lang,
+                [&place, field_value(display, 0x0701).map_or("", first_line)],
             ),
             field_value(display, 0x0702),
         ),
-        ApprovalKind::SolSignIn => (
-            format!(
-                "{place}사이트 로그인(Sign-In-With-Solana) 메시지에 서명합니다. 거래 서명이나 전송은 하지 않습니다."
-            ),
-            None,
-        ),
+        ApprovalKind::SolSignIn => (text::SIWS.fill(lang, [&place]), None),
         // The mode and count come from the request row `0x0510` (spec/07 §20.6).
         ApprovalKind::SolTransaction => {
             let request_row = field_value(display, 0x0510).unwrap_or("");
-            if request_row.starts_with("서명 후 전송") {
-                (
-                    format!(
-                        "{place}사이트가 만든 Solana 거래에 서명하고 지갑이 바로 전송합니다. 되돌릴 수 없습니다."
-                    ),
-                    None,
-                )
+            let send_mode = yw_core::sol::dapp::text::SUMMARY_SEND.get(lang);
+            if request_row.starts_with(send_mode.split(" — ").next().unwrap_or(send_mode)) {
+                (text::SOL_TX_SEND.fill(lang, [&place]), None)
             } else {
+                // The count line of the sign-only request row (`거래 {n}건`).
+                let count_line = yw_core::sol::dapp::text::SUMMARY_SIGN_ONLY
+                    .template(lang)
+                    .lines()
+                    .nth(1)
+                    .unwrap_or("");
+                let (head, tail) = count_line.split_once("{0}").unwrap_or((count_line, ""));
                 let count = request_row
                     .lines()
-                    .find_map(|line| line.strip_prefix("거래 ")?.strip_suffix("건"))
+                    .find_map(|line| line.strip_prefix(head)?.strip_suffix(tail))
                     .unwrap_or("1");
-                (
-                    format!(
-                        "{place}사이트가 만든 Solana 거래 {count}건에 서명해 사이트에 돌려줍니다. 지갑은 전송하지 않습니다."
-                    ),
-                    None,
-                )
+                (text::SOL_TX_SIGN.fill(lang, [&place, count]), None)
             }
         }
     }
@@ -836,8 +852,9 @@ fn push_simulation_section(
     state: Option<SimState>,
     show_diff: bool,
 ) {
+    let lang = display.lang;
     view.blocks
-        .push(Block::Section("자산 변화 (시뮬레이션 결과)"));
+        .push(Block::Section(text::SECTION_CHANGES.get(lang)));
     if show_diff {
         for field in display
             .fields
@@ -845,20 +862,18 @@ fn push_simulation_section(
             .filter(|field| is_diff(field.key) || field.key == FieldKey::SIMULATION)
         {
             view.blocks.push(Block::Field {
-                label: label_of(field),
+                label: label_of(lang, field),
                 value: field.value.clone(),
                 mono: false,
             });
         }
         if state == Some(SimState::Incomplete) {
-            view.blocks.push(Block::Muted(
-                "시뮬레이션에서 확인된 부분만 표시합니다.".to_owned(),
-            ));
+            view.blocks
+                .push(Block::Muted(text::CHANGES_PARTIAL.get(lang).to_owned()));
         }
     } else {
-        view.blocks.push(Block::Muted(
-            "시뮬레이션 결과가 없어 자산 변화를 표시할 수 없습니다.".to_owned(),
-        ));
+        view.blocks
+            .push(Block::Muted(text::CHANGES_NONE.get(lang).to_owned()));
     }
 }
 
@@ -879,8 +894,10 @@ pub fn signing_view(
 ) -> Result<ApprovalView, ErrorCode> {
     validate_for_display(&request.display)?;
     let display = &request.display;
+    let lang = display.lang;
     let state = sim_state(request);
     let mut view = ApprovalView {
+        lang,
         badges,
         testnet,
         blocked: display.risk == RiskLevel::Blocked,
@@ -888,7 +905,8 @@ pub fn signing_view(
         ..ApprovalView::default()
     };
     for field in display.fields.iter().filter(|field| is_header(field.key)) {
-        view.header.push((label_of(field), field.value.clone()));
+        view.header
+            .push((label_of(lang, field), field.value.clone()));
     }
     let band_index = state
         .filter(|state| *state != SimState::Ok)
@@ -930,18 +948,18 @@ pub fn signing_view(
     let (restated, infos): (Vec<&Warning>, Vec<&Warning>) = infos
         .into_iter()
         .partition(|warning| RESTATING.contains(&warning.rule));
-    let recipient = address.is_some() && sentence.ends_with("아래 주소로 보냅니다.");
+    let recipient = address.is_some() && is_send_sentence(lang, &sentence);
     let (recipient_notes, notes_left): (Vec<&Warning>, Vec<&Warning>) = infos
         .into_iter()
         .partition(|warning| recipient && [E28, E29].contains(&warning.rule));
     let remark = (!restated.is_empty()).then(|| {
-        format!(
-            "참고: {}",
-            restated
+        text::REMARK.fill(
+            lang,
+            [&restated
                 .iter()
                 .map(|warning| warning.text.replace('\n', " — "))
                 .collect::<Vec<_>>()
-                .join(" · ")
+                .join(" · ")],
         )
     });
     view.blocks.push(Block::Summary {
@@ -982,14 +1000,17 @@ pub fn signing_view(
     let fee_in_card =
         !(sol || sol_tx || btc || hc || message) && field_value(display, 0x0120).is_some();
     if sol || sol_tx || btc || hc {
-        view.blocks.push(Block::Section(if sol_tx {
-            "자산 변화·수수료 (시뮬레이션 참고)"
-        } else {
-            "금액·수수료"
-        }));
+        view.blocks.push(Block::Section(
+            if sol_tx {
+                text::SECTION_SOL_TX_MONEY
+            } else {
+                text::SECTION_MONEY
+            }
+            .get(lang),
+        ));
         for field in display.fields.iter().filter(|field| money(field.key)) {
             view.blocks.push(Block::Field {
-                label: label_of(field),
+                label: label_of(lang, field),
                 value: field.value.clone(),
                 mono: false,
             });
@@ -997,12 +1018,14 @@ pub fn signing_view(
     } else if !message {
         push_simulation_section(&mut view, display, state, show_diff);
         if let Some(max) = field_value(display, 0x0120) {
-            let value = match field_value(display, 0x0121).filter(|fee| *fee != "알 수 없음") {
-                Some(expected) => format!("예상 {expected} (최대 {max})"),
-                None => format!("최대 {max}"),
+            let value = match field_value(display, 0x0121)
+                .filter(|fee| *fee != evm_text::UNKNOWN.get(lang))
+            {
+                Some(expected) => text::FEE_EXPECTED.fill(lang, [expected, max]),
+                None => text::FEE_MAX.fill(lang, [max]),
             };
             view.blocks.push(Block::Field {
-                label: "수수료".to_owned(),
+                label: text::FEE.get(lang).to_owned(),
                 value,
                 mono: false,
             });
@@ -1010,12 +1033,12 @@ pub fn signing_view(
     }
     let acknowledge = view.high && !view.blocked;
     if !attention.is_empty() || acknowledge {
-        view.blocks.push(Block::Section("확인할 경고"));
+        view.blocks
+            .push(Block::Section(text::SECTION_WARNINGS.get(lang)));
     }
     if attention.is_empty() && acknowledge {
-        view.blocks.push(Block::Muted(
-            "맨 위의 고위험 경고를 읽고, 이해했으면 아래에 체크하세요.".to_owned(),
-        ));
+        view.blocks
+            .push(Block::Muted(text::ACK_HINT.get(lang).to_owned()));
     }
     for warning in attention {
         view.blocks.push(Block::Warning {
@@ -1038,14 +1061,14 @@ pub fn signing_view(
         .filter(|field| field.critical && !shown_above(field))
         .collect();
     if !key_fields.is_empty() {
-        view.blocks.push(Block::Section("핵심 정보"));
+        view.blocks
+            .push(Block::Section(text::SECTION_KEY.get(lang)));
     }
     // A log-in message (SIWE, SIWS) shows what it parsed first and the message after it, both
     // open (2026-11-10).
-    let login = matches!(
-        title_action(&display.title),
-        "로그인 요청 (SIWE)" | "로그인 요청 (SIWS)"
-    );
+    let action = title_action(&display.title);
+    let login = action == evm_text::SIWE_TITLE.get(lang)
+        || action == yw_core::sol::text::ACTION_SIWS.get(lang);
     let is_login_field = |field: &DisplayField| {
         field.key == FieldKey::SIWE_FIELD || field.key == FieldKey::SIWS_FIELD
     };
@@ -1053,27 +1076,30 @@ pub fn signing_view(
         .into_iter()
         .partition(|field| login && is_login_field(field));
     if !login_fields.is_empty() {
-        view.blocks.push(Block::Subheading("로그인 내용"));
+        view.blocks
+            .push(Block::Subheading(text::SUB_LOGIN.get(lang)));
     }
     for field in login_fields {
         view.blocks.push(Block::Field {
-            label: label_of(field),
+            label: label_of(lang, field),
             value: field.value.clone(),
             mono: is_mono(field.key),
         });
     }
     if login && !other_fields.is_empty() {
-        view.blocks.push(Block::Subheading("메시지 원문"));
+        view.blocks
+            .push(Block::Subheading(text::SUB_MESSAGE.get(lang)));
     }
     for field in other_fields {
         view.blocks.push(Block::Field {
-            label: label_of(field),
+            label: label_of(lang, field),
             value: field.value.clone(),
             mono: is_mono(field.key),
         });
     }
     if !notes_left.is_empty() {
-        view.blocks.push(Block::Section("참고"));
+        view.blocks
+            .push(Block::Section(text::SECTION_NOTES.get(lang)));
     }
     for warning in notes_left {
         view.blocks.push(Block::Warning {
@@ -1099,7 +1125,7 @@ pub fn signing_view(
                         field.value.clone()
                     };
                     view.blocks.push(Block::Field {
-                        label: label_of(field),
+                        label: label_of(lang, field),
                         value,
                         mono: raw || is_mono(field.key),
                     });
@@ -1115,7 +1141,7 @@ pub fn signing_view(
 /// part of the digested display — the Bitcoin and Zcash sends, whose forms already required
 /// `주소 전체를 직접 확인했습니다`, show it again here (an EVM recipient gets the digested rule
 /// E43 instead). Nothing is added without a summary address.
-pub fn attach_address_note(view: &mut ApprovalView, note: &str) {
+pub fn attach_address_note(view: &mut ApprovalView, lang: Lang, note: &str) {
     let Some(index) = view.blocks.iter().position(|block| {
         matches!(
             block,
@@ -1130,10 +1156,7 @@ pub fn attach_address_note(view: &mut ApprovalView, note: &str) {
     view.blocks.insert(
         index.saturating_add(1),
         Block::Warning {
-            text: format!(
-                "받는 주소: {}",
-                yw_core::approval::escape_untrusted(note).text
-            ),
+            text: text::ADDRESS_NOTE.fill(lang, [&yw_core::approval::escape_untrusted(note).text]),
             tone: Tone::Warn,
         },
     );
@@ -1144,7 +1167,12 @@ pub fn attach_address_note(view: &mut ApprovalView, note: &str) {
 /// # Errors
 ///
 /// [`ErrorCode::Ui001`] for a request that must not be displayed.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the window state and its language, all needed for every preparation state"
+)]
 pub fn view(
+    lang: Lang,
     state: &PrepareState,
     now_ms: u64,
     details_open: bool,
@@ -1158,26 +1186,32 @@ pub fn view(
             signing_view(request, details_open, wide, badges, testnet)
         }
         PrepareState::Ready(ReadyContent::Connect(_)) => Ok(ApprovalView {
+            lang,
             badges,
             testnet,
             ..ApprovalView::default()
         }),
         PrepareState::Preparing(PrepareStage::Building) => Ok(ApprovalView {
+            lang,
             badges,
             testnet,
-            blocks: vec![Block::Notice("요청을 준비하는 중입니다…".to_owned())],
+            blocks: vec![Block::Notice(text::PREPARING.get(lang).to_owned())],
             ..ApprovalView::default()
         }),
         PrepareState::Preparing(PrepareStage::Simulating { since_ms }) => {
             let seconds = now_ms.saturating_sub(*since_ms).min(SIM_WAIT_MAX_MS) / 1_000;
             Ok(ApprovalView {
+                lang,
                 badges,
                 testnet,
-                blocks: vec![Block::Notice(format!("시뮬레이션 중… ({seconds}/10초)"))],
+                blocks: vec![Block::Notice(
+                    text::SIMULATING.fill(lang, [&seconds.to_string()]),
+                )],
                 ..ApprovalView::default()
             })
         }
         PrepareState::Failed { code, .. } => Ok(ApprovalView {
+            lang,
             badges,
             testnet,
             blocked: true,
@@ -1194,8 +1228,8 @@ pub fn view(
 /// the request came from a page where the extension presented itself as another wallet. The
 /// origin shown above it is still the real site origin.
 #[must_use]
-pub fn compat_mode_badge(mode: crate::browser::envelope::CompatMode) -> String {
-    format!("호환 모드: {}", mode.label())
+pub fn compat_mode_badge(lang: Lang, mode: crate::browser::envelope::CompatMode) -> String {
+    text::BADGE_COMPAT.fill(lang, [mode.label()])
 }
 
 /// The name of a connect-window row label: its first line without the `  [...]` tags.
@@ -1209,6 +1243,7 @@ pub fn account_name(label: &str) -> &str {
 /// badges, the fixed guidance, the account checkboxes and the origin chain.
 #[must_use]
 pub fn connect_view(
+    lang: Lang,
     origin: &str,
     http: bool,
     accounts: &[(String, String)],
@@ -1219,31 +1254,35 @@ pub fn connect_view(
     use yw_core::policy::Family;
     let mut badges = Vec::new();
     if http {
-        badges.push("로컬 개발 사이트(http)".to_owned());
+        badges.push(text::BADGE_HTTP.get(lang).to_owned());
     }
     if origin
         .split(['/', '.', ':'])
         .any(|label| label.starts_with("xn--"))
     {
-        badges.push("국제화 도메인(punycode) — 주소를 다시 확인하세요".to_owned());
+        badges.push(text::BADGE_PUNYCODE_CHECK.get(lang).to_owned());
     }
     let mut blocks = vec![
         Block::Title(origin.to_owned()),
         Block::Warning {
             text: match family {
-                Family::Evm => "이 사이트는 선택한 계정의 주소, 잔액, 거래 기록을 볼 수 있습니다. 서명과 전송은 매번 따로 승인합니다.",
+                Family::Evm => text::CONNECT_EVM,
                 // spec/04 §3 (2026-11-12, D38): Solana dApps also get transaction signing.
-                Family::Solana => "이 사이트는 선택한 계정의 공개키를 볼 수 있습니다. 메시지 서명과 거래 서명·전송은 매번 따로 승인합니다.",
-                Family::Bitcoin => "이 사이트는 선택한 주소와 공개키를 볼 수 있습니다. 이 지갑은 Bitcoin에서 메시지 서명(소유 증명)만 지원하며, 거래 서명과 전송은 할 수 없습니다. 메시지 서명은 매번 따로 승인합니다.",
+                Family::Solana => text::CONNECT_SOL,
+                Family::Bitcoin => text::CONNECT_BTC,
             }
+            .get(lang)
             .to_owned(),
             tone: Tone::Plain,
         },
-        Block::Section(match family {
-            Family::Evm => "연결할 계정 (1–16개)",
-            Family::Solana => "연결할 Solana 계정 (1개)",
-            Family::Bitcoin => "연결할 Bitcoin 주소 (용도마다 1개, 받기 주소 0번)",
-        }),
+        Block::Section(
+            match family {
+                Family::Evm => text::CONNECT_SECTION_EVM,
+                Family::Solana => text::CONNECT_SECTION_SOL,
+                Family::Bitcoin => text::CONNECT_SECTION_BTC,
+            }
+            .get(lang),
+        ),
     ];
     for (index, (label, address)) in accounts.iter().enumerate() {
         blocks.push(Block::Account {
@@ -1255,9 +1294,7 @@ pub fn connect_view(
     }
     let count = selected.iter().filter(|checked| **checked).count();
     if count > 16 {
-        blocks.push(Block::Muted(
-            "한 사이트에 연결할 수 있는 계정은 16개까지입니다.".to_owned(),
-        ));
+        blocks.push(Block::Muted(text::CONNECT_LIMIT.get(lang).to_owned()));
     }
     // The account a dApp uses is the first checked one in list order (spec/05 §4.2); say which
     // (2026-11-08) so the choice is not a guess — its name only (2026-11-10: a row's label
@@ -1269,18 +1306,18 @@ pub fn connect_view(
             .find(|(_, checked)| **checked)
             .map(|(account, _)| account)
     {
-        blocks.push(Block::Muted(format!(
-            "사이트가 기본으로 쓰는 계정: {} (체크한 계정 중 목록의 첫 계정)",
-            account_name(label)
-        )));
+        blocks.push(Block::Muted(
+            text::CONNECT_DEFAULT.fill(lang, [account_name(label)]),
+        ));
     }
     blocks.push(Block::Field {
-        label: "현재 네트워크".to_owned(),
+        label: text::CONNECT_NETWORK.get(lang).to_owned(),
         value: chain_name.to_owned(),
         mono: false,
     });
     ApprovalView {
-        header: vec![("요청 출처".to_owned(), origin.to_owned())],
+        lang,
+        header: vec![(text::CONNECT_ORIGIN.get(lang).to_owned(), origin.to_owned())],
         badges,
         blocks,
         ..ApprovalView::default()
@@ -1330,6 +1367,7 @@ mod tests {
             tx,
         };
         let draft = build_evm_tx_request(
+            yw_core::lang::Lang::Ko,
             ApprovalId([1; 16]),
             ApprovalOrigin::App,
             EvmKeySource::Derived(AccountIndex::ZERO),
@@ -1353,6 +1391,7 @@ mod tests {
             yw_core::evm::eip712::validate_typed_data_v4(source.as_bytes(), &value, 11_155_111)
                 .unwrap();
         let draft = yw_core::approval::build_typed_request(
+            yw_core::lang::Lang::Ko,
             ApprovalId([2; 16]),
             ApprovalOrigin::App,
             EvmKeySource::Derived(AccountIndex::ZERO),
@@ -1499,6 +1538,7 @@ mod tests {
     #[test]
     fn restating_lines_join_the_summary_card() {
         let draft = yw_core::sol::msgsign::build_sol_message_request(
+            yw_core::lang::Lang::Ko,
             &yw_core::sol::msgsign::SolMessageRequest {
                 id: ApprovalId([3; 16]),
                 origin: yw_core::policy::BrowserOrigin::parse("https://app.example").unwrap(),
@@ -1512,7 +1552,8 @@ mod tests {
             NOW,
         )
         .unwrap();
-        let m04 = yw_core::evm::risk::base_text(yw_core::evm::risk::M04).unwrap();
+        let m04 = yw_core::evm::risk::base_text(yw_core::evm::risk::M04, yw_core::lang::Lang::Ko)
+            .unwrap();
         assert!(draft.display.warnings.iter().any(|w| w.text == m04));
         let request = ApprovalStore::new().issue(draft, 1, NOW).unwrap();
         let view = signing_view(&request, false, true, Vec::new(), true).unwrap();
@@ -1569,6 +1610,7 @@ mod tests {
             tx,
         };
         let draft = build_evm_tx_request(
+            yw_core::lang::Lang::Ko,
             ApprovalId([1; 16]),
             ApprovalOrigin::App,
             EvmKeySource::Derived(AccountIndex::ZERO),
@@ -1595,7 +1637,11 @@ mod tests {
             "{:?}",
             view.blocks.first()
         );
-        attach_address_note(&mut view, "'친구'과 끝 6자가 같지만 다른 주소입니다.");
+        attach_address_note(
+            &mut view,
+            yw_core::lang::Lang::Ko,
+            "'친구'과 끝 6자가 같지만 다른 주소입니다.",
+        );
         assert!(
             matches!(
                 view.blocks.get(1),
@@ -1649,7 +1695,9 @@ mod tests {
             known: Vec::new(),
             fee_cap: 100_000,
         };
-        let draft = yw_core::sol::dapp::build_sol_tx_request(&request, &facts).unwrap();
+        let draft =
+            yw_core::sol::dapp::build_sol_tx_request(yw_core::lang::Lang::Ko, &request, &facts)
+                .unwrap();
         ApprovalStore::new().issue(draft, 1, NOW).unwrap()
     }
 

@@ -39,6 +39,7 @@ pub mod select;
 pub mod sighash;
 pub mod sign;
 pub mod taproot;
+pub mod text;
 pub mod tx;
 pub mod verify;
 

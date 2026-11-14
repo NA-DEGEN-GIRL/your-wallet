@@ -31,6 +31,7 @@ use crate::evm::risk::{
     X01, X02, X03, X04, X05, X06, X07, X08, X09, X10, X11, X12, X13, X14, X15, X16, X17, X18, X19,
     X20, is_simulation_status, level_of,
 };
+use crate::lang::Lang;
 use crate::policy::BrowserOrigin;
 use crate::slip10::SolKeySource;
 use crate::sol::address::{
@@ -223,7 +224,12 @@ fn request(txs: Vec<Vec<u8>>, mode: SolTxMode) -> SolTxRequest {
 
 /// One sign-only transaction with default facts.
 fn draft_of(tx: Vec<u8>, item: SolTxItemFacts) -> ApprovalDraft {
-    build_sol_tx_request(&request(vec![tx], SolTxMode::SignOnly), &facts(vec![item])).unwrap()
+    build_sol_tx_request(
+        Lang::Ko,
+        &request(vec![tx], SolTxMode::SignOnly),
+        &facts(vec![item]),
+    )
+    .unwrap()
 }
 
 fn rules(draft: &ApprovalDraft) -> Vec<RuleId> {
@@ -387,7 +393,7 @@ fn ata_mismatch_and_token_2022_extensions_are_x02() {
         &[],
     );
     let draft = draft_of(bad, ok_facts());
-    assert!(text_of(&draft, X02).contains(ATA_MISMATCH));
+    assert!(text_of(&draft, X02).contains(ATA_MISMATCH.ko));
     assert_ne!(draft.display.risk, RiskLevel::Blocked);
     let keys = [
         wallet(),
@@ -876,7 +882,8 @@ fn lookup_tables_resolve_or_block_one_transaction() {
         tables: Err(AltError::Missing(key(0xa1))),
         ..ok_facts()
     };
-    let draft = build_sol_tx_request(&request, &facts(vec![ok_facts(), missing])).unwrap();
+    let draft =
+        build_sol_tx_request(Lang::Ko, &request, &facts(vec![ok_facts(), missing])).unwrap();
     assert_eq!(draft.display.risk, RiskLevel::Blocked);
     assert!(
         text_of(&draft, X01)
@@ -934,7 +941,8 @@ fn mints_lookalikes_and_simulated_authority_changes() {
         kind: KnownKind::Book { verified: false },
     }];
     let tx = wire(&transfer_message(), &[]);
-    let draft = build_sol_tx_request(&request(vec![tx], SolTxMode::SignOnly), &all).unwrap();
+    let draft =
+        build_sol_tx_request(Lang::Ko, &request(vec![tx], SolTxMode::SignOnly), &all).unwrap();
     let found = rules(&draft);
     for rule in [X12, X15, X16, X17] {
         assert!(found.contains(&rule), "{rule:?} missing in {found:?}");
@@ -971,7 +979,8 @@ fn an_unread_token_2022_mint_is_treated_as_having_every_extension() {
     assert!(!rules(&draft).contains(&X17), "{:?}", rules(&draft));
     let mut all = facts(vec![item]);
     all.unread_mints = vec![mint];
-    let draft = build_sol_tx_request(&request(vec![tx], SolTxMode::SignOnly), &all).unwrap();
+    let draft =
+        build_sol_tx_request(Lang::Ko, &request(vec![tx], SolTxMode::SignOnly), &all).unwrap();
     let found = rules(&draft);
     for rule in [X12, X17] {
         assert!(found.contains(&rule), "{rule:?} missing in {found:?}");
@@ -992,7 +1001,7 @@ fn rules_are_one_warning_each_in_a_batch() {
     let program = key(0x77);
     let txs: Vec<Vec<u8>> = (0..5).map(|_| one_ix(program, &[], &[0], &[1])).collect();
     let request = request(txs, SolTxMode::SignOnly);
-    let draft = build_sol_tx_request(&request, &facts(vec![ok_facts(); 5])).unwrap();
+    let draft = build_sol_tx_request(Lang::Ko, &request, &facts(vec![ok_facts(); 5])).unwrap();
     assert_eq!(rules(&draft), vec![X02, X03, X11]);
     let x02 = text_of(&draft, X02);
     assert_eq!(x02.lines().count(), 1 + 5, "{x02}");
@@ -1243,6 +1252,7 @@ fn display_keys_bounds_whole_addresses_and_escaping() {
     // 32 transactions: 3 + 1 + 32 × 10 fields, one approval.
     let txs = vec![wire(&transfer_message(), &[]); 32];
     let draft = build_sol_tx_request(
+        Lang::Ko,
         &request(txs, SolTxMode::SignOnly),
         &facts(vec![ok_facts(); 32]),
     )
@@ -1264,6 +1274,7 @@ fn display_keys_bounds_whole_addresses_and_escaping() {
     let txs = vec![wire(&transfer_message(), &[]); 33];
     assert!(
         build_sol_tx_request(
+            Lang::Ko,
             &request(txs, SolTxMode::SignOnly),
             &facts(vec![ok_facts(); 33])
         )
@@ -1328,7 +1339,7 @@ fn send_requests_show_their_options() {
         preflight_commitment: Some(SolCommitment::Processed),
         min_context_slot: Some(1_234),
     };
-    let draft = build_sol_tx_request(&send, &facts(vec![ok_facts()])).unwrap();
+    let draft = build_sol_tx_request(Lang::Ko, &send, &facts(vec![ok_facts()])).unwrap();
     assert_eq!(
         draft.display.title,
         "[Solana devnet (테스트)] 사이트 거래 서명 후 전송"
@@ -1343,23 +1354,23 @@ fn send_requests_show_their_options() {
     // A send of an unsigned co-signer or a nonce transaction is X01 (and `check_draft` refuses
     // the payload as well); two transactions are not a send.
     send.txs = vec![wire(&two_signers, &[])];
-    let draft = build_sol_tx_request(&send, &facts(vec![ok_facts()])).unwrap();
+    let draft = build_sol_tx_request(Lang::Ko, &send, &facts(vec![ok_facts()])).unwrap();
     assert!(text_of(&draft, X01).contains("전송하려면 다른 서명이 모두 있어야 합니다"));
     send.txs = vec![wire(&nonce_message(Vec::new()), &[])];
-    let draft = build_sol_tx_request(&send, &facts(vec![ok_facts()])).unwrap();
+    let draft = build_sol_tx_request(Lang::Ko, &send, &facts(vec![ok_facts()])).unwrap();
     assert!(text_of(&draft, X01).contains("durable nonce 거래는 지갑이 전송하지 않습니다"));
     send.txs = vec![wire(&transfer_message(), &[]); 2];
-    assert!(build_sol_tx_request(&send, &facts(vec![ok_facts(); 2])).is_err());
+    assert!(build_sol_tx_request(Lang::Ko, &send, &facts(vec![ok_facts(); 2])).is_err());
     // Bytes that do not parse, or a key that does not sign, are refused (the app checked first).
     let mut plain = request(vec![vec![1, 2, 3]], SolTxMode::SignOnly);
-    assert!(build_sol_tx_request(&plain, &facts(vec![ok_facts()])).is_err());
+    assert!(build_sol_tx_request(Lang::Ko, &plain, &facts(vec![ok_facts()])).is_err());
     plain.txs = vec![wire(&transfer_message(), &[])];
     plain.public = key(0x22).to_bytes();
-    assert!(build_sol_tx_request(&plain, &facts(vec![ok_facts()])).is_err());
+    assert!(build_sol_tx_request(Lang::Ko, &plain, &facts(vec![ok_facts()])).is_err());
     // A recovery-scan source is X01 (and refused by `check_draft`).
     let mut scan = request(vec![wire(&transfer_message(), &[])], SolTxMode::SignOnly);
     scan.source = SolKeySource::RawSeed;
-    let draft = build_sol_tx_request(&scan, &facts(vec![ok_facts()])).unwrap();
+    let draft = build_sol_tx_request(Lang::Ko, &scan, &facts(vec![ok_facts()])).unwrap();
     assert!(rules(&draft).contains(&X01));
     assert_eq!(issue(draft), Err(ApprovalError::PayloadMismatch));
 }
@@ -1899,4 +1910,240 @@ fn every_accepted_draft_is_m01_blocked_as_a_message() {
             &parsed.message_bytes
         ));
     }
+}
+
+#[test]
+fn dapp_catalogue_is_complete() {
+    crate::sol::tests::assert_catalogue(super::text::ALL);
+}
+
+/// Builds `request` in English and checks that no text has Hangul; returns the draft.
+fn english(request: &SolTxRequest, all: &SolTxFacts) -> ApprovalDraft {
+    let mut request = request.clone();
+    request.label = "Account 1".to_owned();
+    let draft = build_sol_tx_request(Lang::En, &request, all).unwrap();
+    crate::sol::tests::assert_english(&draft.display);
+    // Same rules and fields as the Korean display.
+    let korean = build_sol_tx_request(Lang::Ko, &request, all).unwrap();
+    assert_eq!(rules(&korean), rules(&draft));
+    assert_eq!(korean.display.fields.len(), draft.display.fields.len());
+    draft
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "every instruction kind and fact state in English in one place"
+)]
+fn english_dapp_displays_have_no_korean() {
+    let mint = key(0x55);
+    // Our token account 0x22 (classic Token) with a delegate set by the simulation, a known
+    // lookalike, a read mint with every rule extension and an unread one.
+    let mut item = ok_facts();
+    item.pre.push((
+        key(0x22),
+        Some(snapshot(
+            TOKEN_PROGRAM,
+            2_039_280,
+            token_account(mint, wallet(), 50, None, None),
+        )),
+    ));
+    let mut post = item.post.clone().unwrap();
+    post.push((
+        key(0x22),
+        Some(snapshot(
+            TOKEN_PROGRAM,
+            2_039_280,
+            token_account(mint, wallet(), 40, Some(key(0x33)), Some(key(0x34))),
+        )),
+    ));
+    item.post = Some(post);
+    item.rpc_fee = Some(1);
+    item.blockhash_valid = Some(false);
+    let mut all = facts(vec![item.clone()]);
+    all.mints = vec![(
+        mint,
+        MintView {
+            decimals: 6,
+            extensions: vec![1, 12, 14],
+        },
+    )];
+    all.unread_mints = vec![key(0x56)];
+    all.fee_cap = 1;
+    let mut near = [0x22; 32];
+    near[31] = 0x23;
+    all.known = vec![
+        KnownAddress {
+            address: SolAddress::from_bytes(near),
+            label: "Friend".to_owned(),
+            kind: KnownKind::Book { verified: false },
+        },
+        KnownAddress {
+            address: key(0x33),
+            label: "Me".to_owned(),
+            kind: KnownKind::Own { index: 1 },
+        },
+        KnownAddress {
+            address: key(0x34),
+            label: "Shop".to_owned(),
+            kind: KnownKind::Book { verified: true },
+        },
+        KnownAddress {
+            address: key(0x35),
+            label: String::new(),
+            kind: KnownKind::Sent,
+        },
+    ];
+    let extra = [key(0x33), key(0x34), key(0x35), key(0x56), mint];
+    let accounts = [1, 2, 3, 4, 5, 6, 0];
+    let sign_only = |tx: Vec<u8>| request(vec![tx], SolTxMode::SignOnly);
+    let mut seen = String::new();
+    // Every System and Token tag with the payload lengths of their layouts (zero seeds, no
+    // optional authority; other tags and lengths are malformed), ATA, Compute Budget, Memo, a
+    // precompile, a named and an unknown program.
+    let system_lengths: &[usize] = &[0, 8, 32, 48, 72, 80, 88];
+    let token_lengths: &[usize] = &[0, 1, 2, 8, 9, 32, 34, 66, 67];
+    let programs = [
+        (SYSTEM_PROGRAM, 0_u8..=12, true, system_lengths),
+        (TOKEN_PROGRAM, 0..=45, false, token_lengths),
+        (TOKEN_2022_PROGRAM, 0..=45, false, token_lengths),
+    ];
+    for (program, tags, wide, lengths) in programs {
+        for tag in tags {
+            for &length in lengths {
+                let mut data = if wide {
+                    u32::from(tag).to_le_bytes().to_vec()
+                } else {
+                    vec![tag]
+                };
+                data.resize(data.len() + length, 0);
+                let tx = one_ix(program, &extra, &accounts, &data);
+                let draft = english(&sign_only(tx), &all);
+                seen.push_str(&field(&draft, FieldKey::SOL_TX_INSTRUCTIONS));
+            }
+        }
+    }
+    for title in [
+        "Create account with seed (CreateAccountWithSeed)",
+        "Send SOL from seed account (TransferWithSeed)",
+        "Upgrade nonce account (UpgradeNonceAccount)",
+        "Delegate token spending (ApproveChecked)",
+        "Change authority (SetAuthority)",
+        "Close token account (CloseAccount)",
+        "(uninterpreted)",
+        "Uninterpreted — malformed",
+    ] {
+        assert!(seen.contains(title), "{title}");
+    }
+    for data in [&[][..], &[0], &[1], &[2], &[9]] {
+        english(
+            &sign_only(one_ix(ATA_PROGRAM, &extra, &accounts, data)),
+            &all,
+        );
+    }
+    for tag in 0..=4_u8 {
+        for length in 0..=8 {
+            let mut data = vec![tag];
+            data.resize(1 + length, 0);
+            let tx = one_ix(COMPUTE_BUDGET_PROGRAM, &extra, &accounts, &data);
+            english(&sign_only(tx), &all);
+        }
+    }
+    for memo in [&b"gm"[..], &[0xff, 0xfe]] {
+        english(&sign_only(one_ix(MEMO_PROGRAM_V2, &[], &[0], memo)), &all);
+    }
+    let mut precompile = vec![1, 0];
+    precompile.extend_from_slice(&[0; 14]);
+    english(
+        &sign_only(one_ix(ED25519_PRECOMPILE, &[], &[], &precompile)),
+        &all,
+    );
+    english(
+        &sign_only(one_ix(crate::sol::address::STAKE_PROGRAM, &[], &[1], &[2])),
+        &all,
+    );
+    english(&sign_only(one_ix(key(0x77), &[], &[0, 1], &[9, 9])), &all);
+    // Simulation states, no simulation, a replaced blockhash.
+    for sim in [
+        SimSummary::Failed {
+            err: crate::sol::broadcast::err::SYSTEM_INSTRUCTION,
+            units: None,
+        },
+        SimSummary::NoResult,
+    ] {
+        let failed = SolTxItemFacts {
+            sim,
+            post: None,
+            sim_replaced_blockhash: true,
+            rpc_fee: None,
+            ..ok_facts()
+        };
+        english(
+            &sign_only(wire(&transfer_message(), &[])),
+            &facts(vec![failed]),
+        );
+    }
+    // Lookup tables: resolved, deactivated, missing (X01) in a batch.
+    for tables in [
+        Ok((10, vec![(key(0xa1), table(u64::MAX))])),
+        Ok((10, vec![(key(0xa1), table(9))])),
+        Err(AltError::NotTable(key(0xa1))),
+        Err(AltError::Index),
+    ] {
+        let lookup = SolTxItemFacts {
+            tables,
+            ..ok_facts()
+        };
+        let batch = request(
+            vec![wire(&transfer_message(), &[]), v0_tx()],
+            SolTxMode::SignOnly,
+        );
+        english(&batch, &facts(vec![ok_facts(), lookup]));
+    }
+    // A durable nonce sent with options, a site fee payer with its signature, a bad site
+    // signature, and a recovery-scan account.
+    let mut send = request(
+        vec![wire(&nonce_message(Vec::new()), &[])],
+        SolTxMode::SignAndSend,
+    );
+    send.options = SolSendOptions {
+        skip_preflight: true,
+        preflight_commitment: None,
+        min_context_slot: Some(1_234),
+    };
+    let draft = english(&send, &facts(vec![ok_facts()]));
+    assert!(
+        draft
+            .display
+            .title
+            .ends_with("Sign and send site transaction")
+    );
+    send.options = SolSendOptions::default();
+    english(&send, &facts(vec![ok_facts()]));
+    let two_signers = legacy(
+        [2, 0, 1],
+        &[site_address(), wallet(), SYSTEM_PROGRAM],
+        vec![ix(2, &[1, 0], &system_transfer_data(1))],
+    );
+    english(
+        &sign_only(wire(&two_signers, &[(0, &site_key())])),
+        &facts(vec![ok_facts()]),
+    );
+    let mut bad = wire(&two_signers, &[(0, &site_key())]);
+    bad[1] ^= 1;
+    english(&sign_only(bad.clone()), &facts(vec![ok_facts()]));
+    english(
+        &request(vec![bad], SolTxMode::SignAndSend),
+        &facts(vec![ok_facts()]),
+    );
+    let mut scan = sign_only(wire(&transfer_message(), &[]));
+    scan.source = SolKeySource::Bip44Root;
+    let draft = english(&scan, &facts(vec![ok_facts()]));
+    assert_eq!(
+        draft.display.title,
+        "[Solana devnet (test)] Sign site transaction"
+    );
+    let batch = request(vec![wire(&transfer_message(), &[]); 3], SolTxMode::SignOnly);
+    let draft = english(&batch, &facts(vec![item; 3]));
+    assert!(draft.display.title.ends_with("Sign 3 site transactions"));
 }

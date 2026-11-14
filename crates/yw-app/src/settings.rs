@@ -426,6 +426,9 @@ pub struct Settings {
     /// `receivedHistory` (spec/04 §2.6, §6.1; 2026-11-11): the opt-in received history of the
     /// activity cards. Off by default; the top-level key is written only when on.
     pub received_history: bool,
+    /// `language` (spec/04 §6.1, spec/14 §1; 2026-11-14): the UI language. Korean by default;
+    /// the top-level key is written only when it is not Korean.
+    pub language: yw_core::lang::Lang,
     /// Log level.
     pub log_level: LogLevel,
     /// Block explorer overrides (2026-11-11, spec/04 §2.11 "블록 탐색기"): the top-level key
@@ -506,6 +509,7 @@ impl Default for Settings {
             hypercore: HyperCoreSettings::default(),
             walletconnect_project: String::new(),
             received_history: false,
+            language: yw_core::lang::Lang::Ko,
             log_level: LogLevel::Info,
             explorers: Vec::new(),
             compat: SettingsCompat::default(),
@@ -1032,6 +1036,7 @@ pub fn load(bytes: Option<&[u8]>) -> SettingsLoad {
         settings.explorers = crate::explorer::load_overrides(&value, &mut banners);
     }
     load_received_history(&mut settings, &mut banners);
+    load_language(&mut settings, &mut banners);
     SettingsLoad { settings, banners }
 }
 
@@ -1276,6 +1281,7 @@ impl Settings {
             ));
         }
         members.extend(received_history_member(self));
+        members.extend(language_member(self));
         members
     }
 
@@ -1320,6 +1326,36 @@ fn received_history_member(settings: &Settings) -> Option<(&'static str, Value)>
     settings
         .received_history
         .then_some((RECEIVED_HISTORY_KEY, Value::Bool(true)))
+}
+
+// ----- UI language (spec/04 §6.1, spec/14 §1, 2026-11-14) ------------------------------------
+
+/// The top-level `settings.json` key of [`Settings::language`]: `"ko"` or `"en"`, written only
+/// when not Korean (existing files stay byte-identical). A top-level key like
+/// [`RECEIVED_HISTORY_KEY`]: an older build keeps it and writes it back (spec/04 §6.6). Not part of
+/// the security snapshot (§6.7): both languages show the same vetted texts and the setting changes
+/// no amount, endpoint or rule.
+pub const LANGUAGE_KEY: &str = "language";
+
+/// Moves `language` from the unknown keys [`load`] kept into the setting: `"ko"` or `"en"` is the
+/// value, anything else is Korean with a banner.
+fn load_language(settings: &mut Settings, banners: &mut Vec<String>) {
+    let unknown = &mut settings.compat.unknown;
+    let Some(position) = unknown.iter().position(|(key, _)| key == LANGUAGE_KEY) else {
+        return;
+    };
+    let (key, value) = unknown.remove(position);
+    match value.as_str().and_then(yw_core::lang::Lang::from_tag) {
+        Some(lang) => settings.language = lang,
+        None => banners.push(key),
+    }
+}
+
+/// The serialized member of [`Settings::language`] (last among the known keys), only when not
+/// Korean.
+fn language_member(settings: &Settings) -> Option<(&'static str, Value)> {
+    (settings.language != yw_core::lang::Lang::Ko)
+        .then(|| (LANGUAGE_KEY, json_str(settings.language.tag())))
 }
 
 // ----- security settings snapshot (review M1, L15) -------------------------------------------

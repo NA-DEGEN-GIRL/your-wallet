@@ -12,6 +12,7 @@ use super::fee::{FeeRate, rate_kvb};
 use super::network::BtcNetwork;
 use super::policy::BtcWarning;
 use super::select::SendPlan;
+use super::text;
 use super::tx::serialize;
 use super::{BTC_SEQUENCE, BTC_TX_VERSION};
 use crate::approval::{
@@ -19,6 +20,7 @@ use crate::approval::{
     DisplayField, FieldKey, Signer, SigningPayload, SimulationBinding, Warning,
 };
 use crate::bip32::path::BtcChain;
+use crate::lang::Lang;
 
 /// Facts from the app that are shown but not part of the plan (spec/08 §10).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -235,23 +237,21 @@ fn account_block(account: &BtcAccountKey) -> Option<[u8; ACCOUNT_BLOCK_LEN]> {
 }
 
 /// The approval title: `[Bitcoin 메인넷] 보내기: 0.00120000 BTC` or
-/// `[Bitcoin testnet4] 수수료 올리기`. The journal activity rebuilds the same text.
+/// `[Bitcoin testnet4] 수수료 올리기` (English `[Bitcoin mainnet] Send: 0.00120000 BTC`,
+/// `[Bitcoin testnet4] Bump fee`). The journal activity rebuilds the same text.
 #[must_use]
-pub fn btc_title(network: BtcNetwork, fee_bump: bool, amount: Sats) -> String {
+pub fn btc_title(lang: Lang, network: BtcNetwork, fee_bump: bool, amount: Sats) -> String {
+    let name = text::network_name(lang, network);
     if fee_bump {
-        format!("[{}] 수수료 올리기", network.display_name())
+        text::TITLE_FEE_BUMP.fill(lang, [name])
     } else {
-        format!(
-            "[{}] 보내기: {} BTC",
-            network.display_name(),
-            format_btc(amount)
-        )
+        text::TITLE_SEND.fill(lang, [name, &format_btc(amount)])
     }
 }
 
-/// The warnings of a plan (spec/08 §10 table).
+/// The warnings of a plan (spec/08 §10 table), in `lang`.
 #[must_use]
-pub fn plan_warnings(plan: &SendPlan, facts: &BtcSendFacts) -> Vec<Warning> {
+pub fn plan_warnings(lang: Lang, plan: &SendPlan, facts: &BtcSendFacts) -> Vec<Warning> {
     let mut out = Vec::new();
     match plan.fee_check() {
         Some(check) if check.unoverridable => out.push(BtcWarning::FeeUnoverridable),
@@ -291,7 +291,9 @@ pub fn plan_warnings(plan: &SendPlan, facts: &BtcSendFacts) -> Vec<Warning> {
         }
         super::ScriptKind::P2wpkh(_) | super::ScriptKind::P2tr(_) => {}
     }
-    out.into_iter().map(BtcWarning::warning).collect()
+    out.into_iter()
+        .map(|warning| warning.warning(lang))
+        .collect()
 }
 
 /// `fee / amount` as a percentage with 2 decimals, rounded half up.
@@ -316,129 +318,145 @@ fn recipient_address(plan: &SendPlan) -> Result<String, DisplayError> {
     Ok(encode_address(&kind, plan.network()))
 }
 
-fn change_text(plan: &SendPlan) -> String {
+fn change_text(lang: Lang, plan: &SendPlan) -> String {
     match plan.change() {
         Some(change) => {
             let account = plan.account();
             let (chain, index) = account.change_path(change.index);
             let place = if account.is_single() {
-                account
-                    .address(plan.network(), chain, index)
-                    .map_or_else(|_| "같은 주소".to_owned(), |address| address.to_string())
+                account.address(plan.network(), chain, index).map_or_else(
+                    |_| text::CHANGE_SAME_ADDRESS.get(lang).to_owned(),
+                    |address| address.to_string(),
+                )
             } else {
-                account.path_text(plan.network(), chain, index)
+                text::path_text(lang, account, plan.network(), chain, index)
             };
-            format!(
-                "{} BTC — 이 지갑으로 돌아옴 {place}",
-                format_btc(change.value)
-            )
+            text::CHANGE_BACK.fill(lang, [&format_btc(change.value), &place])
         }
-        None => format!(
-            "잔돈 없음: {} sats 수수료에 추가",
-            format_sats_grouped(plan.change_folded().get())
-        ),
+        None => text::CHANGE_NONE.fill(lang, [&format_sats_grouped(plan.change_folded().get())]),
     }
 }
 
-fn inputs_text(plan: &SendPlan, facts: &BtcSendFacts) -> String {
+fn inputs_text(lang: Lang, plan: &SendPlan, facts: &BtcSendFacts) -> String {
     let total = plan.input_total().unwrap_or(Sats::MAX);
     let confirmations = facts.min_confirmations.map_or_else(
-        || "최소 확인 수 알 수 없음 (서버 기준)".to_owned(),
-        |count| format!("최소 확인 수 {count} (서버 기준)"),
+        || text::CONFIRMATIONS_UNKNOWN.get(lang).to_owned(),
+        |count| text::CONFIRMATIONS.fill(lang, [&count.to_string()]),
     );
-    format!(
-        "{}개, 합계 {}\n모든 입력 금액은 이전 거래 해시로 검증됨\n{confirmations}",
-        plan.inputs().len(),
-        format_btc_and_sats(total)
+    text::INPUTS.fill(
+        lang,
+        [
+            &plan.inputs().len().to_string(),
+            &format_btc_and_sats(total),
+            &confirmations,
+        ],
     )
 }
 
-fn fee_text(plan: &SendPlan) -> String {
+fn fee_text(lang: Lang, plan: &SendPlan) -> String {
     let vsize = plan.planned_vsize();
     let rate = rate_kvb(plan.fee(), u64::from(vsize)).map_or_else(
         || "-".to_owned(),
         |rate| FeeRate::from_sat_per_kvb(rate).to_string(),
     );
-    let mut text = format!(
-        "{}\n{rate} (계획 vsize {vsize} vB 기준, 서명 후 실제 값은 같거나 높음)\n보내는 금액의 {}%\n출처: {}",
-        format_btc_and_sats(plan.fee()),
-        percent(plan.fee(), plan.amount()),
-        plan.fee_source().text()
+    let mut out = text::FEE.fill(
+        lang,
+        [
+            &format_btc_and_sats(plan.fee()),
+            &rate,
+            &vsize.to_string(),
+            &percent(plan.fee(), plan.amount()),
+            &text::fee_source_text(lang, plan.fee_source()),
+        ],
     );
     if plan.fee_override_typed() {
-        text.push_str("\n상한 해제: 보내기 화면에서 수수료를 정확히 입력함");
+        out.push('\n');
+        out.push_str(text::FEE_OVERRIDE.get(lang));
     }
-    text
+    out
 }
 
-fn balance_text(plan: &SendPlan, facts: &BtcSendFacts) -> String {
+fn balance_text(lang: Lang, plan: &SendPlan, facts: &BtcSendFacts) -> String {
     let change = plan.change().map_or(Sats::ZERO, |change| change.value);
     let after = facts
         .verified_balance
         .checked_sub(plan.new_input_total())
         .and_then(|rest| rest.checked_add(change));
-    let base = format!("검증 잔액 {} BTC 기준", format_btc(facts.verified_balance));
+    let base = text::BALANCE_BASE.fill(lang, [&format_btc(facts.verified_balance)]);
     match after {
         Some(after) => format!("{} ({base})", format_btc_and_sats(after)),
-        None => format!("알 수 없음 ({base})"),
+        None => text::BALANCE_UNKNOWN.fill(lang, [&base]),
     }
 }
 
-fn replaces_text(plan: &SendPlan) -> Option<String> {
+fn replaces_text(lang: Lang, plan: &SendPlan) -> Option<String> {
     let bump = plan.bump()?;
     let delta = plan.fee().checked_sub(bump.old_fee).unwrap_or(Sats::ZERO);
     let recipient = if plan.recipient_decreased() {
-        format!(
-            "수신 금액 감소(B06): {} → {} sats",
-            format_sats_grouped(bump.old_amount.get()),
-            format_sats_grouped(plan.amount().get())
+        text::REPLACES_DECREASED.fill(
+            lang,
+            [
+                &format_sats_grouped(bump.old_amount.get()),
+                &format_sats_grouped(plan.amount().get()),
+            ],
         )
     } else {
-        "수신자 변경 없음".to_owned()
+        text::REPLACES_SAME_RECIPIENT.get(lang).to_owned()
     };
-    let mut text = format!(
-        "교체 대상 {}\n수수료 {} → {} sats (+{})\n{recipient}",
-        bump.replaces,
-        format_sats_grouped(bump.old_fee.get()),
-        format_sats_grouped(plan.fee().get()),
-        format_sats_grouped(delta.get())
+    let mut out = text::REPLACES.fill(
+        lang,
+        [
+            &bump.replaces.to_string(),
+            &format_sats_grouped(bump.old_fee.get()),
+            &format_sats_grouped(plan.fee().get()),
+            &format_sats_grouped(delta.get()),
+            &recipient,
+        ],
     );
     if bump.min_applied {
-        text.push_str("\n교체 최소 수수료(BIP125)를 적용함");
+        out.push('\n');
+        out.push_str(text::REPLACES_BIP125_MIN.get(lang));
     }
-    Some(text)
+    Some(out)
 }
 
-fn advanced_text(plan: &SendPlan) -> String {
+fn advanced_text(lang: Lang, plan: &SendPlan) -> String {
     let txid = if plan.txid_is_final() {
         plan.txid().to_string()
     } else {
-        "서명 후 결정 (레거시 입력)".to_owned()
+        text::TXID_AFTER_SIGNING.get(lang).to_owned()
     };
-    format!(
-        "version {BTC_TX_VERSION}\nnLockTime {} (= 블록 높이 {})\nRBF 가능 (sequence 0x{BTC_SEQUENCE:08X})\n입력 형식 {}\nvsize {} vB · weight {} WU (서명 전 추정)\ntxid {txid}",
-        plan.lock_time(),
-        plan.lock_time(),
-        plan.account().script_type().technical(),
-        plan.planned_vsize(),
-        plan.planned_weight(),
+    let lock_time = plan.lock_time().to_string();
+    text::ADVANCED.fill(
+        lang,
+        [
+            &BTC_TX_VERSION.to_string(),
+            &lock_time,
+            &lock_time,
+            &format!("{BTC_SEQUENCE:08X}"),
+            plan.account().script_type().technical(),
+            &plan.planned_vsize().to_string(),
+            &plan.planned_weight().to_string(),
+            &txid,
+        ],
     )
 }
 
 /// The approval account field: `Bitcoin 네이티브 세그윗 계정 0 (m/84'/0'/0')`, or for an imported
-/// key `Bitcoin 가져온 키 · 레거시 (<address>)`.
-fn account_text(account: &BtcAccountKey, network: BtcNetwork) -> String {
+/// key `Bitcoin 가져온 키 · 레거시 (<address>)` (English `Bitcoin Native SegWit account 0 (…)`).
+fn account_text(lang: Lang, account: &BtcAccountKey, network: BtcNetwork) -> String {
     let place = if account.is_single() {
         account
             .address(network, BtcChain::Receive, 0)
             .map_or_else(|_| "-".to_owned(), |address| address.to_string())
     } else {
-        account.node_text(network)
+        text::node_text(lang, account, network)
     };
-    format!("Bitcoin {} ({place})", account.display_name())
+    format!("Bitcoin {} ({place})", text::account_name(lang, account))
 }
 
-/// Builds the draft of a send or fee bump (spec/08 §10): origin `App`, chain `Bitcoin` with the
+/// Builds the draft of a send or fee bump in `lang` (spec/08 §10, spec/14): origin `App`, chain
+/// `Bitcoin` with the
 /// network's pinned genesis, account = the account identity (`BtcAccountKey::identity`),
 /// `Signer::FromPayload`, payload [`btc_payload`], `SimulationBinding::NotApplicable`.
 ///
@@ -447,6 +465,7 @@ fn account_text(account: &BtcAccountKey, network: BtcNetwork) -> String {
 /// [`DisplayError`] (defensive: every string is built here; also when `account` is not the
 /// plan's account).
 pub fn build_btc_request(
+    lang: Lang,
     id: ApprovalId,
     plan: &SendPlan,
     account: &BtcAccountKey,
@@ -462,30 +481,31 @@ pub fn build_btc_request(
         .ok_or(DisplayError::InvalidText)?;
     let kind = plan.recipient();
     let mut fields = vec![
-        DisplayField::new(FieldKey::ORIGIN, "", crate::approval::APP_ORIGIN_TEXT)?,
-        DisplayField::new(FieldKey::NETWORK, "", network.banner())?,
-        DisplayField::new(FieldKey::ACCOUNT, "", account_text(account, network))?,
+        DisplayField::new(FieldKey::ORIGIN, "", crate::approval::APP_ORIGIN.get(lang))?,
+        DisplayField::new(FieldKey::NETWORK, "", text::network_banner(lang, network))?,
+        DisplayField::new(FieldKey::ACCOUNT, "", account_text(lang, account, network))?,
         DisplayField::new(FieldKey::BTC_TO, "", recipient_address(plan)?)?,
-        DisplayField::new(FieldKey::BTC_TYPE, "", kind.type_label())?,
+        DisplayField::new(FieldKey::BTC_TYPE, "", text::type_label(lang, &kind))?,
         DisplayField::new(FieldKey::BTC_AMOUNT, "", format_btc_and_sats(plan.amount()))?,
-        DisplayField::new(FieldKey::BTC_CHANGE, "", change_text(plan))?,
-        DisplayField::new(FieldKey::BTC_INPUTS, "", inputs_text(plan, facts))?,
-        DisplayField::new(FieldKey::BTC_FEE, "", fee_text(plan))?,
+        DisplayField::new(FieldKey::BTC_CHANGE, "", change_text(lang, plan))?,
+        DisplayField::new(FieldKey::BTC_INPUTS, "", inputs_text(lang, plan, facts))?,
+        DisplayField::new(FieldKey::BTC_FEE, "", fee_text(lang, plan))?,
         DisplayField::new(FieldKey::BTC_TOTAL, "", format_btc_and_sats(total))?,
-        DisplayField::new(FieldKey::BTC_BALANCE, "", balance_text(plan, facts))?,
+        DisplayField::new(FieldKey::BTC_BALANCE, "", balance_text(lang, plan, facts))?,
     ];
-    if let Some(text) = replaces_text(plan) {
-        fields.push(DisplayField::new(FieldKey::BTC_REPLACES, "", text)?);
+    if let Some(value) = replaces_text(lang, plan) {
+        fields.push(DisplayField::new(FieldKey::BTC_REPLACES, "", value)?);
     }
     fields.push(DisplayField::new(
         FieldKey::BTC_ADVANCED,
         "",
-        advanced_text(plan),
+        advanced_text(lang, plan),
     )?);
     let display = ApprovalDisplay::new(
-        btc_title(network, plan.bump().is_some(), plan.amount()),
+        lang,
+        btc_title(lang, network, plan.bump().is_some(), plan.amount()),
         fields,
-        plan_warnings(plan, facts),
+        plan_warnings(lang, plan, facts),
     )?;
     Ok(ApprovalDraft {
         id,

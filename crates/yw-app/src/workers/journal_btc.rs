@@ -1382,8 +1382,15 @@ impl JournalState {
         }
         let now_unix = now_unix_ms / 1_000;
         let mut trial = current;
-        let mut rows = make_room(&mut trial, network, tip_height, now_unix, now_unix_ms)
-            .map_err(|_| BtcSignFailure::JournalFull)?;
+        let mut rows = make_room(
+            self.lang,
+            &mut trial,
+            network,
+            tip_height,
+            now_unix,
+            now_unix_ms,
+        )
+        .map_err(|_| BtcSignFailure::JournalFull)?;
         // D20 and every input rule per account (spec/08 §12.1). The account's records include
         // those of every other identity spending its scripts or outputs (a removed and
         // re-imported key, an alias address): their in-flight inputs and live abandoned or
@@ -1426,8 +1433,15 @@ impl JournalState {
         // The same transaction signed again (e.g. byte for byte after a pre-check rejection):
         // the finished old record goes to activity first; a tracked one refuses (review H1).
         rows.extend(
-            take_finished_duplicates(&mut trial, &record, tip_height, now_unix, now_unix_ms)
-                .map_err(|_| BtcSignFailure::DuplicateTx)?,
+            take_finished_duplicates(
+                self.lang,
+                &mut trial,
+                &record,
+                tip_height,
+                now_unix,
+                now_unix_ms,
+            )
+            .map_err(|_| BtcSignFailure::DuplicateTx)?,
         );
         if !rows.is_empty() {
             let (primary, accounts) = (self.btc.clone(), self.btc_accounts.clone());
@@ -1826,12 +1840,20 @@ impl JournalState {
                         }
                     }
                 }
-                let mut rows = finished_rows(&next, network, tip_height, now_unix, now_unix_ms);
+                let mut rows =
+                    finished_rows(self.lang, &next, network, tip_height, now_unix, now_unix_ms);
                 let mut pruned = next.clone();
                 let prune_rows = if alt {
                     Vec::new()
                 } else {
-                    prune_finished(&mut pruned, network, tip_height, now_unix, now_unix_ms)
+                    prune_finished(
+                        self.lang,
+                        &mut pruned,
+                        network,
+                        tip_height,
+                        now_unix,
+                        now_unix_ms,
+                    )
                 };
                 for row in prune_rows {
                     if !rows.iter().any(|known| known.tx_id == row.tx_id) {

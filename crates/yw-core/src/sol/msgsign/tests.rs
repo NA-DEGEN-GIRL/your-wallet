@@ -14,6 +14,7 @@ use super::{
 use crate::approval::{ApprovalId, ApprovalKind, FieldKey, RiskLevel};
 use crate::bip32::path::AccountIndex;
 use crate::evm::risk::{M01, M02, M04, M05, W01, W02, W03, W04, W05, W06, W07, W08};
+use crate::lang::Lang;
 use crate::policy::BrowserOrigin;
 use crate::slip10::SolKeySource;
 use crate::sol::SolCluster;
@@ -109,7 +110,7 @@ fn future_message_versions_are_blocked() {
         assert!(looks_like_versioned_message(&future), "{prefix:#04x}");
         assert!(looks_like_transaction(&future), "{prefix:#04x}");
         assert!(!signable(&future), "{prefix:#04x}");
-        let draft = build_sol_message_request(&request(future, false), NOW_MS).unwrap();
+        let draft = build_sol_message_request(Lang::Ko, &request(future, false), NOW_MS).unwrap();
         assert_eq!(draft.display.risk, RiskLevel::Blocked, "{prefix:#04x}");
         assert!(rules(&draft.display.warnings).contains(&M01));
     }
@@ -122,7 +123,8 @@ fn future_message_versions_are_blocked() {
     assert!(korean[0] >= 0x80);
     assert!(!looks_like_versioned_message(korean));
     assert!(signable(korean));
-    let plain = build_sol_message_request(&request(korean.to_vec(), false), NOW_MS).unwrap();
+    let plain =
+        build_sol_message_request(Lang::Ko, &request(korean.to_vec(), false), NOW_MS).unwrap();
     assert_eq!(plain.display.risk, RiskLevel::Info);
     // The same lead byte followed by non-UTF-8 bytes is blocked.
     let mut broken = korean.to_vec();
@@ -267,7 +269,7 @@ fn siws_checks() {
         cluster: SolCluster::Mainnet,
         now_unix_ms: NOW_MS,
     };
-    assert_eq!(rules(&check_siws(&message, &context)), vec![W08]);
+    assert_eq!(rules(&check_siws(Lang::Ko, &message, &context)), vec![W08]);
     let mut other = message.clone();
     other.domain = "evil.example".to_owned();
     other.address = "B".to_owned();
@@ -276,12 +278,12 @@ fn siws_checks() {
     other.expiration_time = Some("2026-10-30T00:00:00Z".to_owned());
     other.not_before = Some("2026-11-30T00:00:00Z".to_owned());
     other.issued_at = Some("2026-10-30T00:00:00Z".to_owned());
-    let found = rules(&check_siws(&other, &context));
+    let found = rules(&check_siws(Lang::Ko, &other, &context));
     for rule in [W01, W02, W03, W04, W05, W06, W07] {
         assert!(found.contains(&rule), "{rule:?}");
     }
     other.issued_at = Some("yesterday".to_owned());
-    assert!(rules(&check_siws(&other, &context)).contains(&W07));
+    assert!(rules(&check_siws(Lang::Ko, &other, &context)).contains(&W07));
     assert!(domain_matches("app.example", &origin));
     assert!(domain_matches("app.example:443", &origin));
     assert!(!domain_matches("app.example:8443", &origin));
@@ -319,8 +321,12 @@ fn request(message: Vec<u8>, sign_in: bool) -> SolMessageRequest {
 
 #[test]
 fn approval_levels() {
-    let plain =
-        build_sol_message_request(&request(b"Prove you own it".to_vec(), false), NOW_MS).unwrap();
+    let plain = build_sol_message_request(
+        Lang::Ko,
+        &request(b"Prove you own it".to_vec(), false),
+        NOW_MS,
+    )
+    .unwrap();
     assert_eq!(plain.kind, ApprovalKind::SolMessage);
     assert_eq!(plain.display.risk, RiskLevel::Info);
     assert_eq!(rules(&plain.display.warnings), vec![M04]);
@@ -328,7 +334,8 @@ fn approval_levels() {
     let account = &plain.display.fields[2].value;
     assert!(account.ends_with("FVen3X669xLzsi6N2V91DoiyzHzg1uAgqiT8jZ9nS96Z"));
     let binary =
-        build_sol_message_request(&request(vec![0xff, 0xfe, 0x00], false), NOW_MS).unwrap();
+        build_sol_message_request(Lang::Ko, &request(vec![0xff, 0xfe, 0x00], false), NOW_MS)
+            .unwrap();
     assert_eq!(binary.display.risk, RiskLevel::High);
     assert!(
         binary
@@ -337,17 +344,19 @@ fn approval_levels() {
             .iter()
             .any(|field| field.key == FieldKey::MESSAGE_HEX)
     );
-    let tx = build_sol_message_request(&request(legacy_message(), false), NOW_MS).unwrap();
+    let tx =
+        build_sol_message_request(Lang::Ko, &request(legacy_message(), false), NOW_MS).unwrap();
     assert_eq!(tx.display.risk, RiskLevel::Blocked);
     assert!(rules(&tx.display.warnings).contains(&M01));
     let mut sdk = super::OFFCHAIN_DOMAIN.to_vec();
     sdk.extend_from_slice(&[0, 0, 5, 0]);
     sdk.extend_from_slice(b"hello");
-    let offchain = build_sol_message_request(&request(sdk.clone(), false), NOW_MS).unwrap();
+    let offchain =
+        build_sol_message_request(Lang::Ko, &request(sdk.clone(), false), NOW_MS).unwrap();
     assert!(rules(&offchain.display.warnings).contains(&M05));
     assert_eq!(offchain.display.risk, RiskLevel::Info);
     sdk.push(0);
-    let broken = build_sol_message_request(&request(sdk, false), NOW_MS).unwrap();
+    let broken = build_sol_message_request(Lang::Ko, &request(sdk, false), NOW_MS).unwrap();
     assert!(rules(&broken.display.warnings).contains(&M02));
     assert_eq!(broken.display.risk, RiskLevel::Blocked);
     let siws = SiwsMessage {
@@ -356,8 +365,12 @@ fn approval_levels() {
         chain_id: Some("mainnet".to_owned()),
         ..SiwsMessage::default()
     };
-    let sign_in =
-        build_sol_message_request(&request(siws.to_text().into_bytes(), true), NOW_MS).unwrap();
+    let sign_in = build_sol_message_request(
+        Lang::Ko,
+        &request(siws.to_text().into_bytes(), true),
+        NOW_MS,
+    )
+    .unwrap();
     assert_eq!(sign_in.kind, ApprovalKind::SolSignIn);
     assert!(rules(&sign_in.display.warnings).contains(&W08));
     assert!(sign_in.display.title.contains("SIWS"));
@@ -365,9 +378,80 @@ fn approval_levels() {
         domain: "evil.example".to_owned(),
         ..siws
     };
-    let blocked =
-        build_sol_message_request(&request(phishing.to_text().into_bytes(), false), NOW_MS)
-            .unwrap();
+    let blocked = build_sol_message_request(
+        Lang::Ko,
+        &request(phishing.to_text().into_bytes(), false),
+        NOW_MS,
+    )
+    .unwrap();
     assert_eq!(blocked.display.risk, RiskLevel::Blocked);
     assert!(rules(&blocked.display.warnings).contains(&W01));
+}
+
+#[test]
+fn english_message_displays_have_no_korean() {
+    let english = |message: Vec<u8>, sign_in: bool| {
+        let mut request = request(message, sign_in);
+        request.label = "Account 1".to_owned();
+        let draft = build_sol_message_request(Lang::En, &request, NOW_MS).unwrap();
+        crate::sol::tests::assert_english(&draft.display);
+        draft
+    };
+    // SIWS with every field, malformed times and a wrong version (W07 causes), no resources.
+    let mut siws = full();
+    siws.address = crate::sol::SolAddress::from_bytes(request(Vec::new(), true).public).to_base58();
+    siws.resources = Some(Vec::new());
+    let sign_in = english(siws.to_text().into_bytes(), true);
+    assert_eq!(
+        sign_in.display.title,
+        "[Solana mainnet] Sign-in request (SIWS)"
+    );
+    let labels: Vec<&str> = sign_in
+        .display
+        .fields
+        .iter()
+        .filter(|field| field.key == FieldKey::SIWS_FIELD)
+        .map(|field| field.sub_label.as_str())
+        .collect();
+    assert!(labels.contains(&"Domain") && labels.contains(&"Resources"));
+    let mut broken = full();
+    broken.version = Some("2".to_owned());
+    broken.issued_at = Some("x".to_owned());
+    broken.expiration_time = Some("x".to_owned());
+    broken.not_before = Some("x".to_owned());
+    let draft = english(broken.to_text().into_bytes(), true);
+    assert!(rules(&draft.display.warnings).contains(&W07));
+    // A plain message, a transaction-like one, a too-long one and off-chain messages.
+    let plain = english(b"Prove you own it".to_vec(), false);
+    assert_eq!(
+        plain.display.title,
+        "[Solana mainnet] Sign message (proof of ownership)"
+    );
+    let mut future = vec![0x81];
+    future.extend_from_slice(&legacy_message());
+    future.push(0xff);
+    english(future, false);
+    english(legacy_message(), false);
+    english(vec![b'a'; super::MAX_SOL_MESSAGE_BYTES + 1], false);
+    let mut proposal = super::OFFCHAIN_DOMAIN.to_vec();
+    proposal.push(0);
+    proposal.extend_from_slice(&[0x55; 32]);
+    proposal.extend_from_slice(&[0, 1]);
+    proposal.extend_from_slice(&[0x66; 32]);
+    proposal.extend_from_slice(&[5, 0]);
+    proposal.extend_from_slice(b"hello");
+    let offchain = english(proposal, false);
+    assert!(rules(&offchain.display.warnings).contains(&M02));
+    let mut bad = super::OFFCHAIN_DOMAIN.to_vec();
+    bad.push(1);
+    english(bad, false);
+    // The error texts keep their Korean `Display`.
+    assert_eq!(
+        SolMessageError::Signing.to_string(),
+        "서명하지 못했습니다(내부 오류)"
+    );
+    assert_eq!(
+        SolMessageError::Signing.text_in(Lang::En),
+        "Could not sign (internal error)"
+    );
 }

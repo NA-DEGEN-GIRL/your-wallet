@@ -45,7 +45,7 @@ Status (spec.md line 3): implemented, manual verification pending.
 | `spec/03-evm.md` | Chains §1, tx model, simulation, decoding, EIP-712, SIWE, risk rules §10, **approval model and digest §11 (canonical for all chains)** |
 | `spec/04-app-ui.md` | Screens, approval window §3, secret windows §4, auto-lock §5, settings, errors, logs, file locations §9, screenshot tour §11 |
 | `spec/05-browser.md` | Extension, provider API, compatibility modes, method allowlist §3, permissions §4, **error codes §5 (canonical)**, envelope v1 §6, yw-host §7, pipe §8 |
-| `spec/06` … `spec/13` | 06 LLM explanation · 07 Solana (§19 dApp connect/messages, §20 dApp transactions) · 08 Bitcoin · 09 testing · 10 YubiKey · 11 HyperCore · 12 Zcash · 13 WalletConnect |
+| `spec/06` … `spec/14` | 06 LLM explanation · 07 Solana (§19 dApp connect/messages, §20 dApp transactions) · 08 Bitcoin · 09 testing · 10 YubiKey · 11 HyperCore · 12 Zcash · 13 WalletConnect · 14 UI language (ko/en setting, text catalogues, canonical English texts §5) |
 | `docs/` | Install/recovery/first-use guides (Korean), `dapp-integration.md`, `security-review-20261101.md`, `ux-review-*.md`, `acceptance/` (per-milestone records), `screenshots/` |
 
 ---

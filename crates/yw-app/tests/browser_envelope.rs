@@ -160,10 +160,13 @@ fn r_e3_optional_compat_mode_context_is_strict() -> TestResult {
     }
     assert_eq!(CompatMode::parse("off"), None);
     assert_eq!(
-        compat_mode_badge(CompatMode::MetaMask),
+        compat_mode_badge(yw_core::lang::Lang::Ko, CompatMode::MetaMask),
         "호환 모드: MetaMask"
     );
-    assert_eq!(compat_mode_badge(CompatMode::Rabby), "호환 모드: Rabby");
+    assert_eq!(
+        compat_mode_badge(yw_core::lang::Lang::Ko, CompatMode::Rabby),
+        "호환 모드: Rabby"
+    );
     Ok(())
 }
 

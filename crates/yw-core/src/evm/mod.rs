@@ -16,6 +16,7 @@ pub mod rlp;
 pub mod sign;
 pub mod simulate;
 pub mod siwe;
+pub mod text;
 pub mod tx;
 
 pub use address::{Address, AddressError, parse_address, to_checksum};

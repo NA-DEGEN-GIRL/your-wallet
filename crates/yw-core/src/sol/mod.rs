@@ -29,6 +29,7 @@ pub mod rent;
 pub mod shortvec;
 pub mod sign;
 pub mod template;
+pub mod text;
 pub mod token;
 
 pub use address::{SolAddress, SolCluster};

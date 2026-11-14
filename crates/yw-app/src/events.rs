@@ -231,6 +231,9 @@ pub enum ImportedAccount {
 
 /// A key worker job (spec/04 §1.2). Buffers are moved, never copied.
 pub enum KeyJob {
+    /// The app language changed (or the app started): the titles of the activity rows the
+    /// journal writes from now on (spec/14 §1). No outcome.
+    SetLanguage(yw_core::lang::Lang),
     /// `Vault::load` and report the status.
     Load,
     /// Create a 24-word wallet and write the default meta.
@@ -813,6 +816,7 @@ impl KeyJob {
     #[must_use]
     pub const fn name(&self) -> &'static str {
         match self {
+            Self::SetLanguage(_) => "SetLanguage",
             Self::Load => "Load",
             Self::CreateWallet { .. } => "CreateWallet",
             Self::PreviewImport { .. } => "PreviewImport",

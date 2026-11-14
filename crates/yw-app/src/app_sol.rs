@@ -1686,7 +1686,12 @@ impl App {
                     self.show_failure(ErrorCode::App009, false, ErrorCode::App009.text());
                     return;
                 }
-                match build_sol_transfer_request(&intent, &prepared.genesis, &prepared.facts) {
+                match build_sol_transfer_request(
+                    self.approval_lang(),
+                    &intent,
+                    &prepared.genesis,
+                    &prepared.facts,
+                ) {
                     Ok(draft) => self.show_ready_draft_at(draft, None, now_unix),
                     Err(_) => {
                         self.show_failure(ErrorCode::App009, false, ErrorCode::App009.text());

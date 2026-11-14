@@ -22,7 +22,9 @@ use super::abi::{
 use super::address::Address;
 use super::chain::{ChainInfo, ContractRole};
 use super::simulate::LogEvent;
+use super::text;
 use super::tx::Eip1559Tx;
+use crate::lang::{Lang, Text};
 
 /// Maximum inner calls of a multicall (R5).
 pub const MAX_MULTICALL_INNER: usize = 16;
@@ -39,8 +41,8 @@ pub enum DecodedCall {
     Known {
         /// Fixed kind string (spec/03 §7.1).
         kind: &'static str,
-        /// Fixed title; `{native}`/`{wrapped}` are substituted at display time.
-        title: &'static str,
+        /// Fixed title in both languages; `{native}`/`{wrapped}` are substituted at display time.
+        title: Text,
         /// Named arguments in table order.
         args: Vec<(&'static str, AbiValue)>,
     },
@@ -109,7 +111,7 @@ impl DecodedCall {
 
 fn known(
     kind: &'static str,
-    title: &'static str,
+    title: Text,
     names: &[&'static str],
     values: Vec<AbiValue>,
 ) -> DecodedCall {
@@ -214,55 +216,55 @@ fn decode_selector(
     let call = match selector {
         SEL_TRANSFER => known(
             "erc20_transfer",
-            "토큰 전송",
+            text::TITLE_TOKEN_TRANSFER,
             &["to", "amount"],
             decode(&[A, u256])?,
         ),
         SEL_APPROVE => known(
             "erc20_approve",
-            "토큰 사용 승인",
+            text::TITLE_TOKEN_APPROVE,
             &["spender", AMOUNT_OR_TOKEN_ID],
             decode(&[A, u256])?,
         ),
         SEL_TRANSFER_FROM => known(
             "erc20_transfer_from",
-            "토큰 이체",
+            text::TITLE_TOKEN_TRANSFER_FROM,
             &["from", "to", AMOUNT_OR_TOKEN_ID],
             decode(&[A, A, u256])?,
         ),
         SEL_INCREASE_ALLOWANCE => known(
             "erc20_increase_allowance",
-            "토큰 승인 증가",
+            text::TITLE_ALLOWANCE_INCREASE,
             &["spender", "added"],
             decode(&[A, u256])?,
         ),
         SEL_DECREASE_ALLOWANCE => known(
             "erc20_decrease_allowance",
-            "토큰 승인 감소",
+            text::TITLE_ALLOWANCE_DECREASE,
             &["spender", "subtracted"],
             decode(&[A, u256])?,
         ),
         SEL_SET_APPROVAL_FOR_ALL => known(
             "set_approval_for_all",
-            "컬렉션 전체 권한",
+            text::TITLE_APPROVAL_FOR_ALL,
             &["operator", "approved"],
             decode(&[A, Bool])?,
         ),
         SEL_SAFE_TRANSFER_FROM_721 => known(
             "erc721_safe_transfer",
-            "NFT 이체",
+            text::TITLE_NFT_TRANSFER,
             &["from", "to", "token_id"],
             decode(&[A, A, u256])?,
         ),
         SEL_SAFE_TRANSFER_FROM_721_DATA => known(
             "erc721_safe_transfer",
-            "NFT 이체",
+            text::TITLE_NFT_TRANSFER,
             &["from", "to", "token_id", "data"],
             decode(&[A, A, u256, Bytes])?,
         ),
         SEL_SAFE_TRANSFER_FROM_1155 => known(
             "erc1155_safe_transfer",
-            "멀티 토큰 이체",
+            text::TITLE_MULTI_TOKEN_TRANSFER,
             &["from", "to", "id", "amount", "data"],
             decode(&[A, A, u256, u256, Bytes])?,
         ),
@@ -275,42 +277,42 @@ fn decode_selector(
             }
             known(
                 "erc1155_safe_batch_transfer",
-                "멀티 토큰 일괄 이체",
+                text::TITLE_MULTI_TOKEN_BATCH,
                 &["from", "to", "ids", "amounts", "data"],
                 values,
             )
         }
         SEL_WETH_DEPOSIT if chain.is_weth(to) => {
             decode(&[])?;
-            known("weth_deposit", "{native} → {wrapped} 변환", &[], Vec::new())
+            known("weth_deposit", text::TITLE_WRAP, &[], Vec::new())
         }
         SEL_WETH_WITHDRAW if chain.is_weth(to) => known(
             "weth_withdraw",
-            "{wrapped} → {native} 변환",
+            text::TITLE_UNWRAP,
             &["amount"],
             decode(&[u256])?,
         ),
         SEL_PERMIT2_APPROVE if chain.is_permit2(to) => known(
             "permit2_approve",
-            "Permit2 승인",
+            text::TITLE_PERMIT2_APPROVE,
             &["token", "spender", "amount", "expiration"],
             decode(&[A, A, Uint(160), Uint(48)])?,
         ),
         SEL_PERMIT2_LOCKDOWN if chain.is_permit2(to) => known(
             "permit2_lockdown",
-            "Permit2 승인 해제",
+            text::TITLE_PERMIT2_LOCKDOWN,
             &["pairs"],
             decode(&[AddressPairArray])?,
         ),
         SEL_PERMIT2_INVALIDATE_NONCES if chain.is_permit2(to) => known(
             "permit2_invalidate_nonces",
-            "Permit2 nonce 무효화",
+            text::TITLE_PERMIT2_INVALIDATE_NONCES,
             &["token", "spender", "new_nonce"],
             decode(&[A, A, Uint(48)])?,
         ),
         SEL_PERMIT2_INVALIDATE_UNORDERED_NONCES if chain.is_permit2(to) => known(
             "permit2_invalidate_unordered_nonces",
-            "Permit2 서명 무효화",
+            text::TITLE_PERMIT2_INVALIDATE_SIGNATURES,
             &["word_pos", "mask"],
             decode(&[u256, u256])?,
         ),
@@ -319,7 +321,7 @@ fn decode_selector(
             values.truncate(4);
             known(
                 "erc2612_permit_submit",
-                "permit 제출",
+                text::TITLE_PERMIT_SUBMIT,
                 &["owner", "spender", "value", "deadline"],
                 values,
             )
@@ -330,7 +332,7 @@ fn decode_selector(
             values.truncate(5);
             known(
                 "dai_permit_submit",
-                "DAI permit 제출",
+                text::TITLE_DAI_PERMIT_SUBMIT,
                 &["holder", "spender", "nonce", "expiry", "allowed"],
                 values,
             )
@@ -388,7 +390,7 @@ pub fn resolve_token_standard(
                 ("erc20_approve", Some(false)) => (
                     known(
                         "erc20_approve",
-                        "토큰 사용 승인",
+                        text::TITLE_TOKEN_APPROVE,
                         &["spender", "amount"],
                         values,
                     ),
@@ -397,7 +399,7 @@ pub fn resolve_token_standard(
                 ("erc20_approve", Some(true)) => (
                     known(
                         "erc721_approve",
-                        "NFT 개별 승인",
+                        text::TITLE_NFT_APPROVE,
                         &["approved", "token_id"],
                         values,
                     ),
@@ -406,7 +408,7 @@ pub fn resolve_token_standard(
                 ("erc20_transfer_from", Some(false)) => (
                     known(
                         "erc20_transfer_from",
-                        "토큰 이체",
+                        text::TITLE_TOKEN_TRANSFER_FROM,
                         &["from", "to", "amount"],
                         values,
                     ),
@@ -415,7 +417,7 @@ pub fn resolve_token_standard(
                 ("erc20_transfer_from", Some(true)) => (
                     known(
                         "erc721_transfer_from",
-                        "NFT 이체",
+                        text::TITLE_NFT_TRANSFER,
                         &["from", "to", "token_id"],
                         values,
                     ),
@@ -466,23 +468,24 @@ fn detect_standard(kind: &str, to: &Address, events: &[LogEvent]) -> Option<bool
     })
 }
 
-fn panic_text(code: &abi::AbiValue) -> String {
+fn panic_text(lang: Lang, code: &abi::AbiValue) -> String {
     let AbiValue::Uint(code) = code else {
-        return "메시지 형식 불명".to_owned();
+        return text::REVERT_UNREADABLE.get(lang).to_owned();
     };
     let description = match code.to_u64() {
-        Some(0x00) => Some("일반"),
-        Some(0x01) => Some("assert 실패"),
-        Some(0x11) => Some("산술 오버플로"),
-        Some(0x12) => Some("0으로 나눔"),
-        Some(0x21) => Some("잘못된 enum 변환"),
-        Some(0x22) => Some("저장소 바이트 배열 인코딩 오류"),
-        Some(0x31) => Some("빈 배열 pop"),
-        Some(0x32) => Some("배열 범위 초과"),
-        Some(0x41) => Some("메모리 과다 할당"),
-        Some(0x51) => Some("초기화되지 않은 함수 호출"),
+        Some(0x00) => Some(text::PANIC_GENERIC),
+        Some(0x01) => Some(text::PANIC_ASSERT),
+        Some(0x11) => Some(text::PANIC_OVERFLOW),
+        Some(0x12) => Some(text::PANIC_DIVISION),
+        Some(0x21) => Some(text::PANIC_ENUM),
+        Some(0x22) => Some(text::PANIC_STORAGE),
+        Some(0x31) => Some(text::PANIC_POP),
+        Some(0x32) => Some(text::PANIC_INDEX),
+        Some(0x41) => Some(text::PANIC_MEMORY),
+        Some(0x51) => Some(text::PANIC_UNINITIALIZED),
         _ => None,
-    };
+    }
+    .map(|text| text.get(lang));
     let hex = code.to_quantity();
     let digits = hex.trim_start_matches("0x");
     let padded = if digits.len() % 2 == 1 {
@@ -517,14 +520,15 @@ pub fn token_transfer_recipient(data: &[u8]) -> Option<Address> {
     }
 }
 
-/// Human-readable revert reason of `error.data` (spec/03 §7.4).
+/// Human-readable revert reason of `error.data` in `lang` (spec/03 §7.4).
 #[must_use]
-pub fn revert_reason(data: &[u8]) -> String {
+pub fn revert_reason(lang: Lang, data: &[u8]) -> String {
+    let unreadable = || text::REVERT_UNREADABLE.get(lang).to_owned();
     if data.is_empty() {
-        return "이유 없이 되돌려짐".to_owned();
+        return text::REVERT_NO_REASON.get(lang).to_owned();
     }
     let Some((selector, params)) = data.split_first_chunk::<4>() else {
-        return "메시지 형식 불명".to_owned();
+        return unreadable();
     };
     match *selector {
         SEL_ERROR_STRING => {
@@ -538,18 +542,15 @@ pub fn revert_reason(data: &[u8]) -> String {
                     text.len() <= 160 && text.bytes().all(|byte| (0x20..=0x7e).contains(&byte))
                 });
             match message {
-                Some(text) => format!("(검증되지 않은 컨트랙트 메시지) \"{text}\""),
-                None => "메시지 형식 불명".to_owned(),
+                Some(message) => text::REVERT_UNVERIFIED_MESSAGE.fill(lang, [&message]),
+                None => unreadable(),
             }
         }
         SEL_PANIC_UINT256 => abi::decode_params(&[AbiType::Uint(256)], params)
-            .and_then(|values| values.first().map(panic_text))
-            .unwrap_or_else(|| "메시지 형식 불명".to_owned()),
-        other => format!(
-            "사용자 정의 오류 0x{} ({}바이트)",
-            crate::hex::encode(&other),
-            data.len()
-        ),
+            .and_then(|values| values.first().map(|code| panic_text(lang, code)))
+            .unwrap_or_else(unreadable),
+        other => text::REVERT_CUSTOM_ERROR
+            .fill(lang, [&crate::hex::encode(&other), &data.len().to_string()]),
     }
 }
 
@@ -599,28 +600,46 @@ mod tests {
 
     #[test]
     fn revert_reasons() {
-        assert_eq!(revert_reason(&[]), "이유 없이 되돌려짐");
+        assert_eq!(
+            revert_reason(crate::lang::Lang::Ko, &[]),
+            "이유 없이 되돌려짐"
+        );
         let message = encode_call(
             SEL_ERROR_STRING,
             &[AbiValue::Bytes(b"insufficient balance".to_vec())],
         );
         assert_eq!(
-            revert_reason(&message),
+            revert_reason(crate::lang::Lang::Ko, &message),
             "(검증되지 않은 컨트랙트 메시지) \"insufficient balance\""
         );
         let control = encode_call(SEL_ERROR_STRING, &[AbiValue::Bytes(b"a\nb".to_vec())]);
-        assert_eq!(revert_reason(&control), "메시지 형식 불명");
-        let long = encode_call(SEL_ERROR_STRING, &[AbiValue::Bytes(vec![b'a'; 161])]);
-        assert_eq!(revert_reason(&long), "메시지 형식 불명");
-        let panic = encode_call(SEL_PANIC_UINT256, &[AbiValue::Uint(U256::from_u64(0x11))]);
-        assert_eq!(revert_reason(&panic), "Panic 0x11 (산술 오버플로)");
-        let other_panic = encode_call(SEL_PANIC_UINT256, &[AbiValue::Uint(U256::from_u64(0x99))]);
-        assert_eq!(revert_reason(&other_panic), "Panic 0x99");
         assert_eq!(
-            revert_reason(&[0xde, 0xad, 0xbe, 0xef]),
+            revert_reason(crate::lang::Lang::Ko, &control),
+            "메시지 형식 불명"
+        );
+        let long = encode_call(SEL_ERROR_STRING, &[AbiValue::Bytes(vec![b'a'; 161])]);
+        assert_eq!(
+            revert_reason(crate::lang::Lang::Ko, &long),
+            "메시지 형식 불명"
+        );
+        let panic = encode_call(SEL_PANIC_UINT256, &[AbiValue::Uint(U256::from_u64(0x11))]);
+        assert_eq!(
+            revert_reason(crate::lang::Lang::Ko, &panic),
+            "Panic 0x11 (산술 오버플로)"
+        );
+        let other_panic = encode_call(SEL_PANIC_UINT256, &[AbiValue::Uint(U256::from_u64(0x99))]);
+        assert_eq!(
+            revert_reason(crate::lang::Lang::Ko, &other_panic),
+            "Panic 0x99"
+        );
+        assert_eq!(
+            revert_reason(crate::lang::Lang::Ko, &[0xde, 0xad, 0xbe, 0xef]),
             "사용자 정의 오류 0xdeadbeef (4바이트)"
         );
-        assert_eq!(revert_reason(&[1, 2]), "메시지 형식 불명");
+        assert_eq!(
+            revert_reason(crate::lang::Lang::Ko, &[1, 2]),
+            "메시지 형식 불명"
+        );
     }
 
     #[test]

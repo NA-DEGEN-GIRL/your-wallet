@@ -34,6 +34,7 @@ use crate::journal::sol::{
     push_record, take_terminal,
 };
 use crate::journal::{Entry, EntryKind, JournalError, JournalPlain};
+use crate::lang::Lang;
 use crate::slip10::SolKeySource;
 use crate::vault::tests::unlocked_with;
 
@@ -392,7 +393,8 @@ fn facts(intent: &SolTransferIntent) -> SolPreviewFacts {
 
 fn approved_for(intent: &SolTransferIntent) -> (ApprovalStore, crate::approval::Approved) {
     let draft =
-        build_sol_transfer_request(intent, &intent.cluster.genesis(), &facts(intent)).unwrap();
+        build_sol_transfer_request(Lang::Ko, intent, &intent.cluster.genesis(), &facts(intent))
+            .unwrap();
     let mut store = ApprovalStore::new();
     let request = store.issue(draft, 1_000, intent.created_at_ms).unwrap();
     let approved = store.consume(request.id, request.digest, 2_000).unwrap();
@@ -588,7 +590,7 @@ fn sign_transfer_rechecks_the_intent_rules() {
     );
     // The approval request refuses the same intents.
     let shown = |intent: &SolTransferIntent| {
-        build_sol_transfer_request(intent, &intent.cluster.genesis(), &facts(intent))
+        build_sol_transfer_request(Lang::Ko, intent, &intent.cluster.genesis(), &facts(intent))
     };
     assert!(shown(&base).is_ok());
     assert_eq!(
@@ -619,7 +621,7 @@ fn sign_transfer_rechecks_the_intent_rules() {
     )
     .unwrap();
     assert_eq!(
-        build_sol_transfer_request(&base, &base.cluster.genesis(), &other).unwrap_err(),
+        build_sol_transfer_request(Lang::Ko, &base, &base.cluster.genesis(), &other).unwrap_err(),
         crate::approval::DisplayError::InvalidText
     );
 }
@@ -653,9 +655,13 @@ fn approval_request_fields_flags_and_digest() {
         label: "친구\u{202E}".to_owned(),
         kind: KnownKind::Book { verified: false },
     });
-    let draft =
-        build_sol_transfer_request(&lookalike_facts_intent, &SolCluster::Devnet.genesis(), &f)
-            .unwrap();
+    let draft = build_sol_transfer_request(
+        Lang::Ko,
+        &lookalike_facts_intent,
+        &SolCluster::Devnet.genesis(),
+        &f,
+    )
+    .unwrap();
     assert_eq!(
         draft.display.title,
         "[Solana devnet (테스트)] SOL 전송: 0.001000000 SOL"
@@ -693,8 +699,13 @@ fn approval_request_fields_flags_and_digest() {
         SolKeySource::Standard(AccountIndex::ZERO),
         flags::FIRST_TIME,
     );
-    let draft =
-        build_sol_transfer_request(&mild, &SolCluster::Devnet.genesis(), &facts(&mild)).unwrap();
+    let draft = build_sol_transfer_request(
+        Lang::Ko,
+        &mild,
+        &SolCluster::Devnet.genesis(),
+        &facts(&mild),
+    )
+    .unwrap();
     assert_eq!(draft.display.risk, RiskLevel::Caution);
     assert!(!draft.display.ack_required);
     // A block reason makes it L01/Blocked; the store refuses consumption.
@@ -702,8 +713,13 @@ fn approval_request_fields_flags_and_digest() {
     blocked_facts
         .blocks
         .push(SolBlock::Fee(FeeError::FeeFormulaChanged));
-    let draft =
-        build_sol_transfer_request(&mild, &SolCluster::Devnet.genesis(), &blocked_facts).unwrap();
+    let draft = build_sol_transfer_request(
+        Lang::Ko,
+        &mild,
+        &SolCluster::Devnet.genesis(),
+        &blocked_facts,
+    )
+    .unwrap();
     assert_eq!(draft.display.warnings[0].rule, L01);
     assert_eq!(draft.display.risk, RiskLevel::Blocked);
     let mut store = ApprovalStore::new();
@@ -719,8 +735,13 @@ fn approval_digest_binds_every_intent_field() {
     let core = template_core();
     // The digest binds every intent byte: one flipped bit anywhere changes it.
     let base = intent(core, SolKeySource::Standard(AccountIndex::ZERO), 0);
-    let draft =
-        build_sol_transfer_request(&base, &SolCluster::Devnet.genesis(), &facts(&base)).unwrap();
+    let draft = build_sol_transfer_request(
+        Lang::Ko,
+        &base,
+        &SolCluster::Devnet.genesis(),
+        &facts(&base),
+    )
+    .unwrap();
     let digest = approval_digest(&draft, 120_000).unwrap();
     let transcript = base.transcript();
     assert!(transcript.starts_with(&[0, 0, 0, 31]));
@@ -1123,8 +1144,13 @@ fn imported_key_signs_the_golden_transfer_without_the_move_rule() {
         SolKeySource::Imported,
     );
     assert_eq!(value & flags::NON_STANDARD_PATH, 0);
-    let draft =
-        build_sol_transfer_request(&intent, &intent.cluster.genesis(), &facts(&intent)).unwrap();
+    let draft = build_sol_transfer_request(
+        Lang::Ko,
+        &intent,
+        &intent.cluster.genesis(),
+        &facts(&intent),
+    )
+    .unwrap();
     assert!(
         !draft
             .display
@@ -1560,4 +1586,141 @@ fn added_mnemonic_transfer_signs_and_journals_as_version_2() {
         SolRecordError::Source,
     );
     reject(&|b| b.truncate(b.len() - 1), SolRecordError::Length);
+}
+
+/// Every text of an English display (title, field values and labels, warnings) is free of
+/// Hangul (spec/14): the inputs of the English tests are ASCII.
+pub(crate) fn assert_english(display: &crate::approval::ApprovalDisplay) {
+    use crate::lang::has_hangul;
+    assert_eq!(display.lang, Lang::En);
+    assert!(!has_hangul(&display.title), "{}", display.title);
+    for field in &display.fields {
+        assert!(
+            !has_hangul(&field.value),
+            "{:#06x}: {}",
+            field.key.0,
+            field.value
+        );
+        assert!(
+            !has_hangul(&field.sub_label),
+            "{:#06x}: {}",
+            field.key.0,
+            field.sub_label
+        );
+    }
+    for warning in &display.warnings {
+        assert!(!has_hangul(&warning.text), "{}", warning.text);
+    }
+}
+
+/// The catalogue rules of spec/14: both templates use exactly the placeholders `0..args`, the
+/// English side has no Hangul and is valid display text.
+pub(crate) fn assert_catalogue(all: &[crate::lang::Entry]) {
+    use crate::approval::{MAX_DISPLAY_VALUE_BYTES, is_valid_display_text};
+    use crate::lang::{has_hangul, placeholders};
+    for entry in all {
+        let expected: Vec<usize> = (0..entry.args).collect();
+        for template in [entry.ko, entry.en] {
+            let mut found = placeholders(template);
+            found.sort_unstable();
+            assert_eq!(found, expected, "{}: {template}", entry.name);
+        }
+        assert!(!has_hangul(entry.en), "{}", entry.name);
+        assert!(
+            is_valid_display_text(entry.en, MAX_DISPLAY_VALUE_BYTES, true),
+            "{}",
+            entry.name
+        );
+    }
+}
+
+#[test]
+fn sol_catalogue_is_complete() {
+    assert_catalogue(super::text::ALL);
+}
+
+#[test]
+fn english_transfer_display_has_no_korean() {
+    let all = flags::SEND_MAX
+        | flags::OFF_CURVE
+        | flags::FIRST_TIME
+        | flags::LOOKALIKE
+        | flags::PROGRAM_OWNED
+        | flags::SIM_WARNING
+        | flags::NON_STANDARD_PATH;
+    let intent = intent(template_core(), SolKeySource::Bip44Root, all);
+    let mut f = facts(&intent);
+    f.account_label = String::new();
+    f.recipient_account = AccountClass::Missing;
+    f.rpc_fee = Some(intent.max_fee_lamports - 1);
+    f.simulation = SimSummary::Failed {
+        err: 6,
+        units: None,
+    };
+    f.balance = 1;
+    f.recipient.exact = Some(KnownAddress {
+        address: intent.core.to,
+        label: "Friend".to_owned(),
+        kind: KnownKind::Book { verified: true },
+    });
+    for kind in [
+        KnownKind::Book { verified: false },
+        KnownKind::Own { index: 0 },
+        KnownKind::Sent,
+    ] {
+        f.recipient.lookalikes.push(KnownAddress {
+            address: addr("7WktogJEd2wQ9eH2oWusmcoFTgeYi6rS632UviTBJ2jm"),
+            label: "Friend".to_owned(),
+            kind,
+        });
+    }
+    f.blocks = vec![
+        SolBlock::ClusterMismatch,
+        SolBlock::Fee(FeeError::AboveCap),
+        SolBlock::Rent(super::rent::RentError::SolReserve {
+            needed: 3_000_000,
+            rent0: 890_880,
+        }),
+        SolBlock::Rent(super::rent::RentError::ZeroAmount),
+        SolBlock::RecipientIsTokenAccount,
+        SolBlock::RecipientIsProgram,
+        SolBlock::RpcAnomaly,
+        SolBlock::PendingExists,
+        SolBlock::JournalFull,
+        SolBlock::TokenAccountFrozen,
+        SolBlock::RecipientTokenAccountUnusable,
+    ];
+    let english =
+        build_sol_transfer_request(Lang::En, &intent, &SolCluster::Devnet.genesis(), &f).unwrap();
+    assert_eq!(
+        english.display.title,
+        "[Solana devnet (test)] SOL transfer: 0.001000000 SOL"
+    );
+    assert_english(&english.display);
+    assert_eq!(
+        english.display.fields[0].value,
+        crate::approval::APP_ORIGIN.en
+    );
+    let korean =
+        build_sol_transfer_request(Lang::Ko, &intent, &SolCluster::Devnet.genesis(), &f).unwrap();
+    assert_eq!(korean.display.lang, Lang::Ko);
+    assert_eq!(
+        korean.display.title,
+        "[Solana devnet (테스트)] SOL 전송: 0.001000000 SOL"
+    );
+    assert_eq!(korean.display.fields.len(), english.display.fields.len());
+    let rules = |draft: &crate::approval::ApprovalDraft| -> Vec<_> {
+        draft.display.warnings.iter().map(|w| w.rule).collect()
+    };
+    assert_eq!(rules(&korean), rules(&english));
+    // The Korean texts of the shared reasons are unchanged.
+    assert_eq!(err::text(6), err::text_in(6, Lang::Ko));
+    assert_eq!(
+        err::text_in(6, Lang::En),
+        "The compute limit (CU) was exceeded"
+    );
+    assert_eq!(
+        SolBlock::Fee(FeeError::AboveCap).text(),
+        "수수료가 설정한 상한을 넘습니다"
+    );
 }

@@ -1623,6 +1623,10 @@ impl KeyWorker {
     pub fn handle(&mut self, job: KeyJob) -> Vec<KeyOutcome> {
         let alt = self.is_alt();
         match job {
+            KeyJob::SetLanguage(lang) => {
+                self.journal.set_lang(lang);
+                Vec::new()
+            }
             KeyJob::LoadJournal => match self.vault.as_mut() {
                 Some(vault) => match self.journal.load(vault) {
                     Ok(view) => {
@@ -2055,7 +2059,8 @@ impl KeyWorker {
                         .collect())
                 }),
             ),
-            KeyJob::LoadJournal
+            KeyJob::SetLanguage(_)
+            | KeyJob::LoadJournal
             | KeyJob::SignEvm { .. }
             | KeyJob::SignEvmCard { .. }
             | KeyJob::SignMessageCard { .. }
@@ -2326,6 +2331,7 @@ pub(crate) mod tests {
             approve(
                 ApprovalKind::EvmTransaction,
                 yw_core::approval::build_evm_tx_request(
+                    yw_core::lang::Lang::Ko,
                     ApprovalId::random().unwrap(),
                     ApprovalOrigin::App,
                     source,
@@ -2400,6 +2406,7 @@ pub(crate) mod tests {
             approve(
                 ApprovalKind::EvmPersonalSign,
                 yw_core::approval::build_personal_request(
+                    yw_core::lang::Lang::Ko,
                     ApprovalId::random().unwrap(),
                     ApprovalOrigin::Site(
                         yw_core::policy::BrowserOrigin::parse("https://app.example").unwrap(),
@@ -2702,8 +2709,13 @@ pub(crate) mod tests {
                 spl: None,
                 blocks: Vec::new(),
             };
-            let draft =
-                build_sol_transfer_request(&intent, &intent.cluster.genesis(), &facts).unwrap();
+            let draft = build_sol_transfer_request(
+                yw_core::lang::Lang::Ko,
+                &intent,
+                &intent.cluster.genesis(),
+                &facts,
+            )
+            .unwrap();
             let mut store = ApprovalStore::new();
             let request = store.issue(draft, 1, NOW).unwrap();
             store.consume(request.id, request.digest, 2).unwrap()
@@ -2824,7 +2836,7 @@ pub(crate) mod tests {
                 known: Vec::new(),
                 fee_cap: 100_000,
             };
-            let draft = build_sol_tx_request(&request, &facts).unwrap();
+            let draft = build_sol_tx_request(yw_core::lang::Lang::Ko, &request, &facts).unwrap();
             let mut store = ApprovalStore::new();
             let request = store.issue(draft, 1, NOW).unwrap();
             Box::new(store.consume(request.id, request.digest, 2).unwrap())
@@ -2975,7 +2987,7 @@ pub(crate) mod tests {
                 known: Vec::new(),
                 fee_cap: 100_000,
             };
-            let draft = build_sol_tx_request(&request, &facts).unwrap();
+            let draft = build_sol_tx_request(yw_core::lang::Lang::Ko, &request, &facts).unwrap();
             let mut store = ApprovalStore::new();
             let request = store.issue(draft, 1, NOW).unwrap();
             Box::new(store.consume(request.id, request.digest, 2).unwrap())
@@ -3168,9 +3180,14 @@ pub(crate) mod tests {
         );
         let approve = || {
             let facts = meta.send_facts(&plan, TIP, &[]).unwrap();
-            let draft =
-                build_btc_request(ApprovalId::random().unwrap(), &plan, meta.account(), &facts)
-                    .unwrap();
+            let draft = build_btc_request(
+                yw_core::lang::Lang::Ko,
+                ApprovalId::random().unwrap(),
+                &plan,
+                meta.account(),
+                &facts,
+            )
+            .unwrap();
             let mut store = ApprovalStore::new();
             let request = store.issue(draft, 1, NOW_MS).unwrap();
             store.consume(request.id, request.digest, 2).unwrap()

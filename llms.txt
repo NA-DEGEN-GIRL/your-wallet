@@ -50,6 +50,7 @@ An assistant helping someone check, build or install this wallet on their own PC
 - [spec/11-hypercore.md](spec/11-hypercore.md): Hyperliquid HyperCore balances and user-signed transfers (no trading), dApp Hyperliquid typed data
 - [spec/12-zcash.md](spec/12-zcash.md): Zcash transparent-only sends: addresses, v5 transactions, ZIP 244 signing, ZIP 317 fees
 - [spec/13-walletconnect.md](spec/13-walletconnect.md): WalletConnect v2 (Reown) wallet side, EVM only, claimed origin and Verify
+- [spec/14-language.md](spec/14-language.md): UI language setting (Korean/English), text catalogues, the language bound to the approval display, canonical English texts
 
 ## Optional
 

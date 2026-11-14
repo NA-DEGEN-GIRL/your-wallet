@@ -125,6 +125,10 @@ pub mod ids {
     pub const REVEAL_KEY: u16 = 514;
     /// 비밀번호 변경.
     pub const CHANGE_PASSWORD: u16 = 515;
+    /// `언어 · Language`: 한국어 (spec/04 §2.11, spec/14 §1).
+    pub const LANG_KO: u16 = 516;
+    /// `언어 · Language`: English.
+    pub const LANG_EN: u16 = 517;
     /// Template radios.
     pub const TPL_QUICKNODE: u16 = 520;
     /// Alchemy radio.
@@ -272,6 +276,8 @@ pub mod ids {
         REVEAL_MNEMONIC,
         REVEAL_KEY,
         CHANGE_PASSWORD,
+        LANG_KO,
+        LANG_EN,
         TPL_QUICKNODE,
         TPL_ALCHEMY,
         TPL_MANUAL,
@@ -343,6 +349,18 @@ pub fn back_main() -> Item {
 
 /// The tooltip of a main card's `새로고침` (F5 presses the visible one).
 pub const T_REFRESH_TIP: &str = "새로고침 (F5)";
+
+/// The `언어 · Language` card title: the same in both languages (spec/14 §1), like the `한국어`
+/// option, so either reader finds the setting.
+pub const LANGUAGE_TITLE: &str = "언어 · Language";
+/// The `한국어` option of the language card (the language's own name in both languages).
+pub const LANGUAGE_KOREAN: &str = "한국어";
+
+yw_core::texts! {
+    /// The language card's help line (spec/04 §2.11).
+    LANGUAGE_HELP = "앱 화면과 승인 창의 언어입니다. 바꾸면 바로 적용되고, 이미 열린 승인 창은 처음 언어로 남습니다."
+        / "The language of the app screens and approval windows. A change applies at once; an approval window that is already open keeps its language.";
+}
 
 /// S08 `QuickNode 주소`'s help (2026-11-10).
 pub const T_DONE_QUICKNODE: &str = "QuickNode 대시보드의 엔드포인트 주소(https://….quiknode.pro/…/)를 통째로 붙여넣으세요. 쓸 체인(Ethereum·Arbitrum·Base·Solana·Bitcoin 등)은 대시보드에서 그 엔드포인트에 켜 두어야 합니다. 입력은 가려지고, 이 Windows 사용자만 풀 수 있게 암호화해 저장합니다.";
@@ -1916,6 +1934,7 @@ impl App {
     }
 
     fn security_section(&self, items: &mut Vec<Item>) {
+        self.language_card(items);
         items.push(Item::CardStart(Some("자동 잠금".to_owned())));
         items.push(Item::Help(
             "정한 시간 동안 쓰지 않으면 지갑을 잠급니다. Windows를 잠그거나 절전에 들어갈 때도 잠깁니다."
@@ -2005,6 +2024,23 @@ impl App {
             crate::ui::screens_reset::ids::RESET_OPEN,
             "지갑 초기화…",
         )]));
+        items.push(Item::CardEnd);
+    }
+
+    /// `언어 · Language` (spec/04 §2.11, spec/14 §1): the first card of the first settings tab,
+    /// its title and options in both languages so a user who cannot read the current one still
+    /// finds it. The change applies at once (an approval window already open keeps its language).
+    fn language_card(&self, items: &mut Vec<Item>) {
+        use yw_core::lang::Lang;
+        items.push(Item::CardStart(Some(LANGUAGE_TITLE.to_owned())));
+        items.push(Item::Help(
+            LANGUAGE_HELP.get(self.settings.language).to_owned(),
+        ));
+        let lang = self.settings.language;
+        items.push(Item::Row(vec![
+            Ctl::radio(ids::LANG_KO, LANGUAGE_KOREAN, lang == Lang::Ko, true),
+            Ctl::radio(ids::LANG_EN, "English", lang == Lang::En, false),
+        ]));
         items.push(Item::CardEnd);
     }
 

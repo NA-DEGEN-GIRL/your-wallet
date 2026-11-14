@@ -65,12 +65,20 @@ fn tx_draft(outcome: &SimOutcome) -> TestResult<ApprovalDraft> {
     let chain = sepolia();
     let tx = s2_tx()?;
     let user = parse_address(ACC1)?;
-    let sim = interpret(&chain, &tx, &user, outcome, CREATED_UNIX_MS);
+    let sim = interpret(
+        yw_core::lang::Lang::Ko,
+        &chain,
+        &tx,
+        &user,
+        outcome,
+        CREATED_UNIX_MS,
+    );
     let decoded = DecodedTx {
         call: decode_call(&chain, &tx.to, &tx.data),
         tx,
     };
     Ok(build_evm_tx_request(
+        yw_core::lang::Lang::Ko,
         ApprovalId(ID),
         ApprovalOrigin::App,
         EvmKeySource::Derived(AccountIndex::ZERO),
@@ -102,6 +110,7 @@ fn tag2() -> TestResult<ApprovalDraft> {
 fn tag0() -> TestResult<ApprovalDraft> {
     let origin = BrowserOrigin::parse("https://app.example").ok_or("origin")?;
     Ok(build_personal_request(
+        yw_core::lang::Lang::Ko,
         ApprovalId(ID),
         ApprovalOrigin::Site(origin),
         EvmKeySource::Derived(AccountIndex::ZERO),

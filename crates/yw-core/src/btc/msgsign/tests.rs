@@ -24,6 +24,7 @@ use crate::btc::sign::SeedKeys;
 use crate::btc::tx::{parse_transaction, txid};
 use crate::codec::wif::parse_wif;
 use crate::entropy::{OsRandom, secp_context};
+use crate::lang::Lang;
 
 const VECTOR_WIF: &str = "L3VFeEujGtevx9w18HD1fhRbCH67Az2dpCymeRE1SoPK6XQtaN2k";
 const VECTOR_ADDRESS: &str = "bc1q9vza2e8x573nczrlzms0wvx3gsqjx7vavgkx0l";
@@ -718,22 +719,25 @@ fn sign_in_message_is_bound_to_the_requesting_site() {
     let ctx = secp_context(&mut OsRandom).unwrap();
     let pubkey = BtcPubKey::of_point(&one().public_key(&ctx), true);
     let draft = |origin: &str, message: &str| {
-        build_btc_message_request(&BtcMessageRequest {
-            id: ApprovalId([3; 16]),
-            origin: BrowserOrigin::parse(origin).unwrap(),
-            network: BtcNetwork::Mainnet,
-            source: BtcKeySource::Imported {
-                id: [1; 16],
+        build_btc_message_request(
+            Lang::Ko,
+            &BtcMessageRequest {
+                id: ApprovalId([3; 16]),
+                origin: BrowserOrigin::parse(origin).unwrap(),
+                network: BtcNetwork::Mainnet,
+                source: BtcKeySource::Imported {
+                    id: [1; 16],
+                    script_type: ScriptType::P2wpkh,
+                    compressed: true,
+                },
+                pubkey,
                 script_type: ScriptType::P2wpkh,
-                compressed: true,
+                label: "가져온 키".to_owned(),
+                path: "가져온 키".to_owned(),
+                protocol: BtcMessageProtocol::Bip322,
+                message: message.as_bytes().to_vec(),
             },
-            pubkey,
-            script_type: ScriptType::P2wpkh,
-            label: "가져온 키".to_owned(),
-            path: "가져온 키".to_owned(),
-            protocol: BtcMessageProtocol::Bip322,
-            message: message.as_bytes().to_vec(),
-        })
+        )
         .unwrap()
         .display
     };
@@ -773,4 +777,83 @@ fn sign_in_message_is_bound_to_the_requesting_site() {
     assert!(rules(&shouted).contains(&M06));
     let plain = draft("https://evil.example", "Hello World");
     assert_eq!(rules(&plain), vec![M04]);
+}
+
+/// spec/14: the Bitcoin message approval built in English (plain, empty, 32-byte, binary,
+/// oversized, transaction and foreign sign-in messages) has no Hangul in its title, fields or
+/// warnings, and the same fields and rules as the Korean one.
+#[test]
+fn english_message_display_has_no_hangul() {
+    use super::{BtcMessageRequest, MAX_BTC_MESSAGE_BYTES, build_btc_message_request};
+    use crate::approval::ApprovalId;
+    use crate::lang::has_hangul;
+    use crate::policy::BrowserOrigin;
+
+    let ctx = secp_context(&mut OsRandom).unwrap();
+    let pubkey = BtcPubKey::of_point(&one().public_key(&ctx), true);
+    let draft = |lang: Lang, network: BtcNetwork, message: Vec<u8>| {
+        build_btc_message_request(
+            lang,
+            &BtcMessageRequest {
+                id: ApprovalId([4; 16]),
+                origin: BrowserOrigin::parse("https://app.example").unwrap(),
+                network,
+                source: BtcKeySource::Imported {
+                    id: [1; 16],
+                    script_type: ScriptType::P2wpkh,
+                    compressed: true,
+                },
+                pubkey,
+                script_type: ScriptType::P2wpkh,
+                label: "Imported key".to_owned(),
+                path: String::new(),
+                protocol: BtcMessageProtocol::Ecdsa,
+                message,
+            },
+        )
+        .unwrap()
+        .display
+    };
+    let transaction = crate::hex::decode(
+        "0100000001000000000000000000000000000000000000000000000000000000000000000000000000000000000001000000000000000000000000",
+    )
+    .unwrap_or_default();
+    let messages = [
+        b"Hello World".to_vec(),
+        Vec::new(),
+        vec![0xab; 32],
+        vec![0xff, 0x00, 0x01],
+        vec![b'a'; MAX_BTC_MESSAGE_BYTES + 1],
+        transaction,
+        b"evil.example wants you to sign in with your Bitcoin account:\nbc1q".to_vec(),
+    ];
+    for network in BtcNetwork::ALL {
+        for message in &messages {
+            let en = draft(Lang::En, network, message.clone());
+            let ko = draft(Lang::Ko, network, message.clone());
+            assert_eq!(en.lang, Lang::En);
+            assert!(!has_hangul(&en.title), "{}", en.title);
+            for field in &en.fields {
+                assert!(!has_hangul(&field.value), "{:?}", field.value);
+            }
+            for warning in &en.warnings {
+                assert!(!has_hangul(&warning.text), "{:?}", warning.text);
+            }
+            let keys = |display: &crate::approval::ApprovalDisplay| {
+                (
+                    display.fields.iter().map(|f| f.key).collect::<Vec<_>>(),
+                    display.warnings.iter().map(|w| w.rule).collect::<Vec<_>>(),
+                )
+            };
+            assert_eq!(keys(&en), keys(&ko));
+        }
+    }
+    assert_eq!(
+        draft(Lang::En, BtcNetwork::Mainnet, b"hi".to_vec()).title,
+        "[Bitcoin mainnet] Sign message (proof of ownership)"
+    );
+    assert_eq!(
+        draft(Lang::Ko, BtcNetwork::Mainnet, b"hi".to_vec()).title,
+        "[Bitcoin 메인넷] 메시지 서명 (소유 증명)"
+    );
 }

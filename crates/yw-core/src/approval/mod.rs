@@ -9,6 +9,8 @@
 
 mod display;
 pub(crate) mod message;
+/// The chain-message display texts (spec/14).
+pub use message::text as message_text;
 mod store;
 mod text;
 
@@ -28,9 +30,13 @@ pub use text::{
 pub use crate::evm::display::{build_evm_tx_request, build_personal_request, build_typed_request};
 pub use crate::sol::dapp::{SolCommitment, SolSendOptions, SolTxItem, SolTxMode, SolTxPayload};
 
-/// The `요청 출처` value of every app-initiated approval (EVM, Solana and Bitcoin sends). It is
-/// display text and therefore part of `display_bytes` and the approval digest (spec/03 §11.3).
-pub const APP_ORIGIN_TEXT: &str = "Your Wallet 앱";
+/// The `요청 출처` value of every app-initiated approval (EVM, Solana, Bitcoin, Zcash and
+/// `HyperCore` sends). It is display text and therefore part of `display_bytes` and the approval
+/// digest (spec/03 §11.3); English per spec/14 §2.
+pub const APP_ORIGIN: crate::lang::Text = crate::lang::Tpl {
+    ko: "Your Wallet 앱",
+    en: "Your Wallet app",
+};
 
 use core::fmt;
 

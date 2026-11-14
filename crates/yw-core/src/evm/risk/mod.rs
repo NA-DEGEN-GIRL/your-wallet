@@ -3,6 +3,7 @@
 //! gas-estimation problems are high risk (D15).
 
 mod rules;
+pub mod text;
 
 pub use rules::*;
 
@@ -19,6 +20,7 @@ use super::simulate::{
 };
 use super::tx::Eip1559Tx;
 use crate::approval::{ApprovalOrigin, ChainFacts, CodeKind, RuleId, Warning, escape_untrusted};
+use crate::lang::Lang;
 
 const THIRTY_DAYS: u64 = 30 * 86_400;
 const ONE_DAY: u64 = 86_400;
@@ -39,13 +41,13 @@ pub enum Unlimited {
 }
 
 impl Unlimited {
-    /// The E14 cause line (none for the exact maximum).
+    /// The E14 cause line in `lang` (none for the exact maximum).
     #[must_use]
-    pub const fn cause(self) -> Option<&'static str> {
+    pub const fn cause(self, lang: Lang) -> Option<&'static str> {
         match self {
             Self::Maximum => None,
-            Self::Huge => Some("2^128 이상의 승인 — 사실상 무제한"),
-            Self::AboveBalance => Some("잔액보다 큰 승인 — 사실상 무제한"),
+            Self::Huge => Some(text::UNLIMITED_HUGE.get(lang)),
+            Self::AboveBalance => Some(text::UNLIMITED_ABOVE_BALANCE.get(lang)),
         }
     }
 }
@@ -84,6 +86,8 @@ fn claims_known_symbol(chain: &ChainInfo, facts: &ChainFacts, token: &Address) -
 /// Inputs of the transaction rules.
 #[derive(Clone, Copy, Debug)]
 pub struct TxRiskInput<'a> {
+    /// Display language of the warning texts.
+    pub lang: Lang,
     /// Chain.
     pub chain: &'a ChainInfo,
     /// Origin.
@@ -475,7 +479,7 @@ impl TransferIntent {
     /// E42 cause when the simulation sends more than the display shows: a larger amount of a
     /// shown asset, or any asset the request does not show (overflowed rows count as sends,
     /// spec/03 §6.4). `None` when nothing exceeds the display.
-    fn excess_outflow(self, tx: &Eip1559Tx, diff: &SimulationDiff) -> Option<String> {
+    fn excess_outflow(self, lang: Lang, tx: &Eip1559Tx, diff: &SimulationDiff) -> Option<String> {
         let mut larger = false;
         let mut unshown = 0_usize;
         for change in &diff.changes {
@@ -496,11 +500,9 @@ impl TransferIntent {
         }
         match (larger, unshown) {
             (false, 0) => None,
-            (true, 0) => Some("보내는 자산이 거래 금액보다 많이 나갑니다".to_owned()),
-            (false, count) => Some(format!("거래에 없는 다른 자산 {count}개도 나갑니다")),
-            (true, count) => Some(format!(
-                "보내는 자산이 거래 금액보다 많이 나가고, 거래에 없는 다른 자산 {count}개도 나갑니다"
-            )),
+            (true, 0) => Some(text::EXCESS_LARGER.get(lang).to_owned()),
+            (false, count) => Some(text::EXCESS_UNSHOWN.fill(lang, [&count.to_string()])),
+            (true, count) => Some(text::EXCESS_BOTH.fill(lang, [&count.to_string()])),
         }
     }
 }
@@ -508,24 +510,21 @@ impl TransferIntent {
 /// The E43 cause line: the known address a recipient imitates (book name or account label,
 /// user-entered: escaped and kept on one line; a past recipient by its role), the equal end
 /// digits as in the send form's W-ADDR-3 note, and that known address in full.
-fn look_alike_cause(entry: &KnownAddress, (prefix, suffix): (usize, usize)) -> String {
+fn look_alike_cause(lang: Lang, entry: &KnownAddress, (prefix, suffix): (usize, usize)) -> String {
     let ends = match (prefix, suffix) {
-        (0, suffix) => format!("끝 {suffix}자"),
-        (prefix, 0) => format!("앞 {prefix}자"),
-        (prefix, suffix) => format!("앞 {prefix}자·끝 {suffix}자"),
+        (0, suffix) => text::ENDS_SUFFIX.fill(lang, [&suffix.to_string()]),
+        (prefix, 0) => text::ENDS_PREFIX.fill(lang, [&prefix.to_string()]),
+        (prefix, suffix) => text::ENDS_BOTH.fill(lang, [&prefix.to_string(), &suffix.to_string()]),
     };
     let name = escape_untrusted(&entry.name).text.replace('\n', "[U+000A]");
-    let whom = if entry.history {
-        "보낸 내역에 있는 주소와".to_owned()
+    let address = format_address(&entry.address);
+    if entry.history {
+        text::LOOK_ALIKE_HISTORY.fill(lang, [&ends, &address])
     } else if entry.mine {
-        format!("내 계정 '{name}'과")
+        text::LOOK_ALIKE_MINE.fill(lang, [&name, &ends, &address])
     } else {
-        format!("주소록 '{name}'과")
-    };
-    format!(
-        "{whom} {ends}가 같습니다: {}",
-        format_address(&entry.address)
-    )
+        text::LOOK_ALIKE_BOOK.fill(lang, [&name, &ends, &address])
+    }
 }
 
 /// E43 (spec/03 §10.2, the approval form of W-ADDR-3): every recipient the request names that
@@ -551,7 +550,11 @@ fn look_alike_rules(input: &TxRiskInput<'_>, warnings: &mut Vec<Warning>) {
             continue;
         }
         if let Some((entry, ends)) = input.facts.look_alike(&recipient) {
-            warnings.push(warning(E43, Some(&look_alike_cause(entry, ends))));
+            warnings.push(warning(
+                input.lang,
+                E43,
+                Some(&look_alike_cause(input.lang, entry, ends)),
+            ));
         }
     }
 }
@@ -561,6 +564,7 @@ fn look_alike_rules(input: &TxRiskInput<'_>, warnings: &mut Vec<Warning>) {
 #[must_use]
 #[expect(clippy::too_many_lines, reason = "one block per rule of spec/03 §10.2")]
 pub fn tx_rules(input: &TxRiskInput<'_>) -> Vec<Warning> {
+    let lang = input.lang;
     let mut warnings = Vec::new();
     let chain = input.chain;
     let facts = input.facts;
@@ -570,29 +574,23 @@ pub fn tx_rules(input: &TxRiskInput<'_>) -> Vec<Warning> {
     if input.call.has_uninterpreted() {
         let cause = match input.call {
             DecodedCall::Multicall { inner, .. } if inner.is_empty() => {
-                Some("내부 호출이 없는 묶음 호출")
+                Some(text::MULTICALL_EMPTY.get(lang))
             }
-            DecodedCall::Multicall { .. } => Some("해석되지 않은 호출 포함"),
+            DecodedCall::Multicall { .. } => Some(text::MULTICALL_UNINTERPRETED.get(lang)),
             _ => None,
         };
-        warnings.push(warning(E12, cause));
+        warnings.push(warning(lang, E12, cause));
     }
     // E13 (R4/R6, only with usable logs)
     if let Some(events) = input.sim.events() {
         if input.r4_unresolved {
-            warnings.push(warning(
-                E13,
-                Some("시뮬레이션 로그로 토큰 종류(ERC-20/ERC-721)를 정할 수 없습니다"),
-            ));
+            warnings.push(warning(lang, E13, Some(text::R4_UNRESOLVED.get(lang))));
         }
         let unconfirmed = calls(input.call)
             .into_iter()
             .any(|call| !r6_confirmed(call, input, events));
         if unconfirmed {
-            warnings.push(warning(
-                E13,
-                Some("해석한 승인·이동이 시뮬레이션 로그에 없거나 다릅니다"),
-            ));
+            warnings.push(warning(lang, E13, Some(text::R6_UNCONFIRMED.get(lang))));
         }
     }
     // Approvals: E14, E15, E16, E20, E21, E22, E30, E39
@@ -602,8 +600,8 @@ pub fn tx_rules(input: &TxRiskInput<'_>) -> Vec<Warning> {
         max,
         facts.balance(token),
     ) {
-        Some(unlimited) => warning(E14, unlimited.cause()),
-        None => warning(E20, None),
+        Some(unlimited) => warning(lang, E14, unlimited.cause(lang)),
+        None => warning(lang, E20, None),
     };
     for intent in approval_intents(input) {
         let revocation = match intent.kind {
@@ -615,13 +613,13 @@ pub fn tx_rules(input: &TxRiskInput<'_>) -> Vec<Warning> {
             }
             ApprovalKindEvm::Erc721 { revoked, .. } => {
                 if !revoked {
-                    warnings.push(warning(E20, None));
+                    warnings.push(warning(lang, E20, None));
                 }
                 revoked
             }
             ApprovalKindEvm::ForAll { approved } => {
                 if approved {
-                    warnings.push(warning(E15, None));
+                    warnings.push(warning(lang, E15, None));
                 }
                 !approved
             }
@@ -630,27 +628,27 @@ pub fn tx_rules(input: &TxRiskInput<'_>) -> Vec<Warning> {
                     warnings.push(allowance(&amount, &U256::MAX_U160, &intent.token));
                 }
                 if expiration == MAX_U48 || expiration > now.saturating_add(THIRTY_DAYS) {
-                    warnings.push(warning(E22, None));
+                    warnings.push(warning(lang, E22, None));
                 }
                 amount.is_zero()
             }
             ApprovalKindEvm::Permit2Lockdown => true,
         };
         if revocation {
-            warnings.push(warning(E30, None));
+            warnings.push(warning(lang, E30, None));
             continue;
         }
         let registered = chain.label(&intent.spender).is_some();
         match facts.code_of(&intent.spender) {
             Some(CodeKind::Eoa | CodeKind::Delegated7702 { .. }) => {
-                warnings.push(warning(E16, None));
+                warnings.push(warning(lang, E16, None));
             }
             Some(CodeKind::Contract) if !registered => {
-                warnings.push(warning(E21, None));
+                warnings.push(warning(lang, E21, None));
             }
             // A failed lookup must not hide an EOA spender (fail closed, spec/03 §8.5).
             Some(CodeKind::Unknown) if !registered => {
-                warnings.push(warning(E39, None));
+                warnings.push(warning(lang, E39, None));
             }
             _ => {}
         }
@@ -659,10 +657,14 @@ pub fn tx_rules(input: &TxRiskInput<'_>) -> Vec<Warning> {
     match facts.account_code {
         CodeKind::Eoa => {}
         CodeKind::Unknown => {
-            warnings.push(warning(E17, Some("서명 계정의 코드를 확인할 수 없습니다")));
+            warnings.push(warning(
+                lang,
+                E17,
+                Some(text::ACCOUNT_CODE_UNKNOWN.get(lang)),
+            ));
         }
         CodeKind::Contract | CodeKind::Delegated7702 { .. } => {
-            warnings.push(warning(E17, None));
+            warnings.push(warning(lang, E17, None));
         }
     }
     // E18
@@ -684,7 +686,7 @@ pub fn tx_rules(input: &TxRiskInput<'_>) -> Vec<Warning> {
         }
     }
     if zero_or_self {
-        warnings.push(warning(E18, None));
+        warnings.push(warning(lang, E18, None));
     }
     // E19, E25, E26, E33
     for token in involved_tokens(input) {
@@ -693,17 +695,17 @@ pub fn tx_rules(input: &TxRiskInput<'_>) -> Vec<Warning> {
         }
         let meta = facts.token(&token);
         if meta.and_then(|meta| meta.symbol.as_deref()).is_none() {
-            warnings.push(warning(E26, None));
+            warnings.push(warning(lang, E26, None));
         } else if claims_known_symbol(chain, facts, &token) {
-            warnings.push(warning(E19, None));
+            warnings.push(warning(lang, E19, None));
         }
         if meta.and_then(|meta| meta.decimals).is_none() {
-            warnings.push(warning(E25, None));
+            warnings.push(warning(lang, E25, None));
         }
-        warnings.push(warning(E33, None));
+        warnings.push(warning(lang, E33, None));
     }
     if !involved_collections(input).is_empty() {
-        warnings.push(warning(E33, None));
+        warnings.push(warning(lang, E33, None));
     }
     // E23, E40: only the native asset and registry tokens count as received — any contract can
     // emit a Transfer log naming the user (spec/03 §6.4). E23 is skipped for a strictly simple
@@ -736,19 +738,19 @@ pub fn tx_rules(input: &TxRiskInput<'_>) -> Vec<Warning> {
             && !verified_receipts
             && simple_transfer.is_none()
         {
-            let cause = unverified_receipts.then_some("받는 자산은 등록되지 않은 토큰·NFT뿐입니다");
-            warnings.push(warning(E23, cause));
+            let cause = unverified_receipts.then_some(text::ONLY_UNVERIFIED_RECEIPTS.get(lang));
+            warnings.push(warning(lang, E23, cause));
         }
         if verified_sends && unverified_receipts {
-            warnings.push(warning(E40, None));
+            warnings.push(warning(lang, E40, None));
         }
-        if let Some(cause) = intent.and_then(|intent| intent.excess_outflow(tx, diff)) {
-            warnings.push(warning(E42, Some(&cause)));
+        if let Some(cause) = intent.and_then(|intent| intent.excess_outflow(lang, tx, diff)) {
+            warnings.push(warning(lang, E42, Some(&cause)));
         }
     }
     // E24
     if tx.to == *input.account && !tx.data.is_empty() {
-        warnings.push(warning(E24, None));
+        warnings.push(warning(lang, E24, None));
     }
     // E28: the wallet's own send, or a site's simple transfer that the E23 exception left
     // without a line — the site chose that recipient (spec/03 §10.2a). The signing account
@@ -765,7 +767,7 @@ pub fn tx_rules(input: &TxRiskInput<'_>) -> Vec<Warning> {
         }
         ApprovalOrigin::Site(_) => (
             simple_transfer.map(|intent| intent.recipient(tx)),
-            Some("사이트가 정한 주소입니다 — 받는 주소가 맞는지 확인하세요"),
+            Some(text::SITE_RECIPIENT.get(lang)),
         ),
     };
     if let Some(recipient) = recipient
@@ -773,7 +775,7 @@ pub fn tx_rules(input: &TxRiskInput<'_>) -> Vec<Warning> {
         && facts.book_name(&recipient).is_none()
         && facts.own_name(&recipient).is_none()
     {
-        warnings.push(warning(E28, cause));
+        warnings.push(warning(lang, E28, cause));
     }
     // E43
     look_alike_rules(input, &mut warnings);
@@ -781,7 +783,7 @@ pub fn tx_rules(input: &TxRiskInput<'_>) -> Vec<Warning> {
     if matches!(input.call, DecodedCall::NativeTransfer)
         && facts.code_of(&tx.to) == Some(CodeKind::Contract)
     {
-        warnings.push(warning(E29, None));
+        warnings.push(warning(lang, E29, None));
     }
     // E32
     if let Some(diff) = input.sim.diff()
@@ -789,7 +791,7 @@ pub fn tx_rules(input: &TxRiskInput<'_>) -> Vec<Warning> {
     {
         warnings.push(warning_text(
             E32,
-            format!("기타 이벤트 {}개", diff.other_events),
+            text::OTHER_EVENTS.fill(lang, [&diff.other_events.to_string()]),
         ));
     }
     warnings
@@ -798,6 +800,8 @@ pub fn tx_rules(input: &TxRiskInput<'_>) -> Vec<Warning> {
 /// Inputs of the typed-data rules.
 #[derive(Clone, Copy, Debug)]
 pub struct TypedRiskInput<'a> {
+    /// Display language of the warning texts.
+    pub lang: Lang,
     /// Chain.
     pub chain: &'a ChainInfo,
     /// Signing account.
@@ -911,6 +915,7 @@ fn typed_tokens(typed: &DecodedTypedData) -> Vec<Address> {
     reason = "one block per schema of spec/03 §10.3"
 )]
 pub fn typed_rules(input: &TypedRiskInput<'_>, hidden_characters: bool) -> Vec<Warning> {
+    let lang = input.lang;
     let mut warnings = Vec::new();
     let typed = input.typed;
     let root = &typed.root;
@@ -919,42 +924,42 @@ pub fn typed_rules(input: &TypedRiskInput<'_>, hidden_characters: bool) -> Vec<W
     let field_address = |node: &TdNode, name: &str| node.field(name).and_then(TdNode::address);
     let field_uint = |node: &TdNode, name: &str| node.field(name).and_then(TdNode::uint);
     let spender = |address: Option<Address>| {
-        spender_rule(input.chain, input.facts, address).map(|rule| warning(rule, None))
+        spender_rule(input.chain, input.facts, address).map(|rule| warning(lang, rule, None))
     };
 
     if typed.domain.chain_id.is_none() {
-        warnings.push(warning(T03, None));
+        warnings.push(warning(lang, T03, None));
     }
     match &typed.schema {
-        None => warnings.push(warning(T04, None)),
+        None => warnings.push(warning(lang, T04, None)),
         Some(schema) => match schema {
             KnownSchema::Eip2612Permit => {
-                warnings.push(warning(T05, None));
+                warnings.push(warning(lang, T05, None));
                 if field_address(root, "owner") != Some(account) {
-                    warnings.push(warning(T07, None));
+                    warnings.push(warning(lang, T07, None));
                 }
                 warnings.extend(spender(field_address(root, "spender")));
                 if deadline_t12(field_uint(root, "deadline"), now, false) {
-                    warnings.push(warning(T12, None));
+                    warnings.push(warning(lang, T12, None));
                 }
             }
             KnownSchema::DaiPermit => {
                 let allowed = root.field("allowed").and_then(TdNode::boolean);
                 if allowed == Some(true) {
-                    warnings.push(warning(T05, None));
+                    warnings.push(warning(lang, T05, None));
                 } else {
-                    warnings.push(warning(T15, None));
+                    warnings.push(warning(lang, T15, None));
                 }
                 if field_address(root, "holder") != Some(account) {
-                    warnings.push(warning(T07, None));
+                    warnings.push(warning(lang, T07, None));
                 }
                 warnings.extend(spender(field_address(root, "spender")));
                 if allowed == Some(true) && deadline_t12(field_uint(root, "expiry"), now, true) {
-                    warnings.push(warning(T12, None));
+                    warnings.push(warning(lang, T12, None));
                 }
             }
             KnownSchema::Permit2Single | KnownSchema::Permit2Batch => {
-                warnings.push(warning(T05, None));
+                warnings.push(warning(lang, T05, None));
                 warnings.extend(spender(field_address(root, "spender")));
                 let details: Vec<&TdNode> = match root.field("details") {
                     Some(TdNode::Array(items)) => items.iter().collect(),
@@ -973,14 +978,14 @@ pub fn typed_rules(input: &TypedRiskInput<'_>, hidden_characters: bool) -> Vec<W
                         .and_then(U256::to_u64)
                         .is_some_and(|deadline| deadline <= now)
                 {
-                    warnings.push(warning(T12, None));
+                    warnings.push(warning(lang, T12, None));
                 }
                 if sig_deadline.is_some_and(|deadline| {
                     deadline
                         .to_u64()
                         .is_none_or(|deadline| deadline > now.saturating_add(ONE_DAY))
                 }) {
-                    warnings.push(warning(T13, None));
+                    warnings.push(warning(lang, T13, None));
                 }
             }
             KnownSchema::Permit2Transfer
@@ -992,14 +997,15 @@ pub fn typed_rules(input: &TypedRiskInput<'_>, hidden_characters: bool) -> Vec<W
                     KnownSchema::Permit2WitnessTransfer { .. }
                         | KnownSchema::Permit2BatchWitnessTransfer { .. }
                 );
-                warnings.push(warning(if witness { T06 } else { T05 }, None));
+                warnings.push(warning(lang, if witness { T06 } else { T05 }, None));
                 warnings.extend(spender(field_address(root, "spender")));
                 if deadline_t12(field_uint(root, "deadline"), now, false) {
-                    warnings.push(warning(T12, None));
+                    warnings.push(warning(lang, T12, None));
                 }
             }
             KnownSchema::HyperliquidUser(action) => {
                 warnings.push(warning(
+                    lang,
                     match action {
                         HlUserAction::Transfer(_) => H01,
                         HlUserAction::ApproveAgent => H06,
@@ -1010,7 +1016,7 @@ pub fn typed_rules(input: &TypedRiskInput<'_>, hidden_characters: bool) -> Vec<W
                     None,
                 ));
                 if root.field("hyperliquidChain").and_then(TdNode::string) == Some("Testnet") {
-                    warnings.push(warning(H09, None));
+                    warnings.push(warning(lang, H09, None));
                 }
                 // A dApp-requested transfer gets the S-HC recipient and token checks (spec/11
                 // §7); missing facts fail closed.
@@ -1021,13 +1027,18 @@ pub fn typed_rules(input: &TypedRiskInput<'_>, hidden_characters: bool) -> Vec<W
                         &account,
                         input.facts.hyperliquid.as_ref(),
                     );
-                    warnings.extend(check.rules.into_iter().map(|rule| warning(rule, None)));
+                    warnings.extend(
+                        check
+                            .rules
+                            .into_iter()
+                            .map(|rule| warning(lang, rule, None)),
+                    );
                 }
             }
             KnownSchema::HyperliquidL1Agent => {
-                warnings.push(warning(H07, None));
+                warnings.push(warning(lang, H07, None));
                 if root.field("source").and_then(TdNode::string) == Some("b") {
-                    warnings.push(warning(H09, None));
+                    warnings.push(warning(lang, H09, None));
                 }
             }
             KnownSchema::SeaportOrder => {
@@ -1038,10 +1049,10 @@ pub fn typed_rules(input: &TypedRiskInput<'_>, hidden_characters: bool) -> Vec<W
                 if field_address(root, "offerer") == Some(account) {
                     // Signing hands the offer to whoever fulfils the order (T19).
                     if !offer.is_empty() {
-                        warnings.push(warning(T19, None));
+                        warnings.push(warning(lang, T19, None));
                     }
                 } else {
-                    warnings.push(warning(T07, None));
+                    warnings.push(warning(lang, T07, None));
                 }
                 let consideration = root
                     .field("consideration")
@@ -1056,19 +1067,18 @@ pub fn typed_rules(input: &TypedRiskInput<'_>, hidden_characters: bool) -> Vec<W
                     .iter()
                     .any(|item| seaport_item_verified(input.chain, item))
                 {
-                    let cause =
-                        (!mine.is_empty()).then_some("받는 것이 등록되지 않은 토큰·NFT뿐입니다");
-                    warnings.push(warning(T08, cause));
+                    let cause = (!mine.is_empty()).then_some(text::ORDER_ONLY_UNVERIFIED.get(lang));
+                    warnings.push(warning(lang, T08, cause));
                 }
                 let end = field_uint(root, "endTime");
                 if end.and_then(U256::to_u64).is_some_and(|end| end <= now) {
-                    warnings.push(warning(T12, None));
+                    warnings.push(warning(lang, T12, None));
                 }
                 if end.is_some_and(|end| {
                     end.to_u64()
                         .is_none_or(|end| end > now.saturating_add(HALF_YEAR))
                 }) {
-                    warnings.push(warning(T13, None));
+                    warnings.push(warning(lang, T13, None));
                 }
                 let criteria = offer.iter().chain(consideration).any(|item| {
                     matches!(
@@ -1079,7 +1089,7 @@ pub fn typed_rules(input: &TypedRiskInput<'_>, hidden_characters: bool) -> Vec<W
                 let contract_order =
                     field_uint(root, "orderType").and_then(U256::to_u64) == Some(4);
                 if criteria || contract_order {
-                    warnings.push(warning(T14, None));
+                    warnings.push(warning(lang, T14, None));
                 }
             }
         },
@@ -1089,7 +1099,7 @@ pub fn typed_rules(input: &TypedRiskInput<'_>, hidden_characters: bool) -> Vec<W
         .iter()
         .any(|token| claims_known_symbol(input.chain, input.facts, token))
     {
-        warnings.push(warning(T20, None));
+        warnings.push(warning(lang, T20, None));
     }
     let hyperliquid = matches!(
         typed.schema,
@@ -1098,19 +1108,19 @@ pub fn typed_rules(input: &TypedRiskInput<'_>, hidden_characters: bool) -> Vec<W
     match typed.domain.verifying_contract {
         // Hyperliquid signs with a zero verifying contract by design (spec/11 §7).
         None if hyperliquid => {}
-        None => warnings.push(warning(T10, None)),
+        None => warnings.push(warning(lang, T10, None)),
         Some(contract) => {
             if input.facts.code_of(&contract) == Some(CodeKind::Eoa) {
-                warnings.push(warning(T11, None));
+                warnings.push(warning(lang, T11, None));
             }
         }
     }
     if hidden_characters {
-        warnings.push(warning(T17, None));
+        warnings.push(warning(lang, T17, None));
     }
     // Some addresses or tokens were not looked up (limit or budget, spec/03 §8.5).
     if input.facts.lookups_limited {
-        warnings.push(warning(E27, None));
+        warnings.push(warning(lang, E27, None));
     }
     warnings
 }

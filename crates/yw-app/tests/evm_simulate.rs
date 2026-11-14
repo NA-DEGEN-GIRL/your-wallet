@@ -81,7 +81,7 @@ struct Run {
 
 fn evaluate(chain: &ChainInfo, tx: &Eip1559Tx, outcome: SimOutcome, now: u64) -> TestResult<Run> {
     let user = address(USER)?;
-    let sim = interpret(chain, tx, &user, &outcome, now);
+    let sim = interpret(yw_core::lang::Lang::Ko, chain, tx, &user, &outcome, now);
     let decoded = DecodedTx {
         tx: tx.clone(),
         call: decode_call(chain, &tx.to, &tx.data),
@@ -106,6 +106,7 @@ fn evaluate(chain: &ChainInfo, tx: &Eip1559Tx, outcome: SimOutcome, now: u64) ->
         hyperliquid: None,
     };
     let draft = build_evm_tx_request(
+        yw_core::lang::Lang::Ko,
         ApprovalId([7; 16]),
         ApprovalOrigin::App,
         EvmKeySource::Derived(AccountIndex::ZERO),

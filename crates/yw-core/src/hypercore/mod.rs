@@ -16,6 +16,7 @@
 pub mod display;
 #[cfg(test)]
 mod tests;
+pub mod text;
 
 use core::fmt;
 

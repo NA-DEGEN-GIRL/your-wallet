@@ -255,8 +255,12 @@ fn approve_as(
         options: yw_core::sol::dapp::SolSendOptions::default(),
         txs,
     };
-    let draft = build_sol_tx_request(&request, &preview.into_facts(Vec::new(), 100_000))
-        .map_err(|error| format!("draft {error:?}"))?;
+    let draft = build_sol_tx_request(
+        yw_core::lang::Lang::Ko,
+        &request,
+        &preview.into_facts(Vec::new(), 100_000),
+    )
+    .map_err(|error| format!("draft {error:?}"))?;
     let risk = draft.display.risk;
     let mut store = ApprovalStore::new();
     let issued = store.issue(draft, 1, NOW)?;

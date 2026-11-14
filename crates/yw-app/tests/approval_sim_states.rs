@@ -121,7 +121,17 @@ fn acks(view: &ApprovalView) -> usize {
 }
 
 fn render(request: &ApprovalRequest) -> TestResult<ApprovalView> {
-    Ok(view(&signing(request), 0, false, true, Vec::new(), true, None).map_err(ErrorCode::code)?)
+    Ok(view(
+        yw_core::lang::Lang::Ko,
+        &signing(request),
+        0,
+        false,
+        true,
+        Vec::new(),
+        true,
+        None,
+    )
+    .map_err(ErrorCode::code)?)
 }
 
 /// The D16 sequence on a fresh session for each step.
@@ -293,6 +303,7 @@ fn ap6_inputs_are_ignored_while_simulating() -> TestResult {
     );
     // The notice counts up to 10 s and stops there.
     let shown = view(
+        yw_core::lang::Lang::Ko,
         &simulating,
         READY_AT + 12_000,
         false,
@@ -308,6 +319,7 @@ fn ap6_inputs_are_ignored_while_simulating() -> TestResult {
     );
     // A failed preparation is blocked; its retry is never an E-SIM code.
     let failed = view(
+        yw_core::lang::Lang::Ko,
         &PrepareState::Failed {
             code: ErrorCode::Rpc001,
             retryable: true,

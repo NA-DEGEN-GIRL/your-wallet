@@ -15,11 +15,13 @@ use super::recipient::{AccountClass, KnownKind, RecipientCheck};
 use super::rent::{RentError, format_amount, format_raw};
 use super::sign::fee_policy_ok;
 use super::template::{SolAsset, SolTransferCore, SplAccounts};
+use super::text as t;
 use crate::approval::{
     AccountRef, ApprovalDisplay, ApprovalDraft, ApprovalId, ApprovalKind, ApprovalOrigin, ChainRef,
     DisplayError, DisplayField, FieldKey, MAX_TITLE_BYTES, RiskLevel, RuleId, Signer,
     SigningPayload, SimulationBinding, Warning, escape_edges, escape_untrusted,
 };
+use crate::lang::Lang;
 use crate::slip10::SolKeySource;
 
 /// `L01` approval impossible (blocked).
@@ -79,29 +81,28 @@ pub enum SolBlock {
 }
 
 impl SolBlock {
-    /// Fixed reason text.
+    /// Fixed reason text in Korean ([`Self::text_in`] for a language).
     #[must_use]
     pub fn text(self) -> String {
-        match self {
-            Self::ClusterMismatch => {
-                "RPC가 다른 Solana 클러스터를 가리킵니다(제네시스 불일치)".to_owned()
-            }
-            Self::Fee(error) => error.to_string(),
-            Self::Rent(error) => error.to_string(),
-            Self::RecipientIsTokenAccount => {
-                "지갑 주소가 아니라 토큰 계정/mint 주소입니다".to_owned()
-            }
-            Self::RecipientIsProgram => "받는 주소가 프로그램입니다".to_owned(),
-            Self::RpcAnomaly => "RPC 응답 값이 비정상입니다".to_owned(),
-            Self::PendingExists => "이 계정의 이전 전송을 확인 중입니다".to_owned(),
-            Self::JournalFull => "거래 저널 공간이 부족합니다".to_owned(),
-            Self::TokenAccountFrozen => {
-                "보내는 토큰 계정이 동결되어 있습니다(토큰 발행자가 막음)".to_owned()
-            }
-            Self::RecipientTokenAccountUnusable => {
-                "받는 사람의 토큰 계정(ATA)이 동결되었거나 이 토큰의 계정이 아닙니다".to_owned()
-            }
-        }
+        self.text_in(Lang::Ko)
+    }
+
+    /// Fixed reason text in `lang`.
+    #[must_use]
+    pub fn text_in(self, lang: Lang) -> String {
+        let text = match self {
+            Self::ClusterMismatch => t::BLOCK_CLUSTER_MISMATCH,
+            Self::Fee(error) => return error.text_in(lang).to_owned(),
+            Self::Rent(error) => return error.text_in(lang),
+            Self::RecipientIsTokenAccount => t::BLOCK_TOKEN_ACCOUNT,
+            Self::RecipientIsProgram => t::BLOCK_PROGRAM,
+            Self::RpcAnomaly => t::RPC_ANOMALY,
+            Self::PendingExists => t::BLOCK_PENDING,
+            Self::JournalFull => t::BLOCK_JOURNAL_FULL,
+            Self::TokenAccountFrozen => t::BLOCK_FROZEN,
+            Self::RecipientTokenAccountUnusable => t::BLOCK_RECIPIENT_ATA,
+        };
+        text.get(lang).to_owned()
     }
 }
 
@@ -214,11 +215,11 @@ pub fn intent_flags(
     out
 }
 
-fn escape_label(text: &str) -> String {
+fn escape_label(lang: Lang, text: &str) -> String {
     let escaped = escape_untrusted(text).text.replace('\n', "[U+000A]");
     let value = escape_edges(&escaped);
     if value.is_empty() {
-        "(이름 없음)".to_owned()
+        t::NO_NAME.get(lang).to_owned()
     } else {
         value
     }
@@ -246,22 +247,29 @@ pub fn asset_amount_text(asset: SolAsset, raw: u64) -> String {
 
 /// The approval title of a transfer (`[Solana devnet (테스트)] SOL 전송: 1.000000000 SOL`,
 /// `[Solana mainnet] 토큰 전송: 1.000000 USDC`). The journal activity rebuilds the same string
-/// from the transaction bytes (spec/07 §14.1).
+/// from the transaction bytes (spec/07 §14.1). Korean; [`transfer_title_in`] for a language.
 #[must_use]
 pub fn transfer_title(cluster: SolCluster, core: &SolTransferCore) -> String {
-    let (kind, short) = match core.asset {
-        SolAsset::Sol => ("SOL 전송", "SOL 전송"),
-        SolAsset::Spl(_) => ("토큰 전송", "토큰 전송"),
-    };
+    transfer_title_in(Lang::Ko, cluster, core)
+}
+
+/// [`transfer_title`] in `lang` (`[Solana devnet (test)] SOL transfer: 1.000000000 SOL`).
+#[must_use]
+pub fn transfer_title_in(lang: Lang, cluster: SolCluster, core: &SolTransferCore) -> String {
+    let kind = match core.asset {
+        SolAsset::Sol => t::TITLE_SOL_TRANSFER,
+        SolAsset::Spl(_) => t::TITLE_TOKEN_TRANSFER,
+    }
+    .get(lang);
+    let network = cluster.display_name_in(lang);
     let title = format!(
-        "[{}] {kind}: {}",
-        cluster.display_name(),
+        "[{network}] {kind}: {}",
         asset_amount_text(core.asset, core.amount)
     );
     if title.len() <= MAX_TITLE_BYTES {
         title
     } else {
-        format!("[{}] {short}", cluster.display_name())
+        format!("[{network}] {kind}")
     }
 }
 
@@ -273,196 +281,180 @@ fn warning(rule: RuleId, text: String) -> Warning {
     }
 }
 
-fn lookalike_text(recipient: &RecipientCheck) -> String {
-    let mut lines =
-        vec!["앞 3자 또는 뒤 3자가 같은 다른 주소입니다 — 주소 오염 공격일 수 있습니다".to_owned()];
+fn lookalike_text(lang: Lang, recipient: &RecipientCheck) -> String {
+    let mut lines = vec![t::LOOKALIKE_HEAD.get(lang).to_owned()];
     for entry in &recipient.lookalikes {
-        let name = escape_label(&entry.label);
+        let name = escape_label(lang, &entry.label);
+        let address = grouped(&entry.address);
         lines.push(match &entry.kind {
-            KnownKind::Book { .. } => {
-                format!("주소록 '{name}'과 비슷함: {}", grouped(&entry.address))
-            }
+            KnownKind::Book { .. } => t::LOOKALIKE_BOOK.fill(lang, [&name, &address]),
             KnownKind::Own { .. }
             | KnownKind::OwnImported
             | KnownKind::OwnHardware
-            | KnownKind::OwnMnemonic => {
-                format!("내 계정 '{name}'과 비슷함: {}", grouped(&entry.address))
-            }
-            KnownKind::Sent | KnownKind::History => {
-                format!("보낸 내역의 주소와 비슷함: {}", grouped(&entry.address))
-            }
+            | KnownKind::OwnMnemonic => t::LOOKALIKE_OWN.fill(lang, [&name, &address]),
+            KnownKind::Sent | KnownKind::History => t::LOOKALIKE_SENT.fill(lang, [&address]),
         });
     }
     lines.join("\n")
 }
 
-fn sim_text(simulation: SimSummary, cu_limit: u32) -> String {
+fn sim_text(lang: Lang, simulation: SimSummary, cu_limit: u32) -> String {
     match simulation {
         SimSummary::Ok { units } if units > u64::from(cu_limit) => {
-            format!("CU 초과: 사용 {units} > 한도 {cu_limit}")
+            t::SIM_CU_OVER.fill(lang, [&units.to_string(), &cu_limit.to_string()])
         }
-        SimSummary::Ok { units } => format!("성공(CU {units})"),
-        SimSummary::Failed { err: code, .. } => format!("실패: {}", err::text(code)),
-        SimSummary::NoResult => "결과 없음(참고 정보이며 승인을 막지 않습니다)".to_owned(),
+        SimSummary::Ok { units } => t::SIM_OK.fill(lang, [&units.to_string()]),
+        SimSummary::Failed { err: code, .. } => {
+            t::SIM_FAILED.fill(lang, [err::text_in(code, lang)])
+        }
+        SimSummary::NoResult => t::SIM_NO_RESULT.get(lang).to_owned(),
     }
 }
 
-fn warnings(intent: &SolTransferIntent, facts: &SolPreviewFacts) -> Vec<Warning> {
+fn warnings(lang: Lang, intent: &SolTransferIntent, facts: &SolPreviewFacts) -> Vec<Warning> {
     let mut out: Vec<Warning> = facts
         .blocks
         .iter()
-        .map(|block| warning(L01, format!("보낼 수 없습니다: {}", block.text())))
+        .map(|block| warning(L01, t::L01_CAUSE.fill(lang, [&block.text_in(lang)])))
         .collect();
     if intent.has(flags::OFF_CURVE) {
-        out.push(warning(
-            L02,
-            "일반 지갑이 아님: 프로그램 소유 주소(PDA)나 토큰 계정일 수 있음".to_owned(),
-        ));
+        out.push(warning(L02, t::L02_TEXT.get(lang).to_owned()));
     }
     if intent.has(flags::LOOKALIKE) {
-        out.push(warning(L03, lookalike_text(&facts.recipient)));
+        out.push(warning(L03, lookalike_text(lang, &facts.recipient)));
     }
     if intent.has(flags::PROGRAM_OWNED) {
-        out.push(warning(
-            L04,
-            "받는 주소가 프로그램 소유 계정입니다 — 일반 지갑이 아닐 수 있습니다".to_owned(),
-        ));
+        out.push(warning(L04, t::L04_TEXT.get(lang).to_owned()));
     }
     if intent.has(flags::SIM_WARNING) {
-        out.push(warning(
-            L05,
-            format!(
-                "시뮬레이션에서 실패했거나 계산 한도를 넘었습니다 — 수수료만 잃을 수 있습니다\n{}",
-                sim_text(facts.simulation, intent.core.cu_limit)
-            ),
-        ));
+        let sim = sim_text(lang, facts.simulation, intent.core.cu_limit);
+        out.push(warning(L05, t::L05_TEXT.fill(lang, [&sim])));
     }
     if intent.has(flags::FIRST_TIME) {
-        out.push(warning(
-            L06,
-            "처음 보내는 주소입니다. 주소 전체를 확인하고, 큰 금액은 소액 시험 송금 뒤 보내세요."
-                .to_owned(),
-        ));
+        out.push(warning(L06, t::L06_TEXT.get(lang).to_owned()));
     }
     if intent.has(flags::NON_STANDARD_PATH) {
         out.push(warning(
             L07,
-            format!("비표준 경로 계정입니다 ({})", intent.source.path_text()),
+            t::L07_TEXT.fill(lang, [&intent.source.path_text_in(lang)]),
         ));
     }
     if intent.has(flags::SEND_MAX) {
         out.push(warning(
             L08,
             match intent.core.asset {
-                SolAsset::Sol => "보내기 최대: 보낸 뒤 이 계정의 SOL 잔액은 0이 됩니다".to_owned(),
-                SolAsset::Spl(entry) => format!(
-                    "보내기 최대: 보낸 뒤 이 계정의 {} 잔액은 0이 됩니다(SOL은 남습니다)",
-                    entry.symbol
-                ),
+                SolAsset::Sol => t::L08_SOL.get(lang).to_owned(),
+                SolAsset::Spl(entry) => t::L08_SPL.fill(lang, [entry.symbol]),
             },
         ));
     }
     out
 }
 
-fn fee_text(intent: &SolTransferIntent, facts: &SolPreviewFacts) -> String {
+fn fee_text(lang: Lang, intent: &SolTransferIntent, facts: &SolPreviewFacts) -> String {
     let core = &intent.core;
     let priority = priority_fee(core.cu_limit, core.cu_price_micro).unwrap_or(u64::MAX);
     let rpc = match facts.rpc_fee {
         Some(rpc) if rpc < intent.max_fee_lamports => {
-            format!("{} lamports (지갑 최대보다 낮은 RPC 추정)", format_raw(rpc))
+            t::FEE_RPC_LOWER.fill(lang, [&format_raw(rpc)])
         }
         Some(rpc) => format!("{} lamports", format_raw(rpc)),
-        None => "확인하지 못함".to_owned(),
+        None => t::NOT_CHECKED.get(lang).to_owned(),
     };
-    format!(
-        "기본 수수료 {} lamports × 서명 1\n우선 수수료 {} lamports (CU 한도 {} × 가격 {} micro-lamports/CU, 올림)\n최대 합계 {} SOL ({} lamports)\n사용자 상한 {} lamports\nRPC getFeeForMessage: {rpc}",
-        format_raw(SOL_BASE_FEE_LAMPORTS_PER_SIG),
-        format_raw(priority),
-        format_raw(u64::from(core.cu_limit)),
-        format_raw(core.cu_price_micro),
-        format_amount(intent.max_fee_lamports, 9),
-        format_raw(intent.max_fee_lamports),
-        format_raw(intent.fee_cap_lamports),
+    t::FEE_TEXT.fill(
+        lang,
+        [
+            &format_raw(SOL_BASE_FEE_LAMPORTS_PER_SIG),
+            &format_raw(priority),
+            &format_raw(u64::from(core.cu_limit)),
+            &format_raw(core.cu_price_micro),
+            &format_amount(intent.max_fee_lamports, 9),
+            &format_raw(intent.max_fee_lamports),
+            &format_raw(intent.fee_cap_lamports),
+            &rpc,
+        ],
     )
 }
 
-fn recipient_text(core: &SolTransferCore, facts: &SolPreviewFacts) -> String {
+fn recipient_text(lang: Lang, core: &SolTransferCore, facts: &SolPreviewFacts) -> String {
     let mut text = grouped(&core.to);
     if let Some(exact) = &facts.recipient.exact {
-        let name = escape_label(&exact.label);
-        let _ = match exact.kind {
-            KnownKind::Book { verified: true } => write!(text, "\n주소록: {name} ✓ 확인됨"),
-            KnownKind::Book { verified: false } => write!(text, "\n주소록: {name}"),
+        let name = escape_label(lang, &exact.label);
+        let note = match exact.kind {
+            KnownKind::Book { verified: true } => t::RECIPIENT_BOOK_VERIFIED.fill(lang, [&name]),
+            KnownKind::Book { verified: false } => t::RECIPIENT_BOOK.fill(lang, [&name]),
             KnownKind::Own { index } => {
-                write!(text, "\n내 계정 #{}: {name}", index.saturating_add(1))
+                t::RECIPIENT_OWN.fill(lang, [&index.saturating_add(1).to_string(), &name])
             }
-            KnownKind::OwnImported => write!(text, "\n내 계정(가져온 개인키): {name}"),
-            KnownKind::OwnHardware => write!(text, "\n내 계정(YubiKey): {name}"),
-            KnownKind::OwnMnemonic => write!(text, "\n내 계정(추가한 복구 단어): {name}"),
-            KnownKind::Sent | KnownKind::History => write!(text, "\n보낸 적 있는 주소"),
+            KnownKind::OwnImported => t::RECIPIENT_OWN_IMPORTED.fill(lang, [&name]),
+            KnownKind::OwnHardware => t::RECIPIENT_OWN_HARDWARE.fill(lang, [&name]),
+            KnownKind::OwnMnemonic => t::RECIPIENT_OWN_MNEMONIC.fill(lang, [&name]),
+            KnownKind::Sent | KnownKind::History => t::RECIPIENT_SENT.get(lang).to_owned(),
         };
+        let _ = write!(text, "\n{note}");
     }
     if facts.recipient_account == AccountClass::Missing {
-        text.push_str(match core.asset {
-            SolAsset::Sol => "\n새 계정(아직 없음)",
-            SolAsset::Spl(_) => "\nSOL 계정 없음(새 지갑일 수 있음 — 토큰을 받는 데는 문제없음)",
-        });
+        let note = match core.asset {
+            SolAsset::Sol => t::RECIPIENT_NEW,
+            SolAsset::Spl(_) => t::RECIPIENT_NO_SOL_ACCOUNT,
+        };
+        text.push('\n');
+        text.push_str(note.get(lang));
     }
     if matches!(core.asset, SolAsset::Spl(_)) {
-        text.push_str("\n받는 지갑(소유자) 주소입니다. 토큰은 아래 '자산·금액'의 받는 토큰 계정(ATA)으로 갑니다.");
+        text.push('\n');
+        text.push_str(t::RECIPIENT_SPL_OWNER.get(lang));
     }
     text
 }
 
 /// `0x0502` for SPL: symbol, UI and raw amount, mint, token program, decimals, both ATAs.
-fn spl_amount_text(core: &SolTransferCore, accounts: &SplAccounts) -> String {
+fn spl_amount_text(lang: Lang, core: &SolTransferCore, accounts: &SplAccounts) -> String {
     let entry = accounts.entry;
-    format!(
-        "{}\n{} (원시 단위, decimals {})\nmint (허용 목록 고정):\n{}\n토큰 프로그램: SPL Token (TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA)\n보내는 토큰 계정(내 ATA):\n{}\n받는 토큰 계정(받는 지갑의 ATA, 지갑이 계산):\n{}",
-        asset_amount_text(core.asset, core.amount),
-        format_raw(core.amount),
-        entry.decimals,
-        grouped(&entry.mint),
-        grouped(&accounts.from_ata),
-        grouped(&accounts.to_ata),
+    t::SPL_AMOUNT.fill(
+        lang,
+        [
+            &asset_amount_text(core.asset, core.amount),
+            &format_raw(core.amount),
+            &entry.decimals.to_string(),
+            &grouped(&entry.mint),
+            &grouped(&accounts.from_ata),
+            &grouped(&accounts.to_ata),
+        ],
     )
 }
 
 /// `0x0503`: the destination ATA creation and who pays its rent.
-fn ata_text(spl: &SplPreviewFacts) -> String {
-    if spl.to_ata_exists {
-        format!(
-            "받는 토큰 계정이 이미 있습니다(RPC 참고) — 생성 비용 없음.\n거래에는 '없으면 만들기'(CreateIdempotent) 명령이 항상 들어갑니다. 실행 때 없으면 최대 {} SOL({} lamports, rent)을 보내는 계정이 냅니다.",
-            format_amount(spl.rent165, 9),
-            format_raw(spl.rent165)
-        )
+fn ata_text(lang: Lang, spl: &SplPreviewFacts) -> String {
+    let template = if spl.to_ata_exists {
+        t::ATA_EXISTS
     } else {
-        format!(
-            "받는 토큰 계정이 없습니다(RPC 참고) — 이 거래가 만듭니다.\n생성 비용(rent) 최대 {} SOL({} lamports)을 보내는 계정이 냅니다(받는 사람 소유 계정에 들어감).",
-            format_amount(spl.rent165, 9),
-            format_raw(spl.rent165)
-        )
-    }
+        t::ATA_MISSING
+    };
+    template.fill(
+        lang,
+        [&format_amount(spl.rent165, 9), &format_raw(spl.rent165)],
+    )
 }
 
-fn balance_text(balance: u64, total: u64) -> String {
+fn balance_text(lang: Lang, balance: u64, total: u64) -> String {
     let after = balance.checked_sub(total).map_or_else(
-        || "부족".to_owned(),
+        || t::INSUFFICIENT.get(lang).to_owned(),
         |rest| format!("{} SOL", format_amount(rest, 9)),
     );
-    format!("{} SOL → {after} (RPC 기준)", format_amount(balance, 9))
+    t::BALANCE_AFTER.fill(lang, [&format_amount(balance, 9), &after])
 }
 
-fn token_balance_text(asset: SolAsset, balance: Option<u64>, amount: u64) -> String {
+fn token_balance_text(lang: Lang, asset: SolAsset, balance: Option<u64>, amount: u64) -> String {
     match balance {
         Some(balance) => {
-            let after = balance
-                .checked_sub(amount)
-                .map_or_else(|| "부족".to_owned(), |rest| asset_amount_text(asset, rest));
-            format!("{} → {after} (RPC 기준)", asset_amount_text(asset, balance))
+            let after = balance.checked_sub(amount).map_or_else(
+                || t::INSUFFICIENT.get(lang).to_owned(),
+                |rest| asset_amount_text(asset, rest),
+            );
+            t::TOKEN_BALANCE_AFTER.fill(lang, [&asset_amount_text(asset, balance), &after])
         }
-        None => format!("{} 토큰 계정 없음 (RPC 기준)", asset.symbol()),
+        None => t::NO_TOKEN_ACCOUNT_BALANCE.fill(lang, [asset.symbol()]),
     }
 }
 
@@ -481,6 +473,7 @@ pub fn max_sol_debit(intent: &SolTransferIntent, facts: &SolPreviewFacts) -> u64
 /// The asset-specific fields `0x0502`–`0x0506` (spec/07 §13.3): SOL amount, fee, total and
 /// balance; SPL adds `0x0503` (ATA creation and its rent) and the token side of each.
 fn asset_fields(
+    lang: Lang,
     fields: &mut Vec<DisplayField>,
     intent: &SolTransferIntent,
     facts: &SolPreviewFacts,
@@ -497,7 +490,7 @@ fn asset_fields(
             fields.push(DisplayField::new(
                 FieldKey::SOL_FEE,
                 "",
-                fee_text(intent, facts),
+                fee_text(lang, intent, facts),
             )?);
             fields.push(DisplayField::new(
                 FieldKey::SOL_TOTAL,
@@ -507,7 +500,7 @@ fn asset_fields(
             fields.push(DisplayField::new(
                 FieldKey::SOL_BALANCE,
                 "",
-                balance_text(facts.balance, total),
+                balance_text(lang, facts.balance, total),
             )?);
         }
         SolAsset::Spl(entry) => {
@@ -517,24 +510,30 @@ fn asset_fields(
             fields.push(DisplayField::new(
                 FieldKey::SOL_AMOUNT,
                 entry.symbol,
-                spl_amount_text(core, &accounts),
+                spl_amount_text(lang, core, &accounts),
             )?);
-            fields.push(DisplayField::new(FieldKey::SOL_ATA, "", ata_text(&spl))?);
+            fields.push(DisplayField::new(
+                FieldKey::SOL_ATA,
+                "",
+                ata_text(lang, &spl),
+            )?);
             fields.push(DisplayField::new(
                 FieldKey::SOL_FEE,
                 "",
-                fee_text(intent, facts),
+                fee_text(lang, intent, facts),
             )?);
             fields.push(DisplayField::new(
                 FieldKey::SOL_TOTAL,
                 "",
-                format!(
-                    "{}\nSOL 최대 {} SOL ({} lamports = 수수료 최대 {} + 토큰 계정 생성 rent {})",
-                    asset_amount_text(core.asset, core.amount),
-                    format_amount(total, 9),
-                    format_raw(total),
-                    format_raw(intent.max_fee_lamports),
-                    format_raw(spl.rent())
+                t::SPL_TOTAL.fill(
+                    lang,
+                    [
+                        &asset_amount_text(core.asset, core.amount),
+                        &format_amount(total, 9),
+                        &format_raw(total),
+                        &format_raw(intent.max_fee_lamports),
+                        &format_raw(spl.rent()),
+                    ],
                 ),
             )?);
             fields.push(DisplayField::new(
@@ -542,8 +541,8 @@ fn asset_fields(
                 "",
                 format!(
                     "{}\n{}",
-                    token_balance_text(core.asset, spl.token_balance, core.amount),
-                    balance_text(facts.balance, total)
+                    token_balance_text(lang, core.asset, spl.token_balance, core.amount),
+                    balance_text(lang, facts.balance, total)
                 ),
             )?);
         }
@@ -551,8 +550,8 @@ fn asset_fields(
     Ok(())
 }
 
-/// Builds the draft of a SOL or SPL transfer (spec/07 §13.1-3); `genesis` is the hash checked
-/// with `getGenesisHash` (equal to the cluster's pinned value).
+/// Builds the draft of a SOL or SPL transfer (spec/07 §13.1-3) with every text in `lang`;
+/// `genesis` is the hash checked with `getGenesisHash` (equal to the cluster's pinned value).
 ///
 /// # Errors
 ///
@@ -561,6 +560,7 @@ fn asset_fields(
 /// compute-unit limit is not the template's, whose maximum fee is not the formula's value or
 /// exceeds the cap, or whose recipient is not the one the shown recipient check parsed).
 pub fn build_sol_transfer_request(
+    lang: Lang,
     intent: &SolTransferIntent,
     genesis: &[u8; 32],
     facts: &SolPreviewFacts,
@@ -573,15 +573,17 @@ pub fn build_sol_transfer_request(
     fields.push(DisplayField::new(
         FieldKey::ORIGIN,
         "",
-        crate::approval::APP_ORIGIN_TEXT,
+        crate::approval::APP_ORIGIN.get(lang),
     )?);
     fields.push(DisplayField::new(
         FieldKey::NETWORK,
         "",
-        format!(
-            "{}\ngenesis 확인됨: {}",
-            intent.cluster.display_name(),
-            crate::codec::base58::base58_encode(genesis)
+        t::NETWORK_GENESIS.fill(
+            lang,
+            [
+                intent.cluster.display_name_in(lang),
+                &crate::codec::base58::base58_encode(genesis),
+            ],
         ),
     )?);
     fields.push(DisplayField::new(
@@ -589,26 +591,26 @@ pub fn build_sol_transfer_request(
         "",
         format!(
             "{}\n{}\n{}",
-            escape_label(&facts.account_label),
-            intent.source.path_text(),
+            escape_label(lang, &facts.account_label),
+            intent.source.path_text_in(lang),
             grouped(&core.from)
         ),
     )?);
     fields.push(DisplayField::new(
         FieldKey::SOL_TO,
         "",
-        recipient_text(core, facts),
+        recipient_text(lang, core, facts),
     )?);
-    asset_fields(&mut fields, intent, facts)?;
+    asset_fields(lang, &mut fields, intent, facts)?;
     fields.push(DisplayField::new(
         FieldKey::SOL_SIMULATION,
         "",
-        sim_text(facts.simulation, core.cu_limit),
+        sim_text(lang, facts.simulation, core.cu_limit),
     )?);
     fields.push(DisplayField::new(
         FieldKey::SOL_VALIDITY,
         "",
-        "승인 창은 표시 후 120초에 만료(남은 시간은 상태 줄). 승인 즉시 서명하며 거래는 약 30초 뒤 만료",
+        t::VALIDITY.get(lang),
     )?);
     fields.push(DisplayField::new(
         FieldKey::SOL_AUDIT,
@@ -616,9 +618,10 @@ pub fn build_sol_transfer_request(
         crate::hex::encode(&intent.intent_hash()),
     )?);
     let display = ApprovalDisplay::new(
-        transfer_title(intent.cluster, core),
+        lang,
+        transfer_title_in(lang, intent.cluster, core),
         fields,
-        warnings(intent, facts),
+        warnings(lang, intent, facts),
     )?;
     Ok(ApprovalDraft {
         id: ApprovalId(intent.id),

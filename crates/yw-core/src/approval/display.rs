@@ -7,6 +7,7 @@ use sha2::{Digest, Sha256};
 use super::text::{RiskLevel, Warning, is_valid_display_text};
 use crate::codec::transcript::Transcript;
 use crate::evm::risk::{request_risk, sort_warnings};
+use crate::lang::Lang;
 
 /// Display bytes magic.
 pub const DISPLAY_MAGIC: &[u8; 8] = b"YWDSP003";
@@ -301,6 +302,9 @@ impl DisplayField {
 /// The approval display (spec/03 §11.1).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ApprovalDisplay {
+    /// The language every text below was built in; the window draws its labels and fixed texts in
+    /// it too (spec/14 §2).
+    pub lang: Lang,
     /// `[{network}] {action}`.
     pub title: String,
     /// Fields in display order.
@@ -320,6 +324,7 @@ impl ApprovalDisplay {
     ///
     /// [`DisplayError`] when a bound or a character rule is violated.
     pub fn new(
+        lang: Lang,
         title: String,
         fields: Vec<DisplayField>,
         mut warnings: Vec<Warning>,
@@ -327,6 +332,7 @@ impl ApprovalDisplay {
         sort_warnings(&mut warnings);
         let (risk, ack_required) = request_risk(&warnings);
         let display = Self {
+            lang,
             title,
             fields,
             warnings,
@@ -461,13 +467,14 @@ mod tests {
     #[test]
     fn warning_order_and_risk() {
         let display = ApprovalDisplay::new(
+            crate::lang::Lang::Ko,
             "[t] x".to_owned(),
             Vec::new(),
             vec![
-                warning(E28, None),
-                warning(E12, None),
-                warning(E31, None),
-                warning(E01, Some("원인")),
+                warning(crate::lang::Lang::Ko, E28, None),
+                warning(crate::lang::Lang::Ko, E12, None),
+                warning(crate::lang::Lang::Ko, E31, None),
+                warning(crate::lang::Lang::Ko, E01, Some("원인")),
             ],
         )
         .unwrap();
@@ -475,10 +482,17 @@ mod tests {
         assert_eq!(rules, vec![E01, E12, E28, E31]);
         assert_eq!(display.risk, RiskLevel::High);
         assert!(display.ack_required);
-        let empty = ApprovalDisplay::new("[t] x".to_owned(), Vec::new(), Vec::new()).unwrap();
+        let empty = ApprovalDisplay::new(
+            crate::lang::Lang::Ko,
+            "[t] x".to_owned(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
         assert_eq!(empty.risk, RiskLevel::Info);
         assert!(!empty.ack_required);
         let bad = ApprovalDisplay::new(
+            crate::lang::Lang::Ko,
             "[t] x".to_owned(),
             Vec::new(),
             vec![Warning {
@@ -496,7 +510,13 @@ mod tests {
             DisplayField::new(FieldKey::TO, "", "a").unwrap(),
             DisplayField::new(FieldKey::EXPECTED_FEE, "", "1 ETH").unwrap(),
         ];
-        let display = ApprovalDisplay::new("[t] x".to_owned(), fields, Vec::new()).unwrap();
+        let display = ApprovalDisplay::new(
+            crate::lang::Lang::Ko,
+            "[t] x".to_owned(),
+            fields,
+            Vec::new(),
+        )
+        .unwrap();
         let mut changed = display.clone();
         changed.fields.get_mut(1).unwrap().value = "2 ETH".to_owned();
         assert_ne!(display.bytes().unwrap(), changed.bytes().unwrap());

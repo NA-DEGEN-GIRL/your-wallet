@@ -777,15 +777,17 @@ pub struct BtcMessageRequest {
     pub message: Vec<u8>,
 }
 
-/// Builds the approval draft of a Bitcoin message request (spec/08 §17.4).
+/// Builds the approval draft of a Bitcoin message request in `lang` (spec/08 §17.4, spec/14).
 ///
 /// # Errors
 ///
 /// [`crate::approval::DisplayError`] (defensive; also for a protocol the address type cannot use
 /// or a key that does not give an address).
 pub fn build_btc_message_request(
+    lang: crate::lang::Lang,
     request: &BtcMessageRequest,
 ) -> Result<crate::approval::ApprovalDraft, crate::approval::DisplayError> {
+    use super::text;
     use crate::approval::message::{inline_value, push_message_body};
     use crate::approval::{
         ApprovalDisplay, ApprovalDraft, ApprovalOrigin, BtcMessagePayload, DisplayError,
@@ -807,15 +809,15 @@ pub fn build_btc_message_request(
         DisplayField::new(
             FieldKey::NETWORK,
             "",
-            request.network.display_name().to_owned(),
+            text::network_name(lang, request.network).to_owned(),
         )?,
         DisplayField::new(
             FieldKey::ACCOUNT,
             "",
             format!(
                 "{}\n{}\n{address}",
-                inline_value(&request.label),
-                inline_value(&request.path)
+                inline_value(lang, &request.label),
+                inline_value(lang, &request.path)
             ),
         )?,
         DisplayField::new(
@@ -824,25 +826,27 @@ pub fn build_btc_message_request(
             request.protocol.label(request.script_type),
         )?,
     ];
-    let mut warnings = vec![risk::warning(M04, None)];
+    let mut warnings = vec![risk::warning(lang, M04, None)];
     if request.message.len() > MAX_BTC_MESSAGE_BYTES {
-        warnings.push(risk::warning(M03, Some("64KiB를 넘는 메시지입니다")));
+        warnings.push(risk::warning(
+            lang,
+            M03,
+            Some(text::MESSAGE_TOO_LARGE.get(lang)),
+        ));
     }
     if looks_like_transaction(&request.message) {
-        warnings.push(risk::warning(M03, None));
+        warnings.push(risk::warning(lang, M03, None));
     }
     // A sign-in message is bound to the site it names (SIWE S01, SIWS W01).
     if let Some(domain) = sign_in_domain(&request.message)
         && !crate::sol::msgsign::domain_matches(domain, &request.origin)
     {
-        warnings.push(risk::warning(M06, None));
+        warnings.push(risk::warning(lang, M06, None));
     }
-    push_message_body(&mut fields, &mut warnings, &request.message)?;
+    push_message_body(lang, &mut fields, &mut warnings, &request.message)?;
     let display = ApprovalDisplay::new(
-        format!(
-            "[{}] 메시지 서명 (소유 증명)",
-            request.network.display_name()
-        ),
+        lang,
+        text::TITLE_MESSAGE.fill(lang, [text::network_name(lang, request.network)]),
         fields,
         warnings,
     )?;

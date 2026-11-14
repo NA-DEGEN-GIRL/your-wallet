@@ -287,6 +287,7 @@ fn read_only_prepare(
         return;
     };
     let job = PrepareJob {
+        lang: yw_core::lang::Lang::Ko,
         job: 1,
         chain: chain_job(info, url),
         id: ApprovalId([1; 16]),

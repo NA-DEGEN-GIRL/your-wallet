@@ -732,6 +732,7 @@ impl App {
                     .into_iter()
                     .find(|row| row.public == *public)?;
                 build_sol_message_request(
+                    self.approval_lang(),
                     &SolMessageRequest {
                         id,
                         origin: site.origin.clone(),
@@ -755,18 +756,21 @@ impl App {
                     .btc_dapp_rows()
                     .into_iter()
                     .find(|row| row.entry.address == *address)?;
-                build_btc_message_request(&BtcMessageRequest {
-                    id,
-                    origin: site.origin.clone(),
-                    network: self.btc_network_now(),
-                    source: row.source,
-                    pubkey: row.entry.pubkey,
-                    script_type: row.entry.script_type,
-                    label: row.label,
-                    path: row.path,
-                    protocol: protocol.unwrap_or(default_protocol(row.entry.script_type)),
-                    message: message.clone(),
-                })
+                build_btc_message_request(
+                    self.approval_lang(),
+                    &BtcMessageRequest {
+                        id,
+                        origin: site.origin.clone(),
+                        network: self.btc_network_now(),
+                        source: row.source,
+                        pubkey: row.entry.pubkey,
+                        script_type: row.entry.script_type,
+                        label: row.label,
+                        path: row.path,
+                        protocol: protocol.unwrap_or(default_protocol(row.entry.script_type)),
+                        message: message.clone(),
+                    },
+                )
                 .ok()
             }
             _ => None,
@@ -1761,7 +1765,10 @@ mod tests {
         for key in 0..=u16::MAX {
             let key = yw_core::approval::FieldKey(key);
             assert!(
-                key.flags().is_none() || field_label(key).is_some(),
+                key.flags().is_none()
+                    || yw_core::lang::Lang::ALL
+                        .iter()
+                        .all(|lang| field_label(key, *lang).is_some()),
                 "display key {key:?} has no window label"
             );
         }
@@ -3076,6 +3083,7 @@ mod tests {
     fn approved_card_message() -> yw_core::approval::Approved {
         use yw_core::approval::{ApprovalId, ApprovalKind, ApprovalOrigin, ApprovalStore};
         let draft = yw_core::approval::build_personal_request(
+            yw_core::lang::Lang::Ko,
             ApprovalId::random().unwrap(),
             ApprovalOrigin::Site(BrowserOrigin::parse("https://app.example").unwrap()),
             yw_core::vault::EvmKeySource::Hardware(
@@ -3241,6 +3249,7 @@ mod tests {
             tx,
         };
         let draft = yw_core::approval::build_evm_tx_request(
+            yw_core::lang::Lang::Ko,
             ApprovalId::random().unwrap(),
             ApprovalOrigin::Site(BrowserOrigin::parse("https://app.example").unwrap()),
             yw_core::vault::EvmKeySource::Hardware(

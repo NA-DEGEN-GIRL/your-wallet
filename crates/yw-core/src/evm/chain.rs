@@ -11,7 +11,9 @@ use core::fmt;
 use super::address::Address;
 use super::amount::U256;
 use super::fee::{FeeCaps, L1DataFee};
+use super::text;
 use crate::approval::is_forbidden_display_char;
+use crate::lang::{Lang, Text};
 
 /// Ethereum mainnet chain id.
 pub const ETHEREUM_MAINNET: u64 = 1;
@@ -177,8 +179,10 @@ pub enum ContractRole {
 pub struct KnownContract {
     /// Contract address.
     pub address: Address,
-    /// Display label (shown as `[label]`).
+    /// Display label (shown as `[label]`; the Korean form, also used for registry checks).
     pub label: &'static str,
+    /// English display label (equal to `label` unless the label has Korean words, spec/14 §4).
+    pub label_en: &'static str,
     /// Role.
     pub role: ContractRole,
 }
@@ -394,6 +398,16 @@ const fn contract(address: Address, label: &'static str, role: ContractRole) -> 
     KnownContract {
         address,
         label,
+        label_en: label,
+        role,
+    }
+}
+
+const fn contract_text(address: Address, label: Text, role: ContractRole) -> KnownContract {
+    KnownContract {
+        address,
+        label: label.ko,
+        label_en: label.en,
         role,
     }
 }
@@ -402,9 +416,9 @@ static MAINNET_CONTRACTS: [KnownContract; 9] = [
     contract(PERMIT2, "Uniswap Permit2", ContractRole::Permit2),
     contract(SEAPORT_16, "OpenSea Seaport 1.6", ContractRole::Seaport16),
     contract(SEAPORT_15, "OpenSea Seaport 1.5", ContractRole::Seaport15),
-    contract(
+    contract_text(
         addr("00000000006c3852cbEf3e08E8dF289169EdE581"),
-        "OpenSea Seaport 1.1(구버전)",
+        text::SEAPORT_11_LABEL,
         ContractRole::LabelOnly,
     ),
     contract(
@@ -486,7 +500,7 @@ pub fn ethereum_mainnet() -> ChainInfo {
             quicknode_path: None,
             alchemy_label: Some("eth-mainnet"),
         }),
-        name: "Ethereum 메인넷".to_owned(),
+        name: text::CHAIN_ETHEREUM.ko.to_owned(),
         native_symbol: "ETH".to_owned(),
         native_decimals: 18,
         explorer: Some("https://etherscan.io".to_owned()),
@@ -517,7 +531,7 @@ pub fn sepolia() -> ChainInfo {
             quicknode_path: None,
             alchemy_label: Some("eth-sepolia"),
         }),
-        name: "Sepolia 테스트넷".to_owned(),
+        name: text::CHAIN_SEPOLIA.ko.to_owned(),
         native_symbol: "SepoliaETH".to_owned(),
         native_decimals: 18,
         explorer: Some("https://sepolia.etherscan.io".to_owned()),
@@ -548,7 +562,7 @@ pub fn hyperevm_mainnet() -> ChainInfo {
             quicknode_path: Some("nanoreth"),
             alchemy_label: Some("hyperliquid-mainnet"),
         }),
-        name: "HyperEVM 메인넷".to_owned(),
+        name: text::CHAIN_HYPEREVM.ko.to_owned(),
         native_symbol: "HYPE".to_owned(),
         native_decimals: 18,
         // 2026-11-11: HyperEVMScan (Etherscan family, `/tx/` and `/address/`; listed by the
@@ -786,12 +800,36 @@ impl ChainInfo {
     /// The registry label of `address` (contract label or token symbol).
     #[must_use]
     pub fn label(&self, address: &Address) -> Option<&'static str> {
+        self.label_in(address, Lang::Ko)
+    }
+
+    /// The registry label of `address` as displayed in `lang`.
+    #[must_use]
+    pub fn label_in(&self, address: &Address, lang: Lang) -> Option<&'static str> {
         self.contract(address)
-            .map(|contract| contract.label)
+            .map(|contract| lang.pick(contract.label, contract.label_en))
             .or_else(|| {
                 self.token(address)
                     .map(|token| token.label.unwrap_or(token.symbol))
             })
+    }
+
+    /// The chain name as displayed in `lang`: built-in chains with a Korean name have an English
+    /// one (spec/14 §4); every other name (user chains included) is the same in both languages.
+    #[must_use]
+    pub fn display_name(&self, lang: Lang) -> &str {
+        if self.source == ChainSource::BuiltIn {
+            for name in [
+                text::CHAIN_ETHEREUM,
+                text::CHAIN_SEPOLIA,
+                text::CHAIN_HYPEREVM,
+            ] {
+                if self.name == name.ko {
+                    return name.get(lang);
+                }
+            }
+        }
+        &self.name
     }
 }
 
@@ -875,10 +913,11 @@ pub fn validate_user_chain(
         return Err(ChainConfigError::NameInvalid);
     }
     let lowered = name.to_lowercase();
-    if builtin
-        .iter()
-        .any(|chain| chain.name.to_lowercase() == lowered)
-    {
+    if builtin.iter().any(|chain| {
+        Lang::ALL
+            .iter()
+            .any(|lang| chain.display_name(*lang).to_lowercase() == lowered)
+    }) {
         return Err(ChainConfigError::NameReserved);
     }
     let symbol = &input.native_symbol;

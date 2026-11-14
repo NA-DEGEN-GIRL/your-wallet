@@ -607,15 +607,17 @@ fn nonce_rule_and_e06_texts() {
         Err(NonceBlock::InFlight { nonce: 3 })
     );
     assert_eq!(plan_nonce(None, 4, 5), Err(NonceBlock::ExternalPending));
-    let warning = NonceBlock::InFlight { nonce: 3 }.warning();
+    let warning = NonceBlock::InFlight { nonce: 3 }.warning(crate::lang::Lang::Ko);
     assert_eq!(warning.rule, E06);
     assert_eq!(warning.text, "진행 중인 거래가 있습니다 (nonce 3)");
     assert_eq!(
-        NonceBlock::ExternalPending.warning().text,
+        NonceBlock::ExternalPending
+            .warning(crate::lang::Lang::Ko)
+            .text,
         "이 계정에서 다른 곳으로 보낸 대기 중 거래가 있습니다"
     );
     assert_eq!(
-        super::evm::journal_full_warning().text,
+        super::evm::journal_full_warning(crate::lang::Lang::Ko).text,
         "거래 저널 공간이 부족합니다"
     );
     assert_eq!(
@@ -653,7 +655,7 @@ fn activity_mapping_of_terminal_groups() {
     let mut records = vec![original.clone(), speed.clone()];
     finalize(&mut records, speed.tx_hash, true, T0 + 50);
     let grouped = groups(&records);
-    let rows = group_activity(&grouped[0].1).unwrap();
+    let rows = group_activity(crate::lang::Lang::Ko, &grouped[0].1).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].tx_id, format!("0x{}", hex::encode(&speed.tx_hash)));
     assert_eq!(rows[0].status, ActivityStatus::Succeeded);
@@ -674,7 +676,7 @@ fn activity_mapping_of_terminal_groups() {
     let cancel = signer.record(&cancel_tx, Role::Cancel, T0 + 1);
     let mut records = vec![original.clone(), cancel.clone()];
     finalize(&mut records, cancel.tx_hash, false, T0 + 60);
-    let rows = group_activity(&groups(&records)[0].1).unwrap();
+    let rows = group_activity(crate::lang::Lang::Ko, &groups(&records)[0].1).unwrap();
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].status, ActivityStatus::Replaced);
     assert_eq!(
@@ -694,11 +696,11 @@ fn activity_mapping_of_terminal_groups() {
             at_unix_ms: T0 + 70,
         },
     );
-    let rows = group_activity(&groups(&records)[0].1).unwrap();
+    let rows = group_activity(crate::lang::Lang::Ko, &groups(&records)[0].1).unwrap();
     assert_eq!(rows[0].status, ActivityStatus::Dropped);
     // A non-terminal group has no rows yet.
     let pending = vec![signer.record(&signer.tx(1, 3, 100, 0), Role::Original, T0)];
-    assert!(group_activity(&groups(&pending)[0].1).is_none());
+    assert!(group_activity(crate::lang::Lang::Ko, &groups(&pending)[0].1).is_none());
     // ERC-20 transfer summary.
     let mut token_tx = signer.tx(1, 4, 100, 0);
     token_tx.value = U256::ZERO;
@@ -743,7 +745,7 @@ fn one_confirmation_is_final_and_frees_the_nonce() {
     assert_eq!(records[0].included_block_number, 9);
     assert_eq!(in_flight(&records, 1, &signer.account), None);
     let members: Vec<&EvmRecord> = records.iter().collect();
-    let rows = group_activity(&members).unwrap();
+    let rows = group_activity(crate::lang::Lang::Ko, &members).unwrap();
     assert_eq!(rows[0].status, ActivityStatus::Succeeded);
 }
 
@@ -762,8 +764,19 @@ fn expired_terminal_groups_move_to_activity_after_seven_days() {
             at_unix_ms: T0 + 1_000,
         }],
     );
-    assert!(take_expired(&mut plain, T0 + 1_000 + super::evm::RETENTION_MS - 1).is_empty());
-    let rows = take_expired(&mut plain, T0 + 1_000 + super::evm::RETENTION_MS);
+    assert!(
+        take_expired(
+            crate::lang::Lang::Ko,
+            &mut plain,
+            T0 + 1_000 + super::evm::RETENTION_MS - 1
+        )
+        .is_empty()
+    );
+    let rows = take_expired(
+        crate::lang::Lang::Ko,
+        &mut plain,
+        T0 + 1_000 + super::evm::RETENTION_MS,
+    );
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].status, ActivityStatus::Dropped);
     let left = EvmEntries::from_plain(&plain).records();
@@ -794,7 +807,7 @@ fn room_check_cleans_terminal_groups_oldest_first_then_reports_full() {
     );
     assert!(!plain.has_room_for(EntryKind::Evm));
     assert!(room_after_cleanup(&plain));
-    let rows = make_room(&mut plain).unwrap();
+    let rows = make_room(crate::lang::Lang::Ko, &mut plain).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(plain.entries.len(), MAX_ENTRIES - 1);
     assert!(plain.has_room_for(EntryKind::Evm));
@@ -803,7 +816,10 @@ fn room_check_cleans_terminal_groups_oldest_first_then_reports_full() {
     push_record(&mut plain, &open).unwrap();
     let before = plain.clone();
     assert!(!room_after_cleanup(&plain));
-    assert_eq!(make_room(&mut plain), Err(JournalError::Full));
+    assert_eq!(
+        make_room(crate::lang::Lang::Ko, &mut plain),
+        Err(JournalError::Full)
+    );
     assert_eq!(plain, before);
     assert_eq!(push_record(&mut plain, &open), Err(JournalError::Full));
 }
@@ -828,7 +844,10 @@ fn size_bound_uses_the_largest_evm_body() {
     }
     assert!(plain.entries.len() < MAX_ENTRIES);
     assert!(plain.plaintext_len() <= super::MAX_PLAINTEXT);
-    assert_eq!(make_room(&mut plain), Err(JournalError::Full));
+    assert_eq!(
+        make_room(crate::lang::Lang::Ko, &mut plain),
+        Err(JournalError::Full)
+    );
     apply_to_plain(
         &mut plain,
         &[Transition::Discarded {
@@ -836,7 +855,7 @@ fn size_bound_uses_the_largest_evm_body() {
             at_unix_ms: T0,
         }],
     );
-    let rows = make_room(&mut plain).unwrap();
+    let rows = make_room(crate::lang::Lang::Ko, &mut plain).unwrap();
     assert_eq!(rows.len(), 1);
     assert!(plain.has_room_for(EntryKind::Evm));
 }

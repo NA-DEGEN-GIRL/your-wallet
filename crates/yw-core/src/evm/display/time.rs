@@ -2,6 +2,8 @@
 //! approval time display (spec/03 §8.3) and SIWE date-times (§9.3). No OS clock: callers pass
 //! `now_unix_ms`.
 
+use crate::lang::Lang;
+
 /// Days since 1970-01-01 of a proleptic Gregorian date.
 #[must_use]
 pub fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
@@ -66,26 +68,48 @@ pub fn format_utc(seconds: i64) -> String {
     )
 }
 
-/// `YYYY-MM-DD HH:MM:SS UTC (약 N일 후/전)` (spec/03 §8.3); under a day it uses hours/minutes.
+/// `YYYY-MM-DD HH:MM:SS UTC (약 N일 후/전)` (spec/03 §8.3; English `(in about N days)` /
+/// `(about N days ago)`, spec/14 §4); under a day it uses hours/minutes.
 #[must_use]
-pub fn format_utc_relative(seconds: i64, now_unix_ms: u64) -> String {
+pub fn format_utc_relative(lang: Lang, seconds: i64, now_unix_ms: u64) -> String {
     let now = i64::try_from(now_unix_ms / 1_000).unwrap_or(i64::MAX);
     let delta = seconds.saturating_sub(now);
     let magnitude = delta.unsigned_abs();
-    let direction = if delta >= 0 { "후" } else { "전" };
-    let relative = if magnitude >= 86_400 {
-        format!("약 {}일 {direction}", magnitude / 86_400)
+    let (count, unit) = if magnitude >= 86_400 {
+        (magnitude / 86_400, 0)
     } else if magnitude >= 3_600 {
-        format!("약 {}시간 {direction}", magnitude / 3_600)
+        (magnitude / 3_600, 1)
     } else {
-        format!("약 {}분 {direction}", magnitude / 60)
+        (magnitude / 60, 2)
     };
-    format!("{} ({relative})", format_utc(seconds))
+    let template = match (delta >= 0, unit) {
+        (true, 0) => IN_DAYS,
+        (true, 1) => IN_HOURS,
+        (true, _) => IN_MINUTES,
+        (false, 0) => DAYS_AGO,
+        (false, 1) => HOURS_AGO,
+        (false, _) => MINUTES_AGO,
+    };
+    format!(
+        "{} ({})",
+        format_utc(seconds),
+        template.fill(lang, [&count.to_string()])
+    )
+}
+
+crate::texts! {
+    IN_DAYS(1) = "약 {0}일 후" / "in about {0} days";
+    IN_HOURS(1) = "약 {0}시간 후" / "in about {0} hours";
+    IN_MINUTES(1) = "약 {0}분 후" / "in about {0} minutes";
+    DAYS_AGO(1) = "약 {0}일 전" / "about {0} days ago";
+    HOURS_AGO(1) = "약 {0}시간 전" / "about {0} hours ago";
+    MINUTES_AGO(1) = "약 {0}분 전" / "about {0} minutes ago";
 }
 
 #[cfg(test)]
 mod tests {
     use super::{civil_from_days, days_from_civil, format_utc, format_utc_relative, valid_date};
+    use crate::lang::Lang;
 
     #[test]
     fn calendar_round_trips() {
@@ -107,11 +131,11 @@ mod tests {
         // Sepolia amsterdam_time 1,791,294,816 = 2026-10-06 13:53:36 UTC (spec/03 §1.1).
         assert_eq!(format_utc(1_791_294_816), "2026-10-06 13:53:36 UTC");
         assert_eq!(
-            format_utc_relative(1_791_294_816 + 3 * 86_400, 1_791_294_816_000),
+            format_utc_relative(Lang::Ko, 1_791_294_816 + 3 * 86_400, 1_791_294_816_000),
             "2026-10-09 13:53:36 UTC (약 3일 후)"
         );
         assert_eq!(
-            format_utc_relative(1_791_294_816 - 7_200, 1_791_294_816_000),
+            format_utc_relative(Lang::Ko, 1_791_294_816 - 7_200, 1_791_294_816_000),
             "2026-10-06 11:53:36 UTC (약 2시간 전)"
         );
     }

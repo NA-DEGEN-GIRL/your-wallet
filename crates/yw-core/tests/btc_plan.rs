@@ -26,6 +26,7 @@ use yw_core::btc::select::{
 use yw_core::btc::tx::{OutPoint, Txid, estimate_vsize, serialize};
 use yw_core::btc::{BTC_SEQUENCE, BTC_TX_VERSION};
 use yw_core::journal::btc::BtcTxState;
+use yw_core::lang::Lang;
 
 fn sats(value: u64) -> Sats {
     Sats::new(value).unwrap()
@@ -243,6 +244,7 @@ fn change_fold_below_294() {
     assert_eq!(folded.change_folded(), sats(324));
     assert_eq!(folded.planned_vsize(), 110);
     let draft = build_btc_request(
+        Lang::Ko,
         ApprovalId([1; 16]),
         &folded,
         &account(),
@@ -334,6 +336,7 @@ fn send_max_dust() {
     assert_eq!(max.fee(), sats(6_817));
     assert_eq!(max.amount(), sats(100_000 - 6_817));
     let draft = build_btc_request(
+        Lang::Ko,
         ApprovalId([2; 16]),
         &max,
         &account(),
@@ -513,6 +516,7 @@ fn rbf_rules() {
     assert!(reduced.send_max() && reduced.recipient_decreased());
     assert_eq!((reduced.fee(), reduced.amount()), (sats(354), sats(49_646)));
     let draft = build_btc_request(
+        Lang::Ko,
         ApprovalId([3; 16]),
         &reduced,
         &account(),
@@ -525,7 +529,7 @@ fn rbf_rules() {
             .display
             .warnings
             .iter()
-            .any(|w| w.rule == B06 && w.text == texts::RECIPIENT_DECREASED)
+            .any(|w| w.rule == B06 && w.text == texts::RECIPIENT_DECREASED.get(Lang::Ko))
     );
     let replaces = draft
         .display
@@ -574,6 +578,7 @@ fn rbf_rules() {
     );
     // The bump approval: 0x0609 after the balance, payload with replaces.
     let draft = build_btc_request(
+        Lang::Ko,
         ApprovalId([4; 16]),
         &same,
         &account(),
@@ -684,7 +689,8 @@ fn display_fields_and_warnings() {
         first_time_recipient: true,
         own_recipient: None,
     };
-    let draft = build_btc_request(ApprovalId([6; 16]), &send, &account(), &facts).unwrap();
+    let draft =
+        build_btc_request(Lang::Ko, ApprovalId([6; 16]), &send, &account(), &facts).unwrap();
     assert_eq!(
         draft.display.title,
         "[Bitcoin testnet4] 보내기: 0.00020000 BTC"
@@ -743,7 +749,7 @@ fn display_fields_and_warnings() {
         own_recipient: Some((BtcChain::Receive, 4)),
         ..BtcSendFacts::default()
     };
-    let draft = build_btc_request(ApprovalId([7; 16]), &send, &account(), &own).unwrap();
+    let draft = build_btc_request(Lang::Ko, ApprovalId([7; 16]), &send, &account(), &own).unwrap();
     assert_eq!(draft.display.warnings[0].rule, B07);
     assert_eq!(
         draft.display.warnings[0].text,
@@ -753,17 +759,26 @@ fn display_fields_and_warnings() {
     let candidates = [utxo(100_000, TIP - 1, 2, 0)];
     let [legacy, script_hash, _, witness_script, taproot] = kinds();
     for (kind, text, label) in [
-        (legacy, Some(texts::LEGACY_RECIPIENT), "P2PKH(레거시)"),
-        (script_hash, Some(texts::SCRIPT_RECIPIENT), "P2SH(스크립트)"),
+        (
+            legacy,
+            Some(texts::LEGACY_RECIPIENT.get(Lang::Ko)),
+            "P2PKH(레거시)",
+        ),
+        (
+            script_hash,
+            Some(texts::SCRIPT_RECIPIENT.get(Lang::Ko)),
+            "P2SH(스크립트)",
+        ),
         (
             witness_script,
-            Some(texts::SCRIPT_RECIPIENT),
+            Some(texts::SCRIPT_RECIPIENT.get(Lang::Ko)),
             "P2WSH(스크립트)",
         ),
         (taproot, None, "P2TR"),
     ] {
         let plan = plan(&candidates, kind, exact(20_000), rate(1), SEED).unwrap();
         let draft = build_btc_request(
+            Lang::Ko,
             ApprovalId([8; 16]),
             &plan,
             &account(),
@@ -786,6 +801,7 @@ fn display_fields_and_warnings() {
     mainnet_source.network = yw_core::btc::BtcNetwork::Mainnet;
     let mainnet = bump(&mainnet_source, rate(1), None, &[]).unwrap();
     let draft = build_btc_request(
+        Lang::Ko,
         ApprovalId([9; 16]),
         &mainnet,
         &account(),
@@ -798,4 +814,57 @@ fn display_fields_and_warnings() {
         field(&draft, FieldKey::ACCOUNT),
         "Bitcoin 네이티브 세그윗 계정 0 (m/84'/0'/0')"
     );
+}
+
+/// spec/14: a send-max fee bump (B06, field `0x0609`) and the send it replaces, built in English
+/// with every fact set (B05, B07): no Hangul in the title, any field or any warning, and the same
+/// fields and rules as the Korean draft.
+#[test]
+fn english_send_and_bump_display() {
+    use yw_core::lang::has_hangul;
+    let max = plan(
+        &[utxo(30_000, TIP - 1, 3, 0), utxo(20_000, TIP - 1, 4, 0)],
+        RECIPIENT,
+        SendAmount::Max,
+        rate(1),
+        SEED,
+    )
+    .unwrap();
+    let reduced = bump(&source_of(&max), rate(2), None, &[]).unwrap();
+    let facts = BtcSendFacts {
+        verified_balance: sats(50_000),
+        min_confirmations: Some(3),
+        first_time_recipient: true,
+        own_recipient: Some((BtcChain::Change, 4)),
+    };
+    for plan in [&max, &reduced] {
+        let build = |lang| build_btc_request(lang, ApprovalId([9; 16]), plan, &account(), &facts);
+        let (en, ko) = (build(Lang::En).unwrap(), build(Lang::Ko).unwrap());
+        assert_eq!((en.display.lang, ko.display.lang), (Lang::En, Lang::Ko));
+        assert!(!has_hangul(&en.display.title), "{}", en.display.title);
+        for field in &en.display.fields {
+            assert!(!has_hangul(&field.value), "{:?}", field.value);
+            assert!(!has_hangul(&field.sub_label), "{:?}", field.sub_label);
+        }
+        for warning in &en.display.warnings {
+            assert!(!has_hangul(&warning.text), "{:?}", warning.text);
+        }
+        let keys = |draft: &yw_core::approval::ApprovalDraft| {
+            let fields: Vec<_> = draft.display.fields.iter().map(|f| f.key).collect();
+            let rules: Vec<_> = draft.display.warnings.iter().map(|w| w.rule).collect();
+            (fields, rules)
+        };
+        assert_eq!(keys(&en), keys(&ko));
+        assert!(
+            en.display
+                .fields
+                .iter()
+                .any(|f| f.key == FieldKey::BTC_BALANCE)
+        );
+    }
+    let bump_title = build_btc_request(Lang::En, ApprovalId([9; 16]), &reduced, &account(), &facts)
+        .unwrap()
+        .display
+        .title;
+    assert_eq!(bump_title, "[Bitcoin testnet4] Bump fee");
 }

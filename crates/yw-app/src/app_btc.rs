@@ -185,6 +185,8 @@ fn active_of(update: &BtcMetaUpdate, net: BtcNetwork) -> Option<BtcMeta> {
 
 /// Everything the controller reads from the App (borrowed for one call).
 pub struct BtcCtx<'a> {
+    /// The app language (activity titles).
+    pub lang: yw_core::lang::Lang,
     /// settings.json `bitcoin`.
     pub settings: &'a BitcoinSettings,
     /// The decrypted endpoints (`rpc:bitcoin:<net>`).
@@ -2458,8 +2460,13 @@ impl BtcUi {
     /// # Errors
     ///
     /// E-APP-009 when the draft cannot be built.
-    pub fn draft(item: &BtcApprovalItem, id: ApprovalId) -> Result<ApprovalDraft, ErrorCode> {
-        build_btc_request(id, &item.plan, &item.account, &item.facts).map_err(|_| ErrorCode::App009)
+    pub fn draft(
+        lang: yw_core::lang::Lang,
+        item: &BtcApprovalItem,
+        id: ApprovalId,
+    ) -> Result<ApprovalDraft, ErrorCode> {
+        build_btc_request(lang, id, &item.plan, &item.account, &item.facts)
+            .map_err(|_| ErrorCode::App009)
     }
 
     /// An approval ended (any outcome; inputs are kept, spec/04 §3.1).
@@ -3832,7 +3839,7 @@ impl BtcUi {
                 let retry_send = self.flow(&record.txid).is_some_and(|flow| flow.retry_send);
                 BtcActivityView {
                     txid: record.txid.to_display_hex(),
-                    title: record.title(),
+                    title: record.title(ctx.lang),
                     amount: record.recipient_amount(),
                     counterparty: record.recipient_address().unwrap_or_default(),
                     status: record_status(record, tip),
@@ -3925,6 +3932,7 @@ impl crate::app::App {
     pub fn btc_call(&mut self, call: impl FnOnce(&mut BtcUi, &BtcCtx<'_>) -> Vec<BtcAction>) {
         let actions = {
             let ctx = BtcCtx {
+                lang: self.settings.language,
                 settings: &self.settings.bitcoin,
                 apikeys: &self.apikeys,
                 meta: self.meta.as_ref(),
@@ -4343,7 +4351,7 @@ impl crate::app::App {
             self.show_failure(ErrorCode::Vlt005, false, ErrorCode::Vlt005.text());
             return;
         };
-        match BtcUi::draft(item, id) {
+        match BtcUi::draft(self.approval_lang(), item, id) {
             Ok(draft) => self.show_ready_draft_at(draft, None, now_unix_ms()),
             Err(code) => self.show_failure(code, false, code.text()),
         }
@@ -4418,6 +4426,7 @@ impl crate::app::App {
     #[must_use]
     pub fn btc_ctx(&self) -> BtcCtx<'_> {
         BtcCtx {
+            lang: self.settings.language,
             settings: &self.settings.bitcoin,
             apikeys: &self.apikeys,
             meta: self.meta.as_ref(),

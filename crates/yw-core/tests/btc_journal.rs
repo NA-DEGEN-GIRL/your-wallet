@@ -583,7 +583,12 @@ fn replacement_bookkeeping() {
     );
     let records = records_of(&first_wins);
     assert!(is_finished(&records[1], &records, Some(TIP), 6));
-    assert_eq!(activity_row(&records[1], 7).unwrap().status, "conflicted");
+    assert_eq!(
+        activity_row(yw_core::lang::Lang::Ko, &records[1], 7)
+            .unwrap()
+            .status,
+        "conflicted"
+    );
     // A chain of two replacements; the last one confirms.
     push_record(&mut plain, &record(&second, BtcTxState::Signed, 5)).unwrap();
     set_state(&mut plain, NET, &t2, BtcTxState::Broadcasting, 6).unwrap();
@@ -624,7 +629,7 @@ fn replacement_bookkeeping() {
     );
     assert!(is_finished(&records[0], &records, Some(TIP), 10));
     assert!(is_finished(&records[1], &records, Some(TIP), 10));
-    let rows = finished_rows(&plain, NET, TIP, 10, 77);
+    let rows = finished_rows(yw_core::lang::Lang::Ko, &plain, NET, TIP, 10, 77);
     let statuses: Vec<_> = rows.iter().map(|row| row.status).collect();
     assert_eq!(statuses, vec!["replaced", "replaced", "succeeded"]);
     assert_eq!(rows[1].title, "[Bitcoin testnet4] 수수료 올리기");
@@ -787,8 +792,10 @@ fn rbf_allowed_while_inflight() {
 fn btc_n5_blocked() {
     use yw_core::approval::{ApprovalId, RiskLevel};
     use yw_core::btc::display::{BtcSendFacts, build_btc_request};
+    use yw_core::lang::Lang;
     let blocked = |plan: &SendPlan| {
         build_btc_request(
+            Lang::Ko,
             ApprovalId([1; 16]),
             plan,
             &account(),
@@ -854,11 +861,11 @@ fn journal_btc_prune() {
     records.insert(0, tracked.clone());
     let mut plain = plain_of(&records[..65]);
     assert!(
-        prune_finished(&mut plain, NET, TIP, 2_000, 1).is_empty(),
+        prune_finished(yw_core::lang::Lang::Ko, &mut plain, NET, TIP, 2_000, 1).is_empty(),
         "64 finished kept"
     );
     push_record(&mut plain, &records[65]).unwrap();
-    let rows = prune_finished(&mut plain, NET, TIP, 2_000, 1);
+    let rows = prune_finished(yw_core::lang::Lang::Ko, &mut plain, NET, TIP, 2_000, 1);
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].tx_id, plans[1].txid().to_display_hex());
     assert_eq!(rows[0].status, "rejected");
@@ -868,7 +875,10 @@ fn journal_btc_prune() {
     assert!(left.iter().any(|r| r.txid == tracked.txid));
     assert!(!left.iter().any(|r| r.txid == plans[1].txid()));
     // Finished rows cover every finished record (written to meta before deleting).
-    assert_eq!(finished_rows(&plain, NET, TIP, 2_000, 1).len(), 64);
+    assert_eq!(
+        finished_rows(yw_core::lang::Lang::Ko, &plain, NET, TIP, 2_000, 1).len(),
+        64
+    );
     // Undecodable BTC entries are never touched.
     plain.entries.push(Entry {
         kind: EntryKind::Btc,
@@ -881,7 +891,7 @@ fn journal_btc_prune() {
         &record(&rejected_plans(67)[66], BtcTxState::Rejected, 5_000),
     )
     .unwrap();
-    prune_finished(&mut plain, NET, TIP, 6_000, 1);
+    prune_finished(yw_core::lang::Lang::Ko, &mut plain, NET, TIP, 6_000, 1);
     assert!(plain.entries.iter().any(|entry| entry.body == vec![9; 300]));
     assert_eq!(BtcEntries::from_plain(&plain).records.len(), 65);
 }
@@ -912,11 +922,15 @@ fn room_and_full() {
         push_record(&mut plain, &finished[0]),
         Err(BtcPushError::Full)
     );
-    let rows = make_room(&mut plain, NET, TIP, 10, 1).unwrap();
+    let rows = make_room(yw_core::lang::Lang::Ko, &mut plain, NET, TIP, 10, 1).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].tx_id, plans[0].txid().to_display_hex());
     assert!(has_room(&plain));
-    assert!(make_room(&mut plain, NET, TIP, 10, 1).unwrap().is_empty());
+    assert!(
+        make_room(yw_core::lang::Lang::Ko, &mut plain, NET, TIP, 10, 1)
+            .unwrap()
+            .is_empty()
+    );
     // Only tracked BTC records: Full, nothing removed.
     let mut tracked_only = JournalPlain::default();
     for _ in 0..255 {
@@ -932,7 +946,7 @@ fn room_and_full() {
     .unwrap();
     let before = tracked_only.clone();
     assert_eq!(
-        make_room(&mut tracked_only, NET, TIP, 10, 1),
+        make_room(yw_core::lang::Lang::Ko, &mut tracked_only, NET, TIP, 10, 1),
         Err(JournalError::Full)
     );
     assert_eq!(tracked_only, before);
@@ -952,7 +966,7 @@ fn room_and_full() {
     });
     assert!(big.within_bounds());
     assert!(!has_room(&big));
-    let rows = make_room(&mut big, NET, TIP, 10, 1).unwrap();
+    let rows = make_room(yw_core::lang::Lang::Ko, &mut big, NET, TIP, 10, 1).unwrap();
     assert_eq!(rows.len(), 1);
     assert!(has_room(&big));
 }

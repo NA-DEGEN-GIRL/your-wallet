@@ -10,6 +10,7 @@ use super::{
 use crate::errors::ErrorCode;
 use crate::ui::secure_field::{Charset, PushResult, SecretField};
 use yw_core::keyimport::ImportChain;
+use yw_core::lang::Lang;
 use yw_core::secret::{SecretString, Zeroizing};
 
 fn type_text(form: &mut SecretForm, text: &str, now: u64) {
@@ -55,6 +56,7 @@ fn sw1_backup_form_collects_only_owned_buffers() {
         SecretKind::Backup {
             positions: [3, 7, 12, 24],
         },
+        Lang::Ko,
         0,
         true,
     );
@@ -97,7 +99,7 @@ fn sw1_secret_messages_are_blocked_headlessly() {
 
 #[test]
 fn sw1_timeout_wipes_and_focus_loss_masks() {
-    let mut form = SecretForm::new(EVM_KEY, 0, true);
+    let mut form = SecretForm::new(EVM_KEY, Lang::Ko, 0, true);
     type_text(&mut form, "0xabc", 1_000);
     assert!(matches!(
         form.on_tick(1_000 + SECRET_WINDOW_TIMEOUT_MS - 1),
@@ -108,18 +110,19 @@ fn sw1_timeout_wipes_and_focus_loss_masks() {
         FormAction::TimedOut
     ));
 
-    let mut plain = SecretForm::new(SecretKind::Mnemonic, 0, true);
+    let mut plain = SecretForm::new(SecretKind::Mnemonic, Lang::Ko, 0, true);
     plain.on_deactivate();
     assert!(plain.masked());
     plain.on_activate();
     assert!(!plain.masked());
 
-    let mut masked = SecretForm::new(SecretKind::SetPassword, 0, true);
+    let mut masked = SecretForm::new(SecretKind::SetPassword, Lang::Ko, 0, true);
     masked.on_deactivate();
     assert!(!masked.masked());
 
     let display = SecretForm::display(
         SecretKind::ShowKey,
+        Lang::Ko,
         5_000,
         DisplaySecret {
             text: SecretString::from_zeroizing(Zeroizing::new("ab".repeat(32))),
@@ -140,17 +143,17 @@ fn sw1_timeout_wipes_and_focus_loss_masks() {
 
 #[test]
 fn password_rules_and_confirmation() {
-    let mut form = SecretForm::new(SecretKind::SetPassword, 0, true);
+    let mut form = SecretForm::new(SecretKind::SetPassword, Lang::Ko, 0, true);
     type_text(&mut form, "short", 0);
     form.on_key(0x09, false, false, false, 0);
     type_text(&mut form, "short", 0);
     assert!(matches!(form.on_char(0x0D, 0), FormAction::Redraw));
-    let mut form = SecretForm::new(SecretKind::SetPassword, 0, true);
+    let mut form = SecretForm::new(SecretKind::SetPassword, Lang::Ko, 0, true);
     type_text(&mut form, "m3-test-password!", 0);
     form.on_key(0x09, false, false, false, 0);
     type_text(&mut form, "m3-test-password?", 0);
     assert!(matches!(form.on_char(0x0D, 0), FormAction::Redraw));
-    let mut form = SecretForm::new(SecretKind::SetPassword, 0, true);
+    let mut form = SecretForm::new(SecretKind::SetPassword, Lang::Ko, 0, true);
     type_text(&mut form, "m3-test-password!", 0);
     form.on_key(0x09, false, false, false, 0);
     type_text(&mut form, "m3-test-password!", 0);
@@ -161,7 +164,7 @@ fn password_rules_and_confirmation() {
 /// empty field is a grey hint.
 #[test]
 fn password_status_names_the_problem() {
-    let texts = |rule, same| super::password_status(rule, same).map(|(text, _)| text);
+    let texts = |rule, same| super::password_status(Lang::Ko, rule, same).map(|(text, _)| text);
     assert_eq!(
         texts(None, None),
         ["· 12–128자", "· 확인 칸에 한 번 더 입력"]
@@ -174,7 +177,7 @@ fn password_status_names_the_problem() {
         texts(Some(true), Some(true)),
         ["✓ 12–128자", "✓ 두 칸이 같음"]
     );
-    let mut form = SecretForm::new(SecretKind::SetPassword, 0, true);
+    let mut form = SecretForm::new(SecretKind::SetPassword, Lang::Ko, 0, true);
     type_text(&mut form, "short", 0);
     assert_eq!(form.password_checks(), Some((Some(false), None)));
     form.on_key(0x09, false, false, false, 0);
@@ -184,7 +187,7 @@ fn password_status_names_the_problem() {
 
 #[test]
 fn ime_and_non_ascii_show_e_inp_008_without_changing_the_buffer() {
-    let mut form = SecretForm::new(SecretKind::Unlock, 0, true);
+    let mut form = SecretForm::new(SecretKind::Unlock, Lang::Ko, 0, true);
     type_text(&mut form, "ab", 0);
     assert!(matches!(form.on_char(0xAC00, 0), FormAction::Redraw));
     assert!(matches!(
@@ -198,7 +201,7 @@ fn ime_and_non_ascii_show_e_inp_008_without_changing_the_buffer() {
 
 #[test]
 fn wrong_password_disables_input_for_one_second() {
-    let mut form = SecretForm::new(SecretKind::Unlock, 0, true);
+    let mut form = SecretForm::new(SecretKind::Unlock, Lang::Ko, 0, true);
     form.fail_password(1_000);
     assert!(matches!(
         form.on_char(u16::from(b'a'), 1_999),
@@ -214,7 +217,7 @@ fn wrong_password_disables_input_for_one_second() {
 
 #[test]
 fn mnemonic_next_requires_valid_count_and_known_words() {
-    let mut form = SecretForm::new(SecretKind::Mnemonic, 0, true);
+    let mut form = SecretForm::new(SecretKind::Mnemonic, Lang::Ko, 0, true);
     let about = format!("{}about", "abandon ".repeat(11));
     type_text(&mut form, &about, 0);
     assert!(form.can_submit(0));
@@ -223,11 +226,11 @@ fn mnemonic_next_requires_valid_count_and_known_words() {
     };
     assert_eq!(submission.values[0].as_slice(), about.as_bytes());
     assert!(!submission.checkbox);
-    let mut form = SecretForm::new(SecretKind::Mnemonic, 0, true);
+    let mut form = SecretForm::new(SecretKind::Mnemonic, Lang::Ko, 0, true);
     type_text(&mut form, &format!("{}abandonn", "abandon ".repeat(11)), 0);
     assert!(!form.can_submit(0));
     assert!(matches!(form.on_char(0x0D, 0), FormAction::Redraw));
-    let mut paste = SecretForm::new(SecretKind::Mnemonic, 0, true);
+    let mut paste = SecretForm::new(SecretKind::Mnemonic, Lang::Ko, 0, true);
     let units: Vec<u16> = "Abandon\r\n abandon\tabout".encode_utf16().collect();
     assert_eq!(paste.apply_paste(&units), Ok(false));
     assert_eq!(
@@ -235,7 +238,8 @@ fn mnemonic_next_requires_valid_count_and_known_words() {
         Err(ErrorCode::Inp018)
     );
     // A passphrase is pasted exactly; an edge space is reported for the notice (§4.7-3).
-    let mut passphrase = SecretForm::new(SecretKind::Passphrase { confirm: false }, 0, true);
+    let mut passphrase =
+        SecretForm::new(SecretKind::Passphrase { confirm: false }, Lang::Ko, 0, true);
     let units: Vec<u16> = " TREZOR \r\n".encode_utf16().collect();
     assert_eq!(passphrase.apply_paste(&units), Ok(true));
     let units: Vec<u16> = "TREZOR".encode_utf16().collect();
@@ -271,23 +275,27 @@ fn sw4_capture_decisions() {
             capture_decision(kind, Ok(true)),
             CaptureDecision::Show { warning: false }
         );
-        let unprotected = SecretForm::new(kind, 0, false);
+        let unprotected = SecretForm::new(kind, Lang::Ko, 0, false);
         assert!(!unprotected.reveal_enabled(0));
         assert!(!unprotected.capture_excluded());
     }
-    let protected = SecretForm::new(SecretKind::SetPassword, 0, true);
+    let protected = SecretForm::new(SecretKind::SetPassword, Lang::Ko, 0, true);
     assert!(protected.reveal_enabled(0));
 }
 
 #[test]
 fn w07_warns_that_imported_keys_are_not_in_the_recovery_words() {
-    let lines = super::intro(EVM_KEY, 0, false);
+    let lines = super::intro(EVM_KEY, Lang::Ko, 0, false);
     assert!(
         lines
             .iter()
-            .any(|line| line == super::T_IMPORTED_KEY_BACKUP)
+            .any(|line| line == super::text::IMPORTED_KEY_BACKUP.get(Lang::Ko))
     );
-    assert!(super::T_IMPORTED_KEY_BACKUP.contains("복구 단어(24단어)로 복구되지 않습니다"));
+    assert!(
+        super::text::IMPORTED_KEY_BACKUP
+            .get(Lang::Ko)
+            .contains("복구 단어(24단어)로 복구되지 않습니다")
+    );
     assert_eq!(EVM_KEY.size(), (640, 560));
     // Without recovery words (key-only wallet, "개인키로 시작하기") the warning says the original
     // key is the only backup, for every chain.
@@ -297,19 +305,25 @@ fn w07_warns_that_imported_keys_are_not_in_the_recovery_words() {
                 chain,
                 no_words: true,
             },
+            Lang::Ko,
             0,
             false,
         );
-        assert!(lines.iter().any(|line| line == super::T_KEY_ONLY_BACKUP));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == super::text::KEY_ONLY_BACKUP.get(Lang::Ko))
+        );
         assert!(
             !lines
                 .iter()
-                .any(|line| line == super::T_IMPORTED_KEY_BACKUP)
+                .any(|line| line == super::text::IMPORTED_KEY_BACKUP.get(Lang::Ko))
         );
     }
     // The redacting display buffer still renders its content for copy.
     let form = SecretForm::display(
         SecretKind::ShowKey,
+        Lang::Ko,
         0,
         DisplaySecret {
             text: SecretString::from_zeroizing(Zeroizing::new("cd".repeat(32))),
@@ -334,6 +348,7 @@ fn w07_solana_and_bitcoin_fields_take_their_formats() {
             chain: ImportChain::Sol,
             no_words: false,
         },
+        Lang::Ko,
         0,
         true,
     );
@@ -366,6 +381,7 @@ fn w07_solana_and_bitcoin_fields_take_their_formats() {
             chain: ImportChain::Btc,
             no_words: true,
         },
+        Lang::Ko,
         0,
         true,
     );
@@ -396,13 +412,13 @@ fn w11_card_pin_bounds_mask_and_owned_buffer() {
         serial: 7_700_011,
     };
     assert_eq!(kind.id(), "W11");
-    assert_eq!(kind.title(), "YubiKey PIN");
+    assert_eq!(kind.title(Lang::Ko), "YubiKey PIN");
     assert!(!kind.is_display() && !kind.plaintext());
     assert_eq!(
         capture_decision(kind, Ok(false)),
         CaptureDecision::Show { warning: true }
     );
-    let intro = super::intro(kind, 0, false);
+    let intro = super::intro(kind, Lang::Ko, 0, false);
     assert!(intro[0].starts_with(
         "1. YubiKey #7700011 연결 → 2. PIN 입력 후 확인 → 3. 깜박이면 15초 안에 터치"
     ));
@@ -415,6 +431,7 @@ fn w11_card_pin_bounds_mask_and_owned_buffer() {
             per_tx: true,
             serial: 7_700_011,
         },
+        Lang::Ko,
         0,
         false,
     );
@@ -434,13 +451,14 @@ fn w11_card_pin_bounds_mask_and_owned_buffer() {
                 per_tx: false,
                 serial: 0,
             },
+            Lang::Ko,
             0,
-            false
+            false,
         )
         .len(),
         1
     );
-    let mut form = SecretForm::new(kind, 0, true);
+    let mut form = SecretForm::new(kind, Lang::Ko, 0, true);
     form.set_details(vec!["이 키를 가진 YubiKey: #7700011".to_owned()]);
     type_text(&mut form, "12345", 0);
     assert!(
@@ -475,7 +493,7 @@ fn w12_card_secrets() {
     use super::CardSecretKind;
     use crate::yubikey::PinTarget;
     let submit = |kind: SecretKind, fields: &[&str]| {
-        let mut form = SecretForm::new(kind, 0, true);
+        let mut form = SecretForm::new(kind, Lang::Ko, 0, true);
         for (index, text) in fields.iter().enumerate() {
             if index > 0 {
                 form.on_key(0x09, false, false, false, 0);
@@ -573,6 +591,7 @@ fn w10_word_not_in_the_list_keeps_confirm_off() {
         SecretKind::Backup {
             positions: [3, 9, 16, 22],
         },
+        Lang::Ko,
         0,
         true,
     );
@@ -603,4 +622,227 @@ fn w10_word_not_in_the_list_keeps_confirm_off() {
     // Enter moves to the last field, then sends.
     assert!(matches!(form.on_char(0x0D, 40), FormAction::Redraw));
     assert!(matches!(form.on_char(0x0D, 50), FormAction::Submit(_)));
+}
+
+/// spec/14: every secret-window text exists in both languages with the same placeholders (each
+/// index `0..args` used by at least one side), and the English side has no Hangul.
+#[test]
+fn secret_text_catalogue_is_complete() {
+    use yw_core::lang::{has_hangul, placeholders};
+    for entry in super::text::ALL {
+        let ko = placeholders(entry.ko);
+        let en = placeholders(entry.en);
+        assert!(
+            ko.iter().chain(&en).all(|index| *index < entry.args),
+            "{}: placeholder out of range",
+            entry.name
+        );
+        for index in 0..entry.args {
+            assert!(
+                ko.contains(&index) || en.contains(&index),
+                "{}: {{{index}}} unused",
+                entry.name
+            );
+        }
+        assert!(!has_hangul(entry.en), "{}: {}", entry.name, entry.en);
+        assert!(
+            !entry.en.is_empty() && !entry.ko.is_empty(),
+            "{}",
+            entry.name
+        );
+    }
+}
+
+/// The Korean PIN-target texts of the W12 windows stay those of `PinTarget` (byte-identical).
+#[test]
+fn pin_target_texts_match_the_korean_originals() {
+    use crate::yubikey::PinTarget;
+    for target in [
+        PinTarget::OpenPgpUser,
+        PinTarget::OpenPgpAdmin,
+        PinTarget::PivPin,
+        PinTarget::PivPuk,
+    ] {
+        assert_eq!(super::target_name(target, Lang::Ko), target.name());
+        assert_eq!(super::target_title(target, Lang::Ko), target.change_title());
+        assert_eq!(super::target_rule(target, Lang::Ko), target.rule());
+    }
+}
+
+/// With `Lang::En` no secret window draws Hangul in its title, field labels, intro and rule lines,
+/// checkbox, status line or buttons (ASCII inputs).
+#[test]
+#[expect(clippy::too_many_lines, reason = "one table of every window kind")]
+fn every_secret_window_is_english_with_lang_en() {
+    use super::CardSecretKind;
+    use crate::yubikey::PinTarget;
+    use yw_core::lang::has_hangul;
+    let mut kinds = vec![
+        SecretKind::SetPassword,
+        SecretKind::Unlock,
+        SecretKind::ConfirmPassword,
+        SecretKind::ChangePassword,
+        SecretKind::Mnemonic,
+        SecretKind::Passphrase { confirm: true },
+        SecretKind::Passphrase { confirm: false },
+        SecretKind::ShowMnemonic { create: true },
+        SecretKind::ShowMnemonic { create: false },
+        SecretKind::ShowKey,
+        SecretKind::Backup {
+            positions: [3, 7, 12, 24],
+        },
+        SecretKind::CardSecret(CardSecretKind::AdminPin),
+        SecretKind::CardSecret(CardSecretKind::ManagementKey),
+        SecretKind::CardSecret(CardSecretKind::PivPin),
+        SecretKind::CardSecret(CardSecretKind::SetPins),
+        SecretKind::CardSecret(CardSecretKind::UserPin { piv: false }),
+        SecretKind::CardSecret(CardSecretKind::UserPin { piv: true }),
+    ];
+    for chain in [
+        ImportChain::Evm,
+        ImportChain::Sol,
+        ImportChain::Btc,
+        ImportChain::Zec,
+    ] {
+        for no_words in [false, true] {
+            kinds.push(SecretKind::PrivateKey { chain, no_words });
+        }
+    }
+    for target in [
+        PinTarget::OpenPgpUser,
+        PinTarget::OpenPgpAdmin,
+        PinTarget::PivPin,
+        PinTarget::PivPuk,
+    ] {
+        kinds.push(SecretKind::CardSecret(CardSecretKind::ChangePin(target)));
+    }
+    for (touches, per_tx, serial) in [(1, false, 0), (3, false, 7_700_011), (2, true, 7)] {
+        kinds.push(SecretKind::CardPin {
+            min: 6,
+            max: 8,
+            touches,
+            per_tx,
+            serial,
+        });
+    }
+    for kind in kinds {
+        let id = kind.id();
+        let form = if kind.is_display() {
+            SecretForm::display(
+                kind,
+                Lang::En,
+                0,
+                DisplaySecret {
+                    text: SecretString::from_zeroizing(Zeroizing::new("ab".repeat(32))),
+                    address: None,
+                    passphrase_note: true,
+                    copy_allowed: true,
+                },
+            )
+        } else {
+            SecretForm::new(kind, Lang::En, 0, false)
+        };
+        let mut texts: Vec<String> = vec![kind.title(Lang::En).to_owned()];
+        texts.extend(form.slots.iter().map(|slot| slot.label.clone()));
+        for address in [false, true] {
+            texts.extend(super::intro(kind, Lang::En, 24, address));
+        }
+        if let Some((label, _)) = form.checkbox {
+            texts.push(label.to_owned());
+        }
+        texts.extend(form.note.clone());
+        let (right, left) = form.button_labels(0);
+        texts.extend(right.into_iter().chain(left).map(|(_, label)| label));
+        for text in &texts {
+            assert!(!text.is_empty() && !has_hangul(text), "{id}: {text}");
+        }
+    }
+    // The W01/W04 status line, the W08 hold button and W12's own validation errors.
+    for rule in [None, Some(false), Some(true)] {
+        for (text, _) in super::password_status(Lang::En, rule, rule) {
+            assert!(!has_hangul(text), "{text}");
+        }
+    }
+    let mut hold = SecretForm::display(
+        SecretKind::ShowMnemonic { create: true },
+        Lang::En,
+        0,
+        DisplaySecret {
+            text: SecretString::from_zeroizing(Zeroizing::new("abandon".to_owned())),
+            address: None,
+            passphrase_note: false,
+            copy_allowed: false,
+        },
+    );
+    hold.hold.begin(0);
+    let (right, _) = hold.button_labels(500);
+    assert!(right.iter().all(|(_, label)| !has_hangul(label)));
+    assert!(super::card_pin_steps(Lang::En, 7).starts_with("1. Connect YubiKey #7 → "));
+    for (kind, fields) in [
+        (
+            SecretKind::CardSecret(CardSecretKind::AdminPin),
+            &["1234567"][..],
+        ),
+        (
+            SecretKind::CardSecret(CardSecretKind::ManagementKey),
+            &["0a"][..],
+        ),
+        (
+            SecretKind::CardSecret(CardSecretKind::PivPin),
+            &["12345"][..],
+        ),
+        (
+            SecretKind::CardSecret(CardSecretKind::UserPin { piv: false }),
+            &["12345"][..],
+        ),
+        (
+            SecretKind::CardSecret(CardSecretKind::SetPins),
+            &["123", "24681357", "24681357"][..],
+        ),
+        (
+            SecretKind::CardSecret(CardSecretKind::SetPins),
+            &["", "24681357", "24681358"][..],
+        ),
+        (
+            SecretKind::CardSecret(CardSecretKind::SetPins),
+            &["", "12345678", "12345678"][..],
+        ),
+        (
+            SecretKind::CardSecret(CardSecretKind::ChangePin(PinTarget::OpenPgpAdmin)),
+            &["12345678", "87654321", "87654320"][..],
+        ),
+        (
+            SecretKind::CardSecret(CardSecretKind::ChangePin(PinTarget::OpenPgpAdmin)),
+            &["12345678", "1234", "1234"][..],
+        ),
+        (
+            SecretKind::CardSecret(CardSecretKind::ChangePin(PinTarget::PivPin)),
+            &["123456", "123456", "123456"][..],
+        ),
+        (
+            SecretKind::CardPin {
+                min: 6,
+                max: 8,
+                touches: 1,
+                per_tx: false,
+                serial: 0,
+            },
+            &["12345"][..],
+        ),
+    ] {
+        let mut form = SecretForm::new(kind, Lang::En, 0, true);
+        for (index, text) in fields.iter().enumerate() {
+            if index > 0 {
+                form.on_key(0x09, false, false, false, 0);
+            }
+            type_text(&mut form, text, 0);
+        }
+        assert!(matches!(form.on_char(0x0D, 0), FormAction::Redraw));
+        let error = form.error.clone().unwrap_or_default();
+        assert!(
+            !error.is_empty() && !has_hangul(&error),
+            "{}: {error}",
+            kind.id()
+        );
+    }
 }

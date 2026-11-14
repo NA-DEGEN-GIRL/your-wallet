@@ -42,6 +42,7 @@ fn dapp_typed_data_gets_the_hyperliquid_display() {
         let value = yw_json::parse(source, &yw_json::Limits::REQUEST).unwrap();
         let typed = validate_typed_data_v4(source, &value, 42_161).unwrap();
         build_typed_request(
+            crate::lang::Lang::Ko,
             ApprovalId([9; 16]),
             origin.clone(),
             crate::vault::EvmKeySource::Derived(crate::bip32::path::AccountIndex::new(0).unwrap()),
@@ -123,6 +124,7 @@ fn dapp_transfers_get_the_site_checks() {
             ..ChainFacts::default()
         };
         let draft = build_typed_request(
+            crate::lang::Lang::Ko,
             ApprovalId([9; 16]),
             origin.clone(),
             crate::vault::EvmKeySource::Derived(crate::bip32::path::AccountIndex::new(0).unwrap()),
@@ -320,6 +322,7 @@ fn uninterpreted_hyperliquid_actions_get_their_own_warning() {
         let value = yw_json::parse(source.as_bytes(), &yw_json::Limits::REQUEST).unwrap();
         let typed = validate_typed_data_v4(source.as_bytes(), &value, 42_161).unwrap();
         let draft = build_typed_request(
+            crate::lang::Lang::Ko,
             ApprovalId([9; 16]),
             ApprovalOrigin::Site(BrowserOrigin::parse("https://evil.example").unwrap()),
             crate::vault::EvmKeySource::Derived(crate::bip32::path::AccountIndex::new(0).unwrap()),
@@ -712,4 +715,188 @@ fn info_and_exchange_shapes() {
         parse_exchange_reply(&yw_json::parse(err, &yw_json::Limits::RESPONSE).unwrap()),
         Ok(HcExchangeReply::Err(message)) if message.contains("does not exist")
     ));
+}
+
+/// spec/14: the `HyperCore` catalogue entries have the placeholders `0..args` in both languages
+/// and a Hangul-free, valid English text; the mapped Korean names are the original functions'.
+#[test]
+fn hypercore_catalogue_entries_are_well_formed() {
+    use super::text;
+    use crate::approval::{MAX_DISPLAY_VALUE_BYTES, is_valid_display_text};
+    use crate::lang::{Lang, has_hangul, placeholders};
+    for entry in text::ALL {
+        let expected: Vec<usize> = (0..entry.args).collect();
+        for template in [entry.ko, entry.en] {
+            let mut found = placeholders(template);
+            found.sort_unstable();
+            assert_eq!(found, expected, "{}", entry.name);
+        }
+        assert!(!has_hangul(entry.en), "{}", entry.name);
+        assert!(
+            is_valid_display_text(entry.en, MAX_DISPLAY_VALUE_BYTES, true),
+            "{}",
+            entry.name
+        );
+    }
+    for (network, catalogue) in [
+        (HcNetwork::Mainnet, text::NETWORK_MAINNET),
+        (HcNetwork::Testnet, text::NETWORK_TESTNET),
+    ] {
+        assert_eq!(catalogue.ko, network.label());
+        assert_eq!(text::network_label(Lang::Ko, network), network.label());
+        assert_eq!(text::network_label(Lang::En, network), catalogue.en);
+    }
+    for (kind, catalogue) in [
+        (HcKind::UsdSend, text::KIND_USD_SEND),
+        (HcKind::SpotSend, text::KIND_SPOT_SEND),
+        (HcKind::Withdraw, text::KIND_WITHDRAW),
+        (HcKind::UsdClassTransfer, text::KIND_USD_CLASS_TRANSFER),
+        (HcKind::SendAsset, text::KIND_SEND_ASSET),
+    ] {
+        assert_eq!(catalogue.ko, kind.korean());
+        assert_eq!(text::kind_name(Lang::Ko, kind), kind.korean());
+        assert_eq!(text::kind_name(Lang::En, kind), catalogue.en);
+    }
+}
+
+/// spec/14: the `HyperCore 전송` approval of every action kind (with and without the spot token,
+/// spot and non-spot `sendAsset`, recipient notes, look-alike, own account) built in English has
+/// no Hangul in its title, fields or warnings when its inputs are ASCII, and the same fields,
+/// rules and payload as the Korean one.
+#[test]
+#[expect(clippy::too_many_lines, reason = "one case per action kind and option")]
+fn hypercore_english_display_has_no_hangul() {
+    use super::display::{HcApprovalInput, HcRecipient, build_hypercore_request, network_text};
+    use super::{HcEvmLink, HcToken};
+    use crate::approval::{ApprovalDraft, ApprovalId};
+    use crate::bip32::path::AccountIndex;
+    use crate::lang::{Lang, has_hangul};
+    use crate::vault::EvmKeySource;
+
+    let account = address("0x1111111111111111111111111111111111111111");
+    let destination = address(SDK_DESTINATION);
+    let purr_wire = "PURR:0xc4bf3f870c0e9465323c0b6ed28096c2".to_owned();
+    let purr = HcToken {
+        name: "PURR".to_owned(),
+        index: 1,
+        token_id: "0xc4bf3f870c0e9465323c0b6ed28096c2".to_owned(),
+        sz_decimals: 0,
+        wei_decimals: 5,
+        evm: Some(HcEvmLink {
+            address: address("0x9b498c3c8a0b8cd8ba1d9851d40d186f1872b44e"),
+            extra_wei_decimals: 13,
+        }),
+        full_name: None,
+    };
+    let send_asset = |source_dex: &str| HcPayload::SendAsset {
+        destination: system_address(1),
+        source_dex: source_dex.to_owned(),
+        destination_dex: "spot".to_owned(),
+        token: purr_wire.clone(),
+        amount: "0.25".to_owned(),
+    };
+    let cases = [
+        (
+            HcPayload::UsdSend {
+                destination,
+                amount: "1".to_owned(),
+            },
+            None,
+        ),
+        (
+            HcPayload::UsdSend {
+                destination: account,
+                amount: "1".to_owned(),
+            },
+            None,
+        ),
+        (
+            HcPayload::SpotSend {
+                destination,
+                token: purr_wire.clone(),
+                amount: "0.5".to_owned(),
+            },
+            Some(&purr),
+        ),
+        (
+            HcPayload::SpotSend {
+                destination,
+                token: purr_wire.clone(),
+                amount: "0.5".to_owned(),
+            },
+            None,
+        ),
+        (
+            HcPayload::Withdraw {
+                destination: account,
+                amount: "5".to_owned(),
+            },
+            None,
+        ),
+        (
+            HcPayload::UsdClassTransfer {
+                amount: "2".to_owned(),
+                to_perp: true,
+            },
+            None,
+        ),
+        (
+            HcPayload::UsdClassTransfer {
+                amount: "2".to_owned(),
+                to_perp: false,
+            },
+            None,
+        ),
+        (send_asset("spot"), Some(&purr)),
+        (send_asset(""), Some(&purr)),
+        (send_asset("spot"), None),
+    ];
+    for network in [HcNetwork::Mainnet, HcNetwork::Testnet] {
+        assert!(!has_hangul(&network_text(Lang::En, network, 1)));
+        for (payload, token) in &cases {
+            for (look_alike, not_in_book) in [(false, false), (true, false), (false, true)] {
+                let action = HcAction::new(network, SDK_TIME, payload.clone());
+                let input = HcApprovalInput {
+                    action: &action,
+                    account,
+                    signer: EvmKeySource::Derived(AccountIndex::new(0).unwrap()),
+                    token: *token,
+                    recipient: HcRecipient {
+                        notes: vec!["Not in the address book.".to_owned()],
+                        look_alike,
+                        not_in_book,
+                    },
+                };
+                let build =
+                    |lang| build_hypercore_request(lang, ApprovalId([2; 16]), &input).unwrap();
+                let (en, ko) = (build(Lang::En), build(Lang::Ko));
+                assert_eq!(en.display.lang, Lang::En);
+                assert!(!has_hangul(&en.display.title), "{}", en.display.title);
+                for field in &en.display.fields {
+                    assert!(!has_hangul(&field.value), "{:?}", field.value);
+                }
+                for warning in &en.display.warnings {
+                    assert!(!has_hangul(&warning.text), "{:?}", warning.text);
+                }
+                let keys = |draft: &ApprovalDraft| {
+                    (
+                        draft
+                            .display
+                            .fields
+                            .iter()
+                            .map(|f| f.key)
+                            .collect::<Vec<_>>(),
+                        draft
+                            .display
+                            .warnings
+                            .iter()
+                            .map(|w| w.rule)
+                            .collect::<Vec<_>>(),
+                    )
+                };
+                assert_eq!(keys(&en), keys(&ko));
+                assert_eq!(en.payload, ko.payload);
+            }
+        }
+    }
 }

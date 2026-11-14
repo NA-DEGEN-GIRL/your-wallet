@@ -184,8 +184,14 @@ fn approve(meta: &BtcMeta, plan: &SendPlan) -> TestResult<Approved> {
     let facts = meta
         .send_facts(plan, TIP, &[])
         .map_err(|error| format!("{error:?}"))?;
-    let draft = build_btc_request(ApprovalId::random()?, plan, meta.account(), &facts)
-        .map_err(|error| format!("{error:?}"))?;
+    let draft = build_btc_request(
+        yw_core::lang::Lang::Ko,
+        ApprovalId::random()?,
+        plan,
+        meta.account(),
+        &facts,
+    )
+    .map_err(|error| format!("{error:?}"))?;
     let mut store = ApprovalStore::new();
     let request = store.issue(draft, 1, NOW_MS)?;
     Ok(store.consume(request.id, request.digest, 2)?)

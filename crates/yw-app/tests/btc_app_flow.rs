@@ -595,6 +595,7 @@ impl Harness {
     fn call(&mut self, call: impl FnOnce(&mut BtcUi, &BtcCtx<'_>) -> Vec<BtcAction>) {
         let actions = {
             let ctx = BtcCtx {
+                lang: yw_core::lang::Lang::Ko,
                 settings: &self.settings,
                 apikeys: &self.apikeys,
                 meta: self.meta.as_ref(),
@@ -612,6 +613,7 @@ impl Harness {
 
     fn ctx(&self) -> BtcCtx<'_> {
         BtcCtx {
+            lang: yw_core::lang::Lang::Ko,
             settings: &self.settings,
             apikeys: &self.apikeys,
             meta: self.meta.as_ref(),
@@ -705,8 +707,8 @@ impl Harness {
     /// Approves the oldest queued item like A01 would (issue at display, consume).
     fn approve(&mut self) -> TestResult {
         let item = self.queued.remove(0);
-        let draft =
-            BtcUi::draft(&item, ApprovalId::random()?).map_err(yw_app::errors::ErrorCode::code)?;
+        let draft = BtcUi::draft(yw_core::lang::Lang::Ko, &item, ApprovalId::random()?)
+            .map_err(yw_app::errors::ErrorCode::code)?;
         let mut store = ApprovalStore::new();
         let now = self.clock.now_ms();
         let request = store.issue(draft, now, self.clock.now_unix_ms())?;
@@ -1415,8 +1417,8 @@ fn approval_view_shows_btc_money_rows() -> TestResult {
         plan,
         look_alike: None,
     };
-    let draft =
-        BtcUi::draft(&item, ApprovalId::random()?).map_err(yw_app::errors::ErrorCode::code)?;
+    let draft = BtcUi::draft(yw_core::lang::Lang::Ko, &item, ApprovalId::random()?)
+        .map_err(yw_app::errors::ErrorCode::code)?;
     let request = ApprovalStore::new().issue(draft, 1, 1_793_074_713_000)?;
     // Folded (`자세히` closed): the summary, the money rows and the critical fields only.
     let folded = yw_app::ui::approval_view::signing_view(&request, false, true, Vec::new(), false)
@@ -1501,7 +1503,7 @@ fn approval_view_shows_btc_money_rows() -> TestResult {
             .any(|(_, value)| value.contains("BITCOIN TESTNET4"))
     );
     assert_eq!(
-        yw_app::ui::approval_view::BtcBanner::of(BtcNetwork::Mainnet).text(),
+        yw_app::ui::approval_view::BtcBanner::of(BtcNetwork::Mainnet).text(yw_core::lang::Lang::Ko),
         "BITCOIN MAINNET"
     );
     Ok(())

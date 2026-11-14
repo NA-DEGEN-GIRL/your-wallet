@@ -191,10 +191,10 @@ impl PrepareError {
             Self::Plan(error) => error.to_string(),
             Self::NeedsTypedFee { fee, .. } => format!(
                 "{} 상한을 풀려면 수수료(sats)를 정확히 입력하세요: {} sats",
-                yw_core::btc::policy::texts::FEE_CAP_BLOCKED,
+                yw_core::btc::policy::texts::FEE_CAP_BLOCKED.ko,
                 yw_core::btc::amount::format_sats_grouped(fee.get())
             ),
-            Self::FeeUnoverridable => yw_core::btc::policy::texts::FEE_UNOVERRIDABLE.to_owned(),
+            Self::FeeUnoverridable => yw_core::btc::policy::texts::FEE_UNOVERRIDABLE.ko.to_owned(),
             Self::Derivation => yw_core::btc::policy::texts::DERIVATION_FAILED.to_owned(),
             Self::TipAhead { core, indexer } => format!(
                 "노드 블록 높이({core})가 인덱서({indexer})보다 {}블록 넘게 앞서 보내기를 멈췄습니다. 잠시 뒤 다시 검토하거나 노드(RPC) 설정을 확인하세요",

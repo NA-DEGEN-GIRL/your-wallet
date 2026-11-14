@@ -1108,8 +1108,8 @@ pub enum SigningPayload { EvmTx(Eip1559Tx), EvmPersonal(Vec<u8>), EvmTypedData([
     SolTx(Box<SolTxPayload>) /* [07] §20.6, 2026-11-12 */, Zec(Vec<u8>) /* [12] */,
     HyperCore(Box<HcAction>) /* 서명 = 작업의 EIP-712 preimage, digest 바이트는 [11] §6 */ }    // 서명 대상 바이트는 §11.4 표
 pub enum Signer { Evm(EvmKeySource) /* [02] §10.3 */, FromPayload /* SOL intent source, BTC 입력별 경로 */ }
-pub struct ApprovalDisplay { pub title: String, pub fields: Vec<DisplayField>, pub warnings: Vec<Warning>,
-    pub risk: RiskLevel, pub ack_required: bool }
+pub struct ApprovalDisplay { pub lang: Lang /* 2026-11-14, [14] §3: 표시를 만든 언어 */, pub title: String,
+    pub fields: Vec<DisplayField>, pub warnings: Vec<Warning>, pub risk: RiskLevel, pub ack_required: bool }
 pub struct DisplayField { pub key: FieldKey, pub sub_label: String, pub value: String, pub critical: bool, pub volatile: bool }
 pub struct SimBinding { pub number: u64, pub parent_hash: [u8; 32], pub timestamp: u64, pub base_fee: U256, pub sim_digest: [u8; 32] }
 #[repr(u8)] pub enum SimVerdict { Ok = 0, Reverted = 1 /* E02 */, Incomplete = 2 /* E03·E04·E07·E08·E09 */ }
@@ -1146,7 +1146,8 @@ pub fn build_typed_request(/* 같은 앞 인수 */ t: &DecodedTypedData, facts: 
 - `warnings`는 §3.7 단계 1–7에서 생긴 경고다(차단 E05·E06·E10·E11·E34·E35, 고위험 E37, 주의 E38, 정보 E31). 차단이 있으면 `sim`은 `Unavailable { reason: Skipped }`이다. `simulation` 필드는 `sim.binding()`이다. 빌더의 `now_unix_ms`는 상대 시각 표시와 T12·S04·S07 판정용이며 만료와 무관하다.
 - `signer`는 yw-app이 서명 계정에서 정한다(`App::account_source`: meta `evm_accounts` → `Derived(index)`, `evm_raw_accounts` → `Raw(record_id)`, 추가한 복구 단어의 계정 → `Mnemonic(record_id, index)`, YubiKey 계정(`hw_accounts.evm`) → `Hardware(index)`; [02] §5.3·§10.3, [10] §9.2). digest에 넣지 않는다: 다른 키로 서명하면 §4.3-5 복구 주소 검사가 막는다.
 - **`BrowserOrigin`**(`yw_core::policy::BrowserOrigin`, [01](01-repo-build.md) §2.2; `policy` 모듈은 승인 모델이 쓰는 이 타입으로 M2에 시작하고 나머지는 M5): [05](05-browser.md) §4.7 Origin 형식을 그대로 구현한 유일한 origin 타입이다. API는 [05] §6.5(`parse`, `is_http`, `as_str`)에 `effective_port(&self) -> u16`(https 443, http 80; §9.4 S05)을 더한다. `as_str()`이 직렬화(`origin_serialized`, §11.4)다: `https://host[:port]` 또는 허용된 `http://localhost|127.0.0.1[:port]`, port 규칙 포함. yw-app은 별도 origin 파서를 두지 않고 이 타입을 쓴다. localhost 허용 토글은 [05](05-browser.md) §4.6이 따로 판정한다. 이식: `archive/spec-v2.4:crates/wallet-model/src/context.rs:42-131`.
-- 제목 형식: `[{네트워크 이름}] {작업 제목}`(예: `[Sepolia 테스트넷] 토큰 전송: 10 USDC`). LLM 설명([06](06-llm-explain.md))은 이 타입에 들어가지 않는다(D21).
+- 제목 형식: `[{네트워크 이름}] {작업 제목}`(예: `[Sepolia 테스트넷] 토큰 전송: 10 USDC`, 영어 `[Sepolia Testnet] Token transfer: 10 USDC`). LLM 설명([06](06-llm-explain.md))은 이 타입에 들어가지 않는다(D21).
+- 언어(2026-11-14, D39, [14](14-language.md) §3): 모든 `build_*`는 `lang: Lang`을 첫 인자로 받고 제목·값·sub_label·경고 문구를 그 언어로 만든다. 위험 규칙 문구는 `base_text(rule, lang)`, 경고는 `warning(lang, rule, cause)`(원인 줄도 같은 언어). 승인 창은 필드 이름·고정 문구를 `display.lang`으로만 그린다. 영어 문구 전문은 [14] §5.
 
 ### 11.2 표시 필드 키 (`FieldKey`, u16, 표시 순서)
 

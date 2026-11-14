@@ -20,10 +20,12 @@ use super::amount::{Delta, U256};
 use super::chain::{ChainInfo, SimulationSupport};
 use super::decode::revert_reason;
 use super::risk::{self, E01, E02, E03, E04, E07, E08, E09, E36};
+use super::text;
 use super::tx::Eip1559Tx;
 use crate::approval::{SimBinding, SimNoneReason, SimVerdict, SimulationBinding, Warning};
 use crate::codec::transcript::{CodecError, Transcript};
 use crate::hex::const_decode;
+use crate::lang::Lang;
 
 /// Synthetic native-transfer log emitter of `traceTransfers` before Glamsterdam (ERC-7528).
 pub const ERC7528_NATIVE: Address = Address::from_bytes(const_decode::<20>(
@@ -556,53 +558,66 @@ pub fn sim_digest(tx: &Eip1559Tx, block: &SimBlock) -> Result<[u8; 32], CodecErr
     Ok(Sha256::digest(transcript.as_bytes()).into())
 }
 
-fn none(reason: SimNoneReason, cause: &str) -> SimResult {
+fn none(lang: Lang, reason: SimNoneReason, cause: &str) -> SimResult {
     SimResult::Unavailable {
         reason,
-        warning: Some(risk::warning(E01, Some(cause))),
+        warning: Some(risk::warning(lang, E01, Some(cause))),
     }
 }
 
-fn rpc_error_cause(code: i64) -> String {
-    match code {
-        -32_601 => "RPC가 eth_simulateV1을 지원하지 않습니다(체인 설정에서 시뮬레이션을 \"미지원\"으로 바꿀 수 있습니다)".to_owned(),
-        -38_010 => "nonce가 이미 사용되었습니다. 다른 곳에서 이 계정으로 거래가 전송되었을 수 있습니다".to_owned(),
-        -38_011 => "앞선 거래가 아직 처리되지 않았습니다".to_owned(),
-        -38_012 | -32_005 => "최대 수수료가 현재 기본 수수료보다 낮습니다".to_owned(),
-        -38_013 => "가스 한도가 최소 필요량보다 작습니다".to_owned(),
-        -38_014 | -32_003 => "잔액이 보낼 금액과 최대 수수료의 합보다 적습니다".to_owned(),
-        -38_015 => "가스 한도가 블록 가스 한도를 넘습니다".to_owned(),
-        other => format!("시뮬레이션 노드 오류(코드 {other})"),
-    }
+fn rpc_error_cause(lang: Lang, code: i64) -> String {
+    let fixed = match code {
+        -32_601 => text::SIM_RPC_UNSUPPORTED,
+        -38_010 => text::SIM_NONCE_USED,
+        -38_011 => text::SIM_PREVIOUS_PENDING,
+        -38_012 | -32_005 => text::SIM_FEE_TOO_LOW,
+        -38_013 => text::SIM_GAS_TOO_LOW,
+        -38_014 | -32_003 => text::SIM_INSUFFICIENT_FUNDS,
+        -38_015 => text::SIM_GAS_ABOVE_BLOCK,
+        other => return text::SIM_NODE_ERROR.fill(lang, [&other.to_string()]),
+    };
+    fixed.get(lang).to_owned()
 }
 
-fn unavailable(outcome: &SimOutcome) -> Option<SimResult> {
+fn unavailable(lang: Lang, outcome: &SimOutcome) -> Option<SimResult> {
     Some(match outcome {
         SimOutcome::Block(_) => return None,
         SimOutcome::Unsupported => SimResult::Unavailable {
             reason: SimNoneReason::Unsupported,
-            warning: Some(risk::warning(E36, None)),
+            warning: Some(risk::warning(lang, E36, None)),
         },
         SimOutcome::Transport(TransportKind::Timeout) => {
-            none(SimNoneReason::Timeout, "시뮬레이션 응답이 없습니다(10초)")
+            none(lang, SimNoneReason::Timeout, text::SIM_TIMEOUT.get(lang))
         }
         SimOutcome::Transport(TransportKind::RateLimited) | SimOutcome::RpcError { code: 429 } => {
-            none(SimNoneReason::RateLimited, "RPC 요청 한도를 넘었습니다")
+            none(
+                lang,
+                SimNoneReason::RateLimited,
+                text::SIM_RATE_LIMITED.get(lang),
+            )
         }
         SimOutcome::Transport(TransportKind::Other) => none(
+            lang,
             SimNoneReason::Transport,
-            "시뮬레이션 RPC에 연결할 수 없습니다",
+            text::SIM_TRANSPORT.get(lang),
         ),
-        SimOutcome::TooLarge => none(SimNoneReason::TooLarge, "시뮬레이션 응답이 너무 큽니다"),
-        SimOutcome::Malformed => malformed(),
-        SimOutcome::RpcError { code } => none(SimNoneReason::RpcError, &rpc_error_cause(*code)),
+        SimOutcome::TooLarge => too_large(lang),
+        SimOutcome::Malformed => malformed(lang),
+        SimOutcome::RpcError { code } => {
+            none(lang, SimNoneReason::RpcError, &rpc_error_cause(lang, *code))
+        }
     })
 }
 
-fn malformed() -> SimResult {
+fn too_large(lang: Lang) -> SimResult {
+    none(lang, SimNoneReason::TooLarge, text::SIM_TOO_LARGE.get(lang))
+}
+
+fn malformed(lang: Lang) -> SimResult {
     none(
+        lang,
         SimNoneReason::Malformed,
-        "시뮬레이션 응답 형식이 올바르지 않습니다",
+        text::SIM_MALFORMED.get(lang),
     )
 }
 
@@ -997,6 +1012,7 @@ impl DiffBuilder {
 /// Never produces a blocking warning (D15).
 #[must_use]
 pub fn interpret(
+    lang: Lang,
     chain: &ChainInfo,
     tx: &Eip1559Tx,
     from: &Address,
@@ -1004,19 +1020,20 @@ pub fn interpret(
     now_unix_ms: u64,
 ) -> SimResult {
     if chain.simulation == SimulationSupport::Unsupported {
-        return unavailable(&SimOutcome::Unsupported).unwrap_or_else(malformed);
+        return unavailable(lang, &SimOutcome::Unsupported).unwrap_or_else(|| malformed(lang));
     }
-    if let Some(result) = unavailable(outcome) {
+    if let Some(result) = unavailable(lang, outcome) {
         return result;
     }
     let SimOutcome::Block(block) = outcome else {
-        return malformed();
+        return malformed(lang);
     };
-    interpret_block(chain, tx, from, block, now_unix_ms)
+    interpret_block(lang, chain, tx, from, block, now_unix_ms)
 }
 
 #[expect(clippy::too_many_lines, reason = "linear spec/03 §6.3–§6.4 evaluation")]
 fn interpret_block(
+    lang: Lang,
     chain: &ChainInfo,
     tx: &Eip1559Tx,
     user: &Address,
@@ -1031,10 +1048,10 @@ fn interpret_block(
             .iter()
             .any(|log| log.topics.len() > MAX_LOG_TOPICS || log.data.len() > MAX_LOG_DATA)
     {
-        return none(SimNoneReason::TooLarge, "시뮬레이션 응답이 너무 큽니다");
+        return too_large(lang);
     }
     let Ok(digest) = sim_digest(tx, block) else {
-        return none(SimNoneReason::TooLarge, "시뮬레이션 응답이 너무 큽니다");
+        return too_large(lang);
     };
     let binding = SimBinding {
         number: block.number,
@@ -1057,17 +1074,17 @@ fn interpret_block(
     if call.status == SimStatus::Failure {
         let cause = match &call.error {
             Some(SimCallError { code: 3, data }) => {
-                format!("이유: {}", revert_reason(data.as_deref().unwrap_or(&[])))
+                text::SIM_REASON.fill(lang, [&revert_reason(lang, data.as_deref().unwrap_or(&[]))])
             }
             Some(SimCallError { code, .. }) => {
-                format!("이유: 실행 오류(가스 부족 등, 코드 {code})")
+                text::SIM_EXECUTION_ERROR.fill(lang, [&code.to_string()])
             }
-            None => format!("이유: {}", revert_reason(&call.return_data)),
+            None => text::SIM_REASON.fill(lang, [&revert_reason(lang, &call.return_data)]),
         };
         return SimResult::Simulated {
             verdict: SimVerdict::Reverted,
             diff,
-            warnings: vec![risk::warning(E02, Some(&cause))],
+            warnings: vec![risk::warning(lang, E02, Some(&cause))],
         };
     }
 
@@ -1077,7 +1094,7 @@ fn interpret_block(
     for (index, log) in call.logs.iter().enumerate() {
         if log.address == EIP7708_SYSTEM || log.address == ERC7528_NATIVE {
             let Ok(parsed) = native_log(log) else {
-                return malformed();
+                return malformed(lang);
             };
             if log.address == EIP7708_SYSTEM {
                 system.push((index, parsed));
@@ -1128,7 +1145,11 @@ fn interpret_block(
 
     // E03
     if call.gas_used > tx.gas_limit || call.max_used_gas.is_some_and(|peak| peak > tx.gas_limit) {
-        warnings.push(risk::warning(E03, Some("사용 가스가 가스 한도를 넘습니다")));
+        warnings.push(risk::warning(
+            lang,
+            E03,
+            Some(text::SIM_GAS_USED_ABOVE_LIMIT.get(lang)),
+        ));
     }
     // E04 (self-transfers are skipped: EIP-7708 chains emit no log for them).
     if !tx.value.is_zero() && tx.to != *user {
@@ -1136,16 +1157,16 @@ fn interpret_block(
             .iter()
             .any(|(_, (from, to, amount))| from == user && *to == tx.to && *amount == tx.value);
         if !confirmed {
-            let cause = format!("{} 이동이 확인되지 않습니다", chain.native_symbol);
-            warnings.push(risk::warning(E04, Some(&cause)));
+            let cause = text::SIM_NATIVE_UNCONFIRMED.fill(lang, [&chain.native_symbol]);
+            warnings.push(risk::warning(lang, E04, Some(&cause)));
         }
     }
     // E07
     let now_secs = now_unix_ms / 1_000;
     let skew = now_secs.abs_diff(block.timestamp);
     if skew > MAX_CLOCK_SKEW_SECS {
-        let cause = format!("기준 블록 시각이 현재와 {skew}초 다릅니다");
-        warnings.push(risk::warning(E07, Some(&cause)));
+        let cause = text::SIM_CLOCK_SKEW.fill(lang, [&skew.to_string()]);
+        warnings.push(risk::warning(lang, E07, Some(&cause)));
     }
 
     // Asset rows (spec/03 §6.4): native and registered tokens first (sends, then receipts), then
@@ -1179,7 +1200,11 @@ fn interpret_block(
     }
     ranked.sort_by_key(|(rank, _)| *rank);
     if overflow {
-        warnings.push(risk::warning(E09, Some("금액 합산이 범위를 넘었습니다")));
+        warnings.push(risk::warning(
+            lang,
+            E09,
+            Some(text::SIM_SUM_OVERFLOW.get(lang)),
+        ));
     }
     let verified_rows = ranked.iter().filter(|(rank, _)| *rank < 2).count();
     let mut changes: Vec<AssetChange> = ranked.into_iter().map(|(_, change)| change).collect();
@@ -1210,8 +1235,8 @@ fn interpret_block(
         let mut flags = keep.into_iter();
         approvals.retain(|_| flags.next().unwrap_or(false));
         diff.omitted_rows = u32::try_from(omitted).unwrap_or(u32::MAX);
-        let cause = format!("표시 한도를 넘어 {omitted}행을 생략했습니다");
-        warnings.push(risk::warning(E08, Some(&cause)));
+        let cause = text::SIM_ROWS_OMITTED.fill(lang, [&omitted.to_string()]);
+        warnings.push(risk::warning(lang, E08, Some(&cause)));
     }
     diff.changes = changes;
     diff.approvals = approvals;

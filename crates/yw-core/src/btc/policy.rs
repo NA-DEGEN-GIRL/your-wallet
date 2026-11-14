@@ -1,5 +1,5 @@
 //! BTC policy (spec/08 §10, §11.3, §13): the `B01`–`B08` warning rules (`RuleId` family `'B'`)
-//! with their levels and fixed Korean texts, the fixed error texts, the Core `reject-reason`
+//! with their levels and fixed Korean/English texts (spec/14), the fixed error texts, the Core `reject-reason`
 //! token table, RPC error texts, and the pure decisions of the pre-broadcast check
 //! (`testmempoolaccept`) and of `sendrawtransaction`. Inputs are values the yw-app RPC layer
 //! already parsed; no server string is ever returned for display (tokens are compared, never
@@ -7,9 +7,11 @@
 #![deny(clippy::indexing_slicing)]
 
 use super::amount::Sats;
+use super::text as btc_text;
 use super::tx::Txid;
 use crate::approval::{RiskLevel, RuleId, Warning};
 use crate::bip32::path::BtcChain;
+use crate::lang::{Lang, Text};
 
 /// `B01` fee rate above 10,000 sat/vB (blocked, cannot be lifted).
 pub const B01: RuleId = RuleId::new(b'B', 1);
@@ -40,29 +42,31 @@ pub fn level_of(rule: RuleId) -> Option<RiskLevel> {
     })
 }
 
-/// Fixed texts (spec/08 §10, §12.1, §13).
+/// Fixed texts (spec/08 §10, §12.1, §13). The `B` warning texts are bilingual [`Text`]s of the
+/// btc catalogue (`btc::text`, spec/14; 2026-11-14: they were Korean `&str` before); the other
+/// texts here are not approval display and stay Korean.
+///
+/// [`Text`]: crate::lang::Text
 pub mod texts {
+    use crate::btc::text;
+    use crate::lang::Text;
+
     /// B01.
-    pub const FEE_UNOVERRIDABLE: &str =
-        "수수료율이 10,000 sat/vB를 넘습니다 — 어떤 입력으로도 보낼 수 없습니다";
+    pub const FEE_UNOVERRIDABLE: Text = text::B01_FEE_UNOVERRIDABLE;
     /// B02.
-    pub const FEE_CAP_BLOCKED: &str = "수수료가 상한(500 sat/vB 또는 0.005 BTC)을 넘습니다 — 보내기 화면에서 수수료(sats)를 정확히 입력해야 상한이 해제됩니다";
+    pub const FEE_CAP_BLOCKED: Text = text::B02_FEE_CAP_BLOCKED;
     /// B03.
-    pub const FEE_CAP_OVERRIDDEN: &str =
-        "수수료 상한(500 sat/vB 또는 0.005 BTC)을 직접 입력으로 해제했습니다";
+    pub const FEE_CAP_OVERRIDDEN: Text = text::B03_FEE_CAP_OVERRIDDEN;
     /// B04.
-    pub const FEE_RATIO: &str = "수수료가 보내는 금액의 2%를 넘습니다";
+    pub const FEE_RATIO: Text = text::B04_FEE_RATIO;
     /// B05.
-    pub const FIRST_TIME: &str =
-        "처음 보내는 주소입니다. 주소 전체를 확인하고, 큰 금액은 소액 시험 송금 뒤 보내세요.";
+    pub const FIRST_TIME: Text = text::B05_FIRST_TIME;
     /// B06 (send-max bump).
-    pub const RECIPIENT_DECREASED: &str =
-        "수신 금액 감소: 늘어난 수수료만큼 받는 금액이 줄어듭니다";
+    pub const RECIPIENT_DECREASED: Text = text::B06_RECIPIENT_DECREASED;
     /// B08 (P2PKH).
-    pub const LEGACY_RECIPIENT: &str = "레거시 형식(P2PKH) 주소입니다";
+    pub const LEGACY_RECIPIENT: Text = text::B08_LEGACY_RECIPIENT;
     /// B08 (P2SH, P2WSH).
-    pub const SCRIPT_RECIPIENT: &str =
-        "스크립트 주소(P2SH·P2WSH)입니다: 수신자가 스크립트를 관리합니다";
+    pub const SCRIPT_RECIPIENT: Text = text::B08_SCRIPT_RECIPIENT;
     /// D20 in-flight refusal (spec/08 §12.1).
     pub const IN_FLIGHT: &str =
         "진행 중인 Bitcoin 거래가 확인된 뒤 보낼 수 있습니다. 수수료 올리기는 가능합니다";
@@ -176,37 +180,38 @@ impl BtcWarning {
         }
     }
 
-    /// The fixed text.
+    /// The fixed text in `lang`.
     #[must_use]
-    pub fn text(self) -> String {
+    pub fn text(self, lang: Lang) -> String {
+        let fixed = |text: Text| text.get(lang).to_owned();
         match self {
-            Self::FeeUnoverridable => texts::FEE_UNOVERRIDABLE.to_owned(),
-            Self::FeeCapBlocked => texts::FEE_CAP_BLOCKED.to_owned(),
-            Self::FeeCapOverridden => texts::FEE_CAP_OVERRIDDEN.to_owned(),
-            Self::FeeRatio => texts::FEE_RATIO.to_owned(),
-            Self::FirstTimeRecipient => texts::FIRST_TIME.to_owned(),
-            Self::RecipientDecreased => texts::RECIPIENT_DECREASED.to_owned(),
+            Self::FeeUnoverridable => fixed(texts::FEE_UNOVERRIDABLE),
+            Self::FeeCapBlocked => fixed(texts::FEE_CAP_BLOCKED),
+            Self::FeeCapOverridden => fixed(texts::FEE_CAP_OVERRIDDEN),
+            Self::FeeRatio => fixed(texts::FEE_RATIO),
+            Self::FirstTimeRecipient => fixed(texts::FIRST_TIME),
+            Self::RecipientDecreased => fixed(texts::RECIPIENT_DECREASED),
             Self::UtxosExcluded { count } => {
-                format!("UTXO {count}개는 포함되지 않음(입력 최대 100개)")
+                btc_text::B06_UTXOS_EXCLUDED.fill(lang, [&count.to_string()])
             }
             Self::OwnAddress {
                 account,
                 network,
                 chain,
                 index,
-            } => format!(
-                "이 지갑의 주소입니다 ({})",
-                account.path_text(network, chain, index)
+            } => btc_text::B07_OWN_ADDRESS.fill(
+                lang,
+                [&btc_text::path_text(lang, &account, network, chain, index)],
             ),
-            Self::LegacyRecipient => texts::LEGACY_RECIPIENT.to_owned(),
-            Self::ScriptRecipient => texts::SCRIPT_RECIPIENT.to_owned(),
+            Self::LegacyRecipient => fixed(texts::LEGACY_RECIPIENT),
+            Self::ScriptRecipient => fixed(texts::SCRIPT_RECIPIENT),
         }
     }
 
-    /// The display warning (rule, level, text).
+    /// The display warning (rule, level, text) in `lang`.
     #[must_use]
-    pub fn warning(self) -> Warning {
-        warning(self.rule(), self.text())
+    pub fn warning(self, lang: Lang) -> Warning {
+        warning(self.rule(), self.text(lang))
     }
 }
 

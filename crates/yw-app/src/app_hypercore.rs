@@ -838,7 +838,8 @@ impl App {
             token: item.token.as_ref(),
             recipient: item.recipient.clone(),
         };
-        match yw_core::hypercore::display::build_hypercore_request(id, &input) {
+        match yw_core::hypercore::display::build_hypercore_request(self.approval_lang(), id, &input)
+        {
             Ok(draft) => self.show_ready_draft_at(draft, None, now_unix_ms()),
             Err(_) => self.show_failure(
                 crate::errors::ErrorCode::App009,

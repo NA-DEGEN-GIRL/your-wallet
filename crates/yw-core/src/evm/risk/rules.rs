@@ -1,13 +1,17 @@
 //! Rule table (spec/03 §10.2–§10.4): identifiers, levels and fixed base texts.
 
 use crate::approval::{RiskLevel, RuleId, Warning};
+use crate::lang::Lang;
 
 macro_rules! rules {
-    ($($name:ident = $family:literal $number:literal, $level:ident, $text:literal;)*) => {
+    ($($name:ident = $family:literal $number:literal, $level:ident, $ko:literal / $en:literal;)*) => {
         $(
             #[doc = concat!("Rule `", stringify!($name), "`.")]
             pub const $name: RuleId = RuleId::new($family, $number);
         )*
+
+        /// Every rule of the central table, in table order (spec/14 §3, tests).
+        pub const ALL_RULES: &[RuleId] = &[$($name),*];
 
         /// The rule's level, `None` for an unknown rule.
         #[must_use]
@@ -16,146 +20,277 @@ macro_rules! rules {
             None
         }
 
-        /// The rule's fixed base text, `None` for an unknown rule.
+        /// The rule's fixed base text in `lang` (Korean = spec/03 §10, English = spec/14 §3),
+        /// `None` for an unknown rule.
         #[must_use]
-        pub fn base_text(rule: RuleId) -> Option<&'static str> {
-            $(if rule == $name { return Some($text); })*
+        pub fn base_text(rule: RuleId, lang: Lang) -> Option<&'static str> {
+            $(if rule == $name { return Some(lang.pick($ko, $en)); })*
             None
         }
     };
 }
 
 rules! {
-    E01 = b'E' 1, High, "시뮬레이션 결과 없음 — 실제 효과를 확인할 수 없습니다";
-    E02 = b'E' 2, High, "시뮬레이션에서 거래가 실패했습니다 — 수수료만 잃을 수 있습니다";
-    E03 = b'E' 3, High, "시뮬레이션 결과가 불완전합니다";
-    E04 = b'E' 4, High, "시뮬레이션 결과가 불완전합니다";
-    E05 = b'E' 5, Blocked, "수수료가 상한을 넘습니다";
-    E06 = b'E' 6, Blocked, "진행 중인 거래가 있습니다";
-    E07 = b'E' 7, High, "시뮬레이션 결과가 불완전합니다";
-    E08 = b'E' 8, High, "시뮬레이션 결과가 불완전합니다";
-    E09 = b'E' 9, High, "시뮬레이션 결과가 불완전합니다";
-    E10 = b'E' 10, Blocked, "가스 추정값이 거래 가스 상한(16,777,216)을 넘습니다";
-    E11 = b'E' 11, Blocked, "서명할 거래가 너무 큽니다(131,072바이트 초과)";
-    E12 = b'E' 12, High, "해석되지 않은 컨트랙트 호출";
-    E13 = b'E' 13, High, "해석한 호출 내용이 시뮬레이션 결과로 확인되지 않습니다";
-    E14 = b'E' 14, High, "무제한 승인";
-    E15 = b'E' 15, High, "컬렉션 전체 권한 부여";
-    E16 = b'E' 16, High, "승인 대상이 일반 계정(EOA) 또는 위임된 계정입니다";
-    E17 = b'E' 17, High, "서명 계정에 코드가 있습니다(EIP-7702 위임 포함)";
-    E18 = b'E' 18, High, "0 주소 또는 토큰 컨트랙트 자신에게 보내는 이동입니다";
-    E19 = b'E' 19, High, "등록되지 않은 토큰이 알려진 심볼을 사용합니다";
-    E20 = b'E' 20, Caution, "토큰 사용 승인";
-    E21 = b'E' 21, Caution, "승인 대상이 등록되지 않은 컨트랙트입니다";
-    E22 = b'E' 22, Caution, "Permit2 승인 만료가 30일을 넘거나 만료가 없습니다";
-    E23 = b'E' 23, Caution, "보내는 자산만 있고 받는 자산이 없습니다";
-    E24 = b'E' 24, Caution, "자기 자신에게 보내는 호출에 데이터가 있습니다";
-    E25 = b'E' 25, Caution, "토큰 소수 자릿수를 확인할 수 없어 원시 단위로 표시합니다";
-    E26 = b'E' 26, Caution, "토큰 심볼을 읽을 수 없습니다";
-    E27 = b'E' 27, Caution, "조회 한도를 넘어 일부 정보를 원시 값으로 표시합니다";
-    E28 = b'E' 28, Info, "주소록에 없는 받는 주소입니다";
-    E29 = b'E' 29, Info, "받는 주소가 컨트랙트입니다";
-    E30 = b'E' 30, Info, "승인 해제";
-    E31 = b'E' 31, Info, "dApp이 보낸 수수료 값은 무시하고 지갑이 계산한 수수료를 씁니다";
-    E32 = b'E' 32, Info, "기타 이벤트";
-    E33 = b'E' 33, Info, "등록되지 않은 토큰 (미확인)";
-    E34 = b'E' 34, Blocked, "RPC 체인 불일치";
-    E35 = b'E' 35, Blocked, "거래를 준비할 수 없음";
-    E36 = b'E' 36, High, "시뮬레이션 미지원 체인 — 실제 효과를 확인할 수 없습니다";
-    E37 = b'E' 37, High, "가스 추정 실패 — 거래가 실패할 수 있습니다";
-    E38 = b'E' 38, Caution, "HyperEVM 작은 블록 한도를 넘는 거래입니다 — 계정에 큰 블록 사용이 켜져 있지 않으면 포함되지 않을 수 있습니다";
-    E39 = b'E' 39, High, "승인 대상의 계정 종류를 확인할 수 없습니다(조회 실패)";
-    E40 = b'E' 40, High, "내 자산을 보내고 받는 것은 등록되지 않은 토큰·NFT입니다 — 가짜 자산일 수 있습니다";
-    E41 = b'E' 41, Caution, "L1 데이터 수수료를 확인하지 못했습니다 — 최대 수수료에 L1 수수료가 빠져 있습니다";
-    E42 = b'E' 42, High, "보내려는 금액보다 많은 자산이 빠져나갑니다 — 자산을 빼가는 거래일 수 있습니다";
-    E43 = b'E' 43, High, "알고 있는 주소와 앞뒤가 같지만 다른 주소입니다 — 주소 오염 공격일 수 있습니다";
-    T01 = b'T' 1, Blocked, "typed data의 chainId가 현재 체인과 다릅니다";
-    T02 = b'T' 2, Blocked, "typed data 형식이 올바르지 않습니다";
-    T03 = b'T' 3, High, "도메인에 chainId가 없습니다 — 다른 체인에서도 쓰일 수 있습니다";
-    T04 = b'T' 4, High, "알 수 없는 형식의 서명 요청입니다";
-    T05 = b'T' 5, High, "토큰 사용 허가(permit) 서명입니다 — 서명만으로 토큰을 가져갈 수 있습니다";
-    T06 = b'T' 6, High, "Permit2 즉시 이체 서명(조건 포함)입니다 — 조건 내용은 해석하지 않았습니다";
-    T07 = b'T' 7, High, "소유자가 서명 계정과 다릅니다";
-    T08 = b'T' 8, High, "이 주문에서 내가 받는 것이 없습니다";
-    T09 = b'T' 9, High, "spender가 일반 계정(EOA) 또는 위임된 계정입니다";
-    T10 = b'T' 10, Caution, "verifyingContract가 없거나 0 주소입니다";
-    T11 = b'T' 11, Caution, "verifyingContract가 일반 계정(EOA)입니다";
-    T12 = b'T' 12, Caution, "기한이 이미 지났거나 30일을 넘거나 만료가 없습니다";
-    T13 = b'T' 13, Caution, "서명 유효 기간이 깁니다";
-    T14 = b'T' 14, Caution, "컬렉션의 아무 토큰이나 대상이 되는 주문이거나 CONTRACT 주문입니다";
-    T15 = b'T' 15, Info, "DAI 사용 허가 해제";
-    T16 = b'T' 16, Blocked, "표시 한도를 넘는 typed data입니다";
-    T17 = b'T' 17, Caution, "숨은 문자 또는 방향 제어 문자가 있습니다";
-    T18 = b'T' 18, High, "spender의 계정 종류를 확인할 수 없습니다(조회 실패)";
-    T19 = b'T' 19, High, "내 자산을 내놓는 마켓 주문입니다 — 서명만으로 주문이 체결될 수 있습니다";
-    T20 = b'T' 20, High, "등록되지 않은 토큰이 알려진 심볼을 사용합니다";
-    P01 = b'P' 1, High, "UTF-8 텍스트가 아닌 메시지입니다 — hex로 표시합니다";
-    P02 = b'P' 2, Caution, "숨은 문자 또는 방향 제어 문자가 있습니다";
-    P03 = b'P' 3, Info, "메시지 서명 요청";
-    P04 = b'P' 4, High, "텍스트로 보기 어려운 메시지입니다 — hex로 표시합니다";
-    S01 = b'S' 1, Blocked, "SIWE 도메인이 요청 사이트와 다릅니다";
-    S02 = b'S' 2, Blocked, "SIWE scheme이 요청 사이트와 다르거나 사용자 정보가 있습니다";
-    S03 = b'S' 3, Blocked, "SIWE 주소가 서명 계정과 다르거나 체크섬이 틀립니다";
-    S04 = b'S' 4, Blocked, "SIWE 메시지가 만료되었습니다";
-    S05 = b'S' 5, Caution, "SIWE 도메인의 포트가 요청 사이트와 다릅니다";
-    S06 = b'S' 6, Caution, "SIWE Chain ID가 현재 체인과 다릅니다";
-    S07 = b'S' 7, Caution, "SIWE 메시지가 아직 유효하지 않습니다(Not Before)";
-    S08 = b'S' 8, High, "SIWE 형식처럼 보이지만 형식이 올바르지 않습니다";
-    S09 = b'S' 9, Info, "로그인 요청 (SIWE)";
-    M01 = b'M' 1, Blocked, "Solana 거래로 해석되는 바이트입니다 — 메시지 서명으로 거래에 서명할 수 없습니다";
-    M02 = b'M' 2, Blocked, "Solana 오프체인 메시지 머리글이 있지만 형식이 올바르지 않습니다";
-    M03 = b'M' 3, Blocked, "Bitcoin 거래 또는 PSBT로 해석되는 바이트입니다 — 메시지 서명으로 거래에 서명할 수 없습니다";
-    M04 = b'M' 4, Info, "소유 증명용 메시지 서명입니다 — 거래·송금에는 쓰이지 않습니다";
-    M05 = b'M' 5, Info, "Solana 오프체인 메시지(v0)입니다";
-    M06 = b'M' 6, Blocked, "Bitcoin 로그인(Sign-In-With-Bitcoin) 메시지의 도메인이 요청 사이트와 다릅니다";
-    W01 = b'W' 1, Blocked, "SIWS 도메인이 요청 사이트와 다릅니다";
-    W02 = b'W' 2, Blocked, "SIWS 주소가 서명 계정과 다릅니다";
-    W03 = b'W' 3, Blocked, "SIWS Chain ID가 현재 Solana 클러스터와 다릅니다";
-    W04 = b'W' 4, Blocked, "SIWS 메시지가 만료되었습니다";
-    W05 = b'W' 5, Caution, "SIWS 메시지가 아직 유효하지 않습니다(Not Before)";
-    W06 = b'W' 6, High, "SIWS 발급 시각이 현재 시각과 10분 넘게 다릅니다";
-    W07 = b'W' 7, Blocked, "SIWS 형식이 올바르지 않습니다";
-    W08 = b'W' 8, Info, "로그인 요청 (SIWS)";
-    X01 = b'X' 1, Blocked, "Solana 거래에 서명할 수 없습니다";
-    X02 = b'X' 2, High, "해석하지 않은 명령을 호출합니다 — 무엇을 하는지 지갑이 확인할 수 없습니다";
-    X03 = b'X' 3, High, "내 지갑(서명자)이나 내 토큰 계정이 해석하지 않은 명령에 전달됩니다 — 이 명령이 자산을 옮길 수 있습니다";
-    X04 = b'X' 4, High, "토큰 사용 권한 위임(Approve) — 위임받은 주소가 내 토큰을 옮길 수 있습니다";
-    X05 = b'X' 5, High, "계정 권한 변경(SetAuthority)";
-    X06 = b'X' 6, High, "내 지갑 계정의 소유 프로그램을 바꿉니다(Assign·Allocate)";
-    X07 = b'X' 7, High, "내 토큰 계정을 닫고 남은 SOL을 다른 주소로 보냅니다";
-    X08 = b'X' 8, High, "durable nonce 거래 — 만료되지 않아 나중에 언제든 처리될 수 있습니다";
-    X09 = b'X' 9, High, "시뮬레이션이 실패했거나 결과가 없습니다 — 실제 효과를 확인할 수 없습니다";
-    X10 = b'X' 10, Caution, "조회 테이블 주소는 RPC가 알려준 값입니다";
-    X11 = b'X' 11, Caution, "서명만 해서 사이트에 돌려줍니다 — 지갑은 전송·추적하지 않고 활동에 남지 않습니다";
-    X12 = b'X' 12, Caution, "Token-2022 전송 수수료가 있습니다(민트 TLV 1 TransferFeeConfig — 받는 쪽 금액이 줄 수 있습니다)";
-    X13 = b'X' 13, Info, "다른 계정이 수수료를 내거나 사이트가 넣은 서명이 있습니다";
-    X14 = b'X' 14, High, "수수료가 설정한 상한을 넘습니다";
-    X15 = b'X' 15, High, "시뮬레이션에서 위임·소유자·닫기 권한이 바뀌거나 지갑 소유 프로그램이 바뀝니다";
-    X16 = b'X' 16, High, "알고 있는 주소와 앞뒤가 같지만 다른 주소입니다 — 주소 오염 공격일 수 있습니다";
-    X17 = b'X' 17, High, "토큰에 영구 위임자 또는 전송 훅이 있습니다(Token-2022)";
-    X18 = b'X' 18, Caution, "런타임 한도나 규칙에 걸려 실패할 수 있습니다 (계정 128개 초과·중복되거나 잘못된 ComputeBudget)";
-    X19 = b'X' 19, Caution, "블록해시를 바꿔 시뮬레이션했습니다 — 결과는 참고용입니다";
-    X20 = b'X' 20, High, "RPC가 알려준 수수료가 거래에서 계산한 수수료와 다릅니다 — RPC 값을 믿을 수 없거나 수수료 규칙이 바뀌었을 수 있습니다";
-    H01 = b'H' 1, Info, "HyperCore 사용자 서명 작업입니다 — 서명하면 Hyperliquid가 바로 처리하며 되돌릴 수 없습니다";
-    H02 = b'H' 2, Caution, "받는 주소가 주소록에 없습니다 — 주소 전체를 확인하세요";
-    H03 = b'H' 3, High, "알고 있는 주소와 앞뒤가 같지만 다른 주소입니다 — 주소 오염 공격일 수 있습니다";
-    H04 = b'H' 4, Info, "HyperEVM으로 이동합니다 — HyperEVM의 같은 주소로 들어갑니다";
-    H05 = b'H' 5, Info, "Arbitrum 출금에는 고정 수수료 1 USDC가 듭니다(약 5분 걸림)";
-    H06 = b'H' 6, High, "Hyperliquid 거래 권한 위임(API 지갑 승인)입니다 — 승인한 주소가 내 계정으로 주문·취소를 할 수 있습니다";
-    H07 = b'H' 7, High, "Hyperliquid 주문·거래 서명(L1 action)입니다 — 지갑은 서명 내용(해시)을 해석할 수 없고, 이 지갑은 거래 기능을 지원하지 않습니다";
-    H08 = b'H' 8, High, "Hyperliquid 빌더 수수료 승인입니다 — 승인한 주소가 내 주문에 수수료를 붙일 수 있습니다";
-    H09 = b'H' 9, Caution, "hyperliquidChain이 Testnet입니다 — 테스트넷 작업입니다";
-    H10 = b'H' 10, High, "사이트가 요청한 HyperCore 전송의 받는 주소가 내 계정도, 주소록에 있는 주소도 아닙니다 — 되돌릴 수 없으니 주소 전체를 확인하세요";
-    H11 = b'H' 11, High, "사이트가 요청한 Arbitrum 출금(withdraw3)의 받는 주소가 서명 계정이 아닙니다 — 다른 사람에게 출금될 수 있습니다";
-    H12 = b'H' 12, High, "토큰 이름과 tokenId가 spotMeta와 맞지 않거나 spotMeta를 확인할 수 없습니다 — 다른 토큰일 수 있습니다";
-    H13 = b'H' 13, High, "HyperEVM 시스템 주소로 보내지만 이 토큰의 시스템 주소가 아니거나 HyperEVM에 연결되지 않은 토큰입니다 — 자산을 잃을 수 있습니다";
-    H14 = b'H' 14, High, "HyperEVM 시스템 주소로 보내는 sendAsset이 현물(spot)→현물 이동이 아니거나 하위 계정에서 보냅니다 — HyperEVM 이동으로 확인할 수 없어 자산을 잃을 수 있습니다";
-    H15 = b'H' 15, High, "해석하지 못한 Hyperliquid 계정 작업입니다 — 계정 권한을 넘기거나 자금을 옮기는 작업일 수 있습니다. 무엇인지 확인할 수 없으면 서명하지 마세요";
-    H16 = b'H' 16, High, "Hyperliquid 계정을 멀티시그 계정으로 바꾸는 서명입니다 — 이후 이 계정의 작업에는 서명자 목록(signers)의 서명이 필요해, 모르는 주소가 있으면 계정과 자금을 빼앗길 수 있습니다";
-    C01 = b'C' 1, Caution, "WalletConnect 요청입니다 — 사이트 주소는 사이트가 스스로 주장한 값이며 확인되지 않았습니다";
-    C02 = b'C' 2, High, "WalletConnect Verify 결과 사이트가 주장한 주소와 실제 주소가 다릅니다 — 피싱일 수 있습니다";
-    C03 = b'C' 3, High, "WalletConnect Verify가 이 사이트를 알려진 사기 사이트로 표시했습니다";
-    C04 = b'C' 4, Info, "WalletConnect 요청 — Verify 서버는 사이트가 주장한 주소와 일치한다고 알렸지만, 브라우저 밖에서 도는 dApp은 이 결과를 꾸밀 수 있습니다";
+    E01 = b'E' 1, High, "시뮬레이션 결과 없음 — 실제 효과를 확인할 수 없습니다"
+        / "No simulation result — the real effect cannot be checked";
+    E02 = b'E' 2, High, "시뮬레이션에서 거래가 실패했습니다 — 수수료만 잃을 수 있습니다"
+        / "The transaction failed in simulation — you may lose the fee and get nothing";
+    E03 = b'E' 3, High, "시뮬레이션 결과가 불완전합니다"
+        / "The simulation result is incomplete";
+    E04 = b'E' 4, High, "시뮬레이션 결과가 불완전합니다"
+        / "The simulation result is incomplete";
+    E05 = b'E' 5, Blocked, "수수료가 상한을 넘습니다"
+        / "The fee exceeds the cap";
+    E06 = b'E' 6, Blocked, "진행 중인 거래가 있습니다"
+        / "A transaction is already in progress";
+    E07 = b'E' 7, High, "시뮬레이션 결과가 불완전합니다"
+        / "The simulation result is incomplete";
+    E08 = b'E' 8, High, "시뮬레이션 결과가 불완전합니다"
+        / "The simulation result is incomplete";
+    E09 = b'E' 9, High, "시뮬레이션 결과가 불완전합니다"
+        / "The simulation result is incomplete";
+    E10 = b'E' 10, Blocked, "가스 추정값이 거래 가스 상한(16,777,216)을 넘습니다"
+        / "The gas estimate exceeds the transaction gas cap (16,777,216)";
+    E11 = b'E' 11, Blocked, "서명할 거래가 너무 큽니다(131,072바이트 초과)"
+        / "The transaction to sign is too large (over 131,072 bytes)";
+    E12 = b'E' 12, High, "해석되지 않은 컨트랙트 호출"
+        / "Uninterpreted contract call";
+    E13 = b'E' 13, High, "해석한 호출 내용이 시뮬레이션 결과로 확인되지 않습니다"
+        / "The interpreted call is not confirmed by the simulation result";
+    E14 = b'E' 14, High, "무제한 승인"
+        / "Unlimited approval";
+    E15 = b'E' 15, High, "컬렉션 전체 권한 부여"
+        / "Permission over the whole collection";
+    E16 = b'E' 16, High, "승인 대상이 일반 계정(EOA) 또는 위임된 계정입니다"
+        / "The approved party is a regular account (EOA) or a delegated account";
+    E17 = b'E' 17, High, "서명 계정에 코드가 있습니다(EIP-7702 위임 포함)"
+        / "The signing account has code (including an EIP-7702 delegation)";
+    E18 = b'E' 18, High, "0 주소 또는 토큰 컨트랙트 자신에게 보내는 이동입니다"
+        / "A transfer to the zero address or to the token contract itself";
+    E19 = b'E' 19, High, "등록되지 않은 토큰이 알려진 심볼을 사용합니다"
+        / "An unregistered token uses a well-known symbol";
+    E20 = b'E' 20, Caution, "토큰 사용 승인"
+        / "Token spending approval";
+    E21 = b'E' 21, Caution, "승인 대상이 등록되지 않은 컨트랙트입니다"
+        / "The approved party is an unregistered contract";
+    E22 = b'E' 22, Caution, "Permit2 승인 만료가 30일을 넘거나 만료가 없습니다"
+        / "The Permit2 approval expires in more than 30 days or never";
+    E23 = b'E' 23, Caution, "보내는 자산만 있고 받는 자산이 없습니다"
+        / "Assets only go out; nothing comes in";
+    E24 = b'E' 24, Caution, "자기 자신에게 보내는 호출에 데이터가 있습니다"
+        / "A call to your own address carries data";
+    E25 = b'E' 25, Caution, "토큰 소수 자릿수를 확인할 수 없어 원시 단위로 표시합니다"
+        / "The token's decimals cannot be read, so amounts are shown in raw units";
+    E26 = b'E' 26, Caution, "토큰 심볼을 읽을 수 없습니다"
+        / "The token symbol cannot be read";
+    E27 = b'E' 27, Caution, "조회 한도를 넘어 일부 정보를 원시 값으로 표시합니다"
+        / "Lookup limits were exceeded, so some details are shown as raw values";
+    E28 = b'E' 28, Info, "주소록에 없는 받는 주소입니다"
+        / "The recipient is not in your address book";
+    E29 = b'E' 29, Info, "받는 주소가 컨트랙트입니다"
+        / "The recipient is a contract";
+    E30 = b'E' 30, Info, "승인 해제"
+        / "Approval revoked";
+    E31 = b'E' 31, Info, "dApp이 보낸 수수료 값은 무시하고 지갑이 계산한 수수료를 씁니다"
+        / "Fee values sent by the dApp are ignored; the wallet computes the fee";
+    E32 = b'E' 32, Info, "기타 이벤트"
+        / "Other events";
+    E33 = b'E' 33, Info, "등록되지 않은 토큰 (미확인)"
+        / "Unregistered token (unverified)";
+    E34 = b'E' 34, Blocked, "RPC 체인 불일치"
+        / "RPC chain mismatch";
+    E35 = b'E' 35, Blocked, "거래를 준비할 수 없음"
+        / "The transaction cannot be prepared";
+    E36 = b'E' 36, High, "시뮬레이션 미지원 체인 — 실제 효과를 확인할 수 없습니다"
+        / "Simulation is not supported on this chain — the real effect cannot be checked";
+    E37 = b'E' 37, High, "가스 추정 실패 — 거래가 실패할 수 있습니다"
+        / "Gas estimation failed — the transaction may fail";
+    E38 = b'E' 38, Caution, "HyperEVM 작은 블록 한도를 넘는 거래입니다 — 계정에 큰 블록 사용이 켜져 있지 않으면 포함되지 않을 수 있습니다"
+        / "The transaction exceeds the HyperEVM small-block limit — it may not be included unless big blocks are enabled for the account";
+    E39 = b'E' 39, High, "승인 대상의 계정 종류를 확인할 수 없습니다(조회 실패)"
+        / "The account type of the approved party cannot be checked (lookup failed)";
+    E40 = b'E' 40, High, "내 자산을 보내고 받는 것은 등록되지 않은 토큰·NFT입니다 — 가짜 자산일 수 있습니다"
+        / "You send your assets and what you receive is unregistered tokens or NFTs — they may be fake assets";
+    E41 = b'E' 41, Caution, "L1 데이터 수수료를 확인하지 못했습니다 — 최대 수수료에 L1 수수료가 빠져 있습니다"
+        / "The L1 data fee could not be checked — the maximum fee does not include the L1 fee";
+    E42 = b'E' 42, High, "보내려는 금액보다 많은 자산이 빠져나갑니다 — 자산을 빼가는 거래일 수 있습니다"
+        / "More assets leave than the amount you are sending — this may be a draining transaction";
+    E43 = b'E' 43, High, "알고 있는 주소와 앞뒤가 같지만 다른 주소입니다 — 주소 오염 공격일 수 있습니다"
+        / "Same start and end as a known address, but a different address — this may be an address-poisoning attack";
+    T01 = b'T' 1, Blocked, "typed data의 chainId가 현재 체인과 다릅니다"
+        / "The typed data chainId differs from the current chain";
+    T02 = b'T' 2, Blocked, "typed data 형식이 올바르지 않습니다"
+        / "The typed data is malformed";
+    T03 = b'T' 3, High, "도메인에 chainId가 없습니다 — 다른 체인에서도 쓰일 수 있습니다"
+        / "The domain has no chainId — the signature may also be usable on other chains";
+    T04 = b'T' 4, High, "알 수 없는 형식의 서명 요청입니다"
+        / "Signature request in an unknown format";
+    T05 = b'T' 5, High, "토큰 사용 허가(permit) 서명입니다 — 서명만으로 토큰을 가져갈 수 있습니다"
+        / "Token spending permit signature — the signature alone lets your tokens be taken";
+    T06 = b'T' 6, High, "Permit2 즉시 이체 서명(조건 포함)입니다 — 조건 내용은 해석하지 않았습니다"
+        / "Permit2 immediate transfer signature (with conditions) — the conditions were not interpreted";
+    T07 = b'T' 7, High, "소유자가 서명 계정과 다릅니다"
+        / "The owner differs from the signing account";
+    T08 = b'T' 8, High, "이 주문에서 내가 받는 것이 없습니다"
+        / "You receive nothing in this order";
+    T09 = b'T' 9, High, "spender가 일반 계정(EOA) 또는 위임된 계정입니다"
+        / "The spender is a regular account (EOA) or a delegated account";
+    T10 = b'T' 10, Caution, "verifyingContract가 없거나 0 주소입니다"
+        / "verifyingContract is missing or the zero address";
+    T11 = b'T' 11, Caution, "verifyingContract가 일반 계정(EOA)입니다"
+        / "verifyingContract is a regular account (EOA)";
+    T12 = b'T' 12, Caution, "기한이 이미 지났거나 30일을 넘거나 만료가 없습니다"
+        / "The deadline has passed, is more than 30 days away, or there is no expiry";
+    T13 = b'T' 13, Caution, "서명 유효 기간이 깁니다"
+        / "The signature stays valid for a long time";
+    T14 = b'T' 14, Caution, "컬렉션의 아무 토큰이나 대상이 되는 주문이거나 CONTRACT 주문입니다"
+        / "The order accepts any token of the collection, or is a CONTRACT order";
+    T15 = b'T' 15, Info, "DAI 사용 허가 해제"
+        / "DAI permit revoked";
+    T16 = b'T' 16, Blocked, "표시 한도를 넘는 typed data입니다"
+        / "The typed data exceeds the display limit";
+    T17 = b'T' 17, Caution, "숨은 문자 또는 방향 제어 문자가 있습니다"
+        / "Contains hidden or direction-control characters";
+    T18 = b'T' 18, High, "spender의 계정 종류를 확인할 수 없습니다(조회 실패)"
+        / "The spender's account type cannot be checked (lookup failed)";
+    T19 = b'T' 19, High, "내 자산을 내놓는 마켓 주문입니다 — 서명만으로 주문이 체결될 수 있습니다"
+        / "A market order that gives away your assets — the signature alone can fill the order";
+    T20 = b'T' 20, High, "등록되지 않은 토큰이 알려진 심볼을 사용합니다"
+        / "An unregistered token uses a well-known symbol";
+    P01 = b'P' 1, High, "UTF-8 텍스트가 아닌 메시지입니다 — hex로 표시합니다"
+        / "The message is not UTF-8 text — shown as hex";
+    P02 = b'P' 2, Caution, "숨은 문자 또는 방향 제어 문자가 있습니다"
+        / "Contains hidden or direction-control characters";
+    P03 = b'P' 3, Info, "메시지 서명 요청"
+        / "Message signature request";
+    P04 = b'P' 4, High, "텍스트로 보기 어려운 메시지입니다 — hex로 표시합니다"
+        / "The message is hard to read as text — shown as hex";
+    S01 = b'S' 1, Blocked, "SIWE 도메인이 요청 사이트와 다릅니다"
+        / "The SIWE domain differs from the requesting site";
+    S02 = b'S' 2, Blocked, "SIWE scheme이 요청 사이트와 다르거나 사용자 정보가 있습니다"
+        / "The SIWE scheme differs from the requesting site or contains user info";
+    S03 = b'S' 3, Blocked, "SIWE 주소가 서명 계정과 다르거나 체크섬이 틀립니다"
+        / "The SIWE address differs from the signing account or has a wrong checksum";
+    S04 = b'S' 4, Blocked, "SIWE 메시지가 만료되었습니다"
+        / "The SIWE message has expired";
+    S05 = b'S' 5, Caution, "SIWE 도메인의 포트가 요청 사이트와 다릅니다"
+        / "The SIWE domain port differs from the requesting site";
+    S06 = b'S' 6, Caution, "SIWE Chain ID가 현재 체인과 다릅니다"
+        / "The SIWE Chain ID differs from the current chain";
+    S07 = b'S' 7, Caution, "SIWE 메시지가 아직 유효하지 않습니다(Not Before)"
+        / "The SIWE message is not valid yet (Not Before)";
+    S08 = b'S' 8, High, "SIWE 형식처럼 보이지만 형식이 올바르지 않습니다"
+        / "Looks like SIWE, but the format is wrong";
+    S09 = b'S' 9, Info, "로그인 요청 (SIWE)"
+        / "Sign-in request (SIWE)";
+    M01 = b'M' 1, Blocked, "Solana 거래로 해석되는 바이트입니다 — 메시지 서명으로 거래에 서명할 수 없습니다"
+        / "These bytes parse as a Solana transaction — a message signature cannot be used to sign a transaction";
+    M02 = b'M' 2, Blocked, "Solana 오프체인 메시지 머리글이 있지만 형식이 올바르지 않습니다"
+        / "There is a Solana off-chain message header, but its format is wrong";
+    M03 = b'M' 3, Blocked, "Bitcoin 거래 또는 PSBT로 해석되는 바이트입니다 — 메시지 서명으로 거래에 서명할 수 없습니다"
+        / "These bytes parse as a Bitcoin transaction or PSBT — a message signature cannot be used to sign a transaction";
+    M04 = b'M' 4, Info, "소유 증명용 메시지 서명입니다 — 거래·송금에는 쓰이지 않습니다"
+        / "Message signature for proof of ownership — not used for transactions or transfers";
+    M05 = b'M' 5, Info, "Solana 오프체인 메시지(v0)입니다"
+        / "Solana off-chain message (v0)";
+    M06 = b'M' 6, Blocked, "Bitcoin 로그인(Sign-In-With-Bitcoin) 메시지의 도메인이 요청 사이트와 다릅니다"
+        / "The domain of the Sign-In-With-Bitcoin message differs from the requesting site";
+    W01 = b'W' 1, Blocked, "SIWS 도메인이 요청 사이트와 다릅니다"
+        / "The SIWS domain differs from the requesting site";
+    W02 = b'W' 2, Blocked, "SIWS 주소가 서명 계정과 다릅니다"
+        / "The SIWS address differs from the signing account";
+    W03 = b'W' 3, Blocked, "SIWS Chain ID가 현재 Solana 클러스터와 다릅니다"
+        / "The SIWS Chain ID differs from the current Solana cluster";
+    W04 = b'W' 4, Blocked, "SIWS 메시지가 만료되었습니다"
+        / "The SIWS message has expired";
+    W05 = b'W' 5, Caution, "SIWS 메시지가 아직 유효하지 않습니다(Not Before)"
+        / "The SIWS message is not valid yet (Not Before)";
+    W06 = b'W' 6, High, "SIWS 발급 시각이 현재 시각과 10분 넘게 다릅니다"
+        / "The SIWS issued-at time differs from the current time by more than 10 minutes";
+    W07 = b'W' 7, Blocked, "SIWS 형식이 올바르지 않습니다"
+        / "The SIWS format is wrong";
+    W08 = b'W' 8, Info, "로그인 요청 (SIWS)"
+        / "Sign-in request (SIWS)";
+    X01 = b'X' 1, Blocked, "Solana 거래에 서명할 수 없습니다"
+        / "This Solana transaction cannot be signed";
+    X02 = b'X' 2, High, "해석하지 않은 명령을 호출합니다 — 무엇을 하는지 지갑이 확인할 수 없습니다"
+        / "Calls an uninterpreted instruction — the wallet cannot check what it does";
+    X03 = b'X' 3, High, "내 지갑(서명자)이나 내 토큰 계정이 해석하지 않은 명령에 전달됩니다 — 이 명령이 자산을 옮길 수 있습니다"
+        / "Your wallet (signer) or your token account is passed to an uninterpreted instruction — it may move your assets";
+    X04 = b'X' 4, High, "토큰 사용 권한 위임(Approve) — 위임받은 주소가 내 토큰을 옮길 수 있습니다"
+        / "Token spending delegation (Approve) — the delegate can move your tokens";
+    X05 = b'X' 5, High, "계정 권한 변경(SetAuthority)"
+        / "Account authority change (SetAuthority)";
+    X06 = b'X' 6, High, "내 지갑 계정의 소유 프로그램을 바꿉니다(Assign·Allocate)"
+        / "Changes the owner program of your wallet account (Assign/Allocate)";
+    X07 = b'X' 7, High, "내 토큰 계정을 닫고 남은 SOL을 다른 주소로 보냅니다"
+        / "Closes your token account and sends the remaining SOL to another address";
+    X08 = b'X' 8, High, "durable nonce 거래 — 만료되지 않아 나중에 언제든 처리될 수 있습니다"
+        / "Durable nonce transaction — it does not expire and can be processed at any time later";
+    X09 = b'X' 9, High, "시뮬레이션이 실패했거나 결과가 없습니다 — 실제 효과를 확인할 수 없습니다"
+        / "The simulation failed or has no result — the real effect cannot be checked";
+    X10 = b'X' 10, Caution, "조회 테이블 주소는 RPC가 알려준 값입니다"
+        / "The lookup table addresses are values reported by the RPC";
+    X11 = b'X' 11, Caution, "서명만 해서 사이트에 돌려줍니다 — 지갑은 전송·추적하지 않고 활동에 남지 않습니다"
+        / "Signed only and returned to the site — the wallet does not send or track it, and it does not appear in activity";
+    X12 = b'X' 12, Caution, "Token-2022 전송 수수료가 있습니다(민트 TLV 1 TransferFeeConfig — 받는 쪽 금액이 줄 수 있습니다)"
+        / "Token-2022 transfer fee applies (mint TLV 1 TransferFeeConfig — the recipient may get less)";
+    X13 = b'X' 13, Info, "다른 계정이 수수료를 내거나 사이트가 넣은 서명이 있습니다"
+        / "Another account pays the fee, or the site added signatures";
+    X14 = b'X' 14, High, "수수료가 설정한 상한을 넘습니다"
+        / "The fee exceeds your configured cap";
+    X15 = b'X' 15, High, "시뮬레이션에서 위임·소유자·닫기 권한이 바뀌거나 지갑 소유 프로그램이 바뀝니다"
+        / "In simulation a delegate, owner or close authority changes, or the owner program of your wallet changes";
+    X16 = b'X' 16, High, "알고 있는 주소와 앞뒤가 같지만 다른 주소입니다 — 주소 오염 공격일 수 있습니다"
+        / "Same start and end as a known address, but a different address — this may be an address-poisoning attack";
+    X17 = b'X' 17, High, "토큰에 영구 위임자 또는 전송 훅이 있습니다(Token-2022)"
+        / "The token has a permanent delegate or a transfer hook (Token-2022)";
+    X18 = b'X' 18, Caution, "런타임 한도나 규칙에 걸려 실패할 수 있습니다 (계정 128개 초과·중복되거나 잘못된 ComputeBudget)"
+        / "May fail on runtime limits or rules (more than 128 accounts, duplicate or invalid ComputeBudget)";
+    X19 = b'X' 19, Caution, "블록해시를 바꿔 시뮬레이션했습니다 — 결과는 참고용입니다"
+        / "Simulated with a replaced blockhash — the result is for reference only";
+    X20 = b'X' 20, High, "RPC가 알려준 수수료가 거래에서 계산한 수수료와 다릅니다 — RPC 값을 믿을 수 없거나 수수료 규칙이 바뀌었을 수 있습니다"
+        / "The fee reported by the RPC differs from the fee computed from the transaction — the RPC value may be untrustworthy or the fee rules may have changed";
+    H01 = b'H' 1, Info, "HyperCore 사용자 서명 작업입니다 — 서명하면 Hyperliquid가 바로 처리하며 되돌릴 수 없습니다"
+        / "HyperCore user-signed action — once signed, Hyperliquid processes it immediately and it cannot be undone";
+    H02 = b'H' 2, Caution, "받는 주소가 주소록에 없습니다 — 주소 전체를 확인하세요"
+        / "The recipient is not in your address book — check the whole address";
+    H03 = b'H' 3, High, "알고 있는 주소와 앞뒤가 같지만 다른 주소입니다 — 주소 오염 공격일 수 있습니다"
+        / "Same start and end as a known address, but a different address — this may be an address-poisoning attack";
+    H04 = b'H' 4, Info, "HyperEVM으로 이동합니다 — HyperEVM의 같은 주소로 들어갑니다"
+        / "Moves to HyperEVM — it arrives at the same address on HyperEVM";
+    H05 = b'H' 5, Info, "Arbitrum 출금에는 고정 수수료 1 USDC가 듭니다(약 5분 걸림)"
+        / "Arbitrum withdrawals cost a fixed fee of 1 USDC (takes about 5 minutes)";
+    H06 = b'H' 6, High, "Hyperliquid 거래 권한 위임(API 지갑 승인)입니다 — 승인한 주소가 내 계정으로 주문·취소를 할 수 있습니다"
+        / "Hyperliquid trading delegation (API wallet approval) — the approved address can place and cancel orders for your account";
+    H07 = b'H' 7, High, "Hyperliquid 주문·거래 서명(L1 action)입니다 — 지갑은 서명 내용(해시)을 해석할 수 없고, 이 지갑은 거래 기능을 지원하지 않습니다"
+        / "Hyperliquid order/trade signature (L1 action) — the wallet cannot interpret what is signed (a hash), and this wallet does not support trading";
+    H08 = b'H' 8, High, "Hyperliquid 빌더 수수료 승인입니다 — 승인한 주소가 내 주문에 수수료를 붙일 수 있습니다"
+        / "Hyperliquid builder fee approval — the approved address can add fees to your orders";
+    H09 = b'H' 9, Caution, "hyperliquidChain이 Testnet입니다 — 테스트넷 작업입니다"
+        / "hyperliquidChain is Testnet — this is a testnet action";
+    H10 = b'H' 10, High, "사이트가 요청한 HyperCore 전송의 받는 주소가 내 계정도, 주소록에 있는 주소도 아닙니다 — 되돌릴 수 없으니 주소 전체를 확인하세요"
+        / "The recipient of the HyperCore transfer requested by the site is neither your account nor in your address book — this cannot be undone, so check the whole address";
+    H11 = b'H' 11, High, "사이트가 요청한 Arbitrum 출금(withdraw3)의 받는 주소가 서명 계정이 아닙니다 — 다른 사람에게 출금될 수 있습니다"
+        / "The recipient of the Arbitrum withdrawal (withdraw3) requested by the site is not the signing account — funds may be withdrawn to someone else";
+    H12 = b'H' 12, High, "토큰 이름과 tokenId가 spotMeta와 맞지 않거나 spotMeta를 확인할 수 없습니다 — 다른 토큰일 수 있습니다"
+        / "The token name and tokenId do not match spotMeta, or spotMeta cannot be checked — it may be a different token";
+    H13 = b'H' 13, High, "HyperEVM 시스템 주소로 보내지만 이 토큰의 시스템 주소가 아니거나 HyperEVM에 연결되지 않은 토큰입니다 — 자산을 잃을 수 있습니다"
+        / "Sends to a HyperEVM system address that is not this token's, or the token is not linked to HyperEVM — you may lose the assets";
+    H14 = b'H' 14, High, "HyperEVM 시스템 주소로 보내는 sendAsset이 현물(spot)→현물 이동이 아니거나 하위 계정에서 보냅니다 — HyperEVM 이동으로 확인할 수 없어 자산을 잃을 수 있습니다"
+        / "sendAsset to a HyperEVM system address is not a spot-to-spot move or is sent from a sub-account — it cannot be confirmed as a HyperEVM move and you may lose the assets";
+    H15 = b'H' 15, High, "해석하지 못한 Hyperliquid 계정 작업입니다 — 계정 권한을 넘기거나 자금을 옮기는 작업일 수 있습니다. 무엇인지 확인할 수 없으면 서명하지 마세요"
+        / "Uninterpreted Hyperliquid account action — it may hand over account control or move funds. Do not sign if you cannot tell what it is";
+    H16 = b'H' 16, High, "Hyperliquid 계정을 멀티시그 계정으로 바꾸는 서명입니다 — 이후 이 계정의 작업에는 서명자 목록(signers)의 서명이 필요해, 모르는 주소가 있으면 계정과 자금을 빼앗길 수 있습니다"
+        / "Signature that turns the Hyperliquid account into a multisig account — afterwards its actions need signatures from the signers list, so an unknown address there can take the account and its funds";
+    C01 = b'C' 1, Caution, "WalletConnect 요청입니다 — 사이트 주소는 사이트가 스스로 주장한 값이며 확인되지 않았습니다"
+        / "WalletConnect request — the site address is what the site claims and is not verified";
+    C02 = b'C' 2, High, "WalletConnect Verify 결과 사이트가 주장한 주소와 실제 주소가 다릅니다 — 피싱일 수 있습니다"
+        / "WalletConnect Verify reports that the site's real address differs from the claimed one — this may be phishing";
+    C03 = b'C' 3, High, "WalletConnect Verify가 이 사이트를 알려진 사기 사이트로 표시했습니다"
+        / "WalletConnect Verify flagged this site as a known scam site";
+    C04 = b'C' 4, Info, "WalletConnect 요청 — Verify 서버는 사이트가 주장한 주소와 일치한다고 알렸지만, 브라우저 밖에서 도는 dApp은 이 결과를 꾸밀 수 있습니다"
+        / "WalletConnect request — the Verify server reported a match with the claimed address, but a dApp running outside a browser can fake this result";
 }
 
 /// Simulation-status rules shown first within their level (spec/03 §10.1, D15; X09 spec/07 §20.6).
@@ -164,11 +299,12 @@ pub fn is_simulation_status(rule: RuleId) -> bool {
     [E01, E02, E03, E04, E07, E08, E09, E36, E37, X09].contains(&rule)
 }
 
-/// A warning with the rule's base text and an optional cause line (`base ‖ LF ‖ cause`).
+/// A warning with the rule's base text in `lang` and an optional cause line (`base ‖ LF ‖ cause`;
+/// the cause is already in `lang`).
 #[must_use]
-pub fn warning(rule: RuleId, cause: Option<&str>) -> Warning {
+pub fn warning(lang: Lang, rule: RuleId, cause: Option<&str>) -> Warning {
     let level = level_of(rule).unwrap_or(RiskLevel::High);
-    let mut text = base_text(rule).unwrap_or("").to_owned();
+    let mut text = base_text(rule, lang).unwrap_or("").to_owned();
     if let Some(cause) = cause {
         text.push('\n');
         text.push_str(cause);

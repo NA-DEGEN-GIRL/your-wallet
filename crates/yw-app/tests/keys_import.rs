@@ -422,8 +422,13 @@ fn imported_sol_key_prepares_and_signs_a_devnet_transfer() -> TestResult {
     );
     // Steps 3–7: approval, then the key worker's journal path signs with the imported key.
     let intent = prepared.intent([0x51; 16], 1_800_000_000_000);
-    let draft = build_sol_transfer_request(&intent, &prepared.genesis, &prepared.facts)
-        .map_err(|error| format!("{error:?}"))?;
+    let draft = build_sol_transfer_request(
+        yw_core::lang::Lang::Ko,
+        &intent,
+        &prepared.genesis,
+        &prepared.facts,
+    )
+    .map_err(|error| format!("{error:?}"))?;
     let mut store = ApprovalStore::new();
     let request = store.issue(draft, 1, intent.created_at_ms)?;
     let approved = store.consume(request.id, request.digest, 2)?;

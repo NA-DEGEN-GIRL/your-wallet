@@ -203,7 +203,9 @@ fn fuzz_lite_sol_msgsign() {
         // The approval window blocks exactly what the signer refuses (every 8th input: the
         // display build is the expensive part).
         if round % 8 == 0 {
-            let draft = build_sol_message_request(&sol_request(input.clone()), 0).unwrap();
+            let draft =
+                build_sol_message_request(yw_core::lang::Lang::Ko, &sol_request(input.clone()), 0)
+                    .unwrap();
             if !ok {
                 assert_eq!(draft.display.risk, RiskLevel::Blocked);
             }

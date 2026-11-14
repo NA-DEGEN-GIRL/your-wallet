@@ -683,6 +683,7 @@ type Fallible<T> = Result<T, Box<dyn std::error::Error>>;
 fn draft_on(chain: &ChainInfo, source: &str, facts: &ChainFacts) -> Fallible<ApprovalDraft> {
     let typed = validate(source, chain.chain_id)?;
     Ok(build_typed_request(
+        yw_core::lang::Lang::Ko,
         ApprovalId([1; 16]),
         ApprovalOrigin::Site(BrowserOrigin::parse("https://app.example").ok_or("origin")?),
         EvmKeySource::Derived(AccountIndex::ZERO),
@@ -1148,4 +1149,55 @@ fn typed_payload_is_the_preimage() {
     );
     assert_eq!(typed.preimage[..2], [0x19, 0x01]);
     let _: Address = typed.domain.verifying_contract.unwrap();
+}
+
+/// spec/14 §3: the same typed-data requests built in English carry no Hangul anywhere in the
+/// display (ASCII inputs), and their display differs from the Korean one.
+#[test]
+fn english_typed_displays_have_no_korean() -> Fallible<()> {
+    use yw_core::lang::{Lang, has_hangul};
+    let none = ChainFacts::default();
+    let sources = [
+        erc2612(ACC1, "5", NOW + 600),
+        permit_single(PERMIT2, NOW + 86_400, NOW + 600, ACC1),
+        permit_batch_of(2),
+        permit_transfer(true, true),
+        seaport_receiving(1, SEPOLIA_USDC),
+    ];
+    for source in &sources {
+        let chain = sepolia();
+        let typed = validate(source, chain.chain_id)?;
+        let build = |lang| {
+            build_typed_request(
+                lang,
+                ApprovalId([1; 16]),
+                ApprovalOrigin::Site(BrowserOrigin::parse("https://app.example").ok_or("origin")?),
+                EvmKeySource::Derived(AccountIndex::ZERO),
+                parse_address(ACC1)?,
+                ApprovalKind::EvmTypedData,
+                &chain,
+                &typed,
+                &none,
+                NOW_MS,
+            )
+            .map_err(Box::<dyn std::error::Error>::from)
+        };
+        let english = build(Lang::En)?.display;
+        let korean = build(Lang::Ko)?.display;
+        assert_eq!(english.lang, Lang::En);
+        assert!(!has_hangul(&english.title), "{}", english.title);
+        for field in &english.fields {
+            assert!(
+                !has_hangul(&field.sub_label) && !has_hangul(&field.value),
+                "{} = {}",
+                field.sub_label,
+                field.value
+            );
+        }
+        for warning in &english.warnings {
+            assert!(!has_hangul(&warning.text), "{}", warning.text);
+        }
+        assert_ne!(english.title, korean.title);
+    }
+    Ok(())
 }

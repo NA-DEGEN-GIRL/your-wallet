@@ -21,6 +21,7 @@ use crate::evm::amount::U256;
 use crate::evm::risk::{E06, warning_text};
 use crate::evm::sign::recover_address;
 use crate::evm::tx::{Eip1559Tx, MAX_SIGNED_TX_BYTES, SignedEip1559, decode_signed, tx_hash};
+use crate::lang::Lang;
 
 /// `record_kind` (fixed).
 pub const RECORD_KIND: u8 = 0x01;
@@ -600,25 +601,33 @@ pub enum NonceBlock {
 }
 
 impl NonceBlock {
-    /// The E06 warning.
+    /// The E06 warning in `lang`.
     #[must_use]
-    pub fn warning(self) -> Warning {
+    pub fn warning(self, lang: Lang) -> Warning {
         match self {
             Self::InFlight { nonce } => {
-                warning_text(E06, format!("진행 중인 거래가 있습니다 (nonce {nonce})"))
+                warning_text(E06, text::IN_FLIGHT.fill(lang, [&nonce.to_string()]))
             }
-            Self::ExternalPending => warning_text(
-                E06,
-                "이 계정에서 다른 곳으로 보낸 대기 중 거래가 있습니다".to_owned(),
-            ),
+            Self::ExternalPending => warning_text(E06, text::EXTERNAL_PENDING.get(lang).to_owned()),
         }
     }
 }
 
-/// The E06 "journal full" warning (§5.4-4).
+/// The E06 "journal full" warning (§5.4-4) in `lang`.
 #[must_use]
-pub fn journal_full_warning() -> Warning {
-    warning_text(E06, "거래 저널 공간이 부족합니다".to_owned())
+pub fn journal_full_warning(lang: Lang) -> Warning {
+    warning_text(E06, text::JOURNAL_FULL.get(lang).to_owned())
+}
+
+/// The E06 texts and the cancel activity title (spec/03 §3.6, §5.4; English spec/14 §4).
+pub mod text {
+    crate::texts! {
+        IN_FLIGHT(1) = "진행 중인 거래가 있습니다 (nonce {0})" / "A transaction is in progress (nonce {0})";
+        EXTERNAL_PENDING = "이 계정에서 다른 곳으로 보낸 대기 중 거래가 있습니다"
+            / "A pending transaction was sent from this account elsewhere";
+        JOURNAL_FULL = "거래 저널 공간이 부족합니다" / "The transaction journal is full";
+        CANCEL_ROW = "거래 취소" / "Transaction cancelled";
+    }
 }
 
 /// The nonce of a new transaction (§3.6): blocked by an in-flight record or by `pending !=
@@ -1002,7 +1011,7 @@ fn row(
 /// (hash of the confirmed candidate); a confirmed cancel turns the original row `replaced` and
 /// adds a "거래 취소" row. `None` when some record is not terminal.
 #[must_use]
-pub fn group_activity(group: &[&EvmRecord]) -> Option<Vec<ActivityRow>> {
+pub fn group_activity(lang: Lang, group: &[&EvmRecord]) -> Option<Vec<ActivityRow>> {
     if group.is_empty() || group.iter().any(|record| !record.is_terminal()) {
         return None;
     }
@@ -1038,7 +1047,12 @@ pub fn group_activity(group: &[&EvmRecord]) -> Option<Vec<ActivityRow>> {
             if let Some(original) = newest_non_cancel {
                 rows.extend(row(original, title, ActivityStatus::Replaced, time));
             }
-            rows.extend(row(record, "거래 취소", receipt(record), time));
+            rows.extend(row(
+                record,
+                text::CANCEL_ROW.get(lang),
+                receipt(record),
+                time,
+            ));
         }
         Some(record) => rows.extend(row(record, title, receipt(record), time)),
         None => {
@@ -1053,13 +1067,13 @@ pub fn group_activity(group: &[&EvmRecord]) -> Option<Vec<ActivityRow>> {
 }
 
 /// Removes the entries of the given groups from `plain` and returns their activity rows.
-fn remove_groups(plain: &mut JournalPlain, keys: &[GroupKey]) -> Vec<ActivityRow> {
+fn remove_groups(lang: Lang, plain: &mut JournalPlain, keys: &[GroupKey]) -> Vec<ActivityRow> {
     let entries = EvmEntries::from_plain(plain);
     let records = entries.records();
     let mut rows = Vec::new();
     for (key, members) in groups(&records) {
         if keys.contains(&key) {
-            rows.extend(group_activity(&members).unwrap_or_default());
+            rows.extend(group_activity(lang, &members).unwrap_or_default());
         }
     }
     let remove: Vec<usize> = entries
@@ -1097,7 +1111,7 @@ fn terminal_groups(records: &[EvmRecord]) -> Vec<(GroupKey, u64)> {
 
 /// Takes out the groups terminal for 7 days or longer (done before every journal write, §5.4-4).
 #[must_use]
-pub fn take_expired(plain: &mut JournalPlain, now_unix_ms: u64) -> Vec<ActivityRow> {
+pub fn take_expired(lang: Lang, plain: &mut JournalPlain, now_unix_ms: u64) -> Vec<ActivityRow> {
     let records = EvmEntries::from_plain(plain).records();
     let expired: Vec<GroupKey> = terminal_groups(&records)
         .into_iter()
@@ -1107,7 +1121,7 @@ pub fn take_expired(plain: &mut JournalPlain, now_unix_ms: u64) -> Vec<ActivityR
     if expired.is_empty() {
         return Vec::new();
     }
-    remove_groups(plain, &expired)
+    remove_groups(lang, plain, &expired)
 }
 
 /// The terminal groups whose removal makes room for one more EVM entry, oldest first; `None`
@@ -1151,12 +1165,12 @@ fn groups_to_free(plain: &JournalPlain) -> Option<Vec<GroupKey>> {
 /// # Errors
 ///
 /// [`JournalError::Full`] when even all terminal EVM groups are not enough (`plain` unchanged).
-pub fn make_room(plain: &mut JournalPlain) -> Result<Vec<ActivityRow>, JournalError> {
+pub fn make_room(lang: Lang, plain: &mut JournalPlain) -> Result<Vec<ActivityRow>, JournalError> {
     let keys = groups_to_free(plain).ok_or(JournalError::Full)?;
     if keys.is_empty() {
         return Ok(Vec::new());
     }
-    Ok(remove_groups(plain, &keys))
+    Ok(remove_groups(lang, plain, &keys))
 }
 
 /// Whether a new EVM record would fit after the clean-up of [`make_room`] (prepare step 4).

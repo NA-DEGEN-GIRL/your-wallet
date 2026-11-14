@@ -39,6 +39,7 @@ use crate::journal::btc::{
     check_plan_allowed, finished_rows, in_flight_outpoints, make_room, push_record,
     recorded_amounts, set_state,
 };
+use crate::lang::Lang;
 use crate::vault::{EvmKeySource, Vault};
 
 const NET: BtcNetwork = BtcNetwork::Testnet4;
@@ -192,7 +193,14 @@ fn two_input_plan(fixture: &Fixture) -> SendPlan {
 
 fn draft_of(fixture: &Fixture, plan: &SendPlan, id: u8) -> ApprovalDraft {
     let facts = fixture.meta.send_facts(plan, TIP, &[]).unwrap();
-    build_btc_request(ApprovalId([id; 16]), plan, &fixture.account, &facts).unwrap()
+    build_btc_request(
+        Lang::Ko,
+        ApprovalId([id; 16]),
+        plan,
+        &fixture.account,
+        &facts,
+    )
+    .unwrap()
 }
 
 /// An `Approved` through the real store (issue → consume).
@@ -760,7 +768,8 @@ fn end_to_end_testnet4_core() {
             own_recipient: None,
         }
     );
-    let draft = build_btc_request(ApprovalId([0x42; 16]), &plan, &account, &facts).unwrap();
+    let draft =
+        build_btc_request(Lang::Ko, ApprovalId([0x42; 16]), &plan, &account, &facts).unwrap();
     assert_eq!(
         draft.display.title,
         "[Bitcoin testnet4] 보내기: 0.00100000 BTC"
@@ -797,7 +806,7 @@ fn end_to_end_testnet4_core() {
     );
 
     assert!(
-        make_room(&mut journal, NET, TIP, NOW_UNIX, 1)
+        make_room(crate::lang::Lang::Ko, &mut journal, NET, TIP, NOW_UNIX, 1)
             .unwrap()
             .is_empty()
     );
@@ -811,7 +820,10 @@ fn end_to_end_testnet4_core() {
         BtcRecord::decode(&record.encode().unwrap()).unwrap(),
         record
     );
-    assert_eq!(record.title(), "[Bitcoin testnet4] 보내기: 0.00100000 BTC");
+    assert_eq!(
+        record.title(crate::lang::Lang::Ko),
+        "[Bitcoin testnet4] 보내기: 0.00100000 BTC"
+    );
 
     // testmempoolaccept → Broadcasting.
     let local = verified.local();
@@ -890,8 +902,15 @@ fn end_to_end_testnet4_core() {
     // the confirmation height (a lagging or garbage tip) does not finish it.
     assert_eq!(check_can_send(&records, NET), Ok(()));
     assert!(in_flight_outpoints(&records, NET).is_empty());
-    assert!(finished_rows(&journal, NET, TIP, NOW_UNIX + 700, 9).is_empty());
-    let rows = finished_rows(&journal, NET, TIP + 1, NOW_UNIX + 700, 9);
+    assert!(finished_rows(crate::lang::Lang::Ko, &journal, NET, TIP, NOW_UNIX + 700, 9).is_empty());
+    let rows = finished_rows(
+        crate::lang::Lang::Ko,
+        &journal,
+        NET,
+        TIP + 1,
+        NOW_UNIX + 700,
+        9,
+    );
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].status, "succeeded");
     assert_eq!(rows[0].tx_id, local.txid.to_display_hex());
@@ -1724,6 +1743,7 @@ fn added_mnemonic_send_end_to_end() {
         let primary_view = fixture.account.with_mnemonic(None);
         let mut store = ApprovalStore::new();
         let draft = build_btc_request(
+            Lang::Ko,
             ApprovalId([4; 16]),
             &plan,
             &fixture.account,

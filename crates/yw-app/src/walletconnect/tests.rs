@@ -258,6 +258,7 @@ fn dib_formats_parse() {
 fn test_draft(warnings: usize) -> yw_core::approval::ApprovalDraft {
     use yw_core::approval::{ApprovalDisplay, ApprovalId, ApprovalKind, ApprovalOrigin};
     let mut draft = yw_core::evm::display::build_personal_request(
+        yw_core::lang::Lang::Ko,
         ApprovalId([7; 16]),
         ApprovalOrigin::Site(yw_core::policy::BrowserOrigin::parse("https://app.example").unwrap()),
         yw_core::vault::EvmKeySource::Derived(yw_core::bip32::path::AccountIndex::ZERO),
@@ -269,10 +270,21 @@ fn test_draft(warnings: usize) -> yw_core::approval::ApprovalDraft {
     )
     .unwrap();
     let list = (0..warnings)
-        .map(|i| yw_core::evm::risk::warning(yw_core::evm::risk::P03, Some(&format!("{i}"))))
+        .map(|i| {
+            yw_core::evm::risk::warning(
+                yw_core::lang::Lang::Ko,
+                yw_core::evm::risk::P03,
+                Some(&format!("{i}")),
+            )
+        })
         .collect();
-    draft.display =
-        ApprovalDisplay::new(draft.display.title.clone(), draft.display.fields, list).unwrap();
+    draft.display = ApprovalDisplay::new(
+        yw_core::lang::Lang::Ko,
+        draft.display.title.clone(),
+        draft.display.fields,
+        list,
+    )
+    .unwrap();
     draft
 }
 
@@ -295,7 +307,7 @@ fn origins_labels_and_caip2() {
         ..super::Metadata::default()
     };
     assert_eq!(
-        super::origin_label(&peer),
+        super::origin_label(yw_core::lang::Lang::Ko, &peer),
         "WalletConnect: https://app.example (사이트가 주장한 주소)"
     );
     // Injection: raw unparsable text and multi-line names never reach a label.
@@ -305,10 +317,10 @@ fn origins_labels_and_caip2() {
         ..super::Metadata::default()
     };
     assert_eq!(
-        super::origin_label(&hostile),
+        super::origin_label(yw_core::lang::Lang::Ko, &hostile),
         "WalletConnect: (주소 형식이 올바르지 않음) (사이트가 주장한 주소)"
     );
-    let name = hostile.display_name();
+    let name = hostile.display_name(yw_core::lang::Lang::Ko);
     assert!(!name.contains('\n') && !name.contains('\u{202E}'), "{name}");
     assert_eq!(
         name,

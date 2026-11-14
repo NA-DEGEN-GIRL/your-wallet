@@ -338,6 +338,7 @@ S16 토큰 추가: 컨트랙트 주소(§2.15) → RPC `decimals()`·`symbol()`(
 
 | 구역 | 항목 | 동작 |
 |---|---|---|
+| 보안 | 언어 · Language (2026-11-14, [14] §1) | 보안 구역 첫 카드. 라디오 `한국어`·`English`(`language`), 카드 제목과 선택지는 두 언어에서 같은 글자. 도움말 "앱 화면과 승인 창의 언어입니다. 바꾸면 바로 적용되고, 이미 열린 승인 창은 처음 언어로 남습니다." / "The language of the app screens and approval windows. A change applies at once; an approval window that is already open keeps its language." |
 | 보안 | 자동 잠금(분) | 1–60, `autoLockMinutes` |
 | 보안 | 니모닉·개인키 복사 허용 | 켤 때 T-COPY-ON 오버레이 확인, `allowSecretCopy` |
 | 보안 | 니모닉 보기 / 개인키 보기 / 비밀번호 변경 | §2.12, §2.13 |
@@ -1080,6 +1081,7 @@ impl SecretField {
 | `logLevel` | string | `"info"` | `error`·`warn`·`info`·`debug` |
 | `llm_reasoning_effort` | string | 없음 | 2026-11-11, [06] §2.1. `"low"`·`"medium"`·`"high"`, 정했을 때만 쓴다(직렬화 순서는 `walletconnect` 다음). 그 밖 값 → 없음 + 배너. 새 부 버전의 최상위 키 규칙(§6.6)대로 `llm_explain` 밖에 둔다 — 이전 버전은 보존만 하고 보내지 않는다 |
 | `explorers` | object | 없음 | 2026-11-11, §2.11 "블록 탐색기". 사용자가 바꾼 템플릿만: `{"<NetworkId>" \| "hypercore:mainnet" \| "hypercore:testnet": {"tx"?: "https://…{hash}…", "address"?: "https://…{address}…"}}`(멤버 하나 이상, 없는 멤버는 그 종류의 기본값). 기본값은 파일에 쓰지 않고, 항목이 없으면 키 자체를 쓰지 않는다(직렬화 순서는 `llm_reasoning_effort` 다음, 알려진 키의 끝). 항목 단위 검증: 모르는 네트워크 키(형식은 `NetworkId`, 등록 여부는 보지 않는다), 모르는 멤버, 빈 객체, §2.11 검사를 통과하지 않거나 검사 결과와 바이트가 다른 템플릿, 48번째 넘는 항목 → 그 항목만 버리고 배너 `explorers.<키>`; 객체가 아니면 전체를 버리고 배너 `explorers`. 사용자 체인의 기본은 그 체인의 `explorer`(`EvmChainDef`)이고 여기 복사하지 않는다. 새 최상위 키라(§6.6) 이전 빌드는 모르는 키로 보존해 그대로 다시 쓰고 링크에는 쓰지 않는다(`evmChains`·`hypercore` 같은 알려진 객체 안에 넣으면 이전 빌드가 그 객체를 기본값으로 되돌리므로 넣지 않았다). 코드는 `settings::load`의 키별 루프 뒤 한 블록(보존한 모르는 키에서 꺼낸다)과 `known_members` 끝 한 블록 |
+| `language` | string | 없음(= `"ko"`) | 2026-11-14, D39, [14](14-language.md) §1. `"ko"`·`"en"`, 한국어가 아닐 때만 쓴다(직렬화 순서는 알려진 키 맨 끝, `receivedHistory` 다음). 그 밖 값 → 한국어 + 배너 `language`. 새 최상위 키(§6.6) — 이전 버전은 보존해 다시 쓰기만 한다. 보안 스냅숏 대상 아님(§6.7) |
 | `receivedHistory` | bool | 없음(= 꺼짐) | 2026-11-11, §2.6 받은 내역. 켰을 때만 `true`로 쓴다(직렬화 순서는 알려진 키 맨 끝, `llm_reasoning_effort` 다음). bool이 아니면 꺼짐 + 배너. 최상위 키(§6.6) — 이전 버전은 모르는 키로 보존해 다시 쓰기만 하고 아무것도 읽지 않는다(기존 객체 안에 두면 이전 버전이 그 객체를 기본값으로 되돌린다). 보안 스냅숏 대상 아님(같은 엔드포인트에 이미 묻는 주소만 묻는다) |
 
 ```

@@ -19,6 +19,7 @@ pub mod worker;
 #[cfg(test)]
 mod tests;
 
+use yw_core::lang::Lang;
 use yw_core::policy::BrowserOrigin;
 use yw_json::Value;
 
@@ -68,16 +69,17 @@ impl VerifyStatus {
         }
     }
 
-    /// The Korean status word (lists, badges). `Valid` says what the server reported, never
+    /// The status word (lists, badges) in `lang`. `Valid` says what the server reported, never
     /// "confirmed".
     #[must_use]
-    pub const fn label(self) -> &'static str {
+    pub const fn label(self, lang: Lang) -> &'static str {
         match self {
-            Self::Valid => "일치(서버 알림)",
-            Self::Invalid => "불일치(위험)",
-            Self::Scam => "알려진 사기 사이트(위험)",
-            Self::Unknown => "확인 불가",
+            Self::Valid => text::VERIFY_VALID,
+            Self::Invalid => text::VERIFY_INVALID,
+            Self::Scam => text::VERIFY_SCAM,
+            Self::Unknown => text::VERIFY_UNKNOWN,
         }
+        .get(lang)
     }
 
     /// Whether the connection or request is high risk.
@@ -155,10 +157,10 @@ impl Metadata {
     /// whitespace, control, bidi or other hidden characters becomes one space), at most 100
     /// characters, escaped; "(이름 없음)" when empty. Never part of an origin or status line.
     #[must_use]
-    pub fn display_name(&self) -> String {
+    pub fn display_name(&self, lang: Lang) -> String {
         let name = yw_core::approval::escape_untrusted(&one_line(&self.name)).text;
         if name.is_empty() {
-            "(이름 없음)".to_owned()
+            text::NO_NAME.get(lang).to_owned()
         } else {
             name
         }
@@ -167,13 +169,13 @@ impl Metadata {
     /// The claimed URL for display: its normalized origin only. Unparsable text is never shown
     /// (it could imitate an origin or a status): "(주소 형식이 올바르지 않음)" instead.
     #[must_use]
-    pub fn display_url(&self) -> String {
+    pub fn display_url(&self, lang: Lang) -> String {
         claimed_origin(&self.url).map_or_else(
             || {
                 if one_line(&self.url).is_empty() {
-                    "(주소 없음)".to_owned()
+                    text::NO_URL.get(lang).to_owned()
                 } else {
-                    "(주소 형식이 올바르지 않음)".to_owned()
+                    text::BAD_URL.get(lang).to_owned()
                 }
             },
             |origin| origin.as_str().to_owned(),
@@ -280,22 +282,51 @@ pub fn claimed_origin(url: &str) -> Option<BrowserOrigin> {
 /// (or a fixed wallet text) only — never the dApp's name or raw text, and never the Verify state,
 /// which only the wallet-authored badge and warning (C01–C04) carry.
 #[must_use]
-pub fn origin_label(peer: &Metadata) -> String {
+pub fn origin_label(lang: Lang, peer: &Metadata) -> String {
     format!(
-        "{LABEL_PREFIX}{} (사이트가 주장한 주소)",
-        peer.display_url()
+        "{LABEL_PREFIX}{}",
+        text::CLAIMED.fill(lang, [&peer.display_url(lang)])
     )
+}
+
+/// The `WalletConnect` texts of the approval display and the session lists (spec/13 §7;
+/// English spec/14 §2). The origin label is digested display text.
+pub mod text {
+    yw_core::texts! {
+        CLAIMED(1) = "{0} (사이트가 주장한 주소)" / "{0} (address claimed by the site)";
+        NO_NAME = "(이름 없음)" / "(no name)";
+        NO_URL = "(주소 없음)" / "(no address)";
+        BAD_URL = "(주소 형식이 올바르지 않음)" / "(malformed address)";
+        VERIFY_VALID = "일치(서버 알림)" / "match (server report)";
+        VERIFY_INVALID = "불일치(위험)" / "mismatch (danger)";
+        VERIFY_SCAM = "알려진 사기 사이트(위험)" / "known scam site (danger)";
+        VERIFY_UNKNOWN = "확인 불가" / "unverified";
+        CONNECT_VALID = "WalletConnect 연결입니다. Verify 서버는 이 연결이 사이트가 주장한 주소에서 시작되었다고 알렸습니다. 다만 브라우저 밖에서 도는 dApp은 이 결과를 꾸밀 수 있으니, 지금 직접 연 사이트에서 연결했는지 확인하세요."
+            / "This is a WalletConnect connection. The Verify server reported that it started at the address the site claims. A dApp running outside a browser can fake this result, so check that you connected from a site you opened yourself just now.";
+        CONNECT_UNKNOWN = "WalletConnect 연결입니다. 사이트 이름과 주소는 사이트가 스스로 주장한 값이며 확인되지 않았습니다. 지금 연결하려던 사이트가 맞는지 확인하세요."
+            / "This is a WalletConnect connection. The site name and address are what the site claims and are not verified. Check that this is the site you meant to connect to.";
+        CONNECT_INVALID = "위험: WalletConnect Verify 결과, 사이트가 주장한 주소와 실제 주소가 다릅니다. 피싱일 수 있습니다. 연결하지 마세요."
+            / "Danger: WalletConnect Verify reports that the site's real address differs from the claimed one. This may be phishing. Do not connect.";
+        CONNECT_SCAM = "위험: WalletConnect Verify가 이 사이트를 알려진 사기 사이트로 표시했습니다. 연결하지 마세요."
+            / "Danger: WalletConnect Verify flagged this site as a known scam site. Do not connect.";
+        SITE_NAME = "사이트 이름 (사이트가 주장)" / "Site name (claimed by the site)";
+        NETWORKS = "연결할 네트워크 (WalletConnect)" / "Networks to connect (WalletConnect)";
+        UNSUPPORTED(1) = "이 지갑이 지원하지 않는 요청은 거부됩니다: {0}" / "Requests this wallet does not support are rejected: {0}";
+        DROPPED(1) = "사이트가 요구한 알 수 없는 요청·이벤트 이름 {0}개는 세션에서 뺐습니다."
+            / "{0} unknown request or event name(s) the site asked for were left out of the session.";
+    }
 }
 
 /// The risk rule a `WalletConnect` request carries (C01 caution unverified, C02 mismatch, C03
 /// scam, C04 info: the Verify server reported a match).
 #[must_use]
-pub fn verify_warning(verify: VerifyStatus) -> yw_core::approval::Warning {
+pub fn verify_warning(lang: Lang, verify: VerifyStatus) -> yw_core::approval::Warning {
     use yw_core::evm::risk::{C01, C02, C03, C04, warning};
-    match verify {
-        VerifyStatus::Valid => warning(C04, None),
-        VerifyStatus::Invalid => warning(C02, None),
-        VerifyStatus::Scam => warning(C03, None),
-        VerifyStatus::Unknown => warning(C01, None),
-    }
+    let rule = match verify {
+        VerifyStatus::Valid => C04,
+        VerifyStatus::Invalid => C02,
+        VerifyStatus::Scam => C03,
+        VerifyStatus::Unknown => C01,
+    };
+    warning(lang, rule, None)
 }

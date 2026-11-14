@@ -7,12 +7,14 @@
 use super::address::RecipientForm;
 use super::plan::ZecPlan;
 use super::sign::zec_payload;
+use super::text;
 use super::{format_zec, format_zec_and_zats};
 use crate::approval::{
     AccountRef, ApprovalDisplay, ApprovalDraft, ApprovalId, ApprovalKind, ApprovalOrigin, ChainRef,
     DisplayError, DisplayField, FieldKey, RiskLevel, RuleId, Signer, SigningPayload,
     SimulationBinding, Warning,
 };
+use crate::lang::Lang;
 
 /// Z01: the recipient is our own address (information).
 pub const RULE_OWN_ADDRESS: RuleId = RuleId::new(b'Z', 1);
@@ -35,31 +37,27 @@ fn warning(rule: RuleId, level: RiskLevel, text: &str) -> Warning {
     }
 }
 
-/// The warnings of a plan.
+/// The warnings of a plan, in `lang`.
 #[must_use]
-pub fn plan_warnings(plan: &ZecPlan) -> Vec<Warning> {
+pub fn plan_warnings(lang: Lang, plan: &ZecPlan) -> Vec<Warning> {
     let mut out = vec![warning(
         RULE_PUBLIC,
         RiskLevel::Info,
-        "일반(transparent) 전송은 보내는 주소·받는 주소·금액이 블록체인에 공개됩니다.",
+        text::Z05_PUBLIC.get(lang),
     )];
     if plan.to_self() {
         out.push(warning(
             RULE_OWN_ADDRESS,
             RiskLevel::Info,
-            "받는 주소가 이 계정의 주소입니다 (수수료만 나갑니다).",
+            text::Z01_OWN_ADDRESS.get(lang),
         ));
     }
     match plan.recipient.form {
-        RecipientForm::Tex => out.push(warning(
-            RULE_TEX,
-            RiskLevel::Info,
-            "TEX 주소: 받는 사람이 일반(transparent) 자금만 받겠다고 요청한 주소입니다. 이 거래는 일반 입력만 씁니다.",
-        )),
+        RecipientForm::Tex => out.push(warning(RULE_TEX, RiskLevel::Info, text::Z02_TEX.get(lang))),
         RecipientForm::Unified => out.push(warning(
             RULE_UA_TRANSPARENT,
             RiskLevel::Caution,
-            "통합 주소(UA)의 일반(transparent) 수신자로 보냅니다. 받는 지갑에는 비공개가 아닌 일반 잔액으로 들어갑니다.",
+            text::Z03_UA_TRANSPARENT.get(lang),
         )),
         RecipientForm::Transparent => {}
     }
@@ -71,114 +69,127 @@ pub fn plan_warnings(plan: &ZecPlan) -> Vec<Warning> {
         out.push(warning(
             RULE_EXPIRY_CAPPED,
             RiskLevel::Info,
-            "다음 네트워크 업그레이드 전에 만료되도록 만료 높이를 앞당겼습니다.",
+            text::Z04_EXPIRY_CAPPED.get(lang),
         ));
     }
     out
 }
 
-fn account_text(plan: &ZecPlan) -> String {
+fn account_text(lang: Lang, plan: &ZecPlan) -> String {
     let account = &plan.account;
     format!(
         "Zcash {} · {}\n{}",
-        account.source.label(),
-        account.source.path_text(account.network),
+        text::source_label(lang, account.source),
+        text::path_text(lang, account.source, account.network),
         account.address()
     )
 }
 
-fn to_text(plan: &ZecPlan) -> String {
+fn to_text(lang: Lang, plan: &ZecPlan) -> String {
     let encoded = plan.recipient.dest.encode(plan.account.network);
     match plan.recipient.form {
         RecipientForm::Transparent => encoded,
         RecipientForm::Tex | RecipientForm::Unified => {
-            format!("{encoded}\n입력한 주소: {}", plan.recipient.text)
+            text::TO_ENTERED.fill(lang, [&encoded, &plan.recipient.text])
         }
     }
 }
 
-fn change_text(plan: &ZecPlan) -> String {
+fn change_text(lang: Lang, plan: &ZecPlan) -> String {
     if plan.change > 0 {
-        format!(
-            "{} ZEC — 같은 주소로 돌아옴 {}",
-            format_zec(plan.change),
-            plan.account.address()
-        )
+        text::CHANGE_BACK.fill(lang, [&format_zec(plan.change), &plan.account.address()])
     } else if plan.fee > plan.conventional_fee {
-        format!(
-            "잔돈 없음: {} zats 수수료에 추가",
-            crate::btc::amount::format_sats_grouped(plan.fee - plan.conventional_fee)
+        text::CHANGE_FOLDED.fill(
+            lang,
+            [&crate::btc::amount::format_sats_grouped(
+                plan.fee - plan.conventional_fee,
+            )],
         )
     } else {
-        "잔돈 없음".to_owned()
+        text::CHANGE_NONE.get(lang).to_owned()
     }
 }
 
-fn fee_text(plan: &ZecPlan) -> String {
-    format!(
-        "{}\nZIP 317 기본 수수료 {} zats (입력 {}개, 출력 {}개)",
-        format_zec_and_zats(plan.fee),
-        crate::btc::amount::format_sats_grouped(plan.conventional_fee),
-        plan.inputs.len(),
-        plan.tx.outputs.len()
+fn fee_text(lang: Lang, plan: &ZecPlan) -> String {
+    text::FEE.fill(
+        lang,
+        [
+            &format_zec_and_zats(plan.fee),
+            &crate::btc::amount::format_sats_grouped(plan.conventional_fee),
+            &plan.inputs.len().to_string(),
+            &plan.tx.outputs.len().to_string(),
+        ],
     )
 }
 
-fn expiry_text(plan: &ZecPlan) -> String {
+fn expiry_text(lang: Lang, plan: &ZecPlan) -> String {
     let consensus = &plan.consensus;
     let blocks = consensus
         .expiry_height
         .saturating_sub(consensus.next_height)
         .saturating_add(1);
     let minutes = u64::from(blocks) * u64::from(consensus.block_secs) / 60;
-    let mut text = format!(
-        "블록 {} (다음 블록 {}부터 {blocks}블록, 약 {minutes}분 안에 포함되지 않으면 무효)\n네트워크 업그레이드 {} (branch id {:08x})",
-        consensus.expiry_height, consensus.next_height, consensus.upgrade_name, consensus.branch_id
+    let mut out = text::EXPIRY.fill(
+        lang,
+        [
+            &consensus.expiry_height.to_string(),
+            &consensus.next_height.to_string(),
+            &blocks.to_string(),
+            &minutes.to_string(),
+            consensus.upgrade_name,
+            &format!("{:08x}", consensus.branch_id),
+        ],
     );
     if let Some(height) = consensus.next_upgrade_height {
-        text.push_str("\n다음 업그레이드 활성화 높이 ");
-        text.push_str(&height.to_string());
+        out.push('\n');
+        out.push_str(&text::EXPIRY_NEXT_UPGRADE.fill(lang, [&height.to_string()]));
     }
-    text
+    out
 }
 
-fn inputs_text(plan: &ZecPlan) -> String {
-    let excluded = if plan.excluded_inputs > 0 {
-        format!(
-            "\n가장 큰 입력 {}개만 씁니다 — 나머지 {}개는 이 주소에 남습니다",
-            plan.inputs.len(),
-            plan.excluded_inputs
-        )
+fn inputs_text(lang: Lang, plan: &ZecPlan) -> String {
+    let mut out = text::INPUTS.fill(
+        lang,
+        [
+            &plan.inputs.len().to_string(),
+            &format_zec_and_zats(plan.input_total()),
+        ],
+    );
+    if plan.excluded_inputs > 0 {
+        out.push('\n');
+        out.push_str(&text::INPUTS_EXCLUDED.fill(
+            lang,
+            [
+                &plan.inputs.len().to_string(),
+                &plan.excluded_inputs.to_string(),
+            ],
+        ));
+    }
+    out
+}
+
+fn advanced_text(lang: Lang, plan: &ZecPlan) -> String {
+    let amount = if plan.send_max {
+        text::ADVANCED_SEND_MAX
     } else {
-        String::new()
+        text::ADVANCED_FIXED
     };
-    format!(
-        "{}개, 합계 {}\n입력 금액과 스크립트는 서명(ZIP 244)에 포함되어, 틀리면 거래가 무효가 됩니다{excluded}",
-        plan.inputs.len(),
-        format_zec_and_zats(plan.input_total())
-    )
+    text::ADVANCED.fill(lang, [amount.get(lang)])
 }
 
-fn advanced_text(plan: &ZecPlan) -> String {
-    format!(
-        "v5 거래 (ZIP 225), 일반(transparent) 입력·출력만\nnLockTime 0 · sequence 0xFFFFFFFF\nSIGHASH_ALL (ZIP 244)\n{}",
-        if plan.send_max {
-            "보내기 최대: 모든 확인된 잔액 − 수수료"
-        } else {
-            "지정 금액"
-        }
-    )
-}
-
-/// Builds the approval draft (spec/12 §9): origin `App`, chain `Zcash` with the network's pinned
-/// genesis, account = the account public key, `Signer::FromPayload`, payload
+/// Builds the approval draft in `lang` (spec/12 §9, spec/14): origin `App`, chain `Zcash` with
+/// the network's pinned genesis, account = the account public key, `Signer::FromPayload`, payload
 /// [`zec_payload`], no simulation.
 ///
 /// # Errors
 ///
 /// [`DisplayError`] (defensive).
-pub fn build_zec_request(id: ApprovalId, plan: &ZecPlan) -> Result<ApprovalDraft, DisplayError> {
-    build_zec_request_with(id, plan, false)
+pub fn build_zec_request(
+    lang: Lang,
+    id: ApprovalId,
+    plan: &ZecPlan,
+) -> Result<ApprovalDraft, DisplayError> {
+    build_zec_request_with(lang, id, plan, false)
 }
 
 /// [`build_zec_request`] with Z06 (caution: "처음 보내는 주소입니다…") when `first_time` — no
@@ -188,17 +199,18 @@ pub fn build_zec_request(id: ApprovalId, plan: &ZecPlan) -> Result<ApprovalDraft
 ///
 /// [`DisplayError`] (defensive).
 pub fn build_zec_request_with(
+    lang: Lang,
     id: ApprovalId,
     plan: &ZecPlan,
     first_time: bool,
 ) -> Result<ApprovalDraft, DisplayError> {
     let network = plan.account.network;
-    let mut warnings = plan_warnings(plan);
+    let mut warnings = plan_warnings(lang, plan);
     if first_time && !plan.to_self() {
         warnings.push(warning(
             RULE_FIRST_TIME,
             RiskLevel::Caution,
-            "처음 보내는 주소입니다. 주소 전체를 확인하고, 큰 금액은 소액 시험 송금 뒤 보내세요.",
+            text::Z06_FIRST_TIME.get(lang),
         ));
     }
     let total = plan
@@ -206,25 +218,26 @@ pub fn build_zec_request_with(
         .checked_add(plan.fee)
         .ok_or(DisplayError::InvalidText)?;
     let fields = vec![
-        DisplayField::new(FieldKey::ORIGIN, "", crate::approval::APP_ORIGIN_TEXT)?,
-        DisplayField::new(FieldKey::NETWORK, "", network.banner())?,
-        DisplayField::new(FieldKey::ACCOUNT, "", account_text(plan))?,
-        DisplayField::new(FieldKey::ZEC_TO, "", to_text(plan))?,
-        DisplayField::new(FieldKey::ZEC_FORM, "", plan.recipient.form.label())?,
+        DisplayField::new(FieldKey::ORIGIN, "", crate::approval::APP_ORIGIN.get(lang))?,
+        DisplayField::new(FieldKey::NETWORK, "", text::network_banner(lang, network))?,
+        DisplayField::new(FieldKey::ACCOUNT, "", account_text(lang, plan))?,
+        DisplayField::new(FieldKey::ZEC_TO, "", to_text(lang, plan))?,
+        DisplayField::new(
+            FieldKey::ZEC_FORM,
+            "",
+            text::form_label(lang, plan.recipient.form),
+        )?,
         DisplayField::new(FieldKey::ZEC_AMOUNT, "", format_zec_and_zats(plan.amount))?,
-        DisplayField::new(FieldKey::ZEC_CHANGE, "", change_text(plan))?,
-        DisplayField::new(FieldKey::ZEC_FEE, "", fee_text(plan))?,
+        DisplayField::new(FieldKey::ZEC_CHANGE, "", change_text(lang, plan))?,
+        DisplayField::new(FieldKey::ZEC_FEE, "", fee_text(lang, plan))?,
         DisplayField::new(FieldKey::ZEC_TOTAL, "", format_zec_and_zats(total))?,
-        DisplayField::new(FieldKey::ZEC_EXPIRY, "", expiry_text(plan))?,
-        DisplayField::new(FieldKey::ZEC_INPUTS, "", inputs_text(plan))?,
-        DisplayField::new(FieldKey::ZEC_ADVANCED, "", advanced_text(plan))?,
+        DisplayField::new(FieldKey::ZEC_EXPIRY, "", expiry_text(lang, plan))?,
+        DisplayField::new(FieldKey::ZEC_INPUTS, "", inputs_text(lang, plan))?,
+        DisplayField::new(FieldKey::ZEC_ADVANCED, "", advanced_text(lang, plan))?,
     ];
     let display = ApprovalDisplay::new(
-        format!(
-            "[{}] 보내기: {} ZEC",
-            network.display_name(),
-            format_zec(plan.amount)
-        ),
+        lang,
+        text::TITLE.fill(lang, [network.display_name(), &format_zec(plan.amount)]),
         fields,
         warnings,
     )?;

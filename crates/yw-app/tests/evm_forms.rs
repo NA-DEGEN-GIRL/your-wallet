@@ -395,6 +395,7 @@ fn fee_quote_uses_the_gas_plan_and_caps() -> TestResult {
     let intent = send_intent()?;
     let mut cache = ChainCache::default();
     let quoted = quote(
+        yw_core::lang::Lang::Ko,
         &rpc.shared(),
         &mut cache,
         &job,
@@ -416,6 +417,7 @@ fn fee_quote_uses_the_gas_plan_and_caps() -> TestResult {
     // A lowered cap → E-TX-001 text that blocks `검토`.
     job.caps.max_total_fee = U256::from_u64(1);
     let quoted = quote(
+        yw_core::lang::Lang::Ko,
         &rpc.shared(),
         &mut cache,
         &job,

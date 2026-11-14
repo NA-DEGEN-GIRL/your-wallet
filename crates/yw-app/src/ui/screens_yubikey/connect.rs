@@ -214,7 +214,11 @@ impl App {
         }
         items.push(Item::CardEnd);
         items.push(Item::CardStart(Some("PIN으로 소유 확인 (선택)".to_owned())));
-        items.push(Item::Text(crate::ui::secret::T_CARD_USER_PIN.to_owned()));
+        items.push(Item::Text(
+            crate::ui::secret_text::CARD_USER_PIN
+                .get(self.settings.language)
+                .to_owned(),
+        ));
         if let Some((ok, text)) = &form.pin_note {
             items.push(Item::Banner(
                 text.clone(),

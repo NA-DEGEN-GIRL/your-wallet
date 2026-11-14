@@ -731,6 +731,7 @@ impl App {
     /// After meta is loaded in `Unlocked`: read the journal (reconcile follows).
     pub fn evm_after_unlock(&mut self) {
         if matches!(self.mode, AppMode::Unlocked { .. }) {
+            self.key(KeyJob::SetLanguage(self.settings.language));
             self.key(KeyJob::LoadJournal);
             self.evm.next_balance_ms = 0;
         }
@@ -1596,6 +1597,7 @@ impl App {
         let job = self.evm.job();
         self.evm.send.quote_job = job;
         self.evm.send.quoting = self.rpc(RpcJob::Quote {
+            lang: self.settings.language,
             job,
             chain,
             from,

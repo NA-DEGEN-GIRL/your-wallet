@@ -426,18 +426,22 @@ pub fn defaults_lines(defaults: yw_core::yubikey::enrol::DefaultsSeen) -> Vec<St
 /// key and the touches the operation needs. It is app chrome next to the header badges; it is
 /// not part of the digested display (spec/03 §11.3), which stays exactly the core's.
 #[must_use]
-pub fn card_badge(records: &[HwKeyRecord], role: KeyRole, touches: usize) -> String {
+pub fn card_badge(
+    lang: yw_core::lang::Lang,
+    records: &[HwKeyRecord],
+    role: KeyRole,
+    touches: usize,
+) -> String {
+    use crate::ui::approval_text as text;
     let serials = crate::yubikey::holders(records, role);
-    let mut text = "YubiKey로 서명".to_owned();
+    let mut badge = text::BADGE_YUBIKEY.get(lang).to_owned();
     if !serials.is_empty() {
         let list: Vec<String> = serials.iter().map(|serial| format!("#{serial}")).collect();
-        text.push_str(" · ");
-        text.push_str(&list.join(", "));
+        badge.push_str(" · ");
+        badge.push_str(&list.join(", "));
     }
-    text.push_str(" · 터치 ");
-    text.push_str(&touches.max(1).to_string());
-    text.push('회');
-    text
+    badge.push_str(&text::BADGE_TOUCHES.fill(lang, [&touches.max(1).to_string()]));
+    badge
 }
 
 fn job_error_text(error: YubiKeyJobError) -> String {

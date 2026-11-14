@@ -308,6 +308,7 @@ fn request(
         kind,
         payload: SigningPayload::EvmPersonal(b"x".to_vec()),
         display: ApprovalDisplay {
+            lang: yw_core::lang::Lang::Ko,
             title: "[Sepolia 테스트넷] 시험".to_owned(),
             fields: Vec::new(),
             warnings: (1..=warnings)
@@ -875,8 +876,13 @@ fn ap3_app_item_expiry_and_a_new_approval_id() -> TestResult {
         signer: yw_core::approval::Signer::Evm(EvmKeySource::Derived(AccountIndex::ZERO)),
         kind: ApprovalKind::EvmPersonalSign,
         payload: SigningPayload::EvmPersonal(b"\x19Ethereum Signed Message:\n1x".to_vec()),
-        display: ApprovalDisplay::new("[Sepolia 테스트넷] 시험".to_owned(), Vec::new(), Vec::new())
-            .unwrap_or_else(|_| unreachable!("valid display")),
+        display: ApprovalDisplay::new(
+            yw_core::lang::Lang::Ko,
+            "[Sepolia 테스트넷] 시험".to_owned(),
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap_or_else(|_| unreachable!("valid display")),
         simulation: SimulationBinding::NotApplicable,
     };
     let first = store.issue(draft(1), 0, 0)?;
