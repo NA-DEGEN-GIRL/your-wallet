@@ -329,37 +329,6 @@ impl core::fmt::Debug for YkWizard {
     }
 }
 
-/// The next unused index of EVM accounts, Bitcoin `script` addresses of `network`, and Solana
-/// accounts over the enrolled cards (the defaults of the next `YubiKey`, spec/10 §3.1).
-fn next_indices(
-    records: &[HwKeyRecord],
-    network: BtcNetwork,
-    script: ScriptType,
-) -> (u32, u32, u32) {
-    let mut evm: Vec<u32> = Vec::new();
-    let mut btc: Vec<u32> = Vec::new();
-    let mut sol: Vec<u32> = Vec::new();
-    // Keys connected without recovery words hold the band 900–999, not paths (spec/10 §7.6).
-    for slot in records
-        .iter()
-        .flat_map(|record| &record.slots)
-        .filter(|slot| !yw_core::yubikey::plan::is_unknown_index(slot.role.index()))
-    {
-        match slot.role {
-            KeyRole::Evm { index, .. } => evm.push(index.get()),
-            KeyRole::Btc {
-                network: net,
-                script: kind,
-                index,
-            } if net == network && kind == script => btc.push(index),
-            KeyRole::Btc { .. } | KeyRole::Zec { .. } => {}
-            KeyRole::Sol { index } => sol.push(index.get()),
-        }
-    }
-    let next = |used: &[u32]| used.iter().max().map_or(0, |max| max.saturating_add(1));
-    (next(&evm), next(&btc), next(&sol))
-}
-
 fn parse_index(text: &str, max: u32, what: &str) -> Result<u32, String> {
     text.trim()
         .parse::<u32>()
@@ -369,11 +338,13 @@ fn parse_index(text: &str, max: u32, what: &str) -> Result<u32, String> {
 }
 
 impl YkWizard {
-    /// A wizard with the defaults (spec/10 §3.1): the first card SIG = EVM 0, AUT = Bitcoin
-    /// P2WPKH 0, one Solana account 0; the next cards the next unused indices.
+    /// A wizard with the defaults (spec/10 §3.1): SIG = EVM 0, AUT = Bitcoin P2WPKH 0, one
+    /// Solana account 0, on every card. 2026-11-14: index 0 even when cards are enrolled; before,
+    /// the next cards got the next unused indices, which guessed that they use the same
+    /// recovery words as the cards already enrolled.
     #[must_use]
-    pub fn new(origin: WizardOrigin, records: &[HwKeyRecord], network: BtcNetwork) -> Self {
-        let (evm, btc, sol) = next_indices(records, network, ScriptType::P2wpkh);
+    pub fn new(origin: WizardOrigin, network: BtcNetwork) -> Self {
+        let (evm, btc, sol) = (0, 0, 0);
         let form = |kind, index| PgpForm {
             zec: zec_network_for(network),
             ..PgpForm::new(kind, index)
@@ -715,7 +686,7 @@ impl App {
         if !matches!(self.mode, AppMode::Unlocked { .. }) || self.card.records.len() >= MAX_CARDS {
             return;
         }
-        let wizard = YkWizard::new(WizardOrigin::Vault, &self.card.records, self.yk_network());
+        let wizard = YkWizard::new(WizardOrigin::Vault, self.yk_network());
         self.card.wizard = Some(wizard);
         self.set_screen(Screen::YubiKey);
     }
@@ -1781,7 +1752,7 @@ impl App {
                 if self.yk_words == YkWords::None {
                     self.yk_words = YkWords::Shown;
                 }
-                let mut wizard = YkWizard::new(WizardOrigin::NewWallet, &[], self.yk_network());
+                let mut wizard = YkWizard::new(WizardOrigin::NewWallet, self.yk_network());
                 wizard.seed_held = true;
                 self.card.wizard = Some(wizard);
                 self.set_screen(Screen::YubiKey);

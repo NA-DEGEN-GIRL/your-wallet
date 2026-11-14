@@ -1451,7 +1451,7 @@ fn tour_yubikey(app: &Rc<RefCell<App>>) {
     };
     {
         let mut state = app.borrow_mut();
-        let mut wizard = YkWizard::new(WizardOrigin::Vault, &[], network);
+        let mut wizard = YkWizard::new(WizardOrigin::Vault, network);
         wizard.slots.clone_from(&slots);
         state.card.wizard = Some(wizard);
     }

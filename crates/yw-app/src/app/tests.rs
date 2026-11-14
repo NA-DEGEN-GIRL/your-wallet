@@ -4194,7 +4194,17 @@ fn yubikey_backup_copy_removal_and_management_key() {
     );
     h.app.on_command(yk::BACKUP_TOGGLE);
     assert_eq!(h.app.card.wizard.as_ref().unwrap().backup_of, None);
-    h.app.yk_set_text(yk::SIG_INDEX_EDIT, "0".to_owned());
+    // Index 0 by default although card A holds EVM 0 (2026-11-14; the next unused index before):
+    // the wizard cannot know which recovery words the next card uses.
+    let wizard = h.app.card.wizard.as_ref().unwrap();
+    assert_eq!(
+        (
+            wizard.sig.index_text.as_str(),
+            wizard.aut.index_text.as_str(),
+            wizard.sol_start_text.as_str()
+        ),
+        ("0", "0", "0")
+    );
     h.app.on_command(yk::PLAN_NEXT);
     yk_pump(&mut h, &mut seen);
     // A key card A holds is shown as such and does not stop the plan (2026-11-12; refused as

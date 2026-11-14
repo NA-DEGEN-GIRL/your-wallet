@@ -176,7 +176,7 @@ impl App {
     }
 
     fn yk_connect_begin(&mut self, origin: WizardOrigin) {
-        let mut wizard = YkWizard::new(origin, &self.card.records, self.yk_network());
+        let mut wizard = YkWizard::new(origin, self.yk_network());
         wizard.connect = Some(Box::default());
         wizard.adopt = true;
         self.card.wizard = Some(wizard);
