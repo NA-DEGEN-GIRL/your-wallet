@@ -10,8 +10,9 @@
 //! `prefs`; `btc_accounts` (spec/08 §12.3a) is optional too and written last. Imported Bitcoin
 //! keys have no list of their own: each is a single-key account in `btc_accounts`. The optional
 //! `token_view` (hidden token rows, `crate::token_view`) is written only when not the default and
-//! falls back to the default when invalid, like `prefs`; so do `address_book_favorites` and
-//! `hw_card_names` (2026-11-15: the `YubiKey` card names), which read as empty when invalid.
+//! falls back to the default when invalid, like `prefs`; so do `address_book_favorites`,
+//! `hw_card_names` (2026-11-15: the `YubiKey` card names) and `btc_account_view` (2026-11-15: the
+//! Bitcoin accounts' names and hidden marks), which read as empty when invalid.
 
 pub use yw_core::btc::meta::BTC_ACCOUNTS_EXT_KEY;
 use yw_core::btc::meta::{BtcAccounts, BtcMeta, btc_meta_from_values, btc_meta_values};
@@ -111,6 +112,21 @@ const HW_KEYS: [&str; 4] = ["evm", "sol", "sol_selected", "defaults"];
 /// record holds are dropped at unlock (`reconcile_hardware`). Names are labels: never logged.
 pub const HW_CARD_NAMES_KEY: &str = "hw_card_names";
 
+/// The optional top-level key of the Bitcoin accounts' names and hidden marks (spec/08 §12.3d,
+/// 2026-11-15): an array of `{"network": "mainnet"|"testnet4", "account": Id, "label"?: Label,
+/// "hidden"?: true}`, at most one entry per account, where `Id` is an account identity in the
+/// `btc_accounts.selected` forms (`{"mnemonic": …}` for an added mnemonic's account, as
+/// `btc_accounts_mn.selected`). Kept apart from `btc`,
+/// `btc_accounts`, `btc_accounts_ext` and `btc_accounts_mn`, which earlier versions decode
+/// strictly (an extra member would make the whole meta unreadable, E-VLT-006). Written only when
+/// non-empty; an invalid value falls back to no names and no hidden accounts (like
+/// `hw_card_names`) and never rejects the document; entries of accounts the document no longer
+/// has are dropped on read and never written. Labels are never logged (D28).
+pub const BTC_ACCOUNT_VIEW_KEY: &str = "btc_account_view";
+/// `btc_account_view` bound: every account of `btc_accounts` and the BIP84 account 0 of each
+/// network.
+const MAX_BTC_VIEW: usize = yw_core::btc::meta::MAX_BTC_ACCOUNTS + 2;
+
 /// The optional top-level key of the recovery phrases (spec/02 §5.3, 2026-11-07 "여러 복구
 /// 단어"): `[{"record_id": Hex16, "label": Label, "evm": Account[]}]`, one entry per vault
 /// `Bip39` record in vault order. The primary (first) mnemonic's accounts stay in
@@ -135,11 +151,15 @@ pub mod text {
         EVM_ACCOUNT_LABEL(1) = "계정 {0}" / "Account {0}";
         /// Default label of a new Solana account of any recovery phrase: {0} number.
         SOL_ACCOUNT_LABEL(1) = "Solana {0}" / "Solana {0}";
+        /// Default label of a Bitcoin account of either network (2026-11-15, `btc_account_view`):
+        /// {0} number.
+        BTC_ACCOUNT_LABEL(1) = "Bitcoin {0}" / "Bitcoin {0}";
     }
 }
 
 pub use text::{
-    EVM_ACCOUNT_LABEL, EVM_IMPORTED_LABEL, MNEMONIC_LABEL, SOL_ACCOUNT_LABEL, SOL_IMPORTED_LABEL,
+    BTC_ACCOUNT_LABEL, EVM_ACCOUNT_LABEL, EVM_IMPORTED_LABEL, MNEMONIC_LABEL, SOL_ACCOUNT_LABEL,
+    SOL_IMPORTED_LABEL,
 };
 
 /// The default-label prefix before 2026-11-08, `니모닉 ` (stored labels keep it; it counts as
@@ -739,6 +759,9 @@ pub struct Meta {
     /// `hw_card_names` (optional key, 2026-11-15): the user's names of the enrolled `YubiKey`
     /// cards as `(serial, name)`, serial ascending (vault tag 5 is the truth source).
     pub hw_card_names: Vec<(u32, String)>,
+    /// `btc_account_view` (optional key, 2026-11-15): the Bitcoin accounts' stored names and
+    /// hidden marks (accounts the document has only).
+    pub btc_view: Vec<BtcAccountView>,
     /// `mnemonics` (optional key, 2026-11-07): the recovery phrases' labels and the added
     /// mnemonics' EVM accounts (vault `Bip39` records are the truth source).
     pub mnemonics: Vec<MnemonicEntry>,
@@ -793,6 +816,7 @@ impl Default for Meta {
             token_view: Box::default(),
             hw_accounts: HwAccounts::default(),
             hw_card_names: Vec::new(),
+            btc_view: Vec::new(),
             mnemonics: Vec::new(),
             zcash: Box::default(),
             mnemonic_accounts: Box::default(),
@@ -1066,6 +1090,68 @@ fn parse_card_names(value: &Value) -> Option<Vec<(u32, String)>> {
     Some(out)
 }
 
+/// One entry of `btc_account_view` (spec/08 §12.3d, 2026-11-15): a Bitcoin account's stored
+/// name and hidden mark. The account is `(network, account)`, the identity `btc_accounts` and its
+/// sibling keys already use.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BtcAccountView {
+    /// The account's network.
+    pub network: yw_core::btc::BtcNetwork,
+    /// The account's identity.
+    pub account: yw_core::btc::BtcAccountId,
+    /// Its name (`None`: the default `Bitcoin N`, [`Meta::btc_labels`]).
+    pub label: Option<String>,
+    /// Hidden from the account card and the dApp connect lists (spec/04 §2.6, spec/05 §4.9).
+    pub hidden: bool,
+}
+
+/// `btc_account_view` of the file: `None` when the value is invalid (the caller falls back to no
+/// entries; the document is not rejected). Entries of accounts the document does not have are
+/// dropped by the caller.
+fn parse_btc_view(value: &Value) -> Option<Vec<BtcAccountView>> {
+    let items = value.as_array()?;
+    if items.len() > MAX_BTC_VIEW {
+        return None;
+    }
+    let mut out: Vec<BtcAccountView> = Vec::new();
+    for item in items {
+        let object = item.as_object()?;
+        let known = ["network", "account", "label", "hidden"]
+            .iter()
+            .filter(|key| object.get(key).is_some())
+            .count();
+        (known == object.len()).then_some(())?;
+        let network =
+            yw_core::btc::BtcNetwork::parse_settings_name(object.get("network")?.as_str()?)?;
+        let account = yw_core::btc::meta::account_id_from_json(object.get("account")?)?;
+        let label = match object.get("label") {
+            None => None,
+            Some(value) => Some(
+                value
+                    .as_str()
+                    .filter(|text| is_valid_label(text))?
+                    .to_owned(),
+            ),
+        };
+        let hidden = match object.get("hidden") {
+            None => false,
+            Some(Value::Bool(flag)) => *flag,
+            Some(_) => return None,
+        };
+        let unique = !out
+            .iter()
+            .any(|view| view.network == network && view.account == account);
+        unique.then_some(())?;
+        out.push(BtcAccountView {
+            network,
+            account,
+            label,
+            hidden,
+        });
+    }
+    Some(out)
+}
+
 /// `address_book_favorites` of the file: `None` when the value is invalid (the caller falls
 /// back to no favorites). Duplicates and names of entries the book does not hold are dropped.
 fn parse_favorites(value: &Value, book: &[Value]) -> Option<Vec<(BookChain, String)>> {
@@ -1305,6 +1391,7 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
                 && *key != crate::zec::meta::ZCASH_KEY
                 && *key != BOOK_FAVORITES_KEY
                 && *key != HW_CARD_NAMES_KEY
+                && *key != BTC_ACCOUNT_VIEW_KEY
         })
         .map(|(key, value)| (key.to_owned(), value.clone()))
         .collect();
@@ -1426,6 +1513,11 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
         .get(HW_CARD_NAMES_KEY)
         .and_then(parse_card_names)
         .unwrap_or_default();
+    // A view preference: an invalid value reads as no names and no hidden accounts.
+    let btc_view = object
+        .get(BTC_ACCOUNT_VIEW_KEY)
+        .and_then(parse_btc_view)
+        .unwrap_or_default();
     let mnemonics = parse_mnemonics(object.get(MNEMONICS_KEY)).ok_or(MetaError)?;
     let mut zcash = crate::zec::meta::ZcashMeta::from_json(object.get(crate::zec::meta::ZCASH_KEY));
     let mnemonic_accounts =
@@ -1458,11 +1550,16 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
         token_view: Box::new(token_view),
         hw_accounts,
         hw_card_names,
+        btc_view,
         mnemonics,
         zcash: Box::new(zcash),
         mnemonic_accounts: Box::new(mnemonic_accounts),
         unknown,
     };
+    // Names of accounts the document no longer has go (an earlier build removed the account).
+    let held = meta.btc_view_held();
+    meta.btc_view
+        .retain(|view| held.contains(&(view.network, view.account)));
     let prefs = parse_prefs(get("prefs")?, &meta);
     let prefs_reset = prefs.is_none() || token_view_reset;
     meta.prefs = prefs.unwrap_or_default();
@@ -1635,6 +1732,9 @@ impl Meta {
         if !self.hw_card_names.is_empty() {
             members.push((HW_CARD_NAMES_KEY, self.card_names_json()));
         }
+        if let Some(view) = self.btc_view_json() {
+            members.push((BTC_ACCOUNT_VIEW_KEY, view));
+        }
         members
     }
 
@@ -1670,6 +1770,187 @@ impl Meta {
             self.hw_card_names.push((serial, name));
             self.hw_card_names.sort_by_key(|(known, _)| *known);
         }
+    }
+
+    /// `btc_account_view` (`None`: nothing to write): entries with a name or a hidden mark of
+    /// accounts the document has, `hidden` only when set.
+    fn btc_view_json(&self) -> Option<Value> {
+        let held = self.btc_view_held();
+        let entries: Vec<Value> = self
+            .btc_view
+            .iter()
+            .filter(|view| {
+                (view.label.is_some() || view.hidden)
+                    && held.contains(&(view.network, view.account))
+            })
+            .map(|view| {
+                let mut members = vec![
+                    ("network", json_str(view.network.settings_name())),
+                    (
+                        "account",
+                        yw_core::btc::meta::account_id_to_json(&view.account),
+                    ),
+                ];
+                if let Some(label) = &view.label {
+                    members.push(("label", json_str(label)));
+                }
+                if view.hidden {
+                    members.push(("hidden", Value::Bool(true)));
+                }
+                json_object(members)
+            })
+            .collect();
+        (!entries.is_empty()).then_some(Value::Array(entries))
+    }
+
+    /// Every Bitcoin account of the document as `(network, identity)`: the BIP84 account 0 (meta
+    /// `btc`) and the accounts of `btc_accounts` (both networks).
+    #[must_use]
+    pub fn btc_view_held(&self) -> Vec<(yw_core::btc::BtcNetwork, yw_core::btc::BtcAccountId)> {
+        self.btc
+            .as_deref()
+            .into_iter()
+            .chain(self.btc_accounts.accounts.iter())
+            .map(|meta| (meta.network(), meta.id()))
+            .collect()
+    }
+
+    /// The accounts of `network` in account-card order: the BIP84 account 0, then the accounts
+    /// of `btc_accounts` in list order.
+    #[must_use]
+    pub fn btc_order(&self, network: yw_core::btc::BtcNetwork) -> Vec<yw_core::btc::BtcAccountId> {
+        self.btc
+            .as_deref()
+            .filter(|meta| meta.network() == network)
+            .into_iter()
+            .chain(self.btc_accounts.of_network(network))
+            .map(BtcMeta::id)
+            .collect()
+    }
+
+    /// The stored entry of account `account` of `network`.
+    #[must_use]
+    pub fn btc_view_of(
+        &self,
+        network: yw_core::btc::BtcNetwork,
+        account: yw_core::btc::BtcAccountId,
+    ) -> Option<&BtcAccountView> {
+        self.btc_view
+            .iter()
+            .find(|view| view.network == network && view.account == account)
+    }
+
+    /// Changes the entry of account `account` of `network` with `change` (a missing entry starts
+    /// with no name, visible, and is added).
+    pub fn btc_view_update(
+        &mut self,
+        network: yw_core::btc::BtcNetwork,
+        account: yw_core::btc::BtcAccountId,
+        change: impl FnOnce(&mut BtcAccountView),
+    ) {
+        if let Some(view) = self
+            .btc_view
+            .iter_mut()
+            .find(|view| view.network == network && view.account == account)
+        {
+            change(view);
+            return;
+        }
+        let mut view = BtcAccountView {
+            network,
+            account,
+            label: None,
+            hidden: false,
+        };
+        change(&mut view);
+        self.btc_view.push(view);
+    }
+
+    /// Whether account `account` of `network` is hidden.
+    #[must_use]
+    pub fn btc_hidden(
+        &self,
+        network: yw_core::btc::BtcNetwork,
+        account: yw_core::btc::BtcAccountId,
+    ) -> bool {
+        self.btc_view_of(network, account)
+            .is_some_and(|view| view.hidden)
+    }
+
+    /// The names of the accounts of `network` in account-card order (2026-11-15): the stored
+    /// name, else the default `Bitcoin N` in `lang` with `N` one above the highest default number
+    /// among the network's stored names and the defaults given before it in this order (two
+    /// unnamed accounts never share a name). Before 2026-11-15 a Bitcoin account had no name of
+    /// its own: the list showed its type and number (`네이티브 세그윗 계정 0`) or, for a one-key
+    /// account, its shortened address.
+    #[must_use]
+    pub fn btc_labels(
+        &self,
+        network: yw_core::btc::BtcNetwork,
+        lang: Lang,
+    ) -> Vec<(yw_core::btc::BtcAccountId, String)> {
+        let order = self.btc_order(network);
+        let mut taken: Vec<String> = order
+            .iter()
+            .filter_map(|account| self.btc_view_of(network, *account)?.label.clone())
+            .collect();
+        order
+            .into_iter()
+            .map(|account| {
+                let stored = self
+                    .btc_view_of(network, account)
+                    .and_then(|view| view.label.clone());
+                let label = stored.unwrap_or_else(|| {
+                    let label = next_imported_label(
+                        lang,
+                        BTC_ACCOUNT_LABEL,
+                        taken.iter().map(String::as_str),
+                    );
+                    taken.push(label.clone());
+                    label
+                });
+                (account, label)
+            })
+            .collect()
+    }
+
+    /// The name of account `account` of `network` ([`Meta::btc_labels`]); the first default
+    /// when the document does not have the account.
+    #[must_use]
+    pub fn btc_label(
+        &self,
+        network: yw_core::btc::BtcNetwork,
+        account: yw_core::btc::BtcAccountId,
+        lang: Lang,
+    ) -> String {
+        self.btc_labels(network, lang)
+            .into_iter()
+            .find(|(id, _)| *id == account)
+            .map_or_else(|| BTC_ACCOUNT_LABEL.fill(lang, ["1"]), |(_, label)| label)
+    }
+
+    /// Stores the default name of every Bitcoin account without one (so the name stays when
+    /// accounts are added, removed or read back in another order) and drops the entries of
+    /// accounts the document no longer has (2026-11-15, spec/08 §12.3d). Returns whether
+    /// anything changed. Run at meta load (`LoadMeta`) and when the key worker reports changed
+    /// accounts (`App::btc_apply`).
+    pub fn reconcile_btc_view(&mut self, lang: Lang) -> bool {
+        let held = self.btc_view_held();
+        let before = self.btc_view.len();
+        self.btc_view
+            .retain(|view| held.contains(&(view.network, view.account)));
+        let mut changed = self.btc_view.len() != before;
+        for network in yw_core::btc::BtcNetwork::ALL {
+            for (account, label) in self.btc_labels(network, lang) {
+                self.btc_view_update(network, account, |view| {
+                    if view.label.is_none() {
+                        view.label = Some(label);
+                        changed = true;
+                    }
+                });
+            }
+        }
+        changed
     }
 
     /// `address_book_favorites`.
@@ -2321,6 +2602,164 @@ mod tests {
         Account, BOOK_FAVORITES_KEY, BookChain, Contact, EvmAccountPref, HW_CARD_NAMES_KEY, LIMITS,
         Meta, RawAccount, SolBookEntry, SolRawAccount, Tab, parse,
     };
+
+    /// `btc_account_view` (2026-11-15, spec/08 §12.3d): default names `Bitcoin N` stored by the
+    /// reconcile in account-card order, names and hidden marks round-trip under the account
+    /// identity (`network`, `account`), written only when non-empty, kept by an earlier version
+    /// as an unknown key, entries of gone accounts dropped on read and never written, and
+    /// lenient — an invalid value reads as no entries and never rejects the document.
+    #[test]
+    #[expect(clippy::too_many_lines, reason = "one block per rule of the key")]
+    fn btc_account_view_round_trip_reconcile_and_leniency() {
+        use super::BTC_ACCOUNT_VIEW_KEY;
+        use yw_core::btc::account::HwBtcKey;
+        use yw_core::btc::{BtcAccountKey, BtcMeta, BtcNetwork, ScriptType};
+        use yw_core::lang::Lang;
+        // The generator point (public test data).
+        let pubkey = yw_core::hex::decode_array::<33>(
+            "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+        )
+        .unwrap();
+        let node = yw_core::bip32::AccountXpub {
+            pubkey,
+            chain_code: [7; 32],
+        };
+        let mut meta = Meta::default();
+        assert!(!meta.reconcile_btc_view(Lang::Ko));
+        assert!(
+            !String::from_utf8(meta.to_json())
+                .unwrap()
+                .contains(BTC_ACCOUNT_VIEW_KEY)
+        );
+        meta.btc = Some(Box::new(BtcMeta::new(BtcNetwork::Testnet4, node)));
+        let taproot = BtcAccountKey::hd(ScriptType::P2tr, 0, node).unwrap();
+        let card =
+            BtcAccountKey::hardware(HwBtcKey::Address(0), ScriptType::P2wpkh, pubkey).unwrap();
+        let evm = BtcAccountKey::evm_shared(1, ScriptType::P2wpkh, pubkey).unwrap();
+        let added = BtcAccountKey::hd(ScriptType::P2wpkh, 0, node)
+            .unwrap()
+            .with_mnemonic(Some(yw_core::vault::RecordId::from_bytes([4; 16])));
+        for key in [taproot, card, evm, added] {
+            meta.btc_accounts
+                .upsert(BtcMeta::with_key(BtcNetwork::Testnet4, key))
+                .unwrap();
+        }
+        // A mainnet account numbers on its own.
+        meta.btc_accounts
+            .upsert(BtcMeta::with_key(BtcNetwork::Mainnet, card))
+            .unwrap();
+        assert!(meta.reconcile_btc_view(Lang::Ko));
+        assert!(!meta.reconcile_btc_view(Lang::Ko));
+        let names: Vec<String> = meta
+            .btc_labels(BtcNetwork::Testnet4, Lang::Ko)
+            .into_iter()
+            .map(|(_, label)| label)
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "Bitcoin 1",
+                "Bitcoin 2",
+                "Bitcoin 3",
+                "Bitcoin 4",
+                "Bitcoin 5"
+            ]
+        );
+        assert_eq!(
+            meta.btc_label(BtcNetwork::Mainnet, card.id(), Lang::Ko),
+            "Bitcoin 1"
+        );
+        // A rename and a hidden mark.
+        meta.btc_view_update(BtcNetwork::Testnet4, card.id(), |view| {
+            view.label = Some("메인 카드".to_owned());
+            view.hidden = true;
+        });
+        assert!(meta.btc_hidden(BtcNetwork::Testnet4, card.id()));
+        assert!(!meta.btc_hidden(BtcNetwork::Mainnet, card.id()));
+        let text = String::from_utf8(meta.to_json()).unwrap();
+        assert!(text.contains(
+            r#"{"network":"testnet4","account":{"yubikey":{"script_type":"p2wpkh","kind":"btc","index":0}},"label":"메인 카드","hidden":true}"#
+        ));
+        assert!(text.contains(r#"{"network":"testnet4","account":{"hd":{"script_type":"p2wpkh","account":0}},"label":"Bitcoin 1"}"#));
+        assert!(text.contains(r#""account":{"mnemonic":{"id":"04040404040404040404040404040404","script_type":"p2wpkh","account":0}}"#));
+        assert!(text.contains(r#""account":{"evm":{"script_type":"p2wpkh","index":1}}"#));
+        let parsed = parse(text.as_bytes()).unwrap();
+        // Read back the accounts come in placement order (`btc_accounts`, `btc_accounts_mn`,
+        // `btc_accounts_ext`, spec/08 §12.3b); the stored names do not move with them.
+        assert_eq!(parsed.meta.btc_view, meta.btc_view);
+        assert_eq!(
+            parsed.meta.btc_labels(BtcNetwork::Testnet4, Lang::Ko).len(),
+            names.len()
+        );
+        for (account, label) in parsed.meta.btc_labels(BtcNetwork::Testnet4, Lang::Ko) {
+            assert_eq!(
+                meta.btc_label(BtcNetwork::Testnet4, account, Lang::Ko),
+                label
+            );
+        }
+        assert!(parsed.meta.unknown.is_empty());
+        // An earlier version keeps the key unread and writes it back.
+        let mut older = parsed.meta.clone();
+        older.unknown = vec![(
+            BTC_ACCOUNT_VIEW_KEY.to_owned(),
+            older.btc_view_json().unwrap(),
+        )];
+        older.btc_view.clear();
+        assert_eq!(
+            parse(&older.to_json()).unwrap().meta.btc_view,
+            meta.btc_view
+        );
+        // A gone account's entry is dropped on read and not written.
+        let mut gone = meta.clone();
+        gone.btc_accounts
+            .remove(BtcNetwork::Testnet4, evm.id(), true)
+            .unwrap();
+        assert!(gone.btc_view_of(BtcNetwork::Testnet4, evm.id()).is_some());
+        let reread = parse(&gone.to_json()).unwrap().meta;
+        assert!(reread.btc_view_of(BtcNetwork::Testnet4, evm.id()).is_none());
+        assert_eq!(reread.btc_view.len(), meta.btc_view.len() - 1);
+        assert!(gone.reconcile_btc_view(Lang::Ko));
+        assert_eq!(gone.btc_view, reread.btc_view);
+        // Numbers continue above the highest default (no repeat after a removal).
+        gone.btc_accounts
+            .upsert(BtcMeta::with_key(BtcNetwork::Testnet4, evm))
+            .unwrap();
+        assert_eq!(
+            gone.btc_label(BtcNetwork::Testnet4, evm.id(), Lang::En),
+            "Bitcoin 6"
+        );
+        // Invalid values: no names and nothing hidden, the rest of the document stays.
+        let view = String::from_utf8(yw_json::to_vec(&meta.btc_view_json().unwrap())).unwrap();
+        let primary = r#"{"network":"testnet4","account":{"hd":{"script_type":"p2wpkh","account":0}},"label":"Bitcoin 1"}"#;
+        for bad in [
+            r#"{"network":"testnet4","account":{"hd":{"script_type":"p2wpkh","account":0}},"label":"Bitcoin 1","x":1}"#,
+            r#"{"network":"regtest","account":{"hd":{"script_type":"p2wpkh","account":0}},"label":"Bitcoin 1"}"#,
+            r#"{"network":"testnet4","account":{"hd":{"script_type":"p2wsh","account":0}},"label":"Bitcoin 1"}"#,
+            r#"{"network":"testnet4","account":{"hd":{"script_type":"p2wpkh","account":0}},"label":" 공백"}"#,
+            r#"{"network":"testnet4","account":{"hd":{"script_type":"p2wpkh","account":0}},"hidden":1}"#,
+            r#"{"network":"testnet4","label":"Bitcoin 1"}"#,
+            r#"{"network":"testnet4","account":{"hd":{"script_type":"p2tr","account":0}},"label":"Bitcoin 1"}"#,
+        ] {
+            let invalid = text.replace(primary, bad);
+            assert_ne!(invalid, text, "{bad}");
+            let parsed = parse(invalid.as_bytes()).unwrap();
+            assert!(parsed.meta.btc_view.is_empty(), "{bad}");
+            assert_eq!(
+                parsed.meta.btc_accounts,
+                parse(text.as_bytes()).unwrap().meta.btc_accounts,
+                "{bad}"
+            );
+        }
+        let not_array = text.replace(&view, r#"{"network":"testnet4"}"#);
+        assert_ne!(not_array, text);
+        assert!(
+            parse(not_array.as_bytes())
+                .unwrap()
+                .meta
+                .btc_view
+                .is_empty()
+        );
+    }
 
     /// `hw_card_names` (2026-11-15, spec/10 §8): written after the known keys only when there is
     /// a name, kept by an earlier version as an unknown key, and lenient — an invalid value

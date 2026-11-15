@@ -1,8 +1,9 @@
-//! One account card for the chain tabs (2026-11-15, spec/04 §2.6): the EVM `내 EVM 계정` and
-//! the Solana `내 Solana 계정` cards are laid out by [`App::push_account_card`] from an
-//! [`AccountCard`] — title, the shared help (`accounts_help`), the drop-down whose items read
-//! `label · source`, the selected account's line (its rename field or its buttons), the hidden
-//! accounts, a rule and the card's actions. Bitcoin and Zcash can adopt it with their own rows.
+//! One account card for the chain tabs (2026-11-15, spec/04 §2.6): the EVM `내 EVM 계정`, the
+//! Solana `내 Solana 계정` and the Bitcoin `내 Bitcoin 계정` cards are laid out by
+//! [`App::push_account_card`] from an [`AccountCard`] — title, the shared help (`accounts_help`),
+//! the drop-down whose items read `label · source`, the selected account's line (its rename field
+//! or its buttons) and details, the hidden accounts, a rule and the card's actions. Zcash can
+//! adopt it with its own rows.
 //!
 //! Before 2026-11-15 each tab wrote its own card: the EVM title was `내 계정`, a `YubiKey`
 //! account's item ended in a bare `· YubiKey` (which card held the key was not said), an imported
@@ -31,6 +32,9 @@ pub mod text {
         SOURCE_CARDS(1) = "YubiKey: {0}" / "YubiKey: {0}";
         /// After the first two cards: {0} how many more.
         MORE_CARDS(1) = " +{0}" / " +{0}";
+        /// The source of a Bitcoin account on an EVM account's key (2026-11-15; the Bitcoin
+        /// list's `EVM 계정 {i} 키` badge before): {0} the EVM account index.
+        SOURCE_EVM_KEY(1) = "EVM 계정 {0} 키" / "EVM account {0} key";
     }
 }
 
@@ -47,6 +51,8 @@ pub enum AccountSource {
     /// A key on `YubiKey` cards: its slot role (`None`: not known; the source then says
     /// `YubiKey` alone).
     Card(Option<KeyRole>),
+    /// The key of EVM account `i` used for a Bitcoin address (spec/08 §3.5).
+    EvmKey(u32),
 }
 
 /// One account of the card's drop-down.
@@ -60,6 +66,9 @@ pub struct AccountItem {
     pub source: AccountSource,
     /// The selected account.
     pub selected: bool,
+    /// Whether the entry can be picked (Bitcoin: not while its tab is gated or an approval is
+    /// open; the selected entry always can).
+    pub enabled: bool,
 }
 
 /// The selected account's line under the drop-down.
@@ -93,6 +102,9 @@ pub struct AccountCard {
     pub empty: Option<String>,
     /// The selected account's line.
     pub selected: Option<SelectedLine>,
+    /// Items after the selected account's line (Bitcoin: a refusal note, the address mode, the
+    /// key reminders).
+    pub details: Vec<Item>,
     /// The tab's hidden accounts (`숨긴 계정 n개 보기 ▸`), if it hides accounts.
     pub hidden: Option<Family>,
     /// The card's actions after the rule (`계정 추가`, `개인키 가져오기`, the recovery-words link).
@@ -133,7 +145,7 @@ impl App {
                 id: account.id,
                 label,
                 selected: account.selected,
-                enabled: true,
+                enabled: account.enabled || account.selected,
             })
             .collect();
         if !entries.is_empty() {
@@ -153,6 +165,7 @@ impl App {
             Some(SelectedLine::Buttons(buttons)) => items.push(Item::Row(buttons)),
             None => {}
         }
+        items.extend(card.details);
         if let Some(family) = card.hidden {
             self.hidden_items(family, items);
         }
@@ -184,6 +197,9 @@ impl App {
                         .or_else(|| mixed.then(|| text::SOURCE_WORDS.get(lang).to_owned())),
                     AccountSource::Imported => Some(text::SOURCE_IMPORTED.get(lang).to_owned()),
                     AccountSource::Card(role) => Some(self.card_source(role)),
+                    AccountSource::EvmKey(index) => {
+                        Some(text::SOURCE_EVM_KEY.fill(lang, [&index.to_string()]))
+                    }
                 };
                 source.map_or_else(
                     || account.label.clone(),
@@ -247,4 +263,19 @@ pub fn sol_card_role(index: u32) -> Option<KeyRole> {
     yw_core::bip32::path::AccountIndex::new(index)
         .ok()
         .map(|index| KeyRole::Sol { index })
+}
+
+/// The card role of a Bitcoin `YubiKey` account on `network` (`None` for another account or an
+/// unknown role).
+#[must_use]
+pub fn btc_card_role(
+    account: &yw_core::btc::BtcAccountKey,
+    network: yw_core::btc::BtcNetwork,
+) -> Option<KeyRole> {
+    match *account {
+        yw_core::btc::BtcAccountKey::Hardware {
+            key, script_type, ..
+        } => key.role(network, script_type),
+        _ => None,
+    }
 }

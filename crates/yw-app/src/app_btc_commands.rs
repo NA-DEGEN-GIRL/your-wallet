@@ -214,6 +214,14 @@ impl App {
             ids::MISMATCH_KEEP_META => self.btc_mismatch_keep_meta(),
             ids::MISMATCH_USE_SETTINGS => self.btc_mismatch_use_settings(),
             ids::RESET_TIP => self.btc_reset_tip(),
+            // Names and hiding (2026-11-15, `app_btc_view`).
+            ids::RENAME => self.btc_rename_start(),
+            ids::RENAME_SAVE => {
+                let label = self.controls.text(ids::RENAME_EDIT, 64).unwrap_or_default();
+                self.btc_save_rename(&label);
+            }
+            ids::RENAME_CANCEL => self.btc_rename_cancel(),
+            ids::HIDE => self.btc_hide_selected(),
             ids::ACCOUNT_ADD => self.btc_call(|ui, ctx| {
                 ui.open_add_account(ctx);
                 Vec::new()
@@ -317,14 +325,13 @@ impl App {
         if let Some(row) = offset(id, ids::ACCOUNT_BASE, ids::ACCOUNT_SPAN) {
             // A choice closes the drop-down (2026-11-11).
             self.account_menu = None;
-            let account = {
-                let ctx = self.btc_ctx();
-                self.btc
-                    .account_rows(&ctx)
-                    .get(usize::from(row))
-                    .map(|row| row.id)
-            };
+            // The drop-down lists the visible accounts only (2026-11-15).
+            let account = self
+                .btc_visible_rows()
+                .get(usize::from(row))
+                .map(|row| row.id);
             if let Some(account) = account {
+                self.btc.rename = None;
                 self.btc_call(|ui, ctx| ui.select_account(ctx, account));
             }
             return true;

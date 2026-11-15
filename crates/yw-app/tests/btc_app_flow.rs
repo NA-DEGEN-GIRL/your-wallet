@@ -1998,11 +1998,23 @@ fn imported_round(key_only: bool, salt: u8, wif: &str, script_type: ScriptType) 
             .get(),
         FUNDING_VALUE
     );
-    // The account list: the imported row with its badge, short address, type and balance.
+    // The account list: the imported row with its name (2026-11-15: the default `Bitcoin N`
+    // of meta `btc_account_view`; its shortened address before), type and balance.
     let rows = harness.ui.account_rows(&harness.ctx());
     let row = rows.iter().find(|row| row.imported).ok_or("imported row")?;
     assert!(row.selected && row.id == account.id());
-    assert_eq!(row.name, yw_app::app_btc::short_address(&info.address));
+    assert_eq!(
+        row.name,
+        meta.btc_label(active.network(), account.id(), yw_core::lang::Lang::Ko)
+    );
+    assert_eq!(row.name, if key_only { "Bitcoin 1" } else { "Bitcoin 2" });
+    assert_eq!(
+        active
+            .address(yw_core::bip32::path::BtcChain::Receive, 0)
+            .map_err(|_| "address")?
+            .as_str(),
+        info.address
+    );
     assert!(
         row.kind
             .starts_with(script_type.name_in(yw_core::lang::Lang::Ko))

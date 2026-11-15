@@ -1133,11 +1133,19 @@ fn key_start_creates_a_key_only_wallet() {
     h.app.settings.bitcoin.enabled = true;
     let items = h.app.items();
     // The account drop-down's button names the selected account (2026-11-11).
+    // 2026-11-15: the item is `label · source` (the default name `Bitcoin 1`, stored when the
+    // account came; the whole address is the card above), not the shortened address.
     assert!(controls(&items).iter().any(|ctl| {
-        ctl.id == crate::ui::screens_links::ids::PICKER_BTC
-            && ctl.text.starts_with("bc1qcr")
-            && ctl.text.contains("· 가져온 키")
+        ctl.id == crate::ui::screens_links::ids::PICKER_BTC && ctl.text == "Bitcoin 1 · 가져온 키"
     }));
+    let stored = h.app.meta.as_ref().unwrap();
+    assert_eq!(
+        stored
+            .btc_view_of(yw_core::btc::BtcNetwork::Mainnet, account.id())
+            .and_then(|view| view.label.as_deref()),
+        Some("Bitcoin 1")
+    );
+    assert!(has_text(&items, "Bitcoin 1"));
     let ids_now = control_ids(&items);
     assert!(ids_now.contains(&key_ids::BTC_REVEAL) && ids_now.contains(&key_ids::BTC_REMOVE));
     assert!(ids_now.contains(&key_ids::BTC_IMPORT));
@@ -1320,9 +1328,7 @@ fn key_start_with_a_bitcoin_key() {
     let items = h.app.items();
     // The account drop-down's button names the selected account (2026-11-11).
     assert!(controls(&items).iter().any(|ctl| {
-        ctl.id == crate::ui::screens_links::ids::PICKER_BTC
-            && ctl.text.starts_with("tb1p")
-            && ctl.text.contains("· 가져온 키")
+        ctl.id == crate::ui::screens_links::ids::PICKER_BTC && ctl.text == "Bitcoin 1 · 가져온 키"
     }));
     let ids_now = control_ids(&items);
     assert!(!ids_now.contains(&btc_ids::ACCOUNT_ADD));

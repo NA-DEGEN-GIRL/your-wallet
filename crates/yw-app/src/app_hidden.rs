@@ -1,8 +1,9 @@
 //! Hidden accounts (spec/04 §2.6, 2026-11-08). `숨기기` only marks meta `hidden` (and takes the
 //! account out of every dApp grant, spec/05 §4.9); until now nothing showed those accounts again.
-//! The EVM and Solana account cards (`내 EVM 계정`, `내 Solana 계정`) list them under
-//! `숨긴 계정 n개 보기 ▸`, and `다시 보이기` clears the mark. Site connections are not restored
-//! (the user connects again from the dApp).
+//! The EVM, Solana and Bitcoin account cards (`내 EVM 계정`, `내 Solana 계정`, `내 Bitcoin 계정`)
+//! list them under `숨긴 계정 n개 보기 ▸`, and `다시 보이기` clears the mark. Site connections
+//! are not restored (the user connects again from the dApp). Bitcoin accounts can be hidden since
+//! 2026-11-15 (meta `btc_account_view`, spec/08 §12.3d); the list shows the settings network's.
 
 use crate::app::App;
 use crate::app_sol::SolAccountId;
@@ -38,7 +39,7 @@ pub mod text {
     }
 }
 
-/// Command ids (block 16,200–16,599 of `ui::command_ids`).
+/// Command ids (blocks 16,100–16,199 and 16,200–16,599 of `ui::command_ids`).
 pub mod ids {
     /// EVM `숨긴 계정 n개 보기 ▸` / `접기 ▾`.
     pub const EVM_TOGGLE: u16 = 16_200;
@@ -50,17 +51,25 @@ pub mod ids {
     pub const SOL_ROW_BASE: u16 = 16_400;
     /// Rows of each list.
     pub const ROW_SPAN: u16 = 190;
+    /// Bitcoin `숨긴 계정 n개 보기 ▸` / `접기 ▾` (2026-11-15).
+    pub const BTC_TOGGLE: u16 = 16_100;
+    /// Bitcoin `다시 보이기` (one id per hidden row of the settings network).
+    pub const BTC_ROW_BASE: u16 = 16_110;
+    /// Bitcoin rows (`btc_accounts` bound + the BIP84 account 0).
+    pub const BTC_ROW_SPAN: u16 = 65;
     /// Every fixed id.
-    pub const FIXED: &[u16] = &[EVM_TOGGLE, SOL_TOGGLE];
+    pub const FIXED: &[u16] = &[EVM_TOGGLE, SOL_TOGGLE, BTC_TOGGLE];
 }
 
-/// Which `내 계정` card.
+/// Which account card.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Family {
     /// EVM tab.
     Evm,
     /// Solana tab.
     Sol,
+    /// Bitcoin tab (the settings network's accounts).
+    Btc,
 }
 
 /// A hidden account.
@@ -70,6 +79,8 @@ pub enum HiddenId {
     Evm(EvmAccountPref),
     /// A Solana account.
     Sol(SolAccountId),
+    /// A Bitcoin account of a network.
+    Btc(yw_core::btc::BtcNetwork, yw_core::btc::BtcAccountId),
 }
 
 /// One row of the hidden list: which account, its label, address text and source.
@@ -94,6 +105,7 @@ pub fn hidden_note(lang: Lang, label: &str) -> String {
 impl App {
     /// The hidden accounts of `family`, in the order of the visible rows' sources.
     #[must_use]
+    #[expect(clippy::too_many_lines, reason = "one block per kind of account")]
     pub fn hidden_rows(&self, family: Family) -> Vec<HiddenRow> {
         let Some(meta) = self.meta.as_ref() else {
             return Vec::new();
@@ -130,6 +142,28 @@ impl App {
                         // The holder cards as on the drop-down (2026-11-15; `YubiKey` before).
                         source: self
                             .card_source(crate::ui::screens_accounts::evm_card_role(account.index)),
+                    });
+                }
+            }
+            Family::Btc => {
+                let network = self.btc_network_now();
+                let ctx = self.btc_ctx();
+                for (account, label) in meta.btc_labels(network, self.settings.language) {
+                    if !meta.btc_hidden(network, account) {
+                        continue;
+                    }
+                    let Some(stored) = ctx.accounts().into_iter().find(|m| m.id() == account)
+                    else {
+                        continue;
+                    };
+                    rows.push(HiddenRow {
+                        id: HiddenId::Btc(network, account),
+                        label,
+                        address: stored
+                            .address(yw_core::bip32::path::BtcChain::Receive, 0)
+                            .map(|address| address.as_str().to_owned())
+                            .unwrap_or_default(),
+                        source: self.btc_source_text(stored.account(), network),
                     });
                 }
             }
@@ -185,9 +219,10 @@ impl App {
         if rows.is_empty() {
             return;
         }
-        let (toggle, base) = match family {
-            Family::Evm => (ids::EVM_TOGGLE, ids::EVM_ROW_BASE),
-            Family::Sol => (ids::SOL_TOGGLE, ids::SOL_ROW_BASE),
+        let (toggle, base, span) = match family {
+            Family::Evm => (ids::EVM_TOGGLE, ids::EVM_ROW_BASE, ids::ROW_SPAN),
+            Family::Sol => (ids::SOL_TOGGLE, ids::SOL_ROW_BASE, ids::ROW_SPAN),
+            Family::Btc => (ids::BTC_TOGGLE, ids::BTC_ROW_BASE, ids::BTC_ROW_SPAN),
         };
         let lang = self.settings.language;
         let open = self.hidden_open;
@@ -204,11 +239,7 @@ impl App {
             return;
         }
         items.push(Item::Help(text::HIDDEN_HELP.get(lang).to_owned()));
-        for (row, hidden) in rows
-            .into_iter()
-            .take(usize::from(ids::ROW_SPAN))
-            .enumerate()
-        {
+        for (row, hidden) in rows.into_iter().take(usize::from(span)).enumerate() {
             items.push(Item::Muted(
                 text::HIDDEN_ROW.fill(lang, [&hidden.label, &hidden.source]),
             ));
@@ -227,6 +258,12 @@ impl App {
                         .and_then(|address| self.sol_balance(&address))
                         .map(|lamports| text::BALANCE.fill(lang, [&Self::sol_text(lamports)])),
                 ),
+                // The whole address, grouped like the tab's (spec/04 §3.3), and the available
+                // balance the account's last refresh left in meta.
+                Family::Btc => (
+                    crate::ui::screens_btc::grouped(&hidden.address),
+                    self.btc_hidden_balance(hidden.id),
+                ),
             };
             items.push(Item::Mono(shown));
             if let Some(balance) = balance {
@@ -242,7 +279,7 @@ impl App {
     /// The hidden-account commands; `false` when `id` is not one.
     pub fn on_hidden_command(&mut self, id: u16) -> bool {
         let family = match id {
-            ids::EVM_TOGGLE | ids::SOL_TOGGLE => {
+            ids::EVM_TOGGLE | ids::SOL_TOGGLE | ids::BTC_TOGGLE => {
                 self.hidden_open = !self.hidden_open;
                 self.refresh();
                 return true;
@@ -252,6 +289,9 @@ impl App {
             }
             _ if (ids::SOL_ROW_BASE..ids::SOL_ROW_BASE + ids::ROW_SPAN).contains(&id) => {
                 (Family::Sol, id - ids::SOL_ROW_BASE)
+            }
+            _ if (ids::BTC_ROW_BASE..ids::BTC_ROW_BASE + ids::BTC_ROW_SPAN).contains(&id) => {
+                (Family::Btc, id - ids::BTC_ROW_BASE)
             }
             _ => return false,
         };
@@ -269,6 +309,9 @@ impl App {
         };
         let mark = |hidden: &mut bool| *hidden = false;
         match hidden.id {
+            HiddenId::Btc(network, account) => {
+                meta.btc_view_update(network, account, |view| view.hidden = false);
+            }
             HiddenId::Evm(EvmAccountPref::Index(index)) => meta
                 .evm_accounts
                 .iter_mut()

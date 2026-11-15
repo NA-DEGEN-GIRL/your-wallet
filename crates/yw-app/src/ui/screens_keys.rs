@@ -345,45 +345,71 @@ impl App {
         items.push(Item::CardEnd);
     }
 
-    /// The imported-key part of the Bitcoin account card (inside the card, after the account
-    /// rows): for the selected imported account its backup note and `개인키 보기`·`삭제`; then
-    /// `개인키 가져오기` with the address-type radios.
-    pub fn btc_imported_items(&self, ctx: &BtcCtx<'_>, items: &mut Vec<Item>) {
+    /// The selected Bitcoin account's key parts of the account card (2026-11-15, the shared
+    /// card of `ui::screens_accounts`): its buttons after `이름 바꾸기`·`숨기기` — `개인키 보기`
+    /// and `삭제` of an imported key, `개인키 보기` of an account on an EVM account's key — and the
+    /// reminder under them (T-IMPORTED-KEY-BACKUP / T-KEY-ONLY-BACKUP, T-BTC-EVM-SHARED).
+    #[must_use]
+    pub fn btc_key_parts(&self, ctx: &BtcCtx<'_>) -> (Vec<Ctl>, Option<Item>) {
         let unlocked = matches!(self.mode, crate::app::AppMode::Unlocked { .. });
         let lang = self.settings.language;
-        let t = |entry: Text| entry.get(lang).to_owned();
         if ctx.selected_imported().is_some() {
-            items.push(Item::Help(if self.key_only() {
-                crate::ui::secret_text::KEY_ONLY_BACKUP
-                    .get(self.settings.language)
-                    .to_owned()
+            let help = if self.key_only() {
+                crate::ui::secret_text::KEY_ONLY_BACKUP.get(lang)
             } else {
-                crate::ui::secret_text::IMPORTED_KEY_BACKUP
-                    .get(self.settings.language)
-                    .to_owned()
-            }));
-            items.push(Item::Row(vec![
-                Ctl::button(ids::BTC_REVEAL, text::SHOW_KEY.get(lang)).enabled(unlocked),
-                Ctl::danger(ids::BTC_REMOVE, text::DELETE.get(lang))
-                    .enabled(unlocked && self.can_remove_imported()),
-            ]));
-        } else if ctx.selected_evm_shared().is_some() {
+                crate::ui::secret_text::IMPORTED_KEY_BACKUP.get(lang)
+            };
+            return (
+                vec![
+                    Ctl::button(ids::BTC_REVEAL, text::SHOW_KEY.get(lang))
+                        .compact()
+                        .enabled(unlocked),
+                    Ctl::danger(ids::BTC_REMOVE, text::DELETE.get(lang))
+                        .compact()
+                        .enabled(unlocked && self.can_remove_imported()),
+                ],
+                Some(Item::Help(help.to_owned())),
+            );
+        }
+        if ctx.selected_evm_shared().is_some() {
             // An account on an EVM account's key (spec/08 §3.5): its WIF can be exported; it is
             // not a vault record, so there is nothing to delete.
-            items.push(Item::Help(t(crate::app_btc::T_BTC_EVM_SHARED)));
-            items.push(Item::Row(vec![
-                Ctl::button(ids::BTC_REVEAL, text::SHOW_KEY.get(lang)).enabled(unlocked),
-            ]));
+            return (
+                vec![
+                    Ctl::button(ids::BTC_REVEAL, text::SHOW_KEY.get(lang))
+                        .compact()
+                        .enabled(unlocked),
+                ],
+                Some(Item::Help(
+                    crate::app_btc::T_BTC_EVM_SHARED.get(lang).to_owned(),
+                )),
+            );
         }
-        items.push(Item::Rule);
+        (Vec::new(), None)
+    }
+
+    /// `개인키 가져오기` of the Bitcoin account card's actions, or `None` while its chooser is
+    /// open (the chooser has `다음`·`취소`).
+    #[must_use]
+    pub fn btc_import_action(&self) -> Option<Ctl> {
+        (!self.keys.btc_import_open).then(|| {
+            Ctl::button(
+                ids::BTC_IMPORT,
+                text::IMPORT_KEY.get(self.settings.language),
+            )
+            .compact()
+            .enabled(self.can_import(ImportChain::Btc))
+        })
+    }
+
+    /// The import part of the Bitcoin account card's footer: closed, one short line (the address
+    /// type chooser opens on demand, an uncommon action that used to fill the card); open,
+    /// T-BTC-IMPORTED, the address-type radios, T-KEYSTART-SCRIPT and `다음`·`취소`.
+    pub fn btc_import_items(&self, items: &mut Vec<Item>) {
+        let lang = self.settings.language;
+        let t = |entry: Text| entry.get(lang).to_owned();
         if !self.keys.btc_import_open {
-            // Closed by default, like `계정 추가`: one short line and the button; the address
-            // type chooser opens on demand (an uncommon action that used to fill the card).
             items.push(Item::Help(t(text::BTC_IMPORT_HINT)));
-            items.push(Item::Row(vec![
-                Ctl::button(ids::BTC_IMPORT, text::IMPORT_KEY.get(lang))
-                    .enabled(self.can_import(ImportChain::Btc)),
-            ]));
             return;
         }
         items.push(Item::Help(t(text::BTC_IMPORTED)));

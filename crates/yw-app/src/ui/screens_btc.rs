@@ -221,6 +221,16 @@ pub mod ids {
     pub const EVM_ACCOUNT_BASE: u16 = 9_064;
     /// EVM account rows shown in the chooser (and id span, 9,064–9,095).
     pub const EVM_ACCOUNT_SPAN: u16 = 32;
+    /// The selected account's `이름 바꾸기` (2026-11-15).
+    pub const RENAME: u16 = 9_035;
+    /// The selected account's `숨기기` (2026-11-15).
+    pub const HIDE: u16 = 9_036;
+    /// The name field of `이름 바꾸기`.
+    pub const RENAME_EDIT: u16 = 9_037;
+    /// Its `저장` (Enter).
+    pub const RENAME_SAVE: u16 = 9_038;
+    /// Its `취소` (Esc).
+    pub const RENAME_CANCEL: u16 = 9_039;
     /// Account rows: `ACCOUNT_BASE + row` selects that account.
     pub const ACCOUNT_BASE: u16 = 9_130;
     /// Most account rows with a button (1 + `MAX_BTC_ACCOUNTS`).
@@ -236,8 +246,13 @@ pub mod ids {
     const _: () = assert!(ACTIVITY_BASE + ACTIVITY_SPAN <= 10_000);
 
     /// Every fixed id (tests check uniqueness and the range).
-    pub const FIXED: [u16; 64] = [
+    pub const FIXED: [u16; 69] = [
         CARD_COPY,
+        RENAME,
+        HIDE,
+        RENAME_EDIT,
+        RENAME_SAVE,
+        RENAME_CANCEL,
         ACCOUNT_SOURCE_STANDARD,
         ACCOUNT_SOURCE_EVM,
         ADDRESS_MODE_SINGLE,
@@ -483,14 +498,6 @@ fn record_rate(fee: Sats, vsize: u32) -> String {
     FeeRate::from_sat_per_kvb(kvb).to_string()
 }
 
-/// The selected account's name (`네이티브 세그윗 계정 0`), `Bitcoin 계정` before BTC has one.
-fn active_label(ctx: &BtcCtx<'_>) -> String {
-    ctx.btc_meta().map_or_else(
-        || text::ACCOUNT_FALLBACK.get(ctx.lang).to_owned(),
-        |meta| crate::app_btc::account_label(ctx.lang, meta.account()),
-    )
-}
-
 /// The selected account's node and type line: `m/86'/0'/0' · 탭루트 (bc1p…)`, or for an
 /// imported key `가져온 키 · 레거시 (1…)`.
 fn active_detail(ctx: &BtcCtx<'_>) -> String {
@@ -514,6 +521,16 @@ fn flow_stage_text(lang: Lang, stage: BtcFlowStage) -> Option<&'static str> {
 }
 
 impl App {
+    /// The selected account's name (meta `btc_account_view`, default `Bitcoin N`; 2026-11-15:
+    /// its type and number `네이티브 세그윗 계정 0` before), `Bitcoin 계정` before BTC has one.
+    /// Its node and type are the line under it (`active_detail`).
+    fn btc_active_label(&self, ctx: &BtcCtx<'_>) -> String {
+        ctx.btc_meta().map_or_else(
+            || text::ACCOUNT_FALLBACK.get(ctx.lang).to_owned(),
+            |meta| self.btc_label_of(meta),
+        )
+    }
+
     fn btc_tip(&self, ctx: &BtcCtx<'_>) -> u32 {
         self.btc
             .tip
@@ -632,115 +649,141 @@ impl App {
         }
     }
 
-    /// The account list (name, address type with prefix, balance; the selected one marked;
-    /// imported keys with the "[가져온 키]" badge), `계정 추가` with its address-type chooser
-    /// (wallets with recovery words), and the imported-key actions (`개인키 보기`·`삭제` of the
-    /// selected imported account, `개인키 가져오기`).
+    /// The account card `내 Bitcoin 계정` (2026-11-15, the shared card of
+    /// `ui::screens_accounts` like the EVM and Solana tabs): the shared help, the drop-down of the
+    /// visible accounts (items `label · source`: recovery words, `가져온 키`, `EVM 계정 {i} 키`,
+    /// `YubiKey: {cards}`), the selected account's `이름 바꾸기`·`숨기기` and key buttons, its
+    /// address mode and key reminder, the hidden accounts, then `계정 추가` (wallets with recovery
+    /// words), `개인키 가져오기` and the recovery-words link, and the choosers they open.
+    ///
+    /// Before 2026-11-15 an untitled card with the subtitle `Bitcoin 계정` whose items read
+    /// `{type} 계정 {n} · {badge} · {type (prefix)} · {balance}`; the selected account's whole
+    /// address, type and balance are the card above (`btc_selected_card`).
+    #[expect(clippy::too_many_lines, reason = "one block per part of the card")]
     fn btc_account_items(&self, ctx: &BtcCtx<'_>, items: &mut Vec<Item>) {
+        use crate::ui::screens_accounts::{AccountCard, AccountItem, SelectedLine};
         let net = ctx.net();
         let lang = ctx.lang;
-        items.push(Item::Subtitle(text::ACCOUNTS_TITLE.get(lang).to_owned()));
         let usable = ctx.gate().is_ok() && !self.btc.slot;
-        let rows = self.btc.account_rows(ctx);
-        if rows.is_empty() {
-            let none_at_all = ctx
-                .meta
-                .is_none_or(|meta| meta.btc_accounts.accounts.is_empty());
-            items.push(Item::Muted(if none_at_all {
-                crate::ui::screens_keys::no_accounts_text(
-                    self.settings.language,
-                    yw_core::keyimport::ImportChain::Btc,
-                )
-            } else {
-                BtcGate::NoAccount.text(lang)
-            }));
-        }
-        // A drop-down like the network's (2026-11-11): the selected account on its button, the
-        // accounts under it while open (each keeps the id its radio had).
-        let mut entries = Vec::new();
+        let rows = self.btc_visible_rows();
+        let empty = if ctx
+            .meta
+            .is_none_or(|meta| meta.btc_accounts.accounts.is_empty())
+        {
+            crate::ui::screens_keys::no_accounts_text(
+                self.settings.language,
+                yw_core::keyimport::ImportChain::Btc,
+            )
+        } else {
+            BtcGate::NoAccount.text(lang)
+        };
+        let mut accounts = Vec::new();
+        let mut chosen = None;
         for (index, row) in rows.iter().take(usize::from(ids::ACCOUNT_SPAN)).enumerate() {
-            let id = ids::ACCOUNT_BASE.saturating_add(u16::try_from(index).unwrap_or(0));
-            let hardware = matches!(row.id, yw_core::btc::BtcAccountId::Hardware { .. });
-            let badge = match (row.imported, row.evm_shared) {
-                _ if hardware => " · YubiKey".to_owned(),
-                (true, _) => format!(" · {}", text::BADGE_IMPORTED.get(lang)),
-                (false, Some(evm_index)) => format!(
-                    " · {}",
-                    text::BADGE_EVM_KEY.fill(lang, [&evm_index.to_string()])
-                ),
-                (false, None) => String::new(),
-            };
-            // HD rows name their mnemonic with several (spec/02 §8.6).
-            let name = match row.id {
-                yw_core::btc::BtcAccountId::Hd {
-                    mnemonic,
-                    script_type,
-                    account,
-                } => {
-                    let name = yw_core::btc::text::ACCOUNT_HD
-                        .fill(lang, [script_type.name_in(lang), &account.to_string()]);
-                    self.mnemonic_tag(mnemonic.map(|id| *id.as_bytes()))
-                        .map_or_else(|| name.clone(), |tag| format!("{name} · {tag}"))
-                }
-                _ => row.name.clone(),
-            };
-            entries.push(crate::ui::screens_links::PickerEntry {
-                id,
-                label: format!(
-                    "{name}{badge} · {} · {}",
-                    row.kind,
-                    BtcUi::amount_text(row.available)
-                ),
+            let account = ctx.accounts().into_iter().find(|meta| meta.id() == row.id);
+            let source = account.map_or(
+                crate::ui::screens_accounts::AccountSource::Card(None),
+                |meta| Self::btc_source(meta.account(), net),
+            );
+            if row.selected {
+                chosen = Some((row.id, row.name.clone()));
+            }
+            accounts.push(AccountItem {
+                id: ids::ACCOUNT_BASE.saturating_add(u16::try_from(index).unwrap_or(0)),
+                label: row.name.clone(),
+                source,
                 selected: row.selected,
-                enabled: usable || row.selected,
+                enabled: usable,
             });
         }
-        if !entries.is_empty() {
-            self.push_account_picker(items, crate::ui::screens_links::ids::PICKER_BTC, &entries);
-        }
-        if let Some(message) = &self.btc.account_message {
-            items.push(Item::Banner(message.clone(), Tone::Warn));
-        }
-        Self::btc_address_mode_items(ctx, usable, items);
-        if !ctx.has_mnemonic {
-            // A key-only wallet has no recovery words to derive accounts from.
-            self.btc_imported_items(ctx, items);
-            return;
-        }
-        if self.btc.add_account_open {
-            items.push(Item::Help(text::ADD_ACCOUNT_HELP.get(lang).to_owned()));
-            self.btc_add_source_items(ctx, usable, items);
-            for (offset, script_type) in yw_core::btc::ScriptType::CHOICES.iter().enumerate() {
-                let id = ids::ACCOUNT_ADD_TYPE.saturating_add(u16::try_from(offset).unwrap_or(0));
-                items.push(Item::Row(vec![
-                    Ctl::button(id, &script_type.label_in(lang, net)).enabled(usable),
-                ]));
+        let selected = chosen.map(|(id, label)| {
+            if self.btc.rename == Some(id) {
+                return SelectedLine::Rename {
+                    edit: ids::RENAME_EDIT,
+                    save: ids::RENAME_SAVE,
+                    cancel: ids::RENAME_CANCEL,
+                    label,
+                };
             }
-            items.push(Item::Row(vec![Ctl::button(
-                ids::ACCOUNT_ADD_CANCEL,
-                text::CANCEL.get(lang),
-            )]));
-        } else {
-            items.push(Item::Row(vec![
-                Ctl::button(ids::ACCOUNT_ADD, text::ADD_ACCOUNT.get(lang)).enabled(usable),
-            ]));
+            let mut buttons = vec![Ctl::button(ids::RENAME, text::RENAME.get(lang)).compact()];
+            // Not the default account, not an imported key (it has `삭제`), not the last one
+            // shown (2026-11-15, as EVM and Solana).
+            if self.btc_can_hide(id) {
+                buttons.push(Ctl::button(ids::HIDE, text::HIDE.get(lang)).compact());
+            }
+            buttons.extend(self.btc_key_parts(ctx).0);
+            SelectedLine::Buttons(buttons)
+        });
+        let mut details = Vec::new();
+        if let Some(message) = &self.btc.account_message {
+            details.push(Item::Banner(message.clone(), Tone::Warn));
         }
-        items.push(Item::Help(text::ACCOUNTS_HELP.get(lang).to_owned()));
-        self.btc_imported_items(ctx, items);
+        if selected.is_some() {
+            self.btc_address_mode_items(ctx, usable, &mut details);
+            details.extend(self.btc_key_parts(ctx).1);
+        }
+        let mut actions = Vec::new();
+        let mut footer = Vec::new();
+        if ctx.has_mnemonic {
+            if self.btc.add_account_open {
+                footer.push(Item::Help(text::ADD_ACCOUNT_HELP.get(lang).to_owned()));
+                self.btc_add_source_items(ctx, usable, &mut footer);
+                for (offset, script_type) in yw_core::btc::ScriptType::CHOICES.iter().enumerate() {
+                    let id =
+                        ids::ACCOUNT_ADD_TYPE.saturating_add(u16::try_from(offset).unwrap_or(0));
+                    footer.push(Item::Row(vec![
+                        Ctl::button(id, &script_type.label_in(lang, net)).enabled(usable),
+                    ]));
+                }
+                footer.push(Item::Row(vec![Ctl::button(
+                    ids::ACCOUNT_ADD_CANCEL,
+                    text::CANCEL.get(lang),
+                )]));
+            } else {
+                actions.push(
+                    Ctl::button(ids::ACCOUNT_ADD, text::ADD_ACCOUNT.get(lang))
+                        .compact()
+                        .enabled(usable),
+                );
+            }
+        }
+        actions.extend(self.btc_import_action());
+        if ctx.has_mnemonic {
+            actions.push(self.mnemonics_link());
+        }
+        self.btc_import_items(&mut footer);
+        if ctx.has_mnemonic {
+            // The Bitcoin-specific hint (the address format of an account never changes).
+            footer.push(Item::Help(text::ACCOUNTS_HELP.get(lang).to_owned()));
+        }
+        self.push_account_card(
+            items,
+            AccountCard {
+                title: text::MY_ACCOUNTS.get(lang).to_owned(),
+                picker: crate::ui::screens_links::ids::PICKER_BTC,
+                accounts,
+                empty: Some(empty),
+                selected,
+                details,
+                hidden: Some(crate::app_hidden::Family::Btc),
+                actions,
+                footer,
+            },
+        );
     }
 
     /// The selected HD account's address mode (spec/08 §3.5): `고정 주소 하나만 사용` (default) /
     /// `받을 때마다 새 주소` with the one-line trade-off. One-key accounts have one address only.
-    fn btc_address_mode_items(ctx: &BtcCtx<'_>, usable: bool, items: &mut Vec<Item>) {
+    /// The line names the account by its name (2026-11-15; its type and number before).
+    fn btc_address_mode_items(&self, ctx: &BtcCtx<'_>, usable: bool, items: &mut Vec<Item>) {
         let Some(meta) = ctx.btc_meta().filter(|meta| meta.account().is_hd()) else {
             return;
         };
         let fixed = meta.fixed_address();
         let lang = ctx.lang;
-        items.push(Item::Text(text::ADDRESS_MODE.fill(
-            lang,
-            [&crate::app_btc::account_label(lang, meta.account())],
-        )));
+        items.push(Item::Text(
+            text::ADDRESS_MODE.fill(lang, [&self.btc_label_of(meta)]),
+        ));
         items.push(Item::Row(vec![
             Ctl::radio(
                 ids::ADDRESS_MODE_SINGLE,
@@ -843,7 +886,7 @@ impl App {
 
     fn btc_balance_items(&self, ctx: &BtcCtx<'_>, items: &mut Vec<Item>) {
         let lang = ctx.lang;
-        items.push(Item::Subtitle(active_label(ctx)));
+        items.push(Item::Subtitle(self.btc_active_label(ctx)));
         items.push(Item::Help(active_detail(ctx)));
         // U7, as on the EVM and Solana tabs: the account's phrase waits for its backup quiz;
         // a YubiKey on its factory PINs likewise (spec/10 §9.3).
@@ -1001,7 +1044,7 @@ impl App {
             items.push(Item::Text(format!(
                 "{} · {} · {} · {}",
                 local_time(row.time_unix_ms),
-                active_label(ctx),
+                self.btc_active_label(ctx),
                 row.title,
                 row.status
             )));
@@ -1249,9 +1292,7 @@ impl App {
         if ctx.btc_meta().is_none() && !ctx.has_mnemonic {
             // A key-only wallet without a Bitcoin key yet: only the account card.
             if show_accounts {
-                items.push(Item::CardStart(None));
                 self.btc_account_items(&ctx, items);
-                items.push(Item::CardEnd);
             }
             return;
         }
@@ -1261,9 +1302,7 @@ impl App {
         // The account card: a mnemonic wallet once BIP84 account 0 exists, a key-only wallet
         // always (its imported keys are its accounts).
         if show_accounts {
-            items.push(Item::CardStart(None));
             self.btc_account_items(&ctx, items);
-            items.push(Item::CardEnd);
         }
         items.push(Item::CardStart(None));
         self.btc_utxo_items(&ctx, items);
@@ -1503,7 +1542,7 @@ impl App {
         items.push(Item::CardStart(Some(
             text::FROM_ACCOUNT.get(lang).to_owned(),
         )));
-        items.push(Item::Text(active_label(&ctx)));
+        items.push(Item::Text(self.btc_active_label(&ctx)));
         items.push(Item::Help(active_detail(&ctx)));
         if let Some(balance) = self.btc.balance(&ctx) {
             items.push(Item::Help(
@@ -2282,27 +2321,39 @@ mod tests {
             let mut app = app(true, settings_net, Some(net), true);
             // The account drop-down (2026-11-11): its button names the selected account; open,
             // the list has one entry per account (the radio ids of before), the selected marked.
+            // 2026-11-15: the shared card `내 Bitcoin 계정`; items `label · source` (one set of
+            // recovery words only: the name alone), the default name `Bitcoin 1`; the type and
+            // prefix are the selected card's line under the name, the address its copy line.
             let items = app.items();
+            assert!(items.iter().any(
+                |item| matches!(item, Item::CardStart(Some(title)) if title == "내 Bitcoin 계정")
+            ));
             let picker = control(&items, crate::ui::screens_links::ids::PICKER_BTC)
                 .expect("account drop-down");
-            assert!(
-                picker
-                    .text
-                    .starts_with("네이티브 세그윗 계정 0 · 네이티브 세그윗 (")
-            );
+            assert_eq!(picker.text, "Bitcoin 1");
             assert!(control(&items, ids::ACCOUNT_BASE).is_none());
             assert!(app.on_links_command(crate::ui::screens_links::ids::PICKER_BTC));
             let items = app.items();
             let row = control(&items, ids::ACCOUNT_BASE).expect("account row");
-            assert!(
-                row.text
-                    .starts_with("네이티브 세그윗 계정 0 · 네이티브 세그윗 (")
-            );
+            assert_eq!(row.text, "Bitcoin 1");
             assert_eq!(row.checked, Some(true));
             assert!(app.on_links_command(crate::ui::screens_links::ids::PICKER_BTC));
             let items = app.items();
             assert!(control(&items, ids::ACCOUNT_ADD).is_some_and(|ctl| ctl.text == "계정 추가"));
-            assert!(has_text(&items, "네이티브 세그윗 계정 0"));
+            assert!(
+                items
+                    .iter()
+                    .any(|item| matches!(item, Item::Subtitle(text) if text == "Bitcoin 1"))
+            );
+            let prefix = if net == BtcNetwork::Mainnet {
+                "bc1q"
+            } else {
+                "tb1q"
+            };
+            assert!(has_text(&items, &format!("네이티브 세그윗 ({prefix}…)")));
+            // The default account: `이름 바꾸기`, no `숨기기`.
+            assert!(control(&items, ids::RENAME).is_some());
+            assert!(control(&items, ids::HIDE).is_none());
             app.btc.add_account_open = true;
             let items = app.items();
             for (offset, label) in labels.iter().enumerate() {

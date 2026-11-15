@@ -2070,6 +2070,7 @@
 | SOL_IMPORTED_LABEL | 가져온 Solana {0} | Imported Solana {0} |
 | EVM_ACCOUNT_LABEL | 계정 {0} | Account {0} |
 | SOL_ACCOUNT_LABEL | Solana {0} | Solana {0} |
+| BTC_ACCOUNT_LABEL | Bitcoin {0} | Bitcoin {0} |
 
 <!-- catalogue: yw_app::received::btc::text -->
 
@@ -2700,6 +2701,7 @@
 | SOURCE_IMPORTED | 가져온 키 | Imported key |
 | SOURCE_CARDS | YubiKey: {0} | YubiKey: {0} |
 | MORE_CARDS |  +{0} |  +{0} |
+| SOURCE_EVM_KEY | EVM 계정 {0} 키 | EVM account {0} key |
 
 <!-- catalogue: yw_app::ui::screens_book::text -->
 
@@ -2786,9 +2788,9 @@
 | CANCEL | 취소 | Cancel |
 | RETRY | 다시 시도 | Try again |
 | FIND_MORE | 더 찾기 | Find more |
-| ACCOUNTS_TITLE | Bitcoin 계정 | Bitcoin accounts |
-| BADGE_IMPORTED | 가져온 키 | Imported key |
-| BADGE_EVM_KEY | EVM 계정 {0} 키 | EVM account {0} key |
+| MY_ACCOUNTS | 내 Bitcoin 계정 | My Bitcoin accounts |
+| RENAME | 이름 바꾸기 | Rename |
+| HIDE | 숨기기 | Hide |
 | ADD_ACCOUNT | 계정 추가 | Add account |
 | ADDRESS_MODE | 주소 방식 — {0} | Address mode — {0} |
 | MNEMONIC | 복구 단어 | Recovery words |

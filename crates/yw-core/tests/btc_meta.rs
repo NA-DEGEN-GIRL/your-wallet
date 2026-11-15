@@ -753,3 +753,58 @@ fn evm_shared_account_json() {
         assert!(BtcMeta::from_json(&parse(&bad)).is_err(), "{to}");
     }
 }
+
+/// spec/08 §12.3d (2026-11-15): every account identity has one JSON form, the forms of
+/// `btc_accounts.selected` and `btc_accounts_mn.selected`, and reads back to itself; other
+/// shapes are not identities.
+#[test]
+fn account_identities_round_trip_through_their_json_form() {
+    use yw_core::btc::account::{BtcAccountId, HwBtcKey, ScriptType};
+    use yw_core::btc::meta::{account_id_from_json, account_id_to_json};
+    let ids = [
+        BtcAccountId::PRIMARY,
+        BtcAccountId::Hd {
+            mnemonic: None,
+            script_type: ScriptType::P2tr,
+            account: 3,
+        },
+        BtcAccountId::Hd {
+            mnemonic: Some(yw_core::vault::RecordId::from_bytes([4; 16])),
+            script_type: ScriptType::P2wpkh,
+            account: 0,
+        },
+        BtcAccountId::Imported { id: [5; 16] },
+        BtcAccountId::EvmShared {
+            evm_index: 1,
+            script_type: ScriptType::P2shP2wpkh,
+        },
+        BtcAccountId::Hardware {
+            key: HwBtcKey::Address(2),
+            script_type: ScriptType::P2wpkh,
+        },
+        BtcAccountId::Hardware {
+            key: HwBtcKey::Evm(0),
+            script_type: ScriptType::P2pkh,
+        },
+    ];
+    for id in ids {
+        assert_eq!(account_id_from_json(&account_id_to_json(&id)), Some(id));
+    }
+    let limits = Limits {
+        max_bytes: 4_096,
+        max_depth: 8,
+        max_nodes: 256,
+        max_items: 256,
+    };
+    for bad in [
+        r"{}",
+        r#"{"hd":{"script_type":"p2wpkh"}}"#,
+        r#"{"hd":{"script_type":"p2wpkh","account":0},"imported":"05050505050505050505050505050505"}"#,
+        r#"{"yubikey":{"script_type":"p2tr","kind":"btc","index":0}}"#,
+        r#"{"mnemonic":{"id":"00000000000000000000000000000000","script_type":"p2wpkh","account":0}}"#,
+        r#""hd""#,
+    ] {
+        let value: Value = yw_json::parse(bad.as_bytes(), &limits).unwrap();
+        assert_eq!(account_id_from_json(&value), None, "{bad}");
+    }
+}

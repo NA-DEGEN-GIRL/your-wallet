@@ -62,10 +62,12 @@ yw_core::texts! {
     RETRY = "다시 시도" / "Try again";
     FIND_MORE = "더 찾기" / "Find more";
 
-    /// The account list.
-    ACCOUNTS_TITLE = "Bitcoin 계정" / "Bitcoin accounts";
-    BADGE_IMPORTED = "가져온 키" / "Imported key";
-    BADGE_EVM_KEY(1) = "EVM 계정 {0} 키" / "EVM account {0} key";
+    /// The account card (2026-11-15: `내 Bitcoin 계정`, the shared card; the subtitle
+    /// `Bitcoin 계정` and the badges `가져온 키`, `EVM 계정 {0} 키` before, now the sources of
+    /// `ui::screens_accounts`).
+    MY_ACCOUNTS = "내 Bitcoin 계정" / "My Bitcoin accounts";
+    RENAME = "이름 바꾸기" / "Rename";
+    HIDE = "숨기기" / "Hide";
     ADD_ACCOUNT = "계정 추가" / "Add account";
     ADDRESS_MODE(1) = "주소 방식 — {0}" / "Address mode — {0}";
     MNEMONIC = "복구 단어" / "Recovery words";

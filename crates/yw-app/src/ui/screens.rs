@@ -1743,6 +1743,7 @@ impl App {
                 label,
                 source,
                 selected: is_selected,
+                enabled: true,
             });
         }
         let selected = chosen.map(|(pref, label)| {
@@ -1802,6 +1803,7 @@ impl App {
                 accounts,
                 empty: None,
                 selected,
+                details: Vec::new(),
                 hidden: Some(crate::app_hidden::Family::Evm),
                 actions,
                 footer,

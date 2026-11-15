@@ -207,6 +207,74 @@ fn card_names_are_a_top_level_key_beside_unknown_keys() {
     assert_eq!(meta.book().len(), 1);
 }
 
+/// 2026-11-15 (spec/08 §12.3d, spec/02 §5.3): the Bitcoin accounts' names and hidden marks are
+/// the new top-level key `btc_account_view` — never members of `btc`/`btc_accounts*`, which
+/// earlier versions decode strictly, so those keep their earlier bytes and an earlier version
+/// keeps the new key unread (an unknown top-level key, like this version keeps a newer one's);
+/// an invalid value reads as no names and the document still opens.
+#[test]
+fn btc_account_view_is_a_top_level_key_beside_unknown_keys() {
+    use yw_core::btc::{BtcAccountKey, BtcMeta, BtcNetwork, ScriptType};
+    // The generator point (public test data).
+    let node = yw_core::bip32::AccountXpub {
+        pubkey: yw_core::hex::decode_array::<33>(
+            "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+        )
+        .unwrap(),
+        chain_code: [7; 32],
+    };
+    let mut meta = parse_meta(META_V3_NEWER_MINOR).unwrap().meta;
+    meta.btc = Some(Box::new(BtcMeta::new(BtcNetwork::Testnet4, node)));
+    let taproot = BtcAccountKey::hd(ScriptType::P2tr, 0, node).unwrap();
+    meta.btc_accounts
+        .upsert(BtcMeta::with_key(BtcNetwork::Testnet4, taproot))
+        .unwrap();
+    let plain = String::from_utf8(meta.to_json()).unwrap();
+    assert!(!plain.contains("btc_account_view"));
+    assert!(meta.reconcile_btc_view(yw_core::lang::Lang::Ko));
+    meta.btc_view_update(BtcNetwork::Testnet4, taproot.id(), |view| {
+        view.label = Some("저축".to_owned());
+        view.hidden = true;
+    });
+    let written = String::from_utf8(meta.to_json()).unwrap();
+    // The strictly read keys are byte for byte what they were without names.
+    let value_of = |text: &str, key: &str| {
+        yw_json::parse(text.as_bytes(), &LIMITS)
+            .unwrap()
+            .as_object()
+            .and_then(|object| object.get(key).cloned())
+    };
+    for key in ["btc", "btc_accounts", "btc_accounts_ext", "btc_accounts_mn"] {
+        assert_eq!(value_of(&written, key), value_of(&plain, key), "{key}");
+    }
+    assert!(written.contains(
+        r#""btc_account_view":[{"network":"testnet4","account":{"hd":{"script_type":"p2wpkh","account":0}},"label":"Bitcoin 1"},{"network":"testnet4","account":{"hd":{"script_type":"p2tr","account":0}},"label":"저축","hidden":true}]"#
+    ));
+    let reread = parse_meta(written.as_bytes()).unwrap().meta;
+    assert_eq!(reread, meta);
+    let unknown: Vec<&str> = reread.unknown.iter().map(|(key, _)| key.as_str()).collect();
+    assert_eq!(unknown, ["watch_only", "ui_layout"]);
+    assert!(reread.btc_hidden(BtcNetwork::Testnet4, taproot.id()));
+    // An earlier version: the key is unknown there, kept and written back unchanged.
+    let mut older = reread.clone();
+    older.unknown.push((
+        "btc_account_view".to_owned(),
+        value_of(&written, "btc_account_view").unwrap(),
+    ));
+    older.btc_view.clear();
+    assert_eq!(
+        parse_meta(&older.to_json()).unwrap().meta.btc_view,
+        meta.btc_view
+    );
+    // Invalid: no names, nothing hidden, the document opens with its accounts.
+    let invalid = written.replace(r#","hidden":true"#, r#","hidden":"yes""#);
+    assert_ne!(invalid, written);
+    let parsed = parse_meta(invalid.as_bytes()).unwrap().meta;
+    assert!(parsed.btc_view.is_empty());
+    assert_eq!(parsed.btc_accounts, meta.btc_accounts);
+    assert_eq!(parsed.book().len(), 1);
+}
+
 fn entry(name: &str, value: &[u8]) -> Vec<u8> {
     let mut out = vec![u8::try_from(name.len()).unwrap_or(u8::MAX)];
     out.extend_from_slice(name.as_bytes());

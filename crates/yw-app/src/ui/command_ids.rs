@@ -13,7 +13,7 @@
 //! | sites (`screens_sites`) | 6,700–6,965 | S13 rows 6,710–6,965 |
 //! | Solana (`screens_sol`) | 7,000–7,463 | send assets 7,015–7,018, token cards 7,027–7,029, picker 7,030–7,069, token hide 7,070–7,073, token mint `주소 복사` 7,080–7,083, result `해시 복사` 7,076, scan rows 7,120–7,375, activity `해시 복사` 7,400–7,463 |
 //! | Zcash (`screens_zec`) | 8,000–8,179 | account card `주소 복사` 8,018, EVM-key radios 8,020–8,035, `YubiKey` slots 8,040–8,047, imported keys 8,060–8,075, activity `해시 복사` 8,100–8,179 |
-//! | Bitcoin (`screens_btc`) | 9,000–9,899 | account card `주소 복사` 9,034, account rows 9,130–9,194, UTXO rows 9,200–9,499, activity 9,500–9,899 |
+//! | Bitcoin (`screens_btc`) | 9,000–9,899 | account card `주소 복사` 9,034, `이름 바꾸기`·`숨기기`·name field·`저장`·`취소` 9,035–9,039 (2026-11-15), account rows 9,130–9,194, UTXO rows 9,200–9,499, activity 9,500–9,899 |
 //! | AI 설명 (`screens_llm`) | 10,000–10,099 | M6 settings |
 //! | EVM accounts (`screens`) | 11,000–11,999 | one radio per row (index range 0..=999) |
 //! | Solana accounts (`screens_sol`) | 12,000–12,999 | one radio per row (index range 0..=999) |
@@ -25,7 +25,7 @@
 //! | recovery phrases (`screens_mnemonics`) | 13,600–13,699 | settings 복구 단어; card actions 13,620–13,657 (8 rows each), 계정 추가 picker 13,660–13,667, Solana picker 13,670–13,677, Bitcoin key source 13,680–13,687, Zcash key source 13,690–13,697 |
 //! | address book (`screens_book`) | 14,000–15,699 | S14 form 14,000–14,016, favorite chips 14,020–14,027, BTC picker 14,030–14,069, SOL activity `이 주소 저장` 14,080–14,143, S14 rows 14,200–15,699 (★·편집·삭제) |
 //! | `WalletConnect` (`screens_walletconnect`) | 16,000–16,099 | S13 panel, session rows 16,020–16,083 |
-//! | hidden accounts (`app_hidden`) | 16,200–16,589 | toggles 16,200–16,201, EVM `다시 보이기` rows 16,210–16,399, Solana rows 16,400–16,589 |
+//! | hidden accounts (`app_hidden`) | 16,100–16,174, 16,200–16,589 | Bitcoin toggle 16,100 and rows 16,110–16,174 (2026-11-15), toggles 16,200–16,201, EVM `다시 보이기` rows 16,210–16,399, Solana rows 16,400–16,589 |
 //! | side-file choices (`app_sidecar`) | 16,600–16,609 | meta `닫기`, `고급`, journal `선택 다시 보기`, the Bitcoin form's check after a journal reset |
 //! | first setup·RPC (`screens`) | 16,700–16,783 | S08 '처음 설정' 16,700–16,705, `모두 테스트` 16,706, the chain tabs' `RPC 설정하기` 16,707–16,710, the EVM·Solana failure bands' `이 네트워크 RPC 테스트`·`RPC 설정 열기` 16,711–16,714, failed-network links 16,720–16,783 |
 //! | block explorers (`screens_explorer`) | 17,200–17,709 | S15 card form 17,200–17,203, account cards' `탐색기에서 주소 보기` 17,204–17,208, send results' `탐색기에서 열기`·`탐색기 링크 복사` 17,210–17,217, card rows 17,220–17,319 (`변경`·`기본값으로`), activity `탐색기에서 열기`·`탐색기 링크 복사`: Solana 17,320–17,447, Bitcoin 17,450–17,549, Zcash 17,550–17,709 (EVM rows use offset 7 of their own stride) |
@@ -147,6 +147,13 @@ pub fn ranges() -> Vec<IdRange> {
             crate::app_hidden::ids::ROW_SPAN,
             1,
             usize::from(crate::app_hidden::ids::ROW_SPAN),
+        ),
+        range(
+            "hidden.btc_rows",
+            crate::app_hidden::ids::BTC_ROW_BASE,
+            crate::app_hidden::ids::BTC_ROW_SPAN,
+            1,
+            yw_core::btc::meta::MAX_BTC_ACCOUNTS + 1,
         ),
         range(
             "walletconnect.sessions",

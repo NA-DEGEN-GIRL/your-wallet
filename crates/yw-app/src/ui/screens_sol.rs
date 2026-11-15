@@ -712,6 +712,7 @@ impl App {
                 label,
                 source,
                 selected: is_selected,
+                enabled: true,
             });
         }
         let selected = chosen.map(|(id, label)| {
@@ -802,6 +803,7 @@ impl App {
                     .to_owned(),
                 ),
                 selected,
+                details: Vec::new(),
                 hidden: Some(crate::app_hidden::Family::Sol),
                 actions,
                 footer,

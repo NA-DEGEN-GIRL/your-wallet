@@ -1921,6 +1921,24 @@ fn account_id(value: &Value) -> Result<BtcAccountId, BtcMetaError> {
     Ok(BtcAccountId::Imported { id })
 }
 
+/// The JSON form of an account identity (2026-11-15, for the app's lenient meta
+/// `btc_account_view`, spec/08 §12.3d): the `btc_accounts.selected` forms (`hd`, `imported`,
+/// `evm`, `yubikey`) and, for an added mnemonic's HD account, the `btc_accounts_mn.selected`
+/// form (`mnemonic`).
+#[must_use]
+pub fn account_id_to_json(id: &BtcAccountId) -> Value {
+    account_id_json(id)
+}
+
+/// The account identity of [`account_id_to_json`]'s forms; `None` when `value` is none of them.
+#[must_use]
+pub fn account_id_from_json(value: &Value) -> Option<BtcAccountId> {
+    if value.as_object()?.get("mnemonic").is_some() {
+        return mnemonic_account_id(value).ok();
+    }
+    account_id(value).ok()
+}
+
 impl BtcAccounts {
     /// Strict decode of meta `btc_accounts`; a missing key is the default (no extra accounts).
     ///

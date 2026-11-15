@@ -1593,6 +1593,10 @@ impl KeyWorker {
         }
         mismatch |= mnemonics::reconcile_mnemonics(&mut document, vault, lang)?;
         mismatch |= mnemonics::reconcile_mnemonic_chains(&mut document, vault)?;
+        // Bitcoin account names after the accounts are settled (2026-11-15, spec/08 §12.3d):
+        // every account keeps the default name it gets now, names of gone accounts go.
+        // Not an address mismatch: written below without the warning.
+        let named = document.reconcile_btc_view(lang);
         let mnemonic_infos = vault.mnemonics()?;
         let sol_sources: Vec<SolKeySource> = document
             .sol_accounts
@@ -1629,9 +1633,9 @@ impl KeyWorker {
         }
         if mismatch {
             logging::warn("key", "MetaAddressMismatch", &[]);
-            if !alt {
-                vault.save_sidecar(FileKind::Meta, &document.to_json())?;
-            }
+        }
+        if (mismatch || named) && !alt {
+            vault.save_sidecar(FileKind::Meta, &document.to_json())?;
         }
         self.journal.set_btc_meta(
             document.btc.as_deref().cloned(),

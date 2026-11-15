@@ -215,12 +215,19 @@ impl App {
             .collect()
     }
 
-    /// Every Bitcoin account of the settings network with its stable address.
+    /// Every visible Bitcoin account of the settings network with its stable address (a hidden
+    /// account is never offered or used, 2026-11-15, spec/05 §4.9).
     pub(crate) fn btc_dapp_rows(&self) -> Vec<BtcRow> {
         let net = self.btc_network_now();
         let ctx = self.btc_ctx();
         ctx.accounts()
             .into_iter()
+            .filter(|meta| {
+                !self
+                    .meta
+                    .as_ref()
+                    .is_some_and(|document| document.btc_hidden(meta.network(), meta.id()))
+            })
             .filter_map(|meta| {
                 let account = meta.account();
                 let pubkey = account.deriver().ok()?.pubkey(BtcChain::Receive, 0).ok()?;
@@ -896,15 +903,18 @@ impl App {
         self.chain_grants_removed(&origins, Family::Solana);
     }
 
-    /// Bitcoin addresses left the wallet (an imported key removed): every grant listing one is
-    /// deleted as a whole, like [`Self::sol_account_removed_from_sites`].
+    /// Bitcoin addresses left the wallet (an imported key removed) or an account was hidden
+    /// (2026-11-15): every grant listing one is deleted as a whole, like
+    /// [`Self::sol_account_removed_from_sites`].
     pub(crate) fn btc_addresses_removed_from_sites(&mut self, addresses: &[String]) {
-        // An address another account still has (any network) stays connected.
+        // An address another visible account still has (any network) stays connected; a hidden
+        // account keeps no grant alive (spec/05 §4.9, as EVM's "숨기지 않은 다른 계정").
         let held: Vec<String> = self.meta.as_ref().map_or_else(Vec::new, |meta| {
             meta.btc
                 .as_deref()
                 .into_iter()
                 .chain(meta.btc_accounts.accounts.iter())
+                .filter(|account| !meta.btc_hidden(account.network(), account.id()))
                 .filter_map(|account| {
                     let address = account.address(BtcChain::Receive, 0).ok()?;
                     Some(address.as_str().to_owned())
@@ -1348,6 +1358,104 @@ mod tests {
         )]);
         assert!(core.btc_grants().is_empty());
         assert!(app.meta.as_ref().unwrap().chain_sites.btc.is_empty());
+    }
+
+    /// spec/05 §4.9 (2026-11-15): hiding a Bitcoin account deletes every grant listing its
+    /// stable address (the dispatcher's and meta's) like a removed key, leaves the other
+    /// accounts' grants, takes it out of the connect choices, and `다시 보이기` brings no
+    /// connection back.
+    #[test]
+    fn hidden_bitcoin_account_drops_its_grants_and_leaves_the_connect_list() {
+        use yw_core::btc::{BtcAccountKey, BtcMeta, BtcNetwork};
+        let mut app = app(false);
+        app.settings.bitcoin.enabled = true;
+        app.settings.bitcoin.network = crate::network::BtcNet::Mainnet;
+        let node = yw_core::bip32::AccountXpub {
+            pubkey: yw_core::hex::decode_array::<33>(
+                "03b88e0fbe3f646337ed93bc0c0f3b843fcf7d2589e5ec884754e6402027a890b4",
+            )
+            .unwrap(),
+            chain_code: [7; 32],
+        };
+        let primary = BtcMeta::new(BtcNetwork::Mainnet, node);
+        // Another account node (the generator point, public test data): another address.
+        let other = yw_core::bip32::AccountXpub {
+            pubkey: yw_core::hex::decode_array::<33>(
+                "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+            )
+            .unwrap(),
+            chain_code: [9; 32],
+        };
+        let second = BtcMeta::with_key(
+            BtcNetwork::Mainnet,
+            BtcAccountKey::hd(ScriptType::P2wpkh, 1, other).unwrap(),
+        );
+        let address_of = |meta: &BtcMeta| {
+            meta.address(yw_core::bip32::path::BtcChain::Receive, 0)
+                .unwrap()
+                .as_str()
+                .to_owned()
+        };
+        let (kept, hidden) = (address_of(&primary), address_of(&second));
+        let id = second.id();
+        let meta = app.meta.as_mut().unwrap();
+        meta.btc = Some(Box::new(primary));
+        meta.btc_accounts.upsert(second).unwrap();
+        meta.btc_accounts.selected = Some(id);
+        let grant = |origin: &str, address: &str| {
+            yw_core::policy::BtcGrant::new(
+                BrowserOrigin::parse(origin).unwrap(),
+                BtcNetwork::Mainnet,
+                vec![BtcGrantAddress {
+                    purpose: BtcPurpose::Payment,
+                    address: address.to_owned(),
+                    pubkey: BtcPubKey::Compressed([2; 33]),
+                    script_type: ScriptType::P2wpkh,
+                }],
+                1,
+            )
+            .unwrap()
+        };
+        let core = core(&app);
+        assert!(core.upsert_btc_grant(grant("https://app.example", &hidden)));
+        assert!(core.upsert_btc_grant(grant("https://other.example", &kept)));
+        app.write_grants();
+        let offered = |app: &App| {
+            app.btc_connect_choices(
+                &BrowserOrigin::parse("https://new.example").unwrap(),
+                &[BtcPurpose::Payment],
+            )
+            .0
+            .into_iter()
+            .map(|(_, _, address, _)| address)
+            .collect::<Vec<_>>()
+        };
+        assert_eq!(offered(&app), [kept.clone(), hidden.clone()]);
+        app.btc_hide_selected();
+        assert!(
+            app.meta
+                .as_ref()
+                .unwrap()
+                .btc_hidden(BtcNetwork::Mainnet, id)
+        );
+        let left: Vec<String> = core
+            .btc_grants()
+            .iter()
+            .flat_map(|grant| grant.addresses.iter().map(|entry| entry.address.clone()))
+            .collect();
+        assert_eq!(left, std::slice::from_ref(&kept));
+        assert_eq!(app.meta.as_ref().unwrap().chain_sites.btc.len(), 1);
+        assert_eq!(offered(&app), std::slice::from_ref(&kept));
+        // Shown again: still no connection for it.
+        assert!(app.on_hidden_command(crate::app_hidden::ids::BTC_ROW_BASE));
+        assert!(
+            !app.meta
+                .as_ref()
+                .unwrap()
+                .btc_hidden(BtcNetwork::Mainnet, id)
+        );
+        assert_eq!(core.btc_grants().len(), 1);
+        assert_eq!(offered(&app), [kept, hidden]);
     }
 
     /// spec/05 §4.9, spec/02 §8.6: removing an added recovery phrase drops the dApp grants of its

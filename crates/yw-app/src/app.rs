@@ -940,6 +940,7 @@ fn enter_primary(edit: u16) -> Option<u16> {
         zec::ids::SEND_TO_EDIT | zec::ids::SEND_AMOUNT_EDIT => zec::ids::SEND_REVIEW,
         screens::ids::RENAME_EDIT => screens::ids::RENAME_SAVE,
         sol::ids::RENAME_EDIT => sol::ids::RENAME_SAVE,
+        btc::ids::RENAME_EDIT => btc::ids::RENAME_SAVE,
         mnemonics::ids::RENAME_EDIT => mnemonics::ids::RENAME_SAVE,
         // A YubiKey's name in Settings (2026-11-15; not the wizard).
         crate::ui::screens_yubikey::ids::CARD_NAME_EDIT => {
@@ -1707,6 +1708,7 @@ impl App {
         if self.press_shown(&[
             ids::RENAME_CANCEL,
             crate::ui::screens_sol::ids::RENAME_CANCEL,
+            crate::ui::screens_btc::ids::RENAME_CANCEL,
             crate::ui::screens_mnemonics::ids::RENAME_CANCEL,
             crate::ui::screens_yubikey::ids::CARD_NAME_CANCEL,
             ids::REPLACE_CANCEL,

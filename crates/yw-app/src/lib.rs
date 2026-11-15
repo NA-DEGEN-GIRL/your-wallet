@@ -10,6 +10,7 @@ pub mod app_book;
 pub mod app_browser;
 pub mod app_btc;
 pub mod app_btc_commands;
+pub mod app_btc_view;
 pub mod app_card;
 pub mod app_chain_sites;
 pub mod app_evm;

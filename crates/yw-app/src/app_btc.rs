@@ -95,8 +95,8 @@ pub enum BtcAddSource {
 pub struct BtcAccountRow {
     /// Identity.
     pub id: BtcAccountId,
-    /// `네이티브 세그윗 계정 0`, `탭루트 계정 1`; an imported key: its shortened address
-    /// (`tb1q6r…cpvkl`).
+    /// The account's name (meta `btc_account_view`, default `Bitcoin N`, 2026-11-15; before:
+    /// `네이티브 세그윗 계정 0`, `탭루트 계정 1`, an imported key's shortened address).
     pub name: String,
     /// The address type with its prefix: `네이티브 세그윗 (bc1q…)`.
     pub kind: String,
@@ -1138,6 +1138,8 @@ pub struct BtcUi {
     pub account_message: Option<String>,
     /// The add-account chooser is open (spec/04 BTC 계정 추가).
     pub add_account_open: bool,
+    /// The account whose name is being edited (`이름 바꾸기`, 2026-11-15).
+    pub rename: Option<BtcAccountId>,
     /// The key source chosen in the add-account chooser (default: the standard path).
     pub add_source: BtcAddSource,
     /// The EVM account of [`BtcAddSource::EvmShared`].
@@ -1189,6 +1191,7 @@ impl Default for BtcUi {
             refresh_account: BtcAccountId::PRIMARY,
             account_message: None,
             add_account_open: false,
+            rename: None,
             add_source: BtcAddSource::Standard,
             add_evm_index: 0,
             add_mnemonic: None,
@@ -2668,14 +2671,18 @@ impl BtcUi {
     // ----- accounts ---------------------------------------------------------------------------
 
     /// The account list of the settings network (BIP84 account 0 first, then the other HD
-    /// accounts and the imported keys in the order they were added): name (an imported key: its
-    /// shortened address), address type with its prefix, available verified balance at the
-    /// known tip, selection, the imported-key badge.
+    /// accounts and the imported keys in the order they were added), hidden accounts included:
+    /// name ([`Meta::btc_labels`]), address type with its prefix, available verified balance at
+    /// the known tip, selection, the imported-key badge.
     #[must_use]
     pub fn account_rows(&self, ctx: &BtcCtx<'_>) -> Vec<BtcAccountRow> {
         let net = ctx.net();
         let active = ctx.active_id();
         let tip = self.tip_or_meta(ctx);
+        let labels = ctx
+            .meta
+            .map(|meta| meta.btc_labels(net, ctx.lang))
+            .unwrap_or_default();
         ctx.accounts()
             .into_iter()
             .map(|meta| {
@@ -2685,14 +2692,10 @@ impl BtcUi {
                     BtcAccountId::EvmShared { evm_index, .. } => Some(evm_index),
                     _ => None,
                 };
-                let name = if meta.is_single() {
-                    meta.address(BtcChain::Receive, 0).map_or_else(
-                        |_| account_label(ctx.lang, meta.account()),
-                        |address| short_address(address.as_str()),
-                    )
-                } else {
-                    account_label(ctx.lang, meta.account())
-                };
+                let name = labels.iter().find(|(id, _)| *id == meta.id()).map_or_else(
+                    || account_label(ctx.lang, meta.account()),
+                    |(_, label)| label.clone(),
+                );
                 BtcAccountRow {
                     id: meta.id(),
                     name,
@@ -3973,9 +3976,16 @@ impl crate::app::App {
                             })
                             .collect()
                     });
-                    if let Some(meta) = self.meta.as_mut() {
+                    let lang = self.settings.language;
+                    let named = self.meta.as_mut().is_some_and(|meta| {
                         meta.btc = btc;
                         meta.btc_accounts = *accounts;
+                        // A new account keeps the default name it gets now; a gone one's
+                        // entry goes (2026-11-15, spec/08 §12.3d).
+                        meta.reconcile_btc_view(lang)
+                    });
+                    if named {
+                        self.save_meta();
                     }
                     if !gone.is_empty() {
                         self.btc_addresses_removed_from_sites(&gone);
