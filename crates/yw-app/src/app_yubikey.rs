@@ -1636,7 +1636,7 @@ impl App {
                 let text = error.text_for_in(
                     self.settings.language,
                     PinKind::PivPin,
-                    &crate::yubikey::PinContext::of(&self.card.records, serial, PinKind::PivPin),
+                    &self.pin_context(serial, PinKind::PivPin),
                 );
                 self.with_form(|form| {
                     form.set_busy(false);
@@ -1681,14 +1681,13 @@ impl App {
                 if let Some((_, error)) = report.failed {
                     self.yk_note_last_try(serial, CardJobError::Card(error));
                 }
-                let records = &self.card.records;
                 let reason = report
                     .failed
                     .map(|(step, error)| {
                         step.kind().error_text_in(
                             lang,
                             error,
-                            &crate::yubikey::PinContext::of(records, serial, step.kind()),
+                            &self.pin_context(serial, step.kind()),
                         )
                     })
                     .unwrap_or_default();
@@ -1724,11 +1723,9 @@ impl App {
             );
         }
         if let Some((step, error)) = report.failed {
-            let reason = step.kind().error_text_in(
-                lang,
-                error,
-                &crate::yubikey::PinContext::of(&self.card.records, serial, step.kind()),
-            );
+            let reason =
+                step.kind()
+                    .error_text_in(lang, error, &self.pin_context(serial, step.kind()));
             let _ = write!(
                 note,
                 " {}",
@@ -2104,7 +2101,7 @@ impl App {
                 let text = error.text_for_in(
                     self.settings.language,
                     target.kind(),
-                    &crate::yubikey::PinContext::of(&self.card.records, serial, target.kind()),
+                    &self.pin_context(serial, target.kind()),
                 );
                 self.yk_note_last_try(serial, error);
                 self.with_form(|form| {
@@ -2176,6 +2173,60 @@ impl App {
         }
     }
 
+    /// `저장` (or `이름 지우기`, `clear`) of the card name edit (2026-11-15, spec/10 §8): an empty
+    /// field clears the name; otherwise it must be a card name (`meta::is_valid_card_name`) no
+    /// other card uses. Stored in meta `hw_card_names` (never logged: names are labels).
+    fn yk_save_card_name(&mut self, clear: bool) {
+        use crate::ui::screens_yubikey::ids;
+        use crate::ui::screens_yubikey::text as t;
+        let lang = self.settings.language;
+        let Some(serial) = self.card.rename.filter(|serial| {
+            self.card
+                .records
+                .iter()
+                .any(|record| record.serial == *serial)
+        }) else {
+            self.card.rename = None;
+            self.refresh();
+            return;
+        };
+        let typed = if clear {
+            String::new()
+        } else {
+            self.controls
+                .text(ids::CARD_NAME_EDIT, 64)
+                .unwrap_or_default()
+                .trim()
+                .to_owned()
+        };
+        let name = (!typed.is_empty()).then_some(typed);
+        if let Some(name) = &name {
+            if !crate::meta::is_valid_card_name(name) {
+                self.info = Some(t::CARD_NAME_INVALID.get(lang).to_owned());
+                self.refresh();
+                return;
+            }
+            let taken = self
+                .card_names()
+                .iter()
+                .any(|(other, known)| *other != serial && known == name);
+            if taken {
+                self.info = Some(t::CARD_NAME_TAKEN.fill(lang, [name]));
+                self.refresh();
+                return;
+            }
+        }
+        let Some(meta) = self.meta.as_mut() else {
+            return;
+        };
+        meta.set_card_name(serial, name);
+        self.card.rename = None;
+        self.info = None;
+        self.save_meta();
+        logging::info("app", "yubikey.card_named", &[]);
+        self.refresh();
+    }
+
     // ----- commands --------------------------------------------------------------------------
 
     /// Main-window commands of the `YubiKey` screens; `false` when `id` is not one of them.
@@ -2233,6 +2284,17 @@ impl App {
             self.yk_remove(row);
             return true;
         }
+        if let Some(row) = ids::rename_card_row(id) {
+            let serial = self.card.records.get(row).map(|record| record.serial);
+            self.card.rename = if self.card.rename == serial {
+                None
+            } else {
+                serial
+            };
+            self.info = None;
+            self.refresh();
+            return true;
+        }
         if let Some(row) = ids::pins_row(id) {
             let serial = self.card.records.get(row).map(|record| record.serial);
             self.card.pin_serial = if self.card.pin_serial == serial {
@@ -2271,6 +2333,13 @@ impl App {
                 }
                 self.set_screen(Screen::Settings(SettingsSection::YubiKey));
                 self.key(KeyJob::HardwareKeys);
+            }
+            ids::CARD_NAME_SAVE => self.yk_save_card_name(false),
+            ids::CARD_NAME_CLEAR => self.yk_save_card_name(true),
+            ids::CARD_NAME_CANCEL => {
+                self.card.rename = None;
+                self.info = None;
+                self.refresh();
             }
             ids::ENROL_START => self.yk_open_wizard(),
             ids::NEW_WALLET => self.yk_new_wallet(),

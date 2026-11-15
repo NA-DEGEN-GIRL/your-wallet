@@ -185,6 +185,28 @@ fn meta_of_a_newer_minor_version_keeps_unknown_keys() {
     assert!(Meta::default().unknown.is_empty());
 }
 
+/// 2026-11-15 (spec/02 §5.3, spec/10 §8): `hw_card_names` is a new top-level key — this version
+/// reads it (not an unknown key) and keeps a newer version's unknown keys next to it; an invalid
+/// value reads as no names and the document still opens.
+#[test]
+fn card_names_are_a_top_level_key_beside_unknown_keys() {
+    let text = String::from_utf8(META_V3_NEWER_MINOR.to_vec()).unwrap();
+    let names = r#""hw_card_names":[{"serial":7700011,"name":"메인"}],"#;
+    let with_names = text.replacen(r#""evm_accounts""#, &format!(r#"{names}"evm_accounts""#), 1);
+    assert_ne!(with_names, text);
+    let meta = parse_meta(with_names.as_bytes()).unwrap().meta;
+    assert_eq!(meta.card_name(7_700_011), Some("메인"));
+    let unknown: Vec<&str> = meta.unknown.iter().map(|(key, _)| key.as_str()).collect();
+    assert_eq!(unknown, ["watch_only", "ui_layout"]);
+    let written = String::from_utf8(meta.to_json()).unwrap();
+    assert!(written.contains(r#""hw_card_names":[{"serial":7700011,"name":"메인"}]"#));
+    assert_eq!(parse_meta(written.as_bytes()).unwrap().meta, meta);
+    let invalid = with_names.replace(r#""name":"메인""#, r#""name":"메인","extra":true"#);
+    let meta = parse_meta(invalid.as_bytes()).unwrap().meta;
+    assert!(meta.hw_card_names.is_empty());
+    assert_eq!(meta.book().len(), 1);
+}
+
 fn entry(name: &str, value: &[u8]) -> Vec<u8> {
     let mut out = vec![u8::try_from(name.len()).unwrap_or(u8::MAX)];
     out.extend_from_slice(name.as_bytes());

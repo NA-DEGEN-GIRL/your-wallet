@@ -851,11 +851,8 @@ impl App {
                     continue;
                 }
                 seen.push(identity);
-                let holders: Vec<String> = crate::yubikey::holders(&self.card.records, slot.role)
-                    .iter()
-                    .map(|serial| format!("#{serial}"))
-                    .collect();
-                let cards = holders.join("·");
+                let holders = crate::yubikey::holders(&self.card.records, slot.role);
+                let cards = self.card_name_list(&holders, "·");
                 let title = slot.role.title_in(lang);
                 lines.push(
                     if yw_core::yubikey::plan::is_unknown_index(slot.role.index()) {
@@ -1196,11 +1193,11 @@ impl App {
         if let Some(done) = self.done_yubikey {
             let (banner, backup) = match done {
                 crate::app_yubikey::YkDone::Created(serial) => (
-                    text::DONE_YK_CREATED.fill(lang, [&serial.to_string()]),
+                    text::DONE_YK_CREATED.fill(lang, [&self.card_name(serial)]),
                     text::DONE_YK_CREATED_BACKUP,
                 ),
                 crate::app_yubikey::YkDone::Connected(serial) => (
-                    text::DONE_YK_CONNECTED.fill(lang, [&serial.to_string()]),
+                    text::DONE_YK_CONNECTED.fill(lang, [&self.card_name(serial)]),
                     text::DONE_YK_CONNECTED_BACKUP,
                 ),
             };

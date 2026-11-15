@@ -71,7 +71,8 @@ pub mod text {
         LAST_READ(2) = "마지막으로 읽은 잔액: {0} ({1})" / "Last read balance: {0} ({1})";
         /// A card key no other card holds.
         CANNOT_SIGN = "이 지갑에서 서명 불가" / "Cannot sign in this wallet";
-        /// The cards that still sign: {0} `#serial·#serial`, {1} the Korean particle.
+        /// The cards that still sign: {0} the cards (`#serial` or `name (#serial)`, joined by
+        /// `·`), {1} the Korean particle.
         STILL_SIGNS(2) = "YubiKey {0}{1} 계속 서명" / "YubiKey {0} keeps signing";
     }
 }
@@ -330,9 +331,9 @@ impl App {
         let note = if holders.is_empty() {
             text::CANNOT_SIGN.get(lang).to_owned()
         } else {
-            let list: Vec<String> = holders.iter().map(|serial| format!("#{serial}")).collect();
-            let cards = list.join("·");
-            // The particle follows how the last digit is read (#…2 → 로, #…3 → 으로).
+            let cards = self.card_name_list(&holders, "·");
+            // The particle follows how the last digit is read (#…2 → 로, #…3 → 으로), or the
+            // name before `(#serial)` of a named card (2026-11-15).
             text::STILL_SIGNS.fill(lang, [&cards, crate::ui::theme::direction_particle(&cards)])
         };
         RemovedAccount {

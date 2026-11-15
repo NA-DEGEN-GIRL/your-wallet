@@ -101,7 +101,8 @@ pub mod text {
         /// `{0}` the word to type ([`LOSS_WORD`]).
         TYPE_LOSS_TO_ERASE(1) = "복구 단어가 없는 키를 지우려면 입력란에 '{0}'를 정확히 입력하세요."
             / "To erase a key without recovery words, type '{0}' exactly in the box.";
-        RESLOTTED(1) = "YubiKey #{0}의 슬롯 구성을 바꿨습니다." / "The slot layout of YubiKey #{0} was changed.";
+        /// `{0}` the card (`name (#serial)` or `#serial`, 2026-11-15).
+        RESLOTTED(1) = "YubiKey {0}의 슬롯 구성을 바꿨습니다." / "The slot layout of YubiKey {0} was changed.";
         RESLOT_PARTIAL = "일부 슬롯에 새 키가 이미 들어갔을 수 있습니다. 지갑의 슬롯 표는 바꾸지 않았습니다. 다시 시도하면 덮어씁니다."
             / "New keys may already be in some slots. The wallet's slot table was not changed. Trying again overwrites them.";
     }
@@ -1093,8 +1094,7 @@ impl App {
         // flow): it ends now and the key worker wipes the held words (spec/10 §7.1 "떠나면
         // 지움"); the result becomes a banner.
         let away = self.screen != Screen::Settings(SettingsSection::YubiKey);
-        let admin_context =
-            crate::yubikey::PinContext::of(&self.card.records, serial, PinKind::OpenPgpAdmin);
+        let admin_context = self.pin_context(serial, PinKind::OpenPgpAdmin);
         let lang = self.settings.language;
         let Some(flow) = self.reslot().filter(|flow| flow.serial == serial) else {
             return;
@@ -1123,7 +1123,7 @@ impl App {
                 }
                 self.key(KeyJob::HardwareKeys);
                 self.request_meta();
-                text::RESLOTTED.fill(lang, [&serial.to_string()])
+                text::RESLOTTED.fill(lang, [&self.card_name(serial)])
             }
             Err(error) => {
                 // A slot holding another key or a wrong admin PIN stops before anything is

@@ -243,7 +243,8 @@ pub mod text {
             / "The PIV PIN is locked. You can unlock it with the PUK (ykman piv access unblock-pin).";
         BLOCKED_PUK = "PIV PUK이 잠겼습니다. 이제 PIV PIN이 잠기면 PIV 초기화 말고는 방법이 없으니 PIV PIN을 잊지 마세요."
             / "The PIV PUK is locked. If the PIV PIN now locks, only a PIV reset is left, so do not forget the PIV PIN.";
-        /// `{0}`: `#serial` list, `{1}`: its Korean particle (English omits it).
+        /// `{0}`: the backup cards (`#serial` or `name (#serial)`, 2026-11-15), `{1}`: its Korean
+        /// particle (English omits it).
         BACKUP_SIGNS(2) = "백업 YubiKey {0}{1} 계속 서명할 수 있습니다."
             / "Backup YubiKey {0} can keep signing.";
         BLOCKED_PW3_ONLY_HERE = "OpenPGP 관리자 PIN이 잠겼습니다. 서명은 지금처럼 OpenPGP PIN으로 됩니다. 키 넣기·슬롯 구성 바꾸기·PIN 풀기만 막힙니다. 다시 쓰려면 OpenPGP 초기화(그 애플릿의 키가 지워짐)가 필요하지만, 이 카드의 키는 복구 단어가 없어 초기화하면 영구히 사라지니 초기화하지 마세요."
@@ -449,6 +450,30 @@ pub fn sign_btc_sighash(
     })
 }
 
+/// How a card is shown to the user (spec/10 §8, 2026-11-15): `name (#serial)` when the user named
+/// it (meta `hw_card_names`), else `#serial` — the serial printed on the device always stays next
+/// to the name. Display only (app chrome, never a digested display field).
+#[must_use]
+pub fn card_label(names: &[(u32, String)], serial: u32) -> String {
+    names
+        .iter()
+        .find(|(known, _)| *known == serial)
+        .map_or_else(
+            || format!("#{serial}"),
+            |(_, name)| format!("{name} (#{serial})"),
+        )
+}
+
+/// [`card_label`] of each of `serials`, joined with `separator`.
+#[must_use]
+pub fn card_labels(names: &[(u32, String)], serials: &[u32], separator: &str) -> String {
+    serials
+        .iter()
+        .map(|serial| card_label(names, *serial))
+        .collect::<Vec<_>>()
+        .join(separator)
+}
+
 /// The serials of the enrolled cards holding the key of `role`, in record order (the PIN
 /// window lists them).
 #[must_use]
@@ -634,12 +659,7 @@ impl PinKind {
         let backup = if context.backups.is_empty() {
             String::new()
         } else {
-            let list: Vec<String> = context
-                .backups
-                .iter()
-                .map(|serial| format!("#{serial}"))
-                .collect();
-            let cards = list.join("·");
+            let cards = context.backups.join("·");
             let particle = crate::ui::theme::direction_particle(&cards);
             format!(" {}", text::BACKUP_SIGNS.fill(lang, [&cards, particle]))
         };
@@ -690,14 +710,20 @@ impl PinKind {
 pub struct PinContext {
     /// Every key of the applet has a known path (`None`: not known).
     pub words: Option<bool>,
-    /// Backup cards holding the same keys.
-    pub backups: Vec<u32>,
+    /// Backup cards holding the same keys, as shown ([`card_label`], serial ascending).
+    pub backups: Vec<String>,
 }
 
 impl PinContext {
-    /// The context of `kind` on card `serial` of `records`.
+    /// The context of `kind` on card `serial` of `records`; `names` are the cards' names (meta
+    /// `hw_card_names`).
     #[must_use]
-    pub fn of(records: &[HwKeyRecord], serial: u32, kind: PinKind) -> Self {
+    pub fn of(
+        records: &[HwKeyRecord],
+        names: &[(u32, String)],
+        serial: u32,
+        kind: PinKind,
+    ) -> Self {
         let Some(record) = records.iter().find(|record| record.serial == serial) else {
             return Self::default();
         };
@@ -729,7 +755,10 @@ impl PinContext {
         backups.sort_unstable();
         Self {
             words: Some(slots.iter().all(|slot| slot.path_known)),
-            backups,
+            backups: backups
+                .iter()
+                .map(|backup| card_label(names, *backup))
+                .collect(),
         }
     }
 }
@@ -1766,7 +1795,7 @@ mod tests {
             }],
         };
         let blocked = |records: &[HwKeyRecord], kind: PinKind| {
-            kind_text(kind, &PinContext::of(records, 7_700_001, kind))
+            kind_text(kind, &PinContext::of(records, &[], 7_700_001, kind))
         };
         let alone = [record(7_700_001, 900, false)];
         let text = blocked(&alone, PinKind::OpenPgpUser);
@@ -1780,6 +1809,17 @@ mod tests {
             blocked(&backed, PinKind::OpenPgpUser)
                 .ends_with("백업 YubiKey #7700002로 계속 서명할 수 있습니다.")
         );
+        // A named backup card (2026-11-15): its name with the serial, the particle of the name.
+        let names = [(7_700_002, "메인".to_owned())];
+        assert!(
+            kind_text(
+                PinKind::OpenPgpUser,
+                &PinContext::of(&backed, &names, 7_700_001, PinKind::OpenPgpUser)
+            )
+            .ends_with("백업 YubiKey 메인 (#7700002)으로 계속 서명할 수 있습니다.")
+        );
+        assert_eq!(super::card_label(&names, 7_700_002), "메인 (#7700002)");
+        assert_eq!(super::card_label(&names, 7_700_001), "#7700001");
         assert!(
             blocked(&words, PinKind::OpenPgpAdmin)
                 .contains("서명은 지금처럼 OpenPGP PIN으로 됩니다")
@@ -1793,7 +1833,7 @@ mod tests {
         let english = PinKind::OpenPgpUser.error_text_in(
             Lang::En,
             CardError::PinBlocked,
-            &PinContext::of(&backed, 7_700_001, PinKind::OpenPgpUser),
+            &PinContext::of(&backed, &[], 7_700_001, PinKind::OpenPgpUser),
         );
         assert!(
             english.ends_with(" Backup YubiKey #7700002 can keep signing."),

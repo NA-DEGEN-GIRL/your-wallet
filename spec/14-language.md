@@ -1424,12 +1424,12 @@
 | DEFAULT_PIV_MANAGEMENT | PIV 관리 키가 기본값입니다. 'PIN 설정'이 새 관리 키를 자동으로 만들어 PIN으로 보호합니다(적거나 입력할 필요 없음). | The PIV management key is the default. 'Set PIN' makes a new management key automatically and protects it with the PIN (nothing to write down or enter). |
 | FACTORY_PIN | 이 YubiKey는 아직 공장 기본 PIN을 쓰고 있어 서명하지 않았습니다. 먼저 'PIN 설정'으로 PIN을 바꾸세요 (설정 → YubiKey). 아무것도 서명하지 않았습니다. | This YubiKey still uses its factory default PIN, so it did not sign. First change the PIN with 'Set PIN' (Settings → YubiKey). Nothing was signed. |
 | BUSY | 다른 YubiKey 서명이 진행 중이어서 방금 승인한 요청은 서명하지 않았습니다. 진행 중인 서명이 끝난 뒤(YubiKey 터치) 다시 시도하세요. | Another YubiKey signature is in progress, so the request you just approved was not signed. Try again after the running signature finishes (YubiKey touch). |
-| ENROLLED | YubiKey #{0}을(를) 등록했습니다 (슬롯 {1}개). | YubiKey #{0} enrolled ({1} slots). |
-| CONNECT_TAG | [YubiKey #{0} PIN 설정 전 — 서명 불가] | [YubiKey #{0} PIN not set — cannot sign] |
-| PIN_BANNER | YubiKey #{0} PIN 설정 전 — 이 계정은 받기만 되고, 보내기·서명은 PIN을 바꾼 뒤에 됩니다. | YubiKey #{0} PIN not set — this account can only receive; sending and signing work after the PIN is changed. |
+| ENROLLED | YubiKey {0}을(를) 등록했습니다 (슬롯 {1}개). | YubiKey {0} enrolled ({1} slots). |
+| CONNECT_TAG | [YubiKey {0} PIN 설정 전 — 서명 불가] | [YubiKey {0} PIN not set — cannot sign] |
+| PIN_BANNER | YubiKey {0} PIN 설정 전 — 이 계정은 받기만 되고, 보내기·서명은 PIN을 바꾼 뒤에 됩니다. | YubiKey {0} PIN not set — this account can only receive; sending and signing work after the PIN is changed. |
 | SET_PIN | PIN 설정 | Set PIN |
-| REFUSE_DEFAULTS | {0}의 서명 요청을 거부했습니다: YubiKey #{1}의 PIN이 아직 공장 기본값이라 서명하지 않았습니다 — 설정 → YubiKey → PIN 설정 | Refused the signature request of {0}: YubiKey #{1} still has its factory default PIN, so nothing was signed — Settings → YubiKey → Set PIN |
-| PRESENCE_OTHER_CARD | 연결된 YubiKey(#{0})에는 이 키가 없습니다 — {1}{2} 연결하세요 | The connected YubiKey (#{0}) does not hold this key — connect {3} |
+| REFUSE_DEFAULTS | {0}의 서명 요청을 거부했습니다: YubiKey {1}의 PIN이 아직 공장 기본값이라 서명하지 않았습니다 — 설정 → YubiKey → PIN 설정 | Refused the signature request of {0}: YubiKey {1} still has its factory default PIN, so nothing was signed — Settings → YubiKey → Set PIN |
+| PRESENCE_OTHER_CARD | 연결된 YubiKey {0}에는 이 키가 없습니다 — {1}{2} 연결하세요 | The connected YubiKey {0} does not hold this key — connect {3} |
 | PRESENCE_NOT_FOUND | {0}{1} 찾지 못했습니다 — 연결한 뒤 PIN을 입력하세요 | {0} not found — connect it, then enter the PIN |
 | PRESENCE_BUSY | 다른 프로그램(gpg-agent 등)이 YubiKey를 쓰고 있습니다 — 그 프로그램을 닫은 뒤 확인을 누르세요 | Another program (gpg-agent, …) is using the YubiKey — close that program, then press OK |
 | PRESENCE_WRONG_CARD | 연결된 YubiKey에는 이 키가 없습니다 — {0}{1} 연결하세요 | The connected YubiKey does not hold this key — connect {2} |
@@ -1818,7 +1818,7 @@
 | CHAIN_SHARED | EVM 공유 키 (고급) | EVM shared key (advanced) |
 | TYPE_TO_CONFIRM | 확인하려면 입력란에 '{0}'를 정확히 입력하세요. | To confirm, type '{0}' exactly in the box. |
 | TYPE_LOSS_TO_ERASE | 복구 단어가 없는 키를 지우려면 입력란에 '{0}'를 정확히 입력하세요. | To erase a key without recovery words, type '{0}' exactly in the box. |
-| RESLOTTED | YubiKey #{0}의 슬롯 구성을 바꿨습니다. | The slot layout of YubiKey #{0} was changed. |
+| RESLOTTED | YubiKey {0}의 슬롯 구성을 바꿨습니다. | The slot layout of YubiKey {0} was changed. |
 | RESLOT_PARTIAL | 일부 슬롯에 새 키가 이미 들어갔을 수 있습니다. 지갑의 슬롯 표는 바꾸지 않았습니다. 다시 시도하면 덮어씁니다. | New keys may already be in some slots. The wallet's slot table was not changed. Trying again overwrites them. |
 
 <!-- catalogue: yw_app::app_yubikey::text -->
@@ -2477,9 +2477,9 @@
 | MISMATCH_RETRY | 다시 입력 | Enter again |
 | MISMATCH_CONTINUE | 이 passphrase로 계속 | Continue with this passphrase |
 | DONE_TITLE | 준비되었습니다 | All set |
-| DONE_YK_CREATED | YubiKey 지갑을 만들었습니다 (YubiKey #{0}). | The YubiKey wallet was created (YubiKey #{0}). |
+| DONE_YK_CREATED | YubiKey 지갑을 만들었습니다 (YubiKey {0}). | The YubiKey wallet was created (YubiKey {0}). |
 | DONE_YK_CREATED_BACKUP | 이 지갑의 백업은 방금 적은 복구 단어 24개입니다. 이 PC에는 저장하지 않았으니 종이를 안전하게 보관하세요. | This wallet's backup is the 24 recovery words you just wrote down. They are not stored on this PC, so keep the paper safe. |
-| DONE_YK_CONNECTED | YubiKey를 연결했습니다 (YubiKey #{0}). | The YubiKey was connected (YubiKey #{0}). |
+| DONE_YK_CONNECTED | YubiKey를 연결했습니다 (YubiKey {0}). | The YubiKey was connected (YubiKey {0}). |
 | DONE_YK_CONNECTED_BACKUP | 복구 단어 없이 카드의 공개키로 연결했습니다. 이 PC에는 개인키도 복구 단어도 없어 카드가 그 키의 유일한 사본일 수 있습니다 — 카드를 잃었을 때를 대비해 원래 백업(복구 단어 등)이 있는지 확인하세요. | Connected with the card's public keys, without recovery words. This PC has neither private keys nor recovery words, so the card may be the only copy of those keys — make sure the original backup (recovery words etc.) exists in case the card is lost. |
 | DONE_IMPORTED | 지갑을 가져왔습니다. 이제 지갑을 쓸 수 있습니다. | The wallet was imported. You can use it now. |
 | DONE_IMPORTED_BACKUP | 이 지갑의 백업은 방금 입력한 복구 단어(와 passphrase)입니다. 그 종이 백업을 계속 안전하게 보관하세요. | This wallet's backup is the recovery words (and passphrase) you just entered. Keep that paper backup safe. |
@@ -3672,7 +3672,12 @@
 | BTN_ERASE_KEYS | YubiKey의 키 지우기… | Erase keys on the YubiKey… |
 | LAST_KEY | 이 지갑의 마지막 키라 기록을 지울 수 없습니다(지갑 초기화로만 가능). | This is the wallet's last key, so its record cannot be removed (only by resetting the wallet). |
 | CARD_PER_ACCOUNT | 계정별 YubiKey | YubiKeys per account |
-| HOLDER_BACKUP | #{0} {1}(백업) | #{0} {1} (backup) |
+| BTN_RENAME_CARD | 이름 바꾸기 | Rename |
+| BTN_CLEAR_CARD_NAME | 이름 지우기 | Clear name |
+| CARD_NAME_HELP | 이 YubiKey를 구별할 이름입니다(예: 메인, 백업). 일련번호는 이름 옆에 늘 함께 보입니다. 비우고 저장하면 이름을 지웁니다. | A name to tell this YubiKey apart (for example Main or Backup). The serial is always shown next to the name. Save it empty to clear the name. |
+| CARD_NAME_INVALID | YubiKey 이름은 1–32자이고 #, 앞뒤 공백, 제어 문자, 보이지 않는 문자를 쓸 수 없습니다. | YubiKey names must be 1–32 characters, without #, leading or trailing spaces, control characters or invisible characters. |
+| CARD_NAME_TAKEN | 다른 YubiKey가 이미 '{0}' 이름을 씁니다. 다른 이름을 고르세요. | Another YubiKey already uses the name '{0}'. Choose another name. |
+| HOLDER_BACKUP | {0} {1}(백업) | {0} {1} (backup) |
 | WIZARD_DONE | YubiKey 등록이 끝났습니다. | YubiKey enrolment has finished. |
 | STEP_4_OF_5 | 4/5단계 · YubiKey에 넣기 | Step 4/5 · Put on YubiKey |
 | TITLE_NEW_WALLET_ENROL | YubiKey 지갑 만들기 — YubiKey 등록 | Create a YubiKey wallet — enrol YubiKey |
@@ -3683,7 +3688,7 @@
 | CHECK_BACKUP | 백업 YubiKey 만들기 (같은 키 복사) | Make a backup YubiKey (copy the same keys) |
 | BACKUP_HELP | 같은 키를 다른 YubiKey에도 넣어 예비용으로 씁니다. 이미 등록한 YubiKey의 슬롯 구성을 그대로 따릅니다. 다른 구성(예: 같은 EVM 키 + 새 Zcash 키)은 이 체크를 끄고 아래에서 슬롯을 직접 고르세요 — 다른 YubiKey에 이미 있는 키는 확인 화면에 표시만 하고 그대로 넣습니다. | Puts the same keys on another YubiKey as a spare, following the slot layout of the enrolled YubiKey. For another layout (e.g. the same EVM key + a new Zcash key), untick this and choose the slots below — keys already on another YubiKey are only marked on the confirmation screen and put on as they are. |
 | LABEL_COPY_FROM | 복사할 YubiKey | YubiKey to copy |
-| BACKUP_OPTION | #{0} (슬롯 {1}개) | #{0} ({1} slots) |
+| BACKUP_OPTION | {0} (슬롯 {1}개) | {0} ({1} slots) |
 | SKIPPED_UNKNOWN | 복구 단어 없이 연결한 키는 복사하지 않습니다: {0} | Keys connected without recovery words are not copied: {0} |
 | BACKUP_SAME | 같은 슬롯·같은 경로·같은 정책으로 이 YubiKey에 넣습니다. 같은 복구 단어(+ passphrase)를 입력해야 합니다. | They go onto this YubiKey with the same slots, paths and policies. Enter the same recovery words (+ passphrase). |
 | WORDS_CHECKED | 복구 단어 확인을 마쳤습니다. 이제 YubiKey에 넣을 키를 고르세요. 첫 YubiKey를 가져오면 지갑이 만들어집니다. | The recovery words are checked. Now choose the keys for the YubiKey. The wallet is created when the first YubiKey is imported. |
@@ -3700,7 +3705,7 @@
 | RELATION_NEW | 새 키 | New key |
 | RELATION | {0} — 같은 경로를 가진 YubiKey: {1} | {0} — YubiKeys with the same path: {1} |
 | RELATION_ALREADY | 이미 다른 YubiKey에 있음 (이 YubiKey에도 같은 키를 넣습니다) | Already on another YubiKey (the same key also goes on this YubiKey) |
-| CARD_LINE | YubiKey #{0} (펌웨어 {1}) — 이 YubiKey에만 씁니다. | YubiKey #{0} (firmware {1}) — only this YubiKey is written. |
+| CARD_LINE | YubiKey {0} (펌웨어 {1}) — 이 YubiKey에만 씁니다. | YubiKey {0} (firmware {1}) — only this YubiKey is written. |
 | READING_CARD | 연결한 YubiKey를 읽는 중… | Reading the connected YubiKey… |
 | CONNECTED_CARD | 연결한 YubiKey | Connected YubiKey |
 | READING_SLOTS | 고른 슬롯에 이미 있는 키를 읽는 중… (PIN 없이 읽기만) | Reading the keys already in the chosen slots… (read only, no PIN) |
@@ -3719,8 +3724,8 @@
 | BTN_IMPORT | 복구 단어에서 키를 넣기 (처음 등록) | Put keys from the recovery words (first enrolment) |
 | BTN_ADOPT | 이미 넣은 키 연결하기 (가져오기 없이 등록) | Connect keys already on it (enrol without import) |
 | BTN_BACK | ← 이전 | ← Back |
-| ADOPTED | YubiKey #{0}을(를) 가져오기 없이 등록했습니다 (카드에 쓰지 않음, 슬롯 {1}개). | YubiKey #{0} enrolled without import (nothing written to the card, {1} slots). |
-| IMPORTED | YubiKey #{0}에 키를 가져왔습니다 (슬롯 {1}개). | Keys imported to YubiKey #{0} ({1} slots). |
+| ADOPTED | YubiKey {0}을(를) 가져오기 없이 등록했습니다 (카드에 쓰지 않음, 슬롯 {1}개). | YubiKey {0} enrolled without import (nothing written to the card, {1} slots). |
+| IMPORTED | YubiKey {0}에 키를 가져왔습니다 (슬롯 {1}개). | Keys imported to YubiKey {0} ({1} slots). |
 | CREATED_CONNECTED | YubiKey 지갑을 만들었습니다. 복구 단어 없이 카드의 공개키로 연결했으므로 이 PC에는 개인키도 복구 단어도 없습니다 — 카드를 잃었을 때를 대비해 원래 백업(복구 단어 등)이 있는지 확인하세요. | The YubiKey wallet was created. It was connected through the card's public keys without recovery words, so this PC has neither private keys nor recovery words — check that you have the original backup (recovery words, …) in case the card is lost. |
 | CREATED | YubiKey 지갑을 만들었습니다. 복구 단어는 이 PC에 저장하지 않았습니다 — 적은 종이를 안전하게 보관하세요. 백업 YubiKey를 지금 더 등록할 수 있습니다. | The YubiKey wallet was created. The recovery words were not stored on this PC — keep the paper safe. You can enrol more backup YubiKeys now. |
 | DETAILS_CLOSED | 슬롯·주소 자세히 ▸ | Slot and address details ▸ |
@@ -3729,7 +3734,7 @@
 | BTN_RECHECK | 다시 확인 | Check again |
 | BTN_ANOTHER_CONNECT | 다른 YubiKey 연결 | Connect another YubiKey |
 | BTN_ANOTHER_ENROL | 다른 YubiKey 등록(백업) | Enrol another YubiKey (backup) |
-| PIN_CARD_TITLE | 기본값 변경 / PIN 설정 — YubiKey #{0} | Change defaults / set PIN — YubiKey #{0} |
+| PIN_CARD_TITLE | 기본값 변경 / PIN 설정 — YubiKey {0} | Change defaults / set PIN — YubiKey {0} |
 | STEP_5_OF_5 | 5/5단계 · PIN 정하기 | Step 5/5 · Choose PIN |
 | FACTORY_SEEN | 공장 기본값: {0} — {1} | Factory defaults: {0} — {1} |
 | FACTORY_SEPARATE | 아래 '공장값 — 바꿔야 함' 버튼으로 하나씩 바꿉니다. | Change them one by one with the 'factory value — change it' buttons below. |
@@ -3743,8 +3748,8 @@
 | PIN_GUIDE_CLOSED | PIN 안내 ▸ | PIN guide ▸ |
 | PIN_GUIDE_OPEN | PIN 안내 ▾ | PIN guide ▾ |
 | REMOVE_SELECTED | 선택한 YubiKey 기록을 지웁니다. | Removes the selected YubiKey record. |
-| REMOVE_TEXT | YubiKey #{0}의 기록을 이 지갑에서 지웁니다. YubiKey 안의 키는 지우지 않습니다. 계속하려면 비밀번호를 입력하세요. | Removes the record of YubiKey #{0} from this wallet. The keys on the YubiKey are not erased. Enter your password to continue. |
-| REMOVE_ACCOUNTS | YubiKey #{0}의 계정 | Accounts of YubiKey #{0} |
+| REMOVE_TEXT | YubiKey {0}의 기록을 이 지갑에서 지웁니다. YubiKey 안의 키는 지우지 않습니다. 계속하려면 비밀번호를 입력하세요. | Removes the record of YubiKey {0} from this wallet. The keys on the YubiKey are not erased. Enter your password to continue. |
+| REMOVE_ACCOUNTS | YubiKey {0}의 계정 | Accounts of YubiKey {0} |
 | BACK_UNKNOWN | 이 지갑에서 서명 불가 — 카드를 'YubiKey 연결하기 (복구 단어 없이)'로 다시 연결하면 돌아옵니다(이 카드를 잃거나 키를 지우면 영구히 사라집니다) | Cannot sign in this wallet — it comes back if you connect the card again with 'Connect YubiKey (without recovery words)' (lost for good if this card is lost or its keys erased) |
 | BACK_WORDS | 이 지갑에서 서명 불가 — 같은 복구 단어로 다시 등록하면 돌아옵니다 | Cannot sign in this wallet — it comes back if you enrol again with the same recovery words |
 | LOST_CARD | 잃어버린 YubiKey라면: 기록을 지워도 카드의 키는 그대로입니다 — 백업 YubiKey나 복구 단어로 새 카드를 등록해 자산을 옮기세요. | If the YubiKey is lost: removing the record leaves the card's keys as they are — enrol a new card with a backup YubiKey or the recovery words and move the assets. |
@@ -3752,12 +3757,12 @@
 | CONNECT_RUNNING | YubiKey를 다시 읽고 저장하는 중입니다 | Reading the YubiKey again and saving |
 | CONNECT_RUNNING_KEEP | YubiKey를 빼지 마세요. 카드에는 아무것도 쓰지 않습니다. | Do not remove the YubiKey. Nothing is written to the card. |
 | SCANNING | 연결한 YubiKey를 읽는 중… (PIN 없음, 쓰기 없음) | Reading the connected YubiKey… (no PIN, no writes) |
-| SERIAL_FIRMWARE | #{0} (펌웨어 {1}) | #{0} (firmware {1}) |
+| SERIAL_FIRMWARE | {0} (펌웨어 {1}) | {0} (firmware {1}) |
 | NO_READABLE_KEYS | PIN 없이 읽을 수 있는 키(OpenPGP SIG·AUT의 secp256k1, PIV의 Ed25519)가 없습니다. 키가 든 YubiKey인지 확인하세요. | There are no keys readable without a PIN (secp256k1 in OpenPGP SIG/AUT, Ed25519 in PIV). Check that the YubiKey holds keys. |
 | LABEL_THIS_KEY | 이 키는 | This key is |
 | NETWORK_LINE | 네트워크: {0} | Network: {0} |
 | FORMAT_HELP | 같은 키라도 형식에 따라 주소가 다릅니다. 이전 지갑에서 쓰던 주소가 나오는 형식을 고르세요. | The same key gives different addresses in different formats. Choose the format that shows the address you used in your previous wallet. |
-| CHECK_BEFORE_SAVE | 저장하기 전에 확인하세요 — YubiKey #{0} | Check before saving — YubiKey #{0} |
+| CHECK_BEFORE_SAVE | 저장하기 전에 확인하세요 — YubiKey {0} | Check before saving — YubiKey {0} |
 | CONNECT_CONFIRM_TEXT | 아래 주소는 YubiKey에서 읽은 공개키로 이 PC가 계산한 값입니다. 쓰려는 주소와 전체가 같은지 확인하세요. | The addresses below were computed by this PC from the public keys read from the YubiKey. Check that each matches the address you intend to use in full. |
 | SAME_KEY_HOLDERS | 같은 키를 가진 YubiKey: {0} — 그 계정에 이 YubiKey를 더합니다 | YubiKeys with the same key: {0} — this YubiKey is added to that account |
 | PIN_OWNERSHIP | PIN으로 소유 확인 (선택) | Check ownership with PIN (optional) |
@@ -3765,7 +3770,7 @@
 | SIGN_HELP | 서명할 때는 지금처럼 YubiKey에 PIN을 입력하고 터치합니다(공장 기본 PIN으로는 서명하지 않음). | To sign, you enter the PIN and touch the YubiKey as before (it does not sign with a factory default PIN). |
 | BTN_SAVE | 저장 | Save |
 | LOST_LINE | {0} — {1} (복구 단어 없음) | {0} — {1} (no recovery words) |
-| RESLOT_TITLE | 슬롯 구성 바꾸기 — YubiKey #{0} | Change slot layout — YubiKey #{0} |
+| RESLOT_TITLE | 슬롯 구성 바꾸기 — YubiKey {0} | Change slot layout — YubiKey {0} |
 | RESLOT_RUNNING | YubiKey에 새 키를 넣는 중입니다 | Putting the new keys on the YubiKey |
 | LABEL_CHAIN | 체인 | Chain |
 | CARD_CURRENT_SLOTS | 지금 이 YubiKey의 슬롯 | Current slots of this YubiKey |
@@ -3777,7 +3782,7 @@
 | ADVANCED | 고급: EVM 공유 키도 고를 수 있게 하기 | Advanced: also offer the EVM shared key |
 | COMPUTING_RESLOT | 복구 단어에서 새 키의 경로와 주소를 계산하고 있습니다(YubiKey와 통신하지 않음). | Computing the paths and addresses of the new keys from the recovery words (no YubiKey communication). |
 | SAME_ACK_RESLOT | 이해했습니다. 그래도 이 복구 단어의 키를 넣습니다 | I understand. Put the keys of these recovery words anyway |
-| AFTER_CHANGE | 바꾼 뒤 YubiKey #{0} | YubiKey #{0} after the change |
+| AFTER_CHANGE | 바꾼 뒤 YubiKey {0} | YubiKey {0} after the change |
 | RESLOT_CONFIRM_TEXT | 아래 경로와 주소는 입력한 복구 단어에서 이 PC가 계산한 값입니다(YubiKey와는 아직 통신하지 않았습니다). | The paths and addresses below were computed by this PC from the recovery words you entered (no YubiKey communication yet). |
 | RELATION_UNCHANGED | 그대로 (지금과 같은 키) | Unchanged (the same key as now) |
 | RELATION_PUT | 새로 넣음 | Newly put |
@@ -3790,15 +3795,15 @@
 | ZEC_UNUSABLE_ERASE | Zcash 계정 {0} — 이 YubiKey의 이 슬롯에만 있는 키입니다. 지운 뒤에는 Zcash 탭에서 이 주소로 보낼 수 없습니다(잔액이 있으면 먼저 옮기세요). | Zcash account {0} — its key is only in this slot of this YubiKey. After erasing, the Zcash tab cannot send from this address (if there is a balance, move it first). |
 | REMOVED_ACK | 이해했습니다: 빠지는 체인은 이 YubiKey로 서명할 수 없습니다 | I understand: chains leaving this YubiKey can no longer be signed with it |
 | ADMIN_NEXT | 다음 창에서 OpenPGP 관리자 PIN을 묻습니다(공장 기본값 12345678). 바뀌는 슬롯의 키는 덮어쓰고, 넣은 뒤 YubiKey에서 공개키를 다시 읽어 위 값과 비교합니다. | The next window asks for the OpenPGP admin PIN (factory default 12345678). The keys of changed slots are overwritten, and after the import the public keys are read back from the YubiKey and compared with the values above. |
-| RESLOT_DONE | YubiKey #{0}의 슬롯 구성을 바꿨습니다. YubiKey에서 다시 읽은 공개키가 복구 단어에서 만든 키와 같습니다. | The slot layout of YubiKey #{0} was changed. The public keys read back from the YubiKey match the keys made from the recovery words. |
+| RESLOT_DONE | YubiKey {0}의 슬롯 구성을 바꿨습니다. YubiKey에서 다시 읽은 공개키가 복구 단어에서 만든 키와 같습니다. | The slot layout of YubiKey {0} was changed. The public keys read back from the YubiKey match the keys made from the recovery words. |
 | CARD_APPLY_BACKUP | 백업 YubiKey에도 같은 구성 적용 | Apply the same layout to backup YubiKeys |
 | APPLY_HELP | 복구 단어는 이 작업을 마칠 때까지만 메모리에 있으므로 다시 묻지 않습니다. 그 YubiKey를 연결하고 고르세요. | The recovery words stay in memory until this task ends, so they are not asked again. Connect that YubiKey and choose it. |
-| APPLY_TO_SHARED | #{0}에 같은 구성 적용 (백업: 같은 키 {1}개) | Apply the same layout to #{0} (backup: {1} same keys) |
-| APPLY_TO | #{0}에 같은 구성 적용 | Apply the same layout to #{0} |
+| APPLY_TO_SHARED | {0}에 같은 구성 적용 (백업: 같은 키 {1}개) | Apply the same layout to {0} (backup: {1} same keys) |
+| APPLY_TO | {0}에 같은 구성 적용 | Apply the same layout to {0} |
 | BTN_DONE_WIPE | 완료 (복구 단어 지우기) | Done (wipe recovery words) |
 | LABEL_METHOD | 방법 | Method |
 | RESET_IRREVERSIBLE | 되돌릴 수 없습니다: 초기화는 그 기능의 다른 키(GPG·PIV 인증서 등 이 지갑이 쓰지 않은 것 포함)도 모두 지우고 PIN을 공장 기본값으로 되돌립니다. | This cannot be undone: a reset also erases every other key of that function (including GPG keys, PIV certificates and others this wallet did not use) and returns the PINs to the factory defaults. |
-| CLEAR_TITLE | YubiKey의 키 지우기 — YubiKey #{0} | Erase keys on the YubiKey — YubiKey #{0} |
+| CLEAR_TITLE | YubiKey의 키 지우기 — YubiKey {0} | Erase keys on the YubiKey — YubiKey {0} |
 | CLEAR_RUNNING | YubiKey의 키를 지우는 중입니다 | Erasing keys on the YubiKey |
 | DONT_REMOVE | YubiKey를 빼지 마세요. | Do not remove the YubiKey. |
 | CARD_WHAT_TO_ERASE | 무엇을 지울까요? | What should be erased? |

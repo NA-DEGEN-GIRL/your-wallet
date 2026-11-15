@@ -25,8 +25,8 @@ mod connect;
 mod manage;
 pub mod text;
 
-/// Command ids (block 13,200–13,399, and 13,500–13,506 and 13,720–13,927 for "`YubiKey` 연결하기";
-/// `ui::command_ids`).
+/// Command ids (block 13,200–13,399, and 13,500–13,506 and 13,720–13,927 for "`YubiKey` 연결하기",
+/// 13,524–13,537 for the card names; `ui::command_ids`).
 pub mod ids {
     use yw_core::btc::ScriptType;
     use yw_core::yubikey::plan::{PgpKey, TouchPolicy};
@@ -200,6 +200,18 @@ pub mod ids {
     pub const PIN_GUIDE: u16 = 13_522;
     /// Re-slot result: `PIN 설정하기` of a card left on its factory PINs (2026-11-10).
     pub const RESLOT_PIN_NOW: u16 = 13_523;
+    /// Card name edit (2026-11-15): `저장`.
+    pub const CARD_NAME_SAVE: u16 = 13_524;
+    /// Card name edit: `취소`.
+    pub const CARD_NAME_CANCEL: u16 = 13_525;
+    /// Card name edit: the name field (a label, not a secret).
+    pub const CARD_NAME_EDIT: u16 = 13_526;
+    /// Card name edit: `이름 지우기`.
+    pub const CARD_NAME_CLEAR: u16 = 13_527;
+    /// `이름 바꾸기` of card row: `RENAME_CARD_BASE + row` (2026-11-15).
+    pub const RENAME_CARD_BASE: u16 = 13_530;
+    /// Rows of [`RENAME_CARD_BASE`].
+    pub const RENAME_CARD_SPAN: u16 = 8;
     /// Re-slot: the T-YK-KEY-LOST checkbox (a key without recovery words is overwritten).
     pub const RESLOT_LOSS_ACK: u16 = 13_390;
     /// Re-slot: the typed `영구 삭제`.
@@ -382,6 +394,12 @@ pub mod ids {
         id.checked_sub(REMOVE_BASE)
             .filter(|offset| *offset < REMOVE_SPAN)
             .map(usize::from)
+    }
+
+    /// The card row of an `이름 바꾸기` id.
+    #[must_use]
+    pub fn rename_card_row(id: u16) -> Option<usize> {
+        row_of(id, RENAME_CARD_BASE, RENAME_CARD_SPAN)
     }
 
     /// The card row of a `PIN 설정 / 기본값 변경` id.
@@ -584,6 +602,10 @@ pub mod ids {
         RESULT_DETAILS,
         PIN_GUIDE,
         RESLOT_PIN_NOW,
+        CARD_NAME_SAVE,
+        CARD_NAME_CANCEL,
+        CARD_NAME_EDIT,
+        CARD_NAME_CLEAR,
     ];
 }
 
@@ -768,7 +790,11 @@ impl App {
             .map(|meta| meta.hw_accounts.defaults.clone())
             .unwrap_or_default();
         for (row, record) in records.iter().enumerate() {
-            items.push(Item::CardStart(Some(format!("YubiKey #{}", record.serial))));
+            // `YubiKey 메인 (#12345678)` once named (2026-11-15), `YubiKey #12345678` before.
+            items.push(Item::CardStart(Some(format!(
+                "YubiKey {}",
+                self.card_name(record.serial)
+            ))));
             // A card on its factory PINs does not sign: said first, and `PIN 설정` is the card's
             // main button (2026-11-10).
             let factory = defaults.contains(&record.serial);
@@ -819,7 +845,15 @@ impl App {
                     t::BTN_RESLOT.get(lang),
                 )
                 .enabled(unlocked),
+                Ctl::button(
+                    ids::RENAME_CARD_BASE.saturating_add(row_id),
+                    t::BTN_RENAME_CARD.get(lang),
+                )
+                .enabled(unlocked),
             ]));
+            if unlocked && self.card.rename == Some(record.serial) {
+                self.yk_card_name_items(record.serial, items);
+            }
             items.push(Item::Help(t::DANGER.get(lang).to_owned()));
             let removable = self.yk_can_remove();
             items.push(Item::Row(vec![
@@ -857,10 +891,11 @@ impl App {
                             CardSlot::OpenPgp(PgpKey::Aut) => "AUT".to_owned(),
                             CardSlot::Piv(slot) => format!("PIV {:02x}", slot.id()),
                         };
+                        let card = self.card_name(holder.serial);
                         if position == 0 {
-                            format!("#{} {name}", holder.serial)
+                            format!("{card} {name}")
                         } else {
-                            t::HOLDER_BACKUP.fill(lang, [&holder.serial.to_string(), &name])
+                            t::HOLDER_BACKUP.fill(lang, [&card, &name])
                         }
                     })
                     .collect();
@@ -873,6 +908,30 @@ impl App {
             }
             items.push(Item::CardEnd);
         }
+    }
+
+    /// The name edit of card `serial` (2026-11-15, spec/10 §8): a plain label field like the
+    /// account `이름 바꾸기` (a name is not a secret), `저장`, `이름 지우기` when named, `취소`.
+    fn yk_card_name_items(&self, serial: u32, items: &mut Vec<Item>) {
+        let lang = self.settings.language;
+        let current = self
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.card_name(serial))
+            .unwrap_or("");
+        items.push(Item::Help(t::CARD_NAME_HELP.get(lang).to_owned()));
+        let mut row = vec![
+            Ctl::edit(ids::CARD_NAME_EDIT, current, 260, false, 64),
+            Ctl::primary(ids::CARD_NAME_SAVE, t::BTN_SAVE.get(lang)),
+        ];
+        if !current.is_empty() {
+            row.push(Ctl::button(
+                ids::CARD_NAME_CLEAR,
+                t::BTN_CLEAR_CARD_NAME.get(lang),
+            ));
+        }
+        row.push(Ctl::button(ids::CARD_NAME_CANCEL, t::BTN_CANCEL.get(lang)));
+        items.push(Item::Row(row));
     }
 
     /// S21: the wizard at its step.
@@ -1061,7 +1120,10 @@ impl App {
                                     .saturating_add(u16::try_from(row).unwrap_or(u16::MAX)),
                                 &t::BACKUP_OPTION.fill(
                                     lang,
-                                    [&record.serial.to_string(), &record.slots.len().to_string()],
+                                    [
+                                        &self.card_name(record.serial),
+                                        &record.slots.len().to_string(),
+                                    ],
                                 ),
                                 record.serial == serial,
                                 position == 0,
@@ -1242,20 +1304,19 @@ impl App {
             let relation = if holders.is_empty() {
                 t::RELATION_NEW.get(lang).to_owned()
             } else {
-                let list: Vec<String> = holders.iter().map(|serial| format!("#{serial}")).collect();
                 let kind = if planned.backup_copy {
                     t::BACKUP_COPY
                 } else {
                     t::RELATION_ALREADY
                 };
-                t::RELATION.fill(lang, [kind.get(lang), &list.join(", ")])
+                t::RELATION.fill(lang, [kind.get(lang), &self.card_name_list(&holders, ", ")])
             };
             items.push(Item::Field(
                 t::FIELD_RELATION.get(lang).to_owned(),
                 relation,
             ));
         }
-        Self::yk_card_items(lang, wizard, items);
+        self.yk_card_items(wizard, items);
         items.push(Item::CardEnd);
         if wizard.applets().1 {
             items.push(Item::Help(yk::YK_PIV_FIRMWARE.get(lang).to_owned()));
@@ -1269,11 +1330,13 @@ impl App {
     }
 
     /// The card the wizard enrols (spec/10 §7.3: one card only, identified read-only).
-    fn yk_card_items(lang: Lang, wizard: &YkWizard, items: &mut Vec<Item>) {
+    fn yk_card_items(&self, wizard: &YkWizard, items: &mut Vec<Item>) {
+        let lang = self.settings.language;
         let line = match (&wizard.card, &wizard.card_error) {
-            (Some(card), _) => {
-                t::CARD_LINE.fill(lang, [&card.serial.to_string(), &card.firmware.to_string()])
-            }
+            (Some(card), _) => t::CARD_LINE.fill(
+                lang,
+                [&self.card_name(card.serial), &card.firmware.to_string()],
+            ),
             (None, Some(error)) => error.clone(),
             (None, None) => t::READING_CARD.get(lang).to_owned(),
         };
@@ -1368,7 +1431,7 @@ impl App {
             t::CARD_CREDENTIALS.get(lang).to_owned(),
         )));
         items.push(Item::Text(t::CREDENTIALS_TEXT.get(lang).to_owned()));
-        Self::yk_card_items(lang, wizard, items);
+        self.yk_card_items(wizard, items);
         if pgp {
             items.push(Item::Field(
                 "OpenPGP".to_owned(),
@@ -1464,7 +1527,10 @@ impl App {
         items.push(Item::Banner(
             done.fill(
                 lang,
-                [&record.serial.to_string(), &record.slots.len().to_string()],
+                [
+                    &self.card_name(record.serial),
+                    &record.slots.len().to_string(),
+                ],
             ),
             Tone::Success,
         ));
@@ -1493,7 +1559,10 @@ impl App {
             .get(lang),
         )]));
         if open {
-            items.push(Item::CardStart(Some(format!("YubiKey #{}", record.serial))));
+            items.push(Item::CardStart(Some(format!(
+                "YubiKey {}",
+                self.card_name(record.serial)
+            ))));
             items.push(Item::Field(
                 t::FIELD_FIRMWARE.get(lang).to_owned(),
                 record.firmware.to_string(),
@@ -1544,7 +1613,11 @@ impl App {
         let lang = self.settings.language;
         if let Some(serial) = self.card.pin_needed {
             items.push(Item::Banner(
-                format!("{} (YubiKey #{serial})", t::YK_PIN_NEEDED.get(lang)),
+                format!(
+                    "{} (YubiKey {})",
+                    t::YK_PIN_NEEDED.get(lang),
+                    self.card_name(serial)
+                ),
                 Tone::Warn,
             ));
             items.push(Item::Row(vec![Ctl::primary(
@@ -1574,7 +1647,7 @@ impl App {
             factory.iter().any(|seen| *seen) && !factory.iter().all(|seen| *seen)
         };
         items.push(Item::CardStart(Some(
-            t::PIN_CARD_TITLE.fill(lang, [&serial.to_string()]),
+            t::PIN_CARD_TITLE.fill(lang, [&self.card_name(serial)]),
         )));
         // The first line: why `완료` waits (a new YubiKey wallet), or that the card does not
         // sign yet (2026-11-10).
@@ -1711,7 +1784,7 @@ impl App {
             return t::REMOVE_SELECTED.get(lang).to_owned();
         };
         // One sentence here; the accounts follow as the "지워지는 계정" block (2026-11-10).
-        t::REMOVE_TEXT.fill(lang, [&record.serial.to_string()])
+        t::REMOVE_TEXT.fill(lang, [&self.card_name(record.serial)])
     }
 
     /// The removal overlay's accounts (2026-11-10): each key of the card with its addresses and
@@ -1734,7 +1807,7 @@ impl App {
             .collect();
         let lang = self.settings.language;
         items.push(Item::Subtitle(
-            t::REMOVE_ACCOUNTS.fill(lang, [&record.serial.to_string()]),
+            t::REMOVE_ACCOUNTS.fill(lang, [&self.card_name(record.serial)]),
         ));
         let accounts: Vec<crate::ui::removed::RemovedAccount> = record
             .slots

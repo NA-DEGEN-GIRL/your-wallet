@@ -152,8 +152,19 @@ yw_core::texts! {
     LAST_KEY = "이 지갑의 마지막 키라 기록을 지울 수 없습니다(지갑 초기화로만 가능)."
         / "This is the wallet's last key, so its record cannot be removed (only by resetting the wallet).";
     CARD_PER_ACCOUNT = "계정별 YubiKey" / "YubiKeys per account";
-    /// `{0}` serial, `{1}` slot.
-    HOLDER_BACKUP(2) = "#{0} {1}(백업)" / "#{0} {1} (backup)";
+    // ----- card names (meta `hw_card_names`, spec/10 §8, 2026-11-15) ---------------------------
+    BTN_RENAME_CARD = "이름 바꾸기" / "Rename";
+    BTN_CLEAR_CARD_NAME = "이름 지우기" / "Clear name";
+    CARD_NAME_HELP = "이 YubiKey를 구별할 이름입니다(예: 메인, 백업). 일련번호는 이름 옆에 늘 함께 보입니다. 비우고 저장하면 이름을 지웁니다."
+        / "A name to tell this YubiKey apart (for example Main or Backup). The serial is always shown next to the name. Save it empty to clear the name.";
+    CARD_NAME_INVALID = "YubiKey 이름은 1–32자이고 #, 앞뒤 공백, 제어 문자, 보이지 않는 문자를 쓸 수 없습니다."
+        / "YubiKey names must be 1–32 characters, without #, leading or trailing spaces, control characters or invisible characters.";
+    /// `{0}` the name another card already has.
+    CARD_NAME_TAKEN(1) = "다른 YubiKey가 이미 '{0}' 이름을 씁니다. 다른 이름을 고르세요."
+        / "Another YubiKey already uses the name '{0}'. Choose another name.";
+    /// `{0}` the card (`App::card_name`: `name (#serial)` or `#serial`, 2026-11-15; the same
+    /// for every card `{0}` below), `{1}` slot.
+    HOLDER_BACKUP(2) = "{0} {1}(백업)" / "{0} {1} (backup)";
 
     // ----- wizard ------------------------------------------------------------------------------
     WIZARD_DONE = "YubiKey 등록이 끝났습니다." / "YubiKey enrolment has finished.";
@@ -169,8 +180,8 @@ yw_core::texts! {
     BACKUP_HELP = "같은 키를 다른 YubiKey에도 넣어 예비용으로 씁니다. 이미 등록한 YubiKey의 슬롯 구성을 그대로 따릅니다. 다른 구성(예: 같은 EVM 키 + 새 Zcash 키)은 이 체크를 끄고 아래에서 슬롯을 직접 고르세요 — 다른 YubiKey에 이미 있는 키는 확인 화면에 표시만 하고 그대로 넣습니다."
         / "Puts the same keys on another YubiKey as a spare, following the slot layout of the enrolled YubiKey. For another layout (e.g. the same EVM key + a new Zcash key), untick this and choose the slots below — keys already on another YubiKey are only marked on the confirmation screen and put on as they are.";
     LABEL_COPY_FROM = "복사할 YubiKey" / "YubiKey to copy";
-    /// `{0}` serial, `{1}` slot count.
-    BACKUP_OPTION(2) = "#{0} (슬롯 {1}개)" / "#{0} ({1} slots)";
+    /// `{0}` the card, `{1}` slot count.
+    BACKUP_OPTION(2) = "{0} (슬롯 {1}개)" / "{0} ({1} slots)";
     SKIPPED_UNKNOWN(1) = "복구 단어 없이 연결한 키는 복사하지 않습니다: {0}"
         / "Keys connected without recovery words are not copied: {0}";
     BACKUP_SAME = "같은 슬롯·같은 경로·같은 정책으로 이 YubiKey에 넣습니다. 같은 복구 단어(+ passphrase)를 입력해야 합니다."
@@ -197,9 +208,9 @@ yw_core::texts! {
     RELATION(2) = "{0} — 같은 경로를 가진 YubiKey: {1}" / "{0} — YubiKeys with the same path: {1}";
     RELATION_ALREADY = "이미 다른 YubiKey에 있음 (이 YubiKey에도 같은 키를 넣습니다)"
         / "Already on another YubiKey (the same key also goes on this YubiKey)";
-    /// `{0}` serial, `{1}` firmware.
-    CARD_LINE(2) = "YubiKey #{0} (펌웨어 {1}) — 이 YubiKey에만 씁니다."
-        / "YubiKey #{0} (firmware {1}) — only this YubiKey is written.";
+    /// `{0}` the card, `{1}` firmware.
+    CARD_LINE(2) = "YubiKey {0} (펌웨어 {1}) — 이 YubiKey에만 씁니다."
+        / "YubiKey {0} (firmware {1}) — only this YubiKey is written.";
     READING_CARD = "연결한 YubiKey를 읽는 중…" / "Reading the connected YubiKey…";
     CONNECTED_CARD = "연결한 YubiKey" / "Connected YubiKey";
     READING_SLOTS = "고른 슬롯에 이미 있는 키를 읽는 중… (PIN 없이 읽기만)"
@@ -225,11 +236,11 @@ yw_core::texts! {
     BTN_IMPORT = "복구 단어에서 키를 넣기 (처음 등록)" / "Put keys from the recovery words (first enrolment)";
     BTN_ADOPT = "이미 넣은 키 연결하기 (가져오기 없이 등록)" / "Connect keys already on it (enrol without import)";
     BTN_BACK = "← 이전" / "← Back";
-    /// `{0}` serial, `{1}` slot count.
-    ADOPTED(2) = "YubiKey #{0}을(를) 가져오기 없이 등록했습니다 (카드에 쓰지 않음, 슬롯 {1}개)."
-        / "YubiKey #{0} enrolled without import (nothing written to the card, {1} slots).";
-    /// `{0}` serial, `{1}` slot count.
-    IMPORTED(2) = "YubiKey #{0}에 키를 가져왔습니다 (슬롯 {1}개)." / "Keys imported to YubiKey #{0} ({1} slots).";
+    /// `{0}` the card, `{1}` slot count.
+    ADOPTED(2) = "YubiKey {0}을(를) 가져오기 없이 등록했습니다 (카드에 쓰지 않음, 슬롯 {1}개)."
+        / "YubiKey {0} enrolled without import (nothing written to the card, {1} slots).";
+    /// `{0}` the card, `{1}` slot count.
+    IMPORTED(2) = "YubiKey {0}에 키를 가져왔습니다 (슬롯 {1}개)." / "Keys imported to YubiKey {0} ({1} slots).";
     CREATED_CONNECTED = "YubiKey 지갑을 만들었습니다. 복구 단어 없이 카드의 공개키로 연결했으므로 이 PC에는 개인키도 복구 단어도 없습니다 — 카드를 잃었을 때를 대비해 원래 백업(복구 단어 등)이 있는지 확인하세요."
         / "The YubiKey wallet was created. It was connected through the card's public keys without recovery words, so this PC has neither private keys nor recovery words — check that you have the original backup (recovery words, …) in case the card is lost.";
     CREATED = "YubiKey 지갑을 만들었습니다. 복구 단어는 이 PC에 저장하지 않았습니다 — 적은 종이를 안전하게 보관하세요. 백업 YubiKey를 지금 더 등록할 수 있습니다."
@@ -242,7 +253,7 @@ yw_core::texts! {
     BTN_ANOTHER_ENROL = "다른 YubiKey 등록(백업)" / "Enrol another YubiKey (backup)";
 
     // ----- PIN card ----------------------------------------------------------------------------
-    PIN_CARD_TITLE(1) = "기본값 변경 / PIN 설정 — YubiKey #{0}" / "Change defaults / set PIN — YubiKey #{0}";
+    PIN_CARD_TITLE(1) = "기본값 변경 / PIN 설정 — YubiKey {0}" / "Change defaults / set PIN — YubiKey {0}";
     STEP_5_OF_5 = "5/5단계 · PIN 정하기" / "Step 5/5 · Choose PIN";
     /// `{0}` the secrets, `{1}` how they are changed.
     FACTORY_SEEN(2) = "공장 기본값: {0} — {1}" / "Factory defaults: {0} — {1}";
@@ -261,9 +272,9 @@ yw_core::texts! {
 
     // ----- removal overlay ---------------------------------------------------------------------
     REMOVE_SELECTED = "선택한 YubiKey 기록을 지웁니다." / "Removes the selected YubiKey record.";
-    REMOVE_TEXT(1) = "YubiKey #{0}의 기록을 이 지갑에서 지웁니다. YubiKey 안의 키는 지우지 않습니다. 계속하려면 비밀번호를 입력하세요."
-        / "Removes the record of YubiKey #{0} from this wallet. The keys on the YubiKey are not erased. Enter your password to continue.";
-    REMOVE_ACCOUNTS(1) = "YubiKey #{0}의 계정" / "Accounts of YubiKey #{0}";
+    REMOVE_TEXT(1) = "YubiKey {0}의 기록을 이 지갑에서 지웁니다. YubiKey 안의 키는 지우지 않습니다. 계속하려면 비밀번호를 입력하세요."
+        / "Removes the record of YubiKey {0} from this wallet. The keys on the YubiKey are not erased. Enter your password to continue.";
+    REMOVE_ACCOUNTS(1) = "YubiKey {0}의 계정" / "Accounts of YubiKey {0}";
     BACK_UNKNOWN = "이 지갑에서 서명 불가 — 카드를 'YubiKey 연결하기 (복구 단어 없이)'로 다시 연결하면 돌아옵니다(이 카드를 잃거나 키를 지우면 영구히 사라집니다)"
         / "Cannot sign in this wallet — it comes back if you connect the card again with 'Connect YubiKey (without recovery words)' (lost for good if this card is lost or its keys erased)";
     BACK_WORDS = "이 지갑에서 서명 불가 — 같은 복구 단어로 다시 등록하면 돌아옵니다"
@@ -277,15 +288,15 @@ yw_core::texts! {
     CONNECT_RUNNING_KEEP = "YubiKey를 빼지 마세요. 카드에는 아무것도 쓰지 않습니다."
         / "Do not remove the YubiKey. Nothing is written to the card.";
     SCANNING = "연결한 YubiKey를 읽는 중… (PIN 없음, 쓰기 없음)" / "Reading the connected YubiKey… (no PIN, no writes)";
-    /// `{0}` serial, `{1}` firmware.
-    SERIAL_FIRMWARE(2) = "#{0} (펌웨어 {1})" / "#{0} (firmware {1})";
+    /// `{0}` the card, `{1}` firmware.
+    SERIAL_FIRMWARE(2) = "{0} (펌웨어 {1})" / "{0} (firmware {1})";
     NO_READABLE_KEYS = "PIN 없이 읽을 수 있는 키(OpenPGP SIG·AUT의 secp256k1, PIV의 Ed25519)가 없습니다. 키가 든 YubiKey인지 확인하세요."
         / "There are no keys readable without a PIN (secp256k1 in OpenPGP SIG/AUT, Ed25519 in PIV). Check that the YubiKey holds keys.";
     LABEL_THIS_KEY = "이 키는" / "This key is";
     NETWORK_LINE(1) = "네트워크: {0}" / "Network: {0}";
     FORMAT_HELP = "같은 키라도 형식에 따라 주소가 다릅니다. 이전 지갑에서 쓰던 주소가 나오는 형식을 고르세요."
         / "The same key gives different addresses in different formats. Choose the format that shows the address you used in your previous wallet.";
-    CHECK_BEFORE_SAVE(1) = "저장하기 전에 확인하세요 — YubiKey #{0}" / "Check before saving — YubiKey #{0}";
+    CHECK_BEFORE_SAVE(1) = "저장하기 전에 확인하세요 — YubiKey {0}" / "Check before saving — YubiKey {0}";
     CONNECT_CONFIRM_TEXT = "아래 주소는 YubiKey에서 읽은 공개키로 이 PC가 계산한 값입니다. 쓰려는 주소와 전체가 같은지 확인하세요."
         / "The addresses below were computed by this PC from the public keys read from the YubiKey. Check that each matches the address you intend to use in full.";
     SAME_KEY_HOLDERS(1) = "같은 키를 가진 YubiKey: {0} — 그 계정에 이 YubiKey를 더합니다"
@@ -300,7 +311,7 @@ yw_core::texts! {
     // ----- 슬롯 구성 바꾸기 (spec/10 §15.1) -----------------------------------------------------
     /// `{0}` slot, `{1}` title.
     LOST_LINE(2) = "{0} — {1} (복구 단어 없음)" / "{0} — {1} (no recovery words)";
-    RESLOT_TITLE(1) = "슬롯 구성 바꾸기 — YubiKey #{0}" / "Change slot layout — YubiKey #{0}";
+    RESLOT_TITLE(1) = "슬롯 구성 바꾸기 — YubiKey {0}" / "Change slot layout — YubiKey {0}";
     RESLOT_RUNNING = "YubiKey에 새 키를 넣는 중입니다" / "Putting the new keys on the YubiKey";
     LABEL_CHAIN = "체인" / "Chain";
     CARD_CURRENT_SLOTS = "지금 이 YubiKey의 슬롯" / "Current slots of this YubiKey";
@@ -316,7 +327,7 @@ yw_core::texts! {
     COMPUTING_RESLOT = "복구 단어에서 새 키의 경로와 주소를 계산하고 있습니다(YubiKey와 통신하지 않음)."
         / "Computing the paths and addresses of the new keys from the recovery words (no YubiKey communication).";
     SAME_ACK_RESLOT = "이해했습니다. 그래도 이 복구 단어의 키를 넣습니다" / "I understand. Put the keys of these recovery words anyway";
-    AFTER_CHANGE(1) = "바꾼 뒤 YubiKey #{0}" / "YubiKey #{0} after the change";
+    AFTER_CHANGE(1) = "바꾼 뒤 YubiKey {0}" / "YubiKey {0} after the change";
     RESLOT_CONFIRM_TEXT = "아래 경로와 주소는 입력한 복구 단어에서 이 PC가 계산한 값입니다(YubiKey와는 아직 통신하지 않았습니다)."
         / "The paths and addresses below were computed by this PC from the recovery words you entered (no YubiKey communication yet).";
     RELATION_UNCHANGED = "그대로 (지금과 같은 키)" / "Unchanged (the same key as now)";
@@ -339,21 +350,21 @@ yw_core::texts! {
         / "I understand: chains leaving this YubiKey can no longer be signed with it";
     ADMIN_NEXT = "다음 창에서 OpenPGP 관리자 PIN을 묻습니다(공장 기본값 12345678). 바뀌는 슬롯의 키는 덮어쓰고, 넣은 뒤 YubiKey에서 공개키를 다시 읽어 위 값과 비교합니다."
         / "The next window asks for the OpenPGP admin PIN (factory default 12345678). The keys of changed slots are overwritten, and after the import the public keys are read back from the YubiKey and compared with the values above.";
-    RESLOT_DONE(1) = "YubiKey #{0}의 슬롯 구성을 바꿨습니다. YubiKey에서 다시 읽은 공개키가 복구 단어에서 만든 키와 같습니다."
-        / "The slot layout of YubiKey #{0} was changed. The public keys read back from the YubiKey match the keys made from the recovery words.";
+    RESLOT_DONE(1) = "YubiKey {0}의 슬롯 구성을 바꿨습니다. YubiKey에서 다시 읽은 공개키가 복구 단어에서 만든 키와 같습니다."
+        / "The slot layout of YubiKey {0} was changed. The public keys read back from the YubiKey match the keys made from the recovery words.";
     CARD_APPLY_BACKUP = "백업 YubiKey에도 같은 구성 적용" / "Apply the same layout to backup YubiKeys";
     APPLY_HELP = "복구 단어는 이 작업을 마칠 때까지만 메모리에 있으므로 다시 묻지 않습니다. 그 YubiKey를 연결하고 고르세요."
         / "The recovery words stay in memory until this task ends, so they are not asked again. Connect that YubiKey and choose it.";
-    /// `{0}` serial, `{1}` count.
-    APPLY_TO_SHARED(2) = "#{0}에 같은 구성 적용 (백업: 같은 키 {1}개)" / "Apply the same layout to #{0} (backup: {1} same keys)";
-    APPLY_TO(1) = "#{0}에 같은 구성 적용" / "Apply the same layout to #{0}";
+    /// `{0}` the card, `{1}` count.
+    APPLY_TO_SHARED(2) = "{0}에 같은 구성 적용 (백업: 같은 키 {1}개)" / "Apply the same layout to {0} (backup: {1} same keys)";
+    APPLY_TO(1) = "{0}에 같은 구성 적용" / "Apply the same layout to {0}";
     BTN_DONE_WIPE = "완료 (복구 단어 지우기)" / "Done (wipe recovery words)";
 
     // ----- YubiKey의 키 지우기 (spec/10 §15.2) --------------------------------------------------
     LABEL_METHOD = "방법" / "Method";
     RESET_IRREVERSIBLE = "되돌릴 수 없습니다: 초기화는 그 기능의 다른 키(GPG·PIV 인증서 등 이 지갑이 쓰지 않은 것 포함)도 모두 지우고 PIN을 공장 기본값으로 되돌립니다."
         / "This cannot be undone: a reset also erases every other key of that function (including GPG keys, PIV certificates and others this wallet did not use) and returns the PINs to the factory defaults.";
-    CLEAR_TITLE(1) = "YubiKey의 키 지우기 — YubiKey #{0}" / "Erase keys on the YubiKey — YubiKey #{0}";
+    CLEAR_TITLE(1) = "YubiKey의 키 지우기 — YubiKey {0}" / "Erase keys on the YubiKey — YubiKey {0}";
     CLEAR_RUNNING = "YubiKey의 키를 지우는 중입니다" / "Erasing keys on the YubiKey";
     DONT_REMOVE = "YubiKey를 빼지 마세요." / "Do not remove the YubiKey.";
     CARD_WHAT_TO_ERASE = "무엇을 지울까요?" / "What should be erased?";

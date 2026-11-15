@@ -172,21 +172,23 @@ pub mod text {
         /// A card approval while another card signature is in progress (spec/10 §9.2).
         BUSY = "다른 YubiKey 서명이 진행 중이어서 방금 승인한 요청은 서명하지 않았습니다. 진행 중인 서명이 끝난 뒤(YubiKey 터치) 다시 시도하세요."
             / "Another YubiKey signature is in progress, so the request you just approved was not signed. Try again after the running signature finishes (YubiKey touch).";
-        /// `{0}` serial, `{1}` slot count.
-        ENROLLED(2) = "YubiKey #{0}을(를) 등록했습니다 (슬롯 {1}개)." / "YubiKey #{0} enrolled ({1} slots).";
-        /// The tag of a dApp connect-window row (after two spaces).
-        CONNECT_TAG(1) = "[YubiKey #{0} PIN 설정 전 — 서명 불가]" / "[YubiKey #{0} PIN not set — cannot sign]";
-        PIN_BANNER(1) = "YubiKey #{0} PIN 설정 전 — 이 계정은 받기만 되고, 보내기·서명은 PIN을 바꾼 뒤에 됩니다."
-            / "YubiKey #{0} PIN not set — this account can only receive; sending and signing work after the PIN is changed.";
+        /// `{0}` the card (`App::card_name`: `name (#serial)` or `#serial`, 2026-11-15; the
+        /// same for every `{…}` card below), `{1}` slot count.
+        ENROLLED(2) = "YubiKey {0}을(를) 등록했습니다 (슬롯 {1}개)." / "YubiKey {0} enrolled ({1} slots).";
+        /// The tag of a dApp connect-window row (after two spaces): `{0}` the card.
+        CONNECT_TAG(1) = "[YubiKey {0} PIN 설정 전 — 서명 불가]" / "[YubiKey {0} PIN not set — cannot sign]";
+        /// `{0}` the card.
+        PIN_BANNER(1) = "YubiKey {0} PIN 설정 전 — 이 계정은 받기만 되고, 보내기·서명은 PIN을 바꾼 뒤에 됩니다."
+            / "YubiKey {0} PIN not set — this account can only receive; sending and signing work after the PIN is changed.";
         /// The `PIN 설정` button (the `YubiKey` list's action of the same name).
         SET_PIN = "PIN 설정" / "Set PIN";
-        /// `{0}` the site, `{1}` the serial.
-        REFUSE_DEFAULTS(2) = "{0}의 서명 요청을 거부했습니다: YubiKey #{1}의 PIN이 아직 공장 기본값이라 서명하지 않았습니다 — 설정 → YubiKey → PIN 설정"
-            / "Refused the signature request of {0}: YubiKey #{1} still has its factory default PIN, so nothing was signed — Settings → YubiKey → Set PIN";
-        /// `{0}` the connected serial, `{1}` the wanted cards (`#…`), `{2}` its particle, `{3}`
-        /// the wanted cards with `YubiKey` (English).
-        PRESENCE_OTHER_CARD(4) = "연결된 YubiKey(#{0})에는 이 키가 없습니다 — {1}{2} 연결하세요"
-            / "The connected YubiKey (#{0}) does not hold this key — connect {3}";
+        /// `{0}` the site, `{1}` the card.
+        REFUSE_DEFAULTS(2) = "{0}의 서명 요청을 거부했습니다: YubiKey {1}의 PIN이 아직 공장 기본값이라 서명하지 않았습니다 — 설정 → YubiKey → PIN 설정"
+            / "Refused the signature request of {0}: YubiKey {1} still has its factory default PIN, so nothing was signed — Settings → YubiKey → Set PIN";
+        /// `{0}` the connected card, `{1}` the wanted cards, `{2}` its particle, `{3}` the
+        /// wanted cards with `YubiKey` (English).
+        PRESENCE_OTHER_CARD(4) = "연결된 YubiKey {0}에는 이 키가 없습니다 — {1}{2} 연결하세요"
+            / "The connected YubiKey {0} does not hold this key — connect {3}";
         /// `{0}` the wanted cards, `{1}` its particle.
         PRESENCE_NOT_FOUND(2) = "{0}{1} 찾지 못했습니다 — 연결한 뒤 PIN을 입력하세요"
             / "{0} not found — connect it, then enter the PIN";
@@ -363,6 +365,8 @@ pub struct CardUi {
     pending_default: Option<u32>,
     /// The card whose "PIN 설정" card is open in the `YubiKey` list (spec/10 §9.3).
     pub pin_serial: Option<u32>,
+    /// The card whose name is being edited in the `YubiKey` list (2026-11-15).
+    pub rename: Option<u32>,
     /// "PIN 설정" mode: `false` = "8자리 하나로 통일", `true` = one value each.
     pub pins_separate: bool,
     /// The mode was picked by the user this run; until then it follows the factory values seen
@@ -411,6 +415,7 @@ impl CardUi {
         self.remove_target = None;
         self.pending_default = None;
         self.pin_serial = None;
+        self.rename = None;
         self.pins_separate = false;
         self.pins_chosen = false;
         self.pin_guide_open = false;
@@ -496,12 +501,13 @@ pub fn defaults_lines(lang: Lang, defaults: yw_core::yubikey::enrol::DefaultsSee
 }
 
 /// The approval window's `YubiKey` badge (spec/10 §10): `YubiKey로 서명`, the cards holding the
-/// key and the touches the operation needs. It is app chrome next to the header badges; it is
-/// not part of the digested display (spec/03 §11.3), which stays exactly the core's.
+/// key (`name (#serial)` or `#serial`, `names` = meta `hw_card_names`, 2026-11-15) and the
+/// touches the operation needs. It is app chrome next to the header badges; it is not part of
+/// the digested display (spec/03 §11.3), which stays exactly the core's.
 #[must_use]
 pub fn card_badge(
     lang: yw_core::lang::Lang,
-    records: &[HwKeyRecord],
+    (records, names): (&[HwKeyRecord], &[(u32, String)]),
     role: KeyRole,
     touches: usize,
 ) -> String {
@@ -509,9 +515,8 @@ pub fn card_badge(
     let serials = crate::yubikey::holders(records, role);
     let mut badge = text::BADGE_YUBIKEY.get(lang).to_owned();
     if !serials.is_empty() {
-        let list: Vec<String> = serials.iter().map(|serial| format!("#{serial}")).collect();
         badge.push_str(" · ");
-        badge.push_str(&list.join(", "));
+        badge.push_str(&crate::yubikey::card_labels(names, &serials, ", "));
     }
     badge.push_str(&text::BADGE_TOUCHES.fill(lang, [&touches.max(1).to_string()]));
     badge
@@ -556,6 +561,39 @@ fn now_unix_ms() -> u64 {
 }
 
 impl App {
+    // ----- card names (meta `hw_card_names`, spec/10 §8, 2026-11-15) -------------------------
+
+    /// The user's names of the enrolled cards (`(serial, name)`; empty while locked).
+    #[must_use]
+    pub(crate) fn card_names(&self) -> &[(u32, String)] {
+        self.meta
+            .as_ref()
+            .map_or(&[], |meta| meta.hw_card_names.as_slice())
+    }
+
+    /// Card `serial` as shown everywhere (Settings, the PIN window, the approval badge, the
+    /// removal and backup texts): `name (#serial)` or `#serial` ([`crate::yubikey::card_label`]).
+    #[must_use]
+    pub(crate) fn card_name(&self, serial: u32) -> String {
+        crate::yubikey::card_label(self.card_names(), serial)
+    }
+
+    /// [`App::card_name`] of each of `serials`, joined with `separator`.
+    #[must_use]
+    pub(crate) fn card_name_list(&self, serials: &[u32], separator: &str) -> String {
+        crate::yubikey::card_labels(self.card_names(), serials, separator)
+    }
+
+    /// [`crate::yubikey::PinContext::of`] with the cards' names.
+    #[must_use]
+    pub(crate) fn pin_context(
+        &self,
+        serial: u32,
+        kind: crate::yubikey::PinKind,
+    ) -> crate::yubikey::PinContext {
+        crate::yubikey::PinContext::of(&self.card.records, self.card_names(), serial, kind)
+    }
+
     // ----- enrolment entry point (the wizard, spec/10 §7) ------------------------------------
 
     /// Enrols the inserted `YubiKey` (spec/10 §7.3): queues `KeyJob::EnrolYubiKey` with the
@@ -626,7 +664,7 @@ impl App {
                 let mut text = text::ENROLLED.fill(
                     self.settings.language,
                     [
-                        &serial.to_string(),
+                        &self.card_name(serial),
                         &enrolled.record.slots.len().to_string(),
                     ],
                 );
@@ -883,7 +921,7 @@ impl App {
         serial.map_or_else(String::new, |serial| {
             format!(
                 "  {}",
-                text::CONNECT_TAG.fill(self.settings.language, [&serial.to_string()])
+                text::CONNECT_TAG.fill(self.settings.language, [&self.card_name(serial)])
             )
         })
     }
@@ -902,7 +940,7 @@ impl App {
         };
         let lang = self.settings.language;
         items.push(Item::Banner(
-            text::PIN_BANNER.fill(lang, [&serial.to_string()]),
+            text::PIN_BANNER.fill(lang, [&self.card_name(serial)]),
             Tone::Warn,
         ));
         if let Some(row) = self
@@ -926,7 +964,7 @@ impl App {
     pub(crate) fn refuse_card_defaults(&mut self, site: &crate::browser::SiteRequest, serial: u32) {
         let text = text::REFUSE_DEFAULTS.fill(
             self.settings.language,
-            [&self.origin_display(&site.origin), &serial.to_string()],
+            [&self.origin_display(&site.origin), &self.card_name(serial)],
         );
         if !self.banners.iter().any(|banner| banner.text == text) {
             self.notice(text, crate::ui::main_window::Tone::Warn);
@@ -952,14 +990,18 @@ impl App {
         let wanted = if holders.is_empty() {
             "YubiKey".to_owned()
         } else {
-            let list: Vec<String> = holders.iter().map(|serial| format!("#{serial}")).collect();
-            format!("YubiKey {}", list.join("·"))
+            format!("YubiKey {}", self.card_name_list(&holders, "·"))
+        };
+        let connected = match &result {
+            Ok(counters) => self.card_name(counters.serial),
+            Err(_) => String::new(),
         };
         let Some(step) = self.card.step.as_mut().filter(|step| step.role == role) else {
             return;
         };
         let card = wanted.trim_start_matches("YubiKey ");
-        // The particle follows how the last digit is read (#…2 → 를, #…8 → 을).
+        // The particle follows how the last digit is read (#…2 → 를, #…8 → 을), or the name
+        // before `(#serial)` of a named card (2026-11-15).
         let card_object = crate::ui::theme::object_particle(card);
         let wanted_object = crate::ui::theme::object_particle(&wanted);
         match result {
@@ -968,11 +1010,10 @@ impl App {
                 step.presence = None;
             }
             // The only card connected (read for its serial) does not hold this key.
-            Ok(counters) => {
-                step.presence = Some(text::PRESENCE_OTHER_CARD.fill(
-                    lang,
-                    [&counters.serial.to_string(), card, card_object, &wanted],
-                ));
+            Ok(_) => {
+                step.presence = Some(
+                    text::PRESENCE_OTHER_CARD.fill(lang, [&connected, card, card_object, &wanted]),
+                );
             }
             Err(
                 CardJobError::NoCard
@@ -1006,9 +1047,17 @@ impl App {
         }
     }
 
+    /// The card W11's first step names (2026-11-15): the first card holding `role`, as shown
+    /// everywhere else (`name (#serial)` or `#serial`); `None` while no record holds it.
+    pub(crate) fn card_step_card(&self, role: KeyRole) -> Option<String> {
+        crate::yubikey::holders(&self.card.records, role)
+            .first()
+            .map(|serial| self.card_name(*serial))
+    }
+
     /// The non-secret lines of the PIN window: the cards holding the key, the last error and
     /// the last-try warning.
-    fn card_details(&self, step: &CardStep) -> Vec<String> {
+    pub(crate) fn card_details(&self, step: &CardStep) -> Vec<String> {
         let lang = self.settings.language;
         let serials = crate::yubikey::holders(&self.card.records, step.role);
         let mut lines = vec![text::DETAIL_KEY.fill(
@@ -1018,8 +1067,7 @@ impl App {
         if serials.is_empty() {
             lines.push(text::DETAIL_NO_RECORDS.get(lang).to_owned());
         } else {
-            let list: Vec<String> = serials.iter().map(|serial| format!("#{serial}")).collect();
-            lines.push(text::DETAIL_HOLDERS.fill(lang, [&list.join(", ")]));
+            lines.push(text::DETAIL_HOLDERS.fill(lang, [&self.card_name_list(&serials, ", ")]));
         }
         if let Some(presence) = &step.presence {
             lines.push(presence.clone());
@@ -1029,8 +1077,9 @@ impl App {
                 yw_core::yubikey::plan::Curve::Secp256k1 => crate::yubikey::PinKind::OpenPgpUser,
                 yw_core::yubikey::plan::Curve::Ed25519 => crate::yubikey::PinKind::PivPin,
             };
+            let card = self.card_name(counters.serial);
             for line in counters.lines(lang, &[kind]) {
-                lines.push(format!("YubiKey #{} {line}", counters.serial));
+                lines.push(format!("YubiKey {card} {line}"));
             }
         }
         lines
@@ -1054,8 +1103,10 @@ impl App {
         let details = self.card_details(step);
         let error = step.error.clone();
         let id = step.id;
+        let card = self.card_step_card(step.role);
         self.open_input(kind, Purpose::CardSign(id), true);
         self.with_form(|form| {
+            form.set_card(card);
             form.set_details(details);
             form.set_error(error);
         });
@@ -1501,8 +1552,12 @@ impl App {
                 .first()
                 .copied()
         });
+        let names = self
+            .meta
+            .as_ref()
+            .map_or(&[][..], |meta| meta.hw_card_names.as_slice());
         let context = serial.map_or_else(crate::yubikey::PinContext::default, |serial| {
-            crate::yubikey::PinContext::of(&self.card.records, serial, kind)
+            crate::yubikey::PinContext::of(&self.card.records, names, serial, kind)
         });
         step.error = Some(error.text_for_in(self.settings.language, kind, &context));
         // A site disconnected (or a page gone) while the card checked the PIN: the step ends

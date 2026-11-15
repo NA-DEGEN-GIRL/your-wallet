@@ -43,14 +43,11 @@ pub const SECRET_TIMER_MS: u32 = 50;
 /// Mnemonic entry buffer (24 × 8 + 23 + 1).
 pub const MNEMONIC_TEXT_MAX: usize = 216;
 /// W11's steps (2026-11-10): which card to connect, the PIN, the touch — and the bounds.
-/// The card step after approval follows them ([`text::CARD_PIN`], spec/10 §9.2).
+/// The card step after approval follows them ([`text::CARD_PIN`], spec/10 §9.2). `card` is the
+/// card as shown everywhere (`name (#serial)` or `#serial`, 2026-11-15; `None` when unknown).
 #[must_use]
-pub fn card_pin_steps(lang: Lang, serial: u32) -> String {
-    let card = if serial == 0 {
-        "YubiKey".to_owned()
-    } else {
-        format!("YubiKey #{serial}")
-    };
+pub fn card_pin_steps(lang: Lang, card: Option<&str>) -> String {
+    let card = card.map_or_else(|| "YubiKey".to_owned(), |card| format!("YubiKey {card}"));
     text::CARD_PIN_STEPS.fill(lang, [&card])
 }
 
@@ -462,6 +459,9 @@ pub struct SecretForm {
     step: Option<SecretStep>,
     /// Extra non-secret lines under the intro (W11: the cards holding the key, the PIN tries).
     details: Vec<String>,
+    /// W11: the card to connect as shown everywhere (`name (#serial)`, 2026-11-15); `None`
+    /// names it by the kind's serial.
+    card: Option<String>,
     /// W08 `create`: what the countdown line adds (where the words are seen again, or that
     /// they are wiped).
     timeout_note: Option<&'static str>,
@@ -721,7 +721,12 @@ fn slots_for(kind: SecretKind, lang: Lang) -> Vec<Slot> {
     slots.into_iter().flatten().collect()
 }
 
-fn intro(kind: SecretKind, lang: Lang, words: usize, address: bool) -> Vec<String> {
+fn intro(
+    kind: SecretKind,
+    lang: Lang,
+    (words, address): (usize, bool),
+    card: Option<&str>,
+) -> Vec<String> {
     let rule = text::PASSWORD_RULE.get(lang);
     match kind {
         SecretKind::SetPassword => vec![rule.to_owned()],
@@ -803,9 +808,10 @@ fn intro(kind: SecretKind, lang: Lang, words: usize, address: bool) -> Vec<Strin
             serial,
             ..
         } => {
+            let serial_card = (serial != 0).then(|| format!("#{serial}"));
             let mut lines = vec![format!(
                 "{}. {}",
-                card_pin_steps(lang, serial),
+                card_pin_steps(lang, card.or(serial_card.as_deref())),
                 text::CARD_PIN.get(lang)
             )];
             if touches > 1 {
@@ -966,6 +972,7 @@ impl SecretForm {
             layout: Layout::default(),
             step: None,
             details: Vec::new(),
+            card: None,
             timeout_note: None,
             countdown_secs: 0,
             backup_left: false,
@@ -1140,6 +1147,11 @@ impl SecretForm {
     /// Extra non-secret lines under the intro (W11 card serials and PIN tries).
     pub fn set_details(&mut self, lines: Vec<String>) {
         self.details = lines;
+    }
+
+    /// W11: the card its first step names (`App::card_name`, a label — not a secret).
+    pub fn set_card(&mut self, card: Option<String>) {
+        self.card = card;
     }
 
     /// Shows an information line (T-PASTE-CLEARED, T-COPIED…).
@@ -1888,7 +1900,7 @@ impl SecretForm {
             .display
             .as_ref()
             .is_some_and(|display| display.address.is_some());
-        for paragraph in intro(self.kind, self.lang, words, address)
+        for paragraph in intro(self.kind, self.lang, (words, address), self.card.as_deref())
             .iter()
             .chain(&self.details)
         {

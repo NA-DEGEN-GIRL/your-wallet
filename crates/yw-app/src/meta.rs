@@ -10,7 +10,8 @@
 //! `prefs`; `btc_accounts` (spec/08 §12.3a) is optional too and written last. Imported Bitcoin
 //! keys have no list of their own: each is a single-key account in `btc_accounts`. The optional
 //! `token_view` (hidden token rows, `crate::token_view`) is written only when not the default and
-//! falls back to the default when invalid, like `prefs`.
+//! falls back to the default when invalid, like `prefs`; so do `address_book_favorites` and
+//! `hw_card_names` (2026-11-15: the `YubiKey` card names), which read as empty when invalid.
 
 pub use yw_core::btc::meta::BTC_ACCOUNTS_EXT_KEY;
 use yw_core::btc::meta::{BtcAccounts, BtcMeta, btc_meta_from_values, btc_meta_values};
@@ -99,6 +100,16 @@ pub const MAX_HW_ACCOUNTS: usize = 192;
 /// `hw_accounts.defaults` bound (`MAX_CARDS`).
 const MAX_HW_DEFAULTS: usize = 8;
 const HW_KEYS: [&str; 4] = ["evm", "sol", "sol_selected", "defaults"];
+
+/// The optional top-level key of the `YubiKey` card names (spec/10 §8, 2026-11-15):
+/// `[{"serial": u32, "name": Label}]`, at most one per enrolled card (8), serial ascending and
+/// unique, no two cards with the same name, names without `#` (the serial is always shown next
+/// to the name as `name (#serial)`, so a name cannot pose as another card's serial). Kept apart
+/// from `hw_accounts`, which earlier versions decode strictly (an extra member would make the
+/// whole meta unreadable, E-VLT-006). Written only when non-empty; an invalid value falls back to
+/// no names (like `address_book_favorites`) and never rejects the document. Serials no tag-5
+/// record holds are dropped at unlock (`reconcile_hardware`). Names are labels: never logged.
+pub const HW_CARD_NAMES_KEY: &str = "hw_card_names";
 
 /// The optional top-level key of the recovery phrases (spec/02 §5.3, 2026-11-07 "여러 복구
 /// 단어"): `[{"record_id": Hex16, "label": Label, "evm": Account[]}]`, one entry per vault
@@ -725,6 +736,9 @@ pub struct Meta {
     /// `hw_accounts` (optional key, spec/10 §13): the `YubiKey` accounts' labels, hidden flags and
     /// selection (vault tag 5 is the truth source).
     pub hw_accounts: HwAccounts,
+    /// `hw_card_names` (optional key, 2026-11-15): the user's names of the enrolled `YubiKey`
+    /// cards as `(serial, name)`, serial ascending (vault tag 5 is the truth source).
+    pub hw_card_names: Vec<(u32, String)>,
     /// `mnemonics` (optional key, 2026-11-07): the recovery phrases' labels and the added
     /// mnemonics' EVM accounts (vault `Bip39` records are the truth source).
     pub mnemonics: Vec<MnemonicEntry>,
@@ -778,6 +792,7 @@ impl Default for Meta {
             security: Box::default(),
             token_view: Box::default(),
             hw_accounts: HwAccounts::default(),
+            hw_card_names: Vec::new(),
             mnemonics: Vec::new(),
             zcash: Box::default(),
             mnemonic_accounts: Box::default(),
@@ -1024,6 +1039,33 @@ fn migrate_book(entries: &mut Vec<Value>) -> bool {
     changed
 }
 
+/// Whether `name` may name a `YubiKey` card (`hw_card_names`, 2026-11-15): a `Label` without `#`.
+#[must_use]
+pub fn is_valid_card_name(name: &str) -> bool {
+    is_valid_label(name) && !name.contains('#')
+}
+
+/// `hw_card_names` of the file: `None` when the value is invalid (the caller falls back to no
+/// names; the document is not rejected).
+fn parse_card_names(value: &Value) -> Option<Vec<(u32, String)>> {
+    let items = value.as_array()?;
+    if items.len() > MAX_HW_DEFAULTS {
+        return None;
+    }
+    let mut out: Vec<(u32, String)> = Vec::new();
+    for item in items {
+        let object = item.as_object()?;
+        exact_keys(object, &["serial", "name"]).then_some(())?;
+        let serial = u32::try_from(u64_of(object.get("serial")?)?).ok()?;
+        let name = object.get("name")?.as_str()?;
+        let ascending = out.last().is_none_or(|(last, _)| *last < serial);
+        let unique = !out.iter().any(|(_, other)| other == name);
+        (is_valid_card_name(name) && ascending && unique).then_some(())?;
+        out.push((serial, name.to_owned()));
+    }
+    Some(out)
+}
+
 /// `address_book_favorites` of the file: `None` when the value is invalid (the caller falls
 /// back to no favorites). Duplicates and names of entries the book does not hold are dropped.
 fn parse_favorites(value: &Value, book: &[Value]) -> Option<Vec<(BookChain, String)>> {
@@ -1262,6 +1304,7 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
                 && *key != crate::walletconnect::store::META_KEY
                 && *key != crate::zec::meta::ZCASH_KEY
                 && *key != BOOK_FAVORITES_KEY
+                && *key != HW_CARD_NAMES_KEY
         })
         .map(|(key, value)| (key.to_owned(), value.clone()))
         .collect();
@@ -1378,6 +1421,11 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
         }
     };
     let hw_accounts = HwAccounts::from_json(object.get(HW_ACCOUNTS_KEY)).ok_or(MetaError)?;
+    // A view preference: an invalid value reads as no names (the document is kept).
+    let hw_card_names = object
+        .get(HW_CARD_NAMES_KEY)
+        .and_then(parse_card_names)
+        .unwrap_or_default();
     let mnemonics = parse_mnemonics(object.get(MNEMONICS_KEY)).ok_or(MetaError)?;
     let mut zcash = crate::zec::meta::ZcashMeta::from_json(object.get(crate::zec::meta::ZCASH_KEY));
     let mnemonic_accounts =
@@ -1409,6 +1457,7 @@ pub fn parse(bytes: &[u8]) -> Result<MetaParse, MetaError> {
         }),
         token_view: Box::new(token_view),
         hw_accounts,
+        hw_card_names,
         mnemonics,
         zcash: Box::new(zcash),
         mnemonic_accounts: Box::new(mnemonic_accounts),
@@ -1583,7 +1632,44 @@ impl Meta {
         if let Some(walletconnect) = &self.chain_sites.walletconnect {
             members.push((crate::walletconnect::store::META_KEY, walletconnect.clone()));
         }
+        if !self.hw_card_names.is_empty() {
+            members.push((HW_CARD_NAMES_KEY, self.card_names_json()));
+        }
         members
+    }
+
+    /// `hw_card_names`.
+    fn card_names_json(&self) -> Value {
+        Value::Array(
+            self.hw_card_names
+                .iter()
+                .map(|(serial, name)| {
+                    json_object(vec![
+                        ("serial", json_u64(u64::from(*serial))),
+                        ("name", json_str(name)),
+                    ])
+                })
+                .collect(),
+        )
+    }
+
+    /// The user's name of card `serial` (`hw_card_names`), if any.
+    #[must_use]
+    pub fn card_name(&self, serial: u32) -> Option<&str> {
+        self.hw_card_names
+            .iter()
+            .find(|(known, _)| *known == serial)
+            .map(|(_, name)| name.as_str())
+    }
+
+    /// Names card `serial` (`Some`) or clears its name (`None`), keeping the list serial
+    /// ascending. The caller checks the name ([`is_valid_card_name`], not another card's).
+    pub fn set_card_name(&mut self, serial: u32, name: Option<String>) {
+        self.hw_card_names.retain(|(known, _)| *known != serial);
+        if let Some(name) = name {
+            self.hw_card_names.push((serial, name));
+            self.hw_card_names.sort_by_key(|(known, _)| *known);
+        }
     }
 
     /// `address_book_favorites`.
@@ -2212,9 +2298,83 @@ impl Meta {
 #[cfg(test)]
 mod tests {
     use super::{
-        Account, BOOK_FAVORITES_KEY, BookChain, Contact, EvmAccountPref, LIMITS, Meta, RawAccount,
-        SolBookEntry, SolRawAccount, Tab, parse,
+        Account, BOOK_FAVORITES_KEY, BookChain, Contact, EvmAccountPref, HW_CARD_NAMES_KEY, LIMITS,
+        Meta, RawAccount, SolBookEntry, SolRawAccount, Tab, parse,
     };
+
+    /// `hw_card_names` (2026-11-15, spec/10 §8): written after the known keys only when there is
+    /// a name, kept by an earlier version as an unknown key, and lenient — an invalid value
+    /// reads as no names and never rejects the document.
+    #[test]
+    fn card_names_round_trip_and_an_invalid_value_reads_as_none() {
+        let mut meta = Meta::default();
+        assert!(
+            !String::from_utf8(meta.to_json())
+                .unwrap()
+                .contains(HW_CARD_NAMES_KEY)
+        );
+        meta.set_card_name(22_222_222, Some("백업".to_owned()));
+        meta.set_card_name(11_111_111, Some("메인".to_owned()));
+        assert_eq!(meta.card_name(11_111_111), Some("메인"));
+        assert_eq!(meta.card_name(33_333_333), None);
+        let text = String::from_utf8(meta.to_json()).unwrap();
+        assert!(text.ends_with(
+            r#","hw_card_names":[{"serial":11111111,"name":"메인"},{"serial":22222222,"name":"백업"}]}"#
+        ));
+        let parsed = parse(text.as_bytes()).unwrap();
+        assert_eq!(parsed.meta, meta);
+        assert!(parsed.meta.unknown.is_empty());
+        assert!(!parsed.prefs_reset);
+        // An earlier version keeps the key unread and writes it back.
+        let mut older = parsed.meta.clone();
+        older.unknown = vec![(HW_CARD_NAMES_KEY.to_owned(), older.card_names_json())];
+        older.hw_card_names.clear();
+        assert_eq!(
+            parse(&older.to_json()).unwrap().meta.hw_card_names,
+            meta.hw_card_names
+        );
+        // Clearing a name; the last one gone, the key is not written.
+        meta.set_card_name(22_222_222, None);
+        assert_eq!(meta.hw_card_names, [(11_111_111, "메인".to_owned())]);
+        meta.set_card_name(11_111_111, None);
+        assert!(
+            !String::from_utf8(meta.to_json())
+                .unwrap()
+                .contains(HW_CARD_NAMES_KEY)
+        );
+        // Invalid values: the names fall back to none, the rest of the document stays.
+        let names = r#""hw_card_names":[{"serial":11111111,"name":"메인"},{"serial":22222222,"name":"백업"}]"#;
+        for bad in [
+            r#""hw_card_names":[{"serial":22222222,"name":"메인"},{"serial":11111111,"name":"백업"}]"#,
+            r#""hw_card_names":[{"serial":11111111,"name":"메인"},{"serial":22222222,"name":"메인"}]"#,
+            r##""hw_card_names":[{"serial":11111111,"name":"#22222222"}]"##,
+            r#""hw_card_names":[{"serial":11111111,"name":" 메인"}]"#,
+            r#""hw_card_names":[{"serial":11111111,"name":""}]"#,
+            r#""hw_card_names":[{"serial":11111111,"name":"메인","x":1}]"#,
+            r#""hw_card_names":[{"serial":4294967296,"name":"메인"}]"#,
+            r#""hw_card_names":{"serial":11111111}"#,
+            r#""hw_card_names":[1,2,3,4,5,6,7,8,9]"#,
+        ] {
+            let invalid = text.replace(names, bad);
+            assert_ne!(invalid, text, "{bad}");
+            let parsed = parse(invalid.as_bytes()).unwrap();
+            assert!(parsed.meta.hw_card_names.is_empty(), "{bad}");
+            assert_eq!(parsed.meta.evm_accounts, meta.evm_accounts);
+            assert!(parsed.meta.unknown.is_empty());
+        }
+        // Nine valid-looking entries exceed the eight cards.
+        let nine: Vec<String> = (1..=9)
+            .map(|serial| format!(r#"{{"serial":{serial},"name":"카드 {serial}"}}"#))
+            .collect();
+        let too_many = text.replace(names, &format!(r#""hw_card_names":[{}]"#, nine.join(",")));
+        assert!(
+            parse(too_many.as_bytes())
+                .unwrap()
+                .meta
+                .hw_card_names
+                .is_empty()
+        );
+    }
 
     /// spec/14: default labels are written in the app language; both languages (and the legacy
     /// `니모닉 N`) count as default when numbering.

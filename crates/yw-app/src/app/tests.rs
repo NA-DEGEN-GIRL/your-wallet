@@ -3452,6 +3452,32 @@ fn yubikey_accounts_and_the_card_step() {
         crate::yubikey::holders(&h.app.card.records, step.role),
         [7_700_011]
     );
+    // W11 names the card by its serial; once named (2026-11-15) by `name (#serial)` — the
+    // first step, the holders line and the tries line.
+    let lines = h.app.card_details(step);
+    assert!(
+        lines.contains(&"이 키를 가진 YubiKey: #7700011".to_owned()),
+        "{lines:?}"
+    );
+    assert_eq!(h.app.card_step_card(step.role).as_deref(), Some("#7700011"));
+    h.app
+        .meta
+        .as_mut()
+        .unwrap()
+        .set_card_name(7_700_011, Some("메인".to_owned()));
+    let step = h.app.card.step.as_ref().unwrap();
+    let lines = h.app.card_details(step);
+    assert!(
+        lines.contains(&"이 키를 가진 YubiKey: 메인 (#7700011)".to_owned())
+            && lines.contains(&"YubiKey 메인 (#7700011) OpenPGP PIN: 남은 시도 3회".to_owned()),
+        "{lines:?}"
+    );
+    let card = h.app.card_step_card(step.role);
+    assert!(
+        crate::ui::secret::card_pin_steps(yw_core::lang::Lang::Ko, card.as_deref())
+            .starts_with("1. YubiKey 메인 (#7700011) 연결 → ")
+    );
+    h.app.meta.as_mut().unwrap().set_card_name(7_700_011, None);
     // The factory PIN is never sent for a signature: the step ends, nothing is queued.
     h.submit(Purpose::CardSign(id), &[b"123456"]);
     assert!(h.app.card.step.is_none());
@@ -4309,10 +4335,68 @@ fn yubikey_backup_copy_removal_and_management_key() {
     yk_pump(&mut h, &mut seen);
     let items = h.app.items();
     assert!(has_text(&items, "#8800011 SIG, #8800012 SIG(백업)"));
+    // Card names (2026-11-15, spec/10 §8): `이름 바꾸기` of card B; a name with `#` and a name
+    // card A already uses are refused; the header, the per-account holders and the removal
+    // texts then show `name (#serial)`, and the name survives a meta save and reload.
+    assert_eq!(
+        super::enter_primary(yk::CARD_NAME_EDIT),
+        Some(yk::CARD_NAME_SAVE)
+    );
+    h.app.on_command(yk::RENAME_CARD_BASE + 1);
+    assert_eq!(h.app.card.rename, Some(8_800_012));
+    assert!(ctl(&h.app.items(), yk::CARD_NAME_EDIT).is_some());
+    assert!(
+        ctl(&h.app.items(), yk::CARD_NAME_CLEAR).is_none(),
+        "no name yet"
+    );
+    h.app.controls.type_text(yk::CARD_NAME_EDIT, "#8800011");
+    h.app.on_command(yk::CARD_NAME_SAVE);
+    assert_eq!(
+        h.app.info.as_deref(),
+        Some(crate::ui::screens_yubikey::text::CARD_NAME_INVALID.ko)
+    );
+    assert!(h.app.meta.as_ref().unwrap().hw_card_names.is_empty());
+    h.app.controls.type_text(yk::CARD_NAME_EDIT, " 백업 ");
+    h.app.on_command(yk::CARD_NAME_SAVE);
+    yk_pump(&mut h, &mut seen);
+    assert_eq!(h.app.card.rename, None);
+    assert_eq!(h.app.card_name(8_800_012), "백업 (#8800012)");
+    assert_eq!(h.app.card_name(8_800_011), "#8800011");
+    h.app.on_command(yk::RENAME_CARD_BASE);
+    h.app.controls.type_text(yk::CARD_NAME_EDIT, "백업");
+    h.app.on_command(yk::CARD_NAME_SAVE);
+    assert!(
+        h.app
+            .info
+            .as_deref()
+            .is_some_and(|info| info.contains("'백업'")),
+        "{:?}",
+        h.app.info
+    );
+    assert_eq!(h.app.card.rename, Some(8_800_011), "the edit stays open");
+    h.app.on_command(yk::CARD_NAME_CANCEL);
+    assert_eq!(h.app.card.rename, None);
+    let items = h.app.items();
+    assert!(has_text(&items, "#8800011 SIG, 백업 (#8800012) SIG(백업)"));
+    assert!(items.iter().any(
+        |item| matches!(item, Item::CardStart(Some(title)) if title == "YubiKey 백업 (#8800012)")
+    ));
+    // Saved to disk: the name comes back from a reload of meta.
+    h.app.meta.as_mut().unwrap().hw_card_names.clear();
+    h.app.request_meta();
+    yk_pump(&mut h, &mut seen);
+    assert_eq!(
+        h.app.meta.as_ref().unwrap().card_name(8_800_012),
+        Some("백업")
+    );
     // Remove card A's record: overlay, W03 (a wrong password first), the copy keeps the account.
     h.app.on_command(yk::REMOVE_BASE);
     assert_eq!(h.app.screen, Screen::Confirm(Confirm::RemoveYubiKey));
-    assert!(has_text(&h.app.items(), "YubiKey #8800012로 계속 서명"));
+    // The particle follows the name before `(#serial)` (백업 → 으로).
+    assert!(has_text(
+        &h.app.items(),
+        "YubiKey 백업 (#8800012)으로 계속 서명"
+    ));
     let id = h.app.card.record_ids[0];
     h.app.on_command(ids::CONFIRM_YES);
     h.submit(
@@ -4713,12 +4797,22 @@ fn yubikey_badge_is_chrome_and_the_solana_note() {
         btc: None,
     };
     assert_eq!(
-        crate::app_card::card_badge(yw_core::lang::Lang::Ko, &records, role, 1),
+        crate::app_card::card_badge(yw_core::lang::Lang::Ko, (&records, &[]), role, 1),
         "YubiKey로 서명 · #7700011 · 터치 1회"
     );
     assert_eq!(
-        crate::app_card::card_badge(yw_core::lang::Lang::Ko, &[], role, 3),
+        crate::app_card::card_badge(yw_core::lang::Lang::Ko, (&[], &[]), role, 3),
         "YubiKey로 서명 · 터치 3회"
+    );
+    // A named card (2026-11-15): its name with the serial — still chrome, outside the digest.
+    let names = [(7_700_011, "메인".to_owned())];
+    assert_eq!(
+        crate::app_card::card_badge(yw_core::lang::Lang::Ko, (&records, &names), role, 1),
+        "YubiKey로 서명 · 메인 (#7700011) · 터치 1회"
+    );
+    assert_eq!(
+        crate::app_card::card_badge(yw_core::lang::Lang::En, (&records, &names), role, 2),
+        "Signed with YubiKey · 메인 (#7700011) · 2 touch(es)"
     );
     let chain = yw_core::evm::chain::sepolia();
     let tx = yw_core::evm::tx::Eip1559Tx {

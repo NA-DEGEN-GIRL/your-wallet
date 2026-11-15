@@ -941,6 +941,10 @@ fn enter_primary(edit: u16) -> Option<u16> {
         screens::ids::RENAME_EDIT => screens::ids::RENAME_SAVE,
         sol::ids::RENAME_EDIT => sol::ids::RENAME_SAVE,
         mnemonics::ids::RENAME_EDIT => mnemonics::ids::RENAME_SAVE,
+        // A YubiKey's name in Settings (2026-11-15; not the wizard).
+        crate::ui::screens_yubikey::ids::CARD_NAME_EDIT => {
+            crate::ui::screens_yubikey::ids::CARD_NAME_SAVE
+        }
         screens::ids::REPLACE_EDIT => screens::ids::REPLACE_SAVE,
         screens::ids::AUTOLOCK_EDIT => screens::ids::AUTOLOCK_SAVE,
         screens::ids::DONE_QN_EDIT => screens::ids::DONE_CONNECT,
@@ -1704,6 +1708,7 @@ impl App {
             ids::RENAME_CANCEL,
             crate::ui::screens_sol::ids::RENAME_CANCEL,
             crate::ui::screens_mnemonics::ids::RENAME_CANCEL,
+            crate::ui::screens_yubikey::ids::CARD_NAME_CANCEL,
             ids::REPLACE_CANCEL,
             crate::ui::screens_book::ids::PROMPT_CANCEL,
             // S14's entry being edited.

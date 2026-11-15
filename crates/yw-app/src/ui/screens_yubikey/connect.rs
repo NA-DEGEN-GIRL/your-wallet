@@ -93,7 +93,10 @@ impl App {
         };
         items.push(Item::Field(
             "YubiKey".to_owned(),
-            t::SERIAL_FIRMWARE.fill(lang, [&scan.serial.to_string(), &scan.firmware.to_string()]),
+            t::SERIAL_FIRMWARE.fill(
+                lang,
+                [&self.card_name(scan.serial), &scan.firmware.to_string()],
+            ),
         ));
         let counters = crate::yubikey::PinCounters {
             serial: scan.serial,
@@ -197,7 +200,7 @@ impl App {
             Tone::Warn,
         ));
         items.push(Item::CardStart(Some(
-            t::CHECK_BEFORE_SAVE.fill(lang, [&record.serial.to_string()]),
+            t::CHECK_BEFORE_SAVE.fill(lang, [&self.card_name(record.serial)]),
         )));
         items.push(Item::Text(t::CONNECT_CONFIRM_TEXT.get(lang).to_owned()));
         for slot in &record.slots {
@@ -209,14 +212,11 @@ impl App {
                 &address_texts(slot.role, &slot.public).unwrap_or_default(),
                 items,
             );
-            let holders: Vec<String> = crate::yubikey::holders(&self.card.records, slot.role)
-                .iter()
-                .map(|serial| format!("#{serial}"))
-                .collect();
+            let holders = crate::yubikey::holders(&self.card.records, slot.role);
             if !holders.is_empty() {
                 items.push(Item::Field(
                     t::FIELD_RELATION.get(lang).to_owned(),
-                    t::SAME_KEY_HOLDERS.fill(lang, [&holders.join(", ")]),
+                    t::SAME_KEY_HOLDERS.fill(lang, [&self.card_name_list(&holders, ", ")]),
                 ));
             }
         }

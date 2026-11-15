@@ -350,13 +350,8 @@ impl App {
         ));
         let same = !self.mn.preview_cards.is_empty();
         if same {
-            let cards: Vec<String> = self
-                .mn
-                .preview_cards
-                .iter()
-                .map(|serial| format!("#{serial}"))
-                .collect();
-            items.push(Item::Text(text::YK_SAME.fill(lang, [&cards.join(", ")])));
+            let cards = self.card_name_list(&self.mn.preview_cards, ", ");
+            items.push(Item::Text(text::YK_SAME.fill(lang, [&cards])));
             items.push(Item::Banner(
                 crate::app_yubikey::text::YK_SAME.get(lang).to_owned(),
                 Tone::HighRisk,

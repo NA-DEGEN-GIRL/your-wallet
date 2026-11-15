@@ -28,14 +28,6 @@ pub const RESLOT_STEPS: [Text; 4] = [
     t::STEP_RESULT,
 ];
 
-fn holders_text(holders: &[u32]) -> String {
-    holders
-        .iter()
-        .map(|serial| format!("#{serial}"))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
 /// T-YK-KEY-LOST with the keys it names, its checkbox and the typed [`mt::LOSS_WORD`] (spec/10
 /// §15): keys connected without recovery words that no other enrolled card holds. `balances` are
 /// those keys' balance sentences of the "지워지는 계정" block (2026-11-10), said inside the band.
@@ -102,7 +94,7 @@ impl App {
     fn yk_reslot_items(&self, flow: &ReslotFlow, items: &mut Vec<Item>) {
         let lang = self.settings.language;
         items.push(Item::Subtitle(
-            t::RESLOT_TITLE.fill(lang, [&flow.serial.to_string()]),
+            t::RESLOT_TITLE.fill(lang, [&self.card_name(flow.serial)]),
         ));
         let current = match flow.step {
             ReslotStep::Choose => 1,
@@ -316,7 +308,7 @@ impl App {
         }
         let others = self.yk_other_records(flow.serial);
         items.push(Item::CardStart(Some(
-            t::AFTER_CHANGE.fill(lang, [&flow.serial.to_string()]),
+            t::AFTER_CHANGE.fill(lang, [&self.card_name(flow.serial)]),
         )));
         items.push(Item::Text(t::RESLOT_CONFIRM_TEXT.get(lang).to_owned()));
         for line in &preview.lines {
@@ -340,7 +332,9 @@ impl App {
             let relation = match (unchanged, holders.is_empty()) {
                 (true, _) => t::RELATION_UNCHANGED.get(lang).to_owned(),
                 (false, true) => t::RELATION_PUT.get(lang).to_owned(),
-                (false, false) => t::RELATION_PUT_BACKUP.fill(lang, [&holders_text(&holders)]),
+                (false, false) => {
+                    t::RELATION_PUT_BACKUP.fill(lang, [&self.card_name_list(&holders, ", ")])
+                }
             };
             items.push(Item::Field(
                 t::FIELD_RELATION.get(lang).to_owned(),
@@ -359,7 +353,9 @@ impl App {
                     account.note = Some(match (holders.is_empty(), slot.path_known) {
                         (true, true) => t::DROP_NOT_ELSEWHERE.get(lang).to_owned(),
                         (true, false) => t::DROP_LOST.get(lang).to_owned(),
-                        (false, _) => t::DROP_KEPT.fill(lang, [&holders_text(holders)]),
+                        (false, _) => {
+                            t::DROP_KEPT.fill(lang, [&self.card_name_list(holders, ", ")])
+                        }
                     });
                     account
                 })
@@ -416,7 +412,7 @@ impl App {
             return;
         };
         items.push(Item::Banner(
-            t::RESLOT_DONE.fill(lang, [&record.serial.to_string()]),
+            t::RESLOT_DONE.fill(lang, [&self.card_name(record.serial)]),
             Tone::Success,
         ));
         // Done under the factory admin PIN: the card does not sign until its PINs are set
@@ -431,7 +427,10 @@ impl App {
                 t::BTN_SET_PIN_NOW.get(lang),
             )]));
         }
-        items.push(Item::CardStart(Some(format!("YubiKey #{}", record.serial))));
+        items.push(Item::CardStart(Some(format!(
+            "YubiKey {}",
+            self.card_name(record.serial)
+        ))));
         record_items(lang, record, items);
         items.push(Item::CardEnd);
         let candidates: Vec<(usize, &HwKeyRecord)> = self
@@ -464,9 +463,9 @@ impl App {
                     ids::RESLOT_BACKUP_BASE.saturating_add(u16::try_from(row).unwrap_or(u16::MAX)),
                     &if shared > 0 {
                         t::APPLY_TO_SHARED
-                            .fill(lang, [&other.serial.to_string(), &shared.to_string()])
+                            .fill(lang, [&self.card_name(other.serial), &shared.to_string()])
                     } else {
-                        t::APPLY_TO.fill(lang, [&other.serial.to_string()])
+                        t::APPLY_TO.fill(lang, [&self.card_name(other.serial)])
                     },
                 )]));
             }
@@ -550,7 +549,7 @@ impl App {
     fn yk_clear_items(&self, flow: &ClearFlow, items: &mut Vec<Item>) {
         let lang = self.settings.language;
         items.push(Item::Subtitle(
-            t::CLEAR_TITLE.fill(lang, [&flow.serial.to_string()]),
+            t::CLEAR_TITLE.fill(lang, [&self.card_name(flow.serial)]),
         ));
         let Some(before) = flow.before.as_ref() else {
             return;
@@ -663,7 +662,7 @@ impl App {
                     } else if holders.is_empty() {
                         t::CLEAR_NOT_ELSEWHERE.get(lang).to_owned()
                     } else {
-                        t::CLEAR_KEPT.fill(lang, [&holders_text(&holders)])
+                        t::CLEAR_KEPT.fill(lang, [&self.card_name_list(&holders, ", ")])
                     });
                     account
                 })
@@ -759,15 +758,7 @@ impl App {
                         }
                         (Some(method), Some(Err(error))) => {
                             let why = if method == ClearMethod::OurSlots {
-                                pin.error_text_in(
-                                    lang,
-                                    error,
-                                    &crate::yubikey::PinContext::of(
-                                        &self.card.records,
-                                        flow.serial,
-                                        pin,
-                                    ),
-                                )
+                                pin.error_text_in(lang, error, &self.pin_context(flow.serial, pin))
                             } else {
                                 error.text_in(lang)
                             };

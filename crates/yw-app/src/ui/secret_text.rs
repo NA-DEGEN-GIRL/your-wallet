@@ -98,7 +98,8 @@ yw_core::texts! {
     /// ([`CARD_PIN_STEPS`]).
     CARD_PIN = "PIN은 이 서명 한 번에만 쓰고 바로 지웁니다."
         / "The PIN is used for this one signature only and wiped right away.";
-    /// W11's steps (2026-11-10): `{0}` is `YubiKey` or `YubiKey #serial`.
+    /// W11's steps (2026-11-10): `{0}` is `YubiKey`, `YubiKey #serial` or, for a named card
+    /// (2026-11-15), `YubiKey name (#serial)`.
     CARD_PIN_STEPS(1) = "1. {0} 연결 → 2. PIN 입력 후 확인 → 3. 깜박이면 15초 안에 터치 (승인 뒤 120초 안에)"
         / "1. Connect {0} → 2. Enter the PIN and confirm → 3. When it blinks, touch it within 15 s (within 120 s of approval)";
     CARD_TOUCHES_PER_TX(1) = "YubiKey 터치 {0}회가 필요합니다 (거래마다 한 번, 15초 유지 정책이면 첫 터치 뒤 15초 안의 거래는 터치 없이 서명됩니다)."

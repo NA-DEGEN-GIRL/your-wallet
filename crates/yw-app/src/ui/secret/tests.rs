@@ -285,7 +285,7 @@ fn sw4_capture_decisions() {
 
 #[test]
 fn w07_warns_that_imported_keys_are_not_in_the_recovery_words() {
-    let lines = super::intro(EVM_KEY, Lang::Ko, 0, false);
+    let lines = super::intro(EVM_KEY, Lang::Ko, (0, false), None);
     assert!(
         lines
             .iter()
@@ -306,8 +306,8 @@ fn w07_warns_that_imported_keys_are_not_in_the_recovery_words() {
                 no_words: true,
             },
             Lang::Ko,
-            0,
-            false,
+            (0, false),
+            None,
         );
         assert!(
             lines
@@ -418,10 +418,13 @@ fn w11_card_pin_bounds_mask_and_owned_buffer() {
         capture_decision(kind, Ok(false)),
         CaptureDecision::Show { warning: true }
     );
-    let intro = super::intro(kind, Lang::Ko, 0, false);
+    let intro = super::intro(kind, Lang::Ko, (0, false), None);
     assert!(intro[0].starts_with(
         "1. YubiKey #7700011 연결 → 2. PIN 입력 후 확인 → 3. 깜박이면 15초 안에 터치"
     ));
+    // A named card (2026-11-15): the name with its serial.
+    let named = super::intro(kind, Lang::Ko, (0, false), Some("메인 (#7700011)"));
+    assert!(named[0].starts_with("1. YubiKey 메인 (#7700011) 연결 → 2. PIN 입력 후 확인"));
     assert!(intro[1].contains("YubiKey 터치 3회가 필요합니다 (입력마다 한 번,"));
     let per_tx = super::intro(
         SecretKind::CardPin {
@@ -432,8 +435,8 @@ fn w11_card_pin_bounds_mask_and_owned_buffer() {
             serial: 7_700_011,
         },
         Lang::Ko,
-        0,
-        false,
+        (0, false),
+        None,
     );
     assert!(
         per_tx[1].contains("YubiKey 터치 3회가 필요합니다 (거래마다 한 번,")
@@ -452,8 +455,8 @@ fn w11_card_pin_bounds_mask_and_owned_buffer() {
                 serial: 0,
             },
             Lang::Ko,
-            0,
-            false,
+            (0, false),
+            None,
         )
         .len(),
         1
@@ -747,7 +750,7 @@ fn every_secret_window_is_english_with_lang_en() {
         let mut texts: Vec<String> = vec![kind.title(Lang::En).to_owned()];
         texts.extend(form.slots.iter().map(|slot| slot.label.clone()));
         for address in [false, true] {
-            texts.extend(super::intro(kind, Lang::En, 24, address));
+            texts.extend(super::intro(kind, Lang::En, (24, address), None));
         }
         if let Some((label, _)) = form.checkbox {
             texts.push(label.to_owned());
@@ -779,7 +782,12 @@ fn every_secret_window_is_english_with_lang_en() {
     hold.hold.begin(0);
     let (right, _) = hold.button_labels(500);
     assert!(right.iter().all(|(_, label)| !has_hangul(label)));
-    assert!(super::card_pin_steps(Lang::En, 7).starts_with("1. Connect YubiKey #7 → "));
+    assert!(super::card_pin_steps(Lang::En, Some("#7")).starts_with("1. Connect YubiKey #7 → "));
+    assert!(
+        super::card_pin_steps(Lang::En, Some("Main (#7)"))
+            .starts_with("1. Connect YubiKey Main (#7) → ")
+    );
+    assert!(super::card_pin_steps(Lang::En, None).starts_with("1. Connect YubiKey → "));
     for (kind, fields) in [
         (
             SecretKind::CardSecret(CardSecretKind::AdminPin),

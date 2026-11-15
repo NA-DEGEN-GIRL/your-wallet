@@ -328,13 +328,13 @@ yw_core::texts! {
     // ----- S08 done -----
     /// S08 title.
     DONE_TITLE = "준비되었습니다" / "All set";
-    /// S08 `YubiKey` wallet created: {0} serial.
-    DONE_YK_CREATED(1) = "YubiKey 지갑을 만들었습니다 (YubiKey #{0})." / "The YubiKey wallet was created (YubiKey #{0}).";
+    /// S08 `YubiKey` wallet created: {0} the card (`#serial`, or `name (#serial)` once named).
+    DONE_YK_CREATED(1) = "YubiKey 지갑을 만들었습니다 (YubiKey {0})." / "The YubiKey wallet was created (YubiKey {0}).";
     /// Its backup note.
     DONE_YK_CREATED_BACKUP = "이 지갑의 백업은 방금 적은 복구 단어 24개입니다. 이 PC에는 저장하지 않았으니 종이를 안전하게 보관하세요."
         / "This wallet's backup is the 24 recovery words you just wrote down. They are not stored on this PC, so keep the paper safe.";
-    /// S08 `YubiKey` connected: {0} serial.
-    DONE_YK_CONNECTED(1) = "YubiKey를 연결했습니다 (YubiKey #{0})." / "The YubiKey was connected (YubiKey #{0}).";
+    /// S08 `YubiKey` connected: {0} the card.
+    DONE_YK_CONNECTED(1) = "YubiKey를 연결했습니다 (YubiKey {0})." / "The YubiKey was connected (YubiKey {0}).";
     /// Its backup note.
     DONE_YK_CONNECTED_BACKUP = "복구 단어 없이 카드의 공개키로 연결했습니다. 이 PC에는 개인키도 복구 단어도 없어 카드가 그 키의 유일한 사본일 수 있습니다 — 카드를 잃었을 때를 대비해 원래 백업(복구 단어 등)이 있는지 확인하세요."
         / "Connected with the card's public keys, without recovery words. This PC has neither private keys nor recovery words, so the card may be the only copy of those keys — make sure the original backup (recovery words etc.) exists in case the card is lost.";

@@ -2867,7 +2867,7 @@ impl App {
             };
             Some(crate::app_card::card_badge(
                 lang,
-                &self.card.records,
+                (&self.card.records, self.card_names()),
                 role,
                 touches,
             ))

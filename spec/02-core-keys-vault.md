@@ -506,6 +506,7 @@ journal_key = HKDF-SHA256(salt = 없음,                   ikm = DEK, info = "yo
 | `btc_accounts` (선택) | object | 이 키만 없어도 된다(없음 = 다른 BTC 계정 없음, 기본값이면 쓰지 않음). 다른 BTC 계정(주소 형식·계정 번호·가져온 키, 두 네트워크)과 선택: [08](08-bitcoin.md) §12.3a. 있으면 알려진 키로 엄격 검증. EVM·YubiKey 키 계정과 HD 모드 표시는 2026-11-07부터 선택 최상위 키 `btc_accounts_ext`([08] §12.3b; 객체 안 `single_address`·`btc_accounts` 안 `key.evm`·`key.yubikey`는 읽기만, 이행) |\| null | BTC를 켜기 전(M8 전 포함) `null`. 필드는 [08](08-bitcoin.md) §12.3 이름 그대로, 바이트 배열은 소문자 hex 문자열, 없음은 `null` |
 | `address_book` | `AddressBookEntry[]` | 0..=500개, (`chain`, `address`) 중복 금지. `chain`은 체인 **계열**이다: EVM 항목은 모두 `"evm"` 하나로 내장·사용자 추가 EVM 체인 전부에서 같이 쓴다(아래 2026-11-06 이전 규칙) |
 | `address_book_favorites` (선택, 2026-11-06) | `BookFavorite[]` | 주소록 ★ 즐겨찾기([04] §2.10). 0..=500개, 별을 붙인 순서, `address_book`에 있는 (`chain`, `address`)만. 비어 있으면 쓰지 않는다(이전 버전은 모르는 최상위 키로 보존하고 다시 쓴다). 형식이 틀리면 문서를 거부하지 않고 즐겨찾기 없음으로 읽는다(표시 전용, `token_view`와 같음). 읽을 때 주소록에 없는 항목·중복은 버린다(이전 버전이 지운 항목의 별) |
+| `hw_card_names` (선택, 2026-11-15) | `CardName[]` | YubiKey 카드 이름([10](10-yubikey.md) §8, [04] §2.19). 0..=8개(`MAX_CARDS`), `serial` 오름차순·중복 금지, 두 카드가 같은 `name`을 쓰지 않는다, `name`은 `Label`이고 `#`을 쓰지 않는다(늘 `name (#serial)`로 보이므로 이름이 다른 카드의 일련번호처럼 보이지 않게). 비어 있으면 쓰지 않는다(이전 버전은 모르는 최상위 키로 보존하고 다시 쓴다). 이전 빌드가 멤버를 엄격하게 검사하는 `hw_accounts` 안에 두지 않는다(멤버를 더하면 meta 전체를 E-VLT-006으로 거부). 형식이 틀리면 문서를 거부하지 않고 이름 없음으로 읽는다(표시 전용, `address_book_favorites`와 같음). 잠금 해제 때 vault tag 5 record에 없는 일련번호의 항목은 버린다(`reconcile_hardware`). 이름은 라벨이라 로그에 쓰지 않는다(D28). 승인 창에서는 머리 배지(digest 밖, [10] §10)에만 쓰고 표시 필드·digest에는 넣지 않는다 |
 | `connected_sites` | `ConnectedSite[]` | 0..=256개, `origin` 중복 금지([05](05-browser.md) §4.1) |
 | `sol_sites`·`btc_sites` (선택, 2026-10-31) | object[] | Solana·Bitcoin dApp 연결([05] §4.9). 각 0..=256개의 객체 배열, 비어 있으면 쓰지 않는다(이전 버전은 모르는 키로 보존). 항목: `sol_sites` `{ origin, public_key: base58, granted_at_unix_ms }`, `btc_sites` `{ origin, network: 1|2, addresses: [{ purpose: "payment"|"ordinals"|"any", address, public_key: hex, script_type }], granted_at_unix_ms }`. 쓸 수 없는 항목은 읽을 때 건너뛴다 |
 | `tokens` | object: `NetworkId` → `TokenEntry[]` | `eip155:*` 키만(SOL 토큰은 고정 허용 목록, D25), 네트워크당 0..=100개·전체 0..=1,000개(어느 쪽이든 상한이면 S16 저장 거부), `address` 중복 금지, 빈 배열 키는 쓰지 않음 |
@@ -528,6 +529,7 @@ SolRawAccount    = { "record_id": Hex16, "label": Label, "address": string(정�
 AddressBookEntry = { "chain": "evm"|"sol"|"btc", "address": string, "label": Label,
                      "verified": bool, "added_at_unix_ms": u64 }     // 정확히 이 5개 멤버
 BookFavorite     = { "chain": "evm"|"sol"|"btc", "address": string }  // address_book 항목을 가리킴
+CardName         = { "serial": u32, "name": Label }                    // 정확히 이 2개 멤버, name에 '#' 없음
 MnemonicEntry    = { "record_id": Hex16, "label": Label, "evm": Account[0..=100] }  // 정확히 이 3개 멤버, evm은 index 오름차순·첫 항목 index 0
 MnSolAccount     = { "mnemonic": Hex16(0 아님), "index": u32(0..=999), "label": Label, "address": string(정규 base58 또는 ""), "hidden": bool }
 MnZec            = { "mnemonic": Hex16(0 아님), "a": u32(0..=999), "b": u32(0..=999), "pubkey": hex66(02|03) }  // ZecKeySource 코드 5

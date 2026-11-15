@@ -423,6 +423,12 @@ fn reconcile_hardware(
         .defaults
         .retain(|serial| present.contains(serial));
     changed |= document.hw_accounts.defaults.len() != before;
+    // Card names (2026-11-15): only of cards a tag-5 record still holds.
+    let before = document.hw_card_names.len();
+    document
+        .hw_card_names
+        .retain(|(serial, _)| present.contains(serial));
+    changed |= document.hw_card_names.len() != before;
     // Bitcoin: single-address accounts in `btc_accounts` (`key.yubikey`).
     let expected = hw_btc_expected(vault, &records);
     let stale: Vec<(BtcNetwork, BtcAccountId)> = document
@@ -2617,9 +2623,14 @@ pub(crate) mod tests {
     /// spec/10 §13: after enrolment the meta reconcile lists the slot map's accounts — EVM 0/1
     /// and Solana 0 in `hw_accounts`, the BIP84 address key as a single-address `YubiKey` account
     /// of `btc_accounts` — with the `abandon` vectors as addresses; a second load changes
-    /// nothing; labels and hidden flags survive; a key no card holds any more is dropped.
+    /// nothing; labels and hidden flags survive; a key no card holds any more is dropped; card
+    /// names (2026-11-15) survive a reload and leave with their record.
     #[test]
     #[allow(clippy::indexing_slicing, reason = "fixed test lists")]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one wallet through enrolment, renames, card names and a removed card"
+    )]
     fn reconcile_lists_yubikey_accounts_of_every_chain() {
         use yw_core::bip32::path::BtcChain;
         use yw_core::btc::account::HwBtcKey;
@@ -2672,10 +2683,38 @@ pub(crate) mod tests {
         assert!(btc.account().is_hardware());
         // The mnemonic's own derived account 0 is still there (same key, different account).
         assert_eq!(meta.evm_accounts.len(), 1);
-        // Idempotent; a renamed and hidden account keeps its label and flag.
+        // Idempotent; a renamed and hidden account keeps its label and flag, and the cards keep
+        // their names (2026-11-15) while a name of a card no record holds is dropped.
+        let serials: Vec<u32> = worker
+            .vault
+            .as_ref()
+            .unwrap()
+            .hardware_keys()
+            .unwrap()
+            .iter()
+            .map(|key| key.record.serial)
+            .collect();
+        assert_eq!(serials.len(), 2);
         let mut edited = (*loaded.meta).clone();
         edited.hw_accounts.evm[1].label = "카드 계정".to_owned();
         edited.hw_accounts.evm[1].hidden = true;
+        edited.set_card_name(serials[0], Some("메인".to_owned()));
+        edited.set_card_name(serials[1], Some("백업".to_owned()));
+        let mut stale = edited.clone();
+        stale.set_card_name(9_999_999, Some("잃어버린 카드".to_owned()));
+        assert!(matches!(
+            worker
+                .handle(KeyJob::SaveMeta {
+                    meta: Box::new(stale)
+                })
+                .pop(),
+            Some(KeyOutcome::MetaSaved(Ok(())))
+        ));
+        let Some(KeyOutcome::Meta(Ok(cleaned))) = worker.handle(KeyJob::LoadMeta).pop() else {
+            unreachable!("meta");
+        };
+        assert!(cleaned.mismatch, "the stale name is dropped");
+        assert_eq!(cleaned.meta.hw_card_names, edited.hw_card_names);
         assert!(matches!(
             worker
                 .handle(KeyJob::SaveMeta {
@@ -2689,6 +2728,7 @@ pub(crate) mod tests {
         };
         assert!(!again.mismatch);
         assert_eq!(again.meta.hw_accounts, edited.hw_accounts);
+        assert_eq!(again.meta.card_name(serials[0]), Some("메인"));
         // The vault without card B's record: its Bitcoin account leaves `btc_accounts`.
         let mut document = (*again.meta).clone();
         {
@@ -2703,6 +2743,11 @@ pub(crate) mod tests {
         }
         assert!(document.btc_accounts.get(BtcNetwork::Mainnet, id).is_none());
         assert_eq!(document.hw_accounts.evm.len(), 2);
+        assert_eq!(
+            document.hw_card_names,
+            [(serials[0], "메인".to_owned())],
+            "the removed card's name goes with its record"
+        );
         drop(worker);
         let _ = std::fs::remove_dir_all(&dir);
     }
