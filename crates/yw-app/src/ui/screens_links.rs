@@ -173,7 +173,8 @@ pub fn save_icon(lang: Lang, id: u16) -> Ctl {
 pub struct PickerEntry {
     /// The entry's command id (the radio id of before).
     pub id: u16,
-    /// `계정 1 · YubiKey`, `가져온 계정 · 가져온 키` …
+    /// `계정 2 · YubiKey: 메인·백업`, `가져온 계정 1 · 가져온 키` … (2026-11-15,
+    /// `App::account_item_labels`).
     pub label: String,
     /// The selected account.
     pub selected: bool,

@@ -3299,7 +3299,7 @@ fn yubikey_accounts_and_the_card_step() {
     assert!(
         controls(&h.app.items())
             .iter()
-            .any(|ctl| ctl.text.contains("· YubiKey"))
+            .any(|ctl| ctl.text.contains("· YubiKey: #"))
     );
     // dApp connect lists offer it.
     assert!(
@@ -3742,6 +3742,9 @@ mod received;
 
 /// English key, recovery-phrase, side-file and `rpc.json` screens (spec/14).
 mod lang_keys;
+
+/// One account card for EVM and Solana, sources with card names (spec/04 §2.6).
+mod accounts;
 
 /// spec/10 §9.2 (2026-11-10): once the PIN is in, the touch prompt is the S11 form's line next to
 /// `검토` (a dApp request: the header band), and it is gone once the card answered — signed or
@@ -4861,7 +4864,7 @@ fn yubikey_badge_is_chrome_and_the_solana_note() {
     if let Some(meta) = app.meta.as_mut() {
         meta.hw_accounts.sol.push(crate::meta::Account {
             index: 0,
-            label: "YubiKey Solana 1".to_owned(),
+            label: "Solana 2".to_owned(),
             address: "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk".to_owned(),
             hidden: false,
         });
@@ -4870,7 +4873,7 @@ fn yubikey_badge_is_chrome_and_the_solana_note() {
     app.sol.send.to_text = "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk".to_owned();
     app.sol_validate_send();
     app.screen = Screen::SolSend;
-    assert!(has_text(&app.items(), "내 계정(YubiKey): YubiKey Solana 1"));
+    assert!(has_text(&app.items(), "내 계정(YubiKey): Solana 2"));
     drop(worker);
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(other);

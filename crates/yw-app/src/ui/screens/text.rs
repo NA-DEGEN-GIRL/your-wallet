@@ -409,9 +409,9 @@ yw_core::texts! {
     /// S08 balance card: {0} network.
     DONE_BALANCE_NETWORK(1) = "· EVM 탭은 지금 {0}입니다 — 다른 네트워크는 메인 화면의 네트워크 칩에서 고르세요"
         / "· The EVM tab is on {0} — choose other networks with the network chip on the main screen";
-    /// S08 balance card: accounts.
-    DONE_BALANCE_ACCOUNTS = "· 계정은 자동으로 찾지 않습니다. 이전 지갑에서 계정을 여러 개 썼다면 “내 계정 → 계정 추가”를 차례로 누르세요. Solana의 다른 경로는 Solana 탭 “다른 경로 스캔”."
-        / "· Accounts are not searched automatically. If you used several accounts in your earlier wallet, press “My accounts → Add account” for each. For other Solana paths, use “Scan other paths” on the Solana tab.";
+    /// S08 balance card: accounts (2026-11-15: “내 계정 → …” before the card was `내 EVM 계정`).
+    DONE_BALANCE_ACCOUNTS = "· 계정은 자동으로 찾지 않습니다. 이전 지갑에서 계정을 여러 개 썼다면 “내 EVM 계정 → 계정 추가”를 차례로 누르세요. Solana의 다른 경로는 Solana 탭 “다른 경로 스캔”."
+        / "· Accounts are not searched automatically. If you used several accounts in your earlier wallet, press “My EVM accounts → Add account” for each. For other Solana paths, use “Scan other paths” on the Solana tab.";
     /// S08 balance card: both chains off.
     DONE_OFF_BOTH = "· Bitcoin·Zcash는 꺼져 있습니다 — 설정 → Bitcoin, Zcash 탭에서 켜면 보입니다(Bitcoin은 네이티브 세그윗 계정 0부터)."
         / "· Bitcoin and Zcash are off — turn them on in Settings → Bitcoin and on the Zcash tab to see them (Bitcoin from native SegWit account 0).";
@@ -460,10 +460,9 @@ yw_core::texts! {
     NETWORK = "네트워크" / "Network";
     /// Sepolia pill.
     TESTNET_PILL = "테스트넷 — 실제 자산이 아닙니다" / "Testnet — not real assets";
-    /// Accounts card.
-    MY_ACCOUNTS = "내 계정" / "My accounts";
-    /// Account tag of an imported key.
-    IMPORTED_KEY_TAG = "가져온 키" / "imported key";
+    /// Accounts card (2026-11-15: `내 계정` / `My accounts` before; the tab is named like the
+    /// Solana card).
+    MY_ACCOUNTS = "내 EVM 계정" / "My EVM accounts";
     /// Save button.
     SAVE = "저장" / "Save";
     /// Rename button.

@@ -464,6 +464,17 @@ pub fn card_label(names: &[(u32, String)], serial: u32) -> String {
         )
 }
 
+/// A card in a short place (2026-11-15, the account drop-down's `YubiKey: 메인·백업`): its name
+/// alone, `#serial` when unnamed. Everywhere else the serial stays next to the name
+/// ([`card_label`]).
+#[must_use]
+pub fn card_short_label(names: &[(u32, String)], serial: u32) -> String {
+    names
+        .iter()
+        .find(|(known, _)| *known == serial)
+        .map_or_else(|| format!("#{serial}"), |(_, name)| name.clone())
+}
+
 /// [`card_label`] of each of `serials`, joined with `separator`.
 #[must_use]
 pub fn card_labels(names: &[(u32, String)], serials: &[u32], separator: &str) -> String {

@@ -21,6 +21,7 @@ use crate::app_sol::SolAccountId;
 use crate::meta::{BookChain, Tab};
 use crate::ui::badge::Badge;
 use crate::ui::main_window::{Ctl, Item, Tone};
+use crate::ui::screens_accounts::{AccountCard, AccountItem, AccountSource, SelectedLine};
 
 /// Fixed texts of the Solana screens (spec/04 §2.6–§2.11, spec/07 §3.3, §12.3; English spec/14
 /// §5). Recipient notes shared with the approval come from `yw_core::sol::text`.
@@ -69,7 +70,6 @@ pub mod text {
         MY_ACCOUNTS = "내 Solana 계정" / "My Solana accounts";
         CREATING = "Solana 계정을 만드는 중…" / "Creating a Solana account…";
         NO_ACCOUNTS = "Solana 계정이 없습니다." / "There is no Solana account.";
-        LABEL_IMPORTED(1) = "{0} · 가져온 키" / "{0} · imported key";
         SAVE = "저장" / "Save";
         CANCEL = "취소" / "Cancel";
         RENAME = "이름 바꾸기" / "Rename";
@@ -681,118 +681,85 @@ impl App {
             items.push(Item::Row(row));
             items.push(Item::CardEnd);
         }
-        items.push(Item::CardStart(Some(
-            text::MY_ACCOUNTS.get(lang).to_owned(),
-        )));
-        let rows = self.sol_account_rows();
-        // The same help as `내 계정` (2026-11-12; the path is the hero card's second line).
-        if let Some(help) = self.accounts_help(
-            rows.iter().any(|(id, ..)| id.is_hardware()),
-            rows.iter().any(|(id, ..)| id.is_imported()),
-        ) {
-            items.push(Item::Help(help));
-        }
-        if rows.is_empty() {
-            items.push(Item::Muted(
-                if self.sol.creating {
-                    text::CREATING
-                } else {
-                    text::NO_ACCOUNTS
-                }
-                .get(lang)
-                .to_owned(),
-            ));
-        }
+        // The shared account card (2026-11-15, `ui::screens_accounts`, as EVM's): items
+        // `label · source`, the selected account's actions under the drop-down (2026-11-12: its
+        // path, balance and address are the hero card's and are not said again here).
         let selected = selected.map(|(id, ..)| id);
         let removable = self.can_remove_imported();
-        // A drop-down like the EVM network's (2026-11-11): the selected account on its button,
-        // the accounts under it while open (each keeps the id its radio had); the selected
-        // account's actions follow (2026-11-12: its path, balance and address are the hero
-        // card's and are not said again here).
-        let mut entries = Vec::new();
+        let mut accounts = Vec::new();
         let mut chosen = None;
-        for (row, (id, label, _)) in rows
+        for (row, (id, label, _)) in self
+            .sol_account_rows()
             .into_iter()
             .take(usize::from(ids::ACCOUNT_SPAN))
             .enumerate()
         {
             let is_selected = selected == Some(id);
-            let shown_label = if id.is_imported() {
-                text::LABEL_IMPORTED.fill(lang, [&label])
-            } else if id.is_hardware() {
-                format!("{label} · YubiKey")
-            } else {
-                // With several mnemonics every derived row names its source.
-                self.mnemonic_tag(id.mnemonic())
-                    .map_or_else(|| label.clone(), |tag| format!("{label} · {tag}"))
+            let source = match id {
+                SolAccountId::Imported(_) => AccountSource::Imported,
+                SolAccountId::Hardware(index) => {
+                    AccountSource::Card(crate::ui::screens_accounts::sol_card_role(index))
+                }
+                SolAccountId::Derived(_) | SolAccountId::Mnemonic(..) => {
+                    AccountSource::Words(id.mnemonic())
+                }
             };
-            entries.push(crate::ui::screens_links::PickerEntry {
-                id: ids::ACCOUNT_BASE.saturating_add(u16::try_from(row).unwrap_or(0)),
-                label: shown_label,
-                selected: is_selected,
-                enabled: true,
-            });
             if is_selected {
-                chosen = Some((id, label));
+                chosen = Some((id, label.clone()));
             }
+            accounts.push(AccountItem {
+                id: ids::ACCOUNT_BASE.saturating_add(u16::try_from(row).unwrap_or(0)),
+                label,
+                source,
+                selected: is_selected,
+            });
         }
-        if !entries.is_empty() {
-            self.push_account_picker(items, crate::ui::screens_links::ids::PICKER_SOL, &entries);
-        }
-        if let Some((id, label)) = chosen {
+        let selected = chosen.map(|(id, label)| {
             if self.sol.rename == Some(id) {
-                items.push(Item::Row(vec![
-                    Ctl::edit(ids::RENAME_EDIT, &label, 260, false, 64),
-                    Ctl::primary(ids::RENAME_SAVE, text::SAVE.get(lang)),
-                    Ctl::button(ids::RENAME_CANCEL, text::CANCEL.get(lang)),
-                ]));
-            } else {
-                let mut row_ctls = vec![Ctl::button(ids::RENAME, text::RENAME.get(lang)).compact()];
-                match id {
-                    // No `숨기기` for a recovery phrase's first account (2026-11-12, as EVM).
-                    SolAccountId::Derived(index) | SolAccountId::Mnemonic(_, index) => {
-                        if index != 0 {
-                            row_ctls.push(Ctl::button(ids::HIDE, text::HIDE.get(lang)).compact());
-                        }
-                    }
-                    // A YubiKey account: no "개인키 보기" (the key is on the card only).
-                    SolAccountId::Hardware(_) => {
-                        row_ctls.push(Ctl::button(ids::HIDE, text::HIDE.get(lang)).compact());
-                    }
-                    SolAccountId::Imported(_) => {
-                        row_ctls.push(
-                            Ctl::button(
-                                crate::ui::screens_keys::ids::SOL_REVEAL,
-                                text::REVEAL_KEY.get(lang),
-                            )
-                            .compact()
-                            .enabled(unlocked),
-                        );
-                        row_ctls.push(
-                            Ctl::danger(
-                                crate::ui::screens_keys::ids::SOL_REMOVE,
-                                text::DELETE.get(lang),
-                            )
-                            .compact()
-                            .enabled(unlocked && removable),
-                        );
+                return SelectedLine::Rename {
+                    edit: ids::RENAME_EDIT,
+                    save: ids::RENAME_SAVE,
+                    cancel: ids::RENAME_CANCEL,
+                    label,
+                };
+            }
+            let mut buttons = vec![Ctl::button(ids::RENAME, text::RENAME.get(lang)).compact()];
+            match id {
+                // No `숨기기` for a recovery phrase's first account (2026-11-12, as EVM).
+                SolAccountId::Derived(index) | SolAccountId::Mnemonic(_, index) => {
+                    if index != 0 {
+                        buttons.push(Ctl::button(ids::HIDE, text::HIDE.get(lang)).compact());
                     }
                 }
-                items.push(Item::Row(row_ctls));
+                // A YubiKey account: no "개인키 보기" (the key is on the card only).
+                SolAccountId::Hardware(_) => {
+                    buttons.push(Ctl::button(ids::HIDE, text::HIDE.get(lang)).compact());
+                }
+                SolAccountId::Imported(_) => {
+                    buttons.push(
+                        Ctl::button(
+                            crate::ui::screens_keys::ids::SOL_REVEAL,
+                            text::REVEAL_KEY.get(lang),
+                        )
+                        .compact()
+                        .enabled(unlocked),
+                    );
+                    buttons.push(
+                        Ctl::danger(
+                            crate::ui::screens_keys::ids::SOL_REMOVE,
+                            text::DELETE.get(lang),
+                        )
+                        .compact()
+                        .enabled(unlocked && removable),
+                    );
+                }
             }
-        }
-        self.hidden_items(crate::app_hidden::Family::Sol, items);
-        items.push(Item::Rule);
-        let import = Ctl::button(
-            crate::ui::screens_keys::ids::SOL_IMPORT,
-            text::IMPORT_KEY.get(lang),
-        )
-        .compact()
-        .enabled(self.can_import(yw_core::keyimport::ImportChain::Sol));
-        if self.key_only() {
-            items.push(Item::Row(vec![import]));
-        } else {
-            items.push(Item::Row(vec![
+            SelectedLine::Buttons(buttons)
+        });
+        let mut actions = Vec::new();
+        let mut footer = Vec::new();
+        if !self.key_only() {
+            actions.push(
                 Ctl::button(ids::ADD_ACCOUNT, text::ADD_ACCOUNT.get(lang))
                     .compact()
                     .enabled(
@@ -804,13 +771,42 @@ impl App {
                                     .and_then(crate::meta::Meta::next_sol_index)
                                     .is_some()),
                     ),
-                Ctl::button(ids::SCAN_OPEN, text::SCAN.get(lang)).compact(),
-                import,
-            ]));
-            self.sol_pick_row(items);
-            items.push(Item::Help(text::SCAN_HINT.get(lang).to_owned()));
+            );
+            actions.push(Ctl::button(ids::SCAN_OPEN, text::SCAN.get(lang)).compact());
+            self.sol_pick_row(&mut footer);
+            footer.push(Item::Help(text::SCAN_HINT.get(lang).to_owned()));
         }
-        items.push(Item::CardEnd);
+        actions.push(
+            Ctl::button(
+                crate::ui::screens_keys::ids::SOL_IMPORT,
+                text::IMPORT_KEY.get(lang),
+            )
+            .compact()
+            .enabled(self.can_import(yw_core::keyimport::ImportChain::Sol)),
+        );
+        // The recovery-words link as on the EVM card (2026-11-15; the Solana card had none).
+        actions.push(self.mnemonics_link());
+        self.push_account_card(
+            items,
+            AccountCard {
+                title: text::MY_ACCOUNTS.get(lang).to_owned(),
+                picker: crate::ui::screens_links::ids::PICKER_SOL,
+                accounts,
+                empty: Some(
+                    if self.sol.creating {
+                        text::CREATING
+                    } else {
+                        text::NO_ACCOUNTS
+                    }
+                    .get(lang)
+                    .to_owned(),
+                ),
+                selected,
+                hidden: Some(crate::app_hidden::Family::Sol),
+                actions,
+                footer,
+            },
+        );
         if let Some((_, _, address)) = self.sol_selected() {
             self.sol_token_card(items, &address, unlocked && !no_endpoint);
         }

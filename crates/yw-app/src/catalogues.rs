@@ -115,6 +115,10 @@ const CATALOGUES: &[(&str, &[Entry])] = &[
     ("yw_app::ui::removed::text", crate::ui::removed::text::ALL),
     ("yw_app::ui::screens::text", crate::ui::screens::text::ALL),
     (
+        "yw_app::ui::screens_accounts::text",
+        crate::ui::screens_accounts::text::ALL,
+    ),
+    (
         "yw_app::ui::screens_book::text",
         crate::ui::screens_book::text::ALL,
     ),

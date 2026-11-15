@@ -17,6 +17,7 @@ use crate::meta::EvmAccountPref;
 use crate::network::NetworkId;
 use crate::settings::{LogLevel, RpcTemplate};
 use crate::ui::main_window::{Ctl, Item, Tone};
+use crate::ui::screens_accounts::{AccountCard, AccountItem, AccountSource, SelectedLine};
 use crate::ui::theme::AddressKind;
 use yw_core::lang::{Lang, Text};
 
@@ -1713,87 +1714,70 @@ impl App {
             return;
         }
         self.evm_hero(items);
-        items.push(Item::CardStart(Some(
-            text::MY_ACCOUNTS.get(lang).to_owned(),
-        )));
+        // The shared account card (2026-11-15, `ui::screens_accounts`): a drop-down like the
+        // network's (2026-11-11) whose items read `label · source`; the selected account's
+        // actions follow (2026-11-12: its path, balance and address are the hero card's).
         let selected = self.selected_pref();
-        let rows = self.account_rows();
-        let has_card = rows
-            .iter()
-            .any(|(pref, ..)| matches!(pref, EvmAccountPref::Hardware(_)));
-        let imported = self
-            .meta
-            .as_ref()
-            .is_some_and(|meta| !meta.evm_raw_accounts.is_empty());
-        if let Some(help) = self.accounts_help(has_card, imported) {
-            items.push(Item::Help(help));
-        }
-        // A drop-down like the network's (2026-11-11): the selected account on its button, the
-        // accounts under it while open (each keeps the id its radio had); the selected
-        // account's actions follow (2026-11-12: its path, balance and address are the hero
-        // card's and are not said again here).
-        let mut entries = Vec::new();
+        let mut accounts = Vec::new();
         let mut chosen = None;
-        for (row, (pref, label, ..)) in rows
+        for (row, (pref, label, ..)) in self
+            .account_rows()
             .into_iter()
             .take(usize::from(ids::ACCOUNT_SPAN))
             .enumerate()
         {
             let is_selected = selected == Some(pref);
-            let tag = match pref {
-                EvmAccountPref::Record(_) => Some(text::IMPORTED_KEY_TAG.get(lang).to_owned()),
-                EvmAccountPref::Hardware(_) => Some("YubiKey".to_owned()),
-                EvmAccountPref::Index(_) => self.mnemonic_tag(None),
-                EvmAccountPref::Mnemonic(id, _) => self.mnemonic_tag(Some(id)),
+            let source = match pref {
+                EvmAccountPref::Record(_) => AccountSource::Imported,
+                EvmAccountPref::Hardware(index) => {
+                    AccountSource::Card(crate::ui::screens_accounts::evm_card_role(index))
+                }
+                EvmAccountPref::Index(_) => AccountSource::Words(None),
+                EvmAccountPref::Mnemonic(id, _) => AccountSource::Words(Some(id)),
             };
-            entries.push(crate::ui::screens_links::PickerEntry {
-                id: ids::ACCOUNT_BASE.saturating_add(u16::try_from(row).unwrap_or(0)),
-                label: tag.map_or_else(|| label.clone(), |tag| format!("{label} · {tag}")),
-                selected: is_selected,
-                enabled: true,
-            });
             if is_selected {
-                chosen = Some((pref, label));
+                chosen = Some((pref, label.clone()));
             }
+            accounts.push(AccountItem {
+                id: ids::ACCOUNT_BASE.saturating_add(u16::try_from(row).unwrap_or(0)),
+                label,
+                source,
+                selected: is_selected,
+            });
         }
-        if !entries.is_empty() {
-            self.push_account_picker(items, crate::ui::screens_links::ids::PICKER_EVM, &entries);
-        }
-        if let Some((pref, label)) = chosen {
+        let selected = chosen.map(|(pref, label)| {
             if self.rename == Some(pref) {
-                items.push(Item::Row(vec![
-                    Ctl::edit(ids::RENAME_EDIT, &label, 260, false, 64),
-                    Ctl::primary(ids::RENAME_SAVE, text::SAVE.get(lang)),
-                    Ctl::button(ids::RENAME_CANCEL, text::CANCEL.get(lang)),
-                ]));
-            } else {
-                let mut row_ctls = vec![Ctl::button(ids::RENAME, text::RENAME.get(lang)).compact()];
-                match pref {
-                    // A recovery phrase's first account (…/0) cannot be hidden: no button
-                    // (2026-11-12; an off button and a line saying why before).
-                    EvmAccountPref::Index(index) | EvmAccountPref::Mnemonic(_, index) => {
-                        if index != 0 {
-                            row_ctls.push(Ctl::button(ids::HIDE, text::HIDE.get(lang)).compact());
-                        }
-                    }
-                    EvmAccountPref::Record(_) => {
-                        row_ctls.push(
-                            Ctl::danger(ids::REMOVE_KEY, text::DELETE.get(lang))
-                                .compact()
-                                .enabled(self.can_remove_imported()),
-                        );
-                    }
-                    // A YubiKey account (spec/10 §13): no "개인키 보기" (the key is on the card
-                    // only); hidden until a card with its key is enrolled again.
-                    EvmAccountPref::Hardware(_) => {
-                        row_ctls.push(Ctl::button(ids::HIDE, text::HIDE.get(lang)).compact());
+                return SelectedLine::Rename {
+                    edit: ids::RENAME_EDIT,
+                    save: ids::RENAME_SAVE,
+                    cancel: ids::RENAME_CANCEL,
+                    label,
+                };
+            }
+            let mut buttons = vec![Ctl::button(ids::RENAME, text::RENAME.get(lang)).compact()];
+            match pref {
+                // A recovery phrase's first account (…/0) cannot be hidden: no button
+                // (2026-11-12; an off button and a line saying why before).
+                EvmAccountPref::Index(index) | EvmAccountPref::Mnemonic(_, index) => {
+                    if index != 0 {
+                        buttons.push(Ctl::button(ids::HIDE, text::HIDE.get(lang)).compact());
                     }
                 }
-                items.push(Item::Row(row_ctls));
+                EvmAccountPref::Record(_) => {
+                    buttons.push(
+                        Ctl::danger(ids::REMOVE_KEY, text::DELETE.get(lang))
+                            .compact()
+                            .enabled(self.can_remove_imported()),
+                    );
+                }
+                // A YubiKey account (spec/10 §13): no "개인키 보기" (the key is on the card
+                // only); hidden until a card with its key is enrolled again.
+                EvmAccountPref::Hardware(_) => {
+                    buttons.push(Ctl::button(ids::HIDE, text::HIDE.get(lang)).compact());
+                }
             }
-        }
-        self.hidden_items(crate::app_hidden::Family::Evm, items);
-        items.push(Item::Rule);
+            SelectedLine::Buttons(buttons)
+        });
         let mut actions = Vec::new();
         if !self.key_only() {
             actions.push(
@@ -1807,16 +1791,22 @@ impl App {
                 .compact()
                 .enabled(self.can_import(yw_core::keyimport::ImportChain::Evm)),
         );
-        actions.push(
-            Ctl::link(
-                crate::ui::screens_mnemonics::ids::MAIN_LINK,
-                text::ADD_MANAGE_MNEMONICS.get(lang),
-            )
-            .compact(),
+        actions.push(self.mnemonics_link());
+        let mut footer = Vec::new();
+        self.mn_pick_row(&mut footer);
+        self.push_account_card(
+            items,
+            AccountCard {
+                title: text::MY_ACCOUNTS.get(lang).to_owned(),
+                picker: crate::ui::screens_links::ids::PICKER_EVM,
+                accounts,
+                empty: None,
+                selected,
+                hidden: Some(crate::app_hidden::Family::Evm),
+                actions,
+                footer,
+            },
         );
-        items.push(Item::Row(actions));
-        self.mn_pick_row(items);
-        items.push(Item::CardEnd);
         self.evm_main_sections(items);
     }
 

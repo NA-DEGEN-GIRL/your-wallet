@@ -12,6 +12,7 @@ pub mod main_window;
 pub mod qr;
 pub mod removed;
 pub mod screens;
+pub mod screens_accounts;
 pub mod screens_book;
 pub mod screens_btc;
 pub mod screens_evm;

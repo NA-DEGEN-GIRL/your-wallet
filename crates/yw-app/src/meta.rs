@@ -1690,10 +1690,20 @@ impl Meta {
     /// Every EVM account label: the first recovery phrase's, the added phrases', imported keys'
     /// and `YubiKey` accounts' (hidden ones too).
     pub fn evm_labels(&self) -> impl Iterator<Item = &str> {
+        self.evm_software_labels().chain(
+            self.hw_accounts
+                .evm
+                .iter()
+                .map(|account| account.label.as_str()),
+        )
+    }
+
+    /// The EVM labels of [`Meta::evm_labels`] but the `YubiKey` accounts' (a new `YubiKey`
+    /// account's default label is numbered after them, 2026-11-15).
+    pub fn evm_software_labels(&self) -> impl Iterator<Item = &str> {
         self.evm_accounts
             .iter()
             .chain(self.mnemonics.iter().flat_map(|entry| entry.evm.iter()))
-            .chain(self.hw_accounts.evm.iter())
             .map(|account| account.label.as_str())
             .chain(self.evm_raw_accounts.iter().map(|raw| raw.label.as_str()))
     }
@@ -1708,6 +1718,17 @@ impl Meta {
 
     /// Every Solana account label (all phrases, imported keys, `YubiKey` accounts).
     pub fn sol_labels(&self) -> impl Iterator<Item = &str> {
+        self.sol_software_labels().chain(
+            self.hw_accounts
+                .sol
+                .iter()
+                .map(|account| account.label.as_str()),
+        )
+    }
+
+    /// The Solana labels of [`Meta::sol_labels`] but the `YubiKey` accounts' (2026-11-15, as
+    /// [`Meta::evm_software_labels`]).
+    pub fn sol_software_labels(&self) -> impl Iterator<Item = &str> {
         self.sol_accounts
             .iter()
             .chain(
@@ -1716,7 +1737,6 @@ impl Meta {
                     .iter()
                     .map(|(_, account)| account),
             )
-            .chain(self.hw_accounts.sol.iter())
             .map(|account| account.label.as_str())
             .chain(self.sol_raw_accounts.iter().map(|raw| raw.label.as_str()))
     }

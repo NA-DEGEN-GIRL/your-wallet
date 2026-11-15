@@ -1493,7 +1493,7 @@
 
 | 이름 | 한국어 | English |
 |---|---|---|
-| HIDDEN_NOTE | '{0}'을(를) 숨겼습니다. 이 계정의 사이트 연결도 해제했습니다. '내 계정' 아래 '숨긴 계정'에서 다시 볼 수 있습니다. | '{0}' is hidden. Its site connections were removed too. You can see it again under 'Hidden accounts' in 'My accounts'. |
+| HIDDEN_NOTE | '{0}'을(를) 숨겼습니다. 이 계정의 사이트 연결도 해제했습니다. 계정 카드 아래 '숨긴 계정'에서 다시 볼 수 있습니다. | '{0}' is hidden. Its site connections were removed too. You can see it again under 'Hidden accounts' on the accounts card. |
 | TOGGLE_CLOSE | 숨긴 계정 {0}개 접기 ▾ | Hide hidden accounts ({0}) ▾ |
 | TOGGLE_OPEN | 숨긴 계정 {0}개 보기 ▸ | Show hidden accounts ({0}) ▸ |
 | HIDDEN_HELP | 숨긴 계정은 목록·보내기·사이트 연결에서 빠질 뿐 블록체인의 자산은 그대로입니다. '다시 보이기'를 누르면 목록으로 돌아옵니다(사이트 연결은 dApp에서 다시 하세요). | Hidden accounts are only left out of the list, sending and site connections; their assets on the blockchain stay as they are. 'Unhide' brings an account back to the list (connect it to sites again from the dApp). |
@@ -2513,7 +2513,7 @@
 | DONE_BALANCE_SEPOLIA | · EVM 탭은 Sepolia 테스트넷으로 시작합니다 — 쓰던 네트워크를 고르세요 | · The EVM tab starts on the Sepolia testnet — choose the network you used |
 | DONE_SHOW_MAINNET | Ethereum 메인넷으로 보기 | Show Ethereum mainnet |
 | DONE_BALANCE_NETWORK | · EVM 탭은 지금 {0}입니다 — 다른 네트워크는 메인 화면의 네트워크 칩에서 고르세요 | · The EVM tab is on {0} — choose other networks with the network chip on the main screen |
-| DONE_BALANCE_ACCOUNTS | · 계정은 자동으로 찾지 않습니다. 이전 지갑에서 계정을 여러 개 썼다면 “내 계정 → 계정 추가”를 차례로 누르세요. Solana의 다른 경로는 Solana 탭 “다른 경로 스캔”. | · Accounts are not searched automatically. If you used several accounts in your earlier wallet, press “My accounts → Add account” for each. For other Solana paths, use “Scan other paths” on the Solana tab. |
+| DONE_BALANCE_ACCOUNTS | · 계정은 자동으로 찾지 않습니다. 이전 지갑에서 계정을 여러 개 썼다면 “내 EVM 계정 → 계정 추가”를 차례로 누르세요. Solana의 다른 경로는 Solana 탭 “다른 경로 스캔”. | · Accounts are not searched automatically. If you used several accounts in your earlier wallet, press “My EVM accounts → Add account” for each. For other Solana paths, use “Scan other paths” on the Solana tab. |
 | DONE_OFF_BOTH | · Bitcoin·Zcash는 꺼져 있습니다 — 설정 → Bitcoin, Zcash 탭에서 켜면 보입니다(Bitcoin은 네이티브 세그윗 계정 0부터). | · Bitcoin and Zcash are off — turn them on in Settings → Bitcoin and on the Zcash tab to see them (Bitcoin from native SegWit account 0). |
 | DONE_OFF_BITCOIN | · Bitcoin은 꺼져 있습니다 — 설정 → Bitcoin에서 켜면 보입니다(네이티브 세그윗 계정 0부터). | · Bitcoin is off — turn it on in Settings → Bitcoin to see it (from native SegWit account 0). |
 | DONE_OFF_ZCASH | · Zcash는 꺼져 있습니다 — Zcash 탭에서 켜면 보입니다. | · Zcash is off — turn it on in the Zcash tab to see it. |
@@ -2534,8 +2534,7 @@
 | REFRESH | 새로고침 | Refresh |
 | NETWORK | 네트워크 | Network |
 | TESTNET_PILL | 테스트넷 — 실제 자산이 아닙니다 | Testnet — not real assets |
-| MY_ACCOUNTS | 내 계정 | My accounts |
-| IMPORTED_KEY_TAG | 가져온 키 | imported key |
+| MY_ACCOUNTS | 내 EVM 계정 | My EVM accounts |
 | SAVE | 저장 | Save |
 | RENAME | 이름 바꾸기 | Rename |
 | HIDE | 숨기기 | Hide |
@@ -2692,6 +2691,15 @@
 | C_GENERATE_TEXT | 선택한 템플릿으로 아래 네트워크의 RPC 주소를 만듭니다. 이미 주소가 있는 네트워크는 '기존 주소 덮어쓰기'를 켰을 때만 바꿉니다. | Creates RPC addresses for the networks below with the selected template. Networks that already have an address change only with 'Overwrite existing addresses' on. |
 | C_GENERATE_EXISTING |  — 기존 주소 있음 |  — has an address |
 | C_GENERATE_SKIPPED | \n건너뜀(템플릿 항목 없음): | \nSkipped (no template entry): |
+
+<!-- catalogue: yw_app::ui::screens_accounts::text -->
+
+| 이름 | 한국어 | English |
+|---|---|---|
+| SOURCE_WORDS | 복구 단어 | Recovery words |
+| SOURCE_IMPORTED | 가져온 키 | Imported key |
+| SOURCE_CARDS | YubiKey: {0} | YubiKey: {0} |
+| MORE_CARDS |  +{0} |  +{0} |
 
 <!-- catalogue: yw_app::ui::screens_book::text -->
 
@@ -3440,7 +3448,6 @@
 | MY_ACCOUNTS | 내 Solana 계정 | My Solana accounts |
 | CREATING | Solana 계정을 만드는 중… | Creating a Solana account… |
 | NO_ACCOUNTS | Solana 계정이 없습니다. | There is no Solana account. |
-| LABEL_IMPORTED | {0} · 가져온 키 | {0} · imported key |
 | SAVE | 저장 | Save |
 | CANCEL | 취소 | Cancel |
 | RENAME | 이름 바꾸기 | Rename |
@@ -4104,9 +4111,10 @@
 
 | 이름 | 한국어 | English |
 |---|---|---|
-| HW_EVM_CARD_KEY | YubiKey 카드 키 {0} | YubiKey card key {0} |
-| HW_SOL_CARD_KEY | YubiKey Solana 카드 키 {0} | YubiKey Solana card key {0} |
-| HW_EVM_ACCOUNT | YubiKey 계정 {0} | YubiKey account {0} |
+| LEGACY_HW_EVM_CARD_KEY | YubiKey 카드 키 {0} | YubiKey card key {0} |
+| LEGACY_HW_SOL_CARD_KEY | YubiKey Solana 카드 키 {0} | YubiKey Solana card key {0} |
+| LEGACY_HW_EVM_ACCOUNT | YubiKey 계정 {0} | YubiKey account {0} |
+| LEGACY_HW_SOL_ACCOUNT | YubiKey Solana {0} | YubiKey Solana {0} |
 
 <!-- catalogue: yw_app::yubikey::text -->
 

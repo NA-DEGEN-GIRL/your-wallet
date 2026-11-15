@@ -1,7 +1,8 @@
 //! Hidden accounts (spec/04 §2.6, 2026-11-08). `숨기기` only marks meta `hidden` (and takes the
 //! account out of every dApp grant, spec/05 §4.9); until now nothing showed those accounts again.
-//! The EVM and Solana `내 계정` cards list them under `숨긴 계정 n개 보기 ▸`, and `다시 보이기`
-//! clears the mark. Site connections are not restored (the user connects again from the dApp).
+//! The EVM and Solana account cards (`내 EVM 계정`, `내 Solana 계정`) list them under
+//! `숨긴 계정 n개 보기 ▸`, and `다시 보이기` clears the mark. Site connections are not restored
+//! (the user connects again from the dApp).
 
 use crate::app::App;
 use crate::app_sol::SolAccountId;
@@ -12,9 +13,10 @@ use yw_core::lang::Lang;
 /// The fixed texts of the hidden-account rows (spec/14).
 pub mod text {
     yw_core::texts! {
-        /// The note after `숨기기`: {0} the account's label.
-        HIDDEN_NOTE(1) = "'{0}'을(를) 숨겼습니다. 이 계정의 사이트 연결도 해제했습니다. '내 계정' 아래 '숨긴 계정'에서 다시 볼 수 있습니다."
-            / "'{0}' is hidden. Its site connections were removed too. You can see it again under 'Hidden accounts' in 'My accounts'.";
+        /// The note after `숨기기`: {0} the account's label (2026-11-15: "… '내 계정' 아래 …" before;
+        /// the cards are `내 EVM 계정` and `내 Solana 계정`).
+        HIDDEN_NOTE(1) = "'{0}'을(를) 숨겼습니다. 이 계정의 사이트 연결도 해제했습니다. 계정 카드 아래 '숨긴 계정'에서 다시 볼 수 있습니다."
+            / "'{0}' is hidden. Its site connections were removed too. You can see it again under 'Hidden accounts' on the accounts card.";
         /// The opened toggle: {0} count.
         TOGGLE_CLOSE(1) = "숨긴 계정 {0}개 접기 ▾" / "Hide hidden accounts ({0}) ▾";
         /// The closed toggle: {0} count.
@@ -125,7 +127,9 @@ impl App {
                         id: HiddenId::Evm(EvmAccountPref::Hardware(account.index)),
                         label: account.label.clone(),
                         address: account.address.clone(),
-                        source: "YubiKey".to_owned(),
+                        // The holder cards as on the drop-down (2026-11-15; `YubiKey` before).
+                        source: self
+                            .card_source(crate::ui::screens_accounts::evm_card_role(account.index)),
                     });
                 }
             }
@@ -165,7 +169,8 @@ impl App {
                         id: HiddenId::Sol(SolAccountId::Hardware(account.index)),
                         label: account.label.clone(),
                         address: account.address.clone(),
-                        source: "YubiKey".to_owned(),
+                        source: self
+                            .card_source(crate::ui::screens_accounts::sol_card_role(account.index)),
                     });
                 }
             }

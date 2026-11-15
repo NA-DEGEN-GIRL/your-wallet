@@ -257,64 +257,116 @@ fn reconcile_imported(document: &mut Meta, keys: &ImportedKeys, lang: yw_core::l
     changed
 }
 
-/// The default `YubiKey` account labels (spec/14; stored data, written in the app language of the
-/// moment like `meta::text`).
+/// The default `YubiKey` account labels written before 2026-11-15 (spec/14; recognised only,
+/// never written: [`hw_list`] replaces a stored label that still equals its index's old default).
 pub mod text {
     yw_core::texts! {
-        /// An EVM key connected without recovery words: {0} number.
-        HW_EVM_CARD_KEY(1) = "YubiKey 카드 키 {0}" / "YubiKey card key {0}";
-        /// A Solana key connected without recovery words: {0} number.
-        HW_SOL_CARD_KEY(1) = "YubiKey Solana 카드 키 {0}" / "YubiKey Solana card key {0}";
-        /// An EVM `YubiKey` account: {0} number.
-        HW_EVM_ACCOUNT(1) = "YubiKey 계정 {0}" / "YubiKey account {0}";
+        /// Before 2026-11-15: an EVM key connected without recovery words, {0} number.
+        LEGACY_HW_EVM_CARD_KEY(1) = "YubiKey 카드 키 {0}" / "YubiKey card key {0}";
+        /// Before 2026-11-15: a Solana key connected without recovery words, {0} number.
+        LEGACY_HW_SOL_CARD_KEY(1) = "YubiKey Solana 카드 키 {0}" / "YubiKey Solana card key {0}";
+        /// Before 2026-11-15: an EVM `YubiKey` account, {0} index + 1.
+        LEGACY_HW_EVM_ACCOUNT(1) = "YubiKey 계정 {0}" / "YubiKey account {0}";
+        /// Before 2026-11-15: a Solana `YubiKey` account, {0} index + 1.
+        LEGACY_HW_SOL_ACCOUNT(1) = "YubiKey Solana {0}" / "YubiKey Solana {0}";
     }
 }
 
-/// The default label of a `YubiKey` account (`YubiKey 계정 1`, `YubiKey Solana 1`).
-fn hw_label(lang: yw_core::lang::Lang, evm: bool, index: u32) -> String {
-    // A key connected without recovery words (spec/10 §7.6): its index is an account number.
-    if yw_core::yubikey::plan::is_unknown_index(index) {
-        let number = index
-            .saturating_sub(yw_core::yubikey::plan::UNKNOWN_PATH_FIRST)
-            .saturating_add(1)
-            .to_string();
-        return if evm {
-            text::HW_EVM_CARD_KEY.fill(lang, [&number])
-        } else {
-            text::HW_SOL_CARD_KEY.fill(lang, [&number])
-        };
-    }
-    if evm {
-        text::HW_EVM_ACCOUNT.fill(lang, [&index.saturating_add(1).to_string()])
+/// The default label of a new `YubiKey` account (2026-11-15, spec/10 §13): the account is named
+/// like a software account of its chain — EVM `계정 N` / `Account N`, Solana `Solana N` — with
+/// `N` one above the highest such number among `taken` (every label of the chain, as
+/// `Meta::next_evm_number`), so the name says which account it is and the drop-down's source
+/// part (`YubiKey: 메인·백업`) says which cards hold it. A key connected without recovery words
+/// (index 900–999, spec/10 §7.6) is named the same way (its path line says the path is not
+/// known).
+///
+/// Before 2026-11-15 the default named the card instead of the account: `YubiKey 계정 {i + 1}` /
+/// `YubiKey Solana {i + 1}` by index, `YubiKey 카드 키 {n}` / `YubiKey Solana 카드 키 {n}` for
+/// index `900 + n − 1` — two cards from one mnemonic read as one `YubiKey 계정 1`, which looked
+/// like a card number.
+fn hw_label<'a>(
+    lang: yw_core::lang::Lang,
+    evm: bool,
+    taken: impl IntoIterator<Item = &'a str>,
+) -> String {
+    let template = if evm {
+        crate::meta::EVM_ACCOUNT_LABEL
     } else {
-        format!("YubiKey Solana {}", index.saturating_add(1))
-    }
+        crate::meta::SOL_ACCOUNT_LABEL
+    };
+    crate::meta::next_imported_label(lang, template, taken)
+}
+
+/// Whether `label` is still the default the account `index` got before 2026-11-15 (either
+/// language; see [`hw_label`]); such a label is replaced by the new default, a label the user
+/// chose is kept.
+fn is_legacy_hw_label(evm: bool, index: u32, label: &str) -> bool {
+    let (template, number) = if yw_core::yubikey::plan::is_unknown_index(index) {
+        (
+            if evm {
+                text::LEGACY_HW_EVM_CARD_KEY
+            } else {
+                text::LEGACY_HW_SOL_CARD_KEY
+            },
+            index.saturating_sub(yw_core::yubikey::plan::UNKNOWN_PATH_FIRST),
+        )
+    } else if evm {
+        (text::LEGACY_HW_EVM_ACCOUNT, index)
+    } else {
+        (text::LEGACY_HW_SOL_ACCOUNT, index)
+    };
+    let expected = usize::try_from(number).ok().map(|n| n.saturating_add(1));
+    yw_core::lang::Lang::ALL
+        .into_iter()
+        .any(|lang| expected.is_some_and(|n| template.fill(lang, [&n.to_string()]) == label))
 }
 
 /// One chain's `hw_accounts` list from the slot map's accounts: labels and hidden flags kept by
-/// index, addresses recomputed; returns the list and whether it differs from `old`.
-fn hw_list(
+/// index, addresses recomputed; a new account, and one whose label is still its old default
+/// (2026-11-15, [`is_legacy_hw_label`]), gets [`hw_label`] numbered after `taken` (the chain's
+/// other labels) and the labels kept, in index order. Returns the list and whether it differs
+/// from `old`.
+fn hw_list<'a>(
     old: &[Account],
     found: impl Iterator<Item = (u32, String)>,
     evm: bool,
     lang: yw_core::lang::Lang,
+    taken: impl Iterator<Item = &'a str>,
 ) -> (Vec<Account>, bool) {
-    let mut list: Vec<Account> = found
+    let mut list: Vec<(Account, bool)> = found
         .map(|(index, address)| {
             let existing = old.iter().find(|account| account.index == index);
-            Account {
-                index,
-                label: existing.map_or_else(
-                    || hw_label(lang, evm, index),
-                    |account| account.label.clone(),
-                ),
-                address,
-                hidden: existing.is_some_and(|account| account.hidden),
-            }
+            let kept = existing
+                .map(|account| account.label.as_str())
+                .filter(|label| !is_legacy_hw_label(evm, index, label));
+            (
+                Account {
+                    index,
+                    label: kept.unwrap_or_default().to_owned(),
+                    address,
+                    hidden: existing.is_some_and(|account| account.hidden),
+                },
+                kept.is_none(),
+            )
         })
         .collect();
-    list.sort_by_key(|account| account.index);
-    list.dedup_by_key(|account| account.index);
+    list.sort_by_key(|(account, _)| account.index);
+    list.dedup_by_key(|(account, _)| account.index);
+    let mut taken: Vec<String> = taken
+        .map(str::to_owned)
+        .chain(
+            list.iter()
+                .filter(|(_, fresh)| !fresh)
+                .map(|(account, _)| account.label.clone()),
+        )
+        .collect();
+    for (account, fresh) in &mut list {
+        if *fresh {
+            account.label = hw_label(lang, evm, taken.iter().map(String::as_str));
+            taken.push(account.label.clone());
+        }
+    }
+    let list: Vec<Account> = list.into_iter().map(|(account, _)| account).collect();
     let changed = list.as_slice() != old;
     (list, changed)
 }
@@ -381,6 +433,7 @@ fn reconcile_hardware(
         }),
         true,
         lang,
+        document.evm_software_labels(),
     );
     let (sol, sol_changed) = hw_list(
         &document.hw_accounts.sol,
@@ -392,6 +445,7 @@ fn reconcile_hardware(
         }),
         false,
         lang,
+        document.sol_software_labels(),
     );
     let mut changed = evm_changed || sol_changed;
     document.hw_accounts.evm = evm;
@@ -2620,6 +2674,119 @@ pub(crate) mod tests {
         (worker, cards, dir, loaded)
     }
 
+    /// spec/10 §13 (2026-11-15): a new `YubiKey` account is named like a software account of
+    /// its chain, numbered after every label of the chain (`계정 N`, `Solana N`), and a stored
+    /// label that is still its index's old default (`YubiKey 계정 {i+1}`, `YubiKey account
+    /// {i+1}`, `YubiKey Solana {i+1}`, `YubiKey 카드 키 {n}` …, either language) is replaced the
+    /// same way, in index order; a renamed label — even one that looks like another index's old
+    /// default — stays.
+    #[test]
+    fn hw_labels_name_the_account_and_old_defaults_migrate() {
+        use super::hw_list;
+        use crate::meta::Account;
+        use yw_core::lang::Lang;
+        let account = |index: u32, label: &str| Account {
+            index,
+            label: label.to_owned(),
+            address: format!("a{index}"),
+            hidden: index == 1,
+        };
+        let found = |indices: &[u32]| {
+            indices
+                .iter()
+                .map(|index| (*index, format!("a{index}")))
+                .collect::<Vec<_>>()
+                .into_iter()
+        };
+        let labels = |list: &[Account]| {
+            list.iter()
+                .map(|account| (account.index, account.label.clone()))
+                .collect::<Vec<_>>()
+        };
+        // New accounts after the software `계정 1`, `Account 4` and a user's `계정 x`.
+        let (list, changed) = hw_list(
+            &[],
+            found(&[0, 1, 900]),
+            true,
+            Lang::Ko,
+            ["계정 1", "Account 4", "계정 x"].into_iter(),
+        );
+        assert!(changed);
+        assert_eq!(
+            labels(&list),
+            [
+                (0, "계정 5".to_owned()),
+                (1, "계정 6".to_owned()),
+                (900, "계정 7".to_owned())
+            ]
+        );
+        // Stored old defaults migrate (hidden flags kept); renamed labels stay, including one
+        // equal to another index's old default.
+        let old = [
+            account(0, "YubiKey 계정 1"),
+            account(1, "YubiKey account 2"),
+            account(2, "YubiKey 계정 1"),
+            account(3, "메인 지갑"),
+            account(900, "YubiKey card key 1"),
+            account(901, "YubiKey 카드 키 1"),
+        ];
+        let (list, changed) = hw_list(
+            &old,
+            found(&[0, 1, 2, 3, 900, 901]),
+            true,
+            Lang::En,
+            ["계정 1"].into_iter(),
+        );
+        assert!(changed);
+        assert_eq!(
+            labels(&list),
+            [
+                (0, "Account 2".to_owned()),
+                (1, "Account 3".to_owned()),
+                (2, "YubiKey 계정 1".to_owned()),
+                (3, "메인 지갑".to_owned()),
+                (900, "Account 4".to_owned()),
+                (901, "YubiKey 카드 키 1".to_owned())
+            ]
+        );
+        assert!(
+            list.get(1).is_some_and(|account| account.hidden),
+            "the hidden flag survives the migration"
+        );
+        // Migrated labels are stable: a second pass changes nothing.
+        let (again, changed) = hw_list(
+            &list,
+            found(&[0, 1, 2, 3, 900, 901]),
+            true,
+            Lang::Ko,
+            ["계정 1"].into_iter(),
+        );
+        assert!(!changed);
+        assert_eq!(again, list);
+        // Solana: `YubiKey Solana 1` → `Solana N` after the software `Solana 1`; a renamed one
+        // stays.
+        let (list, _) = hw_list(
+            &[
+                account(0, "YubiKey Solana 1"),
+                account(1, "트레이딩"),
+                account(900, "YubiKey Solana 카드 키 1"),
+            ],
+            found(&[0, 1, 900, 2]),
+            false,
+            Lang::Ko,
+            ["Solana 1"].into_iter(),
+        );
+        assert_eq!(
+            labels(&list),
+            [
+                (0, "Solana 2".to_owned()),
+                (1, "트레이딩".to_owned()),
+                (2, "Solana 3".to_owned()),
+                (900, "Solana 4".to_owned())
+            ]
+        );
+    }
+
     /// spec/10 §13: after enrolment the meta reconcile lists the slot map's accounts — EVM 0/1
     /// and Solana 0 in `hw_accounts`, the BIP84 address key as a single-address `YubiKey` account
     /// of `btc_accounts` — with the `abandon` vectors as addresses; a second load changes
@@ -2654,16 +2821,8 @@ pub(crate) mod tests {
         assert_eq!(
             evm,
             [
-                (
-                    0,
-                    "YubiKey 계정 1",
-                    "0x9858effd232b4033e47d90003d41ec34ecaeda94"
-                ),
-                (
-                    1,
-                    "YubiKey 계정 2",
-                    "0x6fac4d18c912343bf86fa7049364dd4e424ab9c0"
-                )
+                (0, "계정 2", "0x9858effd232b4033e47d90003d41ec34ecaeda94"),
+                (1, "계정 3", "0x6fac4d18c912343bf86fa7049364dd4e424ab9c0")
             ]
         );
         assert_eq!(meta.hw_accounts.sol.len(), 1);
@@ -2794,7 +2953,7 @@ pub(crate) mod tests {
                 created_at_ms: NOW,
             };
             let facts = SolPreviewFacts {
-                account_label: "YubiKey Solana 1".to_owned(),
+                account_label: "Solana 2".to_owned(),
                 recipient: check_recipient(TO, &intent.core.from, &[]).unwrap(),
                 recipient_account: AccountClass::Missing,
                 balance: 10_000_000_000,
@@ -3062,7 +3221,7 @@ pub(crate) mod tests {
                 cluster: SolCluster::Devnet,
                 source: SolKeySource::Hardware(AccountIndex::ZERO),
                 public,
-                label: "YubiKey Solana 1".to_owned(),
+                label: "Solana 2".to_owned(),
                 mode: SolTxMode::SignAndSend,
                 options: SolSendOptions::default(),
                 txs: vec![tx.clone()],
