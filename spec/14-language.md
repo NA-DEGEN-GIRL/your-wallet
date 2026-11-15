@@ -23,7 +23,8 @@
 - yw-core는 전역 언어를 읽지 않는다: 빌더·규칙 평가가 `Lang` 인자(또는 입력 구조체의 `lang`)를 받는다. yw-app은 `settings.language`를 쓰고, 승인 창 하나에 속한 모든 것(표시, 경고, 준비 실패 문구, 재시뮬레이션)은 그 창의 `lang`(`App::approval_lang`)으로 만든다.
 - 번역하지 않는 것: dApp 메시지·typed data 이름·ABI 인수 이름·주소록 이름·토큰 심볼·사이트 이름 같은 신뢰하지 않는 텍스트, 숫자·금액·hex·base58·UTC 시각 형식(두 언어 같은 형식).
 - 한국어 조사 처리(을/를 등)는 한국어 쪽에만 쓴다: 영어 문구는 조사만 담는 자리표시를 쓰지 않아도 된다(§4 규칙).
-- 글꼴은 두 언어 모두 Malgun Gothic이다(사용자가 붙인 이름에 한글이 있을 수 있다).
+- 본문 글꼴은 언어를 따른다: 한국어 Malgun Gothic, 영어 Segoe UI(`ui::theme::body_faces`; 고정폭 Consolas는 두 언어 같다). 승인 창과 비밀 창은 그 창의 `lang`으로 글꼴을 고른다(`FontCache`가 DPI·언어별). 영어 문구 속 한글(사용자가 붙인 이름, 언어 카드의 `한국어`)은 시스템 글꼴 연결(font link)로 Malgun Gothic 글리프로 그려진다. 2026-11-15 전에는 두 언어 모두 Malgun Gothic이었다 — 이 글꼴은 `\`를 `₩`로 그려 영어 화면의 경로가 `%LOCALAPPDATA%₩YourWallet`처럼 보였다.
+- 확장 팝업도 같다: `<html lang="en">`이면 `"Segoe UI", "Malgun Gothic"` 순서다([05] §2.12).
 
 ## 3. 승인 표시의 언어 ("보는 것이 서명하는 것", 언어별)
 

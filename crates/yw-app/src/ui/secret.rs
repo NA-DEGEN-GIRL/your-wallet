@@ -934,6 +934,12 @@ fn paint_steps(
 }
 
 impl SecretForm {
+    /// The language the window's texts are drawn in (its fonts follow it, `theme::FontCache`).
+    #[must_use]
+    pub const fn lang(&self) -> Lang {
+        self.lang
+    }
+
     /// An input window (W01–W07, W10) whose texts are in `lang`.
     #[must_use]
     pub fn new(kind: SecretKind, lang: Lang, now_ms: u64, capture_excluded: bool) -> Self {

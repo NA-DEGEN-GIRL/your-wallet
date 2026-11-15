@@ -1413,7 +1413,7 @@ impl App {
         let dpi = main.dpi();
         let client = main.client_rect();
         let items = self.items();
-        let Some(fonts) = self.fonts.for_dpi(dpi) else {
+        let Some(fonts) = self.fonts.for_dpi(dpi, self.settings.language) else {
             return;
         };
         let measure = |text: &str, role: FontRole, width: i32| {
@@ -1466,7 +1466,7 @@ impl App {
     fn paint_main(&mut self, window: &Window) {
         let dpi = window.dpi();
         let client = window.client_rect();
-        let Some(fonts) = self.fonts.for_dpi(dpi) else {
+        let Some(fonts) = self.fonts.for_dpi(dpi, self.settings.language) else {
             return;
         };
         if let Ok(mut dc) = window.begin_paint() {
@@ -3062,7 +3062,7 @@ impl App {
         let form = &mut secret.form;
         let action = match msg {
             Msg::Paint => {
-                if let Some(fonts) = fonts.for_dpi(dpi)
+                if let Some(fonts) = fonts.for_dpi(dpi, form.lang())
                     && let Ok(mut dc) = window.begin_paint()
                 {
                     form.paint(&mut dc, window.client_rect(), fonts, dpi, now);

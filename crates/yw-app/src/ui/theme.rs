@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 
+use yw_core::lang::Lang;
 use yw_win::ui::controls::ButtonStyle;
 use yw_win::ui::{Color, DrawFlags, Font, PaintDc, Rect};
 
@@ -209,7 +210,7 @@ pub const fn link_on(backdrop: Color) -> ButtonStyle {
 /// Font roles (the type scale, spec/04 §1.6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum FontRole {
-    /// Body, labels, buttons: Malgun Gothic 10 pt.
+    /// Body, labels, buttons: 10 pt (Malgun Gothic in Korean, Segoe UI in English).
     Body,
     /// Screen title: bold 14 pt.
     Title,
@@ -263,26 +264,38 @@ pub struct Fonts {
     pub symbol: Font,
 }
 
-fn body_font(size: u16, bold: bool, dpi: u32) -> Option<Font> {
-    Font::create("Malgun Gothic", size, bold, dpi)
-        .or_else(|_| Font::create("Segoe UI", size, bold, dpi))
+/// The body face of `lang` and its fallback (spec/04 §1.6, spec/14 §2). Korean is Malgun Gothic.
+/// English is Segoe UI (2026-11-15: before, both languages used Malgun Gothic, which draws `\` as
+/// `₩`, so English paths read `%LOCALAPPDATA%₩YourWallet`); Hangul in English text (a user's
+/// label, `한국어` in the language card) still draws through the system font link to Malgun Gothic.
+const fn body_faces(lang: Lang) -> [&'static str; 2] {
+    match lang {
+        Lang::Ko => ["Malgun Gothic", "Segoe UI"],
+        Lang::En => ["Segoe UI", "Malgun Gothic"],
+    }
+}
+
+fn body_font(lang: Lang, size: u16, bold: bool, dpi: u32) -> Option<Font> {
+    let [face, fallback] = body_faces(lang);
+    Font::create(face, size, bold, dpi)
+        .or_else(|_| Font::create(fallback, size, bold, dpi))
         .ok()
 }
 
 impl Fonts {
-    /// Creates the fonts for `dpi`.
+    /// Creates the fonts for `dpi` and the UI language `lang`.
     #[must_use]
-    pub fn create(dpi: u32) -> Option<Self> {
+    pub fn create(dpi: u32, lang: Lang) -> Option<Self> {
         Some(Self {
-            caption: body_font(9, false, dpi)?,
-            subtitle: body_font(11, true, dpi)?,
-            display: body_font(20, true, dpi)?,
-            body: body_font(10, false, dpi)?,
-            title: body_font(14, true, dpi)?,
+            caption: body_font(lang, 9, false, dpi)?,
+            subtitle: body_font(lang, 11, true, dpi)?,
+            display: body_font(lang, 20, true, dpi)?,
+            body: body_font(lang, 10, false, dpi)?,
+            title: body_font(lang, 14, true, dpi)?,
             mono: Font::create("Consolas", 10, false, dpi).ok()?,
             mono_large: Font::create("Consolas", 14, false, dpi).ok()?,
-            approval_title: body_font(12, true, dpi)?,
-            body_bold: body_font(10, true, dpi)?,
+            approval_title: body_font(lang, 12, true, dpi)?,
+            body_bold: body_font(lang, 10, true, dpi)?,
             mono_small: Font::create("Consolas", 9, false, dpi).ok()?,
             mono_bold: Font::create("Consolas", 10, true, dpi).ok()?,
             symbol: Font::create("Segoe UI Symbol", 11, false, dpi).ok()?,
@@ -351,19 +364,20 @@ fn ends_in_consonant(word: &str, rieul_is_vowel: bool) -> bool {
     }
 }
 
-/// Fonts per DPI (windows on different monitors).
+/// Fonts per DPI (windows on different monitors) and language (an approval window keeps the
+/// language it opened in while the main window may switch).
 #[derive(Debug, Default)]
 pub struct FontCache {
-    by_dpi: HashMap<u32, Fonts>,
+    by_dpi: HashMap<(u32, Lang), Fonts>,
 }
 
 impl FontCache {
-    /// The fonts for `dpi`, created on first use.
-    pub fn for_dpi(&mut self, dpi: u32) -> Option<&Fonts> {
-        if let std::collections::hash_map::Entry::Vacant(entry) = self.by_dpi.entry(dpi) {
-            entry.insert(Fonts::create(dpi)?);
+    /// The fonts for `dpi` in `lang`, created on first use.
+    pub fn for_dpi(&mut self, dpi: u32, lang: Lang) -> Option<&Fonts> {
+        if let std::collections::hash_map::Entry::Vacant(entry) = self.by_dpi.entry((dpi, lang)) {
+            entry.insert(Fonts::create(dpi, lang)?);
         }
-        self.by_dpi.get(&dpi)
+        self.by_dpi.get(&(dpi, lang))
     }
 }
 

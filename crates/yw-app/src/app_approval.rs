@@ -3419,8 +3419,9 @@ impl App {
             .llm
             .as_ref()
             .is_none_or(crate::explain::ExplainService::busy);
+        let lang = self.approval_lang();
         let Self { evm, fonts, .. } = self;
-        let Some(fonts) = fonts.for_dpi(dpi) else {
+        let Some(fonts) = fonts.for_dpi(dpi, lang) else {
             return;
         };
         let Some(ui) = evm.window.as_mut() else {
@@ -3972,8 +3973,9 @@ impl App {
         let now = now_ms();
         let dpi = window.dpi();
         let client = window.client_rect();
+        let lang = self.approval_lang();
         let Self { evm, fonts, .. } = self;
-        let Some(fonts) = fonts.for_dpi(dpi) else {
+        let Some(fonts) = fonts.for_dpi(dpi, lang) else {
             return;
         };
         let Some(ui) = evm.window.as_mut() else {
@@ -4335,8 +4337,9 @@ impl App {
     fn paint_panel(&mut self, window: &Window) {
         let dpi = window.dpi();
         let client = window.client_rect();
+        let lang = self.approval_lang();
         let Self { evm, fonts, .. } = self;
-        let Some(fonts) = fonts.for_dpi(dpi) else {
+        let Some(fonts) = fonts.for_dpi(dpi, lang) else {
             return;
         };
         let Some(ui) = evm.window.as_mut() else {

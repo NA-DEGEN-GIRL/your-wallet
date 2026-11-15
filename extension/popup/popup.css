@@ -38,6 +38,11 @@ body {
   background: var(--page-bg);
 }
 
+/* English: Segoe UI first (2026-11-15; Malgun Gothic draws a backslash as the won sign). */
+html[lang="en"] body {
+  font-family: "Segoe UI", "Malgun Gothic", system-ui, sans-serif;
+}
+
 p {
   margin: 0;
 }

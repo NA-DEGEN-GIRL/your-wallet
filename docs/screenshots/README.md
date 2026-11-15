@@ -27,6 +27,7 @@
 - 화면 크기는 100%(96 DPI) 기준입니다. 비밀 창(03–05, 09)은 실제로는 화면 캡처에서 제외되며, 투어 프로세스가 직접 만든 창에 한해 캡처 직전에 제외를 풀었습니다.
 
 - 2026-11-14(영어 화면, spec/14): 앱 언어를 `English`로 둔 같은 투어를 [`en/`](en/) 폴더에 찍었습니다(`scripts/screenshot-tour.ps1 -Lang en`, 같은 파일 이름·같은 시험용 값). 영어 승인 창의 머리 라벨 열과 `High risk` 표는 이제 글자 폭에 맞추고(한국어는 예전 폭 그대로), 비밀 창 단계 표시의 영어는 짧게 했습니다(`Password · Recovery words · Backup check`). 아래 표의 설명은 한국어 화면 기준입니다. 같은 날 한국어 45도 다시 찍었습니다: 확장 폴더 줄이 투어를 돌린 저장소 경로 대신 설치 위치 `%LOCALAPPDATA%\Programs\YourWallet\extension`을 보입니다(투어 전용 대역). 한국어 장면의 나머지는 바이트 그대로입니다.
+- 2026-11-15(영어 글꼴): 영어 화면의 본문 글꼴을 Malgun Gothic에서 Segoe UI로 바꾸고([spec/14](../../spec/14-language.md) §2) [`en/`](en/) 장면을 모두 다시 찍었습니다. Malgun Gothic은 `\`를 `₩`로 그려 44의 경로가 `%LOCALAPPDATA%₩YourWallet`처럼 보였습니다. 팝업(19)도 영어일 때 Segoe UI가 먼저입니다. 한국어 장면은 그대로입니다.
 
 | 파일 | 설명 |
 |---|---|
