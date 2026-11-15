@@ -1,9 +1,9 @@
 //! One account card for the chain tabs (2026-11-15, spec/04 §2.6): the EVM `내 EVM 계정`, the
-//! Solana `내 Solana 계정` and the Bitcoin `내 Bitcoin 계정` cards are laid out by
-//! [`App::push_account_card`] from an [`AccountCard`] — title, the shared help (`accounts_help`),
-//! the drop-down whose items read `label · source`, the selected account's line (its rename field
-//! or its buttons) and details, the hidden accounts, a rule and the card's actions. Zcash can
-//! adopt it with its own rows.
+//! Solana `내 Solana 계정`, the Bitcoin `내 Bitcoin 계정` and the Zcash `내 Zcash 계정` cards are
+//! laid out by [`App::push_account_card`] from an [`AccountCard`] — title, the shared help
+//! (`accounts_help`), the drop-down whose items read `label · source`, the selected account's line
+//! (its rename field or its buttons) and details, the hidden accounts, a rule and the card's
+//! actions. Zcash's items are its key sources (one account per network: no rename, no hide).
 //!
 //! Before 2026-11-15 each tab wrote its own card: the EVM title was `내 계정`, a `YubiKey`
 //! account's item ended in a bare `· YubiKey` (which card held the key was not said), an imported
@@ -100,6 +100,9 @@ pub struct AccountCard {
     pub accounts: Vec<AccountItem>,
     /// A muted line instead of the drop-down while there is no account.
     pub empty: Option<String>,
+    /// Why the drop-down cannot be used now (Zcash: a transaction is unfinished): its button is
+    /// disabled, it does not open, and this reason is the line under it.
+    pub locked: Option<String>,
     /// The selected account's line.
     pub selected: Option<SelectedLine>,
     /// Items after the selected account's line (Bitcoin: a refusal note, the address mode, the
@@ -145,11 +148,14 @@ impl App {
                 id: account.id,
                 label,
                 selected: account.selected,
-                enabled: account.enabled || account.selected,
+                enabled: (account.enabled && card.locked.is_none()) || account.selected,
             })
             .collect();
         if !entries.is_empty() {
-            self.push_account_picker(items, card.picker, &entries);
+            self.push_account_picker(items, card.picker, &entries, card.locked.is_none());
+        }
+        if let Some(reason) = card.locked {
+            items.push(Item::Help(reason));
         }
         match card.selected {
             Some(SelectedLine::Rename {

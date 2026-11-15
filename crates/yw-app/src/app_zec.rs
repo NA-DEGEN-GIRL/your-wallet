@@ -57,8 +57,9 @@ pub mod text {
             / "No enrolled YubiKey has a Zcash key for this network.";
         IMPORTED_USED = "가져온 키를 이 네트워크의 Zcash 계정으로 씁니다."
             / "The imported key is now this network's Zcash account.";
-        IMPORTED_LISTED(1) = "가져온 키를 목록에 더했습니다 ({0}). 그 네트워크에서 '이 키 사용'으로 고르세요."
-            / "The imported key was added to the list ({0}). Choose it with 'Use this key' on that network.";
+        /// 2026-11-15: names the account card's drop-down (`이 키 사용` of the key rows before).
+        IMPORTED_LISTED(1) = "가져온 키를 목록에 더했습니다 ({0}). 그 네트워크의 '내 Zcash 계정'에서 고르세요."
+            / "The imported key was added to the list ({0}). Choose it in 'My Zcash accounts' on that network.";
         /// The send form.
         APPROVAL_BUSY = "Zcash 승인이 이미 진행 중입니다." / "A Zcash approval is already in progress.";
         CHECKING_NODE = "Zcash 노드를 확인하는 중…" / "Checking the Zcash node…";
@@ -98,7 +99,8 @@ const REFRESH_MS: u64 = yw_core::zec::ZEC_POLL_SECS * 1_000;
 /// every 30 s refresh only repeats the answer.
 const REJECTED_RESEND_BLOCKS: u32 = 10;
 
-/// The key source the account card offers (spec/12 §2.2).
+/// The software key source picked in the account card's drop-down (spec/12 §2.2): the EVM key
+/// waits here for its confirmation (`정말 EVM 키 사용`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SourceChoice {
     /// `m/44'/{133|1}'/0'/0/0` (default).
@@ -202,7 +204,8 @@ pub struct ZecUi {
     key_pending: bool,
     /// Receive card QR shown.
     pub show_qr: bool,
-    /// Key-source choice of the account card.
+    /// The software key source picked in the account card's drop-down (2026-11-15; its radio
+    /// before).
     pub source: SourceChoice,
     /// The EVM-key source needs one more confirmation (T-ZEC-EVM-SHARED).
     pub confirm_shared: bool,
@@ -421,7 +424,8 @@ impl App {
         })));
     }
 
-    /// Uses another key source for the account (account card).
+    /// Uses the picked software key source for the account (the account card's drop-down; the
+    /// EVM key only on its second call, the confirmation).
     pub fn zec_apply_source(&mut self) {
         let source = match self.zec.source {
             SourceChoice::Standard => ZecKeySource::DEFAULT,
@@ -502,12 +506,28 @@ impl App {
             .collect()
     }
 
-    fn zec_all_terminal(&self) -> bool {
+    /// No approval is open and every Zcash record has ended: the key source may change (the
+    /// account card's drop-down is disabled otherwise, 2026-11-15).
+    #[must_use]
+    pub(crate) fn zec_all_terminal(&self) -> bool {
         !self.zec.busy && self.zec_records().iter().all(ZecRecord::is_terminal)
+    }
+
+    /// The account is on `source` (and, given, on `pubkey`): picking that drop-down item again
+    /// changes nothing (2026-11-15).
+    #[must_use]
+    pub fn zec_source_in_use(&self, source: ZecKeySource, pubkey: Option<[u8; 33]>) -> bool {
+        self.zec_account().is_some_and(|account| {
+            account.source == source && pubkey.is_none_or(|key| key == account.pubkey)
+        })
     }
 
     /// Uses the `YubiKey` Zcash slot `index` of the current network as the account (spec/10).
     pub fn zec_use_hardware(&mut self, index: u32) {
+        if self.zec_source_in_use(ZecKeySource::Hardware { index }, None) {
+            self.refresh();
+            return;
+        }
         if !self.zec_all_terminal() {
             self.zec.error = Some(text::SOURCE_BUSY.get(self.settings.language).to_owned());
             self.refresh();
@@ -563,6 +583,15 @@ impl App {
     /// Uses the standard key `m/44'/{coin}'/0'/0/0` of the added mnemonic `id` as the account
     /// (spec/02 §8.6; refused while a transaction is in flight, like every source change).
     pub fn zec_use_mnemonic(&mut self, id: yw_core::vault::RecordId) {
+        let source = ZecKeySource::Mnemonic {
+            mnemonic: id,
+            account: 0,
+            index: 0,
+        };
+        if self.zec_source_in_use(source, None) {
+            self.refresh();
+            return;
+        }
         if !self.zec_all_terminal() {
             self.zec.error = Some(text::SOURCE_BUSY.get(self.settings.language).to_owned());
             self.refresh();
@@ -571,11 +600,7 @@ impl App {
         self.zec.key_pending = true;
         self.key(KeyJob::Zec(Box::new(ZecKeyJob::PublicKey {
             network: self.zec_network(),
-            source: ZecKeySource::Mnemonic {
-                mnemonic: id,
-                account: 0,
-                index: 0,
-            },
+            source,
         })));
         self.refresh();
     }
@@ -603,6 +628,10 @@ impl App {
         let Some((_, info)) = self.zec_imported_keys().into_iter().nth(position) else {
             return;
         };
+        if self.zec_source_in_use(ZecKeySource::Imported, Some(info.pubkey)) {
+            self.refresh();
+            return;
+        }
         if !self.zec_all_terminal() {
             self.zec.error = Some(text::SOURCE_BUSY.get(self.settings.language).to_owned());
             self.refresh();

@@ -1885,7 +1885,7 @@
 | DISABLE_BUSY | 진행 중인 Zcash 거래가 있어 끌 수 없습니다. | A Zcash transaction is in progress, so Zcash cannot be turned off. |
 | NO_HW_KEY | 이 네트워크의 Zcash 키가 등록된 YubiKey가 없습니다. | No enrolled YubiKey has a Zcash key for this network. |
 | IMPORTED_USED | 가져온 키를 이 네트워크의 Zcash 계정으로 씁니다. | The imported key is now this network's Zcash account. |
-| IMPORTED_LISTED | 가져온 키를 목록에 더했습니다 ({0}). 그 네트워크에서 '이 키 사용'으로 고르세요. | The imported key was added to the list ({0}). Choose it with 'Use this key' on that network. |
+| IMPORTED_LISTED | 가져온 키를 목록에 더했습니다 ({0}). 그 네트워크의 '내 Zcash 계정'에서 고르세요. | The imported key was added to the list ({0}). Choose it in 'My Zcash accounts' on that network. |
 | APPROVAL_BUSY | Zcash 승인이 이미 진행 중입니다. | A Zcash approval is already in progress. |
 | CHECKING_NODE | Zcash 노드를 확인하는 중… | Checking the Zcash node… |
 | NO_ACCOUNT | Zcash 계정을 아직 불러오지 못했습니다. | The Zcash account is not loaded yet. |
@@ -3851,9 +3851,6 @@
 | UNCLASSIFIED | 미확정 출력 {0} (0 확인 — 입금인지 확인하지 않았습니다, 아직 쓸 수 없음) | Unconfirmed outputs {0} (0 confirmations — not checked as a deposit, not spendable yet) |
 | RECEIVE_NOTE | 일반(transparent) 주소입니다 — Zashi 등 비공개 주소로 받으려면 그 지갑에서 받으세요. | This is a transparent address — to receive on a shielded address (Zashi etc.), receive in that wallet. |
 | EVM_SHARED | EVM 계정과 같은 키를 쓰면 EVM 주소와 이 Zcash 주소가 같은 공개키라 누구나 두 주소를 한 사람의 것으로 묶을 수 있습니다. 같은 복구 단어를 다른 Zcash 지갑에 넣어도 이 주소는 나오지 않습니다(표준 경로가 아님). 정말 필요할 때만 쓰세요. | With the same key as an EVM account, the EVM address and this Zcash address share one public key, so anyone can link both addresses to one person. Putting the same recovery phrase into another Zcash wallet does not give this address (not the standard path). Use it only when you really need to. |
-| IMPORTED_ROW | [가져온 키] {0} | [Imported key] {0} |
-| IN_USE | 사용 중 | In use |
-| USE_KEY | 이 키 사용 | Use this key |
 | REVEAL_KEY | 개인키 보기 | Show private key |
 | DELETE | 삭제 | Delete |
 | IMPORT_HELP | 다른 지갑(zcashd 등)의 Zcash 일반 주소 개인키(압축 WIF 또는 16진수)를 가져와 이 네트워크의 계정으로 쓸 수 있습니다. 가져온 키는 복구 단어로 복구되지 않습니다. | You can import a Zcash transparent address private key (compressed WIF or hex) from another wallet (zcashd etc.) and use it as this network's account. An imported key is not restored by the recovery phrase. |
@@ -3881,18 +3878,12 @@
 | BALANCE_DASH | 잔액 — | Balance — |
 | CONFIRMED_BALANCE_NOTE | 확인된 잔액 {0} (서버 기준, 진행 중 거래의 입력 제외) | Confirmed balance {0} (per the server, inputs of transactions in progress excluded) |
 | REFRESH | 새로고침 | Refresh |
-| KEY_SOURCE | 키 출처 | Key source |
+| MY_ACCOUNTS | 내 Zcash 계정 | My Zcash accounts |
 | SOURCE_STANDARD | Zcash 표준 경로 (권장, 기본값) | Zcash standard path (recommended, default) |
-| SOURCE_EVM | EVM 계정 {0}과 같은 키 | Same key as EVM account {0} |
-| CHANGE_SOURCE | 키 출처 바꾸기 | Change key source |
+| EVM_PATH | EVM 경로 (비표준) | EVM path (non-standard) |
+| CARD_KEY | 카드 키 {0} (경로 모름) | Card key {0} (path unknown) |
 | CONFIRM_EVM | 정말 EVM 키 사용 | Really use the EVM key |
-| APPLY_SOURCE | 이 키 출처 사용 | Use this key source |
 | CANCEL | 취소 | Cancel |
-| HW_CARD_KEY | YubiKey Zcash 카드 키 {0} 사용 (경로 모름) | Use YubiKey Zcash card key {0} (path unknown) |
-| HW_ADDRESS | YubiKey Zcash 주소 {0} 사용 | Use YubiKey Zcash address {0} |
-| MNEMONIC_IN_USE | {0} 표준 경로 (사용 중) | {0} standard path (in use) |
-| MNEMONIC_USE | {0} 표준 경로 사용 | Use {0} standard path |
-| ADDED_PHRASES | 추가한 복구 단어 | Added recovery phrases |
 | RECEIVE | 받기 | Receive |
 | COPY_ADDRESS | 주소 복사 | Copy address |
 | QR_HIDE | QR 숨기기 | Hide QR |

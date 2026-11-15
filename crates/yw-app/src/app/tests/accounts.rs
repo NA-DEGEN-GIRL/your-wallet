@@ -1,6 +1,7 @@
-//! spec/04 §2.6 (2026-11-15): the EVM, Solana and Bitcoin account cards share one layout —
-//! title `내 EVM 계정` / `내 Solana 계정` / `내 Bitcoin 계정`, drop-down items `label · source` —
-//! and a `YubiKey` account's source names the cards holding its key.
+//! spec/04 §2.6 (2026-11-15): the EVM, Solana, Bitcoin and Zcash account cards share one
+//! layout — title `내 EVM 계정` / `내 Solana 계정` / `내 Bitcoin 계정` / `내 Zcash 계정`,
+//! drop-down items `label · source` (Zcash: its key sources) — and a `YubiKey` account's source
+//! names the cards holding its key.
 
 use yw_core::bip32::path::AccountIndex;
 use yw_core::btc::{BtcNetwork, ScriptType};
@@ -521,5 +522,289 @@ fn bitcoin_rename_hide_and_unhide() {
     let text = app.meta.as_ref().unwrap().to_json();
     let reread = crate::meta::parse(&text).unwrap().meta;
     assert_eq!(reread.btc_view, app.meta.as_ref().unwrap().btc_view);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// The owner's wallet with Zcash on (mainnet): the account on the standard path, a second set of
+/// recovery words, card B's Zcash address key 0 and an imported key (the generator point's
+/// address, public test data). Returns the imported key's address.
+fn owner_zec_app(tag: &str) -> (App, std::path::PathBuf, String) {
+    use yw_core::vault::{MnemonicInfo, RecordId};
+    use yw_core::zec::{ZecAccount, ZecKeySource};
+    let (mut app, dir) = owner_app(tag);
+    app.settings.zcash.enabled = true;
+    app.settings.zcash.network = ZecNetwork::Mainnet;
+    let info = |id: RecordId, primary: bool| MnemonicInfo {
+        id,
+        created_unix: 0,
+        words: 24,
+        passphrase_used: false,
+        backup_confirmed: true,
+        primary,
+    };
+    app.mn.infos = vec![
+        info(RecordId::from_bytes([1; 16]), true),
+        info(RecordId::from_bytes([4; 16]), false),
+    ];
+    let pubkey = yw_core::hex::decode_array::<33>(G).unwrap();
+    let imported = ZecAccount {
+        network: ZecNetwork::Mainnet,
+        source: ZecKeySource::Imported,
+        pubkey,
+    };
+    let address = imported.address();
+    app.keys.zec_keys.push((
+        RecordId::from_bytes([6; 16]),
+        yw_core::keyimport::ZecKeyInfo {
+            network: ZecNetwork::Mainnet,
+            pubkey,
+            address: address.clone(),
+        },
+    ));
+    let meta = app.meta.as_mut().unwrap();
+    meta.prefs.tab = Tab::Zec;
+    meta.zcash.set(ZecAccount {
+        network: ZecNetwork::Mainnet,
+        source: ZecKeySource::DEFAULT,
+        pubkey,
+    });
+    (app, dir, address)
+}
+
+/// The open Zcash drop-down's entries: `(id, text, enabled)`; empty while it cannot open.
+fn zec_entries(app: &mut App) -> Vec<(u16, String, bool)> {
+    app.account_menu = Some(crate::ui::screens_links::ids::PICKER_ZEC);
+    let entries = app
+        .items()
+        .into_iter()
+        .filter_map(|item| match item {
+            Item::Menu(ctls) => Some(ctls),
+            _ => None,
+        })
+        .flatten()
+        .map(|ctl| (ctl.id, ctl.text, ctl.enabled))
+        .collect();
+    app.account_menu = None;
+    entries
+}
+
+fn zec_texts(app: &mut App) -> Vec<String> {
+    zec_entries(app)
+        .into_iter()
+        .map(|(_, text, _)| text)
+        .collect()
+}
+
+/// The Zcash public-key jobs queued since the last call (their sources).
+fn zec_key_sources(app: &App) -> Vec<yw_core::zec::ZecKeySource> {
+    key_jobs(app)
+        .into_iter()
+        .filter_map(|job| match job {
+            crate::events::KeyJob::Zec(job) => match *job {
+                crate::workers::journal::zec::ZecKeyJob::PublicKey { source, .. } => Some(source),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect()
+}
+
+/// spec/12 §11, spec/04 §2.6 (2026-11-15): the Zcash card `내 Zcash 계정` lists every key source
+/// of the network as `label · source` — the standard path (`권장, 기본값`) of each set of
+/// recovery words, the EVM key, card B's Zcash key as `· YubiKey: 백업` and the imported key —
+/// with the account's source selected; the old `키 출처` card and `이 키 출처 사용` are gone, and
+/// there is no `이름 바꾸기` / `숨기기` (one account per network). English sources.
+#[test]
+fn zcash_card_lists_every_key_source_and_card_b() {
+    use crate::ui::screens_zec::ids as zec;
+    let (mut app, dir, address) = owner_zec_app("accounts-zec");
+    assert!(title(&app, "내 Zcash 계정"));
+    assert!(!title(&app, "키 출처"));
+    let mn = crate::ui::screens_mnemonics::ids::ZEC_PICK_BASE;
+    assert_eq!(
+        zec_entries(&mut app),
+        [
+            (
+                zec::SOURCE_STANDARD,
+                "Zcash 표준 경로 (권장, 기본값) · 복구 단어 1".to_owned(),
+                true
+            ),
+            (mn + 1, "Zcash 표준 경로 · 복구 단어 2".to_owned(), true),
+            (
+                zec::SOURCE_EVM_BASE,
+                "EVM 경로 (비표준) · EVM 계정 0 키".to_owned(),
+                true
+            ),
+            (
+                zec::HW_BASE,
+                "Zcash 표준 경로 · YubiKey: 백업".to_owned(),
+                true
+            ),
+            (zec::IMPORTED_BASE, format!("{address} · 가져온 키"), true),
+        ]
+    );
+    let items = app.items();
+    let ctls = super::controls(&items);
+    assert!(ctls.iter().any(|ctl| {
+        ctl.id == crate::ui::screens_links::ids::PICKER_ZEC
+            && ctl.text == "Zcash 표준 경로 (권장, 기본값) · 복구 단어 1"
+            && ctl.enabled
+    }));
+    for gone in [zec::SOURCE_APPLY, zec::SOURCE_CANCEL] {
+        assert!(!ctls.iter().any(|ctl| ctl.id == gone), "{gone}");
+    }
+    assert!(!has_text(&items, "이 키 출처 사용"));
+    // Kept: `개인키 가져오기` with its hint, the recovery-words link.
+    assert!(ctls.iter().any(|ctl| ctl.id == zec::IMPORT));
+    assert!(has_text(
+        &items,
+        crate::ui::screens_zec::text::IMPORT_HELP.ko
+    ));
+    assert!(
+        ctls.iter()
+            .any(|ctl| ctl.id == crate::ui::screens_mnemonics::ids::MAIN_LINK)
+    );
+    // Card B unnamed: its serial.
+    app.meta.as_mut().unwrap().set_card_name(SERIAL_B, None);
+    assert_eq!(
+        zec_texts(&mut app)[3],
+        format!("Zcash 표준 경로 · YubiKey: #{SERIAL_B}")
+    );
+    app.meta
+        .as_mut()
+        .unwrap()
+        .set_card_name(SERIAL_B, Some("Backup".to_owned()));
+    app.settings.language = Lang::En;
+    assert!(title(&app, "My Zcash accounts"));
+    assert_eq!(
+        zec_texts(&mut app),
+        [
+            "Zcash standard path (recommended, default) · Recovery words 1".to_owned(),
+            "Zcash standard path · Recovery words 2".to_owned(),
+            "EVM path (non-standard) · EVM account 0 key".to_owned(),
+            "Zcash standard path · YubiKey: Backup".to_owned(),
+            format!("{address} · Imported key"),
+        ]
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Picking an item applies its source (2026-11-15; a radio and `이 키 출처 사용` before): card B's
+/// key becomes the account and the balance card names it (`YubiKey: 백업`), the standard path and
+/// an added set of words ask the key worker, the imported key becomes the account, and the item
+/// in use changes nothing.
+#[test]
+fn zcash_pick_applies_the_source() {
+    use crate::ui::screens_zec::ids as zec;
+    use yw_core::zec::ZecKeySource;
+    let (mut app, dir, _) = owner_zec_app("accounts-zec-pick");
+    let _ = key_jobs(&app);
+    app.on_command(zec::HW_BASE);
+    let account = app.zec_account().unwrap();
+    assert_eq!(account.source, ZecKeySource::Hardware { index: 0 });
+    assert_eq!(account.pubkey, [2; 33]);
+    let items = app.items();
+    assert!(has_text(
+        &items,
+        "키 출처: Zcash 표준 경로 · YubiKey: 백업 · m/44'/133'/0'/0/0"
+    ));
+    assert!(super::controls(&items).iter().any(|ctl| {
+        ctl.id == crate::ui::screens_links::ids::PICKER_ZEC
+            && ctl.text == "Zcash 표준 경로 · YubiKey: 백업"
+    }));
+    let _ = key_jobs(&app);
+    // The item in use: nothing.
+    app.on_command(zec::HW_BASE);
+    assert!(zec_key_sources(&app).is_empty());
+    // The standard path and the added words: the key worker derives the key.
+    app.on_command(zec::SOURCE_STANDARD);
+    assert_eq!(zec_key_sources(&app), [ZecKeySource::DEFAULT]);
+    app.on_command(crate::ui::screens_mnemonics::ids::ZEC_PICK_BASE + 1);
+    assert_eq!(
+        zec_key_sources(&app),
+        [ZecKeySource::Mnemonic {
+            mnemonic: yw_core::vault::RecordId::from_bytes([4; 16]),
+            account: 0,
+            index: 0,
+        }]
+    );
+    // The imported key: the account at once, with `개인키 보기`·`삭제`.
+    app.on_command(zec::IMPORTED_BASE);
+    assert_eq!(app.zec_account().unwrap().source, ZecKeySource::Imported);
+    let ctls = super::controls(&app.items());
+    assert!(ctls.iter().any(|ctl| ctl.id == zec::REVEAL));
+    assert!(ctls.iter().any(|ctl| ctl.id == zec::REMOVE));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// The EVM key keeps its warning and confirmation (T-ZEC-EVM-SHARED): picking it changes nothing
+/// until `정말 EVM 키 사용`; `취소` drops it.
+#[test]
+fn zcash_evm_key_still_needs_the_confirmation() {
+    use crate::ui::screens_zec::ids as zec;
+    use yw_core::zec::ZecKeySource;
+    let (mut app, dir, _) = owner_zec_app("accounts-zec-evm");
+    let _ = key_jobs(&app);
+    app.on_command(zec::SOURCE_EVM_BASE);
+    assert!(zec_key_sources(&app).is_empty());
+    assert!(app.zec.confirm_shared);
+    assert_eq!(app.zec_account().unwrap().source, ZecKeySource::DEFAULT);
+    let items = app.items();
+    assert!(has_text(
+        &items,
+        crate::ui::screens_zec::text::EVM_SHARED.ko
+    ));
+    assert!(
+        super::controls(&items)
+            .iter()
+            .any(|ctl| ctl.id == zec::SOURCE_APPLY && ctl.text == "정말 EVM 키 사용")
+    );
+    // `취소`: nothing applied.
+    app.on_command(zec::SOURCE_CANCEL);
+    assert!(!app.zec.confirm_shared);
+    assert!(zec_key_sources(&app).is_empty());
+    assert!(
+        !super::controls(&app.items())
+            .iter()
+            .any(|ctl| ctl.id == zec::SOURCE_APPLY)
+    );
+    // Picked again and confirmed: the key worker derives the EVM key.
+    app.on_command(zec::SOURCE_EVM_BASE);
+    app.on_command(zec::SOURCE_APPLY);
+    assert_eq!(
+        zec_key_sources(&app),
+        [ZecKeySource::EvmShared { evm_index: 0 }]
+    );
+    assert!(!app.zec.confirm_shared);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// While a Zcash transaction is unfinished the drop-down is disabled and says why
+/// (`SOURCE_BUSY`), it does not open, and a pick that still arrives is refused.
+#[test]
+fn zcash_dropdown_is_disabled_while_a_transaction_is_unfinished() {
+    use crate::ui::screens_zec::ids as zec;
+    use yw_core::zec::ZecKeySource;
+    let (mut app, dir, _) = owner_zec_app("accounts-zec-busy");
+    app.zec.busy = true;
+    let items = app.items();
+    assert!(
+        super::controls(&items)
+            .iter()
+            .any(|ctl| { ctl.id == crate::ui::screens_links::ids::PICKER_ZEC && !ctl.enabled })
+    );
+    let busy = crate::app_zec::text::SOURCE_BUSY.ko;
+    assert!(
+        items
+            .iter()
+            .any(|item| matches!(item, Item::Help(text) if text == busy))
+    );
+    assert!(zec_entries(&mut app).is_empty());
+    app.on_command(zec::HW_BASE);
+    assert_eq!(app.zec_account().unwrap().source, ZecKeySource::DEFAULT);
+    assert_eq!(app.zec.error.as_deref(), Some(busy));
+    app.zec.busy = false;
+    app.zec.error = None;
+    assert!(zec_entries(&mut app).iter().all(|(_, _, enabled)| *enabled));
     let _ = std::fs::remove_dir_all(dir);
 }

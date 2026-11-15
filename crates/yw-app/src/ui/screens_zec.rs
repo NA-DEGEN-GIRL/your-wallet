@@ -6,13 +6,14 @@
 
 use yw_core::journal::zec::ZecTxState;
 use yw_core::lang::Lang;
-use yw_core::zec::{ZecNetwork, format_zec, format_zec_and_zats};
+use yw_core::zec::{ZecKeySource, ZecNetwork, format_zec, format_zec_and_zats};
 
 use crate::app::{App, AppMode};
 use crate::app_zec::SourceChoice;
 use crate::settings::ZecIndexer;
 use crate::ui::badge::Badge;
 use crate::ui::main_window::{Ctl, Item, Tone};
+use crate::ui::screens_accounts::{AccountItem, AccountSource};
 use crate::zec::rpc::ZecRpcError;
 
 /// Fixed texts of the S10 Zcash tab (spec/12 §11, spec/04 §2.6; English spec/14 §5).
@@ -28,9 +29,6 @@ pub mod text {
         /// T-ZEC-EVM-SHARED: the linkage warning of the EVM-key source.
         EVM_SHARED = "EVM 계정과 같은 키를 쓰면 EVM 주소와 이 Zcash 주소가 같은 공개키라 누구나 두 주소를 한 사람의 것으로 묶을 수 있습니다. 같은 복구 단어를 다른 Zcash 지갑에 넣어도 이 주소는 나오지 않습니다(표준 경로가 아님). 정말 필요할 때만 쓰세요."
             / "With the same key as an EVM account, the EVM address and this Zcash address share one public key, so anyone can link both addresses to one person. Putting the same recovery phrase into another Zcash wallet does not give this address (not the standard path). Use it only when you really need to.";
-        IMPORTED_ROW(1) = "[가져온 키] {0}" / "[Imported key] {0}";
-        IN_USE = "사용 중" / "In use";
-        USE_KEY = "이 키 사용" / "Use this key";
         REVEAL_KEY = "개인키 보기" / "Show private key";
         DELETE = "삭제" / "Delete";
         IMPORT_HELP = "다른 지갑(zcashd 등)의 Zcash 일반 주소 개인키(압축 WIF 또는 16진수)를 가져와 이 네트워크의 계정으로 쓸 수 있습니다. 가져온 키는 복구 단어로 복구되지 않습니다."
@@ -66,18 +64,19 @@ pub mod text {
         CONFIRMED_BALANCE_NOTE(1) = "확인된 잔액 {0} (서버 기준, 진행 중 거래의 입력 제외)"
             / "Confirmed balance {0} (per the server, inputs of transactions in progress excluded)";
         REFRESH = "새로고침" / "Refresh";
-        KEY_SOURCE = "키 출처" / "Key source";
+        /// The account card (2026-11-15: the shared card `내 Zcash 계정` whose drop-down lists
+        /// the key sources; before, a card `키 출처` with the radios `키 출처 바꾸기`, `이 키 출처
+        /// 사용`, `YubiKey Zcash 주소 {0} 사용`, `{0} 표준 경로 사용` and `[가져온 키] {0}` rows
+        /// with `이 키 사용`).
+        MY_ACCOUNTS = "내 Zcash 계정" / "My Zcash accounts";
+        /// The drop-down item of the wallet's own recovery words.
         SOURCE_STANDARD = "Zcash 표준 경로 (권장, 기본값)" / "Zcash standard path (recommended, default)";
-        SOURCE_EVM(1) = "EVM 계정 {0}과 같은 키" / "Same key as EVM account {0}";
-        CHANGE_SOURCE = "키 출처 바꾸기" / "Change key source";
+        /// The drop-down item of an EVM account's key (its source says which account).
+        EVM_PATH = "EVM 경로 (비표준)" / "EVM path (non-standard)";
+        /// The drop-down item of a `YubiKey` Zcash key whose path is not known: {0} its number.
+        CARD_KEY(1) = "카드 키 {0} (경로 모름)" / "Card key {0} (path unknown)";
         CONFIRM_EVM = "정말 EVM 키 사용" / "Really use the EVM key";
-        APPLY_SOURCE = "이 키 출처 사용" / "Use this key source";
         CANCEL = "취소" / "Cancel";
-        HW_CARD_KEY(1) = "YubiKey Zcash 카드 키 {0} 사용 (경로 모름)" / "Use YubiKey Zcash card key {0} (path unknown)";
-        HW_ADDRESS(1) = "YubiKey Zcash 주소 {0} 사용" / "Use YubiKey Zcash address {0}";
-        MNEMONIC_IN_USE(1) = "{0} 표준 경로 (사용 중)" / "{0} standard path (in use)";
-        MNEMONIC_USE(1) = "{0} 표준 경로 사용" / "Use {0} standard path";
-        ADDED_PHRASES = "추가한 복구 단어" / "Added recovery phrases";
         RECEIVE = "받기" / "Receive";
         COPY_ADDRESS = "주소 복사" / "Copy address";
         QR_HIDE = "QR 숨기기" / "Hide QR";
@@ -156,12 +155,17 @@ pub mod ids {
     pub const SEND_MAX: u16 = 8_009;
     /// 검토.
     pub const SEND_REVIEW: u16 = 8_010;
-    /// Key source: standard path.
+    /// The drop-down item of the standard path: picking it applies it (2026-11-15; its radio
+    /// before, applied by `이 키 출처 사용`).
     pub const SOURCE_STANDARD: u16 = 8_011;
-    /// Key source: apply.
+    /// `정말 EVM 키 사용` of the EVM-key confirmation (2026-11-15: shown for that step only;
+    /// before, also the radios' `이 키 출처 사용`).
     pub const SOURCE_APPLY: u16 = 8_012;
     /// Key source: cancel the EVM-key confirmation.
     pub const SOURCE_CANCEL: u16 = 8_013;
+    /// The drop-down item of the account's source when no other item is it (a path, an EVM
+    /// account, a card key or an imported key not listed now): picking it changes nothing.
+    pub const SOURCE_CURRENT: u16 = 8_019;
     /// UTXO source: node.
     pub const INDEXER_NODE: u16 = 8_014;
     /// UTXO source: Blockbook.
@@ -176,13 +180,15 @@ pub mod ids {
     pub const ACTIVITY_COPY_BASE: u16 = 8_100;
     /// Activity copy span (every record the journal can hold).
     pub const ACTIVITY_COPY_SPAN: u16 = 80;
-    /// Key source: EVM account radios (position in the EVM account list).
+    /// Drop-down items of the EVM accounts' keys (position in the EVM account list; their radios
+    /// before 2026-11-15).
     pub const SOURCE_EVM_BASE: u16 = 8_020;
-    /// EVM radio span.
+    /// EVM item span.
     pub const SOURCE_EVM_SPAN: u16 = 16;
-    /// `YubiKey` Zcash slot buttons (position in the slot list).
+    /// Drop-down items of the `YubiKey` Zcash keys (position in the slot list; buttons before
+    /// 2026-11-15).
     pub const HW_BASE: u16 = 8_040;
-    /// `YubiKey` button span.
+    /// `YubiKey` item span.
     pub const HW_SPAN: u16 = 8;
     /// `개인키 가져오기` (spec/12 §2.3).
     pub const IMPORT: u16 = 8_050;
@@ -190,20 +196,23 @@ pub mod ids {
     pub const REVEAL: u16 = 8_051;
     /// `삭제` of the account's imported key.
     pub const REMOVE: u16 = 8_052;
-    /// `이 키 사용` of the imported keys of the network (position in the list).
+    /// Drop-down items of the imported keys of the network (position in the list; their
+    /// `이 키 사용` before 2026-11-15).
     pub const IMPORTED_BASE: u16 = 8_060;
-    /// Imported-key button span (15 keys per chain).
+    /// Imported-key item span (15 keys per chain).
     pub const IMPORTED_SPAN: u16 = 16;
 
-    const _: () = assert!(CARD_COPY < SOURCE_EVM_BASE);
+    const _: () = assert!(CARD_COPY < SOURCE_CURRENT);
+    const _: () = assert!(SOURCE_CURRENT < SOURCE_EVM_BASE);
     const _: () = assert!(SOURCE_EVM_BASE + SOURCE_EVM_SPAN <= HW_BASE);
     const _: () = assert!(HW_BASE + HW_SPAN <= IMPORT);
     const _: () = assert!(IMPORTED_BASE + IMPORTED_SPAN <= ACTIVITY_COPY_BASE);
     const _: () = assert!(ACTIVITY_COPY_BASE + ACTIVITY_COPY_SPAN <= 8_200);
 
     /// Every fixed id.
-    pub const FIXED: [u16; 22] = [
+    pub const FIXED: [u16; 23] = [
         CARD_COPY,
+        SOURCE_CURRENT,
         TAB_ZEC,
         ENABLE_MAINNET,
         ENABLE_TESTNET,
@@ -355,11 +364,18 @@ impl App {
                 self.zec_check_recipient();
                 self.zec_review();
             }
+            // The drop-down's items apply their source when picked (2026-11-15; a radio and
+            // `이 키 출처 사용` before). Picking the source in use changes nothing.
             ids::SOURCE_STANDARD => {
-                self.zec.source = SourceChoice::Standard;
                 self.zec.confirm_shared = false;
-                self.refresh();
+                if self.zec_source_in_use(ZecKeySource::DEFAULT, None) {
+                    self.refresh();
+                } else {
+                    self.zec.source = SourceChoice::Standard;
+                    self.zec_apply_source();
+                }
             }
+            ids::SOURCE_CURRENT => self.refresh(),
             ids::SOURCE_APPLY => self.zec_apply_source(),
             ids::SOURCE_CANCEL => {
                 self.zec.confirm_shared = false;
@@ -385,8 +401,8 @@ impl App {
         true
     }
 
-    /// The Zcash row commands (activity `해시 복사`, imported keys, EVM-key radios, `YubiKey`
-    /// slots); `false` when `id` is not one of them.
+    /// The Zcash row commands (activity `해시 복사`, the drop-down's imported keys, EVM keys and
+    /// `YubiKey` slots); `false` when `id` is not one of them.
     fn on_zec_indexed(&mut self, id: u16) -> bool {
         if let Some(row) = offset(id, ids::ACTIVITY_COPY_BASE, ids::ACTIVITY_COPY_SPAN) {
             // Rows are drawn newest first; a txid is public data, for an explorer.
@@ -400,10 +416,16 @@ impl App {
             return true;
         }
         if let Some(position) = offset(id, ids::SOURCE_EVM_BASE, ids::SOURCE_EVM_SPAN) {
-            if let Some(index) = self.zec_evm_indices().get(usize::from(position)) {
-                self.zec.source = SourceChoice::EvmShared(*index);
+            if let Some(index) = self.zec_evm_indices().get(usize::from(position)).copied() {
                 self.zec.confirm_shared = false;
-                self.refresh();
+                if self.zec_source_in_use(ZecKeySource::EvmShared { evm_index: index }, None) {
+                    self.refresh();
+                } else {
+                    // The first apply asks for the confirmation (T-ZEC-EVM-SHARED,
+                    // `정말 EVM 키 사용`); nothing changes before it.
+                    self.zec.source = SourceChoice::EvmShared(index);
+                    self.zec_apply_source();
+                }
             }
             return true;
         }
@@ -416,52 +438,241 @@ impl App {
         false
     }
 
-    /// The imported keys of the network ("[가져온 키]" rows with `이 키 사용`), `개인키 가져오기`,
-    /// and for an account on an imported key `개인키 보기`·`삭제` (spec/12 §2.3, spec/04 §2.18).
-    fn zec_imported_items(&self, items: &mut Vec<Item>) {
+    /// The label and source of the drop-down item of `source` on the current network (`address`
+    /// names an imported key, whose item is its whole address).
+    fn zec_item_of(&self, source: ZecKeySource, address: &str) -> (String, AccountSource) {
+        let lang = self.settings.language;
+        match source {
+            ZecKeySource::Derived {
+                account: 0,
+                index: 0,
+            } => (
+                text::SOURCE_STANDARD.get(lang).to_owned(),
+                AccountSource::Words(None),
+            ),
+            ZecKeySource::Derived { .. } => (source.label_in(lang), AccountSource::Words(None)),
+            ZecKeySource::Mnemonic {
+                mnemonic,
+                account,
+                index,
+            } => (
+                ZecKeySource::Derived { account, index }.label_in(lang),
+                AccountSource::Words(Some(*mnemonic.as_bytes())),
+            ),
+            ZecKeySource::EvmShared { evm_index } => (
+                text::EVM_PATH.get(lang).to_owned(),
+                AccountSource::EvmKey(evm_index),
+            ),
+            ZecKeySource::Hardware { index } => (
+                if yw_core::yubikey::plan::is_unknown_index(index) {
+                    text::CARD_KEY.fill(
+                        lang,
+                        [&index
+                            .saturating_sub(yw_core::yubikey::plan::UNKNOWN_PATH_FIRST)
+                            .saturating_add(1)
+                            .to_string()],
+                    )
+                } else {
+                    ZecKeySource::Derived { account: 0, index }.label_in(lang)
+                },
+                AccountSource::Card(Some(yw_core::yubikey::plan::KeyRole::Zec {
+                    network: self.zec_network(),
+                    index,
+                })),
+            ),
+            ZecKeySource::Imported => (address.to_owned(), AccountSource::Imported),
+        }
+    }
+
+    /// The drop-down items of `내 Zcash 계정` (2026-11-15, spec/12 §11): the key sources of the
+    /// network, read `label · source` — the wallet's recovery words' standard path
+    /// (`Zcash 표준 경로 (권장, 기본값)`), each added set of recovery words' standard path, each
+    /// visible EVM account's key (`EVM 경로 (비표준) · EVM 계정 {i} 키`), each `YubiKey` Zcash
+    /// key (`Zcash 표준 경로 · YubiKey: {cards}`) and each imported key (its whole address
+    /// `· 가져온 키`). The account's source is the selected item; when none of them is it (a
+    /// non-standard path, a hidden EVM account, a card key no record holds …) it is one more
+    /// item ([`ids::SOURCE_CURRENT`]). A wallet without recovery words lists its cards' and
+    /// imported keys only.
+    #[must_use]
+    pub fn zec_source_items(&self) -> Vec<AccountItem> {
+        let unlocked = matches!(self.mode, AppMode::Unlocked { .. });
+        let uses = |source, pubkey| self.zec_source_in_use(source, pubkey);
+        let mut out = Vec::new();
+        let mut push = |id: u16, source: ZecKeySource, address: &str, selected: bool| {
+            let (label, source) = self.zec_item_of(source, address);
+            out.push(AccountItem {
+                id,
+                label,
+                source,
+                selected,
+                enabled: unlocked,
+            });
+        };
+        let at =
+            |base: u16, position: usize| base.saturating_add(u16::try_from(position).unwrap_or(0));
+        if !self.key_only() {
+            push(
+                ids::SOURCE_STANDARD,
+                ZecKeySource::DEFAULT,
+                "",
+                uses(ZecKeySource::DEFAULT, None),
+            );
+            for (row, info) in self
+                .mn
+                .infos
+                .iter()
+                .enumerate()
+                .take(usize::from(crate::ui::screens_mnemonics::ids::ROW_SPAN))
+                .filter(|(_, info)| !info.primary)
+            {
+                let source = ZecKeySource::Mnemonic {
+                    mnemonic: info.id,
+                    account: 0,
+                    index: 0,
+                };
+                push(
+                    at(crate::ui::screens_mnemonics::ids::ZEC_PICK_BASE, row),
+                    source,
+                    "",
+                    uses(source, None),
+                );
+            }
+            for (position, evm_index) in self.zec_evm_indices().into_iter().enumerate() {
+                let source = ZecKeySource::EvmShared { evm_index };
+                push(
+                    at(ids::SOURCE_EVM_BASE, position),
+                    source,
+                    "",
+                    uses(source, None),
+                );
+            }
+        }
+        for (position, index) in self.zec_hw_slots().into_iter().enumerate() {
+            let source = ZecKeySource::Hardware { index };
+            push(at(ids::HW_BASE, position), source, "", uses(source, None));
+        }
+        for (position, (_, info)) in self.zec_imported_keys().iter().enumerate() {
+            push(
+                at(ids::IMPORTED_BASE, position),
+                ZecKeySource::Imported,
+                &info.address,
+                uses(ZecKeySource::Imported, Some(info.pubkey)),
+            );
+        }
+        if let Some(account) = self.zec_account()
+            && !out.iter().any(|item| item.selected)
+        {
+            let (label, source) = self.zec_item_of(account.source, &account.address());
+            out.push(AccountItem {
+                id: ids::SOURCE_CURRENT,
+                label,
+                source,
+                selected: true,
+                enabled: unlocked,
+            });
+        }
+        out
+    }
+
+    /// The account's source as the line under the balance card's title says it: its drop-down
+    /// item (`Zcash 표준 경로 · YubiKey: 백업`), an imported key's `가져온 키` alone (its address
+    /// is the card's copy line).
+    fn zec_source_name(&self, source: ZecKeySource) -> String {
+        if source == ZecKeySource::Imported {
+            return self.zec_source_label(source);
+        }
+        let accounts = self.zec_source_items();
+        accounts
+            .iter()
+            .zip(self.account_item_labels(&accounts))
+            .find(|(account, _)| account.selected)
+            .map_or_else(|| self.zec_source_label(source), |(_, label)| label)
+    }
+
+    /// The account card `내 Zcash 계정` (2026-11-15, the shared card of `ui::screens_accounts`
+    /// like the other tabs): the shared help, the drop-down of the key sources
+    /// ([`App::zec_source_items`]; picking one applies it, disabled with `SOURCE_BUSY` while a
+    /// transaction is unfinished), an imported key's `개인키 보기`·`삭제` with its backup note,
+    /// the EVM key's linkage warning and its `정말 EVM 키 사용`·`취소` step, then
+    /// `개인키 가져오기` (spec/12 §2.3), the recovery-words link and the import hint. Zcash has
+    /// one account per network: no `이름 바꾸기`, no `숨기기`, no `계정 추가` (a deliberate
+    /// exception, spec/04 §2.6).
+    ///
+    /// Before 2026-11-15 a card `키 출처` with the radios `Zcash 표준 경로` / `EVM 계정 {i}과
+    /// 같은 키` and `이 키 출처 사용`, a button per `YubiKey` Zcash key, a row of the added
+    /// recovery words' paths and `[가져온 키] {address}` rows with `이 키 사용`.
+    fn zec_account_card(&self, items: &mut Vec<Item>) {
+        use crate::ui::screens_accounts::{AccountCard, SelectedLine};
         let lang = self.settings.language;
         let unlocked = matches!(self.mode, AppMode::Unlocked { .. });
-        let current = self.zec_account();
-        let keys = self.zec_imported_keys();
-        items.push(Item::Rule);
-        for (position, (_, info)) in keys.iter().enumerate() {
-            let id = ids::IMPORTED_BASE.saturating_add(u16::try_from(position).unwrap_or(0));
-            let in_use = current.is_some_and(|account| {
-                account.source == yw_core::zec::ZecKeySource::Imported
-                    && account.pubkey == info.pubkey
-            });
-            items.push(Item::LabeledRow(
-                text::IMPORTED_ROW.fill(lang, [&info.address]),
-                vec![
-                    Ctl::button(
-                        id,
-                        if in_use { text::IN_USE } else { text::USE_KEY }.get(lang),
-                    )
-                    .enabled(unlocked && !self.zec.busy && !in_use),
-                ],
+        let free = self.zec_all_terminal();
+        let imported = self.zec_selected_imported().is_some();
+        let selected = imported.then(|| {
+            SelectedLine::Buttons(vec![
+                Ctl::button(ids::REVEAL, text::REVEAL_KEY.get(lang))
+                    .compact()
+                    .enabled(unlocked),
+                Ctl::danger(ids::REMOVE, text::DELETE.get(lang))
+                    .compact()
+                    .enabled(unlocked && self.can_remove_imported()),
+            ])
+        });
+        let mut details = Vec::new();
+        if imported {
+            details.push(Item::Help(
+                if self.key_only() {
+                    crate::ui::secret_text::KEY_ONLY_BACKUP
+                } else {
+                    crate::ui::secret_text::IMPORTED_KEY_BACKUP
+                }
+                .get(lang)
+                .to_owned(),
             ));
         }
-        if self.zec_selected_imported().is_some() {
-            items.push(Item::Help(if self.key_only() {
-                crate::ui::secret_text::KEY_ONLY_BACKUP
-                    .get(self.settings.language)
-                    .to_owned()
-            } else {
-                crate::ui::secret_text::IMPORTED_KEY_BACKUP
-                    .get(self.settings.language)
-                    .to_owned()
-            }));
-            items.push(Item::Row(vec![
-                Ctl::button(ids::REVEAL, text::REVEAL_KEY.get(lang)).enabled(unlocked),
-                Ctl::danger(ids::REMOVE, text::DELETE.get(lang))
-                    .enabled(unlocked && self.can_remove_imported()),
+        // T-ZEC-EVM-SHARED: while the EVM key waits for its confirmation and while the account
+        // is on it.
+        let on_evm = self
+            .zec_account()
+            .is_some_and(|account| matches!(account.source, ZecKeySource::EvmShared { .. }));
+        if self.zec.confirm_shared || on_evm {
+            details.push(Item::Banner(
+                text::EVM_SHARED.get(lang).to_owned(),
+                Tone::Warn,
+            ));
+        }
+        if self.zec.confirm_shared {
+            details.push(Item::Row(vec![
+                Ctl::button(ids::SOURCE_APPLY, text::CONFIRM_EVM.get(lang))
+                    .enabled(unlocked && free),
+                Ctl::link(ids::SOURCE_CANCEL, text::CANCEL.get(lang)),
             ]));
         }
-        items.push(Item::Help(text::IMPORT_HELP.get(lang).to_owned()));
-        items.push(Item::Row(vec![
+        let mut actions = vec![
             Ctl::button(ids::IMPORT, text::IMPORT_KEY.get(lang))
+                .compact()
                 .enabled(self.can_import(yw_core::keyimport::ImportChain::Zec)),
-        ]));
+        ];
+        if !self.key_only() {
+            actions.push(self.mnemonics_link());
+        }
+        self.push_account_card(
+            items,
+            AccountCard {
+                title: text::MY_ACCOUNTS.get(lang).to_owned(),
+                picker: crate::ui::screens_links::ids::PICKER_ZEC,
+                accounts: self.zec_source_items(),
+                empty: Some(crate::ui::screens_keys::no_accounts_text(
+                    lang,
+                    yw_core::keyimport::ImportChain::Zec,
+                )),
+                locked: (!free).then(|| crate::app_zec::text::SOURCE_BUSY.get(lang).to_owned()),
+                selected,
+                details,
+                hidden: None,
+                actions,
+                footer: vec![Item::Help(text::IMPORT_HELP.get(lang).to_owned())],
+            },
+        );
     }
 
     fn zec_disabled_items(&self, items: &mut Vec<Item>) {
@@ -606,7 +817,8 @@ impl App {
         items.push(Item::CardEnd);
 
         // Account and balance: the other tabs' layout (2026-11-11) — name, key source and
-        // path, balance, status, the address with `주소 복사`, `새로고침`.
+        // path, balance, status, the address with `주소 복사`, `새로고침`. The account card under
+        // it (2026-11-15) picks the key source, as Bitcoin's picks the account.
         let account = self.zec_account();
         let hw_state = self.zec_hw_state();
         let address_ok = matches!(
@@ -625,10 +837,12 @@ impl App {
         match account {
             None => items.push(Item::Text(text::ACCOUNT_LOADING.get(lang).to_owned())),
             Some(account) => {
+                // The source as the drop-down names it (2026-11-15: `YubiKey: {cards}` for a
+                // card key; the core name `YubiKey (주소 0)` before), then the path.
                 items.push(Item::Help(text::KEY_SOURCE_LINE.fill(
                     lang,
                     [
-                        &self.zec_source_label(account.source),
+                        &self.zec_source_name(account.source),
                         &account.source.path_text_in(lang, network),
                     ],
                 )));
@@ -746,96 +960,9 @@ impl App {
             )
         }]));
         items.push(Item::CardEnd);
-        // Key source choice.
-        items.push(Item::CardStart(Some(text::KEY_SOURCE.get(lang).to_owned())));
+        // The account card `내 Zcash 계정` (2026-11-15: a card `키 출처` before).
+        self.zec_account_card(items);
         let unlocked = matches!(self.mode, AppMode::Unlocked { .. });
-        let mut sources = vec![Ctl::radio(
-            ids::SOURCE_STANDARD,
-            text::SOURCE_STANDARD.get(lang),
-            self.zec.source == SourceChoice::Standard,
-            true,
-        )];
-        for (position, index) in self.zec_evm_indices().iter().enumerate() {
-            let id = ids::SOURCE_EVM_BASE.saturating_add(u16::try_from(position).unwrap_or(0));
-            sources.push(Ctl::radio(
-                id,
-                &text::SOURCE_EVM.fill(lang, [&index.to_string()]),
-                self.zec.source == SourceChoice::EvmShared(*index),
-                false,
-            ));
-        }
-        items.push(Item::LabeledRow(
-            text::CHANGE_SOURCE.get(lang).to_owned(),
-            sources,
-        ));
-        if matches!(self.zec.source, SourceChoice::EvmShared(_)) {
-            items.push(Item::Banner(
-                text::EVM_SHARED.get(lang).to_owned(),
-                Tone::Warn,
-            ));
-        }
-        let apply = if self.zec.confirm_shared {
-            text::CONFIRM_EVM
-        } else {
-            text::APPLY_SOURCE
-        }
-        .get(lang);
-        let mut row =
-            vec![Ctl::button(ids::SOURCE_APPLY, apply).enabled(unlocked && !self.zec.busy)];
-        if self.zec.confirm_shared {
-            row.push(Ctl::link(ids::SOURCE_CANCEL, text::CANCEL.get(lang)));
-        }
-        for (position, index) in self.zec_hw_slots().iter().enumerate() {
-            let id = ids::HW_BASE.saturating_add(u16::try_from(position).unwrap_or(0));
-            let label = if yw_core::yubikey::plan::is_unknown_index(*index) {
-                text::HW_CARD_KEY.fill(
-                    lang,
-                    [&index
-                        .saturating_sub(yw_core::yubikey::plan::UNKNOWN_PATH_FIRST)
-                        .saturating_add(1)
-                        .to_string()],
-                )
-            } else {
-                text::HW_ADDRESS.fill(lang, [&index.to_string()])
-            };
-            row.push(Ctl::button(id, &label).enabled(unlocked && !self.zec.busy));
-        }
-        items.push(Item::Row(row));
-        // The standard path of each added mnemonic (spec/02 §8.6).
-        let added: Vec<Ctl> = self
-            .mn
-            .infos
-            .iter()
-            .enumerate()
-            .filter(|(_, info)| !info.primary)
-            .map(|(row, info)| {
-                let id = crate::ui::screens_mnemonics::ids::ZEC_PICK_BASE
-                    .saturating_add(u16::try_from(row).unwrap_or(0));
-                let in_use = account.is_some_and(|account| {
-                    account.source
-                        == yw_core::zec::ZecKeySource::Mnemonic {
-                            mnemonic: info.id,
-                            account: 0,
-                            index: 0,
-                        }
-                });
-                let label = if in_use {
-                    text::MNEMONIC_IN_USE
-                } else {
-                    text::MNEMONIC_USE
-                }
-                .fill(lang, [&self.mnemonic_label(info.id)]);
-                Ctl::button(id, &label).enabled(unlocked && !self.zec.busy && !in_use)
-            })
-            .collect();
-        if !added.is_empty() {
-            items.push(Item::LabeledRow(
-                text::ADDED_PHRASES.get(lang).to_owned(),
-                added,
-            ));
-        }
-        self.zec_imported_items(items);
-        items.push(Item::CardEnd);
 
         // Receive (hidden while a hardware account's key is missing or not yet checked).
         if hw_state == crate::app_zec::ZecHwState::Missing {
@@ -857,8 +984,7 @@ impl App {
                     account.source.mnemonic(),
                     matches!(
                         account.source,
-                        yw_core::zec::ZecKeySource::Derived { .. }
-                            | yw_core::zec::ZecKeySource::EvmShared { .. }
+                        ZecKeySource::Derived { .. } | ZecKeySource::EvmShared { .. }
                     ),
                 ),
                 items,

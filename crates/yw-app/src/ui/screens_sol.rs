@@ -802,6 +802,7 @@ impl App {
                     .get(lang)
                     .to_owned(),
                 ),
+                locked: None,
                 selected,
                 details: Vec::new(),
                 hidden: Some(crate::app_hidden::Family::Sol),

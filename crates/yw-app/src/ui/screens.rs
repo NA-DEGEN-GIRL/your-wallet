@@ -1802,6 +1802,7 @@ impl App {
                 picker: crate::ui::screens_links::ids::PICKER_EVM,
                 accounts,
                 empty: None,
+                locked: None,
                 selected,
                 details: Vec::new(),
                 hidden: Some(crate::app_hidden::Family::Evm),

@@ -763,6 +763,7 @@ impl App {
                 picker: crate::ui::screens_links::ids::PICKER_BTC,
                 accounts,
                 empty: Some(empty),
+                locked: None,
                 selected,
                 details,
                 hidden: Some(crate::app_hidden::Family::Btc),

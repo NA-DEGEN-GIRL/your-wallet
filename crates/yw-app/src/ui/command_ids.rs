@@ -12,7 +12,7 @@
 //! | EVM (`screens_evm`) | 900–3,560, 6,600 | send, network drop-down 906, token `주소 복사` 1,010–1,129, chain rows 2,210–2,349, caps 2,400–2,439, activity 2,500–2,899, send assets 3,000–3,199, token rows 3,200–3,439, token `보내기` links 3,440–3,559, `이전 활동` 3,560 |
 //! | sites (`screens_sites`) | 6,700–6,965 | S13 rows 6,710–6,965 |
 //! | Solana (`screens_sol`) | 7,000–7,463 | send assets 7,015–7,018, token cards 7,027–7,029, picker 7,030–7,069, token hide 7,070–7,073, token mint `주소 복사` 7,080–7,083, result `해시 복사` 7,076, scan rows 7,120–7,375, activity `해시 복사` 7,400–7,463 |
-//! | Zcash (`screens_zec`) | 8,000–8,179 | account card `주소 복사` 8,018, EVM-key radios 8,020–8,035, `YubiKey` slots 8,040–8,047, imported keys 8,060–8,075, activity `해시 복사` 8,100–8,179 |
+//! | Zcash (`screens_zec`) | 8,000–8,179 | account card `주소 복사` 8,018, the `내 Zcash 계정` drop-down items (2026-11-15; radios and buttons before): the source in use when no other item is it 8,019, EVM keys 8,020–8,035, `YubiKey` keys 8,040–8,047, imported keys 8,060–8,075, activity `해시 복사` 8,100–8,179 |
 //! | Bitcoin (`screens_btc`) | 9,000–9,899 | account card `주소 복사` 9,034, `이름 바꾸기`·`숨기기`·name field·`저장`·`취소` 9,035–9,039 (2026-11-15), account rows 9,130–9,194, UTXO rows 9,200–9,499, activity 9,500–9,899 |
 //! | AI 설명 (`screens_llm`) | 10,000–10,099 | M6 settings |
 //! | EVM accounts (`screens`) | 11,000–11,999 | one radio per row (index range 0..=999) |
@@ -22,7 +22,7 @@
 //! | reset·extension (`screens_reset`) | 13,400–13,449 | S22 `지갑 초기화`, T-WAIT-STALLED, S23 `Chrome 확장 설치` |
 //! | `HyperCore` (`screens_hypercore`) | 13,450–13,499 | the S10 card, S-HC, settings; spot asset radios 13,470–13,489, the card's `펼치기 ▸`·`접기 ▴` 13,494–13,495 |
 //! | `YubiKey` connect (`screens_yubikey`) | 13,500–13,537, 13,720–13,927 | `YubiKey 연결하기 (복구 단어 없이)` 13,500–13,506, the factory-PIN bands' `PIN 설정` 13,510–13,517 (one per card), `어떻게 지우나요 ▸`·`슬롯·주소 자세히 ▸`·`PIN 안내 ▸`·re-slot `PIN 설정하기` 13,520–13,523, card name edit 13,524–13,527 and `이름 바꾸기` rows 13,530–13,537 (2026-11-15), choice radios 13,720–13,927 (26 keys × 8) |
-//! | recovery phrases (`screens_mnemonics`) | 13,600–13,699 | settings 복구 단어; card actions 13,620–13,657 (8 rows each), 계정 추가 picker 13,660–13,667, Solana picker 13,670–13,677, Bitcoin key source 13,680–13,687, Zcash key source 13,690–13,697 |
+//! | recovery phrases (`screens_mnemonics`) | 13,600–13,699 | settings 복구 단어; card actions 13,620–13,657 (8 rows each), 계정 추가 picker 13,660–13,667, Solana picker 13,670–13,677, Bitcoin key source 13,680–13,687, Zcash drop-down items 13,690–13,697 |
 //! | address book (`screens_book`) | 14,000–15,699 | S14 form 14,000–14,016, favorite chips 14,020–14,027, BTC picker 14,030–14,069, SOL activity `이 주소 저장` 14,080–14,143, S14 rows 14,200–15,699 (★·편집·삭제) |
 //! | `WalletConnect` (`screens_walletconnect`) | 16,000–16,099 | S13 panel, session rows 16,020–16,083 |
 //! | hidden accounts (`app_hidden`) | 16,100–16,174, 16,200–16,589 | Bitcoin toggle 16,100 and rows 16,110–16,174 (2026-11-15), toggles 16,200–16,201, EVM `다시 보이기` rows 16,210–16,399, Solana rows 16,400–16,589 |
@@ -30,7 +30,7 @@
 //! | first setup·RPC (`screens`) | 16,700–16,783 | S08 '처음 설정' 16,700–16,705, `모두 테스트` 16,706, the chain tabs' `RPC 설정하기` 16,707–16,710, the EVM·Solana failure bands' `이 네트워크 RPC 테스트`·`RPC 설정 열기` 16,711–16,714, failed-network links 16,720–16,783 |
 //! | block explorers (`screens_explorer`) | 17,200–17,709 | S15 card form 17,200–17,203, account cards' `탐색기에서 주소 보기` 17,204–17,208, send results' `탐색기에서 열기`·`탐색기 링크 복사` 17,210–17,217, card rows 17,220–17,319 (`변경`·`기본값으로`), activity `탐색기에서 열기`·`탐색기 링크 복사`: Solana 17,320–17,447, Bitcoin 17,450–17,549, Zcash 17,550–17,709 (EVM rows use offset 7 of their own stride) |
 //! | received history (`screens_received`) | 17,800–18,399 | `받은 내역도 보기` per card 17,800–17,804 (EVM·Solana·Bitcoin·HyperCore·Zcash), `더 보기` 17,805–17,809, rows 17,900 + 100 × chain + 2 × row (0 a click on the hash = copy, 1 ↗ `탐색기에서 열기`), 50 rows per chain |
-//! | copy lines·drop-downs (`screens_links`) | 18,400–18,659 | `내 계정` drop-down buttons 18,400–18,402 (EVM·Solana·Bitcoin), a click on an activity recipient = copy: EVM 18,410–18,459, Solana 18,460–18,523, Bitcoin 18,530–18,579, Zcash 18,580–18,659 |
+//! | copy lines·drop-downs (`screens_links`) | 18,400–18,659 | `내 … 계정` drop-down buttons 18,400–18,403 (EVM·Solana·Bitcoin·Zcash), a click on an activity recipient = copy: EVM 18,410–18,459, Solana 18,460–18,523, Bitcoin 18,530–18,579, Zcash 18,580–18,659 |
 
 use crate::ui::{
     screens, screens_book, screens_btc, screens_evm, screens_explorer, screens_hypercore,

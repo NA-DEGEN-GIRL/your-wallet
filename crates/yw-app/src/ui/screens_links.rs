@@ -21,10 +21,12 @@ pub mod ids {
     pub const PICKER_EVM: u16 = 18_400;
     /// The Solana `내 Solana 계정` drop-down button.
     pub const PICKER_SOL: u16 = 18_401;
-    /// The Bitcoin `Bitcoin 계정` drop-down button.
+    /// The Bitcoin `내 Bitcoin 계정` drop-down button.
     pub const PICKER_BTC: u16 = 18_402;
+    /// The Zcash `내 Zcash 계정` drop-down button (2026-11-15: its items are the key sources).
+    pub const PICKER_ZEC: u16 = 18_403;
     /// Every fixed id.
-    pub const FIXED: [u16; 3] = [PICKER_EVM, PICKER_SOL, PICKER_BTC];
+    pub const FIXED: [u16; 4] = [PICKER_EVM, PICKER_SOL, PICKER_BTC, PICKER_ZEC];
     /// EVM activity: a click on the recipient copies it (row order of `App::activity_rows`).
     pub const EVM_TO_BASE: u16 = 18_410;
     /// EVM recipient span (`app_evm::MAX_ACTIVITY_ROWS`).
@@ -42,7 +44,7 @@ pub mod ids {
     /// Zcash recipient span (the journal's 80 records).
     pub const ZEC_TO_SPAN: u16 = 80;
 
-    const _: () = assert!(PICKER_BTC < EVM_TO_BASE);
+    const _: () = assert!(PICKER_ZEC < EVM_TO_BASE);
     const _: () = assert!(EVM_TO_BASE + EVM_TO_SPAN <= SOL_TO_BASE);
     const _: () = assert!(SOL_TO_BASE + SOL_TO_SPAN <= BTC_TO_BASE);
     const _: () = assert!(BTC_TO_BASE + BTC_TO_SPAN <= ZEC_TO_BASE);
@@ -205,9 +207,17 @@ impl App {
     /// An account drop-down (2026-11-11, like S10's network drop-down): `계정` with a button
     /// naming the selected account and ▾ (`picker`), and while open the accounts under it, one
     /// per line (each entry keeps the id its radio had, so the same handler selects it).
-    pub fn push_account_picker(&self, items: &mut Vec<Item>, picker: u16, entries: &[PickerEntry]) {
+    /// `usable == false` (2026-11-15, Zcash while a transaction is unfinished) disables the
+    /// button and keeps the list closed.
+    pub fn push_account_picker(
+        &self,
+        items: &mut Vec<Item>,
+        picker: u16,
+        entries: &[PickerEntry],
+        usable: bool,
+    ) {
         let lang = self.settings.language;
-        let open = self.account_menu == Some(picker);
+        let open = usable && self.account_menu == Some(picker);
         let selected = entries
             .iter()
             .find(|entry| entry.selected)
@@ -216,7 +226,8 @@ impl App {
             text::ACCOUNT.get(lang).to_owned(),
             vec![
                 Ctl::picker(picker, selected, open)
-                    .fit(entries.iter().map(|entry| entry.label.as_str())),
+                    .fit(entries.iter().map(|entry| entry.label.as_str()))
+                    .enabled(usable),
             ],
         ));
         if open {
