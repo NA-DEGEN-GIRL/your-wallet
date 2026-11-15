@@ -1707,6 +1707,7 @@ fn english_yubikey_texts_have_no_korean() {
         CardError::DefaultPin,
         CardError::NotBlocked,
         CardError::PukLastTry,
+        CardError::NotFactory,
         CardError::Internal,
     ];
     for error in errors {

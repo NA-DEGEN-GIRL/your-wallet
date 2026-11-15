@@ -175,6 +175,10 @@ pub enum CardError {
     /// The PIV PUK has one try left and the user did not confirm spending it: nothing was sent
     /// (spec/10 §9.1).
     PukLastTry,
+    /// "PIN 하나로 통일" with an empty current value, but the card reports (GET METADATA, no try
+    /// spent) that the PIV PIN or PUK is no longer the factory value: nothing was sent
+    /// (spec/10 §9.3, 2026-11-16).
+    NotFactory,
     /// Internal error (derivation failure, invariant).
     Internal,
 }
@@ -268,6 +272,7 @@ impl CardError {
             Self::DefaultPin => "default_pin",
             Self::NotBlocked => "not_blocked",
             Self::PukLastTry => "puk_last_try",
+            Self::NotFactory => "not_factory",
             Self::Internal => "internal",
         }
     }
@@ -293,6 +298,7 @@ impl CardError {
             Self::DefaultPin => text::ERR_DEFAULT_PIN,
             Self::NotBlocked => text::ERR_NOT_BLOCKED,
             Self::PukLastTry => text::ERR_PUK_LAST_TRY,
+            Self::NotFactory => text::ERR_NOT_FACTORY,
             Self::WrongPin { retries: 0 } | Self::PinBlocked => text::ERR_PIN_BLOCKED,
             Self::SecurityStatus | Self::Conditions => text::ERR_REFUSED,
             Self::FirmwareTooOld | Self::NotSupported => text::ERR_NOT_SUPPORTED,

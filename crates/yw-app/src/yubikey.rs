@@ -670,7 +670,8 @@ impl PinKind {
         let backup = if context.backups.is_empty() {
             String::new()
         } else {
-            let cards = context.backups.join("·");
+            // Joined with ", " (2026-11-16): "·" ran into short card names ("01·#…·02").
+            let cards = context.backups.join(", ");
             let particle = crate::ui::theme::direction_particle(&cards);
             format!(" {}", text::BACKUP_SIGNS.fill(lang, [&cards, particle]))
         };
@@ -1396,6 +1397,33 @@ impl PinReport {
     }
 }
 
+/// The step of "PIN 설정" that failed and why.
+type StepError = (DefaultsStep, CardError);
+
+/// The current PIV PIN and PUK that "PIN 하나로 통일" sends (spec/10 §9.3, 2026-11-16). The card
+/// says, without spending a try (GET METADATA `80`/`81`), whether each is still the factory value:
+/// a factory one gets the factory value whatever `current` is (a run that stopped after the PIN
+/// left the PUK at the factory value), a blocked one is not sent (`PinBlocked`), and an empty
+/// `current` for one that is no longer the factory value is refused (`NotFactory`). Before, an
+/// empty `current` always sent the factory values: a user who had forgotten an earlier
+/// unification spent a PIV PIN try with every attempt until the PIN locked. Without metadata
+/// (firmware before 5.3) it is as before.
+fn piv_current<'v>(
+    session: &mut yw_core::yubikey::piv::Piv<'_>,
+    current: &'v [u8],
+) -> Result<(&'v [u8], &'v [u8]), StepError> {
+    let old = |step: DefaultsStep, metadata: Result<(bool, u8), CardError>| match metadata {
+        Ok((_, 0)) => Err((step, CardError::PinBlocked)),
+        Ok((true, _)) => Ok(step.factory()),
+        Ok((false, _)) if current.is_empty() => Err((step, CardError::NotFactory)),
+        _ if current.is_empty() => Ok(step.factory()),
+        _ => Ok(current),
+    };
+    let pin = old(DefaultsStep::PivPin, session.pin_metadata())?;
+    let puk = old(DefaultsStep::PivPuk, session.puk_metadata())?;
+    Ok((pin, puk))
+}
+
 /// The confirmations of a last try (spec/10 §9.1) a "PIN 설정" job carries.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LastTries {
@@ -1409,7 +1437,7 @@ pub struct LastTries {
 /// every applet) replaces, in this order, the PIV PIN, the PIV PUK, the management key
 /// (generated and stored PIN-protected with the new PIN), the `OpenPGP` admin PIN and the
 /// `OpenPGP` user PIN. `current` empty = the factory values; otherwise the one current value of
-/// all four. A factory `new` value is refused before the card is touched (`12345678` would
+/// all four (PIV: as the card reports, [`piv_current`]). A factory `new` value is refused before the card is touched (`12345678` would
 /// "change" the factory PUK and admin PIN to themselves and clear the factory-PIN note). The
 /// last tries of the admin PIN and the PUK are checked first (`last_tries`). The first failure
 /// stops the sequence; the report says what changed. An applet the card lacks is skipped.
@@ -1450,13 +1478,10 @@ pub fn set_pins(
             return Ok(report);
         }
         match yw_core::yubikey::piv::Piv::open(transport, MODE) {
-            Ok(mut session) => report.piv(
-                &mut session,
-                (old(DefaultsStep::PivPin), old(DefaultsStep::PivPuk)),
-                new,
-                cipher,
-                &challenge,
-            ),
+            Ok(mut session) => match piv_current(&mut session, current) {
+                Ok(old) => report.piv(&mut session, old, new, cipher, &challenge),
+                Err(failed) => report.failed = Some(failed),
+            },
             Err(CardError::AppletMissing | CardError::FirmwareTooOld) => report.skipped.extend([
                 DefaultsStep::PivPin,
                 DefaultsStep::PivPuk,
@@ -1912,6 +1937,47 @@ mod tests {
             assert!(!has_hangul(target.rule(Lang::En)));
         }
         assert!(!has_hangul(&super::CardJobError::NoCard.text_in(Lang::En)));
+    }
+
+    /// spec/10 §9.3 (2026-11-16): "PIN 하나로 통일" with an empty current value on a card whose
+    /// PIV PIN is no longer the factory value sends nothing (before, every attempt spent a PIV
+    /// PIN try); a PUK still at the factory value gets it even when a current value is given.
+    #[test]
+    fn unifying_from_factory_values_never_spends_a_try_of_a_changed_piv_pin() {
+        use yw_core::yubikey::CardError;
+
+        use super::{DefaultsStep, LastTries};
+        let mut card = MockCard::new(7_700_010);
+        card.piv_pin = b"24681357".to_vec();
+        let cards = Arc::new(Mutex::new(vec![card]));
+        let mut source = MockSource {
+            cards: Arc::clone(&cards),
+        };
+        let mut unify = |current: &[u8]| {
+            super::set_pins(
+                &mut source,
+                7_700_010,
+                (true, true),
+                (current, b"97531864"),
+                LastTries::default(),
+            )
+            .unwrap()
+        };
+        let report = unify(b"");
+        assert!(report.done.is_empty());
+        assert_eq!(
+            report.failed,
+            Some((DefaultsStep::PivPin, CardError::NotFactory))
+        );
+        assert_eq!(cards.lock().unwrap()[0].piv_retries, 3);
+        let report = unify(b"24681357");
+        assert_eq!(
+            report.done[..2],
+            [DefaultsStep::PivPin, DefaultsStep::PivPuk]
+        );
+        let card = &cards.lock().unwrap()[0];
+        assert_eq!(card.piv_puk, b"97531864");
+        assert_eq!(card.piv_puk_retries, 3);
     }
 
     /// spec/10 §5.1: the PIN check is a card job of its own before the signing job. A program

@@ -26,6 +26,8 @@ crate::texts! {
         / "The applet reset stopped: the PIN did not lock within the number of tries the card reported. No keys were erased (the PIN's remaining tries may have gone down). Reconnect the YubiKey and try once more.";
     ERR_PUK_LAST_TRY = "PIV PUK 시도가 1회 남았습니다. 한 번 더 틀리면 PUK가 잠기고, 그 뒤 PIV PIN까지 잠기면 PIV 초기화밖에 방법이 없습니다(복구 단어 없이 연결한 Solana 키는 그때 영구히 사라집니다). 정확한 PUK가 확실하면 다시 입력해 제출하세요 — 그때는 마지막 시도로 카드에 보냅니다."
         / "1 PIV PUK try is left. One more wrong PUK locks it, and if the PIV PIN then locks too, only a PIV reset is left (Solana keys connected without recovery words are then lost for good). If you are sure of the PUK, enter it again and submit — it is then sent to the card as the last try.";
+    ERR_NOT_FACTORY = "이 YubiKey의 PIV PIN이나 PUK는 이미 공장 기본값이 아닙니다(카드가 알려 줌). '현재 PIN'에 지금 값(전에 통일했다면 그 8자)을 넣으세요. 카드에 보내지 않았으니 남은 시도는 그대로입니다."
+        / "This YubiKey's PIV PIN or PUK is no longer the factory default (the card says so). Enter the current value (the 8 characters, if you unified them before) under 'Current PIN'. Nothing was sent, so no tries were used.";
     ERR_PIN_BLOCKED = "PIN이 잠겼습니다. PUK(또는 관리자 PIN)로 풀거나 복구 단어로 다시 등록하세요."
         / "The PIN is locked. Unlock it with the PUK (or the admin PIN), or enrol again with the recovery words.";
     ERR_REFUSED = "YubiKey가 작업을 거부했습니다. PIN 확인과 터치(시간 안에)를 다시 시도하세요."

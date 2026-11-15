@@ -561,6 +561,7 @@ YubiKey(§2.19, [10]) 문구 — 정본은 `app_yubikey`·`ui::screens_yubikey`�
 | T-CARD-ADMIN-PIN / T-CARD-MANAGEMENT-KEY | W12 | 관리자 PIN(8–127자, 기본 12345678) / 관리 키 16진수 48자리 — 이번 작업에만 쓰고 바로 지웁니다. |
 | T-CARD-PIV-PIN / T-CARD-SET-PINS | W12 | PIV PIN(6–8자, 기본 123456) — PIN으로 보호된 관리 키를 꺼내는 데 한 번만 쓰고 지웁니다. / 새 8자 PIN 하나를 OpenPGP PIN·관리자 PIN·PIV PIN·PUK에 똑같이 넣고 관리 키는 자동으로 PIN 보호합니다. 현재 값이 공장 기본값이면 비워 두기, 전에 통일했다면 그 8자. 공장 기본값(12345678)은 새 PIN으로 쓸 수 없습니다. 중간에 실패하면 멈추고 바뀐 것만 알립니다. |
 | T-CARD-NEW-FACTORY | W12 통일·PIN/PUK 바꾸기(2026-11-10) | 공장 기본값(123456·12345678)은 새 PIN으로 쓸 수 없습니다 — YubiKey를 가진 사람이 그 값으로 바로 서명할 수 있습니다. 다른 값을 고르세요. |
+| T-CARD-NOT-FACTORY | W12 통일, 현재 값을 비웠는데 PIV PIN·PUK가 공장값이 아님(2026-11-16) | 이 YubiKey의 PIV PIN이나 PUK는 이미 공장 기본값이 아닙니다(카드가 알려 줌). '현재 PIN'에 지금 값(전에 통일했다면 그 8자)을 넣으세요. 카드에 보내지 않았으니 남은 시도는 그대로입니다. |
 
 ### 2.17 EVM 체인 추가·편집·삭제 (S17, D14)
 기본 체인(1·11155111·999·42161·8453·56·4663)은 [03] §1.1 상수이며 편집·삭제할 수 없다(RPC URL §2.11.1, 수수료 상한, HyperEVM `다시 고정`만). 사용자 체인은 최대 `MAX_CUSTOM_EVM_CHAINS = 32`개이고, 비밀이 아닌 정의(템플릿 식별자 포함)는 `settings.json` `evmChains`(§6.1), RPC URL은 토큰이 들어 있으므로(D13) `apikeys.dpapi` `rpc:eip155:<chainId>`(§6.3)에 둔다. 런타임은 이 URL만 쓴다(§1.9). S15 `EVM 체인`에서 연다. 추가·편집은 S15를 열 수 있으면 언제나(이미 32개면 `추가` → E-CHN-006), 삭제는 `Unlocked`에서만(§2.17.3). dApp은 체인을 추가할 수 없다(`wallet_addEthereumChain` 거부, D14, [05]).
