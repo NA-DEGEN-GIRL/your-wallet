@@ -1891,8 +1891,10 @@ fn origin_authority(origin: &BrowserOrigin) -> String {
     }
 }
 
-/// `{ "publicKey": base58 }` (`sol_connect` result).
-pub(crate) fn sol_connect_value(public: &[u8; 32]) -> Value {
+/// `{ "publicKey": base58 }` (`sol_connect` result). Public (2026-11-17): the App answers queued
+/// connects with it.
+#[must_use]
+pub fn sol_connect_value(public: &[u8; 32]) -> Value {
     crate::text::json_object(vec![(
         "publicKey",
         crate::text::json_str(&yw_core::codec::base58::base58_encode(public)),
@@ -1916,7 +1918,8 @@ fn btc_addresses(state: &State, grant: &BtcGrant) -> Vec<String> {
 /// `btc_requestAccounts`/`btc_getAccounts` result: `[{ address, publicKey, purpose,
 /// addressType }]` (sats-connect address fields; `publicKey` lowercase hex of the key the
 /// address commits to), optionally only the requested purposes.
-pub(crate) fn btc_accounts_value(grant: &BtcGrant, purposes: Option<&[BtcPurpose]>) -> Value {
+#[must_use]
+pub fn btc_accounts_value(grant: &BtcGrant, purposes: Option<&[BtcPurpose]>) -> Value {
     use crate::text::{json_object, json_str};
     Value::Array(
         grant

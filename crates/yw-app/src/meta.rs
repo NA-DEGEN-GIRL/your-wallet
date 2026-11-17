@@ -79,7 +79,7 @@ pub const VAULT_SEEN_KEY: &str = "vault_generation_seen";
 /// The optional top-level key of the last journal reset (2026-11-10, spec/04 §2.5): Unix seconds
 /// of `격리하고 새로 시작` on a `journal.ywj` that did not open. A transaction the old journal
 /// tracked may still confirm without a record, so for a while after it the Bitcoin send form asks
-/// for a check and Solana and Zcash sends wait (`crate::app_sidecar`). Written when non-zero.
+/// for a check and Solana and Zcash sends wait (the App's sidecar code). Written when non-zero.
 pub const JOURNAL_RESET_KEY: &str = "journal_reset_at";
 
 /// The optional top-level key of the address-book favorites (spec/02 §5.3, spec/04 §2.10):

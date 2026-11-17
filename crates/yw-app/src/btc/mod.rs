@@ -39,13 +39,10 @@ pub use indexer::{
 };
 pub use pace::Pace;
 
-/// yw-core network of a settings network.
+/// yw-core network of a settings network (`network::BtcNet::core`, 2026-11-17).
 #[must_use]
 pub const fn core_network(net: BtcNet) -> BtcNetwork {
-    match net {
-        BtcNet::Mainnet => BtcNetwork::Mainnet,
-        BtcNet::Testnet4 => BtcNetwork::Testnet4,
-    }
+    net.core()
 }
 
 /// Settings network of a yw-core network.

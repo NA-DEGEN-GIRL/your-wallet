@@ -14,7 +14,8 @@
 //! Rendering is procedural: every mark is a list of shapes in a unit square whose signed distance
 //! gives a one-pixel anti-aliased edge at any size, so a badge is crisp at 100–200 % DPI and in
 //! the custom-painted approval window. [`Badge::render`] returns premultiplied `0xAARRGGBB` rows
-//! (top-down) for `yw_win::ui::PaintDc::draw_argb` and owner-drawn button icons.
+//! (top-down) for the platform's painter (Windows: the window paint call `draw_argb`) and
+//! owner-drawn button icons.
 
 use yw_core::btc::BtcNetwork;
 use yw_core::evm::chain;
@@ -139,8 +140,8 @@ impl Badge {
     pub fn network(network: NetworkId, name: &str) -> Self {
         match network {
             NetworkId::Eip155(chain_id) => Self::evm(chain_id, name),
-            NetworkId::Solana(cluster) => Self::solana(crate::app_sol::core_cluster(cluster)),
-            NetworkId::Bitcoin(net) => Self::bitcoin(crate::btc::core_network(net)),
+            NetworkId::Solana(cluster) => Self::solana(cluster.core()),
+            NetworkId::Bitcoin(net) => Self::bitcoin(net.core()),
             NetworkId::Zcash(net) => Self::zcash(net),
         }
     }

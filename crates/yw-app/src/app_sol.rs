@@ -61,13 +61,10 @@ pub(crate) fn now_unix_ms() -> u64 {
         })
 }
 
-/// Settings cluster → core cluster.
+/// Settings cluster → core cluster (`network::SolCluster::core`, 2026-11-17).
 #[must_use]
 pub const fn core_cluster(cluster: crate::network::SolCluster) -> SolCluster {
-    match cluster {
-        crate::network::SolCluster::Mainnet => SolCluster::Mainnet,
-        crate::network::SolCluster::Devnet => SolCluster::Devnet,
-    }
+    cluster.core()
 }
 
 /// Core cluster → settings cluster.

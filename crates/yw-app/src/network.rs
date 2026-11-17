@@ -48,6 +48,16 @@ impl SolCluster {
             _ => None,
         }
     }
+
+    /// The yw-core cluster (2026-11-17, spec/15 §11.4 S2: the network badge needs it, and
+    /// before it called the App's `app_sol::core_cluster`, which now delegates here).
+    #[must_use]
+    pub const fn core(self) -> yw_core::sol::SolCluster {
+        match self {
+            Self::Mainnet => yw_core::sol::SolCluster::Mainnet,
+            Self::Devnet => yw_core::sol::SolCluster::Devnet,
+        }
+    }
 }
 
 /// Bitcoin network.
@@ -76,6 +86,16 @@ impl BtcNet {
             "mainnet" => Some(Self::Mainnet),
             "testnet4" => Some(Self::Testnet4),
             _ => None,
+        }
+    }
+
+    /// The yw-core network (2026-11-17, spec/15 §11.4 S2: the network badge needs it, and
+    /// before it called `btc::core_network`, which now delegates here).
+    #[must_use]
+    pub const fn core(self) -> yw_core::btc::BtcNetwork {
+        match self {
+            Self::Mainnet => yw_core::btc::BtcNetwork::Mainnet,
+            Self::Testnet4 => yw_core::btc::BtcNetwork::Testnet4,
         }
     }
 }
@@ -146,6 +166,24 @@ impl fmt::Display for NetworkId {
 #[cfg(test)]
 mod tests {
     use super::{BtcNet, NetworkId, SolCluster};
+
+    /// Every settings cluster and Bitcoin network maps to the yw-core one of the same name (the
+    /// badge and the pipelines depend on it).
+    #[test]
+    fn sol_cluster_and_btc_net_core_cover_every_value() {
+        for (cluster, core) in [
+            (SolCluster::Mainnet, yw_core::sol::SolCluster::Mainnet),
+            (SolCluster::Devnet, yw_core::sol::SolCluster::Devnet),
+        ] {
+            assert_eq!(cluster.core(), core);
+        }
+        for (net, core) in [
+            (BtcNet::Mainnet, yw_core::btc::BtcNetwork::Mainnet),
+            (BtcNet::Testnet4, yw_core::btc::BtcNetwork::Testnet4),
+        ] {
+            assert_eq!(net.core(), core);
+        }
+    }
 
     #[test]
     fn parse_and_display_round_trip() {

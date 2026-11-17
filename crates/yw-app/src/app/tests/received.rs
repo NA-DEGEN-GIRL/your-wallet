@@ -204,7 +204,7 @@ fn pending_row(key: &str, units: u64) -> Incoming {
         hash: key.to_owned(),
         amount: yw_core::zec::format_zec(units),
         symbol: "ZEC".to_owned(),
-        from_note: Some(crate::received::zec::T_NO_SENDER),
+        from_note: Some(crate::received::zec::text::NO_SENDER.ko),
         pending: true,
         amount_units: units,
         ..Incoming::default()
@@ -497,7 +497,7 @@ fn zcash_unconfirmed_deposits_on_the_card() {
                 entries: vec![row.clone()],
                 dust: Vec::new(),
             },
-            limited: Some(crate::received::zec::T_NO_DELTAS_PENDING),
+            limited: Some(crate::received::zec::text::NO_DELTAS_PENDING.ko),
             ..Fetched::default()
         }),
     });
@@ -510,7 +510,10 @@ fn zcash_unconfirmed_deposits_on_the_card() {
     assert!(has_text(&items, "미확정 · 받음 0.40000000 ZEC"));
     assert!(has_text(&items, recv_text::PENDING_STATUS.ko));
     assert!(has_text(&items, recv_text::PENDING_HELP.ko));
-    assert!(has_text(&items, crate::received::zec::T_NO_DELTAS_PENDING));
+    assert!(has_text(
+        &items,
+        crate::received::zec::text::NO_DELTAS_PENDING.ko
+    ));
 
     // The next automatic read carries the pending row; the row goes, counted.
     app.received_tick(yw_win::time::monotonic_ms() + 61_000);
