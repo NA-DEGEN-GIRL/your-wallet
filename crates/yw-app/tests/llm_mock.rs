@@ -29,8 +29,9 @@ mod llm {
     use yw_app::explain::{
         AiPanelState, ExplainError, ExplainInput, ExplainService, ExplainSim, ExplainSource,
         HiddenReason, LlmConfig, LlmDone, LlmJob, MAX_RESPONSE_BODY, MismatchReason,
-        REQUEST_DEADLINE_MS, ResponseFormatMode, WinHttpTransport, build_input, explain_once,
+        REQUEST_DEADLINE_MS, ResponseFormatMode, build_input, explain_once,
     };
+    use yw_app::explain_transport::{WinHttpTransport, factory};
     use yw_app::flow::evm::ChainCache;
     use yw_app::flow::evm::prepare::{Prepared, prepare};
     use yw_app::settings::{LlmSettings, Settings};
@@ -848,7 +849,7 @@ mod llm {
         let sink = Box::new(move |done: LlmDone| {
             let _ = tx.send(done);
         });
-        let service = ExplainService::start(config(&mock, None), sink).unwrap();
+        let service = ExplainService::start(config(&mock, None), factory(), sink).unwrap();
         let mut panel = AiPanel::new(true, Lang::Ko);
         let transition = drive(&mut panel, &service, &results, Instant::now());
         assert_eq!(panel.state(), &AiPanelState::Failed(ExplainError::Timeout));

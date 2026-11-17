@@ -124,7 +124,7 @@ crates/
                   store.rs(`VaultStorage` 구현, [09](09-testing.md) §2.1), workers/{key, rpc, read}.rs([04](04-app-ui.md) §1.2),
                   rpc/{mod.rs(공용 전송, [04](04-app-ui.md) §1.9), evm.rs(`rpc::evm`: eth_simulateV1 응답 파서 M2([09](09-testing.md) §3.8), 전송·호출 M4)}, flow/evm.rs(`flow::evm`, M4),
                   browser/{mod.rs, params.rs, envelope.rs, …}(`browser::params`·`browser::envelope`, M5, [05](05-browser.md)),
-                  explain/(M6, [06](06-llm-explain.md)), sol/(M7, [07](07-solana.md) §2), btc/(M8, [08](08-bitcoin.md)),
+                  explain/(M6, [06](06-llm-explain.md)), explain_transport.rs(LLM `WinHTTP` 전송, 2026-11-17), sol/(M7, [07](07-solana.md) §2), btc/(M8, [08](08-bitcoin.md)),
                   ui/{main_window, screens/*, approval, interaction, secret, secure_field, text_layout, qr, theme}.rs}
                   (배치 [04](04-app-ui.md) §1.8, EVM 모듈 이름 [03](03-evm.md) §0)
   yw-host/   Cargo.toml  src/{lib.rs, main.rs}  tests/               ([05](05-browser.md))

@@ -10,7 +10,9 @@
 //! - [`config`]: `llm_explain` settings, endpoint/model/key rules, the privacy notice (§2).
 //! - [`input`]: `yw.explain.input.v1` built from the wallet's own decoding and the simulation
 //!   status, with untrusted strings wrapped and capped, and the trusted sets of §5.3 (§4.3–§4.4).
-//! - [`request`]: the HTTP body, the transport trait and its `WinHTTP` implementation (§4.1–§4.5).
+//! - [`request`]: the HTTP body and the transport trait (§4.1–§4.5). The platform transport is
+//!   handed in as a [`TransportFactory`] (Windows: yw-app `explain_transport`, 2026-11-17 S2;
+//!   before, the `WinHTTP` implementation lived in `request`).
 //! - [`response`]: envelope, content schema, forbidden content and consistency checks (§5).
 //! - [`panel`]: the per-window state machine and the display model (§3, §6–§7).
 //! - [`ExplainService`]: the single `yw-llm` worker thread (§3.2, §9). It exists only while the
@@ -35,12 +37,18 @@ use std::sync::mpsc;
 use std::thread::JoinHandle;
 
 use yw_core::lang::Lang;
+use yw_platform::http::EndpointUrl;
 
 pub use config::{LlmConfig, PRIVACY_NOTICE_VERSION, ReasoningEffort, ResponseFormatMode};
 pub use input::{ExplainInput, ExplainSim, ExplainSource, build_input};
 pub use panel::{AiPanel, AiPanelState};
-pub use request::{HttpResponse, LlmTransport, WinHttpTransport, build_body, explain_once};
+pub use request::{HttpResponse, LlmTransport, build_body, explain_once};
 pub use response::{ActionType, ExplainAction, Explanation, parse_response};
+
+/// Creates the worker's transport for the configured endpoint, on the `yw-llm` thread when the
+/// service starts (never while the feature is off, D21). `None`: no transport (every job then
+/// fails with [`ExplainError::Network`]).
+pub type TransportFactory = Box<dyn FnOnce(&EndpointUrl) -> Option<Box<dyn LlmTransport>> + Send>;
 
 /// The UI deadline of one request (spec/06 §3.2).
 pub const REQUEST_DEADLINE_MS: u64 = 10_000;
@@ -232,7 +240,7 @@ pub struct LlmDone {
 }
 
 /// The `yw-llm` worker (spec/06 §3.2, §9): one thread, one request at a time, owning the
-/// endpoint, the API key (D10: not a wallet secret) and its own `WinHTTP` session. It exists only
+/// endpoint, the API key (D10: not a wallet secret) and its own HTTP session (Windows: `WinHTTP`). It exists only
 /// while the feature is effectively on (`Option<ExplainService>` = `None` otherwise).
 pub struct ExplainService {
     jobs: Option<mpsc::Sender<LlmJob>>,
@@ -252,16 +260,19 @@ impl core::fmt::Debug for ExplainService {
 }
 
 impl ExplainService {
-    /// Starts the worker with the production `WinHTTP` transport (created on the worker).
+    /// Starts the worker; `factory` creates its transport on the worker thread (production:
+    /// yw-app `explain_transport::factory`, the `WinHTTP` client). 2026-11-17 S2: before, the
+    /// `WinHTTP` transport was built in here.
     ///
     /// # Errors
     ///
     /// [`ExplainError::Network`] when the thread cannot start.
     pub fn start(
         config: LlmConfig,
+        factory: TransportFactory,
         sink: Box<dyn Fn(LlmDone) + Send>,
     ) -> Result<Self, ExplainError> {
-        Self::spawn(config, None, sink)
+        Self::spawn(config, factory, sink)
     }
 
     /// Starts the worker with a caller-supplied transport (tests).
@@ -274,12 +285,12 @@ impl ExplainService {
         transport: Box<dyn LlmTransport>,
         sink: Box<dyn Fn(LlmDone) + Send>,
     ) -> Result<Self, ExplainError> {
-        Self::spawn(config, Some(transport), sink)
+        Self::spawn(config, Box::new(move |_| Some(transport)), sink)
     }
 
     fn spawn(
         config: LlmConfig,
-        transport: Option<Box<dyn LlmTransport>>,
+        factory: TransportFactory,
         sink: Box<dyn Fn(LlmDone) + Send>,
     ) -> Result<Self, ExplainError> {
         let (tx, rx) = mpsc::channel::<LlmJob>();
@@ -290,11 +301,7 @@ impl ExplainService {
         let thread = std::thread::Builder::new()
             .name("yw-llm".to_owned())
             .spawn(move || {
-                let transport: Option<Box<dyn LlmTransport>> = transport.or_else(|| {
-                    WinHttpTransport::new(config.endpoint())
-                        .ok()
-                        .map(|transport| Box::new(transport) as Box<dyn LlmTransport>)
-                });
+                let transport = factory(config.endpoint());
                 for job in rx {
                     let (result, stats) = match transport.as_deref() {
                         Some(transport) => explain_once(transport, &config, &job.input),
@@ -358,14 +365,16 @@ impl ExplainService {
     }
 
     /// Closes the job channel and waits up to `wait_ms` for the worker (it may still be inside
-    /// `WinHTTP`; then it is left to finish and its result is dropped).
+    /// the HTTP call; then it is left to finish and its result is dropped).
     pub fn stop(mut self, wait_ms: u64) {
         drop(self.jobs.take());
         let Some(thread) = self.thread.take() else {
             return;
         };
-        let deadline = yw_win::time::monotonic_ms().saturating_add(wait_ms);
-        while !thread.is_finished() && yw_win::time::monotonic_ms() < deadline {
+        // Local elapsed time only (2026-11-17 S2: `Instant`; before, yw-win `monotonic_ms`).
+        let started = std::time::Instant::now();
+        let wait = std::time::Duration::from_millis(wait_ms);
+        while !thread.is_finished() && started.elapsed() < wait {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         if thread.is_finished() {

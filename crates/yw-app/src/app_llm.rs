@@ -256,7 +256,7 @@ impl App {
                 logging::warn("llm", "E-APP-005", &[]);
             }
         });
-        match ExplainService::start(config, sink) {
+        match ExplainService::start(config, crate::explain_transport::factory(), sink) {
             Ok(service) => {
                 logging::info("llm", "llm.started", &[("host", Field::LlmHost(&host))]);
                 self.llm = Some(service);
@@ -575,8 +575,9 @@ impl App {
             .name("yw-llm-test".to_owned())
             .spawn(move || {
                 let result = sample_input(lang).and_then(|input| {
-                    let transport = crate::explain::WinHttpTransport::new(config.endpoint())
-                        .map_err(|_| ExplainError::Network)?;
+                    let transport =
+                        crate::explain_transport::WinHttpTransport::new(config.endpoint())
+                            .map_err(|_| ExplainError::Network)?;
                     explain_once(&transport, &config, &input).0.map(|_| ())
                 });
                 let _ = events.push(UiEvent::LlmTest(result));

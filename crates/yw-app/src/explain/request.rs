@@ -2,7 +2,6 @@
 
 use yw_json::{Limits, Number, Value};
 use yw_platform::http::{EndpointUrl, HttpError, Timeouts};
-use yw_win::http::Client;
 
 use super::config::{LlmConfig, ResponseFormatMode};
 use super::input::ExplainInput;
@@ -10,7 +9,7 @@ use super::response::{Explanation, parse_response};
 use super::{ExplainError, MAX_REQUEST_BODY, MAX_RESPONSE_BODY, RequestStats};
 use crate::text::{json_object, json_str};
 
-/// `WinHTTP` per-phase timeouts of the LLM session (spec/01 §7.4: four × 10 s).
+/// Per-phase timeouts of the LLM session (spec/01 §7.4: four × 10 s; Windows: `WinHTTP`).
 pub const LLM_TIMEOUTS: Timeouts = Timeouts {
     resolve_ms: 10_000,
     connect_ms: 10_000,
@@ -108,7 +107,8 @@ impl core::fmt::Debug for HttpResponse {
 /// Transport failures (the `WinHTTP` error kinds; no URL or text).
 pub type TransportError = HttpError;
 
-/// The POST used for explanations (§9). Tests use a mock; production is [`WinHttpTransport`].
+/// The POST used for explanations (§9). Tests use a mock; production is the platform client
+/// (Windows: yw-app `explain_transport::WinHttpTransport`, 2026-11-17 S2).
 pub trait LlmTransport: Send {
     /// POSTs `body` with exactly `headers`, reading at most `max_response` bytes.
     ///
@@ -122,46 +122,6 @@ pub trait LlmTransport: Send {
         body: &[u8],
         max_response: usize,
     ) -> Result<HttpResponse, TransportError>;
-}
-
-/// `yw_win::http::Client` for the LLM: its own session (not the RPC one), `Client::new` for https
-/// and `Client::new_loopback` (no proxy) for loopback http, [`LLM_TIMEOUTS`], no redirects,
-/// cookies or automatic authentication (spec/01 §7.4).
-#[derive(Debug)]
-pub struct WinHttpTransport {
-    client: Client,
-}
-
-impl WinHttpTransport {
-    /// Opens the session matching `endpoint`.
-    ///
-    /// # Errors
-    ///
-    /// [`HttpError`] from session creation.
-    pub fn new(endpoint: &EndpointUrl) -> Result<Self, HttpError> {
-        let client = match endpoint {
-            EndpointUrl::Https(_) => Client::new(LLM_TIMEOUTS)?,
-            EndpointUrl::Loopback(_) => Client::new_loopback(LLM_TIMEOUTS)?,
-        };
-        Ok(Self { client })
-    }
-}
-
-impl LlmTransport for WinHttpTransport {
-    fn post(
-        &self,
-        url: &EndpointUrl,
-        headers: &[(&str, &str)],
-        body: &[u8],
-        max_response: usize,
-    ) -> Result<HttpResponse, TransportError> {
-        let response = self.client.post(url, headers, body, max_response)?;
-        Ok(HttpResponse {
-            status: response.status,
-            content_type: response.content_type,
-            body: response.body,
-        })
-    }
 }
 
 const fn transport_error(error: TransportError) -> ExplainError {
@@ -183,7 +143,8 @@ pub fn explain_once(
     cfg: &LlmConfig,
     input: &ExplainInput,
 ) -> (Result<Explanation, ExplainError>, RequestStats) {
-    let started = yw_win::time::monotonic_ms();
+    // Local elapsed time only (2026-11-17 S2: `Instant`; before, yw-win `monotonic_ms`).
+    let started = std::time::Instant::now();
     let mut stats = RequestStats::default();
     let body = match build_body(cfg, input) {
         Ok(body) => body,
@@ -200,7 +161,7 @@ pub fn explain_once(
         headers.push(("Authorization", bearer.as_str()));
     }
     let response = transport.post(cfg.endpoint(), &headers, &body, MAX_RESPONSE_BODY);
-    stats.elapsed_ms = yw_win::time::monotonic_ms().saturating_sub(started);
+    stats.elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let response = match response {
         Ok(response) => response,
         Err(error) => return (Err(transport_error(error)), stats),

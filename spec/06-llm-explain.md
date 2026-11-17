@@ -2,7 +2,7 @@
 
 상위 문서: [spec.md](../spec.md)
 
-D21의 세부 명세다. 이 기능은 승인 창에 참고용 문장을 덧붙일 뿐이며 [03](03-evm.md)의 해석·위험 규칙과 [04](04-app-ui.md)의 승인 창 동작을 바꾸지 않는다. 코드는 모두 `crates/yw-app/src/explain/`에 두고 새 크레이트를 추가하지 않는다(D5). HTTP는 yw-win `http`([01](01-repo-build.md) §7.4), JSON은 yw-json을 쓴다. 상수는 §9.
+D21의 세부 명세다. 이 기능은 승인 창에 참고용 문장을 덧붙일 뿐이며 [03](03-evm.md)의 해석·위험 규칙과 [04](04-app-ui.md)의 승인 창 동작을 바꾸지 않는다. 코드는 모두 `crates/yw-app/src/explain/`에 두고(2026-11-17 S2: Windows 전송만 `explain_transport.rs`) 새 크레이트를 추가하지 않는다(D5). HTTP는 yw-win `http`([01](01-repo-build.md) §7.4), JSON은 yw-json을 쓴다. 상수는 §9.
 
 ## 1. 목적과 비목표
 
@@ -283,9 +283,9 @@ pub trait LlmTransport: Send {                     // 테스트는 mock, 실제 
 }
 ```
 
-`LlmTransport` 실제 구현은 `yw_win::http::Client::post(&EndpointUrl, headers, body, MAX_RESPONSE_BODY)`와 `Response.content_type`([01](01-repo-build.md) §7.4)을 쓴다. https는 `Client::new`, loopback은 `Client::new_loopback`, 둘 다 `Timeouts` 네 값 10,000 ms(§4.1).
+`LlmTransport` 실제 구현(yw-app `explain_transport::WinHttpTransport`)은 `yw_win::http::Client::post(&EndpointUrl, headers, body, MAX_RESPONSE_BODY)`와 `Response.content_type`([01](01-repo-build.md) §7.4)을 쓴다. https는 `Client::new`, loopback은 `Client::new_loopback`, 둘 다 `Timeouts` 네 값 10,000 ms(§4.1, `request::LLM_TIMEOUTS`). `ExplainService::start(config, factory, sink)`는 전송을 만드는 함수 `factory: TransportFactory`(`Box<dyn FnOnce(&EndpointUrl) -> Option<Box<dyn LlmTransport>> + Send>`)를 받아 서비스가 시작될 때 `yw-llm` 스레드에서 한 번 부른다. 앱은 `explain_transport::factory()`를 넘긴다. (2026-11-17 S2: 그 전에는 `WinHttpTransport`가 `explain::request`에 있었고 `start`가 직접 만들었다. `explain/`은 이제 `yw_win`을 부르지 않으며 요청 소요 시간과 `stop`의 대기는 `std::time::Instant`로 잰다 — 그 전에는 yw-win `monotonic_ms`.)
 
-기능이 꺼져 있으면 `ExplainService`를 만들지 않는다(`Option<ExplainService>` = `None`). 이때 작업자 스레드 생성, WinHTTP 세션 생성, `llm` 키 전달이 일어나지 않는다. (`apikeys.dpapi`는 파일 하나를 통째로 복호화하므로 `llm` 항목도 다른 항목처럼 UI 스레드가 들고 있다([04] §6.3). 꺼져 있으면 어떤 작업자에도 넘기지 않는다.) 켜져 있으면 `yw-llm` 스레드가 `llm` 키를 `Zeroizing`으로 프로세스 수명 동안 보관한다(D10: 지갑 비밀 아님). 기능을 끄면 `ExplainService`를 버리고(키 drop), 키를 바꾸거나 지우면 다시 만든다.
+기능이 꺼져 있으면 `ExplainService`를 만들지 않는다(`Option<ExplainService>` = `None`). 이때 작업자 스레드 생성, 전송 함수 호출(WinHTTP 세션 생성), `llm` 키 전달이 일어나지 않는다. (`apikeys.dpapi`는 파일 하나를 통째로 복호화하므로 `llm` 항목도 다른 항목처럼 UI 스레드가 들고 있다([04] §6.3). 꺼져 있으면 어떤 작업자에도 넘기지 않는다.) 켜져 있으면 `yw-llm` 스레드가 `llm` 키를 `Zeroizing`으로 프로세스 수명 동안 보관한다(D10: 지갑 비밀 아님). 기능을 끄면 `ExplainService`를 버리고(키 drop), 키를 바꾸거나 지우면 다시 만든다.
 
 ## 10. 테스트
 

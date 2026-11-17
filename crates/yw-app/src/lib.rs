@@ -41,6 +41,7 @@ pub mod catalogues;
 pub mod errors;
 pub mod events;
 pub mod explain;
+pub mod explain_transport;
 pub mod explorer;
 pub mod flow;
 pub mod hypercore;

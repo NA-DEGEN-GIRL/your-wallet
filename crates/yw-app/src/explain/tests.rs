@@ -1620,3 +1620,53 @@ fn explain_catalogue_invariants() {
         }
     }
 }
+
+/// D21 and the transport seam (2026-11-17 S2): the service calls its transport factory exactly
+/// once, on the worker, and only because it was started (nothing is created before `start`);
+/// a factory without a transport fails each job with `Network` and sends nothing.
+#[test]
+fn the_transport_factory_runs_once_when_the_service_starts() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use super::{ExplainService, LlmDone, LlmJob};
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&calls);
+    let (tx, results) = mpsc::channel();
+    let service = ExplainService::start(
+        test_config(None),
+        Box::new(move |endpoint: &yw_platform::http::EndpointUrl| {
+            assert_eq!(
+                std::thread::current().name(),
+                Some("yw-llm"),
+                "created on the worker"
+            );
+            assert!(matches!(
+                endpoint,
+                yw_platform::http::EndpointUrl::Loopback(_)
+            ));
+            counter.fetch_add(1, Ordering::SeqCst);
+            None
+        }),
+        Box::new(move |done: LlmDone| {
+            let _ = tx.send(done);
+        }),
+    )
+    .unwrap();
+    for generation in 0..2 {
+        let diff = usdc_diff();
+        assert!(service.submit(LlmJob {
+            window: 1,
+            generation,
+            input: usdc_input(ExplainSim::Success(&diff)),
+        }));
+        let done = results.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_eq!(done.generation, generation);
+        assert!(matches!(done.result, Err(ExplainError::Network)));
+        assert_eq!(done.stats.req_bytes, 0, "nothing was sent");
+    }
+    service.stop(1_000);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
