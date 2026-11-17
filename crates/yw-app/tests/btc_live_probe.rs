@@ -33,10 +33,11 @@ use yw_app::btc::rpc::{
 use yw_app::btc::{
     BtcClient, BtcEndpoint, BtcEnv, BtcError, ChainSession, LogSink, Pace, Trigger, network_id,
 };
-use yw_app::flow::evm::{Clock, SystemClock};
+use yw_app::flow::evm::Clock;
 use yw_app::logging::Field;
 use yw_app::rpc::{RPC_TIMEOUTS, RpcFailure, classify};
 use yw_app::settings::{BtcIndexer, LogLevel};
+use yw_app::system_clock::SystemClock;
 use yw_core::bip32::AccountXpub;
 use yw_core::btc::address::BtcAddress;
 use yw_core::btc::prevtx::verify_prev_output;

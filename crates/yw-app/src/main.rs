@@ -20,6 +20,7 @@ use yw_app::app_browser::BrowserUi;
 use yw_app::build_info::start_text;
 use yw_app::errors::ErrorCode;
 use yw_app::events::{EventQueue, KeyJob, UiEvent};
+use yw_app::flow::evm::Limits;
 use yw_app::logging::{self, Field};
 use yw_app::rpc::{RPC_TIMEOUTS, Transport};
 use yw_app::settings::LogLevel;
@@ -27,6 +28,7 @@ use yw_app::shell_msg::{
     NavKey, Shortcut, WM_YW_ACTIVATE, WM_YW_EVENTS, WM_YW_LOCK_SHORTCUT, WM_YW_NAV_KEY,
     WM_YW_SHORTCUT, WM_YW_TAB_SHORTCUT, chain_tab_key,
 };
+use yw_app::system_clock::SystemClock;
 use yw_app::workers::key::{KeyWorker, run as run_key_worker};
 use yw_app::workers::rpc::{RpcWorker, run as run_rpc_worker};
 use yw_core::lang::Lang;
@@ -365,7 +367,10 @@ fn main() -> ExitCode {
         let rpc_thread = std::thread::Builder::new()
             .name("yw-rpc".to_owned())
             .spawn(move || {
-                run_rpc_worker(RpcWorker::production(rpc_transport), &rpc_rx, &rpc_events);
+                // The production clock is the `GetTickCount64` base (spec/15 §11.4 S2).
+                let worker =
+                    RpcWorker::new(rpc_transport, Box::new(SystemClock), Limits::PRODUCTION);
+                run_rpc_worker(worker, &rpc_rx, &rpc_events);
             });
         match (key_thread, rpc_thread) {
             (Ok(key_thread), Ok(rpc_thread)) => {

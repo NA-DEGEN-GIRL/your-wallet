@@ -28,10 +28,11 @@ use crate::browser::{
 use crate::errors::ErrorCode;
 use crate::events::{EventQueue, MessageSignFailure, MessageSigned, SignTicket};
 use crate::flow::evm::track::BroadcastOutcome;
-use crate::flow::evm::{SharedTransport, SystemClock, chain_info};
+use crate::flow::evm::{SharedTransport, chain_info};
 use crate::logging::{self, Field};
 use crate::meta::EvmAccountPref;
 use crate::network::NetworkId;
+use crate::system_clock::SystemClock;
 use crate::ui::approval::{QueueOutcome, QueueSource};
 use crate::ui::secret::SecretKind;
 
@@ -1465,7 +1466,7 @@ mod tests {
         let core = crate::browser::BrowserCore::new(
             "abcdefghijklmnopabcdefghijklmnop",
             events as Arc<dyn crate::browser::DappSink>,
-            Arc::new(crate::flow::evm::SystemClock),
+            Arc::new(crate::system_clock::SystemClock),
         );
         app.browser = Some(BrowserUi {
             core,

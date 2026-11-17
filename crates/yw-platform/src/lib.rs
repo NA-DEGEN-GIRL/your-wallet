@@ -5,7 +5,8 @@
 //! time, file, network, thread and environment access). [`http`] holds the URL, timeout, response
 //! and error types of the HTTP client and the request limits every platform enforces; the client
 //! itself is per platform (Windows: `yw_win::http::Client`, `WinHTTP`). [`clock`] holds the
-//! [`Clock`] trait of the pipelines (Windows implementation: yw-app `SystemClock`).
+//! [`Clock`] trait of the pipelines (Windows implementation: yw-app
+//! `system_clock::SystemClock`).
 //!
 //! 2026-11-17: split out of yw-win (`http` types) and yw-app (`flow::evm::Clock`) as the first
 //! step of the Android port, so code that will be shared across platforms no longer names yw-win.

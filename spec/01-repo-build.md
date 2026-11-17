@@ -119,7 +119,7 @@ crates/
                               ui/{mod.rs, window.rs, msg.rs, paint.rs, controls.rs, capture.rs(개발 빌드 전용), secure_text.rs}}  tests/   (API §7; pcsc·cng [10], ws·image·`cng::p256_verify` [13])
   yw-app/    Cargo.toml  build.rs(선택, [04](04-app-ui.md) §1.6)  yw-app.manifest  tests/
              icons/{yw-app.ico, yw-app.res}   (앱 아이콘, `scripts/make-icons.mjs`가 만들고 커밋, [04](04-app-ui.md) §1.7)
-             src/{lib.rs, main.rs, app.rs, events.rs, shell_msg.rs(Win32 메시지 번호·단축키, 2026-11-17), errors.rs, settings.rs, apikeys.rs(네트워크별 RPC 엔드포인트 URL
+             src/{lib.rs, main.rs, app.rs, events.rs, shell_msg.rs(Win32 메시지 번호·단축키, 2026-11-17), system_clock.rs(Windows `Clock`, 2026-11-17), errors.rs, settings.rs, apikeys.rs(네트워크별 RPC 엔드포인트 URL
                   `rpc:eip155:<chainId>`·`rpc:solana:<cluster>`·`rpc:bitcoin:<net>`·공급자 템플릿 자격 정보·LLM 키, D13, [04](04-app-ui.md) §6.3), logging.rs,
                   store.rs(`VaultStorage` 구현, [09](09-testing.md) §2.1), workers/{key, rpc, read}.rs([04](04-app-ui.md) §1.2),
                   rpc/{mod.rs(공용 전송, [04](04-app-ui.md) §1.9), evm.rs(`rpc::evm`: eth_simulateV1 응답 파서 M2([09](09-testing.md) §3.8), 전송·호출 M4)}, flow/evm.rs(`flow::evm`, M4),
@@ -218,7 +218,7 @@ pub enum ParseError { TooLarge, InvalidUtf8, Syntax { offset: usize }, Duplicate
 플랫폼 중립 타입과 trait(2026-11-17: Android 이식 S1에서 yw-win `http`의 순수 타입과 yw-app `flow::evm::Clock`을 옮겨 만들었다. 그 전에는 각각 yw-win·yw-app에 있었다). 의존성 0, `#![forbid(unsafe_code)]`, `#![deny(clippy::indexing_slicing, clippy::arithmetic_side_effects)]`. yw-core처럼 OS를 부르지 않는다: `crates/yw-platform/clippy.toml`은 yw-core의 것과 같다(§5.1).
 
 - `http`: `HttpsUrl`, `LoopbackUrl`, `EndpointUrl`, `Timeouts`(+`total_ms`), `Response`, `HttpError`, 상한 상수(`MAX_URL_BYTES`, `MAX_REQUEST_BODY`, `MAX_RESPONSE_CAP`, `MAX_HEADER_VALUE`, `MAX_CONTENT_TYPE_BYTES`)와 헤더 규칙 `valid_header`. 시그니처와 규칙은 §7.4. 클라이언트(`Client`)는 플랫폼마다 따로 있다(Windows: yw-win `http`).
-- `clock`: `pub trait Clock: Send + Sync { fn now_ms(&self) -> u64 /* 단조 ms */; fn now_unix_ms(&self) -> u64; fn sleep_ms(&self, ms: u64); }`. yw-app `flow::evm`이 다시 내보내고(`pub use yw_platform::Clock`) Windows 구현 `SystemClock`(yw-win `time::monotonic_ms`)은 yw-app에 남는다. yw-app의 `monotonic_ms` 직접 호출을 `Clock`으로 바꾸는 일은 S2(엔진으로 옮기는 모듈)·S4(App)에서 한다.
+- `clock`: `pub trait Clock: Send + Sync { fn now_ms(&self) -> u64 /* 단조 ms */; fn now_unix_ms(&self) -> u64; fn sleep_ms(&self, ms: u64); }`. yw-app `flow::evm`이 다시 내보내고(`pub use yw_platform::Clock`) Windows 구현 `SystemClock`(yw-win `time::monotonic_ms`, `GetTickCount64`)은 yw-app `system_clock`에 남는다(2026-11-17 S2: 그 전에는 `flow::evm` 안에 있었고 `RpcWorker::production`이 이를 골랐다. 이제 `main.rs`가 `RpcWorker::new(…, Box::new(SystemClock), Limits::PRODUCTION)`으로 넘긴다). 운영 코드는 이 시계만 쓴다. `Instant` 기반 시계는 지역 경과 시간과 시험용이다. yw-app의 `monotonic_ms` 직접 호출을 `Clock`으로 바꾸는 일은 S2(엔진으로 옮기는 모듈)·S4(App)에서 한다.
 
 ### 2.4 크레이트 의존 규칙 (검사 스크립트가 강제, §4.2)
 

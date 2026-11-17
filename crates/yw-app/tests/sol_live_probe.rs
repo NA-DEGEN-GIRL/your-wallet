@@ -24,13 +24,13 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use yw_app::flow::evm::SystemClock;
 use yw_app::rpc::{RpcClient, RpcFailure, classify};
 use yw_app::sol::flow::{
     DappPreviewJob, PreviewJob, PreviewOutcome, SolEndpoint, balances, dapp_preview, pre_sign,
     pre_sign_dapp, preview,
 };
 use yw_app::sol::rpc as sol;
+use yw_app::system_clock::SystemClock;
 use yw_core::bip32::path::AccountIndex;
 use yw_core::codec::base58::base58_encode;
 use yw_core::slip10::SolKeySource;

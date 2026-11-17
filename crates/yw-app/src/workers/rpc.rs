@@ -20,7 +20,7 @@ use crate::flow::evm::prepare::{
 use crate::flow::evm::track::{TrackInput, broadcast_checked, track_group};
 use crate::flow::evm::user_chain::probe_chain;
 use crate::flow::evm::{
-    ChainCache, ChainCheck, ChainJob, Clock, Limits, MismatchKind, SharedTransport, SystemClock,
+    ChainCache, ChainCheck, ChainJob, Clock, Limits, MismatchKind, SharedTransport,
 };
 use crate::logging::{self, Field};
 use crate::network::NetworkId;
@@ -332,12 +332,6 @@ impl RpcWorker {
             limits,
             btc: crate::btc::work::BtcWorker::new(),
         }
-    }
-
-    /// The production worker.
-    #[must_use]
-    pub fn production(transport: Option<SharedTransport>) -> Self {
-        Self::new(transport, Box::new(SystemClock), Limits::PRODUCTION)
     }
 
     /// Checks a chain (cached) and reports the result.

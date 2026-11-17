@@ -54,6 +54,7 @@ pub mod settings;
 pub mod shell_msg;
 pub mod sol;
 pub mod store;
+pub mod system_clock;
 pub mod text;
 pub mod token_view;
 pub mod ui;

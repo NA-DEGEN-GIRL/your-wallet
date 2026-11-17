@@ -21,6 +21,30 @@ use super::qr_decode::{Gray, decode, decode_bgra_text, dib_to_bgra};
 
 const URI: &str = "wc:9e5b70f5ddde5d6f3f5a7b9b4a0a3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b@2?expiryTimestamp=1762430000&relay-protocol=irn&symKey=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef&methods=wc_sessionPropose,wc_sessionAuthenticate";
 
+/// Test clock (2026-11-17 S2: replaces the Windows `SystemClock`, which stays in yw-app):
+/// monotonic time from `Instant`, offset by a day so a fresh clock never reads near zero.
+struct StdClock(std::time::Instant);
+
+impl yw_platform::Clock for StdClock {
+    fn now_ms(&self) -> u64 {
+        u64::try_from(self.0.elapsed().as_millis())
+            .unwrap_or(u64::MAX)
+            .saturating_add(86_400_000)
+    }
+
+    fn now_unix_ms(&self) -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| {
+                u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+            })
+    }
+
+    fn sleep_ms(&self, ms: u64) {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+    }
+}
+
 // ----- QR rendering for the decoder tests --------------------------------------------------
 
 struct Scene {
@@ -1031,10 +1055,11 @@ fn mocked_end_to_end_session() {
     use crate::browser::{BrowserCore, ChainEntry, DappEvent, SiteKind, VaultView, WalletView};
 
     let recorder = Arc::new(Recorder::default());
+    let clock = Arc::new(StdClock(std::time::Instant::now()));
     let core = BrowserCore::new(
         "abcdefghijklmnopabcdefghijklmnop",
         Arc::clone(&recorder) as Arc<dyn crate::browser::DappSink>,
-        Arc::new(crate::flow::evm::SystemClock),
+        Arc::clone(&clock) as Arc<dyn yw_platform::Clock>,
     );
     let chain = |id: u64| ChainEntry {
         info: yw_core::evm::chain::builtin_chain(id).unwrap(),
@@ -1253,7 +1278,7 @@ fn mocked_end_to_end_session() {
         "the request's chain"
     );
     assert!(
-        sign.deadline_ms <= yw_win::time::monotonic_ms() + 300_000,
+        sign.deadline_ms <= yw_platform::Clock::now_ms(&*clock) + 300_000,
         "the dApp's own deadline, not the 10-minute default"
     );
     core.respond(&sign.reply, Ok(Value::String("0xdummy".to_owned())));
@@ -1363,7 +1388,7 @@ fn restored_sessions_follow_grants_and_chains() {
     let core = BrowserCore::new(
         "abcdefghijklmnopabcdefghijklmnop",
         Arc::clone(&recorder) as Arc<dyn crate::browser::DappSink>,
-        Arc::new(crate::flow::evm::SystemClock),
+        Arc::new(StdClock(std::time::Instant::now())),
     );
     let chain = |id: u64| ChainEntry {
         info: yw_core::evm::chain::builtin_chain(id).unwrap(),

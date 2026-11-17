@@ -42,30 +42,9 @@ pub const SIM_WAIT_MS: u64 = 10_000;
 pub const MAX_FACT_LOOKUPS: usize = 16;
 
 /// Time source of the pipelines (2026-11-17: defined in yw-platform, re-exported here so every
-/// `flow::evm::Clock` path still works).
+/// `flow::evm::Clock` path still works; the Windows `SystemClock` lives in yw-app
+/// `system_clock`, 2026-11-17 S2).
 pub use yw_platform::Clock;
-
-/// The real clock (Windows: yw-win `time::monotonic_ms`).
-#[derive(Clone, Copy, Debug, Default)]
-pub struct SystemClock;
-
-impl Clock for SystemClock {
-    fn now_ms(&self) -> u64 {
-        yw_win::time::monotonic_ms()
-    }
-
-    fn now_unix_ms(&self) -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |elapsed| {
-                u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-            })
-    }
-
-    fn sleep_ms(&self, ms: u64) {
-        std::thread::sleep(std::time::Duration::from_millis(ms));
-    }
-}
 
 /// Pipeline time limits (production values from [`Limits::PRODUCTION`]; tests shrink them).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
