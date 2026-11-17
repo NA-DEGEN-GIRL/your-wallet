@@ -19,6 +19,7 @@ use crate::received::{
     REFRESH_MS, ReceivedEvent, ReceivedJob, RecvChain, TokenRef,
 };
 use crate::workers::rpc::RpcJob;
+use yw_engine::cmd::{ReceivedPress, Row};
 
 /// One list (chain, network and account) in memory.
 #[derive(Debug, Default)]
@@ -233,7 +234,7 @@ fn now_unix_ms() -> u64 {
 }
 
 /// The chain whose card a `새로고침` id belongs to.
-fn refresh_chain(id: u16) -> Option<RecvChain> {
+pub(crate) fn refresh_chain(id: u16) -> Option<RecvChain> {
     Some(match id {
         crate::ui::screens_evm::ids::REFRESH => RecvChain::Evm,
         crate::ui::screens_sol::ids::REFRESH => RecvChain::Sol,
@@ -572,7 +573,7 @@ impl App {
 
     /// A card's `새로고침` (or the switch turned on): its list is read now (an unsupported one
     /// is tried again; Bitcoin as a user request, which runs during the 429 cooldown).
-    fn received_now(&mut self, chain: RecvChain) {
+    pub(crate) fn received_now(&mut self, chain: RecvChain) {
         // Only for a card the main screen shows (S-HC's `새로고침` is not the card's).
         if !self.settings.received_history
             || !matches!(self.mode, AppMode::Unlocked { .. })
@@ -633,69 +634,58 @@ impl App {
         };
     }
 
-    /// The switch, `더 보기`, `해시 복사`; a card's `새로고침` also reads its list now but is
-    /// not consumed (the card's own handler runs too).
-    pub fn on_received_command(&mut self, id: u16) -> bool {
-        use crate::ui::screens_received::ids;
+    /// A card's `새로고침` (a control id of a chain family not converted to a press yet) also
+    /// reads its list now; the card's own handler runs after it (2026-11-18, S3 C1: split from
+    /// `on_received_command`, which returned `false` for these ids so the chain went on; a
+    /// converted family's press gets the same read from `Press::refresh_chain` in
+    /// `App::on_press`).
+    pub(crate) fn received_observe(&mut self, id: u16) {
         if let Some(chain) = refresh_chain(id) {
             self.received_now(chain);
-            return false;
         }
-        if let Some(chain) = id
-            .checked_sub(ids::TOGGLE_BASE)
-            .and_then(RecvChain::of_slot)
-            .filter(|_| id < ids::MORE_BASE)
-        {
-            let on = self
-                .controls
-                .checked(id)
-                .unwrap_or(!self.settings.received_history);
-            if on != self.settings.received_history {
-                let mut settings = self.settings.clone();
-                settings.received_history = on;
-                self.save_settings(settings, crate::settings::RECEIVED_HISTORY_KEY);
-                if self.settings.received_history {
-                    self.received_now(chain);
-                } else {
-                    self.received_lock();
+    }
+
+    /// The switch, `더 보기`, `해시 복사` (2026-11-18, S3 C1: a `ReceivedPress`, the switch
+    /// carrying its box's state; before, the control id and a read of the box here).
+    pub(crate) fn on_received(&mut self, press: ReceivedPress) {
+        match press {
+            ReceivedPress::Toggle { chain, checked } => {
+                let on = checked.unwrap_or(!self.settings.received_history);
+                if on != self.settings.received_history {
+                    let mut settings = self.settings.clone();
+                    settings.received_history = on;
+                    self.save_settings(settings, crate::settings::RECEIVED_HISTORY_KEY);
+                    if self.settings.received_history {
+                        self.received_now(chain);
+                    } else {
+                        self.received_lock();
+                    }
+                    self.refresh();
+                }
+            }
+            ReceivedPress::More(chain) => {
+                if let Some(open) = self.received.expanded.get_mut(usize::from(chain.slot())) {
+                    *open = !*open;
                 }
                 self.refresh();
             }
-            return true;
-        }
-        if let Some(slot) = id
-            .checked_sub(ids::MORE_BASE)
-            .filter(|slot| *slot < ids::CHAINS)
-        {
-            if let Some(open) = self.received.expanded.get_mut(usize::from(slot)) {
-                *open = !*open;
-            }
-            self.refresh();
-            return true;
-        }
-        if let Some(offset) = id
-            .checked_sub(ids::ROW_BASE)
-            .filter(|offset| *offset < ids::ROW_SPAN)
-        {
-            let chain = RecvChain::of_slot(offset / ids::CHAIN_SPAN);
-            let row = usize::from(offset % ids::CHAIN_SPAN / ids::ROW_STRIDE);
-            let hash = chain
-                .and_then(|chain| self.received_key(chain))
-                .and_then(|key| self.received.lists.get(&key))
-                .and_then(|list| list.entries.get(row))
-                .map(|entry| entry.hash.clone())
-                .filter(|hash| !hash.is_empty());
-            // Offset 0: `해시 복사`; offset 1: `탐색기에서 열기`.
-            if let Some(hash) = hash {
-                if offset % ids::ROW_STRIDE == 0 {
-                    self.copy_text(&hash);
-                } else if let Some(net) = chain.and_then(|chain| self.received_explorer_net(chain))
-                {
-                    self.open_explorer_tx(net, &hash);
+            ReceivedPress::CopyHash(chain, Row(row))
+            | ReceivedPress::OpenExplorer(chain, Row(row)) => {
+                let hash = self
+                    .received_key(chain)
+                    .and_then(|key| self.received.lists.get(&key))
+                    .and_then(|list| list.entries.get(usize::from(row)))
+                    .map(|entry| entry.hash.clone())
+                    .filter(|hash| !hash.is_empty());
+                // `해시 복사` (a click on the hash) or `탐색기에서 열기`.
+                if let Some(hash) = hash {
+                    if matches!(press, ReceivedPress::CopyHash(..)) {
+                        self.copy_text(&hash);
+                    } else if let Some(net) = self.received_explorer_net(chain) {
+                        self.open_explorer_tx(net, &hash);
+                    }
                 }
             }
-            return true;
         }
-        false
     }
 }

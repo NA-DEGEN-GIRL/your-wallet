@@ -2882,7 +2882,7 @@ fn a_late_copy_result_marks_the_control_of_its_mark() {
     let (mut app, dir) = unlocked_app("copy-late", false);
     // Headless: the copy emits its effect (logged) and nothing answers it.
     app.on_command(COPY_ADDRESS);
-    assert_eq!(app.last_press, press_of(COPY_ADDRESS));
+    assert_eq!(app.last_press, press_of(COPY_ADDRESS, &app.controls));
     assert_eq!(app.copied, None);
     let mark = CopyMark {
         anchor: app.last_press,

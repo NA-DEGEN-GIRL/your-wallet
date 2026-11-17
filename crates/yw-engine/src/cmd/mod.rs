@@ -8,6 +8,11 @@
 //! `Press::Legacy` (a control id whose handler is not converted yet), `Press::Enter` (the shell
 //! still resolves the focus), `Cmd::Form` (the edits' text read back from the window) and the
 //! positional [`Row`].
+//!
+//! 2026-11-18 (S3 C1): the received-history, hidden-account, side-file and drop-down/recipient
+//! families (`Press::{Received, Hidden, Sidecar, Links}`) and the two press facts the shell's
+//! dispatcher checks before a family handler ([`Press::is_receive_gated`],
+//! [`Press::refresh_chain`]).
 
 use core::fmt;
 
@@ -15,6 +20,17 @@ use yw_core::secret::Zeroizing;
 
 use crate::effect::TimerId;
 use crate::form::{EditField, FormSnapshot, PressInput};
+use crate::received::RecvChain;
+
+mod hidden;
+mod links;
+mod received;
+mod sidecar;
+
+pub use hidden::HiddenPress;
+pub use links::LinksPress;
+pub use received::ReceivedPress;
+pub use sidecar::SidecarPress;
 
 /// A list row as the screen drew it (positional: resolved against the list rebuilt when the
 /// press is handled; S5 → stable keys).
@@ -94,9 +110,54 @@ pub enum Press {
     Back,
     /// Windows-transitional: Enter (`IDOK`); the shell still resolves the focused edit (S4).
     Enter,
+    /// A received-history card (S3 C1).
+    Received(ReceivedPress),
+    /// A hidden-account list (S3 C1).
+    Hidden(HiddenPress),
+    /// A side-file overlay or check (S3 C1).
+    Sidecar(SidecarPress),
+    /// An account drop-down button or an activity recipient (S3 C1).
+    Links(LinksPress),
     /// Windows-transitional bridge (S3 B2–D3): a control id whose handler is not converted yet.
     #[doc(hidden)]
     Legacy(u16),
+}
+
+impl Press {
+    /// The chain whose received-history list a card's `새로고침` press also reads now, before the
+    /// card's own handler runs (spec/04 §2.6). Every press listed here has none; a chain family
+    /// adds its `새로고침` arm when it converts (S3 C). `Legacy` presses keep the shell's own
+    /// observer until S3 D3.
+    #[must_use]
+    pub const fn refresh_chain(self) -> Option<RecvChain> {
+        match self {
+            Self::Back
+            | Self::Enter
+            | Self::Received(_)
+            | Self::Hidden(_)
+            | Self::Sidecar(_)
+            | Self::Links(_)
+            | Self::Legacy(_) => None,
+        }
+    }
+
+    /// Whether the press shows or copies a receive address, which is refused while a passphrase
+    /// wallet is open unverified (spec/02 §7.5; before any chain handler runs, so Bitcoin does
+    /// not derive and store a new address). Every press listed here is not one; a chain family
+    /// adds its arms when it converts (S3 C). `Legacy` presses keep the shell's own gate until
+    /// S3 D3.
+    #[must_use]
+    pub const fn is_receive_gated(self) -> bool {
+        match self {
+            Self::Back
+            | Self::Enter
+            | Self::Received(_)
+            | Self::Hidden(_)
+            | Self::Sidecar(_)
+            | Self::Links(_)
+            | Self::Legacy(_) => false,
+        }
+    }
 }
 
 #[cfg(test)]

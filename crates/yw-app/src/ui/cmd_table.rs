@@ -10,35 +10,51 @@
 //! 2026-11-18 (S3 B5): the edit ids ↔ `EditField` (58 plain edits) and `CredField` (7 masked
 //! credential edits), the credential edits each press reads ([`creds_for`], plan §3.4) and
 //! [`capture`], which reads them into a `PressInput` when the press happens.
+//!
+//! 2026-11-18 (S3 C1): the received-history, hidden-account, side-file and drop-down/recipient
+//! ids are their families' presses (each module's `ids::press_of`/`ids::id_of`); [`press_of`]
+//! reads a check box's state into its press (the box is never read again by the handler).
 
 use yw_core::secret::Zeroizing;
 use yw_engine::cmd::Press;
 use yw_engine::form::{CredField, CredUnits, EditField, PressInput};
 
 use crate::ui::main_window::ControlSet;
-use crate::ui::{screens, screens_evm, screens_llm};
+use crate::ui::{screens, screens_evm, screens_links, screens_llm, screens_received};
+use crate::{app_hidden, app_sidecar};
 
 /// The command id `IsDialogMessageW` sends for Enter (no control uses it, `ui::command_ids`).
 pub const IDOK: u16 = 1;
 /// The one it sends for Esc.
 pub const IDCANCEL: u16 = 2;
 
-/// The press a control id stands for.
+/// The press a control id stands for, with the state of its check box when it is one
+/// (`controls.checked(id)` now).
 #[must_use]
-pub const fn press_of(id: u16) -> Press {
+pub fn press_of(id: u16, controls: &ControlSet) -> Press {
     match id {
         IDOK => Press::Enter,
         IDCANCEL => Press::Back,
-        other => Press::Legacy(other),
+        other => screens_received::ids::press_of(other, controls)
+            .map(Press::Received)
+            .or_else(|| app_hidden::ids::press_of(other).map(Press::Hidden))
+            .or_else(|| app_sidecar::ids::press_of(other, controls).map(Press::Sidecar))
+            .or_else(|| screens_links::ids::press_of(other).map(Press::Links))
+            .unwrap_or(Press::Legacy(other)),
     }
 }
 
-/// The control id of a press (the inverse of [`press_of`]).
+/// The control id of a press (the inverse of [`press_of`]; a check box's state is not part of
+/// it).
 #[must_use]
 pub const fn id_of(press: Press) -> u16 {
     match press {
         Press::Enter => IDOK,
         Press::Back => IDCANCEL,
+        Press::Received(press) => screens_received::ids::id_of(press),
+        Press::Hidden(press) => app_hidden::ids::id_of(press),
+        Press::Sidecar(press) => app_sidecar::ids::id_of(press),
+        Press::Links(press) => screens_links::ids::id_of(press),
         Press::Legacy(id) => id,
     }
 }
@@ -237,12 +253,13 @@ mod tests {
     fn every_id_round_trips() {
         let ids = every_id();
         assert!(ids.len() > 1_000, "{}", ids.len());
+        let controls = ControlSet::default();
         for id in ids {
             assert!(id != IDOK && id != IDCANCEL, "{id} is Enter or Esc");
-            assert_eq!(id_of(press_of(id)), id, "{id}");
+            assert_eq!(id_of(press_of(id, &controls)), id, "{id}");
         }
-        assert_eq!(press_of(IDOK), Press::Enter);
-        assert_eq!(press_of(IDCANCEL), Press::Back);
+        assert_eq!(press_of(IDOK, &controls), Press::Enter);
+        assert_eq!(press_of(IDCANCEL, &controls), Press::Back);
         assert_eq!(id_of(Press::Enter), IDOK);
         assert_eq!(id_of(Press::Back), IDCANCEL);
     }
@@ -252,7 +269,104 @@ mod tests {
     #[test]
     fn reset_hold_stays_unpressable() {
         let hold = screens_reset::ids::RESET_HOLD;
-        assert_eq!(press_of(hold), Press::Legacy(hold));
+        assert_eq!(press_of(hold, &ControlSet::default()), Press::Legacy(hold));
+    }
+
+    /// Table test (4) (S3 C1): for every id that is a family's press, the receive gate and the
+    /// received-history observer `App::on_press` applies before the family handler are exactly
+    /// the ones the legacy chain applied to that id (`screens::RECEIVE_IDS`,
+    /// `app_received::refresh_chain`).
+    #[test]
+    fn family_presses_keep_the_gate_and_the_observer() {
+        let controls = ControlSet::default();
+        let mut families = 0;
+        for id in every_id() {
+            let press = press_of(id, &controls);
+            if matches!(press, Press::Legacy(_) | Press::Enter | Press::Back) {
+                continue;
+            }
+            families += 1;
+            assert_eq!(
+                press.is_receive_gated(),
+                screens::RECEIVE_IDS.contains(&id),
+                "{id}"
+            );
+            assert_eq!(
+                press.refresh_chain(),
+                crate::app_received::refresh_chain(id),
+                "{id}"
+            );
+        }
+        assert!(families > 0);
+    }
+
+    /// The families converted in S3 C1 claim exactly the ids their handlers claimed before
+    /// (the id ranges below); a check box carries its state; nothing else in the map is theirs.
+    #[test]
+    fn c1_families_map_their_ids() {
+        use yw_engine::cmd::{HiddenPress, LinksPress, ReceivedPress, Row, SidecarPress};
+        use yw_engine::received::RecvChain;
+        let controls = ControlSet::default();
+        let family = |id: u16| {
+            !matches!(
+                press_of(id, &controls),
+                Press::Legacy(_) | Press::Enter | Press::Back
+            )
+        };
+        // Every id of the four families' blocks (ui::command_ids), and the gaps that stay legacy.
+        for id in 16_100..16_590 {
+            let hidden = id == 16_100
+                || (16_110..16_175).contains(&id)
+                || id == 16_200
+                || id == 16_201
+                || (16_210..16_590).contains(&id);
+            assert_eq!(family(id), hidden, "{id}");
+        }
+        for id in 16_600..16_610 {
+            assert_eq!(family(id), id < 16_604, "{id}");
+        }
+        for id in 17_800..18_400 {
+            assert_eq!(family(id), !(17_810..17_900).contains(&id), "{id}");
+        }
+        for id in 18_400..18_660 {
+            let links = !(18_404..18_410).contains(&id) && !(18_524..18_530).contains(&id);
+            assert_eq!(family(id), links, "{id}");
+        }
+        assert_eq!(
+            press_of(app_hidden::ids::BTC_ROW_BASE + 64, &controls),
+            Press::Hidden(HiddenPress::BtcUnhide(Row(64)))
+        );
+        assert_eq!(
+            press_of(screens_links::ids::ZEC_TO_BASE + 79, &controls),
+            Press::Links(LinksPress::ZecTo(Row(79)))
+        );
+        assert_eq!(
+            press_of(screens_received::ids::ROW_BASE + 499, &controls),
+            Press::Received(ReceivedPress::OpenExplorer(RecvChain::Zec, Row(49)))
+        );
+        // A check box's state travels with the press.
+        let toggle = screens_received::ids::toggle(RecvChain::Btc);
+        assert_eq!(
+            press_of(toggle, &controls),
+            Press::Received(ReceivedPress::Toggle {
+                chain: RecvChain::Btc,
+                checked: None
+            })
+        );
+        controls.type_check(toggle, true);
+        controls.type_check(app_sidecar::ids::RESET_ACK, false);
+        assert_eq!(
+            press_of(toggle, &controls),
+            Press::Received(ReceivedPress::Toggle {
+                chain: RecvChain::Btc,
+                checked: Some(true)
+            })
+        );
+        assert_eq!(
+            press_of(app_sidecar::ids::RESET_ACK, &controls),
+            Press::Sidecar(SidecarPress::ResetAck(Some(false)))
+        );
+        assert_eq!(id_of(press_of(toggle, &controls)), toggle);
     }
 
     /// Table test (3): the 65 edit ids are 58 plain fields and 7 credential fields, each a

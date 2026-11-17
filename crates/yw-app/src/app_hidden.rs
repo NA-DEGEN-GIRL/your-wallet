@@ -10,6 +10,7 @@ use crate::app_sol::SolAccountId;
 use crate::meta::EvmAccountPref;
 use crate::ui::main_window::{Ctl, Item, Tone};
 use yw_core::lang::Lang;
+use yw_engine::cmd::{HiddenPress, Row};
 
 /// The fixed texts of the hidden-account rows (spec/14).
 pub mod text {
@@ -59,6 +60,46 @@ pub mod ids {
     pub const BTC_ROW_SPAN: u16 = 65;
     /// Every fixed id.
     pub const FIXED: &[u16] = &[EVM_TOGGLE, SOL_TOGGLE, BTC_TOGGLE];
+
+    /// The press control `id` stands for (2026-11-18, S3 C1: `ui::cmd_table`); `None` when `id`
+    /// is not one of this module's.
+    #[must_use]
+    pub fn press_of(id: u16) -> Option<yw_engine::cmd::HiddenPress> {
+        use yw_engine::cmd::{HiddenPress, Row};
+        let row = |base: u16, span: u16| {
+            id.checked_sub(base)
+                .filter(|offset| *offset < span)
+                .map(Row)
+        };
+        Some(match id {
+            EVM_TOGGLE => HiddenPress::EvmToggle,
+            SOL_TOGGLE => HiddenPress::SolToggle,
+            BTC_TOGGLE => HiddenPress::BtcToggle,
+            _ => {
+                if let Some(row) = row(EVM_ROW_BASE, ROW_SPAN) {
+                    HiddenPress::EvmUnhide(row)
+                } else if let Some(row) = row(SOL_ROW_BASE, ROW_SPAN) {
+                    HiddenPress::SolUnhide(row)
+                } else {
+                    HiddenPress::BtcUnhide(row(BTC_ROW_BASE, BTC_ROW_SPAN)?)
+                }
+            }
+        })
+    }
+
+    /// The control id of `press` (the inverse of [`press_of`]).
+    #[must_use]
+    pub const fn id_of(press: yw_engine::cmd::HiddenPress) -> u16 {
+        use yw_engine::cmd::{HiddenPress, Row};
+        match press {
+            HiddenPress::EvmToggle => EVM_TOGGLE,
+            HiddenPress::SolToggle => SOL_TOGGLE,
+            HiddenPress::BtcToggle => BTC_TOGGLE,
+            HiddenPress::EvmUnhide(Row(row)) => EVM_ROW_BASE.wrapping_add(row),
+            HiddenPress::SolUnhide(Row(row)) => SOL_ROW_BASE.wrapping_add(row),
+            HiddenPress::BtcUnhide(Row(row)) => BTC_ROW_BASE.wrapping_add(row),
+        }
+    }
 }
 
 /// Which account card.
@@ -276,27 +317,36 @@ impl App {
         }
     }
 
-    /// The hidden-account commands; `false` when `id` is not one.
-    pub fn on_hidden_command(&mut self, id: u16) -> bool {
-        let family = match id {
-            ids::EVM_TOGGLE | ids::SOL_TOGGLE | ids::BTC_TOGGLE => {
+    /// The hidden-account presses (2026-11-18, S3 C1: a `HiddenPress`; before, the control id).
+    pub(crate) fn on_hidden(&mut self, press: HiddenPress) {
+        let family = match press {
+            HiddenPress::EvmToggle | HiddenPress::SolToggle | HiddenPress::BtcToggle => {
                 self.hidden_open = !self.hidden_open;
                 self.refresh();
-                return true;
+                return;
             }
-            _ if (ids::EVM_ROW_BASE..ids::EVM_ROW_BASE + ids::ROW_SPAN).contains(&id) => {
-                (Family::Evm, id - ids::EVM_ROW_BASE)
-            }
-            _ if (ids::SOL_ROW_BASE..ids::SOL_ROW_BASE + ids::ROW_SPAN).contains(&id) => {
-                (Family::Sol, id - ids::SOL_ROW_BASE)
-            }
-            _ if (ids::BTC_ROW_BASE..ids::BTC_ROW_BASE + ids::BTC_ROW_SPAN).contains(&id) => {
-                (Family::Btc, id - ids::BTC_ROW_BASE)
-            }
-            _ => return false,
+            HiddenPress::EvmUnhide(Row(row)) => (Family::Evm, row),
+            HiddenPress::SolUnhide(Row(row)) => (Family::Sol, row),
+            HiddenPress::BtcUnhide(Row(row)) => (Family::Btc, row),
         };
         self.unhide(family.0, usize::from(family.1));
-        true
+    }
+
+    /// Test adapter (S3 C1, plan §3.2): presses hidden-account control `id` directly, as the
+    /// tests did before; `false` when `id` is not one.
+    #[cfg(test)]
+    pub(crate) fn on_hidden_command(&mut self, id: u16) -> bool {
+        self.press_family(
+            id,
+            |press| match press {
+                yw_engine::cmd::Press::Hidden(press) => Some(press),
+                _ => None,
+            },
+            |app, press| {
+                app.on_hidden(press);
+                true
+            },
+        )
     }
 
     /// `다시 보이기` of hidden row `row`: clears the mark only (no site grant comes back).

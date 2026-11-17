@@ -3850,7 +3850,7 @@ impl App {
         self.on_cmd(Cmd::Form(self.controls.form_snapshot()));
         let input = cmd_table::capture(id, &self.controls);
         self.on_cmd(Cmd::Press {
-            press: cmd_table::press_of(id),
+            press: cmd_table::press_of(id, &self.controls),
             input,
         });
         if closed {
@@ -3887,6 +3887,10 @@ impl App {
     }
 
     /// A press: the copy mark and the last command id follow it, then its handler runs.
+    /// 2026-11-18 (S3 C1): a converted family's press goes to its handler here, after the two
+    /// checks the legacy chain made before any family handler (they keep their order): the
+    /// receive gate (`Press::is_receive_gated` while the passphrase is unverified) and the
+    /// received-history read of a card's `새로고침` (`Press::refresh_chain`).
     fn on_press(&mut self, press: Press) {
         self.command = cmd_table::id_of(press);
         self.last_press = press;
@@ -3897,7 +3901,67 @@ impl App {
             Press::Back => self.escape_key(),
             Press::Enter => self.enter_key(),
             Press::Legacy(id) => self.dispatch_legacy(id),
+            _ if self.passphrase_unverified() && press.is_receive_gated() => {
+                self.refuse_receive();
+            }
+            family => {
+                if let Some(chain) = family.refresh_chain() {
+                    self.received_now(chain);
+                }
+                self.on_family(family);
+            }
         }
+    }
+
+    /// A converted family's press (S3 C1–C12: one arm per family). Enter, Esc and legacy ids
+    /// never come here (`on_press`).
+    fn on_family(&mut self, press: Press) {
+        match press {
+            Press::Received(press) => self.on_received(press),
+            Press::Hidden(press) => self.on_hidden(press),
+            Press::Sidecar(press) => self.on_sidecar(press),
+            Press::Links(press) => self.on_links(press),
+            Press::Back | Press::Enter | Press::Legacy(_) => {}
+        }
+    }
+
+    /// A receive or receive-address copy press while the passphrase is unverified: refused
+    /// before any chain handler runs (BTC would derive and store a new address).
+    fn refuse_receive(&mut self) {
+        self.info = Some(
+            crate::ui::screens::T_ALT_PASS_RECEIVE
+                .get(self.settings.language)
+                .to_owned(),
+        );
+        self.refresh();
+    }
+
+    /// Test adapter of a converted family (S3 C, plan §3.2): a module test or the tour presses
+    /// control `id` directly, as before S3 — no copy mark or last command, no receive gate and
+    /// no received-history read — with the form state and the press input taken as
+    /// `on_command` takes them. `pick` keeps the family's presses; `false` when `id` is not one
+    /// of them, else what `run` returns.
+    #[cfg(test)]
+    pub(crate) fn press_family<P>(
+        &mut self,
+        id: u16,
+        pick: impl FnOnce(Press) -> Option<P>,
+        run: impl FnOnce(&mut Self, P) -> bool,
+    ) -> bool {
+        let Some(press) = pick(cmd_table::press_of(id, &self.controls)) else {
+            return false;
+        };
+        self.on_cmd(Cmd::Form(self.controls.form_snapshot()));
+        let input = cmd_table::capture(id, &self.controls);
+        let outer = core::mem::replace(&mut self.input, input);
+        let claimed = run(self, press);
+        let used = core::mem::replace(&mut self.input, outer);
+        #[cfg(debug_assertions)]
+        {
+            self.cred_misses = self.cred_misses.saturating_add(used.misses());
+        }
+        drop(used);
+        claimed
     }
 
     /// An edit of the main window changed (`EN_CHANGE`, 2026-11-18 S3: moved out of `on_main`
@@ -4268,17 +4332,13 @@ impl App {
                 if self.passphrase_unverified()
                     && crate::ui::screens::RECEIVE_IDS.contains(&receive) =>
             {
-                // Before any chain handler runs (BTC would derive and store a new address).
-                self.info = Some(
-                    crate::ui::screens::T_ALT_PASS_RECEIVE
-                        .get(self.settings.language)
-                        .to_owned(),
-                );
-                self.refresh();
+                self.refuse_receive();
             }
             other => {
-                if !self.on_received_command(other)
-                    && !self.on_reset_command(other)
+                // A card's `새로고침` reads its received list first (S3 C1: was the first link
+                // of the chain, `on_received_command`, which returned `false` for these ids).
+                self.received_observe(other);
+                if !self.on_reset_command(other)
                     && !self.on_book_command(other)
                     && !self.on_rpc_import_command(other)
                     && !self.on_extension_command(other)
@@ -4293,10 +4353,7 @@ impl App {
                     && !self.on_mn_command(other)
                     && !self.on_hc_command(other)
                     && !self.on_wc_command(other)
-                    && !self.on_hidden_command(other)
-                    && !self.on_sidecar_command(other)
                     && !self.on_explorer_command(other)
-                    && !self.on_links_command(other)
                 {
                     self.on_indexed_command(other);
                 }

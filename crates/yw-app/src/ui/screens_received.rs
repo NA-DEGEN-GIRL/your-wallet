@@ -62,6 +62,60 @@ pub mod ids {
             .filter(|row| *row < CHAIN_SPAN / ROW_STRIDE)?;
         Some(ROW_BASE + chain.slot() * CHAIN_SPAN + row * ROW_STRIDE)
     }
+
+    /// The press control `id` stands for (2026-11-18, S3 C1: `ui::cmd_table`); a switch carries
+    /// its check box's state now. `None` when `id` is not one of this module's.
+    #[must_use]
+    pub fn press_of(
+        id: u16,
+        controls: &crate::ui::main_window::ControlSet,
+    ) -> Option<yw_engine::cmd::ReceivedPress> {
+        use yw_engine::cmd::{ReceivedPress, Row};
+        if let Some(chain) = id
+            .checked_sub(TOGGLE_BASE)
+            .and_then(crate::received::RecvChain::of_slot)
+            .filter(|_| id < MORE_BASE)
+        {
+            return Some(ReceivedPress::Toggle {
+                chain,
+                checked: controls.checked(id),
+            });
+        }
+        if let Some(chain) = id
+            .checked_sub(MORE_BASE)
+            .filter(|slot| *slot < CHAINS)
+            .and_then(crate::received::RecvChain::of_slot)
+        {
+            return Some(ReceivedPress::More(chain));
+        }
+        let offset = id
+            .checked_sub(ROW_BASE)
+            .filter(|offset| *offset < ROW_SPAN)?;
+        let chain = crate::received::RecvChain::of_slot(offset / CHAIN_SPAN)?;
+        let row = Row(offset % CHAIN_SPAN / ROW_STRIDE);
+        Some(if offset % ROW_STRIDE == 0 {
+            ReceivedPress::CopyHash(chain, row)
+        } else {
+            ReceivedPress::OpenExplorer(chain, row)
+        })
+    }
+
+    /// The control id of `press` (the inverse of [`press_of`]).
+    #[must_use]
+    pub const fn id_of(press: yw_engine::cmd::ReceivedPress) -> u16 {
+        use yw_engine::cmd::{ReceivedPress, Row};
+        const fn row_id(chain: crate::received::RecvChain, Row(row): Row) -> u16 {
+            ROW_BASE
+                .wrapping_add(chain.slot().wrapping_mul(CHAIN_SPAN))
+                .wrapping_add(row.wrapping_mul(ROW_STRIDE))
+        }
+        match press {
+            ReceivedPress::Toggle { chain, .. } => toggle(chain),
+            ReceivedPress::More(chain) => more(chain),
+            ReceivedPress::CopyHash(chain, row) => row_id(chain, row),
+            ReceivedPress::OpenExplorer(chain, row) => row_id(chain, row).wrapping_add(1),
+        }
+    }
 }
 
 /// Rows shown before `더 보기`.

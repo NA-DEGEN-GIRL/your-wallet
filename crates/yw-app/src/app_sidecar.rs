@@ -30,6 +30,7 @@ use crate::errors::ErrorCode;
 use crate::events::{KeyJob, SidecarMoves, SidecarRefusal};
 use crate::logging::{self, Field};
 use crate::ui::main_window::{Ctl, Item, Tone};
+use yw_engine::cmd::SidecarPress;
 
 /// Command ids (block 16,600–16,609 of `ui::command_ids`). The overlays' other buttons keep their
 /// ids: meta `SIDECAR_PREV`/`SIDECAR_FRESH`, journal `CONFIRM_YES`/`CONFIRM_NO`, `LOCK`.
@@ -44,6 +45,35 @@ pub mod ids {
     pub const RESET_ACK: u16 = 16_603;
     /// Every fixed id.
     pub const FIXED: &[u16] = &[SIDECAR_CLOSE, ADVANCED, JOURNAL_REOPEN, RESET_ACK];
+
+    /// The press control `id` stands for (2026-11-18, S3 C1: `ui::cmd_table`); the reset check
+    /// carries its box's state now. `None` when `id` is not one of this module's.
+    #[must_use]
+    pub fn press_of(
+        id: u16,
+        controls: &crate::ui::main_window::ControlSet,
+    ) -> Option<yw_engine::cmd::SidecarPress> {
+        use yw_engine::cmd::SidecarPress;
+        Some(match id {
+            SIDECAR_CLOSE => SidecarPress::Close,
+            ADVANCED => SidecarPress::Advanced,
+            JOURNAL_REOPEN => SidecarPress::JournalReopen,
+            RESET_ACK => SidecarPress::ResetAck(controls.checked(id)),
+            _ => return None,
+        })
+    }
+
+    /// The control id of `press` (the inverse of [`press_of`]).
+    #[must_use]
+    pub const fn id_of(press: yw_engine::cmd::SidecarPress) -> u16 {
+        use yw_engine::cmd::SidecarPress;
+        match press {
+            SidecarPress::Close => SIDECAR_CLOSE,
+            SidecarPress::Advanced => ADVANCED,
+            SidecarPress::JournalReopen => JOURNAL_REOPEN,
+            SidecarPress::ResetAck(_) => RESET_ACK,
+        }
+    }
 }
 
 /// How long after a journal reset the Bitcoin send form asks for a check: the journal's own
@@ -353,11 +383,12 @@ impl App {
         self.set_screen(Screen::Processing(text::LOADING.get(lang)));
     }
 
-    /// Commands of the two overlays, the closed journal's band and the reset check; `false` when
-    /// `id` is not one of them.
-    pub(crate) fn on_sidecar_command(&mut self, id: u16) -> bool {
-        match id {
-            ids::SIDECAR_CLOSE => {
+    /// Presses of the two overlays, the closed journal's band and the reset check (2026-11-18,
+    /// S3 C1: a `SidecarPress`, the check carrying its box's state; before, the control id and a
+    /// read of the box here).
+    pub(crate) fn on_sidecar(&mut self, press: SidecarPress) {
+        match press {
+            SidecarPress::Close => {
                 logging::info("app", "meta.choice_closed", &[]);
                 self.sidecar.advanced = false;
                 self.sidecar.refusal = None;
@@ -367,26 +398,21 @@ impl App {
                     Screen::Main
                 });
             }
-            ids::ADVANCED => {
+            SidecarPress::Advanced => {
                 self.sidecar.advanced = !self.sidecar.advanced;
                 self.refresh();
             }
-            ids::JOURNAL_REOPEN => {
+            SidecarPress::JournalReopen => {
                 if self.sidecar.journal_closed {
                     self.sidecar.advanced = false;
                     self.set_screen(Screen::Confirm(Confirm::JournalCorrupt));
                 }
             }
-            ids::RESET_ACK => {
-                self.sidecar.reset_ack = self
-                    .controls
-                    .checked(ids::RESET_ACK)
-                    .unwrap_or(!self.sidecar.reset_ack);
+            SidecarPress::ResetAck(checked) => {
+                self.sidecar.reset_ack = checked.unwrap_or(!self.sidecar.reset_ack);
                 self.refresh();
             }
-            _ => return false,
         }
-        true
     }
 
     /// The last journal reset (Unix seconds) and how far into `window` `now` is, while inside it.

@@ -14,6 +14,7 @@ use crate::explorer::ExplorerNet;
 use crate::ui::main_window::{Ctl, GLYPH_LINK, GLYPH_OPEN, GLYPH_SAVE, Item};
 use crate::ui::theme::{AddressKind, own_address_spans};
 use yw_core::lang::Lang;
+use yw_engine::cmd::{LinksPress, Row};
 
 /// Command ids (18,400–18,659; the whole map is `ui::command_ids`).
 pub mod ids {
@@ -65,6 +66,51 @@ pub mod ids {
         id.checked_sub(base)
             .filter(|offset| *offset < span)
             .map(usize::from)
+    }
+
+    /// The press control `id` stands for (2026-11-18, S3 C1: `ui::cmd_table`); `None` when `id`
+    /// is not one of this module's.
+    #[must_use]
+    pub fn press_of(id: u16) -> Option<yw_engine::cmd::LinksPress> {
+        use yw_engine::cmd::{LinksPress, Row};
+        let row = |base: u16, span: u16| {
+            id.checked_sub(base)
+                .filter(|offset| *offset < span)
+                .map(Row)
+        };
+        Some(match id {
+            PICKER_EVM => LinksPress::PickerEvm,
+            PICKER_SOL => LinksPress::PickerSol,
+            PICKER_BTC => LinksPress::PickerBtc,
+            PICKER_ZEC => LinksPress::PickerZec,
+            _ => {
+                if let Some(row) = row(EVM_TO_BASE, EVM_TO_SPAN) {
+                    LinksPress::EvmTo(row)
+                } else if let Some(row) = row(SOL_TO_BASE, SOL_TO_SPAN) {
+                    LinksPress::SolTo(row)
+                } else if let Some(row) = row(BTC_TO_BASE, BTC_TO_SPAN) {
+                    LinksPress::BtcTo(row)
+                } else {
+                    LinksPress::ZecTo(row(ZEC_TO_BASE, ZEC_TO_SPAN)?)
+                }
+            }
+        })
+    }
+
+    /// The control id of `press` (the inverse of [`press_of`]).
+    #[must_use]
+    pub const fn id_of(press: yw_engine::cmd::LinksPress) -> u16 {
+        use yw_engine::cmd::{LinksPress, Row};
+        match press {
+            LinksPress::PickerEvm => PICKER_EVM,
+            LinksPress::PickerSol => PICKER_SOL,
+            LinksPress::PickerBtc => PICKER_BTC,
+            LinksPress::PickerZec => PICKER_ZEC,
+            LinksPress::EvmTo(Row(row)) => EVM_TO_BASE.wrapping_add(row),
+            LinksPress::SolTo(Row(row)) => SOL_TO_BASE.wrapping_add(row),
+            LinksPress::BtcTo(Row(row)) => BTC_TO_BASE.wrapping_add(row),
+            LinksPress::ZecTo(Row(row)) => ZEC_TO_BASE.wrapping_add(row),
+        }
     }
 }
 
@@ -255,42 +301,69 @@ impl App {
         account || network
     }
 
-    /// The drop-down buttons and the activity recipients; `false` when `id` is none of them.
-    pub fn on_links_command(&mut self, id: u16) -> bool {
-        if ids::FIXED.contains(&id) {
-            self.account_menu = if self.account_menu == Some(id) {
-                None
-            } else {
-                Some(id)
-            };
-            // One drop-down at a time.
-            self.evm.network_picker = false;
-            self.refresh();
-            return true;
-        }
-        let address = if let Some(row) = ids::row_of(id, ids::EVM_TO_BASE, ids::EVM_TO_SPAN) {
-            self.activity_rows()
-                .get(row)
+    /// The drop-down buttons and the activity recipients (2026-11-18, S3 C1: a `LinksPress`;
+    /// before, the control id). The open drop-down is still kept as its button's control id
+    /// (`account_menu`, Windows; S4 makes it a press).
+    pub(crate) fn on_links(&mut self, press: LinksPress) {
+        let address = match press {
+            LinksPress::PickerEvm
+            | LinksPress::PickerSol
+            | LinksPress::PickerBtc
+            | LinksPress::PickerZec => {
+                let id = ids::id_of(press);
+                self.account_menu = if self.account_menu == Some(id) {
+                    None
+                } else {
+                    Some(id)
+                };
+                // One drop-down at a time.
+                self.evm.network_picker = false;
+                self.refresh();
+                return;
+            }
+            LinksPress::EvmTo(Row(row)) => self
+                .activity_rows()
+                .get(usize::from(row))
                 .and_then(|view| view.counterparty)
-                .map(yw_core::evm::address::Address::to_checksum)
-        } else if let Some(row) = ids::row_of(id, ids::SOL_TO_BASE, ids::SOL_TO_SPAN) {
-            self.sol_activity_counterparties().get(row).cloned()
-        } else if let Some(row) = ids::row_of(id, ids::BTC_TO_BASE, ids::BTC_TO_SPAN) {
-            let ctx = self.btc_ctx();
-            self.btc
-                .activity_rows(&ctx)
-                .get(row)
-                .map(|view| view.counterparty.clone())
-        } else if let Some(row) = ids::row_of(id, ids::ZEC_TO_BASE, ids::ZEC_TO_SPAN) {
-            self.zec_activity_recipients().get(row).cloned().flatten()
-        } else {
-            return false;
+                .map(yw_core::evm::address::Address::to_checksum),
+            LinksPress::SolTo(Row(row)) => self
+                .sol_activity_counterparties()
+                .get(usize::from(row))
+                .cloned(),
+            LinksPress::BtcTo(Row(row)) => {
+                let ctx = self.btc_ctx();
+                self.btc
+                    .activity_rows(&ctx)
+                    .get(usize::from(row))
+                    .map(|view| view.counterparty.clone())
+            }
+            LinksPress::ZecTo(Row(row)) => self
+                .zec_activity_recipients()
+                .get(usize::from(row))
+                .cloned()
+                .flatten(),
         };
         // The wallet's own sent transactions only (its signed journal): the received history's
         // senders have no copy id at all.
         if let Some(address) = address.filter(|address| !address.is_empty()) {
             self.copy_address_text(&address);
         }
-        true
+    }
+
+    /// Test adapter (S3 C1, plan §3.2): presses drop-down or recipient control `id` directly, as
+    /// the tests did before; `false` when `id` is not one.
+    #[cfg(test)]
+    pub(crate) fn on_links_command(&mut self, id: u16) -> bool {
+        self.press_family(
+            id,
+            |press| match press {
+                yw_engine::cmd::Press::Links(press) => Some(press),
+                _ => None,
+            },
+            |app, press| {
+                app.on_links(press);
+                true
+            },
+        )
     }
 }
