@@ -39,7 +39,7 @@ sources below; this offline session did not re-fetch the sources, so no commit i
 | `src/evm/sign/tests.rs` EVM-V03 `Hello, world!` | MetaMask eth-sig-util `src/personal-sign.test.ts` | ISC |
 | `src/evm/sign/tests.rs`, `tests/evm_eip712.rs` Ether Mail | EIPs `assets/eip-712/Example.js` (JSON as in `archive/spec-v2.4:crates/eip712/tests/vectors.rs:6-42`) | CC0-1.0 |
 | `tests/evm_consts.rs` selectors, topics, typeHashes, domain separators | computed by the test from the signature strings of spec/09 §3.6–§3.7 | — |
-| `crates/yw-app/tests/fixtures/eth_simulateV1/*.response.json` | spec/09 §3.8 S1–S16 shapes; S1h/S3c/S4h/S16 follow the 2026-10-27 probe (`docs/acceptance/probe-20261027.md`) | — |
+| `crates/yw-engine/tests/fixtures/eth_simulateV1/*.response.json` (before 2026-11-17 spec/15 §11.4 S2 T1: under `crates/yw-app/tests/fixtures/`) | spec/09 §3.8 S1–S16 shapes; S1h/S3c/S4h/S16 follow the 2026-10-27 probe (`docs/acceptance/probe-20261027.md`) | — |
 
 M8 Bitcoin data (`btc/`, details and the Esplora recording list in `btc/README.md`):
 

@@ -2,7 +2,7 @@
 
 상위 문서: [spec.md](../spec.md)
 
-D36의 세부 명세다. 방식은 Bitcoin([08](08-bitcoin.md))과 같다: 받기·보내기는 yw-app 화면(Zcash 탭)에서만 하고 dApp 연결은 없다. 비공개(shielded: Sapling·Orchard) 거래는 범위 밖이다. 코드는 `yw_core::zec`(코어)와 `crates/yw-app/src/{app_zec.rs, ui/screens_zec.rs, workers/journal_zec.rs}`(앱), `crates/yw-engine/src/zec/`(RPC·작업, 2026-11-17 [15] §11.4 S2 전에는 `crates/yw-app/src/zec/`)이다. 확인한 사실과 출처는 §16에 모은다(2026-11-06 확인).
+D36의 세부 명세다. 방식은 Bitcoin([08](08-bitcoin.md))과 같다: 받기·보내기는 yw-app 화면(Zcash 탭)에서만 하고 dApp 연결은 없다. 비공개(shielded: Sapling·Orchard) 거래는 범위 밖이다. 코드는 `yw_core::zec`(코어)와 `crates/yw-app/src/{app_zec.rs, ui/screens_zec.rs}`(앱), `crates/yw-engine/src/zec/`(RPC·작업, 2026-11-17 [15] §11.4 S2 전에는 `crates/yw-app/src/zec/`)과 `crates/yw-engine/src/workers/journal_zec.rs`(기록 작업자, 2026-11-17 [15] §11.4 S2 E3 전에는 `crates/yw-app/src/workers/journal_zec.rs`)이다. 확인한 사실과 출처는 §16에 모은다(2026-11-06 확인).
 
 ## 1. 범위
 
