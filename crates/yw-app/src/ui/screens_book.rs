@@ -99,6 +99,90 @@ pub mod ids {
         BTC_PICK,
         ADD_OPEN,
     ];
+
+    /// The press control `id` stands for (2026-11-18, S3 C4: `ui::cmd_table`); the four check
+    /// boxes carry their state now. `None` when `id` is not one of this module's presses (the
+    /// edits are fields, not presses). Each range is claimed whole, as `on_book_command` claimed
+    /// it (a chip past the five shown, a row past the list: nothing happens).
+    #[must_use]
+    pub fn press_of(
+        id: u16,
+        controls: &crate::ui::main_window::ControlSet,
+    ) -> Option<yw_engine::cmd::BookPress> {
+        use yw_engine::cmd::{BookPress, BookRowAction, Row};
+        let within = |base: u16, span: u16| id.checked_sub(base).filter(|offset| *offset < span);
+        Some(match id {
+            CHAIN_EVM => BookPress::ChainEvm,
+            CHAIN_SOL => BookPress::ChainSol,
+            CHAIN_BTC => BookPress::ChainBtc,
+            VERIFIED => BookPress::Verified(controls.checked(id)),
+            FAVORITE => BookPress::Favorite(controls.checked(id)),
+            SAVE => BookPress::Save,
+            CANCEL => BookPress::Cancel,
+            FORM_ACK => BookPress::FormAck(controls.checked(id)),
+            PROMPT_SAVE => BookPress::PromptSave,
+            PROMPT_CANCEL => BookPress::PromptCancel,
+            PROMPT_ACK => BookPress::PromptAck(controls.checked(id)),
+            SEND_SAVE => BookPress::SendSave,
+            RESULT_SAVE => BookPress::ResultSave,
+            BTC_PICK => BookPress::BtcPick,
+            ADD_OPEN => BookPress::AddOpen,
+            _ => {
+                if let Some(index) = within(FAV_BASE, FAV_SPAN) {
+                    BookPress::Chip(Row(index))
+                } else if let Some(index) = within(BTC_PICK_BASE, BTC_PICK_SPAN) {
+                    BookPress::BtcPickRow(Row(index))
+                } else if let Some(index) = within(ROW_BASE, ROW_SPAN) {
+                    BookPress::Row(
+                        Row(index / ROW_STRIDE),
+                        match index % ROW_STRIDE {
+                            0 => BookRowAction::Favorite,
+                            1 => BookRowAction::Edit,
+                            _ => BookRowAction::Delete,
+                        },
+                    )
+                } else if let Some(row) = within(COPY_BASE, COPY_SPAN) {
+                    BookPress::Copy(Row(row))
+                } else {
+                    BookPress::SolActivitySave(Row(within(SOL_ACTIVITY_BASE, SOL_ACTIVITY_SPAN)?))
+                }
+            }
+        })
+    }
+
+    /// The control id of `press` (the inverse of [`press_of`]).
+    #[must_use]
+    pub const fn id_of(press: yw_engine::cmd::BookPress) -> u16 {
+        use yw_engine::cmd::{BookPress, BookRowAction, Row};
+        match press {
+            BookPress::ChainEvm => CHAIN_EVM,
+            BookPress::ChainSol => CHAIN_SOL,
+            BookPress::ChainBtc => CHAIN_BTC,
+            BookPress::Verified(_) => VERIFIED,
+            BookPress::Favorite(_) => FAVORITE,
+            BookPress::Save => SAVE,
+            BookPress::Cancel => CANCEL,
+            BookPress::FormAck(_) => FORM_ACK,
+            BookPress::PromptSave => PROMPT_SAVE,
+            BookPress::PromptCancel => PROMPT_CANCEL,
+            BookPress::PromptAck(_) => PROMPT_ACK,
+            BookPress::SendSave => SEND_SAVE,
+            BookPress::ResultSave => RESULT_SAVE,
+            BookPress::BtcPick => BTC_PICK,
+            BookPress::AddOpen => ADD_OPEN,
+            BookPress::Chip(Row(index)) => FAV_BASE.wrapping_add(index),
+            BookPress::BtcPickRow(Row(index)) => BTC_PICK_BASE.wrapping_add(index),
+            BookPress::SolActivitySave(Row(row)) => SOL_ACTIVITY_BASE.wrapping_add(row),
+            BookPress::Row(Row(row), action) => ROW_BASE
+                .wrapping_add(row.wrapping_mul(ROW_STRIDE))
+                .wrapping_add(match action {
+                    BookRowAction::Favorite => 0,
+                    BookRowAction::Edit => 1,
+                    BookRowAction::Delete => 2,
+                }),
+            BookPress::Copy(Row(row)) => COPY_BASE.wrapping_add(row),
+        }
+    }
 }
 
 /// S14 texts and the save prompts of the send forms (spec/04 §2.10; English spec/14 §5).

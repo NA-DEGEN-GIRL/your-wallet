@@ -15,7 +15,7 @@
 //! ids are their families' presses (each module's `ids::press_of`/`ids::id_of`); [`press_of`]
 //! reads a check box's state into its press (the box is never read again by the handler).
 //! S3 C2: S13's sites and `WalletConnect` panel. S3 C3: the block-explorer card and links and
-//! the AI-explanation settings.
+//! the AI-explanation settings. S3 C4: the address book.
 
 use yw_core::secret::Zeroizing;
 use yw_engine::cmd::Press;
@@ -23,8 +23,8 @@ use yw_engine::form::{CredField, CredUnits, EditField, PressInput};
 
 use crate::ui::main_window::ControlSet;
 use crate::ui::{
-    screens, screens_evm, screens_explorer, screens_links, screens_llm, screens_received,
-    screens_sites, screens_walletconnect,
+    screens, screens_book, screens_evm, screens_explorer, screens_links, screens_llm,
+    screens_received, screens_sites, screens_walletconnect,
 };
 use crate::{app_hidden, app_sidecar};
 
@@ -49,6 +49,7 @@ pub fn press_of(id: u16, controls: &ControlSet) -> Press {
             .or_else(|| screens_llm::ids::press_of(other, controls).map(Press::Llm))
             .or_else(|| screens_explorer::ids::press_of(other).map(Press::Explorer))
             .or_else(|| screens_walletconnect::ids::press_of(other).map(Press::Wc))
+            .or_else(|| screens_book::ids::press_of(other, controls).map(Press::Book))
             .unwrap_or(Press::Legacy(other)),
     }
 }
@@ -68,6 +69,7 @@ pub const fn id_of(press: Press) -> u16 {
         Press::Llm(press) => screens_llm::ids::id_of(press),
         Press::Explorer(press) => screens_explorer::ids::id_of(press),
         Press::Wc(press) => screens_walletconnect::ids::id_of(press),
+        Press::Book(press) => screens_book::ids::id_of(press),
         Press::Legacy(id) => id,
     }
 }
@@ -471,6 +473,74 @@ mod tests {
             press_of(screens_llm::ids::NOTICE_CHECK, &controls),
             Press::Llm(LlmPress::NoticeCheck(Some(false)))
         );
+    }
+
+    /// S3 C4: the address book claims exactly the ids `on_book_command` claimed before (each
+    /// range whole, the three edits are fields); its four check boxes carry their state.
+    #[test]
+    fn c4_book_maps_its_ids() {
+        use screens_book::ids;
+        use yw_engine::cmd::{BookPress, BookRowAction, Row};
+        let controls = ControlSet::default();
+        let family = |id: u16| matches!(press_of(id, &controls), Press::Book(_));
+        for id in 14_000..15_700 {
+            let book = !matches!(
+                id,
+                ids::ADDR_EDIT
+                    | ids::LABEL_EDIT
+                    | ids::PROMPT_LABEL_EDIT
+                    | 14_018
+                    | 14_019
+                    | 14_028
+                    | 14_029
+                    | 14_070..14_080
+                    | 14_144..14_200
+            );
+            assert_eq!(family(id), book, "{id}");
+        }
+        for id in 18_690..19_210 {
+            assert_eq!(family(id), (18_700..19_200).contains(&id), "{id}");
+        }
+        assert_eq!(
+            press_of(ids::FAV_BASE + 7, &controls),
+            Press::Book(BookPress::Chip(Row(7)))
+        );
+        assert_eq!(
+            press_of(ids::ROW_BASE + 1_499, &controls),
+            Press::Book(BookPress::Row(Row(499), BookRowAction::Delete))
+        );
+        assert_eq!(
+            press_of(ids::COPY_BASE + 499, &controls),
+            Press::Book(BookPress::Copy(Row(499)))
+        );
+        assert_eq!(
+            press_of(ids::SOL_ACTIVITY_BASE + 63, &controls),
+            Press::Book(BookPress::SolActivitySave(Row(63)))
+        );
+        for (id, press) in [
+            (
+                ids::VERIFIED,
+                BookPress::Verified as fn(Option<bool>) -> BookPress,
+            ),
+            (ids::FAVORITE, BookPress::Favorite),
+            (ids::FORM_ACK, BookPress::FormAck),
+            (ids::PROMPT_ACK, BookPress::PromptAck),
+        ] {
+            assert_eq!(press_of(id, &controls), Press::Book(press(None)), "{id}");
+            controls.type_check(id, true);
+            assert_eq!(
+                press_of(id, &controls),
+                Press::Book(press(Some(true))),
+                "{id}"
+            );
+            controls.type_check(id, false);
+            assert_eq!(
+                press_of(id, &controls),
+                Press::Book(press(Some(false))),
+                "{id}"
+            );
+            assert_eq!(id_of(press_of(id, &controls)), id);
+        }
     }
 
     /// Table test (3): the 65 edit ids are 58 plain fields and 7 credential fields, each a

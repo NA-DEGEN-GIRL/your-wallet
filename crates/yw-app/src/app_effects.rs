@@ -14,7 +14,7 @@
 //! copy (`CopyText`, was `App::copy`'s `clipboard::set_text`). S3 B5: `Render` reads the plain
 //! edits back into the form state. The field writes get their arms when their callers convert
 //! (C); nothing emits them before. S3 C3: `SetField` (the AI section's `빠른 입력`) and
-//! `ClearCred` (the AI key after `키 저장`).
+//! `ClearCred` (the AI key after `키 저장`). S3 C4: `ClearField` (the address book's form).
 
 use yw_core::secret::Zeroizing;
 use yw_engine::cmd::Cmd;
@@ -94,16 +94,18 @@ impl App {
             }
             // A credential edit is emptied after its one read; it is never form state.
             Effect::ClearCred { field } => self.controls.clear_text(cred_id_of(field)),
-            // Not emitted before S3 C4 (the address book's clears), which gives it its arm
-            // (`clear_text` + the form re-read, before the next `refresh()`: `keeps_edit` reads
-            // the edit) in the same commit as its first emitter. Until then (2026-11-18, S3
-            // C1–C3 review) debug builds count one as a form mismatch, so an early emitter fails
-            // the census and the windowed form test instead of leaving the edit uncleared.
+            // S3 C4 (the address book's clears): emptied now, before the handler's next
+            // `refresh()` (`keeps_edit` reads the edit), and read back into the form state
+            // (headless: `ControlSet::clear_text` drops what a test typed, so the field is gone
+            // there as from the edit). (2026-11-18, S3 C1–C3 review: before C4 debug builds
+            // counted a `ClearField` as a form mismatch, as nothing could emit one yet.)
             Effect::ClearField { field } => {
-                #[cfg(debug_assertions)]
-                self.note_form_mismatch(field);
-                #[cfg(not(debug_assertions))]
-                let _ = field;
+                let id = edit_id_of(field);
+                self.controls.clear_text(id);
+                self.form.set(
+                    field,
+                    self.controls.text(id, field.cap()).map(Zeroizing::new),
+                );
             }
         }
     }

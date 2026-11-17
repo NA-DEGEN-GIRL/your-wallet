@@ -25,6 +25,9 @@ use crate::errors::ErrorCode;
 use crate::meta::{BookChain, Contact, ListError, MAX_ADDRESS_BOOK};
 use crate::text::is_valid_label;
 use crate::ui::screens_book::ids;
+use yw_engine::cmd::{BookPress, BookRowAction, Row};
+use yw_engine::effect::Effect;
+use yw_engine::form::EditField;
 
 /// Favorite chips shown above a recipient field.
 pub const FAVORITE_CHIPS: usize = 5;
@@ -246,10 +249,6 @@ fn now_unix_ms() -> u64 {
         })
 }
 
-fn offset(id: u16, base: u16, span: u16) -> Option<u16> {
-    id.checked_sub(base).filter(|offset| *offset < span)
-}
-
 impl App {
     /// The note of a new book entry `address` (canonical, of `chain`) that looks like an
     /// address the user knows — the family's whole known set, as the send forms compare it:
@@ -462,8 +461,13 @@ impl App {
                     .map_or_else(|_| address.to_owned(), Address::to_checksum);
                 self.evm.send.to_text.clone_from(&text);
                 self.evm.send.picker = false;
-                self.controls
-                    .set_text(crate::ui::screens_evm::ids::SEND_TO_EDIT, &text);
+                // 2026-11-18 (S3 C4): the write is `Effect::SetField`, applied at once inside
+                // this borrow (before, `controls.set_text`), so the edit's `EN_CHANGE` is still
+                // not seen; the same for the Solana and Bitcoin forms below.
+                self.emit(Effect::SetField {
+                    field: EditField::EvmSendTo,
+                    text,
+                });
                 self.validate_send(true);
             }
             BookTarget::Sol => {
@@ -472,14 +476,19 @@ impl App {
                 }
                 address.clone_into(&mut self.sol.send.to_text);
                 self.sol.send.picker = false;
-                self.controls
-                    .set_text(crate::ui::screens_sol::ids::SEND_TO_EDIT, address);
+                self.emit(Effect::SetField {
+                    field: EditField::SolSendTo,
+                    text: address.to_owned(),
+                });
                 self.sol_validate_send();
             }
             BookTarget::Btc(_) => {
                 self.book.btc_picker = false;
                 let id = crate::ui::screens_btc::ids::SEND_TO_EDIT;
-                self.controls.set_text(id, address);
+                self.emit(Effect::SetField {
+                    field: EditField::BtcSendTo,
+                    text: address.to_owned(),
+                });
                 self.btc_apply_field(id, address);
                 self.refresh();
             }
@@ -508,8 +517,7 @@ impl App {
     fn save_prompt(&mut self) {
         let lang = self.settings.language;
         let label = self
-            .controls
-            .text(ids::PROMPT_LABEL_EDIT, 512)
+            .form_text(EditField::BookPromptLabel)
             .unwrap_or_default();
         let Some(prompt) = self.book.prompt.as_mut() else {
             return;
@@ -559,11 +567,12 @@ impl App {
 
     /// `추가` / `저장` of the S14 form.
     fn save_book_form(&mut self) {
-        let read = |app: &Self, id| app.controls.text(id, 512).unwrap_or_default();
+        // 2026-11-18 (S3 C4): the form state (`App::form_text`); before, reads of the edits.
+        let read = |app: &Self, field| app.form_text(field).unwrap_or_default();
         if self.book.form.editing.is_none() {
-            self.book.form.address = read(self, ids::ADDR_EDIT);
+            self.book.form.address = read(self, EditField::BookAddress);
         }
-        self.book.form.label = read(self, ids::LABEL_EDIT);
+        self.book.form.label = read(self, EditField::BookLabel);
         let form = self.book.form.clone();
         let address = match &form.editing {
             Some(address) => address.clone(),
@@ -629,8 +638,14 @@ impl App {
                     ..BookForm::default()
                 };
                 // The focused edit is kept across the new row (Enter saves from it).
-                self.controls.clear_text(ids::ADDR_EDIT);
-                self.controls.clear_text(ids::LABEL_EDIT);
+                // (2026-11-18, S3 C4: `Effect::ClearField`, applied here before the `refresh`
+                // below — `keeps_edit` reads the edit; before, `controls.clear_text`.)
+                self.emit(Effect::ClearField {
+                    field: EditField::BookAddress,
+                });
+                self.emit(Effect::ClearField {
+                    field: EditField::BookLabel,
+                });
                 self.save_meta();
             }
             Err(error) => {
@@ -689,11 +704,13 @@ impl App {
         }
     }
 
-    /// `EN_CHANGE` of an address-book edit; `false` when `id` is not one of them.
-    pub fn on_book_edit_change(&mut self, id: u16) -> bool {
-        match id {
-            ids::ADDR_EDIT => {
-                let text = self.controls.text(id, 512).unwrap_or_default();
+    /// `EN_CHANGE` of an address-book edit: `text` is the field's text now (2026-11-18, S3 C4:
+    /// from `Cmd::Edit`; before, a read of the edit by id); `false` when `field` is not one of
+    /// them.
+    pub(crate) fn on_book_edit(&mut self, field: EditField, text: &str) -> bool {
+        match field {
+            EditField::BookAddress => {
+                let text = text.to_owned();
                 // A look-alike note and its acknowledgement belong to the address they were
                 // shown for: an edited address is checked again at `추가`.
                 let stale = text != self.book.form.address && self.book.form.look_alike.is_some();
@@ -704,13 +721,10 @@ impl App {
                     self.refresh();
                 }
             }
-            ids::LABEL_EDIT => {
-                self.book.form.label = self.controls.text(id, 512).unwrap_or_default();
-            }
-            ids::PROMPT_LABEL_EDIT => {
-                let text = self.controls.text(id, 512).unwrap_or_default();
+            EditField::BookLabel => text.clone_into(&mut self.book.form.label),
+            EditField::BookPromptLabel => {
                 if let Some(prompt) = self.book.prompt.as_mut() {
-                    prompt.label = text;
+                    text.clone_into(&mut prompt.label);
                 }
             }
             _ => return false,
@@ -718,18 +732,18 @@ impl App {
         true
     }
 
-    /// Address-book commands; `false` when `id` is not one of them.
-    pub fn on_book_command(&mut self, id: u16) -> bool {
-        match id {
-            ids::CHAIN_EVM | ids::CHAIN_SOL | ids::CHAIN_BTC => {
+    /// Address-book presses (2026-11-18, S3 C4: a `BookPress`, the check boxes carrying their
+    /// state; before, the control id and reads of the controls here).
+    pub(crate) fn on_book(&mut self, press: BookPress) {
+        match press {
+            BookPress::ChainEvm | BookPress::ChainSol | BookPress::ChainBtc => {
                 if self.book.form.editing.is_none() {
                     self.book.form.address =
-                        self.controls.text(ids::ADDR_EDIT, 512).unwrap_or_default();
-                    self.book.form.label =
-                        self.controls.text(ids::LABEL_EDIT, 512).unwrap_or_default();
-                    self.book.form.chain = match id {
-                        ids::CHAIN_SOL => BookChain::Sol,
-                        ids::CHAIN_BTC => BookChain::Btc,
+                        self.form_text(EditField::BookAddress).unwrap_or_default();
+                    self.book.form.label = self.form_text(EditField::BookLabel).unwrap_or_default();
+                    self.book.form.chain = match press {
+                        BookPress::ChainSol => BookChain::Sol,
+                        BookPress::ChainBtc => BookChain::Btc,
                         _ => BookChain::Evm,
                     };
                     self.book.form.look_alike = None;
@@ -738,136 +752,142 @@ impl App {
                 }
                 self.refresh();
             }
-            ids::VERIFIED => {
-                self.book.form.verified = self.controls.checked(id).unwrap_or(false);
+            BookPress::Verified(checked) => {
+                self.book.form.verified = checked.unwrap_or(false);
             }
-            ids::FAVORITE => {
-                self.book.form.favorite = self.controls.checked(id).unwrap_or(false);
+            BookPress::Favorite(checked) => {
+                self.book.form.favorite = checked.unwrap_or(false);
             }
-            ids::FORM_ACK => {
-                self.book.form.ack = self.controls.checked(id).unwrap_or(false);
+            BookPress::FormAck(checked) => {
+                self.book.form.ack = checked.unwrap_or(false);
                 self.refresh();
             }
-            ids::SAVE => self.save_book_form(),
-            ids::ADD_OPEN => {
+            BookPress::Save => self.save_book_form(),
+            BookPress::AddOpen => {
                 self.book.form.open = true;
                 self.refresh();
             }
-            ids::CANCEL => {
+            BookPress::Cancel => {
                 self.book.form = BookForm {
                     chain: self.book.form.chain,
                     ..BookForm::default()
                 };
-                // Esc presses this from a focused edit, which is kept.
-                self.controls.clear_text(ids::ADDR_EDIT);
-                self.controls.clear_text(ids::LABEL_EDIT);
+                // Esc presses this from a focused edit, which is kept. (2026-11-18, S3 C4:
+                // `Effect::ClearField` before the `refresh` below; before, `controls.clear_text`.)
+                self.emit(Effect::ClearField {
+                    field: EditField::BookAddress,
+                });
+                self.emit(Effect::ClearField {
+                    field: EditField::BookLabel,
+                });
                 self.refresh();
             }
-            ids::PROMPT_SAVE => self.save_prompt(),
-            ids::PROMPT_CANCEL => {
+            BookPress::PromptSave => self.save_prompt(),
+            BookPress::PromptCancel => {
                 self.book.prompt = None;
                 self.refresh();
             }
-            ids::PROMPT_ACK => {
-                let checked = self.controls.checked(id).unwrap_or(false);
+            BookPress::PromptAck(checked) => {
+                let checked = checked.unwrap_or(false);
                 if let Some(prompt) = self.book.prompt.as_mut() {
                     prompt.ack = checked;
                     prompt.message = None;
                 }
                 self.refresh();
             }
-            ids::SEND_SAVE => {
+            BookPress::SendSave => {
                 if let Some(target) = self.send_target()
                     && let Some(address) = self.send_recipient(target)
                 {
                     self.open_save_prompt(target.chain(), &address, PromptPlace::SendForm);
                 }
             }
-            ids::RESULT_SAVE => {
+            BookPress::ResultSave => {
                 if let Some(target) = self.send_target()
                     && let Some(address) = self.result_recipient(target)
                 {
                     self.open_save_prompt(target.chain(), &address, PromptPlace::Result);
                 }
             }
-            ids::BTC_PICK => {
+            BookPress::BtcPick => {
                 self.book.btc_picker = !self.book.btc_picker;
                 self.refresh();
             }
-            _ => return self.on_book_indexed(id),
+            BookPress::Chip(row) => self.book_chip(row),
+            BookPress::BtcPickRow(row) => self.book_btc_pick(row),
+            BookPress::Row(row, action) => self.on_book_row(row, action),
+            BookPress::Copy(row) => self.book_copy(row),
+            BookPress::SolActivitySave(Row(row)) => {
+                self.save_activity_address(BookChain::Sol, usize::from(row));
+            }
         }
-        true
     }
 
-    fn on_book_indexed(&mut self, id: u16) -> bool {
-        if let Some(index) = offset(id, ids::FAV_BASE, ids::FAV_SPAN) {
-            if let Some(target) = self.send_target()
-                && let Some(entry) = self.favorite_contacts(target).get(usize::from(index))
-            {
-                let address = entry.address.clone();
-                self.fill_recipient(target, &address);
-            }
-            return true;
+    /// A favorite chip of the send form (2026-11-18, S3 C4: the press's row; before, the id's
+    /// offset in `FAV_BASE`; the same for the three below).
+    fn book_chip(&mut self, Row(index): Row) {
+        if let Some(target) = self.send_target()
+            && let Some(entry) = self.favorite_contacts(target).get(usize::from(index))
+        {
+            let address = entry.address.clone();
+            self.fill_recipient(target, &address);
         }
-        if let Some(index) = offset(id, ids::BTC_PICK_BASE, ids::BTC_PICK_SPAN) {
-            if let Some(target @ BookTarget::Btc(_)) = self.send_target()
-                && let Some(entry) = self.btc_picker_entries(target).get(usize::from(index))
-            {
-                let address = entry.address.clone();
-                self.fill_recipient(target, &address);
-            }
-            return true;
+    }
+
+    /// A row of the Bitcoin picker.
+    fn book_btc_pick(&mut self, Row(index): Row) {
+        if let Some(target @ BookTarget::Btc(_)) = self.send_target()
+            && let Some(entry) = self.btc_picker_entries(target).get(usize::from(index))
+        {
+            let address = entry.address.clone();
+            self.fill_recipient(target, &address);
         }
-        if let Some(index) = offset(id, ids::ROW_BASE, ids::ROW_SPAN) {
-            let rows = self.book_rows();
-            let Some(entry) = rows.get(usize::from(index / ids::ROW_STRIDE)).cloned() else {
-                return true;
-            };
-            match index % ids::ROW_STRIDE {
-                0 => self.toggle_favorite(entry.chain, &entry.address),
-                1 => {
-                    let favorite = self
-                        .meta
-                        .as_ref()
-                        .is_some_and(|meta| meta.is_favorite(entry.chain, &entry.address));
-                    self.book.form = BookForm {
-                        chain: entry.chain,
-                        editing: Some(entry.address.clone()),
-                        address: entry.address.clone(),
-                        label: entry.label.clone(),
-                        verified: entry.verified,
-                        favorite,
-                        ..BookForm::default()
-                    };
-                    self.scroll = 0;
-                    self.refresh();
-                }
-                _ => {
-                    self.book.delete = Some((entry.chain, entry.address));
-                    self.set_screen(Screen::Confirm(Confirm::BookDelete));
-                }
-            }
-            return true;
-        }
-        if let Some(row) = offset(id, ids::COPY_BASE, ids::COPY_SPAN) {
-            if let Some(entry) = self.book_rows().get(usize::from(row)) {
-                let text = match entry.chain {
-                    BookChain::Evm => yw_core::evm::address::parse_address(&entry.address)
-                        .map_or_else(
-                            |_| entry.address.clone(),
-                            yw_core::evm::Address::to_checksum,
-                        ),
-                    BookChain::Sol | BookChain::Btc => entry.address.clone(),
+    }
+
+    /// A button of S14 row `row` (`★`, `편집`, `삭제`).
+    fn on_book_row(&mut self, Row(row): Row, action: BookRowAction) {
+        let rows = self.book_rows();
+        let Some(entry) = rows.get(usize::from(row)).cloned() else {
+            return;
+        };
+        match action {
+            BookRowAction::Favorite => self.toggle_favorite(entry.chain, &entry.address),
+            BookRowAction::Edit => {
+                let favorite = self
+                    .meta
+                    .as_ref()
+                    .is_some_and(|meta| meta.is_favorite(entry.chain, &entry.address));
+                self.book.form = BookForm {
+                    chain: entry.chain,
+                    editing: Some(entry.address.clone()),
+                    address: entry.address.clone(),
+                    label: entry.label.clone(),
+                    verified: entry.verified,
+                    favorite,
+                    ..BookForm::default()
                 };
-                self.copy_address_text(&text);
+                self.scroll = 0;
+                self.refresh();
             }
-            return true;
+            BookRowAction::Delete => {
+                self.book.delete = Some((entry.chain, entry.address));
+                self.set_screen(Screen::Confirm(Confirm::BookDelete));
+            }
         }
-        if let Some(row) = offset(id, ids::SOL_ACTIVITY_BASE, ids::SOL_ACTIVITY_SPAN) {
-            self.save_activity_address(BookChain::Sol, usize::from(row));
-            return true;
+    }
+
+    /// An S14 row's address line: copies the entry's address.
+    fn book_copy(&mut self, Row(row): Row) {
+        if let Some(entry) = self.book_rows().get(usize::from(row)) {
+            let text = match entry.chain {
+                BookChain::Evm => yw_core::evm::address::parse_address(&entry.address).map_or_else(
+                    |_| entry.address.clone(),
+                    yw_core::evm::Address::to_checksum,
+                ),
+                BookChain::Sol | BookChain::Btc => entry.address.clone(),
+            };
+            self.copy_address_text(&text);
         }
-        false
     }
 
     /// The Bitcoin picker entries (book entries of the form's network, filtered by the text).

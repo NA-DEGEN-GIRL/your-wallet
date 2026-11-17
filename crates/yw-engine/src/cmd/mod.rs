@@ -18,6 +18,9 @@
 //!
 //! 2026-11-18 (S3 C3): the block-explorer card and links and the AI-explanation settings
 //! (`Press::{Explorer, Llm}`).
+//!
+//! 2026-11-18 (S3 C4): the address book, its favorite chips, picker and save prompt
+//! (`Press::Book`).
 
 use core::fmt;
 
@@ -27,6 +30,7 @@ use crate::effect::TimerId;
 use crate::form::{EditField, FormSnapshot, PressInput};
 use crate::received::RecvChain;
 
+mod book;
 mod explorer;
 mod hidden;
 mod links;
@@ -36,6 +40,7 @@ mod sidecar;
 mod sites;
 mod wc;
 
+pub use book::{BookPress, BookRowAction};
 pub use explorer::{ExplorerLinkAction, ExplorerPress, ExplorerRowAction};
 pub use hidden::HiddenPress;
 pub use links::LinksPress;
@@ -139,6 +144,8 @@ pub enum Press {
     Explorer(ExplorerPress),
     /// An account drop-down button or an activity recipient (S3 C1).
     Links(LinksPress),
+    /// The address book, its chips, picker and save prompt (S3 C4).
+    Book(BookPress),
     /// Windows-transitional bridge (S3 B2–D3): a control id whose handler is not converted yet.
     #[doc(hidden)]
     Legacy(u16),
@@ -162,6 +169,7 @@ impl Press {
             | Self::Sidecar(_)
             | Self::Explorer(_)
             | Self::Links(_)
+            | Self::Book(_)
             | Self::Legacy(_) => None,
         }
     }
@@ -184,6 +192,7 @@ impl Press {
             | Self::Sidecar(_)
             | Self::Explorer(_)
             | Self::Links(_)
+            | Self::Book(_)
             | Self::Legacy(_) => false,
         }
     }

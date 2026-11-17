@@ -2954,12 +2954,16 @@ fn form_state_follows_the_edits_and_press_input_ends_with_the_press() {
 }
 
 /// 2026-11-18 (S3 C1–C3 review): a notified edit that does not exist (headless only) keeps a
-/// converted family's draft (before C2/C3 `edit_chain` cleared it to "") and is counted, and a
-/// `ClearField` without its C4 arm is counted too, so neither passes a census silently.
+/// converted family's draft (before C2/C3 `edit_chain` cleared it to "") and is counted, so it
+/// does not pass a census silently. (S3 C4: `ClearField` has its executor arm now — it empties
+/// the edit and reads it back into the form state; before C4 debug builds counted one as a
+/// mismatch, which this test checked.)
 #[test]
 #[cfg(debug_assertions)]
-fn missing_edit_notify_and_early_clear_field_are_counted() {
+fn missing_edit_notify_is_counted_and_clear_field_clears() {
+    use crate::ui::screens_book::ids::ADDR_EDIT;
     use crate::ui::screens_llm::ids::MODEL_EDIT;
+    use yw_engine::cmd::Cmd;
     use yw_engine::effect::Effect;
     use yw_engine::form::EditField;
     let (mut app, dir) = unlocked_app("form-missing-edit", false);
@@ -2968,15 +2972,23 @@ fn missing_edit_notify_and_early_clear_field_are_counted() {
     app.on_edit_notify(MODEL_EDIT);
     assert_eq!(app.llm_ui.model_text, "draft-model");
     assert_eq!(app.form_mismatch.get(), 1);
+    let log = app.controls.take_shell_log();
+    assert!(
+        log.iter().any(|line| line == "form.mismatch LlmModel"),
+        "{log:?}"
+    );
+    app.controls.type_text(ADDR_EDIT, "draft");
+    app.on_cmd(Cmd::Form(app.controls.form_snapshot()));
+    assert_eq!(app.form.text(EditField::BookAddress), Some("draft"));
     app.emit(Effect::ClearField {
         field: EditField::BookAddress,
     });
-    assert_eq!(app.form_mismatch.get(), 2);
-    let log = app.controls.take_shell_log();
-    assert!(
-        log.iter().any(|line| line == "form.mismatch LlmModel")
-            && log.iter().any(|line| line == "form.mismatch BookAddress"),
-        "{log:?}"
+    assert_eq!(app.form.text(EditField::BookAddress), None);
+    assert_eq!(app.controls.text(ADDR_EDIT, 512), None);
+    assert_eq!(app.form_mismatch.get(), 1);
+    assert_eq!(
+        app.controls.take_shell_log(),
+        vec![format!("clear_text {ADDR_EDIT}")]
     );
     let _ = std::fs::remove_dir_all(dir);
 }
