@@ -7,6 +7,8 @@
 use yw_core::journal::zec::ZecTxState;
 use yw_core::lang::Lang;
 use yw_core::zec::{ZecKeySource, ZecNetwork, format_zec, format_zec_and_zats};
+use yw_engine::cmd::{Row, ZecPress};
+use yw_engine::form::EditField;
 
 use crate::app::{App, AppMode};
 use crate::app_zec::SourceChoice;
@@ -235,9 +237,77 @@ pub mod ids {
         REVEAL,
         REMOVE,
     ];
-}
 
-const TEXT_MAX: usize = 1_024;
+    /// The press control `id` stands for (2026-11-18, S3 C7: `ui::cmd_table`). `None` when `id`
+    /// is not one of this module's presses (the two edits are fields). Each row range is claimed
+    /// whole, as the ids reached the handler before.
+    #[must_use]
+    pub fn press_of(id: u16) -> Option<yw_engine::cmd::ZecPress> {
+        use yw_engine::cmd::{Row, ZecPress};
+        let within = |base: u16, span: u16| super::offset(id, base, span).map(Row);
+        Some(match id {
+            TAB_ZEC => ZecPress::TabZec,
+            ENABLE_MAINNET => ZecPress::EnableMainnet,
+            ENABLE_TESTNET => ZecPress::EnableTestnet,
+            DISABLE => ZecPress::Disable,
+            REFRESH => ZecPress::Refresh,
+            COPY_ADDRESS => ZecPress::CopyAddress,
+            CARD_COPY => ZecPress::CardCopy,
+            QR_TOGGLE => ZecPress::QrToggle,
+            SEND_MAX => ZecPress::SendMax,
+            SEND_REVIEW => ZecPress::SendReview,
+            SOURCE_STANDARD => ZecPress::SourceStandard,
+            SOURCE_APPLY => ZecPress::SourceApply,
+            SOURCE_CANCEL => ZecPress::SourceCancel,
+            SOURCE_CURRENT => ZecPress::SourceCurrent,
+            INDEXER_NODE => ZecPress::IndexerNode,
+            INDEXER_BB => ZecPress::IndexerBb,
+            SEND_ADDR_ACK => ZecPress::SendAddrAck,
+            RESULT_COPY => ZecPress::ResultCopy,
+            IMPORT => ZecPress::Import,
+            REVEAL => ZecPress::Reveal,
+            REMOVE => ZecPress::Remove,
+            _ => within(ACTIVITY_COPY_BASE, ACTIVITY_COPY_SPAN)
+                .map(ZecPress::ActivityCopy)
+                .or_else(|| within(IMPORTED_BASE, IMPORTED_SPAN).map(ZecPress::Imported))
+                .or_else(|| within(SOURCE_EVM_BASE, SOURCE_EVM_SPAN).map(ZecPress::SourceEvm))
+                .or_else(|| within(HW_BASE, HW_SPAN).map(ZecPress::Hw))?,
+        })
+    }
+
+    /// The control id of `press` (the inverse of [`press_of`]).
+    #[must_use]
+    pub const fn id_of(press: yw_engine::cmd::ZecPress) -> u16 {
+        use yw_engine::cmd::{Row, ZecPress};
+        match press {
+            ZecPress::TabZec => TAB_ZEC,
+            ZecPress::EnableMainnet => ENABLE_MAINNET,
+            ZecPress::EnableTestnet => ENABLE_TESTNET,
+            ZecPress::Disable => DISABLE,
+            ZecPress::Refresh => REFRESH,
+            ZecPress::CopyAddress => COPY_ADDRESS,
+            ZecPress::CardCopy => CARD_COPY,
+            ZecPress::QrToggle => QR_TOGGLE,
+            ZecPress::SendMax => SEND_MAX,
+            ZecPress::SendReview => SEND_REVIEW,
+            ZecPress::SourceStandard => SOURCE_STANDARD,
+            ZecPress::SourceApply => SOURCE_APPLY,
+            ZecPress::SourceCancel => SOURCE_CANCEL,
+            ZecPress::SourceCurrent => SOURCE_CURRENT,
+            ZecPress::IndexerNode => INDEXER_NODE,
+            ZecPress::IndexerBb => INDEXER_BB,
+            ZecPress::SendAddrAck => SEND_ADDR_ACK,
+            ZecPress::ResultCopy => RESULT_COPY,
+            ZecPress::Import => IMPORT,
+            ZecPress::Reveal => REVEAL,
+            ZecPress::Remove => REMOVE,
+            ZecPress::ActivityCopy(Row(row)) => ACTIVITY_COPY_BASE.wrapping_add(row),
+            ZecPress::Imported(Row(row)) => IMPORTED_BASE.wrapping_add(row),
+            ZecPress::SourceEvm(Row(row)) => SOURCE_EVM_BASE.wrapping_add(row),
+            ZecPress::Hw(Row(row)) => HW_BASE.wrapping_add(row),
+        }
+    }
+}
 
 fn offset(id: u16, base: u16, span: u16) -> Option<u16> {
     id.checked_sub(base).filter(|offset| *offset < span)
@@ -297,33 +367,35 @@ impl App {
         })
     }
 
-    /// `EN_CHANGE` of a Zcash edit; `false` when `id` is not one of them.
-    pub fn on_zec_edit_change(&mut self, id: u16) -> bool {
-        let text = || self.controls.text(id, TEXT_MAX).unwrap_or_default();
-        match id {
-            ids::SEND_TO_EDIT => {
-                self.zec.to_text = text();
+    /// `EN_CHANGE` of a Zcash edit (2026-11-18, S3 C7: the field and its text from `Cmd::Edit`;
+    /// before, the control id and a read of the edit here); `false` when `field` is not one of
+    /// them.
+    pub(crate) fn on_zec_edit(&mut self, field: EditField, text: &str) -> bool {
+        match field {
+            EditField::ZecSendTo => {
+                text.clone_into(&mut self.zec.to_text);
                 self.zec_check_recipient();
             }
-            ids::SEND_AMOUNT_EDIT => self.zec.amount_text = text(),
+            EditField::ZecSendAmount => text.clone_into(&mut self.zec.amount_text),
             _ => return false,
         }
         true
     }
 
-    /// A Zcash command; `false` when `id` is not one of them.
-    pub fn on_zec_command(&mut self, id: u16) -> bool {
-        match id {
-            ids::TAB_ZEC => self.zec_select_tab(),
-            ids::ENABLE_MAINNET => self.zec_enable(ZecNetwork::Mainnet),
-            ids::ENABLE_TESTNET => self.zec_enable(ZecNetwork::Testnet),
-            ids::DISABLE => self.zec_disable(),
-            ids::REFRESH => {
+    /// A Zcash press (2026-11-18, S3 C7: a `ZecPress`; before, the control id, and `false` for
+    /// an id that was not one of them).
+    pub(crate) fn on_zec(&mut self, press: ZecPress) {
+        match press {
+            ZecPress::TabZec => self.zec_select_tab(),
+            ZecPress::EnableMainnet => self.zec_enable(ZecNetwork::Mainnet),
+            ZecPress::EnableTestnet => self.zec_enable(ZecNetwork::Testnet),
+            ZecPress::Disable => self.zec_disable(),
+            ZecPress::Refresh => {
                 self.zec.error = None;
                 self.zec_refresh(false);
                 self.refresh();
             }
-            ids::COPY_ADDRESS | ids::CARD_COPY => {
+            ZecPress::CopyAddress | ZecPress::CardCopy => {
                 if let Some(account) = self.zec_account()
                     && matches!(
                         self.zec_hw_state(),
@@ -334,39 +406,35 @@ impl App {
                     self.copy_address_text(&account.address());
                 }
             }
-            ids::QR_TOGGLE => {
+            ZecPress::QrToggle => {
                 self.zec.show_qr = !self.zec.show_qr;
                 self.refresh();
             }
             // A txid is public data (like Bitcoin's `해시 복사`): for checking on an explorer.
-            ids::RESULT_COPY => {
+            ZecPress::ResultCopy => {
                 if let Some(txid) = self.zec.sent {
                     self.copy_text(&yw_core::zec::tx::txid_display(&txid));
                 }
             }
-            ids::SEND_MAX => {
+            ZecPress::SendMax => {
                 self.zec.send_max = !self.zec.send_max;
                 self.refresh();
             }
-            ids::SEND_ADDR_ACK => {
+            ZecPress::SendAddrAck => {
                 self.zec.ack = !self.zec.ack && self.zec.checked.is_some();
                 self.refresh();
             }
-            ids::SEND_REVIEW => {
-                self.zec.to_text = self
-                    .controls
-                    .text(ids::SEND_TO_EDIT, TEXT_MAX)
-                    .unwrap_or_default();
-                self.zec.amount_text = self
-                    .controls
-                    .text(ids::SEND_AMOUNT_EDIT, TEXT_MAX)
-                    .unwrap_or_default();
+            ZecPress::SendReview => {
+                // 2026-11-18 (S3 C7): the form state (`App::form_text`); before, reads of the
+                // edits.
+                self.zec.to_text = self.form_text(EditField::ZecSendTo).unwrap_or_default();
+                self.zec.amount_text = self.form_text(EditField::ZecSendAmount).unwrap_or_default();
                 self.zec_check_recipient();
                 self.zec_review();
             }
             // The drop-down's items apply their source when picked (2026-11-15; a radio and
             // `이 키 출처 사용` before). Picking the source in use changes nothing.
-            ids::SOURCE_STANDARD => {
+            ZecPress::SourceStandard => {
                 self.zec.confirm_shared = false;
                 if self.zec_source_in_use(ZecKeySource::DEFAULT, None) {
                     self.refresh();
@@ -375,47 +443,50 @@ impl App {
                     self.zec_apply_source();
                 }
             }
-            ids::SOURCE_CURRENT => self.refresh(),
-            ids::SOURCE_APPLY => self.zec_apply_source(),
-            ids::SOURCE_CANCEL => {
+            ZecPress::SourceCurrent => self.refresh(),
+            ZecPress::SourceApply => self.zec_apply_source(),
+            ZecPress::SourceCancel => {
                 self.zec.confirm_shared = false;
                 self.zec.source = SourceChoice::Standard;
                 self.refresh();
             }
-            ids::INDEXER_NODE => self.zec_set_indexer(ZecIndexer::Node),
-            ids::INDEXER_BB => self.zec_set_indexer(ZecIndexer::BbRest),
-            ids::IMPORT => {
+            ZecPress::IndexerNode => self.zec_set_indexer(ZecIndexer::Node),
+            ZecPress::IndexerBb => self.zec_set_indexer(ZecIndexer::BbRest),
+            ZecPress::Import => {
                 self.open_key_import(yw_core::keyimport::ImportChain::Zec);
             }
-            ids::REVEAL | ids::REMOVE => {
+            ZecPress::Reveal | ZecPress::Remove => {
                 if let Some(record) = self.zec_selected_imported() {
-                    if id == ids::REVEAL {
+                    if press == ZecPress::Reveal {
                         self.imported_reveal(*record.as_bytes());
                     } else {
                         self.imported_remove(*record.as_bytes());
                     }
                 }
             }
-            other => return self.on_zec_indexed(other),
+            ZecPress::ActivityCopy(_)
+            | ZecPress::Imported(_)
+            | ZecPress::SourceEvm(_)
+            | ZecPress::Hw(_) => self.on_zec_indexed(press),
         }
-        true
     }
 
-    /// The Zcash row commands (activity `해시 복사`, the drop-down's imported keys, EVM keys and
-    /// `YubiKey` slots); `false` when `id` is not one of them.
-    fn on_zec_indexed(&mut self, id: u16) -> bool {
-        if let Some(row) = offset(id, ids::ACTIVITY_COPY_BASE, ids::ACTIVITY_COPY_SPAN) {
+    /// The Zcash row presses (activity `해시 복사`, the drop-down's imported keys, EVM keys and
+    /// `YubiKey` slots; 2026-11-18, S3 C7: a `ZecPress` row, resolved against the lists rebuilt
+    /// now as before).
+    fn on_zec_indexed(&mut self, press: ZecPress) {
+        if let ZecPress::ActivityCopy(Row(row)) = press {
             // Rows are drawn newest first; a txid is public data, for an explorer.
             if let Some(record) = self.zec_records().iter().rev().nth(usize::from(row)) {
                 self.copy_text(&record.txid_hex());
             }
-            return true;
+            return;
         }
-        if let Some(position) = offset(id, ids::IMPORTED_BASE, ids::IMPORTED_SPAN) {
+        if let ZecPress::Imported(Row(position)) = press {
             self.zec_use_imported(usize::from(position));
-            return true;
+            return;
         }
-        if let Some(position) = offset(id, ids::SOURCE_EVM_BASE, ids::SOURCE_EVM_SPAN) {
+        if let ZecPress::SourceEvm(Row(position)) = press {
             if let Some(index) = self.zec_evm_indices().get(usize::from(position)).copied() {
                 self.zec.confirm_shared = false;
                 if self.zec_source_in_use(ZecKeySource::EvmShared { evm_index: index }, None) {
@@ -427,15 +498,13 @@ impl App {
                     self.zec_apply_source();
                 }
             }
-            return true;
+            return;
         }
-        if let Some(position) = offset(id, ids::HW_BASE, ids::HW_SPAN) {
-            if let Some(index) = self.zec_hw_slots().get(usize::from(position)) {
-                self.zec_use_hardware(*index);
-            }
-            return true;
+        if let ZecPress::Hw(Row(position)) = press
+            && let Some(index) = self.zec_hw_slots().get(usize::from(position))
+        {
+            self.zec_use_hardware(*index);
         }
-        false
     }
 
     /// The label and source of the drop-down item of `source` on the current network (`address`

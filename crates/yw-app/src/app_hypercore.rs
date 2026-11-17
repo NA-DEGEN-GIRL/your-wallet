@@ -606,8 +606,13 @@ impl App {
         };
         self.hypercore.form.amount_text.clone_from(&amount);
         self.hypercore.form.dirty_ms = None;
-        self.controls
-            .set_text(crate::ui::screens_hypercore::ids::AMOUNT_EDIT, &amount);
+        // 2026-11-18 (S3 C7): the write is `Effect::SetField`, applied at once inside this
+        // borrow (before, `controls.set_text`), so the edit's `EN_CHANGE` is still not seen and
+        // `dirty_ms` stays cleared.
+        self.emit(yw_engine::effect::Effect::SetField {
+            field: yw_engine::form::EditField::HcAmount,
+            text: amount,
+        });
         self.hc_validate();
         self.refresh();
     }

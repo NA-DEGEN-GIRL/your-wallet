@@ -16,7 +16,8 @@
 //! reads a check box's state into its press (the box is never read again by the handler).
 //! S3 C2: S13's sites and `WalletConnect` panel. S3 C3: the block-explorer card and links and
 //! the AI-explanation settings. S3 C4: the address book. S3 C5: S22 and T-WAIT-STALLED, S23,
-//! the imported-key screens and the `rpc.json` import card. S3 C6: the recovery phrases.
+//! the imported-key screens and the `rpc.json` import card. S3 C6: the recovery phrases. S3 C7:
+//! `HyperCore` and Zcash.
 
 use yw_core::secret::Zeroizing;
 use yw_engine::cmd::Press;
@@ -24,8 +25,9 @@ use yw_engine::form::{CredField, CredUnits, EditField, PressInput};
 
 use crate::ui::main_window::ControlSet;
 use crate::ui::{
-    screens, screens_book, screens_evm, screens_explorer, screens_keys, screens_links, screens_llm,
-    screens_mnemonics, screens_received, screens_reset, screens_sites, screens_walletconnect,
+    screens, screens_book, screens_evm, screens_explorer, screens_hypercore, screens_keys,
+    screens_links, screens_llm, screens_mnemonics, screens_received, screens_reset, screens_sites,
+    screens_walletconnect, screens_zec,
 };
 use crate::{app_hidden, app_rpc_import, app_sidecar};
 
@@ -56,6 +58,8 @@ pub fn press_of(id: u16, controls: &ControlSet) -> Press {
             .or_else(|| screens_keys::ids::press_of(other).map(Press::Keys))
             .or_else(|| app_rpc_import::ids::press_of(other).map(Press::RpcImport))
             .or_else(|| screens_mnemonics::ids::press_of(other).map(Press::Mn))
+            .or_else(|| screens_hypercore::ids::press_of(other).map(Press::Hc))
+            .or_else(|| screens_zec::ids::press_of(other).map(Press::Zec))
             .unwrap_or(Press::Legacy(other)),
     }
 }
@@ -81,6 +85,8 @@ pub const fn id_of(press: Press) -> u16 {
         Press::Keys(press) => screens_keys::ids::id_of(press),
         Press::RpcImport(press) => app_rpc_import::ids::id_of(press),
         Press::Mn(press) => screens_mnemonics::ids::id_of(press),
+        Press::Hc(press) => screens_hypercore::ids::id_of(press),
+        Press::Zec(press) => screens_zec::ids::id_of(press),
         Press::Legacy(id) => id,
     }
 }
@@ -645,6 +651,59 @@ mod tests {
             press_of(ids::PICK_BASE, &controls),
             Press::Mn(MnPress::Pick(Row(0)))
         );
+    }
+
+    /// S3 C7: `HyperCore` and Zcash claim exactly the ids `on_hc_command` and `on_zec_command`
+    /// claimed (every fixed id but the edits, which are fields, and each row range whole); the
+    /// two `새로고침` read their received history first and Zcash's two `주소 복사` are gated
+    /// (table test (4) checks every id).
+    #[test]
+    fn c7_hc_and_zec_map_their_ids() {
+        use yw_engine::cmd::{HcPress, Row, ZecPress};
+        use yw_engine::received::RecvChain;
+        let controls = ControlSet::default();
+        for id in 13_450..13_500 {
+            let hc = matches!(id, 13_450..=13_457 | 13_462..=13_468 | 13_470..=13_490)
+                || (13_492..=13_495).contains(&id);
+            assert_eq!(matches!(press_of(id, &controls), Press::Hc(_)), hc, "{id}");
+        }
+        assert!(screens_hypercore::ids::FIXED.iter().all(|&id| {
+            use screens_hypercore::ids;
+            matches!(press_of(id, &controls), Press::Hc(_))
+                != [ids::TO_EDIT, ids::AMOUNT_EDIT, ids::API_EDIT].contains(&id)
+        }));
+        for id in 8_000..8_200 {
+            let zec = matches!(id, 8_000..=8_006 | 8_009..=8_035 | 8_040..=8_047 | 8_050..=8_052
+                | 8_060..=8_075 | 8_100..=8_179);
+            assert_eq!(
+                matches!(press_of(id, &controls), Press::Zec(_)),
+                zec,
+                "{id}"
+            );
+        }
+        assert_eq!(
+            press_of(screens_hypercore::ids::ASSET_BASE + 19, &controls),
+            Press::Hc(HcPress::Asset(Row(19)))
+        );
+        assert_eq!(
+            press_of(screens_zec::ids::ACTIVITY_COPY_BASE + 79, &controls),
+            Press::Zec(ZecPress::ActivityCopy(Row(79)))
+        );
+        assert_eq!(
+            press_of(screens_zec::ids::HW_BASE, &controls),
+            Press::Zec(ZecPress::Hw(Row(0)))
+        );
+        assert_eq!(
+            Press::Hc(HcPress::Refresh).refresh_chain(),
+            Some(RecvChain::Hc)
+        );
+        assert_eq!(
+            Press::Zec(ZecPress::Refresh).refresh_chain(),
+            Some(RecvChain::Zec)
+        );
+        assert!(Press::Zec(ZecPress::CopyAddress).is_receive_gated());
+        assert!(Press::Zec(ZecPress::CardCopy).is_receive_gated());
+        assert!(!Press::Zec(ZecPress::ResultCopy).is_receive_gated());
     }
 
     /// Table test (3): the 65 edit ids are 58 plain fields and 7 credential fields, each a

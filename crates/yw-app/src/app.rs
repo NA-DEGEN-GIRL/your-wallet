@@ -3937,6 +3937,8 @@ impl App {
                 // `false`: a row naming no phrase, which nothing else claims (as before).
                 let _ = self.on_mn(press);
             }
+            Press::Hc(press) => self.on_hc(press),
+            Press::Zec(press) => self.on_zec(press),
             Press::Back | Press::Enter | Press::Legacy(_) => {}
         }
     }
@@ -4005,7 +4007,8 @@ impl App {
             // edit), and the census asserts `form_mismatch == 0` at every observation, so a test
             // that notifies without typing fails there. (S3 C4: the address book's
             // `BookAddress`, `BookLabel`, `BookPromptLabel` likewise; S3 C5: S22's
-            // `ResetPhrase`; S3 C6: the removal warning's `MnRemoveTyped`.)
+            // `ResetPhrase`; S3 C6: the removal warning's `MnRemoveTyped`; S3 C7: `HcTo`,
+            // `HcAmount`, `HcApi`, `ZecSendTo`, `ZecSendAmount`.)
             #[cfg(debug_assertions)]
             self.note_form_mismatch(field);
             self.edit_chain(id);
@@ -4019,6 +4022,8 @@ impl App {
             || self.on_reset_edit(field, text)
             || self.on_book_edit(field, text)
             || self.on_mn_edit(field, text)
+            || self.on_hc_edit(field, text)
+            || self.on_zec_edit(field, text)
             || self.on_explorer_edit(field, text)
             || self.on_llm_edit(field, text)
     }
@@ -4028,9 +4033,7 @@ impl App {
     fn edit_chain(&mut self, id: u16) {
         if !self.on_sol_edit_change(id)
             && !self.on_btc_edit_change(id)
-            && !self.on_zec_edit_change(id)
             && !self.on_yk_edit_change(id)
-            && !self.on_hc_edit_change(id)
         {
             self.on_edit_change(id);
         }
@@ -4370,10 +4373,8 @@ impl App {
                 self.received_observe(other);
                 if !self.on_sol_command(other)
                     && !self.on_btc_command(other)
-                    && !self.on_zec_command(other)
                     && !self.on_evm_command(other)
                     && !self.on_yk_command(other)
-                    && !self.on_hc_command(other)
                 {
                     self.on_indexed_command(other);
                 }

@@ -4,6 +4,8 @@
 use yw_core::approval::escape_untrusted;
 use yw_core::hypercore::{HcNetwork, WITHDRAW_FEE_USDC};
 use yw_core::lang::Lang;
+use yw_engine::cmd::{HcPress, Row};
+use yw_engine::form::EditField;
 
 use crate::app::App;
 use crate::app_hypercore::{HcAsset, HcFormKind};
@@ -88,6 +90,68 @@ pub mod ids {
         EXPAND,
         COLLAPSE,
     ];
+
+    /// The press control `id` stands for (2026-11-18, S3 C7: `ui::cmd_table`). `None` when `id`
+    /// is not one of this module's presses (the three edits are fields). The asset radio range
+    /// is claimed whole ([`ASSET_SPAN`] rows), as the ids reached the handler before.
+    #[must_use]
+    pub fn press_of(id: u16) -> Option<yw_engine::cmd::HcPress> {
+        use yw_engine::cmd::{HcPress, Row};
+        Some(match id {
+            REFRESH => HcPress::Refresh,
+            OPEN_SEND => HcPress::OpenSend,
+            OPEN_CLASS => HcPress::OpenClass,
+            OPEN_WITHDRAW => HcPress::OpenWithdraw,
+            OPEN_TO_EVM => HcPress::OpenToEvm,
+            OPEN_FROM_EVM => HcPress::OpenFromEvm,
+            NET_MAINNET => HcPress::NetMainnet,
+            NET_TESTNET => HcPress::NetTestnet,
+            ACK => HcPress::Ack,
+            REVIEW => HcPress::Review,
+            CANCEL => HcPress::Cancel,
+            DIR_TO_PERP => HcPress::DirToPerp,
+            DIR_TO_SPOT => HcPress::DirToSpot,
+            ASSET_PERP => HcPress::AssetPerp,
+            MAX => HcPress::Max,
+            ENABLED => HcPress::Enabled,
+            API_SAVE => HcPress::ApiSave,
+            API_DEFAULT => HcPress::ApiDefault,
+            EXPAND => HcPress::Expand,
+            COLLAPSE => HcPress::Collapse,
+            _ => HcPress::Asset(Row(id
+                .checked_sub(ASSET_BASE)
+                .filter(|row| *row < ASSET_SPAN)?)),
+        })
+    }
+
+    /// The control id of `press` (the inverse of [`press_of`]).
+    #[must_use]
+    pub const fn id_of(press: yw_engine::cmd::HcPress) -> u16 {
+        use yw_engine::cmd::{HcPress, Row};
+        match press {
+            HcPress::Refresh => REFRESH,
+            HcPress::OpenSend => OPEN_SEND,
+            HcPress::OpenClass => OPEN_CLASS,
+            HcPress::OpenWithdraw => OPEN_WITHDRAW,
+            HcPress::OpenToEvm => OPEN_TO_EVM,
+            HcPress::OpenFromEvm => OPEN_FROM_EVM,
+            HcPress::NetMainnet => NET_MAINNET,
+            HcPress::NetTestnet => NET_TESTNET,
+            HcPress::Ack => ACK,
+            HcPress::Review => REVIEW,
+            HcPress::Cancel => CANCEL,
+            HcPress::DirToPerp => DIR_TO_PERP,
+            HcPress::DirToSpot => DIR_TO_SPOT,
+            HcPress::AssetPerp => ASSET_PERP,
+            HcPress::Max => MAX,
+            HcPress::Enabled => ENABLED,
+            HcPress::ApiSave => API_SAVE,
+            HcPress::ApiDefault => API_DEFAULT,
+            HcPress::Expand => EXPAND,
+            HcPress::Collapse => COLLAPSE,
+            HcPress::Asset(Row(row)) => ASSET_BASE.wrapping_add(row),
+        }
+    }
 }
 
 /// The EVM chains next to which the `HyperCore` card is always unfolded: `HyperEVM` mainnet and
@@ -665,24 +729,25 @@ impl App {
         items.push(Item::CardEnd);
     }
 
-    /// `HyperCore` commands; `false` when `id` is not one of them.
-    pub fn on_hc_command(&mut self, id: u16) -> bool {
-        match id {
-            ids::REFRESH => {
+    /// `HyperCore` presses (2026-11-18, S3 C7: an `HcPress`; before, the control id, and
+    /// `false` for an id that was not one of them).
+    pub(crate) fn on_hc(&mut self, press: HcPress) {
+        match press {
+            HcPress::Refresh => {
                 self.hc_refresh();
                 if matches!(self.screen, crate::app::Screen::HyperCore) {
                     self.hc_validate();
                 }
                 self.refresh();
             }
-            ids::MAX => self.hc_fill_max(),
-            ids::OPEN_SEND => self.hc_open_form(HcFormKind::Send),
-            ids::OPEN_CLASS => self.hc_open_form(HcFormKind::ClassTransfer),
-            ids::OPEN_WITHDRAW => self.hc_open_form(HcFormKind::Withdraw),
-            ids::OPEN_TO_EVM => self.hc_open_form(HcFormKind::ToEvm),
-            ids::OPEN_FROM_EVM => self.hc_open_from_evm(),
-            ids::NET_MAINNET | ids::NET_TESTNET => {
-                let network = if id == ids::NET_MAINNET {
+            HcPress::Max => self.hc_fill_max(),
+            HcPress::OpenSend => self.hc_open_form(HcFormKind::Send),
+            HcPress::OpenClass => self.hc_open_form(HcFormKind::ClassTransfer),
+            HcPress::OpenWithdraw => self.hc_open_form(HcFormKind::Withdraw),
+            HcPress::OpenToEvm => self.hc_open_form(HcFormKind::ToEvm),
+            HcPress::OpenFromEvm => self.hc_open_from_evm(),
+            HcPress::NetMainnet | HcPress::NetTestnet => {
+                let network = if press == HcPress::NetMainnet {
                     HcNetwork::Mainnet
                 } else {
                     HcNetwork::Testnet
@@ -696,31 +761,31 @@ impl App {
                     self.hc_refresh();
                 }
             }
-            ids::ACK => self.hc_toggle_ack(),
-            ids::REVIEW => self.hc_review(),
-            ids::CANCEL => self.return_to(crate::app::Screen::Main),
-            ids::EXPAND | ids::COLLAPSE => {
-                self.hypercore.unfolded = id == ids::EXPAND;
+            HcPress::Ack => self.hc_toggle_ack(),
+            HcPress::Review => self.hc_review(),
+            HcPress::Cancel => self.return_to(crate::app::Screen::Main),
+            HcPress::Expand | HcPress::Collapse => {
+                self.hypercore.unfolded = press == HcPress::Expand;
                 self.refresh();
             }
-            ids::DIR_TO_PERP | ids::DIR_TO_SPOT => {
-                self.hypercore.form.to_perp = id == ids::DIR_TO_PERP;
+            HcPress::DirToPerp | HcPress::DirToSpot => {
+                self.hypercore.form.to_perp = press == HcPress::DirToPerp;
                 self.hc_validate();
                 self.refresh();
             }
-            ids::ASSET_PERP => {
+            HcPress::AssetPerp => {
                 self.hypercore.form.asset = HcAsset::PerpUsdc;
                 self.hc_validate();
                 self.refresh();
             }
-            ids::ENABLED => {
+            HcPress::Enabled => {
                 let mut settings = self.settings.clone();
                 settings.hypercore.enabled = !settings.hypercore.enabled;
                 self.save_settings(settings, "hypercore");
                 self.hc_refresh();
             }
-            ids::API_SAVE | ids::API_DEFAULT => {
-                let text = if id == ids::API_DEFAULT {
+            HcPress::ApiSave | HcPress::ApiDefault => {
+                let text = if press == HcPress::ApiDefault {
                     yw_core::hypercore::TESTNET_API.to_owned()
                 } else {
                     self.hypercore
@@ -741,13 +806,7 @@ impl App {
                     self.refresh();
                 }
             }
-            other => {
-                let Some(row) = other
-                    .checked_sub(ids::ASSET_BASE)
-                    .filter(|row| *row < ids::ASSET_SPAN)
-                else {
-                    return false;
-                };
+            HcPress::Asset(Row(row)) => {
                 let row = usize::from(row);
                 let index = match self.hypercore.form.kind {
                     HcFormKind::ToEvm => self.hc_evm_tokens().get(row).map(|token| token.index),
@@ -760,26 +819,26 @@ impl App {
                 }
             }
         }
-        true
     }
 
-    /// `EN_CHANGE` of a `HyperCore` edit; `false` when `id` is not one of them.
-    pub fn on_hc_edit_change(&mut self, id: u16) -> bool {
-        if ![ids::TO_EDIT, ids::AMOUNT_EDIT, ids::API_EDIT].contains(&id) {
+    /// `EN_CHANGE` of a `HyperCore` edit (2026-11-18, S3 C7: the field and its text from
+    /// `Cmd::Edit`; before, the control id and a read of the edit here); `false` when `field`
+    /// is not one of them.
+    pub(crate) fn on_hc_edit(&mut self, field: EditField, text: &str) -> bool {
+        if ![EditField::HcTo, EditField::HcAmount, EditField::HcApi].contains(&field) {
             return false;
         }
-        let text = self.controls.text(id, 512).unwrap_or_default();
         let now = yw_win::time::monotonic_ms();
-        match id {
-            ids::TO_EDIT => {
-                self.hypercore.form.to_text = text;
+        match field {
+            EditField::HcTo => {
+                text.clone_into(&mut self.hypercore.form.to_text);
                 self.hypercore.form.dirty_ms = Some(now);
             }
-            ids::AMOUNT_EDIT => {
-                self.hypercore.form.amount_text = text;
+            EditField::HcAmount => {
+                text.clone_into(&mut self.hypercore.form.amount_text);
                 self.hypercore.form.dirty_ms = Some(now);
             }
-            _ => self.hypercore.api_text = Some(text),
+            _ => self.hypercore.api_text = Some(text.to_owned()),
         }
         true
     }
