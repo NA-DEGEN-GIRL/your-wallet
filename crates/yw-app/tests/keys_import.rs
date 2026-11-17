@@ -5,6 +5,8 @@
 //! send pipeline — preview over the scripted RPC, approval, signing in the key worker with the
 //! `Pending` record on disk. Public test vectors only (RFC 8032 test 1, spec/07 §17.1, BIP84).
 
+// The shared helpers live with the engine tests (2026-11-17, spec/15 §11.4 S2 T1).
+#[path = "../../yw-engine/tests/common/mod.rs"]
 mod common;
 
 use std::path::PathBuf;

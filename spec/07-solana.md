@@ -769,7 +769,7 @@ SHA-256(tx 267B)  7ecb80478f954ea1a3625bf0ee1776ff0991c3f8e6ceb33c6f7b198f3929f7
 - 수신자: §12.1 각 행, lookalike(앞 3자·뒤 3자·둘 다·2자는 미해당). `flags` 비트 ↔ §13.3 경고 등급, 고위험이 있을 때만 `ack_required`.
 - 승인 모델: SOL `ApprovalRequest` digest 입력 1비트 변경 → digest 변경([03] §11.4 방식), 표에 없는 `FieldKey` 없음.
 - 클러스터: 제네시스 불일치 → 미리보기·서명·재개 모두 중단.
-- SPL(v1.1, yw-app 가짜 RPC `tests/sol_spl_flow.rs`): 미리보기 호출 순서(수신자 dataSlice → mint·from_ata·to_ata 전체 데이터 → rent0·rent165 → 우선 수수료(from·from_ata·to_ata)), RPC decimals 거짓(9) → `RpcAnomaly`이지만 메시지 decimals 6 유지, mint 없음·다른 owner·81바이트 → `RpcAnomaly`, `NoTokenAccount`·`InsufficientTokens`·`SolReserve` 경계(정확히 필요액 통과, 1 lamport 부족 차단), 기존 ATA는 rent 0, 동결(`TokenAccountFrozen`·`RecipientTokenAccountUnusable`), from_ata 자리의 다른 소유자 계정 → `RpcAnomaly`, rent165 범위, SPL 보내기 최대 = 토큰 전액(RPC 수수료가 낮아도 허용), 잔액은 허용 목록 ATA만 조회(모르는 토큰은 조회조차 안 함, ATA 자리의 다른 mint → `Invalid`), 브로드캐스트 `InstructionError`[3] → 코드 5, 스캔에서 토큰만 있는 계정은 빈 계정이 아님. 저널: T_SPL 본문 526 B 왕복, `cluster` 바꿈·decimals 바이트 변조 → `NotAllowlisted`, 금액 변조 → 서명 오류, 활동 `asset` = mint. 키 작업자 경로(`tests/sol_journal_worker.rs`) devnet USDC 서명 → 437 B, 526 B 본문, `FailedOnChain` → 활동.
+- SPL(v1.1, 가짜 RPC yw-engine `tests/sol_spl_flow.rs`, 2026-11-17 S2 T1 전 yw-app): 미리보기 호출 순서(수신자 dataSlice → mint·from_ata·to_ata 전체 데이터 → rent0·rent165 → 우선 수수료(from·from_ata·to_ata)), RPC decimals 거짓(9) → `RpcAnomaly`이지만 메시지 decimals 6 유지, mint 없음·다른 owner·81바이트 → `RpcAnomaly`, `NoTokenAccount`·`InsufficientTokens`·`SolReserve` 경계(정확히 필요액 통과, 1 lamport 부족 차단), 기존 ATA는 rent 0, 동결(`TokenAccountFrozen`·`RecipientTokenAccountUnusable`), from_ata 자리의 다른 소유자 계정 → `RpcAnomaly`, rent165 범위, SPL 보내기 최대 = 토큰 전액(RPC 수수료가 낮아도 허용), 잔액은 허용 목록 ATA만 조회(모르는 토큰은 조회조차 안 함, ATA 자리의 다른 mint → `Invalid`), 브로드캐스트 `InstructionError`[3] → 코드 5, 스캔에서 토큰만 있는 계정은 빈 계정이 아님. 저널: T_SPL 본문 526 B 왕복, `cluster` 바꿈·decimals 바이트 변조 → `NotAllowlisted`, 금액 변조 → 서명 오류, 활동 `asset` = mint. 키 작업자 경로(`tests/sol_journal_worker.rs`) devnet USDC 서명 → 437 B, 526 B 본문, `FailedOnChain` → 활동.
 
 ### 17.5 퍼징(cargo-fuzz, [09] §2.4)
 
@@ -813,7 +813,7 @@ dApp은 Solana 계정을 **연결**하고 **메시지에 서명**(Sign-In-With-S
 - 결과: `{ publicKey, signature, signedMessage }` — `signedMessage`는 앱이 만든 바이트 그대로.
 
 ### 19.5 시험 (자동)
-RFC 8032 벡터 1·2를 메시지 서명기로 재현, 레거시·v0·서명된 거래 탐지(뒤 바이트가 붙은 것 포함)와 오탐 없음, 버전 접두 `0x80`–`0xfe` 전부 차단·UTF-8 텍스트 허용, 오프체인 두 형식·깨진 머리글, SIWS 도메인 포트 규칙, SIWS 텍스트 레이아웃(전 필드·최소·설명 없음)·파서 왕복·W01–W08, 승인 수준(텍스트 Info, 이진 High, 거래 Blocked). fuzz-lite `fuzz_lite_sol_msgsign`(`crates/yw-core/tests/msgsign_fuzz_lite.rs`: 탐지·`signable`·승인 창 차단 일치, 뒤 바이트로 차단이 풀리지 않음, 오프체인 파서, SIWS 파서 왕복)과 `fuzz_lite_base64`, 매개변수·grant 파서는 `fuzz_lite_chain_params`(yw-app). 디스패처·확장 shim 시험은 [05] §10, 수동 체크리스트는 `docs/acceptance/msgsign-20261031.md`.
+RFC 8032 벡터 1·2를 메시지 서명기로 재현, 레거시·v0·서명된 거래 탐지(뒤 바이트가 붙은 것 포함)와 오탐 없음, 버전 접두 `0x80`–`0xfe` 전부 차단·UTF-8 텍스트 허용, 오프체인 두 형식·깨진 머리글, SIWS 도메인 포트 규칙, SIWS 텍스트 레이아웃(전 필드·최소·설명 없음)·파서 왕복·W01–W08, 승인 수준(텍스트 Info, 이진 High, 거래 Blocked). fuzz-lite `fuzz_lite_sol_msgsign`(`crates/yw-core/tests/msgsign_fuzz_lite.rs`: 탐지·`signable`·승인 창 차단 일치, 뒤 바이트로 차단이 풀리지 않음, 오프체인 파서, SIWS 파서 왕복)과 `fuzz_lite_base64`, 매개변수·grant 파서는 `fuzz_lite_chain_params`(yw-engine `tests/`, 2026-11-17 S2 T1 전 yw-app). 디스패처·확장 shim 시험은 [05] §10, 수동 체크리스트는 `docs/acceptance/msgsign-20261031.md`.
 
 ## 20. dApp 거래 서명 (2026-11-12, D25·D27·D38)
 

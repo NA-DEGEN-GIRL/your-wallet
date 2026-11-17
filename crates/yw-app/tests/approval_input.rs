@@ -1,6 +1,6 @@
 //! AP-2, the Win32 half (spec/04 §3.4, §3.9): which approval-window messages are stray presses.
 //! The interaction half (a stray press restarts the arm delay and counts for the press gap) is
-//! `ap2_right_middle_x_and_non_client_clicks_restart_the_arm_delay` in
+//! `ap2_right_middle_x_and_non_client_clicks_restart_the_arm_delay` in yw-engine
 //! `tests/approval_interaction.rs`. 2026-11-17 (spec/15 §11.4 S2): split from that test when
 //! `stray_press` moved to `ui::approval_input`; this file stays with the Windows shell.
 

@@ -4,6 +4,8 @@
 //! (§4.4, X-18), receipt tracking and reconcile (§4.5, §5.4), chain checks with first-use pins and
 //! mismatches (EVM-V16, X-21–X-24) and the user-chain probe.
 
+// The shared helpers live with the engine tests (2026-11-17, spec/15 §11.4 S2 T1).
+#[path = "../../yw-engine/tests/common/mod.rs"]
 mod common;
 
 use std::time::Duration;
@@ -41,7 +43,12 @@ const BESU_SENDER: &str = "0xFE3B557E8Fb62b89F4916B721be55cEb828dBd73";
 
 macro_rules! fixture {
     ($name:literal) => {
-        include_bytes!(concat!("fixtures/eth_simulateV1/", $name, ".response.json")).to_vec()
+        include_bytes!(concat!(
+            "../../yw-engine/tests/fixtures/eth_simulateV1/",
+            $name,
+            ".response.json"
+        ))
+        .to_vec()
     };
 }
 

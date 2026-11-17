@@ -28,7 +28,7 @@ Status (spec.md line 3): implemented, manual verification pending.
 | `crates/yw-win` | The **only** crate allowed `unsafe` (windows-sys wrappers): clipboard, cng, dpapi, file, http (the WinHTTP `Client` only, which implements yw-platform `http::Transport`; its types are in yw-platform), image (GDI+), input, mem (`LockedBox`, wipe), pcsc, pipe, process, security, session, time, ui, ws (`WebSocket`, which implements yw-platform `ws::WsLink`) |
 | `crates/yw-app` | The wallet binary (`windows_subsystem = "windows"`). `browser/` (a facade over yw-engine's `browser` plus the named-pipe server `server.rs`), `explain_transport.rs` (the `WinHTTP` transport of the LLM explanation), `system_clock.rs` (the Windows `Clock`), `store.rs` (`FileStorage`, `LockedSlotBox`, `WinKeyPlatform`), `ui/` (main window, `approval_input.rs` (Win32 stray presses), `screens_*.rs`, `secret/`, `tour.rs`; `ui::{approval, interaction, approval_text, text_layout, secure_field, badge, approval_view}` are re-exports of yw-engine), `app_*.rs` feature glue (`app.rs` seals `apikeys.dpapi` with DPAPI), `log_file.rs` (the rotating log file sink), `card_pcsc.rs` (the PC/SC transport and CNG cipher of `yubikey`). `errors`, `text`, `network`, `logging`, `yubikey`, `wallet_files` and (E2) `settings`, `apikeys`, `explorer`, `token_view`, `meta`, `hypercore`, `explain`, `rpc`, `flow`, `sol`, `btc`, `zec`, `received` and (E3) `events`, `walletconnect`, `workers` are re-exports of yw-engine (2026-11-17) |
 | `crates/yw-host` | Chrome native-messaging host: a secret-less relay between stdio and the named pipe. Auto-starts yw-app when `browserAutoLaunch` is on |
-| `crates/*/tests/` | Integration tests. Test placement rules: spec/09 §2.1. `#[ignore]` tests include fuzz-lite, live probes, the screenshot tour and the render harness |
+| `crates/*/tests/` | Integration tests. Test placement rules: spec/09 §2.1. `#[ignore]` tests include fuzz-lite, live probes, the screenshot tour and the render harness. Engine-only tests live in `crates/yw-engine/tests/` with the shared helpers (`common/`, `btc_support/`) and `fixtures/`; yw-app tests that need `App`, `store`, yw-win or live endpoints include those helpers with `#[path = "../../yw-engine/tests/common/mod.rs"]` |
 | `extension/` | MV3 extension, **zero npm deps**. `manifest.json`. `src/provider-main.js` (MAIN world: EIP-1193, EIP-6963, Wallet Standard, Phantom/UniSat/Xverse shims). `src/shared.js` (the JS method table `METHOD_ROUTE`, JSON limits, origin rules). `src/content*.js`, `src/background*.js` (router, rate limits, deadlines). `src/popup*.js` + `popup/` (compatibility-mode popup with its own 한국어/English toggle) |
 | `extension/native-host/` | Golden JSON contracts shared by JS and Rust tests (`v1-methods`, `v1-request`, `v1-response-result`, `v1-event`, `v1-cancel`, `v1-limits`, `v1-origins`, `pipe-hello(-ack)` …), the host manifest template and `validate-manifest.mjs` |
 | `extension/test-dapp/` | Manual E2E page (`serve.mjs` binds 127.0.0.1:5173 and [::1]:5173 only) |
@@ -186,7 +186,7 @@ These are not style preferences. Breaking one is a failed change.
   - `crates/yw-core/src/evm/chain.rs`: chain id const, fixed genesis hash, `builtin_chains()` (array length), tip floor, default caps, token registry, known contracts.
   - `crates/yw-core/src/evm/fee.rs` if the chain has extra fees (Base's OP-stack L1 fee, spec/03 §3.4a).
   - `crates/yw-engine/src/network.rs`, `crates/yw-engine/src/settings.rs` (QuickNode subdomain, Alchemy label, explorer), and in yw-app `ui/screens_evm.rs`, `ui/screens.rs`, `ui/command_ids.rs`.
-  - Tests: `crates/yw-core/tests/evm_consts.rs`, `crates/yw-app/tests/{apikeys,settings,browser_dispatch,evm_flow}.rs`.
+  - Tests: `crates/yw-core/tests/evm_consts.rs`, `crates/yw-engine/tests/{apikeys,settings,browser_dispatch}.rs`, `crates/yw-app/tests/evm_flow.rs`.
   - `scripts/dev-rpc-setup.ps1` and `scripts/probe-rpc.mjs` network tables.
   - Specs: spec/03 §1.1 (+ §1.1a sources, §1.2 registry), `spec.md` D14, spec/04.
   - The count of built-in chains appears in prose. spec/05 §3.1, §4.3 and §5 still say "내장 3개"; fix them if you touch them.
@@ -198,10 +198,10 @@ Change all of these in one commit:
 3. `crates/yw-core/src/policy/method.rs`: `Method` and `ALL: [Self; N]`.
 4. Param validation:
    - EVM: `crates/yw-engine/src/browser/params.rs`
-   - Solana and Bitcoin: `crates/yw-engine/src/browser/chain_params.rs` (+ `tests/fuzz_lite_chain_params.rs`)
+   - Solana and Bitcoin: `crates/yw-engine/src/browser/chain_params.rs` (+ `crates/yw-engine/tests/fuzz_lite_chain_params.rs`)
 5. Dispatch: `crates/yw-engine/src/browser/dispatch.rs`, then the yw-app feature glue (`app_browser.rs`, `app_chain_sites.rs`, `app_sol_dapp.rs`, …).
 6. Page API, if the page-facing surface changes: `extension/src/provider-main.js` + `extension/tests/provider-main.test.mjs`.
-7. Tests: `extension/tests/shared.test.mjs`, `crates/yw-core/tests/policy.rs`, `crates/yw-app/tests/{browser_dispatch,browser_params,browser_chain_dispatch}.rs`.
+7. Tests: `extension/tests/shared.test.mjs`, `crates/yw-core/tests/policy.rs`, `crates/yw-engine/tests/{browser_dispatch,browser_params,browser_chain_dispatch}.rs`.
 8. Specs: spec/05 §3.1, §3.4 and §3.6 (keep the method count correct), plus §2.5 and §2.13 if the page API changed. Use existing `ProviderError` variants (spec/05 §5). A new variant changes the canonical error table.
 9. WalletConnect, for an EVM method it should serve: `crates/yw-engine/src/walletconnect/engine.rs` `WALLET_METHODS` + spec/13 §5.
 
@@ -214,7 +214,7 @@ The Solana dApp transaction series (`git log --grep=sol-dapp`, steps 1–8) is a
 - **Drawing is in yw-app**: `app_approval.rs` paints the content model `crates/yw-engine/src/approval/view.rs` (re-exported as `ui::approval_view`). The queue and display re-checks (`crates/yw-engine/src/approval/mod.rs`) and line breaking (`approval/layout.rs`) are in yw-engine.
 - **Interaction rules are in `crates/yw-engine/src/approval/interaction.rs`** (the Win32 message → `OtherPress` mapping in yw-app `ui/approval_input.rs`). Do not weaken them (§6).
 - Changing the field set changes the display digest. Update goldens on purpose:
-  - `crates/yw-app/tests/approval_golden.rs`, `approval_interaction.rs`, `approval_sim_states.rs`
+  - `crates/yw-engine/tests/approval_golden.rs`, `approval_interaction.rs`, `approval_sim_states.rs`
   - spec/09 §3.13
 - Specs: spec/03 §11 (fields, digest) and spec/04 §3 (layout, interaction).
 - Check visually with the render harness or the screenshot tour.

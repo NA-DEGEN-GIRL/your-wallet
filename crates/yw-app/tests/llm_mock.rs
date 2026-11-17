@@ -4,6 +4,8 @@
 //! ignored), E10 (status-only simulation inputs built by the real preparation pipeline) and
 //! injection attempts in the model output. No external network.
 
+// The shared helpers live with the engine tests (2026-11-17, spec/15 §11.4 S2 T1).
+#[path = "../../yw-engine/tests/common/mod.rs"]
 mod common;
 
 #[cfg(test)]

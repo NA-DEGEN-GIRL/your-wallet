@@ -1,7 +1,8 @@
 //! Render harness for the approval window A01 with a fixture dry run (no network, no key, no
 //! signing): the real `App` approval path opens the window for a Sepolia send, the preparation job
 //! it emits is run through `flow::evm::prepare` against a fixture transport (chain, nonce, fees,
-//! gas and an `eth_simulateV1` response from `tests/fixtures/eth_simulateV1/`), and the result goes
+//! gas and an `eth_simulateV1` response from yw-engine's `tests/fixtures/eth_simulateV1/`, where
+//! the fixtures moved on 2026-11-17, spec/15 §11.4 S2 T1), and the result goes
 //! back through `App::on_simulating` / `App::on_prepared` as the RPC worker would deliver it. The
 //! window then runs its own message loop for `YW_SMOKE_HOLD_MS` (default 3,000 ms) so it can be
 //! captured from outside, and the test checks that it painted a Ready view.
@@ -165,7 +166,7 @@ impl Handler for QuitOnTimer {
 
 pub(crate) fn fixture(name: &str) -> Vec<u8> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/eth_simulateV1")
+        .join("../yw-engine/tests/fixtures/eth_simulateV1")
         .join(format!("{name}.response.json"));
     std::fs::read(path).unwrap_or_default()
 }

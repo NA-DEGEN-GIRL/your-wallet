@@ -505,7 +505,7 @@ test("personal-data fixture allowlist is per file and per exact value", async ()
     // Allowlisted pairs pass only at their own path.
     await writeRepositoryFile(repositoryRoot, "crates/yw-win/src/process.rs", profilePath("x"));
     await writeRepositoryFile(repositoryRoot, "scripts/install.test.mjs", profilePath("Test", "\\\\"));
-    await writeRepositoryFile(repositoryRoot, "crates/yw-app/tests/settings.rs", emailAddress("u", "mempool.space"));
+    await writeRepositoryFile(repositoryRoot, "crates/yw-engine/tests/settings.rs", emailAddress("u", "mempool.space"));
     assert.deepEqual(await scanRepository(repositoryRoot), []);
 
     // A different value at an allowlisted path is still reported.
@@ -513,9 +513,9 @@ test("personal-data fixture allowlist is per file and per exact value", async ()
     assert.deepEqual(await scanRepository(repositoryRoot), rules("windows-profile-path"));
     await writeRepositoryFile(repositoryRoot, "crates/yw-win/src/process.rs", profilePath("x"));
 
-    await writeRepositoryFile(repositoryRoot, "crates/yw-app/tests/settings.rs", emailAddress("v", "mempool.space"));
+    await writeRepositoryFile(repositoryRoot, "crates/yw-engine/tests/settings.rs", emailAddress("v", "mempool.space"));
     assert.deepEqual(await scanRepository(repositoryRoot), rules("email-address"));
-    await rm(join(repositoryRoot, "crates", "yw-app", "tests", "settings.rs"));
+    await rm(join(repositoryRoot, "crates", "yw-engine", "tests", "settings.rs"));
 
     // The same value at another path is reported.
     await writeRepositoryFile(repositoryRoot, "crates/yw-win/src/other.rs", profilePath("x"));

@@ -8,6 +8,8 @@
 //! (`inflight_blocks_new_send`, `rbf_allowed_while_inflight`), `network_mismatch_blocks` (no
 //! BTC request), and no BTC request while locked except the Esplora settings `테스트`.
 
+// The shared helpers live with the engine tests (2026-11-17, spec/15 §11.4 S2 T1).
+#[path = "../../yw-engine/tests/btc_support/mod.rs"]
 mod btc_support;
 
 use std::collections::VecDeque;

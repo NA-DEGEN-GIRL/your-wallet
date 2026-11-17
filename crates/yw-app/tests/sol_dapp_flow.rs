@@ -13,6 +13,8 @@
 //! the answer: the transaction id, or -32603 after a deterministic preflight error; an expired
 //! blockhash stops it at pre-sign.
 
+// The shared helpers live with the engine tests (2026-11-17, spec/15 §11.4 S2 T1).
+#[path = "../../yw-engine/tests/common/mod.rs"]
 mod common;
 
 use std::path::PathBuf;

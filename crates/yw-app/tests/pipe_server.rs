@@ -5,6 +5,8 @@
 //! Pipe names are `\\.\pipe\YourWallet.test.<pid>.<n>` (spec/09 §2.1). Every read has a 10 s
 //! watchdog, so a missing frame fails the test instead of hanging it.
 
+// The shared helpers live with the engine tests (2026-11-17, spec/15 §11.4 S2 T1).
+#[path = "../../yw-engine/tests/common/mod.rs"]
 mod common;
 
 use std::io::Write as _;

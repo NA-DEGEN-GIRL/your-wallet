@@ -38,7 +38,8 @@ const EMAIL_ALLOWED_EXACT = new Set([["noreply", "anthropic.com"].join("@")]);
 const EMAIL_RESERVED_DOMAIN = /(?:^|\.)example\.(?:com|org)$|\.example$/u;
 const EMAIL_FIXTURES = [
   // URL userinfo 거부 테스트(`https://u@<실제 호스트>/api`): 사람 주소가 아니라 userinfo 형태 픽스처
-  { path: "crates/yw-app/tests/settings.rs", local: "u", domain: "mempool.space" },
+  // (2026-11-17, [15] §11.4 S2 T1: 이 테스트 파일은 crates/yw-app/tests에서 crates/yw-engine/tests로 옮겼다.)
+  { path: "crates/yw-engine/tests/settings.rs", local: "u", domain: "mempool.space" },
   { path: "spec/04-app-ui.md", local: "u", domain: "mempool.space" },
 ];
 

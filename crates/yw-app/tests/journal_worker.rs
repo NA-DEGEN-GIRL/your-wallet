@@ -4,6 +4,8 @@
 //! before the summary is returned, survives a reload, follows Broadcast → Included → Finalized
 //! and moves to meta `activity` after the 7-day retention.
 
+// The shared helpers live with the engine tests (2026-11-17, spec/15 §11.4 S2 T1).
+#[path = "../../yw-engine/tests/common/mod.rs"]
 mod common;
 
 use std::path::PathBuf;

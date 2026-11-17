@@ -4,6 +4,8 @@
 //! the indexer's `TxStatus` agrees, confirmed when it says so, kept otherwise — and Blockbook
 //! `details=txs` (`bb-rest` `pageSize`, `bb-rpc` `size`) gives the same rows as Esplora.
 
+// The shared helpers live with the engine tests (2026-11-17, spec/15 §11.4 S2 T1).
+#[path = "../../yw-engine/tests/btc_support/mod.rs"]
 mod btc_support;
 
 use btc_support::{
