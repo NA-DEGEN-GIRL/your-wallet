@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex};
 use yw_app::events::{KeyOutcome, SignTicket, SolDappSigned, SolDappSignedSummary, SolSignFailure};
 use yw_app::meta;
 use yw_app::store::{FileStorage, LockedSlotBox};
+use yw_app::system_clock::SystemClock;
 use yw_app::workers::journal::{JournalState, SolDappSignJob, SolSignTimes};
 use yw_core::approval::{ApprovalId, ApprovalStore, Approved};
 use yw_core::bip32::path::AccountIndex;
@@ -152,6 +153,7 @@ fn pending_record_first_then_already_signed_then_activity() -> TestResult {
         Box::new(approve(&intent()?)?),
         times(now),
         false,
+        &SystemClock,
     );
     let Some(KeyOutcome::SignedSol(Ok(summary))) = outcomes.first() else {
         return Err("not signed".into());
@@ -182,6 +184,7 @@ fn pending_record_first_then_already_signed_then_activity() -> TestResult {
         Box::new(approve(&intent()?)?),
         times(now),
         false,
+        &SystemClock,
     );
     assert!(matches!(
         again.first(),
@@ -197,6 +200,7 @@ fn pending_record_first_then_already_signed_then_activity() -> TestResult {
         Box::new(approve(&other)?),
         times(yw_win::time::monotonic_ms()),
         false,
+        &SystemClock,
     );
     assert!(matches!(
         second.first(),
@@ -215,6 +219,7 @@ fn pending_record_first_then_already_signed_then_activity() -> TestResult {
         Box::new(approve(&mainnet)?),
         times(now.saturating_sub(20_001)),
         false,
+        &SystemClock,
     );
     assert!(matches!(
         late.first(),
@@ -334,6 +339,7 @@ fn pending_write_reported_failed_but_on_disk_is_tracked() -> TestResult {
         Box::new(approve(&intent()?)?),
         times(yw_win::time::monotonic_ms()),
         false,
+        &SystemClock,
     );
     assert!(matches!(
         failed.first(),
@@ -349,6 +355,7 @@ fn pending_write_reported_failed_but_on_disk_is_tracked() -> TestResult {
         Box::new(approve(&landed_anyway)?),
         times(yw_win::time::monotonic_ms()),
         false,
+        &SystemClock,
     );
     let Some(KeyOutcome::SignedSol(Ok(summary))) = outcomes.first() else {
         return Err(format!("not tracked: {:?}", outcomes.first()).into());
@@ -400,6 +407,7 @@ fn spl_transfer_is_journaled_and_its_activity_names_the_mint() -> TestResult {
         Box::new(approve(&spl)?),
         times(yw_win::time::monotonic_ms()),
         false,
+        &SystemClock,
     );
     let Some(KeyOutcome::SignedSol(Ok(summary))) = outcomes.first() else {
         return Err("not signed".into());
@@ -550,6 +558,7 @@ fn sign_dapp(
         Box::new(approve_send(tag, id)?),
         dapp_job(u64::from(id), consumed_at_ms),
         false,
+        &SystemClock,
     ))
 }
 
@@ -573,6 +582,7 @@ fn dapp_send_is_journaled_first_reused_and_capped() -> TestResult {
         Box::new(approve(&intent()?)?),
         times(yw_win::time::monotonic_ms()),
         false,
+        &SystemClock,
     );
     assert!(matches!(
         transfer.first(),
@@ -779,6 +789,7 @@ fn dapp_send_is_capped_journal_wide() -> TestResult {
                 Box::new(approve_send_as(signer, tag, id)?),
                 dapp_job(u64::from(id), yw_win::time::monotonic_ms()),
                 false,
+                &SystemClock,
             );
             assert!(
                 matches!(

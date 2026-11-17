@@ -1,5 +1,6 @@
 //! `VaultStorage` over yw-win file functions (spec/02 §6.2) and the `LockedSlot` adapter over
-//! `yw_win::mem::LockedBox<320>` (spec/02 §7.3, D10).
+//! `yw_win::mem::LockedBox<320>` (spec/02 §7.3, D10); together with the reset moves they are the
+//! key worker's Windows platform [`WinKeyPlatform`] (2026-11-17).
 //!
 //! Commit sequence (spec/02 §6.2, pattern from
 //! `archive/spec-v2.4:demo/sepolia-wallet/src/backend.rs:6148-6403`): (1) read and CAS-check the
@@ -23,7 +24,8 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use yw_core::error::StorageError;
+use yw_core::error::{StorageError, VaultError};
+use yw_core::lang::Lang;
 use yw_core::vault::{FileKind, LockedSlot, SLOT_LEN, VaultStorage, peek_generation};
 use yw_win::WinError;
 use yw_win::file::{
@@ -32,19 +34,13 @@ use yw_win::file::{
 };
 use yw_win::mem::LockedBox;
 
+pub use crate::wallet_files::file_name;
+use crate::wallet_files::{ResetError, ResetReport, is_set_aside, with_suffix};
+use crate::workers::key::platform::{KeyDeps, KeyPlatform, WalletStore};
+
 const VAULT_MAX: u64 = 65_536;
 const META_MAX: u64 = 8 * 1_048_576 + 80;
 const JOURNAL_MAX: u64 = 16 * 1_048_576 + 80;
-
-/// File name of a kind.
-#[must_use]
-pub const fn file_name(kind: FileKind) -> &'static str {
-    match kind {
-        FileKind::Vault => "vault.ywv",
-        FileKind::Meta => "meta.ywm",
-        FileKind::Journal => "journal.ywj",
-    }
-}
 
 const fn max_size(kind: FileKind) -> u64 {
     match kind {
@@ -54,25 +50,8 @@ const fn max_size(kind: FileKind) -> u64 {
     }
 }
 
-fn with_suffix(dir: &Path, kind: FileKind, suffix: &str) -> PathBuf {
-    dir.join(format!("{}{suffix}", file_name(kind)))
-}
-
 /// Temporary file of [`VaultStorage::replace_copy`] (removed as an orphan on open).
 const COPY_TMP: &str = ".copy.tmp";
-
-/// Whether `name` is a set-aside copy of `kind` (`<name>.corrupt-<digits>` or
-/// `<name>.prev.corrupt-<digits>`, spec/02 §6.3), so a name from the folder listing never
-/// reaches another file.
-fn is_set_aside(kind: FileKind, name: &str) -> bool {
-    let Some(rest) = name.strip_prefix(file_name(kind)) else {
-        return false;
-    };
-    let digits = rest
-        .strip_prefix(".corrupt-")
-        .or_else(|| rest.strip_prefix(".prev.corrupt-"));
-    digits.is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
-}
 
 /// Whether `<name>.prev` exists in `dir` (a metadata check only, no read; the UI uses it to offer
 /// `.prev` recovery, spec/04 §2.5 S07/S09).
@@ -406,6 +385,84 @@ impl LockedSlot for LockedSlotBox {
 
     fn bytes_mut(&mut self) -> &mut [u8; SLOT_LEN] {
         self.0.expose_mut()
+    }
+}
+
+impl WalletStore for FileStorage {
+    fn any_present(&self, kind: FileKind) -> bool {
+        Self::any_present(self, kind)
+    }
+
+    fn restore_prev(
+        &mut self,
+        kind: FileKind,
+        now_unix: u64,
+    ) -> Result<Option<String>, StorageError> {
+        Self::restore_prev(self, kind, now_unix)
+    }
+
+    fn quarantine_main(
+        &mut self,
+        kind: FileKind,
+        now_unix: u64,
+    ) -> Result<Option<String>, StorageError> {
+        Self::quarantine_main(self, kind, now_unix)
+    }
+
+    fn set_prev_aside(
+        &mut self,
+        kind: FileKind,
+        now_unix: u64,
+    ) -> Result<Option<String>, StorageError> {
+        Self::set_prev_aside(self, kind, now_unix)
+    }
+}
+
+/// The key worker's Windows platform (2026-11-17, spec/15 §11.4 S2): [`FileStorage`], the
+/// `VirtualLock` slot [`LockedSlotBox`] and [`reset::move_wallet_files`] — the same calls the
+/// worker made itself before.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct WinKeyPlatform;
+
+impl WinKeyPlatform {
+    /// The production set: this platform, `SystemClock` (`GetTickCount64`, the App's time base)
+    /// and the PC/SC readers.
+    #[must_use]
+    pub fn deps() -> KeyDeps {
+        KeyDeps {
+            platform: Box::new(Self),
+            clock: Box::new(crate::system_clock::SystemClock),
+            cards: Box::new(crate::card_pcsc::PcscSource),
+        }
+    }
+
+    /// A slot on a locked page (E-VLT-007 when it cannot be allocated or locked).
+    ///
+    /// # Errors
+    ///
+    /// [`VaultError::OutOfMemory`].
+    pub fn locked_slot() -> Result<LockedSlotBox, VaultError> {
+        LockedSlotBox::new().map_err(|_| VaultError::OutOfMemory)
+    }
+}
+
+impl KeyPlatform for WinKeyPlatform {
+    fn open_storage(&self, dir: &Path) -> Result<Box<dyn WalletStore>, StorageError> {
+        FileStorage::open(dir).map(|storage| Box::new(storage) as Box<dyn WalletStore>)
+    }
+
+    fn new_slot(&self) -> Result<Box<dyn LockedSlot>, VaultError> {
+        Self::locked_slot().map(|slot| Box::new(slot) as Box<dyn LockedSlot>)
+    }
+
+    fn move_wallet_files(
+        &self,
+        dir: &Path,
+        stamp: &str,
+        include_settings: bool,
+        lang: Lang,
+    ) -> Result<ResetReport, ResetError> {
+        reset::move_wallet_files(dir, stamp, include_settings, lang)
     }
 }
 

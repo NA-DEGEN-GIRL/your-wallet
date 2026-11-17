@@ -13,7 +13,8 @@ use std::sync::Arc;
 use common::{Answer, FakeRpc, url};
 use yw_app::events::{ImportedAccount, KeyJob, KeyOutcome, RevealWhat};
 use yw_app::sol::flow::{PreviewJob, PreviewOutcome, SolEndpoint, preview};
-use yw_app::store::{FileStorage, LockedSlotBox};
+use yw_app::store::{FileStorage, LockedSlotBox, WinKeyPlatform};
+use yw_app::system_clock::SystemClock;
 use yw_app::workers::journal::btc::BtcMetaDone;
 use yw_app::workers::journal::{JournalState, SolSignTimes};
 use yw_app::workers::key::KeyWorker;
@@ -105,7 +106,7 @@ fn imported(outcome: KeyOutcome) -> TestResult<ImportedAccount> {
 )]
 fn key_only_vault_through_the_key_worker() -> TestResult {
     let dir = temp_dir("keyonly")?;
-    let mut worker = KeyWorker::new(&dir);
+    let mut worker = KeyWorker::new(&dir, WinKeyPlatform::deps());
     assert!(matches!(
         one(&mut worker, KeyJob::Load)?,
         KeyOutcome::Loaded {
@@ -444,6 +445,7 @@ fn imported_sol_key_prepares_and_signs_a_devnet_transfer() -> TestResult {
             now_unix_ms: 1_800_000_000_000,
         },
         false,
+        &SystemClock,
     );
     let Some(KeyOutcome::SignedSol(Ok(summary))) = outcomes.first() else {
         return Err("not signed".into());

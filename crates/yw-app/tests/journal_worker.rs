@@ -320,7 +320,7 @@ fn lock_cancelled_signing_jobs_report_their_tickets() -> TestResult {
     let dir = temp_dir("lock-tickets")?;
     let results: std::sync::Mutex<Vec<KeyResult>> = std::sync::Mutex::new(Vec::new());
     yw_app::workers::key::run(
-        yw_app::workers::key::KeyWorker::new(&dir),
+        yw_app::workers::key::KeyWorker::new(&dir, yw_app::store::WinKeyPlatform::deps()),
         &queue,
         &|result| {
             if let Ok(mut list) = results.lock() {

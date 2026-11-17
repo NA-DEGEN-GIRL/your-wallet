@@ -28,39 +28,9 @@ use yw_win::file::{
 const WALLET_BASES: [&str; 3] = ["vault.ywv", "meta.ywm", "journal.ywj"];
 /// Names moved only with `include_settings`.
 const SETTINGS_BASES: [&str; 2] = ["settings.json", "apikeys.dpapi"];
-/// The note written into the new folder.
-pub const README_NAME: &str = "README-reset.txt";
-/// Folder name prefix.
-pub const FOLDER_PREFIX: &str = "reset-";
 
-/// What a reset moved.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ResetReport {
-    /// The new folder (`None`: nothing was there to move).
-    pub folder: Option<PathBuf>,
-    /// File names moved, in order.
-    pub moved: Vec<String>,
-    /// `settings.json` or `apikeys.dpapi` was among them.
-    pub settings_moved: bool,
-}
-
-/// Why a reset stopped.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ResetError {
-    /// The data folder could not be listed or the new folder could not be created.
-    Folder(StorageError),
-    /// A move failed; the files in `moved` are already in `folder`.
-    Move {
-        /// The new folder.
-        folder: PathBuf,
-        /// Moved before the failure.
-        moved: Vec<String>,
-        /// The file that did not move.
-        failed: String,
-        /// The error.
-        error: StorageError,
-    },
-}
+/// The reset names and report (2026-11-17: defined in `wallet_files`, spec/15 §11.4 S2).
+pub use crate::wallet_files::{FOLDER_PREFIX, README_NAME, ResetError, ResetReport};
 
 fn storage(error: FileError) -> StorageError {
     match error {

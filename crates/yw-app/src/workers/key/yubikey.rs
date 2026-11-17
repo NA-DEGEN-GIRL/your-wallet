@@ -16,7 +16,7 @@ use yw_core::yubikey::piv::ManagementState;
 use yw_core::yubikey::plan::{PlanError, PlannedSlot};
 use yw_core::yubikey::record::HwKeyRecord;
 
-use super::{KeyWorker, ascii, new_slot, now_unix, passphrase, password, reconcile_hardware};
+use super::{KeyWorker, ascii, now_unix, passphrase, password, reconcile_hardware};
 
 pub mod connect;
 pub mod manage;
@@ -570,7 +570,10 @@ impl KeyWorker {
             .into_iter()
             .filter(|card_use| !kept.contains(card_use))
             .collect();
-        !lost.is_empty() && self.journal.hardware_busy(vault, &lost, now_unix())
+        !lost.is_empty()
+            && self
+                .journal
+                .hardware_busy(vault, &lost, now_unix(&*self.clock))
     }
 
     /// `Counters`: the PIN tries left of card `serial` or of the inserted card holding a key.
@@ -860,11 +863,12 @@ impl KeyWorker {
                 .as_ref()
                 .ok_or(YubiKeyJobError::Vault(VaultError::InvalidState))?;
             let password = password(held).map_err(YubiKeyJobError::Vault)?;
-            let slot = new_slot().map_err(YubiKeyJobError::Vault)?;
+            let slot = self.platform.new_slot().map_err(YubiKeyJobError::Vault)?;
             let lang = self.lang;
+            let now = now_unix(&*self.clock);
             let vault = self.vault().map_err(YubiKeyJobError::Vault)?;
             let id = vault
-                .create_with_hardware(&password, enrolled.record.clone(), slot, now_unix())
+                .create_with_hardware(&password, enrolled.record.clone(), slot, now)
                 .map_err(YubiKeyJobError::Vault)?;
             write_yubikey_meta(vault, lang).map_err(YubiKeyJobError::Vault)?;
             // The wallet exists: the password is not needed again. The words stay held for a
@@ -876,9 +880,10 @@ impl KeyWorker {
             logging::info("key", "yubikey.wallet_created", &[]);
             id
         } else {
+            let now = now_unix(&*self.clock);
             self.vault()
                 .map_err(YubiKeyJobError::Vault)?
-                .add_hardware_key(enrolled.record.clone(), now_unix())
+                .add_hardware_key(enrolled.record.clone(), now)
                 .map_err(YubiKeyJobError::Vault)?
         };
         logging::info(

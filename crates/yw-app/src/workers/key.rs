@@ -15,6 +15,7 @@ use yw_core::secret::{SecretString, Zeroizing};
 use yw_core::slip10::SolKeySource;
 use yw_core::sol::SolAddress;
 use yw_core::vault::{EvmKeySource, FileKind, ImportedKeys, RecordId, Vault, VaultStatus};
+use yw_platform::Clock;
 
 use crate::errors::ErrorCode;
 use crate::events::{
@@ -23,10 +24,11 @@ use crate::events::{
 };
 use crate::logging::{self, Field};
 use crate::meta::{self, Account, EvmAccountPref, Meta, RawAccount, SolRawAccount, Tab};
-use crate::store::{FileStorage, LockedSlotBox};
 use crate::workers::journal::{JournalState, SolSignTimes};
+use platform::{KeyDeps, KeyPlatform};
 
 pub mod mnemonics;
+pub mod platform;
 pub mod yubikey;
 
 struct PendingImport {
@@ -57,6 +59,12 @@ pub struct KeyWorker {
     journal: JournalState,
     /// The inserted `YubiKey`s (PC/SC; the emulator in tests, spec/10 §12.1).
     cards: Box<dyn crate::yubikey::CardSource>,
+    /// Wallet file storage, the resident slot and the reset moves (2026-11-17, spec/15 §11.4
+    /// S2; Windows: `store::WinKeyPlatform`).
+    platform: Box<dyn KeyPlatform>,
+    /// Wall time for vault records; monotonic time for the Solana sign-time check (Windows:
+    /// `system_clock::SystemClock`, the App's time base).
+    clock: Box<dyn Clock>,
     /// The last `LoadMeta` could not read `meta.ywm` (most importantly: it opened with this
     /// wallet's key but this build cannot read it, a newer build's format): `SaveMeta` is refused
     /// until a load succeeds, so a document the UI queued before is never sealed over it (the
@@ -73,10 +81,10 @@ impl core::fmt::Debug for KeyWorker {
     }
 }
 
-fn now_unix() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs())
+/// Wall-clock Unix seconds of vault records (2026-11-17: from the injected clock; before,
+/// `SystemTime` here).
+fn now_unix(clock: &dyn Clock) -> u64 {
+    clock.now_unix_ms() / 1_000
 }
 
 /// Whether this build can read a sidecar's plaintext: meta parses, the journal decodes. The
@@ -92,12 +100,6 @@ pub fn sidecar_readable(kind: FileKind, plaintext: &[u8]) -> bool {
 
 fn ascii(bytes: &[u8]) -> Result<&str, KeyError> {
     core::str::from_utf8(bytes).map_err(|_| KeyError::MnemonicFormat)
-}
-
-fn new_slot() -> Result<Box<LockedSlotBox>, VaultError> {
-    LockedSlotBox::new()
-        .map(Box::new)
-        .map_err(|_| VaultError::OutOfMemory)
 }
 
 fn password(bytes: &[u8]) -> Result<VaultPassword, VaultError> {
@@ -603,9 +605,16 @@ fn wallet_accounts(
 }
 
 impl KeyWorker {
-    /// A worker for the data folder `dir`.
+    /// A worker for the data folder `dir` with its platform services (2026-11-17, spec/15
+    /// §11.4 S2: `main.rs` passes `store::WinKeyPlatform`, `SystemClock` and `PcscSource`;
+    /// before, the worker chose them itself).
     #[must_use]
-    pub fn new(dir: &Path) -> Self {
+    pub fn new(dir: &Path, deps: KeyDeps) -> Self {
+        let KeyDeps {
+            platform,
+            clock,
+            cards,
+        } = deps;
         Self {
             dir: dir.to_path_buf(),
             vault: None,
@@ -616,7 +625,9 @@ impl KeyWorker {
             connect_password: None,
             pending_mnemonic: None,
             journal: JournalState::default(),
-            cards: Box::new(crate::card_pcsc::PcscSource),
+            cards,
+            platform,
+            clock,
             meta_unreadable: false,
             lang: yw_core::lang::Lang::Ko,
         }
@@ -687,7 +698,7 @@ impl KeyWorker {
         )
         .map_err(YubiKeyJobError::Card)?;
         let id = vault
-            .add_hardware_key(enrolled.record.clone(), now_unix())
+            .add_hardware_key(enrolled.record.clone(), now_unix(&*self.clock))
             .map_err(YubiKeyJobError::Vault)?;
         logging::info(
             "key",
@@ -888,6 +899,7 @@ impl KeyWorker {
             approved,
             times,
             alt,
+            &*self.clock,
             &mut |_, approved, consumed_at_ms, blockhash, now_ms| {
                 let mut failure = None;
                 let mut card = |message: &[u8]| {
@@ -962,6 +974,7 @@ impl KeyWorker {
             approved,
             job,
             alt,
+            &*self.clock,
             &mut |_, approved, consumed_at_ms, now_ms, check| {
                 let mut failure = None;
                 let mut card = |message: &[u8]| {
@@ -1244,7 +1257,7 @@ impl KeyWorker {
     }
 
     fn load(&mut self) -> KeyOutcome {
-        let storage = match FileStorage::open(&self.dir) {
+        let storage = match self.platform.open_storage(&self.dir) {
             Ok(storage) => storage,
             Err(error) => {
                 return KeyOutcome::Status(Err(VaultError::Storage(error)));
@@ -1252,7 +1265,7 @@ impl KeyWorker {
         };
         let leftover =
             storage.any_present(FileKind::Meta) || storage.any_present(FileKind::Journal);
-        match Vault::load(Box::new(storage)) {
+        match Vault::load(storage) {
             Ok(vault) => {
                 let status = vault.status();
                 self.vault = Some(vault);
@@ -1288,10 +1301,11 @@ impl KeyWorker {
         password_bytes: &[u8],
     ) -> Result<(SecretString, yw_core::evm::address::Address), VaultError> {
         let password = password(password_bytes)?;
-        let slot = new_slot()?;
+        let slot = self.platform.new_slot()?;
         let lang = self.lang;
+        let now = now_unix(&*self.clock);
         let vault = self.vault()?;
-        let phrase = vault.create_wallet(&password, slot, now_unix())?;
+        let phrase = vault.create_wallet(&password, slot, now)?;
         let address = vault.evm_address(EvmKeySource::Derived(AccountIndex::ZERO))?;
         Self::write_default_meta(vault, &address, lang);
         Ok((phrase, address))
@@ -1330,10 +1344,11 @@ impl KeyWorker {
             .map(|bytes| passphrase(bytes))
             .transpose()
             .map_err(VaultError::Key)?;
-        let slot = new_slot()?;
+        let slot = self.platform.new_slot()?;
         let lang = self.lang;
+        let now = now_unix(&*self.clock);
         let vault = self.vault()?;
-        vault.import_mnemonic(&password, phrase, passphrase, slot, now_unix())?;
+        vault.import_mnemonic(&password, phrase, passphrase, slot, now)?;
         let address = vault.evm_address(EvmKeySource::Derived(AccountIndex::ZERO))?;
         Self::write_default_meta(vault, &address, lang);
         Ok(())
@@ -1385,10 +1400,11 @@ impl KeyWorker {
             .ok_or(VaultError::InvalidState)?;
         let password = password(&held)?;
         let key = parse_key(pending.spec, &pending.key)?;
-        let slot = new_slot()?;
+        let slot = self.platform.new_slot()?;
         let lang = self.lang;
+        let now = now_unix(&*self.clock);
         let vault = self.vault()?;
-        vault.create_with_key(&password, key, slot, now_unix())?;
+        vault.create_with_key(&password, key, slot, now)?;
         Self::write_key_only_meta(vault, pending.spec.chain(), lang)
     }
 
@@ -1430,7 +1446,8 @@ impl KeyWorker {
                 return Err(VaultError::DuplicateKey);
             }
         }
-        let id = self.vault()?.import_key(key, now_unix())?;
+        let now = now_unix(&*self.clock);
+        let id = self.vault()?.import_key(key, now)?;
         Ok(match preview {
             ImportPreview::Evm(address) => ImportedAccount::Evm(id, address),
             ImportPreview::Sol(address) => ImportedAccount::Sol(id, address),
@@ -1449,7 +1466,7 @@ impl KeyWorker {
         if let Some(vault) = self.vault.as_ref()
             && (self
                 .journal
-                .btc_imported_busy(vault, *id.as_bytes(), now_unix())
+                .btc_imported_busy(vault, *id.as_bytes(), now_unix(&*self.clock))
                 || self.journal.zec_imported_busy(vault, id))
         {
             return vec![KeyOutcome::ImportedKeyBusy(id)];
@@ -1470,10 +1487,10 @@ impl KeyWorker {
     /// `.prev` recovery; when it moved `vault.ywv` aside, the quarantined file name is reported
     /// first so the UI can name it (spec/04 §2.15, docs/recovery-guide.ko.md).
     fn recover_from_prev(&mut self, bytes: &[u8]) -> Vec<KeyOutcome> {
-        let now = now_unix();
+        let now = now_unix(&*self.clock);
         let result = (|| {
             let password = password(bytes).map_err(|_| VaultError::UnlockFailed)?;
-            let slot = new_slot()?;
+            let slot = self.platform.new_slot()?;
             self.vault()?.recover_from_prev(&password, slot, now)
         })();
         let mut out = Vec::with_capacity(2);
@@ -1693,8 +1710,8 @@ impl KeyWorker {
             );
             SidecarRefusal::Failed(ErrorCode::Vlt003)
         };
-        let mut storage = FileStorage::open(&self.dir).map_err(failed)?;
-        let now = now_unix();
+        let mut storage = self.platform.open_storage(&self.dir).map_err(failed)?;
+        let now = now_unix(&*self.clock);
         let moves = if use_prev {
             SidecarMoves {
                 quarantined: storage.restore_prev(kind, now).map_err(failed)?,
@@ -1711,7 +1728,7 @@ impl KeyWorker {
             "key",
             "sidecar.resolved",
             &[
-                ("file", Field::Word(crate::store::file_name(kind))),
+                ("file", Field::Word(crate::wallet_files::file_name(kind))),
                 (
                     "prev",
                     Field::Word(if use_prev { "used" } else { "set_aside" }),
@@ -1735,7 +1752,7 @@ impl KeyWorker {
             KeyJob::LoadJournal => match self.vault.as_mut() {
                 Some(vault) => match self.journal.load(vault) {
                     Ok(view) => {
-                        let mut out = self.journal.btc_startup(vault, now_unix(), alt);
+                        let mut out = self.journal.btc_startup(vault, now_unix(&*self.clock), alt);
                         if !out
                             .iter()
                             .any(|outcome| matches!(outcome, KeyOutcome::Journal(Ok(_))))
@@ -1819,6 +1836,7 @@ impl KeyWorker {
                         now_unix_ms,
                     },
                     alt,
+                    &*self.clock,
                 ),
                 None => vec![KeyOutcome::SignedSol(Err(
                     crate::events::SolSignFailure::JournalWrite(VaultError::InvalidState),
@@ -1849,7 +1867,10 @@ impl KeyWorker {
                     origin,
                 };
                 match self.vault.as_mut() {
-                    Some(vault) => self.journal.sign_sol_dapp(vault, approved, job, alt),
+                    Some(vault) => {
+                        self.journal
+                            .sign_sol_dapp(vault, approved, job, alt, &*self.clock)
+                    }
                     None => vec![KeyOutcome::SignedSolDapp(crate::events::SolDappSigned {
                         ticket,
                         result: Err(crate::events::SolSignFailure::JournalWrite(
@@ -1974,7 +1995,7 @@ impl KeyWorker {
             KeyJob::CommitImport => KeyOutcome::Imported(self.commit_import()),
             KeyJob::Unlock { password: bytes } => KeyOutcome::Status((|| {
                 let password = password(&bytes).map_err(|_| VaultError::UnlockFailed)?;
-                let slot = new_slot()?;
+                let slot = self.platform.new_slot()?;
                 self.vault()?.unlock(&password, slot)
             })()),
             KeyJob::EnterPassphrase { passphrase: bytes } => KeyOutcome::Status((|| {
@@ -2014,8 +2035,9 @@ impl KeyWorker {
             KeyJob::ImportPrivateKey { hex } => KeyOutcome::RawKeyImported((|| {
                 let text = core::str::from_utf8(&hex)
                     .map_err(|_| VaultError::Key(KeyError::InvalidPrivateKey))?;
+                let now = now_unix(&*self.clock);
                 let vault = self.vault()?;
-                let id = vault.import_evm_private_key(text, now_unix())?;
+                let id = vault.import_evm_private_key(text, now)?;
                 let address = vault.evm_address(EvmKeySource::Raw(id))?;
                 Ok((id, address))
             })()),
@@ -2118,7 +2140,7 @@ impl KeyWorker {
                 // thread, so nothing writes them while (or after) they move.
                 self.lock();
                 self.vault = None;
-                KeyOutcome::WalletReset(crate::store::reset::move_wallet_files(
+                KeyOutcome::WalletReset(self.platform.move_wallet_files(
                     &self.dir,
                     &stamp,
                     include_settings,
@@ -2269,6 +2291,7 @@ pub(crate) mod tests {
 
     use yw_core::btc::BtcNetwork;
 
+    use super::platform::{KeyDeps, testing};
     use super::{KeyWorker, run};
     use crate::events::{
         KeyJob, KeyJobError, KeyOutcome, KeyQueue, KeyResult, LockSignal, accept_result,
@@ -2276,11 +2299,7 @@ pub(crate) mod tests {
 
     #[test]
     fn lk2_lock_jumps_the_queue_and_cancels_pending_jobs() {
-        let dir = std::env::temp_dir().join(format!(
-            "yw-app-lk2-{}-{}",
-            std::process::id(),
-            yw_win::time::monotonic_ms()
-        ));
+        let dir = testing::temp_name("lk2");
         let queue = KeyQueue::default();
         queue.push(1, KeyJob::Load);
         queue.push(1, KeyJob::BackupChallenge);
@@ -2290,7 +2309,7 @@ pub(crate) mod tests {
         let signal = LockSignal::default();
         let before = signal.count();
         run(
-            KeyWorker::new(&dir),
+            KeyWorker::new(&dir, testing::deps()),
             &queue,
             &|result| results.lock().unwrap().push(result),
             &signal,
@@ -2354,15 +2373,12 @@ pub(crate) mod tests {
         // The public `abandon`×11 `about` test mnemonic, built at run time (the privacy scan
         // allows word sequences only in `tests.rs` files).
         let about = format!("{} about", ["abandon"; 11].join(" "));
-        let dir = std::env::temp_dir().join(format!(
-            "yw-app-yubikey-{}-{}",
-            std::process::id(),
-            yw_win::time::monotonic_ms()
-        ));
+        let dir = testing::temp_name("yubikey");
         let cards = Arc::new(Mutex::new(vec![MockCard::new(7_700_001)]));
-        let mut worker = KeyWorker::new(&dir).with_card_source(Box::new(MockSource {
-            cards: Arc::clone(&cards),
-        }));
+        let mut worker =
+            KeyWorker::new(&dir, testing::deps()).with_card_source(Box::new(MockSource {
+                cards: Arc::clone(&cards),
+            }));
         let bytes = |text: &str| Zeroizing::new(text.as_bytes().to_vec());
         worker.handle(KeyJob::Load);
         worker.handle(KeyJob::PreviewImport {
@@ -2585,8 +2601,12 @@ pub(crate) mod tests {
     /// A worker on the `abandon` wallet with two emulated `YubiKey`s enrolled: card A (SIG = EVM 0,
     /// AUT = EVM 1, PIV 82 = Solana 0) and card B (SIG = BIP84 mainnet address 0); both cards stay
     /// inserted. Returns the worker, the cards (A, B), the folder and the reconciled meta.
+    /// `deps` gives the storage and the clock (its card source is replaced by the emulator):
+    /// `testing::deps()` here, `store::WinKeyPlatform::deps()` in the app tests, which read the
+    /// files themselves.
     pub(crate) fn yubikey_wallet(
         tag: &str,
+        deps: KeyDeps,
     ) -> (
         KeyWorker,
         std::sync::Arc<std::sync::Mutex<Vec<yw_core::yubikey::mock::MockCard>>>,
@@ -2601,14 +2621,10 @@ pub(crate) mod tests {
         use yw_core::yubikey::plan::{CardSlot, KeyRole, PgpKey, PivSlot, PlannedSlot};
 
         let about = format!("{} about", ["abandon"; 11].join(" "));
-        let dir = std::env::temp_dir().join(format!(
-            "yw-app-yk-{tag}-{}-{}",
-            std::process::id(),
-            yw_win::time::monotonic_ms()
-        ));
+        let dir = testing::temp_name(&format!("yk-{tag}"));
         let cards = Arc::new(Mutex::new(vec![MockCard::new(7_700_011)]));
         let mut worker =
-            KeyWorker::new(&dir).with_card_source(Box::new(crate::yubikey::MockSource {
+            KeyWorker::new(&dir, deps).with_card_source(Box::new(crate::yubikey::MockSource {
                 cards: Arc::clone(&cards),
             }));
         let bytes = |text: &str| Zeroizing::new(text.as_bytes().to_vec());
@@ -2807,7 +2823,7 @@ pub(crate) mod tests {
         use yw_core::btc::account::HwBtcKey;
         use yw_core::btc::{BtcAccountId, ScriptType};
 
-        let (mut worker, _cards, dir, loaded) = yubikey_wallet("reconcile");
+        let (mut worker, _cards, dir, loaded) = yubikey_wallet("reconcile", testing::deps());
         assert!(loaded.mismatch, "the first load adds the accounts");
         let meta = &loaded.meta;
         let evm: Vec<(u32, &str, &str)> = meta
@@ -2937,7 +2953,7 @@ pub(crate) mod tests {
         const FROM: &str = "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk";
         const TO: &str = "Hh8QwFUA6MtVu1qAoq12ucvFHNwCcVTV7hpWjeY1Hztb";
         const NOW: u64 = 1_800_000_000_000;
-        let (mut worker, cards, dir, _) = yubikey_wallet("sol");
+        let (mut worker, cards, dir, _) = yubikey_wallet("sol", testing::deps());
         let approve = |id: u8| {
             let intent = SolTransferIntent {
                 id: [id; 16],
@@ -2981,7 +2997,7 @@ pub(crate) mod tests {
         let sign = |worker: &mut KeyWorker, id: u8, pin: &str| {
             worker.handle(KeyJob::SignSolCard {
                 approved: Box::new(approve(id)),
-                consumed_at_ms: yw_win::time::monotonic_ms(),
+                consumed_at_ms: testing::MONO_MS,
                 blockhash: [7; 32],
                 last_valid_block_height: 1_150,
                 now_unix_ms: NOW,
@@ -3065,7 +3081,7 @@ pub(crate) mod tests {
             out
         };
         let txs: Vec<Vec<u8>> = (1..=3).map(tx).collect();
-        let (mut worker, cards, dir, _) = yubikey_wallet("sol-dapp");
+        let (mut worker, cards, dir, _) = yubikey_wallet("sol-dapp", testing::deps());
         let approve = |id: u8, source: SolKeySource| {
             let item = SolTxItemFacts {
                 tables: Ok((0, Vec::new())),
@@ -3129,18 +3145,7 @@ pub(crate) mod tests {
                 .map(|card| card.touches)
                 .sum::<u32>()
         };
-        // The card step asks for one touch per transaction (E3).
-        let kind = crate::app_card::CardJobKind::ChainMessage;
-        let touch_count = crate::app_card::approval_touches(&approve(9, hardware), &kind);
-        assert_eq!(touch_count, 3);
-        assert_eq!(
-            crate::app_card::touch_text(&kind, touch_count),
-            "YubiKey가 깜박일 때마다 터치하세요 — 모두 3회(거래마다 한 번)"
-        );
-        assert_eq!(
-            crate::app_card::touch_text(&kind, 1),
-            crate::app_card::T_CARD_TOUCH
-        );
+        // The card step's touch prompt (one per transaction, E3) is tested in `app_card`.
         let refused = card(&mut worker, 1, "000000");
         assert!(matches!(refused[0], KeyOutcome::CardUnused(_, _)));
         assert!(matches!(
@@ -3217,7 +3222,7 @@ pub(crate) mod tests {
         tx.extend_from_slice(&[5; 32]);
         tx.extend_from_slice(&[7; 32]);
         tx.extend_from_slice(&[1, 1, 1, 0, 1, 9]);
-        let (mut worker, cards, dir, _) = yubikey_wallet("sol-dapp-send");
+        let (mut worker, cards, dir, _) = yubikey_wallet("sol-dapp-send", testing::deps());
         let approve = |id: u8| {
             let request = SolTxRequest {
                 id: yw_core::approval::ApprovalId([id; 16]),
@@ -3253,7 +3258,7 @@ pub(crate) mod tests {
         let job = |id: u8, pin: &str| KeyJob::SignSolDappCard {
             ticket: SignTicket(u64::from(id)),
             approved: approve(id),
-            consumed_at_ms: yw_win::time::monotonic_ms(),
+            consumed_at_ms: testing::MONO_MS,
             now_unix_ms: NOW,
             last_valid_block_height: 1_150,
             check: PreSignCheck {
@@ -3354,7 +3359,7 @@ pub(crate) mod tests {
 
         const TIP: u32 = 900_000;
         const NOW_MS: u64 = 1_793_074_713_000;
-        let (mut worker, cards, dir, _) = yubikey_wallet("btc");
+        let (mut worker, cards, dir, _) = yubikey_wallet("btc", testing::deps());
         let id = BtcAccountId::Hardware {
             key: HwBtcKey::Address(0),
             script_type: ScriptType::P2wpkh,
@@ -3528,16 +3533,13 @@ pub(crate) mod tests {
         use crate::yubikey::{CardJobError, PinTarget};
 
         let about = format!("{} about", ["abandon"; 11].join(" "));
-        let dir = std::env::temp_dir().join(format!(
-            "yw-app-yk-jobs-{}-{}",
-            std::process::id(),
-            yw_win::time::monotonic_ms()
-        ));
+        let dir = testing::temp_name("yk-jobs");
         let cards = Arc::new(Mutex::new(vec![MockCard::new(9_900_001)]));
-        let mut worker =
-            KeyWorker::new(&dir).with_card_source(Box::new(crate::yubikey::MockSource {
+        let mut worker = KeyWorker::new(&dir, testing::deps()).with_card_source(Box::new(
+            crate::yubikey::MockSource {
                 cards: Arc::clone(&cards),
-            }));
+            },
+        ));
         let bytes = |text: &str| Zeroizing::new(text.as_bytes().to_vec());
         worker.handle(KeyJob::Load);
         worker.handle(KeyJob::PreviewImport {
@@ -3807,19 +3809,16 @@ pub(crate) mod tests {
         use super::yubikey::{YkJob, YkOutcome};
         use crate::yubikey::{CardJobError, PinTarget};
 
-        let dir = std::env::temp_dir().join(format!(
-            "yw-app-yk-one-{}-{}",
-            std::process::id(),
-            yw_win::time::monotonic_ms()
-        ));
+        let dir = testing::temp_name("yk-one");
         let cards = Arc::new(Mutex::new(vec![
             MockCard::new(9_900_101),
             MockCard::new(9_900_102),
         ]));
-        let mut worker =
-            KeyWorker::new(&dir).with_card_source(Box::new(crate::yubikey::MockSource {
+        let mut worker = KeyWorker::new(&dir, testing::deps()).with_card_source(Box::new(
+            crate::yubikey::MockSource {
                 cards: Arc::clone(&cards),
-            }));
+            },
+        ));
         let mut yk = |job: YkJob| match worker.handle(KeyJob::YubiKey(job)).pop() {
             Some(KeyOutcome::YubiKey(outcome)) => outcome,
             other => unreachable!("{other:?}"),

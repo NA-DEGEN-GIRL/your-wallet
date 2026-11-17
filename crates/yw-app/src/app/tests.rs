@@ -66,7 +66,7 @@ impl Harness {
     fn new(tag: &str) -> Self {
         let dir = temp_dir(tag);
         let app = app_at(&dir);
-        let worker = KeyWorker::new(&dir);
+        let worker = KeyWorker::new(&dir, crate::store::WinKeyPlatform::deps());
         app.key(crate::events::KeyJob::Load);
         let mut harness = Self {
             app,
@@ -3251,7 +3251,8 @@ fn yubikey_accounts_and_the_card_step() {
     use crate::app_sol::SolAccountId;
     use crate::events::{KeyJob, SignInfo};
 
-    let (worker, cards, dir, _) = crate::workers::key::tests::yubikey_wallet("app");
+    let (worker, cards, dir, _) =
+        crate::workers::key::tests::yubikey_wallet("app", crate::store::WinKeyPlatform::deps());
     let mut h = Harness {
         app: app_at(&dir),
         worker,
@@ -3647,9 +3648,11 @@ fn card_harness(tag: &str, serial: u32) -> (Harness, Cards) {
     let cards: Cards = std::sync::Arc::new(std::sync::Mutex::new(vec![
         yw_core::yubikey::mock::MockCard::new(serial),
     ]));
-    let worker = KeyWorker::new(&dir).with_card_source(Box::new(crate::yubikey::MockSource {
-        cards: std::sync::Arc::clone(&cards),
-    }));
+    let worker = KeyWorker::new(&dir, crate::store::WinKeyPlatform::deps()).with_card_source(
+        Box::new(crate::yubikey::MockSource {
+            cards: std::sync::Arc::clone(&cards),
+        }),
+    );
     let app = app_at(&dir);
     app.key(crate::events::KeyJob::Load);
     let mut h = Harness {
@@ -3770,7 +3773,8 @@ fn the_touch_prompt_is_gone_once_the_card_answers() {
     use crate::app_card::T_CARD_TOUCH;
     use crate::events::{KeyJob, SignInfo};
 
-    let (worker, cards, dir, _) = crate::workers::key::tests::yubikey_wallet("touch");
+    let (worker, cards, dir, _) =
+        crate::workers::key::tests::yubikey_wallet("touch", crate::store::WinKeyPlatform::deps());
     let mut h = Harness {
         app: app_at(&dir),
         worker,
@@ -4700,9 +4704,11 @@ fn yubikey_only_wallet_from_the_first_run_screen() {
     h.app.lock(LockReason::Manual);
     yk_pump(&mut h, &mut seen);
     let dir = h.dir.clone();
-    let worker = KeyWorker::new(&dir).with_card_source(Box::new(crate::yubikey::MockSource {
-        cards: std::sync::Arc::clone(&cards),
-    }));
+    let worker = KeyWorker::new(&dir, crate::store::WinKeyPlatform::deps()).with_card_source(
+        Box::new(crate::yubikey::MockSource {
+            cards: std::sync::Arc::clone(&cards),
+        }),
+    );
     let mut again = Harness {
         app: app_at(&dir),
         worker,
@@ -4794,7 +4800,8 @@ fn yubikey_badge_is_chrome_and_the_solana_note() {
     use yw_core::vault::EvmKeySource;
     use yw_core::yubikey::plan::KeyRole;
 
-    let (mut worker, _cards, dir, _) = crate::workers::key::tests::yubikey_wallet("badge");
+    let (mut worker, _cards, dir, _) =
+        crate::workers::key::tests::yubikey_wallet("badge", crate::store::WinKeyPlatform::deps());
     let Some(KeyOutcome::HardwareKeys(Ok(keys))) =
         worker.handle(crate::events::KeyJob::HardwareKeys).pop()
     else {
@@ -4910,7 +4917,7 @@ fn backup_pending_after_restart_shows_s04_and_receive() {
         // The first run: create, `다 적었습니다` (the challenge is asked for), quit before the quiz.
         let mut first = Harness {
             app: app_at(&dir),
-            worker: KeyWorker::new(&dir),
+            worker: KeyWorker::new(&dir, crate::store::WinKeyPlatform::deps()),
             dir: temp_dir("bp-restart-unused"),
             phrase: None,
             address: None,
@@ -4933,7 +4940,7 @@ fn backup_pending_after_restart_shows_s04_and_receive() {
     // The new build starts on the same folder.
     let mut again = Harness {
         app: app_at(&dir),
-        worker: KeyWorker::new(&dir),
+        worker: KeyWorker::new(&dir, crate::store::WinKeyPlatform::deps()),
         dir,
         phrase: None,
         address: None,

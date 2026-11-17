@@ -1711,3 +1711,77 @@ impl App {
         self.card.clear();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use yw_core::approval::ApprovalStore;
+    use yw_core::bip32::path::AccountIndex;
+    use yw_core::slip10::SolKeySource;
+    use yw_core::sol::SolCluster;
+    use yw_core::sol::dapp::{
+        SolSendOptions, SolTxFacts, SolTxItemFacts, SolTxMode, SolTxRequest, build_sol_tx_request,
+    };
+    use yw_core::sol::display::SimSummary;
+
+    use super::{CardJobKind, T_CARD_TOUCH, approval_touches, touch_text};
+
+    /// spec/07 §20.8, spec/10 §6.4 (moved from the key worker's card test, 2026-11-17): the card
+    /// step of a sign-only dApp request of three transactions asks for one touch per
+    /// transaction; a single touch keeps the plain prompt.
+    #[test]
+    fn chain_message_touches_one_per_transaction() {
+        let public = yw_core::codec::base58::base58_decode_32(
+            "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk",
+        )
+        .unwrap();
+        let tx = |tag: u8| {
+            let mut out = vec![1_u8];
+            out.extend_from_slice(&[0; 64]);
+            out.extend_from_slice(&[1, 0, 1, 2]);
+            out.extend_from_slice(&public);
+            out.extend_from_slice(&[5; 32]);
+            out.extend_from_slice(&[7; 32]);
+            out.extend_from_slice(&[1, 1, 1, 0, 1, tag]);
+            out
+        };
+        let item = SolTxItemFacts {
+            tables: Ok((0, Vec::new())),
+            pre: Vec::new(),
+            post: None,
+            sim: SimSummary::NoResult,
+            sim_replaced_blockhash: false,
+            rpc_fee: Some(5_000),
+            blockhash_valid: Some(true),
+        };
+        let request = SolTxRequest {
+            id: yw_core::approval::ApprovalId([9; 16]),
+            origin: yw_core::policy::BrowserOrigin::parse("https://app.example").unwrap(),
+            cluster: SolCluster::Devnet,
+            source: SolKeySource::Hardware(AccountIndex::ZERO),
+            public,
+            label: "Solana 1".to_owned(),
+            mode: SolTxMode::SignOnly,
+            options: SolSendOptions::default(),
+            txs: (1..=3).map(tx).collect(),
+        };
+        let facts = SolTxFacts {
+            items: vec![item; 3],
+            mints: Vec::new(),
+            unread_mints: Vec::new(),
+            known: Vec::new(),
+            fee_cap: 100_000,
+        };
+        let draft = build_sol_tx_request(yw_core::lang::Lang::Ko, &request, &facts).unwrap();
+        let mut store = ApprovalStore::new();
+        let issued = store.issue(draft, 1, 1_800_000_000_000).unwrap();
+        let approved = store.consume(issued.id, issued.digest, 2).unwrap();
+        let kind = CardJobKind::ChainMessage;
+        let touch_count = approval_touches(&approved, &kind);
+        assert_eq!(touch_count, 3);
+        assert_eq!(
+            touch_text(&kind, touch_count),
+            "YubiKey가 깜박일 때마다 터치하세요 — 모두 3회(거래마다 한 번)"
+        );
+        assert_eq!(touch_text(&kind, 1), T_CARD_TOUCH);
+    }
+}

@@ -237,3 +237,31 @@ fn reparse_points_are_refused_on_read_and_commit() {
     fs::remove_dir_all(&dir).unwrap();
     fs::remove_dir_all(&elsewhere).unwrap();
 }
+
+/// spec/15 §11.4 S2 review (a): the key worker's Windows platform gives the `VirtualLock` slot
+/// (D10), never a heap buffer: the slot starts a `VirtualAlloc` reservation (64 KiB
+/// granularity), where a heap allocation of `SLOT_LEN` bytes practically never starts; it is zeroed and
+/// writable. The platform also opens the real folder storage.
+#[test]
+fn win_key_platform_gives_the_locked_slot_and_the_folder_storage() {
+    use crate::workers::key::platform::KeyPlatform;
+
+    let platform = super::WinKeyPlatform;
+    let mut slot = platform.new_slot().unwrap();
+    assert_eq!(slot.bytes().as_ptr().addr() % 65_536, 0);
+    assert!(slot.bytes().iter().all(|byte| *byte == 0));
+    slot.bytes_mut()[0] = 0xa5;
+    assert_eq!(slot.bytes()[0], 0xa5);
+
+    let dir = temp_dir("platform");
+    fs::write(dir.join("meta.ywm.tmp"), b"orphan").unwrap();
+    let storage = platform.open_storage(&dir).unwrap();
+    assert!(
+        !dir.join("meta.ywm.tmp").exists(),
+        "orphans removed as by FileStorage::open"
+    );
+    assert!(!storage.any_present(FileKind::Meta));
+    fs::write(dir.join("meta.ywm.prev"), b"x").unwrap();
+    assert!(storage.any_present(FileKind::Meta));
+    let _ = fs::remove_dir_all(&dir);
+}

@@ -121,7 +121,7 @@ crates/
              icons/{yw-app.ico, yw-app.res}   (앱 아이콘, `scripts/make-icons.mjs`가 만들고 커밋, [04](04-app-ui.md) §1.7)
              src/{lib.rs, main.rs, app.rs, events.rs, shell_msg.rs(Win32 메시지 번호·단축키, 2026-11-17), system_clock.rs(Windows `Clock`, 2026-11-17), errors.rs, settings.rs, apikeys.rs(네트워크별 RPC 엔드포인트 URL
                   `rpc:eip155:<chainId>`·`rpc:solana:<cluster>`·`rpc:bitcoin:<net>`·공급자 템플릿 자격 정보·LLM 키, D13, [04](04-app-ui.md) §6.3), logging.rs(형식·수준·`LogSink`), log_file.rs(순환 로그 파일, 2026-11-17), card_pcsc.rs(`YubiKey` PC/SC 전송·CNG 관리 키 암호, [10](10-yubikey.md), 2026-11-17),
-                  store.rs(`VaultStorage` 구현, [09](09-testing.md) §2.1), workers/{key, rpc, read}.rs([04](04-app-ui.md) §1.2),
+                  store.rs(`VaultStorage` 구현, 키 작업자의 Windows 플랫폼 `WinKeyPlatform`(2026-11-17), [09](09-testing.md) §2.1), wallet_files.rs(지갑 파일 이름·초기화 보고 형식, 순수, 2026-11-17), workers/{key, rpc, read}.rs([04](04-app-ui.md) §1.2; `workers/key/platform.rs`: 키 작업자가 받는 `KeyPlatform`·`WalletStore`·`KeyDeps`, 2026-11-17),
                   rpc/{mod.rs(공용 전송, [04](04-app-ui.md) §1.9), evm.rs(`rpc::evm`: eth_simulateV1 응답 파서 M2([09](09-testing.md) §3.8), 전송·호출 M4)}, flow/evm.rs(`flow::evm`, M4),
                   browser/{mod.rs, params.rs, envelope.rs, …}(`browser::params`·`browser::envelope`, M5, [05](05-browser.md)),
                   explain/(M6, [06](06-llm-explain.md)), explain_transport.rs(LLM `WinHTTP` 전송, 2026-11-17), sol/(M7, [07](07-solana.md) §2), btc/(M8, [08](08-bitcoin.md)),

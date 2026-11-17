@@ -148,7 +148,9 @@ impl KeyWorker {
     pub(super) fn remove_mnemonic(&mut self, bytes: &[u8], id: RecordId) -> Vec<KeyOutcome> {
         let alt = self.is_alt();
         if let Some(vault) = self.vault.as_ref()
-            && self.journal.mnemonic_busy(vault, id, now_unix())
+            && self
+                .journal
+                .mnemonic_busy(vault, id, now_unix(&*self.clock))
         {
             return vec![KeyOutcome::Mnemonics(MnOutcome::Busy(id))];
         }
@@ -177,8 +179,9 @@ impl KeyWorker {
             MnJob::CommitImport { password } => MnOutcome::Added(self.mn_commit(&password)),
             MnJob::Generate { password: bytes } => MnOutcome::Generated((|| {
                 let password = password(&bytes).map_err(|_| VaultError::UnlockFailed)?;
+                let now = now_unix(&*self.clock);
                 let vault = self.vault()?;
-                let (id, phrase) = vault.generate_mnemonic(&password, now_unix())?;
+                let (id, phrase) = vault.generate_mnemonic(&password, now)?;
                 let address = vault.evm_address(EvmKeySource::Mnemonic(id, AccountIndex::ZERO))?;
                 Ok((id, phrase, address))
             })()),
@@ -292,8 +295,9 @@ impl KeyWorker {
                 .map(|bytes| passphrase(bytes))
                 .transpose()
                 .map_err(VaultError::Key)?;
+            let now = now_unix(&*self.clock);
             self.vault()?
-                .add_mnemonic(&password, phrase, passphrase, now_unix())
+                .add_mnemonic(&password, phrase, passphrase, now)
         })();
         if result == Err(VaultError::UnlockFailed) {
             // A mistyped password: the words stay held for the next try.

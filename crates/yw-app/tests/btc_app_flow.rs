@@ -489,7 +489,7 @@ impl Harness {
             ..BitcoinSettings::default()
         };
         let harness = Self {
-            key: KeyWorker::new(&dir),
+            key: KeyWorker::new(&dir, yw_app::store::WinKeyPlatform::deps()),
             dir,
             rpc,
             events: EventQueue::new(Box::new(|| {})),

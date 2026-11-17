@@ -940,7 +940,7 @@ pub enum KeyOutcome {
     /// A BTC journal step finished.
     BtcJournal(Result<BtcJournalDone, BtcKeyError>),
     /// `ResetWallet` finished: the files moved (or what moved before a failure).
-    WalletReset(Result<crate::store::reset::ResetReport, crate::store::reset::ResetError>),
+    WalletReset(Result<crate::wallet_files::ResetReport, crate::wallet_files::ResetError>),
     /// A Zcash step finished (spec/12).
     Zec(Box<crate::workers::journal::zec::ZecKeyOutcome>),
     /// The job was cancelled by `Lock`.
@@ -1599,7 +1599,7 @@ mod tests {
         });
         assert!(super::accept_result(&KeyResult { epoch: 0, outcome }, 9));
         // So is a reset's result: a lock while it moves the files must not strand it.
-        let outcome = KeyOutcome::WalletReset(Ok(crate::store::reset::ResetReport {
+        let outcome = KeyOutcome::WalletReset(Ok(crate::wallet_files::ResetReport {
             folder: None,
             moved: Vec::new(),
             settings_moved: false,

@@ -31,6 +31,7 @@ pub type SolSigner<'a> = dyn FnMut(&Vault, Approved, u64, [u8; 32], u64) -> Resu
 pub type SolDappSigner<'a> = dyn FnMut(&Vault, &Approved, u64, u64, &PreSignCheck) -> Result<SignedSolDappTx, SolSignFailure>
     + 'a;
 use yw_core::vault::{FileKind, Vault};
+use yw_platform::Clock;
 
 use crate::events::{
     JournalView, KeyOutcome, SignFailure, SignInfo, SignTicket, SignedSummary, SolDappSigned,
@@ -286,12 +287,14 @@ impl JournalState {
         approved: Box<Approved>,
         times: SolSignTimes,
         alt: bool,
+        clock: &dyn Clock,
     ) -> Vec<KeyOutcome> {
         self.sign_sol_with(
             vault,
             approved,
             times,
             alt,
+            clock,
             &mut |vault, approved, consumed_at_ms, blockhash, now_ms| {
                 sign_transfer(vault, approved, consumed_at_ms, blockhash, now_ms)
                     .map_err(SolSignFailure::Sign)
@@ -309,20 +312,26 @@ impl JournalState {
         approved: Box<Approved>,
         times: SolSignTimes,
         alt: bool,
+        clock: &dyn Clock,
         sign_step: &mut SolSigner<'_>,
     ) -> Vec<KeyOutcome> {
         let mut out = Vec::new();
-        let result = self.sign_sol_inner(vault, *approved, times, alt, &mut out, sign_step);
+        let result = self.sign_sol_inner(vault, *approved, times, alt, clock, &mut out, sign_step);
         out.insert(0, KeyOutcome::SignedSol(result));
         out
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the journal-first steps of one signature, with the injected clock"
+    )]
     fn sign_sol_inner(
         &mut self,
         vault: &mut Vault,
         approved: Approved,
         times: SolSignTimes,
         alt: bool,
+        clock: &dyn Clock,
         out: &mut Vec<KeyOutcome>,
         sign_step: &mut SolSigner<'_>,
     ) -> Result<SolSignedSummary, SolSignFailure> {
@@ -354,7 +363,7 @@ impl JournalState {
                 Err(_) => return Err(SolSignFailure::JournalFull),
             }
         }
-        let now_ms = yw_win::time::monotonic_ms();
+        let now_ms = clock.now_ms();
         let signed = sign_step(
             vault,
             approved,
@@ -409,12 +418,14 @@ impl JournalState {
         approved: Box<Approved>,
         job: SolDappSignJob,
         alt: bool,
+        clock: &dyn Clock,
     ) -> Vec<KeyOutcome> {
         self.sign_sol_dapp_with(
             vault,
             approved,
             job,
             alt,
+            clock,
             &mut |vault, approved, consumed_at_ms, now_ms, check| {
                 sign_send(vault, approved, consumed_at_ms, now_ms, check)
                     .map_err(SolSignFailure::DappSign)
@@ -431,11 +442,13 @@ impl JournalState {
         approved: Box<Approved>,
         job: SolDappSignJob,
         alt: bool,
+        clock: &dyn Clock,
         sign_step: &mut SolDappSigner<'_>,
     ) -> Vec<KeyOutcome> {
         let mut out = Vec::new();
         let ticket = job.ticket;
-        let result = self.sign_sol_dapp_inner(vault, &approved, &job, alt, &mut out, sign_step);
+        let result =
+            self.sign_sol_dapp_inner(vault, &approved, &job, alt, clock, &mut out, sign_step);
         // The one-time approval and the job end here, used or not.
         drop((approved, job));
         out.insert(
@@ -445,12 +458,17 @@ impl JournalState {
         out
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the journal-first steps of one signature, with the injected clock"
+    )]
     fn sign_sol_dapp_inner(
         &mut self,
         vault: &mut Vault,
         approved: &Approved,
         job: &SolDappSignJob,
         alt: bool,
+        clock: &dyn Clock,
         out: &mut Vec<KeyOutcome>,
         sign_step: &mut SolDappSigner<'_>,
     ) -> Result<SolDappSignedSummary, SolSignFailure> {
@@ -488,7 +506,7 @@ impl JournalState {
                 Err(_) => return Err(SolSignFailure::JournalFull),
             }
         }
-        let now_ms = yw_win::time::monotonic_ms();
+        let now_ms = clock.now_ms();
         let signed = sign_step(vault, approved, job.consumed_at_ms, now_ms, &job.check)?;
         let mut summary = SolDappSignedSummary {
             cluster,

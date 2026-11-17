@@ -61,6 +61,7 @@ pub mod system_clock;
 pub mod text;
 pub mod token_view;
 pub mod ui;
+pub mod wallet_files;
 pub mod walletconnect;
 pub mod window_state;
 pub mod workers;

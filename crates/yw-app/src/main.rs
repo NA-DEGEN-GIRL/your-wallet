@@ -29,6 +29,7 @@ use yw_app::shell_msg::{
     NavKey, Shortcut, WM_YW_ACTIVATE, WM_YW_EVENTS, WM_YW_LOCK_SHORTCUT, WM_YW_NAV_KEY,
     WM_YW_SHORTCUT, WM_YW_TAB_SHORTCUT, chain_tab_key,
 };
+use yw_app::store::WinKeyPlatform;
 use yw_app::system_clock::SystemClock;
 use yw_app::workers::key::{KeyWorker, run as run_key_worker};
 use yw_app::workers::rpc::{RpcWorker, run as run_rpc_worker};
@@ -345,8 +346,10 @@ fn main() -> ExitCode {
         let key_thread = std::thread::Builder::new()
             .name("yw-key".to_owned())
             .spawn(move || {
+                // The production platform: `FileStorage`, the `VirtualLock` slot, `SystemClock`
+                // and the PC/SC readers (spec/15 §11.4 S2).
                 run_key_worker(
-                    KeyWorker::new(&dir),
+                    KeyWorker::new(&dir, WinKeyPlatform::deps()),
                     &queue,
                     &|result| {
                         if key_events.push(UiEvent::Key(Box::new(result))).is_err() {
