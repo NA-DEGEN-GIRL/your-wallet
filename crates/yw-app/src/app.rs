@@ -3988,6 +3988,13 @@ impl App {
             });
         } else {
             // No such edit (only a headless test can notify one): no `Cmd::Edit`, counted.
+            // 2026-11-18 (S3 C1–C3 review): a converted family (C2: WalletConnect `WcUri`,
+            // `WcFile`, `WcProject`; C3: explorer `ExplorerTx`, `ExplorerAddress`, AI
+            // `LlmEndpoint`, `LlmModel`, `LlmMaxTokens`) now keeps its draft here; before C2/C3
+            // `edit_chain` reached its `on_*_edit_change`, which cleared the draft to ""
+            // (`unwrap_or_default`). Production cannot get here (`EN_CHANGE` comes from a live
+            // edit), and the census asserts `form_mismatch == 0` at every observation, so a test
+            // that notifies without typing fails there.
             #[cfg(debug_assertions)]
             self.note_form_mismatch(field);
             self.edit_chain(id);
@@ -4718,6 +4725,13 @@ impl App {
     /// The text of plain edit `field` for a handler (S3 B5, plan §3.2a): the form state, which
     /// equals `controls.text(id, field.cap())`; debug builds read the edit too and count a
     /// difference. The C commits move the handlers' edit reads here.
+    ///
+    /// The returned text is a plain `String` (2026-11-18, S3 C1–C3 review): the `WalletConnect`
+    /// pairing link (`WcUri`, it carries the symKey) is `Zeroizing` in `FormState` and
+    /// `Cmd::Edit` only, not along the `PAIR` handler path (as before S3, when it was the plain
+    /// `controls.text`; the copy count is unchanged, and `on_wc_edit` still keeps the plain
+    /// `wc.uri_text`). S4: return `Zeroizing<String>` here, or add a `WcUri` reader, so `PAIR`
+    /// keeps no plain copy beyond `wc.uri_text`.
     #[must_use]
     pub(crate) fn form_text(&self, field: EditField) -> Option<String> {
         let text = self.form.text(field).map(str::to_owned);
@@ -4735,7 +4749,7 @@ impl App {
     /// Debug builds: one form-state difference (tests: its field name in the shell-call log,
     /// never a text).
     #[cfg(debug_assertions)]
-    fn note_form_mismatch(&self, field: EditField) {
+    pub(crate) fn note_form_mismatch(&self, field: EditField) {
         self.form_mismatch
             .set(self.form_mismatch.get().saturating_add(1));
         #[cfg(test)]

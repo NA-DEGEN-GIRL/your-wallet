@@ -94,8 +94,17 @@ impl App {
             }
             // A credential edit is emptied after its one read; it is never form state.
             Effect::ClearCred { field } => self.controls.clear_text(cred_id_of(field)),
-            // Not emitted before S3 C4 (the address book's clears).
-            Effect::ClearField { .. } => {}
+            // Not emitted before S3 C4 (the address book's clears), which gives it its arm
+            // (`clear_text` + the form re-read, before the next `refresh()`: `keeps_edit` reads
+            // the edit) in the same commit as its first emitter. Until then (2026-11-18, S3
+            // C1–C3 review) debug builds count one as a form mismatch, so an early emitter fails
+            // the census and the windowed form test instead of leaving the edit uncleared.
+            Effect::ClearField { field } => {
+                #[cfg(debug_assertions)]
+                self.note_form_mismatch(field);
+                #[cfg(not(debug_assertions))]
+                let _ = field;
+            }
         }
     }
 }
