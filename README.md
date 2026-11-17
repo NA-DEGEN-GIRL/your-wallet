@@ -255,7 +255,7 @@ AI 비서에게 설치를 도와 달라고 할 때(영문): [docs/llm-install-gu
 | [docs/security-review-20261101.md](docs/security-review-20261101.md) | 보안 검토와 처리 결과 |
 | [docs/acceptance/](docs/acceptance/) | 기능·단계별 인수 기록 |
 | [docs/ux-review-20261109.md](docs/ux-review-20261109.md) | 최근 UI/UX 검토 |
-| [docs/android-feasibility-20261107.md](docs/android-feasibility-20261107.md) | Android 이식 타당성(조사만, 계획 없음) |
+| [docs/android-feasibility-20261107.md](docs/android-feasibility-20261107.md) | Android 이식 타당성 조사(2026-11-07). 2026-11-17에 Android판을 만들기로 정함 → [spec/15](spec/15-android.md), D40 |
 
 ## 라이선스
 
