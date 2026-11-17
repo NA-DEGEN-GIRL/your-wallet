@@ -1415,6 +1415,8 @@ impl App {
     /// Arms the one-shot validation of a send-form edit (EVM and Solana). Without a window or a
     /// timer the main tick's `dirty_ms` poll runs it after the full pause.
     pub(crate) fn arm_send_timer(&self, wait_ms: u64) {
+        #[cfg(test)]
+        self.controls.record(format!("timer.start send {wait_ms}"));
         if let Some(main) = self.main.as_ref() {
             let _ = main.set_timer(SEND_TIMER_ID, u32::try_from(wait_ms).unwrap_or(u32::MAX));
         }
@@ -1423,6 +1425,8 @@ impl App {
     /// The send timer fired: the edit it waited for is validated. Never from `EN_CHANGE` itself
     /// — a validation may rebuild the controls, the edit that is notifying included.
     pub(crate) fn on_send_timer(&mut self) {
+        #[cfg(test)]
+        self.controls.record("timer.stop send".to_owned());
         if let Some(main) = self.main.as_ref() {
             main.kill_timer(SEND_TIMER_ID);
         }
@@ -2031,6 +2035,14 @@ impl App {
     }
 
     fn copy(&mut self, text: &str, address: bool) {
+        // Tests: the length only; an absolute path (`경로 복사`) depends on the machine.
+        #[cfg(test)]
+        self.controls
+            .record(if std::path::Path::new(text).is_absolute() {
+                format!("copy len=<path> address={address}")
+            } else {
+                format!("copy len={} address={address}", text.chars().count())
+            });
         if let Some(main) = self.main.as_ref() {
             let failed = ErrorCode::Sec002.text_in(self.settings.language);
             if clipboard::set_text(main, text).is_ok() {

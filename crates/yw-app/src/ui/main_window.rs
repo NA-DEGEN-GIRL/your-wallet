@@ -2026,6 +2026,22 @@ const fn typed(_: &ControlSet, _: u16) -> Option<String> {
     None
 }
 
+/// The state a headless test gave check box or radio `id` ([`ControlSet::type_check`]).
+#[cfg(test)]
+fn typed_check(set: &ControlSet, id: u16) -> Option<bool> {
+    set.typed_checks
+        .borrow()
+        .iter()
+        .find(|(known, _)| *known == id)
+        .map(|(_, checked)| *checked)
+}
+
+/// Outside tests no check box exists without a window.
+#[cfg(not(test))]
+const fn typed_check(_: &ControlSet, _: u16) -> Option<bool> {
+    None
+}
+
 /// How many leading and how many trailing entries `old` and `new` have in common, as
 /// `(prefix, suffix)`. The two never overlap (`prefix + suffix <= min(old.len(), new.len())`);
 /// what lies between them is the middle that a change replaces ([`ControlSet::sync`]). An entry
@@ -2104,6 +2120,15 @@ pub struct ControlSet {
     /// ([`ControlSet::type_text`]); the readers and `clear_text` use it then.
     #[cfg(test)]
     typed: core::cell::RefCell<Vec<(u16, String)>>,
+    /// Headless tests only (2026-11-18, S3): the state a test gave a check box or radio that has
+    /// no window ([`ControlSet::type_check`]); `checked` uses it then.
+    #[cfg(test)]
+    typed_checks: core::cell::RefCell<Vec<(u16, bool)>>,
+    /// Tests only (2026-11-18, S3 characterization): the shell calls the logic made, in order —
+    /// `refresh`, the send timer, plain copies, edit writes ([`ControlSet::record`]). Lengths
+    /// and ids only, never a value.
+    #[cfg(test)]
+    shell_log: core::cell::RefCell<Vec<String>>,
 }
 
 impl ControlSet {
@@ -2153,8 +2178,30 @@ impl ControlSet {
         typed.push((id, text.to_owned()));
     }
 
+    /// Headless tests: checks or unchecks check box or radio `id` (no window exists).
+    #[cfg(test)]
+    pub fn type_check(&self, id: u16, checked: bool) {
+        let mut typed = self.typed_checks.borrow_mut();
+        typed.retain(|(known, _)| *known != id);
+        typed.push((id, checked));
+    }
+
+    /// Tests: appends one line to the shell-call log.
+    #[cfg(test)]
+    pub fn record(&self, line: String) {
+        self.shell_log.borrow_mut().push(line);
+    }
+
+    /// Tests: the shell-call log since the last call.
+    #[cfg(test)]
+    pub fn take_shell_log(&self) -> Vec<String> {
+        core::mem::take(&mut *self.shell_log.borrow_mut())
+    }
+
     /// Replaces a control's text (non-secret values only).
     pub fn set_text(&self, id: u16, text: &str) {
+        #[cfg(test)]
+        self.record(format!("set_text {id} len={}", text.encode_utf16().count()));
         if let Some((_, control)) = self.controls.iter().find(|(ctl, _)| ctl.id == id) {
             control.set_text(text);
         }
@@ -2162,6 +2209,8 @@ impl ControlSet {
 
     /// Clears an edit.
     pub fn clear_text(&self, id: u16) {
+        #[cfg(test)]
+        self.record(format!("clear_text {id}"));
         if let Some((_, control)) = self.controls.iter().find(|(ctl, _)| ctl.id == id) {
             control.set_text("");
         }
@@ -2202,6 +2251,7 @@ impl ControlSet {
             .iter()
             .find(|(ctl, _)| ctl.id == id)
             .map(|(_, control)| control.is_checked())
+            .or_else(|| typed_check(self, id))
     }
 
     /// After a pure scroll ([`Placed::shift`] + [`Window::scroll_content`], which already moved

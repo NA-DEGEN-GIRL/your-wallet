@@ -141,9 +141,22 @@ pub fn delete_file(path: &Path) -> Result<(), DeleteError> {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Tests: the endpoint file in the test's own temp folder, consulted first (2026-11-18, S3
+    /// command census: a press of `rpc.json에서 가져오기` or `rpc.json 지우기` must never reach
+    /// the owner's real file — AGENTS rules 2 and 4). Thread-local, so no `set_var`.
+    pub static TEST_RPC_JSON: core::cell::RefCell<Option<PathBuf>> =
+        const { core::cell::RefCell::new(None) };
+}
+
 /// The endpoint file: `YW_RPC_JSON` (debug builds only), else `%USERPROFILE%\.yw-dev\rpc.json`.
 #[must_use]
 pub fn rpc_json_path() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(path) = TEST_RPC_JSON.with(|path| path.borrow().clone()) {
+        return Some(path);
+    }
     if cfg!(debug_assertions)
         && let Some(path) = std::env::var_os("YW_RPC_JSON").filter(|path| !path.is_empty())
     {

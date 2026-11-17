@@ -1419,6 +1419,8 @@ impl App {
     /// Recomputes the layout, syncs the child controls and repaints.
     pub fn refresh(&mut self) {
         self.sync_browser();
+        #[cfg(test)]
+        self.controls.record("refresh".to_owned());
         let Some(main) = self.main.as_ref() else {
             return;
         };
@@ -1525,20 +1527,8 @@ impl App {
                     self.on_command(*id);
                     // What the click made due starts now, not at the next tick (2026-11-12).
                     self.reads_due(now_ms());
-                } else if *code == EN_CHANGE
-                    && !self.on_reset_edit_change(*id)
-                    && !self.on_book_edit_change(*id)
-                    && !self.on_sol_edit_change(*id)
-                    && !self.on_btc_edit_change(*id)
-                    && !self.on_zec_edit_change(*id)
-                    && !self.on_llm_edit_change(*id)
-                    && !self.on_yk_edit_change(*id)
-                    && !self.on_mn_edit_change(*id)
-                    && !self.on_hc_edit_change(*id)
-                    && !self.on_wc_edit_change(*id)
-                    && !self.on_explorer_edit_change(*id)
-                {
-                    self.on_edit_change(*id);
+                } else if *code == EN_CHANGE {
+                    self.on_edit_notify(*id);
                 }
                 Reply::Handled(0)
             }
@@ -3773,6 +3763,26 @@ impl App {
         self.dispatch_command(id);
         if closed {
             self.refresh();
+        }
+    }
+
+    /// An edit of the main window changed (`EN_CHANGE`): the first handler that claims `id`
+    /// takes it, else the EVM send form's (2026-11-18, S3: moved out of `on_main` unchanged, so
+    /// a test drives an edit as the window does).
+    pub(crate) fn on_edit_notify(&mut self, id: u16) {
+        if !self.on_reset_edit_change(id)
+            && !self.on_book_edit_change(id)
+            && !self.on_sol_edit_change(id)
+            && !self.on_btc_edit_change(id)
+            && !self.on_zec_edit_change(id)
+            && !self.on_llm_edit_change(id)
+            && !self.on_yk_edit_change(id)
+            && !self.on_mn_edit_change(id)
+            && !self.on_hc_edit_change(id)
+            && !self.on_wc_edit_change(id)
+            && !self.on_explorer_edit_change(id)
+        {
+            self.on_edit_change(id);
         }
     }
 

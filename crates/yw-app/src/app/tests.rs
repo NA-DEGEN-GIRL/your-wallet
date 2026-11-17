@@ -429,7 +429,12 @@ fn lock_during_create_or_import_reports_the_new_vault() {
 
 fn unlocked_app(tag: &str, alt_passphrase: bool) -> (App, PathBuf) {
     let dir = temp_dir(tag);
-    let mut app = app_at(&dir);
+    (unlocked_at(&dir, alt_passphrase), dir)
+}
+
+/// [`unlocked_app`] on a folder the caller owns.
+fn unlocked_at(dir: &std::path::Path, alt_passphrase: bool) -> App {
+    let mut app = app_at(dir);
     app.mode = AppMode::Unlocked { alt_passphrase };
     let mut meta = Meta::default();
     if let Some(first) = meta.evm_accounts.first_mut() {
@@ -443,7 +448,7 @@ fn unlocked_app(tag: &str, alt_passphrase: bool) -> (App, PathBuf) {
     });
     app.meta = Some(meta);
     app.screen = Screen::Main;
-    (app, dir)
+    app
 }
 
 /// Item 3: a mistyped-passphrase session blocks every `받기` and shows T-ALT-PASS everywhere.
@@ -3776,6 +3781,10 @@ mod lang_keys;
 
 /// One account card for EVM and Solana, sources with card names (spec/04 §2.6).
 mod accounts;
+
+/// S3 characterization (spec/15 §11.4): the command, edit and check-box census and the
+/// shell-call goldens every S3 commit must reproduce.
+mod s3_census;
 
 /// spec/10 §9.2 (2026-11-10): once the PIN is in, the touch prompt is the S11 form's line next to
 /// `검토` (a dApp request: the header band), and it is gone once the card answered — signed or
