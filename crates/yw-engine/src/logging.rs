@@ -121,6 +121,10 @@ pub fn format_utc(unix_ms: u64) -> String {
 
 /// The wall clock of the line timestamps (Unix milliseconds; 0 before 1970).
 #[must_use]
+#[expect(
+    clippy::disallowed_types,
+    reason = "log line timestamps only (spec/01 §5.1): never compared with a deadline"
+)]
 pub fn now_unix_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

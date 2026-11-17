@@ -11,7 +11,8 @@ import { fileURLToPath } from "node:url";
 
 const HANGUL = /[ᄀ-ᇿ㄰-㆏ꥠ-꥿가-힯ힰ-퟿]/u;
 // yw-platform/src since 2026-11-17 (spec/15 §11.4 S1): shared non-Windows code must not grow fixed Korean text.
-const ROOTS = ["crates/yw-core/src", "crates/yw-platform/src", "crates/yw-app/src", "extension/src"];
+// yw-engine/src since 2026-11-17 (spec/15 §11.4 S2): the modules moved out of yw-app.
+const ROOTS = ["crates/yw-core/src", "crates/yw-platform/src", "crates/yw-engine/src", "crates/yw-app/src", "extension/src"];
 const CATALOGUE_MACROS = ["texts!", "rules!"];
 // The language card shows the first two in both languages (spec/14 §1); the last two are font
 // measurement probes, never shown.
@@ -222,6 +223,7 @@ export function scan(repositoryRoot) {
 // in its crate's catalogue registry, so `tests/lang_spec.rs` compares it with the spec tables.
 const REGISTRIES = [
   { crate: "yw_core", lib: "crates/yw-core/src/lib.rs", registry: "crates/yw-core/src/lang.rs" },
+  { crate: "yw_engine", lib: "crates/yw-engine/src/lib.rs", registry: "crates/yw-engine/src/catalogues.rs" },
   { crate: "yw_app", lib: "crates/yw-app/src/lib.rs", registry: "crates/yw-app/src/catalogues.rs" },
 ];
 
@@ -305,7 +307,7 @@ export function registryProblems(repositoryRoot) {
   const problems = [];
   for (const { crate, lib, registry } of REGISTRIES) {
     const listed = new Set(
-      [...readFileSync(join(repositoryRoot, registry), "utf8").matchAll(/"((?:yw_core|yw_app)::[\w:]+)",/gu)]
+      [...readFileSync(join(repositoryRoot, registry), "utf8").matchAll(/"((?:yw_core|yw_engine|yw_app)::[\w:]+)",/gu)]
         .map((match) => match[1]),
     );
     const found = new Set(cataloguePaths(repositoryRoot, crate, lib));

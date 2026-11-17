@@ -69,9 +69,9 @@ pub const UNLOCK_PROMPT_COOLDOWN_MS: u64 = 30_000;
 /// Read worker threads.
 pub const READ_WORKERS: usize = 4;
 /// Approval items per origin (shared with the UI queue).
-pub const MAX_APPROVALS_PER_ORIGIN: usize = crate::ui::approval::MAX_APPROVALS_PER_ORIGIN;
+pub const MAX_APPROVALS_PER_ORIGIN: usize = yw_engine::approval::MAX_APPROVALS_PER_ORIGIN;
 /// Approval items overall.
-pub const MAX_APPROVALS_GLOBAL: usize = crate::ui::approval::MAX_APPROVALS_GLOBAL;
+pub const MAX_APPROVALS_GLOBAL: usize = yw_engine::approval::MAX_APPROVALS_GLOBAL;
 /// Document table bound (LRU).
 pub const MAX_DOCUMENTS: usize = 512;
 /// Origin chain cache bound (LRU, spec/05 §4.3).
@@ -457,10 +457,10 @@ pub trait DappSink: Send + Sync {
 /// `Approved` (answered by the flow with the result) and `Cancelled` (no response).
 #[must_use]
 pub const fn outcome_error(
-    outcome: crate::ui::approval::QueueOutcome,
+    outcome: yw_engine::approval::QueueOutcome,
 ) -> Option<yw_core::policy::ProviderError> {
-    use crate::ui::approval::QueueOutcome;
     use yw_core::policy::ProviderError;
+    use yw_engine::approval::QueueOutcome;
     match outcome {
         QueueOutcome::Approved | QueueOutcome::Cancelled => None,
         QueueOutcome::Rejected => Some(ProviderError::UserRejected),

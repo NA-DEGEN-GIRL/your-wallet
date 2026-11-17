@@ -3,6 +3,10 @@
 //! Win32 shell (`app`, `ui::main_window`, `ui::secret`) runs in the binary.
 #![forbid(unsafe_code)]
 
+// 2026-11-17 (spec/15 §11.4 S2, spec/01 §2.3b): these modules moved to yw-engine; the re-exports
+// keep their `crate::…` paths until S3–S4 rewrite the callers (transitional facade).
+pub use yw_engine::{errors, logging, network, text, wallet_files, yubikey};
+
 pub mod apikeys;
 pub mod app;
 pub mod app_approval;
@@ -39,7 +43,6 @@ pub mod btc;
 pub mod build_info;
 pub mod card_pcsc;
 pub mod catalogues;
-pub mod errors;
 pub mod events;
 pub mod explain;
 pub mod explain_transport;
@@ -48,9 +51,7 @@ pub mod flow;
 pub mod hypercore;
 pub mod lock;
 pub mod log_file;
-pub mod logging;
 pub mod meta;
-pub mod network;
 pub mod received;
 pub mod rpc;
 pub mod settings;
@@ -58,12 +59,9 @@ pub mod shell_msg;
 pub mod sol;
 pub mod store;
 pub mod system_clock;
-pub mod text;
 pub mod token_view;
 pub mod ui;
-pub mod wallet_files;
 pub mod walletconnect;
 pub mod window_state;
 pub mod workers;
-pub mod yubikey;
 pub mod zec;

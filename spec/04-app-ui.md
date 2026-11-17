@@ -786,7 +786,7 @@ App 항목(이 앱의 보내기·가속·취소·수수료 올리기)은 dApp �
 
 ### 3.3 표시 규칙
 - **자르지 않는다.** 값은 줄바꿈하고 넘치면 스크롤한다. 말줄임표·툴팁 전용 표시는 없다. 접을 수 있는 것은 `자세히` 영역(`critical == false` 필드와 원본 데이터)뿐이고, critical 필드·경고·시뮬레이션 띠·요약은 접지 않는다.
-- 줄바꿈(`ui::text_layout`): 공백에서 나누고, 한 단어가 폭을 넘으면 문자 단위로 나눈다. 덧붙이는 문자는 없다. LF는 줄바꿈이다. 값은 최대 270,000바이트·필드 1,024개([03] §11.2)이므로 배치는 폭이 바뀔 때만 다시 하고 보이는 줄만 그린다. 시험: 줄 조각을 이으면 원래 값과 같다(줄바꿈 지점의 공백 1개 제외).
+- 줄바꿈(`ui::text_layout`, 2026-11-17부터 `yw_engine::approval::layout`을 yw-app이 옛 이름으로 재수출): 공백에서 나누고, 한 단어가 폭을 넘으면 문자 단위로 나눈다. 덧붙이는 문자는 없다. LF는 줄바꿈이다. 값은 최대 270,000바이트·필드 1,024개([03] §11.2)이므로 배치는 폭이 바뀔 때만 다시 하고 보이는 줄만 그린다. 시험: 줄 조각을 이으면 원래 값과 같다(줄바꿈 지점의 공백 1개 제외).
 - 주소 그리기(2026-11-12부터 한 형식): 모든 화면·승인 창·연결 창·비밀 창에서 주소는 묶음 없이 전체를(대소문자 그대로) 쓰고 접두부 뒤 4자·끝 4자를 굵게·`FOCUS` 색으로 강조한다(§2.6 내 주소 줄과 같음; Bitcoin 메인넷 빨간 머리 안에서는 머리 글자색). 표시 모델·화면 코드가 아직 4자 묶음 문자열(EVM `format_address`, `sol::address::grouped`, `screens_btc::grouped`)을 넘겨도 렌더러가 주소 한 줄로 알아보면(`ui::theme::whole_address`: 주소 그 자체이거나 정확히 그 묶음일 때만) 같은 형식으로 그린다(`ui::theme::address_spans`; 주 창 `main_window::address_line`, 승인 창 `Builder::text`·`draw_line`·머리). 승인 창 필드 값·머리 값(서명 계정 `… [내 계정: 계정 1]`)의 한 줄이 주소 + 대괄호 주석(`0x… [일반 계정(EOA)] [주소록: A]`, `describe_address`)이면 주소는 그 줄에 전체로, 주석은 다음 줄에 본문 글꼴로 그린다(2026-11-14, `ui::theme::address_with_notes`; 그 전에는 주석 때문에 주소 줄로 알아보지 못해 4자 묶음 그대로 보였다 — 스크린샷 12). 표시 모델·digest 문자열은 바뀌지 않는다. 이전(2026-11-11까지): 4자 묶음, 강조는 EVM 없음·SOL 가운데 묶음 굵게([07] §12.3)·BTC 앞뒤 6자 굵게([08] §10), 내 주소 줄 등만 전체 + 앞뒤 4자 강조. 주소 오염 대비는 형식이 아니라 W-ADDR-3·주소록 경고가 맡는다. 주소가 주소록·내 계정과 정확히 같으면 "주소록: {이름}"(verified면 "✓ 확인됨") / "내 계정: {라벨}"이다. W-ADDR-3(아는 주소와 앞·끝만 같음, §2.15 7행): EVM은 [03] E43(고위험, 경고 목록·digest 포함 — 앱 보내기와 dApp·WalletConnect 요청 모두, 시뮬레이션과 무관)이 흉내 낸 주소를 원인 줄에 적는다. BTC·ZEC 보내기는 yw-app이 meta(주소록·내 주소·보낸 내역)로 만든 W-ADDR-3 문장을 "받는 주소: …" `WARN_BG` 주석으로 요약 카드 바로 아래에 붙인다(`approval_view::attach_address_note`, `ApprovalDisplay`·digest 밖; 폼에서 이미 확인 체크를 받았다). SOL은 [07] L03(고위험)이 같은 일을 한다.
 - hex 원본: 폭이 80열 이상이면 한 줄 32바이트, 아니면 16바이트. 줄 앞에 오프셋 `[0x0000]`. calldata는 첫 줄에 셀렉터 4바이트만.
 - **표시 금지 문자**: 이식 `archive/spec-v2.4:crates/approval-wire/src/lib.rs:1266-1300`(`validate_text`: 빈 값·앞뒤 공백 금지, `is_forbidden_display_character`: 제어 문자와 U+00AD, U+034F, U+061C, U+115F–1160, U+17B4–17B5, U+180B–180F, U+200B–200F, U+2028–202E, U+2060–206F, U+3164, U+FE00–FE0F, U+FEFF, U+FFA0, U+FFF9–FFFB, U+1BCA0–1BCA3, U+1D173–1D17A, U+E0000–E0FFF). 단, 값 안의 LF는 허용한다.
@@ -796,7 +796,7 @@ App 항목(이 앱의 보내기·가속·취소·수수료 올리기)은 dApp �
 - 금액은 [03] `format_units`·`format_amount` 결과 그대로 그린다. 글리프 없는 문자는 대체 사각형으로 보인다(숨기지 않는다).
 
 ### 3.4 버튼과 상호작용
-`ApprovalInteraction`을 이식한다(`archive/spec-v2.4:crates/approval-ui/src/lib.rs:140-475`, 테스트 `lib.rs:580-1006`) → `yw_app::ui::interaction`(순수 모듈). 바꿀 점:
+`ApprovalInteraction`을 이식한다(`archive/spec-v2.4:crates/approval-ui/src/lib.rs:140-475`, 테스트 `lib.rs:580-1006`) → `yw_app::ui::interaction`(순수 모듈; 2026-11-17 [15] §11.4 S2부터 `yw_engine::approval::interaction`, yw-app은 옛 경로로 재수출). 바꿀 점:
 1. 위험 사상: [03] `Info`·`Caution` → 이식 `Standard`, `High` → `High`, `Blocked` → 상호작용 없음(승인 버튼 비활성, 거부만). `sim_state`가 `Ok`·`None`이 아니면 등급과 무관하게 `High`로 사상한다(방어 중복, D15). 만료는 `ApprovalGate.deadline`으로 판정하고, `read_request`·`write_response`(`lib.rs:477-506`)와 one-shot `PRESENTED`는 버린다.
 2. `armed: bool`과 `set_armed(now, bool)`을 추가한다. `armed == false`면 `ApproveActivated`와 hold 시작을 무시하고, 진행 중인 hold를 지우고 그 입력원을 block한다.
 3. `physical_down`은 `input::is_down(VK_LBUTTON / VK_SPACE)`로 채운다. 입력 일관성 검사이며 주입 입력을 구분하지 못한다(보안 경계 아님, spec.md §2.2).
@@ -911,7 +911,7 @@ pub fn can_approve(g: &ApprovalGate, now: Instant) -> bool {
 - `SECRET_WINDOW_TIMEOUT_MS = 300_000`: 입력 창은 마지막 입력 후, 표시 창은 표시 후. 넘으면 버퍼를 소거하고 닫는다("시간이 지나 창을 닫았습니다").
 
 ### 4.2 입력 버퍼
-`SecureAsciiBuffer`(`archive/spec-v2.4:crates/secret-input-ui/src/recovery_native.rs:118-178`)를 이식해 넓힌다 → `yw_app::ui::secure_field::SecretField`.
+`SecureAsciiBuffer`(`archive/spec-v2.4:crates/secret-input-ui/src/recovery_native.rs:118-178`)를 이식해 넓힌다 → `yw_app::ui::secure_field::SecretField`(2026-11-17 [15] §11.4 S2부터 `yw_engine::secure_field::SecretField`, yw-app은 옛 경로로 재수출).
 ```rust
 pub enum Charset { Printable, MnemonicText, PrivateKeyHex, BackupWord, Base58, KeyText }
 pub enum PushResult { Accepted, Full, Rejected(RejectReason) }
@@ -1199,7 +1199,7 @@ BTC 계정 선택은 `prefs`에 두지 않는다(알려진 객체에 키를 더�
 - 남는 위험: meta를 지우거나 손상시켜 "새로 시작"(E-VLT-006)을 고르게 하면 스냅샷이 없어져 그때의 파일 값을 다시 믿는다. vault·meta를 같은 백업에서 함께 되돌리면 서로 맞는 옛 상태라 드러나지 않는다.
 
 ## 7. 오류·메시지 정책
-- RPC·LLM·OS가 준 문자열은 화면에 그대로 보이지 않는다(spec.md §2.1). 예외: AI 설명 패널(§3.8)은 [06] §5–§6 필터를 거친 파생 텍스트를 별도 패널에만 표시한다(spec.md §2.1 예외). 모든 오류는 `ErrorCode`로 분류해 고정 문구 + `(코드)`로 보인다. 문구는 앱 언어(§6.1 `language`, [14])를 따른다: 아래 표의 `문구` 열이 한국어, `English` 열이 영어 정본이다(2026-11-14 영어 열 추가, D31·D39; 코드 `yw_app::errors::text`, `ErrorCode::message_in`). 두 언어 모두 원인 한 문장 다음에 사용자가 할 수 있는 다음 행동을 적는다. 자리표시 `{n}`·`{항목}`/`{item}`·`{인덱서}`/`{indexer}`·`{키}`/`{key}`는 호출부가 같은 언어의 값으로 채운다. 예: "RPC 응답 시간이 초과되었습니다. 잠시 후 다시 시도하고, 계속되면 설정 → 네트워크(RPC)에서 테스트하거나 다른 RPC URL로 바꾸세요. (E-RPC-002)". 체인 문서가 정한 고정 문구 표([08] §13 등)는 그 표를 쓴다.
+- RPC·LLM·OS가 준 문자열은 화면에 그대로 보이지 않는다(spec.md §2.1). 예외: AI 설명 패널(§3.8)은 [06] §5–§6 필터를 거친 파생 텍스트를 별도 패널에만 표시한다(spec.md §2.1 예외). 모든 오류는 `ErrorCode`로 분류해 고정 문구 + `(코드)`로 보인다. 문구는 앱 언어(§6.1 `language`, [14])를 따른다: 아래 표의 `문구` 열이 한국어, `English` 열이 영어 정본이다(2026-11-14 영어 열 추가, D31·D39; 코드 `yw_engine::errors::text`(2026-11-17 전 `yw_app::errors::text`), `ErrorCode::message_in`). 두 언어 모두 원인 한 문장 다음에 사용자가 할 수 있는 다음 행동을 적는다. 자리표시 `{n}`·`{항목}`/`{item}`·`{인덱서}`/`{indexer}`·`{키}`/`{key}`는 호출부가 같은 언어의 값으로 채운다. 예: "RPC 응답 시간이 초과되었습니다. 잠시 후 다시 시도하고, 계속되면 설정 → 네트워크(RPC)에서 테스트하거나 다른 RPC URL로 바꾸세요. (E-RPC-002)". 체인 문서가 정한 고정 문구 표([08] §13 등)는 그 표를 쓴다.
 - 분류 입력은 HTTP 상태, JSON-RPC `error.code`, WinHTTP·Win32 오류 번호, 내부 enum(`VaultError`·`KeyError`·`journal::JournalError`, [02] §10)이다. 문자열로 분류해야 하면(공급자의 허용 목록 거부 등) yw-app 안의 고정 부분 문자열 비교만 쓰고 그 문자열은 보이지 않는다. 오류 문구·배너에는 엔드포인트를 네트워크 이름으로만 가리키고 URL·호스트를 넣지 않는다(§1.9).
 - 로그: 코드는 `warn` 이상으로 항상 남긴다. 원격 메시지 문자열은 `debug`에서만, 0x20–0x7E 밖을 `?`로 바꾸고 256바이트로 잘라 남긴다.
 - 배너는 사용자가 닫을 때까지 남고 같은 코드는 한 번만 보인다(`알림 닫기`가 모두 닫는다). 오류·경고는 빨강(오류) 띠이고, 코드 없는 알림은 뜻에 맞는 색을 쓴다(`App::notice`, 2026-11-07): T-GENESIS-PINNED는 정보, "HyperEVM이 등록되어 있지 않습니다… 설정 → EVM 체인에서 추가하세요"는 주의. 설정 파일 변조·되돌림 경고(LLM 강제 끔, genesis 고정값 복원, vault 세대 역행)는 빨강 그대로다.
@@ -1314,7 +1314,7 @@ BTC 계정 선택은 `prefs`에 두지 않는다(알려진 객체에 키를 더�
 - 순환: 한 줄을 쓰기 전 현재 크기 + 줄 길이가 `LOG_FILE_MAX_BYTES = 1_048_576`을 넘으면 닫고, `.4` 삭제, `.3→.4`, `.2→.3`, `.1→.2`, 현재→`.1`로 이름을 바꾸고 새 파일을 연다. `.1`–`.4` 단계의 실패는 무시한다. 현재 파일이 이름 바꾸기 뒤에도 남아 있으면(다른 프로그램이 잡고 있음 등) 그 파일을 비우고(truncate) 첫 줄에 `WARN log rotate.failed`를 쓴 뒤 계속 쓴다. 비우기도 실패하면 이번 실행 동안 파일 로그를 멈춘다(크기 상한을 넘겨 계속 커지지 않는다).
 - 형식: UTF-8, LF, 한 줄 ≤ 1,024바이트(넘으면 자름). `2026-10-26T12:34:56.789Z WARN rpc E-RPC-002 method=eth_simulateV1 net=eip155:11155111 ms=12000`. 시각은 UTC. 필드 값은 0x21–0x7E만(나머지 `?`). 엔드포인트는 `net=<NetworkId>`로만 가리키고 `host=`·`url=` 필드는 없다(D13: QuickNode 호스트에는 엔드포인트 이름이 들어간다, §1.9). BTC 인덱서는 `idx=esplora|bb-rpc|bb-rest`와 경로 종류만 쓴다(`esplora`: `utxo`·`address`·`tx-status`·`tx-hex`·`block-height`·`tip-height`·`tx-post`, `bb-rest`: `utxo`·`address`·`tx`·`block-index`). 비밀이 아닌 Esplora 기준 URL도 쓰지 않는다([08] §4.1).
 - 프로세스 로거는 `Mutex<Box<dyn LogSink>>`를 갖는다(Windows: 버퍼를 둔 `LogWriter`, 아래 구조). `warn` 이상은 즉시 flush, 나머지는 2초마다와 종료 때. `logLevel` 이상만 쓴다. 텔레메트리·업로드 경로는 없다.
-- 구조(2026-11-17, [15] §11.4 S2): `logging`은 형식(`format_line`의 정화·0x21–0x7E 규칙)·수준 거름·프로세스 로거만 맡고, 완성된 줄을 플랫폼 `LogSink`(`write_line(줄, flush_now)`·`flush()`)에 넘긴다. Windows의 sink는 `log_file.rs`의 순환 파일 `LogWriter`이고 `log_file::init`이 한 번 설치한다(설치 전 줄은 버린다 — 전과 같다). 그 전에는 `LogWriter`·`init`이 `logging.rs`에 있었다. `LogLevel`도 `settings`에서 `logging`으로 옮겼다(`settings`가 다시 내보낸다).
+- 구조(2026-11-17, [15] §11.4 S2): `logging`은 형식(`format_line`의 정화·0x21–0x7E 규칙)·수준 거름·프로세스 로거만 맡고, 완성된 줄을 플랫폼 `LogSink`(`write_line(줄, flush_now)`·`flush()`)에 넘긴다. Windows의 sink는 `log_file.rs`의 순환 파일 `LogWriter`이고 `log_file::init`이 한 번 설치한다(설치 전 줄은 버린다 — 전과 같다). 그 전에는 `LogWriter`·`init`이 `logging.rs`에 있었다. `LogLevel`도 `settings`에서 `logging`으로 옮겼다(`settings`가 다시 내보낸다). 2026-11-17 S2 E1: `logging`은 yw-engine으로 옮겼고(yw-app이 `crate::logging`으로 다시 내보냄) `log_file`은 yw-app에 남는다.
 
 | 기록한다 | 기록하지 않는다 |
 |---|---|

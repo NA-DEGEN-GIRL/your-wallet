@@ -476,6 +476,7 @@ version = "0.3.0"
 dependencies = [
  "qrcodegen",
  "yw-core",
+ "yw-engine",
  "yw-json",
  "yw-platform",
  "yw-win",
@@ -501,6 +502,15 @@ dependencies = [
  "subtle",
  "yw-json",
  "zeroize",
+]
+
+[[package]]
+name = "yw-engine"
+version = "0.3.0"
+dependencies = [
+ "yw-core",
+ "yw-json",
+ "yw-platform",
 ]
 
 [[package]]

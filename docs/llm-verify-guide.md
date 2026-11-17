@@ -51,6 +51,7 @@ EIP-6963, Wallet Standard) and forwards requests; it holds no secrets.
 | `crates/yw-core` | Wallet core: keys, vault, chain logic, risk rules, approvals. No network, files, threads or GUI | forbidden |
 | `crates/yw-json` | Own strict JSON parser/writer and framing. Zero dependencies | forbidden |
 | `crates/yw-platform` | Platform-neutral types and traits: HTTP URL/error/response types, the HTTP `Transport` and WebSocket `WsLink` traits, the `Clock` trait. Zero dependencies, no OS calls | forbidden |
+| `crates/yw-engine` | App logic shared by the platform shells (error codes, text rules, log format, `YubiKey` card operations, approval queue and interaction rules, secret input buffers). Depends only on yw-core, yw-json and yw-platform; no file, socket or environment access | forbidden |
 | `crates/yw-win` | The only crate allowed `unsafe`: Windows API wrappers (WinHTTP, DPAPI, pipe, UI, …); its WinHTTP client and WebSocket implement the yw-platform traits | allowed, each block has a `// SAFETY:` comment |
 | `crates/yw-app` | The wallet binary | forbidden |
 | `crates/yw-host` | Native-messaging relay | forbidden |
@@ -62,7 +63,7 @@ git grep -n "forbid(unsafe_code)" -- crates
 Select-String -Path Cargo.toml, crates\yw-win\Cargo.toml -Pattern 'unsafe_code'
 ```
 
-Expected: `#![forbid(unsafe_code)]` in `yw-app` (lib and main), `yw-core`, `yw-host` (lib and main), `yw-json`, `yw-platform`; workspace
+Expected: `#![forbid(unsafe_code)]` in `yw-app` (lib and main), `yw-core`, `yw-host` (lib and main), `yw-json`, `yw-platform`, `yw-engine`; workspace
 lint `unsafe_code = "forbid"` and `yw-win` overriding to `"deny"` with per-module allows.
 
 ---
@@ -269,8 +270,9 @@ Per-crate allowlist: `scripts/check-core-deps.mjs`, object `POLICY`:
 | `yw-core` | RustCrypto hashes/MACs/KDFs, secp256k1, argon2, chacha20poly1305, ed25519/curve25519, getrandom, zeroize, subtle and their closure; local `yw-json` |
 | `yw-json` | nothing |
 | `yw-platform` | nothing |
+| `yw-engine` | exactly yw-core's crates (through yw-core); local `yw-core`, `yw-json`, `yw-platform` — never `yw-win` or `windows-sys` |
 | `yw-win` | `windows-sys` 0.61.2 / `windows-link`; local `yw-platform` |
-| `yw-app` | the above plus `qrcodegen` 1.8.0 |
+| `yw-app` | the above plus `qrcodegen` 1.8.0; local `yw-engine` too |
 | `yw-host` | `yw-json` and `yw-win` only (and `yw-platform` through `yw-win`) |
 
 Build scripts are allowed only for `generic-array`, `getrandom`, `secp256k1-sys`, `curve25519-dalek` and yw-app's own

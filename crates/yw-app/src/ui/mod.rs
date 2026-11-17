@@ -1,14 +1,19 @@
 //! UI modules (spec/04 §1.8): the main window layout and screens, secret windows W01–W10, the
 //! secret input buffers, the approval interaction/queue rules and the A01 content model, the
 //! receive QR, text layout and theme. The A01 window itself is `crate::app_approval`.
+//!
+//! (2026-11-17, spec/15 §11.4 S2: the approval queue and interaction rules, the approval texts,
+//! the text layout and the secret input buffers moved to yw-engine; they are re-exported here
+//! under their old names until S3–S4.)
 
-pub mod approval;
+pub use yw_engine::approval;
+pub use yw_engine::approval::{interaction, layout as text_layout, text as approval_text};
+pub use yw_engine::secure_field;
+
 pub mod approval_input;
-pub mod approval_text;
 pub mod approval_view;
 pub mod badge;
 pub mod command_ids;
-pub mod interaction;
 pub mod main_window;
 pub mod qr;
 pub mod removed;
@@ -32,8 +37,6 @@ pub mod screens_yubikey;
 pub mod screens_zec;
 pub mod secret;
 pub mod secret_text;
-pub mod secure_field;
-pub mod text_layout;
 pub mod theme;
 // DEV ONLY: needs `yw_win::ui::capture`, which exists only with debug assertions, so the tour is
 // left out of `cargo test --release` (and never part of a release binary).

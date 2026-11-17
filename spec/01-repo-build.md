@@ -114,19 +114,24 @@ crates/
   yw-core/   Cargo.toml  clippy.toml(§5.1)  src/  tests/{*.rs, vectors/}   (모듈 §2.2, 테스트 배치 [09](09-testing.md) §2.1)
   yw-json/   Cargo.toml  src/{lib.rs, parse.rs, value.rs, write.rs, frame.rs}  tests/
   yw-platform/ Cargo.toml  clippy.toml(§5.1)  src/{lib.rs, http.rs, clock.rs, ws.rs(2026-11-17 S2)}  tests/   (§2.3a, 2026-11-17)
+  yw-engine/ Cargo.toml  clippy.toml(§5.1)  src/{lib.rs, catalogues.rs, errors.rs, text.rs, network.rs, logging.rs(형식·수준·`LogSink`),
+                              yubikey.rs(`CardSource`·카드 작업, [10](10-yubikey.md)), wallet_files.rs, secure_field.rs,
+                              approval/{mod.rs, interaction.rs, text.rs, layout.rs}}   (§2.3b, 2026-11-17 S2)
   yw-win/    Cargo.toml  src/{lib.rs, error.rs, wide.rs, time.rs, mem.rs, file.rs, dpapi.rs, clipboard.rs,
                               http.rs, ws.rs, pipe.rs, session.rs, process.rs, security.rs, input.rs, cng.rs, image.rs, pcsc.rs,
                               ui/{mod.rs, window.rs, msg.rs, paint.rs, controls.rs, capture.rs(개발 빌드 전용), secure_text.rs}}  tests/   (API §7; pcsc·cng [10], ws·image·`cng::p256_verify` [13])
   yw-app/    Cargo.toml  build.rs(선택, [04](04-app-ui.md) §1.6)  yw-app.manifest  tests/
              icons/{yw-app.ico, yw-app.res}   (앱 아이콘, `scripts/make-icons.mjs`가 만들고 커밋, [04](04-app-ui.md) §1.7)
-             src/{lib.rs, main.rs, app.rs, events.rs, shell_msg.rs(Win32 메시지 번호·단축키, 2026-11-17), system_clock.rs(Windows `Clock`, 2026-11-17), errors.rs, settings.rs, apikeys.rs(네트워크별 RPC 엔드포인트 URL
-                  `rpc:eip155:<chainId>`·`rpc:solana:<cluster>`·`rpc:bitcoin:<net>`·공급자 템플릿 자격 정보·LLM 키, D13, [04](04-app-ui.md) §6.3), logging.rs(형식·수준·`LogSink`), log_file.rs(순환 로그 파일, 2026-11-17), card_pcsc.rs(`YubiKey` PC/SC 전송·CNG 관리 키 암호, [10](10-yubikey.md), 2026-11-17),
-                  store.rs(`VaultStorage` 구현, 키 작업자의 Windows 플랫폼 `WinKeyPlatform`(2026-11-17), [09](09-testing.md) §2.1), wallet_files.rs(지갑 파일 이름·초기화 보고 형식, 순수, 2026-11-17), workers/{key, rpc, read}.rs([04](04-app-ui.md) §1.2; `workers/key/platform.rs`: 키 작업자가 받는 `KeyPlatform`·`WalletStore`·`KeyDeps`, 2026-11-17),
+             src/{lib.rs, main.rs, app.rs, events.rs, shell_msg.rs(Win32 메시지 번호·단축키, 2026-11-17), system_clock.rs(Windows `Clock`, 2026-11-17), settings.rs, apikeys.rs(네트워크별 RPC 엔드포인트 URL
+                  `rpc:eip155:<chainId>`·`rpc:solana:<cluster>`·`rpc:bitcoin:<net>`·공급자 템플릿 자격 정보·LLM 키, D13, [04](04-app-ui.md) §6.3), log_file.rs(순환 로그 파일, 2026-11-17), card_pcsc.rs(`YubiKey` PC/SC 전송·CNG 관리 키 암호, [10](10-yubikey.md), 2026-11-17),
+                  store.rs(`VaultStorage` 구현, 키 작업자의 Windows 플랫폼 `WinKeyPlatform`(2026-11-17), [09](09-testing.md) §2.1), workers/{key, rpc, read}.rs([04](04-app-ui.md) §1.2; `workers/key/platform.rs`: 키 작업자가 받는 `KeyPlatform`·`WalletStore`·`KeyDeps`, 2026-11-17),
                   rpc/{mod.rs(공용 전송, [04](04-app-ui.md) §1.9), evm.rs(`rpc::evm`: eth_simulateV1 응답 파서 M2([09](09-testing.md) §3.8), 전송·호출 M4)}, flow/evm.rs(`flow::evm`, M4),
                   browser/{mod.rs, params.rs, envelope.rs, …}(`browser::params`·`browser::envelope`, M5, [05](05-browser.md)),
                   explain/(M6, [06](06-llm-explain.md)), explain_transport.rs(LLM `WinHTTP` 전송, 2026-11-17), sol/(M7, [07](07-solana.md) §2), btc/(M8, [08](08-bitcoin.md)),
-                  ui/{main_window, screens/*, approval, interaction, secret, secure_field, text_layout, qr, theme}.rs}
-                  (배치 [04](04-app-ui.md) §1.8, EVM 모듈 이름 [03](03-evm.md) §0)
+                  ui/{main_window, screens/*, approval_view, approval_input, badge, secret, qr, theme}.rs}
+                  (배치 [04](04-app-ui.md) §1.8, EVM 모듈 이름 [03](03-evm.md) §0; 2026-11-17 S2: errors·text·network·logging(형식)·
+                  yubikey(순수)·wallet_files와 ui의 approval·interaction·approval_text·text_layout·secure_field는 yw-engine으로 옮겼고
+                  yw-app은 옛 경로로 다시 내보낸다, §2.3b)
   yw-host/   Cargo.toml  src/{lib.rs, main.rs}  tests/               ([05](05-browser.md))
 extension/   manifest.json  package.json  extension-id.txt(M5)  src/*.js  popup/*  icons/icon-{16,32,48,128}.png([05] §2.2)
              native-host/*  tests/*.test.mjs  test-dapp/(M5)
@@ -221,6 +226,14 @@ pub enum ParseError { TooLarge, InvalidUtf8, Syntax { offset: usize }, Duplicate
 - `clock`: `pub trait Clock: Send + Sync { fn now_ms(&self) -> u64 /* 단조 ms */; fn now_unix_ms(&self) -> u64; fn sleep_ms(&self, ms: u64); }`. yw-app `flow::evm`이 다시 내보내고(`pub use yw_platform::Clock`) Windows 구현 `SystemClock`(yw-win `time::monotonic_ms`, `GetTickCount64`)은 yw-app `system_clock`에 남는다(2026-11-17 S2: 그 전에는 `flow::evm` 안에 있었고 `RpcWorker::production`이 이를 골랐다. 이제 `main.rs`가 `RpcWorker::new(…, Box::new(SystemClock), Limits::PRODUCTION)`으로 넘긴다). 운영 코드는 이 시계만 쓴다. `Instant` 기반 시계는 지역 경과 시간과 시험용이다. yw-app의 `monotonic_ms` 직접 호출을 `Clock`으로 바꾸는 일은 S2(엔진으로 옮기는 모듈)·S4(App)에서 한다.
 - `ws`(2026-11-17 S2: yw-app `walletconnect::worker::RelayLink`를 옮김): `pub trait WsLink: Send + Sync { fn send(&self, text: &str) -> bool; fn receive(&self) -> Option<String>; fn abort(&self); }` — 열린 텍스트 WebSocket(WalletConnect 릴레이 연결, [13](13-walletconnect.md) §4). yw-app `walletconnect::worker`는 `pub use yw_platform::ws::WsLink as RelayLink`로 같은 이름을 쓴다. Windows 구현은 yw-win `ws::WebSocket`(§7.4)이고, 연결을 여는 `WsConnector`(`RelayConnector` 구현)는 yw-app `app_walletconnect`에 있다.
 
+### 2.3b yw-engine 공개 모듈
+
+플랫폼 셸(Windows yw-app, 나중의 Android)이 함께 쓰는 지갑 앱 로직([15](15-android.md) §3.1, §11.4 S2; 2026-11-17 E1에서 만들었다). 로컬 의존은 yw-core·yw-json·yw-platform뿐이고 yw-win·windows-sys에 닿지 않는다(§4.2 POLICY가 강제). `#![forbid(unsafe_code)]`. `crates/yw-engine/clippy.toml`은 파일·소켓·프로세스·벽시계·환경 변수 접근을 막는다(§5.1; 스레드와 `Instant`는 허용).
+
+- `errors`(오류 코드와 문구 카탈로그 `yw_engine::errors::text`, [04](04-app-ui.md) §7), `text`(`Label`·식별자 규칙·JSON 도우미·한국어 조사), `network`(`NetworkId`), `logging`(로그 형식·수준 필터·`LogSink` 설치, §5.4; 파일 쓰기는 yw-app `log_file`), `yubikey`(`CardSource`와 카드 작업, PC/SC는 yw-app `card_pcsc`, [10](10-yubikey.md)), `wallet_files`(지갑 파일 이름·초기화 보고), `secure_field`(비밀 입력 버퍼, [04](04-app-ui.md) §4.2), `approval`(옛 yw-app `ui::approval`: 대기열·표시 재검사·`labels`; 하위 모듈 `interaction`(옛 `ui::interaction`), `text`(옛 `ui::approval_text`), `layout`(옛 `ui::text_layout`)), `catalogues`(이 crate의 문구 카탈로그 목록, [14](14-language.md) §2).
+- 옮기는 중의 겉면(transitional facade): yw-app `lib.rs`는 `pub use yw_engine::{errors, logging, network, text, wallet_files, yubikey};`, `ui/mod.rs`는 `pub use yw_engine::approval; pub use yw_engine::approval::{interaction, layout as text_layout, text as approval_text}; pub use yw_engine::secure_field;`로 옛 `crate::…` 경로를 그대로 둔다. S3–S4에서 없앤다.
+- 단위 시험은 파일과 함께 옮겼다(`cargo test -p yw-engine`). 통합 시험은 아직 yw-app `tests/`에서 겉면을 거쳐 돈다(옮기는 일은 S2 T1, [09](09-testing.md) §2.1).
+
 ### 2.4 크레이트 의존 규칙 (검사 스크립트가 강제, §4.2)
 
 | 크레이트 | 로컬 의존 | 외부 의존(직접) | 종류 |
@@ -228,11 +241,12 @@ pub enum ParseError { TooLarge, InvalidUtf8, Syntax { offset: usize }, Duplicate
 | yw-core | yw-json | §3.3 단계 목록 | lib |
 | yw-json | 없음 | 없음 | lib |
 | yw-platform | 없음 | 없음 | lib |
+| yw-engine | yw-core, yw-json, yw-platform | 없음 | lib |
 | yw-win | yw-platform | windows-sys | lib |
-| yw-app | yw-core, yw-json, yw-platform, yw-win | qrcodegen | bin (`#![windows_subsystem = "windows"]`) |
+| yw-app | yw-core, yw-engine, yw-json, yw-platform, yw-win | qrcodegen | bin (`#![windows_subsystem = "windows"]`) |
 | yw-host | yw-json, yw-win (yw-win을 거쳐 yw-platform) | 없음 | bin (콘솔 서브시스템) |
 
-2026-11-17: yw-platform 행을 더했다. 그 전에는 yw-win의 로컬 의존이 없었다.
+2026-11-17: yw-platform 행을 더했다. 그 전에는 yw-win의 로컬 의존이 없었다. 2026-11-17 S2: yw-engine 행을 더했고 yw-app이 yw-engine에 의존한다.
 
 yw-app·yw-host는 창·OS 호출이 없는 로직을 `lib.rs`에 두고 `tests/`로 시험하며 `main.rs`는 진입만 한다([09](09-testing.md) §2.1). 모든 멤버: `[dev-dependencies]` 금지, `build.rs` 금지(예외: yw-app은 실행 파일 링크 인자만 출력하는 `build.rs`를 [04](04-app-ui.md)가 필요로 할 때 둘 수 있다. 허용되는 링크 인자는 manifest 포함(`/MANIFEST:EMBED`·`/MANIFESTINPUT:`)과 커밋된 Win32 리소스 파일 `crates/yw-app/icons/yw-app.res`(앱 아이콘, link.exe가 cvtres로 변환)뿐이다. `build.rs`는 무엇도 컴파일·생성·다운로드하지 않는다. `.res`는 `scripts/make-icons.mjs`가 만들고 check.ps1 icons 단계가 커밋본과 같은지 확인한다).
 
@@ -245,7 +259,7 @@ yw-app·yw-host는 창·OS 호출이 없는 로직을 `lib.rs`에 두고 `tests/
 ```toml
 [workspace]
 resolver = "3"
-members = ["crates/yw-core", "crates/yw-json", "crates/yw-platform", "crates/yw-win", "crates/yw-app", "crates/yw-host"]
+members = ["crates/yw-core", "crates/yw-json", "crates/yw-platform", "crates/yw-engine", "crates/yw-win", "crates/yw-app", "crates/yw-host"]
 exclude = ["fuzz", "tools/btc-oracle", "tools/sol-oracle"]   # 각자 워크스페이스·lock([09] §2.4, [08] §14.3, [07] §17.3), 허용 목록 대상 아님, 배포하지 않음
 
 [workspace.package]
@@ -276,6 +290,7 @@ curve25519-dalek = { version = "=4.1.3", default-features = false, features = ["
 qrcodegen = { version = "=1.8.0", default-features = false }
 windows-sys = { version = "=0.61.2", default-features = false }   # feature 목록은 crates/yw-win/Cargo.toml에만
 yw-core = { path = "crates/yw-core" }
+yw-engine = { path = "crates/yw-engine" }
 yw-json = { path = "crates/yw-json" }
 yw-platform = { path = "crates/yw-platform" }
 yw-win = { path = "crates/yw-win" }
@@ -319,14 +334,15 @@ debug = false
 
 ### 3.2 크레이트별 `Cargo.toml`
 
-모든 멤버의 `[package]`: `name = "<크레이트>"`, `version.workspace = true`, `edition.workspace = true`, `rust-version.workspace = true`, `license.workspace = true`, `publish.workspace = true`. yw-win 외 다섯은 `[lints] workspace = true`(2026-11-17: yw-platform이 더해져 넷에서 다섯). `[dependencies]` 항목은 모두 `<name>.workspace = true` 한 줄씩이다.
+모든 멤버의 `[package]`: `name = "<크레이트>"`, `version.workspace = true`, `edition.workspace = true`, `rust-version.workspace = true`, `license.workspace = true`, `publish.workspace = true`. yw-win 외 여섯은 `[lints] workspace = true`(2026-11-17: yw-platform이 더해져 넷에서 다섯, S2에서 yw-engine이 더해져 여섯). `[dependencies]` 항목은 모두 `<name>.workspace = true` 한 줄씩이다.
 
 | 크레이트 | `[dependencies]` |
 |---|---|
 | yw-core | argon2, blake2(Zcash, [12] §6.1), chacha20poly1305, curve25519-dalek(M7), ed25519-dalek(M7), getrandom, hkdf, hmac, pbkdf2, ripemd, secp256k1, sha2, sha3, subtle, zeroize(서드파티 15), yw-json |
 | yw-json | 없음(빈 `[dependencies]`) |
 | yw-platform | 없음(빈 `[dependencies]`) |
-| yw-app | qrcodegen, yw-core, yw-json, yw-platform, yw-win |
+| yw-engine | yw-core, yw-json, yw-platform(2026-11-17 S2) |
+| yw-app | qrcodegen, yw-core, yw-engine, yw-json, yw-platform, yw-win |
 | yw-host | yw-json, yw-win |
 
 ```toml
@@ -371,8 +387,9 @@ windows-sys feature 추가·삭제는 크레이트 수를 바꾸지 않지만 yw
 | yw-app 추가 | qrcodegen=1.8.0 |
 | yw-json | 없음 |
 | yw-platform | 없음 |
+| yw-engine | yw-core와 같음(yw-core를 거쳐서만, 2026-11-17 S2) |
 
-- 검사 결과(확인함): EVM 단계 yw-core 34, yw-json 0, yw-win 2, yw-app 37, yw-host 2. Solana 단계 yw-core 40, yw-app 43. Bitcoin 단계(M8)는 추가 크레이트가 없다(D5). yw-platform 0(2026-11-17, 로컬 크레이트는 세지 않으므로 다른 수는 그대로).
+- 검사 결과(확인함): EVM 단계 yw-core 34, yw-json 0, yw-win 2, yw-app 37, yw-host 2. Solana 단계 yw-core 40, yw-app 43. Bitcoin 단계(M8)는 추가 크레이트가 없다(D5). yw-platform 0(2026-11-17, 로컬 크레이트는 세지 않으므로 다른 수는 그대로). yw-engine 40(2026-11-17 S2, yw-core와 같다).
 - `build.rs` 허용: generic-array, getrandom, secp256k1-sys (+M7 curve25519-dalek). proc-macro는 어느 단계에서도 0개.
 - 출처는 crates.io만. 라이선스: MIT/Apache-2.0, CC0-1.0(secp256k1, secp256k1-sys), BSD-3-Clause(subtle), MIT(generic-array, qrcodegen).
 - 2026-10-24 기준 RustSec advisory-db(커밋 21d909e)와 OSV에서 위 버전에 열린 권고 없음. curve25519-dalek 4.1.3은 RUSTSEC-2024-0344 수정판이므로 `=4.1.3`을 직접 고정한다(4.2.0은 yank).
@@ -700,8 +717,10 @@ export const POLICY = {
   "yw-json": { allow: {}, local: [] },
   // 2026-11-17: yw-platform(의존성 0) 추가. yw-host는 yw-win을 거쳐 링크한다.
   "yw-platform": { allow: {}, local: [] },
+  // 2026-11-17(spec/15 §11.4 S2): yw-engine은 yw-core 폐포만(yw-win·windows-sys 없음).
+  "yw-engine": { allow: CORE, local: ["yw-core", "yw-json", "yw-platform"] },
   "yw-win": { allow: WIN, local: ["yw-platform"] },
-  "yw-app": { allow: { ...CORE, ...WIN, ...APP }, local: ["yw-core", "yw-json", "yw-platform", "yw-win"] },
+  "yw-app": { allow: { ...CORE, ...WIN, ...APP }, local: ["yw-core", "yw-engine", "yw-json", "yw-platform", "yw-win"] },
   "yw-host": { allow: WIN, local: ["yw-json", "yw-platform", "yw-win"] },
 };
 export const BUILD_RS_ALLOW = new Set(["generic-array", "getrandom", "secp256k1-sys", ...(PHASES.has("sol") ? ["curve25519-dalek"] : [])]);
@@ -803,7 +822,7 @@ if (invokedPath !== undefined && resolve(invokedPath) === resolve(fileURLToPath(
 }
 ```
 
-`--filter-platform`은 필수다(없으면 오프라인에서 wasi 다운로드를 시도해 실패하고, 비Windows 의존까지 섞인다). 출처의 59줄 검사기(yw-core 단일 루트)를 여러 루트(2026-11-17 `yw-platform`을 더해 여섯)·단계·멤버 규칙으로 확장한 것이다. 검사 본체는 `checkMetadata(meta)`(가져와도 CLI는 실행되지 않는다)이고, `scripts/check-core-deps.test.mjs`가 허용 목록과 정확히 같은 합성 그래프(통과)와 위반 종류별 변형(허용 목록 밖·빌드 전용의 런타임 링크·dev-dependency·자체 build.rs·금지 feature·crates.io 밖 출처·proc-macro·검토 안 된 build.rs·도달하지 않는 허용 항목·허용 안 된 로컬 크레이트·정책 없는/없는 멤버)과 `--metadata` CLI의 종료 코드 0·1·2를 cargo 없이 시험한다(script-test 단계).
+`--filter-platform`은 필수다(없으면 오프라인에서 wasi 다운로드를 시도해 실패하고, 비Windows 의존까지 섞인다). 출처의 59줄 검사기(yw-core 단일 루트)를 여러 루트(2026-11-17 `yw-platform`을 더해 여섯, S2에서 `yw-engine`을 더해 일곱)·단계·멤버 규칙으로 확장한 것이다. 검사 본체는 `checkMetadata(meta)`(가져와도 CLI는 실행되지 않는다)이고, `scripts/check-core-deps.test.mjs`가 허용 목록과 정확히 같은 합성 그래프(통과)와 위반 종류별 변형(허용 목록 밖·빌드 전용의 런타임 링크·dev-dependency·자체 build.rs·금지 feature·crates.io 밖 출처·proc-macro·검토 안 된 build.rs·도달하지 않는 허용 항목·허용 안 된 로컬 크레이트·정책 없는/없는 멤버)과 `--metadata` CLI의 종료 코드 0·1·2를 cargo 없이 시험한다(script-test 단계).
 
 ### 4.3 `scripts/privacy-scan.mjs` 변경
 
@@ -899,7 +918,7 @@ const forbidden = [
 
 ### 5.1 unsafe와 경계
 
-- `unsafe`는 yw-win에만 있다. yw-core·yw-json·yw-platform(2026-11-17)·yw-app·yw-host는 workspace lint `unsafe_code = "forbid"`에 더해 `lib.rs`/`main.rs`에 `#![forbid(unsafe_code)]`를 둔다.
+- `unsafe`는 yw-win에만 있다. yw-core·yw-json·yw-platform(2026-11-17)·yw-engine(2026-11-17 S2)·yw-app·yw-host는 workspace lint `unsafe_code = "forbid"`에 더해 `lib.rs`/`main.rs`에 `#![forbid(unsafe_code)]`를 둔다.
 - yw-win은 FFI 모듈 파일 첫 줄에만 `#![allow(unsafe_code)]`를 두고, 모든 `unsafe` 블록에 `// SAFETY:` 주석(어떤 전제가 왜 성립하는지)과 블록당 unsafe 연산 1개(clippy `undocumented_unsafe_blocks`, `multiple_unsafe_ops_per_block`).
 - yw-win 공개 API에 원시 `HANDLE`·`HWND`·포인터를 노출하지 않는다. 모든 핸들은 `Drop`에서 닫는 RAII 타입이다. `static mut` 금지(전역 상태는 atomic·`OnceLock`).
 - yw-app은 windows-sys에 직접 의존하지 않는다. Win32 GUI 전체(클래스, wndproc, 루프, 그리기)는 yw-win의 안전 API다.
@@ -911,6 +930,16 @@ const forbidden = [
                          "std::fs::write", "std::fs::read_to_string" ]
   ```
   `crates/yw-platform/clippy.toml`은 같은 내용이다(2026-11-17): yw-platform도 OS를 부르지 않는다(§2.3a).
+  `crates/yw-engine/clippy.toml`(2026-11-17 S2, §2.3b)은 루트 내용 + 아래로 yw-core의 것과 다르다:
+  ```toml
+  disallowed-types = [ "std::fs::File", "std::fs::OpenOptions", "std::net::TcpStream", "std::net::TcpListener",
+                       "std::net::UdpSocket", "std::process::Command", "std::time::SystemTime" ]
+  disallowed-methods = [ "std::env::var", "std::env::var_os", "std::fs::read", "std::fs::write",
+                         "std::fs::read_to_string", "std::fs::read_dir", "std::fs::remove_file",
+                         "std::fs::remove_dir_all", "std::fs::rename", "std::fs::create_dir_all",
+                         "std::fs::metadata", "std::fs::copy" ]
+  ```
+  `std::thread::spawn`과 `std::time::Instant`는 허용한다: 작업자·준비·설명·WalletConnect 작업 스레드는 이식 가능한 std 스레드이고(Android에서도 JVM에 붙지 않는다, [15](15-android.md) §3.2), `Instant`는 지역 경과 시간만 잰다. App이 정한 기한과 비교하는 시각은 `yw_platform::Clock`을 거치므로 운영은 `GetTickCount64` 기준 그대로다. 예외는 항목별 `#[expect]` 둘: 로그 줄 시각(`logging::now_unix_ms`, `SystemTime`)과 디버그 빌드 전용 `fault_point`(`env::var`, 옮겨 올 때).
 
 ### 5.2 panic 금지와 오류
 

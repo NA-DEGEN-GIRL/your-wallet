@@ -20,9 +20,9 @@ const build = [{ kind: "build", target: null }];
 
 /**
  * A workspace whose closures are exactly the allowlists: yw-core links its runtime crates and
- * builds with its build-only ones; yw-win links windows-* and yw-platform; yw-app links
- * qrcodegen and the four local crates; yw-host links yw-json and yw-win (and through yw-win,
- * yw-platform).
+ * builds with its build-only ones; yw-engine links yw-core, yw-json and yw-platform (and through
+ * yw-core, its crates); yw-win links windows-* and yw-platform; yw-app links qrcodegen and the
+ * five local crates; yw-host links yw-json and yw-win (and through yw-win, yw-platform).
  */
 function baseline() {
   const packages = [];
@@ -64,7 +64,8 @@ function baseline() {
   }
   edge(localId("yw-core"), localId("yw-json"), normal);
   edge(localId("yw-win"), localId("yw-platform"), normal);
-  for (const local of ["yw-core", "yw-json", "yw-platform", "yw-win"]) edge(localId("yw-app"), localId(local), normal);
+  for (const local of ["yw-core", "yw-json", "yw-platform"]) edge(localId("yw-engine"), localId(local), normal);
+  for (const local of ["yw-core", "yw-engine", "yw-json", "yw-platform", "yw-win"]) edge(localId("yw-app"), localId(local), normal);
   edge(localId("yw-app"), registryId("qrcodegen", "1.8.0"), normal);
   for (const local of ["yw-json", "yw-win"]) edge(localId("yw-host"), localId(local), normal);
   return {
@@ -88,6 +89,9 @@ test("a graph equal to the allowlists passes", () => {
   assert.equal(result.ok.length, Object.keys(POLICY).length);
   assert.ok(result.ok.includes("yw-json deps check OK: 0 crates (x86_64-pc-windows-msvc)"));
   assert.ok(result.ok.includes("yw-platform deps check OK: 0 crates (x86_64-pc-windows-msvc)"));
+  const coreCount = result.ok.find((line) => line.startsWith("yw-core deps check OK: "));
+  assert.ok(coreCount !== undefined);
+  assert.ok(result.ok.includes(coreCount.replace("yw-core", "yw-engine")), "yw-engine reaches exactly yw-core's crates");
   assert.ok(result.listing.some((row) => row.startsWith("yw-core\tbuild\tcc=1.4.2\t")));
 });
 
@@ -103,7 +107,15 @@ test("an unlisted crate is reported for every root that reaches it", () => {
   for (const root of ["yw-win", "yw-app", "yw-host"]) {
     assert.ok(errors.includes(`${root} -> evil=1.0.0: not in allowlist (runtime)`), root);
   }
-  assert.deepEqual(ok.map((line) => line.split(" ")[0]).sort(), ["yw-core", "yw-json", "yw-platform"]);
+  assert.deepEqual(ok.map((line) => line.split(" ")[0]).sort(), ["yw-core", "yw-engine", "yw-json", "yw-platform"]);
+});
+
+test("yw-engine may not reach yw-win or windows-sys", () => {
+  const { meta, edge } = baseline();
+  edge(localId("yw-engine"), localId("yw-win"), normal);
+  const { errors } = run(meta);
+  assert.ok(errors.includes("yw-engine -> yw-win=0.3.0: local crate not allowed here"), errors.join("\n"));
+  assert.ok(errors.includes("yw-engine -> windows-sys=0.61.2: not in allowlist (runtime)"), errors.join("\n"));
 });
 
 test("a build-only crate linked at runtime is a violation", () => {

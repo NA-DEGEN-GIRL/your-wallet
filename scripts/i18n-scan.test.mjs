@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-import { check, stringLiterals, violations } from "./i18n-scan.mjs";
+import { cataloguePaths, check, stringLiterals, violations } from "./i18n-scan.mjs";
 
 const root = join(fileURLToPath(new URL(".", import.meta.url)), "..");
 
@@ -48,6 +48,14 @@ test("JavaScript strings of every quote kind are literals", () => {
   const values = stringLiterals("const a = \"하나\"; const b = '둘'; const c = `셋`; // 넷", false)
     .map(({ value }) => value);
   assert.deepEqual(values, ["하나", "둘", "셋"]);
+});
+
+test("the yw-engine module tree is scanned under its own crate name (spec/15 §11.4 S2)", () => {
+  const paths = cataloguePaths(root, "yw_engine", "crates/yw-engine/src/lib.rs");
+  for (const path of ["yw_engine::errors::text", "yw_engine::approval::labels", "yw_engine::approval::text"]) {
+    assert.ok(paths.includes(path), path);
+  }
+  assert.ok(!cataloguePaths(root, "yw_app", "crates/yw-app/src/lib.rs").includes("yw_app::errors::text"));
 });
 
 test("the repository has no Hangul literal outside catalogues except the allowlisted files", () => {

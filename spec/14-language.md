@@ -17,8 +17,8 @@
 ## 2. 구조 (새 crate 없음)
 
 - `yw_core::lang`: `Lang { Ko = 1, En = 2 }`, `Tpl<N> { ko, en }`(자리표시 `{0}`…`{N-1}`, `fill(lang, [&str; N])`은 인자 수를 타입으로 강제), `Text = Tpl<0>`, 그리고 카탈로그 매크로 `texts!`. 한 항목에 두 언어가 나란히 있어 번역이 빠지면 컴파일되지 않고, 매크로가 만드는 `ALL`로 시험이 모든 항목을 돈다.
-- 카탈로그는 그 문구를 쓰는 모듈 옆 `text` 모듈에 둔다(§5 표 이름이 모듈 경로다). 위험 규칙은 `evm/risk/rules.rs`의 `rules!` 표에 영어 열을 더했다(`base_text(rule, lang)`). 오류 코드 문구는 `yw_app::errors::text`(`ErrorCode::text_in`·`message_in`)이다.
-- 카탈로그 목록: crate마다 한 곳에 모든 `texts!` 카탈로그를 모듈 경로와 함께 적는다(`yw_core::lang::catalogues()`, `yw_app::catalogues::catalogues()`). 시험(§4)은 이 목록으로 표와 대조하고, 스캔이 소스의 모든 `texts!` 블록이 목록에 있는지 본다. 스크린숏 투어의 장면 문구(`ui::tour`, 시험 모듈)는 앱 문구가 아니라 목록에 넣지 않는다.
+- 카탈로그는 그 문구를 쓰는 모듈 옆 `text` 모듈에 둔다(§5 표 이름이 모듈 경로다). 위험 규칙은 `evm/risk/rules.rs`의 `rules!` 표에 영어 열을 더했다(`base_text(rule, lang)`). 오류 코드 문구는 `yw_engine::errors::text`(`ErrorCode::text_in`·`message_in`)이다(2026-11-17 S2에서 yw-app에서 옮김, 그 전 이름 `yw_app::errors::text`).
+- 카탈로그 목록: crate마다 한 곳에 모든 `texts!` 카탈로그를 모듈 경로와 함께 적는다(`yw_core::lang::catalogues()`, `yw_engine::catalogues::catalogues()`, `yw_app::catalogues::catalogues()`). 2026-11-17([15] §11.4 S2): yw-engine으로 옮긴 모듈의 카탈로그는 새 모듈 경로(`yw_engine::…`)로 엔진 목록에 적는다. yw-app은 옛 경로를 재수출하지만 표 이름은 실제 모듈 경로다. 시험(§4)은 이 목록으로 표와 대조하고, 스캔이 소스의 모든 `texts!` 블록이 목록에 있는지 본다. 스크린숏 투어의 장면 문구(`ui::tour`, 시험 모듈)는 앱 문구가 아니라 목록에 넣지 않는다.
 - 오류 enum의 `Display`는 한국어 그대로다(로그·시험용). 화면은 언제나 `text_in(lang)`처럼 언어를 받는 함수를 쓴다. 한국어만 내던 이전 함수(`ErrorCode::text()` 등)는 3단계에서 없앴다.
 - yw-core는 전역 언어를 읽지 않는다: 빌더·규칙 평가가 `Lang` 인자(또는 입력 구조체의 `lang`)를 받는다. yw-app은 `settings.language`를 쓰고, 승인 창 하나에 속한 모든 것(표시, 경고, 준비 실패 문구, 재시뮬레이션)은 그 창의 `lang`(`App::approval_lang`)으로 만든다.
 - 번역하지 않는 것: dApp 메시지·typed data 이름·ABI 인수 이름·주소록 이름·토큰 심볼·사이트 이름 같은 신뢰하지 않는 텍스트, 숫자·금액·hex·base58·UTC 시각 형식(두 언어 같은 형식).
@@ -28,7 +28,7 @@
 
 ## 3. 승인 표시의 언어 ("보는 것이 서명하는 것", 언어별)
 
-- `ApprovalDisplay`에 `lang`이 있다. 제목·필드 값·sub_label·경고 문구는 모두 그 언어로 만들어진다. 승인 창은 필드 이름(`field_label(key, display.lang)`, §5 `yw_app::ui::approval::labels`), 등급 이름, 확인 체크박스, 버튼, 상태 줄을 그 언어로만 그린다. 창의 모든 글자가 (key, `display.lang`)과 표시 바이트에서 정해진다.
+- `ApprovalDisplay`에 `lang`이 있다. 제목·필드 값·sub_label·경고 문구는 모두 그 언어로 만들어진다. 승인 창은 필드 이름(`field_label(key, display.lang)`, §5 `yw_engine::approval::labels`, 2026-11-17 전 `yw_app::ui::approval::labels`), 등급 이름, 확인 체크박스, 버튼, 상태 줄을 그 언어로만 그린다. 창의 모든 글자가 (key, `display.lang`)과 표시 바이트에서 정해진다.
 - display 바이트는 `"YWDSP004" ‖ u16 1 ‖ lang u8 ‖ …`([03] §11.3): 언어가 display digest와 승인 digest에 들어간다. 같은 요청을 한국어와 영어로 만들면 두 digest가 모두 다르고, `consume`은 보인 표시의 digest로만 승인하므로 다른 언어로 만든 표시를 승인할 수 없다.
 - 순서(2026-11-14): 먼저 `lang`을 표시 모델에만 두고 `YWDSP003` 골든이 그대로 통과함을 확인한 뒤(한국어 문구 불변), 같은 날 다음 커밋에서 바이트에 묶었다. 새 한국어 골든은 이전 골든에 magic과 `lang` 바이트만 바뀐 값임을 `korean_bytes_are_v3_with_the_language_byte`가 대조한다.
 - 재시뮬레이션(`replace`)은 요청의 원래 언어로 다시 만들고, 스토어도 언어가 같을 때만 교체한다([03] §11.5).
@@ -42,7 +42,7 @@
   - `print_spec14_tables`(`--ignored --exact --nocapture`): §5 표를 코드에서 출력한다. 문구를 바꾸면 이것으로 표를 다시 만들고, 바뀐 행을 검토해 커밋한다.
   - `spec04_lists_every_error_text_in_both_languages`: 모든 `ErrorCode`의 한국어·영어 문장이 [04] §7 표의 `문구`·`English` 열에 있다(자리표시 이름은 비교하지 않는다).
 - 빌더와 화면마다 영어 표시에 한글이 없는지 보는 단위 시험이 각 모듈에 있다(`english_*`; 화면은 영어로 항목을 만들어 데이터가 아닌 글자에 한글이 없는지 본다).
-- `scripts/i18n-scan.mjs`(+ 시험, 게이트 script-test 단계): 비시험 코드(`crates/yw-core/src`, `crates/yw-platform/src`(2026-11-17 추가), `crates/yw-app/src`, `extension/src`)의 한글 문자열 리터럴은 카탈로그(`texts!`·`rules!` 블록, `ko:` 필드) 안에만 있어야 한다. 주석, `#[cfg(test)]` 항목(모듈 블록, `mod tests;` 선언, 단일 항목), tests 파일은 보지 않는다. 허용 리터럴은 언어 카드의 `언어 · Language`·`한국어`와 글꼴 측정용 `가Ay`·`가`뿐이다. 예외 목록 `scripts/i18n-allowlist.txt`는 3단계에서 비웠고 비어 있어야 한다. 같은 스캔이 모든 `texts!` 블록(모듈 경로)이 crate의 카탈로그 목록(§2)에 있고 목록에 없는 블록을 가리키지 않는지도 본다.
+- `scripts/i18n-scan.mjs`(+ 시험, 게이트 script-test 단계): 비시험 코드(`crates/yw-core/src`, `crates/yw-platform/src`(2026-11-17 추가), `crates/yw-engine/src`(2026-11-17 S2 추가), `crates/yw-app/src`, `extension/src`)의 한글 문자열 리터럴은 카탈로그(`texts!`·`rules!` 블록, `ko:` 필드) 안에만 있어야 한다. 주석, `#[cfg(test)]` 항목(모듈 블록, `mod tests;` 선언, 단일 항목), tests 파일은 보지 않는다. 허용 리터럴은 언어 카드의 `언어 · Language`·`한국어`와 글꼴 측정용 `가Ay`·`가`뿐이다. 예외 목록 `scripts/i18n-allowlist.txt`는 3단계에서 비웠고 비어 있어야 한다. 같은 스캔이 모든 `texts!` 블록(모듈 경로)이 crate의 카탈로그 목록(§2)에 있고 목록에 없는 블록을 가리키지 않는지도 본다.
 
 ## 5. 카탈로그 표 (영어 문구 전문)
 
@@ -1232,6 +1232,220 @@
 | UPGRADE_TOO_CLOSE | 네트워크 업그레이드가 곧(블록 {0}) 활성화됩니다. 활성화된 뒤에 다시 보내세요. | A network upgrade activates soon (block {0}). Send again after it activates. |
 | UPGRADE_TIP | 노드의 블록 높이가 올바르지 않습니다. | The node's block height is invalid. |
 
+<!-- catalogue: yw_engine::approval::labels -->
+
+| 이름 | 한국어 | English |
+|---|---|---|
+| ORIGIN | 요청 출처 | Requested by |
+| NETWORK | 네트워크 | Network |
+| ACCOUNT | 서명 계정 | Signing account |
+| TO | 받는 주소/컨트랙트 | To (address/contract) |
+| VALUE | 보내는 금액 | Amount sent |
+| CALL | 호출 내용 | Call |
+| CALL_ARG | 호출 인수 | Call argument |
+| SENT | 보냄 | You send |
+| RECEIVED | 받음 | You receive |
+| APPROVAL | 승인 변경 | Approval change |
+| OTHER_EVENTS | 기타 이벤트 | Other events |
+| MAX_FEE | 최대 수수료 | Max fee |
+| EXPECTED_FEE | 예상 수수료 | Expected fee |
+| FEE_PARAMS | maxFee/tip | maxFee/tip |
+| GAS_LIMIT | 가스 한도 | Gas limit |
+| NONCE | nonce | nonce |
+| REPLACES_TX | 대체 대상 거래 | Replaces transaction |
+| SIMULATION | 시뮬레이션 기준 | Simulated at |
+| ACCESS_LIST | 액세스 리스트 | Access list |
+| CALLDATA | calldata | calldata |
+| DOMAIN | 도메인 | Domain |
+| SCHEMA | 형식 | Format |
+| TD_FIELD | 구조화 필드 | Field |
+| TD_TREE | 필드 트리 | Field tree |
+| MESSAGE_TEXT | 메시지 텍스트 | Message text |
+| MESSAGE_HEX | 메시지 hex | Message hex |
+| MESSAGE_BYTES | 바이트 수 | Bytes |
+| SIWE_FIELD | SIWE 필드 | SIWE field |
+| SIWS_FIELD | SIWS 필드 | SIWS field |
+| MESSAGE_FORMAT | 서명 방식 | Signature format |
+| RECIPIENT | 받는 주소 | Recipient |
+| ASSET_AMOUNT | 자산·금액 | Asset · amount |
+| ATA | ATA 생성 | Create token account (ATA) |
+| FEE | 수수료 | Fee |
+| MAX_TOTAL | 최대 총 차감 | Max total deducted |
+| BALANCE_RPC | 잔액 (RPC 참고) | Balance (RPC, reference) |
+| SIMULATION_REFERENCE | 시뮬레이션 (참고) | Simulation (reference) |
+| VALIDITY | 유효 시간 | Valid until |
+| AUDIT | 감사 | Audit |
+| REQUEST | 요청 | Request |
+| SIGNERS | 서명자·수수료 지불 | Signers · fee payer |
+| INSTRUCTIONS | 명령 | Instructions |
+| WRITABLE | 쓰기 가능한 계정 | Writable accounts |
+| LOOKUPS | 조회 테이블 (RPC) | Lookup tables (RPC) |
+| CHANGES | 자산·권한 변화 (시뮬레이션 참고) | Asset and authority changes (simulation, reference) |
+| SEND_OPTIONS | 전송 방식 | Send options |
+| AUDIT_MESSAGE | 감사 (메시지 SHA-256) | Audit (message SHA-256) |
+| RAW_MESSAGE | 원본 메시지 | Raw message |
+| ADDRESS_TYPE | 주소 종류 | Address type |
+| AMOUNT | 금액 | Amount |
+| CHANGE | 잔돈 | Change |
+| INPUTS | 입력 | Inputs |
+| TOTAL | 총 차감 | Total deducted |
+| EXPIRY_HEIGHT | 만료 높이 | Expiry height |
+| BALANCE_AFTER | 승인 후 잔액 | Balance after approval |
+| REPLACES | 교체 대상 | Replaces |
+| ADVANCED | 고급 | Advanced |
+| ACTION | 작업 | Action |
+| TOKEN_AMOUNT | 토큰·금액 | Token · amount |
+| HC_NONCE | nonce (time) | nonce (time) |
+| HC_TYPED | 원본 typed data (EIP-712) | Raw typed data (EIP-712) |
+
+<!-- catalogue: yw_engine::approval::text -->
+
+| 이름 | 한국어 | English |
+|---|---|---|
+| TITLE_APPROVAL | Your Wallet — 승인 요청 | Your Wallet — Approval request |
+| TITLE_CONNECT | Your Wallet — 사이트 연결 | Your Wallet — Connect site |
+| APPROVE | 승인 | Approve |
+| APPROVE_HOLD | 승인 (2초 길게 누르기) | Approve (hold 2 s) |
+| CONNECT | 연결 | Connect |
+| CANNOT_APPROVE | 승인할 수 없음 | Cannot approve |
+| SIMULATING_BUTTON | 시뮬레이션 중… | Simulating… |
+| REJECT | 거부 | Reject |
+| ACK | 위 경고를 모두 확인했습니다 | I have read all the warnings above |
+| DETAILS_OPEN | 자세히 ▾  (나머지 항목·원본 데이터) | Details ▾  (other fields · raw data) |
+| DETAILS_CLOSED | 자세히 ▸  (나머지 항목·원본 데이터) | Details ▸  (other fields · raw data) |
+| SUMMARY | 요약 | Summary |
+| RETRY_SIMULATION | 시뮬레이션 다시 시도 | Retry simulation |
+| LEVEL_HIGH | 고위험 | High risk |
+| LEVEL_BLOCKED | 차단 | Blocked |
+| LEVEL_CAUTION | 주의 | Caution |
+| LEVEL_INFO | 정보 | Info |
+| REMAINING | 남은 시간 {0} | Time left {0} |
+| WAITING | 대기 {0}건 | {0} waiting |
+| HELD | {0}.{1}초 | {0}.{1} s |
+| CHECKING | 확인 중… | Checking… |
+| SIMULATING_START | 시뮬레이션 중… (0/10초) | Simulating… (0/10 s) |
+| AI_SKIP_BLOCKED | 승인할 수 없는 요청이라 AI 설명을 요청하지 않았습니다. | The request cannot be approved, so no AI explanation was requested. |
+| AI_SKIP_FAILED | 요청을 준비하지 못해 AI 설명을 요청하지 않았습니다. | The request could not be prepared, so no AI explanation was requested. |
+| SIM_CHANGED | 시뮬레이션 결과가 바뀌었습니다 | The simulation result changed |
+| SIM_CHANGED_STEP | . 다시 확인하세요 | . Check again |
+| SIM_RESIM_FAILED | 다시 실행한 시뮬레이션이 성공하지 못했습니다 | The re-run simulation did not succeed |
+| SIM_RESIM_FAILED_STEP | . 경고를 확인하고 다시 승인하세요. | . Check the warnings and approve again. |
+| ARM_WAIT | 잠시 뒤 버튼이 켜집니다 (실수 클릭을 막는 1초 대기) | The button turns on in a moment (a 1 s wait against accidental clicks) |
+| ARM_WAIT_BACKGROUND | 이 창을 클릭해 앞으로 가져오면 1초 뒤 버튼이 켜집니다 | Click this window to bring it to the front; the button turns on 1 s later |
+| ACK_FIRST | 경고를 읽고 아래 '위 경고를 모두 확인했습니다'에 체크하세요 | Read the warnings and tick 'I have read all the warnings above' below |
+| HOLD_NOW | '승인'을 2초 동안 누르고 있으세요 | Hold down 'Approve' for 2 seconds |
+| HOLD_EARLY | 2초가 되기 전에 놓았습니다 — 다시 2초 동안 누르세요 | Released before 2 seconds — hold it again for 2 seconds |
+| CONNECT_PICK | 연결할 계정을 하나 이상 고르세요 | Choose at least one account to connect |
+| BADGE_DEVNET | Solana devnet (테스트) — 실제 자산이 아닙니다 | Solana devnet (test) — not real assets |
+| BADGE_TESTNET | 테스트넷 — 실제 자산이 아닙니다 | Testnet — not real assets |
+| BADGE_MAINNET | 메인넷 — 실제 자산 | Mainnet — real assets |
+| BADGE_HC_TESTNET | HyperCore 테스트넷 — 실제 자산이 아닙니다 | HyperCore testnet — not real assets |
+| BADGE_WALLETCONNECT | WalletConnect 세션 | WalletConnect session |
+| BADGE_HTTP | 로컬 개발 사이트(http) | Local development site (http) |
+| BADGE_PUNYCODE | 국제화 도메인(punycode) | Internationalized domain (punycode) |
+| BADGE_PUNYCODE_CHECK | 국제화 도메인(punycode) — 주소를 다시 확인하세요 | Internationalized domain (punycode) — check the address again |
+| BADGE_COMPAT | 호환 모드: {0} | Compatibility mode: {0} |
+| BADGE_CUSTOM_CHAIN | 사용자 추가 체인 (chainId {0}) | User-added chain (chainId {0}) |
+| BADGE_YUBIKEY | YubiKey로 서명 | Signed with YubiKey |
+| BADGE_TOUCHES |  · 터치 {0}회 |  · {0} touch(es) |
+| SECTION_CHANGES | 자산 변화 (시뮬레이션 결과) | Asset changes (simulation result) |
+| CHANGES_PARTIAL | 시뮬레이션에서 확인된 부분만 표시합니다. | Only what the simulation confirmed is shown. |
+| CHANGES_NONE | 시뮬레이션 결과가 없어 자산 변화를 표시할 수 없습니다. | There is no simulation result, so asset changes cannot be shown. |
+| SECTION_SOL_TX_MONEY | 자산 변화·수수료 (시뮬레이션 참고) | Asset changes · fee (simulation, reference) |
+| SECTION_MONEY | 금액·수수료 | Amount · fee |
+| FEE | 수수료 | Fee |
+| FEE_EXPECTED | 예상 {0} (최대 {1}) | Expected {0} (max {1}) |
+| FEE_MAX | 최대 {0} | Max {0} |
+| SECTION_WARNINGS | 확인할 경고 | Warnings to check |
+| ACK_HINT | 맨 위의 고위험 경고를 읽고, 이해했으면 아래에 체크하세요. | Read the high-risk warning at the top and, if you understand it, tick the box below. |
+| SECTION_KEY | 핵심 정보 | Key details |
+| SUB_LOGIN | 로그인 내용 | Log-in details |
+| SUB_MESSAGE | 메시지 원문 | Original message |
+| SECTION_NOTES | 참고 | Notes |
+| REMARK | 참고: {0} | Note: {0} |
+| ADDRESS_NOTE | 받는 주소: {0} | Recipient: {0} |
+| PREPARING | 요청을 준비하는 중입니다… | Preparing the request… |
+| SIMULATING | 시뮬레이션 중… ({0}/10초) | Simulating… ({0}/10 s) |
+| TOKEN | 토큰 | token |
+| PLACE | {0}에서  | On {0}:  |
+| REVOKE | {0}아래 주소의 권한을 거둡니다(승인 해제). | {0}Revokes the permission of the address below (approval revoked). |
+| GRANT_TOKEN | {0}아래 주소에 {1} 사용 권한을 줍니다: {2}. | {0}Gives the address below permission to spend {1}: {2}. |
+| GRANT_INCREASE_ZERO | {0}아래 주소의 {1} 사용 권한을 늘리는 거래이지만 늘리는 양이 0이라 이미 준 권한은 그대로입니다(승인 해제가 아닙니다). | {0}A transaction that increases the {1} allowance of the address below, but by 0, so the permission already given stays as it is (this is not a revoke). |
+| GRANT_INCREASE | {0}아래 주소의 {1} 사용 권한을 늘립니다: +{2} (이미 준 권한에 더해집니다). | {0}Increases the {1} allowance of the address below: +{2} (added to the permission already given). |
+| GRANT_FOR_ALL | {0}아래 주소에 이 컬렉션 NFT 전체를 옮길 권한을 줍니다. | {0}Gives the address below permission to move every NFT of this collection. |
+| GRANT_PERMIT2_TX | {0}아래 주소가 {1} {2} 쓸 수 있게 하는 거래입니다. | {0}A transaction that lets the address below spend {1} {2}. |
+| PERMIT_SIG | {0}아래 주소가 {1} 가져갈 수 있게 하는 서명입니다. 거래 없이 서명만으로 쓰일 수 있습니다. | {0}A signature that lets the address below take {1}. It can be used with the signature alone, without a transaction. |
+| PERMIT2_BATCH | {0}아래 주소가 토큰 {1}종을 쓸 수 있게 하는 서명입니다. | {0}A signature that lets the address below spend {1} kinds of tokens. |
+| PERMIT2_SIG | {0}아래 주소가 {1} {2} 쓸 수 있게 하는 서명입니다. | {0}A signature that lets the address below spend {1} {2}. |
+| PERMIT2_TRANSFER | {0}아래 주소가 {1} 바로 가져갈 수 있게 하는 서명입니다. | {0}A signature that lets the address below take {1} at once. |
+| TOKEN_KINDS | 토큰 {0}종을 | {0} kinds of tokens |
+| HL_AGENT | {0}아래 주소(API 지갑)에 내 계정으로 주문·취소할 권한을 줍니다. | {0}Gives the address below (an API wallet) permission to place and cancel orders for your account. |
+| UNLIMITED_OBJECT | {0}{1} 무제한으로 | an unlimited amount of {0} |
+| UNTIL | {0}까지 | until {0} |
+| NO_TIME_LIMIT | 기한 없이 | with no time limit |
+| PERSONAL | {0}메시지에 서명합니다. 거래를 보내지는 않지만, 서명은 로그인이나 권한 확인에 쓰일 수 있습니다. | {0}Signs a message. It sends no transaction, but the signature can be used for a log-in or a permission check. |
+| SIWE | {0}{1} 사이트 로그인(Sign-In with Ethereum) 메시지에 서명합니다. 거래를 보내지는 않습니다. | {0}Signs a site log-in message (Sign-In with Ethereum) for {1}. It sends no transaction. |
+| TYPED_GENERIC | {0}구조화된 데이터(EIP-712)에 서명합니다. 토큰 사용 권한(permit) 같은 권한을 줄 수 있으니 아래 내용을 확인하세요. | {0}Signs structured data (EIP-712). It can grant permissions such as a token permit, so check the content below. |
+| TYPED_ACTION | {0}'{1}'에 서명합니다(EIP-712). 서명만으로 권한이나 자산이 넘어갈 수 있으니 아래 경고와 내용을 확인하세요. | {0}Signs '{1}' (EIP-712). The signature alone can hand over permissions or assets, so check the warnings and content below. |
+| SEND | {0}{1}{2} 아래 주소로 보냅니다. | {0}Sends {1} to the address below. |
+| SEND_ASSET | {0}{1} 보냅니다. | {0}Sends {1}. |
+| ASSET_SOL | SOL을 | SOL |
+| ASSET_BTC | BTC를 | BTC |
+| ASSET_ZEC | ZEC를 | ZEC |
+| SIWB | {0}{1} 사이트 로그인(Sign-In with Bitcoin) 메시지에 서명합니다. 거래 서명이나 전송은 하지 않습니다. | {0}Signs a site log-in message (Sign-In with Bitcoin) for {1}. It does not sign or send a transaction. |
+| CONTRACT_CALL | {0}컨트랙트를 호출합니다: {1}. 아래 자산 변화와 경고를 확인하세요. | {0}Calls a contract: {1}. Check the asset changes and warnings below. |
+| SPEED_UP | {0}아직 확정되지 않은 거래를 더 높은 수수료로 다시 보냅니다(가속). | {0}Sends an unconfirmed transaction again with a higher fee (speed up). |
+| CANCEL | {0}아직 확정되지 않은 거래를 취소합니다(같은 nonce로 0을 보내는 거래). | {0}Cancels an unconfirmed transaction (a transaction that sends 0 with the same nonce). |
+| FEE_BUMP | {0}아직 확정되지 않은 거래의 수수료를 올려 다시 보냅니다. | {0}Sends an unconfirmed transaction again with a higher fee. |
+| OWNERSHIP | {0}메시지에 서명해 이 주소의 소유를 증명합니다. 거래 서명이나 전송은 하지 않습니다. | {0}Signs a message to prove that you own this address. It does not sign or send a transaction. |
+| HYPERCORE | {0}Hyperliquid HyperCore 작업에 서명합니다: {1}. 서명하면 Hyperliquid가 바로 처리하며 되돌릴 수 없습니다. | {0}Signs a Hyperliquid HyperCore action: {1}. Once signed, Hyperliquid processes it immediately and it cannot be undone. |
+| SIWS | {0}사이트 로그인(Sign-In-With-Solana) 메시지에 서명합니다. 거래 서명이나 전송은 하지 않습니다. | {0}Signs a site log-in message (Sign-In-With-Solana). It does not sign or send a transaction. |
+| SOL_TX_SEND | {0}사이트가 만든 Solana 거래에 서명하고 지갑이 바로 전송합니다. 되돌릴 수 없습니다. | {0}Signs a Solana transaction made by the site, and the wallet sends it at once. This cannot be undone. |
+| SOL_TX_SIGN | {0}사이트가 만든 Solana 거래 {1}건에 서명해 사이트에 돌려줍니다. 지갑은 전송하지 않습니다. | {0}Signs {1} Solana transaction(s) made by the site and returns them to the site. The wallet does not send them. |
+| CONNECT_EVM | 이 사이트는 선택한 계정의 주소, 잔액, 거래 기록을 볼 수 있습니다. 서명과 전송은 매번 따로 승인합니다. | This site can see the address, balance and transaction history of the accounts you choose. Every signature and send is approved separately. |
+| CONNECT_SOL | 이 사이트는 선택한 계정의 공개키를 볼 수 있습니다. 메시지 서명과 거래 서명·전송은 매번 따로 승인합니다. | This site can see the public key of the account you choose. Every message signature and transaction signature or send is approved separately. |
+| CONNECT_BTC | 이 사이트는 선택한 주소와 공개키를 볼 수 있습니다. 이 지갑은 Bitcoin에서 메시지 서명(소유 증명)만 지원하며, 거래 서명과 전송은 할 수 없습니다. 메시지 서명은 매번 따로 승인합니다. | This site can see the addresses and public keys you choose. On Bitcoin this wallet only supports message signatures (proof of ownership); it cannot sign or send transactions. Every message signature is approved separately. |
+| CONNECT_SECTION_EVM | 연결할 계정 (1–16개) | Accounts to connect (1–16) |
+| CONNECT_SECTION_SOL | 연결할 Solana 계정 (1개) | Solana account to connect (1) |
+| CONNECT_SECTION_BTC | 연결할 Bitcoin 주소 (용도마다 1개, 받기 주소 0번) | Bitcoin addresses to connect (1 per purpose, receive address 0) |
+| CONNECT_LIMIT | 한 사이트에 연결할 수 있는 계정은 16개까지입니다. | At most 16 accounts can be connected to one site. |
+| CONNECT_DEFAULT | 사이트가 기본으로 쓰는 계정: {0} (체크한 계정 중 목록의 첫 계정) | Account the site uses by default: {0} (the first checked account in the list) |
+| CONNECT_NETWORK | 현재 네트워크 | Current network |
+| CONNECT_ORIGIN | 요청 출처 | Requested by |
+
+<!-- catalogue: yw_engine::yubikey::text -->
+
+| 이름 | 한국어 | English |
+|---|---|---|
+| NAME_OPENPGP_ADMIN | OpenPGP 관리자 PIN | OpenPGP admin PIN |
+| NAME_PIV_MANAGEMENT | PIV 관리 키(PIN 보호) | PIV management key (PIN-protected) |
+| TITLE_CHANGE_OPENPGP_PIN | OpenPGP PIN 바꾸기 | Change OpenPGP PIN |
+| TITLE_CHANGE_ADMIN_PIN | OpenPGP 관리자 PIN 바꾸기 | Change OpenPGP admin PIN |
+| TITLE_CHANGE_PIV_PIN | PIV PIN 바꾸기 | Change PIV PIN |
+| TITLE_CHANGE_PIV_PUK | PIV PUK 바꾸기 | Change PIV PUK |
+| RULE_OPENPGP_PIN | 영문·숫자·기호(ASCII) 6–127자입니다(공장 기본값 123456). | Letters, digits and symbols (ASCII), 6–127 characters (factory default 123456). |
+| RULE_ADMIN_PIN | 영문·숫자·기호(ASCII) 8–127자입니다(공장 기본값 12345678). | Letters, digits and symbols (ASCII), 8–127 characters (factory default 12345678). |
+| RULE_PIV_PIN | 영문·숫자·기호(ASCII) 6–8자입니다(공장 기본값 123456). | Letters, digits and symbols (ASCII), 6–8 characters (factory default 123456). |
+| RULE_PIV_PUK | 영문·숫자·기호(ASCII) 6–8자입니다(공장 기본값 12345678). | Letters, digits and symbols (ASCII), 6–8 characters (factory default 12345678). |
+| WRONG_LAST | {0}이 틀렸습니다. 남은 시도 1회 — 한 번 더 틀리면 잠깁니다. | Wrong {0}. 1 try left — one more mistake locks it. |
+| WRONG | {0}이 틀렸습니다. 남은 시도 {1}회. | Wrong {0}. {1} tries left. |
+| COUNTER_LOCKED | {0}: 잠김 — 남은 시도가 없습니다. | {0}: locked — no tries left. |
+| COUNTER_LAST | {0}: 남은 시도 1회 — 한 번 더 틀리면 잠깁니다. | {0}: 1 try left — one more mistake locks it. |
+| COUNTER | {0}: 남은 시도 {1}회 | {0}: {1} tries left |
+| BLOCKED_PW1 | OpenPGP PIN이 잠겼습니다. 관리자 PIN으로 풀 수 있습니다(ykman openpgp access unblock-pin). 관리자 PIN도 모르면 설정 → YubiKey의 'YubiKey의 키 지우기…'에서 OpenPGP 애플릿 초기화 뒤 다시 등록하세요. | The OpenPGP PIN is locked. You can unlock it with the admin PIN (ykman openpgp access unblock-pin). If you do not know the admin PIN either, reset the OpenPGP applet in Settings → YubiKey → 'Erase keys on the YubiKey…' and enrol again. |
+| BLOCKED_PW3 | OpenPGP 관리자 PIN이 잠겼습니다. 서명은 지금처럼 OpenPGP PIN으로 됩니다. 키 넣기·슬롯 구성 바꾸기·PIN 풀기만 막히며, 다시 쓰려면 OpenPGP 초기화(그 애플릿의 키가 지워짐)가 필요합니다. | The OpenPGP admin PIN is locked. Signing still works with the OpenPGP PIN. Only importing keys, changing the slot layout and unlocking PINs are blocked; using them again needs an OpenPGP reset (which erases that applet's keys). |
+| BLOCKED_PIV_PIN | PIV PIN이 잠겼습니다. PUK로 풀 수 있습니다(ykman piv access unblock-pin). | The PIV PIN is locked. You can unlock it with the PUK (ykman piv access unblock-pin). |
+| BLOCKED_PUK | PIV PUK이 잠겼습니다. 이제 PIV PIN이 잠기면 PIV 초기화 말고는 방법이 없으니 PIV PIN을 잊지 마세요. | The PIV PUK is locked. If the PIV PIN now locks, only a PIV reset is left, so do not forget the PIV PIN. |
+| BACKUP_SIGNS | 백업 YubiKey {0}{1} 계속 서명할 수 있습니다. | Backup YubiKey {0} can keep signing. |
+| BLOCKED_PW3_ONLY_HERE | OpenPGP 관리자 PIN이 잠겼습니다. 서명은 지금처럼 OpenPGP PIN으로 됩니다. 키 넣기·슬롯 구성 바꾸기·PIN 풀기만 막힙니다. 다시 쓰려면 OpenPGP 초기화(그 애플릿의 키가 지워짐)가 필요하지만, 이 카드의 키는 복구 단어가 없어 초기화하면 영구히 사라지니 초기화하지 마세요. | The OpenPGP admin PIN is locked. Signing still works with the OpenPGP PIN. Only importing keys, changing the slot layout and unlocking PINs are blocked. Using them again needs an OpenPGP reset (which erases that applet's keys), but this card's keys have no recovery words and a reset would lose them for good, so do not reset. |
+| BLOCKED_PW1_ONLY_HERE | OpenPGP PIN이 잠겼습니다. 이 키는 복구 단어가 없어 초기화하면 영구히 사라집니다. 관리자 PIN으로 PIN을 푸는 방법(ykman openpgp access unblock-pin)만 쓰고 초기화하지 마세요. | The OpenPGP PIN is locked. This key has no recovery words, so a reset would lose it for good. Only unlock the PIN with the admin PIN (ykman openpgp access unblock-pin); do not reset. |
+| BLOCKED_PW1_WORDS | OpenPGP PIN이 잠겼습니다. 관리자 PIN으로 풀 수 있습니다(ykman openpgp access unblock-pin). 관리자 PIN도 모르면 OpenPGP 초기화 뒤 같은 복구 단어로 다시 등록하세요. | The OpenPGP PIN is locked. You can unlock it with the admin PIN (ykman openpgp access unblock-pin). If you do not know the admin PIN either, reset OpenPGP and enrol again with the same recovery words. |
+| BLOCKED_PW1_PLAIN | OpenPGP PIN이 잠겼습니다. 관리자 PIN으로 풀 수 있습니다(ykman openpgp access unblock-pin). | The OpenPGP PIN is locked. You can unlock it with the admin PIN (ykman openpgp access unblock-pin). |
+| BLOCKED_PIV_ONLY_HERE | PIV PIN이 잠겼습니다. 이 Solana 키는 복구 단어가 없어 PIV 초기화하면 영구히 사라집니다. PUK로 PIN을 푸는 방법(ykman piv access unblock-pin)만 쓰고 초기화하지 마세요. | The PIV PIN is locked. This Solana key has no recovery words, so a PIV reset would lose it for good. Only unlock the PIN with the PUK (ykman piv access unblock-pin); do not reset. |
+| BLOCKED_PIV_WORDS | PIV PIN이 잠겼습니다. PUK로 풀 수 있습니다(ykman piv access unblock-pin). PUK도 잠기면 PIV 초기화(Solana 키 삭제) 뒤 같은 복구 단어로 다시 등록하세요. | The PIV PIN is locked. You can unlock it with the PUK (ykman piv access unblock-pin). If the PUK is locked too, reset PIV (erases the Solana keys) and enrol again with the same recovery words. |
+| BLOCKED_PUK_ONLY_HERE | PIV PUK이 잠겼습니다. 이제 PIV PIN까지 잠기면 PIV 초기화(Solana 키 삭제)밖에 없고, 이 Solana 키는 복구 단어가 없어 그때 영구히 사라집니다. PIV PIN을 잊지 마세요. | The PIV PUK is locked. If the PIV PIN now locks too, only a PIV reset (erases the Solana keys) is left, and this Solana key has no recovery words, so it would then be lost for good. Do not forget the PIV PIN. |
+| BLOCKED_PUK_RESET | PIV PUK이 잠겼습니다. 이제 PIV PIN이 잠기면 PIV 초기화(Solana 키 삭제) 말고는 방법이 없으니 PIV PIN을 잊지 마세요. | The PIV PUK is locked. If the PIV PIN now locks, only a PIV reset (erases the Solana keys) is left, so do not forget the PIV PIN. |
+
 <!-- catalogue: yw_app::apikeys::text -->
 
 | 이름 | 한국어 | English |
@@ -2129,187 +2343,6 @@
 | 이름 | 한국어 | English |
 |---|---|---|
 | README_HEAD | Your Wallet — 지갑 초기화로 옮긴 파일\r\n\r\n이 폴더의 파일은 '지갑 초기화' 때 데이터 폴더에서 옮겨 온 것입니다. 지우지 않았습니다.\r\n되돌리려면: 앱을 완전히 종료하고, 데이터 폴더(이 폴더의 상위 폴더)에 새로 생긴 vault.ywv·meta.ywm·journal.ywj가 있으면\r\n먼저 다른 폴더로 옮긴 뒤, 아래 파일을 이 폴더에서 데이터 폴더로 옮기세요. 예전 비밀번호로 열립니다.\r\n자세한 방법: docs/recovery-guide.ko.md '지갑 초기화 되돌리기'.\r\n\r\n옮긴 파일:\r\n | Your Wallet — files moved by a wallet reset\r\n\r\nThe files in this folder were moved here from the data folder by 'Reset wallet'. Nothing was deleted.\r\nTo undo: quit the app completely; if the data folder (the parent of this folder) has a new vault.ywv, meta.ywm or journal.ywj,\r\nfirst move those to another folder, then move the files below from this folder back to the data folder. They open with the old password.\r\nDetails: docs/recovery-guide.ko.md (undoing a wallet reset).\r\n\r\nMoved files:\r\n |
-
-<!-- catalogue: yw_app::ui::approval::labels -->
-
-| 이름 | 한국어 | English |
-|---|---|---|
-| ORIGIN | 요청 출처 | Requested by |
-| NETWORK | 네트워크 | Network |
-| ACCOUNT | 서명 계정 | Signing account |
-| TO | 받는 주소/컨트랙트 | To (address/contract) |
-| VALUE | 보내는 금액 | Amount sent |
-| CALL | 호출 내용 | Call |
-| CALL_ARG | 호출 인수 | Call argument |
-| SENT | 보냄 | You send |
-| RECEIVED | 받음 | You receive |
-| APPROVAL | 승인 변경 | Approval change |
-| OTHER_EVENTS | 기타 이벤트 | Other events |
-| MAX_FEE | 최대 수수료 | Max fee |
-| EXPECTED_FEE | 예상 수수료 | Expected fee |
-| FEE_PARAMS | maxFee/tip | maxFee/tip |
-| GAS_LIMIT | 가스 한도 | Gas limit |
-| NONCE | nonce | nonce |
-| REPLACES_TX | 대체 대상 거래 | Replaces transaction |
-| SIMULATION | 시뮬레이션 기준 | Simulated at |
-| ACCESS_LIST | 액세스 리스트 | Access list |
-| CALLDATA | calldata | calldata |
-| DOMAIN | 도메인 | Domain |
-| SCHEMA | 형식 | Format |
-| TD_FIELD | 구조화 필드 | Field |
-| TD_TREE | 필드 트리 | Field tree |
-| MESSAGE_TEXT | 메시지 텍스트 | Message text |
-| MESSAGE_HEX | 메시지 hex | Message hex |
-| MESSAGE_BYTES | 바이트 수 | Bytes |
-| SIWE_FIELD | SIWE 필드 | SIWE field |
-| SIWS_FIELD | SIWS 필드 | SIWS field |
-| MESSAGE_FORMAT | 서명 방식 | Signature format |
-| RECIPIENT | 받는 주소 | Recipient |
-| ASSET_AMOUNT | 자산·금액 | Asset · amount |
-| ATA | ATA 생성 | Create token account (ATA) |
-| FEE | 수수료 | Fee |
-| MAX_TOTAL | 최대 총 차감 | Max total deducted |
-| BALANCE_RPC | 잔액 (RPC 참고) | Balance (RPC, reference) |
-| SIMULATION_REFERENCE | 시뮬레이션 (참고) | Simulation (reference) |
-| VALIDITY | 유효 시간 | Valid until |
-| AUDIT | 감사 | Audit |
-| REQUEST | 요청 | Request |
-| SIGNERS | 서명자·수수료 지불 | Signers · fee payer |
-| INSTRUCTIONS | 명령 | Instructions |
-| WRITABLE | 쓰기 가능한 계정 | Writable accounts |
-| LOOKUPS | 조회 테이블 (RPC) | Lookup tables (RPC) |
-| CHANGES | 자산·권한 변화 (시뮬레이션 참고) | Asset and authority changes (simulation, reference) |
-| SEND_OPTIONS | 전송 방식 | Send options |
-| AUDIT_MESSAGE | 감사 (메시지 SHA-256) | Audit (message SHA-256) |
-| RAW_MESSAGE | 원본 메시지 | Raw message |
-| ADDRESS_TYPE | 주소 종류 | Address type |
-| AMOUNT | 금액 | Amount |
-| CHANGE | 잔돈 | Change |
-| INPUTS | 입력 | Inputs |
-| TOTAL | 총 차감 | Total deducted |
-| EXPIRY_HEIGHT | 만료 높이 | Expiry height |
-| BALANCE_AFTER | 승인 후 잔액 | Balance after approval |
-| REPLACES | 교체 대상 | Replaces |
-| ADVANCED | 고급 | Advanced |
-| ACTION | 작업 | Action |
-| TOKEN_AMOUNT | 토큰·금액 | Token · amount |
-| HC_NONCE | nonce (time) | nonce (time) |
-| HC_TYPED | 원본 typed data (EIP-712) | Raw typed data (EIP-712) |
-
-<!-- catalogue: yw_app::ui::approval_text -->
-
-| 이름 | 한국어 | English |
-|---|---|---|
-| TITLE_APPROVAL | Your Wallet — 승인 요청 | Your Wallet — Approval request |
-| TITLE_CONNECT | Your Wallet — 사이트 연결 | Your Wallet — Connect site |
-| APPROVE | 승인 | Approve |
-| APPROVE_HOLD | 승인 (2초 길게 누르기) | Approve (hold 2 s) |
-| CONNECT | 연결 | Connect |
-| CANNOT_APPROVE | 승인할 수 없음 | Cannot approve |
-| SIMULATING_BUTTON | 시뮬레이션 중… | Simulating… |
-| REJECT | 거부 | Reject |
-| ACK | 위 경고를 모두 확인했습니다 | I have read all the warnings above |
-| DETAILS_OPEN | 자세히 ▾  (나머지 항목·원본 데이터) | Details ▾  (other fields · raw data) |
-| DETAILS_CLOSED | 자세히 ▸  (나머지 항목·원본 데이터) | Details ▸  (other fields · raw data) |
-| SUMMARY | 요약 | Summary |
-| RETRY_SIMULATION | 시뮬레이션 다시 시도 | Retry simulation |
-| LEVEL_HIGH | 고위험 | High risk |
-| LEVEL_BLOCKED | 차단 | Blocked |
-| LEVEL_CAUTION | 주의 | Caution |
-| LEVEL_INFO | 정보 | Info |
-| REMAINING | 남은 시간 {0} | Time left {0} |
-| WAITING | 대기 {0}건 | {0} waiting |
-| HELD | {0}.{1}초 | {0}.{1} s |
-| CHECKING | 확인 중… | Checking… |
-| SIMULATING_START | 시뮬레이션 중… (0/10초) | Simulating… (0/10 s) |
-| AI_SKIP_BLOCKED | 승인할 수 없는 요청이라 AI 설명을 요청하지 않았습니다. | The request cannot be approved, so no AI explanation was requested. |
-| AI_SKIP_FAILED | 요청을 준비하지 못해 AI 설명을 요청하지 않았습니다. | The request could not be prepared, so no AI explanation was requested. |
-| SIM_CHANGED | 시뮬레이션 결과가 바뀌었습니다 | The simulation result changed |
-| SIM_CHANGED_STEP | . 다시 확인하세요 | . Check again |
-| SIM_RESIM_FAILED | 다시 실행한 시뮬레이션이 성공하지 못했습니다 | The re-run simulation did not succeed |
-| SIM_RESIM_FAILED_STEP | . 경고를 확인하고 다시 승인하세요. | . Check the warnings and approve again. |
-| ARM_WAIT | 잠시 뒤 버튼이 켜집니다 (실수 클릭을 막는 1초 대기) | The button turns on in a moment (a 1 s wait against accidental clicks) |
-| ARM_WAIT_BACKGROUND | 이 창을 클릭해 앞으로 가져오면 1초 뒤 버튼이 켜집니다 | Click this window to bring it to the front; the button turns on 1 s later |
-| ACK_FIRST | 경고를 읽고 아래 '위 경고를 모두 확인했습니다'에 체크하세요 | Read the warnings and tick 'I have read all the warnings above' below |
-| HOLD_NOW | '승인'을 2초 동안 누르고 있으세요 | Hold down 'Approve' for 2 seconds |
-| HOLD_EARLY | 2초가 되기 전에 놓았습니다 — 다시 2초 동안 누르세요 | Released before 2 seconds — hold it again for 2 seconds |
-| CONNECT_PICK | 연결할 계정을 하나 이상 고르세요 | Choose at least one account to connect |
-| BADGE_DEVNET | Solana devnet (테스트) — 실제 자산이 아닙니다 | Solana devnet (test) — not real assets |
-| BADGE_TESTNET | 테스트넷 — 실제 자산이 아닙니다 | Testnet — not real assets |
-| BADGE_MAINNET | 메인넷 — 실제 자산 | Mainnet — real assets |
-| BADGE_HC_TESTNET | HyperCore 테스트넷 — 실제 자산이 아닙니다 | HyperCore testnet — not real assets |
-| BADGE_WALLETCONNECT | WalletConnect 세션 | WalletConnect session |
-| BADGE_HTTP | 로컬 개발 사이트(http) | Local development site (http) |
-| BADGE_PUNYCODE | 국제화 도메인(punycode) | Internationalized domain (punycode) |
-| BADGE_PUNYCODE_CHECK | 국제화 도메인(punycode) — 주소를 다시 확인하세요 | Internationalized domain (punycode) — check the address again |
-| BADGE_COMPAT | 호환 모드: {0} | Compatibility mode: {0} |
-| BADGE_CUSTOM_CHAIN | 사용자 추가 체인 (chainId {0}) | User-added chain (chainId {0}) |
-| BADGE_YUBIKEY | YubiKey로 서명 | Signed with YubiKey |
-| BADGE_TOUCHES |  · 터치 {0}회 |  · {0} touch(es) |
-| SECTION_CHANGES | 자산 변화 (시뮬레이션 결과) | Asset changes (simulation result) |
-| CHANGES_PARTIAL | 시뮬레이션에서 확인된 부분만 표시합니다. | Only what the simulation confirmed is shown. |
-| CHANGES_NONE | 시뮬레이션 결과가 없어 자산 변화를 표시할 수 없습니다. | There is no simulation result, so asset changes cannot be shown. |
-| SECTION_SOL_TX_MONEY | 자산 변화·수수료 (시뮬레이션 참고) | Asset changes · fee (simulation, reference) |
-| SECTION_MONEY | 금액·수수료 | Amount · fee |
-| FEE | 수수료 | Fee |
-| FEE_EXPECTED | 예상 {0} (최대 {1}) | Expected {0} (max {1}) |
-| FEE_MAX | 최대 {0} | Max {0} |
-| SECTION_WARNINGS | 확인할 경고 | Warnings to check |
-| ACK_HINT | 맨 위의 고위험 경고를 읽고, 이해했으면 아래에 체크하세요. | Read the high-risk warning at the top and, if you understand it, tick the box below. |
-| SECTION_KEY | 핵심 정보 | Key details |
-| SUB_LOGIN | 로그인 내용 | Log-in details |
-| SUB_MESSAGE | 메시지 원문 | Original message |
-| SECTION_NOTES | 참고 | Notes |
-| REMARK | 참고: {0} | Note: {0} |
-| ADDRESS_NOTE | 받는 주소: {0} | Recipient: {0} |
-| PREPARING | 요청을 준비하는 중입니다… | Preparing the request… |
-| SIMULATING | 시뮬레이션 중… ({0}/10초) | Simulating… ({0}/10 s) |
-| TOKEN | 토큰 | token |
-| PLACE | {0}에서  | On {0}:  |
-| REVOKE | {0}아래 주소의 권한을 거둡니다(승인 해제). | {0}Revokes the permission of the address below (approval revoked). |
-| GRANT_TOKEN | {0}아래 주소에 {1} 사용 권한을 줍니다: {2}. | {0}Gives the address below permission to spend {1}: {2}. |
-| GRANT_INCREASE_ZERO | {0}아래 주소의 {1} 사용 권한을 늘리는 거래이지만 늘리는 양이 0이라 이미 준 권한은 그대로입니다(승인 해제가 아닙니다). | {0}A transaction that increases the {1} allowance of the address below, but by 0, so the permission already given stays as it is (this is not a revoke). |
-| GRANT_INCREASE | {0}아래 주소의 {1} 사용 권한을 늘립니다: +{2} (이미 준 권한에 더해집니다). | {0}Increases the {1} allowance of the address below: +{2} (added to the permission already given). |
-| GRANT_FOR_ALL | {0}아래 주소에 이 컬렉션 NFT 전체를 옮길 권한을 줍니다. | {0}Gives the address below permission to move every NFT of this collection. |
-| GRANT_PERMIT2_TX | {0}아래 주소가 {1} {2} 쓸 수 있게 하는 거래입니다. | {0}A transaction that lets the address below spend {1} {2}. |
-| PERMIT_SIG | {0}아래 주소가 {1} 가져갈 수 있게 하는 서명입니다. 거래 없이 서명만으로 쓰일 수 있습니다. | {0}A signature that lets the address below take {1}. It can be used with the signature alone, without a transaction. |
-| PERMIT2_BATCH | {0}아래 주소가 토큰 {1}종을 쓸 수 있게 하는 서명입니다. | {0}A signature that lets the address below spend {1} kinds of tokens. |
-| PERMIT2_SIG | {0}아래 주소가 {1} {2} 쓸 수 있게 하는 서명입니다. | {0}A signature that lets the address below spend {1} {2}. |
-| PERMIT2_TRANSFER | {0}아래 주소가 {1} 바로 가져갈 수 있게 하는 서명입니다. | {0}A signature that lets the address below take {1} at once. |
-| TOKEN_KINDS | 토큰 {0}종을 | {0} kinds of tokens |
-| HL_AGENT | {0}아래 주소(API 지갑)에 내 계정으로 주문·취소할 권한을 줍니다. | {0}Gives the address below (an API wallet) permission to place and cancel orders for your account. |
-| UNLIMITED_OBJECT | {0}{1} 무제한으로 | an unlimited amount of {0} |
-| UNTIL | {0}까지 | until {0} |
-| NO_TIME_LIMIT | 기한 없이 | with no time limit |
-| PERSONAL | {0}메시지에 서명합니다. 거래를 보내지는 않지만, 서명은 로그인이나 권한 확인에 쓰일 수 있습니다. | {0}Signs a message. It sends no transaction, but the signature can be used for a log-in or a permission check. |
-| SIWE | {0}{1} 사이트 로그인(Sign-In with Ethereum) 메시지에 서명합니다. 거래를 보내지는 않습니다. | {0}Signs a site log-in message (Sign-In with Ethereum) for {1}. It sends no transaction. |
-| TYPED_GENERIC | {0}구조화된 데이터(EIP-712)에 서명합니다. 토큰 사용 권한(permit) 같은 권한을 줄 수 있으니 아래 내용을 확인하세요. | {0}Signs structured data (EIP-712). It can grant permissions such as a token permit, so check the content below. |
-| TYPED_ACTION | {0}'{1}'에 서명합니다(EIP-712). 서명만으로 권한이나 자산이 넘어갈 수 있으니 아래 경고와 내용을 확인하세요. | {0}Signs '{1}' (EIP-712). The signature alone can hand over permissions or assets, so check the warnings and content below. |
-| SEND | {0}{1}{2} 아래 주소로 보냅니다. | {0}Sends {1} to the address below. |
-| SEND_ASSET | {0}{1} 보냅니다. | {0}Sends {1}. |
-| ASSET_SOL | SOL을 | SOL |
-| ASSET_BTC | BTC를 | BTC |
-| ASSET_ZEC | ZEC를 | ZEC |
-| SIWB | {0}{1} 사이트 로그인(Sign-In with Bitcoin) 메시지에 서명합니다. 거래 서명이나 전송은 하지 않습니다. | {0}Signs a site log-in message (Sign-In with Bitcoin) for {1}. It does not sign or send a transaction. |
-| CONTRACT_CALL | {0}컨트랙트를 호출합니다: {1}. 아래 자산 변화와 경고를 확인하세요. | {0}Calls a contract: {1}. Check the asset changes and warnings below. |
-| SPEED_UP | {0}아직 확정되지 않은 거래를 더 높은 수수료로 다시 보냅니다(가속). | {0}Sends an unconfirmed transaction again with a higher fee (speed up). |
-| CANCEL | {0}아직 확정되지 않은 거래를 취소합니다(같은 nonce로 0을 보내는 거래). | {0}Cancels an unconfirmed transaction (a transaction that sends 0 with the same nonce). |
-| FEE_BUMP | {0}아직 확정되지 않은 거래의 수수료를 올려 다시 보냅니다. | {0}Sends an unconfirmed transaction again with a higher fee. |
-| OWNERSHIP | {0}메시지에 서명해 이 주소의 소유를 증명합니다. 거래 서명이나 전송은 하지 않습니다. | {0}Signs a message to prove that you own this address. It does not sign or send a transaction. |
-| HYPERCORE | {0}Hyperliquid HyperCore 작업에 서명합니다: {1}. 서명하면 Hyperliquid가 바로 처리하며 되돌릴 수 없습니다. | {0}Signs a Hyperliquid HyperCore action: {1}. Once signed, Hyperliquid processes it immediately and it cannot be undone. |
-| SIWS | {0}사이트 로그인(Sign-In-With-Solana) 메시지에 서명합니다. 거래 서명이나 전송은 하지 않습니다. | {0}Signs a site log-in message (Sign-In-With-Solana). It does not sign or send a transaction. |
-| SOL_TX_SEND | {0}사이트가 만든 Solana 거래에 서명하고 지갑이 바로 전송합니다. 되돌릴 수 없습니다. | {0}Signs a Solana transaction made by the site, and the wallet sends it at once. This cannot be undone. |
-| SOL_TX_SIGN | {0}사이트가 만든 Solana 거래 {1}건에 서명해 사이트에 돌려줍니다. 지갑은 전송하지 않습니다. | {0}Signs {1} Solana transaction(s) made by the site and returns them to the site. The wallet does not send them. |
-| CONNECT_EVM | 이 사이트는 선택한 계정의 주소, 잔액, 거래 기록을 볼 수 있습니다. 서명과 전송은 매번 따로 승인합니다. | This site can see the address, balance and transaction history of the accounts you choose. Every signature and send is approved separately. |
-| CONNECT_SOL | 이 사이트는 선택한 계정의 공개키를 볼 수 있습니다. 메시지 서명과 거래 서명·전송은 매번 따로 승인합니다. | This site can see the public key of the account you choose. Every message signature and transaction signature or send is approved separately. |
-| CONNECT_BTC | 이 사이트는 선택한 주소와 공개키를 볼 수 있습니다. 이 지갑은 Bitcoin에서 메시지 서명(소유 증명)만 지원하며, 거래 서명과 전송은 할 수 없습니다. 메시지 서명은 매번 따로 승인합니다. | This site can see the addresses and public keys you choose. On Bitcoin this wallet only supports message signatures (proof of ownership); it cannot sign or send transactions. Every message signature is approved separately. |
-| CONNECT_SECTION_EVM | 연결할 계정 (1–16개) | Accounts to connect (1–16) |
-| CONNECT_SECTION_SOL | 연결할 Solana 계정 (1개) | Solana account to connect (1) |
-| CONNECT_SECTION_BTC | 연결할 Bitcoin 주소 (용도마다 1개, 받기 주소 0번) | Bitcoin addresses to connect (1 per purpose, receive address 0) |
-| CONNECT_LIMIT | 한 사이트에 연결할 수 있는 계정은 16개까지입니다. | At most 16 accounts can be connected to one site. |
-| CONNECT_DEFAULT | 사이트가 기본으로 쓰는 계정: {0} (체크한 계정 중 목록의 첫 계정) | Account the site uses by default: {0} (the first checked account in the list) |
-| CONNECT_NETWORK | 현재 네트워크 | Current network |
-| CONNECT_ORIGIN | 요청 출처 | Requested by |
 
 <!-- catalogue: yw_app::ui::main_window::text -->
 
@@ -4109,39 +4142,6 @@
 | LEGACY_HW_SOL_CARD_KEY | YubiKey Solana 카드 키 {0} | YubiKey Solana card key {0} |
 | LEGACY_HW_EVM_ACCOUNT | YubiKey 계정 {0} | YubiKey account {0} |
 | LEGACY_HW_SOL_ACCOUNT | YubiKey Solana {0} | YubiKey Solana {0} |
-
-<!-- catalogue: yw_app::yubikey::text -->
-
-| 이름 | 한국어 | English |
-|---|---|---|
-| NAME_OPENPGP_ADMIN | OpenPGP 관리자 PIN | OpenPGP admin PIN |
-| NAME_PIV_MANAGEMENT | PIV 관리 키(PIN 보호) | PIV management key (PIN-protected) |
-| TITLE_CHANGE_OPENPGP_PIN | OpenPGP PIN 바꾸기 | Change OpenPGP PIN |
-| TITLE_CHANGE_ADMIN_PIN | OpenPGP 관리자 PIN 바꾸기 | Change OpenPGP admin PIN |
-| TITLE_CHANGE_PIV_PIN | PIV PIN 바꾸기 | Change PIV PIN |
-| TITLE_CHANGE_PIV_PUK | PIV PUK 바꾸기 | Change PIV PUK |
-| RULE_OPENPGP_PIN | 영문·숫자·기호(ASCII) 6–127자입니다(공장 기본값 123456). | Letters, digits and symbols (ASCII), 6–127 characters (factory default 123456). |
-| RULE_ADMIN_PIN | 영문·숫자·기호(ASCII) 8–127자입니다(공장 기본값 12345678). | Letters, digits and symbols (ASCII), 8–127 characters (factory default 12345678). |
-| RULE_PIV_PIN | 영문·숫자·기호(ASCII) 6–8자입니다(공장 기본값 123456). | Letters, digits and symbols (ASCII), 6–8 characters (factory default 123456). |
-| RULE_PIV_PUK | 영문·숫자·기호(ASCII) 6–8자입니다(공장 기본값 12345678). | Letters, digits and symbols (ASCII), 6–8 characters (factory default 12345678). |
-| WRONG_LAST | {0}이 틀렸습니다. 남은 시도 1회 — 한 번 더 틀리면 잠깁니다. | Wrong {0}. 1 try left — one more mistake locks it. |
-| WRONG | {0}이 틀렸습니다. 남은 시도 {1}회. | Wrong {0}. {1} tries left. |
-| COUNTER_LOCKED | {0}: 잠김 — 남은 시도가 없습니다. | {0}: locked — no tries left. |
-| COUNTER_LAST | {0}: 남은 시도 1회 — 한 번 더 틀리면 잠깁니다. | {0}: 1 try left — one more mistake locks it. |
-| COUNTER | {0}: 남은 시도 {1}회 | {0}: {1} tries left |
-| BLOCKED_PW1 | OpenPGP PIN이 잠겼습니다. 관리자 PIN으로 풀 수 있습니다(ykman openpgp access unblock-pin). 관리자 PIN도 모르면 설정 → YubiKey의 'YubiKey의 키 지우기…'에서 OpenPGP 애플릿 초기화 뒤 다시 등록하세요. | The OpenPGP PIN is locked. You can unlock it with the admin PIN (ykman openpgp access unblock-pin). If you do not know the admin PIN either, reset the OpenPGP applet in Settings → YubiKey → 'Erase keys on the YubiKey…' and enrol again. |
-| BLOCKED_PW3 | OpenPGP 관리자 PIN이 잠겼습니다. 서명은 지금처럼 OpenPGP PIN으로 됩니다. 키 넣기·슬롯 구성 바꾸기·PIN 풀기만 막히며, 다시 쓰려면 OpenPGP 초기화(그 애플릿의 키가 지워짐)가 필요합니다. | The OpenPGP admin PIN is locked. Signing still works with the OpenPGP PIN. Only importing keys, changing the slot layout and unlocking PINs are blocked; using them again needs an OpenPGP reset (which erases that applet's keys). |
-| BLOCKED_PIV_PIN | PIV PIN이 잠겼습니다. PUK로 풀 수 있습니다(ykman piv access unblock-pin). | The PIV PIN is locked. You can unlock it with the PUK (ykman piv access unblock-pin). |
-| BLOCKED_PUK | PIV PUK이 잠겼습니다. 이제 PIV PIN이 잠기면 PIV 초기화 말고는 방법이 없으니 PIV PIN을 잊지 마세요. | The PIV PUK is locked. If the PIV PIN now locks, only a PIV reset is left, so do not forget the PIV PIN. |
-| BACKUP_SIGNS | 백업 YubiKey {0}{1} 계속 서명할 수 있습니다. | Backup YubiKey {0} can keep signing. |
-| BLOCKED_PW3_ONLY_HERE | OpenPGP 관리자 PIN이 잠겼습니다. 서명은 지금처럼 OpenPGP PIN으로 됩니다. 키 넣기·슬롯 구성 바꾸기·PIN 풀기만 막힙니다. 다시 쓰려면 OpenPGP 초기화(그 애플릿의 키가 지워짐)가 필요하지만, 이 카드의 키는 복구 단어가 없어 초기화하면 영구히 사라지니 초기화하지 마세요. | The OpenPGP admin PIN is locked. Signing still works with the OpenPGP PIN. Only importing keys, changing the slot layout and unlocking PINs are blocked. Using them again needs an OpenPGP reset (which erases that applet's keys), but this card's keys have no recovery words and a reset would lose them for good, so do not reset. |
-| BLOCKED_PW1_ONLY_HERE | OpenPGP PIN이 잠겼습니다. 이 키는 복구 단어가 없어 초기화하면 영구히 사라집니다. 관리자 PIN으로 PIN을 푸는 방법(ykman openpgp access unblock-pin)만 쓰고 초기화하지 마세요. | The OpenPGP PIN is locked. This key has no recovery words, so a reset would lose it for good. Only unlock the PIN with the admin PIN (ykman openpgp access unblock-pin); do not reset. |
-| BLOCKED_PW1_WORDS | OpenPGP PIN이 잠겼습니다. 관리자 PIN으로 풀 수 있습니다(ykman openpgp access unblock-pin). 관리자 PIN도 모르면 OpenPGP 초기화 뒤 같은 복구 단어로 다시 등록하세요. | The OpenPGP PIN is locked. You can unlock it with the admin PIN (ykman openpgp access unblock-pin). If you do not know the admin PIN either, reset OpenPGP and enrol again with the same recovery words. |
-| BLOCKED_PW1_PLAIN | OpenPGP PIN이 잠겼습니다. 관리자 PIN으로 풀 수 있습니다(ykman openpgp access unblock-pin). | The OpenPGP PIN is locked. You can unlock it with the admin PIN (ykman openpgp access unblock-pin). |
-| BLOCKED_PIV_ONLY_HERE | PIV PIN이 잠겼습니다. 이 Solana 키는 복구 단어가 없어 PIV 초기화하면 영구히 사라집니다. PUK로 PIN을 푸는 방법(ykman piv access unblock-pin)만 쓰고 초기화하지 마세요. | The PIV PIN is locked. This Solana key has no recovery words, so a PIV reset would lose it for good. Only unlock the PIN with the PUK (ykman piv access unblock-pin); do not reset. |
-| BLOCKED_PIV_WORDS | PIV PIN이 잠겼습니다. PUK로 풀 수 있습니다(ykman piv access unblock-pin). PUK도 잠기면 PIV 초기화(Solana 키 삭제) 뒤 같은 복구 단어로 다시 등록하세요. | The PIV PIN is locked. You can unlock it with the PUK (ykman piv access unblock-pin). If the PUK is locked too, reset PIV (erases the Solana keys) and enrol again with the same recovery words. |
-| BLOCKED_PUK_ONLY_HERE | PIV PUK이 잠겼습니다. 이제 PIV PIN까지 잠기면 PIV 초기화(Solana 키 삭제)밖에 없고, 이 Solana 키는 복구 단어가 없어 그때 영구히 사라집니다. PIV PIN을 잊지 마세요. | The PIV PUK is locked. If the PIV PIN now locks too, only a PIV reset (erases the Solana keys) is left, and this Solana key has no recovery words, so it would then be lost for good. Do not forget the PIV PIN. |
-| BLOCKED_PUK_RESET | PIV PUK이 잠겼습니다. 이제 PIV PIN이 잠기면 PIV 초기화(Solana 키 삭제) 말고는 방법이 없으니 PIV PIN을 잊지 마세요. | The PIV PUK is locked. If the PIV PIN now locks, only a PIV reset (erases the Solana keys) is left, so do not forget the PIV PIN. |
 
 <!-- catalogue: yw_app::zec::rpc::text -->
 

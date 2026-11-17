@@ -2,6 +2,14 @@
 //! is drawn from M4; this module holds the pure rules it relies on: the field label table, the
 //! defensive re-validation of every displayed string (E-UI-001), and the FIFO queue with its
 //! limits, deadlines and outcomes (AP-3).
+//!
+//! (2026-11-17, spec/15 §11.4 S2: moved from yw-app `ui::approval`, with `interaction`,
+//! `text` (was `ui::approval_text`) and `layout` (was `ui::text_layout`); yw-app `ui` re-exports
+//! them under the old names.)
+
+pub mod interaction;
+pub mod layout;
+pub mod text;
 
 use std::collections::VecDeque;
 
@@ -10,8 +18,8 @@ use yw_core::approval::{
 };
 use yw_core::lang::{Lang, Text};
 
+use crate::approval::interaction::MIN_REMAINING_TO_SHOW_MS;
 use crate::errors::ErrorCode;
-use crate::ui::interaction::MIN_REMAINING_TO_SHOW_MS;
 
 /// Per-origin queue bound (spec/05 §8.4).
 pub const MAX_APPROVALS_PER_ORIGIN: usize = 16;

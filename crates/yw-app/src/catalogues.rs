@@ -2,6 +2,8 @@
 //! checks that each `texts!` block of the source is listed here, and `tests/lang_spec.rs` that
 //! each one is in the spec tables (`errors::text` in spec/04 §7 instead, D31). The screenshot
 //! tour's scene texts (`ui::tour`, a test module) are not app texts and are not listed.
+//! (2026-11-17, spec/15 §11.4 S2: the catalogues of modules moved to yw-engine are listed in
+//! `yw_engine::catalogues` under their true path.)
 
 use yw_core::lang::Entry;
 
@@ -72,7 +74,6 @@ const CATALOGUES: &[(&str, &[Entry])] = &[
         crate::build_info::start_text::ALL,
     ),
     ("yw_app::build_info::text", crate::build_info::text::ALL),
-    ("yw_app::errors::text", crate::errors::text::ALL),
     ("yw_app::explain::text", crate::explain::text::ALL),
     ("yw_app::explorer::text", crate::explorer::text::ALL),
     (
@@ -102,11 +103,6 @@ const CATALOGUES: &[(&str, &[Entry])] = &[
     ("yw_app::rpc::text", crate::rpc::text::ALL),
     ("yw_app::settings::text", crate::settings::text::ALL),
     ("yw_app::store::reset::text", crate::store::reset::text::ALL),
-    (
-        "yw_app::ui::approval::labels",
-        crate::ui::approval::labels::ALL,
-    ),
-    ("yw_app::ui::approval_text", crate::ui::approval_text::ALL),
     (
         "yw_app::ui::main_window::text",
         crate::ui::main_window::text::ALL,
@@ -200,6 +196,5 @@ const CATALOGUES: &[(&str, &[Entry])] = &[
         crate::workers::journal::zec::text::ALL,
     ),
     ("yw_app::workers::key::text", crate::workers::key::text::ALL),
-    ("yw_app::yubikey::text", crate::yubikey::text::ALL),
     ("yw_app::zec::rpc::text", crate::zec::rpc::text::ALL),
 ];

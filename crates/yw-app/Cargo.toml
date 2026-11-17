@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 qrcodegen.workspace = true
 yw-core.workspace = true
+yw-engine.workspace = true
 yw-json.workspace = true
 yw-platform.workspace = true
 yw-win.workspace = true

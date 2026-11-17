@@ -33,8 +33,10 @@ export const POLICY = {
   "yw-json": { allow: {}, local: [] },
   // 2026-11-17: yw-platform(의존성 0) 추가. yw-host는 yw-win을 거쳐 링크한다.
   "yw-platform": { allow: {}, local: [] },
+  // 2026-11-17(spec/15 §11.4 S2): yw-engine은 yw-core 폐포만(yw-win·windows-sys 없음).
+  "yw-engine": { allow: CORE, local: ["yw-core", "yw-json", "yw-platform"] },
   "yw-win": { allow: WIN, local: ["yw-platform"] },
-  "yw-app": { allow: { ...CORE, ...WIN, ...APP }, local: ["yw-core", "yw-json", "yw-platform", "yw-win"] },
+  "yw-app": { allow: { ...CORE, ...WIN, ...APP }, local: ["yw-core", "yw-engine", "yw-json", "yw-platform", "yw-win"] },
   "yw-host": { allow: WIN, local: ["yw-json", "yw-platform", "yw-win"] },
 };
 export const BUILD_RS_ALLOW = new Set(["generic-array", "getrandom", "secp256k1-sys", ...(PHASES.has("sol") ? ["curve25519-dalek"] : [])]);

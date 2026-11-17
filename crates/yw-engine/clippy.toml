@@ -1,0 +1,15 @@
+# Root clippy.toml contents (clippy reads only the nearest clippy.toml) + the yw-engine OS access bans
+# (spec/01 §5.1; 2026-11-17, spec/15 §11.4 S2). Unlike yw-core and yw-platform, std threads and
+# `Instant` are allowed: the workers spawn portable std threads, and `Instant` measures only local
+# elapsed time (deadlines the App compares go through `yw_platform::Clock`). Files, sockets,
+# processes, the wall clock and the environment stay with the platform layer.
+avoid-breaking-exported-api = false
+msrv = "1.95.0"
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+disallowed-types = [ "std::fs::File", "std::fs::OpenOptions", "std::net::TcpStream", "std::net::TcpListener",
+                     "std::net::UdpSocket", "std::process::Command", "std::time::SystemTime" ]
+disallowed-methods = [ "std::env::var", "std::env::var_os", "std::fs::read", "std::fs::write",
+                       "std::fs::read_to_string", "std::fs::read_dir", "std::fs::remove_file",
+                       "std::fs::remove_dir_all", "std::fs::rename", "std::fs::create_dir_all",
+                       "std::fs::metadata", "std::fs::copy" ]

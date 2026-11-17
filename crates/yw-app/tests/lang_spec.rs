@@ -4,7 +4,8 @@
 //! missing, none extra), and check the catalogue invariants (placeholders, no Hangul in English,
 //! valid display text). `print_spec14_tables` (`--ignored --exact --nocapture`) prints the spec/14
 //! tables from the code. `scripts/i18n-scan.mjs` checks that the catalogue registries
-//! (`yw_core::lang::catalogues`, `yw_app::catalogues::catalogues`) list every `texts!` block.
+//! (`yw_core::lang::catalogues`, `yw_engine::catalogues::catalogues`,
+//! `yw_app::catalogues::catalogues`) list every `texts!` block.
 
 use core::fmt::Write as _;
 
@@ -16,12 +17,14 @@ const SPEC: &str = include_str!("../../../spec/14-language.md");
 const SPEC04: &str = include_str!("../../../spec/04-app-ui.md");
 
 /// The error-code catalogue: its canonical table is spec/04 §7 (D31), not spec/14.
-const ERRORS: &str = "yw_app::errors::text";
+const ERRORS: &str = "yw_engine::errors::text";
 
-/// Every catalogue of both crates with its entries.
+/// Every catalogue of the three crates with its entries (yw-engine since 2026-11-17, spec/15
+/// §11.4 S2).
 fn registered() -> Vec<(&'static str, Vec<Entry>)> {
     yw_core::lang::catalogues()
         .into_iter()
+        .chain(yw_engine::catalogues::catalogues())
         .chain(yw_app::catalogues::catalogues())
         .map(|(name, entries)| (name, entries.to_vec()))
         .collect()

@@ -8,10 +8,10 @@
 //! [`can_approve`] on every event and tick; (3) `physical_down` is filled by the window from
 //! `input::is_down` (a consistency check, not a security boundary); (4) rapid-click lure
 //! defence: every pointer or key press received while not armed (any mouse button, client or
-//! non-client area — the window maps its Win32 messages with `ui::approval_input::stray_press`),
-//! and every window (re)activation, restarts the 1 s arm delay ([`ApprovalSession`]), and an
-//! approving press must start at least 1 s after the previous press anywhere in the window
-//! ([`InteractionEvent::is_press`]).
+//! non-client area — the window maps its Win32 messages with yw-app
+//! `ui::approval_input::stray_press`), and every window (re)activation, restarts the 1 s arm
+//! delay ([`ApprovalSession`]), and an approving press must start at least 1 s after the
+//! previous press anywhere in the window ([`InteractionEvent::is_press`]).
 
 use yw_core::approval::{ApprovalRequest, RiskLevel, SimNoneReason, SimVerdict, SimulationBinding};
 
