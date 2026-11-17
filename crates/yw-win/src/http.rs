@@ -42,8 +42,8 @@ use windows_sys::Win32::Networking::WinHttp::{
 };
 
 use yw_platform::http::{
-    EndpointUrl, HttpError, HttpsUrl, MAX_CONTENT_TYPE_BYTES, MAX_REQUEST_BODY, MAX_RESPONSE_CAP,
-    Response, Timeouts, valid_header,
+    EndpointUrl, HttpError, HttpReply, HttpsUrl, MAX_CONTENT_TYPE_BYTES, MAX_REQUEST_BODY,
+    MAX_RESPONSE_CAP, Response, Timeouts, Transport, valid_header,
 };
 
 use crate::error::WinError;
@@ -577,6 +577,39 @@ impl Client {
             content_type,
             body: body_out,
         })
+    }
+}
+
+/// The RPC transport seam (spec/01 §7.4). 2026-11-17 S2: moved unchanged from yw-app `rpc`.
+impl Transport for Client {
+    fn post_json(
+        &self,
+        url: &HttpsUrl,
+        body: &[u8],
+        max_response: usize,
+    ) -> Result<HttpReply, HttpError> {
+        Self::post_json(self, url, None, body, max_response).map(|response| HttpReply {
+            status: response.status,
+            body: response.body,
+        })
+    }
+
+    fn http_get(&self, url: &HttpsUrl, max_response: usize) -> Result<Response, HttpError> {
+        self.get(url, max_response)
+    }
+
+    fn http_post_text(
+        &self,
+        url: &HttpsUrl,
+        body: &[u8],
+        max_response: usize,
+    ) -> Result<Response, HttpError> {
+        self.post(
+            &EndpointUrl::Https(url.clone()),
+            &[("Content-Type", "text/plain")],
+            body,
+            max_response,
+        )
     }
 }
 

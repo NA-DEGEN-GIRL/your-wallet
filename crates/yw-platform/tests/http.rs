@@ -1,8 +1,11 @@
 //! The pure HTTP types (spec/01 §7.4, §7.8): URL parsing and normalization, redacted formatting,
 //! the header rule and the `HttpError` texts. 2026-11-17: moved from yw-win `http` unit tests with
-//! the types; the `Display` tests of `HttpError` are new.
+//! the types; the `Display` tests of `HttpError` are new. 2026-11-17 S2: the `Transport` seam's
+//! default methods.
 
-use yw_platform::http::{EndpointUrl, HttpError, HttpsUrl, LoopbackUrl, Timeouts, valid_header};
+use yw_platform::http::{
+    EndpointUrl, HttpError, HttpReply, HttpsUrl, LoopbackUrl, Timeouts, Transport, valid_header,
+};
 
 #[test]
 fn https_url_accepts_and_normalizes() {
@@ -187,4 +190,40 @@ fn http_error_display_never_shows_url_or_host() {
         let debug = format!("{error:?}");
         assert!(!debug.contains("secret") && !debug.contains("token"));
     }
+}
+
+/// A transport that speaks only JSON-RPC: the indexer GET and the plain-text POST keep their
+/// defaults, which send nothing and fail with `InvalidUrl` (spec/08 §4.1, §11.3).
+#[test]
+fn transport_defaults_refuse_get_and_text_post() {
+    struct JsonOnly;
+
+    impl Transport for JsonOnly {
+        fn post_json(
+            &self,
+            _url: &HttpsUrl,
+            body: &[u8],
+            _max_response: usize,
+        ) -> Result<HttpReply, HttpError> {
+            Ok(HttpReply {
+                status: 200,
+                body: body.to_vec(),
+            })
+        }
+    }
+
+    let url = HttpsUrl::parse("https://rpc.example/").unwrap();
+    let transport: &dyn Transport = &JsonOnly;
+    assert_eq!(
+        transport.post_json(&url, b"{}", 1_024),
+        Ok(HttpReply {
+            status: 200,
+            body: b"{}".to_vec(),
+        })
+    );
+    assert_eq!(transport.http_get(&url, 1_024), Err(HttpError::InvalidUrl));
+    assert_eq!(
+        transport.http_post_text(&url, b"00", 1_024),
+        Err(HttpError::InvalidUrl)
+    );
 }

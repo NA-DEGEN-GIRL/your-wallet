@@ -2,8 +2,8 @@
 //! screen (spec/04 §2.11.1). `rpc::evm` holds the EVM calls; the Solana calls are
 //! `crate::sol::rpc` (M7).
 //!
-//! JSON-RPC 2.0 over `yw_win::http::Client` (HTTPS only, TLS 1.2/1.3, no redirects/cookies/auth,
-//! no Origin), one increasing `id` per request checked against the response. Failures are
+//! JSON-RPC 2.0 over a [`Transport`] (Windows: `yw_win::http::Client`; HTTPS only, TLS 1.2/1.3,
+//! no redirects/cookies/auth, no Origin), one increasing `id` per request checked against the response. Failures are
 //! classified into fixed codes; URLs, hosts and remote strings never leave this module.
 
 pub mod evm;
@@ -13,8 +13,7 @@ use std::time::Instant;
 
 use yw_core::evm::amount::U256;
 use yw_json::{Limits, Number, Value};
-use yw_platform::http::{EndpointUrl, HttpError, HttpsUrl, Response, Timeouts};
-use yw_win::http::Client;
+use yw_platform::http::{HttpError, HttpsUrl, Timeouts};
 
 use crate::errors::ErrorCode;
 use crate::network::{BtcNet, NetworkId, SolCluster};
@@ -32,88 +31,10 @@ pub const CALL_DEADLINE_MS: u128 = 10_000;
 /// Default response bound.
 pub const DEFAULT_MAX_RESPONSE: usize = 1_048_576;
 
-/// A raw HTTP reply.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HttpReply {
-    /// Status.
-    pub status: u16,
-    /// Body.
-    pub body: Vec<u8>,
-}
-
-/// The transport seam (real `WinHTTP` client, or a fake in tests).
-pub trait Transport: Send + Sync {
-    /// POSTs a JSON body.
-    ///
-    /// # Errors
-    ///
-    /// [`HttpError`].
-    fn post_json(
-        &self,
-        url: &HttpsUrl,
-        body: &[u8],
-        max_response: usize,
-    ) -> Result<HttpReply, HttpError>;
-
-    /// GETs `url` with `Accept: application/json` and returns status, `Content-Type` and body
-    /// (Bitcoin `esplora`/`bb-rest` indexers, spec/08 §4.1). Transports that only speak JSON-RPC
-    /// keep the default, which sends nothing and fails with [`HttpError::InvalidUrl`].
-    ///
-    /// # Errors
-    ///
-    /// [`HttpError`].
-    fn http_get(&self, _url: &HttpsUrl, _max_response: usize) -> Result<Response, HttpError> {
-        Err(HttpError::InvalidUrl)
-    }
-
-    /// POSTs `body` with exactly `Content-Type: text/plain` (only the user-confirmed Esplora
-    /// `POST /tx`, spec/08 §11.3). The default sends nothing and fails with
-    /// [`HttpError::InvalidUrl`].
-    ///
-    /// # Errors
-    ///
-    /// [`HttpError`].
-    fn http_post_text(
-        &self,
-        _url: &HttpsUrl,
-        _body: &[u8],
-        _max_response: usize,
-    ) -> Result<Response, HttpError> {
-        Err(HttpError::InvalidUrl)
-    }
-}
-
-impl Transport for Client {
-    fn post_json(
-        &self,
-        url: &HttpsUrl,
-        body: &[u8],
-        max_response: usize,
-    ) -> Result<HttpReply, HttpError> {
-        Self::post_json(self, url, None, body, max_response).map(|response| HttpReply {
-            status: response.status,
-            body: response.body,
-        })
-    }
-
-    fn http_get(&self, url: &HttpsUrl, max_response: usize) -> Result<Response, HttpError> {
-        self.get(url, max_response)
-    }
-
-    fn http_post_text(
-        &self,
-        url: &HttpsUrl,
-        body: &[u8],
-        max_response: usize,
-    ) -> Result<Response, HttpError> {
-        self.post(
-            &EndpointUrl::Https(url.clone()),
-            &[("Content-Type", "text/plain")],
-            body,
-            max_response,
-        )
-    }
-}
+/// The transport seam and the raw reply (2026-11-17 S2: moved to `yw_platform::http`; the
+/// `WinHTTP` implementation for `yw_win::http::Client` is in yw-win). Re-exported so every
+/// `rpc::Transport` path still works.
+pub use yw_platform::http::{HttpReply, Transport};
 
 /// Why a call failed (classification input, spec/04 §7).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -217,7 +217,7 @@ pub enum ParseError { TooLarge, InvalidUtf8, Syntax { offset: usize }, Duplicate
 
 플랫폼 중립 타입과 trait(2026-11-17: Android 이식 S1에서 yw-win `http`의 순수 타입과 yw-app `flow::evm::Clock`을 옮겨 만들었다. 그 전에는 각각 yw-win·yw-app에 있었다). 의존성 0, `#![forbid(unsafe_code)]`, `#![deny(clippy::indexing_slicing, clippy::arithmetic_side_effects)]`. yw-core처럼 OS를 부르지 않는다: `crates/yw-platform/clippy.toml`은 yw-core의 것과 같다(§5.1).
 
-- `http`: `HttpsUrl`, `LoopbackUrl`, `EndpointUrl`, `Timeouts`(+`total_ms`), `Response`, `HttpError`, 상한 상수(`MAX_URL_BYTES`, `MAX_REQUEST_BODY`, `MAX_RESPONSE_CAP`, `MAX_HEADER_VALUE`, `MAX_CONTENT_TYPE_BYTES`)와 헤더 규칙 `valid_header`. 시그니처와 규칙은 §7.4. 클라이언트(`Client`)는 플랫폼마다 따로 있다(Windows: yw-win `http`).
+- `http`: `HttpsUrl`, `LoopbackUrl`, `EndpointUrl`, `Timeouts`(+`total_ms`), `Response`, `HttpError`, 상한 상수(`MAX_URL_BYTES`, `MAX_REQUEST_BODY`, `MAX_RESPONSE_CAP`, `MAX_HEADER_VALUE`, `MAX_CONTENT_TYPE_BYTES`)와 헤더 규칙 `valid_header`, RPC 전송 이음매 `Transport` trait와 `HttpReply`(2026-11-17 S2: yw-app `rpc`에서 옮김). 시그니처와 규칙은 §7.4. 클라이언트(`Client`)는 플랫폼마다 따로 있고 `Transport`를 구현한다(Windows: yw-win `http`).
 - `clock`: `pub trait Clock: Send + Sync { fn now_ms(&self) -> u64 /* 단조 ms */; fn now_unix_ms(&self) -> u64; fn sleep_ms(&self, ms: u64); }`. yw-app `flow::evm`이 다시 내보내고(`pub use yw_platform::Clock`) Windows 구현 `SystemClock`(yw-win `time::monotonic_ms`, `GetTickCount64`)은 yw-app `system_clock`에 남는다(2026-11-17 S2: 그 전에는 `flow::evm` 안에 있었고 `RpcWorker::production`이 이를 골랐다. 이제 `main.rs`가 `RpcWorker::new(…, Box::new(SystemClock), Limits::PRODUCTION)`으로 넘긴다). 운영 코드는 이 시계만 쓴다. `Instant` 기반 시계는 지역 경과 시간과 시험용이다. yw-app의 `monotonic_ms` 직접 호출을 `Clock`으로 바꾸는 일은 S2(엔진으로 옮기는 모듈)·S4(App)에서 한다.
 
 ### 2.4 크레이트 의존 규칙 (검사 스크립트가 강제, §4.2)
@@ -1113,6 +1113,12 @@ pub enum HttpError { InvalidUrl, InvalidHeader, Timeout, Tls, TooLarge,
 pub const MAX_URL_BYTES: usize = 2048; pub const MAX_REQUEST_BODY: usize = 1_048_576; pub const MAX_RESPONSE_CAP: usize = 16 * 1_048_576;
 pub const MAX_HEADER_VALUE: usize = 4096; pub const MAX_CONTENT_TYPE_BYTES: usize = 256;
 pub fn valid_header(name: &str, value: &[u8]) -> bool;
+pub struct HttpReply { pub status: u16, pub body: Vec<u8> }
+pub trait Transport: Send + Sync {   // RPC 파이프라인의 전송 이음매(실제 클라이언트 또는 시험용 가짜)
+    fn post_json(&self, url: &HttpsUrl, body: &[u8], max_response: usize) -> Result<HttpReply, HttpError>;
+    fn http_get(&self, url: &HttpsUrl, max_response: usize) -> Result<Response, HttpError> { Err(HttpError::InvalidUrl) }
+    fn http_post_text(&self, url: &HttpsUrl, body: &[u8], max_response: usize) -> Result<Response, HttpError> { Err(HttpError::InvalidUrl) }
+}
 
 // yw_win::http
 pub struct Client { /* 세션 핸들 + 종류(Https | Loopback); Send + Sync */ }
@@ -1123,7 +1129,10 @@ impl Client {
     pub fn post_json(&self, url: &HttpsUrl, bearer: Option<&[u8]>, body: &[u8], max_response: usize) -> Result<Response, HttpError>;
     pub fn get(&self, url: &HttpsUrl, max_response: usize) -> Result<Response, HttpError>;
 }
+impl yw_platform::http::Transport for Client { /* post_json(bearer 없음)·get·post(Content-Type: text/plain) */ }
 ```
+
+2026-11-17 S2: `Transport`와 `HttpReply`는 yw-app `rpc`에서 yw-platform `http`로, `impl Transport for Client`는 yw-app `rpc`에서 yw-win `http`로 옮겼다(내용은 같다). yw-app `rpc`는 `pub use yw_platform::http::{HttpReply, Transport}`로 다시 내보내므로 `rpc::Transport` 경로는 그대로다. `http_get`(비트코인 인덱서, [08](08-bitcoin.md) §4.1)과 `http_post_text`(Esplora `POST /tx`, [08] §11.3)의 기본 구현은 아무것도 보내지 않고 `InvalidUrl`로 실패한다.
 
 - `HttpsUrl`: `https://`만(스킴은 대소문자 무관, 정규형은 소문자), host `[a-z0-9.-]{1,253}`(소문자화) 또는 대괄호 IPv6 리터럴(`[` hex·`:`(`::` 한 번)·선택 점 IPv4 꼬리 `]`, zone id `%` 없음, 소문자화, `WinHttpConnect`에는 대괄호 없이 — 루프백 `[::1]`과 같은 경로; 보안 검토 S16), 포트 1–65535 선택, 경로는 `/`로 시작하는 출력 가능 ASCII(공백 없음), 전체 ≤ 2048바이트, userinfo·fragment 거부. `LoopbackUrl`: `http://`만, host는 `127.0.0.1`·`localhost`(소문자화)·`[::1]`(IPv6 리터럴) 중 하나, 포트·경로·길이·거부 규칙은 `HttpsUrl`과 같다. 클라이언트 종류와 URL 종류가 다르면 `InvalidUrl`.
 - 세션: `new`는 `WinHttpOpen("YourWallet/3", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, NULL, NULL, 0)`(동기)이고 `WINHTTP_OPTION_SECURE_PROTOCOLS = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2 | WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3` 설정이 실패하면 `new` 실패. `new_loopback`은 `WINHTTP_ACCESS_TYPE_NO_PROXY`. 공통: `WINHTTP_OPTION_REDIRECT_POLICY = WINHTTP_OPTION_REDIRECT_POLICY_NEVER`, `WinHttpSetTimeouts`, `WINHTTP_OPTION_MAX_RESPONSE_HEADER_SIZE = 16384`. LLM은 RPC와 다른 `Client`(세션)를 쓴다([06](06-llm-explain.md) §4.1).

@@ -1,5 +1,6 @@
-//! HTTP client types (spec/01 §7.4, D13, D21): URLs, timeouts, the response, the error and the
-//! request limits. The client itself is per platform (Windows: `yw_win::http::Client`).
+//! HTTP client types (spec/01 §7.4, D13, D21): URLs, timeouts, the response, the error, the
+//! request limits and the RPC [`Transport`] seam. The client itself is per platform (Windows:
+//! `yw_win::http::Client`, which implements [`Transport`]).
 //!
 //! Errors never contain the URL or host; `HttpsUrl` formats as `https://[redacted]` because a
 //! whole RPC URL is a secret.
@@ -362,4 +363,57 @@ pub fn valid_header(name: &str, value: &[u8]) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
         && value.len() <= MAX_HEADER_VALUE
         && value.iter().all(|byte| (0x20..=0x7E).contains(byte))
+}
+
+/// A raw HTTP reply.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HttpReply {
+    /// Status.
+    pub status: u16,
+    /// Body.
+    pub body: Vec<u8>,
+}
+
+/// The transport seam of the RPC pipelines (spec/01 §2.3a): the platform HTTP client (Windows:
+/// `yw_win::http::Client`, `WinHTTP`) or a fake in tests. 2026-11-17 S2: moved unchanged from
+/// yw-app `rpc` (which re-exports it).
+pub trait Transport: Send + Sync {
+    /// POSTs a JSON body.
+    ///
+    /// # Errors
+    ///
+    /// [`HttpError`].
+    fn post_json(
+        &self,
+        url: &HttpsUrl,
+        body: &[u8],
+        max_response: usize,
+    ) -> Result<HttpReply, HttpError>;
+
+    /// GETs `url` with `Accept: application/json` and returns status, `Content-Type` and body
+    /// (Bitcoin `esplora`/`bb-rest` indexers, spec/08 §4.1). Transports that only speak JSON-RPC
+    /// keep the default, which sends nothing and fails with [`HttpError::InvalidUrl`].
+    ///
+    /// # Errors
+    ///
+    /// [`HttpError`].
+    fn http_get(&self, _url: &HttpsUrl, _max_response: usize) -> Result<Response, HttpError> {
+        Err(HttpError::InvalidUrl)
+    }
+
+    /// POSTs `body` with exactly `Content-Type: text/plain` (only the user-confirmed Esplora
+    /// `POST /tx`, spec/08 §11.3). The default sends nothing and fails with
+    /// [`HttpError::InvalidUrl`].
+    ///
+    /// # Errors
+    ///
+    /// [`HttpError`].
+    fn http_post_text(
+        &self,
+        _url: &HttpsUrl,
+        _body: &[u8],
+        _max_response: usize,
+    ) -> Result<Response, HttpError> {
+        Err(HttpError::InvalidUrl)
+    }
 }
