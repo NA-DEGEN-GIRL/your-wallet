@@ -119,13 +119,27 @@ pub fn format_utc(unix_ms: u64) -> String {
     format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z")
 }
 
-/// The wall clock of the line timestamps (Unix milliseconds; 0 before 1970).
+/// One sanitized line stamped with the current time, for a sink's own lines (a failed rotation).
+///
+/// (2026-11-17 E1 review: before this, the line clock itself was public as `now_unix_ms`, which
+/// any engine module could have used as an unrestricted wall clock. Now only log lines read it.)
 #[must_use]
+pub fn format_line_now(
+    level: LogLevel,
+    area: &'static str,
+    event: &'static str,
+    fields: &[(&'static str, Field<'_>)],
+) -> String {
+    format_line(log_line_unix_ms(), level, area, event, fields)
+}
+
+/// The wall clock of the line timestamps (Unix milliseconds; 0 before 1970). Private: the
+/// engine's other time comes from `yw_platform::Clock`.
 #[expect(
     clippy::disallowed_types,
     reason = "log line timestamps only (spec/01 §5.1): never compared with a deadline"
 )]
-pub fn now_unix_ms() -> u64 {
+fn log_line_unix_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| {
@@ -271,7 +285,7 @@ pub fn log(
     if level_rank(level) > logger.level.load(Ordering::Relaxed) {
         return;
     }
-    let line = format_line(now_unix_ms(), level, area, event, fields);
+    let line = format_line(log_line_unix_ms(), level, area, event, fields);
     if let Ok(mut sink) = logger.sink.lock() {
         sink.write_line(&line, level <= LogLevel::Warn);
     }
@@ -309,7 +323,7 @@ pub fn panic_line(location: Option<&Location<'_>>) {
     };
     let at = location.map(|location| ("at", Field::Source(location)));
     let line = format_line(
-        now_unix_ms(),
+        log_line_unix_ms(),
         LogLevel::Error,
         "app",
         "app.panic",

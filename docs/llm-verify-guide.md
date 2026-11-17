@@ -161,7 +161,7 @@ Further protections to confirm:
   `crates/yw-win/src/ui/capture.rs` is a different thing: a debug-build-only screenshot-tour helper
   (`#[cfg(debug_assertions)]`) whose `dev_tour_lift_capture_exclusion` removes the exclusion for the tour's fake
   data; it is not in release builds.
-- Logs never contain secrets, RPC URLs, hosts or site origins (AGENTS.md hard rule 7, `crates/yw-app/src/logging.rs`).
+- Logs never contain secrets, RPC URLs, hosts or site origins (AGENTS.md hard rule 7, `crates/yw-engine/src/logging.rs`; the Windows file sink is `crates/yw-app/src/log_file.rs`).
 
 ```powershell
 git grep -n "Argon2::new\|Params::new" -- crates/yw-core/src/vault
@@ -234,7 +234,7 @@ Nothing is signed without a decision in the app's own window. Files to read:
 | What | Where |
 |---|---|
 | Approval digest and single-use `consume` (bound to bytes, chain, account, simulation, expiry) | `crates/yw-core/src/approval/`, spec/03 §11 (canonical for all chains) |
-| Click-jacking defences: 1 s arm delay, focus starts on `거부` (Reject), High risk needs the checkbox "위 경고를 모두 확인했습니다" (I checked all warnings above) + 2 s hold of `승인` (Approve), injected Enter never approves, always-on-top, 120 s expiry | `crates/yw-app/src/ui/interaction.rs`, spec/04 §3 |
+| Click-jacking defences: 1 s arm delay, focus starts on `거부` (Reject), High risk needs the checkbox "위 경고를 모두 확인했습니다" (I checked all warnings above) + 2 s hold of `승인` (Approve), injected Enter never approves, always-on-top, 120 s expiry | `crates/yw-engine/src/approval/interaction.rs` (the Win32 stray-press mapping is `crates/yw-app/src/ui/approval_input.rs`), spec/04 §3 |
 | EVM risk rules (E01–E43) and Blocked rules | `crates/yw-core/src/evm/risk/rules.rs`, spec/03 §10 |
 | Solana dApp transactions (parser, ALT, decode, diff, display, sign; rules X01–X19) | `crates/yw-core/src/sol/dapp/`, spec/07 §20 |
 | App glue for the approval window: issuing, re-simulation, `consume`, the `KeyJob::SignEvm` job | `crates/yw-app/src/app_approval.rs` (signing runs on the key worker, `crates/yw-app/src/workers/key.rs`) |

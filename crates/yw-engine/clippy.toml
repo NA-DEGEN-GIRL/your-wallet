@@ -2,14 +2,28 @@
 # (spec/01 §5.1; 2026-11-17, spec/15 §11.4 S2). Unlike yw-core and yw-platform, std threads and
 # `Instant` are allowed: the workers spawn portable std threads, and `Instant` measures only local
 # elapsed time (deadlines the App compares go through `yw_platform::Clock`). Files, sockets,
-# processes, the wall clock and the environment stay with the platform layer.
+# processes, the wall clock and the environment stay with the platform layer. (2026-11-17 E1 review:
+# the lists also cover the `Path` file-system queries, the other `std::fs` free functions, the rest
+# of `std::env` and DNS lookups; before that only the most common calls were listed.)
 avoid-breaking-exported-api = false
 msrv = "1.95.0"
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
-disallowed-types = [ "std::fs::File", "std::fs::OpenOptions", "std::net::TcpStream", "std::net::TcpListener",
-                     "std::net::UdpSocket", "std::process::Command", "std::time::SystemTime" ]
-disallowed-methods = [ "std::env::var", "std::env::var_os", "std::fs::read", "std::fs::write",
-                       "std::fs::read_to_string", "std::fs::read_dir", "std::fs::remove_file",
-                       "std::fs::remove_dir_all", "std::fs::rename", "std::fs::create_dir_all",
-                       "std::fs::metadata", "std::fs::copy" ]
+disallowed-types = [ "std::fs::File", "std::fs::OpenOptions", "std::fs::DirBuilder", "std::net::TcpStream",
+                     "std::net::TcpListener", "std::net::UdpSocket", "std::process::Command",
+                     "std::time::SystemTime" ]
+disallowed-methods = [ "std::env::var", "std::env::var_os", "std::env::vars", "std::env::vars_os",
+                       "std::env::args", "std::env::args_os", "std::env::temp_dir", "std::env::current_dir",
+                       "std::env::set_current_dir", "std::env::current_exe", "std::env::set_var",
+                       "std::env::remove_var",
+                       "std::fs::read", "std::fs::write", "std::fs::read_to_string", "std::fs::read_dir",
+                       "std::fs::read_link", "std::fs::remove_file", "std::fs::remove_dir",
+                       "std::fs::remove_dir_all", "std::fs::rename", "std::fs::create_dir",
+                       "std::fs::create_dir_all", "std::fs::metadata", "std::fs::symlink_metadata",
+                       "std::fs::canonicalize", "std::fs::copy", "std::fs::hard_link",
+                       "std::fs::set_permissions", "std::fs::exists",
+                       "std::path::Path::exists", "std::path::Path::try_exists", "std::path::Path::is_file",
+                       "std::path::Path::is_dir", "std::path::Path::is_symlink", "std::path::Path::metadata",
+                       "std::path::Path::symlink_metadata", "std::path::Path::read_dir",
+                       "std::path::Path::read_link", "std::path::Path::canonicalize",
+                       "std::net::ToSocketAddrs::to_socket_addrs" ]

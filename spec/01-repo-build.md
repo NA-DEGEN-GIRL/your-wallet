@@ -932,14 +932,27 @@ const forbidden = [
   `crates/yw-platform/clippy.toml`은 같은 내용이다(2026-11-17): yw-platform도 OS를 부르지 않는다(§2.3a).
   `crates/yw-engine/clippy.toml`(2026-11-17 S2, §2.3b)은 루트 내용 + 아래로 yw-core의 것과 다르다:
   ```toml
-  disallowed-types = [ "std::fs::File", "std::fs::OpenOptions", "std::net::TcpStream", "std::net::TcpListener",
-                       "std::net::UdpSocket", "std::process::Command", "std::time::SystemTime" ]
-  disallowed-methods = [ "std::env::var", "std::env::var_os", "std::fs::read", "std::fs::write",
-                         "std::fs::read_to_string", "std::fs::read_dir", "std::fs::remove_file",
-                         "std::fs::remove_dir_all", "std::fs::rename", "std::fs::create_dir_all",
-                         "std::fs::metadata", "std::fs::copy" ]
+  disallowed-types = [ "std::fs::File", "std::fs::OpenOptions", "std::fs::DirBuilder", "std::net::TcpStream",
+                       "std::net::TcpListener", "std::net::UdpSocket", "std::process::Command",
+                       "std::time::SystemTime" ]
+  disallowed-methods = [ "std::env::var", "std::env::var_os", "std::env::vars", "std::env::vars_os",
+                         "std::env::args", "std::env::args_os", "std::env::temp_dir", "std::env::current_dir",
+                         "std::env::set_current_dir", "std::env::current_exe", "std::env::set_var",
+                         "std::env::remove_var",
+                         "std::fs::read", "std::fs::write", "std::fs::read_to_string", "std::fs::read_dir",
+                         "std::fs::read_link", "std::fs::remove_file", "std::fs::remove_dir",
+                         "std::fs::remove_dir_all", "std::fs::rename", "std::fs::create_dir",
+                         "std::fs::create_dir_all", "std::fs::metadata", "std::fs::symlink_metadata",
+                         "std::fs::canonicalize", "std::fs::copy", "std::fs::hard_link",
+                         "std::fs::set_permissions", "std::fs::exists",
+                         "std::path::Path::exists", "std::path::Path::try_exists", "std::path::Path::is_file",
+                         "std::path::Path::is_dir", "std::path::Path::is_symlink", "std::path::Path::metadata",
+                         "std::path::Path::symlink_metadata", "std::path::Path::read_dir",
+                         "std::path::Path::read_link", "std::path::Path::canonicalize",
+                         "std::net::ToSocketAddrs::to_socket_addrs" ]
   ```
-  `std::thread::spawn`과 `std::time::Instant`는 허용한다: 작업자·준비·설명·WalletConnect 작업 스레드는 이식 가능한 std 스레드이고(Android에서도 JVM에 붙지 않는다, [15](15-android.md) §3.2), `Instant`는 지역 경과 시간만 잰다. App이 정한 기한과 비교하는 시각은 `yw_platform::Clock`을 거치므로 운영은 `GetTickCount64` 기준 그대로다. 예외는 항목별 `#[expect]` 둘: 로그 줄 시각(`logging::now_unix_ms`, `SystemTime`)과 디버그 빌드 전용 `fault_point`(`env::var`, 옮겨 올 때).
+  (2026-11-17 E1 검토: `Path`의 파일 시스템 조회, 나머지 `std::fs` 함수, 나머지 `std::env`, DNS 조회(`to_socket_addrs`)를 더했다. 그 전 목록은 흔한 호출만 막아 `dir.exists()` 같은 호출이 통과했다.)
+  `std::thread::spawn`과 `std::time::Instant`는 허용한다: 작업자·준비·설명·WalletConnect 작업 스레드는 이식 가능한 std 스레드이고(Android에서도 JVM에 붙지 않는다, [15](15-android.md) §3.2), `Instant`는 지역 경과 시간만 잰다. App이 정한 기한과 비교하는 시각은 `yw_platform::Clock`을 거치므로 운영은 `GetTickCount64` 기준 그대로다. 예외는 항목별 `#[expect]` 둘: 로그 줄 시각(비공개 `logging::log_line_unix_ms`, `SystemTime`)과 디버그 빌드 전용 `fault_point`(`env::var`, 옮겨 올 때). 로그 줄 시계는 비공개라 다른 모듈이 벽시계로 쓸 수 없다. sink가 자기 줄(회전 실패)에 시각을 찍을 때는 `logging::format_line_now`로 완성된 줄만 받는다(2026-11-17 E1 검토: 그 전에는 `pub fn now_unix_ms`였다).
 
 ### 5.2 panic 금지와 오류
 

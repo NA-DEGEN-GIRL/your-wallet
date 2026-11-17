@@ -10,7 +10,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use crate::logging::{self, LogLevel, LogSink, format_line};
+use crate::logging::{self, LogLevel, LogSink, format_line_now};
 
 /// Rotation threshold.
 pub const LOG_FILE_MAX_BYTES: u64 = 1_048_576;
@@ -86,13 +86,7 @@ impl LogWriter {
         };
         self.size = 0;
         if !renamed && self.file.is_some() {
-            let line = format_line(
-                logging::now_unix_ms(),
-                LogLevel::Warn,
-                "log",
-                "rotate.failed",
-                &[],
-            );
+            let line = format_line_now(LogLevel::Warn, "log", "rotate.failed", &[]);
             self.buffer.extend_from_slice(line.as_bytes());
         }
     }
