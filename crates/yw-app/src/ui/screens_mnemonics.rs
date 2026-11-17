@@ -128,6 +128,70 @@ pub mod ids {
         REMOVE_REVEAL,
         REMOVE_TYPED_EDIT,
     ];
+
+    /// The press control `id` stands for (2026-11-18, S3 C6: `ui::cmd_table`). `None` when `id`
+    /// is not one of this module's presses (the two edits are fields). Each row range is
+    /// claimed whole ([`ROW_SPAN`] rows), as the ids reached the handler before.
+    #[must_use]
+    pub fn press_of(id: u16) -> Option<yw_engine::cmd::MnPress> {
+        use yw_engine::cmd::{MnPress, Row};
+        let within = |base: u16| id.checked_sub(base).filter(|row| *row < ROW_SPAN).map(Row);
+        Some(match id {
+            SECTION_MNEMONICS => MnPress::SectionMnemonics,
+            MAIN_LINK => MnPress::MainLink,
+            IMPORT => MnPress::Import,
+            CREATE => MnPress::Create,
+            PREVIEW_CONFIRM => MnPress::PreviewConfirm,
+            PREVIEW_CANCEL => MnPress::PreviewCancel,
+            PREVIEW_SAME_ACK => MnPress::PreviewSameAck,
+            RENAME_SAVE => MnPress::RenameSave,
+            RENAME_CANCEL => MnPress::RenameCancel,
+            REMOVE_CONFIRM => MnPress::RemoveConfirm,
+            REMOVE_REVEAL => MnPress::RemoveReveal,
+            REMOVE_CANCEL => MnPress::RemoveCancel,
+            PICK_CANCEL => MnPress::PickCancel,
+            SOL_PICK_CANCEL => MnPress::SolPickCancel,
+            _ => within(RENAME_BASE)
+                .map(MnPress::Rename)
+                .or_else(|| within(REVEAL_BASE).map(MnPress::Reveal))
+                .or_else(|| within(BACKUP_BASE).map(MnPress::Backup))
+                .or_else(|| within(REMOVE_BASE).map(MnPress::Remove))
+                .or_else(|| within(PICK_BASE).map(MnPress::Pick))
+                .or_else(|| within(SOL_PICK_BASE).map(MnPress::SolPick))
+                .or_else(|| within(BTC_PICK_BASE).map(MnPress::BtcPick))
+                .or_else(|| within(ZEC_PICK_BASE).map(MnPress::ZecPick))?,
+        })
+    }
+
+    /// The control id of `press` (the inverse of [`press_of`]).
+    #[must_use]
+    pub const fn id_of(press: yw_engine::cmd::MnPress) -> u16 {
+        use yw_engine::cmd::{MnPress, Row};
+        match press {
+            MnPress::SectionMnemonics => SECTION_MNEMONICS,
+            MnPress::MainLink => MAIN_LINK,
+            MnPress::Import => IMPORT,
+            MnPress::Create => CREATE,
+            MnPress::PreviewConfirm => PREVIEW_CONFIRM,
+            MnPress::PreviewCancel => PREVIEW_CANCEL,
+            MnPress::PreviewSameAck => PREVIEW_SAME_ACK,
+            MnPress::RenameSave => RENAME_SAVE,
+            MnPress::RenameCancel => RENAME_CANCEL,
+            MnPress::RemoveConfirm => REMOVE_CONFIRM,
+            MnPress::RemoveReveal => REMOVE_REVEAL,
+            MnPress::RemoveCancel => REMOVE_CANCEL,
+            MnPress::PickCancel => PICK_CANCEL,
+            MnPress::SolPickCancel => SOL_PICK_CANCEL,
+            MnPress::Rename(Row(row)) => RENAME_BASE.wrapping_add(row),
+            MnPress::Reveal(Row(row)) => REVEAL_BASE.wrapping_add(row),
+            MnPress::Backup(Row(row)) => BACKUP_BASE.wrapping_add(row),
+            MnPress::Remove(Row(row)) => REMOVE_BASE.wrapping_add(row),
+            MnPress::Pick(Row(row)) => PICK_BASE.wrapping_add(row),
+            MnPress::SolPick(Row(row)) => SOL_PICK_BASE.wrapping_add(row),
+            MnPress::BtcPick(Row(row)) => BTC_PICK_BASE.wrapping_add(row),
+            MnPress::ZecPick(Row(row)) => ZEC_PICK_BASE.wrapping_add(row),
+        }
+    }
 }
 
 fn row_id(base: u16, row: usize) -> u16 {

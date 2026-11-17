@@ -16,7 +16,7 @@
 //! reads a check box's state into its press (the box is never read again by the handler).
 //! S3 C2: S13's sites and `WalletConnect` panel. S3 C3: the block-explorer card and links and
 //! the AI-explanation settings. S3 C4: the address book. S3 C5: S22 and T-WAIT-STALLED, S23,
-//! the imported-key screens and the `rpc.json` import card.
+//! the imported-key screens and the `rpc.json` import card. S3 C6: the recovery phrases.
 
 use yw_core::secret::Zeroizing;
 use yw_engine::cmd::Press;
@@ -25,7 +25,7 @@ use yw_engine::form::{CredField, CredUnits, EditField, PressInput};
 use crate::ui::main_window::ControlSet;
 use crate::ui::{
     screens, screens_book, screens_evm, screens_explorer, screens_keys, screens_links, screens_llm,
-    screens_received, screens_reset, screens_sites, screens_walletconnect,
+    screens_mnemonics, screens_received, screens_reset, screens_sites, screens_walletconnect,
 };
 use crate::{app_hidden, app_rpc_import, app_sidecar};
 
@@ -55,6 +55,7 @@ pub fn press_of(id: u16, controls: &ControlSet) -> Press {
             .or_else(|| screens_reset::ids::ext_press_of(other).map(Press::Ext))
             .or_else(|| screens_keys::ids::press_of(other).map(Press::Keys))
             .or_else(|| app_rpc_import::ids::press_of(other).map(Press::RpcImport))
+            .or_else(|| screens_mnemonics::ids::press_of(other).map(Press::Mn))
             .unwrap_or(Press::Legacy(other)),
     }
 }
@@ -79,6 +80,7 @@ pub const fn id_of(press: Press) -> u16 {
         Press::Ext(press) => screens_reset::ids::ext_id_of(press),
         Press::Keys(press) => screens_keys::ids::id_of(press),
         Press::RpcImport(press) => app_rpc_import::ids::id_of(press),
+        Press::Mn(press) => screens_mnemonics::ids::id_of(press),
         Press::Legacy(id) => id,
     }
 }
@@ -616,6 +618,33 @@ mod tests {
             Press::Reset(ResetPress::SettingsCheck(Some(true)))
         );
         assert_eq!(id_of(press_of(check, &controls)), check);
+    }
+
+    /// S3 C6: the recovery phrases claim exactly the ids `on_mn_command` reached (every fixed
+    /// id but the two edits, which are fields, and each row range whole).
+    #[test]
+    fn c6_mn_maps_its_ids() {
+        use screens_mnemonics::ids;
+        use yw_engine::cmd::{MnPress, Row};
+        let controls = ControlSet::default();
+        for id in 13_600..13_700 {
+            let mn = matches!(id, 13_600..=13_606 | 13_608..=13_614 | 13_620..13_628
+                | 13_630..13_638 | 13_640..13_648 | 13_650..13_658 | 13_660..13_668
+                | 13_670..13_678 | 13_680..13_688 | 13_690..13_698);
+            assert_eq!(matches!(press_of(id, &controls), Press::Mn(_)), mn, "{id}");
+        }
+        assert!(ids::FIXED.iter().all(|&id| {
+            matches!(press_of(id, &controls), Press::Mn(_))
+                != [ids::RENAME_EDIT, ids::REMOVE_TYPED_EDIT].contains(&id)
+        }));
+        assert_eq!(
+            press_of(ids::ZEC_PICK_BASE + 7, &controls),
+            Press::Mn(MnPress::ZecPick(Row(7)))
+        );
+        assert_eq!(
+            press_of(ids::PICK_BASE, &controls),
+            Press::Mn(MnPress::Pick(Row(0)))
+        );
     }
 
     /// Table test (3): the 65 edit ids are 58 plain fields and 7 credential fields, each a

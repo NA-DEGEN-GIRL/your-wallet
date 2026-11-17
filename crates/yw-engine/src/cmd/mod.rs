@@ -24,6 +24,8 @@
 //!
 //! 2026-11-18 (S3 C5): S22 and T-WAIT-STALLED, S23, the imported-key screens and the `rpc.json`
 //! import (`Press::{Reset, Ext, Keys, RpcImport}`).
+//!
+//! 2026-11-18 (S3 C6): the recovery phrases (`Press::Mn`).
 
 use core::fmt;
 
@@ -40,6 +42,7 @@ mod hidden;
 mod keys;
 mod links;
 mod llm;
+mod mn;
 mod received;
 mod reset;
 mod rpc_import;
@@ -54,6 +57,7 @@ pub use hidden::HiddenPress;
 pub use keys::KeysPress;
 pub use links::LinksPress;
 pub use llm::LlmPress;
+pub use mn::MnPress;
 pub use received::ReceivedPress;
 pub use reset::ResetPress;
 pub use rpc_import::RpcImportPress;
@@ -165,6 +169,8 @@ pub enum Press {
     Keys(KeysPress),
     /// The `rpc.json` import card (S3 C5).
     RpcImport(RpcImportPress),
+    /// The recovery phrases and their pickers (S3 C6).
+    Mn(MnPress),
     /// Windows-transitional bridge (S3 B2–D3): a control id whose handler is not converted yet.
     #[doc(hidden)]
     Legacy(u16),
@@ -193,6 +199,7 @@ impl Press {
             | Self::Ext(_)
             | Self::Keys(_)
             | Self::RpcImport(_)
+            | Self::Mn(_)
             | Self::Legacy(_) => None,
         }
     }
@@ -220,6 +227,7 @@ impl Press {
             | Self::Ext(_)
             | Self::Keys(_)
             | Self::RpcImport(_)
+            | Self::Mn(_)
             | Self::Legacy(_) => false,
         }
     }

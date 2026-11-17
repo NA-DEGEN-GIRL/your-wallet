@@ -20,6 +20,8 @@ use crate::ui::main_window::{Ctl, Item, Tone};
 use crate::ui::screens_mnemonics::ids;
 use crate::ui::secret::{DisplaySecret, SecretKind};
 use crate::workers::key::mnemonics::{MnJob, MnOutcome};
+use yw_engine::cmd::{MnPress, Row};
+use yw_engine::form::EditField;
 
 /// What a secret window of the recovery-phrase flows is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -610,81 +612,91 @@ impl App {
         })
     }
 
-    /// The recovery-phrase commands; `false` when `id` is not one of them.
-    pub(crate) fn on_mn_command(&mut self, id: u16) -> bool {
-        let row = |base: u16| {
-            id.checked_sub(base)
-                .filter(|row| *row < ids::ROW_SPAN)
-                .map(usize::from)
-        };
-        let info_at = |app: &Self, row: usize| app.mn.infos.get(row).copied();
-        if let Some(row) = row(ids::PICK_BASE) {
-            self.mn.add_pick = false;
-            match info_at(self, row) {
-                Some(info) if info.primary => self.add_primary_account(),
-                Some(info) => {
-                    let next = self.meta.as_ref().and_then(|meta| {
-                        meta.mnemonics
-                            .iter()
-                            .find(|entry| entry.record_id == *info.id.as_bytes())?
-                            .next_index()
-                    });
-                    if let Some(index) = next {
-                        self.key(KeyJob::Mnemonics(MnJob::Derive { id: info.id, index }));
+    /// The recovery-phrase presses (2026-11-18, S3 C6: an `MnPress`; before, the control id).
+    /// `false` when a row press names no phrase, as before (the id then went on down the legacy
+    /// chain, where nothing claimed it); `Import`/`Create` while the phrases cannot be edited do
+    /// nothing (before, the `_ => FIXED.contains(&id)` arm).
+    pub(crate) fn on_mn(&mut self, press: MnPress) -> bool {
+        let info_at = |app: &Self, Row(row): Row| app.mn.infos.get(usize::from(row)).copied();
+        match press {
+            MnPress::Pick(row) => {
+                self.mn.add_pick = false;
+                match info_at(self, row) {
+                    Some(info) if info.primary => self.add_primary_account(),
+                    Some(info) => {
+                        let next = self.meta.as_ref().and_then(|meta| {
+                            meta.mnemonics
+                                .iter()
+                                .find(|entry| entry.record_id == *info.id.as_bytes())?
+                                .next_index()
+                        });
+                        if let Some(index) = next {
+                            self.key(KeyJob::Mnemonics(MnJob::Derive { id: info.id, index }));
+                        }
                     }
+                    None => {}
                 }
-                None => {}
+                self.refresh();
             }
-            self.refresh();
-            return true;
-        }
-        if self.on_chain_pick(id) {
-            return true;
-        }
-        if let Some(info) = row(ids::RENAME_BASE).and_then(|row| info_at(self, row)) {
-            self.mn.rename = Some(info.id);
-            self.refresh();
-            return true;
-        }
-        if let Some(info) = row(ids::REVEAL_BASE).and_then(|row| info_at(self, row)) {
-            self.open_mn_input(
-                SecretKind::ConfirmPassword,
-                MnPurpose::RevealPassword(info.id, false),
-            );
-            return true;
-        }
-        if let Some(info) = row(ids::BACKUP_BASE).and_then(|row| info_at(self, row)) {
-            self.open_mn_input(
-                SecretKind::ConfirmPassword,
-                MnPurpose::RevealPassword(info.id, true),
-            );
-            return true;
-        }
-        if let Some(info) = row(ids::REMOVE_BASE).and_then(|row| info_at(self, row)) {
-            self.mn_remove_clicked(info);
-            return true;
-        }
-        match id {
-            ids::SECTION_MNEMONICS | ids::MAIN_LINK => {
+            MnPress::SolPickCancel
+            | MnPress::SolPick(_)
+            | MnPress::BtcPick(_)
+            | MnPress::ZecPick(_) => return self.on_chain_pick(press),
+            MnPress::Rename(row) => {
+                let Some(info) = info_at(self, row) else {
+                    return false;
+                };
+                self.mn.rename = Some(info.id);
+                self.refresh();
+            }
+            MnPress::Reveal(row) => {
+                let Some(info) = info_at(self, row) else {
+                    return false;
+                };
+                self.open_mn_input(
+                    SecretKind::ConfirmPassword,
+                    MnPurpose::RevealPassword(info.id, false),
+                );
+            }
+            MnPress::Backup(row) => {
+                let Some(info) = info_at(self, row) else {
+                    return false;
+                };
+                self.open_mn_input(
+                    SecretKind::ConfirmPassword,
+                    MnPurpose::RevealPassword(info.id, true),
+                );
+            }
+            MnPress::Remove(row) => {
+                let Some(info) = info_at(self, row) else {
+                    return false;
+                };
+                self.mn_remove_clicked(info);
+            }
+            MnPress::SectionMnemonics | MnPress::MainLink => {
                 self.set_screen(Screen::Settings(SettingsSection::Mnemonics));
             }
-            ids::IMPORT if self.mn_phrases_editable() => {
-                self.mn.preview = None;
-                self.open_mn_input(SecretKind::Mnemonic, MnPurpose::ImportWords);
+            MnPress::Import => {
+                if self.mn_phrases_editable() {
+                    self.mn.preview = None;
+                    self.open_mn_input(SecretKind::Mnemonic, MnPurpose::ImportWords);
+                }
             }
-            ids::CREATE if self.mn_phrases_editable() => {
-                self.open_mn_input(SecretKind::ConfirmPassword, MnPurpose::CreatePassword);
+            MnPress::Create => {
+                if self.mn_phrases_editable() {
+                    self.open_mn_input(SecretKind::ConfirmPassword, MnPurpose::CreatePassword);
+                }
             }
-            ids::PREVIEW_CONFIRM | ids::PREVIEW_SAME_ACK | ids::PREVIEW_CANCEL => {
-                self.on_mn_preview_command(id);
+            MnPress::PreviewConfirm | MnPress::PreviewSameAck | MnPress::PreviewCancel => {
+                self.on_mn_preview(press);
             }
-            ids::RENAME_SAVE => self.save_mnemonic_label(),
-            ids::RENAME_CANCEL => {
+            MnPress::RenameSave => self.save_mnemonic_label(),
+            MnPress::RenameCancel => {
                 self.mn.rename = None;
                 self.refresh();
             }
-            ids::REMOVE_CONFIRM => self.mn_remove_confirmed(),
-            ids::REMOVE_REVEAL => {
+            MnPress::RemoveConfirm => self.mn_remove_confirmed(),
+            MnPress::RemoveReveal => {
                 if let Some(target) = self.mn.confirm_remove {
                     self.open_mn_input(
                         SecretKind::ConfirmPassword,
@@ -692,35 +704,34 @@ impl App {
                     );
                 }
             }
-            ids::REMOVE_CANCEL => {
+            MnPress::RemoveCancel => {
                 self.mn_remove_reset(None);
                 self.refresh();
             }
-            ids::PICK_CANCEL => {
+            MnPress::PickCancel => {
                 self.mn.add_pick = false;
                 self.refresh();
             }
-
-            _ => return ids::FIXED.contains(&id),
         }
         true
     }
 
     /// The address preview's controls: `가져오기` (after the T-YK-SAME checkbox when the words
-    /// are an enrolled `YubiKey`'s), the checkbox, `취소`.
-    fn on_mn_preview_command(&mut self, id: u16) {
-        match id {
-            ids::PREVIEW_CONFIRM
+    /// are an enrolled `YubiKey`'s), the checkbox, `취소`. (2026-11-18, S3 C6: the press; before,
+    /// the control id.)
+    fn on_mn_preview(&mut self, press: MnPress) {
+        match press {
+            MnPress::PreviewConfirm
                 if self.mn.preview.is_some()
                     && (self.mn.preview_cards.is_empty() || self.mn.same_ack) =>
             {
                 self.open_mn_input(SecretKind::ConfirmPassword, MnPurpose::ImportPassword);
             }
-            ids::PREVIEW_SAME_ACK => {
+            MnPress::PreviewSameAck => {
                 self.mn.same_ack = !self.mn.same_ack;
                 self.refresh();
             }
-            ids::PREVIEW_CANCEL => {
+            MnPress::PreviewCancel => {
                 self.mn.preview = None;
                 self.mn.preview_cards.clear();
                 self.mn.same_ack = false;
@@ -818,13 +829,14 @@ impl App {
         );
     }
 
-    /// `EN_CHANGE` of a recovery-phrase edit; `false` when `id` is not one of them.
-    pub fn on_mn_edit_change(&mut self, id: u16) -> bool {
-        if id != ids::REMOVE_TYPED_EDIT {
+    /// `EN_CHANGE` of a recovery-phrase edit: `text` is the field's text now (2026-11-18, S3 C6:
+    /// from `Cmd::Edit`; before, a read of the edit by id); `false` when `field` is not the
+    /// removal warning's typed phrase (the label edit has no change handler, as before).
+    pub(crate) fn on_mn_edit(&mut self, field: EditField, text: &str) -> bool {
+        if field != EditField::MnRemoveTyped {
             return false;
         }
-        let text = self.controls.text(id, 32).unwrap_or_default();
-        self.mn_set_remove_typed(text);
+        self.mn_set_remove_typed(text.to_owned());
         true
     }
 
@@ -903,34 +915,39 @@ impl App {
         }
     }
 
-    /// The Solana / Bitcoin / Zcash mnemonic choices (spec/02 §8.6); `false` for other ids.
-    fn on_chain_pick(&mut self, id: u16) -> bool {
-        if id == ids::SOL_PICK_CANCEL {
-            self.sol.add_pick = false;
-            self.refresh();
-            return true;
-        }
-        let pick = |base: u16| {
-            id.checked_sub(base)
-                .filter(|row| *row < ids::ROW_SPAN)
-                .and_then(|row| self.mn.infos.get(usize::from(row)).copied())
-        };
-        if let Some(info) = pick(ids::SOL_PICK_BASE) {
-            self.sol_add_account_of(info.id, info.primary);
-            self.refresh();
-            return true;
-        }
-        if let Some(info) = pick(ids::BTC_PICK_BASE) {
-            self.btc_pick_mnemonic(info.id, info.primary);
-            return true;
-        }
-        if let Some(info) = pick(ids::ZEC_PICK_BASE) {
-            if !info.primary {
-                self.zec_use_mnemonic(info.id);
+    /// The Solana / Bitcoin / Zcash mnemonic choices (spec/02 §8.6); `false` when a row names
+    /// no phrase or `press` is not one of them (2026-11-18, S3 C6: the press; before, the id).
+    fn on_chain_pick(&mut self, press: MnPress) -> bool {
+        let info_at = |Row(row): Row| self.mn.infos.get(usize::from(row)).copied();
+        match press {
+            MnPress::SolPickCancel => {
+                self.sol.add_pick = false;
+                self.refresh();
             }
-            return true;
+            MnPress::SolPick(row) => {
+                let Some(info) = info_at(row) else {
+                    return false;
+                };
+                self.sol_add_account_of(info.id, info.primary);
+                self.refresh();
+            }
+            MnPress::BtcPick(row) => {
+                let Some(info) = info_at(row) else {
+                    return false;
+                };
+                self.btc_pick_mnemonic(info.id, info.primary);
+            }
+            MnPress::ZecPick(row) => {
+                let Some(info) = info_at(row) else {
+                    return false;
+                };
+                if !info.primary {
+                    self.zec_use_mnemonic(info.id);
+                }
+            }
+            _ => return false,
         }
-        false
+        true
     }
 
     fn open_mn_input(&mut self, kind: SecretKind, purpose: MnPurpose) {
@@ -938,7 +955,8 @@ impl App {
     }
 
     fn save_mnemonic_label(&mut self) {
-        let label = self.controls.text(ids::RENAME_EDIT, 64).unwrap_or_default();
+        // 2026-11-18 (S3 C6): the form state (`App::form_text`); before, a read of the edit.
+        let label = self.form_text(EditField::MnRename).unwrap_or_default();
         if !is_valid_label(&label) {
             self.info = Some(crate::errors::ErrorCode::Inp017.text_in(self.settings.language));
             self.refresh();

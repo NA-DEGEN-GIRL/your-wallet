@@ -3933,6 +3933,10 @@ impl App {
             Press::Ext(press) => self.on_ext(press),
             Press::Keys(press) => self.on_keys(press),
             Press::RpcImport(press) => self.on_rpc_import(press),
+            Press::Mn(press) => {
+                // `false`: a row naming no phrase, which nothing else claims (as before).
+                let _ = self.on_mn(press);
+            }
             Press::Back | Press::Enter | Press::Legacy(_) => {}
         }
     }
@@ -4001,7 +4005,7 @@ impl App {
             // edit), and the census asserts `form_mismatch == 0` at every observation, so a test
             // that notifies without typing fails there. (S3 C4: the address book's
             // `BookAddress`, `BookLabel`, `BookPromptLabel` likewise; S3 C5: S22's
-            // `ResetPhrase`.)
+            // `ResetPhrase`; S3 C6: the removal warning's `MnRemoveTyped`.)
             #[cfg(debug_assertions)]
             self.note_form_mismatch(field);
             self.edit_chain(id);
@@ -4014,6 +4018,7 @@ impl App {
         self.on_wc_edit(field, text)
             || self.on_reset_edit(field, text)
             || self.on_book_edit(field, text)
+            || self.on_mn_edit(field, text)
             || self.on_explorer_edit(field, text)
             || self.on_llm_edit(field, text)
     }
@@ -4025,7 +4030,6 @@ impl App {
             && !self.on_btc_edit_change(id)
             && !self.on_zec_edit_change(id)
             && !self.on_yk_edit_change(id)
-            && !self.on_mn_edit_change(id)
             && !self.on_hc_edit_change(id)
         {
             self.on_edit_change(id);
@@ -4369,7 +4373,6 @@ impl App {
                     && !self.on_zec_command(other)
                     && !self.on_evm_command(other)
                     && !self.on_yk_command(other)
-                    && !self.on_mn_command(other)
                     && !self.on_hc_command(other)
                 {
                     self.on_indexed_command(other);
