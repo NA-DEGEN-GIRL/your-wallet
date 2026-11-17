@@ -575,6 +575,92 @@ fn unconfirmed_added_phrase_receive_banner_and_guarded_removal() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// The recovery-phrase list of [`unlocked_app`]: the primary phrase (backup confirmed) and an
+/// added one (`added`, backup confirmed as given), on the settings page that lists them.
+fn two_phrase_app(tag: &str, added_confirmed: bool) -> (App, PathBuf, yw_core::vault::RecordId) {
+    use yw_core::vault::{MnemonicInfo, RecordId};
+    let (mut app, dir) = unlocked_app(tag, false);
+    let added = RecordId::from_bytes([4; 16]);
+    let info = |id: RecordId, primary: bool, backup_confirmed: bool| MnemonicInfo {
+        id,
+        created_unix: 0,
+        words: 24,
+        passphrase_used: false,
+        backup_confirmed,
+        primary,
+    };
+    app.mn.infos = vec![
+        info(RecordId::from_bytes([1; 16]), true, true),
+        info(added, false, added_confirmed),
+    ];
+    app.screen = Screen::Settings(super::SettingsSection::Mnemonics);
+    (app, dir, added)
+}
+
+/// 2026-11-18 (S3 C4–C6 review): the removal warning's typed phrase reaches the app as the
+/// window sends it — `EN_CHANGE` of `REMOVE_TYPED_EDIT` → `Cmd::Edit` → `on_mn_edit`
+/// (`MnRemoveTyped`), not the label edit's field — and `지우기` then asks for the password.
+#[test]
+fn removal_phrase_typed_in_the_edit_reaches_the_removal() {
+    use crate::app_mnemonics::{MnPurpose, text as mn_text};
+    use crate::ui::screens_mnemonics::ids as mn;
+    let (mut app, dir, id) = two_phrase_app("mn-remove-typed", false);
+    app.on_command(mn::REMOVE_BASE + 1);
+    assert_eq!(app.mn.confirm_remove, Some(id));
+    app.mn_hold_complete(MnPurpose::ShowWords(id, false));
+    let items = app.items();
+    assert!(ctl(&items, mn::REMOVE_TYPED_EDIT).unwrap().enabled);
+    assert!(ctl(&items, mn::REMOVE_CONFIRM).unwrap().enabled);
+    // The label edit's change is not the typed phrase (the label edit has no change handler).
+    app.controls.type_text(mn::RENAME_EDIT, "label text");
+    app.on_edit_notify(mn::RENAME_EDIT);
+    assert_eq!(app.mn.remove_typed, "");
+    let serial = app.secret_serial;
+    app.on_command(mn::REMOVE_CONFIRM);
+    assert!(app.mn.remove_error.is_some(), "nothing typed yet");
+    assert_eq!(app.secret_serial, serial);
+    let word = mn_text::REMOVE_WORD.get(app.settings.language);
+    app.controls.type_text(mn::REMOVE_TYPED_EDIT, word);
+    app.on_edit_notify(mn::REMOVE_TYPED_EDIT);
+    assert_eq!(app.mn.remove_typed, word);
+    assert!(ctl(&app.items(), mn::REMOVE_CONFIRM).unwrap().enabled);
+    // `지우기` opens the password window (headless: the attempt, `create_secret`, counts).
+    let serial = app.secret_serial;
+    app.on_command(mn::REMOVE_CONFIRM);
+    assert!(app.mn.remove_error.is_none());
+    assert_eq!(app.secret_serial, serial + 1);
+    #[cfg(debug_assertions)]
+    assert_eq!((app.form_mismatch.get(), app.cred_misses()), (0, 0));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// 2026-11-18 (S3 C4–C6 review): `저장` of a phrase label (button, then Enter in the edit) reads
+/// the label edit (`MnRename` through the form state), not the removal warning's typed phrase.
+#[test]
+fn phrase_label_saves_from_the_label_edit_by_button_and_enter() {
+    use crate::ui::screens_mnemonics::ids as mn;
+    let (mut app, dir, id) = two_phrase_app("mn-rename", true);
+    app.on_command(mn::RENAME_BASE + 1);
+    assert_eq!(app.mn.rename, Some(id));
+    app.controls.type_text(mn::RENAME_EDIT, "Savings");
+    app.on_edit_notify(mn::RENAME_EDIT);
+    app.on_command(mn::RENAME_SAVE);
+    assert_eq!(app.info, None);
+    assert_eq!(app.mn.rename, None);
+    assert_eq!(app.mnemonic_label(id), "Savings");
+    assert_eq!(app.mn.remove_typed, "");
+    // Enter in the label edit presses `저장` (`enter_primary`).
+    app.on_command(mn::RENAME_BASE + 1);
+    app.controls.type_text(mn::RENAME_EDIT, "Cold");
+    let edit = ctl(&app.items(), mn::RENAME_EDIT).unwrap();
+    app.enter_on(Some(&edit));
+    assert_eq!(app.mn.rename, None);
+    assert_eq!(app.mnemonic_label(id), "Cold");
+    #[cfg(debug_assertions)]
+    assert_eq!((app.form_mismatch.get(), app.cred_misses()), (0, 0));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// Item 6 (LK-1): the idle clock pauses while an approval is shown; only input restarts it (a
 /// window that closes by itself does not).
 #[test]
