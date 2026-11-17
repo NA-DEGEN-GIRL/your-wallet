@@ -1,8 +1,9 @@
 //! The `WalletConnect` Sign v2 wallet engine (spec/13 §3–§5): pairings, proposals, sessions and
 //! the client-to-client JSON-RPC of `clients/sign/rpc-methods.md` over typed envelopes. Pure: no
 //! I/O, no clock (callers pass Unix seconds); the only OS call is the CSPRNG for keys, nonces and
-//! ids. The worker ([`super::worker`]) moves [`Out::Publish`]/[`Out::Subscribe`] to the relay and
-//! the other outputs to the dispatcher and the UI.
+//! ids. The worker (`walletconnect::worker`; in yw-app until S2 E3) moves
+//! [`Out::Publish`]/[`Out::Subscribe`] to the relay and the other outputs to the dispatcher and
+//! the UI.
 //!
 //! Tags and TTLs (`ENGINE_RPC_OPTS` of the reference sign-client): propose response 1101 /
 //! reject 1120 (300 s), settle 1102 (300 s), update 1104 and extend 1106 (86,400 s), request
@@ -200,7 +201,7 @@ pub struct SessionRequest {
 
 /// Something the user should hear about that has no window of its own: a proposal refused
 /// before its connect window, a pairing that lapsed unused, a session the dApp never confirmed.
-/// The worker words it ([`super::worker::notice_text`]); nothing the dApp sent is shown.
+/// The worker words it (`worker::notice_text`); nothing the dApp sent is shown.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Notice {
     /// Required chains this wallet does not have or has blocked (`eip155` references), and

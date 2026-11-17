@@ -115,23 +115,27 @@ crates/
   yw-json/   Cargo.toml  src/{lib.rs, parse.rs, value.rs, write.rs, frame.rs}  tests/
   yw-platform/ Cargo.toml  clippy.toml(§5.1)  src/{lib.rs, http.rs, clock.rs, ws.rs(2026-11-17 S2)}  tests/   (§2.3a, 2026-11-17)
   yw-engine/ Cargo.toml  clippy.toml(§5.1)  src/{lib.rs, catalogues.rs, errors.rs, text.rs, network.rs, logging.rs(형식·수준·`LogSink`),
-                              yubikey.rs(`CardSource`·카드 작업, [10](10-yubikey.md)), wallet_files.rs, secure_field.rs,
-                              approval/{mod.rs, interaction.rs, text.rs, layout.rs}}   (§2.3b, 2026-11-17 S2)
+                              yubikey.rs(`CardSource`·카드 작업, [10](10-yubikey.md)), wallet_files.rs, secure_field.rs, badge.rs,
+                              approval/{mod.rs, interaction.rs, text.rs, layout.rs},
+                              settings.rs, apikeys.rs(평문 형식), explorer.rs, token_view.rs, meta.rs, hypercore.rs,
+                              explain/, rpc/{mod.rs, evm.rs}, flow/evm/, sol/, btc/, zec/, received/,
+                              walletconnect/{mod.rs, engine.rs, store.rs, verify.rs, qr_decode.rs}}   (§2.3b, 2026-11-17 S2 E1·E2)
   yw-win/    Cargo.toml  src/{lib.rs, error.rs, wide.rs, time.rs, mem.rs, file.rs, dpapi.rs, clipboard.rs,
                               http.rs, ws.rs, pipe.rs, session.rs, process.rs, security.rs, input.rs, cng.rs, image.rs, pcsc.rs,
                               ui/{mod.rs, window.rs, msg.rs, paint.rs, controls.rs, capture.rs(개발 빌드 전용), secure_text.rs}}  tests/   (API §7; pcsc·cng [10], ws·image·`cng::p256_verify` [13])
   yw-app/    Cargo.toml  build.rs(선택, [04](04-app-ui.md) §1.6)  yw-app.manifest  tests/
              icons/{yw-app.ico, yw-app.res}   (앱 아이콘, `scripts/make-icons.mjs`가 만들고 커밋, [04](04-app-ui.md) §1.7)
-             src/{lib.rs, main.rs, app.rs, events.rs, shell_msg.rs(Win32 메시지 번호·단축키, 2026-11-17), system_clock.rs(Windows `Clock`, 2026-11-17), settings.rs, apikeys.rs(네트워크별 RPC 엔드포인트 URL
-                  `rpc:eip155:<chainId>`·`rpc:solana:<cluster>`·`rpc:bitcoin:<net>`·공급자 템플릿 자격 정보·LLM 키, D13, [04](04-app-ui.md) §6.3), log_file.rs(순환 로그 파일, 2026-11-17), card_pcsc.rs(`YubiKey` PC/SC 전송·CNG 관리 키 암호, [10](10-yubikey.md), 2026-11-17),
+             src/{lib.rs, main.rs, app.rs(`apikeys.dpapi` DPAPI 봉인과 그 entropy, 2026-11-17 S2 E2), events.rs, shell_msg.rs(Win32 메시지 번호·단축키, 2026-11-17), system_clock.rs(Windows `Clock`, 2026-11-17),
+                  log_file.rs(순환 로그 파일, 2026-11-17), card_pcsc.rs(`YubiKey` PC/SC 전송·CNG 관리 키 암호, [10](10-yubikey.md), 2026-11-17),
                   store.rs(`VaultStorage` 구현, 키 작업자의 Windows 플랫폼 `WinKeyPlatform`(2026-11-17), [09](09-testing.md) §2.1), workers/{key, rpc, read}.rs([04](04-app-ui.md) §1.2; `workers/key/platform.rs`: 키 작업자가 받는 `KeyPlatform`·`WalletStore`·`KeyDeps`, 2026-11-17),
-                  rpc/{mod.rs(공용 전송, [04](04-app-ui.md) §1.9), evm.rs(`rpc::evm`: eth_simulateV1 응답 파서 M2([09](09-testing.md) §3.8), 전송·호출 M4)}, flow/evm.rs(`flow::evm`, M4),
                   browser/{mod.rs, params.rs, envelope.rs, …}(`browser::params`·`browser::envelope`, M5, [05](05-browser.md)),
-                  explain/(M6, [06](06-llm-explain.md)), explain_transport.rs(LLM `WinHTTP` 전송, 2026-11-17), sol/(M7, [07](07-solana.md) §2), btc/(M8, [08](08-bitcoin.md)),
-                  ui/{main_window, screens/*, approval_view, approval_input, badge, secret, qr, theme}.rs}
+                  explain_transport.rs(LLM `WinHTTP` 전송, 2026-11-17), walletconnect/{mod.rs(겉면), worker.rs, tests.rs}([13](13-walletconnect.md)),
+                  ui/{main_window, screens/*, approval_view, approval_input, secret, qr, theme}.rs}
                   (배치 [04](04-app-ui.md) §1.8, EVM 모듈 이름 [03](03-evm.md) §0; 2026-11-17 S2: errors·text·network·logging(형식)·
-                  yubikey(순수)·wallet_files와 ui의 approval·interaction·approval_text·text_layout·secure_field는 yw-engine으로 옮겼고
-                  yw-app은 옛 경로로 다시 내보낸다, §2.3b)
+                  yubikey(순수)·wallet_files와 ui의 approval·interaction·approval_text·text_layout·secure_field는 yw-engine으로 옮겼고(E1),
+                  settings·apikeys(평문 형식)·explorer·token_view·meta·hypercore·explain·rpc(공용 전송 [04](04-app-ui.md) §1.9, `rpc::evm`)·
+                  flow(`flow::evm`)·sol([07](07-solana.md) §2)·btc([08](08-bitcoin.md))·zec·received·walletconnect(작업자 밖)·ui::badge도
+                  옮겼다(E2). yw-app은 옛 경로로 다시 내보낸다, §2.3b)
   yw-host/   Cargo.toml  src/{lib.rs, main.rs}  tests/               ([05](05-browser.md))
 extension/   manifest.json  package.json  extension-id.txt(M5)  src/*.js  popup/*  icons/icon-{16,32,48,128}.png([05] §2.2)
              native-host/*  tests/*.test.mjs  test-dapp/(M5)
@@ -184,7 +188,7 @@ docs/        install.ko.md(설치·업데이트·제거)  recovery-guide.ko.md  
 | `zec` | 2026-11-06 | Zcash 일반 주소·v5 거래·ZIP 244·ZIP 317 | [12](12-zcash.md) |
 | `walletconnect` | 2026-11-06 | WalletConnect v2 URI·봉투·키 합의·릴레이 JWT | [13](13-walletconnect.md) |
 
-규칙: yw-core는 시간·파일·네트워크·스레드·환경 변수를 쓰지 않는다. 시각이 필요하면 호출자가 단조 `now_ms: u64`(yw-win `time::monotonic_ms`)나 벽시계 `now_unix_ms: u64`(유닉스 ms, yw-app이 구함)를 인자로 넘긴다. yw-core는 yw-json(의존성 0)에 의존한다. `evm::eip712`가 `yw_json::Value`를 입력으로 받기 때문이다([03](03-evm.md) §0). 외부 허용 목록은 바뀌지 않는다. RPC 응답은 여전히 yw-app이 yw-json으로 파싱해 yw-core 타입으로 넘기며 yw-core는 네트워크 데이터를 직접 받지 않는다.
+규칙: yw-core는 시간·파일·네트워크·스레드·환경 변수를 쓰지 않는다. 시각이 필요하면 호출자가 단조 `now_ms: u64`(yw-win `time::monotonic_ms`)나 벽시계 `now_unix_ms: u64`(유닉스 ms, yw-app이 구함)를 인자로 넘긴다. yw-core는 yw-json(의존성 0)에 의존한다. `evm::eip712`가 `yw_json::Value`를 입력으로 받기 때문이다([03](03-evm.md) §0). 외부 허용 목록은 바뀌지 않는다. RPC 응답은 여전히 앱 쪽(2026-11-17 S2 E2부터 yw-engine의 RPC 파이프라인, 그 전 yw-app)이 yw-json으로 파싱해 yw-core 타입으로 넘기며 yw-core는 네트워크 데이터를 직접 받지 않는다.
 
 ### 2.3 yw-json 공개 API
 
@@ -223,7 +227,7 @@ pub enum ParseError { TooLarge, InvalidUtf8, Syntax { offset: usize }, Duplicate
 플랫폼 중립 타입과 trait(2026-11-17: Android 이식 S1에서 yw-win `http`의 순수 타입과 yw-app `flow::evm::Clock`을 옮겨 만들었다. 그 전에는 각각 yw-win·yw-app에 있었다). 의존성 0, `#![forbid(unsafe_code)]`, `#![deny(clippy::indexing_slicing, clippy::arithmetic_side_effects)]`. yw-core처럼 OS를 부르지 않는다: `crates/yw-platform/clippy.toml`은 yw-core의 것과 같다(§5.1).
 
 - `http`: `HttpsUrl`, `LoopbackUrl`, `EndpointUrl`, `Timeouts`(+`total_ms`), `Response`, `HttpError`, 상한 상수(`MAX_URL_BYTES`, `MAX_REQUEST_BODY`, `MAX_RESPONSE_CAP`, `MAX_HEADER_VALUE`, `MAX_CONTENT_TYPE_BYTES`)와 헤더 규칙 `valid_header`, RPC 전송 이음매 `Transport` trait와 `HttpReply`(2026-11-17 S2: yw-app `rpc`에서 옮김). 시그니처와 규칙은 §7.4. 클라이언트(`Client`)는 플랫폼마다 따로 있고 `Transport`를 구현한다(Windows: yw-win `http`).
-- `clock`: `pub trait Clock: Send + Sync { fn now_ms(&self) -> u64 /* 단조 ms */; fn now_unix_ms(&self) -> u64; fn sleep_ms(&self, ms: u64); }`. yw-app `flow::evm`이 다시 내보내고(`pub use yw_platform::Clock`) Windows 구현 `SystemClock`(yw-win `time::monotonic_ms`, `GetTickCount64`)은 yw-app `system_clock`에 남는다(2026-11-17 S2: 그 전에는 `flow::evm` 안에 있었고 `RpcWorker::production`이 이를 골랐다. 이제 `main.rs`가 `RpcWorker::new(…, Box::new(SystemClock), Limits::PRODUCTION)`으로 넘긴다). 운영 코드는 이 시계만 쓴다. `Instant` 기반 시계는 지역 경과 시간과 시험용이다. yw-app의 `monotonic_ms` 직접 호출을 `Clock`으로 바꾸는 일은 S2(엔진으로 옮기는 모듈)·S4(App)에서 한다.
+- `clock`: `pub trait Clock: Send + Sync { fn now_ms(&self) -> u64 /* 단조 ms */; fn now_unix_ms(&self) -> u64; fn sleep_ms(&self, ms: u64); }`. `flow::evm`(2026-11-17 S2 E2부터 yw-engine, 그 전 yw-app)이 다시 내보내고(`pub use yw_platform::Clock`) Windows 구현 `SystemClock`(yw-win `time::monotonic_ms`, `GetTickCount64`)은 yw-app `system_clock`에 남는다(2026-11-17 S2: 그 전에는 `flow::evm` 안에 있었고 `RpcWorker::production`이 이를 골랐다. 이제 `main.rs`가 `RpcWorker::new(…, Box::new(SystemClock), Limits::PRODUCTION)`으로 넘긴다). 운영 코드는 이 시계만 쓴다. `Instant` 기반 시계는 지역 경과 시간과 시험용이다. yw-app의 `monotonic_ms` 직접 호출을 `Clock`으로 바꾸는 일은 S2(엔진으로 옮기는 모듈)·S4(App)에서 한다.
 - `ws`(2026-11-17 S2: yw-app `walletconnect::worker::RelayLink`를 옮김): `pub trait WsLink: Send + Sync { fn send(&self, text: &str) -> bool; fn receive(&self) -> Option<String>; fn abort(&self); }` — 열린 텍스트 WebSocket(WalletConnect 릴레이 연결, [13](13-walletconnect.md) §4). yw-app `walletconnect::worker`는 `pub use yw_platform::ws::WsLink as RelayLink`로 같은 이름을 쓴다. Windows 구현은 yw-win `ws::WebSocket`(§7.4)이고, 연결을 여는 `WsConnector`(`RelayConnector` 구현)는 yw-app `app_walletconnect`에 있다.
 
 ### 2.3b yw-engine 공개 모듈
@@ -231,7 +235,8 @@ pub enum ParseError { TooLarge, InvalidUtf8, Syntax { offset: usize }, Duplicate
 플랫폼 셸(Windows yw-app, 나중의 Android)이 함께 쓰는 지갑 앱 로직([15](15-android.md) §3.1, §11.4 S2; 2026-11-17 E1에서 만들었다). 로컬 의존은 yw-core·yw-json·yw-platform뿐이고 yw-win·windows-sys에 닿지 않는다(§4.2 POLICY가 강제). `#![forbid(unsafe_code)]`. `crates/yw-engine/clippy.toml`은 파일·소켓·프로세스·벽시계·환경 변수 접근을 막는다(§5.1; 스레드와 `Instant`는 허용).
 
 - `errors`(오류 코드와 문구 카탈로그 `yw_engine::errors::text`, [04](04-app-ui.md) §7), `text`(`Label`·식별자 규칙·JSON 도우미·한국어 조사), `network`(`NetworkId`), `logging`(로그 형식·수준 필터·`LogSink` 설치, §5.4; 파일 쓰기는 yw-app `log_file`), `yubikey`(`CardSource`와 카드 작업, PC/SC는 yw-app `card_pcsc`, [10](10-yubikey.md)), `wallet_files`(지갑 파일 이름·초기화 보고), `secure_field`(비밀 입력 버퍼, [04](04-app-ui.md) §4.2), `approval`(옛 yw-app `ui::approval`: 대기열·표시 재검사·`labels`; 하위 모듈 `interaction`(옛 `ui::interaction`), `text`(옛 `ui::approval_text`), `layout`(옛 `ui::text_layout`)), `catalogues`(이 crate의 문구 카탈로그 목록, [14](14-language.md) §2).
-- 옮기는 중의 겉면(transitional facade): yw-app `lib.rs`는 `pub use yw_engine::{errors, logging, network, text, wallet_files, yubikey};`, `ui/mod.rs`는 `pub use yw_engine::approval; pub use yw_engine::approval::{interaction, layout as text_layout, text as approval_text}; pub use yw_engine::secure_field;`로 옛 `crate::…` 경로를 그대로 둔다. S3–S4에서 없앤다.
+- 2026-11-17 S2 E2에서 더 옮긴 것: `settings`(설정 파일 형식·검증, [04](04-app-ui.md) §6), `apikeys`(`apikeys.dpapi` 평문 형식과 템플릿 URL; DPAPI 봉인과 entropy `APIKEYS_ENTROPY`는 yw-app `app`), `explorer`, `token_view`, `meta`(지갑 메타데이터, [02](02-core-keys-vault.md) §5), `hypercore`([11](11-hypercore.md)), `explain`([06](06-llm-explain.md); WinHTTP 전송은 yw-app `explain_transport`), `rpc`(공용 전송 규칙·`rpc::evm`, [04](04-app-ui.md) §1.9), `flow`(`flow::evm`, [03](03-evm.md)), `sol`([07](07-solana.md)), `btc`([08](08-bitcoin.md)), `zec`([12](12-zcash.md)), `received`(받은 거래 목록), `walletconnect`(작업자를 뺀 `engine`·`store`·`verify`·`qr_decode`, [13](13-walletconnect.md)), `badge`(옛 yw-app `ui::badge`, 체인 배지).
+- 옮기는 중의 겉면(transitional facade): yw-app `lib.rs`는 `pub use yw_engine::{errors, logging, network, text, wallet_files, yubikey};`, `ui/mod.rs`는 `pub use yw_engine::approval; pub use yw_engine::approval::{interaction, layout as text_layout, text as approval_text}; pub use yw_engine::secure_field;`로 옛 `crate::…` 경로를 그대로 둔다. E2는 `lib.rs`에 `pub use yw_engine::{apikeys, btc, explain, explorer, flow, hypercore, meta, received, rpc, settings, sol, token_view, zec};`, `ui/mod.rs`에 `pub use yw_engine::badge;`를 더했고, `walletconnect/mod.rs`는 `pub use yw_engine::walletconnect::*; pub mod worker;`(+ 단위 시험 `tests.rs`)인 겉면 모듈이다(작업자와 그 시험은 S2 E3에서 옮긴다). 시험 시계 `StdClock`(`cfg(test)`)은 그 두 사용처(디스패처·작업자 시험)와 함께 yw-app `browser`에 있다. S3–S4에서 없앤다.
 - 단위 시험은 파일과 함께 옮겼다(`cargo test -p yw-engine`). 통합 시험은 아직 yw-app `tests/`에서 겉면을 거쳐 돈다(옮기는 일은 S2 T1, [09](09-testing.md) §2.1).
 
 ### 2.4 크레이트 의존 규칙 (검사 스크립트가 강제, §4.2)

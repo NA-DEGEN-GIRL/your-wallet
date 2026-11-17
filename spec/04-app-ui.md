@@ -170,6 +170,7 @@ BTC_MAINNET_BG #C42B1C / BTC_MAINNET_TEXT #FFFFFF, BTC_TESTNET4_BG #F7A23B(글�
 
 모듈 배치(yw-app 정본, EVM 모듈 이름은 [03] §0과 같다; [01] §2.1 트리는 이 목록을 따른다): `crates/yw-app/src/{lib,main,app,events,settings,apikeys,logging,errors,store}.rs`, `workers/{mod,key,rpc,journal,journal_btc,journal_zec}.rs`(§1.2; `yw-read-0..3` 작업자는 `browser/read.rs`이고 `app_browser`가 띄운다), `rpc/{mod,evm}.rs`(`mod` = 공용 전송 §1.9, `rpc::evm` = EVM RPC 호출·JSON↔코어 타입; eth_simulateV1 응답 파서만 M2, 나머지 M4), `flow/evm.rs`(`flow::evm`: EVM 처리 순서·저널 I/O·영수증 추적, M4), `browser/`(M5, [05]: `browser::envelope` §6.5, `browser::params` §3.3–3.4, 디스패처), `explain/`(M6, [06]), `sol/{rpc,flow,scan}.rs`(M7, [07]), `btc/`(M8, [08]), `ui/{main_window,screens,screens_*,approval,approval_view,interaction,secret,secure_field,text_layout,qr,theme,badge,command_ids,removed,tour}.rs`(하위 폴더 `screens_yubikey/`·`secret/`·`tour/`).
 (2026-11-17 S2 E1, [15] §11.4: `errors`, `text`, `network`, `logging`(형식·수준·`LogSink`; Windows 파일 기록은 yw-app `log_file`), `yubikey`(순수 부분; PC/SC·CNG는 yw-app `card_pcsc`), `wallet_files`와 `ui::{approval, interaction, approval_text, text_layout, secure_field}`는 이제 `crates/yw-engine/src/`에 있다(`approval/{mod,interaction,text,layout}.rs`, `secure_field.rs`). yw-app은 옛 경로로 다시 내보낸다(`pub use yw_engine::{errors, logging, …}`, `ui::{approval, interaction, approval_text, text_layout, secure_field}`). 승인 창의 Win32 입력 매핑은 yw-app `ui/approval_input.rs`, 그리기는 `ui/approval_view.rs`다. 크레이트별 실제 파일은 [01] §2.1 트리와 §2.3b가 정본이다. 그 전에는 위 목록이 모두 yw-app 안이었다.)
+(2026-11-17 S2 E2: `settings`, `apikeys`(평문 형식; DPAPI 봉인은 yw-app `app`), `explorer`, `token_view`, `meta`, `hypercore`, `explain/`, `rpc/`, `flow/`, `sol/`, `btc/`, `zec/`, `received/`, `walletconnect`의 엔진 부분(`engine`·`store`·`verify`·`qr_decode`)과 `ui::badge`도 yw-engine으로 옮겼다. yw-app은 옛 경로로 다시 내보낸다(`pub use yw_engine::{settings, …}`, `ui::badge`). `walletconnect`는 S2 E3까지 yw-app의 겉면 모듈이 엔진 부분을 다시 내보내고 릴레이 작업자 `worker`(와 그 단위 시험 `tests.rs`)를 둔다.)
 
 ### 1.9 RPC 전송 (모든 체인 공용)
 [03] §1.4, [05] §3.5, [07] §15.2, [08] §4.1이 말하는 공용 전송 규칙이다.
@@ -1117,7 +1118,7 @@ EsploraBaseUrls = { "mainnet": EsploraBaseUrl, "testnet4": EsploraBaseUrl }   //
 - 반영: `autoLockMinutes` 다음 판정부터, `allowLocalhostDapps` [05]의 다음 요청부터, `browserAutoLaunch` yw-host의 다음 실행 판단부터, `evmChainId` 즉시(S10 새로고침), `evmChains`·`evmGenesisPins` 즉시(새 `RpcConfig`, 그 체인 확인 상태 초기화, §1.9), `feeCaps` 다음 준비부터, `rpc.template` 즉시(S15·S17 입력 해석만), `bitcoin.indexer`·`bitcoin.esploraBaseUrl` 즉시(새 `RpcConfig`, [08] §2 연결 검사 다시), `logLevel` 다음 줄부터.
 
 ### 6.3 apikeys.dpapi
-- 파일 = `CryptProtectData` 출력 그대로. `pOptionalEntropy` = ASCII `your-wallet/v3/apikeys`(22바이트), `szDataDescr` = NULL, `pPromptStruct` = NULL, 플래그 `CRYPTPROTECT_UI_FORBIDDEN (0x1)`(`CRYPTPROTECT_LOCAL_MACHINE` 없음 → 현재 사용자, D13). 복호화도 같은 entropy·플래그.
+- 파일 = `CryptProtectData` 출력 그대로. `pOptionalEntropy` = ASCII `your-wallet/v3/apikeys`(22바이트), `szDataDescr` = NULL, `pPromptStruct` = NULL, 플래그 `CRYPTPROTECT_UI_FORBIDDEN (0x1)`(`CRYPTPROTECT_LOCAL_MACHINE` 없음 → 현재 사용자, D13). 복호화도 같은 entropy·플래그. (2026-11-17 [15] §11.4 S2 E2: entropy 상수 `APIKEYS_ENTROPY`는 DPAPI를 부르는 yw-app `app`에 있고, 평문 형식(`apikeys`)은 yw-engine에 있다. 그 전에는 둘 다 yw-app `apikeys`였다. 값은 같다.)
 - 평문(최대 131,072바이트):
 ```
 offset 0   magic       8 bytes  "YWAPIK01"

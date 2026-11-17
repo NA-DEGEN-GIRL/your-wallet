@@ -46,34 +46,6 @@ pub const MAX_FACT_LOOKUPS: usize = 16;
 /// `system_clock`, 2026-11-17 S2).
 pub use yw_platform::Clock;
 
-/// Test clock shared by the in-crate unit tests (2026-11-17 S2: replaces the Windows
-/// `SystemClock`, which stays in yw-app; before, `browser::dispatch` and `walletconnect` tests
-/// each had a copy): monotonic time from `Instant`, offset by a day so a fresh clock never reads
-/// near zero.
-#[cfg(test)]
-pub(crate) struct StdClock(pub(crate) std::time::Instant);
-
-#[cfg(test)]
-impl Clock for StdClock {
-    fn now_ms(&self) -> u64 {
-        u64::try_from(self.0.elapsed().as_millis())
-            .unwrap_or(u64::MAX)
-            .saturating_add(86_400_000)
-    }
-
-    fn now_unix_ms(&self) -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |elapsed| {
-                u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-            })
-    }
-
-    fn sleep_ms(&self, ms: u64) {
-        std::thread::sleep(std::time::Duration::from_millis(ms));
-    }
-}
-
 /// Pipeline time limits (production values from [`Limits::PRODUCTION`]; tests shrink them).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[expect(clippy::struct_field_names, reason = "every limit is in milliseconds")]

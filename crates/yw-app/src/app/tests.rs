@@ -1739,7 +1739,7 @@ fn legacy_llm_key_is_bound_to_the_endpoint_saved_at_load() {
     plain.extend_from_slice(name);
     plain.extend_from_slice(&u16::try_from(value.len()).unwrap().to_be_bytes());
     plain.extend_from_slice(value);
-    let blob = yw_win::dpapi::protect(&plain, crate::apikeys::APIKEYS_ENTROPY).unwrap();
+    let blob = yw_win::dpapi::protect(&plain, crate::app::APIKEYS_ENTROPY).unwrap();
 
     let (mut app, dir) = llm_app("llm-legacy", LLM_A);
     std::fs::write(app.paths.apikeys(), &blob).unwrap();
@@ -1788,7 +1788,7 @@ fn llm_endpoint_swapped_in_the_file_needs_a_new_consent() {
     plain.extend_from_slice(name);
     plain.extend_from_slice(&u16::try_from(value.len()).unwrap().to_be_bytes());
     plain.extend_from_slice(value);
-    let blob = yw_win::dpapi::protect(&plain, crate::apikeys::APIKEYS_ENTROPY).unwrap();
+    let blob = yw_win::dpapi::protect(&plain, crate::app::APIKEYS_ENTROPY).unwrap();
 
     let (mut app, dir) = llm_app("llm-swap", LLM_B);
     let consented = Settings {

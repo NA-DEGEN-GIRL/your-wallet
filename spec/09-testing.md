@@ -29,7 +29,7 @@
 | `crates/yw-core/tests/vectors/` | 벡터 데이터 + `SOURCES.md`(파일별 URL, 원본 커밋, 가져온 날짜, 라이선스) | — |
 | `crates/yw-json/tests/` | 엄격 파서·한도 골든·프레이밍(05 R-F1, R-J1) | `cargo test` |
 | `crates/yw-platform/tests/` | HTTP URL 파싱·가림 출력·헤더 규칙·`HttpError` 문구(01 §7.8, 2026-11-17) | `cargo test` |
-| `crates/yw-engine/src/**` + `tests/` | 플랫폼 공유 앱 로직의 단위 테스트(같은 파일 `mod tests`, yw-app에서 파일과 함께 옮김: `errors`·`text`·`network`·`logging` 형식·`yubikey`(에뮬레이터 `MockSource`)·`wallet_files`·`secure_field`·`approval`의 대기열·상호작용·줄바꿈, 2026-11-17 S2). yw-win 없이 돈다(`cargo test -p yw-engine`). 엔진만 쓰는 통합 테스트는 S2 T1에서 yw-app `tests/`에서 `tests/`로 옮긴다. 그때까지 yw-app `tests/`가 재수출 경로(`yw_app::errors` 등)로 시험한다 | `cargo test` |
+| `crates/yw-engine/src/**` + `tests/` | 플랫폼 공유 앱 로직의 단위 테스트(같은 파일 `mod tests`, yw-app에서 파일과 함께 옮김: `errors`·`text`·`network`·`logging` 형식·`yubikey`(에뮬레이터 `MockSource`)·`wallet_files`·`secure_field`·`approval`의 대기열·상호작용·줄바꿈, 2026-11-17 S2 E1; E2에서 `settings`·`apikeys`·`explorer`·`token_view`·`meta`·`hypercore`·`badge`·`explain`·`rpc`·`flow::evm`·`sol`·`btc`·`zec`·`received`·`walletconnect::qr_decode` 등. `walletconnect/tests.rs`는 작업자를 디스패처로 돌리므로 E3까지 yw-app에 남는다). yw-win 없이 돈다(`cargo test -p yw-engine`). 엔진만 쓰는 통합 테스트는 S2 T1에서 yw-app `tests/`에서 `tests/`로 옮긴다. 그때까지 yw-app `tests/`가 재수출 경로(`yw_app::errors` 등)로 시험한다 | `cargo test` |
 | `crates/yw-win/tests/` | 실제 Win32: DPAPI 왕복(§4.1 V-DPAPI), 파일 쓰기·이동 래퍼, 실제 CNG `cng::p256_verify` RFC 7515 A.3 ES256 KAT(`tests/cng.rs`, 2026-11-17 S2, 13 §10). 파일은 `std::env::temp_dir()` 아래 새 폴더 | `cargo test` |
 | `crates/yw-app/src/lib.rs` + `tests/` | GUI를 뺀 로직: RPC 응답 파서, 정책, 저널 구동, 승인 상호작용 상태 기계, 봉투, 디스패처, `VaultStorage` 구현의 중단 지점(§4.1 V-FS, `#[cfg(test)] commit_until`을 쓰므로 `src/store.rs`의 단위 테스트), pipe DACL·첫 인스턴스(05 R-P2, 이름 `\\.\pipe\YourWallet.test.<pid>.<n>`). 픽스처 `tests/fixtures/eth_simulateV1/`. 사용자 체인 추가·제네시스 고정·메서드별 호출 수는 가짜 RPC 전송(호출 기록)으로(§4.2 X-21–X-24, 03 EVM-V16, EVM-V17의 `flow::evm` 사례) | `cargo test` |
 | `crates/yw-app/tests/live_probe.rs` | §2.5 L-LIMITS, 03 §1.5 A6–A8·A9(c)–(e), 03 §1.2 확인 행(`eth_getCode`·`decimals`·`symbol`·Seaport `information()`·`getConduit`·999 Permit2 immutable 제외 비교), 앱 경로 체인 확인과 읽기 전용 `prepare`(서명·전송 없음) (`#[ignore]`, 엔드포인트는 01 §4.6 개발 설정, 출력은 `NetworkId`만) | 수동 |
@@ -773,7 +773,7 @@ WETH = Sepolia `0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14`(03 §1.2, 구현 시
 
 ### 5.8 M6 LLM 설명 (선택)
 
-- [ ] M6-1 자동: 06 §10 E1–E12 통과(X-19 포함). 순수 사례는 `crates/yw-app/src/explain/tests.rs`·`explain/config.rs`, loopback mock(127.0.0.1:0)·실제 WinHTTP 사례는 `crates/yw-app/tests/llm_mock.rs`(E1·E2·E3·E4·E5·E8·E9·E10·E11·응답 주입 시도).
+- [ ] M6-1 자동: 06 §10 E1–E12 통과(X-19 포함). 순수 사례는 `crates/yw-engine/src/explain/tests.rs`·`explain/config.rs`(2026-11-17 S2 전 `crates/yw-app/src/explain/`), loopback mock(127.0.0.1:0)·실제 WinHTTP 사례는 `crates/yw-app/tests/llm_mock.rs`(E1·E2·E3·E4·E5·E8·E9·E10·E11·응답 주입 시도).
 - [ ] M6-1b 자동(UI 명령 ID): `ui::command_ids` 시험 — 모든 고정 ID와 목록형 범위가 겹치지 않고 범위마다 최대 목록(스캔 107행 × 2, 계정 0..=999, 사이트 256, 주소록 500 등)을 담음, Solana 스캔 41번째 이후 행 버튼이 그 행 동작으로 가는 회귀 시험(`app_sol_commands::tests`).
 - [ ] M6-2 수동: 기능 끔 → M4-2 수행 → `logs\`에 `llm_explain` 줄 0, 외부 연결 대상은 설정한 RPC 엔드포인트(현재 QuickNode, D13)뿐(기록에는 호스트 대신 `NetworkId`).
 - [ ] M6-3 수동: 실제 공급자 켬 → 켜기 고지 표시, T09·T23 설명 1회씩 패널 표시, 결과 도착 전후 버튼 위치 동일(06 §10 수동). 엔드포인트를 틀린 URL로 바꿈 → 패널 오류 문구, 승인 정상.

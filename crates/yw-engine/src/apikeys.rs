@@ -1,7 +1,8 @@
 //! `apikeys.dpapi` (spec/04 §6.3, D13): per-network RPC endpoint URLs (`rpc:<NetworkId>`),
 //! provider template credentials (`tpl:quicknode`, `tpl:alchemy`), the LLM key (`llm`) and the
-//! endpoint `host[:port]` that key is bound to (`llm:host`), encrypted with DPAPI for the current
-//! user. A whole URL is a secret (token in the path, endpoint
+//! endpoint `host[:port]` that key is bound to (`llm:host`), sealed by the platform (Windows: DPAPI
+//! for the current user, in yw-app `app`; 2026-11-17 S2 E2: the DPAPI entropy `APIKEYS_ENTROPY`
+//! moved there with the DPAPI calls). A whole URL is a secret (token in the path, endpoint
 //! name in the host): values are never logged or displayed; screens use [`mask_url`].
 //!
 //! Also the pure helpers of spec/04 §2.11.1: [`template_url`] and [`mask_url`], and the S15
@@ -21,8 +22,6 @@ use crate::network::{BUILTIN_EVM, BtcNet, NetworkId, SolCluster};
 use crate::settings::{MAX_CUSTOM_EVM_CHAINS, RpcTemplate, Settings};
 use crate::text::{is_dns_label, is_token_text};
 
-/// DPAPI optional entropy.
-pub const APIKEYS_ENTROPY: &[u8] = b"your-wallet/v3/apikeys";
 /// Plaintext magic.
 pub const APIKEYS_MAGIC: &[u8; 8] = b"YWAPIK01";
 /// Largest plaintext.

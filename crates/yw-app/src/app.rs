@@ -27,8 +27,7 @@ use yw_win::time::monotonic_ms;
 use yw_win::ui::{Handler, Msg, Reply, UiError, Window, WindowKind, WindowSpec, create_window};
 
 use crate::apikeys::{
-    APIKEYS_ENTROPY, ApiKeys, KeyName, is_registered, quicknode_credentials, template_entry,
-    valid_provider_token,
+    ApiKeys, KeyName, is_registered, quicknode_credentials, template_entry, valid_provider_token,
 };
 use crate::errors::{ErrorCode, key_code, vault_code};
 use crate::events::{
@@ -54,6 +53,11 @@ use crate::ui::theme::{FontCache, FontRole, wide};
 use crate::workers::key::new_account;
 use crate::workers::rpc::RpcJob;
 use yw_core::lang::{Lang, Text};
+
+/// DPAPI optional entropy of `apikeys.dpapi` (spec/04 §6.3). (2026-11-17, spec/15 §11.4 S2 E2:
+/// moved here next to the DPAPI calls from `apikeys`, which moved to yw-engine; the value is
+/// unchanged.)
+pub const APIKEYS_ENTROPY: &[u8] = b"your-wallet/v3/apikeys";
 
 /// Main window class.
 pub const MAIN_CLASS: &str = "YourWalletV3Main";

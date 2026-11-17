@@ -26,8 +26,8 @@ D25·D27·D29·D38의 세부 명세다. Solana 보내기·받기는 yw-app 화�
 | `yw-core::sol::{shortvec, address, pda, keys, message, template, token, fee, rent, intent, broadcast, display}` | §3–§14의 순수 로직(저널 레코드 제외). `token`은 §15.4 SPL 계정 데이터 파서·분류(v1.1). 시간은 인자로 받는다(`now_ms: u64`). | 없음 |
 | `yw-core::sol::dapp::{parse, alt, decode, diff, display, sign}` (M7.2) | dApp 거래(§20): `parse` legacy·v0 파서·인코더와 재인코딩 동일성(§20.2), `alt` 조회 테이블 계정 파서·해석(§20.3), `decode` System·Token·Token-2022·ATA·ComputeBudget·Memo·프리컴파일 해석(§20.4), `diff` 시뮬레이션 전·후 차이(§20.7), `display` 승인 요청 빌더(§20.6), `sign` 서명만·서명 후 전송 서명기(§20.5, §20.8). payload 타입 `SolTxPayload`는 `sol::dapp`에 두고 `approval`이 다시 내보낸다 | 없음 |
 | `yw_core::journal::sol` (M7) | SOL 저널 본문 코덱(§14.1)·상태 전이(§14.2). 컨테이너 코덱·`JournalError`는 `journal`([01] §2.2, [02] §5.4) | 없음 |
-| `yw-app::sol::{rpc, flow, scan}` | Solana JSON-RPC(`apikeys.dpapi`에 저장한 `solana:<cluster>` 엔드포인트 URL 하나, 공급자 무관(D13, [04] §6.3, §15.1), WinHTTP + yw-json), 미리보기·서명·브로드캐스트 루프 구동, 복구 스캔 | 있음 |
-| `yw-app::sol::flow::{dapp_preview, pre_sign_dapp}`, `yw-app::sol::rpc::{multiple_accounts, blockhash_valid, latest_blockhash_at, simulate_dapp, send_transaction_opts}`, `yw-app::app_sol_dapp` (M7.2) | dApp 거래 미리보기(테이블·실행 전 상태·민트·블록해시·수수료·시뮬레이션, §20.7), 서명 전 확인(§20.10), 승인 창·키 작업·전송 응답 연결 | 있음 |
+| `yw-engine::sol::{rpc, flow, scan}`(2026-11-17 [15] §11.4 S2 전 `yw-app::sol`, yw-app이 `crate::sol`로 다시 내보낸다) | Solana JSON-RPC(`apikeys.dpapi`에 저장한 `solana:<cluster>` 엔드포인트 URL 하나, 공급자 무관(D13, [04] §6.3, §15.1), WinHTTP + yw-json), 미리보기·서명·브로드캐스트 루프 구동, 복구 스캔 | 있음 |
+| `yw-engine::sol::flow::{dapp_preview, pre_sign_dapp}`, `yw-engine::sol::rpc::{multiple_accounts, blockhash_valid, latest_blockhash_at, simulate_dapp, send_transaction_opts}`, `yw-app::app_sol_dapp` (M7.2) | dApp 거래 미리보기(테이블·실행 전 상태·민트·블록해시·수수료·시뮬레이션, §20.7), 서명 전 확인(§20.10), 승인 창·키 작업·전송 응답 연결 | 있음 |
 
 ```rust
 // yw-core::sol (요약; 이름은 다른 문서가 그대로 쓴다)

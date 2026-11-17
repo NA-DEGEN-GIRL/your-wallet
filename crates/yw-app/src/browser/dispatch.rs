@@ -1952,9 +1952,9 @@ mod tests {
     use yw_core::policy::BrowserOrigin;
 
     use super::{BrowserCore, Conn, Lru, Pending};
+    use crate::browser::StdClock;
     use crate::browser::envelope::{Id16, Id32};
     use crate::browser::{DappEvent, DappSink, MAX_DOCUMENTS, MAX_DOCUMENTS_PER_ORIGIN, Outbound};
-    use crate::flow::evm::StdClock;
 
     struct Quiet;
 

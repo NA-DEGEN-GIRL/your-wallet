@@ -3,7 +3,8 @@
 //! each one is in the spec tables (`errors::text` in spec/04 §7 instead, D31). The screenshot
 //! tour's scene texts (`ui::tour`, a test module) are not app texts and are not listed.
 //! (2026-11-17, spec/15 §11.4 S2: the catalogues of modules moved to yw-engine are listed in
-//! `yw_engine::catalogues` under their true path.)
+//! `yw_engine::catalogues` under their true path; E1 the approval, error and card texts, E2 the
+//! settings, metadata, explain, RPC pipeline and `WalletConnect` engine texts.)
 
 use yw_core::lang::Entry;
 
@@ -14,7 +15,6 @@ pub fn catalogues() -> Vec<(&'static str, &'static [Entry])> {
 }
 
 const CATALOGUES: &[(&str, &[Entry])] = &[
-    ("yw_app::apikeys::text", crate::apikeys::text::ALL),
     ("yw_app::app::text", crate::app::text::ALL),
     ("yw_app::app_book::text", crate::app_book::text::ALL),
     ("yw_app::app_browser::text", crate::app_browser::text::ALL),
@@ -68,40 +68,11 @@ const CATALOGUES: &[(&str, &[Entry])] = &[
     ),
     ("yw_app::app_yubikey::text", crate::app_yubikey::text::ALL),
     ("yw_app::app_zec::text", crate::app_zec::text::ALL),
-    ("yw_app::btc::text", crate::btc::text::ALL),
     (
         "yw_app::build_info::start_text",
         crate::build_info::start_text::ALL,
     ),
     ("yw_app::build_info::text", crate::build_info::text::ALL),
-    ("yw_app::explain::text", crate::explain::text::ALL),
-    ("yw_app::explorer::text", crate::explorer::text::ALL),
-    (
-        "yw_app::flow::evm::form::text",
-        crate::flow::evm::form::text::ALL,
-    ),
-    ("yw_app::flow::evm::prepare", crate::flow::evm::prepare::ALL),
-    (
-        "yw_app::flow::evm::user_chain::text",
-        crate::flow::evm::user_chain::text::ALL,
-    ),
-    ("yw_app::hypercore::text", crate::hypercore::text::ALL),
-    ("yw_app::meta::text", crate::meta::text::ALL),
-    (
-        "yw_app::received::btc::text",
-        crate::received::btc::text::ALL,
-    ),
-    (
-        "yw_app::received::evm::text",
-        crate::received::evm::text::ALL,
-    ),
-    ("yw_app::received::hc::text", crate::received::hc::text::ALL),
-    (
-        "yw_app::received::zec::text",
-        crate::received::zec::text::ALL,
-    ),
-    ("yw_app::rpc::text", crate::rpc::text::ALL),
-    ("yw_app::settings::text", crate::settings::text::ALL),
     ("yw_app::store::reset::text", crate::store::reset::text::ALL),
     (
         "yw_app::ui::main_window::text",
@@ -180,10 +151,6 @@ const CATALOGUES: &[(&str, &[Entry])] = &[
     ),
     ("yw_app::ui::secret_text", crate::ui::secret_text::ALL),
     (
-        "yw_app::walletconnect::text",
-        crate::walletconnect::text::ALL,
-    ),
-    (
         "yw_app::walletconnect::worker::text",
         crate::walletconnect::worker::text::ALL,
     ),
@@ -196,5 +163,4 @@ const CATALOGUES: &[(&str, &[Entry])] = &[
         crate::workers::journal::zec::text::ALL,
     ),
     ("yw_app::workers::key::text", crate::workers::key::text::ALL),
-    ("yw_app::zec::rpc::text", crate::zec::rpc::text::ALL),
 ];

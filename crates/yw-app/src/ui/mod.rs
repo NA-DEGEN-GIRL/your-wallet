@@ -3,16 +3,17 @@
 //! receive QR, text layout and theme. The A01 window itself is `crate::app_approval`.
 //!
 //! (2026-11-17, spec/15 §11.4 S2: the approval queue and interaction rules, the approval texts,
-//! the text layout and the secret input buffers moved to yw-engine; they are re-exported here
-//! under their old names until S3–S4.)
+//! the text layout and the secret input buffers moved to yw-engine, and in E2 the chain badge;
+//! they are re-exported here under their old names until S3–S4.)
 
 pub use yw_engine::approval;
 pub use yw_engine::approval::{interaction, layout as text_layout, text as approval_text};
 pub use yw_engine::secure_field;
+// 2026-11-17 (S2 E2): the chain badge followed with `meta`.
+pub use yw_engine::badge;
 
 pub mod approval_input;
 pub mod approval_view;
-pub mod badge;
 pub mod command_ids;
 pub mod main_window;
 pub mod qr;

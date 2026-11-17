@@ -847,7 +847,7 @@ journal.ywj의 컨테이너·암호화·원자적 쓰기는 [02](02-core-keys-va
 
 ## 13. 오류 표시 (고정 문구만)
 
-2026-11-14: 영어 문구 열을 더했다(spec/14, 설정 언어가 영어일 때). 코드의 정본은 `yw_core::btc::text`와 `yw_app::btc::text`이다.
+2026-11-14: 영어 문구 열을 더했다(spec/14, 설정 언어가 영어일 때). 코드의 정본은 `yw_core::btc::text`와 `yw_engine::btc::text`이다(2026-11-17 [15] §11.4 S2 전 `yw_app::btc::text`).
 
 | 내부 값 | 표시 | English (spec/14) |
 |---|---|---|

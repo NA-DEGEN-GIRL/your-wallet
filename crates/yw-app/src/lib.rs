@@ -6,8 +6,14 @@
 // 2026-11-17 (spec/15 §11.4 S2, spec/01 §2.3b): these modules moved to yw-engine; the re-exports
 // keep their `crate::…` paths until S3–S4 rewrite the callers (transitional facade).
 pub use yw_engine::{errors, logging, network, text, wallet_files, yubikey};
+// 2026-11-17 (S2 E2): settings, wallet metadata, explain and the RPC pipelines followed.
+// `walletconnect` is a local facade module for now: it re-exports the engine part and keeps the
+// worker (E3).
+pub use yw_engine::{
+    apikeys, btc, explain, explorer, flow, hypercore, meta, received, rpc, settings, sol,
+    token_view, zec,
+};
 
-pub mod apikeys;
 pub mod app;
 pub mod app_approval;
 pub mod app_book;
@@ -39,29 +45,17 @@ pub mod app_walletconnect;
 pub mod app_yubikey;
 pub mod app_zec;
 pub mod browser;
-pub mod btc;
 pub mod build_info;
 pub mod card_pcsc;
 pub mod catalogues;
 pub mod events;
-pub mod explain;
 pub mod explain_transport;
-pub mod explorer;
-pub mod flow;
-pub mod hypercore;
 pub mod lock;
 pub mod log_file;
-pub mod meta;
-pub mod received;
-pub mod rpc;
-pub mod settings;
 pub mod shell_msg;
-pub mod sol;
 pub mod store;
 pub mod system_clock;
-pub mod token_view;
 pub mod ui;
 pub mod walletconnect;
 pub mod window_state;
 pub mod workers;
-pub mod zec;

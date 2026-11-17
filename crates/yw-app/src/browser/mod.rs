@@ -26,6 +26,36 @@ pub use dispatch::BrowserCore;
 use envelope::{BrowserEvent, CompatMode, Correlation, Id16, Id32};
 use params::TxParams;
 
+/// Test clock shared by the dispatcher and `WalletConnect` worker unit tests: monotonic time from
+/// `Instant`, offset by a day so a fresh clock never reads near zero. Never used in production,
+/// which keeps the Windows `SystemClock` (yw-app `system_clock`).
+/// (2026-11-17, spec/15 §11.4 S2 E2: moved here from `flow::evm`, which moved to yw-engine, where
+/// a `cfg(test)` item is not visible to these tests; both users move to yw-engine in E3. Before
+/// the P5–P8 review the two test modules each had a copy.)
+#[cfg(test)]
+pub(crate) struct StdClock(pub(crate) std::time::Instant);
+
+#[cfg(test)]
+impl yw_platform::Clock for StdClock {
+    fn now_ms(&self) -> u64 {
+        u64::try_from(self.0.elapsed().as_millis())
+            .unwrap_or(u64::MAX)
+            .saturating_add(86_400_000)
+    }
+
+    fn now_unix_ms(&self) -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| {
+                u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+            })
+    }
+
+    fn sleep_ms(&self, ms: u64) {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+    }
+}
+
 /// The pinned extension id file, compiled in (spec/05 §2.3).
 const EXTENSION_ID_FILE: &str = include_str!("../../../../extension/extension-id.txt");
 

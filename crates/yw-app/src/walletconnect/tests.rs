@@ -18,7 +18,7 @@ use yw_json::Value;
 
 use super::qr_decode::dib_to_bgra;
 
-use crate::flow::evm::StdClock;
+use crate::browser::StdClock;
 
 // ----- clipboard image parsing --------------------------------------------------------------
 

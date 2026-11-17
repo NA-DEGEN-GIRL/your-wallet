@@ -72,7 +72,7 @@ lint `unsafe_code = "forbid"` and `yw-win` overriding to `"deny"` with per-modul
 
 Claim (README "Privacy", spec.md D13/D21/D26): no telemetry, no crash upload, no wallet server. HTTPS only through
 Windows WinHTTP with TLS 1.2/1.3, except an optional local LLM endpoint on loopback (`http://127.0.0.1`, `localhost`
-or `[::1]`) over plain HTTP (D21, `crates/yw-app/src/explain/config.rs`).
+or `[::1]`) over plain HTTP (D21, `crates/yw-engine/src/explain/config.rs`).
 
 ### 1.1 Only WinHTTP opens connections
 
@@ -88,7 +88,8 @@ Expected:
 - The TLS 1.2 | 1.3 protocol flags in both files.
 - `std::net` only in tests, in `crates/yw-app/src/ui/tour.rs` (the developer screenshot tour's loopback server, bound
   to `127.0.0.1:0`; compiled only under `#[cfg(test)] #[cfg(debug_assertions)]`, `crates/yw-app/src/ui/mod.rs`), and in
-  `crates/yw-core/clippy.toml`, which lists these types as **banned** in yw-core.
+  `crates/yw-core/clippy.toml`, `crates/yw-platform/clippy.toml` and `crates/yw-engine/clippy.toml`, which list
+  these types as **banned** in those crates.
 
 ### 1.2 Fixed hosts compiled into the program
 
@@ -100,12 +101,12 @@ Expected hosts and why:
 
 | Host | Where configured | When contacted |
 |---|---|---|
-| The user's RPC (QuickNode, Alchemy or any `https://` URL) | Entered by the user; URL templates in `crates/yw-app/src/apikeys.rs` and `crates/yw-app/src/app_rpc_import.rs`; stored DPAPI-encrypted | Balances, fees, simulation, sending |
-| `mempool.space` (Esplora) | `crates/yw-core/src/btc/mod.rs`, `crates/yw-app/src/settings.rs`; changeable in 설정 → Bitcoin | Bitcoin address lookups and broadcast (keyless) |
+| The user's RPC (QuickNode, Alchemy or any `https://` URL) | Entered by the user; URL templates in `crates/yw-engine/src/apikeys.rs` and `crates/yw-app/src/app_rpc_import.rs`; stored DPAPI-encrypted | Balances, fees, simulation, sending |
+| `mempool.space` (Esplora) | `crates/yw-core/src/btc/mod.rs`, `crates/yw-engine/src/settings.rs`; changeable in 설정 → Bitcoin | Bitcoin address lookups and broadcast (keyless) |
 | `api.hyperliquid.xyz`, `api.hyperliquid-testnet.xyz` | `crates/yw-core/src/hypercore/mod.rs` | HyperCore balances and user-signed transfers |
-| `relay.walletconnect.org` (wss), `verify.walletconnect.org` | `crates/yw-core/src/walletconnect/mod.rs`, `crates/yw-app/src/walletconnect/verify.rs` | Only when WalletConnect is used with the user's own Reown Project ID (no default ID) |
-| The user's LLM endpoint (e.g. OpenAI, Anthropic, OpenRouter, a local Ollama/LM Studio) | `crates/yw-app/src/explain/config.rs`, spec/06 §2 | Only when the optional AI explanation is turned on (off by default, D21). Zero calls when off |
-| Block explorers (Etherscan, Solscan, mempool.space, …) | `crates/yw-app/src/explorer.rs` | Never fetched by the app. Opened in the default browser only when the user clicks `탐색기에서 열기` (open in explorer) |
+| `relay.walletconnect.org` (wss), `verify.walletconnect.org` | `crates/yw-core/src/walletconnect/mod.rs`, `crates/yw-engine/src/walletconnect/verify.rs` | Only when WalletConnect is used with the user's own Reown Project ID (no default ID) |
+| The user's LLM endpoint (e.g. OpenAI, Anthropic, OpenRouter, a local Ollama/LM Studio) | `crates/yw-engine/src/explain/config.rs`, spec/06 §2 | Only when the optional AI explanation is turned on (off by default, D21). Zero calls when off |
+| Block explorers (Etherscan, Solscan, mempool.space, …) | `crates/yw-engine/src/explorer.rs` | Never fetched by the app. Opened in the default browser only when the user clicks `탐색기에서 열기` (open in explorer) |
 
 The grep also prints `T_EXPLORER_RULES` in `crates/yw-app/src/ui/screens_explorer.rs`: a Korean help-text constant
 with an example explorer link, not a contacted host.
@@ -145,7 +146,7 @@ Expected: no output. `scripts/audit-extension.mjs` enforces this (see §4).
 |---|---|---|---|
 | Recovery phrases, imported private keys | `%LOCALAPPDATA%\YourWallet\v3\vault.ywv` (+ `.prev`) | Argon2id (m = 256 MiB, t = 3, p = 4) → HKDF → KEK wraps a random DEK with XChaCha20-Poly1305 | spec/02 §4, `crates/yw-core/src/vault/format.rs` |
 | Accounts, address book, sites, activity | `meta.ywm`, `journal.ywj` | Encrypted with the vault DEK | spec/02 §5 |
-| RPC URLs, provider tokens, LLM API key | `apikeys.dpapi` | Windows DPAPI: only this Windows user on this PC can decrypt | `crates/yw-app/src/apikeys.rs`, `crates/yw-win/src/dpapi.rs` |
+| RPC URLs, provider tokens, LLM API key | `apikeys.dpapi` | Windows DPAPI: only this Windows user on this PC can decrypt | `crates/yw-engine/src/apikeys.rs` (format), `crates/yw-app/src/app.rs` (DPAPI sealing), `crates/yw-win/src/dpapi.rs` |
 | Settings | `settings.json` | Plain text, contains no secrets | spec/04 §6 |
 | YubiKey wallet keys | On the YubiKey; the PC stores public keys only | Card PIN (never cached) and touch | spec/10, README "YubiKey" limits |
 

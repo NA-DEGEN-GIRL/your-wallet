@@ -4,9 +4,10 @@
 //! Names, tokens and keys are fake; URLs are assembled at run time.
 
 use yw_app::apikeys::{
-    APIKEYS_ENTROPY, APIKEYS_MAX_ACTIVE, APIKEYS_MAX_ENTRIES, ApiKeys, KeyName, TemplateCred,
-    TemplateEntry, is_registered, mask_url, template_entry, template_url,
+    APIKEYS_MAX_ACTIVE, APIKEYS_MAX_ENTRIES, ApiKeys, KeyName, TemplateCred, TemplateEntry,
+    is_registered, mask_url, template_entry, template_url,
 };
+use yw_app::app::APIKEYS_ENTROPY;
 use yw_app::network::{BtcNet, NetworkId, SolCluster};
 use yw_app::settings::{EvmChainDef, MAX_CUSTOM_EVM_CHAINS, RpcTemplate, Settings};
 use yw_core::evm::chain::SimulationSupport;

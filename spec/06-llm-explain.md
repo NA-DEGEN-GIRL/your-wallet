@@ -102,7 +102,7 @@ AI explanations can be wrong and are not used for the approval decision or the r
 
 ### 4.2 system 프롬프트
 
-`SYSTEM_PROMPT_V1: Text`(카탈로그 `yw_app::explain::text`, [14] §2)는 아래 줄들을 `\n`으로 이은 고정 문자열이다(끝 개행 없음). 바꾸면 `V2`를 새로 만든다. 요청은 입력의 언어(`ExplainInput::lang`)로 고른다: 한국어는 아래 첫 블록, 영어는 그다음 블록이다(2026-11-14 영어 추가 — 한국어 블록은 바뀌지 않았다). 영어 판은 답을 영어로 쓰라고 하고, 판정 표현 예시를 영어 단어로 들며, `untrusted`·`unverified` 안의 판정 단어도 쓰지 말라고 덧붙인다(§5.2 판정 표현 검사가 부분 문자열로 걸기 때문).
+`SYSTEM_PROMPT_V1: Text`(카탈로그 `yw_engine::explain::text`, [14] §2; 2026-11-17 [15] §11.4 S2 전 `yw_app::explain::text`)는 아래 줄들을 `\n`으로 이은 고정 문자열이다(끝 개행 없음). 바꾸면 `V2`를 새로 만든다. 요청은 입력의 언어(`ExplainInput::lang`)로 고른다: 한국어는 아래 첫 블록, 영어는 그다음 블록이다(2026-11-14 영어 추가 — 한국어 블록은 바뀌지 않았다). 영어 판은 답을 영어로 쓰라고 하고, 판정 표현 예시를 영어 단어로 들며, `untrusted`·`unverified` 안의 판정 단어도 쓰지 말라고 덧붙인다(§5.2 판정 표현 검사가 부분 문자열로 걸기 때문).
 
 ```text
 너는 암호화폐 지갑의 거래 설명 도우미다. 사용자 메시지는 지갑이 직접 해석한 요청 데이터와 시뮬레이션 상태를 담은 JSON(schema "yw.explain.input.v1") 하나다.
@@ -185,7 +185,7 @@ yw-app이 코어 해석 결과([03](03-evm.md) §7–§9)와 시뮬레이션 상
 
 - **문자 허용 목록**(모든 출력 문자열): U+0020–U+007E, U+AC00–U+D7A3(한국어 입력만), U+00B7, U+2013, U+2014, U+2018, U+2019, U+201C, U+201D, U+2026, U+2190, U+2192. `summary`만 U+000A를 허용하고 표시할 때 공백으로 바꾼다. 그 밖 → `ForbiddenChar`(제어·bidi·zero-width·전각·결합 자모가 모두 걸린다). 2026-11-14: 영어 입력(`ExplainInput::lang = en`)의 응답은 한글 음절도 `ForbiddenChar`다(영어로 쓰라고 했는데 한글이 오면 숨긴다). 한국어 입력의 규칙은 그대로다.
 - **링크**: `summary`·`unknowns`에 `://` 또는 `www.`(대소문자 무시) → `Link`.
-- **판정 표현**: `summary`·`unknowns`를 정규화(공백·문장 부호·기호 제거, 소문자 — 글자·숫자만 남김; "안 전", "S.A.F.E", "no-risk"도 걸림)한 뒤 같은 방식으로 정규화한 다음 중 하나를 포함하면 → `Verdict`: `안전`, `정상`, `신뢰`, `믿을 수`, `문제없`, `괜찮`, `승인해도`, `승인하세요`, `승인하십시오`, `서명해도`, `서명하세요`, `위험이 없`, `위험 없`, `위험하지 않`, `무해`, `안심`, `검증된`, `공식`, `safe`, `harmless`, `legit`, `trusted`, `verified`, `no risk`, `risk free`, `trustworthy`, `no problem`, `official`, `riskless`, `not risky`, `you can approve`, `you can sign`. 목록은 카탈로그 `yw_app::explain::text::VERDICTS`(한국어 열·영어 열)이고 두 열 모두 두 언어의 응답에 적용한다. 2026-11-14: 영어 응답에 맞춰 `trustworthy`부터 끝까지의 영어 단어를 더했다(그 전에는 `risk free`까지; 한국어 응답에도 적용되며 오탐은 숨기기만 한다).
+- **판정 표현**: `summary`·`unknowns`를 정규화(공백·문장 부호·기호 제거, 소문자 — 글자·숫자만 남김; "안 전", "S.A.F.E", "no-risk"도 걸림)한 뒤 같은 방식으로 정규화한 다음 중 하나를 포함하면 → `Verdict`: `안전`, `정상`, `신뢰`, `믿을 수`, `문제없`, `괜찮`, `승인해도`, `승인하세요`, `승인하십시오`, `서명해도`, `서명하세요`, `위험이 없`, `위험 없`, `위험하지 않`, `무해`, `안심`, `검증된`, `공식`, `safe`, `harmless`, `legit`, `trusted`, `verified`, `no risk`, `risk free`, `trustworthy`, `no problem`, `official`, `riskless`, `not risky`, `you can approve`, `you can sign`. 목록은 카탈로그 `yw_engine::explain::text::VERDICTS`(한국어 열·영어 열)이고 두 열 모두 두 언어의 응답에 적용한다. 2026-11-14: 영어 응답에 맞춰 `trustworthy`부터 끝까지의 영어 단어를 더했다(그 전에는 `risk free`까지; 한국어 응답에도 적용되며 오탐은 숨기기만 한다).
 
 ### 5.3 일관성 검사
 
@@ -207,7 +207,7 @@ yw-app이 코어 해석 결과([03](03-evm.md) §7–§9)와 시뮬레이션 상
 
 ### 5.4 구조 일치 (중요 효과 누락)
 
-입력을 만들 때 지갑의 결정적 해석이 찾은 중요 효과를 기록한다: 승인(approve·increaseAllowance·Permit2 approve·시뮬레이션 승인 로그; 0 승인 제외), permit(EIP-2612·DAI·Permit2 typed data), 전체 권한(`setApprovalForAll(true)`), 내보내는 전송(네이티브 value, 토큰 전송, 시뮬레이션의 나가는 변화; WETH deposit 제외). 검증을 통과한 설명이 그 효과를 맞는 `actions` 유형(`approve`·`permit`·`approve_all`·`send`)이나 `summary`의 정규화된 키워드(승인·허용·approve·allowance·permission, permit·서명 허가, 전체 권한·모든 NFT·setApprovalForAll·all tokens·entire collection, 전송·보내·transfer·send·withdraw — 그냥 "승인"은 전체 권한을 덮지 않는다; 목록은 `yw_app::explain::text::MENTION_*`, 두 열 모두 적용, 2026-11-14 영어 단어 `permission`·`authoriz`·`alltokens`·`allassets`·`entirecollection`·`wholecollection`·`withdraw` 추가)로 언급하지 않으면, 패널은 **"설명 불일치 — 무시하세요"** / **"Explanation inconsistent — ignore it"**를 보이고 본문을 접는다(클릭으로 펼침, "다시 요청" 제공, 로그 이유 `Inconsistent`). 안내 문장은 "AI 설명이 이 요청의 {효과}을(를) 언급하지 않습니다. 위의 지갑 해석과 경고를 따르세요." / "The AI explanation does not mention this request's {effect}. Follow the wallet's interpretation and the warnings above."이고 효과 이름은 "토큰 사용 승인"·"권한 서명(permit)"·"전체 승인(setApprovalForAll)"·"자산 전송" / "token spending approval"·"approval signature (permit)"·"approval for all (setApprovalForAll)"·"asset transfer"다.
+입력을 만들 때 지갑의 결정적 해석이 찾은 중요 효과를 기록한다: 승인(approve·increaseAllowance·Permit2 approve·시뮬레이션 승인 로그; 0 승인 제외), permit(EIP-2612·DAI·Permit2 typed data), 전체 권한(`setApprovalForAll(true)`), 내보내는 전송(네이티브 value, 토큰 전송, 시뮬레이션의 나가는 변화; WETH deposit 제외). 검증을 통과한 설명이 그 효과를 맞는 `actions` 유형(`approve`·`permit`·`approve_all`·`send`)이나 `summary`의 정규화된 키워드(승인·허용·approve·allowance·permission, permit·서명 허가, 전체 권한·모든 NFT·setApprovalForAll·all tokens·entire collection, 전송·보내·transfer·send·withdraw — 그냥 "승인"은 전체 권한을 덮지 않는다; 목록은 `yw_engine::explain::text::MENTION_*`, 두 열 모두 적용, 2026-11-14 영어 단어 `permission`·`authoriz`·`alltokens`·`allassets`·`entirecollection`·`wholecollection`·`withdraw` 추가)로 언급하지 않으면, 패널은 **"설명 불일치 — 무시하세요"** / **"Explanation inconsistent — ignore it"**를 보이고 본문을 접는다(클릭으로 펼침, "다시 요청" 제공, 로그 이유 `Inconsistent`). 안내 문장은 "AI 설명이 이 요청의 {효과}을(를) 언급하지 않습니다. 위의 지갑 해석과 경고를 따르세요." / "The AI explanation does not mention this request's {effect}. Follow the wallet's interpretation and the warnings above."이고 효과 이름은 "토큰 사용 승인"·"권한 서명(permit)"·"전체 승인(setApprovalForAll)"·"자산 전송" / "token spending approval"·"approval signature (permit)"·"approval for all (setApprovalForAll)"·"asset transfer"다.
 
 ## 6. 표시 규칙
 
@@ -248,7 +248,7 @@ yw-app이 코어 해석 결과([03](03-evm.md) §7–§9)와 시뮬레이션 상
 
 ## 9. 모듈과 시그니처
 
-파일: `crates/yw-app/src/explain/{mod,config,input,request,response,panel,text}.rs`(단위 테스트 `explain/tests.rs`; `text`는 두 언어 카탈로그, [14] §2). 앱 연결은 기존 패턴대로 `app_llm.rs`(작업자 수명, S15 `AI 설명` 명령, 연결 테스트, §8 로그), `app_approval.rs`(패널 확보·그리기·상태 전이), `ui/screens_llm.rs`(S15 화면)에 둔다.
+파일: `crates/yw-engine/src/explain/{mod,config,input,request,response,panel,text}.rs`(단위 테스트 `explain/tests.rs`; `text`는 두 언어 카탈로그, [14] §2; 2026-11-17 [15] §11.4 S2 E2에서 `crates/yw-app/src/explain/`에서 옮겼고 yw-app은 `crate::explain`으로 다시 내보낸다. WinHTTP 전송은 yw-app `explain_transport.rs`). 앱 연결은 기존 패턴대로 `app_llm.rs`(작업자 수명, S15 `AI 설명` 명령, 연결 테스트, §8 로그), `app_approval.rs`(패널 확보·그리기·상태 전이), `ui/screens_llm.rs`(S15 화면)에 둔다.
 
 ```rust
 pub const REQUEST_DEADLINE_MS: u64 = 10_000;   pub const MAX_REQUEST_BODY: usize = 49_152;

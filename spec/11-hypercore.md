@@ -1,6 +1,6 @@
 # 11. Hyperliquid HyperCore — 잔액과 전송 (D34, 2026-11-06)
 
-- 상태: 구현(yw-core `hypercore`, yw-app `app_hypercore`·`hypercore`·`ui::screens_hypercore`). 실제 자산 수동 확인만 남음(`docs/acceptance/hypercore-20261106.md`).
+- 상태: 구현(yw-core `hypercore`, yw-engine `hypercore`(2026-11-17 [15] §11.4 S2 전 yw-app), yw-app `app_hypercore`·`ui::screens_hypercore`). 실제 자산 수동 확인만 남음(`docs/acceptance/hypercore-20261106.md`).
 - 범위: 같은 secp256k1 EVM 계정 주소의 HyperCore(Hyperliquid L1) **잔액 보기**와 **사용자 서명 전송**(USDC·현물 토큰 보내기, 현물↔선물 이동, Arbitrum 출금, HyperEVM↔HyperCore 이동). **거래(주문·취소·레버리지·API 지갑 승인)는 범위 밖**이다. dApp(app.hyperliquid.xyz 등)이 요청하는 `eth_signTypedData_v4`는 구조화해 보이되(§7) 지갑이 직접 만들지 않는다.
 - 의존성 추가 없음. 서명은 기존 EVM 키 경로(파생·가져온 키·YubiKey, [03] §4, [10] §6)의 typed-data 서명 그대로다.
 
