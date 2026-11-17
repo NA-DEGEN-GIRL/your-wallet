@@ -6,7 +6,7 @@ D13–D20, D27–D29의 EVM 세부 명세다. 이 문서는 [spec.md](../spec.md
 
 ## 0. 모듈 배치
 
-yw-core는 네트워크를 호출하지 않는다. yw-app이 RPC를 호출하고 응답을 yw-json으로 파싱해 아래 yw-core 타입으로 넘긴다. EIP-712 원문은 JSON이므로 `yw-core::evm::eip712`는 `yw_json::Value`를 입력으로 받는다(D5·[01](01-repo-build.md) §2.4가 허용하는 유일한 로컬 의존 yw-core → yw-json). yw-core 모듈 이름과 도입 단계는 [01](01-repo-build.md) §2.2가 정본이다(D31): `hex`·`evm::address`는 M1, `journal`(EVM 레코드 `journal::evm`)은 M4, `policy`는 M2에 `BrowserOrigin`으로 시작하고 나머지는 M5, 아래 표의 그 밖 yw-core 모듈은 M2. yw-app의 EVM 모듈 이름(`rpc::evm`, `flow::evm`, `browser::params`)은 아래 표가 정본이고, yw-app 전체 모듈 배치는 [04](04-app-ui.md) §1.8이 정한다(`browser::envelope` 등 브라우저 모듈 내용은 [05](05-browser.md)). yw-core는 시각을 인자(`now_ms: u64` = yw-win `time::monotonic_ms`, `now_unix_ms: u64`)로만 받는다([01](01-repo-build.md) §5.1: `Instant`·`SystemTime` 금지).
+yw-core는 네트워크를 호출하지 않는다. RPC 파이프라인(yw-engine `rpc::evm`·`flow::evm`, 2026-11-17 [15] §11.4 S2 E2 전 yw-app)이 RPC를 호출하고 응답을 yw-json으로 파싱해 아래 yw-core 타입으로 넘긴다. EIP-712 원문은 JSON이므로 `yw-core::evm::eip712`는 `yw_json::Value`를 입력으로 받는다(D5·[01](01-repo-build.md) §2.4가 허용하는 유일한 로컬 의존 yw-core → yw-json). yw-core 모듈 이름과 도입 단계는 [01](01-repo-build.md) §2.2가 정본이다(D31): `hex`·`evm::address`는 M1, `journal`(EVM 레코드 `journal::evm`)은 M4, `policy`는 M2에 `BrowserOrigin`으로 시작하고 나머지는 M5, 아래 표의 그 밖 yw-core 모듈은 M2. EVM 앱 모듈 이름(yw-engine `rpc::evm`·`flow::evm`, yw-app `browser::params`)은 아래 표가 정본이고, yw-app 전체 모듈 배치는 [04](04-app-ui.md) §1.8이 정한다(`browser::envelope` 등 브라우저 모듈 내용은 [05](05-browser.md)). yw-core는 시각을 인자(`now_ms: u64` = yw-win `time::monotonic_ms`, `now_unix_ms: u64`)로만 받는다([01](01-repo-build.md) §5.1: `Instant`·`SystemTime` 금지).
 
 | 모듈 | 크레이트 | 내용 | 이식 근거 |
 |---|---|---|---|
@@ -213,7 +213,7 @@ pub fn user_chain_info(i: &UserChainInput, genesis: [u8; 32]) -> ChainInfo;     
 
 어떤 L1·L2든 이 절차로 추가한다(EIP-1559 type 2를 받는 체인이면 된다). Arbitrum 계열(Orbit)은 L1 비용이 가스에 들어 있어 따로 할 일이 없고, OP-stack 계열(Optimism·Unichain·Ink 등)은 `Probe`가 L1 데이터 수수료를 찾아 더한다. 그 밖의 L2 수수료 방식(별도 L1 수수료를 다른 방법으로 받는 체인)은 최대 수수료 표시가 실제보다 작을 수 있다.
 
-추가 절차(yw-app `rpc::evm`, 각 호출 §1.4 제한):
+추가 절차(yw-engine `rpc::evm`, 2026-11-17 S2 전 yw-app, 각 호출 §1.4 제한):
 1. `validate_user_chain`.
 2. 입력한 RPC URL로 `eth_chainId` → 입력 chainId의 정규 hex와 같아야 한다. 다르면 거부 "RPC의 chainId({10진})가 입력한 값과 다릅니다"(저장 없음).
 3. `eth_getBlockByNumber(["0x0", false]).hash`(32바이트) → 고정값. 못 받으면 거부 "블록 0을 받을 수 없습니다".

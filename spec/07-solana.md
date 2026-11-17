@@ -672,7 +672,7 @@ pub const SOL_JOURNAL_MAX_RECORDS: usize = 64;
 
 ### 15.4 SPL 계정 데이터(v1.1, 참고 + 교차 확인)
 
-- 조회: `getAccountInfo(addr, {"encoding":"base64","commitment":"confirmed"})`(dataSlice 없음, `jsonParsed` 쓰지 않음). `data`는 `["<base64>", "base64"]`여야 하고 엄격 base64(RFC 4648 패딩, 정규 비트, 4,096바이트 상한)로 디코딩한다(yw-app `sol::rpc::account_data`). 어긋나면 응답 오류(`Malformed`).
+- 조회: `getAccountInfo(addr, {"encoding":"base64","commitment":"confirmed"})`(dataSlice 없음, `jsonParsed` 쓰지 않음). `data`는 `["<base64>", "base64"]`여야 하고 엄격 base64(RFC 4648 패딩, 정규 비트, 4,096바이트 상한)로 디코딩한다(yw-engine `sol::rpc::account_data`, 2026-11-17 S2 전 yw-app). 어긋나면 응답 오류(`Malformed`).
 - mint(82바이트, yw-core `sol::token::parse_mint`·`check_mint`): owner = 고정 토큰 프로그램, `data.len == 82`, `COption` 태그 0/1, `data[44] == 고정 decimals`, `data[45] == 1`(initialized). 없음·불일치 → `MintMismatch` → `RpcAnomaly`(승인 불가). 메시지의 decimals는 언제나 허용 목록 값이다(RPC가 9라고 해도 6으로 서명하지 않고 막을 뿐).
 - 토큰 계정(165바이트, `parse_token_account`): `mint = [0..32]`, `owner = [32..64]`, `amount = u64 LE [64..72]`, delegate `COption` `[72..108]`, `state = [108]`(0 미초기화, 1 정상, 2 동결, 그 밖 거부), is_native `COption<u64>` `[109..121]`, close authority `COption` `[129..165]`. `classify_holding(entry, wallet, account) -> TokenHolding`: null → `Missing`, 프로그램 = 고정 토큰 프로그램·165바이트·mint 일치·owner = wallet·is_native 없음·state 1 → `Active(amount)`, state 2 → `Frozen(amount)`, 그 밖 → `Invalid`.
 - 미리보기: `from_ata` `Missing` → `NoTokenAccount`(§11), `Frozen` → `TokenAccountFrozen`, `Invalid` → `RpcAnomaly`. `to_ata` `Missing` → 생성(rent165), `Active` → 있음, `Frozen`·`Invalid` → `RecipientTokenAccountUnusable`.

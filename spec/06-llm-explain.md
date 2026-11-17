@@ -2,7 +2,7 @@
 
 상위 문서: [spec.md](../spec.md)
 
-D21의 세부 명세다. 이 기능은 승인 창에 참고용 문장을 덧붙일 뿐이며 [03](03-evm.md)의 해석·위험 규칙과 [04](04-app-ui.md)의 승인 창 동작을 바꾸지 않는다. 코드는 모두 `crates/yw-app/src/explain/`에 두고(2026-11-17 S2: Windows 전송만 `explain_transport.rs`) 새 크레이트를 추가하지 않는다(D5). HTTP는 yw-win `http`([01](01-repo-build.md) §7.4), JSON은 yw-json을 쓴다. 상수는 §9.
+D21의 세부 명세다. 이 기능은 승인 창에 참고용 문장을 덧붙일 뿐이며 [03](03-evm.md)의 해석·위험 규칙과 [04](04-app-ui.md)의 승인 창 동작을 바꾸지 않는다. 코드는 `crates/yw-engine/src/explain/`에 둔다(2026-11-17 [15] §11.4 S2 E2 전에는 `crates/yw-app/src/explain/`). 전송은 주입하며(P8), yw-app에는 Windows 전송 `explain_transport.rs`만 남는다. 이 전송이 HTTP에 yw-win `http`([01](01-repo-build.md) §7.4)를 쓴다. 이 기능을 위해 새 크레이트를 추가하지 않는다(D5). JSON은 yw-json을 쓴다. 상수는 §9.
 
 ## 1. 목적과 비목표
 
