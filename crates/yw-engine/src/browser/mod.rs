@@ -1,7 +1,11 @@
 //! The browser bridge (spec/05, M5): envelope v1, dApp parameter rules, the per-connection
-//! dispatcher with its permission/chain state, the read workers and the named-pipe server.
+//! dispatcher with its permission/chain state and the read workers. The platform runs the
+//! named-pipe transport (yw-app `browser::server`) and drives this module.
+//! (2026-11-17, S2 E3: before, this module was yw-app `browser` and also held the pipe server,
+//! which stayed in yw-app when the rest moved here.)
 //!
-//! Thread model (spec/05 §8.3–§8.4, spec/04 §1.2): each pipe connection has a reader thread
+//! Thread model (spec/05 §8.3–§8.4, spec/04 §1.2): the platform's server gives each pipe
+//! connection a reader thread
 //! ([`BrowserCore::handle_frame`] — answers "immediate" methods from memory, never waits for RPC
 //! or approvals) and a writer thread (assigns the outbound `sequence`); reads go to
 //! [`read::run_worker`] threads; approval-class requests go to the UI thread as

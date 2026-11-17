@@ -174,6 +174,9 @@ mod tests {
     /// The source folders the scans read: yw-app's `src`, and yw-engine's once that crate
     /// exists (2026-11-17 S2 review: `yubikey.rs` and the key worker move there, and the scans
     /// must keep covering them; a folder that does not exist yet is skipped).
+    /// Every new crate that depends on yw-engine must add its `src` here, so the `MockSource`
+    /// and `testkit` scans keep covering all production code that could reach them (2026-11-17,
+    /// S2 E3 review; spec/01 §2.3b, spec/15 §11.4: today yw-app is the only such crate).
     fn source_roots() -> Vec<PathBuf> {
         let app = Path::new(env!("CARGO_MANIFEST_DIR"));
         let mut roots = vec![app.join("src")];
@@ -313,10 +316,7 @@ mod tests {
                 .lines()
                 .filter(|line| !line.trim_start().starts_with("//"))
                 .collect::<Vec<_>>()
-                .join(
-                    "
-",
-                );
+                .join("\n");
             let rest = if engine && path.ends_with("lib.rs") {
                 code.replacen("pub mod testkit;", "", 1)
             } else {

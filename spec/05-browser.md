@@ -155,8 +155,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
 Rust 쪽 고정값: yw-host와 yw-app은 같은 파일을 컴파일 시점에 포함한다.
 
 ```rust
-// crates/yw-host/src/lib.rs (테스트가 쓰므로 lib에 둔다; yw-app 쪽은 crates/yw-engine/src/browser/mod.rs에서 상대 경로만 다름 —
-// 2026-11-17 S2 E3 전에는 crates/yw-app/src/browser/mod.rs, 깊이가 같아 경로 문자열은 그대로)
+// crates/yw-host/src/lib.rs (테스트가 쓰므로 lib에 둔다; 앱 쪽 고정값은 yw-engine의 crates/yw-engine/src/browser/mod.rs에
+// 컴파일되고 yw-app은 그것을 다시 내보낸다, 상대 경로만 다름 — 2026-11-17 S2 E3 전에는 yw-app의
+// crates/yw-app/src/browser/mod.rs에 있었다, 깊이가 같아 경로 문자열은 그대로)
 const EXTENSION_ID_FILE: &str = include_str!("../../../extension/extension-id.txt");
 fn pinned_extension_id() -> Option<&'static str> {
     let id = EXTENSION_ID_FILE.trim_end();
