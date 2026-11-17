@@ -17,7 +17,7 @@
 //! S3 C2: S13's sites and `WalletConnect` panel. S3 C3: the block-explorer card and links and
 //! the AI-explanation settings. S3 C4: the address book. S3 C5: S22 and T-WAIT-STALLED, S23,
 //! the imported-key screens and the `rpc.json` import card. S3 C6: the recovery phrases. S3 C7:
-//! `HyperCore` and Zcash.
+//! `HyperCore` and Zcash. S3 C8: Solana.
 
 use yw_core::secret::Zeroizing;
 use yw_engine::cmd::Press;
@@ -27,7 +27,7 @@ use crate::ui::main_window::ControlSet;
 use crate::ui::{
     screens, screens_book, screens_evm, screens_explorer, screens_hypercore, screens_keys,
     screens_links, screens_llm, screens_mnemonics, screens_received, screens_reset, screens_sites,
-    screens_walletconnect, screens_zec,
+    screens_sol, screens_walletconnect, screens_zec,
 };
 use crate::{app_hidden, app_rpc_import, app_sidecar};
 
@@ -60,6 +60,7 @@ pub fn press_of(id: u16, controls: &ControlSet) -> Press {
             .or_else(|| screens_mnemonics::ids::press_of(other).map(Press::Mn))
             .or_else(|| screens_hypercore::ids::press_of(other).map(Press::Hc))
             .or_else(|| screens_zec::ids::press_of(other).map(Press::Zec))
+            .or_else(|| screens_sol::ids::press_of(other).map(Press::Sol))
             .unwrap_or(Press::Legacy(other)),
     }
 }
@@ -87,6 +88,7 @@ pub const fn id_of(press: Press) -> u16 {
         Press::Mn(press) => screens_mnemonics::ids::id_of(press),
         Press::Hc(press) => screens_hypercore::ids::id_of(press),
         Press::Zec(press) => screens_zec::ids::id_of(press),
+        Press::Sol(press) => screens_sol::ids::id_of(press),
         Press::Legacy(id) => id,
     }
 }
@@ -704,6 +706,72 @@ mod tests {
         assert!(Press::Zec(ZecPress::CopyAddress).is_receive_gated());
         assert!(Press::Zec(ZecPress::CardCopy).is_receive_gated());
         assert!(!Press::Zec(ZecPress::ResultCopy).is_receive_gated());
+    }
+
+    /// S3 C8: Solana claims exactly the ids `on_sol_command` claimed (every fixed id but the
+    /// five edits, which are fields, and each row range whole); a scan row's two buttons keep
+    /// their row and action; `새로고침` reads its received history first and `받기`/`주소 복사`
+    /// are gated (table test (4) checks every id).
+    #[test]
+    fn c8_sol_maps_its_ids() {
+        use screens_sol::ids;
+        use yw_engine::cmd::{Row, SolPress, SolScanAction};
+        use yw_engine::received::RecvChain;
+        let controls = ControlSet::default();
+        for id in 7_000..7_910 {
+            let sol = matches!(id, 7_000..=7_010 | 7_012..=7_019 | 7_022..=7_073 | 7_075 | 7_076
+                | 7_080..=7_083 | 7_100 | 7_103..=7_106 | 7_110..=7_112 | 7_120..=7_375
+                | 7_400..=7_463);
+            assert_eq!(
+                matches!(press_of(id, &controls), Press::Sol(_)),
+                sol,
+                "{id}"
+            );
+        }
+        for id in 11_990..13_000 {
+            assert_eq!(
+                matches!(press_of(id, &controls), Press::Sol(_)),
+                id >= 12_000,
+                "{id}"
+            );
+        }
+        assert!(ids::FIXED.iter().all(|&id| {
+            matches!(press_of(id, &controls), Press::Sol(_))
+                != [
+                    ids::RENAME_EDIT,
+                    ids::SEND_TO_EDIT,
+                    ids::SEND_AMOUNT_EDIT,
+                    ids::FEE_CAP_EDIT,
+                    ids::CU_PRICE_EDIT,
+                ]
+                .contains(&id)
+        }));
+        for row in 0..128_usize {
+            for (action, scan) in [
+                (ids::ScanAction::Add(row), SolScanAction::Add),
+                (ids::ScanAction::Move(row), SolScanAction::Move),
+            ] {
+                let id = ids::scan_row_id(action).unwrap();
+                let press = SolPress::ScanRow(Row(u16::try_from(row).unwrap()), scan);
+                assert_eq!(press_of(id, &controls), Press::Sol(press), "{id}");
+                assert_eq!(id_of(Press::Sol(press)), id);
+            }
+        }
+        assert_eq!(
+            press_of(ids::ACCOUNT_BASE + 999, &controls),
+            Press::Sol(SolPress::Account(Row(999)))
+        );
+        assert_eq!(
+            press_of(ids::SEND_PICK_BASE + 39, &controls),
+            Press::Sol(SolPress::SendPickRow(Row(39)))
+        );
+        assert_eq!(
+            Press::Sol(SolPress::Refresh).refresh_chain(),
+            Some(RecvChain::Sol)
+        );
+        assert!(Press::Sol(SolPress::ReceiveOpen).is_receive_gated());
+        assert!(Press::Sol(SolPress::CopyAddress).is_receive_gated());
+        assert!(!Press::Sol(SolPress::TokenCopy(Row(0))).is_receive_gated());
     }
 
     /// Table test (3): the 65 edit ids are 58 plain fields and 7 credential fields, each a

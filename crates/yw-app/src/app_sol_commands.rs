@@ -1,12 +1,13 @@
 //! Command and edit-change handling of the Solana screens (ids in `ui::screens_sol::ids`).
 
+use yw_engine::cmd::{Row, SolPress, SolScanAction};
+use yw_engine::effect::Effect;
+use yw_engine::form::EditField;
+
 use crate::app::{App, Screen, SettingsSection};
 use crate::app_sol::SolSendForm;
 use crate::meta::Tab;
 use crate::network::SolCluster;
-use crate::ui::screens_sol::ids;
-
-const TEXT_MAX: usize = 256;
 
 /// Fixed texts of the Solana commands (spec/07, spec/14).
 pub(crate) mod text {
@@ -16,30 +17,30 @@ pub(crate) mod text {
     }
 }
 
-fn offset(id: u16, base: u16, span: u16) -> Option<u16> {
-    id.checked_sub(base).filter(|offset| *offset < span)
-}
-
 impl App {
-    fn sol_edit_text(&self, id: u16) -> String {
-        self.controls.text(id, TEXT_MAX).unwrap_or_default()
+    /// The text of a Solana edit for a handler (2026-11-18, S3 C8: the form state,
+    /// `App::form_text`; before, a read of the edit with the module's cap 256, now
+    /// `EditField::cap`).
+    fn sol_edit_text(&self, field: EditField) -> String {
+        self.form_text(field).unwrap_or_default()
     }
 
-    /// `EN_CHANGE` of a Solana edit; `false` when `id` is not one of them. A send-form edit is
-    /// validated by the send timer (`App::on_send_timer`): at once when the text is a whole
-    /// address or amount, after the typing pause otherwise.
-    pub fn on_sol_edit_change(&mut self, id: u16) -> bool {
+    /// `EN_CHANGE` of a Solana edit (2026-11-18, S3 C8: the field and its text from
+    /// `Cmd::Edit`; before, the control id and a read of the edit here); `false` when `field` is
+    /// not one of them. A send-form edit is validated by the send timer (`App::on_send_timer`):
+    /// at once when the text is a whole address or amount, after the typing pause otherwise.
+    pub(crate) fn on_sol_edit(&mut self, field: EditField, text: &str) -> bool {
         let now = yw_win::time::monotonic_ms();
-        match id {
-            ids::SEND_TO_EDIT => {
+        match field {
+            EditField::SolSendTo => {
                 if self.sol.send.moving.is_none() {
-                    self.sol.send.to_text = self.sol_edit_text(id);
+                    text.clone_into(&mut self.sol.send.to_text);
                     self.sol.send.dirty_ms = Some(now);
                     self.arm_send_timer(self.sol.send.edit_wait_ms(true));
                 }
             }
-            ids::SEND_AMOUNT_EDIT => {
-                self.sol.send.amount_text = self.sol_edit_text(id);
+            EditField::SolSendAmount => {
+                text.clone_into(&mut self.sol.send.amount_text);
                 self.sol.send.dirty_ms = Some(now);
                 self.arm_send_timer(self.sol.send.edit_wait_ms(false));
             }
@@ -68,8 +69,8 @@ impl App {
             )
         } else {
             let parse = |text: String| crate::network::parse_decimal_u64(text.trim());
-            let fee = parse(self.sol_edit_text(ids::FEE_CAP_EDIT));
-            let price_text = self.sol_edit_text(ids::CU_PRICE_EDIT);
+            let fee = parse(self.sol_edit_text(EditField::SolFeeCap));
+            let price_text = self.sol_edit_text(EditField::SolCuPrice);
             let price = if price_text.trim() == "0" {
                 Some(0)
             } else {
@@ -96,130 +97,149 @@ impl App {
         self.save_settings(settings, "solana");
     }
 
-    /// Solana commands; `false` when `id` is not one of them.
-    pub fn on_sol_command(&mut self, id: u16) -> bool {
-        match id {
-            ids::TAB_EVM => self.sol_select_tab(Tab::Evm),
-            ids::TAB_SOL => self.sol_select_tab(Tab::Sol),
-            ids::CLUSTER_MAINNET | ids::SET_MAINNET => self.sol_set_cluster(SolCluster::Mainnet),
-            ids::CLUSTER_DEVNET | ids::SET_DEVNET => self.sol_set_cluster(SolCluster::Devnet),
-            ids::REFRESH => {
+    /// Solana presses (2026-11-18, S3 C8: a `SolPress`; before, the control id, and `false` for
+    /// an id that was not one of them).
+    pub(crate) fn on_sol(&mut self, press: SolPress) {
+        match press {
+            SolPress::TabEvm => self.sol_select_tab(Tab::Evm),
+            SolPress::TabSol => self.sol_select_tab(Tab::Sol),
+            SolPress::ClusterMainnet | SolPress::SetMainnet => {
+                self.sol_set_cluster(SolCluster::Mainnet);
+            }
+            SolPress::ClusterDevnet | SolPress::SetDevnet => {
+                self.sol_set_cluster(SolCluster::Devnet);
+            }
+            SolPress::Refresh => {
                 self.sol_refresh_balances();
                 self.refresh();
             }
-            ids::SEND_OPEN => self.sol_open_send(),
-            ids::RECEIVE_OPEN => self.set_screen(Screen::SolReceive),
-            ids::RENAME => {
+            SolPress::SendOpen => self.sol_open_send(),
+            SolPress::ReceiveOpen => self.set_screen(Screen::SolReceive),
+            SolPress::Rename => {
                 self.sol.rename = self.sol_selected().map(|(id, ..)| id);
                 self.refresh();
             }
-            ids::RENAME_SAVE => {
-                let text = self.sol_edit_text(ids::RENAME_EDIT);
+            SolPress::RenameSave => {
+                let text = self.sol_edit_text(EditField::SolRename);
                 self.sol_save_rename(&text);
             }
-            ids::RENAME_CANCEL => {
+            SolPress::RenameCancel => {
                 self.sol.rename = None;
                 self.refresh();
             }
-            ids::HIDE => self.sol_hide_selected(),
-            ids::ADD_ACCOUNT => {
+            SolPress::Hide => self.sol_hide_selected(),
+            SolPress::AddAccount => {
                 self.sol_add_account_clicked();
                 self.refresh();
             }
             // `스캔 결과로` after a move opens the kept results.
-            ids::SCAN_OPEN | ids::SCAN_BACK => self.sol_open_scan(),
-            ids::COPY_ADDRESS => self.sol_copy_address(),
-            ids::SEND_MAX => self.sol_fill_max(),
-            ids::SEND_REVIEW => self.sol_review(),
-            ids::SEND_AGAIN => self.sol_send_again(),
-            ids::SEND_NOW => self.sol_send_now(),
+            SolPress::ScanOpen | SolPress::ScanBack => self.sol_open_scan(),
+            SolPress::CopyAddress => self.sol_copy_address(),
+            SolPress::SendMax => self.sol_fill_max(),
+            SolPress::SendReview => self.sol_review(),
+            SolPress::SendAgain => self.sol_send_again(),
+            SolPress::SendNow => self.sol_send_now(),
             // The signature is the transaction id: public data, for an explorer.
-            ids::RESULT_COPY => {
+            SolPress::ResultCopy => {
                 if let Some((_, signature)) = self.sol.sent {
                     self.copy_text(&yw_core::codec::base58::base58_encode(&signature));
                 }
             }
-            ids::SEND_CANCEL => {
+            SolPress::SendCancel => {
                 self.sol.send = SolSendForm::default();
                 self.return_to(Screen::Main);
             }
-            ids::SEND_PICK => {
+            SolPress::SendPick => {
                 self.sol.send.picker = !self.sol.send.picker;
                 self.refresh();
             }
-            ids::SECTION_SOL => self.set_screen(Screen::Settings(SettingsSection::Solana)),
-            ids::FEE_SAVE => self.sol_save_fees(false),
-            ids::FEE_DEFAULT => self.sol_save_fees(true),
-            ids::SCAN_START => self.sol_start_scan(),
-            ids::SCAN_AGAIN => self.sol_scan_again(),
-            other => return self.on_sol_indexed(other),
+            SolPress::SectionSol => self.set_screen(Screen::Settings(SettingsSection::Solana)),
+            SolPress::FeeSave => self.sol_save_fees(false),
+            SolPress::FeeDefault => self.sol_save_fees(true),
+            SolPress::ScanStart => self.sol_start_scan(),
+            SolPress::ScanAgain => self.sol_scan_again(),
+            SolPress::TokenHiddenToggle => {
+                self.sol.show_hidden_tokens = !self.sol.show_hidden_tokens;
+                self.refresh();
+            }
+            SolPress::Account(_)
+            | SolPress::SendAsset(_)
+            | SolPress::TokenHide(_)
+            | SolPress::TokenCopy(_)
+            | SolPress::ActivityCopy(_)
+            | SolPress::TokenSend(_)
+            | SolPress::SendPickRow(_)
+            | SolPress::ScanRow(..) => self.on_sol_indexed(press),
         }
-        true
     }
 
-    fn on_sol_indexed(&mut self, id: u16) -> bool {
-        if let Some(row) = offset(id, ids::ACCOUNT_BASE, ids::ACCOUNT_SPAN) {
-            // A choice closes the drop-down (2026-11-11).
-            self.account_menu = None;
-            self.sol_select_account(usize::from(row));
-            return true;
-        }
-        if let Some(index) = offset(id, ids::SEND_ASSET_BASE, ids::SEND_ASSET_SPAN) {
-            self.sol_select_asset(usize::from(index));
-            return true;
-        }
-        if let Some(index) = offset(id, ids::TOKEN_HIDE_BASE, ids::TOKEN_HIDE_SPAN) {
-            self.toggle_sol_token_hidden(usize::from(index));
-            return true;
-        }
-        if id == ids::TOKEN_HIDDEN_TOGGLE {
-            self.sol.show_hidden_tokens = !self.sol.show_hidden_tokens;
-            self.refresh();
-            return true;
-        }
-        if let Some(index) = offset(id, ids::TOKEN_COPY_BASE, ids::TOKEN_COPY_SPAN) {
-            // The token card's `주소 복사`: the allowlist row's whole mint (2026-11-11).
-            if let Some(entry) =
-                yw_core::sol::template::spl_entries(self.sol_cluster()).nth(usize::from(index))
-            {
-                self.copy_address_text(&entry.mint.to_base58());
+    /// The Solana row presses (2026-11-18, S3 C8: a `SolPress` row, resolved against the lists
+    /// rebuilt now as before; the token card's `숨긴 토큰` toggle, which was checked here between
+    /// the rows, is an arm of `on_sol`).
+    fn on_sol_indexed(&mut self, press: SolPress) {
+        match press {
+            SolPress::Account(Row(row)) => {
+                // A choice closes the drop-down (2026-11-11).
+                self.account_menu = None;
+                self.sol_select_account(usize::from(row));
             }
-            return true;
-        }
-        if let Some(row) = offset(id, ids::ACTIVITY_COPY_BASE, ids::ACTIVITY_COPY_SPAN) {
-            if let Some(tx_id) = self.sol_activity_tx_ids().get(usize::from(row)) {
-                self.copy_text(tx_id);
+            SolPress::SendAsset(Row(index)) => self.sol_select_asset(usize::from(index)),
+            SolPress::TokenHide(Row(index)) => self.toggle_sol_token_hidden(usize::from(index)),
+            SolPress::TokenCopy(Row(index)) => {
+                // The token card's `주소 복사`: the allowlist row's whole mint (2026-11-11).
+                if let Some(entry) =
+                    yw_core::sol::template::spl_entries(self.sol_cluster()).nth(usize::from(index))
+                {
+                    self.copy_address_text(&entry.mint.to_base58());
+                }
             }
-            return true;
-        }
-        if let Some(index) = offset(id, ids::TOKEN_SEND_BASE, ids::TOKEN_SEND_SPAN) {
-            // Token card "보내기": the send form with that token selected (SOL is asset 0).
-            self.sol_open_send();
-            self.sol_select_asset(usize::from(index).saturating_add(1));
-            return true;
-        }
-        if let Some(row) = offset(id, ids::SEND_PICK_BASE, ids::SEND_PICK_SPAN) {
-            if let Some((_, address)) = self.sol_picker_entries().get(usize::from(row)) {
-                self.sol.send.to_text = address.to_base58();
-                self.sol.send.picker = false;
-                self.controls
-                    .set_text(ids::SEND_TO_EDIT, &self.sol.send.to_text);
-                self.sol_validate_send();
+            SolPress::ActivityCopy(Row(row)) => {
+                if let Some(tx_id) = self.sol_activity_tx_ids().get(usize::from(row)) {
+                    self.copy_text(tx_id);
+                }
             }
-            return true;
-        }
-        match ids::scan_action(id) {
-            Some(ids::ScanAction::Add(row)) => {
-                self.sol_scan_add(row);
-                return true;
+            SolPress::TokenSend(Row(index)) => {
+                // Token card "보내기": the send form with that token selected (SOL is asset 0).
+                self.sol_open_send();
+                self.sol_select_asset(usize::from(index).saturating_add(1));
             }
-            Some(ids::ScanAction::Move(row)) => {
-                self.sol_scan_move(row);
-                return true;
+            SolPress::SendPickRow(Row(row)) => {
+                if let Some((_, address)) = self.sol_picker_entries().get(usize::from(row)) {
+                    self.sol.send.to_text = address.to_base58();
+                    self.sol.send.picker = false;
+                    // 2026-11-18 (S3 C8): the write is `Effect::SetField`, applied at once inside
+                    // this borrow (before, `controls.set_text`), so the edit's `EN_CHANGE` is
+                    // still not seen; the form state reads the edit back.
+                    self.emit(Effect::SetField {
+                        field: EditField::SolSendTo,
+                        text: self.sol.send.to_text.clone(),
+                    });
+                    self.sol_validate_send();
+                }
             }
-            None => {}
+            SolPress::ScanRow(Row(row), SolScanAction::Add) => self.sol_scan_add(usize::from(row)),
+            SolPress::ScanRow(Row(row), SolScanAction::Move) => {
+                self.sol_scan_move(usize::from(row));
+            }
+            _ => {}
         }
-        false
+    }
+
+    /// Test adapter (S3 C8, plan §3.2): presses Solana control `id` directly, as the tests did
+    /// before; `false` when `id` is not one.
+    #[cfg(test)]
+    pub(crate) fn on_sol_command(&mut self, id: u16) -> bool {
+        self.press_family(
+            id,
+            |press| match press {
+                yw_engine::cmd::Press::Sol(press) => Some(press),
+                _ => None,
+            },
+            |app, press| {
+                app.on_sol(press);
+                true
+            },
+        )
     }
 }
 

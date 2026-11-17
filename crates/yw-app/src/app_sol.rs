@@ -1509,8 +1509,12 @@ impl App {
         self.sol.send.send_max = !self.sol.send.send_max;
         if self.sol.send.send_max {
             self.sol.send.amount_text.clear();
-            self.controls
-                .set_text(crate::ui::screens_sol::ids::SEND_AMOUNT_EDIT, "");
+            // 2026-11-18 (S3 C8): `Effect::SetField` (before, `controls.set_text`), applied at
+            // once inside this borrow, so the edit's `EN_CHANGE` is still not seen.
+            self.emit(yw_engine::effect::Effect::SetField {
+                field: yw_engine::form::EditField::SolSendAmount,
+                text: String::new(),
+            });
         }
         self.sol_validate_send();
     }

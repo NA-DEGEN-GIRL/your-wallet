@@ -363,6 +363,123 @@ pub mod ids {
         SCAN_BACK,
     ];
 
+    /// The press control `id` stands for (2026-11-18, S3 C8: `ui::cmd_table`). `None` when `id`
+    /// is not one of this module's presses (the five edits are fields). Each row range is claimed
+    /// whole, as the ids reached the handler before; a scan row's two buttons are
+    /// `SolPress::ScanRow` with their action ([`scan_action`]).
+    #[must_use]
+    pub fn press_of(id: u16) -> Option<yw_engine::cmd::SolPress> {
+        use yw_engine::cmd::{Row, SolPress, SolScanAction};
+        let within = |base: u16, span: u16| {
+            id.checked_sub(base)
+                .filter(|offset| *offset < span)
+                .map(Row)
+        };
+        Some(match id {
+            TAB_EVM => SolPress::TabEvm,
+            TAB_SOL => SolPress::TabSol,
+            CLUSTER_MAINNET => SolPress::ClusterMainnet,
+            CLUSTER_DEVNET => SolPress::ClusterDevnet,
+            REFRESH => SolPress::Refresh,
+            SEND_OPEN => SolPress::SendOpen,
+            RECEIVE_OPEN => SolPress::ReceiveOpen,
+            RENAME => SolPress::Rename,
+            HIDE => SolPress::Hide,
+            ADD_ACCOUNT => SolPress::AddAccount,
+            SCAN_OPEN => SolPress::ScanOpen,
+            RENAME_SAVE => SolPress::RenameSave,
+            RENAME_CANCEL => SolPress::RenameCancel,
+            COPY_ADDRESS => SolPress::CopyAddress,
+            SEND_MAX => SolPress::SendMax,
+            SEND_REVIEW => SolPress::SendReview,
+            SEND_CANCEL => SolPress::SendCancel,
+            SEND_PICK => SolPress::SendPick,
+            SEND_AGAIN => SolPress::SendAgain,
+            SEND_NOW => SolPress::SendNow,
+            TOKEN_HIDDEN_TOGGLE => SolPress::TokenHiddenToggle,
+            RESULT_COPY => SolPress::ResultCopy,
+            SECTION_SOL => SolPress::SectionSol,
+            FEE_SAVE => SolPress::FeeSave,
+            FEE_DEFAULT => SolPress::FeeDefault,
+            SET_MAINNET => SolPress::SetMainnet,
+            SET_DEVNET => SolPress::SetDevnet,
+            SCAN_START => SolPress::ScanStart,
+            SCAN_AGAIN => SolPress::ScanAgain,
+            SCAN_BACK => SolPress::ScanBack,
+            _ => within(ACCOUNT_BASE, ACCOUNT_SPAN)
+                .map(SolPress::Account)
+                .or_else(|| within(SEND_ASSET_BASE, SEND_ASSET_SPAN).map(SolPress::SendAsset))
+                .or_else(|| within(TOKEN_HIDE_BASE, TOKEN_HIDE_SPAN).map(SolPress::TokenHide))
+                .or_else(|| within(TOKEN_COPY_BASE, TOKEN_COPY_SPAN).map(SolPress::TokenCopy))
+                .or_else(|| {
+                    within(ACTIVITY_COPY_BASE, ACTIVITY_COPY_SPAN).map(SolPress::ActivityCopy)
+                })
+                .or_else(|| within(TOKEN_SEND_BASE, TOKEN_SEND_SPAN).map(SolPress::TokenSend))
+                .or_else(|| within(SEND_PICK_BASE, SEND_PICK_SPAN).map(SolPress::SendPickRow))
+                .or_else(|| {
+                    within(SCAN_ROW_BASE, SCAN_ROW_SPAN).map(|Row(offset)| {
+                        let action = if offset % SCAN_ROW_STRIDE == 0 {
+                            SolScanAction::Add
+                        } else {
+                            SolScanAction::Move
+                        };
+                        SolPress::ScanRow(Row(offset / SCAN_ROW_STRIDE), action)
+                    })
+                })?,
+        })
+    }
+
+    /// The control id of `press` (the inverse of [`press_of`]).
+    #[must_use]
+    pub const fn id_of(press: yw_engine::cmd::SolPress) -> u16 {
+        use yw_engine::cmd::{Row, SolPress, SolScanAction};
+        match press {
+            SolPress::TabEvm => TAB_EVM,
+            SolPress::TabSol => TAB_SOL,
+            SolPress::ClusterMainnet => CLUSTER_MAINNET,
+            SolPress::ClusterDevnet => CLUSTER_DEVNET,
+            SolPress::Refresh => REFRESH,
+            SolPress::SendOpen => SEND_OPEN,
+            SolPress::ReceiveOpen => RECEIVE_OPEN,
+            SolPress::Rename => RENAME,
+            SolPress::Hide => HIDE,
+            SolPress::AddAccount => ADD_ACCOUNT,
+            SolPress::ScanOpen => SCAN_OPEN,
+            SolPress::RenameSave => RENAME_SAVE,
+            SolPress::RenameCancel => RENAME_CANCEL,
+            SolPress::CopyAddress => COPY_ADDRESS,
+            SolPress::SendMax => SEND_MAX,
+            SolPress::SendReview => SEND_REVIEW,
+            SolPress::SendCancel => SEND_CANCEL,
+            SolPress::SendPick => SEND_PICK,
+            SolPress::SendAgain => SEND_AGAIN,
+            SolPress::SendNow => SEND_NOW,
+            SolPress::TokenHiddenToggle => TOKEN_HIDDEN_TOGGLE,
+            SolPress::ResultCopy => RESULT_COPY,
+            SolPress::SectionSol => SECTION_SOL,
+            SolPress::FeeSave => FEE_SAVE,
+            SolPress::FeeDefault => FEE_DEFAULT,
+            SolPress::SetMainnet => SET_MAINNET,
+            SolPress::SetDevnet => SET_DEVNET,
+            SolPress::ScanStart => SCAN_START,
+            SolPress::ScanAgain => SCAN_AGAIN,
+            SolPress::ScanBack => SCAN_BACK,
+            SolPress::Account(Row(row)) => ACCOUNT_BASE.wrapping_add(row),
+            SolPress::SendAsset(Row(row)) => SEND_ASSET_BASE.wrapping_add(row),
+            SolPress::TokenHide(Row(row)) => TOKEN_HIDE_BASE.wrapping_add(row),
+            SolPress::TokenCopy(Row(row)) => TOKEN_COPY_BASE.wrapping_add(row),
+            SolPress::ActivityCopy(Row(row)) => ACTIVITY_COPY_BASE.wrapping_add(row),
+            SolPress::TokenSend(Row(row)) => TOKEN_SEND_BASE.wrapping_add(row),
+            SolPress::SendPickRow(Row(row)) => SEND_PICK_BASE.wrapping_add(row),
+            SolPress::ScanRow(Row(row), action) => SCAN_ROW_BASE
+                .wrapping_add(row.wrapping_mul(SCAN_ROW_STRIDE))
+                .wrapping_add(match action {
+                    SolScanAction::Add => 0,
+                    SolScanAction::Move => 1,
+                }),
+        }
+    }
+
     /// What a scan-row id does (row index into `sol_scan_rows`).
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum ScanAction {

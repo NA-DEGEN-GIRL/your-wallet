@@ -30,6 +30,8 @@
 //! 2026-11-18 (S3 C7): `HyperCore` and Zcash (`Press::{Hc, Zec}`); the two chains' `새로고침`
 //! and Zcash's two `주소 복사` are the first presses with a received-history read and a receive
 //! gate.
+//!
+//! 2026-11-18 (S3 C8): Solana (`Press::Sol`).
 
 use core::fmt;
 
@@ -53,6 +55,7 @@ mod reset;
 mod rpc_import;
 mod sidecar;
 mod sites;
+mod sol;
 mod wc;
 mod zec;
 
@@ -70,6 +73,7 @@ pub use reset::ResetPress;
 pub use rpc_import::RpcImportPress;
 pub use sidecar::SidecarPress;
 pub use sites::SitesPress;
+pub use sol::{SolPress, SolScanAction};
 pub use wc::WcPress;
 pub use zec::ZecPress;
 
@@ -183,6 +187,8 @@ pub enum Press {
     Hc(HcPress),
     /// The Zcash tab (S3 C7).
     Zec(ZecPress),
+    /// The Solana screens (S3 C8).
+    Sol(SolPress),
     /// Windows-transitional bridge (S3 B2–D3): a control id whose handler is not converted yet.
     #[doc(hidden)]
     Legacy(u16),
@@ -191,13 +197,14 @@ pub enum Press {
 impl Press {
     /// The chain whose received-history list a card's `새로고침` press also reads now, before the
     /// card's own handler runs (spec/04 §2.6). A chain family adds its `새로고침` arm when it
-    /// converts (S3 C; C7: `HyperCore` and Zcash); every other press has none. `Legacy` presses
-    /// keep the shell's own observer until S3 D3.
+    /// converts (S3 C; C7: `HyperCore` and Zcash; C8: Solana); every other press has none.
+    /// `Legacy` presses keep the shell's own observer until S3 D3.
     #[must_use]
     pub const fn refresh_chain(self) -> Option<RecvChain> {
         match self {
             Self::Hc(HcPress::Refresh) => Some(RecvChain::Hc),
             Self::Zec(ZecPress::Refresh) => Some(RecvChain::Zec),
+            Self::Sol(SolPress::Refresh) => Some(RecvChain::Sol),
             Self::Back
             | Self::Enter
             | Self::Received(_)
@@ -216,6 +223,7 @@ impl Press {
             | Self::Mn(_)
             | Self::Hc(_)
             | Self::Zec(_)
+            | Self::Sol(_)
             | Self::Legacy(_) => None,
         }
     }
@@ -223,12 +231,13 @@ impl Press {
     /// Whether the press shows or copies a receive address, which is refused while a passphrase
     /// wallet is open unverified (spec/02 §7.5; before any chain handler runs, so Bitcoin does
     /// not derive and store a new address). A chain family adds its arms when it converts (S3 C;
-    /// C7: Zcash's two `주소 복사`); every other press is not one. `Legacy` presses keep the
-    /// shell's own gate until S3 D3.
+    /// C7: Zcash's two `주소 복사`; C8: Solana's `받기` and `주소 복사`); every other press is not
+    /// one. `Legacy` presses keep the shell's own gate until S3 D3.
     #[must_use]
     pub const fn is_receive_gated(self) -> bool {
         match self {
-            Self::Zec(ZecPress::CopyAddress | ZecPress::CardCopy) => true,
+            Self::Zec(ZecPress::CopyAddress | ZecPress::CardCopy)
+            | Self::Sol(SolPress::ReceiveOpen | SolPress::CopyAddress) => true,
             Self::Back
             | Self::Enter
             | Self::Received(_)
@@ -247,6 +256,7 @@ impl Press {
             | Self::Mn(_)
             | Self::Hc(_)
             | Self::Zec(_)
+            | Self::Sol(_)
             | Self::Legacy(_) => false,
         }
     }
