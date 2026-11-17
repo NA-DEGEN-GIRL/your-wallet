@@ -113,7 +113,7 @@ install.cmd  uninstall.cmd         소스 설치·제거 진입점(더블클릭,
 crates/
   yw-core/   Cargo.toml  clippy.toml(§5.1)  src/  tests/{*.rs, vectors/}   (모듈 §2.2, 테스트 배치 [09](09-testing.md) §2.1)
   yw-json/   Cargo.toml  src/{lib.rs, parse.rs, value.rs, write.rs, frame.rs}  tests/
-  yw-platform/ Cargo.toml  clippy.toml(§5.1)  src/{lib.rs, http.rs, clock.rs}  tests/   (§2.3a, 2026-11-17)
+  yw-platform/ Cargo.toml  clippy.toml(§5.1)  src/{lib.rs, http.rs, clock.rs, ws.rs(2026-11-17 S2)}  tests/   (§2.3a, 2026-11-17)
   yw-win/    Cargo.toml  src/{lib.rs, error.rs, wide.rs, time.rs, mem.rs, file.rs, dpapi.rs, clipboard.rs,
                               http.rs, ws.rs, pipe.rs, session.rs, process.rs, security.rs, input.rs, cng.rs, image.rs, pcsc.rs,
                               ui/{mod.rs, window.rs, msg.rs, paint.rs, controls.rs, capture.rs(개발 빌드 전용), secure_text.rs}}  tests/   (API §7; pcsc·cng [10], ws·image·`cng::p256_verify` [13])
@@ -219,6 +219,7 @@ pub enum ParseError { TooLarge, InvalidUtf8, Syntax { offset: usize }, Duplicate
 
 - `http`: `HttpsUrl`, `LoopbackUrl`, `EndpointUrl`, `Timeouts`(+`total_ms`), `Response`, `HttpError`, 상한 상수(`MAX_URL_BYTES`, `MAX_REQUEST_BODY`, `MAX_RESPONSE_CAP`, `MAX_HEADER_VALUE`, `MAX_CONTENT_TYPE_BYTES`)와 헤더 규칙 `valid_header`, RPC 전송 이음매 `Transport` trait와 `HttpReply`(2026-11-17 S2: yw-app `rpc`에서 옮김). 시그니처와 규칙은 §7.4. 클라이언트(`Client`)는 플랫폼마다 따로 있고 `Transport`를 구현한다(Windows: yw-win `http`).
 - `clock`: `pub trait Clock: Send + Sync { fn now_ms(&self) -> u64 /* 단조 ms */; fn now_unix_ms(&self) -> u64; fn sleep_ms(&self, ms: u64); }`. yw-app `flow::evm`이 다시 내보내고(`pub use yw_platform::Clock`) Windows 구현 `SystemClock`(yw-win `time::monotonic_ms`, `GetTickCount64`)은 yw-app `system_clock`에 남는다(2026-11-17 S2: 그 전에는 `flow::evm` 안에 있었고 `RpcWorker::production`이 이를 골랐다. 이제 `main.rs`가 `RpcWorker::new(…, Box::new(SystemClock), Limits::PRODUCTION)`으로 넘긴다). 운영 코드는 이 시계만 쓴다. `Instant` 기반 시계는 지역 경과 시간과 시험용이다. yw-app의 `monotonic_ms` 직접 호출을 `Clock`으로 바꾸는 일은 S2(엔진으로 옮기는 모듈)·S4(App)에서 한다.
+- `ws`(2026-11-17 S2: yw-app `walletconnect::worker::RelayLink`를 옮김): `pub trait WsLink: Send + Sync { fn send(&self, text: &str) -> bool; fn receive(&self) -> Option<String>; fn abort(&self); }` — 열린 텍스트 WebSocket(WalletConnect 릴레이 연결, [13](13-walletconnect.md) §4). yw-app `walletconnect::worker`는 `pub use yw_platform::ws::WsLink as RelayLink`로 같은 이름을 쓴다. Windows 구현은 yw-win `ws::WebSocket`(§7.4)이고, 연결을 여는 `WsConnector`(`RelayConnector` 구현)는 yw-app `app_walletconnect`에 있다.
 
 ### 2.4 크레이트 의존 규칙 (검사 스크립트가 강제, §4.2)
 
@@ -1140,7 +1141,7 @@ impl yw_platform::http::Transport for Client { /* post_json(bearer 없음)·get�
 - 요청: HTTPS만 `WINHTTP_FLAG_SECURE`(loopback은 없음). `WINHTTP_OPTION_DISABLE_FEATURE = WINHTTP_DISABLE_COOKIES | WINHTTP_DISABLE_REDIRECTS | WINHTTP_DISABLE_AUTHENTICATION`. `post`는 호출자 헤더만 보낸다(이름 `^[A-Za-z0-9-]{1,64}$`, 값 0x20–0x7E ≤ 4096바이트, 위반은 `InvalidHeader`). `post_json`·`get`은 같은 내부 경로의 래퍼다: `Accept: application/json`, POST에 `Content-Type: application/json`, `bearer`가 있으면 `Authorization: Bearer <값>`. 헤더 버퍼는 `WipeBuf<u16>`. Origin 헤더 없음(D13). `SECURITY_FLAG_IGNORE_*` 금지. 인증서 폐기 확인(`WINHTTP_OPTION_ENABLE_FEATURE = WINHTTP_ENABLE_SSL_REVOCATION`)은 켜지 않는다: CRL/OCSP 응답자에 닿지 못하는 네트워크(캡티브 포털, 필터링, 공급자 쪽 장애)에서 TLS 핸드셰이크 자체가 실패해 RPC·LLM이 모두 막히기 때문이다. 체인 검증은 그대로다.
 - 응답: 상태 코드(`WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER`)와 `WINHTTP_QUERY_CONTENT_TYPE`(없거나 256바이트 초과·비ASCII면 `None`)를 그대로 돌려준다. `Content-Length` 또는 누적 읽기가 `max_response`(≤ 16 MiB)를 넘으면 본문을 더 읽지 않고 즉시 `TooLarge`. 요청 본문 ≤ 1 MiB. `ERROR_WINHTTP_TIMEOUT`(12002) → `Timeout`, `ERROR_WINHTTP_SECURE_FAILURE`(12175) → `Tls`, 그 밖의 WinHTTP 실패는 `Os(GetLastError 코드)`, 상태 코드가 u16을 넘으면 `Os(0)`. `UpgradeRefused`는 일반 요청에서 나오지 않는다(상태는 `Response::status`). 오류에 URL·호스트를 넣지 않는다. 호출자(yw-app RPC 계층)는 RPC 실패를 로그·화면 오류에 `NetworkId`·메서드 이름·`HttpError` 종류·HTTP 상태로만 남긴다(§5.4, D13).
 - `[::1]`은 `WinHttpConnect`에 대괄호 없이(`::1`) 넘긴다(구현 시 확인, §8-3). `http`와 `ws`가 같은 도우미(`connect_host`)를 쓴다(2026-11-17: 그 전에는 `ws`가 대괄호째 넘겨 IPv6 리터럴 릴레이 URL에 연결할 수 없었다).
-- `ws`(WebSocket, [13](13-walletconnect.md) §4): 업그레이드 응답이 101이 아니면 `HttpError::UpgradeRefused(상태)`(u16을 넘으면 65535). yw-app은 401·403만 릴레이의 프로젝트 ID 거부(`ConnectError::Unauthorized`)로 보고 나머지는 네트워크 실패로 본다(`walletconnect::worker::connect_error`).
+- `ws`(WebSocket, [13](13-walletconnect.md) §4): 업그레이드 응답이 101이 아니면 `HttpError::UpgradeRefused(상태)`(u16을 넘으면 65535). yw-app은 401·403만 릴레이의 프로젝트 ID 거부(`ConnectError::Unauthorized`)로 보고 나머지는 네트워크 실패로 본다(`walletconnect::worker::connect_error`). `WebSocket`은 `yw_platform::ws::WsLink`를 구현한다(`send` = `send_text` 성공 여부, `receive` = 텍스트 프레임 또는 닫힘·오류 시 `None`, `abort`; 2026-11-17 S2: yw-app `walletconnect::worker`의 `impl RelayLink for WebSocket`을 그대로 옮김).
 
 ### 7.5 `pipe`
 

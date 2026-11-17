@@ -11,15 +11,12 @@
 
 use std::sync::{Arc, Mutex};
 
-use qrcodegen::{QrCode, QrCodeEcc};
 use yw_core::walletconnect::{
     Envelope, X25519Secret, derive_sym_key, open_envelope, seal_envelope, topic_of,
 };
 use yw_json::Value;
 
-use super::qr_decode::{Gray, decode, decode_bgra_text, dib_to_bgra};
-
-const URI: &str = "wc:9e5b70f5ddde5d6f3f5a7b9b4a0a3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b@2?expiryTimestamp=1762430000&relay-protocol=irn&symKey=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef&methods=wc_sessionPropose,wc_sessionAuthenticate";
+use super::qr_decode::dib_to_bgra;
 
 /// Test clock (2026-11-17 S2: replaces the Windows `SystemClock`, which stays in yw-app):
 /// monotonic time from `Instant`, offset by a day so a fresh clock never reads near zero.
@@ -45,192 +42,7 @@ impl yw_platform::Clock for StdClock {
     }
 }
 
-// ----- QR rendering for the decoder tests --------------------------------------------------
-
-struct Scene {
-    width: usize,
-    height: usize,
-    /// Module size in pixels.
-    module: f64,
-    /// Rotation in degrees.
-    angle: f64,
-    /// Code centre.
-    center: (f64, f64),
-    dark: u8,
-    light: u8,
-    background: u8,
-}
-
-fn matrix(qr: &QrCode) -> (usize, Vec<bool>) {
-    let size = qr.size();
-    let mut out = Vec::new();
-    for y in 0..size {
-        for x in 0..size {
-            out.push(qr.get_module(x, y));
-        }
-    }
-    (size as usize, out)
-}
-
-/// Renders the matrix with a 4-module quiet zone, rotated and scaled, 3×3 supersampled, on a
-/// "screenshot" background with a few dark UI boxes away from the code.
-fn render(size: usize, modules: &[bool], scene: &Scene) -> Vec<u8> {
-    let total = size as f64 + 8.0;
-    let (sin, cos) = scene.angle.to_radians().sin_cos();
-    let mut pixels = Vec::with_capacity(scene.width * scene.height * 4);
-    let mut seed = 0x1234_5678_u32;
-    let mut boxes = Vec::new();
-    for _ in 0..6 {
-        seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
-        let x = (seed >> 8) as usize % scene.width;
-        seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
-        let y = (seed >> 8) as usize % scene.height;
-        boxes.push((x, y));
-    }
-    let half = total * scene.module / 2.0;
-    for py in 0..scene.height {
-        for px in 0..scene.width {
-            let mut sum = 0.0;
-            let mut inside_any = false;
-            for sy in 0..3 {
-                for sx in 0..3 {
-                    let fx = px as f64 + (f64::from(sx) + 0.5) / 3.0 - scene.center.0;
-                    let fy = py as f64 + (f64::from(sy) + 0.5) / 3.0 - scene.center.1;
-                    // Inverse rotation into the code frame.
-                    let rx = fx * cos + fy * sin;
-                    let ry = -fx * sin + fy * cos;
-                    let mx = (rx + half) / scene.module - 4.0;
-                    let my = (ry + half) / scene.module - 4.0;
-                    let inside_quiet = (rx + half) >= 0.0
-                        && (ry + half) >= 0.0
-                        && (rx + half) < total * scene.module
-                        && (ry + half) < total * scene.module;
-                    inside_any |= inside_quiet;
-                    let value = if !inside_quiet {
-                        let near_box = boxes
-                            .iter()
-                            .any(|(bx, by)| px.abs_diff(*bx) < 18 && py.abs_diff(*by) < 10);
-                        if near_box {
-                            40.0
-                        } else {
-                            f64::from(scene.background)
-                        }
-                    } else if mx >= 0.0
-                        && my >= 0.0
-                        && (mx as usize) < size
-                        && (my as usize) < size
-                        && modules[my as usize * size + mx as usize]
-                    {
-                        f64::from(scene.dark)
-                    } else {
-                        f64::from(scene.light)
-                    };
-                    sum += value;
-                }
-            }
-            let _ = inside_any;
-            let value = (sum / 9.0).round().clamp(0.0, 255.0) as u8;
-            pixels.extend_from_slice(&[value, value, value, 255]);
-        }
-    }
-    pixels
-}
-
-fn scene(width: usize, height: usize, module: f64, angle: f64) -> Scene {
-    Scene {
-        width,
-        height,
-        module,
-        angle,
-        center: (width as f64 / 2.0, height as f64 / 2.0),
-        dark: 20,
-        light: 250,
-        background: 230,
-    }
-}
-
-fn decode_scene(qr: &QrCode, scene: &Scene) -> Option<String> {
-    let (size, modules) = matrix(qr);
-    let pixels = render(size, &modules, scene);
-    decode_bgra_text(scene.width, scene.height, &pixels)
-}
-
-/// Codes made by the app's own encoder (`qrcodegen`), several versions and levels, upright.
-#[test]
-fn qr_decodes_generated_codes() {
-    let long = format!("{URI}&relay-data=");
-    for (text, ecc) in [
-        (URI, QrCodeEcc::Medium),
-        (URI, QrCodeEcc::Low),
-        (URI, QrCodeEcc::High),
-        (long.as_str(), QrCodeEcc::Quartile),
-        ("HELLO WORLD 123", QrCodeEcc::Medium),
-        ("31415926535897932384626433", QrCodeEcc::Low),
-    ] {
-        let qr = QrCode::encode_text(text, ecc).unwrap();
-        let module = 4.0;
-        let side = ((f64::from(qr.size()) + 8.0) * module) as usize + 40;
-        let found = decode_scene(&qr, &scene(side, side, module, 0.0));
-        assert_eq!(
-            found.as_deref(),
-            Some(text),
-            "version {}",
-            qr.version().value()
-        );
-    }
-}
-
-/// Screenshot-like samples: rotated and non-integer scaled codes inside a larger image with UI
-/// boxes, a 90° turn, a light-on-dark code, and a high-version code.
-#[test]
-fn qr_decodes_rotated_scaled_and_inverted_screenshots() {
-    let qr = QrCode::encode_text(URI, QrCodeEcc::Medium).unwrap();
-    for (module, angle) in [
-        (3.3, 17.0),
-        (2.6, -8.0),
-        (5.1, 90.0),
-        (3.0, 180.0),
-        (4.4, 33.0),
-    ] {
-        let found = decode_scene(&qr, &scene(900, 700, module, angle));
-        assert_eq!(
-            found.as_deref(),
-            Some(URI),
-            "module {module}, angle {angle}"
-        );
-    }
-    let mut dark_mode = scene(700, 600, 3.5, 5.0);
-    dark_mode.dark = 245;
-    dark_mode.light = 25;
-    dark_mode.background = 30;
-    assert_eq!(decode_scene(&qr, &dark_mode).as_deref(), Some(URI));
-    let big = "x".repeat(700);
-    let qr = QrCode::encode_text(&big, QrCodeEcc::Medium).unwrap();
-    assert!(qr.version().value() >= 15);
-    let found = decode_scene(&qr, &scene(1_000, 1_000, 6.0, 4.0));
-    assert_eq!(found.as_deref(), Some(big.as_str()));
-}
-
-/// Reed–Solomon corrects damaged modules (a smudge over part of the data area).
-#[test]
-fn qr_corrects_damaged_modules() {
-    let qr = QrCode::encode_text(URI, QrCodeEcc::Medium).unwrap();
-    let (size, mut modules) = matrix(&qr);
-    for y in 22..26 {
-        for x in 20..26 {
-            modules[y * size + x] = !modules[y * size + x];
-        }
-    }
-    let scene = scene(500, 500, 4.0, 0.0);
-    let pixels = render(size, &modules, &scene);
-    assert_eq!(
-        decode_bgra_text(scene.width, scene.height, &pixels).as_deref(),
-        Some(URI)
-    );
-    // No code at all.
-    let blank = Gray::new(64, 64, vec![255; 64 * 64]).unwrap();
-    assert!(decode(&blank).is_none());
-}
+// ----- clipboard image parsing --------------------------------------------------------------
 
 /// `CF_DIB` parsing: 24-bit bottom-up and 32-bit top-down give the same pixels.
 #[test]
@@ -352,7 +164,7 @@ fn origins_labels_and_caip2() {
     );
     // The Verify warning always gets a slot, even with the display full.
     let mut draft = test_draft(yw_core::approval::MAX_DISPLAY_WARNINGS);
-    assert!(crate::app_walletconnect::decorate(
+    assert!(super::decorate(
         &mut draft,
         &peer,
         super::VerifyStatus::Scam
@@ -380,10 +192,10 @@ fn origins_labels_and_caip2() {
     assert_eq!(super::parse_caip2("eip155:8453"), Some(8_453));
     assert_eq!(super::parse_caip2("eip155:01"), None);
     assert_eq!(super::parse_caip2("solana:5eykt"), None);
-    assert!(super::worker::valid_project_id(
+    assert!(crate::settings::valid_project_id(
         "0123456789abcdef0123456789abcdef"
     ));
-    assert!(!super::worker::valid_project_id(
+    assert!(!crate::settings::valid_project_id(
         "0123456789ABCDEF0123456789abcdef"
     ));
 }
@@ -820,10 +632,12 @@ fn test_session(key: &[u8; 32], chains: Vec<u64>, now: u64) -> super::engine::Se
     }
 }
 
-/// The ES256 example of RFC 7515 Appendix A.3 verifies with the CNG P-256 check used for Verify
-/// v3 attestations; a flipped bit does not. `check_attestation` then reads the claims.
+/// The claims check of `check_attestation` on the ES256 example of RFC 7515 Appendix A.3: the
+/// RFC payload has `exp` but no `id`, so even an accepted signature is not an attestation.
+/// (2026-11-17 S2: the signature check against real CNG moved to yw-win `tests/cng.rs`; here
+/// the platform check is a stub.)
 #[test]
-fn es256_rfc7515_vector_verifies_with_cng() {
+fn es256_rfc7515_claims_are_not_an_attestation() {
     let decode = |text: &str| yw_core::walletconnect::base64url_decode(text).unwrap();
     let x: [u8; 32] = decode("f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU")
         .try_into()
@@ -832,23 +646,118 @@ fn es256_rfc7515_vector_verifies_with_cng() {
         .try_into()
         .unwrap();
     let jws = "eyJhbGciOiJFUzI1NiJ9.eyJpc3MiOiJqb2UiLA0KICJleHAiOjEzMDA4MTkzODAsDQogImh0dHA6Ly9leGFtcGxlLmNvbS9pc19yb290Ijp0cnVlfQ.DtEhU3ljbEg8L38VWAfUAqOyKAM6-Xx-F4GawxaepmXFCgfTjDxw5djxLa8ISlSApmWQxfKTUJqPP3-Kg6NU1Q";
-    let (input, signature) = jws.rsplit_once('.').unwrap();
-    let signature: [u8; 64] = decode(signature).try_into().unwrap();
-    let digest = yw_core::codec::sha256(input.as_bytes());
-    assert!(yw_win::cng::p256_verify(&x, &y, &digest, &signature));
-    let mut bad = signature;
-    bad[10] ^= 1;
-    assert!(!yw_win::cng::p256_verify(&x, &y, &digest, &bad));
-    // The claims check: the RFC payload has `exp` but no `id`, so it is not an attestation.
     let key = super::verify::VerifyKey {
         x,
         y,
         expires_at: u64::MAX,
     };
-    let check = |x: &[u8; 32], y: &[u8; 32], d: &[u8; 32], s: &[u8; 64]| {
-        yw_win::cng::p256_verify(x, y, d, s)
+    let seen = Arc::new(Mutex::new(None));
+    let record = Arc::clone(&seen);
+    let check = move |x: &[u8; 32], y: &[u8; 32], d: &[u8; 32], s: &[u8; 64]| {
+        *record.lock().unwrap() = Some((*x, *y, *d, *s));
+        true
     };
     assert!(super::verify::check_attestation(jws, &key, "id", 0, &check).is_none());
+    // The check saw the key, sha256 of `header.payload` and the raw `r ‖ s`.
+    let (input, signature) = jws.rsplit_once('.').unwrap();
+    let signature: [u8; 64] = decode(signature).try_into().unwrap();
+    assert_eq!(
+        *seen.lock().unwrap(),
+        Some((x, y, yw_core::codec::sha256(input.as_bytes()), signature))
+    );
+}
+
+/// The Verify HTTP stub of the `resolve` tests: the v3 public key, and a v2 answer that is
+/// never there (404).
+struct VerifyStub {
+    key: Vec<u8>,
+    gets: Mutex<Vec<String>>,
+}
+
+impl super::verify::VerifyHttp for VerifyStub {
+    fn get(&self, url: &str) -> Option<(u16, Vec<u8>)> {
+        self.gets.lock().unwrap().push(url.to_owned());
+        if url.ends_with("/v3/public-key") {
+            Some((200, self.key.clone()))
+        } else {
+            Some((404, Vec::new()))
+        }
+    }
+}
+
+fn no_p256(_: &[u8; 32], _: &[u8; 32], _: &[u8; 32], _: &[u8; 64]) -> bool {
+    false
+}
+
+fn any_p256(_: &[u8; 32], _: &[u8; 32], _: &[u8; 32], _: &[u8; 64]) -> bool {
+    true
+}
+
+/// `resolve` uses the P-256 check it is given (2026-11-17 S2: a parameter, before a direct CNG
+/// call): an accepted v3 attestation decides the status without the v2 request; a rejected one
+/// falls back to v2, whose 404 is unknown.
+#[test]
+fn resolve_uses_the_given_p256_check() {
+    use super::engine::VerifyInput;
+    use super::verify::resolve;
+    use yw_core::walletconnect::base64url_encode;
+    let now = 1_800_000_000;
+    let header = base64url_encode(br#"{"alg":"ES256","typ":"JWT"}"#);
+    let payload = base64url_encode(
+        format!(
+            r#"{{"exp":{},"id":"enc-id","origin":"https://app.example","isScam":false,"isVerified":true}}"#,
+            now + 60
+        )
+        .as_bytes(),
+    );
+    let jwt = format!("{header}.{payload}.{}", base64url_encode(&[9; 64]));
+    let coordinate = base64url_encode(&[1; 32]);
+    let stub = || {
+        VerifyStub {
+        key: format!(
+            r#"{{"publicKey":{{"crv":"P-256","kty":"EC","x":"{coordinate}","y":"{coordinate}"}},"expiresAt":{}}}"#,
+            now + 3_600
+        )
+        .into_bytes(),
+        gets: Mutex::new(Vec::new()),
+    }
+    };
+    let input = VerifyInput {
+        attestation: Some(jwt),
+        hash: "abc".to_owned(),
+        encrypted_id: "enc-id".to_owned(),
+    };
+    let accepted = stub();
+    let mut cache = None;
+    assert_eq!(
+        resolve(
+            &accepted,
+            any_p256,
+            &mut cache,
+            &input,
+            "https://app.example",
+            now
+        ),
+        super::VerifyStatus::Valid
+    );
+    assert_eq!(accepted.gets.lock().unwrap().len(), 1, "public key only");
+    assert!(cache.is_some());
+    let rejected = stub();
+    let mut cache = None;
+    assert_eq!(
+        resolve(
+            &rejected,
+            no_p256,
+            &mut cache,
+            &input,
+            "https://app.example",
+            now
+        ),
+        super::VerifyStatus::Unknown
+    );
+    let gets = rejected.gets.lock().unwrap();
+    assert_eq!(gets.len(), 2);
+    assert!(gets[1].contains("/attestation/abc?v2Supported=true"));
 }
 
 #[test]
@@ -1078,6 +987,7 @@ fn mocked_end_to_end_session() {
         Arc::new(WcRecorder(Arc::clone(&recorder))),
         Box::new(MockConnector(Arc::clone(&wire), Arc::clone(&urls))),
         None,
+        no_p256,
     );
     worker.refresh_chains();
     // Until something arrived and then 40 quiet rounds (5 ms each); up to 2 s for the first
@@ -1424,6 +1334,7 @@ fn restored_sessions_follow_grants_and_chains() {
             Arc::new(Mutex::new(Vec::new())),
         )),
         None,
+        no_p256,
     );
     worker.refresh_chains();
     // Until something arrived and then 40 quiet rounds (5 ms each); up to 2 s for the first

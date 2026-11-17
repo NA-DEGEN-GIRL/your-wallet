@@ -4,7 +4,8 @@
 //! 1. v3: the relay message's `attestation` is an ES256 JWT signed by the Verify server; its
 //!    public key is `GET https://verify.walletconnect.org/v3/public-key` (`{publicKey: JWK P-256,
 //!    expiresAt}`, cached until `expiresAt`). The payload `{exp, id, origin, isScam, isVerified}`
-//!    counts only when the signature verifies (CNG), `exp` is in the future and `id` equals
+//!    counts only when the signature verifies (the platform's P-256 check, [`P256Verify`];
+//!    Windows: CNG), `exp` is in the future and `id` equals
 //!    `sha256(encrypted message)`; `isVerified: false` means unknown.
 //! 2. v2 fallback: `GET https://verify.walletconnect.org/attestation/{sha256(JSON)}?v2Supported=true`
 //!    → 200 `{origin, isScam?}`; anything else is unknown.
@@ -14,8 +15,14 @@
 //! cannot parse — plain http off localhost, IPv6, an extension page, `null` — unless it is the
 //! claimed URL's own origin); no answer → [`VerifyStatus::Unknown`]. Only the official server
 //! is used (`metadata.verifyUrl` ignored).
+//!
+//! 2026-11-17 S2: the HTTP access is any `yw_platform::http::Transport` (`http_get`, the same
+//! `WinHTTP` GET as before through yw-win `http::Client`), and [`resolve`] takes the P-256 check
+//! as a parameter (before: an `impl VerifyHttp` for the yw-win client and a direct call of
+//! yw-win `cng::p256_verify`). Verify only sets the warning label (spec/13 §6), never signing.
 
 use yw_json::{Limits, Value};
+use yw_platform::http::{HttpsUrl, Transport};
 
 use super::VerifyStatus;
 use super::engine::VerifyInput;
@@ -74,6 +81,10 @@ pub struct Attestation {
 
 /// An ES256 check: `(x, y, sha256 digest, r ‖ s) → valid`.
 pub type SignatureCheck = dyn Fn(&[u8; 32], &[u8; 32], &[u8; 32], &[u8; 64]) -> bool;
+
+/// The platform's P-256 ECDSA check `(x, y, sha256 digest, r ‖ s) → valid` that [`resolve`] uses
+/// for v3 attestations (Windows: yw-win `cng::p256_verify`).
+pub type P256Verify = fn(&[u8; 32], &[u8; 32], &[u8; 32], &[u8; 64]) -> bool;
 
 /// Checks a v3 attestation JWT: ES256 with `key` (`verify_signature(x, y, digest, sig)`), not
 /// expired at `now_s`, `id == encrypted_id`.
@@ -193,23 +204,27 @@ fn raw_origin(url: &str) -> Option<String> {
     Some(format!("{scheme}://{authority}"))
 }
 
-/// HTTP access for the check (the worker's `WinHTTP` client; a stub in tests).
+/// HTTP access for the check (the worker's platform HTTP client; a stub in tests).
 pub trait VerifyHttp {
     /// `GET url` → `(status, body)`.
     fn get(&self, url: &str) -> Option<(u16, Vec<u8>)>;
 }
 
-impl VerifyHttp for yw_win::http::Client {
+/// Any platform transport: `GET` with `Accept: application/json`, at most 64 KiB (Windows:
+/// yw-win `http::Client::get`, as before 2026-11-17).
+impl<T: Transport + ?Sized> VerifyHttp for T {
     fn get(&self, url: &str) -> Option<(u16, Vec<u8>)> {
-        let url = yw_platform::http::HttpsUrl::parse(url).ok()?;
-        let response = yw_win::http::Client::get(self, &url, 65_536).ok()?;
+        let url = HttpsUrl::parse(url).ok()?;
+        let response = self.http_get(&url, 65_536).ok()?;
         Some((response.status, response.body))
     }
 }
 
-/// Runs the check of a proposal (blocking, ≤ two requests of the client's timeouts).
+/// Runs the check of a proposal (blocking, ≤ two requests of the client's timeouts). `p256`
+/// checks the v3 attestation's ES256 signature.
 pub fn resolve(
     http: &dyn VerifyHttp,
+    p256: P256Verify,
     cache: &mut Option<VerifyKey>,
     input: &VerifyInput,
     claimed_url: &str,
@@ -223,13 +238,8 @@ pub fn resolve(
                 .and_then(|(_, body)| parse_public_key(&body));
         }
         if let Some(key) = cache.as_ref()
-            && let Some(attestation) = check_attestation(
-                jwt,
-                key,
-                &input.encrypted_id,
-                now_s,
-                &|x, y, digest, signature| yw_win::cng::p256_verify(x, y, digest, signature),
-            )
+            && let Some(attestation) =
+                check_attestation(jwt, key, &input.encrypted_id, now_s, &p256)
         {
             return status_of(Some(&attestation), claimed_url);
         }

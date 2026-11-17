@@ -26,19 +26,18 @@ use super::engine::{
     Engine, Notice, Out, ProposalView, Publish, SETTLE_TAG, Session, SessionRequest,
 };
 use super::store::WcStore;
-use super::verify::{VerifyHttp, VerifyKey};
+use super::verify::{P256Verify, VerifyHttp, VerifyKey};
 use super::{Metadata, VerifyStatus, session_origin};
 use crate::browser::envelope::{
     BrowserContext, BrowserEvent, Correlation, Id16, Id32, RequestEnvelope, chain_id_hex,
 };
 use crate::browser::{BrowserCore, ConnId, INTERACTIVE_DEADLINE_MS, Outbound, Outlet, VaultView};
 use crate::logging::{self, Field};
+use crate::settings::valid_project_id;
 use crate::text::{json_object, json_str, json_u64};
 
 /// The dispatcher session id of the bridge (one virtual connection).
 const SESSION_ID: Id32 = Id32([0x57; 32]);
-/// Relay connect timeout.
-const CONNECT_TIMEOUT_MS: u32 = 15_000;
 /// Reconnect backoff bounds.
 const BACKOFF_MIN_MS: u64 = 1_000;
 const BACKOFF_MAX_MS: u64 = 60_000;
@@ -62,15 +61,10 @@ const RELAY_LIMITS: Limits = Limits {
     max_items: 2_048,
 };
 
-/// A relay connection (the `WinHTTP` WebSocket; an in-memory pair in tests).
-pub trait RelayLink: Send + Sync {
-    /// Sends a text frame; `false` when the connection is gone.
-    fn send(&self, text: &str) -> bool;
-    /// Blocks for the next text frame; `None` when closed.
-    fn receive(&self) -> Option<String>;
-    /// Closes (a blocked receive returns `None`).
-    fn abort(&self);
-}
+/// A relay connection (the platform WebSocket; an in-memory pair in tests). 2026-11-17 S2: the
+/// trait is `yw_platform::ws::WsLink` (before: defined here, with the impl for
+/// yw-win `ws::WebSocket`, which now lives in yw-win).
+pub use yw_platform::ws::WsLink as RelayLink;
 
 /// Opens relay connections.
 pub trait RelayConnector: Send {
@@ -102,37 +96,6 @@ pub fn connect_error(error: yw_platform::http::HttpError) -> ConnectError {
             ConnectError::Unauthorized(u32::from(status))
         }
         _ => ConnectError::Network,
-    }
-}
-
-impl RelayLink for yw_win::ws::WebSocket {
-    fn send(&self, text: &str) -> bool {
-        self.send_text(text).is_ok()
-    }
-
-    fn receive(&self) -> Option<String> {
-        match yw_win::ws::WebSocket::receive(self) {
-            Ok(yw_win::ws::WsMessage::Text(text)) => Some(text),
-            Ok(yw_win::ws::WsMessage::Closed) | Err(_) => None,
-        }
-    }
-
-    fn abort(&self) {
-        yw_win::ws::WebSocket::abort(self);
-    }
-}
-
-/// The production connector.
-#[derive(Debug, Default)]
-pub struct WsConnector;
-
-impl RelayConnector for WsConnector {
-    fn connect(&mut self, url: &str) -> Result<Arc<dyn RelayLink>, ConnectError> {
-        let url = yw_platform::http::HttpsUrl::parse(url).map_err(|_| ConnectError::Network)?;
-        match yw_win::ws::WebSocket::connect(&url, CONNECT_TIMEOUT_MS) {
-            Ok(socket) => Ok(Arc::new(socket)),
-            Err(error) => Err(connect_error(error)),
-        }
     }
 }
 
@@ -352,6 +315,7 @@ pub struct Worker {
     sink: Arc<dyn WcSink>,
     connector: Box<dyn RelayConnector>,
     http: Option<Box<dyn VerifyHttp + Send>>,
+    p256: P256Verify,
     verify_key: Option<VerifyKey>,
     project_id: Option<String>,
     client_seed: Option<Zeroizing<[u8; 32]>>,
@@ -395,15 +359,6 @@ fn percent_encode(text: &str) -> String {
         }
     }
     out
-}
-
-/// Whether `text` is a Reown Cloud project id (32 lowercase hex digits).
-#[must_use]
-pub fn valid_project_id(text: &str) -> bool {
-    text.len() == 32
-        && text
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 /// The panel's words for an engine [`Notice`]: wallet text only (nothing the dApp sent is
@@ -509,12 +464,14 @@ pub mod text {
 }
 
 impl Worker {
-    /// A worker on `core` (opens the virtual connection) and its input sender.
+    /// A worker on `core` (opens the virtual connection) and its input sender. `p256` is the
+    /// platform's ES256 check of Verify v3 attestations (Windows: yw-win `cng::p256_verify`).
     pub fn new(
         core: Arc<BrowserCore>,
         sink: Arc<dyn WcSink>,
         connector: Box<dyn RelayConnector>,
         http: Option<Box<dyn VerifyHttp + Send>>,
+        p256: P256Verify,
     ) -> (Self, Sender<Input>, Receiver<Input>) {
         let (tx, rx) = std::sync::mpsc::channel();
         let conn = core.open_virtual_connection(Box::new(WcOutlet(Mutex::new(tx.clone()))));
@@ -525,6 +482,7 @@ impl Worker {
             sink,
             connector,
             http,
+            p256,
             verify_key: None,
             project_id: None,
             client_seed: None,
@@ -1063,8 +1021,16 @@ impl Worker {
 
     fn proposal(&mut self, mut view: ProposalView, input: &super::engine::VerifyInput) {
         let now = self.now_s();
+        let p256 = self.p256;
         let status = self.http.as_ref().map_or(VerifyStatus::Unknown, |http| {
-            super::verify::resolve(&**http, &mut self.verify_key, input, &view.peer.url, now)
+            super::verify::resolve(
+                &**http,
+                p256,
+                &mut self.verify_key,
+                input,
+                &view.peer.url,
+                now,
+            )
         });
         self.engine.set_verify(&view.session_topic, status);
         view.verify = status;
@@ -1433,15 +1399,16 @@ impl WcHandle {
     }
 }
 
-/// Starts the worker thread.
+/// Starts the worker thread (`p256`: see [`Worker::new`]).
 #[must_use]
 pub fn start(
     core: Arc<BrowserCore>,
     sink: Arc<dyn WcSink>,
     connector: Box<dyn RelayConnector>,
     http: Option<Box<dyn VerifyHttp + Send>>,
+    p256: P256Verify,
 ) -> Option<WcHandle> {
-    let (worker, tx, rx) = Worker::new(core, sink, connector, http);
+    let (worker, tx, rx) = Worker::new(core, sink, connector, http, p256);
     let thread = std::thread::Builder::new()
         .name("yw-walletconnect".to_owned())
         .spawn(move || worker.run(&rx))

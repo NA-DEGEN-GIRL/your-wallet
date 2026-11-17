@@ -38,6 +38,7 @@ use windows_sys::Win32::Networking::WinHttp::{
 };
 
 use yw_platform::http::{HttpError, HttpsUrl};
+use yw_platform::ws::WsLink;
 
 use crate::error::WinError;
 use crate::http::connect_host;
@@ -354,5 +355,24 @@ impl WebSocket {
                 0,
             )
         };
+    }
+}
+
+/// The relay seam of the `WalletConnect` worker (spec/13 §4). 2026-11-17 S2: moved unchanged from
+/// yw-app `walletconnect::worker` (`impl RelayLink for WebSocket`).
+impl WsLink for WebSocket {
+    fn send(&self, text: &str) -> bool {
+        self.send_text(text).is_ok()
+    }
+
+    fn receive(&self) -> Option<String> {
+        match WebSocket::receive(self) {
+            Ok(WsMessage::Text(text)) => Some(text),
+            Ok(WsMessage::Closed) | Err(_) => None,
+        }
+    }
+
+    fn abort(&self) {
+        WebSocket::abort(self);
     }
 }

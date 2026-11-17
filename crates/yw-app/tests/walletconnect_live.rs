@@ -17,7 +17,8 @@
 
 use std::sync::Arc;
 
-use yw_app::walletconnect::worker::{ConnectError, RelayConnector, RelayLink, WsConnector};
+use yw_app::app_walletconnect::WsConnector;
+use yw_app::walletconnect::worker::{ConnectError, RelayConnector, RelayLink};
 use yw_json::Value;
 
 fn url(seed: &[u8; 32], project: &str) -> String {

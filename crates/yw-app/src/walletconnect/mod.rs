@@ -19,6 +19,9 @@ pub mod worker;
 #[cfg(test)]
 mod tests;
 
+use yw_core::approval::{
+    ApprovalDisplay, ApprovalDraft, DisplayField, FieldKey, MAX_DISPLAY_WARNINGS,
+};
 use yw_core::lang::Lang;
 use yw_core::policy::BrowserOrigin;
 use yw_json::Value;
@@ -329,4 +332,41 @@ pub fn verify_warning(lang: Lang, verify: VerifyStatus) -> yw_core::approval::Wa
         VerifyStatus::Unknown => C01,
     };
     warning(lang, rule, None)
+}
+
+/// Gives a `WalletConnect` request's draft the `WalletConnect: …` origin text and its Verify
+/// warning (C01–C04): the warning always gets a slot; at [`MAX_DISPLAY_WARNINGS`] the least
+/// severe one gives way. `false` when the draft could not be decorated (the caller must not show
+/// it). 2026-11-17 S2: moved from yw-app `app_walletconnect` (pure; used by
+/// `App::wc_decorate_draft`).
+#[must_use]
+pub fn decorate(draft: &mut ApprovalDraft, peer: &Metadata, verify: VerifyStatus) -> bool {
+    let lang = draft.display.lang;
+    let label = origin_label(lang, peer);
+    let Ok(origin_field) = DisplayField::new(FieldKey::ORIGIN, "", label) else {
+        return false;
+    };
+    let mut fields = draft.display.fields.clone();
+    match fields.iter_mut().find(|f| f.key == FieldKey::ORIGIN) {
+        Some(slot) => *slot = origin_field,
+        None => return false,
+    }
+    let mut warnings = draft.display.warnings.clone();
+    if warnings.len() >= MAX_DISPLAY_WARNINGS {
+        yw_core::evm::risk::sort_warnings(&mut warnings);
+        warnings.truncate(MAX_DISPLAY_WARNINGS - 1);
+    }
+    warnings.push(verify_warning(lang, verify));
+    match ApprovalDisplay::new(
+        draft.display.lang,
+        draft.display.title.clone(),
+        fields,
+        warnings,
+    ) {
+        Ok(display) => {
+            draft.display = display;
+            true
+        }
+        Err(_) => false,
+    }
 }

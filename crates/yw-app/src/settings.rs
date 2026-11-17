@@ -296,6 +296,16 @@ fn load_zcash(object: &Object) -> Option<ZcashSettings> {
     })
 }
 
+/// Whether `text` is a Reown Cloud project id (32 lowercase hex digits, spec/13 §2).
+/// 2026-11-17 S2: moved from `walletconnect::worker`, which calls it here.
+#[must_use]
+pub fn valid_project_id(text: &str) -> bool {
+    text.len() == 32
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 /// Validates a `HyperCore` API base URL (HTTPS, ≤ 256 bytes, no query/fragment) and returns
 /// its normal form without a trailing `/`.
 #[must_use]
@@ -1028,7 +1038,7 @@ pub fn load(bytes: Option<&[u8]>) -> SettingsLoad {
                 .filter(|object| object.len() == 1)
                 .and_then(|object| object.get("projectId"))
                 .and_then(Value::as_str)
-                .filter(|id| crate::walletconnect::worker::valid_project_id(id))
+                .filter(|id| valid_project_id(id))
             {
                 Some(id) => id.clone_into(&mut settings.walletconnect_project),
                 None => banners.push(key.to_owned()),

@@ -2,7 +2,7 @@
 //! screen (spec/04 §2.11.1). `rpc::evm` holds the EVM calls; the Solana calls are
 //! `crate::sol::rpc` (M7).
 //!
-//! JSON-RPC 2.0 over a [`Transport`] (Windows: `yw_win::http::Client`; HTTPS only, TLS 1.2/1.3,
+//! JSON-RPC 2.0 over a [`Transport`] (Windows: yw-win `http::Client`; HTTPS only, TLS 1.2/1.3,
 //! no redirects/cookies/auth, no Origin), one increasing `id` per request checked against the response. Failures are
 //! classified into fixed codes; URLs, hosts and remote strings never leave this module.
 
@@ -32,7 +32,7 @@ pub const CALL_DEADLINE_MS: u128 = 10_000;
 pub const DEFAULT_MAX_RESPONSE: usize = 1_048_576;
 
 /// The transport seam and the raw reply (2026-11-17 S2: moved to `yw_platform::http`; the
-/// `WinHTTP` implementation for `yw_win::http::Client` is in yw-win). Re-exported so every
+/// `WinHTTP` implementation for yw-win `http::Client` is in yw-win). Re-exported so every
 /// `rpc::Transport` path still works.
 pub use yw_platform::http::{HttpReply, Transport};
 

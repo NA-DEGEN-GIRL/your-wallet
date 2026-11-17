@@ -5,9 +5,7 @@
 
 use std::sync::Arc;
 
-use yw_core::approval::{
-    ApprovalDisplay, ApprovalDraft, ApprovalOrigin, DisplayField, FieldKey, MAX_DISPLAY_WARNINGS,
-};
+use yw_core::approval::{ApprovalDraft, ApprovalOrigin};
 use yw_core::policy::{BrowserOrigin, ProviderError};
 
 use crate::app::App;
@@ -16,7 +14,8 @@ use crate::logging::{self, Field};
 use crate::walletconnect::engine::ProposalView;
 use crate::walletconnect::store::WcStore;
 use crate::walletconnect::worker::{
-    ProposalEnd, RelayStatus, SessionView, WcCommand, WcEvent, WcHandle,
+    ConnectError, ProposalEnd, RelayConnector, RelayLink, RelayStatus, SessionView, WcCommand,
+    WcEvent, WcHandle, connect_error,
 };
 use crate::walletconnect::{Metadata, VerifyStatus, is_session_origin};
 
@@ -183,9 +182,9 @@ impl App {
 
     /// A draft about to be shown: a `WalletConnect` request gets the `WalletConnect: …` origin
     /// text and its Verify warning (C01–C04; mismatch and scam are high risk). The warning always
-    /// gets a slot: at [`MAX_DISPLAY_WARNINGS`] the least severe one gives way. Returns `false`
-    /// when the draft could not be decorated — the caller must not show it (fail closed: the
-    /// bare claimed origin is never shown as if it were the site).
+    /// gets a slot: at [`yw_core::approval::MAX_DISPLAY_WARNINGS`] the least severe one gives
+    /// way. Returns `false` when the draft could not be decorated — the caller must not show it
+    /// (fail closed: the bare claimed origin is never shown as if it were the site).
     #[must_use]
     pub(crate) fn wc_decorate_draft(
         &self,
@@ -202,7 +201,7 @@ impl App {
             // A session origin without its session (ended meanwhile): nothing to label it with.
             return false;
         };
-        decorate(draft, &peer, verify)
+        crate::walletconnect::decorate(draft, &peer, verify)
     }
 
     /// What the connect window of a `WalletConnect` proposal shows instead of the synthetic
@@ -233,6 +232,24 @@ impl App {
     }
 }
 
+/// Relay connect timeout.
+const CONNECT_TIMEOUT_MS: u32 = 15_000;
+
+/// The production relay connector: the `WinHTTP` WebSocket (`yw_win::ws`). 2026-11-17 S2: moved
+/// unchanged from `walletconnect::worker`, which names only the `RelayConnector` seam.
+#[derive(Debug, Default)]
+pub struct WsConnector;
+
+impl RelayConnector for WsConnector {
+    fn connect(&mut self, url: &str) -> Result<Arc<dyn RelayLink>, ConnectError> {
+        let url = yw_platform::http::HttpsUrl::parse(url).map_err(|_| ConnectError::Network)?;
+        match yw_win::ws::WebSocket::connect(&url, CONNECT_TIMEOUT_MS) {
+            Ok(socket) => Ok(Arc::new(socket)),
+            Err(error) => Err(connect_error(error)),
+        }
+    }
+}
+
 /// Largest QR image file read (bytes).
 pub const MAX_IMAGE_FILE: u64 = 64 * 1_048_576;
 
@@ -257,39 +274,6 @@ fn image_file_acceptable(path: &std::path::Path) -> bool {
         .is_ok_and(|meta| meta.is_file() && meta.len() <= MAX_IMAGE_FILE);
     let mut head = [0_u8; 8];
     size_ok && file.take(8).read_exact(&mut head).is_ok() && image_magic_ok(&head)
-}
-
-/// [`App::wc_decorate_draft`] for a known peer.
-#[must_use]
-pub fn decorate(draft: &mut ApprovalDraft, peer: &Metadata, verify: VerifyStatus) -> bool {
-    let lang = draft.display.lang;
-    let label = crate::walletconnect::origin_label(lang, peer);
-    let Ok(origin_field) = DisplayField::new(FieldKey::ORIGIN, "", label) else {
-        return false;
-    };
-    let mut fields = draft.display.fields.clone();
-    match fields.iter_mut().find(|f| f.key == FieldKey::ORIGIN) {
-        Some(slot) => *slot = origin_field,
-        None => return false,
-    }
-    let mut warnings = draft.display.warnings.clone();
-    if warnings.len() >= MAX_DISPLAY_WARNINGS {
-        yw_core::evm::risk::sort_warnings(&mut warnings);
-        warnings.truncate(MAX_DISPLAY_WARNINGS - 1);
-    }
-    warnings.push(crate::walletconnect::verify_warning(lang, verify));
-    match ApprovalDisplay::new(
-        draft.display.lang,
-        draft.display.title.clone(),
-        fields,
-        warnings,
-    ) {
-        Ok(display) => {
-            draft.display = display;
-            true
-        }
-        Err(_) => false,
-    }
 }
 
 /// See [`App::wc_connect_patch`].
@@ -382,8 +366,9 @@ impl App {
         self.wc.handle = crate::walletconnect::worker::start(
             Arc::clone(&browser.core),
             Arc::clone(events) as Arc<dyn crate::walletconnect::worker::WcSink>,
-            Box::new(crate::walletconnect::worker::WsConnector),
+            Box::new(WsConnector),
             http,
+            yw_win::cng::p256_verify,
         );
         if self.wc.handle.is_none() {
             logging::warn("walletconnect", "worker.start_failed", &[]);
@@ -662,7 +647,7 @@ impl App {
             .unwrap_or_else(|| self.settings.walletconnect_project.clone())
             .trim()
             .to_ascii_lowercase();
-        if !text.is_empty() && !crate::walletconnect::worker::valid_project_id(&text) {
+        if !text.is_empty() && !crate::settings::valid_project_id(&text) {
             self.wc_notice(text::PROJECT_FORMAT);
             return;
         }
