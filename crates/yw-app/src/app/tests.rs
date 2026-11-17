@@ -2869,6 +2869,47 @@ fn copy_is_answered_at_its_control_and_expires() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// 2026-11-18 (S3 B4): a copy's result (`Cmd::CopyDone`) marks the control in its `CopyMark`,
+/// not the one pressed last — on Android the result may arrive after another press. A failure
+/// is the E-SEC-002 band, and a later success takes that band away.
+#[test]
+fn a_late_copy_result_marks_the_control_of_its_mark() {
+    use crate::app_evm::Copied;
+    use crate::errors::ErrorCode;
+    use crate::ui::cmd_table::press_of;
+    use crate::ui::screens_evm::ids::{COPY_ADDRESS, REFRESH};
+    use yw_engine::cmd::{Cmd, CopyMark};
+    let (mut app, dir) = unlocked_app("copy-late", false);
+    // Headless: the copy emits its effect (logged) and nothing answers it.
+    app.on_command(COPY_ADDRESS);
+    assert_eq!(app.last_press, press_of(COPY_ADDRESS));
+    assert_eq!(app.copied, None);
+    let mark = CopyMark {
+        anchor: app.last_press,
+        address: true,
+    };
+    app.on_command(REFRESH);
+    assert_eq!(app.command, REFRESH);
+    let failed = ErrorCode::Sec002.text_in(app.settings.language);
+    app.on_cmd(Cmd::CopyDone { ok: false, mark });
+    assert_eq!(
+        (app.copied, app.info.as_deref()),
+        (None, Some(failed.as_str()))
+    );
+    app.on_cmd(Cmd::CopyDone { ok: true, mark });
+    assert!(matches!(
+        app.copied,
+        Some(Copied {
+            id: COPY_ADDRESS,
+            address: true,
+            ..
+        })
+    ));
+    assert_eq!(app.info, None);
+    assert_eq!(app.command, REFRESH);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// `숨기기` moves a row under `숨긴 토큰 n개 보기` (dimmed, `다시 보이기`) and persists in meta
 /// `token_view`; `잔액 0인 토큰 숨기기` hides only known zero balances; registry tokens have no
 /// `삭제`; hiding never removes a token from `chain_tokens` (balances, approvals, recognition).

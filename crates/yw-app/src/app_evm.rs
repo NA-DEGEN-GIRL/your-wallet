@@ -17,7 +17,8 @@ use yw_core::journal::evm::{
     latest_candidate,
 };
 use yw_core::vault::{EvmKeySource, FileKind, RecordId};
-use yw_win::clipboard;
+use yw_engine::cmd::CopyMark;
+use yw_engine::effect::{Effect, TimerId};
 
 use crate::apikeys::{KeyName, mask_url};
 use crate::app::{App, AppMode, Confirm, Screen, SettingsSection};
@@ -1413,23 +1414,21 @@ impl App {
     }
 
     /// Arms the one-shot validation of a send-form edit (EVM and Solana). Without a window or a
-    /// timer the main tick's `dirty_ms` poll runs it after the full pause.
-    pub(crate) fn arm_send_timer(&self, wait_ms: u64) {
-        #[cfg(test)]
-        self.controls.record(format!("timer.start send {wait_ms}"));
-        if let Some(main) = self.main.as_ref() {
-            let _ = main.set_timer(SEND_TIMER_ID, u32::try_from(wait_ms).unwrap_or(u32::MAX));
-        }
+    /// timer the main tick's `dirty_ms` poll runs it after the full pause. 2026-11-18 (S3 B4):
+    /// through `Effect::StartTimer`, applied at once; it fires as `Cmd::Timer(SendCheck)`.
+    pub(crate) fn arm_send_timer(&mut self, wait_ms: u64) {
+        self.emit(Effect::StartTimer {
+            timer: TimerId::SendCheck,
+            ms: wait_ms,
+        });
     }
 
     /// The send timer fired: the edit it waited for is validated. Never from `EN_CHANGE` itself
     /// — a validation may rebuild the controls, the edit that is notifying included.
     pub(crate) fn on_send_timer(&mut self) {
-        #[cfg(test)]
-        self.controls.record("timer.stop send".to_owned());
-        if let Some(main) = self.main.as_ref() {
-            main.kill_timer(SEND_TIMER_ID);
-        }
+        self.emit(Effect::StopTimer {
+            timer: TimerId::SendCheck,
+        });
         // Solana validates locally only.
         if self.sol.send.dirty_ms.take().is_some() {
             self.sol_validate_send();
@@ -2034,36 +2033,40 @@ impl App {
         self.copy(address, true);
     }
 
+    /// 2026-11-18 (S3 B4): the copy is `Effect::CopyText`, applied at once (Windows:
+    /// `clipboard::set_text` when the main window exists, nothing headless); its result comes
+    /// back as `Cmd::CopyDone` ([`App::copy_done`]) with the mark made here from the press being
+    /// handled. Before, this function called `clipboard::set_text` and marked `self.command`.
     fn copy(&mut self, text: &str, address: bool) {
-        // Tests: the length only, in `char`s (`text.chars().count()`, not UTF-16 units as the
-        // `set_text` line counts); a text that `Path::new(text).is_absolute()` holds (`경로 복사`,
-        // machine-dependent) is `len=<path>`. 2026-11-18 S3 A1–A3 review: S3 B4's `CopyText`
-        // effect log must keep exactly these two rules, or the census goldens change.
-        #[cfg(test)]
-        self.controls
-            .record(if std::path::Path::new(text).is_absolute() {
-                format!("copy len=<path> address={address}")
-            } else {
-                format!("copy len={} address={address}", text.chars().count())
-            });
-        if let Some(main) = self.main.as_ref() {
-            let failed = ErrorCode::Sec002.text_in(self.settings.language);
-            if clipboard::set_text(main, text).is_ok() {
-                self.copied = Some(Copied {
-                    id: self.command,
-                    until_ms: now_ms().saturating_add(COPIED_MS),
-                    address,
-                });
-                // An earlier failure's band no longer holds.
-                if self.info.as_deref() == Some(failed.as_str()) {
-                    self.info = None;
-                }
-            } else {
-                self.copied = None;
-                self.info = Some(failed);
-            }
-        }
+        let mark = CopyMark {
+            anchor: self.last_press,
+            address,
+        };
+        self.emit(Effect::CopyText {
+            text: text.to_owned(),
+            mark,
+        });
         self.refresh();
+    }
+
+    /// `Cmd::CopyDone`: the copy reached the clipboard (`ok`) — answered at `mark`'s control for
+    /// [`COPIED_MS`], and an earlier failure's band goes — or it did not (E-SEC-002 band).
+    pub(crate) fn copy_done(&mut self, ok: bool, mark: CopyMark) {
+        let failed = ErrorCode::Sec002.text_in(self.settings.language);
+        if ok {
+            self.copied = Some(Copied {
+                id: crate::ui::cmd_table::id_of(mark.anchor),
+                until_ms: now_ms().saturating_add(COPIED_MS),
+                address: mark.address,
+            });
+            // An earlier failure's band no longer holds.
+            if self.info.as_deref() == Some(failed.as_str()) {
+                self.info = None;
+            }
+        } else {
+            self.copied = None;
+            self.info = Some(failed);
+        }
     }
 
     /// Copy part of the main timer: the mark of [`App::copy_text`] goes at its deadline.

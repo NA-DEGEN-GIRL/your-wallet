@@ -57,7 +57,7 @@ use crate::workers::key::new_account;
 use crate::workers::rpc::RpcJob;
 use yw_core::lang::{Lang, Text};
 use yw_engine::cmd::{Cmd, Press};
-use yw_engine::effect::Effect;
+use yw_engine::effect::{Effect, TimerId};
 use yw_engine::form::PressInput;
 
 /// DPAPI optional entropy of `apikeys.dpapi` (spec/04 §6.3). (2026-11-17, spec/15 §11.4 S2 E2:
@@ -693,6 +693,10 @@ pub struct App {
     pub(crate) copied: Option<crate::app_evm::Copied>,
     /// The command being handled: the control a copy is answered at.
     pub(crate) command: u16,
+    /// The press being handled (`cmd_table::id_of(last_press) == command`, 2026-11-18 S3 B4):
+    /// a plain copy carries it in its `CopyMark`, so its result marks the pressed control even
+    /// when the result arrives after another press.
+    pub(crate) last_press: Press,
     pub(crate) mismatch_checked: bool,
     pub(crate) overwrite_checked: bool,
     /// 고급 설정 보기 (technical settings and fee details shown).
@@ -1073,6 +1077,7 @@ impl App {
             info: None,
             copied: None,
             command: 0,
+            last_press: Press::Legacy(0),
             mismatch_checked: false,
             overwrite_checked: false,
             show_advanced: false,
@@ -1561,9 +1566,9 @@ impl App {
                 self.scroll_tick(window);
                 Reply::Handled(0)
             }
-            // The validation a send-form edit waits for (one shot).
+            // The validation a send-form edit waits for (one shot, `Effect::StartTimer`).
             Msg::Timer(crate::app_evm::SEND_TIMER_ID) => {
-                self.on_send_timer();
+                self.on_cmd(Cmd::Timer(TimerId::SendCheck));
                 Reply::Handled(0)
             }
             Msg::Wheel(delta) => {
@@ -3788,14 +3793,19 @@ impl App {
                 // it is always empty.
                 drop(input);
             }
-            // Not sent before S3 B4 (timer, copy result) and B5 (edits, form snapshot).
-            Cmd::Edit { .. } | Cmd::Form(_) | Cmd::Timer(_) | Cmd::CopyDone { .. } => {}
+            // The send forms' one-shot check (`Effect::StartTimer`, S3 B4).
+            Cmd::Timer(TimerId::SendCheck) => self.on_send_timer(),
+            // A plain copy's result (`Effect::CopyText`, S3 B4).
+            Cmd::CopyDone { ok, mark } => self.copy_done(ok, mark),
+            // Not sent before S3 B5 (edits, form snapshot).
+            Cmd::Edit { .. } | Cmd::Form(_) => {}
         }
     }
 
     /// A press: the copy mark and the last command id follow it, then its handler runs.
     fn on_press(&mut self, press: Press) {
         self.command = cmd_table::id_of(press);
+        self.last_press = press;
         // The mark is for the last press: a command that changes the value behind the marked
         // control (another account, a new receive address) must not leave it there.
         self.copied = None;
