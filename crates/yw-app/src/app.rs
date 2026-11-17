@@ -49,10 +49,15 @@ use crate::ui::secret::{
     CaptureDecision, DisplaySecret, FormAction, PASTE_MAX_UTF16_UNITS, SECRET_TIMER_ID,
     SECRET_TIMER_MS, SecretForm, SecretKind, SecretStep, Submission, capture_decision,
 };
+// `IDOK`/`IDCANCEL`: the ids `IsDialogMessageW` sends for Enter and Esc (2026-11-18, S3 B2: they
+// were constants of this file).
+use crate::ui::cmd_table::{self, IDCANCEL, IDOK};
 use crate::ui::theme::{FontCache, FontRole, wide};
 use crate::workers::key::new_account;
 use crate::workers::rpc::RpcJob;
 use yw_core::lang::{Lang, Text};
+use yw_engine::cmd::{Cmd, Press};
+use yw_engine::form::PressInput;
 
 /// DPAPI optional entropy of `apikeys.dpapi` (spec/04 §6.3). (2026-11-17, spec/15 §11.4 S2 E2:
 /// moved here next to the DPAPI calls from `apikeys`, which moved to yw-engine; the value is
@@ -94,10 +99,6 @@ const VK_SHIFT: u16 = 0x10;
 const VK_MENU: u16 = 0x12;
 const MA_ACTIVATEANDEAT: isize = 2;
 const EN_CHANGE: u16 = 0x0300;
-/// The command id `IsDialogMessageW` sends for Esc (no control uses it, `ui::command_ids`).
-const IDCANCEL: u16 = 2;
-/// The one it sends for Enter (no button is a default button: they are owner-drawn).
-const IDOK: u16 = 1;
 /// Settings field limits (UTF-16 units).
 const TOKEN_MAX_UNITS: usize = 256;
 const URL_MAX_UNITS: usize = 2_048;
@@ -3756,13 +3757,45 @@ impl App {
     /// A command of the main window. Any command but Enter, Esc and a drop-down's own selector
     /// closes an open network or account drop-down (2026-11-12); the layout follows after the
     /// command ran, because its handler may read the live controls (check boxes, edits).
+    /// 2026-11-18 (S3 B2): the id goes through `ui::cmd_table` as a `Cmd::Press`; before, this
+    /// called `dispatch_command(id)` directly.
     fn on_command(&mut self, id: u16) {
         self.note_input();
         let closed =
             !matches!(id, IDOK | IDCANCEL) && !Self::is_picker_button(id) && self.close_pickers();
-        self.dispatch_command(id);
+        self.on_cmd(Cmd::Press {
+            press: cmd_table::press_of(id),
+            input: PressInput::default(),
+        });
         if closed {
             self.refresh();
+        }
+    }
+
+    /// One input from the shell (spec/15 §3.2, §11.4 S3), handled at once in this borrow.
+    pub(crate) fn on_cmd(&mut self, cmd: Cmd) {
+        match cmd {
+            Cmd::Press { press, input } => {
+                self.on_press(press);
+                // S3 B5 captures the credential input and installs it for the press; until then
+                // it is always empty.
+                drop(input);
+            }
+            // Not sent before S3 B4 (timer, copy result) and B5 (edits, form snapshot).
+            Cmd::Edit { .. } | Cmd::Form(_) | Cmd::Timer(_) | Cmd::CopyDone { .. } => {}
+        }
+    }
+
+    /// A press: the copy mark and the last command id follow it, then its handler runs.
+    fn on_press(&mut self, press: Press) {
+        self.command = cmd_table::id_of(press);
+        // The mark is for the last press: a command that changes the value behind the marked
+        // control (another account, a new receive address) must not leave it there.
+        self.copied = None;
+        match press {
+            Press::Back => self.escape_key(),
+            Press::Enter => self.enter_key(),
+            Press::Legacy(id) => self.dispatch_legacy(id),
         }
     }
 
@@ -3786,17 +3819,12 @@ impl App {
         }
     }
 
+    /// A control id whose handler family is not converted to `Press` yet (S3 B2: was
+    /// `dispatch_command`; Esc, Enter, the copy mark and `self.command` moved to `on_press`).
     #[expect(clippy::too_many_lines, reason = "one arm per command id")]
-    fn dispatch_command(&mut self, id: u16) {
+    fn dispatch_legacy(&mut self, id: u16) {
         use crate::ui::screens::ids;
-        self.command = id;
-        // The mark is for the last press: a command that changes the value behind the marked
-        // control (another account, a new receive address) must not leave it there.
-        self.copied = None;
         match id {
-            // Esc and Enter (the dialog manager's `IDCANCEL` and `IDOK`).
-            IDCANCEL => self.escape_key(),
-            IDOK => self.enter_key(),
             ids::FIRST_CREATE => self.set_screen(Screen::CreateIntro),
             ids::FIRST_IMPORT => self.set_screen(Screen::ImportIntro),
             ids::OPEN_DATA_FOLDER => Self::open_folder(&self.paths.data.clone()),

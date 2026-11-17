@@ -15,6 +15,7 @@ pub use yw_engine::badge;
 pub use yw_engine::approval::view as approval_view;
 
 pub mod approval_input;
+pub mod cmd_table;
 pub mod command_ids;
 pub mod main_window;
 pub mod qr;
