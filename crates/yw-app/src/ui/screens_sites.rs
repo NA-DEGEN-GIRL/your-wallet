@@ -15,6 +15,7 @@ use crate::app::{App, Confirm};
 use crate::meta::BookChain;
 use crate::ui::main_window::{Ctl, Item, Tone};
 use crate::ui::screens_book::shown_address;
+use yw_engine::cmd::{Row, SitesPress};
 
 /// Control ids (6,700–6,965; the whole map is `ui::command_ids`).
 pub mod ids {
@@ -34,10 +35,39 @@ pub mod ids {
     pub const SITES_PAGE_ROWS: usize = 50;
     /// Every fixed id of this module.
     pub const FIXED: &[u16] = &[SITES_OPEN, SITES_REVOKE_ALL, SITES_PREV, SITES_NEXT];
+
+    /// The press control `id` stands for (2026-11-18, S3 C2: `ui::cmd_table`); `None` when `id`
+    /// is not one of this module's.
+    #[must_use]
+    pub fn press_of(id: u16) -> Option<yw_engine::cmd::SitesPress> {
+        use yw_engine::cmd::{Row, SitesPress};
+        Some(match id {
+            SITES_OPEN => SitesPress::Open,
+            SITES_REVOKE_ALL => SitesPress::RevokeAll,
+            SITES_PREV => SitesPress::Prev,
+            SITES_NEXT => SitesPress::Next,
+            _ => SitesPress::Disconnect(Row(id
+                .checked_sub(SITE_ROW_BASE)
+                .filter(|offset| *offset < SITE_ROW_SPAN)?)),
+        })
+    }
+
+    /// The control id of `press` (the inverse of [`press_of`]).
+    #[must_use]
+    pub const fn id_of(press: yw_engine::cmd::SitesPress) -> u16 {
+        use yw_engine::cmd::{Row, SitesPress};
+        match press {
+            SitesPress::Open => SITES_OPEN,
+            SitesPress::RevokeAll => SITES_REVOKE_ALL,
+            SitesPress::Prev => SITES_PREV,
+            SitesPress::Next => SITES_NEXT,
+            SitesPress::Disconnect(Row(row)) => SITE_ROW_BASE.wrapping_add(row),
+        }
+    }
 }
 
 /// The page being drawn: which cards of the combined list it shows, and the grant behind each
-/// row button (recorded for [`App::on_sites_command`]).
+/// row button (recorded for [`App::on_sites`]).
 struct Page<'a> {
     start: usize,
     end: usize,
@@ -384,18 +414,16 @@ impl App {
         Some(text::PENDING.fill(lang, [&count.to_string(), &list]))
     }
 
-    /// Commands of S13.
-    pub(crate) fn on_sites_command(&mut self, id: u16) -> bool {
-        match id {
-            ids::SITES_OPEN => {
+    /// Presses of S13 (2026-11-18, S3 C2: a `SitesPress`; before, the control id).
+    pub(crate) fn on_sites(&mut self, press: SitesPress) {
+        match press {
+            SitesPress::Open => {
                 self.set_screen(crate::app::Screen::Sites);
-                true
             }
-            ids::SITES_REVOKE_ALL => {
+            SitesPress::RevokeAll => {
                 self.set_screen(crate::app::Screen::Confirm(Confirm::DisconnectAll));
-                true
             }
-            ids::SITES_PREV | ids::SITES_NEXT => {
+            SitesPress::Prev | SitesPress::Next => {
                 let total = self
                     .browser_grants()
                     .iter()
@@ -407,22 +435,15 @@ impl App {
                     };
                 if let Some(browser) = self.browser.as_mut() {
                     let (pages, shown) = page_of(total, browser.site_rows.page);
-                    browser.site_rows.page = if id == ids::SITES_PREV {
+                    browser.site_rows.page = if press == SitesPress::Prev {
                         shown.saturating_sub(1)
                     } else {
                         (shown + 1).min(pages - 1)
                     };
                 }
                 self.refresh();
-                true
             }
-            _ => {
-                let Some(offset) = id
-                    .checked_sub(ids::SITE_ROW_BASE)
-                    .filter(|offset| *offset < ids::SITE_ROW_SPAN)
-                else {
-                    return false;
-                };
+            SitesPress::Disconnect(Row(offset)) => {
                 // The grant this button was drawn for (a list that changed since does not move
                 // the click to another site).
                 let key = self.browser.as_ref().and_then(|browser| {
@@ -446,8 +467,24 @@ impl App {
                         }
                     }
                 }
-                true
             }
         }
+    }
+
+    /// Test adapter (S3 C2, plan §3.2): presses S13 control `id` directly, as the tests did
+    /// before; `false` when `id` is not one.
+    #[cfg(test)]
+    pub(crate) fn on_sites_command(&mut self, id: u16) -> bool {
+        self.press_family(
+            id,
+            |press| match press {
+                yw_engine::cmd::Press::Sites(press) => Some(press),
+                _ => None,
+            },
+            |app, press| {
+                app.on_sites(press);
+                true
+            },
+        )
     }
 }

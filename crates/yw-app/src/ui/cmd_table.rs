@@ -14,13 +14,17 @@
 //! 2026-11-18 (S3 C1): the received-history, hidden-account, side-file and drop-down/recipient
 //! ids are their families' presses (each module's `ids::press_of`/`ids::id_of`); [`press_of`]
 //! reads a check box's state into its press (the box is never read again by the handler).
+//! S3 C2: S13's sites and `WalletConnect` panel.
 
 use yw_core::secret::Zeroizing;
 use yw_engine::cmd::Press;
 use yw_engine::form::{CredField, CredUnits, EditField, PressInput};
 
 use crate::ui::main_window::ControlSet;
-use crate::ui::{screens, screens_evm, screens_links, screens_llm, screens_received};
+use crate::ui::{
+    screens, screens_evm, screens_links, screens_llm, screens_received, screens_sites,
+    screens_walletconnect,
+};
 use crate::{app_hidden, app_sidecar};
 
 /// The command id `IsDialogMessageW` sends for Enter (no control uses it, `ui::command_ids`).
@@ -40,6 +44,8 @@ pub fn press_of(id: u16, controls: &ControlSet) -> Press {
             .or_else(|| app_hidden::ids::press_of(other).map(Press::Hidden))
             .or_else(|| app_sidecar::ids::press_of(other, controls).map(Press::Sidecar))
             .or_else(|| screens_links::ids::press_of(other).map(Press::Links))
+            .or_else(|| screens_sites::ids::press_of(other).map(Press::Sites))
+            .or_else(|| screens_walletconnect::ids::press_of(other).map(Press::Wc))
             .unwrap_or(Press::Legacy(other)),
     }
 }
@@ -55,6 +61,8 @@ pub const fn id_of(press: Press) -> u16 {
         Press::Hidden(press) => app_hidden::ids::id_of(press),
         Press::Sidecar(press) => app_sidecar::ids::id_of(press),
         Press::Links(press) => screens_links::ids::id_of(press),
+        Press::Sites(press) => screens_sites::ids::id_of(press),
+        Press::Wc(press) => screens_walletconnect::ids::id_of(press),
         Press::Legacy(id) => id,
     }
 }
@@ -367,6 +375,41 @@ mod tests {
             Press::Sidecar(SidecarPress::ResetAck(Some(false)))
         );
         assert_eq!(id_of(press_of(toggle, &controls)), toggle);
+    }
+
+    /// S3 C2: S13 and the `WalletConnect` panel claim exactly the ids their handlers claimed
+    /// before; the panel's three edits are fields, not presses.
+    #[test]
+    fn c2_families_map_their_ids() {
+        use yw_engine::cmd::{Row, SitesPress, WcPress};
+        let controls = ControlSet::default();
+        let family = |id: u16| {
+            !matches!(
+                press_of(id, &controls),
+                Press::Legacy(_) | Press::Enter | Press::Back
+            )
+        };
+        for id in 6_700..6_966 {
+            assert_eq!(family(id), !(6_704..6_710).contains(&id), "{id}");
+        }
+        for id in 16_000..16_100 {
+            let edit = [
+                screens_walletconnect::ids::URI_EDIT,
+                screens_walletconnect::ids::FILE_EDIT,
+                screens_walletconnect::ids::PROJECT_EDIT,
+            ]
+            .contains(&id);
+            let wc = !edit && !(16_012..16_020).contains(&id) && id < 16_084;
+            assert_eq!(family(id), wc, "{id}");
+        }
+        assert_eq!(
+            press_of(screens_sites::ids::SITE_ROW_BASE + 255, &controls),
+            Press::Sites(SitesPress::Disconnect(Row(255)))
+        );
+        assert_eq!(
+            press_of(screens_walletconnect::ids::ROW_BASE + 63, &controls),
+            Press::Wc(WcPress::Disconnect(Row(63)))
+        );
     }
 
     /// Table test (3): the 65 edit ids are 58 plain fields and 7 credential fields, each a

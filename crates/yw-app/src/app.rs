@@ -3875,9 +3875,13 @@ impl App {
             }
             Cmd::Form(snapshot) => self.form.replace(snapshot),
             // The field's own handler (or the legacy chain) runs after the state has the text.
+            // S3 C2: a converted family's handler takes the field and its text.
             Cmd::Edit { field, text } => {
-                self.form.set(field, Some(field.clamp(&text)));
-                self.edit_chain(cmd_table::edit_id_of(field));
+                let text = field.clamp(&text);
+                self.form.set(field, Some(text.clone()));
+                if !self.on_field_edit(field, &text) {
+                    self.edit_chain(cmd_table::edit_id_of(field));
+                }
             }
             // The send forms' one-shot check (`Effect::StartTimer`, S3 B4).
             Cmd::Timer(TimerId::SendCheck) => self.on_send_timer(),
@@ -3918,6 +3922,8 @@ impl App {
     fn on_family(&mut self, press: Press) {
         match press {
             Press::Received(press) => self.on_received(press),
+            Press::Sites(press) => self.on_sites(press),
+            Press::Wc(press) => self.on_wc(press),
             Press::Hidden(press) => self.on_hidden(press),
             Press::Sidecar(press) => self.on_sidecar(press),
             Press::Links(press) => self.on_links(press),
@@ -3987,6 +3993,12 @@ impl App {
         }
     }
 
+    /// The edit handler of a converted family (S3 C2–C12): `false` when `field` is not one of
+    /// theirs (then the legacy `edit_chain` runs, as before).
+    fn on_field_edit(&mut self, field: EditField, text: &str) -> bool {
+        self.on_wc_edit(field, text)
+    }
+
     /// The handlers of an edit change: the first that claims `id` takes it, else the EVM send
     /// form's (S3 B5: the body of `on_edit_notify` before, unchanged).
     fn edit_chain(&mut self, id: u16) {
@@ -3999,7 +4011,6 @@ impl App {
             && !self.on_yk_edit_change(id)
             && !self.on_mn_edit_change(id)
             && !self.on_hc_edit_change(id)
-            && !self.on_wc_edit_change(id)
             && !self.on_explorer_edit_change(id)
         {
             self.on_edit_change(id);
@@ -4347,12 +4358,10 @@ impl App {
                     && !self.on_btc_command(other)
                     && !self.on_zec_command(other)
                     && !self.on_evm_command(other)
-                    && !self.on_sites_command(other)
                     && !self.on_llm_command(other)
                     && !self.on_yk_command(other)
                     && !self.on_mn_command(other)
                     && !self.on_hc_command(other)
-                    && !self.on_wc_command(other)
                     && !self.on_explorer_command(other)
                 {
                     self.on_indexed_command(other);
@@ -4711,10 +4720,6 @@ impl App {
     /// equals `controls.text(id, field.cap())`; debug builds read the edit too and count a
     /// difference. The C commits move the handlers' edit reads here.
     #[must_use]
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "S3 C1–C12 move the handlers' edit reads here")
-    )]
     pub(crate) fn form_text(&self, field: EditField) -> Option<String> {
         let text = self.form.text(field).map(str::to_owned);
         #[cfg(debug_assertions)]

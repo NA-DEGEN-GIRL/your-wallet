@@ -7,6 +7,8 @@
 use crate::app::App;
 use crate::ui::main_window::{Ctl, Item, Tone};
 use crate::walletconnect::VerifyStatus;
+use yw_engine::cmd::{Row, WcPress};
+use yw_engine::form::EditField;
 
 /// Control ids (16,000–16,099; the whole map is `ui::command_ids`).
 pub mod ids {
@@ -53,6 +55,45 @@ pub mod ids {
         FILE_TOGGLE,
         REOWN_COPY,
     ];
+
+    /// The press control `id` stands for (2026-11-18, S3 C2: `ui::cmd_table`); `None` when `id`
+    /// is not one of this module's presses (the three edits are fields, not presses).
+    #[must_use]
+    pub fn press_of(id: u16) -> Option<yw_engine::cmd::WcPress> {
+        use yw_engine::cmd::{Row, WcPress};
+        Some(match id {
+            PAIR => WcPress::Pair,
+            CLIPBOARD_QR => WcPress::ClipboardQr,
+            CLIPBOARD_CONNECT => WcPress::ClipboardConnect,
+            FILE_TOGGLE => WcPress::FileToggle,
+            FILE_QR => WcPress::FileQr,
+            PROJECT_SAVE => WcPress::ProjectSave,
+            DISCONNECT_ALL => WcPress::DisconnectAll,
+            PROJECT_TOGGLE => WcPress::ProjectToggle,
+            REOWN_COPY => WcPress::ReownCopy,
+            _ => WcPress::Disconnect(Row(id
+                .checked_sub(ROW_BASE)
+                .filter(|offset| *offset < ROW_SPAN)?)),
+        })
+    }
+
+    /// The control id of `press` (the inverse of [`press_of`]).
+    #[must_use]
+    pub const fn id_of(press: yw_engine::cmd::WcPress) -> u16 {
+        use yw_engine::cmd::{Row, WcPress};
+        match press {
+            WcPress::Pair => PAIR,
+            WcPress::ClipboardQr => CLIPBOARD_QR,
+            WcPress::ClipboardConnect => CLIPBOARD_CONNECT,
+            WcPress::FileToggle => FILE_TOGGLE,
+            WcPress::FileQr => FILE_QR,
+            WcPress::ProjectSave => PROJECT_SAVE,
+            WcPress::DisconnectAll => DISCONNECT_ALL,
+            WcPress::ProjectToggle => PROJECT_TOGGLE,
+            WcPress::ReownCopy => REOWN_COPY,
+            WcPress::Disconnect(Row(row)) => ROW_BASE.wrapping_add(row),
+        }
+    }
 }
 
 /// The panel's texts (spec/13 §6; English spec/14).
@@ -314,46 +355,46 @@ impl App {
         )]));
     }
 
-    /// Commands of the panel.
-    pub(crate) fn on_wc_command(&mut self, id: u16) -> bool {
-        match id {
-            ids::PAIR => {
+    /// Presses of the panel (2026-11-18, S3 C2: a `WcPress`, the edits' text from the form
+    /// state; before, the control id and reads of the edits here).
+    pub(crate) fn on_wc(&mut self, press: WcPress) {
+        match press {
+            WcPress::Pair => {
                 let text = self
-                    .controls
-                    .text(ids::URI_EDIT, 2_048)
+                    .form_text(EditField::WcUri)
                     .unwrap_or_else(|| self.wc.uri_text.clone());
                 self.wc_pair(&text);
             }
-            ids::CLIPBOARD_QR => self.wc_clipboard_qr(),
-            ids::CLIPBOARD_CONNECT => self.wc_clipboard_connect(),
-            ids::FILE_TOGGLE => self.wc.file_open = !self.wc.file_open,
-            ids::FILE_QR => {
-                if let Some(text) = self.controls.text(ids::FILE_EDIT, 1_024) {
+            WcPress::ClipboardQr => self.wc_clipboard_qr(),
+            WcPress::ClipboardConnect => self.wc_clipboard_connect(),
+            WcPress::FileToggle => self.wc.file_open = !self.wc.file_open,
+            WcPress::FileQr => {
+                if let Some(text) = self.form_text(EditField::WcFile) {
                     self.wc.file_text = text;
                 }
                 self.wc_file_qr();
             }
-            ids::PROJECT_SAVE => {
-                if let Some(text) = self.controls.text(ids::PROJECT_EDIT, 64) {
+            WcPress::ProjectSave => {
+                if let Some(text) = self.form_text(EditField::WcProject) {
                     self.wc.project_text = Some(text);
                 }
                 self.wc_save_project();
             }
-            ids::DISCONNECT_ALL => {
+            WcPress::DisconnectAll => {
                 // Every session at once: confirmed first, like `모든 사이트 연결 해제`.
                 if !self.wc.sessions.is_empty() {
                     self.set_screen(crate::app::Screen::Confirm(
                         crate::app::Confirm::WcDisconnectAll,
                     ));
                 }
-                return true;
+                return;
             }
-            ids::PROJECT_TOGGLE => {
+            WcPress::ProjectToggle => {
                 let open = self.wc.project_open || self.wc.project_text.is_some();
                 self.wc.project_open = !open;
                 self.wc.project_text = None;
             }
-            ids::REOWN_COPY => {
+            WcPress::ReownCopy => {
                 // Only the address string: no browser is started (2026-11-10).
                 self.copy_text("https://dashboard.reown.com");
                 // A setup step: its instruction stays a band (not the mark at the button).
@@ -361,13 +402,7 @@ impl App {
                     self.info = Some(text::REOWN_COPIED.get(self.settings.language).to_owned());
                 }
             }
-            _ => {
-                let Some(offset) = id
-                    .checked_sub(ids::ROW_BASE)
-                    .filter(|offset| *offset < ids::ROW_SPAN)
-                else {
-                    return false;
-                };
+            WcPress::Disconnect(Row(offset)) => {
                 let topic = self.wc.rows.borrow().get(usize::from(offset)).copied();
                 if let Some(topic) = topic {
                     self.wc_disconnect(topic);
@@ -375,21 +410,15 @@ impl App {
             }
         }
         self.refresh();
-        true
     }
 
-    /// Edit changes of the panel.
-    pub(crate) fn on_wc_edit_change(&mut self, id: u16) -> bool {
-        match id {
-            ids::URI_EDIT => {
-                self.wc.uri_text = self.controls.text(id, 2_048).unwrap_or_default();
-            }
-            ids::FILE_EDIT => {
-                self.wc.file_text = self.controls.text(id, 1_024).unwrap_or_default();
-            }
-            ids::PROJECT_EDIT => {
-                self.wc.project_text = Some(self.controls.text(id, 64).unwrap_or_default());
-            }
+    /// Edit changes of the panel: `text` is the field's text now (2026-11-18, S3 C2: from
+    /// `Cmd::Edit`; before, a read of the edit by id); `false` when `field` is not one of them.
+    pub(crate) fn on_wc_edit(&mut self, field: EditField, text: &str) -> bool {
+        match field {
+            EditField::WcUri => text.clone_into(&mut self.wc.uri_text),
+            EditField::WcFile => text.clone_into(&mut self.wc.file_text),
+            EditField::WcProject => self.wc.project_text = Some(text.to_owned()),
             _ => return false,
         }
         true

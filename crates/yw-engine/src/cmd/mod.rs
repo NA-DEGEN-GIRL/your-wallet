@@ -13,6 +13,8 @@
 //! families (`Press::{Received, Hidden, Sidecar, Links}`) and the two press facts the shell's
 //! dispatcher checks before a family handler ([`Press::is_receive_gated`],
 //! [`Press::refresh_chain`]).
+//!
+//! 2026-11-18 (S3 C2): S13's sites and `WalletConnect` panel (`Press::{Sites, Wc}`).
 
 use core::fmt;
 
@@ -26,11 +28,15 @@ mod hidden;
 mod links;
 mod received;
 mod sidecar;
+mod sites;
+mod wc;
 
 pub use hidden::HiddenPress;
 pub use links::LinksPress;
 pub use received::ReceivedPress;
 pub use sidecar::SidecarPress;
+pub use sites::SitesPress;
+pub use wc::WcPress;
 
 /// A list row as the screen drew it (positional: resolved against the list rebuilt when the
 /// press is handled; S5 → stable keys).
@@ -112,6 +118,10 @@ pub enum Press {
     Enter,
     /// A received-history card (S3 C1).
     Received(ReceivedPress),
+    /// S13 `연결된 사이트` (S3 C2).
+    Sites(SitesPress),
+    /// The `WalletConnect` panel of S13 (S3 C2).
+    Wc(WcPress),
     /// A hidden-account list (S3 C1).
     Hidden(HiddenPress),
     /// A side-file overlay or check (S3 C1).
@@ -134,6 +144,8 @@ impl Press {
             Self::Back
             | Self::Enter
             | Self::Received(_)
+            | Self::Sites(_)
+            | Self::Wc(_)
             | Self::Hidden(_)
             | Self::Sidecar(_)
             | Self::Links(_)
@@ -152,6 +164,8 @@ impl Press {
             Self::Back
             | Self::Enter
             | Self::Received(_)
+            | Self::Sites(_)
+            | Self::Wc(_)
             | Self::Hidden(_)
             | Self::Sidecar(_)
             | Self::Links(_)
