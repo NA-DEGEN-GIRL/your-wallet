@@ -57,6 +57,7 @@ use crate::workers::key::new_account;
 use crate::workers::rpc::RpcJob;
 use yw_core::lang::{Lang, Text};
 use yw_engine::cmd::{Cmd, Press};
+use yw_engine::effect::Effect;
 use yw_engine::form::PressInput;
 
 /// DPAPI optional entropy of `apikeys.dpapi` (spec/04 §6.3). (2026-11-17, spec/15 §11.4 S2 E2:
@@ -1417,11 +1418,17 @@ impl App {
 
     // ----- rendering ---------------------------------------------------------------------
 
-    /// Recomputes the layout, syncs the child controls and repaints.
+    /// Syncs the dApp view (spec/05 §4.5), then recomputes the layout, syncs the child controls
+    /// and repaints through `Effect::Render`, applied at once (2026-11-18, S3 B3: the layout
+    /// body moved to `render_main` unchanged).
     pub fn refresh(&mut self) {
         self.sync_browser();
-        #[cfg(test)]
-        self.controls.record("refresh".to_owned());
+        self.emit(Effect::Render);
+    }
+
+    /// `Effect::Render` on Windows: recomputes the layout, syncs the child controls and
+    /// repaints the main window (nothing without a window).
+    pub(crate) fn render_main(&mut self) {
         let Some(main) = self.main.as_ref() else {
             return;
         };

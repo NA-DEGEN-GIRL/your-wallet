@@ -25,6 +25,7 @@ pub mod app_btc_commands;
 pub mod app_btc_view;
 pub mod app_card;
 pub mod app_chain_sites;
+pub mod app_effects;
 pub mod app_evm;
 pub mod app_evm_commands;
 pub mod app_explorer;

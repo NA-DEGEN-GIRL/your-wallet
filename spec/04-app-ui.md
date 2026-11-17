@@ -72,6 +72,7 @@ impl EventQueue {
 ```
 - `push`는 큐가 비어 있다가 채워질 때만 `poster.post(WM_YW_EVENTS, 0)`(`PostMessageW`)을 보낸다. 실패해도 `MAIN_TIMER_MS` 타이머가 큐를 비운다.
 - `QueueFull`: pipe 쪽은 그 요청에 내부 오류로 응답하고([05]), RPC 쪽은 결과를 버리고 작업 실패로 처리한다(로그 E-APP-005).
+- (2026-11-18, [15] §11.4 S3) `App::refresh`는 dApp 상태 동기화(`sync_browser`, [05] §4.5) 뒤 `Effect::Render`를 그 자리에서 적용한다(yw-app `app_effects`: 배치 다시 계산·자식 컨트롤 맞춤·다시 그리기 = 전의 `refresh` 본문 `render_main`). 효과는 그것을 낸 처리기의 `App` 빌림 안에서 낸 순서대로 곧바로 적용하고 합치거나 미루지 않는다(메시지를 post하지 않는다). 그 전에는 `refresh`가 같은 본문을 직접 실행했다.
 - 메시지 루프는 앱 전체에 하나다. 중첩 모달 루프(`MessageBoxW`, `DialogBox*`, 이식 코드의 `run_loop`)를 쓰지 않는다. 확인 대화상자는 주 창 안의 오버레이 패널이다. 이식 코드의 `PostQuitMessage`는 `WM_YW_CHILD_DONE`으로 바꾼다.
 
 ### 1.4 시작 순서
