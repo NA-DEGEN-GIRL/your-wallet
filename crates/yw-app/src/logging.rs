@@ -1,27 +1,72 @@
-//! Local log file (spec/04 §8, spec/01 §5.4, D28).
+//! The log facade (spec/04 §8, spec/01 §5.4, D28).
 //!
-//! `logs\yw-app.log` rotated through `yw-app.1.log` … `yw-app.4.log` at 1 MiB. One line per
-//! event: `<UTC time> <LEVEL> <area> <event> key=value…`, ≤ 1,024 bytes, values limited to
-//! 0x21–0x7E (others become `?`). The API takes only static event names and typed fields, so
-//! secrets (which have no `Display`), URLs, hosts, origins and labels cannot be passed.
+//! One line per event: `<UTC time> <LEVEL> <area> <event> key=value…`, ≤ 1,024 bytes, values
+//! limited to 0x21–0x7E (others become `?`). The API takes only static event names and typed
+//! fields, so secrets (which have no `Display`), URLs, hosts, origins and labels cannot be passed.
+//!
+//! (2026-11-17, spec/15 §11.4 S2: the facade is split from the file writer. This module formats
+//! and filters; a platform [`LogSink`], installed once with [`install`], only stores lines that
+//! [`format_line`] already sanitized. On Windows the sink is the rotating `logs\yw-app.log`
+//! writer of `log_file`. Before that, `LogWriter` and `init` lived here.)
 
-use std::fs::{self, File, OpenOptions};
-use std::io::Write;
 use std::panic::Location;
-use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use crate::errors::ErrorCode;
 use crate::network::NetworkId;
-use crate::settings::LogLevel;
 
-/// Rotation threshold.
-pub const LOG_FILE_MAX_BYTES: u64 = 1_048_576;
 /// Longest line (bytes, including LF).
 pub const LOG_LINE_MAX_BYTES: usize = 1_024;
-const ROTATIONS: u8 = 4;
+
+/// `logLevel` (the setting, spec/04 §6; `settings` re-exports it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum LogLevel {
+    /// `error`.
+    Error,
+    /// `warn`.
+    Warn,
+    /// `info`.
+    Info,
+    /// `debug`.
+    Debug,
+}
+
+impl LogLevel {
+    /// Settings string.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::Warn => "warn",
+            Self::Info => "info",
+            Self::Debug => "debug",
+        }
+    }
+
+    /// Parses the settings string.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "error" => Some(Self::Error),
+            "warn" => Some(Self::Warn),
+            "info" => Some(Self::Info),
+            "debug" => Some(Self::Debug),
+            _ => None,
+        }
+    }
+}
+
+/// Whether `text` is a commit id this app shows: 7–40 lowercase hex digits ([`Field::Commit`],
+/// and the installation record of `build_info`).
+#[must_use]
+pub fn is_commit(text: &str) -> bool {
+    (7..=40).contains(&text.len())
+        && text
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
 
 /// A typed log field value.
 #[derive(Clone, Copy, Debug)]
@@ -48,8 +93,8 @@ pub enum Field<'a> {
     /// A source location, written `file:line` (the panic hook, [`panic_line`]): where in the code,
     /// never a value.
     Source(&'a Location<'a>),
-    /// The installed commit (`build_info`): written only when it is 7–40 lowercase hex digits,
-    /// else `?`.
+    /// The installed commit (`build_info`): written only when it is 7–40 lowercase hex digits
+    /// ([`is_commit`]), else `?`.
     Commit(&'a str),
 }
 
@@ -74,7 +119,9 @@ pub fn format_utc(unix_ms: u64) -> String {
     format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z")
 }
 
-fn now_unix_ms() -> u64 {
+/// The wall clock of the line timestamps (Unix milliseconds; 0 before 1970).
+#[must_use]
+pub fn now_unix_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| {
@@ -147,7 +194,7 @@ pub fn format_line(
                 line.push_str(&location.line().to_string());
             }
             Field::Commit(commit) => {
-                if crate::build_info::is_commit(commit) {
+                if is_commit(commit) {
                     line.push_str(commit);
                 } else {
                     line.push('?');
@@ -166,116 +213,18 @@ pub fn format_line(
     line
 }
 
-/// The rotating file writer.
-#[derive(Debug)]
-pub struct LogWriter {
-    dir: PathBuf,
-    file: Option<File>,
-    size: u64,
-    buffer: Vec<u8>,
-}
-
-fn numbered(dir: &Path, index: u8) -> PathBuf {
-    if index == 0 {
-        dir.join("yw-app.log")
-    } else {
-        dir.join(format!("yw-app.{index}.log"))
-    }
-}
-
-impl LogWriter {
-    /// Opens (appends to) `dir\yw-app.log`.
-    #[must_use]
-    pub fn open(dir: &Path) -> Self {
-        let path = numbered(dir, 0);
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .ok();
-        let size = file
-            .as_ref()
-            .and_then(|file| file.metadata().ok())
-            .map_or(0, |metadata| metadata.len());
-        Self {
-            dir: dir.to_path_buf(),
-            file,
-            size,
-            buffer: Vec::new(),
-        }
-    }
-
-    /// Rotates the files. If the current file could not be renamed away (another program holds
-    /// it, a `.1` that cannot be replaced), it is truncated instead so it never grows past the
-    /// bound, and a `rotate.failed` line says so; if even that fails, file logging stops for this
-    /// run (spec/04 §8).
-    fn rotate(&mut self) {
-        self.flush();
-        self.file = None;
-        let _ = fs::remove_file(numbered(&self.dir, ROTATIONS));
-        for index in (0..ROTATIONS).rev() {
-            let _ = fs::rename(numbered(&self.dir, index), numbered(&self.dir, index + 1));
-        }
-        let current = numbered(&self.dir, 0);
-        let renamed = fs::metadata(&current)
-            .ok()
-            .is_none_or(|metadata| metadata.len() == 0);
-        self.file = if renamed {
-            OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&current)
-                .ok()
-        } else {
-            OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(true)
-                .open(&current)
-                .ok()
-        };
-        self.size = 0;
-        if !renamed && self.file.is_some() {
-            let line = format_line(now_unix_ms(), LogLevel::Warn, "log", "rotate.failed", &[]);
-            self.buffer.extend_from_slice(line.as_bytes());
-        }
-    }
-
-    /// Appends one line, rotating first if it would exceed the bound. A failed rotation truncates
-    /// the current file (or stops file logging) instead of letting it grow (spec/04 §8).
-    pub fn write_line(&mut self, line: &str, flush_now: bool) {
-        let len = u64::try_from(line.len()).unwrap_or(u64::MAX);
-        let pending = u64::try_from(self.buffer.len()).unwrap_or(u64::MAX);
-        if self.size.saturating_add(pending).saturating_add(len) > LOG_FILE_MAX_BYTES {
-            self.rotate();
-        }
-        self.buffer.extend_from_slice(line.as_bytes());
-        if flush_now {
-            self.flush();
-        }
-    }
-
-    /// Writes buffered lines.
-    pub fn flush(&mut self) {
-        if self.buffer.is_empty() {
-            return;
-        }
-        if let Some(file) = self.file.as_mut()
-            && file.write_all(&self.buffer).is_ok()
-        {
-            let _ = file.flush();
-            self.size = self
-                .size
-                .saturating_add(u64::try_from(self.buffer.len()).unwrap_or(0));
-        }
-        self.buffer.clear();
-    }
+/// Where finished lines go (the platform's log store; Windows: `log_file::LogWriter`). It only
+/// receives lines that [`format_line`] built and sanitized, never raw text (D28).
+pub trait LogSink: Send {
+    /// Stores one finished line (ending in LF). `flush_now` is set for `warn` and above.
+    fn write_line(&mut self, line: &str, flush_now: bool);
+    /// Writes buffered lines (every 2 s and at exit).
+    fn flush(&mut self);
 }
 
 /// The process logger.
-#[derive(Debug)]
-pub struct Logger {
-    writer: Mutex<LogWriter>,
+struct Logger {
+    sink: Mutex<Box<dyn LogSink>>,
     level: AtomicU8,
 }
 
@@ -290,10 +239,10 @@ const fn level_rank(level: LogLevel) -> u8 {
     }
 }
 
-/// Installs the process logger writing under `dir` (first call wins).
-pub fn init(dir: &Path, level: LogLevel) {
+/// Installs the process logger's sink (first call wins). Lines logged before it are dropped.
+pub fn install(sink: Box<dyn LogSink>, level: LogLevel) {
     let _ = LOGGER.set(Logger {
-        writer: Mutex::new(LogWriter::open(dir)),
+        sink: Mutex::new(sink),
         level: AtomicU8::new(level_rank(level)),
     });
 }
@@ -319,17 +268,17 @@ pub fn log(
         return;
     }
     let line = format_line(now_unix_ms(), level, area, event, fields);
-    if let Ok(mut writer) = logger.writer.lock() {
-        writer.write_line(&line, level <= LogLevel::Warn);
+    if let Ok(mut sink) = logger.sink.lock() {
+        sink.write_line(&line, level <= LogLevel::Warn);
     }
 }
 
 /// Flushes buffered lines (every 2 s and at exit).
 pub fn flush() {
     if let Some(logger) = LOGGER.get()
-        && let Ok(mut writer) = logger.writer.lock()
+        && let Ok(mut sink) = logger.sink.lock()
     {
-        writer.flush();
+        sink.flush();
     }
 }
 
@@ -363,8 +312,8 @@ pub fn panic_line(location: Option<&Location<'_>>) {
         at.as_slice(),
     );
     for _ in 0..PANIC_LOCK_TRIES {
-        if let Ok(mut writer) = logger.writer.try_lock() {
-            writer.write_line(&line, true);
+        if let Ok(mut sink) = logger.sink.try_lock() {
+            sink.write_line(&line, true);
             return;
         }
         std::thread::sleep(Duration::from_millis(1));
@@ -373,10 +322,9 @@ pub fn panic_line(location: Option<&Location<'_>>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{Field, LOG_FILE_MAX_BYTES, LogWriter, format_line, format_utc};
+    use super::{Field, LogLevel, format_line, format_utc, is_commit};
     use crate::errors::ErrorCode;
     use crate::network::NetworkId;
-    use crate::settings::LogLevel;
 
     #[test]
     fn utc_formatting() {
@@ -418,69 +366,28 @@ mod tests {
         assert_eq!(format_line(0, LogLevel::Info, "a", "b", &long).len(), 1_024);
     }
 
+    /// A commit field is written only when it is 7–40 lowercase hex digits.
     #[test]
-    fn rotation_keeps_five_files() {
-        let dir = std::env::temp_dir().join(format!(
-            "yw-app-log-test-{}-{}",
-            std::process::id(),
-            yw_win::time::monotonic_ms()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let mut writer = LogWriter::open(&dir);
-        let line = format!("{}\n", "x".repeat(1_000));
-        let lines_per_file = usize::try_from(LOG_FILE_MAX_BYTES).unwrap() / line.len() + 1;
-        for _ in 0..lines_per_file * 6 {
-            writer.write_line(&line, true);
-        }
-        let mut names: Vec<String> = std::fs::read_dir(&dir)
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        names.sort();
-        assert_eq!(
-            names,
-            [
-                "yw-app.1.log",
-                "yw-app.2.log",
-                "yw-app.3.log",
-                "yw-app.4.log",
-                "yw-app.log"
-            ]
-        );
-        for name in &names {
-            assert!(std::fs::metadata(dir.join(name)).unwrap().len() <= LOG_FILE_MAX_BYTES);
-        }
-        drop(writer);
-        std::fs::remove_dir_all(&dir).unwrap();
+    fn commit_field_is_checked() {
+        assert!(is_commit("75c3136"));
+        assert!(!is_commit("75C3136"));
+        assert!(!is_commit("75c313"));
+        let line =
+            |commit| format_line(0, LogLevel::Info, "a", "b", &[("c", Field::Commit(commit))]);
+        assert!(line("75c3136a1b2c").ends_with(" c=75c3136a1b2c\n"));
+        assert!(line("75c3136 x").ends_with(" c=?\n"));
     }
 
     #[test]
-    fn failed_rotation_truncates_instead_of_growing() {
-        let dir = std::env::temp_dir().join(format!(
-            "yw-app-log-stuck-{}-{}",
-            std::process::id(),
-            yw_win::time::monotonic_ms()
-        ));
-        // `.1`–`.4` are non-empty directories: no rename in the chain can succeed, so the current
-        // file stays where it is.
-        for index in 1..=4 {
-            let blocker = dir.join(format!("yw-app.{index}.log"));
-            std::fs::create_dir_all(&blocker).unwrap();
-            std::fs::write(blocker.join("keep"), b"x").unwrap();
+    fn level_strings_round_trip() {
+        for level in [
+            LogLevel::Error,
+            LogLevel::Warn,
+            LogLevel::Info,
+            LogLevel::Debug,
+        ] {
+            assert_eq!(LogLevel::parse(level.as_str()), Some(level));
         }
-        let mut writer = LogWriter::open(&dir);
-        let line = format!("{}\n", "y".repeat(1_000));
-        let lines_per_file = usize::try_from(LOG_FILE_MAX_BYTES).unwrap() / line.len() + 1;
-        for _ in 0..lines_per_file * 3 {
-            writer.write_line(&line, true);
-        }
-        let current = dir.join("yw-app.log");
-        let size = std::fs::metadata(&current).unwrap().len();
-        assert!(size <= LOG_FILE_MAX_BYTES, "{size}");
-        let text = std::fs::read_to_string(&current).unwrap();
-        assert!(text.contains(" WARN log rotate.failed\n"));
-        assert!(text.ends_with(&line));
-        drop(writer);
-        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(LogLevel::parse("trace"), None);
     }
 }

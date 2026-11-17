@@ -21,6 +21,7 @@ use yw_app::build_info::start_text;
 use yw_app::errors::ErrorCode;
 use yw_app::events::{EventQueue, KeyJob, UiEvent};
 use yw_app::flow::evm::Limits;
+use yw_app::log_file;
 use yw_app::logging::{self, Field};
 use yw_app::rpc::{RPC_TIMEOUTS, Transport};
 use yw_app::settings::LogLevel;
@@ -199,7 +200,7 @@ fn main() -> ExitCode {
 
     // 4. Logging, and the panic hook that writes to it. The installed commit (checked, 2026-11-10)
     // says which build wrote the lines that follow.
-    logging::init(&paths.logs, LogLevel::Info);
+    log_file::init(&paths.logs, LogLevel::Info);
     install_panic_hook();
     let install_commit = yw_app::build_info::read_install_commit();
     let mut start_fields = vec![

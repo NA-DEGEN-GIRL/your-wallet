@@ -46,6 +46,7 @@ pub mod explorer;
 pub mod flow;
 pub mod hypercore;
 pub mod lock;
+pub mod log_file;
 pub mod logging;
 pub mod meta;
 pub mod network;

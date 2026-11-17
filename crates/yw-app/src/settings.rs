@@ -69,43 +69,8 @@ impl RpcTemplate {
     }
 }
 
-/// `logLevel`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum LogLevel {
-    /// `error`.
-    Error,
-    /// `warn`.
-    Warn,
-    /// `info`.
-    Info,
-    /// `debug`.
-    Debug,
-}
-
-impl LogLevel {
-    /// Settings string.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Error => "error",
-            Self::Warn => "warn",
-            Self::Info => "info",
-            Self::Debug => "debug",
-        }
-    }
-
-    /// Parses the settings string.
-    #[must_use]
-    pub fn parse(text: &str) -> Option<Self> {
-        match text {
-            "error" => Some(Self::Error),
-            "warn" => Some(Self::Warn),
-            "info" => Some(Self::Info),
-            "debug" => Some(Self::Debug),
-            _ => None,
-        }
-    }
-}
+/// `logLevel` (2026-11-17: defined in `logging`, spec/15 §11.4 S2).
+pub use crate::logging::LogLevel;
 
 /// `bitcoin.indexer` (spec/04 §1.9 `BtcIndexer`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

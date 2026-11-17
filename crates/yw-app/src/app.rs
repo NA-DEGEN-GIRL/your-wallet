@@ -1136,7 +1136,7 @@ impl App {
 
     /// The installed commit read at start (`build_info::read_install_commit`, already checked).
     pub fn set_install_commit(&mut self, commit: Option<String>) {
-        self.install_commit = commit.filter(|commit| crate::build_info::is_commit(commit));
+        self.install_commit = commit.filter(|commit| crate::logging::is_commit(commit));
     }
 
     /// `WerAddExcludedApplication` failed at startup (review L9): a banner now and a line in

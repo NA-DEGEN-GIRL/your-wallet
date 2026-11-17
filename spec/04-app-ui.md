@@ -1314,6 +1314,7 @@ BTC 계정 선택은 `prefs`에 두지 않는다(알려진 객체에 키를 더�
 - 순환: 한 줄을 쓰기 전 현재 크기 + 줄 길이가 `LOG_FILE_MAX_BYTES = 1_048_576`을 넘으면 닫고, `.4` 삭제, `.3→.4`, `.2→.3`, `.1→.2`, 현재→`.1`로 이름을 바꾸고 새 파일을 연다. `.1`–`.4` 단계의 실패는 무시한다. 현재 파일이 이름 바꾸기 뒤에도 남아 있으면(다른 프로그램이 잡고 있음 등) 그 파일을 비우고(truncate) 첫 줄에 `WARN log rotate.failed`를 쓴 뒤 계속 쓴다. 비우기도 실패하면 이번 실행 동안 파일 로그를 멈춘다(크기 상한을 넘겨 계속 커지지 않는다).
 - 형식: UTF-8, LF, 한 줄 ≤ 1,024바이트(넘으면 자름). `2026-10-26T12:34:56.789Z WARN rpc E-RPC-002 method=eth_simulateV1 net=eip155:11155111 ms=12000`. 시각은 UTC. 필드 값은 0x21–0x7E만(나머지 `?`). 엔드포인트는 `net=<NetworkId>`로만 가리키고 `host=`·`url=` 필드는 없다(D13: QuickNode 호스트에는 엔드포인트 이름이 들어간다, §1.9). BTC 인덱서는 `idx=esplora|bb-rpc|bb-rest`와 경로 종류만 쓴다(`esplora`: `utxo`·`address`·`tx-status`·`tx-hex`·`block-height`·`tip-height`·`tx-post`, `bb-rest`: `utxo`·`address`·`tx`·`block-index`). 비밀이 아닌 Esplora 기준 URL도 쓰지 않는다([08] §4.1).
 - `Mutex<LogWriter>`(버퍼). `warn` 이상은 즉시 flush, 나머지는 2초마다와 종료 때. `logLevel` 이상만 쓴다. 텔레메트리·업로드 경로는 없다.
+- 구조(2026-11-17, [15] §11.4 S2): `logging`은 형식(`format_line`의 정화·0x21–0x7E 규칙)·수준 거름·프로세스 로거만 맡고, 완성된 줄을 플랫폼 `LogSink`(`write_line(줄, flush_now)`·`flush()`)에 넘긴다. Windows의 sink는 `log_file.rs`의 순환 파일 `LogWriter`이고 `log_file::init`이 한 번 설치한다(설치 전 줄은 버린다 — 전과 같다). 그 전에는 `LogWriter`·`init`이 `logging.rs`에 있었다. `LogLevel`도 `settings`에서 `logging`으로 옮겼다(`settings`가 다시 내보낸다).
 
 | 기록한다 | 기록하지 않는다 |
 |---|---|

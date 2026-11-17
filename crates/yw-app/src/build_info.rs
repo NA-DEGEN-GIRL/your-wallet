@@ -7,6 +7,8 @@
 
 use yw_json::{Limits, Value};
 
+use crate::logging::is_commit;
+
 /// The startup failure texts of `main.rs` (spec/04 §1.4, spec/14). They live in the library
 /// because `main.rs` is the binary crate and every catalogue must be reachable from the tests.
 /// The texts before `settings.json` is read (single instance, data folder) are shown in Korean,
@@ -51,17 +53,8 @@ const LIMITS: Limits = Limits {
     max_items: 4_096,
 };
 
-/// Whether `text` is a commit id this app shows: 7–40 lowercase hex digits.
-#[must_use]
-pub fn is_commit(text: &str) -> bool {
-    (7..=40).contains(&text.len())
-        && text
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
 /// The `commit` of an installation record (strict JSON, an object), when it is a commit id
-/// ([`is_commit`]); `None` otherwise.
+/// ([`is_commit`], defined in `logging` since 2026-11-17); `None` otherwise.
 #[must_use]
 pub fn install_commit(bytes: &[u8]) -> Option<String> {
     let Ok(Value::Object(record)) = yw_json::parse(bytes, &LIMITS) else {
