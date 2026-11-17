@@ -2035,7 +2035,10 @@ impl App {
     }
 
     fn copy(&mut self, text: &str, address: bool) {
-        // Tests: the length only; an absolute path (`경로 복사`) depends on the machine.
+        // Tests: the length only, in `char`s (`text.chars().count()`, not UTF-16 units as the
+        // `set_text` line counts); a text that `Path::new(text).is_absolute()` holds (`경로 복사`,
+        // machine-dependent) is `len=<path>`. 2026-11-18 S3 A1–A3 review: S3 B4's `CopyText`
+        // effect log must keep exactly these two rules, or the census goldens change.
         #[cfg(test)]
         self.controls
             .record(if std::path::Path::new(text).is_absolute() {

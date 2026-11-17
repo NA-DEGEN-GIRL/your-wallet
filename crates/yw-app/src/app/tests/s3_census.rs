@@ -8,16 +8,21 @@
 //! Every press starts from a fresh state on the census's own temp folder. Nothing leaves it:
 //! `rpc_json_path` and `extension_dir` point into it (AGENTS rules 2 and 4: a press of
 //! `rpc.json에서 가져오기` or `rpc.json 지우기` would otherwise read or delete the owner's file),
-//! no worker is attached (no RPC, `WalletConnect` relay or LLM connection can start; RPC jobs land
-//! in a channel and are named only), explorer links go to `Launcher::Record`, the key queue is
-//! drained unrun (no card reader), and presses that open a folder, quit or read the clipboard
-//! or an image file are skipped ([`SKIPPED`]).
+//! no RPC, `WalletConnect` or LLM worker is ever attached (no connection can start; RPC jobs land
+//! in a channel and are named only), explorer links go to `Launcher::Record`, and presses that
+//! open a folder, quit or read the clipboard or an image file are skipped ([`SKIPPED`]). The
+//! command, edit, check-box and write censuses attach no worker at all: their key queue is
+//! drained unrun. The vault-backed A3 steps (the lifecycles of `scenarios.txt`, the dApp-view and
+//! no-secret tests) run the real key worker synchronously on the test thread
+//! ([`super::Harness`]): Argon2 on the vault files of the census folder, with
+//! `yubikey::NoReaders` as the card source (2026-11-18 A1–A3 review).
 //!
 //! A golden line holds ids, names, counts and hashes only — no address, URL, key or path:
 //! before hashing, the census's own paths become `<data>`, `<logs>`, `<ext>`, `<exe>`, `<tmp>`.
 //! Regenerate with `YW_S3_CENSUS_OUT=<folder> cargo test -p yw-app --lib s3_census::print --
 //! --ignored` and review the diff; only the S3 phase-A commits may change these files.
 
+use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, channel};
@@ -140,6 +145,11 @@ const SKIPPED: [u16; 7] = [
 pub(super) struct Census {
     root: PathBuf,
     data: PathBuf,
+    /// When kept ([`Census::keep_debug`]): the unhashed `Debug` text of every observation's
+    /// items, banners and info, for the no-secret test (T9).
+    debug: core::cell::RefCell<Option<Vec<String>>>,
+    /// Every control id a press of this census read with `ControlSet::checked`.
+    checked: core::cell::RefCell<BTreeSet<u16>>,
 }
 
 impl Census {
@@ -154,7 +164,12 @@ impl Census {
         ));
         let data = root.join("data");
         std::fs::create_dir_all(&data).unwrap();
-        let census = Self { root, data };
+        let census = Self {
+            root,
+            data,
+            debug: core::cell::RefCell::new(None),
+            checked: core::cell::RefCell::default(),
+        };
         census.guard();
         census
     }
@@ -218,6 +233,22 @@ impl Census {
         out
     }
 
+    /// Keeps the unhashed `Debug` text of items, banners and info of every later observation.
+    pub(super) fn keep_debug(&self) {
+        *self.debug.borrow_mut() = Some(Vec::new());
+    }
+
+    /// The `Debug` text kept since [`Census::keep_debug`].
+    pub(super) fn kept_debug(&self) -> Vec<String> {
+        self.debug.borrow_mut().take().unwrap_or_default()
+    }
+
+    /// The ids this census's presses read with `ControlSet::checked` (collected by
+    /// [`Census::observe`]) since the last call.
+    pub(super) fn checked_reads(&self) -> BTreeSet<u16> {
+        self.checked.take()
+    }
+
     /// What the app shows and asked for since the last call.
     pub(super) fn observe(&self, app: &App, rx: &Receiver<RpcJob>) -> Seen {
         self.observe_with(app, rx, true)
@@ -229,6 +260,9 @@ impl Census {
     /// ([`redact_corrupt`]).
     pub(super) fn observe_with(&self, app: &App, rx: &Receiver<RpcJob>, keys: bool) -> Seen {
         let calls = compress(&app.controls.take_shell_log());
+        self.checked
+            .borrow_mut()
+            .extend(app.controls.take_checked_reads());
         let clean = |text: &str| {
             let text = self.normalize(text);
             if keys {
@@ -237,8 +271,14 @@ impl Census {
                 redact_wall_time(&redact_corrupt(&text))
             }
         };
-        let items = clean(&format!("{:?}", app.items()));
-        let banners = clean(&format!("{:?}", app.banners));
+        let items = format!("{:?}", app.items());
+        let banners = format!("{:?}", app.banners);
+        if let Some(kept) = self.debug.borrow_mut().as_mut() {
+            kept.extend([items.clone(), banners.clone()]);
+            kept.extend(app.info.clone());
+        }
+        let items = clean(&items);
+        let banners = clean(&banners);
         let info = app.info.as_deref().map(clean);
         let copied = app.copied.map_or_else(
             || "-".to_owned(),
@@ -538,7 +578,8 @@ pub(super) fn section(out: &mut String, census: &Census, base: Base, ids: &[u16]
         let seen = census.observe(&app, &rx);
         drop(app);
         census.guard();
-        crate::logging::set_level(crate::settings::Settings::default().log_level);
+        // `LOG_*` presses need no restore: `logging::set_level` changes nothing until
+        // `logging::install` ran, and only the release logger (`log_file.rs`) installs one.
         if seen.state == start.state {
             same.entry(seen.calls).or_default().push(id);
         } else {
@@ -556,9 +597,16 @@ pub(super) fn section(out: &mut String, census: &Census, base: Base, ids: &[u16]
 /// How a census presses an id on a state.
 pub(super) type PressFn = fn(&mut App, u16);
 
-/// The sections of `bases` in order, each built on its own thread with its own census folder.
-pub(super) fn sections(tag: &str, bases: &[Base], ids: &[u16], press: PressFn) -> String {
-    std::thread::scope(|scope| {
+/// The sections of `bases` in order, each built on its own thread with its own census folder;
+/// the ids their presses read with `ControlSet::checked` are added to `checked`.
+pub(super) fn sections(
+    tag: &str,
+    bases: &[Base],
+    ids: &[u16],
+    press: PressFn,
+    checked: &mut BTreeSet<u16>,
+) -> String {
+    let parts: Vec<(String, BTreeSet<u16>)> = std::thread::scope(|scope| {
         let workers: Vec<_> = bases
             .iter()
             .map(|&base| {
@@ -566,7 +614,7 @@ pub(super) fn sections(tag: &str, bases: &[Base], ids: &[u16], press: PressFn) -
                     let census = Census::new(&format!("{tag}-{}", base.name()));
                     let mut out = String::new();
                     section(&mut out, &census, base, ids, press);
-                    out
+                    (out, census.checked_reads())
                 })
             })
             .collect();
@@ -574,23 +622,36 @@ pub(super) fn sections(tag: &str, bases: &[Base], ids: &[u16], press: PressFn) -
             .into_iter()
             .map(|worker| worker.join().unwrap())
             .collect()
-    })
+    });
+    let mut out = String::new();
+    for (text, read) in parts {
+        out.push_str(&text);
+        checked.extend(read);
+    }
+    out
 }
 
 /// T2: every press on every census state.
-fn commands_golden() -> String {
+fn commands_golden(checked: &mut BTreeSet<u16>) -> String {
     let ids = command_ids();
     let mut out = String::from(
         "# S3 command census (2026-11-18, spec/15 §11.4 S3): state id | mode | screen | items | \
          banners | info | copied | key jobs | rpc jobs | links opened | shell calls\n",
     );
-    out.push_str(&sections("commands", &Base::ALL, &ids, App::on_command));
+    out.push_str(&sections(
+        "commands",
+        &Base::ALL,
+        &ids,
+        App::on_command,
+        checked,
+    ));
     // The receive presses where the passphrase was mistyped (they are refused there).
     out.push_str(&sections(
         "commands",
         &Base::ALT,
         &screens::RECEIVE_IDS,
         App::on_command,
+        checked,
     ));
     out
 }
@@ -645,7 +706,21 @@ fn edit_ids_are_the_65_fixed_edits() {
 /// T2 (S3 A1): the command census matches `s3_census/commands.txt`.
 #[test]
 fn command_census_matches_the_golden() {
-    compare("commands", &commands_golden(), COMMANDS);
+    let mut checked = BTreeSet::new();
+    compare("commands", &commands_golden(&mut checked), COMMANDS);
+    assert_checks_listed("commands", &checked);
+}
+
+/// Every id a census press read with `ControlSet::checked` is in [`CHECK_IDS`] (2026-11-18 A1–A3
+/// review): a check box missed there, or added later, would otherwise drop out of `checks.txt`,
+/// the golden that keeps the check-box state of a press exact (plan D-k).
+fn assert_checks_listed(census: &str, checked: &BTreeSet<u16>) {
+    for id in checked {
+        assert!(
+            CHECK_IDS.contains(id),
+            "{census}: {id} is read with `checked` but is not in CHECK_IDS"
+        );
+    }
 }
 
 /// Regenerates every golden of this module into `YW_S3_CENSUS_OUT` (a folder).
@@ -654,9 +729,10 @@ fn command_census_matches_the_golden() {
 fn print() {
     let out = PathBuf::from(std::env::var_os("YW_S3_CENSUS_OUT").expect("YW_S3_CENSUS_OUT"));
     std::fs::create_dir_all(&out).unwrap();
-    std::fs::write(out.join("commands.txt"), commands_golden()).unwrap();
-    std::fs::write(out.join("edits.txt"), edits_golden()).unwrap();
-    std::fs::write(out.join("checks.txt"), checks_golden()).unwrap();
+    let mut checked = BTreeSet::new();
+    std::fs::write(out.join("commands.txt"), commands_golden(&mut checked)).unwrap();
+    std::fs::write(out.join("edits.txt"), edits_golden(&mut checked)).unwrap();
+    std::fs::write(out.join("checks.txt"), checks_golden(&mut checked)).unwrap();
     std::fs::write(out.join("writes.txt"), writes_golden()).unwrap();
     std::fs::write(out.join("scenarios.txt"), scenarios_golden()).unwrap();
 }
@@ -753,7 +829,7 @@ fn check_off(app: &mut App, id: u16) {
 
 /// T3: every edit typed and notified (`EN_CHANGE`) on every census state, then Enter in every
 /// edit Enter presses from.
-fn edits_golden() -> String {
+fn edits_golden(checked: &mut BTreeSet<u16>) -> String {
     let mut ids = EDIT_IDS.to_vec();
     ids.sort_unstable();
     let mut out = String::from(
@@ -763,7 +839,7 @@ fn edits_golden() -> String {
     let typing: [(&str, PressFn); 2] = [("1", type_one), ("x", type_x)];
     for (value, press) in typing {
         let _ = writeln!(out, "# type \"{value}\"");
-        out.push_str(&sections("edits", &Base::ALL, &ids, press));
+        out.push_str(&sections("edits", &Base::ALL, &ids, press, checked));
     }
     let mut enter: Vec<u16> = ENTER_EDITS
         .iter()
@@ -772,12 +848,12 @@ fn edits_golden() -> String {
         .collect();
     enter.sort_unstable();
     let _ = writeln!(out, "# enter");
-    out.push_str(&sections("edits", &Base::ALL, &enter, enter_shown));
+    out.push_str(&sections("edits", &Base::ALL, &enter, enter_shown, checked));
     out
 }
 
 /// T4: every check box read with `checked`, pressed checked, unchecked and without a state.
-fn checks_golden() -> String {
+fn checks_golden(checked: &mut BTreeSet<u16>) -> String {
     let mut ids = CHECK_IDS.to_vec();
     ids.sort_unstable();
     let mut out = String::from(
@@ -791,7 +867,7 @@ fn checks_golden() -> String {
     ];
     for (name, press) in variants {
         let _ = writeln!(out, "# check {name}");
-        out.push_str(&sections("checks", &Base::ALL, &ids, press));
+        out.push_str(&sections("checks", &Base::ALL, &ids, press, checked));
     }
     out
 }
@@ -876,7 +952,6 @@ pub(super) fn run_scenario(out: &mut String, census: &Census, scenario: &Scenari
     }
     drop(app);
     census.guard();
-    crate::logging::set_level(crate::settings::Settings::default().log_level);
 }
 
 fn no_setup(_: &mut App) {}
@@ -1260,7 +1335,8 @@ fn masked_edits_change_nothing_on_en_change() {
 }
 
 /// The census's id lists match the code: `ENTER_EDITS` are exactly the edits `enter_primary`
-/// maps, and every check box is a fixed or indexed id.
+/// maps, and no check box is listed twice or as an edit (that `CHECK_IDS` are exactly the ids
+/// the code reads with `checked`: the commands, edits and checks census tests).
 #[test]
 fn enter_and_check_lists_match_the_code() {
     for id in EDIT_IDS {
@@ -1280,13 +1356,20 @@ fn enter_and_check_lists_match_the_code() {
 /// T3 (S3 A2): `s3_census/edits.txt`.
 #[test]
 fn edit_census_matches_the_golden() {
-    compare("edits", &edits_golden(), EDITS);
+    let mut checked = BTreeSet::new();
+    compare("edits", &edits_golden(&mut checked), EDITS);
+    assert_checks_listed("edits", &checked);
 }
 
-/// T4 (S3 A2): `s3_census/checks.txt`.
+/// T4 (S3 A2): `s3_census/checks.txt`; each of [`CHECK_IDS`] is read with `checked` when it is
+/// pressed on some census state, and no other id is (with the commands and edits censuses, which
+/// assert the same for every other press: [`assert_checks_listed`]).
 #[test]
 fn check_census_matches_the_golden() {
-    compare("checks", &checks_golden(), CHECKS);
+    let mut checked = BTreeSet::new();
+    compare("checks", &checks_golden(&mut checked), CHECKS);
+    let listed: BTreeSet<u16> = CHECK_IDS.into_iter().collect();
+    assert_eq!(checked, listed);
 }
 
 /// T5 (S3 A2): `s3_census/writes.txt`.
@@ -1590,8 +1673,11 @@ fn headless_browser() -> crate::app_browser::BrowserUi {
 }
 
 /// T8 (S3 A3, spec/05 §4.5): with a dApp dispatcher attached, its wallet view equals the UI
-/// state after unlock, an account switch, a chain switch, `잠그기` and unlock again — only
-/// because `App::refresh` runs `sync_browser`; the test never calls it.
+/// state after unlock, an account switch, a chain switch, Bitcoin turned on, `잠그기` and unlock
+/// again; the test never calls `sync_browser`. Every step but the lock is synced only because
+/// `App::refresh` runs `sync_browser` (the path S3 B3 moves into `Effect::Render`); the lock is
+/// also synced by `App::browser_lock_begin`, which calls `sync_browser` itself, so its assert is
+/// no evidence for `refresh` (2026-11-18 A1–A3 review).
 #[test]
 fn dapp_view_follows_every_step_without_a_manual_sync() {
     use super::{Purpose, WALLET_PW};
@@ -1608,6 +1694,20 @@ fn dapp_view_follows_every_step_without_a_manual_sync() {
     h.app.on_command(screens::ids::NETWORK_BASE + 1);
     h.pump();
     assert!(h.app.browser_view_current(), "after the chain switch");
+    // Bitcoin on (an endpoint set in memory; nothing is fetched: no RPC worker): its accounts
+    // and `btc_enabled` reach the view only through `refresh`.
+    assert!(!h.app.settings.bitcoin.enabled);
+    let network = h.app.settings.bitcoin.network;
+    h.app.apikeys.set_rpc(
+        crate::network::NetworkId::Bitcoin(network),
+        &yw_platform::http::HttpsUrl::parse("https://btc.example.test/").unwrap(),
+    );
+    h.app.on_command(screens_btc::ids::SECTION_BTC);
+    h.app.on_command(screens_btc::ids::ENABLE);
+    h.pump();
+    assert!(h.app.settings.bitcoin.enabled);
+    assert!(h.app.browser_view_current(), "after Bitcoin is turned on");
+    // Also synced by `browser_lock_begin`, not only by `refresh`.
     h.app.on_command(screens::ids::LOCK);
     h.pump();
     assert_eq!(h.app.mode, AppMode::Locked);
@@ -1619,12 +1719,16 @@ fn dapp_view_follows_every_step_without_a_manual_sync() {
 }
 
 /// T9 (S3 A3, D13/D28): no password, recovery phrase (or two of its words in a row), template
-/// token, Alchemy or LLM key, or typed RPC URL reaches a recorded shell call or a census line —
-/// through create, backup, lock and unlock, and every credential form of the write scenarios.
+/// token, Alchemy or LLM key, or typed RPC URL reaches a recorded shell call, a census line, or
+/// the unhashed `Debug` text of the screen model (`items()`), the banners or the info line that
+/// the census hashes — through create, backup, lock and unlock, and every credential form of the
+/// write and timer/copy scenarios. (2026-11-18 A1–A3 review: before, only the hashed lines were
+/// scanned, so a secret in the screen model would have been hashed away.)
 #[test]
 fn no_secret_reaches_a_recorded_line() {
     use super::{Purpose, WALLET_PW};
     let census = Census::new("no-secret");
+    census.keep_debug();
     let (mut h, rx) = harness(&census);
     let mut lines = Vec::new();
     h.create_and_confirm();
@@ -1648,6 +1752,9 @@ fn no_secret_reaches_a_recorded_line() {
     }
     lines.extend(out.lines().map(str::to_owned));
     assert!(lines.len() > 100, "{}", lines.len());
+    let debug = census.kept_debug();
+    assert!(debug.len() > 100, "{}", debug.len());
+    lines.extend(debug);
     let words: Vec<&str> = phrase.split(' ').collect();
     let mut secrets: Vec<String> = words.windows(2).map(|pair| pair.join(" ")).collect();
     secrets.extend([

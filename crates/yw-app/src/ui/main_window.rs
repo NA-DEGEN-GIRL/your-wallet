@@ -2129,6 +2129,10 @@ pub struct ControlSet {
     /// and ids only, never a value.
     #[cfg(test)]
     shell_log: core::cell::RefCell<Vec<String>>,
+    /// Tests only (2026-11-18, S3 A1–A3 review): every id the logic read with
+    /// [`ControlSet::checked`], so the census can tie its check-box list to the code.
+    #[cfg(test)]
+    checked_reads: core::cell::RefCell<Vec<u16>>,
 }
 
 impl ControlSet {
@@ -2198,8 +2202,17 @@ impl ControlSet {
         core::mem::take(&mut *self.shell_log.borrow_mut())
     }
 
+    /// Tests: the ids read with [`ControlSet::checked`] since the last call.
+    #[cfg(test)]
+    pub fn take_checked_reads(&self) -> Vec<u16> {
+        core::mem::take(&mut *self.checked_reads.borrow_mut())
+    }
+
     /// Replaces a control's text (non-secret values only).
     pub fn set_text(&self, id: u16, text: &str) {
+        // Tests: the length in UTF-16 units, as the edit holds it (2026-11-18 S3 A1–A3 review:
+        // a plain copy counts `char`s instead, `App::copy`; S3 B4's effect log keeps both rules
+        // byte for byte).
         #[cfg(test)]
         self.record(format!("set_text {id} len={}", text.encode_utf16().count()));
         if let Some((_, control)) = self.controls.iter().find(|(ctl, _)| ctl.id == id) {
@@ -2247,6 +2260,8 @@ impl ControlSet {
     /// Whether a check box or radio is checked.
     #[must_use]
     pub fn checked(&self, id: u16) -> Option<bool> {
+        #[cfg(test)]
+        self.checked_reads.borrow_mut().push(id);
         self.controls
             .iter()
             .find(|(ctl, _)| ctl.id == id)
