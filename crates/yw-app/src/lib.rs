@@ -51,6 +51,7 @@ pub mod network;
 pub mod received;
 pub mod rpc;
 pub mod settings;
+pub mod shell_msg;
 pub mod sol;
 pub mod store;
 pub mod text;

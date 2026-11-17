@@ -27,12 +27,12 @@
 //! in placed order ([`tab_target`]; a radio group's checked button, [`radio_entry`]), scrolling it
 //! into view, and every focus moved by the keyboard ends fully in view ([`reveal_offset`]).
 //!
-//! [`WM_YW_NAV_KEY`]: crate::events::WM_YW_NAV_KEY
+//! [`WM_YW_NAV_KEY`]: crate::shell_msg::WM_YW_NAV_KEY
 
 use yw_win::ui::{Window, wheel_scroll_lines};
 
 use crate::app::App;
-use crate::events::NavKey;
+use crate::shell_msg::NavKey;
 use crate::ui::main_window::{is_tab_stop, radio_state};
 
 /// Main window timer of the wheel glide (the main tick is 1).
@@ -574,7 +574,7 @@ mod tests {
         // Closed: no entries.
         assert_eq!(menu_step(&[None, Some(true), None], 1, false), None);
     }
-    use crate::events::NavKey;
+    use crate::shell_msg::NavKey;
 
     /// Review 2026-11-10: Tab into S11's asset radios (ETH first, USDC checked) focused the
     /// unchecked ETH, which Windows answers with a click; the group is entered on USDC.

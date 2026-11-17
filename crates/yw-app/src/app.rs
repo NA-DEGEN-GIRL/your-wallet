@@ -33,14 +33,17 @@ use crate::apikeys::{
 use crate::errors::{ErrorCode, key_code, vault_code};
 use crate::events::{
     KeyJob, KeyOutcome, KeyQueue, KeyResult, LockSignal, MetaLoaded, RevealWhat, RpcEvent, UiEvent,
-    WM_YW_ACTIVATE, WM_YW_EVENTS, WM_YW_LOCK_SHORTCUT, WM_YW_NAV_KEY, WM_YW_SHORTCUT,
-    WM_YW_TAB_SHORTCUT, accept_result,
+    accept_result,
 };
 use crate::lock::{IdleTracker, LockReason, SystemAction, system_action};
 use crate::logging::{self, Field};
 use crate::meta::{EvmAccountPref, Meta, RawAccount};
 use crate::network::NetworkId;
 use crate::settings::{LogLevel, RpcTemplate, Settings};
+use crate::shell_msg::{
+    WM_YW_ACTIVATE, WM_YW_EVENTS, WM_YW_LOCK_SHORTCUT, WM_YW_NAV_KEY, WM_YW_SHORTCUT,
+    WM_YW_TAB_SHORTCUT,
+};
 use crate::text::is_valid_label;
 use crate::ui::main_window::{ControlSet, Placed, Tone, layout, paint};
 use crate::ui::secret::{
@@ -1198,7 +1201,7 @@ impl App {
         let window = create_window(&spec, handler)?;
         let mut state = app.borrow_mut();
         state.self_ref = Rc::downgrade(app);
-        window.set_timer(MAIN_TIMER_ID, crate::events::MAIN_TIMER_MS)?;
+        window.set_timer(MAIN_TIMER_ID, crate::shell_msg::MAIN_TIMER_MS)?;
         state.main = Some(window);
         Ok(())
     }
@@ -1662,8 +1665,8 @@ impl App {
         if self.secret.is_some() {
             return;
         }
-        match crate::events::Shortcut::from_code(code) {
-            Some(crate::events::Shortcut::Refresh) if self.screen == Screen::Main => {
+        match crate::shell_msg::Shortcut::from_code(code) {
+            Some(crate::shell_msg::Shortcut::Refresh) if self.screen == Screen::Main => {
                 let _ = self.press_shown(&[
                     crate::ui::screens_evm::ids::REFRESH,
                     crate::ui::screens_sol::ids::REFRESH,
@@ -1671,7 +1674,7 @@ impl App {
                     crate::ui::screens_zec::ids::REFRESH,
                 ]);
             }
-            Some(crate::events::Shortcut::Settings) => {
+            Some(crate::shell_msg::Shortcut::Settings) => {
                 let _ = self.press_shown(&[crate::ui::screens::ids::OPEN_SETTINGS]);
             }
             _ => {}
@@ -1846,7 +1849,7 @@ impl App {
     /// timer period — a held key (Ctrl+2 repeating) marks them due at the repeat rate, and
     /// the RPC worker runs jobs one after another; the tick starts what this leaves.
     pub(crate) fn reads_due(&mut self, now: u64) {
-        if now.saturating_sub(self.reads_due_ms) < u64::from(crate::events::MAIN_TIMER_MS) {
+        if now.saturating_sub(self.reads_due_ms) < u64::from(crate::shell_msg::MAIN_TIMER_MS) {
             return;
         }
         let evm = self.evm_balance_tick(now);

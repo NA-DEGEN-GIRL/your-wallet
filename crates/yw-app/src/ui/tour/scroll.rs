@@ -25,7 +25,8 @@ use yw_win::ui::capture::{
 
 use super::{UNLOCKED, main_hwnd, pump, register_classes, tour_apikeys, tour_meta, tour_settings};
 use crate::app::{App, Paths, Screen, SettingsSection};
-use crate::events::{EventQueue, RpcEvent, UiEvent, WM_YW_EVENTS};
+use crate::events::{EventQueue, RpcEvent, UiEvent};
+use crate::shell_msg::WM_YW_EVENTS;
 
 const SB_LINEDOWN: u16 = 1;
 const SB_PAGEUP: u16 = 2;

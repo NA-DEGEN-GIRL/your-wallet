@@ -19,13 +19,14 @@ use yw_app::app_approval::{APPROVAL_CLASS, PANEL_CLASS};
 use yw_app::app_browser::BrowserUi;
 use yw_app::build_info::start_text;
 use yw_app::errors::ErrorCode;
-use yw_app::events::{
-    EventQueue, KeyJob, NavKey, Shortcut, UiEvent, WM_YW_ACTIVATE, WM_YW_EVENTS,
-    WM_YW_LOCK_SHORTCUT, WM_YW_NAV_KEY, WM_YW_SHORTCUT, WM_YW_TAB_SHORTCUT, chain_tab_key,
-};
+use yw_app::events::{EventQueue, KeyJob, UiEvent};
 use yw_app::logging::{self, Field};
 use yw_app::rpc::{RPC_TIMEOUTS, Transport};
 use yw_app::settings::LogLevel;
+use yw_app::shell_msg::{
+    NavKey, Shortcut, WM_YW_ACTIVATE, WM_YW_EVENTS, WM_YW_LOCK_SHORTCUT, WM_YW_NAV_KEY,
+    WM_YW_SHORTCUT, WM_YW_TAB_SHORTCUT, chain_tab_key,
+};
 use yw_app::workers::key::{KeyWorker, run as run_key_worker};
 use yw_app::workers::rpc::{RpcWorker, run as run_rpc_worker};
 use yw_core::lang::Lang;

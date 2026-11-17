@@ -2129,7 +2129,7 @@ fn tab_shortcuts_switch_chain_tabs_on_the_main_screen() {
 /// Review 2026-11-07 F2: Ctrl+4 reaches the Zcash tab (the loop observer stopped at Ctrl+3).
 #[test]
 fn ctrl_4_is_the_zcash_tab() {
-    use crate::events::chain_tab_key;
+    use crate::shell_msg::chain_tab_key;
     assert_eq!(chain_tab_key(0x31), Some(1));
     assert_eq!(chain_tab_key(0x34), Some(4));
     assert_eq!(chain_tab_key(0x30), None);
@@ -2274,7 +2274,7 @@ fn reads_due_starts_a_due_balance_read_without_the_tick() {
     app.evm_tick(now.saturating_add(100));
     assert_eq!(sent(&rx), [other]);
     // A period later the early start is back; never while S10 is not the screen.
-    let later = now.saturating_add(u64::from(crate::events::MAIN_TIMER_MS));
+    let later = now.saturating_add(u64::from(crate::shell_msg::MAIN_TIMER_MS));
     app.on_command(chip(&app, 1));
     app.screen = Screen::Settings(super::SettingsSection::Network);
     app.reads_due(later);
