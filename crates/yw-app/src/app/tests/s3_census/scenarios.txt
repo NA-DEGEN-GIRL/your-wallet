@@ -1,0 +1,57 @@
+# S3 scenarios (2026-11-18): send timer, plain copies (command = the copy mark's anchor), S22 phrase, card name; then vault lifecycles (key ~ = jobs left to the worker)
+evm-timer 0 setup | Unlocked{alt_passphrase:false} | Main | items#8b1b9d42dae127f0 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+evm-timer 1 press 900 | Unlocked{alt_passphrase:false} | Send | items#44e949ecab1c0785 | banners - | info - | copied - | key - | rpc HyperCore | launch 0 | refresh | command 900
+evm-timer 2 type 910 len=4 | Unlocked{alt_passphrase:false} | Send | items#000c1187ce4173b8 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh; timer.start send 500 | command 900
+evm-timer 3 type 910 len=42 | Unlocked{alt_passphrase:false} | Send | items#463d264c35f215a6 | banners - | info - | copied - | key - | rpc - | launch 0 | timer.start send 40 | command 900
+evm-timer 4 type 911 len=2 | Unlocked{alt_passphrase:false} | Send | items#73974bae36865dd8 | banners - | info - | copied - | key - | rpc - | launch 0 | timer.start send 500 | command 900
+evm-timer 5 type 911 len=3 | Unlocked{alt_passphrase:false} | Send | items#d8aec34715837764 | banners - | info - | copied - | key - | rpc - | launch 0 | timer.start send 40 | command 900
+evm-timer 6 call fire-late | Unlocked{alt_passphrase:false} | Send | items#f1f70de8ae07ee44 | banners - | info - | copied - | key - | rpc - | launch 0 | timer.stop send; refresh | command 900
+evm-timer 7 type 911 len=4 | Unlocked{alt_passphrase:false} | Send | items#19432ad7a226f618 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh; timer.start send 40 | command 900
+evm-timer 8 call fire-early | Unlocked{alt_passphrase:false} | Send | items#19432ad7a226f618 | banners - | info - | copied - | key - | rpc - | launch 0 | timer.stop send; refresh; timer.start send 250 | command 900
+evm-timer 9 type 911 len=0 | Unlocked{alt_passphrase:false} | Send | items#588914c53208e5a7 | banners - | info - | copied - | key - | rpc - | launch 0 | timer.start send 40 | command 900
+sol-timer 0 setup | Unlocked{alt_passphrase:false} | Main | items#82fed2061e8a217e | banners - | info - | copied - | key - | rpc - | launch 0 | -
+sol-timer 1 press 7005 | Unlocked{alt_passphrase:false} | SolSend | items#48ae2b99b5d7e937 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh | command 7005
+sol-timer 2 type 7020 len=3 | Unlocked{alt_passphrase:false} | SolSend | items#3324b026deb43a05 | banners - | info - | copied - | key - | rpc - | launch 0 | timer.start send 500 | command 7005
+sol-timer 3 type 7020 len=43 | Unlocked{alt_passphrase:false} | SolSend | items#52ee3caaa072ea69 | banners - | info - | copied - | key - | rpc - | launch 0 | timer.start send 40 | command 7005
+sol-timer 4 type 7021 len=2 | Unlocked{alt_passphrase:false} | SolSend | items#6d233b58c92effd9 | banners - | info - | copied - | key - | rpc - | launch 0 | timer.start send 500 | command 7005
+sol-timer 5 type 7021 len=3 | Unlocked{alt_passphrase:false} | SolSend | items#94816867d3605841 | banners - | info - | copied - | key - | rpc - | launch 0 | timer.start send 40 | command 7005
+sol-timer 6 call fire | Unlocked{alt_passphrase:false} | SolSend | items#fa10ac1b77f12878 | banners - | info - | copied - | key - | rpc - | launch 0 | timer.stop send; refresh | command 7005
+copy-evm 0 setup | Unlocked{alt_passphrase:false} | Main | items#8b1b9d42dae127f0 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+copy-evm 1 press 1000 | Unlocked{alt_passphrase:false} | Main | items#8b1b9d42dae127f0 | banners - | info - | copied - | key - | rpc - | launch 0 | copy len=42 address=true; refresh | command 1000
+copy-evm 2 press 901 | Unlocked{alt_passphrase:false} | Receive | items#dca4a4fcdb57a570 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh | command 901
+copy-sol 0 setup | Unlocked{alt_passphrase:false} | Main | items#82fed2061e8a217e | banners - | info - | copied - | key - | rpc - | launch 0 | -
+copy-sol 1 press 7014 | Unlocked{alt_passphrase:false} | Main | items#82fed2061e8a217e | banners - | info - | copied - | key - | rpc - | launch 0 | copy len=43 address=true; refresh | command 7014
+copy-btc 0 setup | Unlocked{alt_passphrase:false} | Main | items#f9c9c8f2e14aaa3d | banners - | info - | copied - | key - | rpc - | launch 0 | -
+copy-btc 1 press 9034 | Unlocked{alt_passphrase:false} | Main | items#f9c9c8f2e14aaa3d | banners - | info - | copied - | key - | rpc - | launch 0 | copy len=42 address=true; refresh*2 | command 9034
+copy-btc 2 press 9060 | Unlocked{alt_passphrase:false} | Main | items#f9c9c8f2e14aaa3d | banners - | info - | copied - | key - | rpc - | launch 0 | refresh | command 9060
+copy-zec 0 setup | Unlocked{alt_passphrase:false} | Main | items#cc462eb4139fe2bc | banners - | info - | copied - | key - | rpc - | launch 0 | -
+copy-zec 1 press 8018 | Unlocked{alt_passphrase:false} | Main | items#cc462eb4139fe2bc | banners - | info - | copied - | key - | rpc - | launch 0 | copy len=35 address=true; refresh | command 8018
+copy-zec 2 press 8005 | Unlocked{alt_passphrase:false} | Main | items#cc462eb4139fe2bc | banners - | info - | copied - | key - | rpc - | launch 0 | copy len=35 address=true; refresh | command 8005
+reset-phrase 0 setup | Unlocked{alt_passphrase:false} | Settings(Security) | items#79cb4c7c76d4721f | banners - | info - | copied - | key - | rpc - | launch 0 | -
+reset-phrase 1 press 13400 | Unlocked{alt_passphrase:false} | Reset | items#5693227e3db153b8 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh | command 13400
+reset-phrase 2 type 13401 len=5 | Unlocked{alt_passphrase:false} | Reset | items#5693227e3db153b8 | banners - | info - | copied - | key - | rpc - | launch 0 | - | command 13400
+reset-phrase 3 type 13401 len=3 | Unlocked{alt_passphrase:false} | Reset | items#fbd6e44e0bc6ad89 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh | command 13400
+reset-phrase 4 check 13402 true | Unlocked{alt_passphrase:false} | Reset | items#56791cee5dc44dbf | banners - | info - | copied - | key - | rpc - | launch 0 | refresh | command 13402
+reset-phrase 5 check 13402 false | Unlocked{alt_passphrase:false} | Reset | items#fbd6e44e0bc6ad89 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh | command 13402
+reset-phrase 6 press 13404 | Unlocked{alt_passphrase:false} | Settings(Security) | items#79cb4c7c76d4721f | banners - | info - | copied - | key - | rpc - | launch 0 | refresh | command 13404
+card-name 0 setup | Unlocked{alt_passphrase:false} | Settings(YubiKey) | items#ba5b09803afb4c5e | banners - | info - | copied - | key - | rpc - | launch 0 | -
+card-name 1 press 13531 | Unlocked{alt_passphrase:false} | Settings(YubiKey) | items#c21e9efd91811ce9 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh | command 13531
+card-name 2 type 13526 len=8 | Unlocked{alt_passphrase:false} | Settings(YubiKey) | items#c21e9efd91811ce9 | banners - | info - | copied - | key - | rpc - | launch 0 | - | command 13531
+card-name 3 press 13524 | Unlocked{alt_passphrase:false} | Settings(YubiKey) | items#861d3896fbaa6e62 | banners - | info 4eeb7842 | copied - | key - | rpc - | launch 0 | refresh | command 13524
+card-name 4 type 13526 len=8 | Unlocked{alt_passphrase:false} | Settings(YubiKey) | items#861d3896fbaa6e62 | banners - | info 4eeb7842 | copied - | key - | rpc - | launch 0 | - | command 13524
+card-name 5 enter 13526 | Unlocked{alt_passphrase:false} | Settings(YubiKey) | items#ac93151f585ce629 | banners - | info - | copied - | key SaveMeta | rpc - | launch 0 | refresh | command 13524
+card-name 6 press 13530 | Unlocked{alt_passphrase:false} | Settings(YubiKey) | items#09769852a042e09b | banners - | info - | copied - | key - | rpc - | launch 0 | refresh | command 13530
+card-name 7 type 13526 len=6 | Unlocked{alt_passphrase:false} | Settings(YubiKey) | items#09769852a042e09b | banners - | info - | copied - | key - | rpc - | launch 0 | - | command 13530
+card-name 8 press 13524 | Unlocked{alt_passphrase:false} | Settings(YubiKey) | items#84e72999de53275b | banners - | info c18778ae | copied - | key - | rpc - | launch 0 | refresh | command 13524
+card-name 9 press 13525 | Unlocked{alt_passphrase:false} | Settings(YubiKey) | items#ac93151f585ce629 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh | command 13525
+payload-prev 0 loaded | NoVault | FirstRun | items#7639dd0088464780 | banners - | info - | copied - | key ~ | rpc - | launch 0 | -
+payload-prev 1 created | Unlocked{alt_passphrase:false} | Done | items#372f1f3594f164d1 | banners 1#c40c6cbe | info - | copied - | key ~ | rpc - | launch 0 | refresh*10
+payload-prev 2 lock | Locked | Locked | items#5d40d853aee37625 | banners 1#c40c6cbe | info - | copied - | key ~ | rpc BtcReset | launch 0 | refresh*2
+payload-prev 3 unlock damaged | Unlocking | Locked | items#5d40d853aee37625 | banners 1#c40c6cbe | info - | copied - | key ~ | rpc - | launch 0 | -
+payload-prev 4 recovery | Corrupt{prev_available:true} | Recovery | items#61544b5d86b719a6 | banners 2#0906fb42 | info - | copied - | key ~ | rpc - | launch 0 | refresh
+payload-prev 5 recover wrong | Corrupt{prev_available:true} | Recovery | items#61544b5d86b719a6 | banners 2#0906fb42 | info - | copied - | key ~ | rpc - | launch 0 | -
+payload-prev 6 recovered | BackupPending | BackupPending | items#aa8fd840aa955a23 | banners 2#0906fb42 | info ee47b9f8 | copied - | key ~ | rpc - | launch 0 | refresh*2
+lock-create 1 create | NoVault | Processing#2e3cc350 | items#d9737339ead79592 | banners - | info - | copied - | key ~ | rpc - | launch 0 | refresh
+lock-create 2 lock | NoVault | FirstRun | items#7639dd0088464780 | banners - | info - | copied - | key ~ | rpc BtcReset | launch 0 | refresh
+lock-create 3 old result | NoVault | FirstRun | items#7639dd0088464780 | banners - | info - | copied - | key ~ | rpc - | launch 0 | -
+lock-create 4 loaded | Locked | Locked | items#4a8154399ff3d8ef | banners - | info - | copied - | key ~ | rpc - | launch 0 | refresh

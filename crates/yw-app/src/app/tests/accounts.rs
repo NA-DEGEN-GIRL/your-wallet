@@ -61,7 +61,7 @@ fn piv() -> CardSlot {
 
 /// The owner's two cards from one mnemonic: A holds EVM 0, Solana 0 and Bitcoin address 0, B
 /// holds EVM 0, Solana 0 and Zcash address 0.
-fn owner_cards() -> Vec<HwKeyRecord> {
+pub(super) fn owner_cards() -> Vec<HwKeyRecord> {
     let record = |serial: u32, slots: Vec<RecordedSlot>| HwKeyRecord {
         serial,
         firmware: Firmware {

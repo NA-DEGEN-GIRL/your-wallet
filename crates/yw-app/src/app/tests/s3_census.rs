@@ -40,6 +40,7 @@ const COMMANDS: &str = include_str!("s3_census/commands.txt");
 const EDITS: &str = include_str!("s3_census/edits.txt");
 const CHECKS: &str = include_str!("s3_census/checks.txt");
 const WRITES: &str = include_str!("s3_census/writes.txt");
+const SCENARIOS: &str = include_str!("s3_census/scenarios.txt");
 
 /// The 65 edits of the main window (spec/15 §11.1): 58 plain and the 7 masked credential
 /// edits of [`MASKED`].
@@ -219,18 +220,32 @@ impl Census {
 
     /// What the app shows and asked for since the last call.
     pub(super) fn observe(&self, app: &App, rx: &Receiver<RpcJob>) -> Seen {
+        self.observe_with(app, rx, true)
+    }
+
+    /// [`Census::observe`]; `keys = false` is a vault-backed step: the key queue is left to the
+    /// key worker (`key ~`), and the wall-clock text of the vault file loses its time: the
+    /// `vault.ywv` facts line ([`redact_wall_time`]) and a set-aside vault's name
+    /// ([`redact_corrupt`]).
+    pub(super) fn observe_with(&self, app: &App, rx: &Receiver<RpcJob>, keys: bool) -> Seen {
         let calls = compress(&app.controls.take_shell_log());
-        let items = self.normalize(&format!("{:?}", app.items()));
-        let banners = self.normalize(&format!("{:?}", app.banners));
-        let info = app.info.as_deref().map(|info| self.normalize(info));
+        let clean = |text: &str| {
+            let text = self.normalize(text);
+            if keys {
+                text
+            } else {
+                redact_wall_time(&redact_corrupt(&text))
+            }
+        };
+        let items = clean(&format!("{:?}", app.items()));
+        let banners = clean(&format!("{:?}", app.banners));
+        let info = app.info.as_deref().map(clean);
         let copied = app.copied.map_or_else(
             || "-".to_owned(),
             |copied| format!("{}/{}", copied.id, copied.address),
         );
-        let keys: Vec<&str> = key_jobs(app)
-            .iter()
-            .map(crate::events::KeyJob::name)
-            .collect();
+        let jobs = if keys { key_jobs(app) } else { Vec::new() };
+        let names: Vec<&str> = jobs.iter().map(crate::events::KeyJob::name).collect();
         let rpc: Vec<&str> = rx.try_iter().map(|job| job.name()).collect();
         let launched = match &app.explorer_ui.launcher {
             Launcher::Record(urls) => urls.len(),
@@ -248,7 +263,7 @@ impl Census {
             },
             info.map_or_else(|| "-".to_owned(), |info| hash(&info, 8)),
             copied,
-            list(&keys),
+            if keys { list(&names) } else { "~".to_owned() },
             list(&rpc),
             launched,
         );
@@ -284,6 +299,50 @@ impl Drop for Census {
         TOUR_EXTENSION_DIR.with(|dir| *dir.borrow_mut() = None);
         let _ = std::fs::remove_dir_all(&self.root);
     }
+}
+
+/// `text` with every local time `YYYY-MM-DD HH:MM` (the `vault.ywv` facts line of S07 and the
+/// security settings, `ui::screens::vault_file_text`) replaced by `<time>`.
+fn redact_wall_time(text: &str) -> String {
+    const SHAPE: &[u8; 16] = b"0000-00-00 00:00";
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut start = 0;
+    let mut at = 0;
+    while let Some(window) = bytes.get(at..at + SHAPE.len()) {
+        let matches = window.iter().zip(SHAPE).all(|(byte, shape)| {
+            if *shape == b'0' {
+                byte.is_ascii_digit()
+            } else {
+                byte == shape
+            }
+        });
+        if matches {
+            out.push_str(text.get(start..at).unwrap_or_default());
+            out.push_str("<time>");
+            at += SHAPE.len();
+            start = at;
+        } else {
+            at += 1;
+        }
+    }
+    out.push_str(text.get(start..).unwrap_or_default());
+    out
+}
+
+/// `text` with the time in a set-aside vault's name (`vault.ywv.corrupt-<time>`) replaced.
+fn redact_corrupt(text: &str) -> String {
+    const MARK: &str = ".corrupt-";
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(MARK) {
+        let (head, tail) = rest.split_at(at + MARK.len());
+        out.push_str(head);
+        out.push_str("<time>");
+        rest = tail.trim_start_matches(|c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    }
+    out.push_str(rest);
+    out
 }
 
 /// The key jobs queued since the last call (never run: no worker, no card reader).
@@ -599,6 +658,7 @@ fn print() {
     std::fs::write(out.join("edits.txt"), edits_golden()).unwrap();
     std::fs::write(out.join("checks.txt"), checks_golden()).unwrap();
     std::fs::write(out.join("writes.txt"), writes_golden()).unwrap();
+    std::fs::write(out.join("scenarios.txt"), scenarios_golden()).unwrap();
 }
 
 // ----- A2: edits, check boxes, programmatic writes ---------------------------------------
@@ -1233,4 +1293,397 @@ fn check_census_matches_the_golden() {
 #[test]
 fn write_scenarios_match_the_golden() {
     compare("writes", &writes_golden(), WRITES);
+}
+
+// ----- A3: send timer, copy, dApp view, no secrets, lifecycle --------------------------
+
+/// The secp256k1 generator, compressed (a public constant; a Zcash transparent test key).
+const GENERATOR: &str = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+
+/// A Zcash mainnet account of the default source.
+fn zec_wallet(app: &mut App) {
+    use yw_core::zec::{ZecAccount, ZecKeySource, ZecNetwork};
+    app.settings.zcash.enabled = true;
+    app.settings.zcash.network = ZecNetwork::Mainnet;
+    let pubkey = yw_core::hex::decode_array::<33>(GENERATOR).unwrap();
+    if let Some(meta) = app.meta.as_mut() {
+        meta.prefs.tab = Tab::Zec;
+        meta.zcash.set(ZecAccount {
+            network: ZecNetwork::Mainnet,
+            source: ZecKeySource::DEFAULT,
+            pubkey,
+        });
+    }
+}
+
+/// [`btc_wallet`] whose account already gave out receive address 0 (the card shows it).
+fn btc_wallet_with_address(app: &mut App) {
+    btc_wallet(app);
+    if let Some(btc) = app.meta.as_mut().and_then(|meta| meta.btc.as_mut()) {
+        btc.receive_address().unwrap();
+    }
+}
+
+/// The send timer fired after the whole pause (the EVM edit is quoted).
+fn fire_late(app: &mut App) {
+    app.evm.send.dirty_ms = Some(0);
+    app.on_send_timer();
+}
+
+/// The send timer fired at once (the EVM edit is validated locally and waits again).
+fn fire_early(app: &mut App) {
+    app.evm.send.dirty_ms = Some(u64::MAX);
+    app.on_send_timer();
+}
+
+fn fire(app: &mut App) {
+    app.on_send_timer();
+}
+
+fn reset_phrase() -> String {
+    crate::app_reset::RESET_PHRASE.ko.to_owned()
+}
+
+fn two_cards(app: &mut App) {
+    app.card.records = super::accounts::owner_cards();
+}
+
+/// T6, T7 and the headless lifecycle scenarios (T10 without a vault): the send-form timer, the
+/// plain copies with the control they answer at (`command` = the copy mark's anchor), S22's
+/// typed phrase and a `YubiKey` card name.
+fn timer_copy_scenarios() -> Vec<Scenario> {
+    use crate::ui::{screens_btc as btc, screens_evm as evm, screens_sol as sol};
+    use crate::ui::{screens_yubikey as yk, screens_zec as zec};
+    use Step::{Call, Check, Enter, Press, Type, TypeWith};
+    vec![
+        Scenario {
+            name: "evm-timer",
+            base: Base::Main(Tab::Evm, false),
+            setup: no_setup,
+            steps: vec![
+                Press(evm::ids::SEND_OPEN),
+                Type(evm::ids::SEND_TO_EDIT, "0x12"),
+                Type(evm::ids::SEND_TO_EDIT, EVM_TO),
+                Type(evm::ids::SEND_AMOUNT_EDIT, "0."),
+                Type(evm::ids::SEND_AMOUNT_EDIT, "0.5"),
+                Call("fire-late", fire_late),
+                Type(evm::ids::SEND_AMOUNT_EDIT, "0.25"),
+                Call("fire-early", fire_early),
+                Type(evm::ids::SEND_AMOUNT_EDIT, ""),
+            ],
+        },
+        Scenario {
+            name: "sol-timer",
+            base: Base::Main(Tab::Sol, false),
+            setup: no_setup,
+            steps: vec![
+                Press(sol::ids::SEND_OPEN),
+                Type(sol::ids::SEND_TO_EDIT, "abc"),
+                TypeWith(sol::ids::SEND_TO_EDIT, sol_to),
+                Type(sol::ids::SEND_AMOUNT_EDIT, "0."),
+                Type(sol::ids::SEND_AMOUNT_EDIT, "0.1"),
+                Call("fire", fire),
+            ],
+        },
+        Scenario {
+            name: "copy-evm",
+            base: Base::Main(Tab::Evm, false),
+            setup: no_setup,
+            steps: vec![Press(evm::ids::COPY_ADDRESS), Press(evm::ids::RECEIVE_OPEN)],
+        },
+        Scenario {
+            name: "copy-sol",
+            base: Base::Main(Tab::Sol, false),
+            setup: no_setup,
+            steps: vec![Press(sol::ids::COPY_ADDRESS)],
+        },
+        Scenario {
+            name: "copy-btc",
+            base: Base::Main(Tab::Btc, false),
+            setup: btc_wallet_with_address,
+            steps: vec![Press(btc::ids::CARD_COPY), Press(btc::ids::COPY_ADDRESS)],
+        },
+        Scenario {
+            name: "copy-zec",
+            base: Base::Main(Tab::Zec, false),
+            setup: zec_wallet,
+            steps: vec![Press(zec::ids::CARD_COPY), Press(zec::ids::COPY_ADDRESS)],
+        },
+        Scenario {
+            name: "reset-phrase",
+            base: Base::Settings(SettingsSection::Security),
+            setup: no_setup,
+            steps: vec![
+                Press(screens_reset::ids::RESET_OPEN),
+                Type(screens_reset::ids::RESET_PHRASE, "wrong"),
+                TypeWith(screens_reset::ids::RESET_PHRASE, reset_phrase),
+                Check(screens_reset::ids::RESET_SETTINGS_CHECK, true),
+                Check(screens_reset::ids::RESET_SETTINGS_CHECK, false),
+                Press(screens_reset::ids::RESET_CANCEL),
+            ],
+        },
+        Scenario {
+            name: "card-name",
+            base: Base::Settings(SettingsSection::YubiKey),
+            setup: two_cards,
+            steps: vec![
+                Press(yk::ids::RENAME_CARD_BASE + 1),
+                Type(yk::ids::CARD_NAME_EDIT, "#8800011"),
+                Press(yk::ids::CARD_NAME_SAVE),
+                Type(yk::ids::CARD_NAME_EDIT, " backup "),
+                Enter(yk::ids::CARD_NAME_EDIT),
+                Press(yk::ids::RENAME_CARD_BASE),
+                Type(yk::ids::CARD_NAME_EDIT, "backup"),
+                Press(yk::ids::CARD_NAME_SAVE),
+                Press(yk::ids::CARD_NAME_CANCEL),
+            ],
+        },
+    ]
+}
+
+/// The same app's last pressed control (the anchor a copy marks), appended to a step.
+fn anchored(out: &mut String, census: &Census, scenario: &Scenario) {
+    let (mut app, rx) = census.state(scenario.base);
+    (scenario.setup)(&mut app);
+    let seen = census.observe(&app, &rx);
+    let _ = writeln!(out, "{} 0 setup | {}", scenario.name, seen.line());
+    for (index, step) in scenario.steps.iter().enumerate() {
+        let what = step.run(&mut app);
+        let seen = census.observe(&app, &rx);
+        let _ = writeln!(
+            out,
+            "{} {} {what} | {} | command {}",
+            scenario.name,
+            index + 1,
+            seen.line(),
+            app.command
+        );
+    }
+    drop(app);
+    census.guard();
+}
+
+/// A vault-backed app on the census folder: the real key worker on this thread
+/// ([`super::Harness`]), card readers none, and an RPC channel.
+fn harness(census: &Census) -> (super::Harness, Receiver<RpcJob>) {
+    census.fresh_data();
+    census.guard();
+    let mut app = app_at(&census.data);
+    let (tx, rx) = channel();
+    app.rpc_tx = Some(tx);
+    let worker = crate::workers::key::KeyWorker::new(&census.data, super::file_deps());
+    app.key(crate::events::KeyJob::Load);
+    let mut harness = super::Harness {
+        app,
+        worker,
+        dir: census.data.clone(),
+        phrase: None,
+        address: None,
+    };
+    harness.pump();
+    let _ = harness.app.controls.take_shell_log();
+    (harness, rx)
+}
+
+/// The observation of a vault-backed step: as [`Census::observe`] but the key queue stays for
+/// the key worker (`key ~`).
+fn observe_harness(census: &Census, h: &super::Harness, rx: &Receiver<RpcJob>) -> String {
+    census.observe_with(&h.app, rx, false).line()
+}
+
+/// One golden line of a vault-backed step.
+fn harness_step(
+    out: &mut String,
+    census: &Census,
+    h: &super::Harness,
+    rx: &Receiver<RpcJob>,
+    name: &str,
+    step: &str,
+) {
+    let _ = writeln!(out, "{name} {step} | {}", observe_harness(census, h, rx));
+}
+
+/// T10 with a vault (Argon2): `.prev` recovery after payload damage, and a lock while
+/// `CreateWallet` runs (the flows of `payload_damage_keeps_prev_recovery_reachable` and
+/// `lock_during_create_or_import_reports_the_new_vault`).
+fn lifecycle_golden(census: &Census, out: &mut String) {
+    use super::{LockReason, PasswordAction, Purpose, WALLET_PW, WRONG};
+    let name = "payload-prev";
+    let (mut h, rx) = harness(census);
+    harness_step(out, census, &h, &rx, name, "0 loaded");
+    h.create_and_confirm();
+    harness_step(out, census, &h, &rx, name, "1 created");
+    h.app.lock(LockReason::Manual);
+    h.pump();
+    harness_step(out, census, &h, &rx, name, "2 lock");
+    let mut bytes = std::fs::read(h.vault_file()).unwrap();
+    bytes[200] ^= 1;
+    std::fs::write(h.vault_file(), &bytes).unwrap();
+    h.submit(Purpose::Unlock, &[WALLET_PW]);
+    harness_step(out, census, &h, &rx, name, "3 unlock damaged");
+    h.pump();
+    harness_step(out, census, &h, &rx, name, "4 recovery");
+    h.app.on_command(screens::ids::RECOVER);
+    h.submit(Purpose::ConfirmPassword(PasswordAction::Recover), &[WRONG]);
+    h.pump();
+    harness_step(out, census, &h, &rx, name, "5 recover wrong");
+    h.submit(
+        Purpose::ConfirmPassword(PasswordAction::Recover),
+        &[WALLET_PW],
+    );
+    h.pump();
+    harness_step(out, census, &h, &rx, name, "6 recovered");
+    drop(h);
+
+    let name = "lock-create";
+    let (mut h, rx) = harness(census);
+    h.submit(Purpose::CreatePassword, &[WALLET_PW]);
+    harness_step(out, census, &h, &rx, name, "1 create");
+    let running = h.run_one();
+    h.app.lock(LockReason::SessionLock);
+    harness_step(out, census, &h, &rx, name, "2 lock");
+    h.deliver(running);
+    harness_step(out, census, &h, &rx, name, "3 old result");
+    h.pump();
+    harness_step(out, census, &h, &rx, name, "4 loaded");
+    drop(h);
+    census.guard();
+}
+
+fn scenarios_golden() -> String {
+    let census = Census::new("scenarios");
+    let mut out = String::from(
+        "# S3 scenarios (2026-11-18): send timer, plain copies (command = the copy mark's \
+         anchor), S22 phrase, card name; then vault lifecycles (key ~ = jobs left to the worker)\n",
+    );
+    for scenario in timer_copy_scenarios() {
+        anchored(&mut out, &census, &scenario);
+    }
+    lifecycle_golden(&census, &mut out);
+    out
+}
+
+/// A dispatcher with no pipe server and no read workers (as `app_browser`'s tests build it).
+fn headless_browser() -> crate::app_browser::BrowserUi {
+    use std::sync::Arc;
+    let events = Arc::new(crate::events::EventQueue::new(Box::new(|| {})));
+    crate::app_browser::BrowserUi {
+        core: crate::browser::BrowserCore::new(
+            "abcdefghijklmnopabcdefghijklmnop",
+            events as Arc<dyn crate::browser::DappSink>,
+            Arc::new(crate::system_clock::SystemClock),
+        ),
+        reads: Arc::new(crate::browser::read::ReadContext::new(None)),
+        server: None,
+        pipe_error: None,
+        threads: Vec::new(),
+        connections: 0,
+        waiters: std::collections::HashMap::new(),
+        broadcasts: std::collections::HashMap::new(),
+        sol_broadcasts: std::collections::HashMap::new(),
+        dapp_unlock: false,
+        unlocked: false,
+        locking: false,
+        grant_write: crate::app_browser::GrantWrite::default(),
+        site_rows: crate::app_browser::SiteRows::default(),
+    }
+}
+
+/// T8 (S3 A3, spec/05 §4.5): with a dApp dispatcher attached, its wallet view equals the UI
+/// state after unlock, an account switch, a chain switch, `잠그기` and unlock again — only
+/// because `App::refresh` runs `sync_browser`; the test never calls it.
+#[test]
+fn dapp_view_follows_every_step_without_a_manual_sync() {
+    use super::{Purpose, WALLET_PW};
+    let census = Census::new("dapp-view");
+    let (mut h, _rx) = harness(&census);
+    h.app.browser = Some(headless_browser());
+    h.create_and_confirm();
+    assert!(h.app.browser_view_current(), "after unlock");
+    h.app.on_command(screens::ids::ADD_ACCOUNT);
+    h.pump();
+    h.app.on_command(screens::ids::ACCOUNT_BASE + 1);
+    h.pump();
+    assert!(h.app.browser_view_current(), "after the account switch");
+    h.app.on_command(screens::ids::NETWORK_BASE + 1);
+    h.pump();
+    assert!(h.app.browser_view_current(), "after the chain switch");
+    h.app.on_command(screens::ids::LOCK);
+    h.pump();
+    assert_eq!(h.app.mode, AppMode::Locked);
+    assert!(h.app.browser_view_current(), "after the lock");
+    h.submit(Purpose::Unlock, &[WALLET_PW]);
+    h.pump();
+    assert!(matches!(h.app.mode, AppMode::Unlocked { .. }));
+    assert!(h.app.browser_view_current(), "after unlocking again");
+}
+
+/// T9 (S3 A3, D13/D28): no password, recovery phrase (or two of its words in a row), template
+/// token, Alchemy or LLM key, or typed RPC URL reaches a recorded shell call or a census line —
+/// through create, backup, lock and unlock, and every credential form of the write scenarios.
+#[test]
+fn no_secret_reaches_a_recorded_line() {
+    use super::{Purpose, WALLET_PW};
+    let census = Census::new("no-secret");
+    let (mut h, rx) = harness(&census);
+    let mut lines = Vec::new();
+    h.create_and_confirm();
+    lines.extend(h.app.controls.take_shell_log());
+    lines.push(observe_harness(&census, &h, &rx));
+    h.app.on_command(screens::ids::LOCK);
+    h.pump();
+    lines.extend(h.app.controls.take_shell_log());
+    h.submit(Purpose::Unlock, &[WALLET_PW]);
+    h.pump();
+    lines.extend(h.app.controls.take_shell_log());
+    lines.push(observe_harness(&census, &h, &rx));
+    let phrase = h.phrase.clone().unwrap();
+    drop(h);
+    let mut out = String::new();
+    for scenario in write_scenarios() {
+        run_scenario(&mut out, &census, &scenario);
+    }
+    for scenario in timer_copy_scenarios() {
+        anchored(&mut out, &census, &scenario);
+    }
+    lines.extend(out.lines().map(str::to_owned));
+    assert!(lines.len() > 100, "{}", lines.len());
+    let words: Vec<&str> = phrase.split(' ').collect();
+    let mut secrets: Vec<String> = words.windows(2).map(|pair| pair.join(" ")).collect();
+    secrets.extend([
+        String::from_utf8(WALLET_PW.to_vec()).unwrap(),
+        phrase.clone(),
+        QN_TOKEN.to_owned(),
+        qn_url(),
+        alchemy_key(),
+        llm_key(),
+        rpc_url(),
+    ]);
+    for line in &lines {
+        for secret in &secrets {
+            assert!(
+                !line.contains(secret.as_str()),
+                "a secret in a recorded line"
+            );
+        }
+    }
+}
+
+/// T6, T7, T10 (S3 A3): `s3_census/scenarios.txt`.
+#[test]
+fn scenarios_match_the_golden() {
+    compare("scenarios", &scenarios_golden(), SCENARIOS);
+}
+
+#[test]
+fn wall_time_and_set_aside_names_are_redacted() {
+    assert_eq!(
+        redact_wall_time("세대 3 · 2026-11-18 03:04 저장, 2026-11-18 03:0"),
+        "세대 3 · <time> 저장, 2026-11-18 03:0"
+    );
+    assert_eq!(
+        redact_corrupt("vault.ywv.corrupt-1789000000000 그리고 meta.ywm.corrupt-7a"),
+        "vault.ywv.corrupt-<time> 그리고 meta.ywm.corrupt-<time>"
+    );
+    assert_eq!(redact_wall_time("no time"), "no time");
 }
