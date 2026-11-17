@@ -135,7 +135,7 @@ crates/
                   store.rs(`VaultStorage` 구현, 키 작업자의 Windows 플랫폼 `WinKeyPlatform`(2026-11-17), [09](09-testing.md) §2.1),
                   browser/{mod.rs(겉면), server.rs}(named pipe 서버, M5, [05](05-browser.md) §8),
                   explain_transport.rs(LLM `WinHTTP` 전송, 2026-11-17),
-                  ui/{main_window, screens/*, approval_input, secret, qr, theme, cmd_table(컨트롤 id → `Cmd` 표, 2026-11-18 S3)}.rs}
+                  ui/{main_window, screens/*, approval_input, secret, qr, theme, cmd_table(컨트롤 id → `Cmd` 표, 2026-11-18 S3; 같은 날 B5부터 편집 칸 id ↔ `EditField`/`CredField`와 누름 입력 `capture`), tour_forms(창 있는 폼 시험, 개발 전용 `#[ignore]`, 2026-11-18 S3 B5)}.rs}
                   (배치 [04](04-app-ui.md) §1.8, EVM 모듈 이름 [03](03-evm.md) §0; 2026-11-17 S2: errors·text·network·logging(형식)·
                   yubikey(순수)·wallet_files와 ui의 approval·interaction·approval_text·text_layout·secure_field는 yw-engine으로 옮겼고(E1),
                   settings·apikeys(평문 형식)·explorer·token_view·meta·hypercore·explain·rpc(공용 전송 [04](04-app-ui.md) §1.9, `rpc::evm`)·

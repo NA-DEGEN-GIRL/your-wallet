@@ -313,7 +313,7 @@ fn tour_meta() -> Meta {
     meta
 }
 
-fn register_classes() {
+pub(super) fn register_classes() {
     for (name, secret, capture) in [
         (MAIN_CLASS, false, CaptureExclusion::Preferred),
         (SECRET_INPUT_CLASS, true, CaptureExclusion::Preferred),

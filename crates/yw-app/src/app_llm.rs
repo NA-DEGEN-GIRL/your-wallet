@@ -513,6 +513,12 @@ impl App {
 
     fn llm_save_key(&mut self) {
         let units = self.controls.text_wiping(ids::KEY_EDIT, 1_024);
+        // Debug builds (S3 B5): the units captured with the press are the same.
+        #[cfg(debug_assertions)]
+        self.cred_shadow(
+            yw_engine::form::CredField::LlmKey,
+            units.as_ref().map(yw_win::mem::WipeBuf::as_slice),
+        );
         let key = units
             .map(|units| String::from_utf16_lossy(units.as_slice()))
             .map(yw_core::secret::Zeroizing::new)

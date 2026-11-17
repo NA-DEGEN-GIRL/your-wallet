@@ -47,3 +47,7 @@ pub mod theme;
 #[cfg(test)]
 #[cfg(debug_assertions)]
 mod tour;
+// DEV ONLY (2026-11-18, S3 B5): the windowed form test, gated like the tour.
+#[cfg(test)]
+#[cfg(debug_assertions)]
+mod tour_forms;

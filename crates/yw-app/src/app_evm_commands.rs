@@ -181,6 +181,12 @@ impl App {
                     self.on_edit_change(edit);
                 }
                 let units = self.controls.text_wiping(ids::CHAIN_RPC_EDIT, 2_048);
+                // Debug builds (S3 B5): the units captured with the press are the same.
+                #[cfg(debug_assertions)]
+                self.cred_shadow(
+                    yw_engine::form::CredField::ChainRpc,
+                    units.as_ref().map(yw_win::mem::WipeBuf::as_slice),
+                );
                 let rpc = units
                     .map(|units| String::from_utf16_lossy(units.as_slice()))
                     .map(yw_core::secret::Zeroizing::new)

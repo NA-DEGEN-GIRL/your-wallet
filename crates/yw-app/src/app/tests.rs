@@ -2910,6 +2910,49 @@ fn a_late_copy_result_marks_the_control_of_its_mark() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// 2026-11-18 (S3 B5): the form state follows the edits — a press reads them all first
+/// (`Cmd::Form`), `EN_CHANGE` sets one (`Cmd::Edit`, cut to the field's cap) — and
+/// `App::form_text` gives what `controls.text` gives; the credential units captured with a press
+/// are gone when it returns, and a masked edit never reaches the form state.
+#[test]
+fn form_state_follows_the_edits_and_press_input_ends_with_the_press() {
+    use crate::ui::screens::ids::{QN_TOKEN_EDIT, TPL_SAVE};
+    use crate::ui::screens_llm::ids::{ENDPOINT_EDIT, MODEL_EDIT};
+    use yw_engine::form::{CredField, EditField};
+    let (mut app, dir) = unlocked_app("form-state", false);
+    app.screen = Screen::Settings(crate::app::SettingsSection::Ai);
+    assert_eq!(app.form_text(EditField::LlmModel), None);
+    app.controls.type_text(MODEL_EDIT, &"m".repeat(200));
+    app.on_edit_notify(MODEL_EDIT);
+    let model = "m".repeat(EditField::LlmModel.cap());
+    assert_eq!(
+        app.form_text(EditField::LlmModel).as_deref(),
+        Some(model.as_str())
+    );
+    // Typed without `EN_CHANGE` (the window would have sent one): the next press reads it.
+    app.controls
+        .type_text(ENDPOINT_EDIT, "https://llm.example.test/v1");
+    assert_eq!(app.form.text(EditField::LlmEndpoint), None);
+    app.controls.type_text(QN_TOKEN_EDIT, "token-shaped-0123");
+    app.on_command(TPL_SAVE);
+    assert_eq!(
+        app.form_text(EditField::LlmEndpoint).as_deref(),
+        Some("https://llm.example.test/v1")
+    );
+    assert!(app.input.take(CredField::QnToken).is_empty());
+    #[cfg(debug_assertions)]
+    {
+        // The take above had no entry outside a press: one miss, and nothing else differed.
+        assert_eq!((app.form_mismatch.get(), app.cred_misses()), (0, 1));
+    }
+    let shown = format!("{:?}", app.form);
+    assert!(
+        !shown.contains("example") && !shown.contains("token"),
+        "{shown}"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// `숨기기` moves a row under `숨긴 토큰 n개 보기` (dimmed, `다시 보이기`) and persists in meta
 /// `token_view`; `잔액 0인 토큰 숨기기` hides only known zero balances; registry tokens have no
 /// `삭제`; hiding never removes a token from `chain_tokens` (balances, approvals, recognition).
@@ -3825,7 +3868,7 @@ mod accounts;
 
 /// S3 characterization (spec/15 §11.4): the command, edit and check-box census and the
 /// shell-call goldens every S3 commit must reproduce.
-mod s3_census;
+pub(crate) mod s3_census;
 
 /// spec/10 §9.2 (2026-11-10): once the PIN is in, the touch prompt is the S11 form's line next to
 /// `검토` (a dApp request: the header band), and it is gone once the card answered — signed or

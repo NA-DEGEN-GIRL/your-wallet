@@ -58,7 +58,7 @@ use crate::workers::rpc::RpcJob;
 use yw_core::lang::{Lang, Text};
 use yw_engine::cmd::{Cmd, Press};
 use yw_engine::effect::{Effect, TimerId};
-use yw_engine::form::PressInput;
+use yw_engine::form::{CredField, EditField, FormState, PressInput};
 
 /// DPAPI optional entropy of `apikeys.dpapi` (spec/04 §6.3). (2026-11-17, spec/15 §11.4 S2 E2:
 /// moved here next to the DPAPI calls from `apikeys`, which moved to yw-engine; the value is
@@ -758,6 +758,23 @@ pub struct App {
     /// (`build_info`), checked; `None` = a development build.
     pub(crate) install_commit: Option<String>,
     pub(crate) controls: ControlSet,
+    /// The text of each plain edit (2026-11-18 S3 B5, spec/15 §11.4): kept equal to what the
+    /// edits show — read again at every press (`Cmd::Form`), on every `EN_CHANGE`
+    /// (`Cmd::Edit`) and after every render (Windows-transitional; engine-owned in S5).
+    /// Handlers read it through [`App::form_text`].
+    pub(crate) form: FormState,
+    /// The credential units captured with the press being handled (S3 B5), wiped when it ends.
+    pub(crate) input: PressInput,
+    /// Debug builds (S3 B5, plan §3.2a): reads where the form state and the window's edit
+    /// differed, and credential units that differed from the handler's own read. Tests assert 0.
+    #[cfg(debug_assertions)]
+    pub(crate) form_mismatch: core::cell::Cell<u32>,
+    /// Debug builds: credential reads of a field the press did not capture (`creds_for`).
+    #[cfg(debug_assertions)]
+    cred_misses: u32,
+    /// Tests (debug builds): every credential read as (`self.command`, field).
+    #[cfg(all(test, debug_assertions))]
+    pub(crate) cred_reads: Vec<(u16, CredField)>,
     pub(crate) placed: Placed,
     pub(crate) evm: crate::app_evm::EvmUi,
     pub(crate) sol: crate::app_sol::SolUi,
@@ -1109,6 +1126,14 @@ impl App {
             window_state: crate::window_state::WindowSaver::default(),
             install_commit: None,
             controls: ControlSet::default(),
+            form: FormState::default(),
+            input: PressInput::default(),
+            #[cfg(debug_assertions)]
+            form_mismatch: core::cell::Cell::new(0),
+            #[cfg(debug_assertions)]
+            cred_misses: 0,
+            #[cfg(all(test, debug_assertions))]
+            cred_reads: Vec::new(),
             placed: Placed::default(),
             evm: crate::app_evm::EvmUi::default(),
             sol: crate::app_sol::SolUi::default(),
@@ -3770,14 +3795,18 @@ impl App {
     /// closes an open network or account drop-down (2026-11-12); the layout follows after the
     /// command ran, because its handler may read the live controls (check boxes, edits).
     /// 2026-11-18 (S3 B2): the id goes through `ui::cmd_table` as a `Cmd::Press`; before, this
-    /// called `dispatch_command(id)` directly.
+    /// called `dispatch_command(id)` directly. S3 B5: first the plain edits' text
+    /// (`Cmd::Form`), then the press with the credential edits it reads, captured now
+    /// (`cmd_table::capture`).
     fn on_command(&mut self, id: u16) {
         self.note_input();
         let closed =
             !matches!(id, IDOK | IDCANCEL) && !Self::is_picker_button(id) && self.close_pickers();
+        self.on_cmd(Cmd::Form(self.controls.form_snapshot()));
+        let input = cmd_table::capture(id, &self.controls);
         self.on_cmd(Cmd::Press {
             press: cmd_table::press_of(id),
-            input: PressInput::default(),
+            input,
         });
         if closed {
             self.refresh();
@@ -3788,17 +3817,27 @@ impl App {
     pub(crate) fn on_cmd(&mut self, cmd: Cmd) {
         match cmd {
             Cmd::Press { press, input } => {
+                // The press's input is installed for exactly this press (a press inside it,
+                // Enter's primary button, has its own) and wiped when it ends.
+                let outer = core::mem::replace(&mut self.input, input);
                 self.on_press(press);
-                // S3 B5 captures the credential input and installs it for the press; until then
-                // it is always empty.
-                drop(input);
+                let used = core::mem::replace(&mut self.input, outer);
+                #[cfg(debug_assertions)]
+                {
+                    self.cred_misses = self.cred_misses.saturating_add(used.misses());
+                }
+                drop(used);
+            }
+            Cmd::Form(snapshot) => self.form.replace(snapshot),
+            // The field's own handler (or the legacy chain) runs after the state has the text.
+            Cmd::Edit { field, text } => {
+                self.form.set(field, Some(field.clamp(&text)));
+                self.edit_chain(cmd_table::edit_id_of(field));
             }
             // The send forms' one-shot check (`Effect::StartTimer`, S3 B4).
             Cmd::Timer(TimerId::SendCheck) => self.on_send_timer(),
             // A plain copy's result (`Effect::CopyText`, S3 B4).
             Cmd::CopyDone { ok, mark } => self.copy_done(ok, mark),
-            // Not sent before S3 B5 (edits, form snapshot).
-            Cmd::Edit { .. } | Cmd::Form(_) => {}
         }
     }
 
@@ -3816,10 +3855,28 @@ impl App {
         }
     }
 
-    /// An edit of the main window changed (`EN_CHANGE`): the first handler that claims `id`
-    /// takes it, else the EVM send form's (2026-11-18, S3: moved out of `on_main` unchanged, so
-    /// a test drives an edit as the window does).
+    /// An edit of the main window changed (`EN_CHANGE`, 2026-11-18 S3: moved out of `on_main`
+    /// so a test drives an edit as the window does). S3 B5: a plain edit becomes `Cmd::Edit`
+    /// with its text; a masked credential edit is never read (no handler claims it).
     pub(crate) fn on_edit_notify(&mut self, id: u16) {
+        if let Some(field) = cmd_table::field_of(id) {
+            if let Some(text) = self.controls.text(id, field.cap()) {
+                self.on_cmd(Cmd::Edit {
+                    field,
+                    text: Zeroizing::new(text),
+                });
+                return;
+            }
+            // No such edit (only a headless test can notify one): no `Cmd::Edit`, counted.
+            #[cfg(debug_assertions)]
+            self.note_form_mismatch(field);
+        }
+        self.edit_chain(id);
+    }
+
+    /// The handlers of an edit change: the first that claims `id` takes it, else the EVM send
+    /// form's (S3 B5: the body of `on_edit_notify` before, unchanged).
+    fn edit_chain(&mut self, id: u16) {
         if !self.on_reset_edit_change(id)
             && !self.on_book_edit_change(id)
             && !self.on_sol_edit_change(id)
@@ -4544,8 +4601,69 @@ impl App {
         }
     }
 
-    fn read_wiping(&self, id: u16, max: usize) -> Zeroizing<String> {
+    /// The text of plain edit `field` for a handler (S3 B5, plan §3.2a): the form state, which
+    /// equals `controls.text(id, field.cap())`; debug builds read the edit too and count a
+    /// difference. The C commits move the handlers' edit reads here.
+    #[must_use]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "S3 C1–C12 move the handlers' edit reads here")
+    )]
+    pub(crate) fn form_text(&self, field: EditField) -> Option<String> {
+        let text = self.form.text(field).map(str::to_owned);
+        #[cfg(debug_assertions)]
+        if self
+            .controls
+            .text(cmd_table::edit_id_of(field), field.cap())
+            != text
+        {
+            self.note_form_mismatch(field);
+        }
+        text
+    }
+
+    /// Debug builds: one form-state difference (tests: its field name in the shell-call log,
+    /// never a text).
+    #[cfg(debug_assertions)]
+    fn note_form_mismatch(&self, field: EditField) {
+        self.form_mismatch
+            .set(self.form_mismatch.get().saturating_add(1));
+        #[cfg(test)]
+        self.controls.record(format!("form.mismatch {field:?}"));
+        #[cfg(not(test))]
+        let _ = field;
+    }
+
+    /// Debug builds (S3 B5): the units the press captured for `field` must be the units the
+    /// handler just read from the edit (`read`); a field the press did not list is a miss
+    /// (`PressInput::take`). The captured units are wiped here; the handler keeps using its own
+    /// read until its C commit moves it to the captured units.
+    #[cfg(debug_assertions)]
+    pub(crate) fn cred_shadow(&mut self, field: CredField, read: Option<&[u16]>) {
+        let captured = self.input.take(field);
+        #[cfg(test)]
+        self.cred_reads.push((self.command, field));
+        if captured.as_slice() != read.unwrap_or_default() {
+            self.form_mismatch
+                .set(self.form_mismatch.get().saturating_add(1));
+            #[cfg(test)]
+            self.controls.record(format!("cred.mismatch {field:?}"));
+        }
+    }
+
+    /// Debug builds: credential reads of a field no press captured (tests assert 0).
+    #[cfg(all(test, debug_assertions))]
+    #[must_use]
+    pub(crate) fn cred_misses(&self) -> u32 {
+        self.cred_misses.saturating_add(self.input.misses())
+    }
+
+    fn read_wiping(&mut self, id: u16, max: usize) -> Zeroizing<String> {
         let units = self.controls.text_wiping(id, max);
+        #[cfg(debug_assertions)]
+        if let Some(field) = cmd_table::cred_of(id) {
+            self.cred_shadow(field, units.as_ref().map(yw_win::mem::WipeBuf::as_slice));
+        }
         let mut out = Zeroizing::new(String::new());
         if let Some(units) = units {
             for unit in units.as_slice() {
@@ -5273,4 +5391,4 @@ impl App {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

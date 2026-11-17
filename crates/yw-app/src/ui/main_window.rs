@@ -14,8 +14,11 @@ use yw_win::ui::controls::{
 use yw_win::ui::{Color, DrawFlags, PaintDc, Rect, Window, scale};
 
 use crate::ui::badge::{BADGE_DIP, BADGE_GAP_DIP, Badge, TITLE_BADGE_DIP};
+use crate::ui::cmd_table::edit_id_of;
 use crate::ui::theme::{self, FontRole, Fonts, wide};
 use yw_core::lang::Lang;
+use yw_core::secret::Zeroizing;
+use yw_engine::form::{EditField, FormSnapshot};
 
 /// Banner tone. Each tone has one meaning everywhere (spec/04 §1.6 status colors).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2148,14 +2151,36 @@ impl ControlSet {
         self.controls.clear();
     }
 
-    /// Reads a control's current text (non-secret).
+    /// Reads a control's current text (non-secret). Headless tests: what was typed, cut to
+    /// `max_units` UTF-16 units like the window's read (2026-11-18 S3 B5: before, the typed text
+    /// came back whole, unlike the edit's read and unlike [`ControlSet::text_wiping`]).
     #[must_use]
     pub fn text(&self, id: u16, max_units: usize) -> Option<String> {
         self.controls
             .iter()
             .find(|(ctl, _)| ctl.id == id)
             .map(|(_, control)| control.text(max_units))
-            .or_else(|| typed(self, id))
+            .or_else(|| {
+                let text = typed(self, id)?;
+                let units: Vec<u16> = text.encode_utf16().take(max_units).collect();
+                Some(String::from_utf16_lossy(&units))
+            })
+    }
+
+    /// What the plain edits show now (S3 B5, Windows-transitional `Cmd::Form`): every
+    /// [`EditField`] whose edit exists, read like [`ControlSet::text`] at the field's cap.
+    /// Masked credential edits are never read here.
+    #[must_use]
+    pub fn form_snapshot(&self) -> FormSnapshot {
+        FormSnapshot(
+            EditField::ALL
+                .iter()
+                .filter_map(|&field| {
+                    self.text(edit_id_of(field), field.cap())
+                        .map(|text| (field, Zeroizing::new(text)))
+                })
+                .collect(),
+        )
     }
 
     /// Reads an edit's text into a wiping buffer (RPC tokens and URLs).

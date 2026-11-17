@@ -49,7 +49,7 @@ const SCENARIOS: &str = include_str!("s3_census/scenarios.txt");
 
 /// The 65 edits of the main window (spec/15 §11.1): 58 plain and the 7 masked credential
 /// edits of [`MASKED`].
-pub(super) const EDIT_IDS: [u16; 65] = [
+pub(crate) const EDIT_IDS: [u16; 65] = [
     screens::ids::RENAME_EDIT,
     screens::ids::AUTOLOCK_EDIT,
     screens::ids::QN_NAME_EDIT,
@@ -118,7 +118,7 @@ pub(super) const EDIT_IDS: [u16; 65] = [
 ];
 
 /// The masked credential edits (read once with `text_wiping`, never on `EN_CHANGE`).
-pub(super) const MASKED: [u16; 7] = [
+pub(crate) const MASKED: [u16; 7] = [
     screens::ids::QN_NAME_EDIT,
     screens::ids::QN_TOKEN_EDIT,
     screens::ids::ALCHEMY_KEY_EDIT,
@@ -142,7 +142,7 @@ const SKIPPED: [u16; 7] = [
 ];
 
 /// The census's own temp folder; the path overrides point into it while it lives.
-pub(super) struct Census {
+pub(crate) struct Census {
     root: PathBuf,
     data: PathBuf,
     /// When kept ([`Census::keep_debug`]): the unhashed `Debug` text of every observation's
@@ -153,7 +153,7 @@ pub(super) struct Census {
 }
 
 impl Census {
-    pub(super) fn new(tag: &str) -> Self {
+    pub(crate) fn new(tag: &str) -> Self {
         // One folder per census in this process (tests and their threads run in parallel).
         static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let serial = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -176,7 +176,7 @@ impl Census {
 
     /// Points `rpc_json_path` and `extension_dir` into the census folder (thread-locals, set
     /// again before every press) and checks that they stay there.
-    pub(super) fn guard(&self) {
+    pub(crate) fn guard(&self) {
         let rpc_json = self.root.join("rpc.json");
         TEST_RPC_JSON.with(|path| *path.borrow_mut() = Some(rpc_json));
         let ext = self.root.join("extension");
@@ -190,8 +190,13 @@ impl Census {
         );
     }
 
+    /// The data folder states are built on (S3 B5: the windowed form test, `ui::tour_forms`).
+    pub(crate) fn data(&self) -> &std::path::Path {
+        &self.data
+    }
+
     /// An empty data folder for the next state (a press may have written settings or keys).
-    fn fresh_data(&self) {
+    pub(crate) fn fresh_data(&self) {
         let used =
             std::fs::read_dir(&self.data).map_or(true, |mut entries| entries.next().is_some());
         if used {
@@ -201,7 +206,7 @@ impl Census {
     }
 
     /// A fresh `base` state with an RPC channel; nothing it did while being built is kept.
-    pub(super) fn state(&self, base: Base) -> (App, Receiver<RpcJob>) {
+    pub(crate) fn state(&self, base: Base) -> (App, Receiver<RpcJob>) {
         self.fresh_data();
         self.guard();
         let mut app = base.build(&self.data);
@@ -214,7 +219,7 @@ impl Census {
 
     /// `text` with the census's machine-dependent paths replaced by fixed tokens (raw and as
     /// `Debug` escapes them).
-    pub(super) fn normalize(&self, text: &str) -> String {
+    pub(crate) fn normalize(&self, text: &str) -> String {
         let mut paths = vec![
             (self.data.join("logs"), "<logs>"),
             (self.data.clone(), "<data>"),
@@ -234,23 +239,23 @@ impl Census {
     }
 
     /// Keeps the unhashed `Debug` text of items, banners and info of every later observation.
-    pub(super) fn keep_debug(&self) {
+    pub(crate) fn keep_debug(&self) {
         *self.debug.borrow_mut() = Some(Vec::new());
     }
 
     /// The `Debug` text kept since [`Census::keep_debug`].
-    pub(super) fn kept_debug(&self) -> Vec<String> {
+    pub(crate) fn kept_debug(&self) -> Vec<String> {
         self.debug.borrow_mut().take().unwrap_or_default()
     }
 
     /// The ids this census's presses read with `ControlSet::checked` (collected by
     /// [`Census::observe`]) since the last call.
-    pub(super) fn checked_reads(&self) -> BTreeSet<u16> {
+    pub(crate) fn checked_reads(&self) -> BTreeSet<u16> {
         self.checked.take()
     }
 
     /// What the app shows and asked for since the last call.
-    pub(super) fn observe(&self, app: &App, rx: &Receiver<RpcJob>) -> Seen {
+    pub(crate) fn observe(&self, app: &App, rx: &Receiver<RpcJob>) -> Seen {
         self.observe_with(app, rx, true)
     }
 
@@ -258,7 +263,16 @@ impl Census {
     /// key worker (`key ~`), and the wall-clock text of the vault file loses its time: the
     /// `vault.ywv` facts line ([`redact_wall_time`]) and a set-aside vault's name
     /// ([`redact_corrupt`]).
-    pub(super) fn observe_with(&self, app: &App, rx: &Receiver<RpcJob>, keys: bool) -> Seen {
+    pub(crate) fn observe_with(&self, app: &App, rx: &Receiver<RpcJob>, keys: bool) -> Seen {
+        // S3 B5 (debug builds): every credential read so far was captured with its press, with
+        // the same units, and the form state never differed from the edits (plan §3.2a).
+        #[cfg(debug_assertions)]
+        assert_eq!(
+            (app.form_mismatch.get(), app.cred_misses()),
+            (0, 0),
+            "form mismatches, credential misses: {:?}",
+            app.controls.take_shell_log()
+        );
         let calls = compress(&app.controls.take_shell_log());
         self.checked
             .borrow_mut()
@@ -320,15 +334,15 @@ impl Census {
 
 /// One observation: the visible state and the job queues, and the shell calls.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct Seen {
+pub(crate) struct Seen {
     /// Mode, screen, hashes of items, banners and info, the copy mark, jobs, links opened.
-    pub(super) state: String,
+    pub(crate) state: String,
     /// The shell calls in order.
-    pub(super) calls: String,
+    pub(crate) calls: String,
 }
 
 impl Seen {
-    pub(super) fn line(&self) -> String {
+    pub(crate) fn line(&self) -> String {
         format!("{} | {}", self.state, self.calls)
     }
 }
@@ -453,7 +467,7 @@ fn screen_name(screen: &Screen) -> String {
 
 /// A census start state.
 #[derive(Clone, Copy, Debug)]
-pub(super) enum Base {
+pub(crate) enum Base {
     /// S01: no wallet.
     FirstRun,
     /// S07.
@@ -466,7 +480,7 @@ pub(super) enum Base {
 
 impl Base {
     /// Every state the command census presses in.
-    pub(super) const ALL: [Self; 15] = [
+    pub(crate) const ALL: [Self; 15] = [
         Self::FirstRun,
         Self::Locked,
         Self::Main(Tab::Evm, false),
@@ -485,14 +499,14 @@ impl Base {
     ];
 
     /// The mistyped-passphrase states (only the receive presses are made there).
-    pub(super) const ALT: [Self; 4] = [
+    pub(crate) const ALT: [Self; 4] = [
         Self::Main(Tab::Evm, true),
         Self::Main(Tab::Sol, true),
         Self::Main(Tab::Btc, true),
         Self::Main(Tab::Zec, true),
     ];
 
-    pub(super) fn name(self) -> String {
+    pub(crate) fn name(self) -> String {
         match self {
             Self::FirstRun => "first".to_owned(),
             Self::Locked => "locked".to_owned(),
@@ -503,7 +517,7 @@ impl Base {
         }
     }
 
-    fn build(self, data: &std::path::Path) -> App {
+    pub(crate) fn build(self, data: &std::path::Path) -> App {
         match self {
             Self::FirstRun => {
                 let mut app = app_at(data);
@@ -564,7 +578,7 @@ fn command_ids() -> Vec<u16> {
 
 /// One state's section of a golden: its base line, a line for every press that changed what
 /// the state shows or queued, and the presses that did not, grouped by their shell calls.
-pub(super) fn section(out: &mut String, census: &Census, base: Base, ids: &[u16], press: PressFn) {
+pub(crate) fn section(out: &mut String, census: &Census, base: Base, ids: &[u16], press: PressFn) {
     let name = base.name();
     let (app, rx) = census.state(base);
     let start = census.observe(&app, &rx);
@@ -595,11 +609,11 @@ pub(super) fn section(out: &mut String, census: &Census, base: Base, ids: &[u16]
 }
 
 /// How a census presses an id on a state.
-pub(super) type PressFn = fn(&mut App, u16);
+pub(crate) type PressFn = fn(&mut App, u16);
 
 /// The sections of `bases` in order, each built on its own thread with its own census folder;
 /// the ids their presses read with `ControlSet::checked` are added to `checked`.
-pub(super) fn sections(
+pub(crate) fn sections(
     tag: &str,
     bases: &[Base],
     ids: &[u16],
@@ -658,7 +672,7 @@ fn commands_golden(checked: &mut BTreeSet<u16>) -> String {
 
 /// Compares a generated golden with the committed one; on a difference the generated text is
 /// written next to the census folders (temp) and the first differing line is named.
-pub(super) fn compare(name: &str, generated: &str, committed: &str) {
+pub(crate) fn compare(name: &str, generated: &str, committed: &str) {
     if generated != committed {
         let out = std::env::temp_dir().join(format!("yw-s3-census-{name}.actual.txt"));
         let _ = std::fs::write(&out, generated);
@@ -740,7 +754,7 @@ fn print() {
 // ----- A2: edits, check boxes, programmatic writes ---------------------------------------
 
 /// The 21 check boxes and radios whose handler reads `ControlSet::checked` (spec/15 §11.1).
-pub(super) const CHECK_IDS: [u16; 21] = [
+pub(crate) const CHECK_IDS: [u16; 21] = [
     screens::ids::MISMATCH_CHECK,
     screens::ids::COPY_TOGGLE,
     screens::ids::LOCALHOST_TOGGLE,
@@ -766,7 +780,7 @@ pub(super) const CHECK_IDS: [u16; 21] = [
 
 /// The edits Enter presses a button from (`enter_primary`), except the image-file path, whose
 /// button reads a file.
-pub(super) const ENTER_EDITS: [u16; 31] = [
+pub(crate) const ENTER_EDITS: [u16; 31] = [
     screens::ids::RENAME_EDIT,
     screens::ids::AUTOLOCK_EDIT,
     screens::ids::REPLACE_EDIT,
@@ -874,7 +888,7 @@ fn checks_golden(checked: &mut BTreeSet<u16>) -> String {
 
 /// One input of a scenario.
 #[derive(Clone, Copy)]
-pub(super) enum Step {
+pub(crate) enum Step {
     /// A click (`WM_COMMAND` code 0).
     Press(u16),
     /// Text typed into an edit, then its `EN_CHANGE`.
@@ -891,7 +905,7 @@ pub(super) enum Step {
 
 impl Step {
     /// Runs the step; the golden's description (ids, lengths, names; never the text).
-    pub(super) fn run(self, app: &mut App) -> String {
+    pub(crate) fn run(self, app: &mut App) -> String {
         match self {
             Self::Press(id) => {
                 app.on_command(id);
@@ -926,15 +940,15 @@ impl Step {
 }
 
 /// A sequence of inputs from a census state.
-pub(super) struct Scenario {
-    pub(super) name: &'static str,
-    pub(super) base: Base,
-    pub(super) setup: fn(&mut App),
-    pub(super) steps: Vec<Step>,
+pub(crate) struct Scenario {
+    pub(crate) name: &'static str,
+    pub(crate) base: Base,
+    pub(crate) setup: fn(&mut App),
+    pub(crate) steps: Vec<Step>,
 }
 
 /// Runs `scenario` on `census`: one golden line for the setup and one per step.
-pub(super) fn run_scenario(out: &mut String, census: &Census, scenario: &Scenario) {
+pub(crate) fn run_scenario(out: &mut String, census: &Census, scenario: &Scenario) {
     let (mut app, rx) = census.state(scenario.base);
     (scenario.setup)(&mut app);
     let seen = census.observe(&app, &rx);
@@ -954,7 +968,7 @@ pub(super) fn run_scenario(out: &mut String, census: &Census, scenario: &Scenari
     census.guard();
 }
 
-fn no_setup(_: &mut App) {}
+pub(crate) fn no_setup(_: &mut App) {}
 
 /// The `abandon … about` vector's EVM account 1 (public test data).
 const EVM_TO: &str = "0x6fac4d18c912343bf86fa7049364dd4e424ab9c0";
@@ -987,13 +1001,13 @@ fn rpc_url() -> String {
     "https://rpc.example.test/v1".to_owned()
 }
 
-fn done_screen(app: &mut App) {
+pub(crate) fn done_screen(app: &mut App) {
     app.done_imported = true;
     app.set_screen(Screen::Done);
 }
 
 /// A Bitcoin mainnet wallet with an endpoint and room in the journal.
-fn btc_wallet(app: &mut App) {
+pub(crate) fn btc_wallet(app: &mut App) {
     use yw_core::btc::BtcNetwork;
     app.settings.bitcoin.enabled = true;
     app.settings.bitcoin.network = crate::network::BtcNet::Mainnet;
@@ -1024,7 +1038,7 @@ fn btc_wallet(app: &mut App) {
 }
 
 /// A native balance of the selected EVM account and a quote for it (as the RPC worker answers).
-fn evm_quote(app: &mut App) {
+pub(crate) fn evm_quote(app: &mut App) {
     use yw_core::evm::amount::U256;
     let chain = app.settings.evm_chain_id;
     let owner =
@@ -1051,7 +1065,7 @@ fn evm_quote(app: &mut App) {
 }
 
 /// The selected EVM account's `HyperCore` balances and a withdrawal form (S-HC).
-fn hc_withdraw(app: &mut App) {
+pub(crate) fn hc_withdraw(app: &mut App) {
     let owner =
         yw_core::evm::address::parse_address("0x9858effd232b4033e47d90003d41ec34ecaeda94").unwrap();
     app.settings.hypercore.enabled = true;
@@ -1077,7 +1091,7 @@ fn hc_withdraw(app: &mut App) {
 /// T5: scenarios that reach every programmatic edit write (`set_text` ×13, `clear_text` ×11)
 /// and Enter in the forms they open, the masked credential edits included.
 #[expect(clippy::too_many_lines, reason = "one scenario per write site")]
-fn write_scenarios() -> Vec<Scenario> {
+pub(crate) fn write_scenarios() -> Vec<Scenario> {
     use crate::ui::{screens_book as book, screens_btc as btc, screens_evm as evm};
     use crate::ui::{screens_hypercore as hc, screens_llm as llm, screens_sol as sol};
     use Step::{Call, Check, Enter, Press, Type, TypeWith};
@@ -1353,6 +1367,137 @@ fn enter_and_check_lists_match_the_code() {
     }
 }
 
+/// Table test (5), S3 B5: no check box (its state travels with its click, plan D-k) is the
+/// target of a press the logic makes itself — Enter's primary button, the tab and F5/Ctrl+,
+/// shortcuts, or Esc's cancel and back buttons (`App::tab_shortcut`, `App::shortcut`,
+/// `App::escape_key`).
+#[test]
+fn no_check_box_is_pressed_by_the_logic() {
+    use crate::ui::{screens_btc as btc, screens_sol as sol, screens_yubikey as yk};
+    let inner = [
+        sol::ids::TAB_EVM,
+        sol::ids::TAB_SOL,
+        btc::ids::TAB_BTC,
+        screens_zec::ids::TAB_ZEC,
+        screens_evm::ids::REFRESH,
+        sol::ids::REFRESH,
+        btc::ids::REFRESH,
+        screens_zec::ids::REFRESH,
+        screens::ids::OPEN_SETTINGS,
+        screens::ids::CONFIRM_NO,
+        screens::ids::RENAME_CANCEL,
+        sol::ids::RENAME_CANCEL,
+        btc::ids::RENAME_CANCEL,
+        screens_mnemonics::ids::RENAME_CANCEL,
+        yk::ids::CARD_NAME_CANCEL,
+        screens::ids::REPLACE_CANCEL,
+        screens_book::ids::PROMPT_CANCEL,
+        screens_book::ids::CANCEL,
+        screens_explorer::ids::CANCEL,
+        screens::ids::INTRO_CANCEL,
+        screens_reset::ids::RESET_CANCEL,
+        btc::ids::ACCOUNT_ADD_CANCEL,
+        screens_zec::ids::SOURCE_CANCEL,
+        yk::ids::NEW_WALLET_CANCEL,
+        screens::ids::BACK_DONE,
+        screens::ids::BACK_MAIN,
+        screens_reset::ids::EXT_BACK,
+    ];
+    for id in inner {
+        assert!(!CHECK_IDS.contains(&id), "{id}");
+    }
+    for id in EDIT_IDS {
+        if let Some(primary) = crate::app::enter_primary(id) {
+            assert!(!CHECK_IDS.contains(&primary), "{id} → {primary}");
+        }
+    }
+}
+
+/// Table test (8), S3 B5 (debug builds): every credential read happens in a press that
+/// captured that field, with the same units (the census asserts 0 misses and mismatches on
+/// every observation), and every (press, field) pair `cmd_table::creds_for` lists is reached by
+/// one of these scenarios — the write scenarios plus the template and test presses they do not
+/// make. A network row's `테스트` counts once (row 0).
+#[cfg(debug_assertions)]
+#[test]
+fn credential_capture_covers_every_read() {
+    use crate::network::NetworkId;
+    use crate::ui::cmd_table::creds_for;
+    use Step::{Call, Press, Type, TypeWith};
+    use yw_engine::form::CredField;
+    fn replace_evm(app: &mut App) {
+        app.replace_target = Some(NetworkId::Eip155(app.settings.evm_chain_id));
+    }
+    fn replace_sol(app: &mut App) {
+        app.replace_target = Some(NetworkId::Solana(app.settings.solana.cluster));
+    }
+    let network = Base::Settings(SettingsSection::Network);
+    let mut scenarios = write_scenarios();
+    scenarios.extend([
+        Scenario {
+            name: "template-quicknode-generate",
+            base: network,
+            setup: no_setup,
+            steps: vec![
+                Press(screens::ids::TPL_QUICKNODE),
+                Type(screens::ids::QN_NAME_EDIT, "my-node"),
+                TypeWith(screens::ids::QN_TOKEN_EDIT, qn_token),
+                Press(screens::ids::GENERATE),
+            ],
+        },
+        Scenario {
+            name: "template-alchemy-save",
+            base: network,
+            setup: no_setup,
+            steps: vec![
+                Press(screens::ids::TPL_ALCHEMY),
+                TypeWith(screens::ids::ALCHEMY_KEY_EDIT, alchemy_key),
+                Press(screens::ids::TPL_SAVE),
+            ],
+        },
+        Scenario {
+            name: "rpc-test-cards",
+            base: network,
+            setup: no_setup,
+            steps: vec![
+                Call("replace evm", replace_evm),
+                TypeWith(screens::ids::REPLACE_EDIT, rpc_url),
+                Press(screens::ids::EVM_RPC_TEST),
+                Call("replace sol", replace_sol),
+                TypeWith(screens::ids::REPLACE_EDIT, rpc_url),
+                Press(screens::ids::SOL_RPC_TEST),
+            ],
+        },
+    ]);
+    let census = Census::new("creds");
+    let mut reached: BTreeSet<(u16, String)> = BTreeSet::new();
+    for scenario in &scenarios {
+        let (mut app, rx) = census.state(scenario.base);
+        (scenario.setup)(&mut app);
+        for step in &scenario.steps {
+            step.run(&mut app);
+            let _ = census.observe(&app, &rx);
+        }
+        for (id, field) in app.cred_reads.drain(..) {
+            reached.insert((id, format!("{field:?}")));
+        }
+        drop(app);
+        census.guard();
+    }
+    let row_test = screens::ids::ROW_BASE + 1;
+    let mut listed: BTreeSet<(u16, String)> = BTreeSet::new();
+    for (_, ids) in fixed() {
+        for &id in ids {
+            for field in creds_for(id) {
+                listed.insert((id, format!("{field:?}")));
+            }
+        }
+    }
+    listed.insert((row_test, format!("{:?}", CredField::RpcReplace)));
+    // `TPL_SAVE`/`GENERATE` read the fields of the chosen template only; both templates ran.
+    assert_eq!(reached, listed);
+}
+
 /// T3 (S3 A2): `s3_census/edits.txt`.
 #[test]
 fn edit_census_matches_the_golden() {
@@ -1384,7 +1529,7 @@ fn write_scenarios_match_the_golden() {
 const GENERATOR: &str = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
 
 /// A Zcash mainnet account of the default source.
-fn zec_wallet(app: &mut App) {
+pub(crate) fn zec_wallet(app: &mut App) {
     use yw_core::zec::{ZecAccount, ZecKeySource, ZecNetwork};
     app.settings.zcash.enabled = true;
     app.settings.zcash.network = ZecNetwork::Mainnet;
@@ -1400,7 +1545,7 @@ fn zec_wallet(app: &mut App) {
 }
 
 /// [`btc_wallet`] whose account already gave out receive address 0 (the card shows it).
-fn btc_wallet_with_address(app: &mut App) {
+pub(crate) fn btc_wallet_with_address(app: &mut App) {
     btc_wallet(app);
     if let Some(btc) = app.meta.as_mut().and_then(|meta| meta.btc.as_mut()) {
         btc.receive_address().unwrap();
@@ -1427,7 +1572,7 @@ fn reset_phrase() -> String {
     crate::app_reset::RESET_PHRASE.ko.to_owned()
 }
 
-fn two_cards(app: &mut App) {
+pub(crate) fn two_cards(app: &mut App) {
     app.card.records = super::accounts::owner_cards();
 }
 

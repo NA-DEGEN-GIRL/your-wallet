@@ -11,8 +11,9 @@
 //! 2026-11-18 (S3 B3): created with `Effect::Render` (the body of `App::refresh` after the dApp
 //! state sync). S3 B4: the send forms' one-shot timer (`StartTimer`/`StopTimer`, was
 //! `App::arm_send_timer`'s and `App::on_send_timer`'s own `set_timer`/`kill_timer`) and the plain
-//! copy (`CopyText`, was `App::copy`'s `clipboard::set_text`). The field writes get their arms
-//! when their callers convert (B5 and C); nothing emits them before.
+//! copy (`CopyText`, was `App::copy`'s `clipboard::set_text`). S3 B5: `Render` reads the plain
+//! edits back into the form state. The field writes get their arms when their callers convert
+//! (C); nothing emits them before.
 
 use yw_engine::cmd::Cmd;
 use yw_engine::effect::{Effect, TimerId};
@@ -36,6 +37,12 @@ impl App {
                 #[cfg(test)]
                 self.controls.record("refresh".to_owned());
                 self.render_main();
+                // S3 B5 (Windows-transitional): the layout may have created edits again (from
+                // their model text) or kept the one being typed in, so the form state is read
+                // back from the window. Headless (no window) nothing was laid out.
+                if self.main.is_some() {
+                    self.form.replace(self.controls.form_snapshot());
+                }
             }
             Effect::StartTimer { timer, ms } => {
                 #[cfg(test)]
@@ -71,7 +78,7 @@ impl App {
                     self.on_cmd(Cmd::CopyDone { ok, mark });
                 }
             }
-            // Not emitted before S3 B5/C (field writes).
+            // Not emitted before S3 C (field writes).
             Effect::SetField { .. } | Effect::ClearField { .. } | Effect::ClearCred { .. } => {}
         }
     }
