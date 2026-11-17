@@ -3,8 +3,9 @@
 //! `crate::sol::rpc` (M7).
 //!
 //! JSON-RPC 2.0 over a [`Transport`] (Windows: yw-win `http::Client`; HTTPS only, TLS 1.2/1.3,
-//! no redirects/cookies/auth, no Origin), one increasing `id` per request checked against the response. Failures are
-//! classified into fixed codes; URLs, hosts and remote strings never leave this module.
+//! no redirects/cookies/auth, no Origin), one increasing `id` per request checked against the
+//! response. Failures are classified into fixed codes; URLs, hosts and remote strings never
+//! leave this module.
 
 pub mod evm;
 

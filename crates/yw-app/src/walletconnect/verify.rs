@@ -19,7 +19,7 @@
 //! 2026-11-17 S2: the HTTP access is any `yw_platform::http::Transport` (`http_get`, the same
 //! `WinHTTP` GET as before through yw-win `http::Client`), and [`resolve`] takes the P-256 check
 //! as a parameter (before: an `impl VerifyHttp` for the yw-win client and a direct call of
-//! yw-win `cng::p256_verify`). Verify only sets the warning label (spec/13 §6), never signing.
+//! yw-win `cng::p256_verify`). Verify only sets the warning label (spec/13 §7), never signing.
 
 use yw_json::{Limits, Value};
 use yw_platform::http::{HttpsUrl, Transport};

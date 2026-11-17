@@ -2,8 +2,8 @@
 //! Appendix A.3 verifies with `cng::p256_verify`, the check the `WalletConnect` Verify v3
 //! attestations use; a flipped bit, another digest or another key does not.
 //!
-//! 2026-11-17 S2: moved from yw-app `walletconnect/tests.rs` (`es256_rfc7515_vector_verifies_with_cng`)
-//! when the Verify code stopped calling CNG directly. The values are the RFC's, decoded from
+//! 2026-11-17 S2: moved from yw-app `walletconnect/tests.rs`
+//! (`es256_rfc7515_vector_verifies_with_cng`) when the Verify code stopped calling CNG directly. The values are the RFC's, decoded from
 //! base64url; the digest is SHA-256 of the RFC's `header.payload` text.
 
 use yw_win::cng::p256_verify;

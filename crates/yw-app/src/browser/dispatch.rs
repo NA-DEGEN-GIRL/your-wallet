@@ -1951,36 +1951,13 @@ mod tests {
     use super::{BrowserCore, Conn, Lru, Pending};
     use crate::browser::envelope::{Id16, Id32};
     use crate::browser::{DappEvent, DappSink, MAX_DOCUMENTS, MAX_DOCUMENTS_PER_ORIGIN, Outbound};
+    use crate::flow::evm::StdClock;
 
     struct Quiet;
 
     impl DappSink for Quiet {
         fn push(&self, _event: DappEvent) -> bool {
             true
-        }
-    }
-
-    /// Test clock (2026-11-17 S2: replaces the Windows `SystemClock`, which stays in yw-app):
-    /// monotonic time from `Instant`, offset by a day so a fresh clock never reads near zero.
-    struct StdClock(std::time::Instant);
-
-    impl yw_platform::Clock for StdClock {
-        fn now_ms(&self) -> u64 {
-            u64::try_from(self.0.elapsed().as_millis())
-                .unwrap_or(u64::MAX)
-                .saturating_add(86_400_000)
-        }
-
-        fn now_unix_ms(&self) -> u64 {
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |elapsed| {
-                    u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-                })
-        }
-
-        fn sleep_ms(&self, ms: u64) {
-            std::thread::sleep(std::time::Duration::from_millis(ms));
         }
     }
 

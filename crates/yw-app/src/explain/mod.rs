@@ -240,8 +240,9 @@ pub struct LlmDone {
 }
 
 /// The `yw-llm` worker (spec/06 §3.2, §9): one thread, one request at a time, owning the
-/// endpoint, the API key (D10: not a wallet secret) and its own HTTP session (Windows: `WinHTTP`). It exists only
-/// while the feature is effectively on (`Option<ExplainService>` = `None` otherwise).
+/// endpoint, the API key (D10: not a wallet secret) and its own HTTP session (Windows:
+/// `WinHTTP`). It exists only while the feature is effectively on (`Option<ExplainService>` =
+/// `None` otherwise).
 pub struct ExplainService {
     jobs: Option<mpsc::Sender<LlmJob>>,
     busy: Arc<AtomicBool>,

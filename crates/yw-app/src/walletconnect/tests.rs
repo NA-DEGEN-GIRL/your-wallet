@@ -18,29 +18,7 @@ use yw_json::Value;
 
 use super::qr_decode::dib_to_bgra;
 
-/// Test clock (2026-11-17 S2: replaces the Windows `SystemClock`, which stays in yw-app):
-/// monotonic time from `Instant`, offset by a day so a fresh clock never reads near zero.
-struct StdClock(std::time::Instant);
-
-impl yw_platform::Clock for StdClock {
-    fn now_ms(&self) -> u64 {
-        u64::try_from(self.0.elapsed().as_millis())
-            .unwrap_or(u64::MAX)
-            .saturating_add(86_400_000)
-    }
-
-    fn now_unix_ms(&self) -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |elapsed| {
-                u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-            })
-    }
-
-    fn sleep_ms(&self, ms: u64) {
-        std::thread::sleep(std::time::Duration::from_millis(ms));
-    }
-}
+use crate::flow::evm::StdClock;
 
 // ----- clipboard image parsing --------------------------------------------------------------
 
@@ -712,15 +690,13 @@ fn resolve_uses_the_given_p256_check() {
     );
     let jwt = format!("{header}.{payload}.{}", base64url_encode(&[9; 64]));
     let coordinate = base64url_encode(&[1; 32]);
-    let stub = || {
-        VerifyStub {
-        key: format!(
-            r#"{{"publicKey":{{"crv":"P-256","kty":"EC","x":"{coordinate}","y":"{coordinate}"}},"expiresAt":{}}}"#,
-            now + 3_600
-        )
-        .into_bytes(),
+    let key = format!(
+        r#"{{"publicKey":{{"crv":"P-256","kty":"EC","x":"{coordinate}","y":"{coordinate}"}},"expiresAt":{}}}"#,
+        now + 3_600
+    );
+    let stub = || VerifyStub {
+        key: key.clone().into_bytes(),
         gets: Mutex::new(Vec::new()),
-    }
     };
     let input = VerifyInput {
         attestation: Some(jwt),

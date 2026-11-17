@@ -50,8 +50,8 @@ EIP-6963, Wallet Standard) and forwards requests; it holds no secrets.
 |---|---|---|
 | `crates/yw-core` | Wallet core: keys, vault, chain logic, risk rules, approvals. No network, files, threads or GUI | forbidden |
 | `crates/yw-json` | Own strict JSON parser/writer and framing. Zero dependencies | forbidden |
-| `crates/yw-platform` | Platform-neutral types: HTTP URL/error/response types, the `Clock` trait. Zero dependencies, no OS calls | forbidden |
-| `crates/yw-win` | The only crate allowed `unsafe`: Windows API wrappers (WinHTTP, DPAPI, pipe, UI, …) | allowed, each block has a `// SAFETY:` comment |
+| `crates/yw-platform` | Platform-neutral types and traits: HTTP URL/error/response types, the HTTP `Transport` and WebSocket `WsLink` traits, the `Clock` trait. Zero dependencies, no OS calls | forbidden |
+| `crates/yw-win` | The only crate allowed `unsafe`: Windows API wrappers (WinHTTP, DPAPI, pipe, UI, …); its WinHTTP client and WebSocket implement the yw-platform traits | allowed, each block has a `// SAFETY:` comment |
 | `crates/yw-app` | The wallet binary | forbidden |
 | `crates/yw-host` | Native-messaging relay | forbidden |
 
