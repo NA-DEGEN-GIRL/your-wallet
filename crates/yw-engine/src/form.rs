@@ -1,0 +1,581 @@
+//! Form state of the main screens (spec/15 §3.2, §11.3, §11.4 S3): the text of each plain edit,
+//! and the credential units captured with one press.
+//!
+//! Plain edits ([`EditField`]) hold no wallet secret; their text lives in [`FormState`] as
+//! `Zeroizing` strings anyway, because the `WalletConnect` pairing link (its `symKey`, spec/15
+//! §12.2) and RPC URLs pass through them. The seven masked credential edits ([`CredField`]: RPC
+//! tokens, keys and URLs, D13) are never form state: the shell reads them only when a press that
+//! uses them happens and hands the units over in a [`PressInput`], wiped on drop (D28).
+//!
+//! 2026-11-18 (S3 B1): created. S3 mirrors the form state from the Windows edits (`Cmd::Form`
+//! at every press and after every render, Windows-transitional); S5 makes it engine-owned.
+
+use core::fmt;
+
+use yw_core::secret::Zeroizing;
+
+/// A plain (non-secret, non-credential) edit of the main screens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum EditField {
+    /// The account rename edit of the core screens.
+    CoreRename,
+    /// Settings › 보안: auto-lock minutes.
+    CoreAutoLock,
+    /// Address book: address.
+    BookAddress,
+    /// Address book: label.
+    BookLabel,
+    /// Address book: the `이 주소 저장` prompt's label.
+    BookPromptLabel,
+    /// Bitcoin send: recipient.
+    BtcSendTo,
+    /// Bitcoin send: amount.
+    BtcSendAmount,
+    /// Bitcoin send: manual fee rate.
+    BtcFeeManual,
+    /// Bitcoin send: typed confirmation of a high fee.
+    BtcTypedFee,
+    /// Bitcoin fee bump: manual fee rate.
+    BtcBumpManual,
+    /// Bitcoin fee bump: typed confirmation of a high fee.
+    BtcBumpTyped,
+    /// Bitcoin account card: name.
+    BtcRename,
+    /// Settings › Bitcoin: Esplora URL, mainnet.
+    BtcEsploraMainnet,
+    /// Settings › Bitcoin: Esplora URL, testnet4.
+    BtcEsploraTestnet4,
+    /// EVM send: recipient.
+    EvmSendTo,
+    /// EVM send: amount.
+    EvmSendAmount,
+    /// EVM token form: contract address.
+    EvmTokenAddress,
+    /// EVM token form: label.
+    EvmTokenLabel,
+    /// EVM chain form: chain id.
+    EvmChainId,
+    /// EVM chain form: name.
+    EvmChainName,
+    /// EVM chain form: symbol.
+    EvmChainSymbol,
+    /// EVM chain form: decimals.
+    EvmChainDecimals,
+    /// EVM chain form: explorer URL.
+    EvmChainExplorer,
+    /// EVM fee caps: max fee.
+    EvmCapFee,
+    /// EVM fee caps: max tip.
+    EvmCapTip,
+    /// EVM fee caps: max total.
+    EvmCapTotal,
+    /// S15 explorer card: transaction template.
+    ExplorerTx,
+    /// S15 explorer card: address template.
+    ExplorerAddress,
+    /// `HyperCore`: recipient.
+    HcTo,
+    /// `HyperCore`: amount.
+    HcAmount,
+    /// `HyperCore` settings: testnet API URL.
+    HcApi,
+    /// AI 설명: endpoint URL.
+    LlmEndpoint,
+    /// AI 설명: model.
+    LlmModel,
+    /// AI 설명: max tokens.
+    LlmMaxTokens,
+    /// Recovery phrases: the typed word that confirms a removal.
+    MnRemoveTyped,
+    /// Recovery phrases: name.
+    MnRename,
+    /// S22: the typed reset phrase.
+    ResetPhrase,
+    /// Solana send: recipient.
+    SolSendTo,
+    /// Solana send: amount.
+    SolSendAmount,
+    /// Settings › Solana: fee cap.
+    SolFeeCap,
+    /// Settings › Solana: compute-unit price.
+    SolCuPrice,
+    /// Solana account card: name.
+    SolRename,
+    /// `WalletConnect`: pairing link (holds the pairing `symKey`).
+    WcUri,
+    /// `WalletConnect`: QR image file path.
+    WcFile,
+    /// `WalletConnect`: project id.
+    WcProject,
+    /// `YubiKey` wizard: SIG account index.
+    YkSigIndex,
+    /// `YubiKey` wizard: AUT account index.
+    YkAutIndex,
+    /// `YubiKey` wizard: Solana account count.
+    YkSolCount,
+    /// `YubiKey` wizard: Solana first account.
+    YkSolStart,
+    /// `YubiKey` wizard: the typed word that confirms an overwrite.
+    YkOverwrite,
+    /// `YubiKey` card: name.
+    YkCardName,
+    /// `YubiKey` re-slot: SIG account index.
+    YkReslotSigIndex,
+    /// `YubiKey` re-slot: AUT account index.
+    YkReslotAutIndex,
+    /// `YubiKey` clear: the typed confirmation word.
+    YkClearConfirm,
+    /// `YubiKey` re-slot: the typed loss acknowledgement.
+    YkReslotLoss,
+    /// `YubiKey` clear: the typed loss acknowledgement.
+    YkClearLoss,
+    /// Zcash send: recipient.
+    ZecSendTo,
+    /// Zcash send: amount.
+    ZecSendAmount,
+}
+
+impl EditField {
+    /// Every plain edit.
+    pub const ALL: [Self; 58] = [
+        Self::CoreRename,
+        Self::CoreAutoLock,
+        Self::BookAddress,
+        Self::BookLabel,
+        Self::BookPromptLabel,
+        Self::BtcSendTo,
+        Self::BtcSendAmount,
+        Self::BtcFeeManual,
+        Self::BtcTypedFee,
+        Self::BtcBumpManual,
+        Self::BtcBumpTyped,
+        Self::BtcRename,
+        Self::BtcEsploraMainnet,
+        Self::BtcEsploraTestnet4,
+        Self::EvmSendTo,
+        Self::EvmSendAmount,
+        Self::EvmTokenAddress,
+        Self::EvmTokenLabel,
+        Self::EvmChainId,
+        Self::EvmChainName,
+        Self::EvmChainSymbol,
+        Self::EvmChainDecimals,
+        Self::EvmChainExplorer,
+        Self::EvmCapFee,
+        Self::EvmCapTip,
+        Self::EvmCapTotal,
+        Self::ExplorerTx,
+        Self::ExplorerAddress,
+        Self::HcTo,
+        Self::HcAmount,
+        Self::HcApi,
+        Self::LlmEndpoint,
+        Self::LlmModel,
+        Self::LlmMaxTokens,
+        Self::MnRemoveTyped,
+        Self::MnRename,
+        Self::ResetPhrase,
+        Self::SolSendTo,
+        Self::SolSendAmount,
+        Self::SolFeeCap,
+        Self::SolCuPrice,
+        Self::SolRename,
+        Self::WcUri,
+        Self::WcFile,
+        Self::WcProject,
+        Self::YkSigIndex,
+        Self::YkAutIndex,
+        Self::YkSolCount,
+        Self::YkSolStart,
+        Self::YkOverwrite,
+        Self::YkCardName,
+        Self::YkReslotSigIndex,
+        Self::YkReslotAutIndex,
+        Self::YkClearConfirm,
+        Self::YkReslotLoss,
+        Self::YkClearLoss,
+        Self::ZecSendTo,
+        Self::ZecSendAmount,
+    ];
+
+    /// Read cap in UTF-16 units: the one cap the Windows app reads the field with (2026-11-18:
+    /// yw-app's read sites each pass this literal or their module's `TEXT_MAX`).
+    #[must_use]
+    pub const fn cap(self) -> usize {
+        match self {
+            Self::CoreAutoLock
+            | Self::LlmMaxTokens
+            | Self::YkSigIndex
+            | Self::YkAutIndex
+            | Self::YkSolCount
+            | Self::YkSolStart => 8,
+            Self::YkOverwrite
+            | Self::YkReslotSigIndex
+            | Self::YkReslotAutIndex
+            | Self::YkClearConfirm
+            | Self::YkReslotLoss
+            | Self::YkClearLoss => 16,
+            Self::MnRemoveTyped | Self::ResetPhrase => 32,
+            Self::CoreRename
+            | Self::BtcRename
+            | Self::MnRename
+            | Self::WcProject
+            | Self::YkCardName => 64,
+            Self::LlmModel => 128,
+            Self::SolSendTo
+            | Self::SolSendAmount
+            | Self::SolFeeCap
+            | Self::SolCuPrice
+            | Self::SolRename => 256,
+            Self::BookAddress
+            | Self::BookLabel
+            | Self::BookPromptLabel
+            | Self::BtcSendTo
+            | Self::BtcSendAmount
+            | Self::BtcFeeManual
+            | Self::BtcTypedFee
+            | Self::BtcBumpManual
+            | Self::BtcBumpTyped
+            | Self::BtcEsploraMainnet
+            | Self::BtcEsploraTestnet4
+            | Self::EvmSendTo
+            | Self::EvmSendAmount
+            | Self::EvmTokenAddress
+            | Self::EvmTokenLabel
+            | Self::EvmChainId
+            | Self::EvmChainName
+            | Self::EvmChainSymbol
+            | Self::EvmChainDecimals
+            | Self::EvmChainExplorer
+            | Self::EvmCapFee
+            | Self::EvmCapTip
+            | Self::EvmCapTotal
+            | Self::ExplorerTx
+            | Self::ExplorerAddress
+            | Self::HcTo
+            | Self::HcAmount
+            | Self::HcApi => 512,
+            Self::WcFile | Self::ZecSendTo | Self::ZecSendAmount => 1_024,
+            Self::WcUri | Self::LlmEndpoint => 2_048,
+        }
+    }
+
+    /// `text` cut to [`cap`](Self::cap) UTF-16 units and decoded like the Windows edit read
+    /// (`String::from_utf16_lossy` of the first `cap()` units: a surrogate pair split by the cut
+    /// becomes U+FFFD), so a value is the same whether the shell or the logic cut it. No
+    /// intermediate buffer outlives the call unwiped.
+    #[must_use]
+    pub fn clamp(self, text: &str) -> Zeroizing<String> {
+        let cap = self.cap();
+        let mut units = Zeroizing::new(Vec::with_capacity(text.len().min(cap)));
+        units.extend(text.encode_utf16().take(cap));
+        // A UTF-16 unit decodes to at most 3 UTF-8 bytes (U+FFFD for a lone surrogate), so the
+        // string never reallocates and leaves no copy behind.
+        let mut out = Zeroizing::new(String::with_capacity(units.len().saturating_mul(3)));
+        out.extend(
+            char::decode_utf16(units.iter().copied())
+                .map(|unit| unit.unwrap_or(char::REPLACEMENT_CHARACTER)),
+        );
+        out
+    }
+}
+
+/// The seven masked credential edits (RPC tokens, keys and URLs; D13). Never in [`FormState`],
+/// `Cmd::Edit`, [`FormSnapshot`] or an `Effect` payload (D28).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CredField {
+    /// Settings › 네트워크: `QuickNode` endpoint name.
+    QnName,
+    /// Settings › 네트워크: `QuickNode` token.
+    QnToken,
+    /// Settings › 네트워크: Alchemy key.
+    AlchemyKey,
+    /// Settings › 네트워크: a network's replacement RPC URL (`교체`).
+    RpcReplace,
+    /// S08 처음 설정: `QuickNode` endpoint URL.
+    DoneQn,
+    /// EVM chain form: RPC URL.
+    ChainRpc,
+    /// AI 설명: API key.
+    LlmKey,
+}
+
+impl CredField {
+    /// Every credential edit.
+    pub const ALL: [Self; 7] = [
+        Self::QnName,
+        Self::QnToken,
+        Self::AlchemyKey,
+        Self::RpcReplace,
+        Self::DoneQn,
+        Self::ChainRpc,
+        Self::LlmKey,
+    ];
+
+    /// Read cap in UTF-16 units (yw-app `TOKEN_MAX_UNITS` 256, `URL_MAX_UNITS` 2 048, the chain
+    /// form's RPC 2 048 and the LLM key 1 024).
+    #[must_use]
+    pub const fn cap(self) -> usize {
+        match self {
+            Self::QnName | Self::QnToken | Self::AlchemyKey | Self::DoneQn => 256,
+            Self::LlmKey => 1_024,
+            Self::RpcReplace | Self::ChainRpc => 2_048,
+        }
+    }
+}
+
+/// What the plain edits show (Windows-transitional `Cmd::Form`).
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct FormSnapshot(pub Vec<(EditField, Zeroizing<String>)>);
+
+/// Field names and lengths only.
+impl fmt::Debug for FormSnapshot {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("FormSnapshot")
+            .field(&Lengths(&self.0))
+            .finish()
+    }
+}
+
+/// `{field: len, …}` of a field list.
+struct Lengths<'a>(&'a [(EditField, Zeroizing<String>)]);
+
+impl fmt::Debug for Lengths<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_map()
+            .entries(self.0.iter().map(|(field, text)| (field, text.len())))
+            .finish()
+    }
+}
+
+/// The text of each plain edit on screen. `None` = no such edit (as the Windows read of a
+/// missing control), so every caller's fallback keeps its meaning. S3: mirrored from the shell;
+/// S5: owned here (Android sends only `Cmd::Edit`).
+#[derive(Default)]
+pub struct FormState {
+    fields: Vec<(EditField, Zeroizing<String>)>,
+}
+
+impl FormState {
+    /// Takes a whole snapshot (the edits not in it no longer exist).
+    pub fn replace(&mut self, snapshot: FormSnapshot) {
+        self.fields = snapshot.0;
+    }
+
+    /// Sets one field; `None` removes it.
+    pub fn set(&mut self, field: EditField, text: Option<Zeroizing<String>>) {
+        let at = self.fields.iter().position(|(known, _)| *known == field);
+        match (at, text) {
+            (Some(at), Some(text)) => {
+                if let Some(slot) = self.fields.get_mut(at) {
+                    slot.1 = text;
+                }
+            }
+            (Some(at), None) => {
+                self.fields.remove(at);
+            }
+            (None, Some(text)) => self.fields.push((field, text)),
+            (None, None) => {}
+        }
+    }
+
+    /// The field's text, `None` when the edit does not exist.
+    #[must_use]
+    pub fn text(&self, field: EditField) -> Option<&str> {
+        self.fields
+            .iter()
+            .find(|(known, _)| *known == field)
+            .map(|(_, text)| text.as_str())
+    }
+}
+
+/// Field names and lengths only.
+impl fmt::Debug for FormState {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("FormState")
+            .field("fields", &Lengths(&self.fields))
+            .finish()
+    }
+}
+
+/// One credential field listed for a press.
+pub enum CredUnits {
+    /// Its edit did not exist when the press happened (reads as empty).
+    Absent,
+    /// The UTF-16 units it held.
+    Units(Zeroizing<Vec<u16>>),
+}
+
+/// The unit count only.
+impl fmt::Debug for CredUnits {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Absent => formatter.write_str("Absent"),
+            Self::Units(units) => formatter.debug_tuple("Units").field(&units.len()).finish(),
+        }
+    }
+}
+
+/// Platform input captured with one press: the units of every credential field the press uses
+/// (each listed field has an entry, `Absent` when its edit did not exist). No `Clone`; wiped on
+/// drop.
+#[derive(Default)]
+pub struct PressInput {
+    creds: Vec<(CredField, CredUnits)>,
+    misses: u32,
+}
+
+impl PressInput {
+    /// The input of a press that uses `creds`.
+    #[must_use]
+    pub const fn new(creds: Vec<(CredField, CredUnits)>) -> Self {
+        Self { creds, misses: 0 }
+    }
+
+    /// Moves the units of `field` out: empty for `Absent` or a second take, as the Windows read
+    /// of a missing edit. A field with no entry (not captured for this press: a table bug) also
+    /// gives empty units and is counted in [`misses`](Self::misses).
+    pub fn take(&mut self, field: CredField) -> Zeroizing<Vec<u16>> {
+        let Some((_, units)) = self.creds.iter_mut().find(|(known, _)| *known == field) else {
+            self.misses = self.misses.saturating_add(1);
+            return Zeroizing::new(Vec::new());
+        };
+        match core::mem::replace(units, CredUnits::Absent) {
+            CredUnits::Absent => Zeroizing::new(Vec::new()),
+            CredUnits::Units(units) => units,
+        }
+    }
+
+    /// Takes of a field with no entry so far (tests assert 0).
+    #[must_use]
+    pub const fn misses(&self) -> u32 {
+        self.misses
+    }
+}
+
+/// Field names and unit counts only.
+impl fmt::Debug for PressInput {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PressInput")
+            .field("creds", &self.creds)
+            .field("misses", &self.misses)
+            .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn units(text: &str) -> Zeroizing<Vec<u16>> {
+        Zeroizing::new(text.encode_utf16().collect())
+    }
+
+    #[test]
+    fn edit_fields_are_unique_and_capped() {
+        for (at, field) in EditField::ALL.iter().enumerate() {
+            assert!(
+                !EditField::ALL[..at].contains(field),
+                "{field:?} listed twice"
+            );
+            assert!(field.cap() >= 8, "{field:?}");
+        }
+        for (at, field) in CredField::ALL.iter().enumerate() {
+            assert!(
+                !CredField::ALL[..at].contains(field),
+                "{field:?} listed twice"
+            );
+        }
+    }
+
+    #[test]
+    fn clamp_cuts_at_the_cap_like_the_window_read() {
+        let long = "a".repeat(40);
+        assert_eq!(EditField::ResetPhrase.clamp(&long).as_str(), "a".repeat(32));
+        assert_eq!(EditField::ResetPhrase.clamp("short").as_str(), "short");
+        assert_eq!(EditField::CoreAutoLock.clamp("").as_str(), "");
+        // 7 ASCII units then a surrogate pair cut after its first half (cap 8).
+        let split = "1234567\u{1F600}";
+        let expect = String::from_utf16_lossy(&split.encode_utf16().take(8).collect::<Vec<_>>());
+        assert_eq!(EditField::CoreAutoLock.clamp(split).as_str(), expect);
+        assert_eq!(expect, "1234567\u{FFFD}");
+        // A whole pair inside the cap stays.
+        assert_eq!(
+            EditField::CoreAutoLock.clamp("123456\u{1F600}").as_str(),
+            "123456\u{1F600}"
+        );
+        // Hangul (one unit, three UTF-8 bytes each) at the cap.
+        let hangul = "가".repeat(10);
+        assert_eq!(
+            EditField::CoreAutoLock.clamp(&hangul).as_str(),
+            "가".repeat(8)
+        );
+    }
+
+    #[test]
+    fn form_state_knows_presence() {
+        let mut state = FormState::default();
+        assert_eq!(state.text(EditField::EvmSendTo), None);
+        state.set(EditField::EvmSendTo, Some(Zeroizing::new(String::new())));
+        assert_eq!(state.text(EditField::EvmSendTo), Some(""));
+        state.set(EditField::EvmSendTo, Some(Zeroizing::new("x".to_owned())));
+        assert_eq!(state.text(EditField::EvmSendTo), Some("x"));
+        state.set(EditField::EvmSendTo, None);
+        assert_eq!(state.text(EditField::EvmSendTo), None);
+        state.set(EditField::EvmSendTo, None);
+        assert_eq!(state.text(EditField::EvmSendTo), None);
+        state.set(EditField::HcTo, Some(Zeroizing::new("y".to_owned())));
+        state.replace(FormSnapshot(vec![(
+            EditField::SolSendTo,
+            Zeroizing::new("z".to_owned()),
+        )]));
+        assert_eq!(state.text(EditField::HcTo), None);
+        assert_eq!(state.text(EditField::SolSendTo), Some("z"));
+        let shown = format!("{state:?}");
+        assert_eq!(shown, "FormState { fields: {SolSendTo: 1} }");
+    }
+
+    #[test]
+    fn take_moves_units_out_once() {
+        let mut input = PressInput::new(vec![
+            (CredField::QnName, CredUnits::Units(units("name"))),
+            (CredField::QnToken, CredUnits::Absent),
+        ]);
+        assert_eq!(
+            input.take(CredField::QnName).as_slice(),
+            units("name").as_slice()
+        );
+        assert!(input.take(CredField::QnName).is_empty());
+        assert!(input.take(CredField::QnToken).is_empty());
+        assert_eq!(input.misses(), 0);
+        assert!(input.take(CredField::LlmKey).is_empty());
+        assert_eq!(input.misses(), 1);
+        assert!(PressInput::default().take(CredField::DoneQn).is_empty());
+        let shown = format!("{input:?}");
+        assert_eq!(
+            shown,
+            "PressInput { creds: [(QnName, Absent), (QnToken, Absent)], misses: 1 }"
+        );
+    }
+
+    #[test]
+    fn debug_prints_no_text() {
+        let snapshot = FormSnapshot(vec![(
+            EditField::WcUri,
+            Zeroizing::new("wc:topic@2?symKey=ab".to_owned()),
+        )]);
+        let shown = format!("{snapshot:?}");
+        assert!(!shown.contains("symKey"), "{shown}");
+        let input = PressInput::new(vec![(
+            CredField::LlmKey,
+            CredUnits::Units(units("key-secret")),
+        )]);
+        let shown = format!("{input:?}");
+        assert!(!shown.contains("secret"), "{shown}");
+        assert!(shown.contains("Units(10)"), "{shown}");
+    }
+}

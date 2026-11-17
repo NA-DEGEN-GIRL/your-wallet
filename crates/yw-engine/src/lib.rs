@@ -17,11 +17,15 @@
 //! transport), [`events`] the worker and UI event types, [`workers`] the key, RPC and journal
 //! workers, and `approval::view` the A01 content model. [`catalogues`] lists the text catalogues
 //! of this crate (spec/14 §4). `testkit` (hidden) holds test helpers for the platform crates.
+//! [`cmd`] holds the inputs a shell sends to the logic (`Cmd`, `Press`), [`effect`] what the
+//! logic asks the shell to do (`Effect`) and [`form`] the plain edits' state and the credential
+//! units captured with a press.
 //!
 //! 2026-11-17 (spec/15 §11.4 S2, E1): created; these modules moved out of yw-app unchanged except
 //! for their `use` paths. E2 added the settings, metadata, explain and pipeline modules, E3 the
 //! dispatcher, the `WalletConnect` worker, the events, the workers and the approval view (before
-//! E3 the relay worker was still in yw-app).
+//! E3 the relay worker was still in yw-app). 2026-11-18 (spec/15 §11.4 S3 B1): `cmd`, `effect`
+//! and `form` were added.
 #![forbid(unsafe_code)]
 
 pub mod apikeys;
@@ -30,11 +34,14 @@ pub mod badge;
 pub mod browser;
 pub mod btc;
 pub mod catalogues;
+pub mod cmd;
+pub mod effect;
 pub mod errors;
 pub mod events;
 pub mod explain;
 pub mod explorer;
 pub mod flow;
+pub mod form;
 pub mod hypercore;
 pub mod logging;
 pub mod meta;
