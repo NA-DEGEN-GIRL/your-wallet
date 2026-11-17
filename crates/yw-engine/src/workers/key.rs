@@ -2284,11 +2284,12 @@ pub(crate) mod tests {
 
     use yw_core::btc::BtcNetwork;
 
-    use super::platform::{KeyDeps, testing};
+    use super::platform::testing;
     use super::{KeyWorker, run};
     use crate::events::{
         KeyJob, KeyJobError, KeyOutcome, KeyQueue, KeyResult, LockSignal, accept_result,
     };
+    use crate::testkit::yubikey_wallet;
 
     #[test]
     fn lk2_lock_jumps_the_queue_and_cancels_pending_jobs() {
@@ -2588,104 +2589,6 @@ pub(crate) mod tests {
         );
     }
 
-    /// A worker on the `abandon` wallet with two emulated `YubiKey`s enrolled: card A (SIG = EVM 0,
-    /// AUT = EVM 1, PIV 82 = Solana 0) and card B (SIG = BIP84 mainnet address 0); both cards stay
-    /// inserted. Returns the worker, the cards (A, B), the folder and the reconciled meta.
-    /// `deps` gives the storage and the clock (its card source is replaced by the emulator):
-    /// `testing::deps()` here, the Windows platform on real files (no readers) in the App tests,
-    /// which read the files themselves. Those tests stay in yw-app, so this helper moves to
-    /// `yw_engine::testkit` (always compiled, hidden from the docs) when the worker moves
-    /// (spec/15 §11.4 S2, 2026-11-17 review).
-    pub(crate) fn yubikey_wallet(
-        tag: &str,
-        deps: KeyDeps,
-    ) -> (
-        KeyWorker,
-        std::sync::Arc<std::sync::Mutex<Vec<yw_core::yubikey::mock::MockCard>>>,
-        std::path::PathBuf,
-        crate::events::MetaLoaded,
-    ) {
-        use std::sync::{Arc, Mutex};
-
-        use yw_core::bip32::path::AccountIndex;
-        use yw_core::secret::Zeroizing;
-        use yw_core::yubikey::mock::MockCard;
-        use yw_core::yubikey::plan::{CardSlot, KeyRole, PgpKey, PivSlot, PlannedSlot};
-
-        let about = format!("{} about", ["abandon"; 11].join(" "));
-        let dir = testing::temp_name(&format!("yk-{tag}"));
-        let cards = Arc::new(Mutex::new(vec![MockCard::new(7_700_011)]));
-        let mut worker =
-            KeyWorker::new(&dir, deps).with_card_source(Box::new(crate::yubikey::MockSource {
-                cards: Arc::clone(&cards),
-            }));
-        let bytes = |text: &str| Zeroizing::new(text.as_bytes().to_vec());
-        worker.handle(KeyJob::Load);
-        worker.handle(KeyJob::PreviewImport {
-            password: Some(bytes("yubikey wallet password")),
-            phrase: bytes(&about),
-            passphrase: None,
-        });
-        assert!(matches!(
-            worker.handle(KeyJob::CommitImport).first(),
-            Some(KeyOutcome::Imported(Ok(())))
-        ));
-        let evm = |index| KeyRole::Evm {
-            index: AccountIndex::new(index).unwrap(),
-            btc: None,
-        };
-        let enrol = |worker: &mut KeyWorker, slots| match worker
-            .handle(KeyJob::EnrolYubiKey {
-                phrase: bytes(&about),
-                passphrase: None,
-                slots,
-                admin_pin: bytes("12345678"),
-                management_key: Zeroizing::new(
-                    yw_core::yubikey::piv::DEFAULT_MANAGEMENT_KEY.to_vec(),
-                ),
-            })
-            .pop()
-        {
-            Some(KeyOutcome::YubiKeyEnrolled(Ok(_))) => {}
-            other => unreachable!("enrolment failed: {other:?}"),
-        };
-        enrol(
-            &mut worker,
-            vec![
-                PlannedSlot::recommended(CardSlot::OpenPgp(PgpKey::Sig), evm(0)),
-                PlannedSlot::recommended(CardSlot::OpenPgp(PgpKey::Aut), evm(1)),
-                PlannedSlot::recommended(
-                    CardSlot::Piv(PivSlot::new(0x82).unwrap()),
-                    KeyRole::Sol {
-                        index: AccountIndex::ZERO,
-                    },
-                ),
-            ],
-        );
-        // Card B alone in the reader for its enrolment, then both inserted.
-        let card_a = cards.lock().unwrap().pop().unwrap();
-        cards.lock().unwrap().push(MockCard::new(7_700_012));
-        enrol(
-            &mut worker,
-            vec![PlannedSlot::recommended(
-                CardSlot::OpenPgp(PgpKey::Sig),
-                KeyRole::Btc {
-                    network: BtcNetwork::Mainnet,
-                    script: yw_core::btc::ScriptType::P2wpkh,
-                    index: 0,
-                },
-            )],
-        );
-        cards.lock().unwrap().insert(0, card_a);
-        for card in cards.lock().unwrap().iter_mut() {
-            card.log.clear();
-        }
-        let Some(KeyOutcome::Meta(Ok(loaded))) = worker.handle(KeyJob::LoadMeta).pop() else {
-            unreachable!("meta");
-        };
-        (worker, cards, dir, loaded)
-    }
-
     /// spec/10 §13 (2026-11-15): a new `YubiKey` account is named like a software account of
     /// its chain, numbered after every label of the chain (`계정 N`, `Solana N`), and a stored
     /// label that is still its index's old default (`YubiKey 계정 {i+1}`, `YubiKey account
@@ -2815,7 +2718,8 @@ pub(crate) mod tests {
         use yw_core::btc::account::HwBtcKey;
         use yw_core::btc::{BtcAccountId, ScriptType};
 
-        let (mut worker, _cards, _, loaded) = yubikey_wallet("reconcile", testing::deps());
+        let (mut worker, _cards, _, loaded) =
+            yubikey_wallet(testing::temp_name("yk-reconcile"), testing::deps());
         assert!(loaded.mismatch, "the first load adds the accounts");
         let meta = &loaded.meta;
         let evm: Vec<(u32, &str, &str)> = meta
@@ -2943,7 +2847,8 @@ pub(crate) mod tests {
         const FROM: &str = "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk";
         const TO: &str = "Hh8QwFUA6MtVu1qAoq12ucvFHNwCcVTV7hpWjeY1Hztb";
         const NOW: u64 = 1_800_000_000_000;
-        let (mut worker, cards, _, _) = yubikey_wallet("sol", testing::deps());
+        let (mut worker, cards, _, _) =
+            yubikey_wallet(testing::temp_name("yk-sol"), testing::deps());
         let approve = |id: u8| {
             let intent = SolTransferIntent {
                 id: [id; 16],
@@ -3069,7 +2974,8 @@ pub(crate) mod tests {
             out
         };
         let txs: Vec<Vec<u8>> = (1..=3).map(tx).collect();
-        let (mut worker, cards, _, _) = yubikey_wallet("sol-dapp", testing::deps());
+        let (mut worker, cards, _, _) =
+            yubikey_wallet(testing::temp_name("yk-sol-dapp"), testing::deps());
         let approve = |id: u8, source: SolKeySource| {
             let item = SolTxItemFacts {
                 tables: Ok((0, Vec::new())),
@@ -3208,7 +3114,8 @@ pub(crate) mod tests {
         tx.extend_from_slice(&[5; 32]);
         tx.extend_from_slice(&[7; 32]);
         tx.extend_from_slice(&[1, 1, 1, 0, 1, 9]);
-        let (mut worker, cards, _, _) = yubikey_wallet("sol-dapp-send", testing::deps());
+        let (mut worker, cards, _, _) =
+            yubikey_wallet(testing::temp_name("yk-sol-dapp-send"), testing::deps());
         let approve = |id: u8| {
             let request = SolTxRequest {
                 id: yw_core::approval::ApprovalId([id; 16]),
@@ -3343,7 +3250,8 @@ pub(crate) mod tests {
 
         const TIP: u32 = 900_000;
         const NOW_MS: u64 = 1_793_074_713_000;
-        let (mut worker, cards, _, _) = yubikey_wallet("btc", testing::deps());
+        let (mut worker, cards, _, _) =
+            yubikey_wallet(testing::temp_name("yk-btc"), testing::deps());
         let id = BtcAccountId::Hardware {
             key: HwBtcKey::Address(0),
             script_type: ScriptType::P2wpkh,

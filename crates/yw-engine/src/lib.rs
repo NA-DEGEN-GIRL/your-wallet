@@ -12,19 +12,26 @@
 //! platform seals it), [`explorer`], [`token_view`] and [`meta`] hold the settings and wallet
 //! metadata, [`explain`] the optional LLM explanation, [`rpc`], [`flow`], [`sol`], [`btc`],
 //! [`zec`], [`received`] and [`hypercore`] the RPC pipelines and chain flows, and
-//! [`walletconnect`] the `WalletConnect` session engine (the relay worker is still in yw-app).
-//! [`catalogues`] lists the text catalogues of this crate (spec/14 §4).
+//! [`walletconnect`] the `WalletConnect` session engine and relay worker. [`browser`] holds the
+//! dApp dispatcher (envelope v1, parameters, grants, read workers; the platform runs the
+//! transport), [`events`] the worker and UI event types, [`workers`] the key, RPC and journal
+//! workers, and `approval::view` the A01 content model. [`catalogues`] lists the text catalogues
+//! of this crate (spec/14 §4). `testkit` (hidden) holds test helpers for the platform crates.
 //!
 //! 2026-11-17 (spec/15 §11.4 S2, E1): created; these modules moved out of yw-app unchanged except
-//! for their `use` paths. E2 added the settings, metadata, explain and pipeline modules.
+//! for their `use` paths. E2 added the settings, metadata, explain and pipeline modules, E3 the
+//! dispatcher, the `WalletConnect` worker, the events, the workers and the approval view (before
+//! E3 the relay worker was still in yw-app).
 #![forbid(unsafe_code)]
 
 pub mod apikeys;
 pub mod approval;
 pub mod badge;
+pub mod browser;
 pub mod btc;
 pub mod catalogues;
 pub mod errors;
+pub mod events;
 pub mod explain;
 pub mod explorer;
 pub mod flow;
@@ -37,9 +44,12 @@ pub mod rpc;
 pub mod secure_field;
 pub mod settings;
 pub mod sol;
+#[doc(hidden)]
+pub mod testkit;
 pub mod text;
 pub mod token_view;
 pub mod wallet_files;
 pub mod walletconnect;
+pub mod workers;
 pub mod yubikey;
 pub mod zec;

@@ -1645,6 +1645,63 @@
 | UNSUPPORTED | 이 지갑이 지원하지 않는 요청은 거부됩니다: {0} | Requests this wallet does not support are rejected: {0} |
 | DROPPED | 사이트가 요구한 알 수 없는 요청·이벤트 이름 {0}개는 세션에서 뺐습니다. | {0} unknown request or event name(s) the site asked for were left out of the session. |
 
+<!-- catalogue: yw_engine::walletconnect::worker::text -->
+
+| 이름 | 한국어 | English |
+|---|---|---|
+| RELAY_NO_PROJECT | Reown Project ID가 없어 WalletConnect가 꺼져 있습니다 | WalletConnect is off: no Reown Project ID |
+| RELAY_IDLE | 대기 중 (연결된 세션 없음) | Idle (no connected session) |
+| RELAY_CONNECTING | 릴레이에 연결하는 중… | Connecting to the relay… |
+| RELAY_CONNECTED | 릴레이에 연결됨 | Connected to the relay |
+| RELAY_UNAUTHORIZED | 릴레이가 Project ID를 거부했습니다 (HTTP {0}) — dashboard.reown.com에서 ID와 허용 출처 설정을 확인하세요 | The relay refused the Project ID (HTTP {0}) — check the ID and the allowed origins at dashboard.reown.com |
+| RELAY_OFFLINE | 릴레이에 연결할 수 없습니다 — 다시 시도하는 중 | Cannot connect to the relay — retrying |
+| HINT_ADD_CHAIN | 설정 → EVM 체인에서 그 네트워크를 추가하거나 RPC를 확인한 뒤 dApp에서 다시 연결하세요. | Add that network or check its RPC in Settings → EVM chains, then connect again from the dApp. |
+| HINT_EVM_ONLY | 이 지갑의 WalletConnect는 EVM 네트워크만 지원합니다. | This wallet's WalletConnect supports EVM networks only. |
+| HINT_NEW_LINK | dApp에서 새 QR/링크를 받아 다시 연결하세요. | Get a new QR code or link from the dApp and connect again. |
+| MORE_CHAINS | 외 {0}개 | and {0} more |
+| NON_EVM_NETWORKS | EVM이 아닌 네트워크(Solana·Bitcoin 등) | non-EVM networks (Solana, Bitcoin, etc.) |
+| REFUSED_MISSING | 연결 요청을 거절했습니다: dApp이 이 지갑에서 쓸 수 없는 네트워크를 필수로 요구합니다 — {0}. {1} | Connection request refused: the dApp requires networks this wallet cannot use — {0}. {1} |
+| REFUSED_NON_EVM_ONLY | 연결 요청을 거절했습니다: dApp이 EVM이 아닌 네트워크(Solana·Bitcoin 등)만 요청했습니다. {0} | Connection request refused: the dApp asked only for non-EVM networks (Solana, Bitcoin, etc.). {0} |
+| REFUSED_NO_CHAIN | 연결 요청을 거절했습니다: dApp이 연결할 EVM 네트워크를 지정하지 않았습니다. | Connection request refused: the dApp named no EVM network to connect to. |
+| REFUSED_NONE_USABLE | 연결 요청을 거절했습니다: dApp이 요청한 네트워크({0}) 중 이 지갑에서 쓸 수 있는 것이 없습니다. {1} | Connection request refused: none of the networks the dApp asked for ({0}) can be used in this wallet. {1} |
+| REFUSED_MALFORMED | 연결 요청을 거절했습니다: dApp이 보낸 연결 요청의 형식이 올바르지 않습니다. | Connection request refused: the dApp's connection request is malformed. |
+| COOLING | 방금 거절했거나 시간이 지난 연결 요청과 같은 연결 주소라 {0}초 동안은 새 요청을 받지 않습니다. 잠시 뒤 dApp에서 다시 연결하세요. | Same link as a connection request just refused or timed out: no new request is taken for {0} s. Connect again from the dApp in a moment. |
+| PAIRING_USED | 이 연결 주소(QR/링크)는 이미 쓰였습니다. {0} | This link (QR/link) was already used. {0} |
+| BUSY | 처리하지 않은 연결 요청이 많아 새 요청을 거절했습니다. 열린 연결 창부터 처리하세요. | Too many connection requests are pending, so the new one was refused. Handle the open connection windows first. |
+| PAIRING_EXPIRED | dApp의 연결 요청이 오지 않은 채 연결 주소가 만료되었습니다. {0} | The link expired before the dApp sent a connection request. {0} |
+| SETTLE_REFUSED | dApp이 방금 승인한 연결을 받아들이지 않아 그 WalletConnect 세션을 지웠습니다. dApp에서 다시 연결하세요. | The dApp did not accept the connection just approved, so that WalletConnect session was removed. Connect again from the dApp. |
+| UNCONFIRMED | dApp이 WalletConnect 연결을 확인하지 않아 세션을 끊었습니다(dApp 창이 닫혔을 수 있습니다). 필요하면 {0} | The dApp did not confirm the WalletConnect connection, so the session was disconnected (the dApp window may have closed). If needed: {0} |
+| PAIR_NO_PROJECT | 먼저 Reown Project ID를 저장하세요 (연결된 사이트 → WalletConnect). | Save a Reown Project ID first (Connected sites → WalletConnect). |
+| PAIR_LOCKED | 지갑 잠금을 해제한 뒤 다시 시도하세요. | Unlock the wallet, then try again. |
+| PAIR_EXPIRED | 연결 주소가 만료되었습니다. dApp에서 새 WalletConnect 주소를 받으세요. | The link has expired. Get a new WalletConnect link from the dApp. |
+| PAIR_WAITING | dApp의 연결 요청을 기다리는 중입니다… | Waiting for the dApp's connection request… |
+
+<!-- catalogue: yw_engine::workers::journal::btc::text -->
+
+| 이름 | 한국어 | English |
+|---|---|---|
+| NO_META | Bitcoin이 켜져 있지 않습니다 | Bitcoin is not turned on |
+| KEY_REMOVED | 이 계정의 개인키는 지갑에서 삭제되었습니다. 이 계정의 주소로 받지 마세요. | This account's private key was deleted from the wallet. Do not receive to this account's addresses. |
+| JOURNAL_DAMAGED | 거래 저널이 손상되어 보내기를 멈췄습니다. (E-VLT-006) | The transaction journal is damaged, so sending is stopped. (E-VLT-006) |
+| JOURNAL_WRITE | 저널 저장 실패 — {0} | Journal save failed — {0} |
+
+<!-- catalogue: yw_engine::workers::journal::zec::text -->
+
+| 이름 | 한국어 | English |
+|---|---|---|
+| JOURNAL_WRITE | 거래 저널을 쓰지 못해 서명을 버렸습니다. 아무것도 보내지 않았습니다. | The transaction journal could not be written, so the signature was dropped. Nothing was sent. |
+| HARDWARE_KEY | YubiKey 키는 등록된 슬롯에서 가져옵니다. | A YubiKey key is taken from its enrolled slot. |
+| IMPORTED_KEY | 가져온 키는 그 키의 목록에서 고릅니다. | An imported key is chosen from its list. |
+
+<!-- catalogue: yw_engine::workers::key::text -->
+
+| 이름 | 한국어 | English |
+|---|---|---|
+| LEGACY_HW_EVM_CARD_KEY | YubiKey 카드 키 {0} | YubiKey card key {0} |
+| LEGACY_HW_SOL_CARD_KEY | YubiKey Solana 카드 키 {0} | YubiKey Solana card key {0} |
+| LEGACY_HW_EVM_ACCOUNT | YubiKey 계정 {0} | YubiKey account {0} |
+| LEGACY_HW_SOL_ACCOUNT | YubiKey Solana {0} | YubiKey Solana {0} |
+
 <!-- catalogue: yw_engine::yubikey::text -->
 
 | 이름 | 한국어 | English |
@@ -4095,63 +4152,6 @@
 | CANCEL | 취소 | Cancel |
 | CLEAR_ALL | 모두 지우기 | Clear all |
 | COPY | 복사 | Copy |
-
-<!-- catalogue: yw_app::walletconnect::worker::text -->
-
-| 이름 | 한국어 | English |
-|---|---|---|
-| RELAY_NO_PROJECT | Reown Project ID가 없어 WalletConnect가 꺼져 있습니다 | WalletConnect is off: no Reown Project ID |
-| RELAY_IDLE | 대기 중 (연결된 세션 없음) | Idle (no connected session) |
-| RELAY_CONNECTING | 릴레이에 연결하는 중… | Connecting to the relay… |
-| RELAY_CONNECTED | 릴레이에 연결됨 | Connected to the relay |
-| RELAY_UNAUTHORIZED | 릴레이가 Project ID를 거부했습니다 (HTTP {0}) — dashboard.reown.com에서 ID와 허용 출처 설정을 확인하세요 | The relay refused the Project ID (HTTP {0}) — check the ID and the allowed origins at dashboard.reown.com |
-| RELAY_OFFLINE | 릴레이에 연결할 수 없습니다 — 다시 시도하는 중 | Cannot connect to the relay — retrying |
-| HINT_ADD_CHAIN | 설정 → EVM 체인에서 그 네트워크를 추가하거나 RPC를 확인한 뒤 dApp에서 다시 연결하세요. | Add that network or check its RPC in Settings → EVM chains, then connect again from the dApp. |
-| HINT_EVM_ONLY | 이 지갑의 WalletConnect는 EVM 네트워크만 지원합니다. | This wallet's WalletConnect supports EVM networks only. |
-| HINT_NEW_LINK | dApp에서 새 QR/링크를 받아 다시 연결하세요. | Get a new QR code or link from the dApp and connect again. |
-| MORE_CHAINS | 외 {0}개 | and {0} more |
-| NON_EVM_NETWORKS | EVM이 아닌 네트워크(Solana·Bitcoin 등) | non-EVM networks (Solana, Bitcoin, etc.) |
-| REFUSED_MISSING | 연결 요청을 거절했습니다: dApp이 이 지갑에서 쓸 수 없는 네트워크를 필수로 요구합니다 — {0}. {1} | Connection request refused: the dApp requires networks this wallet cannot use — {0}. {1} |
-| REFUSED_NON_EVM_ONLY | 연결 요청을 거절했습니다: dApp이 EVM이 아닌 네트워크(Solana·Bitcoin 등)만 요청했습니다. {0} | Connection request refused: the dApp asked only for non-EVM networks (Solana, Bitcoin, etc.). {0} |
-| REFUSED_NO_CHAIN | 연결 요청을 거절했습니다: dApp이 연결할 EVM 네트워크를 지정하지 않았습니다. | Connection request refused: the dApp named no EVM network to connect to. |
-| REFUSED_NONE_USABLE | 연결 요청을 거절했습니다: dApp이 요청한 네트워크({0}) 중 이 지갑에서 쓸 수 있는 것이 없습니다. {1} | Connection request refused: none of the networks the dApp asked for ({0}) can be used in this wallet. {1} |
-| REFUSED_MALFORMED | 연결 요청을 거절했습니다: dApp이 보낸 연결 요청의 형식이 올바르지 않습니다. | Connection request refused: the dApp's connection request is malformed. |
-| COOLING | 방금 거절했거나 시간이 지난 연결 요청과 같은 연결 주소라 {0}초 동안은 새 요청을 받지 않습니다. 잠시 뒤 dApp에서 다시 연결하세요. | Same link as a connection request just refused or timed out: no new request is taken for {0} s. Connect again from the dApp in a moment. |
-| PAIRING_USED | 이 연결 주소(QR/링크)는 이미 쓰였습니다. {0} | This link (QR/link) was already used. {0} |
-| BUSY | 처리하지 않은 연결 요청이 많아 새 요청을 거절했습니다. 열린 연결 창부터 처리하세요. | Too many connection requests are pending, so the new one was refused. Handle the open connection windows first. |
-| PAIRING_EXPIRED | dApp의 연결 요청이 오지 않은 채 연결 주소가 만료되었습니다. {0} | The link expired before the dApp sent a connection request. {0} |
-| SETTLE_REFUSED | dApp이 방금 승인한 연결을 받아들이지 않아 그 WalletConnect 세션을 지웠습니다. dApp에서 다시 연결하세요. | The dApp did not accept the connection just approved, so that WalletConnect session was removed. Connect again from the dApp. |
-| UNCONFIRMED | dApp이 WalletConnect 연결을 확인하지 않아 세션을 끊었습니다(dApp 창이 닫혔을 수 있습니다). 필요하면 {0} | The dApp did not confirm the WalletConnect connection, so the session was disconnected (the dApp window may have closed). If needed: {0} |
-| PAIR_NO_PROJECT | 먼저 Reown Project ID를 저장하세요 (연결된 사이트 → WalletConnect). | Save a Reown Project ID first (Connected sites → WalletConnect). |
-| PAIR_LOCKED | 지갑 잠금을 해제한 뒤 다시 시도하세요. | Unlock the wallet, then try again. |
-| PAIR_EXPIRED | 연결 주소가 만료되었습니다. dApp에서 새 WalletConnect 주소를 받으세요. | The link has expired. Get a new WalletConnect link from the dApp. |
-| PAIR_WAITING | dApp의 연결 요청을 기다리는 중입니다… | Waiting for the dApp's connection request… |
-
-<!-- catalogue: yw_app::workers::journal::btc::text -->
-
-| 이름 | 한국어 | English |
-|---|---|---|
-| NO_META | Bitcoin이 켜져 있지 않습니다 | Bitcoin is not turned on |
-| KEY_REMOVED | 이 계정의 개인키는 지갑에서 삭제되었습니다. 이 계정의 주소로 받지 마세요. | This account's private key was deleted from the wallet. Do not receive to this account's addresses. |
-| JOURNAL_DAMAGED | 거래 저널이 손상되어 보내기를 멈췄습니다. (E-VLT-006) | The transaction journal is damaged, so sending is stopped. (E-VLT-006) |
-| JOURNAL_WRITE | 저널 저장 실패 — {0} | Journal save failed — {0} |
-
-<!-- catalogue: yw_app::workers::journal::zec::text -->
-
-| 이름 | 한국어 | English |
-|---|---|---|
-| JOURNAL_WRITE | 거래 저널을 쓰지 못해 서명을 버렸습니다. 아무것도 보내지 않았습니다. | The transaction journal could not be written, so the signature was dropped. Nothing was sent. |
-| HARDWARE_KEY | YubiKey 키는 등록된 슬롯에서 가져옵니다. | A YubiKey key is taken from its enrolled slot. |
-| IMPORTED_KEY | 가져온 키는 그 키의 목록에서 고릅니다. | An imported key is chosen from its list. |
-
-<!-- catalogue: yw_app::workers::key::text -->
-
-| 이름 | 한국어 | English |
-|---|---|---|
-| LEGACY_HW_EVM_CARD_KEY | YubiKey 카드 키 {0} | YubiKey card key {0} |
-| LEGACY_HW_SOL_CARD_KEY | YubiKey Solana 카드 키 {0} | YubiKey Solana card key {0} |
-| LEGACY_HW_EVM_ACCOUNT | YubiKey 계정 {0} | YubiKey account {0} |
-| LEGACY_HW_SOL_ACCOUNT | YubiKey Solana {0} | YubiKey Solana {0} |
 
 <!-- catalogue: display-fixed -->
 

@@ -51,9 +51,9 @@ EIP-6963, Wallet Standard) and forwards requests; it holds no secrets.
 | `crates/yw-core` | Wallet core: keys, vault, chain logic, risk rules, approvals. No network, files, threads or GUI | forbidden |
 | `crates/yw-json` | Own strict JSON parser/writer and framing. Zero dependencies | forbidden |
 | `crates/yw-platform` | Platform-neutral types and traits: HTTP URL/error/response types, the HTTP `Transport` and WebSocket `WsLink` traits, the `Clock` trait. Zero dependencies, no OS calls | forbidden |
-| `crates/yw-engine` | App logic shared by the platform shells (error codes, text rules, log format, `YubiKey` card operations, approval queue and interaction rules, secret input buffers; since 2026-11-17 S2 E2 also settings, the API-key file format, explorer links, token views, wallet metadata, HyperCore, the LLM explanation, the RPC pipelines (`rpc`, `flow`, `sol`, `btc`, `zec`, `received`) and the WalletConnect engine without its worker). Depends only on yw-core, yw-json and yw-platform; no file, socket or environment access | forbidden |
+| `crates/yw-engine` | App logic shared by the platform shells (error codes, text rules, log format, `YubiKey` card operations, approval queue and interaction rules, secret input buffers; since 2026-11-17 S2 E2 also settings, the API-key file format, explorer links, token views, wallet metadata, HyperCore, the LLM explanation, the RPC pipelines (`rpc`, `flow`, `sol`, `btc`, `zec`, `received`) and the WalletConnect engine; since S2 E3 also the dApp dispatcher (`browser`, without the named-pipe server), the WalletConnect relay worker, the worker events, the key/RPC/journal workers and the approval content model `approval::view`). Depends only on yw-core, yw-json and yw-platform; no file, socket or environment access | forbidden |
 | `crates/yw-win` | The only crate allowed `unsafe`: Windows API wrappers (WinHTTP, DPAPI, pipe, UI, …); its WinHTTP client and WebSocket implement the yw-platform traits | allowed, each block has a `// SAFETY:` comment |
-| `crates/yw-app` | The wallet binary | forbidden |
+| `crates/yw-app` | The wallet binary: the Win32 shell (windows, screens, the approval window), the named-pipe server, Windows storage, clock, PC/SC and WinHTTP glue | forbidden |
 | `crates/yw-host` | Native-messaging relay | forbidden |
 
 Check the `unsafe` claim:
@@ -238,7 +238,7 @@ Nothing is signed without a decision in the app's own window. Files to read:
 | Click-jacking defences: 1 s arm delay, focus starts on `거부` (Reject), High risk needs the checkbox "위 경고를 모두 확인했습니다" (I checked all warnings above) + 2 s hold of `승인` (Approve), injected Enter never approves, always-on-top, 120 s expiry | `crates/yw-engine/src/approval/interaction.rs` (the Win32 stray-press mapping is `crates/yw-app/src/ui/approval_input.rs`), spec/04 §3 |
 | EVM risk rules (E01–E43) and Blocked rules | `crates/yw-core/src/evm/risk/rules.rs`, spec/03 §10 |
 | Solana dApp transactions (parser, ALT, decode, diff, display, sign; rules X01–X19) | `crates/yw-core/src/sol/dapp/`, spec/07 §20 |
-| App glue for the approval window: issuing, re-simulation, `consume`, the `KeyJob::SignEvm` job | `crates/yw-app/src/app_approval.rs` (signing runs on the key worker, `crates/yw-app/src/workers/key.rs`) |
+| App glue for the approval window: issuing, re-simulation, `consume`, the `KeyJob::SignEvm` job | `crates/yw-app/src/app_approval.rs` (signing runs on the key worker, `crates/yw-engine/src/workers/key.rs`; before 2026-11-17 S2 E3 in yw-app) |
 | EVM post-sign check: re-encode, strict decode, signer recovery must equal the account | `crates/yw-core/src/evm/sign/mod.rs` |
 | dApp method allowlist and error codes | `crates/yw-core/src/policy`, spec/05 §3 and §5, [dapp-integration.md](dapp-integration.md) |
 

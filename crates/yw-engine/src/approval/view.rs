@@ -1,6 +1,8 @@
 //! The A01 content model (spec/04 §3.2–§3.3): which fields go to the fixed header, the fixed
 //! simulation band, and the scrolling summary / asset-change / warnings + acknowledgement /
 //! critical-field areas and the folded 자세히 (non-critical fields and raw data). Pure, so AP-4/AP-6 are tested without windows; `ui::approval_window` paints it.
+//! (2026-11-17, spec/15 §11.4 S2 E3: moved from yw-app `ui::approval_view`, which re-exports it
+//! under that name until S3–S4.)
 
 use core::fmt::Write as _;
 
@@ -17,12 +19,12 @@ use yw_core::lang::{Lang, Text, Tpl};
 /// (2026-11-10). C04 (the `WalletConnect` Verify caution) is not one of them.
 const RESTATING: [RuleId; 5] = [H01, M04, S09, W08, P03];
 
-use crate::errors::ErrorCode;
-use crate::ui::approval::{field_label, validate_for_display};
-use crate::ui::approval_text as text;
-use crate::ui::interaction::{
+use crate::approval::interaction::{
     PrepareStage, PrepareState, ReadyContent, SIM_WAIT_MAX_MS, SimState, ack_needed, sim_state,
 };
+use crate::approval::text;
+use crate::approval::{field_label, validate_for_display};
+use crate::errors::ErrorCode;
 
 /// Text tone.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -158,7 +160,7 @@ pub struct ApprovalView {
     pub badges: Vec<String>,
     /// The chain badge drawn before the `네트워크` header value (app chrome, not part of the
     /// digested display).
-    pub chain: Option<crate::ui::badge::Badge>,
+    pub chain: Option<crate::badge::Badge>,
     /// Testnet coloring.
     pub testnet: bool,
     /// Bitcoin network banner (header colored red / orange instead of the testnet band).

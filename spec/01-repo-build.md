@@ -119,23 +119,28 @@ crates/
                               approval/{mod.rs, interaction.rs, text.rs, layout.rs},
                               settings.rs, apikeys.rs(평문 형식), explorer.rs, token_view.rs, meta.rs, hypercore.rs,
                               explain/, rpc/{mod.rs, evm.rs}, flow/evm/, sol/, btc/, zec/, received/,
-                              walletconnect/{mod.rs, engine.rs, store.rs, verify.rs, qr_decode.rs}}   (§2.3b, 2026-11-17 S2 E1·E2)
+                              walletconnect/{mod.rs, engine.rs, store.rs, verify.rs, qr_decode.rs, worker.rs, tests.rs},
+                              browser/{mod.rs, chain_params.rs, dispatch.rs, envelope.rs, grants.rs, params.rs, read.rs}, events.rs,
+                              workers/{mod.rs, journal.rs, journal_btc.rs, journal_zec.rs, rpc.rs, key.rs, key/{mnemonics.rs, platform.rs, yubikey.rs, yubikey/*}},
+                              approval/view.rs, testkit.rs(시험 도우미, 문서 숨김)}   (§2.3b, 2026-11-17 S2 E1·E2·E3)
   yw-win/    Cargo.toml  src/{lib.rs, error.rs, wide.rs, time.rs, mem.rs, file.rs, dpapi.rs, clipboard.rs,
                               http.rs, ws.rs, pipe.rs, session.rs, process.rs, security.rs, input.rs, cng.rs, image.rs, pcsc.rs,
                               ui/{mod.rs, window.rs, msg.rs, paint.rs, controls.rs, capture.rs(개발 빌드 전용), secure_text.rs}}  tests/   (API §7; pcsc·cng [10], ws·image·`cng::p256_verify` [13])
   yw-app/    Cargo.toml  build.rs(선택, [04](04-app-ui.md) §1.6)  yw-app.manifest  tests/
              icons/{yw-app.ico, yw-app.res}   (앱 아이콘, `scripts/make-icons.mjs`가 만들고 커밋, [04](04-app-ui.md) §1.7)
-             src/{lib.rs, main.rs, app.rs(`apikeys.dpapi` DPAPI 봉인과 그 entropy, 2026-11-17 S2 E2), events.rs, shell_msg.rs(Win32 메시지 번호·단축키, 2026-11-17), system_clock.rs(Windows `Clock`, 2026-11-17),
+             src/{lib.rs, main.rs, app.rs(`apikeys.dpapi` DPAPI 봉인과 그 entropy, 2026-11-17 S2 E2), shell_msg.rs(Win32 메시지 번호·단축키, 2026-11-17), system_clock.rs(Windows `Clock`, 2026-11-17),
                   log_file.rs(순환 로그 파일, 2026-11-17), card_pcsc.rs(`YubiKey` PC/SC 전송·CNG 관리 키 암호, [10](10-yubikey.md), 2026-11-17),
-                  store.rs(`VaultStorage` 구현, 키 작업자의 Windows 플랫폼 `WinKeyPlatform`(2026-11-17), [09](09-testing.md) §2.1), workers/{key, rpc, read}.rs([04](04-app-ui.md) §1.2; `workers/key/platform.rs`: 키 작업자가 받는 `KeyPlatform`·`WalletStore`·`KeyDeps`, 2026-11-17),
-                  browser/{mod.rs, params.rs, envelope.rs, …}(`browser::params`·`browser::envelope`, M5, [05](05-browser.md)),
-                  explain_transport.rs(LLM `WinHTTP` 전송, 2026-11-17), walletconnect/{mod.rs(겉면), worker.rs, tests.rs}([13](13-walletconnect.md)),
-                  ui/{main_window, screens/*, approval_view, approval_input, secret, qr, theme}.rs}
+                  store.rs(`VaultStorage` 구현, 키 작업자의 Windows 플랫폼 `WinKeyPlatform`(2026-11-17), [09](09-testing.md) §2.1),
+                  browser/{mod.rs(겉면), server.rs}(named pipe 서버, M5, [05](05-browser.md) §8),
+                  explain_transport.rs(LLM `WinHTTP` 전송, 2026-11-17),
+                  ui/{main_window, screens/*, approval_input, secret, qr, theme}.rs}
                   (배치 [04](04-app-ui.md) §1.8, EVM 모듈 이름 [03](03-evm.md) §0; 2026-11-17 S2: errors·text·network·logging(형식)·
                   yubikey(순수)·wallet_files와 ui의 approval·interaction·approval_text·text_layout·secure_field는 yw-engine으로 옮겼고(E1),
                   settings·apikeys(평문 형식)·explorer·token_view·meta·hypercore·explain·rpc(공용 전송 [04](04-app-ui.md) §1.9, `rpc::evm`)·
                   flow(`flow::evm`)·sol([07](07-solana.md) §2)·btc([08](08-bitcoin.md))·zec·received·walletconnect(작업자 밖)·ui::badge도
-                  옮겼다(E2). yw-app은 옛 경로로 다시 내보낸다, §2.3b)
+                  옮겼다(E2). E3에서 browser(파이프 서버 `server.rs` 밖; `browser::params`·`browser::envelope`, [05](05-browser.md))·
+                  walletconnect 작업자([13](13-walletconnect.md))·events·workers([04](04-app-ui.md) §1.2; `workers/key/platform.rs`의
+                  `KeyPlatform`·`WalletStore`·`KeyDeps`)·ui::approval_view(→ `approval::view`)도 옮겼다. yw-app은 옛 경로로 다시 내보낸다, §2.3b)
   yw-host/   Cargo.toml  src/{lib.rs, main.rs}  tests/               ([05](05-browser.md))
 extension/   manifest.json  package.json  extension-id.txt(M5)  src/*.js  popup/*  icons/icon-{16,32,48,128}.png([05] §2.2)
              native-host/*  tests/*.test.mjs  test-dapp/(M5)
@@ -236,7 +241,8 @@ pub enum ParseError { TooLarge, InvalidUtf8, Syntax { offset: usize }, Duplicate
 
 - `errors`(오류 코드와 문구 카탈로그 `yw_engine::errors::text`, [04](04-app-ui.md) §7), `text`(`Label`·식별자 규칙·JSON 도우미·한국어 조사), `network`(`NetworkId`), `logging`(로그 형식·수준 필터·`LogSink` 설치, §5.4; 파일 쓰기는 yw-app `log_file`), `yubikey`(`CardSource`와 카드 작업, PC/SC는 yw-app `card_pcsc`, [10](10-yubikey.md)), `wallet_files`(지갑 파일 이름·초기화 보고), `secure_field`(비밀 입력 버퍼, [04](04-app-ui.md) §4.2), `approval`(옛 yw-app `ui::approval`: 대기열·표시 재검사·`labels`; 하위 모듈 `interaction`(옛 `ui::interaction`), `text`(옛 `ui::approval_text`), `layout`(옛 `ui::text_layout`)), `catalogues`(이 crate의 문구 카탈로그 목록, [14](14-language.md) §2).
 - 2026-11-17 S2 E2에서 더 옮긴 것: `settings`(설정 파일 형식·검증, [04](04-app-ui.md) §6), `apikeys`(`apikeys.dpapi` 평문 형식과 템플릿 URL; DPAPI 봉인과 entropy `APIKEYS_ENTROPY`는 yw-app `app`), `explorer`, `token_view`, `meta`(지갑 메타데이터, [02](02-core-keys-vault.md) §5), `hypercore`([11](11-hypercore.md)), `explain`([06](06-llm-explain.md); WinHTTP 전송은 yw-app `explain_transport`), `rpc`(공용 전송 규칙·`rpc::evm`, [04](04-app-ui.md) §1.9), `flow`(`flow::evm`, [03](03-evm.md)), `sol`([07](07-solana.md)), `btc`([08](08-bitcoin.md)), `zec`([12](12-zcash.md)), `received`(받은 거래 목록), `walletconnect`(작업자를 뺀 `engine`·`store`·`verify`·`qr_decode`, [13](13-walletconnect.md)), `badge`(옛 yw-app `ui::badge`, 체인 배지).
-- 옮기는 중의 겉면(transitional facade): yw-app `lib.rs`는 `pub use yw_engine::{errors, logging, network, text, wallet_files, yubikey};`, `ui/mod.rs`는 `pub use yw_engine::approval; pub use yw_engine::approval::{interaction, layout as text_layout, text as approval_text}; pub use yw_engine::secure_field;`로 옛 `crate::…` 경로를 그대로 둔다. E2는 `lib.rs`에 `pub use yw_engine::{apikeys, btc, explain, explorer, flow, hypercore, meta, received, rpc, settings, sol, token_view, zec};`, `ui/mod.rs`에 `pub use yw_engine::badge;`를 더했고, `walletconnect/mod.rs`는 `pub use yw_engine::walletconnect::*; pub mod worker;`(+ 단위 시험 `tests.rs`)인 겉면 모듈이다(작업자와 그 시험은 S2 E3에서 옮긴다). 시험 시계 `StdClock`(`cfg(test)`)은 그 두 사용처(디스패처·작업자 시험)와 함께 yw-app `browser`에 있다. S3–S4에서 없앤다.
+- 2026-11-17 S2 E3에서 더 옮긴 것: `browser`(봉투 v1·dApp 매개변수·디스패처·권한·읽기 작업자, [05](05-browser.md); named pipe 서버 `server.rs`는 yw-app), `walletconnect::worker`(릴레이 작업자와 그 단위 시험 `tests.rs`, [13](13-walletconnect.md)), `events`(작업자·UI 사이 사건 타입; Win32 메시지 번호는 yw-app `shell_msg`), `workers`(`key`·`rpc`·`journal`, [04](04-app-ui.md) §1.2; 키 작업자는 `workers::key::platform::KeyDeps`로 저장소·잠긴 슬롯·시계·카드 소스를 받는다), `approval::view`(옛 yw-app `ui::approval_view`, A01 내용 모델). `testkit`(`#[doc(hidden)]`, 늘 컴파일): yw-app 시험이 crate 경계 너머로 쓰는 시험 도우미 — `yubikey_wallet`(에뮬레이터 카드 두 장을 등록한 키 작업자). `cfg(test)`는 crate를 넘지 못하고 dev-dependency·feature는 고정이라 이렇게 둔다(`yw_core::yubikey::mock`과 같은 까닭). 운영 코드는 이 모듈을 부르지 않는다(yw-app `card_pcsc`의 소스 검사 `testkit_is_named_only_by_tests`). 날 meta 사이드카를 쓰는 도우미는 두지 않는다(2026-11-17 소유자 결정; App 시험은 두 번째 vault 세션으로 봉인한다).
+- 옮기는 중의 겉면(transitional facade): yw-app `lib.rs`는 `pub use yw_engine::{errors, logging, network, text, wallet_files, yubikey};`, `ui/mod.rs`는 `pub use yw_engine::approval; pub use yw_engine::approval::{interaction, layout as text_layout, text as approval_text}; pub use yw_engine::secure_field;`로 옛 `crate::…` 경로를 그대로 둔다. E2는 `lib.rs`에 `pub use yw_engine::{apikeys, btc, explain, explorer, flow, hypercore, meta, received, rpc, settings, sol, token_view, zec};`, `ui/mod.rs`에 `pub use yw_engine::badge;`를 더했다. E3는 `lib.rs`에 `pub use yw_engine::{events, walletconnect, workers};`, `ui/mod.rs`에 `pub use yw_engine::approval::view as approval_view;`를 더했고, `browser/mod.rs`는 `pub use yw_engine::browser::*; pub mod server;`인 겉면 모듈이다(`server.rs`의 `super::` 경로가 그대로 풀린다). E2–E3 사이에는 `walletconnect/mod.rs`도 `pub use yw_engine::walletconnect::*; pub mod worker;`인 겉면 모듈이었다. 시험 시계 `StdClock`(`cfg(test)`)은 두 사용처(디스패처·작업자 시험)와 함께 yw-engine `browser`에 있고, 벽시계는 고정한 날(2026-11-17T00:00:00Z)에 지난 시간을 더한 값이다(E3: 그 전에는 `SystemTime::now()`, §5.1 엔진 clippy가 막는다). S3–S4에서 겉면을 없앤다.
 - 단위 시험은 파일과 함께 옮겼다(`cargo test -p yw-engine`). 통합 시험은 아직 yw-app `tests/`에서 겉면을 거쳐 돈다(옮기는 일은 S2 T1, [09](09-testing.md) §2.1).
 
 ### 2.4 크레이트 의존 규칙 (검사 스크립트가 강제, §4.2)
@@ -957,11 +963,11 @@ const forbidden = [
                          "std::net::ToSocketAddrs::to_socket_addrs" ]
   ```
   (2026-11-17 E1 검토: `Path`의 파일 시스템 조회, 나머지 `std::fs` 함수, 나머지 `std::env`, DNS 조회(`to_socket_addrs`)를 더했다. 그 전 목록은 흔한 호출만 막아 `dir.exists()` 같은 호출이 통과했다.)
-  `std::thread::spawn`과 `std::time::Instant`는 허용한다: 작업자·준비·설명·WalletConnect 작업 스레드는 이식 가능한 std 스레드이고(Android에서도 JVM에 붙지 않는다, [15](15-android.md) §3.2), `Instant`는 지역 경과 시간만 잰다. App이 정한 기한과 비교하는 시각은 `yw_platform::Clock`을 거치므로 운영은 `GetTickCount64` 기준 그대로다. 예외는 항목별 `#[expect]` 둘: 로그 줄 시각(비공개 `logging::log_line_unix_ms`, `SystemTime`)과 디버그 빌드 전용 `fault_point`(`env::var`, 옮겨 올 때). 로그 줄 시계는 비공개라 다른 모듈이 벽시계로 쓸 수 없다. sink가 자기 줄(회전 실패)에 시각을 찍을 때는 `logging::format_line_now`로 완성된 줄만 받는다(2026-11-17 E1 검토: 그 전에는 `pub fn now_unix_ms`였다).
+  `std::thread::spawn`과 `std::time::Instant`는 허용한다: 작업자·준비·설명·WalletConnect 작업 스레드는 이식 가능한 std 스레드이고(Android에서도 JVM에 붙지 않는다, [15](15-android.md) §3.2), `Instant`는 지역 경과 시간만 잰다. App이 정한 기한과 비교하는 시각은 `yw_platform::Clock`을 거치므로 운영은 `GetTickCount64` 기준 그대로다. 예외는 항목별 `#[expect]` 둘: 로그 줄 시각(비공개 `logging::log_line_unix_ms`, `SystemTime`)과 디버그 빌드 전용 `fault_point`(`env::var_os`, 2026-11-17 E3에서 `workers::journal`과 함께 옮겨 왔다). 로그 줄 시계는 비공개라 다른 모듈이 벽시계로 쓸 수 없다. sink가 자기 줄(회전 실패)에 시각을 찍을 때는 `logging::format_line_now`로 완성된 줄만 받는다(2026-11-17 E1 검토: 그 전에는 `pub fn now_unix_ms`였다).
 
 ### 5.2 panic 금지와 오류
 
-- `unwrap`·`expect`·`panic!`·`todo!`·`unimplemented!`·`dbg!`·`print*`·`std::process::exit`·`mem::forget`은 clippy deny. 예외: `#[test]` 함수와 `#[cfg(test)]` 모듈의 `unwrap`·`expect`(clippy.toml `allow-unwrap-in-tests`, `allow-expect-in-tests`). 통합 테스트의 도우미 함수는 `Result`를 반환한다.
+- `unwrap`·`expect`·`panic!`·`todo!`·`unimplemented!`·`dbg!`·`print*`·`std::process::exit`·`mem::forget`은 clippy deny. 예외: `#[test]` 함수와 `#[cfg(test)]` 모듈의 `unwrap`·`expect`(clippy.toml `allow-unwrap-in-tests`, `allow-expect-in-tests`). 통합 테스트의 도우미 함수는 `Result`를 반환한다. 늘 컴파일하는 시험 도우미 `yw_engine::testkit`(§2.3b)은 `cfg(test)` 밖이라 함수 단위 `#[expect(clippy::unwrap_used)]`와 `# Panics` 문서를 단다(2026-11-17 S2 E3: 실패한 단계는 실패한 시험이다).
 - `main`은 `std::process::ExitCode`를 반환한다(소멸자가 돌아 비밀이 지워진다).
 - pedantic lint를 개별로 끌 때는 항목 단위 `#[expect(clippy::<lint>, reason = "...")]`만 쓴다(사라지면 경고 → 실패).
 - 오류는 모듈별 수동 enum + `impl Display` + `impl std::error::Error`. thiserror 등 매크로 크레이트 금지. 오류 값과 `Display`에 비밀·dApp/RPC 원문·URL·호스트·경로를 담지 않는다(고정 문구 + 숫자 코드, 대상 네트워크는 `NetworkId`).

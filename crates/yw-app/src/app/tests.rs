@@ -3274,7 +3274,8 @@ fn yubikey_accounts_and_the_card_step() {
     use crate::app_sol::SolAccountId;
     use crate::events::{KeyJob, SignInfo};
 
-    let (worker, cards, dir, _) = crate::workers::key::tests::yubikey_wallet("app", file_deps());
+    let (worker, cards, dir, _) =
+        yw_engine::testkit::yubikey_wallet(temp_dir("yk-app"), file_deps());
     let mut h = Harness {
         app: app_at(&dir),
         worker,
@@ -3794,7 +3795,8 @@ fn the_touch_prompt_is_gone_once_the_card_answers() {
     use crate::app_card::T_CARD_TOUCH;
     use crate::events::{KeyJob, SignInfo};
 
-    let (worker, cards, dir, _) = crate::workers::key::tests::yubikey_wallet("touch", file_deps());
+    let (worker, cards, dir, _) =
+        yw_engine::testkit::yubikey_wallet(temp_dir("yk-touch"), file_deps());
     let mut h = Harness {
         app: app_at(&dir),
         worker,
@@ -4820,7 +4822,7 @@ fn yubikey_badge_is_chrome_and_the_solana_note() {
     use yw_core::yubikey::plan::KeyRole;
 
     let (mut worker, _cards, dir, _) =
-        crate::workers::key::tests::yubikey_wallet("badge", file_deps());
+        yw_engine::testkit::yubikey_wallet(temp_dir("yk-badge"), file_deps());
     let Some(KeyOutcome::HardwareKeys(Ok(keys))) =
         worker.handle(crate::events::KeyJob::HardwareKeys).pop()
     else {

@@ -7,12 +7,14 @@
 // keep their `crate::…` paths until S3–S4 rewrite the callers (transitional facade).
 pub use yw_engine::{errors, logging, network, text, wallet_files, yubikey};
 // 2026-11-17 (S2 E2): settings, wallet metadata, explain and the RPC pipelines followed.
-// `walletconnect` is a local facade module for now: it re-exports the engine part and keeps the
-// worker (E3).
 pub use yw_engine::{
     apikeys, btc, explain, explorer, flow, hypercore, meta, received, rpc, settings, sol,
     token_view, zec,
 };
+// 2026-11-17 (S2 E3): the dApp dispatcher, the `WalletConnect` worker, the events and the
+// workers followed. `browser` is a local facade module that re-exports the engine part and keeps
+// the Windows pipe server; before E3, `walletconnect` was one too (it kept the relay worker).
+pub use yw_engine::{events, walletconnect, workers};
 
 pub mod app;
 pub mod app_approval;
@@ -48,7 +50,6 @@ pub mod browser;
 pub mod build_info;
 pub mod card_pcsc;
 pub mod catalogues;
-pub mod events;
 pub mod explain_transport;
 pub mod lock;
 pub mod log_file;
@@ -56,6 +57,4 @@ pub mod shell_msg;
 pub mod store;
 pub mod system_clock;
 pub mod ui;
-pub mod walletconnect;
 pub mod window_state;
-pub mod workers;

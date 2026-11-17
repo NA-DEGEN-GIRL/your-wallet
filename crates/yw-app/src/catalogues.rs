@@ -4,7 +4,8 @@
 //! tour's scene texts (`ui::tour`, a test module) are not app texts and are not listed.
 //! (2026-11-17, spec/15 §11.4 S2: the catalogues of modules moved to yw-engine are listed in
 //! `yw_engine::catalogues` under their true path; E1 the approval, error and card texts, E2 the
-//! settings, metadata, explain, RPC pipeline and `WalletConnect` engine texts.)
+//! settings, metadata, explain, RPC pipeline and `WalletConnect` engine texts, E3 the
+//! `WalletConnect` worker and key/journal worker texts.)
 
 use yw_core::lang::Entry;
 
@@ -150,17 +151,4 @@ const CATALOGUES: &[(&str, &[Entry])] = &[
         crate::ui::screens_zec::text::ALL,
     ),
     ("yw_app::ui::secret_text", crate::ui::secret_text::ALL),
-    (
-        "yw_app::walletconnect::worker::text",
-        crate::walletconnect::worker::text::ALL,
-    ),
-    (
-        "yw_app::workers::journal::btc::text",
-        crate::workers::journal::btc::text::ALL,
-    ),
-    (
-        "yw_app::workers::journal::zec::text",
-        crate::workers::journal::zec::text::ALL,
-    ),
-    ("yw_app::workers::key::text", crate::workers::key::text::ALL),
 ];

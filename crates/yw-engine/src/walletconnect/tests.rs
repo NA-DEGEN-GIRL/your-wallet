@@ -1130,11 +1130,7 @@ fn mocked_end_to_end_session() {
 
     // personal_sign → dispatcher → the UI queue (answered with a dummy value; never signed). The
     // reference sign-client puts its deadline in `request.expiryTimestamp` (5 min by default).
-    let soon = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
-        + 300;
+    let soon = yw_platform::Clock::now_unix_ms(&*clock) / 1000 + 300;
     let request = format!(
         r#"{{"id":1700000000000002,"jsonrpc":"2.0","method":"wc_sessionRequest","params":{{"request":{{"method":"personal_sign","params":["0x48656c6c6f","0x9858effd232b4033e47d90003d41ec34ecaeda94"],"expiryTimestamp":{soon}}},"chainId":"eip155:11155111"}}}}"#
     );
@@ -1287,10 +1283,7 @@ fn restored_sessions_follow_grants_and_chains() {
         ..WalletView::default()
     };
     core.set_wallet(view(vec![chain(1), chain(yw_core::evm::chain::SEPOLIA)]));
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+    let now = yw_platform::Clock::now_unix_ms(&StdClock(std::time::Instant::now())) / 1000;
     let (kept, gone) = ([0x81_u8; 32], [0x82_u8; 32]);
     let (first, second) = (Address::from_bytes([1; 20]), Address::from_bytes([2; 20]));
     let mut session = test_session(&kept, vec![1, yw_core::evm::chain::SEPOLIA], now);

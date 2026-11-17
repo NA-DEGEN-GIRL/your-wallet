@@ -10,6 +10,7 @@
 pub mod interaction;
 pub mod layout;
 pub mod text;
+pub mod view;
 
 use std::collections::VecDeque;
 

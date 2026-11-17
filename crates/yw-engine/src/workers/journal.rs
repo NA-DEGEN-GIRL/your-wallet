@@ -42,6 +42,11 @@ use crate::meta::{self, ActivityEntry, Meta};
 use crate::network::NetworkId;
 
 /// Debug builds only: aborts when `YW_FAULT_POINT` names this point (spec/09 §2.1, M4-8).
+/// (2026-11-17, spec/15 §11.4 S2 E3: the one environment read of yw-engine, spec/01 §5.1.)
+#[expect(
+    clippy::disallowed_methods,
+    reason = "fault injection (spec/09 §2.1): reads YW_FAULT_POINT in debug builds only"
+)]
 pub fn fault_point(name: &str) {
     if cfg!(debug_assertions)
         && std::env::var_os("YW_FAULT_POINT").is_some_and(|value| value == name)

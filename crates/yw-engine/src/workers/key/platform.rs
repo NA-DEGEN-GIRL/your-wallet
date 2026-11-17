@@ -308,11 +308,13 @@ pub(crate) mod testing {
         }
     }
 
-    /// A temp folder name for a test (process id + counter; nothing is created).
+    /// A folder name for a test (process id + counter; nothing is created, and the in-memory
+    /// platform ignores it). (2026-11-17, spec/15 §11.4 S2 E3: a relative name; before, it was
+    /// under `std::env::temp_dir()`, which the yw-engine clippy policy forbids, spec/01 §5.1.)
     pub(crate) fn temp_name(tag: &str) -> std::path::PathBuf {
         static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        std::env::temp_dir().join(format!(
-            "yw-app-{tag}-{}-{}",
+        std::path::PathBuf::from(format!(
+            "yw-engine-{tag}-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ))

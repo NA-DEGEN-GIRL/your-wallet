@@ -14,6 +14,10 @@ pub mod engine;
 pub mod qr_decode;
 pub mod store;
 pub mod verify;
+pub mod worker;
+
+#[cfg(test)]
+mod tests;
 
 use yw_core::approval::{
     ApprovalDisplay, ApprovalDraft, DisplayField, FieldKey, MAX_DISPLAY_WARNINGS,

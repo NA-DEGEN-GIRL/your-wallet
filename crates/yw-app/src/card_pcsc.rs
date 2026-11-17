@@ -218,7 +218,9 @@ mod tests {
 
     /// The emulator source is always compiled (`yubikey::MockSource`, spec/15 §11.4 S2) but only
     /// test code may build one: production code never constructs or names it outside its own
-    /// definition, so the key worker can only get the PC/SC readers.
+    /// definition, so the key worker can only get the PC/SC readers. yw-engine's `testkit` (test
+    /// helpers, always compiled) builds one; `testkit_is_named_only_by_tests` keeps it out of
+    /// production code (2026-11-17, S2 E3).
     #[test]
     fn mock_source_is_built_only_by_tests() {
         let mut sources = Vec::new();
@@ -228,6 +230,9 @@ mod tests {
         assert!(sources.len() > 100, "{}", sources.len());
         let mut offenders = Vec::new();
         for (path, text) in &sources {
+            if path.ends_with("testkit.rs") {
+                continue;
+            }
             let allowed: &[&str] = if path.ends_with("yubikey.rs") {
                 &[
                     "pub struct MockSource {",
@@ -279,6 +284,45 @@ mod tests {
             if (code.contains("PcscSource") && !pcsc_allowed)
                 || (code.contains("WinKeyPlatform::deps()") && !deps_allowed)
             {
+                offenders.push(path.display().to_string());
+            }
+        }
+        assert!(offenders.is_empty(), "{offenders:?}");
+    }
+
+    /// yw-engine's `testkit` (the `YubiKey` emulator wallet helper, always compiled because
+    /// `cfg(test)` does not cross crates, spec/15 §11.4 S2 D-f) is named only by test code: no
+    /// production source of yw-app or yw-engine reaches it, except its own declaration in the
+    /// engine's `lib.rs` and the module itself. Comment lines are not code. (2026-11-17, S2 E3.)
+    #[test]
+    fn testkit_is_named_only_by_tests() {
+        let mut sources = Vec::new();
+        for root in source_roots() {
+            production_sources(&root, &mut sources);
+        }
+        assert!(sources.len() > 100, "{}", sources.len());
+        let mut offenders = Vec::new();
+        for (path, text) in &sources {
+            let engine = path
+                .components()
+                .any(|part| part.as_os_str() == "yw-engine");
+            if engine && path.ends_with("testkit.rs") {
+                continue;
+            }
+            let code: String = text
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join(
+                    "
+",
+                );
+            let rest = if engine && path.ends_with("lib.rs") {
+                code.replacen("pub mod testkit;", "", 1)
+            } else {
+                code
+            };
+            if rest.contains("testkit") {
                 offenders.push(path.display().to_string());
             }
         }

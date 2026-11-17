@@ -155,7 +155,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
 Rust 쪽 고정값: yw-host와 yw-app은 같은 파일을 컴파일 시점에 포함한다.
 
 ```rust
-// crates/yw-host/src/lib.rs (테스트가 쓰므로 lib에 둔다; yw-app은 crates/yw-app/src/browser/mod.rs에서 상대 경로만 다름)
+// crates/yw-host/src/lib.rs (테스트가 쓰므로 lib에 둔다; yw-app 쪽은 crates/yw-engine/src/browser/mod.rs에서 상대 경로만 다름 —
+// 2026-11-17 S2 E3 전에는 crates/yw-app/src/browser/mod.rs, 깊이가 같아 경로 문자열은 그대로)
 const EXTENSION_ID_FILE: &str = include_str!("../../../extension/extension-id.txt");
 fn pinned_extension_id() -> Option<&'static str> {
     let id = EXTENSION_ID_FILE.trim_end();
@@ -534,7 +535,7 @@ EIP-2255 권한 객체: `{ "invoker": "<origin>", "parentCapability": "eth_accou
 
 `eth_coinbase`는 계정 노출 경로를 줄이기 위해 지원하지 않는다. `wallet_addEthereumChain`은 D14에 따라 params와 무관하게(이미 등록된 체인이어도) 4200이다. 체인 추가는 yw-app 설정([04](04-app-ui.md) §6.1 `evmChains`)에서만 한다. dApp이 4902를 받은 뒤 이어 부르는 `wallet_addEthereumChain`도 4200이며 레지스트리는 바뀌지 않는다.
 
-### 3.3 공통 값 규칙 (yw-app `browser/params.rs`, `archive/spec-v2.4:crates/broker/src/params.rs:186-240`을 고쳐 이식)
+### 3.3 공통 값 규칙 (yw-engine `browser/params.rs`(2026-11-17 S2 E3 전 yw-app), `archive/spec-v2.4:crates/broker/src/params.rs:186-240`을 고쳐 이식)
 | 값 | 허용 | 정규화(RPC 전달·내부 표현) | 거부 |
 |---|---|---|---|
 | address | `0x` + 40 hex. 전부 소문자, 전부 대문자, 또는 EIP-55 체크섬이 맞는 대소문자 혼합 | 20바이트, 출력은 소문자 | `0X` 접두사, 길이 오류, 혼합 대소문자 체크섬 불일치 |
@@ -857,8 +858,8 @@ D23: 요청 기한은 읽기 60 s, 연결·서명 600 s(잠금 해제·승인 �
 | yw-app | `min(deadlineUnixMs, 수신 + route 기한)` | 대기 큐에서 제거·창 닫기, -32603 응답(확장은 이미 응답했으면 버림) |
 | 승인·연결 창 | 표시 후 120 s(D23, [03] §11.5, [04] §3.5) | 창 닫기, 4001 "Request expired." |
 
-### 6.5 Rust 타입 (yw-app `browser/envelope.rs`, `archive/spec-v2.4:crates/native-host/src/wire.rs:832-1038`의 serde 타입을 yw-json으로 바꿔 이식)
-메서드 표·route·origin·오류 코드는 yw-core `policy`에, 봉투·디스패처·params는 yw-app `browser/`에 둔다([01](01-repo-build.md) §2.2, D31).
+### 6.5 Rust 타입 (yw-engine `browser/envelope.rs`(2026-11-17 S2 E3 전 yw-app), `archive/spec-v2.4:crates/native-host/src/wire.rs:832-1038`의 serde 타입을 yw-json으로 바꿔 이식)
+메서드 표·route·origin·오류 코드는 yw-core `policy`에, 봉투·디스패처·params는 yw-engine `browser/`에 둔다([01](01-repo-build.md) §2.2·§2.3b, D31). (2026-11-17 S2 E3: 그 전에는 yw-app `browser/`였다. named pipe 서버 `browser/server.rs`는 yw-app에 남고, yw-app `browser`는 엔진 부분을 다시 내보낸다.)
 
 ```rust
 // yw-core src/policy (플랫폼 독립, 시간·I/O 없음)
@@ -871,7 +872,7 @@ impl BrowserOrigin { pub fn parse(s: &str) -> Option<Self>; pub fn is_http(&self
 pub enum ProviderError { /* §5의 변형 */ }
 impl ProviderError { pub fn code(&self) -> i64; pub fn message(&self) -> &str; }
 
-// yw-app src/browser/envelope.rs
+// yw-engine src/browser/envelope.rs (2026-11-17 S2 E3 전 yw-app)
 use yw_core::policy::{BrowserOrigin, ProviderError, Route};
 pub const NAMESPACE: &str = "your-wallet";
 pub const PROTOCOL_VERSION: u64 = 1;

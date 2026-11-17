@@ -11,9 +11,10 @@ pub use yw_engine::approval::{interaction, layout as text_layout, text as approv
 pub use yw_engine::secure_field;
 // 2026-11-17 (S2 E2): the chain badge followed with `meta`.
 pub use yw_engine::badge;
+// 2026-11-17 (S2 E3): the A01 content model followed (engine `approval::view`).
+pub use yw_engine::approval::view as approval_view;
 
 pub mod approval_input;
-pub mod approval_view;
 pub mod command_ids;
 pub mod main_window;
 pub mod qr;

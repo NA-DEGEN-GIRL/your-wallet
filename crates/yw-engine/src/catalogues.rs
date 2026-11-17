@@ -3,7 +3,8 @@
 //! that each one is in the spec tables (`errors::text` in spec/04 §7 instead, D31).
 //! (2026-11-17, spec/15 §11.4 S2: the catalogues of the modules that moved out of yw-app; before,
 //! they were listed in yw-app `catalogues` as `yw_app::…`; E1 the approval, error and card texts,
-//! E2 the settings, metadata, explain, RPC pipeline and `WalletConnect` engine texts.)
+//! E2 the settings, metadata, explain, RPC pipeline and `WalletConnect` engine texts, E3 the
+//! `WalletConnect` worker and key/journal worker texts.)
 
 use yw_core::lang::Entry;
 
@@ -56,6 +57,22 @@ const CATALOGUES: &[(&str, &[Entry])] = &[
     (
         "yw_engine::walletconnect::text",
         crate::walletconnect::text::ALL,
+    ),
+    (
+        "yw_engine::walletconnect::worker::text",
+        crate::walletconnect::worker::text::ALL,
+    ),
+    (
+        "yw_engine::workers::journal::btc::text",
+        crate::workers::journal::btc::text::ALL,
+    ),
+    (
+        "yw_engine::workers::journal::zec::text",
+        crate::workers::journal::zec::text::ALL,
+    ),
+    (
+        "yw_engine::workers::key::text",
+        crate::workers::key::text::ALL,
     ),
     ("yw_engine::yubikey::text", crate::yubikey::text::ALL),
     ("yw_engine::zec::rpc::text", crate::zec::rpc::text::ALL),
