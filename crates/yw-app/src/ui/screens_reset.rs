@@ -47,6 +47,65 @@ pub mod ids {
         EXT_COPY_PATH,
         EXT_COPY_URL,
     ];
+
+    /// The S22 / T-WAIT-STALLED press control `id` stands for (2026-11-18, S3 C5:
+    /// `ui::cmd_table`); `설정과 API 키도 함께 옮기기` carries its box's state now. `None` when
+    /// `id` is not one of them: the confirmation edit is a field, and the 2 s hold area
+    /// ([`RESET_HOLD`]) is a mouse hold, never a press.
+    #[must_use]
+    pub fn reset_press_of(
+        id: u16,
+        controls: &crate::ui::main_window::ControlSet,
+    ) -> Option<yw_engine::cmd::ResetPress> {
+        use yw_engine::cmd::ResetPress;
+        Some(match id {
+            RESET_OPEN => ResetPress::Open,
+            RESET_SETTINGS_CHECK => ResetPress::SettingsCheck(controls.checked(id)),
+            RESET_CANCEL => ResetPress::Cancel,
+            WAIT_RETRY => ResetPress::WaitRetry,
+            _ => return None,
+        })
+    }
+
+    /// The control id of `press` (the inverse of [`reset_press_of`]).
+    #[must_use]
+    pub const fn reset_id_of(press: yw_engine::cmd::ResetPress) -> u16 {
+        use yw_engine::cmd::ResetPress;
+        match press {
+            ResetPress::Open => RESET_OPEN,
+            ResetPress::SettingsCheck(_) => RESET_SETTINGS_CHECK,
+            ResetPress::Cancel => RESET_CANCEL,
+            ResetPress::WaitRetry => WAIT_RETRY,
+        }
+    }
+
+    /// The S23 press control `id` stands for (2026-11-18, S3 C5: `ui::cmd_table`); `None` when
+    /// `id` is not one of them.
+    #[must_use]
+    pub const fn ext_press_of(id: u16) -> Option<yw_engine::cmd::ExtPress> {
+        use yw_engine::cmd::ExtPress;
+        Some(match id {
+            EXT_OPEN => ExtPress::Open,
+            EXT_BACK => ExtPress::Back,
+            EXT_OPEN_FOLDER => ExtPress::OpenFolder,
+            EXT_COPY_PATH => ExtPress::CopyPath,
+            EXT_COPY_URL => ExtPress::CopyUrl,
+            _ => return None,
+        })
+    }
+
+    /// The control id of `press` (the inverse of [`ext_press_of`]).
+    #[must_use]
+    pub const fn ext_id_of(press: yw_engine::cmd::ExtPress) -> u16 {
+        use yw_engine::cmd::ExtPress;
+        match press {
+            ExtPress::Open => EXT_OPEN,
+            ExtPress::Back => EXT_BACK,
+            ExtPress::OpenFolder => EXT_OPEN_FOLDER,
+            ExtPress::CopyPath => EXT_COPY_PATH,
+            ExtPress::CopyUrl => EXT_COPY_URL,
+        }
+    }
 }
 
 /// The fixed texts of S22, S23 and T-WAIT-STALLED (spec/04 §2.20–§2.21, spec/14).

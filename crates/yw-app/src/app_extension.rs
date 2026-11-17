@@ -183,13 +183,13 @@ impl App {
         self.return_to(back.unwrap_or(fallback));
     }
 
-    /// Commands of S23; `false` when `id` is not one of them.
-    pub(crate) fn on_extension_command(&mut self, id: u16) -> bool {
-        use crate::ui::screens_reset::ids;
-        match id {
-            ids::EXT_OPEN => self.open_extension_help(),
-            ids::EXT_BACK => self.close_extension_help(),
-            ids::EXT_OPEN_FOLDER => {
+    /// Presses of S23 (2026-11-18, S3 C5: an `ExtPress`; before, the control id).
+    pub(crate) fn on_ext(&mut self, press: yw_engine::cmd::ExtPress) {
+        use yw_engine::cmd::ExtPress;
+        match press {
+            ExtPress::Open => self.open_extension_help(),
+            ExtPress::Back => self.close_extension_help(),
+            ExtPress::OpenFolder => {
                 if let Some(dir) = extension_dir() {
                     Self::open_folder(&dir);
                 } else {
@@ -202,7 +202,7 @@ impl App {
                     self.refresh();
                 }
             }
-            ids::EXT_COPY_PATH => {
+            ExtPress::CopyPath => {
                 if let Some(dir) = extension_dir() {
                     self.copy_text(&dir.display().to_string());
                     // A setup step: its instruction stays a band (not the mark at the button).
@@ -212,16 +212,14 @@ impl App {
                     }
                 }
             }
-            ids::EXT_COPY_URL => {
+            ExtPress::CopyUrl => {
                 self.copy_text(CHROME_EXTENSIONS_URL);
                 if self.copied.take().is_some() {
                     self.info = Some(text::URL_COPIED.get(self.settings.language).to_owned());
                     self.refresh();
                 }
             }
-            _ => return false,
         }
-        true
     }
 }
 

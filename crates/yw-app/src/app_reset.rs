@@ -22,6 +22,8 @@ use crate::lock::LockReason;
 use crate::logging::{self, Field};
 use crate::store::reset::{ResetError, ResetReport};
 use crate::ui::secret::{BACKUP_ACK_HOLD_MS, HoldGate};
+use yw_engine::cmd::ResetPress;
+use yw_engine::form::EditField;
 
 /// A wait longer than this shows T-WAIT-STALLED.
 pub const WAIT_TIMEOUT_MS: u64 = 30_000;
@@ -499,33 +501,29 @@ impl App {
         self.refresh();
     }
 
-    /// Commands of S22 and T-WAIT-STALLED; `false` when `id` is not one of them.
-    pub(crate) fn on_reset_command(&mut self, id: u16) -> bool {
-        use crate::ui::screens_reset::ids;
-        match id {
-            ids::RESET_OPEN => self.open_reset(),
-            ids::RESET_CANCEL => self.cancel_reset(),
-            ids::RESET_SETTINGS_CHECK => {
-                self.reset.include_settings = self
-                    .controls
-                    .checked(ids::RESET_SETTINGS_CHECK)
-                    .unwrap_or(!self.reset.include_settings);
+    /// Presses of S22 and T-WAIT-STALLED (2026-11-18, S3 C5: a `ResetPress`, the check box
+    /// carrying its state; before, the control id and a read of the box here). The 2 s hold area
+    /// is not a press (`App::reset_hold_*`).
+    pub(crate) fn on_reset(&mut self, press: ResetPress) {
+        match press {
+            ResetPress::Open => self.open_reset(),
+            ResetPress::Cancel => self.cancel_reset(),
+            ResetPress::SettingsCheck(checked) => {
+                self.reset.include_settings = checked.unwrap_or(!self.reset.include_settings);
                 self.reset_list_files();
                 self.refresh();
             }
-            ids::WAIT_RETRY => self.wait_retry(),
-            _ => return false,
+            ResetPress::WaitRetry => self.wait_retry(),
         }
-        true
     }
 
-    /// `EN_CHANGE` of the S22 field; `false` for other fields.
-    pub(crate) fn on_reset_edit_change(&mut self, id: u16) -> bool {
-        if id != crate::ui::screens_reset::ids::RESET_PHRASE {
+    /// `EN_CHANGE` of the S22 field: `text` is its text now (2026-11-18, S3 C5: from
+    /// `Cmd::Edit`; before, a read of the edit by id); `false` for other fields.
+    pub(crate) fn on_reset_edit(&mut self, field: EditField, text: &str) -> bool {
+        if field != EditField::ResetPhrase {
             return false;
         }
-        let text = self.controls.text(id, 32).unwrap_or_default();
-        self.reset_phrase_changed(&text);
+        self.reset_phrase_changed(text);
         true
     }
 

@@ -88,6 +88,58 @@ pub mod ids {
         let offset = id.checked_sub(SCRIPT_BASE).filter(|offset| *offset < 4)?;
         ScriptType::from_code(u8::try_from(offset).ok()?.checked_add(1)?)
     }
+
+    /// The press control `id` stands for (2026-11-18, S3 C5: `ui::cmd_table`; an address-type
+    /// radio carries its `ScriptType`). `None` when `id` is not one of this module's.
+    #[must_use]
+    pub fn press_of(id: u16) -> Option<yw_engine::cmd::KeysPress> {
+        use yw_engine::cmd::KeysPress;
+        if let Some(script) = script_of(id) {
+            return Some(KeysPress::Script(script));
+        }
+        Some(match id {
+            FIRST_KEY => KeysPress::FirstKey,
+            START_CHAIN_EVM => KeysPress::StartChainEvm,
+            START_CHAIN_SOL => KeysPress::StartChainSol,
+            START_CHAIN_BTC => KeysPress::StartChainBtc,
+            START_NEXT => KeysPress::StartNext,
+            START_CORRECT => KeysPress::StartCorrect,
+            START_WRONG => KeysPress::StartWrong,
+            SOL_IMPORT => KeysPress::SolImport,
+            BTC_IMPORT => KeysPress::BtcImport,
+            SOL_REVEAL => KeysPress::SolReveal,
+            SOL_REMOVE => KeysPress::SolRemove,
+            BTC_REVEAL => KeysPress::BtcReveal,
+            BTC_REMOVE => KeysPress::BtcRemove,
+            BTC_IMPORT_NEXT => KeysPress::BtcImportNext,
+            BTC_IMPORT_CANCEL => KeysPress::BtcImportCancel,
+            _ => return None,
+        })
+    }
+
+    /// The control id of `press` (the inverse of [`press_of`]).
+    #[must_use]
+    pub const fn id_of(press: yw_engine::cmd::KeysPress) -> u16 {
+        use yw_engine::cmd::KeysPress;
+        match press {
+            KeysPress::FirstKey => FIRST_KEY,
+            KeysPress::StartChainEvm => START_CHAIN_EVM,
+            KeysPress::StartChainSol => START_CHAIN_SOL,
+            KeysPress::StartChainBtc => START_CHAIN_BTC,
+            KeysPress::StartNext => START_NEXT,
+            KeysPress::StartCorrect => START_CORRECT,
+            KeysPress::StartWrong => START_WRONG,
+            KeysPress::Script(script) => script_id(script),
+            KeysPress::SolImport => SOL_IMPORT,
+            KeysPress::BtcImport => BTC_IMPORT,
+            KeysPress::SolReveal => SOL_REVEAL,
+            KeysPress::SolRemove => SOL_REMOVE,
+            KeysPress::BtcReveal => BTC_REVEAL,
+            KeysPress::BtcRemove => BTC_REMOVE,
+            KeysPress::BtcImportNext => BTC_IMPORT_NEXT,
+            KeysPress::BtcImportCancel => BTC_IMPORT_CANCEL,
+        }
+    }
 }
 
 /// The imported-key screen texts (spec/04 §2.18, T-KEYSTART-*, T-BTC-IMPORTED,

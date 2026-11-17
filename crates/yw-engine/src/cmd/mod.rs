@@ -21,6 +21,9 @@
 //!
 //! 2026-11-18 (S3 C4): the address book, its favorite chips, picker and save prompt
 //! (`Press::Book`).
+//!
+//! 2026-11-18 (S3 C5): S22 and T-WAIT-STALLED, S23, the imported-key screens and the `rpc.json`
+//! import (`Press::{Reset, Ext, Keys, RpcImport}`).
 
 use core::fmt;
 
@@ -32,20 +35,28 @@ use crate::received::RecvChain;
 
 mod book;
 mod explorer;
+mod ext;
 mod hidden;
+mod keys;
 mod links;
 mod llm;
 mod received;
+mod reset;
+mod rpc_import;
 mod sidecar;
 mod sites;
 mod wc;
 
 pub use book::{BookPress, BookRowAction};
 pub use explorer::{ExplorerLinkAction, ExplorerPress, ExplorerRowAction};
+pub use ext::ExtPress;
 pub use hidden::HiddenPress;
+pub use keys::KeysPress;
 pub use links::LinksPress;
 pub use llm::LlmPress;
 pub use received::ReceivedPress;
+pub use reset::ResetPress;
+pub use rpc_import::RpcImportPress;
 pub use sidecar::SidecarPress;
 pub use sites::SitesPress;
 pub use wc::WcPress;
@@ -146,6 +157,14 @@ pub enum Press {
     Links(LinksPress),
     /// The address book, its chips, picker and save prompt (S3 C4).
     Book(BookPress),
+    /// S22 `지갑 초기화` and T-WAIT-STALLED (S3 C5).
+    Reset(ResetPress),
+    /// S23 `Chrome 확장 설치` (S3 C5).
+    Ext(ExtPress),
+    /// The imported-key screens and card parts (S3 C5).
+    Keys(KeysPress),
+    /// The `rpc.json` import card (S3 C5).
+    RpcImport(RpcImportPress),
     /// Windows-transitional bridge (S3 B2–D3): a control id whose handler is not converted yet.
     #[doc(hidden)]
     Legacy(u16),
@@ -170,6 +189,10 @@ impl Press {
             | Self::Explorer(_)
             | Self::Links(_)
             | Self::Book(_)
+            | Self::Reset(_)
+            | Self::Ext(_)
+            | Self::Keys(_)
+            | Self::RpcImport(_)
             | Self::Legacy(_) => None,
         }
     }
@@ -193,6 +216,10 @@ impl Press {
             | Self::Explorer(_)
             | Self::Links(_)
             | Self::Book(_)
+            | Self::Reset(_)
+            | Self::Ext(_)
+            | Self::Keys(_)
+            | Self::RpcImport(_)
             | Self::Legacy(_) => false,
         }
     }

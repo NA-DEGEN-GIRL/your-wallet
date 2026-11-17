@@ -36,6 +36,7 @@ use crate::network::NetworkId;
 use crate::settings::{RpcTemplate, Settings};
 use crate::text::is_dns_label;
 use crate::ui::main_window::{Ctl, Item, Tone};
+use yw_engine::cmd::RpcImportPress;
 
 /// Largest `rpc.json` (spec/01 §4.6).
 pub const RPC_JSON_MAX: u64 = 65_536;
@@ -138,6 +139,45 @@ pub fn delete_file(path: &Path) -> Result<(), DeleteError> {
         Ok(_) => Err(DeleteError::NotPlainFile),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(_) => Err(DeleteError::Failed),
+    }
+}
+
+/// The `rpc.json` import card's presses (its ids are core ids, `ui::screens::ids`).
+pub mod ids {
+    use crate::ui::screens::ids::{
+        RPC_IMPORT, RPC_IMPORT_CANCEL, RPC_IMPORT_FILL, RPC_IMPORT_OVERWRITE, RPC_JSON_DELETE,
+        RPC_JSON_DELETE_CANCEL, RPC_JSON_DELETE_CONFIRM,
+    };
+    use yw_engine::cmd::RpcImportPress;
+
+    /// The press control `id` stands for (2026-11-18, S3 C5: `ui::cmd_table`); `None` when `id`
+    /// is not one of the card's.
+    #[must_use]
+    pub const fn press_of(id: u16) -> Option<RpcImportPress> {
+        Some(match id {
+            RPC_IMPORT => RpcImportPress::Import,
+            RPC_IMPORT_OVERWRITE => RpcImportPress::Overwrite,
+            RPC_IMPORT_FILL => RpcImportPress::Fill,
+            RPC_IMPORT_CANCEL => RpcImportPress::Cancel,
+            RPC_JSON_DELETE => RpcImportPress::Delete,
+            RPC_JSON_DELETE_CONFIRM => RpcImportPress::DeleteConfirm,
+            RPC_JSON_DELETE_CANCEL => RpcImportPress::DeleteCancel,
+            _ => return None,
+        })
+    }
+
+    /// The control id of `press` (the inverse of [`press_of`]).
+    #[must_use]
+    pub const fn id_of(press: RpcImportPress) -> u16 {
+        match press {
+            RpcImportPress::Import => RPC_IMPORT,
+            RpcImportPress::Overwrite => RPC_IMPORT_OVERWRITE,
+            RpcImportPress::Fill => RPC_IMPORT_FILL,
+            RpcImportPress::Cancel => RPC_IMPORT_CANCEL,
+            RpcImportPress::Delete => RPC_JSON_DELETE,
+            RpcImportPress::DeleteConfirm => RPC_JSON_DELETE_CONFIRM,
+            RpcImportPress::DeleteCancel => RPC_JSON_DELETE_CANCEL,
+        }
     }
 }
 
@@ -388,33 +428,48 @@ impl RpcImportUi {
 }
 
 impl App {
-    /// `rpc.json에서 가져오기` commands; `false` when `id` is not one of them.
-    pub(crate) fn on_rpc_import_command(&mut self, id: u16) -> bool {
-        use crate::ui::screens::ids;
-        match id {
-            ids::RPC_IMPORT => {
+    /// `rpc.json에서 가져오기` presses (2026-11-18, S3 C5: an `RpcImportPress`; before, the
+    /// control id). The file is still found by [`rpc_json_path`] (S4: a platform trait).
+    pub(crate) fn on_rpc_import(&mut self, press: RpcImportPress) {
+        match press {
+            RpcImportPress::Import => {
                 if let Some(path) = rpc_json_path() {
                     self.begin_rpc_import(&path);
                 }
             }
-            ids::RPC_IMPORT_OVERWRITE => self.finish_rpc_import(true),
-            ids::RPC_IMPORT_FILL => self.finish_rpc_import(false),
-            ids::RPC_IMPORT_CANCEL => {
+            RpcImportPress::Overwrite => self.finish_rpc_import(true),
+            RpcImportPress::Fill => self.finish_rpc_import(false),
+            RpcImportPress::Cancel => {
                 self.rpc_import = RpcImportUi::default();
                 self.refresh();
             }
-            ids::RPC_JSON_DELETE | ids::RPC_JSON_DELETE_CANCEL => {
-                self.rpc_import.confirm_delete = id == ids::RPC_JSON_DELETE;
+            RpcImportPress::Delete | RpcImportPress::DeleteCancel => {
+                self.rpc_import.confirm_delete = press == RpcImportPress::Delete;
                 self.refresh();
             }
-            ids::RPC_JSON_DELETE_CONFIRM => {
+            RpcImportPress::DeleteConfirm => {
                 if let Some(path) = rpc_json_path() {
                     self.delete_rpc_json(&path);
                 }
             }
-            _ => return false,
         }
-        true
+    }
+
+    /// Test adapter (S3 C5, plan §3.2): presses an import-card control `id` directly, as the
+    /// module tests did before; `false` when `id` is not one.
+    #[cfg(test)]
+    pub(crate) fn on_rpc_import_command(&mut self, id: u16) -> bool {
+        self.press_family(
+            id,
+            |press| match press {
+                yw_engine::cmd::Press::RpcImport(press) => Some(press),
+                _ => None,
+            },
+            |app, press| {
+                app.on_rpc_import(press);
+                true
+            },
+        )
     }
 
     /// `rpc.json 지우기` confirmed: deletes the file (never a link) and says what happened.

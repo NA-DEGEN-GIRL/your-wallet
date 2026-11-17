@@ -15,7 +15,8 @@
 //! ids are their families' presses (each module's `ids::press_of`/`ids::id_of`); [`press_of`]
 //! reads a check box's state into its press (the box is never read again by the handler).
 //! S3 C2: S13's sites and `WalletConnect` panel. S3 C3: the block-explorer card and links and
-//! the AI-explanation settings. S3 C4: the address book.
+//! the AI-explanation settings. S3 C4: the address book. S3 C5: S22 and T-WAIT-STALLED, S23,
+//! the imported-key screens and the `rpc.json` import card.
 
 use yw_core::secret::Zeroizing;
 use yw_engine::cmd::Press;
@@ -23,10 +24,10 @@ use yw_engine::form::{CredField, CredUnits, EditField, PressInput};
 
 use crate::ui::main_window::ControlSet;
 use crate::ui::{
-    screens, screens_book, screens_evm, screens_explorer, screens_links, screens_llm,
-    screens_received, screens_sites, screens_walletconnect,
+    screens, screens_book, screens_evm, screens_explorer, screens_keys, screens_links, screens_llm,
+    screens_received, screens_reset, screens_sites, screens_walletconnect,
 };
-use crate::{app_hidden, app_sidecar};
+use crate::{app_hidden, app_rpc_import, app_sidecar};
 
 /// The command id `IsDialogMessageW` sends for Enter (no control uses it, `ui::command_ids`).
 pub const IDOK: u16 = 1;
@@ -50,6 +51,10 @@ pub fn press_of(id: u16, controls: &ControlSet) -> Press {
             .or_else(|| screens_explorer::ids::press_of(other).map(Press::Explorer))
             .or_else(|| screens_walletconnect::ids::press_of(other).map(Press::Wc))
             .or_else(|| screens_book::ids::press_of(other, controls).map(Press::Book))
+            .or_else(|| screens_reset::ids::reset_press_of(other, controls).map(Press::Reset))
+            .or_else(|| screens_reset::ids::ext_press_of(other).map(Press::Ext))
+            .or_else(|| screens_keys::ids::press_of(other).map(Press::Keys))
+            .or_else(|| app_rpc_import::ids::press_of(other).map(Press::RpcImport))
             .unwrap_or(Press::Legacy(other)),
     }
 }
@@ -70,6 +75,10 @@ pub const fn id_of(press: Press) -> u16 {
         Press::Explorer(press) => screens_explorer::ids::id_of(press),
         Press::Wc(press) => screens_walletconnect::ids::id_of(press),
         Press::Book(press) => screens_book::ids::id_of(press),
+        Press::Reset(press) => screens_reset::ids::reset_id_of(press),
+        Press::Ext(press) => screens_reset::ids::ext_id_of(press),
+        Press::Keys(press) => screens_keys::ids::id_of(press),
+        Press::RpcImport(press) => app_rpc_import::ids::id_of(press),
         Press::Legacy(id) => id,
     }
 }
@@ -244,7 +253,6 @@ pub fn capture(id: u16, controls: &ControlSet) -> PressInput {
 mod tests {
     use super::*;
     use crate::ui::command_ids::{fixed, ranges};
-    use crate::ui::screens_reset;
 
     /// Every id the main window can send: the fixed ids and every id of every indexed range up
     /// to its documented maximum.
@@ -541,6 +549,73 @@ mod tests {
             );
             assert_eq!(id_of(press_of(id, &controls)), id);
         }
+    }
+
+    /// S3 C5: S22 and T-WAIT-STALLED, S23, the imported-key screens and the `rpc.json` card
+    /// claim exactly the ids their handlers claimed before (S22's edit is a field, its 2 s hold
+    /// area no press); the S22 check box carries its state, an address-type radio its type.
+    #[test]
+    fn c5_families_map_their_ids() {
+        use yw_core::btc::ScriptType;
+        use yw_engine::cmd::{ExtPress, KeysPress, ResetPress, RpcImportPress};
+        let controls = ControlSet::default();
+        let family = |id: u16| {
+            !matches!(
+                press_of(id, &controls),
+                Press::Legacy(_) | Press::Enter | Press::Back
+            )
+        };
+        for id in 13_400..13_450 {
+            let s22 = matches!(id, 13_400 | 13_402 | 13_404 | 13_410 | 13_420..=13_424);
+            assert_eq!(family(id), s22, "{id}");
+        }
+        for id in 13_000..13_200 {
+            let keys = matches!(id, 13_000..=13_006 | 13_010..=13_013 | 13_020..=13_027);
+            assert_eq!(
+                matches!(press_of(id, &controls), Press::Keys(_)),
+                keys,
+                "{id}"
+            );
+        }
+        for id in 525..545 {
+            assert_eq!(
+                matches!(press_of(id, &controls), Press::RpcImport(_)),
+                (530..=536).contains(&id),
+                "{id}"
+            );
+        }
+        assert_eq!(
+            press_of(screens_reset::ids::EXT_COPY_PATH, &controls),
+            Press::Ext(ExtPress::CopyPath)
+        );
+        assert_eq!(
+            press_of(screens::ids::RPC_JSON_DELETE_CONFIRM, &controls),
+            Press::RpcImport(RpcImportPress::DeleteConfirm)
+        );
+        for script in [
+            ScriptType::P2pkh,
+            ScriptType::P2shP2wpkh,
+            ScriptType::P2wpkh,
+            ScriptType::P2tr,
+        ] {
+            let id = screens_keys::ids::script_id(script);
+            assert_eq!(
+                press_of(id, &controls),
+                Press::Keys(KeysPress::Script(script))
+            );
+            assert_eq!(id_of(Press::Keys(KeysPress::Script(script))), id);
+        }
+        let check = screens_reset::ids::RESET_SETTINGS_CHECK;
+        assert_eq!(
+            press_of(check, &controls),
+            Press::Reset(ResetPress::SettingsCheck(None))
+        );
+        controls.type_check(check, true);
+        assert_eq!(
+            press_of(check, &controls),
+            Press::Reset(ResetPress::SettingsCheck(Some(true)))
+        );
+        assert_eq!(id_of(press_of(check, &controls)), check);
     }
 
     /// Table test (3): the 65 edit ids are 58 plain fields and 7 credential fields, each a

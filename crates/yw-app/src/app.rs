@@ -3929,6 +3929,10 @@ impl App {
             Press::Explorer(press) => self.on_explorer(press),
             Press::Links(press) => self.on_links(press),
             Press::Book(press) => self.on_book(press),
+            Press::Reset(press) => self.on_reset(press),
+            Press::Ext(press) => self.on_ext(press),
+            Press::Keys(press) => self.on_keys(press),
+            Press::RpcImport(press) => self.on_rpc_import(press),
             Press::Back | Press::Enter | Press::Legacy(_) => {}
         }
     }
@@ -3996,7 +4000,8 @@ impl App {
             // (`unwrap_or_default`). Production cannot get here (`EN_CHANGE` comes from a live
             // edit), and the census asserts `form_mismatch == 0` at every observation, so a test
             // that notifies without typing fails there. (S3 C4: the address book's
-            // `BookAddress`, `BookLabel`, `BookPromptLabel` likewise.)
+            // `BookAddress`, `BookLabel`, `BookPromptLabel` likewise; S3 C5: S22's
+            // `ResetPhrase`.)
             #[cfg(debug_assertions)]
             self.note_form_mismatch(field);
             self.edit_chain(id);
@@ -4007,6 +4012,7 @@ impl App {
     /// theirs (then the legacy `edit_chain` runs, as before).
     fn on_field_edit(&mut self, field: EditField, text: &str) -> bool {
         self.on_wc_edit(field, text)
+            || self.on_reset_edit(field, text)
             || self.on_book_edit(field, text)
             || self.on_explorer_edit(field, text)
             || self.on_llm_edit(field, text)
@@ -4015,8 +4021,7 @@ impl App {
     /// The handlers of an edit change: the first that claims `id` takes it, else the EVM send
     /// form's (S3 B5: the body of `on_edit_notify` before, unchanged).
     fn edit_chain(&mut self, id: u16) {
-        if !self.on_reset_edit_change(id)
-            && !self.on_sol_edit_change(id)
+        if !self.on_sol_edit_change(id)
             && !self.on_btc_edit_change(id)
             && !self.on_zec_edit_change(id)
             && !self.on_yk_edit_change(id)
@@ -4359,11 +4364,7 @@ impl App {
                 // A card's `새로고침` reads its received list first (S3 C1: was the first link
                 // of the chain, `on_received_command`, which returned `false` for these ids).
                 self.received_observe(other);
-                if !self.on_reset_command(other)
-                    && !self.on_rpc_import_command(other)
-                    && !self.on_extension_command(other)
-                    && !self.on_keys_command(other)
-                    && !self.on_sol_command(other)
+                if !self.on_sol_command(other)
                     && !self.on_btc_command(other)
                     && !self.on_zec_command(other)
                     && !self.on_evm_command(other)

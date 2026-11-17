@@ -20,6 +20,7 @@ use crate::logging::{self, Field};
 use crate::meta::{EvmAccountPref, MAX_RAW_ACCOUNTS, RawAccount, SolRawAccount, Tab};
 use crate::ui::secret::SecretKind;
 use crate::workers::journal::btc::BtcMetaOp;
+use yw_engine::cmd::KeysPress;
 
 /// "개인키로 시작하기" state (before any vault exists).
 pub struct KeyStartFlow {
@@ -712,72 +713,86 @@ impl App {
         self.refresh();
     }
 
-    /// Main-window commands of this module; `false` when `id` is not one of them.
-    pub fn on_keys_command(&mut self, id: u16) -> bool {
-        use crate::ui::screens_keys::ids;
-        if let Some(script) = ids::script_of(id) {
-            if self.screen == Screen::KeyStartIntro {
-                self.keys.start.script = script;
-            } else {
-                self.keys.btc_script = script;
+    /// Main-window presses of this module (2026-11-18, S3 C5: a `KeysPress`, an address-type
+    /// radio carrying its `ScriptType`; before, the control id).
+    pub(crate) fn on_keys(&mut self, press: KeysPress) {
+        match press {
+            KeysPress::Script(script) => {
+                if self.screen == Screen::KeyStartIntro {
+                    self.keys.start.script = script;
+                } else {
+                    self.keys.btc_script = script;
+                }
+                self.refresh();
             }
-            self.refresh();
-            return true;
-        }
-        match id {
-            ids::FIRST_KEY => self.key_start_open(),
-            ids::START_CHAIN_EVM | ids::START_CHAIN_SOL | ids::START_CHAIN_BTC => {
-                self.keys.start.chain = match id {
-                    ids::START_CHAIN_SOL => ImportChain::Sol,
-                    ids::START_CHAIN_BTC => ImportChain::Btc,
+            KeysPress::FirstKey => self.key_start_open(),
+            KeysPress::StartChainEvm | KeysPress::StartChainSol | KeysPress::StartChainBtc => {
+                self.keys.start.chain = match press {
+                    KeysPress::StartChainSol => ImportChain::Sol,
+                    KeysPress::StartChainBtc => ImportChain::Btc,
                     _ => ImportChain::Evm,
                 };
                 self.refresh();
             }
-            ids::START_NEXT => self.key_start_next(),
-            ids::START_CORRECT => self.key_start_commit(),
-            ids::START_WRONG => self.key_start_wrong(),
-            ids::SOL_IMPORT => self.open_key_import(ImportChain::Sol),
-            ids::BTC_IMPORT => {
+            KeysPress::StartNext => self.key_start_next(),
+            KeysPress::StartCorrect => self.key_start_commit(),
+            KeysPress::StartWrong => self.key_start_wrong(),
+            KeysPress::SolImport => self.open_key_import(ImportChain::Sol),
+            KeysPress::BtcImport => {
                 self.keys.btc_import_open = true;
                 self.refresh();
             }
-            ids::BTC_IMPORT_CANCEL => {
+            KeysPress::BtcImportCancel => {
                 self.keys.btc_import_open = false;
                 self.refresh();
             }
-            ids::BTC_IMPORT_NEXT => {
+            KeysPress::BtcImportNext => {
                 self.keys.btc_import_open = false;
                 self.open_key_import(ImportChain::Btc);
             }
-            ids::SOL_REVEAL | ids::SOL_REMOVE => {
+            KeysPress::SolReveal | KeysPress::SolRemove => {
                 let selected = self.meta.as_ref().and_then(|meta| meta.sol_raw_selected);
                 if let Some(record) = selected {
-                    if id == ids::SOL_REVEAL {
+                    if press == KeysPress::SolReveal {
                         self.imported_reveal(record);
                     } else {
                         self.imported_remove(record);
                     }
                 }
             }
-            ids::BTC_REVEAL | ids::BTC_REMOVE => {
+            KeysPress::BtcReveal | KeysPress::BtcRemove => {
                 // The selected account of the Bitcoin list, when it is an imported key (or, for
                 // `개인키 보기` only, an account on an EVM account's key).
                 let evm_shared = self.btc_ctx().selected_evm_shared();
                 if let Some(record) = self.btc_ctx().selected_imported() {
-                    if id == ids::BTC_REVEAL {
+                    if press == KeysPress::BtcReveal {
                         self.imported_reveal(record);
                     } else {
                         self.imported_remove(record);
                     }
                 } else if let Some((evm_index, network)) = evm_shared
-                    && id == ids::BTC_REVEAL
+                    && press == KeysPress::BtcReveal
                 {
                     self.btc_evm_shared_reveal(evm_index, network);
                 }
             }
-            _ => return false,
         }
-        true
+    }
+
+    /// Test adapter (S3 C5, plan §3.2): presses imported-key control `id` directly, as the tests
+    /// did before; `false` when `id` is not one.
+    #[cfg(test)]
+    pub(crate) fn on_keys_command(&mut self, id: u16) -> bool {
+        self.press_family(
+            id,
+            |press| match press {
+                yw_engine::cmd::Press::Keys(press) => Some(press),
+                _ => None,
+            },
+            |app, press| {
+                app.on_keys(press);
+                true
+            },
+        )
     }
 }
