@@ -616,7 +616,7 @@ impl KeyWorker {
             connect_password: None,
             pending_mnemonic: None,
             journal: JournalState::default(),
-            cards: Box::new(crate::yubikey::PcscSource),
+            cards: Box::new(crate::card_pcsc::PcscSource),
             meta_unreadable: false,
             lang: yw_core::lang::Lang::Ko,
         }

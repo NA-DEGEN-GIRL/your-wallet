@@ -1,105 +1,24 @@
-//! `YubiKey` glue for the key worker (spec/10 §4, §7, §9.2): adapters from yw-win's PC/SC card
-//! and CNG cipher to the yw-core `CardTransport` / `MgmtCipher` traits, the [`CardSource`]
-//! that visits the inserted cards (the emulator in tests), and the two operations the worker
-//! runs on a card: enrolment and EVM digest signing.
+//! `YubiKey` glue for the key worker (spec/10 §4, §7, §9.2): the [`CardSource`] that visits the
+//! inserted cards (the emulator in tests), and the operations the worker runs on a card
+//! (enrolment, digest signing, management). The Windows PC/SC transport and CNG cipher are
+//! `card_pcsc` in yw-app (2026-11-17, spec/15 §11.4 S2; before, they were here).
 //!
 //! Every PIN, admin PIN and management key reaches these functions as a borrowed buffer that
 //! the job owns and wipes when it finishes (no caching between operations, spec/10 §9.1).
 
 use yw_core::bip32::path::AccountIndex;
 use yw_core::lang::Lang;
-use yw_core::secret::Zeroizing;
 use yw_core::yubikey::apdu::ApduMode;
 use yw_core::yubikey::enrol::{EnrolAuth, EnrolError, Enrolled, enrol_card, identify};
-use yw_core::yubikey::piv::{ManagementState, MgmtAlgorithm, MgmtCipher};
+use yw_core::yubikey::piv::{ManagementState, MgmtCipher};
 use yw_core::yubikey::plan::{Curve, KeyRole, PlannedSlot, slot_on_card};
 use yw_core::yubikey::record::HwKeyRecord;
 use yw_core::yubikey::sign::{CardKey, sign_evm_checked};
 use yw_core::yubikey::{CardError, CardTransport, TransportFault};
-use yw_win::pcsc::{self, PcscFault};
 
 /// The framing used with every reader: short APDUs with chaining work on USB and NFC alike
 /// (spec/10 §5.1).
 pub const MODE: ApduMode = ApduMode::Short;
-
-const fn transport_error(fault: PcscFault) -> CardError {
-    match fault {
-        PcscFault::NoService => CardError::Transport(TransportFault::NoService),
-        PcscFault::NoReader => CardError::Transport(TransportFault::NoReader),
-        PcscFault::NoCard => CardError::Transport(TransportFault::NoCard),
-        PcscFault::Busy => CardError::Transport(TransportFault::Busy),
-        PcscFault::Removed => CardError::CardRemoved,
-        PcscFault::Other => CardError::Transport(TransportFault::Io),
-    }
-}
-
-/// A connected PC/SC card as a [`CardTransport`]. A job that sends anything but a read-only
-/// instruction (`yubikey::needs_reset`: VERIFY, management-key authentication, signing, writes)
-/// releases the card with a warm reset (spec/10 §5.1), so no PIN stays verified for the next
-/// PC/SC client — between the PIN check and the signature, or after any card job.
-#[derive(Debug)]
-pub struct PcscTransport<'c> {
-    card: pcsc::Card<'c>,
-}
-
-impl CardTransport for PcscTransport<'_> {
-    fn transmit(&mut self, command: &[u8]) -> Result<Vec<u8>, CardError> {
-        if yw_core::yubikey::needs_reset(command) {
-            // Marked before the frame leaves: a command that fails half way still ends in a
-            // reset.
-            self.card.reset_on_release();
-        }
-        self.card
-            .transmit(command)
-            .map_err(|error| transport_error(pcsc::fault(&error)))
-    }
-}
-
-/// Windows CNG as the PIV management-key cipher.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct CngCipher;
-
-impl CngCipher {
-    fn run(
-        algorithm: MgmtAlgorithm,
-        key: &[u8],
-        block: &[u8],
-        encrypt: bool,
-    ) -> Result<Zeroizing<Vec<u8>>, CardError> {
-        let cipher = match algorithm {
-            MgmtAlgorithm::TripleDes => yw_win::cng::BlockCipher::TripleDes,
-            MgmtAlgorithm::Aes128 | MgmtAlgorithm::Aes192 | MgmtAlgorithm::Aes256 => {
-                yw_win::cng::BlockCipher::Aes
-            }
-        };
-        if key.len() != algorithm.key_len() {
-            return Err(CardError::Internal);
-        }
-        yw_win::cng::ecb_block(cipher, key, block, encrypt)
-            .map(Zeroizing::new)
-            .map_err(|_| CardError::Internal)
-    }
-}
-
-impl MgmtCipher for CngCipher {
-    fn encrypt_block(
-        &self,
-        algorithm: MgmtAlgorithm,
-        key: &[u8],
-        block: &[u8],
-    ) -> Result<Zeroizing<Vec<u8>>, CardError> {
-        Self::run(algorithm, key, block, true)
-    }
-
-    fn decrypt_block(
-        &self,
-        algorithm: MgmtAlgorithm,
-        key: &[u8],
-        block: &[u8],
-    ) -> Result<Zeroizing<Vec<u8>>, CardError> {
-        Self::run(algorithm, key, block, false)
-    }
-}
 
 /// The visitor of [`CardSource::each_card`]: a transport to one card and the management-key
 /// cipher; returns `true` to stop.
@@ -114,55 +33,6 @@ pub trait CardSource: Send {
     ///
     /// Reader errors before any card was visited (no service, no reader).
     fn each_card(&mut self, visit: &mut CardVisit<'_>) -> Result<(), CardError>;
-}
-
-/// The real readers (PC/SC, user scope).
-#[derive(Debug, Default)]
-pub struct PcscSource;
-
-impl CardSource for PcscSource {
-    fn each_card(&mut self, visit: &mut CardVisit<'_>) -> Result<(), CardError> {
-        let context =
-            pcsc::Context::establish().map_err(|error| transport_error(pcsc::fault(&error)))?;
-        let readers = context
-            .readers()
-            .map_err(|error| transport_error(pcsc::fault(&error)))?;
-        if readers.is_empty() {
-            return Err(CardError::Transport(TransportFault::NoReader));
-        }
-        // A reader without a card is skipped silently; a card another program holds (gpg-agent,
-        // scdaemon) or a reader error is remembered and reported when no card could be visited
-        // (spec/10 §5.1: "다른 프로그램이 YubiKey를 쓰고 있습니다", not "찾을 수 없습니다").
-        let mut fault: Option<PcscFault> = None;
-        let mut visited = false;
-        let mut note = |found: PcscFault| {
-            if found != PcscFault::NoCard && fault != Some(PcscFault::Busy) {
-                fault = Some(found);
-            }
-        };
-        for reader in readers {
-            let mut card = match context.connect(&reader) {
-                Ok(card) => card,
-                Err(error) => {
-                    note(pcsc::fault(&error));
-                    continue;
-                }
-            };
-            if let Err(error) = card.begin_transaction() {
-                note(pcsc::fault(&error));
-                continue;
-            }
-            visited = true;
-            let mut transport = PcscTransport { card };
-            if visit(&mut transport, &CngCipher) {
-                break;
-            }
-        }
-        match fault {
-            Some(found) if !visited => Err(transport_error(found)),
-            _ => Ok(()),
-        }
-    }
 }
 
 /// Why a card operation of the worker failed.
@@ -1742,22 +1612,30 @@ pub fn clear_card(
     )
 }
 
-/// The emulator as a card source (tests of the key worker and the app).
-#[cfg(test)]
-pub(crate) struct MockSource {
+/// The emulator as a card source (tests of the key worker and the app). Always compiled and
+/// public, hidden from the docs (2026-11-17, spec/15 §11.4 S2; before, `cfg(test)`): the tests
+/// that use it move to another crate, and `cfg(test)` does not cross crates. Only test code
+/// constructs it (the yw-app source scan `mock_source_is_built_only_by_tests`); the key worker
+/// gets the PC/SC source from `main.rs`.
+#[doc(hidden)]
+pub struct MockSource {
     /// The inserted emulated cards.
-    pub(crate) cards: std::sync::Arc<std::sync::Mutex<Vec<yw_core::yubikey::mock::MockCard>>>,
+    pub cards: std::sync::Arc<std::sync::Mutex<Vec<yw_core::yubikey::mock::MockCard>>>,
 }
 
-/// One job on an emulated card: as with [`PcscTransport`], a job that sent an instruction of
+impl std::fmt::Debug for MockSource {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("MockSource").finish_non_exhaustive()
+    }
+}
+
+/// One job on an emulated card: as with the PC/SC transport, a job that sent an instruction of
 /// `yubikey::needs_reset` ends with a warm reset of the card.
-#[cfg(test)]
 struct MockJob<'c> {
     card: &'c mut yw_core::yubikey::mock::MockCard,
     reset: bool,
 }
 
-#[cfg(test)]
 impl CardTransport for MockJob<'_> {
     fn transmit(&mut self, command: &[u8]) -> Result<Vec<u8>, CardError> {
         if yw_core::yubikey::needs_reset(command) {
@@ -1767,7 +1645,6 @@ impl CardTransport for MockJob<'_> {
     }
 }
 
-#[cfg(test)]
 impl CardSource for MockSource {
     fn each_card(&mut self, visit: &mut CardVisit<'_>) -> Result<(), CardError> {
         let mut cards = self.cards.lock().map_err(|_| CardError::Internal)?;
