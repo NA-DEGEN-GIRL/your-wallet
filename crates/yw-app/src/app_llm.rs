@@ -28,6 +28,9 @@ use crate::explain::{
 };
 use crate::logging::{self, Field};
 use crate::ui::screens_llm::{DraftNotes, ids, preset_url};
+use yw_engine::cmd::LlmPress;
+use yw_engine::effect::Effect;
+use yw_engine::form::{CredField, EditField};
 
 /// How long the UI waits for the old worker when the configuration changes (it is never
 /// blocked on `WinHTTP`; a late result is dropped with its channel).
@@ -285,20 +288,21 @@ impl App {
         self.set_screen(Screen::Settings(SettingsSection::Ai));
     }
 
-    /// `EN_CHANGE` of an AI-section edit; `false` when `id` is not one of them.
-    pub fn on_llm_edit_change(&mut self, id: u16) -> bool {
-        let read = |app: &Self, max: usize| app.controls.text(id, max).unwrap_or_default();
-        match id {
-            ids::ENDPOINT_EDIT => {
+    /// `EN_CHANGE` of an AI-section edit: `text` is the field's text now (2026-11-18, S3 C3:
+    /// from `Cmd::Edit`, or the form state for `저장`; before, a read of the edit by id);
+    /// `false` when `field` is not one of them.
+    pub(crate) fn on_llm_edit(&mut self, field: EditField, text: &str) -> bool {
+        match field {
+            EditField::LlmEndpoint => {
                 let before = DraftNotes::of(&self.llm_ui.endpoint_text);
-                self.llm_ui.endpoint_text = read(self, 2_048);
+                text.clone_into(&mut self.llm_ui.endpoint_text);
                 if DraftNotes::of(&self.llm_ui.endpoint_text) != before {
                     // The path hint and the OpenAI / Claude notes follow the draft.
                     self.refresh();
                 }
             }
-            ids::MODEL_EDIT => self.llm_ui.model_text = read(self, 128),
-            ids::MAX_TOKENS_EDIT => self.llm_ui.max_tokens_text = read(self, 8),
+            EditField::LlmModel => text.clone_into(&mut self.llm_ui.model_text),
+            EditField::LlmMaxTokens => text.clone_into(&mut self.llm_ui.max_tokens_text),
             _ => return false,
         }
         true
@@ -324,8 +328,13 @@ impl App {
     fn llm_preset(&mut self, url: &str) {
         url.clone_into(&mut self.llm_ui.endpoint_text);
         // The edit keeps its own text; its `EN_CHANGE` arrives while this handler runs and is
-        // not seen, so the draft above is set directly.
-        self.controls.set_text(ids::ENDPOINT_EDIT, url);
+        // not seen, so the draft above is set directly. (2026-11-18, S3 C3: the write is
+        // `Effect::SetField`, which the shell applies at once inside this handler's borrow —
+        // `app_effects` — so the notification is still not seen; before, `controls.set_text`.)
+        self.emit(Effect::SetField {
+            field: EditField::LlmEndpoint,
+            text: url.to_owned(),
+        });
         if DraftNotes::of(url).anthropic {
             self.llm_ui.format = ResponseFormatMode::JsonSchema;
         }
@@ -338,53 +347,78 @@ impl App {
         self.refresh();
     }
 
-    /// AI-section commands; `false` when `id` is not one of them.
-    pub fn on_llm_command(&mut self, id: u16) -> bool {
-        if let Some(url) = preset_url(id) {
-            self.llm_preset(url);
-            return true;
-        }
-        match id {
-            ids::SECTION_AI => self.open_llm_settings(),
-            ids::ENABLE => self.llm_toggle(),
-            ids::FORMAT_SCHEMA => {
+    /// AI-section presses (2026-11-18, S3 C3: an `LlmPress`, the check boxes carrying their
+    /// state and `키 저장` its key; before, the control id and reads of the controls here).
+    pub(crate) fn on_llm(&mut self, press: LlmPress) {
+        match press {
+            LlmPress::PresetOpenAi
+            | LlmPress::PresetClaude
+            | LlmPress::PresetOpenRouter
+            | LlmPress::PresetOllama
+            | LlmPress::PresetLmStudio => {
+                if let Some(url) = preset_url(ids::id_of(press)) {
+                    self.llm_preset(url);
+                }
+            }
+            LlmPress::SectionAi => self.open_llm_settings(),
+            LlmPress::Enable(checked) => self.llm_toggle(checked),
+            LlmPress::FormatSchema => {
                 self.llm_ui.format = ResponseFormatMode::JsonSchema;
                 self.refresh();
             }
-            ids::FORMAT_OBJECT => {
+            LlmPress::FormatObject => {
                 self.llm_ui.format = ResponseFormatMode::JsonObject;
                 self.refresh();
             }
-            ids::EFFORT_NONE => self.llm_set_effort(None),
-            ids::EFFORT_LOW => self.llm_set_effort(Some(ReasoningEffort::Low)),
-            ids::EFFORT_MEDIUM => self.llm_set_effort(Some(ReasoningEffort::Medium)),
-            ids::EFFORT_HIGH => self.llm_set_effort(Some(ReasoningEffort::High)),
-            ids::SAVE => {
-                for edit in [ids::ENDPOINT_EDIT, ids::MODEL_EDIT, ids::MAX_TOKENS_EDIT] {
-                    self.on_llm_edit_change(edit);
+            LlmPress::EffortNone => self.llm_set_effort(None),
+            LlmPress::EffortLow => self.llm_set_effort(Some(ReasoningEffort::Low)),
+            LlmPress::EffortMedium => self.llm_set_effort(Some(ReasoningEffort::Medium)),
+            LlmPress::EffortHigh => self.llm_set_effort(Some(ReasoningEffort::High)),
+            LlmPress::Save => {
+                for field in [
+                    EditField::LlmEndpoint,
+                    EditField::LlmModel,
+                    EditField::LlmMaxTokens,
+                ] {
+                    let text = self.form_text(field).unwrap_or_default();
+                    self.on_llm_edit(field, &text);
                 }
                 self.llm_save();
             }
-            ids::TEST => self.llm_test(),
-            ids::KEY_SAVE => self.llm_save_key(),
-            ids::KEY_DELETE => {
+            LlmPress::Test => self.llm_test(),
+            LlmPress::KeySave => self.llm_save_key(),
+            LlmPress::KeyDelete => {
                 // The stored key cannot be shown again: asked first (2026-11-10).
                 if self.apikeys.has(KeyName::Llm) {
                     self.set_screen(Screen::Confirm(Confirm::LlmKeyDelete));
                 }
             }
-            ids::NOTICE_CHECK => {
-                self.llm_ui.notice_checked =
-                    self.controls.checked(ids::NOTICE_CHECK).unwrap_or(false);
+            LlmPress::NoticeCheck(checked) => {
+                self.llm_ui.notice_checked = checked.unwrap_or(false);
                 self.refresh();
             }
-            _ => return false,
         }
-        true
     }
 
-    fn llm_toggle(&mut self) {
-        let checked = self.controls.checked(ids::ENABLE).unwrap_or(false);
+    /// Test adapter (S3 C3, plan §3.2): presses AI-section control `id` directly, as the tests
+    /// and the screenshot tour did before; `false` when `id` is not one.
+    #[cfg(test)]
+    pub(crate) fn on_llm_command(&mut self, id: u16) -> bool {
+        self.press_family(
+            id,
+            |press| match press {
+                yw_engine::cmd::Press::Llm(press) => Some(press),
+                _ => None,
+            },
+            |app, press| {
+                app.on_llm(press);
+                true
+            },
+        )
+    }
+
+    fn llm_toggle(&mut self, checked: Option<bool>) {
+        let checked = checked.unwrap_or(false);
         let enabled = self.settings.llm_explain.enabled;
         if checked && !enabled {
             let saved = &self.settings.llm_explain;
@@ -512,18 +546,16 @@ impl App {
     }
 
     fn llm_save_key(&mut self) {
-        let units = self.controls.text_wiping(ids::KEY_EDIT, 1_024);
-        // Debug builds (S3 B5): the units captured with the press are the same.
-        #[cfg(debug_assertions)]
-        self.cred_shadow(
-            yw_engine::form::CredField::LlmKey,
-            units.as_ref().map(yw_win::mem::WipeBuf::as_slice),
-        );
-        let key = units
-            .map(|units| String::from_utf16_lossy(units.as_slice()))
-            .map(yw_core::secret::Zeroizing::new)
-            .unwrap_or_default();
-        self.controls.clear_text(ids::KEY_EDIT);
+        // 2026-11-18 (S3 C3): the units the shell read with the press (`PressInput`, wiped with
+        // it; empty when the edit did not exist, as a read of a missing edit); before, a read of
+        // the edit here. Decoded as before (`from_utf16_lossy`), then the edit is emptied
+        // (`Effect::ClearCred`, before, `controls.clear_text`) before the key is checked.
+        let units = self.take_cred(CredField::LlmKey);
+        let key = yw_core::secret::Zeroizing::new(String::from_utf16_lossy(units.as_slice()));
+        drop(units);
+        self.emit(Effect::ClearCred {
+            field: CredField::LlmKey,
+        });
         self.llm_store_key(key.trim());
     }
 

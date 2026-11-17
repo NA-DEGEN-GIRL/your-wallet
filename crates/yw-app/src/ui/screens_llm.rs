@@ -83,6 +83,64 @@ pub mod ids {
         EFFORT_MEDIUM,
         EFFORT_HIGH,
     ];
+
+    /// The press control `id` stands for (2026-11-18, S3 C3: `ui::cmd_table`); the two check
+    /// boxes carry their state now. `None` when `id` is not one of this module's presses (the
+    /// edits are fields, not presses).
+    #[must_use]
+    pub fn press_of(
+        id: u16,
+        controls: &crate::ui::main_window::ControlSet,
+    ) -> Option<yw_engine::cmd::LlmPress> {
+        use yw_engine::cmd::LlmPress;
+        Some(match id {
+            SECTION_AI => LlmPress::SectionAi,
+            ENABLE => LlmPress::Enable(controls.checked(id)),
+            FORMAT_SCHEMA => LlmPress::FormatSchema,
+            FORMAT_OBJECT => LlmPress::FormatObject,
+            SAVE => LlmPress::Save,
+            TEST => LlmPress::Test,
+            KEY_SAVE => LlmPress::KeySave,
+            KEY_DELETE => LlmPress::KeyDelete,
+            NOTICE_CHECK => LlmPress::NoticeCheck(controls.checked(id)),
+            PRESET_OPENAI => LlmPress::PresetOpenAi,
+            PRESET_CLAUDE => LlmPress::PresetClaude,
+            PRESET_OPENROUTER => LlmPress::PresetOpenRouter,
+            PRESET_OLLAMA => LlmPress::PresetOllama,
+            PRESET_LM_STUDIO => LlmPress::PresetLmStudio,
+            EFFORT_NONE => LlmPress::EffortNone,
+            EFFORT_LOW => LlmPress::EffortLow,
+            EFFORT_MEDIUM => LlmPress::EffortMedium,
+            EFFORT_HIGH => LlmPress::EffortHigh,
+            _ => return None,
+        })
+    }
+
+    /// The control id of `press` (the inverse of [`press_of`]).
+    #[must_use]
+    pub const fn id_of(press: yw_engine::cmd::LlmPress) -> u16 {
+        use yw_engine::cmd::LlmPress;
+        match press {
+            LlmPress::SectionAi => SECTION_AI,
+            LlmPress::Enable(_) => ENABLE,
+            LlmPress::FormatSchema => FORMAT_SCHEMA,
+            LlmPress::FormatObject => FORMAT_OBJECT,
+            LlmPress::Save => SAVE,
+            LlmPress::Test => TEST,
+            LlmPress::KeySave => KEY_SAVE,
+            LlmPress::KeyDelete => KEY_DELETE,
+            LlmPress::NoticeCheck(_) => NOTICE_CHECK,
+            LlmPress::PresetOpenAi => PRESET_OPENAI,
+            LlmPress::PresetClaude => PRESET_CLAUDE,
+            LlmPress::PresetOpenRouter => PRESET_OPENROUTER,
+            LlmPress::PresetOllama => PRESET_OLLAMA,
+            LlmPress::PresetLmStudio => PRESET_LM_STUDIO,
+            LlmPress::EffortNone => EFFORT_NONE,
+            LlmPress::EffortLow => EFFORT_LOW,
+            LlmPress::EffortMedium => EFFORT_MEDIUM,
+            LlmPress::EffortHigh => EFFORT_HIGH,
+        }
+    }
 }
 
 /// The `빠른 입력` presets (spec/06 §2.1, 2026-11-11): command id, button label, endpoint. A

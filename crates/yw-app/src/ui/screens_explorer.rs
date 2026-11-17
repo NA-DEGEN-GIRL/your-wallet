@@ -91,6 +91,101 @@ pub mod ids {
         RESULT_ZEC_COPY,
     ];
 
+    /// The press control `id` stands for (2026-11-18, S3 C3: `ui::cmd_table`); `None` when `id`
+    /// is not one of this module's presses (the card's two edits are fields, not presses).
+    #[must_use]
+    pub fn press_of(id: u16) -> Option<yw_engine::cmd::ExplorerPress> {
+        use yw_engine::cmd::{ExplorerLinkAction, ExplorerPress, ExplorerRowAction, Row};
+        let link = |position: u16| {
+            (
+                Row(position / ACTIVITY_STRIDE),
+                if position.is_multiple_of(ACTIVITY_STRIDE) {
+                    ExplorerLinkAction::Open
+                } else {
+                    ExplorerLinkAction::Copy
+                },
+            )
+        };
+        let within = |base: u16, span: u16| id.checked_sub(base).filter(|offset| *offset < span);
+        Some(match id {
+            SAVE => ExplorerPress::Save,
+            CANCEL => ExplorerPress::Cancel,
+            CARD_EVM => ExplorerPress::CardEvm,
+            CARD_SOL => ExplorerPress::CardSol,
+            CARD_BTC => ExplorerPress::CardBtc,
+            CARD_ZEC => ExplorerPress::CardZec,
+            CARD_HC => ExplorerPress::CardHc,
+            RESULT_EVM_OPEN => ExplorerPress::ResultEvmOpen,
+            RESULT_EVM_COPY => ExplorerPress::ResultEvmCopy,
+            RESULT_SOL_OPEN => ExplorerPress::ResultSolOpen,
+            RESULT_SOL_COPY => ExplorerPress::ResultSolCopy,
+            RESULT_BTC_OPEN => ExplorerPress::ResultBtcOpen,
+            RESULT_BTC_COPY => ExplorerPress::ResultBtcCopy,
+            RESULT_ZEC_OPEN => ExplorerPress::ResultZecOpen,
+            RESULT_ZEC_COPY => ExplorerPress::ResultZecCopy,
+            _ => {
+                if let Some(position) = within(ROW_BASE, ROW_SPAN) {
+                    ExplorerPress::Row(
+                        Row(position / ROW_STRIDE),
+                        if position.is_multiple_of(ROW_STRIDE) {
+                            ExplorerRowAction::Edit
+                        } else {
+                            ExplorerRowAction::Reset
+                        },
+                    )
+                } else if let Some(position) = within(SOL_ACTIVITY_BASE, SOL_ACTIVITY_SPAN) {
+                    let (row, action) = link(position);
+                    ExplorerPress::SolActivity(row, action)
+                } else if let Some(position) = within(BTC_ACTIVITY_BASE, BTC_ACTIVITY_SPAN) {
+                    let (row, action) = link(position);
+                    ExplorerPress::BtcActivity(row, action)
+                } else {
+                    let (row, action) = link(within(ZEC_ACTIVITY_BASE, ZEC_ACTIVITY_SPAN)?);
+                    ExplorerPress::ZecActivity(row, action)
+                }
+            }
+        })
+    }
+
+    /// The control id of `press` (the inverse of [`press_of`]).
+    #[must_use]
+    pub const fn id_of(press: yw_engine::cmd::ExplorerPress) -> u16 {
+        use yw_engine::cmd::{ExplorerLinkAction, ExplorerPress, ExplorerRowAction, Row};
+        const fn link(base: u16, Row(row): Row, action: ExplorerLinkAction) -> u16 {
+            base.wrapping_add(row.wrapping_mul(ACTIVITY_STRIDE))
+                .wrapping_add(match action {
+                    ExplorerLinkAction::Open => 0,
+                    ExplorerLinkAction::Copy => 1,
+                })
+        }
+        match press {
+            ExplorerPress::Save => SAVE,
+            ExplorerPress::Cancel => CANCEL,
+            ExplorerPress::CardEvm => CARD_EVM,
+            ExplorerPress::CardSol => CARD_SOL,
+            ExplorerPress::CardBtc => CARD_BTC,
+            ExplorerPress::CardZec => CARD_ZEC,
+            ExplorerPress::CardHc => CARD_HC,
+            ExplorerPress::ResultEvmOpen => RESULT_EVM_OPEN,
+            ExplorerPress::ResultEvmCopy => RESULT_EVM_COPY,
+            ExplorerPress::ResultSolOpen => RESULT_SOL_OPEN,
+            ExplorerPress::ResultSolCopy => RESULT_SOL_COPY,
+            ExplorerPress::ResultBtcOpen => RESULT_BTC_OPEN,
+            ExplorerPress::ResultBtcCopy => RESULT_BTC_COPY,
+            ExplorerPress::ResultZecOpen => RESULT_ZEC_OPEN,
+            ExplorerPress::ResultZecCopy => RESULT_ZEC_COPY,
+            ExplorerPress::Row(Row(row), action) => ROW_BASE
+                .wrapping_add(row.wrapping_mul(ROW_STRIDE))
+                .wrapping_add(match action {
+                    ExplorerRowAction::Edit => 0,
+                    ExplorerRowAction::Reset => 1,
+                }),
+            ExplorerPress::SolActivity(row, action) => link(SOL_ACTIVITY_BASE, row, action),
+            ExplorerPress::BtcActivity(row, action) => link(BTC_ACTIVITY_BASE, row, action),
+            ExplorerPress::ZecActivity(row, action) => link(ZEC_ACTIVITY_BASE, row, action),
+        }
+    }
+
     /// The two ids of activity row `row` of a list starting at `base` (`None` past `span`).
     #[must_use]
     pub fn activity_ids(base: u16, span: u16, row: usize) -> Option<(u16, u16)> {

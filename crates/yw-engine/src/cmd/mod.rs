@@ -15,6 +15,9 @@
 //! [`Press::refresh_chain`]).
 //!
 //! 2026-11-18 (S3 C2): S13's sites and `WalletConnect` panel (`Press::{Sites, Wc}`).
+//!
+//! 2026-11-18 (S3 C3): the block-explorer card and links and the AI-explanation settings
+//! (`Press::{Explorer, Llm}`).
 
 use core::fmt;
 
@@ -24,15 +27,19 @@ use crate::effect::TimerId;
 use crate::form::{EditField, FormSnapshot, PressInput};
 use crate::received::RecvChain;
 
+mod explorer;
 mod hidden;
 mod links;
+mod llm;
 mod received;
 mod sidecar;
 mod sites;
 mod wc;
 
+pub use explorer::{ExplorerLinkAction, ExplorerPress, ExplorerRowAction};
 pub use hidden::HiddenPress;
 pub use links::LinksPress;
+pub use llm::LlmPress;
 pub use received::ReceivedPress;
 pub use sidecar::SidecarPress;
 pub use sites::SitesPress;
@@ -120,12 +127,16 @@ pub enum Press {
     Received(ReceivedPress),
     /// S13 `연결된 사이트` (S3 C2).
     Sites(SitesPress),
+    /// The AI-explanation settings (S3 C3).
+    Llm(LlmPress),
     /// The `WalletConnect` panel of S13 (S3 C2).
     Wc(WcPress),
     /// A hidden-account list (S3 C1).
     Hidden(HiddenPress),
     /// A side-file overlay or check (S3 C1).
     Sidecar(SidecarPress),
+    /// The block-explorer card or an explorer link (S3 C3).
+    Explorer(ExplorerPress),
     /// An account drop-down button or an activity recipient (S3 C1).
     Links(LinksPress),
     /// Windows-transitional bridge (S3 B2–D3): a control id whose handler is not converted yet.
@@ -145,9 +156,11 @@ impl Press {
             | Self::Enter
             | Self::Received(_)
             | Self::Sites(_)
+            | Self::Llm(_)
             | Self::Wc(_)
             | Self::Hidden(_)
             | Self::Sidecar(_)
+            | Self::Explorer(_)
             | Self::Links(_)
             | Self::Legacy(_) => None,
         }
@@ -165,9 +178,11 @@ impl Press {
             | Self::Enter
             | Self::Received(_)
             | Self::Sites(_)
+            | Self::Llm(_)
             | Self::Wc(_)
             | Self::Hidden(_)
             | Self::Sidecar(_)
+            | Self::Explorer(_)
             | Self::Links(_)
             | Self::Legacy(_) => false,
         }

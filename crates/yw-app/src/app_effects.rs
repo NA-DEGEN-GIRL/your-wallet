@@ -13,13 +13,16 @@
 //! `App::arm_send_timer`'s and `App::on_send_timer`'s own `set_timer`/`kill_timer`) and the plain
 //! copy (`CopyText`, was `App::copy`'s `clipboard::set_text`). S3 B5: `Render` reads the plain
 //! edits back into the form state. The field writes get their arms when their callers convert
-//! (C); nothing emits them before.
+//! (C); nothing emits them before. S3 C3: `SetField` (the AI section's `빠른 입력`) and
+//! `ClearCred` (the AI key after `키 저장`).
 
+use yw_core::secret::Zeroizing;
 use yw_engine::cmd::Cmd;
 use yw_engine::effect::{Effect, TimerId};
 use yw_win::clipboard;
 
 use crate::app::App;
+use crate::ui::cmd_table::{cred_id_of, edit_id_of};
 
 /// The main window's timer id for `timer`, and its name in the tests' shell-call log.
 const fn timer_of(timer: TimerId) -> (usize, &'static str) {
@@ -78,8 +81,21 @@ impl App {
                     self.on_cmd(Cmd::CopyDone { ok, mark });
                 }
             }
-            // Not emitted before S3 C (field writes).
-            Effect::SetField { .. } | Effect::ClearField { .. } | Effect::ClearCred { .. } => {}
+            Effect::SetField { field, text } => {
+                // The edit's `EN_CHANGE` arrives inside this borrow and is not seen (as before,
+                // spec/01 §7.7); the form state reads the edit back (headless: the edit keeps
+                // what a test typed, as `ControlSet::set_text` writes no window there).
+                let id = edit_id_of(field);
+                self.controls.set_text(id, &text);
+                self.form.set(
+                    field,
+                    self.controls.text(id, field.cap()).map(Zeroizing::new),
+                );
+            }
+            // A credential edit is emptied after its one read; it is never form state.
+            Effect::ClearCred { field } => self.controls.clear_text(cred_id_of(field)),
+            // Not emitted before S3 C4 (the address book's clears).
+            Effect::ClearField { .. } => {}
         }
     }
 }

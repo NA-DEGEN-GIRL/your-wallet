@@ -58,10 +58,9 @@ use crate::workers::rpc::RpcJob;
 use yw_core::lang::{Lang, Text};
 use yw_engine::cmd::{Cmd, Press};
 use yw_engine::effect::{Effect, TimerId};
-// `CredField`: debug builds only (the shadow reads of plan §3.2a; 2026-11-18 B4–B5 review).
-#[cfg(debug_assertions)]
-use yw_engine::form::CredField;
-use yw_engine::form::{EditField, FormState, PressInput};
+// `CredField`: debug builds only until S3 C3 (the shadow reads of plan §3.2a; 2026-11-18 B4–B5
+// review); since C3 `App::take_cred` uses it in every build.
+use yw_engine::form::{CredField, EditField, FormState, PressInput};
 
 /// DPAPI optional entropy of `apikeys.dpapi` (spec/04 §6.3). (2026-11-17, spec/15 §11.4 S2 E2:
 /// moved here next to the DPAPI calls from `apikeys`, which moved to yw-engine; the value is
@@ -3923,9 +3922,11 @@ impl App {
         match press {
             Press::Received(press) => self.on_received(press),
             Press::Sites(press) => self.on_sites(press),
+            Press::Llm(press) => self.on_llm(press),
             Press::Wc(press) => self.on_wc(press),
             Press::Hidden(press) => self.on_hidden(press),
             Press::Sidecar(press) => self.on_sidecar(press),
+            Press::Explorer(press) => self.on_explorer(press),
             Press::Links(press) => self.on_links(press),
             Press::Back | Press::Enter | Press::Legacy(_) => {}
         }
@@ -3997,6 +3998,8 @@ impl App {
     /// theirs (then the legacy `edit_chain` runs, as before).
     fn on_field_edit(&mut self, field: EditField, text: &str) -> bool {
         self.on_wc_edit(field, text)
+            || self.on_explorer_edit(field, text)
+            || self.on_llm_edit(field, text)
     }
 
     /// The handlers of an edit change: the first that claims `id` takes it, else the EVM send
@@ -4007,11 +4010,9 @@ impl App {
             && !self.on_sol_edit_change(id)
             && !self.on_btc_edit_change(id)
             && !self.on_zec_edit_change(id)
-            && !self.on_llm_edit_change(id)
             && !self.on_yk_edit_change(id)
             && !self.on_mn_edit_change(id)
             && !self.on_hc_edit_change(id)
-            && !self.on_explorer_edit_change(id)
         {
             self.on_edit_change(id);
         }
@@ -4358,11 +4359,9 @@ impl App {
                     && !self.on_btc_command(other)
                     && !self.on_zec_command(other)
                     && !self.on_evm_command(other)
-                    && !self.on_llm_command(other)
                     && !self.on_yk_command(other)
                     && !self.on_mn_command(other)
                     && !self.on_hc_command(other)
-                    && !self.on_explorer_command(other)
                 {
                     self.on_indexed_command(other);
                 }
@@ -4752,14 +4751,45 @@ impl App {
     #[cfg(debug_assertions)]
     pub(crate) fn cred_shadow(&mut self, field: CredField, read: Option<&[u16]>) {
         let captured = self.input.take(field);
+        self.cred_compare(field, captured.as_slice(), read);
+    }
+
+    /// Debug builds: one credential read of the press being handled, `captured` the press
+    /// input's units and `read` the edit's (tests: the read is recorded, a difference is
+    /// counted and logged by field name, never by text).
+    #[cfg(debug_assertions)]
+    fn cred_compare(&mut self, field: CredField, captured: &[u16], read: Option<&[u16]>) {
+        #[cfg(not(test))]
+        let _ = field;
         #[cfg(test)]
         self.cred_reads.push((self.command, field));
-        if captured.as_slice() != read.unwrap_or_default() {
+        if captured != read.unwrap_or_default() {
             self.form_mismatch
                 .set(self.form_mismatch.get().saturating_add(1));
             #[cfg(test)]
             self.controls.record(format!("cred.mismatch {field:?}"));
         }
+    }
+
+    /// The units of credential edit `field` the shell read with the press being handled
+    /// (2026-11-18, S3 C3, plan §3.4 and D-l): moved out of the press input, wiped when dropped;
+    /// empty when the edit did not exist, exactly as a read of a missing edit. A field the press
+    /// did not capture is a credential miss (`PressInput::take`, debug builds). Debug builds
+    /// also read the edit itself and compare (the shadow read of plan §3.2a).
+    pub(crate) fn take_cred(&mut self, field: CredField) -> Zeroizing<Vec<u16>> {
+        let units = self.input.take(field);
+        #[cfg(debug_assertions)]
+        {
+            let read = self
+                .controls
+                .text_wiping(cmd_table::cred_id_of(field), field.cap());
+            self.cred_compare(
+                field,
+                units.as_slice(),
+                read.as_ref().map(yw_win::mem::WipeBuf::as_slice),
+            );
+        }
+        units
     }
 
     /// Debug builds: credential reads of a field no press captured (tests assert 0).

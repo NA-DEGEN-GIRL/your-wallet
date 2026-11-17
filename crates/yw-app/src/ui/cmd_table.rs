@@ -14,7 +14,8 @@
 //! 2026-11-18 (S3 C1): the received-history, hidden-account, side-file and drop-down/recipient
 //! ids are their families' presses (each module's `ids::press_of`/`ids::id_of`); [`press_of`]
 //! reads a check box's state into its press (the box is never read again by the handler).
-//! S3 C2: S13's sites and `WalletConnect` panel.
+//! S3 C2: S13's sites and `WalletConnect` panel. S3 C3: the block-explorer card and links and
+//! the AI-explanation settings.
 
 use yw_core::secret::Zeroizing;
 use yw_engine::cmd::Press;
@@ -22,8 +23,8 @@ use yw_engine::form::{CredField, CredUnits, EditField, PressInput};
 
 use crate::ui::main_window::ControlSet;
 use crate::ui::{
-    screens, screens_evm, screens_links, screens_llm, screens_received, screens_sites,
-    screens_walletconnect,
+    screens, screens_evm, screens_explorer, screens_links, screens_llm, screens_received,
+    screens_sites, screens_walletconnect,
 };
 use crate::{app_hidden, app_sidecar};
 
@@ -45,6 +46,8 @@ pub fn press_of(id: u16, controls: &ControlSet) -> Press {
             .or_else(|| app_sidecar::ids::press_of(other, controls).map(Press::Sidecar))
             .or_else(|| screens_links::ids::press_of(other).map(Press::Links))
             .or_else(|| screens_sites::ids::press_of(other).map(Press::Sites))
+            .or_else(|| screens_llm::ids::press_of(other, controls).map(Press::Llm))
+            .or_else(|| screens_explorer::ids::press_of(other).map(Press::Explorer))
             .or_else(|| screens_walletconnect::ids::press_of(other).map(Press::Wc))
             .unwrap_or(Press::Legacy(other)),
     }
@@ -62,6 +65,8 @@ pub const fn id_of(press: Press) -> u16 {
         Press::Sidecar(press) => app_sidecar::ids::id_of(press),
         Press::Links(press) => screens_links::ids::id_of(press),
         Press::Sites(press) => screens_sites::ids::id_of(press),
+        Press::Llm(press) => screens_llm::ids::id_of(press),
+        Press::Explorer(press) => screens_explorer::ids::id_of(press),
         Press::Wc(press) => screens_walletconnect::ids::id_of(press),
         Press::Legacy(id) => id,
     }
@@ -409,6 +414,62 @@ mod tests {
         assert_eq!(
             press_of(screens_walletconnect::ids::ROW_BASE + 63, &controls),
             Press::Wc(WcPress::Disconnect(Row(63)))
+        );
+    }
+
+    /// S3 C3: the explorer card and links and the AI section claim exactly the ids their
+    /// handlers claimed before (the edits are fields); the AI section's two check boxes carry
+    /// their state.
+    #[test]
+    fn c3_families_map_their_ids() {
+        use yw_engine::cmd::{ExplorerLinkAction, ExplorerPress, ExplorerRowAction, LlmPress, Row};
+        let controls = ControlSet::default();
+        let family = |id: u16| {
+            !matches!(
+                press_of(id, &controls),
+                Press::Legacy(_) | Press::Enter | Press::Back
+            )
+        };
+        for id in 17_200..17_710 {
+            let explorer = !matches!(id, 17_200 | 17_201 | 17_209 | 17_218 | 17_219)
+                && !(17_448..17_450).contains(&id);
+            assert_eq!(family(id), explorer, "{id}");
+        }
+        for id in 10_000..10_100 {
+            let llm = id < 10_022
+                && ![
+                    screens_llm::ids::ENDPOINT_EDIT,
+                    screens_llm::ids::MODEL_EDIT,
+                    screens_llm::ids::MAX_TOKENS_EDIT,
+                    screens_llm::ids::KEY_EDIT,
+                ]
+                .contains(&id);
+            assert_eq!(family(id), llm, "{id}");
+        }
+        assert_eq!(
+            press_of(screens_explorer::ids::ROW_BASE + 99, &controls),
+            Press::Explorer(ExplorerPress::Row(Row(49), ExplorerRowAction::Reset))
+        );
+        assert_eq!(
+            press_of(screens_explorer::ids::ZEC_ACTIVITY_BASE + 158, &controls),
+            Press::Explorer(ExplorerPress::ZecActivity(
+                Row(79),
+                ExplorerLinkAction::Open
+            ))
+        );
+        assert_eq!(
+            press_of(screens_llm::ids::ENABLE, &controls),
+            Press::Llm(LlmPress::Enable(None))
+        );
+        controls.type_check(screens_llm::ids::ENABLE, true);
+        controls.type_check(screens_llm::ids::NOTICE_CHECK, false);
+        assert_eq!(
+            press_of(screens_llm::ids::ENABLE, &controls),
+            Press::Llm(LlmPress::Enable(Some(true)))
+        );
+        assert_eq!(
+            press_of(screens_llm::ids::NOTICE_CHECK, &controls),
+            Press::Llm(LlmPress::NoticeCheck(Some(false)))
         );
     }
 

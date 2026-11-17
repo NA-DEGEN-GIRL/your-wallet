@@ -18,6 +18,8 @@ use crate::explorer::{
 use crate::logging::{self, Field};
 use crate::network::{NetworkId, SolCluster};
 use crate::ui::screens_explorer::ids;
+use yw_engine::cmd::{ExplorerLinkAction, ExplorerPress, ExplorerRowAction, Row};
+use yw_engine::form::EditField;
 
 /// Explorer link texts (spec/04 §2.11, §2.14; English spec/14 §5).
 pub mod text {
@@ -36,8 +38,6 @@ pub mod text {
             / "Reset the block explorer address of {0} to the default.";
     }
 }
-
-const TEXT_MAX: usize = 512;
 
 /// How a link is opened.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -92,10 +92,6 @@ pub struct ExplorerUi {
     pub message: Option<String>,
     /// How links are opened (tests record them).
     pub launcher: Launcher,
-}
-
-fn offset(id: u16, base: u16, span: u16) -> Option<u16> {
-    id.checked_sub(base).filter(|offset| *offset < span)
 }
 
 /// The app's Solana cluster of a core cluster (the send result keeps the core one).
@@ -265,12 +261,13 @@ impl App {
         }
     }
 
-    /// `EN_CHANGE` of the card's fields; `false` when `id` is not one of them.
-    pub fn on_explorer_edit_change(&mut self, id: u16) -> bool {
-        let text = || self.controls.text(id, TEXT_MAX).unwrap_or_default();
-        match id {
-            ids::EDIT_TX => self.explorer_ui.tx_text = text(),
-            ids::EDIT_ADDRESS => self.explorer_ui.address_text = text(),
+    /// `EN_CHANGE` of the card's fields: `text` is the field's text now (2026-11-18, S3 C3:
+    /// from `Cmd::Edit`; before, a read of the edit by id); `false` when `field` is not one of
+    /// them.
+    pub(crate) fn on_explorer_edit(&mut self, field: EditField, text: &str) -> bool {
+        match field {
+            EditField::ExplorerTx => text.clone_into(&mut self.explorer_ui.tx_text),
+            EditField::ExplorerAddress => text.clone_into(&mut self.explorer_ui.address_text),
             _ => return false,
         }
         true
@@ -318,12 +315,13 @@ impl App {
         let Some(net) = self.explorer_ui.editing else {
             return;
         };
-        // The fields as they are now (EN_CHANGE keeps the texts across re-layouts).
-        for (id, kind) in [
-            (ids::EDIT_TX, LinkKind::Tx),
-            (ids::EDIT_ADDRESS, LinkKind::Address),
+        // The fields as they are now (EN_CHANGE keeps the texts across re-layouts; 2026-11-18,
+        // S3 C3: from the form state, which equals the edits).
+        for (field, kind) in [
+            (EditField::ExplorerTx, LinkKind::Tx),
+            (EditField::ExplorerAddress, LinkKind::Address),
         ] {
-            if let Some(text) = self.controls.text(id, TEXT_MAX) {
+            if let Some(text) = self.form_text(field) {
                 match kind {
                     LinkKind::Tx => self.explorer_ui.tx_text = text,
                     LinkKind::Address => self.explorer_ui.address_text = text,
@@ -385,27 +383,27 @@ impl App {
     }
 
     /// The account cards' `탐색기에서 주소 보기`: the address the card shows.
-    fn explorer_card(&mut self, id: u16) {
-        match id {
-            ids::CARD_EVM => {
+    fn explorer_card(&mut self, press: ExplorerPress) {
+        match press {
+            ExplorerPress::CardEvm => {
                 if let Some((address, ..)) = self.selected_account() {
                     let network = NetworkId::Eip155(self.settings.evm_chain_id);
                     self.open_explorer_address(network, &address.to_checksum());
                 }
             }
-            ids::CARD_SOL => {
+            ExplorerPress::CardSol => {
                 if let Some((_, _, address)) = self.sol_selected() {
                     let network = NetworkId::Solana(self.settings.solana.cluster);
                     self.open_explorer_address(network, &address.to_base58());
                 }
             }
-            ids::CARD_BTC => {
+            ExplorerPress::CardBtc => {
                 if let Some(address) = self.btc_card_address() {
                     let network = NetworkId::Bitcoin(self.settings.bitcoin.network);
                     self.open_explorer_address(network, &address);
                 }
             }
-            ids::CARD_ZEC => {
+            ExplorerPress::CardZec => {
                 if let Some(account) = self.zec_account()
                     && matches!(
                         self.zec_hw_state(),
@@ -417,7 +415,7 @@ impl App {
                     self.open_explorer_address(network, &account.address());
                 }
             }
-            ids::CARD_HC => {
+            ExplorerPress::CardHc => {
                 if let Some((address, ..)) = self.selected_account() {
                     let network = ExplorerNet::HyperCore(self.hc_network());
                     self.open_explorer_address(network, &address.to_checksum());
@@ -428,32 +426,40 @@ impl App {
     }
 
     /// The transaction of a send result screen: `(network, hash)`.
-    fn explorer_result(&self, id: u16) -> Option<(ExplorerNet, String)> {
-        match id {
-            ids::RESULT_EVM_OPEN | ids::RESULT_EVM_COPY => self.evm.sent.map(|sent| {
-                (
-                    ExplorerNet::Evm(sent.chain_id),
-                    crate::app_evm::hash_text(&sent.tx_hash),
-                )
-            }),
-            ids::RESULT_SOL_OPEN | ids::RESULT_SOL_COPY => self.sol.sent.map(|(cluster, sig)| {
-                (
-                    ExplorerNet::Solana(app_cluster(cluster)),
-                    yw_core::codec::base58::base58_encode(&sig),
-                )
-            }),
-            ids::RESULT_BTC_OPEN | ids::RESULT_BTC_COPY => self.btc.result.map(|txid| {
-                (
-                    ExplorerNet::Bitcoin(self.settings.bitcoin.network),
-                    txid.to_display_hex(),
-                )
-            }),
-            ids::RESULT_ZEC_OPEN | ids::RESULT_ZEC_COPY => self.zec.sent.map(|txid| {
-                (
-                    ExplorerNet::Zcash(self.zec_network()),
-                    yw_core::zec::tx::txid_display(&txid),
-                )
-            }),
+    fn explorer_result(&self, press: ExplorerPress) -> Option<(ExplorerNet, String)> {
+        match press {
+            ExplorerPress::ResultEvmOpen | ExplorerPress::ResultEvmCopy => {
+                self.evm.sent.map(|sent| {
+                    (
+                        ExplorerNet::Evm(sent.chain_id),
+                        crate::app_evm::hash_text(&sent.tx_hash),
+                    )
+                })
+            }
+            ExplorerPress::ResultSolOpen | ExplorerPress::ResultSolCopy => {
+                self.sol.sent.map(|(cluster, sig)| {
+                    (
+                        ExplorerNet::Solana(app_cluster(cluster)),
+                        yw_core::codec::base58::base58_encode(&sig),
+                    )
+                })
+            }
+            ExplorerPress::ResultBtcOpen | ExplorerPress::ResultBtcCopy => {
+                self.btc.result.map(|txid| {
+                    (
+                        ExplorerNet::Bitcoin(self.settings.bitcoin.network),
+                        txid.to_display_hex(),
+                    )
+                })
+            }
+            ExplorerPress::ResultZecOpen | ExplorerPress::ResultZecCopy => {
+                self.zec.sent.map(|txid| {
+                    (
+                        ExplorerNet::Zcash(self.zec_network()),
+                        yw_core::zec::tx::txid_display(&txid),
+                    )
+                })
+            }
             _ => None,
         }
     }
@@ -487,65 +493,79 @@ impl App {
         }
     }
 
-    /// The explorer commands; `false` when `id` is not one of them.
-    pub fn on_explorer_command(&mut self, id: u16) -> bool {
-        match id {
-            ids::SAVE => self.explorer_save_edit(),
-            ids::CANCEL => self.explorer_cancel_edit(),
-            ids::CARD_EVM | ids::CARD_SOL | ids::CARD_BTC | ids::CARD_ZEC | ids::CARD_HC => {
-                self.explorer_card(id);
+    /// The explorer presses (2026-11-18, S3 C3: an `ExplorerPress`; before, the control id).
+    pub(crate) fn on_explorer(&mut self, press: ExplorerPress) {
+        match press {
+            ExplorerPress::Save => self.explorer_save_edit(),
+            ExplorerPress::Cancel => self.explorer_cancel_edit(),
+            ExplorerPress::CardEvm
+            | ExplorerPress::CardSol
+            | ExplorerPress::CardBtc
+            | ExplorerPress::CardZec
+            | ExplorerPress::CardHc => {
+                self.explorer_card(press);
             }
-            ids::RESULT_EVM_OPEN
-            | ids::RESULT_SOL_OPEN
-            | ids::RESULT_BTC_OPEN
-            | ids::RESULT_ZEC_OPEN => {
-                if let Some((net, hash)) = self.explorer_result(id) {
+            ExplorerPress::ResultEvmOpen
+            | ExplorerPress::ResultSolOpen
+            | ExplorerPress::ResultBtcOpen
+            | ExplorerPress::ResultZecOpen => {
+                if let Some((net, hash)) = self.explorer_result(press) {
                     self.open_explorer_tx(net, &hash);
                 }
             }
-            ids::RESULT_EVM_COPY
-            | ids::RESULT_SOL_COPY
-            | ids::RESULT_BTC_COPY
-            | ids::RESULT_ZEC_COPY => {
-                if let Some((net, hash)) = self.explorer_result(id) {
+            ExplorerPress::ResultEvmCopy
+            | ExplorerPress::ResultSolCopy
+            | ExplorerPress::ResultBtcCopy
+            | ExplorerPress::ResultZecCopy => {
+                if let Some((net, hash)) = self.explorer_result(press) {
                     self.copy_explorer_tx(net, &hash);
                 }
             }
-            other => return self.on_explorer_indexed(other),
-        }
-        true
-    }
-
-    fn on_explorer_indexed(&mut self, id: u16) -> bool {
-        if let Some(position) = offset(id, ids::ROW_BASE, ids::ROW_SPAN) {
-            let row = usize::from(position / ids::ROW_STRIDE);
-            if let Some(net) = self.explorer_networks().get(row).copied() {
-                if position % ids::ROW_STRIDE == 0 {
-                    self.explorer_start_edit(net);
-                } else {
-                    self.explorer_reset(net);
-                }
-            }
-            return true;
-        }
-        for (base, span) in [
-            (ids::SOL_ACTIVITY_BASE, ids::SOL_ACTIVITY_SPAN),
-            (ids::BTC_ACTIVITY_BASE, ids::BTC_ACTIVITY_SPAN),
-            (ids::ZEC_ACTIVITY_BASE, ids::ZEC_ACTIVITY_SPAN),
-        ] {
-            if let Some(position) = offset(id, base, span) {
-                let row = usize::from(position / ids::ACTIVITY_STRIDE);
-                if let Some((net, hash)) = self.explorer_activity(base, row) {
-                    if position % ids::ACTIVITY_STRIDE == 0 {
-                        self.open_explorer_tx(net, &hash);
-                    } else {
-                        self.copy_explorer_tx(net, &hash);
+            ExplorerPress::Row(Row(row), action) => {
+                if let Some(net) = self.explorer_networks().get(usize::from(row)).copied() {
+                    match action {
+                        ExplorerRowAction::Edit => self.explorer_start_edit(net),
+                        ExplorerRowAction::Reset => self.explorer_reset(net),
                     }
                 }
-                return true;
+            }
+            ExplorerPress::SolActivity(row, action) => {
+                self.explorer_activity_link(ids::SOL_ACTIVITY_BASE, row, action);
+            }
+            ExplorerPress::BtcActivity(row, action) => {
+                self.explorer_activity_link(ids::BTC_ACTIVITY_BASE, row, action);
+            }
+            ExplorerPress::ZecActivity(row, action) => {
+                self.explorer_activity_link(ids::ZEC_ACTIVITY_BASE, row, action);
             }
         }
-        false
+    }
+
+    /// ↗ or 🔗 of activity row `row` of the list starting at `base`.
+    fn explorer_activity_link(&mut self, base: u16, Row(row): Row, action: ExplorerLinkAction) {
+        if let Some((net, hash)) = self.explorer_activity(base, usize::from(row)) {
+            match action {
+                ExplorerLinkAction::Open => self.open_explorer_tx(net, &hash),
+                ExplorerLinkAction::Copy => self.copy_explorer_tx(net, &hash),
+            }
+        }
+    }
+
+    /// Test adapter (S3 C3, plan §3.2): presses explorer control `id` directly, as the tests
+    /// did before; `false` when `id` is not one.
+    #[cfg(test)]
+    pub(crate) fn on_explorer_command(&mut self, id: u16) -> bool {
+        self.press_family(
+            id,
+            |press| match press {
+                yw_engine::cmd::Press::Explorer(press) => Some(press),
+                _ => None,
+            },
+            |app, press| {
+                app.on_explorer(press);
+                true
+            },
+        )
     }
 }
 
