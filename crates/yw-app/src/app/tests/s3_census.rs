@@ -31,12 +31,15 @@ use crate::meta::Tab;
 use crate::ui::command_ids::{fixed, ranges};
 use crate::ui::{
     screens, screens_book, screens_btc, screens_evm, screens_explorer, screens_hypercore,
-    screens_llm, screens_mnemonics, screens_reset, screens_sol, screens_walletconnect,
-    screens_yubikey, screens_zec,
+    screens_llm, screens_mnemonics, screens_received, screens_reset, screens_sol,
+    screens_walletconnect, screens_yubikey, screens_zec,
 };
 use crate::workers::rpc::RpcJob;
 
 const COMMANDS: &str = include_str!("s3_census/commands.txt");
+const EDITS: &str = include_str!("s3_census/edits.txt");
+const CHECKS: &str = include_str!("s3_census/checks.txt");
+const WRITES: &str = include_str!("s3_census/writes.txt");
 
 /// The 65 edits of the main window (spec/15 §11.1): 58 plain and the 7 masked credential
 /// edits of [`MASKED`].
@@ -140,8 +143,11 @@ pub(super) struct Census {
 
 impl Census {
     pub(super) fn new(tag: &str) -> Self {
+        // One folder per census in this process (tests and their threads run in parallel).
+        static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let serial = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let root = std::env::temp_dir().join(format!(
-            "yw-s3-census-{tag}-{}-{}",
+            "yw-s3-census-{tag}-{}-{serial}-{}",
             std::process::id(),
             yw_win::time::monotonic_ms()
         ));
@@ -459,13 +465,7 @@ fn command_ids() -> Vec<u16> {
 
 /// One state's section of a golden: its base line, a line for every press that changed what
 /// the state shows or queued, and the presses that did not, grouped by their shell calls.
-pub(super) fn section(
-    out: &mut String,
-    census: &Census,
-    base: Base,
-    ids: &[u16],
-    press: fn(&mut App, u16),
-) {
+pub(super) fn section(out: &mut String, census: &Census, base: Base, ids: &[u16], press: PressFn) {
     let name = base.name();
     let (app, rx) = census.state(base);
     let start = census.observe(&app, &rx);
@@ -494,8 +494,11 @@ pub(super) fn section(
     }
 }
 
+/// How a census presses an id on a state.
+pub(super) type PressFn = fn(&mut App, u16);
+
 /// The sections of `bases` in order, each built on its own thread with its own census folder.
-pub(super) fn sections(tag: &str, bases: &[Base], ids: &[u16], press: fn(&mut App, u16)) -> String {
+pub(super) fn sections(tag: &str, bases: &[Base], ids: &[u16], press: PressFn) -> String {
     std::thread::scope(|scope| {
         let workers: Vec<_> = bases
             .iter()
@@ -593,4 +596,641 @@ fn print() {
     let out = PathBuf::from(std::env::var_os("YW_S3_CENSUS_OUT").expect("YW_S3_CENSUS_OUT"));
     std::fs::create_dir_all(&out).unwrap();
     std::fs::write(out.join("commands.txt"), commands_golden()).unwrap();
+    std::fs::write(out.join("edits.txt"), edits_golden()).unwrap();
+    std::fs::write(out.join("checks.txt"), checks_golden()).unwrap();
+    std::fs::write(out.join("writes.txt"), writes_golden()).unwrap();
+}
+
+// ----- A2: edits, check boxes, programmatic writes ---------------------------------------
+
+/// The 21 check boxes and radios whose handler reads `ControlSet::checked` (spec/15 §11.1).
+pub(super) const CHECK_IDS: [u16; 21] = [
+    screens::ids::MISMATCH_CHECK,
+    screens::ids::COPY_TOGGLE,
+    screens::ids::LOCALHOST_TOGGLE,
+    screens::ids::AUTOLAUNCH_TOGGLE,
+    screens::ids::OVERWRITE_CHECK,
+    screens_book::ids::VERIFIED,
+    screens_book::ids::FAVORITE,
+    screens_book::ids::FORM_ACK,
+    screens_book::ids::PROMPT_ACK,
+    screens_evm::ids::TOKEN_HIDE_ZERO,
+    screens_evm::ids::SEND_ACK,
+    screens_evm::ids::REPIN_CHECK,
+    screens_llm::ids::NOTICE_CHECK,
+    screens_llm::ids::ENABLE,
+    screens_received::ids::TOGGLE_BASE,
+    screens_received::ids::TOGGLE_BASE + 1,
+    screens_received::ids::TOGGLE_BASE + 2,
+    screens_received::ids::TOGGLE_BASE + 3,
+    screens_received::ids::TOGGLE_BASE + 4,
+    screens_reset::ids::RESET_SETTINGS_CHECK,
+    crate::app_sidecar::ids::RESET_ACK,
+];
+
+/// The edits Enter presses a button from (`enter_primary`), except the image-file path, whose
+/// button reads a file.
+pub(super) const ENTER_EDITS: [u16; 31] = [
+    screens::ids::RENAME_EDIT,
+    screens::ids::AUTOLOCK_EDIT,
+    screens::ids::REPLACE_EDIT,
+    screens::ids::DONE_QN_EDIT,
+    screens_book::ids::ADDR_EDIT,
+    screens_book::ids::LABEL_EDIT,
+    screens_book::ids::PROMPT_LABEL_EDIT,
+    screens_btc::ids::SEND_TO_EDIT,
+    screens_btc::ids::SEND_AMOUNT_EDIT,
+    screens_btc::ids::FEE_MANUAL_EDIT,
+    screens_btc::ids::RENAME_EDIT,
+    screens_evm::ids::SEND_TO_EDIT,
+    screens_evm::ids::SEND_AMOUNT_EDIT,
+    screens_evm::ids::TOKEN_ADDR_EDIT,
+    screens_evm::ids::TOKEN_LABEL_EDIT,
+    screens_explorer::ids::EDIT_TX,
+    screens_explorer::ids::EDIT_ADDRESS,
+    screens_llm::ids::ENDPOINT_EDIT,
+    screens_llm::ids::MODEL_EDIT,
+    screens_llm::ids::MAX_TOKENS_EDIT,
+    screens_llm::ids::KEY_EDIT,
+    screens_mnemonics::ids::RENAME_EDIT,
+    screens_sol::ids::RENAME_EDIT,
+    screens_sol::ids::SEND_TO_EDIT,
+    screens_sol::ids::SEND_AMOUNT_EDIT,
+    screens_walletconnect::ids::URI_EDIT,
+    screens_walletconnect::ids::PROJECT_EDIT,
+    screens_yubikey::ids::CARD_NAME_EDIT,
+    screens_zec::ids::SEND_TO_EDIT,
+    screens_zec::ids::SEND_AMOUNT_EDIT,
+    screens_walletconnect::ids::FILE_EDIT,
+];
+
+fn type_one(app: &mut App, id: u16) {
+    app.controls.type_text(id, "1");
+    app.on_edit_notify(id);
+}
+
+fn type_x(app: &mut App, id: u16) {
+    app.controls.type_text(id, "x");
+    app.on_edit_notify(id);
+}
+
+/// Enter in edit `id` as the window delivers it: only when the edit is shown.
+fn enter_shown(app: &mut App, id: u16) {
+    if let Some(ctl) = super::ctl(&app.items(), id) {
+        app.enter_on(Some(&ctl));
+    }
+}
+
+fn check_on(app: &mut App, id: u16) {
+    app.controls.type_check(id, true);
+    app.on_command(id);
+}
+
+fn check_off(app: &mut App, id: u16) {
+    app.controls.type_check(id, false);
+    app.on_command(id);
+}
+
+/// T3: every edit typed and notified (`EN_CHANGE`) on every census state, then Enter in every
+/// edit Enter presses from.
+fn edits_golden() -> String {
+    let mut ids = EDIT_IDS.to_vec();
+    ids.sort_unstable();
+    let mut out = String::from(
+        "# S3 edit census (2026-11-18): type + EN_CHANGE of every edit, then Enter (shown edits \
+         only); fields as in commands.txt\n",
+    );
+    let typing: [(&str, PressFn); 2] = [("1", type_one), ("x", type_x)];
+    for (value, press) in typing {
+        let _ = writeln!(out, "# type \"{value}\"");
+        out.push_str(&sections("edits", &Base::ALL, &ids, press));
+    }
+    let mut enter: Vec<u16> = ENTER_EDITS
+        .iter()
+        .copied()
+        .filter(|id| *id != screens_walletconnect::ids::FILE_EDIT)
+        .collect();
+    enter.sort_unstable();
+    let _ = writeln!(out, "# enter");
+    out.push_str(&sections("edits", &Base::ALL, &enter, enter_shown));
+    out
+}
+
+/// T4: every check box read with `checked`, pressed checked, unchecked and without a state.
+fn checks_golden() -> String {
+    let mut ids = CHECK_IDS.to_vec();
+    ids.sort_unstable();
+    let mut out = String::from(
+        "# S3 check-box census (2026-11-18): the press with the box checked, unchecked, and with \
+         no state (`checked` = None); fields as in commands.txt\n",
+    );
+    let variants: [(&str, PressFn); 3] = [
+        ("on", check_on),
+        ("off", check_off),
+        ("none", App::on_command),
+    ];
+    for (name, press) in variants {
+        let _ = writeln!(out, "# check {name}");
+        out.push_str(&sections("checks", &Base::ALL, &ids, press));
+    }
+    out
+}
+
+/// One input of a scenario.
+#[derive(Clone, Copy)]
+pub(super) enum Step {
+    /// A click (`WM_COMMAND` code 0).
+    Press(u16),
+    /// Text typed into an edit, then its `EN_CHANGE`.
+    Type(u16, &'static str),
+    /// The same with text built at run time (addresses, credential shapes).
+    TypeWith(u16, fn() -> String),
+    /// A check box or radio set, then its click.
+    Check(u16, bool),
+    /// Enter in a shown edit.
+    Enter(u16),
+    /// A state change the window cannot make (a balance, a quote that arrived).
+    Call(&'static str, fn(&mut App)),
+}
+
+impl Step {
+    /// Runs the step; the golden's description (ids, lengths, names; never the text).
+    pub(super) fn run(self, app: &mut App) -> String {
+        match self {
+            Self::Press(id) => {
+                app.on_command(id);
+                format!("press {id}")
+            }
+            Self::Type(id, text) => Self::typed(app, id, text),
+            Self::TypeWith(id, text) => Self::typed(app, id, &text()),
+            Self::Check(id, checked) => {
+                app.controls.type_check(id, checked);
+                app.on_command(id);
+                format!("check {id} {checked}")
+            }
+            Self::Enter(id) => match super::ctl(&app.items(), id) {
+                Some(ctl) => {
+                    app.enter_on(Some(&ctl));
+                    format!("enter {id}")
+                }
+                None => format!("enter {id} (not shown)"),
+            },
+            Self::Call(name, call) => {
+                call(app);
+                format!("call {name}")
+            }
+        }
+    }
+
+    fn typed(app: &mut App, id: u16, text: &str) -> String {
+        app.controls.type_text(id, text);
+        app.on_edit_notify(id);
+        format!("type {id} len={}", text.encode_utf16().count())
+    }
+}
+
+/// A sequence of inputs from a census state.
+pub(super) struct Scenario {
+    pub(super) name: &'static str,
+    pub(super) base: Base,
+    pub(super) setup: fn(&mut App),
+    pub(super) steps: Vec<Step>,
+}
+
+/// Runs `scenario` on `census`: one golden line for the setup and one per step.
+pub(super) fn run_scenario(out: &mut String, census: &Census, scenario: &Scenario) {
+    let (mut app, rx) = census.state(scenario.base);
+    (scenario.setup)(&mut app);
+    let seen = census.observe(&app, &rx);
+    let _ = writeln!(out, "{} 0 setup | {}", scenario.name, seen.line());
+    for (index, step) in scenario.steps.iter().enumerate() {
+        let what = step.run(&mut app);
+        let seen = census.observe(&app, &rx);
+        let _ = writeln!(
+            out,
+            "{} {} {what} | {}",
+            scenario.name,
+            index + 1,
+            seen.line()
+        );
+    }
+    drop(app);
+    census.guard();
+    crate::logging::set_level(crate::settings::Settings::default().log_level);
+}
+
+fn no_setup(_: &mut App) {}
+
+/// The `abandon … about` vector's EVM account 1 (public test data).
+const EVM_TO: &str = "0x6fac4d18c912343bf86fa7049364dd4e424ab9c0";
+/// The same vector's first BIP84 mainnet receive address (public test data).
+const BTC_TO: &str = "bc1qcr8te4kr609gcawutmrza0j4xv80jy8z306fyu";
+/// A token-shaped value (not a real token).
+const QN_TOKEN: &str = "abcdef0123456789abcdef0123456789";
+
+fn sol_to() -> String {
+    yw_core::sol::SolAddress::from_bytes([9; 32]).to_base58()
+}
+
+fn qn_url() -> String {
+    format!("https://my-node.quiknode.pro/{QN_TOKEN}/")
+}
+
+fn qn_token() -> String {
+    QN_TOKEN.to_owned()
+}
+
+fn alchemy_key() -> String {
+    "alchemyTestKey0123456789abcdefAB".to_owned()
+}
+
+fn llm_key() -> String {
+    "test-llm-key-0123456789abcdef".to_owned()
+}
+
+fn rpc_url() -> String {
+    "https://rpc.example.test/v1".to_owned()
+}
+
+fn done_screen(app: &mut App) {
+    app.done_imported = true;
+    app.set_screen(Screen::Done);
+}
+
+/// A Bitcoin mainnet wallet with an endpoint and room in the journal.
+fn btc_wallet(app: &mut App) {
+    use yw_core::btc::BtcNetwork;
+    app.settings.bitcoin.enabled = true;
+    app.settings.bitcoin.network = crate::network::BtcNet::Mainnet;
+    let account = yw_core::bip32::AccountXpub {
+        pubkey: yw_core::hex::decode_array::<33>(
+            "03b88e0fbe3f646337ed93bc0c0f3b843fcf7d2589e5ec884754e6402027a890b4",
+        )
+        .unwrap(),
+        chain_code: [7; 32],
+    };
+    if let Some(meta) = app.meta.as_mut() {
+        meta.btc = Some(Box::new(yw_core::btc::meta::BtcMeta::new(
+            BtcNetwork::Mainnet,
+            account,
+        )));
+        meta.prefs.tab = crate::meta::Tab::Btc;
+    }
+    app.apikeys.set_rpc(
+        crate::network::NetworkId::Bitcoin(crate::network::BtcNet::Mainnet),
+        &yw_platform::http::HttpsUrl::parse("https://btc.example.test/").unwrap(),
+    );
+    app.evm.journal = Some(crate::events::JournalView {
+        room: true,
+        sol_room: true,
+        btc_room: true,
+        ..crate::events::JournalView::default()
+    });
+}
+
+/// A native balance of the selected EVM account and a quote for it (as the RPC worker answers).
+fn evm_quote(app: &mut App) {
+    use yw_core::evm::amount::U256;
+    let chain = app.settings.evm_chain_id;
+    let owner =
+        yw_core::evm::address::parse_address("0x9858effd232b4033e47d90003d41ec34ecaeda94").unwrap();
+    app.evm.balances.insert(
+        chain,
+        crate::app_evm::BalanceState {
+            snapshot: Some(crate::events::BalanceSnapshot {
+                block: 7,
+                native: vec![(owner, U256::from_u64(5_000_000_000_000_000))],
+                tokens: Vec::new(),
+                token_owner: owner,
+            }),
+            ..crate::app_evm::BalanceState::default()
+        },
+    );
+    app.evm.send.quote = Some(crate::flow::evm::form::Quote {
+        gas_limit: 21_000,
+        max_fee_per_gas: U256::from_u64(3_000_000_000),
+        max_total: U256::from_u64(63_000_000_000_000),
+        cap_violation: None,
+        estimate_failed: false,
+    });
+}
+
+/// The selected EVM account's `HyperCore` balances and a withdrawal form (S-HC).
+fn hc_withdraw(app: &mut App) {
+    let owner =
+        yw_core::evm::address::parse_address("0x9858effd232b4033e47d90003d41ec34ecaeda94").unwrap();
+    app.settings.hypercore.enabled = true;
+    app.hypercore.balances = Some((
+        yw_core::hypercore::HcNetwork::Mainnet,
+        owner,
+        crate::hypercore::HcBalances {
+            spot: Vec::new(),
+            perp: yw_core::hypercore::HcPerpState {
+                account_value: "100.0".to_owned(),
+                withdrawable: "100.0".to_owned(),
+                positions: 0,
+            },
+        },
+    ));
+    app.hypercore.form = crate::app_hypercore::HcForm {
+        kind: crate::app_hypercore::HcFormKind::Withdraw,
+        ..crate::app_hypercore::HcForm::default()
+    };
+    app.screen = Screen::HyperCore;
+}
+
+/// T5: scenarios that reach every programmatic edit write (`set_text` ×13, `clear_text` ×11)
+/// and Enter in the forms they open, the masked credential edits included.
+#[expect(clippy::too_many_lines, reason = "one scenario per write site")]
+fn write_scenarios() -> Vec<Scenario> {
+    use crate::ui::{screens_book as book, screens_btc as btc, screens_evm as evm};
+    use crate::ui::{screens_hypercore as hc, screens_llm as llm, screens_sol as sol};
+    use Step::{Call, Check, Enter, Press, Type, TypeWith};
+    vec![
+        Scenario {
+            name: "llm-preset",
+            base: Base::Settings(SettingsSection::Ai),
+            setup: no_setup,
+            steps: vec![
+                Press(llm::ids::PRESET_OPENAI),
+                Press(llm::ids::PRESET_OLLAMA),
+            ],
+        },
+        Scenario {
+            name: "llm-key-save",
+            base: Base::Settings(SettingsSection::Ai),
+            setup: no_setup,
+            steps: vec![
+                TypeWith(llm::ids::KEY_EDIT, llm_key),
+                Press(llm::ids::KEY_SAVE),
+                Press(llm::ids::KEY_DELETE),
+            ],
+        },
+        Scenario {
+            name: "llm-key-enter",
+            base: Base::Settings(SettingsSection::Ai),
+            setup: no_setup,
+            steps: vec![
+                TypeWith(llm::ids::KEY_EDIT, llm_key),
+                Enter(llm::ids::KEY_EDIT),
+                Type(llm::ids::MODEL_EDIT, "test-model"),
+                Enter(llm::ids::MODEL_EDIT),
+            ],
+        },
+        Scenario {
+            name: "template-quicknode",
+            base: Base::Settings(SettingsSection::Network),
+            setup: no_setup,
+            steps: vec![
+                Press(screens::ids::TPL_QUICKNODE),
+                Type(screens::ids::QN_NAME_EDIT, "my-node"),
+                TypeWith(screens::ids::QN_TOKEN_EDIT, qn_token),
+                Press(screens::ids::TPL_SAVE),
+            ],
+        },
+        Scenario {
+            name: "template-alchemy",
+            base: Base::Settings(SettingsSection::Network),
+            setup: no_setup,
+            steps: vec![
+                Press(screens::ids::TPL_ALCHEMY),
+                TypeWith(screens::ids::ALCHEMY_KEY_EDIT, alchemy_key),
+                Press(screens::ids::GENERATE),
+            ],
+        },
+        Scenario {
+            name: "rpc-replace",
+            base: Base::Settings(SettingsSection::Network),
+            setup: no_setup,
+            steps: vec![
+                Press(screens::ids::ROW_BASE),
+                TypeWith(screens::ids::REPLACE_EDIT, rpc_url),
+                Press(screens::ids::ROW_BASE + 1),
+                Press(screens::ids::REPLACE_SAVE),
+            ],
+        },
+        Scenario {
+            name: "rpc-replace-enter",
+            base: Base::Settings(SettingsSection::Network),
+            setup: no_setup,
+            steps: vec![
+                Press(screens::ids::ROW_BASE),
+                TypeWith(screens::ids::REPLACE_EDIT, rpc_url),
+                Enter(screens::ids::REPLACE_EDIT),
+            ],
+        },
+        Scenario {
+            name: "done-connect",
+            base: Base::Main(Tab::Evm, false),
+            setup: done_screen,
+            steps: vec![
+                Press(screens::ids::DONE_CONNECT),
+                TypeWith(screens::ids::DONE_QN_EDIT, qn_url),
+                Press(screens::ids::DONE_CONNECT),
+            ],
+        },
+        Scenario {
+            name: "done-connect-enter",
+            base: Base::Main(Tab::Evm, false),
+            setup: done_screen,
+            steps: vec![
+                TypeWith(screens::ids::DONE_QN_EDIT, qn_url),
+                Enter(screens::ids::DONE_QN_EDIT),
+            ],
+        },
+        Scenario {
+            name: "chain-save",
+            base: Base::Settings(SettingsSection::Chains),
+            setup: no_setup,
+            steps: vec![
+                Press(evm::ids::CHAIN_ADD),
+                Type(evm::ids::CHAIN_ID_EDIT, "31337"),
+                Type(evm::ids::CHAIN_NAME_EDIT, "Local Test"),
+                Type(evm::ids::CHAIN_SYMBOL_EDIT, "TST"),
+                Type(evm::ids::CHAIN_DECIMALS_EDIT, "18"),
+                TypeWith(evm::ids::CHAIN_RPC_EDIT, rpc_url),
+                Type(
+                    evm::ids::CHAIN_EXPLORER_EDIT,
+                    "https://explorer.example.test/",
+                ),
+                Press(evm::ids::CHAIN_SAVE),
+            ],
+        },
+        Scenario {
+            name: "book-evm",
+            base: Base::Main(Tab::Evm, false),
+            setup: no_setup,
+            steps: vec![
+                Press(evm::ids::BOOK_OPEN),
+                Press(book::ids::ADD_OPEN),
+                Type(book::ids::ADDR_EDIT, EVM_TO),
+                Type(book::ids::LABEL_EDIT, "Friend"),
+                Check(book::ids::VERIFIED, true),
+                Check(book::ids::FAVORITE, true),
+                Press(book::ids::SAVE),
+                Press(evm::ids::SEND_OPEN),
+                Press(book::ids::FAV_BASE),
+                Press(evm::ids::SEND_PICK),
+                Press(evm::ids::SEND_PICK_BASE),
+                Type(evm::ids::SEND_AMOUNT_EDIT, "0.001"),
+                Enter(evm::ids::SEND_AMOUNT_EDIT),
+                Enter(evm::ids::SEND_TO_EDIT),
+            ],
+        },
+        Scenario {
+            name: "book-cancel",
+            base: Base::Main(Tab::Evm, false),
+            setup: no_setup,
+            steps: vec![
+                Press(evm::ids::BOOK_OPEN),
+                Press(book::ids::ADD_OPEN),
+                Type(book::ids::ADDR_EDIT, EVM_TO),
+                Type(book::ids::LABEL_EDIT, "Friend"),
+                Enter(book::ids::LABEL_EDIT),
+                Press(book::ids::ADD_OPEN),
+                Type(book::ids::ADDR_EDIT, "0x12"),
+                Press(book::ids::CANCEL),
+            ],
+        },
+        Scenario {
+            name: "book-sol",
+            base: Base::Main(Tab::Sol, false),
+            setup: no_setup,
+            steps: vec![
+                Press(evm::ids::BOOK_OPEN),
+                Press(book::ids::CHAIN_SOL),
+                Press(book::ids::ADD_OPEN),
+                TypeWith(book::ids::ADDR_EDIT, sol_to),
+                Type(book::ids::LABEL_EDIT, "Friend"),
+                Check(book::ids::VERIFIED, true),
+                Check(book::ids::FAVORITE, true),
+                Press(book::ids::SAVE),
+                Press(sol::ids::SEND_OPEN),
+                Press(book::ids::FAV_BASE),
+                Press(sol::ids::SEND_PICK),
+                Press(sol::ids::SEND_PICK_BASE),
+                Press(sol::ids::SEND_MAX),
+                Enter(sol::ids::SEND_TO_EDIT),
+            ],
+        },
+        Scenario {
+            name: "book-btc",
+            base: Base::Main(Tab::Btc, false),
+            setup: btc_wallet,
+            steps: vec![
+                Press(evm::ids::BOOK_OPEN),
+                Press(book::ids::CHAIN_BTC),
+                Press(book::ids::ADD_OPEN),
+                Type(book::ids::ADDR_EDIT, BTC_TO),
+                Type(book::ids::LABEL_EDIT, "Friend"),
+                Check(book::ids::VERIFIED, true),
+                Check(book::ids::FAVORITE, true),
+                Press(book::ids::SAVE),
+                Press(btc::ids::SEND_OPEN),
+                Press(book::ids::FAV_BASE),
+                Type(btc::ids::SEND_AMOUNT_EDIT, "0.0012"),
+                Press(btc::ids::UNIT_SATS),
+                Press(btc::ids::UNIT_BTC),
+                Press(btc::ids::SEND_MAX),
+                Enter(btc::ids::SEND_TO_EDIT),
+            ],
+        },
+        Scenario {
+            name: "btc-esplora",
+            base: Base::Settings(SettingsSection::Bitcoin),
+            setup: no_setup,
+            steps: vec![
+                Type(
+                    btc::ids::ESPLORA_MAINNET_EDIT,
+                    "https://esplora.example.test/api",
+                ),
+                Press(btc::ids::ESPLORA_MAINNET_SAVE),
+                Press(btc::ids::ESPLORA_MAINNET_DEFAULT),
+                Type(btc::ids::ESPLORA_TESTNET4_EDIT, "x"),
+                Press(btc::ids::ESPLORA_TESTNET4_SAVE),
+                Press(btc::ids::ESPLORA_TESTNET4_DEFAULT),
+            ],
+        },
+        Scenario {
+            name: "evm-send-max",
+            base: Base::Main(Tab::Evm, false),
+            setup: no_setup,
+            steps: vec![
+                Press(evm::ids::SEND_OPEN),
+                Call("quote", evm_quote),
+                Press(evm::ids::SEND_MAX),
+            ],
+        },
+        Scenario {
+            name: "hc-max",
+            base: Base::Main(Tab::Evm, false),
+            setup: hc_withdraw,
+            steps: vec![Press(hc::ids::MAX)],
+        },
+    ]
+}
+
+fn writes_golden() -> String {
+    let census = Census::new("writes");
+    let mut out = String::from(
+        "# S3 programmatic writes (2026-11-18): scenario step what | fields as in commands.txt\n",
+    );
+    for scenario in write_scenarios() {
+        run_scenario(&mut out, &census, &scenario);
+    }
+    out
+}
+
+/// The masked credential edits are read once when their button is pressed: their `EN_CHANGE`
+/// changes nothing on any state.
+#[test]
+fn masked_edits_change_nothing_on_en_change() {
+    let census = Census::new("masked");
+    for base in Base::ALL {
+        for id in MASKED {
+            let (mut app, rx) = census.state(base);
+            let start = census.observe(&app, &rx);
+            app.controls.type_text(id, "cred-shaped-value-0123456789");
+            app.on_edit_notify(id);
+            let seen = census.observe(&app, &rx);
+            assert_eq!(seen.state, start.state, "{base:?} {id}");
+            assert_eq!(seen.calls, "-", "{base:?} {id}");
+        }
+    }
+}
+
+/// The census's id lists match the code: `ENTER_EDITS` are exactly the edits `enter_primary`
+/// maps, and every check box is a fixed or indexed id.
+#[test]
+fn enter_and_check_lists_match_the_code() {
+    for id in EDIT_IDS {
+        assert_eq!(
+            crate::app::enter_primary(id).is_some(),
+            ENTER_EDITS.contains(&id),
+            "{id}"
+        );
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for id in CHECK_IDS {
+        assert!(seen.insert(id), "{id} twice");
+        assert!(!EDIT_IDS.contains(&id));
+    }
+}
+
+/// T3 (S3 A2): `s3_census/edits.txt`.
+#[test]
+fn edit_census_matches_the_golden() {
+    compare("edits", &edits_golden(), EDITS);
+}
+
+/// T4 (S3 A2): `s3_census/checks.txt`.
+#[test]
+fn check_census_matches_the_golden() {
+    compare("checks", &checks_golden(), CHECKS);
+}
+
+/// T5 (S3 A2): `s3_census/writes.txt`.
+#[test]
+fn write_scenarios_match_the_golden() {
+    compare("writes", &writes_golden(), WRITES);
 }

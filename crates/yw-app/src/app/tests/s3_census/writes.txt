@@ -1,0 +1,115 @@
+# S3 programmatic writes (2026-11-18): scenario step what | fields as in commands.txt
+llm-preset 0 setup | Unlocked{alt_passphrase:false} | Settings(Ai) | items#4b658a216e919bb2 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+llm-preset 1 press 10013 | Unlocked{alt_passphrase:false} | Settings(Ai) | items#d119abc5aa23b93a | banners - | info - | copied - | key - | rpc - | launch 0 | set_text 10002 len=42; refresh
+llm-preset 2 press 10016 | Unlocked{alt_passphrase:false} | Settings(Ai) | items#be45ad4a47cf54ab | banners - | info - | copied - | key - | rpc - | launch 0 | set_text 10002 len=42; refresh
+llm-key-save 0 setup | Unlocked{alt_passphrase:false} | Settings(Ai) | items#4b658a216e919bb2 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+llm-key-save 1 type 10009 len=29 | Unlocked{alt_passphrase:false} | Settings(Ai) | items#4b658a216e919bb2 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+llm-key-save 2 press 10010 | Unlocked{alt_passphrase:false} | Settings(Ai) | items#1f7d719189ce5339 | banners - | info - | copied - | key - | rpc - | launch 0 | clear_text 10009; refresh
+llm-key-save 3 press 10011 | Unlocked{alt_passphrase:false} | Confirm(LlmKeyDelete) | items#20efa106fc6e4a6e | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+llm-key-enter 0 setup | Unlocked{alt_passphrase:false} | Settings(Ai) | items#4b658a216e919bb2 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+llm-key-enter 1 type 10009 len=29 | Unlocked{alt_passphrase:false} | Settings(Ai) | items#4b658a216e919bb2 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+llm-key-enter 2 enter 10009 | Unlocked{alt_passphrase:false} | Settings(Ai) | items#1f7d719189ce5339 | banners - | info - | copied - | key - | rpc - | launch 0 | clear_text 10009; refresh
+llm-key-enter 3 type 10003 len=10 | Unlocked{alt_passphrase:false} | Settings(Ai) | items#687e0dcbd56c7ac2 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+llm-key-enter 4 enter 10003 | Unlocked{alt_passphrase:false} | Settings(Ai) | items#9fea2476e0935783 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh*2
+template-quicknode 0 setup | Unlocked{alt_passphrase:false} | Settings(Network) | items#134248c429b063fa | banners - | info - | copied - | key - | rpc - | launch 0 | -
+template-quicknode 1 press 520 | Unlocked{alt_passphrase:false} | Settings(Network) | items#134248c429b063fa | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+template-quicknode 2 type 523 len=7 | Unlocked{alt_passphrase:false} | Settings(Network) | items#134248c429b063fa | banners - | info - | copied - | key - | rpc - | launch 0 | -
+template-quicknode 3 type 524 len=32 | Unlocked{alt_passphrase:false} | Settings(Network) | items#134248c429b063fa | banners - | info - | copied - | key - | rpc - | launch 0 | -
+template-quicknode 4 press 526 | Unlocked{alt_passphrase:false} | Settings(Network) | items#c45ea0fae518a303 | banners - | info 32fccbcc | copied - | key - | rpc - | launch 0 | clear_text 523; clear_text 524; clear_text 525; refresh
+template-alchemy 0 setup | Unlocked{alt_passphrase:false} | Settings(Network) | items#134248c429b063fa | banners - | info - | copied - | key - | rpc - | launch 0 | -
+template-alchemy 1 press 521 | Unlocked{alt_passphrase:false} | Settings(Network) | items#33ef453ebe219361 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+template-alchemy 2 type 525 len=32 | Unlocked{alt_passphrase:false} | Settings(Network) | items#33ef453ebe219361 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+template-alchemy 3 press 528 | Unlocked{alt_passphrase:false} | Settings(Network) | items#8a0456747e6e0942 | banners - | info 1885ae35 | copied - | key - | rpc ResetChain,ResetChain,ResetChain,ResetChain,ResetChain,ResetChain,ResetChain,BtcReset,BtcReset,Test | launch 0 | clear_text 523; clear_text 524; clear_text 525; refresh*3
+rpc-replace 0 setup | Unlocked{alt_passphrase:false} | Settings(Network) | items#134248c429b063fa | banners - | info - | copied - | key - | rpc - | launch 0 | -
+rpc-replace 1 press 540 | Unlocked{alt_passphrase:false} | Settings(Network) | items#19d4a032d1aa8b35 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+rpc-replace 2 type 700 len=27 | Unlocked{alt_passphrase:false} | Settings(Network) | items#19d4a032d1aa8b35 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+rpc-replace 3 press 541 | Unlocked{alt_passphrase:false} | Settings(Network) | items#19d4a032d1aa8b35 | banners - | info - | copied - | key - | rpc Test | launch 0 | refresh
+rpc-replace 4 press 701 | Unlocked{alt_passphrase:false} | Settings(Network) | items#f5f3ca14ab956d24 | banners - | info - | copied - | key - | rpc ResetChain,Test | launch 0 | clear_text 700; refresh
+rpc-replace-enter 0 setup | Unlocked{alt_passphrase:false} | Settings(Network) | items#134248c429b063fa | banners - | info - | copied - | key - | rpc - | launch 0 | -
+rpc-replace-enter 1 press 540 | Unlocked{alt_passphrase:false} | Settings(Network) | items#19d4a032d1aa8b35 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+rpc-replace-enter 2 type 700 len=27 | Unlocked{alt_passphrase:false} | Settings(Network) | items#19d4a032d1aa8b35 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+rpc-replace-enter 3 enter 700 | Unlocked{alt_passphrase:false} | Settings(Network) | items#f5f3ca14ab956d24 | banners - | info - | copied - | key - | rpc ResetChain,Test | launch 0 | clear_text 700; refresh
+done-connect 0 setup | Unlocked{alt_passphrase:false} | Done | items#b9e326a0bd06fbfe | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+done-connect 1 press 16701 | Unlocked{alt_passphrase:false} | Done | items#d7560d10a7e59724 | banners - | info - | copied - | key - | rpc - | launch 0 | clear_text 16700; refresh
+done-connect 2 type 16700 len=62 | Unlocked{alt_passphrase:false} | Done | items#d7560d10a7e59724 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+done-connect 3 press 16701 | Unlocked{alt_passphrase:false} | Done | items#abc8da6b9899fbdf | banners - | info - | copied - | key - | rpc ResetChain,ResetChain,ResetChain,ResetChain,ResetChain,ResetChain,ResetChain,BtcReset,BtcReset,Test | launch 0 | clear_text 16700; refresh*3
+done-connect-enter 0 setup | Unlocked{alt_passphrase:false} | Done | items#b9e326a0bd06fbfe | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+done-connect-enter 1 type 16700 len=62 | Unlocked{alt_passphrase:false} | Done | items#b9e326a0bd06fbfe | banners - | info - | copied - | key - | rpc - | launch 0 | -
+done-connect-enter 2 enter 16700 | Unlocked{alt_passphrase:false} | Done | items#abc8da6b9899fbdf | banners - | info - | copied - | key - | rpc ResetChain,ResetChain,ResetChain,ResetChain,ResetChain,ResetChain,ResetChain,BtcReset,BtcReset,Test | launch 0 | clear_text 16700; refresh*3
+chain-save 0 setup | Unlocked{alt_passphrase:false} | Settings(Chains) | items#57743bd64e1e3a54 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+chain-save 1 press 2201 | Unlocked{alt_passphrase:false} | ChainEdit | items#ba963924f82de32e | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+chain-save 2 type 2350 len=5 | Unlocked{alt_passphrase:false} | ChainEdit | items#910f42b1f801ab4a | banners - | info - | copied - | key - | rpc - | launch 0 | -
+chain-save 3 type 2351 len=10 | Unlocked{alt_passphrase:false} | ChainEdit | items#6cfa708856229c9f | banners - | info - | copied - | key - | rpc - | launch 0 | -
+chain-save 4 type 2352 len=3 | Unlocked{alt_passphrase:false} | ChainEdit | items#ec0c1cdb7dabe756 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+chain-save 5 type 2353 len=2 | Unlocked{alt_passphrase:false} | ChainEdit | items#ec0c1cdb7dabe756 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+chain-save 6 type 2354 len=27 | Unlocked{alt_passphrase:false} | ChainEdit | items#ec0c1cdb7dabe756 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+chain-save 7 type 2355 len=30 | Unlocked{alt_passphrase:false} | ChainEdit | items#a8185dfeecfaa1b5 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+chain-save 8 press 2358 | Unlocked{alt_passphrase:false} | ChainEdit | items#727f5807e83fbc36 | banners - | info - | copied - | key - | rpc Probe | launch 0 | refresh; clear_text 2354
+book-evm 0 setup | Unlocked{alt_passphrase:false} | Main | items#8b1b9d42dae127f0 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+book-evm 1 press 903 | Unlocked{alt_passphrase:false} | AddressBook | items#114116ff7813b917 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+book-evm 2 press 14017 | Unlocked{alt_passphrase:false} | AddressBook | items#61d2c35e0bd35569 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+book-evm 3 type 14003 len=42 | Unlocked{alt_passphrase:false} | AddressBook | items#5b0704c0aedb3a40 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+book-evm 4 type 14004 len=6 | Unlocked{alt_passphrase:false} | AddressBook | items#e7f41a1c4b1355b1 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+book-evm 5 check 14005 true | Unlocked{alt_passphrase:false} | AddressBook | items#86a3a6571d9da316 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+book-evm 6 check 14006 true | Unlocked{alt_passphrase:false} | AddressBook | items#f6793e1cdba70626 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+book-evm 7 press 14007 | Unlocked{alt_passphrase:false} | AddressBook | items#e35bcac0807ea002 | banners - | info - | copied - | key SaveMeta | rpc - | launch 0 | clear_text 14003; clear_text 14004; refresh
+book-evm 8 press 900 | Unlocked{alt_passphrase:false} | Send | items#2a905531501fd805 | banners - | info - | copied - | key - | rpc HyperCore | launch 0 | refresh
+book-evm 9 press 14020 | Unlocked{alt_passphrase:false} | Send | items#5b0a954492bd951f | banners - | info - | copied - | key - | rpc - | launch 0 | set_text 910 len=42; refresh
+book-evm 10 press 913 | Unlocked{alt_passphrase:false} | Send | items#695bbdc581e3c64f | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+book-evm 11 press 960 | Unlocked{alt_passphrase:false} | Send | items#5b0a954492bd951f | banners - | info - | copied - | key - | rpc - | launch 0 | set_text 910 len=42; refresh
+book-evm 12 type 911 len=5 | Unlocked{alt_passphrase:false} | Send | items#674153f1e7b9aee1 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh; timer.start send 40
+book-evm 13 enter 911 | Unlocked{alt_passphrase:false} | Send | items#674153f1e7b9aee1 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+book-evm 14 enter 910 | Unlocked{alt_passphrase:false} | Send | items#674153f1e7b9aee1 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+book-cancel 0 setup | Unlocked{alt_passphrase:false} | Main | items#8b1b9d42dae127f0 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+book-cancel 1 press 903 | Unlocked{alt_passphrase:false} | AddressBook | items#114116ff7813b917 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+book-cancel 2 press 14017 | Unlocked{alt_passphrase:false} | AddressBook | items#61d2c35e0bd35569 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+book-cancel 3 type 14003 len=42 | Unlocked{alt_passphrase:false} | AddressBook | items#5b0704c0aedb3a40 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+book-cancel 4 type 14004 len=6 | Unlocked{alt_passphrase:false} | AddressBook | items#e7f41a1c4b1355b1 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+book-cancel 5 enter 14004 | Unlocked{alt_passphrase:false} | AddressBook | items#a2902dbefcbcca6d | banners - | info - | copied - | key SaveMeta | rpc - | launch 0 | clear_text 14003; clear_text 14004; refresh
+book-cancel 6 press 14017 | Unlocked{alt_passphrase:false} | AddressBook | items#2c7b8409595c1337 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+book-cancel 7 type 14003 len=4 | Unlocked{alt_passphrase:false} | AddressBook | items#2bf5184cfde96717 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+book-cancel 8 press 14008 | Unlocked{alt_passphrase:false} | AddressBook | items#a2902dbefcbcca6d | banners - | info - | copied - | key - | rpc - | launch 0 | clear_text 14003; clear_text 14004; refresh
+book-sol 0 setup | Unlocked{alt_passphrase:false} | Main | items#82fed2061e8a217e | banners - | info - | copied - | key - | rpc - | launch 0 | -
+book-sol 1 press 903 | Unlocked{alt_passphrase:false} | AddressBook | items#114116ff7813b917 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+book-sol 2 press 14001 | Unlocked{alt_passphrase:false} | AddressBook | items#007a9e0449630535 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+book-sol 3 press 14017 | Unlocked{alt_passphrase:false} | AddressBook | items#956ea2f8ed827497 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+book-sol 4 type 14003 len=43 | Unlocked{alt_passphrase:false} | AddressBook | items#1cb0f26b103c06df | banners - | info - | copied - | key - | rpc - | launch 0 | -
+book-sol 5 type 14004 len=6 | Unlocked{alt_passphrase:false} | AddressBook | items#c5748405234e79cb | banners - | info - | copied - | key - | rpc - | launch 0 | -
+book-sol 6 check 14005 true | Unlocked{alt_passphrase:false} | AddressBook | items#95285a9fbe3d797a | banners - | info - | copied - | key - | rpc - | launch 0 | -
+book-sol 7 check 14006 true | Unlocked{alt_passphrase:false} | AddressBook | items#de09a4814fb3bc87 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+book-sol 8 press 14007 | Unlocked{alt_passphrase:false} | AddressBook | items#25d6910fcda9ea90 | banners - | info - | copied - | key SaveMeta | rpc - | launch 0 | clear_text 14003; clear_text 14004; refresh
+book-sol 9 press 7005 | Unlocked{alt_passphrase:false} | SolSend | items#c9380e71b937efb5 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+book-sol 10 press 14020 | Unlocked{alt_passphrase:false} | SolSend | items#db362cddc45c669a | banners - | info - | copied - | key - | rpc - | launch 0 | set_text 7020 len=43; refresh
+book-sol 11 press 7025 | Unlocked{alt_passphrase:false} | SolSend | items#6347c0b05eb79f32 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+book-sol 12 press 7030 | Unlocked{alt_passphrase:false} | SolSend | items#db362cddc45c669a | banners - | info - | copied - | key - | rpc - | launch 0 | set_text 7020 len=43; refresh
+book-sol 13 press 7022 | Unlocked{alt_passphrase:false} | SolSend | items#7b94aa785e3bad82 | banners - | info - | copied - | key - | rpc - | launch 0 | set_text 7021 len=0; refresh
+book-sol 14 enter 7020 | Unlocked{alt_passphrase:false} | SolSend | items#7b94aa785e3bad82 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+book-btc 0 setup | Unlocked{alt_passphrase:false} | Main | items#5a9909a3fbc6cf2d | banners - | info - | copied - | key - | rpc - | launch 0 | -
+book-btc 1 press 903 | Unlocked{alt_passphrase:false} | AddressBook | items#114116ff7813b917 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+book-btc 2 press 14002 | Unlocked{alt_passphrase:false} | AddressBook | items#0d91535feb7d053f | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+book-btc 3 press 14017 | Unlocked{alt_passphrase:false} | AddressBook | items#06aef96f84bfcbc5 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+book-btc 4 type 14003 len=42 | Unlocked{alt_passphrase:false} | AddressBook | items#d10a02909582f1bd | banners - | info - | copied - | key - | rpc - | launch 0 | -
+book-btc 5 type 14004 len=6 | Unlocked{alt_passphrase:false} | AddressBook | items#d97e00b630dedf9b | banners - | info - | copied - | key - | rpc - | launch 0 | -
+book-btc 6 check 14005 true | Unlocked{alt_passphrase:false} | AddressBook | items#a16dfadac822135a | banners - | info - | copied - | key - | rpc - | launch 0 | -
+book-btc 7 check 14006 true | Unlocked{alt_passphrase:false} | AddressBook | items#b3b943fe432b90bc | banners - | info - | copied - | key - | rpc - | launch 0 | -
+book-btc 8 press 14007 | Unlocked{alt_passphrase:false} | AddressBook | items#5e4e7d840e053ebf | banners - | info - | copied - | key SaveMeta | rpc - | launch 0 | clear_text 14003; clear_text 14004; refresh
+book-btc 9 press 9003 | Unlocked{alt_passphrase:false} | BtcSend | items#7459c96b528a71dc | banners - | info - | copied - | key - | rpc BtcFeeQuote | launch 0 | refresh*3
+book-btc 10 press 14020 | Unlocked{alt_passphrase:false} | BtcSend | items#772046eadba2ad75 | banners - | info - | copied - | key - | rpc - | launch 0 | set_text 9020 len=42; refresh
+book-btc 11 type 9021 len=6 | Unlocked{alt_passphrase:false} | BtcSend | items#176b2ee537a784ec | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+book-btc 12 press 9023 | Unlocked{alt_passphrase:false} | BtcSend | items#4877ea58fd0a71bd | banners - | info - | copied - | key - | rpc - | launch 0 | set_text 9021 len=6; refresh
+book-btc 13 press 9022 | Unlocked{alt_passphrase:false} | BtcSend | items#d190af821f6e4185 | banners - | info - | copied - | key - | rpc - | launch 0 | set_text 9021 len=10; refresh
+book-btc 14 press 9024 | Unlocked{alt_passphrase:false} | BtcSend | items#6066eb36adc2df37 | banners - | info - | copied - | key - | rpc - | launch 0 | set_text 9021 len=0; refresh
+book-btc 15 enter 9020 | Unlocked{alt_passphrase:false} | BtcSend | items#6066eb36adc2df37 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+btc-esplora 0 setup | Unlocked{alt_passphrase:false} | Settings(Bitcoin) | items#3a2d1561bd07d17b | banners - | info - | copied - | key - | rpc - | launch 0 | -
+btc-esplora 1 type 9110 len=32 | Unlocked{alt_passphrase:false} | Settings(Bitcoin) | items#3a2d1561bd07d17b | banners - | info - | copied - | key - | rpc - | launch 0 | -
+btc-esplora 2 press 9111 | Unlocked{alt_passphrase:false} | Settings(Bitcoin) | items#8884e678964c59c7 | banners - | info - | copied - | key - | rpc BtcReset | launch 0 | refresh*2; set_text 9110 len=32; refresh
+btc-esplora 3 press 9112 | Unlocked{alt_passphrase:false} | Settings(Bitcoin) | items#3a2d1561bd07d17b | banners - | info - | copied - | key - | rpc BtcReset | launch 0 | refresh*2; set_text 9110 len=25; refresh
+btc-esplora 4 type 9120 len=1 | Unlocked{alt_passphrase:false} | Settings(Bitcoin) | items#3a2d1561bd07d17b | banners - | info - | copied - | key - | rpc - | launch 0 | -
+btc-esplora 5 press 9121 | Unlocked{alt_passphrase:false} | Settings(Bitcoin) | items#ce85685223f18b82 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+btc-esplora 6 press 9122 | Unlocked{alt_passphrase:false} | Settings(Bitcoin) | items#3a2d1561bd07d17b | banners - | info - | copied - | key - | rpc BtcReset | launch 0 | refresh*2; set_text 9120 len=34; refresh
+evm-send-max 0 setup | Unlocked{alt_passphrase:false} | Main | items#8b1b9d42dae127f0 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+evm-send-max 1 press 900 | Unlocked{alt_passphrase:false} | Send | items#44e949ecab1c0785 | banners - | info - | copied - | key - | rpc HyperCore | launch 0 | refresh
+evm-send-max 2 call quote | Unlocked{alt_passphrase:false} | Send | items#6014fcdc24fad6e2 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+evm-send-max 3 press 912 | Unlocked{alt_passphrase:false} | Send | items#ce0ea06ed4d51dc7 | banners - | info - | copied - | key - | rpc - | launch 0 | set_text 911 len=8; refresh
+hc-max 0 setup | Unlocked{alt_passphrase:false} | HyperCore | items#dc6bde6ff2b4c5e9 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+hc-max 1 press 13468 | Unlocked{alt_passphrase:false} | HyperCore | items#234c75a097600f60 | banners - | info - | copied - | key - | rpc - | launch 0 | set_text 13461 len=3; refresh

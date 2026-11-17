@@ -1,0 +1,259 @@
+# S3 check-box census (2026-11-18): the press with the box checked, unchecked, and with no state (`checked` = None); fields as in commands.txt
+# check on
+## first | NoVault | FirstRun | items#7639dd0088464780 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+first 512 | NoVault | Confirm(CopyOn) | items#8e0b97ea087214c5 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+first 710 | NoVault | Confirm(LocalhostOn) | items#2ce28d448a5432ce | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+first = - : 14005 14006
+first = refresh : 182 711 802 914 2104 6600 10001 10012 13402 14009 14013 16603
+first = refresh*2 : 17800 17801 17802 17803 17804
+## locked | Locked | Locked | items#4a8154399ff3d8ef | banners - | info - | copied - | key - | rpc - | launch 0 | -
+locked 512 | Locked | Confirm(CopyOn) | items#8e0b97ea087214c5 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+locked 710 | Locked | Confirm(LocalhostOn) | items#2ce28d448a5432ce | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+locked = - : 14005 14006
+locked = refresh : 182 711 802 914 2104 6600 10001 10012 13402 14009 14013 16603
+locked = refresh*2 : 17800 17801 17802 17803 17804
+## evm | Unlocked{alt_passphrase:false} | Main | items#8b1b9d42dae127f0 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+evm 512 | Unlocked{alt_passphrase:false} | Confirm(CopyOn) | items#8e0b97ea087214c5 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+evm 710 | Unlocked{alt_passphrase:false} | Confirm(LocalhostOn) | items#2ce28d448a5432ce | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+evm 2104 | Unlocked{alt_passphrase:false} | Main | items#06b6a2f29f079a44 | banners - | info - | copied - | key SaveMeta | rpc - | launch 0 | refresh
+evm 17800 | Unlocked{alt_passphrase:false} | Main | items#c021170a55597822 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh*2
+evm 17801 | Unlocked{alt_passphrase:false} | Main | items#c021170a55597822 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh*2
+evm 17802 | Unlocked{alt_passphrase:false} | Main | items#c021170a55597822 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh*2
+evm 17803 | Unlocked{alt_passphrase:false} | Main | items#c021170a55597822 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh*2
+evm 17804 | Unlocked{alt_passphrase:false} | Main | items#c021170a55597822 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh*2
+evm = - : 14005 14006
+evm = refresh : 182 711 802 914 6600 10001 10012 13402 14009 14013 16603
+## sol | Unlocked{alt_passphrase:false} | Main | items#82fed2061e8a217e | banners - | info - | copied - | key - | rpc - | launch 0 | -
+sol 512 | Unlocked{alt_passphrase:false} | Confirm(CopyOn) | items#8e0b97ea087214c5 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+sol 710 | Unlocked{alt_passphrase:false} | Confirm(LocalhostOn) | items#2ce28d448a5432ce | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+sol 2104 | Unlocked{alt_passphrase:false} | Main | items#82fed2061e8a217e | banners - | info - | copied - | key SaveMeta | rpc - | launch 0 | refresh
+sol 17800 | Unlocked{alt_passphrase:false} | Main | items#22d2bca662893d16 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh*2
+sol 17801 | Unlocked{alt_passphrase:false} | Main | items#22d2bca662893d16 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh*2
+sol 17802 | Unlocked{alt_passphrase:false} | Main | items#22d2bca662893d16 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh*2
+sol 17803 | Unlocked{alt_passphrase:false} | Main | items#22d2bca662893d16 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh*2
+sol 17804 | Unlocked{alt_passphrase:false} | Main | items#22d2bca662893d16 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh*2
+sol = - : 14005 14006
+sol = refresh : 182 711 802 914 6600 10001 10012 13402 14009 14013 16603
+## btc | Unlocked{alt_passphrase:false} | Main | items#dc8d333b00613d40 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+btc 512 | Unlocked{alt_passphrase:false} | Confirm(CopyOn) | items#8e0b97ea087214c5 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+btc 710 | Unlocked{alt_passphrase:false} | Confirm(LocalhostOn) | items#2ce28d448a5432ce | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+btc 2104 | Unlocked{alt_passphrase:false} | Main | items#dc8d333b00613d40 | banners - | info - | copied - | key SaveMeta | rpc - | launch 0 | refresh
+btc 17800 | Unlocked{alt_passphrase:false} | Main | items#0cb8f5b71cf27317 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh*2
+btc 17801 | Unlocked{alt_passphrase:false} | Main | items#0cb8f5b71cf27317 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh*2
+btc 17802 | Unlocked{alt_passphrase:false} | Main | items#0cb8f5b71cf27317 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh*2
+btc 17803 | Unlocked{alt_passphrase:false} | Main | items#0cb8f5b71cf27317 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh*2
+btc 17804 | Unlocked{alt_passphrase:false} | Main | items#0cb8f5b71cf27317 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh*2
+btc = - : 14005 14006
+btc = refresh : 182 711 802 914 6600 10001 10012 13402 14009 14013 16603
+## zec | Unlocked{alt_passphrase:false} | Main | items#dd992439746a9898 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+zec 512 | Unlocked{alt_passphrase:false} | Confirm(CopyOn) | items#8e0b97ea087214c5 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+zec 710 | Unlocked{alt_passphrase:false} | Confirm(LocalhostOn) | items#2ce28d448a5432ce | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+zec 2104 | Unlocked{alt_passphrase:false} | Main | items#dd992439746a9898 | banners - | info - | copied - | key SaveMeta | rpc - | launch 0 | refresh
+zec 17800 | Unlocked{alt_passphrase:false} | Main | items#57ec2b2325bebcc6 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh*2
+zec 17801 | Unlocked{alt_passphrase:false} | Main | items#57ec2b2325bebcc6 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh*2
+zec 17802 | Unlocked{alt_passphrase:false} | Main | items#57ec2b2325bebcc6 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh*2
+zec 17803 | Unlocked{alt_passphrase:false} | Main | items#57ec2b2325bebcc6 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh*2
+zec 17804 | Unlocked{alt_passphrase:false} | Main | items#57ec2b2325bebcc6 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh*2
+zec = - : 14005 14006
+zec = refresh : 182 711 802 914 6600 10001 10012 13402 14009 14013 16603
+## set-security | Unlocked{alt_passphrase:false} | Settings(Security) | items#79cb4c7c76d4721f | banners - | info - | copied - | key - | rpc - | launch 0 | -
+set-security 512 | Unlocked{alt_passphrase:false} | Confirm(CopyOn) | items#8e0b97ea087214c5 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+set-security 710 | Unlocked{alt_passphrase:false} | Confirm(LocalhostOn) | items#2ce28d448a5432ce | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+set-security 2104 | Unlocked{alt_passphrase:false} | Settings(Security) | items#79cb4c7c76d4721f | banners - | info - | copied - | key SaveMeta | rpc - | launch 0 | refresh
+set-security = - : 14005 14006
+set-security = refresh : 182 711 802 914 6600 10001 10012 13402 14009 14013 16603
+set-security = refresh*2 : 17800 17801 17802 17803 17804
+## set-network | Unlocked{alt_passphrase:false} | Settings(Network) | items#134248c429b063fa | banners - | info - | copied - | key - | rpc - | launch 0 | -
+set-network 512 | Unlocked{alt_passphrase:false} | Confirm(CopyOn) | items#8e0b97ea087214c5 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+set-network 710 | Unlocked{alt_passphrase:false} | Confirm(LocalhostOn) | items#2ce28d448a5432ce | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+set-network 2104 | Unlocked{alt_passphrase:false} | Settings(Network) | items#134248c429b063fa | banners - | info - | copied - | key SaveMeta | rpc - | launch 0 | refresh
+set-network = - : 14005 14006
+set-network = refresh : 182 711 802 914 6600 10001 10012 13402 14009 14013 16603
+set-network = refresh*2 : 17800 17801 17802 17803 17804
+## set-other | Unlocked{alt_passphrase:false} | Settings(Other) | items#296fd3c13b277f4a | banners - | info - | copied - | key - | rpc - | launch 0 | -
+set-other 512 | Unlocked{alt_passphrase:false} | Confirm(CopyOn) | items#8e0b97ea087214c5 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+set-other 710 | Unlocked{alt_passphrase:false} | Confirm(LocalhostOn) | items#2ce28d448a5432ce | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+set-other 2104 | Unlocked{alt_passphrase:false} | Settings(Other) | items#296fd3c13b277f4a | banners - | info - | copied - | key SaveMeta | rpc - | launch 0 | refresh
+set-other = - : 14005 14006
+set-other = refresh : 182 711 802 914 6600 10001 10012 13402 14009 14013 16603
+set-other = refresh*2 : 17800 17801 17802 17803 17804
+## set-chains | Unlocked{alt_passphrase:false} | Settings(Chains) | items#57743bd64e1e3a54 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+set-chains 512 | Unlocked{alt_passphrase:false} | Confirm(CopyOn) | items#8e0b97ea087214c5 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+set-chains 710 | Unlocked{alt_passphrase:false} | Confirm(LocalhostOn) | items#2ce28d448a5432ce | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+set-chains 2104 | Unlocked{alt_passphrase:false} | Settings(Chains) | items#57743bd64e1e3a54 | banners - | info - | copied - | key SaveMeta | rpc - | launch 0 | refresh
+set-chains = - : 14005 14006
+set-chains = refresh : 182 711 802 914 6600 10001 10012 13402 14009 14013 16603
+set-chains = refresh*2 : 17800 17801 17802 17803 17804
+## set-solana | Unlocked{alt_passphrase:false} | Settings(Solana) | items#7a752790eb8387d9 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+set-solana 512 | Unlocked{alt_passphrase:false} | Confirm(CopyOn) | items#8e0b97ea087214c5 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+set-solana 710 | Unlocked{alt_passphrase:false} | Confirm(LocalhostOn) | items#2ce28d448a5432ce | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+set-solana 2104 | Unlocked{alt_passphrase:false} | Settings(Solana) | items#7a752790eb8387d9 | banners - | info - | copied - | key SaveMeta | rpc - | launch 0 | refresh
+set-solana = - : 14005 14006
+set-solana = refresh : 182 711 802 914 6600 10001 10012 13402 14009 14013 16603
+set-solana = refresh*2 : 17800 17801 17802 17803 17804
+## set-bitcoin | Unlocked{alt_passphrase:false} | Settings(Bitcoin) | items#3a2d1561bd07d17b | banners - | info - | copied - | key - | rpc - | launch 0 | -
+set-bitcoin 512 | Unlocked{alt_passphrase:false} | Confirm(CopyOn) | items#8e0b97ea087214c5 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+set-bitcoin 710 | Unlocked{alt_passphrase:false} | Confirm(LocalhostOn) | items#2ce28d448a5432ce | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+set-bitcoin 2104 | Unlocked{alt_passphrase:false} | Settings(Bitcoin) | items#3a2d1561bd07d17b | banners - | info - | copied - | key SaveMeta | rpc - | launch 0 | refresh
+set-bitcoin = - : 14005 14006
+set-bitcoin = refresh : 182 711 802 914 6600 10001 10012 13402 14009 14013 16603
+set-bitcoin = refresh*2 : 17800 17801 17802 17803 17804
+## set-ai | Unlocked{alt_passphrase:false} | Settings(Ai) | items#4b658a216e919bb2 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+set-ai 512 | Unlocked{alt_passphrase:false} | Confirm(CopyOn) | items#8e0b97ea087214c5 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+set-ai 710 | Unlocked{alt_passphrase:false} | Confirm(LocalhostOn) | items#2ce28d448a5432ce | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+set-ai 2104 | Unlocked{alt_passphrase:false} | Settings(Ai) | items#4b658a216e919bb2 | banners - | info - | copied - | key SaveMeta | rpc - | launch 0 | refresh
+set-ai 10001 | Unlocked{alt_passphrase:false} | Settings(Ai) | items#0d4e77e11a080900 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+set-ai = - : 14005 14006
+set-ai = refresh : 182 711 802 914 6600 10012 13402 14009 14013 16603
+set-ai = refresh*2 : 17800 17801 17802 17803 17804
+## set-yubikey | Unlocked{alt_passphrase:false} | Settings(YubiKey) | items#cb1f43844621fbcf | banners - | info - | copied - | key - | rpc - | launch 0 | -
+set-yubikey 512 | Unlocked{alt_passphrase:false} | Confirm(CopyOn) | items#8e0b97ea087214c5 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+set-yubikey 710 | Unlocked{alt_passphrase:false} | Confirm(LocalhostOn) | items#2ce28d448a5432ce | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+set-yubikey 2104 | Unlocked{alt_passphrase:false} | Settings(YubiKey) | items#cb1f43844621fbcf | banners - | info - | copied - | key SaveMeta | rpc - | launch 0 | refresh
+set-yubikey = - : 14005 14006
+set-yubikey = refresh : 182 711 802 914 6600 10001 10012 13402 14009 14013 16603
+set-yubikey = refresh*2 : 17800 17801 17802 17803 17804
+## set-mnemonics | Unlocked{alt_passphrase:false} | Settings(Mnemonics) | items#9f5af8db667219ca | banners - | info - | copied - | key - | rpc - | launch 0 | -
+set-mnemonics 512 | Unlocked{alt_passphrase:false} | Confirm(CopyOn) | items#8e0b97ea087214c5 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+set-mnemonics 710 | Unlocked{alt_passphrase:false} | Confirm(LocalhostOn) | items#2ce28d448a5432ce | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+set-mnemonics 2104 | Unlocked{alt_passphrase:false} | Settings(Mnemonics) | items#9f5af8db667219ca | banners - | info - | copied - | key SaveMeta | rpc - | launch 0 | refresh
+set-mnemonics = - : 14005 14006
+set-mnemonics = refresh : 182 711 802 914 6600 10001 10012 13402 14009 14013 16603
+set-mnemonics = refresh*2 : 17800 17801 17802 17803 17804
+# check off
+## first | NoVault | FirstRun | items#7639dd0088464780 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+first = - : 14005 14006 17800 17801 17802 17803 17804
+first = refresh : 182 512 710 711 802 914 2104 6600 10001 10012 13402 14009 14013 16603
+## locked | Locked | Locked | items#4a8154399ff3d8ef | banners - | info - | copied - | key - | rpc - | launch 0 | -
+locked = - : 14005 14006 17800 17801 17802 17803 17804
+locked = refresh : 182 512 710 711 802 914 2104 6600 10001 10012 13402 14009 14013 16603
+## evm | Unlocked{alt_passphrase:false} | Main | items#8b1b9d42dae127f0 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+evm = - : 14005 14006 17800 17801 17802 17803 17804
+evm = refresh : 182 512 710 711 802 914 2104 6600 10001 10012 13402 14009 14013 16603
+## sol | Unlocked{alt_passphrase:false} | Main | items#82fed2061e8a217e | banners - | info - | copied - | key - | rpc - | launch 0 | -
+sol = - : 14005 14006 17800 17801 17802 17803 17804
+sol = refresh : 182 512 710 711 802 914 2104 6600 10001 10012 13402 14009 14013 16603
+## btc | Unlocked{alt_passphrase:false} | Main | items#dc8d333b00613d40 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+btc = - : 14005 14006 17800 17801 17802 17803 17804
+btc = refresh : 182 512 710 711 802 914 2104 6600 10001 10012 13402 14009 14013 16603
+## zec | Unlocked{alt_passphrase:false} | Main | items#dd992439746a9898 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+zec = - : 14005 14006 17800 17801 17802 17803 17804
+zec = refresh : 182 512 710 711 802 914 2104 6600 10001 10012 13402 14009 14013 16603
+## set-security | Unlocked{alt_passphrase:false} | Settings(Security) | items#79cb4c7c76d4721f | banners - | info - | copied - | key - | rpc - | launch 0 | -
+set-security = - : 14005 14006 17800 17801 17802 17803 17804
+set-security = refresh : 182 512 710 711 802 914 2104 6600 10001 10012 13402 14009 14013 16603
+## set-network | Unlocked{alt_passphrase:false} | Settings(Network) | items#134248c429b063fa | banners - | info - | copied - | key - | rpc - | launch 0 | -
+set-network = - : 14005 14006 17800 17801 17802 17803 17804
+set-network = refresh : 182 512 710 711 802 914 2104 6600 10001 10012 13402 14009 14013 16603
+## set-other | Unlocked{alt_passphrase:false} | Settings(Other) | items#296fd3c13b277f4a | banners - | info - | copied - | key - | rpc - | launch 0 | -
+set-other 711 | Unlocked{alt_passphrase:false} | Settings(Other) | items#352c9ac50e26c910 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh
+set-other = - : 14005 14006 17800 17801 17802 17803 17804
+set-other = refresh : 182 512 710 802 914 2104 6600 10001 10012 13402 14009 14013 16603
+## set-chains | Unlocked{alt_passphrase:false} | Settings(Chains) | items#57743bd64e1e3a54 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+set-chains = - : 14005 14006 17800 17801 17802 17803 17804
+set-chains = refresh : 182 512 710 711 802 914 2104 6600 10001 10012 13402 14009 14013 16603
+## set-solana | Unlocked{alt_passphrase:false} | Settings(Solana) | items#7a752790eb8387d9 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+set-solana = - : 14005 14006 17800 17801 17802 17803 17804
+set-solana = refresh : 182 512 710 711 802 914 2104 6600 10001 10012 13402 14009 14013 16603
+## set-bitcoin | Unlocked{alt_passphrase:false} | Settings(Bitcoin) | items#3a2d1561bd07d17b | banners - | info - | copied - | key - | rpc - | launch 0 | -
+set-bitcoin = - : 14005 14006 17800 17801 17802 17803 17804
+set-bitcoin = refresh : 182 512 710 711 802 914 2104 6600 10001 10012 13402 14009 14013 16603
+## set-ai | Unlocked{alt_passphrase:false} | Settings(Ai) | items#4b658a216e919bb2 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+set-ai = - : 14005 14006 17800 17801 17802 17803 17804
+set-ai = refresh : 182 512 710 711 802 914 2104 6600 10001 10012 13402 14009 14013 16603
+## set-yubikey | Unlocked{alt_passphrase:false} | Settings(YubiKey) | items#cb1f43844621fbcf | banners - | info - | copied - | key - | rpc - | launch 0 | -
+set-yubikey = - : 14005 14006 17800 17801 17802 17803 17804
+set-yubikey = refresh : 182 512 710 711 802 914 2104 6600 10001 10012 13402 14009 14013 16603
+## set-mnemonics | Unlocked{alt_passphrase:false} | Settings(Mnemonics) | items#9f5af8db667219ca | banners - | info - | copied - | key - | rpc - | launch 0 | -
+set-mnemonics = - : 14005 14006 17800 17801 17802 17803 17804
+set-mnemonics = refresh : 182 512 710 711 802 914 2104 6600 10001 10012 13402 14009 14013 16603
+# check none
+## first | NoVault | FirstRun | items#7639dd0088464780 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+first = - : 14005 14006
+first = refresh : 182 512 710 711 802 914 2104 6600 10001 10012 13402 14009 14013 16603
+first = refresh*2 : 17800 17801 17802 17803 17804
+## locked | Locked | Locked | items#4a8154399ff3d8ef | banners - | info - | copied - | key - | rpc - | launch 0 | -
+locked = - : 14005 14006
+locked = refresh : 182 512 710 711 802 914 2104 6600 10001 10012 13402 14009 14013 16603
+locked = refresh*2 : 17800 17801 17802 17803 17804
+## evm | Unlocked{alt_passphrase:false} | Main | items#8b1b9d42dae127f0 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+evm 2104 | Unlocked{alt_passphrase:false} | Main | items#06b6a2f29f079a44 | banners - | info - | copied - | key SaveMeta | rpc - | launch 0 | refresh
+evm 17800 | Unlocked{alt_passphrase:false} | Main | items#c021170a55597822 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh*2
+evm 17801 | Unlocked{alt_passphrase:false} | Main | items#c021170a55597822 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh*2
+evm 17802 | Unlocked{alt_passphrase:false} | Main | items#c021170a55597822 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh*2
+evm 17803 | Unlocked{alt_passphrase:false} | Main | items#c021170a55597822 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh*2
+evm 17804 | Unlocked{alt_passphrase:false} | Main | items#c021170a55597822 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh*2
+evm = - : 14005 14006
+evm = refresh : 182 512 710 711 802 914 6600 10001 10012 13402 14009 14013 16603
+## sol | Unlocked{alt_passphrase:false} | Main | items#82fed2061e8a217e | banners - | info - | copied - | key - | rpc - | launch 0 | -
+sol 2104 | Unlocked{alt_passphrase:false} | Main | items#82fed2061e8a217e | banners - | info - | copied - | key SaveMeta | rpc - | launch 0 | refresh
+sol 17800 | Unlocked{alt_passphrase:false} | Main | items#22d2bca662893d16 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh*2
+sol 17801 | Unlocked{alt_passphrase:false} | Main | items#22d2bca662893d16 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh*2
+sol 17802 | Unlocked{alt_passphrase:false} | Main | items#22d2bca662893d16 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh*2
+sol 17803 | Unlocked{alt_passphrase:false} | Main | items#22d2bca662893d16 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh*2
+sol 17804 | Unlocked{alt_passphrase:false} | Main | items#22d2bca662893d16 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh*2
+sol = - : 14005 14006
+sol = refresh : 182 512 710 711 802 914 6600 10001 10012 13402 14009 14013 16603
+## btc | Unlocked{alt_passphrase:false} | Main | items#dc8d333b00613d40 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+btc 2104 | Unlocked{alt_passphrase:false} | Main | items#dc8d333b00613d40 | banners - | info - | copied - | key SaveMeta | rpc - | launch 0 | refresh
+btc 17800 | Unlocked{alt_passphrase:false} | Main | items#0cb8f5b71cf27317 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh*2
+btc 17801 | Unlocked{alt_passphrase:false} | Main | items#0cb8f5b71cf27317 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh*2
+btc 17802 | Unlocked{alt_passphrase:false} | Main | items#0cb8f5b71cf27317 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh*2
+btc 17803 | Unlocked{alt_passphrase:false} | Main | items#0cb8f5b71cf27317 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh*2
+btc 17804 | Unlocked{alt_passphrase:false} | Main | items#0cb8f5b71cf27317 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh*2
+btc = - : 14005 14006
+btc = refresh : 182 512 710 711 802 914 6600 10001 10012 13402 14009 14013 16603
+## zec | Unlocked{alt_passphrase:false} | Main | items#dd992439746a9898 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+zec 2104 | Unlocked{alt_passphrase:false} | Main | items#dd992439746a9898 | banners - | info - | copied - | key SaveMeta | rpc - | launch 0 | refresh
+zec 17800 | Unlocked{alt_passphrase:false} | Main | items#57ec2b2325bebcc6 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh*2
+zec 17801 | Unlocked{alt_passphrase:false} | Main | items#57ec2b2325bebcc6 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh*2
+zec 17802 | Unlocked{alt_passphrase:false} | Main | items#57ec2b2325bebcc6 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh*2
+zec 17803 | Unlocked{alt_passphrase:false} | Main | items#57ec2b2325bebcc6 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh*2
+zec 17804 | Unlocked{alt_passphrase:false} | Main | items#57ec2b2325bebcc6 | banners - | info - | copied - | key - | rpc - | launch 0 | refresh*2
+zec = - : 14005 14006
+zec = refresh : 182 512 710 711 802 914 6600 10001 10012 13402 14009 14013 16603
+## set-security | Unlocked{alt_passphrase:false} | Settings(Security) | items#79cb4c7c76d4721f | banners - | info - | copied - | key - | rpc - | launch 0 | -
+set-security 2104 | Unlocked{alt_passphrase:false} | Settings(Security) | items#79cb4c7c76d4721f | banners - | info - | copied - | key SaveMeta | rpc - | launch 0 | refresh
+set-security = - : 14005 14006
+set-security = refresh : 182 512 710 711 802 914 6600 10001 10012 13402 14009 14013 16603
+set-security = refresh*2 : 17800 17801 17802 17803 17804
+## set-network | Unlocked{alt_passphrase:false} | Settings(Network) | items#134248c429b063fa | banners - | info - | copied - | key - | rpc - | launch 0 | -
+set-network 2104 | Unlocked{alt_passphrase:false} | Settings(Network) | items#134248c429b063fa | banners - | info - | copied - | key SaveMeta | rpc - | launch 0 | refresh
+set-network = - : 14005 14006
+set-network = refresh : 182 512 710 711 802 914 6600 10001 10012 13402 14009 14013 16603
+set-network = refresh*2 : 17800 17801 17802 17803 17804
+## set-other | Unlocked{alt_passphrase:false} | Settings(Other) | items#296fd3c13b277f4a | banners - | info - | copied - | key - | rpc - | launch 0 | -
+set-other 2104 | Unlocked{alt_passphrase:false} | Settings(Other) | items#296fd3c13b277f4a | banners - | info - | copied - | key SaveMeta | rpc - | launch 0 | refresh
+set-other = - : 14005 14006
+set-other = refresh : 182 512 710 711 802 914 6600 10001 10012 13402 14009 14013 16603
+set-other = refresh*2 : 17800 17801 17802 17803 17804
+## set-chains | Unlocked{alt_passphrase:false} | Settings(Chains) | items#57743bd64e1e3a54 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+set-chains 2104 | Unlocked{alt_passphrase:false} | Settings(Chains) | items#57743bd64e1e3a54 | banners - | info - | copied - | key SaveMeta | rpc - | launch 0 | refresh
+set-chains = - : 14005 14006
+set-chains = refresh : 182 512 710 711 802 914 6600 10001 10012 13402 14009 14013 16603
+set-chains = refresh*2 : 17800 17801 17802 17803 17804
+## set-solana | Unlocked{alt_passphrase:false} | Settings(Solana) | items#7a752790eb8387d9 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+set-solana 2104 | Unlocked{alt_passphrase:false} | Settings(Solana) | items#7a752790eb8387d9 | banners - | info - | copied - | key SaveMeta | rpc - | launch 0 | refresh
+set-solana = - : 14005 14006
+set-solana = refresh : 182 512 710 711 802 914 6600 10001 10012 13402 14009 14013 16603
+set-solana = refresh*2 : 17800 17801 17802 17803 17804
+## set-bitcoin | Unlocked{alt_passphrase:false} | Settings(Bitcoin) | items#3a2d1561bd07d17b | banners - | info - | copied - | key - | rpc - | launch 0 | -
+set-bitcoin 2104 | Unlocked{alt_passphrase:false} | Settings(Bitcoin) | items#3a2d1561bd07d17b | banners - | info - | copied - | key SaveMeta | rpc - | launch 0 | refresh
+set-bitcoin = - : 14005 14006
+set-bitcoin = refresh : 182 512 710 711 802 914 6600 10001 10012 13402 14009 14013 16603
+set-bitcoin = refresh*2 : 17800 17801 17802 17803 17804
+## set-ai | Unlocked{alt_passphrase:false} | Settings(Ai) | items#4b658a216e919bb2 | banners - | info - | copied - | key - | rpc - | launch 0 | -
+set-ai 2104 | Unlocked{alt_passphrase:false} | Settings(Ai) | items#4b658a216e919bb2 | banners - | info - | copied - | key SaveMeta | rpc - | launch 0 | refresh
+set-ai = - : 14005 14006
+set-ai = refresh : 182 512 710 711 802 914 6600 10001 10012 13402 14009 14013 16603
+set-ai = refresh*2 : 17800 17801 17802 17803 17804
+## set-yubikey | Unlocked{alt_passphrase:false} | Settings(YubiKey) | items#cb1f43844621fbcf | banners - | info - | copied - | key - | rpc - | launch 0 | -
+set-yubikey 2104 | Unlocked{alt_passphrase:false} | Settings(YubiKey) | items#cb1f43844621fbcf | banners - | info - | copied - | key SaveMeta | rpc - | launch 0 | refresh
+set-yubikey = - : 14005 14006
+set-yubikey = refresh : 182 512 710 711 802 914 6600 10001 10012 13402 14009 14013 16603
+set-yubikey = refresh*2 : 17800 17801 17802 17803 17804
+## set-mnemonics | Unlocked{alt_passphrase:false} | Settings(Mnemonics) | items#9f5af8db667219ca | banners - | info - | copied - | key - | rpc - | launch 0 | -
+set-mnemonics 2104 | Unlocked{alt_passphrase:false} | Settings(Mnemonics) | items#9f5af8db667219ca | banners - | info - | copied - | key SaveMeta | rpc - | launch 0 | refresh
+set-mnemonics = - : 14005 14006
+set-mnemonics = refresh : 182 512 710 711 802 914 6600 10001 10012 13402 14009 14013 16603
+set-mnemonics = refresh*2 : 17800 17801 17802 17803 17804
