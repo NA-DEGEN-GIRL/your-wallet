@@ -425,6 +425,8 @@ impl fmt::Debug for CredUnits {
 #[derive(Default)]
 pub struct PressInput {
     creds: Vec<(CredField, CredUnits)>,
+    /// Debug builds only (plan §2.3, §3.2a): release builds compile no checking code.
+    #[cfg(debug_assertions)]
     misses: u32,
 }
 
@@ -432,15 +434,22 @@ impl PressInput {
     /// The input of a press that uses `creds`.
     #[must_use]
     pub const fn new(creds: Vec<(CredField, CredUnits)>) -> Self {
-        Self { creds, misses: 0 }
+        Self {
+            creds,
+            #[cfg(debug_assertions)]
+            misses: 0,
+        }
     }
 
     /// Moves the units of `field` out: empty for `Absent` or a second take, as the Windows read
     /// of a missing edit. A field with no entry (not captured for this press: a table bug) also
-    /// gives empty units and is counted in [`misses`](Self::misses).
+    /// gives empty units; debug builds count it in `misses`.
     pub fn take(&mut self, field: CredField) -> Zeroizing<Vec<u16>> {
         let Some((_, units)) = self.creds.iter_mut().find(|(known, _)| *known == field) else {
-            self.misses = self.misses.saturating_add(1);
+            #[cfg(debug_assertions)]
+            {
+                self.misses = self.misses.saturating_add(1);
+            }
             return Zeroizing::new(Vec::new());
         };
         match core::mem::replace(units, CredUnits::Absent) {
@@ -449,7 +458,8 @@ impl PressInput {
         }
     }
 
-    /// Takes of a field with no entry so far (tests assert 0).
+    /// Takes of a field with no entry so far (tests assert 0). Debug builds only.
+    #[cfg(debug_assertions)]
     #[must_use]
     pub const fn misses(&self) -> u32 {
         self.misses
@@ -459,11 +469,11 @@ impl PressInput {
 /// Field names and unit counts only.
 impl fmt::Debug for PressInput {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("PressInput")
-            .field("creds", &self.creds)
-            .field("misses", &self.misses)
-            .finish()
+        let mut shown = formatter.debug_struct("PressInput");
+        shown.field("creds", &self.creds);
+        #[cfg(debug_assertions)]
+        shown.field("misses", &self.misses);
+        shown.finish()
     }
 }
 
@@ -551,14 +561,22 @@ mod tests {
         );
         assert!(input.take(CredField::QnName).is_empty());
         assert!(input.take(CredField::QnToken).is_empty());
+        #[cfg(debug_assertions)]
         assert_eq!(input.misses(), 0);
         assert!(input.take(CredField::LlmKey).is_empty());
+        #[cfg(debug_assertions)]
         assert_eq!(input.misses(), 1);
         assert!(PressInput::default().take(CredField::DoneQn).is_empty());
         let shown = format!("{input:?}");
+        #[cfg(debug_assertions)]
         assert_eq!(
             shown,
             "PressInput { creds: [(QnName, Absent), (QnToken, Absent)], misses: 1 }"
+        );
+        #[cfg(not(debug_assertions))]
+        assert_eq!(
+            shown,
+            "PressInput { creds: [(QnName, Absent), (QnToken, Absent)] }"
         );
     }
 
