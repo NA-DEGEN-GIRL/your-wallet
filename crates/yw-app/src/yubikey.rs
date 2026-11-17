@@ -1665,6 +1665,22 @@ impl CardSource for MockSource {
     }
 }
 
+/// A card source with no readers: every visit is `NoReader`, as on a PC without a smart-card
+/// reader. The source of tests that run the key worker on real wallet files but use no card
+/// (2026-11-17 S2 review: before, they got the PC/SC readers of the machine through
+/// `store::WinKeyPlatform::deps`; now only `main.rs` gets those, which the yw-app source scan
+/// `pcsc_readers_only_from_main` checks). Always compiled for the same reason as the emulator
+/// source; it reaches no card, so it needs no scan of its own.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoReaders;
+
+impl CardSource for NoReaders {
+    fn each_card(&mut self, _visit: &mut CardVisit<'_>) -> Result<(), CardError> {
+        Err(CardError::Transport(TransportFault::NoReader))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};

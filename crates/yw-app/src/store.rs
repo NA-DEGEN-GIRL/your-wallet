@@ -37,6 +37,7 @@ use yw_win::mem::LockedBox;
 pub use crate::wallet_files::file_name;
 use crate::wallet_files::{ResetError, ResetReport, is_set_aside, with_suffix};
 use crate::workers::key::platform::{KeyDeps, KeyPlatform, WalletStore};
+use crate::yubikey::CardSource;
 
 const VAULT_MAX: u64 = 65_536;
 const META_MAX: u64 = 8 * 1_048_576 + 80;
@@ -426,13 +427,22 @@ pub struct WinKeyPlatform;
 
 impl WinKeyPlatform {
     /// The production set: this platform, `SystemClock` (`GetTickCount64`, the App's time base)
-    /// and the PC/SC readers.
+    /// and the PC/SC readers. Only `main.rs` calls it (the source scan
+    /// `card_pcsc::tests::pcsc_readers_only_from_main`).
     #[must_use]
     pub fn deps() -> KeyDeps {
+        Self::deps_with_cards(Box::new(crate::card_pcsc::PcscSource))
+    }
+
+    /// This platform and `SystemClock` with another card source: tests on real wallet files pass
+    /// `yubikey::NoReaders` or the emulator, never the machine's readers (2026-11-17 S2 review,
+    /// AGENTS rule 3).
+    #[must_use]
+    pub fn deps_with_cards(cards: Box<dyn CardSource>) -> KeyDeps {
         KeyDeps {
             platform: Box::new(Self),
             clock: Box::new(crate::system_clock::SystemClock),
-            cards: Box::new(crate::card_pcsc::PcscSource),
+            cards,
         }
     }
 

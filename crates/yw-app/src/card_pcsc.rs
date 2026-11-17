@@ -171,7 +171,33 @@ mod tests {
         kept
     }
 
-    /// The yw-app sources that are not test code: every `.rs` under `src`, except files named
+    /// The source folders the scans read: yw-app's `src`, and yw-engine's once that crate
+    /// exists (2026-11-17 S2 review: `yubikey.rs` and the key worker move there, and the scans
+    /// must keep covering them; a folder that does not exist yet is skipped).
+    fn source_roots() -> Vec<PathBuf> {
+        let app = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut roots = vec![app.join("src")];
+        let engine = app.join("..").join("yw-engine").join("src");
+        if engine.is_dir() {
+            roots.push(engine);
+        }
+        roots
+    }
+
+    /// Every `.rs` under `dir`, test code included.
+    fn all_sources(dir: &Path, found: &mut Vec<(PathBuf, String)>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                all_sources(&path, found);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                let text = std::fs::read_to_string(&path).unwrap();
+                found.push((path, text));
+            }
+        }
+    }
+
+    /// The sources that are not test code: every `.rs` under `dir`, except files named
     /// `tests.rs` or under a `tests` folder, without their inline `#[cfg(test)]` modules.
     fn production_sources(dir: &Path, found: &mut Vec<(PathBuf, String)>) {
         for entry in std::fs::read_dir(dir).unwrap() {
@@ -196,10 +222,9 @@ mod tests {
     #[test]
     fn mock_source_is_built_only_by_tests() {
         let mut sources = Vec::new();
-        production_sources(
-            &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
-            &mut sources,
-        );
+        for root in source_roots() {
+            production_sources(&root, &mut sources);
+        }
         assert!(sources.len() > 100, "{}", sources.len());
         let mut offenders = Vec::new();
         for (path, text) in &sources {
@@ -218,6 +243,42 @@ mod tests {
                 rest = rest.replace(definition, "");
             }
             if rest.contains("MockSource") {
+                offenders.push(path.display().to_string());
+            }
+        }
+        assert!(offenders.is_empty(), "{offenders:?}");
+    }
+
+    /// Only `main.rs` gives the key worker the machine's PC/SC readers (2026-11-17 S2 review,
+    /// AGENTS rule 3): in every source, test code included (`src` and `tests` of yw-app and,
+    /// once it exists, yw-engine), `WinKeyPlatform::deps()` is called only by `main.rs` and
+    /// `PcscSource` is named in code only by its definition and `store.rs` (`deps`). Tests on
+    /// real files use `WinKeyPlatform::deps_with_cards` with `yubikey::NoReaders` or the
+    /// emulator. Comment lines are not code.
+    #[test]
+    fn pcsc_readers_only_from_main() {
+        let mut sources = Vec::new();
+        for root in source_roots() {
+            all_sources(&root, &mut sources);
+            let tests = root.join("..").join("tests");
+            if tests.is_dir() {
+                all_sources(&tests, &mut sources);
+            }
+        }
+        assert!(sources.len() > 150, "{}", sources.len());
+        let mut offenders = Vec::new();
+        for (path, text) in &sources {
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let code: String = text
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let pcsc_allowed = name == "card_pcsc.rs" || name == "store.rs";
+            let deps_allowed = name == "main.rs" || name == "card_pcsc.rs";
+            if (code.contains("PcscSource") && !pcsc_allowed)
+                || (code.contains("WinKeyPlatform::deps()") && !deps_allowed)
+            {
                 offenders.push(path.display().to_string());
             }
         }

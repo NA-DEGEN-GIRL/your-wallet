@@ -61,7 +61,10 @@ fn temp_dir(tag: &str) -> TestResult<PathBuf> {
 /// A key worker with the `abandon` wallet imported, and the public keys of standard Solana
 /// accounts 0 and 1.
 fn worker(dir: &std::path::Path) -> TestResult<(KeyWorker, [u8; 32], [u8; 32])> {
-    let mut worker = KeyWorker::new(dir, yw_app::store::WinKeyPlatform::deps());
+    let mut worker = KeyWorker::new(
+        dir,
+        yw_app::store::WinKeyPlatform::deps_with_cards(Box::new(yw_app::yubikey::NoReaders)),
+    );
     let _ = worker.handle(KeyJob::Load);
     let preview = worker.handle(KeyJob::PreviewImport {
         password: Some(Zeroizing::new(b"sol dapp flow password".to_vec())),

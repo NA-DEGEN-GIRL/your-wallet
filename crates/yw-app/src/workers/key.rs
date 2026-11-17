@@ -1236,13 +1236,6 @@ impl KeyWorker {
         )
     }
 
-    /// Tests: writes `plaintext` as the meta sidecar as it is (e.g. the JSON an older build
-    /// wrote), bypassing `Meta::to_json`.
-    #[cfg(test)]
-    pub(crate) fn test_write_meta_bytes(&mut self, plaintext: &[u8]) -> Result<u64, VaultError> {
-        self.vault()?.save_sidecar(FileKind::Meta, plaintext)
-    }
-
     /// Locks the vault and wipes held import buffers.
     pub fn lock(&mut self) {
         self.pending = None;
@@ -2338,7 +2331,6 @@ pub(crate) mod tests {
         };
         assert!(!accept_result(&stale, 2));
         assert!(accept_result(&results[1], 7));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// spec/10 §13 minimal EVM end to end on the key worker, with the APDU emulator as the card:
@@ -2594,16 +2586,16 @@ pub(crate) mod tests {
                 yw_core::yubikey::CardError::Transport(yw_core::yubikey::TransportFault::NoCard)
             )))
         );
-        drop(worker);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A worker on the `abandon` wallet with two emulated `YubiKey`s enrolled: card A (SIG = EVM 0,
     /// AUT = EVM 1, PIV 82 = Solana 0) and card B (SIG = BIP84 mainnet address 0); both cards stay
     /// inserted. Returns the worker, the cards (A, B), the folder and the reconciled meta.
     /// `deps` gives the storage and the clock (its card source is replaced by the emulator):
-    /// `testing::deps()` here, `store::WinKeyPlatform::deps()` in the app tests, which read the
-    /// files themselves.
+    /// `testing::deps()` here, the Windows platform on real files (no readers) in the App tests,
+    /// which read the files themselves. Those tests stay in yw-app, so this helper moves to
+    /// `yw_engine::testkit` (always compiled, hidden from the docs) when the worker moves
+    /// (spec/15 §11.4 S2, 2026-11-17 review).
     pub(crate) fn yubikey_wallet(
         tag: &str,
         deps: KeyDeps,
@@ -2823,7 +2815,7 @@ pub(crate) mod tests {
         use yw_core::btc::account::HwBtcKey;
         use yw_core::btc::{BtcAccountId, ScriptType};
 
-        let (mut worker, _cards, dir, loaded) = yubikey_wallet("reconcile", testing::deps());
+        let (mut worker, _cards, _, loaded) = yubikey_wallet("reconcile", testing::deps());
         assert!(loaded.mismatch, "the first load adds the accounts");
         let meta = &loaded.meta;
         let evm: Vec<(u32, &str, &str)> = meta
@@ -2927,8 +2919,6 @@ pub(crate) mod tests {
             [(serials[0], "메인".to_owned())],
             "the removed card's name goes with its record"
         );
-        drop(worker);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// spec/10 §6.4, §13: `SignSolCard` signs an approved devnet transfer of `YubiKey` Solana
@@ -2953,7 +2943,7 @@ pub(crate) mod tests {
         const FROM: &str = "HAgk14JpMQLgt6rVgv7cBQFJWFto5Dqxi472uT3DKpqk";
         const TO: &str = "Hh8QwFUA6MtVu1qAoq12ucvFHNwCcVTV7hpWjeY1Hztb";
         const NOW: u64 = 1_800_000_000_000;
-        let (mut worker, cards, dir, _) = yubikey_wallet("sol", testing::deps());
+        let (mut worker, cards, _, _) = yubikey_wallet("sol", testing::deps());
         let approve = |id: u8| {
             let intent = SolTransferIntent {
                 id: [id; 16],
@@ -3039,8 +3029,6 @@ pub(crate) mod tests {
             cards.lock().unwrap().iter().all(|card| !card.saw_write()),
             "card signing sends no write"
         );
-        drop(worker);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// spec/07 §20.8, spec/10 §6.4: a sign-only dApp request of three transactions goes the
@@ -3081,7 +3069,7 @@ pub(crate) mod tests {
             out
         };
         let txs: Vec<Vec<u8>> = (1..=3).map(tx).collect();
-        let (mut worker, cards, dir, _) = yubikey_wallet("sol-dapp", testing::deps());
+        let (mut worker, cards, _, _) = yubikey_wallet("sol-dapp", testing::deps());
         let approve = |id: u8, source: SolKeySource| {
             let item = SolTxItemFacts {
                 tables: Ok((0, Vec::new())),
@@ -3183,8 +3171,6 @@ pub(crate) mod tests {
         };
         check(list);
         assert_eq!(touches(&cards), 3);
-        drop(worker);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// spec/07 §20.8, spec/10 §6.4: `SignSolDappCard` signs an approved dApp send of `YubiKey`
@@ -3222,7 +3208,7 @@ pub(crate) mod tests {
         tx.extend_from_slice(&[5; 32]);
         tx.extend_from_slice(&[7; 32]);
         tx.extend_from_slice(&[1, 1, 1, 0, 1, 9]);
-        let (mut worker, cards, dir, _) = yubikey_wallet("sol-dapp-send", testing::deps());
+        let (mut worker, cards, _, _) = yubikey_wallet("sol-dapp-send", testing::deps());
         let approve = |id: u8| {
             let request = SolTxRequest {
                 id: yw_core::approval::ApprovalId([id; 16]),
@@ -3332,8 +3318,6 @@ pub(crate) mod tests {
             cards.lock().unwrap().iter().all(|card| !card.saw_write()),
             "card signing sends no write"
         );
-        drop(worker);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// spec/10 §6.3, §13: `SignBtcCard` spends two inputs of the `YubiKey` BIP84 address on card
@@ -3359,7 +3343,7 @@ pub(crate) mod tests {
 
         const TIP: u32 = 900_000;
         const NOW_MS: u64 = 1_793_074_713_000;
-        let (mut worker, cards, dir, _) = yubikey_wallet("btc", testing::deps());
+        let (mut worker, cards, _, _) = yubikey_wallet("btc", testing::deps());
         let id = BtcAccountId::Hardware {
             key: HwBtcKey::Address(0),
             script_type: ScriptType::P2wpkh,
@@ -3509,9 +3493,6 @@ pub(crate) mod tests {
             .count();
         assert_eq!(signs - signs_before, 2, "one card signature per input");
         assert!(cards.iter().all(|card| !card.saw_write()));
-        drop(cards);
-        drop(worker);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The wizard jobs on the emulator (spec/10 §7, §7.5, §9.3): the preview holds the seed and
@@ -3791,8 +3772,6 @@ pub(crate) mod tests {
             ),
             Some(YkOutcome::Preview(Err(_)))
         ));
-        drop(worker);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// spec/10 §7.3, §9.1: `Identify` refuses two inserted cards and names the one card with its
@@ -3871,7 +3850,5 @@ pub(crate) mod tests {
             unreachable!("counters");
         };
         assert_eq!(counters.pw3, Some(3));
-        drop(worker);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -41,6 +41,29 @@ fn temp_dir(tag: &str) -> PathBuf {
     dir
 }
 
+/// The key worker's deps on real files: `store::WinKeyPlatform` and `SystemClock` as in
+/// `main.rs`, but no card readers (AGENTS rule 3: a test never reaches the machine's PC/SC
+/// readers; the card tests swap in the emulator).
+fn file_deps() -> crate::workers::key::platform::KeyDeps {
+    crate::store::WinKeyPlatform::deps_with_cards(Box::new(crate::yubikey::NoReaders))
+}
+
+/// Seals `plaintext` as the wallet's meta sidecar as it is (e.g. the JSON an older build wrote),
+/// bypassing `Meta::to_json`: a second vault session on the same files, unlocked with
+/// `password`. The worker's own session reads the file again on its next meta load.
+/// (2026-11-17 S2 review: replaces the key worker's `cfg(test)` hook `test_write_meta_bytes`,
+/// which these App tests cannot reach once the worker moves to yw-engine; a raw meta writer is
+/// not built into release, owner decision.)
+fn seal_meta_bytes(dir: &std::path::Path, password: &[u8], plaintext: &[u8]) {
+    use yw_core::vault::{FileKind, Vault};
+    let storage = crate::store::FileStorage::open(dir).unwrap();
+    let mut vault = Vault::load(Box::new(storage)).unwrap();
+    let slot = crate::store::WinKeyPlatform::locked_slot().unwrap();
+    let password = yw_core::password::VaultPassword::new(password).unwrap();
+    vault.unlock(&password, Box::new(slot)).unwrap();
+    vault.save_sidecar(FileKind::Meta, plaintext).unwrap();
+}
+
 fn app_at(dir: &std::path::Path) -> App {
     App::new(
         Paths {
@@ -66,7 +89,7 @@ impl Harness {
     fn new(tag: &str) -> Self {
         let dir = temp_dir(tag);
         let app = app_at(&dir);
-        let worker = KeyWorker::new(&dir, crate::store::WinKeyPlatform::deps());
+        let worker = KeyWorker::new(&dir, file_deps());
         app.key(crate::events::KeyJob::Load);
         let mut harness = Self {
             app,
@@ -3251,8 +3274,7 @@ fn yubikey_accounts_and_the_card_step() {
     use crate::app_sol::SolAccountId;
     use crate::events::{KeyJob, SignInfo};
 
-    let (worker, cards, dir, _) =
-        crate::workers::key::tests::yubikey_wallet("app", crate::store::WinKeyPlatform::deps());
+    let (worker, cards, dir, _) = crate::workers::key::tests::yubikey_wallet("app", file_deps());
     let mut h = Harness {
         app: app_at(&dir),
         worker,
@@ -3648,11 +3670,10 @@ fn card_harness(tag: &str, serial: u32) -> (Harness, Cards) {
     let cards: Cards = std::sync::Arc::new(std::sync::Mutex::new(vec![
         yw_core::yubikey::mock::MockCard::new(serial),
     ]));
-    let worker = KeyWorker::new(&dir, crate::store::WinKeyPlatform::deps()).with_card_source(
-        Box::new(crate::yubikey::MockSource {
+    let worker =
+        KeyWorker::new(&dir, file_deps()).with_card_source(Box::new(crate::yubikey::MockSource {
             cards: std::sync::Arc::clone(&cards),
-        }),
-    );
+        }));
     let app = app_at(&dir);
     app.key(crate::events::KeyJob::Load);
     let mut h = Harness {
@@ -3773,8 +3794,7 @@ fn the_touch_prompt_is_gone_once_the_card_answers() {
     use crate::app_card::T_CARD_TOUCH;
     use crate::events::{KeyJob, SignInfo};
 
-    let (worker, cards, dir, _) =
-        crate::workers::key::tests::yubikey_wallet("touch", crate::store::WinKeyPlatform::deps());
+    let (worker, cards, dir, _) = crate::workers::key::tests::yubikey_wallet("touch", file_deps());
     let mut h = Harness {
         app: app_at(&dir),
         worker,
@@ -4704,11 +4724,10 @@ fn yubikey_only_wallet_from_the_first_run_screen() {
     h.app.lock(LockReason::Manual);
     yk_pump(&mut h, &mut seen);
     let dir = h.dir.clone();
-    let worker = KeyWorker::new(&dir, crate::store::WinKeyPlatform::deps()).with_card_source(
-        Box::new(crate::yubikey::MockSource {
+    let worker =
+        KeyWorker::new(&dir, file_deps()).with_card_source(Box::new(crate::yubikey::MockSource {
             cards: std::sync::Arc::clone(&cards),
-        }),
-    );
+        }));
     let mut again = Harness {
         app: app_at(&dir),
         worker,
@@ -4801,7 +4820,7 @@ fn yubikey_badge_is_chrome_and_the_solana_note() {
     use yw_core::yubikey::plan::KeyRole;
 
     let (mut worker, _cards, dir, _) =
-        crate::workers::key::tests::yubikey_wallet("badge", crate::store::WinKeyPlatform::deps());
+        crate::workers::key::tests::yubikey_wallet("badge", file_deps());
     let Some(KeyOutcome::HardwareKeys(Ok(keys))) =
         worker.handle(crate::events::KeyJob::HardwareKeys).pop()
     else {
@@ -4917,7 +4936,7 @@ fn backup_pending_after_restart_shows_s04_and_receive() {
         // The first run: create, `다 적었습니다` (the challenge is asked for), quit before the quiz.
         let mut first = Harness {
             app: app_at(&dir),
-            worker: KeyWorker::new(&dir, crate::store::WinKeyPlatform::deps()),
+            worker: KeyWorker::new(&dir, file_deps()),
             dir: temp_dir("bp-restart-unused"),
             phrase: None,
             address: None,
@@ -4931,16 +4950,17 @@ fn backup_pending_after_restart_shows_s04_and_receive() {
         first.app.key(crate::events::KeyJob::BackupChallenge);
         first.pump();
         // The older build's meta.
-        first
-            .worker
-            .test_write_meta_bytes(old_build_meta(&address.to_lower_hex()).as_bytes())
-            .unwrap();
+        seal_meta_bytes(
+            &dir,
+            WALLET_PW,
+            old_build_meta(&address.to_lower_hex()).as_bytes(),
+        );
     }
 
     // The new build starts on the same folder.
     let mut again = Harness {
         app: app_at(&dir),
-        worker: KeyWorker::new(&dir, crate::store::WinKeyPlatform::deps()),
+        worker: KeyWorker::new(&dir, file_deps()),
         dir,
         phrase: None,
         address: None,
@@ -5574,12 +5594,8 @@ fn unreadable_meta_is_never_overwritten_and_prev_is_checked_before_anything_move
     h.create_and_confirm();
     h.pump();
     // Two documents this build cannot read: the file and its `.prev`.
-    h.worker
-        .test_write_meta_bytes(br#"{"schema":"yw-meta/3","newer":"#)
-        .unwrap();
-    h.worker
-        .test_write_meta_bytes(br#"{"schema":"yw-meta/3","newest":"#)
-        .unwrap();
+    seal_meta_bytes(&h.dir, WALLET_PW, br#"{"schema":"yw-meta/3","newer":"#);
+    seal_meta_bytes(&h.dir, WALLET_PW, br#"{"schema":"yw-meta/3","newest":"#);
     let meta_file = h.dir.join("meta.ywm");
     let sealed = std::fs::read(&meta_file).unwrap();
     h.app.request_meta();

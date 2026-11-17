@@ -119,18 +119,21 @@ pub(crate) mod testing {
     use yw_core::error::{StorageError, VaultError};
     use yw_core::lang::Lang;
     use yw_core::vault::{FileKind, LockedSlot, SLOT_LEN, VaultStorage, peek_generation};
-    use yw_core::yubikey::{CardError, TransportFault};
     use yw_platform::Clock;
 
     use super::{KeyDeps, KeyPlatform, WalletStore};
     use crate::wallet_files::{ResetError, ResetReport, file_name};
-    use crate::yubikey::{CardSource, CardVisit};
 
     /// The monotonic time of [`FixedClock`]; card and software sign jobs pass it as
     /// `consumed_at_ms`.
     pub(crate) const MONO_MS: u64 = 86_400_000;
 
-    /// Monotonic time stands still at [`MONO_MS`]; wall time is real.
+    /// The wall time of [`FixedClock`] (2026-11-17T00:00:00Z).
+    pub(crate) const WALL_MS: u64 = 1_794_873_600_000;
+
+    /// Both times stand still: monotonic at [`MONO_MS`], wall at [`WALL_MS`]. (2026-11-17 S2
+    /// review: the wall time was `SystemTime::now()`, which the yw-engine clippy policy forbids
+    /// once the worker moves there; no test reads the real date.)
     pub(crate) struct FixedClock;
 
     impl Clock for FixedClock {
@@ -139,23 +142,10 @@ pub(crate) mod testing {
         }
 
         fn now_unix_ms(&self) -> u64 {
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |elapsed| {
-                    u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-                })
+            WALL_MS
         }
 
         fn sleep_ms(&self, _ms: u64) {}
-    }
-
-    /// No readers.
-    pub(crate) struct NoCards;
-
-    impl CardSource for NoCards {
-        fn each_card(&mut self, _visit: &mut CardVisit<'_>) -> Result<(), CardError> {
-            Err(CardError::Transport(TransportFault::NoReader))
-        }
     }
 
     #[derive(Default)]
@@ -314,7 +304,7 @@ pub(crate) mod testing {
         KeyDeps {
             platform: Box::new(MemPlatform::default()),
             clock: Box::new(FixedClock),
-            cards: Box::new(NoCards),
+            cards: Box::new(crate::yubikey::NoReaders),
         }
     }
 

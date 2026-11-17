@@ -18,6 +18,7 @@ use yw_app::system_clock::SystemClock;
 use yw_app::workers::journal::btc::BtcMetaDone;
 use yw_app::workers::journal::{JournalState, SolSignTimes};
 use yw_app::workers::key::KeyWorker;
+use yw_app::yubikey::NoReaders;
 use yw_core::approval::ApprovalStore;
 use yw_core::bip32::path::BtcChain;
 use yw_core::btc::{BtcAccountId, BtcNetwork, ScriptType};
@@ -106,7 +107,7 @@ fn imported(outcome: KeyOutcome) -> TestResult<ImportedAccount> {
 )]
 fn key_only_vault_through_the_key_worker() -> TestResult {
     let dir = temp_dir("keyonly")?;
-    let mut worker = KeyWorker::new(&dir, WinKeyPlatform::deps());
+    let mut worker = KeyWorker::new(&dir, WinKeyPlatform::deps_with_cards(Box::new(NoReaders)));
     assert!(matches!(
         one(&mut worker, KeyJob::Load)?,
         KeyOutcome::Loaded {
