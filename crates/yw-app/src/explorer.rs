@@ -13,7 +13,7 @@ use yw_core::hypercore::HcNetwork;
 use yw_core::lang::Lang;
 use yw_core::zec::ZecNetwork;
 use yw_json::Value;
-use yw_win::http::HttpsUrl;
+use yw_platform::http::HttpsUrl;
 
 use crate::network::{BtcNet, NetworkId, SolCluster};
 use crate::text::{json_object, json_object_owned, json_str};

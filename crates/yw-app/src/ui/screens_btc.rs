@@ -2094,7 +2094,7 @@ mod tests {
     use std::collections::BTreeSet;
 
     use yw_core::btc::{BtcMeta, BtcNetwork, Sats};
-    use yw_win::http::HttpsUrl;
+    use yw_platform::http::HttpsUrl;
 
     use super::{
         T_BTC_ESPLORA_NOTE, fee_choice_of, fee_ids, grouped, ids, mismatch_labels, network_tone,

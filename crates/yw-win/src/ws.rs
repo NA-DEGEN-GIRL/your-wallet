@@ -10,6 +10,12 @@
 //! serialized by a lock); [`WebSocket::abort`] (`WinHttpWebSocketClose` with a 2 s close timeout)
 //! makes a pending receive return. Handles close on drop. Errors carry no URL (the relay URL
 //! holds the auth token and the project id).
+//!
+//! 2026-11-17: the error type is `yw_platform::http::HttpError`. A non-101 answer to the upgrade
+//! is `UpgradeRefused(status)` (before: `Os` with the API name `WinHttpReceiveResponse` and the
+//! status as the code), and an IPv6 literal host reaches `WinHttpConnect` without its brackets,
+//! as in [`crate::http`] (before, the bracketed text was passed, which `WinHttpConnect` does not
+//! take as an IPv6 address).
 
 use std::sync::Mutex;
 
@@ -31,8 +37,10 @@ use windows_sys::Win32::Networking::WinHttp::{
     WinHttpWebSocketReceive, WinHttpWebSocketSend,
 };
 
+use yw_platform::http::{HttpError, HttpsUrl};
+
 use crate::error::WinError;
-use crate::http::{HttpError, HttpsUrl};
+use crate::http::connect_host;
 use crate::wide::to_wide;
 
 /// Largest text message accepted (relay frames are small; a bigger one is a protocol error).
@@ -59,19 +67,14 @@ impl Drop for Handle {
 }
 
 fn os_error(api: &'static str) -> HttpError {
-    let error = WinError::last(api);
-    match error.code {
-        ERROR_WINHTTP_TIMEOUT => HttpError::Timeout,
-        ERROR_WINHTTP_SECURE_FAILURE => HttpError::Tls,
-        _ => HttpError::Os(error),
-    }
+    code_error(WinError::last(api).code)
 }
 
-fn code_error(api: &'static str, code: u32) -> HttpError {
+fn code_error(code: u32) -> HttpError {
     match code {
         ERROR_WINHTTP_TIMEOUT => HttpError::Timeout,
         ERROR_WINHTTP_SECURE_FAILURE => HttpError::Tls,
-        _ => HttpError::Os(WinError::new(api, code)),
+        _ => HttpError::Os(code),
     }
 }
 
@@ -120,11 +123,12 @@ impl WebSocket {
     ///
     /// # Errors
     ///
-    /// [`HttpError`]; `Os(WinHttpReceiveResponse, status)` when the server answers without 101
-    /// (e.g. 401 for a bad project id or auth token: the code is the HTTP status).
+    /// [`HttpError`]; `UpgradeRefused(status)` when the server answers without 101 (e.g. 401 for
+    /// a bad project id or auth token).
     #[expect(clippy::too_many_lines, reason = "one linear WinHTTP upgrade sequence")]
     pub fn connect(url: &HttpsUrl, timeout_ms: u32) -> Result<Self, HttpError> {
-        let agent = to_wide("YourWallet/3", "WinHttpOpen").map_err(HttpError::Os)?;
+        let agent =
+            to_wide("YourWallet/3", "WinHttpOpen").map_err(|error| HttpError::Os(error.code))?;
         // SAFETY: `agent` is NUL-terminated and live; no proxy strings; synchronous mode.
         let session = Handle(unsafe {
             WinHttpOpen(
@@ -153,7 +157,8 @@ impl WebSocket {
         if unsafe { WinHttpSetTimeouts(session.0, timeout, timeout, timeout, timeout) } == 0 {
             return Err(os_error("WinHttpSetTimeouts"));
         }
-        let host = to_wide(url.host(), "WinHttpConnect").map_err(|_| HttpError::InvalidUrl)?;
+        let host = to_wide(connect_host(url.host()), "WinHttpConnect")
+            .map_err(|_| HttpError::InvalidUrl)?;
         let port = url.port().unwrap_or(INTERNET_DEFAULT_HTTPS_PORT);
         // SAFETY: Opens a connection handle under our session; `host` is NUL-terminated.
         let connect = Handle(unsafe { WinHttpConnect(session.0, host.as_ptr(), port, 0) });
@@ -229,10 +234,9 @@ impl WebSocket {
             return Err(os_error("WinHttpQueryHeaders"));
         }
         if status != 101 {
-            return Err(HttpError::Os(WinError::new(
-                "WinHttpReceiveResponse",
-                status,
-            )));
+            return Err(HttpError::UpgradeRefused(
+                u16::try_from(status).unwrap_or(u16::MAX),
+            ));
         }
         // SAFETY: Completes the upgrade of our request handle (no context).
         let socket = Handle(unsafe { WinHttpWebSocketCompleteUpgrade(request.0, 0) });
@@ -274,7 +278,7 @@ impl WebSocket {
             )
         };
         if code != 0 {
-            return Err(code_error("WinHttpWebSocketSend", code));
+            return Err(code_error(code));
         }
         Ok(())
     }
@@ -308,7 +312,7 @@ impl WebSocket {
                 )
             };
             if code != 0 {
-                return Err(code_error("WinHttpWebSocketReceive", code));
+                return Err(code_error(code));
             }
             let got = chunk
                 .get(..usize::try_from(read).unwrap_or(0))
@@ -333,7 +337,7 @@ impl WebSocket {
                         _ => {}
                     }
                 }
-                _ => return Err(HttpError::Os(WinError::new("WinHttpWebSocketReceive", 0))),
+                _ => return Err(HttpError::Os(0)),
             }
         }
     }

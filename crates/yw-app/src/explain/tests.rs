@@ -807,7 +807,7 @@ struct Recorder {
 impl LlmTransport for Recorder {
     fn post(
         &self,
-        _url: &yw_win::http::EndpointUrl,
+        _url: &yw_platform::http::EndpointUrl,
         headers: &[(&str, &str)],
         body: &[u8],
         _max_response: usize,

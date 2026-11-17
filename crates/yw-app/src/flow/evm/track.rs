@@ -9,7 +9,7 @@ use yw_core::journal::evm::{
     DROP_CONFIRM_MS, EvmRecord, FLAG_MANUAL_RESEND, FLAG_RPC_HASH_MISMATCH,
     REBROADCAST_INTERVAL_MS, Transition, TxState, latest_candidate,
 };
-use yw_win::http::HttpsUrl;
+use yw_platform::http::HttpsUrl;
 
 use super::{ChainCheck, Clock, Limits, MismatchKind, SharedTransport, check_chain, check_once};
 use crate::errors::ErrorCode;

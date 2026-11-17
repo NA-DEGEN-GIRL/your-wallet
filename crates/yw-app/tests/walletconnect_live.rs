@@ -73,7 +73,7 @@ fn live_relay_round_trip() {
                 assert_eq!(code, 403, "the relay refused our auth JWT");
             }
             Err(ConnectError::Network) => {
-                let parsed = yw_win::http::HttpsUrl::parse(&url(
+                let parsed = yw_platform::http::HttpsUrl::parse(&url(
                     &[7; 32],
                     "00000000000000000000000000000000",
                 ));

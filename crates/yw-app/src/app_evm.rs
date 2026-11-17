@@ -2878,7 +2878,7 @@ mod tests {
         app.evm.journal = Some(JournalView::default());
         app.apikeys.set_rpc(
             NetworkId::Eip155(app.settings.evm_chain_id),
-            &yw_win::http::HttpsUrl::parse("https://rpc.example.test/").unwrap(),
+            &yw_platform::http::HttpsUrl::parse("https://rpc.example.test/").unwrap(),
         );
         let (tx, rx) = std::sync::mpsc::channel();
         app.rpc_tx = Some(tx);

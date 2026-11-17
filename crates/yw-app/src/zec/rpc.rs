@@ -9,7 +9,7 @@
 use yw_core::zec::upgrade::ConsensusObservation;
 use yw_core::zec::{ZecNetwork, ZecOutPoint, ZecUtxo};
 use yw_json::{Number, Value};
-use yw_win::http::{HttpError, HttpsUrl};
+use yw_platform::http::{HttpError, HttpsUrl};
 
 use crate::errors::ErrorCode;
 use crate::rpc::{RpcClient, RpcFailure, Transport, classify};

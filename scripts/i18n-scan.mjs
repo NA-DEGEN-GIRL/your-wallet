@@ -10,7 +10,8 @@ import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HANGUL = /[ᄀ-ᇿ㄰-㆏ꥠ-꥿가-힯ힰ-퟿]/u;
-const ROOTS = ["crates/yw-core/src", "crates/yw-app/src", "extension/src"];
+// yw-platform/src since 2026-11-17 (spec/15 §11.4 S1): shared non-Windows code must not grow fixed Korean text.
+const ROOTS = ["crates/yw-core/src", "crates/yw-platform/src", "crates/yw-app/src", "extension/src"];
 const CATALOGUE_MACROS = ["texts!", "rules!"];
 // The language card shows the first two in both languages (spec/14 §1); the last two are font
 // measurement probes, never shown.

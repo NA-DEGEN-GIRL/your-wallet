@@ -8,7 +8,7 @@
 
 use yw_core::btc::Txid;
 use yw_core::btc::policy::{MempoolAccept, SendRawResult};
-use yw_win::http::HttpsUrl;
+use yw_platform::http::HttpsUrl;
 
 use super::chain::{ChainInput, ChainSession, check_core};
 use super::client::{BtcClient, Tag};

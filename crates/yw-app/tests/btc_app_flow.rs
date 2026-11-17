@@ -51,7 +51,7 @@ use yw_core::btc::{
 use yw_core::journal::btc::BtcTxState;
 use yw_core::keyimport::{ImportPreview, ImportSpec};
 use yw_core::secret::Zeroizing;
-use yw_win::http::HttpsUrl;
+use yw_platform::http::HttpsUrl;
 
 const ABANDON: &str =
     "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
@@ -266,7 +266,7 @@ fn answer(world: &Mutex<World>, call: &Call) -> Reply {
             let id = txid(&tx).to_display_hex();
             let witness_id = Txid::from_bytes(wtxid(&tx)).to_display_hex();
             if world.precheck_transport {
-                return Reply::Transport(yw_win::http::HttpError::Timeout);
+                return Reply::Transport(yw_platform::http::HttpError::Timeout);
             }
             if let Some(reason) = world.reject {
                 return Reply::Result(format!(
@@ -298,7 +298,7 @@ fn answer(world: &Mutex<World>, call: &Call) -> Reply {
                 return Reply::RpcError(code);
             }
             if world.send_transport {
-                return Reply::Transport(yw_win::http::HttpError::Timeout);
+                return Reply::Transport(yw_platform::http::HttpError::Timeout);
             }
             let id = txid(&tx);
             if world.find(&id.to_display_hex()).is_none() {
@@ -314,7 +314,7 @@ fn answer(world: &Mutex<World>, call: &Call) -> Reply {
         },
         (Verb::Rpc, "getblockhash") if world.fail_chain_after_precheck && world.prechecked => {
             world.fail_chain_after_precheck = false;
-            Reply::Transport(yw_win::http::HttpError::Timeout)
+            Reply::Transport(yw_platform::http::HttpError::Timeout)
         }
         (Verb::Rpc, "getblockchaininfo") if world.core_tip.is_some() => {
             let tip = world.core_tip.unwrap_or(TIP);

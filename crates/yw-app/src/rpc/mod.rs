@@ -13,7 +13,8 @@ use std::time::Instant;
 
 use yw_core::evm::amount::U256;
 use yw_json::{Limits, Number, Value};
-use yw_win::http::{Client, EndpointUrl, HttpError, HttpsUrl, Response, Timeouts};
+use yw_platform::http::{EndpointUrl, HttpError, HttpsUrl, Response, Timeouts};
+use yw_win::http::Client;
 
 use crate::errors::ErrorCode;
 use crate::network::{BtcNet, NetworkId, SolCluster};
@@ -146,7 +147,9 @@ pub const fn classify(failure: RpcFailure) -> ErrorCode {
         RpcFailure::Http(HttpError::Tls) => ErrorCode::Rpc008,
         RpcFailure::Http(HttpError::TooLarge) | RpcFailure::Malformed => ErrorCode::Rpc005,
         RpcFailure::Http(HttpError::InvalidUrl) => ErrorCode::Key003,
-        RpcFailure::Http(HttpError::Os(_) | HttpError::InvalidHeader) => ErrorCode::Rpc001,
+        RpcFailure::Http(
+            HttpError::Os(_) | HttpError::InvalidHeader | HttpError::UpgradeRefused(_),
+        ) => ErrorCode::Rpc001,
         RpcFailure::Status(401 | 403) => ErrorCode::Rpc003,
         RpcFailure::Status(429) | RpcFailure::Rpc(-32_005 | 429) => ErrorCode::Rpc004,
         RpcFailure::Status(_) | RpcFailure::Rpc(_) => ErrorCode::Rpc007,

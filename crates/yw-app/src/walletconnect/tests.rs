@@ -1507,3 +1507,36 @@ fn restored_sessions_follow_grants_and_chains() {
             .any(|event| matches!(event, WcEvent::Ended(ended) if *ended == origin))
     );
 }
+
+// ----- Relay connect errors (spec/13 §2) ----------------------------------------------------
+
+/// A 401/403 answer to the WebSocket upgrade is the relay refusing the project id (the 5-minute
+/// backoff); every other failure, including other statuses and OS errors, is a network failure.
+#[test]
+fn relay_connect_error_mapping() {
+    use super::worker::{ConnectError, connect_error};
+    use yw_platform::http::HttpError;
+    assert_eq!(
+        connect_error(HttpError::UpgradeRefused(401)),
+        ConnectError::Unauthorized(401)
+    );
+    assert_eq!(
+        connect_error(HttpError::UpgradeRefused(403)),
+        ConnectError::Unauthorized(403)
+    );
+    for other in [
+        HttpError::UpgradeRefused(200),
+        HttpError::UpgradeRefused(404),
+        HttpError::UpgradeRefused(500),
+        HttpError::Os(401),
+        HttpError::Os(403),
+        HttpError::Os(0),
+        HttpError::Timeout,
+        HttpError::Tls,
+        HttpError::TooLarge,
+        HttpError::InvalidUrl,
+        HttpError::InvalidHeader,
+    ] {
+        assert_eq!(connect_error(other), ConnectError::Network, "{other:?}");
+    }
+}

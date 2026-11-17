@@ -36,7 +36,7 @@ use yw_core::journal::btc::{
     in_flight_replacements, of_account, related_records, track_mode, unspendable_outpoints,
 };
 use yw_core::lang::Lang;
-use yw_win::http::HttpsUrl;
+use yw_platform::http::HttpsUrl;
 
 use crate::apikeys::ApiKeys;
 use crate::app_sol::ReviewBlocker;

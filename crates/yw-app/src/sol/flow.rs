@@ -38,7 +38,7 @@ use yw_core::sol::sign::{SOL_MAX_LVBH_AHEAD, SOL_MIN_LVBH_AHEAD};
 use yw_core::sol::template::{SplAccounts, spl_entries};
 use yw_core::sol::token::{MintView, TokenHolding, check_mint, classify_holding, parse_mint_any};
 use yw_core::sol::{SolAddress, SolAsset, SolCluster, SolTransferCore, SplAllowEntry};
-use yw_win::http::HttpsUrl;
+use yw_platform::http::HttpsUrl;
 
 use super::rpc::{self as sol_rpc, AccountData, SendConfig};
 use crate::errors::ErrorCode;

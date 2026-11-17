@@ -16,7 +16,7 @@ use yw_core::bip32::AccountXpub;
 use yw_core::btc::BtcNetwork;
 use yw_core::btc::network::{SIGNET_GENESIS_HEX, TESTNET3_GENESIS_HEX};
 use yw_json::{Limits, Number, Object, Value};
-use yw_win::http::{HttpError, HttpsUrl, Response};
+use yw_platform::http::{HttpError, HttpsUrl, Response};
 
 pub type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 

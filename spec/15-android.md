@@ -422,7 +422,7 @@ yw-android   Android 셸: JNI(§3.2), 입력 → `Cmd`, `Effect` → Java, 화�
 
 | 단계 | 내용 | 위험 |
 |---|---|---|
-| S1 | `yw-platform` 신설, `HttpsUrl` 등 순수 타입을 `yw-win`에서 옮김(`HttpError::Os`는 OS 오류 코드 숫자로), `monotonic_ms` 직접 호출을 `Clock`으로 | 낮음, 기계적 |
+| S1 | `yw-platform` 신설, `HttpsUrl` 등 순수 타입을 `yw-win`에서 옮김(`HttpError::Os`는 OS 오류 코드 숫자로, WebSocket 업그레이드 거절은 `UpgradeRefused(u16)`), `Clock` trait를 `yw-platform`으로 옮김. **끝남(2026-11-17).** `monotonic_ms` 직접 호출(33개 파일)을 `Clock`으로 바꾸는 일은 S2(엔진으로 옮기는 모듈: `explain/`, `workers/journal.rs` 등)와 S4(`impl App`)로 미뤘다 — 지금 바꾸면 S4에서 같은 곳을 다시 고치게 된다 | 낮음, 기계적 |
 | S2 | 방향 틀린 의존 4곳 정리, `yw-engine` 신설 후 "이미 떼어 낼 수 있는 것" 이동(시험 포함) | 낮음–중간, 파일 이동이 큼 |
 | S3 | `Cmd`·`Effect` 도입: 컨트롤 id → `Cmd` 표, `refresh`·`notice`·`set_timer`·클립보드·`controls.set_text`를 `Effect`로, 폼 값을 엔진 상태로 | 중간–높음, 410곳 |
 | S4 | `App` 분리: 지갑 상태 → `yw-engine::Wallet`, Win32 핸들은 `yw-app`에 남김. 승인 흐름(`approved`·재시뮬레이션·`consume_and_sign`)을 엔진으로, 승인 창은 "신뢰 입력 신호 → `InteractionEvent`"만 남김 | 높음, 승인 보안 규칙 회귀 위험 — `tests/approval_interaction.rs`·`approval_golden.rs`를 먼저 늘린다 |

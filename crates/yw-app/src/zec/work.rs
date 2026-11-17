@@ -4,7 +4,7 @@
 //! asks the key worker to apply journal steps. URLs are never logged (D13).
 
 use yw_core::zec::{ZecNetwork, ZecOutPoint, ZecUtxo};
-use yw_win::http::HttpsUrl;
+use yw_platform::http::HttpsUrl;
 
 use super::rpc::{
     ChainView, SendOutcome, TxStatus, UsefulUtxos, ZecRpcError, chain_check, keep_useful, send_raw,

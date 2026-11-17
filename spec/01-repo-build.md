@@ -113,6 +113,7 @@ install.cmd  uninstall.cmd         소스 설치·제거 진입점(더블클릭,
 crates/
   yw-core/   Cargo.toml  clippy.toml(§5.1)  src/  tests/{*.rs, vectors/}   (모듈 §2.2, 테스트 배치 [09](09-testing.md) §2.1)
   yw-json/   Cargo.toml  src/{lib.rs, parse.rs, value.rs, write.rs, frame.rs}  tests/
+  yw-platform/ Cargo.toml  clippy.toml(§5.1)  src/{lib.rs, http.rs, clock.rs}  tests/   (§2.3a, 2026-11-17)
   yw-win/    Cargo.toml  src/{lib.rs, error.rs, wide.rs, time.rs, mem.rs, file.rs, dpapi.rs, clipboard.rs,
                               http.rs, ws.rs, pipe.rs, session.rs, process.rs, security.rs, input.rs, cng.rs, image.rs, pcsc.rs,
                               ui/{mod.rs, window.rs, msg.rs, paint.rs, controls.rs, capture.rs(개발 빌드 전용), secure_text.rs}}  tests/   (API §7; pcsc·cng [10], ws·image·`cng::p256_verify` [13])
@@ -212,15 +213,25 @@ pub enum ParseError { TooLarge, InvalidUtf8, Syntax { offset: usize }, Duplicate
 
 `frame` 모듈: native messaging·pipe 공통 프레이밍(4바이트 LE 길이 + payload, `read_frame`/`write_frame`, 상한 1,048,576), API는 [05](05-browser.md) §7.3.
 
+### 2.3a yw-platform 공개 API
+
+플랫폼 중립 타입과 trait(2026-11-17: Android 이식 S1에서 yw-win `http`의 순수 타입과 yw-app `flow::evm::Clock`을 옮겨 만들었다. 그 전에는 각각 yw-win·yw-app에 있었다). 의존성 0, `#![forbid(unsafe_code)]`, `#![deny(clippy::indexing_slicing, clippy::arithmetic_side_effects)]`. yw-core처럼 OS를 부르지 않는다: `crates/yw-platform/clippy.toml`은 yw-core의 것과 같다(§5.1).
+
+- `http`: `HttpsUrl`, `LoopbackUrl`, `EndpointUrl`, `Timeouts`(+`total_ms`), `Response`, `HttpError`, 상한 상수(`MAX_URL_BYTES`, `MAX_REQUEST_BODY`, `MAX_RESPONSE_CAP`, `MAX_HEADER_VALUE`, `MAX_CONTENT_TYPE_BYTES`)와 헤더 규칙 `valid_header`. 시그니처와 규칙은 §7.4. 클라이언트(`Client`)는 플랫폼마다 따로 있다(Windows: yw-win `http`).
+- `clock`: `pub trait Clock: Send + Sync { fn now_ms(&self) -> u64 /* 단조 ms */; fn now_unix_ms(&self) -> u64; fn sleep_ms(&self, ms: u64); }`. yw-app `flow::evm`이 다시 내보내고(`pub use yw_platform::Clock`) Windows 구현 `SystemClock`(yw-win `time::monotonic_ms`)은 yw-app에 남는다. yw-app의 `monotonic_ms` 직접 호출을 `Clock`으로 바꾸는 일은 S2(엔진으로 옮기는 모듈)·S4(App)에서 한다.
+
 ### 2.4 크레이트 의존 규칙 (검사 스크립트가 강제, §4.2)
 
 | 크레이트 | 로컬 의존 | 외부 의존(직접) | 종류 |
 |---|---|---|---|
 | yw-core | yw-json | §3.3 단계 목록 | lib |
 | yw-json | 없음 | 없음 | lib |
-| yw-win | 없음 | windows-sys | lib |
-| yw-app | yw-core, yw-json, yw-win | qrcodegen | bin (`#![windows_subsystem = "windows"]`) |
-| yw-host | yw-json, yw-win | 없음 | bin (콘솔 서브시스템) |
+| yw-platform | 없음 | 없음 | lib |
+| yw-win | yw-platform | windows-sys | lib |
+| yw-app | yw-core, yw-json, yw-platform, yw-win | qrcodegen | bin (`#![windows_subsystem = "windows"]`) |
+| yw-host | yw-json, yw-win (yw-win을 거쳐 yw-platform) | 없음 | bin (콘솔 서브시스템) |
+
+2026-11-17: yw-platform 행을 더했다. 그 전에는 yw-win의 로컬 의존이 없었다.
 
 yw-app·yw-host는 창·OS 호출이 없는 로직을 `lib.rs`에 두고 `tests/`로 시험하며 `main.rs`는 진입만 한다([09](09-testing.md) §2.1). 모든 멤버: `[dev-dependencies]` 금지, `build.rs` 금지(예외: yw-app은 실행 파일 링크 인자만 출력하는 `build.rs`를 [04](04-app-ui.md)가 필요로 할 때 둘 수 있다. 허용되는 링크 인자는 manifest 포함(`/MANIFEST:EMBED`·`/MANIFESTINPUT:`)과 커밋된 Win32 리소스 파일 `crates/yw-app/icons/yw-app.res`(앱 아이콘, link.exe가 cvtres로 변환)뿐이다. `build.rs`는 무엇도 컴파일·생성·다운로드하지 않는다. `.res`는 `scripts/make-icons.mjs`가 만들고 check.ps1 icons 단계가 커밋본과 같은지 확인한다).
 
@@ -233,7 +244,7 @@ yw-app·yw-host는 창·OS 호출이 없는 로직을 `lib.rs`에 두고 `tests/
 ```toml
 [workspace]
 resolver = "3"
-members = ["crates/yw-core", "crates/yw-json", "crates/yw-win", "crates/yw-app", "crates/yw-host"]
+members = ["crates/yw-core", "crates/yw-json", "crates/yw-platform", "crates/yw-win", "crates/yw-app", "crates/yw-host"]
 exclude = ["fuzz", "tools/btc-oracle", "tools/sol-oracle"]   # 각자 워크스페이스·lock([09] §2.4, [08] §14.3, [07] §17.3), 허용 목록 대상 아님, 배포하지 않음
 
 [workspace.package]
@@ -265,6 +276,7 @@ qrcodegen = { version = "=1.8.0", default-features = false }
 windows-sys = { version = "=0.61.2", default-features = false }   # feature 목록은 crates/yw-win/Cargo.toml에만
 yw-core = { path = "crates/yw-core" }
 yw-json = { path = "crates/yw-json" }
+yw-platform = { path = "crates/yw-platform" }
 yw-win = { path = "crates/yw-win" }
 
 [workspace.lints.rust]
@@ -306,17 +318,21 @@ debug = false
 
 ### 3.2 크레이트별 `Cargo.toml`
 
-모든 멤버의 `[package]`: `name = "<크레이트>"`, `version.workspace = true`, `edition.workspace = true`, `rust-version.workspace = true`, `license.workspace = true`, `publish.workspace = true`. yw-win 외 넷은 `[lints] workspace = true`. `[dependencies]` 항목은 모두 `<name>.workspace = true` 한 줄씩이다.
+모든 멤버의 `[package]`: `name = "<크레이트>"`, `version.workspace = true`, `edition.workspace = true`, `rust-version.workspace = true`, `license.workspace = true`, `publish.workspace = true`. yw-win 외 다섯은 `[lints] workspace = true`(2026-11-17: yw-platform이 더해져 넷에서 다섯). `[dependencies]` 항목은 모두 `<name>.workspace = true` 한 줄씩이다.
 
 | 크레이트 | `[dependencies]` |
 |---|---|
 | yw-core | argon2, blake2(Zcash, [12] §6.1), chacha20poly1305, curve25519-dalek(M7), ed25519-dalek(M7), getrandom, hkdf, hmac, pbkdf2, ripemd, secp256k1, sha2, sha3, subtle, zeroize(서드파티 15), yw-json |
 | yw-json | 없음(빈 `[dependencies]`) |
-| yw-app | qrcodegen, yw-core, yw-json, yw-win |
+| yw-platform | 없음(빈 `[dependencies]`) |
+| yw-app | qrcodegen, yw-core, yw-json, yw-platform, yw-win |
 | yw-host | yw-json, yw-win |
 
 ```toml
 # crates/yw-win/Cargo.toml (package 표 외 전체)
+[dependencies]
+yw-platform.workspace = true
+
 [dependencies.windows-sys]
 workspace = true
 features = [
@@ -353,8 +369,9 @@ windows-sys feature 추가·삭제는 크레이트 수를 바꾸지 않지만 yw
 | yw-win | windows-sys=0.61.2 windows-link=0.2.1 |
 | yw-app 추가 | qrcodegen=1.8.0 |
 | yw-json | 없음 |
+| yw-platform | 없음 |
 
-- 검사 결과(확인함): EVM 단계 yw-core 34, yw-json 0, yw-win 2, yw-app 37, yw-host 2. Solana 단계 yw-core 40, yw-app 43. Bitcoin 단계(M8)는 추가 크레이트가 없다(D5).
+- 검사 결과(확인함): EVM 단계 yw-core 34, yw-json 0, yw-win 2, yw-app 37, yw-host 2. Solana 단계 yw-core 40, yw-app 43. Bitcoin 단계(M8)는 추가 크레이트가 없다(D5). yw-platform 0(2026-11-17, 로컬 크레이트는 세지 않으므로 다른 수는 그대로).
 - `build.rs` 허용: generic-array, getrandom, secp256k1-sys (+M7 curve25519-dalek). proc-macro는 어느 단계에서도 0개.
 - 출처는 crates.io만. 라이선스: MIT/Apache-2.0, CC0-1.0(secp256k1, secp256k1-sys), BSD-3-Clause(subtle), MIT(generic-array, qrcodegen).
 - 2026-10-24 기준 RustSec advisory-db(커밋 21d909e)와 OSV에서 위 버전에 열린 권고 없음. curve25519-dalek 4.1.3은 RUSTSEC-2024-0344 수정판이므로 `=4.1.3`을 직접 고정한다(4.2.0은 yank).
@@ -680,9 +697,11 @@ const CORE = { ...CORE_EVM, ...(PHASES.has("sol") ? CORE_SOL : {}) };
 export const POLICY = {
   "yw-core": { allow: CORE, local: ["yw-json"] },
   "yw-json": { allow: {}, local: [] },
-  "yw-win": { allow: WIN, local: [] },
-  "yw-app": { allow: { ...CORE, ...WIN, ...APP }, local: ["yw-core", "yw-json", "yw-win"] },
-  "yw-host": { allow: WIN, local: ["yw-json", "yw-win"] },
+  // 2026-11-17: yw-platform(의존성 0) 추가. yw-host는 yw-win을 거쳐 링크한다.
+  "yw-platform": { allow: {}, local: [] },
+  "yw-win": { allow: WIN, local: ["yw-platform"] },
+  "yw-app": { allow: { ...CORE, ...WIN, ...APP }, local: ["yw-core", "yw-json", "yw-platform", "yw-win"] },
+  "yw-host": { allow: WIN, local: ["yw-json", "yw-platform", "yw-win"] },
 };
 export const BUILD_RS_ALLOW = new Set(["generic-array", "getrandom", "secp256k1-sys", ...(PHASES.has("sol") ? ["curve25519-dalek"] : [])]);
 export const OWN_BUILD_RS_ALLOW = new Set(["yw-app"]);
@@ -783,7 +802,7 @@ if (invokedPath !== undefined && resolve(invokedPath) === resolve(fileURLToPath(
 }
 ```
 
-`--filter-platform`은 필수다(없으면 오프라인에서 wasi 다운로드를 시도해 실패하고, 비Windows 의존까지 섞인다). 출처의 59줄 검사기(yw-core 단일 루트)를 다섯 루트·단계·멤버 규칙으로 확장한 것이다. 검사 본체는 `checkMetadata(meta)`(가져와도 CLI는 실행되지 않는다)이고, `scripts/check-core-deps.test.mjs`가 허용 목록과 정확히 같은 합성 그래프(통과)와 위반 종류별 변형(허용 목록 밖·빌드 전용의 런타임 링크·dev-dependency·자체 build.rs·금지 feature·crates.io 밖 출처·proc-macro·검토 안 된 build.rs·도달하지 않는 허용 항목·허용 안 된 로컬 크레이트·정책 없는/없는 멤버)과 `--metadata` CLI의 종료 코드 0·1·2를 cargo 없이 시험한다(script-test 단계).
+`--filter-platform`은 필수다(없으면 오프라인에서 wasi 다운로드를 시도해 실패하고, 비Windows 의존까지 섞인다). 출처의 59줄 검사기(yw-core 단일 루트)를 여러 루트(2026-11-17 `yw-platform`을 더해 여섯)·단계·멤버 규칙으로 확장한 것이다. 검사 본체는 `checkMetadata(meta)`(가져와도 CLI는 실행되지 않는다)이고, `scripts/check-core-deps.test.mjs`가 허용 목록과 정확히 같은 합성 그래프(통과)와 위반 종류별 변형(허용 목록 밖·빌드 전용의 런타임 링크·dev-dependency·자체 build.rs·금지 feature·crates.io 밖 출처·proc-macro·검토 안 된 build.rs·도달하지 않는 허용 항목·허용 안 된 로컬 크레이트·정책 없는/없는 멤버)과 `--metadata` CLI의 종료 코드 0·1·2를 cargo 없이 시험한다(script-test 단계).
 
 ### 4.3 `scripts/privacy-scan.mjs` 변경
 
@@ -879,7 +898,7 @@ const forbidden = [
 
 ### 5.1 unsafe와 경계
 
-- `unsafe`는 yw-win에만 있다. yw-core·yw-json·yw-app·yw-host는 workspace lint `unsafe_code = "forbid"`에 더해 `lib.rs`/`main.rs`에 `#![forbid(unsafe_code)]`를 둔다.
+- `unsafe`는 yw-win에만 있다. yw-core·yw-json·yw-platform(2026-11-17)·yw-app·yw-host는 workspace lint `unsafe_code = "forbid"`에 더해 `lib.rs`/`main.rs`에 `#![forbid(unsafe_code)]`를 둔다.
 - yw-win은 FFI 모듈 파일 첫 줄에만 `#![allow(unsafe_code)]`를 두고, 모든 `unsafe` 블록에 `// SAFETY:` 주석(어떤 전제가 왜 성립하는지)과 블록당 unsafe 연산 1개(clippy `undocumented_unsafe_blocks`, `multiple_unsafe_ops_per_block`).
 - yw-win 공개 API에 원시 `HANDLE`·`HWND`·포인터를 노출하지 않는다. 모든 핸들은 `Drop`에서 닫는 RAII 타입이다. `static mut` 금지(전역 상태는 atomic·`OnceLock`).
 - yw-app은 windows-sys에 직접 의존하지 않는다. Win32 GUI 전체(클래스, wndproc, 루프, 그리기)는 yw-win의 안전 API다.
@@ -890,6 +909,7 @@ const forbidden = [
   disallowed-methods = [ "std::thread::spawn", "std::env::var", "std::env::var_os", "std::fs::read",
                          "std::fs::write", "std::fs::read_to_string" ]
   ```
+  `crates/yw-platform/clippy.toml`은 같은 내용이다(2026-11-17): yw-platform도 OS를 부르지 않는다(§2.3a).
 
 ### 5.2 panic 금지와 오류
 
@@ -1068,17 +1088,33 @@ pub fn clear_if_unchanged(owner: &ui::Window, seq: u32) -> Result<bool, ClipErro
 
 ### 7.4 `http`
 
+2026-11-17: `Client` 밖의 타입·상수·헤더 규칙은 yw-platform `http`로 옮겼다(§2.3a). yw-win `http`에는 `Client`만 남고 재수출하지 않는다. 그 전에는 모두 yw-win `http`에 있었고 `HttpError::Os`가 `WinError`(API 이름 + 코드)를 담았으며, WebSocket의 101 아닌 응답은 `Os(WinError { api: "WinHttpReceiveResponse", code: <HTTP 상태> })`였다.
+
 ```rust
+// yw_platform::http
 pub struct HttpsUrl { /* 원문 */ }      // Debug/Display: "https://[redacted]" (호스트·경로·쿼리 모두 숨김 — RPC URL 전체가 비밀, D13)
 impl HttpsUrl { pub fn parse(s: &str) -> Result<Self, HttpError>;
-                pub fn host(&self) -> &str; }   // LLM 엔드포인트 표시·로그([06] §2.2·§6·§8) 전용. RPC 엔드포인트에는 쓰지 않는다(§5.4)
+                pub fn host(&self) -> &str;   // 전송 계층용(소문자, IPv6는 대괄호 포함). RPC 엔드포인트의 host는 로그에 남기지 않는다(§5.4).
+                                              // LLM 엔드포인트는 표시·로그에 쓴다([06] §2.2·§6·§8)
+                pub fn expose(&self) -> &str; pub fn path(&self) -> &str; pub fn port(&self) -> Option<u16>; }
 pub struct LoopbackUrl { /* 원문 */ }   // Debug/Display: "http://<host>[:port]/…"
-impl LoopbackUrl { pub fn parse(s: &str) -> Result<Self, HttpError>; }
+impl LoopbackUrl { pub fn parse(s: &str) -> Result<Self, HttpError>;
+                   pub fn host(&self) -> &str; pub fn path(&self) -> &str /* 전송 계층용, 로그 금지 */; pub fn port(&self) -> Option<u16>; }
 pub enum EndpointUrl { Https(HttpsUrl), Loopback(LoopbackUrl) }   // LLM 엔드포인트(D21). RPC는 HttpsUrl만(D13)
 impl EndpointUrl { pub fn parse(s: &str) -> Result<Self, HttpError>; }   // scheme으로 분기
 pub struct Timeouts { pub resolve_ms: u32, pub connect_ms: u32, pub send_ms: u32, pub receive_ms: u32 }  // Default 없음
+impl Timeouts { pub fn total_ms(&self) -> u64; }   // 요청 전체 기한 = 네 값의 합(포화)
 pub struct Response { pub status: u16, pub content_type: Option<String>, pub body: Vec<u8> }
-pub enum HttpError { InvalidUrl, InvalidHeader, Timeout, Tls, TooLarge, Os(WinError) }
+pub enum HttpError { InvalidUrl, InvalidHeader, Timeout, Tls, TooLarge,
+                     UpgradeRefused(u16) /* WebSocket 전용(yw-win `ws`): 업그레이드에 101 대신 온 HTTP 상태 */,
+                     Os(u32) /* OS 오류 코드만 */ }
+// Display: "invalid URL" | "invalid header" | "HTTP timeout" | "TLS failure" | "HTTP payload too large"
+//          | "WebSocket upgrade refused: HTTP <n>" | "OS error 0x<code:08X>" — URL·호스트·API 이름·응답 본문 없음
+pub const MAX_URL_BYTES: usize = 2048; pub const MAX_REQUEST_BODY: usize = 1_048_576; pub const MAX_RESPONSE_CAP: usize = 16 * 1_048_576;
+pub const MAX_HEADER_VALUE: usize = 4096; pub const MAX_CONTENT_TYPE_BYTES: usize = 256;
+pub fn valid_header(name: &str, value: &[u8]) -> bool;
+
+// yw_win::http
 pub struct Client { /* 세션 핸들 + 종류(Https | Loopback); Send + Sync */ }
 impl Client {
     pub fn new(timeouts: Timeouts) -> Result<Self, HttpError>;            // HTTPS 전용
@@ -1093,8 +1129,9 @@ impl Client {
 - 세션: `new`는 `WinHttpOpen("YourWallet/3", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, NULL, NULL, 0)`(동기)이고 `WINHTTP_OPTION_SECURE_PROTOCOLS = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2 | WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3` 설정이 실패하면 `new` 실패. `new_loopback`은 `WINHTTP_ACCESS_TYPE_NO_PROXY`. 공통: `WINHTTP_OPTION_REDIRECT_POLICY = WINHTTP_OPTION_REDIRECT_POLICY_NEVER`, `WinHttpSetTimeouts`, `WINHTTP_OPTION_MAX_RESPONSE_HEADER_SIZE = 16384`. LLM은 RPC와 다른 `Client`(세션)를 쓴다([06](06-llm-explain.md) §4.1).
 - 시간 제한(Default 없음, 호출자가 정함): RPC([03](03-evm.md) §1.4, 07·08 공용) `Timeouts { 5000, 5000, 10000, 10000 }`, LLM `Timeouts { 10000, 10000, 10000, 10000 }`. WinHTTP 값은 단계별(수신은 읽기 한 번마다)이므로, 요청마다 전체 기한 = 네 값의 합(RPC 30 s, LLM 40 s)을 두고 본문 읽기 반복이 그것을 넘지 않게 한다: 읽기마다 남은 시간을 확인해 지났으면 `Timeout`, 다음 읽기의 `WINHTTP_OPTION_RECEIVE_TIMEOUT`을 `min(receive_ms, 남은 시간)`으로 줄인다(바이트를 조금씩 흘리는 서버가 요청을 무한히 붙잡지 못한다). 앞 단계도 같은 기한 안에 둔다: `WinHttpSendRequest` 전에 요청 핸들에 `WinHttpSetTimeouts(min(resolve_ms, 남은), min(connect_ms, 남은), min(send_ms, 남은), min(receive_ms, 남은))`, `WinHttpReceiveResponse` 전에 다시 `WinHttpSetTimeouts`(남은 시간 기준)와 `WINHTTP_OPTION_RECEIVE_RESPONSE_TIMEOUT = min(receive_ms, 남은 시간)`(기본 90 s이고 `WinHttpSetTimeouts`가 바꾸지 않는다). 각 값은 최소 1 ms, 기한이 이미 지났으면 단계를 시작하지 않고 `Timeout`, 설정 실패는 요청 실패다. 호출자는 여전히 자기 기한(03 호출당 10 s, 06 `REQUEST_DEADLINE_MS`)을 넘겨 돌아온 결과를 `Timeout`으로 보고 버린다.
 - 요청: HTTPS만 `WINHTTP_FLAG_SECURE`(loopback은 없음). `WINHTTP_OPTION_DISABLE_FEATURE = WINHTTP_DISABLE_COOKIES | WINHTTP_DISABLE_REDIRECTS | WINHTTP_DISABLE_AUTHENTICATION`. `post`는 호출자 헤더만 보낸다(이름 `^[A-Za-z0-9-]{1,64}$`, 값 0x20–0x7E ≤ 4096바이트, 위반은 `InvalidHeader`). `post_json`·`get`은 같은 내부 경로의 래퍼다: `Accept: application/json`, POST에 `Content-Type: application/json`, `bearer`가 있으면 `Authorization: Bearer <값>`. 헤더 버퍼는 `WipeBuf<u16>`. Origin 헤더 없음(D13). `SECURITY_FLAG_IGNORE_*` 금지. 인증서 폐기 확인(`WINHTTP_OPTION_ENABLE_FEATURE = WINHTTP_ENABLE_SSL_REVOCATION`)은 켜지 않는다: CRL/OCSP 응답자에 닿지 못하는 네트워크(캡티브 포털, 필터링, 공급자 쪽 장애)에서 TLS 핸드셰이크 자체가 실패해 RPC·LLM이 모두 막히기 때문이다. 체인 검증은 그대로다.
-- 응답: 상태 코드(`WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER`)와 `WINHTTP_QUERY_CONTENT_TYPE`(없거나 256바이트 초과·비ASCII면 `None`)를 그대로 돌려준다. `Content-Length` 또는 누적 읽기가 `max_response`(≤ 16 MiB)를 넘으면 본문을 더 읽지 않고 즉시 `TooLarge`. 요청 본문 ≤ 1 MiB. `ERROR_WINHTTP_TIMEOUT`(12002) → `Timeout`, `ERROR_WINHTTP_SECURE_FAILURE`(12175) → `Tls`. 오류에 URL·호스트를 넣지 않는다. 호출자(yw-app RPC 계층)는 RPC 실패를 로그·화면 오류에 `NetworkId`·메서드 이름·`HttpError` 종류·HTTP 상태로만 남긴다(§5.4, D13).
-- `[::1]`은 `WinHttpConnect`에 대괄호 없이(`::1`) 넘긴다(구현 시 확인, §8-3).
+- 응답: 상태 코드(`WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER`)와 `WINHTTP_QUERY_CONTENT_TYPE`(없거나 256바이트 초과·비ASCII면 `None`)를 그대로 돌려준다. `Content-Length` 또는 누적 읽기가 `max_response`(≤ 16 MiB)를 넘으면 본문을 더 읽지 않고 즉시 `TooLarge`. 요청 본문 ≤ 1 MiB. `ERROR_WINHTTP_TIMEOUT`(12002) → `Timeout`, `ERROR_WINHTTP_SECURE_FAILURE`(12175) → `Tls`, 그 밖의 WinHTTP 실패는 `Os(GetLastError 코드)`, 상태 코드가 u16을 넘으면 `Os(0)`. `UpgradeRefused`는 일반 요청에서 나오지 않는다(상태는 `Response::status`). 오류에 URL·호스트를 넣지 않는다. 호출자(yw-app RPC 계층)는 RPC 실패를 로그·화면 오류에 `NetworkId`·메서드 이름·`HttpError` 종류·HTTP 상태로만 남긴다(§5.4, D13).
+- `[::1]`은 `WinHttpConnect`에 대괄호 없이(`::1`) 넘긴다(구현 시 확인, §8-3). `http`와 `ws`가 같은 도우미(`connect_host`)를 쓴다(2026-11-17: 그 전에는 `ws`가 대괄호째 넘겨 IPv6 리터럴 릴레이 URL에 연결할 수 없었다).
+- `ws`(WebSocket, [13](13-walletconnect.md) §4): 업그레이드 응답이 101이 아니면 `HttpError::UpgradeRefused(상태)`(u16을 넘으면 65535). yw-app은 401·403만 릴레이의 프로젝트 ID 거부(`ConnectError::Unauthorized`)로 보고 나머지는 네트워크 실패로 본다(`walletconnect::worker::connect_error`).
 
 ### 7.5 `pipe`
 
@@ -1241,7 +1278,8 @@ impl SecureTextField {
 
 ### 7.8 테스트
 
-- 순수(`#[cfg(test)]`): `HttpsUrl`·`LoopbackUrl`·`EndpointUrl::parse` 경계(`http://example.com`·`http://127.0.0.2` 거부, `http://[::1]:11434/…` 허용, `HTTPS://`·`https://[2001:db8::1]:8545/` 허용·정규화, 잘못된 IPv6 리터럴 거부), `HttpsUrl`의 `{:?}`·`{}` 출력에 호스트·경로 문자열이 없음, 헤더 검사, `is_blocked_secret_msg`, `capture_outcome` 4경우(성공은 둘 다 `Excluded`, 실패는 `Required` → `Destroy`·`Preferred` → `Unprotected`), `wallet_pipe_name`·`user_only_sddl`, `Msg` 디코딩(`WM_WTSSESSION_CHANGE` wParam 0x2·0x4·0x6·0x7·0x8과 그 밖 값, `WM_QUERYENDSESSION`, `WM_ENDSESSION` wParam TRUE·FALSE 포함), `SecureTextField` 정책·backspace·용량, `spawn_detached` 인자 검증, `owner_is`, WER 파일 이름, 클립보드 순번을 닫기 전에 읽음·NUL 탐색 상한, 전체 HTTP 기한 계산, `WM_NCCREATE` 채택 규칙·게시 금지 메시지·`WM_DPICHANGED` wParam, 디렉터리 flush 실패의 경고 결과, 다른 파이프에 붙은 이후 인스턴스 거부(같은 사용자의 DACL이 다른 "선점" 파이프로), 숨김 창에 위조한 `GWLP_USERDATA`·`WM_NCCREATE`·게시된 `WM_NCDESTROY`/`WM_DRAWITEM`이 상태에 닿지 않음.
+- yw-platform `tests/http.rs`(2026-11-17: yw-win `http`의 `#[cfg(test)]`에서 옮김): `HttpsUrl`·`LoopbackUrl`·`EndpointUrl::parse` 경계(`http://example.com`·`http://127.0.0.2` 거부, `http://[::1]:11434/…` 허용, `HTTPS://`·`https://[2001:db8::1]:8545/` 허용·정규화, 잘못된 IPv6 리터럴 거부), `HttpsUrl`의 `{:?}`·`{}` 출력에 호스트·경로 문자열이 없음, `LoopbackUrl` 접근자, 헤더 검사, `Timeouts::total_ms`, `HttpError` 모든 변형의 `Display`가 고정 문구이고 URL·호스트·경로·API 이름을 담지 않음.
+- 순수(`#[cfg(test)]`): `connect_host`(IPv6 대괄호만 벗김), 헤더 블록, `is_blocked_secret_msg`, `capture_outcome` 4경우(성공은 둘 다 `Excluded`, 실패는 `Required` → `Destroy`·`Preferred` → `Unprotected`), `wallet_pipe_name`·`user_only_sddl`, `Msg` 디코딩(`WM_WTSSESSION_CHANGE` wParam 0x2·0x4·0x6·0x7·0x8과 그 밖 값, `WM_QUERYENDSESSION`, `WM_ENDSESSION` wParam TRUE·FALSE 포함), `SecureTextField` 정책·backspace·용량, `spawn_detached` 인자 검증, `owner_is`, WER 파일 이름, 클립보드 순번을 닫기 전에 읽음·NUL 탐색 상한, 전체 HTTP 기한 계산, `WM_NCCREATE` 채택 규칙·게시 금지 메시지·`WM_DPICHANGED` wParam, 디렉터리 flush 실패의 경고 결과, 다른 파이프에 붙은 이후 인스턴스 거부(같은 사용자의 DACL이 다른 "선점" 파이프로), 숨김 창에 위조한 `GWLP_USERDATA`·`WM_NCCREATE`·게시된 `WM_NCDESTROY`/`WM_DRAWITEM`이 상태에 닿지 않음.
 - Windows 통합(`crates/yw-win/tests/`, 개발 PC의 `cargo test`): pipe 왕복과 전이중 동시 읽기·쓰기, 두 번째 `Server::create`의 `AlreadyExists`, 연결 4개일 때 다음 인스턴스 보류, 서버가 쓰고 바로 닫아도 데이터가 도착함, 양 끝의 `owner_sid`, 취소 뒤 대기 중·이후 쓰기의 `ERROR_OPERATION_ABORTED`, loopback HTTP 정상 응답과 조금씩 흘리는 본문의 전체 기한 `Timeout`, 정션에 대한 `flush_dir`의 `ReparsePoint`, `atomic_write` 덮어쓰기·남은 임시 파일 처리, DPAPI 왕복과 다른 entropy 실패, `LockedBox` 생성·해제, 사설 네임스페이스 `SingleInstance` 이중 획득 실패·해제 후 재획득·`Local\<별칭>` 점유에 영향 없음, 데이터 폴더 ACL(테스트마다 `icacls /inheritance:r`로 명시 ACL을 준 임시 기반 폴더: 새 폴더 3단계가 보호 DACL·Medium NR/NW 레이블이고 안의 `vault.ywv`·`apikeys.dpapi`·로그가 사용자·SYSTEM·Administrators만 상속, 다른 그룹 RX가 상속된 기존 폴더와 명시 허용 ACE가 있는 파일의 자동 수리, 정션 거부). 순수 단위: 무결성 판정, 경로 비교, `decide_dir`·`decide_entry`(소유자·추가 허용·보호·레이블·NULL DACL·거부 ACE), 단계별 HTTP 시간 제한 계산. yw-host `tests/owner.rs`: 서버 프로세스 검사 거부 → hello 없음, 실제 `verify_process`(자기 이미지 통과, 다른 파일·없는 pid 거부). 네트워크·화면 캡처·세션 잠금은 수동 체크리스트([09](09-testing.md)).
 
 ---

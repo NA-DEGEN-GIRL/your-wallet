@@ -44,7 +44,8 @@ use yw_core::btc::script::p2wpkh_script_pubkey;
 use yw_core::btc::tx::{Transaction, TxIn, TxOut, serialize, sha256d};
 use yw_core::btc::{BTC_CONF_TARGETS, BtcNetwork, OutPoint, Sats, Txid};
 use yw_json::Limits as JsonLimits;
-use yw_win::http::{Client, HttpsUrl};
+use yw_platform::http::HttpsUrl;
+use yw_win::http::Client;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 

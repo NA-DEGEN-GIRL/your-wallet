@@ -31,7 +31,8 @@ use yw_core::keyimport::{ImportKey, ImportSpec};
 use yw_core::password::VaultPassword;
 use yw_core::vault::{EvmKeySource, FileKind, LockedSlot, SLOT_LEN, Vault, VaultStorage};
 use yw_json::{Limits, Value};
-use yw_win::http::{Client, HttpsUrl};
+use yw_platform::http::HttpsUrl;
+use yw_win::http::Client;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 

@@ -23,8 +23,8 @@ use std::path::{Path, PathBuf};
 
 use yw_core::lang::{Lang, Text};
 use yw_core::secret::Zeroizing;
+use yw_platform::http::HttpsUrl;
 use yw_win::file::read_limited_no_reparse;
-use yw_win::http::HttpsUrl;
 
 use crate::apikeys::{
     ApiKeys, KeyName, TemplateCred, parse_quicknode_url, template_entry, template_url,

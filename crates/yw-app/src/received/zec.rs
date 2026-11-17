@@ -34,7 +34,7 @@ use yw_core::lang::Lang;
 use yw_core::zec::format_zec;
 use yw_core::zec::tx::{MAX_MONEY, transparent_parts, txid_display};
 use yw_json::{Number, Object, Value};
-use yw_win::http::HttpsUrl;
+use yw_platform::http::HttpsUrl;
 
 use super::{Cursor, DUST_ZEC_ZATS, Fetched, Found, Incoming};
 use crate::flow::evm::Clock;
@@ -917,7 +917,7 @@ mod tests {
         use yw_core::zec::ZecNetwork;
         use yw_core::zec::tx::{ZecOutPoint, ZecTx, ZecTxIn, ZecTxOut, serialize_tx, txid_display};
         use yw_json::{Limits, Number, Object, Value};
-        use yw_win::http::{HttpError, HttpsUrl};
+        use yw_platform::http::{HttpError, HttpsUrl};
 
         use super::super::{
             T_MEMPOOL_BIG, T_MEMPOOL_PARTIAL, T_NO_DELTAS_PENDING, ZEC_MEMPOOL_SCAN_MAX,

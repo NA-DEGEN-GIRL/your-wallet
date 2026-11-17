@@ -42,7 +42,7 @@
   - `print_spec14_tables`(`--ignored --exact --nocapture`): §5 표를 코드에서 출력한다. 문구를 바꾸면 이것으로 표를 다시 만들고, 바뀐 행을 검토해 커밋한다.
   - `spec04_lists_every_error_text_in_both_languages`: 모든 `ErrorCode`의 한국어·영어 문장이 [04] §7 표의 `문구`·`English` 열에 있다(자리표시 이름은 비교하지 않는다).
 - 빌더와 화면마다 영어 표시에 한글이 없는지 보는 단위 시험이 각 모듈에 있다(`english_*`; 화면은 영어로 항목을 만들어 데이터가 아닌 글자에 한글이 없는지 본다).
-- `scripts/i18n-scan.mjs`(+ 시험, 게이트 script-test 단계): 비시험 코드(`crates/yw-core/src`, `crates/yw-app/src`, `extension/src`)의 한글 문자열 리터럴은 카탈로그(`texts!`·`rules!` 블록, `ko:` 필드) 안에만 있어야 한다. 주석, `#[cfg(test)]` 항목(모듈 블록, `mod tests;` 선언, 단일 항목), tests 파일은 보지 않는다. 허용 리터럴은 언어 카드의 `언어 · Language`·`한국어`와 글꼴 측정용 `가Ay`·`가`뿐이다. 예외 목록 `scripts/i18n-allowlist.txt`는 3단계에서 비웠고 비어 있어야 한다. 같은 스캔이 모든 `texts!` 블록(모듈 경로)이 crate의 카탈로그 목록(§2)에 있고 목록에 없는 블록을 가리키지 않는지도 본다.
+- `scripts/i18n-scan.mjs`(+ 시험, 게이트 script-test 단계): 비시험 코드(`crates/yw-core/src`, `crates/yw-platform/src`(2026-11-17 추가), `crates/yw-app/src`, `extension/src`)의 한글 문자열 리터럴은 카탈로그(`texts!`·`rules!` 블록, `ko:` 필드) 안에만 있어야 한다. 주석, `#[cfg(test)]` 항목(모듈 블록, `mod tests;` 선언, 단일 항목), tests 파일은 보지 않는다. 허용 리터럴은 언어 카드의 `언어 · Language`·`한국어`와 글꼴 측정용 `가Ay`·`가`뿐이다. 예외 목록 `scripts/i18n-allowlist.txt`는 3단계에서 비웠고 비어 있어야 한다. 같은 스캔이 모든 `texts!` 블록(모듈 경로)이 crate의 카탈로그 목록(§2)에 있고 목록에 없는 블록을 가리키지 않는지도 본다.
 
 ## 5. 카탈로그 표 (영어 문구 전문)
 

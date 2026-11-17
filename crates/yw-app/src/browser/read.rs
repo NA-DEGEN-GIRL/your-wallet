@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use yw_core::policy::{Method, ProviderError};
 use yw_json::{Limits, Number, Value};
-use yw_win::http::{HttpError, HttpsUrl};
+use yw_platform::http::{HttpError, HttpsUrl};
 
 use super::dispatch::{BrowserCore, ReadTask};
 use super::params::check_logs_range;
@@ -235,7 +235,7 @@ pub fn forward(client: &RpcClient<'_>, url: &HttpsUrl, method: Method, params: V
 mod tests {
     use yw_core::policy::{Method, ProviderError};
     use yw_json::Value;
-    use yw_win::http::{HttpError, HttpsUrl};
+    use yw_platform::http::{HttpError, HttpsUrl};
 
     use super::forward;
     use crate::rpc::{HttpReply, RpcClient, Transport};

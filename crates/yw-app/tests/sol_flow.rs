@@ -430,7 +430,7 @@ fn send_max_and_simulation_warning() -> TestResult {
 fn transport_failures_fail_the_preview() -> TestResult {
     let rpc = FakeRpc::new(|method, _| match method {
         "getGenesisHash" => Answer::Result(format!("\"{DEVNET}\"")),
-        _ => Answer::Transport(yw_win::http::HttpError::Timeout),
+        _ => Answer::Transport(yw_platform::http::HttpError::Timeout),
     });
     match preview(&*rpc, &job(Some(SOL))?).outcome {
         PreviewOutcome::Failed { code, retryable } => {
@@ -852,7 +852,7 @@ fn first_send_goes_out_even_when_the_status_lookup_fails() {
     // The status lookup times out: the first round of the session still sends the signed bytes
     // first, records that send (no immediate repeat), and reports the lookup failure.
     let rpc = FakeRpc::new(|method, _| match method {
-        "getSignatureStatuses" => Answer::Transport(yw_win::http::HttpError::Timeout),
+        "getSignatureStatuses" => Answer::Transport(yw_platform::http::HttpError::Timeout),
         "sendTransaction" => accepted(),
         _ => Answer::Error(-32_601, None),
     });
@@ -869,7 +869,7 @@ fn first_send_goes_out_even_when_the_status_lookup_fails() {
     assert_eq!(rpc.count("sendTransaction"), 1);
     // A deterministic preflight error of that first send is kept even though the lookup failed.
     let rpc = FakeRpc::new(|method, _| match method {
-        "getSignatureStatuses" => Answer::Transport(yw_win::http::HttpError::Timeout),
+        "getSignatureStatuses" => Answer::Transport(yw_platform::http::HttpError::Timeout),
         "sendTransaction" => preflight("\"InsufficientFundsForFee\""),
         _ => Answer::Error(-32_601, None),
     });
@@ -924,7 +924,7 @@ fn sol_n1_deterministic_preflight_stops_resending_but_keeps_pending() {
         NULL_STATUS,
         NULL_STATUS,
         1_000,
-        Answer::Transport(yw_win::http::HttpError::Timeout),
+        Answer::Transport(yw_platform::http::HttpError::Timeout),
     )));
     let rpc = net_rpc(&net);
     let (_, state) = run(&rpc, &FakeClock::at(SIGNED_AT), 12, LoopState::default());

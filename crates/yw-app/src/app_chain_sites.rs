@@ -2150,7 +2150,7 @@ mod tests {
             app.chain_site_preflight(&sign),
             Some(Some(QueueOutcome::Cancelled))
         );
-        let url = yw_win::http::HttpsUrl::parse("https://sol.example.test/").unwrap();
+        let url = yw_platform::http::HttpsUrl::parse("https://sol.example.test/").unwrap();
         app.apikeys.set_rpc(
             crate::network::NetworkId::Solana(crate::network::SolCluster::Devnet),
             &url,
@@ -2228,7 +2228,7 @@ mod tests {
         const SERIAL: u32 = 7_700_011;
         let mut app = app(false);
         app.settings.solana.cluster = crate::network::SolCluster::Devnet;
-        let url = yw_win::http::HttpsUrl::parse("https://sol.example.test/").unwrap();
+        let url = yw_platform::http::HttpsUrl::parse("https://sol.example.test/").unwrap();
         app.apikeys.set_rpc(
             crate::network::NetworkId::Solana(crate::network::SolCluster::Devnet),
             &url,
@@ -2336,7 +2336,7 @@ mod tests {
         use crate::ui::approval::QueueSource;
         let mut app = app(true);
         app.settings.solana.cluster = crate::network::SolCluster::Devnet;
-        let url = yw_win::http::HttpsUrl::parse("https://sol.example.test/").unwrap();
+        let url = yw_platform::http::HttpsUrl::parse("https://sol.example.test/").unwrap();
         app.apikeys.set_rpc(
             crate::network::NetworkId::Solana(crate::network::SolCluster::Devnet),
             &url,
@@ -2393,7 +2393,7 @@ mod tests {
     /// channel in these tests).
     fn devnet(app: &mut App) {
         app.settings.solana.cluster = crate::network::SolCluster::Devnet;
-        let url = yw_win::http::HttpsUrl::parse("https://sol.example.test/").unwrap();
+        let url = yw_platform::http::HttpsUrl::parse("https://sol.example.test/").unwrap();
         app.apikeys.set_rpc(
             crate::network::NetworkId::Solana(crate::network::SolCluster::Devnet),
             &url,

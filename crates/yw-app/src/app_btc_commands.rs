@@ -391,7 +391,7 @@ mod tests {
     use std::sync::mpsc;
 
     use yw_core::btc::{BtcMeta, BtcNetwork, Sats};
-    use yw_win::http::HttpsUrl;
+    use yw_platform::http::HttpsUrl;
 
     use crate::apikeys::ApiKeys;
     use crate::app::{App, AppMode, Confirm, Paths, Screen, SettingsSection};

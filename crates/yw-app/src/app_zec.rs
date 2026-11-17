@@ -402,7 +402,7 @@ impl App {
             .is_some_and(|journal| journal.zec_corrupt > 0)
     }
 
-    fn zec_url(&self) -> Result<yw_win::http::HttpsUrl, ErrorCode> {
+    fn zec_url(&self) -> Result<yw_platform::http::HttpsUrl, ErrorCode> {
         self.apikeys
             .rpc_url(NetworkId::Zcash(self.zec_network()))
             .ok_or(ErrorCode::Key005)

@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use yw_core::btc::{BTC_429_BACKOFF_MS, Txid};
 use yw_json::{Limits, Number, Value};
-use yw_win::http::{HttpError, HttpsUrl, Response};
+use yw_platform::http::{HttpError, HttpsUrl, Response};
 
 use super::{BtcEndpoint, BtcEnv, indexer_word, network_id};
 use crate::logging::Field;
@@ -428,5 +428,6 @@ pub const fn http_word(error: HttpError) -> &'static str {
         HttpError::Tls => "tls",
         HttpError::TooLarge => "too_large",
         HttpError::Os(_) => "os",
+        HttpError::UpgradeRefused(_) => "upgrade_refused",
     }
 }

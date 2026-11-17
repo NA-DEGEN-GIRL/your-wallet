@@ -18,9 +18,9 @@ use yw_core::secret::Zeroizing;
 use yw_core::vault::{
     BackupChallenge, ChallengeId, EvmKeySource, FileKind, PasswordChange, RecordId, VaultStatus,
 };
+use yw_platform::http::HttpsUrl;
 use yw_win::clipboard::{self, ClipError, SecretClip};
 use yw_win::file::{FileError, atomic_write, read_limited_no_reparse};
-use yw_win::http::HttpsUrl;
 use yw_win::input::is_down;
 use yw_win::session;
 use yw_win::time::monotonic_ms;

@@ -25,7 +25,7 @@ use yw_core::btc::meta::{ListedUtxo, VerifiedUtxo as CoreVerifiedUtxo};
 use yw_core::btc::prevtx::{PrevTxError, verify_prev_output};
 use yw_core::btc::{BTC_MAX_ADDRESS_INDEX, BtcNetwork, Discovery, OutPoint, Sats, Txid, conf};
 use yw_core::journal::btc::{TrackInput, TrackObservation, hold_confirmation, observe};
-use yw_win::http::HttpsUrl;
+use yw_platform::http::HttpsUrl;
 
 use super::chain::{ChainInput, ChainSession, ChainStatus, ensure_chain};
 use super::client::{BTC_CALL_DEADLINE_MS, BtcClient, http_word, is_rate_limited};

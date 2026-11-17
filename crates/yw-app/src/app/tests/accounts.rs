@@ -295,7 +295,7 @@ fn owner_btc_app(tag: &str) -> (App, std::path::PathBuf, yw_core::btc::BtcAccoun
     // A usable tab (an endpoint, the journal read): the selected card shows its address.
     app.apikeys.set_rpc(
         crate::network::NetworkId::Bitcoin(crate::network::BtcNet::Mainnet),
-        &yw_win::http::HttpsUrl::parse("https://btc.example.test/").unwrap(),
+        &yw_platform::http::HttpsUrl::parse("https://btc.example.test/").unwrap(),
     );
     app.evm.journal = Some(crate::events::JournalView {
         room: true,

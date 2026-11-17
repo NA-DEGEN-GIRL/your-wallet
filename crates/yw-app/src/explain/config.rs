@@ -6,7 +6,7 @@
 
 use yw_core::lang::Lang;
 use yw_core::secret::Zeroizing;
-use yw_win::http::EndpointUrl;
+use yw_platform::http::EndpointUrl;
 
 use super::{ExplainError, text};
 use crate::settings::LlmSettings;

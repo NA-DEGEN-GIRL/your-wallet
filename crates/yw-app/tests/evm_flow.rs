@@ -205,7 +205,7 @@ fn transport_failures_retry_three_times_then_unverified() -> TestResult {
         SEPOLIA_GENESIS,
         vec![(
             "eth_chainId",
-            Answer::Transport(yw_win::http::HttpError::Timeout),
+            Answer::Transport(yw_platform::http::HttpError::Timeout),
         )],
     ));
     let clock = FakeClock::at(S2_UNIX_MS);
@@ -853,7 +853,7 @@ fn resimulation_classifies_new_spenders() -> TestResult {
     // The spender's code lookup fails: `Unknown`, E39 (high risk), no interim E27 stand-in.
     let failing = FakeRpc::new(move |method, params| {
         if method == "eth_getCode" && param_str(params, 0).eq_ignore_ascii_case(SPENDER) {
-            return Answer::Transport(yw_win::http::HttpError::Timeout);
+            return Answer::Transport(yw_platform::http::HttpError::Timeout);
         }
         script.get(method)
     });
@@ -934,7 +934,7 @@ fn typed_facts_failed_code_lookup_is_unknown_and_t18() -> TestResult {
     let failing_script = script.clone();
     let failing = FakeRpc::new(move |method, params| {
         if method == "eth_getCode" && param_str(params, 0).eq_ignore_ascii_case(TYPED_SPENDER) {
-            return Answer::Transport(yw_win::http::HttpError::Timeout);
+            return Answer::Transport(yw_platform::http::HttpError::Timeout);
         }
         failing_script.get(method)
     });
@@ -959,7 +959,7 @@ fn typed_facts_failed_code_lookup_is_unknown_and_t18() -> TestResult {
         SEPOLIA_GENESIS,
         vec![(
             "eth_chainId",
-            Answer::Transport(yw_win::http::HttpError::Timeout),
+            Answer::Transport(yw_platform::http::HttpError::Timeout),
         )],
     )));
     assert!(matches!(check, ChainCheck::Unverified(_)), "{check:?}");
@@ -1069,7 +1069,7 @@ fn broadcast_outcomes() -> TestResult {
     let (unconfirmed, rpc) = run(vec![
         (
             "eth_sendRawTransaction",
-            Answer::Transport(yw_win::http::HttpError::Timeout),
+            Answer::Transport(yw_platform::http::HttpError::Timeout),
         ),
         (
             "eth_getTransactionByHash",
@@ -1101,7 +1101,7 @@ fn broadcast_outcomes() -> TestResult {
     // is sent, the record stays Signed and tracking re-sends it — the dApp gets the hash.
     let (unverified, rpc) = run(vec![(
         "eth_chainId",
-        Answer::Transport(yw_win::http::HttpError::Timeout),
+        Answer::Transport(yw_platform::http::HttpError::Timeout),
     )]);
     assert_eq!(unverified, BroadcastOutcome::ChainUnverified);
     assert_eq!(rpc.count("eth_chainId"), 4);

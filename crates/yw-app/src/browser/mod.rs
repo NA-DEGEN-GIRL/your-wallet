@@ -20,7 +20,7 @@ use yw_core::evm::address::Address;
 use yw_core::evm::chain::ChainInfo;
 use yw_core::policy::{BrowserOrigin, Method};
 use yw_json::Value;
-use yw_win::http::HttpsUrl;
+use yw_platform::http::HttpsUrl;
 
 pub use dispatch::BrowserCore;
 use envelope::{BrowserEvent, CompatMode, Correlation, Id16, Id32};

@@ -371,7 +371,7 @@ impl App {
         let (Some(browser), Some(events)) = (self.browser.as_ref(), self.events.as_ref()) else {
             return;
         };
-        let http = yw_win::http::Client::new(yw_win::http::Timeouts {
+        let http = yw_win::http::Client::new(yw_platform::http::Timeouts {
             resolve_ms: 5_000,
             connect_ms: 5_000,
             send_ms: 5_000,

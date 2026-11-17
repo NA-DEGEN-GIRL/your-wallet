@@ -37,7 +37,8 @@ use yw_core::evm::fee::suggest_fees;
 use yw_core::evm::simulate::{SimOutcome, SimStatus};
 use yw_core::vault::EvmKeySource;
 use yw_json::{Limits as JsonLimits, Number, Object, Value};
-use yw_win::http::{Client, HttpError, HttpsUrl};
+use yw_platform::http::{HttpError, HttpsUrl};
+use yw_win::http::Client;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 

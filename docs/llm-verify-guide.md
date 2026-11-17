@@ -50,6 +50,7 @@ EIP-6963, Wallet Standard) and forwards requests; it holds no secrets.
 |---|---|---|
 | `crates/yw-core` | Wallet core: keys, vault, chain logic, risk rules, approvals. No network, files, threads or GUI | forbidden |
 | `crates/yw-json` | Own strict JSON parser/writer and framing. Zero dependencies | forbidden |
+| `crates/yw-platform` | Platform-neutral types: HTTP URL/error/response types, the `Clock` trait. Zero dependencies, no OS calls | forbidden |
 | `crates/yw-win` | The only crate allowed `unsafe`: Windows API wrappers (WinHTTP, DPAPI, pipe, UI, …) | allowed, each block has a `// SAFETY:` comment |
 | `crates/yw-app` | The wallet binary | forbidden |
 | `crates/yw-host` | Native-messaging relay | forbidden |
@@ -61,7 +62,7 @@ git grep -n "forbid(unsafe_code)" -- crates
 Select-String -Path Cargo.toml, crates\yw-win\Cargo.toml -Pattern 'unsafe_code'
 ```
 
-Expected: `#![forbid(unsafe_code)]` in `yw-app` (lib and main), `yw-core`, `yw-host` (lib and main), `yw-json`; workspace
+Expected: `#![forbid(unsafe_code)]` in `yw-app` (lib and main), `yw-core`, `yw-host` (lib and main), `yw-json`, `yw-platform`; workspace
 lint `unsafe_code = "forbid"` and `yw-win` overriding to `"deny"` with per-module allows.
 
 ---
@@ -220,7 +221,8 @@ File: `crates/yw-host/src/lib.rs`, spec/05 §7–§8.
 | Hello/ack timeout 2 s | `HELLO_TIMEOUT_MS`, `run_with_deadline`, `handshake_with` |
 | Auto-starts `yw-app.exe --background` only when `browserAutoLaunch` is on | `auto_launch_enabled_with`, `connect_app` |
 
-yw-host links only `yw-json` and `yw-win` (`crates/yw-host/Cargo.toml`) and writes no log file.
+yw-host links only `yw-json` and `yw-win` (`crates/yw-host/Cargo.toml`; through `yw-win` also the dependency-free
+`yw-platform`) and writes no log file.
 
 ---
 
@@ -266,9 +268,10 @@ Per-crate allowlist: `scripts/check-core-deps.mjs`, object `POLICY`:
 |---|---|
 | `yw-core` | RustCrypto hashes/MACs/KDFs, secp256k1, argon2, chacha20poly1305, ed25519/curve25519, getrandom, zeroize, subtle and their closure; local `yw-json` |
 | `yw-json` | nothing |
-| `yw-win` | `windows-sys` 0.61.2 / `windows-link` |
+| `yw-platform` | nothing |
+| `yw-win` | `windows-sys` 0.61.2 / `windows-link`; local `yw-platform` |
 | `yw-app` | the above plus `qrcodegen` 1.8.0 |
-| `yw-host` | `yw-json` and `yw-win` only |
+| `yw-host` | `yw-json` and `yw-win` only (and `yw-platform` through `yw-win`) |
 
 Build scripts are allowed only for `generic-array`, `getrandom`, `secp256k1-sys`, `curve25519-dalek` and yw-app's own
 link-args `build.rs`. To run the check (needs Node 22+ and cargo; reads `cargo metadata`):

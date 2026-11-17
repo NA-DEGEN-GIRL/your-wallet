@@ -1,7 +1,8 @@
 //! The chat-completions request (spec/06 §4.1–§4.5) and its transport.
 
 use yw_json::{Limits, Number, Value};
-use yw_win::http::{Client, EndpointUrl, HttpError, Timeouts};
+use yw_platform::http::{EndpointUrl, HttpError, Timeouts};
+use yw_win::http::Client;
 
 use super::config::{LlmConfig, ResponseFormatMode};
 use super::input::ExplainInput;
@@ -168,9 +169,10 @@ const fn transport_error(error: TransportError) -> ExplainError {
         HttpError::Timeout => ExplainError::Timeout,
         HttpError::Tls => ExplainError::Tls,
         HttpError::TooLarge => ExplainError::TooLarge,
-        HttpError::InvalidUrl | HttpError::InvalidHeader | HttpError::Os(_) => {
-            ExplainError::Network
-        }
+        HttpError::InvalidUrl
+        | HttpError::InvalidHeader
+        | HttpError::UpgradeRefused(_)
+        | HttpError::Os(_) => ExplainError::Network,
     }
 }
 

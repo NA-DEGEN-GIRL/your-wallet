@@ -10,7 +10,7 @@ use yw_app::settings::{
     LogLevel, RpcTemplate, SETTINGS_MAX_BYTES, Settings, load, newer_version_banner,
 };
 use yw_json::Limits;
-use yw_win::http::HttpsUrl;
+use yw_platform::http::HttpsUrl;
 
 const SETTINGS_V1: &[u8] = include_bytes!("fixtures/compat/settings-v1.json");
 const SETTINGS_V1_NEWER_MINOR: &[u8] =

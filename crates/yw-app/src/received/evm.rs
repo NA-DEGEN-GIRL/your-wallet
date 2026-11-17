@@ -16,7 +16,7 @@ use yw_core::evm::address::Address;
 use yw_core::evm::amount::{U256, format_units};
 use yw_core::lang::Lang;
 use yw_json::{Object, Value};
-use yw_win::http::{HttpError, HttpsUrl};
+use yw_platform::http::{HttpError, HttpsUrl};
 
 use super::{Cursor, Fetched, Found, Incoming, TokenRef, token_dust_units};
 use crate::rpc::{RpcClient, RpcFailure, Transport, classify};

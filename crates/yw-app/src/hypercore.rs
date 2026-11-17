@@ -10,7 +10,7 @@ use yw_core::hypercore::{
 };
 use yw_core::lang::Lang;
 use yw_json::{Limits, Value};
-use yw_win::http::{HttpError, HttpsUrl};
+use yw_platform::http::{HttpError, HttpsUrl};
 
 use crate::logging::{self, Field};
 use crate::rpc::Transport;
@@ -100,7 +100,7 @@ pub enum HcEvent {
     },
 }
 
-fn failure_text(lang: Lang, error: &HttpError) -> String {
+fn failure_text(lang: Lang, error: HttpError) -> String {
     match error {
         HttpError::Timeout => text::API_TIMEOUT.get(lang).to_owned(),
         _ => text::API_UNREACHABLE.get(lang).to_owned(),
@@ -119,7 +119,7 @@ pub(crate) fn post(
         .map_err(|_| text::API_BAD_URL.get(lang).to_owned())?;
     let reply = transport
         .post_json(&url, body, max_response)
-        .map_err(|error| failure_text(lang, &error))?;
+        .map_err(|error| failure_text(lang, error))?;
     if reply.status != 200 {
         return Err(text::API_HTTP.fill(lang, [&reply.status.to_string()]));
     }
@@ -244,7 +244,7 @@ mod tests {
 
     use yw_core::evm::address::Address;
     use yw_core::hypercore::{HcExchangeReply, HcNetwork, TESTNET_API};
-    use yw_win::http::{HttpError, HttpsUrl};
+    use yw_platform::http::{HttpError, HttpsUrl};
 
     use super::{HcEndpoint, HcEvent, HcRpcJob, run};
     use crate::rpc::{HttpReply, Transport};

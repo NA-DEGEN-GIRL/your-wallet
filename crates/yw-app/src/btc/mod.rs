@@ -23,7 +23,7 @@ pub mod text;
 pub mod work;
 
 use yw_core::btc::BtcNetwork;
-use yw_win::http::HttpsUrl;
+use yw_platform::http::HttpsUrl;
 
 use crate::errors::ErrorCode;
 use crate::flow::evm::Clock;

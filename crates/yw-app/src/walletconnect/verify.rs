@@ -201,7 +201,7 @@ pub trait VerifyHttp {
 
 impl VerifyHttp for yw_win::http::Client {
     fn get(&self, url: &str) -> Option<(u16, Vec<u8>)> {
-        let url = yw_win::http::HttpsUrl::parse(url).ok()?;
+        let url = yw_platform::http::HttpsUrl::parse(url).ok()?;
         let response = yw_win::http::Client::get(self, &url, 65_536).ok()?;
         Some((response.status, response.body))
     }

@@ -24,7 +24,7 @@ use yw_core::evm::chain::{SEPOLIA, SimulationSupport};
 const MAINNET: u64 = 1;
 use yw_core::policy::{BrowserOrigin, ConnectedSite, ProviderError};
 use yw_json::{Limits, Object, Value};
-use yw_win::http::{HttpError, HttpsUrl};
+use yw_platform::http::{HttpError, HttpsUrl};
 
 const SITE: &str = "https://app.example";
 const OTHER: &str = "https://other.example";

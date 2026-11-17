@@ -20,7 +20,7 @@ use yw_core::btc::{
     OutPoint, PlanError, Sats, SendAmount, SendPlan, SendRequest, Txid, plan_fee_bump, plan_send,
 };
 use yw_core::journal::btc::TrackObservation;
-use yw_win::http::HttpsUrl;
+use yw_platform::http::HttpsUrl;
 
 use super::broadcast::{
     EsploraPostOutcome, ManualBroadcastGate, esplora_broadcast_confirmed, send_raw_transaction,

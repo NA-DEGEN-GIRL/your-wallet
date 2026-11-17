@@ -1,8 +1,13 @@
 #![allow(unsafe_code)]
 //! Synchronous `WinHTTP` client (spec/01 §7.4, D13, D21): HTTPS with TLS 1.2/1.3 only, or loopback
 //! `http` for local LLM endpoints. No redirects, cookies, automatic authentication, Origin or
-//! Referer. Errors never contain the URL or host; `HttpsUrl` formats as `https://[redacted]`
-//! because a whole RPC URL is a secret.
+//! Referer. Errors never contain the URL or host.
+//!
+//! The URL, timeout, response and error types and the request limits live in
+//! `yw_platform::http` (2026-11-17: moved there so platform-neutral code does not name yw-win);
+//! this module holds only the `WinHTTP` [`Client`]. A `WinHTTP` failure other than a timeout or a
+//! TLS failure is `HttpError::Os` with the `GetLastError` code (before 2026-11-17 it also carried
+//! the API name).
 //!
 //! The `WinHTTP` timeouts are per phase and per receive, so a server that trickles its body could
 //! keep a request alive indefinitely; every request therefore also has a total deadline (the sum
@@ -36,317 +41,38 @@ use windows_sys::Win32::Networking::WinHttp::{
     WinHttpSetOption, WinHttpSetTimeouts,
 };
 
+use yw_platform::http::{
+    EndpointUrl, HttpError, HttpsUrl, MAX_CONTENT_TYPE_BYTES, MAX_REQUEST_BODY, MAX_RESPONSE_CAP,
+    Response, Timeouts, valid_header,
+};
+
 use crate::error::WinError;
 use crate::mem::WipeBuf;
 use crate::wide::to_wide;
 
-/// Longest URL (bytes).
-pub const MAX_URL_BYTES: usize = 2_048;
-/// Largest request body.
-pub const MAX_REQUEST_BODY: usize = 1_048_576;
-/// Largest `max_response` honoured.
-pub const MAX_RESPONSE_CAP: usize = 16 * 1_048_576;
-const MAX_HEADER_VALUE: usize = 4_096;
-const MAX_CONTENT_TYPE_BYTES: usize = 256;
-
-/// HTTP failure. Contains no URL, host or response text.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HttpError {
-    /// The URL breaks the rules, or its kind does not match the client.
-    InvalidUrl,
-    /// A header name or value breaks the rules.
-    InvalidHeader,
-    /// `ERROR_WINHTTP_TIMEOUT`.
-    Timeout,
-    /// `ERROR_WINHTTP_SECURE_FAILURE`.
-    Tls,
-    /// Request or response exceeds its bound.
-    TooLarge,
-    /// Another `WinHTTP` failure.
-    Os(WinError),
+/// The host as `WinHttpConnect` takes it: an IPv6 literal without its brackets (`[::1]` →
+/// `::1`), any other host unchanged. Shared with [`crate::ws`].
+pub(crate) fn connect_host(host: &str) -> &str {
+    host.strip_prefix('[')
+        .and_then(|inner| inner.strip_suffix(']'))
+        .unwrap_or(host)
 }
 
-impl fmt::Display for HttpError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidUrl => formatter.write_str("invalid URL"),
-            Self::InvalidHeader => formatter.write_str("invalid header"),
-            Self::Timeout => formatter.write_str("HTTP timeout"),
-            Self::Tls => formatter.write_str("TLS failure"),
-            Self::TooLarge => formatter.write_str("HTTP payload too large"),
-            Self::Os(error) => write!(formatter, "{error}"),
-        }
-    }
-}
-
-impl std::error::Error for HttpError {}
-
-#[derive(Clone, PartialEq, Eq)]
-struct Parts {
-    text: String,
-    host: String,
+/// The request target, read from an `HttpsUrl` or a `LoopbackUrl`.
+struct Target<'a> {
+    host: &'a str,
     port: Option<u16>,
-    path: String,
+    path: &'a str,
 }
 
-fn valid_https_host(host: &str) -> bool {
-    if let Some(literal) = host
-        .strip_prefix('[')
-        .and_then(|rest| rest.strip_suffix(']'))
-    {
-        return valid_ipv6_literal(literal);
-    }
-    (1..=253).contains(&host.len())
-        && host.bytes().all(|byte| {
-            byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'.' || byte == b'-'
-        })
-}
-
-/// A bracketed IPv6 literal's inside (already lowercased): hex groups and `:` (one `::`), an
-/// optional dotted IPv4 tail, no zone id (`%`), 2–45 bytes. `WinHttpConnect` gets it without
-/// the brackets, like the loopback `[::1]`.
-fn valid_ipv6_literal(literal: &str) -> bool {
-    (2..=45).contains(&literal.len())
-        && literal.contains(':')
-        && literal.matches("::").count() <= 1
-        && !literal.contains(":::")
-        && literal
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() || byte == b':' || byte == b'.')
-        && literal
-            .split(':')
-            .all(|group| group.len() <= 4 || (group.contains('.') && group.split('.').count() == 4))
-}
-
-/// `input` without its `scheme` prefix, the scheme compared case-insensitively (RFC 3986 §3.1;
-/// the normalized text is lowercase).
-fn strip_scheme<'a>(input: &'a str, scheme: &str) -> Option<&'a str> {
-    let head = input.get(..scheme.len())?;
-    head.eq_ignore_ascii_case(scheme)
-        .then(|| input.get(scheme.len()..))
-        .flatten()
-}
-
-fn parse_parts(input: &str, scheme: &str) -> Result<Parts, HttpError> {
-    if input.len() > MAX_URL_BYTES || !input.bytes().all(|byte| (0x21..=0x7E).contains(&byte)) {
-        return Err(HttpError::InvalidUrl);
-    }
-    let rest = strip_scheme(input, scheme).ok_or(HttpError::InvalidUrl)?;
-    if rest.contains('#') {
-        return Err(HttpError::InvalidUrl);
-    }
-    let split = rest.find(['/', '?']).unwrap_or(rest.len());
-    let (authority, tail) = rest.split_at(split);
-    if authority.is_empty() || authority.contains('@') {
-        return Err(HttpError::InvalidUrl);
-    }
-    let path = if tail.is_empty() {
-        "/".to_owned()
-    } else if tail.starts_with('/') {
-        tail.to_owned()
-    } else {
-        format!("/{tail}")
-    };
-    let (host, port) = if let Some(inner) = authority.strip_prefix('[') {
-        let close = inner.find(']').ok_or(HttpError::InvalidUrl)?;
-        let (literal, after) = inner.split_at(close);
-        let after = after.get(1..).unwrap_or("");
-        if !after.is_empty() && !after.starts_with(':') {
-            return Err(HttpError::InvalidUrl);
-        }
-        (format!("[{}]", literal.to_ascii_lowercase()), after)
-    } else {
-        match authority.split_once(':') {
-            Some((host, port)) => (host.to_ascii_lowercase(), port),
-            None => (authority.to_ascii_lowercase(), ""),
-        }
-    };
-    let port = if port.is_empty() {
-        if authority.ends_with(':') {
-            return Err(HttpError::InvalidUrl);
-        }
-        None
-    } else {
-        let digits = port.strip_prefix(':').unwrap_or(port);
-        if digits.is_empty()
-            || digits.len() > 5
-            || digits.starts_with('0')
-            || !digits.bytes().all(|byte| byte.is_ascii_digit())
-        {
-            return Err(HttpError::InvalidUrl);
-        }
-        let value: u16 = digits.parse().map_err(|_| HttpError::InvalidUrl)?;
-        Some(value)
-    };
-    let mut text = String::with_capacity(input.len());
-    text.push_str(scheme);
-    text.push_str(&host);
-    if let Some(port) = port {
-        text.push(':');
-        text.push_str(&port.to_string());
-    }
-    text.push_str(if tail.is_empty() { "" } else { &path });
-    Ok(Parts {
-        text,
-        host,
-        port,
-        path,
-    })
-}
-
-/// An `https://` URL (rules of spec/01 §7.4). The whole URL is treated as secret: `Debug` and
-/// `Display` show only `https://[redacted]`.
-#[derive(Clone, PartialEq, Eq)]
-pub struct HttpsUrl(Parts);
-
-impl HttpsUrl {
-    /// Parses and normalizes (lowercase host) an HTTPS URL: `https://` only, host
-    /// `[a-z0-9.-]{1,253}`, optional port 1–65535, printable-ASCII path without spaces, ≤ 2048
-    /// bytes, no userinfo or fragment.
-    ///
-    /// # Errors
-    ///
-    /// [`HttpError::InvalidUrl`].
-    pub fn parse(text: &str) -> Result<Self, HttpError> {
-        let parts = parse_parts(text, "https://")?;
-        if !valid_https_host(&parts.host) {
-            return Err(HttpError::InvalidUrl);
-        }
-        Ok(Self(parts))
-    }
-
-    /// The host (LLM endpoint display/log only; never for RPC endpoints, spec/01 §5.4).
-    #[must_use]
-    pub fn host(&self) -> &str {
-        &self.0.host
-    }
-
-    /// The normalized URL text. Secret: store it encrypted, never log or display it.
-    #[must_use]
-    pub fn expose(&self) -> &str {
-        &self.0.text
-    }
-
-    /// The path (with query), starting with `/`.
-    #[must_use]
-    pub fn path(&self) -> &str {
-        &self.0.path
-    }
-
-    /// The explicit port, if any.
-    #[must_use]
-    pub const fn port(&self) -> Option<u16> {
-        self.0.port
-    }
-}
-
-impl fmt::Debug for HttpsUrl {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("https://[redacted]")
-    }
-}
-
-impl fmt::Display for HttpsUrl {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("https://[redacted]")
-    }
-}
-
-/// An `http://` loopback URL (`127.0.0.1`, `localhost`, `[::1]`).
-#[derive(Clone, PartialEq, Eq)]
-pub struct LoopbackUrl(Parts);
-
-impl LoopbackUrl {
-    /// Parses a loopback URL with the same port/path/length rules as [`HttpsUrl`].
-    ///
-    /// # Errors
-    ///
-    /// [`HttpError::InvalidUrl`].
-    pub fn parse(text: &str) -> Result<Self, HttpError> {
-        let parts = parse_parts(text, "http://")?;
-        if !matches!(parts.host.as_str(), "127.0.0.1" | "localhost" | "[::1]") {
-            return Err(HttpError::InvalidUrl);
-        }
-        Ok(Self(parts))
-    }
-}
-
-impl fmt::Debug for LoopbackUrl {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(self, formatter)
-    }
-}
-
-impl fmt::Display for LoopbackUrl {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.0.port {
-            Some(port) => write!(formatter, "http://{}:{port}/…", self.0.host),
-            None => write!(formatter, "http://{}/…", self.0.host),
+impl<'a> Target<'a> {
+    fn https(url: &'a HttpsUrl) -> Self {
+        Self {
+            host: url.host(),
+            port: url.port(),
+            path: url.path(),
         }
     }
-}
-
-/// An LLM endpoint (D21). RPC endpoints are [`HttpsUrl`] only (D13).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum EndpointUrl {
-    /// HTTPS.
-    Https(HttpsUrl),
-    /// Loopback HTTP.
-    Loopback(LoopbackUrl),
-}
-
-impl EndpointUrl {
-    /// Dispatches on the scheme.
-    ///
-    /// # Errors
-    ///
-    /// [`HttpError::InvalidUrl`].
-    pub fn parse(text: &str) -> Result<Self, HttpError> {
-        if strip_scheme(text, "https://").is_some() {
-            HttpsUrl::parse(text).map(Self::Https)
-        } else if strip_scheme(text, "http://").is_some() {
-            LoopbackUrl::parse(text).map(Self::Loopback)
-        } else {
-            Err(HttpError::InvalidUrl)
-        }
-    }
-}
-
-/// Per-phase `WinHTTP` timeouts in milliseconds (no default; callers choose, spec/01 §7.4).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[expect(
-    clippy::struct_field_names,
-    reason = "field names are fixed by spec/01 §7.4"
-)]
-pub struct Timeouts {
-    /// Name resolution.
-    pub resolve_ms: u32,
-    /// Connect.
-    pub connect_ms: u32,
-    /// Send.
-    pub send_ms: u32,
-    /// Receive.
-    pub receive_ms: u32,
-}
-
-/// An HTTP response.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Response {
-    /// Status code.
-    pub status: u16,
-    /// `Content-Type` when present, ASCII and ≤ 256 bytes.
-    pub content_type: Option<String>,
-    /// Body.
-    pub body: Vec<u8>,
-}
-
-fn valid_header(name: &str, value: &[u8]) -> bool {
-    (1..=64).contains(&name.len())
-        && name
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-        && value.len() <= MAX_HEADER_VALUE
-        && value.iter().all(|byte| (0x20..=0x7E).contains(byte))
 }
 
 /// Builds `Name: value\r\n…` as UTF-16 in a wiping buffer.
@@ -389,11 +115,10 @@ impl Drop for Handle {
 }
 
 fn os_error(api: &'static str) -> HttpError {
-    let error = WinError::last(api);
-    match error.code {
+    match WinError::last(api).code {
         ERROR_WINHTTP_TIMEOUT => HttpError::Timeout,
         ERROR_WINHTTP_SECURE_FAILURE => HttpError::Tls,
-        _ => HttpError::Os(error),
+        code => HttpError::Os(code),
     }
 }
 
@@ -445,17 +170,6 @@ pub struct Client {
     timeouts: Timeouts,
 }
 
-impl Timeouts {
-    /// The total deadline of one request: the sum of the four phase timeouts (saturating).
-    #[must_use]
-    pub fn total_ms(&self) -> u64 {
-        u64::from(self.resolve_ms)
-            .saturating_add(u64::from(self.connect_ms))
-            .saturating_add(u64::from(self.send_ms))
-            .saturating_add(u64::from(self.receive_ms))
-    }
-}
-
 /// The receive timeout for the next body read: what is left of the total deadline, at most
 /// `receive_ms`, at least 1 ms; `None` once the deadline has passed.
 fn next_receive_timeout(total: Duration, elapsed: Duration, receive_ms: u32) -> Option<u32> {
@@ -505,7 +219,8 @@ unsafe impl Sync for Client {}
 
 impl Client {
     fn open(timeouts: Timeouts, kind: ClientKind) -> Result<Self, HttpError> {
-        let agent = to_wide("YourWallet/3", "WinHttpOpen").map_err(HttpError::Os)?;
+        let agent =
+            to_wide("YourWallet/3", "WinHttpOpen").map_err(|error| HttpError::Os(error.code))?;
         let access = match kind {
             ClientKind::Https => WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
             ClientKind::Loopback => WINHTTP_ACCESS_TYPE_NO_PROXY,
@@ -587,16 +302,20 @@ impl Client {
         body: &[u8],
         max_response: usize,
     ) -> Result<Response, HttpError> {
-        let parts = match (url, self.kind) {
-            (EndpointUrl::Https(url), ClientKind::Https) => &url.0,
-            (EndpointUrl::Loopback(url), ClientKind::Loopback) => &url.0,
+        let target = match (url, self.kind) {
+            (EndpointUrl::Https(url), ClientKind::Https) => Target::https(url),
+            (EndpointUrl::Loopback(url), ClientKind::Loopback) => Target {
+                host: url.host(),
+                port: url.port(),
+                path: url.path(),
+            },
             _ => return Err(HttpError::InvalidUrl),
         };
         let headers: Vec<(&str, &[u8])> = headers
             .iter()
             .map(|(name, value)| (*name, value.as_bytes()))
             .collect();
-        self.request("POST", parts, &headers, Some(body), max_response)
+        self.request("POST", &target, &headers, Some(body), max_response)
     }
 
     /// POSTs JSON with `Accept`/`Content-Type: application/json` and an optional bearer token.
@@ -627,7 +346,13 @@ impl Client {
                 .map_err(|_| HttpError::InvalidHeader)?;
             headers.push(("Authorization", authorization.as_slice()));
         }
-        self.request("POST", &url.0, &headers, Some(body), max_response)
+        self.request(
+            "POST",
+            &Target::https(url),
+            &headers,
+            Some(body),
+            max_response,
+        )
     }
 
     /// GETs with `Accept: application/json`.
@@ -641,7 +366,7 @@ impl Client {
         }
         self.request(
             "GET",
-            &url.0,
+            &Target::https(url),
             &[("Accept", b"application/json".as_slice())],
             None,
             max_response,
@@ -652,7 +377,7 @@ impl Client {
     fn request(
         &self,
         verb: &str,
-        parts: &Parts,
+        target: &Target<'_>,
         headers: &[(&str, &[u8])],
         body: Option<&[u8]>,
         max_response: usize,
@@ -666,13 +391,9 @@ impl Client {
         let max_response = max_response.min(MAX_RESPONSE_CAP);
         let block = header_block(headers)?;
         let secure = self.kind == ClientKind::Https;
-        let host = parts
-            .host
-            .strip_prefix('[')
-            .and_then(|inner| inner.strip_suffix(']'))
-            .unwrap_or(&parts.host);
-        let host = to_wide(host, "WinHttpConnect").map_err(|_| HttpError::InvalidUrl)?;
-        let port = parts.port.unwrap_or(if secure {
+        let host = to_wide(connect_host(target.host), "WinHttpConnect")
+            .map_err(|_| HttpError::InvalidUrl)?;
+        let port = target.port.unwrap_or(if secure {
             INTERNET_DEFAULT_HTTPS_PORT
         } else {
             INTERNET_DEFAULT_HTTP_PORT
@@ -683,7 +404,7 @@ impl Client {
             return Err(os_error("WinHttpConnect"));
         }
         let verb = to_wide(verb, "WinHttpOpenRequest").map_err(|_| HttpError::InvalidUrl)?;
-        let path = to_wide(&parts.path, "WinHttpOpenRequest").map_err(|_| HttpError::InvalidUrl)?;
+        let path = to_wide(target.path, "WinHttpOpenRequest").map_err(|_| HttpError::InvalidUrl)?;
         // SAFETY: Strings are NUL-terminated and live; default version, no referrer, no accept
         // type list.
         let request = Handle(unsafe {
@@ -764,8 +485,7 @@ impl Client {
         if ok == 0 {
             return Err(os_error("WinHttpQueryHeaders"));
         }
-        let status = u16::try_from(status)
-            .map_err(|_| HttpError::Os(WinError::new("WinHttpQueryHeaders", 0)))?;
+        let status = u16::try_from(status).map_err(|_| HttpError::Os(0))?;
         let mut type_buffer = [0_u16; MAX_CONTENT_TYPE_BYTES / 2 + 1];
         let mut type_len = u32::try_from(core::mem::size_of_val(&type_buffer)).unwrap_or(0);
         // SAFETY: `type_buffer` is writable for `type_len` bytes.
@@ -863,8 +583,7 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::{
-        EndpointUrl, HttpError, HttpsUrl, LoopbackUrl, PhaseTimeouts, Timeouts, header_block,
-        next_receive_timeout, valid_header,
+        HttpError, PhaseTimeouts, Timeouts, connect_host, header_block, next_receive_timeout,
     };
     use std::time::Duration;
 
@@ -925,122 +644,20 @@ mod tests {
         assert_eq!(huge.total_ms(), 4 * u64::from(u32::MAX));
     }
 
+    /// `WinHttpConnect` gets an IPv6 literal without brackets (2026-11-17: shared with `ws`,
+    /// which before passed the bracketed host).
     #[test]
-    fn https_url_accepts_and_normalizes() {
-        let url =
-            HttpsUrl::parse("https://Name.Ethereum-Sepolia.QuikNode.pro/tok_EN-123/").unwrap();
-        assert_eq!(url.host(), "name.ethereum-sepolia.quiknode.pro");
-        assert_eq!(url.path(), "/tok_EN-123/");
-        assert_eq!(
-            url.expose(),
-            "https://name.ethereum-sepolia.quiknode.pro/tok_EN-123/"
-        );
-        assert_eq!(HttpsUrl::parse("https://h.example").unwrap().path(), "/");
-        assert_eq!(
-            HttpsUrl::parse("https://h.example:8443/x?y=1")
-                .unwrap()
-                .port(),
-            Some(8443)
-        );
-        assert!(HttpsUrl::parse(&format!("https://h.example/{}", "a".repeat(2_028))).is_ok());
-        // Security review S16: the scheme is case-insensitive and an IPv6 literal is a host,
-        // as for the loopback `http://[::1]`; both normalize to lowercase.
-        assert_eq!(
-            HttpsUrl::parse("HTTPS://Example.com/x").unwrap().expose(),
-            "https://example.com/x"
-        );
-        let v6 = HttpsUrl::parse("https://[2001:DB8::1]:8545/rpc").unwrap();
-        assert_eq!(v6.host(), "[2001:db8::1]");
-        assert_eq!(v6.port(), Some(8545));
-        assert_eq!(v6.expose(), "https://[2001:db8::1]:8545/rpc");
-        assert!(HttpsUrl::parse("https://[::ffff:192.0.2.1]/").is_ok());
-        assert!(matches!(
-            EndpointUrl::parse("Https://api.example/v1"),
-            Ok(EndpointUrl::Https(_))
-        ));
-        assert!(matches!(
-            EndpointUrl::parse("HTTP://[::1]:11434/v1"),
-            Ok(EndpointUrl::Loopback(_))
-        ));
+    fn connect_host_strips_ipv6_brackets_only() {
+        assert_eq!(connect_host("[2001:db8::1]"), "2001:db8::1");
+        assert_eq!(connect_host("[::1]"), "::1");
+        assert_eq!(connect_host("relay.example"), "relay.example");
+        assert_eq!(connect_host("127.0.0.1"), "127.0.0.1");
+        assert_eq!(connect_host("[::1"), "[::1");
     }
 
-    #[test]
-    fn https_url_rejections() {
-        for bad in [
-            "http://example.com",
-            "https://",
-            "https://user@example.com/",
-            "https://example.com/#frag",
-            "https://example.com/a b",
-            "https://exa_mple.com/",
-            "https://example.com:0/",
-            "https://example.com:65536/",
-            "https://example.com:/",
-            "https://example.com:08/",
-            "https://[::1",
-            "https://[::1]x/",
-            "https://[g::1]/",
-            "https://[::1%25eth0]/",
-            "https://[:::1]/",
-            "https://[1::2::3]/",
-            "https://[12345::1]/",
-            "https://[]/",
-            "https://[1.2.3.4]/",
-            "ftp://example.com/",
-            "httpsx://example.com/",
-            "https://example.com/\u{e9}",
-        ] {
-            assert_eq!(HttpsUrl::parse(bad), Err(HttpError::InvalidUrl), "{bad}");
-        }
-        assert!(HttpsUrl::parse(&format!("https://h.example/{}", "a".repeat(2_040))).is_err());
-    }
-
-    #[test]
-    fn https_url_formatting_never_shows_host_or_path() {
-        let url = HttpsUrl::parse("https://secret-name.rpc.example/token-path/").unwrap();
-        for shown in [format!("{url}"), format!("{url:?}")] {
-            assert_eq!(shown, "https://[redacted]");
-            assert!(!shown.contains("secret-name"));
-            assert!(!shown.contains("token"));
-        }
-    }
-
-    #[test]
-    fn loopback_and_endpoint_dispatch() {
-        assert!(LoopbackUrl::parse("http://127.0.0.1:11434/v1/chat/completions").is_ok());
-        assert!(LoopbackUrl::parse("http://LOCALHOST/v1/chat/completions").is_ok());
-        assert!(matches!(
-            EndpointUrl::parse("http://[::1]:11434/v1/chat/completions"),
-            Ok(EndpointUrl::Loopback(_))
-        ));
-        assert_eq!(
-            EndpointUrl::parse("http://example.com/"),
-            Err(HttpError::InvalidUrl)
-        );
-        assert_eq!(
-            EndpointUrl::parse("http://127.0.0.2/"),
-            Err(HttpError::InvalidUrl)
-        );
-        assert!(matches!(
-            EndpointUrl::parse("https://api.example/v1/chat/completions"),
-            Ok(EndpointUrl::Https(_))
-        ));
-        let shown = format!(
-            "{}",
-            LoopbackUrl::parse("http://localhost:8080/secret/path").unwrap()
-        );
-        assert_eq!(shown, "http://localhost:8080/…");
-    }
-
+    /// The header rule itself is tested in yw-platform (`tests/http.rs`).
     #[test]
     fn header_rules() {
-        assert!(valid_header("Content-Type", b"application/json"));
-        assert!(!valid_header("", b"x"));
-        assert!(!valid_header("Bad Name", b"x"));
-        assert!(!valid_header(&"a".repeat(65), b"x"));
-        assert!(!valid_header("X", b"line\r\nbreak"));
-        assert!(!valid_header("X", &[0x80]));
-        assert!(!valid_header("X", &vec![b'a'; 4_097]));
         assert_eq!(
             header_block(&[("Bad Name", b"x".as_slice())]).map(|_| ()),
             Err(HttpError::InvalidHeader)

@@ -16,7 +16,7 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use yw_win::http::HttpsUrl;
+use yw_platform::http::HttpsUrl;
 use yw_win::ui::Hwnd;
 use yw_win::ui::capture::{
     Capture, capture_client, dev_tour_app_env, dev_tour_clear_of_pointer, dev_tour_flush,

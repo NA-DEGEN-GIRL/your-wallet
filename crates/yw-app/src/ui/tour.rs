@@ -37,7 +37,7 @@ use yw_core::evm::chain::SEPOLIA;
 use yw_core::lang::Lang;
 use yw_core::sol::SolAddress;
 use yw_core::vault::EvmKeySource;
-use yw_win::http::HttpsUrl;
+use yw_platform::http::HttpsUrl;
 use yw_win::ui::{
     self, CaptureExclusion, ClassSpec, Handler, Hwnd, Msg, Reply, Window, WindowKind, WindowSpec,
 };
@@ -554,13 +554,13 @@ impl crate::rpc::Transport for SolTourRpc {
         _url: &HttpsUrl,
         body: &[u8],
         _max_response: usize,
-    ) -> Result<crate::rpc::HttpReply, yw_win::http::HttpError> {
+    ) -> Result<crate::rpc::HttpReply, yw_platform::http::HttpError> {
         use yw_json::{Limits, Object, Value};
         let request = yw_json::parse(body, &Limits::REQUEST)
-            .map_err(|_| yw_win::http::HttpError::InvalidUrl)?;
+            .map_err(|_| yw_platform::http::HttpError::InvalidUrl)?;
         let object = request
             .as_object()
-            .ok_or(yw_win::http::HttpError::InvalidUrl)?;
+            .ok_or(yw_platform::http::HttpError::InvalidUrl)?;
         let id = object.get("id").cloned().unwrap_or(Value::Null);
         let method = object.get("method").and_then(Value::as_str).unwrap_or("");
         let first = object
@@ -687,13 +687,13 @@ impl crate::rpc::Transport for SolDappTourRpc {
         _url: &HttpsUrl,
         body: &[u8],
         _max_response: usize,
-    ) -> Result<crate::rpc::HttpReply, yw_win::http::HttpError> {
+    ) -> Result<crate::rpc::HttpReply, yw_platform::http::HttpError> {
         use yw_json::{Limits, Object, Value};
         let request = yw_json::parse(body, &Limits::REQUEST)
-            .map_err(|_| yw_win::http::HttpError::InvalidUrl)?;
+            .map_err(|_| yw_platform::http::HttpError::InvalidUrl)?;
         let object = request
             .as_object()
-            .ok_or(yw_win::http::HttpError::InvalidUrl)?;
+            .ok_or(yw_platform::http::HttpError::InvalidUrl)?;
         let id = object.get("id").cloned().unwrap_or(Value::Null);
         let method = object.get("method").and_then(Value::as_str).unwrap_or("");
         let params = object

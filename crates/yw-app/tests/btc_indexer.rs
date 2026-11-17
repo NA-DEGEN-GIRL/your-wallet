@@ -25,7 +25,7 @@ use yw_core::btc::prevtx::{PrevTxError, verify_prev_output};
 use yw_core::btc::script::p2wpkh_script_pubkey;
 use yw_core::btc::{BtcNetwork, ScriptKind, Txid, parse_address};
 use yw_json::{Limits, Value};
-use yw_win::http::{HttpError, Response};
+use yw_platform::http::{HttpError, Response};
 
 fn address(text: &str, net: BtcNetwork) -> TestResult<BtcAddress> {
     match parse_address(text, net).map_err(|error| format!("{error:?}"))? {

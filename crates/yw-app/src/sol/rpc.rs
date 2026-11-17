@@ -15,7 +15,7 @@ use yw_core::sol::display::SimSummary;
 use yw_core::sol::template::T_SPL_HEADER;
 use yw_core::sol::{SolAddress, SolAsset};
 use yw_json::{Number, Value};
-use yw_win::http::HttpsUrl;
+use yw_platform::http::HttpsUrl;
 
 use crate::rpc::{CallError, DEFAULT_MAX_RESPONSE, RpcClient, RpcFailure};
 use crate::text::{json_object, json_str, json_u64};

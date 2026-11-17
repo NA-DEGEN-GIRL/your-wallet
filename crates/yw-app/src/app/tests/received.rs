@@ -43,7 +43,7 @@ fn switch_off_queues_nothing_and_on_reads_the_shown_card() {
     let (mut app, dir) = unlocked_app("received", false);
     let (tx, rx) = std::sync::mpsc::channel();
     app.rpc_tx = Some(tx);
-    let url = yw_win::http::HttpsUrl::parse("https://rpc.example.test/key").unwrap();
+    let url = yw_platform::http::HttpsUrl::parse("https://rpc.example.test/key").unwrap();
     app.apikeys
         .set_rpc(NetworkId::Eip155(app.settings.evm_chain_id), &url);
     let now = yw_win::time::monotonic_ms();
@@ -425,7 +425,7 @@ fn zcash_unconfirmed_deposits_on_the_card() {
         .unwrap(),
     };
     app.meta.as_mut().unwrap().zcash.set(account);
-    let url = yw_win::http::HttpsUrl::parse("https://zec.example.test/key").unwrap();
+    let url = yw_platform::http::HttpsUrl::parse("https://zec.example.test/key").unwrap();
     app.apikeys
         .set_rpc(NetworkId::Zcash(ZecNetwork::Testnet), &url);
     let utxo = |fill: u8, value: u64, height: Option<u32>| ZecUtxo {

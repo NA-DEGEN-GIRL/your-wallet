@@ -2741,7 +2741,7 @@ mod tests {
             std::env::temp_dir().join(format!("yw-app-sol-ui-{}", std::process::id())),
         );
         let mut app = app();
-        let url = yw_win::http::HttpsUrl::parse("https://rpc.example.test/v1").unwrap();
+        let url = yw_platform::http::HttpsUrl::parse("https://rpc.example.test/v1").unwrap();
         for cluster in [
             crate::network::SolCluster::Mainnet,
             crate::network::SolCluster::Devnet,
@@ -2856,7 +2856,7 @@ mod tests {
         assert_eq!(app.sol.tracking.len(), 2);
         let (rpc, jobs) = std::sync::mpsc::channel();
         app.rpc_tx = Some(rpc);
-        let url = yw_win::http::HttpsUrl::parse("https://sol.example.test/").unwrap();
+        let url = yw_platform::http::HttpsUrl::parse("https://sol.example.test/").unwrap();
         app.apikeys.set_rpc(
             crate::network::NetworkId::Solana(crate::network::SolCluster::Mainnet),
             &url,

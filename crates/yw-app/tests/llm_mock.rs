@@ -875,7 +875,7 @@ mod llm {
     impl LlmTransport for Slow {
         fn post(
             &self,
-            _url: &yw_win::http::EndpointUrl,
+            _url: &yw_platform::http::EndpointUrl,
             _headers: &[(&str, &str)],
             _body: &[u8],
             _max_response: usize,

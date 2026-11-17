@@ -7,7 +7,8 @@ use std::net::{TcpListener, TcpStream};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use yw_win::http::{Client, EndpointUrl, HttpError, Timeouts};
+use yw_platform::http::{EndpointUrl, HttpError, Timeouts};
+use yw_win::http::Client;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 

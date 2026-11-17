@@ -15,7 +15,7 @@ use core::fmt;
 
 use yw_core::evm::chain::builtin_chain;
 use yw_core::secret::Zeroizing;
-use yw_win::http::HttpsUrl;
+use yw_platform::http::HttpsUrl;
 
 use crate::network::{BUILTIN_EVM, BtcNet, NetworkId, SolCluster};
 use crate::settings::{MAX_CUSTOM_EVM_CHAINS, RpcTemplate, Settings};

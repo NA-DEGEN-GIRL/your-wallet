@@ -11,7 +11,7 @@ use yw_app::network::{BtcNet, NetworkId, SolCluster};
 use yw_app::settings::{EvmChainDef, MAX_CUSTOM_EVM_CHAINS, RpcTemplate, Settings};
 use yw_core::evm::chain::SimulationSupport;
 use yw_core::secret::Zeroizing;
-use yw_win::http::HttpsUrl;
+use yw_platform::http::HttpsUrl;
 
 const NAME: &str = "fake-node";
 const TOKEN: &str = "FakeToken_0123456789abcdef";

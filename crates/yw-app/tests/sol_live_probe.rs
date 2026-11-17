@@ -48,7 +48,8 @@ use yw_core::sol::template::SPL_ALLOWLIST;
 use yw_core::sol::token::{TokenHolding, check_mint, parse_token_account};
 use yw_core::sol::{SolAddress, SolAsset, SolCluster, SolTransferCore, SplAllowEntry};
 use yw_json::{Limits as JsonLimits, Number, Object, Value};
-use yw_win::http::{Client, HttpError, HttpsUrl};
+use yw_platform::http::{HttpError, HttpsUrl};
+use yw_win::http::Client;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 

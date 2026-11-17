@@ -2166,7 +2166,7 @@ fn chip_and_account_changes_read_balances_at_the_next_tick() {
     let (mut app, dir) = unlocked_app("balances-due", false);
     let (tx, rx) = std::sync::mpsc::channel();
     app.rpc_tx = Some(tx);
-    let url = yw_win::http::HttpsUrl::parse("https://rpc.example.test/").unwrap();
+    let url = yw_platform::http::HttpsUrl::parse("https://rpc.example.test/").unwrap();
     for chain in app.settings.registered_evm() {
         app.apikeys.set_rpc(NetworkId::Eip155(chain), &url);
     }
@@ -2226,7 +2226,7 @@ fn reads_due_starts_a_due_balance_read_without_the_tick() {
     let (mut app, dir) = unlocked_app("reads-due", false);
     let (tx, rx) = std::sync::mpsc::channel();
     app.rpc_tx = Some(tx);
-    let url = yw_win::http::HttpsUrl::parse("https://rpc.example.test/").unwrap();
+    let url = yw_platform::http::HttpsUrl::parse("https://rpc.example.test/").unwrap();
     for chain in app.settings.registered_evm() {
         app.apikeys.set_rpc(NetworkId::Eip155(chain), &url);
     }
@@ -2569,7 +2569,7 @@ fn rpc_failure_is_said_once() {
     use crate::ui::screens::T_BALANCE_FAILED;
     let (mut app, dir) = unlocked_app("rpc-once", false);
     let chain = app.settings.evm_chain_id;
-    let url = yw_win::http::HttpsUrl::parse("https://rpc.example.test/").unwrap();
+    let url = yw_platform::http::HttpsUrl::parse("https://rpc.example.test/").unwrap();
     app.apikeys.set_rpc(NetworkId::Eip155(chain), &url);
     let address = parse_address("0x9858effd232b4033e47d90003d41ec34ecaeda94").unwrap();
     app.evm.balances.insert(

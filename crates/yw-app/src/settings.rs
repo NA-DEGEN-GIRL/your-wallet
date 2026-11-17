@@ -9,7 +9,7 @@
 use yw_core::evm::amount::{U256, parse_units};
 use yw_core::evm::chain::{GenesisRule, MAX_CHAIN_ID, SimulationSupport, builtin_chains};
 use yw_json::{Limits, Object, Value};
-use yw_win::http::HttpsUrl;
+use yw_platform::http::HttpsUrl;
 
 use crate::network::{BUILTIN_EVM, BtcNet, NetworkId, SolCluster};
 use crate::text::{

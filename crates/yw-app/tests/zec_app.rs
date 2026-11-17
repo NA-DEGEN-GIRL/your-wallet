@@ -209,15 +209,15 @@ struct OverLimitNode {
 impl yw_app::rpc::Transport for OverLimitNode {
     fn post_json(
         &self,
-        _url: &yw_win::http::HttpsUrl,
+        _url: &yw_platform::http::HttpsUrl,
         body: &[u8],
         _max_response: usize,
-    ) -> Result<yw_app::rpc::HttpReply, yw_win::http::HttpError> {
+    ) -> Result<yw_app::rpc::HttpReply, yw_platform::http::HttpError> {
         let request = yw_json::parse(body, &Limits::REQUEST)
-            .map_err(|_| yw_win::http::HttpError::InvalidHeader)?;
+            .map_err(|_| yw_platform::http::HttpError::InvalidHeader)?;
         let object = request
             .as_object()
-            .ok_or(yw_win::http::HttpError::InvalidHeader)?;
+            .ok_or(yw_platform::http::HttpError::InvalidHeader)?;
         let id = object
             .get("id")
             .and_then(Value::as_number)
@@ -229,7 +229,7 @@ impl yw_app::rpc::Transport for OverLimitNode {
                 r#""result":{{"chain":"{}","blocks":4469100,"headers":4469100,"consensus":{{"nextblock":"77190ad9"}}}}"#,
                 ZecNetwork::Testnet.chain_name()
             ),
-            Some("getaddressutxos") => return Err(yw_win::http::HttpError::TooLarge),
+            Some("getaddressutxos") => return Err(yw_platform::http::HttpError::TooLarge),
             Some("gettxout") => {
                 let index = params
                     .and_then(|params| params.get(1))
@@ -276,7 +276,7 @@ fn over_limit_answer_keeps_what_is_known() {
         let job = ZecRpcJob::Refresh {
             job: 1,
             network: ZecNetwork::Testnet,
-            url: yw_win::http::HttpsUrl::parse("https://zec.example/").unwrap(),
+            url: yw_platform::http::HttpsUrl::parse("https://zec.example/").unwrap(),
             indexer: ZecIndexer::Node,
             address: "tmXYZ".to_owned(),
             script_hex: "76a914000000000000000000000000000000000000000088ac".to_owned(),

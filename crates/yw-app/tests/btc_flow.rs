@@ -38,7 +38,7 @@ use yw_core::btc::tx::{Transaction, TxIn, TxOut, serialize, txid as compute_txid
 use yw_core::btc::{BtcMeta, Discovery};
 use yw_core::btc::{BtcNetwork, OutPoint, Sats, Txid};
 use yw_core::journal::btc::TrackObservation;
-use yw_win::http::{HttpError, HttpsUrl};
+use yw_platform::http::{HttpError, HttpsUrl};
 
 fn new_session() -> ChainSession {
     ChainSession::new(BtcNetwork::Testnet4, BtcNetwork::Testnet4)

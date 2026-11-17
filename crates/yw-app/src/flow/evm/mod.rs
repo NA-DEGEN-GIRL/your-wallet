@@ -20,7 +20,7 @@ use yw_core::evm::chain::{
     ChainInfo, GenesisRule, HYPEREVM_MAINNET, UserChainInput, builtin_chain, user_chain_info,
 };
 use yw_core::evm::fee::FeeCaps;
-use yw_win::http::HttpsUrl;
+use yw_platform::http::HttpsUrl;
 
 use crate::errors::ErrorCode;
 use crate::rpc::evm::{chain_id_text, genesis_hash, parse_chain_id};
@@ -41,17 +41,11 @@ pub const SIM_WAIT_MS: u64 = 10_000;
 /// Token metadata and address classification lookups per request (spec/03 §2.5).
 pub const MAX_FACT_LOOKUPS: usize = 16;
 
-/// Time source of the pipelines (monotonic ms for budgets, wall clock for records).
-pub trait Clock: Send + Sync {
-    /// Monotonic milliseconds (yw-win `time::monotonic_ms`).
-    fn now_ms(&self) -> u64;
-    /// Wall-clock Unix milliseconds.
-    fn now_unix_ms(&self) -> u64;
-    /// Sleeps (retry delays).
-    fn sleep_ms(&self, ms: u64);
-}
+/// Time source of the pipelines (2026-11-17: defined in yw-platform, re-exported here so every
+/// `flow::evm::Clock` path still works).
+pub use yw_platform::Clock;
 
-/// The real clock.
+/// The real clock (Windows: yw-win `time::monotonic_ms`).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SystemClock;
 

@@ -6,9 +6,12 @@ use std::sync::Mutex;
 use yw_app::errors::ErrorCode;
 use yw_app::logging::{Field, format_line};
 use yw_app::network::{BtcNet, NetworkId, SolCluster};
-use yw_app::rpc::{HttpReply, RpcClient, TestOutcome, Transport, endpoint_for_test, test_endpoint};
+use yw_app::rpc::{
+    HttpReply, RpcClient, RpcFailure, TestOutcome, Transport, classify, endpoint_for_test,
+    test_endpoint,
+};
 use yw_app::settings::LogLevel;
-use yw_win::http::{HttpError, HttpsUrl};
+use yw_platform::http::{HttpError, HttpsUrl};
 
 struct Fake {
     status: u16,
@@ -206,5 +209,25 @@ fn english_test_messages() {
     for outcome in [mismatch, TestOutcome::Failed(ErrorCode::Rpc001)] {
         let message = outcome.message(Lang::En, "Ethereum");
         assert!(!has_hangul(&message), "{message}");
+    }
+}
+
+/// spec/04 §1.9: every transport error maps to one code. `Os` (the bare OS error number since
+/// 2026-11-17, S1) and the WebSocket-only `UpgradeRefused` stay E-RPC-001.
+#[test]
+fn transport_errors_classify() {
+    let cases = [
+        (HttpError::Timeout, ErrorCode::Rpc002),
+        (HttpError::Tls, ErrorCode::Rpc008),
+        (HttpError::TooLarge, ErrorCode::Rpc005),
+        (HttpError::InvalidUrl, ErrorCode::Key003),
+        (HttpError::InvalidHeader, ErrorCode::Rpc001),
+        (HttpError::Os(0), ErrorCode::Rpc001),
+        (HttpError::Os(0x0000_2EFD), ErrorCode::Rpc001),
+        (HttpError::UpgradeRefused(401), ErrorCode::Rpc001),
+        (HttpError::UpgradeRefused(503), ErrorCode::Rpc001),
+    ];
+    for (error, code) in cases {
+        assert_eq!(classify(RpcFailure::Http(error)), code, "{error:?}");
     }
 }

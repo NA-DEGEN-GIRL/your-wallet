@@ -9,7 +9,7 @@ use std::sync::mpsc::Receiver;
 use yw_core::approval::TokenMeta;
 use yw_core::evm::abi::balance_of_data;
 use yw_core::evm::address::Address;
-use yw_win::http::HttpsUrl;
+use yw_platform::http::HttpsUrl;
 
 use crate::errors::ErrorCode;
 use crate::events::{BalanceSnapshot, EventQueue, RpcEvent, UiEvent};
@@ -267,11 +267,8 @@ impl Transport for Unavailable {
         _url: &HttpsUrl,
         _body: &[u8],
         _max_response: usize,
-    ) -> Result<crate::rpc::HttpReply, yw_win::http::HttpError> {
-        Err(yw_win::http::HttpError::Os(yw_win::WinError {
-            api: "WinHttpOpen",
-            code: 0,
-        }))
+    ) -> Result<crate::rpc::HttpReply, yw_platform::http::HttpError> {
+        Err(yw_platform::http::HttpError::Os(0))
     }
 }
 

@@ -18,7 +18,7 @@ use yw_core::evm::simulate::{
 };
 use yw_core::evm::tx::{AccessListItem, Eip1559Tx};
 use yw_json::{Limits, Object, ParseError, Value};
-use yw_win::http::{HttpError, HttpsUrl};
+use yw_platform::http::{HttpError, HttpsUrl};
 
 use super::{DEFAULT_MAX_RESPONSE, RpcClient, RpcFailure, canonical_quantity};
 use crate::text::{json_object, json_str};

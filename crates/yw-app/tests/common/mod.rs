@@ -13,7 +13,7 @@ use std::time::Duration;
 use yw_app::flow::evm::{Clock, SharedTransport};
 use yw_app::rpc::{HttpReply, Transport};
 use yw_json::{Limits, Number, Object, Value};
-use yw_win::http::{HttpError, HttpsUrl};
+use yw_platform::http::{HttpError, HttpsUrl};
 
 /// A scripted answer.
 #[derive(Clone, Debug)]

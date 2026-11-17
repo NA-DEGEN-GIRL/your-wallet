@@ -38,7 +38,7 @@ use yw_core::journal::evm::{
 };
 use yw_core::lang::Lang;
 use yw_core::vault::EvmKeySource;
-use yw_win::http::HttpsUrl;
+use yw_platform::http::HttpsUrl;
 
 use super::track::{TrackInput, track_group};
 use super::{

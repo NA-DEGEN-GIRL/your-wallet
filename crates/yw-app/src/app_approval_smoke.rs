@@ -20,7 +20,7 @@ use yw_core::evm::amount::U256;
 use yw_core::evm::chain::SEPOLIA_GENESIS;
 use yw_core::vault::EvmKeySource;
 use yw_json::{Limits, Number, Object, Value};
-use yw_win::http::{HttpError, HttpsUrl};
+use yw_platform::http::{HttpError, HttpsUrl};
 use yw_win::ui::{
     self, CaptureExclusion, ClassSpec, Handler, Msg, PaintStats, Rect, Reply, Window, WindowKind,
     WindowSpec,

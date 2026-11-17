@@ -91,6 +91,20 @@ pub enum ConnectError {
     Network,
 }
 
+/// Maps a relay WebSocket failure: a 401/403 answer to the upgrade is the relay refusing the
+/// project id or auth token (spec/13 §2, 5-minute backoff); anything else is a network failure.
+/// (2026-11-17: the refusal is `HttpError::UpgradeRefused`; before it was `Os` with the API name
+/// `WinHttpReceiveResponse` and the status as the code.)
+#[must_use]
+pub fn connect_error(error: yw_platform::http::HttpError) -> ConnectError {
+    match error {
+        yw_platform::http::HttpError::UpgradeRefused(status @ (401 | 403)) => {
+            ConnectError::Unauthorized(u32::from(status))
+        }
+        _ => ConnectError::Network,
+    }
+}
+
 impl RelayLink for yw_win::ws::WebSocket {
     fn send(&self, text: &str) -> bool {
         self.send_text(text).is_ok()
@@ -114,15 +128,10 @@ pub struct WsConnector;
 
 impl RelayConnector for WsConnector {
     fn connect(&mut self, url: &str) -> Result<Arc<dyn RelayLink>, ConnectError> {
-        let url = yw_win::http::HttpsUrl::parse(url).map_err(|_| ConnectError::Network)?;
+        let url = yw_platform::http::HttpsUrl::parse(url).map_err(|_| ConnectError::Network)?;
         match yw_win::ws::WebSocket::connect(&url, CONNECT_TIMEOUT_MS) {
             Ok(socket) => Ok(Arc::new(socket)),
-            Err(yw_win::http::HttpError::Os(error))
-                if error.api == "WinHttpReceiveResponse" && matches!(error.code, 401 | 403) =>
-            {
-                Err(ConnectError::Unauthorized(error.code))
-            }
-            Err(_) => Err(ConnectError::Network),
+            Err(error) => Err(connect_error(error)),
         }
     }
 }

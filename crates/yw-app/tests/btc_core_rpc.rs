@@ -29,7 +29,7 @@ use yw_core::btc::policy::{
 use yw_core::btc::prevtx::verify_prev_output;
 use yw_core::btc::script::p2wpkh_script_pubkey;
 use yw_core::btc::{BtcNetwork, Sats, Txid};
-use yw_win::http::HttpError;
+use yw_platform::http::HttpError;
 
 fn rig(handler: impl Fn(&btc_support::Call) -> Reply + Send + Sync + 'static) -> Rig {
     Rig::new(BtcIndexer::Esplora, handler)

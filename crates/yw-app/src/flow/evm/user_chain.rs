@@ -3,7 +3,7 @@
 
 use yw_core::evm::chain::{MAX_CHAIN_ID, SimulationSupport, builtin_chains};
 use yw_core::lang::Lang;
-use yw_win::http::HttpsUrl;
+use yw_platform::http::HttpsUrl;
 
 use super::SharedTransport;
 use crate::apikeys::{ApiKeys, TemplateEntry, template_url};

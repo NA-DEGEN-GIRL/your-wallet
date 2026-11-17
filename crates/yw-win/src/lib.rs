@@ -4,7 +4,8 @@
 //! `#![allow(unsafe_code)]`; every block carries a `// SAFETY:` comment and one unsafe operation
 //! (spec/01 §5.1). No raw handle or pointer is exposed; handles close on drop.
 //!
-//! M3 provides `time`, `mem`, `file`, `dpapi`, `clipboard`, `http`, `session`, `process`
+//! M3 provides `time`, `mem`, `file`, `dpapi`, `clipboard`, `http` (the `WinHTTP` client; its URL,
+//! error and response types are in yw-platform since 2026-11-17), `session`, `process`
 //! (single instance, process setup), `input` and `ui`. M5 adds `pipe` (the yw-host ↔ yw-app named
 //! pipe) and the yw-host process helpers (`spawn_detached`, `StdIn`/`StdOut`,
 //! `current_user_sid_string`; spec/05 §7.8). The `YubiKey` feature (spec/10 §4) adds `pcsc` (PC/SC

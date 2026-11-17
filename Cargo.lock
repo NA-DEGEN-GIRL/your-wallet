@@ -477,6 +477,7 @@ dependencies = [
  "qrcodegen",
  "yw-core",
  "yw-json",
+ "yw-platform",
  "yw-win",
 ]
 
@@ -515,10 +516,15 @@ name = "yw-json"
 version = "0.3.0"
 
 [[package]]
+name = "yw-platform"
+version = "0.3.0"
+
+[[package]]
 name = "yw-win"
 version = "0.3.0"
 dependencies = [
  "windows-sys",
+ "yw-platform",
 ]
 
 [[package]]
