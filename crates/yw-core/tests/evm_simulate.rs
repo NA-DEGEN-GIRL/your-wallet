@@ -1,6 +1,7 @@
 //! Simulation interpretation and transaction risk rules on constructed outcomes (spec/03 §6,
 //! §10.2; EVM-V09 diff, EVM-V17 core cases). Fixture-based cases S1–S16 live in
-//! `crates/yw-app/tests/evm_simulate.rs` next to the response parser.
+//! `crates/yw-engine/tests/evm_simulate.rs` next to the response parser (2026-11-17 S2 T1: before,
+//! yw-app).
 
 use yw_core::approval::{
     ApprovalDraft, ApprovalId, ApprovalKind, ApprovalOrigin, ApprovalStore, ChainFacts, CodeKind,

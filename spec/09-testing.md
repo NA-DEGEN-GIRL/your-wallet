@@ -786,7 +786,7 @@ WETH = Sepolia `0xfFf9976782d46CC05630D1f6eBAb18b2324d6B14`(03 §1.2, 구현 시
 - [ ] M7-4 devnet E2E: 07 §17.6 1–9. 4번 장애 주입 지점 이름은 `sol.after_journal_pending`(07 §14.2 `Pending` fsync 직후, 전송 전). 6번의 devnet RPC 재정의는 설정에서 저장해 `apikeys.dpapi`의 `rpc:solana:devnet` 항목(04 §6.3)으로 넣고, 끝나면 지운다.
 - [ ] M7-5 T_SOL·T_SPL 골든 교차 확인(07 §17.3, 저장소 안 별도 워크스페이스 `tools/sol-oracle/`(§2.1), 1회) 기록.
 - [ ] M7-6 호환성: 시험 vault에서 만든 24단어 시험 니모닉을 Phantom 또는 Solflare에 가져옴 → 계정 0·1 주소가 yw-app과 같음.
-- [ ] M7-7 (v1.1) 자동: SOL-N5, 07 §17.3 T_SPL 골든·PDA·ATA 벡터, 07 §17.4 SPL 항목(`sol::tests_spl`, `sol::token`, `tests/sol_spl_flow.rs`, `tests/sol_journal_worker.rs` SPL 사례), 퍼징 시드에 T_SPL 골든.
+- [ ] M7-7 (v1.1) 자동: SOL-N5, 07 §17.3 T_SPL 골든·PDA·ATA 벡터, 07 §17.4 SPL 항목(`sol::tests_spl`, `sol::token`, yw-engine `tests/sol_spl_flow.rs`, yw-app `tests/sol_journal_worker.rs` SPL 사례; 2026-11-17 S2 T1: 그 전에는 둘 다 yw-app), 퍼징 시드에 T_SPL 골든.
 - [ ] M7-8 (v1.1) §2.5 SOL 라이브에 SPL 항목: mint 확인(owner·82바이트·decimals 6), rent165, T_SPL `getFeeForMessage`, T_SPL CU 측정(새 ATA·기존 ATA 각 10회, 07 §10 bump 모델) → `SPL_TRANSFER_CU_LIMIT` 확정. 측정 전 mainnet SPL 전송 금지.
 - [ ] M7-9 (v1.1) devnet USDC E2E: 07 §17.6-8(faucet, 새 수신자 ATA 생성, 기존 ATA, 토큰 보내기 최대, 모르는 토큰 숨김, 곡선 밖 받는 주소 차단). USDT는 devnet 공식 mint가 없어 M9 mainnet 소액 체크리스트(07 미결 4).
 - [ ] M7-10 (M7.2 dApp 거래, D38) 자동: SOL-N6–N19, 07 §17.4 dApp 항목, 05 §10 S9·P13·P14·C6·B5·R-SOLTX, 04 §3.9 AP-SOLTX, fuzz-lite `fuzz_lite_sol_dapp_tx`, 키 작업자 emulator 시험(카드 서명만 3건 = 터치 3회, 카드 전송), `tests/sol_dapp_flow.rs`(서명만·전송·결정적 preflight·서명 전 만료).
