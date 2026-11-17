@@ -27,7 +27,7 @@ use crate::app_evm::{QueuedItem, SendAsset};
 use crate::browser::SiteRequest;
 use crate::events::{KeyJob, MessageSignFailure, MessageSigned, SignTicket};
 use crate::flow::evm::form::{AddressNote, check_recipient};
-use crate::hypercore::{HcBalances, HcEndpoint, HcEvent, HcRpcJob};
+use crate::hypercore::{HcBalances, HcEndpoint, HcEvent, HcRpcJob, api_units};
 use crate::logging::{self, Field};
 use crate::ui::approval::{QueueOutcome, QueueSource};
 use crate::workers::rpc::RpcJob;
@@ -276,24 +276,6 @@ impl HcUi {
             .filter(|(net, _)| *net == network)
             .and_then(|(_, tokens)| tokens.iter().find(|token| token.index == index))
     }
-}
-
-/// Smallest units of an API decimal (`"14.625485"`) at `decimals`, the fraction truncated.
-#[must_use]
-pub fn api_units(text: &str, decimals: u8) -> Option<U256> {
-    if text.starts_with('-') {
-        return Some(U256::ZERO);
-    }
-    let (integer, fraction) = text.split_once('.').unwrap_or((text, ""));
-    let fraction: String = fraction.chars().take(usize::from(decimals)).collect();
-    let integer = integer.trim_start_matches('0');
-    let integer = if integer.is_empty() { "0" } else { integer };
-    let normalized = if fraction.is_empty() {
-        integer.to_owned()
-    } else {
-        format!("{integer}.{fraction}")
-    };
-    parse_units(&normalized, decimals).ok()
 }
 
 fn now_unix_ms() -> u64 {

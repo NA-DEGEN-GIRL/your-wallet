@@ -334,7 +334,7 @@ impl App {
                         .find(|balance| balance.token == index)
                         .map(|balance| balance.hold.clone())
                         .filter(|hold| {
-                            crate::app_hypercore::api_units(hold, 18)
+                            crate::hypercore::api_units(hold, 18)
                                 .is_some_and(|units| !units.is_zero())
                         });
                     items.push(Item::Field(

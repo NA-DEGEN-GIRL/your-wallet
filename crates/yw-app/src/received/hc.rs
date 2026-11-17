@@ -55,8 +55,8 @@ fn listed(token: &str, amount: &str) -> Result<Option<String>, ()> {
         .find(|(symbol, _)| *symbol == token)
         .ok_or(())?;
     let amount = decimal_text(amount).ok_or(())?;
-    let value = crate::app_hypercore::api_units(amount, 18).ok_or(())?;
-    let floor = crate::app_hypercore::api_units(threshold, 18).ok_or(())?;
+    let value = crate::hypercore::api_units(amount, 18).ok_or(())?;
+    let floor = crate::hypercore::api_units(threshold, 18).ok_or(())?;
     Ok((value >= floor).then(|| amount.to_owned()))
 }
 

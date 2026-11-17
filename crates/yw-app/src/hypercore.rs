@@ -3,6 +3,7 @@
 //! secret); logs carry the network word only.
 
 use yw_core::evm::address::Address;
+use yw_core::evm::amount::{U256, parse_units};
 use yw_core::hypercore::{
     HcExchangeReply, HcNetwork, HcPerpState, HcSpotBalance, HcToken, info_perp_state_body,
     info_spot_meta_body, info_spot_state_body, parse_exchange_reply, parse_perp_state,
@@ -238,6 +239,24 @@ pub fn run(transport: &dyn Transport, job: HcRpcJob) -> HcEvent {
     }
 }
 
+/// Smallest units of an API decimal (`"14.625485"`) at `decimals`, the fraction truncated.
+#[must_use]
+pub fn api_units(text: &str, decimals: u8) -> Option<U256> {
+    if text.starts_with('-') {
+        return Some(U256::ZERO);
+    }
+    let (integer, fraction) = text.split_once('.').unwrap_or((text, ""));
+    let fraction: String = fraction.chars().take(usize::from(decimals)).collect();
+    let integer = integer.trim_start_matches('0');
+    let integer = if integer.is_empty() { "0" } else { integer };
+    let normalized = if fraction.is_empty() {
+        integer.to_owned()
+    } else {
+        format!("{integer}.{fraction}")
+    };
+    parse_units(&normalized, decimals).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
@@ -246,7 +265,7 @@ mod tests {
     use yw_core::hypercore::{HcExchangeReply, HcNetwork, TESTNET_API};
     use yw_platform::http::{HttpError, HttpsUrl};
 
-    use super::{HcEndpoint, HcEvent, HcRpcJob, run};
+    use super::{HcEndpoint, HcEvent, HcRpcJob, api_units, run};
     use crate::rpc::{HttpReply, Transport};
 
     /// Answers by request `type` (docs examples); records the paths it was asked for.
@@ -328,5 +347,19 @@ mod tests {
             fake.0.lock().unwrap().as_slice(),
             ["/info", "/info", "/info", "/exchange"]
         );
+    }
+
+    /// API decimals become smallest units with the fraction truncated at `decimals`; a negative
+    /// value counts as zero and text that is not a decimal is refused.
+    #[test]
+    fn api_units_truncates_the_fraction() {
+        let units = |text: &str, decimals: u8| api_units(text, decimals).map(|v| v.to_string());
+        assert_eq!(units("14.625485", 6).as_deref(), Some("14625485"));
+        assert_eq!(units("1.23456789", 2).as_deref(), Some("123"));
+        assert_eq!(units("007.5", 1).as_deref(), Some("75"));
+        assert_eq!(units("100", 6).as_deref(), Some("100000000"));
+        assert_eq!(units("0.0", 18).as_deref(), Some("0"));
+        assert_eq!(units("-1.5", 6).as_deref(), Some("0"));
+        assert_eq!(units("abc", 6), None);
     }
 }
