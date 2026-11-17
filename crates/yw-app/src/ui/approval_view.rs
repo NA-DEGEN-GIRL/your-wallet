@@ -435,7 +435,7 @@ fn is_zero_amount(amount: &str) -> bool {
 fn amount_object(lang: Lang, token: &str, amount: &str) -> String {
     let amount = first_line(amount).trim();
     let particle = |what: &str| match lang {
-        Lang::Ko => crate::ui::theme::object_particle(what),
+        Lang::Ko => crate::text::object_particle(what),
         Lang::En => "",
     };
     if amount == evm_text::UNLIMITED.get(lang) {
@@ -645,7 +645,7 @@ fn permit_summary<'d>(
         } else {
             let amount = first_line(amount()?).trim();
             match lang {
-                Lang::Ko => format!("{amount}{}", crate::ui::theme::object_particle(amount)),
+                Lang::Ko => format!("{amount}{}", crate::text::object_particle(amount)),
                 Lang::En => amount.to_owned(),
             }
         };
@@ -718,7 +718,7 @@ pub fn summary(request: &ApprovalRequest) -> (String, Option<String>) {
 fn send_sentence(lang: Lang, place: &str, amount: &str) -> String {
     let amount = first_line(amount).trim();
     let particle = match lang {
-        Lang::Ko => crate::ui::theme::object_particle(amount),
+        Lang::Ko => crate::text::object_particle(amount),
         Lang::En => "",
     };
     text::SEND.fill(lang, [place, amount, particle])

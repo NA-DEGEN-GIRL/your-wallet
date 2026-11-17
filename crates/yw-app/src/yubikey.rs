@@ -672,7 +672,7 @@ impl PinKind {
         } else {
             // Joined with ", " (2026-11-16): "·" ran into short card names ("01·#…·02").
             let cards = context.backups.join(", ");
-            let particle = crate::ui::theme::direction_particle(&cards);
+            let particle = crate::text::direction_particle(&cards);
             format!(" {}", text::BACKUP_SIGNS.fill(lang, [&cards, particle]))
         };
         let only_here = !words && context.backups.is_empty();

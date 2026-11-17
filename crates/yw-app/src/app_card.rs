@@ -1002,8 +1002,8 @@ impl App {
         let card = wanted.trim_start_matches("YubiKey ");
         // The particle follows how the last digit is read (#…2 → 를, #…8 → 을), or the name
         // before `(#serial)` of a named card (2026-11-15).
-        let card_object = crate::ui::theme::object_particle(card);
-        let wanted_object = crate::ui::theme::object_particle(&wanted);
+        let card_object = crate::text::object_particle(card);
+        let wanted_object = crate::text::object_particle(&wanted);
         match result {
             Ok(counters) if holders.is_empty() || holders.contains(&counters.serial) => {
                 step.counters = Some(counters);

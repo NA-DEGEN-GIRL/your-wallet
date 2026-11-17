@@ -334,7 +334,7 @@ impl App {
             let cards = self.card_name_list(&holders, "·");
             // The particle follows how the last digit is read (#…2 → 로, #…3 → 으로), or the
             // name before `(#serial)` of a named card (2026-11-15).
-            text::STILL_SIGNS.fill(lang, [&cards, crate::ui::theme::direction_particle(&cards)])
+            text::STILL_SIGNS.fill(lang, [&cards, crate::text::direction_particle(&cards)])
         };
         RemovedAccount {
             label: format!("{} ({})", slot.role.title_in(lang), slot.path_text_in(lang)),

@@ -321,69 +321,6 @@ impl Fonts {
     }
 }
 
-/// Korean-only helpers (spec/14 §2): the particles are written as escapes, so the i18n scan (Hangul
-/// string literals outside the catalogues) does not count them — they have no English counterpart
-/// and only Korean templates use them.
-///
-/// Korean object particle for `word` (`을` after a final consonant, `를` otherwise), judged by
-/// how the last character is read: Hangul by its final consonant, digits and Latin letters by
-/// their Korean names (L·M·N·R and 0·1·3·6·7·8 end in a consonant). A trailing parenthesis is
-/// skipped, as the particle follows the word before it (2026-11-15: a named card
-/// `메인 (#12345678)` takes the particle of `메인`).
-#[must_use]
-pub fn object_particle(word: &str) -> &'static str {
-    if ends_in_consonant(word, false) {
-        "\u{C744}" // 을
-    } else {
-        "\u{B97C}" // 를
-    }
-}
-
-/// Korean direction particle for `word` (`으로` after a final consonant other than ㄹ, `로`
-/// otherwise).
-#[must_use]
-pub fn direction_particle(word: &str) -> &'static str {
-    if ends_in_consonant(word, true) {
-        "\u{C73C}\u{B85C}" // 으로
-    } else {
-        "\u{B85C}" // 로
-    }
-}
-
-/// `word` without trailing parenthesised groups (`메인 (#1)` → `메인`); a word that is only a
-/// parenthesis stays as it is.
-fn before_parenthesis(word: &str) -> &str {
-    let mut word = word.trim_end();
-    while word.ends_with(')') {
-        let Some(before) = word
-            .rfind('(')
-            .and_then(|open| word.get(..open))
-            .map(str::trim_end)
-            .filter(|before| !before.is_empty())
-        else {
-            break;
-        };
-        word = before;
-    }
-    word
-}
-
-fn ends_in_consonant(word: &str, rieul_is_vowel: bool) -> bool {
-    let Some(last) = before_parenthesis(word).chars().last() else {
-        return false;
-    };
-    let code = u32::from(last);
-    if (0xAC00..=0xD7A3).contains(&code) {
-        let final_index = (code - 0xAC00) % 28;
-        return final_index != 0 && !(rieul_is_vowel && final_index == 8);
-    }
-    match last.to_ascii_uppercase() {
-        'L' | 'R' | '1' | '7' | '8' => !rieul_is_vowel,
-        'M' | 'N' | '0' | '3' | '6' => true,
-        _ => false,
-    }
-}
-
 /// Fonts per DPI (windows on different monitors) and language (an approval window keeps the
 /// language it opened in while the main window may switch).
 #[derive(Debug, Default)]
@@ -613,10 +550,7 @@ pub fn paint_spans(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        AddressKind, address_spans, address_with_notes, direction_particle, object_particle,
-        own_address_spans, whole_address,
-    };
+    use super::{AddressKind, address_spans, address_with_notes, own_address_spans, whole_address};
 
     /// `(joined text, emphasized pieces)` of an own-address line.
     fn own(address: &str, kind: AddressKind, short: bool) -> (String, Vec<String>) {
@@ -704,33 +638,6 @@ mod tests {
             own_address_spans("t1abc", AddressKind::Zcash, false),
             [("t1abc".to_owned(), false)]
         );
-    }
-
-    #[test]
-    fn particles_follow_the_last_sound() {
-        assert_eq!(object_particle("0.01 ETH"), "를");
-        assert_eq!(object_particle("1 SOL"), "을");
-        assert_eq!(object_particle("10 USDC"), "를");
-        assert_eq!(object_particle("계정"), "을");
-        assert_eq!(object_particle("주소"), "를");
-        assert_eq!(direction_particle("서울"), "로");
-        assert_eq!(direction_particle("계정"), "으로");
-        assert_eq!(direction_particle("0x1cdb"), "로");
-        assert_eq!(direction_particle("…EcaE da94"), "로");
-        assert_eq!(direction_particle("abc0"), "으로");
-        assert_eq!(direction_particle("abc8"), "로");
-        // A named card (2026-11-15): the particle follows the name before `(#serial)`, and a
-        // card without a name follows its serial's last digit.
-        assert_eq!(object_particle("메인 (#12345678)"), "을");
-        assert_eq!(object_particle("백업키 (#12345678)"), "를");
-        assert_eq!(object_particle("#12345672"), "를");
-        assert_eq!(object_particle("#12345678"), "을");
-        assert_eq!(direction_particle("메인 (#12345673)"), "으로");
-        assert_eq!(direction_particle("서울 (#12345673)"), "로");
-        assert_eq!(direction_particle("Card 7 (#12345673)"), "로");
-        assert_eq!(direction_particle("#12345672·메인 (#12345673)"), "으로");
-        assert_eq!(direction_particle("메인 (#12345673)·#12345672"), "로");
-        assert_eq!(object_particle("(#1)"), "를");
     }
 
     #[test]
