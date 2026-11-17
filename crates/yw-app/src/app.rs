@@ -58,7 +58,10 @@ use crate::workers::rpc::RpcJob;
 use yw_core::lang::{Lang, Text};
 use yw_engine::cmd::{Cmd, Press};
 use yw_engine::effect::{Effect, TimerId};
-use yw_engine::form::{CredField, EditField, FormState, PressInput};
+// `CredField`: debug builds only (the shadow reads of plan §3.2a; 2026-11-18 B4–B5 review).
+#[cfg(debug_assertions)]
+use yw_engine::form::CredField;
+use yw_engine::form::{EditField, FormState, PressInput};
 
 /// DPAPI optional entropy of `apikeys.dpapi` (spec/04 §6.3). (2026-11-17, spec/15 §11.4 S2 E2:
 /// moved here next to the DPAPI calls from `apikeys`, which moved to yw-engine; the value is
@@ -995,6 +998,76 @@ fn enter_primary(edit: u16) -> Option<u16> {
     })
 }
 
+/// The buttons the logic presses itself through `on_command`, besides Enter's
+/// [`enter_primary`] (2026-11-18, S3 B4–B5 review: named lists, so table test (5) checks the
+/// lists the code uses — a check box added to one fails it; plan D-k: a check box's state
+/// travels with its click, and no internal press targets one).
+pub(crate) mod logic_presses {
+    use crate::ui::{
+        screens, screens_book as book, screens_btc as btc, screens_evm as evm,
+        screens_explorer as explorer, screens_mnemonics as mnemonics, screens_reset as reset,
+        screens_sol as sol, screens_yubikey as yk, screens_zec as zec,
+    };
+
+    /// Ctrl+1/2/3/4 ([`super::App::tab_shortcut`]): the chain tab of shortcut `n` at `n - 1`.
+    pub(crate) const TABS: [u16; 4] = [
+        sol::ids::TAB_EVM,
+        sol::ids::TAB_SOL,
+        btc::ids::TAB_BTC,
+        zec::ids::TAB_ZEC,
+    ];
+    /// F5 on S10 ([`super::App::shortcut`]): the visible chain tab's `새로고침`.
+    pub(crate) const REFRESH: [u16; 4] = [
+        evm::ids::REFRESH,
+        sol::ids::REFRESH,
+        btc::ids::REFRESH,
+        zec::ids::REFRESH,
+    ];
+    /// Ctrl+, ([`super::App::shortcut`]): `설정`.
+    pub(crate) const SETTINGS: [u16; 1] = [screens::ids::OPEN_SETTINGS];
+    /// Esc on an overlay ([`super::App::escape_key`]): its `취소`.
+    pub(crate) const ESC_CONFIRM: [u16; 1] = [screens::ids::CONFIRM_NO];
+    /// Esc: an open inline edit's or a screen's own cancel, the first one shown.
+    pub(crate) const ESC_CANCEL: [u16; 13] = [
+        screens::ids::RENAME_CANCEL,
+        sol::ids::RENAME_CANCEL,
+        btc::ids::RENAME_CANCEL,
+        mnemonics::ids::RENAME_CANCEL,
+        yk::ids::CARD_NAME_CANCEL,
+        screens::ids::REPLACE_CANCEL,
+        book::ids::PROMPT_CANCEL,
+        // S14's entry being edited.
+        book::ids::CANCEL,
+        // The block explorer row being changed (2026-11-11).
+        explorer::ids::CANCEL,
+        // A screen's or chooser's own `취소` (2026-11-12).
+        screens::ids::INTRO_CANCEL,
+        reset::ids::RESET_CANCEL,
+        btc::ids::ACCOUNT_ADD_CANCEL,
+        zec::ids::SOURCE_CANCEL,
+    ];
+    /// Esc: S20's `취소` while its new words were never shown.
+    pub(crate) const ESC_NEW_WALLET_CANCEL: [u16; 1] = [yk::ids::NEW_WALLET_CANCEL];
+    /// Esc: the back link of a screen that has one.
+    pub(crate) const ESC_BACK: [u16; 3] = [
+        screens::ids::BACK_DONE,
+        screens::ids::BACK_MAIN,
+        reset::ids::EXT_BACK,
+    ];
+
+    /// Every list above (table test (5)).
+    #[cfg(test)]
+    pub(crate) const ALL: [&[u16]; 7] = [
+        &TABS,
+        &REFRESH,
+        &SETTINGS,
+        &ESC_CONFIRM,
+        &ESC_CANCEL,
+        &ESC_NEW_WALLET_CANCEL,
+        &ESC_BACK,
+    ];
+}
+
 /// E-KEY-002 with the item name before the code (spec/04 §2.11, §7).
 fn key002_text(lang: Lang, item: &str) -> String {
     ErrorCode::Key002
@@ -1652,12 +1725,11 @@ impl App {
     /// chain tab, exactly as clicking it, when S10 shows that tab enabled and no secret window
     /// is open.
     pub(crate) fn tab_shortcut(&mut self, tab: usize) {
-        let id = match tab {
-            1 => crate::ui::screens_sol::ids::TAB_EVM,
-            2 => crate::ui::screens_sol::ids::TAB_SOL,
-            3 => crate::ui::screens_btc::ids::TAB_BTC,
-            4 => crate::ui::screens_zec::ids::TAB_ZEC,
-            _ => return,
+        let Some(&id) = tab
+            .checked_sub(1)
+            .and_then(|index| logic_presses::TABS.get(index))
+        else {
+            return;
         };
         if self.screen != Screen::Main || self.secret.is_some() {
             return;
@@ -1699,15 +1771,10 @@ impl App {
         }
         match crate::shell_msg::Shortcut::from_code(code) {
             Some(crate::shell_msg::Shortcut::Refresh) if self.screen == Screen::Main => {
-                let _ = self.press_shown(&[
-                    crate::ui::screens_evm::ids::REFRESH,
-                    crate::ui::screens_sol::ids::REFRESH,
-                    crate::ui::screens_btc::ids::REFRESH,
-                    crate::ui::screens_zec::ids::REFRESH,
-                ]);
+                let _ = self.press_shown(&logic_presses::REFRESH);
             }
             Some(crate::shell_msg::Shortcut::Settings) => {
-                let _ = self.press_shown(&[crate::ui::screens::ids::OPEN_SETTINGS]);
+                let _ = self.press_shown(&logic_presses::SETTINGS);
             }
             _ => {}
         }
@@ -1723,12 +1790,11 @@ impl App {
     /// S20), S22, the Bitcoin `계정 추가` chooser and the Zcash key-source confirmation. Enter is
     /// [`Self::enter_key`].
     pub(crate) fn escape_key(&mut self) {
-        use crate::ui::screens::ids;
         if self.secret.is_some() {
             return;
         }
         if matches!(self.screen, Screen::Confirm(_)) {
-            let _ = self.press_shown(&[ids::CONFIRM_NO]);
+            let _ = self.press_shown(&logic_presses::ESC_CONFIRM);
             return;
         }
         if self.close_pickers() {
@@ -1740,30 +1806,13 @@ impl App {
         if in_yubikey_flow {
             return;
         }
-        if self.press_shown(&[
-            ids::RENAME_CANCEL,
-            crate::ui::screens_sol::ids::RENAME_CANCEL,
-            crate::ui::screens_btc::ids::RENAME_CANCEL,
-            crate::ui::screens_mnemonics::ids::RENAME_CANCEL,
-            crate::ui::screens_yubikey::ids::CARD_NAME_CANCEL,
-            ids::REPLACE_CANCEL,
-            crate::ui::screens_book::ids::PROMPT_CANCEL,
-            // S14's entry being edited.
-            crate::ui::screens_book::ids::CANCEL,
-            // The block explorer row being changed (2026-11-11).
-            crate::ui::screens_explorer::ids::CANCEL,
-            // A screen's or chooser's own `취소` (2026-11-12).
-            ids::INTRO_CANCEL,
-            crate::ui::screens_reset::ids::RESET_CANCEL,
-            crate::ui::screens_btc::ids::ACCOUNT_ADD_CANCEL,
-            crate::ui::screens_zec::ids::SOURCE_CANCEL,
-        ]) {
+        if self.press_shown(&logic_presses::ESC_CANCEL) {
             return;
         }
         // S20's `취소` too, but never once its new words were shown: it discards them, like the
         // YubiKey wizard's (both stay a click then).
         if self.yk_words == crate::app_yubikey::YkWords::None
-            && self.press_shown(&[crate::ui::screens_yubikey::ids::NEW_WALLET_CANCEL])
+            && self.press_shown(&logic_presses::ESC_NEW_WALLET_CANCEL)
         {
             return;
         }
@@ -1782,11 +1831,7 @@ impl App {
                 | Screen::BtcSend
                 | Screen::BtcReceive
         ) {
-            let _ = self.press_shown(&[
-                ids::BACK_DONE,
-                ids::BACK_MAIN,
-                crate::ui::screens_reset::ids::EXT_BACK,
-            ]);
+            let _ = self.press_shown(&logic_presses::ESC_BACK);
         }
     }
 
@@ -3859,19 +3904,23 @@ impl App {
     /// so a test drives an edit as the window does). S3 B5: a plain edit becomes `Cmd::Edit`
     /// with its text; a masked credential edit is never read (no handler claims it).
     pub(crate) fn on_edit_notify(&mut self, id: u16) {
-        if let Some(field) = cmd_table::field_of(id) {
-            if let Some(text) = self.controls.text(id, field.cap()) {
-                self.on_cmd(Cmd::Edit {
-                    field,
-                    text: Zeroizing::new(text),
-                });
-                return;
-            }
+        // 2026-11-18 (S3 B4–B5 review): `let … else`, not two nested `if let`s, so the shape is
+        // the same with and without the debug-only statement (release clippy: `collapsible_if`).
+        let Some(field) = cmd_table::field_of(id) else {
+            self.edit_chain(id);
+            return;
+        };
+        if let Some(text) = self.controls.text(id, field.cap()) {
+            self.on_cmd(Cmd::Edit {
+                field,
+                text: Zeroizing::new(text),
+            });
+        } else {
             // No such edit (only a headless test can notify one): no `Cmd::Edit`, counted.
             #[cfg(debug_assertions)]
             self.note_form_mismatch(field);
+            self.edit_chain(id);
         }
-        self.edit_chain(id);
     }
 
     /// The handlers of an edit change: the first that claims `id` takes it, else the EVM send

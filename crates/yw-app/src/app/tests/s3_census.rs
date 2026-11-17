@@ -1370,39 +1370,15 @@ fn enter_and_check_lists_match_the_code() {
 /// Table test (5), S3 B5: no check box (its state travels with its click, plan D-k) is the
 /// target of a press the logic makes itself — Enter's primary button, the tab and F5/Ctrl+,
 /// shortcuts, or Esc's cancel and back buttons (`App::tab_shortcut`, `App::shortcut`,
-/// `App::escape_key`).
+/// `App::escape_key`). 2026-11-18 (B4–B5 review): the lists are the code's own
+/// (`app::logic_presses`), not a copy, so a check box added to one fails here.
 #[test]
 fn no_check_box_is_pressed_by_the_logic() {
-    use crate::ui::{screens_btc as btc, screens_sol as sol, screens_yubikey as yk};
-    let inner = [
-        sol::ids::TAB_EVM,
-        sol::ids::TAB_SOL,
-        btc::ids::TAB_BTC,
-        screens_zec::ids::TAB_ZEC,
-        screens_evm::ids::REFRESH,
-        sol::ids::REFRESH,
-        btc::ids::REFRESH,
-        screens_zec::ids::REFRESH,
-        screens::ids::OPEN_SETTINGS,
-        screens::ids::CONFIRM_NO,
-        screens::ids::RENAME_CANCEL,
-        sol::ids::RENAME_CANCEL,
-        btc::ids::RENAME_CANCEL,
-        screens_mnemonics::ids::RENAME_CANCEL,
-        yk::ids::CARD_NAME_CANCEL,
-        screens::ids::REPLACE_CANCEL,
-        screens_book::ids::PROMPT_CANCEL,
-        screens_book::ids::CANCEL,
-        screens_explorer::ids::CANCEL,
-        screens::ids::INTRO_CANCEL,
-        screens_reset::ids::RESET_CANCEL,
-        btc::ids::ACCOUNT_ADD_CANCEL,
-        screens_zec::ids::SOURCE_CANCEL,
-        yk::ids::NEW_WALLET_CANCEL,
-        screens::ids::BACK_DONE,
-        screens::ids::BACK_MAIN,
-        screens_reset::ids::EXT_BACK,
-    ];
+    let inner: Vec<u16> = crate::app::logic_presses::ALL
+        .iter()
+        .flat_map(|ids| ids.iter().copied())
+        .collect();
+    assert_eq!(inner.len(), 27);
     for id in inner {
         assert!(!CHECK_IDS.contains(&id), "{id}");
     }
