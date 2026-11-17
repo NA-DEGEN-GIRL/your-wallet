@@ -3,6 +3,7 @@
 //! receive QR, text layout and theme. The A01 window itself is `crate::app_approval`.
 
 pub mod approval;
+pub mod approval_input;
 pub mod approval_text;
 pub mod approval_view;
 pub mod badge;

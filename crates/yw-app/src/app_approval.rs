@@ -42,12 +42,13 @@ use crate::flow::evm::prepare::{
 };
 use crate::logging::{self, Field};
 use crate::ui::approval::QueueOutcome;
+use crate::ui::approval_input::stray_press;
 use crate::ui::approval_text as text;
 use crate::ui::approval_view::{ApprovalView, Block, Tone, escape_spans, view};
 use crate::ui::badge::{BADGE_DIP, BADGE_GAP_DIP, Badge};
 use crate::ui::interaction::{
     APPROVAL_TICK_MS, ApprovalGate, ApprovalSession, HIGH_RISK_HOLD_MS, InteractionEvent,
-    InteractionStatus, MAX_LIFETIME_MS, PrepareStage, PrepareState, ReadyContent, stray_press,
+    InteractionStatus, MAX_LIFETIME_MS, PrepareStage, PrepareState, ReadyContent,
 };
 use crate::ui::text_layout;
 use crate::ui::theme::{self, FontRole, Fonts, wide};

@@ -25,7 +25,7 @@ Status (spec.md line 3): implemented, manual verification pending.
 | `crates/yw-json` | Own strict RFC 8259 JSON parser/writer + `frame` (4-byte LE length + payload, ≤ 1 MiB). Zero dependencies |
 | `crates/yw-platform` | Platform-neutral types and traits, zero dependencies, no OS calls or `unsafe` (2026-11-17): `http` (`HttpsUrl`, `LoopbackUrl`, `EndpointUrl`, `Timeouts`, `Response`, `HttpError`, request limits, `valid_header`) and `clock` (`Clock`, re-exported as `flow::evm::Clock`) |
 | `crates/yw-win` | The **only** crate allowed `unsafe` (windows-sys wrappers): clipboard, cng, dpapi, file, http (the WinHTTP `Client` only; its types are in yw-platform), image (GDI+), input, mem (`LockedBox`, wipe), pcsc, pipe, process, security, session, time, ui, ws (WebSocket) |
-| `crates/yw-app` | The wallet binary (`windows_subsystem = "windows"`). `browser/` (dApp dispatcher, envelope v1, params, grants, pipe server), `walletconnect/`, `rpc/`, `flow/evm`, `sol/`, `btc/`, `zec/`, `explain/` (optional LLM explanation), `workers/`, `ui/` (main window, `approval.rs`, `approval_view.rs`, `interaction.rs`, `screens_*.rs`, `secret/`, `tour.rs`), `app_*.rs` feature glue, `settings.rs`, `apikeys.rs` (DPAPI), `logging.rs` |
+| `crates/yw-app` | The wallet binary (`windows_subsystem = "windows"`). `browser/` (dApp dispatcher, envelope v1, params, grants, pipe server), `walletconnect/`, `rpc/`, `flow/evm`, `sol/`, `btc/`, `zec/`, `explain/` (optional LLM explanation), `workers/`, `ui/` (main window, `approval.rs`, `approval_view.rs`, `interaction.rs`, `approval_input.rs` (Win32 stray presses), `screens_*.rs`, `secret/`, `tour.rs`), `app_*.rs` feature glue, `settings.rs`, `apikeys.rs` (DPAPI), `logging.rs` |
 | `crates/yw-host` | Chrome native-messaging host: a secret-less relay between stdio and the named pipe. Auto-starts yw-app when `browserAutoLaunch` is on |
 | `crates/*/tests/` | Integration tests. Test placement rules: spec/09 §2.1. `#[ignore]` tests include fuzz-lite, live probes, the screenshot tour and the render harness |
 | `extension/` | MV3 extension, **zero npm deps**. `manifest.json`. `src/provider-main.js` (MAIN world: EIP-1193, EIP-6963, Wallet Standard, Phantom/UniSat/Xverse shims). `src/shared.js` (the JS method table `METHOD_ROUTE`, JSON limits, origin rules). `src/content*.js`, `src/background*.js` (router, rate limits, deadlines). `src/popup*.js` + `popup/` (compatibility-mode popup with its own 한국어/English toggle) |
@@ -211,7 +211,7 @@ The Solana dApp transaction series (`git log --grep=sol-dapp`, steps 1–8) is a
   - shared model, `FieldKey` and digests: `crates/yw-core/src/approval/`
   - per chain: `crates/yw-core/src/evm/display/`, `sol/display.rs`, `sol/dapp/display.rs`, `hypercore/display.rs`, btc/zec modules
 - **Drawing is in yw-app**: `ui/approval.rs`, `ui/approval_view.rs`, `ui/text_layout.rs`, with glue in `app_approval.rs`.
-- **Interaction rules are in `ui/interaction.rs`.** Do not weaken them (§6).
+- **Interaction rules are in `ui/interaction.rs`** (the Win32 message → `OtherPress` mapping in `ui/approval_input.rs`). Do not weaken them (§6).
 - Changing the field set changes the display digest. Update goldens on purpose:
   - `crates/yw-app/tests/approval_golden.rs`, `approval_interaction.rs`, `approval_sim_states.rs`
   - spec/09 §3.13
@@ -260,7 +260,7 @@ If a task seems to require breaking one of these, stop and ask the owner.
 - **Named pipe** `\\.\pipe\YourWallet.v3.<SID>`: current-user DACL, `FILE_FLAG_FIRST_PIPE_INSTANCE`, `PIPE_REJECT_REMOTE_CLIENTS`. yw-host verifies the server's owner SID, integrity level and image path before hello (D24, spec/05 §8.1).
 - **`unsafe` only in yw-win.** yw-core stays free of network, GUI, file and time access.
 
-**Approval window** (spec/04 §3.4–3.7, `crates/yw-app/src/ui/interaction.rs`)
+**Approval window** (spec/04 §3.4–3.7, `crates/yw-app/src/ui/interaction.rs`, `ui/approval_input.rs`)
 - **Arm delay** `APPROVE_ARM_DELAY_MS = 1_000` after the window is ready and in the foreground. Any stray press while unarmed restarts the wait (any button, non-client clicks, key auto-repeat), and so does re-activation.
 - **High risk** needs the checkbox + a 2 s continuous hold (`HIGH_RISK_HOLD_MS = 2_000`) by mouse or Space, on every chain.
 - **Reject-first:** initial focus is `거부`. Auto-repeated Enter on Reject is ignored.
