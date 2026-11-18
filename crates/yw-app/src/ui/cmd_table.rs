@@ -17,7 +17,7 @@
 //! S3 C2: S13's sites and `WalletConnect` panel. S3 C3: the block-explorer card and links and
 //! the AI-explanation settings. S3 C4: the address book. S3 C5: S22 and T-WAIT-STALLED, S23,
 //! the imported-key screens and the `rpc.json` import card. S3 C6: the recovery phrases. S3 C7:
-//! `HyperCore` and Zcash. S3 C8: Solana.
+//! `HyperCore` and Zcash. S3 C8: Solana. S3 C9: Bitcoin.
 
 use yw_core::secret::Zeroizing;
 use yw_engine::cmd::Press;
@@ -25,9 +25,9 @@ use yw_engine::form::{CredField, CredUnits, EditField, PressInput};
 
 use crate::ui::main_window::ControlSet;
 use crate::ui::{
-    screens, screens_book, screens_evm, screens_explorer, screens_hypercore, screens_keys,
-    screens_links, screens_llm, screens_mnemonics, screens_received, screens_reset, screens_sites,
-    screens_sol, screens_walletconnect, screens_zec,
+    screens, screens_book, screens_btc, screens_evm, screens_explorer, screens_hypercore,
+    screens_keys, screens_links, screens_llm, screens_mnemonics, screens_received, screens_reset,
+    screens_sites, screens_sol, screens_walletconnect, screens_zec,
 };
 use crate::{app_hidden, app_rpc_import, app_sidecar};
 
@@ -61,6 +61,7 @@ pub fn press_of(id: u16, controls: &ControlSet) -> Press {
             .or_else(|| screens_hypercore::ids::press_of(other).map(Press::Hc))
             .or_else(|| screens_zec::ids::press_of(other).map(Press::Zec))
             .or_else(|| screens_sol::ids::press_of(other).map(Press::Sol))
+            .or_else(|| screens_btc::ids::press_of(other).map(Press::Btc))
             .unwrap_or(Press::Legacy(other)),
     }
 }
@@ -89,6 +90,7 @@ pub const fn id_of(press: Press) -> u16 {
         Press::Hc(press) => screens_hypercore::ids::id_of(press),
         Press::Zec(press) => screens_zec::ids::id_of(press),
         Press::Sol(press) => screens_sol::ids::id_of(press),
+        Press::Btc(press) => screens_btc::ids::id_of(press),
         Press::Legacy(id) => id,
     }
 }
@@ -772,6 +774,102 @@ mod tests {
         assert!(Press::Sol(SolPress::ReceiveOpen).is_receive_gated());
         assert!(Press::Sol(SolPress::CopyAddress).is_receive_gated());
         assert!(!Press::Sol(SolPress::TokenCopy(Row(0))).is_receive_gated());
+    }
+
+    /// S3 C9: Bitcoin claims exactly the ids `on_btc_command` claimed (every fixed id but the
+    /// nine edits, which are fields, and each row range whole); an address-type radio carries
+    /// its `ScriptType`, an Esplora button its network, an activity button its row and action;
+    /// `새로고침` reads its received history first, `받기` and the card's `주소 복사` are gated
+    /// (table test (4) checks every id).
+    #[test]
+    fn c9_btc_maps_its_ids() {
+        use screens_btc::ids;
+        use yw_core::btc::{BtcNetwork, ScriptType};
+        use yw_engine::cmd::{BtcActivityAction, BtcPress, Row};
+        use yw_engine::received::RecvChain;
+        let controls = ControlSet::default();
+        for id in 9_000..10_000 {
+            let btc = matches!(id, 9_000..=9_019 | 9_022..=9_028 | 9_031..=9_036 | 9_038..=9_042
+                | 9_050..=9_053 | 9_056 | 9_057 | 9_060..=9_095 | 9_100..=9_105
+                | 9_111..=9_113 | 9_121..=9_123 | 9_130..=9_194 | 9_200..=9_899);
+            assert_eq!(
+                matches!(press_of(id, &controls), Press::Btc(_)),
+                btc,
+                "{id}"
+            );
+        }
+        let edits = [
+            ids::SEND_TO_EDIT,
+            ids::SEND_AMOUNT_EDIT,
+            ids::FEE_MANUAL_EDIT,
+            ids::TYPED_FEE_EDIT,
+            ids::BUMP_MANUAL_EDIT,
+            ids::BUMP_TYPED_EDIT,
+            ids::RENAME_EDIT,
+            ids::ESPLORA_MAINNET_EDIT,
+            ids::ESPLORA_TESTNET4_EDIT,
+        ];
+        assert!(ids::FIXED.iter().all(|&id| {
+            matches!(press_of(id, &controls), Press::Btc(_)) != edits.contains(&id)
+        }));
+        for (position, script) in ScriptType::CHOICES.into_iter().enumerate() {
+            let id = ids::ACCOUNT_ADD_TYPE + u16::try_from(position).unwrap();
+            assert_eq!(
+                press_of(id, &controls),
+                Press::Btc(BtcPress::AccountAddType(script))
+            );
+        }
+        for net in BtcNetwork::ALL {
+            let (_, save, default, test) = screens_btc::esplora_ids(net);
+            assert_eq!(
+                press_of(save, &controls),
+                Press::Btc(BtcPress::EsploraSave(net))
+            );
+            assert_eq!(
+                press_of(default, &controls),
+                Press::Btc(BtcPress::EsploraDefault(net))
+            );
+            assert_eq!(
+                press_of(test, &controls),
+                Press::Btc(BtcPress::EsploraTest(net))
+            );
+        }
+        let actions = [
+            (ids::ACT_COPY, BtcActivityAction::CopyHash),
+            (ids::ACT_BUMP, BtcActivityAction::Bump),
+            (ids::ACT_REBROADCAST, BtcActivityAction::Rebroadcast),
+            (ids::ACT_ABANDON, BtcActivityAction::Abandon),
+            (ids::ACT_ESPLORA, BtcActivityAction::Esplora),
+            (ids::ACT_CONTINUE, BtcActivityAction::Continue),
+            (ids::ACT_CANCEL, BtcActivityAction::Cancel),
+            (ids::ACT_SAVE, BtcActivityAction::SaveAddress),
+        ];
+        for row in 0..ids::ACTIVITY_SPAN / ids::ACTIVITY_STRIDE {
+            for (offset, action) in actions {
+                let id = ids::ACTIVITY_BASE + row * ids::ACTIVITY_STRIDE + offset;
+                assert_eq!(
+                    press_of(id, &controls),
+                    Press::Btc(BtcPress::Activity(Row(row), action)),
+                    "{id}"
+                );
+            }
+        }
+        for (id, press) in [
+            (ids::FEE_MANUAL, BtcPress::FeeManual),
+            (ids::BUMP_FEE_FAST, BtcPress::BumpFeeFast),
+            (ids::ACCOUNT_BASE + 64, BtcPress::Account(Row(64))),
+            (ids::UTXO_BASE + 299, BtcPress::Utxo(Row(299))),
+            (ids::EVM_ACCOUNT_BASE + 31, BtcPress::EvmAccount(Row(31))),
+        ] {
+            assert_eq!(press_of(id, &controls), Press::Btc(press), "{id}");
+        }
+        assert_eq!(
+            Press::Btc(BtcPress::Refresh).refresh_chain(),
+            Some(RecvChain::Btc)
+        );
+        assert!(Press::Btc(BtcPress::ReceiveOpen).is_receive_gated());
+        assert!(Press::Btc(BtcPress::CardCopy).is_receive_gated());
+        assert!(!Press::Btc(BtcPress::CopyAddress).is_receive_gated());
     }
 
     /// Table test (3): the 65 edit ids are 58 plain fields and 7 credential fields, each a

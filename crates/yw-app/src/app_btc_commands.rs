@@ -3,67 +3,84 @@
 //! Buttons, checks and radios act on the controller state, not on the control's own check
 //! state, so a `WM_COMMAND` without a click behaves the same.
 
-use yw_core::btc::{BtcNetwork, ScriptType, Txid};
+use yw_core::btc::{BtcNetwork, Txid};
+use yw_engine::cmd::{BtcActivityAction, BtcPress, Row};
+use yw_engine::effect::Effect;
+use yw_engine::form::EditField;
 
 use crate::app::{App, Screen, SettingsSection};
-use crate::app_btc::{BtcAction, BtcAmountUnit, BtcBumpForm, BtcSendForm};
+use crate::app_btc::{BtcAction, BtcAmountUnit, BtcBumpForm, BtcFeeChoice, BtcSendForm};
 use crate::btc::{app_network, core_network};
 use crate::settings::BtcIndexer;
-use crate::ui::screens_btc::{esplora_ids, fee_choice_of, ids};
-
-/// Longest text read from a Bitcoin edit (addresses ≤ 128, Esplora URL ≤ 256).
-const TEXT_MAX: usize = 512;
-
-fn offset(id: u16, base: u16, span: u16) -> Option<u16> {
-    id.checked_sub(base).filter(|offset| *offset < span)
-}
 
 /// The form edits whose text the controller keeps (re-created controls show it again).
-const SEND_FIELDS: [u16; 4] = [
-    ids::SEND_TO_EDIT,
-    ids::SEND_AMOUNT_EDIT,
-    ids::FEE_MANUAL_EDIT,
-    ids::TYPED_FEE_EDIT,
+/// 2026-11-18 (S3 C9): `EditField`s (before, their control ids).
+const SEND_FIELDS: [EditField; 4] = [
+    EditField::BtcSendTo,
+    EditField::BtcSendAmount,
+    EditField::BtcFeeManual,
+    EditField::BtcTypedFee,
 ];
-const BUMP_FIELDS: [u16; 2] = [ids::BUMP_MANUAL_EDIT, ids::BUMP_TYPED_EDIT];
+const BUMP_FIELDS: [EditField; 2] = [EditField::BtcBumpManual, EditField::BtcBumpTyped];
+
+/// The Esplora URL edit of `net` (S3 C9; `ui::screens_btc::esplora_ids` names its control).
+const fn esplora_field(net: BtcNetwork) -> EditField {
+    match net {
+        BtcNetwork::Mainnet => EditField::BtcEsploraMainnet,
+        BtcNetwork::Testnet4 => EditField::BtcEsploraTestnet4,
+    }
+}
+
+/// The fee choice of a fee radio press, with whether it belongs to the fee-bump form (S3 C9:
+/// was `ui::screens_btc::fee_choice_of` of the control id, which keeps the radio order).
+const fn fee_choice(press: BtcPress) -> Option<(BtcFeeChoice, bool)> {
+    Some(match press {
+        BtcPress::FeeFast => (BtcFeeChoice::Fast, false),
+        BtcPress::FeeNormal => (BtcFeeChoice::Normal, false),
+        BtcPress::FeeSlow => (BtcFeeChoice::Slow, false),
+        BtcPress::FeeManual => (BtcFeeChoice::Manual, false),
+        BtcPress::BumpFeeFast => (BtcFeeChoice::Fast, true),
+        BtcPress::BumpFeeNormal => (BtcFeeChoice::Normal, true),
+        BtcPress::BumpFeeSlow => (BtcFeeChoice::Slow, true),
+        BtcPress::BumpFeeManual => (BtcFeeChoice::Manual, true),
+        _ => return None,
+    })
+}
 
 impl App {
-    fn btc_edit_text(&self, id: u16) -> Option<String> {
-        self.controls.text(id, TEXT_MAX)
-    }
-
     /// The controller's copy of a form edit.
-    fn btc_field_text(&self, id: u16) -> &str {
-        match id {
-            ids::SEND_TO_EDIT => &self.btc.send.to_text,
-            ids::SEND_AMOUNT_EDIT => &self.btc.send.amount_text,
-            ids::FEE_MANUAL_EDIT => &self.btc.send.fee.manual_text,
-            ids::TYPED_FEE_EDIT => &self.btc.send.fee.typed_text,
-            ids::BUMP_MANUAL_EDIT => &self.btc.bump.fee.manual_text,
-            ids::BUMP_TYPED_EDIT => &self.btc.bump.fee.typed_text,
+    fn btc_field_text(&self, field: EditField) -> &str {
+        match field {
+            EditField::BtcSendTo => &self.btc.send.to_text,
+            EditField::BtcSendAmount => &self.btc.send.amount_text,
+            EditField::BtcFeeManual => &self.btc.send.fee.manual_text,
+            EditField::BtcTypedFee => &self.btc.send.fee.typed_text,
+            EditField::BtcBumpManual => &self.btc.bump.fee.manual_text,
+            EditField::BtcBumpTyped => &self.btc.bump.fee.typed_text,
             _ => "",
         }
     }
 
-    /// Hands a form edit's text to the controller (no repaint).
-    pub(crate) fn btc_apply_field(&mut self, id: u16, text: &str) {
+    /// Hands a form edit's text to the controller (no repaint). 2026-11-18 (S3 C9): the field
+    /// is an `EditField` (before, its control id).
+    pub(crate) fn btc_apply_field(&mut self, field: EditField, text: &str) {
         self.btc_call(|ui, ctx| {
-            match id {
-                ids::SEND_TO_EDIT => ui.set_recipient(ctx, text),
-                ids::SEND_AMOUNT_EDIT => ui.set_amount(ctx, text),
-                ids::FEE_MANUAL_EDIT => ui.set_manual_rate(ctx.lang, text, false),
-                ids::TYPED_FEE_EDIT => ui.set_typed_fee(ctx.lang, text, false),
-                ids::BUMP_MANUAL_EDIT => ui.set_manual_rate(ctx.lang, text, true),
-                ids::BUMP_TYPED_EDIT => ui.set_typed_fee(ctx.lang, text, true),
+            match field {
+                EditField::BtcSendTo => ui.set_recipient(ctx, text),
+                EditField::BtcSendAmount => ui.set_amount(ctx, text),
+                EditField::BtcFeeManual => ui.set_manual_rate(ctx.lang, text, false),
+                EditField::BtcTypedFee => ui.set_typed_fee(ctx.lang, text, false),
+                EditField::BtcBumpManual => ui.set_manual_rate(ctx.lang, text, true),
+                EditField::BtcBumpTyped => ui.set_typed_fee(ctx.lang, text, true),
                 _ => {}
             }
             Vec::new()
         });
-        match id {
-            ids::SEND_TO_EDIT | ids::SEND_AMOUNT_EDIT | ids::FEE_MANUAL_EDIT => {
+        match field {
+            EditField::BtcSendTo | EditField::BtcSendAmount | EditField::BtcFeeManual => {
                 self.btc_drop_stale_typed(false);
             }
-            ids::BUMP_MANUAL_EDIT => self.btc_drop_stale_typed(true),
+            EditField::BtcBumpManual => self.btc_drop_stale_typed(true),
             _ => {}
         }
     }
@@ -82,34 +99,36 @@ impl App {
     }
 
     /// Reads the form edits once more before `검토` (the controller copy wins only when equal).
+    /// 2026-11-18 (S3 C9): from the form state (`App::form_text`); before, reads of the edits.
     fn btc_sync_form(&mut self, bump: bool) {
-        let fields: &[u16] = if bump { &BUMP_FIELDS } else { &SEND_FIELDS };
-        for id in fields {
-            if let Some(text) = self.btc_edit_text(*id)
-                && text != self.btc_field_text(*id)
+        let fields: &[EditField] = if bump { &BUMP_FIELDS } else { &SEND_FIELDS };
+        for field in fields {
+            if let Some(text) = self.form_text(*field)
+                && text != self.btc_field_text(*field)
             {
-                self.btc_apply_field(*id, &text);
+                self.btc_apply_field(*field, &text);
             }
         }
     }
 
-    /// `EN_CHANGE` of a Bitcoin edit; `false` when `id` is not one of them.
-    pub fn on_btc_edit_change(&mut self, id: u16) -> bool {
-        match id {
-            ids::SEND_TO_EDIT
-            | ids::SEND_AMOUNT_EDIT
-            | ids::FEE_MANUAL_EDIT
-            | ids::TYPED_FEE_EDIT
-            | ids::BUMP_MANUAL_EDIT
-            | ids::BUMP_TYPED_EDIT => {
-                let text = self.btc_edit_text(id).unwrap_or_default();
-                if text != self.btc_field_text(id) {
-                    self.btc_apply_field(id, &text);
+    /// `EN_CHANGE` of a Bitcoin edit (2026-11-18, S3 C9: the field and its text from
+    /// `Cmd::Edit`; before, the control id and a read of the edit here); `false` when `field` is
+    /// not one of them (the name edit has no change handler, as before).
+    pub(crate) fn on_btc_edit(&mut self, field: EditField, text: &str) -> bool {
+        match field {
+            EditField::BtcSendTo
+            | EditField::BtcSendAmount
+            | EditField::BtcFeeManual
+            | EditField::BtcTypedFee
+            | EditField::BtcBumpManual
+            | EditField::BtcBumpTyped => {
+                if text != self.btc_field_text(field) {
+                    self.btc_apply_field(field, text);
                     self.refresh();
                 }
             }
             // Read when `저장` / `테스트` is pressed.
-            ids::ESPLORA_MAINNET_EDIT | ids::ESPLORA_TESTNET4_EDIT => {}
+            EditField::BtcEsploraMainnet | EditField::BtcEsploraTestnet4 => {}
             _ => return false,
         }
         true
@@ -121,7 +140,13 @@ impl App {
             Vec::new()
         });
         let text = self.btc.send.amount_text.clone();
-        self.controls.set_text(ids::SEND_AMOUNT_EDIT, &text);
+        // 2026-11-18 (S3 C9): the writes of the amount and Esplora edits are `Effect::SetField`,
+        // applied at once inside this borrow (before, `controls.set_text`), so the edit's
+        // `EN_CHANGE` is still not seen; the form state reads the edit back.
+        self.emit(Effect::SetField {
+            field: EditField::BtcSendAmount,
+            text,
+        });
     }
 
     fn btc_toggle_max(&mut self) {
@@ -131,7 +156,10 @@ impl App {
         });
         self.btc_drop_stale_typed(false);
         if self.btc.send.send_max {
-            self.controls.set_text(ids::SEND_AMOUNT_EDIT, "");
+            self.emit(Effect::SetField {
+                field: EditField::BtcSendAmount,
+                text: String::new(),
+            });
         }
     }
 
@@ -163,137 +191,141 @@ impl App {
         }
     }
 
-    /// Esplora URL rows: `저장`, `기본값으로`, `테스트`; `false` when `id` is not one of them.
-    fn on_btc_esplora(&mut self, id: u16) -> bool {
-        for net in BtcNetwork::ALL {
-            let (edit_id, save_id, default_id, test_id) = esplora_ids(net);
-            if id == save_id {
-                let typed = self.btc_edit_text(edit_id).unwrap_or_default();
-                self.btc_save_esplora_url(net, &typed);
-                if self.btc.settings_message.is_none() {
-                    let saved = self.btc_ctx().esplora_text(net).to_owned();
-                    self.controls.set_text(edit_id, &saved);
-                }
-                return true;
-            }
-            if id == default_id {
-                self.btc_default_esplora_url(net);
-                let saved = self.btc_ctx().esplora_text(net).to_owned();
-                self.controls.set_text(edit_id, &saved);
-                return true;
-            }
-            if id == test_id {
-                let typed = self.btc_edit_text(edit_id).unwrap_or_default();
-                self.btc_test_esplora_url(net, &typed);
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Bitcoin commands; `false` when `id` is not one of them.
-    pub fn on_btc_command(&mut self, id: u16) -> bool {
-        match id {
-            ids::TAB_BTC => self.btc_select_tab(),
-            ids::SECTION_BTC => {
+    /// Bitcoin presses (2026-11-18, S3 C9: a `BtcPress`; before, the control id, and `false` for
+    /// an id that was not one of them). Every press repaints at the end, as every claimed id
+    /// did.
+    pub(crate) fn on_btc(&mut self, press: BtcPress) {
+        match press {
+            BtcPress::TabBtc => self.btc_select_tab(),
+            BtcPress::SectionBtc => {
                 self.btc.settings_message = None;
                 self.set_screen(Screen::Settings(SettingsSection::Bitcoin));
             }
-            ids::REFRESH => self.btc_refresh(),
-            ids::SEND_OPEN => self.btc_open_send(),
-            ids::RECEIVE_OPEN => {
+            BtcPress::Refresh => self.btc_refresh(),
+            BtcPress::SendOpen => self.btc_open_send(),
+            BtcPress::ReceiveOpen => {
                 self.btc_open_receive();
                 if !matches!(self.screen, Screen::BtcReceive | Screen::Confirm(_)) {
                     self.set_screen(Screen::BtcReceive);
                 }
             }
-            ids::BUMP_OPEN => self.btc_open_bump(),
-            ids::DISCOVER_RETRY => self.btc_discover(false),
-            ids::DISCOVER_MORE => self.btc_discover(true),
-            ids::DISCOVER_CANCEL => self.btc_cancel_discovery(),
-            ids::MISMATCH_KEEP_META => self.btc_mismatch_keep_meta(),
-            ids::MISMATCH_USE_SETTINGS => self.btc_mismatch_use_settings(),
-            ids::RESET_TIP => self.btc_reset_tip(),
+            BtcPress::BumpOpen => self.btc_open_bump(),
+            BtcPress::DiscoverRetry => self.btc_discover(false),
+            BtcPress::DiscoverMore => self.btc_discover(true),
+            BtcPress::DiscoverCancel => self.btc_cancel_discovery(),
+            BtcPress::MismatchKeepMeta => self.btc_mismatch_keep_meta(),
+            BtcPress::MismatchUseSettings => self.btc_mismatch_use_settings(),
+            BtcPress::ResetTip => self.btc_reset_tip(),
             // Names and hiding (2026-11-15, `app_btc_view`).
-            ids::RENAME => self.btc_rename_start(),
-            ids::RENAME_SAVE => {
-                let label = self.controls.text(ids::RENAME_EDIT, 64).unwrap_or_default();
+            BtcPress::Rename => self.btc_rename_start(),
+            BtcPress::RenameSave => {
+                // 2026-11-18 (S3 C9): the form state (`App::form_text`, cap 64 as before).
+                let label = self.form_text(EditField::BtcRename).unwrap_or_default();
                 self.btc_save_rename(&label);
             }
-            ids::RENAME_CANCEL => self.btc_rename_cancel(),
-            ids::HIDE => self.btc_hide_selected(),
-            ids::ACCOUNT_ADD => self.btc_call(|ui, ctx| {
+            BtcPress::RenameCancel => self.btc_rename_cancel(),
+            BtcPress::Hide => self.btc_hide_selected(),
+            BtcPress::AccountAdd => self.btc_call(|ui, ctx| {
                 ui.open_add_account(ctx);
                 Vec::new()
             }),
-            ids::ACCOUNT_ADD_CANCEL => self.btc_call(|ui, _| {
+            BtcPress::AccountAddCancel => self.btc_call(|ui, _| {
                 ui.close_add_account();
                 Vec::new()
             }),
-            ids::ACCOUNT_SOURCE_STANDARD => self.btc_call(|ui, _| {
+            BtcPress::AccountSourceStandard => self.btc_call(|ui, _| {
                 ui.set_add_source(crate::app_btc::BtcAddSource::Standard);
                 Vec::new()
             }),
-            ids::ACCOUNT_SOURCE_EVM => self.btc_call(|ui, _| {
+            BtcPress::AccountSourceEvm => self.btc_call(|ui, _| {
                 ui.set_add_source(crate::app_btc::BtcAddSource::EvmShared);
                 Vec::new()
             }),
-            ids::ADDRESS_MODE_SINGLE => self.btc_call(|ui, ctx| ui.set_address_mode(ctx, true)),
-            ids::ADDRESS_MODE_HD => self.btc_call(|ui, ctx| ui.set_address_mode(ctx, false)),
-            ids::SEND_ADDR_ACK => self.btc_toggle_address_ack(),
-            ids::UNIT_BTC => self.btc_set_unit(BtcAmountUnit::Btc),
-            ids::UNIT_SATS => self.btc_set_unit(BtcAmountUnit::Sats),
-            ids::SEND_MAX => self.btc_toggle_max(),
-            ids::SEND_REVIEW => {
+            BtcPress::AddressModeSingle => self.btc_call(|ui, ctx| ui.set_address_mode(ctx, true)),
+            BtcPress::AddressModeHd => self.btc_call(|ui, ctx| ui.set_address_mode(ctx, false)),
+            BtcPress::SendAddrAck => self.btc_toggle_address_ack(),
+            BtcPress::UnitBtc => self.btc_set_unit(BtcAmountUnit::Btc),
+            BtcPress::UnitSats => self.btc_set_unit(BtcAmountUnit::Sats),
+            BtcPress::SendMax => self.btc_toggle_max(),
+            BtcPress::SendReview => {
                 self.btc_sync_form(false);
                 self.btc_review();
             }
-            ids::SEND_CANCEL => {
+            BtcPress::SendCancel => {
                 self.btc.send = BtcSendForm::default();
                 self.return_to(Screen::Main);
             }
-            ids::RESULT_COPY => {
+            BtcPress::ResultCopy => {
                 if let Some(txid) = self.btc.result {
                     self.copy_text(&txid.to_display_hex());
                 }
             }
-            ids::RESULT_RETRY => {
+            BtcPress::ResultRetry => {
                 if let Some(txid) = self.btc.result {
                     self.btc_continue(txid);
                 }
             }
-            ids::RESULT_TO_SEND => self.set_screen(Screen::BtcSend),
-            ids::BUMP_REVIEW => {
+            BtcPress::ResultToSend => self.set_screen(Screen::BtcSend),
+            BtcPress::BumpReview => {
                 self.btc_sync_form(true);
                 self.btc_review_bump();
             }
-            ids::BUMP_CANCEL => {
+            BtcPress::BumpCancel => {
                 self.btc.bump = BtcBumpForm::default();
                 self.return_to(Screen::Main);
             }
-            ids::COPY_ADDRESS => self.btc_copy_address(),
-            ids::CARD_COPY => self.btc_copy_card_address(),
-            ids::NEW_ADDRESS => self.btc_new_receive_address(),
-            ids::ENABLE => self.btc_toggle_enabled(),
-            ids::SET_MAINNET => self.btc_settings_network(BtcNetwork::Mainnet),
-            ids::SET_TESTNET4 => self.btc_settings_network(BtcNetwork::Testnet4),
-            ids::IDX_ESPLORA => self.btc_set_indexer(BtcIndexer::Esplora),
-            ids::IDX_BB_RPC => self.btc_set_indexer(BtcIndexer::BbRpc),
-            ids::IDX_BB_REST => self.btc_set_indexer(BtcIndexer::BbRest),
-            other => {
-                if !self.on_btc_esplora(other) && !self.on_btc_indexed(other) {
-                    return false;
-                }
+            BtcPress::CopyAddress => self.btc_copy_address(),
+            BtcPress::CardCopy => self.btc_copy_card_address(),
+            BtcPress::NewAddress => self.btc_new_receive_address(),
+            BtcPress::Enable => self.btc_toggle_enabled(),
+            BtcPress::SetMainnet => self.btc_settings_network(BtcNetwork::Mainnet),
+            BtcPress::SetTestnet4 => self.btc_settings_network(BtcNetwork::Testnet4),
+            BtcPress::IdxEsplora => self.btc_set_indexer(BtcIndexer::Esplora),
+            BtcPress::IdxBbRpc => self.btc_set_indexer(BtcIndexer::BbRpc),
+            BtcPress::IdxBbRest => self.btc_set_indexer(BtcIndexer::BbRest),
+            BtcPress::EsploraSave(net)
+            | BtcPress::EsploraDefault(net)
+            | BtcPress::EsploraTest(net) => {
+                self.on_btc_esplora(press, net);
             }
+            // The fee radios and the rows (the legacy `other` arm).
+            indexed => self.on_btc_indexed(indexed),
         }
         // The wrappers repaint only when the controller acted; radios and checks must show the
         // controller state again either way.
         self.refresh();
-        true
     }
 
-    fn on_btc_indexed(&mut self, id: u16) -> bool {
-        if let Some((choice, bump)) = fee_choice_of(id) {
+    /// Esplora URL rows: `저장`, `기본값으로`, `테스트` of `net` (2026-11-18, S3 C9: a `BtcPress`
+    /// with its network; before, the control id matched against each network's row).
+    fn on_btc_esplora(&mut self, press: BtcPress, net: BtcNetwork) {
+        let field = esplora_field(net);
+        match press {
+            BtcPress::EsploraSave(_) => {
+                let typed = self.form_text(field).unwrap_or_default();
+                self.btc_save_esplora_url(net, &typed);
+                if self.btc.settings_message.is_none() {
+                    let saved = self.btc_ctx().esplora_text(net).to_owned();
+                    self.emit(Effect::SetField { field, text: saved });
+                }
+            }
+            BtcPress::EsploraDefault(_) => {
+                self.btc_default_esplora_url(net);
+                let saved = self.btc_ctx().esplora_text(net).to_owned();
+                self.emit(Effect::SetField { field, text: saved });
+            }
+            BtcPress::EsploraTest(_) => {
+                let typed = self.form_text(field).unwrap_or_default();
+                self.btc_test_esplora_url(net, &typed);
+            }
+            _ => {}
+        }
+    }
+
+    /// The Bitcoin radio and row presses (2026-11-18, S3 C9: a `BtcPress`, rows resolved against
+    /// the lists rebuilt now as before; an address-type radio carries its `ScriptType`).
+    fn on_btc_indexed(&mut self, press: BtcPress) {
+        if let Some((choice, bump)) = fee_choice(press) {
             self.btc_call(|ui, ctx| {
                 ui.set_fee_choice(ctx, choice, bump);
                 // The send form's preview is asked again when older than 60 s (2026-11-10).
@@ -304,84 +336,97 @@ impl App {
                 }
             });
             self.btc_drop_stale_typed(bump);
-            return true;
+            return;
         }
-        if let Some(choice) = offset(id, ids::ACCOUNT_ADD_TYPE, 4) {
-            if let Some(script_type) = ScriptType::CHOICES.get(usize::from(choice)).copied() {
+        match press {
+            BtcPress::AccountAddType(script_type) => {
                 self.btc_call(|ui, ctx| ui.add_account(ctx, script_type));
             }
-            return true;
+            BtcPress::EvmAccount(Row(row)) => {
+                let index = self.btc_ctx().evm_indices().get(usize::from(row)).copied();
+                if let Some(index) = index {
+                    self.btc_call(|ui, ctx| {
+                        ui.set_add_evm_index(ctx, index);
+                        Vec::new()
+                    });
+                }
+            }
+            BtcPress::Account(Row(row)) => {
+                // A choice closes the drop-down (2026-11-11).
+                self.account_menu = None;
+                // The drop-down lists the visible accounts only (2026-11-15).
+                let account = self
+                    .btc_visible_rows()
+                    .get(usize::from(row))
+                    .map(|row| row.id);
+                if let Some(account) = account {
+                    self.btc.rename = None;
+                    self.btc_call(|ui, ctx| ui.select_account(ctx, account));
+                }
+            }
+            BtcPress::Utxo(Row(row)) => {
+                let utxo = {
+                    let ctx = self.btc_ctx();
+                    self.btc.utxos(&ctx).get(usize::from(row)).copied()
+                };
+                if let Some(utxo) = utxo
+                    && !utxo.in_flight
+                {
+                    self.btc_freeze(utxo.outpoint, utxo.frozen.is_none());
+                }
+            }
+            BtcPress::Activity(Row(row), action) => self.on_btc_activity(usize::from(row), action),
+            _ => {}
         }
-        if let Some(row) = offset(id, ids::EVM_ACCOUNT_BASE, ids::EVM_ACCOUNT_SPAN) {
-            let index = self.btc_ctx().evm_indices().get(usize::from(row)).copied();
-            if let Some(index) = index {
-                self.btc_call(|ui, ctx| {
-                    ui.set_add_evm_index(ctx, index);
-                    Vec::new()
-                });
-            }
-            return true;
+    }
+
+    /// An activity row's button (S3 C9: split out of `on_btc_indexed`, same order).
+    fn on_btc_activity(&mut self, row: usize, action: BtcActivityAction) {
+        let rows = {
+            let ctx = self.btc_ctx();
+            self.btc.activity_rows(&ctx)
+        };
+        let Some(view) = rows.get(row) else {
+            return;
+        };
+        if action == BtcActivityAction::CopyHash {
+            let text = view.txid.clone();
+            self.copy_text(&text);
+            return;
         }
-        if let Some(row) = offset(id, ids::ACCOUNT_BASE, ids::ACCOUNT_SPAN) {
-            // A choice closes the drop-down (2026-11-11).
-            self.account_menu = None;
-            // The drop-down lists the visible accounts only (2026-11-15).
-            let account = self
-                .btc_visible_rows()
-                .get(usize::from(row))
-                .map(|row| row.id);
-            if let Some(account) = account {
-                self.btc.rename = None;
-                self.btc_call(|ui, ctx| ui.select_account(ctx, account));
-            }
-            return true;
+        if action == BtcActivityAction::SaveAddress {
+            self.save_activity_address(crate::meta::BookChain::Btc, row);
+            return;
         }
-        if let Some(row) = offset(id, ids::UTXO_BASE, ids::UTXO_SPAN) {
-            let utxo = {
-                let ctx = self.btc_ctx();
-                self.btc.utxos(&ctx).get(usize::from(row)).copied()
-            };
-            if let Some(utxo) = utxo
-                && !utxo.in_flight
-            {
-                self.btc_freeze(utxo.outpoint, utxo.frozen.is_none());
-            }
-            return true;
+        let Ok(txid) = Txid::from_display_hex(&view.txid) else {
+            return;
+        };
+        match action {
+            BtcActivityAction::Bump if view.can_bump => self.btc_open_bump(),
+            BtcActivityAction::Rebroadcast if view.can_rebroadcast => self.btc_rebroadcast(txid),
+            BtcActivityAction::Abandon if view.can_abandon => self.btc_abandon(txid),
+            BtcActivityAction::Esplora if view.can_esplora => self.btc_esplora_broadcast(txid),
+            BtcActivityAction::Continue if view.can_continue => self.btc_continue(txid),
+            BtcActivityAction::Cancel if view.can_continue => self.btc_cancel_signed(txid),
+            _ => {}
         }
-        if let Some(position) = offset(id, ids::ACTIVITY_BASE, ids::ACTIVITY_SPAN) {
-            let rows = {
-                let ctx = self.btc_ctx();
-                self.btc.activity_rows(&ctx)
-            };
-            let Some(view) = rows.get(usize::from(position / ids::ACTIVITY_STRIDE)) else {
-                return true;
-            };
-            let action = position % ids::ACTIVITY_STRIDE;
-            if action == ids::ACT_COPY {
-                let text = view.txid.clone();
-                self.copy_text(&text);
-                return true;
-            }
-            if action == ids::ACT_SAVE {
-                let row = usize::from(position / ids::ACTIVITY_STRIDE);
-                self.save_activity_address(crate::meta::BookChain::Btc, row);
-                return true;
-            }
-            let Ok(txid) = Txid::from_display_hex(&view.txid) else {
-                return true;
-            };
-            match action {
-                ids::ACT_BUMP if view.can_bump => self.btc_open_bump(),
-                ids::ACT_REBROADCAST if view.can_rebroadcast => self.btc_rebroadcast(txid),
-                ids::ACT_ABANDON if view.can_abandon => self.btc_abandon(txid),
-                ids::ACT_ESPLORA if view.can_esplora => self.btc_esplora_broadcast(txid),
-                ids::ACT_CONTINUE if view.can_continue => self.btc_continue(txid),
-                ids::ACT_CANCEL if view.can_continue => self.btc_cancel_signed(txid),
-                _ => {}
-            }
-            return true;
-        }
-        false
+    }
+
+    /// Test adapter (S3 C9, plan §3.2): presses Bitcoin control `id` directly, as the tests did
+    /// before; `false` when `id` is not one.
+    #[cfg(test)]
+    pub(crate) fn on_btc_command(&mut self, id: u16) -> bool {
+        self.press_family(
+            id,
+            |press| match press {
+                yw_engine::cmd::Press::Btc(press) => Some(press),
+                _ => None,
+            },
+            |app, press| {
+                app.on_btc(press);
+                true
+            },
+        )
     }
 }
 
@@ -391,6 +436,7 @@ mod tests {
     use std::sync::mpsc;
 
     use yw_core::btc::{BtcMeta, BtcNetwork, Sats};
+    use yw_engine::form::EditField;
     use yw_platform::http::HttpsUrl;
 
     use crate::apikeys::ApiKeys;
@@ -546,22 +592,22 @@ mod tests {
         testnet_url(&mut app);
         assert!(app.on_btc_command(ids::SEND_OPEN));
         assert_eq!(app.screen, Screen::BtcSend);
-        app.btc_apply_field(ids::SEND_AMOUNT_EDIT, "0.0012");
+        app.btc_apply_field(EditField::BtcSendAmount, "0.0012");
         assert_eq!(app.btc.send.amount, Sats::new(120_000));
         assert!(app.on_btc_command(ids::UNIT_SATS));
         assert_eq!(app.btc.send.unit, BtcAmountUnit::Sats);
         assert_eq!(app.btc.send.amount_text, "120000");
         // A typed fee survives its own edits and is dropped when the cap request goes away.
         app.btc.send.fee.needs_typed = Sats::new(600_000);
-        app.btc_apply_field(ids::TYPED_FEE_EDIT, "600000");
+        app.btc_apply_field(EditField::BtcTypedFee, "600000");
         assert_eq!(app.btc.send.fee.typed, Sats::new(600_000));
-        app.btc_apply_field(ids::SEND_AMOUNT_EDIT, "130000");
+        app.btc_apply_field(EditField::BtcSendAmount, "130000");
         assert_eq!(app.btc.send.fee.needs_typed, None);
         assert!(app.btc.send.fee.typed_text.is_empty());
         assert_eq!(app.btc.send.fee.typed, None);
         assert!(app.on_btc_command(ids::FEE_MANUAL));
         assert_eq!(app.btc.send.fee.choice, BtcFeeChoice::Manual);
-        app.btc_apply_field(ids::FEE_MANUAL_EDIT, "2.5");
+        app.btc_apply_field(EditField::BtcFeeManual, "2.5");
         assert!(app.btc.send.fee.manual.is_some());
         assert!(app.on_btc_command(ids::SEND_MAX));
         assert!(app.btc.send.send_max);

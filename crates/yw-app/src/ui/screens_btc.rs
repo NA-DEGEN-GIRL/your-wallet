@@ -317,6 +317,192 @@ pub mod ids {
         ESPLORA_TESTNET4_DEFAULT,
         ESPLORA_TESTNET4_TEST,
     ];
+
+    /// The press control `id` stands for (2026-11-18, S3 C9: `ui::cmd_table`). `None` when `id`
+    /// is not one of this module's presses (the nine edits are fields). An address-type radio
+    /// carries its `ScriptType` (`ScriptType::CHOICES` order), an Esplora row button its
+    /// network; each row range is claimed whole, as the ids reached the handler before.
+    #[must_use]
+    pub fn press_of(id: u16) -> Option<yw_engine::cmd::BtcPress> {
+        use yw_core::btc::{BtcNetwork, ScriptType};
+        use yw_engine::cmd::{BtcActivityAction, BtcPress, Row};
+        let within = |base: u16, span: u16| id.checked_sub(base).filter(|offset| *offset < span);
+        for net in BtcNetwork::ALL {
+            let (_, save, default, test) = super::esplora_ids(net);
+            if id == save {
+                return Some(BtcPress::EsploraSave(net));
+            }
+            if id == default {
+                return Some(BtcPress::EsploraDefault(net));
+            }
+            if id == test {
+                return Some(BtcPress::EsploraTest(net));
+            }
+        }
+        if let Some(choice) = within(ACCOUNT_ADD_TYPE, 4) {
+            return ScriptType::CHOICES
+                .get(usize::from(choice))
+                .map(|script| BtcPress::AccountAddType(*script));
+        }
+        Some(match id {
+            TAB_BTC => BtcPress::TabBtc,
+            SECTION_BTC => BtcPress::SectionBtc,
+            REFRESH => BtcPress::Refresh,
+            SEND_OPEN => BtcPress::SendOpen,
+            RECEIVE_OPEN => BtcPress::ReceiveOpen,
+            BUMP_OPEN => BtcPress::BumpOpen,
+            DISCOVER_RETRY => BtcPress::DiscoverRetry,
+            DISCOVER_MORE => BtcPress::DiscoverMore,
+            DISCOVER_CANCEL => BtcPress::DiscoverCancel,
+            MISMATCH_KEEP_META => BtcPress::MismatchKeepMeta,
+            MISMATCH_USE_SETTINGS => BtcPress::MismatchUseSettings,
+            RESET_TIP => BtcPress::ResetTip,
+            RENAME => BtcPress::Rename,
+            RENAME_SAVE => BtcPress::RenameSave,
+            RENAME_CANCEL => BtcPress::RenameCancel,
+            HIDE => BtcPress::Hide,
+            ACCOUNT_ADD => BtcPress::AccountAdd,
+            ACCOUNT_ADD_CANCEL => BtcPress::AccountAddCancel,
+            ACCOUNT_SOURCE_STANDARD => BtcPress::AccountSourceStandard,
+            ACCOUNT_SOURCE_EVM => BtcPress::AccountSourceEvm,
+            ADDRESS_MODE_SINGLE => BtcPress::AddressModeSingle,
+            ADDRESS_MODE_HD => BtcPress::AddressModeHd,
+            SEND_ADDR_ACK => BtcPress::SendAddrAck,
+            UNIT_BTC => BtcPress::UnitBtc,
+            UNIT_SATS => BtcPress::UnitSats,
+            SEND_MAX => BtcPress::SendMax,
+            FEE_FAST => BtcPress::FeeFast,
+            FEE_NORMAL => BtcPress::FeeNormal,
+            FEE_SLOW => BtcPress::FeeSlow,
+            FEE_MANUAL => BtcPress::FeeManual,
+            SEND_REVIEW => BtcPress::SendReview,
+            SEND_CANCEL => BtcPress::SendCancel,
+            RESULT_COPY => BtcPress::ResultCopy,
+            RESULT_RETRY => BtcPress::ResultRetry,
+            RESULT_TO_SEND => BtcPress::ResultToSend,
+            BUMP_FEE_FAST => BtcPress::BumpFeeFast,
+            BUMP_FEE_NORMAL => BtcPress::BumpFeeNormal,
+            BUMP_FEE_SLOW => BtcPress::BumpFeeSlow,
+            BUMP_FEE_MANUAL => BtcPress::BumpFeeManual,
+            BUMP_REVIEW => BtcPress::BumpReview,
+            BUMP_CANCEL => BtcPress::BumpCancel,
+            COPY_ADDRESS => BtcPress::CopyAddress,
+            CARD_COPY => BtcPress::CardCopy,
+            NEW_ADDRESS => BtcPress::NewAddress,
+            ENABLE => BtcPress::Enable,
+            SET_MAINNET => BtcPress::SetMainnet,
+            SET_TESTNET4 => BtcPress::SetTestnet4,
+            IDX_ESPLORA => BtcPress::IdxEsplora,
+            IDX_BB_RPC => BtcPress::IdxBbRpc,
+            IDX_BB_REST => BtcPress::IdxBbRest,
+            _ => {
+                if let Some(row) = within(EVM_ACCOUNT_BASE, EVM_ACCOUNT_SPAN) {
+                    BtcPress::EvmAccount(Row(row))
+                } else if let Some(row) = within(ACCOUNT_BASE, ACCOUNT_SPAN) {
+                    BtcPress::Account(Row(row))
+                } else if let Some(row) = within(UTXO_BASE, UTXO_SPAN) {
+                    BtcPress::Utxo(Row(row))
+                } else {
+                    let position = within(ACTIVITY_BASE, ACTIVITY_SPAN)?;
+                    let action = match position % ACTIVITY_STRIDE {
+                        ACT_COPY => BtcActivityAction::CopyHash,
+                        ACT_BUMP => BtcActivityAction::Bump,
+                        ACT_REBROADCAST => BtcActivityAction::Rebroadcast,
+                        ACT_ABANDON => BtcActivityAction::Abandon,
+                        ACT_ESPLORA => BtcActivityAction::Esplora,
+                        ACT_CONTINUE => BtcActivityAction::Continue,
+                        ACT_CANCEL => BtcActivityAction::Cancel,
+                        _ => BtcActivityAction::SaveAddress,
+                    };
+                    BtcPress::Activity(Row(position / ACTIVITY_STRIDE), action)
+                }
+            }
+        })
+    }
+
+    /// The control id of `press` (the inverse of [`press_of`]).
+    #[must_use]
+    pub const fn id_of(press: yw_engine::cmd::BtcPress) -> u16 {
+        use yw_core::btc::ScriptType;
+        use yw_engine::cmd::{BtcActivityAction, BtcPress, Row};
+        match press {
+            BtcPress::TabBtc => TAB_BTC,
+            BtcPress::SectionBtc => SECTION_BTC,
+            BtcPress::Refresh => REFRESH,
+            BtcPress::SendOpen => SEND_OPEN,
+            BtcPress::ReceiveOpen => RECEIVE_OPEN,
+            BtcPress::BumpOpen => BUMP_OPEN,
+            BtcPress::DiscoverRetry => DISCOVER_RETRY,
+            BtcPress::DiscoverMore => DISCOVER_MORE,
+            BtcPress::DiscoverCancel => DISCOVER_CANCEL,
+            BtcPress::MismatchKeepMeta => MISMATCH_KEEP_META,
+            BtcPress::MismatchUseSettings => MISMATCH_USE_SETTINGS,
+            BtcPress::ResetTip => RESET_TIP,
+            BtcPress::Rename => RENAME,
+            BtcPress::RenameSave => RENAME_SAVE,
+            BtcPress::RenameCancel => RENAME_CANCEL,
+            BtcPress::Hide => HIDE,
+            BtcPress::AccountAdd => ACCOUNT_ADD,
+            BtcPress::AccountAddCancel => ACCOUNT_ADD_CANCEL,
+            // `ScriptType::CHOICES` order.
+            BtcPress::AccountAddType(script) => ACCOUNT_ADD_TYPE.wrapping_add(match script {
+                ScriptType::P2wpkh => 0,
+                ScriptType::P2tr => 1,
+                ScriptType::P2shP2wpkh => 2,
+                ScriptType::P2pkh => 3,
+            }),
+            BtcPress::AccountSourceStandard => ACCOUNT_SOURCE_STANDARD,
+            BtcPress::AccountSourceEvm => ACCOUNT_SOURCE_EVM,
+            BtcPress::AddressModeSingle => ADDRESS_MODE_SINGLE,
+            BtcPress::AddressModeHd => ADDRESS_MODE_HD,
+            BtcPress::SendAddrAck => SEND_ADDR_ACK,
+            BtcPress::UnitBtc => UNIT_BTC,
+            BtcPress::UnitSats => UNIT_SATS,
+            BtcPress::SendMax => SEND_MAX,
+            BtcPress::FeeFast => FEE_FAST,
+            BtcPress::FeeNormal => FEE_NORMAL,
+            BtcPress::FeeSlow => FEE_SLOW,
+            BtcPress::FeeManual => FEE_MANUAL,
+            BtcPress::SendReview => SEND_REVIEW,
+            BtcPress::SendCancel => SEND_CANCEL,
+            BtcPress::ResultCopy => RESULT_COPY,
+            BtcPress::ResultRetry => RESULT_RETRY,
+            BtcPress::ResultToSend => RESULT_TO_SEND,
+            BtcPress::BumpFeeFast => BUMP_FEE_FAST,
+            BtcPress::BumpFeeNormal => BUMP_FEE_NORMAL,
+            BtcPress::BumpFeeSlow => BUMP_FEE_SLOW,
+            BtcPress::BumpFeeManual => BUMP_FEE_MANUAL,
+            BtcPress::BumpReview => BUMP_REVIEW,
+            BtcPress::BumpCancel => BUMP_CANCEL,
+            BtcPress::CopyAddress => COPY_ADDRESS,
+            BtcPress::CardCopy => CARD_COPY,
+            BtcPress::NewAddress => NEW_ADDRESS,
+            BtcPress::Enable => ENABLE,
+            BtcPress::SetMainnet => SET_MAINNET,
+            BtcPress::SetTestnet4 => SET_TESTNET4,
+            BtcPress::IdxEsplora => IDX_ESPLORA,
+            BtcPress::IdxBbRpc => IDX_BB_RPC,
+            BtcPress::IdxBbRest => IDX_BB_REST,
+            BtcPress::EsploraSave(net) => super::esplora_ids(net).1,
+            BtcPress::EsploraDefault(net) => super::esplora_ids(net).2,
+            BtcPress::EsploraTest(net) => super::esplora_ids(net).3,
+            BtcPress::EvmAccount(Row(row)) => EVM_ACCOUNT_BASE.wrapping_add(row),
+            BtcPress::Account(Row(row)) => ACCOUNT_BASE.wrapping_add(row),
+            BtcPress::Utxo(Row(row)) => UTXO_BASE.wrapping_add(row),
+            BtcPress::Activity(Row(row), action) => ACTIVITY_BASE
+                .wrapping_add(row.wrapping_mul(ACTIVITY_STRIDE))
+                .wrapping_add(match action {
+                    BtcActivityAction::CopyHash => ACT_COPY,
+                    BtcActivityAction::Bump => ACT_BUMP,
+                    BtcActivityAction::Rebroadcast => ACT_REBROADCAST,
+                    BtcActivityAction::Abandon => ACT_ABANDON,
+                    BtcActivityAction::Esplora => ACT_ESPLORA,
+                    BtcActivityAction::Continue => ACT_CONTINUE,
+                    BtcActivityAction::Cancel => ACT_CANCEL,
+                    BtcActivityAction::SaveAddress => ACT_SAVE,
+                }),
+        }
+    }
 }
 
 /// The fee choices in radio order.

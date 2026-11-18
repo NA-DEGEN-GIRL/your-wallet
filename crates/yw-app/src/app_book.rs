@@ -484,12 +484,12 @@ impl App {
             }
             BookTarget::Btc(_) => {
                 self.book.btc_picker = false;
-                let id = crate::ui::screens_btc::ids::SEND_TO_EDIT;
                 self.emit(Effect::SetField {
                     field: EditField::BtcSendTo,
                     text: address.to_owned(),
                 });
-                self.btc_apply_field(id, address);
+                // S3 C9: the Bitcoin controller takes the field (before, its control id).
+                self.btc_apply_field(EditField::BtcSendTo, address);
                 self.refresh();
             }
         }
