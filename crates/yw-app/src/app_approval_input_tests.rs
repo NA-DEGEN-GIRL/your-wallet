@@ -10,9 +10,18 @@
 //! scripted trusted-signal oracles `fg-down` (A01 is the foreground window, raw and seamed; the
 //! left button, Space and Shift are down; Enter is in the message's key state, not injected) and
 //! `bg-up` (all of it false), plus an `injected` oracle for Enter and Space on `승인`. The window
-//! got a `Tick` at +0 and the message comes at +1 500 (armed under `fg-down`). Button and panel
-//! rectangles are fixed values (`BOTTOM`, `layout()`), not painted ones, so no line depends on
-//! the screen's DPI. A line:
+//! got a `Tick` at +0 and the message comes at +1 500: armed under `fg-down` for the Standard,
+//! connect and AI windows; the High window is not armed (its checkbox is unchecked), so a stray
+//! press there restarts the delay (`ready=+1500` after an `OtherPress`, where the matching
+//! Standard row keeps `ready=+0`). Button and panel rectangles are fixed values (`BOTTOM`,
+//! `layout()`), not painted ones, and the real panel is moved to the fixed `BOTTOM.panel` size
+//! (800 x 600 client pixels, so a page is 600 and the last scroll position 1 400). The panel
+//! starts scrolled to `PANEL_SCROLL_START` with its scroll bar thumb at `PANEL_THUMB`, the AI
+//! body at `AI_SCROLL_START` with the stand-in body window's thumb at `AI_THUMB`, so every page
+//! key, every `WM_VSCROLL` code but `SB_ENDSCROLL` and the wheel move the view in a visible
+//! direction (2026-11-18, A5 review: before, the panel had no size and no scroll position, so
+//! the page keys and the page and thumb codes recorded `Scroll(0)`). No line depends on the
+//! screen's DPI: a scroll is printed against its start, never in pixels. A line:
 //! `<row> | <oracle> | reply <Reply of each message> | trace <the ordered input log of the
 //! delivery: every oracle read with its program point and value, every A01 Win32 side effect
 //! (`/skip` = the hidden host skipped it), every `interaction` event with its foreground sample
@@ -21,9 +30,17 @@
 //! because the App was borrowed> | after <the window afterwards: interaction status, gate
 //! `ready` (relative to the clock origin) / foreground / checkbox, a hold in progress, the early
 //! release mark, focus, pressed button, raw data open, connect selection, panel and AI body
-//! scroll at zero or not (`-`: no AI body);
+//! scroll against the row's start (`0`, `start`, a named position: `start-page`, `start+page`,
+//! `thumb`, `end`, else `<start` or `>start`; `-`: no AI body);
 //! the store state of the issued request; the RPC and key jobs and dApp answers the delivery
 //! caused>`.
+//!
+//! Branches inside the covered arms that `input.txt` does **not** pin (2026-11-18, A5 review):
+//! the `ai.down` click on an inconsistent explanation (`toggle_expanded() == true`: it needs a
+//! worker answer fed back, which these rows never do), and what `ai_tick` changes in the AI
+//! panel's own state (`a01.timer.approval.ai-window` runs it on a live panel, but the panel state
+//! is not printed). `a01.timer.approval.simulating` runs the `rebuild_view_with(false)` branch,
+//! which has no traced effect of its own.
 //!
 //! **`reentry.txt`** (critique A-8): messages delivered through the real approval `Forward` with
 //! the App **not** borrowed by the test, to the real A01 `HWND` (the test holds A01 and leaves an
@@ -36,10 +53,20 @@
 //! `Forward`'s guard does) and a Standard click then approves exactly once; a capture taken by
 //! another window while the button is held reaches the App (`CaptureLost`) and ends the press;
 //! every message kind delivered to any of the three targets while the App is borrowed is dropped
-//! (a paint is deferred) and changes nothing. Activation messages during a real (shown) open are
-//! not produced here: the hidden host never shows, activates or focuses a window (A3); the
-//! `while_borrowed` scenario pins the same drop for them. A line: `<scenario> <step> | reply
-//! <..> | trace <..> | after <..>` (formats as above).
+//! (a paint is deferred) and leaves the App's state as it was. The dropped message's reply is
+//! `Default`, and these scenarios call `Forward::on` directly, so what the window procedure then
+//! does with it is **not** exercised: there `Reply::Default` goes to `DefWindowProc`, so a
+//! re-entrant `WM_CLOSE` destroys A01 without `finish_approval` (the store item stays Pending and
+//! the App still holds the dead window) and a re-entrant `WM_MOUSEACTIVATE` returns
+//! `MA_ACTIVATE` (the activating click is not eaten). That is today's code (yw-win's own
+//! running-handler guard answers the same way), a latent behaviour recorded for the owner at
+//! F-A, not a harmless drop (2026-11-18, A5 review). Activation messages during a real (shown)
+//! open are not produced here: the hidden host never shows, activates or focuses a window (A3);
+//! the `while_borrowed` scenario pins the same drop for them only by direct calls. The order in
+//! which `WM_ACTIVATEAPP`, `WM_MOUSEACTIVATE` and `WM_KILLFOCUS` reach A01 inside a shown open is
+//! a gap left to the F-A review (the render harness shows a real window) and to B5's checks,
+//! when the open becomes an effect. A line: `<scenario> <step> | reply <..> | trace <..> | after
+//! <..>` (formats as above).
 //!
 //! Nothing here touches the network (the AI rows run the explanation worker on an in-process
 //! transport that never opens a socket, the `tests/llm_mock.rs` pattern, and no answer is fed
@@ -142,17 +169,30 @@ const AT_ACK: (i32, i32) = (100, 215);
 const AT_RAW: (i32, i32) = (100, 275);
 const AT_PANEL_NOTHING: (i32, i32) = (100, 500);
 
+/// Where the panel view starts in every row with the fixed geometry (content pixels; the last
+/// position is `layout().height` 2 000 - the 600-pixel page = 1 400).
+const PANEL_SCROLL_START: i32 = 700;
+/// The panel content height of every row with the fixed geometry (`layout().height`).
+const PANEL_CONTENT: i32 = 2_000;
+/// The panel's scroll bar thumb at the start of a row (what `SB_THUMBPOSITION`/`SB_THUMBTRACK`
+/// read): not the view's position, so a thumb code moves the view.
+const PANEL_THUMB: i32 = 1_100;
+/// Where the AI body view starts in every AI row (more than a page of the stand-in window, so a
+/// page up stays above zero).
+const AI_SCROLL_START: i32 = 2_000;
+/// The stand-in AI body window's scroll bar thumb at the start of an AI body row.
+const AI_THUMB: i32 = 3_000;
+
 /// The panel layout of every row (panel content pixels): two account rows, the checkbox and the
-/// raw-data switch.
+/// raw-data switch, placed `PANEL_SCROLL_START` below the content top so that the `AT_*` panel
+/// client points hit them through the start scroll (a click is mapped to content pixels).
 fn layout() -> PanelLayout {
+    let at = |y: i32| Rect::new(20, PANEL_SCROLL_START + y, 700, 30);
     PanelLayout {
-        accounts: vec![
-            (0, Rect::new(20, 100, 700, 30)),
-            (1, Rect::new(20, 140, 700, 30)),
-        ],
-        ack: Some(Rect::new(20, 200, 700, 30)),
-        raw: Some(Rect::new(20, 260, 700, 30)),
-        height: 2_000,
+        accounts: vec![(0, at(100)), (1, at(140))],
+        ack: Some(at(200)),
+        raw: Some(at(260)),
+        height: PANEL_CONTENT,
         ..PanelLayout::default()
     }
 }
@@ -215,6 +255,8 @@ enum Kind {
     Connect,
     /// A site `personal_sign` with the explanation panel (AI body window).
     Ai,
+    /// The S2 Sepolia app send while it is still simulating (its preparation not answered).
+    Simulating,
 }
 
 /// One opened window and what the recorder needs of it.
@@ -222,14 +264,25 @@ struct Opened {
     fx: Fixture,
     outlet: Option<Outlet>,
     issued: Option<ApprovalId>,
+    /// The fixed geometry and start positions are set (the `after` scrolls are printed against
+    /// them; else against zero).
+    fixed: bool,
 }
 
 /// Opens a fresh `kind` window on its own fixture, installs `oracle`, delivers the window's
 /// `Tick` at +0 and moves the clock to +1 500; with `fixed`, the bottom bar and panel get the
-/// fixed rectangles. Everything captured on the way (jobs, answers, log) is discarded.
+/// fixed rectangles, the real panel the fixed size and scroll bar, and the views their start
+/// positions. Everything captured on the way (jobs, answers, log) is discarded.
 fn open(kind: Kind, oracle: Signals, tag: &str, fixed: bool) -> Opened {
     let fx = Fixture::new(tag, HostMode::Hidden);
     let outlet = match kind {
+        Kind::Simulating => {
+            fx.enqueue_sepolia_send();
+            let _ = fx.rpc_jobs();
+            let job = fx.app.borrow().evm.window.as_ref().map_or(0, |ui| ui.job);
+            fx.app().on_simulating(job, START_MS);
+            None
+        }
         Kind::Std | Kind::High => {
             fx.enqueue_sepolia_send();
             let job = fx
@@ -270,8 +323,16 @@ fn open(kind: Kind, oracle: Signals, tag: &str, fixed: bool) -> Opened {
         let mut app = fx.app();
         let ui = app.evm.window.as_mut().expect("the window is open");
         if fixed {
+            let layout = layout();
+            ui.panel.set_rect(BOTTOM.panel);
+            ui.panel
+                .set_vscroll(PANEL_THUMB, BOTTOM.panel.h, layout.height);
+            ui.scroll = PANEL_SCROLL_START;
             ui.bottom = BOTTOM;
-            ui.layout = Some(layout());
+            ui.layout = Some(layout);
+            if let Some(ai) = ui.ai.as_mut() {
+                ai.scroll = AI_SCROLL_START;
+            }
         }
         ui.request.as_ref().map(|request| request.id)
     };
@@ -281,7 +342,12 @@ fn open(kind: Kind, oracle: Signals, tag: &str, fixed: bool) -> Opened {
         let _ = outlet.answers();
     }
     let _ = flow_support::take_log();
-    Opened { fx, outlet, issued }
+    Opened {
+        fx,
+        outlet,
+        issued,
+        fixed,
+    }
 }
 
 /// Delivers `msg` to `target`'s arm with the App borrowed by the test (as the window procedure
@@ -425,8 +491,36 @@ fn replies(replies: &[Reply]) -> String {
     names(replies.iter().map(|reply| format!("{reply:?}")))
 }
 
+/// A view position, never in pixels: `0`, `start`, one of the row's `named` positions, else
+/// `<start` or `>start`.
+fn against(scroll: i32, start: i32, named: &[(i32, &'static str)]) -> &'static str {
+    if scroll == 0 {
+        return "0";
+    }
+    if scroll == start {
+        return "start";
+    }
+    if let Some((_, name)) = named.iter().find(|(at, _)| *at == scroll) {
+        return name;
+    }
+    if scroll < start { "<start" } else { ">start" }
+}
+
+/// The panel positions a fixed row names: a page above and below the start, the thumb and the
+/// last position (all DPI-independent; a line or wheel step is not).
+const PANEL_NAMED: [(i32, &str); 4] = [
+    (PANEL_SCROLL_START - BOTTOM.panel.h, "start-page"),
+    (PANEL_SCROLL_START + BOTTOM.panel.h, "start+page"),
+    (PANEL_THUMB, "thumb"),
+    (PANEL_CONTENT - BOTTOM.panel.h, "end"),
+];
+/// The AI body positions a fixed row names (its page is the stand-in window's, not fixed).
+const AI_NAMED: [(i32, &str); 2] = [(AI_THUMB, "thumb"), (i32::MAX / 2, "end")];
+
 /// The window and what the delivery caused (format in the module doc).
-fn after(fx: &Fixture, issued: Option<ApprovalId>, outlet: Option<&Outlet>) -> String {
+fn after(opened: &Opened, issued: Option<ApprovalId>) -> String {
+    let fx = &opened.fx;
+    let outlet = opened.outlet.as_ref();
     let now = fx.clock.peek();
     let app = fx.app.borrow();
     let mut line = match app.evm.window.as_ref() {
@@ -454,10 +548,16 @@ fn after(fx: &Fixture, issued: Option<ApprovalId>, outlet: Option<&Outlet>) -> S
                         .map(|checked| if *checked { '1' } else { '0' })
                         .collect()
                 ),
-                if ui.scroll == 0 { "0" } else { "+" },
-                ui.ai
-                    .as_ref()
-                    .map_or("-", |ai| if ai.scroll == 0 { "0" } else { "+" }),
+                if opened.fixed {
+                    against(ui.scroll, PANEL_SCROLL_START, &PANEL_NAMED)
+                } else {
+                    against(ui.scroll, 0, &[])
+                },
+                ui.ai.as_ref().map_or("-", |ai| if opened.fixed {
+                    against(ai.scroll, AI_SCROLL_START, &AI_NAMED)
+                } else {
+                    against(ai.scroll, 0, &[])
+                }),
             )
         }
     };
@@ -528,6 +628,18 @@ fn a01_rows() -> Vec<Row> {
         row("a01.dpi-changed", vec![Msg::DpiChanged { dpi: 96 }]),
         row("a01.mouse-activate", vec![Msg::MouseActivate]),
         row("a01.timer.approval", vec![Msg::Timer(APPROVAL_TIMER_ID)]),
+        Row::new(
+            "a01.timer.approval.ai-window",
+            Kind::Ai,
+            Target::Approval,
+            vec![Msg::Timer(APPROVAL_TIMER_ID)],
+        ),
+        Row::new(
+            "a01.timer.approval.simulating",
+            Kind::Simulating,
+            Target::Approval,
+            vec![Msg::Timer(APPROVAL_TIMER_ID)],
+        ),
         row("a01.timer.other", vec![Msg::Timer(TIMER_OTHER)]),
         row("a01.down.approve", vec![down(AT_APPROVE)]),
         row("a01.down.reject", vec![down(AT_REJECT)]),
@@ -582,6 +694,7 @@ fn a01_rows() -> Vec<Row> {
         row("a01.other.destroy", vec![Msg::Destroy]),
         row("a01.other.exit-size-move", vec![Msg::ExitSizeMove]),
         row("a01.other.command", vec![Msg::Command { id: 1, code: 0 }]),
+        row("a01.other.vscroll", vec![Msg::VScroll { code: 1 }]),
     ]
 }
 
@@ -756,6 +869,10 @@ fn run_row(row: &Row, oracle: &Oracle, serial: usize) -> String {
     let opened = open(row.kind, oracle.1, &format!("input-{serial}"), true);
     let fx = &opened.fx;
     let spare = spare_window();
+    if row.target == Target::AiBody {
+        // The stand-in AI body's scroll bar: what the thumb codes read.
+        spare.set_vscroll(AI_THUMB, 100, 10_000);
+    }
     if let Some(ui) = fx.app().evm.window.as_mut() {
         ui.focus = row.focus;
         ui.pressed = row.pressed;
@@ -772,7 +889,7 @@ fn run_row(row: &Row, oracle: &Oracle, serial: usize) -> String {
         oracle.0,
         replies(&replies_seen),
         trace(&log),
-        after(fx, opened.issued, opened.outlet.as_ref())
+        after(&opened, opened.issued)
     )
 }
 
@@ -839,7 +956,7 @@ impl<'a> Rec<'a> {
         {
             self.issued = Some(id);
         }
-        let after = after(&self.opened.fx, self.issued, self.opened.outlet.as_ref());
+        let after = after(self.opened, self.issued);
         self.lines.push(format!(
             "{} {step} | reply {} | trace {} | after {after}",
             self.name,
@@ -864,6 +981,7 @@ fn reentry_open() -> Vec<String> {
         fx: Fixture::new("reentry-open", HostMode::Hidden),
         outlet: None,
         issued: None,
+        fixed: false,
     };
     let fx = &opened.fx;
     flow_support::set_signals(Some(FG_DOWN));
@@ -955,7 +1073,9 @@ fn reentry_capture_taken() -> Vec<String> {
 
 /// A-8: while the App is borrowed (as during an open, a paint or any handler), every message to
 /// the approval window, its panel and its AI body is dropped (a paint is deferred) and the gate,
-/// focus and window stay as they were.
+/// focus and window stay as they were. The `Default` replies are not passed on here; in the app
+/// they reach `DefWindowProc` (module doc: a re-entrant `WM_CLOSE` destroys A01 without
+/// `finish_approval`, a re-entrant `WM_MOUSEACTIVATE` is not eaten).
 fn reentry_while_borrowed() -> Vec<String> {
     let opened = open(Kind::Std, FG_DOWN, "reentry-borrowed", true);
     let mut rec = Rec::new("reentry_while_borrowed", &opened);
@@ -1370,20 +1490,45 @@ fn approve_enter_is_physical_and_not_injected() {
 #[test]
 fn ai_never_touches_the_gate() {
     let code = approval_production();
-    let mut found = 0;
-    for (at, _) in code.match_indices("    fn ai_") {
-        let head_end = code
-            .get(at..)
-            .and_then(|rest| rest.find('('))
-            .map_or(at, |end| at + end + 1);
-        let head = code.get(at..head_end).unwrap_or_default();
-        let body = item(&code, head, 4);
+    // Every `fn ai_*` of any visibility (2026-11-18, A5 review: the scan matched private
+    // `    fn ai_` only, so a `pub(crate) fn ai_*` was skipped).
+    let mut found = Vec::new();
+    for line in code.lines() {
+        let trimmed = line.trim_start();
+        let Some(rest) = [
+            "fn ai_",
+            "pub fn ai_",
+            "pub(crate) fn ai_",
+            "pub(super) fn ai_",
+        ]
+        .into_iter()
+        .find_map(|prefix| trimmed.strip_prefix(prefix)) else {
+            continue;
+        };
+        let name = rest.split('(').next().unwrap_or_default();
+        let indent = line.len() - trimmed.len();
+        let head_len = line.find('(').map_or(line.len(), |at| at + 1);
+        let head = line.get(..head_len).unwrap_or_default();
+        let body = item(&code, head, indent);
         for banned in ["session", "gate", "interaction(", "can_approve"] {
             assert!(!body.contains(banned), "{banned} in {head}");
         }
-        found += 1;
+        found.push(format!("ai_{name}"));
     }
-    assert!(found >= 8, "every ai_ function: {found}");
+    assert_eq!(
+        found,
+        [
+            "ai_scroll_by",
+            "ai_after",
+            "ai_ready",
+            "ai_ready_tx",
+            "ai_ready_message",
+            "ai_ready_typed",
+            "ai_tick",
+            "ai_retry",
+        ],
+        "every ai_ function of the window (a new one is added here once checked)"
+    );
     for head in [
         "    pub(crate) fn on_llm_done(",
         "    fn llm_busy(",
