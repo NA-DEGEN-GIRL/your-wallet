@@ -133,6 +133,11 @@ pub fn phrase_matches(lang: Lang, text: &str) -> bool {
 }
 
 fn now_unix_ms() -> u64 {
+    // S4 A3 review (2026-11-18): tests read the approval test clock here too.
+    #[cfg(test)]
+    if let Some(now) = crate::app_approval::flow_support::clock_now_unix_ms() {
+        return now;
+    }
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| {

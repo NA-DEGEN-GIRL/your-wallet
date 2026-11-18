@@ -191,7 +191,10 @@ impl Census {
         );
     }
 
-    /// The data folder states are built on (S3 B5: the windowed form test, `ui::tour_forms`).
+    /// The data folder states are built on (S3 B5: the windowed form test, `ui::tour_forms`,
+    /// which is debug-only like the tour; 2026-11-18 S4 A3 review: gated the same way, so
+    /// `--release` test builds have no dead code).
+    #[cfg(debug_assertions)]
     pub(crate) fn data(&self) -> &std::path::Path {
         &self.data
     }

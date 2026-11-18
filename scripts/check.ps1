@@ -177,8 +177,22 @@ $env:YW_FUZZ_RUNS = "20000"                                           # fuzz-lit
 Invoke-Step "fuzz" 29 "cargo" (@("test", "--workspace") + $net + $config + @("--", "--ignored", "fuzz_lite"))
 $env:YW_FUZZ_RUNS = $null                                             # 직접 --ignored로 돌리면 1,000,000회
 # S4 승인 흐름 하네스(2026-11-18 [15] §11.4 S4 A3, [09] §2.2): 숨은 승인 창을 만드는 #[ignore] 시험을 직렬로 돌린다. 창은 보이지
-# 않고 전경을 가져가지 않는다(자체 시험이 확인). 비공개 데스크톱 경로는 windows-sys 기능이 없어 쓰지 않는다. B7(창 없는 시험)에서 없앤다.
-Invoke-Step "s4fl" 31 "cargo" (@("test", "-p", "yw-app", "--lib") + $net + $config + @("--", "--ignored", "--test-threads=1", "app_approval::flow_support", "app_approval::flow_tests", "app_approval::input_tests"))
+# 않고 전경을 가져가지 않는다(자체 시험이 확인). 테스트 스레드에 비공개 데스크톱을 붙이는 길은 yw-win에 데스크톱 API가 없고(더하면
+# A3 밖의 yw-win unsafe 변경) 주인이 대안(O-3)을 골라 쓰지 않는다. B7(창 없는 시험)에서 없앤다. 필터가 아무 시험도 고르지 않으면
+# libtest는 0으로 끝나므로(2026-11-18 A3 검토), 먼저 --list로 필터마다 #[ignore] 시험 수를 세어 최소 수보다 적으면 31로 멈춘다.
+# 최소 수는 그 시험을 더하는 커밋(S4 A4·A5·A6)이 올리고 이름을 바꾸는 커밋이 함께 고친다.
+$S4flMinimum = [ordered]@{ "app_approval::flow_support" = 3; "app_approval::flow_tests" = 0; "app_approval::input_tests" = 0 }
+$s4flArgs = @("test", "-p", "yw-app", "--lib") + $net + $config + @("--", "--ignored")
+if ($Step -in "all", "s4fl") {
+    Write-Host "check: s4fl (list)"
+    $s4flListed = @(& cargo @($s4flArgs + @("--list") + @($S4flMinimum.Keys)))
+    if ($LASTEXITCODE -ne 0) { Fail 31 "s4fl list (exit $LASTEXITCODE)" }
+    foreach ($filter in $S4flMinimum.Keys) {
+        $found = @($s4flListed | Where-Object { "$_".StartsWith("${filter}::") -and "$_".EndsWith(": test") }).Count
+        if ($found -lt $S4flMinimum[$filter]) { Fail 31 "s4fl: $found ignored tests under $filter, at least $($S4flMinimum[$filter]) expected" }
+    }
+}
+Invoke-Step "s4fl" 31 "cargo" ($s4flArgs + @("--test-threads=1") + @($S4flMinimum.Keys))
 Invoke-Step "build" 24 "cargo" (@("build", "--workspace") + $net + $config)   # <빌드 폴더>\debug\yw-host.exe ([09] §2.2, [05] H1)
 $env:YW_CHECK = "1"                                                   # 확장 프로세스 테스트가 skip 대신 실패([09])
 if ($Step -in "all", "ext-test") { Invoke-Step "ext-test" 25 "node" (@("--test") + (Get-Tests "extension/tests" 25)) }

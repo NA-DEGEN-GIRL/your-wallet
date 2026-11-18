@@ -1253,6 +1253,9 @@ impl App {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(0));
+        // S4 A3 review (2026-11-18): tests read the approval test clock here too.
+        #[cfg(test)]
+        let now = crate::app_approval::flow_support::clock_now_unix_ms().unwrap_or(now);
         let Some(grant) = ConnectedSite::new(site.origin.clone(), accounts, chain_id, now) else {
             self.respond(&site.reply, Err(ProviderError::Internal));
             return;

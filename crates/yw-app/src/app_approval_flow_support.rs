@@ -1,15 +1,26 @@
 //! Approval flow test seams and fixture (2026-11-18, S4 A3; spec/15 §11.4 S4, spec/09 §2.2).
 //!
 //! `cfg(test)` only: release builds compile none of this, and the production functions that
-//! read it (`now_ms`/`now_unix_ms` of `app_approval`, `app_card`, `app_browser`, `app_evm`,
-//! `app`, `app_sol`, the consume time of `app_sol_dapp`, the A01 trusted-signal reads and Win32
-//! side effects, `open_approval`) behave exactly as before while no seam is installed. Every
-//! seam is a thread-local of the test thread, set by [`Fixture`] and cleared when it drops:
+//! read it (every `now_ms`/`now_unix_ms` wrapper of the App, a few inline reads, the A01
+//! trusted-signal reads and Win32 side effects, `open_approval`) behave exactly as before while
+//! no seam is installed. Every seam is a thread-local of the test thread, set by [`Fixture`] and
+//! cleared when it drops:
 //!
 //! - `TEST_CLOCK`: one [`TestClock`] (manual, or stepping by a fixed amount at every read)
 //!   shared by the App wrappers, the prepare fixture and the test `BrowserCore`s
 //!   ([`core_clock`]), so `sim_received_ms`, the site deadline and the App's own reads have one
-//!   base (S4 critique A-9/B-19). B1a/B1b replace it with the injected `Clock`.
+//!   base (S4 critique A-9/B-19). B1a/B1b replace it with the injected `Clock`. The wrappers:
+//!   `now_ms`/`now_unix_ms` of `app_approval`, `app_card`, `app_browser`, `app_evm`, `app`,
+//!   `app_sol` (plan §4.5), and since the A3 review (2026-11-18) also those of `app_chain_sites`
+//!   (SOL/BTC connect grant time, SIWS check), `app_btc` (its `BtcCtx` times: fee-quote
+//!   freshness), `app_hypercore` (action nonce), `app_zec`, `app_book`, `app_received` and
+//!   `app_reset` (`every_app_time_wrapper_reads_the_test_clock`). Inline reads: the consume
+//!   time of `app_sol_dapp` and its tracking tick after a broadcast, and the EVM connect grant
+//!   time in `app_browser`. Still on the real clock under a fixture (not on an approval path; B1b
+//!   converts them): form-edit times (`app_evm_commands`, `app_sol_commands`), refresh and wait
+//!   timers (`app_hypercore` `loaded_ms`, `app_zec`, `app_received`, `app_reset`,
+//!   `app_rpc_import`, `app_extension`, `ui/screens_*`), `app_sidecar`'s backup time,
+//!   `app_yubikey`'s password and idle times and `app_walletconnect`'s join wait.
 //! - `TEST_APPROVAL_HOST`: [`HostMode::Hidden`] creates A01, its panel and AI body as hidden
 //!   windows and skips every call that could show or activate one (`center_on`, `show`,
 //!   `set_foreground`, `flash`, `set_focus`; capture is still taken and released);
@@ -662,6 +673,68 @@ fn seams_are_inert_without_a_fixture_and_the_clock_steps() {
     assert_eq!(clock_now_ms(), None);
 }
 
+/// Every `now_ms`/`now_unix_ms` wrapper of the App reads the test clock first (S4 A3 review,
+/// 2026-11-18), so a fixture's App, its prepare fixture and its `BrowserCore` share one time base
+/// on every approval path (the inline reads are listed in the module doc).
+#[test]
+fn every_app_time_wrapper_reads_the_test_clock() {
+    let sources = [
+        ("app.rs", include_str!("app.rs")),
+        ("app_approval.rs", include_str!("app_approval.rs")),
+        ("app_book.rs", include_str!("app_book.rs")),
+        ("app_browser.rs", include_str!("app_browser.rs")),
+        ("app_btc.rs", include_str!("app_btc.rs")),
+        ("app_card.rs", include_str!("app_card.rs")),
+        ("app_chain_sites.rs", include_str!("app_chain_sites.rs")),
+        ("app_evm.rs", include_str!("app_evm.rs")),
+        ("app_hypercore.rs", include_str!("app_hypercore.rs")),
+        ("app_received.rs", include_str!("app_received.rs")),
+        ("app_reset.rs", include_str!("app_reset.rs")),
+        ("app_sol.rs", include_str!("app_sol.rs")),
+        ("app_zec.rs", include_str!("app_zec.rs")),
+    ];
+    let mut wrappers = 0_usize;
+    for (file, text) in sources {
+        for (head, seam) in [
+            ("fn now_ms() -> u64 {", "flow_support::clock_now_ms()"),
+            (
+                "fn now_unix_ms() -> u64 {",
+                "flow_support::clock_now_unix_ms()",
+            ),
+        ] {
+            for (at, _) in text.match_indices(head) {
+                let rest = text.get(at..).unwrap_or_default();
+                let body = rest
+                    .find(
+                        "
+}
+",
+                    )
+                    .and_then(|end| rest.get(..end));
+                assert!(
+                    body.is_some_and(|body| body.contains(seam)),
+                    "{file}: {head} without the test clock"
+                );
+                wrappers += 1;
+            }
+        }
+    }
+    assert_eq!(wrappers, 18, "the wrappers of plan §4.5 and the A3 review");
+}
+
+/// No top-level approval or panel window of this process exists (real Win32 lookup).
+fn assert_no_approval_window() {
+    let pid = std::process::id();
+    for class in [APPROVAL_CLASS, PANEL_CLASS] {
+        assert!(
+            ui::find_windows(class)
+                .iter()
+                .all(|(_, owner)| *owner != pid),
+            "a {class} window of this process"
+        );
+    }
+}
+
 fn assert_hidden(fixture: &Fixture) {
     let app = fixture.app.borrow();
     let ui = app.evm.window.as_ref().expect("window open");
@@ -763,15 +836,15 @@ fn hidden_approval_window_is_never_shown_and_the_seams_drive_it() {
         ]
     );
     assert!(fixture.key_jobs().is_empty());
+    // The gate is foreground by the oracle only: the real windows stay hidden and background.
+    assert_hidden(&fixture);
     // 1 s later a physical Enter on `승인` approves once: one key job, no re-simulation.
     fixture.clock.advance(1_000);
-    {
-        let mut app = fixture.app();
-        if let Some(ui) = app.evm.window.as_mut() {
-            ui.focus = Focus::Approve;
-        }
-        app.on_approval_key(super::VK_RETURN, false);
+    if let Some(ui) = fixture.app().evm.window.as_mut() {
+        ui.focus = Focus::Approve;
     }
+    assert_hidden(&fixture);
+    fixture.app().on_approval_key(super::VK_RETURN, false);
     let log = take_log();
     assert_eq!(
         log.get(..2),
@@ -810,6 +883,18 @@ fn hidden_approval_window_is_never_shown_and_the_seams_drive_it() {
             ..
         }
     )));
+    // Nothing on the way to the approval showed or activated a window.
+    assert!(
+        !log.iter().any(|entry| matches!(
+            entry,
+            Logged::Effect {
+                fx,
+                performed: true,
+            } if fx.hidden_skips()
+        )),
+        "{log:?}"
+    );
+    assert_no_approval_window();
 }
 
 /// A3 self-test: a refused window rejects the item, shows E-APP-009 and prepares nothing.
@@ -831,6 +916,7 @@ fn a_refused_approval_window_rejects_with_app009() {
     }
     assert!(fixture.rpc_jobs().is_empty(), "no preparation");
     assert!(fixture.key_jobs().is_empty());
+    // The refusal is the only effect: no window was created, shown or activated.
     assert_eq!(
         take_log(),
         [Logged::Effect {
@@ -838,6 +924,7 @@ fn a_refused_approval_window_rejects_with_app009() {
             performed: false
         }]
     );
+    assert_no_approval_window();
 }
 
 /// A3 self-test: the recorded outlet carries a dApp request through the real dispatcher (on the

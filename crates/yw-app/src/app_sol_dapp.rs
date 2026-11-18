@@ -595,7 +595,11 @@ impl App {
                             },
                         });
                 }
-                self.sol_tick_tracking(yw_win::time::monotonic_ms());
+                let now = yw_win::time::monotonic_ms();
+                // S4 A3 review (2026-11-18): tests read the approval test clock here too.
+                #[cfg(test)]
+                let now = crate::app_approval::flow_support::clock_now_ms().unwrap_or(now);
+                self.sol_tick_tracking(now);
                 self.refresh();
             }
             Err(SolSignFailure::TooManyPending) => {

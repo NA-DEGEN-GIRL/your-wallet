@@ -3896,7 +3896,21 @@ impl BtcUi {
 
 // ----- App glue ---------------------------------------------------------------------------------
 
+fn now_ms() -> u64 {
+    // S4 A3 review (2026-11-18): tests read the approval test clock here too.
+    #[cfg(test)]
+    if let Some(now) = crate::app_approval::flow_support::clock_now_ms() {
+        return now;
+    }
+    yw_win::time::monotonic_ms()
+}
+
 fn now_unix_ms() -> u64 {
+    // S4 A3 review (2026-11-18): tests read the approval test clock here too.
+    #[cfg(test)]
+    if let Some(now) = crate::app_approval::flow_support::clock_now_unix_ms() {
+        return now;
+    }
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| {
@@ -3923,7 +3937,7 @@ impl crate::app::App {
                 journal_closed: self.sidecar.journal_closed,
                 unlocked: matches!(self.mode, crate::app::AppMode::Unlocked { .. }),
                 has_mnemonic: self.keys.has_mnemonic,
-                now_ms: yw_win::time::monotonic_ms(),
+                now_ms: now_ms(),
                 now_unix_ms: now_unix_ms(),
             };
             call(&mut self.btc, &ctx)
@@ -4437,7 +4451,7 @@ impl crate::app::App {
             journal_closed: self.sidecar.journal_closed,
             unlocked: matches!(self.mode, crate::app::AppMode::Unlocked { .. }),
             has_mnemonic: self.keys.has_mnemonic,
-            now_ms: yw_win::time::monotonic_ms(),
+            now_ms: now_ms(),
             now_unix_ms: now_unix_ms(),
         }
     }

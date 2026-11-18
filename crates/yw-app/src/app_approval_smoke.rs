@@ -323,13 +323,15 @@ fn take_stats(app: &Rc<RefCell<App>>) -> (PaintStats, PaintStats, Rect) {
 
 /// A01 flicker check: during a high-risk 2 s hold the 50 ms timer repaints only the bottom bar
 /// (status line, approve button and its progress), never the header, the band or the scrolling
-/// panel, and a paint never erases first. Frames are written to `YW_SMOKE_OUT` when set.
+/// panel, and a paint never erases first. Frames are written to `YW_SMOKE_OUT` when set (debug
+/// builds: `yw_win::ui::capture` exists only there, so `--release` test builds compile without it).
 #[test]
 #[expect(clippy::print_stdout, reason = "the harness reports what it repainted")]
 #[ignore = "opens a window for a few seconds (render harness, spec/09 smoke run)"]
 fn approval_hold_repaints_only_the_bottom_bar() {
     let (app, dir) = open_dry_run("S3");
     super::TEST_FORCE_FOREGROUND.with(|force| force.set(true));
+    #[cfg(debug_assertions)]
     let out = std::env::var_os("YW_SMOKE_OUT").map(std::path::PathBuf::from);
     assert!(
         app.borrow()
@@ -373,6 +375,7 @@ fn approval_hold_repaints_only_the_bottom_bar() {
         assert!(within(painted.area, bar), "only the bottom bar repaints");
         assert_eq!(panel.count, 0, "the panel never repaints during a hold");
         frames = frames.saturating_add(painted.count);
+        #[cfg(debug_assertions)]
         if let Some(out) = out.as_ref() {
             let capture = yw_win::ui::capture::capture_client(ui.window.hwnd()).unwrap();
             let path = out.join(format!("a01-hold-{frame}.bmp"));
