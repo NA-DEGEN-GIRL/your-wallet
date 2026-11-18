@@ -1722,10 +1722,13 @@ impl App {
         match value {
             Ok(value) => {
                 self.evm.send.amount_text = format_units(&value, decimals).replace(',', "");
-                self.controls.set_text(
-                    crate::ui::screens_evm::ids::SEND_AMOUNT_EDIT,
-                    &self.evm.send.amount_text,
-                );
+                // 2026-11-18 (S3 C10): `Effect::SetField` (before, `controls.set_text`), applied
+                // at once inside this borrow, so the edit's `EN_CHANGE` is still not seen; the
+                // form state reads the edit back.
+                self.emit(Effect::SetField {
+                    field: yw_engine::form::EditField::EvmSendAmount,
+                    text: self.evm.send.amount_text.clone(),
+                });
                 self.validate_send(true);
             }
             Err(code) => {

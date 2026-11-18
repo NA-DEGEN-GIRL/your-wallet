@@ -17,7 +17,7 @@
 //! S3 C2: S13's sites and `WalletConnect` panel. S3 C3: the block-explorer card and links and
 //! the AI-explanation settings. S3 C4: the address book. S3 C5: S22 and T-WAIT-STALLED, S23,
 //! the imported-key screens and the `rpc.json` import card. S3 C6: the recovery phrases. S3 C7:
-//! `HyperCore` and Zcash. S3 C8: Solana. S3 C9: Bitcoin.
+//! `HyperCore` and Zcash. S3 C8: Solana. S3 C9: Bitcoin. S3 C10: the EVM screens.
 
 use yw_core::secret::Zeroizing;
 use yw_engine::cmd::Press;
@@ -62,6 +62,7 @@ pub fn press_of(id: u16, controls: &ControlSet) -> Press {
             .or_else(|| screens_zec::ids::press_of(other).map(Press::Zec))
             .or_else(|| screens_sol::ids::press_of(other).map(Press::Sol))
             .or_else(|| screens_btc::ids::press_of(other).map(Press::Btc))
+            .or_else(|| screens_evm::ids::press_of(other, controls).map(Press::Evm))
             .unwrap_or(Press::Legacy(other)),
     }
 }
@@ -91,6 +92,7 @@ pub const fn id_of(press: Press) -> u16 {
         Press::Zec(press) => screens_zec::ids::id_of(press),
         Press::Sol(press) => screens_sol::ids::id_of(press),
         Press::Btc(press) => screens_btc::ids::id_of(press),
+        Press::Evm(press) => screens_evm::ids::id_of(press),
         Press::Legacy(id) => id,
     }
 }
@@ -870,6 +872,127 @@ mod tests {
         assert!(Press::Btc(BtcPress::ReceiveOpen).is_receive_gated());
         assert!(Press::Btc(BtcPress::CardCopy).is_receive_gated());
         assert!(!Press::Btc(BtcPress::CopyAddress).is_receive_gated());
+    }
+
+    /// S3 C10: the EVM screens claim exactly the ids `on_evm_command` claimed (every fixed id
+    /// but the thirteen edits, which are fields, and each row range whole); the three check
+    /// boxes carry their state, a chain or activity row button its row and action; `새로고침`
+    /// reads its received history first, `받기` and `주소 복사` are gated (table test (4) checks
+    /// every id).
+    #[test]
+    fn c10_evm_maps_its_ids() {
+        use screens_evm::ids;
+        use yw_engine::cmd::{ChainRowAction, EvmActivityAction, EvmPress, Row};
+        use yw_engine::received::RecvChain;
+        let controls = ControlSet::default();
+        let evm = |id: u16| matches!(press_of(id, &controls), Press::Evm(_));
+        let edits = [
+            ids::SEND_TO_EDIT,
+            ids::SEND_AMOUNT_EDIT,
+            ids::TOKEN_ADDR_EDIT,
+            ids::TOKEN_LABEL_EDIT,
+            ids::CHAIN_ID_EDIT,
+            ids::CHAIN_NAME_EDIT,
+            ids::CHAIN_SYMBOL_EDIT,
+            ids::CHAIN_DECIMALS_EDIT,
+            ids::CHAIN_RPC_EDIT,
+            ids::CHAIN_EXPLORER_EDIT,
+            ids::CAPS_FEE_EDIT,
+            ids::CAPS_TIP_EDIT,
+            ids::CAPS_TOTAL_EDIT,
+        ];
+        assert!(ids::FIXED.iter().all(|&id| evm(id) != edits.contains(&id)));
+        for id in 900..3_600 {
+            let fixed = ids::FIXED.contains(&id) && !edits.contains(&id);
+            let ranged = matches!(id, 960..1_000 | 1_010..1_130 | 2_210..2_350 | 2_400..2_440
+                | 2_500..2_900 | 3_000..3_200 | 3_200..3_440 | 3_440..3_560);
+            assert_eq!(evm(id), fixed || ranged, "{id}");
+        }
+        assert!(evm(ids::REPIN_CHECK) && !evm(ids::REPIN_CHECK + 1));
+        for row in 0..ids::CHAIN_ROW_SPAN {
+            let action = [
+                ChainRowAction::Edit,
+                ChainRowAction::Delete,
+                ChainRowAction::Repin,
+            ][usize::from(row % 3)];
+            let id = ids::CHAIN_ROW_BASE + row;
+            assert_eq!(
+                press_of(id, &controls),
+                Press::Evm(EvmPress::ChainRow(Row(row / 3), action)),
+                "{id}"
+            );
+        }
+        let actions = [
+            EvmActivityAction::CopyHash,
+            EvmActivityAction::SpeedUp,
+            EvmActivityAction::Cancel,
+            EvmActivityAction::Resend,
+            EvmActivityAction::Discard,
+            EvmActivityAction::CopyExplorerLink,
+            EvmActivityAction::SaveAddress,
+            EvmActivityAction::OpenExplorer,
+        ];
+        for row in 0..ids::ACTIVITY_SPAN / ids::ACTIVITY_STRIDE {
+            for (offset, action) in (0..).zip(actions) {
+                let id = ids::ACTIVITY_BASE + row * ids::ACTIVITY_STRIDE + offset;
+                assert_eq!(
+                    press_of(id, &controls),
+                    Press::Evm(EvmPress::Activity(Row(row), action)),
+                    "{id}"
+                );
+            }
+        }
+        for (id, press) in [
+            (ids::SEND_ASSET_BASE + 199, EvmPress::SendAsset(Row(199))),
+            (ids::TOKEN_SEND_BASE + 119, EvmPress::TokenSend(Row(119))),
+            (ids::TOKEN_COPY_BASE + 119, EvmPress::TokenCopy(Row(119))),
+            (ids::SEND_PICK_BASE + 39, EvmPress::PickRecipient(Row(39))),
+            (ids::CAPS_CHAIN_BASE + 39, EvmPress::CapsChain(Row(39))),
+        ] {
+            assert_eq!(press_of(id, &controls), Press::Evm(press), "{id}");
+        }
+        assert_eq!(
+            Press::Evm(EvmPress::Refresh).refresh_chain(),
+            Some(RecvChain::Evm)
+        );
+        assert!(Press::Evm(EvmPress::ReceiveOpen).is_receive_gated());
+        assert!(Press::Evm(EvmPress::CopyAddress).is_receive_gated());
+        assert!(!Press::Evm(EvmPress::TokenCopy(Row(0))).is_receive_gated());
+    }
+
+    /// S3 C10: an EVM token row's two buttons are the ids `token_row_id` draws; the three check
+    /// boxes carry their state.
+    #[test]
+    fn c10_evm_token_rows_and_checks() {
+        use screens_evm::ids;
+        use yw_engine::cmd::{EvmPress, Row};
+        let controls = ControlSet::default();
+        for row in 0..ids::TOKEN_ROW_SPAN / ids::TOKEN_ROW_STRIDE {
+            let usize_row = usize::from(row);
+            assert_eq!(
+                Some(id_of(Press::Evm(EvmPress::TokenToggleHidden(Row(row))))),
+                ids::token_row_id(ids::TokenAction::ToggleHidden(usize_row))
+            );
+            assert_eq!(
+                Some(id_of(Press::Evm(EvmPress::TokenDelete(Row(row))))),
+                ids::token_row_id(ids::TokenAction::Delete(usize_row))
+            );
+        }
+        for (id, press) in [
+            (
+                ids::SEND_ACK,
+                EvmPress::SendAck as fn(Option<bool>) -> EvmPress,
+            ),
+            (ids::TOKEN_HIDE_ZERO, EvmPress::TokenHideZero),
+            (ids::REPIN_CHECK, EvmPress::RepinCheck),
+        ] {
+            assert_eq!(press_of(id, &controls), Press::Evm(press(None)), "{id}");
+            controls.type_check(id, true);
+            assert_eq!(press_of(id, &controls), Press::Evm(press(Some(true))));
+            controls.type_check(id, false);
+            assert_eq!(press_of(id, &controls), Press::Evm(press(Some(false))));
+            assert_eq!(id_of(press_of(id, &controls)), id);
+        }
     }
 
     /// Table test (3): the 65 edit ids are 58 plain fields and 7 credential fields, each a

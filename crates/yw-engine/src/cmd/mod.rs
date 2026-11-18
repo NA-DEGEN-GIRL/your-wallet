@@ -34,6 +34,8 @@
 //! 2026-11-18 (S3 C8): Solana (`Press::Sol`).
 //!
 //! 2026-11-18 (S3 C9): Bitcoin (`Press::Btc`).
+//!
+//! 2026-11-18 (S3 C10): the EVM screens (`Press::Evm`).
 
 use core::fmt;
 
@@ -45,6 +47,7 @@ use crate::received::RecvChain;
 
 mod book;
 mod btc;
+mod evm;
 mod explorer;
 mod ext;
 mod hc;
@@ -64,6 +67,7 @@ mod zec;
 
 pub use book::{BookPress, BookRowAction};
 pub use btc::{BtcActivityAction, BtcPress};
+pub use evm::{ChainRowAction, EvmActivityAction, EvmPress};
 pub use explorer::{ExplorerLinkAction, ExplorerPress, ExplorerRowAction};
 pub use ext::ExtPress;
 pub use hc::HcPress;
@@ -195,6 +199,8 @@ pub enum Press {
     Sol(SolPress),
     /// The Bitcoin screens (S3 C9).
     Btc(BtcPress),
+    /// The EVM screens (S3 C10).
+    Evm(EvmPress),
     /// Windows-transitional bridge (S3 B2–D3): a control id whose handler is not converted yet.
     #[doc(hidden)]
     Legacy(u16),
@@ -203,8 +209,8 @@ pub enum Press {
 impl Press {
     /// The chain whose received-history list a card's `새로고침` press also reads now, before the
     /// card's own handler runs (spec/04 §2.6). A chain family adds its `새로고침` arm when it
-    /// converts (S3 C; C7: `HyperCore` and Zcash; C8: Solana; C9: Bitcoin); every other press
-    /// has none.
+    /// converts (S3 C; C7: `HyperCore` and Zcash; C8: Solana; C9: Bitcoin; C10: EVM); every
+    /// other press has none.
     /// `Legacy` presses keep the shell's own observer until S3 D3.
     #[must_use]
     pub const fn refresh_chain(self) -> Option<RecvChain> {
@@ -213,6 +219,7 @@ impl Press {
             Self::Zec(ZecPress::Refresh) => Some(RecvChain::Zec),
             Self::Sol(SolPress::Refresh) => Some(RecvChain::Sol),
             Self::Btc(BtcPress::Refresh) => Some(RecvChain::Btc),
+            Self::Evm(EvmPress::Refresh) => Some(RecvChain::Evm),
             Self::Back
             | Self::Enter
             | Self::Received(_)
@@ -233,6 +240,7 @@ impl Press {
             | Self::Zec(_)
             | Self::Sol(_)
             | Self::Btc(_)
+            | Self::Evm(_)
             | Self::Legacy(_) => None,
         }
     }
@@ -241,14 +249,15 @@ impl Press {
     /// wallet is open unverified (spec/02 §7.5; before any chain handler runs, so Bitcoin does
     /// not derive and store a new address). A chain family adds its arms when it converts (S3 C;
     /// C7: Zcash's two `주소 복사`; C8: Solana's `받기` and `주소 복사`; C9: Bitcoin's `받기` and
-    /// the account card's `주소 복사` — its receive screen's copy never was); every other press is
-    /// not one. `Legacy` presses keep the shell's own gate until S3 D3.
+    /// the account card's `주소 복사` — its receive screen's copy never was; C10: EVM's `받기` and
+    /// `주소 복사`); every other press is not one. `Legacy` presses keep the shell's own gate until S3 D3.
     #[must_use]
     pub const fn is_receive_gated(self) -> bool {
         match self {
             Self::Zec(ZecPress::CopyAddress | ZecPress::CardCopy)
             | Self::Sol(SolPress::ReceiveOpen | SolPress::CopyAddress)
-            | Self::Btc(BtcPress::ReceiveOpen | BtcPress::CardCopy) => true,
+            | Self::Btc(BtcPress::ReceiveOpen | BtcPress::CardCopy)
+            | Self::Evm(EvmPress::ReceiveOpen | EvmPress::CopyAddress) => true,
             Self::Back
             | Self::Enter
             | Self::Received(_)
@@ -269,6 +278,7 @@ impl Press {
             | Self::Zec(_)
             | Self::Sol(_)
             | Self::Btc(_)
+            | Self::Evm(_)
             | Self::Legacy(_) => false,
         }
     }

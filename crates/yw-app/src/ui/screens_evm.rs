@@ -270,6 +270,160 @@ pub mod ids {
         REPIN_CHECK,
         ACTIVITY_MORE,
     ];
+
+    /// The press control `id` stands for (2026-11-18, S3 C10: `ui::cmd_table`). `None` when `id`
+    /// is not one of this module's presses (the thirteen edits are fields). The three check
+    /// boxes carry their state (`controls.checked(id)` now); each row range is claimed whole, as
+    /// the ids reached the handler before.
+    #[must_use]
+    pub fn press_of(
+        id: u16,
+        controls: &crate::ui::main_window::ControlSet,
+    ) -> Option<yw_engine::cmd::EvmPress> {
+        use yw_engine::cmd::{ChainRowAction, EvmActivityAction, EvmPress, Row};
+        let within = |base: u16, span: u16| id.checked_sub(base).filter(|offset| *offset < span);
+        Some(match id {
+            SEND_OPEN => EvmPress::SendOpen,
+            RECEIVE_OPEN => EvmPress::ReceiveOpen,
+            REFRESH => EvmPress::Refresh,
+            BOOK_OPEN => EvmPress::BookOpen,
+            TOKEN_OPEN => EvmPress::TokenOpen,
+            REPIN_SETTINGS => EvmPress::RepinSettings,
+            NETWORK_PICKER => EvmPress::NetworkPicker,
+            SEND_MAX => EvmPress::SendMax,
+            SEND_PICK => EvmPress::SendPick,
+            SEND_ACK => EvmPress::SendAck(controls.checked(id)),
+            SEND_REVIEW => EvmPress::SendReview,
+            SEND_CANCEL => EvmPress::SendCancel,
+            SEND_HIDDEN_TOGGLE => EvmPress::SendHiddenToggle,
+            COPY_ADDRESS => EvmPress::CopyAddress,
+            QR_EIP681 => EvmPress::QrEip681,
+            QR_PLAIN => EvmPress::QrPlain,
+            TOKEN_LOOKUP => EvmPress::TokenLookup,
+            TOKEN_SAVE => EvmPress::TokenSave,
+            TOKEN_HIDE_ZERO => EvmPress::TokenHideZero(controls.checked(id)),
+            TOKEN_HIDDEN_TOGGLE => EvmPress::TokenHiddenToggle,
+            SECTION_CHAINS => EvmPress::SectionChains,
+            CHAIN_ADD => EvmPress::ChainAdd,
+            CHAIN_SIM_AUTO => EvmPress::ChainSimAuto,
+            CHAIN_SIM_UNSUPPORTED => EvmPress::ChainSimUnsupported,
+            CHAIN_SAVE => EvmPress::ChainSave,
+            CHAIN_CANCEL => EvmPress::ChainCancel,
+            CAPS_SAVE => EvmPress::CapsSave,
+            CAPS_DEFAULT => EvmPress::CapsDefault,
+            ACTIVITY_MORE => EvmPress::ActivityMore,
+            REPIN_CHECK => EvmPress::RepinCheck(controls.checked(id)),
+            _ => {
+                if let Some(row) = within(SEND_ASSET_BASE, SEND_ASSET_SPAN) {
+                    EvmPress::SendAsset(Row(row))
+                } else if let Some(row) = within(TOKEN_SEND_BASE, TOKEN_SEND_SPAN) {
+                    EvmPress::TokenSend(Row(row))
+                } else if let Some(row) = within(TOKEN_COPY_BASE, TOKEN_COPY_SPAN) {
+                    EvmPress::TokenCopy(Row(row))
+                } else if let Some(offset) = within(TOKEN_ROW_BASE, TOKEN_ROW_SPAN) {
+                    let row = Row(offset / TOKEN_ROW_STRIDE);
+                    if offset % TOKEN_ROW_STRIDE == 0 {
+                        EvmPress::TokenToggleHidden(row)
+                    } else {
+                        EvmPress::TokenDelete(row)
+                    }
+                } else if let Some(row) = within(SEND_PICK_BASE, SEND_PICK_SPAN) {
+                    EvmPress::PickRecipient(Row(row))
+                } else if let Some(offset) = within(CHAIN_ROW_BASE, CHAIN_ROW_SPAN) {
+                    let action = match offset % 3 {
+                        0 => ChainRowAction::Edit,
+                        1 => ChainRowAction::Delete,
+                        _ => ChainRowAction::Repin,
+                    };
+                    EvmPress::ChainRow(Row(offset / 3), action)
+                } else if let Some(row) = within(CAPS_CHAIN_BASE, CAPS_CHAIN_SPAN) {
+                    EvmPress::CapsChain(Row(row))
+                } else {
+                    let offset = within(ACTIVITY_BASE, ACTIVITY_SPAN)?;
+                    let action = match offset % ACTIVITY_STRIDE {
+                        0 => EvmActivityAction::CopyHash,
+                        1 => EvmActivityAction::SpeedUp,
+                        2 => EvmActivityAction::Cancel,
+                        3 => EvmActivityAction::Resend,
+                        4 => EvmActivityAction::Discard,
+                        5 => EvmActivityAction::CopyExplorerLink,
+                        6 => EvmActivityAction::SaveAddress,
+                        _ => EvmActivityAction::OpenExplorer,
+                    };
+                    EvmPress::Activity(Row(offset / ACTIVITY_STRIDE), action)
+                }
+            }
+        })
+    }
+
+    /// The control id of `press` (the inverse of [`press_of`]; a check box's state is not part
+    /// of it).
+    #[must_use]
+    pub const fn id_of(press: yw_engine::cmd::EvmPress) -> u16 {
+        use yw_engine::cmd::{ChainRowAction, EvmActivityAction, EvmPress, Row};
+        match press {
+            EvmPress::SendOpen => SEND_OPEN,
+            EvmPress::ReceiveOpen => RECEIVE_OPEN,
+            EvmPress::Refresh => REFRESH,
+            EvmPress::BookOpen => BOOK_OPEN,
+            EvmPress::TokenOpen => TOKEN_OPEN,
+            EvmPress::RepinSettings => REPIN_SETTINGS,
+            EvmPress::NetworkPicker => NETWORK_PICKER,
+            EvmPress::SendMax => SEND_MAX,
+            EvmPress::SendPick => SEND_PICK,
+            EvmPress::SendAck(_) => SEND_ACK,
+            EvmPress::SendReview => SEND_REVIEW,
+            EvmPress::SendCancel => SEND_CANCEL,
+            EvmPress::SendHiddenToggle => SEND_HIDDEN_TOGGLE,
+            EvmPress::CopyAddress => COPY_ADDRESS,
+            EvmPress::QrEip681 => QR_EIP681,
+            EvmPress::QrPlain => QR_PLAIN,
+            EvmPress::TokenLookup => TOKEN_LOOKUP,
+            EvmPress::TokenSave => TOKEN_SAVE,
+            EvmPress::TokenHideZero(_) => TOKEN_HIDE_ZERO,
+            EvmPress::TokenHiddenToggle => TOKEN_HIDDEN_TOGGLE,
+            EvmPress::SectionChains => SECTION_CHAINS,
+            EvmPress::ChainAdd => CHAIN_ADD,
+            EvmPress::ChainSimAuto => CHAIN_SIM_AUTO,
+            EvmPress::ChainSimUnsupported => CHAIN_SIM_UNSUPPORTED,
+            EvmPress::ChainSave => CHAIN_SAVE,
+            EvmPress::ChainCancel => CHAIN_CANCEL,
+            EvmPress::CapsSave => CAPS_SAVE,
+            EvmPress::CapsDefault => CAPS_DEFAULT,
+            EvmPress::ActivityMore => ACTIVITY_MORE,
+            EvmPress::RepinCheck(_) => REPIN_CHECK,
+            EvmPress::SendAsset(Row(row)) => SEND_ASSET_BASE.wrapping_add(row),
+            EvmPress::TokenSend(Row(row)) => TOKEN_SEND_BASE.wrapping_add(row),
+            EvmPress::TokenCopy(Row(row)) => TOKEN_COPY_BASE.wrapping_add(row),
+            EvmPress::TokenToggleHidden(Row(row)) => {
+                TOKEN_ROW_BASE.wrapping_add(row.wrapping_mul(TOKEN_ROW_STRIDE))
+            }
+            EvmPress::TokenDelete(Row(row)) => TOKEN_ROW_BASE
+                .wrapping_add(row.wrapping_mul(TOKEN_ROW_STRIDE))
+                .wrapping_add(1),
+            EvmPress::PickRecipient(Row(row)) => SEND_PICK_BASE.wrapping_add(row),
+            EvmPress::ChainRow(Row(row), action) => CHAIN_ROW_BASE
+                .wrapping_add(row.wrapping_mul(3))
+                .wrapping_add(match action {
+                    ChainRowAction::Edit => 0,
+                    ChainRowAction::Delete => 1,
+                    ChainRowAction::Repin => 2,
+                }),
+            EvmPress::CapsChain(Row(row)) => CAPS_CHAIN_BASE.wrapping_add(row),
+            EvmPress::Activity(Row(row), action) => ACTIVITY_BASE
+                .wrapping_add(row.wrapping_mul(ACTIVITY_STRIDE))
+                .wrapping_add(match action {
+                    EvmActivityAction::CopyHash => 0,
+                    EvmActivityAction::SpeedUp => 1,
+                    EvmActivityAction::Cancel => 2,
+                    EvmActivityAction::Resend => 3,
+                    EvmActivityAction::Discard => 4,
+                    EvmActivityAction::CopyExplorerLink => 5,
+                    EvmActivityAction::SaveAddress => 6,
+                    EvmActivityAction::OpenExplorer => 7,
+                }),
+        }
+    }
 }
 
 /// Status words of activity rows.

@@ -3941,6 +3941,7 @@ impl App {
             Press::Zec(press) => self.on_zec(press),
             Press::Sol(press) => self.on_sol(press),
             Press::Btc(press) => self.on_btc(press),
+            Press::Evm(press) => self.on_evm(press),
             Press::Back | Press::Enter | Press::Legacy(_) => {}
         }
     }
@@ -4011,7 +4012,8 @@ impl App {
             // `BookAddress`, `BookLabel`, `BookPromptLabel` likewise; S3 C5: S22's
             // `ResetPhrase`; S3 C6: the removal warning's `MnRemoveTyped`; S3 C7: `HcTo`,
             // `HcAmount`, `HcApi`, `ZecSendTo`, `ZecSendAmount`; S3 C8: `SolSendTo`,
-            // `SolSendAmount`; S3 C9: the Bitcoin send, bump and Esplora fields.)
+            // `SolSendAmount`; S3 C9: the Bitcoin send, bump and Esplora fields; S3 C10: the
+            // EVM send, token, S17 and fee-cap fields.)
             #[cfg(debug_assertions)]
             self.note_form_mismatch(field);
             self.edit_chain(id);
@@ -4029,16 +4031,17 @@ impl App {
             || self.on_zec_edit(field, text)
             || self.on_sol_edit(field, text)
             || self.on_btc_edit(field, text)
+            || self.on_evm_edit(field, text)
             || self.on_explorer_edit(field, text)
             || self.on_llm_edit(field, text)
     }
 
-    /// The handlers of an edit change: the first that claims `id` takes it, else the EVM send
-    /// form's (S3 B5: the body of `on_edit_notify` before, unchanged).
+    /// The handlers of an edit change not converted yet (S3 B5: the body of `on_edit_notify`
+    /// before). 2026-11-18 (S3 C10): the EVM handler, the last of the chain, takes its fields
+    /// from `Cmd::Edit` (`on_evm_edit`); its `_ => {}`, which swallowed every other edit, is
+    /// gone with it — what the `YubiKey` handler does not claim is still ignored.
     fn edit_chain(&mut self, id: u16) {
-        if !self.on_yk_edit_change(id) {
-            self.on_edit_change(id);
-        }
+        let _ = self.on_yk_edit_change(id);
     }
 
     /// A control id whose handler family is not converted to `Press` yet (S3 B2: was
@@ -4372,8 +4375,10 @@ impl App {
             other => {
                 // A card's `새로고침` reads its received list first (S3 C1: was the first link
                 // of the chain, `on_received_command`, which returned `false` for these ids).
+                // S3 C10: every chain's `새로고침` is a family press now; the observer stays
+                // until S3 D3 removes the bridge.
                 self.received_observe(other);
-                if !self.on_evm_command(other) && !self.on_yk_command(other) {
+                if !self.on_yk_command(other) {
                     self.on_indexed_command(other);
                 }
             }

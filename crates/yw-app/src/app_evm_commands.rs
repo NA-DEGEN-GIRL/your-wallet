@@ -1,22 +1,21 @@
 //! Command and edit-change handling of the EVM screens (ids in `ui::screens_evm::ids`).
 
 use yw_core::evm::chain::builtin_chain;
+use yw_engine::cmd::{ChainRowAction, EvmActivityAction, EvmPress, Row};
+use yw_engine::effect::Effect;
+use yw_engine::form::{CredField, EditField};
 
 use crate::app::{App, AppMode, Confirm, Screen, SettingsSection};
 use crate::app_evm::{SendAsset, SendForm, hash_text};
 use crate::flow::evm::prepare::ReplaceMode;
 use crate::network::NetworkId;
-use crate::ui::screens_evm::ids;
-
-const TEXT_MAX: usize = 512;
-
-fn offset(id: u16, base: u16, span: u16) -> Option<u16> {
-    id.checked_sub(base).filter(|offset| *offset < span)
-}
 
 impl App {
-    fn edit_text(&self, id: u16) -> String {
-        self.controls.text(id, TEXT_MAX).unwrap_or_default()
+    /// The text of an EVM edit for a handler (2026-11-18, S3 C10: the form state,
+    /// `App::form_text`; before, a read of the edit with the module's cap 512, now
+    /// `EditField::cap`).
+    fn evm_edit_text(&self, field: EditField) -> String {
+        self.form_text(field).unwrap_or_default()
     }
 
     /// `EN_CHANGE` of an EVM edit: keep the text (controls may be recreated) and leave the
@@ -24,196 +23,212 @@ impl App {
     /// a whole address or amount, 500 ms after typing stops otherwise). `검토` is off until that
     /// validation runs; the first edit of a burst repaints it so (the picker, whose rows follow
     /// the text, keeps its controls until the validation).
-    pub fn on_edit_change(&mut self, id: u16) {
+    /// 2026-11-18 (S3 C10): the field and its text from `Cmd::Edit` (or the form state for
+    /// `저장`); `false` when `field` is not one of them. Before, `on_edit_change(id)` read the
+    /// edit by id, and its `_ => {}` swallowed every other edit's change; nothing handles those
+    /// now either.
+    pub(crate) fn on_evm_edit(&mut self, field: EditField, text: &str) -> bool {
         let now = yw_win::time::monotonic_ms();
-        match id {
-            ids::SEND_TO_EDIT | ids::SEND_AMOUNT_EDIT => {
-                let text = self.edit_text(id);
+        match field {
+            EditField::EvmSendTo | EditField::EvmSendAmount => {
                 let form = &mut self.evm.send;
-                if id == ids::SEND_TO_EDIT {
-                    form.to_text = text;
+                if field == EditField::EvmSendTo {
+                    text.clone_into(&mut form.to_text);
                 } else {
-                    form.amount_text = text;
+                    text.clone_into(&mut form.amount_text);
                 }
                 let first = form.dirty_ms.replace(now).is_none();
                 if first && !form.picker {
                     self.refresh();
                 }
-                self.arm_send_timer(self.send_edit_wait_ms(id == ids::SEND_TO_EDIT));
+                self.arm_send_timer(self.send_edit_wait_ms(field == EditField::EvmSendTo));
             }
-            ids::TOKEN_ADDR_EDIT => self.evm.token.address = self.edit_text(id),
-            ids::TOKEN_LABEL_EDIT => self.evm.token.label = self.edit_text(id),
-            ids::CHAIN_ID_EDIT
-            | ids::CHAIN_NAME_EDIT
-            | ids::CHAIN_SYMBOL_EDIT
-            | ids::CHAIN_DECIMALS_EDIT
-            | ids::CHAIN_EXPLORER_EDIT => {
-                let text = self.edit_text(id);
+            EditField::EvmTokenAddress => text.clone_into(&mut self.evm.token.address),
+            EditField::EvmTokenLabel => text.clone_into(&mut self.evm.token.label),
+            EditField::EvmChainId
+            | EditField::EvmChainName
+            | EditField::EvmChainSymbol
+            | EditField::EvmChainDecimals
+            | EditField::EvmChainExplorer => {
                 if let Some(form) = self.evm.chain_form.as_mut() {
-                    let field = match id {
-                        ids::CHAIN_ID_EDIT => &mut form.chain_id,
-                        ids::CHAIN_NAME_EDIT => &mut form.name,
-                        ids::CHAIN_SYMBOL_EDIT => &mut form.symbol,
-                        ids::CHAIN_DECIMALS_EDIT => &mut form.decimals,
+                    let slot = match field {
+                        EditField::EvmChainId => &mut form.chain_id,
+                        EditField::EvmChainName => &mut form.name,
+                        EditField::EvmChainSymbol => &mut form.symbol,
+                        EditField::EvmChainDecimals => &mut form.decimals,
                         _ => &mut form.explorer,
                     };
-                    *field = text;
+                    text.clone_into(slot);
                 }
             }
-            ids::CAPS_FEE_EDIT | ids::CAPS_TIP_EDIT | ids::CAPS_TOTAL_EDIT => {
-                let text = self.edit_text(id);
+            EditField::EvmCapFee | EditField::EvmCapTip | EditField::EvmCapTotal => {
                 if let Some(caps) = self.evm.caps.as_mut() {
-                    match id {
-                        ids::CAPS_FEE_EDIT => caps.fee = text,
-                        ids::CAPS_TIP_EDIT => caps.tip = text,
-                        _ => caps.total = text,
+                    match field {
+                        EditField::EvmCapFee => text.clone_into(&mut caps.fee),
+                        EditField::EvmCapTip => text.clone_into(&mut caps.tip),
+                        _ => text.clone_into(&mut caps.total),
                     }
                 }
             }
-            _ => {}
+            _ => return false,
+        }
+        true
+    }
+
+    /// The EVM edit handler run again over `fields` with their form-state text (S17 and the
+    /// fee caps' `저장`: the drafts are taken again before the save, as before S3).
+    fn evm_reread(&mut self, fields: &[EditField]) {
+        for &field in fields {
+            let text = self.evm_edit_text(field);
+            self.on_evm_edit(field, &text);
         }
     }
 
-    /// EVM commands; `false` when `id` is not one of them.
-    #[expect(clippy::too_many_lines, reason = "one arm per EVM command id")]
-    pub fn on_evm_command(&mut self, id: u16) -> bool {
-        match id {
-            ids::SEND_OPEN => {
+    /// EVM presses (2026-11-18, S3 C10: an `EvmPress`; before, the control id, and `false` for
+    /// an id that was not one of them; a row press past its list still does nothing).
+    #[expect(clippy::too_many_lines, reason = "one arm per EVM press")]
+    pub(crate) fn on_evm(&mut self, press: EvmPress) {
+        match press {
+            EvmPress::SendOpen => {
                 if matches!(self.mode, AppMode::Unlocked { .. }) {
                     self.open_send();
                 }
             }
-            ids::RECEIVE_OPEN => self.set_screen(Screen::Receive),
-            ids::REFRESH => {
+            EvmPress::ReceiveOpen => self.set_screen(Screen::Receive),
+            EvmPress::Refresh => {
                 self.refresh_balances();
                 self.schedule_tracking(true);
             }
-            ids::BOOK_OPEN => self.set_screen(Screen::AddressBook),
-            ids::ACTIVITY_MORE => {
+            EvmPress::BookOpen => self.set_screen(Screen::AddressBook),
+            EvmPress::ActivityMore => {
                 self.activity_all = !self.activity_all;
                 self.refresh();
             }
-            ids::TOKEN_OPEN => {
+            EvmPress::TokenOpen => {
                 self.evm.token = crate::app_evm::TokenForm::default();
                 self.set_screen(Screen::TokenAdd);
             }
-            ids::REPIN_SETTINGS | ids::SECTION_CHAINS => {
+            EvmPress::RepinSettings | EvmPress::SectionChains => {
                 self.set_screen(Screen::Settings(SettingsSection::Chains));
             }
-            ids::SEND_MAX => self.fill_max(),
-            ids::SEND_PICK => {
+            EvmPress::SendMax => self.fill_max(),
+            EvmPress::SendPick => {
                 let form = &mut self.evm.send;
                 form.picker = !form.picker;
                 form.picker_filter.clone_from(&form.to_text);
                 self.refresh();
             }
-            ids::SEND_HIDDEN_TOGGLE => {
+            EvmPress::SendHiddenToggle => {
                 self.evm.send_show_hidden = !self.evm.send_show_hidden;
                 self.refresh();
             }
-            ids::TOKEN_HIDE_ZERO => {
-                let on = self
-                    .controls
-                    .checked(ids::TOKEN_HIDE_ZERO)
-                    .unwrap_or(!self.evm_hide_zero());
+            EvmPress::TokenHideZero(checked) => {
+                let on = checked.unwrap_or(!self.evm_hide_zero());
                 self.set_evm_hide_zero(on);
             }
-            ids::TOKEN_HIDDEN_TOGGLE => {
+            EvmPress::TokenHiddenToggle => {
                 self.evm.show_hidden_tokens = !self.evm.show_hidden_tokens;
                 self.refresh();
             }
-            ids::SEND_ACK => {
-                self.evm.send.ack = self.controls.checked(ids::SEND_ACK).unwrap_or(false);
+            EvmPress::SendAck(checked) => {
+                self.evm.send.ack = checked.unwrap_or(false);
                 self.refresh();
             }
-            ids::SEND_REVIEW => {
-                self.evm.send.to_text = self.edit_text(ids::SEND_TO_EDIT);
-                self.evm.send.amount_text = self.edit_text(ids::SEND_AMOUNT_EDIT);
+            EvmPress::SendReview => {
+                self.evm.send.to_text = self.evm_edit_text(EditField::EvmSendTo);
+                self.evm.send.amount_text = self.evm_edit_text(EditField::EvmSendAmount);
                 self.review_send();
             }
-            ids::SEND_CANCEL => {
+            EvmPress::SendCancel => {
                 self.evm.send = SendForm::default();
                 self.return_to(Screen::Main);
             }
-            ids::COPY_ADDRESS => {
+            EvmPress::CopyAddress => {
                 // S12 and the S10 account card: the selected account (one path for both).
                 if let Some((address, ..)) = self.selected_account() {
                     let text = address.to_checksum();
                     self.copy_address_text(&text);
                 }
             }
-            ids::NETWORK_PICKER => {
+            EvmPress::NetworkPicker => {
                 self.evm.network_picker = !self.evm.network_picker;
                 // One drop-down at a time.
                 self.account_menu = None;
                 self.refresh();
             }
-            ids::QR_EIP681 | ids::QR_PLAIN => {
-                self.evm.receive_qr = if id == ids::QR_PLAIN {
+            EvmPress::QrEip681 | EvmPress::QrPlain => {
+                self.evm.receive_qr = if press == EvmPress::QrPlain {
                     crate::ui::qr::EvmQrKind::PlainAddress
                 } else {
                     crate::ui::qr::EvmQrKind::Eip681
                 };
                 self.refresh();
             }
-            ids::TOKEN_LOOKUP => {
-                self.evm.token.address = self.edit_text(ids::TOKEN_ADDR_EDIT);
+            EvmPress::TokenLookup => {
+                self.evm.token.address = self.evm_edit_text(EditField::EvmTokenAddress);
                 self.lookup_token();
             }
-            ids::TOKEN_SAVE => {
-                self.evm.token.label = self.edit_text(ids::TOKEN_LABEL_EDIT);
+            EvmPress::TokenSave => {
+                self.evm.token.label = self.evm_edit_text(EditField::EvmTokenLabel);
                 self.save_token();
             }
-            ids::CHAIN_ADD => self.open_chain_form(None),
-            ids::CHAIN_SIM_AUTO | ids::CHAIN_SIM_UNSUPPORTED => {
+            EvmPress::ChainAdd => self.open_chain_form(None),
+            EvmPress::ChainSimAuto | EvmPress::ChainSimUnsupported => {
                 if let Some(form) = self.evm.chain_form.as_mut() {
-                    form.unsupported = id == ids::CHAIN_SIM_UNSUPPORTED;
+                    form.unsupported = press == EvmPress::ChainSimUnsupported;
                 }
             }
-            ids::CHAIN_SAVE => {
-                for edit in [
-                    ids::CHAIN_ID_EDIT,
-                    ids::CHAIN_NAME_EDIT,
-                    ids::CHAIN_SYMBOL_EDIT,
-                    ids::CHAIN_DECIMALS_EDIT,
-                    ids::CHAIN_EXPLORER_EDIT,
-                ] {
-                    self.on_edit_change(edit);
-                }
-                let units = self.controls.text_wiping(ids::CHAIN_RPC_EDIT, 2_048);
-                // Debug builds (S3 B5): the units captured with the press are the same.
-                #[cfg(debug_assertions)]
-                self.cred_shadow(
-                    yw_engine::form::CredField::ChainRpc,
-                    units.as_ref().map(yw_win::mem::WipeBuf::as_slice),
-                );
-                let rpc = units
-                    .map(|units| String::from_utf16_lossy(units.as_slice()))
-                    .map(yw_core::secret::Zeroizing::new)
-                    .unwrap_or_default();
+            EvmPress::ChainSave => {
+                self.evm_reread(&[
+                    EditField::EvmChainId,
+                    EditField::EvmChainName,
+                    EditField::EvmChainSymbol,
+                    EditField::EvmChainDecimals,
+                    EditField::EvmChainExplorer,
+                ]);
+                // 2026-11-18 (S3 C10): the units the shell read with the press (`PressInput`,
+                // wiped with it; empty when the edit did not exist, as a read of a missing edit);
+                // before, a read of the edit here. Decoded as before (`from_utf16_lossy`); the
+                // edit is emptied after the save (`Effect::ClearCred`; before,
+                // `controls.clear_text`).
+                let units = self.take_cred(CredField::ChainRpc);
+                let rpc =
+                    yw_core::secret::Zeroizing::new(String::from_utf16_lossy(units.as_slice()));
+                drop(units);
                 self.save_chain_form(&rpc);
-                self.controls.clear_text(ids::CHAIN_RPC_EDIT);
+                self.emit(Effect::ClearCred {
+                    field: CredField::ChainRpc,
+                });
             }
-            ids::CHAIN_CANCEL => {
+            EvmPress::ChainCancel => {
                 self.evm.chain_form = None;
                 self.set_screen(Screen::Settings(SettingsSection::Chains));
             }
-            ids::CAPS_SAVE | ids::CAPS_DEFAULT => {
-                for edit in [ids::CAPS_FEE_EDIT, ids::CAPS_TIP_EDIT, ids::CAPS_TOTAL_EDIT] {
-                    self.on_edit_change(edit);
-                }
-                self.save_caps(id == ids::CAPS_DEFAULT);
+            EvmPress::CapsSave | EvmPress::CapsDefault => {
+                self.evm_reread(&[
+                    EditField::EvmCapFee,
+                    EditField::EvmCapTip,
+                    EditField::EvmCapTotal,
+                ]);
+                self.save_caps(press == EvmPress::CapsDefault);
             }
-            ids::REPIN_CHECK => {
-                let checked = self.controls.checked(ids::REPIN_CHECK).unwrap_or(false);
+            EvmPress::RepinCheck(checked) => {
+                let checked = checked.unwrap_or(false);
                 if let Some(repin) = self.evm.repin.as_mut() {
                     repin.checked = checked;
                 }
                 self.refresh();
             }
-            other => return self.on_evm_indexed(other),
+            EvmPress::SendAsset(_)
+            | EvmPress::TokenSend(_)
+            | EvmPress::TokenCopy(_)
+            | EvmPress::TokenToggleHidden(_)
+            | EvmPress::TokenDelete(_)
+            | EvmPress::PickRecipient(_)
+            | EvmPress::ChainRow(..)
+            | EvmPress::CapsChain(_)
+            | EvmPress::Activity(..) => self.on_evm_indexed(press),
         }
-        true
     }
 
     /// `{기호} 보내기` of token row `index`: S11 with that token chosen (the form's checks,
@@ -248,107 +263,112 @@ impl App {
         self.validate_send(true);
     }
 
-    fn on_evm_indexed(&mut self, id: u16) -> bool {
+    /// The row presses (2026-11-18, S3 C10: the press with its row; before, the control id
+    /// and its offset in each range, checked in this order).
+    fn on_evm_indexed(&mut self, press: EvmPress) {
         let chain_id = self.settings.evm_chain_id;
-        if let Some(index) = offset(id, ids::SEND_ASSET_BASE, ids::SEND_ASSET_SPAN) {
-            let asset = self.send_asset_at(chain_id, usize::from(index));
-            self.choose_send_asset(asset);
-            return true;
-        }
-        if let Some(index) = offset(id, ids::TOKEN_SEND_BASE, ids::TOKEN_SEND_SPAN) {
-            self.send_token_row(chain_id, usize::from(index));
-            return true;
-        }
-        if let Some(index) = offset(id, ids::TOKEN_COPY_BASE, ids::TOKEN_COPY_SPAN) {
-            // The token card's `주소 복사`: the whole contract, checksum case (2026-11-11).
-            if let Some((address, ..)) = self.chain_tokens(chain_id).get(usize::from(index)) {
-                let text = address.to_checksum();
-                self.copy_address_text(&text);
+        match press {
+            EvmPress::SendAsset(Row(index)) => {
+                let asset = self.send_asset_at(chain_id, usize::from(index));
+                self.choose_send_asset(asset);
             }
-            return true;
-        }
-        if let Some(action) = ids::token_action(id) {
-            match action {
-                ids::TokenAction::ToggleHidden(row) => self.toggle_evm_token_hidden(row),
-                ids::TokenAction::Delete(row) => self.request_delete_token(row),
-            }
-            return true;
-        }
-        if let Some(index) = offset(id, ids::SEND_PICK_BASE, ids::SEND_PICK_SPAN) {
-            // The rows on screen (their filter, not text typed since): the clicked row's address.
-            if let Some(address) = self.picker_entries().get(usize::from(index)).copied() {
-                self.evm.send.to_text = address.to_checksum();
-                self.evm.send.picker = false;
-                self.controls
-                    .set_text(ids::SEND_TO_EDIT, &self.evm.send.to_text.clone());
-                self.validate_send(true);
-            }
-            return true;
-        }
-        if let Some(index) = offset(id, ids::CHAIN_ROW_BASE, ids::CHAIN_ROW_SPAN) {
-            let chains = self.settings.registered_evm();
-            if let Some(chain) = chains.get(usize::from(index / 3)).copied() {
-                match index % 3 {
-                    0 if builtin_chain(chain).is_none() => self.open_chain_form(Some(chain)),
-                    1 if builtin_chain(chain).is_none() => self.request_delete_chain(chain),
-                    2 => self.start_repin(chain),
-                    _ => {}
+            EvmPress::TokenSend(Row(index)) => self.send_token_row(chain_id, usize::from(index)),
+            EvmPress::TokenCopy(Row(index)) => {
+                // The token card's `주소 복사`: the whole contract, checksum case (2026-11-11).
+                if let Some((address, ..)) = self.chain_tokens(chain_id).get(usize::from(index)) {
+                    let text = address.to_checksum();
+                    self.copy_address_text(&text);
                 }
             }
-            return true;
-        }
-        if let Some(index) = offset(id, ids::CAPS_CHAIN_BASE, ids::CAPS_CHAIN_SPAN) {
-            if let Some(chain) = self
-                .settings
-                .registered_evm()
-                .get(usize::from(index))
-                .copied()
-            {
-                self.select_caps_chain(chain);
+            EvmPress::TokenToggleHidden(Row(row)) => {
+                self.toggle_evm_token_hidden(usize::from(row));
             }
-            return true;
-        }
-        if let Some(index) = offset(id, ids::ACTIVITY_BASE, ids::ACTIVITY_SPAN) {
-            let rows = self.activity_rows();
-            let Some(row) = rows.get(usize::from(index / ids::ACTIVITY_STRIDE)).cloned() else {
-                return true;
-            };
-            match index % ids::ACTIVITY_STRIDE {
-                0 => self.copy_text(&row.hash),
-                1 => {
-                    if let Some(key) = row.open {
-                        self.replace_group(key, ReplaceMode::SpeedUp);
+            EvmPress::TokenDelete(Row(row)) => self.request_delete_token(usize::from(row)),
+            EvmPress::PickRecipient(Row(index)) => {
+                // The rows on screen (their filter, not text typed since): the clicked row's
+                // address.
+                if let Some(address) = self.picker_entries().get(usize::from(index)).copied() {
+                    self.evm.send.to_text = address.to_checksum();
+                    self.evm.send.picker = false;
+                    // 2026-11-18 (S3 C10): the write is `Effect::SetField`, applied at once
+                    // inside this borrow (before, `controls.set_text`), so the edit's
+                    // `EN_CHANGE` is still not seen; the form state reads the edit back.
+                    self.emit(Effect::SetField {
+                        field: EditField::EvmSendTo,
+                        text: self.evm.send.to_text.clone(),
+                    });
+                    self.validate_send(true);
+                }
+            }
+            EvmPress::ChainRow(Row(row), action) => {
+                let chains = self.settings.registered_evm();
+                if let Some(chain) = chains.get(usize::from(row)).copied() {
+                    match action {
+                        ChainRowAction::Edit if builtin_chain(chain).is_none() => {
+                            self.open_chain_form(Some(chain));
+                        }
+                        ChainRowAction::Delete if builtin_chain(chain).is_none() => {
+                            self.request_delete_chain(chain);
+                        }
+                        ChainRowAction::Repin => self.start_repin(chain),
+                        ChainRowAction::Edit | ChainRowAction::Delete => {}
                     }
                 }
-                2 => {
-                    if let Some(key) = row.open {
-                        self.replace_group(key, ReplaceMode::Cancel);
-                    }
-                }
-                3 => {
-                    if let Some(key) = row.open {
-                        self.resend_group(key);
-                    }
-                }
-                4 => {
-                    if let Some(key) = row.open {
-                        self.evm.discard = Some(key);
-                        self.set_screen(Screen::Confirm(Confirm::Discard));
-                    }
-                }
-                // `탐색기 링크 복사` / `탐색기에서 열기` (2026-11-11: the S15 "블록 탐색기"
-                // templates, `app_explorer`).
-                5 => self.copy_explorer_tx(NetworkId::Eip155(chain_id), &row.hash),
-                7 => self.open_explorer_tx(NetworkId::Eip155(chain_id), &row.hash),
-                6 => self.save_activity_address(
-                    crate::meta::BookChain::Evm,
-                    usize::from(index / ids::ACTIVITY_STRIDE),
-                ),
-                _ => {}
             }
-            return true;
+            EvmPress::CapsChain(Row(index)) => {
+                if let Some(chain) = self
+                    .settings
+                    .registered_evm()
+                    .get(usize::from(index))
+                    .copied()
+                {
+                    self.select_caps_chain(chain);
+                }
+            }
+            EvmPress::Activity(Row(index), action) => {
+                let rows = self.activity_rows();
+                let Some(row) = rows.get(usize::from(index)).cloned() else {
+                    return;
+                };
+                match action {
+                    EvmActivityAction::CopyHash => self.copy_text(&row.hash),
+                    EvmActivityAction::SpeedUp => {
+                        if let Some(key) = row.open {
+                            self.replace_group(key, ReplaceMode::SpeedUp);
+                        }
+                    }
+                    EvmActivityAction::Cancel => {
+                        if let Some(key) = row.open {
+                            self.replace_group(key, ReplaceMode::Cancel);
+                        }
+                    }
+                    EvmActivityAction::Resend => {
+                        if let Some(key) = row.open {
+                            self.resend_group(key);
+                        }
+                    }
+                    EvmActivityAction::Discard => {
+                        if let Some(key) = row.open {
+                            self.evm.discard = Some(key);
+                            self.set_screen(Screen::Confirm(Confirm::Discard));
+                        }
+                    }
+                    // `탐색기 링크 복사` / `탐색기에서 열기` (2026-11-11: the S15 "블록 탐색기"
+                    // templates, `app_explorer`).
+                    EvmActivityAction::CopyExplorerLink => {
+                        self.copy_explorer_tx(NetworkId::Eip155(chain_id), &row.hash);
+                    }
+                    EvmActivityAction::OpenExplorer => {
+                        self.open_explorer_tx(NetworkId::Eip155(chain_id), &row.hash);
+                    }
+                    EvmActivityAction::SaveAddress => {
+                        self.save_activity_address(crate::meta::BookChain::Evm, usize::from(index));
+                    }
+                }
+            }
+            // The fixed presses are `on_evm`'s.
+            _ => {}
         }
-        false
     }
 
     /// The hash text of a record (shared by screens).
