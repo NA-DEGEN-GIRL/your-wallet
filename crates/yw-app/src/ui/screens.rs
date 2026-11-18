@@ -334,6 +334,220 @@ pub mod ids {
         EVM_RPC_ROW,
         SOL_RPC_ROW,
     ];
+
+    /// The press control `id` stands for (2026-11-18, S3 C12: `ui::cmd_table`). `None` when
+    /// `id` is not one of the core handler's (the `rpc.json` card is `RpcImportPress`, the
+    /// edits are fields). The five check boxes carry their state (`controls.checked(id)` now);
+    /// each row range is claimed whole, as the ids reached the handler before.
+    #[must_use]
+    #[expect(clippy::too_many_lines, reason = "one arm per control id")]
+    pub fn press_of(
+        id: u16,
+        controls: &crate::ui::main_window::ControlSet,
+    ) -> Option<yw_engine::cmd::CorePress> {
+        use yw_core::lang::Lang;
+        use yw_engine::cmd::{CorePress, Row, RpcRowAction};
+        use yw_engine::logging::LogLevel;
+        use yw_engine::settings::RpcTemplate;
+        let within = |base: u16, span: u16| id.checked_sub(base).filter(|offset| *offset < span);
+        Some(match id {
+            FIRST_CREATE => CorePress::FirstCreate,
+            FIRST_IMPORT => CorePress::FirstImport,
+            OPEN_DATA_FOLDER => CorePress::OpenDataFolder,
+            OPEN_LOG_FOLDER => CorePress::OpenLogFolder,
+            CREATE_NEXT => CorePress::CreateNext,
+            INTRO_CANCEL => CorePress::IntroCancel,
+            IMPORT_NEXT => CorePress::ImportNext,
+            IMPORT_CORRECT => CorePress::ImportCorrect,
+            IMPORT_WRONG => CorePress::ImportWrong,
+            UNLOCK => CorePress::Unlock,
+            BACKUP_CHECK => CorePress::BackupCheck,
+            LOCK => CorePress::Lock,
+            DONE_RPC => CorePress::DoneRpc,
+            DONE_CONTINUE => CorePress::DoneContinue,
+            RECOVER => CorePress::Recover,
+            EXIT => CorePress::Exit,
+            MISMATCH_RETRY => CorePress::MismatchRetry,
+            MISMATCH_CONTINUE => CorePress::MismatchContinue,
+            MISMATCH_CHECK => CorePress::MismatchCheck(controls.checked(id)),
+            SIDECAR_PREV => CorePress::SidecarPrev,
+            SIDECAR_FRESH => CorePress::SidecarFresh,
+            OPEN_SETTINGS => CorePress::OpenSettings,
+            BACK_MAIN => CorePress::BackMain,
+            SWITCH_ACCOUNT => CorePress::SwitchAccount,
+            GO_NETWORK => CorePress::GoNetwork,
+            DISMISS_BANNERS => CorePress::DismissBanners,
+            SETTINGS_ACCEPT_FILE => CorePress::SettingsAcceptFile,
+            SETTINGS_RESTORE => CorePress::SettingsRestore,
+            ADVANCED_TOGGLE => CorePress::AdvancedToggle,
+            ADD_ACCOUNT => CorePress::AddAccount,
+            IMPORT_KEY => CorePress::ImportKey,
+            RENAME => CorePress::Rename,
+            HIDE => CorePress::Hide,
+            REMOVE_KEY => CorePress::RemoveKey,
+            RENAME_SAVE => CorePress::RenameSave,
+            RENAME_CANCEL => CorePress::RenameCancel,
+            SECTION_SECURITY => CorePress::SectionSecurity,
+            SECTION_NETWORK => CorePress::SectionNetwork,
+            SECTION_OTHER => CorePress::SectionOther,
+            AUTOLOCK_SAVE => CorePress::AutolockSave,
+            COPY_TOGGLE => CorePress::CopyToggle(controls.checked(id)),
+            REVEAL_MNEMONIC => CorePress::RevealMnemonic,
+            REVEAL_KEY => CorePress::RevealKey,
+            CHANGE_PASSWORD => CorePress::ChangePassword,
+            LANG_KO => CorePress::Lang(Lang::Ko),
+            LANG_EN => CorePress::Lang(Lang::En),
+            TPL_QUICKNODE => CorePress::Template(RpcTemplate::QuickNode),
+            TPL_ALCHEMY => CorePress::Template(RpcTemplate::Alchemy),
+            TPL_MANUAL => CorePress::Template(RpcTemplate::Manual),
+            TPL_SAVE => CorePress::TemplateSave,
+            TPL_DELETE => CorePress::TemplateDelete,
+            GENERATE => CorePress::Generate,
+            PRUNE_DORMANT => CorePress::PruneDormant,
+            REPLACE_SAVE => CorePress::ReplaceSave,
+            REPLACE_CANCEL => CorePress::ReplaceCancel,
+            LOCALHOST_TOGGLE => CorePress::LocalhostToggle(controls.checked(id)),
+            AUTOLAUNCH_TOGGLE => CorePress::AutolaunchToggle(controls.checked(id)),
+            LOG_ERROR => CorePress::LogLevel(LogLevel::Error),
+            LOG_WARN => CorePress::LogLevel(LogLevel::Warn),
+            LOG_INFO => CorePress::LogLevel(LogLevel::Info),
+            LOG_DEBUG => CorePress::LogLevel(LogLevel::Debug),
+            CONFIRM_YES => CorePress::ConfirmYes,
+            CONFIRM_NO => CorePress::ConfirmNo,
+            OVERWRITE_CHECK => CorePress::OverwriteCheck(controls.checked(id)),
+            DONE_CONNECT => CorePress::DoneConnect,
+            DONE_RPC_JSON => CorePress::DoneRpcJson,
+            DONE_MAINNET => CorePress::DoneMainnet,
+            DONE_WC => CorePress::DoneWc,
+            BACK_DONE => CorePress::BackDone,
+            TEST_ALL => CorePress::TestAll,
+            EVM_RPC_OPEN => CorePress::EvmRpcOpen,
+            SOL_RPC_OPEN => CorePress::SolRpcOpen,
+            BTC_RPC_OPEN => CorePress::BtcRpcOpen,
+            ZEC_RPC_OPEN => CorePress::ZecRpcOpen,
+            EVM_RPC_TEST => CorePress::EvmRpcTest,
+            SOL_RPC_TEST => CorePress::SolRpcTest,
+            EVM_RPC_ROW => CorePress::EvmRpcRow,
+            SOL_RPC_ROW => CorePress::SolRpcRow,
+            _ => {
+                if let Some(row) = within(NETWORK_BASE, NETWORK_SPAN) {
+                    CorePress::Network(Row(row))
+                } else if let Some(row) = within(ACCOUNT_BASE, ACCOUNT_SPAN) {
+                    CorePress::Account(Row(row))
+                } else if let Some(row) = within(RPC_ROW_OPEN_BASE, RPC_ROW_OPEN_SPAN) {
+                    CorePress::RpcRowOpen(Row(row))
+                } else {
+                    let offset = within(ROW_BASE, ROW_SPAN)?;
+                    let action = match offset % 3 {
+                        0 => RpcRowAction::Replace,
+                        1 => RpcRowAction::Test,
+                        _ => RpcRowAction::Delete,
+                    };
+                    CorePress::RpcRow(Row(offset / 3), action)
+                }
+            }
+        })
+    }
+
+    /// The control id of `press` (the inverse of [`press_of`]; a check box's state is not part
+    /// of it).
+    #[must_use]
+    pub const fn id_of(press: yw_engine::cmd::CorePress) -> u16 {
+        use yw_core::lang::Lang;
+        use yw_engine::cmd::{CorePress, Row, RpcRowAction};
+        use yw_engine::logging::LogLevel;
+        use yw_engine::settings::RpcTemplate;
+        match press {
+            CorePress::FirstCreate => FIRST_CREATE,
+            CorePress::FirstImport => FIRST_IMPORT,
+            CorePress::OpenDataFolder => OPEN_DATA_FOLDER,
+            CorePress::OpenLogFolder => OPEN_LOG_FOLDER,
+            CorePress::CreateNext => CREATE_NEXT,
+            CorePress::IntroCancel => INTRO_CANCEL,
+            CorePress::ImportNext => IMPORT_NEXT,
+            CorePress::ImportCorrect => IMPORT_CORRECT,
+            CorePress::ImportWrong => IMPORT_WRONG,
+            CorePress::Unlock => UNLOCK,
+            CorePress::BackupCheck => BACKUP_CHECK,
+            CorePress::Lock => LOCK,
+            CorePress::DoneRpc => DONE_RPC,
+            CorePress::DoneContinue => DONE_CONTINUE,
+            CorePress::Recover => RECOVER,
+            CorePress::Exit => EXIT,
+            CorePress::MismatchRetry => MISMATCH_RETRY,
+            CorePress::MismatchContinue => MISMATCH_CONTINUE,
+            CorePress::MismatchCheck(_) => MISMATCH_CHECK,
+            CorePress::SidecarPrev => SIDECAR_PREV,
+            CorePress::SidecarFresh => SIDECAR_FRESH,
+            CorePress::OpenSettings => OPEN_SETTINGS,
+            CorePress::BackMain => BACK_MAIN,
+            CorePress::SwitchAccount => SWITCH_ACCOUNT,
+            CorePress::GoNetwork => GO_NETWORK,
+            CorePress::DismissBanners => DISMISS_BANNERS,
+            CorePress::SettingsAcceptFile => SETTINGS_ACCEPT_FILE,
+            CorePress::SettingsRestore => SETTINGS_RESTORE,
+            CorePress::AdvancedToggle => ADVANCED_TOGGLE,
+            CorePress::AddAccount => ADD_ACCOUNT,
+            CorePress::ImportKey => IMPORT_KEY,
+            CorePress::Rename => RENAME,
+            CorePress::Hide => HIDE,
+            CorePress::RemoveKey => REMOVE_KEY,
+            CorePress::RenameSave => RENAME_SAVE,
+            CorePress::RenameCancel => RENAME_CANCEL,
+            CorePress::SectionSecurity => SECTION_SECURITY,
+            CorePress::SectionNetwork => SECTION_NETWORK,
+            CorePress::SectionOther => SECTION_OTHER,
+            CorePress::AutolockSave => AUTOLOCK_SAVE,
+            CorePress::CopyToggle(_) => COPY_TOGGLE,
+            CorePress::RevealMnemonic => REVEAL_MNEMONIC,
+            CorePress::RevealKey => REVEAL_KEY,
+            CorePress::ChangePassword => CHANGE_PASSWORD,
+            CorePress::Lang(Lang::Ko) => LANG_KO,
+            CorePress::Lang(Lang::En) => LANG_EN,
+            CorePress::Template(RpcTemplate::QuickNode) => TPL_QUICKNODE,
+            CorePress::Template(RpcTemplate::Alchemy) => TPL_ALCHEMY,
+            CorePress::Template(RpcTemplate::Manual) => TPL_MANUAL,
+            CorePress::TemplateSave => TPL_SAVE,
+            CorePress::TemplateDelete => TPL_DELETE,
+            CorePress::Generate => GENERATE,
+            CorePress::PruneDormant => PRUNE_DORMANT,
+            CorePress::ReplaceSave => REPLACE_SAVE,
+            CorePress::ReplaceCancel => REPLACE_CANCEL,
+            CorePress::LocalhostToggle(_) => LOCALHOST_TOGGLE,
+            CorePress::AutolaunchToggle(_) => AUTOLAUNCH_TOGGLE,
+            CorePress::LogLevel(LogLevel::Error) => LOG_ERROR,
+            CorePress::LogLevel(LogLevel::Warn) => LOG_WARN,
+            CorePress::LogLevel(LogLevel::Info) => LOG_INFO,
+            CorePress::LogLevel(LogLevel::Debug) => LOG_DEBUG,
+            CorePress::ConfirmYes => CONFIRM_YES,
+            CorePress::ConfirmNo => CONFIRM_NO,
+            CorePress::OverwriteCheck(_) => OVERWRITE_CHECK,
+            CorePress::DoneConnect => DONE_CONNECT,
+            CorePress::DoneRpcJson => DONE_RPC_JSON,
+            CorePress::DoneMainnet => DONE_MAINNET,
+            CorePress::DoneWc => DONE_WC,
+            CorePress::BackDone => BACK_DONE,
+            CorePress::TestAll => TEST_ALL,
+            CorePress::EvmRpcOpen => EVM_RPC_OPEN,
+            CorePress::SolRpcOpen => SOL_RPC_OPEN,
+            CorePress::BtcRpcOpen => BTC_RPC_OPEN,
+            CorePress::ZecRpcOpen => ZEC_RPC_OPEN,
+            CorePress::EvmRpcTest => EVM_RPC_TEST,
+            CorePress::SolRpcTest => SOL_RPC_TEST,
+            CorePress::EvmRpcRow => EVM_RPC_ROW,
+            CorePress::SolRpcRow => SOL_RPC_ROW,
+            CorePress::Network(Row(row)) => NETWORK_BASE.wrapping_add(row),
+            CorePress::Account(Row(row)) => ACCOUNT_BASE.wrapping_add(row),
+            CorePress::RpcRowOpen(Row(row)) => RPC_ROW_OPEN_BASE.wrapping_add(row),
+            CorePress::RpcRow(Row(row), action) => ROW_BASE
+                .wrapping_add(row.wrapping_mul(3))
+                .wrapping_add(match action {
+                    RpcRowAction::Replace => 0,
+                    RpcRowAction::Test => 1,
+                    RpcRowAction::Delete => 2,
+                }),
+        }
+    }
 }
 
 /// Steps of the create flow (S02 → W01 → W08 → W10, spec/04 §2.3).

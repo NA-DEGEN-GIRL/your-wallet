@@ -19,6 +19,8 @@
 //! the imported-key screens and the `rpc.json` import card. S3 C6: the recovery phrases. S3 C7:
 //! `HyperCore` and Zcash. S3 C8: Solana. S3 C9: Bitcoin. S3 C10: the EVM screens. S3 C11: the
 //! `YubiKey` card actions, connect flow and wizard (asked in that order, as the handler did).
+//! S3 C12: the core screens, settings sections and URL rows (asked first, as the core arms
+//! were matched before the family chain).
 
 use yw_core::secret::Zeroizing;
 use yw_engine::cmd::Press;
@@ -44,8 +46,9 @@ pub fn press_of(id: u16, controls: &ControlSet) -> Press {
     match id {
         IDOK => Press::Enter,
         IDCANCEL => Press::Back,
-        other => screens_received::ids::press_of(other, controls)
-            .map(Press::Received)
+        other => screens::ids::press_of(other, controls)
+            .map(Press::Core)
+            .or_else(|| screens_received::ids::press_of(other, controls).map(Press::Received))
             .or_else(|| app_hidden::ids::press_of(other).map(Press::Hidden))
             .or_else(|| app_sidecar::ids::press_of(other, controls).map(Press::Sidecar))
             .or_else(|| screens_links::ids::press_of(other).map(Press::Links))
@@ -78,6 +81,7 @@ pub const fn id_of(press: Press) -> u16 {
     match press {
         Press::Enter => IDOK,
         Press::Back => IDCANCEL,
+        Press::Core(press) => screens::ids::id_of(press),
         Press::Received(press) => screens_received::ids::id_of(press),
         Press::Hidden(press) => app_hidden::ids::id_of(press),
         Press::Sidecar(press) => app_sidecar::ids::id_of(press),
@@ -1081,6 +1085,115 @@ mod tests {
                 }
                 _ => {}
             }
+        }
+    }
+
+    /// S3 C12: the core screens claim exactly the ids the core arms of the legacy dispatcher
+    /// and `on_indexed_command` claimed: every fixed id of `screens::ids` but the seven edits
+    /// (fields, credentials) and the `rpc.json` card (C5), and the four row ranges whole; the
+    /// five check boxes carry their state, the radios their language, template or log level.
+    #[test]
+    fn c12_core_maps_its_ids() {
+        use crate::ui::screens::ids;
+        use yw_core::lang::Lang;
+        use yw_engine::cmd::{CorePress, Row, RpcRowAction};
+        use yw_engine::logging::LogLevel;
+        use yw_engine::settings::RpcTemplate;
+        let controls = ControlSet::default();
+        let core = |id: u16| matches!(press_of(id, &controls), Press::Core(_));
+        for &id in ids::FIXED {
+            let other = field_of(id).is_some()
+                || cred_of(id).is_some()
+                || (ids::RPC_IMPORT..=ids::RPC_JSON_DELETE_CANCEL).contains(&id);
+            assert_eq!(core(id), !other, "{id}");
+        }
+        for (base, span) in [
+            (ids::NETWORK_BASE, ids::NETWORK_SPAN),
+            (ids::ACCOUNT_BASE, ids::ACCOUNT_SPAN),
+            (ids::RPC_ROW_OPEN_BASE, ids::RPC_ROW_OPEN_SPAN),
+            (ids::ROW_BASE, ids::ROW_SPAN),
+        ] {
+            assert!(
+                !core(base - 1) || ids::FIXED.contains(&(base - 1)),
+                "{base}"
+            );
+            assert!((base..base + span).all(core), "{base}");
+            assert!(
+                !core(base + span) || ids::FIXED.contains(&(base + span)),
+                "{base}"
+            );
+        }
+        for offset in 0..ids::ROW_SPAN {
+            let action = [
+                RpcRowAction::Replace,
+                RpcRowAction::Test,
+                RpcRowAction::Delete,
+            ][usize::from(offset % 3)];
+            assert_eq!(
+                press_of(ids::ROW_BASE + offset, &controls),
+                Press::Core(CorePress::RpcRow(Row(offset / 3), action))
+            );
+        }
+        for (id, press) in [
+            (ids::LANG_KO, CorePress::Lang(Lang::Ko)),
+            (ids::LANG_EN, CorePress::Lang(Lang::En)),
+            (
+                ids::TPL_QUICKNODE,
+                CorePress::Template(RpcTemplate::QuickNode),
+            ),
+            (ids::TPL_ALCHEMY, CorePress::Template(RpcTemplate::Alchemy)),
+            (ids::TPL_MANUAL, CorePress::Template(RpcTemplate::Manual)),
+            (ids::LOG_ERROR, CorePress::LogLevel(LogLevel::Error)),
+            (ids::LOG_WARN, CorePress::LogLevel(LogLevel::Warn)),
+            (ids::LOG_INFO, CorePress::LogLevel(LogLevel::Info)),
+            (ids::LOG_DEBUG, CorePress::LogLevel(LogLevel::Debug)),
+            (ids::ACCOUNT_BASE + 999, CorePress::Account(Row(999))),
+            (ids::NETWORK_BASE + 39, CorePress::Network(Row(39))),
+            (ids::RPC_ROW_OPEN_BASE + 63, CorePress::RpcRowOpen(Row(63))),
+        ] {
+            assert_eq!(press_of(id, &controls), Press::Core(press), "{id}");
+        }
+        for (id, press) in [
+            (
+                ids::MISMATCH_CHECK,
+                CorePress::MismatchCheck as fn(Option<bool>) -> CorePress,
+            ),
+            (ids::COPY_TOGGLE, CorePress::CopyToggle),
+            (ids::LOCALHOST_TOGGLE, CorePress::LocalhostToggle),
+            (ids::AUTOLAUNCH_TOGGLE, CorePress::AutolaunchToggle),
+            (ids::OVERWRITE_CHECK, CorePress::OverwriteCheck),
+        ] {
+            assert_eq!(press_of(id, &controls), Press::Core(press(None)), "{id}");
+            controls.type_check(id, true);
+            assert_eq!(press_of(id, &controls), Press::Core(press(Some(true))));
+            controls.type_check(id, false);
+            assert_eq!(press_of(id, &controls), Press::Core(press(Some(false))));
+            assert_eq!(id_of(press_of(id, &controls)), id);
+        }
+    }
+
+    /// S3 C12: after the last family, no control a click can send is legacy any more except
+    /// the ones no handler claimed before either: the edits (fields and credentials), S22's
+    /// painted hold area and the eighth id of a `YubiKey` connect choice row.
+    #[test]
+    fn only_unclaimed_ids_stay_legacy() {
+        use screens_yubikey::ids::{
+            CONNECT_CHOICE_BASE, CONNECT_CHOICE_SPAN, CONNECT_CHOICE_STRIDE,
+        };
+        let controls = ControlSet::default();
+        for id in every_id() {
+            let no_radio = id.checked_sub(CONNECT_CHOICE_BASE).is_some_and(|offset| {
+                offset < CONNECT_CHOICE_SPAN && offset % CONNECT_CHOICE_STRIDE == 7
+            });
+            let unclaimed = field_of(id).is_some()
+                || cred_of(id).is_some()
+                || id == screens_reset::ids::RESET_HOLD
+                || no_radio;
+            assert_eq!(
+                press_of(id, &controls) == Press::Legacy(id),
+                unclaimed,
+                "{id}"
+            );
         }
     }
 

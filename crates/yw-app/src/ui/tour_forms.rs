@@ -19,7 +19,8 @@
 //! After every step the form state is compared with the window for all 58 plain edits, through
 //! `App::form_text` (the debug shadow read, which counts a difference in `form_mismatch`); then
 //! a render is forced and the comparison runs again. Credential units captured with a press are
-//! compared with the handler's own read (`App::cred_shadow`). The test fails unless
+//! compared with a read of the edit when the handler takes them (`App::take_cred`; before S3
+//! C12, also `App::cred_shadow` for the reads not converted yet). The test fails unless
 //! `form_mismatch` and the credential misses stay 0; it prints the fields it saw shown and typed.
 //!
 //! Safety: no worker is attached (no RPC, `WalletConnect`, LLM or key worker runs; RPC jobs land

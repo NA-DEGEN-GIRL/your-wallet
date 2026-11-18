@@ -38,7 +38,7 @@ use crate::lock::{IdleTracker, LockReason, SystemAction, system_action};
 use crate::logging::{self, Field};
 use crate::meta::{EvmAccountPref, Meta, RawAccount};
 use crate::network::NetworkId;
-use crate::settings::{LogLevel, RpcTemplate, Settings};
+use crate::settings::{RpcTemplate, Settings};
 use crate::shell_msg::{
     WM_YW_ACTIVATE, WM_YW_EVENTS, WM_YW_LOCK_SHORTCUT, WM_YW_NAV_KEY, WM_YW_SHORTCUT,
     WM_YW_TAB_SHORTCUT,
@@ -56,7 +56,7 @@ use crate::ui::theme::{FontCache, FontRole, wide};
 use crate::workers::key::new_account;
 use crate::workers::rpc::RpcJob;
 use yw_core::lang::{Lang, Text};
-use yw_engine::cmd::{Cmd, Press};
+use yw_engine::cmd::{Cmd, CorePress, Press, Row, RpcRowAction};
 use yw_engine::effect::{Effect, TimerId};
 // `CredField`: debug builds only until S3 C3 (the shadow reads of plan §3.2a; 2026-11-18 B4–B5
 // review); since C3 `App::take_cred` uses it in every build.
@@ -102,9 +102,9 @@ const VK_SHIFT: u16 = 0x10;
 const VK_MENU: u16 = 0x12;
 const MA_ACTIVATEANDEAT: isize = 2;
 const EN_CHANGE: u16 = 0x0300;
-/// Settings field limits (UTF-16 units).
-const TOKEN_MAX_UNITS: usize = 256;
-const URL_MAX_UNITS: usize = 2_048;
+// Settings field limits (UTF-16 units): 2026-11-18 (S3 C12) `CredField::cap` — 256 for the
+// `QuickNode`, Alchemy and S08 fields (`TOKEN_MAX_UNITS` here before), 2 048 for `교체`
+// (`URL_MAX_UNITS`); the shell reads them with the press (`ui::cmd_table::capture`).
 
 /// App mode (spec/04 §2.1): `VaultStatus` plus progress states.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -3920,6 +3920,7 @@ impl App {
     /// never come here (`on_press`).
     fn on_family(&mut self, press: Press) {
         match press {
+            Press::Core(press) => self.on_core(press),
             Press::Received(press) => self.on_received(press),
             Press::Sites(press) => self.on_sites(press),
             Press::Llm(press) => self.on_llm(press),
@@ -4043,47 +4044,57 @@ impl App {
             || self.on_llm_edit(field, text)
     }
 
-    /// A control id whose handler family is not converted to `Press` yet (S3 B2: was
-    /// `dispatch_command`; Esc, Enter, the copy mark and `self.command` moved to `on_press`).
-    #[expect(clippy::too_many_lines, reason = "one arm per command id")]
+    /// A control id no handler family claims (S3 B2: was `dispatch_command`; Esc, Enter, the
+    /// copy mark and `self.command` moved to `on_press`). 2026-11-18 (S3 C12): the core arms
+    /// moved to `on_core`, so no handler claims such an id (an edit's id, S22's hold area, a
+    /// connect choice row's eighth id): it reaches the received-history observer, which finds
+    /// no `새로고침` in it (table test (4)), as the end of the old chain did. S3 D3 removes it.
     fn dispatch_legacy(&mut self, id: u16) {
-        use crate::ui::screens::ids;
-        match id {
-            ids::FIRST_CREATE => self.set_screen(Screen::CreateIntro),
-            ids::FIRST_IMPORT => self.set_screen(Screen::ImportIntro),
-            ids::OPEN_DATA_FOLDER => Self::open_folder(&self.paths.data.clone()),
-            ids::OPEN_LOG_FOLDER => Self::open_folder(&self.paths.logs.clone()),
-            ids::CREATE_NEXT => {
+        self.received_observe(id);
+    }
+
+    /// Presses of the core screens, settings sections and URL rows (2026-11-18, S3 C12: a
+    /// `CorePress`; before, the core arms of `dispatch_legacy` by control id, then
+    /// `on_indexed_command` for the four row ranges). The receive gate ran before these arms
+    /// and never matched one of their ids; it is now only `on_press`'s.
+    #[expect(clippy::too_many_lines, reason = "one arm per command id")]
+    fn on_core(&mut self, press: CorePress) {
+        match press {
+            CorePress::FirstCreate => self.set_screen(Screen::CreateIntro),
+            CorePress::FirstImport => self.set_screen(Screen::ImportIntro),
+            CorePress::OpenDataFolder => Self::open_folder(&self.paths.data.clone()),
+            CorePress::OpenLogFolder => Self::open_folder(&self.paths.logs.clone()),
+            CorePress::CreateNext => {
                 self.open_input(SecretKind::SetPassword, Purpose::CreatePassword, false);
             }
-            ids::INTRO_CANCEL => {
+            CorePress::IntroCancel => {
                 self.key_start_cancel();
                 self.set_screen(Screen::FirstRun);
             }
-            ids::IMPORT_NEXT => {
+            CorePress::ImportNext => {
                 self.open_input(SecretKind::SetPassword, Purpose::ImportPassword, false);
             }
-            ids::IMPORT_CORRECT => {
+            CorePress::ImportCorrect => {
                 self.set_screen(Screen::Processing(
                     text::IMPORTING.get(self.settings.language),
                 ));
                 self.key(KeyJob::CommitImport);
             }
-            ids::IMPORT_WRONG => {
+            CorePress::ImportWrong => {
                 self.key(KeyJob::DiscardImport {
                     keep_password: true,
                 });
                 self.set_screen(Screen::ImportIntro);
                 self.open_input(SecretKind::Mnemonic, Purpose::ImportMnemonic, false);
             }
-            ids::UNLOCK => self.open_input(SecretKind::Unlock, Purpose::Unlock, false),
-            ids::BACKUP_CHECK => self.open_input(
+            CorePress::Unlock => self.open_input(SecretKind::Unlock, Purpose::Unlock, false),
+            CorePress::BackupCheck => self.open_input(
                 SecretKind::ConfirmPassword,
                 Purpose::ConfirmPassword(PasswordAction::RevealMnemonic { then_backup: true }),
                 false,
             ),
-            ids::LOCK => self.lock(LockReason::Manual),
-            ids::DONE_CONTINUE | ids::BACK_MAIN | ids::SWITCH_ACCOUNT => {
+            CorePress::Lock => self.lock(LockReason::Manual),
+            CorePress::DoneContinue | CorePress::BackMain | CorePress::SwitchAccount => {
                 self.info = None;
                 self.clear_done();
                 if self.mode == AppMode::BackupPending {
@@ -4095,7 +4106,7 @@ impl App {
                     self.set_screen(Screen::BackupPending);
                 } else if self.meta.is_some() {
                     // `← 메인으로` is a way back (where S10 was left); `지갑 열기` opens it.
-                    if id == ids::DONE_CONTINUE {
+                    if press == CorePress::DoneContinue {
                         self.set_screen(Screen::Main);
                     } else {
                         self.return_to(Screen::Main);
@@ -4107,7 +4118,7 @@ impl App {
                     ));
                 }
             }
-            ids::RECOVER => {
+            CorePress::Recover => {
                 // S09, or S07 after a failed unlock (a damaged key section looks like a wrong
                 // password; `recover_from_prev` from `Locked` tries the main file first).
                 if !matches!(
@@ -4122,84 +4133,84 @@ impl App {
                     false,
                 );
             }
-            ids::EXIT => self.shutdown(),
-            ids::MISMATCH_RETRY => {
+            CorePress::Exit => self.shutdown(),
+            CorePress::MismatchRetry => {
                 self.key(KeyJob::RetryPassphrase);
             }
-            ids::MISMATCH_CHECK => {
-                self.mismatch_checked = self.controls.checked(ids::MISMATCH_CHECK).unwrap_or(false);
+            CorePress::MismatchCheck(checked) => {
+                self.mismatch_checked = checked.unwrap_or(false);
                 self.refresh();
             }
-            ids::MISMATCH_CONTINUE => {
+            CorePress::MismatchContinue => {
                 if self.mismatch_checked {
                     self.key(KeyJob::AcceptMismatch);
                 }
             }
-            ids::SIDECAR_PREV | ids::SIDECAR_FRESH => {
-                self.choose_sidecar(FileKind::Meta, id == ids::SIDECAR_PREV);
+            CorePress::SidecarPrev | CorePress::SidecarFresh => {
+                self.choose_sidecar(FileKind::Meta, press == CorePress::SidecarPrev);
             }
             // `설정` (and Ctrl+,) opens the section last opened in this run (2026-11-10).
-            ids::OPEN_SETTINGS => self.set_screen(Screen::Settings(self.settings_last)),
-            ids::SECTION_SECURITY => {
+            CorePress::OpenSettings => self.set_screen(Screen::Settings(self.settings_last)),
+            CorePress::SectionSecurity => {
                 self.set_screen(Screen::Settings(SettingsSection::Security));
             }
-            ids::DONE_RPC | ids::DONE_RPC_JSON | ids::DONE_WC => {
+            CorePress::DoneRpc | CorePress::DoneRpcJson | CorePress::DoneWc => {
                 // S08's '처음 설정' card: the opened screen's back link returns to S08.
                 self.done_return = true;
-                if id == ids::DONE_WC {
+                if press == CorePress::DoneWc {
                     self.set_screen(Screen::Sites);
                 } else {
                     self.set_screen(Screen::Settings(SettingsSection::Network));
-                    if id == ids::DONE_RPC_JSON {
-                        self.reveal_id(ids::RPC_IMPORT);
+                    if press == CorePress::DoneRpcJson {
+                        self.reveal_id(crate::ui::screens::ids::RPC_IMPORT);
                     }
                 }
             }
-            ids::SECTION_NETWORK | ids::GO_NETWORK => {
+            CorePress::SectionNetwork | CorePress::GoNetwork => {
                 self.set_screen(Screen::Settings(SettingsSection::Network));
             }
-            ids::BACK_DONE => self.return_to(Screen::Done),
-            ids::DONE_CONNECT => self.done_connect(),
-            ids::DONE_MAINNET => {
+            CorePress::BackDone => self.return_to(Screen::Done),
+            CorePress::DoneConnect => self.done_connect(),
+            CorePress::DoneMainnet => {
                 // The network chip's path (`evmChainId`), from S08's '잔액이 안 보이면' card.
                 let mut settings = self.settings.clone();
                 settings.evm_chain_id = yw_core::evm::chain::ETHEREUM_MAINNET;
                 self.save_settings(settings, "evmChainId");
                 self.evm_balances_due();
             }
-            ids::TEST_ALL => self.test_all_networks(),
-            ids::EVM_RPC_OPEN => {
+            CorePress::TestAll => self.test_all_networks(),
+            CorePress::EvmRpcOpen => {
                 self.open_rpc_row(NetworkId::Eip155(self.settings.evm_chain_id), true);
             }
-            ids::SOL_RPC_OPEN => {
+            CorePress::SolRpcOpen => {
                 self.open_rpc_row(NetworkId::Solana(self.settings.solana.cluster), true);
             }
-            ids::BTC_RPC_OPEN => {
+            CorePress::BtcRpcOpen => {
                 self.open_rpc_row(NetworkId::Bitcoin(self.settings.bitcoin.network), true);
             }
-            ids::ZEC_RPC_OPEN => {
+            CorePress::ZecRpcOpen => {
                 self.open_rpc_row(NetworkId::Zcash(self.settings.zcash.network), true);
             }
             // The failure band of an EVM / Solana network card (2026-11-10): the stored address's
             // `테스트` (its three-state band in the same card), or that network's row.
-            ids::EVM_RPC_TEST => {
+            CorePress::EvmRpcTest => {
                 self.test_network(NetworkId::Eip155(self.settings.evm_chain_id));
             }
-            ids::SOL_RPC_TEST => {
+            CorePress::SolRpcTest => {
                 self.test_network(NetworkId::Solana(self.settings.solana.cluster));
             }
-            ids::EVM_RPC_ROW => {
+            CorePress::EvmRpcRow => {
                 self.open_rpc_row(NetworkId::Eip155(self.settings.evm_chain_id), false);
             }
-            ids::SOL_RPC_ROW => {
+            CorePress::SolRpcRow => {
                 self.open_rpc_row(NetworkId::Solana(self.settings.solana.cluster), false);
             }
-            ids::SECTION_OTHER => self.set_screen(Screen::Settings(SettingsSection::Other)),
-            ids::ADVANCED_TOGGLE => {
+            CorePress::SectionOther => self.set_screen(Screen::Settings(SettingsSection::Other)),
+            CorePress::AdvancedToggle => {
                 self.show_advanced = !self.show_advanced;
                 self.refresh();
             }
-            ids::DISMISS_BANNERS => {
+            CorePress::DismissBanners => {
                 self.banners.clear();
                 // Review L17: a dismissed rollback warning is acknowledged; the next meta write
                 // remembers the current generation.
@@ -4207,42 +4218,42 @@ impl App {
                 self.info = None;
                 self.refresh();
             }
-            ids::SETTINGS_ACCEPT_FILE => {
+            CorePress::SettingsAcceptFile => {
                 // Every file value at once (a new chain without a pin, higher caps, another
                 // lookup server): confirmed with the list first (2026-11-08).
                 if self.guard.pending.is_some() {
                     self.set_screen(Screen::Confirm(Confirm::SettingsFile));
                 }
             }
-            ids::SETTINGS_RESTORE => self.settings_restore(),
-            ids::ADD_ACCOUNT => self.add_account_clicked(),
-            ids::IMPORT_KEY => {
+            CorePress::SettingsRestore => self.settings_restore(),
+            CorePress::AddAccount => self.add_account_clicked(),
+            CorePress::ImportKey => {
                 self.open_key_import(yw_core::keyimport::ImportChain::Evm);
             }
-            ids::RENAME => {
+            CorePress::Rename => {
                 self.rename = self.selected_pref();
                 self.refresh();
             }
-            ids::RENAME_CANCEL => {
+            CorePress::RenameCancel => {
                 self.rename = None;
                 self.refresh();
             }
-            ids::RENAME_SAVE => self.save_rename(),
-            ids::HIDE => self.hide_selected(),
-            ids::REMOVE_KEY => {
+            CorePress::RenameSave => self.save_rename(),
+            CorePress::Hide => self.hide_selected(),
+            CorePress::RemoveKey => {
                 if let Some(EvmAccountPref::Record(id)) = self.selected_pref() {
                     self.pending_remove = Some(RecordId::from_bytes(id));
                     self.set_screen(Screen::Confirm(Confirm::RemoveKey));
                 }
             }
-            ids::REVEAL_MNEMONIC => self.set_screen(Screen::Confirm(Confirm::RevealMnemonic)),
-            ids::REVEAL_KEY => self.set_screen(Screen::Confirm(Confirm::RevealKey)),
-            ids::CHANGE_PASSWORD => {
+            CorePress::RevealMnemonic => self.set_screen(Screen::Confirm(Confirm::RevealMnemonic)),
+            CorePress::RevealKey => self.set_screen(Screen::Confirm(Confirm::RevealKey)),
+            CorePress::ChangePassword => {
                 self.open_input(SecretKind::ChangePassword, Purpose::ChangePassword, false);
             }
-            ids::AUTOLOCK_SAVE => self.save_autolock(),
-            ids::COPY_TOGGLE => {
-                let checked = self.controls.checked(ids::COPY_TOGGLE).unwrap_or(false);
+            CorePress::AutolockSave => self.save_autolock(),
+            CorePress::CopyToggle(checked) => {
+                let checked = checked.unwrap_or(false);
                 if checked && !self.settings.allow_secret_copy {
                     self.set_screen(Screen::Confirm(Confirm::CopyOn));
                 } else if !checked {
@@ -4251,11 +4262,8 @@ impl App {
                     self.save_settings(settings, "allowSecretCopy");
                 }
             }
-            ids::LOCALHOST_TOGGLE => {
-                let checked = self
-                    .controls
-                    .checked(ids::LOCALHOST_TOGGLE)
-                    .unwrap_or(false);
+            CorePress::LocalhostToggle(checked) => {
+                let checked = checked.unwrap_or(false);
                 if checked && !self.settings.allow_localhost_dapps {
                     self.set_screen(Screen::Confirm(Confirm::LocalhostOn));
                 } else if !checked {
@@ -4264,48 +4272,29 @@ impl App {
                     self.save_settings(settings, "allowLocalhostDapps");
                 }
             }
-            ids::AUTOLAUNCH_TOGGLE => {
+            CorePress::AutolaunchToggle(checked) => {
                 let mut settings = self.settings.clone();
-                settings.browser_auto_launch = self
-                    .controls
-                    .checked(ids::AUTOLAUNCH_TOGGLE)
-                    .unwrap_or(true);
+                settings.browser_auto_launch = checked.unwrap_or(true);
                 self.save_settings(settings, "browserAutoLaunch");
             }
-            ids::LOG_ERROR | ids::LOG_WARN | ids::LOG_INFO | ids::LOG_DEBUG => {
-                let level = match id {
-                    ids::LOG_ERROR => LogLevel::Error,
-                    ids::LOG_WARN => LogLevel::Warn,
-                    ids::LOG_DEBUG => LogLevel::Debug,
-                    _ => LogLevel::Info,
-                };
+            CorePress::LogLevel(level) => {
                 let mut settings = self.settings.clone();
                 settings.log_level = level;
                 self.save_settings(settings, "logLevel");
             }
-            ids::LANG_KO | ids::LANG_EN => {
-                let language = if id == ids::LANG_EN {
-                    yw_core::lang::Lang::En
-                } else {
-                    yw_core::lang::Lang::Ko
-                };
+            CorePress::Lang(language) => {
                 if language != self.settings.language {
                     let mut settings = self.settings.clone();
                     settings.language = language;
                     self.save_settings(settings, crate::settings::LANGUAGE_KEY);
                 }
             }
-            ids::TPL_QUICKNODE | ids::TPL_ALCHEMY | ids::TPL_MANUAL => {
-                let template = match id {
-                    ids::TPL_QUICKNODE => RpcTemplate::QuickNode,
-                    ids::TPL_ALCHEMY => RpcTemplate::Alchemy,
-                    _ => RpcTemplate::Manual,
-                };
+            CorePress::Template(template) => {
                 let mut settings = self.settings.clone();
                 settings.rpc_template = template;
                 self.save_settings(settings, "rpc.template");
             }
-            ids::TPL_SAVE => {
+            CorePress::TemplateSave => {
                 if self.save_template_credentials() == Ok(true) {
                     let lang = self.settings.language;
                     let mut info = text::TPL_SAVED.get(lang).to_owned();
@@ -4317,36 +4306,37 @@ impl App {
                 }
                 self.refresh();
             }
-            ids::TPL_DELETE => {
+            CorePress::TemplateDelete => {
                 // The stored value cannot be shown again: asked first (2026-11-10).
                 if self.template_stored() {
                     self.set_screen(Screen::Confirm(Confirm::TemplateDelete));
                 }
             }
-            ids::GENERATE => self.begin_generate(),
-            ids::PRUNE_DORMANT => {
+            CorePress::Generate => self.begin_generate(),
+            CorePress::PruneDormant => {
                 if !self.apikeys.dormant_names().is_empty() {
                     self.set_screen(Screen::Confirm(Confirm::PruneDormant));
                 }
             }
-            ids::OVERWRITE_CHECK => {
-                self.overwrite_checked =
-                    self.controls.checked(ids::OVERWRITE_CHECK).unwrap_or(false);
+            CorePress::OverwriteCheck(checked) => {
+                self.overwrite_checked = checked.unwrap_or(false);
                 self.refresh();
             }
-            ids::REPLACE_SAVE => self.save_replacement(),
-            ids::REPLACE_CANCEL => {
+            CorePress::ReplaceSave => self.save_replacement(),
+            CorePress::ReplaceCancel => {
                 self.replace_target = None;
                 self.refresh();
             }
-            ids::CONFIRM_YES => self.confirm_yes(),
-            ids::CONFIRM_NO if matches!(self.screen, Screen::Confirm(Confirm::Btc)) => {
+            CorePress::ConfirmYes => self.confirm_yes(),
+            CorePress::ConfirmNo if matches!(self.screen, Screen::Confirm(Confirm::Btc)) => {
                 self.btc_confirm_no();
             }
-            ids::CONFIRM_NO if matches!(self.screen, Screen::Confirm(Confirm::JournalCorrupt)) => {
+            CorePress::ConfirmNo
+                if matches!(self.screen, Screen::Confirm(Confirm::JournalCorrupt)) =>
+            {
                 self.journal_choice_closed();
             }
-            ids::CONFIRM_NO => {
+            CorePress::ConfirmNo => {
                 self.pending_remove = None;
                 self.keys.target = None;
                 self.card.remove_target = None;
@@ -4365,81 +4355,61 @@ impl App {
                 let previous = self.previous_screen.clone();
                 self.set_screen(previous);
             }
-            receive
-                if self.passphrase_unverified()
-                    && crate::ui::screens::RECEIVE_IDS.contains(&receive) =>
-            {
-                self.refuse_receive();
-            }
-            other => {
-                // A card's `새로고침` reads its received list first (S3 C1: was the first link
-                // of the chain, `on_received_command`, which returned `false` for these ids).
-                // S3 C10: every chain's `새로고침` is a family press now; the observer stays
-                // until S3 D3 removes the bridge. S3 C11: the `YubiKey` handlers are presses.
-                self.received_observe(other);
-                self.on_indexed_command(other);
-            }
+            CorePress::Network(_)
+            | CorePress::Account(_)
+            | CorePress::RpcRowOpen(_)
+            | CorePress::RpcRow(..) => self.on_core_row(press),
         }
     }
 
-    fn on_indexed_command(&mut self, id: u16) {
-        use crate::ui::screens::ids;
-        if let Some(index) = id
-            .checked_sub(ids::NETWORK_BASE)
-            .filter(|offset| *offset < ids::NETWORK_SPAN)
-        {
-            let chains = self.settings.registered_evm();
-            // A choice closes the S10 network drop-down (2026-11-11).
-            self.evm.network_picker = false;
-            if let Some(chain_id) = chains.get(usize::from(index)).copied() {
-                let mut settings = self.settings.clone();
-                settings.evm_chain_id = chain_id;
-                self.save_settings(settings, "evmChainId");
-                // The new network's balances at the next tick, not up to 60 s later.
-                self.evm_balances_due();
-            }
-            return;
-        }
-        if let Some(offset) = id
-            .checked_sub(ids::ACCOUNT_BASE)
-            .filter(|offset| *offset < ids::ACCOUNT_SPAN)
-        {
-            // A choice closes the `내 계정` drop-down (2026-11-11).
-            self.account_menu = None;
-            self.select_account(usize::from(offset));
-            return;
-        }
-        if let Some(offset) = id
-            .checked_sub(ids::RPC_ROW_OPEN_BASE)
-            .filter(|offset| *offset < ids::RPC_ROW_OPEN_SPAN)
-        {
-            // A failed network named on S08 or in the RPC summary: its row (spec/04 §2.11.1).
-            if let Some(network) = self.url_networks().get(usize::from(offset)).copied() {
-                self.open_rpc_row(network, false);
-            }
-            return;
-        }
-        if let Some(offset) = id
-            .checked_sub(ids::ROW_BASE)
-            .filter(|offset| *offset < ids::ROW_SPAN)
-        {
-            let row = usize::from(offset / 3);
-            let networks = self.url_networks();
-            let Some(network) = networks.get(row).copied() else {
-                return;
-            };
-            match offset % 3 {
-                0 => {
-                    self.replace_target = Some(network);
-                    self.refresh();
+    /// The row presses of the core screens (2026-11-18, S3 C12: the press with its row;
+    /// before, `on_indexed_command` with the control id and its offset in each range).
+    fn on_core_row(&mut self, press: CorePress) {
+        match press {
+            CorePress::Network(Row(index)) => {
+                let chains = self.settings.registered_evm();
+                // A choice closes the S10 network drop-down (2026-11-11).
+                self.evm.network_picker = false;
+                if let Some(chain_id) = chains.get(usize::from(index)).copied() {
+                    let mut settings = self.settings.clone();
+                    settings.evm_chain_id = chain_id;
+                    self.save_settings(settings, "evmChainId");
+                    // The new network's balances at the next tick, not up to 60 s later.
+                    self.evm_balances_due();
                 }
-                1 => self.test_network(network),
-                // The stored address cannot be shown again: asked first (2026-11-10).
-                2 if self.apikeys.has(KeyName::Rpc(network)) => {
-                    self.set_screen(Screen::Confirm(Confirm::RpcUrlDelete(network)));
-                }
-                _ => {}
             }
+            CorePress::Account(Row(offset)) => {
+                // A choice closes the `내 계정` drop-down (2026-11-11).
+                self.account_menu = None;
+                self.select_account(usize::from(offset));
+            }
+            CorePress::RpcRowOpen(Row(offset)) => {
+                // A failed network named on S08 or in the RPC summary: its row (spec/04
+                // §2.11.1).
+                if let Some(network) = self.url_networks().get(usize::from(offset)).copied() {
+                    self.open_rpc_row(network, false);
+                }
+            }
+            CorePress::RpcRow(Row(row), action) => {
+                let networks = self.url_networks();
+                let Some(network) = networks.get(usize::from(row)).copied() else {
+                    return;
+                };
+                match action {
+                    RpcRowAction::Replace => {
+                        self.replace_target = Some(network);
+                        self.refresh();
+                    }
+                    RpcRowAction::Test => self.test_network(network),
+                    // The stored address cannot be shown again: asked first (2026-11-10).
+                    RpcRowAction::Delete if self.apikeys.has(KeyName::Rpc(network)) => {
+                        self.set_screen(Screen::Confirm(Confirm::RpcUrlDelete(network)));
+                    }
+                    RpcRowAction::Delete => {}
+                }
+            }
+            // The fixed presses are `on_core`'s.
+            _ => {}
         }
     }
 
@@ -4576,9 +4546,10 @@ impl App {
     }
 
     fn save_rename(&mut self) {
-        use crate::ui::screens::ids;
         let lang = self.settings.language;
-        let label = self.controls.text(ids::RENAME_EDIT, 64).unwrap_or_default();
+        // 2026-11-18 (S3 C12): the form state (`App::form_text`; before, a read of the edit,
+        // cap 64 = `EditField::CoreRename.cap()`).
+        let label = self.form_text(EditField::CoreRename).unwrap_or_default();
         if !is_valid_label(&label) {
             self.info = Some(ErrorCode::Inp017.text_in(lang));
             self.refresh();
@@ -4707,11 +4678,9 @@ impl App {
     }
 
     fn save_autolock(&mut self) {
-        use crate::ui::screens::ids;
-        let text = self
-            .controls
-            .text(ids::AUTOLOCK_EDIT, 8)
-            .unwrap_or_default();
+        // 2026-11-18 (S3 C12): the form state (`App::form_text`; before, a read of the edit,
+        // cap 8 = `EditField::CoreAutoLock.cap()`).
+        let text = self.form_text(EditField::CoreAutoLock).unwrap_or_default();
         match text.trim().parse::<u8>() {
             Ok(minutes) if (1..=60).contains(&minutes) => {
                 let mut settings = self.settings.clone();
@@ -4764,16 +4733,6 @@ impl App {
         let _ = field;
     }
 
-    /// Debug builds (S3 B5): the units the press captured for `field` must be the units the
-    /// handler just read from the edit (`read`); a field the press did not list is a miss
-    /// (`PressInput::take`). The captured units are wiped here; the handler keeps using its own
-    /// read until its C commit moves it to the captured units.
-    #[cfg(debug_assertions)]
-    pub(crate) fn cred_shadow(&mut self, field: CredField, read: Option<&[u16]>) {
-        let captured = self.input.take(field);
-        self.cred_compare(field, captured.as_slice(), read);
-    }
-
     /// Debug builds: one credential read of the press being handled, `captured` the press
     /// input's units and `read` the edit's (tests: the read is recorded, a difference is
     /// counted and logged by field name, never by text).
@@ -4819,18 +4778,16 @@ impl App {
         self.cred_misses.saturating_add(self.input.misses())
     }
 
-    fn read_wiping(&mut self, id: u16, max: usize) -> Zeroizing<String> {
-        let units = self.controls.text_wiping(id, max);
-        #[cfg(debug_assertions)]
-        if let Some(field) = cmd_table::cred_of(id) {
-            self.cred_shadow(field, units.as_ref().map(yw_win::mem::WipeBuf::as_slice));
-        }
+    /// The text of credential edit `field` (2026-11-18, S3 C12, plan §3.4: the units the shell
+    /// read with the press, `App::take_cred`; before, `read_wiping(id, max)` read the edit here
+    /// into a wiping buffer). Decoded as before: one `char` per UTF-16 unit, a unit that is no
+    /// `char` (a surrogate half) dropped; empty when the edit did not exist.
+    fn read_cred(&mut self, field: CredField) -> Zeroizing<String> {
+        let units = self.take_cred(field);
         let mut out = Zeroizing::new(String::new());
-        if let Some(units) = units {
-            for unit in units.as_slice() {
-                if let Some(character) = char::from_u32(u32::from(*unit)) {
-                    out.push(character);
-                }
+        for unit in units.as_slice() {
+            if let Some(character) = char::from_u32(u32::from(*unit)) {
+                out.push(character);
             }
         }
         out
@@ -4840,11 +4797,10 @@ impl App {
     /// credentials (spec/04 §2.11): `Ok(true)` saved, `Ok(false)` the fields were empty (nothing
     /// to save); E-KEY-002 with the item name (its text is in the information band) or E-APP-002.
     fn save_template_credentials(&mut self) -> Result<bool, ErrorCode> {
-        use crate::ui::screens::ids;
         match self.settings.rpc_template {
             RpcTemplate::QuickNode => {
-                let name = self.read_wiping(ids::QN_NAME_EDIT, TOKEN_MAX_UNITS);
-                let token = self.read_wiping(ids::QN_TOKEN_EDIT, TOKEN_MAX_UNITS);
+                let name = self.read_cred(CredField::QnName);
+                let token = self.read_cred(CredField::QnToken);
                 match quicknode_input(self.settings.language, &name, &token) {
                     Ok(None) => return Ok(false),
                     Ok(Some((name, token))) => self.apikeys.set_quicknode(&name, &token),
@@ -4855,7 +4811,7 @@ impl App {
                 }
             }
             RpcTemplate::Alchemy => {
-                let key = self.read_wiping(ids::ALCHEMY_KEY_EDIT, TOKEN_MAX_UNITS);
+                let key = self.read_cred(CredField::AlchemyKey);
                 if key.is_empty() {
                     return Ok(false);
                 }
@@ -4868,9 +4824,10 @@ impl App {
             }
             RpcTemplate::Manual => return Ok(false),
         }
-        self.controls.clear_text(ids::QN_NAME_EDIT);
-        self.controls.clear_text(ids::QN_TOKEN_EDIT);
-        self.controls.clear_text(ids::ALCHEMY_KEY_EDIT);
+        // 2026-11-18 (S3 C12): `Effect::ClearCred` (before, `controls.clear_text`), at once.
+        for field in [CredField::QnName, CredField::QnToken, CredField::AlchemyKey] {
+            self.emit(Effect::ClearCred { field });
+        }
         if !self.save_apikeys() {
             return Err(ErrorCode::App002);
         }
@@ -5072,12 +5029,11 @@ impl App {
     }
 
     fn save_replacement(&mut self) {
-        use crate::ui::screens::ids;
         let lang = self.settings.language;
         let Some(network) = self.replace_target else {
             return;
         };
-        let text = self.read_wiping(ids::REPLACE_EDIT, URL_MAX_UNITS);
+        let text = self.read_cred(CredField::RpcReplace);
         match HttpsUrl::parse(text.trim()) {
             Ok(url) => {
                 self.apikeys.set_rpc(network, &url);
@@ -5091,7 +5047,10 @@ impl App {
                     // The saved address is tested right away (2026-11-10).
                     self.queue_rpc_tests(&[network]);
                 }
-                self.controls.clear_text(ids::REPLACE_EDIT);
+                // 2026-11-18 (S3 C12): `Effect::ClearCred` (before, `controls.clear_text`).
+                self.emit(Effect::ClearCred {
+                    field: CredField::RpcReplace,
+                });
                 self.replace_target = None;
             }
             Err(_) => {
@@ -5180,10 +5139,9 @@ impl App {
     /// A row's `테스트`: the typed address (the open `교체` field) is sent at once; the stored one
     /// goes first in the queue.
     fn test_network(&mut self, network: NetworkId) {
-        use crate::ui::screens::ids;
         let lang = self.settings.language;
         let typed = if self.replace_target == Some(network) {
-            self.read_wiping(ids::REPLACE_EDIT, URL_MAX_UNITS)
+            self.read_cred(CredField::RpcReplace)
         } else {
             Zeroizing::new(String::new())
         };
@@ -5289,11 +5247,14 @@ impl App {
     }
 
     /// S08 `연결하기` (spec/04 §2.3, 2026-11-10): the whole `QuickNode` address from its field —
-    /// read into a wiping buffer, the field emptied at once.
+    /// read into a wiping buffer, the field emptied at once. 2026-11-18 (S3 C12): the units the
+    /// shell read with the press (`read_cred`) and `Effect::ClearCred` (before, `read_wiping`
+    /// and `controls.clear_text`).
     fn done_connect(&mut self) {
-        use crate::ui::screens::ids;
-        let text = self.read_wiping(ids::DONE_QN_EDIT, TOKEN_MAX_UNITS);
-        self.controls.clear_text(ids::DONE_QN_EDIT);
+        let text = self.read_cred(CredField::DoneQn);
+        self.emit(Effect::ClearCred {
+            field: CredField::DoneQn,
+        });
         self.done_connect_with(&text);
     }
 

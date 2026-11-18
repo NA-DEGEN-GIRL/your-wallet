@@ -39,6 +39,10 @@
 //!
 //! 2026-11-18 (S3 C11): the `YubiKey` tab and wizard, card actions and connect flow
 //! (`Press::{Yk, YkManage, YkConnect}`).
+//!
+//! 2026-11-18 (S3 C12): the core screens, settings sections and URL rows (`Press::Core`);
+//! every control of the main window is now a family press (`Legacy` is left for ids no
+//! handler claimed, until S3 D3).
 
 use core::fmt;
 
@@ -50,6 +54,7 @@ use crate::received::RecvChain;
 
 mod book;
 mod btc;
+mod core_screens;
 mod evm;
 mod explorer;
 mod ext;
@@ -71,6 +76,7 @@ mod zec;
 
 pub use book::{BookPress, BookRowAction};
 pub use btc::{BtcActivityAction, BtcPress};
+pub use core_screens::{CorePress, RpcRowAction};
 pub use evm::{ChainRowAction, EvmActivityAction, EvmPress};
 pub use explorer::{ExplorerLinkAction, ExplorerPress, ExplorerRowAction};
 pub use ext::ExtPress;
@@ -168,6 +174,8 @@ pub enum Press {
     Back,
     /// Windows-transitional: Enter (`IDOK`); the shell still resolves the focused edit (S4).
     Enter,
+    /// The core screens, settings sections and URL rows (S3 C12).
+    Core(CorePress),
     /// A received-history card (S3 C1).
     Received(ReceivedPress),
     /// S13 `연결된 사이트` (S3 C2).
@@ -222,7 +230,8 @@ impl Press {
     /// card's own handler runs (spec/04 §2.6). A chain family adds its `새로고침` arm when it
     /// converts (S3 C; C7: `HyperCore` and Zcash; C8: Solana; C9: Bitcoin; C10: EVM); every
     /// other press has none.
-    /// `Legacy` presses keep the shell's own observer until S3 D3.
+    /// `Legacy` presses keep the shell's own observer until S3 D3 (since C10 no `새로고침` is
+    /// one).
     #[must_use]
     pub const fn refresh_chain(self) -> Option<RecvChain> {
         match self {
@@ -233,6 +242,7 @@ impl Press {
             Self::Evm(EvmPress::Refresh) => Some(RecvChain::Evm),
             Self::Back
             | Self::Enter
+            | Self::Core(_)
             | Self::Received(_)
             | Self::Sites(_)
             | Self::Llm(_)
@@ -264,7 +274,8 @@ impl Press {
     /// not derive and store a new address). A chain family adds its arms when it converts (S3 C;
     /// C7: Zcash's two `주소 복사`; C8: Solana's `받기` and `주소 복사`; C9: Bitcoin's `받기` and
     /// the account card's `주소 복사` — its receive screen's copy never was; C10: EVM's `받기` and
-    /// `주소 복사`); every other press is not one. `Legacy` presses keep the shell's own gate until S3 D3.
+    /// `주소 복사`); every other press is not one. `Legacy` presses kept the shell's own gate
+    /// until S3 C12, when the last receive press was already a family's and the gate went.
     #[must_use]
     pub const fn is_receive_gated(self) -> bool {
         match self {
@@ -274,6 +285,7 @@ impl Press {
             | Self::Evm(EvmPress::ReceiveOpen | EvmPress::CopyAddress) => true,
             Self::Back
             | Self::Enter
+            | Self::Core(_)
             | Self::Received(_)
             | Self::Sites(_)
             | Self::Llm(_)
