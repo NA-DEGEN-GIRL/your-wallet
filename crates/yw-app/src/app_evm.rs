@@ -462,6 +462,10 @@ impl EvmUi {
 }
 
 fn now_unix_ms() -> u64 {
+    #[cfg(test)]
+    if let Some(now) = crate::app_approval::flow_support::clock_now_unix_ms() {
+        return now;
+    }
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| {
@@ -470,6 +474,10 @@ fn now_unix_ms() -> u64 {
 }
 
 fn now_ms() -> u64 {
+    #[cfg(test)]
+    if let Some(now) = crate::app_approval::flow_support::clock_now_ms() {
+        return now;
+    }
     yw_win::time::monotonic_ms()
 }
 

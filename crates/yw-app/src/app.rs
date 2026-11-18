@@ -874,6 +874,10 @@ fn paste_notice(lang: Lang, edge_space: bool, cleared: Option<String>) -> Option
 }
 
 fn now_ms() -> u64 {
+    #[cfg(test)]
+    if let Some(now) = crate::app_approval::flow_support::clock_now_ms() {
+        return now;
+    }
     monotonic_ms()
 }
 

@@ -1012,7 +1012,7 @@ mod tests {
         let core = crate::browser::BrowserCore::new(
             "abcdefghijklmnopabcdefghijklmnop",
             events as Arc<dyn crate::browser::DappSink>,
-            Arc::new(crate::system_clock::SystemClock),
+            crate::app_approval::flow_support::core_clock(),
         );
         app.browser = Some(BrowserUi {
             core,
@@ -2875,7 +2875,7 @@ mod tests {
         let core = crate::browser::BrowserCore::new(
             "abcdefghijklmnopabcdefghijklmnop",
             Arc::clone(&events) as Arc<dyn crate::browser::DappSink>,
-            Arc::new(crate::system_clock::SystemClock),
+            crate::app_approval::flow_support::core_clock(),
         );
         core.set_wallet(unlocked_view(app));
         core.upsert_sol_grant(sol_grant("https://app.example", public()));

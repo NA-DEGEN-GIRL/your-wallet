@@ -353,6 +353,10 @@ pub fn broadcast_answer(
 }
 
 fn now_ms() -> u64 {
+    #[cfg(test)]
+    if let Some(now) = crate::app_approval::flow_support::clock_now_ms() {
+        return now;
+    }
     yw_win::time::monotonic_ms()
 }
 
@@ -1475,7 +1479,7 @@ mod tests {
         let core = crate::browser::BrowserCore::new(
             "abcdefghijklmnopabcdefghijklmnop",
             events as Arc<dyn crate::browser::DappSink>,
-            Arc::new(crate::system_clock::SystemClock),
+            crate::app_approval::flow_support::core_clock(),
         );
         app.browser = Some(BrowserUi {
             core,

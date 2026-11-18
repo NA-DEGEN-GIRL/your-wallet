@@ -464,10 +464,18 @@ impl Handler for Forward {
 }
 
 fn now_ms() -> u64 {
+    #[cfg(test)]
+    if let Some(now) = flow_support::clock_now_ms() {
+        return now;
+    }
     yw_win::time::monotonic_ms()
 }
 
 fn now_unix_ms() -> u64 {
+    #[cfg(test)]
+    if let Some(now) = flow_support::clock_now_unix_ms() {
+        return now;
+    }
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| {
@@ -1011,10 +1019,126 @@ thread_local! {
 /// Whether A01 is the foreground window (the gate input, spec/04 §3.4).
 fn window_is_foreground(window: &Window) -> bool {
     #[cfg(test)]
+    if let Some(value) = flow_support::scripted(flow_support::Read::Foreground) {
+        return value;
+    }
+    #[cfg(test)]
     if TEST_FORCE_FOREGROUND.with(core::cell::Cell::get) {
         return true;
     }
     window.is_foreground()
+}
+
+// The trusted-signal reads and the Win32 side effects of A01 (spec/04 §3.4) go through the
+// small functions below, each a plain call in release builds. 2026-11-18 (S4 A3, spec/15 §11.4
+// S4): under `cfg(test)` a scripted signal oracle answers the reads and every call is traced
+// with its program point, so the sample points are pinned before S4 moves them
+// (`flow_support`); a hidden test host skips the calls that could show or activate a window.
+
+/// `window.is_foreground()` without the render harness's force: the activating click and the
+/// approve press's click-through read the real foreground.
+#[cfg_attr(
+    not(test),
+    expect(unused_variables, reason = "`point` labels the cfg(test) trace only")
+)]
+fn raw_foreground(window: &Window, point: &'static str) -> bool {
+    #[cfg(test)]
+    if let Some(value) = flow_support::scripted(flow_support::Read::RawForeground(point)) {
+        return value;
+    }
+    window.is_foreground()
+}
+
+/// `is_down(vk)`: the key or button is down in the thread's key state.
+#[cfg_attr(
+    not(test),
+    expect(unused_variables, reason = "`point` labels the cfg(test) trace only")
+)]
+fn key_down(vk: u16, point: &'static str) -> bool {
+    #[cfg(test)]
+    if let Some(value) = flow_support::scripted(flow_support::Read::KeyDown(vk, point)) {
+        return value;
+    }
+    is_down(vk)
+}
+
+/// Enter is down in the state of the message being handled (L5: a posted `WM_KEYDOWN` is not).
+fn enter_in_message() -> bool {
+    #[cfg(test)]
+    if let Some(value) = flow_support::scripted(flow_support::Read::EnterInMessage) {
+        return value;
+    }
+    yw_win::input::is_down_in_message(VK_RETURN)
+}
+
+/// The message being handled came from injected input (`SendInput`).
+fn injected_input() -> bool {
+    #[cfg(test)]
+    if let Some(value) = flow_support::scripted(flow_support::Read::Injected) {
+        return value;
+    }
+    yw_win::input::injected()
+}
+
+fn show_window(window: &Window) {
+    #[cfg(test)]
+    if flow_support::effect(flow_support::Fx::Show) {
+        return;
+    }
+    window.show();
+}
+
+fn center_window(window: &Window, anchor: Option<&Window>) {
+    #[cfg(test)]
+    if flow_support::effect(flow_support::Fx::CenterOn) {
+        return;
+    }
+    window.center_on(anchor);
+}
+
+/// `SetForegroundWindow` on A01 or (`of == "main"`) the main window.
+#[cfg_attr(
+    not(test),
+    expect(unused_variables, reason = "`of` labels the cfg(test) trace only")
+)]
+fn request_foreground(window: &Window, of: &'static str) -> bool {
+    #[cfg(test)]
+    if let Some(done) = flow_support::foreground_request(of) {
+        return done;
+    }
+    window.set_foreground()
+}
+
+fn flash_window(window: &Window) {
+    #[cfg(test)]
+    if flow_support::effect(flow_support::Fx::Flash) {
+        return;
+    }
+    window.flash();
+}
+
+fn focus_window(window: &Window) {
+    #[cfg(test)]
+    if flow_support::effect(flow_support::Fx::SetFocus) {
+        return;
+    }
+    window.set_focus();
+}
+
+fn capture_mouse(window: &Window) {
+    #[cfg(test)]
+    if flow_support::effect(flow_support::Fx::SetCapture) {
+        return;
+    }
+    window.set_capture();
+}
+
+fn release_mouse(window: &Window) {
+    #[cfg(test)]
+    if flow_support::effect(flow_support::Fx::ReleaseCapture) {
+        return;
+    }
+    window.release_capture();
 }
 
 fn remaining_text(ms: u64) -> String {
@@ -1571,6 +1695,10 @@ impl App {
             .min_size(520, 460 + extra)
             .topmost(true)
             .resizable(true);
+        #[cfg(test)]
+        if flow_support::fail_open() {
+            return Err(());
+        }
         let window = create_window(&spec, handler).map_err(|_| ())?;
         let panel_handler = Box::new(Forward {
             app: self.self_ref.clone(),
@@ -1629,13 +1757,13 @@ impl App {
             submitting: false,
         };
         let session = ApprovalSession::new(gate, now).map_err(|_| ())?;
-        window.center_on(self.main.as_ref());
+        center_window(&window, self.main.as_ref());
         let _ = window.set_timer(APPROVAL_TIMER_ID, APPROVAL_TICK_MS);
-        window.show();
-        if !window.set_foreground() {
-            window.flash();
+        show_window(&window);
+        if !request_foreground(&window, "approval") {
+            flash_window(&window);
         }
-        window.set_focus();
+        focus_window(&window);
         self.evm.window = Some(ApprovalUi {
             lang,
             window,
@@ -2061,7 +2189,7 @@ impl App {
             if let Some(main) = self.main.as_ref()
                 && main.is_alive()
             {
-                let _ = main.set_foreground();
+                let _ = request_foreground(main, "main");
             }
         }
     }
@@ -2712,11 +2840,23 @@ impl App {
     fn interaction(&mut self, event: InteractionEvent) {
         let now = now_ms();
         let Some(ui) = self.evm.window.as_mut() else {
+            #[cfg(test)]
+            flow_support::log_input(flow_support::Logged::Event {
+                event,
+                foreground: None,
+                focus: None,
+            });
             return;
         };
         // A false → true edge (activation, also within this process) restarts the arm delay.
-        ui.session
-            .set_foreground(now, window_is_foreground(&ui.window));
+        let foreground = window_is_foreground(&ui.window);
+        #[cfg(test)]
+        flow_support::log_input(flow_support::Logged::Event {
+            event,
+            foreground: Some(foreground),
+            focus: Some(ui.focus),
+        });
+        ui.session.set_foreground(now, foreground);
         let before = ui.session.interaction().status();
         let holding = ui.session.interaction().hold_remaining_ms(now).is_some();
         let status = ui.session.event(now, event);
@@ -3006,6 +3146,8 @@ impl App {
     }
 
     fn toggle_ack(&mut self) {
+        #[cfg(test)]
+        self.log_approval_call(flow_support::Call::ToggleAck);
         let now = now_ms();
         if let Some(ui) = self.evm.window.as_mut()
             && ui.view.blocks.contains(&Block::Ack)
@@ -3023,6 +3165,8 @@ impl App {
     }
 
     fn toggle_connect_account(&mut self, index: usize) {
+        #[cfg(test)]
+        self.log_approval_call(flow_support::Call::ToggleAccount(index));
         let now = now_ms();
         if let Some(ui) = self.evm.window.as_mut()
             && let Some(connect) = ui.connect.as_mut()
@@ -3036,6 +3180,8 @@ impl App {
     }
 
     fn toggle_raw(&mut self) {
+        #[cfg(test)]
+        self.log_approval_call(flow_support::Call::ToggleRaw);
         if let Some(ui) = self.evm.window.as_mut() {
             ui.raw_open = !ui.raw_open;
         }
@@ -3043,6 +3189,8 @@ impl App {
     }
 
     fn scroll_by(&mut self, delta: i32) {
+        #[cfg(test)]
+        self.log_approval_call(flow_support::Call::Scroll(delta));
         if let Some(ui) = self.evm.window.as_mut() {
             let page = ui.panel.client_rect().h;
             let max = ui
@@ -3076,7 +3224,7 @@ impl App {
                 Reply::Default
             }
             Msg::MouseActivate => {
-                if window.is_foreground() {
+                if raw_foreground(window, "mouse_activate") {
                     Reply::Default
                 } else {
                     // The eaten activating click (any button) is a press while not armed.
@@ -3110,28 +3258,28 @@ impl App {
                 let Some(ui) = self.evm.window.as_mut() else {
                     return Reply::Default;
                 };
-                window.set_focus();
+                focus_window(window);
                 let bottom = ui.bottom;
                 if bottom.approve.contains(*x, *y) {
                     ui.pressed = Some(Pressed::Approve);
                     ui.focus = Focus::Approve;
-                    window.set_capture();
+                    capture_mouse(window);
                     self.interaction(InteractionEvent::PointerPressed {
                         inside: true,
-                        click_through: !window.is_foreground(),
-                        physical_down: is_down(VK_LBUTTON),
+                        click_through: !raw_foreground(window, "mouse_down"),
+                        physical_down: key_down(VK_LBUTTON, "mouse_down"),
                     });
                 } else if bottom.reject.contains(*x, *y) {
                     ui.pressed = Some(Pressed::Reject);
                     ui.focus = Focus::Reject;
-                    window.set_capture();
+                    capture_mouse(window);
                 } else if bottom.retry.is_some_and(|rect| rect.contains(*x, *y)) {
                     ui.pressed = Some(Pressed::Retry);
-                    window.set_capture();
+                    capture_mouse(window);
                 } else if bottom.ai_retry.is_some_and(|rect| rect.contains(*x, *y)) {
                     // Mouse only: not a default button, not in the Tab order, not on Enter/Space.
                     ui.pressed = Some(Pressed::AiRetry);
-                    window.set_capture();
+                    capture_mouse(window);
                 }
                 window.invalidate();
                 Reply::Handled(0)
@@ -3149,7 +3297,7 @@ impl App {
                 Reply::Handled(0)
             }
             Msg::MouseUp { x, y } => {
-                window.release_capture();
+                release_mouse(window);
                 let Some(ui) = self.evm.window.as_mut() else {
                     return Reply::Default;
                 };
@@ -3157,7 +3305,7 @@ impl App {
                 let bottom = ui.bottom;
                 match pressed {
                     Some(Pressed::Approve) => self.interaction(InteractionEvent::PointerReleased {
-                        physical_down: is_down(VK_LBUTTON),
+                        physical_down: key_down(VK_LBUTTON, "mouse_up"),
                     }),
                     Some(Pressed::Reject) if bottom.reject.contains(*x, *y) => {
                         self.interaction(InteractionEvent::RejectActivated);
@@ -3190,7 +3338,7 @@ impl App {
                         .is_some_and(|ui| ui.focus == Focus::Approve)
                 {
                     self.interaction(InteractionEvent::SpaceReleased {
-                        physical_down: is_down(VK_SPACE),
+                        physical_down: key_down(VK_SPACE, "key_up"),
                     });
                 }
                 Reply::Handled(0)
@@ -3209,6 +3357,10 @@ impl App {
                 Reply::Default
             }
             Msg::ActivateApp(true) => {
+                #[cfg(test)]
+                flow_support::log_input(flow_support::Logged::Activated {
+                    focus: self.evm.window.as_ref().map(|ui| ui.focus),
+                });
                 if let Some(ui) = self.evm.window.as_mut() {
                     let now = now_ms();
                     ui.session.restart_arm_delay(now);
@@ -3246,6 +3398,8 @@ impl App {
     }
 
     fn retry_action(&mut self) {
+        #[cfg(test)]
+        self.log_approval_call(flow_support::Call::Retry);
         let failed_retryable = self.evm.window.as_ref().is_some_and(|ui| {
             matches!(
                 ui.session.gate.prepare,
@@ -3283,7 +3437,7 @@ impl App {
                 let order = Self::focus_order(ui);
                 let position = order.iter().position(|item| *item == focus).unwrap_or(0);
                 let len = order.len().max(1);
-                let next = if is_down(VK_SHIFT) {
+                let next = if key_down(VK_SHIFT, "tab") {
                     position.checked_sub(1).unwrap_or(len - 1)
                 } else {
                     (position + 1) % len
@@ -3297,8 +3451,7 @@ impl App {
                 // L5: a posted/sent WM_KEYDOWN (not in the thread's key state) or an injected
                 // one never approves, like Space and the pointer (`is_down`).
                 Focus::Approve => self.interaction(InteractionEvent::ApproveActivated {
-                    physical: yw_win::input::is_down_in_message(VK_RETURN)
-                        && !yw_win::input::injected(),
+                    physical: enter_in_message() && !injected_input(),
                 }),
                 // Not an auto-repeat (2026-11-12): the Enter that opened this window from a
                 // send form may still be held.
@@ -3310,7 +3463,7 @@ impl App {
             VK_SPACE => match focus {
                 Focus::Approve => self.interaction(InteractionEvent::SpacePressed {
                     repeat,
-                    physical_down: is_down(VK_SPACE),
+                    physical_down: key_down(VK_SPACE, "key_down"),
                 }),
                 Focus::Reject if !repeat => self.interaction(InteractionEvent::RejectActivated),
                 Focus::Ack if !repeat => self.toggle_ack(),
@@ -3355,7 +3508,7 @@ impl App {
                 let Some(ui) = self.evm.window.as_mut() else {
                     return Reply::Default;
                 };
-                ui.window.set_focus();
+                focus_window(&ui.window);
                 let content_y = y.saturating_add(ui.scroll);
                 let layout = ui.layout.clone().unwrap_or_default();
                 if let Some((index, _)) = layout
@@ -4079,7 +4232,7 @@ impl App {
                         ai.scroll = 0;
                         window.invalidate();
                     }
-                    ui.window.set_focus();
+                    focus_window(&ui.window);
                 }
                 Reply::Handled(0)
             }
@@ -4310,6 +4463,8 @@ impl App {
 
     /// `다시 요청` (mouse only).
     fn ai_retry(&mut self) {
+        #[cfg(test)]
+        self.log_approval_call(flow_support::Call::AiRetry);
         let now = now_ms();
         let busy = self.llm_busy();
         let Some(ai) = self.evm.window.as_mut().and_then(|ui| ui.ai.as_mut()) else {
@@ -4440,6 +4595,12 @@ impl App {
 #[cfg(test)]
 #[path = "app_approval_smoke.rs"]
 pub(crate) mod smoke;
+
+/// S4 A3 (2026-11-18, spec/15 §11.4 S4): the test clock, the hidden approval host, the scripted
+/// trusted-signal oracle with its call trace, and the App fixture of the approval flow tests.
+#[cfg(test)]
+#[path = "app_approval_flow_support.rs"]
+pub(crate) mod flow_support;
 
 /// Hooks for the screenshot tour (`ui::tour`, an `#[ignore]` test). Gated like the tour module
 /// (`#[cfg(test)]` + `#[cfg(debug_assertions)]`), so `cargo test --release` has no dead code.

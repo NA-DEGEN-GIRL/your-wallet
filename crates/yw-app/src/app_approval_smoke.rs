@@ -41,7 +41,7 @@ use crate::ui::interaction::{PrepareState, ReadyContent};
 use crate::workers::rpc::RpcJob;
 
 const TIMER_CLASS: &str = "YourWalletV3SmokeTimer";
-const S2_UNIX_MS: u64 = 0x6ac6_4ee0 * 1_000;
+pub(crate) const S2_UNIX_MS: u64 = 0x6ac6_4ee0 * 1_000;
 
 pub(crate) struct FixtureRpc {
     pub(crate) simulate: Vec<u8>,

@@ -432,6 +432,10 @@ impl App {
         match result {
             Ok((last_valid_block_height, check)) => {
                 let consumed_at_ms = yw_win::time::monotonic_ms();
+                // S4 A3 (2026-11-18): tests read the approval test clock here too.
+                #[cfg(test)]
+                let consumed_at_ms =
+                    crate::app_approval::flow_support::clock_now_ms().unwrap_or(consumed_at_ms);
                 let now_unix_ms = crate::app_sol::now_unix_ms();
                 match pin {
                     Some(pin) => self.key(KeyJob::SignSolDappCard {

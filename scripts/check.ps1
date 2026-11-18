@@ -1,7 +1,7 @@
 ﻿# scripts/check.ps1 — 저장소 게이트. 사용: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1 [-Step <name>] [-Offline]
 [CmdletBinding()]
 param(
-    [ValidateSet("all", "fmt", "deps", "clippy", "test", "fuzz", "build", "ext-test", "script-test", "privacy", "audit-ext", "icons")]
+    [ValidateSet("all", "fmt", "deps", "clippy", "test", "fuzz", "s4fl", "build", "ext-test", "script-test", "privacy", "audit-ext", "icons")]
     [string]$Step = "all",
     [switch]$Offline
 )
@@ -176,6 +176,9 @@ Invoke-Step "test" 23 "cargo" (@("test", "--workspace") + $net + $config)
 $env:YW_FUZZ_RUNS = "20000"                                           # fuzz-lite 스모크([09] §2.4): 무시된 fuzz_lite_*를 2만 회씩
 Invoke-Step "fuzz" 29 "cargo" (@("test", "--workspace") + $net + $config + @("--", "--ignored", "fuzz_lite"))
 $env:YW_FUZZ_RUNS = $null                                             # 직접 --ignored로 돌리면 1,000,000회
+# S4 승인 흐름 하네스(2026-11-18 [15] §11.4 S4 A3, [09] §2.2): 숨은 승인 창을 만드는 #[ignore] 시험을 직렬로 돌린다. 창은 보이지
+# 않고 전경을 가져가지 않는다(자체 시험이 확인). 비공개 데스크톱 경로는 windows-sys 기능이 없어 쓰지 않는다. B7(창 없는 시험)에서 없앤다.
+Invoke-Step "s4fl" 31 "cargo" (@("test", "-p", "yw-app", "--lib") + $net + $config + @("--", "--ignored", "--test-threads=1", "app_approval::flow_support", "app_approval::flow_tests", "app_approval::input_tests"))
 Invoke-Step "build" 24 "cargo" (@("build", "--workspace") + $net + $config)   # <빌드 폴더>\debug\yw-host.exe ([09] §2.2, [05] H1)
 $env:YW_CHECK = "1"                                                   # 확장 프로세스 테스트가 skip 대신 실패([09])
 if ($Step -in "all", "ext-test") { Invoke-Step "ext-test" 25 "node" (@("--test") + (Get-Tests "extension/tests" 25)) }

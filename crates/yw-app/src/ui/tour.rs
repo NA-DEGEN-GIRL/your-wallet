@@ -400,7 +400,7 @@ fn tour_browser(state: &mut App) {
     let core = crate::browser::BrowserCore::new(
         crate::browser::pinned_extension_id().unwrap_or_default(),
         sink,
-        Arc::new(crate::system_clock::SystemClock),
+        crate::app_approval::flow_support::core_clock(),
     );
     let name = format!(r"\\.\pipe\YourWallet.tour.{}", std::process::id());
     let server = crate::browser::pinned_origin()

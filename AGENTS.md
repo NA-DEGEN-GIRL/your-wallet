@@ -62,7 +62,7 @@ build tools. Cargo is always run `--locked`. Add `--offline` when the crates are
 # Full gate (what must pass before a commit). -Offline adds --offline to cargo and the deps check.
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1 -Offline
 
-# One step: all | fmt | deps | clippy | test | fuzz | build | ext-test | script-test | privacy | audit-ext | icons
+# One step: all | fmt | deps | clippy | test | fuzz | s4fl | build | ext-test | script-test | privacy | audit-ext | icons
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1 -Step clippy -Offline
 
 # Plain commands
@@ -74,11 +74,16 @@ node --test scripts/*.test.mjs
 ```
 
 Gate order and failure exit codes (`scripts/check.ps1`):
-fmt 20 → deps 21 → clippy 22 (`-D warnings`) → test 23 → fuzz 29 → build 24 → ext-test 25 →
+fmt 20 → deps 21 → clippy 22 (`-D warnings`) → test 23 → fuzz 29 → s4fl 31 → build 24 → ext-test 25 →
 script-test 26 → privacy 27 → audit-ext 28 → icons 30. On success it prints `check: OK`.
 
 - **fuzz** runs the `#[ignore]` `fuzz_lite_*` tests with `YW_FUZZ_RUNS=20000`. A direct
   `cargo test --release -- --ignored fuzz_lite` runs 1,000,000 iterations per target. There is no cargo-fuzz and no `fuzz/` dir.
+- **s4fl** (temporary, 2026-11-18 S4 A3; S4 B7 removes it) runs the `#[ignore]` approval flow harness serially:
+  `cargo test -p yw-app --lib --locked -- --ignored --test-threads=1 app_approval::flow_support app_approval::flow_tests app_approval::input_tests`.
+  It creates hidden approval windows that are never shown and never take the foreground (its self-test checks that); the
+  test clock, the scripted trusted-signal oracle and the input log are `cfg(test)` seams in `app_approval_flow_support.rs`
+  (spec/09 §2.2). Never put `fuzz_lite` in the path of such a test.
 - **build** produces `<target>\debug\yw-host.exe`, which the extension process test needs. The gate sets
   `YW_CHECK=1` so that test fails instead of being skipped.
 - Precondition failures:
