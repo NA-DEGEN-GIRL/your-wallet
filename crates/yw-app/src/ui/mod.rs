@@ -4,7 +4,7 @@
 //!
 //! (2026-11-17, spec/15 §11.4 S2: the approval queue and interaction rules, the approval texts,
 //! the text layout and the secret input buffers moved to yw-engine, and in E2 the chain badge;
-//! they are re-exported here under their old names until S3–S4.)
+//! they are re-exported here under their old names until S4 (2026-11-18: was S3–S4).)
 
 pub use yw_engine::approval;
 pub use yw_engine::approval::{interaction, layout as text_layout, text as approval_text};

@@ -4,7 +4,8 @@
 #![forbid(unsafe_code)]
 
 // 2026-11-17 (spec/15 §11.4 S2, spec/01 §2.3b): these modules moved to yw-engine; the re-exports
-// keep their `crate::…` paths until S3–S4 rewrite the callers (transitional facade).
+// keep their `crate::…` paths until S4 rewrites the callers (transitional facade;
+// 2026-11-18: was S3–S4).
 pub use yw_engine::{errors, logging, network, text, wallet_files, yubikey};
 // 2026-11-17 (S2 E2): settings, wallet metadata, explain and the RPC pipelines followed.
 pub use yw_engine::{

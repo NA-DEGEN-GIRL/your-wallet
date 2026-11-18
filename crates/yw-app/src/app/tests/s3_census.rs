@@ -19,8 +19,9 @@
 //!
 //! A golden line holds ids, names, counts and hashes only — no address, URL, key or path:
 //! before hashing, the census's own paths become `<data>`, `<logs>`, `<ext>`, `<exe>`, `<tmp>`.
-//! Regenerate with `YW_S3_CENSUS_OUT=<folder> cargo test -p yw-app --lib s3_census::print --
-//! --ignored` and review the diff; only the S3 phase-A commits may change these files.
+//! Regenerate (PowerShell) with `$env:YW_S3_CENSUS_OUT='<folder>'; cargo test -p yw-app --lib
+//! s3_census::print --locked --offline -- --ignored` and review the diff; only the S3 phase-A
+//! commits may change these files.
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
