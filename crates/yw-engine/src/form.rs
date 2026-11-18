@@ -9,6 +9,10 @@
 //!
 //! 2026-11-18 (S3 B1): created. S3 mirrors the form state from the Windows edits (`Cmd::Form`
 //! at every press and after every render, Windows-transitional); S5 makes it engine-owned.
+//!
+//! 2026-11-18 (S3 D1): a press also carries what the shell read from the clipboard for it
+//! ([`ClipInput`], the `WalletConnect` panel's `클립보드에서 연결` and `클립보드 이미지에서 QR
+//! 읽기`); before, the handler read the clipboard itself.
 
 use core::fmt;
 
@@ -419,12 +423,46 @@ impl fmt::Debug for CredUnits {
     }
 }
 
+/// What the shell read from the clipboard for a press that pairs from it (2026-11-18, S3 D1:
+/// spec/13 §6; before, the `WalletConnect` handler read the clipboard itself). Read only when
+/// such a press happens, never written.
+pub enum ClipInput {
+    /// No main window (nothing is read; the press does nothing, as before).
+    NoWindow,
+    /// A pairing link (`wc:`, or a wholly percent-encoded `wc%3A…`) copied as text. It holds the
+    /// pairing `symKey` (spec/15 §12.2), so it is wiped with the press input. Other clipboard
+    /// text never becomes a `String`: the shell checks the start on the UTF-16 units.
+    Link(Zeroizing<String>),
+    /// Windows `CF_DIB` bytes (a Win+Shift+S capture), parsed by
+    /// `walletconnect::qr_decode::dib_to_bgra`. Windows only: Android pairs through the
+    /// prefilled link and the camera reader (spec/15 §12.2), not this input.
+    WinDib(Vec<u8>),
+    /// The clipboard holds no image.
+    NoImage,
+    /// The clipboard could not be opened.
+    OpenFailed,
+}
+
+/// The variant and a length only (the link is the pairing secret).
+impl fmt::Debug for ClipInput {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoWindow => formatter.write_str("NoWindow"),
+            Self::Link(text) => formatter.debug_tuple("Link").field(&text.len()).finish(),
+            Self::WinDib(bytes) => formatter.debug_tuple("WinDib").field(&bytes.len()).finish(),
+            Self::NoImage => formatter.write_str("NoImage"),
+            Self::OpenFailed => formatter.write_str("OpenFailed"),
+        }
+    }
+}
+
 /// Platform input captured with one press: the units of every credential field the press uses
-/// (each listed field has an entry, `Absent` when its edit did not exist). No `Clone`; wiped on
-/// drop.
+/// (each listed field has an entry, `Absent` when its edit did not exist) and, for a press that
+/// reads the clipboard, what it held (S3 D1). No `Clone`; wiped on drop.
 #[derive(Default)]
 pub struct PressInput {
     creds: Vec<(CredField, CredUnits)>,
+    clip: Option<ClipInput>,
     /// Debug builds only (plan §2.3, §3.2a): release builds compile no checking code.
     #[cfg(debug_assertions)]
     misses: u32,
@@ -436,9 +474,28 @@ impl PressInput {
     pub const fn new(creds: Vec<(CredField, CredUnits)>) -> Self {
         Self {
             creds,
+            clip: None,
             #[cfg(debug_assertions)]
             misses: 0,
         }
+    }
+
+    /// The same input with what the clipboard held at the press (S3 D1).
+    #[must_use]
+    pub fn with_clip(mut self, clip: ClipInput) -> Self {
+        self.clip = Some(clip);
+        self
+    }
+
+    /// Moves the clipboard input out. `None` when the press captured none (a table bug, or a
+    /// second take); debug builds count it in `misses`, like a credential take with no entry.
+    pub fn take_clip(&mut self) -> Option<ClipInput> {
+        let clip = self.clip.take();
+        #[cfg(debug_assertions)]
+        if clip.is_none() {
+            self.misses = self.misses.saturating_add(1);
+        }
+        clip
     }
 
     /// Moves the units of `field` out: empty for `Absent` or a second take, as the Windows read
@@ -466,11 +523,15 @@ impl PressInput {
     }
 }
 
-/// Field names and unit counts only.
+/// Field names and unit counts only (the clipboard input, when there is one, its variant and
+/// length).
 impl fmt::Debug for PressInput {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut shown = formatter.debug_struct("PressInput");
         shown.field("creds", &self.creds);
+        if let Some(clip) = &self.clip {
+            shown.field("clip", clip);
+        }
         #[cfg(debug_assertions)]
         shown.field("misses", &self.misses);
         shown.finish()
@@ -578,6 +639,35 @@ mod tests {
             shown,
             "PressInput { creds: [(QnName, Absent), (QnToken, Absent)] }"
         );
+    }
+
+    #[test]
+    fn clip_input_is_taken_once_and_prints_no_text() {
+        let mut input = PressInput::default().with_clip(ClipInput::Link(Zeroizing::new(
+            "wc:topic@2?symKey=ab".to_owned(),
+        )));
+        let shown = format!("{input:?}");
+        assert!(!shown.contains("symKey"), "{shown}");
+        assert!(shown.contains("clip: Link(20)"), "{shown}");
+        assert!(
+            matches!(input.take_clip(), Some(ClipInput::Link(text)) if text.starts_with("wc:"))
+        );
+        #[cfg(debug_assertions)]
+        assert_eq!(input.misses(), 0);
+        assert!(input.take_clip().is_none());
+        #[cfg(debug_assertions)]
+        assert_eq!(input.misses(), 1);
+        assert_eq!(
+            format!("{:?}", ClipInput::WinDib(vec![0; 40])),
+            "WinDib(40)"
+        );
+        for (clip, shown) in [
+            (ClipInput::NoWindow, "NoWindow"),
+            (ClipInput::NoImage, "NoImage"),
+            (ClipInput::OpenFailed, "OpenFailed"),
+        ] {
+            assert_eq!(format!("{clip:?}"), shown);
+        }
     }
 
     #[test]

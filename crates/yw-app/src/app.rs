@@ -3841,13 +3841,14 @@ impl App {
     /// 2026-11-18 (S3 B2): the id goes through `ui::cmd_table` as a `Cmd::Press`; before, this
     /// called `dispatch_command(id)` directly. S3 B5: first the plain edits' text
     /// (`Cmd::Form`), then the press with the credential edits it reads, captured now
-    /// (`cmd_table::capture`).
+    /// (`cmd_table::capture`). S3 D1: and, for the `WalletConnect` clipboard presses, what the
+    /// clipboard holds.
     fn on_command(&mut self, id: u16) {
         self.note_input();
         let closed =
             !matches!(id, IDOK | IDCANCEL) && !Self::is_picker_button(id) && self.close_pickers();
         self.on_cmd(Cmd::Form(self.controls.form_snapshot()));
-        let input = cmd_table::capture(id, &self.controls);
+        let input = cmd_table::capture(id, &self.controls, self.main.as_ref());
         self.on_cmd(Cmd::Press {
             press: cmd_table::press_of(id, &self.controls),
             input,
@@ -3977,7 +3978,7 @@ impl App {
             return false;
         };
         self.on_cmd(Cmd::Form(self.controls.form_snapshot()));
-        let input = cmd_table::capture(id, &self.controls);
+        let input = cmd_table::capture(id, &self.controls, self.main.as_ref());
         let outer = core::mem::replace(&mut self.input, input);
         let claimed = run(self, press);
         let used = core::mem::replace(&mut self.input, outer);

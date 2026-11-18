@@ -2500,6 +2500,75 @@ fn walletconnect_panel_asks_for_the_project_id_first() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// S3 D1 (spec/13 §6, 2026-11-18): the `WalletConnect` clipboard presses use what the shell read
+/// with the press (`ClipInput`), with the notices the handlers gave when they read the clipboard
+/// themselves. Headless (`on_command`, no main window) nothing is read and nothing changes; the
+/// link goes to `wc_pair` (a malformed one here: no worker, no network).
+#[test]
+fn walletconnect_clipboard_presses_take_the_press_input() {
+    use crate::app_walletconnect::text as t;
+    use crate::ui::screens_walletconnect::ids as wc;
+    use yw_engine::cmd::{Cmd, Press, WcPress};
+    use yw_engine::form::{ClipInput, PressInput};
+    let (mut app, dir) = unlocked_app("wc-clip", false);
+    "0123456789abcdef0123456789abcdef".clone_into(&mut app.settings.walletconnect_project);
+    app.screen = Screen::Sites;
+    for id in [wc::CLIPBOARD_CONNECT, wc::CLIPBOARD_QR] {
+        app.on_command(id);
+        assert_eq!(app.wc.notice, None);
+    }
+    #[cfg(debug_assertions)]
+    assert_eq!(app.cred_misses(), 0);
+    let press = |app: &mut App, press: WcPress, clip: ClipInput| {
+        app.wc.notice = None;
+        app.on_cmd(Cmd::Press {
+            press: Press::Wc(press),
+            input: PressInput::default().with_clip(clip),
+        });
+        app.wc.notice.clone()
+    };
+    let lang = app.settings.language;
+    let shown = |text: yw_core::lang::Text| Some(text.get(lang).to_owned());
+    for which in [WcPress::ClipboardConnect, WcPress::ClipboardQr] {
+        assert_eq!(
+            press(&mut app, which, ClipInput::NoImage),
+            shown(t::CLIPBOARD_NO_IMAGE)
+        );
+        assert_eq!(
+            press(&mut app, which, ClipInput::OpenFailed),
+            shown(t::CLIPBOARD_OPEN)
+        );
+        assert_eq!(
+            press(&mut app, which, ClipInput::WinDib(vec![0; 8])),
+            shown(t::CLIPBOARD_FORMAT)
+        );
+        assert_eq!(press(&mut app, which, ClipInput::NoWindow), None);
+    }
+    let link = || ClipInput::Link(Zeroizing::new("  wc:not-a-link \n".to_owned()));
+    let refused = yw_core::walletconnect::parse_pairing_uri("wc:not-a-link")
+        .err()
+        .unwrap()
+        .message(lang)
+        .to_owned();
+    assert_eq!(
+        press(&mut app, WcPress::ClipboardConnect, link()),
+        Some(refused)
+    );
+    // `클립보드 이미지에서 QR 읽기` reads only an image; a link is never paired there.
+    assert_eq!(press(&mut app, WcPress::ClipboardQr, link()), None);
+    #[cfg(debug_assertions)]
+    assert_eq!(app.cred_misses(), 0);
+    // A press that captured no clipboard input reads nothing; debug builds count the miss.
+    app.on_cmd(Cmd::Press {
+        press: Press::Wc(WcPress::ClipboardConnect),
+        input: PressInput::default(),
+    });
+    assert_eq!(app.wc.notice, None);
+    #[cfg(debug_assertions)]
+    assert_eq!(app.cred_misses(), 1);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// Review 2026-11-07 (10-31 D3): a wallet's only account is not listed a second time with the
 /// same address and balance under `내 계정`; with two accounts the drop-down (2026-11-11) names
 /// them and opens to list both, the address staying the hero card's. 2026-11-12: the path too

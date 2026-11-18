@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use yw_core::approval::{ApprovalDraft, ApprovalOrigin};
 use yw_core::policy::{BrowserOrigin, ProviderError};
+use yw_engine::form::ClipInput;
 
 use crate::app::App;
 use crate::browser::{SiteRequest, VaultView};
@@ -602,19 +603,21 @@ impl App {
     }
 
     /// `클립보드 이미지에서 QR 읽기` (Win+Shift+S places a bitmap on the clipboard).
-    pub(crate) fn wc_clipboard_qr(&mut self) {
-        let Some(main) = self.main.as_ref() else {
-            return;
-        };
-        match yw_win::clipboard::read_dib(main, MAX_CLIPBOARD_IMAGE) {
-            Ok(Some(dib)) => match crate::walletconnect::qr_decode::dib_to_bgra(&dib) {
+    /// 2026-11-18 (S3 D1): `clip` is what the shell read from the clipboard with the press
+    /// (`ui::cmd_table::capture`); before, this read `CF_DIB` itself. Same notices, same order.
+    pub(crate) fn wc_clipboard_qr(&mut self, clip: ClipInput) {
+        match clip {
+            ClipInput::WinDib(dib) => match crate::walletconnect::qr_decode::dib_to_bgra(&dib) {
                 Some((width, height, pixels)) => {
                     self.wc_pair_pixels(width, height, &pixels, "clipboard");
                 }
                 None => self.wc_notice(text::CLIPBOARD_FORMAT),
             },
-            Ok(None) => self.wc_notice(text::CLIPBOARD_NO_IMAGE),
-            Err(_) => self.wc_notice(text::CLIPBOARD_OPEN),
+            ClipInput::NoImage => self.wc_notice(text::CLIPBOARD_NO_IMAGE),
+            ClipInput::OpenFailed => self.wc_notice(text::CLIPBOARD_OPEN),
+            // No main window: nothing was read (as before). A link is only read for
+            // `클립보드에서 연결`, which pairs with it before coming here.
+            ClipInput::NoWindow | ClipInput::Link(_) => {}
         }
     }
 
@@ -683,31 +686,22 @@ impl App {
     /// is read only on this press, never written, and its text is not logged (only the source
     /// word, as `qr.decoded`). Only a pairing link leaves the wiped buffer as a `String`: other
     /// clipboard text (it may be a copied secret) is never copied out of it.
-    pub(crate) fn wc_clipboard_connect(&mut self) {
-        let Some(main) = self.main.as_ref() else {
-            return;
-        };
-        let text = yw_win::clipboard::read_text(main, 2_048)
-            .ok()
-            .and_then(|(units, _)| {
-                let units = units.as_slice();
-                let start = units.iter().position(|unit| {
-                    !char::from_u32(u32::from(*unit)).is_some_and(char::is_whitespace)
-                })?;
-                units_look_like_pairing_link(units.get(start..)?)
-                    .then(|| String::from_utf16_lossy(units))
-            });
-        if let Some(text) = text {
-            logging::info(
-                "walletconnect",
-                "clipboard.link",
-                &[("source", Field::Word("text"))],
-            );
-            self.wc_notice(text::CLIPBOARD_LINK);
-            self.wc_pair(text.trim());
-            return;
+    /// 2026-11-18 (S3 D1): the shell reads the clipboard with the press and hands over `clip`
+    /// (`ui::cmd_table::capture`: the text first, its start checked on the UTF-16 units, else
+    /// the bitmap); before, this read it. The link is a `Zeroizing` string now.
+    pub(crate) fn wc_clipboard_connect(&mut self, clip: ClipInput) {
+        match clip {
+            ClipInput::Link(text) => {
+                logging::info(
+                    "walletconnect",
+                    "clipboard.link",
+                    &[("source", Field::Word("text"))],
+                );
+                self.wc_notice(text::CLIPBOARD_LINK);
+                self.wc_pair(text.trim());
+            }
+            image => self.wc_clipboard_qr(image),
         }
-        self.wc_clipboard_qr();
     }
 
     /// `모든 WalletConnect 세션 끊기`.

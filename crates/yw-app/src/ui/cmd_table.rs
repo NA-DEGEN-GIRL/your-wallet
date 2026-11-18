@@ -21,10 +21,15 @@
 //! `YubiKey` card actions, connect flow and wizard (asked in that order, as the handler did).
 //! S3 C12: the core screens, settings sections and URL rows (asked first, as the core arms
 //! were matched before the family chain).
+//!
+//! 2026-11-18 (S3 D1): [`capture`] also reads the clipboard for the `WalletConnect` panel's
+//! `클립보드에서 연결` and `클립보드 이미지에서 QR 읽기` (`ClipInput`); before, their handlers
+//! read it.
 
 use yw_core::secret::Zeroizing;
 use yw_engine::cmd::Press;
-use yw_engine::form::{CredField, CredUnits, EditField, PressInput};
+use yw_engine::form::{ClipInput, CredField, CredUnits, EditField, PressInput};
+use yw_win::ui::Window;
 
 use crate::ui::main_window::ControlSet;
 use crate::ui::{
@@ -32,7 +37,7 @@ use crate::ui::{
     screens_keys, screens_links, screens_llm, screens_mnemonics, screens_received, screens_reset,
     screens_sites, screens_sol, screens_walletconnect, screens_yubikey, screens_zec,
 };
-use crate::{app_hidden, app_rpc_import, app_sidecar};
+use crate::{app_hidden, app_rpc_import, app_sidecar, app_walletconnect};
 
 /// The command id `IsDialogMessageW` sends for Enter (no control uses it, `ui::command_ids`).
 pub const IDOK: u16 = 1;
@@ -254,8 +259,10 @@ pub fn creds_for(id: u16) -> &'static [CredField] {
 
 /// The press input of control `id` (Windows): the units of every credential edit
 /// [`creds_for`] lists, read now into wiped buffers; `Absent` when that edit does not exist.
+/// For the `WalletConnect` panel's two clipboard presses also what the clipboard holds
+/// ([`clip_input`]; S3 D1), read only for them and only with a main window.
 #[must_use]
-pub fn capture(id: u16, controls: &ControlSet) -> PressInput {
+pub fn capture(id: u16, controls: &ControlSet, main: Option<&Window>) -> PressInput {
     let creds = creds_for(id)
         .iter()
         .map(|&field| {
@@ -271,7 +278,59 @@ pub fn capture(id: u16, controls: &ControlSet) -> PressInput {
             (field, units)
         })
         .collect();
-    PressInput::new(creds)
+    let input = PressInput::new(creds);
+    match id {
+        screens_walletconnect::ids::CLIPBOARD_CONNECT => {
+            input.with_clip(clip_input(main, ClipRead::LinkOrImage))
+        }
+        screens_walletconnect::ids::CLIPBOARD_QR => {
+            input.with_clip(clip_input(main, ClipRead::Image))
+        }
+        _ => input,
+    }
+}
+
+/// What a clipboard press reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ClipRead {
+    /// `클립보드에서 연결`: a copied pairing link (text), else a copied image.
+    LinkOrImage,
+    /// `클립보드 이미지에서 QR 읽기`: a copied image.
+    Image,
+}
+
+/// Reads the clipboard for a `WalletConnect` press (2026-11-18, S3 D1; the sequence of the
+/// former `App::wc_clipboard_connect`/`wc_clipboard_qr` reads, spec/13 §6): no main window →
+/// nothing read; for `LinkOrImage` first `CF_UNICODETEXT` (at most 2 048 units), a pairing link
+/// when [`clip_link`] finds one; otherwise (no text, other text, or the text could not be read)
+/// the `CF_DIB` bitmap (at most `MAX_CLIPBOARD_IMAGE` bytes).
+fn clip_input(main: Option<&Window>, read: ClipRead) -> ClipInput {
+    let Some(main) = main else {
+        return ClipInput::NoWindow;
+    };
+    if read == ClipRead::LinkOrImage
+        && let Some(link) = yw_win::clipboard::read_text(main, 2_048)
+            .ok()
+            .and_then(|(units, _)| clip_link(units.as_slice()))
+    {
+        return ClipInput::Link(link);
+    }
+    match yw_win::clipboard::read_dib(main, app_walletconnect::MAX_CLIPBOARD_IMAGE) {
+        Ok(Some(dib)) => ClipInput::WinDib(dib),
+        Ok(None) => ClipInput::NoImage,
+        Err(_) => ClipInput::OpenFailed,
+    }
+}
+
+/// The clipboard text `units` as a pairing link: `Some` only when, after leading whitespace,
+/// it starts like one (`app_walletconnect::units_look_like_pairing_link`, checked on the units);
+/// any other text (it may be a copied secret) is never copied out of the wiped buffer.
+fn clip_link(units: &[u16]) -> Option<Zeroizing<String>> {
+    let start = units
+        .iter()
+        .position(|unit| !char::from_u32(u32::from(*unit)).is_some_and(char::is_whitespace))?;
+    app_walletconnect::units_look_like_pairing_link(units.get(start..)?)
+        .then(|| Zeroizing::new(String::from_utf16_lossy(units)))
 }
 
 #[cfg(test)]
@@ -1537,7 +1596,7 @@ mod tests {
         controls.type_text(ids::QN_NAME_EDIT, "node-name");
         controls.type_text(ids::QN_TOKEN_EDIT, "");
         controls.type_text(screens_llm::ids::ENDPOINT_EDIT, "https://example.test/");
-        let mut input = capture(ids::TPL_SAVE, &controls);
+        let mut input = capture(ids::TPL_SAVE, &controls, None);
         let shown = format!("{input:?}");
         assert!(
             shown.starts_with(
@@ -1553,14 +1612,67 @@ mod tests {
         #[cfg(debug_assertions)]
         assert_eq!(input.misses(), 0);
         // A plain press captures nothing; the credential cap is the edit's.
-        let mut plain = capture(screens_llm::ids::SAVE, &controls);
+        let mut plain = capture(screens_llm::ids::SAVE, &controls, None);
         assert!(format!("{plain:?}").starts_with("PressInput { creds: []"));
         assert!(plain.take(CredField::LlmKey).is_empty());
         #[cfg(debug_assertions)]
         assert_eq!(plain.misses(), 1);
         controls.type_text(screens_llm::ids::KEY_EDIT, &"k".repeat(1_100));
-        let mut key = capture(screens_llm::ids::KEY_SAVE, &controls);
+        let mut key = capture(screens_llm::ids::KEY_SAVE, &controls, None);
         assert_eq!(key.take(CredField::LlmKey).len(), CredField::LlmKey.cap());
+    }
+
+    /// S3 D1: only the two `WalletConnect` clipboard presses carry a clipboard input, and
+    /// without a main window it is `NoWindow` (nothing is read: no clipboard access headless).
+    #[test]
+    fn capture_reads_the_clipboard_only_for_its_two_presses() {
+        use crate::ui::screens_walletconnect::ids as wc;
+        let controls = ControlSet::default();
+        for id in [wc::CLIPBOARD_CONNECT, wc::CLIPBOARD_QR] {
+            let mut input = capture(id, &controls, None);
+            assert!(matches!(input.take_clip(), Some(ClipInput::NoWindow)));
+            #[cfg(debug_assertions)]
+            assert_eq!(input.misses(), 0);
+        }
+        for id in every_id() {
+            if id == wc::CLIPBOARD_CONNECT || id == wc::CLIPBOARD_QR {
+                continue;
+            }
+            let shown = format!("{:?}", capture(id, &controls, None));
+            assert!(!shown.contains("clip"), "{id}: {shown}");
+        }
+    }
+
+    /// S3 D1 (spec/13 §6): a copied pairing link becomes the press's link (whole, leading
+    /// whitespace kept for the handler's `trim`, as before); any other text gives nothing, so it
+    /// is never copied out of the clipboard's wiped buffer.
+    #[test]
+    fn clip_link_takes_pairing_links_only() {
+        let units = |text: &str| text.encode_utf16().collect::<Vec<u16>>();
+        for link in [
+            "wc:abc@2?relay-protocol=irn&symKey=00",
+            "  \twc:abc@2",
+            "WC:abc@2",
+            "wc%3Aabc%402",
+            "Wc%3aabc",
+        ] {
+            let got = clip_link(&units(link));
+            assert_eq!(got.as_deref().map(String::as_str), Some(link), "{link}");
+        }
+        for other in [
+            "",
+            "   ",
+            "w",
+            "wc",
+            "wc;abc",
+            "my wallet password",
+            "x wc:abc@2",
+            "\u{FF57}c:abc",
+        ] {
+            assert!(clip_link(&units(other)).is_none(), "{other:?}");
+        }
+        // A lone surrogate before the link is not whitespace: not a link.
+        assert!(clip_link(&[0xD800, u16::from(b'w'), u16::from(b'c'), u16::from(b':')]).is_none());
     }
 
     /// `form_snapshot` reads every plain edit that exists, at its cap, and never a credential

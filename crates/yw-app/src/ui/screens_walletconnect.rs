@@ -365,8 +365,18 @@ impl App {
                     .unwrap_or_else(|| self.wc.uri_text.clone());
                 self.wc_pair(&text);
             }
-            WcPress::ClipboardQr => self.wc_clipboard_qr(),
-            WcPress::ClipboardConnect => self.wc_clipboard_connect(),
+            // 2026-11-18 (S3 D1): what the shell read from the clipboard with the press; a
+            // press without it (none captured) reads nothing, as without a main window.
+            WcPress::ClipboardQr => {
+                if let Some(clip) = self.input.take_clip() {
+                    self.wc_clipboard_qr(clip);
+                }
+            }
+            WcPress::ClipboardConnect => {
+                if let Some(clip) = self.input.take_clip() {
+                    self.wc_clipboard_connect(clip);
+                }
+            }
             WcPress::FileToggle => self.wc.file_open = !self.wc.file_open,
             WcPress::FileQr => {
                 if let Some(text) = self.form_text(EditField::WcFile) {
