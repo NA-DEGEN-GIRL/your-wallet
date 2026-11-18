@@ -4602,6 +4602,12 @@ pub(crate) mod smoke;
 #[path = "app_approval_flow_support.rs"]
 pub(crate) mod flow_support;
 
+/// S4 A4 (2026-11-18, spec/15 §11.4 S4): the App-level approval flow scenarios and their golden
+/// `app/tests/s4_flow/flow.txt` (`#[ignore]`, gate step `s4fl`).
+#[cfg(test)]
+#[path = "app_approval_flow_tests.rs"]
+mod flow_tests;
+
 /// Hooks for the screenshot tour (`ui::tour`, an `#[ignore]` test). Gated like the tour module
 /// (`#[cfg(test)]` + `#[cfg(debug_assertions)]`), so `cargo test --release` has no dead code.
 #[cfg(test)]
