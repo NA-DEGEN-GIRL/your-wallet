@@ -327,10 +327,18 @@ mod tests {
         };
         let shown = format!("{press:?}");
         assert!(!shown.contains("token"), "{shown}");
+        // `misses` is counted (and printed) only in debug builds.
+        #[cfg(debug_assertions)]
         assert_eq!(
             shown,
             "Press { press: Core(TemplateSave), input: PressInput { creds: [(QnToken, Units(9)), \
              (AlchemyKey, Absent)], misses: 0 } }"
+        );
+        #[cfg(not(debug_assertions))]
+        assert_eq!(
+            shown,
+            "Press { press: Core(TemplateSave), input: PressInput { creds: [(QnToken, Units(9)), \
+             (AlchemyKey, Absent)] } }"
         );
         let edit = Cmd::Edit {
             field: EditField::WcUri,

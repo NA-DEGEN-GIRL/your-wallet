@@ -435,7 +435,8 @@ pub enum ClipInput {
     Link(Zeroizing<String>),
     /// Windows `CF_DIB` bytes (a Win+Shift+S capture), parsed by
     /// `walletconnect::qr_decode::dib_to_bgra`. Windows only: Android pairs through the
-    /// prefilled link and the camera reader (spec/15 §12.2), not this input.
+    /// prefilled link and the camera reader (spec/15 §12.2), not this input. A plain `Vec`, not
+    /// wiped on drop, as `read_dib` returned before S3 (2026-11-18: wiping it is left for S4).
     WinDib(Vec<u8>),
     /// The clipboard holds no image.
     NoImage,
@@ -458,7 +459,8 @@ impl fmt::Debug for ClipInput {
 
 /// Platform input captured with one press: the units of every credential field the press uses
 /// (each listed field has an entry, `Absent` when its edit did not exist) and, for a press that
-/// reads the clipboard, what it held (S3 D1). No `Clone`; wiped on drop.
+/// reads the clipboard, what it held (S3 D1). No `Clone`; the credential units and a pairing link
+/// are wiped on drop (a `WinDib` image is not).
 #[derive(Default)]
 pub struct PressInput {
     creds: Vec<(CredField, CredUnits)>,

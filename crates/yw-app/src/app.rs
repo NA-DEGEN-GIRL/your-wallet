@@ -3883,7 +3883,7 @@ impl App {
                 drop(used);
             }
             Cmd::Form(snapshot) => self.form.replace(snapshot),
-            // The field's own handler (or the legacy chain) runs after the state has the text.
+            // The field's own handler runs after the state has the text.
             // S3 C2: a converted family's handler takes the field and its text. S3 C11: every
             // handler is converted; a field none claims is ignored, as the legacy chain ignored
             // it. S3 D3: the handler is chosen by `match field` (`on_field_edit`).
