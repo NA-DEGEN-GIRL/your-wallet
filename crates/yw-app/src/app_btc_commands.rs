@@ -194,6 +194,7 @@ impl App {
     /// Bitcoin presses (2026-11-18, S3 C9: a `BtcPress`; before, the control id, and `false` for
     /// an id that was not one of them). Every press repaints at the end, as every claimed id
     /// did.
+    #[expect(clippy::too_many_lines, reason = "one arm per Bitcoin press")]
     pub(crate) fn on_btc(&mut self, press: BtcPress) {
         match press {
             BtcPress::TabBtc => self.btc_select_tab(),
@@ -288,8 +289,22 @@ impl App {
             | BtcPress::EsploraTest(net) => {
                 self.on_btc_esplora(press, net);
             }
-            // The fee radios and the rows (the legacy `other` arm).
-            indexed => self.on_btc_indexed(indexed),
+            // The fee radios and the rows (the legacy `other` arm). Listed by name, not a
+            // catch-all (2026-11-18, S3 C7-C9 review): a new `BtcPress` must be routed on
+            // purpose.
+            BtcPress::FeeFast
+            | BtcPress::FeeNormal
+            | BtcPress::FeeSlow
+            | BtcPress::FeeManual
+            | BtcPress::BumpFeeFast
+            | BtcPress::BumpFeeNormal
+            | BtcPress::BumpFeeSlow
+            | BtcPress::BumpFeeManual
+            | BtcPress::AccountAddType(_)
+            | BtcPress::EvmAccount(_)
+            | BtcPress::Account(_)
+            | BtcPress::Utxo(_)
+            | BtcPress::Activity(..) => self.on_btc_indexed(press),
         }
         // The wrappers repaint only when the controller acted; radios and checks must show the
         // controller state again either way.
@@ -631,5 +646,20 @@ mod tests {
             }
         )));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The fee radios dispatch to the choice they are drawn for (2026-11-18, S3 C7-C9 review):
+    /// `super::fee_choice` of each radio's press equals `fee_choice_of` of its id, which pairs
+    /// `fee_ids` with the drawing order `FEE_CHOICES`.
+    #[test]
+    fn fee_presses_match_the_drawn_radio_order() {
+        use crate::ui::screens_btc::{fee_choice_of, fee_ids};
+        for bump in [false, true] {
+            for id in fee_ids(bump) {
+                let press = ids::press_of(id).unwrap();
+                assert_eq!(super::fee_choice(press), fee_choice_of(id), "id {id}");
+                assert_eq!(fee_choice_of(id).map(|(_, b)| b), Some(bump), "id {id}");
+            }
+        }
     }
 }
