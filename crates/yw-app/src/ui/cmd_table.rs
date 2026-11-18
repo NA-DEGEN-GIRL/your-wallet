@@ -4,8 +4,8 @@
 //! keys state by id (the copy mark `App::command`, an open drop-down).
 //!
 //! 2026-11-18 (S3 B2): created. Enter and Esc map to `Press::Enter`/`Press::Back`; every other id
-//! is `Press::Legacy(id)` until its handler family is converted (S3 C1–C12), and `Legacy` goes in
-//! S3 D3.
+//! was `Press::Legacy(id)` until its handler family was converted (S3 C1–C12; `Legacy` is gone
+//! since S3 D3, below).
 //!
 //! 2026-11-18 (S3 B5): the edit ids ↔ `EditField` (58 plain edits) and `CredField` (7 masked
 //! credential edits), the credential edits each press reads ([`creds_for`], plan §3.4) and
@@ -22,14 +22,14 @@
 //! S3 C12: the core screens, settings sections and URL rows (asked first, as the core arms
 //! were matched before the family chain).
 //!
+//! 2026-11-18 (S3 D1): [`capture`] also reads the clipboard for the `WalletConnect` panel's
+//! `클립보드에서 연결` and `클립보드 이미지에서 QR 읽기` (`ClipInput`); before, their handlers
+//! read it.
+//!
 //! 2026-11-18 (S3 D3): `Press::Legacy` is gone: [`press_of`] gives `None` for an id no
 //! control of the main window sends (an edit's id, S22's painted hold area, the eighth id of a
 //! `YubiKey` connect choice row), and `App::on_command` then only records it as the last
 //! command id.
-//!
-//! 2026-11-18 (S3 D1): [`capture`] also reads the clipboard for the `WalletConnect` panel's
-//! `클립보드에서 연결` and `클립보드 이미지에서 QR 읽기` (`ClipInput`); before, their handlers
-//! read it.
 
 use yw_core::secret::Zeroizing;
 use yw_engine::cmd::Press;
@@ -1536,7 +1536,9 @@ mod tests {
     /// the ones no handler claimed before either: the edits (fields and credentials), S22's
     /// painted hold area and the eighth id of a `YubiKey` connect choice row. Table tests (2)
     /// and (7) (S3 D3): `Legacy` is gone, and exactly these ids are no press (`None`); an id
-    /// past every block is none either.
+    /// past every block is none either. 2026-11-18 (S3 D1-D3 review): no such id is a
+    /// `새로고침` or a receive-gated id, so dropping `Press::Legacy`'s receive gate and the
+    /// received-history observer it reached (`App::received_observe`) loses nothing.
     #[test]
     fn only_unclaimed_ids_are_no_press() {
         use screens_yubikey::ids::{
@@ -1551,7 +1553,12 @@ mod tests {
                 || cred_of(id).is_some()
                 || id == screens_reset::ids::RESET_HOLD
                 || no_radio;
-            assert_eq!(press_of(id, &controls).is_none(), unclaimed, "{id}");
+            let none = press_of(id, &controls).is_none();
+            assert_eq!(none, unclaimed, "{id}");
+            if none {
+                assert_eq!(crate::app_received::refresh_chain(id), None, "{id}");
+                assert!(!screens::RECEIVE_IDS.contains(&id), "{id}");
+            }
         }
         // An id in no block of `ui::command_ids` (not every decoded block is listed there, e.g.
         // Zcash's source radios at 8 020, so only ids past the last block are checked).
