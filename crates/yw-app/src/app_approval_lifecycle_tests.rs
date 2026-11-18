@@ -13,14 +13,16 @@
 //! and the dApp answer (critique A-17: the key and RPC results enter through the event drain of
 //! the main window, `WM_YW_EVENTS`, never through the answer helpers), the `YubiKey` card step
 //! reached from the window (mock card wallet of `yw_engine::testkit::yubikey_wallet`), the
-//! queue limits through the dApp entry, the journal-before-broadcast order per chain at the App
+//! queue limits through the dApp entry (the dispatcher's and, with the app's own send shown, the
+//! App queue's), the journal-before-broadcast order per chain at the App
 //! (critique A-5), the `rpc.json` import on temp data (critique B-5) and the balance polling
 //! while the main window is hidden (critique B-10).
 //!
 //! Nothing here touches the network (the RPC channel is captured; RPC answers are built here),
-//! a card reader (the mock card's wallet is built by the key worker on this test's temp folder;
-//! no card job runs), a process, the clipboard or the registry; files are written only below the
-//! fixtures' own temp folders (and by `print`, into `YW_S4_FLOW_OUT` when it is set). The
+//! a card reader (the mock card's wallet is built by the key worker in a `card` folder below the
+//! fixture's own temp folder, which the fixture removes when it drops; no card job runs), a
+//! process, the clipboard or the registry; files are written only below the fixtures' own temp
+//! folders (and by `print`, into `YW_S4_FLOW_OUT` when it is set). The
 //! `rpc.json` of the import scenario is a file in the fixture's folder named by the
 //! `TEST_RPC_JSON` seam before any press, never `%USERPROFILE%\.yw-dev\rpc.json`.
 //!
@@ -516,23 +518,25 @@ fn open_then_lock_same_entry() -> Vec<String> {
         app.lock(LockReason::Manual);
     }
     rec.snap("open-and-lock");
-    let opened = super::super::flow_support::take_log()
-        .iter()
-        .filter(|entry| {
-            matches!(
-                entry,
-                super::super::flow_support::Logged::Effect {
-                    fx: super::super::flow_support::Fx::SetCapture
-                        | super::super::flow_support::Fx::Show,
-                    ..
-                }
-            )
-        })
-        .count();
+    // Each A01 effect counted on its own (A6 review: a `SetCapture` is not a show).
+    let log = super::super::flow_support::take_log();
+    let count = |wanted: super::super::flow_support::Fx| {
+        log.iter()
+            .filter(|entry| {
+                matches!(
+                    entry,
+                    super::super::flow_support::Logged::Effect { fx, .. } if *fx == wanted
+                )
+            })
+            .count()
+    };
+    let shows = count(super::super::flow_support::Fx::Show);
+    let captures = count(super::super::flow_support::Fx::SetCapture);
+    let releases = count(super::super::flow_support::Fx::ReleaseCapture);
     rec.fact(
         "windows",
         &format!(
-            "approval windows={} show calls={opened}",
+            "approval windows={} show calls={shows} capture calls={captures} release calls={releases}",
             approval_windows()
         ),
     );
@@ -566,6 +570,28 @@ fn personal_sign_frame_only(fx: &Fixture, outlet: &Outlet, core: &crate::browser
 
 // ----- revoke, removal, chain deletion, cancel (scout C T2 #17) -------------------------------
 
+/// The id of the request the approval window shows.
+fn shown_id(fx: &Fixture) -> Option<yw_core::approval::ApprovalId> {
+    fx.app
+        .borrow()
+        .evm
+        .window
+        .as_ref()
+        .and_then(|ui| ui.request.as_ref().map(|request| request.id))
+}
+
+/// The store state of request `id` (shown before a revoke or cancel; the recorder's `store`
+/// column follows the request shown after it, A6 review) and the approval windows left.
+fn entry_fact(fx: &Fixture, id: Option<yw_core::approval::ApprovalId>) -> String {
+    let state = id
+        .and_then(|id| fx.app.borrow().evm.store.state(id))
+        .map_or_else(|| "-".to_owned(), |state| format!("{state:?}"));
+    format!(
+        "store of the request shown before={state} approval windows={}",
+        approval_windows()
+    )
+}
+
 /// Two sites: `https://app.example` (account A) and [`OTHER`] (account B), each granted; request
 /// 1 (app, A) shown and armed, request 2 ([`OTHER`], B) and 3 (app, A) waiting.
 fn two_sites(fx: &Fixture, rec: &mut Rec<'_>, outlet: &Outlet) {
@@ -583,8 +609,10 @@ fn revoke_disconnect_while_shown() -> Vec<String> {
     let outlet = super::dapp(&fx, false, true);
     let mut rec = Rec::new("revoke_disconnect_while_shown", &fx, Some(&outlet));
     two_sites(&fx, &mut rec, &outlet);
+    let shown = shown_id(&fx);
     fx.app().disconnect_site(&origin());
     rec.snap("disconnect");
+    rec.fact("first", &entry_fact(&fx, shown));
     rec.lines
 }
 
@@ -594,9 +622,11 @@ fn revoke_account_removed_while_shown() -> Vec<String> {
     let outlet = super::dapp(&fx, false, true);
     let mut rec = Rec::new("revoke_account_removed_while_shown", &fx, Some(&outlet));
     two_sites(&fx, &mut rec, &outlet);
+    let shown = shown_id(&fx);
     fx.app()
         .account_removed_from_sites(&parse_address(ACCOUNT_A).unwrap());
     rec.snap("account-removed");
+    rec.fact("first", &entry_fact(&fx, shown));
     rec.lines
 }
 
@@ -606,9 +636,11 @@ fn revoke_chain_deleted_while_shown() -> Vec<String> {
     let outlet = super::dapp(&fx, false, true);
     let mut rec = Rec::new("revoke_chain_deleted_while_shown", &fx, Some(&outlet));
     two_sites(&fx, &mut rec, &outlet);
+    let shown = shown_id(&fx);
     fx.app()
         .chain_removed_from_sites(yw_core::evm::chain::SEPOLIA);
     rec.snap("chain-deleted");
+    rec.fact("first", &entry_fact(&fx, shown));
     rec.lines
 }
 
@@ -619,8 +651,11 @@ fn cancel_while_shown() -> Vec<String> {
     let outlet = super::dapp(&fx, false, true);
     let mut rec = Rec::new("cancel_while_shown", &fx, Some(&outlet));
     two_sites(&fx, &mut rec, &outlet);
+    let first = shown_id(&fx);
     cancel_request(&fx, &outlet, 1, 10);
     rec.snap("page-cancel");
+    rec.fact("first", &entry_fact(&fx, first));
+    let second = shown_id(&fx);
     let core = fx
         .app
         .borrow()
@@ -635,6 +670,7 @@ fn cancel_while_shown() -> Vec<String> {
         }
     }
     rec.snap("connection-closed");
+    rec.fact("second", &entry_fact(&fx, second));
     rec.lines
 }
 
@@ -930,6 +966,54 @@ fn queue_limits() -> Vec<String> {
     rec.lines
 }
 
+/// The App queue's own limit (A6 review; `App::on_site_request`: `enqueue(..).is_err()` ->
+/// -32005), reached while the dispatcher still has room. The app's own send is shown first (an
+/// app item counts in the App's 64 but not in the dispatcher's site count), then 63 site
+/// requests (16 + 16 + 16 + 15 from four sites) fill the App queue; the next site request (a
+/// fifth site, the dispatcher at 63) passes the dispatcher and is refused by the App. Rejecting
+/// the app send (Enter on `거부`) frees one place and the same request is then queued. The App's
+/// 16 per origin cannot be reached this way (the dispatcher counts the same site requests per
+/// origin and refuses first); `ap3_queue_limits` (yw-engine) pins the queue's own check.
+fn queue_limit_at_the_app() -> Vec<String> {
+    let fx = fixture("queue-limit-app");
+    let outlet = super::dapp(&fx, false, true);
+    let mut rec = Rec::new("queue_limit_at_the_app", &fx, Some(&outlet));
+    let sites = [
+        "https://app.example",
+        "https://b.example",
+        "https://c.example",
+        "https://d.example",
+        "https://e.example",
+    ];
+    for site in &sites[1..] {
+        grant(&fx, site, ACCOUNT_A);
+    }
+    fx.enqueue_sepolia_send();
+    rec.snap("app-send-shown");
+    let mut n = 0_u8;
+    for (index, site) in sites[..4].iter().enumerate() {
+        let tab = 17 + u8::try_from(index).unwrap();
+        let count = if index == 3 { 15 } else { 16 };
+        for _ in 0..count {
+            n += 1;
+            personal_sign_from(&fx, &outlet, n, site, tab, ACCOUNT_A);
+        }
+    }
+    rec.snap("63-site-requests");
+    n += 1;
+    personal_sign_from(&fx, &outlet, n, sites[4], 21, ACCOUNT_A);
+    rec.snap("64th-site-request");
+    at(&fx, 0);
+    ev(&fx, InteractionEvent::Tick);
+    at(&fx, 1_500);
+    super::key(&fx, super::VK_RETURN, false);
+    rec.snap("app-send-rejected");
+    n += 1;
+    personal_sign_from(&fx, &outlet, n, sites[4], 21, ACCOUNT_A);
+    rec.snap("64th-site-request-again");
+    rec.lines
+}
+
 // ----- the card step reached from the window (scout C T2 #19) ---------------------------------
 
 /// The mock card wallet (an explicit `cfg(test)` module: `card_pcsc`'s source scan
@@ -965,17 +1049,13 @@ fn card_fact(fx: &Fixture) -> String {
 /// later PIN signs nothing); a step past its PIN is not aborted by a disconnect and its
 /// signature is answered 4100.
 fn card_step_from_the_window() -> Vec<String> {
-    use std::sync::atomic::AtomicU64;
-    static NEXT: AtomicU64 = AtomicU64::new(0);
     let fx = fixture("card-step");
     let main = spare_window();
     let outlet = super::dapp(&fx, false, false);
     install_events(&fx, Some(&outlet));
-    let dir = std::env::temp_dir().join(format!(
-        "yw-s4-card-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
+    // Below the fixture's folder, which the fixture removes when it drops (a panic included;
+    // A6 review: it was a separate `%TEMP%` folder removed on the success path only).
+    let dir = fx.dir().join("card");
     std::fs::create_dir_all(&dir).unwrap();
     let (wallet_dir, loaded) = card_wallet::meta(dir.clone());
     {
@@ -1607,6 +1687,12 @@ fn rpc_import_on_temp_data() -> Vec<String> {
 /// Critique B-10: the main timer's balance, `HyperCore` and received-history reads with the main
 /// window shown (no window: tests are "not hidden") and hidden (a hidden stand-in main window),
 /// on the EVM and the Solana tab; every due time reset before each tick.
+///
+/// The "shown" case is `App::main == None` (`main_hidden()` is false without a main window), not
+/// a main window that is visible or restored: `main_hidden` reads `is_hidden_or_minimized` of
+/// the real window, and these tests never show a window (A6 review). A W3 `main_hidden` mirror
+/// that got the visible-window case wrong (e.g. hidden by default once `main` is `Some`) would
+/// not change these lines; that case stays an open item for W3 (its own check there).
 fn polling_while_hidden() -> Vec<String> {
     let fx = fixture("polling");
     let timer = spare_window();
@@ -1656,7 +1742,7 @@ fn polling_while_hidden() -> Vec<String> {
 type Scenario = fn() -> Vec<String>;
 
 /// Every scenario, in golden order.
-const SCENARIOS: [(&str, Scenario); 24] = [
+const SCENARIOS: [(&str, Scenario); 25] = [
     ("lock_shortcut_while_shown", lock_shortcut_while_shown),
     (
         "lock_with_resimulation_in_flight",
@@ -1699,6 +1785,7 @@ const SCENARIOS: [(&str, Scenario); 24] = [
     ("journal_zec", journal_zec),
     ("card_step_from_the_window", card_step_from_the_window),
     ("queue_limits", queue_limits),
+    ("queue_limit_at_the_app", queue_limit_at_the_app),
     ("rpc_import_on_temp_data", rpc_import_on_temp_data),
     ("polling_while_hidden", polling_while_hidden),
 ];
@@ -1763,18 +1850,25 @@ lifecycle_tests! {
     golden_journal_zec => "journal_zec",
     golden_card_step_from_the_window => "card_step_from_the_window",
     golden_queue_limits => "queue_limits",
+    golden_queue_limit_at_the_app => "queue_limit_at_the_app",
     golden_rpc_import_on_temp_data => "rpc_import_on_temp_data",
     golden_polling_while_hidden => "polling_while_hidden",
 }
 
 /// Every scenario in table order: writes `lifecycle.txt` into `YW_S4_FLOW_OUT` when it is set
-/// (for review), else compares the whole golden file (order and completeness).
+/// (for review), else compares the whole golden file (order and completeness). Each scenario
+/// runs on a thread of its own, as each `golden_*` test does (A6 review: `lock_end_session`
+/// runs the real shutdown, which posts `WM_QUIT` to its thread; the scenarios after it must not
+/// run with that message pending once effects or message pumps reach them).
 #[test]
 #[ignore = "creates hidden approval windows (S4 flow harness, gate step s4fl)"]
 fn print() {
     let mut out = String::new();
     for (_, scenario) in &SCENARIOS {
-        for line in scenario() {
+        let lines = std::thread::spawn(*scenario)
+            .join()
+            .expect("the scenario's thread");
+        for line in lines {
             out.push_str(&line);
             out.push('\n');
         }
