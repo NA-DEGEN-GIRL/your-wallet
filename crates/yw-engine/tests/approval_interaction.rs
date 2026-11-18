@@ -1573,7 +1573,8 @@ fn ap7_deadline_is_min_of_site_and_display() {
 
 /// L-2's engine half (spec/04 §3.4): once the status is `Approved`, `restart_arm_delay`, the
 /// checkbox, the foreground and every event leave it `Approved` (a Reject does nothing) while the
-/// gate's `ready_at` still moves; only `restart_interaction` brings a pending interaction back.
+/// gate's values (`ready_at`, the checkbox, the foreground) still move; only
+/// `restart_interaction` brings a pending interaction back.
 #[test]
 fn ap7_restart_arm_delay_while_approved_does_nothing() {
     let mut s = session(message(RiskLevel::Info, false, 0), 0);
@@ -1586,9 +1587,20 @@ fn ap7_restart_arm_delay_while_approved_does_nothing() {
         s.event(1_200, InteractionEvent::RejectActivated),
         InteractionStatus::Approved
     );
+    // 2026-11-18 (S4 A1 review): the gate's checkbox and foreground values move too.
     s.set_ack(1_300, true);
+    assert!(s.gate.ack_checked);
+    assert_eq!(s.interaction().status(), InteractionStatus::Approved);
     s.set_foreground(1_400, false);
+    assert!(!s.gate.is_foreground);
+    assert_eq!(s.gate.ready_at_ms, 1_100);
     s.set_foreground(1_500, true);
+    assert!(s.gate.is_foreground);
+    assert_eq!(
+        s.gate.ready_at_ms, 1_500,
+        "re-activation restarts the arm delay"
+    );
+    assert_eq!(s.interaction().status(), InteractionStatus::Approved);
     assert_eq!(
         s.event(200_000, InteractionEvent::Tick),
         InteractionStatus::Approved
@@ -1651,12 +1663,14 @@ impl Rng {
 /// transaction whose simulation failed, a connect window, preparing and failed.
 fn fuzz_content(rng: &mut Rng) -> PrepareState {
     let signing = |request| PrepareState::Ready(ReadyContent::Signing(Box::new(request)));
-    match rng.below(8) {
+    // 2026-11-18 (S4 A1 review): weighted towards High (four of eleven) so that the short
+    // gate run reaches High approvals more than a few dozen times.
+    match rng.below(11) {
         0 => signing(message(RiskLevel::Info, false, 0)),
-        1 => signing(message(RiskLevel::High, true, 1)),
-        2 => signing(message(RiskLevel::High, false, 2)),
+        1 | 8 => signing(message(RiskLevel::High, true, 1)),
+        2 | 9 => signing(message(RiskLevel::High, false, 2)),
         3 => signing(message(RiskLevel::Blocked, false, 1)),
-        4 => signing(request(
+        4 | 10 => signing(request(
             RiskLevel::Caution,
             false,
             0,
@@ -1735,12 +1749,25 @@ fn fuzz_risk(gate: &ApprovalGate) -> Option<InteractionRisk> {
     }
 }
 
+/// What the fuzz remembers about the hold under way: when it started, the gate's `ready_at` then,
+/// and whether a session operation that must cancel a hold (an arm-delay restart, a foreground
+/// change, an acknowledgement change where one is required, a content replacement or an
+/// interaction restart) has happened since.
+#[derive(Default)]
+struct FuzzHold {
+    started: Option<(u64, u64)>,
+    disturbed: bool,
+}
+
 /// Checks one session event: a hold starts only on an armed, spaced, physical press of an
-/// approvable request, and `Approved` appears only with every one of its conditions
-/// (Standard: a spaced physical Enter or the release of such a hold; High: a hold ≥ 2 s).
+/// approvable request; an event never leaves a terminal status (`Approved` stays, `Rejected`
+/// stays); and `Approved` appears only with every one of its conditions (Standard: a spaced
+/// physical Enter or the release of such a hold; High: a hold ≥ 2 s), where an approving hold
+/// started ≥ 1 s after the gate's current `ready_at` and survived no cancelling operation.
 /// Returns the level of the approval this event made, if it made one.
 fn fuzz_check_event(
     s: &mut ApprovalSession,
+    tracker: &mut FuzzHold,
     now: u64,
     event: InteractionEvent,
 ) -> Option<InteractionRisk> {
@@ -1754,6 +1781,11 @@ fn fuzz_check_event(
         .last_press_ms()
         .is_none_or(|last| now >= last + APPROVE_ARM_DELAY_MS);
     let after = s.event(now, event);
+    if before != InteractionStatus::Pending {
+        // 2026-11-18 (S4 A1 review): only `restart_interaction`/`replace_content` renew it.
+        assert_eq!(after, before, "an event left a terminal status: {event:?}");
+        return None;
+    }
     if hold.is_none() && s.interaction().hold_source().is_some() {
         assert!(
             fuzz_gate_open(&gate, now),
@@ -1772,12 +1804,27 @@ fn fuzz_check_event(
                 physical_down: true,
             }
         ));
+        *tracker = FuzzHold {
+            started: Some((now, gate.ready_at_ms)),
+            disturbed: false,
+        };
     }
-    if before == InteractionStatus::Pending && after == InteractionStatus::Approved {
+    if after == InteractionStatus::Approved {
         assert!(
             fuzz_gate_open(&gate, now),
             "approved without the gate: {event:?}"
         );
+        if hold.is_some() {
+            let (started, ready_at) = tracker
+                .started
+                .unwrap_or_else(|| unreachable!("a hold the fuzz did not see start"));
+            assert!(!tracker.disturbed, "a hold survived a cancelling operation");
+            assert_eq!(ready_at, gate.ready_at_ms, "the gate moved under a hold");
+            assert!(
+                started >= gate.ready_at_ms + APPROVE_ARM_DELAY_MS,
+                "a hold started before the arm delay"
+            );
+        }
         match risk {
             Some(InteractionRisk::Standard) => match event {
                 InteractionEvent::ApproveActivated { physical: true } => assert!(spaced),
@@ -1802,39 +1849,75 @@ fn fuzz_check_event(
     None
 }
 
+/// Whether the shown content needs the acknowledgement box for approval.
+fn fuzz_ack_required(gate: &ApprovalGate) -> bool {
+    matches!(
+        &gate.prepare,
+        PrepareState::Ready(ReadyContent::Signing(request))
+            if request.display.risk != RiskLevel::Blocked && ack_needed(request)
+    )
+}
+
 /// The session-level operations the App performs besides events; none of them approves.
-fn fuzz_other_step(s: &mut ApprovalSession, rng: &mut Rng, now: u64) {
+/// Marks `tracker` disturbed when the operation must cancel a hold under way (the raw
+/// `submitting`/`connect_selected` writes are judged by the next event's re-arm instead).
+fn fuzz_other_step(s: &mut ApprovalSession, tracker: &mut FuzzHold, rng: &mut Rng, now: u64) {
     let before = s.interaction().status();
-    match rng.below(7) {
-        0 => s.set_foreground(now, rng.below(5) != 0),
-        1 => s.set_ack(now, rng.flag()),
-        2 => s.restart_arm_delay(now),
+    let cancels = match rng.below(7) {
+        0 => {
+            let foreground = rng.below(5) != 0;
+            let changed = foreground != s.gate.is_foreground;
+            s.set_foreground(now, foreground);
+            changed
+        }
+        1 => {
+            let checked = rng.flag();
+            let changed = checked != s.gate.ack_checked && fuzz_ack_required(&s.gate);
+            s.set_ack(now, checked);
+            changed
+        }
+        2 => {
+            s.restart_arm_delay(now);
+            true
+        }
         3 => {
             let content = fuzz_content(rng);
             let _ = s.replace_content(now, content);
+            true
         }
         4 => {
             s.gate.submitting = rng.below(3) == 0;
             let _ = s.restart_interaction(now);
+            true
         }
-        5 => s.gate.connect_selected = rng.connect_count(),
-        _ => s.gate.submitting = rng.below(4) == 0,
-    }
-    if before == InteractionStatus::Pending {
-        assert_ne!(
-            s.interaction().status(),
-            InteractionStatus::Approved,
-            "only an event approves"
-        );
-    }
+        5 => {
+            s.gate.connect_selected = rng.connect_count();
+            false
+        }
+        _ => {
+            s.gate.submitting = rng.below(4) == 0;
+            false
+        }
+    };
+    tracker.disturbed |= cancels;
+    // 2026-11-18 (S4 A1 review): from any status, not only `Pending`.
+    assert!(
+        before == InteractionStatus::Approved
+            || s.interaction().status() != InteractionStatus::Approved,
+        "only an event approves"
+    );
 }
 
 /// AP-7 fuzz-lite: random sessions (Info, High with and without the flag, Blocked, a failed
 /// simulation, connect with 0/1/16/17 accounts, preparing, failed) driven by random events,
 /// foreground flips, checkbox toggles, arm-delay restarts, content replacements, interaction
 /// restarts and `submitting`, with time mostly moving forward. Whenever the status turns
-/// `Approved`, every condition of spec/04 §3.4 held at that moment; a hold never starts
-/// without them; nothing but an event approves.
+/// `Approved` (from any status), every condition of spec/04 §3.4 held at that moment and an
+/// approving hold started ≥ 1 s after the gate's current `ready_at` with no cancelling session
+/// operation since; a hold never starts without them; no event leaves `Approved` or
+/// `Rejected`; nothing but an event approves. (2026-11-18, S4 A1 review: the last three checks
+/// and the High weighting were added; the 20,000-run gate step reaches 162 High and 318
+/// Standard approvals, was 30 and 496.)
 #[test]
 #[ignore = "fuzz-lite (spec/09 §2.4 fallback)"]
 fn fuzz_lite_approval_never_without_its_conditions() {
@@ -1854,6 +1937,10 @@ fn fuzz_lite_approval_never_without_its_conditions() {
         };
         let mut s =
             ApprovalSession::new(gate, now).unwrap_or_else(|_| unreachable!("valid session"));
+        let mut tracker = FuzzHold::default();
+        // 2026-11-18 (S4 A1 review): half of the sessions are calm — fewer session
+        // operations, and mostly `Tick` while a hold is under way — so that holds complete.
+        let calm = rng.flag();
         for _ in 0..64 {
             now = match rng.below(64) {
                 0 => now.saturating_sub(1 + rng.below(100)),
@@ -1861,11 +1948,16 @@ fn fuzz_lite_approval_never_without_its_conditions() {
                 5 => now + 20_000 + rng.below(110_000),
                 _ => now + rng.below(400),
             };
-            if rng.below(3) == 0 {
-                fuzz_other_step(&mut s, &mut rng, now);
+            if rng.below(if calm { 8 } else { 3 }) == 0 {
+                fuzz_other_step(&mut s, &mut tracker, &mut rng, now);
             } else {
-                let event = fuzz_event(&mut rng);
-                match fuzz_check_event(&mut s, now, event) {
+                let event = if calm && s.interaction().hold_source().is_some() && rng.below(8) != 0
+                {
+                    InteractionEvent::Tick
+                } else {
+                    fuzz_event(&mut rng)
+                };
+                match fuzz_check_event(&mut s, &mut tracker, now, event) {
                     Some(InteractionRisk::Standard) => standard += 1,
                     Some(InteractionRisk::High) => high += 1,
                     None => {}

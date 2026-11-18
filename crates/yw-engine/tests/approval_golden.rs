@@ -533,9 +533,10 @@ fn print_v14_goldens() -> TestResult {
 // example, the secp256k1 keys 1 and 2, the BIP173 P2WPKH vector) and patterned bytes for txids,
 // outpoints and blockhashes. The approval digest is rebuilt with the spec/03 §11.4 field order
 // in the test (kind byte, chain tag and network codes written out); the payload bytes of the
-// transcript-shaped payloads (SOL intent and messages, dApp SOL transactions, BTC messages,
-// HyperCore actions) are the payload's own (their layouts are pinned by their modules' tests),
-// the EVM ones are rebuilt here. Recorded from the code at `0909127` with `print_v14_goldens`.
+// transcript-shaped payloads (SOL intent and messages, dApp SOL transactions, the BTC send and
+// fee-bump `btc_payload`, BTC messages, the ZEC `zec_payload`, HyperCore actions) are the
+// payload's own (their layouts are pinned by their modules' tests), the EVM ones are rebuilt
+// here. (2026-11-18, review: the BTC send/fee-bump and ZEC payloads were missing from that list.) Recorded from the code at `0909127` with `print_v14_goldens`.
 
 use yw_core::approval::{ApprovalDisplay, SigningPayload, build_typed_request};
 use yw_core::bip32::AccountXpub;
@@ -1510,13 +1511,16 @@ fn v14_every_approval_kind() -> TestResult {
     Ok(())
 }
 
-/// The golden that pins each `ApprovalKind` (exhaustive: a new kind does not compile without one).
+/// The golden that pins each `ApprovalKind` (exhaustive `match`; `every_approval_kind_has_a_golden`
+/// checks `ALL_KINDS` against the enum's source). 2026-11-18 (review): `EvmTransaction` and
+/// `EvmPersonalSign` map to their `WC_SEND`/`SIWE` goldens (also pinned by the V14 TAG1/TAG0
+/// goldens above), so both languages are checked for them too; they were skipped before.
 const fn kind_golden(kind: ApprovalKind) -> &'static str {
     match kind {
-        ApprovalKind::EvmTransaction => "TAG1",
+        ApprovalKind::EvmTransaction => "WC_SEND",
         ApprovalKind::EvmSpeedUp => "SPEED_UP",
         ApprovalKind::EvmCancel => "CANCEL",
-        ApprovalKind::EvmPersonalSign => "TAG0",
+        ApprovalKind::EvmPersonalSign => "SIWE",
         ApprovalKind::EvmTypedData => "TYPED",
         ApprovalKind::SolTransfer => "SOL_TRANSFER",
         ApprovalKind::SolMessage => "SOL_MESSAGE",
@@ -1530,30 +1534,65 @@ const fn kind_golden(kind: ApprovalKind) -> &'static str {
     }
 }
 
-/// No approval kind is left without a golden in either language.
+/// Every `ApprovalKind`, in declaration order.
+const ALL_KINDS: [ApprovalKind; 14] = [
+    ApprovalKind::EvmTransaction,
+    ApprovalKind::EvmSpeedUp,
+    ApprovalKind::EvmCancel,
+    ApprovalKind::EvmPersonalSign,
+    ApprovalKind::EvmTypedData,
+    ApprovalKind::SolTransfer,
+    ApprovalKind::BtcSend,
+    ApprovalKind::BtcFeeBump,
+    ApprovalKind::SolMessage,
+    ApprovalKind::SolSignIn,
+    ApprovalKind::SolTransaction,
+    ApprovalKind::BtcMessage,
+    ApprovalKind::ZecSend,
+    ApprovalKind::HyperCoreAction,
+];
+
+/// The yw-core source that declares `ApprovalKind` (read at compile time).
+const APPROVAL_SOURCE: &str = include_str!("../../yw-core/src/approval/mod.rs");
+
+/// The `(name, code)` of each variant of `ApprovalKind` as declared in the source.
+fn declared_kinds() -> TestResult<Vec<(String, u8)>> {
+    let start = APPROVAL_SOURCE
+        .find("pub enum ApprovalKind {")
+        .ok_or("ApprovalKind declaration")?;
+    let body = APPROVAL_SOURCE.get(start..).ok_or("ApprovalKind body")?;
+    let end = body.find("\n}").ok_or("ApprovalKind end")?;
+    let body = body.get(..end).ok_or("ApprovalKind body end")?;
+    let mut kinds = Vec::new();
+    for line in body.lines().map(str::trim) {
+        if line.starts_with("//") || !line.contains(" = 0x") {
+            continue;
+        }
+        let (name, code) = line
+            .trim_end_matches(',')
+            .split_once(" = 0x")
+            .ok_or("variant")?;
+        kinds.push((name.to_owned(), u8::from_str_radix(code, 16)?));
+    }
+    Ok(kinds)
+}
+
+/// No approval kind is left without a golden in either language: `ALL_KINDS` is the enum's
+/// variant list (read from the yw-core source, so a new kind without a row here fails), and each
+/// kind has a ko and an en golden row and case of its own kind.
 #[test]
 fn every_approval_kind_has_a_golden() -> TestResult {
-    let kinds = [
-        ApprovalKind::EvmTransaction,
-        ApprovalKind::EvmSpeedUp,
-        ApprovalKind::EvmCancel,
-        ApprovalKind::EvmPersonalSign,
-        ApprovalKind::EvmTypedData,
-        ApprovalKind::SolTransfer,
-        ApprovalKind::SolMessage,
-        ApprovalKind::SolSignIn,
-        ApprovalKind::SolTransaction,
-        ApprovalKind::BtcSend,
-        ApprovalKind::BtcFeeBump,
-        ApprovalKind::BtcMessage,
-        ApprovalKind::ZecSend,
-        ApprovalKind::HyperCoreAction,
-    ];
-    for kind in kinds {
+    let declared = declared_kinds()?;
+    let listed: Vec<(String, u8)> = ALL_KINDS
+        .iter()
+        .map(|kind| (format!("{kind:?}"), kind.code()))
+        .collect();
+    assert_eq!(
+        listed, declared,
+        "ALL_KINDS against the ApprovalKind source"
+    );
+    for kind in ALL_KINDS {
         let name = kind_golden(kind);
-        if matches!(name, "TAG1" | "TAG0") {
-            continue; // the earlier V14 goldens above
-        }
         for lang in [Lang::Ko, Lang::En] {
             let full = golden_name(lang, name);
             assert!(KIND_GOLDENS.iter().any(|row| row.0 == full), "{full}");
