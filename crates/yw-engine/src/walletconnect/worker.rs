@@ -316,6 +316,8 @@ pub struct Worker {
     connector: Box<dyn RelayConnector>,
     http: Option<Box<dyn VerifyHttp + Send>>,
     p256: P256Verify,
+    /// The platform word of the relay user agent (S3 D2).
+    ua_platform: &'static str,
     verify_key: Option<VerifyKey>,
     project_id: Option<String>,
     client_seed: Option<Zeroizing<[u8; 32]>>,
@@ -347,6 +349,17 @@ impl core::fmt::Debug for Worker {
 
 fn hex(topic: &[u8; 32]) -> String {
     yw_core::hex::encode(topic)
+}
+
+/// The relay user agent (`wc-2/rust-yourwallet-{version}/{platform}`, spec/13 §4; the relay
+/// spec's `protocol/sdk/os` form). 2026-11-18 (S3 D2): the platform word is the shell's
+/// argument (Windows: `"windows"`, the same bytes as before); before, `/windows` was fixed.
+#[must_use]
+pub fn relay_ua(platform: &str) -> String {
+    format!(
+        "wc-2/rust-yourwallet-{}/{platform}",
+        env!("CARGO_PKG_VERSION")
+    )
 }
 
 fn percent_encode(text: &str) -> String {
@@ -466,12 +479,15 @@ pub mod text {
 impl Worker {
     /// A worker on `core` (opens the virtual connection) and its input sender. `p256` is the
     /// platform's ES256 check of Verify v3 attestations (Windows: yw-win `cng::p256_verify`).
+    /// `ua_platform` is the last word of the relay user agent ([`relay_ua`]; Windows:
+    /// `"windows"`; 2026-11-18 S3 D2, before it was fixed here).
     pub fn new(
         core: Arc<BrowserCore>,
         sink: Arc<dyn WcSink>,
         connector: Box<dyn RelayConnector>,
         http: Option<Box<dyn VerifyHttp + Send>>,
         p256: P256Verify,
+        ua_platform: &'static str,
     ) -> (Self, Sender<Input>, Receiver<Input>) {
         let (tx, rx) = std::sync::mpsc::channel();
         let conn = core.open_virtual_connection(Box::new(WcOutlet(Mutex::new(tx.clone()))));
@@ -483,6 +499,7 @@ impl Worker {
             connector,
             http,
             p256,
+            ua_platform,
             verify_key: None,
             project_id: None,
             client_seed: None,
@@ -756,10 +773,9 @@ impl Worker {
             self.now_s(),
             JWT_TTL_S,
         );
-        let ua = format!("wc-2/rust-yourwallet-{}/windows", env!("CARGO_PKG_VERSION"));
         Some(format!(
             "https://relay.walletconnect.org/?auth={jwt}&projectId={project}&ua={}",
-            percent_encode(&ua)
+            percent_encode(&relay_ua(self.ua_platform))
         ))
     }
 
@@ -1399,7 +1415,7 @@ impl WcHandle {
     }
 }
 
-/// Starts the worker thread (`p256`: see [`Worker::new`]).
+/// Starts the worker thread (`p256`, `ua_platform`: see [`Worker::new`]).
 #[must_use]
 pub fn start(
     core: Arc<BrowserCore>,
@@ -1407,8 +1423,9 @@ pub fn start(
     connector: Box<dyn RelayConnector>,
     http: Option<Box<dyn VerifyHttp + Send>>,
     p256: P256Verify,
+    ua_platform: &'static str,
 ) -> Option<WcHandle> {
-    let (worker, tx, rx) = Worker::new(core, sink, connector, http, p256);
+    let (worker, tx, rx) = Worker::new(core, sink, connector, http, p256, ua_platform);
     let thread = std::thread::Builder::new()
         .name("yw-walletconnect".to_owned())
         .spawn(move || worker.run(&rx))

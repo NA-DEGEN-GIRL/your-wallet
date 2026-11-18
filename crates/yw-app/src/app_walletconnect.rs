@@ -370,6 +370,8 @@ impl App {
             Box::new(WsConnector),
             http,
             yw_win::cng::p256_verify,
+            // The relay user agent's platform word (S3 D2; the same `…/windows` as before).
+            "windows",
         );
         if self.wc.handle.is_none() {
             logging::warn("walletconnect", "worker.start_failed", &[]);

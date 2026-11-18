@@ -46,7 +46,7 @@
 
 ## 4. 릴레이 연결
 
-- `wss://relay.walletconnect.org/?auth={JWT}&projectId={ID}&ua=wc-2%2Frust-yourwallet-{버전}%2Fwindows`. yw-win `ws`(WinHTTP WebSocket: `WINHTTP_OPTION_UPGRADE_TO_WEB_SOCKET` → 101 → `WinHttpWebSocketCompleteUpgrade`), TLS 1.2/1.3, 리다이렉트·쿠키·자동 인증 없음, keep-alive 15초, 닫기 시간 2초. 연결 15초 제한. 오류에는 URL(토큰·ID 포함)을 넣지 않는다.
+- `wss://relay.walletconnect.org/?auth={JWT}&projectId={ID}&ua=wc-2%2Frust-yourwallet-{버전}%2Fwindows`. (2026-11-18 S3 D2: 마지막 낱말 `windows`는 셸이 넘기는 플랫폼 인자다 — `worker::start`·`Worker::new`의 `ua_platform`, UA 문자열은 `worker::relay_ua`가 만든다. Windows는 `"windows"`를 넘기므로 바이트는 전과 같다. 전에는 `worker.rs`에 `/windows`가 박혀 있었다.) yw-win `ws`(WinHTTP WebSocket: `WINHTTP_OPTION_UPGRADE_TO_WEB_SOCKET` → 101 → `WinHttpWebSocketCompleteUpgrade`), TLS 1.2/1.3, 리다이렉트·쿠키·자동 인증 없음, keep-alive 15초, 닫기 시간 2초. 연결 15초 제한. 오류에는 URL(토큰·ID 포함)을 넣지 않는다.
 - 구독할 토픽(페어링 + 세션)이 있고 Project ID와 클라이언트 키가 있을 때만 연결한다. 토픽이 없으면 10초 뒤 닫는다. 끊기면 1초부터 두 배씩 최대 60초 간격으로 다시 붙고, 붙으면 모든 토픽을 다시 구독(우편함의 밀린 메시지가 온다)하고 그동안 쌓인 발행(최대 256개)을 보낸다. 401/403이면 5분 뒤에만 다시 시도하고 패널에 "릴레이가 Project ID를 거부했습니다 (HTTP n)" / "The relay refused the Project ID (HTTP n)".
 - `irn_subscription`은 받은 `id`로 `{"result":true}` 응답한 뒤 처리한다. 같은 (토픽, JSON-RPC id)는 한 번만 처리한다(최근 512개; 릴레이는 최소 한 번 전달).
 

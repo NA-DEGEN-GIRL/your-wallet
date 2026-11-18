@@ -964,6 +964,7 @@ fn mocked_end_to_end_session() {
         Box::new(MockConnector(Arc::clone(&wire), Arc::clone(&urls))),
         None,
         no_p256,
+        "windows",
     );
     worker.refresh_chains();
     // Until something arrived and then 40 quiet rounds (5 ms each); up to 2 s for the first
@@ -1019,6 +1020,11 @@ fn mocked_end_to_end_session() {
         "https://relay.walletconnect.org/?auth=eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9."
     ));
     assert!(url.contains("&projectId=0123456789abcdef0123456789abcdef&ua=wc-2%2Frust-yourwallet-"));
+    // The Windows user agent, byte for byte as before the platform argument (S3 D2).
+    assert!(url.ends_with(&format!(
+        "&ua=wc-2%2Frust-yourwallet-{}%2Fwindows",
+        env!("CARGO_PKG_VERSION")
+    )));
     let subscribe = json(&wire.sent.lock().unwrap()[0]);
     assert_eq!(get(&subscribe, &["method"]).as_str(), Some("irn_subscribe"));
     assert_eq!(
@@ -1304,6 +1310,7 @@ fn restored_sessions_follow_grants_and_chains() {
         )),
         None,
         no_p256,
+        "windows",
     );
     worker.refresh_chains();
     // Until something arrived and then 40 quiet rounds (5 ms each); up to 2 s for the first
@@ -1444,4 +1451,19 @@ fn relay_connect_error_mapping() {
     ] {
         assert_eq!(connect_error(other), ConnectError::Network, "{other:?}");
     }
+}
+
+/// S3 D2 (spec/13 §4, spec/15 §11.1): the relay user agent ends with the shell's platform word;
+/// Windows' is the string the worker used before the argument existed.
+#[test]
+fn relay_ua_names_the_platform() {
+    let version = env!("CARGO_PKG_VERSION");
+    assert_eq!(
+        super::worker::relay_ua("windows"),
+        format!("wc-2/rust-yourwallet-{version}/windows")
+    );
+    assert_eq!(
+        super::worker::relay_ua("android"),
+        format!("wc-2/rust-yourwallet-{version}/android")
+    );
 }
