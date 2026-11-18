@@ -17,7 +17,10 @@
 //! last issued request> | queue len=<n> shown=<kind> | rpc <jobs since the last line> | key
 //! <jobs since the last line> | dapp <answers since the last line: code and fixed message> |
 //! banners <codes> | info <send-form note> | card <step|->`. No address, digest, URL or value:
-//! digest equality is asserted in code and printed as `same`/`new`.
+//! digest equality is asserted in code and printed as `same`/`new`. A fact line is
+//! `<scenario> <step> | <fact>`. (2026-11-18, S4 A4 review: this format, not the shorter line of
+//! plan §4.2, is the canonical one of `s4_flow/flow.txt`; later S4 commits compare against it byte
+//! for byte.)
 //!
 //! The three latent behaviours of plan §0.1 are pinned as the code does them today: L-1
 //! (`l1_close_with_a_second_request_queued`), L-2 (`l2_connect_chain_change_*`) and L-3
@@ -874,8 +877,9 @@ fn signed_digest(rec: &Rec<'_>) -> Option<[u8; 32]> {
     })
 }
 
-/// T2 #7: re-simulation `Same` after the click consumes the replaced request (H1); the digest
-/// before the re-simulation cannot be consumed afterwards.
+/// T2 #7: re-simulation `Same` after the click consumes the replaced request; its digest equals
+/// the one shown before, so the `old-digest` line pins single use only (H1, a pre-replace digest
+/// refused after a change, is `resim_changed_old_digest`; S4 A4 review, 2026-11-18).
 fn resim_same_after_click() -> Vec<String> {
     let fx = fixture("resim-same");
     let mut rec = Rec::new("resim_same_after_click", &fx, None);
@@ -942,6 +946,39 @@ fn resim_changed_needs_a_new_click() -> Vec<String> {
             }
         ),
     );
+    rec.lines
+}
+
+/// H1 at App level (S4 A4 review, 2026-11-18): after a `Changed` re-simulation replaced the
+/// request, the digest shown before it is refused (`DigestMismatch`, which invalidates the entry
+/// in the store: a separate scenario, so `resim_changed_needs_a_new_click` keeps its approval).
+fn resim_changed_old_digest() -> Vec<String> {
+    let fx = fixture("resim-old-digest");
+    let mut rec = Rec::new("resim_changed_old_digest", &fx, None);
+    app_send(&fx, &mut rec, "S2");
+    ev(&fx, InteractionEvent::Tick);
+    let (id, old) = shown_digest(&fx).unwrap();
+    at(&fx, 61_000);
+    click(&fx);
+    rec.snap("click-stale");
+    let job = rec.take_resim();
+    at(&fx, 61_500);
+    answer_resim(&fx, &job, "S3");
+    rec.snap("resim-changed");
+    let replaced = shown_digest(&fx).map(|(new_id, digest)| (new_id == id, digest != old));
+    rec.fact(
+        "digest",
+        &format!("shown (same id, digest changed)={replaced:?}"),
+    );
+    let again = fx.app().evm.store.consume(id, old, START_MS + 61_600);
+    rec.fact(
+        "old-digest",
+        &format!(
+            "consume with the pre-resim digest={:?}",
+            again.map(|_| "approved")
+        ),
+    );
+    rec.snap("after-old-digest");
     rec.lines
 }
 
@@ -1323,8 +1360,10 @@ fn l3_site_deadline(main: bool, name: &'static str) -> Vec<String> {
     rec.lines
 }
 
-/// T2 #21: a display that fails the E-UI-001 re-check and a `WalletConnect` request whose
-/// session label cannot be added are rejected, never shown as approvable.
+/// T2 #21: drafts with an unsafe display (refused at issue, E-APP-009) and a `WalletConnect`
+/// request whose session label cannot be added (E-UI-001, rejected with 4001) are never shown
+/// as approvable. The post-issue E-UI-001 re-check is not reached here (S4 A4 review,
+/// 2026-11-18).
 fn ui001_and_wc_label() -> Vec<String> {
     let fx = fixture("ui001");
     let mut rec = Rec::new("ui001_and_wc_label", &fx, None);
@@ -1346,7 +1385,15 @@ fn ui001_and_wc_label() -> Vec<String> {
     unsafe_title.display.title = "\u{202e}title".to_owned();
     fx.app().show_ready_draft(unsafe_title, None);
     rec.snap("unsafe-title");
-    // A field key the window has no label for: issued, then refused by the re-check.
+    // The `store` column above is the earlier S2 request's; the refused draft has no entry.
+    let refused = fx.app.borrow().evm.store.state(ApprovalId([9; 16]));
+    rec.fact(
+        "unsafe-title-id",
+        &format!("store state of the draft={refused:?}"),
+    );
+    // A field key the window has no label for: the store's display check refuses it at issue
+    // too (E-APP-009). The post-issue E-UI-001 re-check (`show_ready_draft_at`) is reached by
+    // no scenario here (open for the F-A checkpoint).
     let fx3 = fixture("ui001-key");
     let mut rec3 = Rec::new("ui001_and_wc_label", &fx3, None);
     fx3.enqueue_sepolia_send();
@@ -1359,61 +1406,91 @@ fn ui001_and_wc_label() -> Vec<String> {
     }
     fx3.app().show_ready_draft(draft, None);
     rec3.snap("unlabelled-field");
+    let refused = fx3.app.borrow().evm.store.state(ApprovalId([10; 16]));
+    rec3.fact(
+        "unlabelled-field-id",
+        &format!("store state of the draft={refused:?}"),
+    );
     rec.lines.append(&mut rec3.lines);
-    // A WalletConnect session origin with no session: the label cannot be added.
+    // A WalletConnect session origin with no session: the label cannot be added. The request
+    // goes through a virtual connection of the dispatcher (the bridge's path, spec/13 §5), so
+    // the reject answer reaches a recorded frame (S4 A4 review, 2026-11-18: was a hand-built
+    // `SiteRequest` whose answer reached no frame).
     let fx2 = fixture("wc-label");
     let outlet = dapp(&fx2, false, true);
-    let mut rec2 = Rec::new("ui001_and_wc_label", &fx2, Some(&outlet));
     let wc_origin = crate::walletconnect::session_origin(&[9; 32]).unwrap();
-    if let Some(browser) = fx2.app.borrow().browser.as_ref() {
-        browser.core.upsert_grant(
-            ConnectedSite::new(
-                wc_origin.clone(),
-                vec![parse_address(ACCOUNT_A).unwrap()],
-                yw_core::evm::chain::SEPOLIA,
-                1,
-            )
-            .unwrap(),
-        );
-    }
-    let site = crate::browser::SiteRequest {
-        reply: crate::browser::Reply {
-            conn: outlet.conn,
-            correlation: crate::browser::envelope::Correlation {
-                session_id: crate::browser::envelope::Id32([1; 32]),
-                sequence: 1,
-                activation_nonce: crate::browser::envelope::Id32([2; 32]),
-                request_id: crate::browser::envelope::Id16([3; 16]),
-            },
-        },
-        origin: wc_origin,
-        chain_id: yw_core::evm::chain::SEPOLIA,
-        deadline_ms: u64::MAX,
-        method: yw_core::policy::Method::PersonalSign,
-        kind: crate::browser::SiteKind::PersonalSign {
-            account: parse_address(ACCOUNT_A).unwrap(),
-            message: b"hi".to_vec(),
-        },
-        compat_mode: None,
+    let (sender, frames) = std::sync::mpsc::channel();
+    let core = fx2
+        .app
+        .borrow()
+        .browser
+        .as_ref()
+        .map(|browser| Arc::clone(&browser.core))
+        .unwrap();
+    core.upsert_grant(
+        ConnectedSite::new(
+            wc_origin.clone(),
+            vec![parse_address(ACCOUNT_A).unwrap()],
+            yw_core::evm::chain::SEPOLIA,
+            1,
+        )
+        .unwrap(),
+    );
+    let wc = Outlet {
+        events: Arc::clone(&outlet.events),
+        frames,
+        conn: core.open_virtual_connection(Box::new(sender)),
     };
-    {
-        let mut app = fx2.app();
-        app.evm
-            .queue
-            .enqueue(
-                QueueSource::Site {
-                    origin: site.origin.as_str().to_owned(),
-                    deadline_ms: u64::MAX,
-                },
-                QueuedItem::Site(Box::new(site)),
-            )
-            .unwrap();
-        app.show_next_approval();
-    }
+    let _ = wc.events.drain();
+    let mut rec2 = Rec::new("ui001_and_wc_label", &fx2, Some(&wc));
+    wc_personal_sign(&fx2, &core, &wc, wc_origin);
     rec2.snap("wc-no-session");
     let mut lines = rec.lines;
     lines.append(&mut rec2.lines);
     lines
+}
+
+/// A `personal_sign` of `origin` on the virtual connection `wc` (as the `WalletConnect` bridge
+/// submits it, spec/13 §5), handed to the App.
+fn wc_personal_sign(
+    fx: &Fixture,
+    core: &crate::browser::BrowserCore,
+    wc: &Outlet,
+    wc_origin: BrowserOrigin,
+) {
+    let method = yw_core::policy::Method::PersonalSign;
+    core.submit(
+        wc.conn,
+        &crate::browser::envelope::RequestEnvelope {
+            correlation: crate::browser::envelope::Correlation {
+                session_id: crate::browser::envelope::Id32([0x57; 32]),
+                sequence: 1,
+                activation_nonce: crate::browser::envelope::Id32([9; 32]),
+                request_id: crate::browser::envelope::Id16([3; 16]),
+            },
+            deadline_unix_ms: fx.clock.unix_at(fx.clock.peek() + 600_000),
+            profile_install_id: crate::browser::envelope::Id32([0; 32]),
+            method: method.as_str().to_owned(),
+            params: yw_json::Value::Array(vec![
+                yw_json::Value::String("0x6869".to_owned()),
+                yw_json::Value::String(ACCOUNT_A.to_owned()),
+            ]),
+            route: method.route(),
+            context: crate::browser::envelope::BrowserContext {
+                tab_id: 0,
+                document_id: "walletconnect".to_owned(),
+                origin: wc_origin,
+                channel_nonce: crate::browser::envelope::Id32([9; 32]),
+                compat_mode: None,
+            },
+        },
+        yw_core::evm::chain::SEPOLIA,
+    );
+    for event in wc.events.drain() {
+        if let crate::events::UiEvent::Dapp(event) = event {
+            fx.app().on_dapp_event(event);
+        }
+    }
 }
 
 /// T2 #22: a refused window rejects the request with E-APP-009 and prepares nothing.
@@ -1608,7 +1685,7 @@ fn connect_toggle_layout() -> Vec<String> {
 type Scenario = fn() -> Vec<String>;
 
 /// Every scenario, in golden order.
-const SCENARIOS: [(&str, Scenario); 38] = [
+const SCENARIOS: [(&str, Scenario); 39] = [
     ("reject_first", reject_first),
     ("repeat_enter_on_reject", repeat_enter_on_reject),
     ("posted_enter_on_approve", posted_enter_on_approve),
@@ -1633,6 +1710,7 @@ const SCENARIOS: [(&str, Scenario); 38] = [
         "resim_changed_needs_a_new_click",
         resim_changed_needs_a_new_click,
     ),
+    ("resim_changed_old_digest", resim_changed_old_digest),
     ("resim_no_result_and_failed", resim_no_result_and_failed),
     (
         "stale_resim_result_is_dropped",
@@ -1745,6 +1823,7 @@ scenario_tests! {
     golden_resim_stale_60001 => "resim_stale_60001",
     golden_resim_same_after_click => "resim_same_after_click",
     golden_resim_changed_needs_a_new_click => "resim_changed_needs_a_new_click",
+    golden_resim_changed_old_digest => "resim_changed_old_digest",
     golden_resim_no_result_and_failed => "resim_no_result_and_failed",
     golden_stale_resim_result_is_dropped => "stale_resim_result_is_dropped",
     golden_display_change_mid_hold => "display_change_mid_hold",

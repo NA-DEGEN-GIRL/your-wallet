@@ -181,7 +181,7 @@ $env:YW_FUZZ_RUNS = $null                                             # 직접 -
 # A3 밖의 yw-win unsafe 변경) 주인이 대안(O-3)을 골라 쓰지 않는다. B7(창 없는 시험)에서 없앤다. 필터가 아무 시험도 고르지 않으면
 # libtest는 0으로 끝나므로(2026-11-18 A3 검토), 먼저 --list로 필터마다 #[ignore] 시험 수를 세어 최소 수보다 적으면 31로 멈춘다.
 # 최소 수는 그 시험을 더하는 커밋(S4 A4·A5·A6)이 올리고 이름을 바꾸는 커밋이 함께 고친다.
-$S4flMinimum = [ordered]@{ "app_approval::flow_support" = 3; "app_approval::flow_tests" = 39; "app_approval::input_tests" = 0 }
+$S4flMinimum = [ordered]@{ "app_approval::flow_support" = 3; "app_approval::flow_tests" = 40; "app_approval::input_tests" = 0 }
 $s4flArgs = @("test", "-p", "yw-app", "--lib") + $net + $config + @("--", "--ignored")
 if ($Step -in "all", "s4fl") {
     Write-Host "check: s4fl (list)"
