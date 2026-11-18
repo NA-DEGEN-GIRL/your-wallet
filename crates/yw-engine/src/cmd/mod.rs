@@ -5,9 +5,9 @@
 //!
 //! 2026-11-18 (S3 B1): created with `Press::{Back, Enter, Legacy}` only; one sub-enum per handler
 //! family follows in the family's own commit. Windows-transitional (they go in S5 or earlier):
-//! `Press::Legacy` (a control id whose handler is not converted yet), `Press::Enter` (the shell
-//! still resolves the focus), `Cmd::Form` (the edits' text read back from the window) and the
-//! positional [`Row`].
+//! `Press::Legacy` (a control id whose handler is not converted yet; gone in S3 D3),
+//! `Press::Enter` (the shell still resolves the focus), `Cmd::Form` (the edits' text read back
+//! from the window) and the positional [`Row`].
 //!
 //! 2026-11-18 (S3 C1): the received-history, hidden-account, side-file and drop-down/recipient
 //! families (`Press::{Received, Hidden, Sidecar, Links}`) and the two press facts the shell's
@@ -43,6 +43,10 @@
 //! 2026-11-18 (S3 C12): the core screens, settings sections and URL rows (`Press::Core`);
 //! every control of the main window is now a family press (`Legacy` is left for ids no
 //! handler claimed, until S3 D3).
+//!
+//! 2026-11-18 (S3 D3): `Press::Legacy` is gone. An id no control of the main window sends (an
+//! edit's, S22's painted hold area, the eighth id of a `YubiKey` connect choice row) is no press
+//! at all: the Windows table gives `None` for it.
 
 use core::fmt;
 
@@ -220,9 +224,6 @@ pub enum Press {
     YkManage(YkManagePress),
     /// The `YubiKey` connect flow (S3 C11).
     YkConnect(YkConnectPress),
-    /// Windows-transitional bridge (S3 B2–D3): a control id whose handler is not converted yet.
-    #[doc(hidden)]
-    Legacy(u16),
 }
 
 impl Press {
@@ -230,8 +231,6 @@ impl Press {
     /// card's own handler runs (spec/04 §2.6). A chain family adds its `새로고침` arm when it
     /// converts (S3 C; C7: `HyperCore` and Zcash; C8: Solana; C9: Bitcoin; C10: EVM); every
     /// other press has none.
-    /// `Legacy` presses keep the shell's own observer until S3 D3 (since C10 no `새로고침` is
-    /// one).
     #[must_use]
     pub const fn refresh_chain(self) -> Option<RecvChain> {
         match self {
@@ -264,8 +263,7 @@ impl Press {
             | Self::Evm(_)
             | Self::Yk(_)
             | Self::YkManage(_)
-            | Self::YkConnect(_)
-            | Self::Legacy(_) => None,
+            | Self::YkConnect(_) => None,
         }
     }
 
@@ -274,8 +272,8 @@ impl Press {
     /// not derive and store a new address). A chain family adds its arms when it converts (S3 C;
     /// C7: Zcash's two `주소 복사`; C8: Solana's `받기` and `주소 복사`; C9: Bitcoin's `받기` and
     /// the account card's `주소 복사` — its receive screen's copy never was; C10: EVM's `받기` and
-    /// `주소 복사`); every other press is not one. `Legacy` presses kept the shell's own gate
-    /// until S3 C12, when the last receive press was already a family's and the gate went.
+    /// `주소 복사`); every other press is not one. (Until S3 C12 the shell's legacy chain kept
+    /// its own gate for ids not converted yet; S3 D3 removed `Legacy`.)
     #[must_use]
     pub const fn is_receive_gated(self) -> bool {
         match self {
@@ -307,8 +305,7 @@ impl Press {
             | Self::Evm(_)
             | Self::Yk(_)
             | Self::YkManage(_)
-            | Self::YkConnect(_)
-            | Self::Legacy(_) => false,
+            | Self::YkConnect(_) => false,
         }
     }
 }
@@ -322,7 +319,7 @@ mod tests {
     fn debug_prints_no_text_or_units() {
         let units: Vec<u16> = "token-abc".encode_utf16().collect();
         let press = Cmd::Press {
-            press: Press::Legacy(524),
+            press: Press::Core(CorePress::TemplateSave),
             input: PressInput::new(vec![
                 (CredField::QnToken, CredUnits::Units(Zeroizing::new(units))),
                 (CredField::AlchemyKey, CredUnits::Absent),
@@ -332,7 +329,7 @@ mod tests {
         assert!(!shown.contains("token"), "{shown}");
         assert_eq!(
             shown,
-            "Press { press: Legacy(524), input: PressInput { creds: [(QnToken, Units(9)), \
+            "Press { press: Core(TemplateSave), input: PressInput { creds: [(QnToken, Units(9)), \
              (AlchemyKey, Absent)], misses: 0 } }"
         );
         let edit = Cmd::Edit {

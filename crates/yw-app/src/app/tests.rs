@@ -3024,6 +3024,106 @@ fn copy_is_answered_at_its_control_and_expires() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// S3 D3 (table test (7)): an id that is no press (an edit's, S22's painted hold area, one in
+/// no block) only becomes the last command id and clears the copy mark, as every id did first
+/// before S3; the screen, the bands and the last press stay.
+#[test]
+fn an_id_that_is_no_press_only_moves_the_command_id() {
+    use crate::app_evm::Copied;
+    use crate::ui::screens_evm::ids::COPY_ADDRESS;
+    let (mut app, dir) = unlocked_app("no-press", false);
+    app.on_command(COPY_ADDRESS);
+    let last = app.last_press;
+    let before = (
+        format!("{:?}", app.items()),
+        format!("{:?}", app.screen),
+        app.info.clone(),
+        app.banners.len(),
+    );
+    for id in [
+        ids::RENAME_EDIT,
+        ids::QN_TOKEN_EDIT,
+        crate::ui::screens_reset::ids::RESET_HOLD,
+        60_000,
+    ] {
+        assert_eq!(crate::ui::cmd_table::press_of(id, &app.controls), None);
+        app.copied = Some(Copied {
+            id: COPY_ADDRESS,
+            until_ms: u64::MAX,
+            address: true,
+        });
+        app.on_command(id);
+        assert_eq!(app.command, id);
+        assert_eq!(app.copied, None);
+        assert_eq!(app.last_press, last);
+        let after = (
+            format!("{:?}", app.items()),
+            format!("{:?}", app.screen),
+            app.info.clone(),
+            app.banners.len(),
+        );
+        assert!(after == before, "{id}");
+    }
+    #[cfg(debug_assertions)]
+    assert_eq!(app.cred_misses(), 0);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// S3 D3: `App::on_field_edit` routes each field by `match` to the one family handler that
+/// claims it (before, the handlers were asked in turn); no field is claimed by two handlers,
+/// and the fields read only at their `저장` are claimed by none.
+#[test]
+fn edits_route_to_the_one_handler_that_claims_them() {
+    use yw_engine::form::EditField;
+    type Handler = fn(&mut App, EditField, &str) -> bool;
+    let handlers: [(&str, Handler); 12] = [
+        ("wc", App::on_wc_edit),
+        ("reset", App::on_reset_edit),
+        ("book", App::on_book_edit),
+        ("mn", App::on_mn_edit),
+        ("hc", App::on_hc_edit),
+        ("zec", App::on_zec_edit),
+        ("sol", App::on_sol_edit),
+        ("btc", App::on_btc_edit),
+        ("evm", App::on_evm_edit),
+        ("yk", App::on_yk_edit),
+        ("explorer", App::on_explorer_edit),
+        ("llm", App::on_llm_edit),
+    ];
+    let (mut app, dir) = unlocked_app("edit-route", false);
+    let mut unclaimed = Vec::new();
+    for field in EditField::ALL {
+        let claimed: Vec<&str> = handlers
+            .iter()
+            .filter(|(_, handler)| handler(&mut app, field, ""))
+            .map(|(name, _)| *name)
+            .collect();
+        assert!(claimed.len() <= 1, "{field:?}: {claimed:?}");
+        assert_eq!(
+            app.on_field_edit(field, ""),
+            !claimed.is_empty(),
+            "{field:?}"
+        );
+        if claimed.is_empty() {
+            unclaimed.push(field);
+        }
+    }
+    assert_eq!(
+        unclaimed,
+        [
+            EditField::CoreRename,
+            EditField::CoreAutoLock,
+            EditField::BtcRename,
+            EditField::MnRename,
+            EditField::SolFeeCap,
+            EditField::SolCuPrice,
+            EditField::SolRename,
+            EditField::YkCardName,
+        ]
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// 2026-11-18 (S3 B4): a copy's result (`Cmd::CopyDone`) marks the control in its `CopyMark`,
 /// not the one pressed last — on Android the result may arrive after another press. A failure
 /// is the E-SEC-002 band, and a later success takes that band away.
@@ -3037,7 +3137,7 @@ fn a_late_copy_result_marks_the_control_of_its_mark() {
     let (mut app, dir) = unlocked_app("copy-late", false);
     // Headless: the copy emits its effect (logged) and nothing answers it.
     app.on_command(COPY_ADDRESS);
-    assert_eq!(app.last_press, press_of(COPY_ADDRESS, &app.controls));
+    assert_eq!(Some(app.last_press), press_of(COPY_ADDRESS, &app.controls));
     assert_eq!(app.copied, None);
     let mark = CopyMark {
         anchor: app.last_press,

@@ -22,6 +22,11 @@
 //! S3 C12: the core screens, settings sections and URL rows (asked first, as the core arms
 //! were matched before the family chain).
 //!
+//! 2026-11-18 (S3 D3): `Press::Legacy` is gone: [`press_of`] gives `None` for an id no
+//! control of the main window sends (an edit's id, S22's painted hold area, the eighth id of a
+//! `YubiKey` connect choice row), and `App::on_command` then only records it as the last
+//! command id.
+//!
 //! 2026-11-18 (S3 D1): [`capture`] also reads the clipboard for the `WalletConnect` panel's
 //! `클립보드에서 연결` and `클립보드 이미지에서 QR 읽기` (`ClipInput`); before, their handlers
 //! read it.
@@ -45,12 +50,13 @@ pub const IDOK: u16 = 1;
 pub const IDCANCEL: u16 = 2;
 
 /// The press a control id stands for, with the state of its check box when it is one
-/// (`controls.checked(id)` now).
+/// (`controls.checked(id)` now); `None` for an id that is no press (S3 D3; before,
+/// `Press::Legacy(id)`).
 #[must_use]
-pub fn press_of(id: u16, controls: &ControlSet) -> Press {
+pub fn press_of(id: u16, controls: &ControlSet) -> Option<Press> {
     match id {
-        IDOK => Press::Enter,
-        IDCANCEL => Press::Back,
+        IDOK => Some(Press::Enter),
+        IDCANCEL => Some(Press::Back),
         other => screens::ids::press_of(other, controls)
             .map(Press::Core)
             .or_else(|| screens_received::ids::press_of(other, controls).map(Press::Received))
@@ -74,8 +80,7 @@ pub fn press_of(id: u16, controls: &ControlSet) -> Press {
             .or_else(|| screens_evm::ids::press_of(other, controls).map(Press::Evm))
             .or_else(|| screens_yubikey::ids::manage_press_of(other).map(Press::YkManage))
             .or_else(|| screens_yubikey::ids::connect_press_of(other).map(Press::YkConnect))
-            .or_else(|| screens_yubikey::ids::press_of(other).map(Press::Yk))
-            .unwrap_or(Press::Legacy(other)),
+            .or_else(|| screens_yubikey::ids::press_of(other).map(Press::Yk)),
     }
 }
 
@@ -109,7 +114,6 @@ pub const fn id_of(press: Press) -> u16 {
         Press::Yk(press) => screens_yubikey::ids::id_of(press),
         Press::YkManage(press) => screens_yubikey::ids::manage_id_of(press),
         Press::YkConnect(press) => screens_yubikey::ids::connect_id_of(press),
-        Press::Legacy(id) => id,
     }
 }
 
@@ -355,18 +359,25 @@ mod tests {
         ids
     }
 
-    /// Table test (1): the table is injective and round-trips every id.
+    /// Table test (1): the table is injective and round-trips every id that is a press (S3 D3:
+    /// the others are exactly those of `only_unclaimed_ids_are_no_press`).
     #[test]
     fn every_id_round_trips() {
         let ids = every_id();
         assert!(ids.len() > 1_000, "{}", ids.len());
         let controls = ControlSet::default();
+        let mut presses = 0;
         for id in ids {
             assert!(id != IDOK && id != IDCANCEL, "{id} is Enter or Esc");
-            assert_eq!(id_of(press_of(id, &controls)), id, "{id}");
+            let Some(press) = press_of(id, &controls) else {
+                continue;
+            };
+            presses += 1;
+            assert_eq!(id_of(press), id, "{id}");
         }
-        assert_eq!(press_of(IDOK, &controls), Press::Enter);
-        assert_eq!(press_of(IDCANCEL, &controls), Press::Back);
+        assert!(presses > 1_000, "{presses}");
+        assert_eq!(press_of(IDOK, &controls).unwrap(), Press::Enter);
+        assert_eq!(press_of(IDCANCEL, &controls).unwrap(), Press::Back);
         assert_eq!(id_of(Press::Enter), IDOK);
         assert_eq!(id_of(Press::Back), IDCANCEL);
     }
@@ -376,7 +387,7 @@ mod tests {
     #[test]
     fn reset_hold_stays_unpressable() {
         let hold = screens_reset::ids::RESET_HOLD;
-        assert_eq!(press_of(hold, &ControlSet::default()), Press::Legacy(hold));
+        assert_eq!(press_of(hold, &ControlSet::default()), None);
     }
 
     /// Table test (4) (S3 C1): for every id that is a family's press, the receive gate and the
@@ -388,8 +399,10 @@ mod tests {
         let controls = ControlSet::default();
         let mut families = 0;
         for id in every_id() {
-            let press = press_of(id, &controls);
-            if matches!(press, Press::Legacy(_) | Press::Enter | Press::Back) {
+            let Some(press) = press_of(id, &controls) else {
+                continue;
+            };
+            if matches!(press, Press::Enter | Press::Back) {
                 continue;
             }
             families += 1;
@@ -417,7 +430,7 @@ mod tests {
         let family = |id: u16| {
             !matches!(
                 press_of(id, &controls),
-                Press::Legacy(_) | Press::Enter | Press::Back
+                None | Some(Press::Enter | Press::Back)
             )
         };
         // Every id of the four families' blocks (ui::command_ids), and the gaps that stay legacy.
@@ -440,21 +453,21 @@ mod tests {
             assert_eq!(family(id), links, "{id}");
         }
         assert_eq!(
-            press_of(app_hidden::ids::BTC_ROW_BASE + 64, &controls),
+            press_of(app_hidden::ids::BTC_ROW_BASE + 64, &controls).unwrap(),
             Press::Hidden(HiddenPress::BtcUnhide(Row(64)))
         );
         assert_eq!(
-            press_of(screens_links::ids::ZEC_TO_BASE + 79, &controls),
+            press_of(screens_links::ids::ZEC_TO_BASE + 79, &controls).unwrap(),
             Press::Links(LinksPress::ZecTo(Row(79)))
         );
         assert_eq!(
-            press_of(screens_received::ids::ROW_BASE + 499, &controls),
+            press_of(screens_received::ids::ROW_BASE + 499, &controls).unwrap(),
             Press::Received(ReceivedPress::OpenExplorer(RecvChain::Zec, Row(49)))
         );
         // A check box's state travels with the press.
         let toggle = screens_received::ids::toggle(RecvChain::Btc);
         assert_eq!(
-            press_of(toggle, &controls),
+            press_of(toggle, &controls).unwrap(),
             Press::Received(ReceivedPress::Toggle {
                 chain: RecvChain::Btc,
                 checked: None
@@ -463,17 +476,17 @@ mod tests {
         controls.type_check(toggle, true);
         controls.type_check(app_sidecar::ids::RESET_ACK, false);
         assert_eq!(
-            press_of(toggle, &controls),
+            press_of(toggle, &controls).unwrap(),
             Press::Received(ReceivedPress::Toggle {
                 chain: RecvChain::Btc,
                 checked: Some(true)
             })
         );
         assert_eq!(
-            press_of(app_sidecar::ids::RESET_ACK, &controls),
+            press_of(app_sidecar::ids::RESET_ACK, &controls).unwrap(),
             Press::Sidecar(SidecarPress::ResetAck(Some(false)))
         );
-        assert_eq!(id_of(press_of(toggle, &controls)), toggle);
+        assert_eq!(id_of(press_of(toggle, &controls).unwrap()), toggle);
     }
 
     /// S3 C2: S13 and the `WalletConnect` panel claim exactly the ids their handlers claimed
@@ -485,7 +498,7 @@ mod tests {
         let family = |id: u16| {
             !matches!(
                 press_of(id, &controls),
-                Press::Legacy(_) | Press::Enter | Press::Back
+                None | Some(Press::Enter | Press::Back)
             )
         };
         for id in 6_700..6_966 {
@@ -502,11 +515,11 @@ mod tests {
             assert_eq!(family(id), wc, "{id}");
         }
         assert_eq!(
-            press_of(screens_sites::ids::SITE_ROW_BASE + 255, &controls),
+            press_of(screens_sites::ids::SITE_ROW_BASE + 255, &controls).unwrap(),
             Press::Sites(SitesPress::Disconnect(Row(255)))
         );
         assert_eq!(
-            press_of(screens_walletconnect::ids::ROW_BASE + 63, &controls),
+            press_of(screens_walletconnect::ids::ROW_BASE + 63, &controls).unwrap(),
             Press::Wc(WcPress::Disconnect(Row(63)))
         );
     }
@@ -521,7 +534,7 @@ mod tests {
         let family = |id: u16| {
             !matches!(
                 press_of(id, &controls),
-                Press::Legacy(_) | Press::Enter | Press::Back
+                None | Some(Press::Enter | Press::Back)
             )
         };
         for id in 17_200..17_710 {
@@ -541,28 +554,28 @@ mod tests {
             assert_eq!(family(id), llm, "{id}");
         }
         assert_eq!(
-            press_of(screens_explorer::ids::ROW_BASE + 99, &controls),
+            press_of(screens_explorer::ids::ROW_BASE + 99, &controls).unwrap(),
             Press::Explorer(ExplorerPress::Row(Row(49), ExplorerRowAction::Reset))
         );
         assert_eq!(
-            press_of(screens_explorer::ids::ZEC_ACTIVITY_BASE + 158, &controls),
+            press_of(screens_explorer::ids::ZEC_ACTIVITY_BASE + 158, &controls).unwrap(),
             Press::Explorer(ExplorerPress::ZecActivity(
                 Row(79),
                 ExplorerLinkAction::Open
             ))
         );
         assert_eq!(
-            press_of(screens_llm::ids::ENABLE, &controls),
+            press_of(screens_llm::ids::ENABLE, &controls).unwrap(),
             Press::Llm(LlmPress::Enable(None))
         );
         controls.type_check(screens_llm::ids::ENABLE, true);
         controls.type_check(screens_llm::ids::NOTICE_CHECK, false);
         assert_eq!(
-            press_of(screens_llm::ids::ENABLE, &controls),
+            press_of(screens_llm::ids::ENABLE, &controls).unwrap(),
             Press::Llm(LlmPress::Enable(Some(true)))
         );
         assert_eq!(
-            press_of(screens_llm::ids::NOTICE_CHECK, &controls),
+            press_of(screens_llm::ids::NOTICE_CHECK, &controls).unwrap(),
             Press::Llm(LlmPress::NoticeCheck(Some(false)))
         );
     }
@@ -574,7 +587,7 @@ mod tests {
         use screens_book::ids;
         use yw_engine::cmd::{BookPress, BookRowAction, Row};
         let controls = ControlSet::default();
-        let family = |id: u16| matches!(press_of(id, &controls), Press::Book(_));
+        let family = |id: u16| matches!(press_of(id, &controls), Some(Press::Book(_)));
         for id in 14_000..15_700 {
             let book = !matches!(
                 id,
@@ -594,19 +607,19 @@ mod tests {
             assert_eq!(family(id), (18_700..19_200).contains(&id), "{id}");
         }
         assert_eq!(
-            press_of(ids::FAV_BASE + 7, &controls),
+            press_of(ids::FAV_BASE + 7, &controls).unwrap(),
             Press::Book(BookPress::Chip(Row(7)))
         );
         assert_eq!(
-            press_of(ids::ROW_BASE + 1_499, &controls),
+            press_of(ids::ROW_BASE + 1_499, &controls).unwrap(),
             Press::Book(BookPress::Row(Row(499), BookRowAction::Delete))
         );
         assert_eq!(
-            press_of(ids::COPY_BASE + 499, &controls),
+            press_of(ids::COPY_BASE + 499, &controls).unwrap(),
             Press::Book(BookPress::Copy(Row(499)))
         );
         assert_eq!(
-            press_of(ids::SOL_ACTIVITY_BASE + 63, &controls),
+            press_of(ids::SOL_ACTIVITY_BASE + 63, &controls).unwrap(),
             Press::Book(BookPress::SolActivitySave(Row(63)))
         );
         for (id, press) in [
@@ -618,20 +631,24 @@ mod tests {
             (ids::FORM_ACK, BookPress::FormAck),
             (ids::PROMPT_ACK, BookPress::PromptAck),
         ] {
-            assert_eq!(press_of(id, &controls), Press::Book(press(None)), "{id}");
+            assert_eq!(
+                press_of(id, &controls).unwrap(),
+                Press::Book(press(None)),
+                "{id}"
+            );
             controls.type_check(id, true);
             assert_eq!(
-                press_of(id, &controls),
+                press_of(id, &controls).unwrap(),
                 Press::Book(press(Some(true))),
                 "{id}"
             );
             controls.type_check(id, false);
             assert_eq!(
-                press_of(id, &controls),
+                press_of(id, &controls).unwrap(),
                 Press::Book(press(Some(false))),
                 "{id}"
             );
-            assert_eq!(id_of(press_of(id, &controls)), id);
+            assert_eq!(id_of(press_of(id, &controls).unwrap()), id);
         }
     }
 
@@ -646,7 +663,7 @@ mod tests {
         let family = |id: u16| {
             !matches!(
                 press_of(id, &controls),
-                Press::Legacy(_) | Press::Enter | Press::Back
+                None | Some(Press::Enter | Press::Back)
             )
         };
         for id in 13_400..13_450 {
@@ -656,24 +673,24 @@ mod tests {
         for id in 13_000..13_200 {
             let keys = matches!(id, 13_000..=13_006 | 13_010..=13_013 | 13_020..=13_027);
             assert_eq!(
-                matches!(press_of(id, &controls), Press::Keys(_)),
+                matches!(press_of(id, &controls), Some(Press::Keys(_))),
                 keys,
                 "{id}"
             );
         }
         for id in 525..545 {
             assert_eq!(
-                matches!(press_of(id, &controls), Press::RpcImport(_)),
+                matches!(press_of(id, &controls), Some(Press::RpcImport(_))),
                 (530..=536).contains(&id),
                 "{id}"
             );
         }
         assert_eq!(
-            press_of(screens_reset::ids::EXT_COPY_PATH, &controls),
+            press_of(screens_reset::ids::EXT_COPY_PATH, &controls).unwrap(),
             Press::Ext(ExtPress::CopyPath)
         );
         assert_eq!(
-            press_of(screens::ids::RPC_JSON_DELETE_CONFIRM, &controls),
+            press_of(screens::ids::RPC_JSON_DELETE_CONFIRM, &controls).unwrap(),
             Press::RpcImport(RpcImportPress::DeleteConfirm)
         );
         for script in [
@@ -684,22 +701,22 @@ mod tests {
         ] {
             let id = screens_keys::ids::script_id(script);
             assert_eq!(
-                press_of(id, &controls),
+                press_of(id, &controls).unwrap(),
                 Press::Keys(KeysPress::Script(script))
             );
             assert_eq!(id_of(Press::Keys(KeysPress::Script(script))), id);
         }
         let check = screens_reset::ids::RESET_SETTINGS_CHECK;
         assert_eq!(
-            press_of(check, &controls),
+            press_of(check, &controls).unwrap(),
             Press::Reset(ResetPress::SettingsCheck(None))
         );
         controls.type_check(check, true);
         assert_eq!(
-            press_of(check, &controls),
+            press_of(check, &controls).unwrap(),
             Press::Reset(ResetPress::SettingsCheck(Some(true)))
         );
-        assert_eq!(id_of(press_of(check, &controls)), check);
+        assert_eq!(id_of(press_of(check, &controls).unwrap()), check);
     }
 
     /// S3 C6: the recovery phrases claim exactly the ids `on_mn_command` reached (every fixed
@@ -713,18 +730,22 @@ mod tests {
             let mn = matches!(id, 13_600..=13_606 | 13_608..=13_614 | 13_620..13_628
                 | 13_630..13_638 | 13_640..13_648 | 13_650..13_658 | 13_660..13_668
                 | 13_670..13_678 | 13_680..13_688 | 13_690..13_698);
-            assert_eq!(matches!(press_of(id, &controls), Press::Mn(_)), mn, "{id}");
+            assert_eq!(
+                matches!(press_of(id, &controls), Some(Press::Mn(_))),
+                mn,
+                "{id}"
+            );
         }
         assert!(ids::FIXED.iter().all(|&id| {
-            matches!(press_of(id, &controls), Press::Mn(_))
+            matches!(press_of(id, &controls), Some(Press::Mn(_)))
                 != [ids::RENAME_EDIT, ids::REMOVE_TYPED_EDIT].contains(&id)
         }));
         assert_eq!(
-            press_of(ids::ZEC_PICK_BASE + 7, &controls),
+            press_of(ids::ZEC_PICK_BASE + 7, &controls).unwrap(),
             Press::Mn(MnPress::ZecPick(Row(7)))
         );
         assert_eq!(
-            press_of(ids::PICK_BASE, &controls),
+            press_of(ids::PICK_BASE, &controls).unwrap(),
             Press::Mn(MnPress::Pick(Row(0)))
         );
     }
@@ -741,32 +762,36 @@ mod tests {
         for id in 13_450..13_500 {
             let hc = matches!(id, 13_450..=13_457 | 13_462..=13_468 | 13_470..=13_490)
                 || (13_492..=13_495).contains(&id);
-            assert_eq!(matches!(press_of(id, &controls), Press::Hc(_)), hc, "{id}");
+            assert_eq!(
+                matches!(press_of(id, &controls), Some(Press::Hc(_))),
+                hc,
+                "{id}"
+            );
         }
         assert!(screens_hypercore::ids::FIXED.iter().all(|&id| {
             use screens_hypercore::ids;
-            matches!(press_of(id, &controls), Press::Hc(_))
+            matches!(press_of(id, &controls), Some(Press::Hc(_)))
                 != [ids::TO_EDIT, ids::AMOUNT_EDIT, ids::API_EDIT].contains(&id)
         }));
         for id in 8_000..8_200 {
             let zec = matches!(id, 8_000..=8_006 | 8_009..=8_035 | 8_040..=8_047 | 8_050..=8_052
                 | 8_060..=8_075 | 8_100..=8_179);
             assert_eq!(
-                matches!(press_of(id, &controls), Press::Zec(_)),
+                matches!(press_of(id, &controls), Some(Press::Zec(_))),
                 zec,
                 "{id}"
             );
         }
         assert_eq!(
-            press_of(screens_hypercore::ids::ASSET_BASE + 19, &controls),
+            press_of(screens_hypercore::ids::ASSET_BASE + 19, &controls).unwrap(),
             Press::Hc(HcPress::Asset(Row(19)))
         );
         assert_eq!(
-            press_of(screens_zec::ids::ACTIVITY_COPY_BASE + 79, &controls),
+            press_of(screens_zec::ids::ACTIVITY_COPY_BASE + 79, &controls).unwrap(),
             Press::Zec(ZecPress::ActivityCopy(Row(79)))
         );
         assert_eq!(
-            press_of(screens_zec::ids::HW_BASE, &controls),
+            press_of(screens_zec::ids::HW_BASE, &controls).unwrap(),
             Press::Zec(ZecPress::Hw(Row(0)))
         );
         assert_eq!(
@@ -797,20 +822,20 @@ mod tests {
                 | 7_080..=7_083 | 7_100 | 7_103..=7_106 | 7_110..=7_112 | 7_120..=7_375
                 | 7_400..=7_463);
             assert_eq!(
-                matches!(press_of(id, &controls), Press::Sol(_)),
+                matches!(press_of(id, &controls), Some(Press::Sol(_))),
                 sol,
                 "{id}"
             );
         }
         for id in 11_990..13_000 {
             assert_eq!(
-                matches!(press_of(id, &controls), Press::Sol(_)),
+                matches!(press_of(id, &controls), Some(Press::Sol(_))),
                 id >= 12_000,
                 "{id}"
             );
         }
         assert!(ids::FIXED.iter().all(|&id| {
-            matches!(press_of(id, &controls), Press::Sol(_))
+            matches!(press_of(id, &controls), Some(Press::Sol(_)))
                 != [
                     ids::RENAME_EDIT,
                     ids::SEND_TO_EDIT,
@@ -827,16 +852,16 @@ mod tests {
             ] {
                 let id = ids::scan_row_id(action).unwrap();
                 let press = SolPress::ScanRow(Row(u16::try_from(row).unwrap()), scan);
-                assert_eq!(press_of(id, &controls), Press::Sol(press), "{id}");
+                assert_eq!(press_of(id, &controls).unwrap(), Press::Sol(press), "{id}");
                 assert_eq!(id_of(Press::Sol(press)), id);
             }
         }
         assert_eq!(
-            press_of(ids::ACCOUNT_BASE + 999, &controls),
+            press_of(ids::ACCOUNT_BASE + 999, &controls).unwrap(),
             Press::Sol(SolPress::Account(Row(999)))
         );
         assert_eq!(
-            press_of(ids::SEND_PICK_BASE + 39, &controls),
+            press_of(ids::SEND_PICK_BASE + 39, &controls).unwrap(),
             Press::Sol(SolPress::SendPickRow(Row(39)))
         );
         assert_eq!(
@@ -865,7 +890,7 @@ mod tests {
                 | 9_050..=9_053 | 9_056 | 9_057 | 9_060..=9_095 | 9_100..=9_105
                 | 9_111..=9_113 | 9_121..=9_123 | 9_130..=9_194 | 9_200..=9_899);
             assert_eq!(
-                matches!(press_of(id, &controls), Press::Btc(_)),
+                matches!(press_of(id, &controls), Some(Press::Btc(_))),
                 btc,
                 "{id}"
             );
@@ -882,27 +907,27 @@ mod tests {
             ids::ESPLORA_TESTNET4_EDIT,
         ];
         assert!(ids::FIXED.iter().all(|&id| {
-            matches!(press_of(id, &controls), Press::Btc(_)) != edits.contains(&id)
+            matches!(press_of(id, &controls), Some(Press::Btc(_))) != edits.contains(&id)
         }));
         for (position, script) in ScriptType::CHOICES.into_iter().enumerate() {
             let id = ids::ACCOUNT_ADD_TYPE + u16::try_from(position).unwrap();
             assert_eq!(
-                press_of(id, &controls),
+                press_of(id, &controls).unwrap(),
                 Press::Btc(BtcPress::AccountAddType(script))
             );
         }
         for net in BtcNetwork::ALL {
             let (_, save, default, test) = screens_btc::esplora_ids(net);
             assert_eq!(
-                press_of(save, &controls),
+                press_of(save, &controls).unwrap(),
                 Press::Btc(BtcPress::EsploraSave(net))
             );
             assert_eq!(
-                press_of(default, &controls),
+                press_of(default, &controls).unwrap(),
                 Press::Btc(BtcPress::EsploraDefault(net))
             );
             assert_eq!(
-                press_of(test, &controls),
+                press_of(test, &controls).unwrap(),
                 Press::Btc(BtcPress::EsploraTest(net))
             );
         }
@@ -920,7 +945,7 @@ mod tests {
             for (offset, action) in actions {
                 let id = ids::ACTIVITY_BASE + row * ids::ACTIVITY_STRIDE + offset;
                 assert_eq!(
-                    press_of(id, &controls),
+                    press_of(id, &controls).unwrap(),
                     Press::Btc(BtcPress::Activity(Row(row), action)),
                     "{id}"
                 );
@@ -933,7 +958,7 @@ mod tests {
             (ids::UTXO_BASE + 299, BtcPress::Utxo(Row(299))),
             (ids::EVM_ACCOUNT_BASE + 31, BtcPress::EvmAccount(Row(31))),
         ] {
-            assert_eq!(press_of(id, &controls), Press::Btc(press), "{id}");
+            assert_eq!(press_of(id, &controls).unwrap(), Press::Btc(press), "{id}");
         }
         assert_eq!(
             Press::Btc(BtcPress::Refresh).refresh_chain(),
@@ -955,7 +980,7 @@ mod tests {
         use yw_engine::cmd::{ChainRowAction, EvmActivityAction, EvmPress, Row};
         use yw_engine::received::RecvChain;
         let controls = ControlSet::default();
-        let evm = |id: u16| matches!(press_of(id, &controls), Press::Evm(_));
+        let evm = |id: u16| matches!(press_of(id, &controls), Some(Press::Evm(_)));
         let edits = [
             ids::SEND_TO_EDIT,
             ids::SEND_AMOUNT_EDIT,
@@ -987,7 +1012,7 @@ mod tests {
             ][usize::from(row % 3)];
             let id = ids::CHAIN_ROW_BASE + row;
             assert_eq!(
-                press_of(id, &controls),
+                press_of(id, &controls).unwrap(),
                 Press::Evm(EvmPress::ChainRow(Row(row / 3), action)),
                 "{id}"
             );
@@ -1006,7 +1031,7 @@ mod tests {
             for (offset, action) in (0..).zip(actions) {
                 let id = ids::ACTIVITY_BASE + row * ids::ACTIVITY_STRIDE + offset;
                 assert_eq!(
-                    press_of(id, &controls),
+                    press_of(id, &controls).unwrap(),
                     Press::Evm(EvmPress::Activity(Row(row), action)),
                     "{id}"
                 );
@@ -1019,7 +1044,7 @@ mod tests {
             (ids::SEND_PICK_BASE + 39, EvmPress::PickRecipient(Row(39))),
             (ids::CAPS_CHAIN_BASE + 39, EvmPress::CapsChain(Row(39))),
         ] {
-            assert_eq!(press_of(id, &controls), Press::Evm(press), "{id}");
+            assert_eq!(press_of(id, &controls).unwrap(), Press::Evm(press), "{id}");
         }
         assert_eq!(
             Press::Evm(EvmPress::Refresh).refresh_chain(),
@@ -1056,19 +1081,29 @@ mod tests {
             (ids::TOKEN_HIDE_ZERO, EvmPress::TokenHideZero),
             (ids::REPIN_CHECK, EvmPress::RepinCheck),
         ] {
-            assert_eq!(press_of(id, &controls), Press::Evm(press(None)), "{id}");
+            assert_eq!(
+                press_of(id, &controls).unwrap(),
+                Press::Evm(press(None)),
+                "{id}"
+            );
             controls.type_check(id, true);
-            assert_eq!(press_of(id, &controls), Press::Evm(press(Some(true))));
+            assert_eq!(
+                press_of(id, &controls).unwrap(),
+                Press::Evm(press(Some(true)))
+            );
             controls.type_check(id, false);
-            assert_eq!(press_of(id, &controls), Press::Evm(press(Some(false))));
-            assert_eq!(id_of(press_of(id, &controls)), id);
+            assert_eq!(
+                press_of(id, &controls).unwrap(),
+                Press::Evm(press(Some(false)))
+            );
+            assert_eq!(id_of(press_of(id, &controls).unwrap()), id);
         }
     }
 
     /// S3 C11: the `YubiKey` screens claim exactly the ids `on_yk_command` claimed (directly or
     /// through the card-action and connect handlers it asked first): every fixed id but the
     /// eleven edits, which are fields, each row range whole and every choice radio; the eighth
-    /// id of a connect choice row, which is no radio, stays legacy as before.
+    /// id of a connect choice row, which is no radio, stays unclaimed as before (S3 D3: no press).
     #[test]
     fn c11_yubikey_maps_its_ids() {
         use screens_yubikey::ids;
@@ -1076,7 +1111,7 @@ mod tests {
         let yk = |id: u16| {
             matches!(
                 press_of(id, &controls),
-                Press::Yk(_) | Press::YkManage(_) | Press::YkConnect(_)
+                Some(Press::Yk(_) | Press::YkManage(_) | Press::YkConnect(_))
             )
         };
         let edits = [
@@ -1114,12 +1149,12 @@ mod tests {
                 );
             let connect = ids::connect_choice(id).is_some() || (13_500..=13_506).contains(&id);
             assert_eq!(
-                matches!(press_of(id, &controls), Press::YkManage(_)),
+                matches!(press_of(id, &controls), Some(Press::YkManage(_))),
                 manage,
                 "{id}"
             );
             assert_eq!(
-                matches!(press_of(id, &controls), Press::YkConnect(_)),
+                matches!(press_of(id, &controls), Some(Press::YkConnect(_))),
                 connect,
                 "{id}"
             );
@@ -1134,12 +1169,14 @@ mod tests {
         let controls = ControlSet::default();
         for id in 13_200..13_960 {
             match press_of(id, &controls) {
-                Press::Yk(press) => assert_eq!(ids::pgp_of(press), ids::pgp_action(id), "{id}"),
-                Press::YkManage(press) => {
+                Some(Press::Yk(press)) => {
+                    assert_eq!(ids::pgp_of(press), ids::pgp_action(id), "{id}");
+                }
+                Some(Press::YkManage(press)) => {
                     assert_eq!(ids::reslot_of(press), ids::reslot_action(id), "{id}");
                     assert_eq!(ids::preset_of(press), ids::preset(id), "{id}");
                 }
-                Press::YkConnect(press) => {
+                Some(Press::YkConnect(press)) => {
                     assert_eq!(ids::choice_of(press), ids::connect_choice(id), "{id}");
                 }
                 _ => {}
@@ -1159,7 +1196,7 @@ mod tests {
         use yw_engine::logging::LogLevel;
         use yw_engine::settings::RpcTemplate;
         let controls = ControlSet::default();
-        let core = |id: u16| matches!(press_of(id, &controls), Press::Core(_));
+        let core = |id: u16| matches!(press_of(id, &controls), Some(Press::Core(_)));
         for &id in ids::FIXED {
             let other = field_of(id).is_some()
                 || cred_of(id).is_some()
@@ -1189,7 +1226,7 @@ mod tests {
                 RpcRowAction::Delete,
             ][usize::from(offset % 3)];
             assert_eq!(
-                press_of(ids::ROW_BASE + offset, &controls),
+                press_of(ids::ROW_BASE + offset, &controls).unwrap(),
                 Press::Core(CorePress::RpcRow(Row(offset / 3), action))
             );
         }
@@ -1210,7 +1247,7 @@ mod tests {
             (ids::NETWORK_BASE + 39, CorePress::Network(Row(39))),
             (ids::RPC_ROW_OPEN_BASE + 63, CorePress::RpcRowOpen(Row(63))),
         ] {
-            assert_eq!(press_of(id, &controls), Press::Core(press), "{id}");
+            assert_eq!(press_of(id, &controls).unwrap(), Press::Core(press), "{id}");
         }
         for (id, press) in [
             (
@@ -1222,12 +1259,22 @@ mod tests {
             (ids::AUTOLAUNCH_TOGGLE, CorePress::AutolaunchToggle),
             (ids::OVERWRITE_CHECK, CorePress::OverwriteCheck),
         ] {
-            assert_eq!(press_of(id, &controls), Press::Core(press(None)), "{id}");
+            assert_eq!(
+                press_of(id, &controls).unwrap(),
+                Press::Core(press(None)),
+                "{id}"
+            );
             controls.type_check(id, true);
-            assert_eq!(press_of(id, &controls), Press::Core(press(Some(true))));
+            assert_eq!(
+                press_of(id, &controls).unwrap(),
+                Press::Core(press(Some(true)))
+            );
             controls.type_check(id, false);
-            assert_eq!(press_of(id, &controls), Press::Core(press(Some(false))));
-            assert_eq!(id_of(press_of(id, &controls)), id);
+            assert_eq!(
+                press_of(id, &controls).unwrap(),
+                Press::Core(press(Some(false)))
+            );
+            assert_eq!(id_of(press_of(id, &controls).unwrap()), id);
         }
     }
 
@@ -1476,7 +1523,7 @@ mod tests {
         let mut undrawn = 0;
         for (press, drawn) in cases {
             let back = press_of(id_of(press), &controls);
-            assert_eq!(back == press, drawn, "{press:?} -> {back:?}");
+            assert_eq!(back == Some(press), drawn, "{press:?} -> {back:?}");
             undrawn += usize::from(!drawn);
         }
         // Two slots x (two Taproot radios + `Never`); the 18 one-id rows at their span; chain
@@ -1487,9 +1534,11 @@ mod tests {
 
     /// S3 C12: after the last family, no control a click can send is legacy any more except
     /// the ones no handler claimed before either: the edits (fields and credentials), S22's
-    /// painted hold area and the eighth id of a `YubiKey` connect choice row.
+    /// painted hold area and the eighth id of a `YubiKey` connect choice row. Table tests (2)
+    /// and (7) (S3 D3): `Legacy` is gone, and exactly these ids are no press (`None`); an id
+    /// past every block is none either.
     #[test]
-    fn only_unclaimed_ids_stay_legacy() {
+    fn only_unclaimed_ids_are_no_press() {
         use screens_yubikey::ids::{
             CONNECT_CHOICE_BASE, CONNECT_CHOICE_SPAN, CONNECT_CHOICE_STRIDE,
         };
@@ -1502,11 +1551,12 @@ mod tests {
                 || cred_of(id).is_some()
                 || id == screens_reset::ids::RESET_HOLD
                 || no_radio;
-            assert_eq!(
-                press_of(id, &controls) == Press::Legacy(id),
-                unclaimed,
-                "{id}"
-            );
+            assert_eq!(press_of(id, &controls).is_none(), unclaimed, "{id}");
+        }
+        // An id in no block of `ui::command_ids` (not every decoded block is listed there, e.g.
+        // Zcash's source radios at 8 020, so only ids past the last block are checked).
+        for id in [IDCANCEL + 1, 60_000, u16::MAX] {
+            assert_eq!(press_of(id, &controls), None, "{id}");
         }
     }
 

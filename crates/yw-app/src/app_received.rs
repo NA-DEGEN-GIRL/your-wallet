@@ -233,7 +233,10 @@ fn now_unix_ms() -> u64 {
         })
 }
 
-/// The chain whose card a `새로고침` id belongs to.
+/// The chain whose card a `새로고침` id belongs to (2026-11-18, S3 D3: test-only — the
+/// table test that `Press::refresh_chain` names the same chains; before, the legacy chain's
+/// observer `App::received_observe` read it for ids not converted to a press yet).
+#[cfg(test)]
 pub(crate) fn refresh_chain(id: u16) -> Option<RecvChain> {
     Some(match id {
         crate::ui::screens_evm::ids::REFRESH => RecvChain::Evm,
@@ -632,17 +635,6 @@ impl App {
             job: self.received.job,
             ..crate::app_received::ReceivedUi::default()
         };
-    }
-
-    /// A card's `새로고침` (a control id of a chain family not converted to a press yet) also
-    /// reads its list now; the card's own handler runs after it (2026-11-18, S3 C1: split from
-    /// `on_received_command`, which returned `false` for these ids so the chain went on; a
-    /// converted family's press gets the same read from `Press::refresh_chain` in
-    /// `App::on_press`).
-    pub(crate) fn received_observe(&mut self, id: u16) {
-        if let Some(chain) = refresh_chain(id) {
-            self.received_now(chain);
-        }
     }
 
     /// The switch, `더 보기`, `해시 복사` (2026-11-18, S3 C1: a `ReceivedPress`, the switch

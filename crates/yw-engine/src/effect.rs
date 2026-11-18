@@ -104,7 +104,7 @@ pub enum TimerId {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cmd::Press;
+    use crate::cmd::{EvmPress, Press};
 
     #[test]
     fn debug_prints_no_text() {
@@ -117,7 +117,7 @@ mod tests {
         let copy = Effect::CopyText {
             text: "https://example.com/tx/abc".to_owned(),
             mark: CopyMark {
-                anchor: Press::Legacy(905),
+                anchor: Press::Evm(EvmPress::CopyAddress),
                 address: true,
             },
         };
@@ -125,7 +125,7 @@ mod tests {
         assert!(!shown.contains("example"), "{shown}");
         assert_eq!(
             shown,
-            "CopyText { len: 26, mark: CopyMark { anchor: Legacy(905), address: true } }"
+            "CopyText { len: 26, mark: CopyMark { anchor: Evm(CopyAddress), address: true } }"
         );
         assert_eq!(
             format!(

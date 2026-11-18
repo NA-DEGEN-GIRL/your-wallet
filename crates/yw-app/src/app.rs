@@ -695,7 +695,8 @@ pub struct App {
     pub(crate) copied: Option<crate::app_evm::Copied>,
     /// The command being handled: the control a copy is answered at.
     pub(crate) command: u16,
-    /// The press being handled (`cmd_table::id_of(last_press) == command`, 2026-11-18 S3 B4):
+    /// The press being handled (`cmd_table::id_of(last_press) == command` after every press,
+    /// 2026-11-18 S3 B4; S3 D3: an id that is no press changes `command` only):
     /// a plain copy carries it in its `CopyMark`, so its result marks the pressed control even
     /// when the result arrives after another press.
     pub(crate) last_press: Press,
@@ -1166,7 +1167,9 @@ impl App {
             info: None,
             copied: None,
             command: 0,
-            last_press: Press::Legacy(0),
+            // No press yet (S3 D3: `Back`, whose id `IDCANCEL` is no control's; before,
+            // `Press::Legacy(0)`). Every copy is made by a press, which sets it first.
+            last_press: Press::Back,
             mismatch_checked: false,
             overwrite_checked: false,
             show_advanced: false,
@@ -3842,17 +3845,23 @@ impl App {
     /// called `dispatch_command(id)` directly. S3 B5: first the plain edits' text
     /// (`Cmd::Form`), then the press with the credential edits it reads, captured now
     /// (`cmd_table::capture`). S3 D1: and, for the `WalletConnect` clipboard presses, what the
-    /// clipboard holds.
+    /// clipboard holds. S3 D3: an id that is no press (`cmd_table::press_of` → `None`: no
+    /// control of the main window sends it) only becomes the last command id and clears the copy
+    /// mark — what every id did first before S3 — and nothing else runs (before D3 it went
+    /// through `Press::Legacy` to `dispatch_legacy`, whose received-history check found no
+    /// `새로고침` in it). The last press (`App::last_press`) stays the one before.
     fn on_command(&mut self, id: u16) {
         self.note_input();
         let closed =
             !matches!(id, IDOK | IDCANCEL) && !Self::is_picker_button(id) && self.close_pickers();
         self.on_cmd(Cmd::Form(self.controls.form_snapshot()));
         let input = cmd_table::capture(id, &self.controls, self.main.as_ref());
-        self.on_cmd(Cmd::Press {
-            press: cmd_table::press_of(id, &self.controls),
-            input,
-        });
+        if let Some(press) = cmd_table::press_of(id, &self.controls) {
+            self.on_cmd(Cmd::Press { press, input });
+        } else {
+            self.command = id;
+            self.copied = None;
+        }
         if closed {
             self.refresh();
         }
@@ -3877,7 +3886,7 @@ impl App {
             // The field's own handler (or the legacy chain) runs after the state has the text.
             // S3 C2: a converted family's handler takes the field and its text. S3 C11: every
             // handler is converted; a field none claims is ignored, as the legacy chain ignored
-            // it.
+            // it. S3 D3: the handler is chosen by `match field` (`on_field_edit`).
             Cmd::Edit { field, text } => {
                 let text = field.clamp(&text);
                 self.form.set(field, Some(text.clone()));
@@ -3904,7 +3913,6 @@ impl App {
         match press {
             Press::Back => self.escape_key(),
             Press::Enter => self.enter_key(),
-            Press::Legacy(id) => self.dispatch_legacy(id),
             _ if self.passphrase_unverified() && press.is_receive_gated() => {
                 self.refuse_receive();
             }
@@ -3917,8 +3925,8 @@ impl App {
         }
     }
 
-    /// A converted family's press (S3 C1–C12: one arm per family). Enter, Esc and legacy ids
-    /// never come here (`on_press`).
+    /// A converted family's press (S3 C1–C12: one arm per family). Enter and Esc never come
+    /// here (`on_press`).
     fn on_family(&mut self, press: Press) {
         match press {
             Press::Core(press) => self.on_core(press),
@@ -3947,7 +3955,7 @@ impl App {
             Press::YkManage(press) => self.on_yk_manage_press(press),
             Press::YkConnect(press) => self.on_yk_connect(press),
             Press::Yk(press) => self.on_yk(press),
-            Press::Back | Press::Enter | Press::Legacy(_) => {}
+            Press::Back | Press::Enter => {}
         }
     }
 
@@ -3974,7 +3982,7 @@ impl App {
         pick: impl FnOnce(Press) -> Option<P>,
         run: impl FnOnce(&mut Self, P) -> bool,
     ) -> bool {
-        let Some(press) = pick(cmd_table::press_of(id, &self.controls)) else {
+        let Some(press) = cmd_table::press_of(id, &self.controls).and_then(pick) else {
             return false;
         };
         self.on_cmd(Cmd::Form(self.controls.form_snapshot()));
@@ -4026,32 +4034,65 @@ impl App {
         }
     }
 
-    /// The edit handler of a converted family (S3 C2–C12): `false` when `field` is not one of
-    /// theirs, and then nothing handles it (2026-11-18, S3 C11: the legacy `edit_chain` ran
-    /// here before; its last handler, `YubiKey`'s, is converted, and an edit no handler claims
-    /// is still ignored).
-    fn on_field_edit(&mut self, field: EditField, text: &str) -> bool {
-        self.on_wc_edit(field, text)
-            || self.on_reset_edit(field, text)
-            || self.on_book_edit(field, text)
-            || self.on_mn_edit(field, text)
-            || self.on_hc_edit(field, text)
-            || self.on_zec_edit(field, text)
-            || self.on_sol_edit(field, text)
-            || self.on_btc_edit(field, text)
-            || self.on_evm_edit(field, text)
-            || self.on_yk_edit(field, text)
-            || self.on_explorer_edit(field, text)
-            || self.on_llm_edit(field, text)
-    }
-
-    /// A control id no handler family claims (S3 B2: was `dispatch_command`; Esc, Enter, the
-    /// copy mark and `self.command` moved to `on_press`). 2026-11-18 (S3 C12): the core arms
-    /// moved to `on_core`, so no handler claims such an id (an edit's id, S22's hold area, a
-    /// connect choice row's eighth id): it reaches the received-history observer, which finds
-    /// no `새로고침` in it (table test (4)), as the end of the old chain did. S3 D3 removes it.
-    fn dispatch_legacy(&mut self, id: u16) {
-        self.received_observe(id);
+    /// The edit handler of `field`'s family (S3 C2–C12); `false` for a field read only when
+    /// its button is pressed, which nothing handles while typing (2026-11-18, S3 C11: the legacy
+    /// `edit_chain` ran here before; its last handler, `YubiKey`'s, is converted, and an edit no
+    /// handler claims is still ignored). S3 D3: routed by `match field`; before, each family's
+    /// handler was asked in turn until one claimed the field (they claim disjoint fields, so
+    /// the order never mattered: test `edits_route_to_the_one_handler_that_claims_them`).
+    pub(crate) fn on_field_edit(&mut self, field: EditField, text: &str) -> bool {
+        use EditField as F;
+        match field {
+            F::WcUri | F::WcFile | F::WcProject => self.on_wc_edit(field, text),
+            F::ResetPhrase => self.on_reset_edit(field, text),
+            F::BookAddress | F::BookLabel | F::BookPromptLabel => self.on_book_edit(field, text),
+            F::MnRemoveTyped => self.on_mn_edit(field, text),
+            F::HcTo | F::HcAmount | F::HcApi => self.on_hc_edit(field, text),
+            F::ZecSendTo | F::ZecSendAmount => self.on_zec_edit(field, text),
+            F::SolSendTo | F::SolSendAmount => self.on_sol_edit(field, text),
+            F::BtcSendTo
+            | F::BtcSendAmount
+            | F::BtcFeeManual
+            | F::BtcTypedFee
+            | F::BtcBumpManual
+            | F::BtcBumpTyped
+            | F::BtcEsploraMainnet
+            | F::BtcEsploraTestnet4 => self.on_btc_edit(field, text),
+            F::EvmSendTo
+            | F::EvmSendAmount
+            | F::EvmTokenAddress
+            | F::EvmTokenLabel
+            | F::EvmChainId
+            | F::EvmChainName
+            | F::EvmChainSymbol
+            | F::EvmChainDecimals
+            | F::EvmChainExplorer
+            | F::EvmCapFee
+            | F::EvmCapTip
+            | F::EvmCapTotal => self.on_evm_edit(field, text),
+            // The wizard's fields and (asked first inside) the card actions' ones.
+            F::YkSigIndex
+            | F::YkAutIndex
+            | F::YkSolCount
+            | F::YkSolStart
+            | F::YkOverwrite
+            | F::YkReslotSigIndex
+            | F::YkReslotAutIndex
+            | F::YkClearConfirm
+            | F::YkReslotLoss
+            | F::YkClearLoss => self.on_yk_edit(field, text),
+            F::ExplorerTx | F::ExplorerAddress => self.on_explorer_edit(field, text),
+            F::LlmEndpoint | F::LlmModel | F::LlmMaxTokens => self.on_llm_edit(field, text),
+            // Read when their `저장` is pressed (form state), not while typing.
+            F::CoreRename
+            | F::CoreAutoLock
+            | F::BtcRename
+            | F::MnRename
+            | F::SolFeeCap
+            | F::SolCuPrice
+            | F::SolRename
+            | F::YkCardName => false,
+        }
     }
 
     /// Presses of the core screens, settings sections and URL rows (2026-11-18, S3 C12: a
