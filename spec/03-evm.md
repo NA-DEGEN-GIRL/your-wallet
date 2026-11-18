@@ -1235,7 +1235,7 @@ digest = SHA-256(T)
 | `Zec` | [12] §9 `zec_payload`(transcript `"your-wallet/v3/zec-send"` v1) 그대로 |
 | `HyperCore` | [11] §6 transcript `"your-wallet/v3/hypercore-action"` v1 |
 
-시험: digest 입력 중 임의 1비트를 바꾸면 digest가 바뀐다(`archive/spec-v2.4:crates/wallet-protocol/src/approval.rs:708-765` 방식).
+시험: digest 입력 중 임의 1비트를 바꾸면 digest가 바뀐다(`archive/spec-v2.4:crates/wallet-protocol/src/approval.rs:708-765` 방식). 2026-11-18([15] §11.4 S4 A2): 모든 `ApprovalKind`(EVM 5종, SOL 4종, BTC 3종, ZEC, HyperCore)와 WalletConnect로 꾸민 dApp 송금의 display bytes·display_digest·승인 digest를 한국어·영어로 고정하고, 이 transcript를 시험 안에서 위 순서대로 다시 계산해 대조한다([09] §3.13 V14).
 
 ### 11.5 일회 소비·만료
 
