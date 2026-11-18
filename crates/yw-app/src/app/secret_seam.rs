@@ -4,8 +4,8 @@
 //! `cfg(test)` only: release builds compile none of this, and the production functions that call
 //! it (`create_secret`, `show_secret`, `open_display`, `close_secret`, the two secret-clip
 //! clears, the lock's and the shutdown's waits for the key worker, `close_approval_window`)
-//! behave exactly as before while no log runs and no refusal is set. Both seams are thread-locals
-//! of the test thread:
+//! behave exactly as before while no log runs, no refusal is set and the modifiers are not
+//! scripted. The seams are thread-locals of the test thread:
 //!
 //! - `TEST_SECRET_LOG`: the secret-window operations in call order ([`Op`]): window kinds, unit
 //!   counts and flags only, never a value. A closed window's units are counted after its wipe
@@ -18,6 +18,10 @@
 //!   when a `Required` window cannot be excluded from capture (`CaptureExclusionFailed`) or
 //!   `CreateWindowExW` fails (`Os`), before a window exists. Removed in S4 P8 (the headless
 //!   secret host).
+//! - `TEST_SECRET_KEYS_UP` (2026-11-18, A7 review): while set, the modifier reads of the secret
+//!   handler's `WM_KEYDOWN` arm (`on_secret`: Ctrl, Shift, Alt) answer "up" instead of reading the
+//!   real keyboard (`yw_win::input::is_down`), so a key the person at the desk holds during the
+//!   windowed run cannot change the Esc and Enter lines. Not logged (the goldens are unchanged).
 //!
 //! The `impl App` accessors (debug test builds, like `ui::tour_secrets`, their only user) read
 //! the open secret window and the transient secret buffers as facts (kinds, flags, counts), and
@@ -90,6 +94,8 @@ thread_local! {
     static TEST_SECRET_REFUSE: Cell<Option<Refuse>> = const { Cell::new(None) };
     /// The serial and `topmost` of the last window `create_secret` was asked for.
     static TEST_LAST_CREATE: Cell<Option<(u64, bool)>> = const { Cell::new(None) };
+    /// Whether the secret handler's modifier reads answer "up" (A7 review).
+    static TEST_SECRET_KEYS_UP: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Starts (or restarts) the operation log of this thread.
@@ -106,11 +112,29 @@ pub(crate) fn take_log() -> Vec<Op> {
         .unwrap_or_default()
 }
 
-/// Stops the log and clears the refusal and the last creation of this thread.
+/// Stops the log and clears the refusal, the last creation and the scripted modifiers of this
+/// thread.
 pub(crate) fn stop() {
     let _ = TEST_SECRET_LOG.try_with(|slot| *slot.borrow_mut() = None);
     let _ = TEST_SECRET_REFUSE.try_with(|slot| slot.set(None));
     let _ = TEST_LAST_CREATE.try_with(|slot| slot.set(None));
+    let _ = TEST_SECRET_KEYS_UP.try_with(|slot| slot.set(false));
+}
+
+/// Makes the secret handler's modifier reads answer "up" (`true`) or read the real keyboard
+/// again (`false`) on this thread.
+pub(crate) fn set_keys_up(up: bool) {
+    let _ = TEST_SECRET_KEYS_UP.try_with(|slot| slot.set(up));
+}
+
+/// `on_secret`'s modifier read: `Some(false)` ("up") while scripted, else `None` (the real read
+/// follows).
+pub(crate) fn scripted_modifier() -> Option<bool> {
+    TEST_SECRET_KEYS_UP
+        .try_with(Cell::get)
+        .ok()
+        .filter(|up| *up)
+        .map(|_| false)
 }
 
 /// Appends to the log while it runs.
@@ -302,5 +326,9 @@ fn secret_seams_are_inert_without_a_log() {
     stop();
     assert!(create(4, SecretKind::Unlock, false).is_none());
     assert!(take_log().is_empty());
+    assert_eq!(scripted_modifier(), None);
+    set_keys_up(true);
+    assert_eq!(scripted_modifier(), Some(false));
     stop();
+    assert_eq!(scripted_modifier(), None);
 }

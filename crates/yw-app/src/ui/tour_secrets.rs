@@ -8,8 +8,10 @@
 //!
 //! Headless tests cannot see these paths: without a main window `create_secret` refuses every
 //! window (E-SEC-001), so `secret_purpose()` is always `None` there. Here the App has its real
-//! main window (created, never shown), and the secret windows W01–W12 are real windows on the
-//! desktop: created, shown, capture-excluded by yw-win, closed and wiped by the App. Each
+//! main window (created, never shown), and the secret windows W02–W12 are real windows on the
+//! desktop: created, shown, capture-excluded by yw-win, closed and wiped by the App (W01 is not
+//! opened: the first-run scenario enters its passwords through `App::test_submit`, the headless
+//! harness's path; 2026-11-18, A7 review). Each
 //! scenario runs on a thread of its own (the end-session lock runs the real shutdown, which posts
 //! `WM_QUIT` to its thread).
 //!
@@ -35,6 +37,15 @@
 //! The backup challenges come from a key worker run once on its own temp folder with a synthetic
 //! password (its random words are never shown and are wiped with it). Approval windows are the
 //! flow fixture's hidden windows (never visible, never the foreground).
+//!
+//! Preconditions (2026-11-18, A7 review): some columns come from the real desktop, so the goldens
+//! hold only on a local console session (not RDP) of a Windows build where
+//! `WDA_EXCLUDEFROMCAPTURE` works: `shown=` is the real `is_hidden_or_minimized`, `excluded=` the
+//! real `SetWindowDisplayAffinity` result of yw-win, and a display window whose exclusion fails is
+//! refused (E-SEC-001), which changes whole scenarios. The secret handler's Ctrl, Shift and Alt
+//! reads are scripted "up" (`app::secret_seam::set_keys_up`), so a key held during the run does
+//! not change the Esc and Enter lines; the typed text goes in as `WM_CHAR` messages, never through
+//! the real keyboard.
 //!
 //! Run: `cargo test -p yw-app --lib ui::tour_secrets --locked --offline -- --ignored
 //! --test-threads=1 --nocapture`. Regenerate for review (PowerShell):
@@ -77,6 +88,9 @@ const PASSWORD: &str = "synthetic-pass-0417";
 const PIN: &str = "135790";
 /// The dApp site of the card scenarios.
 const SITE: &str = "https://app.example";
+/// The other texts a scenario types into a window ([`Env::type_text`] accepts only these,
+/// [`PASSWORD`] and [`PIN`]); [`scan`] rejects each as a word of a golden line.
+const TYPED: [&str; 4] = ["zoo", "word", "abc", "ab"];
 
 // ----- values ---------------------------------------------------------------------------------
 
@@ -210,6 +224,7 @@ impl Env {
             );
         }
         secret_seam::start_log();
+        secret_seam::set_keys_up(true);
         let _ = fx.key_jobs();
         let _ = fx.rpc_jobs();
         Self {
@@ -240,6 +255,10 @@ impl Env {
 
     /// `text` typed into the open window (one `WM_CHAR` per unit).
     fn type_text(&self, text: &str) {
+        assert!(
+            text == PASSWORD || text == PIN || TYPED.contains(&text),
+            "a typed text the scan does not know: add it to TYPED"
+        );
         let serial = self.serial();
         for unit in text.encode_utf16() {
             let _ = self.msg(serial, &Msg::Char(unit));
@@ -492,13 +511,26 @@ fn dapp_answers(outlet: &Outlet) -> String {
 }
 
 /// A golden line holds no value: ASCII only, no address, URL, e-mail, path, the test vector's
-/// words, the synthetic password or PIN.
+/// words, the synthetic password or PIN, no text a scenario types (as a word: `Password` and
+/// `yk-words` are names), and no run of 32 or more hex digits (a key without `0x`, such as W09's
+/// key 1; 2026-11-18, A7 review).
 fn scan(line: &str) {
     assert!(line.is_ascii(), "non-ASCII text in {line}");
     for banned in [
         "0x", "://", "@", "\\", "Users", ".example", "rpc.json", "abandon", PASSWORD, PIN,
     ] {
         assert!(!line.contains(banned), "{banned:?} in {line}");
+    }
+    for word in line.split(|c: char| !c.is_ascii_alphanumeric()) {
+        assert!(
+            !["abandon", "about"].contains(&word) && !TYPED.contains(&word),
+            "{word:?} in {line}"
+        );
+    }
+    let mut run = 0_usize;
+    for c in line.chars() {
+        run = if c.is_ascii_hexdigit() { run + 1 } else { 0 };
+        assert!(run < 32, "a run of 32 hex digits in {line}");
     }
 }
 
@@ -585,8 +617,9 @@ fn reveal_key() -> Vec<String> {
 }
 
 /// A new wallet's words (`Created`): a display window refused by capture exclusion drops the
-/// words, says E-SEC-001 and stays on S04 (`BackupPending`); a failed window drops them with
-/// E-APP-009; a shown one is W08 `ShowForBackup` (create).
+/// words, says E-SEC-001 and stays on S04 (`BackupPending`); a failed window (`UiError::Os`) also
+/// drops them with E-SEC-001 (the refuse branch: `open_display`'s E-APP-009 arm is unreachable for
+/// W08/W09); a shown one is W08 `ShowForBackup` (create).
 fn created_words_display() -> Vec<String> {
     let mut env = Env::new("created_words_display", AppMode::Starting);
     secret_seam::set_refuse(Some(Refuse::Exclusion));
@@ -788,8 +821,9 @@ fn stale_serial_ignored() -> Vec<String> {
 }
 
 /// A lock on S01 (no wallet; `SessionLock`, which locks in every mode): the import's password
-/// (W01 → W05) and "개인키로 시작하기"'s password (W01 → W07) are held, W07 is open with units
-/// typed; the lock closes it wiped and drops both.
+/// and "개인키로 시작하기"'s password are held (each submitted through `test_submit` as W01 would,
+/// which opens W05 and then W07; W01 itself is not opened), W07 is open with units typed; the
+/// lock closes it wiped and drops both.
 fn lock_in_first_run_wipes_import_and_key_start() -> Vec<String> {
     let mut env = Env::new(
         "lock_in_first_run_wipes_import_and_key_start",
@@ -1203,6 +1237,29 @@ fn secret_sessions_match_the_goldens() {
 
 /// Each golden names only scenarios of its table, each with lines, grouped in table order, and
 /// holds no value (gate test step; no window).
+/// The scan rejects a bare hex key, the vector's words and the typed texts as words, and keeps
+/// the names that contain them (gate test step; 2026-11-18, A7 review).
+#[test]
+fn the_scan_rejects_values_and_keeps_names() {
+    let key = format!("x | key {}1 |", "0".repeat(63));
+    for line in [
+        key.as_str(),
+        "x | about |",
+        "x zoo",
+        "x | ab |",
+        "x word",
+        "x abc",
+    ] {
+        assert!(
+            std::panic::catch_unwind(|| scan(line)).is_err(),
+            "kept: {line}"
+        );
+    }
+    scan(
+        "reveal_words_plain close-box | ConfirmPassword/RevealMnemonic | yk-words None | #0a1b2c3d",
+    );
+}
+
 #[test]
 fn the_secret_goldens_name_only_known_scenarios() {
     for (golden, table) in [

@@ -884,6 +884,16 @@ fn now_ms() -> u64 {
     monotonic_ms()
 }
 
+/// A modifier read of the secret window's `WM_KEYDOWN` arm (`is_down`; 2026-11-18, S4 A7 review:
+/// a `cfg(test)` seam lets the windowed secret characterization read them as up).
+fn secret_modifier(vk: u16) -> bool {
+    #[cfg(test)]
+    if let Some(down) = secret_seam::scripted_modifier() {
+        return down;
+    }
+    is_down(vk)
+}
+
 /// The step indicator of the create and import flows shown in their secret windows
 /// (spec/04 §2.3–§2.4).
 /// The labels of `steps` in `lang`, as a constant (the secret window keeps `&'static` labels).
@@ -3222,9 +3232,9 @@ impl App {
             Msg::KeyDown { vk, .. } => {
                 let action = form.on_key(
                     *vk,
-                    is_down(VK_CONTROL),
-                    is_down(VK_SHIFT),
-                    is_down(VK_MENU),
+                    secret_modifier(VK_CONTROL),
+                    secret_modifier(VK_SHIFT),
+                    secret_modifier(VK_MENU),
                     now,
                 );
                 if matches!(action, FormAction::None) {
