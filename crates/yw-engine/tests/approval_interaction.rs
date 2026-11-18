@@ -1010,3 +1010,871 @@ fn ack_missing_is_the_users_step() {
     assert!(!session(message(RiskLevel::Info, false, 0), 0).ack_missing());
     assert!(!session(message(RiskLevel::Blocked, false, 1), 0).ack_missing());
 }
+
+// ----- AP-7 (2026-11-18, spec/15 §11.4 S4 A1) ----------------------------------------------
+//
+// Edges the App-level approval flow relies on, pinned before S4 moves that flow into the
+// engine: physical Enter on a High request, synthetic Enter streams, reject during a hold, the
+// exact 120 s boundary, display changes and resets in the middle of a hold, re-activation,
+// time going backwards, the queue's `TimedOut`/`Expired` split, lock while preparing, the
+// per-origin limit, and the session sequences the App uses (`restart_interaction`,
+// `submitting`, the deadline, `restart_arm_delay` after `Approved`).
+
+use yw_engine::approval::interaction::{APPROVE_ARM_DELAY_MS, MAX_LIFETIME_MS, interaction_risk};
+
+const SPACE: InteractionEvent = InteractionEvent::SpacePressed {
+    repeat: false,
+    physical_down: true,
+};
+const SPACE_UP: InteractionEvent = InteractionEvent::SpaceReleased {
+    physical_down: false,
+};
+const ENTER: InteractionEvent = InteractionEvent::ApproveActivated { physical: true };
+
+fn press_of(source: HoldSource) -> InteractionEvent {
+    match source {
+        HoldSource::Pointer => PRESS,
+        HoldSource::Space => SPACE,
+    }
+}
+
+fn release_of(source: HoldSource) -> InteractionEvent {
+    match source {
+        HoldSource::Pointer => RELEASE,
+        HoldSource::Space => SPACE_UP,
+    }
+}
+
+/// A High request with its checkbox ticked at `ack_at`, shown at 0.
+fn high_checked(ack_at: u64) -> ApprovalSession {
+    let mut s = session(message(RiskLevel::High, true, 1), 0);
+    s.set_ack(ack_at, true);
+    s
+}
+
+/// High + checked + armed: a physical Enter is still not an approval, it counts as a press
+/// (a hold within 1 s of it never starts), and a hold started 1 s later approves after 2 s.
+#[test]
+fn ap7_physical_enter_never_approves_high_even_armed_and_checked() {
+    let mut s = high_checked(500);
+    assert_eq!(
+        s.event(1_000, InteractionEvent::Tick),
+        InteractionStatus::Pending
+    );
+    assert!(s.approve_ready(1_000));
+    assert_eq!(s.event(1_000, ENTER), InteractionStatus::Pending);
+    assert_eq!(s.interaction().last_press_ms(), Some(1_000));
+    s.event(1_500, PRESS);
+    assert_eq!(
+        s.interaction().hold_source(),
+        None,
+        "within 1 s of the Enter"
+    );
+    assert_eq!(s.event(1_600, RELEASE), InteractionStatus::Pending);
+    s.event(2_600, PRESS);
+    assert_eq!(s.interaction().hold_source(), Some(HoldSource::Pointer));
+    assert_eq!(
+        s.event(4_599, InteractionEvent::Tick),
+        InteractionStatus::Pending
+    );
+    assert_eq!(
+        s.event(4_600, InteractionEvent::Tick),
+        InteractionStatus::Approved
+    );
+}
+
+/// Standard, armed: 50 synthetic Enters 1.1 s apart never approve; a physical Enter within 1 s
+/// of the last of them does not either, one 1 s after it does.
+#[test]
+fn ap7_synthetic_enter_stream_never_approves_standard() {
+    let mut s = session(message(RiskLevel::Info, false, 0), 0);
+    let mut now = 1_100;
+    for _ in 0..50 {
+        assert_eq!(
+            s.event(now, InteractionEvent::ApproveActivated { physical: false }),
+            InteractionStatus::Pending
+        );
+        assert!(s.interaction().is_armed());
+        now += 1_100;
+    }
+    let last = now - 1_100;
+    assert_eq!(s.event(last + 999, ENTER), InteractionStatus::Pending);
+    assert_eq!(
+        s.event(last + 999 + 1_000, ENTER),
+        InteractionStatus::Approved
+    );
+}
+
+/// Reject in the middle of a hold is terminal: neither the completed hold time nor a release
+/// approves afterwards.
+#[test]
+fn ap7_reject_during_a_hold_is_terminal() {
+    for source in [HoldSource::Pointer, HoldSource::Space] {
+        let mut s = high_checked(500);
+        s.event(1_000, press_of(source));
+        assert_eq!(s.interaction().hold_source(), Some(source));
+        assert_eq!(
+            s.event(2_000, InteractionEvent::RejectActivated),
+            InteractionStatus::Rejected
+        );
+        assert_eq!(
+            s.event(3_100, InteractionEvent::Tick),
+            InteractionStatus::Rejected
+        );
+        assert_eq!(
+            s.event(3_200, release_of(source)),
+            InteractionStatus::Rejected
+        );
+        assert_eq!(s.interaction().hold_source(), None);
+    }
+}
+
+/// `deadline = ready + 120 000`: 119 999 is still inside (click, Enter, completed hold),
+/// 120 000 is outside (everything rejects).
+#[test]
+fn ap7_expiry_at_exactly_120_s_from_ready() {
+    let shown = || session(message(RiskLevel::Info, false, 0), 0);
+    let mut s = shown();
+    assert_eq!(s.interaction().lifetime_remaining_ms(119_999), 1);
+    assert_eq!(s.interaction().lifetime_remaining_ms(120_000), 0);
+    s.event(118_000, PRESS);
+    assert_eq!(s.event(119_999, RELEASE), InteractionStatus::Approved);
+    let mut s = shown();
+    s.event(118_000, PRESS);
+    assert_eq!(s.event(120_000, RELEASE), InteractionStatus::Rejected);
+    let mut s = shown();
+    assert_eq!(s.event(119_999, ENTER), InteractionStatus::Approved);
+    let mut s = shown();
+    assert!(!s.approve_ready(120_000));
+    assert_eq!(s.event(120_000, ENTER), InteractionStatus::Rejected);
+    let mut s = high_checked(500);
+    s.event(117_999, PRESS);
+    assert_eq!(
+        s.event(119_999, InteractionEvent::Tick),
+        InteractionStatus::Approved
+    );
+    let mut s = high_checked(500);
+    s.event(118_000, PRESS);
+    assert_eq!(
+        s.event(119_999, InteractionEvent::Tick),
+        InteractionStatus::Pending
+    );
+    assert_eq!(
+        s.event(120_000, InteractionEvent::Tick),
+        InteractionStatus::Rejected
+    );
+}
+
+/// A hold that would complete after the deadline never completes: the deadline tick rejects and
+/// the state stays rejected.
+#[test]
+fn ap7_a_hold_spanning_the_deadline_never_completes() {
+    let mut s = high_checked(500);
+    s.event(118_500, PRESS);
+    assert_eq!(s.interaction().hold_source(), Some(HoldSource::Pointer));
+    assert_eq!(
+        s.event(119_950, InteractionEvent::Tick),
+        InteractionStatus::Pending
+    );
+    assert_eq!(
+        s.event(120_000, InteractionEvent::Tick),
+        InteractionStatus::Rejected
+    );
+    assert_eq!(
+        s.event(120_500, InteractionEvent::Tick),
+        InteractionStatus::Rejected
+    );
+    assert_eq!(s.event(120_600, RELEASE), InteractionStatus::Rejected);
+}
+
+/// Replacing the shown content in the middle of a hold (Ready again, back to simulating,
+/// failed), from either source: the hold and the checkbox clear, `ready_at = now`,
+/// `submitting` clears, the deadline and the previous press are kept; only a new hold on new
+/// Ready content approves.
+#[test]
+fn ap7_display_change_mid_hold_resets_for_every_new_state() {
+    let request = message(RiskLevel::High, true, 1);
+    let states = [
+        PrepareState::Ready(ReadyContent::Signing(Box::new(request))),
+        PrepareState::Preparing(PrepareStage::Simulating { since_ms: 2_000 }),
+        PrepareState::Failed {
+            code: ErrorCode::Rpc001,
+            retryable: true,
+        },
+    ];
+    for source in [HoldSource::Pointer, HoldSource::Space] {
+        for state in &states {
+            let mut s = high_checked(500);
+            s.event(1_500, press_of(source));
+            assert_eq!(s.interaction().hold_source(), Some(source));
+            s.gate.submitting = true;
+            s.replace_content(2_000, state.clone())
+                .unwrap_or_else(|_| unreachable!("deadline ahead"));
+            assert!(!s.gate.ack_checked);
+            assert_eq!(s.gate.ready_at_ms, 2_000);
+            assert!(!s.gate.submitting);
+            assert_eq!(s.interaction().hold_source(), None);
+            assert_eq!(s.interaction().last_press_ms(), Some(1_500));
+            assert_eq!(s.gate.deadline_ms, 120_000, "the deadline is kept");
+            assert_eq!(
+                s.event(3_600, InteractionEvent::Tick),
+                InteractionStatus::Pending
+            );
+            s.event(3_700, release_of(source));
+            s.set_ack(3_800, true);
+            s.event(4_000, press_of(source));
+            let ready = matches!(state, PrepareState::Ready(_));
+            assert_eq!(s.interaction().hold_source().is_some(), ready);
+            assert_eq!(
+                s.event(6_000, InteractionEvent::Tick),
+                if ready {
+                    InteractionStatus::Approved
+                } else {
+                    InteractionStatus::Pending
+                }
+            );
+        }
+    }
+}
+
+/// Focus loss, foreground loss and `WM_CANCELMODE` clear a hold of either source and block that
+/// source until it is physically released; capture loss clears and blocks the pointer only
+/// (a Space hold goes on: recorded as the code behaves at `0909127`).
+#[test]
+fn ap7_focus_foreground_capture_cancel_reset_either_source() {
+    for event in [
+        InteractionEvent::FocusLost,
+        InteractionEvent::ForegroundLost,
+        InteractionEvent::CaptureLost,
+        InteractionEvent::CancelMode,
+    ] {
+        for source in [HoldSource::Pointer, HoldSource::Space] {
+            let mut s = high_checked(500);
+            s.event(1_000, press_of(source));
+            assert_eq!(s.interaction().hold_source(), Some(source));
+            assert_eq!(s.event(1_500, event), InteractionStatus::Pending);
+            if event == InteractionEvent::CaptureLost && source == HoldSource::Space {
+                assert_eq!(s.interaction().hold_source(), Some(HoldSource::Space));
+                assert!(s.interaction().is_blocked(HoldSource::Pointer));
+                assert_eq!(
+                    s.event(3_000, InteractionEvent::Tick),
+                    InteractionStatus::Approved
+                );
+                continue;
+            }
+            assert_eq!(s.interaction().hold_source(), None, "{event:?} {source:?}");
+            assert!(s.interaction().is_blocked(source));
+            // Pressed again without a release: still blocked.
+            s.event(2_600, press_of(source));
+            assert_eq!(s.interaction().hold_source(), None);
+            // Released, then pressed 1 s after the previous press: a new hold.
+            s.event(2_700, release_of(source));
+            assert!(!s.interaction().is_blocked(source));
+            s.event(3_600, press_of(source));
+            assert_eq!(s.interaction().hold_source(), Some(source));
+            assert_eq!(
+                s.event(5_599, InteractionEvent::Tick),
+                InteractionStatus::Pending
+            );
+            assert_eq!(
+                s.event(5_600, InteractionEvent::Tick),
+                InteractionStatus::Approved
+            );
+        }
+    }
+}
+
+/// Losing and regaining the foreground in the middle of a hold restarts the arm delay, clears the
+/// hold and blocks its source; a new hold needs a release and the new delay.
+#[test]
+fn ap7_reactivation_mid_hold_cancels_it() {
+    let mut s = high_checked(500);
+    s.event(1_500, PRESS);
+    assert_eq!(s.interaction().hold_source(), Some(HoldSource::Pointer));
+    s.set_foreground(2_000, false);
+    s.set_foreground(2_100, true);
+    assert_eq!(s.gate.ready_at_ms, 2_100);
+    assert!(!s.interaction().is_armed());
+    assert_eq!(s.interaction().hold_source(), None);
+    assert!(s.interaction().is_blocked(HoldSource::Pointer));
+    assert_eq!(
+        s.event(3_600, InteractionEvent::Tick),
+        InteractionStatus::Pending
+    );
+    s.event(3_650, RELEASE);
+    // `ready_at` 2 100 + 1 s = 3 100 and ≥ 1 s after the press at 1 500: a new hold.
+    s.event(3_700, PRESS);
+    assert_eq!(s.interaction().hold_source(), Some(HoldSource::Pointer));
+    assert_eq!(
+        s.event(5_700, InteractionEvent::Tick),
+        InteractionStatus::Approved
+    );
+
+    // An explicit `restart_arm_delay` (WM_ACTIVATEAPP(TRUE)) while foreground does the same.
+    let mut s = high_checked(500);
+    s.event(1_500, PRESS);
+    s.restart_arm_delay(2_000);
+    assert_eq!(s.gate.ready_at_ms, 2_000);
+    assert_eq!(s.interaction().hold_source(), None);
+    assert!(s.interaction().is_blocked(HoldSource::Pointer));
+    assert_eq!(
+        s.event(4_000, InteractionEvent::Tick),
+        InteractionStatus::Pending
+    );
+}
+
+/// Unchecking the box in the middle of a hold clears it; checking again needs a new hold.
+#[test]
+fn ap7_unchecking_the_box_mid_hold_cancels_it() {
+    let mut s = high_checked(500);
+    s.event(1_500, PRESS);
+    assert_eq!(s.interaction().hold_source(), Some(HoldSource::Pointer));
+    s.set_ack(2_000, false);
+    assert_eq!(s.interaction().hold_source(), None);
+    assert!(s.interaction().is_blocked(HoldSource::Pointer));
+    s.set_ack(2_100, true);
+    assert_eq!(
+        s.event(4_000, InteractionEvent::Tick),
+        InteractionStatus::Pending
+    );
+    s.event(4_100, RELEASE);
+    s.event(5_100, PRESS);
+    assert_eq!(s.interaction().hold_source(), Some(HoldSource::Pointer));
+    assert_eq!(
+        s.event(7_100, InteractionEvent::Tick),
+        InteractionStatus::Approved
+    );
+}
+
+/// Time going backwards rejects terminally, whichever session call sees it.
+#[test]
+fn ap7_session_time_going_backwards_rejects() {
+    let shown = || session(message(RiskLevel::Info, false, 0), 1_000);
+    let mut s = shown();
+    assert_eq!(
+        s.event(5_000, InteractionEvent::Tick),
+        InteractionStatus::Pending
+    );
+    assert_eq!(
+        s.event(4_999, InteractionEvent::Tick),
+        InteractionStatus::Rejected
+    );
+    assert_eq!(s.event(9_000, ENTER), InteractionStatus::Rejected);
+    let mut s = shown();
+    s.event(5_000, InteractionEvent::Tick);
+    s.restart_arm_delay(4_999);
+    assert_eq!(s.interaction().status(), InteractionStatus::Rejected);
+    let mut s = shown();
+    s.event(5_000, InteractionEvent::Tick);
+    s.set_ack(4_999, true);
+    assert_eq!(s.interaction().status(), InteractionStatus::Rejected);
+}
+
+/// The queue half of the two timer paths (spec/04 §3.5): the shown item ends `TimedOut` when the
+/// site deadline is the earlier (or equal) one and `Expired` when the display deadline is.
+#[test]
+fn ap7_site_deadline_shorter_than_display_is_timed_out_by_the_queue() {
+    let shown = |site_deadline: u64, ready: u64| {
+        let mut queue: ApprovalQueue<u32> = ApprovalQueue::default();
+        let _ = queue.enqueue(site("https://a.example", site_deadline), 1);
+        queue.show_next(0, &mut Vec::new());
+        queue.mark_ready(ready);
+        queue
+    };
+    let mut queue = shown(100_000, 10_000);
+    assert_eq!(queue.shown_deadline(), Some(100_000));
+    assert!(queue.tick(99_999).is_empty());
+    assert_eq!(queue.tick(100_000)[0].1, QueueOutcome::TimedOut);
+    let mut queue = shown(600_000, 0);
+    assert_eq!(queue.shown_deadline(), Some(120_000));
+    assert!(queue.tick(119_999).is_empty());
+    assert_eq!(queue.tick(120_000)[0].1, QueueOutcome::Expired);
+    let mut queue = shown(130_000, 10_000);
+    assert_eq!(queue.shown_deadline(), Some(130_000));
+    assert_eq!(
+        queue.tick(130_000)[0].1,
+        QueueOutcome::TimedOut,
+        "equal: the site's"
+    );
+}
+
+/// Locking while the shown item is still preparing ends it `Rejected`; waiting items stay and
+/// their deadlines go on.
+#[test]
+fn ap7_lock_while_preparing_and_waiting_deadlines_continue() {
+    let mut queue: ApprovalQueue<u32> = ApprovalQueue::default();
+    let _ = queue.enqueue(site("https://a.example", 600_000), 1);
+    let _ = queue.enqueue(site("https://b.example", 50_000), 2);
+    let _ = queue.enqueue(QueueSource::App, 3);
+    assert!(queue.show_next(0, &mut Vec::new()).is_some());
+    assert_eq!(queue.shown().map(|item| item.payload), Some(3));
+    assert_eq!(
+        queue.shown_deadline(),
+        None,
+        "an app item has none before Ready"
+    );
+    let locked = queue.lock();
+    assert_eq!(locked.len(), 1);
+    assert_eq!(locked[0].1, QueueOutcome::Rejected);
+    assert_eq!(locked[0].0.payload, 3);
+    assert!(queue.shown().is_none());
+    assert_eq!(queue.len(), 2);
+    assert!(queue.tick(49_999).is_empty());
+    let timed_out = queue.tick(50_000);
+    assert_eq!(timed_out.len(), 1);
+    assert_eq!(timed_out[0].0.payload, 2);
+    assert_eq!(timed_out[0].1, QueueOutcome::TimedOut);
+    assert_eq!(queue.len(), 1);
+}
+
+/// The per-origin limit of 16 counts the shown item.
+#[test]
+fn ap7_per_origin_limit_counts_the_shown_item() {
+    let mut queue: ApprovalQueue<u32> = ApprovalQueue::default();
+    assert!(queue.enqueue(site("https://a.example", 600_000), 0).is_ok());
+    assert!(queue.show_next(0, &mut Vec::new()).is_some());
+    for n in 1..16 {
+        assert!(queue.enqueue(site("https://a.example", 600_000), n).is_ok());
+    }
+    assert_eq!(queue.len(), MAX_APPROVALS_PER_ORIGIN);
+    assert_eq!(
+        queue.enqueue(site("https://a.example", 600_000), 16),
+        Err(QueueOutcome::TooManyPending)
+    );
+    assert!(
+        queue
+            .enqueue(site("https://b.example", 600_000), 17)
+            .is_ok()
+    );
+    // The shown item gone: one more fits.
+    assert!(queue.finish_shown(QueueOutcome::Approved).is_some());
+    assert!(
+        queue
+            .enqueue(site("https://a.example", 600_000), 18)
+            .is_ok()
+    );
+}
+
+/// `restart_interaction` (the App's C1 step after acting on `Approved`) keeps the checkbox, the arm
+/// delay start, `submitting`, the deadline and the previous press; it clears a hold.
+#[test]
+fn ap7_restart_interaction_keeps_ack_arm_and_submitting() {
+    let mut s = high_checked(500);
+    s.event(1_000, PRESS);
+    assert_eq!(
+        s.event(3_000, InteractionEvent::Tick),
+        InteractionStatus::Approved
+    );
+    s.gate.submitting = true;
+    let before = s.gate.clone();
+    s.restart_interaction(3_050)
+        .unwrap_or_else(|_| unreachable!("deadline ahead"));
+    assert_eq!(s.gate, before);
+    assert_eq!(s.interaction().status(), InteractionStatus::Pending);
+    assert_eq!(s.interaction().hold_source(), None);
+    assert_eq!(s.interaction().last_press_ms(), Some(1_000));
+    assert_eq!(
+        s.interaction().lifetime_remaining_ms(3_050),
+        120_000 - 3_050
+    );
+    // `submitting` disarms at the next event.
+    s.event(5_000, PRESS);
+    assert!(!s.interaction().is_armed());
+    assert_eq!(s.interaction().hold_source(), None);
+    assert_eq!(
+        s.event(8_000, InteractionEvent::Tick),
+        InteractionStatus::Pending
+    );
+}
+
+/// `submitting` blocks every approving input of both levels until it clears.
+#[test]
+fn ap7_submitting_blocks_approve() {
+    let mut s = session(message(RiskLevel::Info, false, 0), 0);
+    s.gate.submitting = true;
+    assert!(!can_approve(&s.gate, 5_000));
+    assert!(!s.approve_ready(5_000));
+    assert!(!s.arm_waiting(5_000), "not the window's own timing");
+    assert_eq!(s.event(5_000, ENTER), InteractionStatus::Pending);
+    s.event(6_000, PRESS);
+    assert_eq!(s.event(6_001, RELEASE), InteractionStatus::Pending);
+    let mut high = high_checked(500);
+    high.gate.submitting = true;
+    high.event(2_000, PRESS);
+    assert_eq!(high.interaction().hold_source(), None);
+    assert_eq!(
+        high.event(5_000, InteractionEvent::Tick),
+        InteractionStatus::Pending
+    );
+    s.gate.submitting = false;
+    // The presses while `submitting` were unarmed presses: the delay restarted at 6 000.
+    assert_eq!(s.gate.ready_at_ms, 6_000);
+    assert_eq!(s.event(7_001, ENTER), InteractionStatus::Approved);
+}
+
+/// The deadline the App gives the gate is `min(site, Ready + 120 s)` from the queue
+/// (`shown_deadline`), the site deadline alone while preparing; the interaction's own lifetime is
+/// clamped to `1..=MAX_LIFETIME_MS` from the session start.
+#[test]
+fn ap7_deadline_is_min_of_site_and_display() {
+    let mut queue: ApprovalQueue<u32> = ApprovalQueue::default();
+    let _ = queue.enqueue(site("https://a.example", 600_000), 1);
+    queue.show_next(0, &mut Vec::new());
+    assert_eq!(queue.shown_deadline(), Some(600_000));
+    queue.mark_ready(10_000);
+    assert_eq!(queue.shown_deadline(), Some(130_000));
+    queue.mark_ready(20_000);
+    assert_eq!(
+        queue.shown_deadline(),
+        Some(130_000),
+        "the first Ready counts"
+    );
+    let mut app: ApprovalQueue<u32> = ApprovalQueue::default();
+    let _ = app.enqueue(QueueSource::App, 1);
+    app.show_next(0, &mut Vec::new());
+    app.mark_ready(5_000);
+    assert_eq!(app.shown_deadline(), Some(125_000));
+
+    let start = |deadline_ms| {
+        ApprovalSession::new(
+            ApprovalGate {
+                prepare: PrepareState::Ready(ReadyContent::Signing(Box::new(message(
+                    RiskLevel::Info,
+                    false,
+                    0,
+                )))),
+                ack_checked: false,
+                connect_selected: 0,
+                ready_at_ms: 0,
+                is_foreground: true,
+                deadline_ms,
+                submitting: false,
+            },
+            0,
+        )
+        .unwrap_or_else(|_| unreachable!("valid session"))
+    };
+    let s = start(MAX_LIFETIME_MS + 100_000);
+    assert_eq!(s.interaction().lifetime_remaining_ms(0), MAX_LIFETIME_MS);
+    let mut s = start(MAX_LIFETIME_MS + 100_000);
+    assert_eq!(
+        s.event(MAX_LIFETIME_MS, InteractionEvent::Tick),
+        InteractionStatus::Rejected,
+        "the interaction's own clamp"
+    );
+    let mut s = start(0);
+    assert_eq!(s.interaction().lifetime_remaining_ms(0), 1);
+    assert!(!can_approve(&s.gate, 0));
+    assert_eq!(
+        s.event(1, InteractionEvent::Tick),
+        InteractionStatus::Rejected
+    );
+}
+
+/// L-2's engine half (spec/04 §3.4): once the status is `Approved`, `restart_arm_delay`, the
+/// checkbox, the foreground and every event leave it `Approved` (a Reject does nothing) while the
+/// gate's `ready_at` still moves; only `restart_interaction` brings a pending interaction back.
+#[test]
+fn ap7_restart_arm_delay_while_approved_does_nothing() {
+    let mut s = session(message(RiskLevel::Info, false, 0), 0);
+    s.event(1_000, PRESS);
+    assert_eq!(s.event(1_001, RELEASE), InteractionStatus::Approved);
+    s.restart_arm_delay(1_100);
+    assert_eq!(s.gate.ready_at_ms, 1_100, "the gate moves");
+    assert_eq!(s.interaction().status(), InteractionStatus::Approved);
+    assert_eq!(
+        s.event(1_200, InteractionEvent::RejectActivated),
+        InteractionStatus::Approved
+    );
+    s.set_ack(1_300, true);
+    s.set_foreground(1_400, false);
+    s.set_foreground(1_500, true);
+    assert_eq!(
+        s.event(200_000, InteractionEvent::Tick),
+        InteractionStatus::Approved
+    );
+    s.restart_interaction(1_600)
+        .unwrap_or_else(|_| unreachable!("deadline ahead"));
+    assert_eq!(s.interaction().status(), InteractionStatus::Pending);
+    assert_eq!(
+        s.event(1_700, InteractionEvent::RejectActivated),
+        InteractionStatus::Rejected
+    );
+}
+
+// ----- AP-7 fuzz-lite (spec/09 §2.4) ---------------------------------------------------------
+
+/// Iterations: `YW_FUZZ_RUNS` when set to a positive number (the short smoke run of
+/// `scripts/check.ps1`), otherwise 1,000,000 (spec/09 §2.4).
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the iteration count of a test tool; yw-engine itself never reads the environment"
+)]
+fn fuzz_runs() -> u32 {
+    std::env::var("YW_FUZZ_RUNS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|&runs| runs > 0)
+        .unwrap_or(1_000_000)
+}
+
+/// xorshift64* (the seed is fixed in the test).
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 >> 12;
+        self.0 ^= self.0 << 25;
+        self.0 ^= self.0 >> 27;
+        self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
+    }
+
+    fn below(&mut self, bound: u64) -> u64 {
+        self.next() % bound.max(1)
+    }
+
+    fn flag(&mut self) -> bool {
+        self.next() & 1 == 1
+    }
+
+    fn connect_count(&mut self) -> usize {
+        match self.below(4) {
+            0 => 0,
+            1 => 1,
+            2 => 16,
+            _ => 17,
+        }
+    }
+}
+
+/// Content kinds of the fuzz: Info, High with the flag, High without it, Blocked, a Caution
+/// transaction whose simulation failed, a connect window, preparing and failed.
+fn fuzz_content(rng: &mut Rng) -> PrepareState {
+    let signing = |request| PrepareState::Ready(ReadyContent::Signing(Box::new(request)));
+    match rng.below(8) {
+        0 => signing(message(RiskLevel::Info, false, 0)),
+        1 => signing(message(RiskLevel::High, true, 1)),
+        2 => signing(message(RiskLevel::High, false, 2)),
+        3 => signing(message(RiskLevel::Blocked, false, 1)),
+        4 => signing(request(
+            RiskLevel::Caution,
+            false,
+            0,
+            ApprovalKind::EvmTransaction,
+            SimulationBinding::None {
+                reason: SimNoneReason::Timeout,
+            },
+        )),
+        5 => PrepareState::Ready(ReadyContent::Connect(ConnectView { accounts: 20 })),
+        6 => PrepareState::Preparing(PrepareStage::Simulating { since_ms: 0 }),
+        _ => PrepareState::Failed {
+            code: ErrorCode::Rpc001,
+            retryable: true,
+        },
+    }
+}
+
+fn fuzz_event(rng: &mut Rng) -> InteractionEvent {
+    match rng.below(14) {
+        0..=2 => InteractionEvent::Tick,
+        3 => InteractionEvent::ApproveActivated {
+            physical: rng.flag(),
+        },
+        4 => InteractionEvent::RejectActivated,
+        5 | 6 => InteractionEvent::PointerPressed {
+            inside: rng.below(4) != 0,
+            click_through: rng.below(4) == 0,
+            physical_down: rng.below(4) != 0,
+        },
+        7 => InteractionEvent::PointerMoved {
+            inside: rng.below(4) != 0,
+        },
+        8 => InteractionEvent::PointerReleased {
+            physical_down: rng.below(4) == 0,
+        },
+        9 => InteractionEvent::SpacePressed {
+            repeat: rng.below(4) == 0,
+            physical_down: rng.below(4) != 0,
+        },
+        10 => InteractionEvent::SpaceReleased {
+            physical_down: rng.below(4) == 0,
+        },
+        11 => match rng.below(4) {
+            0 => InteractionEvent::FocusLost,
+            1 => InteractionEvent::ForegroundLost,
+            2 => InteractionEvent::CaptureLost,
+            _ => InteractionEvent::CancelMode,
+        },
+        _ => InteractionEvent::OtherPress,
+    }
+}
+
+/// What the gate needs for an approving input at `now` (spec/04 §3.4), written out again here
+/// rather than calling `can_approve`: approvable content, the checkbox when required, the arm
+/// delay, the foreground, the deadline and not `submitting`.
+fn fuzz_gate_open(gate: &ApprovalGate, now: u64) -> bool {
+    let content = match &gate.prepare {
+        PrepareState::Ready(ReadyContent::Signing(request)) => {
+            request.display.risk != RiskLevel::Blocked && (!ack_needed(request) || gate.ack_checked)
+        }
+        PrepareState::Ready(ReadyContent::Connect(_)) => (1..=16).contains(&gate.connect_selected),
+        PrepareState::Preparing(_) | PrepareState::Failed { .. } => false,
+    };
+    content
+        && now >= gate.ready_at_ms + APPROVE_ARM_DELAY_MS
+        && gate.is_foreground
+        && now < gate.deadline_ms
+        && !gate.submitting
+}
+
+fn fuzz_risk(gate: &ApprovalGate) -> Option<InteractionRisk> {
+    match &gate.prepare {
+        PrepareState::Ready(ReadyContent::Signing(request)) => interaction_risk(request),
+        PrepareState::Ready(ReadyContent::Connect(_)) => Some(InteractionRisk::Standard),
+        PrepareState::Preparing(_) | PrepareState::Failed { .. } => None,
+    }
+}
+
+/// Checks one session event: a hold starts only on an armed, spaced, physical press of an
+/// approvable request, and `Approved` appears only with every one of its conditions
+/// (Standard: a spaced physical Enter or the release of such a hold; High: a hold ≥ 2 s).
+/// Returns the level of the approval this event made, if it made one.
+fn fuzz_check_event(
+    s: &mut ApprovalSession,
+    now: u64,
+    event: InteractionEvent,
+) -> Option<InteractionRisk> {
+    let gate = s.gate.clone();
+    let risk = fuzz_risk(&gate);
+    let before = s.interaction().status();
+    let hold = s.interaction().hold_source();
+    let remaining = s.interaction().hold_remaining_ms(now);
+    let spaced = s
+        .interaction()
+        .last_press_ms()
+        .is_none_or(|last| now >= last + APPROVE_ARM_DELAY_MS);
+    let after = s.event(now, event);
+    if hold.is_none() && s.interaction().hold_source().is_some() {
+        assert!(
+            fuzz_gate_open(&gate, now),
+            "hold without the gate: {event:?}"
+        );
+        assert!(spaced, "hold within 1 s of a press");
+        assert!(risk.is_some(), "hold on blocked content");
+        assert!(matches!(
+            event,
+            InteractionEvent::PointerPressed {
+                inside: true,
+                click_through: false,
+                physical_down: true,
+            } | InteractionEvent::SpacePressed {
+                repeat: false,
+                physical_down: true,
+            }
+        ));
+    }
+    if before == InteractionStatus::Pending && after == InteractionStatus::Approved {
+        assert!(
+            fuzz_gate_open(&gate, now),
+            "approved without the gate: {event:?}"
+        );
+        match risk {
+            Some(InteractionRisk::Standard) => match event {
+                InteractionEvent::ApproveActivated { physical: true } => assert!(spaced),
+                InteractionEvent::PointerReleased {
+                    physical_down: false,
+                } => assert_eq!(hold, Some(HoldSource::Pointer)),
+                InteractionEvent::SpaceReleased {
+                    physical_down: false,
+                } => assert_eq!(hold, Some(HoldSource::Space)),
+                other => unreachable!("Standard approved by {other:?}"),
+            },
+            // Any event may be the one that sees the completed hold (a Tick, a key press):
+            // what approves is the hold, never the event itself.
+            Some(InteractionRisk::High) => {
+                assert!(hold.is_some(), "High approved without a hold");
+                assert_eq!(remaining, Some(0), "High approved before 2 s");
+            }
+            None => unreachable!("approved blocked, preparing or failed content"),
+        }
+        return risk;
+    }
+    None
+}
+
+/// The session-level operations the App performs besides events; none of them approves.
+fn fuzz_other_step(s: &mut ApprovalSession, rng: &mut Rng, now: u64) {
+    let before = s.interaction().status();
+    match rng.below(7) {
+        0 => s.set_foreground(now, rng.below(5) != 0),
+        1 => s.set_ack(now, rng.flag()),
+        2 => s.restart_arm_delay(now),
+        3 => {
+            let content = fuzz_content(rng);
+            let _ = s.replace_content(now, content);
+        }
+        4 => {
+            s.gate.submitting = rng.below(3) == 0;
+            let _ = s.restart_interaction(now);
+        }
+        5 => s.gate.connect_selected = rng.connect_count(),
+        _ => s.gate.submitting = rng.below(4) == 0,
+    }
+    if before == InteractionStatus::Pending {
+        assert_ne!(
+            s.interaction().status(),
+            InteractionStatus::Approved,
+            "only an event approves"
+        );
+    }
+}
+
+/// AP-7 fuzz-lite: random sessions (Info, High with and without the flag, Blocked, a failed
+/// simulation, connect with 0/1/16/17 accounts, preparing, failed) driven by random events,
+/// foreground flips, checkbox toggles, arm-delay restarts, content replacements, interaction
+/// restarts and `submitting`, with time mostly moving forward. Whenever the status turns
+/// `Approved`, every condition of spec/04 §3.4 held at that moment; a hold never starts
+/// without them; nothing but an event approves.
+#[test]
+#[ignore = "fuzz-lite (spec/09 §2.4 fallback)"]
+fn fuzz_lite_approval_never_without_its_conditions() {
+    let mut rng = Rng(0x5eed_a9a7_0000_0001);
+    // The invariant must not pass on nothing: both levels are approved somewhere in the run.
+    let (mut standard, mut high) = (0_u64, 0_u64);
+    for _ in 0..fuzz_runs() {
+        let mut now = rng.below(5_000);
+        let gate = ApprovalGate {
+            prepare: fuzz_content(&mut rng),
+            ack_checked: rng.flag(),
+            connect_selected: rng.connect_count(),
+            ready_at_ms: now,
+            is_foreground: rng.below(4) != 0,
+            deadline_ms: now + 120_000,
+            submitting: false,
+        };
+        let mut s =
+            ApprovalSession::new(gate, now).unwrap_or_else(|_| unreachable!("valid session"));
+        for _ in 0..64 {
+            now = match rng.below(64) {
+                0 => now.saturating_sub(1 + rng.below(100)),
+                1..=4 => now + 1_000 + rng.below(3_000),
+                5 => now + 20_000 + rng.below(110_000),
+                _ => now + rng.below(400),
+            };
+            if rng.below(3) == 0 {
+                fuzz_other_step(&mut s, &mut rng, now);
+            } else {
+                let event = fuzz_event(&mut rng);
+                match fuzz_check_event(&mut s, now, event) {
+                    Some(InteractionRisk::Standard) => standard += 1,
+                    Some(InteractionRisk::High) => high += 1,
+                    None => {}
+                }
+            }
+        }
+    }
+    assert!(
+        standard > 0 && high > 0,
+        "approvals: {standard} standard, {high} high"
+    );
+}

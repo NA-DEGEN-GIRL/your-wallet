@@ -103,6 +103,7 @@
 | `btc_tx` | `yw_core::btc::tx` 파서(08 §6.5) | Ok → 재직렬화 == 입력, txid 결정적 | 65,536 | BIP143 거래, Core `tx_valid.json` |
 | `btc_address` | `parse_address(s, Mainnet/Testnet4)`(08 §6.3) | Ok → `encode_address`가 소문자 정규형이고 재파싱이 같은 `ScriptKind` | 128 | BIP173/350·key_io |
 | `vault_header` | `peek_generation` + 디코드 1–7단계(02 §4.5) | 패닉 없음, Argon2 호출 0회 | 4,096 | §3.12 골든 |
+| `approval` | yw-engine `approval::interaction::ApprovalSession`에 사건·전경·체크·`restart_arm_delay`·표시 교체·`restart_interaction`·`submitting`·연결 선택 수를 무작위로 이어 넣는다(실행당 64단계, 시간은 대부분 앞으로, 가끔 역행). 2026-11-18 [15] §11.4 S4 A1에서 더했고 fuzz-lite 대체 경로만 있다(`tests/approval_interaction.rs` `fuzz_lite_approval_never_without_its_conditions`, 바이트 입력이 없어 cargo-fuzz 대상은 없다) | `Approved`가 되는 순간 04 §3.4 조건(승인할 수 있는 내용, 필요하면 체크, `ready_at` + 1 s, 전경, 기한 전, `submitting` 아님)이 모두 참. Standard는 직전 누름에서 1초 이상 지난 물리 Enter 또는 그런 hold의 놓기로만, High는 2초 이상 이어진 hold로만. hold는 같은 조건에서 1초 간격의 물리 누름으로만 시작. 사건이 아닌 호출은 승인하지 않는다. 두 등급이 한 번 이상 승인되어야 한다(빈 실행 방지) | — | 고정 seed `0x5eed_a9a7_0000_0001` |
 
 - 판정: 마일스톤에 해당하는 대상 전부 600초씩, 충돌·시간 초과(입력당 2초)·RSS 초과 0건. 파서·디코더 코드가 바뀐 커밋 뒤에도 해당 대상을 다시 돌린다.
 - 충돌 처리: `cargo fuzz tmin`으로 줄인 입력을 소유 크레이트의 `tests/regressions/<target>-<n>.bin`에 넣고 `include_bytes!` 회귀 테스트를 추가한 뒤 고친다.
@@ -495,7 +496,7 @@ G1과 같은 절차로 고정한다: 테스트가 아래 입력으로 바이트�
 
 ### 4.2 EVM·승인 (M2, M4, M5, M6)
 
-단계(그 모듈이 생기는 마일스톤, 01 §2.2·03 §0): X-1–X-3·X-25는 dApp 파라미터 검증·라우팅(`browser::params`)이라 M5(§5.6 M5-14), X-5·X-17·X-18·X-21–X-24는 송신 슬롯·저널·RPC 흐름·사용자 체인 등록(`flow::evm`, `journal`, `rpc::evm`)이라 M4(§5.5 M4-12), X-19는 M6(§5.8 M6-1), 나머지는 M2(§5.3 M2-2).
+단계(그 모듈이 생기는 마일스톤, 01 §2.2·03 §0): X-1–X-3·X-25는 dApp 파라미터 검증·라우팅(`browser::params`)이라 M5(§5.6 M5-14), X-5·X-17·X-18·X-21–X-24는 송신 슬롯·저널·RPC 흐름·사용자 체인 등록(`flow::evm`, `journal`, `rpc::evm`)이라 M4(§5.5 M4-12), X-19는 M6(§5.8 M6-1), X-26은 승인 창 상호작용(`approval::interaction`, yw-core `ApprovalStore`)이라 M4(2026-11-18 [15] §11.4 S4 A1에서 더함), 나머지는 M2(§5.3 M2-2).
 
 | ID | 조작 | 기대 | 정본 |
 |---|---|---|---|
@@ -524,6 +525,7 @@ G1과 같은 절차로 고정한다: 테스트가 아래 입력으로 바이트�
 | X-23 | 추가 시 블록 0 해시 H1 고정 → 재시작(또는 RPC URL 변경) 뒤 연결에서 (a) 블록 0 = H2 (b) `eth_chainId` ≠ 등록값 | (a) 그 체인 읽기·보내기·서명·dApp 읽기 전부 체인 불일치 오류. H2를 보여 주는 확인 창에서 사용자가 다시 고정해야만 해제(취소 → 계속 오류), 재고정 뒤 정상 (b) 같은 오류, 재고정 없이 URL을 고칠 때까지 유지. 기본 제공 체인은 §3.11 상수와 비교(03 §1.4) | D14 |
 | X-24 | `simulation = unsupported` 체인 보내기(§3.8 S15), 61 s 뒤 클릭 포함 | `eth_simulateV1` 호출 0, [미지원], 체크 + 2초 누르기로 서명·전송 | D14·D15 |
 | X-25 | dApp `wallet_switchEthereumChain` 사용자 체인(10, `0xa`; 8453은 내장 Base) / 999 / 미등록 `0x89` / `wallet_addEthereumChain`(유효한 EIP-3085 파라미터) | `null` + `chainChanged` / 같음 / 4902 `UnrecognizedChain` / 4200 `UnsupportedMethod`, 창 없음, 체인 목록 불변 | D14, 05 §5 |
+| X-26 | 승인 창 입력 경계(2026-11-18, [15] §11.4 S4 A1, M4 흐름을 옮기기 전): 고위험·체크·armed에서 물리 Enter, 1.1초 간격 합성 Enter 50번, hold 중 거부·표시 교체·전경 상실 뒤 재획득·체크 해제·시간 역행, 표시 + 정확히 120,000 ms의 클릭·Enter·hold 완료, 차단 요청 `consume` 되풀이, `replace` 뒤 교체 전 digest로 `consume` | 모두 `Approved` 아님(거부 뒤·120,000 ms·역행은 `Rejected`), hold 취소 후 놓고 1초 뒤 새 hold만 승인, 차단 요청은 `Pending` 유지, 교체 전 digest → `Invalidated`이고 새 digest도 소비 불가 | 04 §3.4·§3.9 AP-7, 03 §11.5 |
 
 SIWE 기본형(LF 줄바꿈, 끝 LF 없음, 검사 시각 2026-10-26T00:00:00Z, 활성 체인 11155111, 서명 계정 ACC-1):
 

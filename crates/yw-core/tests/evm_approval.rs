@@ -559,3 +559,84 @@ fn message_drafts_need_exact_eip191_and_eip712_prefixes() {
         ApprovalError::PayloadMismatch
     );
 }
+
+/// 2026-11-18 (spec/15 §11.4 S4 A1): a blocked request refused by `consume` stays `Pending`
+/// (never `Consumed`), refuses again the same way, and can still be rejected.
+#[test]
+fn blocked_consume_leaves_the_entry_pending() {
+    let mut store = ApprovalStore::new();
+    let mut blocked = draft();
+    blocked.display = display(
+        "a",
+        vec![warning(
+            yw_core::lang::Lang::Ko,
+            E05,
+            Some("최대 수수료 > 상한"),
+        )],
+    );
+    let request = store.issue(blocked, 0, 0).unwrap();
+    for now in [1, 2, 119_999] {
+        assert_eq!(
+            store.consume(request.id, request.digest, now),
+            Err(ApprovalError::Blocked)
+        );
+        assert_eq!(store.state(request.id), Some(ApprovalState::Pending));
+    }
+    store.reject(request.id);
+    assert_eq!(store.state(request.id), Some(ApprovalState::Rejected));
+    assert_eq!(
+        store.consume(request.id, request.digest, 3),
+        Err(ApprovalError::NotPending(ApprovalState::Rejected))
+    );
+}
+
+/// 2026-11-18 (spec/15 §11.4 S4 A1): after `replace`, consuming with the digest shown before the
+/// replacement invalidates the entry, and the new digest no longer consumes; without that stale
+/// attempt the new digest consumes exactly once.
+#[test]
+fn a_stale_shown_digest_after_replace_invalidates() {
+    let fresh = |id: u8| {
+        let mut fresh = draft();
+        fresh.id = ApprovalId([id; 16]);
+        fresh.simulation = SimulationBinding::Simulated {
+            verdict: SimVerdict::Ok,
+            block: SimBinding {
+                parent_hash: [0xb9; 32],
+                ..block()
+            },
+        };
+        fresh
+    };
+    let mut store = ApprovalStore::new();
+    let request = store.issue(draft(), 10_000, 1_791_381_216_000).unwrap();
+    let replaced = store.replace(request.id, request.digest, fresh(0)).unwrap();
+    assert_ne!(replaced.digest, request.digest);
+    assert_eq!(
+        store.consume(request.id, request.digest, 10_001),
+        Err(ApprovalError::DigestMismatch)
+    );
+    assert_eq!(store.state(request.id), Some(ApprovalState::Invalidated));
+    assert_eq!(
+        store.consume(request.id, replaced.digest, 10_002),
+        Err(ApprovalError::NotPending(ApprovalState::Invalidated))
+    );
+
+    let mut other = draft();
+    other.id = ApprovalId([1; 16]);
+    let request = store.issue(other, 10_000, 1_791_381_216_000).unwrap();
+    let replaced = store.replace(request.id, request.digest, fresh(1)).unwrap();
+    // The old digest no longer replaces either.
+    assert_eq!(
+        store
+            .replace(request.id, request.digest, fresh(1))
+            .unwrap_err(),
+        ApprovalError::DigestMismatch
+    );
+    assert_eq!(store.state(request.id), Some(ApprovalState::Pending));
+    let approved = store.consume(request.id, replaced.digest, 10_001).unwrap();
+    assert_eq!(approved.digest(), replaced.digest);
+    assert_eq!(
+        store.consume(request.id, replaced.digest, 10_002),
+        Err(ApprovalError::NotPending(ApprovalState::Consumed))
+    );
+}
