@@ -82,6 +82,17 @@ impl core::fmt::Debug for MnUi {
     }
 }
 
+// 2026-11-18 (S4 A7): what the windowed secret characterization (`ui::tour_secrets`, debug test
+// builds) reads of the held buffers: flags only, never the words.
+#[cfg(test)]
+#[cfg(debug_assertions)]
+impl MnUi {
+    /// Whether the words between W05 and W06, and an open quiz, are held.
+    pub(crate) const fn test_holds(&self) -> (bool, bool) {
+        (self.phrase.is_some(), self.challenge.is_some())
+    }
+}
+
 /// The recovery-phrase texts (spec/04 §2.24, T-MN-*).
 pub mod text {
     yw_core::texts! {

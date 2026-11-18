@@ -51,3 +51,8 @@ mod tour;
 #[cfg(test)]
 #[cfg(debug_assertions)]
 mod tour_forms;
+// DEV ONLY (2026-11-18, S4 A7): the windowed secret-session characterization, gated like the
+// tour.
+#[cfg(test)]
+#[cfg(debug_assertions)]
+mod tour_secrets;

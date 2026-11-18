@@ -2191,6 +2191,11 @@ impl App {
     /// Closes the window without queue bookkeeping; a still-pending issued approval is rejected
     /// (it can never be consumed without its window).
     pub fn close_approval_window(&mut self) {
+        // 2026-11-18 (S4 A7, critique A-2): the secret characterization's lock order.
+        #[cfg(test)]
+        crate::app::secret_seam::log(crate::app::secret_seam::Op::ApprovalClose {
+            shown: self.evm.window.is_some(),
+        });
         if let Some(mut ui) = self.evm.window.take() {
             if let Some(request) = ui.request.as_ref() {
                 self.evm.store.reject(request.id);

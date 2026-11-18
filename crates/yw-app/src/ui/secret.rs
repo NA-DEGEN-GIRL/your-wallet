@@ -472,6 +472,36 @@ pub struct SecretForm {
     backup_left: bool,
 }
 
+// 2026-11-18 (S4 A7, spec/15 §11.4 S4): what the secret-window seam (`app::secret_seam`) and the
+// windowed secret characterization (`ui::tour_secrets`) read of a form: counts and flags only,
+// never a unit of a field or of the displayed secret.
+#[cfg(test)]
+impl SecretForm {
+    /// The units its fields hold (after a wipe: 0).
+    pub(crate) fn test_held_units(&self) -> usize {
+        self.slots.iter().map(|slot| slot.field.len()).sum()
+    }
+
+    /// Flags and counts: busy, an error, an information or transient line, the detail lines,
+    /// the card name, the held units, a displayed secret, capture exclusion, the input pause.
+    #[cfg(debug_assertions)]
+    pub(crate) fn test_facts(&self) -> String {
+        format!(
+            "busy={} error={} transient={} info={} details={} card={} units={} display={} excluded={} paused={}",
+            self.busy,
+            self.error.is_some(),
+            self.transient.is_some(),
+            self.info.is_some(),
+            self.details.len(),
+            self.card.is_some(),
+            self.test_held_units(),
+            self.display.is_some(),
+            self.capture_excluded,
+            self.disabled_until != 0
+        )
+    }
+}
+
 /// The flow a secret window belongs to and its step (the main window's step indicator, spec/04
 /// §2.3–§2.4): the flow title, the step labels (three; five for the new `YubiKey` wallet) and
 /// the current step (1-based).

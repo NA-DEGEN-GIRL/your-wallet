@@ -90,6 +90,9 @@ pub const SECRET_CLIPBOARD_NOTICE_MS: u64 = 5_000;
 /// At shutdown (no later tick): retries of a busy clear for about this long.
 const SECRET_CLIPBOARD_EXIT_MS: u64 = 1_000;
 pub mod text;
+// 2026-11-18 (S4 A7): the secret-window test seams (`cfg(test)` only, `app::secret_seam`).
+#[cfg(test)]
+pub(crate) mod secret_seam;
 
 use text::{PASTE_CLEARED, T_CLIP_CLEARED_LATE};
 pub use text::{PASTE_EDGE_SPACE, T_CLIP_NOT_CLEARED, T_PASSWORD_OLD_COPIES};
@@ -2039,6 +2042,11 @@ impl App {
     /// [`SECRET_CLIPBOARD_RETRY_MS`], and after [`SECRET_CLIPBOARD_NOTICE_MS`] of that the main
     /// window says so ([`T_CLIP_NOT_CLEARED`]) instead of leaving the user believing it is gone.
     fn clear_secret_clip(&mut self, now: u64) {
+        #[cfg(test)]
+        secret_seam::log(secret_seam::Op::ClearClip {
+            at_exit: false,
+            pending: self.secret_clip.is_some(),
+        });
         let Some(mut pending) = self.secret_clip.take() else {
             return;
         };
@@ -2142,6 +2150,11 @@ impl App {
     /// At shutdown there is no later tick: a busy clipboard is retried for about
     /// [`SECRET_CLIPBOARD_EXIT_MS`].
     fn clear_secret_clip_at_exit(&mut self) {
+        #[cfg(test)]
+        secret_seam::log(secret_seam::Op::ClearClip {
+            at_exit: true,
+            pending: self.secret_clip.is_some(),
+        });
         let Some(pending) = self.secret_clip.take() else {
             return;
         };
@@ -2232,6 +2245,11 @@ impl App {
         self.scroll_memory.clear();
         logging::info("app", "lock", &[("reason", Field::Word(reason.as_str()))]);
         if reason == LockReason::Suspend {
+            #[cfg(test)]
+            secret_seam::log(secret_seam::Op::Wait {
+                what: "lock",
+                ms: 1_500,
+            });
             let _ = self
                 .lock_signal
                 .wait_beyond(before, Duration::from_millis(1_500));
@@ -2274,6 +2292,11 @@ impl App {
         self.wc_shutdown();
         let before = self.lock_signal.count();
         self.lock(LockReason::Shutdown);
+        #[cfg(test)]
+        secret_seam::log(secret_seam::Op::Wait {
+            what: "shutdown",
+            ms: 5_000,
+        });
         let _ = self.lock_signal.wait_beyond(before, Duration::from_secs(5));
         self.key_queue.push(self.lock_epoch, KeyJob::Shutdown);
         if let Some(tx) = self.rpc_tx.take() {
@@ -3014,6 +3037,12 @@ impl App {
         let Some(owner) = self.main.as_ref().map(Window::hwnd) else {
             return (serial, Err(UiError::CaptureExclusionFailed));
         };
+        // 2026-11-18 (S4 A7): the cfg(test) seam logs the request and can refuse it as yw-win
+        // would (`TEST_SECRET_REFUSE`, removed in S4 P8); release builds have no such line.
+        #[cfg(test)]
+        if let Some(refused) = secret_seam::create(serial, kind, topmost) {
+            return (serial, Err(refused));
+        }
         let (w, h) = kind.size();
         let class = if kind.is_display() {
             SECRET_VIEW_CLASS
@@ -3045,6 +3074,10 @@ impl App {
         }
         window.set_focus();
         window.invalidate();
+        #[cfg(test)]
+        secret_seam::log(secret_seam::Op::Show {
+            kind: form.kind().id(),
+        });
         self.secret = Some(SecretWin {
             serial,
             window,
@@ -3125,6 +3158,8 @@ impl App {
                 self.show_secret(serial, window, form, purpose);
             }
             (CaptureDecision::Refuse(code), _) => {
+                #[cfg(test)]
+                secret_seam::log(secret_seam::Op::DisplayDropped);
                 drop(display);
                 self.error_banner(code);
                 if purpose == Purpose::ShowForBackup {
@@ -3132,6 +3167,8 @@ impl App {
                 }
             }
             (CaptureDecision::Show { .. }, Err(_)) => {
+                #[cfg(test)]
+                secret_seam::log(secret_seam::Op::DisplayDropped);
                 drop(display);
                 self.error_banner(ErrorCode::App009);
             }
@@ -3148,6 +3185,11 @@ impl App {
     pub fn close_secret(&mut self) {
         if let Some(mut secret) = self.secret.take() {
             secret.form.wipe();
+            #[cfg(test)]
+            secret_seam::log(secret_seam::Op::Close {
+                kind: secret.form.kind().id(),
+                left: secret.form.test_held_units(),
+            });
             secret.window.kill_timer(SECRET_TIMER_ID);
             if let Some(main) = self.main.as_ref() {
                 main.enable(true);

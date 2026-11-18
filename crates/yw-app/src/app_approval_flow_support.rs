@@ -570,6 +570,29 @@ impl Fixture {
             conn,
         }
     }
+
+    /// Approves the shown Standard request as a user does (2026-11-18, S4 A7: the secret
+    /// characterization's card step, `ui::tour_secrets`): the window is foreground (oracle), a
+    /// tick arms it now, and a click on `승인` 1 s later approves it. Debug test builds only,
+    /// like its user.
+    #[cfg(debug_assertions)]
+    pub(crate) fn approve_standard(&self) {
+        set_signals(Some(Signals {
+            foreground: true,
+            enter_in_message: true,
+            ..Signals::default()
+        }));
+        self.app().interaction(InteractionEvent::Tick);
+        self.clock.advance(1_000);
+        self.app().interaction(InteractionEvent::PointerPressed {
+            inside: true,
+            click_through: false,
+            physical_down: true,
+        });
+        self.app().interaction(InteractionEvent::PointerReleased {
+            physical_down: false,
+        });
+    }
 }
 
 impl Drop for Fixture {

@@ -413,6 +413,17 @@ fn parse_index(lang: Lang, input: &str, max: u32, what: &str) -> Result<u32, Str
         .ok_or_else(|| text::INDEX_NUMBER.fill(lang, [what, &max.to_string()]))
 }
 
+// 2026-11-18 (S4 A7): what the windowed secret characterization (`ui::tour_secrets`, debug test
+// builds) reads of the wizard's held buffers: a flag, never the PIN or the words.
+#[cfg(test)]
+#[cfg(debug_assertions)]
+impl YkWizard {
+    /// Whether the admin PIN (W12 → job) or the words (W05 → W06) are held.
+    pub(crate) const fn test_holds_secret(&self) -> bool {
+        self.admin_pin.is_some() || self.phrase.is_some()
+    }
+}
+
 impl YkWizard {
     /// A wizard with the defaults (spec/10 §3.1): SIG = EVM 0, AUT = Bitcoin P2WPKH 0, one
     /// Solana account 0, on every card. 2026-11-14: index 0 even when cards are enrolled; before,
