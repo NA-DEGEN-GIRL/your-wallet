@@ -718,6 +718,9 @@ pub mod ids {
     }
 
     /// The control id of a wizard press (the inverse of [`press_of`]).
+    /// A value no screen draws (a Taproot radio, the `Never` touch radio, a row past its span)
+    /// lands on another control's id (S3 C10–C12 review: listed in `ui::cmd_table`'s
+    /// `c10_c12_payloads_round_trip_or_are_undrawn`; a press that arrives as data must refuse it).
     #[must_use]
     pub const fn id_of(press: yw_engine::cmd::YkPress) -> u16 {
         use yw_engine::cmd::{Row, YkPress};
@@ -890,6 +893,9 @@ pub mod ids {
     }
 
     /// The control id of a card-action press (the inverse of [`manage_press_of`]).
+    /// A value no screen draws (a Taproot radio, the `Never` touch radio, a row past its span)
+    /// lands on another control's id (S3 C10–C12 review: listed in `ui::cmd_table`'s
+    /// `c10_c12_payloads_round_trip_or_are_undrawn`; a press that arrives as data must refuse it).
     #[must_use]
     pub const fn manage_id_of(press: yw_engine::cmd::YkManagePress) -> u16 {
         use yw_engine::cmd::{Row, YkManagePress};
@@ -989,6 +995,9 @@ pub mod ids {
     }
 
     /// The control id of a connect-flow press (the inverse of [`connect_press_of`]).
+    /// A value no screen draws (a Taproot radio, the `Never` touch radio, a row past its span)
+    /// lands on another control's id (S3 C10–C12 review: listed in `ui::cmd_table`'s
+    /// `c10_c12_payloads_round_trip_or_are_undrawn`; a press that arrives as data must refuse it).
     #[must_use]
     pub const fn connect_id_of(press: yw_engine::cmd::YkConnectPress) -> u16 {
         use yw_engine::cmd::{Row, YkConnectPress};

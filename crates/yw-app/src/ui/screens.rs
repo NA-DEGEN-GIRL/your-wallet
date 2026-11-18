@@ -451,6 +451,9 @@ pub mod ids {
 
     /// The control id of `press` (the inverse of [`press_of`]; a check box's state is not part
     /// of it).
+    /// A row past its span lands on another control's id (S3 C10–C12 review: listed in
+    /// `ui::cmd_table`'s `c10_c12_payloads_round_trip_or_are_undrawn`; a press that arrives as
+    /// data must refuse it).
     #[must_use]
     pub const fn id_of(press: yw_engine::cmd::CorePress) -> u16 {
         use yw_core::lang::Lang;

@@ -1172,6 +1172,260 @@ mod tests {
         }
     }
 
+    /// S3 C10–C12 review: the reverse direction of table test (1) for the C10–C12 families.
+    /// Every payload value their presses can hold (each script type, touch policy, Zcash
+    /// network, connect choice, row action, radio value and the check boxes' unread state) and
+    /// every row variant at its last row inside the span and at the first row past it maps to
+    /// an id that decodes back to the same press, except the values the screens never draw,
+    /// listed here: a Taproot script radio (wizard, re-slot, connect), the `Never` touch radio
+    /// and a row past its span. Their ids belong to another control (a slot's index edit, a
+    /// connect row's EVM radio, a neighbouring range), so `id_of` is not one to one there.
+    /// Windows only sends drawn ids, so nothing changes today; once a press arrives as data
+    /// (S3 D3, S5, Android) such a value must be refused before `on_press` anchors
+    /// `App::command` on it (plan D-c; S4/S5: enums that cannot hold them, no id past a span).
+    #[test]
+    #[expect(clippy::too_many_lines, reason = "one table of every payload value")]
+    fn c10_c12_payloads_round_trip_or_are_undrawn() {
+        use crate::ui::screens::ids as core;
+        use screens_evm::ids as evm;
+        use screens_yubikey::ids as yk;
+        use yw_core::btc::ScriptType;
+        use yw_core::lang::Lang;
+        use yw_core::yubikey::plan::{PgpKey, TouchPolicy};
+        use yw_core::zec::ZecNetwork;
+        use yw_engine::cmd::{
+            ChainRowAction, CorePress, EvmActivityAction, EvmPress, Row, RpcRowAction,
+            YkConnectPress, YkManagePress, YkPress,
+        };
+        use yw_engine::logging::LogLevel;
+        use yw_engine::settings::RpcTemplate;
+        // A row variant's press for a row.
+        type RowPress = fn(Row) -> Press;
+        // The exhaustive matches fail to compile on a new variant until it is placed here.
+        const fn script_drawn(script: ScriptType) -> bool {
+            match script {
+                ScriptType::P2wpkh | ScriptType::P2shP2wpkh | ScriptType::P2pkh => true,
+                ScriptType::P2tr => false,
+            }
+        }
+        const fn touch_drawn(touch: TouchPolicy) -> bool {
+            match touch {
+                TouchPolicy::Always
+                | TouchPolicy::Cached
+                | TouchPolicy::AlwaysFixed
+                | TouchPolicy::CachedFixed => true,
+                TouchPolicy::Never => false,
+            }
+        }
+        let scripts = [
+            ScriptType::P2wpkh,
+            ScriptType::P2shP2wpkh,
+            ScriptType::P2pkh,
+            ScriptType::P2tr,
+        ];
+        let touches = [
+            TouchPolicy::Never,
+            TouchPolicy::Always,
+            TouchPolicy::Cached,
+            TouchPolicy::AlwaysFixed,
+            TouchPolicy::CachedFixed,
+        ];
+        let controls = ControlSet::default();
+        // (press, drawn)
+        let mut cases: Vec<(Press, bool)> = Vec::new();
+        // Values with no row: every one is drawn but the Taproot scripts and `Never`.
+        for key in [PgpKey::Sig, PgpKey::Aut] {
+            for press in [
+                YkPress::PgpNone(key),
+                YkPress::PgpEvm(key),
+                YkPress::PgpBtc(key),
+                YkPress::PgpShared(key),
+                YkPress::PgpZec(key),
+            ] {
+                cases.push((Press::Yk(press), true));
+            }
+            for script in scripts {
+                cases.push((
+                    Press::Yk(YkPress::PgpScript(key, script)),
+                    script_drawn(script),
+                ));
+                cases.push((
+                    Press::YkManage(YkManagePress::ReslotScript(key, script)),
+                    script_drawn(script),
+                ));
+            }
+            for touch in touches {
+                cases.push((Press::Yk(YkPress::PgpTouch(key, touch)), touch_drawn(touch)));
+            }
+            for network in ZecNetwork::ALL {
+                cases.push((Press::Yk(YkPress::PgpZecNetwork(key, network)), true));
+            }
+            for press in [
+                YkManagePress::ReslotEvm(key),
+                YkManagePress::ReslotBtc(key),
+                YkManagePress::ReslotZec(key),
+                YkManagePress::ReslotShared(key),
+            ] {
+                cases.push((Press::YkManage(press), true));
+            }
+        }
+        for press in [
+            CorePress::Lang(Lang::Ko),
+            CorePress::Lang(Lang::En),
+            CorePress::Template(RpcTemplate::QuickNode),
+            CorePress::Template(RpcTemplate::Alchemy),
+            CorePress::Template(RpcTemplate::Manual),
+            CorePress::LogLevel(LogLevel::Error),
+            CorePress::LogLevel(LogLevel::Warn),
+            CorePress::LogLevel(LogLevel::Info),
+            CorePress::LogLevel(LogLevel::Debug),
+            CorePress::MismatchCheck(None),
+            CorePress::CopyToggle(None),
+            CorePress::LocalhostToggle(None),
+            CorePress::AutolaunchToggle(None),
+            CorePress::OverwriteCheck(None),
+        ] {
+            cases.push((Press::Core(press), true));
+        }
+        for press in [
+            EvmPress::SendAck(None),
+            EvmPress::TokenHideZero(None),
+            EvmPress::RepinCheck(None),
+        ] {
+            cases.push((Press::Evm(press), true));
+        }
+        // One id per row: the last row of the span is drawn, the row at the span is not.
+        let single: [(u16, RowPress); 18] = [
+            (evm::SEND_ASSET_SPAN, |row| {
+                Press::Evm(EvmPress::SendAsset(row))
+            }),
+            (evm::TOKEN_SEND_SPAN, |row| {
+                Press::Evm(EvmPress::TokenSend(row))
+            }),
+            (evm::TOKEN_COPY_SPAN, |row| {
+                Press::Evm(EvmPress::TokenCopy(row))
+            }),
+            (evm::SEND_PICK_SPAN, |row| {
+                Press::Evm(EvmPress::PickRecipient(row))
+            }),
+            (evm::CAPS_CHAIN_SPAN, |row| {
+                Press::Evm(EvmPress::CapsChain(row))
+            }),
+            (evm::TOKEN_ROW_SPAN / evm::TOKEN_ROW_STRIDE, |row| {
+                Press::Evm(EvmPress::TokenToggleHidden(row))
+            }),
+            (evm::TOKEN_ROW_SPAN / evm::TOKEN_ROW_STRIDE, |row| {
+                Press::Evm(EvmPress::TokenDelete(row))
+            }),
+            (yk::BACKUP_SPAN, |row| Press::Yk(YkPress::Backup(row))),
+            (yk::REMOVE_SPAN, |row| Press::Yk(YkPress::Remove(row))),
+            (yk::RENAME_CARD_SPAN, |row| {
+                Press::Yk(YkPress::RenameCard(row))
+            }),
+            (yk::PINS_SPAN, |row| Press::Yk(YkPress::Pins(row))),
+            (yk::PIN_GATE_SPAN, |row| Press::Yk(YkPress::PinGate(row))),
+            (yk::RESLOT_SPAN, |row| {
+                Press::YkManage(YkManagePress::Reslot(row))
+            }),
+            (yk::CLEAR_SPAN, |row| {
+                Press::YkManage(YkManagePress::Clear(row))
+            }),
+            (yk::RESLOT_BACKUP_SPAN, |row| {
+                Press::YkManage(YkManagePress::ReslotBackup(row))
+            }),
+            (core::NETWORK_SPAN, |row| {
+                Press::Core(CorePress::Network(row))
+            }),
+            (core::ACCOUNT_SPAN, |row| {
+                Press::Core(CorePress::Account(row))
+            }),
+            (core::RPC_ROW_OPEN_SPAN, |row| {
+                Press::Core(CorePress::RpcRowOpen(row))
+            }),
+        ];
+        for (rows, press) in single {
+            cases.push((press(Row(rows - 1)), true));
+            cases.push((press(Row(rows)), false));
+        }
+        // Several ids per row: an action is drawn while its offset is inside the span, so the
+        // two rows around the span's end cover a partly drawn row and an undrawn one.
+        let around = |span: u16, stride: u16| {
+            let last = span.div_ceil(stride);
+            [last - 1, last]
+        };
+        let chain_actions = [
+            ChainRowAction::Edit,
+            ChainRowAction::Delete,
+            ChainRowAction::Repin,
+        ];
+        for row in around(evm::CHAIN_ROW_SPAN, 3) {
+            for (offset, action) in (0..).zip(chain_actions) {
+                cases.push((
+                    Press::Evm(EvmPress::ChainRow(Row(row), action)),
+                    row * 3 + offset < evm::CHAIN_ROW_SPAN,
+                ));
+            }
+        }
+        let activity_actions = [
+            EvmActivityAction::CopyHash,
+            EvmActivityAction::SpeedUp,
+            EvmActivityAction::Cancel,
+            EvmActivityAction::Resend,
+            EvmActivityAction::Discard,
+            EvmActivityAction::CopyExplorerLink,
+            EvmActivityAction::SaveAddress,
+            EvmActivityAction::OpenExplorer,
+        ];
+        for row in around(evm::ACTIVITY_SPAN, evm::ACTIVITY_STRIDE) {
+            for (offset, action) in (0..).zip(activity_actions) {
+                cases.push((
+                    Press::Evm(EvmPress::Activity(Row(row), action)),
+                    row * evm::ACTIVITY_STRIDE + offset < evm::ACTIVITY_SPAN,
+                ));
+            }
+        }
+        let rpc_actions = [
+            RpcRowAction::Replace,
+            RpcRowAction::Test,
+            RpcRowAction::Delete,
+        ];
+        for row in around(core::ROW_SPAN, 3) {
+            for (offset, action) in (0..).zip(rpc_actions) {
+                cases.push((
+                    Press::Core(CorePress::RpcRow(Row(row), action)),
+                    row * 3 + offset < core::ROW_SPAN,
+                ));
+            }
+        }
+        for row in around(yk::CONNECT_CHOICE_SPAN, yk::CONNECT_CHOICE_STRIDE) {
+            let inside = row < yk::CONNECT_CHOICE_ROWS;
+            for press in [
+                YkConnectPress::ChoiceEvm(Row(row)),
+                YkConnectPress::ChoiceZec(Row(row)),
+                YkConnectPress::ChoiceSol(Row(row)),
+                YkConnectPress::ChoiceSkip(Row(row)),
+            ] {
+                cases.push((Press::YkConnect(press), inside));
+            }
+            for script in scripts {
+                cases.push((
+                    Press::YkConnect(YkConnectPress::ChoiceBtc(Row(row), script)),
+                    inside && script_drawn(script),
+                ));
+            }
+        }
+        let mut undrawn = 0;
+        for (press, drawn) in cases {
+            let back = press_of(id_of(press), &controls);
+            assert_eq!(back == press, drawn, "{press:?} -> {back:?}");
+            undrawn += usize::from(!drawn);
+        }
+        // Two slots x (two Taproot radios + `Never`); the 18 one-id rows at their span; chain
+        // row 46 `Repin` and row 47; activity row 50; URL row 53 `Test`/`Delete` and row 54;
+        // connect row 25's Taproot radio and all eight presses of row 26.
+        assert_eq!(undrawn, 6 + 18 + (1 + 3) + 8 + (2 + 3) + (1 + 8));
+    }
+
     /// S3 C12: after the last family, no control a click can send is legacy any more except
     /// the ones no handler claimed before either: the edits (fields and credentials), S22's
     /// painted hold area and the eighth id of a `YubiKey` connect choice row.
