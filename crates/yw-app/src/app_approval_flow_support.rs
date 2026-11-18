@@ -31,7 +31,8 @@
 //! - `TEST_INPUT_LOG`: every `interaction(event)` with its foreground sample and focus, the
 //!   `ActivateApp(true)` arm, the toggles, retries and scrolls (A-19), every scripted read with
 //!   its program point and every A01 side effect, in one ordered list (the call index is the
-//!   position). Removed in B2.
+//!   position); since S4 A5 (2026-11-18, A-8) also every message the approval `Forward` drops
+//!   because the App is borrowed (re-entrancy). Removed in B2.
 //!
 //! The fixture never touches the network (the RPC channel and the key queue are captured, never
 //! run; the prepare job is answered by the smoke harness's fixture transport), a card reader, a
@@ -50,7 +51,7 @@ use yw_core::evm::amount::U256;
 use yw_core::policy::ProviderError;
 use yw_core::vault::EvmKeySource;
 use yw_platform::http::HttpsUrl;
-use yw_win::ui::{self, CaptureExclusion, ClassSpec};
+use yw_win::ui::{self, CaptureExclusion, ClassSpec, Msg};
 
 use super::{APPROVAL_CLASS, Focus, PANEL_CLASS};
 use crate::apikeys::ApiKeys;
@@ -242,6 +243,9 @@ pub(crate) enum Logged {
     Read { read: Read, value: bool },
     /// A side effect; `performed == false` when the hidden host skipped it.
     Effect { fx: Fx, performed: bool },
+    /// A message the approval `Forward` dropped (or deferred, `Paint`) because the App was
+    /// borrowed: a re-entrant message (2026-11-18, S4 A5, critique A-8).
+    Dropped { target: &'static str, msg: Msg },
 }
 
 thread_local! {

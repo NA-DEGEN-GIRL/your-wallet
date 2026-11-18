@@ -437,6 +437,18 @@ enum Target {
     AiBody,
 }
 
+#[cfg(test)]
+impl Target {
+    /// The window kind a dropped re-entrant message was meant for (S4 A5 trace).
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Approval => "approval",
+            Self::Panel => "panel",
+            Self::AiBody => "ai-body",
+        }
+    }
+}
+
 struct Forward {
     app: std::rc::Weak<std::cell::RefCell<App>>,
     target: Target,
@@ -448,6 +460,13 @@ impl Handler for Forward {
             return Reply::Default;
         };
         let Ok(mut app) = app.try_borrow_mut() else {
+            // 2026-11-18 (S4 A5, critique A-8): the cfg(test) trace records every message this
+            // branch drops (or defers), so the re-entrancy golden `s4_flow/reentry.txt` pins it.
+            #[cfg(test)]
+            flow_support::log_input(flow_support::Logged::Dropped {
+                target: self.target.label(),
+                msg: *msg,
+            });
             // A paint requested from inside another handler: owed, not dropped unpainted.
             if matches!(msg, Msg::Paint) {
                 window.defer_paint();
@@ -4607,6 +4626,13 @@ pub(crate) mod flow_support;
 #[cfg(test)]
 #[path = "app_approval_flow_tests.rs"]
 mod flow_tests;
+
+/// S4 A5 (2026-11-18, spec/15 §11.4 S4): the approval window's input mapping and re-entrancy
+/// goldens `app/tests/s4_flow/{input,reentry}.txt` (`#[ignore]`, gate step `s4fl`) and the
+/// source checks S1–S3 (gate test step).
+#[cfg(test)]
+#[path = "app_approval_input_tests.rs"]
+mod input_tests;
 
 /// Hooks for the screenshot tour (`ui::tour`, an `#[ignore]` test). Gated like the tour module
 /// (`#[cfg(test)]` + `#[cfg(debug_assertions)]`), so `cargo test --release` has no dead code.

@@ -325,7 +325,7 @@ fn item_name(item: &QueuedItem) -> &'static str {
     }
 }
 
-fn dapp_answers(outlet: &Outlet) -> String {
+pub(super) fn dapp_answers(outlet: &Outlet) -> String {
     let answers: Vec<String> = outlet
         .answers()
         .into_iter()
@@ -395,7 +395,7 @@ impl Handler for Inert {
     }
 }
 
-fn spare_window() -> Window {
+pub(super) fn spare_window() -> Window {
     let window = create_window(
         &WindowSpec::new(PANEL_CLASS, WindowKind::Floating).size(820, 710),
         Box::new(Inert),
@@ -423,13 +423,13 @@ fn answer_resim(fx: &Fixture, job: &ResimJob, sim: &str) {
     fx.app().on_resimulated(result);
 }
 
-fn origin() -> BrowserOrigin {
+pub(super) fn origin() -> BrowserOrigin {
     BrowserOrigin::parse("https://app.example").unwrap()
 }
 
 /// The fixture's dispatcher with EVM accounts A and B (and the Solana account when `sol`),
 /// unlocked, and the origin connected to account A on Sepolia when `granted`.
-fn dapp(fx: &Fixture, sol: bool, granted: bool) -> Outlet {
+pub(super) fn dapp(fx: &Fixture, sol: bool, granted: bool) -> Outlet {
     let outlet = fx.connect_outlet();
     {
         let mut app = fx.app();
@@ -479,7 +479,7 @@ fn dapp(fx: &Fixture, sol: bool, granted: bool) -> Outlet {
 }
 
 /// Sends request `n` due `due_ms` after now (monotonic, converted to the wall clock).
-fn request(
+pub(super) fn request(
     fx: &Fixture,
     outlet: &Outlet,
     n: u8,
@@ -492,7 +492,7 @@ fn request(
     outlet.send(fx, n, method, params, route, due);
 }
 
-fn personal_sign(fx: &Fixture, outlet: &Outlet, n: u8, due_ms: u64) {
+pub(super) fn personal_sign(fx: &Fixture, outlet: &Outlet, n: u8, due_ms: u64) {
     request(
         fx,
         outlet,
