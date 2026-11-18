@@ -33,6 +33,8 @@ use yw_core::yubikey::plan::{
     validate_plan,
 };
 use yw_core::yubikey::record::HwKeyRecord;
+use yw_engine::cmd::{Row, YkPress};
+use yw_engine::form::EditField;
 
 use crate::app::{App, AppMode, Confirm, PasswordAction, Purpose, Screen, SettingsSection};
 use crate::events::{KeyJob, YubiKeyJobError};
@@ -2177,7 +2179,6 @@ impl App {
     /// field clears the name; otherwise it must be a card name (`meta::is_valid_card_name`) no
     /// other card uses. Stored in meta `hw_card_names` (never logged: names are labels).
     fn yk_save_card_name(&mut self, clear: bool) {
-        use crate::ui::screens_yubikey::ids;
         use crate::ui::screens_yubikey::text as t;
         let lang = self.settings.language;
         let Some(serial) = self.card.rename.filter(|serial| {
@@ -2193,8 +2194,9 @@ impl App {
         let typed = if clear {
             String::new()
         } else {
-            self.controls
-                .text(ids::CARD_NAME_EDIT, 64)
+            // 2026-11-18 (S3 C11): the form state (`App::form_text`; before, a read of the edit,
+            // cap 64 = `EditField::YkCardName.cap()`).
+            self.form_text(EditField::YkCardName)
                 .unwrap_or_default()
                 .trim()
                 .to_owned()
@@ -2229,13 +2231,13 @@ impl App {
 
     // ----- commands --------------------------------------------------------------------------
 
-    /// Main-window commands of the `YubiKey` screens; `false` when `id` is not one of them.
+    /// Presses of the `YubiKey` tab and the enrolment wizard (2026-11-18, S3 C11: a `YkPress`;
+    /// before, the control id, and `false` for an id that was not one of them). The card
+    /// actions and the connect flow are their own presses (`on_yk_manage_press`, `on_yk_connect`;
+    /// before, this function asked them first by id — their ids are disjoint from these).
     #[expect(clippy::too_many_lines, reason = "one arm per wizard control")]
-    pub fn on_yk_command(&mut self, id: u16) -> bool {
+    pub(crate) fn on_yk(&mut self, press: YkPress) {
         use crate::ui::screens_yubikey::ids;
-        if self.on_yk_manage_command(id) || self.on_yk_connect_command(id) {
-            return true;
-        }
         // The connect flow's result screen: `다시 시도` returns to its confirmation, `다른
         // YubiKey 등록(백업)` reads the next card.
         let connecting = self
@@ -2243,15 +2245,15 @@ impl App {
             .wizard
             .as_ref()
             .is_some_and(|wizard| wizard.connect.is_some());
-        if connecting && id == ids::RETRY {
+        if connecting && press == YkPress::Retry {
             if let Some(wizard) = self.yk_wizard() {
                 wizard.step = WizardStep::Confirm;
                 wizard.failure = None;
             }
             self.refresh();
-            return true;
+            return;
         }
-        if connecting && id == ids::ANOTHER && !self.yk_pins_first() {
+        if connecting && press == YkPress::Another && !self.yk_pins_first() {
             let origin = self
                 .card
                 .wizard
@@ -2260,13 +2262,13 @@ impl App {
             if origin == WizardOrigin::Vault && self.card.records.len() < MAX_CARDS {
                 self.yk_open_connect();
             }
-            return true;
+            return;
         }
-        if connecting && id == ids::CONFIRM_BACK {
+        if connecting && press == YkPress::ConfirmBack {
             self.yk_connect_back();
-            return true;
+            return;
         }
-        if let Some((key, action)) = ids::pgp_action(id) {
+        if let Some((key, action)) = ids::pgp_of(press) {
             if let Some(wizard) = self.yk_wizard() {
                 let form = wizard.pgp_mut(key);
                 match action {
@@ -2278,50 +2280,52 @@ impl App {
                 wizard.error = None;
             }
             self.refresh();
-            return true;
+            return;
         }
-        if let Some(row) = ids::remove_row(id) {
-            self.yk_remove(row);
-            return true;
-        }
-        if let Some(row) = ids::rename_card_row(id) {
-            let serial = self.card.records.get(row).map(|record| record.serial);
-            self.card.rename = if self.card.rename == serial {
-                None
-            } else {
-                serial
-            };
-            self.info = None;
-            self.refresh();
-            return true;
-        }
-        if let Some(row) = ids::pins_row(id) {
-            let serial = self.card.records.get(row).map(|record| record.serial);
-            self.card.pin_serial = if self.card.pin_serial == serial {
-                None
-            } else {
-                serial
-            };
-            self.refresh();
-            return true;
-        }
-        if let Some(row) = ids::backup_row(id) {
-            // Only a card with a known path can be copied (spec/10 §7.6).
-            let serial = self
-                .card
-                .records
-                .get(row)
-                .filter(|record| record.has_known_path())
-                .map(|record| record.serial);
-            if let (Some(serial), Some(wizard)) = (serial, self.yk_wizard()) {
-                wizard.backup_of = Some(serial);
-                wizard.error = None;
+        match press {
+            YkPress::Remove(Row(row)) => self.yk_remove(usize::from(row)),
+            YkPress::RenameCard(Row(row)) => {
+                let serial = self
+                    .card
+                    .records
+                    .get(usize::from(row))
+                    .map(|record| record.serial);
+                self.card.rename = if self.card.rename == serial {
+                    None
+                } else {
+                    serial
+                };
+                self.info = None;
+                self.refresh();
             }
-            self.refresh();
-            return true;
-        }
-        match id {
-            ids::SECTION_YUBIKEY => {
+            YkPress::Pins(Row(row)) => {
+                let serial = self
+                    .card
+                    .records
+                    .get(usize::from(row))
+                    .map(|record| record.serial);
+                self.card.pin_serial = if self.card.pin_serial == serial {
+                    None
+                } else {
+                    serial
+                };
+                self.refresh();
+            }
+            YkPress::Backup(Row(row)) => {
+                // Only a card with a known path can be copied (spec/10 §7.6).
+                let serial = self
+                    .card
+                    .records
+                    .get(usize::from(row))
+                    .filter(|record| record.has_known_path())
+                    .map(|record| record.serial);
+                if let (Some(serial), Some(wizard)) = (serial, self.yk_wizard()) {
+                    wizard.backup_of = Some(serial);
+                    wizard.error = None;
+                }
+                self.refresh();
+            }
+            YkPress::SectionYubikey => {
                 // Opening the tab again ends a card action that is not talking to the card.
                 if self
                     .card
@@ -2334,23 +2338,23 @@ impl App {
                 self.set_screen(Screen::Settings(SettingsSection::YubiKey));
                 self.key(KeyJob::HardwareKeys);
             }
-            ids::CARD_NAME_SAVE => self.yk_save_card_name(false),
-            ids::CARD_NAME_CLEAR => self.yk_save_card_name(true),
-            ids::CARD_NAME_CANCEL => {
+            YkPress::CardNameSave => self.yk_save_card_name(false),
+            YkPress::CardNameClear => self.yk_save_card_name(true),
+            YkPress::CardNameCancel => {
                 self.card.rename = None;
                 self.info = None;
                 self.refresh();
             }
-            ids::ENROL_START => self.yk_open_wizard(),
-            ids::NEW_WALLET => self.yk_new_wallet(),
-            ids::NEW_WALLET_START => self.yk_new_wallet_start(),
-            ids::NEW_WALLET_CANCEL => {
+            YkPress::EnrolStart => self.yk_open_wizard(),
+            YkPress::NewWallet => self.yk_new_wallet(),
+            YkPress::NewWalletStart => self.yk_new_wallet_start(),
+            YkPress::NewWalletCancel => {
                 self.key(KeyJob::YubiKey(YkJob::Discard));
                 self.set_screen(Screen::FirstRun);
             }
-            ids::PIV_TOUCH_ALWAYS | ids::PIV_TOUCH_CACHED => {
+            YkPress::PivTouchAlways | YkPress::PivTouchCached => {
                 if let Some(wizard) = self.yk_wizard() {
-                    wizard.piv_touch = if id == ids::PIV_TOUCH_ALWAYS {
+                    wizard.piv_touch = if press == YkPress::PivTouchAlways {
                         TouchPolicy::Always
                     } else {
                         TouchPolicy::Cached
@@ -2358,14 +2362,14 @@ impl App {
                 }
                 self.refresh();
             }
-            ids::SHARED_ACK => {
+            YkPress::SharedAck => {
                 if let Some(wizard) = self.yk_wizard() {
                     wizard.shared_ack = !wizard.shared_ack;
                     wizard.error = None;
                 }
                 self.refresh();
             }
-            ids::BACKUP_TOGGLE => {
+            YkPress::BackupToggle => {
                 // The first card the words can copy: one with a known path (a card connected
                 // without recovery words cannot be made again from words, spec/10 §7.6).
                 let first = self
@@ -2388,17 +2392,17 @@ impl App {
                 }
                 self.refresh();
             }
-            ids::OVERWRITE_ACK => {
+            YkPress::OverwriteAck => {
                 if let Some(wizard) = self.yk_wizard() {
                     wizard.overwrite_ack = !wizard.overwrite_ack;
                     wizard.error = None;
                 }
                 self.refresh();
             }
-            ids::PLAN_NEXT => self.yk_plan_next(),
-            ids::FINISH | ids::ANOTHER if self.yk_pins_first() => self.refresh(),
+            YkPress::PlanNext => self.yk_plan_next(),
+            YkPress::Finish | YkPress::Another if self.yk_pins_first() => self.refresh(),
             // A card left on its factory PINs does not sign: `완료` asks once (2026-11-10).
-            ids::FINISH
+            YkPress::Finish
                 if self
                     .yk_result_serial()
                     .is_some_and(|serial| self.yk_card_on_defaults(serial)) =>
@@ -2406,44 +2410,46 @@ impl App {
                 self.set_screen(Screen::Confirm(Confirm::YkPinLater));
             }
             // The words of a new wallet are not dropped on one click: asked first (2026-11-10).
-            ids::WIZARD_CANCEL if self.yk_abandon_asks() => {
+            YkPress::WizardCancel if self.yk_abandon_asks() => {
                 self.set_screen(Screen::Confirm(Confirm::YkAbandon));
             }
-            ids::RESULT_DETAILS => {
+            YkPress::ResultDetails => {
                 self.card.result_details_open = !self.card.result_details_open;
                 self.refresh();
             }
-            ids::PIN_GUIDE => {
+            YkPress::PinGuide => {
                 self.card.pin_guide_open = !self.card.pin_guide_open;
                 self.refresh();
             }
-            ids::WIZARD_CANCEL | ids::FINISH => self.yk_close_wizard(),
-            ids::IDENTIFY_AGAIN => self.yk_identify_again(),
-            ids::PIN_NEEDED_OPEN => {
+            YkPress::WizardCancel | YkPress::Finish => self.yk_close_wizard(),
+            YkPress::IdentifyAgain => self.yk_identify_again(),
+            YkPress::PinNeededOpen => {
                 // The card of the refused signing: its "PIN 설정" card in the YubiKey list.
                 self.card.pin_serial = self.card.pin_needed;
                 self.set_screen(Screen::Settings(SettingsSection::YubiKey));
                 self.key(KeyJob::HardwareKeys);
             }
-            gate if (ids::PIN_GATE_BASE..ids::PIN_GATE_BASE + ids::PIN_GATE_SPAN)
-                .contains(&gate) =>
-            {
+            YkPress::PinGate(Row(row)) => {
                 // A form's or account card's band: that card's "PIN 설정" card.
-                let row = usize::from(gate - ids::PIN_GATE_BASE);
-                if let Some(serial) = self.card.records.get(row).map(|record| record.serial) {
+                if let Some(serial) = self
+                    .card
+                    .records
+                    .get(usize::from(row))
+                    .map(|record| record.serial)
+                {
                     self.card.pin_serial = Some(serial);
                     self.set_screen(Screen::Settings(SettingsSection::YubiKey));
                     self.key(KeyJob::HardwareKeys);
                 }
             }
-            ids::SAME_ACK => {
+            YkPress::SameAck => {
                 if let Some(wizard) = self.yk_wizard() {
                     wizard.same_ack = !wizard.same_ack;
                 }
                 self.refresh();
             }
-            ids::CONFIRM_BACK | ids::ANOTHER => {
-                let another = id == ids::ANOTHER;
+            YkPress::ConfirmBack | YkPress::Another => {
+                let another = press == YkPress::Another;
                 let serial = self.yk_result_serial();
                 if let Some(wizard) = self.yk_wizard() {
                     wizard.step = WizardStep::Plan;
@@ -2458,17 +2464,17 @@ impl App {
                 }
                 self.refresh();
             }
-            ids::CONFIRM_NEXT => {
+            YkPress::ConfirmNext => {
                 if self.yk_wizard().is_some_and(|wizard| wizard.can_continue()) {
                     self.yk_enter_credentials();
                 }
                 self.refresh();
             }
-            ids::RETRY => {
+            YkPress::Retry => {
                 self.yk_enter_credentials();
                 self.refresh();
             }
-            ids::CRED_BACK => {
+            YkPress::CredBack => {
                 if let Some(wizard) = self.yk_wizard() {
                     wizard.step = WizardStep::Confirm;
                     wizard.failure = None;
@@ -2476,24 +2482,27 @@ impl App {
                 }
                 self.refresh();
             }
-            ids::MGMT_DEFAULT | ids::MGMT_CUSTOM => {
+            YkPress::MgmtDefault | YkPress::MgmtCustom => {
                 if let Some(wizard) = self.yk_wizard() {
-                    wizard.default_management = id == ids::MGMT_DEFAULT;
+                    wizard.default_management = press == YkPress::MgmtDefault;
                 }
                 self.refresh();
             }
-            ids::IMPORT => self.yk_import(false),
-            ids::ADOPT => self.yk_import(true),
-            ids::RECHECK => {
+            YkPress::Import => self.yk_import(false),
+            YkPress::Adopt => self.yk_import(true),
+            YkPress::Recheck => {
                 if let Some(serial) = self.yk_result_serial() {
                     self.key(KeyJob::YubiKey(YkJob::Check { serial }));
                 }
             }
-            ids::CHANGE_PW1 | ids::CHANGE_PW3 | ids::CHANGE_PIV_PIN | ids::CHANGE_PUK => {
-                let target = match id {
-                    ids::CHANGE_PW1 => PinTarget::OpenPgpUser,
-                    ids::CHANGE_PW3 => PinTarget::OpenPgpAdmin,
-                    ids::CHANGE_PIV_PIN => PinTarget::PivPin,
+            YkPress::ChangePw1
+            | YkPress::ChangePw3
+            | YkPress::ChangePivPin
+            | YkPress::ChangePuk => {
+                let target = match press {
+                    YkPress::ChangePw1 => PinTarget::OpenPgpUser,
+                    YkPress::ChangePw3 => PinTarget::OpenPgpAdmin,
+                    YkPress::ChangePivPin => PinTarget::PivPin,
                     _ => PinTarget::PivPuk,
                 };
                 // The tries left of that secret are read and shown before it is typed
@@ -2503,61 +2512,65 @@ impl App {
                     YkPurpose::ChangePin(target),
                 );
             }
-            ids::CHANGE_MGMT => {
+            YkPress::ChangeMgmt => {
                 self.yk_open_pin_action(CardSecretKind::PivPin, YkPurpose::ProtectManagement);
             }
-            ids::SET_PINS => self.yk_open_pin_action(CardSecretKind::SetPins, YkPurpose::SetPins),
-            ids::PINS_UNIFIED | ids::PINS_SEPARATE => {
-                self.card.pins_separate = id == ids::PINS_SEPARATE;
+            YkPress::SetPins => {
+                self.yk_open_pin_action(CardSecretKind::SetPins, YkPurpose::SetPins);
+            }
+            YkPress::PinsUnified | YkPress::PinsSeparate => {
+                self.card.pins_separate = press == YkPress::PinsSeparate;
                 self.card.pins_chosen = true;
                 self.refresh();
             }
+            // The `OpenPGP` radios ran above (`ids::pgp_of`).
+            YkPress::PgpNone(_)
+            | YkPress::PgpEvm(_)
+            | YkPress::PgpBtc(_)
+            | YkPress::PgpShared(_)
+            | YkPress::PgpZec(_)
+            | YkPress::PgpScript(..)
+            | YkPress::PgpTouch(..)
+            | YkPress::PgpZecNetwork(..) => {}
+        }
+    }
+
+    /// `EN_CHANGE` of a wizard or card-action edit (2026-11-18, S3 C11: the field and its text
+    /// from `Cmd::Edit`; before, the control id and a read of the edit here, cap 16 for the
+    /// typed word and 8 for the numbers, now `EditField::cap`); `false` when `field` is not
+    /// one of them (the card name edit is read only by its `저장`, as before).
+    pub(crate) fn on_yk_edit(&mut self, field: EditField, text: &str) -> bool {
+        if self.on_yk_manage_edit(field, text) {
+            return true;
+        }
+        match field {
+            EditField::YkOverwrite => {
+                // No repaint while typing: `가져오기` checks the word when pressed.
+                if let Some(wizard) = self.yk_wizard() {
+                    text.clone_into(&mut wizard.overwrite_typed);
+                }
+            }
+            EditField::YkSigIndex
+            | EditField::YkAutIndex
+            | EditField::YkSolCount
+            | EditField::YkSolStart => self.yk_set_text(field, text.to_owned()),
             _ => return false,
         }
         true
     }
 
-    /// `EN_CHANGE` of a wizard edit; `false` when `id` is not one of them.
-    pub fn on_yk_edit_change(&mut self, id: u16) -> bool {
-        use crate::ui::screens_yubikey::ids;
-        if self.on_yk_manage_edit_change(id) {
-            return true;
-        }
-        if id == ids::OVERWRITE_EDIT {
-            // No repaint while typing: `가져오기` checks the word when pressed.
-            let text = self.controls.text(id, 16).unwrap_or_default();
-            if let Some(wizard) = self.yk_wizard() {
-                wizard.overwrite_typed = text;
-            }
-            return true;
-        }
-        if ![
-            ids::SIG_INDEX_EDIT,
-            ids::AUT_INDEX_EDIT,
-            ids::SOL_COUNT_EDIT,
-            ids::SOL_START_EDIT,
-        ]
-        .contains(&id)
-        {
-            return false;
-        }
-        let text = self.controls.text(id, 8).unwrap_or_default();
-        self.yk_set_text(id, text);
-        true
-    }
-
-    /// Stores the text of a wizard edit (also the tests' way to type).
-    pub fn yk_set_text(&mut self, id: u16, text: String) {
-        use crate::ui::screens_yubikey::ids;
+    /// Stores the text of a wizard edit (also the tests' way to type; 2026-11-18, S3 C11:
+    /// keyed by the field, before by its control id).
+    pub fn yk_set_text(&mut self, field: EditField, text: String) {
         let Some(wizard) = self.yk_wizard() else {
             return;
         };
-        match id {
-            ids::SIG_INDEX_EDIT => wizard.sig.index_text = text,
-            ids::AUT_INDEX_EDIT => wizard.aut.index_text = text,
-            ids::SOL_COUNT_EDIT => wizard.sol_count_text = text,
-            ids::SOL_START_EDIT => wizard.sol_start_text = text,
-            ids::OVERWRITE_EDIT => wizard.overwrite_typed = text,
+        match field {
+            EditField::YkSigIndex => wizard.sig.index_text = text,
+            EditField::YkAutIndex => wizard.aut.index_text = text,
+            EditField::YkSolCount => wizard.sol_count_text = text,
+            EditField::YkSolStart => wizard.sol_start_text = text,
+            EditField::YkOverwrite => wizard.overwrite_typed = text,
             _ => {}
         }
         wizard.error = None;

@@ -18,6 +18,7 @@ use yw_core::yubikey::connect::{CardScan, KeyUse, connect_record};
 use yw_core::yubikey::plan::{CardSlot, Curve, MAX_CARDS};
 use yw_core::yubikey::record::HwKeyRecord;
 use yw_core::zec::ZecNetwork;
+use yw_engine::cmd::YkConnectPress;
 
 use super::{WizardOrigin, WizardStep, YkPurpose, YkWizard};
 use crate::app::{App, AppMode, Purpose, Screen};
@@ -483,23 +484,27 @@ impl App {
         self.refresh();
     }
 
-    /// Commands of the connect flow; `false` when `id` is not one of them.
-    pub(crate) fn on_yk_connect_command(&mut self, id: u16) -> bool {
-        use crate::ui::screens_yubikey::ids;
-        if let Some((row, choice)) = ids::connect_choice(id) {
+    /// Presses of the connect flow (2026-11-18, S3 C11: a `YkConnectPress`; before, the control
+    /// id, and `false` for an id that was not one of them).
+    pub(crate) fn on_yk_connect(&mut self, press: YkConnectPress) {
+        if let Some((row, choice)) = crate::ui::screens_yubikey::ids::choice_of(press) {
             self.yk_connect_choose(row, choice);
-            return true;
+            return;
         }
-        match id {
-            ids::CONNECT_START => self.yk_open_connect(),
-            ids::CONNECT_NEW_WALLET => self.yk_connect_new_wallet(),
-            ids::CONNECT_RESCAN => self.yk_connect_rescan(),
-            ids::CONNECT_NEXT => self.yk_connect_next(),
-            ids::CONNECT_BACK => self.yk_connect_back(),
-            ids::CONNECT_PIN => self.yk_connect_pin(),
-            ids::CONNECT_SAVE => self.yk_connect_save(),
-            _ => return false,
+        match press {
+            YkConnectPress::Start => self.yk_open_connect(),
+            YkConnectPress::NewWallet => self.yk_connect_new_wallet(),
+            YkConnectPress::Rescan => self.yk_connect_rescan(),
+            YkConnectPress::Next => self.yk_connect_next(),
+            YkConnectPress::Back => self.yk_connect_back(),
+            YkConnectPress::Pin => self.yk_connect_pin(),
+            YkConnectPress::Save => self.yk_connect_save(),
+            // The choice radios ran above.
+            YkConnectPress::ChoiceEvm(_)
+            | YkConnectPress::ChoiceBtc(..)
+            | YkConnectPress::ChoiceZec(_)
+            | YkConnectPress::ChoiceSol(_)
+            | YkConnectPress::ChoiceSkip(_) => {}
         }
-        true
     }
 }

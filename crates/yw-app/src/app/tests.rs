@@ -4152,15 +4152,20 @@ fn yubikey_wizard_enrols_an_existing_wallet() {
     assert_eq!(wizard_step(&h), Some(WizardStep::Plan));
     unique_ids(&h.app.items());
     // (a) SIG = EVM 2, AUT = Bitcoin P2WPKH 0 (the default), 2 Solana accounts from index 1.
-    h.app.yk_set_text(yk::SIG_INDEX_EDIT, "2".to_owned());
-    h.app.yk_set_text(yk::SOL_COUNT_EDIT, "2".to_owned());
-    h.app.yk_set_text(yk::SOL_START_EDIT, "1".to_owned());
+    h.app
+        .yk_set_text(yw_engine::form::EditField::YkSigIndex, "2".to_owned());
+    h.app
+        .yk_set_text(yw_engine::form::EditField::YkSolCount, "2".to_owned());
+    h.app
+        .yk_set_text(yw_engine::form::EditField::YkSolStart, "1".to_owned());
     // An out-of-range index is refused on the plan screen.
-    h.app.yk_set_text(yk::AUT_INDEX_EDIT, "1000".to_owned());
+    h.app
+        .yk_set_text(yw_engine::form::EditField::YkAutIndex, "1000".to_owned());
     h.app.on_command(yk::PLAN_NEXT);
     assert_eq!(wizard_step(&h), Some(WizardStep::Plan));
     assert!(h.app.card.wizard.as_ref().unwrap().error.is_some());
-    h.app.yk_set_text(yk::AUT_INDEX_EDIT, "0".to_owned());
+    h.app
+        .yk_set_text(yw_engine::form::EditField::YkAutIndex, "0".to_owned());
     h.app.on_command(yk::PLAN_NEXT);
     assert_eq!(wizard_step(&h), Some(WizardStep::Confirm));
     // (b) W05 (headless: the submission) → the key worker derives the preview; the card is
@@ -4455,12 +4460,15 @@ fn yubikey_import_shows_the_key_it_would_overwrite() {
     h.app.on_command(yk::OVERWRITE_ACK);
     assert!(ctl(&h.app.items(), yk::IMPORT).unwrap().enabled);
     // The word must be typed exactly; nothing is asked or sent before.
-    h.app.yk_set_text(yk::OVERWRITE_EDIT, "삭제".to_owned());
+    h.app
+        .yk_set_text(yw_engine::form::EditField::YkOverwrite, "삭제".to_owned());
     h.app.on_command(yk::IMPORT);
     assert!(h.app.card.wizard.as_ref().unwrap().error.is_some());
     assert!(h.app.secret_purpose().is_none());
-    h.app
-        .yk_set_text(yk::OVERWRITE_EDIT, "영구 삭제".to_owned());
+    h.app.yk_set_text(
+        yw_engine::form::EditField::YkOverwrite,
+        "영구 삭제".to_owned(),
+    );
     h.app.on_command(yk::IMPORT);
     h.submit(Purpose::YubiKey(YkPurpose::AdminPin), &[b"12345678"]);
     yk_pump(&mut h, &mut seen);
@@ -4494,7 +4502,8 @@ fn yubikey_backup_copy_removal_and_management_key() {
         yw_core::yubikey::plan::PgpKey::Aut,
         crate::ui::screens_yubikey::ids::PgpAction::Kind(crate::app_yubikey::PgpKind::None),
     ));
-    h.app.yk_set_text(yk::SOL_COUNT_EDIT, "0".to_owned());
+    h.app
+        .yk_set_text(yw_engine::form::EditField::YkSolCount, "0".to_owned());
     h.app.on_command(yk::PLAN_NEXT);
     h.submit(Purpose::YubiKey(YkPurpose::Mnemonic), &[ABOUT.as_bytes()]);
     yk_pump(&mut h, &mut seen);
@@ -5600,8 +5609,10 @@ fn yubikey_connect_without_words_from_the_first_run_screen() {
     assert!(!ctl(&items, yk::CLEAR_RUN).unwrap().enabled);
     h.app.on_command(yk::CLEAR_LOSS_ACK);
     assert!(ctl(&h.app.items(), yk::CLEAR_RUN).unwrap().enabled);
-    h.app
-        .yk_manage_set_text(yk::CLEAR_CONFIRM_EDIT, CLEAR_WORD.to_owned());
+    h.app.yk_manage_set_text(
+        yw_engine::form::EditField::YkClearConfirm,
+        CLEAR_WORD.to_owned(),
+    );
     h.app.on_command(yk::CLEAR_RUN);
     let clear_state = |h: &Harness| match h.app.card.manage.as_ref() {
         Some(YkManage::Clear(flow)) => Some((flow.step, flow.error.is_some())),
@@ -5613,8 +5624,10 @@ fn yubikey_connect_without_words_from_the_first_run_screen() {
         "the loss word is missing"
     );
     assert!(has_text(&h.app.items(), LOSS_WORD));
-    h.app
-        .yk_manage_set_text(yk::CLEAR_LOSS_EDIT, LOSS_WORD.to_owned());
+    h.app.yk_manage_set_text(
+        yw_engine::form::EditField::YkClearLoss,
+        LOSS_WORD.to_owned(),
+    );
     h.app.on_command(yk::CLEAR_RUN);
     // Accepted: the PIV PIN window comes next (nothing is sent to the card before it).
     assert_eq!(clear_state(&h), Some((ClearStep::Choose, false)));

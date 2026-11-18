@@ -71,7 +71,8 @@ fn yubikey_reslot_switches_chains_and_applies_it_to_the_backup() {
         PgpKey::Aut,
         PgpAction::Kind(crate::app_yubikey::PgpKind::Zec),
     ));
-    h.app.yk_set_text(yk::AUT_INDEX_EDIT, "0".to_owned());
+    h.app
+        .yk_set_text(yw_engine::form::EditField::YkAutIndex, "0".to_owned());
     h.app.on_command(yk::PLAN_NEXT);
     h.submit(Purpose::YubiKey(YkPurpose::Mnemonic), &[ABOUT.as_bytes()]);
     yk_pump(&mut h, &mut seen);
@@ -303,13 +304,17 @@ fn yubikey_clear_our_slots_and_applet_resets() {
         crate::app_yubikey::manage::T_YK_CLEAR_FUNDS
     ));
     // The word must be typed exactly.
-    h.app
-        .yk_manage_set_text(yk::CLEAR_CONFIRM_EDIT, "비움".to_owned());
+    h.app.yk_manage_set_text(
+        yw_engine::form::EditField::YkClearConfirm,
+        "비움".to_owned(),
+    );
     h.app.on_command(yk::CLEAR_RUN);
     assert_eq!(clear_step(&h), Some(ClearStep::Choose));
     assert!(h.app.key_queue.is_empty());
-    h.app
-        .yk_manage_set_text(yk::CLEAR_CONFIRM_EDIT, CLEAR_WORD.to_owned());
+    h.app.yk_manage_set_text(
+        yw_engine::form::EditField::YkClearConfirm,
+        CLEAR_WORD.to_owned(),
+    );
     cards.lock().unwrap()[0].log.clear();
     h.app.on_command(yk::CLEAR_RUN);
     h.submit(Purpose::YubiKey(YkPurpose::ClearAdminPin), &[ADMIN]);
@@ -367,8 +372,10 @@ fn yubikey_clear_our_slots_and_applet_resets() {
     h.app.on_command(yk::CLEAR_BASE);
     h.app.on_command(yk::CLEAR_PIV_TOGGLE);
     h.app.on_command(yk::CLEAR_PIV_RESET);
-    h.app
-        .yk_manage_set_text(yk::CLEAR_CONFIRM_EDIT, CLEAR_WORD.to_owned());
+    h.app.yk_manage_set_text(
+        yw_engine::form::EditField::YkClearConfirm,
+        CLEAR_WORD.to_owned(),
+    );
     h.app.on_command(yk::CLEAR_RUN);
     yk_pump(&mut h, &mut seen);
     assert_eq!(clear_step(&h), Some(ClearStep::Result));
@@ -412,8 +419,10 @@ fn yubikey_clear_our_slots_and_applet_resets() {
     );
     h.app.on_command(yk::CLEAR_PGP_TOGGLE);
     h.app.on_command(yk::CLEAR_PGP_RESET);
-    h.app
-        .yk_manage_set_text(yk::CLEAR_CONFIRM_EDIT, CLEAR_WORD.to_owned());
+    h.app.yk_manage_set_text(
+        yw_engine::form::EditField::YkClearConfirm,
+        CLEAR_WORD.to_owned(),
+    );
     h.app.on_command(yk::CLEAR_RUN);
     yk_pump(&mut h, &mut seen);
     {

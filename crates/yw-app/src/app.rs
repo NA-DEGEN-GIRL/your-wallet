@@ -3874,13 +3874,13 @@ impl App {
             }
             Cmd::Form(snapshot) => self.form.replace(snapshot),
             // The field's own handler (or the legacy chain) runs after the state has the text.
-            // S3 C2: a converted family's handler takes the field and its text.
+            // S3 C2: a converted family's handler takes the field and its text. S3 C11: every
+            // handler is converted; a field none claims is ignored, as the legacy chain ignored
+            // it.
             Cmd::Edit { field, text } => {
                 let text = field.clamp(&text);
                 self.form.set(field, Some(text.clone()));
-                if !self.on_field_edit(field, &text) {
-                    self.edit_chain(cmd_table::edit_id_of(field));
-                }
+                let _ = self.on_field_edit(field, &text);
             }
             // The send forms' one-shot check (`Effect::StartTimer`, S3 B4).
             Cmd::Timer(TimerId::SendCheck) => self.on_send_timer(),
@@ -3942,6 +3942,9 @@ impl App {
             Press::Sol(press) => self.on_sol(press),
             Press::Btc(press) => self.on_btc(press),
             Press::Evm(press) => self.on_evm(press),
+            Press::YkManage(press) => self.on_yk_manage_press(press),
+            Press::YkConnect(press) => self.on_yk_connect(press),
+            Press::Yk(press) => self.on_yk(press),
             Press::Back | Press::Enter | Press::Legacy(_) => {}
         }
     }
@@ -3991,8 +3994,9 @@ impl App {
     pub(crate) fn on_edit_notify(&mut self, id: u16) {
         // 2026-11-18 (S3 B4–B5 review): `let … else`, not two nested `if let`s, so the shape is
         // the same with and without the debug-only statement (release clippy: `collapsible_if`).
+        // 2026-11-18 (S3 C11): a masked credential edit (no field) reaches no handler, as before
+        // (the last legacy edit handlers, `YubiKey`'s, never claimed one).
         let Some(field) = cmd_table::field_of(id) else {
-            self.edit_chain(id);
             return;
         };
         if let Some(text) = self.controls.text(id, field.cap()) {
@@ -4013,15 +4017,17 @@ impl App {
             // `ResetPhrase`; S3 C6: the removal warning's `MnRemoveTyped`; S3 C7: `HcTo`,
             // `HcAmount`, `HcApi`, `ZecSendTo`, `ZecSendAmount`; S3 C8: `SolSendTo`,
             // `SolSendAmount`; S3 C9: the Bitcoin send, bump and Esplora fields; S3 C10: the
-            // EVM send, token, S17 and fee-cap fields.)
+            // EVM send, token, S17 and fee-cap fields; S3 C11: the `YubiKey` wizard and card
+            // action fields.)
             #[cfg(debug_assertions)]
             self.note_form_mismatch(field);
-            self.edit_chain(id);
         }
     }
 
     /// The edit handler of a converted family (S3 C2–C12): `false` when `field` is not one of
-    /// theirs (then the legacy `edit_chain` runs, as before).
+    /// theirs, and then nothing handles it (2026-11-18, S3 C11: the legacy `edit_chain` ran
+    /// here before; its last handler, `YubiKey`'s, is converted, and an edit no handler claims
+    /// is still ignored).
     fn on_field_edit(&mut self, field: EditField, text: &str) -> bool {
         self.on_wc_edit(field, text)
             || self.on_reset_edit(field, text)
@@ -4032,16 +4038,9 @@ impl App {
             || self.on_sol_edit(field, text)
             || self.on_btc_edit(field, text)
             || self.on_evm_edit(field, text)
+            || self.on_yk_edit(field, text)
             || self.on_explorer_edit(field, text)
             || self.on_llm_edit(field, text)
-    }
-
-    /// The handlers of an edit change not converted yet (S3 B5: the body of `on_edit_notify`
-    /// before). 2026-11-18 (S3 C10): the EVM handler, the last of the chain, takes its fields
-    /// from `Cmd::Edit` (`on_evm_edit`); its `_ => {}`, which swallowed every other edit, is
-    /// gone with it — what the `YubiKey` handler does not claim is still ignored.
-    fn edit_chain(&mut self, id: u16) {
-        let _ = self.on_yk_edit_change(id);
     }
 
     /// A control id whose handler family is not converted to `Press` yet (S3 B2: was
@@ -4376,11 +4375,9 @@ impl App {
                 // A card's `새로고침` reads its received list first (S3 C1: was the first link
                 // of the chain, `on_received_command`, which returned `false` for these ids).
                 // S3 C10: every chain's `새로고침` is a family press now; the observer stays
-                // until S3 D3 removes the bridge.
+                // until S3 D3 removes the bridge. S3 C11: the `YubiKey` handlers are presses.
                 self.received_observe(other);
-                if !self.on_yk_command(other) {
-                    self.on_indexed_command(other);
-                }
+                self.on_indexed_command(other);
             }
         }
     }

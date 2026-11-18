@@ -17,7 +17,8 @@
 //! S3 C2: S13's sites and `WalletConnect` panel. S3 C3: the block-explorer card and links and
 //! the AI-explanation settings. S3 C4: the address book. S3 C5: S22 and T-WAIT-STALLED, S23,
 //! the imported-key screens and the `rpc.json` import card. S3 C6: the recovery phrases. S3 C7:
-//! `HyperCore` and Zcash. S3 C8: Solana. S3 C9: Bitcoin. S3 C10: the EVM screens.
+//! `HyperCore` and Zcash. S3 C8: Solana. S3 C9: Bitcoin. S3 C10: the EVM screens. S3 C11: the
+//! `YubiKey` card actions, connect flow and wizard (asked in that order, as the handler did).
 
 use yw_core::secret::Zeroizing;
 use yw_engine::cmd::Press;
@@ -27,7 +28,7 @@ use crate::ui::main_window::ControlSet;
 use crate::ui::{
     screens, screens_book, screens_btc, screens_evm, screens_explorer, screens_hypercore,
     screens_keys, screens_links, screens_llm, screens_mnemonics, screens_received, screens_reset,
-    screens_sites, screens_sol, screens_walletconnect, screens_zec,
+    screens_sites, screens_sol, screens_walletconnect, screens_yubikey, screens_zec,
 };
 use crate::{app_hidden, app_rpc_import, app_sidecar};
 
@@ -63,6 +64,9 @@ pub fn press_of(id: u16, controls: &ControlSet) -> Press {
             .or_else(|| screens_sol::ids::press_of(other).map(Press::Sol))
             .or_else(|| screens_btc::ids::press_of(other).map(Press::Btc))
             .or_else(|| screens_evm::ids::press_of(other, controls).map(Press::Evm))
+            .or_else(|| screens_yubikey::ids::manage_press_of(other).map(Press::YkManage))
+            .or_else(|| screens_yubikey::ids::connect_press_of(other).map(Press::YkConnect))
+            .or_else(|| screens_yubikey::ids::press_of(other).map(Press::Yk))
             .unwrap_or(Press::Legacy(other)),
     }
 }
@@ -93,6 +97,9 @@ pub const fn id_of(press: Press) -> u16 {
         Press::Sol(press) => screens_sol::ids::id_of(press),
         Press::Btc(press) => screens_btc::ids::id_of(press),
         Press::Evm(press) => screens_evm::ids::id_of(press),
+        Press::Yk(press) => screens_yubikey::ids::id_of(press),
+        Press::YkManage(press) => screens_yubikey::ids::manage_id_of(press),
+        Press::YkConnect(press) => screens_yubikey::ids::connect_id_of(press),
         Press::Legacy(id) => id,
     }
 }
@@ -992,6 +999,88 @@ mod tests {
             controls.type_check(id, false);
             assert_eq!(press_of(id, &controls), Press::Evm(press(Some(false))));
             assert_eq!(id_of(press_of(id, &controls)), id);
+        }
+    }
+
+    /// S3 C11: the `YubiKey` screens claim exactly the ids `on_yk_command` claimed (directly or
+    /// through the card-action and connect handlers it asked first): every fixed id but the
+    /// eleven edits, which are fields, each row range whole and every choice radio; the eighth
+    /// id of a connect choice row, which is no radio, stays legacy as before.
+    #[test]
+    fn c11_yubikey_maps_its_ids() {
+        use screens_yubikey::ids;
+        let controls = ControlSet::default();
+        let yk = |id: u16| {
+            matches!(
+                press_of(id, &controls),
+                Press::Yk(_) | Press::YkManage(_) | Press::YkConnect(_)
+            )
+        };
+        let edits = [
+            ids::SIG_INDEX_EDIT,
+            ids::AUT_INDEX_EDIT,
+            ids::SOL_COUNT_EDIT,
+            ids::SOL_START_EDIT,
+            ids::RESLOT_SIG_INDEX_EDIT,
+            ids::RESLOT_AUT_INDEX_EDIT,
+            ids::CLEAR_CONFIRM_EDIT,
+            ids::CARD_NAME_EDIT,
+            ids::RESLOT_LOSS_EDIT,
+            ids::CLEAR_LOSS_EDIT,
+            ids::OVERWRITE_EDIT,
+        ];
+        assert!(ids::FIXED.iter().all(|&id| yk(id) != edits.contains(&id)));
+        for id in 13_200..13_960 {
+            let ranged = matches!(id, 13_260..13_268 | 13_270..13_278 | 13_300..13_308 | 13_310..13_318 | 13_320..13_328
+                | 13_370..13_378 | 13_510..13_518 | 13_530..13_538)
+                || (13_720..13_928).contains(&id) && (id - 13_720) % 8 != 7;
+            let fixed = ids::FIXED.contains(&id) && !edits.contains(&id);
+            assert_eq!(yk(id), fixed || ranged, "{id}");
+        }
+        // Each id goes to the family whose handler took it.
+        for id in ids::FIXED.iter().copied().chain(13_200..13_960) {
+            let manage = ids::reslot_row(id).is_some()
+                || ids::clear_row(id).is_some()
+                || ids::reslot_backup_row(id).is_some()
+                || ids::reslot_action(id).is_some()
+                || ids::preset(id).is_some()
+                || (13_358..=13_368).contains(&id)
+                || matches!(
+                    id,
+                    13_380..=13_385 | 13_387 | 13_390 | 13_392 | 13_394 | 13_520 | 13_523
+                );
+            let connect = ids::connect_choice(id).is_some() || (13_500..=13_506).contains(&id);
+            assert_eq!(
+                matches!(press_of(id, &controls), Press::YkManage(_)),
+                manage,
+                "{id}"
+            );
+            assert_eq!(
+                matches!(press_of(id, &controls), Press::YkConnect(_)),
+                connect,
+                "{id}"
+            );
+        }
+    }
+
+    /// S3 C11: the `YubiKey` radios carry the choice the id's decoder gives, and map back to it
+    /// (`pgp_of`, `reslot_of`, `preset_of`, `choice_of`).
+    #[test]
+    fn c11_yubikey_radios_carry_their_choice() {
+        use screens_yubikey::ids;
+        let controls = ControlSet::default();
+        for id in 13_200..13_960 {
+            match press_of(id, &controls) {
+                Press::Yk(press) => assert_eq!(ids::pgp_of(press), ids::pgp_action(id), "{id}"),
+                Press::YkManage(press) => {
+                    assert_eq!(ids::reslot_of(press), ids::reslot_action(id), "{id}");
+                    assert_eq!(ids::preset_of(press), ids::preset(id), "{id}");
+                }
+                Press::YkConnect(press) => {
+                    assert_eq!(ids::choice_of(press), ids::connect_choice(id), "{id}");
+                }
+                _ => {}
+            }
         }
     }
 

@@ -607,6 +607,421 @@ pub mod ids {
         CARD_NAME_EDIT,
         CARD_NAME_CLEAR,
     ];
+
+    /// The wizard and settings-tab press control `id` stands for (2026-11-18, S3 C11:
+    /// `ui::cmd_table`). `None` when `id` is not one of `App::on_yk`'s (the card actions' and
+    /// the connect flow's ids are theirs, the edits are fields). An `OpenPGP` radio carries its
+    /// slot and choice; each row range is claimed whole, as the ids reached the handler before.
+    #[must_use]
+    pub fn press_of(id: u16) -> Option<yw_engine::cmd::YkPress> {
+        use yw_engine::cmd::{Row, YkPress};
+        if let Some((key, action)) = pgp_action(id) {
+            return Some(match action {
+                PgpAction::Kind(PgpKind::None) => YkPress::PgpNone(key),
+                PgpAction::Kind(PgpKind::Evm) => YkPress::PgpEvm(key),
+                PgpAction::Kind(PgpKind::Btc) => YkPress::PgpBtc(key),
+                PgpAction::Kind(PgpKind::Shared) => YkPress::PgpShared(key),
+                PgpAction::Kind(PgpKind::Zec) => YkPress::PgpZec(key),
+                PgpAction::Script(script) => YkPress::PgpScript(key, script),
+                PgpAction::Touch(touch) => YkPress::PgpTouch(key, touch),
+                PgpAction::Zec(network) => YkPress::PgpZecNetwork(key, network),
+            });
+        }
+        let row = |found: Option<usize>| found.and_then(|row| u16::try_from(row).ok()).map(Row);
+        if let Some(row) = row(remove_row(id)) {
+            return Some(YkPress::Remove(row));
+        }
+        if let Some(row) = row(rename_card_row(id)) {
+            return Some(YkPress::RenameCard(row));
+        }
+        if let Some(row) = row(pins_row(id)) {
+            return Some(YkPress::Pins(row));
+        }
+        if let Some(row) = row(backup_row(id)) {
+            return Some(YkPress::Backup(row));
+        }
+        if let Some(row) = row(row_of(id, PIN_GATE_BASE, PIN_GATE_SPAN)) {
+            return Some(YkPress::PinGate(row));
+        }
+        Some(match id {
+            SECTION_YUBIKEY => YkPress::SectionYubikey,
+            CARD_NAME_SAVE => YkPress::CardNameSave,
+            CARD_NAME_CLEAR => YkPress::CardNameClear,
+            CARD_NAME_CANCEL => YkPress::CardNameCancel,
+            ENROL_START => YkPress::EnrolStart,
+            NEW_WALLET => YkPress::NewWallet,
+            NEW_WALLET_START => YkPress::NewWalletStart,
+            NEW_WALLET_CANCEL => YkPress::NewWalletCancel,
+            PIV_TOUCH_ALWAYS => YkPress::PivTouchAlways,
+            PIV_TOUCH_CACHED => YkPress::PivTouchCached,
+            SHARED_ACK => YkPress::SharedAck,
+            BACKUP_TOGGLE => YkPress::BackupToggle,
+            OVERWRITE_ACK => YkPress::OverwriteAck,
+            PLAN_NEXT => YkPress::PlanNext,
+            FINISH => YkPress::Finish,
+            ANOTHER => YkPress::Another,
+            WIZARD_CANCEL => YkPress::WizardCancel,
+            RESULT_DETAILS => YkPress::ResultDetails,
+            PIN_GUIDE => YkPress::PinGuide,
+            IDENTIFY_AGAIN => YkPress::IdentifyAgain,
+            PIN_NEEDED_OPEN => YkPress::PinNeededOpen,
+            SAME_ACK => YkPress::SameAck,
+            CONFIRM_BACK => YkPress::ConfirmBack,
+            CONFIRM_NEXT => YkPress::ConfirmNext,
+            RETRY => YkPress::Retry,
+            CRED_BACK => YkPress::CredBack,
+            MGMT_DEFAULT => YkPress::MgmtDefault,
+            MGMT_CUSTOM => YkPress::MgmtCustom,
+            IMPORT => YkPress::Import,
+            ADOPT => YkPress::Adopt,
+            RECHECK => YkPress::Recheck,
+            CHANGE_PW1 => YkPress::ChangePw1,
+            CHANGE_PW3 => YkPress::ChangePw3,
+            CHANGE_PIV_PIN => YkPress::ChangePivPin,
+            CHANGE_PUK => YkPress::ChangePuk,
+            CHANGE_MGMT => YkPress::ChangeMgmt,
+            SET_PINS => YkPress::SetPins,
+            PINS_UNIFIED => YkPress::PinsUnified,
+            PINS_SEPARATE => YkPress::PinsSeparate,
+            _ => return None,
+        })
+    }
+
+    /// The `OpenPGP` slot and action of a wizard radio press (the inverse of the mapping in
+    /// [`press_of`]); `None` for every other press.
+    #[must_use]
+    pub const fn pgp_of(press: yw_engine::cmd::YkPress) -> Option<(PgpKey, PgpAction)> {
+        use yw_engine::cmd::YkPress;
+        Some(match press {
+            YkPress::PgpNone(key) => (key, PgpAction::Kind(PgpKind::None)),
+            YkPress::PgpEvm(key) => (key, PgpAction::Kind(PgpKind::Evm)),
+            YkPress::PgpBtc(key) => (key, PgpAction::Kind(PgpKind::Btc)),
+            YkPress::PgpShared(key) => (key, PgpAction::Kind(PgpKind::Shared)),
+            YkPress::PgpZec(key) => (key, PgpAction::Kind(PgpKind::Zec)),
+            YkPress::PgpScript(key, script) => (key, PgpAction::Script(script)),
+            YkPress::PgpTouch(key, touch) => (key, PgpAction::Touch(touch)),
+            YkPress::PgpZecNetwork(key, network) => (key, PgpAction::Zec(network)),
+            _ => return None,
+        })
+    }
+
+    /// The offset of a card-script radio in a slot's controls (`CARD_SCRIPTS` order, 5–7); a
+    /// script the wizard does not draw falls on the index edit (4), as [`pgp_id`] and
+    /// [`reslot_id`] place it.
+    const fn script_offset(script: ScriptType) -> u16 {
+        match script {
+            ScriptType::P2wpkh => 5,
+            ScriptType::P2shP2wpkh => 6,
+            ScriptType::P2pkh => 7,
+            ScriptType::P2tr => 4,
+        }
+    }
+
+    /// The control id of a wizard press (the inverse of [`press_of`]).
+    #[must_use]
+    pub const fn id_of(press: yw_engine::cmd::YkPress) -> u16 {
+        use yw_engine::cmd::{Row, YkPress};
+        const fn pgp(key: PgpKey, offset: u16) -> u16 {
+            match key {
+                PgpKey::Sig => SIG_BASE.wrapping_add(offset),
+                PgpKey::Aut => AUT_BASE.wrapping_add(offset),
+            }
+        }
+        match press {
+            YkPress::SectionYubikey => SECTION_YUBIKEY,
+            YkPress::CardNameSave => CARD_NAME_SAVE,
+            YkPress::CardNameClear => CARD_NAME_CLEAR,
+            YkPress::CardNameCancel => CARD_NAME_CANCEL,
+            YkPress::EnrolStart => ENROL_START,
+            YkPress::NewWallet => NEW_WALLET,
+            YkPress::NewWalletStart => NEW_WALLET_START,
+            YkPress::NewWalletCancel => NEW_WALLET_CANCEL,
+            YkPress::PivTouchAlways => PIV_TOUCH_ALWAYS,
+            YkPress::PivTouchCached => PIV_TOUCH_CACHED,
+            YkPress::SharedAck => SHARED_ACK,
+            YkPress::BackupToggle => BACKUP_TOGGLE,
+            YkPress::OverwriteAck => OVERWRITE_ACK,
+            YkPress::PlanNext => PLAN_NEXT,
+            YkPress::Finish => FINISH,
+            YkPress::Another => ANOTHER,
+            YkPress::WizardCancel => WIZARD_CANCEL,
+            YkPress::ResultDetails => RESULT_DETAILS,
+            YkPress::PinGuide => PIN_GUIDE,
+            YkPress::IdentifyAgain => IDENTIFY_AGAIN,
+            YkPress::PinNeededOpen => PIN_NEEDED_OPEN,
+            YkPress::SameAck => SAME_ACK,
+            YkPress::ConfirmBack => CONFIRM_BACK,
+            YkPress::ConfirmNext => CONFIRM_NEXT,
+            YkPress::Retry => RETRY,
+            YkPress::CredBack => CRED_BACK,
+            YkPress::MgmtDefault => MGMT_DEFAULT,
+            YkPress::MgmtCustom => MGMT_CUSTOM,
+            YkPress::Import => IMPORT,
+            YkPress::Adopt => ADOPT,
+            YkPress::Recheck => RECHECK,
+            YkPress::ChangePw1 => CHANGE_PW1,
+            YkPress::ChangePw3 => CHANGE_PW3,
+            YkPress::ChangePivPin => CHANGE_PIV_PIN,
+            YkPress::ChangePuk => CHANGE_PUK,
+            YkPress::ChangeMgmt => CHANGE_MGMT,
+            YkPress::SetPins => SET_PINS,
+            YkPress::PinsUnified => PINS_UNIFIED,
+            YkPress::PinsSeparate => PINS_SEPARATE,
+            // `KINDS` order, Zcash at 12 (see `pgp_id`).
+            YkPress::PgpNone(key) => pgp(key, 0),
+            YkPress::PgpEvm(key) => pgp(key, 1),
+            YkPress::PgpBtc(key) => pgp(key, 2),
+            YkPress::PgpShared(key) => pgp(key, 3),
+            YkPress::PgpZec(key) => pgp(key, 12),
+            YkPress::PgpScript(key, script) => pgp(key, script_offset(script)),
+            // `PGP_TOUCH` order at 8–11; `Never` is not drawn (the index edit, as `pgp_id`).
+            YkPress::PgpTouch(key, touch) => pgp(
+                key,
+                match touch {
+                    TouchPolicy::Always => 8,
+                    TouchPolicy::Cached => 9,
+                    TouchPolicy::AlwaysFixed => 10,
+                    TouchPolicy::CachedFixed => 11,
+                    TouchPolicy::Never => 4,
+                },
+            ),
+            YkPress::PgpZecNetwork(key, network) => pgp(
+                key,
+                match network {
+                    ZecNetwork::Mainnet => 13,
+                    ZecNetwork::Testnet => 14,
+                },
+            ),
+            YkPress::Backup(Row(row)) => BACKUP_BASE.wrapping_add(row),
+            YkPress::Remove(Row(row)) => REMOVE_BASE.wrapping_add(row),
+            YkPress::RenameCard(Row(row)) => RENAME_CARD_BASE.wrapping_add(row),
+            YkPress::Pins(Row(row)) => PINS_BASE.wrapping_add(row),
+            YkPress::PinGate(Row(row)) => PIN_GATE_BASE.wrapping_add(row),
+        }
+    }
+
+    /// The card-action press control `id` stands for (2026-11-18, S3 C11). `None` when `id` is
+    /// not one of `App::on_yk_manage_press`'s (the edits are fields); each row range is claimed whole.
+    #[must_use]
+    pub fn manage_press_of(id: u16) -> Option<yw_engine::cmd::YkManagePress> {
+        use yw_engine::cmd::{Row, YkManagePress};
+        let row = |found: Option<usize>| found.and_then(|row| u16::try_from(row).ok()).map(Row);
+        if let Some(row) = row(reslot_row(id)) {
+            return Some(YkManagePress::Reslot(row));
+        }
+        if let Some(row) = row(clear_row(id)) {
+            return Some(YkManagePress::Clear(row));
+        }
+        if let Some(row) = row(reslot_backup_row(id)) {
+            return Some(YkManagePress::ReslotBackup(row));
+        }
+        if let Some((key, action)) = reslot_action(id) {
+            return Some(match action {
+                ReslotAction::Chain(Chain::Evm) => YkManagePress::ReslotEvm(key),
+                ReslotAction::Chain(Chain::Btc) => YkManagePress::ReslotBtc(key),
+                ReslotAction::Chain(Chain::Zec) => YkManagePress::ReslotZec(key),
+                ReslotAction::Chain(Chain::Shared) => YkManagePress::ReslotShared(key),
+                ReslotAction::Script(script) => YkManagePress::ReslotScript(key, script),
+            });
+        }
+        if let Some(preset) = preset(id) {
+            return Some(match preset {
+                Preset::EvmBtc => YkManagePress::PresetEvmBtc,
+                Preset::EvmZec => YkManagePress::PresetEvmZec,
+                Preset::BtcZec => YkManagePress::PresetBtcZec,
+                Preset::EvmEvm => YkManagePress::PresetEvmEvm,
+                Preset::Custom => YkManagePress::PresetCustom,
+            });
+        }
+        Some(match id {
+            RESLOT_ZEC_MAIN => YkManagePress::ZecMain,
+            RESLOT_ZEC_TEST => YkManagePress::ZecTest,
+            RESLOT_ADVANCED => YkManagePress::Advanced,
+            RESLOT_SHARED_ACK => YkManagePress::SharedAck,
+            RESLOT_REMOVED_ACK => YkManagePress::RemovedAck,
+            RESLOT_LOSS_ACK => YkManagePress::LossAck,
+            RESLOT_SAME_ACK => YkManagePress::SameAck,
+            CLEAR_LOSS_ACK => YkManagePress::ClearLossAck,
+            RESLOT_NEXT => YkManagePress::Next,
+            RESLOT_BACK => YkManagePress::Back,
+            RESLOT_IMPORT => YkManagePress::Import,
+            RESLOT_RETRY => YkManagePress::Retry,
+            MANAGE_DONE => YkManagePress::Done,
+            MANAGE_CANCEL => YkManagePress::Cancel,
+            RESLOT_PIN_NOW => YkManagePress::PinNow,
+            CLEAR_PGP_TOGGLE => YkManagePress::ClearPgpToggle,
+            CLEAR_PIV_TOGGLE => YkManagePress::ClearPivToggle,
+            CLEAR_PGP_OURS => YkManagePress::ClearPgpOurs,
+            CLEAR_PGP_RESET => YkManagePress::ClearPgpReset,
+            CLEAR_PIV_OURS => YkManagePress::ClearPivOurs,
+            CLEAR_PIV_RESET => YkManagePress::ClearPivReset,
+            CLEAR_RUN => YkManagePress::ClearRun,
+            CLEAR_HOW => YkManagePress::ClearHow,
+            _ => return None,
+        })
+    }
+
+    /// The slot and action of a re-slot radio press; `None` for every other press.
+    #[must_use]
+    pub const fn reslot_of(press: yw_engine::cmd::YkManagePress) -> Option<(PgpKey, ReslotAction)> {
+        use yw_engine::cmd::YkManagePress;
+        Some(match press {
+            YkManagePress::ReslotEvm(key) => (key, ReslotAction::Chain(Chain::Evm)),
+            YkManagePress::ReslotBtc(key) => (key, ReslotAction::Chain(Chain::Btc)),
+            YkManagePress::ReslotZec(key) => (key, ReslotAction::Chain(Chain::Zec)),
+            YkManagePress::ReslotShared(key) => (key, ReslotAction::Chain(Chain::Shared)),
+            YkManagePress::ReslotScript(key, script) => (key, ReslotAction::Script(script)),
+            _ => return None,
+        })
+    }
+
+    /// The preset of a preset radio press; `None` for every other press.
+    #[must_use]
+    pub const fn preset_of(press: yw_engine::cmd::YkManagePress) -> Option<Preset> {
+        use yw_engine::cmd::YkManagePress;
+        Some(match press {
+            YkManagePress::PresetEvmBtc => Preset::EvmBtc,
+            YkManagePress::PresetEvmZec => Preset::EvmZec,
+            YkManagePress::PresetBtcZec => Preset::BtcZec,
+            YkManagePress::PresetEvmEvm => Preset::EvmEvm,
+            YkManagePress::PresetCustom => Preset::Custom,
+            _ => return None,
+        })
+    }
+
+    /// The control id of a card-action press (the inverse of [`manage_press_of`]).
+    #[must_use]
+    pub const fn manage_id_of(press: yw_engine::cmd::YkManagePress) -> u16 {
+        use yw_engine::cmd::{Row, YkManagePress};
+        const fn slot(key: PgpKey, offset: u16) -> u16 {
+            match key {
+                PgpKey::Sig => RESLOT_SIG_BASE.wrapping_add(offset),
+                PgpKey::Aut => RESLOT_AUT_BASE.wrapping_add(offset),
+            }
+        }
+        match press {
+            YkManagePress::Reslot(Row(row)) => RESLOT_BASE.wrapping_add(row),
+            YkManagePress::Clear(Row(row)) => CLEAR_BASE.wrapping_add(row),
+            YkManagePress::ReslotBackup(Row(row)) => RESLOT_BACKUP_BASE.wrapping_add(row),
+            // `Chain::ALL` order.
+            YkManagePress::ReslotEvm(key) => slot(key, 0),
+            YkManagePress::ReslotBtc(key) => slot(key, 1),
+            YkManagePress::ReslotZec(key) => slot(key, 2),
+            YkManagePress::ReslotShared(key) => slot(key, 3),
+            YkManagePress::ReslotScript(key, script) => slot(key, script_offset(script)),
+            // `Preset::ALL` order.
+            YkManagePress::PresetEvmBtc => PRESET_BASE,
+            YkManagePress::PresetEvmZec => PRESET_BASE + 1,
+            YkManagePress::PresetBtcZec => PRESET_BASE + 2,
+            YkManagePress::PresetEvmEvm => PRESET_BASE + 3,
+            YkManagePress::PresetCustom => PRESET_BASE + 4,
+            YkManagePress::ZecMain => RESLOT_ZEC_MAIN,
+            YkManagePress::ZecTest => RESLOT_ZEC_TEST,
+            YkManagePress::Advanced => RESLOT_ADVANCED,
+            YkManagePress::SharedAck => RESLOT_SHARED_ACK,
+            YkManagePress::RemovedAck => RESLOT_REMOVED_ACK,
+            YkManagePress::LossAck => RESLOT_LOSS_ACK,
+            YkManagePress::SameAck => RESLOT_SAME_ACK,
+            YkManagePress::ClearLossAck => CLEAR_LOSS_ACK,
+            YkManagePress::Next => RESLOT_NEXT,
+            YkManagePress::Back => RESLOT_BACK,
+            YkManagePress::Import => RESLOT_IMPORT,
+            YkManagePress::Retry => RESLOT_RETRY,
+            YkManagePress::Done => MANAGE_DONE,
+            YkManagePress::Cancel => MANAGE_CANCEL,
+            YkManagePress::PinNow => RESLOT_PIN_NOW,
+            YkManagePress::ClearPgpToggle => CLEAR_PGP_TOGGLE,
+            YkManagePress::ClearPivToggle => CLEAR_PIV_TOGGLE,
+            YkManagePress::ClearPgpOurs => CLEAR_PGP_OURS,
+            YkManagePress::ClearPgpReset => CLEAR_PGP_RESET,
+            YkManagePress::ClearPivOurs => CLEAR_PIV_OURS,
+            YkManagePress::ClearPivReset => CLEAR_PIV_RESET,
+            YkManagePress::ClearRun => CLEAR_RUN,
+            YkManagePress::ClearHow => CLEAR_HOW,
+        }
+    }
+
+    /// The connect-flow press control `id` stands for (2026-11-18, S3 C11). `None` when `id` is
+    /// not one of `App::on_yk_connect`'s; a choice radio carries its row and choice (the
+    /// eighth id of a row is no radio and stays unclaimed, as before).
+    #[must_use]
+    pub fn connect_press_of(id: u16) -> Option<yw_engine::cmd::YkConnectPress> {
+        use crate::app_yubikey::connect::Choice;
+        use yw_engine::cmd::{Row, YkConnectPress};
+        if let Some((row, choice)) = connect_choice(id) {
+            let row = Row(u16::try_from(row).ok()?);
+            return Some(match choice {
+                Choice::Evm => YkConnectPress::ChoiceEvm(row),
+                Choice::Btc(script) => YkConnectPress::ChoiceBtc(row, script),
+                Choice::Zec => YkConnectPress::ChoiceZec(row),
+                Choice::Sol => YkConnectPress::ChoiceSol(row),
+                Choice::Skip => YkConnectPress::ChoiceSkip(row),
+            });
+        }
+        Some(match id {
+            CONNECT_START => YkConnectPress::Start,
+            CONNECT_NEW_WALLET => YkConnectPress::NewWallet,
+            CONNECT_RESCAN => YkConnectPress::Rescan,
+            CONNECT_NEXT => YkConnectPress::Next,
+            CONNECT_BACK => YkConnectPress::Back,
+            CONNECT_PIN => YkConnectPress::Pin,
+            CONNECT_SAVE => YkConnectPress::Save,
+            _ => return None,
+        })
+    }
+
+    /// The row and choice of a choice radio press; `None` for every other press.
+    #[must_use]
+    pub fn choice_of(
+        press: yw_engine::cmd::YkConnectPress,
+    ) -> Option<(usize, crate::app_yubikey::connect::Choice)> {
+        use crate::app_yubikey::connect::Choice;
+        use yw_engine::cmd::{Row, YkConnectPress};
+        let (Row(row), choice) = match press {
+            YkConnectPress::ChoiceEvm(row) => (row, Choice::Evm),
+            YkConnectPress::ChoiceBtc(row, script) => (row, Choice::Btc(script)),
+            YkConnectPress::ChoiceZec(row) => (row, Choice::Zec),
+            YkConnectPress::ChoiceSol(row) => (row, Choice::Sol),
+            YkConnectPress::ChoiceSkip(row) => (row, Choice::Skip),
+            _ => return None,
+        };
+        Some((usize::from(row), choice))
+    }
+
+    /// The control id of a connect-flow press (the inverse of [`connect_press_of`]).
+    #[must_use]
+    pub const fn connect_id_of(press: yw_engine::cmd::YkConnectPress) -> u16 {
+        use yw_engine::cmd::{Row, YkConnectPress};
+        // `CONNECT_CHOICES` order; a Bitcoin type the flow does not offer is column 0, as
+        // `connect_choice_id` places it.
+        const fn choice(Row(row): Row, column: u16) -> u16 {
+            CONNECT_CHOICE_BASE
+                .wrapping_add(row.wrapping_mul(CONNECT_CHOICE_STRIDE))
+                .wrapping_add(column)
+        }
+        match press {
+            YkConnectPress::Start => CONNECT_START,
+            YkConnectPress::NewWallet => CONNECT_NEW_WALLET,
+            YkConnectPress::Rescan => CONNECT_RESCAN,
+            YkConnectPress::Next => CONNECT_NEXT,
+            YkConnectPress::Back => CONNECT_BACK,
+            YkConnectPress::Pin => CONNECT_PIN,
+            YkConnectPress::Save => CONNECT_SAVE,
+            YkConnectPress::ChoiceEvm(row) => choice(row, 0),
+            YkConnectPress::ChoiceBtc(row, script) => choice(
+                row,
+                match script {
+                    ScriptType::P2wpkh => 1,
+                    ScriptType::P2shP2wpkh => 2,
+                    ScriptType::P2pkh => 3,
+                    ScriptType::P2tr => 0,
+                },
+            ),
+            YkConnectPress::ChoiceZec(row) => choice(row, 4),
+            YkConnectPress::ChoiceSol(row) => choice(row, 5),
+            YkConnectPress::ChoiceSkip(row) => choice(row, 6),
+        }
+    }
 }
 
 /// T-YK-MNEMONIC-WALLET, Korean (tests).

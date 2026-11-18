@@ -36,6 +36,9 @@
 //! 2026-11-18 (S3 C9): Bitcoin (`Press::Btc`).
 //!
 //! 2026-11-18 (S3 C10): the EVM screens (`Press::Evm`).
+//!
+//! 2026-11-18 (S3 C11): the `YubiKey` tab and wizard, card actions and connect flow
+//! (`Press::{Yk, YkManage, YkConnect}`).
 
 use core::fmt;
 
@@ -63,6 +66,7 @@ mod sidecar;
 mod sites;
 mod sol;
 mod wc;
+mod yubikey;
 mod zec;
 
 pub use book::{BookPress, BookRowAction};
@@ -83,6 +87,7 @@ pub use sidecar::SidecarPress;
 pub use sites::SitesPress;
 pub use sol::{SolPress, SolScanAction};
 pub use wc::WcPress;
+pub use yubikey::{YkConnectPress, YkManagePress, YkPress};
 pub use zec::ZecPress;
 
 /// A list row as the screen drew it (positional: resolved against the list rebuilt when the
@@ -201,6 +206,12 @@ pub enum Press {
     Btc(BtcPress),
     /// The EVM screens (S3 C10).
     Evm(EvmPress),
+    /// The `YubiKey` tab and enrolment wizard (S3 C11).
+    Yk(YkPress),
+    /// The `YubiKey` card actions re-slot and clear (S3 C11).
+    YkManage(YkManagePress),
+    /// The `YubiKey` connect flow (S3 C11).
+    YkConnect(YkConnectPress),
     /// Windows-transitional bridge (S3 B2–D3): a control id whose handler is not converted yet.
     #[doc(hidden)]
     Legacy(u16),
@@ -241,6 +252,9 @@ impl Press {
             | Self::Sol(_)
             | Self::Btc(_)
             | Self::Evm(_)
+            | Self::Yk(_)
+            | Self::YkManage(_)
+            | Self::YkConnect(_)
             | Self::Legacy(_) => None,
         }
     }
@@ -279,6 +293,9 @@ impl Press {
             | Self::Sol(_)
             | Self::Btc(_)
             | Self::Evm(_)
+            | Self::Yk(_)
+            | Self::YkManage(_)
+            | Self::YkConnect(_)
             | Self::Legacy(_) => false,
         }
     }

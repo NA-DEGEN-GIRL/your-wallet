@@ -24,6 +24,8 @@ use yw_core::yubikey::plan::{
 };
 use yw_core::yubikey::record::{HwKeyRecord, HwPublicKey, RecordedSlot};
 use yw_core::zec::ZecNetwork;
+use yw_engine::cmd::{Row, YkManagePress};
+use yw_engine::form::EditField;
 
 use super::{YkPurpose, failure_text, failure_text_for};
 use crate::app::{App, Screen, SettingsSection};
@@ -1204,23 +1206,27 @@ impl App {
 
     // ----- commands --------------------------------------------------------------------------
 
-    /// Main-window commands of the card actions; `false` when `id` is not one of them.
+    /// Presses of the card actions (2026-11-18, S3 C11: a `YkManagePress`; before, the control
+    /// id, and `false` for an id that was not one of them).
     #[expect(clippy::too_many_lines, reason = "one arm per control")]
-    pub fn on_yk_manage_command(&mut self, id: u16) -> bool {
+    pub(crate) fn on_yk_manage_press(&mut self, press: YkManagePress) {
         use crate::ui::screens_yubikey::ids;
-        if let Some(row) = ids::reslot_row(id) {
-            self.yk_reslot_open(row);
-            return true;
+        match press {
+            YkManagePress::Reslot(Row(row)) => {
+                self.yk_reslot_open(usize::from(row));
+                return;
+            }
+            YkManagePress::Clear(Row(row)) => {
+                self.yk_clear_open(usize::from(row));
+                return;
+            }
+            YkManagePress::ReslotBackup(Row(row)) => {
+                self.yk_reslot_backup(usize::from(row));
+                return;
+            }
+            _ => {}
         }
-        if let Some(row) = ids::clear_row(id) {
-            self.yk_clear_open(row);
-            return true;
-        }
-        if let Some(row) = ids::reslot_backup_row(id) {
-            self.yk_reslot_backup(row);
-            return true;
-        }
-        if let Some((key, action)) = ids::reslot_action(id) {
+        if let Some((key, action)) = ids::reslot_of(press) {
             if let Some(flow) = self.reslot() {
                 let form = flow.form_mut(key);
                 match action {
@@ -1231,27 +1237,27 @@ impl App {
                 flow.error = None;
             }
             self.refresh();
-            return true;
+            return;
         }
-        if let Some(preset) = ids::preset(id) {
+        if let Some(preset) = ids::preset_of(press) {
             if let Some(flow) = self.reslot() {
                 flow.apply_preset(preset);
                 flow.error = None;
             }
             self.refresh();
-            return true;
+            return;
         }
-        match id {
-            ids::RESLOT_ZEC_MAIN | ids::RESLOT_ZEC_TEST => {
+        match press {
+            YkManagePress::ZecMain | YkManagePress::ZecTest => {
                 if let Some(flow) = self.reslot() {
-                    flow.zec_network = if id == ids::RESLOT_ZEC_MAIN {
+                    flow.zec_network = if press == YkManagePress::ZecMain {
                         ZecNetwork::Mainnet
                     } else {
                         ZecNetwork::Testnet
                     };
                 }
             }
-            ids::RESLOT_ADVANCED => {
+            YkManagePress::Advanced => {
                 if let Some(flow) = self.reslot() {
                     flow.advanced = !flow.advanced;
                     if !flow.advanced {
@@ -1264,37 +1270,37 @@ impl App {
                     }
                 }
             }
-            ids::RESLOT_SHARED_ACK => {
+            YkManagePress::SharedAck => {
                 if let Some(flow) = self.reslot() {
                     flow.shared_ack = !flow.shared_ack;
                     flow.error = None;
                 }
             }
-            ids::RESLOT_REMOVED_ACK => {
+            YkManagePress::RemovedAck => {
                 if let Some(flow) = self.reslot() {
                     flow.removed_ack = !flow.removed_ack;
                 }
             }
-            ids::RESLOT_LOSS_ACK => {
+            YkManagePress::LossAck => {
                 if let Some(flow) = self.reslot() {
                     flow.loss_ack = !flow.loss_ack;
                 }
             }
-            ids::RESLOT_SAME_ACK => {
+            YkManagePress::SameAck => {
                 if let Some(flow) = self.reslot() {
                     flow.same_ack = !flow.same_ack;
                 }
             }
-            ids::CLEAR_LOSS_ACK => {
+            YkManagePress::ClearLossAck => {
                 if let Some(flow) = self.clear_flow() {
                     flow.loss_ack = !flow.loss_ack;
                 }
             }
-            ids::RESLOT_NEXT => {
+            YkManagePress::Next => {
                 self.yk_reslot_next();
-                return true;
+                return;
             }
-            ids::RESLOT_BACK => {
+            YkManagePress::Back => {
                 if let Some(flow) = self.reslot() {
                     flow.step = ReslotStep::Choose;
                     flow.preview = None;
@@ -1302,8 +1308,8 @@ impl App {
                     flow.error = None;
                 }
             }
-            ids::RESLOT_IMPORT | ids::RESLOT_RETRY => {
-                if id == ids::RESLOT_RETRY
+            YkManagePress::Import | YkManagePress::Retry => {
+                if press == YkManagePress::Retry
                     && let Some(flow) = self.reslot()
                 {
                     flow.step = ReslotStep::Confirm;
@@ -1313,7 +1319,7 @@ impl App {
             }
             // A re-slot under the factory admin PIN leaves the card on factory PINs: `완료`
             // asks once (2026-11-10).
-            ids::MANAGE_DONE
+            YkManagePress::Done
                 if self
                     .card
                     .manage
@@ -1328,13 +1334,13 @@ impl App {
                     }) =>
             {
                 self.set_screen(Screen::Confirm(crate::app::Confirm::YkPinLater));
-                return true;
+                return;
             }
-            ids::MANAGE_CANCEL | ids::MANAGE_DONE => {
+            YkManagePress::Cancel | YkManagePress::Done => {
                 self.yk_manage_close();
-                return true;
+                return;
             }
-            ids::RESLOT_PIN_NOW => {
+            YkManagePress::PinNow => {
                 // That card's "PIN 설정" card in the list (the held words are wiped).
                 let serial = match self.card.manage.as_ref() {
                     Some(YkManage::Reslot(flow)) => Some(flow.serial),
@@ -1343,11 +1349,11 @@ impl App {
                 self.yk_manage_close();
                 self.card.pin_serial = serial;
                 self.refresh();
-                return true;
+                return;
             }
-            ids::CLEAR_PGP_TOGGLE | ids::CLEAR_PIV_TOGGLE => {
+            YkManagePress::ClearPgpToggle | YkManagePress::ClearPivToggle => {
                 if let Some(flow) = self.clear_flow() {
-                    let target = if id == ids::CLEAR_PGP_TOGGLE {
+                    let target = if press == YkManagePress::ClearPgpToggle {
                         &mut flow.openpgp
                     } else {
                         &mut flow.piv
@@ -1358,86 +1364,98 @@ impl App {
                     };
                 }
             }
-            ids::CLEAR_PGP_OURS | ids::CLEAR_PGP_RESET => {
+            YkManagePress::ClearPgpOurs | YkManagePress::ClearPgpReset => {
                 if let Some(flow) = self.clear_flow()
                     && flow.openpgp.is_some()
                 {
-                    flow.openpgp = Some(if id == ids::CLEAR_PGP_OURS {
+                    flow.openpgp = Some(if press == YkManagePress::ClearPgpOurs {
                         ClearMethod::OurSlots
                     } else {
                         ClearMethod::Reset
                     });
                 }
             }
-            ids::CLEAR_PIV_OURS | ids::CLEAR_PIV_RESET => {
+            YkManagePress::ClearPivOurs | YkManagePress::ClearPivReset => {
                 if let Some(flow) = self.clear_flow()
                     && flow.piv.is_some()
                 {
-                    flow.piv = Some(if id == ids::CLEAR_PIV_OURS {
+                    flow.piv = Some(if press == YkManagePress::ClearPivOurs {
                         ClearMethod::OurSlots
                     } else {
                         ClearMethod::Reset
                     });
                 }
             }
-            ids::CLEAR_RUN => {
+            YkManagePress::ClearRun => {
                 self.yk_clear_run();
-                return true;
+                return;
             }
-            ids::CLEAR_HOW => {
+            YkManagePress::ClearHow => {
                 if let Some(flow) = self.clear_flow() {
                     flow.how_open = !flow.how_open;
                 }
             }
-            _ => return false,
+            // The rows, slot radios and presets ran above.
+            YkManagePress::Reslot(_)
+            | YkManagePress::Clear(_)
+            | YkManagePress::ReslotBackup(_)
+            | YkManagePress::ReslotEvm(_)
+            | YkManagePress::ReslotBtc(_)
+            | YkManagePress::ReslotZec(_)
+            | YkManagePress::ReslotShared(_)
+            | YkManagePress::ReslotScript(..)
+            | YkManagePress::PresetEvmBtc
+            | YkManagePress::PresetEvmZec
+            | YkManagePress::PresetBtcZec
+            | YkManagePress::PresetEvmEvm
+            | YkManagePress::PresetCustom => return,
         }
         self.refresh();
-        true
     }
 
-    /// `EN_CHANGE` of a card-action edit; `false` when `id` is not one of them.
-    pub fn on_yk_manage_edit_change(&mut self, id: u16) -> bool {
-        use crate::ui::screens_yubikey::ids;
+    /// `EN_CHANGE` of a card-action edit (2026-11-18, S3 C11: the field and its text from
+    /// `Cmd::Edit`; before, the control id and a read of the edit here, cap 16 =
+    /// `EditField::cap`); `false` when `field` is not one of them.
+    pub(crate) fn on_yk_manage_edit(&mut self, field: EditField, text: &str) -> bool {
         if ![
-            ids::RESLOT_SIG_INDEX_EDIT,
-            ids::RESLOT_AUT_INDEX_EDIT,
-            ids::CLEAR_CONFIRM_EDIT,
-            ids::RESLOT_LOSS_EDIT,
-            ids::CLEAR_LOSS_EDIT,
+            EditField::YkReslotSigIndex,
+            EditField::YkReslotAutIndex,
+            EditField::YkClearConfirm,
+            EditField::YkReslotLoss,
+            EditField::YkClearLoss,
         ]
-        .contains(&id)
+        .contains(&field)
         {
             return false;
         }
-        let text = self.controls.text(id, 16).unwrap_or_default();
-        self.yk_manage_set_text(id, text);
+        self.yk_manage_set_text(field, text.to_owned());
         true
     }
 
-    /// Stores the text of a card-action edit (also the tests' way to type).
-    pub fn yk_manage_set_text(&mut self, id: u16, text: String) {
-        use crate::ui::screens_yubikey::ids;
-        match id {
-            ids::CLEAR_CONFIRM_EDIT => {
+    /// Stores the text of a card-action edit (also the tests' way to type; 2026-11-18, S3 C11:
+    /// keyed by the field, before by its control id).
+    pub fn yk_manage_set_text(&mut self, field: EditField, text: String) {
+        match field {
+            EditField::YkClearConfirm => {
                 // No repaint while typing: `비우기` checks the word when pressed.
                 if let Some(flow) = self.clear_flow() {
                     flow.typed = text;
                 }
             }
-            ids::CLEAR_LOSS_EDIT => {
+            EditField::YkClearLoss => {
                 if let Some(flow) = self.clear_flow() {
                     flow.loss_typed = text;
                 }
             }
-            ids::RESLOT_LOSS_EDIT => {
+            EditField::YkReslotLoss => {
                 // Checked when `YubiKey에 넣기` is pressed.
                 if let Some(flow) = self.reslot() {
                     flow.loss_typed = text;
                 }
             }
-            ids::RESLOT_SIG_INDEX_EDIT | ids::RESLOT_AUT_INDEX_EDIT => {
+            EditField::YkReslotSigIndex | EditField::YkReslotAutIndex => {
                 if let Some(flow) = self.reslot() {
-                    let key = if id == ids::RESLOT_SIG_INDEX_EDIT {
+                    let key = if field == EditField::YkReslotSigIndex {
                         PgpKey::Sig
                     } else {
                         PgpKey::Aut
