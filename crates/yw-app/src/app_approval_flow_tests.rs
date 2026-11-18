@@ -1902,3 +1902,8 @@ fn the_flow_golden_names_only_known_scenarios() {
     let table: Vec<&str> = SCENARIOS.iter().map(|(name, _)| *name).collect();
     assert_eq!(order, table, "every scenario, in table order");
 }
+
+/// The lock, revoke, cancel, card-step and grant re-check scenarios of a shown approval
+/// (2026-11-18, S4 A6): `s4_flow/lifecycle.txt`, on this module's recorder and drivers.
+#[path = "app_approval_lifecycle_tests.rs"]
+mod lifecycle;

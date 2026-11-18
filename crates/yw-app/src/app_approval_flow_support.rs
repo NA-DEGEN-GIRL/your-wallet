@@ -469,6 +469,11 @@ impl Fixture {
         self.app.borrow_mut()
     }
 
+    /// The fixture's own temp folder (the App's data folder; removed when it drops).
+    pub(crate) fn dir(&self) -> &std::path::Path {
+        &self.dir
+    }
+
     /// The RPC jobs sent since the last call.
     pub(crate) fn rpc_jobs(&self) -> Vec<RpcJob> {
         self.rpc.try_iter().collect()

@@ -1706,6 +1706,20 @@ impl App {
         }
     }
 
+    /// Tests (2026-11-18, S4 A6): the main window's own message handler, so the approval
+    /// lifecycle scenarios enter a lock, the shutdown, the main timer and the event drain exactly
+    /// as the window does (`app_approval::flow_tests::lifecycle`).
+    #[cfg(test)]
+    pub(crate) fn test_on_main(&mut self, window: &Window, msg: &Msg) -> Reply {
+        self.on_main(window, msg)
+    }
+
+    /// Tests (2026-11-18, S4 A6): the main timer's message, through [`Self::test_on_main`].
+    #[cfg(test)]
+    pub(crate) fn test_main_timer(&mut self, window: &Window) -> Reply {
+        self.on_main(window, &Msg::Timer(MAIN_TIMER_ID))
+    }
+
     fn on_system(&mut self, action: SystemAction) -> Reply {
         match action {
             SystemAction::Lock(reason) => {
