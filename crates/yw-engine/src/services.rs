@@ -5,10 +5,12 @@
 //!
 //! [`Services`] is a bundle of factories, not an OS abstraction: nothing here opens a session or
 //! a socket by itself. The LLM factory runs only when the `yw-llm` worker starts (on its thread)
-//! or when the user presses the connection test, so with the feature off no transport is ever
-//! made (D21); the `WalletConnect` parts are asked for only when the relay worker starts (after
-//! an unlock with a project id). Windows: yw-app `app::windows_services` (`WinHTTP` for the LLM,
-//! `WsConnector` + `WinHTTP` + CNG P-256 for `WalletConnect`, user agent word `"windows"`).
+//! or when the user presses the connection test (on its thread), so with the feature off no
+//! worker makes a transport; only an explicit connection-test press does, with the fixed sample
+//! and no user data (spec/06 §2.2, D21). The `WalletConnect` parts are asked for only when the
+//! relay worker starts (after an unlock with a project id). Windows: yw-app
+//! `app::windows_services` (`WinHTTP` for the LLM, `WsConnector` + `WinHTTP` + CNG P-256 for
+//! `WalletConnect`, user agent word `"windows"`).
 //!
 //! `Debug` of [`Services`] prints which parts are present and the platform word only.
 //!
@@ -28,7 +30,8 @@ use crate::walletconnect::worker::RelayConnector;
 
 /// Creates the LLM transport for an endpoint (`None`: no transport; every request then fails
 /// with `ExplainError::Network`). Reusable: the worker start and the connection test both call
-/// it, each time it is needed and never while the feature is off (D21).
+/// it, each time it is needed. With the feature off no worker calls it; only an explicit
+/// connection-test press does (fixed sample, no user data; spec/06 §2.2, D21).
 pub type LlmFactory = Arc<dyn Fn(&EndpointUrl) -> Option<Box<dyn LlmTransport>> + Send + Sync>;
 
 /// The platform parts of the `WalletConnect` relay worker (spec/13 §4, §7), asked for once per

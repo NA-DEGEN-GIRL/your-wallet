@@ -2151,15 +2151,18 @@ fn wait_for_calls(calls: &std::sync::atomic::AtomicUsize, want: usize) -> usize 
 }
 
 /// S4 P2 (spec/06 §2.2, §9, D21): the LLM transport is made only by the injected
-/// `Services::llm`, and never while the feature is off. Off, on before the check after unlock, and
-/// a connection test without a usable configuration never call it; a worker start calls it once
-/// (on the `yw-llm` thread) and a connection test once (on its own thread). The counting factory
-/// returns no transport, so nothing is sent anywhere and the test answers `Network`.
+/// `Services::llm`, and never by a worker while the feature is off. Off, on before the check after
+/// unlock, and a connection test without a usable configuration never call it; a worker start
+/// calls it once (on the `yw-llm` thread) and a connection-test press once (on its own thread;
+/// spec/06 §2.2 allows the test while the feature is off, with the fixed sample). The counting
+/// factory returns no transport, so nothing is sent anywhere and the test answers `Network`.
+/// The endpoint is loopback port 9 (2026-11-20 P2 review: was `LLM_A`, an internet host), so a
+/// build that stopped using `Services` fails here without leaving the machine.
 #[test]
-fn the_llm_transport_comes_only_from_the_injected_services_and_never_while_off() {
+fn the_llm_transport_comes_only_from_the_injected_services_and_never_by_a_worker_while_off() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    let (mut app, dir) = llm_app("llm-services", LLM_A);
+    let (mut app, dir) = llm_app("llm-services", "http://127.0.0.1:9/v1/chat/completions");
     let calls = Arc::new(AtomicUsize::new(0));
     let counted = Arc::clone(&calls);
     app.services.llm = Arc::new(move |_endpoint| {
@@ -2178,7 +2181,11 @@ fn the_llm_transport_comes_only_from_the_injected_services_and_never_while_off()
     app.llm_reconfigure();
     assert!(!app.llm_running());
     std::thread::sleep(std::time::Duration::from_millis(50));
-    assert_eq!(calls.load(Ordering::SeqCst), 0, "no transport while off");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "no worker transport while off"
+    );
 
     // On and checked: the worker starts and makes its transport once, on its thread.
     app.guard.verified = true;

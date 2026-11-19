@@ -4,8 +4,9 @@
 //! `explain::WinHttpTransport`), so `explain` names only the [`LlmTransport`] seam.
 //! [`llm_factory`] is the app's `Services::llm` (2026-11-20, S4 P2; before, `app_llm` handed
 //! [`factory`] to `ExplainService::start` and built [`WinHttpTransport`] for the connection test
-//! itself): it runs on the `yw-llm` worker when the service starts, or for the connection test,
-//! so with the feature off no session is opened (D21).
+//! itself): it runs on the `yw-llm` worker when the service starts, or on the connection-test
+//! thread when that test is pressed, so with the feature off no worker opens a session; only an
+//! explicit connection-test press does (fixed sample, no user data; spec/06 §2.2, D21).
 
 use std::sync::Arc;
 

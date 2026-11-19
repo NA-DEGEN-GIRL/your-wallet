@@ -838,8 +838,8 @@ mod tests {
     }
 
     /// S4 P2 (spec/13 §4, §7; spec/15 §11.2): the relay worker starts from the injected
-    /// `Services` — the Verify client, the connector and the P-256 check are asked for once per
-    /// start, in that order of use, and never again while the worker runs; without
+    /// `Services` — the Verify client, the connector and the P-256 check are each asked for once
+    /// per start (counts only, not their order) and never again while the worker runs; without
     /// `WalletConnect` parts no worker starts. No socket, HTTP session or CNG call: the counting
     /// parts open nothing and no `Configure` is sent, so the worker never connects.
     #[test]
