@@ -28,7 +28,11 @@
 //! pin one rejection and the queued request shown next (only the `l1_*` lines changed). Same day
 //! (F1 review): the key and mouse guards of F1 are pinned too (`l1_press_past_deadline_*`: Esc,
 //! Enter, Space, Tab and a `MouseDown` on `거부` past the first window's deadline), and the
-//! `l1_close_*` block gained a `shown` fact (the request shown after the close box). Run
+//! `l1_close_*` block gained a `shown` fact (the request shown after the close box). 2026-11-19
+//! (S4 F2, owner decision O-5): L-2 is fixed; only the `l2_*` lines changed: the two scenarios
+//! of A4 now pin the window `Pending` again after the chain change and a too-soon click that
+//! stores nothing, and five new ones pin `거부` by Enter and by mouse, Escape, the window's own
+//! expiry and a new armed click that stores the redrawn chain. Run
 //! (`#[ignore]`, gate step `s4fl`):
 //! `cargo test -p yw-app --lib --locked --offline -- --ignored --test-threads=1 app_approval::flow_tests`.
 //! Regenerate for review (PowerShell): `$env:YW_S4_FLOW_OUT='<folder>'; cargo test -p yw-app
@@ -1679,9 +1683,16 @@ fn connect_window(fx: &Fixture, outlet: &Outlet, rec: &mut Rec<'_>) {
 }
 
 /// L-2 (plan §0.1): the origin's chain changes between the drawing and the approval of an EVM
-/// connect window (L4(c)); afterwards `거부`, Escape and the window's own expiry are tried, then
-/// the close box (`main == false`) or the main timer's queue expiry (`main == true`).
-fn l2_connect_chain_change(main: bool, name: &'static str) -> Vec<String> {
+/// connect window (L4(c)); the click that finds the change redraws the window with the new chain
+/// and stores nothing. Then `end` follows. 2026-11-19 (S4 F2, owner decision O-5): the click
+/// starts a fresh interaction, so the window is `Pending` again with the arm delay restarted at
+/// the click; a click 200 ms later (`click-too-soon`, every variant) stores nothing, and then:
+/// `close-box` and `main-tick` (the two ends that worked before F2 too), `enter-on-reject`,
+/// `mouse-reject`, `escape` and `window-tick` (dead before F2: the interaction stayed `Approved`)
+/// end it as rejected or expired, and `approve` (a new click 1 s after the last press) stores the
+/// redrawn chain. Before F2 the window stayed `Approved` after the change and every click, `거부`,
+/// Escape and the window tick did nothing.
+fn l2_connect_chain_change(end: &'static str, name: &'static str) -> Vec<String> {
     let fx = fixture(name);
     let spare = spare_window();
     let outlet = dapp(&fx, false, false);
@@ -1692,35 +1703,74 @@ fn l2_connect_chain_change(main: bool, name: &'static str) -> Vec<String> {
             .core
             .set_origin_chain(&origin(), yw_core::evm::chain::ETHEREUM_MAINNET);
     }
+    let grants = |fx: &Fixture| {
+        fx.app.borrow().browser.as_ref().map_or_else(
+            || "-".to_owned(),
+            |browser| {
+                let sites = browser.core.grants();
+                let chains = names(sites.iter().map(|site| site.chain_id.to_string()));
+                let accounts = names(sites.iter().map(|site| site.accounts.len().to_string()));
+                format!("grants={} chain={chains} accounts={accounts}", sites.len())
+            },
+        )
+    };
     at(&fx, 1_500);
     click(&fx);
     rec.snap("click-chain-changed");
-    let grants = fx
-        .app
-        .borrow()
-        .browser
-        .as_ref()
-        .map_or(0, |browser| browser.core.grants().len());
-    rec.fact("grants", &format!("grants={grants}"));
-    at(&fx, 3_000);
+    rec.fact("grants", &grants(&fx));
+    at(&fx, 1_700);
     click(&fx);
-    rec.snap("click-again");
-    at(&fx, 4_000);
-    key(&fx, VK_RETURN, false);
-    rec.snap("enter-on-reject");
-    at(&fx, 5_000);
-    key(&fx, VK_ESCAPE, false);
-    rec.snap("escape");
-    at(&fx, 121_000);
-    ev(&fx, InteractionEvent::Tick);
-    rec.snap("window-tick-past-deadline");
-    if main {
-        fx.app().tick_approval(START_MS + 121_000);
-        rec.snap("main-tick");
-    } else {
-        let reply = fx.app().on_approval_msg(&spare, &Msg::Close);
-        rec.snap("close-box");
-        rec.fact("reply", &format!("close reply={reply:?}"));
+    rec.snap("click-too-soon");
+    rec.fact("grants", &grants(&fx));
+    match end {
+        "close-box" => {
+            at(&fx, 2_000);
+            let reply = fx.app().on_approval_msg(&spare, &Msg::Close);
+            rec.snap(end);
+            rec.fact("reply", &format!("close reply={reply:?}"));
+        }
+        "main-tick" => {
+            at(&fx, 121_000);
+            fx.app().tick_approval(START_MS + 121_000);
+            rec.snap(end);
+        }
+        "enter-on-reject" => {
+            at(&fx, 2_000);
+            key(&fx, VK_RETURN, false);
+            rec.snap(end);
+        }
+        "mouse-reject" => {
+            // The buttons as painted (the hidden host never paints): `거부` at (460, 640, 120, 40).
+            if let Some(ui) = fx.app().evm.window.as_mut() {
+                ui.bottom.reject = yw_win::ui::Rect::new(460, 640, 120, 40);
+                ui.bottom.approve = yw_win::ui::Rect::new(600, 640, 120, 40);
+            }
+            at(&fx, 2_000);
+            let down = fx
+                .app()
+                .on_approval_msg(&spare, &Msg::MouseDown { x: 520, y: 660 });
+            let up = fx
+                .app()
+                .on_approval_msg(&spare, &Msg::MouseUp { x: 520, y: 660 });
+            rec.snap(end);
+            rec.fact("reply", &format!("down={down:?} up={up:?}"));
+        }
+        "escape" => {
+            at(&fx, 2_000);
+            key(&fx, VK_ESCAPE, false);
+            rec.snap(end);
+        }
+        "window-tick" => {
+            at(&fx, 121_000);
+            ev(&fx, InteractionEvent::Tick);
+            rec.snap(end);
+        }
+        _ => {
+            at(&fx, 2_700);
+            click(&fx);
+            rec.snap("click-armed");
+            rec.fact("grants", &grants(&fx));
+        }
     }
     rec.lines
 }
@@ -1793,7 +1843,7 @@ fn connect_toggle_layout() -> Vec<String> {
 type Scenario = fn() -> Vec<String>;
 
 /// Every scenario, in golden order.
-const SCENARIOS: [(&str, Scenario); 44] = [
+const SCENARIOS: [(&str, Scenario); 49] = [
     ("reject_first", reject_first),
     ("repeat_enter_on_reject", repeat_enter_on_reject),
     ("posted_enter_on_approve", posted_enter_on_approve),
@@ -1878,10 +1928,25 @@ const SCENARIOS: [(&str, Scenario); 44] = [
         l1_press_past_deadline("mouse-reject", "l1_press_past_deadline_mouse_reject")
     }),
     ("l2_connect_chain_change_close_box", || {
-        l2_connect_chain_change(false, "l2_connect_chain_change_close_box")
+        l2_connect_chain_change("close-box", "l2_connect_chain_change_close_box")
     }),
     ("l2_connect_chain_change_main_tick", || {
-        l2_connect_chain_change(true, "l2_connect_chain_change_main_tick")
+        l2_connect_chain_change("main-tick", "l2_connect_chain_change_main_tick")
+    }),
+    ("l2_connect_chain_change_enter_on_reject", || {
+        l2_connect_chain_change("enter-on-reject", "l2_connect_chain_change_enter_on_reject")
+    }),
+    ("l2_connect_chain_change_mouse_reject", || {
+        l2_connect_chain_change("mouse-reject", "l2_connect_chain_change_mouse_reject")
+    }),
+    ("l2_connect_chain_change_escape", || {
+        l2_connect_chain_change("escape", "l2_connect_chain_change_escape")
+    }),
+    ("l2_connect_chain_change_window_tick", || {
+        l2_connect_chain_change("window-tick", "l2_connect_chain_change_window_tick")
+    }),
+    ("l2_connect_chain_change_approve", || {
+        l2_connect_chain_change("approve", "l2_connect_chain_change_approve")
     }),
     ("connect_toggle_layout", connect_toggle_layout),
 ];
@@ -1977,6 +2042,11 @@ scenario_tests! {
     golden_l1_press_past_deadline_mouse_reject => "l1_press_past_deadline_mouse_reject",
     golden_l2_connect_chain_change_close_box => "l2_connect_chain_change_close_box",
     golden_l2_connect_chain_change_main_tick => "l2_connect_chain_change_main_tick",
+    golden_l2_connect_chain_change_enter_on_reject => "l2_connect_chain_change_enter_on_reject",
+    golden_l2_connect_chain_change_mouse_reject => "l2_connect_chain_change_mouse_reject",
+    golden_l2_connect_chain_change_escape => "l2_connect_chain_change_escape",
+    golden_l2_connect_chain_change_window_tick => "l2_connect_chain_change_window_tick",
+    golden_l2_connect_chain_change_approve => "l2_connect_chain_change_approve",
     golden_connect_toggle_layout => "connect_toggle_layout",
 }
 

@@ -324,10 +324,10 @@ yw-app/src/app_approval_flow_tests.rs fn shown_request efe7a481661a0a42 mutable
 yw-app/src/app_approval_flow_tests.rs fn press_trace 88018259978c123c mutable
 yw-app/src/app_approval_flow_tests.rs fn l1_press_past_deadline d621751f9b59e969 mutable
 yw-app/src/app_approval_flow_tests.rs fn connect_window f8a7ded3ea046948 mutable
-yw-app/src/app_approval_flow_tests.rs fn l2_connect_chain_change d6a960bffe887870 mutable
+yw-app/src/app_approval_flow_tests.rs fn l2_connect_chain_change 00573dbdf5028e72 mutable
 yw-app/src/app_approval_flow_tests.rs fn connect_toggle_layout 9612affd6dd2029e mutable
 yw-app/src/app_approval_flow_tests.rs type Scenario 58387d5ab13f655b mutable
-yw-app/src/app_approval_flow_tests.rs const SCENARIOS 122ab3d3492e4d03 mutable
+yw-app/src/app_approval_flow_tests.rs const SCENARIOS 7ef5706e7a72d9af mutable
 yw-app/src/app_approval_flow_tests.rs fn first_difference 02fafcf5a4cb6566 fixed
 yw-app/src/app_approval_flow_tests.rs fn run 803de1da394995f6 fixed
 yw-app/src/app_approval_lifecycle_tests.rs const GOLDEN 74bc8a4bc1a11949 fixed

@@ -2526,8 +2526,14 @@ impl App {
             if connect.family == yw_core::policy::Family::Evm {
                 // L4(c): the chain changed since the window was drawn — show the new one and
                 // wait for a new click (re-armed), never store a chain the user did not see.
+                // (2026-11-19, S4 F2, owner decision O-5: the click that found the change left
+                // the interaction `Approved`, so `거부`, Escape and the window's own expiry did
+                // nothing and only the close box or the main timer ended the window (L-2). A fresh
+                // interaction first, then the arm delay: the redrawn chain needs a new armed
+                // click at least 1 s later, as after a re-simulation that asks again (C1).)
                 if self.refresh_connect_chain() {
                     if let Some(ui) = self.evm.window.as_mut() {
+                        let _ = ui.session.restart_interaction(now);
                         ui.session.restart_arm_delay(now);
                     }
                     self.rebuild_view();
