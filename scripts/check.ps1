@@ -184,7 +184,10 @@ $env:YW_FUZZ_RUNS = $null                                             # 직접 -
 # 교차 확인)은 test 단계에서 돈다. 그 전에는 이름이 s4fl이었고 B7에서 없앨 예정이었다. 필터가 아무 시험도 고르지 않으면
 # libtest는 0으로 끝나므로(2026-11-18 A3 검토), 먼저 --list로 필터마다 #[ignore] 시험 수를 세어 최소 수보다 적으면 31로 멈춘다.
 # 최소 수는 그 시험을 더하는 커밋(S4 A4·A5·A6)이 올리고 이름을 바꾸는 커밋이 함께 고친다.
-$WinuiMinimum = [ordered]@{ "app_approval::flow_support" = 3; "app_approval::flow_tests" = 66; "app_approval::input_tests" = 9 }
+# 2026-11-20(S4 B7 검토): 최소 수는 실제 수다 — flow_tests 80은 창 있는 시험 79(단계 A의 66에 F1 검토·F2·B5 검토·B6이 더한
+# 13)와 창 없는 print_headless 하나. 그 전에는 단계 A 끝의 66이라 창 있는 시험 14개가 빠져도 31이 나지 않았다. 시험을 더하거나
+# 빼는 커밋이 이 수를 함께 고친다.
+$WinuiMinimum = [ordered]@{ "app_approval::flow_support" = 3; "app_approval::flow_tests" = 80; "app_approval::input_tests" = 9 }
 $winuiArgs = @("test", "-p", "yw-app", "--lib") + $net + $config + @("--", "--ignored")
 if ($Step -in "all", "winui") {
     Write-Host "check: winui (list)"

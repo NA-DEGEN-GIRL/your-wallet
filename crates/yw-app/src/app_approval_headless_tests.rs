@@ -1641,7 +1641,10 @@ fn cancel_while_shown() -> Vec<String> {
     // differs between runs (2026-11-20, S4 B7: found by this module's `effects` column; the
     // windowed line is the same for either order). The App gets them here in request order
     // (`requestId` bytes), so the effects are stable: request 2 (shown) ends, request 3 opens
-    // and ends.
+    // and ends. This sort stands in for the dispatcher's order until the owner decides whether
+    // `close_connection` should cancel in a stable order (2026-11-20, S4 B7 review: spec/15 §18
+    // open question 10). In production, when the shown request is cancelled first, the next
+    // queued request's approval window opens and is closed at once.
     let mut events: Vec<UiEvent> = outlet.events.drain();
     events.sort_by_key(|event| match event {
         UiEvent::Dapp(crate::browser::DappEvent::Cancel(key)) => (0, key.request.0),
@@ -3004,55 +3007,125 @@ fn the_cross_check_drops_only_the_shell() {
     assert_eq!(without_effects(fact), fact);
 }
 
-/// `App::test_on_main_windowless` makes the same calls as the arms of `App::on_main` it stands
-/// for (source check; `app.rs` read only, the `card_pcsc` precedent).
+/// `App::test_on_main_windowless` is the arms of `App::on_main` it stands for (source check;
+/// `app.rs` read only, the `card_pcsc` precedent). 2026-11-20 (S4 B7 review): whole arms, not
+/// snippets. Before, each snippet only had to appear somewhere in `on_main` and in the mirror, so
+/// the check stayed green if `on_main` gained a call in its `Msg::App` arm before `match *msg` or
+/// between the system check and the `match`, and the mirror's order was not checked. Now
+/// `on_main`'s head up to `match msg {`, its `Msg::Timer(MAIN_TIMER_ID)` arm and its `Msg::App` arm
+/// (each from the arm's start to the brace that closes it, comments dropped) are pinned whole, the
+/// mirror is pinned whole, and the mirror's `Msg::App` arm is `on_main`'s with only the messages
+/// that read the main window (`WM_YW_ACTIVATE` and the three foreground-guarded ones) left out. A
+/// change to any of these parts of `on_main` fails here until the mirror is looked at again.
 #[test]
 fn the_windowless_main_entry_mirrors_on_main() {
     let source = std::fs::read_to_string(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app.rs"),
     )
     .unwrap();
+    // The fn's text from its head to its closing brace, without `//` comments, each run of
+    // whitespace one space.
     let body = |head: &str| -> String {
+        assert_eq!(source.matches(head).count(), 1, "{head}");
         let start = source.find(head).expect(head);
         let rest = &source[start..];
         let end = rest.find("\n    }\n").expect("the end of the fn");
-        rest[..end].split_whitespace().collect::<Vec<_>>().join(" ")
+        rest[..end]
+            .lines()
+            .map(|line| line.split_once("//").map_or(line, |(code, _)| code))
+            .flat_map(str::split_whitespace)
+            .collect::<Vec<_>>()
+            .join(" ")
     };
     let on_main = body("    fn on_main(&mut self, window: &Window, msg: &Msg) -> Reply {");
     let mirror = body("    pub(crate) fn test_on_main_windowless(&mut self, msg: &Msg) -> Reply {");
-    for (in_main, in_mirror) in [
-        (
-            "if let Some(action) = system_action(msg) { return self.on_system(action); }",
-            "if let Some(action) = system_action(msg) { return self.on_system(action); }",
-        ),
-        (
-            "Msg::Timer(MAIN_TIMER_ID) => { self.tick(); Reply::Handled(0) }",
-            "Msg::Timer(MAIN_TIMER_ID) => { self.tick(); Reply::Handled(0) }",
-        ),
-        (
-            "WM_YW_EVENTS => self.drain_events(),",
-            "WM_YW_EVENTS => self.drain_events(),",
-        ),
-        (
-            "WM_YW_LOCK_SHORTCUT => self.lock_shortcut(),",
-            "WM_YW_LOCK_SHORTCUT => self.lock_shortcut(),",
-        ),
-        (
-            "_ => {} } // A worker's answer, a shortcut or the window shown again may have made a \
-             // read due. self.reads_due(self.clock.now_ms()); Reply::Handled(0) }",
-            "_ => {} } self.reads_due(self.clock.now_ms()); Reply::Handled(0) }",
-        ),
-    ] {
-        assert!(on_main.contains(in_main), "on_main: {in_main}");
-        assert!(mirror.contains(in_mirror), "mirror: {in_mirror}");
-    }
-    assert!(
-        on_main.starts_with(
-            "fn on_main(&mut self, window: &Window, msg: &Msg) -> Reply { if let Some(action) = \
-             system_action(msg)"
-        ),
-        "the system messages come first"
+
+    let system =
+        "if let Some(action) = system_action(msg) { return self.on_system(action); } match msg {";
+    let timer = "Msg::Timer(MAIN_TIMER_ID) => { self.tick(); Reply::Handled(0) }";
+    let window_arms = [
+        " WM_YW_ACTIVATE => self.activate(),",
+        " WM_YW_TAB_SHORTCUT if window.is_foreground() => self.tab_shortcut(*wparam),",
+        " WM_YW_SHORTCUT if window.is_foreground() => self.shortcut(*wparam),",
+        " WM_YW_NAV_KEY if window.is_foreground() => self.main_nav_key(window, *wparam),",
+    ];
+    let app_in_main = format!(
+        "Msg::App {{ msg, wparam }} => {{ match *msg {{ WM_YW_EVENTS => self.drain_events(),{} \
+         WM_YW_LOCK_SHORTCUT => self.lock_shortcut(),{} _ => {{}} }} \
+         self.reads_due(self.clock.now_ms()); Reply::Handled(0) }}",
+        window_arms[0],
+        window_arms[1..].concat()
     );
+
+    // on_main: the system messages first and nothing between them and the `match`; the two
+    // arms whole; one catch-all, last.
+    assert!(
+        on_main.starts_with(&format!(
+            "fn on_main(&mut self, window: &Window, msg: &Msg) -> Reply {{ {system} "
+        )),
+        "on_main: {on_main}"
+    );
+    assert_eq!(
+        match_arm(&on_main, "Msg::Timer(MAIN_TIMER_ID) =>").as_deref(),
+        Some(timer)
+    );
+    assert_eq!(
+        match_arm(&on_main, "Msg::App {").as_deref(),
+        Some(app_in_main.as_str())
+    );
+    assert_eq!(on_main.matches("_ => Reply::Default,").count(), 1);
+    assert!(
+        on_main.ends_with(" _ => Reply::Default, }"),
+        "on_main: {on_main}"
+    );
+
+    // The mirror, whole: the same head, the same timer arm, the `Msg::App` arm of `on_main`
+    // without the window's messages, then nothing else.
+    let mut app_in_mirror = app_in_main.replacen(
+        "Msg::App { msg, wparam } =>",
+        "Msg::App { msg, .. } if matches!(*msg, WM_YW_EVENTS | WM_YW_LOCK_SHORTCUT) =>",
+        1,
+    );
+    for window_arm in window_arms {
+        assert_eq!(app_in_mirror.matches(window_arm).count(), 1, "{window_arm}");
+        app_in_mirror = app_in_mirror.replacen(window_arm, "", 1);
+    }
+    assert_eq!(
+        match_arm(&mirror, "Msg::App {").as_deref(),
+        Some(app_in_mirror.as_str())
+    );
+    assert_eq!(
+        mirror,
+        format!(
+            "pub(crate) fn test_on_main_windowless(&mut self, msg: &Msg) -> Reply {{ {system} \
+             {timer} {app_in_mirror} _ => Reply::Default, }}"
+        )
+    );
+}
+
+/// The match arm of `text` that starts with `start` (it must be there exactly once): from `start`
+/// to the brace that closes the arm's block.
+fn match_arm(text: &str, start: &str) -> Option<String> {
+    let mut found = text.match_indices(start);
+    let (at, _) = found.next()?;
+    if found.next().is_some() {
+        return None;
+    }
+    let open = at + text[at..].find("=> {")? + "=> ".len();
+    let mut depth = 0_usize;
+    for (offset, c) in text[open..].char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth = depth.checked_sub(1)?;
+                if depth == 0 {
+                    return Some(text[at..=open + offset].to_owned());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// The headless host is installed only by the fixture of this module and leaves no window: a

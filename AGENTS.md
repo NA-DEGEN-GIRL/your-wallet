@@ -89,7 +89,9 @@ ext-test 25 → script-test 26 → privacy 27 → audit-ext 28 → icons 30. On 
   test clock (injected with `App::with_clock` since S4 B1a/B1b, 2026-11-19), the scripted trusted-signal oracle and the input log are `cfg(test)` seams in `app_approval_flow_support.rs`
   (spec/09 §2.2). Never put `fuzz_lite` in the path of such a test. A filter that matches nothing passes in libtest, so the
   step first lists the `#[ignore]` tests per filter and fails 31 below the minimum in `$WinuiMinimum` (2026-11-18 A3 review; `$S4flMinimum` before 2026-11-20);
-  the commit that adds or renames such tests (S4 A4, A5, A6) updates it.
+  the commit that adds, removes or renames such tests (S4 A4, A5, A6) updates it. Since 2026-11-20 (S4 B7 review) the
+  minimums are the real counts: flow_support 3, flow_tests 80 (79 windowed tests plus the windowless `print_headless`),
+  input_tests 9; before, flow_tests stayed at phase A's 66, so 14 windowed tests could go without exit 31.
 - **s4fz** (2026-11-19 S4 F-A review; kept for all of S4) checks that the frozen tests are compiled and run: it
   lists `cargo test --workspace -- --list` and `-- --list --ignored` with the test step's arguments, passes the
   compiled and ignored count of every frozen leaf name (`crates/yw-app/src/app/tests/s4_flow/frozen-tests.txt` and the
