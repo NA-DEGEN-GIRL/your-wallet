@@ -49,12 +49,17 @@
 //! at all: the Windows table gives `None` for it.
 //!
 //! 2026-11-19 (S4 B5): [`Cmd::ApprovalOpened`], the answer to `Effect::Approval(Open)`.
+//!
+//! 2026-11-19 (S4 B6): [`Cmd::Approval`], one input of an approval window (`ApprovalInput`: the
+//! window's `ShownId`, its foreground sample for an interaction event, one signal). Built only by
+//! the platform's input mapper (Windows: `ui::approval_input`); never stored, posted or queued
+//! past the window message it came from.
 
 use core::fmt;
 
 use yw_core::secret::Zeroizing;
 
-use crate::approval::flow::{OpenOutcome, ShownId};
+use crate::approval::flow::{ApprovalInput, OpenOutcome, ShownId};
 use crate::effect::TimerId;
 use crate::form::{EditField, FormSnapshot, PressInput};
 use crate::received::RecvChain;
@@ -136,6 +141,9 @@ pub enum Cmd {
         /// The mark of the copy effect.
         mark: CopyMark,
     },
+    /// One input of an approval window (S4 B6): an input of a window that is not the shown one
+    /// is dropped.
+    Approval(ApprovalInput),
     /// Result of `Effect::Approval(ApprovalEffect::Open)` (S4 B5): the window it was asked for,
     /// whether it was made, and its width class (the wide layout applies) when it was.
     ApprovalOpened {
@@ -169,6 +177,7 @@ impl fmt::Debug for Cmd {
                 .field("ok", ok)
                 .field("mark", mark)
                 .finish(),
+            Self::Approval(input) => formatter.debug_tuple("Approval").field(input).finish(),
             Self::ApprovalOpened {
                 shown,
                 outcome,
@@ -404,6 +413,17 @@ mod tests {
                 }
             ),
             "ApprovalOpened { shown: ShownId(2), outcome: Failed(App009), wide: false }"
+        );
+        assert_eq!(
+            format!(
+                "{:?}",
+                Cmd::Approval(ApprovalInput {
+                    shown: ShownId(4),
+                    foreground: false,
+                    signal: crate::approval::flow::ApprovalSignal::Close,
+                })
+            ),
+            "Approval(ApprovalInput { shown: ShownId(4), foreground: false, signal: Close })"
         );
     }
 }

@@ -10,9 +10,10 @@ use super::{
     APPROVAL_TIMER_ID, BarHits, Facts, Focus, KeyScroll, MA_ACTIVATEANDEAT, Mapped, PanelHit,
     Pressed, SB_ENDSCROLL, ScrollGoal, Step, Surface, Trusted, TrustedSignals, VK_DOWN, VK_END,
     VK_ESCAPE, VK_HOME, VK_NEXT, VK_PRIOR, VK_RETURN, VK_SPACE, VK_TAB, VK_UP, is_release, map_key,
-    map_msg, panel_click, panel_hit, stray_press, tab_order, tab_target, wheel_delta,
+    map_msg, panel_click, panel_hit, stray_press, tab_order, tab_target, wheel_delta, window_input,
 };
 use crate::ui::interaction::InteractionEvent;
+use yw_engine::approval::flow::{ApprovalInput, ApprovalSignal, ShownId};
 
 const OTHER: Step = Step::Event(InteractionEvent::OtherPress);
 const VK_A: u16 = 0x41;
@@ -830,17 +831,25 @@ fn panel_rows() {
         );
     }
     assert_eq!(panel_hit(&[], None, None, 50, 5), PanelHit::Nothing);
-    assert_eq!(panel_click(PanelHit::Account(1)), [Step::ToggleAccount(1)]);
+    // 2026-11-19 (S4 B6, A-13): an account row's toggle carries the revision of the view the
+    // layout was drawn from.
     assert_eq!(
-        panel_click(PanelHit::Ack),
+        panel_click(PanelHit::Account(1), 7),
+        [Step::ToggleAccount {
+            index: 1,
+            view_rev: 7
+        }]
+    );
+    assert_eq!(
+        panel_click(PanelHit::Ack, 7),
         [Step::MoveFocus(Focus::Ack), Step::ToggleAck]
     );
     assert_eq!(
-        panel_click(PanelHit::Raw),
+        panel_click(PanelHit::Raw, 7),
         [Step::MoveFocus(Focus::Raw), Step::ToggleRaw]
     );
     assert_eq!(
-        panel_click(PanelHit::Nothing),
+        panel_click(PanelHit::Nothing, 7),
         [Step::MoveFocus(Focus::Scroll), Step::InvalidateApproval]
     );
 }
@@ -1051,4 +1060,36 @@ fn stray_press_and_release_events() {
     ] {
         assert!(!is_release(event), "{event:?}");
     }
+}
+
+/// `window_input` (2026-11-19, S4 B6, critique A-6, A-12): the input carries the id of the window
+/// that got the message, the sample it was given and the signal, unchanged.
+#[test]
+fn window_input_carries_the_window_its_sample_and_the_signal() {
+    assert_eq!(
+        window_input(ShownId(9), true, ApprovalSignal::Close),
+        ApprovalInput {
+            shown: ShownId(9),
+            foreground: true,
+            signal: ApprovalSignal::Close,
+        }
+    );
+    assert_eq!(
+        window_input(
+            ShownId(2),
+            false,
+            ApprovalSignal::ToggleAccount {
+                index: 1,
+                view_rev: 4
+            }
+        ),
+        ApprovalInput {
+            shown: ShownId(2),
+            foreground: false,
+            signal: ApprovalSignal::ToggleAccount {
+                index: 1,
+                view_rev: 4
+            },
+        }
+    );
 }

@@ -818,7 +818,10 @@ const HELPERS: &str = include_str!("s4_flow/frozen-helpers.txt");
 /// 2026-11-19 (S4 B1b): 641 → 637, the `mutable` lines `fn set_clock`, `fn installed_clock`,
 /// `fn clock_now_ms` and `fn clock_now_unix_ms` of `app_approval_flow_support.rs` are gone (the
 /// `TEST_CLOCK` seam: every App time read is an injected-clock read).
-const HELPER_LINES: usize = 637;
+/// 2026-11-19 (S4 B6): 637 → 640, the `mutable` lines `fn gate_state`,
+/// `fn stale_window_input_is_dropped` and `fn connect_toggle_stale_layout` of
+/// `app_approval_flow_tests.rs` (the critique A-12 and A-13 scenarios).
+const HELPER_LINES: usize = 640;
 
 /// The planned S4 commits (plan §5 with critique round 2), the only words of a commit-list rule.
 const PLANNED: [&str; 54] = [

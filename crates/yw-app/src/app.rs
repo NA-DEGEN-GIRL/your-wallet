@@ -3999,6 +3999,8 @@ impl App {
             Cmd::Timer(TimerId::SendCheck) => self.on_send_timer(),
             // A plain copy's result (`Effect::CopyText`, S3 B4).
             Cmd::CopyDone { ok, mark } => self.copy_done(ok, mark),
+            // One input of an approval window (S4 B6): dropped unless it is the shown window's.
+            Cmd::Approval(input) => self.on_approval_input(input),
             // The approval window's open (`Effect::Approval(Open)`, S4 B5).
             Cmd::ApprovalOpened {
                 shown,

@@ -22,7 +22,15 @@
 //! the fields were `pub`, the type derived `Default` and `Trusted::event` was `pub`: any yw-app
 //! code could have built `ApproveActivated { physical: true }` without naming a scanned
 //! identifier.
+//!
+//! 2026-11-19 (S4 B6, plan §3.1, critique A-6, A-12, A-13): what a step hands to the approval flow
+//! is one `yw_engine::approval::flow::ApprovalInput`, built only here ([`window_input`]: the
+//! `ShownId` of the window that got the message, its foreground sample for an interaction event,
+//! one signal) and sent as `Cmd::Approval`. A connect account row's step carries the revision of
+//! the view its layout was drawn from ([`Step::ToggleAccount`]); the flow drops a toggle drawn
+//! from an older view.
 
+use yw_engine::approval::flow::{ApprovalInput, ApprovalSignal, ShownId};
 use yw_win::ui::{Msg, Rect, Reply, Window};
 
 use crate::ui::interaction::InteractionEvent;
@@ -140,7 +148,8 @@ impl TrustedSignals {
         self.shift_down
     }
 
-    /// The gate's foreground sample, taken in `interaction()` before every event.
+    /// The gate's foreground sample, taken before every event (2026-11-19, S4 B6: by
+    /// `App::window_event` for the window that got the message; was `interaction()`).
     #[must_use]
     pub fn sample_foreground(window: &Window) -> Self {
         Self {
@@ -340,6 +349,24 @@ impl Trusted {
     }
 }
 
+/// One input of the approval window `shown` (2026-11-19, S4 B6, critique A-6): the only place in
+/// yw-app that builds an [`ApprovalInput`] (source check S8). `foreground` is that window's gate
+/// sample ([`TrustedSignals::sample_foreground`]) for an interaction event (`Event`, `Close`),
+/// `false` for the other signals, which take none. An approving event in `signal` comes only from
+/// [`Trusted::deliver`].
+#[must_use]
+pub const fn window_input(
+    shown: ShownId,
+    foreground: bool,
+    signal: ApprovalSignal,
+) -> ApprovalInput {
+    ApprovalInput {
+        shown,
+        foreground,
+        signal,
+    }
+}
+
 /// Whether `event` lets go of a hold (pointer or Space release): a High-risk hold released before
 /// 2 s marks the status line (`early_release`).
 #[must_use]
@@ -494,10 +521,11 @@ pub fn panel_hit(
 }
 
 /// The steps of a panel click on `hit` (after its press counted and A01 took the focus).
+/// `view_rev`: the revision of the view the hit layout was drawn from (2026-11-19, S4 B6, A-13).
 #[must_use]
-pub fn panel_click(hit: PanelHit) -> Vec<Step> {
+pub fn panel_click(hit: PanelHit, view_rev: u64) -> Vec<Step> {
     match hit {
-        PanelHit::Account(index) => vec![Step::ToggleAccount(index)],
+        PanelHit::Account(index) => vec![Step::ToggleAccount { index, view_rev }],
         PanelHit::Ack => vec![Step::MoveFocus(Focus::Ack), Step::ToggleAck],
         PanelHit::Raw => vec![Step::MoveFocus(Focus::Raw), Step::ToggleRaw],
         PanelHit::Nothing => vec![Step::MoveFocus(Focus::Scroll), Step::InvalidateApproval],
@@ -505,28 +533,38 @@ pub fn panel_click(hit: PanelHit) -> Vec<Step> {
 }
 
 /// One step of a mapped message. The shell runs the steps in order, inside the `App` borrow of
-/// the message; a guard step that fails ends the message with its reply.
+/// the message; a guard step that fails ends the message with its reply. 2026-11-19 (S4 B6): the
+/// steps that reach the approval flow (an event, activation, the close box, a toggle, a retry, a
+/// size change) go as one `Cmd::Approval` input of the window that got the message
+/// ([`window_input`]); the flow drops it when that window is not the shown one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Step {
-    /// `interaction(event)`: an event the message decides by itself.
+    /// An event the message decides by itself (`ApprovalSignal::Event`, with the window's
+    /// foreground sample).
     Event(InteractionEvent),
     /// Sample what `Trusted` reads now and deliver its event ([`Trusted::deliver`]; 2026-11-19,
     /// S4 B2 review: one call, was `TrustedSignals::sample_for` then `Trusted::event`).
     Sampled(Trusted),
     /// `WM_ACTIVATEAPP(TRUE)`: restart the arm delay unconditionally, then foreground `true` (not
-    /// an interaction event).
+    /// an interaction event; `ApprovalSignal::Activated`).
     Activated,
-    /// The close box: `RejectActivated`, then finish `Rejected` only while the same request is
-    /// still shown (S4 F1, L-1).
+    /// The close box: `RejectActivated`, then finish `Rejected` only while the window that got
+    /// it is still the shown one (S4 F1, L-1; 2026-11-19, S4 B6: `ApprovalSignal::Close`, the
+    /// window's id checked by the flow, was the shown queue item).
     Close,
     ToggleAck,
     ToggleRaw,
-    /// A connect account row (its index in the offered list).
-    ToggleAccount(usize),
+    /// A connect account row: its index in the offered list and the revision of the view the
+    /// layout was drawn from (2026-11-19, S4 B6, A-13: was the index only).
+    ToggleAccount {
+        index: usize,
+        view_rev: u64,
+    },
     Retry,
     AiRetry,
-    /// Go on only while the window shown when the message arrived is still the shown one and
-    /// is open (S4 F1, L-1); else end with this reply.
+    /// Go on only while the window that got the message is the shown one (S4 F1, L-1;
+    /// 2026-11-19, S4 B6: its `ShownId`, was the queue item shown when the message arrived);
+    /// else end with this reply.
     SameWindow(Reply),
     /// Go on only while some approval window is open; else end with this reply.
     AnyWindow(Reply),
@@ -571,7 +609,8 @@ pub enum Step {
     AiExpand,
     /// Paint the window that got the message.
     Paint,
-    /// A01's size or DPI changed: lay out and rebuild the view.
+    /// A01's size or DPI changed: lay out and rebuild the view (2026-11-19, S4 B6: the width
+    /// class goes to the flow as `ApprovalSignal::Resized`).
     Relayout,
     /// The rest of the 50 ms timer after its `Tick`: the AI panel tick, then the
     /// simulating-countdown rebuild.

@@ -12,7 +12,11 @@
 //! operations are [`ApprovalEffect`]s inside `Effect::Approval` (applied at once by the Windows
 //! executor), the open is answered with `Cmd::ApprovalOpened` carrying its [`OpenOutcome`] and the
 //! width class, and every flow carries its [`ShownId`]; [`ApprovalInput`] and [`ApprovalSignal`]
-//! wait for B6.
+//! wait for B6. 2026-11-19 (S4 B6): the window sends its inputs as `Cmd::Approval`
+//! ([`ApprovalInput`]): the [`ShownId`] of the window that got the message (captured when that
+//! window was made), its foreground sample for an interaction event and one [`ApprovalSignal`];
+//! the flow drops an input of a window that is not the shown one. [`ApprovalEffect::Redraw`] is
+//! the acknowledgement checkbox's repaint.
 
 use core::fmt;
 
@@ -39,7 +43,9 @@ pub struct ApprovalInput {
     /// The window that received the message (an input for another window is dropped).
     pub shown: ShownId,
     /// The window's foreground sample taken before the signal; applied to the session for
-    /// [`ApprovalSignal::Event`] only.
+    /// [`ApprovalSignal::Event`] and the close box's `RejectActivated` ([`ApprovalSignal::Close`])
+    /// only, the inputs that are interaction events (2026-11-19, S4 B6: `false`, never read, for
+    /// the others, which take no sample).
     pub foreground: bool,
     /// What happened.
     pub signal: ApprovalSignal,
@@ -111,6 +117,12 @@ pub enum ApprovalEffect {
     },
     /// Only the bottom bar may have changed: repaint it when what it shows changed.
     RepaintBar {
+        /// The window.
+        shown: ShownId,
+    },
+    /// What the window draws changed without a new view (the acknowledgement checkbox): lay it
+    /// out again and repaint the panel, the window and the AI body (2026-11-19, S4 B6).
+    Redraw {
         /// The window.
         shown: ShownId,
     },
@@ -670,6 +682,10 @@ mod tests {
                 }
             ),
             "Shown { capture_excluded: true }"
+        );
+        assert_eq!(
+            format!("{:?}", ApprovalEffect::Redraw { shown: ShownId(5) }),
+            "Redraw { shown: ShownId(5) }"
         );
     }
 }

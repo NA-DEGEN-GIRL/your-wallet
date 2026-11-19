@@ -20,6 +20,12 @@
 //! whether the window has an AI explanation is decided once, when the flow opens ([`AiReserved`]:
 //! the request kind and the endpoint's host and model of that moment); the answer attaches what
 //! was reserved and never asks again (before, it worked the condition out a second time).
+//!
+//! 2026-11-19 (S4 B6, plan §3.1, critique A-12, A-13): the window's inputs reach the flow as
+//! `Cmd::Approval` (`App::on_approval_input`), dropped unless their `ShownId` is this flow's
+//! ([`ApprovalFlow::shown`]). Every new view bumps [`ApprovalFlow::view_rev`]; the shell keeps
+//! the revision its panel layout was drawn from, and a connect account toggle drawn from an
+//! older view changes nothing ([`ApprovalFlow::toggle_account`]).
 
 use yw_core::approval::{ApprovalRequest, RiskLevel};
 use yw_core::evm::eip712::DecodedTypedData;
@@ -72,6 +78,9 @@ pub struct ApprovalFlow {
     raw_open: bool,
     resim_click: bool,
     view: ApprovalView,
+    /// The revision of `view`: bumped by every new view (2026-11-19, S4 B6, critique A-13), so a
+    /// connect toggle hit-tested on a layout drawn from an older view can be told apart.
+    view_rev: u64,
     /// The wide layout applies (the A01 client area is at least 640 DIP wide): reported by the
     /// shell when the window opens and at each A01 size or DPI change (2026-11-19, S4 B5: was read
     /// from the window by every view rebuild).
@@ -137,6 +146,8 @@ pub(crate) struct ApprovalPaint<'a> {
     pub(crate) lang: Lang,
     /// The view drawn.
     pub(crate) view: &'a ApprovalView,
+    /// The revision of `view` (the shell's layout keeps it; 2026-11-19, S4 B6, A-13).
+    pub(crate) view_rev: u64,
     /// The status message.
     pub(crate) status: Option<&'a str>,
     /// The shown content (`Preparing`, `Ready`, `Failed`); read by the render harness only.
@@ -242,6 +253,7 @@ impl ApprovalFlow {
             raw_open: false,
             resim_click: false,
             view: ApprovalView::default(),
+            view_rev: 0,
             wide: true,
             ai_reserved,
             ai: None,
@@ -340,11 +352,19 @@ impl ApprovalFlow {
         &self.view
     }
 
+    /// The revision of the view drawn (2026-11-19, S4 B6, A-13; the tests' read, the window
+    /// reads it through `ApprovalPaint`).
+    #[cfg(test)]
+    pub(crate) const fn view_rev(&self) -> u64 {
+        self.view_rev
+    }
+
     /// What the window paints (2026-11-19, S4 B4b).
     pub(crate) fn paint(&self) -> ApprovalPaint<'_> {
         ApprovalPaint {
             lang: self.lang,
             view: &self.view,
+            view_rev: self.view_rev,
             status: self.status.as_deref(),
             #[cfg(test)]
             prepare: &self.session.gate.prepare,
@@ -477,9 +497,11 @@ impl ApprovalFlow {
         self.prepared = prepared;
     }
 
-    /// The view the window draws.
+    /// The view the window draws: a new revision (2026-11-19, S4 B6, A-13; every caller then
+    /// emits `Rebuilt { changed: true }`, which drops the shell's layout).
     pub(crate) fn set_view(&mut self, view: ApprovalView) {
         self.view = view;
+        self.view_rev = self.view_rev.wrapping_add(1);
     }
 
     /// The width class the shell reported (the open's result, an A01 size or DPI change; S4
@@ -506,7 +528,8 @@ impl ApprovalFlow {
 
     /// One interaction event: the foreground sample first (a `false` → `true` edge restarts the
     /// arm delay), then the event, then the early-release note, then what it did
-    /// (`status_action`, S4 B3). The order of today's `interaction()` in `app_approval.rs`.
+    /// (`status_action`, S4 B3). The order of today's `interaction()` in `app_approval.rs`
+    /// (2026-11-19, S4 B6: `App::approval_event`, with the sample `window_event` took).
     /// Pinned by `tests::the_foreground_sample_comes_before_the_event` and the source check S8
     /// (2026-11-19, S4 B4 review: no golden can show this order, the harness keeps the
     /// foreground steady between events).
@@ -546,9 +569,16 @@ impl ApprovalFlow {
         true
     }
 
-    /// Toggles connect entry `index` (when it exists): the gate's selection count follows and
-    /// the checkbox is cleared.
-    pub(crate) fn toggle_account(&mut self, index: usize, now: u64) {
+    /// Toggles connect entry `index` (when it exists) of the list drawn at `view_rev`: the gate's
+    /// selection count follows and the checkbox is cleared. Returns `false`, and changes nothing,
+    /// for a toggle drawn from an older view than the one shown (2026-11-19, S4 B6, critique
+    /// A-13: the index is a position in the list as it was drawn; before, any index was applied
+    /// to the list of now). On Windows the panel layout is dropped with every new view, so a
+    /// layout the shell hit-tests is always the shown view's and this never drops a click.
+    pub(crate) fn toggle_account(&mut self, index: usize, view_rev: u64, now: u64) -> bool {
+        if view_rev != self.view_rev {
+            return false;
+        }
         if let Some(connect) = self.connect.as_mut()
             && index < connect.selected.len()
         {
@@ -556,6 +586,7 @@ impl ApprovalFlow {
             self.session.gate.connect_selected = connect.gate_count();
             self.session.set_ack(now, false);
         }
+        true
     }
 
     /// Unfolds or folds the raw data.
@@ -668,7 +699,9 @@ impl ApprovalFlow {
 #[cfg(test)]
 mod tests {
     //! `ApprovalFlow::on_event` applies the gate's foreground sample before the event (spec/04
-    //! §3.4, AGENTS.md §6 arm delay and re-activation; 2026-11-19, S4 B4 review). Headless: a
+    //! §3.4, AGENTS.md §6 arm delay and re-activation; 2026-11-19, S4 B4 review); activation
+    //! restarts the delay unconditionally and a connect toggle from an older view is dropped
+    //! (2026-11-19, S4 B6). Headless: a
     //! flow without a window, driven at fixed times. The `s4_flow` goldens cannot show the order
     //! because their harness keeps the foreground steady between events.
 
@@ -678,6 +711,7 @@ mod tests {
     use yw_core::policy::{BrowserOrigin, Family, Method};
     use yw_engine::approval::flow::{ShownId, StatusAction};
     use yw_engine::approval::interaction::{APPROVE_ARM_DELAY_MS, InteractionEvent};
+    use yw_engine::approval::view::ApprovalView;
     use yw_engine::browser::envelope::{Correlation, Id16, Id32};
     use yw_engine::browser::{Reply, SiteKind, SiteRequest};
 
@@ -789,5 +823,48 @@ mod tests {
             flow.on_event(again + APPROVE_ARM_DELAY_MS, true, ENTER),
             StatusAction::Approve
         );
+    }
+
+    /// `ApprovalSignal::Activated` (2026-11-19, S4 B6, plan D-10): the arm delay restarts even
+    /// when the gate is already foreground and armed (unconditional), then the gate is
+    /// foreground; an Enter before a full delay does not approve, one after it does.
+    #[test]
+    fn activation_restarts_the_delay_unconditionally() {
+        let (mut flow, armed_at) = armed();
+        assert!(flow.gate().is_foreground);
+        let at = armed_at + 500;
+        flow.activated(at);
+        assert!(flow.gate().is_foreground);
+        assert_eq!(flow.gate().ready_at_ms, at);
+        assert_eq!(
+            flow.on_event(at + APPROVE_ARM_DELAY_MS - 1, true, ENTER),
+            StatusAction::Repaint
+        );
+        let again = at + APPROVE_ARM_DELAY_MS - 1;
+        assert_eq!(
+            flow.on_event(again + APPROVE_ARM_DELAY_MS, true, ENTER),
+            StatusAction::Approve
+        );
+    }
+
+    /// Critique A-13 (2026-11-19, S4 B6): a connect toggle carries the revision of the view its
+    /// layout was drawn from; one drawn from an older view changes nothing (selection, count and
+    /// checkbox as they were), one drawn from the shown view toggles.
+    #[test]
+    fn a_toggle_drawn_from_an_older_view_changes_nothing() {
+        let (mut flow, armed_at) = armed();
+        let old = flow.view_rev();
+        flow.set_view(ApprovalView::default());
+        let shown = flow.view_rev();
+        assert_ne!(old, shown, "a new view is a new revision");
+        assert!(!flow.toggle_account(0, old, armed_at + 1));
+        assert_eq!(flow.connect().map(|c| c.selected.clone()), Some(vec![true]));
+        assert_eq!(flow.gate().connect_selected, 1);
+        assert!(flow.toggle_account(0, shown, armed_at + 2));
+        assert_eq!(
+            flow.connect().map(|c| c.selected.clone()),
+            Some(vec![false])
+        );
+        assert_eq!(flow.gate().connect_selected, 0);
     }
 }

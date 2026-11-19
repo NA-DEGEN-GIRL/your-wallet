@@ -193,7 +193,8 @@ pub(crate) struct Signals {
 /// One trusted-signal read and its program point.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Read {
-    /// The gate's foreground read in `interaction()` (`TrustedSignals::sample_foreground`).
+    /// The gate's foreground read before an event (`TrustedSignals::sample_foreground`; 2026-11-19,
+    /// S4 B6: in `window_event`, was `interaction()`).
     Foreground,
     /// The raw foreground read at the named point.
     RawForeground(&'static str),
@@ -242,7 +243,8 @@ pub(crate) enum Call {
 /// One entry of the ordered input log.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Logged {
-    /// `interaction(event)`: its foreground sample and the focus (`None`: no window open).
+    /// An event: its foreground sample and the focus (`None`: the window it belongs to is not
+    /// open; 2026-11-19, S4 B6: logged by `window_event`, was `interaction(event)`).
     Event {
         event: InteractionEvent,
         foreground: Option<bool>,
@@ -907,9 +909,19 @@ fn hidden_approval_window_is_never_shown_and_the_seams_drive_it() {
         win.focus = Focus::Approve;
     }
     assert_hidden(&fixture);
-    fixture
-        .app()
-        .on_approval_key(crate::ui::approval_input::VK_RETURN, false);
+    // 2026-11-19 (S4 B6): through the A01 message entry (`on_approval_key`, the window-less key
+    // entry, went with B6); the Enter arm reads nothing from the spare window, which is gone
+    // before the windows are counted below.
+    {
+        let spare = super::flow_tests::spare_window();
+        let _ = fixture.app().on_approval_msg(
+            &spare,
+            &Msg::KeyDown {
+                vk: crate::ui::approval_input::VK_RETURN,
+                repeat: false,
+            },
+        );
+    }
     let log = take_log();
     assert_eq!(
         log.get(..2),

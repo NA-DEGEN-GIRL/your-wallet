@@ -91,7 +91,8 @@ use crate::explain::config::{ModelName, parse_endpoint};
 use crate::explain::request::{HttpResponse, LlmTransport, TransportError};
 use crate::explain::{ExplainService, LlmConfig, ResponseFormatMode};
 use crate::ui::approval_input::{
-    VK_DOWN, VK_END, VK_ESCAPE, VK_HOME, VK_NEXT, VK_PRIOR, VK_RETURN, VK_SPACE, VK_TAB, VK_UP,
+    Surface, VK_DOWN, VK_END, VK_ESCAPE, VK_HOME, VK_NEXT, VK_PRIOR, VK_RETURN, VK_SPACE, VK_TAB,
+    VK_UP,
 };
 use crate::ui::interaction::InteractionEvent;
 use crate::workers::rpc::RpcJob;
@@ -328,9 +329,18 @@ fn open(kind: Kind, oracle: Signals, tag: &str, fixed: bool) -> Opened {
     fx.clock.set(START_MS + ARMED_AT);
     let issued = {
         let mut app = fx.app();
+        // 2026-11-19 (S4 B6, A-13): the fixed layout stands for one drawn from the view shown.
+        let view_rev = app
+            .evm
+            .approval
+            .as_ref()
+            .map_or(0, crate::approval_flow::ApprovalFlow::view_rev);
         let win = app.approval_win.as_mut().expect("the window is open");
         if fixed {
-            let layout = layout();
+            let layout = PanelLayout {
+                view_rev,
+                ..layout()
+            };
             win.panel.set_rect(BOTTOM.panel);
             win.panel
                 .set_vscroll(PANEL_THUMB, BOTTOM.panel.h, layout.height);
@@ -360,18 +370,19 @@ fn open(kind: Kind, oracle: Signals, tag: &str, fixed: bool) -> Opened {
     }
 }
 
-/// Delivers `msg` to `target`'s arm with the App borrowed by the test (as the window procedure
-/// would after `Forward` borrowed it).
-fn deliver(fx: &Fixture, target: Target, window: &Window, msg: &Msg) -> Reply {
+/// Delivers `msg` to `surface`'s arm of the window opened last with the App borrowed by the test
+/// (as the window procedure would after `Forward` borrowed it). (2026-11-19, S4 B6: by surface;
+/// `Target` now carries the window's `ShownId`.)
+fn deliver(fx: &Fixture, surface: Surface, window: &Window, msg: &Msg) -> Reply {
     let mut app = fx.app();
-    match target {
-        Target::Approval => app.on_approval_msg(window, msg),
-        Target::Panel => app.on_panel_msg(window, msg),
-        Target::AiBody => app.on_ai_body_msg(window, msg),
+    match surface {
+        Surface::Approval => app.on_approval_msg(window, msg),
+        Surface::Panel => app.on_panel_msg(window, msg),
+        Surface::AiBody => app.on_ai_body_msg(window, msg),
     }
 }
 
-/// The real approval `Forward` of `target` on the fixture's App.
+/// The real approval `Forward` of `target` (its kind and window id) on the fixture's App.
 fn forward(fx: &Fixture, target: Target) -> Forward {
     Forward {
         app: Rc::downgrade(&fx.app),
@@ -595,7 +606,7 @@ fn after(opened: &Opened, issued: Option<ApprovalId>) -> String {
 struct Row {
     name: String,
     kind: Kind,
-    target: Target,
+    target: Surface,
     focus: Focus,
     pressed: Option<Pressed>,
     msgs: Vec<Msg>,
@@ -603,7 +614,7 @@ struct Row {
 }
 
 impl Row {
-    fn new(name: &str, kind: Kind, target: Target, msgs: Vec<Msg>) -> Self {
+    fn new(name: &str, kind: Kind, target: Surface, msgs: Vec<Msg>) -> Self {
         Self {
             name: name.to_owned(),
             kind,
@@ -633,7 +644,7 @@ impl Row {
 
 /// The A01 rows (`on_approval_msg`), on the Standard send unless named.
 fn a01_rows() -> Vec<Row> {
-    let row = |name: &str, msgs: Vec<Msg>| Row::new(name, Kind::Std, Target::Approval, msgs);
+    let row = |name: &str, msgs: Vec<Msg>| Row::new(name, Kind::Std, Surface::Approval, msgs);
     vec![
         row("a01.stray.other-button", vec![Msg::OtherButtonDown]),
         row("a01.stray.non-client", vec![Msg::NonClientButtonDown]),
@@ -645,13 +656,13 @@ fn a01_rows() -> Vec<Row> {
         Row::new(
             "a01.timer.approval.ai-window",
             Kind::Ai,
-            Target::Approval,
+            Surface::Approval,
             vec![Msg::Timer(APPROVAL_TIMER_ID)],
         ),
         Row::new(
             "a01.timer.approval.simulating",
             Kind::Simulating,
-            Target::Approval,
+            Surface::Approval,
             vec![Msg::Timer(APPROVAL_TIMER_ID)],
         ),
         row("a01.timer.other", vec![Msg::Timer(TIMER_OTHER)]),
@@ -675,7 +686,7 @@ fn a01_rows() -> Vec<Row> {
         Row::new(
             "a01.up.ai-retry-inside.ai-window",
             Kind::Ai,
-            Target::Approval,
+            Surface::Approval,
             vec![up(AT_AI_RETRY)],
         )
         .pressed(Pressed::AiRetry),
@@ -712,7 +723,8 @@ fn a01_rows() -> Vec<Row> {
     ]
 }
 
-/// The keyboard rows (`on_approval_key` through `Msg::KeyDown`): every key the arm names and one
+/// The keyboard rows (`map_key` through `Msg::KeyDown`; 2026-11-19, S4 B6: `on_approval_key` is
+/// gone): every key the arm names and one
 /// it does not, × focus; Enter and Space also auto-repeated. The checkbox focus is on the High
 /// send (the only one with the checkbox); the rest on the Standard send.
 fn key_rows() -> Vec<Row> {
@@ -753,7 +765,7 @@ fn key_rows() -> Vec<Row> {
                     Row::new(
                         &format!("key.{key}.{focus_name}.r{}", bit(repeat)),
                         kind,
-                        Target::Approval,
+                        Surface::Approval,
                         vec![key_down(vk, repeat)],
                     )
                     .focus(focus),
@@ -766,7 +778,7 @@ fn key_rows() -> Vec<Row> {
             Row::new(
                 &format!("key.{key}.approve.r0.injected"),
                 Kind::Std,
-                Target::Approval,
+                Surface::Approval,
                 vec![key_down(vk, false)],
             )
             .focus(Focus::Approve)
@@ -777,7 +789,7 @@ fn key_rows() -> Vec<Row> {
 }
 
 /// Every `WM_VSCROLL` code the arms name (`SB_LINEUP` 0 … `SB_BOTTOM` 7) and `SB_ENDSCROLL` 8.
-fn vscroll_rows(prefix: &str, kind: Kind, target: Target) -> Vec<Row> {
+fn vscroll_rows(prefix: &str, kind: Kind, target: Surface) -> Vec<Row> {
     (0..=8_u16)
         .map(|code| {
             Row::new(
@@ -792,7 +804,7 @@ fn vscroll_rows(prefix: &str, kind: Kind, target: Target) -> Vec<Row> {
 
 /// The panel rows (`on_panel_msg`).
 fn panel_rows() -> Vec<Row> {
-    let row = |name: &str, kind: Kind, msgs: Vec<Msg>| Row::new(name, kind, Target::Panel, msgs);
+    let row = |name: &str, kind: Kind, msgs: Vec<Msg>| Row::new(name, kind, Surface::Panel, msgs);
     let mut rows = vec![
         row(
             "panel.stray.other-button",
@@ -825,7 +837,7 @@ fn panel_rows() -> Vec<Row> {
         row("panel.wheel.down", Kind::Std, vec![Msg::Wheel(-120)]),
         row("panel.wheel.up", Kind::Std, vec![Msg::Wheel(120)]),
     ];
-    rows.extend(vscroll_rows("panel", Kind::Std, Target::Panel));
+    rows.extend(vscroll_rows("panel", Kind::Std, Surface::Panel));
     rows.extend([
         row("panel.other.mouse-up", Kind::Std, vec![up(AT_ACK)]),
         row(
@@ -849,7 +861,7 @@ fn panel_rows() -> Vec<Row> {
 
 /// The AI body rows (`on_ai_body_msg`, a site `personal_sign` with the explanation panel).
 fn ai_rows() -> Vec<Row> {
-    let row = |name: &str, msgs: Vec<Msg>| Row::new(name, Kind::Ai, Target::AiBody, msgs);
+    let row = |name: &str, msgs: Vec<Msg>| Row::new(name, Kind::Ai, Surface::AiBody, msgs);
     let mut rows = vec![
         row("ai.stray.other-button", vec![Msg::OtherButtonDown]),
         row("ai.stray.non-client", vec![Msg::NonClientButtonDown]),
@@ -858,7 +870,7 @@ fn ai_rows() -> Vec<Row> {
         row("ai.wheel.down", vec![Msg::Wheel(-120)]),
         row("ai.wheel.up", vec![Msg::Wheel(120)]),
     ];
-    rows.extend(vscroll_rows("ai", Kind::Ai, Target::AiBody));
+    rows.extend(vscroll_rows("ai", Kind::Ai, Surface::AiBody));
     rows.extend([
         row("ai.other.mouse-up", vec![up(AT_NOTHING)]),
         row("ai.other.mouse-activate", vec![Msg::MouseActivate]),
@@ -883,7 +895,7 @@ fn run_row(row: &Row, oracle: &Oracle, serial: usize) -> String {
     let opened = open(row.kind, oracle.1, &format!("input-{serial}"), true);
     let fx = &opened.fx;
     let spare = spare_window();
-    if row.target == Target::AiBody {
+    if row.target == Surface::AiBody {
         // The stand-in AI body's scroll bar: what the thumb codes read.
         spare.set_vscroll(AI_THUMB, 100, 10_000);
     }
@@ -1028,7 +1040,8 @@ fn reentry_click() -> Vec<String> {
     let mut rec = Rec::new("reentry_click", &opened);
     let fx = &opened.fx;
     let a01 = take_a01(fx);
-    let mut approval = forward(fx, Target::Approval);
+    let shown = fx.app.borrow().last_opened();
+    let mut approval = forward(fx, Target::Approval(shown));
     let reply = approval.on(&a01, &Msg::Paint);
     rec.line("paint", &[reply]);
     let at = approve_center(fx);
@@ -1057,7 +1070,8 @@ fn reentry_capture_taken() -> Vec<String> {
     let mut rec = Rec::new("reentry_capture_taken", &opened);
     let fx = &opened.fx;
     let a01 = take_a01(fx);
-    let mut approval = forward(fx, Target::Approval);
+    let shown = fx.app.borrow().last_opened();
+    let mut approval = forward(fx, Target::Approval(shown));
     let reply = approval.on(&a01, &Msg::Paint);
     rec.line("paint", &[reply]);
     let at = approve_center(fx);
@@ -1097,30 +1111,31 @@ fn reentry_while_borrowed() -> Vec<String> {
     let a01 = take_a01(fx);
     let other = spare_window();
     rec.line("before", &[]);
+    let shown = fx.app.borrow().last_opened();
     let messages = [
-        (Target::Approval, Msg::ActivateApp(true)),
-        (Target::Approval, Msg::ActivateApp(false)),
-        (Target::Approval, Msg::MouseActivate),
-        (Target::Approval, Msg::KillFocus { to_foreign: true }),
-        (Target::Approval, down(AT_APPROVE)),
-        (Target::Approval, up(AT_APPROVE)),
-        (Target::Approval, key_down(VK_RETURN, false)),
-        (Target::Approval, key_down(VK_ESCAPE, false)),
-        (Target::Approval, Msg::Timer(APPROVAL_TIMER_ID)),
-        (Target::Approval, Msg::CaptureChanged),
-        (Target::Approval, Msg::Close),
-        (Target::Panel, down(AT_ACK)),
-        (Target::Panel, Msg::VScroll { code: 1 }),
-        (Target::AiBody, down(AT_NOTHING)),
-        (Target::AiBody, Msg::Wheel(120)),
-        (Target::Panel, Msg::Paint),
-        (Target::Approval, Msg::Paint),
+        (Target::Approval(shown), Msg::ActivateApp(true)),
+        (Target::Approval(shown), Msg::ActivateApp(false)),
+        (Target::Approval(shown), Msg::MouseActivate),
+        (Target::Approval(shown), Msg::KillFocus { to_foreign: true }),
+        (Target::Approval(shown), down(AT_APPROVE)),
+        (Target::Approval(shown), up(AT_APPROVE)),
+        (Target::Approval(shown), key_down(VK_RETURN, false)),
+        (Target::Approval(shown), key_down(VK_ESCAPE, false)),
+        (Target::Approval(shown), Msg::Timer(APPROVAL_TIMER_ID)),
+        (Target::Approval(shown), Msg::CaptureChanged),
+        (Target::Approval(shown), Msg::Close),
+        (Target::Panel(shown), down(AT_ACK)),
+        (Target::Panel(shown), Msg::VScroll { code: 1 }),
+        (Target::AiBody(shown), down(AT_NOTHING)),
+        (Target::AiBody(shown), Msg::Wheel(120)),
+        (Target::Panel(shown), Msg::Paint),
+        (Target::Approval(shown), Msg::Paint),
     ];
     let mut seen = Vec::new();
     {
         let _borrowed = fx.app();
         for (target, msg) in &messages {
-            let window = if *target == Target::Approval {
+            let window = if *target == Target::Approval(shown) {
                 &a01
             } else {
                 &other
@@ -1636,6 +1651,14 @@ fn approve_enter_is_physical_and_not_injected() {
 /// 2026-11-19 (S4 B4a): the session call moved with the gate into `ApprovalFlow::on_event`
 /// (`approval_flow.rs`), which `interaction()` calls with the event it was handed: `.event(` is
 /// now counted once in `approval_flow.rs` and none in `app_approval.rs`.
+/// 2026-11-19 (S4 B6, critique A-6, A-12): the window's input is one `ApprovalInput`, built only
+/// by `ui::approval_input::window_input` (the one `ApprovalInput {` literal) and sent as
+/// `Cmd::Approval` only by the two senders of `app_approval.rs`: `window_event` (an interaction
+/// event or the close box, with the foreground sample of the window the input belongs to, never
+/// of the window shown now) and `window_signal` (no sample, `false`); `run_step` takes the id from
+/// the window that got the message (`Received`, captured by `Forward` when the window was made);
+/// `on_approval_input` drops an input of another window before anything else, and the flow half
+/// of the former `interaction()` is `approval_event`.
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -1730,6 +1753,7 @@ fn approving_input_is_built_only_by_the_mapper() {
     assert_eq!(
         builders,
         [
+            ("ui/approval_input.rs", "ApprovalInput {"),
             ("ui/approval_input.rs", "ApproveActivated"),
             ("ui/approval_input.rs", "PointerPressed"),
             ("ui/approval_input.rs", "PointerReleased"),
@@ -1767,7 +1791,7 @@ fn approving_input_is_built_only_by_the_mapper() {
                 ways.push((path.as_str(), name, count));
             }
         }
-        for call in [".deliver(", ".event("] {
+        for call in [".deliver(", ".event(", "window_input(", "Cmd::Approval("] {
             let count = code.matches(call).count();
             if count > 0 {
                 ways.push((path.as_str(), call, count));
@@ -1778,20 +1802,82 @@ fn approving_input_is_built_only_by_the_mapper() {
     assert_eq!(
         ways,
         [
+            ("app.rs", "Cmd::Approval(", 1),
             ("app_approval.rs", ".deliver(", 1),
+            ("app_approval.rs", "Cmd::Approval(", 2),
             ("app_approval.rs", "Sampled(", 1),
+            ("app_approval.rs", "window_input(", 2),
             ("approval_flow.rs", ".event(", 1),
         ]
     );
     let code = approval_production();
+    let run_step = folded(item(&code, "    fn run_step(", 4));
+    in_order(
+        &run_step,
+        &[
+            "let shown = window.map(|received| received.shown);",
+            "Step::Sampled(trusted) => { let event = trusted.deliver(window.map(|received| received.window)); self.window_event(shown, ApprovalSignal::Event(event)); }",
+        ],
+    );
+    // The id is the window's that got the message (A-12): `run_step` and the two senders never
+    // read the window shown now for it.
+    let event = folded(item(&code, "    fn window_event(", 4));
+    in_order(
+        &event,
+        &[
+            ".filter(|win| Some(win.shown) == shown)",
+            "TrustedSignals::sample_foreground(&win.window).foreground(),",
+            "self.on_cmd(Cmd::Approval(window_input(shown, foreground, signal)));",
+        ],
+    );
+    let signal = folded(item(&code, "    fn window_signal(", 4));
     assert!(
-        folded(item(&code, "    fn run_step(", 4))
-            .contains("Step::Sampled(trusted) => self.interaction(trusted.deliver(window)),"),
-        "run_step delivers the sampled step"
+        signal.contains("self.on_cmd(Cmd::Approval(window_input(shown, false, signal)));"),
+        "{signal}"
+    );
+    assert_eq!(
+        run_step.matches("let shown =").count(),
+        1,
+        "one id per message"
+    );
+    assert!(!run_step.contains("last_opened"), "{run_step}");
+    for body in [&event, &signal] {
+        for banned in [
+            "last_opened",
+            "evm.approval",
+            "ApprovalFlow::shown",
+            "shown_now",
+        ] {
+            assert!(!body.contains(banned), "{banned} in {body}");
+        }
+    }
+    in_order(
+        &folded(item(&code, "impl Handler for Forward {", 0)),
+        &[
+            "shown: self.target.shown(),",
+            "app.on_surface_msg(self.target.surface(), &received, msg)",
+        ],
+    );
+    let opens = folded(item(&code, "    fn open_approval_window(", 4));
+    in_order(
+        &opens,
+        &[
+            "target: Target::Approval(shown),",
+            "target: Target::Panel(shown),",
+            "target: Target::AiBody(shown),",
+        ],
+    );
+    in_order(
+        &folded(item(&code, "    pub(crate) fn on_approval_input(", 4)),
+        &[
+            "let shown = input.shown;",
+            "if self.shown_now() != Some(shown) { return; }",
+            "match input.signal {",
+        ],
     );
     assert!(
-        item(&code, "    fn interaction(", 4).contains("flow.on_event(now, foreground, event)"),
-        "interaction() hands the event to the flow"
+        item(&code, "    fn approval_event(", 4).contains("flow.on_event(now, foreground, event)"),
+        "approval_event hands the event to the flow"
     );
     let flow = found
         .iter()
@@ -2025,7 +2111,10 @@ fn ai_never_touches_the_gate() {
 /// 2026-11-19 (S4 B5 review, critique A-3): also that the shell's open makes nothing for a `shown`
 /// that is not the current flow's, that an answer for such a `shown` closes the window it made,
 /// and that the AI explanation is reserved once at the open (the answer attaches the reservation
-/// and names neither `explain_kind` nor the endpoint).
+/// and names neither `explain_kind` nor the endpoint). 2026-11-19 (S4 B6): the scanned range ends
+/// at `rebuild_view` (was the event entry `interaction()`, whose flow half is now
+/// `approval_event` and whose window half is `window_event`) and holds the input handler
+/// `on_approval_input` and `approval_event`.
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -2065,7 +2154,7 @@ fn the_approval_flow_names_no_window() {
     let start = code
         .find("    pub fn show_next_approval(")
         .expect("show_next_approval");
-    let end = code.find("    fn interaction(").expect("interaction()");
+    let end = code.find("    fn rebuild_view(").expect("rebuild_view");
     assert!(start < end);
     let range = code.get(start..end).unwrap_or_default();
     let mut heads: Vec<String> = Vec::new();
@@ -2112,6 +2201,8 @@ fn the_approval_flow_names_no_window() {
         "start_resimulation",
         "consume_and_sign",
         "tick_approval",
+        "on_approval_input",
+        "approval_event",
         "rebuild_view_with",
     ] {
         assert!(names.contains(&planned), "{planned} not scanned: {names:?}");

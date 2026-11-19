@@ -16,9 +16,9 @@ use yw_core::approval::RiskLevel;
 use yw_core::evm::chain::SEPOLIA;
 use yw_core::evm::simulate::needs_resimulation;
 use yw_core::lang::{Lang, Text};
-use yw_engine::approval::QueueId;
 use yw_engine::approval::flow::{
-    ApprovalEffect, OpenOutcome, ShownId, StatusAction, connect_gate_count,
+    ApprovalEffect, ApprovalInput, ApprovalSignal, OpenOutcome, ShownId, StatusAction,
+    connect_gate_count,
 };
 use yw_engine::cmd::Cmd;
 use yw_engine::effect::Effect;
@@ -50,6 +50,7 @@ use crate::ui::approval::QueueOutcome;
 use crate::ui::approval_input::{
     APPROVAL_TIMER_ID, BarHits, Facts, Focus, Mapped, Pressed, ScrollGoal, Step, Surface,
     TrustedSignals, map_msg, panel_click, panel_hit, tab_order, tab_target, wheel_delta,
+    window_input,
 };
 use crate::ui::approval_text as text;
 use crate::ui::approval_view::{ApprovalView, Block, Tone, escape_spans, view};
@@ -70,15 +71,6 @@ pub const PANEL_CLASS: &str = "YourWalletV3Panel";
 const AI_PANEL_EXTRA_DIP: i32 = 240;
 const SKIP_BLOCKED: Text = text::AI_SKIP_BLOCKED;
 const SKIP_FAILED: Text = text::AI_SKIP_FAILED;
-
-/// Which approval window is shown (2026-11-19, S4 F1, L-1, spec/04 §3.6): none, or one showing
-/// the queue item with this id (`None`: a window without its queue item, not expected between
-/// messages).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ShownWindow {
-    NoWindow,
-    Showing(Option<QueueId>),
-}
 
 /// The AI explanation panel of one window (spec/06 §6, spec/04 §3.8): reserved when the window
 /// opens, painted by the window (title, `다시 요청`) and by its own child (`body`, ten lines,
@@ -124,6 +116,9 @@ struct PanelLayout {
     ack: Option<Rect>,
     raw: Option<Rect>,
     accounts: Vec<(usize, Rect)>,
+    /// The revision of the flow's view this layout was drawn from (2026-11-19, S4 B6, critique
+    /// A-13): a connect toggle hit-tested here carries it.
+    view_rev: u64,
 }
 
 /// Connect-window state (spec/05 §4.2, §4.9).
@@ -352,22 +347,58 @@ fn explain_kind(item: &QueuedItem) -> Option<RequestKind> {
     }
 }
 
+/// The window a `Forward` serves and the approval window it belongs to: the `ShownId` captured
+/// when `open_approval_window` made it (2026-11-19, S4 B6, critique A-12). Its inputs carry that
+/// id, never the id of the window shown when they arrive, so the flow drops an input of a window
+/// that is no longer the shown one. Before B6 the target named the kind of window only.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Target {
-    Approval,
-    Panel,
-    AiBody,
+    Approval(ShownId),
+    Panel(ShownId),
+    AiBody(ShownId),
 }
 
-#[cfg(test)]
 impl Target {
+    /// The kind of window.
+    const fn surface(self) -> Surface {
+        match self {
+            Self::Approval(_) => Surface::Approval,
+            Self::Panel(_) => Surface::Panel,
+            Self::AiBody(_) => Surface::AiBody,
+        }
+    }
+
+    /// The approval window it belongs to.
+    const fn shown(self) -> ShownId {
+        match self {
+            Self::Approval(shown) | Self::Panel(shown) | Self::AiBody(shown) => shown,
+        }
+    }
+
     /// The window kind a dropped re-entrant message was meant for (S4 A5 trace).
+    #[cfg(test)]
     const fn label(self) -> &'static str {
         match self {
-            Self::Approval => "approval",
-            Self::Panel => "panel",
-            Self::AiBody => "ai-body",
+            Self::Approval(_) => "approval",
+            Self::Panel(_) => "panel",
+            Self::AiBody(_) => "ai-body",
         }
+    }
+}
+
+/// The window that got a message and the approval window it belongs to (2026-11-19, S4 B6,
+/// critique A-12): what `Forward` hands to `on_surface_msg`. It derefs to the window, so the steps
+/// that act on the window that got the message use it as before.
+struct Received<'a> {
+    window: &'a Window,
+    shown: ShownId,
+}
+
+impl core::ops::Deref for Received<'_> {
+    type Target = Window;
+
+    fn deref(&self) -> &Window {
+        self.window
     }
 }
 
@@ -396,11 +427,13 @@ impl Handler for Forward {
             }
             return Reply::Default;
         };
-        match self.target {
-            Target::Approval => app.on_approval_msg(window, msg),
-            Target::Panel => app.on_panel_msg(window, msg),
-            Target::AiBody => app.on_ai_body_msg(window, msg),
-        }
+        // 2026-11-19 (S4 B6, A-12): with the id the window was made for (before, the three
+        // `on_*_msg` entries, whose inputs went to the window shown at the time).
+        let received = Received {
+            window,
+            shown: self.target.shown(),
+        };
+        app.on_surface_msg(self.target.surface(), &received, msg)
     }
 }
 
@@ -1965,16 +1998,14 @@ impl App {
         self.assert_flow_and_window_in_step();
     }
 
-    /// Which approval window is shown, by the queue id of its request (2026-11-19, S4 F1, L-1,
-    /// spec/04 §3.6). The later steps of one window message apply only while this is unchanged:
-    /// an earlier step of the same message may have ended the request and opened the next
-    /// request's window (`finish_approval` → `show_next_approval`).
-    fn shown_window(&self) -> ShownWindow {
-        if self.evm.approval.is_some() {
-            ShownWindow::Showing(self.evm.queue.shown().map(|item| item.id))
-        } else {
-            ShownWindow::NoWindow
-        }
+    /// The approval window shown now, by its `ShownId` (`None`: none). An input of another window
+    /// is dropped, and the later steps of one window message apply only while the window that got
+    /// it is still the shown one: an earlier step of the same message may have ended its request
+    /// and opened the next request's window (`finish_approval` → `show_next_approval`).
+    /// (2026-11-19, S4 B6, critique A-12: the F1 guard is this id check; S4 F1 compared the queue
+    /// item shown when the message arrived, `shown_window()`.)
+    fn shown_now(&self) -> Option<ShownId> {
+        self.evm.approval.as_ref().map(ApprovalFlow::shown)
     }
 
     fn finish_approval(&mut self, outcome: QueueOutcome) {
@@ -2602,31 +2633,88 @@ impl App {
         }
     }
 
-    fn interaction(&mut self, event: InteractionEvent) {
+    /// One input of an approval window (`Cmd::Approval`; 2026-11-19, S4 B6, plan §3.1, critique
+    /// A-12, A-13): dropped unless its `ShownId` is the shown window's, then, by signal: an
+    /// interaction event with the window's foreground sample (`approval_event`); the close box
+    /// (its `RejectActivated`, then `Rejected` only while the same window is still shown: the
+    /// S4 F1 guard as the id check); activation (the arm delay restarts unconditionally, then the
+    /// gate is foreground; no sample); the checkbox (`Redraw` when it toggled), the raw fold and a
+    /// connect toggle of the shown view (a new view); `다시 시도` and `다시 요청`; the window's
+    /// width class (a new view). Each does what the window procedure did before B6, in the same
+    /// order and with the same clock reads (`interaction()`, `ActivateApp(true)`, `Close`,
+    /// `toggle_ack`, `toggle_raw`, `toggle_connect_account`, `retry_action`, `ai_retry` and the
+    /// A01 `WM_SIZE` arm).
+    pub(crate) fn on_approval_input(&mut self, input: ApprovalInput) {
         #[cfg(test)]
         self.assert_flow_and_window_in_step();
+        let shown = input.shown;
+        if self.shown_now() != Some(shown) {
+            return;
+        }
+        let foreground = input.foreground;
+        match input.signal {
+            ApprovalSignal::Event(event) => self.approval_event(foreground, event),
+            ApprovalSignal::Close => {
+                self.approval_event(foreground, InteractionEvent::RejectActivated);
+                // A window whose `RejectActivated` changes nothing (an `Approved` interaction)
+                // still shows the same request, so the close box still ends it; a rejection that
+                // opened the next request's window ends only its own (S4 F1, L-1).
+                if self.shown_now() == Some(shown) {
+                    self.finish_approval(QueueOutcome::Rejected);
+                }
+            }
+            ApprovalSignal::Activated => {
+                if let Some(flow) = self.evm.approval.as_mut() {
+                    flow.activated(self.clock.now_ms());
+                }
+            }
+            ApprovalSignal::ToggleAck => {
+                let now = self.clock.now_ms();
+                if self
+                    .evm
+                    .approval
+                    .as_mut()
+                    .is_some_and(|flow| flow.toggle_ack(now))
+                {
+                    self.emit(Effect::Approval(ApprovalEffect::Redraw { shown }));
+                }
+            }
+            ApprovalSignal::ToggleRaw => {
+                if let Some(flow) = self.evm.approval.as_mut() {
+                    flow.toggle_raw();
+                }
+                self.rebuild_view();
+            }
+            ApprovalSignal::ToggleAccount { index, view_rev } => {
+                let now = self.clock.now_ms();
+                if self
+                    .evm
+                    .approval
+                    .as_mut()
+                    .is_some_and(|flow| flow.toggle_account(usize::from(index), view_rev, now))
+                {
+                    self.rebuild_view();
+                }
+            }
+            ApprovalSignal::Retry => self.retry_action(),
+            ApprovalSignal::AiRetry => self.ai_retry(),
+            ApprovalSignal::Resized { wide } => {
+                if let Some(flow) = self.evm.approval.as_mut() {
+                    flow.set_wide(wide);
+                }
+                self.rebuild_view();
+            }
+        }
+    }
+
+    /// An interaction event of the shown window with its foreground sample (2026-11-19, S4 B6:
+    /// the flow half of the former `interaction()`, whose window half samples in
+    /// `window_event`).
+    fn approval_event(&mut self, foreground: bool, event: InteractionEvent) {
         let now = self.clock.now_ms();
-        // 2026-11-19 (S4 B4b): the flow from `EvmUi.approval`, the window from `App.approval_win`.
-        let (Some(flow), Some(win)) = (self.evm.approval.as_mut(), self.approval_win.as_ref())
-        else {
-            #[cfg(test)]
-            flow_support::log_input(flow_support::Logged::Event {
-                event,
-                foreground: None,
-                focus: None,
-            });
+        let Some(flow) = self.evm.approval.as_mut() else {
             return;
         };
-        // A false → true edge (activation, also within this process) restarts the arm delay.
-        // The gate's foreground sample, taken before the event (2026-11-19, S4 B2: through
-        // `TrustedSignals`, was `window_is_foreground`; B2 review: a getter, the field is private).
-        let foreground = TrustedSignals::sample_foreground(&win.window).foreground();
-        #[cfg(test)]
-        flow_support::log_input(flow_support::Logged::Event {
-            event,
-            foreground: Some(foreground),
-            focus: Some(win.focus),
-        });
         // 2026-11-19 (S4 B4a): the foreground sample, the event, the early-release note and
         // `status_action` run in `ApprovalFlow::on_event`, in this order (were inline here).
         match flow.on_event(now, foreground, event) {
@@ -2936,6 +3024,10 @@ impl App {
                 self.approval_repaint_bar(shown);
                 None
             }
+            ApprovalEffect::Redraw { shown } => {
+                self.approval_redraw(shown);
+                None
+            }
         }
     }
 
@@ -2961,9 +3053,10 @@ impl App {
         if self.evm.approval.as_ref().map(ApprovalFlow::shown) != Some(shown) {
             return FAILED;
         }
+        // 2026-11-19 (S4 B6, A-12): each window's `Forward` keeps the id it was made for.
         let handler = Box::new(Forward {
             app: self.self_ref.clone(),
-            target: Target::Approval,
+            target: Target::Approval(shown),
         });
         let title = if connect {
             text::TITLE_CONNECT
@@ -2987,7 +3080,7 @@ impl App {
         };
         let panel_handler = Box::new(Forward {
             app: self.self_ref.clone(),
-            target: Target::Panel,
+            target: Target::Panel(shown),
         });
         let panel_spec = WindowSpec::new(
             PANEL_CLASS,
@@ -3002,7 +3095,7 @@ impl App {
         let ai = if ai_reserved {
             let body_handler = Box::new(Forward {
                 app: self.self_ref.clone(),
-                target: Target::AiBody,
+                target: Target::AiBody(shown),
             });
             let body_spec = WindowSpec::new(
                 PANEL_CLASS,
@@ -3099,6 +3192,21 @@ impl App {
         }
     }
 
+    /// `Effect::Approval(Redraw)`: the acknowledgement checkbox changed; the layout is dropped and
+    /// the panel, the window and the AI body (a High-risk request's AI panel waits for the
+    /// checkbox, `held_for_ack`) are invalidated, in this order. Nothing for a window that is not
+    /// open under `shown`. (2026-11-19, S4 B6: was inline in `toggle_ack`.)
+    fn approval_redraw(&mut self, shown: ShownId) {
+        if let Some(win) = self.approval_win.as_mut().filter(|win| win.shown == shown) {
+            win.layout = None;
+            win.panel.invalidate();
+            win.window.invalidate();
+            if let Some(ai) = win.ai.as_ref() {
+                ai.body.invalidate();
+            }
+        }
+    }
+
     /// The flow (`EvmUi.approval`) and the window's shell state (`App.approval_win`) are set and
     /// taken together (2026-11-19, S4 B4 review). Test builds check it where they change and
     /// where a window event reaches the flow, so a flow left without its window (or a window
@@ -3116,40 +3224,90 @@ impl App {
 
     // ----- window messages ----------------------------------------------------------------
 
+    /// An interaction event of the window `shown` (2026-11-19, S4 B6; the window half of the
+    /// former `interaction()`): the gate's foreground sample of that A01, taken before the event,
+    /// then the input as `Cmd::Approval` (`signal`: the event itself, or the close box, whose
+    /// event is `RejectActivated`). Without that window (it ended, or none is open) there is no
+    /// sample and the flow drops the input. `shown` is the id of the window that got the message
+    /// (`Received`), never the window shown now.
+    fn window_event(&mut self, shown: Option<ShownId>, signal: ApprovalSignal) {
+        // A false → true edge (activation, also within this process) restarts the arm delay.
+        // The gate's foreground sample, taken before the event (2026-11-19, S4 B2: through
+        // `TrustedSignals`, was `window_is_foreground`; B2 review: a getter, the field is private).
+        let sample = self
+            .approval_win
+            .as_ref()
+            .filter(|win| Some(win.shown) == shown)
+            .map(|win| {
+                (
+                    TrustedSignals::sample_foreground(&win.window).foreground(),
+                    win.focus,
+                )
+            });
+        #[cfg(test)]
+        flow_support::log_input(flow_support::Logged::Event {
+            event: match signal {
+                ApprovalSignal::Event(event) => event,
+                _ => InteractionEvent::RejectActivated,
+            },
+            foreground: sample.map(|(foreground, _)| foreground),
+            focus: sample.map(|(_, focus)| focus),
+        });
+        if let Some(shown) = shown {
+            let foreground = sample.is_some_and(|(foreground, _)| foreground);
+            self.on_cmd(Cmd::Approval(window_input(shown, foreground, signal)));
+        }
+    }
+
+    /// An input of the window `shown` that is not an interaction event (2026-11-19, S4 B6):
+    /// activation, a toggle, a retry, the width class. No foreground sample (`false`, not read).
+    fn window_signal(&mut self, shown: Option<ShownId>, signal: ApprovalSignal) {
+        if let Some(shown) = shown {
+            self.on_cmd(Cmd::Approval(window_input(shown, false, signal)));
+        }
+    }
+
+    /// The focus of the window `shown` when it is open (the tests' input log).
+    #[cfg(test)]
+    fn focus_of(&self, shown: Option<ShownId>) -> Option<Focus> {
+        self.approval_win
+            .as_ref()
+            .filter(|win| Some(win.shown) == shown)
+            .map(|win| win.focus)
+    }
+
+    /// Logs a toggle or retry step of the window `shown` with its focus (the tests' input log,
+    /// A-19; 2026-11-19, S4 B6: logged by the step, was logged by `toggle_ack`, `toggle_raw`,
+    /// `toggle_connect_account`, `retry_action` and `ai_retry`).
+    #[cfg(test)]
+    fn log_window_call(&self, shown: Option<ShownId>, call: flow_support::Call) {
+        flow_support::log_input(flow_support::Logged::Call {
+            call,
+            focus: self.focus_of(shown),
+        });
+    }
+
+    /// The id of the approval window opened last: the shown one, or (none open) one that has
+    /// ended or `ShownId(0)`, which is never handed out. The tests' entries deliver to it as if
+    /// it got the message (2026-11-19, S4 B6).
+    #[cfg(test)]
+    const fn last_opened(&self) -> ShownId {
+        ShownId(self.evm.next_shown)
+    }
+
+    /// An interaction event of the window opened last (the tests' event entry; 2026-11-19, S4
+    /// B6: what the window's `Event` step does; before, `interaction()` was the event entry).
+    #[cfg(test)]
+    fn interaction(&mut self, event: InteractionEvent) {
+        self.window_event(Some(self.last_opened()), ApprovalSignal::Event(event));
+    }
+
+    /// The checkbox toggle of the window opened last (the tests' entry; the `ToggleAck` step).
+    #[cfg(test)]
     fn toggle_ack(&mut self) {
-        #[cfg(test)]
-        self.log_approval_call(flow_support::Call::ToggleAck);
-        let now = self.clock.now_ms();
-        if let (Some(flow), Some(win)) = (self.evm.approval.as_mut(), self.approval_win.as_mut())
-            && flow.toggle_ack(now)
-        {
-            win.layout = None;
-            win.panel.invalidate();
-            win.window.invalidate();
-            // A High-risk request's AI panel waits for this checkbox (held_for_ack).
-            if let Some(ai) = win.ai.as_ref() {
-                ai.body.invalidate();
-            }
-        }
-    }
-
-    fn toggle_connect_account(&mut self, index: usize) {
-        #[cfg(test)]
-        self.log_approval_call(flow_support::Call::ToggleAccount(index));
-        let now = self.clock.now_ms();
-        if let Some(flow) = self.evm.approval.as_mut() {
-            flow.toggle_account(index, now);
-        }
-        self.rebuild_view();
-    }
-
-    fn toggle_raw(&mut self) {
-        #[cfg(test)]
-        self.log_approval_call(flow_support::Call::ToggleRaw);
-        if let Some(flow) = self.evm.approval.as_mut() {
-            flow.toggle_raw();
-        }
-        self.rebuild_view();
+        let shown = Some(self.last_opened());
+        self.log_window_call(shown, flow_support::Call::ToggleAck);
+        self.window_signal(shown, ApprovalSignal::ToggleAck);
     }
 
     fn scroll_by(&mut self, delta: i32) {
@@ -3179,23 +3337,36 @@ impl App {
     // and built its events inline. The reads, Win32 calls and events keep their order
     // (`s4_flow/input.txt`, `reentry.txt` byte-equal).
 
+    /// A message to A01 of the window opened last (the tests' entry; 2026-11-19, S4 B6: `Forward`
+    /// calls `on_surface_msg` with the id its window was made for).
+    #[cfg(test)]
     pub(crate) fn on_approval_msg(&mut self, window: &Window, msg: &Msg) -> Reply {
-        self.on_surface_msg(Surface::Approval, window, msg)
+        let received = Received {
+            window,
+            shown: self.last_opened(),
+        };
+        self.on_surface_msg(Surface::Approval, &received, msg)
     }
 
-    /// One message of `surface`: sample, map, run.
-    fn on_surface_msg(&mut self, surface: Surface, window: &Window, msg: &Msg) -> Reply {
+    /// One message of `surface`: sample, map, run. `window`: the window that got it and the
+    /// approval window it belongs to (2026-11-19, S4 B6, A-12: was the window only).
+    fn on_surface_msg(&mut self, surface: Surface, window: &Received<'_>, msg: &Msg) -> Reply {
         let signals = TrustedSignals::sample_on_arrival(surface, msg, window);
-        let facts = self.input_facts(msg);
+        let facts = self.input_facts(window.shown, msg);
         let Mapped { steps, reply } = map_msg(surface, msg, facts, signals);
         self.run_steps(surface, Some(window), &steps)
             .unwrap_or(reply)
     }
 
-    /// What A01 is when a message arrives (`None`: no window): its focus, its pressed button
-    /// and, for a mouse message, the bottom-bar buttons that contain the point.
-    fn input_facts(&self, msg: &Msg) -> Option<Facts> {
-        let win = self.approval_win.as_ref()?;
+    /// What A01 of the window `shown` is when a message arrives (`None`: that window is not open):
+    /// its focus, its pressed button and, for a mouse message, the bottom-bar buttons that contain
+    /// the point. (2026-11-19, S4 B6, A-12: of the window the message belongs to, was whatever
+    /// window was shown; a message of a window that is not the shown one maps as with no window.)
+    fn input_facts(&self, shown: ShownId, msg: &Msg) -> Option<Facts> {
+        let win = self
+            .approval_win
+            .as_ref()
+            .filter(|win| win.shown == shown)?;
         let hits = match *msg {
             Msg::MouseDown { x, y } | Msg::MouseUp { x, y } | Msg::MouseMove { x, y } => {
                 let bottom = win.bottom;
@@ -3216,17 +3387,16 @@ impl App {
     }
 
     /// Runs mapped steps in order; `Some(reply)` when a guard step ended the message. `window`:
-    /// the window that got it (`None` only for `on_approval_key`'s keys, whose steps need none).
+    /// the window that got it and the approval window it belongs to (2026-11-19, S4 B6: every
+    /// entry passes one; before, `on_approval_key`'s window-less keys passed `None`).
     fn run_steps(
         &mut self,
         surface: Surface,
-        window: Option<&Window>,
+        window: Option<&Received<'_>>,
         steps: &[Step],
     ) -> Option<Reply> {
-        // The window shown when the message arrived (S4 F1, L-1).
-        let shown = self.shown_window();
         for step in steps {
-            if let Some(reply) = self.run_step(surface, window, shown, *step) {
+            if let Some(reply) = self.run_step(surface, window, *step) {
                 return Some(reply);
             }
         }
@@ -3237,47 +3407,69 @@ impl App {
     fn run_step(
         &mut self,
         surface: Surface,
-        window: Option<&Window>,
-        shown: ShownWindow,
+        window: Option<&Received<'_>>,
         step: Step,
     ) -> Option<Reply> {
+        // The approval window the message belongs to (2026-11-19, S4 B6, critique A-12): every
+        // input of this message carries its id, so the flow drops it once that window is no
+        // longer the shown one.
+        let shown = window.map(|received| received.shown);
         match step {
-            Step::Event(event) => self.interaction(event),
+            Step::Event(event) => self.window_event(shown, ApprovalSignal::Event(event)),
             // The only delivery of an approving or holding event (source check S8; 2026-11-19,
             // S4 B2 review: `Trusted::deliver` samples and builds in one call, was
             // `TrustedSignals::sample_for` then a `pub` `Trusted::event`).
-            Step::Sampled(trusted) => self.interaction(trusted.deliver(window)),
+            Step::Sampled(trusted) => {
+                let event = trusted.deliver(window.map(|received| received.window));
+                self.window_event(shown, ApprovalSignal::Event(event));
+            }
             Step::Activated => {
                 #[cfg(test)]
                 flow_support::log_input(flow_support::Logged::Activated {
-                    focus: self.approval_win.as_ref().map(|win| win.focus),
+                    focus: self.focus_of(shown),
                 });
-                if let Some(flow) = self.evm.approval.as_mut() {
-                    flow.activated(self.clock.now_ms());
-                }
+                self.window_signal(shown, ApprovalSignal::Activated);
             }
-            Step::Close => {
-                // 2026-11-19 (S4 F1, L-1, owner decision O-4): the close box rejects only the
-                // request this window showed. Before, `if self.evm.window.is_some()` also
-                // rejected the next request, whose window `RejectActivated` had just opened.
-                // A window whose `RejectActivated` changes nothing (L-2: already `Approved`)
-                // still shows the same request, so the close box still ends it.
-                let shown = self.shown_window();
-                self.interaction(InteractionEvent::RejectActivated);
-                if shown != ShownWindow::NoWindow && self.shown_window() == shown {
-                    self.finish_approval(QueueOutcome::Rejected);
-                }
+            // 2026-11-19 (S4 F1, L-1, owner decision O-4): the close box rejects only the
+            // request this window showed. Before, `if self.evm.window.is_some()` also rejected
+            // the next request, whose window `RejectActivated` had just opened. 2026-11-19 (S4
+            // B6): `ApprovalSignal::Close`, the guard is the flow's id check
+            // (`on_approval_input`; was the queue item shown before the event, here).
+            Step::Close => self.window_event(shown, ApprovalSignal::Close),
+            Step::ToggleAck => {
+                #[cfg(test)]
+                self.log_window_call(shown, flow_support::Call::ToggleAck);
+                self.window_signal(shown, ApprovalSignal::ToggleAck);
             }
-            Step::ToggleAck => self.toggle_ack(),
-            Step::ToggleRaw => self.toggle_raw(),
-            Step::ToggleAccount(index) => self.toggle_connect_account(index),
-            Step::Retry => self.retry_action(),
-            Step::AiRetry => self.ai_retry(),
+            Step::ToggleRaw => {
+                #[cfg(test)]
+                self.log_window_call(shown, flow_support::Call::ToggleRaw);
+                self.window_signal(shown, ApprovalSignal::ToggleRaw);
+            }
+            Step::ToggleAccount { index, view_rev } => {
+                #[cfg(test)]
+                self.log_window_call(shown, flow_support::Call::ToggleAccount(index));
+                // More rows than `u16` holds cannot be drawn; such an index toggles nothing.
+                let index = u16::try_from(index).unwrap_or(u16::MAX);
+                self.window_signal(shown, ApprovalSignal::ToggleAccount { index, view_rev });
+            }
+            Step::Retry => {
+                #[cfg(test)]
+                self.log_window_call(shown, flow_support::Call::Retry);
+                self.window_signal(shown, ApprovalSignal::Retry);
+            }
+            Step::AiRetry => {
+                #[cfg(test)]
+                self.log_window_call(shown, flow_support::Call::AiRetry);
+                self.window_signal(shown, ApprovalSignal::AiRetry);
+            }
             Step::SameWindow(reply) => {
                 // 2026-11-19 (S4 F1, L-1): a press that ended this request (past its deadline)
                 // goes no further, like a press with no window. Before, the rest of the message
-                // ran on the next request's window that the press had just opened.
-                if self.shown_window() != shown || self.evm.approval.is_none() {
+                // ran on the next request's window that the press had just opened. 2026-11-19
+                // (S4 B6): the window that got the message by its id (was the queue item shown
+                // when the message arrived).
+                if shown.is_none_or(|shown| self.shown_now() != Some(shown)) {
                     return Some(reply);
                 }
             }
@@ -3398,8 +3590,10 @@ impl App {
                 let content_y = y.saturating_add(win.scroll);
                 let layout = win.layout.clone().unwrap_or_default();
                 let hit = panel_hit(&layout.accounts, layout.ack, layout.raw, x, content_y);
-                for step in panel_click(hit) {
-                    if let Some(reply) = self.run_step(surface, window, shown, step) {
+                // 2026-11-19 (S4 B6, A-13): an account row's toggle carries the revision of the
+                // view the layout was drawn from.
+                for step in panel_click(hit, layout.view_rev) {
+                    if let Some(reply) = self.run_step(surface, window, step) {
                         return Some(reply);
                     }
                 }
@@ -3427,16 +3621,21 @@ impl App {
                 }
             }
             Step::Relayout => {
-                if let Some(win) = self.approval_win.as_mut() {
-                    win.layout = None;
-                    // 2026-11-19 (S4 B5): the width class goes to the flow here, where the
-                    // rebuild below read it from the window before B5 (B6: `Resized`).
-                    let wide = win.is_wide();
-                    if let Some(flow) = self.evm.approval.as_mut() {
-                        flow.set_wide(wide);
-                    }
+                // 2026-11-19 (S4 B5): the width class goes to the flow here, where the rebuild
+                // read it from the window before B5. 2026-11-19 (S4 B6): as
+                // `ApprovalSignal::Resized` of the window that got the message, whose flow sets it
+                // and rebuilds the view (was `set_wide` and `rebuild_view` here).
+                let resized = self
+                    .approval_win
+                    .as_mut()
+                    .filter(|win| Some(win.shown) == shown)
+                    .map(|win| {
+                        win.layout = None;
+                        win.is_wide()
+                    });
+                if let Some(wide) = resized {
+                    self.window_signal(shown, ApprovalSignal::Resized { wide });
                 }
-                self.rebuild_view();
             }
             Step::TimerTail => {
                 self.ai_tick(self.clock.now_ms());
@@ -3453,9 +3652,8 @@ impl App {
         None
     }
 
+    /// `다시 시도` / `시뮬레이션 다시 실행` of the shown window (`ApprovalSignal::Retry`).
     fn retry_action(&mut self) {
-        #[cfg(test)]
-        self.log_approval_call(flow_support::Call::Retry);
         let failed_retryable = self.evm.approval.as_ref().is_some_and(|flow| {
             matches!(
                 flow.gate().prepare,
@@ -3472,20 +3670,14 @@ impl App {
         }
     }
 
-    /// An A01 `WM_KEYDOWN` without its window (the flow tests' key entry): the same map and steps
-    /// as `on_approval_msg` (2026-11-19, S4 B2: production keys come through `map_msg`).
+    /// A message to the panel of the window opened last (the tests' entry; 2026-11-19, S4 B6).
     #[cfg(test)]
-    fn on_approval_key(&mut self, vk: u16, repeat: bool) {
-        let steps = crate::ui::approval_input::map_key(
-            vk,
-            repeat,
-            self.input_facts(&Msg::KeyDown { vk, repeat }),
-        );
-        let _ = self.run_steps(Surface::Approval, None, &steps);
-    }
-
     pub(crate) fn on_panel_msg(&mut self, window: &Window, msg: &Msg) -> Reply {
-        self.on_surface_msg(Surface::Panel, window, msg)
+        let received = Received {
+            window,
+            shown: self.last_opened(),
+        };
+        self.on_surface_msg(Surface::Panel, &received, msg)
     }
 
     // ----- painting -----------------------------------------------------------------------
@@ -4163,8 +4355,14 @@ impl App {
         }
     }
 
+    /// A message to the AI body of the window opened last (the tests' entry; 2026-11-19, S4 B6).
+    #[cfg(test)]
     pub(crate) fn on_ai_body_msg(&mut self, window: &Window, msg: &Msg) -> Reply {
-        self.on_surface_msg(Surface::AiBody, window, msg)
+        let received = Received {
+            window,
+            shown: self.last_opened(),
+        };
+        self.on_surface_msg(Surface::AiBody, &received, msg)
     }
 
     fn ai_scroll_by(&mut self, window: &Window, delta: i32) {
@@ -4367,10 +4565,8 @@ impl App {
         }
     }
 
-    /// `다시 요청` (mouse only).
+    /// `다시 요청` (mouse only; `ApprovalSignal::AiRetry`).
     fn ai_retry(&mut self) {
-        #[cfg(test)]
-        self.log_approval_call(flow_support::Call::AiRetry);
         let now = self.clock.now_ms();
         let busy = self.llm_busy();
         let Some(ai) = self.evm.approval.as_mut().and_then(ApprovalFlow::ai_mut) else {
@@ -4427,7 +4623,7 @@ impl App {
             .as_ref()
             .is_none_or(|layout| layout.width != width)
         {
-            let layout = build_layout(
+            let mut layout = build_layout(
                 &mut dc,
                 fonts,
                 &mut win.widths,
@@ -4436,6 +4632,8 @@ impl App {
                 dpi,
                 paint.ack_checked,
             );
+            // 2026-11-19 (S4 B6, A-13): the revision of the view it was drawn from.
+            layout.view_rev = paint.view_rev;
             win.layout = Some(layout);
             let max = win
                 .layout

@@ -7,7 +7,9 @@
 //! the prepare fixture and the test `BrowserCore`, the scripted trusted-signal oracle, the RPC
 //! channel and key queue captured (never run) and the recorded dApp outlet. Inputs go through
 //! the private `interaction(event)` with explicit events and through `on_approval_key` /
-//! `on_approval_msg` / `on_panel_msg` (plan §4.6 rule 3). Nothing here touches the network, a
+//! `on_approval_msg` / `on_panel_msg` (plan §4.6 rule 3). (2026-11-19, S4 B6: those are the
+//! tests' entries for the window opened last, `interaction(event)` sends the `Event` input a
+//! window step sends, and keys go through `on_approval_msg`.) Nothing here touches the network, a
 //! card reader, a process, the clipboard or the registry; files are written only below the
 //! fixture's own temp folder (and by `print`, into `YW_S4_FLOW_OUT` when it is set).
 //!
@@ -391,8 +393,14 @@ fn click(fx: &Fixture) {
     ev(fx, RELEASE);
 }
 
+/// A key to A01 of the window opened last (2026-11-19, S4 B6: through the message entry, on a
+/// spare window the key arms read nothing from; was `on_approval_key`, the window-less key entry,
+/// which went with B6).
 fn key(fx: &Fixture, vk: u16, repeat: bool) {
-    fx.app().on_approval_key(vk, repeat);
+    let spare = spare_window();
+    let _ = fx
+        .app()
+        .on_approval_msg(&spare, &Msg::KeyDown { vk, repeat });
 }
 
 /// A hidden top-level window for the `window` argument of the message handlers (the arms
@@ -1847,12 +1855,226 @@ fn connect_toggle_layout() -> Vec<String> {
     rec.lines
 }
 
+/// The shown window's gate, interaction, store and queue as one comparable text (the A-12
+/// scenario's "nothing changed" check; no address or value).
+fn gate_state(fx: &Fixture) -> String {
+    let app = fx.app.borrow();
+    app.evm.approval.as_ref().map_or_else(
+        || "-".to_owned(),
+        |flow| {
+            let gate = flow.gate();
+            format!(
+                "{:?} {:?} ready={} fg={} ack={} sel={} submitting={} deadline={} issued={:?}                  queue={}",
+                flow.shown(),
+                flow.session().interaction().status(),
+                rel(gate.ready_at_ms),
+                gate.is_foreground,
+                gate.ack_checked,
+                gate.connect_selected,
+                gate.submitting,
+                rel(gate.deadline_ms),
+                flow.issued()
+                    .and_then(|request| app.evm.store.state(request.id)),
+                app.evm.queue.len(),
+            )
+        },
+    )
+}
+
+/// Critique A-12 (2026-11-19, S4 B6): the first request's window ends (Escape) and the second
+/// request's window opens and is armed; messages still queued for the first window's `HWND` are
+/// then delivered through the first window's `Forward`, whose `ShownId` is the first window's:
+/// the close box, Escape, Enter, `WM_ACTIVATEAPP(TRUE)` and the 50 ms timer, then a
+/// `Cmd::Approval` with an approving physical Enter for the first window. Every input is dropped:
+/// the second window's gate, interaction, store, queue and answers stay as they were (and the
+/// approving input signs nothing). The same close box through the second window's `Forward`
+/// rejects the second request. On Windows a window that has gone gets no message while effects
+/// are applied at once; under a deferred schedule (S4b, S4d) one can.
+fn stale_window_input_is_dropped() -> Vec<String> {
+    use yw_engine::approval::flow::{ApprovalInput, ApprovalSignal};
+    use yw_engine::cmd::Cmd;
+
+    use super::{Forward, Target};
+    use crate::ui::approval_input::APPROVAL_TIMER_ID;
+
+    let fx = fixture("stale-window");
+    let spare = spare_window();
+    let outlet = dapp(&fx, false, true);
+    let mut rec = Rec::new("stale_window_input_is_dropped", &fx, Some(&outlet));
+    personal_sign(&fx, &outlet, 1, 600_000);
+    personal_sign(&fx, &outlet, 2, 600_000);
+    rec.snap("two-queued");
+    let first = fx.app.borrow().last_opened();
+    let mut stale = Forward {
+        app: std::rc::Rc::downgrade(&fx.app),
+        target: Target::Approval(first),
+    };
+    ev(&fx, InteractionEvent::Tick);
+    at(&fx, 1_500);
+    key(&fx, VK_ESCAPE, false);
+    ev(&fx, InteractionEvent::Tick);
+    rec.snap("first-rejected");
+    let second = fx.app.borrow().last_opened();
+    rec.fact(
+        "windows",
+        &format!(
+            "first={} second={} shown request={}",
+            first.0,
+            second.0,
+            shown_request(&fx)
+        ),
+    );
+    at(&fx, 2_600);
+    let before = gate_state(&fx);
+    let _ = flow_support::take_log();
+    for (name, msg) in [
+        ("stale-close", Msg::Close),
+        (
+            "stale-escape",
+            Msg::KeyDown {
+                vk: VK_ESCAPE,
+                repeat: false,
+            },
+        ),
+        (
+            "stale-enter",
+            Msg::KeyDown {
+                vk: VK_RETURN,
+                repeat: false,
+            },
+        ),
+        ("stale-activate", Msg::ActivateApp(true)),
+        ("stale-timer", Msg::Timer(APPROVAL_TIMER_ID)),
+    ] {
+        let reply = stale.on(&spare, &msg);
+        let log = flow_support::take_log();
+        rec.snap(name);
+        rec.fact(
+            "dropped",
+            &format!(
+                "reply={reply:?} trace {} | second unchanged={}",
+                press_trace(&log),
+                gate_state(&fx) == before
+            ),
+        );
+    }
+    fx.app().on_cmd(Cmd::Approval(ApprovalInput {
+        shown: first,
+        foreground: true,
+        signal: ApprovalSignal::Event(InteractionEvent::ApproveActivated { physical: true }),
+    }));
+    rec.snap("stale-approving-input");
+    rec.fact(
+        "dropped",
+        &format!("second unchanged={}", gate_state(&fx) == before),
+    );
+    let mut current = Forward {
+        app: std::rc::Rc::downgrade(&fx.app),
+        target: Target::Approval(second),
+    };
+    let reply = current.on(&spare, &Msg::Close);
+    rec.snap("second-close-box");
+    rec.fact("reply", &format!("close reply={reply:?}"));
+    rec.lines
+}
+
+/// Critique A-13 (2026-11-19, S4 B6): a connect toggle carries the revision of the view its panel
+/// layout was drawn from. After a toggle redraws the view, the layout drawn before it (put back,
+/// as a deferred schedule could leave it) still hit-tests a row, but that click toggles nothing,
+/// and neither does a `Cmd::Approval` toggle of that older view; a click on a layout drawn from
+/// the view shown toggles its row. On Windows every new view drops the layout before a click
+/// can reach it (`connect_toggle_layout`), so no click is ever dropped there.
+fn connect_toggle_stale_layout() -> Vec<String> {
+    use yw_engine::approval::flow::{ApprovalInput, ApprovalSignal};
+    use yw_engine::cmd::Cmd;
+
+    let fx = fixture("connect-stale-layout");
+    let spare = spare_window();
+    let outlet = dapp(&fx, false, false);
+    let mut rec = Rec::new("connect_toggle_stale_layout", &fx, Some(&outlet));
+    connect_window(&fx, &outlet, &mut rec);
+    let row = |fx: &Fixture, index: usize| {
+        fx.app.borrow().approval_win.as_ref().and_then(|win| {
+            win.layout.as_ref().and_then(|layout| {
+                layout
+                    .accounts
+                    .iter()
+                    .find(|(at, _)| *at == index)
+                    .map(|(_, rect)| (rect.x + rect.w / 2, rect.y + rect.h / 2))
+            })
+        })
+    };
+    let press = |fx: &Fixture, (x, y): (i32, i32)| {
+        let _ = fx.app().on_panel_msg(&spare, &Msg::MouseDown { x, y });
+    };
+    let revision = |fx: &Fixture| {
+        fx.app
+            .borrow()
+            .evm
+            .approval
+            .as_ref()
+            .map_or(0, crate::approval_flow::ApprovalFlow::view_rev)
+    };
+    fx.app().paint_panel(&spare);
+    let drawn = fx
+        .app
+        .borrow()
+        .approval_win
+        .as_ref()
+        .and_then(|win| win.layout.clone());
+    let (Some(drawn), Some(row_0), Some(row_1)) = (drawn, row(&fx, 0), row(&fx, 1)) else {
+        rec.fact("error", "no layout after the paint");
+        return rec.lines;
+    };
+    let old = revision(&fx);
+    rec.fact(
+        "layout",
+        &format!("drawn from the view shown={}", drawn.view_rev == old),
+    );
+    at(&fx, 1_000);
+    press(&fx, row_1);
+    rec.snap("click-row-1");
+    rec.fact(
+        "layout",
+        &format!(
+            "new view={} layout kept={}",
+            revision(&fx) != old,
+            row(&fx, 1).is_some()
+        ),
+    );
+    if let Some(win) = fx.app().approval_win.as_mut() {
+        win.layout = Some(drawn);
+    }
+    at(&fx, 2_000);
+    press(&fx, row_0);
+    rec.snap("click-row-0-older-layout");
+    let shown = fx.app.borrow().last_opened();
+    at(&fx, 2_500);
+    fx.app().on_cmd(Cmd::Approval(ApprovalInput {
+        shown,
+        foreground: false,
+        signal: ApprovalSignal::ToggleAccount {
+            index: 0,
+            view_rev: old,
+        },
+    }));
+    rec.snap("toggle-older-view");
+    if let Some(win) = fx.app().approval_win.as_mut() {
+        win.layout = None;
+    }
+    fx.app().paint_panel(&spare);
+    at(&fx, 3_000);
+    press(&fx, row_0);
+    rec.snap("click-row-0-shown-layout");
+    rec.lines
+}
+
 // ----- the scenario table -------------------------------------------------------------------
 
 type Scenario = fn() -> Vec<String>;
 
 /// Every scenario, in golden order.
-const SCENARIOS: [(&str, Scenario); 49] = [
+const SCENARIOS: [(&str, Scenario); 51] = [
     ("reject_first", reject_first),
     ("repeat_enter_on_reject", repeat_enter_on_reject),
     ("posted_enter_on_approve", posted_enter_on_approve),
@@ -1958,6 +2180,11 @@ const SCENARIOS: [(&str, Scenario); 49] = [
         l2_connect_chain_change("approve", "l2_connect_chain_change_approve")
     }),
     ("connect_toggle_layout", connect_toggle_layout),
+    (
+        "stale_window_input_is_dropped",
+        stale_window_input_is_dropped,
+    ),
+    ("connect_toggle_stale_layout", connect_toggle_stale_layout),
 ];
 
 /// The first line where `generated` and `committed` differ, as an assertion message.
@@ -2057,6 +2284,8 @@ scenario_tests! {
     golden_l2_connect_chain_change_window_tick => "l2_connect_chain_change_window_tick",
     golden_l2_connect_chain_change_approve => "l2_connect_chain_change_approve",
     golden_connect_toggle_layout => "connect_toggle_layout",
+    golden_stale_window_input_is_dropped => "stale_window_input_is_dropped",
+    golden_connect_toggle_stale_layout => "connect_toggle_stale_layout",
 }
 
 /// Every scenario in table order: writes `flow.txt` into `YW_S4_FLOW_OUT` when it is set (for
