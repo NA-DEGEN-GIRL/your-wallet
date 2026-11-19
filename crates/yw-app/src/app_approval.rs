@@ -2640,10 +2640,21 @@ impl App {
     /// S4 F1 guard as the id check); activation (the arm delay restarts unconditionally, then the
     /// gate is foreground; no sample); the checkbox (`Redraw` when it toggled), the raw fold and a
     /// connect toggle of the shown view (a new view); `다시 시도` and `다시 요청`; the window's
-    /// width class (a new view). Each does what the window procedure did before B6, in the same
-    /// order and with the same clock reads (`interaction()`, `ActivateApp(true)`, `Close`,
-    /// `toggle_ack`, `toggle_raw`, `toggle_connect_account`, `retry_action`, `ai_retry` and the
-    /// A01 `WM_SIZE` arm).
+    /// width class (a new view). Each does what the window procedure did before B6
+    /// (`interaction()`, `ActivateApp(true)`, `Close`, `toggle_ack`, `toggle_raw`,
+    /// `toggle_connect_account`, `retry_action`, `ai_retry` and the A01 `WM_SIZE` arm), with
+    /// these differences (2026-11-20, S4 B6 review; none visible in production, where the clock
+    /// read has no side effect and a rebuild without a flow returns at once):
+    /// - an `Event` reads `now` after the window's foreground sample (`interaction()` read `now`
+    ///   first, then sampled); the sample still comes before the event;
+    /// - a dropped input (another id, or no flow) reads no clock: `toggle_ack` and
+    ///   `toggle_connect_account` read it even without a flow;
+    /// - a dropped `ToggleAccount`, `ToggleRaw` or `Resized`, and a `ToggleAccount` of an older
+    ///   view (A-13), rebuild no view: `toggle_connect_account`, `toggle_raw` and `Relayout`
+    ///   always called `rebuild_view` (whose first step reads the clock).
+    ///
+    /// With a test clock that steps on every read, a skipped read moves every later timestamp;
+    /// no scenario reaches these paths today.
     pub(crate) fn on_approval_input(&mut self, input: ApprovalInput) {
         #[cfg(test)]
         self.assert_flow_and_window_in_step();
@@ -3227,9 +3238,14 @@ impl App {
     /// An interaction event of the window `shown` (2026-11-19, S4 B6; the window half of the
     /// former `interaction()`): the gate's foreground sample of that A01, taken before the event,
     /// then the input as `Cmd::Approval` (`signal`: the event itself, or the close box, whose
-    /// event is `RejectActivated`). Without that window (it ended, or none is open) there is no
-    /// sample and the flow drops the input. `shown` is the id of the window that got the message
-    /// (`Received`), never the window shown now.
+    /// event is `RejectActivated`). Without an open window of that id there is no sample and the
+    /// input goes with `foreground: false` (2026-11-20, S4 B6 review: this comment said the flow
+    /// then drops it). The flow drops it when the id is not the shown flow's (the window ended,
+    /// or none is open); a flow of that id without its window (the pairing test builds assert in
+    /// `assert_flow_and_window_in_step`) gets the event with `false`, which never makes the gate
+    /// foreground, where `interaction()` before B6 dropped the event without a window.
+    /// `shown` is the id of the window that got the message (`Received`), never the window shown
+    /// now.
     fn window_event(&mut self, shown: Option<ShownId>, signal: ApprovalSignal) {
         // A false → true edge (activation, also within this process) restarts the arm delay.
         // The gate's foreground sample, taken before the event (2026-11-19, S4 B2: through
@@ -3473,6 +3489,12 @@ impl App {
                     return Some(reply);
                 }
             }
+            // 2026-11-20 (S4 B6 review): not an id check. A panel or AI-body message passes it
+            // while any flow is shown, and the steps after it (`FocusApproval`, `PanelClick`,
+            // `MoveFocus`, `AiExpand`) act on the shown window and flow, not on the window that
+            // got the message. Windows cannot reach the difference (an ended window gets no
+            // message while effects are applied at once); recorded in spec/15 §11.4 (B6 review)
+            // for P10/S4d, which make a deferred schedule.
             Step::AnyWindow(reply) => {
                 if self.evm.approval.is_none() {
                     return Some(reply);
@@ -3600,7 +3622,8 @@ impl App {
             }
             Step::AiExpand => {
                 // 2026-11-19 (S4 B4b): the panel state is the flow's `AiFlow`, the body's scroll
-                // the shell's `AiBody`.
+                // the shell's `AiBody`. 2026-11-20 (S4 B6 review): it flips the shown flow's
+                // panel directly, not through `Cmd::Approval` and its id check (see `AnyWindow`).
                 if let Some(ai) = self.evm.approval.as_mut().and_then(ApprovalFlow::ai_mut)
                     && ai.panel.toggle_expanded()
                     && let Some(body) = self.approval_win.as_mut().and_then(|win| win.ai.as_mut())
@@ -3637,6 +3660,11 @@ impl App {
                     self.window_signal(shown, ApprovalSignal::Resized { wide });
                 }
             }
+            // 2026-11-20 (S4 B6 review): the timer's tail after its `Tick` runs on the flow shown
+            // now, without the id check (plan §3.1 puts it inside the flow's `Event(Tick)`). A
+            // `Tick` that ends the request (`Expire`) and opens the next one's window is followed
+            // by this tail on the new flow, as before B6; moving it behind the id check would
+            // change that order, so it stays here until P10/S4d (spec/15 §11.4, B6 review).
             Step::TimerTail => {
                 self.ai_tick(self.clock.now_ms());
                 if let Some(flow) = self.evm.approval.as_ref()
