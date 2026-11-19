@@ -25,7 +25,10 @@
 //! The three latent behaviours of plan §0.1 are pinned as the code does them today: L-1
 //! (`l1_close_with_a_second_request_queued`), L-2 (`l2_connect_chain_change_*`) and L-3
 //! (`l3_site_deadline_*`). 2026-11-19 (S4 F1, owner decision O-4): L-1 is fixed; its lines now
-//! pin one rejection and the queued request shown next (only the `l1_*` lines changed). Run
+//! pin one rejection and the queued request shown next (only the `l1_*` lines changed). Same day
+//! (F1 review): the key and mouse guards of F1 are pinned too (`l1_press_past_deadline_*`: Esc,
+//! Enter, Space, Tab and a `MouseDown` on `거부` past the first window's deadline), and the
+//! `l1_close_*` block gained a `shown` fact (the request shown after the close box). Run
 //! (`#[ignore]`, gate step `s4fl`):
 //! `cargo test -p yw-app --lib --locked --offline -- --ignored --test-threads=1 app_approval::flow_tests`.
 //! Regenerate for review (PowerShell): `$env:YW_S4_FLOW_OUT='<folder>'; cargo test -p yw-app
@@ -44,7 +47,7 @@ use yw_core::vault::EvmKeySource;
 use yw_win::ui::{Handler, Msg, Reply, Window, WindowKind, WindowSpec, create_window};
 
 use super::flow_support::{self, Fixture, HostMode, Outlet, START_MS, Signals};
-use super::{Focus, PANEL_CLASS, VK_ESCAPE, VK_RETURN, VK_TAB, text};
+use super::{Focus, PANEL_CLASS, VK_ESCAPE, VK_RETURN, VK_SPACE, VK_TAB, text};
 use crate::app_evm::QueuedItem;
 use crate::events::KeyJob;
 use crate::flow::evm::prepare::{
@@ -1556,6 +1559,107 @@ fn l1_close_with_a_second_request_queued() -> Vec<String> {
     let reply = fx.app().on_approval_msg(&spare, &Msg::Close);
     rec.snap("close-box");
     rec.fact("reply", &format!("close reply={reply:?}"));
+    // 2026-11-19 (S4 F1 review): the one 4001 above is the first request's; the second is the
+    // one shown now.
+    let shown = shown_request(&fx);
+    rec.fact("shown", &format!("shown request={shown}"));
+    rec.lines
+}
+
+/// The `sequence` of the shown site request (`-`: none or not a site request).
+fn shown_request(fx: &Fixture) -> String {
+    match fx.app.borrow().evm.queue.shown().map(|item| &item.payload) {
+        Some(QueuedItem::Site(site)) => site.reply.correlation.sequence.to_string(),
+        _ => "-".to_owned(),
+    }
+}
+
+/// The interaction events, A01 Win32 side effects and flow calls of an input log, in order.
+fn press_trace(log: &[flow_support::Logged]) -> String {
+    names(log.iter().filter_map(|entry| match *entry {
+        flow_support::Logged::Event { event, .. } => {
+            let text = format!("{event:?}");
+            Some(format!(
+                "ev {}",
+                text.split([' ', '{', '(']).next().unwrap_or_default()
+            ))
+        }
+        flow_support::Logged::Effect { fx, performed } => {
+            Some(format!("fx {fx:?}{}", if performed { "" } else { "/skip" }))
+        }
+        flow_support::Logged::Call { call, .. } => Some(format!("call {call:?}")),
+        flow_support::Logged::Activated { .. } => Some("activated".to_owned()),
+        flow_support::Logged::Read { .. } | flow_support::Logged::Dropped { .. } => None,
+    }))
+}
+
+/// L-1, the key and mouse guards of F1 (2026-11-19, S4 F1 review): the first request's window
+/// is shown and armed, a second request is queued, and one press comes past the first window's
+/// deadline (`escape`, `enter` and `space` with the focus on `거부`, `tab`, or a `MouseDown` on
+/// `거부`). The press's `OtherPress` ends the first request (expired) and opens the second
+/// request's window; the rest of the message must not act on that window: one dApp answer, the
+/// second request shown `Pending` with the focus on `거부` and no button pressed, the
+/// `MouseDown` reply `Default`. Before F1, Esc, Enter and Space rejected the second request
+/// unseen, Tab moved its focus and the `MouseDown` focused it (`Handled(0)`).
+fn l1_press_past_deadline(press: &'static str, name: &'static str) -> Vec<String> {
+    let fx = fixture(name);
+    let spare = spare_window();
+    let outlet = dapp(&fx, false, true);
+    let mut rec = Rec::new(name, &fx, Some(&outlet));
+    personal_sign(&fx, &outlet, 1, 600_000);
+    personal_sign(&fx, &outlet, 2, 600_000);
+    rec.snap("two-queued");
+    let first = rec.issued;
+    ev(&fx, InteractionEvent::Tick);
+    // The buttons as painted (the hidden host never paints): `거부` at (460, 640, 120, 40).
+    if let Some(ui) = fx.app().evm.window.as_mut() {
+        ui.bottom.reject = yw_win::ui::Rect::new(460, 640, 120, 40);
+        ui.bottom.approve = yw_win::ui::Rect::new(600, 640, 120, 40);
+    }
+    at(&fx, 121_000);
+    let _ = flow_support::take_log();
+    let msg = match press {
+        "escape" => Msg::KeyDown {
+            vk: VK_ESCAPE,
+            repeat: false,
+        },
+        "enter" => Msg::KeyDown {
+            vk: VK_RETURN,
+            repeat: false,
+        },
+        "space" => Msg::KeyDown {
+            vk: VK_SPACE,
+            repeat: false,
+        },
+        "tab" => Msg::KeyDown {
+            vk: VK_TAB,
+            repeat: false,
+        },
+        _ => Msg::MouseDown { x: 520, y: 660 },
+    };
+    let reply = fx.app().on_approval_msg(&spare, &msg);
+    let log = flow_support::take_log();
+    rec.snap(press);
+    let app = fx.app.borrow();
+    let first = first
+        .and_then(|id| app.evm.store.state(id))
+        .map_or_else(|| "-".to_owned(), |state| format!("{state:?}"));
+    let pressed = app
+        .evm
+        .window
+        .as_ref()
+        .and_then(|ui| ui.pressed)
+        .map_or_else(|| "-".to_owned(), |pressed| format!("{pressed:?}"));
+    drop(app);
+    let shown = shown_request(&fx);
+    rec.fact(
+        "after",
+        &format!(
+            "first store={first} shown request={shown} pressed={pressed} reply={reply:?} | \
+             trace {}",
+            press_trace(&log)
+        ),
+    );
     rec.lines
 }
 
@@ -1689,7 +1793,7 @@ fn connect_toggle_layout() -> Vec<String> {
 type Scenario = fn() -> Vec<String>;
 
 /// Every scenario, in golden order.
-const SCENARIOS: [(&str, Scenario); 39] = [
+const SCENARIOS: [(&str, Scenario); 44] = [
     ("reject_first", reject_first),
     ("repeat_enter_on_reject", repeat_enter_on_reject),
     ("posted_enter_on_approve", posted_enter_on_approve),
@@ -1758,6 +1862,21 @@ const SCENARIOS: [(&str, Scenario); 39] = [
         "l1_close_with_a_second_request_queued",
         l1_close_with_a_second_request_queued,
     ),
+    ("l1_press_past_deadline_escape", || {
+        l1_press_past_deadline("escape", "l1_press_past_deadline_escape")
+    }),
+    ("l1_press_past_deadline_enter", || {
+        l1_press_past_deadline("enter", "l1_press_past_deadline_enter")
+    }),
+    ("l1_press_past_deadline_space", || {
+        l1_press_past_deadline("space", "l1_press_past_deadline_space")
+    }),
+    ("l1_press_past_deadline_tab", || {
+        l1_press_past_deadline("tab", "l1_press_past_deadline_tab")
+    }),
+    ("l1_press_past_deadline_mouse_reject", || {
+        l1_press_past_deadline("mouse-reject", "l1_press_past_deadline_mouse_reject")
+    }),
     ("l2_connect_chain_change_close_box", || {
         l2_connect_chain_change(false, "l2_connect_chain_change_close_box")
     }),
@@ -1851,6 +1970,11 @@ scenario_tests! {
     golden_open_failure => "open_failure",
     golden_issue_uses_one_instant => "issue_uses_one_instant",
     golden_l1_close_with_a_second_request_queued => "l1_close_with_a_second_request_queued",
+    golden_l1_press_past_deadline_escape => "l1_press_past_deadline_escape",
+    golden_l1_press_past_deadline_enter => "l1_press_past_deadline_enter",
+    golden_l1_press_past_deadline_space => "l1_press_past_deadline_space",
+    golden_l1_press_past_deadline_tab => "l1_press_past_deadline_tab",
+    golden_l1_press_past_deadline_mouse_reject => "l1_press_past_deadline_mouse_reject",
     golden_l2_connect_chain_change_close_box => "l2_connect_chain_change_close_box",
     golden_l2_connect_chain_change_main_tick => "l2_connect_chain_change_main_tick",
     golden_connect_toggle_layout => "connect_toggle_layout",

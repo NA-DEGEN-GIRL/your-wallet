@@ -811,7 +811,9 @@ const HELPERS: &str = include_str!("s4_flow/frozen-helpers.txt");
 
 /// Lines of `frozen-helpers.txt`. A commit that may remove a `mutable` line (its helper is gone)
 /// lowers this in the same commit and names the line (the check cannot pass on an emptied file).
-const HELPER_LINES: usize = 639;
+/// 2026-11-19 (S4 F1 review): 639 → 642, the three new `mutable` helpers of the F1 key and mouse
+/// scenarios (`shown_request`, `press_trace`, `l1_press_past_deadline`) are pinned too.
+const HELPER_LINES: usize = 642;
 
 /// The planned S4 commits (plan §5 with critique round 2), the only words of a commit-list rule.
 const PLANNED: [&str; 54] = [
