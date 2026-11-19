@@ -461,26 +461,6 @@ impl EvmUi {
     }
 }
 
-fn now_unix_ms() -> u64 {
-    #[cfg(test)]
-    if let Some(now) = crate::app_approval::flow_support::clock_now_unix_ms() {
-        return now;
-    }
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-        })
-}
-
-fn now_ms() -> u64 {
-    #[cfg(test)]
-    if let Some(now) = crate::app_approval::flow_support::clock_now_ms() {
-        return now;
-    }
-    yw_win::time::monotonic_ms()
-}
-
 /// How long a copy is answered at its control (2026-11-12): the check mark and `복사됨`.
 pub const COPIED_MS: u64 = 1_500;
 
@@ -1012,10 +992,10 @@ impl App {
                 at_unix_ms,
             } => self.on_broadcast(chain_id, tx_hash, outcome, at_unix_ms),
             RpcEvent::Tracked { key, result } => {
-                let now = now_ms();
-                let interval = self
-                    .group(&key)
-                    .map_or(15_000, |group| poll_interval_ms(&group, now_unix_ms()));
+                let now = self.clock.now_ms();
+                let interval = self.group(&key).map_or(15_000, |group| {
+                    poll_interval_ms(&group, self.clock.now_unix_ms())
+                });
                 let state = self.evm.tracking.entry(key).or_default();
                 state.busy = false;
                 state.drop_seen = result.drop_seen_unix_ms;
@@ -1070,7 +1050,7 @@ impl App {
             Ok(snapshot) => {
                 state.snapshot = Some(snapshot);
                 state.error = None;
-                state.updated_unix_ms = Some(now_unix_ms());
+                state.updated_unix_ms = Some(self.clock.now_unix_ms());
             }
             Err(code) => state.error = Some(code),
         }
@@ -1162,7 +1142,7 @@ impl App {
             return;
         }
         let chain_id = self.settings.evm_chain_id;
-        self.evm.next_balance_ms = now_ms().saturating_add(BALANCE_REFRESH_MS);
+        self.evm.next_balance_ms = self.clock.now_ms().saturating_add(BALANCE_REFRESH_MS);
         let chain = match self.chain_job(chain_id) {
             Ok(chain) => chain,
             // No address is U17's own line; anything else (an unknown chain) is a failed read,
@@ -1250,7 +1230,7 @@ impl App {
     /// Ensures every open group is tracked; `now_too` polls them immediately (reconcile after
     /// unlock, spec/03 §5.4).
     pub fn schedule_tracking(&mut self, now_too: bool) {
-        let now = now_ms();
+        let now = self.clock.now_ms();
         let open: Vec<GroupKey> = self.open_groups().into_iter().map(|(key, _)| key).collect();
         self.evm.tracking.retain(|key, _| open.contains(key));
         for key in open {
@@ -1305,7 +1285,7 @@ impl App {
                 input: TrackInput {
                     group,
                     drop_seen_unix_ms: drop_seen,
-                    now_unix_ms: now_unix_ms(),
+                    now_unix_ms: self.clock.now_unix_ms(),
                     allow_rebroadcast: !manual,
                 },
             }) && let Some(state) = self.evm.tracking.get_mut(&key)
@@ -1320,7 +1300,7 @@ impl App {
         if matches!(self.mode, AppMode::Unlocked { .. }) && !transitions.is_empty() {
             self.key(KeyJob::JournalApply {
                 transitions,
-                now_unix_ms: now_unix_ms(),
+                now_unix_ms: self.clock.now_unix_ms(),
             });
         }
     }
@@ -1444,7 +1424,7 @@ impl App {
         let Some(edited) = self.evm.send.dirty_ms else {
             return;
         };
-        let waited = now_ms().saturating_sub(edited);
+        let waited = self.clock.now_ms().saturating_sub(edited);
         if waited >= SEND_QUOTE_PAUSE_MS {
             self.evm.send.dirty_ms = None;
             self.validate_send(true);
@@ -2026,7 +2006,7 @@ impl App {
     pub fn discard_group(&mut self, key: GroupKey) {
         self.apply_transitions(vec![Transition::Discarded {
             key,
-            at_unix_ms: now_unix_ms(),
+            at_unix_ms: self.clock.now_unix_ms(),
         }]);
     }
 
@@ -2067,7 +2047,7 @@ impl App {
         if ok {
             self.copied = Some(Copied {
                 id: crate::ui::cmd_table::id_of(mark.anchor),
-                until_ms: now_ms().saturating_add(COPIED_MS),
+                until_ms: self.clock.now_ms().saturating_add(COPIED_MS),
                 address: mark.address,
             });
             // An earlier failure's band no longer holds.

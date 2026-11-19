@@ -23,10 +23,12 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use yw_core::error::{StorageError, VaultError};
 use yw_core::lang::Lang;
 use yw_core::vault::{FileKind, LockedSlot, SLOT_LEN, VaultStorage, peek_generation};
+use yw_platform::Clock;
 use yw_win::WinError;
 use yw_win::file::{
     FileError, ensure_dir, flush_dir, read_limited_no_reparse, reject_reparse_point,
@@ -426,12 +428,18 @@ impl WalletStore for FileStorage {
 pub struct WinKeyPlatform;
 
 impl WinKeyPlatform {
-    /// The production set: this platform, `SystemClock` (`GetTickCount64`, the App's time base)
-    /// and the PC/SC readers. Only `main.rs` calls it (the source scan
-    /// `card_pcsc::tests::pcsc_readers_only_from_main`).
+    /// The production set: this platform, the App's `clock` and the PC/SC readers. Only
+    /// `main.rs` calls it (the source scan `card_pcsc::tests::pcsc_readers_only_from_main`).
+    /// 2026-11-19 (S4 B1a, spec/15 §11.4 S4 critique B-19): `main.rs` passes the App's clock,
+    /// which the worker reads through [`ArcClock`](crate::system_clock::ArcClock); before, its
+    /// own `SystemClock` (`GetTickCount64`, the same base).
     #[must_use]
-    pub fn deps() -> KeyDeps {
-        Self::deps_with_cards(Box::new(crate::card_pcsc::PcscSource))
+    pub fn deps(clock: Arc<dyn Clock>) -> KeyDeps {
+        KeyDeps {
+            platform: Box::new(Self),
+            clock: Box::new(crate::system_clock::ArcClock(clock)),
+            cards: Box::new(crate::card_pcsc::PcscSource),
+        }
     }
 
     /// This platform and `SystemClock` with another card source: tests on real wallet files pass

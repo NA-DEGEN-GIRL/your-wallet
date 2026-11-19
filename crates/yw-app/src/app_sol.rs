@@ -49,26 +49,6 @@ pub const SOL_SEND_DEBOUNCE_MS: u64 = 500;
 /// Activity rows shown.
 pub const SOL_MAX_ACTIVITY_ROWS: usize = 50;
 
-fn now_ms() -> u64 {
-    #[cfg(test)]
-    if let Some(now) = crate::app_approval::flow_support::clock_now_ms() {
-        return now;
-    }
-    yw_win::time::monotonic_ms()
-}
-
-pub(crate) fn now_unix_ms() -> u64 {
-    #[cfg(test)]
-    if let Some(now) = crate::app_approval::flow_support::clock_now_unix_ms() {
-        return now;
-    }
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-        })
-}
-
 /// Settings cluster → core cluster (`network::SolCluster::core`, 2026-11-17).
 #[must_use]
 pub const fn core_cluster(cluster: crate::network::SolCluster) -> SolCluster {
@@ -1202,7 +1182,7 @@ impl App {
 
     /// Asks the balances of the visible accounts (Solana tab, spec/04 §2.6).
     pub fn sol_refresh_balances(&mut self) {
-        self.sol.next_balance_ms = now_ms().saturating_add(SOL_BALANCE_REFRESH_MS);
+        self.sol.next_balance_ms = self.clock.now_ms().saturating_add(SOL_BALANCE_REFRESH_MS);
         let cluster = self.sol_cluster();
         let mut accounts: Vec<SolAddress> = self
             .sol_account_rows()
@@ -1315,7 +1295,9 @@ impl App {
                             self.sol.tokens.insert((cluster, row.address), row.tokens);
                         }
                         self.sol.balance_error.remove(&cluster);
-                        self.sol.balance_at.insert(cluster, now_unix_ms());
+                        self.sol
+                            .balance_at
+                            .insert(cluster, self.clock.now_unix_ms());
                     }
                     Err(code) => {
                         self.sol.balance_error.insert(cluster, code);
@@ -1760,7 +1742,7 @@ impl App {
                     self.show_failure(ErrorCode::Vlt005, false, ErrorCode::Vlt005.text_in(lang));
                     return;
                 };
-                let now_unix = now_unix_ms();
+                let now_unix = self.clock.now_unix_ms();
                 let intent = prepared.intent(id.0, now_unix);
                 if prepared.core.cu_limit != template_cu_limit(prepared.core.asset) {
                     self.show_failure(ErrorCode::App009, false, ErrorCode::App009.text_in(lang));
@@ -1885,7 +1867,7 @@ impl App {
                     consumed_at_ms: pending.consumed_at_ms,
                     blockhash,
                     last_valid_block_height,
-                    now_unix_ms: now_unix_ms(),
+                    now_unix_ms: self.clock.now_unix_ms(),
                     pin: pin.into_inner(),
                 }),
                 None => self.key(KeyJob::SignSol {
@@ -1893,7 +1875,7 @@ impl App {
                     consumed_at_ms: pending.consumed_at_ms,
                     blockhash,
                     last_valid_block_height,
-                    now_unix_ms: now_unix_ms(),
+                    now_unix_ms: self.clock.now_unix_ms(),
                 }),
             },
             Err(error) => {
@@ -1948,7 +1930,7 @@ impl App {
                 } else {
                     self.refresh();
                 }
-                self.sol_tick_tracking(now_ms());
+                self.sol_tick_tracking(self.clock.now_ms());
             }
             Err(failure) => {
                 let cause = match failure {
@@ -2073,7 +2055,7 @@ impl App {
             state.next_ms = 0;
         }
         logging::info("app", "sol.send_now", &[]);
-        self.sol_tick_tracking(now_ms());
+        self.sol_tick_tracking(self.clock.now_ms());
         self.refresh();
     }
 
@@ -2153,7 +2135,7 @@ impl App {
 
     /// A broadcast round finished (RPC worker).
     fn on_sol_tracked(&mut self, result: &TrackResult) {
-        let now = now_ms();
+        let now = self.clock.now_ms();
         let Some(state) = self.sol.tracking.get_mut(&result.signature) else {
             return;
         };
@@ -2210,7 +2192,7 @@ impl App {
                 state.halt = Some(SolHalt::Saving { since_ms: now });
                 self.key(KeyJob::SolApply {
                     transition,
-                    now_unix_ms: now_unix_ms(),
+                    now_unix_ms: self.clock.now_unix_ms(),
                 });
             }
             // Locked: the journal is written after unlock (spec/07 §14.2); the loop resumes from
@@ -2508,7 +2490,7 @@ mod tests {
 
     use super::{
         ReviewRefusal, SOL_APPLY_RETRY_MS, SOL_REVIEW_CHANGED_TEXT, SOL_SAVE_FAILED_TEXT,
-        SOL_SAVING_TEXT, SOL_SCAN_RECONFIRM_TEXT, ScanStage, SolHalt, now_ms,
+        SOL_SAVING_TEXT, SOL_SCAN_RECONFIRM_TEXT, ScanStage, SolHalt,
     };
     use crate::apikeys::ApiKeys;
     use crate::app::{App, AppMode, Paths, Screen};
@@ -2661,7 +2643,7 @@ mod tests {
         );
         // Still `Pending` in the journal long after `SolApply`: the write failed. The loop
         // resumes (to observe and save again) and says so.
-        app.sol_tick_tracking(now_ms().saturating_add(SOL_APPLY_RETRY_MS));
+        app.sol_tick_tracking(app.clock.now_ms().saturating_add(SOL_APPLY_RETRY_MS));
         let state = app.sol.tracking[&signature];
         assert_eq!(state.halt, None);
         assert!(state.save_failed);
@@ -2870,7 +2852,7 @@ mod tests {
             crate::network::NetworkId::Solana(crate::network::SolCluster::Mainnet),
             &url,
         );
-        app.sol_tick_tracking(now_ms());
+        app.sol_tick_tracking(app.clock.now_ms());
         let mut sent: Vec<([u8; 64], bool)> = jobs
             .try_iter()
             .filter_map(|job| match job {

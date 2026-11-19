@@ -1615,7 +1615,7 @@ fn idle_first_run_import_is_discarded() {
     h.pump();
     assert!(matches!(h.app.screen, Screen::ImportAddress(_)));
     assert_eq!(h.app.mode, AppMode::NoVault);
-    let start = super::now_ms();
+    let start = h.app.clock.now_ms();
     h.app.idle = IdleTracker::new(start);
     let minutes = u64::from(h.app.settings.auto_lock_minutes);
     h.app.idle_tick(start + minutes * 60_000 - 1);

@@ -259,10 +259,11 @@ mod tests {
 
     /// Only `main.rs` gives the key worker the machine's PC/SC readers (2026-11-17 S2 review,
     /// AGENTS rule 3): in every source, test code included (`src` and `tests` of yw-app and,
-    /// once it exists, yw-engine), `WinKeyPlatform::deps()` is called only by `main.rs` and
+    /// once it exists, yw-engine), `WinKeyPlatform::deps(…)` is called only by `main.rs` and
     /// `PcscSource` is named in code only by its definition and `store.rs` (`deps`). Tests on
     /// real files use `WinKeyPlatform::deps_with_cards` with `yubikey::NoReaders` or the
-    /// emulator. Comment lines are not code.
+    /// emulator. Comment lines are not code. (2026-11-19, S4 B1a: `deps` takes the App's clock,
+    /// so the scan matches `WinKeyPlatform::deps(`; before, `WinKeyPlatform::deps()`.)
     #[test]
     fn pcsc_readers_only_from_main() {
         let mut sources = Vec::new();
@@ -285,7 +286,7 @@ mod tests {
             let pcsc_allowed = name == "card_pcsc.rs" || name == "store.rs";
             let deps_allowed = name == "main.rs" || name == "card_pcsc.rs";
             if (code.contains("PcscSource") && !pcsc_allowed)
-                || (code.contains("WinKeyPlatform::deps()") && !deps_allowed)
+                || (code.contains("WinKeyPlatform::deps(") && !deps_allowed)
             {
                 offenders.push(path.display().to_string());
             }

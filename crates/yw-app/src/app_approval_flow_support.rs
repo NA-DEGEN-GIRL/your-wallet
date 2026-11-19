@@ -7,9 +7,16 @@
 //! cleared when it drops:
 //!
 //! - `TEST_CLOCK`: one [`TestClock`] (manual, or stepping by a fixed amount at every read)
-//!   shared by the App wrappers, the prepare fixture and the test `BrowserCore`s
-//!   ([`core_clock`]), so `sim_received_ms`, the site deadline and the App's own reads have one
-//!   base (S4 critique A-9/B-19). B1a/B1b replace it with the injected `Clock`. The wrappers:
+//!   shared by the App wrappers, the prepare fixture and the test `BrowserCore`s, so
+//!   `sim_received_ms`, the site deadline and the App's own reads have one base (S4 critique
+//!   A-9/B-19). B1a/B1b replace it with the injected `Clock`. Since S4 B1a (2026-11-19) the
+//!   fixture's App reads the same `TestClock` as its injected clock ([`App::with_clock`]): the
+//!   wrappers of `app`, `app_approval`, `app_card`, `app_browser`, `app_evm` and `app_sol` and
+//!   the two `app_sol_dapp` reads and the EVM connect grant time of `app_browser` became
+//!   `self.clock` reads at the same lines, and the test
+//!   `BrowserCore`s take the App's clock (before, `core_clock()`, which returned the installed
+//!   test clock or `SystemClock`); `TEST_CLOCK` now serves only the B1b wrappers below. The
+//!   wrappers (before B1a):
 //!   `now_ms`/`now_unix_ms` of `app_approval`, `app_card`, `app_browser`, `app_evm`, `app`,
 //!   `app_sol` (plan §4.5), and since the A3 review (2026-11-18) also those of `app_chain_sites`
 //!   (SOL/BTC connect grant time, SIWS check), `app_btc` (its `BtcCtx` times: fee-quote
@@ -278,15 +285,6 @@ pub(crate) fn clock_now_unix_ms() -> Option<u64> {
     installed_clock().map(|clock| clock.unix_at(clock.read()))
 }
 
-/// The clock of a test `BrowserCore`: the installed test clock, else the system clock (what
-/// the tests that install none had before 2026-11-18).
-pub(crate) fn core_clock() -> Arc<dyn Clock> {
-    installed_clock().map_or_else(
-        || Arc::new(crate::system_clock::SystemClock) as Arc<dyn Clock>,
-        |clock| clock as Arc<dyn Clock>,
-    )
-}
-
 /// Sets this thread's approval host mode (`None`: real windows).
 pub(crate) fn set_host(mode: Option<HostMode>) {
     let _ = TEST_APPROVAL_HOST.try_with(|slot| slot.set(mode));
@@ -431,7 +429,9 @@ impl Fixture {
             NetworkId::Eip155(11_155_111),
             &HttpsUrl::parse("https://rpc.example.test/").unwrap(),
         );
-        let app = Rc::new(RefCell::new(App::new(
+        // The App reads the same clock (injected since S4 B1a, 2026-11-19; before, through the
+        // `TEST_CLOCK` seam of its wrappers).
+        let app = Rc::new(RefCell::new(App::with_clock(
             Paths {
                 data: dir.clone(),
                 logs: dir.join("logs"),
@@ -439,6 +439,7 @@ impl Fixture {
             true,
             Settings::default(),
             apikeys,
+            Arc::clone(&clock) as Arc<dyn Clock>,
         )));
         let (tx, rpc) = mpsc::channel();
         {
@@ -539,7 +540,7 @@ impl Fixture {
         let core = crate::browser::BrowserCore::new(
             EXTENSION_ID,
             Arc::clone(&events) as Arc<dyn crate::browser::DappSink>,
-            core_clock(),
+            Arc::clone(&self.clock) as Arc<dyn Clock>,
         );
         let (sender, frames) = mpsc::channel();
         let conn = core.open_connection(Box::new(sender));
@@ -696,7 +697,7 @@ fn seams_are_inert_without_a_fixture_and_the_clock_steps() {
     set_clock(Some(Arc::clone(&clock)));
     assert_eq!(clock_now_ms(), Some(10));
     assert_eq!(clock_now_unix_ms(), Some(clock.unix_at(15)));
-    assert_eq!(core_clock().now_ms(), 20);
+    assert_eq!((Arc::clone(&clock) as Arc<dyn Clock>).now_ms(), 20);
     clock.set_step(0);
     clock.set(100);
     clock.advance(1);
@@ -707,22 +708,39 @@ fn seams_are_inert_without_a_fixture_and_the_clock_steps() {
 
 /// Every `now_ms`/`now_unix_ms` wrapper of the App reads the test clock first (S4 A3 review,
 /// 2026-11-18), so a fixture's App, its prepare fixture and its `BrowserCore` share one time base
-/// on every approval path (the inline reads are listed in the module doc).
+/// on every approval path (the inline reads are listed in the module doc). Since S4 B1a
+/// (2026-11-19) the files whose wrappers became `self.clock` reads have none left and no
+/// test-clock read (before, 18 wrappers in 13 files).
 #[test]
 fn every_app_time_wrapper_reads_the_test_clock() {
-    let sources = [
+    let injected = [
         ("app.rs", include_str!("app.rs")),
         ("app_approval.rs", include_str!("app_approval.rs")),
-        ("app_book.rs", include_str!("app_book.rs")),
         ("app_browser.rs", include_str!("app_browser.rs")),
-        ("app_btc.rs", include_str!("app_btc.rs")),
         ("app_card.rs", include_str!("app_card.rs")),
-        ("app_chain_sites.rs", include_str!("app_chain_sites.rs")),
         ("app_evm.rs", include_str!("app_evm.rs")),
+        ("app_sol.rs", include_str!("app_sol.rs")),
+        ("app_sol_dapp.rs", include_str!("app_sol_dapp.rs")),
+    ];
+    for (file, text) in injected {
+        for gone in [
+            "fn now_ms() -> u64 {",
+            "fn now_unix_ms() -> u64 {",
+            "flow_support::clock_now_ms()",
+            "flow_support::clock_now_unix_ms()",
+            "time::monotonic_ms()",
+            "SystemTime::now()",
+        ] {
+            assert!(!text.contains(gone), "{file}: {gone}");
+        }
+    }
+    let sources = [
+        ("app_book.rs", include_str!("app_book.rs")),
+        ("app_btc.rs", include_str!("app_btc.rs")),
+        ("app_chain_sites.rs", include_str!("app_chain_sites.rs")),
         ("app_hypercore.rs", include_str!("app_hypercore.rs")),
         ("app_received.rs", include_str!("app_received.rs")),
         ("app_reset.rs", include_str!("app_reset.rs")),
-        ("app_sol.rs", include_str!("app_sol.rs")),
         ("app_zec.rs", include_str!("app_zec.rs")),
     ];
     let mut wrappers = 0_usize;
@@ -751,7 +769,7 @@ fn every_app_time_wrapper_reads_the_test_clock() {
             }
         }
     }
-    assert_eq!(wrappers, 18, "the wrappers of plan §4.5 and the A3 review");
+    assert_eq!(wrappers, 8, "the A3-review wrappers that S4 B1b converts");
 }
 
 /// No top-level approval or panel window of this process exists (real Win32 lookup).

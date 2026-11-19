@@ -30,7 +30,7 @@ use yw_app::shell_msg::{
     WM_YW_SHORTCUT, WM_YW_TAB_SHORTCUT, chain_tab_key,
 };
 use yw_app::store::WinKeyPlatform;
-use yw_app::system_clock::SystemClock;
+use yw_app::system_clock::ArcClock;
 use yw_app::workers::key::{KeyWorker, run as run_key_worker};
 use yw_app::workers::rpc::{RpcWorker, run as run_rpc_worker};
 use yw_core::lang::Lang;
@@ -341,15 +341,21 @@ fn main() -> ExitCode {
     {
         let mut state = app.borrow_mut();
         let (queue, signal) = state.worker_channels();
+        // One clock for the App, both workers and the browser dispatcher (2026-11-19, S4 B1a,
+        // spec/15 §11.4 S4): `App::new` built it (`SystemClock`, `GetTickCount64`).
+        let clock = state.clock();
+        let key_clock = Arc::clone(&clock);
+        let rpc_clock = Arc::clone(&clock);
         let key_events = Arc::clone(&events);
         let dir = paths.data.clone();
         let key_thread = std::thread::Builder::new()
             .name("yw-key".to_owned())
             .spawn(move || {
-                // The production platform: `FileStorage`, the `VirtualLock` slot, `SystemClock`
-                // and the PC/SC readers (spec/15 §11.4 S2).
+                // The production platform: `FileStorage`, the `VirtualLock` slot, the App's clock
+                // and the PC/SC readers (spec/15 §11.4 S2; the App's clock since 2026-11-19 S4
+                // B1a, before its own `SystemClock`).
                 run_key_worker(
-                    KeyWorker::new(&dir, WinKeyPlatform::deps()),
+                    KeyWorker::new(&dir, WinKeyPlatform::deps(key_clock)),
                     &queue,
                     &|result| {
                         if key_events.push(UiEvent::Key(Box::new(result))).is_err() {
@@ -371,9 +377,13 @@ fn main() -> ExitCode {
         let rpc_thread = std::thread::Builder::new()
             .name("yw-rpc".to_owned())
             .spawn(move || {
-                // The production clock is the `GetTickCount64` base (spec/15 §11.4 S2).
-                let worker =
-                    RpcWorker::new(rpc_transport, Box::new(SystemClock), Limits::PRODUCTION);
+                // The production clock is the `GetTickCount64` base (spec/15 §11.4 S2), the App's
+                // `Arc` since 2026-11-19 (S4 B1a; before, its own `SystemClock`).
+                let worker = RpcWorker::new(
+                    rpc_transport,
+                    Box::new(ArcClock(rpc_clock)),
+                    Limits::PRODUCTION,
+                );
                 run_rpc_worker(worker, &rpc_rx, &rpc_events);
             });
         match (key_thread, rpc_thread) {
@@ -383,7 +393,7 @@ fn main() -> ExitCode {
             _ => return fail(start_text::THREADS_FAILED.get(lang)),
         }
         // Browser bridge: dispatcher, read workers, pipe server (spec/05 §8.1, within 2 s).
-        state.attach_browser(BrowserUi::start(&events, transport));
+        state.attach_browser(BrowserUi::start(&events, transport, clock));
         // 8. Classify the vault. The key worker first learns the language: the default labels of
         // a new or imported wallet are written in it (spec/14 §1).
         state.key(KeyJob::SetLanguage(lang));

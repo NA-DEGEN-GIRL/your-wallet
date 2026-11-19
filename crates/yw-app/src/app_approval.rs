@@ -492,26 +492,6 @@ impl Handler for Forward {
     }
 }
 
-fn now_ms() -> u64 {
-    #[cfg(test)]
-    if let Some(now) = flow_support::clock_now_ms() {
-        return now;
-    }
-    yw_win::time::monotonic_ms()
-}
-
-fn now_unix_ms() -> u64 {
-    #[cfg(test)]
-    if let Some(now) = flow_support::clock_now_unix_ms() {
-        return now;
-    }
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-        })
-}
-
 fn char_width(
     dc: &mut PaintDc<'_>,
     fonts: &Fonts,
@@ -1503,7 +1483,7 @@ impl App {
             return;
         }
         loop {
-            let now = now_ms();
+            let now = self.clock.now_ms();
             let mut finished = Vec::new();
             let shown = self.evm.queue.show_next(now, &mut finished);
             for (item, outcome) in finished {
@@ -1674,7 +1654,7 @@ impl App {
         reason = "window, panel, AI body and session set up in order"
     )]
     fn open_approval(&mut self, item: QueuedItem) -> Result<(), ()> {
-        let now = now_ms();
+        let now = self.clock.now_ms();
         let connect = match &item {
             QueuedItem::Site(site) if site.kind.is_connect() => Some(self.connect_state(site)),
             _ => None,
@@ -1832,9 +1812,10 @@ impl App {
         ui.job = job;
         ui.failure = None;
         let item = ui.item.clone();
-        let _ = ui
-            .session
-            .replace_content(now_ms(), PrepareState::Preparing(PrepareStage::Building));
+        let _ = ui.session.replace_content(
+            self.clock.now_ms(),
+            PrepareState::Preparing(PrepareStage::Building),
+        );
         match item {
             QueuedItem::App(app) => self.prepare_transaction(job, &app, None),
             QueuedItem::Site(site) => self.prepare_site(job, &site),
@@ -1923,7 +1904,7 @@ impl App {
     /// The dApp items: connect window content, transaction preparation, message drafts.
     #[expect(clippy::too_many_lines, reason = "one arm per dApp request kind")]
     fn prepare_site(&mut self, job: u64, site: &SiteRequest) {
-        let now = now_ms();
+        let now = self.clock.now_ms();
         match &site.kind {
             SiteKind::RequestAccounts
             | SiteKind::RequestPermissions
@@ -1995,7 +1976,7 @@ impl App {
                         yw_core::approval::ApprovalKind::EvmPersonalSign,
                         &chain,
                         &decoded,
-                        now_unix_ms(),
+                        self.clock.now_unix_ms(),
                     )
                     .ok()
                 });
@@ -2170,7 +2151,7 @@ impl App {
                 &chain,
                 &typed,
                 facts,
-                now_unix_ms(),
+                self.clock.now_unix_ms(),
             )
             .ok()
         });
@@ -2190,9 +2171,10 @@ impl App {
     pub(crate) fn show_failure(&mut self, code: ErrorCode, retryable: bool, text: String) {
         if let Some(ui) = self.evm.window.as_mut() {
             ui.failure = Some(text);
-            let _ = ui
-                .session
-                .replace_content(now_ms(), PrepareState::Failed { code, retryable });
+            let _ = ui.session.replace_content(
+                self.clock.now_ms(),
+                PrepareState::Failed { code, retryable },
+            );
         }
         self.ai_ready(AiReady::Skip(SKIP_FAILED.get(self.approval_lang())));
         self.rebuild_view();
@@ -2212,7 +2194,7 @@ impl App {
             }
             // spec/06 §3.2: a result arriving after the window closed is dropped.
             if let Some(mut ai) = ui.ai.take() {
-                if let Some(ended) = ai.panel.close(now_ms()) {
+                if let Some(ended) = ai.panel.close(self.clock.now_ms()) {
                     log_request(&ai.host, ai.kind, &ended, None);
                 }
                 drop(ai.body);
@@ -2266,7 +2248,7 @@ impl App {
             && ui.job == job
         {
             let _ = ui.session.replace_content(
-                now_ms(),
+                self.clock.now_ms(),
                 PrepareState::Preparing(PrepareStage::Simulating { since_ms }),
             );
             self.rebuild_view();
@@ -2334,7 +2316,7 @@ impl App {
         draft: yw_core::approval::ApprovalDraft,
         prepared: Option<Box<Prepared>>,
     ) {
-        self.show_ready_draft_at(draft, prepared, now_unix_ms());
+        self.show_ready_draft_at(draft, prepared, self.clock.now_unix_ms());
     }
 
     /// [`Self::show_ready_draft`] with the wall-clock display time given (the SOL intent binds
@@ -2345,7 +2327,7 @@ impl App {
         prepared: Option<Box<Prepared>>,
         now_unix: u64,
     ) {
-        let now = now_ms();
+        let now = self.clock.now_ms();
         let mut draft = draft;
         let site_origin = self.evm.window.as_ref().and_then(|ui| match &ui.item {
             QueuedItem::Site(site) => Some(site.origin.clone()),
@@ -2428,7 +2410,7 @@ impl App {
                 ui.resim_click = false;
                 // Same content, but a new approval (checkbox, arm delay, fresh interaction).
                 let prepare = ui.session.gate.prepare.clone();
-                let _ = ui.session.replace_content(now_ms(), prepare);
+                let _ = ui.session.replace_content(self.clock.now_ms(), prepare);
             }
             self.rebuild_view();
             return;
@@ -2468,7 +2450,7 @@ impl App {
             );
             return;
         };
-        let now = now_ms();
+        let now = self.clock.now_ms();
         if let Some(ui) = self.evm.window.as_mut() {
             ui.request = Some(request.clone());
             ui.prepared = Some(prepared);
@@ -2503,7 +2485,7 @@ impl App {
     }
 
     fn approved(&mut self) {
-        let now = now_ms();
+        let now = self.clock.now_ms();
         let connect = self
             .evm
             .window
@@ -2626,12 +2608,12 @@ impl App {
             if sent {
                 // C1: the approval that asked for this re-simulation has been acted on; the
                 // terminal `Approved` status must not dispatch it again on the next tick.
-                let _ = ui.session.restart_interaction(now_ms());
+                let _ = ui.session.restart_interaction(self.clock.now_ms());
             } else {
                 ui.status = Some(ErrorCode::Rpc001.text_in(ui.lang));
                 ui.resim_click = false;
                 let prepare = ui.session.gate.prepare.clone();
-                let _ = ui.session.replace_content(now_ms(), prepare);
+                let _ = ui.session.replace_content(self.clock.now_ms(), prepare);
             }
         }
         self.rebuild_view();
@@ -2642,7 +2624,7 @@ impl App {
         reason = "one branch per approval kind, in the order of spec/03 §11.5"
     )]
     fn consume_and_sign(&mut self) {
-        let now = now_ms();
+        let now = self.clock.now_ms();
         let Some(ui) = self.evm.window.as_ref() else {
             return;
         };
@@ -2804,7 +2786,7 @@ impl App {
                             origin,
                             label: request.display.title.clone(),
                             role: prepared.context.role,
-                            now_unix_ms: now_unix_ms(),
+                            now_unix_ms: self.clock.now_unix_ms(),
                         };
                         // The S11 send: an app item that replaces nothing (speed-up and cancel
                         // come from the activity list).
@@ -2890,7 +2872,7 @@ impl App {
     }
 
     fn interaction(&mut self, event: InteractionEvent) {
-        let now = now_ms();
+        let now = self.clock.now_ms();
         let Some(ui) = self.evm.window.as_mut() else {
             #[cfg(test)]
             flow_support::log_input(flow_support::Logged::Event {
@@ -2938,7 +2920,7 @@ impl App {
                 if let Some(ui) = self.evm.window.as_ref() {
                     if ui.bottom.bar.w <= 0 {
                         ui.window.invalidate();
-                    } else if bar_state(ui, waiting, now_ms()) != ui.bar {
+                    } else if bar_state(ui, waiting, self.clock.now_ms()) != ui.bar {
                         ui.window.invalidate_rect(ui.bottom.bar);
                     }
                 }
@@ -2958,7 +2940,7 @@ impl App {
         reason = "badges, connect view and signing view of every queue item kind"
     )]
     fn rebuild_view_with(&mut self, force: bool) {
-        let now = now_ms();
+        let now = self.clock.now_ms();
         self.refresh_connect_chain();
         let testnet_chain = self.evm.window.as_ref().map(|ui| match &ui.connect {
             Some(connect) if connect.family == yw_core::policy::Family::Evm => connect.chain_id,
@@ -3200,7 +3182,7 @@ impl App {
     fn toggle_ack(&mut self) {
         #[cfg(test)]
         self.log_approval_call(flow_support::Call::ToggleAck);
-        let now = now_ms();
+        let now = self.clock.now_ms();
         if let Some(ui) = self.evm.window.as_mut()
             && ui.view.blocks.contains(&Block::Ack)
         {
@@ -3219,7 +3201,7 @@ impl App {
     fn toggle_connect_account(&mut self, index: usize) {
         #[cfg(test)]
         self.log_approval_call(flow_support::Call::ToggleAccount(index));
-        let now = now_ms();
+        let now = self.clock.now_ms();
         if let Some(ui) = self.evm.window.as_mut()
             && let Some(connect) = ui.connect.as_mut()
             && index < connect.selected.len()
@@ -3286,7 +3268,7 @@ impl App {
             }
             Msg::Timer(APPROVAL_TIMER_ID) => {
                 self.interaction(InteractionEvent::Tick);
-                self.ai_tick(now_ms());
+                self.ai_tick(self.clock.now_ms());
                 if let Some(ui) = self.evm.window.as_ref()
                     && matches!(
                         ui.session.gate.prepare,
@@ -3421,7 +3403,7 @@ impl App {
                     focus: self.evm.window.as_ref().map(|ui| ui.focus),
                 });
                 if let Some(ui) = self.evm.window.as_mut() {
-                    let now = now_ms();
+                    let now = self.clock.now_ms();
                     ui.session.restart_arm_delay(now);
                     ui.session.set_foreground(now, true);
                 }
@@ -3638,7 +3620,7 @@ impl App {
 
     #[expect(clippy::too_many_lines, reason = "the fixed A01 areas in order")]
     fn paint_approval(&mut self, window: &Window) {
-        let now = now_ms();
+        let now = self.clock.now_ms();
         let dpi = window.dpi();
         let client = window.client_rect();
         let llm_busy = self
@@ -4196,7 +4178,7 @@ impl App {
     /// Paints the AI panel body (spec/06 §6): plain text laid out by `ui::text_layout`, wrapped
     /// only; no links, formatting, click actions or copy.
     fn paint_ai_body(&mut self, window: &Window) {
-        let now = now_ms();
+        let now = self.clock.now_ms();
         let dpi = window.dpi();
         let client = window.client_rect();
         let lang = self.approval_lang();
@@ -4364,7 +4346,7 @@ impl App {
         dispatch: Option<Dispatch>,
         stats: Option<&RequestStats>,
     ) {
-        let now = now_ms();
+        let now = self.clock.now_ms();
         let Self { evm, llm, .. } = self;
         let Some(ui) = evm.window.as_mut() else {
             return;
@@ -4396,7 +4378,7 @@ impl App {
     }
 
     fn ai_ready(&mut self, ready: AiReady) {
-        let now = now_ms();
+        let now = self.clock.now_ms();
         let busy = self.llm_busy();
         let Some(ai) = self.evm.window.as_mut().and_then(|ui| ui.ai.as_mut()) else {
             return;
@@ -4537,7 +4519,7 @@ impl App {
     fn ai_retry(&mut self) {
         #[cfg(test)]
         self.log_approval_call(flow_support::Call::AiRetry);
-        let now = now_ms();
+        let now = self.clock.now_ms();
         let busy = self.llm_busy();
         let Some(ai) = self.evm.window.as_mut().and_then(|ui| ui.ai.as_mut()) else {
             return;
@@ -4548,7 +4530,7 @@ impl App {
 
     /// A `yw-llm` result (spec/06 §3.2): applied only to the open window's current request.
     pub(crate) fn on_llm_done(&mut self, done: LlmDone) {
-        let now = now_ms();
+        let now = self.clock.now_ms();
         let Some(ai) = self
             .evm
             .window

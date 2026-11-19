@@ -548,26 +548,6 @@ const fn retryable(error: CardJobError) -> bool {
 // waiting for the touch) is not signed, the running one continues ([`text::BUSY`], spec/10
 // §9.2).
 
-fn now_ms() -> u64 {
-    #[cfg(test)]
-    if let Some(now) = crate::app_approval::flow_support::clock_now_ms() {
-        return now;
-    }
-    yw_win::time::monotonic_ms()
-}
-
-fn now_unix_ms() -> u64 {
-    #[cfg(test)]
-    if let Some(now) = crate::app_approval::flow_support::clock_now_unix_ms() {
-        return now;
-    }
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-        })
-}
-
 impl App {
     // ----- card names (meta `hw_card_names`, spec/10 §8, 2026-11-15) -------------------------
 
@@ -795,7 +775,7 @@ impl App {
             kind,
             ticket,
             role,
-            deadline_ms: now_ms().saturating_add(CARD_STEP_MS),
+            deadline_ms: self.clock.now_ms().saturating_add(CARD_STEP_MS),
             touches,
             error: None,
             swallow_failure: false,
@@ -1149,7 +1129,7 @@ impl App {
             drop(pin);
             return;
         }
-        let now = now_ms();
+        let now = self.clock.now_ms();
         let Some(step) = self.card.step.as_mut().filter(|step| step.id == id) else {
             drop(pin);
             return;
@@ -1231,14 +1211,14 @@ impl App {
                 approved,
                 plan,
                 tip_height,
-                now_unix_ms: now_unix_ms(),
+                now_unix_ms: self.clock.now_unix_ms(),
                 pin,
             }),
             CardJobKind::Zec { plan } => self.key(KeyJob::Zec(Box::new(
                 crate::workers::journal::zec::ZecKeyJob::SignCard {
                     approved,
                     plan,
-                    now_unix_ms: now_unix_ms(),
+                    now_unix_ms: self.clock.now_unix_ms(),
                     pin,
                 },
             ))),
@@ -1516,7 +1496,7 @@ impl App {
     /// that follows is then not shown); otherwise the approval is dropped and the failure is
     /// shown as usual.
     fn card_unused(&mut self, approved: Box<Approved>, error: CardJobError) {
-        let now = now_ms();
+        let now = self.clock.now_ms();
         let Some(step) = self.card.step.as_mut() else {
             return;
         };

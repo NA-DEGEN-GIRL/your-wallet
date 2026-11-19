@@ -28,11 +28,10 @@ use crate::browser::{
 use crate::errors::ErrorCode;
 use crate::events::{EventQueue, MessageSignFailure, MessageSigned, SignTicket};
 use crate::flow::evm::track::BroadcastOutcome;
-use crate::flow::evm::{SharedTransport, chain_info};
+use crate::flow::evm::{Clock, SharedTransport, chain_info};
 use crate::logging::{self, Field};
 use crate::meta::EvmAccountPref;
 use crate::network::NetworkId;
-use crate::system_clock::SystemClock;
 use crate::ui::approval::{QueueOutcome, QueueSource};
 use crate::ui::secret::SecretKind;
 
@@ -208,11 +207,17 @@ impl core::fmt::Debug for BrowserUi {
 impl BrowserUi {
     /// Starts the dispatcher, 4 read workers and the pipe server (spec/05 §8.1: within 2 s of
     /// process start). A server failure keeps the dispatcher (E-PIPE-001 banner by the caller).
+    /// The dispatcher reads `clock`, the App's (2026-11-19, S4 B1a: one time base for the site
+    /// deadline and the App's approval reads; before, its own `SystemClock`, the same base).
     #[must_use]
-    pub fn start(events: &Arc<EventQueue>, transport: Option<SharedTransport>) -> Self {
+    pub fn start(
+        events: &Arc<EventQueue>,
+        transport: Option<SharedTransport>,
+        clock: Arc<dyn Clock>,
+    ) -> Self {
         let sink = Arc::clone(events) as Arc<dyn DappSink>;
         let pinned = pinned_extension_id().unwrap_or_default();
-        let core = BrowserCore::new(pinned, sink, Arc::new(SystemClock));
+        let core = BrowserCore::new(pinned, sink, clock);
         let reads = Arc::new(ReadContext::new(transport));
         let mut threads = Vec::new();
         for index in 0..READ_WORKERS {
@@ -350,14 +355,6 @@ pub fn broadcast_answer(
     } else {
         Err(ProviderError::BroadcastFailed)
     }
-}
-
-fn now_ms() -> u64 {
-    #[cfg(test)]
-    if let Some(now) = crate::app_approval::flow_support::clock_now_ms() {
-        return now;
-    }
-    yw_win::time::monotonic_ms()
 }
 
 impl App {
@@ -517,7 +514,7 @@ impl App {
         let Some(browser) = self.browser.as_mut() else {
             return;
         };
-        browser.grant_write.written(now_ms());
+        browser.grant_write.written(self.clock.now_ms());
         let core = Arc::clone(&browser.core);
         if let Some(meta) = self.meta.as_mut() {
             meta.connected_sites = sites_to_values(&core.grants());
@@ -1010,7 +1007,7 @@ impl App {
                 self.write_grants();
             }
             GrantChange::Chain(_) => {
-                let now = now_ms();
+                let now = self.clock.now_ms();
                 let write = self
                     .browser
                     .as_mut()
@@ -1250,12 +1247,9 @@ impl App {
             self.respond(&site.reply, Err(ProviderError::Unauthorized));
             return;
         }
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(0));
-        // S4 A3 review (2026-11-18): tests read the approval test clock here too.
-        #[cfg(test)]
-        let now = crate::app_approval::flow_support::clock_now_unix_ms().unwrap_or(now);
+        // The injected clock (2026-11-19, S4 B1a; before, `SystemTime` with a `cfg(test)`
+        // approval test clock read).
+        let now = self.clock.now_unix_ms();
         let Some(grant) = ConnectedSite::new(site.origin.clone(), accounts, chain_id, now) else {
             self.respond(&site.reply, Err(ProviderError::Internal));
             return;
@@ -1482,7 +1476,7 @@ mod tests {
         let core = crate::browser::BrowserCore::new(
             "abcdefghijklmnopabcdefghijklmnop",
             events as Arc<dyn crate::browser::DappSink>,
-            crate::app_approval::flow_support::core_clock(),
+            Arc::clone(&app.clock),
         );
         app.browser = Some(BrowserUi {
             core,

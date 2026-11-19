@@ -18,12 +18,12 @@ use yw_core::secret::Zeroizing;
 use yw_core::vault::{
     BackupChallenge, ChallengeId, EvmKeySource, FileKind, PasswordChange, RecordId, VaultStatus,
 };
+use yw_platform::Clock;
 use yw_platform::http::HttpsUrl;
 use yw_win::clipboard::{self, ClipError, SecretClip};
 use yw_win::file::{FileError, atomic_write, read_limited_no_reparse};
 use yw_win::input::is_down;
 use yw_win::session;
-use yw_win::time::monotonic_ms;
 use yw_win::ui::{Handler, Msg, Reply, UiError, Window, WindowKind, WindowSpec, create_window};
 
 use crate::apikeys::{
@@ -43,6 +43,7 @@ use crate::shell_msg::{
     WM_YW_ACTIVATE, WM_YW_EVENTS, WM_YW_LOCK_SHORTCUT, WM_YW_NAV_KEY, WM_YW_SHORTCUT,
     WM_YW_TAB_SHORTCUT,
 };
+use crate::system_clock::SystemClock;
 use crate::text::is_valid_label;
 use crate::ui::main_window::{ControlSet, Placed, Tone, layout, paint};
 use crate::ui::secret::{
@@ -678,6 +679,12 @@ pub struct App {
     pub(crate) main: Option<Window>,
     pub(crate) fonts: FontCache,
     pub(crate) events: Option<Arc<crate::events::EventQueue>>,
+    /// The time source of every `impl App` time read (2026-11-19, S4 B1a, spec/15 §11.4 S4;
+    /// before, per-file `now_ms`/`now_unix_ms` wrappers over yw-win `time::monotonic_ms` and
+    /// `SystemTime`, with a `cfg(test)` approval test clock read first): `SystemClock` from
+    /// [`App::new`]; `main.rs` hands the same `Arc` to the RPC worker, the key worker and the
+    /// browser dispatcher ([`App::clock`]); tests inject theirs ([`App::with_clock`]).
+    pub(crate) clock: Arc<dyn Clock>,
     pub(crate) key_queue: Arc<KeyQueue>,
     pub(crate) lock_signal: Arc<LockSignal>,
     pub(crate) rpc_tx: Option<Sender<RpcJob>>,
@@ -874,14 +881,6 @@ fn paste_notice(lang: Lang, edge_space: bool, cleared: Option<String>) -> Option
         (true, None) => Some(PASTE_EDGE_SPACE.get(lang).to_owned()),
         (true, Some(cleared)) => Some(format!("{} {cleared}", PASTE_EDGE_SPACE.get(lang))),
     }
-}
-
-fn now_ms() -> u64 {
-    #[cfg(test)]
-    if let Some(now) = crate::app_approval::flow_support::clock_now_ms() {
-        return now;
-    }
-    monotonic_ms()
 }
 
 /// A modifier read of the secret window's `WM_KEYDOWN` arm (`is_down`; 2026-11-18, S4 A7 review:
@@ -1157,16 +1156,30 @@ pub fn load_apikeys(paths: &Paths, settings: &Settings) -> (ApiKeys, bool) {
 }
 
 impl App {
-    /// A new app (no windows yet).
+    /// A new app (no windows yet) on the system clock.
     #[must_use]
     pub fn new(paths: Paths, background: bool, settings: Settings, apikeys: ApiKeys) -> Self {
-        let now = now_ms();
+        Self::with_clock(paths, background, settings, apikeys, Arc::new(SystemClock))
+    }
+
+    /// A new app (no windows yet) on `clock` (2026-11-19, S4 B1a: tests inject a manual or
+    /// stepping clock; [`App::new`] passes `SystemClock`).
+    #[must_use]
+    pub fn with_clock(
+        paths: Paths,
+        background: bool,
+        settings: Settings,
+        apikeys: ApiKeys,
+        clock: Arc<dyn Clock>,
+    ) -> Self {
+        let now = clock.now_ms();
         Self {
             paths,
             background,
             main: None,
             fonts: FontCache::default(),
             events: None,
+            clock,
             key_queue: Arc::new(KeyQueue::default()),
             lock_signal: Arc::new(LockSignal::default()),
             rpc_tx: None,
@@ -1260,6 +1273,14 @@ impl App {
             last_flush_ms: now,
             reads_due_ms: 0,
         }
+    }
+
+    /// The App's clock, for the workers and the browser dispatcher that must share its time base
+    /// (2026-11-19, S4 B1a: one `Arc` for the App, the RPC worker, the key worker and the
+    /// dispatcher, spec/15 §11.4 S4 critique A-9/B-19).
+    #[must_use]
+    pub fn clock(&self) -> Arc<dyn Clock> {
+        Arc::clone(&self.clock)
     }
 
     /// The installed commit read at start (`build_info::read_install_commit`, already checked).
@@ -1384,7 +1405,7 @@ impl App {
                     &[("code", Field::Num(u64::from(error.code)))],
                 );
                 self.session_retries = self.session_retries.saturating_add(1);
-                self.session_next_ms = now_ms().saturating_add(SESSION_RETRY_MS);
+                self.session_next_ms = self.clock.now_ms().saturating_add(SESSION_RETRY_MS);
                 if self.session_retries >= SESSION_RETRY_MAX {
                     self.session_retries = 0;
                     self.error_banner(ErrorCode::App004);
@@ -1527,7 +1548,8 @@ impl App {
         ) {
             self.llm_ui.key_deleted = false;
         }
-        self.wait.screen_changed(&self.screen, &screen, now_ms());
+        self.wait
+            .screen_changed(&self.screen, &screen, self.clock.now_ms());
         if let Screen::Settings(section) = &screen {
             self.settings_last = *section;
         }
@@ -1631,18 +1653,18 @@ impl App {
             }
             Msg::Size { .. } => {
                 self.refresh();
-                self.window_state.changed(now_ms());
+                self.window_state.changed(self.clock.now_ms());
                 Reply::Default
             }
             Msg::ExitSizeMove => {
-                self.window_state.changed(now_ms());
+                self.window_state.changed(self.clock.now_ms());
                 Reply::Default
             }
             Msg::DpiChanged { dpi } => {
                 // The offset follows the new scale (2026-11-10); the suggested rectangle applied
                 // by the default processing resizes and lays the screen out again.
                 self.scroll_dpi_changed(*dpi);
-                self.window_state.changed(now_ms());
+                self.window_state.changed(self.clock.now_ms());
                 if let Some(main) = self.main.as_ref() {
                     main.invalidate();
                 }
@@ -1656,7 +1678,7 @@ impl App {
                 if *code == 0 {
                     self.on_command(*id);
                     // What the click made due starts now, not at the next tick (2026-11-12).
-                    self.reads_due(now_ms());
+                    self.reads_due(self.clock.now_ms());
                 } else if *code == EN_CHANGE {
                     self.on_edit_notify(*id);
                 }
@@ -1665,7 +1687,7 @@ impl App {
             // The S22 hold area (painted, no child control). A click on the window itself, not
             // on a control, also closes an open drop-down (2026-11-12).
             Msg::MouseDown { x, y } => {
-                self.hold_down(*x, *y, now_ms());
+                self.hold_down(*x, *y, self.clock.now_ms());
                 if self.close_pickers() {
                     self.refresh();
                 }
@@ -1708,7 +1730,7 @@ impl App {
                 }
                 // A worker's answer, a shortcut or the window shown again may have made a
                 // read due.
-                self.reads_due(now_ms());
+                self.reads_due(self.clock.now_ms());
                 Reply::Handled(0)
             }
             Msg::Resume => {
@@ -1900,7 +1922,7 @@ impl App {
 
     /// Records app input for the idle timer.
     pub fn note_input(&mut self) {
-        self.idle.input(now_ms());
+        self.idle.input(self.clock.now_ms());
     }
 
     fn activate(&mut self) {
@@ -1926,7 +1948,7 @@ impl App {
     }
 
     fn tick(&mut self) {
-        let now = now_ms();
+        let now = self.clock.now_ms();
         self.drain_events();
         if self.session_retries > 0 && now >= self.session_next_ms {
             self.register_session();
@@ -2132,7 +2154,7 @@ impl App {
         let Some(main) = self.main.as_ref() else {
             return;
         };
-        let now = now_ms();
+        let now = self.clock.now_ms();
         let mut pending = PendingClip::earlier_run(now);
         let result = clipboard::clear_secret(main, &pending.clip);
         let outcome = match clip_step(&mut pending.retry, now, result) {
@@ -2171,10 +2193,10 @@ impl App {
         let Some(main) = self.main.as_ref() else {
             return;
         };
-        let deadline = now_ms().saturating_add(SECRET_CLIPBOARD_EXIT_MS);
+        let deadline = self.clock.now_ms().saturating_add(SECRET_CLIPBOARD_EXIT_MS);
         let result = loop {
             let result = clipboard::clear_secret(main, &pending.clip);
-            if result.is_ok() || now_ms() >= deadline {
+            if result.is_ok() || self.clock.now_ms() >= deadline {
                 break result;
             }
             std::thread::sleep(Duration::from_millis(20));
@@ -2221,7 +2243,7 @@ impl App {
             self.clear_secret_clip_at_exit();
         } else {
             // Due now; a busy clipboard keeps being retried by the tick after the lock.
-            self.clear_secret_clip(now_ms());
+            self.clear_secret_clip(self.clock.now_ms());
         }
         self.evm_lock();
         self.book = crate::app_book::BookUi::default();
@@ -2315,9 +2337,9 @@ impl App {
         self.llm_shutdown();
         // The window's place for the next start (`window.json`, 2026-11-10).
         self.save_window_state();
-        let deadline = now_ms().saturating_add(2_000);
+        let deadline = self.clock.now_ms().saturating_add(2_000);
         for handle in std::mem::take(&mut self.workers) {
-            while !handle.is_finished() && now_ms() < deadline {
+            while !handle.is_finished() && self.clock.now_ms() < deadline {
                 std::thread::sleep(Duration::from_millis(20));
             }
             if handle.is_finished() {
@@ -2411,7 +2433,7 @@ impl App {
         if !accept_result(&result, self.lock_epoch) {
             return;
         }
-        let now = now_ms();
+        let now = self.clock.now_ms();
         // The YubiKey card step sees signing outcomes first (a returned approval, a retry).
         let Some(outcome) = self.card_filter(result.outcome) else {
             return;
@@ -3126,8 +3148,12 @@ impl App {
                 Self::log_capture(kind, excluded);
                 match capture_decision(kind, Ok(excluded)) {
                     CaptureDecision::Show { warning } => {
-                        let mut form =
-                            SecretForm::new(kind, self.settings.language, now_ms(), !warning);
+                        let mut form = SecretForm::new(
+                            kind,
+                            self.settings.language,
+                            self.clock.now_ms(),
+                            !warning,
+                        );
                         form.set_step(flow_step(self.settings.language, purpose));
                         self.show_secret(serial, window, form, purpose);
                     }
@@ -3162,7 +3188,8 @@ impl App {
         let decision = capture_decision(kind, excluded);
         match (decision, created) {
             (CaptureDecision::Show { .. }, Ok(window)) => {
-                let mut form = SecretForm::display(kind, self.settings.language, now_ms(), display);
+                let mut form =
+                    SecretForm::display(kind, self.settings.language, self.clock.now_ms(), display);
                 form.set_step(flow_step(self.settings.language, purpose));
                 form.set_timeout_note(timeout_note(self.settings.language, purpose));
                 self.show_secret(serial, window, form, purpose);
@@ -3212,7 +3239,7 @@ impl App {
     }
 
     fn on_secret(&mut self, serial: u64, window: &Window, msg: &Msg) -> Reply {
-        let now = now_ms();
+        let now = self.clock.now_ms();
         let dpi = window.dpi();
         let Self { secret, fonts, .. } = self;
         let Some(secret) = secret.as_mut().filter(|secret| secret.serial == serial) else {
@@ -3404,7 +3431,9 @@ impl App {
         let mut replaced = None;
         match clipboard::set_secret_text(&secret.window, &units) {
             Ok(clip) => {
-                replaced = self.secret_clip.replace(PendingClip::new(clip, now_ms()));
+                replaced = self
+                    .secret_clip
+                    .replace(PendingClip::new(clip, self.clock.now_ms()));
                 secret
                     .form
                     .set_info(Some(text::COPIED_SECRET.get(lang).to_owned()));
@@ -5605,7 +5634,7 @@ impl App {
 
     /// Types `text` into the open secret window's active field (tour values only).
     pub(crate) fn tour_type(&mut self, text: &str) {
-        let now = now_ms();
+        let now = self.clock.now_ms();
         if let Some(secret) = self.secret.as_mut() {
             for unit in text.encode_utf16() {
                 let _ = secret.form.on_char(unit, now);
@@ -5616,7 +5645,7 @@ impl App {
 
     /// Moves to the next field of the open secret window (Tab).
     pub(crate) fn tour_next_field(&mut self) {
-        let now = now_ms();
+        let now = self.clock.now_ms();
         if let Some(secret) = self.secret.as_mut() {
             let _ = secret.form.on_key(0x09, false, false, false, now);
             secret.window.invalidate();

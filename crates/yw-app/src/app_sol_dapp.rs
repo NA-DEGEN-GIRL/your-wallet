@@ -431,12 +431,10 @@ impl App {
         } = pending;
         match result {
             Ok((last_valid_block_height, check)) => {
-                let consumed_at_ms = yw_win::time::monotonic_ms();
-                // S4 A3 (2026-11-18): tests read the approval test clock here too.
-                #[cfg(test)]
-                let consumed_at_ms =
-                    crate::app_approval::flow_support::clock_now_ms().unwrap_or(consumed_at_ms);
-                let now_unix_ms = crate::app_sol::now_unix_ms();
+                // The injected clock (2026-11-19, S4 B1a; before, `yw_win::time::monotonic_ms`
+                // with a `cfg(test)` approval test clock read).
+                let consumed_at_ms = self.clock.now_ms();
+                let now_unix_ms = self.clock.now_unix_ms();
                 match pin {
                     Some(pin) => self.key(KeyJob::SignSolDappCard {
                         ticket,
@@ -595,10 +593,9 @@ impl App {
                             },
                         });
                 }
-                let now = yw_win::time::monotonic_ms();
-                // S4 A3 review (2026-11-18): tests read the approval test clock here too.
-                #[cfg(test)]
-                let now = crate::app_approval::flow_support::clock_now_ms().unwrap_or(now);
+                // The injected clock (2026-11-19, S4 B1a; before, `yw_win::time::monotonic_ms`
+                // with a `cfg(test)` approval test clock read).
+                let now = self.clock.now_ms();
                 self.sol_tick_tracking(now);
                 self.refresh();
             }

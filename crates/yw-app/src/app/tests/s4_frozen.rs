@@ -813,7 +813,9 @@ const HELPERS: &str = include_str!("s4_flow/frozen-helpers.txt");
 /// lowers this in the same commit and names the line (the check cannot pass on an emptied file).
 /// 2026-11-19 (S4 F1 review): 639 → 642, the three new `mutable` helpers of the F1 key and mouse
 /// scenarios (`shown_request`, `press_trace`, `l1_press_past_deadline`) are pinned too.
-const HELPER_LINES: usize = 642;
+/// 2026-11-19 (S4 B1a): 642 → 641, the `mutable` line `fn core_clock` of
+/// `app_approval_flow_support.rs` is gone (the test `BrowserCore`s take the App's injected clock).
+const HELPER_LINES: usize = 641;
 
 /// The planned S4 commits (plan §5 with critique round 2), the only words of a commit-list rule.
 const PLANNED: [&str; 54] = [

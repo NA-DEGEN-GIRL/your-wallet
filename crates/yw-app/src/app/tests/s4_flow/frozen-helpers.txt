@@ -554,7 +554,7 @@ yw-app/src/ui/tour_secrets.rs const LOCK_SCENARIOS 2ecf239c8ef68ed9 mutable
 yw-app/src/ui/tour_secrets.rs fn record 80913ab1ff9a1f59 fixed
 yw-app/src/ui/tour_secrets.rs fn first_difference 0439bc8da566ec25 fixed
 yw-app/src/app_chain_sites.rs const tests::SOL_KEY 78879f5ee2e9194c mutable
-yw-app/src/app_chain_sites.rs fn tests::app 0f269d34e64be086 mutable
+yw-app/src/app_chain_sites.rs fn tests::app 32612381b703619d mutable
 yw-app/src/app_chain_sites.rs fn tests::site 2f60b9248eeb75b9 mutable
 yw-app/src/app_chain_sites.rs fn tests::public 0a9c111340d06094 mutable
 yw-app/src/app_chain_sites.rs fn tests::sol_grant f68ddfbbcd314e59 mutable
@@ -575,7 +575,7 @@ yw-app/src/app_chain_sites.rs fn tests::summary d60c135ed3ef719f mutable
 yw-app/src/app_chain_sites.rs fn tests::first_round 04306c20a80e94e2 mutable
 yw-app/src/app_chain_sites.rs fn tests::send_answer_text ccb3778853d9de98 mutable
 yw-app/src/app_chain_sites.rs fn tests::texts 11b8816d8c079ba3 mutable
-yw-app/src/app_chain_sites.rs fn tests::recorded 12c8bed8ca735131 mutable
+yw-app/src/app_chain_sites.rs fn tests::recorded 7de0bd9a35da0a15 mutable
 yw-app/src/app_chain_sites.rs fn tests::queued_sol_tx 3ec4244587527f86 mutable
 yw-app/src/app_chain_sites.rs fn tests::answers 9fbce566d9ec14e0 mutable
 yw-app/src/app_chain_sites.rs fn tests::evm_account d2e5c67684eb4e77 mutable
@@ -602,7 +602,6 @@ yw-app/src/app_approval_flow_support.rs fn set_clock 15d5825088343b8a mutable
 yw-app/src/app_approval_flow_support.rs fn installed_clock 616d3de681d85290 mutable
 yw-app/src/app_approval_flow_support.rs fn clock_now_ms 3c2db355bc49d441 mutable
 yw-app/src/app_approval_flow_support.rs fn clock_now_unix_ms 7ea45ef4b3eb7102 mutable
-yw-app/src/app_approval_flow_support.rs fn core_clock d9f8c9605fb1c88d mutable
 yw-app/src/app_approval_flow_support.rs fn set_host 8e0cbcb0c1b76f1b mutable
 yw-app/src/app_approval_flow_support.rs fn host a16eb7d4d7534ff6 mutable
 yw-app/src/app_approval_flow_support.rs fn set_signals e3773672b0b22663 mutable
@@ -616,7 +615,7 @@ yw-app/src/app_approval_flow_support.rs fn foreground_request ad3d4772557fd0fa m
 yw-app/src/app_approval_flow_support.rs fn fail_open 1a69612a6c823361 mutable
 yw-app/src/app_approval_flow_support.rs impl App 16478a54deb5c265 mutable
 yw-app/src/app_approval_flow_support.rs struct Fixture d7ff65971806330f mutable
-yw-app/src/app_approval_flow_support.rs impl Fixture 5e337af0f15d3b7d mutable
+yw-app/src/app_approval_flow_support.rs impl Fixture 2f2725a88e0ddb73 mutable
 yw-app/src/app_approval_flow_support.rs impl DropforFixture a0d3a6f1f6d76fcf mutable
 yw-app/src/app_approval_flow_support.rs struct Outlet 947b36a31ad28718 mutable
 yw-app/src/app_approval_flow_support.rs impl Outlet eac19435d4f3f4ca mutable
