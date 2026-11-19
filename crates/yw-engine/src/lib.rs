@@ -20,13 +20,15 @@
 //! [`cmd`] holds the inputs a shell sends to the logic (`Cmd`, `Press`), [`effect`] what the
 //! logic asks the shell to do (`Effect`) and [`form`] the plain edits' state and the credential
 //! units captured with a press. [`app_store`] is the app's data-folder store (`AppStore`: the
-//! settings file, the sealed API keys, the vault facts; the platform implements it).
+//! settings file, the sealed API keys, the vault facts; the platform implements it). [`services`]
+//! holds the platform factories the optional network workers start from (`Services`: the LLM
+//! transport, the `WalletConnect` relay parts, the relay user agent's platform word).
 //!
 //! 2026-11-17 (spec/15 §11.4 S2, E1): created; these modules moved out of yw-app unchanged except
 //! for their `use` paths. E2 added the settings, metadata, explain and pipeline modules, E3 the
 //! dispatcher, the `WalletConnect` worker, the events, the workers and the approval view (before
 //! E3 the relay worker was still in yw-app). 2026-11-18 (spec/15 §11.4 S3 B1): `cmd`, `effect`
-//! and `form` were added. 2026-11-20 (S4 P1): `app_store` was added.
+//! and `form` were added. 2026-11-20 (S4 P1): `app_store` was added; (S4 P2) `services`.
 #![forbid(unsafe_code)]
 
 pub mod apikeys;
@@ -51,6 +53,7 @@ pub mod network;
 pub mod received;
 pub mod rpc;
 pub mod secure_field;
+pub mod services;
 pub mod settings;
 pub mod sol;
 #[doc(hidden)]

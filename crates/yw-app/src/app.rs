@@ -64,6 +64,7 @@ use yw_engine::effect::{Effect, TimerId};
 // `CredField`: debug builds only until S3 C3 (the shadow reads of plan §3.2a; 2026-11-18 B4–B5
 // review); since C3 `App::take_cred` uses it in every build.
 use yw_engine::form::{CredField, EditField, FormState, PressInput};
+use yw_engine::services::Services;
 
 /// Main window class.
 pub const MAIN_CLASS: &str = "YourWalletV3Main";
@@ -665,6 +666,12 @@ pub struct App {
     /// in the generic folder text for the picture and puts the real folder back, with no store
     /// call in between (`ui::tour`). A test that needs other store results swaps this field.
     pub(crate) store: Box<dyn AppStore>,
+    /// The factories the optional network workers start from: the LLM transport (worker start
+    /// and connection test), the `WalletConnect` relay parts and the relay user agent word
+    /// (2026-11-20, S4 P2: yw-engine `Services`, [`windows_services`] from [`App::with_clock`];
+    /// before, `app_llm` and `app_walletconnect` built the `WinHTTP`, WebSocket and CNG values
+    /// inline). A test that needs other services swaps this field.
+    pub(crate) services: Services,
     pub(crate) background: bool,
     pub(crate) main: Option<Window>,
     pub(crate) fonts: FontCache,
@@ -1132,6 +1139,20 @@ pub fn load_apikeys(paths: &Paths, settings: &Settings) -> (ApiKeys, bool) {
     yw_engine::app_store::load_sealed_keys(&WinAppStore::new(paths), settings)
 }
 
+/// The Windows platform services (2026-11-20, S4 P2, spec/15 §11.2): the `WinHTTP` LLM transport
+/// (`explain_transport::llm_factory`), the `WalletConnect` parts
+/// (`app_walletconnect::WinWcPlatform`) and the relay user agent word `"windows"` (spec/13 §4;
+/// the same bytes as before). Building it opens nothing: every part is made only when a worker
+/// starts or the LLM connection test runs.
+#[must_use]
+pub fn windows_services() -> Services {
+    Services {
+        llm: crate::explain_transport::llm_factory(),
+        walletconnect: Some(Box::new(crate::app_walletconnect::WinWcPlatform)),
+        ua_platform: "windows",
+    }
+}
+
 impl App {
     /// A new app (no windows yet) on the system clock.
     #[must_use]
@@ -1156,6 +1177,7 @@ impl App {
         let now = clock.now_ms();
         Self {
             store: Box::new(WinAppStore::new(&paths)),
+            services: windows_services(),
             paths,
             background,
             main: None,

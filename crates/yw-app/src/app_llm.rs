@@ -259,7 +259,10 @@ impl App {
                 logging::warn("llm", "E-APP-005", &[]);
             }
         });
-        match ExplainService::start(config, crate::explain_transport::factory(), sink) {
+        // 2026-11-20 (S4 P2): the transport factory comes from the injected `Services` (Windows:
+        // `explain_transport::llm_factory`, the same `WinHTTP` session as before); it still runs
+        // only on the new worker's thread (D21).
+        match ExplainService::start(config, self.services.llm_factory(), sink) {
             Ok(service) => {
                 logging::info("llm", "llm.started", &[("host", Field::LlmHost(&host))]);
                 self.llm = Some(service);
@@ -609,14 +612,17 @@ impl App {
         };
         self.llm_ui.test_running = true;
         self.llm_ui.test_result = None;
+        // 2026-11-20 (S4 P2): the transport comes from the injected `Services::llm` (Windows: the
+        // same `WinHTTP` session as before, opened on the test thread; before, built here).
+        let llm = Arc::clone(&self.services.llm);
         let spawned = std::thread::Builder::new()
             .name("yw-llm-test".to_owned())
             .spawn(move || {
                 let result = sample_input(lang).and_then(|input| {
-                    let transport =
-                        crate::explain_transport::WinHttpTransport::new(config.endpoint())
-                            .map_err(|_| ExplainError::Network)?;
-                    explain_once(&transport, &config, &input).0.map(|_| ())
+                    let transport = llm(config.endpoint()).ok_or(ExplainError::Network)?;
+                    explain_once(transport.as_ref(), &config, &input)
+                        .0
+                        .map(|_| ())
                 });
                 let _ = events.push(UiEvent::LlmTest(result));
             });

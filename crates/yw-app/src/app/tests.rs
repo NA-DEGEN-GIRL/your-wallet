@@ -2138,6 +2138,96 @@ fn a_failed_settings_write_keeps_the_values_and_shows_e_app_002() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// Waits (at most 5 s) until `calls` reaches `want`.
+fn wait_for_calls(calls: &std::sync::atomic::AtomicUsize, want: usize) -> usize {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let now = calls.load(std::sync::atomic::Ordering::SeqCst);
+        if now >= want || std::time::Instant::now() > deadline {
+            return now;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+/// S4 P2 (spec/06 §2.2, §9, D21): the LLM transport is made only by the injected
+/// `Services::llm`, and never while the feature is off. Off, on before the check after unlock, and
+/// a connection test without a usable configuration never call it; a worker start calls it once
+/// (on the `yw-llm` thread) and a connection test once (on its own thread). The counting factory
+/// returns no transport, so nothing is sent anywhere and the test answers `Network`.
+#[test]
+fn the_llm_transport_comes_only_from_the_injected_services_and_never_while_off() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let (mut app, dir) = llm_app("llm-services", LLM_A);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&calls);
+    app.services.llm = Arc::new(move |_endpoint| {
+        counted.fetch_add(1, Ordering::SeqCst);
+        None
+    });
+    let events = Arc::new(crate::events::EventQueue::new(Box::new(|| {})));
+    let (tx, _rx) = std::sync::mpsc::channel();
+    app.attach_workers(Arc::clone(&events), Vec::new(), tx);
+
+    // Off; then on in the plain file but not yet checked after an unlock (review M1).
+    app.llm_reconfigure();
+    assert!(!app.llm_running());
+    app.settings.llm_explain.enabled = true;
+    app.settings.llm_explain.privacy_notice_version = 1;
+    app.llm_reconfigure();
+    assert!(!app.llm_running());
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert_eq!(calls.load(Ordering::SeqCst), 0, "no transport while off");
+
+    // On and checked: the worker starts and makes its transport once, on its thread.
+    app.guard.verified = true;
+    app.llm_reconfigure();
+    assert!(app.llm_running());
+    assert_eq!(wait_for_calls(&calls, 1), 1);
+    app.llm_shutdown();
+    assert!(!app.llm_running());
+
+    // Off again: a connection test without a usable model sends nothing.
+    app.settings.llm_explain.enabled = false;
+    app.llm_reconfigure();
+    assert!(!app.llm_running());
+    app.settings.llm_explain.model = String::new();
+    app.llm_test();
+    assert!(!app.llm_ui.test_running);
+    assert!(app.llm_ui.test_result.as_ref().is_some_and(|(_, ok)| !ok));
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "no transport for a refused test"
+    );
+
+    // The connection test (a press, also while the feature is off) asks the services once.
+    app.settings.llm_explain.model = "m".to_owned();
+    app.llm_test();
+    assert!(app.llm_ui.test_running);
+    assert_eq!(wait_for_calls(&calls, 2), 2);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let result = loop {
+        let found = events.drain().into_iter().find_map(|event| match event {
+            crate::events::UiEvent::LlmTest(result) => Some(result),
+            _ => None,
+        });
+        if let Some(result) = found {
+            break result;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the test thread answers"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    };
+    assert_eq!(result, Err(crate::explain::ExplainError::Network));
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// Review L15: fee caps and auto-lock changed in the file use the snapshot values; the banner's
 /// `파일 값 사용` takes the file values (and the snapshot follows), `되돌리기` rewrites the file;
 /// a deleted `HyperEVM` pin is restored in memory and on disk.

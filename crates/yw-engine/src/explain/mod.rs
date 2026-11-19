@@ -262,8 +262,9 @@ impl core::fmt::Debug for ExplainService {
 
 impl ExplainService {
     /// Starts the worker; `factory` creates its transport on the worker thread (production:
-    /// yw-app `explain_transport::factory`, the `WinHTTP` client). 2026-11-17 S2: before, the
-    /// `WinHTTP` transport was built in here.
+    /// `services::Services::llm_factory`, on Windows the `WinHTTP` client of yw-app
+    /// `explain_transport`; 2026-11-20 S4 P2, before `explain_transport::factory` directly).
+    /// 2026-11-17 S2: before, the `WinHTTP` transport was built in here.
     ///
     /// # Errors
     ///

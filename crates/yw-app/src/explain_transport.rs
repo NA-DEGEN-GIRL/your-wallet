@@ -2,9 +2,14 @@
 //!
 //! 2026-11-17 S2: moved unchanged from `explain::request` (where it was re-exported as
 //! `explain::WinHttpTransport`), so `explain` names only the [`LlmTransport`] seam.
-//! [`factory`] is what the app hands to `ExplainService::start`; it runs on the `yw-llm` worker
-//! when the service starts, so with the feature off no session is opened (D21).
+//! [`llm_factory`] is the app's `Services::llm` (2026-11-20, S4 P2; before, `app_llm` handed
+//! [`factory`] to `ExplainService::start` and built [`WinHttpTransport`] for the connection test
+//! itself): it runs on the `yw-llm` worker when the service starts, or for the connection test,
+//! so with the feature off no session is opened (D21).
 
+use std::sync::Arc;
+
+use yw_engine::services::LlmFactory;
 use yw_platform::http::{EndpointUrl, HttpError};
 use yw_win::http::Client;
 
@@ -51,13 +56,24 @@ impl LlmTransport for WinHttpTransport {
     }
 }
 
-/// The production transport factory: a [`WinHttpTransport`] for the endpoint, or `None` when
-/// the session cannot be opened (every job then fails with `ExplainError::Network`).
+/// A [`WinHttpTransport`] for the endpoint, or `None` when the session cannot be opened (every
+/// job then fails with `ExplainError::Network`).
+fn open(endpoint: &EndpointUrl) -> Option<Box<dyn LlmTransport>> {
+    WinHttpTransport::new(endpoint)
+        .ok()
+        .map(|transport| Box::new(transport) as Box<dyn LlmTransport>)
+}
+
+/// A one-shot factory over `open` for `ExplainService::start` (the app's own start uses
+/// `Services::llm` since 2026-11-20 S4 P2; the loopback tests still call this).
 #[must_use]
 pub fn factory() -> TransportFactory {
-    Box::new(|endpoint: &EndpointUrl| {
-        WinHttpTransport::new(endpoint)
-            .ok()
-            .map(|transport| Box::new(transport) as Box<dyn LlmTransport>)
-    })
+    Box::new(open)
+}
+
+/// The production [`LlmFactory`] of `yw_engine::services::Services` (2026-11-20, S4 P2): the
+/// same `open`, reusable by the worker start and the connection test (`app::windows_services`).
+#[must_use]
+pub fn llm_factory() -> LlmFactory {
+    Arc::new(open)
 }
