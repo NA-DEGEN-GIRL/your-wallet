@@ -661,10 +661,103 @@ mod tests {
         }
     }
 
+    /// The code of a Rust source without comments and without whitespace outside literals, so a
+    /// call that rustfmt wraps over several lines reads as one chain (2026-11-20, S4 P3 review:
+    /// the first scan cut each line at `//` and so missed wrapped calls, calls through a local
+    /// binding and calls after a `"https://…"` literal). Strings, raw strings and char literals
+    /// are kept as written (a `//` inside one is not a comment); a lifetime is not a literal.
+    fn code_only(text: &str) -> String {
+        let chars: Vec<char> = text.chars().collect();
+        let at = |i: usize| chars.get(i).copied().unwrap_or('\0');
+        let ident = |c: char| c.is_alphanumeric() || c == '_';
+        let mut out = String::new();
+        let mut i = 0;
+        while i < chars.len() {
+            let c = chars[i];
+            if c == '/' && at(i + 1) == '/' {
+                while i < chars.len() && chars[i] != '\n' {
+                    i += 1;
+                }
+            } else if c == '/' && at(i + 1) == '*' {
+                let mut depth = 0_usize;
+                while i < chars.len() {
+                    if chars[i] == '/' && at(i + 1) == '*' {
+                        depth += 1;
+                        i += 2;
+                    } else if chars[i] == '*' && at(i + 1) == '/' {
+                        depth -= 1;
+                        i += 2;
+                        if depth == 0 {
+                            break;
+                        }
+                    } else {
+                        i += 1;
+                    }
+                }
+            } else if c == 'r'
+                && (i == 0
+                    || !ident(chars[i - 1])
+                    || (chars[i - 1] == 'b' && (i < 2 || !ident(chars[i - 2]))))
+                && {
+                    let mut j = i + 1;
+                    while at(j) == '#' {
+                        j += 1;
+                    }
+                    at(j) == '"'
+                }
+            {
+                // A raw string: `r"…"`, `r#"…"#` (also after `b`).
+                let begin = i;
+                i += 1;
+                let mut hashes = 0;
+                while at(i) == '#' {
+                    hashes += 1;
+                    i += 1;
+                }
+                i += 1;
+                while i < chars.len()
+                    && !(chars[i] == '"' && (1..=hashes).all(|k| at(i + k) == '#'))
+                {
+                    i += 1;
+                }
+                i += 1 + hashes;
+                out.extend(&chars[begin..i.min(chars.len())]);
+            } else if c == '"' {
+                let begin = i;
+                i += 1;
+                while i < chars.len() && chars[i] != '"' {
+                    i += if chars[i] == '\\' { 2 } else { 1 };
+                }
+                i += 1;
+                out.extend(&chars[begin..i.min(chars.len())]);
+            } else if c == '\'' && (at(i + 1) == '\\' || at(i + 2) == '\'') {
+                // A char literal (`'x'`, `'\n'`, `'\u{..}'`); a lifetime has no closing quote.
+                let begin = i;
+                i += if at(i + 1) == '\\' { 3 } else { 2 };
+                while i < chars.len() && chars[i] != '\'' {
+                    i += 1;
+                }
+                i += 1;
+                out.extend(&chars[begin..i.min(chars.len())]);
+            } else {
+                if !c.is_whitespace() {
+                    out.push(c);
+                }
+                i += 1;
+            }
+        }
+        out
+    }
+
     /// 2026-11-20 (S4 P3): only the effect executor (`app_effects.rs`: `Effect::OpenUrl`,
     /// `Effect::OpenFolder`) starts the launcher, and only the launcher (this file) names
     /// `explorer.exe`: no handler opens a link or a folder itself. A read-only scan of yw-app's
-    /// `src` (code, not comments); it asserts that it found its targets.
+    /// `src` (code without comments and whitespace, [`code_only`]): every `.launch(` /
+    /// `.open_folder(` call and every `::launch` / `::open_folder` path counts, whatever the
+    /// receiver (2026-11-20 review: was only `launcher.launch(` / `launcher.open_folder(` within
+    /// one line). `app_effects.rs` has three: `launcher.open_folder`, `launcher.launch` and the
+    /// executor's own `self.open_folder` (`App::open_folder`, the shell half). It asserts that the
+    /// scan sees the shapes the first scan missed and that it found its targets.
     #[test]
     fn only_the_effect_executor_starts_the_launcher() {
         fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -677,39 +770,66 @@ mod tests {
                 }
             }
         }
+        // Split so that this test's own text does not match.
+        let calls = [
+            [".", "launch("].concat(),
+            [".", "open_folder("].concat(),
+            [":", ":launch"].concat(),
+            [":", ":open_folder"].concat(),
+        ];
+        let count = |code: &str| -> usize {
+            calls
+                .iter()
+                .map(|pattern| code.matches(pattern.as_str()).count())
+                .sum()
+        };
+        // The shapes the line scan missed: a wrapped chain, a local binding, a call after a URL
+        // literal on the same line (and a commented-out call that must not count), a path.
+        let wrapped = ["self.explorer_ui\n    .launcher\n    .", "launch(&url);"].concat();
+        let bound = [
+            "let l = &mut self.explorer_ui.launcher; l.",
+            "open_folder(&p);",
+        ]
+        .concat();
+        let after_url = [
+            "let u = \"https://x\"; launcher.",
+            "launch(u); // l.",
+            "launch(u);",
+        ]
+        .concat();
+        let path = ["let f = Launcher:", ":launch;"].concat();
+        for sample in [&wrapped, &bound, &after_url, &path] {
+            assert_eq!(count(&code_only(sample)), 1, "{sample}");
+        }
+        assert_eq!(
+            code_only("/* a /* b */ c */ x // y\n'a' &'b T br#\"//\"# '\\''"),
+            "x'a'&'bTbr#\"//\"#'\\''"
+        );
+
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut files = Vec::new();
         walk(&root, &mut files);
-        // Split so that this test's own text does not match.
-        let launches = [
-            ["launcher", ".launch("].concat(),
-            ["launcher", ".open_folder("].concat(),
-        ];
         let program = ["explorer", ".exe"].concat();
         let (mut launch_sites, mut program_sites) = (Vec::new(), Vec::new());
         for file in &files {
-            let text = std::fs::read_to_string(file).unwrap();
+            let code = code_only(&std::fs::read_to_string(file).unwrap());
             let name = file
                 .strip_prefix(&root)
                 .unwrap()
                 .to_string_lossy()
                 .replace('\\', "/");
-            for line in text.lines() {
-                let code = line.split("//").next().unwrap_or_default();
-                if launches
-                    .iter()
-                    .any(|pattern| code.contains(pattern.as_str()))
-                {
-                    launch_sites.push(name.clone());
-                }
-                if code.contains(program.as_str()) {
-                    program_sites.push(name.clone());
-                }
+            let calls = count(&code);
+            if calls > 0 {
+                launch_sites.push((name.clone(), calls));
+            }
+            let programs = code.matches(program.as_str()).count();
+            if programs > 0 {
+                program_sites.push((name, programs));
             }
         }
         assert!(files.len() > 50, "{} files", files.len());
-        assert_eq!(launch_sites, ["app_effects.rs", "app_effects.rs"]);
-        assert_eq!(program_sites, ["app_explorer.rs"]);
+        assert_eq!(launch_sites, [("app_effects.rs".to_owned(), 3)]);
+        assert_eq!(program_sites, [("app_explorer.rs".to_owned(), 1)]);
     }
 
     #[test]
