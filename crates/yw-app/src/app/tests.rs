@@ -2825,7 +2825,11 @@ fn walletconnect_clipboard_presses_take_the_press_input() {
             shown(t::CLIPBOARD_OPEN)
         );
         assert_eq!(
-            press(&mut app, which, ClipInput::WinDib(vec![0; 8])),
+            press(
+                &mut app,
+                which,
+                ClipInput::WinDib(Zeroizing::new(vec![0; 8]))
+            ),
             shown(t::CLIPBOARD_FORMAT)
         );
         assert_eq!(press(&mut app, which, ClipInput::NoWindow), None);
@@ -2853,6 +2857,128 @@ fn walletconnect_clipboard_presses_take_the_press_input() {
     #[cfg(debug_assertions)]
     assert_eq!(app.cred_misses(), 1);
     let _ = std::fs::remove_dir_all(dir);
+}
+
+/// S4 P5 (spec/13 §6, 2026-11-20): `이미지 파일에서 QR 읽기` uses the image the shell read and
+/// decoded with the press (`ImageInput`), with the notices the handler gave when it opened the
+/// file itself: through `on_command` (path edit → `cmd_table::capture` → GDI+ → handler) for an
+/// empty path, a missing file, an undecodable PNG, a picture without a code, a QR that is no
+/// pairing link and a malformed `wc:` QR (refused by `wc_pair`: no worker, no network); the kept
+/// path field follows the edit as before. Then each `ImageInput` handed over directly. Files only
+/// in the test's own temp folder.
+#[test]
+fn walletconnect_file_press_takes_the_shell_image() {
+    use crate::app_walletconnect::text as t;
+    use crate::ui::screens_walletconnect::ids as wc;
+    use yw_engine::cmd::{Cmd, Press, WcPress};
+    use yw_engine::form::{ImageInput, PressInput};
+    let (mut app, dir) = unlocked_app("wc-file", false);
+    "0123456789abcdef0123456789abcdef".clone_into(&mut app.settings.walletconnect_project);
+    app.screen = Screen::Sites;
+    let lang = app.settings.language;
+    let shown = |text: yw_core::lang::Text| Some(text.get(lang).to_owned());
+    let refused = yw_core::walletconnect::parse_pairing_uri("wc:not-a-link")
+        .err()
+        .unwrap()
+        .message(lang)
+        .to_owned();
+    let write = |name: &str, bytes: &[u8]| {
+        let path = dir.join(name);
+        std::fs::write(&path, bytes).unwrap();
+        path.display().to_string()
+    };
+    let link = write("link.bmp", &qr_bmp("wc:not-a-link"));
+    let other = write("other.bmp", &qr_bmp("hello"));
+    let blank = write("blank.bmp", &qr_bmp(""));
+    let broken = write("broken.png", b"\x89PNG\r\n\x1a\nbroken");
+    let missing = dir.join("missing.png").display().to_string();
+    let quoted = format!("\"{link}\"");
+    for (path, notice) in [
+        ("  ", shown(t::FILE_EMPTY)),
+        (missing.as_str(), shown(t::FILE_KIND)),
+        (broken.as_str(), shown(t::FILE_OPEN)),
+        (blank.as_str(), shown(t::QR_NOT_FOUND)),
+        (other.as_str(), shown(t::QR_NOT_WC)),
+        (quoted.as_str(), Some(refused.clone())),
+    ] {
+        app.wc.notice = None;
+        app.controls.type_text(wc::FILE_EDIT, path);
+        app.on_command(wc::FILE_QR);
+        assert_eq!(app.wc.notice, notice, "{path}");
+        assert_eq!(app.wc.file_text, path);
+    }
+    #[cfg(debug_assertions)]
+    assert_eq!(app.cred_misses(), 0);
+    let press = |app: &mut App, image: Option<ImageInput>| {
+        app.wc.notice = None;
+        let input = PressInput::default();
+        app.on_cmd(Cmd::Press {
+            press: Press::Wc(WcPress::FileQr),
+            input: match image {
+                Some(image) => input.with_image(image),
+                None => input,
+            },
+        });
+        app.wc.notice.clone()
+    };
+    assert_eq!(
+        press(&mut app, Some(ImageInput::NoPath)),
+        shown(t::FILE_EMPTY)
+    );
+    assert_eq!(
+        press(&mut app, Some(ImageInput::Refused)),
+        shown(t::FILE_KIND)
+    );
+    assert_eq!(
+        press(&mut app, Some(ImageInput::Unreadable)),
+        shown(t::FILE_OPEN)
+    );
+    let no_code = ImageInput::Pixels {
+        width: 2,
+        height: 2,
+        pixels: Zeroizing::new(vec![255; 16]),
+    };
+    assert_eq!(press(&mut app, Some(no_code)), shown(t::QR_NOT_FOUND));
+    #[cfg(debug_assertions)]
+    assert_eq!(app.cred_misses(), 0);
+    // A press that captured no image reads nothing; debug builds count the miss.
+    assert_eq!(press(&mut app, None), None);
+    #[cfg(debug_assertions)]
+    assert_eq!(app.cred_misses(), 1);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A 24-bit bottom-up BMP of `text` as a QR code (ECC medium, 4 px modules, 4-module quiet zone,
+/// black on white); an empty `text` gives a white picture of the same size as one for "".
+fn qr_bmp(text: &str) -> Vec<u8> {
+    let code = qrcodegen::QrCode::encode_text(text, qrcodegen::QrCodeEcc::Medium).unwrap();
+    let modules = code.size() + 8;
+    let width = usize::try_from(modules * 4).unwrap();
+    let row = (width * 3).div_ceil(4) * 4;
+    let data = row * width;
+    let mut file = Vec::with_capacity(54 + data);
+    file.extend_from_slice(b"BM");
+    file.extend_from_slice(&u32::try_from(54 + data).unwrap().to_le_bytes());
+    file.extend_from_slice(&[0; 4]);
+    file.extend_from_slice(&54_u32.to_le_bytes());
+    file.extend_from_slice(&40_u32.to_le_bytes());
+    file.extend_from_slice(&i32::try_from(width).unwrap().to_le_bytes());
+    file.extend_from_slice(&i32::try_from(width).unwrap().to_le_bytes());
+    file.extend_from_slice(&1_u16.to_le_bytes());
+    file.extend_from_slice(&24_u16.to_le_bytes());
+    file.extend_from_slice(&[0; 24]);
+    for y in (0..width).rev() {
+        let my = i32::try_from(y / 4).unwrap() - 4;
+        let start = file.len();
+        for x in 0..width {
+            let mx = i32::try_from(x / 4).unwrap() - 4;
+            let dark = !text.is_empty() && code.get_module(mx, my);
+            let value = if dark { 0 } else { 255 };
+            file.extend_from_slice(&[value; 3]);
+        }
+        file.resize(start + row, 0);
+    }
+    file
 }
 
 /// Review 2026-11-07 (10-31 D3): a wallet's only account is not listed a second time with the

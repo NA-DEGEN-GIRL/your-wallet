@@ -26,6 +26,11 @@
 //! `클립보드에서 연결` and `클립보드 이미지에서 QR 읽기` (`ClipInput`); before, their handlers
 //! read it.
 //!
+//! 2026-11-20 (S4 P5): [`capture`] also reads and decodes the image file of the `WalletConnect`
+//! panel's `이미지 파일에서 QR 읽기` (`ImageInput`: the file checks and GDI+ are the shell's);
+//! before, its handler opened and decoded the file. The clipboard's `CF_DIB` bytes are moved into
+//! a wiped buffer.
+//!
 //! 2026-11-18 (S3 D3): `Press::Legacy` is gone: [`press_of`] gives `None` for an id no
 //! control of the main window sends (an edit's id, S22's painted hold area, the eighth id of a
 //! `YubiKey` connect choice row), and `App::on_command` then only records it as the last
@@ -33,7 +38,7 @@
 
 use yw_core::secret::Zeroizing;
 use yw_engine::cmd::Press;
-use yw_engine::form::{ClipInput, CredField, CredUnits, EditField, PressInput};
+use yw_engine::form::{ClipInput, CredField, CredUnits, EditField, ImageInput, PressInput};
 use yw_win::ui::Window;
 
 use crate::ui::main_window::ControlSet;
@@ -264,9 +269,17 @@ pub fn creds_for(id: u16) -> &'static [CredField] {
 /// The press input of control `id` (Windows): the units of every credential edit
 /// [`creds_for`] lists, read now into wiped buffers; `Absent` when that edit does not exist.
 /// For the `WalletConnect` panel's two clipboard presses also what the clipboard holds
-/// ([`clip_input`]; S3 D1), read only for them and only with a main window.
+/// ([`clip_input`]; S3 D1), read only for them and only with a main window. For its
+/// `이미지 파일에서 QR 읽기` also the image file ([`image_input`]; S4 P5), named by the path
+/// edit, or by `kept_file` (the path the panel keeps, `wc.file_text`) when that edit does not
+/// exist — the path the handler used before P5 (the form state, else the kept text).
 #[must_use]
-pub fn capture(id: u16, controls: &ControlSet, main: Option<&Window>) -> PressInput {
+pub fn capture(
+    id: u16,
+    controls: &ControlSet,
+    main: Option<&Window>,
+    kept_file: &str,
+) -> PressInput {
     let creds = creds_for(id)
         .iter()
         .map(|&field| {
@@ -290,8 +303,54 @@ pub fn capture(id: u16, controls: &ControlSet, main: Option<&Window>) -> PressIn
         screens_walletconnect::ids::CLIPBOARD_QR => {
             input.with_clip(clip_input(main, ClipRead::Image))
         }
+        screens_walletconnect::ids::FILE_QR => {
+            let field = controls.text(edit_id_of(EditField::WcFile), EditField::WcFile.cap());
+            input.with_image(image_input(field.as_deref().unwrap_or(kept_file)))
+        }
         _ => input,
     }
+}
+
+/// Reads the image file for `이미지 파일에서 QR 읽기` (2026-11-20, S4 P5; the checks and the
+/// decode the former `App::wc_file_qr` made, in the same order, spec/13 §6): `field` is the path
+/// field (spaces and the quotes of Explorer's `경로로 복사` trimmed); only a regular file of at
+/// most `MAX_IMAGE_FILE` bytes with a PNG, JPEG, BMP or GIF signature is handed to GDI+
+/// (`yw_win::image::decode_file`, no other codec on untrusted files). The pixels move into a
+/// wiped buffer without a copy.
+fn image_input(field: &str) -> ImageInput {
+    let path = field.trim().trim_matches('"');
+    if path.is_empty() {
+        return ImageInput::NoPath;
+    }
+    let path = std::path::Path::new(path);
+    if !image_file_acceptable(path) {
+        return ImageInput::Refused;
+    }
+    match yw_win::image::decode_file(path) {
+        Ok(image) => ImageInput::Pixels {
+            width: image.width,
+            height: image.height,
+            pixels: Zeroizing::new(image.pixels),
+        },
+        Err(_) => ImageInput::Unreadable,
+    }
+}
+
+/// A regular file of at most `MAX_IMAGE_FILE` bytes with an accepted signature
+/// (`app_walletconnect::image_magic_ok`). 2026-11-20 (S4 P5): moved unchanged from
+/// `app_walletconnect`.
+fn image_file_acceptable(path: &std::path::Path) -> bool {
+    use std::io::Read as _;
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let size_ok = file
+        .metadata()
+        .is_ok_and(|meta| meta.is_file() && meta.len() <= app_walletconnect::MAX_IMAGE_FILE);
+    let mut head = [0_u8; 8];
+    size_ok
+        && file.take(8).read_exact(&mut head).is_ok()
+        && app_walletconnect::image_magic_ok(&head)
 }
 
 /// What a clipboard press reads.
@@ -320,7 +379,8 @@ fn clip_input(main: Option<&Window>, read: ClipRead) -> ClipInput {
         return ClipInput::Link(link);
     }
     match yw_win::clipboard::read_dib(main, app_walletconnect::MAX_CLIPBOARD_IMAGE) {
-        Ok(Some(dib)) => ClipInput::WinDib(dib),
+        // 2026-11-20 (S4 P5): moved into a wiped buffer (no copy); before, a plain `Vec`.
+        Ok(Some(dib)) => ClipInput::WinDib(Zeroizing::new(dib)),
         Ok(None) => ClipInput::NoImage,
         Err(_) => ClipInput::OpenFailed,
     }
@@ -1653,7 +1713,7 @@ mod tests {
         controls.type_text(ids::QN_NAME_EDIT, "node-name");
         controls.type_text(ids::QN_TOKEN_EDIT, "");
         controls.type_text(screens_llm::ids::ENDPOINT_EDIT, "https://example.test/");
-        let mut input = capture(ids::TPL_SAVE, &controls, None);
+        let mut input = capture(ids::TPL_SAVE, &controls, None, "");
         let shown = format!("{input:?}");
         assert!(
             shown.starts_with(
@@ -1669,35 +1729,115 @@ mod tests {
         #[cfg(debug_assertions)]
         assert_eq!(input.misses(), 0);
         // A plain press captures nothing; the credential cap is the edit's.
-        let mut plain = capture(screens_llm::ids::SAVE, &controls, None);
+        let mut plain = capture(screens_llm::ids::SAVE, &controls, None, "");
         assert!(format!("{plain:?}").starts_with("PressInput { creds: []"));
         assert!(plain.take(CredField::LlmKey).is_empty());
         #[cfg(debug_assertions)]
         assert_eq!(plain.misses(), 1);
         controls.type_text(screens_llm::ids::KEY_EDIT, &"k".repeat(1_100));
-        let mut key = capture(screens_llm::ids::KEY_SAVE, &controls, None);
+        let mut key = capture(screens_llm::ids::KEY_SAVE, &controls, None, "");
         assert_eq!(key.take(CredField::LlmKey).len(), CredField::LlmKey.cap());
     }
 
     /// S3 D1: only the two `WalletConnect` clipboard presses carry a clipboard input, and
     /// without a main window it is `NoWindow` (nothing is read: no clipboard access headless).
+    /// 2026-11-20 (S4 P5): only `이미지 파일에서 QR 읽기` carries an image input; with no path
+    /// (no edit, an empty kept path) it is `NoPath` and no file is opened.
     #[test]
     fn capture_reads_the_clipboard_only_for_its_two_presses() {
         use crate::ui::screens_walletconnect::ids as wc;
         let controls = ControlSet::default();
         for id in [wc::CLIPBOARD_CONNECT, wc::CLIPBOARD_QR] {
-            let mut input = capture(id, &controls, None);
+            let mut input = capture(id, &controls, None, "");
             assert!(matches!(input.take_clip(), Some(ClipInput::NoWindow)));
             #[cfg(debug_assertions)]
             assert_eq!(input.misses(), 0);
         }
+        let mut file = capture(wc::FILE_QR, &controls, None, "");
+        assert!(matches!(file.take_image(), Some(ImageInput::NoPath)));
+        #[cfg(debug_assertions)]
+        assert_eq!(file.misses(), 0);
         for id in every_id() {
-            if id == wc::CLIPBOARD_CONNECT || id == wc::CLIPBOARD_QR {
-                continue;
+            let shown = format!("{:?}", capture(id, &controls, None, ""));
+            if id != wc::CLIPBOARD_CONNECT && id != wc::CLIPBOARD_QR {
+                assert!(!shown.contains("clip"), "{id}: {shown}");
             }
-            let shown = format!("{:?}", capture(id, &controls, None));
-            assert!(!shown.contains("clip"), "{id}: {shown}");
+            if id != wc::FILE_QR {
+                assert!(!shown.contains("image"), "{id}: {shown}");
+            }
         }
+    }
+
+    /// S4 P5 (spec/13 §6): the image-file press reads the path edit (else the kept path), trims
+    /// spaces and Explorer's quotes, refuses a missing file, a folder and a file without a
+    /// PNG/JPEG/BMP/GIF signature before any decoder sees it, gives `Unreadable` when GDI+ cannot
+    /// decode an accepted file, and the decoded pixels of a BMP. Files only in the test's own
+    /// temp folder (removed at the end).
+    #[test]
+    fn capture_reads_the_image_file_in_the_shell() {
+        use crate::ui::screens_walletconnect::ids as wc;
+        let dir = std::env::temp_dir().join(format!("yw-p5-capture-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let bmp = dir.join("two.bmp");
+        std::fs::write(&bmp, bmp_2x1()).unwrap();
+        let text = dir.join("note.txt");
+        std::fs::write(&text, b"not an image at all").unwrap();
+        let broken = dir.join("broken.png");
+        std::fs::write(&broken, b"\x89PNG\r\n\x1a\nbroken").unwrap();
+        let shown = |field: Option<&str>, kept: &str| {
+            let controls = ControlSet::default();
+            if let Some(field) = field {
+                controls.type_text(wc::FILE_EDIT, field);
+            }
+            let mut input = capture(wc::FILE_QR, &controls, None, kept);
+            let image = input.take_image();
+            #[cfg(debug_assertions)]
+            assert_eq!(input.misses(), 0);
+            format!("{image:?}")
+        };
+        let bmp_text = bmp.display().to_string();
+        let quoted = format!("  \"{bmp_text}\" ");
+        assert_eq!(shown(Some(&quoted), ""), "Some(Pixels(2, 1, 8))");
+        // The kept path only when the edit does not exist; an empty edit is an empty path.
+        assert_eq!(shown(None, &bmp_text), "Some(Pixels(2, 1, 8))");
+        assert_eq!(shown(Some("  "), &bmp_text), "Some(NoPath)");
+        assert_eq!(shown(Some("\"\""), ""), "Some(NoPath)");
+        let missing = dir.join("missing.png").display().to_string();
+        let folder = dir.display().to_string();
+        let note = text.display().to_string();
+        for refused in [&missing, &folder, &note] {
+            assert_eq!(shown(Some(refused), ""), "Some(Refused)", "{refused}");
+        }
+        let broken = broken.display().to_string();
+        assert_eq!(shown(Some(&broken), ""), "Some(Unreadable)");
+        // The decoded pixels are B, G, R, A, top row first.
+        let controls = ControlSet::default();
+        controls.type_text(wc::FILE_EDIT, &bmp_text);
+        let mut input = capture(wc::FILE_QR, &controls, None, "");
+        assert!(matches!(
+            input.take_image(),
+            Some(ImageInput::Pixels { pixels, .. })
+                if pixels.as_slice() == [0, 0, 255, 255, 255, 255, 255, 255]
+        ));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A 2×1 24-bit bottom-up BMP: a red pixel, then a white one.
+    fn bmp_2x1() -> Vec<u8> {
+        let mut file = Vec::new();
+        file.extend_from_slice(b"BM");
+        file.extend_from_slice(&62_u32.to_le_bytes()); // file size: 14 + 40 + 8
+        file.extend_from_slice(&[0; 4]);
+        file.extend_from_slice(&54_u32.to_le_bytes()); // pixel data offset
+        file.extend_from_slice(&40_u32.to_le_bytes()); // BITMAPINFOHEADER
+        file.extend_from_slice(&2_i32.to_le_bytes());
+        file.extend_from_slice(&1_i32.to_le_bytes());
+        file.extend_from_slice(&1_u16.to_le_bytes()); // planes
+        file.extend_from_slice(&24_u16.to_le_bytes()); // bits per pixel
+        file.extend_from_slice(&[0; 24]); // BI_RGB, sizes, resolution, palette
+        file.extend_from_slice(&[0, 0, 255, 255, 255, 255, 0, 0]); // B G R, B G R, row padding
+        file
     }
 
     /// S3 D1 (spec/13 §6): a copied pairing link becomes the press's link (whole, leading

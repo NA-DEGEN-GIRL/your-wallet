@@ -4052,7 +4052,7 @@ impl App {
         let closed =
             !matches!(id, IDOK | IDCANCEL) && !Self::is_picker_button(id) && self.close_pickers();
         self.on_cmd(Cmd::Form(self.controls.form_snapshot()));
-        let input = cmd_table::capture(id, &self.controls, self.main.as_ref());
+        let input = cmd_table::capture(id, &self.controls, self.main.as_ref(), &self.wc.file_text);
         if let Some(press) = cmd_table::press_of(id, &self.controls) {
             self.on_cmd(Cmd::Press { press, input });
             match press {
@@ -4201,7 +4201,7 @@ impl App {
             return false;
         };
         self.on_cmd(Cmd::Form(self.controls.form_snapshot()));
-        let input = cmd_table::capture(id, &self.controls, self.main.as_ref());
+        let input = cmd_table::capture(id, &self.controls, self.main.as_ref(), &self.wc.file_text);
         let outer = core::mem::replace(&mut self.input, input);
         let claimed = run(self, press);
         let used = core::mem::replace(&mut self.input, outer);
@@ -4967,8 +4967,9 @@ impl App {
     /// pairing link (`WcUri`, it carries the symKey) is `Zeroizing` in `FormState` and
     /// `Cmd::Edit` only, not along the `PAIR` handler path (as before S3, when it was the plain
     /// `controls.text`; the copy count is unchanged, and `on_wc_edit` still keeps the plain
-    /// `wc.uri_text`). S4: return `Zeroizing<String>` here, or add a `WcUri` reader, so `PAIR`
-    /// keeps no plain copy beyond `wc.uri_text`.
+    /// `wc.uri_text`). 2026-11-20 (S4 P5, critique B-12(c)): `PAIR` reads it with
+    /// [`App::form_text_wiping`] instead, so it keeps no plain copy beyond `wc.uri_text`; before,
+    /// this note said "S4: return `Zeroizing<String>` here, or add a `WcUri` reader".
     #[must_use]
     pub(crate) fn form_text(&self, field: EditField) -> Option<String> {
         let text = self.form.text(field).map(str::to_owned);
@@ -4977,6 +4978,28 @@ impl App {
             .controls
             .text(cmd_table::edit_id_of(field), field.cap())
             != text
+        {
+            self.note_form_mismatch(field);
+        }
+        text
+    }
+
+    /// [`App::form_text`] as a wiped string (2026-11-20, S4 P5, critique B-12(c)): for the
+    /// `WalletConnect` pairing link (`EditField::WcUri`, it holds the pairing `symKey`). The same
+    /// form-state read and the same debug comparison with the edit (its read wiped too).
+    #[must_use]
+    pub(crate) fn form_text_wiping(&self, field: EditField) -> Option<Zeroizing<String>> {
+        let text = self
+            .form
+            .text(field)
+            .map(|text| Zeroizing::new(text.to_owned()));
+        #[cfg(debug_assertions)]
+        if self
+            .controls
+            .text(cmd_table::edit_id_of(field), field.cap())
+            .map(Zeroizing::new)
+            .as_deref()
+            != text.as_deref()
         {
             self.note_form_mismatch(field);
         }

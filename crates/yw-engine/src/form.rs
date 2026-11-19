@@ -13,6 +13,11 @@
 //! 2026-11-18 (S3 D1): a press also carries what the shell read from the clipboard for it
 //! ([`ClipInput`], the `WalletConnect` panel's `클립보드에서 연결` and `클립보드 이미지에서 QR
 //! 읽기`); before, the handler read the clipboard itself.
+//!
+//! 2026-11-20 (S4 P5): the Windows `CF_DIB` bytes ([`ClipInput::WinDib`]) are wiped on drop
+//! (before, a plain `Vec`), and the `WalletConnect` panel's `이미지 파일에서 QR 읽기` carries the
+//! image file the shell read and decoded with the press ([`ImageInput`]); before, the handler
+//! opened and decoded the file itself.
 
 use core::fmt;
 
@@ -435,9 +440,11 @@ pub enum ClipInput {
     Link(Zeroizing<String>),
     /// Windows `CF_DIB` bytes (a Win+Shift+S capture), parsed by
     /// `walletconnect::qr_decode::dib_to_bgra`. Windows only: Android pairs through the
-    /// prefilled link and the camera reader (spec/15 §12.2), not this input. A plain `Vec`, not
-    /// wiped on drop, as `read_dib` returned before S3 (2026-11-18: wiping it is left for S4).
-    WinDib(Vec<u8>),
+    /// prefilled link and the camera reader (spec/15 §12.2), not this input. Wiped on drop
+    /// (2026-11-20, S4 P5: the image may show a pairing QR, whose link holds the `symKey`; the
+    /// shell moves `read_dib`'s buffer in without a copy. Before, a plain `Vec`, as `read_dib`
+    /// returned it).
+    WinDib(Zeroizing<Vec<u8>>),
     /// The clipboard holds no image.
     NoImage,
     /// The clipboard could not be opened.
@@ -457,14 +464,62 @@ impl fmt::Debug for ClipInput {
     }
 }
 
+/// What the shell read for the `WalletConnect` panel's `이미지 파일에서 QR 읽기` (2026-11-20, S4
+/// P5: spec/13 §6; before, the handler opened and decoded the file itself): the path is the
+/// panel's path field at the press (a quoted path from Explorer's `경로로 복사` is accepted).
+/// Only a regular file of at most 64 MB that starts like a PNG, JPEG, BMP or GIF file is handed
+/// to the platform decoder (Windows: GDI+). Read only when that press happens, never written.
+pub enum ImageInput {
+    /// The path field is empty (after trimming spaces and quotes).
+    NoPath,
+    /// Not an acceptable image file (missing, not a regular file, too large, or another
+    /// signature); nothing was handed to the decoder.
+    Refused,
+    /// The decoder could not read the file.
+    Unreadable,
+    /// The decoded image: `width × height` pixels, 4 bytes each in B, G, R, A order, top row
+    /// first. Wiped on drop (it may show a pairing QR).
+    Pixels {
+        /// Width in pixels.
+        width: usize,
+        /// Height in pixels.
+        height: usize,
+        /// `width * height * 4` bytes.
+        pixels: Zeroizing<Vec<u8>>,
+    },
+}
+
+/// The variant and, for pixels, the size and byte length only.
+impl fmt::Debug for ImageInput {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoPath => formatter.write_str("NoPath"),
+            Self::Refused => formatter.write_str("Refused"),
+            Self::Unreadable => formatter.write_str("Unreadable"),
+            Self::Pixels {
+                width,
+                height,
+                pixels,
+            } => formatter
+                .debug_tuple("Pixels")
+                .field(width)
+                .field(height)
+                .field(&pixels.len())
+                .finish(),
+        }
+    }
+}
+
 /// Platform input captured with one press: the units of every credential field the press uses
 /// (each listed field has an entry, `Absent` when its edit did not exist) and, for a press that
-/// reads the clipboard, what it held (S3 D1). No `Clone`; the credential units and a pairing link
-/// are wiped on drop (a `WinDib` image is not).
+/// reads the clipboard, what it held (S3 D1), or, for the image-file press, the decoded image (S4
+/// P5). No `Clone`; the credential units, a pairing link, a `WinDib` image and the decoded pixels
+/// are wiped on drop (2026-11-20, S4 P5: before, a `WinDib` image was not).
 #[derive(Default)]
 pub struct PressInput {
     creds: Vec<(CredField, CredUnits)>,
     clip: Option<ClipInput>,
+    image: Option<ImageInput>,
     /// Debug builds only (plan §2.3, §3.2a): release builds compile no checking code.
     #[cfg(debug_assertions)]
     misses: u32,
@@ -477,6 +532,7 @@ impl PressInput {
         Self {
             creds,
             clip: None,
+            image: None,
             #[cfg(debug_assertions)]
             misses: 0,
         }
@@ -498,6 +554,24 @@ impl PressInput {
             self.misses = self.misses.saturating_add(1);
         }
         clip
+    }
+
+    /// The same input with the image file the shell read for the press (S4 P5).
+    #[must_use]
+    pub fn with_image(mut self, image: ImageInput) -> Self {
+        self.image = Some(image);
+        self
+    }
+
+    /// Moves the image input out. `None` when the press captured none (a table bug, or a second
+    /// take); debug builds count it in `misses`, like [`PressInput::take_clip`].
+    pub fn take_image(&mut self) -> Option<ImageInput> {
+        let image = self.image.take();
+        #[cfg(debug_assertions)]
+        if image.is_none() {
+            self.misses = self.misses.saturating_add(1);
+        }
+        image
     }
 
     /// Moves the units of `field` out: empty for `Absent` or a second take, as the Windows read
@@ -526,13 +600,16 @@ impl PressInput {
 }
 
 /// Field names and unit counts only (the clipboard input, when there is one, its variant and
-/// length).
+/// length; the image input its variant, size and length).
 impl fmt::Debug for PressInput {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut shown = formatter.debug_struct("PressInput");
         shown.field("creds", &self.creds);
         if let Some(clip) = &self.clip {
             shown.field("clip", clip);
+        }
+        if let Some(image) = &self.image {
+            shown.field("image", image);
         }
         #[cfg(debug_assertions)]
         shown.field("misses", &self.misses);
@@ -660,7 +737,7 @@ mod tests {
         #[cfg(debug_assertions)]
         assert_eq!(input.misses(), 1);
         assert_eq!(
-            format!("{:?}", ClipInput::WinDib(vec![0; 40])),
+            format!("{:?}", ClipInput::WinDib(Zeroizing::new(vec![0; 40]))),
             "WinDib(40)"
         );
         for (clip, shown) in [
@@ -669,6 +746,37 @@ mod tests {
             (ClipInput::OpenFailed, "OpenFailed"),
         ] {
             assert_eq!(format!("{clip:?}"), shown);
+        }
+    }
+
+    /// S4 P5: the image input is taken once (a second take is a debug miss) and prints its size
+    /// and length only; a press input with no image prints no `image` field.
+    #[test]
+    fn image_input_is_taken_once_and_prints_no_pixels() {
+        let mut input = PressInput::default().with_image(ImageInput::Pixels {
+            width: 3,
+            height: 2,
+            pixels: Zeroizing::new(vec![0x7F; 24]),
+        });
+        let shown = format!("{input:?}");
+        assert!(shown.contains("image: Pixels(3, 2, 24)"), "{shown}");
+        assert!(!shown.contains("127"), "{shown}");
+        assert!(matches!(
+            input.take_image(),
+            Some(ImageInput::Pixels { width: 3, height: 2, pixels }) if pixels.len() == 24
+        ));
+        #[cfg(debug_assertions)]
+        assert_eq!(input.misses(), 0);
+        assert!(input.take_image().is_none());
+        #[cfg(debug_assertions)]
+        assert_eq!(input.misses(), 1);
+        assert!(!format!("{input:?}").contains("image"));
+        for (image, shown) in [
+            (ImageInput::NoPath, "NoPath"),
+            (ImageInput::Refused, "Refused"),
+            (ImageInput::Unreadable, "Unreadable"),
+        ] {
+            assert_eq!(format!("{image:?}"), shown);
         }
     }
 

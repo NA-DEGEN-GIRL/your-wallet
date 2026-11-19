@@ -7,7 +7,8 @@ use std::sync::Arc;
 
 use yw_core::approval::{ApprovalDraft, ApprovalOrigin};
 use yw_core::policy::{BrowserOrigin, ProviderError};
-use yw_engine::form::ClipInput;
+use yw_core::secret::Zeroizing;
+use yw_engine::form::{ClipInput, ImageInput};
 use yw_engine::services::WcPlatform;
 
 use crate::app::App;
@@ -280,7 +281,8 @@ impl WcPlatform for WinWcPlatform {
     }
 }
 
-/// Largest QR image file read (bytes).
+/// Largest QR image file read (bytes). 2026-11-20 (S4 P5): the shell checks it at the press
+/// (`ui::cmd_table`'s `image_file_acceptable`, moved from here).
 pub const MAX_IMAGE_FILE: u64 = 64 * 1_048_576;
 
 /// Whether `head` starts like a PNG, JPEG, BMP or GIF file.
@@ -291,19 +293,6 @@ pub fn image_magic_ok(head: &[u8]) -> bool {
         || head.starts_with(b"BM")
         || head.starts_with(b"GIF87a")
         || head.starts_with(b"GIF89a")
-}
-
-/// A regular file of at most [`MAX_IMAGE_FILE`] bytes with an accepted signature.
-fn image_file_acceptable(path: &std::path::Path) -> bool {
-    use std::io::Read as _;
-    let Ok(file) = std::fs::File::open(path) else {
-        return false;
-    };
-    let size_ok = file
-        .metadata()
-        .is_ok_and(|meta| meta.is_file() && meta.len() <= MAX_IMAGE_FILE);
-    let mut head = [0_u8; 8];
-    size_ok && file.take(8).read_exact(&mut head).is_ok() && image_magic_ok(&head)
 }
 
 /// See [`App::wc_connect_patch`].
@@ -635,10 +624,12 @@ impl App {
     /// `클립보드 이미지에서 QR 읽기` (Win+Shift+S places a bitmap on the clipboard).
     /// 2026-11-18 (S3 D1): `clip` is what the shell read from the clipboard with the press
     /// (`ui::cmd_table::capture`); before, this read `CF_DIB` itself. Same notices, same order.
+    /// 2026-11-20 (S4 P5): the `CF_DIB` bytes and the pixels made from them are wiped on drop.
     pub(crate) fn wc_clipboard_qr(&mut self, clip: ClipInput) {
         match clip {
             ClipInput::WinDib(dib) => match crate::walletconnect::qr_decode::dib_to_bgra(&dib) {
                 Some((width, height, pixels)) => {
+                    let pixels = Zeroizing::new(pixels);
                     self.wc_pair_pixels(width, height, &pixels, "clipboard");
                 }
                 None => self.wc_notice(text::CLIPBOARD_FORMAT),
@@ -653,21 +644,21 @@ impl App {
 
     /// `이미지 파일에서 QR 읽기` (PNG, JPEG, BMP, GIF; the path field accepts a quoted path from
     /// Explorer's `경로로 복사`).
-    pub(crate) fn wc_file_qr(&mut self) {
-        let path = self.wc.file_text.trim().trim_matches('"').to_owned();
-        if path.is_empty() {
-            self.wc_notice(text::FILE_EMPTY);
-            return;
-        }
-        // Only the four formats are handed to GDI+ (no EMF/WMF/TIFF/ICO codecs on untrusted
-        // files), and only files of a screenshot's size.
-        if !image_file_acceptable(std::path::Path::new(&path)) {
-            self.wc_notice(text::FILE_KIND);
-            return;
-        }
-        match yw_win::image::decode_file(std::path::Path::new(&path)) {
-            Ok(image) => self.wc_pair_pixels(image.width, image.height, &image.pixels, "file"),
-            Err(_) => self.wc_notice(text::FILE_OPEN),
+    /// 2026-11-20 (S4 P5): `image` is what the shell read and decoded with the press
+    /// (`ui::cmd_table::capture`: the empty-path check, then only the four formats of a
+    /// screenshot's size handed to GDI+, no EMF/WMF/TIFF/ICO codecs on untrusted files); before,
+    /// this opened and decoded `wc.file_text` itself. Same notices, same order; the pixels are
+    /// wiped on drop.
+    pub(crate) fn wc_file_qr(&mut self, image: ImageInput) {
+        match image {
+            ImageInput::NoPath => self.wc_notice(text::FILE_EMPTY),
+            ImageInput::Refused => self.wc_notice(text::FILE_KIND),
+            ImageInput::Unreadable => self.wc_notice(text::FILE_OPEN),
+            ImageInput::Pixels {
+                width,
+                height,
+                pixels,
+            } => self.wc_pair_pixels(width, height, &pixels, "file"),
         }
     }
 

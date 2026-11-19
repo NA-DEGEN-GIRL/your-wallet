@@ -7,6 +7,7 @@
 use crate::app::App;
 use crate::ui::main_window::{Ctl, Item, Tone};
 use crate::walletconnect::VerifyStatus;
+use yw_core::secret::Zeroizing;
 use yw_engine::cmd::{Row, WcPress};
 use yw_engine::form::EditField;
 
@@ -360,9 +361,11 @@ impl App {
     pub(crate) fn on_wc(&mut self, press: WcPress) {
         match press {
             WcPress::Pair => {
+                // 2026-11-20 (S4 P5, critique B-12(c)): a wiped string (the link holds the
+                // pairing `symKey`); before, a plain `String` from `form_text`.
                 let text = self
-                    .form_text(EditField::WcUri)
-                    .unwrap_or_else(|| self.wc.uri_text.clone());
+                    .form_text_wiping(EditField::WcUri)
+                    .unwrap_or_else(|| Zeroizing::new(self.wc.uri_text.clone()));
                 self.wc_pair(&text);
             }
             // 2026-11-18 (S3 D1): what the shell read from the clipboard with the press; a
@@ -382,7 +385,12 @@ impl App {
                 if let Some(text) = self.form_text(EditField::WcFile) {
                     self.wc.file_text = text;
                 }
-                self.wc_file_qr();
+                // 2026-11-20 (S4 P5): the image file the shell read and decoded with the press
+                // (from the same path); before, `wc_file_qr` opened `wc.file_text` itself. A
+                // press without it (none captured) reads nothing.
+                if let Some(image) = self.input.take_image() {
+                    self.wc_file_qr(image);
+                }
             }
             WcPress::ProjectSave => {
                 if let Some(text) = self.form_text(EditField::WcProject) {
