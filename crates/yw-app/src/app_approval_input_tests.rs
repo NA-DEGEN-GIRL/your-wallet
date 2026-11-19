@@ -1789,9 +1789,21 @@ fn approving_input_is_built_only_by_the_mapper() {
         .find(|(path, _)| path == "approval_flow.rs")
         .map(|(_, text)| code_only(text))
         .expect("approval_flow.rs");
+    let on_event = item(&flow, "    pub(crate) fn on_event(", 4);
     assert!(
-        item(&flow, "    pub(crate) fn on_event(", 4).contains("self.session.event(now, event)"),
+        on_event.contains("self.session.event(now, event)"),
         "the flow hands the event to the session"
+    );
+    // 2026-11-19 (S4 B4 review): the gate's foreground sample comes before the event, once (a
+    // mutation that moved it after the event passed every golden; the behaviour is pinned by
+    // `approval_flow::tests::the_foreground_sample_comes_before_the_event`).
+    assert_eq!(on_event.matches("set_foreground(").count(), 1, "one sample");
+    in_order(
+        on_event,
+        &[
+            "self.session.set_foreground(now, foreground);",
+            "self.session.event(now, event);",
+        ],
     );
 }
 
@@ -1805,7 +1817,9 @@ fn approving_input_is_built_only_by_the_mapper() {
 /// B4b): `AiUi` split into the flow's `AiFlow` (panel state, serial, host, model, kind) and the
 /// shell's `AiBody` (body child, scroll): neither holds a gate type, `AiFlow` has no methods of its
 /// own, and the flow's AI accessors (`ai`, `ai_mut`, `take_ai`) name no session or gate; the
-/// shell state `ApprovalWin` holds no session, gate, flow or request.
+/// shell state `ApprovalWin` holds no session, gate, flow or request. 2026-11-19 (S4 B4 review):
+/// "no methods" is checked over every `impl` header of the crate that names `AiFlow` (only its
+/// `Debug`, whose body names no gate either), not by the one spelling `impl AiFlow`.
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -1905,9 +1919,68 @@ fn ai_never_touches_the_gate() {
         flow.matches("self.session.set_foreground(").count(),
         "only the gate's foreground flag"
     );
-    assert!(!flow.contains("impl AiFlow"), "AiFlow has no methods");
+    // `AiFlow` has no methods: the only `impl` naming it, in any yw-app source file, under any
+    // path and for any trait, is its `Debug` (2026-11-19, S4 B4 review: the check was
+    // `!contains("impl AiFlow")`, which missed `impl Trait for AiFlow` and
+    // `impl crate::approval_flow::AiFlow`). An item header starts a line with `impl` and ends at
+    // its first `{` or `;`.
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    let mut files = Vec::new();
+    let mut dirs = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                files.push(path);
+            }
+        }
+    }
+    assert!(files.len() > 50, "{}", files.len());
+    let mut ai_impls = Vec::new();
+    for path in &files {
+        let code = code_only(&std::fs::read_to_string(path).unwrap());
+        let mut at = 0;
+        for line in code.split_inclusive('\n') {
+            let start = at;
+            at += line.len();
+            let trimmed = line.trim_start();
+            if !(trimmed.starts_with("impl ") || trimmed.starts_with("impl<")) {
+                continue;
+            }
+            let rest = code.get(start..).unwrap_or_default();
+            let header = folded(
+                rest.get(..rest.find(['{', ';']).unwrap_or(rest.len()))
+                    .unwrap_or_default(),
+            );
+            let names_ai_flow = header.match_indices("AiFlow").any(|(i, _)| {
+                !header
+                    .get(..i)
+                    .unwrap_or_default()
+                    .chars()
+                    .next_back()
+                    .is_some_and(ident)
+                    && !header
+                        .get(i + 6..)
+                        .unwrap_or_default()
+                        .chars()
+                        .next()
+                        .is_some_and(ident)
+            });
+            if names_ai_flow {
+                ai_impls.push(header);
+            }
+        }
+    }
+    assert_eq!(
+        ai_impls,
+        ["impl core::fmt::Debug for AiFlow"],
+        "AiFlow has no methods"
+    );
     for (head, indent) in [
         ("pub struct AiFlow {", 0),
+        ("impl core::fmt::Debug for AiFlow {", 0),
         ("    pub(crate) const fn ai(", 4),
         ("    pub(crate) fn ai_mut(", 4),
         ("    pub(crate) fn take_ai(", 4),

@@ -1556,7 +1556,22 @@ impl App {
         });
         logging::info("app", "approval.open", &[]);
         self.rebuild_view();
+        #[cfg(test)]
+        self.assert_flow_and_window_in_step();
         Ok(())
+    }
+
+    /// The flow (`EvmUi.approval`) and the window's shell state (`App.approval_win`) are set and
+    /// taken together (2026-11-19, S4 B4 review). Test builds check it where they change and
+    /// where a window event reaches the flow, so a flow left without its window (or a window
+    /// without its flow) fails the tests: the recorders print both cases like a closed window.
+    #[cfg(test)]
+    fn assert_flow_and_window_in_step(&self) {
+        assert_eq!(
+            self.evm.approval.is_some(),
+            self.approval_win.is_some(),
+            "the approval flow and its window are out of step"
+        );
     }
 
     fn start_prepare(&mut self) {
@@ -1952,6 +1967,8 @@ impl App {
                 let _ = request_foreground(main, "main");
             }
         }
+        #[cfg(test)]
+        self.assert_flow_and_window_in_step();
     }
 
     /// Which approval window is shown, by the queue id of its request (2026-11-19, S4 F1, L-1,
@@ -2592,6 +2609,8 @@ impl App {
     }
 
     fn interaction(&mut self, event: InteractionEvent) {
+        #[cfg(test)]
+        self.assert_flow_and_window_in_step();
         let now = self.clock.now_ms();
         // 2026-11-19 (S4 B4b): the flow from `EvmUi.approval`, the window from `App.approval_win`.
         let (Some(flow), Some(win)) = (self.evm.approval.as_mut(), self.approval_win.as_ref())

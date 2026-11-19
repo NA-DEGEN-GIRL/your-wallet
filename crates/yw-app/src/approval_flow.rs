@@ -84,9 +84,14 @@ impl core::fmt::Debug for AiFlow {
     }
 }
 
-/// What the approval window paints, read from the flow (2026-11-19, S4 B4b, plan D-19): one
-/// reviewed read surface, no `&mut`. The session reaches the shell only as the bottom bar's
-/// facts ([`Self::bar`]); the smoke harness and the tour hooks read through here too.
+/// What the approval window paints, read from the flow (2026-11-19, S4 B4b, plan D-19): no
+/// `&mut`. While it paints, the session reaches the shell only as the bottom bar's facts
+/// ([`Self::bar`]); the smoke harness and the tour hooks read through here too. It is not the
+/// shell's only way to the flow (2026-11-19, S4 B4 review: this said "one reviewed read
+/// surface", stronger than the code): before the AI body paints, `paint_ai_body` calls
+/// [`ApprovalFlow::hold_ai_for_ack`], which writes the AI panel's held flag (never the gate), and
+/// the window's input steps and layout read the flow's read-only accessors (`Step::Tab` reads
+/// [`ApprovalFlow::view`] for the tab order).
 pub(crate) struct ApprovalPaint<'a> {
     /// The window's language.
     pub(crate) lang: Lang,
@@ -99,9 +104,12 @@ pub(crate) struct ApprovalPaint<'a> {
     pub(crate) prepare: &'a PrepareState,
     /// The acknowledgement checkbox is checked.
     pub(crate) ack_checked: bool,
-    /// The interaction's status.
+    /// The interaction's status; read by the render harness only (2026-11-19, S4 B4 review:
+    /// `cfg(test)` like `prepare`, a release paint computed it for nothing).
+    #[cfg(test)]
     pub(crate) interaction: InteractionStatus,
-    /// A high-risk hold is under way.
+    /// A high-risk hold is under way; read by the render harness only (`cfg(test)`, as above).
+    #[cfg(test)]
     pub(crate) holding: bool,
     /// The AI explanation, when the window has one.
     pub(crate) ai: Option<&'a AiFlow>,
@@ -115,16 +123,16 @@ impl ApprovalPaint<'_> {
     }
 }
 
-/// Names and flags only (D28).
+/// Names and flags only (D28); the interaction status and the hold in test builds only.
 impl core::fmt::Debug for ApprovalPaint<'_> {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        formatter
-            .debug_struct("ApprovalPaint")
-            .field("lang", &self.lang)
-            .field("ack_checked", &self.ack_checked)
-            .field("interaction", &self.interaction)
-            .field("holding", &self.holding)
-            .finish_non_exhaustive()
+        let mut out = formatter.debug_struct("ApprovalPaint");
+        out.field("lang", &self.lang)
+            .field("ack_checked", &self.ack_checked);
+        #[cfg(test)]
+        out.field("interaction", &self.interaction)
+            .field("holding", &self.holding);
+        out.finish_non_exhaustive()
     }
 }
 
@@ -282,7 +290,9 @@ impl ApprovalFlow {
             #[cfg(test)]
             prepare: &self.session.gate.prepare,
             ack_checked: self.session.gate.ack_checked,
+            #[cfg(test)]
             interaction: self.session.interaction().status(),
+            #[cfg(test)]
             holding: self.session.interaction().hold_source().is_some(),
             ai: self.ai.as_ref(),
             bar: BarSource {
@@ -420,6 +430,9 @@ impl ApprovalFlow {
     /// One interaction event: the foreground sample first (a `false` → `true` edge restarts the
     /// arm delay), then the event, then the early-release note, then what it did
     /// (`status_action`, S4 B3). The order of today's `interaction()` in `app_approval.rs`.
+    /// Pinned by `tests::the_foreground_sample_comes_before_the_event` and the source check S8
+    /// (2026-11-19, S4 B4 review: no golden can show this order, the harness keeps the
+    /// foreground steady between events).
     pub(crate) fn on_event(
         &mut self,
         now: u64,
@@ -571,6 +584,132 @@ impl ApprovalFlow {
         let _ = self.session.replace_content(
             now,
             PrepareState::Ready(ReadyContent::Signing(Box::new(request))),
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! `ApprovalFlow::on_event` applies the gate's foreground sample before the event (spec/04
+    //! §3.4, AGENTS.md §6 arm delay and re-activation; 2026-11-19, S4 B4 review). Headless: a
+    //! flow without a window, driven at fixed times. The `s4_flow` goldens cannot show the order
+    //! because their harness keeps the foreground steady between events.
+
+    use yw_core::evm::address::parse_address;
+    use yw_core::evm::chain::SEPOLIA;
+    use yw_core::lang::Lang;
+    use yw_core::policy::{BrowserOrigin, Family, Method};
+    use yw_engine::approval::flow::StatusAction;
+    use yw_engine::approval::interaction::{APPROVE_ARM_DELAY_MS, InteractionEvent};
+    use yw_engine::browser::envelope::{Correlation, Id16, Id32};
+    use yw_engine::browser::{Reply, SiteKind, SiteRequest};
+
+    use super::ApprovalFlow;
+    use crate::app_approval::ConnectState;
+    use crate::app_chain_sites::ConnectChoice;
+    use crate::app_evm::QueuedItem;
+
+    const START: u64 = 1_000_000;
+
+    const ENTER: InteractionEvent = InteractionEvent::ApproveActivated { physical: true };
+
+    /// A Ready EVM connect window with its one account selected (Standard risk, no checkbox),
+    /// brought to the front at `START`; returns it after a `Tick` at the first armed instant.
+    fn armed() -> (ApprovalFlow, u64) {
+        let site = SiteRequest {
+            reply: Reply {
+                conn: 1,
+                correlation: Correlation {
+                    session_id: Id32([1; 32]),
+                    sequence: 1,
+                    activation_nonce: Id32([2; 32]),
+                    request_id: Id16([3; 16]),
+                },
+            },
+            origin: BrowserOrigin::parse("https://app.example").unwrap(),
+            chain_id: SEPOLIA,
+            deadline_ms: u64::MAX,
+            method: Method::RequestAccounts,
+            kind: SiteKind::RequestAccounts,
+            compat_mode: None,
+        };
+        let account = parse_address("0x9858effd232b4033e47d90003d41ec34ecaeda94").unwrap();
+        let connect = ConnectState {
+            accounts: vec![(
+                ConnectChoice::Evm(account),
+                "A".to_owned(),
+                "a".to_owned(),
+                0,
+            )],
+            selected: vec![true],
+            chain_name: "Sepolia".to_owned(),
+            chain_id: SEPOLIA,
+            family: Family::Evm,
+            groups: 0,
+        };
+        let mut flow = ApprovalFlow::open(
+            Lang::En,
+            QueuedItem::Site(Box::new(site)),
+            Some(connect),
+            None,
+            START,
+        )
+        .unwrap();
+        let deadline = flow.gate().deadline_ms;
+        flow.connect_ready(deadline, START);
+        flow.activated(START);
+        let armed_at = START + APPROVE_ARM_DELAY_MS;
+        assert_eq!(
+            flow.on_event(armed_at, true, InteractionEvent::Tick),
+            StatusAction::Repaint
+        );
+        (flow, armed_at)
+    }
+
+    /// The control: armed, foreground and spaced, a physical Enter approves.
+    #[test]
+    fn an_armed_foreground_enter_approves() {
+        let (mut flow, armed_at) = armed();
+        assert_eq!(
+            flow.on_event(armed_at + 1, true, ENTER),
+            StatusAction::Approve
+        );
+    }
+
+    /// A press handled with a `false` sample (the window lost the foreground in the same
+    /// message) is judged against that sample: it never approves, and it restarts the arm delay.
+    /// Were the sample applied after the event, the press would see the previous `true` and
+    /// approve.
+    #[test]
+    fn the_foreground_sample_comes_before_the_event() {
+        let (mut flow, armed_at) = armed();
+        let now = armed_at + 1;
+        assert_eq!(flow.on_event(now, false, ENTER), StatusAction::Repaint);
+        assert!(!flow.gate().is_foreground);
+        assert_eq!(flow.gate().ready_at_ms, now);
+    }
+
+    /// After a `false` sample, the next press with a `true` sample is a re-activation first: the
+    /// arm delay restarts at that press and it does not approve; a press a full delay later does.
+    #[test]
+    fn a_press_after_a_lost_foreground_restarts_the_delay() {
+        let (mut flow, armed_at) = armed();
+        assert_eq!(
+            flow.on_event(armed_at + 1, false, InteractionEvent::Tick),
+            StatusAction::Repaint
+        );
+        let back = armed_at + 2;
+        assert_eq!(flow.on_event(back, true, ENTER), StatusAction::Repaint);
+        assert!(flow.gate().is_foreground);
+        assert_eq!(flow.gate().ready_at_ms, back);
+        assert_eq!(
+            flow.on_event(back + APPROVE_ARM_DELAY_MS - 1, true, ENTER),
+            StatusAction::Repaint
+        );
+        let again = back + APPROVE_ARM_DELAY_MS - 1;
+        assert_eq!(
+            flow.on_event(again + APPROVE_ARM_DELAY_MS, true, ENTER),
+            StatusAction::Approve
         );
     }
 }
