@@ -7,6 +7,7 @@
 //! `text` (was `ui::approval_text`) and `layout` (was `ui::text_layout`); yw-app `ui` re-exports
 //! them under the old names.)
 
+pub mod flow;
 pub mod interaction;
 pub mod layout;
 pub mod text;

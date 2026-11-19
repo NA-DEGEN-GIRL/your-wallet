@@ -116,7 +116,7 @@ crates/
   yw-platform/ Cargo.toml  clippy.toml(§5.1)  src/{lib.rs, http.rs, clock.rs, ws.rs(2026-11-17 S2)}  tests/   (§2.3a, 2026-11-17)
   yw-engine/ Cargo.toml  clippy.toml(§5.1)  src/{lib.rs, catalogues.rs, errors.rs, text.rs, network.rs, logging.rs(형식·수준·`LogSink`),
                               yubikey.rs(`CardSource`·카드 작업, [10](10-yubikey.md)), wallet_files.rs, secure_field.rs, badge.rs,
-                              approval/{mod.rs, interaction.rs, text.rs, layout.rs},
+                              approval/{mod.rs, interaction.rs, text.rs, layout.rs, flow.rs(2026-11-19 S4 B3: 순수 승인 흐름 판단과 창 ↔ 흐름 형식)},
                               settings.rs, apikeys.rs(평문 형식), explorer.rs, token_view.rs, meta.rs, hypercore.rs,
                               explain/, rpc/{mod.rs, evm.rs}, flow/evm/, sol/, btc/, zec/, received/,
                               walletconnect/{mod.rs, engine.rs, store.rs, verify.rs, qr_decode.rs, worker.rs, tests.rs},

@@ -17,6 +17,9 @@ use yw_core::evm::chain::SEPOLIA;
 use yw_core::evm::simulate::needs_resimulation;
 use yw_core::lang::{Lang, Text};
 use yw_engine::approval::QueueId;
+use yw_engine::approval::flow::{
+    BarSource, StatusAction, bar_facts, connect_gate_count, session_deadline, status_action,
+};
 use yw_win::ui::{
     Color, DrawFlags, Handler, Msg, PaintDc, Rect, Reply, Window, WindowKind, WindowSpec,
     create_window,
@@ -52,7 +55,7 @@ use crate::ui::approval_view::{ApprovalView, Block, Tone, escape_spans, view};
 use crate::ui::badge::{BADGE_DIP, BADGE_GAP_DIP, Badge};
 use crate::ui::interaction::{
     APPROVAL_TICK_MS, ApprovalGate, ApprovalSession, HIGH_RISK_HOLD_MS, InteractionEvent,
-    InteractionStatus, MAX_LIFETIME_MS, PrepareStage, PrepareState, ReadyContent,
+    InteractionStatus, PrepareStage, PrepareState, ReadyContent,
 };
 use crate::ui::text_layout;
 use crate::ui::theme::{self, FontRole, Fonts, wide};
@@ -156,22 +159,17 @@ pub struct ConnectState {
 
 impl ConnectState {
     /// The gate's `connect_selected`: the checked count for EVM; for Solana/Bitcoin the count
-    /// when every group has exactly one choice, else 0 (approve disabled).
+    /// when every group has exactly one choice, else 0 (approve disabled). (2026-11-19, S4 B3:
+    /// the rule is `yw_engine::approval::flow::connect_gate_count`, moved from here unchanged.)
     #[must_use]
     pub fn gate_count(&self) -> usize {
-        let count = self.selected.iter().filter(|checked| **checked).count();
-        if self.family == yw_core::policy::Family::Evm {
-            return count;
-        }
-        let complete = (0..self.groups).all(|group| {
-            self.accounts
-                .iter()
-                .zip(&self.selected)
-                .filter(|((_, _, _, of), checked)| *of == group && **checked)
-                .count()
-                == 1
-        });
-        if complete { count } else { 0 }
+        connect_gate_count(
+            &self.accounts,
+            |(_, _, _, group)| *group,
+            &self.selected,
+            self.groups,
+            self.family == yw_core::policy::Family::Evm,
+        )
     }
 
     /// Toggles entry `index`: a checkbox for EVM, a radio button within its group otherwise.
@@ -243,51 +241,24 @@ fn status_fact(lang: Lang, message: &str, step_shown: bool) -> &str {
         .unwrap_or(message)
 }
 
-/// The user's next step on the status line (display only; the gate is unchanged): what is still
-/// to do, then why the button waits (the 1 s arm delay, spec/04 §3.4-2), then how to approve a
-/// high-risk request.
-fn next_step(ui: &ApprovalUi, held: bool, now: u64) -> Option<&'static str> {
-    let gate = &ui.session.gate;
-    if ui.view.blocked || held || gate.submitting || now >= gate.deadline_ms {
-        return None;
-    }
-    let step = if ui.session.connect_empty() {
-        text::CONNECT_PICK
-    } else if ui.session.ack_missing() {
-        text::ACK_FIRST
-    } else if ui.early_release {
-        text::HOLD_EARLY
-    } else if ui.session.arm_waiting(now) {
-        // Why the button is grey (review 2026-11-07 F7); the arm delay itself is unchanged.
-        if gate.is_foreground {
-            text::ARM_WAIT
-        } else {
-            text::ARM_WAIT_BACKGROUND
-        }
-    } else if ui.view.high && ui.session.approve_ready(now) {
-        text::HOLD_NOW
-    } else {
-        return None;
-    };
-    Some(step.get(ui.lang))
-}
-
-/// Whether a status message says a simulation is under way or just changed the content.
-fn simulating_status(lang: Lang, status: &str) -> bool {
-    status.starts_with(text::SIMULATING_BUTTON.get(lang).trim_end_matches('…'))
-        || status.starts_with(text::SIM_CHANGED.get(lang))
-}
-
+/// The bottom bar's texts (2026-11-19, S4 B3: what it shows apart from the text assembly — the
+/// countdown facts, the hold progress, the next step (was `next_step` here), the button label and
+/// its armed look — comes from `yw_engine::approval::flow::bar_facts`, moved from here unchanged).
 fn bar_state(ui: &ApprovalUi, waiting: usize, now: u64) -> BarState {
-    let gate = &ui.session.gate;
-    let remaining = gate.deadline_ms.saturating_sub(now);
-    let held_ms = ui
-        .session
-        .interaction()
-        .hold_remaining_ms(now)
-        .map(|left| HIGH_RISK_HOLD_MS.saturating_sub(left));
     let lang = ui.lang;
-    let step = next_step(ui, held_ms.is_some(), now);
+    let facts = bar_facts(
+        &BarSource {
+            lang,
+            session: &ui.session,
+            view: &ui.view,
+            connect: ui.connect.is_some(),
+            early_release: ui.early_release,
+            status: ui.status.as_deref(),
+        },
+        now,
+    );
+    let held_ms = facts.held_ms;
+    let step = facts.step.map(|step| step.get(lang));
     let mut status = String::new();
     let mut urgent = None;
     let part = |status: &mut String, text: &str| {
@@ -296,10 +267,10 @@ fn bar_state(ui: &ApprovalUi, waiting: usize, now: u64) -> BarState {
         }
         status.push_str(text);
     };
-    if matches!(gate.prepare, PrepareState::Ready(_)) {
-        status.push_str(&text::REMAINING.fill(lang, [&remaining_text(remaining)]));
+    if facts.countdown {
+        status.push_str(&text::REMAINING.fill(lang, [&remaining_text(facts.remaining_ms)]));
         // The last 30 s are drawn in the caution color.
-        urgent = (remaining <= 30_000).then_some(status.len());
+        urgent = facts.urgent.then_some(status.len());
     }
     if waiting > 0 {
         part(
@@ -322,32 +293,12 @@ fn bar_state(ui: &ApprovalUi, waiting: usize, now: u64) -> BarState {
             ),
         );
     }
-    let simulating = matches!(
-        gate.prepare,
-        PrepareState::Preparing(PrepareStage::Simulating { .. })
-    ) || (gate.submitting
-        && ui
-            .status
-            .as_deref()
-            .is_some_and(|status| simulating_status(lang, status)));
-    let label = if ui.connect.is_some() {
-        text::CONNECT
-    } else if ui.view.blocked {
-        text::CANNOT_APPROVE
-    } else if simulating {
-        text::SIMULATING_BUTTON
-    } else if ui.view.high {
-        text::APPROVE_HOLD
-    } else {
-        text::APPROVE
-    }
-    .get(lang);
     BarState {
         status,
         urgent,
         step,
-        label,
-        armed: ui.session.approve_ready(now),
+        label: facts.label.get(lang),
+        armed: facts.armed,
         held_ms,
         focus: matches!(ui.focus, Focus::Approve | Focus::Reject).then_some(ui.focus),
     }
@@ -1062,39 +1013,6 @@ fn remaining_text(ms: u64) -> String {
     format!("{}:{:02}", seconds / 60, seconds % 60)
 }
 
-/// What the window does after an interaction event.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum StatusAction {
-    /// Act on the approval (once).
-    Approve,
-    /// Expired (`Expired`).
-    Expire,
-    /// Rejected.
-    Reject,
-    /// Still pending: repaint.
-    Repaint,
-    /// An approval already acted on (C1): `Approved` is terminal and is returned again on every
-    /// later tick, so only the transition into it may act.
-    Nothing,
-}
-
-fn status_action(
-    before: InteractionStatus,
-    after: InteractionStatus,
-    now_ms: u64,
-    deadline_ms: u64,
-) -> StatusAction {
-    match after {
-        InteractionStatus::Approved if before == InteractionStatus::Approved => {
-            StatusAction::Nothing
-        }
-        InteractionStatus::Approved => StatusAction::Approve,
-        InteractionStatus::Rejected if now_ms >= deadline_ms => StatusAction::Expire,
-        InteractionStatus::Rejected => StatusAction::Reject,
-        InteractionStatus::Pending => StatusAction::Repaint,
-    }
-}
-
 /// The header network badge (spec/04 §3 header): built-in mainnets (Ethereum, `HyperEVM`,
 /// Arbitrum One, Base, BNB Smart Chain, Robinhood Chain, Solana mainnet) say plainly that real assets move; Sepolia and Solana devnet are test
 /// networks. User chains have no testnet classification and get neither; Bitcoin has its own
@@ -1655,13 +1573,15 @@ impl App {
             }
             _ => None,
         };
-        let deadline_ms = match &item {
-            QueuedItem::Site(site) => site.deadline_ms,
+        // 2026-11-19 (S4 B3): the deadline rule is `yw_engine::approval::flow::session_deadline`
+        // (was inline here: the site deadline, else `now + MAX_LIFETIME_MS`, at least `now + 1`).
+        let site_deadline = match &item {
+            QueuedItem::Site(site) => Some(site.deadline_ms),
             QueuedItem::App(_)
             | QueuedItem::Sol(_)
             | QueuedItem::Btc(_)
             | QueuedItem::Zec(_)
-            | QueuedItem::HyperCore(_) => now.saturating_add(MAX_LIFETIME_MS),
+            | QueuedItem::HyperCore(_) => None,
         };
         let gate = ApprovalGate {
             prepare: PrepareState::Preparing(PrepareStage::Building),
@@ -1669,7 +1589,7 @@ impl App {
             connect_selected: 0,
             ready_at_ms: now,
             is_foreground: false,
-            deadline_ms: deadline_ms.max(now.saturating_add(1)),
+            deadline_ms: session_deadline(site_deadline, now),
             submitting: false,
         };
         let session = ApprovalSession::new(gate, now).map_err(|_| ())?;
@@ -4482,15 +4402,11 @@ mod tests {
     };
     use yw_core::sol::SolCluster;
 
-    use super::{
-        BarMetrics, StatusAction, bar_layout, layout_badges, network_badge, order_badges,
-        status_action,
-    };
+    use super::{BarMetrics, bar_layout, layout_badges, network_badge, order_badges};
 
     const MAINNET_BADGE: &str = crate::ui::approval_text::BADGE_MAINNET.ko;
     const T_ACK_FIRST: &str = crate::ui::approval_text::ACK_FIRST.ko;
     const T_SIM_RESIM_FAILED: &str = crate::ui::approval_text::SIM_RESIM_FAILED.ko;
-    use crate::ui::interaction::InteractionStatus;
     use crate::ui::theme;
 
     /// Test widths: 13 px a Hangul (or other wide) character, 7 px an ASCII one (96 DPI).
@@ -4584,35 +4500,6 @@ mod tests {
         assert!(wide.step.len() <= 2 && wide.step_w >= 260, "{wide:?}");
         assert_eq!(joined(&wide.step), T_ACK_FIRST);
         assert!(wide.step.iter().all(|(y, _)| *y >= wide.approve.y - 2));
-    }
-
-    /// C1: `Approved` is terminal and comes back on every 50 ms tick; only the transition into
-    /// it acts, so one click dispatches at most one re-simulation.
-    #[test]
-    fn only_the_transition_into_approved_acts() {
-        use InteractionStatus::{Approved, Pending, Rejected};
-        assert_eq!(
-            status_action(Pending, Approved, 1, 10),
-            StatusAction::Approve
-        );
-        for _tick in 0..100 {
-            assert_eq!(
-                status_action(Approved, Approved, 2, 10),
-                StatusAction::Nothing
-            );
-        }
-        assert_eq!(
-            status_action(Pending, Pending, 3, 10),
-            StatusAction::Repaint
-        );
-        assert_eq!(
-            status_action(Pending, Rejected, 3, 10),
-            StatusAction::Reject
-        );
-        assert_eq!(
-            status_action(Pending, Rejected, 10, 10),
-            StatusAction::Expire
-        );
     }
 
     #[test]
