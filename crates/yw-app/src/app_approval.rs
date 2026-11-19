@@ -12,14 +12,12 @@
 
 use std::collections::HashMap;
 
-use yw_core::approval::{ApprovalRequest, RiskLevel};
+use yw_core::approval::RiskLevel;
 use yw_core::evm::chain::SEPOLIA;
 use yw_core::evm::simulate::needs_resimulation;
 use yw_core::lang::{Lang, Text};
 use yw_engine::approval::QueueId;
-use yw_engine::approval::flow::{
-    BarSource, StatusAction, bar_facts, connect_gate_count, session_deadline, status_action,
-};
+use yw_engine::approval::flow::{BarSource, StatusAction, bar_facts, connect_gate_count};
 use yw_win::ui::{
     Color, DrawFlags, Handler, Msg, PaintDc, Rect, Reply, Window, WindowKind, WindowSpec,
     create_window,
@@ -28,6 +26,7 @@ use yw_win::ui::{
 use crate::app::App;
 use crate::app_evm::{AppApproval, QueuedItem};
 use crate::app_llm::log_request;
+use crate::approval_flow::ApprovalFlow;
 use crate::browser::{SiteKind, SiteRequest};
 use crate::errors::ErrorCode;
 use crate::events::{KeyJob, SignInfo};
@@ -47,15 +46,13 @@ use crate::logging::{self, Field};
 use crate::ui::approval::QueueOutcome;
 use crate::ui::approval_input::{
     APPROVAL_TIMER_ID, BarHits, Facts, Focus, Mapped, Pressed, ScrollGoal, Step, Surface,
-    TrustedSignals, is_release, map_msg, panel_click, panel_hit, tab_order, tab_target,
-    wheel_delta,
+    TrustedSignals, map_msg, panel_click, panel_hit, tab_order, tab_target, wheel_delta,
 };
 use crate::ui::approval_text as text;
 use crate::ui::approval_view::{ApprovalView, Block, Tone, escape_spans, view};
 use crate::ui::badge::{BADGE_DIP, BADGE_GAP_DIP, Badge};
 use crate::ui::interaction::{
-    APPROVAL_TICK_MS, ApprovalGate, ApprovalSession, HIGH_RISK_HOLD_MS, InteractionEvent,
-    InteractionStatus, PrepareStage, PrepareState, ReadyContent,
+    APPROVAL_TICK_MS, HIGH_RISK_HOLD_MS, InteractionEvent, PrepareStage, PrepareState, ReadyContent,
 };
 use crate::ui::text_layout;
 use crate::ui::theme::{self, FontRole, Fonts, wide};
@@ -245,15 +242,15 @@ fn status_fact(lang: Lang, message: &str, step_shown: bool) -> &str {
 /// countdown facts, the hold progress, the next step (was `next_step` here), the button label and
 /// its armed look — comes from `yw_engine::approval::flow::bar_facts`, moved from here unchanged).
 fn bar_state(ui: &ApprovalUi, waiting: usize, now: u64) -> BarState {
-    let lang = ui.lang;
+    let lang = ui.flow.lang();
     let facts = bar_facts(
         &BarSource {
             lang,
-            session: &ui.session,
-            view: &ui.view,
-            connect: ui.connect.is_some(),
-            early_release: ui.early_release,
-            status: ui.status.as_deref(),
+            session: ui.flow.session(),
+            view: ui.flow.view(),
+            connect: ui.flow.connect().is_some(),
+            early_release: ui.flow.early_release(),
+            status: ui.flow.status(),
         },
         now,
     );
@@ -278,7 +275,7 @@ fn bar_state(ui: &ApprovalUi, waiting: usize, now: u64) -> BarState {
             &text::WAITING.fill(lang, [&waiting.to_string()]),
         );
     }
-    if let Some(message) = &ui.status {
+    if let Some(message) = ui.flow.status() {
         part(&mut status, status_fact(lang, message, step.is_some()));
     }
     if let Some(done) = held_ms {
@@ -306,28 +303,15 @@ fn bar_state(ui: &ApprovalUi, waiting: usize, now: u64) -> BarState {
 
 /// The open approval window and its flow state.
 pub struct ApprovalUi {
-    /// The window's language: the app language when it opened. The request is built in it, so
-    /// the display (digested with its language, spec/03 §11.3) and the chrome always match.
-    lang: Lang,
+    /// The flow state: item, preparation, issued request, gate and its interaction, view
+    /// (2026-11-19, S4 B4a, spec/15 §11.4 S4: `crate::approval_flow::ApprovalFlow`, whose methods
+    /// are the only writers of the gate; before, these were fields of this struct).
+    flow: ApprovalFlow,
     window: Window,
     panel: Window,
-    item: QueuedItem,
-    connect: Option<ConnectState>,
-    typed: Option<Box<yw_core::evm::eip712::DecodedTypedData>>,
-    session: ApprovalSession,
-    job: u64,
-    prepared: Option<Box<Prepared>>,
-    request: Option<ApprovalRequest>,
-    failure: Option<String>,
-    status: Option<String>,
-    /// A high-risk hold was let go before 2 s (the status line says so until the next press).
-    early_release: bool,
     focus: Focus,
-    raw_open: bool,
     scroll: i32,
     pressed: Option<Pressed>,
-    resim_click: bool,
-    view: ApprovalView,
     layout: Option<PanelLayout>,
     bottom: Bottom,
     /// The bottom bar as last painted.
@@ -339,12 +323,12 @@ pub struct ApprovalUi {
 impl ApprovalUi {
     /// The current preparation job id.
     pub(crate) const fn job(&self) -> u64 {
-        self.job
+        self.flow.job()
     }
 
     /// The queued item the window shows.
     pub(crate) const fn item(&self) -> &QueuedItem {
-        &self.item
+        self.flow.item()
     }
 }
 
@@ -1446,32 +1430,27 @@ impl App {
     /// Security review L4(c): an open EVM connect window shows the origin's chain of now (a
     /// window-less `wallet_switchEthereumChain` may have changed it). Returns whether it changed.
     fn refresh_connect_chain(&mut self) -> bool {
-        let Some(site) = self
-            .evm
-            .window
-            .as_ref()
-            .and_then(|ui| match (&ui.item, &ui.connect) {
-                (QueuedItem::Site(site), Some(connect))
-                    if connect.family == yw_core::policy::Family::Evm =>
-                {
-                    Some(site.clone())
-                }
-                _ => None,
-            })
+        let Some(site) =
+            self.evm
+                .window
+                .as_ref()
+                .and_then(|ui| match (ui.flow.item(), ui.flow.connect()) {
+                    (QueuedItem::Site(site), Some(connect))
+                        if connect.family == yw_core::policy::Family::Evm =>
+                    {
+                        Some(site.clone())
+                    }
+                    _ => None,
+                })
         else {
             return false;
         };
         let chain_id = self.connect_origin_chain(&site);
         let name = self.evm_chain_label(chain_id);
-        let Some(connect) = self.evm.window.as_mut().and_then(|ui| ui.connect.as_mut()) else {
-            return false;
-        };
-        if connect.chain_id == chain_id {
-            return false;
-        }
-        connect.chain_id = chain_id;
-        connect.chain_name = name;
-        true
+        self.evm
+            .window
+            .as_mut()
+            .is_some_and(|ui| ui.flow.set_connect_chain(chain_id, name))
     }
 
     #[expect(
@@ -1575,24 +1554,9 @@ impl App {
         };
         // 2026-11-19 (S4 B3): the deadline rule is `yw_engine::approval::flow::session_deadline`
         // (was inline here: the site deadline, else `now + MAX_LIFETIME_MS`, at least `now + 1`).
-        let site_deadline = match &item {
-            QueuedItem::Site(site) => Some(site.deadline_ms),
-            QueuedItem::App(_)
-            | QueuedItem::Sol(_)
-            | QueuedItem::Btc(_)
-            | QueuedItem::Zec(_)
-            | QueuedItem::HyperCore(_) => None,
-        };
-        let gate = ApprovalGate {
-            prepare: PrepareState::Preparing(PrepareStage::Building),
-            ack_checked: false,
-            connect_selected: 0,
-            ready_at_ms: now,
-            is_foreground: false,
-            deadline_ms: session_deadline(site_deadline, now),
-            submitting: false,
-        };
-        let session = ApprovalSession::new(gate, now).map_err(|_| ())?;
+        // 2026-11-19 (S4 B4a): `ApprovalFlow::open` builds the gate and its session at this
+        // point (was inline here: the same gate, the same `now`).
+        let flow = ApprovalFlow::open(lang, item, connect, now).map_err(|_| ())?;
         center_window(&window, self.main.as_ref());
         let _ = window.set_timer(APPROVAL_TIMER_ID, APPROVAL_TICK_MS);
         show_window(&window);
@@ -1601,25 +1565,12 @@ impl App {
         }
         focus_window(&window);
         self.evm.window = Some(ApprovalUi {
-            lang,
+            flow,
             window,
             panel,
-            item,
-            connect,
-            typed: None,
-            session,
-            job: 0,
-            prepared: None,
-            request: None,
-            failure: None,
-            status: None,
-            early_release: false,
             focus: Focus::Reject,
-            raw_open: false,
             scroll: 0,
             pressed: None,
-            resim_click: false,
-            view: ApprovalView::default(),
             layout: None,
             bottom: Bottom::default(),
             bar: BarState::default(),
@@ -1636,13 +1587,8 @@ impl App {
         let Some(ui) = self.evm.window.as_mut() else {
             return;
         };
-        ui.job = job;
-        ui.failure = None;
-        let item = ui.item.clone();
-        let _ = ui.session.replace_content(
-            self.clock.now_ms(),
-            PrepareState::Preparing(PrepareStage::Building),
-        );
+        let item = ui.flow.item().clone();
+        ui.flow.begin_prepare(job, self.clock.now_ms());
         match item {
             QueuedItem::App(app) => self.prepare_transaction(job, &app, None),
             QueuedItem::Site(site) => self.prepare_site(job, &site),
@@ -1744,16 +1690,7 @@ impl App {
                     .shown_deadline()
                     .unwrap_or(now.saturating_add(120_000));
                 if let Some(ui) = self.evm.window.as_mut() {
-                    let selected = ui.connect.as_ref().map_or(0, ConnectState::gate_count);
-                    let accounts = ui.connect.as_ref().map_or(0, |c| c.accounts.len());
-                    ui.session.gate.deadline_ms = deadline;
-                    let _ = ui.session.replace_content(
-                        now,
-                        PrepareState::Ready(ReadyContent::Connect(
-                            crate::ui::interaction::ConnectView { accounts },
-                        )),
-                    );
-                    ui.session.gate.connect_selected = selected;
+                    ui.flow.connect_ready(deadline, now);
                 }
             }
             SiteKind::Send(tx) => {
@@ -1844,7 +1781,7 @@ impl App {
                 };
                 let typed = Box::new(typed);
                 if let Some(ui) = self.evm.window.as_mut() {
-                    ui.typed = Some(typed.clone());
+                    ui.flow.set_typed(typed.clone());
                 }
                 // Without the lookups (no endpoint, no worker) the spender counts as a failed
                 // lookup (`Unknown`, T18, fail closed).
@@ -1910,7 +1847,7 @@ impl App {
         self.evm
             .window
             .as_ref()
-            .map_or(self.settings.language, |ui| ui.lang)
+            .map_or(self.settings.language, |ui| ui.flow.lang())
     }
 
     /// The chain of a message signature: the registered definition with the verified genesis
@@ -1937,10 +1874,13 @@ impl App {
         let Some(ui) = self.evm.window.as_ref() else {
             return;
         };
-        if ui.job != job {
+        if ui.flow.job() != job {
             return;
         }
-        let (QueuedItem::Site(site), Some(typed)) = (ui.item.clone(), ui.typed.clone()) else {
+        let (QueuedItem::Site(site), Some(typed)) = (
+            ui.flow.item().clone(),
+            ui.flow.typed().cloned().map(Box::new),
+        ) else {
             return;
         };
         let SiteKind::TypedData { account, .. } = &site.kind else {
@@ -1997,11 +1937,7 @@ impl App {
 
     pub(crate) fn show_failure(&mut self, code: ErrorCode, retryable: bool, text: String) {
         if let Some(ui) = self.evm.window.as_mut() {
-            ui.failure = Some(text);
-            let _ = ui.session.replace_content(
-                self.clock.now_ms(),
-                PrepareState::Failed { code, retryable },
-            );
+            ui.flow.fail(text, code, retryable, self.clock.now_ms());
         }
         self.ai_ready(AiReady::Skip(SKIP_FAILED.get(self.approval_lang())));
         self.rebuild_view();
@@ -2016,7 +1952,7 @@ impl App {
             shown: self.evm.window.is_some(),
         });
         if let Some(mut ui) = self.evm.window.take() {
-            if let Some(request) = ui.request.as_ref() {
+            if let Some(request) = ui.flow.issued() {
                 self.evm.store.reject(request.id);
             }
             // spec/06 §3.2: a result arriving after the window closed is dropped.
@@ -2054,7 +1990,7 @@ impl App {
             .evm
             .window
             .as_ref()
-            .and_then(|ui| ui.request.as_ref().map(|request| request.id));
+            .and_then(|ui| ui.flow.issued().map(|request| request.id));
         if let Some(id) = id
             && outcome != QueueOutcome::Approved
         {
@@ -2072,12 +2008,9 @@ impl App {
     /// `eth_simulateV1` started.
     pub fn on_simulating(&mut self, job: u64, since_ms: u64) {
         if let Some(ui) = self.evm.window.as_mut()
-            && ui.job == job
+            && ui.flow.job() == job
         {
-            let _ = ui.session.replace_content(
-                self.clock.now_ms(),
-                PrepareState::Preparing(PrepareStage::Simulating { since_ms }),
-            );
+            ui.flow.simulating(since_ms, self.clock.now_ms());
             self.rebuild_view();
         }
     }
@@ -2089,7 +2022,7 @@ impl App {
             .evm
             .window
             .as_ref()
-            .is_some_and(|ui| ui.job == result.job);
+            .is_some_and(|ui| ui.flow.job() == result.job);
         if !matches {
             return;
         }
@@ -2100,14 +2033,18 @@ impl App {
                     "prepare.failed",
                     &[("code", Field::Code(failure.code))],
                 );
-                let site = self.evm.window.as_ref().and_then(|ui| match &ui.item {
-                    QueuedItem::Site(site) => Some(site.reply),
-                    QueuedItem::App(_)
-                    | QueuedItem::Sol(_)
-                    | QueuedItem::Btc(_)
-                    | QueuedItem::Zec(_)
-                    | QueuedItem::HyperCore(_) => None,
-                });
+                let site = self
+                    .evm
+                    .window
+                    .as_ref()
+                    .and_then(|ui| match ui.flow.item() {
+                        QueuedItem::Site(site) => Some(site.reply),
+                        QueuedItem::App(_)
+                        | QueuedItem::Sol(_)
+                        | QueuedItem::Btc(_)
+                        | QueuedItem::Zec(_)
+                        | QueuedItem::HyperCore(_) => None,
+                    });
                 if failure.invalid_params
                     && let Some(reply) = site
                 {
@@ -2156,10 +2093,14 @@ impl App {
     ) {
         let now = self.clock.now_ms();
         let mut draft = draft;
-        let site_origin = self.evm.window.as_ref().and_then(|ui| match &ui.item {
-            QueuedItem::Site(site) => Some(site.origin.clone()),
-            _ => None,
-        });
+        let site_origin = self
+            .evm
+            .window
+            .as_ref()
+            .and_then(|ui| match ui.flow.item() {
+                QueuedItem::Site(site) => Some(site.origin.clone()),
+                _ => None,
+            });
         if !self.wc_decorate_draft(site_origin.as_ref(), &mut draft) {
             // spec/13 §7: a WalletConnect request is never shown without its label and warning.
             logging::warn("app", "E-UI-001", &[("wc", Field::Word("label"))]);
@@ -2188,14 +2129,7 @@ impl App {
             .shown_deadline()
             .unwrap_or(now.saturating_add(120_000));
         if let Some(ui) = self.evm.window.as_mut() {
-            ui.raw_open = request.display.risk >= RiskLevel::High;
-            ui.session.gate.deadline_ms = deadline;
-            let _ = ui.session.replace_content(
-                now,
-                PrepareState::Ready(ReadyContent::Signing(Box::new(request.clone()))),
-            );
-            ui.request = Some(request);
-            ui.prepared = prepared;
+            ui.flow.show_ready(request, prepared, deadline, now);
         }
         self.rebuild_view();
     }
@@ -2205,11 +2139,11 @@ impl App {
         let Some(ui) = self.evm.window.as_ref() else {
             return;
         };
-        if ui.job != result.job {
+        if ui.flow.job() != result.job {
             return;
         }
-        let click = ui.resim_click;
-        let Some(old) = ui.request.clone() else {
+        let click = ui.flow.resim_click();
+        let Some(old) = ui.flow.issued().cloned() else {
             return;
         };
         // A chain mismatch found now blocks like at preparation (`Failed`, only `거부`); it never
@@ -2221,23 +2155,15 @@ impl App {
                 &[("code", Field::Code(failure.code))],
             );
             if let Some(ui) = self.evm.window.as_mut() {
-                ui.status = None;
-                ui.resim_click = false;
+                ui.flow.resim_failed();
             }
             self.show_failure(failure.code, false, failure.message(self.approval_lang()));
             return;
         }
         let Some(prepared) = result.prepared else {
             if let Some(ui) = self.evm.window.as_mut() {
-                ui.status = Some(format!(
-                    "{}{}",
-                    text::SIM_RESIM_FAILED.get(ui.lang),
-                    text::SIM_RESIM_FAILED_STEP.get(ui.lang)
-                ));
-                ui.resim_click = false;
                 // Same content, but a new approval (checkbox, arm delay, fresh interaction).
-                let prepare = ui.session.gate.prepare.clone();
-                let _ = ui.session.replace_content(self.clock.now_ms(), prepare);
+                ui.flow.resim_no_result(self.clock.now_ms());
             }
             self.rebuild_view();
             return;
@@ -2245,10 +2171,14 @@ impl App {
         // The re-simulated draft is built afresh: a WalletConnect request gets its label and
         // Verify warning again (spec/13 §7), or is not shown.
         let mut draft = prepared.draft.clone();
-        let site_origin = self.evm.window.as_ref().and_then(|ui| match &ui.item {
-            QueuedItem::Site(site) => Some(site.origin.clone()),
-            _ => None,
-        });
+        let site_origin = self
+            .evm
+            .window
+            .as_ref()
+            .and_then(|ui| match ui.flow.item() {
+                QueuedItem::Site(site) => Some(site.origin.clone()),
+                _ => None,
+            });
         if !self.wc_decorate_draft(site_origin.as_ref(), &mut draft) {
             logging::warn("app", "E-UI-001", &[("wc", Field::Word("label"))]);
             self.error_banner(ErrorCode::Ui001);
@@ -2279,32 +2209,16 @@ impl App {
         };
         let now = self.clock.now_ms();
         if let Some(ui) = self.evm.window.as_mut() {
-            ui.request = Some(request.clone());
-            ui.prepared = Some(prepared);
-            ui.resim_click = false;
+            // The documented exception (plan H1): `issued` is the replaced request from here on,
+            // the session keeps the drawn content until `resim_shown` below.
+            ui.flow.resim_replaced(request.clone(), prepared);
         }
         if click && kind == ResimKind::Same {
             self.consume_and_sign();
             return;
         }
         if let Some(ui) = self.evm.window.as_mut() {
-            ui.status = match kind {
-                ResimKind::Same => None,
-                ResimKind::Changed | ResimKind::Blocked | ResimKind::Failed => Some(format!(
-                    "{}{}",
-                    text::SIM_CHANGED.get(ui.lang),
-                    text::SIM_CHANGED_STEP.get(ui.lang)
-                )),
-                ResimKind::NoResult => Some(format!(
-                    "{}{}",
-                    text::SIM_RESIM_FAILED.get(ui.lang),
-                    text::SIM_RESIM_FAILED_STEP.get(ui.lang)
-                )),
-            };
-            let _ = ui.session.replace_content(
-                now,
-                PrepareState::Ready(ReadyContent::Signing(Box::new(request))),
-            );
+            ui.flow.resim_shown(kind, request, now);
         }
         // spec/06 §3.2: a re-simulation that changes the input bytes re-requests.
         self.ai_ready_tx();
@@ -2313,14 +2227,16 @@ impl App {
 
     fn approved(&mut self) {
         let now = self.clock.now_ms();
-        let connect = self
-            .evm
-            .window
-            .as_ref()
-            .and_then(|ui| match (&ui.item, &ui.connect) {
-                (QueuedItem::Site(site), Some(connect)) => Some((site.clone(), connect.clone())),
-                _ => None,
-            });
+        let connect =
+            self.evm
+                .window
+                .as_ref()
+                .and_then(|ui| match (ui.flow.item(), ui.flow.connect()) {
+                    (QueuedItem::Site(site), Some(connect)) => {
+                        Some((site.clone(), connect.clone()))
+                    }
+                    _ => None,
+                });
         if let Some((site, connect)) = connect {
             if connect.gate_count() == 0 {
                 return;
@@ -2342,8 +2258,7 @@ impl App {
                 // click at least 1 s later, as after a re-simulation that asks again (C1).)
                 if self.refresh_connect_chain() {
                     if let Some(ui) = self.evm.window.as_mut() {
-                        let _ = ui.session.restart_interaction(now);
-                        ui.session.restart_arm_delay(now);
+                        ui.flow.chain_changed_at_approve(now);
                     }
                     self.rebuild_view();
                     return;
@@ -2367,22 +2282,22 @@ impl App {
         };
         // C1: one approval is acted on once — a submission in flight (re-simulation or consume)
         // ignores any further approval until its result replaces or resets the content.
-        if ui.session.gate.submitting {
+        if ui.flow.submitting() {
             return;
         }
-        let Some(request) = ui.request.clone() else {
+        let Some(request) = ui.flow.issued().cloned() else {
             return;
         };
-        if ui.prepared.is_none() {
-            ui.session.gate.submitting = true;
+        if ui.flow.prepared().is_none() {
+            ui.flow.begin_submit();
             self.consume_and_sign();
             return;
         }
-        ui.session.gate.submitting = true;
-        ui.status = Some(text::CHECKING.get(ui.lang).to_owned());
+        ui.flow.begin_submit();
+        ui.flow.checking();
         let received = ui
-            .prepared
-            .as_ref()
+            .flow
+            .prepared()
             .map_or(0, |prepared| prepared.sim_received_ms);
         if needs_resimulation(&request.simulation, received, now) {
             self.start_resimulation(true);
@@ -2397,16 +2312,16 @@ impl App {
         let Some(ui) = self.evm.window.as_mut() else {
             return;
         };
-        let (Some(request), Some(prepared)) = (ui.request.clone(), ui.prepared.clone()) else {
+        let (Some(request), Some(prepared)) = (
+            ui.flow.issued().cloned(),
+            ui.flow.prepared().cloned().map(Box::new),
+        ) else {
             return;
         };
-        ui.job = job;
-        ui.resim_click = click;
-        ui.session.gate.submitting = true;
-        ui.status = Some(text::SIMULATING_START.get(ui.lang).to_owned());
-        let chain_id = ui.item.chain_id();
-        let extra_warnings = match &ui.item {
-            QueuedItem::Site(site) => site_fee_warning(ui.lang, site),
+        ui.flow.resim_requested(job, click);
+        let chain_id = ui.flow.item().chain_id();
+        let extra_warnings = match ui.flow.item() {
+            QueuedItem::Site(site) => site_fee_warning(ui.flow.lang(), site),
             QueuedItem::App(_)
             | QueuedItem::Sol(_)
             | QueuedItem::Btc(_)
@@ -2435,12 +2350,9 @@ impl App {
             if sent {
                 // C1: the approval that asked for this re-simulation has been acted on; the
                 // terminal `Approved` status must not dispatch it again on the next tick.
-                let _ = ui.session.restart_interaction(self.clock.now_ms());
+                ui.flow.resim_sent(self.clock.now_ms());
             } else {
-                ui.status = Some(ErrorCode::Rpc001.text_in(ui.lang));
-                ui.resim_click = false;
-                let prepare = ui.session.gate.prepare.clone();
-                let _ = ui.session.replace_content(self.clock.now_ms(), prepare);
+                ui.flow.resim_not_sent(self.clock.now_ms());
             }
         }
         self.rebuild_view();
@@ -2455,11 +2367,12 @@ impl App {
         let Some(ui) = self.evm.window.as_ref() else {
             return;
         };
-        let Some(request) = ui.request.clone() else {
+        // `issued` is the consume handle (2026-11-19, S4 B4a: was `ApprovalUi.request`).
+        let Some(request) = ui.flow.issued().cloned() else {
             return;
         };
-        let prepared = ui.prepared.clone();
-        let item = ui.item.clone();
+        let prepared = ui.flow.prepared().cloned().map(Box::new);
+        let item = ui.flow.item().clone();
         match self.evm.store.consume(request.id, request.digest, now) {
             Ok(approved) => {
                 logging::info(
@@ -2719,17 +2632,9 @@ impl App {
             foreground: Some(foreground),
             focus: Some(ui.focus),
         });
-        ui.session.set_foreground(now, foreground);
-        let before = ui.session.interaction().status();
-        let holding = ui.session.interaction().hold_remaining_ms(now).is_some();
-        let status = ui.session.event(now, event);
-        if event.is_press() {
-            ui.early_release = false;
-        } else if holding && status == InteractionStatus::Pending && is_release(event) {
-            ui.early_release = true;
-        }
-        let deadline = ui.session.gate.deadline_ms;
-        match status_action(before, status, now, deadline) {
+        // 2026-11-19 (S4 B4a): the foreground sample, the event, the early-release note and
+        // `status_action` run in `ApprovalFlow::on_event`, in this order (were inline here).
+        match ui.flow.on_event(now, foreground, event) {
             StatusAction::Approve => self.approved(),
             StatusAction::Expire => self.finish_approval(QueueOutcome::Expired),
             StatusAction::Reject => {
@@ -2765,15 +2670,15 @@ impl App {
     fn rebuild_view_with(&mut self, force: bool) {
         let now = self.clock.now_ms();
         self.refresh_connect_chain();
-        let testnet_chain = self.evm.window.as_ref().map(|ui| match &ui.connect {
+        let testnet_chain = self.evm.window.as_ref().map(|ui| match ui.flow.connect() {
             Some(connect) if connect.family == yw_core::policy::Family::Evm => connect.chain_id,
-            _ => ui.item.chain_id(),
+            _ => ui.flow.item().chain_id(),
         });
         let Some(chain_id) = testnet_chain else {
             return;
         };
         let mut badges = Vec::new();
-        let family = match self.evm.window.as_ref().map(|ui| &ui.item) {
+        let family = match self.evm.window.as_ref().map(|ui| ui.flow.item()) {
             Some(QueuedItem::Site(site)) => site.kind.family(),
             _ => yw_core::policy::Family::Evm,
         };
@@ -2788,27 +2693,29 @@ impl App {
                 self.evm
                     .window
                     .as_ref()
-                    .map_or(self.settings.language, |ui| ui.lang),
+                    .map_or(self.settings.language, |ui| ui.flow.lang()),
                 chain_id,
             ));
         }
-        let (evm_chain, sol_cluster) = match (self.evm.window.as_ref().map(|ui| &ui.item), family) {
-            (Some(QueuedItem::Sol(item)), _) => (None, Some(item.cluster)),
-            // A dApp transaction shows the cluster it is bound to, whatever is selected now.
-            (Some(QueuedItem::Site(site)), yw_core::policy::Family::Solana) => match &site.kind {
-                SiteKind::SolTx { cluster, .. } => (None, Some(*cluster)),
-                _ => (None, Some(self.sol_cluster())),
-            },
-            (Some(QueuedItem::Site(_)), yw_core::policy::Family::Bitcoin)
-            | (
-                Some(QueuedItem::Btc(_) | QueuedItem::Zec(_) | QueuedItem::HyperCore(_)) | None,
-                _,
-            ) => (None, None),
-            (Some(QueuedItem::App(_) | QueuedItem::Site(_)), _) => (Some(chain_id), None),
-        };
+        let (evm_chain, sol_cluster) =
+            match (self.evm.window.as_ref().map(|ui| ui.flow.item()), family) {
+                (Some(QueuedItem::Sol(item)), _) => (None, Some(item.cluster)),
+                // A dApp transaction shows the cluster it is bound to, whatever is selected now.
+                (Some(QueuedItem::Site(site)), yw_core::policy::Family::Solana) => match &site.kind
+                {
+                    SiteKind::SolTx { cluster, .. } => (None, Some(*cluster)),
+                    _ => (None, Some(self.sol_cluster())),
+                },
+                (Some(QueuedItem::Site(_)), yw_core::policy::Family::Bitcoin)
+                | (
+                    Some(QueuedItem::Btc(_) | QueuedItem::Zec(_) | QueuedItem::HyperCore(_)) | None,
+                    _,
+                ) => (None, None),
+                (Some(QueuedItem::App(_) | QueuedItem::Site(_)), _) => (Some(chain_id), None),
+            };
         let site_btc_banner = (family == yw_core::policy::Family::Bitcoin)
             .then(|| crate::ui::approval_view::BtcBanner::of(self.btc_network_now()));
-        let chain_badge = match (self.evm.window.as_ref().map(|ui| &ui.item), family) {
+        let chain_badge = match (self.evm.window.as_ref().map(|ui| ui.flow.item()), family) {
             (Some(QueuedItem::Btc(item)), _) => Some(Badge::bitcoin(item.network)),
             (Some(QueuedItem::Site(_)), yw_core::policy::Family::Bitcoin) => {
                 Some(Badge::bitcoin(self.btc_network_now()))
@@ -2827,13 +2734,14 @@ impl App {
             .evm
             .window
             .as_ref()
-            .map_or(self.settings.language, |ui| ui.lang);
+            .map_or(self.settings.language, |ui| ui.flow.lang());
         if let Some((badge, test)) = network_badge(lang, evm_chain, sol_cluster) {
             testnet = test;
             badges.push(badge.to_owned());
         }
         // HyperCore (spec/11 §6): the same mainnet / testnet badges as the EVM chains.
-        if let Some(QueuedItem::HyperCore(item)) = self.evm.window.as_ref().map(|ui| &ui.item) {
+        if let Some(QueuedItem::HyperCore(item)) = self.evm.window.as_ref().map(|ui| ui.flow.item())
+        {
             if item.action.network == yw_core::hypercore::HcNetwork::Testnet {
                 testnet = true;
                 badges.push(text::BADGE_HC_TESTNET.get(lang).to_owned());
@@ -2844,7 +2752,7 @@ impl App {
         // spec/10 §10: a YubiKey signer adds the "YubiKey로 서명" badge (app chrome only: the
         // badges are not part of the request's digested display, spec/03 §11.3).
         let card_badge = self.evm.window.as_ref().and_then(|ui| {
-            let (role, touches) = match (&ui.item, &ui.session.gate.prepare) {
+            let (role, touches) = match (ui.flow.item(), &ui.flow.gate().prepare) {
                 (QueuedItem::Btc(item), _) => (
                     crate::yubikey::btc_plan_role(&item.plan)?,
                     item.plan.inputs().len(),
@@ -2872,15 +2780,19 @@ impl App {
         });
         badges.extend(card_badge);
         // WalletConnect sessions (spec/13 §7): the claimed origin, chains and Verify state.
-        let wc_patch = self.evm.window.as_ref().and_then(|ui| match &ui.item {
-            QueuedItem::Site(site) => self.wc_connect_patch(&site.origin),
-            _ => None,
-        });
+        let wc_patch = self
+            .evm
+            .window
+            .as_ref()
+            .and_then(|ui| match ui.flow.item() {
+                QueuedItem::Site(site) => self.wc_connect_patch(&site.origin),
+                _ => None,
+            });
         let Some(ui) = self.evm.window.as_mut() else {
             return;
         };
         let wide_layout = ui.window.client_rect().w >= ui.window.px(80 * 8);
-        if let QueuedItem::Site(site) = &ui.item {
+        if let QueuedItem::Site(site) = ui.flow.item() {
             if crate::walletconnect::is_session_origin(&site.origin) {
                 badges.insert(0, text::BADGE_WALLETCONNECT.get(lang).to_owned());
             }
@@ -2889,7 +2801,7 @@ impl App {
                 badges.insert(0, crate::ui::approval_view::compat_mode_badge(lang, mode));
             }
             if let (Some(connect), PrepareState::Ready(ReadyContent::Connect(_))) =
-                (&ui.connect, &ui.session.gate.prepare)
+                (ui.flow.connect(), &ui.flow.gate().prepare)
             {
                 let accounts: Vec<(String, String)> = connect
                     .accounts
@@ -2912,7 +2824,7 @@ impl App {
                 order_badges(&mut connect_view.badges);
                 connect_view.testnet = testnet;
                 connect_view.chain = chain_badge;
-                ui.view = connect_view;
+                ui.flow.set_view(connect_view);
                 ui.layout = None;
                 ui.window.invalidate();
                 ui.panel.invalidate();
@@ -2933,7 +2845,7 @@ impl App {
             site_badges.extend(badges);
             badges = site_badges;
         }
-        let btc_banner = match &ui.item {
+        let btc_banner = match ui.flow.item() {
             QueuedItem::Btc(item) => Some(crate::ui::approval_view::BtcBanner::of(item.network)),
             QueuedItem::Site(_) => site_btc_banner,
             QueuedItem::App(_)
@@ -2943,20 +2855,20 @@ impl App {
         };
         match view(
             lang,
-            &ui.session.gate.prepare,
+            &ui.flow.gate().prepare,
             now,
-            ui.raw_open,
+            ui.flow.raw_open(),
             wide_layout,
             badges,
             testnet,
-            ui.failure.as_deref(),
+            ui.flow.failure(),
         ) {
             Ok(mut view) => {
                 order_badges(&mut view.badges);
                 view.btc_banner = btc_banner;
                 view.chain = chain_badge;
                 // W-ADDR-3 under the recipient (spec/04 §3.3, outside the digest).
-                let note = match &ui.item {
+                let note = match ui.flow.item() {
                     QueuedItem::Btc(item) => item.look_alike.as_deref(),
                     QueuedItem::Zec(item) => item.look_alike.as_deref(),
                     QueuedItem::App(_)
@@ -2967,10 +2879,10 @@ impl App {
                 if let Some(note) = note {
                     crate::ui::approval_view::attach_address_note(&mut view, lang, note);
                 }
-                if !force && view == ui.view {
+                if !force && view == *ui.flow.view() {
                     return;
                 }
-                ui.view = view;
+                ui.flow.set_view(view);
                 ui.layout = None;
                 ui.window.invalidate();
                 ui.panel.invalidate();
@@ -2994,10 +2906,8 @@ impl App {
         self.log_approval_call(flow_support::Call::ToggleAck);
         let now = self.clock.now_ms();
         if let Some(ui) = self.evm.window.as_mut()
-            && ui.view.blocks.contains(&Block::Ack)
+            && ui.flow.toggle_ack(now)
         {
-            let checked = !ui.session.gate.ack_checked;
-            ui.session.set_ack(now, checked);
             ui.layout = None;
             ui.panel.invalidate();
             ui.window.invalidate();
@@ -3012,13 +2922,8 @@ impl App {
         #[cfg(test)]
         self.log_approval_call(flow_support::Call::ToggleAccount(index));
         let now = self.clock.now_ms();
-        if let Some(ui) = self.evm.window.as_mut()
-            && let Some(connect) = ui.connect.as_mut()
-            && index < connect.selected.len()
-        {
-            connect.toggle(index);
-            ui.session.gate.connect_selected = connect.gate_count();
-            ui.session.set_ack(now, false);
+        if let Some(ui) = self.evm.window.as_mut() {
+            ui.flow.toggle_account(index, now);
         }
         self.rebuild_view();
     }
@@ -3027,7 +2932,7 @@ impl App {
         #[cfg(test)]
         self.log_approval_call(flow_support::Call::ToggleRaw);
         if let Some(ui) = self.evm.window.as_mut() {
-            ui.raw_open = !ui.raw_open;
+            ui.flow.toggle_raw();
         }
         self.rebuild_view();
     }
@@ -3130,9 +3035,7 @@ impl App {
                     focus: self.evm.window.as_ref().map(|ui| ui.focus),
                 });
                 if let Some(ui) = self.evm.window.as_mut() {
-                    let now = self.clock.now_ms();
-                    ui.session.restart_arm_delay(now);
-                    ui.session.set_foreground(now, true);
+                    ui.flow.activated(self.clock.now_ms());
                 }
             }
             Step::Close => {
@@ -3212,7 +3115,8 @@ impl App {
             }
             Step::Tab => {
                 if let Some(ui) = self.evm.window.as_mut() {
-                    let order = tab_order(ui.view.blocks.contains(&Block::Ack), ui.view.has_raw);
+                    let view = ui.flow.view();
+                    let order = tab_order(view.blocks.contains(&Block::Ack), view.has_raw);
                     let backwards = TrustedSignals::sample_shift().shift_down();
                     ui.focus = tab_target(&order, ui.focus, backwards);
                     ui.window.invalidate();
@@ -3312,7 +3216,7 @@ impl App {
                 self.ai_tick(self.clock.now_ms());
                 if let Some(ui) = self.evm.window.as_ref()
                     && matches!(
-                        ui.session.gate.prepare,
+                        ui.flow.gate().prepare,
                         PrepareState::Preparing(PrepareStage::Simulating { .. })
                     )
                 {
@@ -3328,7 +3232,7 @@ impl App {
         self.log_approval_call(flow_support::Call::Retry);
         let failed_retryable = self.evm.window.as_ref().is_some_and(|ui| {
             matches!(
-                ui.session.gate.prepare,
+                ui.flow.gate().prepare,
                 PrepareState::Failed {
                     retryable: true,
                     ..
@@ -3391,7 +3295,7 @@ impl App {
         // Header: one row per field (muted label column, value), then the badges as pills. A
         // grouped Solana address line is Consolas with bold middle groups (spec/07 §12.3).
         let mut rows: Vec<(String, String, FontRole)> = Vec::new();
-        for (label, value) in &ui.view.header {
+        for (label, value) in &ui.flow.view().header {
             let mut first = true;
             for line in value.split('\n') {
                 // An address on a line of its own is drawn whole with its ends emphasized
@@ -3420,8 +3324,10 @@ impl App {
         }
         if rows.is_empty() {
             rows.push((
-                crate::ui::approval::labels::ORIGIN.get(ui.lang).to_owned(),
-                yw_core::approval::APP_ORIGIN.get(ui.lang).to_owned(),
+                crate::ui::approval::labels::ORIGIN
+                    .get(ui.flow.lang())
+                    .to_owned(),
+                yw_core::approval::APP_ORIGIN.get(ui.flow.lang()).to_owned(),
                 FontRole::Body,
             ));
         }
@@ -3436,20 +3342,20 @@ impl App {
         let label_w = px(84).max(widest.saturating_add(px(10))).min(width / 3);
         let value_w = width.saturating_sub(label_w).max(px(60));
         let mut badges: Vec<String> = Vec::new();
-        if let Some(banner) = ui.view.btc_banner
+        if let Some(banner) = ui.flow.view().btc_banner
             && !rows
                 .iter()
-                .any(|(_, value, _)| value.contains(banner.text(ui.lang)))
+                .any(|(_, value, _)| value.contains(banner.text(ui.flow.lang())))
         {
-            badges.push(banner.text(ui.lang).to_owned());
+            badges.push(banner.text(ui.flow.lang()).to_owned());
         }
-        badges.extend(ui.view.badges.iter().cloned());
+        badges.extend(ui.flow.view().badges.iter().cloned());
         // The chain badge goes before the first `네트워크` value line (app chrome, spec/04 §3.2).
         let badge_size = px(BADGE_DIP);
-        let badge_row = ui.view.chain.and_then(|badge| {
+        let badge_row = ui.flow.view().chain.and_then(|badge| {
             rows.iter()
                 .position(|(label, _, _)| {
-                    label == crate::ui::approval::labels::NETWORK.get(ui.lang)
+                    label == crate::ui::approval::labels::NETWORK.get(ui.flow.lang())
                 })
                 .map(|row| (row, badge))
         });
@@ -3479,7 +3385,7 @@ impl App {
         let mainnet = badges
             .iter()
             .any(|badge| is_badge(badge, text::BADGE_MAINNET));
-        let (header_fill, header_text, header_muted) = match ui.view.btc_banner {
+        let (header_fill, header_text, header_muted) = match ui.flow.view().btc_banner {
             Some(crate::ui::approval_view::BtcBanner::Mainnet) => (
                 theme::BTC_MAINNET_BG,
                 theme::BTC_MAINNET_TEXT,
@@ -3488,7 +3394,7 @@ impl App {
             Some(crate::ui::approval_view::BtcBanner::Testnet4) => {
                 (theme::BTC_TESTNET4_BG, theme::TEXT, theme::TEXT)
             }
-            None if ui.view.testnet => (theme::TESTNET_BG, theme::TEXT, theme::MUTED),
+            None if ui.flow.view().testnet => (theme::TESTNET_BG, theme::TEXT, theme::MUTED),
             None => (theme::CARD, theme::TEXT, theme::MUTED),
         };
         let header_rect = Rect::new(
@@ -3550,7 +3456,8 @@ impl App {
                         rect,
                         header_text,
                         // White on the red Bitcoin mainnet header, `FOCUS` elsewhere.
-                        if ui.view.btc_banner == Some(crate::ui::approval_view::BtcBanner::Mainnet)
+                        if ui.flow.view().btc_banner
+                            == Some(crate::ui::approval_view::BtcBanner::Mainnet)
                         {
                             header_text
                         } else {
@@ -3582,12 +3489,12 @@ impl App {
         y = header_rect.bottom().saturating_add(px(10));
         // Simulation band.
         let mut retry = None;
-        if let Some(band) = ui.view.band.clone() {
+        if let Some(band) = ui.flow.view().band.clone() {
             let pad = px(12);
             // The tag fits its word (2026-11-14: "High risk" is wider than "고위험"; the Korean
             // tag keeps its 56 px).
             dc.select_font(&fonts.body_bold);
-            let (_, level_w) = dc.measure(&wide(text::LEVEL_HIGH.get(ui.lang)), i32::MAX);
+            let (_, level_w) = dc.measure(&wide(text::LEVEL_HIGH.get(ui.flow.lang())), i32::MAX);
             let tag_w = px(56).max(level_w.saturating_add(px(16)));
             let inner = width
                 .saturating_sub(pad.saturating_mul(2))
@@ -3622,7 +3529,11 @@ impl App {
             dc.round_rect(tag, px(11), theme::DANGER_ACCENT, theme::DANGER_ACCENT);
             dc.select_font(&fonts.body_bold);
             dc.set_text_color(theme::CARD);
-            dc.draw_text(&wide(text::LEVEL_HIGH.get(ui.lang)), tag, DrawFlags::CENTER);
+            dc.draw_text(
+                &wide(text::LEVEL_HIGH.get(ui.flow.lang())),
+                tag,
+                DrawFlags::CENTER,
+            );
             dc.set_text_color(theme::DANGER_TEXT);
             dc.draw_text(
                 &wide(&band.head),
@@ -3645,7 +3556,7 @@ impl App {
                 );
                 dc.set_text_color(theme::DANGER_TEXT);
                 dc.draw_text(
-                    &wide(text::RETRY_SIMULATION.get(ui.lang)),
+                    &wide(text::RETRY_SIMULATION.get(ui.flow.lang())),
                     button,
                     DrawFlags::CENTER,
                 );
@@ -3775,7 +3686,11 @@ impl App {
         let radius = px(theme::RADIUS_CONTROL);
         dc.round_rect(reject, radius, theme::CARD, theme::BUTTON_SECONDARY.border);
         dc.set_text_color(theme::TEXT);
-        dc.draw_text(&wide(text::REJECT.get(ui.lang)), reject, DrawFlags::CENTER);
+        dc.draw_text(
+            &wide(text::REJECT.get(ui.flow.lang())),
+            reject,
+            DrawFlags::CENTER,
+        );
         let armed = bar.armed;
         let label = bar.label;
         let (fill, text_color) = if armed {
@@ -3932,11 +3847,7 @@ impl App {
             return;
         };
         let ApprovalUi {
-            ai,
-            widths,
-            request,
-            session,
-            ..
+            ai, widths, flow, ..
         } = ui;
         let Some(ai) = ai.as_mut() else {
             return;
@@ -3944,8 +3855,8 @@ impl App {
         // A High-risk request shows its warnings first: the AI text waits for the
         // acknowledgement checkbox (the panel keeps its reserved place).
         ai.panel.set_held(held_for_ack(
-            request.as_ref().map(|request| request.display.risk),
-            session.gate.ack_checked,
+            flow.issued().map(|request| request.display.risk),
+            flow.gate().ack_checked,
         ));
         let Ok(mut dc) = window.begin_paint() else {
             return;
@@ -4088,7 +3999,7 @@ impl App {
                 return;
             }
             let (QueuedItem::Site(site), Some(prepared), Some(request)) =
-                (&ui.item, ui.prepared.as_ref(), ui.request.as_ref())
+                (ui.flow.item(), ui.flow.prepared(), ui.flow.issued())
             else {
                 return;
             };
@@ -4119,18 +4030,18 @@ impl App {
             return;
         };
         // Only for the window whose draft was just shown (not a next window opened meanwhile).
-        if ui.ai.is_none() || ui.request.is_none() {
+        if ui.ai.is_none() || ui.flow.issued().is_none() {
             return;
         }
-        let QueuedItem::Site(site) = ui.item.clone() else {
+        let QueuedItem::Site(site) = ui.flow.item().clone() else {
             return;
         };
         let SiteKind::PersonalSign { account, message } = &site.kind else {
             return;
         };
         let blocked = ui
-            .request
-            .as_ref()
+            .flow
+            .issued()
             .is_some_and(|request| request.display.risk == RiskLevel::Blocked);
         let ready = match self.message_chain(site.chain_id) {
             _ if blocked => AiReady::Skip(SKIP_BLOCKED.get(self.approval_lang())),
@@ -4155,18 +4066,21 @@ impl App {
         let Some(ui) = self.evm.window.as_ref() else {
             return;
         };
-        if ui.ai.is_none() || ui.request.is_none() {
+        if ui.ai.is_none() || ui.flow.issued().is_none() {
             return;
         }
-        let (QueuedItem::Site(site), Some(typed)) = (ui.item.clone(), ui.typed.clone()) else {
+        let (QueuedItem::Site(site), Some(typed)) = (
+            ui.flow.item().clone(),
+            ui.flow.typed().cloned().map(Box::new),
+        ) else {
             return;
         };
         let SiteKind::TypedData { account, .. } = &site.kind else {
             return;
         };
         let blocked = ui
-            .request
-            .as_ref()
+            .flow
+            .issued()
             .is_some_and(|request| request.display.risk == RiskLevel::Blocked);
         let ready = match self.message_chain(site.chain_id) {
             _ if blocked => AiReady::Skip(SKIP_BLOCKED.get(self.approval_lang())),
@@ -4255,10 +4169,10 @@ impl App {
                 &mut dc,
                 fonts,
                 &mut ui.widths,
-                &ui.view,
+                ui.flow.view(),
                 width,
                 dpi,
-                ui.session.gate.ack_checked,
+                ui.flow.gate().ack_checked,
             );
             ui.layout = Some(layout);
             let max = ui

@@ -280,7 +280,13 @@ fn open(kind: Kind, oracle: Signals, tag: &str, fixed: bool) -> Opened {
         Kind::Simulating => {
             fx.enqueue_sepolia_send();
             let _ = fx.rpc_jobs();
-            let job = fx.app.borrow().evm.window.as_ref().map_or(0, |ui| ui.job);
+            let job = fx
+                .app
+                .borrow()
+                .evm
+                .window
+                .as_ref()
+                .map_or(0, |ui| ui.flow.job());
             fx.app().on_simulating(job, START_MS);
             None
         }
@@ -335,7 +341,7 @@ fn open(kind: Kind, oracle: Signals, tag: &str, fixed: bool) -> Opened {
                 ai.scroll = AI_SCROLL_START;
             }
         }
-        ui.request.as_ref().map(|request| request.id)
+        ui.flow.issued().map(|request| request.id)
     };
     let _ = fx.rpc_jobs();
     let _ = fx.key_jobs();
@@ -527,21 +533,26 @@ fn after(opened: &Opened, issued: Option<ApprovalId>) -> String {
     let mut line = match app.evm.window.as_ref() {
         None => "win closed".to_owned(),
         Some(ui) => {
-            let gate = &ui.session.gate;
+            let gate = ui.flow.gate();
             format!(
                 "win open status={:?} ready={} fg={} ack={} hold={} early={} focus={:?} \
                  pressed={} raw={} sel={} scroll={} ai-scroll={}",
-                ui.session.interaction().status(),
+                ui.flow.session().interaction().status(),
                 rel(gate.ready_at_ms),
                 bit(gate.is_foreground),
                 bit(gate.ack_checked),
-                bit(ui.session.interaction().hold_remaining_ms(now).is_some()),
-                bit(ui.early_release),
+                bit(ui
+                    .flow
+                    .session()
+                    .interaction()
+                    .hold_remaining_ms(now)
+                    .is_some()),
+                bit(ui.flow.early_release()),
                 ui.focus,
                 ui.pressed
                     .map_or_else(|| "-".to_owned(), |pressed| format!("{pressed:?}")),
-                bit(ui.raw_open),
-                ui.connect.as_ref().map_or_else(
+                bit(ui.flow.raw_open()),
+                ui.flow.connect().map_or_else(
                     || "-".to_owned(),
                     |connect| connect
                         .selected
@@ -953,7 +964,7 @@ impl<'a> Rec<'a> {
             .evm
             .window
             .as_ref()
-            .and_then(|ui| ui.request.as_ref().map(|request| request.id))
+            .and_then(|ui| ui.flow.issued().map(|request| request.id))
         {
             self.issued = Some(id);
         }
@@ -1611,6 +1622,9 @@ fn approve_enter_is_physical_and_not_injected() {
 /// `ui/approval_input.rs`, `Trusted::` and a `TrustedSignals {` literal occur nowhere, and
 /// `Sampled(`, `.deliver(` and `.event(` once each, in `app_approval.rs`: the one
 /// `Step::Sampled` arm of `run_step`, which delivers, and the session call of `interaction()`.
+/// 2026-11-19 (S4 B4a): the session call moved with the gate into `ApprovalFlow::on_event`
+/// (`approval_flow.rs`), which `interaction()` calls with the event it was handed: `.event(` is
+/// now counted once in `approval_flow.rs` and none in `app_approval.rs`.
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -1754,8 +1768,8 @@ fn approving_input_is_built_only_by_the_mapper() {
         ways,
         [
             ("app_approval.rs", ".deliver(", 1),
-            ("app_approval.rs", ".event(", 1),
             ("app_approval.rs", "Sampled(", 1),
+            ("approval_flow.rs", ".event(", 1),
         ]
     );
     let code = approval_production();
@@ -1765,15 +1779,27 @@ fn approving_input_is_built_only_by_the_mapper() {
         "run_step delivers the sampled step"
     );
     assert!(
-        item(&code, "    fn interaction(", 4).contains("ui.session.event(now, event)"),
-        "interaction() hands the event to the session"
+        item(&code, "    fn interaction(", 4).contains("ui.flow.on_event(now, foreground, event)"),
+        "interaction() hands the event to the flow"
+    );
+    let flow = found
+        .iter()
+        .find(|(path, _)| path == "approval_flow.rs")
+        .map(|(_, text)| code_only(text))
+        .expect("approval_flow.rs");
+    assert!(
+        item(&flow, "    pub(crate) fn on_event(", 4).contains("self.session.event(now, event)"),
+        "the flow hands the event to the session"
     );
 }
 
 /// S3 (spec/04 §3.8, spec/06 D21, AP-5): the AI explanation never touches the gate: no `ai_*`
 /// function of the window, `on_llm_done` or `llm_busy` names the session, the gate or the
 /// interaction, `AiUi` holds none of them, the engine's AI panel names no gate type, and
-/// `can_approve` takes the gate and the time only.
+/// `can_approve` takes the gate and the time only. 2026-11-19 (S4 B4a, plan §4.4 S3): extended to
+/// the flow module `approval_flow.rs`, which holds the gate: it names no window (`yw_win`,
+/// `Window`, `invalidate`, `create_window`, the timer, the Win32 foreground and flash calls), and
+/// its only `set_foreground(` is the gate's own (`self.session.set_foreground(`).
 #[test]
 fn ai_never_touches_the_gate() {
     let code = approval_production();
@@ -1843,4 +1869,27 @@ fn ai_never_touches_the_gate() {
             .count(),
         1
     );
+    let flow = code_only(include_str!("approval_flow.rs"));
+    assert!(
+        flow.contains("pub struct ApprovalFlow {"),
+        "the flow module"
+    );
+    for banned in [
+        "yw_win",
+        "Window",
+        "invalidate",
+        "create_window",
+        "set_timer",
+        "kill_timer",
+        "request_foreground",
+        "flash",
+    ] {
+        assert!(!flow.contains(banned), "{banned} in approval_flow.rs");
+    }
+    assert_eq!(
+        flow.matches("set_foreground(").count(),
+        flow.matches("self.session.set_foreground(").count(),
+        "only the gate's foreground flag"
+    );
+    assert!(flow.contains("self.session.set_foreground("));
 }

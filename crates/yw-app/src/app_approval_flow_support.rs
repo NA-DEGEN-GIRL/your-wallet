@@ -857,17 +857,18 @@ fn hidden_approval_window_is_never_shown_and_the_seams_drive_it() {
     {
         let app = fixture.app.borrow();
         let ui = app.evm.window.as_ref().expect("window open");
-        assert!(ui.request.is_some(), "issued at the first Ready display");
-        assert!(!ui.view.high, "S2 is a Standard send");
-        assert_eq!(ui.session.gate.ready_at_ms, START_MS, "the test clock");
+        assert!(
+            ui.flow.issued().is_some(),
+            "issued at the first Ready display"
+        );
+        assert!(!ui.flow.view().high, "S2 is a Standard send");
+        assert_eq!(ui.flow.gate().ready_at_ms, START_MS, "the test clock");
         assert_eq!(
-            ui.prepared
-                .as_ref()
-                .map(|prepared| prepared.sim_received_ms),
+            ui.flow.prepared().map(|prepared| prepared.sim_received_ms),
             Some(START_MS),
             "the prepare fixture reads the same clock"
         );
-        assert!(!ui.session.gate.is_foreground);
+        assert!(!ui.flow.gate().is_foreground);
     }
     // The oracle answers the gate's foreground read although the real window is not foreground.
     set_signals(Some(Signals {
@@ -884,7 +885,7 @@ fn hidden_approval_window_is_never_shown_and_the_seams_drive_it() {
             .evm
             .window
             .as_ref()
-            .is_some_and(|ui| ui.session.gate.is_foreground)
+            .is_some_and(|ui| ui.flow.gate().is_foreground)
     );
     assert_eq!(
         take_log(),

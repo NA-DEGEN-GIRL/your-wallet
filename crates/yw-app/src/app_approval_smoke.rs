@@ -285,17 +285,22 @@ fn approval_window_renders_a_fixture_dry_run() {
         let state = app.borrow();
         let window = state.evm.window.as_ref().expect("window open");
         assert!(matches!(
-            window.session.gate.prepare,
+            window.flow.gate().prepare,
             PrepareState::Ready(ReadyContent::Signing(_))
         ));
         assert!(window.layout.is_some(), "the panel painted");
         println!(
             "fixture={name} title={:?} band={:?} blocks={} high={} blocked={}",
-            window.view.blocks.first(),
-            window.view.band.as_ref().map(|band| band.head.clone()),
-            window.view.blocks.len(),
-            window.view.high,
-            window.view.blocked
+            window.flow.view().blocks.first(),
+            window
+                .flow
+                .view()
+                .band
+                .as_ref()
+                .map(|band| band.head.clone()),
+            window.flow.view().blocks.len(),
+            window.flow.view().high,
+            window.flow.view().blocked
         );
     }
     app.borrow_mut().close_approval_window();
@@ -338,7 +343,7 @@ fn approval_hold_repaints_only_the_bottom_bar() {
             .evm
             .window
             .as_ref()
-            .is_some_and(|ui| ui.view.high),
+            .is_some_and(|ui| ui.flow.view().high),
         "S3 is a high-risk approval"
     );
     app.borrow_mut().toggle_ack();
@@ -368,7 +373,7 @@ fn approval_hold_repaints_only_the_bottom_bar() {
         let held = ui.bar.held_ms;
         println!("hold frame {frame}: held {held:?} window {painted:?} panel {panel:?}");
         assert!(
-            ui.session.interaction().hold_source().is_some(),
+            ui.flow.session().interaction().hold_source().is_some(),
             "the hold is under way"
         );
         assert!(painted.count >= 2, "the progress repaints");
@@ -391,9 +396,9 @@ fn approval_hold_repaints_only_the_bottom_bar() {
     {
         let state = app.borrow();
         let ui = state.evm.window.as_ref().expect("window open");
-        assert!(ui.session.interaction().hold_source().is_none());
+        assert!(ui.flow.session().interaction().hold_source().is_none());
         assert_eq!(
-            ui.session.interaction().status(),
+            ui.flow.session().interaction().status(),
             crate::ui::interaction::InteractionStatus::Pending
         );
     }

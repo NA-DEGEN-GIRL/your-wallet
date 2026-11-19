@@ -48,6 +48,7 @@ pub mod app_tokens;
 pub mod app_walletconnect;
 pub mod app_yubikey;
 pub mod app_zec;
+pub mod approval_flow;
 pub mod browser;
 pub mod build_info;
 pub mod card_pcsc;

@@ -175,7 +175,7 @@ impl<'a> Rec<'a> {
             .evm
             .window
             .as_ref()
-            .and_then(|ui| ui.request.as_ref().map(|request| request.id))
+            .and_then(|ui| ui.flow.issued().map(|request| request.id))
         {
             self.issued = Some(id);
         }
@@ -183,23 +183,23 @@ impl<'a> Rec<'a> {
         match app.evm.window.as_ref() {
             None => line.push_str(" | win closed"),
             Some(ui) => {
-                let gate = &ui.session.gate;
+                let gate = ui.flow.gate();
                 let _ = write!(
                     line,
                     " | win open status={:?} prep={} risk={} | gate ready={} ack={} sel={} \
                      submitting={} fg={} deadline={} | focus={:?} | status-text {}",
-                    ui.session.interaction().status(),
+                    ui.flow.session().interaction().status(),
                     prep_name(&gate.prepare),
-                    if ui.view.blocked {
+                    if ui.flow.view().blocked {
                         "blocked"
-                    } else if ui.view.high {
+                    } else if ui.flow.view().high {
                         "high"
                     } else {
                         "std"
                     },
                     rel(gate.ready_at_ms),
                     gate.ack_checked,
-                    ui.connect.as_ref().map_or_else(
+                    ui.flow.connect().map_or_else(
                         || "-".to_owned(),
                         |connect| connect
                             .selected
@@ -303,10 +303,10 @@ fn prep_name(prepare: &PrepareState) -> String {
 
 /// The catalogue key of the window's status message.
 fn status_key(ui: &super::ApprovalUi) -> &'static str {
-    let Some(status) = ui.status.as_deref() else {
+    let Some(status) = ui.flow.status() else {
         return "-";
     };
-    let lang = ui.lang;
+    let lang = ui.flow.lang();
     for (key, fact) in [
         ("SIM_CHANGED", text::SIM_CHANGED),
         ("SIM_RESIM_FAILED", text::SIM_RESIM_FAILED),
@@ -667,7 +667,7 @@ fn approve_by_risk(fx: &Fixture, rec: &mut Rec<'_>, t: u64) {
         .evm
         .window
         .as_ref()
-        .is_some_and(|ui| ui.view.high);
+        .is_some_and(|ui| ui.flow.view().high);
     if !high {
         at(fx, t + 1_000);
         click(fx);
@@ -873,11 +873,12 @@ fn resim_boundary(after_ms: u64, name: &'static str) -> Vec<String> {
 
 /// The digest of the shown request.
 fn shown_digest(fx: &Fixture) -> Option<(ApprovalId, [u8; 32])> {
-    fx.app.borrow().evm.window.as_ref().and_then(|ui| {
-        ui.request
-            .as_ref()
-            .map(|request| (request.id, request.digest))
-    })
+    fx.app
+        .borrow()
+        .evm
+        .window
+        .as_ref()
+        .and_then(|ui| ui.flow.issued().map(|request| (request.id, request.digest)))
 }
 
 fn signed_digest(rec: &Rec<'_>) -> Option<[u8; 32]> {
@@ -1064,7 +1065,13 @@ fn display_change_mid_hold() -> Vec<String> {
     at(&fx, 3_500);
     ev(&fx, InteractionEvent::Tick);
     rec.snap("holding");
-    let job = fx.app.borrow().evm.window.as_ref().map_or(0, |ui| ui.job);
+    let job = fx
+        .app
+        .borrow()
+        .evm
+        .window
+        .as_ref()
+        .map_or(0, |ui| ui.flow.job());
     fx.app().on_simulating(job, START_MS + 3_500);
     rec.snap("display-changed");
     at(&fx, 4_000);
@@ -1264,7 +1271,7 @@ fn consume_app009_branches() -> Vec<String> {
         .evm
         .window
         .as_ref()
-        .and_then(|ui| ui.prepared.as_ref().map(|prepared| prepared.draft.clone()))
+        .and_then(|ui| ui.flow.prepared().map(|prepared| prepared.draft.clone()))
         .unwrap();
     // A new id: the store issues an id once.
     let draft = yw_core::approval::ApprovalDraft {
@@ -1353,7 +1360,7 @@ fn l3_site_deadline(main: bool, name: &'static str) -> Vec<String> {
         .evm
         .window
         .as_ref()
-        .map_or(0, |ui| ui.session.gate.deadline_ms);
+        .map_or(0, |ui| ui.flow.gate().deadline_ms);
     rec.fact("deadline", &format!("gate deadline={}", rel(deadline)));
     fx.clock.set(deadline);
     if main {
@@ -1386,7 +1393,7 @@ fn ui001_and_wc_label() -> Vec<String> {
         .evm
         .window
         .as_ref()
-        .and_then(|ui| ui.prepared.as_ref().map(|prepared| prepared.draft.clone()))
+        .and_then(|ui| ui.flow.prepared().map(|prepared| prepared.draft.clone()))
         .unwrap();
     // A new id (the store issues an id once) and a title with a bidi override: the store's
     // own display check refuses it at issue (E-APP-009), before the E-UI-001 re-check.
@@ -1527,18 +1534,18 @@ fn issue_uses_one_instant() -> Vec<String> {
     rec.snap("ready");
     let app = fx.app.borrow();
     let ui = app.evm.window.as_ref().unwrap();
-    let request = ui.request.as_ref().unwrap();
+    let request = ui.flow.issued().unwrap();
     let queue_deadline = app.evm.queue.shown_deadline().unwrap_or(0);
     let received = ui
-        .prepared
-        .as_ref()
+        .flow
+        .prepared()
         .map_or(0, |prepared| prepared.sim_received_ms);
     let fact = format!(
         "sim received={} session ready={} gate deadline={} queue deadline={} issued(unix-base)={} \
          expires-issued={}",
         rel(received),
-        rel(ui.session.gate.ready_at_ms),
-        rel(ui.session.gate.deadline_ms),
+        rel(ui.flow.gate().ready_at_ms),
+        rel(ui.flow.gate().deadline_ms),
         rel(queue_deadline),
         rel(request.created_unix_ms - fx.clock.unix_at(0)),
         request.expires_unix_ms - request.created_unix_ms,
