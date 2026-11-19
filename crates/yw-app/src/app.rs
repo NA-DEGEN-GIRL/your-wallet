@@ -1996,7 +1996,11 @@ impl App {
     }
 
     /// Enter with the focus on `focus` ([`Self::enter_target`]), pressed exactly as a click. The
-    /// tests' and the census's way in (a control as the window placed it).
+    /// tests' and the census's way in (a control as the window placed it). 2026-11-20 (S4 P4
+    /// review): it skips the shell's `IDOK` → `enter_key` → focus read; the windowed form test
+    /// (`ui::tour_forms`) runs that path, and the source check
+    /// `app::tests::converted_handlers_reach_the_main_window_only_through_effects` pins
+    /// `on_command`'s calls of `enter_key`/`escape_key`.
     pub(crate) fn enter_on(&mut self, focus: Option<&crate::ui::main_window::Ctl>) {
         if let Some(id) = self.enter_target(focus) {
             self.on_command(id);
@@ -2007,8 +2011,10 @@ impl App {
     /// form with one obvious action ([`enter_primary`]) that action, when it is shown enabled. A
     /// check box, a radio, any other edit or no focus: nothing, and nothing while a secret window
     /// is open (the secret and approval windows have their own key rules). 2026-11-20 (S4 P4):
-    /// only reads.
-    fn enter_target(&self, focus: Option<&crate::ui::main_window::Ctl>) -> Option<u16> {
+    /// only reads. 2026-11-20 (S4 P4 review): `pub(crate)` so the windowed form test
+    /// (`ui::tour_forms`) can say which press a real Enter (`IDOK` with the focus on an edit)
+    /// must reach; no caller outside `App` in production.
+    pub(crate) fn enter_target(&self, focus: Option<&crate::ui::main_window::Ctl>) -> Option<u16> {
         let ctl = focus?;
         if self.secret.is_some() || !ctl.enabled {
             return None;

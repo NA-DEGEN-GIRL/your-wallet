@@ -6639,6 +6639,11 @@ fn keys_resolve_in_the_shell_and_the_scroll_memory_follows_screen_entries() {
         );
     }
     assert_eq!(cred_id_of(CredField::RpcReplace), ids::REPLACE_EDIT);
+    // 2026-11-20 (S4 P4 review): `id_of` builds a row id with wrapping u16 math where the old
+    // `open_rpc_row` used saturating math; the two differ only once `ROW_BASE + row * 3 + 1`
+    // passes `u16::MAX` (rows above about 21,600), far past the RPC row range's row count
+    // (`url_rows` in `ui::command_ids::ranges`), so the ids are the same for every row the range
+    // holds. The rows above are a sample of that.
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -6646,7 +6651,10 @@ fn keys_resolve_in_the_shell_and_the_scroll_memory_follows_screen_entries() {
 /// no scroll offset or memory, focus, pointer capture, foreground or reveal of their own — and
 /// the logic's press dispatch (`on_press`) resolves no key and reads no focus. Only the effect
 /// executor reveals a control or tops a tab. Reads yw-app's `src` only; asserts that it found
-/// every fn it checks.
+/// every fn it checks. 2026-11-20 (S4 P4 review): also the shell's half of the keys —
+/// `on_command` calls `enter_key`/`escape_key` after `on_cmd(Cmd::Press …)`, and `enter_key`
+/// reads the focus (before, nothing pinned that: `Press::Enter => {}` in `on_command` left every
+/// gate test green). The windowed form test (`ui::tour_forms`) runs that path with a real focus.
 #[test]
 fn converted_handlers_reach_the_main_window_only_through_effects() {
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -6713,6 +6721,7 @@ fn converted_handlers_reach_the_main_window_only_through_effects() {
     for key in ["escape_key", "enter_key", "enter_on", "focused"] {
         assert!(!dispatch.contains(key), "on_press names {key}");
     }
+    shell_resolves_the_keys(&body);
     // Only the executor reveals a control or tops a tab (definitions are `fn …(`).
     let mut callers = Vec::new();
     let mut files = 0;
@@ -6745,4 +6754,43 @@ fn converted_handlers_reach_the_main_window_only_through_effects() {
             ("app_effects.rs".to_owned(), "tab_top", 1),
         ]
     );
+}
+
+/// 2026-11-20 (S4 P4 review), part of
+/// [`converted_handlers_reach_the_main_window_only_through_effects`] (`body` is its fn reader):
+/// the shell's half — `on_command` resolves Enter and Esc right after their own press,
+/// `enter_key` reads the window's focus, and the resolvers press what they find through
+/// `on_command`. Whitespace dropped, so only the code's shape counts.
+fn shell_resolves_the_keys(body: &dyn Fn(&str, &str) -> String) {
+    let squeezed = |head: &str| -> String {
+        body("app.rs", head)
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect()
+    };
+    let shell = [
+        (
+            "    fn on_command(&mut self, id: u16) {",
+            "self.on_cmd(Cmd::Press{press,input});matchpress{Press::Enter=>self.enter_key(),\
+             Press::Back=>self.escape_key(),_=>{}}",
+        ),
+        (
+            "    fn enter_key(&mut self) {",
+            "letfocus=self.controls.focused().and_then(|index|self.placed.controls.get(index))\
+             .map(|(ctl,_)|ctl.clone());self.enter_on(focus.as_ref());",
+        ),
+        (
+            "    pub(crate) fn enter_on(&mut self, focus: Option<&crate::ui::main_window::Ctl>) {",
+            "ifletSome(id)=self.enter_target(focus){self.on_command(id);}",
+        ),
+        (
+            "    pub(crate) fn escape_key(&mut self) {",
+            "matchself.escape_target(){EscTarget::Press(id)=>self.on_command(id),\
+             EscTarget::ClosePickers=>{let_=self.close_pickers();self.refresh();}\
+             EscTarget::Nothing=>{}}",
+        ),
+    ];
+    for (head, call) in shell {
+        assert!(squeezed(head).contains(call), "app.rs: {head} lost {call}");
+    }
 }

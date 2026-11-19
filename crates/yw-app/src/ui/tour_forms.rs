@@ -16,6 +16,13 @@
 //!   below, step by step, typing into the shown edits as above; a check box is pressed with the
 //!   state the window gives it.
 //!
+//! Enter is a real key (2026-11-20, S4 P4 review): the edit is focused and `IDOK` goes through
+//! the shell's `on_command`, which reads the focus and presses what Enter stands for (S4 P4 moved
+//! that resolution out of the logic); the press the logic got must be the one
+//! `App::enter_target` names, and Enter in the credential forms (`REPLACE_EDIT`, `DONE_QN_EDIT`)
+//! and in the account rename must press their button. Before, the test called the census's
+//! `App::enter_on`, which skips the key and the focus read.
+//!
 //! After every step the form state is compared with the window for all 58 plain edits, through
 //! `App::form_text` (the debug shadow read, which counts a difference in `form_mismatch`); then
 //! a render is forced and the comparison runs again. Credential units captured with a press are
@@ -35,13 +42,14 @@ use std::collections::BTreeSet;
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, channel};
 
+use yw_engine::cmd::Press;
 use yw_engine::form::EditField;
 
 use crate::app::App;
 use crate::app::tests::s3_census::{
     Base, Census, ENTER_EDITS, Scenario, Step, no_setup, write_scenarios,
 };
-use crate::ui::cmd_table::edit_id_of;
+use crate::ui::cmd_table::{IDOK, edit_id_of, press_of};
 use crate::ui::screens_walletconnect;
 use crate::workers::rpc::RpcJob;
 
@@ -62,6 +70,10 @@ struct Tally {
     cred_misses: u32,
     /// Steps skipped because their edit or button was not shown.
     skipped: usize,
+    /// Enter steps run through the shell (`IDOK`), and the edits where Enter pressed a control
+    /// (2026-11-20, S4 P4 review).
+    enters: usize,
+    enter_pressed: BTreeSet<u16>,
 }
 
 /// One app with its real main window, on a fresh state of `census`.
@@ -141,8 +153,43 @@ fn close(app: Rc<RefCell<App>>, rx: Receiver<RpcJob>, census: &Census, tally: &m
     census.guard();
 }
 
+/// Enter in shown edit `id` (at `index`) as the window delivers it (2026-11-20, S4 P4 review):
+/// the edit focused, then `IDOK` through the shell's `on_command`, whose `enter_key` reads the
+/// focus and presses what it stands for (before, this test called the census's `enter_on`, which
+/// skips the key and the focus read). The press the logic got last must be the one
+/// `App::enter_target` names for the focused edit before the key (its button's own press), or
+/// `Press::Enter` itself when Enter stands for nothing there.
+fn enter_key(state: &mut App, id: u16, index: usize, tally: &mut Tally) -> String {
+    let what = format!("enter {id}");
+    state.controls.focus_at(index);
+    if state.controls.focused() != Some(index) {
+        tally
+            .differences
+            .push(format!("{what}: the edit did not take the focus"));
+        return what;
+    }
+    let focus = state.placed.controls.get(index).map(|(ctl, _)| ctl.clone());
+    let expected = state
+        .enter_target(focus.as_ref())
+        .and_then(|target| press_of(target, &state.controls))
+        .unwrap_or(Press::Enter);
+    Step::Press(IDOK).run(state);
+    tally.enters += 1;
+    if expected != Press::Enter {
+        tally.enter_pressed.insert(id);
+    }
+    if state.last_press != expected {
+        tally.differences.push(format!(
+            "{what}: Enter pressed {:?}, expected {expected:?}",
+            state.last_press
+        ));
+    }
+    what
+}
+
 /// A step of a census scenario, with the window: a press as a click, text through the edit,
-/// Enter in a shown edit, a check box pressed with the window's own state.
+/// Enter in a shown edit (focused, then `IDOK` through the shell), a check box pressed with the
+/// window's own state.
 fn run_step(state: &mut App, step: Step, tally: &mut Tally) -> String {
     match step {
         Step::Press(id) | Step::Check(id, _) => {
@@ -161,11 +208,11 @@ fn run_step(state: &mut App, step: Step, tally: &mut Tally) -> String {
             format!("type {id}")
         }
         Step::Enter(id) => {
-            if shown(state, id).is_none() {
+            let Some(index) = shown(state, id) else {
                 tally.skipped += 1;
                 return format!("enter {id} (not shown)");
-            }
-            step.run(state)
+            };
+            enter_key(state, id, index, tally)
         }
         Step::Call(..) => {
             let what = step.run(state);
@@ -448,9 +495,26 @@ fn form_state_equals_the_window() {
         tally.cred_misses,
         tally.differences.len()
     );
+    println!(
+        "tour_forms: Enter through IDOK: {} steps, {} edits where it pressed a control",
+        tally.enters,
+        tally.enter_pressed.len()
+    );
     for difference in tally.differences.iter().take(40) {
         println!("tour_forms: difference: {difference}");
     }
     assert!(tally.differences.is_empty());
+    // The credential Enter forms (S3 K17: the RPC row's `교체`, the done screen's QuickNode URL)
+    // and a plain one (the account rename) pressed their button through the shell's key path.
+    for id in [
+        crate::ui::screens::ids::REPLACE_EDIT,
+        crate::ui::screens::ids::DONE_QN_EDIT,
+        crate::ui::screens::ids::RENAME_EDIT,
+    ] {
+        assert!(
+            tally.enter_pressed.contains(&id),
+            "Enter in {id} pressed nothing"
+        );
+    }
     assert_eq!((tally.form_mismatch, tally.cred_misses), (0, 0));
 }
