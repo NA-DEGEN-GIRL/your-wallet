@@ -35,7 +35,24 @@
 //!
 //! [`print_frozen_tests`] wrote the file at F-A (`#[ignore]`, recording only; the file is frozen:
 //! no line of it is ever removed or changed, plan §4.3 FZ).
+//!
+//! 2026-11-19 (F-A review): two gaps closed. (1) The hash above covers only the `#[test]` fn,
+//! and most frozen tests are one-line calls (`run(name)`, `run_group(..)`, `compare(..)`): the
+//! code that runs and compares was not pinned. `s4_flow/frozen-helpers.txt` now holds one line
+//! per non-test item of the frozen test files and their two seam files (`HELPER_SET`), plus the
+//! source checks S1–S3: F-A path, kind, name, hash (same normalization, from the keyword), rule.
+//! Rule `fixed` (the drivers that run a scenario and compare it with its golden, and every item
+//! of the engine and core approval test files): never changes. `mutable`: only a planned S4
+//! commit may re-record (or remove) the line, naming it in its body with the reason and the
+//! goldens it kept byte-equal. A commit list (S1–S3): only those commits. The gate test
+//! [`frozen_helpers_keep_their_bodies`] checks every line. (2) A source scan cannot see that a
+//! frozen test is compiled out; [`frozen_tests_are_compiled`] (gate step s4fz) compares the
+//! compiled test list with the sources. Before this note the claim "every test of a file is
+//! frozen" meant only the `#[test]` fn text. This file, `frozen-tests.txt` and
+//! `frozen-helpers.txt` are in the FZ frozen-file list (spec/09 §2.1): no `-` line after the
+//! F-A review commit except what a line's rule allows.
 
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 const FROZEN: &str = include_str!("s4_flow/frozen-tests.txt");
@@ -356,11 +373,11 @@ fn short_hash(text: &str) -> String {
     hex
 }
 
-/// Every `#[test]` fn of one source file, in source order (macro-made ones at their invocation).
-fn tests_of(path: &str, source: &str) -> Vec<Found> {
-    let n = Normalized::new(source);
+/// The `macro_rules!` of a file, as (spans, test templates): a template is a macro holding a
+/// `#[test] fn $test` (name, ignored, hashed text of that fn).
+#[expect(clippy::type_complexity, reason = "two plain lists returned together")]
+fn macro_templates(n: &Normalized) -> (Vec<(usize, usize)>, Vec<(String, bool, String)>) {
     let len = n.text.len();
-    let mut found = Vec::new();
     let mut templates: Vec<(String, bool, String)> = Vec::new();
     let mut macro_spans: Vec<(usize, usize)> = Vec::new();
     // `macro_rules! NAME { … #[test] … fn $test() { … } … }`
@@ -377,7 +394,7 @@ fn tests_of(path: &str, source: &str) -> Vec<Found> {
             let mut k = open;
             while k < close {
                 if n.has(k, "#[")
-                    && let Some((leaf, ignored, hashed, end)) = test_fn_at(&n, k, close)
+                    && let Some((leaf, ignored, hashed, end)) = test_fn_at(n, k, close)
                 {
                     if leaf == "$test" {
                         templates.push((name.clone(), ignored, hashed));
@@ -391,6 +408,15 @@ fn tests_of(path: &str, source: &str) -> Vec<Found> {
         }
         i += 1;
     }
+    (macro_spans, templates)
+}
+
+/// Every `#[test]` fn of one source file, in source order (macro-made ones at their invocation).
+fn tests_of(path: &str, source: &str) -> Vec<Found> {
+    let n = Normalized::new(source);
+    let len = n.text.len();
+    let mut found = Vec::new();
+    let (macro_spans, templates) = macro_templates(&n);
     let inside_macro = |at: usize| macro_spans.iter().any(|&(from, to)| at >= from && at <= to);
     let mut i = 0;
     while i < len {
@@ -465,6 +491,180 @@ fn split_entries(n: &Normalized, from: usize, to: usize) -> Vec<String> {
         entries.push(current);
     }
     entries
+}
+
+/// One non-test item of a source file (a helper of the tests in it).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Item {
+    kind: &'static str,
+    /// The item name with the inline module path inside the file (`tests::first_round`); an
+    /// `impl` is named by its header (`HandlerforInert`), a macro call by `name!`.
+    name: String,
+    hash: String,
+}
+
+/// Item keywords as they start the normalized text (whitespace dropped), longest first where one
+/// is a prefix of another, with the kind they record and whether the item ends with a block.
+const ITEM_KEYWORDS: [(&str, &str, bool); 16] = [
+    ("constfn", "fn", true),
+    ("unsafefn", "fn", true),
+    ("asyncfn", "fn", true),
+    ("fn", "fn", true),
+    ("const", "const", false),
+    ("static", "static", false),
+    ("struct", "struct", true),
+    ("enum", "enum", true),
+    ("union", "union", true),
+    ("unsafeimpl", "impl", true),
+    ("impl", "impl", true),
+    ("type", "type", false),
+    ("trait", "trait", true),
+    ("use", "use", false),
+    ("externcrate", "use", false),
+    ("mod", "mod", true),
+];
+
+/// The end of the item whose keyword starts at `at`: its first depth-0 `;`, or (`braced`) the
+/// `}` closing its first depth-0 block (and a `;` right after it).
+fn item_end(n: &Normalized, at: usize, to: usize, braced: bool) -> Option<usize> {
+    let mut depth = 0usize;
+    for k in at..to {
+        if !n.code[k] {
+            continue;
+        }
+        match n.text[k] {
+            '{' if depth == 0 && braced => {
+                let close = n.closing(k)?;
+                return Some(if n.has(close + 1, ";") {
+                    close + 1
+                } else {
+                    close
+                });
+            }
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth = depth.checked_sub(1)?,
+            ';' if depth == 0 => return Some(k),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Every non-test item of one source file: functions, constants, statics, types, `impl`
+/// blocks, `macro_rules!` and item-level macro calls, also inside inline modules (named with the
+/// module path). Not items: `use`, `mod x;`, `#[test]` fns, test-template macros and their calls
+/// (their tests are in `frozen-tests.txt`). The hashed text is normalized like a test's (from
+/// the keyword, so a visibility change on a move does not count; `#[expect]`, `#[allow]` and
+/// `#[doc]` dropped).
+fn items_of(source: &str) -> Vec<Item> {
+    let n = Normalized::new(source);
+    let (_, templates) = macro_templates(&n);
+    let template_names: Vec<&str> = templates.iter().map(|(name, ..)| name.as_str()).collect();
+    let mut out = Vec::new();
+    items_in(&n, 0, n.text.len(), "", &template_names, &mut out);
+    out
+}
+
+fn items_in(
+    n: &Normalized,
+    from: usize,
+    to: usize,
+    prefix: &str,
+    templates: &[&str],
+    out: &mut Vec<Item>,
+) {
+    let mut i = from;
+    while i < to {
+        if n.has(i, "#![") {
+            let Some(close) = n.closing(i + 2) else {
+                return;
+            };
+            i = close + 1;
+            continue;
+        }
+        let mut attrs = Vec::new();
+        let mut j = i;
+        while n.has(j, "#[") {
+            let Some(close) = n.closing(j + 1) else {
+                return;
+            };
+            attrs.push(n.slice(j, close));
+            j = close + 1;
+        }
+        if n.has(j, "pub(") {
+            let Some(close) = n.closing(j + 3) else {
+                return;
+            };
+            j = close + 1;
+        } else if n.has(j, "pub") {
+            j += 3;
+        }
+        let word_end = (j..to)
+            .find(|&k| !n.code[k] || !is_ident(n.text[k]))
+            .unwrap_or(to);
+        let word: String = n.text[j..word_end].iter().collect();
+        let ident_from = |from: usize| -> String {
+            (from..to)
+                .take_while(|&k| n.code[k] && is_ident(n.text[k]))
+                .map(|k| n.text[k])
+                .collect()
+        };
+        let (kind, name, braced) = if word == "macro_rules" && n.has(word_end, "!") {
+            ("macro", ident_from(word_end + 1), true)
+        } else if !word.is_empty() && n.has(word_end, "!") {
+            ("invoke", format!("{word}!"), true)
+        } else if let Some(&(keyword, kind, braced)) = ITEM_KEYWORDS
+            .iter()
+            .find(|(keyword, ..)| word.starts_with(keyword))
+        {
+            let name = if kind == "impl" {
+                let open = n.find(j, to, '{').unwrap_or(j);
+                n.text[j + keyword.len()..open].iter().collect()
+            } else {
+                word[keyword.len()..].to_owned()
+            };
+            (kind, name, braced)
+        } else {
+            ("other", String::new(), true)
+        };
+        let Some(end) = item_end(n, j, to, braced) else {
+            return;
+        };
+        let template = (kind == "macro" && templates.contains(&name.as_str()))
+            || (kind == "invoke" && templates.contains(&name.trim_end_matches('!')));
+        let test = attrs.iter().any(|attr| attr == "#[test]");
+        if kind == "mod" {
+            if n.text[end] == '}'
+                && let Some(open) = n.find(j, end, '{')
+            {
+                items_in(
+                    n,
+                    open + 1,
+                    end,
+                    &format!("{prefix}{name}::"),
+                    templates,
+                    out,
+                );
+            }
+        } else if !(matches!(kind, "use" | "other") || template || test) {
+            let mut hashed = String::new();
+            for attr in &attrs {
+                if !["#[expect(", "#[allow(", "#[doc"]
+                    .iter()
+                    .any(|dropped| attr.starts_with(dropped))
+                {
+                    hashed.push_str(attr);
+                }
+            }
+            hashed.push_str(&n.slice(j, end));
+            out.push(Item {
+                kind,
+                name: format!("{prefix}{name}"),
+                hash: short_hash(&hashed),
+            });
+        }
+        i = end + 1;
+    }
 }
 
 fn crates_dir() -> PathBuf {
@@ -550,6 +750,27 @@ fn entries() -> Vec<Entry<'static>> {
         .collect()
 }
 
+/// For each frozen entry, the found test it matches (same leaf, same hash, not ignored when it
+/// ran at F-A; each found test used once, in file order).
+fn match_entries(frozen: &[Entry<'_>], found: &[Found]) -> Vec<Option<usize>> {
+    let mut used = vec![false; found.len()];
+    frozen
+        .iter()
+        .map(|entry| {
+            let pick = found.iter().enumerate().position(|(k, test)| {
+                !used[k]
+                    && test.leaf == entry.leaf
+                    && test.hash == entry.hash
+                    && (entry.ignored || !test.ignored)
+            });
+            if let Some(k) = pick {
+                used[k] = true;
+            }
+            pick
+        })
+        .collect()
+}
+
 /// Gate test step 23 (2026-11-19, S4 F-A): every frozen test still exists under its leaf name
 /// with an unchanged normalized body, and none that ran at F-A is ignored now.
 #[test]
@@ -561,17 +782,10 @@ fn frozen_tests_keep_their_names_and_bodies() {
         "frozen-tests.txt lost or gained lines"
     );
     let found = all_tests();
-    let mut used = vec![false; found.len()];
+    let picks = match_entries(&frozen, &found);
     let mut errors = Vec::new();
-    for entry in &frozen {
-        let pick = found.iter().enumerate().position(|(k, test)| {
-            !used[k]
-                && test.leaf == entry.leaf
-                && test.hash == entry.hash
-                && (entry.ignored || !test.ignored)
-        });
-        if let Some(k) = pick {
-            used[k] = true;
+    for (entry, pick) in frozen.iter().zip(&picks) {
+        if pick.is_some() {
             continue;
         }
         let same_name: Vec<String> = found
@@ -587,6 +801,346 @@ fn frozen_tests_keep_their_names_and_bodies() {
             entry.hash,
             same_name
         ));
+    }
+    assert!(errors.is_empty(), "{}", errors.join("\n"));
+}
+
+// ---- Pinned helpers (2026-11-19, S4 F-A review) ----------------------------------------------
+
+const HELPERS: &str = include_str!("s4_flow/frozen-helpers.txt");
+
+/// Lines of `frozen-helpers.txt`. A commit that may remove a `mutable` line (its helper is gone)
+/// lowers this in the same commit and names the line (the check cannot pass on an emptied file).
+const HELPER_LINES: usize = 639;
+
+/// The planned S4 commits (plan §5 with critique round 2), the only words of a commit-list rule.
+const PLANNED: [&str; 54] = [
+    "F1", "F2", "B1a", "B1b", "B2", "B3", "B4a", "B4b", "B5", "B6", "B7", "Z-a", "P1", "P2", "P3",
+    "P4", "P5", "P6", "P7a1", "P7a2", "P7b", "P8", "P9", "P10", "Z-b", "W0", "W1", "W2", "W3",
+    "W3a", "W3b", "W4", "W5", "W6", "W7", "W8", "W9", "W10", "W11", "W12", "W13", "W14a", "W14b",
+    "W15", "Z-c", "E0a", "E0b", "E0c", "E1", "E2", "E3a", "E3b", "E4", "Z-d",
+];
+
+/// A frozen test file whose non-test items are pinned: its F-A path, the name prefix of the
+/// pinned items (`tests::` = only the inline test module), the drivers (the code that runs a
+/// scenario and compares it with its golden: rule `fixed`), and the rule of every other item.
+struct HelperFile {
+    path: &'static str,
+    prefix: &'static str,
+    fixed: &'static [&'static str],
+    rest: &'static str,
+}
+
+/// The pinned helper files (FA review, A-10 as amended by B-9): the frozen-test files of
+/// `FROZEN_SET` and the two seam files their tests run on. Not pinned: the shared integration
+/// helpers `yw-engine/tests/{common,btc_support}/` (many unfrozen tests use them; they build
+/// inputs, and what a frozen test compares stays in the frozen file).
+const HELPER_SET: [HelperFile; 14] = [
+    HelperFile {
+        path: "yw-engine/tests/approval_interaction.rs",
+        prefix: "",
+        fixed: &[],
+        rest: "fixed",
+    },
+    HelperFile {
+        path: "yw-engine/tests/approval_golden.rs",
+        prefix: "",
+        fixed: &[],
+        rest: "fixed",
+    },
+    HelperFile {
+        path: "yw-engine/tests/approval_sim_states.rs",
+        prefix: "",
+        fixed: &[],
+        rest: "fixed",
+    },
+    HelperFile {
+        path: "yw-app/tests/approval_input.rs",
+        prefix: "",
+        fixed: &[],
+        rest: "fixed",
+    },
+    HelperFile {
+        path: "yw-core/tests/evm_approval.rs",
+        prefix: "",
+        fixed: &[],
+        rest: "fixed",
+    },
+    HelperFile {
+        path: "yw-app/tests/btc_app_flow.rs",
+        prefix: "",
+        fixed: &[],
+        rest: "mutable",
+    },
+    HelperFile {
+        path: "yw-app/src/app/tests/s3_census.rs",
+        prefix: "",
+        fixed: &[
+            "compare",
+            "COMMANDS",
+            "EDITS",
+            "CHECKS",
+            "WRITES",
+            "SCENARIOS",
+        ],
+        rest: "mutable",
+    },
+    HelperFile {
+        path: "yw-app/src/app_approval_flow_tests.rs",
+        prefix: "",
+        fixed: &["run", "golden_of", "first_difference", "GOLDEN"],
+        rest: "mutable",
+    },
+    HelperFile {
+        path: "yw-app/src/app_approval_lifecycle_tests.rs",
+        prefix: "",
+        fixed: &["run", "golden_of", "GOLDEN"],
+        rest: "mutable",
+    },
+    HelperFile {
+        path: "yw-app/src/app_approval_input_tests.rs",
+        prefix: "",
+        fixed: &[
+            "first_difference",
+            "compare",
+            "run_group",
+            "run_reentry",
+            "write_out",
+            "INPUT",
+            "REENTRY",
+        ],
+        rest: "mutable",
+    },
+    HelperFile {
+        path: "yw-app/src/ui/tour_secrets.rs",
+        prefix: "",
+        fixed: &["record", "first_difference", "SECRET_GOLDEN", "LOCK_GOLDEN"],
+        rest: "mutable",
+    },
+    HelperFile {
+        path: "yw-app/src/app_chain_sites.rs",
+        prefix: "tests::",
+        fixed: &[],
+        rest: "mutable",
+    },
+    HelperFile {
+        path: "yw-app/src/app_approval_flow_support.rs",
+        prefix: "",
+        fixed: &[],
+        rest: "mutable",
+    },
+    HelperFile {
+        path: "yw-app/src/app/secret_seam.rs",
+        prefix: "",
+        fixed: &[],
+        rest: "mutable",
+    },
+];
+
+/// The source checks S1–S3 of `app_approval_input_tests.rs` (plan §4.4): not frozen (B2, B4 and
+/// B5 re-point them), pinned so that only those commits may change them (FA review). Each
+/// change must keep what it asserts: S1 `topmost(true)` and `MA_ACTIVATEANDEAT`, S2 the
+/// `physical` Enter expression with `injected`, S3 the scan that no AI code names the gate.
+const SOURCE_CHECKS: [(&str, &str); 3] = [
+    (
+        "approval_window_is_topmost_and_eats_activating_clicks",
+        "B2,B4a,B4b,B5",
+    ),
+    (
+        "approve_enter_is_physical_and_not_injected",
+        "B2,B4a,B4b,B5",
+    ),
+    ("ai_never_touches_the_gate", "B2,B4a,B4b,B5,W14a,W14b,E1"),
+];
+const SOURCE_CHECKS_PATH: &str = "yw-app/src/app_approval_input_tests.rs";
+
+/// One line of `frozen-helpers.txt`: F-A path, kind (`test` for S1–S3), name, hash, rule.
+struct HelperLine<'a> {
+    path: &'a str,
+    kind: &'a str,
+    name: &'a str,
+    hash: &'a str,
+    rule: &'a str,
+}
+
+const KINDS: [&str; 12] = [
+    "fn", "const", "static", "struct", "enum", "union", "impl", "type", "trait", "macro", "invoke",
+    "test",
+];
+
+fn rule_is_valid(rule: &str) -> bool {
+    rule == "fixed" || rule == "mutable" || rule.split(',').all(|commit| PLANNED.contains(&commit))
+}
+
+fn helper_lines() -> Vec<HelperLine<'static>> {
+    HELPERS
+        .lines()
+        .map(|line| {
+            let parts: Vec<&str> = line.split(' ').collect();
+            assert!(parts.len() == 5, "malformed line: {line}");
+            assert!(KINDS.contains(&parts[1]), "malformed line: {line}");
+            assert!(
+                parts[3].len() == 16 && parts[3].chars().all(|c| c.is_ascii_hexdigit()),
+                "malformed line: {line}"
+            );
+            assert!(rule_is_valid(parts[4]), "malformed line: {line}");
+            HelperLine {
+                path: parts[0],
+                kind: parts[1],
+                name: parts[2],
+                hash: parts[3],
+                rule: parts[4],
+            }
+        })
+        .collect()
+}
+
+/// The files that hold the frozen tests of each F-A file now (where a moved helper must be).
+fn homes(frozen: &[Entry<'_>], found: &[Found]) -> HashMap<String, BTreeSet<String>> {
+    let mut homes: HashMap<String, BTreeSet<String>> = HashMap::new();
+    for (entry, pick) in frozen.iter().zip(match_entries(frozen, found)) {
+        if let Some(k) = pick {
+            homes
+                .entry(entry.path.to_owned())
+                .or_default()
+                .insert(found[k].path.clone());
+        }
+    }
+    homes
+}
+
+/// Gate test step 23 (2026-11-19, S4 F-A review): every pinned helper of a frozen test file
+/// (`frozen-helpers.txt`) still exists with an unchanged normalized text. It must be in its F-A
+/// file while that file exists; once a planned commit moved the file away, in a file that holds
+/// frozen tests of that F-A file (a helper moves with its tests; an unchanged copy left
+/// elsewhere does not count). S1–S3 (`test` lines) must still run.
+#[test]
+fn frozen_helpers_keep_their_bodies() {
+    let lines = helper_lines();
+    assert_eq!(
+        lines.len(),
+        HELPER_LINES,
+        "frozen-helpers.txt lost or gained lines"
+    );
+    let root = crates_dir();
+    let found = all_tests();
+    let homes = homes(&entries(), &found);
+    let mut parsed: HashMap<String, (Vec<Item>, Vec<Found>)> = HashMap::new();
+    let mut used: BTreeSet<(String, bool, usize)> = BTreeSet::new();
+    let mut errors = Vec::new();
+    for line in &lines {
+        let files: Vec<String> = if root.join(line.path).is_file() {
+            vec![line.path.to_owned()]
+        } else {
+            homes
+                .get(line.path)
+                .map(|set| set.iter().cloned().collect())
+                .unwrap_or_default()
+        };
+        let mut hit = false;
+        for file in &files {
+            let (items, tests) = parsed.entry(file.clone()).or_insert_with(|| {
+                let text = std::fs::read_to_string(root.join(file)).unwrap();
+                (items_of(&text), tests_of(file, &text))
+            });
+            let pick = if line.kind == "test" {
+                tests
+                    .iter()
+                    .enumerate()
+                    .position(|(k, test)| {
+                        !used.contains(&(file.clone(), true, k))
+                            && test.leaf == line.name
+                            && test.hash == line.hash
+                            && !test.ignored
+                    })
+                    .map(|k| (true, k))
+            } else {
+                items
+                    .iter()
+                    .enumerate()
+                    .position(|(k, item)| {
+                        !used.contains(&(file.clone(), false, k))
+                            && item.kind == line.kind
+                            && item.name == line.name
+                            && item.hash == line.hash
+                    })
+                    .map(|k| (false, k))
+            };
+            if let Some((test, k)) = pick {
+                used.insert((file.clone(), test, k));
+                hit = true;
+                break;
+            }
+        }
+        if !hit {
+            errors.push(format!(
+                "pinned {} {} ({}, {}, rule {}): not found unchanged in {files:?}; only a commit \
+                 the rule allows may re-record it (spec/09 §2.1)",
+                line.kind, line.name, line.path, line.hash, line.rule
+            ));
+        }
+    }
+    assert!(errors.is_empty(), "{}", errors.join("\n"));
+}
+
+/// Gate step s4fz (2026-11-19, S4 F-A review): the frozen tests are compiled into the gate's
+/// `cargo test --workspace` and the ones that ran at F-A still run. `scripts/check.ps1` lists the
+/// compiled tests (`-- --list` and `-- --list --ignored`) and passes, for every frozen leaf name
+/// (`frozen-tests.txt` and the `test` lines of `frozen-helpers.txt`), the compiled and the
+/// ignored count in `YW_S4_COMPILED` (`leaf=all/ignored;…`). For each leaf, every `#[test]` fn
+/// of that name in the sources must be compiled (a crate- or module-level `cfg`, a missing
+/// `mod`/`#[path]` line, `test = false` or an unchanged copy in a file that is not compiled
+/// leaves fewer compiled than in the sources), and every one not `#[ignore]`d there must run.
+#[test]
+#[ignore = "gate step s4fz: needs the compiled test list in YW_S4_COMPILED"]
+fn frozen_tests_are_compiled() {
+    let listed = std::env::var("YW_S4_COMPILED").unwrap_or_default();
+    assert!(
+        !listed.is_empty(),
+        "YW_S4_COMPILED is not set: run scripts/check.ps1 -Step s4fz"
+    );
+    let mut compiled: HashMap<&str, (usize, usize)> = HashMap::new();
+    for pair in listed.split(';') {
+        let (leaf, counts) = pair.split_once('=').expect("leaf=all/ignored");
+        let (all, ignored) = counts.split_once('/').expect("leaf=all/ignored");
+        compiled.insert(leaf, (all.parse().unwrap(), ignored.parse().unwrap()));
+    }
+    let helpers = helper_lines();
+    let leaves: BTreeSet<&str> = entries()
+        .iter()
+        .map(|entry| entry.leaf)
+        .chain(
+            helpers
+                .iter()
+                .filter(|line| line.kind == "test")
+                .map(|line| line.name),
+        )
+        .collect();
+    assert!(leaves.len() > SOURCE_CHECKS.len(), "no frozen leaf names");
+    let found = all_tests();
+    let mut errors = Vec::new();
+    for leaf in &leaves {
+        let Some(&(all, ignored)) = compiled.get(leaf) else {
+            errors.push(format!("{leaf}: not in YW_S4_COMPILED"));
+            continue;
+        };
+        let in_sources = found.iter().filter(|test| test.leaf == *leaf).count();
+        let run_in_sources = found
+            .iter()
+            .filter(|test| test.leaf == *leaf && !test.ignored)
+            .count();
+        let run = all.saturating_sub(ignored);
+        if all < in_sources {
+            errors.push(format!(
+                "{leaf}: {in_sources} #[test] fn in the sources, {all} compiled (a cfg, a missing \
+                 mod or #[path] line, test = false, or a copy in a file that is not compiled)"
+            ));
+        }
+        if run < run_in_sources {
+            errors.push(format!(
+                "{leaf}: {run_in_sources} not #[ignore]d in the sources, {run} run by the gate"
+            ));
+        }
     }
     assert!(errors.is_empty(), "{}", errors.join("\n"));
 }
@@ -667,4 +1221,101 @@ fn print_frozen_tests() {
         return;
     }
     assert_eq!(out, FROZEN);
+}
+
+/// The helper items are the non-test items of a file, with the inline module path; tests,
+/// `use`, `mod x;`, test-template macros and their calls are not items; the hash ignores layout,
+/// comments and visibility, and sees a changed body or an added early `return`.
+#[test]
+fn helper_items_are_the_non_test_items() {
+    let source = "//! doc\n#![allow(x)]\nuse a::b;\n#[path = \"x.rs\"]\nmod x;\nconst GOLDEN: &str = include_str!(\"g.txt\");\npub(super) fn run(name: &str) {\n    check(name);\n}\nstruct Rec<'a> {\n    a: &'a str,\n}\nimpl<'a> Rec<'a> {\n    fn new() -> Self { todo() }\n}\nimpl Handler for Inert {}\nmacro_rules! t {\n    ($($test:ident => $name:literal),* $(,)?) => {\n        $(\n            #[test]\n            fn $test() { run($name); }\n        )*\n    };\n}\nt! { golden_x => \"x\" }\nthread_local! { static S: u8 = 0; }\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn a() {}\n    fn first_round(x: [u8; 2]) -> u8 { x[0] }\n    type Scenario = fn() -> Vec<String>;\n}\n";
+    let items = items_of(source);
+    let names: Vec<(&str, &str)> = items
+        .iter()
+        .map(|item| (item.kind, item.name.as_str()))
+        .collect();
+    assert_eq!(
+        names,
+        [
+            ("const", "GOLDEN"),
+            ("fn", "run"),
+            ("struct", "Rec"),
+            ("impl", "<'a>Rec<'a>"),
+            ("impl", "HandlerforInert"),
+            ("invoke", "thread_local!"),
+            ("fn", "tests::first_round"),
+            ("type", "tests::Scenario"),
+        ]
+    );
+    let run = |source: &str| {
+        items_of(source)
+            .into_iter()
+            .find(|item| item.name == "run")
+            .unwrap()
+            .hash
+    };
+    let base = "fn run(name: &str) {\n    check(name);\n}\n";
+    let layout = "/// d\n#[expect(clippy::x, reason = \"r\")]\npub(crate) fn run(name: &str) { check(name) ; }\n";
+    let early = "fn run(name: &str) {\n    if !name.is_empty() { return; }\n    check(name);\n}\n";
+    assert_eq!(run(base), run(layout));
+    assert_ne!(run(base), run(early));
+}
+
+/// Writes `frozen-helpers.txt` into `YW_S4_FLOW_OUT` (recording only: at the F-A review, and in
+/// a commit the rule of a line allows, which then names every changed line), else compares the
+/// set computed from `HELPER_SET` and `SOURCE_CHECKS` with the committed file.
+#[test]
+#[ignore = "recording of s4_flow/frozen-helpers.txt (S4 F-A review)"]
+fn print_frozen_helpers() {
+    use std::fmt::Write as _;
+    let root = crates_dir();
+    let mut out = String::new();
+    for file in &HELPER_SET {
+        let text = std::fs::read_to_string(root.join(file.path)).unwrap();
+        let items: Vec<Item> = items_of(&text)
+            .into_iter()
+            .filter(|item| item.name.starts_with(file.prefix))
+            .collect();
+        assert!(!items.is_empty(), "no helper in {}", file.path);
+        for name in file.fixed {
+            let count = items.iter().filter(|item| item.name == *name).count();
+            assert_eq!(count, 1, "{name} in {}", file.path);
+        }
+        for item in &items {
+            let rule = if file.fixed.contains(&item.name.as_str()) {
+                "fixed"
+            } else {
+                file.rest
+            };
+            let _ = writeln!(
+                out,
+                "{} {} {} {} {rule}",
+                file.path, item.kind, item.name, item.hash
+            );
+        }
+    }
+    let text = std::fs::read_to_string(root.join(SOURCE_CHECKS_PATH)).unwrap();
+    let tests = tests_of(SOURCE_CHECKS_PATH, &text);
+    for (name, rule) in SOURCE_CHECKS {
+        let matching: Vec<&Found> = tests.iter().filter(|test| test.leaf == name).collect();
+        assert!(
+            matching.len() == 1 && !matching[0].ignored,
+            "{name} in {SOURCE_CHECKS_PATH}"
+        );
+        let _ = writeln!(
+            out,
+            "{SOURCE_CHECKS_PATH} test {name} {} {rule}",
+            matching[0].hash
+        );
+    }
+    for line in out.lines() {
+        assert!(line.split(' ').count() == 5 && line.is_ascii(), "{line}");
+    }
+    if let Some(dir) = std::env::var_os("YW_S4_FLOW_OUT") {
+        let dir = PathBuf::from(dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("frozen-helpers.txt"), &out).unwrap();
+        return;
+    }
+    assert_eq!(out, HELPERS);
 }

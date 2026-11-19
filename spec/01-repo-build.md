@@ -501,7 +501,7 @@ rustflags = ["--cfg", 'curve25519_dalek_backend="serial"', "-C", "link-arg=/Brep
 # scripts/check.ps1 — 저장소 게이트. 사용: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1 [-Step <name>] [-Offline]
 [CmdletBinding()]
 param(
-    [ValidateSet("all", "fmt", "deps", "clippy", "test", "fuzz", "s4fl", "build", "ext-test", "script-test", "privacy", "audit-ext", "icons")]
+    [ValidateSet("all", "fmt", "deps", "clippy", "test", "fuzz", "s4fl", "s4fz", "build", "ext-test", "script-test", "privacy", "audit-ext", "icons")]
     [string]$Step = "all",
     [switch]$Offline
 )
@@ -693,6 +693,42 @@ if ($Step -in "all", "s4fl") {
     }
 }
 Invoke-Step "s4fl" 31 "cargo" ($s4flArgs + @("--test-threads=1") + @($S4flMinimum.Keys))
+# S4 고정 시험이 컴파일되어 도는지(2026-11-19 [15] §11.4 S4 F-A 검토, [09] §2.1): test 단계의 frozen_tests_keep_their_names_and_bodies는
+# 소스 글만 읽으므로, 파일·모듈 cfg, 빠진 mod·#[path] 줄, [[test]] test = false, 컴파일되지 않는 파일에 남긴 사본이면 고정 시험이 돌지 않아도
+# 초록이다. 그래서 test 단계와 같은 인자의 --list와 --list --ignored로 고정 이름(frozen-tests.txt와 frozen-helpers.txt의 test 줄)마다
+# 컴파일된 수·무시된 수를 세어 YW_S4_COMPILED로 넘기고, #[ignore]된 frozen_tests_are_compiled가 소스의 같은 이름 #[test] 수와 맞춰 본다
+# (소스보다 적게 컴파일되거나, 소스에서 무시되지 않은 것보다 적게 돌면 32). 그 시험이 목록에 정확히 하나 없으면 32. S4 동안 둔다.
+$S4fzTest = "app::tests::s4_frozen::frozen_tests_are_compiled"
+if ($Step -in "all", "s4fz") {
+    Write-Host "check: s4fz"
+    $frozenDir = Join-Path $Root "crates/yw-app/src/app/tests/s4_flow"
+    $leaves = [System.Collections.Generic.SortedSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($line in [IO.File]::ReadAllLines((Join-Path $frozenDir "frozen-tests.txt"))) { $parts = $line.Split(' '); if ($parts.Count -eq 4) { [void]$leaves.Add($parts[1]) } }
+    foreach ($line in [IO.File]::ReadAllLines((Join-Path $frozenDir "frozen-helpers.txt"))) { $parts = $line.Split(' '); if ($parts.Count -eq 5 -and $parts[1] -eq "test") { [void]$leaves.Add($parts[2]) } }
+    if ($leaves.Count -eq 0) { Fail 32 "s4fz: no frozen test names" }
+    $s4fzList = @("test", "--workspace") + $net + $config + @("--", "--list")
+    $s4fzCounts = @{}
+    foreach ($ignoredOnly in $false, $true) {
+        $listed = @(& cargo @($s4fzList + @(if ($ignoredOnly) { "--ignored" })))
+        if ($LASTEXITCODE -ne 0) { Fail 32 "s4fz list (exit $LASTEXITCODE)" }
+        $counts = [System.Collections.Generic.Dictionary[string, int]]::new([StringComparer]::Ordinal)
+        foreach ($leaf in $leaves) { $counts[$leaf] = 0 }
+        foreach ($entry in $listed) {
+            $text = "$entry"
+            if (-not $text.EndsWith(": test")) { continue }
+            $leaf = ($text.Substring(0, $text.Length - 6) -split "::")[-1]
+            if ($counts.ContainsKey($leaf)) { $counts[$leaf] += 1 }
+        }
+        $s4fzCounts[$ignoredOnly] = $counts
+    }
+    $env:YW_S4_COMPILED = (@(foreach ($leaf in $leaves) { "$leaf=$($s4fzCounts[$false][$leaf])/$($s4fzCounts[$true][$leaf])" }) -join ";")
+    $s4fzArgs = @("test", "-p", "yw-app", "--lib") + $net + $config + @("--", "--ignored", "--exact", $S4fzTest)
+    $s4fzFound = @(& cargo @($s4fzArgs + @("--list")) | Where-Object { "$_" -eq "${S4fzTest}: test" })
+    if ($LASTEXITCODE -ne 0 -or $s4fzFound.Count -ne 1) { Fail 32 "s4fz: $S4fzTest not listed exactly once" }
+    & cargo @s4fzArgs
+    if ($LASTEXITCODE -ne 0) { Fail 32 "s4fz (exit $LASTEXITCODE)" }
+    $env:YW_S4_COMPILED = $null
+}
 Invoke-Step "build" 24 "cargo" (@("build", "--workspace") + $net + $config)   # <빌드 폴더>\debug\yw-host.exe ([09] §2.2, [05] H1)
 $env:YW_CHECK = "1"                                                   # 확장 프로세스 테스트가 skip 대신 실패([09])
 if ($Step -in "all", "ext-test") { Invoke-Step "ext-test" 25 "node" (@("--test") + (Get-Tests "extension/tests" 25)) }
@@ -708,7 +744,7 @@ exit 0
 
 빌드 폴더(2026-11-01): 게이트 결과는 호스트 ACL 특성에 좌우되지 않아야 한다. 빌드 폴더(`CARGO_TARGET_DIR`, 없으면 `target\`; 저장소 안이면 저장소 루트도)에 Medium보다 낮은 무결성 레이블(Low·Untrusted — 일부 샌드박스 도구가 저장소에 붙인다)이 있거나 빌드 폴더가 재분석 지점이면, 그 실행에서만 `CARGO_TARGET_DIR`을 저장소 밖 사설 폴더 `%LOCALAPPDATA%\YourWallet-dev\target`으로 바꾸고 한 줄(`check: build folder … unsuitable (…); using CARGO_TARGET_DIR=…`) 출력한다. 레이블이 붙은 폴더에서 만든 exe는 Low 무결성으로 실행되어 yw-win·yw-host 무결성 검사, [05] H1, `%TEMP%` 쓰기가 환경 때문에 실패하기 때문이다. `YourWallet-dev`는 없으면 현재 사용자·SYSTEM·Administrators 모든 권한·상속 끊음으로 만들고, 있으면 링크가 아님·소유자와 허용 ACE가 그 셋뿐·상속 끊김·낮은 레이블 없음을 확인한다(그 아래 `target`도 링크·다른 SID·낮은 레이블 없음). 저장소의 ACL은 바꾸지 않는다. 바뀐 `CARGO_TARGET_DIR`은 모든 단계(확장·스크립트 테스트 포함)에 넘어가고, `extension/tests/yw-host-process.test.mjs`는 `CARGO_TARGET_DIR`(상대 경로면 작업 폴더 기준, cargo와 같음)의 `debug\yw-host.exe`를 실행한다.
 
-종료 코드: 0 통과, 1 스크립트 자체 오류(잘못된 `-Step` 포함), 10 cargo 1.95.0 또는 Node 22+ 없음, 11 rustflags 환경 변수 설정됨, 12 빌드 폴더가 부적합한데 사설 폴더를 만들거나 쓸 수 없음(`LOCALAPPDATA` 없음, 기존 `YourWallet-dev`의 권한이 다름 — 지우고 다시 실행), 20 fmt, 21 의존성 허용 목록, 22 clippy, 23 cargo test, 29 fuzz-lite 스모크(`fuzz`, test 다음·build 앞: `#[ignore]`된 `fuzz_lite_*` 테스트를 `YW_FUZZ_RUNS=20000`으로 디버그 빌드에서 실행; 각 테스트는 이 변수가 없으면 1,000,000회), 31 S4 승인 흐름 하네스(`s4fl`, fuzz 다음·build 앞: yw-app `--lib`의 `#[ignore]`된 `app_approval::flow_support`·`app_approval::flow_tests`·`app_approval::input_tests`를 `--test-threads=1`로 실행 — 숨은 승인 창을 만들지만 보이거나 전경을 가져가지 않는다. 2026-11-18 [15] §11.4 S4 A3에서 임시로 더했고 S4 B7(창 없는 시험이 게이트의 test 단계로 들어감)에서 없앤다. 테스트 스레드에 비공개 데스크톱을 붙이는 길은 yw-win에 데스크톱 API가 없고 그것을 더하는 일은 A3 범위 밖의 yw-win `unsafe` 변경이라, 주인이 이 대안을 골랐다(2026-11-18 O-3; A3 검토 전 문장은 "windows-sys 기능을 늘려야 해서"였는데 틀렸다 — `crates/yw-win/tests/clipboard_winsta.rs`처럼 자체 `extern` 블록이면 기능 변경이 필요 없다). 필터가 아무 시험도 고르지 않아도 libtest는 0으로 끝나므로(2026-11-18 A3 검토) 먼저 같은 필터의 `--list`로 필터마다 `#[ignore]` 시험 수를 세어 `$S4flMinimum`의 최소 수보다 적으면 31; 최소 수는 그 시험을 더하는 커밋(S4 A4·A5·A6)이 올린다. 경로 이름에 `fuzz_lite`를 넣지 않는다), 24 cargo build, 25 확장 테스트, 26 스크립트 테스트, 27 privacy scan, 28 확장 정적 감사, 30 아이콘(`scripts/make-icons.mjs --check`: 앱 `.ico`·`.res`, 확장 `icons/*.png`, `provider-main.js`의 `PROVIDER_ICON`, `docs/icon-preview.png`를 메모리에서 다시 만들어 커밋본과 바이트 비교; 다르거나 없으면 생성기 종료 1, 사용법·입출력 오류 2). 첫 실패에서 멈춘다. 모든 마일스톤 완료 조건은 이 스크립트의 0을 포함한다. (PowerShell 5.1에서 단계 선택, 종료 코드 11, 잘못된 `-Step`의 1을 확인함.)
+종료 코드: 0 통과, 1 스크립트 자체 오류(잘못된 `-Step` 포함), 10 cargo 1.95.0 또는 Node 22+ 없음, 11 rustflags 환경 변수 설정됨, 12 빌드 폴더가 부적합한데 사설 폴더를 만들거나 쓸 수 없음(`LOCALAPPDATA` 없음, 기존 `YourWallet-dev`의 권한이 다름 — 지우고 다시 실행), 20 fmt, 21 의존성 허용 목록, 22 clippy, 23 cargo test, 29 fuzz-lite 스모크(`fuzz`, test 다음·build 앞: `#[ignore]`된 `fuzz_lite_*` 테스트를 `YW_FUZZ_RUNS=20000`으로 디버그 빌드에서 실행; 각 테스트는 이 변수가 없으면 1,000,000회), 31 S4 승인 흐름 하네스(`s4fl`, fuzz 다음·build 앞: yw-app `--lib`의 `#[ignore]`된 `app_approval::flow_support`·`app_approval::flow_tests`·`app_approval::input_tests`를 `--test-threads=1`로 실행 — 숨은 승인 창을 만들지만 보이거나 전경을 가져가지 않는다. 2026-11-18 [15] §11.4 S4 A3에서 임시로 더했고 S4 B7(창 없는 시험이 게이트의 test 단계로 들어감)에서 없앤다. 테스트 스레드에 비공개 데스크톱을 붙이는 길은 yw-win에 데스크톱 API가 없고 그것을 더하는 일은 A3 범위 밖의 yw-win `unsafe` 변경이라, 주인이 이 대안을 골랐다(2026-11-18 O-3; A3 검토 전 문장은 "windows-sys 기능을 늘려야 해서"였는데 틀렸다 — `crates/yw-win/tests/clipboard_winsta.rs`처럼 자체 `extern` 블록이면 기능 변경이 필요 없다). 필터가 아무 시험도 고르지 않아도 libtest는 0으로 끝나므로(2026-11-18 A3 검토) 먼저 같은 필터의 `--list`로 필터마다 `#[ignore]` 시험 수를 세어 `$S4flMinimum`의 최소 수보다 적으면 31; 최소 수는 그 시험을 더하는 커밋(S4 A4·A5·A6)이 올린다. 경로 이름에 `fuzz_lite`를 넣지 않는다), 32 S4 고정 시험 컴파일 확인(`s4fz`, s4fl 다음·build 앞, 2026-11-19 [15] §11.4 S4 F-A 검토: test 단계의 `frozen_tests_keep_their_names_and_bodies`는 소스 글만 읽어 고정 시험이 컴파일에서 빠져도 초록이므로, test 단계와 같은 인자의 `cargo test --workspace -- --list`와 `-- --list --ignored`로 고정 잎 이름(`crates/yw-app/src/app/tests/s4_flow/frozen-tests.txt`와 `frozen-helpers.txt`의 `test` 줄)마다 컴파일된 수·무시된 수를 세어 `YW_S4_COMPILED`(`이름=전체/무시;…`)로 넘기고, `#[ignore]`된 `app::tests::s4_frozen::frozen_tests_are_compiled`를 `--exact`로 돌린다. 이름마다 소스의 `#[test]` fn보다 적게 컴파일되거나 소스에서 무시되지 않은 것보다 적게 돌면, 또는 그 시험이 목록에 정확히 하나 없으면 32. S4 동안 둔다; [09] §2.1·§2.2), 24 cargo build, 25 확장 테스트, 26 스크립트 테스트, 27 privacy scan, 28 확장 정적 감사, 30 아이콘(`scripts/make-icons.mjs --check`: 앱 `.ico`·`.res`, 확장 `icons/*.png`, `provider-main.js`의 `PROVIDER_ICON`, `docs/icon-preview.png`를 메모리에서 다시 만들어 커밋본과 바이트 비교; 다르거나 없으면 생성기 종료 1, 사용법·입출력 오류 2). 첫 실패에서 멈춘다. 모든 마일스톤 완료 조건은 이 스크립트의 0을 포함한다. (PowerShell 5.1에서 단계 선택, 종료 코드 11, 잘못된 `-Step`의 1을 확인함.)
 
 ### 4.2 `scripts/check-core-deps.mjs` (전체)
 

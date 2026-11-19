@@ -1,7 +1,7 @@
 ﻿# scripts/check.ps1 — 저장소 게이트. 사용: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1 [-Step <name>] [-Offline]
 [CmdletBinding()]
 param(
-    [ValidateSet("all", "fmt", "deps", "clippy", "test", "fuzz", "s4fl", "build", "ext-test", "script-test", "privacy", "audit-ext", "icons")]
+    [ValidateSet("all", "fmt", "deps", "clippy", "test", "fuzz", "s4fl", "s4fz", "build", "ext-test", "script-test", "privacy", "audit-ext", "icons")]
     [string]$Step = "all",
     [switch]$Offline
 )
@@ -193,6 +193,42 @@ if ($Step -in "all", "s4fl") {
     }
 }
 Invoke-Step "s4fl" 31 "cargo" ($s4flArgs + @("--test-threads=1") + @($S4flMinimum.Keys))
+# S4 고정 시험이 컴파일되어 도는지(2026-11-19 [15] §11.4 S4 F-A 검토, [09] §2.1): test 단계의 frozen_tests_keep_their_names_and_bodies는
+# 소스 글만 읽으므로, 파일·모듈 cfg, 빠진 mod·#[path] 줄, [[test]] test = false, 컴파일되지 않는 파일에 남긴 사본이면 고정 시험이 돌지 않아도
+# 초록이다. 그래서 test 단계와 같은 인자의 --list와 --list --ignored로 고정 이름(frozen-tests.txt와 frozen-helpers.txt의 test 줄)마다
+# 컴파일된 수·무시된 수를 세어 YW_S4_COMPILED로 넘기고, #[ignore]된 frozen_tests_are_compiled가 소스의 같은 이름 #[test] 수와 맞춰 본다
+# (소스보다 적게 컴파일되거나, 소스에서 무시되지 않은 것보다 적게 돌면 32). 그 시험이 목록에 정확히 하나 없으면 32. S4 동안 둔다.
+$S4fzTest = "app::tests::s4_frozen::frozen_tests_are_compiled"
+if ($Step -in "all", "s4fz") {
+    Write-Host "check: s4fz"
+    $frozenDir = Join-Path $Root "crates/yw-app/src/app/tests/s4_flow"
+    $leaves = [System.Collections.Generic.SortedSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($line in [IO.File]::ReadAllLines((Join-Path $frozenDir "frozen-tests.txt"))) { $parts = $line.Split(' '); if ($parts.Count -eq 4) { [void]$leaves.Add($parts[1]) } }
+    foreach ($line in [IO.File]::ReadAllLines((Join-Path $frozenDir "frozen-helpers.txt"))) { $parts = $line.Split(' '); if ($parts.Count -eq 5 -and $parts[1] -eq "test") { [void]$leaves.Add($parts[2]) } }
+    if ($leaves.Count -eq 0) { Fail 32 "s4fz: no frozen test names" }
+    $s4fzList = @("test", "--workspace") + $net + $config + @("--", "--list")
+    $s4fzCounts = @{}
+    foreach ($ignoredOnly in $false, $true) {
+        $listed = @(& cargo @($s4fzList + @(if ($ignoredOnly) { "--ignored" })))
+        if ($LASTEXITCODE -ne 0) { Fail 32 "s4fz list (exit $LASTEXITCODE)" }
+        $counts = [System.Collections.Generic.Dictionary[string, int]]::new([StringComparer]::Ordinal)
+        foreach ($leaf in $leaves) { $counts[$leaf] = 0 }
+        foreach ($entry in $listed) {
+            $text = "$entry"
+            if (-not $text.EndsWith(": test")) { continue }
+            $leaf = ($text.Substring(0, $text.Length - 6) -split "::")[-1]
+            if ($counts.ContainsKey($leaf)) { $counts[$leaf] += 1 }
+        }
+        $s4fzCounts[$ignoredOnly] = $counts
+    }
+    $env:YW_S4_COMPILED = (@(foreach ($leaf in $leaves) { "$leaf=$($s4fzCounts[$false][$leaf])/$($s4fzCounts[$true][$leaf])" }) -join ";")
+    $s4fzArgs = @("test", "-p", "yw-app", "--lib") + $net + $config + @("--", "--ignored", "--exact", $S4fzTest)
+    $s4fzFound = @(& cargo @($s4fzArgs + @("--list")) | Where-Object { "$_" -eq "${S4fzTest}: test" })
+    if ($LASTEXITCODE -ne 0 -or $s4fzFound.Count -ne 1) { Fail 32 "s4fz: $S4fzTest not listed exactly once" }
+    & cargo @s4fzArgs
+    if ($LASTEXITCODE -ne 0) { Fail 32 "s4fz (exit $LASTEXITCODE)" }
+    $env:YW_S4_COMPILED = $null
+}
 Invoke-Step "build" 24 "cargo" (@("build", "--workspace") + $net + $config)   # <빌드 폴더>\debug\yw-host.exe ([09] §2.2, [05] H1)
 $env:YW_CHECK = "1"                                                   # 확장 프로세스 테스트가 skip 대신 실패([09])
 if ($Step -in "all", "ext-test") { Invoke-Step "ext-test" 25 "node" (@("--test") + (Get-Tests "extension/tests" 25)) }
