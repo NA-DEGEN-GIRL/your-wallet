@@ -1829,8 +1829,10 @@ fn approving_input_is_built_only_by_the_mapper() {
 /// shell state `ApprovalWin` holds no session, gate, flow or request. 2026-11-19 (S4 B4 review):
 /// "no methods" is checked over every `impl` header of the crate that names `AiFlow` (only its
 /// `Debug`, whose body names no gate either), not by the one spelling `impl AiFlow`.
-/// 2026-11-19 (S4 B5): the flow's new AI accessor `attach_ai` (the AI explanation joins the flow
-/// when the open's answer says its body was made) names no session or gate either.
+/// 2026-11-19 (S4 B5): the flow's new AI accessor `attach_ai` names no session or gate either.
+/// (2026-11-19, S4 B5 review: this said the AI explanation joins the flow "when the open's answer
+/// says its body was made"; no answer says so. It is reserved once when the flow opens, the open
+/// asks for the AI body iff one is reserved, and a made window's answer attaches the reservation.)
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -2020,6 +2022,10 @@ fn ai_never_touches_the_gate() {
 /// and the width class comes from the flow (`wide`). The open asks for the window after it made
 /// the flow, the close emits `Close` after it ended the flow, and the executor feeds the open's
 /// answer back at once. Asserts the functions it scanned (the plan's list must be among them).
+/// 2026-11-19 (S4 B5 review, critique A-3): also that the shell's open makes nothing for a `shown`
+/// that is not the current flow's, that an answer for such a `shown` closes the window it made,
+/// and that the AI explanation is reserved once at the open (the answer attaches the reservation
+/// and names neither `explain_kind` nor the endpoint).
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -2122,23 +2128,42 @@ fn the_approval_flow_names_no_window() {
     in_order(
         &open,
         &[
-            "ApprovalFlow::open(shown, lang, item, connect, now)",
+            "explain_kind(&item)",
+            "ApprovalFlow::open(shown, lang, item, connect, ai_reserved, now)",
             "self.evm.approval = Some(flow);",
             "self.emit(Effect::Approval(ApprovalEffect::Open {",
+            "ai_reserved: reserve_ai,",
         ],
     );
     let answer = folded(item(&code, "    pub(crate) fn on_approval_opened(", 4));
+    // 2026-11-19 (S4 B5 review, critique A-3): a stale answer closes the window it made; the AI
+    // explanation is the one reserved at the open, never worked out again from the endpoint.
     in_order(
         &answer,
         &[
-            "!= Some(shown) { return; }",
+            "!= Some(shown) { if matches!(outcome, OpenOutcome::Shown { .. }) { \
+             self.emit(Effect::Approval(ApprovalEffect::Close { shown })); } return; }",
             "OpenOutcome::Shown { .. } => {",
+            "if let Some(reserved) = flow.take_ai_reserved() {",
+            "flow.attach_ai(AiFlow {",
             "self.rebuild_view();",
             "self.start_prepare();",
             "OpenOutcome::Refused(_) | OpenOutcome::Failed(_) => {",
             "self.evm.approval.take()",
             "ApprovalEffect::Close {",
             "self.approval_open_failed();",
+        ],
+    );
+    for banned in ["explain_kind", "self.llm.", "service"] {
+        assert!(!answer.contains(banned), "{banned} in on_approval_opened");
+    }
+    // The shell's open makes nothing for a `shown` that is not the current flow's (A-3).
+    let shell_open = folded(item(&code, "    fn open_approval_window(", 4));
+    in_order(
+        &shell_open,
+        &[
+            "if self.evm.approval.as_ref().map(ApprovalFlow::shown) != Some(shown) { return FAILED; }",
+            "create_window(&spec, handler)",
         ],
     );
     // The close ends the flow (reject, AI close), then the window goes.

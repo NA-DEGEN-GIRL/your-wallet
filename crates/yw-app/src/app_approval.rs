@@ -30,7 +30,7 @@ use yw_win::ui::{
 use crate::app::App;
 use crate::app_evm::{AppApproval, QueuedItem};
 use crate::app_llm::log_request;
-use crate::approval_flow::{AiFlow, ApprovalFlow, ApprovalPaint};
+use crate::approval_flow::{AiFlow, AiReserved, ApprovalFlow, ApprovalPaint};
 use crate::browser::{SiteKind, SiteRequest};
 use crate::errors::ErrorCode;
 use crate::events::{KeyJob, SignInfo};
@@ -1482,15 +1482,25 @@ impl App {
         };
         let lang = self.settings.language;
         // spec/06 §3.1: dApp transactions, personal_sign and typed data, only while the worker
-        // exists (feature effectively on). The panel's height is reserved now (§6).
-        let ai_reserved = explain_kind(&item).is_some() && self.llm.is_some();
+        // exists (feature effectively on). The panel's height is reserved now (§6). 2026-11-19
+        // (S4 B5 review): decided here once, with the endpoint's host and model of now, and kept
+        // in the flow until the open's answer attaches it (the answer worked the condition out
+        // again before).
+        let ai_reserved = explain_kind(&item)
+            .zip(self.llm.as_ref())
+            .map(|(kind, service)| AiReserved {
+                kind,
+                host: service.host().to_owned(),
+                model: service.model().to_owned(),
+            });
+        let reserve_ai = ai_reserved.is_some();
         let shown = self.evm.shown_id();
         let is_connect = connect.is_some();
         // 2026-11-19 (S4 B3): the deadline rule is `yw_engine::approval::flow::session_deadline`
         // (was inline here: the site deadline, else `now + MAX_LIFETIME_MS`, at least `now + 1`).
         // 2026-11-19 (S4 B4a): `ApprovalFlow::open` builds the gate and its session (was inline
         // here: the same gate, the same `now`).
-        let Ok(flow) = ApprovalFlow::open(shown, lang, item, connect, now) else {
+        let Ok(flow) = ApprovalFlow::open(shown, lang, item, connect, ai_reserved, now) else {
             self.approval_open_failed();
             return;
         };
@@ -1498,19 +1508,24 @@ impl App {
         self.emit(Effect::Approval(ApprovalEffect::Open {
             shown,
             lang,
-            ai_reserved,
+            ai_reserved: reserve_ai,
             connect: is_connect,
         }));
     }
 
-    /// The answer to `Effect::Approval(Open)` (S4 B5). Made: the AI explanation joins the flow
-    /// when its body was made, the flow takes the window's width class, then the open's log, the
-    /// first view and the preparation, in the order of the code before B5. Not made: the flow
-    /// ends (its `Close` finds no window and does nothing, critique A-3) and the item is rejected
-    /// with E-APP-009, as `show_next_approval` did on `open_approval`'s `Err`. An answer for a
-    /// window that is not the flow's is dropped.
+    /// The answer to `Effect::Approval(Open)` (S4 B5). Made: the AI explanation reserved when the
+    /// flow opened joins it (the open asked for the AI body iff one was reserved), the flow takes
+    /// the window's width class, then the open's log, the first view and the preparation, in the
+    /// order of the code before B5. Not made: the flow ends (its `Close` finds no window and does
+    /// nothing, critique A-3) and the item is rejected with E-APP-009, as `show_next_approval` did
+    /// on `open_approval`'s `Err`. An answer for a window that is not the flow's is dropped; when
+    /// that window was made, it is closed (2026-11-19, S4 B5 review, critique A-3: before, it was
+    /// left without a flow; unreachable while effects are applied at once).
     pub(crate) fn on_approval_opened(&mut self, shown: ShownId, outcome: OpenOutcome, wide: bool) {
         if self.evm.approval.as_ref().map(ApprovalFlow::shown) != Some(shown) {
+            if matches!(outcome, OpenOutcome::Shown { .. }) {
+                self.emit(Effect::Approval(ApprovalEffect::Close { shown }));
+            }
             return;
         }
         match outcome {
@@ -1518,16 +1533,16 @@ impl App {
                 if let Some(flow) = self.evm.approval.as_mut() {
                     // 2026-11-19 (S4 B4b): the AI panel's state is the flow's `AiFlow`, its body
                     // child and scroll the shell's `AiBody`, made in the open in the same order.
-                    if let (Some(kind), Some(service)) =
-                        (explain_kind(flow.item()), self.llm.as_ref())
-                    {
+                    // 2026-11-19 (S4 B5 review): attached from the reservation made at the open
+                    // (was `explain_kind(item)` and the endpoint read again here).
+                    if let Some(reserved) = flow.take_ai_reserved() {
                         self.llm_ui.next_window = self.llm_ui.next_window.saturating_add(1);
                         flow.attach_ai(AiFlow {
                             panel: AiPanel::new(true, flow.lang()),
                             serial: self.llm_ui.next_window,
-                            host: service.host().to_owned(),
-                            model: service.model().to_owned(),
-                            kind,
+                            host: reserved.host,
+                            model: reserved.model,
+                            kind: reserved.kind,
                         });
                     }
                     flow.set_wide(wide);
@@ -2930,7 +2945,11 @@ impl App {
     /// cannot be made drops the ones made before it (panel before A01, as before) and the open
     /// answers `Failed(E-APP-009)`. 2026-11-19 (S4 B5): this was the window part of
     /// `open_approval`, the same calls in the same order (the flow, made there before B5 between
-    /// the AI body and the centring, is now made before the open is asked for).
+    /// the AI body and the centring, is now made before the open is asked for). 2026-11-19 (S4 B5
+    /// review, critique A-3): an open for a `shown` that is no longer the current flow's makes
+    /// nothing and answers `Failed(E-APP-009)` (the answer is then dropped as stale). While effects
+    /// are applied at once the open always runs right after its flow was stored, so this never
+    /// happens today.
     fn open_approval_window(
         &mut self,
         shown: ShownId,
@@ -2939,6 +2958,9 @@ impl App {
         connect: bool,
     ) -> (OpenOutcome, bool) {
         const FAILED: (OpenOutcome, bool) = (OpenOutcome::Failed(ErrorCode::App009), false);
+        if self.evm.approval.as_ref().map(ApprovalFlow::shown) != Some(shown) {
+            return FAILED;
+        }
         let handler = Box::new(Forward {
             app: self.self_ref.clone(),
             target: Target::Approval,

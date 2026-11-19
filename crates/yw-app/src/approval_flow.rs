@@ -16,7 +16,10 @@
 //! and the width class the shell reported (`Cmd::ApprovalOpened`, then each A01 `WM_SIZE` /
 //! `WM_DPICHANGED`); the window's operations are `Effect::Approval`s the App emits (open, close,
 //! rebuilt view, bottom bar). The flow is made before its window is asked for and gets its AI
-//! explanation when the window was made ([`ApprovalFlow::attach_ai`]).
+//! explanation when the window was made ([`ApprovalFlow::attach_ai`]). 2026-11-19 (S4 B5 review):
+//! whether the window has an AI explanation is decided once, when the flow opens ([`AiReserved`]:
+//! the request kind and the endpoint's host and model of that moment); the answer attaches what
+//! was reserved and never asks again (before, it worked the condition out a second time).
 
 use yw_core::approval::{ApprovalRequest, RiskLevel};
 use yw_core::evm::eip712::DecodedTypedData;
@@ -73,9 +76,29 @@ pub struct ApprovalFlow {
     /// shell when the window opens and at each A01 size or DPI change (2026-11-19, S4 B5: was read
     /// from the window by every view rebuild).
     wide: bool,
+    /// The AI explanation reserved when the flow opened, until the open's answer attaches it
+    /// (2026-11-19, S4 B5 review).
+    ai_reserved: Option<AiReserved>,
     /// The AI explanation (spec/06 §6), when the window reserved its panel (2026-11-19, S4 B4b:
     /// was the state half of `app_approval::AiUi`).
     ai: Option<AiFlow>,
+}
+
+/// The AI explanation reserved for a flow when it opens (spec/06 §3.1: a request kind that has
+/// one, while the explanation worker exists): the request kind and the endpoint's host and model
+/// of that moment. The open asks for the AI body iff one is reserved, and the open's answer turns
+/// it into the [`AiFlow`] (2026-11-19, S4 B5 review: decided once, not again at the answer).
+pub struct AiReserved {
+    pub(crate) kind: RequestKind,
+    pub(crate) host: String,
+    pub(crate) model: String,
+}
+
+/// Names only (D28): never the host or the model.
+impl core::fmt::Debug for AiReserved {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.debug_struct("AiReserved").finish_non_exhaustive()
+    }
 }
 
 /// The AI explanation of the shown approval (spec/06 §6, spec/04 §3.8): the panel state, the
@@ -171,7 +194,8 @@ impl ApprovalFlow {
     /// `now + MAX_LIFETIME_MS`; S4 B3). 2026-11-19 (S4 B5): made before the window is asked for
     /// (was after the window, its panel and AI body existed, with the AI explanation as an
     /// argument; the AI explanation is now [`Self::attach_ai`]). The layout is wide until the
-    /// open's result reports the window's class.
+    /// open's result reports the window's class. 2026-11-19 (S4 B5 review): `ai_reserved` is the
+    /// AI explanation decided now, kept until the open's answer ([`Self::take_ai_reserved`]).
     ///
     /// # Errors
     ///
@@ -181,6 +205,7 @@ impl ApprovalFlow {
         lang: Lang,
         item: QueuedItem,
         connect: Option<ConnectState>,
+        ai_reserved: Option<AiReserved>,
         now: u64,
     ) -> Result<Self, InteractionError> {
         let site_deadline = match &item {
@@ -218,6 +243,7 @@ impl ApprovalFlow {
             resim_click: false,
             view: ApprovalView::default(),
             wide: true,
+            ai_reserved,
             ai: None,
         })
     }
@@ -361,6 +387,12 @@ impl ApprovalFlow {
     /// argument of [`Self::open`]).
     pub(crate) fn attach_ai(&mut self, ai: AiFlow) {
         self.ai = Some(ai);
+    }
+
+    /// The AI explanation reserved when the flow opened, taken by the open's answer (2026-11-19,
+    /// S4 B5 review).
+    pub(crate) fn take_ai_reserved(&mut self) -> Option<AiReserved> {
+        self.ai_reserved.take()
     }
 
     /// A High-risk request shows its warnings first: the AI text waits for the acknowledgement
@@ -697,6 +729,7 @@ mod tests {
             Lang::En,
             QueuedItem::Site(Box::new(site)),
             Some(connect),
+            None,
             START,
         )
         .unwrap();

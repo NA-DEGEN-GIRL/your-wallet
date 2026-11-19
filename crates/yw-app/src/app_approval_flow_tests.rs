@@ -2110,6 +2110,77 @@ fn the_flow_golden_names_only_known_scenarios() {
     assert_eq!(order, table, "every scenario, in table order");
 }
 
+/// Critique A-3, both halves (2026-11-19, S4 B5 review; no golden line): the shell's open for a
+/// `shown` that is not the current flow's makes no window and answers `Failed(E-APP-009)`, which
+/// the flow drops as stale (the shown window, flow and queue stay as they were); and a `Shown`
+/// answer for a `shown` whose flow has ended closes the window made for it. Neither can happen
+/// while effects are applied at once (the open runs right after its flow was stored); the race is
+/// built here by calling the executor arm and the answer directly. A deferred-schedule scenario
+/// pins it again when the outbox lands (P10, E2).
+#[test]
+#[ignore = "creates hidden approval windows (S4 flow harness, gate step s4fl)"]
+fn stale_open_and_stale_answer_leave_no_orphan_window() {
+    use yw_engine::approval::flow::{ApprovalEffect, OpenOutcome, ShownId};
+    use yw_engine::cmd::Cmd;
+
+    use crate::approval_flow::ApprovalFlow;
+    use crate::errors::ErrorCode;
+
+    let fx = fixture("stale-open");
+    fx.enqueue_sepolia_send();
+    let mut app = fx.app();
+    let current = app.evm.approval.as_ref().map(ApprovalFlow::shown).unwrap();
+    let window_of = |app: &crate::app::App| app.approval_win.as_ref().map(|win| win.shown);
+    assert_eq!(window_of(&app), Some(current));
+    let queued = app.evm.queue.len();
+    let stale = ShownId(current.0 + 1_000);
+    let answer = app.apply_approval_effect(ApprovalEffect::Open {
+        shown: stale,
+        lang: yw_core::lang::Lang::En,
+        ai_reserved: false,
+        connect: false,
+    });
+    assert_eq!(
+        answer.map(|cmd| match cmd {
+            Cmd::ApprovalOpened {
+                shown,
+                outcome,
+                wide,
+            } => Some((shown, outcome, wide)),
+            _ => None,
+        }),
+        Some(Some((stale, OpenOutcome::Failed(ErrorCode::App009), false))),
+        "a stale open answers Failed"
+    );
+    assert_eq!(
+        window_of(&app),
+        Some(current),
+        "no window made, none replaced"
+    );
+    app.on_approval_opened(stale, OpenOutcome::Failed(ErrorCode::App009), false);
+    assert_eq!(
+        app.evm.approval.as_ref().map(ApprovalFlow::shown),
+        Some(current),
+        "a stale Failed answer is dropped"
+    );
+    assert_eq!(window_of(&app), Some(current));
+    assert_eq!(app.evm.queue.len(), queued, "nothing rejected");
+    // The flow of the shown window ends before its answer arrives (a deferred schedule).
+    assert!(app.evm.approval.take().is_some());
+    app.on_approval_opened(
+        current,
+        OpenOutcome::Shown {
+            capture_excluded: false,
+        },
+        true,
+    );
+    assert_eq!(
+        window_of(&app),
+        None,
+        "the window of an ended flow is closed"
+    );
+}
+
 /// The lock, revoke, cancel, card-step and grant re-check scenarios of a shown approval
 /// (2026-11-18, S4 A6): `s4_flow/lifecycle.txt`, on this module's recorder and drivers.
 #[path = "app_approval_lifecycle_tests.rs"]
