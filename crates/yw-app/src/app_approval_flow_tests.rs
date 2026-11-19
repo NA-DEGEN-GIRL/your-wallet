@@ -1765,12 +1765,15 @@ fn l2_connect_chain_change(end: &'static str, name: &'static str) -> Vec<String>
             ev(&fx, InteractionEvent::Tick);
             rec.snap(end);
         }
-        _ => {
+        "approve" => {
             at(&fx, 2_700);
             click(&fx);
             rec.snap("click-armed");
             rec.fact("grants", &grants(&fx));
         }
+        // 2026-11-19 F2 review: a misspelt `end` used to run the approve path through this arm;
+        // it now records an error line, so the golden comparison fails.
+        _ => rec.fact("error", &format!("unknown end {end}")),
     }
     rec.lines
 }
