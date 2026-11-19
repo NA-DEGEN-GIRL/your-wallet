@@ -8,7 +8,11 @@
 //! `bar_state` that is not text assembly, with `next_step` and the button label). The interaction
 //! state machine ([`super::interaction`]), `can_approve`, the queue and the store are unchanged.
 //! The window ↔ flow types [`ShownId`], [`ApprovalInput`], [`ApprovalSignal`], [`ApprovalEffect`]
-//! and [`OpenOutcome`] are not used yet; S4 B4–B6 wire them.
+//! and [`OpenOutcome`] are not used yet; S4 B4–B6 wire them. 2026-11-19 (S4 B5): the window's
+//! operations are [`ApprovalEffect`]s inside `Effect::Approval` (applied at once by the Windows
+//! executor), the open is answered with `Cmd::ApprovalOpened` carrying its [`OpenOutcome`] and the
+//! width class, and every flow carries its [`ShownId`]; [`ApprovalInput`] and [`ApprovalSignal`]
+//! wait for B6.
 
 use core::fmt;
 
@@ -88,8 +92,12 @@ pub enum ApprovalEffect {
         lang: Lang,
         /// Room for the AI explanation panel is reserved.
         ai_reserved: bool,
+        /// A connect window (its title; 2026-11-19, S4 B5: added, the sketch had no title).
+        connect: bool,
     },
-    /// Stop the timer, destroy the windows and return the foreground to the main window.
+    /// Stop the timer, destroy the windows and return the foreground to the main window. The
+    /// flow sends it whenever it ends, also before its open was answered; for a window the shell
+    /// never made (or already closed) it does nothing.
     Close {
         /// The window.
         shown: ShownId,

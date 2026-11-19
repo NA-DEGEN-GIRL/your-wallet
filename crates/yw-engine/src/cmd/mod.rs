@@ -47,11 +47,14 @@
 //! 2026-11-18 (S3 D3): `Press::Legacy` is gone. An id no control of the main window sends (an
 //! edit's, S22's painted hold area, the eighth id of a `YubiKey` connect choice row) is no press
 //! at all: the Windows table gives `None` for it.
+//!
+//! 2026-11-19 (S4 B5): [`Cmd::ApprovalOpened`], the answer to `Effect::Approval(Open)`.
 
 use core::fmt;
 
 use yw_core::secret::Zeroizing;
 
+use crate::approval::flow::{OpenOutcome, ShownId};
 use crate::effect::TimerId;
 use crate::form::{EditField, FormSnapshot, PressInput};
 use crate::received::RecvChain;
@@ -133,6 +136,16 @@ pub enum Cmd {
         /// The mark of the copy effect.
         mark: CopyMark,
     },
+    /// Result of `Effect::Approval(ApprovalEffect::Open)` (S4 B5): the window it was asked for,
+    /// whether it was made, and its width class (the wide layout applies) when it was.
+    ApprovalOpened {
+        /// The window the open was for (a result for a flow that has ended is dropped).
+        shown: ShownId,
+        /// What became of the open.
+        outcome: OpenOutcome,
+        /// The window's client area is wide (`>= 640` DIP); `false` when not made.
+        wide: bool,
+    },
 }
 
 /// Variant, field names and lengths only (D28): never a field's text or a credential unit.
@@ -155,6 +168,16 @@ impl fmt::Debug for Cmd {
                 .debug_struct("CopyDone")
                 .field("ok", ok)
                 .field("mark", mark)
+                .finish(),
+            Self::ApprovalOpened {
+                shown,
+                outcome,
+                wide,
+            } => formatter
+                .debug_struct("ApprovalOpened")
+                .field("shown", shown)
+                .field("outcome", outcome)
+                .field("wide", wide)
                 .finish(),
         }
     }
@@ -370,6 +393,17 @@ mod tests {
         assert_eq!(
             format!("{:?}", Cmd::Timer(TimerId::SendCheck)),
             "Timer(SendCheck)"
+        );
+        assert_eq!(
+            format!(
+                "{:?}",
+                Cmd::ApprovalOpened {
+                    shown: ShownId(2),
+                    outcome: OpenOutcome::Failed(crate::errors::ErrorCode::App009),
+                    wide: false,
+                }
+            ),
+            "ApprovalOpened { shown: ShownId(2), outcome: Failed(App009), wide: false }"
         );
     }
 }

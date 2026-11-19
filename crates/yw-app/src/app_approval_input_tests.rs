@@ -1400,6 +1400,9 @@ fn in_order(text: &str, parts: &[&str]) {
 /// input map — the `MouseActivate` row of `ui::approval_input::map_msg`, its raw foreground read
 /// on arrival (`TrustedSignals::sample_on_arrival`, taken before the map) and the shell that
 /// samples before it maps; before, the arm of `on_approval_msg` in `app_approval.rs`.
+/// 2026-11-19 (S4 B5): A01 is made by the `Effect::Approval(Open)` executor arm
+/// `open_approval_window` (was `open_approval`, which now makes the flow and emits the effect);
+/// `open_approval` names no window spec.
 #[test]
 fn approval_window_is_topmost_and_eats_activating_clicks() {
     /// `ui/approval_input.rs` without comment lines and before its test module.
@@ -1410,7 +1413,7 @@ fn approval_window_is_topmost_and_eats_activating_clicks() {
         code_only(STRAY_SOURCE.get(..end).unwrap_or_default())
     }
     let code = approval_production();
-    let open = folded(item(&code, "    fn open_approval(", 4));
+    let open = folded(item(&code, "    fn open_approval_window(", 4));
     in_order(
         &open,
         &[
@@ -1420,6 +1423,12 @@ fn approval_window_is_topmost_and_eats_activating_clicks() {
         ],
     );
     assert_eq!(open.matches(".topmost(").count(), 1, "{open}");
+    assert_eq!(
+        code.matches(".topmost(").count(),
+        1,
+        "A01 is made in one place"
+    );
+    assert!(!item(&code, "    fn open_approval(", 4).contains("WindowSpec"));
     for moved in ["MA_ACTIVATEANDEAT", "MouseActivate"] {
         assert!(
             !code.contains(moved),
@@ -1820,6 +1829,8 @@ fn approving_input_is_built_only_by_the_mapper() {
 /// shell state `ApprovalWin` holds no session, gate, flow or request. 2026-11-19 (S4 B4 review):
 /// "no methods" is checked over every `impl` header of the crate that names `AiFlow` (only its
 /// `Debug`, whose body names no gate either), not by the one spelling `impl AiFlow`.
+/// 2026-11-19 (S4 B5): the flow's new AI accessor `attach_ai` (the AI explanation joins the flow
+/// when the open's answer says its body was made) names no session or gate either.
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -1984,6 +1995,7 @@ fn ai_never_touches_the_gate() {
         ("    pub(crate) const fn ai(", 4),
         ("    pub(crate) fn ai_mut(", 4),
         ("    pub(crate) fn take_ai(", 4),
+        ("    pub(crate) fn attach_ai(", 4),
     ] {
         let body = item(&flow, head, indent);
         for banned in [
@@ -1998,4 +2010,167 @@ fn ai_never_touches_the_gate() {
         }
     }
     assert!(flow.contains("self.session.set_foreground("));
+}
+
+/// S6 (S4 B5, plan §4.4; spec/15 §11.4 S4): the approval flow names no window. The functions of
+/// `app_approval.rs` from `show_next_approval` up to `interaction()` (queue, open, prepare,
+/// results, close, finish, approve, re-simulation, consume, tick) and the view rebuild name no
+/// window type, window field or Win32 window call as a whole identifier: the window is made,
+/// closed, invalidated and repainted only through `Effect::Approval` (`apply_approval_effect`),
+/// and the width class comes from the flow (`wide`). The open asks for the window after it made
+/// the flow, the close emits `Close` after it ended the flow, and the executor feeds the open's
+/// answer back at once. Asserts the functions it scanned (the plan's list must be among them).
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the scanned functions, the banned names, then the open and close order"
+)]
+fn the_approval_flow_names_no_window() {
+    /// `name` occurs as a whole identifier (no identifier character on either side).
+    fn ident(code: &str, name: &str) -> bool {
+        let is_ident = |c: char| c.is_alphanumeric() || c == '_';
+        code.match_indices(name).any(|(at, _)| {
+            !code[..at].chars().next_back().is_some_and(is_ident)
+                && !code[at + name.len()..].chars().next().is_some_and(is_ident)
+        })
+    }
+    const BANNED: [&str; 19] = [
+        "window",
+        "win",
+        "Window",
+        "ApprovalWin",
+        "approval_win",
+        "panel_spec",
+        "client_rect",
+        "px",
+        "invalidate",
+        "invalidate_rect",
+        "set_rect",
+        "set_foreground",
+        "request_foreground",
+        "create_window",
+        "center_window",
+        "show_window",
+        "flash_window",
+        "focus_window",
+        "kill_timer",
+    ];
+    let code = approval_production();
+    let start = code
+        .find("    pub fn show_next_approval(")
+        .expect("show_next_approval");
+    let end = code.find("    fn interaction(").expect("interaction()");
+    assert!(start < end);
+    let range = code.get(start..end).unwrap_or_default();
+    let mut heads: Vec<String> = Vec::new();
+    for line in range.lines() {
+        let trimmed = line.trim_start();
+        if line.len() - trimmed.len() != 4 {
+            continue;
+        }
+        if ["fn ", "pub fn ", "pub(crate) fn "]
+            .iter()
+            .any(|prefix| trimmed.starts_with(prefix))
+        {
+            let name_at = line.find("fn ").unwrap_or_default();
+            let head_len = line
+                .get(name_at..)
+                .and_then(|rest| rest.find('('))
+                .map_or(line.len(), |at| name_at + at + 1);
+            heads.push(line.get(..head_len).unwrap_or_default().to_owned());
+        }
+    }
+    heads.push("    fn rebuild_view(".to_owned());
+    heads.push("    fn rebuild_view_with(".to_owned());
+    let names: Vec<&str> = heads
+        .iter()
+        .map(|head| {
+            head.trim_start()
+                .trim_start_matches("pub(crate) ")
+                .trim_start_matches("pub ")
+                .trim_start_matches("fn ")
+                .trim_end_matches('(')
+        })
+        .collect();
+    for planned in [
+        "show_next_approval",
+        "open_approval",
+        "on_approval_opened",
+        "start_prepare",
+        "show_failure",
+        "close_approval_window",
+        "finish_approval",
+        "on_prepared",
+        "on_resimulated",
+        "approved",
+        "start_resimulation",
+        "consume_and_sign",
+        "tick_approval",
+        "rebuild_view_with",
+    ] {
+        assert!(names.contains(&planned), "{planned} not scanned: {names:?}");
+    }
+    assert!(names.len() > 20, "{names:?}");
+    for head in &heads {
+        let body = item(&code, head, 4);
+        for banned in BANNED {
+            assert!(!ident(body, banned), "{banned} in {head}");
+        }
+    }
+    // The open makes the flow, then asks for the window; the answer ends a refused open.
+    let open = folded(item(&code, "    fn open_approval(", 4));
+    in_order(
+        &open,
+        &[
+            "ApprovalFlow::open(shown, lang, item, connect, now)",
+            "self.evm.approval = Some(flow);",
+            "self.emit(Effect::Approval(ApprovalEffect::Open {",
+        ],
+    );
+    let answer = folded(item(&code, "    pub(crate) fn on_approval_opened(", 4));
+    in_order(
+        &answer,
+        &[
+            "!= Some(shown) { return; }",
+            "OpenOutcome::Shown { .. } => {",
+            "self.rebuild_view();",
+            "self.start_prepare();",
+            "OpenOutcome::Refused(_) | OpenOutcome::Failed(_) => {",
+            "self.evm.approval.take()",
+            "ApprovalEffect::Close {",
+            "self.approval_open_failed();",
+        ],
+    );
+    // The close ends the flow (reject, AI close), then the window goes.
+    let close = folded(item(&code, "    pub fn close_approval_window(", 4));
+    in_order(
+        &close,
+        &[
+            "self.evm.approval.take()",
+            "self.evm.store.reject(request.id);",
+            "flow.take_ai()",
+            "self.emit(Effect::Approval(ApprovalEffect::Close {",
+        ],
+    );
+    // A `Close` for a window that is not open under its id does nothing (critique A-3).
+    let shell = folded(item(&code, "    fn close_approval_shell(", 4));
+    in_order(
+        &shell,
+        &[
+            "self.approval_win.take_if(|win| win.shown == shown) else { return; };",
+            "drop(win.ai.take());",
+            "win.window.kill_timer(APPROVAL_TIMER_ID);",
+            "drop(win.panel);",
+            "drop(win.window);",
+            "request_foreground(main, \"main\")",
+        ],
+    );
+    // The executor applies an approval effect at once and feeds the open's answer back.
+    let effects = code_only(include_str!("app_effects.rs"));
+    assert!(
+        folded(&effects).contains(
+            "Effect::Approval(effect) => { if let Some(answer) = self.apply_approval_effect(effect) { self.on_cmd(answer); } }"
+        ),
+        "the executor arm"
+    );
 }

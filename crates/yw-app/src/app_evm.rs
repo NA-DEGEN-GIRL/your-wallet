@@ -402,6 +402,9 @@ pub struct EvmUi {
     /// The shown approval's flow state (2026-11-19, S4 B4b, spec/15 §11.4 S4: was `window:
     /// Option<ApprovalUi>`, which also held the window; the shell state is `App.approval_win`).
     pub approval: Option<crate::approval_flow::ApprovalFlow>,
+    /// The last approval window id handed out (2026-11-19, S4 B5: `ShownId`, a fresh serial at
+    /// every open, never reused; not cleared by a lock).
+    pub next_shown: u64,
     /// What the S12 receive QR encodes (session only, spec/04 §2.8).
     pub receive_qr: crate::ui::qr::EvmQrKind,
     /// The S10 network drop-down is open (2026-11-11; session only, closed by a choice).
@@ -413,6 +416,12 @@ impl EvmUi {
     pub fn job(&mut self) -> u64 {
         self.next_job = self.next_job.saturating_add(1);
         self.next_job
+    }
+
+    /// A fresh approval window id (S4 B5).
+    pub fn shown_id(&mut self) -> yw_engine::approval::flow::ShownId {
+        self.next_shown = self.next_shown.saturating_add(1);
+        yw_engine::approval::flow::ShownId(self.next_shown)
     }
 
     /// Forgets everything that needs the unlocked wallet (lock).

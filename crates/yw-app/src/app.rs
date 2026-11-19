@@ -3999,6 +3999,12 @@ impl App {
             Cmd::Timer(TimerId::SendCheck) => self.on_send_timer(),
             // A plain copy's result (`Effect::CopyText`, S3 B4).
             Cmd::CopyDone { ok, mark } => self.copy_done(ok, mark),
+            // The approval window's open (`Effect::Approval(Open)`, S4 B5).
+            Cmd::ApprovalOpened {
+                shown,
+                outcome,
+                wide,
+            } => self.on_approval_opened(shown, outcome, wide),
         }
     }
 

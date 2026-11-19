@@ -15,6 +15,12 @@
 //! edits back into the form state. The field writes get their arms when their callers convert
 //! (C); nothing emits them before. S3 C3: `SetField` (the AI section's `빠른 입력`) and
 //! `ClearCred` (the AI key after `키 저장`). S3 C4: `ClearField` (the address book's form).
+//!
+//! 2026-11-19 (S4 B5): `Approval`, the approval window's open, close, rebuilt view and bottom-bar
+//! repaint (`app_approval.rs` `apply_approval_effect`: the code `open_approval`,
+//! `close_approval_window`, `rebuild_view_with` and `interaction()` ran inline before). The open
+//! is answered at once with `Cmd::ApprovalOpened`. Tests record no shell-call line for it (the
+//! census recorder is unchanged: before B5 these steps recorded none either).
 
 use yw_core::secret::Zeroizing;
 use yw_engine::cmd::Cmd;
@@ -106,6 +112,12 @@ impl App {
                     field,
                     self.controls.text(id, field.cap()).map(Zeroizing::new),
                 );
+            }
+            // S4 B5: the approval window; an open is answered before `emit` returns.
+            Effect::Approval(effect) => {
+                if let Some(answer) = self.apply_approval_effect(effect) {
+                    self.on_cmd(answer);
+                }
             }
         }
     }

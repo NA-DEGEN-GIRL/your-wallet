@@ -17,7 +17,11 @@ use yw_core::evm::chain::SEPOLIA;
 use yw_core::evm::simulate::needs_resimulation;
 use yw_core::lang::{Lang, Text};
 use yw_engine::approval::QueueId;
-use yw_engine::approval::flow::{StatusAction, connect_gate_count};
+use yw_engine::approval::flow::{
+    ApprovalEffect, OpenOutcome, ShownId, StatusAction, connect_gate_count,
+};
+use yw_engine::cmd::Cmd;
+use yw_engine::effect::Effect;
 use yw_win::ui::{
     Color, DrawFlags, Handler, Msg, PaintDc, Rect, Reply, Window, WindowKind, WindowSpec,
     create_window,
@@ -286,8 +290,13 @@ fn bar_state(paint: &ApprovalPaint<'_>, focus: Focus, waiting: usize, now: u64) 
 /// widths. It holds no gate: the flow state is `App.evm.approval` (`ApprovalFlow`), and the window
 /// paints from its read model `ApprovalPaint`. Shown exactly while the flow is (`open_approval`
 /// sets both, `close_approval_window` takes both). Before B4b, one `EvmUi.window: ApprovalUi` held
-/// this state and the flow (B4a) or every field (before B4a).
+/// this state and the flow (B4a) or every field (before B4a). 2026-11-19 (S4 B5): made by the
+/// `Effect::Approval(Open)` executor arm (`open_approval_window`) after the flow, which
+/// `open_approval` makes first, and taken by the `Close` arm (`close_approval_shell`) right after
+/// `close_approval_window` took the flow; `shown` is the flow's window id.
 pub struct ApprovalWin {
+    /// The flow's window id (S4 B5): an effect for another id leaves this window alone.
+    shown: ShownId,
     window: Window,
     panel: Window,
     focus: Focus,
@@ -306,6 +315,40 @@ pub struct ApprovalWin {
 impl core::fmt::Debug for ApprovalWin {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         formatter.write_str("ApprovalWin")
+    }
+}
+
+impl ApprovalWin {
+    /// The wide layout applies: the client area is at least 80 × 8 DIP wide (2026-11-19, S4 B5:
+    /// the measure `rebuild_view_with` read itself before; now reported to the flow).
+    fn is_wide(&self) -> bool {
+        self.window.client_rect().w >= self.window.px(80 * 8)
+    }
+}
+
+/// The AI explanation kind of a queued item (spec/06 §3.1): dApp transactions, `personal_sign`
+/// and typed data; the window reserves its panel only while the LLM worker exists. 2026-11-19
+/// (S4 B5): the match of `open_approval`, shared with the open's answer.
+fn explain_kind(item: &QueuedItem) -> Option<RequestKind> {
+    match item {
+        QueuedItem::Site(site) => match &site.kind {
+            SiteKind::Send(_) => Some(RequestKind::EvmTx),
+            SiteKind::PersonalSign { .. } => Some(RequestKind::PersonalSign),
+            SiteKind::TypedData { .. } => Some(RequestKind::TypedData),
+            SiteKind::RequestAccounts
+            | SiteKind::RequestPermissions
+            | SiteKind::Revoke
+            | SiteKind::SolConnect
+            | SiteKind::BtcConnect(_)
+            | SiteKind::SolSign { .. }
+            | SiteKind::SolTx { .. }
+            | SiteKind::BtcSign { .. } => None,
+        },
+        QueuedItem::App(_)
+        | QueuedItem::Sol(_)
+        | QueuedItem::Btc(_)
+        | QueuedItem::Zec(_)
+        | QueuedItem::HyperCore(_) => None,
     }
 }
 
@@ -1285,14 +1328,10 @@ impl App {
                 }
                 continue;
             }
-            if self.open_approval(item).is_err() {
-                if let Some((item, outcome)) = self.evm.queue.finish_shown(QueueOutcome::Rejected) {
-                    self.approval_finished(&item.payload, outcome);
-                }
-                self.error_banner(ErrorCode::App009);
-                return;
-            }
-            self.start_prepare();
+            // 2026-11-19 (S4 B5): the open's answer (`on_approval_opened`) starts the
+            // preparation or rejects the item with E-APP-009 (was here, on `open_approval`'s
+            // result).
+            self.open_approval(item);
             return;
         }
     }
@@ -1425,153 +1464,98 @@ impl App {
             .is_some_and(|flow| flow.set_connect_chain(chain_id, name))
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "window, panel, AI body and session set up in order"
-    )]
-    fn open_approval(&mut self, item: QueuedItem) -> Result<(), ()> {
+    /// Opens the approval window for `item` (the wallet half; 2026-11-19, S4 B5, plan §3.1): the
+    /// flow is made at `now` and becomes `EvmUi.approval`, then the window is asked for with
+    /// `Effect::Approval(Open)`, which the executor applies at once (`open_approval_window`) and
+    /// answers with `Cmd::ApprovalOpened` (`on_approval_opened`: the AI explanation, the first
+    /// view, then `start_prepare`; a refused open rejects the item with E-APP-009). Before B5 this
+    /// function made the window, its panel and AI body, then the flow, centred, showed and focused
+    /// the window, and `show_next_approval` called `start_prepare` or rejected on its `Err`. The
+    /// flow is pure: making it before the window changes no message, Win32 call or clock read
+    /// (its only error, a clock past `u64::MAX - 120 000` ms, cannot happen; it would reject
+    /// before a window was made instead of after the made windows were dropped unshown).
+    fn open_approval(&mut self, item: QueuedItem) {
         let now = self.clock.now_ms();
         let connect = match &item {
             QueuedItem::Site(site) if site.kind.is_connect() => Some(self.connect_state(site)),
             _ => None,
         };
-        let handler = Box::new(Forward {
-            app: self.self_ref.clone(),
-            target: Target::Approval,
-        });
         let lang = self.settings.language;
-        let title = if connect.is_some() {
-            text::TITLE_CONNECT
-        } else {
-            text::TITLE_APPROVAL
-        }
-        .get(lang);
         // spec/06 §3.1: dApp transactions, personal_sign and typed data, only while the worker
         // exists (feature effectively on). The panel's height is reserved now (§6).
-        let ai_kind = match &item {
-            QueuedItem::Site(site) => match &site.kind {
-                SiteKind::Send(_) => Some(RequestKind::EvmTx),
-                SiteKind::PersonalSign { .. } => Some(RequestKind::PersonalSign),
-                SiteKind::TypedData { .. } => Some(RequestKind::TypedData),
-                SiteKind::RequestAccounts
-                | SiteKind::RequestPermissions
-                | SiteKind::Revoke
-                | SiteKind::SolConnect
-                | SiteKind::BtcConnect(_)
-                | SiteKind::SolSign { .. }
-                | SiteKind::SolTx { .. }
-                | SiteKind::BtcSign { .. } => None,
-            },
-            QueuedItem::App(_)
-            | QueuedItem::Sol(_)
-            | QueuedItem::Btc(_)
-            | QueuedItem::Zec(_)
-            | QueuedItem::HyperCore(_) => None,
-        }
-        .filter(|_| self.llm.is_some());
-        let extra = if ai_kind.is_some() {
-            AI_PANEL_EXTRA_DIP
-        } else {
-            0
-        };
-        let spec = WindowSpec::new(APPROVAL_CLASS, WindowKind::Floating)
-            .title(title)
-            .size(820, 710 + extra)
-            .min_size(520, 460 + extra)
-            .topmost(true)
-            .resizable(true);
-        #[cfg(test)]
-        if flow_support::fail_open() {
-            return Err(());
-        }
-        let window = create_window(&spec, handler).map_err(|_| ())?;
-        let panel_handler = Box::new(Forward {
-            app: self.self_ref.clone(),
-            target: Target::Panel,
-        });
-        let panel_spec = WindowSpec::new(
-            PANEL_CLASS,
-            WindowKind::Child {
-                parent: window.hwnd(),
-            },
-        )
-        .visible(true);
-        let panel = create_window(&panel_spec, panel_handler).map_err(|_| ())?;
-        // 2026-11-19 (S4 B4b): the AI panel's state is the flow's `AiFlow`, its body child and
-        // scroll the shell's `AiBody` (one `AiUi` before), made here in the same order.
-        let (ai, ai_body) = match (ai_kind, self.llm.as_ref()) {
-            (Some(kind), Some(service)) => {
-                let body_handler = Box::new(Forward {
-                    app: self.self_ref.clone(),
-                    target: Target::AiBody,
-                });
-                let body_spec = WindowSpec::new(
-                    PANEL_CLASS,
-                    WindowKind::Child {
-                        parent: window.hwnd(),
-                    },
-                )
-                .visible(true);
-                let body = create_window(&body_spec, body_handler).map_err(|_| ())?;
-                self.llm_ui.next_window = self.llm_ui.next_window.saturating_add(1);
-                (
-                    Some(AiFlow {
-                        panel: AiPanel::new(true, lang),
-                        serial: self.llm_ui.next_window,
-                        host: service.host().to_owned(),
-                        model: service.model().to_owned(),
-                        kind,
-                    }),
-                    Some(AiBody { body, scroll: 0 }),
-                )
-            }
-            _ => (None, None),
-        };
+        let ai_reserved = explain_kind(&item).is_some() && self.llm.is_some();
+        let shown = self.evm.shown_id();
+        let is_connect = connect.is_some();
         // 2026-11-19 (S4 B3): the deadline rule is `yw_engine::approval::flow::session_deadline`
         // (was inline here: the site deadline, else `now + MAX_LIFETIME_MS`, at least `now + 1`).
-        // 2026-11-19 (S4 B4a): `ApprovalFlow::open` builds the gate and its session at this
-        // point (was inline here: the same gate, the same `now`).
-        let flow = ApprovalFlow::open(lang, item, connect, ai, now).map_err(|_| ())?;
-        center_window(&window, self.main.as_ref());
-        let _ = window.set_timer(APPROVAL_TIMER_ID, APPROVAL_TICK_MS);
-        show_window(&window);
-        if !request_foreground(&window, "approval") {
-            flash_window(&window);
-        }
-        focus_window(&window);
-        // 2026-11-19 (S4 B4b): the flow goes to `EvmUi.approval`, the shell state to
-        // `App.approval_win`, together (one `EvmUi.window` before).
+        // 2026-11-19 (S4 B4a): `ApprovalFlow::open` builds the gate and its session (was inline
+        // here: the same gate, the same `now`).
+        let Ok(flow) = ApprovalFlow::open(shown, lang, item, connect, now) else {
+            self.approval_open_failed();
+            return;
+        };
         self.evm.approval = Some(flow);
-        self.approval_win = Some(ApprovalWin {
-            window,
-            panel,
-            focus: Focus::Reject,
-            scroll: 0,
-            pressed: None,
-            layout: None,
-            bottom: Bottom::default(),
-            bar: BarState::default(),
-            widths: HashMap::new(),
-            ai: ai_body,
-        });
-        logging::info("app", "approval.open", &[]);
-        self.rebuild_view();
-        #[cfg(test)]
-        self.assert_flow_and_window_in_step();
-        Ok(())
+        self.emit(Effect::Approval(ApprovalEffect::Open {
+            shown,
+            lang,
+            ai_reserved,
+            connect: is_connect,
+        }));
     }
 
-    /// The flow (`EvmUi.approval`) and the window's shell state (`App.approval_win`) are set and
-    /// taken together (2026-11-19, S4 B4 review). Test builds check it where they change and
-    /// where a window event reaches the flow, so a flow left without its window (or a window
-    /// without its flow) fails the tests: the recorders print both cases like a closed window.
-    #[cfg(test)]
-    fn assert_flow_and_window_in_step(&self) {
-        assert_eq!(
-            self.evm.approval.is_some(),
-            self.approval_win.is_some(),
-            "the approval flow and its window are out of step"
-        );
+    /// The answer to `Effect::Approval(Open)` (S4 B5). Made: the AI explanation joins the flow
+    /// when its body was made, the flow takes the window's width class, then the open's log, the
+    /// first view and the preparation, in the order of the code before B5. Not made: the flow
+    /// ends (its `Close` finds no window and does nothing, critique A-3) and the item is rejected
+    /// with E-APP-009, as `show_next_approval` did on `open_approval`'s `Err`. An answer for a
+    /// window that is not the flow's is dropped.
+    pub(crate) fn on_approval_opened(&mut self, shown: ShownId, outcome: OpenOutcome, wide: bool) {
+        if self.evm.approval.as_ref().map(ApprovalFlow::shown) != Some(shown) {
+            return;
+        }
+        match outcome {
+            OpenOutcome::Shown { .. } => {
+                if let Some(flow) = self.evm.approval.as_mut() {
+                    // 2026-11-19 (S4 B4b): the AI panel's state is the flow's `AiFlow`, its body
+                    // child and scroll the shell's `AiBody`, made in the open in the same order.
+                    if let (Some(kind), Some(service)) =
+                        (explain_kind(flow.item()), self.llm.as_ref())
+                    {
+                        self.llm_ui.next_window = self.llm_ui.next_window.saturating_add(1);
+                        flow.attach_ai(AiFlow {
+                            panel: AiPanel::new(true, flow.lang()),
+                            serial: self.llm_ui.next_window,
+                            host: service.host().to_owned(),
+                            model: service.model().to_owned(),
+                            kind,
+                        });
+                    }
+                    flow.set_wide(wide);
+                }
+                logging::info("app", "approval.open", &[]);
+                self.rebuild_view();
+                #[cfg(test)]
+                self.assert_flow_and_window_in_step();
+                self.start_prepare();
+            }
+            OpenOutcome::Refused(_) | OpenOutcome::Failed(_) => {
+                if let Some(flow) = self.evm.approval.take() {
+                    self.emit(Effect::Approval(ApprovalEffect::Close {
+                        shown: flow.shown(),
+                    }));
+                }
+                self.approval_open_failed();
+            }
+        }
+    }
+
+    /// The shown item could not get its window: rejected, E-APP-009 (`show_next_approval`'s
+    /// open-failure branch before S4 B5).
+    fn approval_open_failed(&mut self) {
+        if let Some((item, outcome)) = self.evm.queue.finish_shown(QueueOutcome::Rejected) {
+            self.approval_finished(&item.payload, outcome);
+        }
+        self.error_banner(ErrorCode::App009);
     }
 
     fn start_prepare(&mut self) {
@@ -1944,28 +1928,23 @@ impl App {
         });
         // 2026-11-19 (S4 B4b): the flow and the shell state are taken together; the steps keep
         // their order (reject, AI close and its log, AI body, timer, panel, window).
+        // 2026-11-19 (S4 B5): the flow ends here (reject, AI close and its log) and emits
+        // `Effect::Approval(Close)`, whose executor arm (`close_approval_shell`) then drops the AI
+        // body, stops the timer, destroys the panel and the window and raises the main window, in
+        // that order (were inline here).
         if let Some(mut flow) = self.evm.approval.take() {
-            let mut win = self.approval_win.take();
             if let Some(request) = flow.issued() {
                 self.evm.store.reject(request.id);
             }
             // spec/06 §3.2: a result arriving after the window closed is dropped.
-            if let Some(mut ai) = flow.take_ai() {
-                if let Some(ended) = ai.panel.close(self.clock.now_ms()) {
-                    log_request(&ai.host, ai.kind, &ended, None);
-                }
-                drop(win.as_mut().and_then(|win| win.ai.take()));
-            }
-            if let Some(win) = win {
-                win.window.kill_timer(APPROVAL_TIMER_ID);
-                drop(win.panel);
-                drop(win.window);
-            }
-            if let Some(main) = self.main.as_ref()
-                && main.is_alive()
+            if let Some(mut ai) = flow.take_ai()
+                && let Some(ended) = ai.panel.close(self.clock.now_ms())
             {
-                let _ = request_foreground(main, "main");
+                log_request(&ai.host, ai.kind, &ended, None);
             }
+            self.emit(Effect::Approval(ApprovalEffect::Close {
+                shown: flow.shown(),
+            }));
         }
         #[cfg(test)]
         self.assert_flow_and_window_in_step();
@@ -2645,17 +2624,10 @@ impl App {
             StatusAction::Repaint => {
                 // Only the bottom bar changes with interaction events and ticks: repaint just it,
                 // and only when what it shows changed (no full-window redraw every 50 ms).
-                let waiting = self.evm.queue.len().saturating_sub(1);
-                if let (Some(flow), Some(win)) =
-                    (self.evm.approval.as_ref(), self.approval_win.as_ref())
-                {
-                    if win.bottom.bar.w <= 0 {
-                        win.window.invalidate();
-                    } else if bar_state(&flow.paint(), win.focus, waiting, self.clock.now_ms())
-                        != win.bar
-                    {
-                        win.window.invalidate_rect(win.bottom.bar);
-                    }
+                // 2026-11-19 (S4 B5): `Effect::Approval(RepaintBar)`, applied at once by
+                // `approval_repaint_bar` (the same code, was inline here).
+                if let Some(shown) = self.evm.approval.as_ref().map(ApprovalFlow::shown) {
+                    self.emit(Effect::Approval(ApprovalEffect::RepaintBar { shown }));
                 }
             }
             StatusAction::Nothing => {}
@@ -2795,11 +2767,16 @@ impl App {
                 _ => None,
             });
         // 2026-11-19 (S4 B4b): the view is the flow's, the invalidations the window's.
-        let (Some(flow), Some(win)) = (self.evm.approval.as_mut(), self.approval_win.as_mut())
-        else {
+        // 2026-11-19 (S4 B5): the width class is the flow's (`wide`, reported by the shell when
+        // the window opened and at each A01 size or DPI change; was read here from the window),
+        // and a rebuilt view is `Effect::Approval(Rebuilt)` (`approval_rebuilt`: layout dropped,
+        // window, panel and AI body invalidated; was inline here). The flow and the window are
+        // shown together, so the guard on the window is the guard on the flow.
+        let Some(flow) = self.evm.approval.as_mut() else {
             return;
         };
-        let wide_layout = win.window.client_rect().w >= win.window.px(80 * 8);
+        let shown = flow.shown();
+        let wide_layout = flow.wide();
         if let QueuedItem::Site(site) = flow.item() {
             if crate::walletconnect::is_session_origin(&site.origin) {
                 badges.insert(0, text::BADGE_WALLETCONNECT.get(lang).to_owned());
@@ -2833,9 +2810,12 @@ impl App {
                 connect_view.testnet = testnet;
                 connect_view.chain = chain_badge;
                 flow.set_view(connect_view);
-                win.layout = None;
-                win.window.invalidate();
-                win.panel.invalidate();
+                // A connect window has no AI body (spec/06 §3.1), so `Rebuilt` invalidates the
+                // window and the panel only, as before.
+                self.emit(Effect::Approval(ApprovalEffect::Rebuilt {
+                    shown,
+                    changed: true,
+                }));
                 return;
             }
             let mut site_badges = Vec::new();
@@ -2888,16 +2868,19 @@ impl App {
                     crate::ui::approval_view::attach_address_note(&mut view, lang, note);
                 }
                 if !force && view == *flow.view() {
+                    self.emit(Effect::Approval(ApprovalEffect::Rebuilt {
+                        shown,
+                        changed: false,
+                    }));
                     return;
                 }
                 flow.set_view(view);
-                win.layout = None;
-                win.window.invalidate();
-                win.panel.invalidate();
-                // The risk level or the acknowledgement may have changed (held_for_ack).
-                if let Some(ai) = win.ai.as_ref() {
-                    ai.body.invalidate();
-                }
+                // The risk level or the acknowledgement may have changed (held_for_ack): the AI
+                // body is invalidated too.
+                self.emit(Effect::Approval(ApprovalEffect::Rebuilt {
+                    shown,
+                    changed: true,
+                }));
             }
             Err(code) => {
                 logging::warn("app", "E-UI-001", &[]);
@@ -2905,6 +2888,208 @@ impl App {
                 self.finish_approval(QueueOutcome::Rejected);
             }
         }
+    }
+
+    // ----- the approval window (shell) ----------------------------------------------------
+
+    /// Applies one `Effect::Approval` (S4 B5; called by the executor `App::emit`, at once and in
+    /// emission order). Returns the open's answer, which the executor feeds back at once.
+    pub(crate) fn apply_approval_effect(&mut self, effect: ApprovalEffect) -> Option<Cmd> {
+        match effect {
+            ApprovalEffect::Open {
+                shown,
+                lang,
+                ai_reserved,
+                connect,
+            } => {
+                let (outcome, wide) = self.open_approval_window(shown, lang, ai_reserved, connect);
+                Some(Cmd::ApprovalOpened {
+                    shown,
+                    outcome,
+                    wide,
+                })
+            }
+            ApprovalEffect::Close { shown } => {
+                self.close_approval_shell(shown);
+                None
+            }
+            ApprovalEffect::Rebuilt { shown, changed } => {
+                self.approval_rebuilt(shown, changed);
+                None
+            }
+            ApprovalEffect::RepaintBar { shown } => {
+                self.approval_repaint_bar(shown);
+                None
+            }
+        }
+    }
+
+    /// `Effect::Approval(Open)`: A01 (topmost), its panel and, when reserved, the AI body, in this
+    /// order; then centred on the main window, the 50 ms timer, shown, brought to the foreground
+    /// or flashed, focus on `거부` (reject-first), and the width class measured. Any window that
+    /// cannot be made drops the ones made before it (panel before A01, as before) and the open
+    /// answers `Failed(E-APP-009)`. 2026-11-19 (S4 B5): this was the window part of
+    /// `open_approval`, the same calls in the same order (the flow, made there before B5 between
+    /// the AI body and the centring, is now made before the open is asked for).
+    fn open_approval_window(
+        &mut self,
+        shown: ShownId,
+        lang: Lang,
+        ai_reserved: bool,
+        connect: bool,
+    ) -> (OpenOutcome, bool) {
+        const FAILED: (OpenOutcome, bool) = (OpenOutcome::Failed(ErrorCode::App009), false);
+        let handler = Box::new(Forward {
+            app: self.self_ref.clone(),
+            target: Target::Approval,
+        });
+        let title = if connect {
+            text::TITLE_CONNECT
+        } else {
+            text::TITLE_APPROVAL
+        }
+        .get(lang);
+        let extra = if ai_reserved { AI_PANEL_EXTRA_DIP } else { 0 };
+        let spec = WindowSpec::new(APPROVAL_CLASS, WindowKind::Floating)
+            .title(title)
+            .size(820, 710 + extra)
+            .min_size(520, 460 + extra)
+            .topmost(true)
+            .resizable(true);
+        #[cfg(test)]
+        if flow_support::fail_open() {
+            return FAILED;
+        }
+        let Ok(window) = create_window(&spec, handler) else {
+            return FAILED;
+        };
+        let panel_handler = Box::new(Forward {
+            app: self.self_ref.clone(),
+            target: Target::Panel,
+        });
+        let panel_spec = WindowSpec::new(
+            PANEL_CLASS,
+            WindowKind::Child {
+                parent: window.hwnd(),
+            },
+        )
+        .visible(true);
+        let Ok(panel) = create_window(&panel_spec, panel_handler) else {
+            return FAILED;
+        };
+        let ai = if ai_reserved {
+            let body_handler = Box::new(Forward {
+                app: self.self_ref.clone(),
+                target: Target::AiBody,
+            });
+            let body_spec = WindowSpec::new(
+                PANEL_CLASS,
+                WindowKind::Child {
+                    parent: window.hwnd(),
+                },
+            )
+            .visible(true);
+            let Ok(body) = create_window(&body_spec, body_handler) else {
+                return FAILED;
+            };
+            Some(AiBody { body, scroll: 0 })
+        } else {
+            None
+        };
+        center_window(&window, self.main.as_ref());
+        let _ = window.set_timer(APPROVAL_TIMER_ID, APPROVAL_TICK_MS);
+        show_window(&window);
+        if !request_foreground(&window, "approval") {
+            flash_window(&window);
+        }
+        focus_window(&window);
+        let win = ApprovalWin {
+            shown,
+            window,
+            panel,
+            focus: Focus::Reject,
+            scroll: 0,
+            pressed: None,
+            layout: None,
+            bottom: Bottom::default(),
+            bar: BarState::default(),
+            widths: HashMap::new(),
+            ai,
+        };
+        let wide = win.is_wide();
+        // 2026-11-19 (S4 B4b): the shell state is `App.approval_win` (the flow `EvmUi.approval`,
+        // one `EvmUi.window` before).
+        self.approval_win = Some(win);
+        (
+            OpenOutcome::Shown {
+                capture_excluded: false,
+            },
+            wide,
+        )
+    }
+
+    /// `Effect::Approval(Close)`: the AI body, the timer, the panel and the window go, then the
+    /// main window is raised. Nothing for a window that is not open under `shown` (one never made,
+    /// critique A-3). 2026-11-19 (S4 B5): the window part of `close_approval_window`, same order.
+    fn close_approval_shell(&mut self, shown: ShownId) {
+        let Some(mut win) = self.approval_win.take_if(|win| win.shown == shown) else {
+            return;
+        };
+        drop(win.ai.take());
+        win.window.kill_timer(APPROVAL_TIMER_ID);
+        drop(win.panel);
+        drop(win.window);
+        if let Some(main) = self.main.as_ref()
+            && main.is_alive()
+        {
+            let _ = request_foreground(main, "main");
+        }
+    }
+
+    /// `Effect::Approval(Rebuilt)`: a changed view drops the layout and invalidates the window,
+    /// the panel and the AI body (S4 B5: was inline in `rebuild_view_with`).
+    fn approval_rebuilt(&mut self, shown: ShownId, changed: bool) {
+        if !changed {
+            return;
+        }
+        if let Some(win) = self.approval_win.as_mut().filter(|win| win.shown == shown) {
+            win.layout = None;
+            win.window.invalidate();
+            win.panel.invalidate();
+            if let Some(ai) = win.ai.as_ref() {
+                ai.body.invalidate();
+            }
+        }
+    }
+
+    /// `Effect::Approval(RepaintBar)`: the whole window while the bar was never laid out, else the
+    /// bar's rectangle when what it shows changed (S4 B5: was inline in `interaction()`).
+    fn approval_repaint_bar(&mut self, shown: ShownId) {
+        let waiting = self.evm.queue.len().saturating_sub(1);
+        if let (Some(flow), Some(win)) = (self.evm.approval.as_ref(), self.approval_win.as_ref())
+            && win.shown == shown
+        {
+            if win.bottom.bar.w <= 0 {
+                win.window.invalidate();
+            } else if bar_state(&flow.paint(), win.focus, waiting, self.clock.now_ms()) != win.bar {
+                win.window.invalidate_rect(win.bottom.bar);
+            }
+        }
+    }
+
+    /// The flow (`EvmUi.approval`) and the window's shell state (`App.approval_win`) are set and
+    /// taken together (2026-11-19, S4 B4 review). Test builds check it where they change and
+    /// where a window event reaches the flow, so a flow left without its window (or a window
+    /// without its flow) fails the tests: the recorders print both cases like a closed window.
+    /// 2026-11-19 (S4 B5): checked at the end of the open's answer (was the end of
+    /// `open_approval`), and kept here because the flow-only functions name no window.
+    #[cfg(test)]
+    fn assert_flow_and_window_in_step(&self) {
+        assert_eq!(
+            self.evm.approval.is_some(),
+            self.approval_win.is_some(),
+            "the approval flow and its window are out of step"
+        );
     }
 
     // ----- window messages ----------------------------------------------------------------
@@ -3222,6 +3407,12 @@ impl App {
             Step::Relayout => {
                 if let Some(win) = self.approval_win.as_mut() {
                     win.layout = None;
+                    // 2026-11-19 (S4 B5): the width class goes to the flow here, where the
+                    // rebuild below read it from the window before B5 (B6: `Resized`).
+                    let wide = win.is_wide();
+                    if let Some(flow) = self.evm.approval.as_mut() {
+                        flow.set_wide(wide);
+                    }
                 }
                 self.rebuild_view();
             }

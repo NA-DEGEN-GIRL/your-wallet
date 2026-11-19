@@ -7,9 +7,14 @@
 //! queued or coalesced in S3; an outbox, if S4 adds one, must drain inside the same borrow.
 //!
 //! 2026-11-18 (spec/15 §11.4 S3 B1): created. No yw-json codec yet (spec/15 §18 item 8).
+//!
+//! 2026-11-19 (spec/15 §11.4 S4 B5): [`Effect::Approval`], the approval window's open, close,
+//! rebuilt view and bottom-bar repaint ([`ApprovalEffect`]); the open is answered with
+//! `Cmd::ApprovalOpened`. Still applied at once (Windows: inside the `App` borrow).
 
 use core::fmt;
 
+use crate::approval::flow::ApprovalEffect;
 use crate::cmd::CopyMark;
 use crate::form::{CredField, EditField};
 
@@ -56,6 +61,9 @@ pub enum Effect {
         /// What the result applies to.
         mark: CopyMark,
     },
+    /// The approval window (S4 B5): ids, flags and the language only, never request text.
+    /// `ApprovalEffect::Open` is answered with `Cmd::ApprovalOpened`.
+    Approval(ApprovalEffect),
 }
 
 /// Names, fields and lengths only (D28): never the text of a field or a copy.
@@ -90,6 +98,7 @@ impl fmt::Debug for Effect {
                 .field("len", &text.len())
                 .field("mark", mark)
                 .finish(),
+            Self::Approval(effect) => formatter.debug_tuple("Approval").field(effect).finish(),
         }
     }
 }
@@ -104,6 +113,7 @@ pub enum TimerId {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::approval::flow::ShownId;
     use crate::cmd::{EvmPress, Press};
 
     #[test]
@@ -145,6 +155,28 @@ mod tests {
                 }
             ),
             "ClearCred { field: QnToken }"
+        );
+        assert_eq!(
+            format!(
+                "{:?}",
+                Effect::Approval(ApprovalEffect::Open {
+                    shown: ShownId(4),
+                    lang: yw_core::lang::Lang::Ko,
+                    ai_reserved: true,
+                    connect: false,
+                })
+            ),
+            "Approval(Open { shown: ShownId(4), lang: Ko, ai_reserved: true, connect: false })"
+        );
+        assert_eq!(
+            format!(
+                "{:?}",
+                Effect::Approval(ApprovalEffect::Rebuilt {
+                    shown: ShownId(4),
+                    changed: true,
+                })
+            ),
+            "Approval(Rebuilt { shown: ShownId(4), changed: true })"
         );
     }
 }

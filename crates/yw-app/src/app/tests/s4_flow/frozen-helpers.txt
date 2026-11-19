@@ -632,6 +632,6 @@ yw-app/src/app/secret_seam.rs fn create bbb5bc71a1190b68 mutable
 yw-app/src/app/secret_seam.rs fn topmost_of bcd857a12c776ac9 mutable
 yw-app/src/app/secret_seam.rs struct SecretFacts 1d3cbdc700db0554 mutable
 yw-app/src/app/secret_seam.rs impl super::App 96d168c6a16f9efd mutable
-yw-app/src/app_approval_input_tests.rs test approval_window_is_topmost_and_eats_activating_clicks a7af11beaf0bc90d B2,B4a,B4b,B5
+yw-app/src/app_approval_input_tests.rs test approval_window_is_topmost_and_eats_activating_clicks 26c1a63b504a0e38 B2,B4a,B4b,B5
 yw-app/src/app_approval_input_tests.rs test approve_enter_is_physical_and_not_injected 4fca4667b660cd7e B2,B4a,B4b,B5
-yw-app/src/app_approval_input_tests.rs test ai_never_touches_the_gate 7f7a173883cd07bf B2,B4a,B4b,B5,W14a,W14b,E1
+yw-app/src/app_approval_input_tests.rs test ai_never_touches_the_gate ccf4809d18d1f06d B2,B4a,B4b,B5,W14a,W14b,E1

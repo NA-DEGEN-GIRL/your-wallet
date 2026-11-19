@@ -11,12 +11,18 @@
 //! after it, `submitting` before any dispatch). `issued` is the one handle `consume` and `reject`
 //! use. The module names no window type: it moves to yw-engine with the flow at S4d (source check
 //! S3 in `app_approval_input_tests.rs`). Not the send flows of `yw_engine::flow`.
+//!
+//! 2026-11-19 (S4 B5): every flow carries the [`ShownId`] of its window, allocated when it opens,
+//! and the width class the shell reported (`Cmd::ApprovalOpened`, then each A01 `WM_SIZE` /
+//! `WM_DPICHANGED`); the window's operations are `Effect::Approval`s the App emits (open, close,
+//! rebuilt view, bottom bar). The flow is made before its window is asked for and gets its AI
+//! explanation when the window was made ([`ApprovalFlow::attach_ai`]).
 
 use yw_core::approval::{ApprovalRequest, RiskLevel};
 use yw_core::evm::eip712::DecodedTypedData;
 use yw_core::lang::Lang;
 use yw_engine::approval::flow::{
-    BarFacts, BarSource, StatusAction, bar_facts, session_deadline, status_action,
+    BarFacts, BarSource, ShownId, StatusAction, bar_facts, session_deadline, status_action,
 };
 use yw_engine::approval::interaction::{
     ApprovalGate, ApprovalSession, ConnectView, InteractionError, InteractionEvent,
@@ -35,7 +41,14 @@ use crate::ui::approval_input::is_release;
 
 /// The shown approval's flow: today's `ApprovalUi` minus the window, the panel, the AI body and
 /// the paint state (spec/15 §11.4 S4, plan §3.1).
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent window facts of the flow (early release, raw fold, re-simulation click, width class)"
+)]
 pub struct ApprovalFlow {
+    /// The window this flow is shown in: a fresh serial at every open, never reused (2026-11-19,
+    /// S4 B5). The queue item id stays the idle identity.
+    shown: ShownId,
     /// The window's language: the app language when it opened. The request is built in it, so
     /// the display (digested with its language, spec/03 §11.3) and the chrome always match.
     lang: Lang,
@@ -56,6 +69,10 @@ pub struct ApprovalFlow {
     raw_open: bool,
     resim_click: bool,
     view: ApprovalView,
+    /// The wide layout applies (the A01 client area is at least 640 DIP wide): reported by the
+    /// shell when the window opens and at each A01 size or DPI change (2026-11-19, S4 B5: was read
+    /// from the window by every view rebuild).
+    wide: bool,
     /// The AI explanation (spec/06 §6), when the window reserved its panel (2026-11-19, S4 B4b:
     /// was the state half of `app_approval::AiUi`).
     ai: Option<AiFlow>,
@@ -141,6 +158,7 @@ impl core::fmt::Debug for ApprovalFlow {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         formatter
             .debug_struct("ApprovalFlow")
+            .field("shown", &self.shown)
             .field("job", &self.job)
             .field("issued", &self.issued.is_some())
             .finish_non_exhaustive()
@@ -148,18 +166,21 @@ impl core::fmt::Debug for ApprovalFlow {
 }
 
 impl ApprovalFlow {
-    /// The flow of a window opening at `now`: the gate starts `Preparing(Building)`, unarmed,
-    /// not foreground, with the deadline of `session_deadline` (the site deadline, else `now +
-    /// MAX_LIFETIME_MS`; S4 B3). `ai`: the AI explanation when the window reserved its panel.
+    /// The flow of window `shown` opening at `now`: the gate starts `Preparing(Building)`,
+    /// unarmed, not foreground, with the deadline of `session_deadline` (the site deadline, else
+    /// `now + MAX_LIFETIME_MS`; S4 B3). 2026-11-19 (S4 B5): made before the window is asked for
+    /// (was after the window, its panel and AI body existed, with the AI explanation as an
+    /// argument; the AI explanation is now [`Self::attach_ai`]). The layout is wide until the
+    /// open's result reports the window's class.
     ///
     /// # Errors
     ///
     /// [`InteractionError`] for an invalid deadline.
     pub(crate) fn open(
+        shown: ShownId,
         lang: Lang,
         item: QueuedItem,
         connect: Option<ConnectState>,
-        ai: Option<AiFlow>,
         now: u64,
     ) -> Result<Self, InteractionError> {
         let site_deadline = match &item {
@@ -181,6 +202,7 @@ impl ApprovalFlow {
         };
         let session = ApprovalSession::new(gate, now)?;
         Ok(Self {
+            shown,
             lang,
             item,
             connect,
@@ -195,11 +217,22 @@ impl ApprovalFlow {
             raw_open: false,
             resim_click: false,
             view: ApprovalView::default(),
-            ai,
+            wide: true,
+            ai: None,
         })
     }
 
     // ----- reads ----------------------------------------------------------------------------
+
+    /// The window this flow is shown in (S4 B5).
+    pub(crate) const fn shown(&self) -> ShownId {
+        self.shown
+    }
+
+    /// The wide layout applies (S4 B5: the class the shell reported).
+    pub(crate) const fn wide(&self) -> bool {
+        self.wide
+    }
 
     /// The window's language.
     pub(crate) const fn lang(&self) -> Lang {
@@ -324,6 +357,12 @@ impl ApprovalFlow {
         self.ai.take()
     }
 
+    /// The AI explanation of a window that was made with its AI body (2026-11-19, S4 B5: was an
+    /// argument of [`Self::open`]).
+    pub(crate) fn attach_ai(&mut self, ai: AiFlow) {
+        self.ai = Some(ai);
+    }
+
     /// A High-risk request shows its warnings first: the AI text waits for the acknowledgement
     /// checkbox (`held_for_ack`; read from the issued request and the gate, written to the AI
     /// panel only). Returns whether the window has an AI explanation.
@@ -409,6 +448,12 @@ impl ApprovalFlow {
     /// The view the window draws.
     pub(crate) fn set_view(&mut self, view: ApprovalView) {
         self.view = view;
+    }
+
+    /// The width class the shell reported (the open's result, an A01 size or DPI change; S4
+    /// B5). The next view rebuild lays out for it.
+    pub(crate) fn set_wide(&mut self, wide: bool) {
+        self.wide = wide;
     }
 
     /// An open EVM connect window shows the origin's chain of now (security review L4(c)).
@@ -599,7 +644,7 @@ mod tests {
     use yw_core::evm::chain::SEPOLIA;
     use yw_core::lang::Lang;
     use yw_core::policy::{BrowserOrigin, Family, Method};
-    use yw_engine::approval::flow::StatusAction;
+    use yw_engine::approval::flow::{ShownId, StatusAction};
     use yw_engine::approval::interaction::{APPROVE_ARM_DELAY_MS, InteractionEvent};
     use yw_engine::browser::envelope::{Correlation, Id16, Id32};
     use yw_engine::browser::{Reply, SiteKind, SiteRequest};
@@ -648,10 +693,10 @@ mod tests {
             groups: 0,
         };
         let mut flow = ApprovalFlow::open(
+            ShownId(1),
             Lang::En,
             QueuedItem::Site(Box::new(site)),
             Some(connect),
-            None,
             START,
         )
         .unwrap();
