@@ -235,10 +235,10 @@ Nothing is signed without a decision in the app's own window. Files to read:
 | What | Where |
 |---|---|
 | Approval digest and single-use `consume` (bound to bytes, chain, account, simulation, expiry) | `crates/yw-core/src/approval/`, spec/03 §11 (canonical for all chains) |
-| Click-jacking defences: 1 s arm delay, focus starts on `거부` (Reject), High risk needs the checkbox "위 경고를 모두 확인했습니다" (I checked all warnings above) + 2 s hold of `승인` (Approve), injected Enter never approves, always-on-top, 120 s expiry | `crates/yw-engine/src/approval/interaction.rs` (the Win32 stray-press mapping is `crates/yw-app/src/ui/approval_input.rs`), spec/04 §3 |
+| Click-jacking defences: 1 s arm delay, focus starts on `거부` (Reject), High risk needs the checkbox "위 경고를 모두 확인했습니다" (I checked all warnings above) + 2 s hold of `승인` (Approve), injected Enter never approves, always-on-top, 120 s expiry | `crates/yw-engine/src/approval/interaction.rs` (the Win32 message mapping is `crates/yw-app/src/ui/approval_input.rs`: trusted input read only by `TrustedSignals`, the pure `map_msg`/`map_key`; since 2026-11-19), spec/04 §3 |
 | EVM risk rules (E01–E43) and Blocked rules | `crates/yw-core/src/evm/risk/rules.rs`, spec/03 §10 |
 | Solana dApp transactions (parser, ALT, decode, diff, display, sign; rules X01–X19) | `crates/yw-core/src/sol/dapp/`, spec/07 §20 |
-| App glue for the approval window: issuing, re-simulation, `consume`, the `KeyJob::SignEvm` job | `crates/yw-app/src/app_approval.rs` (signing runs on the key worker, `crates/yw-engine/src/workers/key.rs`; before 2026-11-17 S2 E3 in yw-app) |
+| App glue for the approval window: issuing, re-simulation, `consume`, the `KeyJob::SignEvm` job | `crates/yw-app/src/app_approval.rs` (signing runs on the key worker, `crates/yw-engine/src/workers/key.rs`; before 2026-11-17 S2 E3 in yw-app). Since 2026-11-19 the shown approval's gate and issued request live in `crates/yw-app/src/approval_flow.rs` (`ApprovalFlow`, its methods are the only gate writers) and the pure decisions in `crates/yw-engine/src/approval/flow.rs` |
 | EVM post-sign check: re-encode, strict decode, signer recovery must equal the account | `crates/yw-core/src/evm/sign/mod.rs` |
 | dApp method allowlist and error codes | `crates/yw-core/src/policy`, spec/05 §3 and §5, [dapp-integration.md](dapp-integration.md) |
 
@@ -311,7 +311,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1
 
 - On a fresh clone run it **without** `-Offline` (or run `cargo fetch --locked` first); `-Offline` is for when crates are
   already cached.
-- One step only: `-Step fmt|deps|clippy|test|fuzz|build|ext-test|script-test|privacy|audit-ext|icons`.
+- One step only: `-Step fmt|deps|clippy|test|fuzz|winui|s4fz|build|ext-test|script-test|privacy|audit-ext|icons`.
+- The `winui` step creates hidden approval windows on the desktop for a moment; they are never shown and never take the
+  foreground (its self-test checks that).
 - It takes a long time (1,400+ tests, and a debug-profile fuzz-lite smoke at 20,000 iterations per target). Success
   prints `check: OK`, exit 0.
 - It compiles and runs repository and crate code (see the note at the top); run it only with the person's go-ahead.
@@ -324,7 +326,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1
 | deps | 21 | `scripts/check-core-deps.mjs` allowlist (§5) |
 | clippy | 22 | Lints with `-D warnings`, including yw-core's disallowed types (no time, file, network, threads, env) |
 | test | 23 | Workspace tests (known-answer vectors, vault, approvals, risk rules, parsers, …) |
-| fuzz | 29 | 22 fuzz-lite targets, `YW_FUZZ_RUNS=20000` |
+| fuzz | 29 | 24 fuzz-lite targets, `YW_FUZZ_RUNS=20000` |
+| winui | 31 | The windowed approval-window harness (hidden windows; flow, lifecycle, input mapping and re-entrancy goldens) |
+| s4fz | 32 | The tests frozen for the App refactor (S4) are compiled and run |
 | build | 24 | Debug build incl. `yw-host.exe` for the extension process test |
 | ext-test | 25 | `node --test extension/tests/*.test.mjs` |
 | script-test | 26 | `node --test scripts/*.test.mjs` (installer validation functions included) |
