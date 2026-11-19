@@ -1,7 +1,7 @@
 ﻿# scripts/check.ps1 — 저장소 게이트. 사용: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check.ps1 [-Step <name>] [-Offline]
 [CmdletBinding()]
 param(
-    [ValidateSet("all", "fmt", "deps", "clippy", "test", "fuzz", "s4fl", "s4fz", "build", "ext-test", "script-test", "privacy", "audit-ext", "icons")]
+    [ValidateSet("all", "fmt", "deps", "clippy", "test", "fuzz", "winui", "s4fz", "build", "ext-test", "script-test", "privacy", "audit-ext", "icons")]
     [string]$Step = "all",
     [switch]$Offline
 )
@@ -176,23 +176,26 @@ Invoke-Step "test" 23 "cargo" (@("test", "--workspace") + $net + $config)
 $env:YW_FUZZ_RUNS = "20000"                                           # fuzz-lite 스모크([09] §2.4): 무시된 fuzz_lite_*를 2만 회씩
 Invoke-Step "fuzz" 29 "cargo" (@("test", "--workspace") + $net + $config + @("--", "--ignored", "fuzz_lite"))
 $env:YW_FUZZ_RUNS = $null                                             # 직접 --ignored로 돌리면 1,000,000회
-# S4 승인 흐름 하네스(2026-11-18 [15] §11.4 S4 A3, [09] §2.2): 숨은 승인 창을 만드는 #[ignore] 시험을 직렬로 돌린다. 창은 보이지
+# 창 UI 하네스 winui(2026-11-18 [15] §11.4 S4 A3, [09] §2.2): 숨은 승인 창을 만드는 #[ignore] 시험을 직렬로 돌린다. 창은 보이지
 # 않고 전경을 가져가지 않는다(자체 시험이 확인). 테스트 스레드에 비공개 데스크톱을 붙이는 길은 yw-win에 데스크톱 API가 없고(더하면
-# A3 밖의 yw-win unsafe 변경) 주인이 대안(O-3)을 골라 쓰지 않는다. B7(창 없는 시험)에서 없앤다. 필터가 아무 시험도 고르지 않으면
+# A3 밖의 yw-win unsafe 변경) 주인이 대안(O-3)을 골라 쓰지 않는다. 2026-11-20(S4 B7, 주인이 맡긴 결정): 이 단계는 상설이다. 실제 Win32
+# 재진입(s4_flow/reentry.txt의 drop 항목)과 창 흔적(input.txt, flow.txt의 l1_* fx 항목·포커스·Tab·패널 클릭, lifecycle.txt의
+# windows=N)은 비평 A-7·A-8의 고정이고 창 없이 돌리면 만들 수 없다. 창 없는 절반(셸 없이 같은 시나리오, s4_flow/headless.txt와 그
+# 교차 확인)은 test 단계에서 돈다. 그 전에는 이름이 s4fl이었고 B7에서 없앨 예정이었다. 필터가 아무 시험도 고르지 않으면
 # libtest는 0으로 끝나므로(2026-11-18 A3 검토), 먼저 --list로 필터마다 #[ignore] 시험 수를 세어 최소 수보다 적으면 31로 멈춘다.
 # 최소 수는 그 시험을 더하는 커밋(S4 A4·A5·A6)이 올리고 이름을 바꾸는 커밋이 함께 고친다.
-$S4flMinimum = [ordered]@{ "app_approval::flow_support" = 3; "app_approval::flow_tests" = 66; "app_approval::input_tests" = 9 }
-$s4flArgs = @("test", "-p", "yw-app", "--lib") + $net + $config + @("--", "--ignored")
-if ($Step -in "all", "s4fl") {
-    Write-Host "check: s4fl (list)"
-    $s4flListed = @(& cargo @($s4flArgs + @("--list") + @($S4flMinimum.Keys)))
-    if ($LASTEXITCODE -ne 0) { Fail 31 "s4fl list (exit $LASTEXITCODE)" }
-    foreach ($filter in $S4flMinimum.Keys) {
-        $found = @($s4flListed | Where-Object { "$_".StartsWith("${filter}::") -and "$_".EndsWith(": test") }).Count
-        if ($found -lt $S4flMinimum[$filter]) { Fail 31 "s4fl: $found ignored tests under $filter, at least $($S4flMinimum[$filter]) expected" }
+$WinuiMinimum = [ordered]@{ "app_approval::flow_support" = 3; "app_approval::flow_tests" = 66; "app_approval::input_tests" = 9 }
+$winuiArgs = @("test", "-p", "yw-app", "--lib") + $net + $config + @("--", "--ignored")
+if ($Step -in "all", "winui") {
+    Write-Host "check: winui (list)"
+    $winuiListed = @(& cargo @($winuiArgs + @("--list") + @($WinuiMinimum.Keys)))
+    if ($LASTEXITCODE -ne 0) { Fail 31 "winui list (exit $LASTEXITCODE)" }
+    foreach ($filter in $WinuiMinimum.Keys) {
+        $found = @($winuiListed | Where-Object { "$_".StartsWith("${filter}::") -and "$_".EndsWith(": test") }).Count
+        if ($found -lt $WinuiMinimum[$filter]) { Fail 31 "winui: $found ignored tests under $filter, at least $($WinuiMinimum[$filter]) expected" }
     }
 }
-Invoke-Step "s4fl" 31 "cargo" ($s4flArgs + @("--test-threads=1") + @($S4flMinimum.Keys))
+Invoke-Step "winui" 31 "cargo" ($winuiArgs + @("--test-threads=1") + @($WinuiMinimum.Keys))
 # S4 고정 시험이 컴파일되어 도는지(2026-11-19 [15] §11.4 S4 F-A 검토, [09] §2.1): test 단계의 frozen_tests_keep_their_names_and_bodies는
 # 소스 글만 읽으므로, 파일·모듈 cfg, 빠진 mod·#[path] 줄, [[test]] test = false, 컴파일되지 않는 파일에 남긴 사본이면 고정 시험이 돌지 않아도
 # 초록이다. 그래서 test 단계와 같은 인자의 --list와 --list --ignored로 고정 이름(frozen-tests.txt와 frozen-helpers.txt의 test 줄)마다

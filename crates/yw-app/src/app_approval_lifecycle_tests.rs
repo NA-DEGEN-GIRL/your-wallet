@@ -3,7 +3,7 @@
 //! recorded from today's code before S4 moves a line of the approval flow (owner decision O-2;
 //! reviewed at the F-A checkpoint).
 //!
-//! A child of `flow_tests` (gate step `s4fl` runs it with that filter): the same A3 fixture
+//! A child of `flow_tests` (gate step `winui` runs it with that filter): the same A3 fixture
 //! (hidden approval windows, the shared test clock, the scripted trusted-signal oracle, the RPC
 //! channel and key queue captured and never run, the recorded dApp outlet) and the same recorder
 //! and line format as `s4_flow/flow.txt`. What a shown approval meets after it opened: a lock
@@ -26,7 +26,7 @@
 //! `rpc.json` of the import scenario is a file in the fixture's folder named by the
 //! `TEST_RPC_JSON` seam before any press, never `%USERPROFILE%\.yw-dev\rpc.json`.
 //!
-//! Run (`#[ignore]`, gate step `s4fl`): `cargo test -p yw-app --lib --locked --offline --
+//! Run (`#[ignore]`, gate step `winui`): `cargo test -p yw-app --lib --locked --offline --
 //! --ignored --test-threads=1 app_approval::flow_tests::lifecycle`. Regenerate for review
 //! (PowerShell): `$env:YW_S4_FLOW_OUT='<folder>'; cargo test -p yw-app --lib --locked --offline
 //! -- --ignored --test-threads=1 app_approval::flow_tests::lifecycle::print`.
@@ -1819,7 +1819,7 @@ macro_rules! lifecycle_tests {
     ($($test:ident => $name:literal),* $(,)?) => {
         $(
             #[test]
-            #[ignore = "creates hidden approval windows (S4 flow harness, gate step s4fl)"]
+            #[ignore = "creates hidden approval windows (S4 flow harness, gate step winui)"]
             fn $test() {
                 run($name);
             }
@@ -1861,7 +1861,7 @@ lifecycle_tests! {
 /// runs the real shutdown, which posts `WM_QUIT` to its thread; the scenarios after it must not
 /// run with that message pending once effects or message pumps reach them).
 #[test]
-#[ignore = "creates hidden approval windows (S4 flow harness, gate step s4fl)"]
+#[ignore = "creates hidden approval windows (S4 flow harness, gate step winui)"]
 fn print() {
     let mut out = String::new();
     for (_, scenario) in &SCENARIOS {
@@ -1911,3 +1911,9 @@ fn the_lifecycle_golden_names_only_known_scenarios() {
     let table: Vec<&str> = SCENARIOS.iter().map(|(name, _)| *name).collect();
     assert_eq!(order, table, "every scenario, in table order");
 }
+
+/// The flow and lifecycle scenarios with the shell half absent (2026-11-20, S4 B7):
+/// `s4_flow/headless.txt` and the cross-check with this file's and `flow.txt`'s goldens (gate
+/// test step, no window). A child of this module so that it runs the same helpers.
+#[path = "app_approval_headless_tests.rs"]
+mod headless;

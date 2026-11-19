@@ -35,7 +35,7 @@
 //! of A4 now pin the window `Pending` again after the chain change and a too-soon click that
 //! stores nothing, and five new ones pin `거부` by Enter and by mouse, Escape, the window's own
 //! expiry and a new armed click that stores the redrawn chain. Run
-//! (`#[ignore]`, gate step `s4fl`):
+//! (`#[ignore]`, gate step `winui`):
 //! `cargo test -p yw-app --lib --locked --offline -- --ignored --test-threads=1 app_approval::flow_tests`.
 //! Regenerate for review (PowerShell): `$env:YW_S4_FLOW_OUT='<folder>'; cargo test -p yw-app
 //! --lib --locked --offline -- --ignored --test-threads=1 app_approval::flow_tests::print`.
@@ -2226,7 +2226,7 @@ macro_rules! scenario_tests {
     ($($test:ident => $name:literal),* $(,)?) => {
         $(
             #[test]
-            #[ignore = "creates hidden approval windows (S4 flow harness, gate step s4fl)"]
+            #[ignore = "creates hidden approval windows (S4 flow harness, gate step winui)"]
             fn $test() {
                 run($name);
             }
@@ -2291,7 +2291,7 @@ scenario_tests! {
 /// Every scenario in table order: writes `flow.txt` into `YW_S4_FLOW_OUT` when it is set (for
 /// review), else compares the whole golden file (order and completeness).
 #[test]
-#[ignore = "creates hidden approval windows (S4 flow harness, gate step s4fl)"]
+#[ignore = "creates hidden approval windows (S4 flow harness, gate step winui)"]
 fn print() {
     let mut out = String::new();
     for (_, scenario) in &SCENARIOS {
@@ -2347,7 +2347,7 @@ fn the_flow_golden_names_only_known_scenarios() {
 /// built here by calling the executor arm and the answer directly. A deferred-schedule scenario
 /// pins it again when the outbox lands (P10, E2).
 #[test]
-#[ignore = "creates hidden approval windows (S4 flow harness, gate step s4fl)"]
+#[ignore = "creates hidden approval windows (S4 flow harness, gate step winui)"]
 fn stale_open_and_stale_answer_leave_no_orphan_window() {
     use yw_engine::approval::flow::{ApprovalEffect, OpenOutcome, ShownId};
     use yw_engine::cmd::Cmd;

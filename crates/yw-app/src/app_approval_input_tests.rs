@@ -73,7 +73,7 @@
 //! transport that never opens a socket, the `tests/llm_mock.rs` pattern, and no answer is fed
 //! back), a card reader, a process, the clipboard or the registry; files are written only below
 //! each fixture's own temp folder (and by the `print_*` tests into `YW_S4_FLOW_OUT` when it is
-//! set). Run (`#[ignore]`, gate step `s4fl`):
+//! set). Run (`#[ignore]`, gate step `winui`):
 //! `cargo test -p yw-app --lib --locked --offline -- --ignored --test-threads=1 app_approval::input_tests`.
 //! Regenerate for review (PowerShell): `$env:YW_S4_FLOW_OUT='<folder>'; cargo test -p yw-app
 //! --lib --locked --offline -- --ignored --test-threads=1 app_approval::input_tests::print`.
@@ -1226,49 +1226,49 @@ fn write_out(file: &str, lines: &[String]) -> bool {
 }
 
 #[test]
-#[ignore = "creates hidden approval windows (S4 flow harness, gate step s4fl)"]
+#[ignore = "creates hidden approval windows (S4 flow harness, gate step winui)"]
 fn golden_input_a01() {
     run_group("a01");
 }
 
 #[test]
-#[ignore = "creates hidden approval windows (S4 flow harness, gate step s4fl)"]
+#[ignore = "creates hidden approval windows (S4 flow harness, gate step winui)"]
 fn golden_input_keys() {
     run_group("key");
 }
 
 #[test]
-#[ignore = "creates hidden approval windows (S4 flow harness, gate step s4fl)"]
+#[ignore = "creates hidden approval windows (S4 flow harness, gate step winui)"]
 fn golden_input_panel() {
     run_group("panel");
 }
 
 #[test]
-#[ignore = "creates hidden approval windows (S4 flow harness, gate step s4fl)"]
+#[ignore = "creates hidden approval windows (S4 flow harness, gate step winui)"]
 fn golden_input_ai_body() {
     run_group("ai");
 }
 
 #[test]
-#[ignore = "creates hidden approval windows (S4 flow harness, gate step s4fl)"]
+#[ignore = "creates hidden approval windows (S4 flow harness, gate step winui)"]
 fn golden_reentry_open() {
     run_reentry("reentry_open");
 }
 
 #[test]
-#[ignore = "creates hidden approval windows (S4 flow harness, gate step s4fl)"]
+#[ignore = "creates hidden approval windows (S4 flow harness, gate step winui)"]
 fn golden_reentry_click() {
     run_reentry("reentry_click");
 }
 
 #[test]
-#[ignore = "creates hidden approval windows (S4 flow harness, gate step s4fl)"]
+#[ignore = "creates hidden approval windows (S4 flow harness, gate step winui)"]
 fn golden_reentry_capture_taken() {
     run_reentry("reentry_capture_taken");
 }
 
 #[test]
-#[ignore = "creates hidden approval windows (S4 flow harness, gate step s4fl)"]
+#[ignore = "creates hidden approval windows (S4 flow harness, gate step winui)"]
 fn golden_reentry_while_borrowed() {
     run_reentry("reentry_while_borrowed");
 }
@@ -1276,7 +1276,7 @@ fn golden_reentry_while_borrowed() {
 /// Both goldens in full: writes `input.txt` and `reentry.txt` into `YW_S4_FLOW_OUT` when it is
 /// set (for review), else compares each whole file (order and completeness).
 #[test]
-#[ignore = "creates hidden approval windows (S4 flow harness, gate step s4fl)"]
+#[ignore = "creates hidden approval windows (S4 flow harness, gate step winui)"]
 fn print() {
     let mut input = Vec::new();
     for (group, _) in groups() {

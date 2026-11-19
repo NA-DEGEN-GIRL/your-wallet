@@ -1759,6 +1759,42 @@ impl App {
         self.on_main(window, &Msg::Timer(MAIN_TIMER_ID))
     }
 
+    /// Tests (2026-11-20, S4 B7): the arms of [`Self::on_main`] that read no window, for the
+    /// headless approval scenarios (`app_approval::flow_tests::lifecycle::headless`), which make
+    /// no window at all: the session, power and end-session messages (`system_action`), the main
+    /// timer, the event drain (`WM_YW_EVENTS`) and the Ctrl+L shortcut (`WM_YW_LOCK_SHORTCUT`),
+    /// each the same calls in the same order as in `on_main` (the source check
+    /// `the_windowless_main_entry_mirrors_on_main` pins them). Any other message does nothing.
+    #[cfg(test)]
+    pub(crate) fn test_on_main_windowless(&mut self, msg: &Msg) -> Reply {
+        if let Some(action) = system_action(msg) {
+            return self.on_system(action);
+        }
+        match msg {
+            Msg::Timer(MAIN_TIMER_ID) => {
+                self.tick();
+                Reply::Handled(0)
+            }
+            Msg::App { msg, .. } if matches!(*msg, WM_YW_EVENTS | WM_YW_LOCK_SHORTCUT) => {
+                match *msg {
+                    WM_YW_EVENTS => self.drain_events(),
+                    WM_YW_LOCK_SHORTCUT => self.lock_shortcut(),
+                    _ => {}
+                }
+                self.reads_due(self.clock.now_ms());
+                Reply::Handled(0)
+            }
+            _ => Reply::Default,
+        }
+    }
+
+    /// Tests (2026-11-20, S4 B7): the main timer's message, through
+    /// [`Self::test_on_main_windowless`].
+    #[cfg(test)]
+    pub(crate) fn test_main_timer_windowless(&mut self) -> Reply {
+        self.test_on_main_windowless(&Msg::Timer(MAIN_TIMER_ID))
+    }
+
     fn on_system(&mut self, action: SystemAction) -> Reply {
         match action {
             SystemAction::Lock(reason) => {

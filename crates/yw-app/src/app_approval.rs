@@ -3009,6 +3009,15 @@ impl App {
     /// Applies one `Effect::Approval` (S4 B5; called by the executor `App::emit`, at once and in
     /// emission order). Returns the open's answer, which the executor feeds back at once.
     pub(crate) fn apply_approval_effect(&mut self, effect: ApprovalEffect) -> Option<Cmd> {
+        // 2026-11-20 (S4 B7): the headless approval host of the tests records the effect and
+        // answers an open itself (no window); release builds have no such line.
+        #[cfg(test)]
+        if headless_host::installed() {
+            return headless_host::record(
+                effect,
+                self.evm.approval.as_ref().map(ApprovalFlow::shown),
+            );
+        }
         match effect {
             ApprovalEffect::Open {
                 shown,
@@ -3224,8 +3233,17 @@ impl App {
     /// without its flow) fails the tests: the recorders print both cases like a closed window.
     /// 2026-11-19 (S4 B5): checked at the end of the open's answer (was the end of
     /// `open_approval`), and kept here because the flow-only functions name no window.
+    /// 2026-11-20 (S4 B7): under the headless approval host there is never a window
+    /// (`headless_host`), so the check is that none was made.
     #[cfg(test)]
     fn assert_flow_and_window_in_step(&self) {
+        if headless_host::installed() {
+            assert!(
+                self.approval_win.is_none(),
+                "the headless approval host made a window"
+            );
+            return;
+        }
         assert_eq!(
             self.evm.approval.is_some(),
             self.approval_win.is_some(),
@@ -4744,14 +4762,21 @@ pub(crate) mod smoke;
 #[path = "app_approval_flow_support.rs"]
 pub(crate) mod flow_support;
 
+/// S4 B7 (2026-11-20, spec/15 §11.4 S4): the headless approval host: `Effect::Approval`
+/// recorded instead of applied, the open answered without a window (the headless half of the
+/// flow and lifecycle scenarios, `flow_tests::lifecycle::headless`, gate test step).
+#[cfg(test)]
+#[path = "app_approval_headless_host.rs"]
+pub(crate) mod headless_host;
+
 /// S4 A4 (2026-11-18, spec/15 §11.4 S4): the App-level approval flow scenarios and their golden
-/// `app/tests/s4_flow/flow.txt` (`#[ignore]`, gate step `s4fl`).
+/// `app/tests/s4_flow/flow.txt` (`#[ignore]`, gate step `winui`).
 #[cfg(test)]
 #[path = "app_approval_flow_tests.rs"]
 mod flow_tests;
 
 /// S4 A5 (2026-11-18, spec/15 §11.4 S4): the approval window's input mapping and re-entrancy
-/// goldens `app/tests/s4_flow/{input,reentry}.txt` (`#[ignore]`, gate step `s4fl`) and the
+/// goldens `app/tests/s4_flow/{input,reentry}.txt` (`#[ignore]`, gate step `winui`) and the
 /// source checks S1–S3 (gate test step).
 #[cfg(test)]
 #[path = "app_approval_input_tests.rs"]

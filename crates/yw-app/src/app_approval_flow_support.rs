@@ -32,7 +32,10 @@
 //!   windows and skips every call that could show or activate one (`center_on`, `show`,
 //!   `set_foreground`, `flash`, `set_focus`; capture is still taken and released);
 //!   [`HostMode::FailOpen`] refuses the window like a failed `CreateWindowExW` (the open-failure
-//!   path). Removed in B7.
+//!   path). Kept (2026-11-20, S4 B7 as amended by the owner-delegated decision: the plan said
+//!   "removed in B7"; the windowed scenarios and their goldens need real hidden windows, gate step
+//!   `winui`). The headless half of the scenarios runs with `app_approval::headless_host` instead,
+//!   which makes no window at all (gate test step).
 //! - `TEST_SIGNALS`: a scripted trusted-signal oracle ([`Signals`]) that answers the foreground,
 //!   key-state, Enter-in-message and injected reads (critique A-7); since S4 B2 (2026-11-19) the
 //!   reads it answers are `ui::approval_input::TrustedSignals::sample*` (before, the A3 wrappers
@@ -44,7 +47,8 @@
 //!   because the App is borrowed (re-entrancy). Kept until B7 (2026-11-19, S4 B2: the plan said
 //!   "removed in B2", but `input.txt` and `reentry.txt` record this trace and B2 must keep them
 //!   byte-equal; the pure map is tested directly by `ui/approval_input_tests.rs`, and B7 replaces
-//!   the windowed harness).
+//!   the windowed harness). 2026-11-20 (S4 B7): kept with the windowed harness, which B7 did not
+//!   replace (the re-entrancy and Win32 trace of `input.txt`/`reentry.txt` are real windows').
 //!
 //! The fixture never touches the network (the RPC channel and the key queue are captured, never
 //! run; the prepare job is answered by the smoke harness's fixture transport), a card reader, a
@@ -816,7 +820,7 @@ fn assert_hidden(fixture: &Fixture) {
 /// and the gate share the test clock; the scripted oracle answers the gate's reads; one
 /// physical Enter approves the Standard send exactly once (one key job, no re-simulation).
 #[test]
-#[ignore = "creates hidden approval windows (S4 flow harness, gate step s4fl)"]
+#[ignore = "creates hidden approval windows (S4 flow harness, gate step winui)"]
 #[expect(clippy::too_many_lines, reason = "one scenario, open to approval")]
 fn hidden_approval_window_is_never_shown_and_the_seams_drive_it() {
     let fixture = Fixture::new("selftest", HostMode::Hidden);
@@ -976,7 +980,7 @@ fn hidden_approval_window_is_never_shown_and_the_seams_drive_it() {
 
 /// A3 self-test: a refused window rejects the item, shows E-APP-009 and prepares nothing.
 #[test]
-#[ignore = "approval host seam (S4 flow harness, gate step s4fl)"]
+#[ignore = "approval host seam (S4 flow harness, gate step winui)"]
 fn a_refused_approval_window_rejects_with_app009() {
     let fixture = Fixture::new("failopen", HostMode::FailOpen);
     fixture.enqueue_sepolia_send();
@@ -1007,7 +1011,7 @@ fn a_refused_approval_window_rejects_with_app009() {
 /// A3 self-test: the recorded outlet carries a dApp request through the real dispatcher (on the
 /// shared clock) to the App and records its answer.
 #[test]
-#[ignore = "approval host seam (S4 flow harness, gate step s4fl)"]
+#[ignore = "approval host seam (S4 flow harness, gate step winui)"]
 fn the_outlet_records_a_dapp_answer() {
     let fixture = Fixture::new("outlet", HostMode::Hidden);
     let outlet = fixture.connect_outlet();
