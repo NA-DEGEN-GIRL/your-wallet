@@ -4165,6 +4165,10 @@ mod accounts;
 /// shell-call goldens every S3 commit must reproduce.
 pub(crate) mod s3_census;
 
+/// S4 F-A freeze (spec/15 §11.4 S4, 2026-11-19): the frozen approval and secret tests keep their
+/// names and normalized bodies (`s4_flow/frozen-tests.txt`).
+mod s4_frozen;
+
 /// spec/10 §9.2 (2026-11-10): once the PIN is in, the touch prompt is the S11 form's line next to
 /// `검토` (a dApp request: the header band), and it is gone once the card answered — signed or
 /// failed.
