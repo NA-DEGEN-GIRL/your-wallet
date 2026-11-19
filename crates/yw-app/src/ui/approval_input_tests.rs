@@ -77,9 +77,12 @@ fn steps(steps: &[Step], reply: Reply) -> Mapped {
     }
 }
 
-/// One value of every `Msg` variant (the `match` breaks the build when yw-win adds one).
+/// One value of every `Msg` variant (the `match` breaks the build when yw-win adds one), and
+/// (2026-11-19, S4 B2 review) the other values the map tells apart: each key it maps (and a
+/// letter) with and without auto-repeat, the key-up of Enter, both `ActivateApp` and `KillFocus`
+/// values, `SB_ENDSCROLL` and a timer that is not A01's.
 fn every_msg() -> Vec<Msg> {
-    let all = vec![
+    let mut all = vec![
         Msg::Create,
         Msg::Paint,
         Msg::Size { w: 800, h: 700 },
@@ -159,6 +162,21 @@ fn every_msg() -> Vec<Msg> {
             | Msg::App { .. } => {}
         }
     }
+    for vk in [
+        VK_RETURN, VK_SPACE, VK_ESCAPE, VK_TAB, VK_A, VK_PRIOR, VK_NEXT, VK_HOME, VK_END, VK_UP,
+        VK_DOWN,
+    ] {
+        for repeat in [false, true] {
+            all.push(Msg::KeyDown { vk, repeat });
+        }
+    }
+    all.extend([
+        Msg::KeyUp { vk: VK_RETURN },
+        Msg::ActivateApp(false),
+        Msg::KillFocus { to_foreign: false },
+        Msg::VScroll { code: SB_ENDSCROLL },
+        Msg::Timer(99),
+    ]);
     all
 }
 
@@ -913,63 +931,97 @@ fn layout_paint_and_the_rest() {
     }
 }
 
-/// Over every message kind, surface, focus, pressed button, hit and arrival sample: the map
-/// never builds an approving or holding event itself (only `Step::Sampled` delivers one, from a
-/// sample taken at delivery, source check S8), and a sampled step never comes before the press's
-/// own focus and capture steps.
+/// Over every message of [`every_msg`], surface, window state (no window, or every focus ×
+/// pressed button × hit) and arrival sample: the map never builds an approving or holding event
+/// itself (only `Step::Sampled` delivers one, from a sample taken at delivery, source check S8),
+/// and a sampled step never comes before the press's own focus and capture steps. (2026-11-19,
+/// S4 B2 review: the no-window state, the keys, auto-repeats and the other values of
+/// `every_msg` were added; before, one `KeyDown` and no `None` facts.)
 #[test]
 fn approving_events_come_only_from_samples() {
-    let mut sampled = 0;
+    let mut states = vec![None];
+    for focus in [
+        Focus::Reject,
+        Focus::Ack,
+        Focus::Approve,
+        Focus::Raw,
+        Focus::Scroll,
+    ] {
+        for pressed in [
+            None,
+            Some(Pressed::Approve),
+            Some(Pressed::Reject),
+            Some(Pressed::Retry),
+            Some(Pressed::AiRetry),
+        ] {
+            for hits in [
+                NO_HIT,
+                on(true, false, false, false),
+                on(false, true, true, true),
+                on(true, true, true, true),
+            ] {
+                states.push(facts(focus, pressed, hits));
+            }
+        }
+    }
+    let mut cases = Vec::new();
     for msg in every_msg() {
         for surface in [Surface::Approval, Surface::Panel, Surface::AiBody] {
-            for focus in [
-                Focus::Reject,
-                Focus::Ack,
-                Focus::Approve,
-                Focus::Raw,
-                Focus::Scroll,
-            ] {
-                for pressed in [None, Some(Pressed::Approve), Some(Pressed::Reject)] {
-                    for hits in [
-                        NO_HIT,
-                        on(true, false, false, false),
-                        on(false, true, true, true),
-                    ] {
-                        for signals in [NONE, ALL] {
-                            let Mapped { steps, .. } =
-                                map_msg(surface, &msg, facts(focus, pressed, hits), signals);
-                            for (at, step) in steps.iter().enumerate() {
-                                if let Step::Event(event) = step {
-                                    assert!(!trusted_only(*event), "{msg:?} {surface:?} {step:?}");
-                                }
-                                if let Step::Sampled(Trusted::PointerPressed) = step {
-                                    assert_eq!(
-                                        steps.get(..at),
-                                        Some(
-                                            &[
-                                                Step::FocusReceiver,
-                                                Step::Press(Pressed::Approve),
-                                                Step::MoveFocus(Focus::Approve),
-                                                Step::Capture,
-                                            ][..]
-                                        )
-                                    );
-                                }
-                                if let Step::Sampled(Trusted::PointerReleased) = step {
-                                    assert_eq!(
-                                        steps.get(..at),
-                                        Some(&[Step::Release, Step::Unpress][..])
-                                    );
-                                }
-                                sampled += usize::from(matches!(step, Step::Sampled(_)));
-                            }
-                        }
-                    }
+            for state in &states {
+                for signals in [NONE, ALL] {
+                    cases.push((msg, surface, *state, signals));
                 }
             }
         }
     }
-    assert!(sampled > 0);
+    let mut sampled = Vec::new();
+    for (msg, surface, state, signals) in cases {
+        let Mapped { steps, .. } = map_msg(surface, &msg, state, signals);
+        for (at, step) in steps.iter().enumerate() {
+            let case = format!("{msg:?} {surface:?} {state:?} {signals:?}: {step:?}");
+            if let Step::Event(event) = step {
+                assert!(!trusted_only(*event), "{case}");
+            }
+            let Step::Sampled(trusted) = step else {
+                continue;
+            };
+            assert!(state.is_some(), "no window, no sampled event: {case}");
+            match trusted {
+                Trusted::PointerPressed => assert_eq!(
+                    steps.get(..at),
+                    Some(
+                        &[
+                            Step::FocusReceiver,
+                            Step::Press(Pressed::Approve),
+                            Step::MoveFocus(Focus::Approve),
+                            Step::Capture,
+                        ][..]
+                    ),
+                    "{case}"
+                ),
+                Trusted::PointerReleased => assert_eq!(
+                    steps.get(..at),
+                    Some(&[Step::Release, Step::Unpress][..]),
+                    "{case}"
+                ),
+                Trusted::SpacePressed { .. } | Trusted::SpaceReleased | Trusted::ApproveEnter => {}
+            }
+            if !sampled.contains(trusted) {
+                sampled.push(*trusted);
+            }
+        }
+    }
+    // The sweep reached every sampled event.
+    for trusted in [
+        Trusted::PointerPressed,
+        Trusted::PointerReleased,
+        Trusted::SpacePressed { repeat: false },
+        Trusted::SpacePressed { repeat: true },
+        Trusted::SpaceReleased,
+        Trusted::ApproveEnter,
+    ] {
+        assert!(sampled.contains(&trusted), "{trusted:?} not reached");
+    }
 }
 
 /// The stray-press map is unchanged (`tests/approval_input.rs` pins it too), and the release

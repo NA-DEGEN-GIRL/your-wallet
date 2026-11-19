@@ -1436,7 +1436,7 @@ fn approval_window_is_topmost_and_eats_activating_clicks() {
         &[
             "if surface == Surface::Approval && matches!(msg, Msg::MouseActivate) {",
             "foreground_raw: Self::sample_raw_foreground(window, \"mouse_activate\"),",
-            "} else { Self::default() }",
+            "} else { Self::NONE }",
         ],
     );
     let a01 = item(&map, "fn map_approval(", 0);
@@ -1471,7 +1471,14 @@ fn approval_window_is_topmost_and_eats_activating_clicks() {
 /// and `injected()` occur in the approval shell only inside the `TrustedSignals::sample*` readers
 /// of `ui/approval_input.rs` (none in `app_approval.rs`); the stray-press map names no approving
 /// event. Before B2: the Enter arm of `on_approval_key` and the A3 wrappers in `app_approval.rs`.
+/// 2026-11-19 (S4 B2 review): `Trusted::event` and `TrustedSignals::sample_for` are private and
+/// called only by `Trusted::deliver` (sample, then build), the sample's fields are private, it
+/// has no `Default`, and the shell reads the gate foreground through its getter.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one check per enforced part of the Enter rule and its readers"
+)]
 fn approve_enter_is_physical_and_not_injected() {
     /// `ui/approval_input.rs` without comment lines and before its test module.
     fn map_code() -> String {
@@ -1496,7 +1503,7 @@ fn approve_enter_is_physical_and_not_injected() {
             "Focus::Reject if !repeat => Some(Step::Event(InteractionEvent::RejectActivated)),",
         ],
     );
-    let event = folded(item(&map, "    pub const fn event(", 4));
+    let event = folded(item(&map, "    const fn event(", 4));
     in_order(
         &event,
         &[
@@ -1509,7 +1516,38 @@ fn approve_enter_is_physical_and_not_injected() {
         1,
         "built only by Trusted::event"
     );
-    let sample = folded(item(&map, "    pub fn sample_for(", 4));
+    let deliver = folded(item(&map, "    pub fn deliver(", 4));
+    assert!(
+        deliver.contains("self.event(TrustedSignals::sample_for(self, window))"),
+        "{deliver}"
+    );
+    for private in [
+        "pub const fn event(",
+        "pub fn sample_for(",
+        "impl Default for TrustedSignals",
+    ] {
+        assert!(!map.contains(private), "{private} in ui/approval_input.rs");
+    }
+    let head = "pub struct TrustedSignals {";
+    let fields = item(&map, head, 0);
+    assert_eq!(
+        fields.matches("pub ").count(),
+        1,
+        "private fields:
+{fields}"
+    );
+    let derive = map
+        .get(..map.find(head).unwrap_or_default())
+        .and_then(|before| before.rfind("#[derive(").and_then(|at| before.get(at..)))
+        .expect("the derive of TrustedSignals");
+    assert!(!derive.contains("Default"), "{derive}");
+    assert_eq!(map.matches("self.event(").count(), 1, "only deliver builds");
+    assert_eq!(
+        map.matches("sample_for(").count(),
+        2,
+        "defined, called by deliver"
+    );
+    let sample = folded(item(&map, "    fn sample_for(", 4));
     in_order(
         &sample,
         &[
@@ -1550,7 +1588,7 @@ fn approve_enter_is_physical_and_not_injected() {
     for read in READS {
         assert!(!code.contains(read), "{read} in app_approval.rs");
     }
-    assert!(code.contains("TrustedSignals::sample_foreground(&ui.window).foreground"));
+    assert!(code.contains("TrustedSignals::sample_foreground(&ui.window).foreground()"));
     let stray = item(&map, "pub const fn stray_press(", 0);
     assert!(stray.contains("Some(InteractionEvent::OtherPress)"));
     for approving in ["ApproveActivated", "PointerPressed", "SpacePressed"] {
@@ -1564,7 +1602,20 @@ fn approve_enter_is_physical_and_not_injected() {
 /// `ApprovalInput {` literal occur only in `ui/approval_input.rs`, where `Trusted::event` builds
 /// the events from a sample (each as a whole identifier: yw-core's `HcApprovalInput` is another
 /// type). Asserts that it scanned the crate (> 50 files) and found the map.
+///
+/// 2026-11-19 (S4 B2 review): the names above alone did not stop a forged approval: production
+/// code could build `Trusted::ApproveEnter.event(TrustedSignals { enter_in_message: true, .. })`
+/// without naming any of them (a review probe in `run_step` passed every check). Since then the
+/// sample's fields and `Trusted::event` are private (S2 asserts it), so only `Trusted::deliver`
+/// leaves the module with an event, and this check also pins where the way in is named: outside
+/// `ui/approval_input.rs`, `Trusted::` and a `TrustedSignals {` literal occur nowhere, and
+/// `Sampled(`, `.deliver(` and `.event(` once each, in `app_approval.rs`: the one
+/// `Step::Sampled` arm of `run_step`, which delivers, and the session call of `interaction()`.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the crate scan, then the names and the way to a sampled event"
+)]
 fn approving_input_is_built_only_by_the_mapper() {
     fn sources(root: &std::path::Path, dir: &std::path::Path, found: &mut Vec<(String, String)>) {
         for entry in std::fs::read_dir(dir).unwrap() {
@@ -1660,6 +1711,62 @@ fn approving_input_is_built_only_by_the_mapper() {
             ("ui/approval_input.rs", "SpacePressed"),
             ("ui/approval_input.rs", "SpaceReleased"),
         ]
+    );
+    // The way to a sampled event (2026-11-19, S4 B2 review).
+    let mut ways: Vec<(&str, &str, usize)> = Vec::new();
+    for (path, text) in &found {
+        let code = production(text);
+        if path == "ui/approval_input.rs" {
+            assert_eq!(
+                code.matches(".deliver(").count(),
+                0,
+                "the map never delivers"
+            );
+            assert!(
+                names(&code, "Trusted::"),
+                "the map names its sampled events"
+            );
+            continue;
+        }
+        for name in ["Trusted::", "TrustedSignals {", "Sampled("] {
+            let count = code
+                .match_indices(name)
+                .filter(|(at, _)| {
+                    !code[..*at]
+                        .chars()
+                        .next_back()
+                        .is_some_and(|c| c.is_alphanumeric() || c == '_')
+                })
+                .count();
+            if count > 0 {
+                ways.push((path.as_str(), name, count));
+            }
+        }
+        for call in [".deliver(", ".event("] {
+            let count = code.matches(call).count();
+            if count > 0 {
+                ways.push((path.as_str(), call, count));
+            }
+        }
+    }
+    ways.sort_unstable();
+    assert_eq!(
+        ways,
+        [
+            ("app_approval.rs", ".deliver(", 1),
+            ("app_approval.rs", ".event(", 1),
+            ("app_approval.rs", "Sampled(", 1),
+        ]
+    );
+    let code = approval_production();
+    assert!(
+        folded(item(&code, "    fn run_step(", 4))
+            .contains("Step::Sampled(trusted) => self.interaction(trusted.deliver(window)),"),
+        "run_step delivers the sampled step"
+    );
+    assert!(
+        item(&code, "    fn interaction(", 4).contains("ui.session.event(now, event)"),
+        "interaction() hands the event to the session"
     );
 }
 

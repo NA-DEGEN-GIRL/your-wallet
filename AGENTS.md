@@ -235,7 +235,7 @@ The Solana dApp transaction series (`git log --grep=sol-dapp`, steps 1–8) is a
   - shared model, `FieldKey` and digests: `crates/yw-core/src/approval/`
   - per chain: `crates/yw-core/src/evm/display/`, `sol/display.rs`, `sol/dapp/display.rs`, `hypercore/display.rs`, btc/zec modules
 - **Drawing is in yw-app**: `app_approval.rs` paints the content model `crates/yw-engine/src/approval/view.rs` (re-exported as `ui::approval_view`). The queue and display re-checks (`crates/yw-engine/src/approval/mod.rs`) and line breaking (`approval/layout.rs`) are in yw-engine.
-- **Interaction rules are in `crates/yw-engine/src/approval/interaction.rs`** (the Win32 message → `InteractionEvent` mapping in yw-app `ui/approval_input.rs`: `TrustedSignals` sampled at the message, the pure `map_msg`/`map_key`, approving events built only by `Trusted::event`; 2026-11-19 S4 B2, was `OtherPress` only). Do not weaken them (§6).
+- **Interaction rules are in `crates/yw-engine/src/approval/interaction.rs`** (the Win32 message → `InteractionEvent` mapping in yw-app `ui/approval_input.rs`: `TrustedSignals` sampled at the message, the pure `map_msg`/`map_key`, approving events built only by `Trusted::deliver` from its own sample (the sample's fields and `Trusted::event` are private, source checks S2 and S8); 2026-11-19 S4 B2, was `OtherPress` only). Do not weaken them (§6).
 - Changing the field set changes the display digest. Update goldens on purpose:
   - `crates/yw-engine/tests/approval_golden.rs`, `approval_interaction.rs`, `approval_sim_states.rs`
   - spec/09 §3.13

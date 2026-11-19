@@ -2791,8 +2791,8 @@ impl App {
         };
         // A false → true edge (activation, also within this process) restarts the arm delay.
         // The gate's foreground sample, taken before the event (2026-11-19, S4 B2: through
-        // `TrustedSignals`, was `window_is_foreground`).
-        let foreground = TrustedSignals::sample_foreground(&ui.window).foreground;
+        // `TrustedSignals`, was `window_is_foreground`; B2 review: a getter, the field is private).
+        let foreground = TrustedSignals::sample_foreground(&ui.window).foreground();
         #[cfg(test)]
         flow_support::log_input(flow_support::Logged::Event {
             event,
@@ -3200,10 +3200,10 @@ impl App {
     ) -> Option<Reply> {
         match step {
             Step::Event(event) => self.interaction(event),
-            Step::Sampled(trusted) => {
-                let signals = TrustedSignals::sample_for(trusted, window);
-                self.interaction(trusted.event(signals));
-            }
+            // The only delivery of an approving or holding event (source check S8; 2026-11-19,
+            // S4 B2 review: `Trusted::deliver` samples and builds in one call, was
+            // `TrustedSignals::sample_for` then a `pub` `Trusted::event`).
+            Step::Sampled(trusted) => self.interaction(trusted.deliver(window)),
             Step::Activated => {
                 #[cfg(test)]
                 flow_support::log_input(flow_support::Logged::Activated {
@@ -3293,7 +3293,7 @@ impl App {
             Step::Tab => {
                 if let Some(ui) = self.evm.window.as_mut() {
                     let order = tab_order(ui.view.blocks.contains(&Block::Ack), ui.view.has_raw);
-                    let backwards = TrustedSignals::sample_shift().shift_down;
+                    let backwards = TrustedSignals::sample_shift().shift_down();
                     ui.focus = tab_target(&order, ui.focus, backwards);
                     ui.window.invalidate();
                     ui.panel.invalidate();

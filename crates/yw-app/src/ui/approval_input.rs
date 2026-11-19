@@ -9,12 +9,19 @@
 //! its ordered [`Step`]s by the pure [`map_msg`] and [`map_key`] (one table row per arm, spec/04
 //! §3.4 table; the table tests below mirror it row by row). The approving and holding events
 //! (`ApproveActivated`, `PointerPressed`, `PointerReleased`, `SpacePressed`, `SpaceReleased`) are
-//! built only here ([`Trusted::event`]), from a sample the shell takes right before it delivers
-//! them; a press's focus and capture steps come before that sample (S4 critique A-7: the pointer
-//! press samples the foreground and the button after `SetFocus` and `SetCapture`), and
+//! built only here ([`Trusted::deliver`]), from a sample it takes itself right before the shell
+//! delivers them; a press's focus and capture steps come before that sample (S4 critique A-7: the
+//! pointer press samples the foreground and the button after `SetFocus` and `SetCapture`), and
 //! `ReleaseCapture` comes before the release event (A-8). Before B2, `app_approval.rs` read the
 //! signals through small wrappers and built the events inline in each arm; the reads, Win32 calls
 //! and events keep their order (`app/tests/s4_flow/input.txt` and `reentry.txt` byte-equal).
+//!
+//! 2026-11-19 (S4 B2 review): a sample's fields and the sample-to-event step (`Trusted::event`)
+//! are private, so no code outside this module can build a sample or an approving event from
+//! made-up values (source check S8 also pins where `Trusted::` and `.deliver(` occur). Before,
+//! the fields were `pub`, the type derived `Default` and `Trusted::event` was `pub`: any yw-app
+//! code could have built `ApproveActivated { physical: true }` without naming a scanned
+//! identifier.
 
 use yw_win::ui::{Msg, Rect, Reply, Window};
 
@@ -79,8 +86,12 @@ pub enum Surface {
 /// The approval window's trusted input, read while its message is processed (spec/04 §3.4). The
 /// `sample*` functions are the only readers of the foreground, the key state, the message's own
 /// key state and the injection flag in the approval shell (source check S2); each sample reads
-/// only what its step needs, so a field it does not read stays `false`.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// only what its step needs, so a field it does not read stays `false`. 2026-11-19 (S4 B2
+/// review): the fields are private and there is no `Default`, so only the `sample*` functions
+/// (and this module's table tests) make one; the shell reads the two values it needs through
+/// [`TrustedSignals::foreground`] and [`TrustedSignals::shift_down`]. Before, the fields were
+/// `pub` and the type derived `Default`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[expect(
     clippy::struct_excessive_bools,
     reason = "one independent value per Win32 read"
@@ -88,30 +99,53 @@ pub enum Surface {
 pub struct TrustedSignals {
     /// A01 is the foreground window: the gate's input, read before every interaction event (the
     /// render harness may force it under `cfg(test)`).
-    pub foreground: bool,
+    foreground: bool,
     /// The raw foreground read (no harness force) of the activating click and the approve
     /// press's click-through check.
-    pub foreground_raw: bool,
+    foreground_raw: bool,
     /// `is_down(VK_LBUTTON)`.
-    pub lbutton_down: bool,
+    lbutton_down: bool,
     /// `is_down(VK_SPACE)`.
-    pub space_down: bool,
+    space_down: bool,
     /// `is_down(VK_SHIFT)` (Tab direction only).
-    pub shift_down: bool,
+    shift_down: bool,
     /// Enter is down in the key state of the message being handled (`is_down_in_message`; a
     /// posted `WM_KEYDOWN` is not, security review L5).
-    pub enter_in_message: bool,
+    enter_in_message: bool,
     /// The message came from injected input (`SendInput`).
-    pub injected: bool,
+    injected: bool,
 }
 
 impl TrustedSignals {
+    /// Nothing read.
+    const NONE: Self = Self {
+        foreground: false,
+        foreground_raw: false,
+        lbutton_down: false,
+        space_down: false,
+        shift_down: false,
+        enter_in_message: false,
+        injected: false,
+    };
+
+    /// A01 is the foreground window (the gate's sample, [`TrustedSignals::sample_foreground`]).
+    #[must_use]
+    pub const fn foreground(self) -> bool {
+        self.foreground
+    }
+
+    /// Shift is down (Tab's direction, [`TrustedSignals::sample_shift`]).
+    #[must_use]
+    pub const fn shift_down(self) -> bool {
+        self.shift_down
+    }
+
     /// The gate's foreground sample, taken in `interaction()` before every event.
     #[must_use]
     pub fn sample_foreground(window: &Window) -> Self {
         Self {
             foreground: Self::sample_gate_foreground(window),
-            ..Self::default()
+            ..Self::NONE
         }
     }
 
@@ -122,36 +156,37 @@ impl TrustedSignals {
         if surface == Surface::Approval && matches!(msg, Msg::MouseActivate) {
             Self {
                 foreground_raw: Self::sample_raw_foreground(window, "mouse_activate"),
-                ..Self::default()
+                ..Self::NONE
             }
         } else {
-            Self::default()
+            Self::NONE
         }
     }
 
     /// What `trusted` reads, right before its event is delivered (after the press's focus and
     /// capture steps). `window`: the window that got the message (the approve press reads its
-    /// raw foreground; `None` only for keys, which never read it).
+    /// raw foreground; `None` only for keys, which never read it). Private: only
+    /// [`Trusted::deliver`] samples for an event (2026-11-19, S4 B2 review).
     #[must_use]
-    pub fn sample_for(trusted: Trusted, window: Option<&Window>) -> Self {
+    fn sample_for(trusted: Trusted, window: Option<&Window>) -> Self {
         match trusted {
             Trusted::PointerPressed => Self {
                 foreground_raw: window
                     .is_some_and(|window| Self::sample_raw_foreground(window, "mouse_down")),
                 lbutton_down: Self::sample_key(VK_LBUTTON, "mouse_down"),
-                ..Self::default()
+                ..Self::NONE
             },
             Trusted::PointerReleased => Self {
                 lbutton_down: Self::sample_key(VK_LBUTTON, "mouse_up"),
-                ..Self::default()
+                ..Self::NONE
             },
             Trusted::SpacePressed { .. } => Self {
                 space_down: Self::sample_key(VK_SPACE, "key_down"),
-                ..Self::default()
+                ..Self::NONE
             },
             Trusted::SpaceReleased => Self {
                 space_down: Self::sample_key(VK_SPACE, "key_up"),
-                ..Self::default()
+                ..Self::NONE
             },
             Trusted::ApproveEnter => {
                 // Short-circuit as before: the injection flag is read only for an Enter that is
@@ -160,7 +195,7 @@ impl TrustedSignals {
                 Self {
                     enter_in_message,
                     injected: enter_in_message && Self::sample_injection(),
-                    ..Self::default()
+                    ..Self::NONE
                 }
             }
         }
@@ -171,7 +206,7 @@ impl TrustedSignals {
     pub fn sample_shift() -> Self {
         Self {
             shift_down: Self::sample_key(VK_SHIFT, "tab"),
-            ..Self::default()
+            ..Self::NONE
         }
     }
 
@@ -247,7 +282,10 @@ impl TrustedSignals {
 }
 
 /// An event whose trusted fields come from a sample taken right before it is delivered: the
-/// approving and holding events. They are built only by [`Trusted::event`] (source check S8).
+/// approving and holding events. They are built only by [`Trusted::deliver`] (source check S8:
+/// in yw-app production code `Trusted::` and `TrustedSignals {` occur only in this file, and
+/// `Step::Sampled` is run, and `.deliver(` called, only by the one `Step::Sampled` arm of
+/// `App::run_step`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Trusted {
     /// A left press on `승인`: click-through = A01 was not the foreground window (raw read),
@@ -264,9 +302,19 @@ pub enum Trusted {
 }
 
 impl Trusted {
-    /// The event this sample delivers (spec/04 §3.4 table).
+    /// Samples what this event reads, now (`TrustedSignals::sample_for`), and builds the event
+    /// from that sample: the only way out of this module to an approving or holding event
+    /// (2026-11-19, S4 B2 review: was `TrustedSignals::sample_for` + a `pub` `Trusted::event`,
+    /// which took a sample built anywhere). `window`: the window that got the message.
     #[must_use]
-    pub const fn event(self, signals: TrustedSignals) -> InteractionEvent {
+    pub fn deliver(self, window: Option<&Window>) -> InteractionEvent {
+        self.event(TrustedSignals::sample_for(self, window))
+    }
+
+    /// The event `signals` delivers (spec/04 §3.4 table). Private: the table tests call it with
+    /// made-up samples; production calls it only through [`Trusted::deliver`].
+    #[must_use]
+    const fn event(self, signals: TrustedSignals) -> InteractionEvent {
         match self {
             Self::PointerPressed => InteractionEvent::PointerPressed {
                 inside: true,
@@ -462,8 +510,8 @@ pub fn panel_click(hit: PanelHit) -> Vec<Step> {
 pub enum Step {
     /// `interaction(event)`: an event the message decides by itself.
     Event(InteractionEvent),
-    /// Sample what `Trusted` reads now ([`TrustedSignals::sample_for`]), then deliver
-    /// [`Trusted::event`].
+    /// Sample what `Trusted` reads now and deliver its event ([`Trusted::deliver`]; 2026-11-19,
+    /// S4 B2 review: one call, was `TrustedSignals::sample_for` then `Trusted::event`).
     Sampled(Trusted),
     /// `WM_ACTIVATEAPP(TRUE)`: restart the arm delay unconditionally, then foreground `true` (not
     /// an interaction event).
