@@ -51,7 +51,7 @@ use yw_core::vault::EvmKeySource;
 use yw_win::ui::{Handler, Msg, Reply, Window, WindowKind, WindowSpec, create_window};
 
 use super::flow_support::{self, Fixture, HostMode, Outlet, START_MS, Signals};
-use super::{Focus, PANEL_CLASS, VK_ESCAPE, VK_RETURN, VK_SPACE, VK_TAB, text};
+use super::{Focus, PANEL_CLASS, text};
 use crate::app_evm::QueuedItem;
 use crate::events::KeyJob;
 use crate::flow::evm::prepare::{
@@ -59,6 +59,7 @@ use crate::flow::evm::prepare::{
 };
 use crate::flow::evm::{ChainCache, SharedTransport};
 use crate::ui::approval::QueueSource;
+use crate::ui::approval_input::{VK_ESCAPE, VK_RETURN, VK_SPACE, VK_TAB};
 use crate::ui::interaction::{InteractionEvent, PrepareStage, PrepareState, ReadyContent};
 use crate::workers::rpc::RpcJob;
 

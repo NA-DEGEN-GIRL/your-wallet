@@ -17,7 +17,6 @@ use yw_core::evm::chain::SEPOLIA;
 use yw_core::evm::simulate::needs_resimulation;
 use yw_core::lang::{Lang, Text};
 use yw_engine::approval::QueueId;
-use yw_win::input::is_down;
 use yw_win::ui::{
     Color, DrawFlags, Handler, Msg, PaintDc, Rect, Reply, Window, WindowKind, WindowSpec,
     create_window,
@@ -43,7 +42,11 @@ use crate::flow::evm::prepare::{
 };
 use crate::logging::{self, Field};
 use crate::ui::approval::QueueOutcome;
-use crate::ui::approval_input::stray_press;
+use crate::ui::approval_input::{
+    APPROVAL_TIMER_ID, BarHits, Facts, Focus, Mapped, Pressed, ScrollGoal, Step, Surface,
+    TrustedSignals, is_release, map_msg, panel_click, panel_hit, tab_order, tab_target,
+    wheel_delta,
+};
 use crate::ui::approval_text as text;
 use crate::ui::approval_view::{ApprovalView, Block, Tone, escape_spans, view};
 use crate::ui::badge::{BADGE_DIP, BADGE_GAP_DIP, Badge};
@@ -59,51 +62,11 @@ use crate::workers::rpc::RpcJob;
 pub const APPROVAL_CLASS: &str = "YourWalletV3Approval";
 /// Scrolling panel class.
 pub const PANEL_CLASS: &str = "YourWalletV3Panel";
-const APPROVAL_TIMER_ID: usize = 7;
-const MA_ACTIVATEANDEAT: isize = 2;
-/// `SB_ENDSCROLL`: the scroll-bar button was released (every other `WM_VSCROLL` code comes from
-/// a scroll-bar press or drag, which counts as a press for the press-gap rule).
-const SB_ENDSCROLL: u16 = 8;
 /// Extra window height (DIP) when the AI panel is reserved (spec/06 §6: ten body lines plus the
 /// title row), so the core content area keeps the size it has without the panel.
 const AI_PANEL_EXTRA_DIP: i32 = 240;
 const SKIP_BLOCKED: Text = text::AI_SKIP_BLOCKED;
 const SKIP_FAILED: Text = text::AI_SKIP_FAILED;
-const VK_LBUTTON: u16 = 0x01;
-const VK_TAB: u16 = 0x09;
-const VK_RETURN: u16 = 0x0D;
-const VK_SHIFT: u16 = 0x10;
-const VK_ESCAPE: u16 = 0x1B;
-const VK_SPACE: u16 = 0x20;
-const VK_PRIOR: u16 = 0x21;
-const VK_NEXT: u16 = 0x22;
-const VK_END: u16 = 0x23;
-const VK_HOME: u16 = 0x24;
-const VK_UP: u16 = 0x26;
-const VK_DOWN: u16 = 0x28;
-
-/// Keyboard focus inside A01 (spec/04 §3.4 Tab order).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Focus {
-    /// `거부` (initial).
-    Reject,
-    /// The acknowledgement checkbox.
-    Ack,
-    /// `승인`.
-    Approve,
-    /// `원본 데이터`.
-    Raw,
-    /// The scrolling area.
-    Scroll,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Pressed {
-    Approve,
-    Reject,
-    Retry,
-    AiRetry,
-}
 
 /// Which approval window is shown (2026-11-19, S4 F1, L-1, spec/04 §3.6): none, or one showing
 /// the queue item with this id (`None`: a window without its queue item, not expected between
@@ -1025,69 +988,13 @@ thread_local! {
         const { core::cell::Cell::new(false) };
 }
 
-/// Whether A01 is the foreground window (the gate input, spec/04 §3.4).
-fn window_is_foreground(window: &Window) -> bool {
-    #[cfg(test)]
-    if let Some(value) = flow_support::scripted(flow_support::Read::Foreground) {
-        return value;
-    }
-    #[cfg(test)]
-    if TEST_FORCE_FOREGROUND.with(core::cell::Cell::get) {
-        return true;
-    }
-    window.is_foreground()
-}
-
-// The trusted-signal reads and the Win32 side effects of A01 (spec/04 §3.4) go through the
-// small functions below, each a plain call in release builds. 2026-11-18 (S4 A3, spec/15 §11.4
-// S4): under `cfg(test)` a scripted signal oracle answers the reads and every call is traced
-// with its program point, so the sample points are pinned before S4 moves them
-// (`flow_support`); a hidden test host skips the calls that could show or activate a window.
-
-/// `window.is_foreground()` without the render harness's force: the activating click and the
-/// approve press's click-through read the real foreground.
-#[cfg_attr(
-    not(test),
-    expect(unused_variables, reason = "`point` labels the cfg(test) trace only")
-)]
-fn raw_foreground(window: &Window, point: &'static str) -> bool {
-    #[cfg(test)]
-    if let Some(value) = flow_support::scripted(flow_support::Read::RawForeground(point)) {
-        return value;
-    }
-    window.is_foreground()
-}
-
-/// `is_down(vk)`: the key or button is down in the thread's key state.
-#[cfg_attr(
-    not(test),
-    expect(unused_variables, reason = "`point` labels the cfg(test) trace only")
-)]
-fn key_down(vk: u16, point: &'static str) -> bool {
-    #[cfg(test)]
-    if let Some(value) = flow_support::scripted(flow_support::Read::KeyDown(vk, point)) {
-        return value;
-    }
-    is_down(vk)
-}
-
-/// Enter is down in the state of the message being handled (L5: a posted `WM_KEYDOWN` is not).
-fn enter_in_message() -> bool {
-    #[cfg(test)]
-    if let Some(value) = flow_support::scripted(flow_support::Read::EnterInMessage) {
-        return value;
-    }
-    yw_win::input::is_down_in_message(VK_RETURN)
-}
-
-/// The message being handled came from injected input (`SendInput`).
-fn injected_input() -> bool {
-    #[cfg(test)]
-    if let Some(value) = flow_support::scripted(flow_support::Read::Injected) {
-        return value;
-    }
-    yw_win::input::injected()
-}
+// The Win32 side effects of A01 (spec/04 §3.4) go through the small functions below, each a
+// plain call in release builds. 2026-11-18 (S4 A3, spec/15 §11.4 S4): under `cfg(test)` every
+// call is traced with its program point (`flow_support`); a hidden test host skips the calls that
+// could show or activate a window. 2026-11-19 (S4 B2): the trusted-signal reads that were here
+// (`window_is_foreground`, `raw_foreground`, `key_down`, `enter_in_message`, `injected_input`)
+// are `ui::approval_input::TrustedSignals::sample*`, their only readers (source check S2), with
+// the same scripted oracle under `cfg(test)`.
 
 fn show_window(window: &Window) {
     #[cfg(test)]
@@ -2883,7 +2790,9 @@ impl App {
             return;
         };
         // A false → true edge (activation, also within this process) restarts the arm delay.
-        let foreground = window_is_foreground(&ui.window);
+        // The gate's foreground sample, taken before the event (2026-11-19, S4 B2: through
+        // `TrustedSignals`, was `window_is_foreground`).
+        let foreground = TrustedSignals::sample_foreground(&ui.window).foreground;
         #[cfg(test)]
         flow_support::log_input(flow_support::Logged::Event {
             event,
@@ -2896,13 +2805,7 @@ impl App {
         let status = ui.session.event(now, event);
         if event.is_press() {
             ui.early_release = false;
-        } else if holding
-            && status == InteractionStatus::Pending
-            && matches!(
-                event,
-                InteractionEvent::PointerReleased { .. } | InteractionEvent::SpaceReleased { .. }
-            )
-        {
+        } else if holding && status == InteractionStatus::Pending && is_release(event) {
             ui.early_release = true;
         }
         let deadline = ui.session.gate.deadline_ms;
@@ -3166,19 +3069,6 @@ impl App {
 
     // ----- window messages ----------------------------------------------------------------
 
-    fn focus_order(ui: &ApprovalUi) -> Vec<Focus> {
-        let mut order = vec![Focus::Reject];
-        if ui.view.blocks.contains(&Block::Ack) {
-            order.push(Focus::Ack);
-        }
-        order.push(Focus::Approve);
-        if ui.view.has_raw {
-            order.push(Focus::Raw);
-        }
-        order.push(Focus::Scroll);
-        order
-    }
-
     fn toggle_ack(&mut self) {
         #[cfg(test)]
         self.log_approval_call(flow_support::Call::ToggleAck);
@@ -3238,166 +3128,83 @@ impl App {
         }
     }
 
-    #[expect(clippy::too_many_lines, reason = "one arm per spec/04 §3.4 input row")]
+    // 2026-11-19 (S4 B2, spec/15 §11.4 S4, spec/04 §3.4): the window procedures of A01, its panel
+    // and its AI body only sample what a message reads on arrival (`TrustedSignals`), read the
+    // window's facts, map the message with the pure `ui::approval_input::map_msg` and run its steps
+    // in order (`run_steps`); a step that delivers an approving or holding event samples its
+    // trusted signals right before it. Before, each arm read the signals through the A3 wrappers
+    // and built its events inline. The reads, Win32 calls and events keep their order
+    // (`s4_flow/input.txt`, `reentry.txt` byte-equal).
+
     pub(crate) fn on_approval_msg(&mut self, window: &Window, msg: &Msg) -> Reply {
-        if let Some(event) = stray_press(msg) {
-            // Right/middle/X button and non-client presses count too (spec/04 §3.4).
-            self.interaction(event);
-            return Reply::Default;
+        self.on_surface_msg(Surface::Approval, window, msg)
+    }
+
+    /// One message of `surface`: sample, map, run.
+    fn on_surface_msg(&mut self, surface: Surface, window: &Window, msg: &Msg) -> Reply {
+        let signals = TrustedSignals::sample_on_arrival(surface, msg, window);
+        let facts = self.input_facts(msg);
+        let Mapped { steps, reply } = map_msg(surface, msg, facts, signals);
+        self.run_steps(surface, Some(window), &steps)
+            .unwrap_or(reply)
+    }
+
+    /// What A01 is when a message arrives (`None`: no window): its focus, its pressed button
+    /// and, for a mouse message, the bottom-bar buttons that contain the point.
+    fn input_facts(&self, msg: &Msg) -> Option<Facts> {
+        let ui = self.evm.window.as_ref()?;
+        let hits = match *msg {
+            Msg::MouseDown { x, y } | Msg::MouseUp { x, y } | Msg::MouseMove { x, y } => {
+                let bottom = ui.bottom;
+                BarHits {
+                    approve: bottom.approve.contains(x, y),
+                    reject: bottom.reject.contains(x, y),
+                    retry: bottom.retry.is_some_and(|rect| rect.contains(x, y)),
+                    ai_retry: bottom.ai_retry.is_some_and(|rect| rect.contains(x, y)),
+                }
+            }
+            _ => BarHits::default(),
+        };
+        Some(Facts {
+            focus: ui.focus,
+            pressed: ui.pressed,
+            hits,
+        })
+    }
+
+    /// Runs mapped steps in order; `Some(reply)` when a guard step ended the message. `window`:
+    /// the window that got it (`None` only for `on_approval_key`'s keys, whose steps need none).
+    fn run_steps(
+        &mut self,
+        surface: Surface,
+        window: Option<&Window>,
+        steps: &[Step],
+    ) -> Option<Reply> {
+        // The window shown when the message arrived (S4 F1, L-1).
+        let shown = self.shown_window();
+        for step in steps {
+            if let Some(reply) = self.run_step(surface, window, shown, *step) {
+                return Some(reply);
+            }
         }
-        match msg {
-            Msg::Paint => {
-                self.paint_approval(window);
-                Reply::Handled(0)
+        None
+    }
+
+    #[expect(clippy::too_many_lines, reason = "one arm per mapped step")]
+    fn run_step(
+        &mut self,
+        surface: Surface,
+        window: Option<&Window>,
+        shown: ShownWindow,
+        step: Step,
+    ) -> Option<Reply> {
+        match step {
+            Step::Event(event) => self.interaction(event),
+            Step::Sampled(trusted) => {
+                let signals = TrustedSignals::sample_for(trusted, window);
+                self.interaction(trusted.event(signals));
             }
-            Msg::Size { .. } | Msg::DpiChanged { .. } => {
-                if let Some(ui) = self.evm.window.as_mut() {
-                    ui.layout = None;
-                }
-                self.rebuild_view();
-                Reply::Default
-            }
-            Msg::MouseActivate => {
-                if raw_foreground(window, "mouse_activate") {
-                    Reply::Default
-                } else {
-                    // The eaten activating click (any button) is a press while not armed.
-                    self.interaction(InteractionEvent::OtherPress);
-                    Reply::Handled(MA_ACTIVATEANDEAT)
-                }
-            }
-            Msg::Timer(APPROVAL_TIMER_ID) => {
-                self.interaction(InteractionEvent::Tick);
-                self.ai_tick(self.clock.now_ms());
-                if let Some(ui) = self.evm.window.as_ref()
-                    && matches!(
-                        ui.session.gate.prepare,
-                        PrepareState::Preparing(PrepareStage::Simulating { .. })
-                    )
-                {
-                    self.rebuild_view_with(false);
-                }
-                Reply::Handled(0)
-            }
-            Msg::MouseDown { x, y } => {
-                let on_approve = self
-                    .evm
-                    .window
-                    .as_ref()
-                    .is_some_and(|ui| ui.bottom.approve.contains(*x, *y));
-                let shown = self.shown_window();
-                if !on_approve {
-                    // Every press counts for the press-gap rule (spec/04 §3.4).
-                    self.interaction(InteractionEvent::OtherPress);
-                }
-                // 2026-11-19 (S4 F1, L-1): a press that ended this request (past its deadline)
-                // goes no further, like a click with no window. Before, the rest of this arm
-                // ran on the next request's window that the press had just opened.
-                if self.shown_window() != shown {
-                    return Reply::Default;
-                }
-                let Some(ui) = self.evm.window.as_mut() else {
-                    return Reply::Default;
-                };
-                focus_window(window);
-                let bottom = ui.bottom;
-                if bottom.approve.contains(*x, *y) {
-                    ui.pressed = Some(Pressed::Approve);
-                    ui.focus = Focus::Approve;
-                    capture_mouse(window);
-                    self.interaction(InteractionEvent::PointerPressed {
-                        inside: true,
-                        click_through: !raw_foreground(window, "mouse_down"),
-                        physical_down: key_down(VK_LBUTTON, "mouse_down"),
-                    });
-                } else if bottom.reject.contains(*x, *y) {
-                    ui.pressed = Some(Pressed::Reject);
-                    ui.focus = Focus::Reject;
-                    capture_mouse(window);
-                } else if bottom.retry.is_some_and(|rect| rect.contains(*x, *y)) {
-                    ui.pressed = Some(Pressed::Retry);
-                    capture_mouse(window);
-                } else if bottom.ai_retry.is_some_and(|rect| rect.contains(*x, *y)) {
-                    // Mouse only: not a default button, not in the Tab order, not on Enter/Space.
-                    ui.pressed = Some(Pressed::AiRetry);
-                    capture_mouse(window);
-                }
-                window.invalidate();
-                Reply::Handled(0)
-            }
-            Msg::MouseMove { x, y } => {
-                let inside = self
-                    .evm
-                    .window
-                    .as_ref()
-                    .filter(|ui| ui.pressed == Some(Pressed::Approve))
-                    .map(|ui| ui.bottom.approve.contains(*x, *y));
-                if let Some(inside) = inside {
-                    self.interaction(InteractionEvent::PointerMoved { inside });
-                }
-                Reply::Handled(0)
-            }
-            Msg::MouseUp { x, y } => {
-                release_mouse(window);
-                let Some(ui) = self.evm.window.as_mut() else {
-                    return Reply::Default;
-                };
-                let pressed = ui.pressed.take();
-                let bottom = ui.bottom;
-                match pressed {
-                    Some(Pressed::Approve) => self.interaction(InteractionEvent::PointerReleased {
-                        physical_down: key_down(VK_LBUTTON, "mouse_up"),
-                    }),
-                    Some(Pressed::Reject) if bottom.reject.contains(*x, *y) => {
-                        self.interaction(InteractionEvent::RejectActivated);
-                    }
-                    Some(Pressed::Retry)
-                        if bottom.retry.is_some_and(|rect| rect.contains(*x, *y)) =>
-                    {
-                        self.retry_action();
-                    }
-                    Some(Pressed::AiRetry)
-                        if bottom.ai_retry.is_some_and(|rect| rect.contains(*x, *y)) =>
-                    {
-                        self.ai_retry();
-                    }
-                    _ => {}
-                }
-                window.invalidate();
-                Reply::Handled(0)
-            }
-            Msg::KeyDown { vk, repeat } => {
-                self.on_approval_key(*vk, *repeat);
-                Reply::Handled(0)
-            }
-            Msg::KeyUp { vk } => {
-                if *vk == VK_SPACE
-                    && self
-                        .evm
-                        .window
-                        .as_ref()
-                        .is_some_and(|ui| ui.focus == Focus::Approve)
-                {
-                    self.interaction(InteractionEvent::SpaceReleased {
-                        physical_down: key_down(VK_SPACE, "key_up"),
-                    });
-                }
-                Reply::Handled(0)
-            }
-            Msg::Wheel(delta) => {
-                let step = window.px(60);
-                self.scroll_by(-(i32::from(*delta) / 120).saturating_mul(step));
-                Reply::Handled(0)
-            }
-            Msg::KillFocus { to_foreign: true } => {
-                self.interaction(InteractionEvent::FocusLost);
-                Reply::Default
-            }
-            Msg::ActivateApp(false) => {
-                self.interaction(InteractionEvent::ForegroundLost);
-                Reply::Default
-            }
-            Msg::ActivateApp(true) => {
+            Step::Activated => {
                 #[cfg(test)]
                 flow_support::log_input(flow_support::Logged::Activated {
                     focus: self.evm.window.as_ref().map(|ui| ui.focus),
@@ -3407,27 +3214,8 @@ impl App {
                     ui.session.restart_arm_delay(now);
                     ui.session.set_foreground(now, true);
                 }
-                Reply::Default
             }
-            Msg::CaptureChanged => {
-                if self
-                    .evm
-                    .window
-                    .as_ref()
-                    .is_some_and(|ui| ui.pressed.is_some())
-                {
-                    if let Some(ui) = self.evm.window.as_mut() {
-                        ui.pressed = None;
-                    }
-                    self.interaction(InteractionEvent::CaptureLost);
-                }
-                Reply::Default
-            }
-            Msg::CancelMode => {
-                self.interaction(InteractionEvent::CancelMode);
-                Reply::Default
-            }
-            Msg::Close => {
+            Step::Close => {
                 // 2026-11-19 (S4 F1, L-1, owner decision O-4): the close box rejects only the
                 // request this window showed. Before, `if self.evm.window.is_some()` also
                 // rejected the next request, whose window `RejectActivated` had just opened.
@@ -3438,10 +3226,181 @@ impl App {
                 if shown != ShownWindow::NoWindow && self.shown_window() == shown {
                     self.finish_approval(QueueOutcome::Rejected);
                 }
-                Reply::Handled(0)
             }
-            _ => Reply::Default,
+            Step::ToggleAck => self.toggle_ack(),
+            Step::ToggleRaw => self.toggle_raw(),
+            Step::ToggleAccount(index) => self.toggle_connect_account(index),
+            Step::Retry => self.retry_action(),
+            Step::AiRetry => self.ai_retry(),
+            Step::SameWindow(reply) => {
+                // 2026-11-19 (S4 F1, L-1): a press that ended this request (past its deadline)
+                // goes no further, like a press with no window. Before, the rest of the message
+                // ran on the next request's window that the press had just opened.
+                if self.shown_window() != shown || self.evm.window.is_none() {
+                    return Some(reply);
+                }
+            }
+            Step::AnyWindow(reply) => {
+                if self.evm.window.is_none() {
+                    return Some(reply);
+                }
+            }
+            Step::FocusReceiver => {
+                if let Some(window) = window {
+                    focus_window(window);
+                }
+            }
+            Step::FocusApproval => {
+                if let Some(ui) = self.evm.window.as_ref() {
+                    focus_window(&ui.window);
+                }
+            }
+            Step::MoveFocus(focus) => {
+                if let Some(ui) = self.evm.window.as_mut() {
+                    ui.focus = focus;
+                }
+            }
+            Step::Press(pressed) => {
+                if let Some(ui) = self.evm.window.as_mut() {
+                    ui.pressed = Some(pressed);
+                }
+            }
+            Step::Unpress => {
+                if let Some(ui) = self.evm.window.as_mut() {
+                    ui.pressed = None;
+                }
+            }
+            Step::Capture => {
+                if let Some(window) = window {
+                    capture_mouse(window);
+                }
+            }
+            Step::Release => {
+                if let Some(window) = window {
+                    release_mouse(window);
+                }
+            }
+            Step::Invalidate => {
+                if let Some(window) = window {
+                    window.invalidate();
+                }
+            }
+            Step::InvalidateApproval => {
+                if let Some(ui) = self.evm.window.as_ref() {
+                    ui.window.invalidate();
+                }
+            }
+            Step::Tab => {
+                if let Some(ui) = self.evm.window.as_mut() {
+                    let order = tab_order(ui.view.blocks.contains(&Block::Ack), ui.view.has_raw);
+                    let backwards = TrustedSignals::sample_shift().shift_down;
+                    ui.focus = tab_target(&order, ui.focus, backwards);
+                    ui.window.invalidate();
+                    ui.panel.invalidate();
+                }
+            }
+            Step::KeyScroll(scroll) => {
+                let metrics = self
+                    .evm
+                    .window
+                    .as_ref()
+                    .map(|ui| (ui.panel.client_rect().h, ui.panel.px(20)));
+                if let Some((page, line)) = metrics {
+                    self.scroll_by(scroll.delta(page, line));
+                }
+            }
+            Step::Wheel(delta) => {
+                if let Some(window) = window {
+                    self.scroll_by(wheel_delta(delta, window.px(60)));
+                }
+            }
+            Step::AiWheel(delta) => {
+                if let Some(window) = window {
+                    self.ai_scroll_by(window, wheel_delta(delta, window.px(40)));
+                }
+            }
+            Step::PanelScroll(goal) => {
+                let ui = self.evm.window.as_ref()?;
+                let page = ui.panel.client_rect().h;
+                let line = ui.panel.px(20);
+                let current = ui.scroll;
+                let track = if goal == ScrollGoal::Track {
+                    ui.panel.vscroll_track_pos()
+                } else {
+                    0
+                };
+                let target = goal.target(current, page, line, track);
+                self.scroll_by(target.saturating_sub(current));
+            }
+            Step::AiScroll(goal) => {
+                if let Some(window) = window {
+                    let page = window.client_rect().h;
+                    let line = window.px(20);
+                    let current = self
+                        .evm
+                        .window
+                        .as_ref()
+                        .and_then(|ui| ui.ai.as_ref())
+                        .map_or(0, |ai| ai.scroll);
+                    let track = if goal == ScrollGoal::Track {
+                        window.vscroll_track_pos()
+                    } else {
+                        0
+                    };
+                    let target = goal.target(current, page, line, track);
+                    self.ai_scroll_by(window, target.saturating_sub(current));
+                }
+            }
+            Step::PanelClick { x, y } => {
+                let ui = self.evm.window.as_ref()?;
+                let content_y = y.saturating_add(ui.scroll);
+                let layout = ui.layout.clone().unwrap_or_default();
+                let hit = panel_hit(&layout.accounts, layout.ack, layout.raw, x, content_y);
+                for step in panel_click(hit) {
+                    if let Some(reply) = self.run_step(surface, window, shown, step) {
+                        return Some(reply);
+                    }
+                }
+            }
+            Step::AiExpand => {
+                if let Some(ui) = self.evm.window.as_mut()
+                    && let Some(ai) = ui.ai.as_mut()
+                    && ai.panel.toggle_expanded()
+                {
+                    ai.scroll = 0;
+                    if let Some(window) = window {
+                        window.invalidate();
+                    }
+                }
+            }
+            Step::Paint => {
+                if let Some(window) = window {
+                    match surface {
+                        Surface::Approval => self.paint_approval(window),
+                        Surface::Panel => self.paint_panel(window),
+                        Surface::AiBody => self.paint_ai_body(window),
+                    }
+                }
+            }
+            Step::Relayout => {
+                if let Some(ui) = self.evm.window.as_mut() {
+                    ui.layout = None;
+                }
+                self.rebuild_view();
+            }
+            Step::TimerTail => {
+                self.ai_tick(self.clock.now_ms());
+                if let Some(ui) = self.evm.window.as_ref()
+                    && matches!(
+                        ui.session.gate.prepare,
+                        PrepareState::Preparing(PrepareStage::Simulating { .. })
+                    )
+                {
+                    self.rebuild_view_with(false);
+                }
+            }
         }
+        None
     }
 
     fn retry_action(&mut self) {
@@ -3463,157 +3422,20 @@ impl App {
         }
     }
 
+    /// An A01 `WM_KEYDOWN` without its window (the flow tests' key entry): the same map and steps
+    /// as `on_approval_msg` (2026-11-19, S4 B2: production keys come through `map_msg`).
+    #[cfg(test)]
     fn on_approval_key(&mut self, vk: u16, repeat: bool) {
-        // Every key press (auto-repeat included) counts for the press-gap rule; Enter and Space
-        // on the approve button are presses of their own (`ApproveActivated`/`SpacePressed`).
-        let approve_input = matches!(vk, VK_RETURN | VK_SPACE)
-            && self
-                .evm
-                .window
-                .as_ref()
-                .is_some_and(|ui| ui.focus == Focus::Approve);
-        let shown = self.shown_window();
-        if !approve_input {
-            self.interaction(InteractionEvent::OtherPress);
-        }
-        // 2026-11-19 (S4 F1, L-1): a key press that ended this request (past its deadline) goes
-        // no further. Before, Esc, Enter, Space and Tab then acted on the next request's window
-        // that the press had just opened (Enter or Space on its `거부` rejected it unseen).
-        if self.shown_window() != shown {
-            return;
-        }
-        let Some(ui) = self.evm.window.as_mut() else {
-            return;
-        };
-        let focus = ui.focus;
-        match vk {
-            VK_TAB => {
-                let order = Self::focus_order(ui);
-                let position = order.iter().position(|item| *item == focus).unwrap_or(0);
-                let len = order.len().max(1);
-                let next = if key_down(VK_SHIFT, "tab") {
-                    position.checked_sub(1).unwrap_or(len - 1)
-                } else {
-                    (position + 1) % len
-                };
-                ui.focus = order.get(next).copied().unwrap_or(Focus::Reject);
-                ui.window.invalidate();
-                ui.panel.invalidate();
-            }
-            VK_ESCAPE => self.interaction(InteractionEvent::RejectActivated),
-            VK_RETURN => match focus {
-                // L5: a posted/sent WM_KEYDOWN (not in the thread's key state) or an injected
-                // one never approves, like Space and the pointer (`is_down`).
-                Focus::Approve => self.interaction(InteractionEvent::ApproveActivated {
-                    physical: enter_in_message() && !injected_input(),
-                }),
-                // Not an auto-repeat (2026-11-12): the Enter that opened this window from a
-                // send form may still be held.
-                Focus::Reject if !repeat => self.interaction(InteractionEvent::RejectActivated),
-                Focus::Ack if !repeat => self.toggle_ack(),
-                Focus::Raw if !repeat => self.toggle_raw(),
-                _ => {}
-            },
-            VK_SPACE => match focus {
-                Focus::Approve => self.interaction(InteractionEvent::SpacePressed {
-                    repeat,
-                    physical_down: key_down(VK_SPACE, "key_down"),
-                }),
-                Focus::Reject if !repeat => self.interaction(InteractionEvent::RejectActivated),
-                Focus::Ack if !repeat => self.toggle_ack(),
-                Focus::Raw if !repeat => self.toggle_raw(),
-                _ => {}
-            },
-            // Page keys and Home/End scroll wherever the focus is (2026-11-12: they did nothing
-            // until Tab reached the scroll area, the fifth stop); the arrows there only. The
-            // focus stays where it was.
-            VK_PRIOR | VK_NEXT | VK_HOME | VK_END | VK_UP | VK_DOWN
-                if focus == Focus::Scroll || !matches!(vk, VK_UP | VK_DOWN) =>
-            {
-                let page = ui.panel.client_rect().h;
-                let line = ui.panel.px(20);
-                let delta = match vk {
-                    VK_PRIOR => -page,
-                    VK_NEXT => page,
-                    VK_UP => -line,
-                    VK_DOWN => line,
-                    VK_HOME => i32::MIN / 2,
-                    _ => i32::MAX / 2,
-                };
-                self.scroll_by(delta);
-            }
-            _ => {}
-        }
+        let steps = crate::ui::approval_input::map_key(
+            vk,
+            repeat,
+            self.input_facts(&Msg::KeyDown { vk, repeat }),
+        );
+        let _ = self.run_steps(Surface::Approval, None, &steps);
     }
 
     pub(crate) fn on_panel_msg(&mut self, window: &Window, msg: &Msg) -> Reply {
-        if let Some(event) = stray_press(msg) {
-            // Right/middle/X button and non-client presses count too (spec/04 §3.4).
-            self.interaction(event);
-            return Reply::Default;
-        }
-        match msg {
-            Msg::Paint => {
-                self.paint_panel(window);
-                Reply::Handled(0)
-            }
-            Msg::MouseDown { x, y } => {
-                self.interaction(InteractionEvent::OtherPress);
-                let Some(ui) = self.evm.window.as_mut() else {
-                    return Reply::Default;
-                };
-                focus_window(&ui.window);
-                let content_y = y.saturating_add(ui.scroll);
-                let layout = ui.layout.clone().unwrap_or_default();
-                if let Some((index, _)) = layout
-                    .accounts
-                    .iter()
-                    .find(|(_, rect)| rect.contains(*x, content_y))
-                {
-                    let index = *index;
-                    self.toggle_connect_account(index);
-                } else if layout.ack.is_some_and(|rect| rect.contains(*x, content_y)) {
-                    ui.focus = Focus::Ack;
-                    self.toggle_ack();
-                } else if layout.raw.is_some_and(|rect| rect.contains(*x, content_y)) {
-                    ui.focus = Focus::Raw;
-                    self.toggle_raw();
-                } else {
-                    ui.focus = Focus::Scroll;
-                    ui.window.invalidate();
-                }
-                Reply::Handled(0)
-            }
-            Msg::Wheel(delta) => {
-                let step = window.px(60);
-                self.scroll_by(-(i32::from(*delta) / 120).saturating_mul(step));
-                Reply::Handled(0)
-            }
-            Msg::VScroll { code } => {
-                if *code != SB_ENDSCROLL {
-                    self.interaction(InteractionEvent::OtherPress);
-                }
-                let Some(ui) = self.evm.window.as_ref() else {
-                    return Reply::Default;
-                };
-                let page = ui.panel.client_rect().h;
-                let line = ui.panel.px(20);
-                let current = ui.scroll;
-                let target = match code {
-                    0 => current.saturating_sub(line),
-                    1 => current.saturating_add(line),
-                    2 => current.saturating_sub(page),
-                    3 => current.saturating_add(page),
-                    4 | 5 => ui.panel.vscroll_track_pos(),
-                    6 => 0,
-                    7 => i32::MAX / 2,
-                    _ => current,
-                };
-                self.scroll_by(target.saturating_sub(current));
-                Reply::Handled(0)
-            }
-            _ => Reply::Default,
-        }
+        self.on_surface_msg(Surface::Panel, window, msg)
     }
 
     // ----- painting -----------------------------------------------------------------------
@@ -4265,63 +4087,7 @@ impl App {
     }
 
     pub(crate) fn on_ai_body_msg(&mut self, window: &Window, msg: &Msg) -> Reply {
-        if let Some(event) = stray_press(msg) {
-            // Right/middle/X button and non-client presses count too (spec/04 §3.4).
-            self.interaction(event);
-            return Reply::Default;
-        }
-        match msg {
-            Msg::Paint => {
-                self.paint_ai_body(window);
-                Reply::Handled(0)
-            }
-            Msg::MouseDown { .. } => {
-                self.interaction(InteractionEvent::OtherPress);
-                // The panel never takes keyboard focus (spec/04 §3.8). A click opens or folds
-                // the body of an inconsistent explanation.
-                if let Some(ui) = self.evm.window.as_mut() {
-                    if let Some(ai) = ui.ai.as_mut()
-                        && ai.panel.toggle_expanded()
-                    {
-                        ai.scroll = 0;
-                        window.invalidate();
-                    }
-                    focus_window(&ui.window);
-                }
-                Reply::Handled(0)
-            }
-            Msg::Wheel(delta) => {
-                let step = window.px(40);
-                self.ai_scroll_by(window, -(i32::from(*delta) / 120).saturating_mul(step));
-                Reply::Handled(0)
-            }
-            Msg::VScroll { code } => {
-                if *code != SB_ENDSCROLL {
-                    self.interaction(InteractionEvent::OtherPress);
-                }
-                let page = window.client_rect().h;
-                let line = window.px(20);
-                let current = self
-                    .evm
-                    .window
-                    .as_ref()
-                    .and_then(|ui| ui.ai.as_ref())
-                    .map_or(0, |ai| ai.scroll);
-                let target = match code {
-                    0 => current.saturating_sub(line),
-                    1 => current.saturating_add(line),
-                    2 => current.saturating_sub(page),
-                    3 => current.saturating_add(page),
-                    4 | 5 => window.vscroll_track_pos(),
-                    6 => 0,
-                    7 => i32::MAX / 2,
-                    _ => current,
-                };
-                self.ai_scroll_by(window, target.saturating_sub(current));
-                Reply::Handled(0)
-            }
-            _ => Reply::Default,
-        }
+        self.on_surface_msg(Surface::AiBody, window, msg)
     }
 
     fn ai_scroll_by(&mut self, window: &Window, delta: i32) {

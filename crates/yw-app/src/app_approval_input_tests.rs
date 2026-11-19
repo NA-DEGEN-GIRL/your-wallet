@@ -2,7 +2,8 @@
 //! spec/15 §11.4 S4, spec/04 §3.4, spec/01 §7.7, spec/09 §2.2): the goldens
 //! `app/tests/s4_flow/input.txt` and `app/tests/s4_flow/reentry.txt`, recorded from today's code
 //! before S4 moves a line of the approval window (owner decision O-2; reviewed at the F-A
-//! checkpoint), and the source checks S1–S3 of the S4 plan.
+//! checkpoint), and the source checks S1–S3 of the S4 plan (2026-11-19, S4 B2: S1 and S2
+//! re-pointed to the input map `ui::approval_input`, and S8 added).
 //!
 //! **`input.txt`** (critique A-7): every arm of `on_approval_msg`, `on_approval_key` (through
 //! `Msg::KeyDown`), `on_panel_msg` and `on_ai_body_msg`, delivered to a fresh window per row on
@@ -85,13 +86,13 @@ use yw_win::ui::{Handler, Msg, Rect, Reply, Window};
 
 use super::flow_support::{self, Call, Fixture, HostMode, Logged, Outlet, Read, START_MS, Signals};
 use super::flow_tests::{dapp, dapp_answers, personal_sign, request, spare_window};
-use super::{
-    APPROVAL_TIMER_ID, Bottom, Focus, Forward, PanelLayout, Pressed, Target, VK_DOWN, VK_END,
-    VK_ESCAPE, VK_HOME, VK_NEXT, VK_PRIOR, VK_RETURN, VK_SPACE, VK_TAB, VK_UP,
-};
+use super::{APPROVAL_TIMER_ID, Bottom, Focus, Forward, PanelLayout, Pressed, Target};
 use crate::explain::config::{ModelName, parse_endpoint};
 use crate::explain::request::{HttpResponse, LlmTransport, TransportError};
 use crate::explain::{ExplainService, LlmConfig, ResponseFormatMode};
+use crate::ui::approval_input::{
+    VK_DOWN, VK_END, VK_ESCAPE, VK_HOME, VK_NEXT, VK_PRIOR, VK_RETURN, VK_SPACE, VK_TAB, VK_UP,
+};
 use crate::ui::interaction::InteractionEvent;
 use crate::workers::rpc::RpcJob;
 
@@ -1382,11 +1383,20 @@ fn in_order(text: &str, parts: &[&str]) {
 /// activating click (A01 not the foreground window, raw read) is a press while not armed and is
 /// eaten with `MA_ACTIVATEANDEAT` (2); the panel and the AI body have no activation arm of their
 /// own (the click activates A01 through the parent). The behaviour is pinned by the
-/// `a01.mouse-activate` rows of `input.txt`.
+/// `a01.mouse-activate` rows of `input.txt`. 2026-11-19 (S4 B2, plan §4.4): re-pointed to the
+/// input map — the `MouseActivate` row of `ui::approval_input::map_msg`, its raw foreground read
+/// on arrival (`TrustedSignals::sample_on_arrival`, taken before the map) and the shell that
+/// samples before it maps; before, the arm of `on_approval_msg` in `app_approval.rs`.
 #[test]
 fn approval_window_is_topmost_and_eats_activating_clicks() {
+    /// `ui/approval_input.rs` without comment lines and before its test module.
+    fn map_code() -> String {
+        let end = STRAY_SOURCE
+            .find("#[cfg(test)]\n#[path = \"approval_input_tests.rs\"]")
+            .expect("the table test module declaration");
+        code_only(STRAY_SOURCE.get(..end).unwrap_or_default())
+    }
     let code = approval_production();
-    assert!(code.contains("const MA_ACTIVATEANDEAT: isize = 2;"));
     let open = folded(item(&code, "    fn open_approval(", 4));
     in_order(
         &open,
@@ -1397,90 +1407,260 @@ fn approval_window_is_topmost_and_eats_activating_clicks() {
         ],
     );
     assert_eq!(open.matches(".topmost(").count(), 1, "{open}");
-    let on_msg = item(&code, "    pub(crate) fn on_approval_msg(", 4);
-    let activate = on_msg
+    for moved in ["MA_ACTIVATEANDEAT", "MouseActivate"] {
+        assert!(
+            !code.contains(moved),
+            "{moved} in app_approval.rs: the map's"
+        );
+    }
+    let surface = folded(item(&code, "    fn on_surface_msg(", 4));
+    in_order(
+        &surface,
+        &[
+            "TrustedSignals::sample_on_arrival(surface, msg, window);",
+            "map_msg(surface, msg, facts, signals);",
+            "self.run_steps(surface, Some(window), &steps)",
+            ".unwrap_or(reply)",
+        ],
+    );
+    let map = map_code();
+    assert!(map.contains("pub const MA_ACTIVATEANDEAT: isize = 2;"));
+    assert_eq!(
+        map.matches("MA_ACTIVATEANDEAT").count(),
+        2,
+        "definition and the map's row"
+    );
+    let arrival = folded(item(&map, "    pub fn sample_on_arrival(", 4));
+    in_order(
+        &arrival,
+        &[
+            "if surface == Surface::Approval && matches!(msg, Msg::MouseActivate) {",
+            "foreground_raw: Self::sample_raw_foreground(window, \"mouse_activate\"),",
+            "} else { Self::default() }",
+        ],
+    );
+    let a01 = item(&map, "fn map_approval(", 0);
+    let activate = a01
         .find("Msg::MouseActivate => {")
         .and_then(|start| {
-            let arm = on_msg.get(start..)?;
+            let arm = a01.get(start..)?;
             arm.find("Msg::Timer(APPROVAL_TIMER_ID)")
                 .and_then(|end| arm.get(..end))
         })
-        .expect("the MouseActivate arm");
+        .expect("the MouseActivate row");
     in_order(
         &folded(activate),
         &[
-            "if raw_foreground(window, \"mouse_activate\") { Reply::Default } else {",
-            "self.interaction(InteractionEvent::OtherPress);",
-            "Reply::Handled(MA_ACTIVATEANDEAT)",
+            "if signals.foreground_raw { mapped(Vec::new(), Reply::Default) } else {",
+            "vec![Step::Event(InteractionEvent::OtherPress)],",
+            "Reply::Handled(MA_ACTIVATEANDEAT),",
         ],
     );
-    assert_eq!(
-        code.matches("MA_ACTIVATEANDEAT").count(),
-        2,
-        "definition and arm"
-    );
-    for head in [
-        "    pub(crate) fn on_panel_msg(",
-        "    pub(crate) fn on_ai_body_msg(",
-    ] {
-        assert!(!item(&code, head, 4).contains("MouseActivate"), "{head}");
+    for head in ["fn map_panel(", "fn map_ai_body("] {
+        assert!(!item(&map, head, 0).contains("MouseActivate"), "{head}");
     }
 }
 
 /// S2 (spec/04 §3.4, security review L5): Enter on `승인` approves only as `physical` = Enter
-/// in the message's own key state **and** not injected, read while the message is handled; the
-/// trusted reads (`is_foreground`, `is_down`, `is_down_in_message`, `injected`) occur in
-/// `app_approval.rs` only inside their A3 wrappers, `ApproveActivated` is built in one place,
-/// and the stray-press map names no approving event. (B2 rewrites this into
-/// `trusted_signals_have_one_reader`.)
+/// in the message's own key state **and** not injected, read while the message is handled, and
+/// the trusted reads have one reader. 2026-11-19 (S4 B2, plan §4.4: the plan's
+/// `trusted_signals_have_one_reader`, kept under this name because `frozen-helpers.txt` pins the
+/// source checks by name): Enter on `승인` maps to the sampled `Trusted::ApproveEnter`, whose
+/// event is built once (`Trusted::event`) from `enter_in_message && !injected`, the injection flag
+/// read only for an Enter in the message; `is_foreground()`, `is_down(`, `is_down_in_message(`
+/// and `injected()` occur in the approval shell only inside the `TrustedSignals::sample*` readers
+/// of `ui/approval_input.rs` (none in `app_approval.rs`); the stray-press map names no approving
+/// event. Before B2: the Enter arm of `on_approval_key` and the A3 wrappers in `app_approval.rs`.
 #[test]
 fn approve_enter_is_physical_and_not_injected() {
-    let code = approval_production();
-    let key = folded(item(&code, "    fn on_approval_key(", 4));
-    in_order(
-        &key,
-        &[
-            "VK_RETURN => match focus {",
-            "Focus::Approve => self.interaction(InteractionEvent::ApproveActivated { physical: \
-             enter_in_message() && !injected_input(), }),",
-            "Focus::Reject if !repeat => self.interaction(InteractionEvent::RejectActivated),",
-        ],
-    );
-    assert_eq!(
-        code.matches("InteractionEvent::ApproveActivated {").count(),
-        1,
-        "built only by the Enter arm"
-    );
-    let wrappers = [
-        ("fn window_is_foreground(", "window.is_foreground()"),
-        ("fn raw_foreground(", "window.is_foreground()"),
-        ("fn key_down(", "is_down(vk)"),
-        (
-            "fn enter_in_message(",
-            "yw_win::input::is_down_in_message(VK_RETURN)",
-        ),
-        ("fn injected_input(", "yw_win::input::injected()"),
-    ];
-    let mut rest = code.clone();
-    for (head, read) in wrappers {
-        let body = item(&code, head, 0);
-        assert!(body.contains(read), "{head} reads {read}");
-        rest = rest.replace(body, "");
+    /// `ui/approval_input.rs` without comment lines and before its test module.
+    fn map_code() -> String {
+        let end = STRAY_SOURCE
+            .find("#[cfg(test)]\n#[path = \"approval_input_tests.rs\"]")
+            .expect("the table test module declaration");
+        code_only(STRAY_SOURCE.get(..end).unwrap_or_default())
     }
-    rest = rest.replace("use yw_win::input::is_down;", "");
-    for read in [
+    const READS: [&str; 4] = [
         "is_foreground()",
         "is_down(",
         "is_down_in_message(",
         "injected()",
-    ] {
-        assert!(!rest.contains(read), "{read} outside its wrapper");
+    ];
+    let map = map_code();
+    let key = folded(item(&map, "pub fn map_key(", 0));
+    in_order(
+        &key,
+        &[
+            "VK_RETURN | VK_SPACE => match focus {",
+            "Focus::Approve if vk == VK_RETURN => Some(Step::Sampled(Trusted::ApproveEnter)),",
+            "Focus::Reject if !repeat => Some(Step::Event(InteractionEvent::RejectActivated)),",
+        ],
+    );
+    let event = folded(item(&map, "    pub const fn event(", 4));
+    in_order(
+        &event,
+        &[
+            "Self::ApproveEnter => InteractionEvent::ApproveActivated {",
+            "physical: signals.enter_in_message && !signals.injected,",
+        ],
+    );
+    assert_eq!(
+        map.matches("InteractionEvent::ApproveActivated {").count(),
+        1,
+        "built only by Trusted::event"
+    );
+    let sample = folded(item(&map, "    pub fn sample_for(", 4));
+    in_order(
+        &sample,
+        &[
+            "Trusted::ApproveEnter => {",
+            "let enter_in_message = Self::sample_enter_in_message();",
+            "injected: enter_in_message && Self::sample_injection(),",
+        ],
+    );
+    let readers = [
+        ("    fn sample_gate_foreground(", "window.is_foreground()"),
+        ("    fn sample_raw_foreground(", "window.is_foreground()"),
+        ("    fn sample_key(", "yw_win::input::is_down(vk)"),
+        (
+            "    fn sample_enter_in_message(",
+            "yw_win::input::is_down_in_message(VK_RETURN)",
+        ),
+        ("    fn sample_injection(", "yw_win::input::injected()"),
+    ];
+    let signals = item(&map, "impl TrustedSignals {", 0);
+    let mut rest = map.clone();
+    for (head, read) in readers {
+        let body = item(&map, head, 4);
+        assert!(body.contains(read), "{head} reads {read}");
+        assert!(signals.contains(body), "{head} is a TrustedSignals reader");
+        rest = rest.replace(body, "");
     }
-    let stray = code_only(STRAY_SOURCE);
+    for read in READS {
+        assert!(
+            !rest.contains(read),
+            "{read} outside its TrustedSignals reader"
+        );
+    }
+    let code = approval_production();
+    assert!(
+        !code.contains("yw_win::input"),
+        "app_approval.rs reads no input"
+    );
+    for read in READS {
+        assert!(!code.contains(read), "{read} in app_approval.rs");
+    }
+    assert!(code.contains("TrustedSignals::sample_foreground(&ui.window).foreground"));
+    let stray = item(&map, "pub const fn stray_press(", 0);
     assert!(stray.contains("Some(InteractionEvent::OtherPress)"));
     for approving in ["ApproveActivated", "PointerPressed", "SpacePressed"] {
         assert!(!stray.contains(approving), "{approving} in stray_press");
     }
+}
+
+/// S8 (S4 B2, plan critique A-6, spec/04 §3.4): only the input map says "approve". In yw-app
+/// production code (test files and inline `#[cfg(test)]` modules skipped, comment lines too),
+/// `ApproveActivated`, `PointerPressed`, `PointerReleased`, `SpacePressed`, `SpaceReleased` and an
+/// `ApprovalInput {` literal occur only in `ui/approval_input.rs`, where `Trusted::event` builds
+/// the events from a sample (each as a whole identifier: yw-core's `HcApprovalInput` is another
+/// type). Asserts that it scanned the crate (> 50 files) and found the map.
+#[test]
+fn approving_input_is_built_only_by_the_mapper() {
+    fn sources(root: &std::path::Path, dir: &std::path::Path, found: &mut Vec<(String, String)>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let relative = path
+                .strip_prefix(root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            if path.is_dir() {
+                if name != "tests" {
+                    sources(root, &path, found);
+                }
+            } else if std::path::Path::new(&name)
+                .extension()
+                .is_some_and(|extension| extension == "rs")
+                && name != "tests.rs"
+                && !name.ends_with("_tests.rs")
+                && !relative.starts_with("ui/tour")
+                && !matches!(
+                    relative.as_str(),
+                    "app_approval_flow_support.rs" | "app_approval_smoke.rs" | "app/secret_seam.rs"
+                )
+            {
+                found.push((relative, std::fs::read_to_string(&path).unwrap()));
+            }
+        }
+    }
+    /// The text without its comment lines and its `#[cfg(test)]` `mod … {` blocks and
+    /// `#[cfg(test)] #[path] mod …;` declarations (a top-level block ends at the first `}` line).
+    fn production(text: &str) -> String {
+        let mut kept = String::new();
+        let mut lines = text.lines().peekable();
+        while let Some(line) = lines.next() {
+            if line == "#[cfg(test)]"
+                && lines
+                    .peek()
+                    .is_some_and(|next| next.starts_with("mod ") && next.ends_with('{'))
+            {
+                for skipped in lines.by_ref() {
+                    if skipped == "}" {
+                        break;
+                    }
+                }
+                continue;
+            }
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
+            kept.push_str(line);
+            kept.push('\n');
+        }
+        kept
+    }
+    /// `name` occurs as a whole identifier (no identifier character right before it).
+    fn names(code: &str, name: &str) -> bool {
+        code.match_indices(name).any(|(at, _)| {
+            !code[..at]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_alphanumeric() || c == '_')
+        })
+    }
+    const APPROVING: [&str; 6] = [
+        "ApproveActivated",
+        "PointerPressed",
+        "PointerReleased",
+        "SpacePressed",
+        "SpaceReleased",
+        "ApprovalInput {",
+    ];
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut found = Vec::new();
+    sources(&root, &root, &mut found);
+    assert!(found.len() > 50, "{}", found.len());
+    let mut builders: Vec<(&str, &str)> = Vec::new();
+    for (path, text) in &found {
+        let code = production(text);
+        for name in APPROVING {
+            if names(&code, name) {
+                builders.push((path.as_str(), name));
+            }
+        }
+    }
+    builders.sort_unstable();
+    assert_eq!(
+        builders,
+        [
+            ("ui/approval_input.rs", "ApproveActivated"),
+            ("ui/approval_input.rs", "PointerPressed"),
+            ("ui/approval_input.rs", "PointerReleased"),
+            ("ui/approval_input.rs", "SpacePressed"),
+            ("ui/approval_input.rs", "SpaceReleased"),
+        ]
+    );
 }
 
 /// S3 (spec/04 §3.8, spec/06 D21, AP-5): the AI explanation never touches the gate: no `ai_*`

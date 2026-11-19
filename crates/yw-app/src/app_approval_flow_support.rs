@@ -34,12 +34,17 @@
 //!   [`HostMode::FailOpen`] refuses the window like a failed `CreateWindowExW` (the open-failure
 //!   path). Removed in B7.
 //! - `TEST_SIGNALS`: a scripted trusted-signal oracle ([`Signals`]) that answers the foreground,
-//!   key-state, Enter-in-message and injected reads (critique A-7).
+//!   key-state, Enter-in-message and injected reads (critique A-7); since S4 B2 (2026-11-19) the
+//!   reads it answers are `ui::approval_input::TrustedSignals::sample*` (before, the A3 wrappers
+//!   in `app_approval.rs`), with the same program-point labels.
 //! - `TEST_INPUT_LOG`: every `interaction(event)` with its foreground sample and focus, the
 //!   `ActivateApp(true)` arm, the toggles, retries and scrolls (A-19), every scripted read with
 //!   its program point and every A01 side effect, in one ordered list (the call index is the
 //!   position); since S4 A5 (2026-11-18, A-8) also every message the approval `Forward` drops
-//!   because the App is borrowed (re-entrancy). Removed in B2.
+//!   because the App is borrowed (re-entrancy). Kept until B7 (2026-11-19, S4 B2: the plan said
+//!   "removed in B2", but `input.txt` and `reentry.txt` record this trace and B2 must keep them
+//!   byte-equal; the pure map is tested directly by `ui/approval_input_tests.rs`, and B7 replaces
+//!   the windowed harness).
 //!
 //! The fixture never touches the network (the RPC channel and the key queue are captured, never
 //! run; the prepare job is answered by the smoke harness's fixture transport), a card reader, a
@@ -169,7 +174,8 @@ pub(crate) enum HostMode {
     reason = "one independent value per Win32 read"
 )]
 pub(crate) struct Signals {
-    /// `window_is_foreground` (the gate input; it wins over `TEST_FORCE_FOREGROUND`).
+    /// The gate's foreground read (`TrustedSignals::sample_foreground`, was `window_is_foreground`;
+    /// it wins over `TEST_FORCE_FOREGROUND`).
     pub(crate) foreground: bool,
     /// The raw `window.is_foreground()` of the activating click and the click-through check.
     pub(crate) foreground_raw: bool,
@@ -187,7 +193,7 @@ pub(crate) struct Signals {
 /// One trusted-signal read and its program point.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Read {
-    /// `window_is_foreground` in `interaction()`.
+    /// The gate's foreground read in `interaction()` (`TrustedSignals::sample_foreground`).
     Foreground,
     /// The raw foreground read at the named point.
     RawForeground(&'static str),
@@ -903,7 +909,9 @@ fn hidden_approval_window_is_never_shown_and_the_seams_drive_it() {
         ui.focus = Focus::Approve;
     }
     assert_hidden(&fixture);
-    fixture.app().on_approval_key(super::VK_RETURN, false);
+    fixture
+        .app()
+        .on_approval_key(crate::ui::approval_input::VK_RETURN, false);
     let log = take_log();
     assert_eq!(
         log.get(..2),
