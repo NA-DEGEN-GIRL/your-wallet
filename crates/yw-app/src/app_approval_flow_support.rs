@@ -21,6 +21,13 @@
 //!   wait timers of `app_hypercore`, `app_zec`, `app_received` and `app_reset`, `app_sidecar`'s
 //!   journal-reset time, `app_yubikey`'s password and idle times and `app_walletconnect`'s join
 //!   wait) and removed `TEST_CLOCK` (`app_time_reads_go_through_the_clock`).
+//!   A manual `TestClock` moves only when the test moves it, so the bounded busy waits that read
+//!   the App's clock (`App::shutdown`'s worker join wait, `wc_shutdown`'s relay worker join wait
+//!   and `clear_secret_clip_at_exit`'s clipboard retry, 1–2 s in production) never run out under
+//!   it (2026-11-19, B1 review): a fixture App must not reach them while a live thread could fail
+//!   to finish or the clipboard could fail. No fixture starts a WalletConnect worker or a real
+//!   worker thread, or touches the clipboard; a test that does advances the clock (or uses a
+//!   stepping one) before it shuts the App down.
 //! - `TEST_APPROVAL_HOST`: [`HostMode::Hidden`] creates A01, its panel and AI body as hidden
 //!   windows and skips every call that could show or activate one (`center_on`, `show`,
 //!   `set_foreground`, `flash`, `set_focus`; capture is still taken and released);
@@ -672,38 +679,50 @@ fn seams_are_inert_without_a_fixture_and_the_clock_steps() {
 /// No production code of yw-app reads the time except through the App's injected clock (S4
 /// B1b, 2026-11-19; it replaces `every_app_time_wrapper_reads_the_test_clock`, which pinned that
 /// the 18 wrappers read the A3 `TEST_CLOCK` first). Read-only source scan of `src` (the
-/// `card_pcsc` precedent): a direct `monotonic_ms()`, `SystemTime::now()` or `Instant::now()`
-/// is left only in `system_clock.rs` (the clock itself) and `browser/server.rs` (the pipe accept
-/// back-off warnings, shell only, plan critique B-13); test files and inline `#[cfg(test)]`
-/// modules are not production code (temp-folder names, test ticks); `log_file.rs`, `store.rs`
-/// and `store/*` read none outside their tests.
+/// `card_pcsc` precedent): a time source is named only in `system_clock.rs` (the clock itself:
+/// one `monotonic_ms`, one `SystemTime`) and `browser/server.rs` (one `monotonic_ms`, the pipe
+/// accept back-off warnings, shell only, plan critique B-13); test files and inline
+/// `#[cfg(test)]` modules are not production code (temp-folder names, test ticks); `log_file.rs`,
+/// `store.rs` and `store/*` read none outside their tests.
+///
+/// 2026-11-19 (B1 review): files are compared by their path below `src` (before, by bare file
+/// name, so any `server.rs` passed), each exempt file by its number of uses (before, the whole
+/// file was exempt), and a use is any `monotonic_ms`, `SystemTime` or `Instant` identifier in a
+/// line that is not a comment, so a function pointer, an aliased import (`use
+/// yw_win::time::monotonic_ms as tick`) or other spacing is found too (before, only the literal
+/// texts `monotonic_ms()`, `SystemTime::now()` and `Instant::now()`).
 #[test]
 fn app_time_reads_go_through_the_clock() {
-    fn sources(dir: &std::path::Path, found: &mut Vec<(String, String)>) {
+    fn sources(root: &std::path::Path, dir: &std::path::Path, found: &mut Vec<(String, String)>) {
         for entry in std::fs::read_dir(dir).unwrap() {
             let path = entry.unwrap().path();
             let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let relative = path
+                .strip_prefix(root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
             if path.is_dir() {
                 if name != "tests" {
-                    sources(&path, found);
+                    sources(root, &path, found);
                 }
             } else if std::path::Path::new(&name)
                 .extension()
                 .is_some_and(|extension| extension == "rs")
                 && name != "tests.rs"
                 && !name.ends_with("_tests.rs")
-                && !name.starts_with("tour")
+                && !relative.starts_with("ui/tour")
                 && !matches!(
-                    name.as_str(),
-                    "app_approval_flow_support.rs" | "app_approval_smoke.rs" | "secret_seam.rs"
+                    relative.as_str(),
+                    "app_approval_flow_support.rs" | "app_approval_smoke.rs" | "app/secret_seam.rs"
                 )
             {
-                found.push((name, std::fs::read_to_string(&path).unwrap()));
+                found.push((relative, std::fs::read_to_string(&path).unwrap()));
             }
         }
     }
-    /// The text without its `#[cfg(test)]` `mod … {` blocks (a top-level block ends at the first
-    /// line that is `}`).
+    /// The text without its comment lines and its `#[cfg(test)]` `mod … {` blocks (a top-level
+    /// block ends at the first line that is `}`).
     fn production(text: &str) -> String {
         let mut kept = String::new();
         let mut lines = text.lines().peekable();
@@ -720,29 +739,46 @@ fn app_time_reads_go_through_the_clock() {
                 }
                 continue;
             }
+            if line.trim_start().starts_with("//") {
+                continue;
+            }
             kept.push_str(line);
             kept.push('\n');
         }
         kept
     }
+    /// Uses of a time source: each `monotonic_ms`, `SystemTime` or `Instant` that is a whole
+    /// identifier.
+    fn uses(code: &str) -> usize {
+        let identifier = |c: char| c.is_alphanumeric() || c == '_';
+        ["monotonic_ms", "SystemTime", "Instant"]
+            .iter()
+            .map(|source| {
+                code.match_indices(source)
+                    .filter(|(at, _)| {
+                        !code[..*at].chars().next_back().is_some_and(identifier)
+                            && !code[*at + source.len()..]
+                                .chars()
+                                .next()
+                                .is_some_and(identifier)
+                    })
+                    .count()
+            })
+            .sum()
+    }
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut found = Vec::new();
-    sources(
-        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
-        &mut found,
-    );
+    sources(&root, &root, &mut found);
     assert!(found.len() > 50, "{}", found.len());
-    let mut readers: Vec<&str> = found
+    let mut readers: Vec<(&str, usize)> = found
         .iter()
-        .filter(|(_, text)| {
-            let code = production(text);
-            ["monotonic_ms()", "SystemTime::now()", "Instant::now()"]
-                .iter()
-                .any(|read| code.contains(read))
+        .filter_map(|(path, text)| {
+            let count = uses(&production(text));
+            (count > 0).then_some((path.as_str(), count))
         })
-        .map(|(name, _)| name.as_str())
         .collect();
     readers.sort_unstable();
-    assert_eq!(readers, ["server.rs", "system_clock.rs"]);
+    assert_eq!(readers, [("browser/server.rs", 1), ("system_clock.rs", 2)]);
 }
 
 /// No top-level approval or panel window of this process exists (real Win32 lookup).

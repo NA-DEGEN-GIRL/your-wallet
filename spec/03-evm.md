@@ -6,7 +6,7 @@ D13–D20, D27–D29의 EVM 세부 명세다. 이 문서는 [spec.md](../spec.md
 
 ## 0. 모듈 배치
 
-yw-core는 네트워크를 호출하지 않는다. RPC 파이프라인(yw-engine `rpc::evm`·`flow::evm`, 2026-11-17 [15] §11.4 S2 E2 전 yw-app)이 RPC를 호출하고 응답을 yw-json으로 파싱해 아래 yw-core 타입으로 넘긴다. EIP-712 원문은 JSON이므로 `yw-core::evm::eip712`는 `yw_json::Value`를 입력으로 받는다(D5·[01](01-repo-build.md) §2.4가 허용하는 유일한 로컬 의존 yw-core → yw-json). yw-core 모듈 이름과 도입 단계는 [01](01-repo-build.md) §2.2가 정본이다(D31): `hex`·`evm::address`는 M1, `journal`(EVM 레코드 `journal::evm`)은 M4, `policy`는 M2에 `BrowserOrigin`으로 시작하고 나머지는 M5, 아래 표의 그 밖 yw-core 모듈은 M2. EVM 앱 모듈 이름(yw-engine `rpc::evm`·`flow::evm`, yw-app `browser::params`)은 아래 표가 정본이고, yw-app 전체 모듈 배치는 [04](04-app-ui.md) §1.8이 정한다(`browser::envelope` 등 브라우저 모듈 내용은 [05](05-browser.md)). yw-core는 시각을 인자(`now_ms: u64` = yw-win `time::monotonic_ms`, `now_unix_ms: u64`)로만 받는다([01](01-repo-build.md) §5.1: `Instant`·`SystemTime` 금지).
+yw-core는 네트워크를 호출하지 않는다. RPC 파이프라인(yw-engine `rpc::evm`·`flow::evm`, 2026-11-17 [15] §11.4 S2 E2 전 yw-app)이 RPC를 호출하고 응답을 yw-json으로 파싱해 아래 yw-core 타입으로 넘긴다. EIP-712 원문은 JSON이므로 `yw-core::evm::eip712`는 `yw_json::Value`를 입력으로 받는다(D5·[01](01-repo-build.md) §2.4가 허용하는 유일한 로컬 의존 yw-core → yw-json). yw-core 모듈 이름과 도입 단계는 [01](01-repo-build.md) §2.2가 정본이다(D31): `hex`·`evm::address`는 M1, `journal`(EVM 레코드 `journal::evm`)은 M4, `policy`는 M2에 `BrowserOrigin`으로 시작하고 나머지는 M5, 아래 표의 그 밖 yw-core 모듈은 M2. EVM 앱 모듈 이름(yw-engine `rpc::evm`·`flow::evm`, yw-app `browser::params`)은 아래 표가 정본이고, yw-app 전체 모듈 배치는 [04](04-app-ui.md) §1.8이 정한다(`browser::envelope` 등 브라우저 모듈 내용은 [05](05-browser.md)). yw-core는 시각을 인자(`now_ms: u64` = yw-win `time::monotonic_ms`, `now_unix_ms: u64`; 2026-11-19 S4 B1a부터 yw-app은 주입받은 `Clock`에서 읽어 넘긴다, 운영은 같은 기준의 `SystemClock`, §11.5)로만 받는다([01](01-repo-build.md) §5.1: `Instant`·`SystemTime` 금지).
 
 | 모듈 | 크레이트 | 내용 | 이식 근거 |
 |---|---|---|---|
@@ -700,7 +700,7 @@ sim_digest = SHA-256(T)
 ### 6.6 신선도·재시뮬레이션
 
 1. 바인딩이 `SimulationBinding::None`(결과 없음·미지원)이면 재시뮬레이션하지 않고 그대로 소비한다(만료 120 s만 적용).
-2. `Simulated`이고 응답 수신 후 경과(yw-app `monotonic_ms`) ≤ 60 s → 그대로 소비(D23).
+2. `Simulated`이고 응답 수신 후 경과(yw-app `monotonic_ms`; 2026-11-19 S4 B1a부터 App이 주입받은 `Clock`, §11.5 메모) ≤ 60 s → 그대로 소비(D23).
 3. `Simulated`이고 > 60 s → 같은 거래로 재시뮬레이션 → §6.3 판정·표시 재구성. **안정 부분**(volatile이 아닌 필드, 경고, risk, ack_required; WalletConnect 요청은 [13] §7 출처 라벨·Verify 경고를 붙인 뒤에 비교)이 같으면 요청을 새 digest로 교체(§11.5 `replace`)하고 그 클릭으로 소비한다. 다르면 요청을 교체하고 "시뮬레이션 결과가 바뀌었습니다. 다시 확인하세요"를 띄운 뒤 새 클릭(고위험이면 체크·누르기 다시)을 요구한다. 재시뮬레이션 결과가 없으면(E01) 바인딩을 `None { reason }`으로 바꾼 요청으로 교체하고 "시뮬레이션을 다시 실행하지 못했습니다. 경고를 확인하고 다시 승인하세요"를 띄운 뒤 새 클릭(체크·2초 누르기)을 요구한다(그 클릭은 1항으로 소비). 만료 시각은 바꾸지 않는다.
 4. 재시뮬레이션이 -38012/-32005면 §3.4로 수수료를 다시 계산해 거래를 다시 만들고(속도 올리기·취소는 수수료를 내리지 않는다: `tip' = max(거래 tip, f.tip)`, `max_fee' = max(거래 max_fee, 2 × base_next + tip')` — §4.6의 +10 % 바닥을 지킨다; 상한 초과면 E05 차단 요청으로 교체) 한 번 더 시뮬레이션한 뒤 3의 "다르면"(또는 결과 없음) 경로를 탄다. 재시뮬레이션 결과 자체로는 차단하지 않는다(수수료 재계산의 E05만 차단).
 5. 재시뮬레이션 전 체인 확인(§1.4)이 불일치(E34)면 시뮬레이션하지 않고 요청을 교체하지 않는다. "결과 없음"으로 승인할 수 있게 두지 않고 §3.7 단계 3과 같이 승인 창 `Failed`([04] §3.5, 거부만)로 끝낸다. 미확인(`Unverified`)은 전송 오류이므로 3의 결과 없음 경로다.
@@ -1244,7 +1244,7 @@ pub const APPROVAL_TTL_MS: u64 = 120_000;            // D23: 표시 후 120 s
 pub struct ApprovalStore { /* id → (ApprovalRequest, ApprovalState, deadline_ms: u64) */ }
 pub enum ApprovalState { Pending, Consumed, Rejected, Expired, Invalidated }
 pub struct Approved { /* private: id, digest, chain, account, signer, kind, payload — Clone/Copy 없음, 읽기 접근자만 */ }
-impl ApprovalStore {   // now_ms = yw-win time::monotonic_ms, now_unix_ms = 벽시계 ms (yw-app이 넘김)
+impl ApprovalStore {   // now_ms = yw-win time::monotonic_ms, now_unix_ms = 벽시계 ms (yw-app이 넘김; 2026-11-19부터 App의 주입 시계, 아래 "시각의 출처")
     pub fn issue(&mut self, d: ApprovalDraft, now_ms: u64, now_unix_ms: u64) -> Result<ApprovalRequest, ApprovalError>;
     pub fn replace(&mut self, id: ApprovalId, shown: [u8; 32], new: ApprovalDraft) -> Result<ApprovalRequest, ApprovalError>;
     pub fn consume(&mut self, id: ApprovalId, shown: [u8; 32], now_ms: u64) -> Result<Approved, ApprovalError>;
@@ -1259,6 +1259,7 @@ impl ApprovalStore {   // now_ms = yw-win time::monotonic_ms, now_unix_ms = 벽�
 - `replace`(§6.6): `Pending`, `shown == 현재 digest`, `new.id == id`이고 kind·origin·chain·account·signer·표시 언어(`display.lang`, 2026-11-14)가 같을 때만 교체한다(payload·표시·바인딩은 바뀔 수 있다). `created_unix_ms`·`expires_unix_ms`·`deadline_ms`는 그대로 두고 digest만 다시 계산한다.
 - 만료 판정은 `deadline_ms`(단조 시계)로만 한다. `expires_unix_ms`는 digest·표시·로그용이다. 지갑 잠금 → `invalidate_all`. 동시 대기 개수·창 대기열은 [05](05-browser.md) §8.4·[04](04-app-ui.md) §3.7이 정한다.
 - 서명 함수(§4.2, [07] §13.1, [08] §11)는 `Approved`를 값으로 받아 소비한다. `Approved`는 `consume`으로만 만든다.
+- 시각의 출처(2026-11-19 S4 B1a, [15] §11.4 S4; 전에는 yw-app 파일마다 yw-win `time::monotonic_ms`와 `SystemTime`을 직접 읽는 `now_ms`/`now_unix_ms` 감싸개가 있었다): `issue`·`consume`·`expire_due`에 넘기는 `now_ms`/`now_unix_ms`는 yw-app `App`이 주입받은 시계(`self.clock`, `Arc<dyn Clock>`)에서 읽는다. 운영에서는 `App::new`가 만든 `SystemClock`(단조 = yw-win `time::monotonic_ms`, `GetTickCount64`; 벽시계 = `SystemTime`)이라 값의 기준은 전과 같다. `main.rs`가 같은 `Arc` 하나를 RPC 작업자(`ArcClock`)·키 작업자·브라우저 디스패처(`BrowserCore`)에 넘기므로 §6.6의 `sim_received_ms`(RPC 작업자가 기록)와 사이트 기한 `deadline_ms`([05] §6.4 요청 기한, 디스패처가 기록)도 App의 시각 읽기와 한 기준이다([01] §2.3a `clock`). 시험은 `App::with_clock`으로 자기 시계를 주입한다. 승인 흐름이 엔진으로 옮겨 가면(S4 W14b·E1) 이 메모를 다시 쓴다.
 
 ### 11.6 dApp 응답
 
