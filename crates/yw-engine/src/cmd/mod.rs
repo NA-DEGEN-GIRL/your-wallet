@@ -58,6 +58,10 @@
 //! 2026-11-20 (S4 P3): [`Cmd::Opened`], the answer to `Effect::OpenUrl` (echoing its
 //! [`LinkTarget`]), and [`Cmd::FolderMissing`], the answer to `Effect::OpenFolder` when the shell
 //! finds no extension folder.
+//!
+//! 2026-11-20 (S4 P4): `Press::Enter` and `Press::Back` no longer make the logic read the focus
+//! or the screen's controls: the shell resolves them into the concrete press they stand for
+//! (see [`Press::Back`]).
 
 use core::fmt;
 
@@ -253,9 +257,14 @@ pub struct CopyMark {
 /// What was pressed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Press {
-    /// Esc (Windows `IDCANCEL`); Android back.
+    /// Esc (Windows `IDCANCEL`); Android back. 2026-11-20 (S4 P4): the logic only does what
+    /// every press does first (the last press, the copy mark); the shell then resolves what the
+    /// key stands for on the screen (an overlay's `취소`, a cancel, a back link, closing a
+    /// drop-down) and sends that control's own press. Before P4 the logic resolved it.
     Back,
-    /// Windows-transitional: Enter (`IDOK`); the shell still resolves the focused edit (S4).
+    /// Windows-transitional: Enter (`IDOK`). 2026-11-20 (S4 P4): as [`Self::Back`] — the shell
+    /// resolves the focused control (a button, or an edit's one action) into its own press
+    /// after this one. Before P4 the logic read the focus.
     Enter,
     /// The core screens, settings sections and URL rows (S3 C12).
     Core(CorePress),

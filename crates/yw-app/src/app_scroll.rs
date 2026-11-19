@@ -297,12 +297,60 @@ impl App {
 
     /// A chain tab click or Ctrl+1–4 (2026-11-10): the old tab's offset is noted and the new tab
     /// opens at its top, its network band first (the previous tab's offset stayed before).
+    /// 2026-11-20 (S4 P4): `Effect::TabTop`, which the tab selectors (`btc_select_tab`,
+    /// `sol_select_tab`, `zec_select_tab`) emit where they called this before, while the tab
+    /// being left is still the selected one.
     pub(crate) fn tab_top(&mut self) {
         self.remember_scroll();
         self.scroll = 0;
         self.stop_scroll();
         if let Some(main) = self.main.as_ref() {
             main.kill_timer(SCROLL_TIMER_ID);
+        }
+    }
+
+    /// `Effect::ScreenLeaving` (2026-11-20, S4 P4; the first scroll steps of `App::enter_screen`
+    /// before, in the same order): an overlay opening over the screen shown now notes where that
+    /// screen is scrolled (`overlay_opens`), and leaving it for another screen (`changes`) notes
+    /// where it was left. Emitted while the wallet's screen is still the one being left.
+    pub(crate) fn screen_leaving(&mut self, overlay_opens: bool, changes: bool) {
+        if overlay_opens {
+            self.scroll_memory.under_overlay = Some(self.scroll_dip());
+        }
+        if changes {
+            self.remember_scroll();
+        }
+    }
+
+    /// `Effect::ScreenEntered` (2026-11-20, S4 P4; the restore steps of `App::enter_screen`
+    /// before): where the screen just entered (the wallet's screen now) opens — under a closing
+    /// overlay (`overlay`) where it was when the overlay opened, if it is that screen; on a way
+    /// back (`back`) where it was left in this run; else at the top. The layout that follows cuts
+    /// the offset to the content height. Any wheel glide ends.
+    pub(crate) fn screen_entered(&mut self, back: bool, overlay: bool) {
+        use crate::app::Screen;
+        let restore = if overlay && !matches!(self.screen, Screen::Confirm(_)) {
+            let under = self.scroll_memory.under_overlay.take();
+            if self.screen == self.previous_screen {
+                under
+            } else {
+                None
+            }
+        } else if back {
+            self.scroll_place(&self.screen)
+                .and_then(|place| self.scroll_memory.get(place))
+        } else {
+            None
+        };
+        self.scroll = restore.map_or(0, |dip| self.scroll_px(dip));
+        self.stop_scroll();
+    }
+
+    /// `Effect::OverlayClosedInPlace` (2026-11-20, S4 P4; was in `App::close_overlay_in_place`):
+    /// the screen under the closed overlay is shown where it was, when that was noted.
+    pub(crate) fn overlay_closed_in_place(&mut self) {
+        if let Some(dip) = self.scroll_memory.under_overlay.take() {
+            self.scroll = self.scroll_px(dip);
         }
     }
 
@@ -502,8 +550,23 @@ impl App {
         }
     }
 
+    /// Scrolls the control `id` of the current screen into view and gives it the focus.
+    /// 2026-11-20 (S4 P4): `Effect::Reveal` (moved here from `app.rs`; the handlers called it
+    /// with the id before: `App::open_rpc_row` and S08's `rpc.json에서 가져오기`).
+    pub(crate) fn reveal_id(&mut self, id: u16) {
+        if let Some(index) = self
+            .placed
+            .controls
+            .iter()
+            .position(|(ctl, _)| ctl.id == id)
+        {
+            self.reveal_control(index);
+            self.controls.focus_at(index);
+        }
+    }
+
     /// Scrolls the control at `index` (placed order) fully into view ([`reveal_offset`]); a
-    /// control that comes into view is shown by the scroll (also `App::open_rpc_row`).
+    /// control that comes into view is shown by the scroll (also `Effect::Reveal`).
     pub(crate) fn reveal_control(&mut self, index: usize) {
         let Some(main) = self.main.as_ref() else {
             return;

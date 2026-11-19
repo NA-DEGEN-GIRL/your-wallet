@@ -459,14 +459,14 @@ impl App {
         }
     }
 
-    /// Released (early) or capture lost.
+    /// Released (early) or capture lost. 2026-11-20 (S4 P4): the pointer capture is released by
+    /// the shell, `Effect::ReleaseHold` at the same point (before, `release_capture` was called
+    /// here); `lock` and the hold's tick reach it through this fn.
     pub(crate) fn hold_cancel(&mut self) {
         if self.reset.holding.take().is_some() {
             self.reset.gate.cancel();
             self.reset.progress = 0;
-            if let Some(main) = self.main.as_ref() {
-                main.release_capture();
-            }
+            self.emit(yw_engine::effect::Effect::ReleaseHold);
             self.refresh();
         }
     }

@@ -267,9 +267,10 @@ impl App {
             .is_some_and(|meta| meta.prefs.tab == crate::meta::Tab::Zec)
     }
 
-    /// Selects the Zcash tab (refresh on open).
+    /// Selects the Zcash tab (refresh on open). 2026-11-20 (S4 P4): the scroll memory's part is
+    /// `Effect::TabTop`, at the same point (before, `tab_top` was called here).
     pub fn zec_select_tab(&mut self) {
-        self.tab_top();
+        self.emit(yw_engine::effect::Effect::TabTop);
         if let Some(meta) = self.meta.as_mut()
             && meta.prefs.tab != crate::meta::Tab::Zec
         {

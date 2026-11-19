@@ -6558,3 +6558,191 @@ fn core_screen_catalogues_keep_their_invariants() {
         }
     }
 }
+
+/// 2026-11-20 (S4 P4): Enter and Esc are resolved by the shell (`on_command`). The logic, given
+/// `Press::Back` or `Press::Enter` on its own, only notes the press (and clears the copy mark);
+/// through the shell the key presses the control it stands for, and the logic gets that control's
+/// own press. The scroll memory of a screen entry is the shell's, applied through effects at the
+/// old points: an overlay over a scrolled screen returns it to its offset, a way back finds the
+/// offset it left, a lock forgets them. The reveal targets name the controls the ids named.
+#[test]
+fn keys_resolve_in_the_shell_and_the_scroll_memory_follows_screen_entries() {
+    use crate::app::SettingsSection;
+    use crate::app_scroll::ScrollPlace;
+    use crate::ui::cmd_table::{cred_id_of, id_of, press_of};
+    use yw_engine::cmd::{Cmd, CorePress, Press, Row, RpcImportPress, RpcRowAction};
+    use yw_engine::form::{CredField, PressInput};
+    let (mut app, dir) = unlocked_app("shell-keys", false);
+    let security = Screen::Settings(SettingsSection::Security);
+    app.set_screen(security.clone());
+    app.scroll = 240;
+    app.set_screen(Screen::Confirm(Confirm::CopyOn));
+    assert_eq!(
+        (app.scroll, app.scroll_memory.under_overlay),
+        (0, Some(240))
+    );
+    // The logic alone resolves nothing.
+    app.on_cmd(Cmd::Press {
+        press: Press::Back,
+        input: PressInput::default(),
+    });
+    assert_eq!(app.last_press, Press::Back);
+    assert_eq!(app.command, super::IDCANCEL);
+    assert_eq!(app.screen, Screen::Confirm(Confirm::CopyOn));
+    // Through the shell: the overlay's `취소`, its own press; the screen under it where it was.
+    app.on_command(super::IDCANCEL);
+    assert_eq!(app.last_press, Press::Core(CorePress::ConfirmNo));
+    assert_eq!(app.screen, security);
+    assert_eq!((app.scroll, app.scroll_memory.under_overlay), (240, None));
+    // A way back opens where the screen was left; a new screen opens at its top.
+    app.set_screen(Screen::Main);
+    assert_eq!(app.scroll, 0);
+    assert_eq!(
+        app.scroll_memory
+            .get(ScrollPlace::Settings(SettingsSection::Security)),
+        Some(240)
+    );
+    app.return_to(security.clone());
+    assert_eq!(app.scroll, 240);
+    app.set_screen(Screen::Main);
+    app.set_screen(security);
+    assert_eq!(app.scroll, 0);
+    // Enter: the logic alone does nothing; the shell presses the focused button as a click.
+    app.set_screen(Screen::Main);
+    app.on_cmd(Cmd::Press {
+        press: Press::Enter,
+        input: PressInput::default(),
+    });
+    assert_eq!(
+        (app.last_press, app.rename.is_some()),
+        (Press::Enter, false)
+    );
+    app.enter_on(Some(&Ctl::button(ids::RENAME, "이름 바꾸기")));
+    assert_eq!(Some(app.last_press), press_of(ids::RENAME, &app.controls));
+    assert!(app.rename.is_some());
+    // A lock forgets every remembered offset.
+    app.lock(LockReason::Manual);
+    assert_eq!(
+        app.scroll_memory
+            .get(ScrollPlace::Settings(SettingsSection::Security)),
+        None
+    );
+    // What `Effect::Reveal` names is the control the handlers named by id before.
+    assert_eq!(
+        id_of(Press::RpcImport(RpcImportPress::Import)),
+        ids::RPC_IMPORT
+    );
+    for row in [0_u16, 1, 6] {
+        assert_eq!(
+            id_of(Press::Core(CorePress::RpcRow(Row(row), RpcRowAction::Test))),
+            ids::ROW_BASE + row * 3 + 1
+        );
+    }
+    assert_eq!(cred_id_of(CredField::RpcReplace), ids::REPLACE_EDIT);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// 2026-11-20 (S4 P4): the handlers P4 converted reach the main window only through effects —
+/// no scroll offset or memory, focus, pointer capture, foreground or reveal of their own — and
+/// the logic's press dispatch (`on_press`) resolves no key and reads no focus. Only the effect
+/// executor reveals a control or tops a tab. Reads yw-app's `src` only; asserts that it found
+/// every fn it checks.
+#[test]
+fn converted_handlers_reach_the_main_window_only_through_effects() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let read = |file: &str| std::fs::read_to_string(src.join(file)).unwrap();
+    // The fn from its head to the first closing brace at method depth, `//` comments dropped.
+    let body = |file: &str, head: &str| -> String {
+        let text = read(file);
+        assert_eq!(text.matches(head).count(), 1, "{file}: {head}");
+        let start = text.find(head).unwrap();
+        let rest = &text[start..];
+        let end = rest.find("\n    }\n").expect("the end of the fn");
+        rest[..end]
+            .lines()
+            .map(|line| line.split_once("//").map_or(line, |(code, _)| code))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let shell_names = [
+        "self.scroll",
+        "remember_scroll",
+        "stop_scroll",
+        "tab_top(",
+        "reveal_id(",
+        "reveal_control(",
+        "focus_at(",
+        "release_capture(",
+        "show_main_window(",
+        "set_foreground(",
+        "self.main",
+        "self.placed",
+        "self.controls",
+    ];
+    let converted = [
+        (
+            "app.rs",
+            "    fn enter_screen(&mut self, screen: Screen, back: bool) {",
+        ),
+        (
+            "app.rs",
+            "    fn close_overlay_in_place(&mut self, previous: Screen) {",
+        ),
+        ("app.rs", "    fn activate(&mut self) {"),
+        (
+            "app.rs",
+            "    pub(crate) fn open_rpc_row(&mut self, network: NetworkId, edit: bool) {",
+        ),
+        ("app.rs", "    pub fn lock(&mut self, reason: LockReason) {"),
+        ("app.rs", "    fn on_press(&mut self, press: Press) {"),
+        ("app_reset.rs", "    pub(crate) fn hold_cancel(&mut self) {"),
+        ("app_btc.rs", "    pub fn btc_select_tab(&mut self) {"),
+        (
+            "app_sol.rs",
+            "    pub fn sol_select_tab(&mut self, tab: Tab) {",
+        ),
+        ("app_zec.rs", "    pub fn zec_select_tab(&mut self) {"),
+    ];
+    for (file, head) in converted {
+        let code = body(file, head);
+        for shell in shell_names {
+            assert!(!code.contains(shell), "{file}: {head} names {shell}");
+        }
+    }
+    let dispatch = body("app.rs", "    fn on_press(&mut self, press: Press) {");
+    for key in ["escape_key", "enter_key", "enter_on", "focused"] {
+        assert!(!dispatch.contains(key), "on_press names {key}");
+    }
+    // Only the executor reveals a control or tops a tab (definitions are `fn …(`).
+    let mut callers = Vec::new();
+    let mut files = 0;
+    let mut stack = vec![src.clone()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                files += 1;
+                let text = std::fs::read_to_string(&path).unwrap();
+                // Built at run time, so this file's own text is no call.
+                for call in ["reveal_id", "tab_top"] {
+                    let count = text.matches(&format!(".{call}(")).count();
+                    if count > 0 {
+                        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+                        callers.push((name, call, count));
+                    }
+                }
+            }
+        }
+    }
+    assert!(files > 50, "scanned {files} files");
+    callers.sort_unstable();
+    assert_eq!(
+        callers,
+        [
+            ("app_effects.rs".to_owned(), "reveal_id", 1),
+            ("app_effects.rs".to_owned(), "tab_top", 1),
+        ]
+    );
+}

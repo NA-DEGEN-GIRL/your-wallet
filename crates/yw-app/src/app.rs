@@ -59,8 +59,8 @@ use crate::workers::key::new_account;
 use crate::workers::rpc::RpcJob;
 use yw_core::lang::{Lang, Text};
 use yw_engine::app_store::AppStore;
-use yw_engine::cmd::{Cmd, CorePress, Press, Row, RpcRowAction};
-use yw_engine::effect::{Effect, Folder, TimerId};
+use yw_engine::cmd::{Cmd, CorePress, Press, Row, RpcImportPress, RpcRowAction};
+use yw_engine::effect::{Effect, Folder, RevealTarget, TimerId};
 // `CredField`: debug builds only until S3 C3 (the shadow reads of plan §3.2a; 2026-11-18 B4–B5
 // review); since C3 `App::take_cred` uses it in every build.
 use yw_engine::form::{CredField, EditField, FormState, PressInput};
@@ -1084,6 +1084,18 @@ pub(crate) mod logic_presses {
     ];
 }
 
+/// What Esc stands for on the main window (2026-11-20, S4 P4: `App::escape_target`, resolved by
+/// the shell).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EscTarget {
+    /// Nothing happens.
+    Nothing,
+    /// The open network or account drop-down closes (nothing else happens on that press).
+    ClosePickers,
+    /// This control is pressed exactly as a click.
+    Press(u16),
+}
+
 /// E-KEY-002 with the item name before the code (spec/04 §2.11, §7).
 fn key002_text(lang: Lang, item: &str) -> String {
     ErrorCode::Key002
@@ -1430,6 +1442,15 @@ impl App {
         self.refresh();
     }
 
+    /// `Effect::RaiseMain` (2026-11-20, S4 P4; was the start of [`Self::activate`]): the main
+    /// window is shown and asked for the foreground (no flash when refused, as before).
+    pub(crate) fn raise_main(&mut self) {
+        self.show_main_window();
+        if let Some(main) = self.main.as_ref() {
+            let _ = main.set_foreground();
+        }
+    }
+
     /// Shows the main window; the first show of a place saved maximized maximizes it
     /// (`window_state`).
     fn show_main_window(&mut self) {
@@ -1508,32 +1529,26 @@ impl App {
         self.yk_leaving(&screen);
         self.mn_leaving(&screen);
         let overlay = matches!(self.screen, Screen::Confirm(_));
-        if matches!(screen, Screen::Confirm(_)) && !overlay {
+        let overlay_opens = matches!(screen, Screen::Confirm(_)) && !overlay;
+        let changes = screen != self.screen;
+        // 2026-11-20 (S4 P4): the scroll memory is the shell's. It notes where the screen being
+        // left (still `self.screen`) was — under an opening overlay, and for the ways back —
+        // here, where these steps ran before (`App::screen_leaving`); where the new screen opens
+        // is `Effect::ScreenEntered` below. Before, this fn noted and restored the offsets
+        // itself.
+        self.emit(Effect::ScreenLeaving {
+            overlay_opens,
+            changes,
+        });
+        if overlay_opens {
             self.previous_screen = self.screen.clone();
-            self.scroll_memory.under_overlay = Some(self.scroll_dip());
         }
-        if screen != self.screen {
-            self.remember_scroll();
+        if changes {
             // A drop-down does not stay open behind another screen (a lock, 2026-11-12).
             let _ = self.close_pickers();
             // A copy's mark belongs to the screen it was made on.
             self.copied = None;
         }
-        // Where the new screen opens: under a closing overlay where it was, on a way back where
-        // it was left, else at the top.
-        let restore = if overlay && !matches!(screen, Screen::Confirm(_)) {
-            let under = self.scroll_memory.under_overlay.take();
-            if screen == self.previous_screen {
-                under
-            } else {
-                None
-            }
-        } else if back {
-            self.scroll_place(&screen)
-                .and_then(|place| self.scroll_memory.get(place))
-        } else {
-            None
-        };
         if screen != self.screen && !matches!(screen, Screen::Confirm(_)) {
             // The inline `주소록에 저장` prompt and its note belong to the screen they opened on.
             self.book.prompt = None;
@@ -1559,9 +1574,10 @@ impl App {
             self.settings_last = *section;
         }
         self.screen = screen;
-        self.scroll = restore.map_or(0, |dip| self.scroll_px(dip));
-        self.stop_scroll();
-        // `refresh` cuts a remembered offset to the content height.
+        // Where the new screen opens (S4 P4, `App::screen_entered`): under a closing overlay
+        // where it was, on a way back where it was left, else at the top. `refresh` cuts a
+        // remembered offset to the content height.
+        self.emit(Effect::ScreenEntered { back, overlay });
         self.refresh();
     }
 
@@ -1576,7 +1592,10 @@ impl App {
     }
 
     /// `Effect::Render` on Windows: recomputes the layout, syncs the child controls and
-    /// repaints the main window (nothing without a window).
+    /// repaints the main window (nothing without a window). 2026-11-20 (S4 P4, critique B-12(b)):
+    /// cutting the offset to the content height, and the second layout that cut needs, stay here
+    /// in the shell's `Render` arm; the offset a screen entry restores comes from
+    /// `Effect::ScreenEntered` just before.
     pub(crate) fn render_main(&mut self) {
         let Some(main) = self.main.as_ref() else {
             return;
@@ -1810,7 +1829,17 @@ impl App {
         }
     }
 
-    /// Ctrl+L (posted by the loop observer).
+    // ----- the main window's keys (the shell, 2026-11-20 S4 P4) ----------------------------
+    //
+    // Enter, Esc and the posted shortcuts are resolved here, by the shell, from what the main
+    // window shows (its laid-out items, the focused control) and a read of the wallet state, into
+    // the control they stand for; that control is then pressed exactly as a click (`on_command`),
+    // so the logic gets that concrete `Press`. Each `*_target` fn only reads; the resolution and
+    // its order are the ones the logic ran before P4 (`on_press` called `escape_key`/`enter_key`,
+    // which read the focus and pressed through `press_shown`).
+
+    /// Ctrl+L (posted by the loop observer). 2026-11-20 (S4 P4): unchanged — the lock is the
+    /// wallet's `lock(Manual)`, called from this shell entry until S4c makes it a `Cmd`.
     fn lock_shortcut(&mut self) {
         if self.mode.holds_secrets() {
             self.lock(LockReason::Manual);
@@ -1819,98 +1848,118 @@ impl App {
 
     /// Ctrl+1/2/3/4 (posted by the loop observer; the main window is in the foreground): the
     /// chain tab, exactly as clicking it, when S10 shows that tab enabled and no secret window
-    /// is open.
+    /// is open ([`Self::tab_shortcut_target`]).
     pub(crate) fn tab_shortcut(&mut self, tab: usize) {
-        let Some(&id) = tab
+        if let Some(id) = self.tab_shortcut_target(tab) {
+            self.on_command(id);
+        }
+    }
+
+    /// The chain tab Ctrl+`tab` presses (S4 P4: the read half of [`Self::tab_shortcut`]).
+    fn tab_shortcut_target(&self, tab: usize) -> Option<u16> {
+        let &id = tab
             .checked_sub(1)
-            .and_then(|index| logic_presses::TABS.get(index))
-        else {
-            return;
-        };
+            .and_then(|index| logic_presses::TABS.get(index))?;
         if self.screen != Screen::Main || self.secret.is_some() {
-            return;
+            return None;
         }
         let shown = self.items().iter().any(|item| {
             matches!(item, crate::ui::main_window::Item::Row(ctls)
                 if ctls.iter().any(|ctl| ctl.id == id && ctl.enabled))
         });
-        if shown {
-            self.on_command(id);
-        }
+        shown.then_some(id)
     }
 
-    /// Presses the first of `ids` the current screen shows enabled, exactly as a click (the
-    /// keyboard shortcuts' path); whether one was.
-    fn press_shown(&mut self, ids: &[u16]) -> bool {
+    /// The first of `ids` the current screen shows enabled (the keyboard shortcuts' targets).
+    /// 2026-11-20 (S4 P4): only reads; before, `press_shown` also pressed it.
+    fn shown_of(&self, ids: &[u16]) -> Option<u16> {
         let items = self.items();
-        let shown = ids.iter().copied().find(|id| {
+        ids.iter().copied().find(|id| {
             items.iter().any(|item| {
                 matches!(item, crate::ui::main_window::Item::Row(ctls)
                     | crate::ui::main_window::Item::LabeledRow(_, ctls)
                     | crate::ui::main_window::Item::Toolbar(_, ctls)
                     if ctls.iter().any(|ctl| ctl.id == *id && ctl.enabled))
             })
-        });
-        if let Some(id) = shown {
-            self.on_command(id);
-        }
-        shown.is_some()
+        })
     }
 
     /// F5 and Ctrl+, (posted by the loop observer; the main window is in the foreground; never
     /// while a secret window is open), 2026-11-10: F5 is the visible chain tab's `새로고침` on
     /// S10, Ctrl+, the `설정` button (the section last opened in this run), each only when that
-    /// control is shown enabled.
+    /// control is shown enabled ([`Self::shortcut_target`]), pressed exactly as a click.
     pub(crate) fn shortcut(&mut self, code: usize) {
-        if self.secret.is_some() {
-            return;
-        }
-        match crate::shell_msg::Shortcut::from_code(code) {
-            Some(crate::shell_msg::Shortcut::Refresh) if self.screen == Screen::Main => {
-                let _ = self.press_shown(&logic_presses::REFRESH);
-            }
-            Some(crate::shell_msg::Shortcut::Settings) => {
-                let _ = self.press_shown(&logic_presses::SETTINGS);
-            }
-            _ => {}
+        if let Some(id) = self.shortcut_target(code) {
+            self.on_command(id);
         }
     }
 
-    /// Esc on the main window (`IDCANCEL` from the dialog manager), 2026-11-10: an overlay's
-    /// `취소`; else an open inline edit's cancel (rename, an RPC row's `교체`, the address-book save
-    /// prompt or entry being edited); else the back link of a screen that has one (S11–S16, S23, S-HC, the Solana and
-    /// Bitcoin send and receive screens) — its inputs stay. Nothing on S17, the `YubiKey` flows,
-    /// a waiting screen or S01, nor while a secret window is open. 2026-11-12: after the overlay
+    /// The control F5 or Ctrl+, presses (S4 P4: the read half of [`Self::shortcut`]).
+    fn shortcut_target(&self, code: usize) -> Option<u16> {
+        if self.secret.is_some() {
+            return None;
+        }
+        match crate::shell_msg::Shortcut::from_code(code) {
+            Some(crate::shell_msg::Shortcut::Refresh) if self.screen == Screen::Main => {
+                self.shown_of(&logic_presses::REFRESH)
+            }
+            Some(crate::shell_msg::Shortcut::Settings) => self.shown_of(&logic_presses::SETTINGS),
+            _ => None,
+        }
+    }
+
+    /// Esc on the main window (`IDCANCEL` from the dialog manager), after its `Press::Back`
+    /// (2026-11-20, S4 P4: called by `on_command`; before, by the logic's `on_press`): what
+    /// [`Self::escape_target`] finds — a control pressed exactly as a click, or an open
+    /// drop-down closed (and the screen laid out again). Enter is [`Self::enter_key`].
+    pub(crate) fn escape_key(&mut self) {
+        match self.escape_target() {
+            EscTarget::Press(id) => self.on_command(id),
+            EscTarget::ClosePickers => {
+                let _ = self.close_pickers();
+                self.refresh();
+            }
+            EscTarget::Nothing => {}
+        }
+    }
+
+    /// What Esc stands for now (2026-11-10): an overlay's `취소`; else an open inline edit's
+    /// cancel (rename, an RPC row's `교체`, the address-book save prompt or entry being edited);
+    /// else the back link of a screen that has one (S11–S16, S23, S-HC, the Solana and Bitcoin
+    /// send and receive screens) — its inputs stay. Nothing on S17, the `YubiKey` flows, a
+    /// waiting screen or S01, nor while a secret window is open. 2026-11-12: after the overlay
     /// an open network or account drop-down closes first (nothing else happens on that press),
     /// and a screen's own `취소` counts like an inline edit's: the intro screens (S02, S05, S18,
-    /// S20), S22, the Bitcoin `계정 추가` chooser and the Zcash key-source confirmation. Enter is
-    /// [`Self::enter_key`].
-    pub(crate) fn escape_key(&mut self) {
+    /// S20), S22, the Bitcoin `계정 추가` chooser and the Zcash key-source confirmation.
+    /// 2026-11-20 (S4 P4): only reads, in the order `escape_key` checked and pressed before (an
+    /// overlay whose `취소` is not shown is still nothing; the drop-downs are what
+    /// `close_pickers` closes, [`Self::pickers_open`]).
+    fn escape_target(&self) -> EscTarget {
         if self.secret.is_some() {
-            return;
+            return EscTarget::Nothing;
         }
         if matches!(self.screen, Screen::Confirm(_)) {
-            let _ = self.press_shown(&logic_presses::ESC_CONFIRM);
-            return;
+            return self
+                .shown_of(&logic_presses::ESC_CONFIRM)
+                .map_or(EscTarget::Nothing, EscTarget::Press);
         }
-        if self.close_pickers() {
-            self.refresh();
-            return;
+        if self.pickers_open() {
+            return EscTarget::ClosePickers;
         }
         let in_yubikey_flow = matches!(self.screen, Screen::Settings(SettingsSection::YubiKey))
             && self.card.manage.is_some();
         if in_yubikey_flow {
-            return;
+            return EscTarget::Nothing;
         }
-        if self.press_shown(&logic_presses::ESC_CANCEL) {
-            return;
+        if let Some(id) = self.shown_of(&logic_presses::ESC_CANCEL) {
+            return EscTarget::Press(id);
         }
         // S20's `취소` too, but never once its new words were shown: it discards them, like the
         // YubiKey wizard's (both stay a click then).
         if self.yk_words == crate::app_yubikey::YkWords::None
-            && self.press_shown(&logic_presses::ESC_NEW_WALLET_CANCEL)
+            && let Some(id) = self.shown_of(&logic_presses::ESC_NEW_WALLET_CANCEL)
         {
-            return;
+            return EscTarget::Press(id);
         }
         if matches!(
             self.screen,
@@ -1926,14 +1975,17 @@ impl App {
                 | Screen::SolReceive
                 | Screen::BtcSend
                 | Screen::BtcReceive
-        ) {
-            let _ = self.press_shown(&logic_presses::ESC_BACK);
+        ) && let Some(id) = self.shown_of(&logic_presses::ESC_BACK)
+        {
+            return EscTarget::Press(id);
         }
+        EscTarget::Nothing
     }
 
     /// Enter on the main window (`IDOK` from the dialog manager; the buttons are owner-drawn, so
     /// there is no default button), 2026-11-12: [`Self::enter_on`] the control that has the
-    /// focus.
+    /// focus. 2026-11-20 (S4 P4): called by `on_command` after its `Press::Enter` (before, by the
+    /// logic's `on_press`).
     fn enter_key(&mut self) {
         let focus = self
             .controls
@@ -1943,21 +1995,28 @@ impl App {
         self.enter_on(focus.as_ref());
     }
 
-    /// Enter with the focus on `focus`: an enabled button is pressed, exactly as a click; in an
-    /// edit of a form with one obvious action ([`enter_primary`]) that action, when it is shown
-    /// enabled. A check box, a radio, any other edit or no focus: nothing, and nothing while a
-    /// secret window is open (the secret and approval windows have their own key rules).
+    /// Enter with the focus on `focus` ([`Self::enter_target`]), pressed exactly as a click. The
+    /// tests' and the census's way in (a control as the window placed it).
     pub(crate) fn enter_on(&mut self, focus: Option<&crate::ui::main_window::Ctl>) {
-        let Some(ctl) = focus else {
-            return;
-        };
+        if let Some(id) = self.enter_target(focus) {
+            self.on_command(id);
+        }
+    }
+
+    /// What Enter with the focus on `focus` presses: an enabled button itself; in an edit of a
+    /// form with one obvious action ([`enter_primary`]) that action, when it is shown enabled. A
+    /// check box, a radio, any other edit or no focus: nothing, and nothing while a secret window
+    /// is open (the secret and approval windows have their own key rules). 2026-11-20 (S4 P4):
+    /// only reads.
+    fn enter_target(&self, focus: Option<&crate::ui::main_window::Ctl>) -> Option<u16> {
+        let ctl = focus?;
         if self.secret.is_some() || !ctl.enabled {
-            return;
+            return None;
         }
         if ctl.is_button() {
-            self.on_command(ctl.id);
-        } else if let Some(primary) = enter_primary(ctl.id) {
-            let _ = self.press_shown(&[primary]);
+            Some(ctl.id)
+        } else {
+            self.shown_of(&[enter_primary(ctl.id)?])
         }
     }
 
@@ -1966,11 +2025,11 @@ impl App {
         self.idle.input(self.clock.now_ms());
     }
 
+    /// `WM_YW_ACTIVATE` (a second start, spec/04 §1.1): the main window comes up, then the unlock
+    /// window when locked. 2026-11-20 (S4 P4): the window's part is `Effect::RaiseMain`, at the
+    /// same point (before, `show_main_window` and `set_foreground` were called here).
     fn activate(&mut self) {
-        self.show_main_window();
-        if let Some(main) = self.main.as_ref() {
-            let _ = main.set_foreground();
-        }
+        self.emit(Effect::RaiseMain);
         self.background = false;
         self.refresh();
         // Not while a wallet reset moves the files (its vault is gone once it finishes).
@@ -2314,8 +2373,10 @@ impl App {
         self.rpc_import = crate::app_rpc_import::RpcImportUi::default();
         self.passphrase_session = false;
         self.recover_return = None;
-        // After a lock every screen opens at its top again (2026-11-10).
-        self.scroll_memory.clear();
+        // After a lock every screen opens at its top again (2026-11-10). 2026-11-20 (S4 P4): the
+        // shell's scroll memory, through `Effect::ScrollMemoryClear` at this point (before, this
+        // fn cleared it; the hold's capture above is `Effect::ReleaseHold` inside `hold_cancel`).
+        self.emit(Effect::ScrollMemoryClear);
         logging::info("app", "lock", &[("reason", Field::Word(reason.as_str()))]);
         if reason == LockReason::Suspend {
             #[cfg(test)]
@@ -3974,6 +4035,12 @@ impl App {
     /// mark — what every id did first before S3 — and nothing else runs (before D3 it went
     /// through `Press::Legacy` to `dispatch_legacy`, whose received-history check found no
     /// `새로고침` in it). The last press (`App::last_press`) stays the one before.
+    /// 2026-11-20 (S4 P4): Enter and Esc are resolved here, by the shell, after their own press
+    /// (which still sets the last command and clears the copy mark, as every press does first):
+    /// `enter_key`/`escape_key` find the control they stand for and press it through this fn,
+    /// so the logic gets that control's concrete `Press`. Before P4 the logic's `on_press` called
+    /// them inside the `Enter`/`Back` press (the inner press nested in it); the steps and their
+    /// order are the same.
     fn on_command(&mut self, id: u16) {
         self.note_input();
         let closed =
@@ -3982,6 +4049,11 @@ impl App {
         let input = cmd_table::capture(id, &self.controls, self.main.as_ref());
         if let Some(press) = cmd_table::press_of(id, &self.controls) {
             self.on_cmd(Cmd::Press { press, input });
+            match press {
+                Press::Enter => self.enter_key(),
+                Press::Back => self.escape_key(),
+                _ => {}
+            }
         } else {
             self.command = id;
             self.copied = None;
@@ -4047,8 +4119,9 @@ impl App {
         // control (another account, a new receive address) must not leave it there.
         self.copied = None;
         match press {
-            Press::Back => self.escape_key(),
-            Press::Enter => self.enter_key(),
+            // 2026-11-20 (S4 P4): nothing more here — the shell resolves the key after this
+            // press (`on_command`); before, `escape_key`/`enter_key` ran here.
+            Press::Back | Press::Enter => {}
             _ if self.passphrase_unverified() && press.is_receive_gated() => {
                 self.refuse_receive();
             }
@@ -4342,7 +4415,10 @@ impl App {
                 } else {
                     self.set_screen(Screen::Settings(SettingsSection::Network));
                     if press == CorePress::DoneRpcJson {
-                        self.reveal_id(crate::ui::screens::ids::RPC_IMPORT);
+                        // S4 P4: `Effect::Reveal` (before, `reveal_id` with the control id).
+                        self.emit(Effect::Reveal(RevealTarget::Press(Press::RpcImport(
+                            RpcImportPress::Import,
+                        ))));
                     }
                 }
             }
@@ -5380,8 +5456,9 @@ impl App {
     /// opens its address field (`ES_PASSWORD`) with the focus — a chain tab's `RPC 설정하기` —,
     /// otherwise the focus goes to its `테스트` (a failed network named on S08 or in the
     /// summary).
+    /// 2026-11-20 (S4 P4): the scroll and focus are `Effect::Reveal` of the row's `테스트` press
+    /// or of the masked address field (before, `reveal_id` with the control id).
     pub(crate) fn open_rpc_row(&mut self, network: NetworkId, edit: bool) {
-        use crate::ui::screens::ids;
         let row = self
             .url_networks()
             .iter()
@@ -5394,26 +5471,11 @@ impl App {
             return;
         };
         let target = if edit {
-            ids::REPLACE_EDIT
+            RevealTarget::Cred(CredField::RpcReplace)
         } else {
-            ids::ROW_BASE
-                .saturating_add(row.saturating_mul(3))
-                .saturating_add(1)
+            RevealTarget::Press(Press::Core(CorePress::RpcRow(Row(row), RpcRowAction::Test)))
         };
-        self.reveal_id(target);
-    }
-
-    /// Scrolls the control `id` of the current screen into view and gives it the focus.
-    pub(crate) fn reveal_id(&mut self, id: u16) {
-        if let Some(index) = self
-            .placed
-            .controls
-            .iter()
-            .position(|(ctl, _)| ctl.id == id)
-        {
-            self.reveal_control(index);
-            self.controls.focus_at(index);
-        }
+        self.emit(Effect::Reveal(target));
     }
 
     /// Clears what S08 shows (its banners, `← 처음 설정으로`, the connect results).
@@ -5480,12 +5542,11 @@ impl App {
     }
 
     /// Back to the screen under the overlay without `set_screen` (its leaving hooks stay out of
-    /// it), where it was.
+    /// it), where it was. 2026-11-20 (S4 P4): "where it was" is the shell's scroll memory,
+    /// through `Effect::OverlayClosedInPlace` (before, this fn set the offset).
     fn close_overlay_in_place(&mut self, previous: Screen) {
         self.screen = previous;
-        if let Some(dip) = self.scroll_memory.under_overlay.take() {
-            self.scroll = self.scroll_px(dip);
-        }
+        self.emit(Effect::OverlayClosedInPlace);
     }
 
     #[expect(clippy::too_many_lines, reason = "one arm per confirmation overlay")]

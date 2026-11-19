@@ -4067,9 +4067,10 @@ impl crate::app::App {
             .is_some_and(|meta| meta.prefs.tab == crate::meta::Tab::Btc)
     }
 
-    /// Selects the Bitcoin tab (refresh on open, spec/08 §4.7).
+    /// Selects the Bitcoin tab (refresh on open, spec/08 §4.7). 2026-11-20 (S4 P4): the scroll
+    /// memory's part is `Effect::TabTop`, at the same point (before, `tab_top` was called here).
     pub fn btc_select_tab(&mut self) {
-        self.tab_top();
+        self.emit(yw_engine::effect::Effect::TabTop);
         if let Some(meta) = self.meta.as_mut()
             && meta.prefs.tab != crate::meta::Tab::Btc
         {

@@ -782,8 +782,9 @@ impl App {
 
     /// Switches the main tab; the first Solana entry derives account 0 (spec/07 §3.1).
     pub fn sol_select_tab(&mut self, tab: Tab) {
-        // The new tab opens at its top (2026-11-10).
-        self.tab_top();
+        // The new tab opens at its top (2026-11-10). 2026-11-20 (S4 P4): the shell's scroll
+        // memory, `Effect::TabTop` at the same point (before, `tab_top` was called here).
+        self.emit(yw_engine::effect::Effect::TabTop);
         if let Some(meta) = self.meta.as_mut()
             && meta.prefs.tab != tab
         {

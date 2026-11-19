@@ -301,6 +301,13 @@ impl App {
         account || network
     }
 
+    /// Whether a drop-down is open: what [`Self::close_pickers`] would return (2026-11-20, S4
+    /// P4: the shell's Esc resolution reads it before closing).
+    #[must_use]
+    pub(crate) const fn pickers_open(&self) -> bool {
+        self.account_menu.is_some() || self.evm.network_picker
+    }
+
     /// The drop-down buttons and the activity recipients (2026-11-18, S3 C1: a `LinksPress`;
     /// before, the control id). The open drop-down is still kept as its button's control id
     /// (`account_menu`, Windows; S4 makes it a press).

@@ -29,15 +29,24 @@
 //! replace with a record, also for folders (before, a folder press started `explorer.exe` in
 //! every build). They apply with or without a main window, as before, and record no shell-call
 //! line (none was recorded before; the census counts the launcher's record, `launch N`).
+//!
+//! 2026-11-20 (S4 P4): the main window's own work the handlers did themselves before:
+//! `Reveal` (`App::reveal_id`, the id from `cmd_table`), `RaiseMain` (was in `App::activate`),
+//! the scroll memory of a screen entry (`ScreenLeaving`/`ScreenEntered`, `OverlayClosedInPlace`,
+//! `TabTop`, `ScrollMemoryClear`: `app_scroll`; were in `App::enter_screen`,
+//! `close_overlay_in_place`, the tab selectors and `lock`) and `ReleaseHold` (was in
+//! `App::hold_cancel`). Each arm is the code that ran at the emitting point, so the order is the
+//! same; none answers or records a shell-call line (none was recorded before). The scroll arms
+//! read the wallet's screen and tab while applied, exactly as that code did.
 
 use yw_core::secret::Zeroizing;
 use yw_engine::cmd::Cmd;
-use yw_engine::effect::{Effect, Folder, TimerId};
+use yw_engine::effect::{Effect, Folder, RevealTarget, TimerId};
 use yw_win::clipboard;
 
 use crate::app::App;
 use crate::logging::{self, Field};
-use crate::ui::cmd_table::{cred_id_of, edit_id_of};
+use crate::ui::cmd_table::{self, cred_id_of, edit_id_of};
 
 /// The main window's timer id for `timer`, and its name in the tests' shell-call log.
 const fn timer_of(timer: TimerId) -> (usize, &'static str) {
@@ -161,6 +170,25 @@ impl App {
             Effect::OpenFolder(folder) => {
                 if let Some(answer) = self.open_folder(folder) {
                     self.on_cmd(answer);
+                }
+            }
+            // S4 P4: the main window's own work, at the emitting point (module doc).
+            Effect::Reveal(target) => self.reveal_id(match target {
+                RevealTarget::Press(press) => cmd_table::id_of(press),
+                RevealTarget::Cred(field) => cred_id_of(field),
+            }),
+            Effect::RaiseMain => self.raise_main(),
+            Effect::ScreenLeaving {
+                overlay_opens,
+                changes,
+            } => self.screen_leaving(overlay_opens, changes),
+            Effect::ScreenEntered { back, overlay } => self.screen_entered(back, overlay),
+            Effect::OverlayClosedInPlace => self.overlay_closed_in_place(),
+            Effect::TabTop => self.tab_top(),
+            Effect::ScrollMemoryClear => self.scroll_memory.clear(),
+            Effect::ReleaseHold => {
+                if let Some(main) = self.main.as_ref() {
+                    main.release_capture();
                 }
             }
         }

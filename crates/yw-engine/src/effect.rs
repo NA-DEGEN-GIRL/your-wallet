@@ -16,11 +16,20 @@
 //! `Cmd::Opened`) and [`Effect::OpenFolder`] (a [`Folder`]; an extension folder the shell does not
 //! find is answered with `Cmd::FolderMissing`). Before, the handlers started `explorer.exe`
 //! themselves (`App::open_folder`, the launcher in `App::open_explorer`). Still applied at once.
+//!
+//! 2026-11-20 (spec/15 §11.4 S4 P4): what the logic asked of the main window directly before:
+//! [`Effect::Reveal`] (scroll a control into view and focus it, [`RevealTarget`]),
+//! [`Effect::RaiseMain`] (a second start's activation), the scroll memory of a screen entry
+//! ([`Effect::ScreenLeaving`], [`Effect::ScreenEntered`], [`Effect::OverlayClosedInPlace`],
+//! [`Effect::TabTop`], [`Effect::ScrollMemoryClear`]) and the end of a hold area's pointer
+//! capture ([`Effect::ReleaseHold`]). None is answered. Still applied at once: the scroll ones
+//! read the wallet's screen while they are applied (Windows: inside the handler that emitted
+//! them), so an outbox must carry what they read.
 
 use core::fmt;
 
 use crate::approval::flow::ApprovalEffect;
-use crate::cmd::{CopyMark, LinkTarget};
+use crate::cmd::{CopyMark, LinkTarget, Press};
 use crate::form::{CredField, EditField};
 
 /// One request to the shell.
@@ -82,6 +91,51 @@ pub enum Effect {
     /// The shell resolves the path; [`Folder::Extension`] not found is answered with
     /// `Cmd::FolderMissing`, the other folders with nothing.
     OpenFolder(Folder),
+    /// Scroll a control of the main screen fully into view and give it the focus (S4 P4; was
+    /// `App::reveal_id` in the handlers). Nothing when the screen laid out last does not show it.
+    Reveal(RevealTarget),
+    /// Show the main window and bring it to the foreground (S4 P4: a second start's
+    /// `WM_YW_ACTIVATE`, spec/04 §1.1; was in `App::activate`). Not answered.
+    RaiseMain,
+    /// The screen shown now is being left (S4 P4; the first half of a screen entry, emitted
+    /// before the logic changes its screen): the shell notes where it was scrolled when an
+    /// overlay opens over it (`overlay_opens`) and, when another screen follows (`changes`), where
+    /// it was left for the ways back (spec/04 §1.7). It reads the screen being left.
+    ScreenLeaving {
+        /// A confirmation overlay opens over a screen that is not one.
+        overlay_opens: bool,
+        /// The next screen is another one.
+        changes: bool,
+    },
+    /// A screen was entered (S4 P4; the second half, emitted after the logic changed its screen
+    /// and before its render): it opens where it was under a closing overlay (`overlay`: the
+    /// screen left was one), where it was left on a way back (`back`), else at its top.
+    ScreenEntered {
+        /// A way back (`App::return_to`).
+        back: bool,
+        /// The screen left was a confirmation overlay.
+        overlay: bool,
+    },
+    /// A confirmation overlay closed back onto the screen under it without a screen entry (S4
+    /// P4; `App::close_overlay_in_place`): that screen is shown where it was, if that was noted.
+    OverlayClosedInPlace,
+    /// A chain tab is selected (S4 P4; emitted before the tab changes): the shell notes where the
+    /// tab being left was and the new one opens at its top.
+    TabTop,
+    /// Forget every remembered scroll offset (S4 P4: a lock; the next session opens at the top).
+    ScrollMemoryClear,
+    /// A press-and-hold area's hold ended: release its pointer capture (S4 P4; S22).
+    ReleaseHold,
+}
+
+/// A control of the main screen [`Effect::Reveal`] names (S4 P4): a button by its press, a
+/// masked credential edit by its field. Never a control id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RevealTarget {
+    /// The control that sends this press.
+    Press(Press),
+    /// The masked edit of this field (`ES_PASSWORD`).
+    Cred(CredField),
 }
 
 /// Names, fields and lengths only (D28): never the text of a field or a copy.
@@ -123,6 +177,25 @@ impl fmt::Debug for Effect {
                 .field("which", which)
                 .finish(),
             Self::OpenFolder(folder) => formatter.debug_tuple("OpenFolder").field(folder).finish(),
+            Self::Reveal(target) => formatter.debug_tuple("Reveal").field(target).finish(),
+            Self::RaiseMain => formatter.write_str("RaiseMain"),
+            Self::ScreenLeaving {
+                overlay_opens,
+                changes,
+            } => formatter
+                .debug_struct("ScreenLeaving")
+                .field("overlay_opens", overlay_opens)
+                .field("changes", changes)
+                .finish(),
+            Self::ScreenEntered { back, overlay } => formatter
+                .debug_struct("ScreenEntered")
+                .field("back", back)
+                .field("overlay", overlay)
+                .finish(),
+            Self::OverlayClosedInPlace => formatter.write_str("OverlayClosedInPlace"),
+            Self::TabTop => formatter.write_str("TabTop"),
+            Self::ScrollMemoryClear => formatter.write_str("ScrollMemoryClear"),
+            Self::ReleaseHold => formatter.write_str("ReleaseHold"),
         }
     }
 }
@@ -232,5 +305,54 @@ mod tests {
             format!("{:?}", Effect::OpenFolder(Folder::Extension)),
             "OpenFolder(Extension)"
         );
+    }
+
+    /// S4 P4: a reveal names a press or a field, never a control id; the scroll effects are
+    /// flags.
+    #[test]
+    fn the_main_window_effects_debug_as_names_and_flags() {
+        assert_eq!(
+            format!(
+                "{:?}",
+                Effect::Reveal(RevealTarget::Press(Press::Evm(EvmPress::CopyAddress)))
+            ),
+            "Reveal(Press(Evm(CopyAddress)))"
+        );
+        assert_eq!(
+            format!(
+                "{:?}",
+                Effect::Reveal(RevealTarget::Cred(CredField::QnToken))
+            ),
+            "Reveal(Cred(QnToken))"
+        );
+        assert_eq!(
+            format!(
+                "{:?}",
+                Effect::ScreenLeaving {
+                    overlay_opens: true,
+                    changes: false
+                }
+            ),
+            "ScreenLeaving { overlay_opens: true, changes: false }"
+        );
+        assert_eq!(
+            format!(
+                "{:?}",
+                Effect::ScreenEntered {
+                    back: true,
+                    overlay: false
+                }
+            ),
+            "ScreenEntered { back: true, overlay: false }"
+        );
+        for (effect, name) in [
+            (Effect::RaiseMain, "RaiseMain"),
+            (Effect::OverlayClosedInPlace, "OverlayClosedInPlace"),
+            (Effect::TabTop, "TabTop"),
+            (Effect::ScrollMemoryClear, "ScrollMemoryClear"),
+            (Effect::ReleaseHold, "ReleaseHold"),
+        ] {
+            assert_eq!(format!("{effect:?}"), name);
+        }
     }
 }
