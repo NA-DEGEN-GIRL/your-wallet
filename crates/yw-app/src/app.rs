@@ -659,6 +659,11 @@ pub struct App {
     /// The data-folder store: `settings.json` writes, `apikeys.dpapi`, the `vault.ywv` facts,
     /// `.prev` checks and the reset candidates (2026-11-20, S4 P1: yw-engine `AppStore`, built
     /// from `paths` in [`App::with_clock`]; before, `impl App` made these calls directly).
+    ///
+    /// It takes `paths.data` once, so `paths.data` must not change after the `App` is built
+    /// (2026-11-20, S4 P1 review): the only writer is the screenshot tour's shot 44, which swaps
+    /// in the generic folder text for the picture and puts the real folder back, with no store
+    /// call in between (`ui::tour`). A test that needs other store results swaps this field.
     pub(crate) store: Box<dyn AppStore>,
     pub(crate) background: bool,
     pub(crate) main: Option<Window>,

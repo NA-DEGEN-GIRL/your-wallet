@@ -1949,6 +1949,195 @@ fn llm_endpoint_swapped_in_the_file_needs_a_new_consent() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// What [`FakeStore`] answers and what it was asked (shared with the test).
+#[derive(Default)]
+struct FakeStoreState {
+    settings_ok: bool,
+    keys_ok: bool,
+    /// What a sealed-keys read returns (`None`: no file).
+    sealed: Option<Vec<u8>>,
+    settings_writes: usize,
+    key_writes: usize,
+    key_reads: usize,
+    /// The plaintext of the last successful sealed-keys write (fake keys only).
+    last_keys: Option<Vec<u8>>,
+}
+
+/// An `AppStore` whose writes succeed or fail on request (no file, no DPAPI), swapped into
+/// `App::store` so the callers' failure branches run (2026-11-20, S4 P1 review: `App::with_clock`
+/// always builds `WinAppStore`, which a test cannot make fail on purpose).
+struct FakeStore(std::sync::Arc<std::sync::Mutex<FakeStoreState>>);
+
+impl yw_engine::app_store::AppStore for FakeStore {
+    fn write_settings(&self, _json: &[u8]) -> bool {
+        let mut state = self.0.lock().unwrap();
+        state.settings_writes += 1;
+        state.settings_ok
+    }
+
+    fn read_sealed_keys(&self) -> yw_engine::app_store::SealedRead {
+        let mut state = self.0.lock().unwrap();
+        state.key_reads += 1;
+        state
+            .sealed
+            .clone()
+            .map_or(yw_engine::app_store::SealedRead::NotFound, |plain| {
+                yw_engine::app_store::SealedRead::Plain(Zeroizing::new(plain))
+            })
+    }
+
+    fn write_sealed_keys(&self, plain: &[u8]) -> bool {
+        let mut state = self.0.lock().unwrap();
+        state.key_writes += 1;
+        if state.keys_ok {
+            state.last_keys = Some(plain.to_vec());
+        }
+        state.keys_ok
+    }
+
+    fn vault_file_info(&self) -> Option<(u64, u64)> {
+        None
+    }
+
+    fn prev_exists(&self, _kind: yw_core::vault::FileKind) -> bool {
+        false
+    }
+
+    fn reset_candidates(&self, _include_settings: bool) -> Vec<String> {
+        Vec::new()
+    }
+}
+
+fn fake_store(
+    app: &mut App,
+    state: FakeStoreState,
+) -> std::sync::Arc<std::sync::Mutex<FakeStoreState>> {
+    let shared = std::sync::Arc::new(std::sync::Mutex::new(state));
+    app.store = Box::new(FakeStore(std::sync::Arc::clone(&shared)));
+    shared
+}
+
+fn has_app002(app: &App) -> bool {
+    app.banners
+        .iter()
+        .any(|banner| banner.code == Some(crate::errors::ErrorCode::App002))
+}
+
+/// AI settings on `endpoint` with the privacy notice accepted (the consent a snapshot records).
+fn consented_llm(endpoint: &str) -> Settings {
+    Settings {
+        llm_explain: crate::settings::LlmSettings {
+            enabled: true,
+            endpoint: endpoint.to_owned(),
+            model: "m".to_owned(),
+            privacy_notice_version: 1,
+            ..crate::settings::LlmSettings::default()
+        },
+        ..Settings::default()
+    }
+}
+
+/// S4 P1 review (spec/04 §6.3, §7 E-APP-002): when sealing or writing `apikeys.dpapi` fails,
+/// `save_apikeys` returns `false`, the keys in memory go back to what the store holds (an older
+/// key bound again to the snapshot host after the check), and E-APP-002 shows; the caller does
+/// not report the key as saved. A later successful save writes the keys in use and reads nothing.
+#[test]
+fn a_failed_apikeys_save_reloads_the_stored_keys_and_shows_e_app_002() {
+    let (mut app, dir) = llm_app("keys-fail", LLM_A);
+    let mut stored = ApiKeys::default();
+    stored.set_llm("legacy-key-01", None);
+    let shared = fake_store(
+        &mut app,
+        FakeStoreState {
+            sealed: Some(stored.encode().to_vec()),
+            ..FakeStoreState::default()
+        },
+    );
+    app.meta = Some(meta_with_snapshot(&consented_llm(LLM_A)));
+    app.guard.verified = true;
+
+    app.llm_store_key("test-key-03");
+    assert_eq!(app.apikeys.llm_key(), Some("legacy-key-01"), "reloaded");
+    assert_eq!(
+        app.apikeys.llm_host(),
+        Some("api.example.org"),
+        "the reloaded key is bound to the snapshot host"
+    );
+    assert!(has_app002(&app));
+    {
+        let state = shared.lock().unwrap();
+        assert_eq!((state.key_writes, state.key_reads), (1, 1));
+        assert!(state.last_keys.is_none());
+    }
+
+    app.apikeys.set_alchemy("FakeAlchemyKey_0123456789");
+    assert!(!app.save_apikeys());
+    assert_eq!(app.apikeys.llm_key(), Some("legacy-key-01"));
+    assert!(
+        app.apikeys
+            .credential(crate::settings::RpcTemplate::Alchemy)
+            .is_none(),
+        "the unsaved key is gone"
+    );
+
+    app.banners.clear();
+    shared.lock().unwrap().keys_ok = true;
+    app.apikeys.set_alchemy("FakeAlchemyKey_0123456789");
+    assert!(app.save_apikeys());
+    assert!(!has_app002(&app));
+    {
+        let state = shared.lock().unwrap();
+        assert_eq!((state.key_writes, state.key_reads), (3, 2), "no reload");
+        assert_eq!(
+            state.last_keys.as_deref(),
+            Some(app.apikeys.encode().as_slice())
+        );
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// S4 P1 review (spec/04 §6.2, §7 E-APP-002): a failed `settings.json` write keeps the values in
+/// use and shows E-APP-002, in `save_settings` and in the check after unlock
+/// (`reconcile_settings`, which still applies its repair in memory: the AI goes off).
+#[test]
+fn a_failed_settings_write_keeps_the_values_and_shows_e_app_002() {
+    let dir = temp_dir("settings-fail");
+    let mut app = app_at(&dir);
+    let shared = fake_store(&mut app, FakeStoreState::default());
+    let before = app.settings.auto_lock_minutes;
+    assert_ne!(before, 9);
+    let mut changed = app.settings.clone();
+    changed.auto_lock_minutes = 9;
+    app.save_settings(changed.clone(), "autoLockMinutes");
+    assert_eq!(app.settings.auto_lock_minutes, before, "kept");
+    assert!(has_app002(&app));
+    assert_eq!(shared.lock().unwrap().settings_writes, 1);
+
+    app.banners.clear();
+    shared.lock().unwrap().settings_ok = true;
+    app.save_settings(changed, "autoLockMinutes");
+    assert_eq!(app.settings.auto_lock_minutes, 9, "applied");
+    assert!(!has_app002(&app));
+    assert_eq!(shared.lock().unwrap().settings_writes, 2);
+    assert!(!dir.join("settings.json").exists(), "only the store wrote");
+    let _ = std::fs::remove_dir_all(dir);
+
+    // The check after unlock: the AI is on in the file without a consent for its host, so the
+    // repaired file is written, and that write fails.
+    let (mut app, dir) = llm_app("reconcile-fail", LLM_B);
+    let shared = fake_store(&mut app, FakeStoreState::default());
+    app.settings.llm_explain.enabled = true;
+    app.settings.llm_explain.privacy_notice_version = 1;
+    let _ = app.reconcile_settings(Some(crate::settings::SecuritySnapshot::of(&consented_llm(
+        LLM_A,
+    ))));
+    assert!(!app.settings.llm_explain.enabled, "off in memory");
+    assert_eq!(shared.lock().unwrap().settings_writes, 1);
+    assert!(has_app002(&app));
+    assert!(!app.llm_running());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// Review L15: fee caps and auto-lock changed in the file use the snapshot values; the banner's
 /// `파일 값 사용` takes the file values (and the snapshot follows), `되돌리기` rewrites the file;
 /// a deleted `HyperEVM` pin is restored in memory and on disk.

@@ -1695,7 +1695,9 @@ fn screenshot_tour() {
         // S22 지갑 초기화 from the lock screen: the phrase typed, the hold not started. The file
         // list is made up (the tour's data folder has no wallet files), and the shown folder is
         // the generic one, never the tour's temp path with the user's profile name (2026-11-14:
-        // shot 44 showed it before).
+        // shot 44 showed it before). Only the shown text changes: `App::store` keeps the tour's
+        // folder, and nothing between the swap and the restore below calls it (the file list
+        // was read by `open_reset`, before the swap; 2026-11-20, S4 P1 review).
         let mut state = app.borrow_mut();
         state.open_reset();
         let tour_data = std::mem::replace(
