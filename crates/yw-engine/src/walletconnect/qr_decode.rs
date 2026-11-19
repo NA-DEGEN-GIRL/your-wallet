@@ -15,6 +15,8 @@
 //! tests use as the encoder.
 #![deny(clippy::indexing_slicing)]
 
+use yw_core::secret::Zeroizing;
+
 /// Largest image the decoder looks at (pixels).
 pub const MAX_PIXELS: usize = 64 * 1_024 * 1_024;
 
@@ -74,8 +76,13 @@ impl Gray {
 
 /// Parses `CF_DIB` clipboard bytes (`BITMAPINFOHEADER`/V4/V5 + optional masks/palette + pixels;
 /// 8-bit palettised, 24-bit and 32-bit, bottom-up or top-down) into BGRA pixels.
+///
+/// 2026-11-20 (S4 P5 review): the pixels are built in a wiped buffer from the start (reserved
+/// once at full size, so it never reallocates), so a `CF_DIB` that ends partway through the rows
+/// also wipes the rows already copied when it is refused. Before, a plain `Vec` that the caller
+/// wrapped in `Zeroizing` only on success.
 #[must_use]
-pub fn dib_to_bgra(bytes: &[u8]) -> Option<(usize, usize, Vec<u8>)> {
+pub fn dib_to_bgra(bytes: &[u8]) -> Option<(usize, usize, Zeroizing<Vec<u8>>)> {
     let u32_at = |offset: usize| -> Option<u32> {
         Some(u32::from_le_bytes(
             bytes.get(offset..offset + 4)?.try_into().ok()?,
@@ -120,7 +127,7 @@ pub fn dib_to_bgra(bytes: &[u8]) -> Option<(usize, usize, Vec<u8>)> {
     let palette_start = header + masks;
     let pixels_start = palette_start + palette_len * 4;
     let row_bytes = (width * usize::from(bits)).div_ceil(32) * 4;
-    let mut out = Vec::with_capacity(width * height * 4);
+    let mut out = Zeroizing::new(Vec::with_capacity(width * height * 4));
     for row in 0..height {
         let source_row = if top_down { row } else { height - 1 - row };
         let start = pixels_start + source_row * row_bytes;

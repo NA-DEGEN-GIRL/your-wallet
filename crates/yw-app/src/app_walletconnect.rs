@@ -7,7 +7,6 @@ use std::sync::Arc;
 
 use yw_core::approval::{ApprovalDraft, ApprovalOrigin};
 use yw_core::policy::{BrowserOrigin, ProviderError};
-use yw_core::secret::Zeroizing;
 use yw_engine::form::{ClipInput, ImageInput};
 use yw_engine::services::WcPlatform;
 
@@ -624,12 +623,14 @@ impl App {
     /// `클립보드 이미지에서 QR 읽기` (Win+Shift+S places a bitmap on the clipboard).
     /// 2026-11-18 (S3 D1): `clip` is what the shell read from the clipboard with the press
     /// (`ui::cmd_table::capture`); before, this read `CF_DIB` itself. Same notices, same order.
-    /// 2026-11-20 (S4 P5): the `CF_DIB` bytes and the pixels made from them are wiped on drop.
+    /// 2026-11-20 (S4 P5): the `CF_DIB` bytes and the BGRA pixels made from them are wiped on
+    /// drop (the pixels also when `dib_to_bgra` refuses a `CF_DIB` partway, since the P5 review:
+    /// it builds them in a wiped buffer; before, this wrapped them only on success). The
+    /// decoder's grayscale copy and the decoded link text are not wiped yet (spec/13 §6).
     pub(crate) fn wc_clipboard_qr(&mut self, clip: ClipInput) {
         match clip {
             ClipInput::WinDib(dib) => match crate::walletconnect::qr_decode::dib_to_bgra(&dib) {
                 Some((width, height, pixels)) => {
-                    let pixels = Zeroizing::new(pixels);
                     self.wc_pair_pixels(width, height, &pixels, "clipboard");
                 }
                 None => self.wc_notice(text::CLIPBOARD_FORMAT),

@@ -443,7 +443,11 @@ pub enum ClipInput {
     /// prefilled link and the camera reader (spec/15 §12.2), not this input. Wiped on drop
     /// (2026-11-20, S4 P5: the image may show a pairing QR, whose link holds the `symKey`; the
     /// shell moves `read_dib`'s buffer in without a copy. Before, a plain `Vec`, as `read_dib`
-    /// returned it).
+    /// returned it). 2026-11-20 (S4 P5 review): what stays unwiped is recorded as a later item
+    /// (spec/13 §6): the QR decoder's grayscale copy of the pixels (`qr_decode::Gray`) and the
+    /// decoded link text (`decode_bgra_text`'s `String` and `wc_pair`'s trimmed copy) are plain
+    /// buffers, so after a QR press the image as luma and the link still sit in freed memory
+    /// unwiped, as before P5. The BGRA pixels `dib_to_bgra` makes are wiped on every path.
     WinDib(Zeroizing<Vec<u8>>),
     /// The clipboard holds no image.
     NoImage,
@@ -478,7 +482,9 @@ pub enum ImageInput {
     /// The decoder could not read the file.
     Unreadable,
     /// The decoded image: `width × height` pixels, 4 bytes each in B, G, R, A order, top row
-    /// first. Wiped on drop (it may show a pairing QR).
+    /// first. Wiped on drop (it may show a pairing QR). 2026-11-20 (S4 P5 review): the QR
+    /// decoder's grayscale copy and the decoded link text are not wiped yet (a later item,
+    /// spec/13 §6; see [`ClipInput::WinDib`]).
     Pixels {
         /// Width in pixels.
         width: usize,
