@@ -7,9 +7,11 @@
 //!
 //! A URL is built only from a validated template and a value of the network's character set
 //! (`crate::explorer::build_url`) and opened with `%SystemRoot%\explorer.exe <url>` like a
-//! folder (§2.14) — no shell API, no `cmd.exe`. The log names only the network.
+//! folder (§2.14) — no shell API, no `cmd.exe`. The log names only the network. 2026-11-20
+//! (S4 P3): the handlers emit `Effect::OpenUrl`; the effect executor starts the [`Launcher`] and
+//! answers `Cmd::Opened` ([`App::on_opened`]).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::app::App;
 use crate::explorer::{
@@ -18,7 +20,8 @@ use crate::explorer::{
 use crate::logging::{self, Field};
 use crate::network::{NetworkId, SolCluster};
 use crate::ui::screens_explorer::ids;
-use yw_engine::cmd::{ExplorerLinkAction, ExplorerPress, ExplorerRowAction, Row};
+use yw_engine::cmd::{ExplorerLinkAction, ExplorerPress, ExplorerRowAction, LinkTarget, Row};
+use yw_engine::effect::Effect;
 use yw_engine::form::EditField;
 
 /// Explorer link texts (spec/04 §2.11, §2.14; English spec/14 §5).
@@ -39,12 +42,18 @@ pub mod text {
     }
 }
 
-/// How a link is opened.
+/// How a link or a folder is opened. Only the effect executor (`app_effects`: `Effect::OpenUrl`,
+/// `Effect::OpenFolder`) calls it (2026-11-20, S4 P3: before, `App::open_explorer` launched and
+/// `App::open_folder` started `explorer.exe` for a folder itself, also in unit-test builds). The
+/// field stays in `ExplorerUi` until the shell gets its own state (S4 W1); the census counts its
+/// record (`launch N`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Launcher {
-    /// `%SystemRoot%\explorer.exe <url>` (the default browser; spec/04 §2.14).
+    /// `%SystemRoot%\explorer.exe <url or folder>` (the default browser or File Explorer;
+    /// spec/04 §2.14).
     System,
-    /// Tests: the URLs that would have been opened, in order (no browser starts).
+    /// Tests: what would have been opened, in order: a URL, or a folder's path (no process
+    /// starts).
     Record(Vec<String>),
 }
 
@@ -61,22 +70,38 @@ impl Default for Launcher {
 impl Launcher {
     /// Opens `url` (already built by `explorer::build_url`); `false` when the process did not
     /// start.
-    fn launch(&mut self, url: &str) -> bool {
+    pub(crate) fn launch(&mut self, url: &str) -> bool {
         match self {
-            Self::System => {
-                let root = std::env::var_os("SystemRoot")
-                    .map_or_else(|| PathBuf::from("C:\\Windows"), PathBuf::from);
-                std::process::Command::new(root.join("explorer.exe"))
-                    .arg(url)
-                    .spawn()
-                    .is_ok()
-            }
+            Self::System => explorer_exe(url),
             Self::Record(urls) => {
                 urls.push(url.to_owned());
                 true
             }
         }
     }
+
+    /// Opens the folder `path` in File Explorer (2026-11-20, S4 P3: was `App::open_folder`,
+    /// which always started the process); `false` when the process did not start.
+    pub(crate) fn open_folder(&mut self, path: &Path) -> bool {
+        match self {
+            Self::System => explorer_exe(path),
+            Self::Record(opened) => {
+                opened.push(path.to_string_lossy().into_owned());
+                true
+            }
+        }
+    }
+}
+
+/// `%SystemRoot%\explorer.exe <arg>` (`C:\Windows` when `SystemRoot` is not set; spec/04 §2.14);
+/// whether the process started.
+fn explorer_exe(arg: impl AsRef<std::ffi::OsStr>) -> bool {
+    let root =
+        std::env::var_os("SystemRoot").map_or_else(|| PathBuf::from("C:\\Windows"), PathBuf::from);
+    std::process::Command::new(root.join("explorer.exe"))
+        .arg(arg)
+        .spawn()
+        .is_ok()
 }
 
 /// The S15 card's state and the launcher.
@@ -194,13 +219,28 @@ impl App {
         }
     }
 
+    /// 2026-11-20 (S4 P3): the launch is `Effect::OpenUrl`, applied by the shell; its result
+    /// comes back as `Cmd::Opened` ([`App::on_opened`]: the log and the band). Before, this
+    /// called the launcher and went on with its `bool`. The host the band names is taken from
+    /// the URL here and travels in the [`LinkTarget`].
     fn open_explorer(&mut self, net: ExplorerNet, kind: LinkKind, value: &str) {
         let Some(url) = self.explorer_url(net, kind, value) else {
             self.info = Some(text::EXPLORER_NONE.get(self.settings.language).to_owned());
             self.refresh();
             return;
         };
-        let ok = self.explorer_ui.launcher.launch(&url);
+        let host = explorer::url_host(&url);
+        self.emit(Effect::OpenUrl {
+            url,
+            which: LinkTarget::Explorer { net, host },
+        });
+    }
+
+    /// `Cmd::Opened` (S4 P3): the `explorer.open` log line (the network only: never the URL,
+    /// the host, the hash or the address), then the band (the host when the browser was started)
+    /// and the repaint, as `open_explorer` did after its launch before.
+    pub(crate) fn on_opened(&mut self, ok: bool, which: LinkTarget) {
+        let LinkTarget::Explorer { net, host } = which;
         let net_field = match (net.network_id(), net) {
             (Some(id), _) => Field::Net(id),
             (None, ExplorerNet::HyperCore(network)) => {
@@ -219,7 +259,7 @@ impl App {
         );
         let lang = self.settings.language;
         self.info = Some(if ok {
-            explorer::url_host(&url).map_or_else(
+            host.map_or_else(
                 || text::OPENED.get(lang).to_owned(),
                 |host| text::OPENED_HOST.fill(lang, [&host]),
             )
@@ -619,6 +659,57 @@ mod tests {
             simulation: yw_core::evm::chain::SimulationSupport::Auto,
             genesis_hash: [7; 32],
         }
+    }
+
+    /// 2026-11-20 (S4 P3): only the effect executor (`app_effects.rs`: `Effect::OpenUrl`,
+    /// `Effect::OpenFolder`) starts the launcher, and only the launcher (this file) names
+    /// `explorer.exe`: no handler opens a link or a folder itself. A read-only scan of yw-app's
+    /// `src` (code, not comments); it asserts that it found its targets.
+    #[test]
+    fn only_the_effect_executor_starts_the_launcher() {
+        fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        walk(&root, &mut files);
+        // Split so that this test's own text does not match.
+        let launches = [
+            ["launcher", ".launch("].concat(),
+            ["launcher", ".open_folder("].concat(),
+        ];
+        let program = ["explorer", ".exe"].concat();
+        let (mut launch_sites, mut program_sites) = (Vec::new(), Vec::new());
+        for file in &files {
+            let text = std::fs::read_to_string(file).unwrap();
+            let name = file
+                .strip_prefix(&root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            for line in text.lines() {
+                let code = line.split("//").next().unwrap_or_default();
+                if launches
+                    .iter()
+                    .any(|pattern| code.contains(pattern.as_str()))
+                {
+                    launch_sites.push(name.clone());
+                }
+                if code.contains(program.as_str()) {
+                    program_sites.push(name.clone());
+                }
+            }
+        }
+        assert!(files.len() > 50, "{} files", files.len());
+        assert_eq!(launch_sites, ["app_effects.rs", "app_effects.rs"]);
+        assert_eq!(program_sites, ["app_explorer.rs"]);
     }
 
     #[test]

@@ -6,7 +6,9 @@
 //! candidate counts only as a plain folder (no reparse point) named `extension` holding a plain
 //! `manifest.json`; `폴더 열기` passes that resolved path, never text from elsewhere, to
 //! `explorer.exe` (§2.14). Chrome refuses `chrome://` links opened by other programs, so the page
-//! address is copied for the user to paste.
+//! address is copied for the user to paste. 2026-11-20 (S4 P3): the press emits
+//! `Effect::OpenFolder(Folder::Extension)`; the shell (`App::open_folder`) resolves the folder
+//! here and opens it, or answers `Cmd::FolderMissing`.
 
 use std::path::{Path, PathBuf};
 
@@ -183,24 +185,32 @@ impl App {
         self.return_to(back.unwrap_or(fallback));
     }
 
+    /// `Cmd::FolderMissing` (S4 P3): `탐색기에서 폴더 열기` found no extension folder — the
+    /// `extension.folder_missing` log line, the band and the repaint, as the press did before.
+    pub(crate) fn on_folder_missing(&mut self) {
+        logging::info("app", "extension.folder_missing", &[]);
+        self.info = Some(
+            crate::ui::screens_reset::T_EXT_MISSING
+                .get(self.settings.language)
+                .to_owned(),
+        );
+        self.refresh();
+    }
+
     /// Presses of S23 (2026-11-18, S3 C5: an `ExtPress`; before, the control id).
     pub(crate) fn on_ext(&mut self, press: yw_engine::cmd::ExtPress) {
         use yw_engine::cmd::ExtPress;
         match press {
             ExtPress::Open => self.open_extension_help(),
             ExtPress::Back => self.close_extension_help(),
+            // 2026-11-20 (S4 P3): the shell resolves and opens the folder
+            // (`Effect::OpenFolder`); a folder it does not find comes back as
+            // `Cmd::FolderMissing` (`on_folder_missing`). Before, this resolved the folder and
+            // started `explorer.exe` itself.
             ExtPress::OpenFolder => {
-                if let Some(dir) = extension_dir() {
-                    Self::open_folder(&dir);
-                } else {
-                    logging::info("app", "extension.folder_missing", &[]);
-                    self.info = Some(
-                        crate::ui::screens_reset::T_EXT_MISSING
-                            .get(self.settings.language)
-                            .to_owned(),
-                    );
-                    self.refresh();
-                }
+                self.emit(yw_engine::effect::Effect::OpenFolder(
+                    yw_engine::effect::Folder::Extension,
+                ));
             }
             ExtPress::CopyPath => {
                 if let Some(dir) = extension_dir() {

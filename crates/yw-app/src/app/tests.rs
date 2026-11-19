@@ -3451,6 +3451,81 @@ fn a_late_copy_result_marks_the_control_of_its_mark() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// 2026-11-20 (S4 P3): explorer links and the three folders open through `Effect::OpenUrl` and
+/// `Effect::OpenFolder`. The executor starts the launcher (unit-test builds: a record, no process
+/// — for folders too, which started `explorer.exe` in every build before) and answers in the same
+/// borrow: `Cmd::Opened` gives the band (the page's host, or the failure), `Cmd::FolderMissing`
+/// the `T_EXT_MISSING` band. A result carries its own target, so a late one names the host it was
+/// opened for; a result launches nothing.
+#[test]
+fn links_and_folders_open_through_effects_answered_in_the_same_borrow() {
+    use crate::app_explorer::{Launcher, text};
+    use crate::app_extension::TOUR_EXTENSION_DIR;
+    use crate::explorer::ExplorerNet;
+    use crate::network::NetworkId;
+    use crate::ui::screens::ids::{OPEN_DATA_FOLDER, OPEN_LOG_FOLDER};
+    use crate::ui::screens_reset::{T_EXT_MISSING, ids::EXT_OPEN_FOLDER};
+    use yw_engine::cmd::{Cmd, LinkTarget};
+    const HASH: &str = "0x7a329aaf9f457ef8516d5a51631fe5a75e3c12d7d71b6a73a38ce42ad352de2d";
+    let (mut app, dir) = unlocked_app("open-effects", false);
+    let recorded = |app: &App| {
+        match &app.explorer_ui.launcher {
+            Launcher::Record(opened) => Some(opened.clone()),
+            Launcher::System => None,
+        }
+        .expect("a unit-test build never starts a process")
+    };
+    assert_eq!(recorded(&app), Vec::<String>::new());
+    // The folders: the shell resolves the path; nothing comes back for one it opened.
+    let extension = dir.join("extension");
+    app.on_command(OPEN_DATA_FOLDER);
+    app.on_command(OPEN_LOG_FOLDER);
+    TOUR_EXTENSION_DIR.with(|slot| *slot.borrow_mut() = Some(extension.clone()));
+    app.on_command(EXT_OPEN_FOLDER);
+    TOUR_EXTENSION_DIR.with(|slot| *slot.borrow_mut() = None);
+    assert_eq!(
+        recorded(&app),
+        [
+            app.paths.data.display().to_string(),
+            app.paths.logs.display().to_string(),
+            extension.display().to_string(),
+        ]
+    );
+    assert_eq!(app.info, None);
+    // A link: the page is opened and its host named in the band, in the press's borrow.
+    let url = app.explorer_tx_url(NetworkId::Eip155(1), HASH).unwrap();
+    let host = crate::explorer::url_host(&url).unwrap();
+    app.open_explorer_tx(NetworkId::Eip155(1), HASH);
+    assert_eq!(recorded(&app).len(), 4);
+    assert_eq!(recorded(&app).last(), Some(&url));
+    let lang = app.settings.language;
+    assert_eq!(
+        app.info.as_deref(),
+        Some(text::OPENED_HOST.fill(lang, [&host]).as_str())
+    );
+    // Late results (Android): each answers with what its own target says.
+    app.on_cmd(Cmd::Opened {
+        ok: false,
+        which: LinkTarget::Explorer {
+            net: ExplorerNet::Evm(1),
+            host: Some(host.clone()),
+        },
+    });
+    assert_eq!(app.info.as_deref(), Some(text::EXPLORER_FAILED.get(lang)));
+    app.on_cmd(Cmd::Opened {
+        ok: true,
+        which: LinkTarget::Explorer {
+            net: ExplorerNet::Evm(1),
+            host: None,
+        },
+    });
+    assert_eq!(app.info.as_deref(), Some(text::OPENED.get(lang)));
+    app.on_cmd(Cmd::FolderMissing);
+    assert_eq!(app.info.as_deref(), Some(T_EXT_MISSING.get(lang)));
+    assert_eq!(recorded(&app).len(), 4, "a result opens nothing");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// 2026-11-18 (S3 B5): the form state follows the edits — a press reads them all first
 /// (`Cmd::Form`), `EN_CHANGE` sets one (`Cmd::Edit`, cut to the field's cap) — and
 /// `App::form_text` gives what `controls.text` gives; the credential units captured with a press

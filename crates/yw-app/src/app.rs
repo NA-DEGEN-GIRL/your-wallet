@@ -5,7 +5,7 @@
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::sync::mpsc::Sender;
@@ -60,7 +60,7 @@ use crate::workers::rpc::RpcJob;
 use yw_core::lang::{Lang, Text};
 use yw_engine::app_store::AppStore;
 use yw_engine::cmd::{Cmd, CorePress, Press, Row, RpcRowAction};
-use yw_engine::effect::{Effect, TimerId};
+use yw_engine::effect::{Effect, Folder, TimerId};
 // `CredField`: debug builds only until S3 C3 (the shadow reads of plan §3.2a; 2026-11-18 B4–B5
 // review); since C3 `App::take_cred` uses it in every build.
 use yw_engine::form::{CredField, EditField, FormState, PressInput};
@@ -3960,22 +3960,6 @@ impl App {
         self.save_settings(self.settings.clone(), "settingsFileRestored");
     }
 
-    pub(crate) fn open_folder(path: &Path) {
-        let root = std::env::var_os("SystemRoot")
-            .map_or_else(|| PathBuf::from("C:\\Windows"), PathBuf::from);
-        let spawned = std::process::Command::new(root.join("explorer.exe"))
-            .arg(path)
-            .spawn();
-        logging::info(
-            "app",
-            "folder.open",
-            &[(
-                "ok",
-                Field::Word(if spawned.is_ok() { "yes" } else { "no" }),
-            )],
-        );
-    }
-
     // ----- commands ----------------------------------------------------------------------
 
     /// A command of the main window. Any command but Enter, Esc and a drop-down's own selector
@@ -4044,6 +4028,10 @@ impl App {
                 outcome,
                 wide,
             } => self.on_approval_opened(shown, outcome, wide),
+            // An explorer link's open (`Effect::OpenUrl`, S4 P3).
+            Cmd::Opened { ok, which } => self.on_opened(ok, which),
+            // The extension folder was not found (`Effect::OpenFolder`, S4 P3).
+            Cmd::FolderMissing => self.on_folder_missing(),
         }
     }
 
@@ -4252,8 +4240,10 @@ impl App {
         match press {
             CorePress::FirstCreate => self.set_screen(Screen::CreateIntro),
             CorePress::FirstImport => self.set_screen(Screen::ImportIntro),
-            CorePress::OpenDataFolder => Self::open_folder(&self.paths.data.clone()),
-            CorePress::OpenLogFolder => Self::open_folder(&self.paths.logs.clone()),
+            // 2026-11-20 (S4 P3): the shell opens them (`Effect::OpenFolder`); before, this
+            // started `explorer.exe` with the path directly.
+            CorePress::OpenDataFolder => self.emit(Effect::OpenFolder(Folder::Data)),
+            CorePress::OpenLogFolder => self.emit(Effect::OpenFolder(Folder::Logs)),
             CorePress::CreateNext => {
                 self.open_input(SecretKind::SetPassword, Purpose::CreatePassword, false);
             }

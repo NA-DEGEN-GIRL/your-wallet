@@ -54,6 +54,10 @@
 //! window's `ShownId`, its foreground sample for an interaction event, one signal). Built only by
 //! the platform's input mapper (Windows: `ui::approval_input`); never stored, posted or queued
 //! past the window message it came from.
+//!
+//! 2026-11-20 (S4 P3): [`Cmd::Opened`], the answer to `Effect::OpenUrl` (echoing its
+//! [`LinkTarget`]), and [`Cmd::FolderMissing`], the answer to `Effect::OpenFolder` when the shell
+//! finds no extension folder.
 
 use core::fmt;
 
@@ -61,6 +65,7 @@ use yw_core::secret::Zeroizing;
 
 use crate::approval::flow::{ApprovalInput, OpenOutcome, ShownId};
 use crate::effect::TimerId;
+use crate::explorer::ExplorerNet;
 use crate::form::{EditField, FormSnapshot, PressInput};
 use crate::received::RecvChain;
 
@@ -154,6 +159,16 @@ pub enum Cmd {
         /// The window's client area is wide (`>= 640` DIP); `false` when not made.
         wide: bool,
     },
+    /// Result of `Effect::OpenUrl` (S4 P3), echoing its target (it may arrive later on Android).
+    Opened {
+        /// Whether the browser was started.
+        ok: bool,
+        /// The target of the open effect.
+        which: LinkTarget,
+    },
+    /// Answer to `Effect::OpenFolder(Folder::Extension)` (S4 P3): no extension folder was found
+    /// and nothing was opened. An open of the data or log folder is never answered.
+    FolderMissing,
 }
 
 /// Variant, field names and lengths only (D28): never a field's text or a credential unit.
@@ -187,6 +202,38 @@ impl fmt::Debug for Cmd {
                 .field("shown", shown)
                 .field("outcome", outcome)
                 .field("wide", wide)
+                .finish(),
+            Self::Opened { ok, which } => formatter
+                .debug_struct("Opened")
+                .field("ok", ok)
+                .field("which", which)
+                .finish(),
+            Self::FolderMissing => formatter.write_str("FolderMissing"),
+        }
+    }
+}
+
+/// What an `Effect::OpenUrl` opens (S4 P3). It travels with the effect and back with
+/// `Cmd::Opened`, so the result never depends on what changed in between (as [`CopyMark`]).
+#[derive(Clone, PartialEq, Eq)]
+pub enum LinkTarget {
+    /// A block-explorer page of `net` (spec/04 §2.6, §2.14).
+    Explorer {
+        /// The network (the `explorer.open` log names only it).
+        net: ExplorerNet,
+        /// The page's host name, for the result band (`None`: the URL gave none).
+        host: Option<String>,
+    },
+}
+
+/// The network and the host's length only (D28): never the host.
+impl fmt::Debug for LinkTarget {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Explorer { net, host } => formatter
+                .debug_struct("Explorer")
+                .field("net", net)
+                .field("host_len", &host.as_ref().map(String::len))
                 .finish(),
         }
     }
@@ -425,5 +472,20 @@ mod tests {
             ),
             "Approval(ApprovalInput { shown: ShownId(4), foreground: false, signal: Close })"
         );
+        // S4 P3: the network and the host's length only.
+        let opened = Cmd::Opened {
+            ok: true,
+            which: LinkTarget::Explorer {
+                net: ExplorerNet::Evm(1),
+                host: Some("etherscan.io".to_owned()),
+            },
+        };
+        let shown = format!("{opened:?}");
+        assert!(!shown.contains("etherscan"), "{shown}");
+        assert_eq!(
+            shown,
+            "Opened { ok: true, which: Explorer { net: Evm(1), host_len: Some(12) } }"
+        );
+        assert_eq!(format!("{:?}", Cmd::FolderMissing), "FolderMissing");
     }
 }

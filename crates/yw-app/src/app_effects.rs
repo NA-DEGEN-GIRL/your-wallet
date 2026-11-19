@@ -21,13 +21,22 @@
 //! `close_approval_window`, `rebuild_view_with` and `interaction()` ran inline before). The open
 //! is answered at once with `Cmd::ApprovalOpened`. Tests record no shell-call line for it (the
 //! census recorder is unchanged: before B5 these steps recorded none either).
+//!
+//! 2026-11-20 (S4 P3): `OpenUrl` (the explorer link's launch, was in `App::open_explorer`;
+//! answered at once with `Cmd::Opened`) and `OpenFolder` (`App::open_folder` resolves and opens
+//! the folder, was called by the handlers with the path; an extension folder it does not find is
+//! answered with `Cmd::FolderMissing`). Both go through the `Launcher`, which unit-test builds
+//! replace with a record, also for folders (before, a folder press started `explorer.exe` in
+//! every build). They apply with or without a main window, as before, and record no shell-call
+//! line (none was recorded before; the census counts the launcher's record, `launch N`).
 
 use yw_core::secret::Zeroizing;
 use yw_engine::cmd::Cmd;
-use yw_engine::effect::{Effect, TimerId};
+use yw_engine::effect::{Effect, Folder, TimerId};
 use yw_win::clipboard;
 
 use crate::app::App;
+use crate::logging::{self, Field};
 use crate::ui::cmd_table::{cred_id_of, edit_id_of};
 
 /// The main window's timer id for `timer`, and its name in the tests' shell-call log.
@@ -38,6 +47,30 @@ const fn timer_of(timer: TimerId) -> (usize, &'static str) {
 }
 
 impl App {
+    /// The shell's half of `Effect::OpenFolder` (2026-11-20, S4 P3; was `App::open_folder(path)`
+    /// in `app.rs`, called by the handlers with the path they resolved): the folder's path (the
+    /// data and log folders of `paths`, the extension folder of `app_extension::extension_dir`),
+    /// started in File Explorer through the launcher (unit-test builds record it) and the
+    /// `folder.open` log line, as before. An extension folder that is not found starts and logs
+    /// nothing here and is answered with `Cmd::FolderMissing` (the handler's band, as before).
+    fn open_folder(&mut self, folder: Folder) -> Option<Cmd> {
+        let path = match folder {
+            Folder::Data => self.paths.data.clone(),
+            Folder::Logs => self.paths.logs.clone(),
+            Folder::Extension => match crate::app_extension::extension_dir() {
+                Some(dir) => dir,
+                None => return Some(Cmd::FolderMissing),
+            },
+        };
+        let started = self.explorer_ui.launcher.open_folder(&path);
+        logging::info(
+            "app",
+            "folder.open",
+            &[("ok", Field::Word(if started { "yes" } else { "no" }))],
+        );
+        None
+    }
+
     /// Applies `effect` now (see the module doc). Tests record each effect in the shell-call log
     /// before the window check, so headless tests see it too.
     pub(crate) fn emit(&mut self, effect: Effect) {
@@ -116,6 +149,17 @@ impl App {
             // S4 B5: the approval window; an open is answered before `emit` returns.
             Effect::Approval(effect) => {
                 if let Some(answer) = self.apply_approval_effect(effect) {
+                    self.on_cmd(answer);
+                }
+            }
+            // S4 P3: the browser is started now and its result answered before `emit` returns.
+            Effect::OpenUrl { url, which } => {
+                let ok = self.explorer_ui.launcher.launch(&url);
+                self.on_cmd(Cmd::Opened { ok, which });
+            }
+            // S4 P3: the folder is opened now; a missing extension folder is answered at once.
+            Effect::OpenFolder(folder) => {
+                if let Some(answer) = self.open_folder(folder) {
                     self.on_cmd(answer);
                 }
             }

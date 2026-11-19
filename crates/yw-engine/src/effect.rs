@@ -11,11 +11,16 @@
 //! 2026-11-19 (spec/15 §11.4 S4 B5): [`Effect::Approval`], the approval window's open, close,
 //! rebuilt view and bottom-bar repaint ([`ApprovalEffect`]); the open is answered with
 //! `Cmd::ApprovalOpened`. Still applied at once (Windows: inside the `App` borrow).
+//!
+//! 2026-11-20 (spec/15 §11.4 S4 P3): [`Effect::OpenUrl`] (an explorer link; answered with
+//! `Cmd::Opened`) and [`Effect::OpenFolder`] (a [`Folder`]; an extension folder the shell does not
+//! find is answered with `Cmd::FolderMissing`). Before, the handlers started `explorer.exe`
+//! themselves (`App::open_folder`, the launcher in `App::open_explorer`). Still applied at once.
 
 use core::fmt;
 
 use crate::approval::flow::ApprovalEffect;
-use crate::cmd::CopyMark;
+use crate::cmd::{CopyMark, LinkTarget};
 use crate::form::{CredField, EditField};
 
 /// One request to the shell.
@@ -64,6 +69,19 @@ pub enum Effect {
     /// The approval window (S4 B5): ids, flags and the language only, never request text.
     /// `ApprovalEffect::Open` is answered with `Cmd::ApprovalOpened`.
     Approval(ApprovalEffect),
+    /// Open a link in the default browser (S4 P3): a block-explorer page built from a validated
+    /// template (`explorer::build_url`). Answered with `Cmd::Opened` carrying the same `which`.
+    /// `Debug` prints the URL's length only.
+    OpenUrl {
+        /// The URL.
+        url: String,
+        /// What the result applies to.
+        which: LinkTarget,
+    },
+    /// Open one of the app's folders in the file manager (S4 P3; Windows only, spec/04 §2.14).
+    /// The shell resolves the path; [`Folder::Extension`] not found is answered with
+    /// `Cmd::FolderMissing`, the other folders with nothing.
+    OpenFolder(Folder),
 }
 
 /// Names, fields and lengths only (D28): never the text of a field or a copy.
@@ -99,8 +117,26 @@ impl fmt::Debug for Effect {
                 .field("mark", mark)
                 .finish(),
             Self::Approval(effect) => formatter.debug_tuple("Approval").field(effect).finish(),
+            Self::OpenUrl { url, which } => formatter
+                .debug_struct("OpenUrl")
+                .field("len", &url.len())
+                .field("which", which)
+                .finish(),
+            Self::OpenFolder(folder) => formatter.debug_tuple("OpenFolder").field(folder).finish(),
         }
     }
+}
+
+/// A folder of the app the shell can open (S4 P3). Its path is the shell's, never in an effect.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Folder {
+    /// The data folder (`데이터 폴더 열기`).
+    Data,
+    /// The log folder (`로그 폴더 열기`).
+    Logs,
+    /// The unpacked Chrome extension of this installation (S23 `탐색기에서 폴더 열기`); the
+    /// shell may not find it.
+    Extension,
 }
 
 /// A one-shot timer the logic arms through the shell.
@@ -177,6 +213,24 @@ mod tests {
                 })
             ),
             "Approval(Rebuilt { shown: ShownId(4), changed: true })"
+        );
+        // S4 P3: the URL's length only, never the URL or its host.
+        let open = Effect::OpenUrl {
+            url: "https://scan.example.org/tx/0xabc".to_owned(),
+            which: LinkTarget::Explorer {
+                net: crate::explorer::ExplorerNet::Evm(10),
+                host: Some("scan.example.org".to_owned()),
+            },
+        };
+        let shown = format!("{open:?}");
+        assert!(!shown.contains("example"), "{shown}");
+        assert_eq!(
+            shown,
+            "OpenUrl { len: 33, which: Explorer { net: Evm(10), host_len: Some(16) } }"
+        );
+        assert_eq!(
+            format!("{:?}", Effect::OpenFolder(Folder::Extension)),
+            "OpenFolder(Extension)"
         );
     }
 }
