@@ -429,7 +429,9 @@ impl RpcImportUi {
 
 impl App {
     /// `rpc.json에서 가져오기` presses (2026-11-18, S3 C5: an `RpcImportPress`; before, the
-    /// control id). The file is still found by [`rpc_json_path`] (S4: a platform trait).
+    /// control id). The file is found by [`rpc_json_path`] in the shell (2026-11-20, S4 P1:
+    /// owner decision O-13 keeps `rpc.json` Windows-only with no platform trait; it was
+    /// "S4: a platform trait").
     pub(crate) fn on_rpc_import(&mut self, press: RpcImportPress) {
         match press {
             RpcImportPress::Import => {

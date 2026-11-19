@@ -21,14 +21,15 @@ use yw_core::vault::{
 use yw_platform::Clock;
 use yw_platform::http::HttpsUrl;
 use yw_win::clipboard::{self, ClipError, SecretClip};
-use yw_win::file::{FileError, atomic_write, read_limited_no_reparse};
+use yw_win::file::{FileError, read_limited_no_reparse};
 use yw_win::input::is_down;
 use yw_win::session;
 use yw_win::ui::{Handler, Msg, Reply, UiError, Window, WindowKind, WindowSpec, create_window};
 
 use crate::apikeys::{
-    ApiKeys, KeyName, is_registered, quicknode_credentials, template_entry, valid_provider_token,
+    ApiKeys, KeyName, quicknode_credentials, template_entry, valid_provider_token,
 };
+use crate::app_store::WinAppStore;
 use crate::errors::{ErrorCode, key_code, vault_code};
 use crate::events::{
     KeyJob, KeyOutcome, KeyQueue, KeyResult, LockSignal, MetaLoaded, RevealWhat, RpcEvent, UiEvent,
@@ -57,16 +58,12 @@ use crate::ui::theme::{FontCache, FontRole, wide};
 use crate::workers::key::new_account;
 use crate::workers::rpc::RpcJob;
 use yw_core::lang::{Lang, Text};
+use yw_engine::app_store::AppStore;
 use yw_engine::cmd::{Cmd, CorePress, Press, Row, RpcRowAction};
 use yw_engine::effect::{Effect, TimerId};
 // `CredField`: debug builds only until S3 C3 (the shadow reads of plan §3.2a; 2026-11-18 B4–B5
 // review); since C3 `App::take_cred` uses it in every build.
 use yw_engine::form::{CredField, EditField, FormState, PressInput};
-
-/// DPAPI optional entropy of `apikeys.dpapi` (spec/04 §6.3). (2026-11-17, spec/15 §11.4 S2 E2:
-/// moved here next to the DPAPI calls from `apikeys`, which moved to yw-engine; the value is
-/// unchanged.)
-pub const APIKEYS_ENTROPY: &[u8] = b"your-wallet/v3/apikeys";
 
 /// Main window class.
 pub const MAIN_CLASS: &str = "YourWalletV3Main";
@@ -583,11 +580,12 @@ pub struct Paths {
 }
 
 impl Paths {
-    fn settings(&self) -> PathBuf {
+    // 2026-11-20 (S4 P1): `pub(crate)` for `app_store::WinAppStore` (was private).
+    pub(crate) fn settings(&self) -> PathBuf {
         self.data.join("settings.json")
     }
 
-    fn apikeys(&self) -> PathBuf {
+    pub(crate) fn apikeys(&self) -> PathBuf {
         self.data.join("apikeys.dpapi")
     }
 }
@@ -643,23 +641,6 @@ pub(crate) struct SettingsGuard {
     pub(crate) rollback: Option<(u64, u64)>,
 }
 
-/// The `vault.ywv` generation and last write time (Unix ms) from the file itself (review L17);
-/// `None` when absent, unreadable or not a vault.
-#[must_use]
-pub fn vault_file_info(data: &Path) -> Option<(u64, u64)> {
-    let path = data.join(crate::store::file_name(FileKind::Vault));
-    let bytes = read_limited_no_reparse(&path, 65_536).ok()?;
-    let generation = yw_core::vault::peek_generation(FileKind::Vault, &bytes)?;
-    let written = std::fs::symlink_metadata(&path)
-        .and_then(|metadata| metadata.modified())
-        .ok()
-        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-        .map_or(0, |since| {
-            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
-        });
-    Some((generation, written))
-}
-
 /// Import flow buffers held on the UI thread until `PreviewImport` moves them.
 #[derive(Default)]
 struct ImportFlow {
@@ -675,6 +656,10 @@ struct ImportFlow {
 )]
 pub struct App {
     pub(crate) paths: Paths,
+    /// The data-folder store: `settings.json` writes, `apikeys.dpapi`, the `vault.ywv` facts,
+    /// `.prev` checks and the reset candidates (2026-11-20, S4 P1: yw-engine `AppStore`, built
+    /// from `paths` in [`App::with_clock`]; before, `impl App` made these calls directly).
+    pub(crate) store: Box<dyn AppStore>,
     pub(crate) background: bool,
     pub(crate) main: Option<Window>,
     pub(crate) fonts: FontCache,
@@ -1133,29 +1118,13 @@ pub fn load_settings(paths: &Paths) -> crate::settings::SettingsLoad {
 /// endpoint in `settings.json` (a plain file anyone can edit, review M1): it stays unbound —
 /// never attached to a request — until the first check after an unlock binds it to the host
 /// in the vault-encrypted settings snapshot (`App::reconcile_settings`).
+///
+/// 2026-11-20 (S4 P1): reads through `app_store::WinAppStore` and decodes with
+/// `yw_engine::app_store::load_sealed_keys`; the file, the DPAPI call and the results are
+/// unchanged.
 #[must_use]
 pub fn load_apikeys(paths: &Paths, settings: &Settings) -> (ApiKeys, bool) {
-    let blob = match read_limited_no_reparse(&paths.apikeys(), 1_048_576) {
-        Ok(blob) => blob,
-        Err(FileError::NotFound) => return (ApiKeys::default(), false),
-        Err(_) => return (ApiKeys::default(), true),
-    };
-    let Ok(plain) = yw_win::dpapi::unprotect(&blob, APIKEYS_ENTROPY) else {
-        return (ApiKeys::default(), true);
-    };
-    match ApiKeys::decode(plain.as_slice(), &|network| {
-        is_registered(settings, network)
-    }) {
-        Ok(decoded) => {
-            for orphan in decoded.orphans {
-                if let KeyName::Rpc(network) = orphan {
-                    logging::info("app", "apikeys.orphan", &[("net", Field::Net(network))]);
-                }
-            }
-            (decoded.keys, false)
-        }
-        Err(_) => (ApiKeys::default(), true),
-    }
+    yw_engine::app_store::load_sealed_keys(&WinAppStore::new(paths), settings)
 }
 
 impl App {
@@ -1168,6 +1137,10 @@ impl App {
     /// A new app (no windows yet) on `clock` (2026-11-19, S4 B1a: tests inject a manual or
     /// stepping clock; [`App::new`] passes `SystemClock`).
     #[must_use]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one initializer per App field (2026-11-20, S4 P1: the store field passed 100)"
+    )]
     pub fn with_clock(
         paths: Paths,
         background: bool,
@@ -1177,6 +1150,7 @@ impl App {
     ) -> Self {
         let now = clock.now_ms();
         Self {
+            store: Box::new(WinAppStore::new(&paths)),
             paths,
             background,
             main: None,
@@ -2486,7 +2460,7 @@ impl App {
                     return;
                 }
                 self.leftover = leftover;
-                self.prev_on_disk = crate::store::prev_exists(&self.paths.data, FileKind::Vault);
+                self.prev_on_disk = self.store.prev_exists(FileKind::Vault);
                 if status == VaultStatus::Locked && self.payload_damaged {
                     // The payload failed authentication at unlock; the intact header makes a
                     // reload report `Locked`. Stay on S09: `recover_from_prev` also works from
@@ -2989,7 +2963,7 @@ impl App {
                     }
                     VaultStatus::Locked | VaultStatus::NoVault => {
                         self.close_secret();
-                        self.guard.vault_file = vault_file_info(&self.paths.data);
+                        self.guard.vault_file = self.store.vault_file_info();
                         self.set_screen(Screen::Locked);
                     }
                 }
@@ -3001,7 +2975,7 @@ impl App {
                 self.close_secret();
                 self.error_banner(ErrorCode::Vlt008);
                 self.payload_damaged = true;
-                self.prev_on_disk = crate::store::prev_exists(&self.paths.data, FileKind::Vault);
+                self.prev_on_disk = self.store.prev_exists(FileKind::Vault);
                 self.set_mode(AppMode::Corrupt {
                     prev_available: self.prev_on_disk,
                 });
@@ -3016,8 +2990,7 @@ impl App {
                 } else {
                     if error == VaultError::UnlockFailed {
                         self.unlock_failed = true;
-                        self.prev_on_disk =
-                            crate::store::prev_exists(&self.paths.data, FileKind::Vault);
+                        self.prev_on_disk = self.store.prev_exists(FileKind::Vault);
                     } else if error == VaultError::UnsupportedPayload {
                         // The right password, a newer build's file (E-VLT-014): update the app.
                         // Never offer `.prev`, which would drop the newer records.
@@ -3713,7 +3686,7 @@ impl App {
         }
         // Review L17: remember the newest `vault.ywv` generation with every meta write, so a
         // `vault.ywv` rolled back on its own is noticed at the next unlock.
-        if let Some((found, written)) = vault_file_info(&self.paths.data) {
+        if let Some((found, written)) = self.store.vault_file_info() {
             self.guard.vault_file = Some((found, written));
             if let Some(meta) = self.meta.as_mut()
                 && found > meta.security.vault_generation_seen
@@ -3733,8 +3706,8 @@ impl App {
     /// `settings.json` of a newer app version (`Settings::read_only`, spec/04 §6.6) is never
     /// written: the change applies to this run only (its E-APP-001 banner says so).
     pub fn save_settings(&mut self, settings: Settings, key: &'static str) {
-        let written = settings.read_only().is_some()
-            || atomic_write(&self.paths.settings(), &settings.to_json()).is_ok();
+        let written =
+            settings.read_only().is_some() || self.store.write_settings(&settings.to_json());
         if written {
             if settings.log_level != self.settings.log_level {
                 logging::set_level(settings.log_level);
@@ -3767,13 +3740,14 @@ impl App {
     }
 
     /// Encrypts and writes `apikeys.dpapi`; on failure reloads the previous file (E-APP-002).
+    /// (2026-11-20, S4 P1: through `self.store`, the same DPAPI and file calls; the result is
+    /// still synchronous, callers branch on it.)
     pub fn save_apikeys(&mut self) -> bool {
         let plain = self.apikeys.encode();
-        let written = yw_win::dpapi::protect(&plain, APIKEYS_ENTROPY)
-            .ok()
-            .is_some_and(|blob| atomic_write(&self.paths.apikeys(), &blob).is_ok());
+        let written = self.store.write_sealed_keys(&plain);
         if !written {
-            let (keys, _) = load_apikeys(&self.paths, &self.settings);
+            let (keys, _) =
+                yw_engine::app_store::load_sealed_keys(self.store.as_ref(), &self.settings);
             self.apikeys = keys;
             if self.guard.verified
                 && let Some(host) = self
@@ -3848,7 +3822,7 @@ impl App {
         let outcome = crate::settings::reconcile(&self.settings, &stored, &early);
         if outcome.write_file
             && outcome.file.read_only().is_none()
-            && atomic_write(&self.paths.settings(), &outcome.file.to_json()).is_err()
+            && !self.store.write_settings(&outcome.file.to_json())
         {
             self.error_banner(ErrorCode::App002);
         }
@@ -3908,7 +3882,7 @@ impl App {
             return;
         };
         let snapshot = self.reconcile_settings(stored);
-        let file = vault_file_info(&self.paths.data);
+        let file = self.store.vault_file_info();
         self.guard.vault_file = file;
         let Some(meta) = self.meta.as_mut() else {
             return;

@@ -44,6 +44,7 @@ pub mod app_sidecar;
 pub mod app_sol;
 pub mod app_sol_commands;
 pub mod app_sol_dapp;
+pub mod app_store;
 pub mod app_tokens;
 pub mod app_walletconnect;
 pub mod app_yubikey;

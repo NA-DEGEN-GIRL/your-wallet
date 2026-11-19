@@ -1,6 +1,7 @@
 //! Presses of the `rpc.json에서 가져오기` card of settings → 네트워크(RPC) (`app_rpc_import` on
-//! Windows; spec/04 §2.11). The file itself is read and deleted by the shell (S4: behind a
-//! platform trait).
+//! Windows; spec/04 §2.11). The file itself is read and deleted by the shell (2026-11-20, S4
+//! P1: owner decision O-13 keeps it there with no platform trait; it was "S4: behind a
+//! platform trait").
 //!
 //! 2026-11-18 (S3 C5): created.
 

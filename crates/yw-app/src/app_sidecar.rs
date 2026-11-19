@@ -520,7 +520,7 @@ impl App {
     /// The meta overlay (`Confirm::SidecarCorrupt`).
     pub(crate) fn meta_overlay(&self, items: &mut Vec<Item>) {
         use crate::ui::screens::ids as core;
-        let prev = crate::store::prev_exists(&self.paths.data, FileKind::Meta);
+        let prev = self.store.prev_exists(FileKind::Meta);
         let newer = self.sidecar.meta_newer;
         let lang = self.settings.language;
         let t = |entry: Text| entry.get(lang).to_owned();

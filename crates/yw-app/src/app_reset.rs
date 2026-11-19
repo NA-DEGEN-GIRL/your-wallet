@@ -520,9 +520,7 @@ impl App {
     }
 
     fn reset_list_files(&mut self) {
-        self.reset.files =
-            crate::store::reset::candidates(&self.paths.data, self.reset.include_settings)
-                .unwrap_or_default();
+        self.reset.files = self.store.reset_candidates(self.reset.include_settings);
     }
 
     /// After a reset the old wallet's per-file facts no longer apply.
@@ -530,7 +528,7 @@ impl App {
         self.payload_damaged = false;
         self.unlock_failed = false;
         self.quarantined = None;
-        self.prev_on_disk = crate::store::prev_exists(&self.paths.data, FileKind::Vault);
+        self.prev_on_disk = self.store.prev_exists(FileKind::Vault);
         self.done_imported = false;
         // S08's banner of the old wallet (a YubiKey wallet or a key start that never pressed
         // `지갑 열기`) must not follow the next first-run path.

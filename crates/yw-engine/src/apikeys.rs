@@ -2,8 +2,10 @@
 //! provider template credentials (`tpl:quicknode`, `tpl:alchemy`), the LLM key (`llm`) and the
 //! endpoint `host[:port]` that key is bound to (`llm:host`), sealed by the platform (Windows: DPAPI
 //! for the current user, in yw-app `app`; 2026-11-17 S2 E2: the DPAPI entropy `APIKEYS_ENTROPY`
-//! moved there with the DPAPI calls). A whole URL is a secret (token in the path, endpoint
-//! name in the host): values are never logged or displayed; screens use [`mask_url`].
+//! moved there with the DPAPI calls; 2026-11-20 S4 P1: both are in yw-app `app_store`, the
+//! Windows `crate::app_store::AppStore`, which reads and writes the sealed file). A whole URL is
+//! a secret (token in the path, endpoint name in the host): values are never logged or
+//! displayed; screens use [`mask_url`].
 //!
 //! Also the pure helpers of spec/04 §2.11.1: [`template_url`] and [`mask_url`], and the S15
 //! `QuickNode` input helper [`quicknode_credentials`] that accepts a pasted endpoint URL.

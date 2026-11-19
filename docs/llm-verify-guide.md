@@ -146,7 +146,7 @@ Expected: no output. `scripts/audit-extension.mjs` enforces this (see §4).
 |---|---|---|---|
 | Recovery phrases, imported private keys | `%LOCALAPPDATA%\YourWallet\v3\vault.ywv` (+ `.prev`) | Argon2id (m = 256 MiB, t = 3, p = 4) → HKDF → KEK wraps a random DEK with XChaCha20-Poly1305 | spec/02 §4, `crates/yw-core/src/vault/format.rs` |
 | Accounts, address book, sites, activity | `meta.ywm`, `journal.ywj` | Encrypted with the vault DEK | spec/02 §5 |
-| RPC URLs, provider tokens, LLM API key | `apikeys.dpapi` | Windows DPAPI: only this Windows user on this PC can decrypt | `crates/yw-engine/src/apikeys.rs` (format), `crates/yw-app/src/app.rs` (DPAPI sealing), `crates/yw-win/src/dpapi.rs` |
+| RPC URLs, provider tokens, LLM API key | `apikeys.dpapi` | Windows DPAPI: only this Windows user on this PC can decrypt | `crates/yw-engine/src/apikeys.rs` (format), `crates/yw-app/src/app_store.rs` (DPAPI sealing; 2026-11-20, was `app.rs`), `crates/yw-win/src/dpapi.rs` |
 | Settings | `settings.json` | Plain text, contains no secrets | spec/04 §6 |
 | YubiKey wallet keys | On the YubiKey; the PC stores public keys only | Card PIN (never cached) and touch | spec/10, README "YubiKey" limits |
 
