@@ -575,9 +575,9 @@ fn shown_id(fx: &Fixture) -> Option<yw_core::approval::ApprovalId> {
     fx.app
         .borrow()
         .evm
-        .window
+        .approval
         .as_ref()
-        .and_then(|ui| ui.flow.issued().map(|request| request.id))
+        .and_then(|flow| flow.issued().map(|request| request.id))
 }
 
 /// The store state of request `id` (shown before a revoke or cancel; the recorder's `store`

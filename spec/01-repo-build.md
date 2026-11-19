@@ -130,7 +130,7 @@ crates/
                               ui/{mod.rs, window.rs, msg.rs, paint.rs, controls.rs, capture.rs(개발 빌드 전용), secure_text.rs}}  tests/   (API §7; pcsc·cng [10], ws·image·`cng::p256_verify` [13])
   yw-app/    Cargo.toml  build.rs(선택, [04](04-app-ui.md) §1.6)  yw-app.manifest  tests/
              icons/{yw-app.ico, yw-app.res}   (앱 아이콘, `scripts/make-icons.mjs`가 만들고 커밋, [04](04-app-ui.md) §1.7)
-             src/{lib.rs, main.rs, app.rs(`apikeys.dpapi` DPAPI 봉인과 그 entropy, 2026-11-17 S2 E2), app_effects.rs(`Effect` 실행기, 2026-11-18 S3), approval_flow.rs(보이는 승인의 흐름 상태 `ApprovalFlow`, 필드 비공개·게이트를 쓰는 것은 메서드뿐, 2026-11-19 S4 B4a), shell_msg.rs(Win32 메시지 번호·단축키, 2026-11-17), system_clock.rs(Windows `Clock`, 2026-11-17; 공유 시계 어댑터 `ArcClock`, 2026-11-19 S4 B1a),
+             src/{lib.rs, main.rs, app.rs(`apikeys.dpapi` DPAPI 봉인과 그 entropy, 2026-11-17 S2 E2), app_effects.rs(`Effect` 실행기, 2026-11-18 S3), approval_flow.rs(보이는 승인의 흐름 상태 `ApprovalFlow`, 필드 비공개·게이트를 쓰는 것은 메서드뿐, 2026-11-19 S4 B4a; 같은 날 B4b부터 AI 설명 상태 `AiFlow`와 창이 그리는 읽기 모델 `ApprovalPaint`도, 창의 셸 상태는 app_approval.rs의 `ApprovalWin`), shell_msg.rs(Win32 메시지 번호·단축키, 2026-11-17), system_clock.rs(Windows `Clock`, 2026-11-17; 공유 시계 어댑터 `ArcClock`, 2026-11-19 S4 B1a),
                   log_file.rs(순환 로그 파일, 2026-11-17), card_pcsc.rs(`YubiKey` PC/SC 전송·CNG 관리 키 암호, [10](10-yubikey.md), 2026-11-17),
                   store.rs(`VaultStorage` 구현, 키 작업자의 Windows 플랫폼 `WinKeyPlatform`(2026-11-17), [09](09-testing.md) §2.1),
                   browser/{mod.rs(겉면), server.rs}(named pipe 서버, M5, [05](05-browser.md) §8),

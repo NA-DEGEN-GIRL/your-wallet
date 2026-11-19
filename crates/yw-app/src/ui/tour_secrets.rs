@@ -345,7 +345,7 @@ impl Env {
             } else {
                 held.join(",")
             },
-            if app.evm.window.is_some() {
+            if app.evm.approval.is_some() {
                 "open"
             } else {
                 "closed"

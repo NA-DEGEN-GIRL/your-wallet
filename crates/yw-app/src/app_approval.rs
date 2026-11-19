@@ -17,7 +17,7 @@ use yw_core::evm::chain::SEPOLIA;
 use yw_core::evm::simulate::needs_resimulation;
 use yw_core::lang::{Lang, Text};
 use yw_engine::approval::QueueId;
-use yw_engine::approval::flow::{BarSource, StatusAction, bar_facts, connect_gate_count};
+use yw_engine::approval::flow::{StatusAction, connect_gate_count};
 use yw_win::ui::{
     Color, DrawFlags, Handler, Msg, PaintDc, Rect, Reply, Window, WindowKind, WindowSpec,
     create_window,
@@ -26,14 +26,13 @@ use yw_win::ui::{
 use crate::app::App;
 use crate::app_evm::{AppApproval, QueuedItem};
 use crate::app_llm::log_request;
-use crate::approval_flow::ApprovalFlow;
+use crate::approval_flow::{AiFlow, ApprovalFlow, ApprovalPaint};
 use crate::browser::{SiteKind, SiteRequest};
 use crate::errors::ErrorCode;
 use crate::events::{KeyJob, SignInfo};
 use crate::explain::input::RequestKind;
 use crate::explain::panel::{
     AiPanel, BODY_LINES, Dispatch, Ended, PANEL_TITLE, PanelLine, RETRY_LABEL, body_lines,
-    held_for_ack,
 };
 use crate::explain::{
     ExplainError, ExplainInput, ExplainSource, LlmDone, LlmJob, RequestStats, build_input,
@@ -79,24 +78,12 @@ enum ShownWindow {
 
 /// The AI explanation panel of one window (spec/06 §6, spec/04 §3.8): reserved when the window
 /// opens, painted by the window (title, `다시 요청`) and by its own child (`body`, ten lines,
-/// scrolled inside). Never focused and never an input of the gate.
-struct AiUi {
-    panel: AiPanel,
-    serial: u64,
+/// scrolled inside). Never focused and never an input of the gate. 2026-11-19 (S4 B4b): this is
+/// the shell half, the body child and its scroll; the panel state, serial, host, model and kind
+/// are the flow's `approval_flow::AiFlow` (before, one `AiUi` held both).
+struct AiBody {
     body: Window,
     scroll: i32,
-    host: String,
-    model: String,
-    kind: RequestKind,
-}
-
-impl core::fmt::Debug for AiUi {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        formatter
-            .debug_struct("AiUi")
-            .field("state", self.panel.state())
-            .finish_non_exhaustive()
-    }
 }
 
 /// What a Ready display means for the AI panel.
@@ -241,19 +228,11 @@ fn status_fact(lang: Lang, message: &str, step_shown: bool) -> &str {
 /// The bottom bar's texts (2026-11-19, S4 B3: what it shows apart from the text assembly — the
 /// countdown facts, the hold progress, the next step (was `next_step` here), the button label and
 /// its armed look — comes from `yw_engine::approval::flow::bar_facts`, moved from here unchanged).
-fn bar_state(ui: &ApprovalUi, waiting: usize, now: u64) -> BarState {
-    let lang = ui.flow.lang();
-    let facts = bar_facts(
-        &BarSource {
-            lang,
-            session: ui.flow.session(),
-            view: ui.flow.view(),
-            connect: ui.flow.connect().is_some(),
-            early_release: ui.flow.early_release(),
-            status: ui.flow.status(),
-        },
-        now,
-    );
+/// (2026-11-19, S4 B4b: it reads the flow through the read model `ApprovalPaint` and the shell's
+/// focus; was the whole `ApprovalUi`.)
+fn bar_state(paint: &ApprovalPaint<'_>, focus: Focus, waiting: usize, now: u64) -> BarState {
+    let lang = paint.lang;
+    let facts = paint.bar(now);
     let held_ms = facts.held_ms;
     let step = facts.step.map(|step| step.get(lang));
     let mut status = String::new();
@@ -275,7 +254,7 @@ fn bar_state(ui: &ApprovalUi, waiting: usize, now: u64) -> BarState {
             &text::WAITING.fill(lang, [&waiting.to_string()]),
         );
     }
-    if let Some(message) = ui.flow.status() {
+    if let Some(message) = paint.status {
         part(&mut status, status_fact(lang, message, step.is_some()));
     }
     if let Some(done) = held_ms {
@@ -297,16 +276,18 @@ fn bar_state(ui: &ApprovalUi, waiting: usize, now: u64) -> BarState {
         label: facts.label.get(lang),
         armed: facts.armed,
         held_ms,
-        focus: matches!(ui.focus, Focus::Approve | Focus::Reject).then_some(ui.focus),
+        focus: matches!(focus, Focus::Approve | Focus::Reject).then_some(focus),
     }
 }
 
-/// The open approval window and its flow state.
-pub struct ApprovalUi {
-    /// The flow state: item, preparation, issued request, gate and its interaction, view
-    /// (2026-11-19, S4 B4a, spec/15 §11.4 S4: `crate::approval_flow::ApprovalFlow`, whose methods
-    /// are the only writers of the gate; before, these were fields of this struct).
-    flow: ApprovalFlow,
+/// The open approval window's shell state (2026-11-19, S4 B4b, spec/15 §11.4 S4): the window,
+/// its scrolling panel, the AI body and its scroll, the focus, the panel scroll, the pressed
+/// button, the panel layout, the bottom bar's rectangles and last painted state, and the glyph
+/// widths. It holds no gate: the flow state is `App.evm.approval` (`ApprovalFlow`), and the window
+/// paints from its read model `ApprovalPaint`. Shown exactly while the flow is (`open_approval`
+/// sets both, `close_approval_window` takes both). Before B4b, one `EvmUi.window: ApprovalUi` held
+/// this state and the flow (B4a) or every field (before B4a).
+pub struct ApprovalWin {
     window: Window,
     panel: Window,
     focus: Focus,
@@ -317,24 +298,14 @@ pub struct ApprovalUi {
     /// The bottom bar as last painted.
     bar: BarState,
     widths: HashMap<(FontRole, char), i32>,
-    ai: Option<AiUi>,
+    /// The AI body child, when the window reserved the AI panel (exactly when the flow has an
+    /// `AiFlow`).
+    ai: Option<AiBody>,
 }
 
-impl ApprovalUi {
-    /// The current preparation job id.
-    pub(crate) const fn job(&self) -> u64 {
-        self.flow.job()
-    }
-
-    /// The queued item the window shows.
-    pub(crate) const fn item(&self) -> &QueuedItem {
-        self.flow.item()
-    }
-}
-
-impl core::fmt::Debug for ApprovalUi {
+impl core::fmt::Debug for ApprovalWin {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        formatter.write_str("ApprovalUi")
+        formatter.write_str("ApprovalWin")
     }
 }
 
@@ -1273,7 +1244,8 @@ impl App {
     /// window (connected `eth_requestAccounts`, revoke after unlock) or fail their checks are
     /// answered and skipped.
     pub fn show_next_approval(&mut self) {
-        if self.evm.window.is_some() || !matches!(self.mode, crate::app::AppMode::Unlocked { .. }) {
+        if self.evm.approval.is_some() || !matches!(self.mode, crate::app::AppMode::Unlocked { .. })
+        {
             if self.mode == crate::app::AppMode::BackupPending {
                 let finished = self.evm.queue.drain_waiting_matching(
                     |item| matches!(item, QueuedItem::Site(_)),
@@ -1432,9 +1404,9 @@ impl App {
     fn refresh_connect_chain(&mut self) -> bool {
         let Some(site) =
             self.evm
-                .window
+                .approval
                 .as_ref()
-                .and_then(|ui| match (ui.flow.item(), ui.flow.connect()) {
+                .and_then(|flow| match (flow.item(), flow.connect()) {
                     (QueuedItem::Site(site), Some(connect))
                         if connect.family == yw_core::policy::Family::Evm =>
                     {
@@ -1448,9 +1420,9 @@ impl App {
         let chain_id = self.connect_origin_chain(&site);
         let name = self.evm_chain_label(chain_id);
         self.evm
-            .window
+            .approval
             .as_mut()
-            .is_some_and(|ui| ui.flow.set_connect_chain(chain_id, name))
+            .is_some_and(|flow| flow.set_connect_chain(chain_id, name))
     }
 
     #[expect(
@@ -1525,7 +1497,9 @@ impl App {
         )
         .visible(true);
         let panel = create_window(&panel_spec, panel_handler).map_err(|_| ())?;
-        let ai = match (ai_kind, self.llm.as_ref()) {
+        // 2026-11-19 (S4 B4b): the AI panel's state is the flow's `AiFlow`, its body child and
+        // scroll the shell's `AiBody` (one `AiUi` before), made here in the same order.
+        let (ai, ai_body) = match (ai_kind, self.llm.as_ref()) {
             (Some(kind), Some(service)) => {
                 let body_handler = Box::new(Forward {
                     app: self.self_ref.clone(),
@@ -1540,23 +1514,24 @@ impl App {
                 .visible(true);
                 let body = create_window(&body_spec, body_handler).map_err(|_| ())?;
                 self.llm_ui.next_window = self.llm_ui.next_window.saturating_add(1);
-                Some(AiUi {
-                    panel: AiPanel::new(true, lang),
-                    serial: self.llm_ui.next_window,
-                    body,
-                    scroll: 0,
-                    host: service.host().to_owned(),
-                    model: service.model().to_owned(),
-                    kind,
-                })
+                (
+                    Some(AiFlow {
+                        panel: AiPanel::new(true, lang),
+                        serial: self.llm_ui.next_window,
+                        host: service.host().to_owned(),
+                        model: service.model().to_owned(),
+                        kind,
+                    }),
+                    Some(AiBody { body, scroll: 0 }),
+                )
             }
-            _ => None,
+            _ => (None, None),
         };
         // 2026-11-19 (S4 B3): the deadline rule is `yw_engine::approval::flow::session_deadline`
         // (was inline here: the site deadline, else `now + MAX_LIFETIME_MS`, at least `now + 1`).
         // 2026-11-19 (S4 B4a): `ApprovalFlow::open` builds the gate and its session at this
         // point (was inline here: the same gate, the same `now`).
-        let flow = ApprovalFlow::open(lang, item, connect, now).map_err(|_| ())?;
+        let flow = ApprovalFlow::open(lang, item, connect, ai, now).map_err(|_| ())?;
         center_window(&window, self.main.as_ref());
         let _ = window.set_timer(APPROVAL_TIMER_ID, APPROVAL_TICK_MS);
         show_window(&window);
@@ -1564,8 +1539,10 @@ impl App {
             flash_window(&window);
         }
         focus_window(&window);
-        self.evm.window = Some(ApprovalUi {
-            flow,
+        // 2026-11-19 (S4 B4b): the flow goes to `EvmUi.approval`, the shell state to
+        // `App.approval_win`, together (one `EvmUi.window` before).
+        self.evm.approval = Some(flow);
+        self.approval_win = Some(ApprovalWin {
             window,
             panel,
             focus: Focus::Reject,
@@ -1575,7 +1552,7 @@ impl App {
             bottom: Bottom::default(),
             bar: BarState::default(),
             widths: HashMap::new(),
-            ai,
+            ai: ai_body,
         });
         logging::info("app", "approval.open", &[]);
         self.rebuild_view();
@@ -1584,11 +1561,11 @@ impl App {
 
     fn start_prepare(&mut self) {
         let job = self.evm.job();
-        let Some(ui) = self.evm.window.as_mut() else {
+        let Some(flow) = self.evm.approval.as_mut() else {
             return;
         };
-        let item = ui.flow.item().clone();
-        ui.flow.begin_prepare(job, self.clock.now_ms());
+        let item = flow.item().clone();
+        flow.begin_prepare(job, self.clock.now_ms());
         match item {
             QueuedItem::App(app) => self.prepare_transaction(job, &app, None),
             QueuedItem::Site(site) => self.prepare_site(job, &site),
@@ -1689,8 +1666,8 @@ impl App {
                     .queue
                     .shown_deadline()
                     .unwrap_or(now.saturating_add(120_000));
-                if let Some(ui) = self.evm.window.as_mut() {
-                    ui.flow.connect_ready(deadline, now);
+                if let Some(flow) = self.evm.approval.as_mut() {
+                    flow.connect_ready(deadline, now);
                 }
             }
             SiteKind::Send(tx) => {
@@ -1780,8 +1757,8 @@ impl App {
                     return;
                 };
                 let typed = Box::new(typed);
-                if let Some(ui) = self.evm.window.as_mut() {
-                    ui.flow.set_typed(typed.clone());
+                if let Some(flow) = self.evm.approval.as_mut() {
+                    flow.set_typed(typed.clone());
                 }
                 // Without the lookups (no endpoint, no worker) the spender counts as a failed
                 // lookup (`Unknown`, T18, fail closed).
@@ -1845,9 +1822,9 @@ impl App {
     /// display, warning and failure of its request is built in it (spec/14 §2).
     pub(crate) fn approval_lang(&self) -> Lang {
         self.evm
-            .window
+            .approval
             .as_ref()
-            .map_or(self.settings.language, |ui| ui.flow.lang())
+            .map_or(self.settings.language, ApprovalFlow::lang)
     }
 
     /// The chain of a message signature: the registered definition with the verified genesis
@@ -1871,16 +1848,15 @@ impl App {
         facts: &yw_core::approval::ChainFacts,
         check: Option<crate::flow::evm::ChainCheck>,
     ) {
-        let Some(ui) = self.evm.window.as_ref() else {
+        let Some(flow) = self.evm.approval.as_ref() else {
             return;
         };
-        if ui.flow.job() != job {
+        if flow.job() != job {
             return;
         }
-        let (QueuedItem::Site(site), Some(typed)) = (
-            ui.flow.item().clone(),
-            ui.flow.typed().cloned().map(Box::new),
-        ) else {
+        let (QueuedItem::Site(site), Some(typed)) =
+            (flow.item().clone(), flow.typed().cloned().map(Box::new))
+        else {
             return;
         };
         let SiteKind::TypedData { account, .. } = &site.kind else {
@@ -1936,8 +1912,8 @@ impl App {
     }
 
     pub(crate) fn show_failure(&mut self, code: ErrorCode, retryable: bool, text: String) {
-        if let Some(ui) = self.evm.window.as_mut() {
-            ui.flow.fail(text, code, retryable, self.clock.now_ms());
+        if let Some(flow) = self.evm.approval.as_mut() {
+            flow.fail(text, code, retryable, self.clock.now_ms());
         }
         self.ai_ready(AiReady::Skip(SKIP_FAILED.get(self.approval_lang())));
         self.rebuild_view();
@@ -1949,22 +1925,27 @@ impl App {
         // 2026-11-18 (S4 A7, critique A-2): the secret characterization's lock order.
         #[cfg(test)]
         crate::app::secret_seam::log(crate::app::secret_seam::Op::ApprovalClose {
-            shown: self.evm.window.is_some(),
+            shown: self.evm.approval.is_some(),
         });
-        if let Some(mut ui) = self.evm.window.take() {
-            if let Some(request) = ui.flow.issued() {
+        // 2026-11-19 (S4 B4b): the flow and the shell state are taken together; the steps keep
+        // their order (reject, AI close and its log, AI body, timer, panel, window).
+        if let Some(mut flow) = self.evm.approval.take() {
+            let mut win = self.approval_win.take();
+            if let Some(request) = flow.issued() {
                 self.evm.store.reject(request.id);
             }
             // spec/06 §3.2: a result arriving after the window closed is dropped.
-            if let Some(mut ai) = ui.ai.take() {
+            if let Some(mut ai) = flow.take_ai() {
                 if let Some(ended) = ai.panel.close(self.clock.now_ms()) {
                     log_request(&ai.host, ai.kind, &ended, None);
                 }
-                drop(ai.body);
+                drop(win.as_mut().and_then(|win| win.ai.take()));
             }
-            ui.window.kill_timer(APPROVAL_TIMER_ID);
-            drop(ui.panel);
-            drop(ui.window);
+            if let Some(win) = win {
+                win.window.kill_timer(APPROVAL_TIMER_ID);
+                drop(win.panel);
+                drop(win.window);
+            }
             if let Some(main) = self.main.as_ref()
                 && main.is_alive()
             {
@@ -1978,7 +1959,7 @@ impl App {
     /// an earlier step of the same message may have ended the request and opened the next
     /// request's window (`finish_approval` → `show_next_approval`).
     fn shown_window(&self) -> ShownWindow {
-        if self.evm.window.is_some() {
+        if self.evm.approval.is_some() {
             ShownWindow::Showing(self.evm.queue.shown().map(|item| item.id))
         } else {
             ShownWindow::NoWindow
@@ -1988,9 +1969,9 @@ impl App {
     fn finish_approval(&mut self, outcome: QueueOutcome) {
         let id = self
             .evm
-            .window
+            .approval
             .as_ref()
-            .and_then(|ui| ui.flow.issued().map(|request| request.id));
+            .and_then(|flow| flow.issued().map(|request| request.id));
         if let Some(id) = id
             && outcome != QueueOutcome::Approved
         {
@@ -2007,10 +1988,10 @@ impl App {
 
     /// `eth_simulateV1` started.
     pub fn on_simulating(&mut self, job: u64, since_ms: u64) {
-        if let Some(ui) = self.evm.window.as_mut()
-            && ui.flow.job() == job
+        if let Some(flow) = self.evm.approval.as_mut()
+            && flow.job() == job
         {
-            ui.flow.simulating(since_ms, self.clock.now_ms());
+            flow.simulating(since_ms, self.clock.now_ms());
             self.rebuild_view();
         }
     }
@@ -2020,9 +2001,9 @@ impl App {
         self.apply_transitions(result.transitions.clone());
         let matches = self
             .evm
-            .window
+            .approval
             .as_ref()
-            .is_some_and(|ui| ui.flow.job() == result.job);
+            .is_some_and(|flow| flow.job() == result.job);
         if !matches {
             return;
         }
@@ -2035,9 +2016,9 @@ impl App {
                 );
                 let site = self
                     .evm
-                    .window
+                    .approval
                     .as_ref()
-                    .and_then(|ui| match ui.flow.item() {
+                    .and_then(|flow| match flow.item() {
                         QueuedItem::Site(site) => Some(site.reply),
                         QueuedItem::App(_)
                         | QueuedItem::Sol(_)
@@ -2095,9 +2076,9 @@ impl App {
         let mut draft = draft;
         let site_origin = self
             .evm
-            .window
+            .approval
             .as_ref()
-            .and_then(|ui| match ui.flow.item() {
+            .and_then(|flow| match flow.item() {
                 QueuedItem::Site(site) => Some(site.origin.clone()),
                 _ => None,
             });
@@ -2128,22 +2109,22 @@ impl App {
             .queue
             .shown_deadline()
             .unwrap_or(now.saturating_add(120_000));
-        if let Some(ui) = self.evm.window.as_mut() {
-            ui.flow.show_ready(request, prepared, deadline, now);
+        if let Some(flow) = self.evm.approval.as_mut() {
+            flow.show_ready(request, prepared, deadline, now);
         }
         self.rebuild_view();
     }
 
     /// Re-simulation finished (spec/03 §6.6-3/4, spec/04 §3.4).
     pub fn on_resimulated(&mut self, result: ResimResult) {
-        let Some(ui) = self.evm.window.as_ref() else {
+        let Some(flow) = self.evm.approval.as_ref() else {
             return;
         };
-        if ui.flow.job() != result.job {
+        if flow.job() != result.job {
             return;
         }
-        let click = ui.flow.resim_click();
-        let Some(old) = ui.flow.issued().cloned() else {
+        let click = flow.resim_click();
+        let Some(old) = flow.issued().cloned() else {
             return;
         };
         // A chain mismatch found now blocks like at preparation (`Failed`, only `거부`); it never
@@ -2154,16 +2135,16 @@ impl App {
                 "resim.failed",
                 &[("code", Field::Code(failure.code))],
             );
-            if let Some(ui) = self.evm.window.as_mut() {
-                ui.flow.resim_failed();
+            if let Some(flow) = self.evm.approval.as_mut() {
+                flow.resim_failed();
             }
             self.show_failure(failure.code, false, failure.message(self.approval_lang()));
             return;
         }
         let Some(prepared) = result.prepared else {
-            if let Some(ui) = self.evm.window.as_mut() {
+            if let Some(flow) = self.evm.approval.as_mut() {
                 // Same content, but a new approval (checkbox, arm delay, fresh interaction).
-                ui.flow.resim_no_result(self.clock.now_ms());
+                flow.resim_no_result(self.clock.now_ms());
             }
             self.rebuild_view();
             return;
@@ -2173,9 +2154,9 @@ impl App {
         let mut draft = prepared.draft.clone();
         let site_origin = self
             .evm
-            .window
+            .approval
             .as_ref()
-            .and_then(|ui| match ui.flow.item() {
+            .and_then(|flow| match flow.item() {
                 QueuedItem::Site(site) => Some(site.origin.clone()),
                 _ => None,
             });
@@ -2208,17 +2189,17 @@ impl App {
             return;
         };
         let now = self.clock.now_ms();
-        if let Some(ui) = self.evm.window.as_mut() {
+        if let Some(flow) = self.evm.approval.as_mut() {
             // The documented exception (plan H1): `issued` is the replaced request from here on,
             // the session keeps the drawn content until `resim_shown` below.
-            ui.flow.resim_replaced(request.clone(), prepared);
+            flow.resim_replaced(request.clone(), prepared);
         }
         if click && kind == ResimKind::Same {
             self.consume_and_sign();
             return;
         }
-        if let Some(ui) = self.evm.window.as_mut() {
-            ui.flow.resim_shown(kind, request, now);
+        if let Some(flow) = self.evm.approval.as_mut() {
+            flow.resim_shown(kind, request, now);
         }
         // spec/06 §3.2: a re-simulation that changes the input bytes re-requests.
         self.ai_ready_tx();
@@ -2229,9 +2210,9 @@ impl App {
         let now = self.clock.now_ms();
         let connect =
             self.evm
-                .window
+                .approval
                 .as_ref()
-                .and_then(|ui| match (ui.flow.item(), ui.flow.connect()) {
+                .and_then(|flow| match (flow.item(), flow.connect()) {
                     (QueuedItem::Site(site), Some(connect)) => {
                         Some((site.clone(), connect.clone()))
                     }
@@ -2257,8 +2238,8 @@ impl App {
                 // interaction first, then the arm delay: the redrawn chain needs a new armed
                 // click at least 1 s later, as after a re-simulation that asks again (C1).)
                 if self.refresh_connect_chain() {
-                    if let Some(ui) = self.evm.window.as_mut() {
-                        ui.flow.chain_changed_at_approve(now);
+                    if let Some(flow) = self.evm.approval.as_mut() {
+                        flow.chain_changed_at_approve(now);
                     }
                     self.rebuild_view();
                     return;
@@ -2277,26 +2258,25 @@ impl App {
             self.finish_approval(QueueOutcome::Approved);
             return;
         }
-        let Some(ui) = self.evm.window.as_mut() else {
+        let Some(flow) = self.evm.approval.as_mut() else {
             return;
         };
         // C1: one approval is acted on once — a submission in flight (re-simulation or consume)
         // ignores any further approval until its result replaces or resets the content.
-        if ui.flow.submitting() {
+        if flow.submitting() {
             return;
         }
-        let Some(request) = ui.flow.issued().cloned() else {
+        let Some(request) = flow.issued().cloned() else {
             return;
         };
-        if ui.flow.prepared().is_none() {
-            ui.flow.begin_submit();
+        if flow.prepared().is_none() {
+            flow.begin_submit();
             self.consume_and_sign();
             return;
         }
-        ui.flow.begin_submit();
-        ui.flow.checking();
-        let received = ui
-            .flow
+        flow.begin_submit();
+        flow.checking();
+        let received = flow
             .prepared()
             .map_or(0, |prepared| prepared.sim_received_ms);
         if needs_resimulation(&request.simulation, received, now) {
@@ -2309,19 +2289,19 @@ impl App {
     fn start_resimulation(&mut self, click: bool) {
         let job = self.evm.job();
         let address_book = self.address_book_facts();
-        let Some(ui) = self.evm.window.as_mut() else {
+        let Some(flow) = self.evm.approval.as_mut() else {
             return;
         };
         let (Some(request), Some(prepared)) = (
-            ui.flow.issued().cloned(),
-            ui.flow.prepared().cloned().map(Box::new),
+            flow.issued().cloned(),
+            flow.prepared().cloned().map(Box::new),
         ) else {
             return;
         };
-        ui.flow.resim_requested(job, click);
-        let chain_id = ui.flow.item().chain_id();
-        let extra_warnings = match ui.flow.item() {
-            QueuedItem::Site(site) => site_fee_warning(ui.flow.lang(), site),
+        flow.resim_requested(job, click);
+        let chain_id = flow.item().chain_id();
+        let extra_warnings = match flow.item() {
+            QueuedItem::Site(site) => site_fee_warning(flow.lang(), site),
             QueuedItem::App(_)
             | QueuedItem::Sol(_)
             | QueuedItem::Btc(_)
@@ -2346,13 +2326,13 @@ impl App {
             extra_warnings,
             limits: Limits::PRODUCTION,
         })));
-        if let Some(ui) = self.evm.window.as_mut() {
+        if let Some(flow) = self.evm.approval.as_mut() {
             if sent {
                 // C1: the approval that asked for this re-simulation has been acted on; the
                 // terminal `Approved` status must not dispatch it again on the next tick.
-                ui.flow.resim_sent(self.clock.now_ms());
+                flow.resim_sent(self.clock.now_ms());
             } else {
-                ui.flow.resim_not_sent(self.clock.now_ms());
+                flow.resim_not_sent(self.clock.now_ms());
             }
         }
         self.rebuild_view();
@@ -2364,15 +2344,15 @@ impl App {
     )]
     fn consume_and_sign(&mut self) {
         let now = self.clock.now_ms();
-        let Some(ui) = self.evm.window.as_ref() else {
+        let Some(flow) = self.evm.approval.as_ref() else {
             return;
         };
         // `issued` is the consume handle (2026-11-19, S4 B4a: was `ApprovalUi.request`).
-        let Some(request) = ui.flow.issued().cloned() else {
+        let Some(request) = flow.issued().cloned() else {
             return;
         };
-        let prepared = ui.flow.prepared().cloned().map(Box::new);
-        let item = ui.flow.item().clone();
+        let prepared = flow.prepared().cloned().map(Box::new);
+        let item = flow.item().clone();
         match self.evm.store.consume(request.id, request.digest, now) {
             Ok(approved) => {
                 logging::info(
@@ -2601,7 +2581,7 @@ impl App {
         self.card_tick(now);
         let finished = self.evm.queue.tick(now);
         let _ = self.evm.store.expire_due(now);
-        let shown_gone = self.evm.queue.shown().is_none() && self.evm.window.is_some();
+        let shown_gone = self.evm.queue.shown().is_none() && self.evm.approval.is_some();
         for (item, outcome) in finished {
             self.approval_finished(&item.payload, outcome);
         }
@@ -2613,7 +2593,9 @@ impl App {
 
     fn interaction(&mut self, event: InteractionEvent) {
         let now = self.clock.now_ms();
-        let Some(ui) = self.evm.window.as_mut() else {
+        // 2026-11-19 (S4 B4b): the flow from `EvmUi.approval`, the window from `App.approval_win`.
+        let (Some(flow), Some(win)) = (self.evm.approval.as_mut(), self.approval_win.as_ref())
+        else {
             #[cfg(test)]
             flow_support::log_input(flow_support::Logged::Event {
                 event,
@@ -2625,16 +2607,16 @@ impl App {
         // A false → true edge (activation, also within this process) restarts the arm delay.
         // The gate's foreground sample, taken before the event (2026-11-19, S4 B2: through
         // `TrustedSignals`, was `window_is_foreground`; B2 review: a getter, the field is private).
-        let foreground = TrustedSignals::sample_foreground(&ui.window).foreground();
+        let foreground = TrustedSignals::sample_foreground(&win.window).foreground();
         #[cfg(test)]
         flow_support::log_input(flow_support::Logged::Event {
             event,
             foreground: Some(foreground),
-            focus: Some(ui.focus),
+            focus: Some(win.focus),
         });
         // 2026-11-19 (S4 B4a): the foreground sample, the event, the early-release note and
         // `status_action` run in `ApprovalFlow::on_event`, in this order (were inline here).
-        match ui.flow.on_event(now, foreground, event) {
+        match flow.on_event(now, foreground, event) {
             StatusAction::Approve => self.approved(),
             StatusAction::Expire => self.finish_approval(QueueOutcome::Expired),
             StatusAction::Reject => {
@@ -2645,11 +2627,15 @@ impl App {
                 // Only the bottom bar changes with interaction events and ticks: repaint just it,
                 // and only when what it shows changed (no full-window redraw every 50 ms).
                 let waiting = self.evm.queue.len().saturating_sub(1);
-                if let Some(ui) = self.evm.window.as_ref() {
-                    if ui.bottom.bar.w <= 0 {
-                        ui.window.invalidate();
-                    } else if bar_state(ui, waiting, self.clock.now_ms()) != ui.bar {
-                        ui.window.invalidate_rect(ui.bottom.bar);
+                if let (Some(flow), Some(win)) =
+                    (self.evm.approval.as_ref(), self.approval_win.as_ref())
+                {
+                    if win.bottom.bar.w <= 0 {
+                        win.window.invalidate();
+                    } else if bar_state(&flow.paint(), win.focus, waiting, self.clock.now_ms())
+                        != win.bar
+                    {
+                        win.window.invalidate_rect(win.bottom.bar);
                     }
                 }
             }
@@ -2670,15 +2656,15 @@ impl App {
     fn rebuild_view_with(&mut self, force: bool) {
         let now = self.clock.now_ms();
         self.refresh_connect_chain();
-        let testnet_chain = self.evm.window.as_ref().map(|ui| match ui.flow.connect() {
+        let testnet_chain = self.evm.approval.as_ref().map(|flow| match flow.connect() {
             Some(connect) if connect.family == yw_core::policy::Family::Evm => connect.chain_id,
-            _ => ui.flow.item().chain_id(),
+            _ => flow.item().chain_id(),
         });
         let Some(chain_id) = testnet_chain else {
             return;
         };
         let mut badges = Vec::new();
-        let family = match self.evm.window.as_ref().map(|ui| ui.flow.item()) {
+        let family = match self.evm.approval.as_ref().map(ApprovalFlow::item) {
             Some(QueuedItem::Site(site)) => site.kind.family(),
             _ => yw_core::policy::Family::Evm,
         };
@@ -2691,14 +2677,14 @@ impl App {
         {
             badges.push(crate::ui::screens_evm::custom_chain_badge(
                 self.evm
-                    .window
+                    .approval
                     .as_ref()
-                    .map_or(self.settings.language, |ui| ui.flow.lang()),
+                    .map_or(self.settings.language, ApprovalFlow::lang),
                 chain_id,
             ));
         }
         let (evm_chain, sol_cluster) =
-            match (self.evm.window.as_ref().map(|ui| ui.flow.item()), family) {
+            match (self.evm.approval.as_ref().map(ApprovalFlow::item), family) {
                 (Some(QueuedItem::Sol(item)), _) => (None, Some(item.cluster)),
                 // A dApp transaction shows the cluster it is bound to, whatever is selected now.
                 (Some(QueuedItem::Site(site)), yw_core::policy::Family::Solana) => match &site.kind
@@ -2715,7 +2701,7 @@ impl App {
             };
         let site_btc_banner = (family == yw_core::policy::Family::Bitcoin)
             .then(|| crate::ui::approval_view::BtcBanner::of(self.btc_network_now()));
-        let chain_badge = match (self.evm.window.as_ref().map(|ui| ui.flow.item()), family) {
+        let chain_badge = match (self.evm.approval.as_ref().map(ApprovalFlow::item), family) {
             (Some(QueuedItem::Btc(item)), _) => Some(Badge::bitcoin(item.network)),
             (Some(QueuedItem::Site(_)), yw_core::policy::Family::Bitcoin) => {
                 Some(Badge::bitcoin(self.btc_network_now()))
@@ -2732,15 +2718,16 @@ impl App {
         let mut testnet = false;
         let lang = self
             .evm
-            .window
+            .approval
             .as_ref()
-            .map_or(self.settings.language, |ui| ui.flow.lang());
+            .map_or(self.settings.language, ApprovalFlow::lang);
         if let Some((badge, test)) = network_badge(lang, evm_chain, sol_cluster) {
             testnet = test;
             badges.push(badge.to_owned());
         }
         // HyperCore (spec/11 §6): the same mainnet / testnet badges as the EVM chains.
-        if let Some(QueuedItem::HyperCore(item)) = self.evm.window.as_ref().map(|ui| ui.flow.item())
+        if let Some(QueuedItem::HyperCore(item)) =
+            self.evm.approval.as_ref().map(ApprovalFlow::item)
         {
             if item.action.network == yw_core::hypercore::HcNetwork::Testnet {
                 testnet = true;
@@ -2751,8 +2738,8 @@ impl App {
         }
         // spec/10 §10: a YubiKey signer adds the "YubiKey로 서명" badge (app chrome only: the
         // badges are not part of the request's digested display, spec/03 §11.3).
-        let card_badge = self.evm.window.as_ref().and_then(|ui| {
-            let (role, touches) = match (ui.flow.item(), &ui.flow.gate().prepare) {
+        let card_badge = self.evm.approval.as_ref().and_then(|flow| {
+            let (role, touches) = match (flow.item(), &flow.gate().prepare) {
                 (QueuedItem::Btc(item), _) => (
                     crate::yubikey::btc_plan_role(&item.plan)?,
                     item.plan.inputs().len(),
@@ -2782,17 +2769,19 @@ impl App {
         // WalletConnect sessions (spec/13 §7): the claimed origin, chains and Verify state.
         let wc_patch = self
             .evm
-            .window
+            .approval
             .as_ref()
-            .and_then(|ui| match ui.flow.item() {
+            .and_then(|flow| match flow.item() {
                 QueuedItem::Site(site) => self.wc_connect_patch(&site.origin),
                 _ => None,
             });
-        let Some(ui) = self.evm.window.as_mut() else {
+        // 2026-11-19 (S4 B4b): the view is the flow's, the invalidations the window's.
+        let (Some(flow), Some(win)) = (self.evm.approval.as_mut(), self.approval_win.as_mut())
+        else {
             return;
         };
-        let wide_layout = ui.window.client_rect().w >= ui.window.px(80 * 8);
-        if let QueuedItem::Site(site) = ui.flow.item() {
+        let wide_layout = win.window.client_rect().w >= win.window.px(80 * 8);
+        if let QueuedItem::Site(site) = flow.item() {
             if crate::walletconnect::is_session_origin(&site.origin) {
                 badges.insert(0, text::BADGE_WALLETCONNECT.get(lang).to_owned());
             }
@@ -2801,7 +2790,7 @@ impl App {
                 badges.insert(0, crate::ui::approval_view::compat_mode_badge(lang, mode));
             }
             if let (Some(connect), PrepareState::Ready(ReadyContent::Connect(_))) =
-                (ui.flow.connect(), &ui.flow.gate().prepare)
+                (flow.connect(), &flow.gate().prepare)
             {
                 let accounts: Vec<(String, String)> = connect
                     .accounts
@@ -2824,10 +2813,10 @@ impl App {
                 order_badges(&mut connect_view.badges);
                 connect_view.testnet = testnet;
                 connect_view.chain = chain_badge;
-                ui.flow.set_view(connect_view);
-                ui.layout = None;
-                ui.window.invalidate();
-                ui.panel.invalidate();
+                flow.set_view(connect_view);
+                win.layout = None;
+                win.window.invalidate();
+                win.panel.invalidate();
                 return;
             }
             let mut site_badges = Vec::new();
@@ -2845,7 +2834,7 @@ impl App {
             site_badges.extend(badges);
             badges = site_badges;
         }
-        let btc_banner = match ui.flow.item() {
+        let btc_banner = match flow.item() {
             QueuedItem::Btc(item) => Some(crate::ui::approval_view::BtcBanner::of(item.network)),
             QueuedItem::Site(_) => site_btc_banner,
             QueuedItem::App(_)
@@ -2855,20 +2844,20 @@ impl App {
         };
         match view(
             lang,
-            &ui.flow.gate().prepare,
+            &flow.gate().prepare,
             now,
-            ui.flow.raw_open(),
+            flow.raw_open(),
             wide_layout,
             badges,
             testnet,
-            ui.flow.failure(),
+            flow.failure(),
         ) {
             Ok(mut view) => {
                 order_badges(&mut view.badges);
                 view.btc_banner = btc_banner;
                 view.chain = chain_badge;
                 // W-ADDR-3 under the recipient (spec/04 §3.3, outside the digest).
-                let note = match ui.flow.item() {
+                let note = match flow.item() {
                     QueuedItem::Btc(item) => item.look_alike.as_deref(),
                     QueuedItem::Zec(item) => item.look_alike.as_deref(),
                     QueuedItem::App(_)
@@ -2879,15 +2868,15 @@ impl App {
                 if let Some(note) = note {
                     crate::ui::approval_view::attach_address_note(&mut view, lang, note);
                 }
-                if !force && view == *ui.flow.view() {
+                if !force && view == *flow.view() {
                     return;
                 }
-                ui.flow.set_view(view);
-                ui.layout = None;
-                ui.window.invalidate();
-                ui.panel.invalidate();
+                flow.set_view(view);
+                win.layout = None;
+                win.window.invalidate();
+                win.panel.invalidate();
                 // The risk level or the acknowledgement may have changed (held_for_ack).
-                if let Some(ai) = ui.ai.as_ref() {
+                if let Some(ai) = win.ai.as_ref() {
                     ai.body.invalidate();
                 }
             }
@@ -2905,14 +2894,14 @@ impl App {
         #[cfg(test)]
         self.log_approval_call(flow_support::Call::ToggleAck);
         let now = self.clock.now_ms();
-        if let Some(ui) = self.evm.window.as_mut()
-            && ui.flow.toggle_ack(now)
+        if let (Some(flow), Some(win)) = (self.evm.approval.as_mut(), self.approval_win.as_mut())
+            && flow.toggle_ack(now)
         {
-            ui.layout = None;
-            ui.panel.invalidate();
-            ui.window.invalidate();
+            win.layout = None;
+            win.panel.invalidate();
+            win.window.invalidate();
             // A High-risk request's AI panel waits for this checkbox (held_for_ack).
-            if let Some(ai) = ui.ai.as_ref() {
+            if let Some(ai) = win.ai.as_ref() {
                 ai.body.invalidate();
             }
         }
@@ -2922,8 +2911,8 @@ impl App {
         #[cfg(test)]
         self.log_approval_call(flow_support::Call::ToggleAccount(index));
         let now = self.clock.now_ms();
-        if let Some(ui) = self.evm.window.as_mut() {
-            ui.flow.toggle_account(index, now);
+        if let Some(flow) = self.evm.approval.as_mut() {
+            flow.toggle_account(index, now);
         }
         self.rebuild_view();
     }
@@ -2931,8 +2920,8 @@ impl App {
     fn toggle_raw(&mut self) {
         #[cfg(test)]
         self.log_approval_call(flow_support::Call::ToggleRaw);
-        if let Some(ui) = self.evm.window.as_mut() {
-            ui.flow.toggle_raw();
+        if let Some(flow) = self.evm.approval.as_mut() {
+            flow.toggle_raw();
         }
         self.rebuild_view();
     }
@@ -2940,16 +2929,19 @@ impl App {
     fn scroll_by(&mut self, delta: i32) {
         #[cfg(test)]
         self.log_approval_call(flow_support::Call::Scroll(delta));
-        if let Some(ui) = self.evm.window.as_mut() {
-            let page = ui.panel.client_rect().h;
-            let max = ui
+        if let Some(win) = self.approval_win.as_mut() {
+            let page = win.panel.client_rect().h;
+            let max = win
                 .layout
                 .as_ref()
                 .map_or(0, |layout| layout.height.saturating_sub(page).max(0));
-            ui.scroll = ui.scroll.saturating_add(delta).clamp(0, max);
-            ui.panel
-                .set_vscroll(ui.scroll, page, ui.layout.as_ref().map_or(0, |l| l.height));
-            ui.panel.invalidate();
+            win.scroll = win.scroll.saturating_add(delta).clamp(0, max);
+            win.panel.set_vscroll(
+                win.scroll,
+                page,
+                win.layout.as_ref().map_or(0, |l| l.height),
+            );
+            win.panel.invalidate();
         }
     }
 
@@ -2977,10 +2969,10 @@ impl App {
     /// What A01 is when a message arrives (`None`: no window): its focus, its pressed button
     /// and, for a mouse message, the bottom-bar buttons that contain the point.
     fn input_facts(&self, msg: &Msg) -> Option<Facts> {
-        let ui = self.evm.window.as_ref()?;
+        let win = self.approval_win.as_ref()?;
         let hits = match *msg {
             Msg::MouseDown { x, y } | Msg::MouseUp { x, y } | Msg::MouseMove { x, y } => {
-                let bottom = ui.bottom;
+                let bottom = win.bottom;
                 BarHits {
                     approve: bottom.approve.contains(x, y),
                     reject: bottom.reject.contains(x, y),
@@ -2991,8 +2983,8 @@ impl App {
             _ => BarHits::default(),
         };
         Some(Facts {
-            focus: ui.focus,
-            pressed: ui.pressed,
+            focus: win.focus,
+            pressed: win.pressed,
             hits,
         })
     }
@@ -3032,10 +3024,10 @@ impl App {
             Step::Activated => {
                 #[cfg(test)]
                 flow_support::log_input(flow_support::Logged::Activated {
-                    focus: self.evm.window.as_ref().map(|ui| ui.focus),
+                    focus: self.approval_win.as_ref().map(|win| win.focus),
                 });
-                if let Some(ui) = self.evm.window.as_mut() {
-                    ui.flow.activated(self.clock.now_ms());
+                if let Some(flow) = self.evm.approval.as_mut() {
+                    flow.activated(self.clock.now_ms());
                 }
             }
             Step::Close => {
@@ -3059,12 +3051,12 @@ impl App {
                 // 2026-11-19 (S4 F1, L-1): a press that ended this request (past its deadline)
                 // goes no further, like a press with no window. Before, the rest of the message
                 // ran on the next request's window that the press had just opened.
-                if self.shown_window() != shown || self.evm.window.is_none() {
+                if self.shown_window() != shown || self.evm.approval.is_none() {
                     return Some(reply);
                 }
             }
             Step::AnyWindow(reply) => {
-                if self.evm.window.is_none() {
+                if self.evm.approval.is_none() {
                     return Some(reply);
                 }
             }
@@ -3074,23 +3066,23 @@ impl App {
                 }
             }
             Step::FocusApproval => {
-                if let Some(ui) = self.evm.window.as_ref() {
-                    focus_window(&ui.window);
+                if let Some(win) = self.approval_win.as_ref() {
+                    focus_window(&win.window);
                 }
             }
             Step::MoveFocus(focus) => {
-                if let Some(ui) = self.evm.window.as_mut() {
-                    ui.focus = focus;
+                if let Some(win) = self.approval_win.as_mut() {
+                    win.focus = focus;
                 }
             }
             Step::Press(pressed) => {
-                if let Some(ui) = self.evm.window.as_mut() {
-                    ui.pressed = Some(pressed);
+                if let Some(win) = self.approval_win.as_mut() {
+                    win.pressed = Some(pressed);
                 }
             }
             Step::Unpress => {
-                if let Some(ui) = self.evm.window.as_mut() {
-                    ui.pressed = None;
+                if let Some(win) = self.approval_win.as_mut() {
+                    win.pressed = None;
                 }
             }
             Step::Capture => {
@@ -3109,26 +3101,27 @@ impl App {
                 }
             }
             Step::InvalidateApproval => {
-                if let Some(ui) = self.evm.window.as_ref() {
-                    ui.window.invalidate();
+                if let Some(win) = self.approval_win.as_ref() {
+                    win.window.invalidate();
                 }
             }
             Step::Tab => {
-                if let Some(ui) = self.evm.window.as_mut() {
-                    let view = ui.flow.view();
+                if let (Some(flow), Some(win)) =
+                    (self.evm.approval.as_ref(), self.approval_win.as_mut())
+                {
+                    let view = flow.view();
                     let order = tab_order(view.blocks.contains(&Block::Ack), view.has_raw);
                     let backwards = TrustedSignals::sample_shift().shift_down();
-                    ui.focus = tab_target(&order, ui.focus, backwards);
-                    ui.window.invalidate();
-                    ui.panel.invalidate();
+                    win.focus = tab_target(&order, win.focus, backwards);
+                    win.window.invalidate();
+                    win.panel.invalidate();
                 }
             }
             Step::KeyScroll(scroll) => {
                 let metrics = self
-                    .evm
-                    .window
+                    .approval_win
                     .as_ref()
-                    .map(|ui| (ui.panel.client_rect().h, ui.panel.px(20)));
+                    .map(|win| (win.panel.client_rect().h, win.panel.px(20)));
                 if let Some((page, line)) = metrics {
                     self.scroll_by(scroll.delta(page, line));
                 }
@@ -3144,12 +3137,12 @@ impl App {
                 }
             }
             Step::PanelScroll(goal) => {
-                let ui = self.evm.window.as_ref()?;
-                let page = ui.panel.client_rect().h;
-                let line = ui.panel.px(20);
-                let current = ui.scroll;
+                let win = self.approval_win.as_ref()?;
+                let page = win.panel.client_rect().h;
+                let line = win.panel.px(20);
+                let current = win.scroll;
                 let track = if goal == ScrollGoal::Track {
-                    ui.panel.vscroll_track_pos()
+                    win.panel.vscroll_track_pos()
                 } else {
                     0
                 };
@@ -3161,10 +3154,9 @@ impl App {
                     let page = window.client_rect().h;
                     let line = window.px(20);
                     let current = self
-                        .evm
-                        .window
+                        .approval_win
                         .as_ref()
-                        .and_then(|ui| ui.ai.as_ref())
+                        .and_then(|win| win.ai.as_ref())
                         .map_or(0, |ai| ai.scroll);
                     let track = if goal == ScrollGoal::Track {
                         window.vscroll_track_pos()
@@ -3176,9 +3168,9 @@ impl App {
                 }
             }
             Step::PanelClick { x, y } => {
-                let ui = self.evm.window.as_ref()?;
-                let content_y = y.saturating_add(ui.scroll);
-                let layout = ui.layout.clone().unwrap_or_default();
+                let win = self.approval_win.as_ref()?;
+                let content_y = y.saturating_add(win.scroll);
+                let layout = win.layout.clone().unwrap_or_default();
                 let hit = panel_hit(&layout.accounts, layout.ack, layout.raw, x, content_y);
                 for step in panel_click(hit) {
                     if let Some(reply) = self.run_step(surface, window, shown, step) {
@@ -3187,11 +3179,13 @@ impl App {
                 }
             }
             Step::AiExpand => {
-                if let Some(ui) = self.evm.window.as_mut()
-                    && let Some(ai) = ui.ai.as_mut()
+                // 2026-11-19 (S4 B4b): the panel state is the flow's `AiFlow`, the body's scroll
+                // the shell's `AiBody`.
+                if let Some(ai) = self.evm.approval.as_mut().and_then(ApprovalFlow::ai_mut)
                     && ai.panel.toggle_expanded()
+                    && let Some(body) = self.approval_win.as_mut().and_then(|win| win.ai.as_mut())
                 {
-                    ai.scroll = 0;
+                    body.scroll = 0;
                     if let Some(window) = window {
                         window.invalidate();
                     }
@@ -3207,16 +3201,16 @@ impl App {
                 }
             }
             Step::Relayout => {
-                if let Some(ui) = self.evm.window.as_mut() {
-                    ui.layout = None;
+                if let Some(win) = self.approval_win.as_mut() {
+                    win.layout = None;
                 }
                 self.rebuild_view();
             }
             Step::TimerTail => {
                 self.ai_tick(self.clock.now_ms());
-                if let Some(ui) = self.evm.window.as_ref()
+                if let Some(flow) = self.evm.approval.as_ref()
                     && matches!(
-                        ui.flow.gate().prepare,
+                        flow.gate().prepare,
                         PrepareState::Preparing(PrepareStage::Simulating { .. })
                     )
                 {
@@ -3230,9 +3224,9 @@ impl App {
     fn retry_action(&mut self) {
         #[cfg(test)]
         self.log_approval_call(flow_support::Call::Retry);
-        let failed_retryable = self.evm.window.as_ref().is_some_and(|ui| {
+        let failed_retryable = self.evm.approval.as_ref().is_some_and(|flow| {
             matches!(
-                ui.flow.gate().prepare,
+                flow.gate().prepare,
                 PrepareState::Failed {
                     retryable: true,
                     ..
@@ -3274,13 +3268,21 @@ impl App {
             .as_ref()
             .is_none_or(crate::explain::ExplainService::busy);
         let lang = self.approval_lang();
-        let Self { evm, fonts, .. } = self;
+        let Self {
+            evm,
+            fonts,
+            approval_win,
+            ..
+        } = self;
         let Some(fonts) = fonts.for_dpi(dpi, lang) else {
             return;
         };
-        let Some(ui) = evm.window.as_mut() else {
+        // 2026-11-19 (S4 B4b): the flow is read through `ApprovalPaint`, the shell state is
+        // `App.approval_win` (both were `EvmUi.window`).
+        let (Some(flow), Some(win)) = (evm.approval.as_ref(), approval_win.as_mut()) else {
             return;
         };
+        let paint = flow.paint();
         let Ok(mut dc) = window.begin_paint() else {
             return;
         };
@@ -3295,7 +3297,7 @@ impl App {
         // Header: one row per field (muted label column, value), then the badges as pills. A
         // grouped Solana address line is Consolas with bold middle groups (spec/07 §12.3).
         let mut rows: Vec<(String, String, FontRole)> = Vec::new();
-        for (label, value) in &ui.flow.view().header {
+        for (label, value) in &paint.view.header {
             let mut first = true;
             for line in value.split('\n') {
                 // An address on a line of its own is drawn whole with its ends emphasized
@@ -3325,9 +3327,9 @@ impl App {
         if rows.is_empty() {
             rows.push((
                 crate::ui::approval::labels::ORIGIN
-                    .get(ui.flow.lang())
+                    .get(paint.lang)
                     .to_owned(),
-                yw_core::approval::APP_ORIGIN.get(ui.flow.lang()).to_owned(),
+                yw_core::approval::APP_ORIGIN.get(paint.lang).to_owned(),
                 FontRole::Body,
             ));
         }
@@ -3342,20 +3344,20 @@ impl App {
         let label_w = px(84).max(widest.saturating_add(px(10))).min(width / 3);
         let value_w = width.saturating_sub(label_w).max(px(60));
         let mut badges: Vec<String> = Vec::new();
-        if let Some(banner) = ui.flow.view().btc_banner
+        if let Some(banner) = paint.view.btc_banner
             && !rows
                 .iter()
-                .any(|(_, value, _)| value.contains(banner.text(ui.flow.lang())))
+                .any(|(_, value, _)| value.contains(banner.text(paint.lang)))
         {
-            badges.push(banner.text(ui.flow.lang()).to_owned());
+            badges.push(banner.text(paint.lang).to_owned());
         }
-        badges.extend(ui.flow.view().badges.iter().cloned());
+        badges.extend(paint.view.badges.iter().cloned());
         // The chain badge goes before the first `네트워크` value line (app chrome, spec/04 §3.2).
         let badge_size = px(BADGE_DIP);
-        let badge_row = ui.flow.view().chain.and_then(|badge| {
+        let badge_row = paint.view.chain.and_then(|badge| {
             rows.iter()
                 .position(|(label, _, _)| {
-                    label == crate::ui::approval::labels::NETWORK.get(ui.flow.lang())
+                    label == crate::ui::approval::labels::NETWORK.get(paint.lang)
                 })
                 .map(|row| (row, badge))
         });
@@ -3385,7 +3387,7 @@ impl App {
         let mainnet = badges
             .iter()
             .any(|badge| is_badge(badge, text::BADGE_MAINNET));
-        let (header_fill, header_text, header_muted) = match ui.flow.view().btc_banner {
+        let (header_fill, header_text, header_muted) = match paint.view.btc_banner {
             Some(crate::ui::approval_view::BtcBanner::Mainnet) => (
                 theme::BTC_MAINNET_BG,
                 theme::BTC_MAINNET_TEXT,
@@ -3394,7 +3396,7 @@ impl App {
             Some(crate::ui::approval_view::BtcBanner::Testnet4) => {
                 (theme::BTC_TESTNET4_BG, theme::TEXT, theme::TEXT)
             }
-            None if ui.flow.view().testnet => (theme::TESTNET_BG, theme::TEXT, theme::MUTED),
+            None if paint.view.testnet => (theme::TESTNET_BG, theme::TEXT, theme::MUTED),
             None => (theme::CARD, theme::TEXT, theme::MUTED),
         };
         let header_rect = Rect::new(
@@ -3456,7 +3458,7 @@ impl App {
                         rect,
                         header_text,
                         // White on the red Bitcoin mainnet header, `FOCUS` elsewhere.
-                        if ui.flow.view().btc_banner
+                        if paint.view.btc_banner
                             == Some(crate::ui::approval_view::BtcBanner::Mainnet)
                         {
                             header_text
@@ -3489,12 +3491,12 @@ impl App {
         y = header_rect.bottom().saturating_add(px(10));
         // Simulation band.
         let mut retry = None;
-        if let Some(band) = ui.flow.view().band.clone() {
+        if let Some(band) = paint.view.band.clone() {
             let pad = px(12);
             // The tag fits its word (2026-11-14: "High risk" is wider than "고위험"; the Korean
             // tag keeps its 56 px).
             dc.select_font(&fonts.body_bold);
-            let (_, level_w) = dc.measure(&wide(text::LEVEL_HIGH.get(ui.flow.lang())), i32::MAX);
+            let (_, level_w) = dc.measure(&wide(text::LEVEL_HIGH.get(paint.lang)), i32::MAX);
             let tag_w = px(56).max(level_w.saturating_add(px(16)));
             let inner = width
                 .saturating_sub(pad.saturating_mul(2))
@@ -3530,7 +3532,7 @@ impl App {
             dc.select_font(&fonts.body_bold);
             dc.set_text_color(theme::CARD);
             dc.draw_text(
-                &wide(text::LEVEL_HIGH.get(ui.flow.lang())),
+                &wide(text::LEVEL_HIGH.get(paint.lang)),
                 tag,
                 DrawFlags::CENTER,
             );
@@ -3556,7 +3558,7 @@ impl App {
                 );
                 dc.set_text_color(theme::DANGER_TEXT);
                 dc.draw_text(
-                    &wide(text::RETRY_SIMULATION.get(ui.flow.lang())),
+                    &wide(text::RETRY_SIMULATION.get(paint.lang)),
                     button,
                     DrawFlags::CENTER,
                 );
@@ -3566,15 +3568,15 @@ impl App {
         }
         // Bottom bar: the status line(s), the next step, the buttons (spec/04 §3.2 하단).
         let waiting = evm.queue.len().saturating_sub(1);
-        let bar = bar_state(ui, waiting, now);
+        let bar = bar_state(&paint, win.focus, waiting, now);
         for character in bar.status.chars() {
-            let _ = char_width(&mut dc, fonts, &mut ui.widths, FontRole::Body, character);
+            let _ = char_width(&mut dc, fonts, &mut win.widths, FontRole::Body, character);
         }
         for character in bar.step.unwrap_or("").chars() {
             let _ = char_width(
                 &mut dc,
                 fonts,
-                &mut ui.widths,
+                &mut win.widths,
                 FontRole::BodyBold,
                 character,
             );
@@ -3582,7 +3584,7 @@ impl App {
         let status_line = line_height(&mut dc, fonts, FontRole::Body);
         let step_line = line_height(&mut dc, fonts, FontRole::BodyBold);
         let bar_layout = {
-            let widths = &ui.widths;
+            let widths = &win.widths;
             let status_char = |character| {
                 widths
                     .get(&(FontRole::Body, character))
@@ -3610,7 +3612,7 @@ impl App {
         };
         let bottom_h = bar_layout.height.min(client.h);
         let bottom_top = client.h.saturating_sub(bottom_h);
-        if ui.bottom.bar.h > 0 && ui.bottom.bar.h != bottom_h {
+        if win.bottom.bar.h > 0 && win.bottom.bar.h != bottom_h {
             // The bar grew or shrank (a wrapped status line, a step above the buttons): the
             // content area moves, so the whole window is painted again.
             window.invalidate();
@@ -3631,7 +3633,7 @@ impl App {
             let urgent_w: i32 = urgent
                 .chars()
                 .map(|character| {
-                    ui.widths
+                    win.widths
                         .get(&(FontRole::Body, character))
                         .copied()
                         .unwrap_or(0)
@@ -3687,7 +3689,7 @@ impl App {
         dc.round_rect(reject, radius, theme::CARD, theme::BUTTON_SECONDARY.border);
         dc.set_text_color(theme::TEXT);
         dc.draw_text(
-            &wide(text::REJECT.get(ui.flow.lang())),
+            &wide(text::REJECT.get(paint.lang)),
             reject,
             DrawFlags::CENTER,
         );
@@ -3722,15 +3724,15 @@ impl App {
         dc.set_text_color(text_color);
         dc.select_font(&fonts.body_bold);
         dc.draw_text(&wide(label), approve, DrawFlags::CENTER);
-        match ui.focus {
+        match win.focus {
             Focus::Approve => dc.frame_rect(approve.inset(-px(3)), theme::FOCUS),
             Focus::Reject => dc.frame_rect(reject.inset(-px(3)), theme::FOCUS),
             _ => {}
         }
         // AI panel (spec/06 §6): fixed height right above the bottom bar, reserved from the start,
         // so a result never moves the buttons or the warnings.
-        let (content_bottom, ai_retry, ai_body) = match ui.ai.as_ref() {
-            Some(ai) => {
+        let (content_bottom, ai_retry, ai_body) = match paint.ai.zip(win.ai.as_ref()) {
+            Some((ai, ai_child)) => {
                 let line_h = line_height(&mut dc, fonts, FontRole::Body);
                 let pad = px(10);
                 let title_h = px(28);
@@ -3794,25 +3796,25 @@ impl App {
                     width,
                     body_h,
                 );
-                if body != ui.bottom.ai_body {
-                    ai.body.set_rect(body);
-                    ai.body.invalidate();
+                if body != win.bottom.ai_body {
+                    ai_child.body.set_rect(body);
+                    ai_child.body.invalidate();
                 }
                 (top, retry_rect.filter(|_| !llm_busy), body)
             }
             None => (bottom_top, None, Rect::default()),
         };
         let panel = Rect::new(0, y, client.w, content_bottom.saturating_sub(y).max(px(40)));
-        if panel != ui.bottom.panel {
-            ui.panel.set_rect(panel);
-            ui.layout = None;
-            ui.panel.invalidate();
+        if panel != win.bottom.panel {
+            win.panel.set_rect(panel);
+            win.layout = None;
+            win.panel.invalidate();
         }
         let bar_rect = Rect::new(0, bottom_top, client.w, bottom_h);
         // A paint that did not cover the whole bar leaves part of it stale: the next tick
         // repaints it.
         let update = dc.update_rect();
-        ui.bar = if update.x <= bar_rect.x
+        win.bar = if update.x <= bar_rect.x
             && update.y <= bar_rect.y
             && update.right() >= bar_rect.right()
             && update.bottom() >= bar_rect.bottom()
@@ -3821,7 +3823,7 @@ impl App {
         } else {
             BarState::default()
         };
-        ui.bottom = Bottom {
+        win.bottom = Bottom {
             bar: bar_rect,
             approve,
             reject,
@@ -3839,25 +3841,37 @@ impl App {
         let dpi = window.dpi();
         let client = window.client_rect();
         let lang = self.approval_lang();
-        let Self { evm, fonts, .. } = self;
+        let Self {
+            evm,
+            fonts,
+            approval_win,
+            ..
+        } = self;
         let Some(fonts) = fonts.for_dpi(dpi, lang) else {
             return;
         };
-        let Some(ui) = evm.window.as_mut() else {
+        let (Some(flow), Some(win)) = (evm.approval.as_mut(), approval_win.as_mut()) else {
             return;
         };
-        let ApprovalUi {
-            ai, widths, flow, ..
-        } = ui;
-        let Some(ai) = ai.as_mut() else {
+        let ApprovalWin {
+            ai: ai_child,
+            widths,
+            ..
+        } = win;
+        let Some(ai_child) = ai_child.as_mut() else {
             return;
         };
         // A High-risk request shows its warnings first: the AI text waits for the
-        // acknowledgement checkbox (the panel keeps its reserved place).
-        ai.panel.set_held(held_for_ack(
-            flow.issued().map(|request| request.display.risk),
-            flow.gate().ack_checked,
-        ));
+        // acknowledgement checkbox (the panel keeps its reserved place). (2026-11-19, S4 B4b:
+        // `ApprovalFlow::hold_ai_for_ack` sets it from the issued request and the gate, then the
+        // body paints from `ApprovalPaint`; was `ai.panel.set_held(held_for_ack(..))` here.)
+        if !flow.hold_ai_for_ack() {
+            return;
+        }
+        let paint = flow.paint();
+        let Some(ai) = paint.ai else {
+            return;
+        };
         let Ok(mut dc) = window.begin_paint() else {
             return;
         };
@@ -3900,10 +3914,10 @@ impl App {
             }
         }
         let max = y.saturating_sub(client.h).max(0);
-        ai.scroll = ai.scroll.clamp(0, max);
-        window.set_vscroll(ai.scroll, client.h, y);
+        ai_child.scroll = ai_child.scroll.clamp(0, max);
+        window.set_vscroll(ai_child.scroll, client.h, y);
         for (top, text, role, color, height) in rows {
-            let top = top.saturating_sub(ai.scroll);
+            let top = top.saturating_sub(ai_child.scroll);
             if top.saturating_add(height) < 0 || top > client.h {
                 continue;
             }
@@ -3922,7 +3936,7 @@ impl App {
     }
 
     fn ai_scroll_by(&mut self, window: &Window, delta: i32) {
-        if let Some(ai) = self.evm.window.as_mut().and_then(|ui| ui.ai.as_mut()) {
+        if let Some(ai) = self.approval_win.as_mut().and_then(|win| win.ai.as_mut()) {
             ai.scroll = ai.scroll.saturating_add(delta).max(0);
             window.invalidate();
         }
@@ -3944,11 +3958,13 @@ impl App {
         stats: Option<&RequestStats>,
     ) {
         let now = self.clock.now_ms();
-        let Self { evm, llm, .. } = self;
-        let Some(ui) = evm.window.as_mut() else {
-            return;
-        };
-        let Some(ai) = ui.ai.as_mut() else {
+        let Self {
+            evm,
+            llm,
+            approval_win,
+            ..
+        } = self;
+        let Some(ai) = evm.approval.as_mut().and_then(ApprovalFlow::ai_mut) else {
             return;
         };
         if let Some(ended) = ended {
@@ -3970,14 +3986,18 @@ impl App {
                 log_request(&ai.host, ai.kind, &ended, None);
             }
         }
-        ai.body.invalidate();
-        ui.window.invalidate();
+        if let Some(win) = approval_win.as_ref() {
+            if let Some(ai_child) = win.ai.as_ref() {
+                ai_child.body.invalidate();
+            }
+            win.window.invalidate();
+        }
     }
 
     fn ai_ready(&mut self, ready: AiReady) {
         let now = self.clock.now_ms();
         let busy = self.llm_busy();
-        let Some(ai) = self.evm.window.as_mut().and_then(|ui| ui.ai.as_mut()) else {
+        let Some(ai) = self.evm.approval.as_mut().and_then(ApprovalFlow::ai_mut) else {
             return;
         };
         let (ended, dispatch) = match ready {
@@ -3992,14 +4012,14 @@ impl App {
     /// wallet's decoding and the simulation status (spec/06 §3.1, §4.3).
     fn ai_ready_tx(&mut self) {
         let ready = {
-            let Some(ui) = self.evm.window.as_ref() else {
+            let Some(flow) = self.evm.approval.as_ref() else {
                 return;
             };
-            if ui.ai.is_none() {
+            if flow.ai().is_none() {
                 return;
             }
             let (QueuedItem::Site(site), Some(prepared), Some(request)) =
-                (ui.flow.item(), ui.flow.prepared(), ui.flow.issued())
+                (flow.item(), flow.prepared(), flow.issued())
             else {
                 return;
             };
@@ -4026,21 +4046,20 @@ impl App {
 
     /// A `personal_sign` request reached Ready.
     fn ai_ready_message(&mut self) {
-        let Some(ui) = self.evm.window.as_ref() else {
+        let Some(flow) = self.evm.approval.as_ref() else {
             return;
         };
         // Only for the window whose draft was just shown (not a next window opened meanwhile).
-        if ui.ai.is_none() || ui.flow.issued().is_none() {
+        if flow.ai().is_none() || flow.issued().is_none() {
             return;
         }
-        let QueuedItem::Site(site) = ui.flow.item().clone() else {
+        let QueuedItem::Site(site) = flow.item().clone() else {
             return;
         };
         let SiteKind::PersonalSign { account, message } = &site.kind else {
             return;
         };
-        let blocked = ui
-            .flow
+        let blocked = flow
             .issued()
             .is_some_and(|request| request.display.risk == RiskLevel::Blocked);
         let ready = match self.message_chain(site.chain_id) {
@@ -4063,23 +4082,21 @@ impl App {
 
     /// A typed-data request reached Ready (with the facts its display used).
     fn ai_ready_typed(&mut self, facts: &yw_core::approval::ChainFacts) {
-        let Some(ui) = self.evm.window.as_ref() else {
+        let Some(flow) = self.evm.approval.as_ref() else {
             return;
         };
-        if ui.ai.is_none() || ui.flow.issued().is_none() {
+        if flow.ai().is_none() || flow.issued().is_none() {
             return;
         }
-        let (QueuedItem::Site(site), Some(typed)) = (
-            ui.flow.item().clone(),
-            ui.flow.typed().cloned().map(Box::new),
-        ) else {
+        let (QueuedItem::Site(site), Some(typed)) =
+            (flow.item().clone(), flow.typed().cloned().map(Box::new))
+        else {
             return;
         };
         let SiteKind::TypedData { account, .. } = &site.kind else {
             return;
         };
-        let blocked = ui
-            .flow
+        let blocked = flow
             .issued()
             .is_some_and(|request| request.display.risk == RiskLevel::Blocked);
         let ready = match self.message_chain(site.chain_id) {
@@ -4100,7 +4117,7 @@ impl App {
     /// The 50 ms tick: deadline and a request waiting for the worker (spec/06 §3.2).
     fn ai_tick(&mut self, now: u64) {
         let busy = self.llm_busy();
-        let Some(ai) = self.evm.window.as_mut().and_then(|ui| ui.ai.as_mut()) else {
+        let Some(ai) = self.evm.approval.as_mut().and_then(ApprovalFlow::ai_mut) else {
             return;
         };
         let requesting = matches!(
@@ -4110,8 +4127,11 @@ impl App {
         let (ended, dispatch) = ai.panel.tick(now, busy);
         if ended.is_some() || dispatch.is_some() {
             self.ai_after(ended, dispatch, None);
-        } else if requesting && now % 1_000 < 50 {
-            ai.body.invalidate();
+        } else if requesting
+            && now % 1_000 < 50
+            && let Some(ai_child) = self.approval_win.as_ref().and_then(|win| win.ai.as_ref())
+        {
+            ai_child.body.invalidate();
         }
     }
 
@@ -4121,7 +4141,7 @@ impl App {
         self.log_approval_call(flow_support::Call::AiRetry);
         let now = self.clock.now_ms();
         let busy = self.llm_busy();
-        let Some(ai) = self.evm.window.as_mut().and_then(|ui| ui.ai.as_mut()) else {
+        let Some(ai) = self.evm.approval.as_mut().and_then(ApprovalFlow::ai_mut) else {
             return;
         };
         let dispatch = ai.panel.retry(now, busy);
@@ -4133,9 +4153,9 @@ impl App {
         let now = self.clock.now_ms();
         let Some(ai) = self
             .evm
-            .window
+            .approval
             .as_mut()
-            .and_then(|ui| ui.ai.as_mut())
+            .and_then(ApprovalFlow::ai_mut)
             .filter(|ai| ai.serial == done.window)
         else {
             return;
@@ -4144,23 +4164,33 @@ impl App {
         self.ai_after(ended, None, Some(&done.stats));
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the layout, then the panel's shapes, lines and focus in one pass"
+    )]
     fn paint_panel(&mut self, window: &Window) {
         let dpi = window.dpi();
         let client = window.client_rect();
         let lang = self.approval_lang();
-        let Self { evm, fonts, .. } = self;
+        let Self {
+            evm,
+            fonts,
+            approval_win,
+            ..
+        } = self;
         let Some(fonts) = fonts.for_dpi(dpi, lang) else {
             return;
         };
-        let Some(ui) = evm.window.as_mut() else {
+        let (Some(flow), Some(win)) = (evm.approval.as_ref(), approval_win.as_mut()) else {
             return;
         };
+        let paint = flow.paint();
         let Ok(mut dc) = window.begin_paint() else {
             return;
         };
         dc.fill_rect(client, theme::BG);
         let width = client.w;
-        if ui
+        if win
             .layout
             .as_ref()
             .is_none_or(|layout| layout.width != width)
@@ -4168,28 +4198,28 @@ impl App {
             let layout = build_layout(
                 &mut dc,
                 fonts,
-                &mut ui.widths,
-                ui.flow.view(),
+                &mut win.widths,
+                paint.view,
                 width,
                 dpi,
-                ui.flow.gate().ack_checked,
+                paint.ack_checked,
             );
-            ui.layout = Some(layout);
-            let max = ui
+            win.layout = Some(layout);
+            let max = win
                 .layout
                 .as_ref()
                 .map_or(0, |layout| layout.height.saturating_sub(client.h).max(0));
-            ui.scroll = ui.scroll.min(max);
+            win.scroll = win.scroll.min(max);
             window.set_vscroll(
-                ui.scroll,
+                win.scroll,
                 client.h,
-                ui.layout.as_ref().map_or(0, |layout| layout.height),
+                win.layout.as_ref().map_or(0, |layout| layout.height),
             );
         }
-        let Some(layout) = ui.layout.as_ref() else {
+        let Some(layout) = win.layout.as_ref() else {
             return;
         };
-        let offset = ui.scroll;
+        let offset = win.scroll;
         for (rect, fill, border, radius) in &layout.rounds {
             let shifted = Rect::new(rect.x, rect.y.saturating_sub(offset), rect.w, rect.h);
             if shifted.bottom() >= 0 && shifted.y <= client.h {
@@ -4222,9 +4252,9 @@ impl App {
             if top.saturating_add(line.height) < 0 || top > client.h {
                 continue;
             }
-            draw_line(&mut dc, fonts, line, offset, &ui.widths);
+            draw_line(&mut dc, fonts, line, offset, &win.widths);
         }
-        let focus_rect = match ui.focus {
+        let focus_rect = match win.focus {
             Focus::Ack => layout.ack,
             Focus::Raw => layout.raw,
             _ => None,
@@ -4240,7 +4270,7 @@ impl App {
                 theme::FOCUS,
             );
         }
-        if ui.focus == Focus::Scroll {
+        if win.focus == Focus::Scroll {
             dc.frame_rect(client.inset(1), theme::FOCUS);
         }
     }
@@ -4276,7 +4306,7 @@ mod input_tests;
 impl App {
     /// The open approval window.
     pub(crate) fn tour_approval_window(&self) -> Option<&Window> {
-        self.evm.window.as_ref().map(|ui| &ui.window)
+        self.approval_win.as_ref().map(|win| &win.window)
     }
 
     /// Rejects the open approval (as `거부` would).
@@ -4286,11 +4316,11 @@ impl App {
 
     /// The open window's AI panel state (spec/06), if it has one.
     pub(crate) fn tour_ai_state(&self) -> Option<crate::explain::AiPanelState> {
+        // 2026-11-19 (S4 B4b): read through the flow's `ApprovalPaint`.
         self.evm
-            .window
+            .approval
             .as_ref()
-            .and_then(|ui| ui.ai.as_ref())
-            .map(|ai| ai.panel.state().clone())
+            .and_then(|flow| flow.paint().ai.map(|ai| ai.panel.state().clone()))
     }
 }
 

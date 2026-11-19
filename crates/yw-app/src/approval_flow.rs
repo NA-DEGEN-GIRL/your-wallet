@@ -1,7 +1,10 @@
 //! The shown approval's flow state (spec/04 §3, spec/03 §11.5, spec/15 §11.4 S4): the request
 //! the window shows, its preparation, the issued approval and the gate with its interaction
 //! (`ApprovalSession`). 2026-11-19 (S4 B4a, plan D-7): split out of the yw-app `ApprovalUi` of
-//! `app_approval.rs` unchanged; the window, its panel, the AI body and the paint state stay there.
+//! `app_approval.rs` unchanged. 2026-11-19 (S4 B4b): the rest of `ApprovalUi` is the shell state
+//! `app_approval::ApprovalWin` (window, panel, AI body and its scroll, focus, scroll, pressed
+//! button, layout, bottom bar, glyph widths); the AI panel's state is here ([`AiFlow`]), beside the
+//! session, never inside it; the window paints from the read model [`ApprovalPaint`].
 //!
 //! Every field is private: the methods below are the only writers of the gate, and each keeps
 //! the order of the code it came from (the deadline before `replace_content`, `connect_selected`
@@ -12,7 +15,9 @@
 use yw_core::approval::{ApprovalRequest, RiskLevel};
 use yw_core::evm::eip712::DecodedTypedData;
 use yw_core::lang::Lang;
-use yw_engine::approval::flow::{StatusAction, session_deadline, status_action};
+use yw_engine::approval::flow::{
+    BarFacts, BarSource, StatusAction, bar_facts, session_deadline, status_action,
+};
 use yw_engine::approval::interaction::{
     ApprovalGate, ApprovalSession, ConnectView, InteractionError, InteractionEvent,
     InteractionStatus, PrepareStage, PrepareState, ReadyContent,
@@ -20,6 +25,8 @@ use yw_engine::approval::interaction::{
 use yw_engine::approval::text;
 use yw_engine::approval::view::{ApprovalView, Block};
 use yw_engine::errors::ErrorCode;
+use yw_engine::explain::input::RequestKind;
+use yw_engine::explain::panel::{AiPanel, held_for_ack};
 use yw_engine::flow::evm::prepare::{Prepared, ResimKind};
 
 use crate::app_approval::ConnectState;
@@ -49,6 +56,76 @@ pub struct ApprovalFlow {
     raw_open: bool,
     resim_click: bool,
     view: ApprovalView,
+    /// The AI explanation (spec/06 §6), when the window reserved its panel (2026-11-19, S4 B4b:
+    /// was the state half of `app_approval::AiUi`).
+    ai: Option<AiFlow>,
+}
+
+/// The AI explanation of the shown approval (spec/06 §6, spec/04 §3.8): the panel state, the
+/// request serial of this window, the endpoint host and model, and the request kind. Beside the
+/// session, never inside it: it holds no gate type and no method of it reads or writes the gate
+/// (source check S3, D21). Its body window and the body's scroll are shell state
+/// (`app_approval::ApprovalWin`). (2026-11-19, S4 B4b: was the state half of
+/// `app_approval::AiUi`.)
+pub struct AiFlow {
+    pub(crate) panel: AiPanel,
+    pub(crate) serial: u64,
+    pub(crate) host: String,
+    pub(crate) model: String,
+    pub(crate) kind: RequestKind,
+}
+
+impl core::fmt::Debug for AiFlow {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("AiFlow")
+            .field("state", self.panel.state())
+            .finish_non_exhaustive()
+    }
+}
+
+/// What the approval window paints, read from the flow (2026-11-19, S4 B4b, plan D-19): one
+/// reviewed read surface, no `&mut`. The session reaches the shell only as the bottom bar's
+/// facts ([`Self::bar`]); the smoke harness and the tour hooks read through here too.
+pub(crate) struct ApprovalPaint<'a> {
+    /// The window's language.
+    pub(crate) lang: Lang,
+    /// The view drawn.
+    pub(crate) view: &'a ApprovalView,
+    /// The status message.
+    pub(crate) status: Option<&'a str>,
+    /// The shown content (`Preparing`, `Ready`, `Failed`); read by the render harness only.
+    #[cfg(test)]
+    pub(crate) prepare: &'a PrepareState,
+    /// The acknowledgement checkbox is checked.
+    pub(crate) ack_checked: bool,
+    /// The interaction's status.
+    pub(crate) interaction: InteractionStatus,
+    /// A high-risk hold is under way.
+    pub(crate) holding: bool,
+    /// The AI explanation, when the window has one.
+    pub(crate) ai: Option<&'a AiFlow>,
+    bar: BarSource<'a>,
+}
+
+impl ApprovalPaint<'_> {
+    /// The bottom bar's facts at `now` (`yw_engine::approval::flow::bar_facts`, S4 B3).
+    pub(crate) fn bar(&self, now: u64) -> BarFacts {
+        bar_facts(&self.bar, now)
+    }
+}
+
+/// Names and flags only (D28).
+impl core::fmt::Debug for ApprovalPaint<'_> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("ApprovalPaint")
+            .field("lang", &self.lang)
+            .field("ack_checked", &self.ack_checked)
+            .field("interaction", &self.interaction)
+            .field("holding", &self.holding)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Names only (D28): never the request, a text or an address.
@@ -65,7 +142,7 @@ impl core::fmt::Debug for ApprovalFlow {
 impl ApprovalFlow {
     /// The flow of a window opening at `now`: the gate starts `Preparing(Building)`, unarmed,
     /// not foreground, with the deadline of `session_deadline` (the site deadline, else `now +
-    /// MAX_LIFETIME_MS`; S4 B3).
+    /// MAX_LIFETIME_MS`; S4 B3). `ai`: the AI explanation when the window reserved its panel.
     ///
     /// # Errors
     ///
@@ -74,6 +151,7 @@ impl ApprovalFlow {
         lang: Lang,
         item: QueuedItem,
         connect: Option<ConnectState>,
+        ai: Option<AiFlow>,
         now: u64,
     ) -> Result<Self, InteractionError> {
         let site_deadline = match &item {
@@ -109,6 +187,7 @@ impl ApprovalFlow {
             raw_open: false,
             resim_click: false,
             view: ApprovalView::default(),
+            ai,
         })
     }
 
@@ -134,7 +213,9 @@ impl ApprovalFlow {
         self.typed.as_deref()
     }
 
-    /// The gate and its interaction (read-only).
+    /// The gate and its interaction (read-only; the tests' recorders. 2026-11-19, S4 B4b: the
+    /// window reads the bar facts through `ApprovalPaint`).
+    #[cfg(test)]
     pub(crate) const fn session(&self) -> &ApprovalSession {
         &self.session
     }
@@ -164,12 +245,15 @@ impl ApprovalFlow {
         self.failure.as_deref()
     }
 
-    /// The status message.
+    /// The status message (the tests' recorders; the window reads `ApprovalPaint::status`).
+    #[cfg(test)]
     pub(crate) fn status(&self) -> Option<&str> {
         self.status.as_deref()
     }
 
-    /// A high-risk hold was let go before 2 s.
+    /// A high-risk hold was let go before 2 s (the tests' recorders; the window reads it as
+    /// a bar fact).
+    #[cfg(test)]
     pub(crate) const fn early_release(&self) -> bool {
         self.early_release
     }
@@ -187,6 +271,60 @@ impl ApprovalFlow {
     /// The view drawn.
     pub(crate) const fn view(&self) -> &ApprovalView {
         &self.view
+    }
+
+    /// What the window paints (2026-11-19, S4 B4b).
+    pub(crate) fn paint(&self) -> ApprovalPaint<'_> {
+        ApprovalPaint {
+            lang: self.lang,
+            view: &self.view,
+            status: self.status.as_deref(),
+            #[cfg(test)]
+            prepare: &self.session.gate.prepare,
+            ack_checked: self.session.gate.ack_checked,
+            interaction: self.session.interaction().status(),
+            holding: self.session.interaction().hold_source().is_some(),
+            ai: self.ai.as_ref(),
+            bar: BarSource {
+                lang: self.lang,
+                session: &self.session,
+                view: &self.view,
+                connect: self.connect.is_some(),
+                early_release: self.early_release,
+                status: self.status.as_deref(),
+            },
+        }
+    }
+
+    // ----- AI explanation (spec/06), beside the gate ----------------------------------------
+
+    /// The AI explanation, when the window has one.
+    pub(crate) const fn ai(&self) -> Option<&AiFlow> {
+        self.ai.as_ref()
+    }
+
+    /// The AI explanation to update (its panel state only: it holds no gate).
+    pub(crate) fn ai_mut(&mut self) -> Option<&mut AiFlow> {
+        self.ai.as_mut()
+    }
+
+    /// The AI explanation, taken when the window closes (spec/06 §3.2: a later result is
+    /// dropped).
+    pub(crate) fn take_ai(&mut self) -> Option<AiFlow> {
+        self.ai.take()
+    }
+
+    /// A High-risk request shows its warnings first: the AI text waits for the acknowledgement
+    /// checkbox (`held_for_ack`; read from the issued request and the gate, written to the AI
+    /// panel only). Returns whether the window has an AI explanation.
+    pub(crate) fn hold_ai_for_ack(&mut self) -> bool {
+        let risk = self.issued.as_ref().map(|request| request.display.risk);
+        let checked = self.session.gate.ack_checked;
+        let Some(ai) = self.ai.as_mut() else {
+            return false;
+        };
+        ai.panel.set_held(held_for_ack(risk, checked));
+        true
     }
 
     // ----- preparation ----------------------------------------------------------------------

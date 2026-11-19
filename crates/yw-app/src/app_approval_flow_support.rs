@@ -367,7 +367,7 @@ impl App {
     pub(crate) fn log_approval_call(&self, call: Call) {
         log_input(Logged::Call {
             call,
-            focus: self.evm.window.as_ref().map(|ui| ui.focus),
+            focus: self.approval_win.as_ref().map(|win| win.focus),
         });
     }
 }
@@ -802,11 +802,11 @@ fn assert_no_approval_window() {
 
 fn assert_hidden(fixture: &Fixture) {
     let app = fixture.app.borrow();
-    let ui = app.evm.window.as_ref().expect("window open");
+    let win = app.approval_win.as_ref().expect("window open");
     // Real Win32 reads, not the scripted ones.
-    assert!(ui.window.is_alive() && ui.window.is_hidden_or_minimized());
-    assert!(ui.panel.is_hidden_or_minimized());
-    assert!(!ui.window.is_foreground() && !ui.panel.is_foreground());
+    assert!(win.window.is_alive() && win.window.is_hidden_or_minimized());
+    assert!(win.panel.is_hidden_or_minimized());
+    assert!(!win.window.is_foreground() && !win.panel.is_foreground());
 }
 
 /// A3 self-test: a hidden host opens A01 that is never visible and never the foreground; every
@@ -856,19 +856,16 @@ fn hidden_approval_window_is_never_shown_and_the_seams_drive_it() {
     assert_hidden(&fixture);
     {
         let app = fixture.app.borrow();
-        let ui = app.evm.window.as_ref().expect("window open");
-        assert!(
-            ui.flow.issued().is_some(),
-            "issued at the first Ready display"
-        );
-        assert!(!ui.flow.view().high, "S2 is a Standard send");
-        assert_eq!(ui.flow.gate().ready_at_ms, START_MS, "the test clock");
+        let flow = app.evm.approval.as_ref().expect("window open");
+        assert!(flow.issued().is_some(), "issued at the first Ready display");
+        assert!(!flow.view().high, "S2 is a Standard send");
+        assert_eq!(flow.gate().ready_at_ms, START_MS, "the test clock");
         assert_eq!(
-            ui.flow.prepared().map(|prepared| prepared.sim_received_ms),
+            flow.prepared().map(|prepared| prepared.sim_received_ms),
             Some(START_MS),
             "the prepare fixture reads the same clock"
         );
-        assert!(!ui.flow.gate().is_foreground);
+        assert!(!flow.gate().is_foreground);
     }
     // The oracle answers the gate's foreground read although the real window is not foreground.
     set_signals(Some(Signals {
@@ -883,9 +880,9 @@ fn hidden_approval_window_is_never_shown_and_the_seams_drive_it() {
             .app
             .borrow()
             .evm
-            .window
+            .approval
             .as_ref()
-            .is_some_and(|ui| ui.flow.gate().is_foreground)
+            .is_some_and(|flow| flow.gate().is_foreground)
     );
     assert_eq!(
         take_log(),
@@ -906,8 +903,8 @@ fn hidden_approval_window_is_never_shown_and_the_seams_drive_it() {
     assert_hidden(&fixture);
     // 1 s later a physical Enter on `승인` approves once: one key job, no re-simulation.
     fixture.clock.advance(1_000);
-    if let Some(ui) = fixture.app().evm.window.as_mut() {
-        ui.focus = Focus::Approve;
+    if let Some(win) = fixture.app().approval_win.as_mut() {
+        win.focus = Focus::Approve;
     }
     assert_hidden(&fixture);
     fixture
@@ -943,7 +940,7 @@ fn hidden_approval_window_is_never_shown_and_the_seams_drive_it() {
     );
     // Consumed: the window closed (`finish_approval(Approved)`) and the main window had none to
     // raise (no main window in the fixture, so no `set_foreground` of it either).
-    assert!(fixture.app.borrow().evm.window.is_none());
+    assert!(fixture.app.borrow().evm.approval.is_none());
     assert!(!log.iter().any(|entry| matches!(
         entry,
         Logged::Effect {
@@ -973,7 +970,7 @@ fn a_refused_approval_window_rejects_with_app009() {
     fixture.enqueue_sepolia_send();
     {
         let app = fixture.app.borrow();
-        assert!(app.evm.window.is_none());
+        assert!(app.evm.approval.is_none());
         assert!(app.evm.queue.is_empty());
         assert!(app.evm.slots.is_empty(), "the send slot is free again");
         assert!(
@@ -1007,6 +1004,6 @@ fn the_outlet_records_a_dapp_answer() {
     let answers = outlet.answers();
     // No EVM account in the fixture: 4100 at once, no window (spec/05 §5).
     assert_eq!(answers, [Err(ProviderError::NoEvmAccount)]);
-    assert!(fixture.app.borrow().evm.window.is_none());
+    assert!(fixture.app.borrow().evm.approval.is_none());
     assert!(fixture.key_jobs().is_empty());
 }

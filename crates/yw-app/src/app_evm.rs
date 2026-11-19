@@ -399,8 +399,9 @@ pub struct EvmUi {
     pub show_hidden_tokens: bool,
     /// The S11 asset radios of hidden tokens are expanded (`숨긴 토큰 n개 보기`; session only).
     pub send_show_hidden: bool,
-    /// The approval window.
-    pub window: Option<crate::app_approval::ApprovalUi>,
+    /// The shown approval's flow state (2026-11-19, S4 B4b, spec/15 §11.4 S4: was `window:
+    /// Option<ApprovalUi>`, which also held the window; the shell state is `App.approval_win`).
+    pub approval: Option<crate::approval_flow::ApprovalFlow>,
     /// What the S12 receive QR encodes (session only, spec/04 §2.8).
     pub receive_qr: crate::ui::qr::EvmQrKind,
     /// The S10 network drop-down is open (2026-11-11; session only, closed by a choice).

@@ -283,24 +283,22 @@ fn approval_window_renders_a_fixture_dry_run() {
     pump(hold);
     {
         let state = app.borrow();
-        let window = state.evm.window.as_ref().expect("window open");
+        // 2026-11-19 (S4 B4b): the flow is read through its paint model `ApprovalPaint`, the
+        // layout is the shell's `ApprovalWin` (both were `EvmUi.window`).
+        let paint = state.evm.approval.as_ref().expect("window open").paint();
+        let win = state.approval_win.as_ref().expect("window open");
         assert!(matches!(
-            window.flow.gate().prepare,
+            paint.prepare,
             PrepareState::Ready(ReadyContent::Signing(_))
         ));
-        assert!(window.layout.is_some(), "the panel painted");
+        assert!(win.layout.is_some(), "the panel painted");
         println!(
             "fixture={name} title={:?} band={:?} blocks={} high={} blocked={}",
-            window.flow.view().blocks.first(),
-            window
-                .flow
-                .view()
-                .band
-                .as_ref()
-                .map(|band| band.head.clone()),
-            window.flow.view().blocks.len(),
-            window.flow.view().high,
-            window.flow.view().blocked
+            paint.view.blocks.first(),
+            paint.view.band.as_ref().map(|band| band.head.clone()),
+            paint.view.blocks.len(),
+            paint.view.high,
+            paint.view.blocked
         );
     }
     app.borrow_mut().close_approval_window();
@@ -318,11 +316,11 @@ fn within(inner: Rect, outer: Rect) -> bool {
 /// Paint statistics of A01 and its scrolling panel since the previous call, and the bar.
 fn take_stats(app: &Rc<RefCell<App>>) -> (PaintStats, PaintStats, Rect) {
     let state = app.borrow();
-    let window = state.evm.window.as_ref().expect("window open");
+    let win = state.approval_win.as_ref().expect("window open");
     (
-        window.window.take_paint_stats(),
-        window.panel.take_paint_stats(),
-        window.bottom.bar,
+        win.window.take_paint_stats(),
+        win.panel.take_paint_stats(),
+        win.bottom.bar,
     )
 }
 
@@ -341,9 +339,9 @@ fn approval_hold_repaints_only_the_bottom_bar() {
     assert!(
         app.borrow()
             .evm
-            .window
+            .approval
             .as_ref()
-            .is_some_and(|ui| ui.flow.view().high),
+            .is_some_and(|flow| flow.paint().view.high),
         "S3 is a high-risk approval"
     );
     app.borrow_mut().toggle_ack();
@@ -369,20 +367,18 @@ fn approval_hold_repaints_only_the_bottom_bar() {
         pump(250);
         let (painted, panel, bar) = take_stats(&app);
         let state = app.borrow();
-        let ui = state.evm.window.as_ref().expect("window open");
-        let held = ui.bar.held_ms;
+        let win = state.approval_win.as_ref().expect("window open");
+        let paint = state.evm.approval.as_ref().expect("window open").paint();
+        let held = win.bar.held_ms;
         println!("hold frame {frame}: held {held:?} window {painted:?} panel {panel:?}");
-        assert!(
-            ui.flow.session().interaction().hold_source().is_some(),
-            "the hold is under way"
-        );
+        assert!(paint.holding, "the hold is under way");
         assert!(painted.count >= 2, "the progress repaints");
         assert!(within(painted.area, bar), "only the bottom bar repaints");
         assert_eq!(panel.count, 0, "the panel never repaints during a hold");
         frames = frames.saturating_add(painted.count);
         #[cfg(debug_assertions)]
         if let Some(out) = out.as_ref() {
-            let capture = yw_win::ui::capture::capture_client(ui.window.hwnd()).unwrap();
+            let capture = yw_win::ui::capture::capture_client(win.window.hwnd()).unwrap();
             let path = out.join(format!("a01-hold-{frame}.bmp"));
             std::fs::write(&path, &capture.bmp).unwrap();
             println!("frame: {}", path.display());
@@ -395,10 +391,10 @@ fn approval_hold_repaints_only_the_bottom_bar() {
         });
     {
         let state = app.borrow();
-        let ui = state.evm.window.as_ref().expect("window open");
-        assert!(ui.flow.session().interaction().hold_source().is_none());
+        let paint = state.evm.approval.as_ref().expect("window open").paint();
+        assert!(!paint.holding);
         assert_eq!(
-            ui.flow.session().interaction().status(),
+            paint.interaction,
             crate::ui::interaction::InteractionStatus::Pending
         );
     }

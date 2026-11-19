@@ -790,6 +790,9 @@ pub struct App {
     pub(crate) cred_reads: Vec<(u16, CredField)>,
     pub(crate) placed: Placed,
     pub(crate) evm: crate::app_evm::EvmUi,
+    /// The approval window's shell state (2026-11-19, S4 B4b, spec/15 §11.4 S4): shown exactly
+    /// while `evm.approval` is (was part of `EvmUi.window`).
+    pub(crate) approval_win: Option<crate::app_approval::ApprovalWin>,
     pub(crate) sol: crate::app_sol::SolUi,
     pub(crate) btc: crate::app_btc::BtcUi,
     /// The Zcash tab (spec/12).
@@ -1241,6 +1244,7 @@ impl App {
             cred_reads: Vec::new(),
             placed: Placed::default(),
             evm: crate::app_evm::EvmUi::default(),
+            approval_win: None,
             sol: crate::app_sol::SolUi::default(),
             btc: crate::app_btc::BtcUi::default(),
             zec: crate::app_zec::ZecUi::default(),
@@ -2011,7 +2015,7 @@ impl App {
             Some(item) => Some(item.id.0),
             // An approval window without its queue item (not expected between messages): one
             // window like any other.
-            None => self.evm.window.is_some().then_some(DISPLAY - 1),
+            None => self.evm.approval.is_some().then_some(DISPLAY - 1),
         }
     }
 

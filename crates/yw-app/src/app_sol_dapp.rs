@@ -226,8 +226,8 @@ impl App {
         job: u64,
         result: Result<DappPreview, ErrorCode>,
     ) {
-        let site = match self.evm.window.as_ref() {
-            Some(window) if window.job() == job => match window.item() {
+        let site = match self.evm.approval.as_ref() {
+            Some(flow) if flow.job() == job => match flow.item() {
                 QueuedItem::Site(site) => site.clone(),
                 _ => return,
             },

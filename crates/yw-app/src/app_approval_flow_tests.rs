@@ -173,33 +173,32 @@ impl<'a> Rec<'a> {
         let app = self.fx.app.borrow();
         if let Some(id) = app
             .evm
-            .window
+            .approval
             .as_ref()
-            .and_then(|ui| ui.flow.issued().map(|request| request.id))
+            .and_then(|flow| flow.issued().map(|request| request.id))
         {
             self.issued = Some(id);
         }
         let mut line = format!("{} {step} | t={}", self.name, rel(self.fx.clock.peek()));
-        match app.evm.window.as_ref() {
-            None => line.push_str(" | win closed"),
-            Some(ui) => {
-                let gate = ui.flow.gate();
+        match (app.evm.approval.as_ref(), app.approval_win.as_ref()) {
+            (Some(flow), Some(win)) => {
+                let gate = flow.gate();
                 let _ = write!(
                     line,
                     " | win open status={:?} prep={} risk={} | gate ready={} ack={} sel={} \
                      submitting={} fg={} deadline={} | focus={:?} | status-text {}",
-                    ui.flow.session().interaction().status(),
+                    flow.session().interaction().status(),
                     prep_name(&gate.prepare),
-                    if ui.flow.view().blocked {
+                    if flow.view().blocked {
                         "blocked"
-                    } else if ui.flow.view().high {
+                    } else if flow.view().high {
                         "high"
                     } else {
                         "std"
                     },
                     rel(gate.ready_at_ms),
                     gate.ack_checked,
-                    ui.flow.connect().map_or_else(
+                    flow.connect().map_or_else(
                         || "-".to_owned(),
                         |connect| connect
                             .selected
@@ -210,10 +209,11 @@ impl<'a> Rec<'a> {
                     gate.submitting,
                     gate.is_foreground,
                     rel(gate.deadline_ms),
-                    ui.focus,
-                    status_key(ui),
+                    win.focus,
+                    status_key(flow),
                 );
             }
+            _ => line.push_str(" | win closed"),
         }
         let store = self
             .issued
@@ -302,11 +302,11 @@ fn prep_name(prepare: &PrepareState) -> String {
 }
 
 /// The catalogue key of the window's status message.
-fn status_key(ui: &super::ApprovalUi) -> &'static str {
-    let Some(status) = ui.flow.status() else {
+fn status_key(flow: &crate::approval_flow::ApprovalFlow) -> &'static str {
+    let Some(status) = flow.status() else {
         return "-";
     };
-    let lang = ui.flow.lang();
+    let lang = flow.lang();
     for (key, fact) in [
         ("SIM_CHANGED", text::SIM_CHANGED),
         ("SIM_RESIM_FAILED", text::SIM_RESIM_FAILED),
@@ -665,9 +665,9 @@ fn approve_by_risk(fx: &Fixture, rec: &mut Rec<'_>, t: u64) {
         .app
         .borrow()
         .evm
-        .window
+        .approval
         .as_ref()
-        .is_some_and(|ui| ui.flow.view().high);
+        .is_some_and(|flow| flow.view().high);
     if !high {
         at(fx, t + 1_000);
         click(fx);
@@ -676,8 +676,8 @@ fn approve_by_risk(fx: &Fixture, rec: &mut Rec<'_>, t: u64) {
     }
     fx.app().toggle_ack();
     rec.snap("ack");
-    if let Some(ui) = fx.app().evm.window.as_mut() {
-        ui.focus = Focus::Approve;
+    if let Some(win) = fx.app().approval_win.as_mut() {
+        win.focus = Focus::Approve;
     }
     at(fx, t + 1_000);
     key(fx, VK_RETURN, false);
@@ -876,9 +876,9 @@ fn shown_digest(fx: &Fixture) -> Option<(ApprovalId, [u8; 32])> {
     fx.app
         .borrow()
         .evm
-        .window
+        .approval
         .as_ref()
-        .and_then(|ui| ui.flow.issued().map(|request| (request.id, request.digest)))
+        .and_then(|flow| flow.issued().map(|request| (request.id, request.digest)))
 }
 
 fn signed_digest(rec: &Rec<'_>) -> Option<[u8; 32]> {
@@ -1069,9 +1069,9 @@ fn display_change_mid_hold() -> Vec<String> {
         .app
         .borrow()
         .evm
-        .window
+        .approval
         .as_ref()
-        .map_or(0, |ui| ui.flow.job());
+        .map_or(0, crate::approval_flow::ApprovalFlow::job);
     fx.app().on_simulating(job, START_MS + 3_500);
     rec.snap("display-changed");
     at(&fx, 4_000);
@@ -1269,9 +1269,9 @@ fn consume_app009_branches() -> Vec<String> {
         .app
         .borrow()
         .evm
-        .window
+        .approval
         .as_ref()
-        .and_then(|ui| ui.flow.prepared().map(|prepared| prepared.draft.clone()))
+        .and_then(|flow| flow.prepared().map(|prepared| prepared.draft.clone()))
         .unwrap();
     // A new id: the store issues an id once.
     let draft = yw_core::approval::ApprovalDraft {
@@ -1301,8 +1301,8 @@ fn blocked_is_never_consumed() -> Vec<String> {
     at(&fx, 1_500);
     click(&fx);
     rec.snap("click");
-    if let Some(ui) = fx.app().evm.window.as_mut() {
-        ui.focus = Focus::Approve;
+    if let Some(win) = fx.app().approval_win.as_mut() {
+        win.focus = Focus::Approve;
     }
     at(&fx, 2_600);
     key(&fx, VK_RETURN, false);
@@ -1358,9 +1358,9 @@ fn l3_site_deadline(main: bool, name: &'static str) -> Vec<String> {
         .app
         .borrow()
         .evm
-        .window
+        .approval
         .as_ref()
-        .map_or(0, |ui| ui.flow.gate().deadline_ms);
+        .map_or(0, |flow| flow.gate().deadline_ms);
     rec.fact("deadline", &format!("gate deadline={}", rel(deadline)));
     fx.clock.set(deadline);
     if main {
@@ -1391,9 +1391,9 @@ fn ui001_and_wc_label() -> Vec<String> {
         .app
         .borrow()
         .evm
-        .window
+        .approval
         .as_ref()
-        .and_then(|ui| ui.flow.prepared().map(|prepared| prepared.draft.clone()))
+        .and_then(|flow| flow.prepared().map(|prepared| prepared.draft.clone()))
         .unwrap();
     // A new id (the store issues an id once) and a title with a bidi override: the store's
     // own display check refuses it at issue (E-APP-009), before the E-UI-001 re-check.
@@ -1533,19 +1533,18 @@ fn issue_uses_one_instant() -> Vec<String> {
     fx.clock.set_step(0);
     rec.snap("ready");
     let app = fx.app.borrow();
-    let ui = app.evm.window.as_ref().unwrap();
-    let request = ui.flow.issued().unwrap();
+    let flow = app.evm.approval.as_ref().unwrap();
+    let request = flow.issued().unwrap();
     let queue_deadline = app.evm.queue.shown_deadline().unwrap_or(0);
-    let received = ui
-        .flow
+    let received = flow
         .prepared()
         .map_or(0, |prepared| prepared.sim_received_ms);
     let fact = format!(
         "sim received={} session ready={} gate deadline={} queue deadline={} issued(unix-base)={} \
          expires-issued={}",
         rel(received),
-        rel(ui.flow.gate().ready_at_ms),
-        rel(ui.flow.gate().deadline_ms),
+        rel(flow.gate().ready_at_ms),
+        rel(flow.gate().deadline_ms),
         rel(queue_deadline),
         rel(request.created_unix_ms - fx.clock.unix_at(0)),
         request.expires_unix_ms - request.created_unix_ms,
@@ -1624,9 +1623,9 @@ fn l1_press_past_deadline(press: &'static str, name: &'static str) -> Vec<String
     let first = rec.issued;
     ev(&fx, InteractionEvent::Tick);
     // The buttons as painted (the hidden host never paints): `거부` at (460, 640, 120, 40).
-    if let Some(ui) = fx.app().evm.window.as_mut() {
-        ui.bottom.reject = yw_win::ui::Rect::new(460, 640, 120, 40);
-        ui.bottom.approve = yw_win::ui::Rect::new(600, 640, 120, 40);
+    if let Some(win) = fx.app().approval_win.as_mut() {
+        win.bottom.reject = yw_win::ui::Rect::new(460, 640, 120, 40);
+        win.bottom.approve = yw_win::ui::Rect::new(600, 640, 120, 40);
     }
     at(&fx, 121_000);
     let _ = flow_support::take_log();
@@ -1657,10 +1656,9 @@ fn l1_press_past_deadline(press: &'static str, name: &'static str) -> Vec<String
         .and_then(|id| app.evm.store.state(id))
         .map_or_else(|| "-".to_owned(), |state| format!("{state:?}"));
     let pressed = app
-        .evm
-        .window
+        .approval_win
         .as_ref()
-        .and_then(|ui| ui.pressed)
+        .and_then(|win| win.pressed)
         .map_or_else(|| "-".to_owned(), |pressed| format!("{pressed:?}"));
     drop(app);
     let shown = shown_request(&fx);
@@ -1749,9 +1747,9 @@ fn l2_connect_chain_change(end: &'static str, name: &'static str) -> Vec<String>
         }
         "mouse-reject" => {
             // The buttons as painted (the hidden host never paints): `거부` at (460, 640, 120, 40).
-            if let Some(ui) = fx.app().evm.window.as_mut() {
-                ui.bottom.reject = yw_win::ui::Rect::new(460, 640, 120, 40);
-                ui.bottom.approve = yw_win::ui::Rect::new(600, 640, 120, 40);
+            if let Some(win) = fx.app().approval_win.as_mut() {
+                win.bottom.reject = yw_win::ui::Rect::new(460, 640, 120, 40);
+                win.bottom.approve = yw_win::ui::Rect::new(600, 640, 120, 40);
             }
             at(&fx, 2_000);
             let down = fx
@@ -1798,8 +1796,8 @@ fn connect_toggle_layout() -> Vec<String> {
     let mut rec = Rec::new("connect_toggle_layout", &fx, Some(&outlet));
     connect_window(&fx, &outlet, &mut rec);
     let row = |fx: &Fixture, index: usize| {
-        fx.app.borrow().evm.window.as_ref().and_then(|ui| {
-            ui.layout.as_ref().and_then(|layout| {
+        fx.app.borrow().approval_win.as_ref().and_then(|win| {
+            win.layout.as_ref().and_then(|layout| {
                 layout
                     .accounts
                     .iter()

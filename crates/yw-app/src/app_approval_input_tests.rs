@@ -284,9 +284,9 @@ fn open(kind: Kind, oracle: Signals, tag: &str, fixed: bool) -> Opened {
                 .app
                 .borrow()
                 .evm
-                .window
+                .approval
                 .as_ref()
-                .map_or(0, |ui| ui.flow.job());
+                .map_or(0, crate::approval_flow::ApprovalFlow::job);
             fx.app().on_simulating(job, START_MS);
             None
         }
@@ -328,20 +328,23 @@ fn open(kind: Kind, oracle: Signals, tag: &str, fixed: bool) -> Opened {
     fx.clock.set(START_MS + ARMED_AT);
     let issued = {
         let mut app = fx.app();
-        let ui = app.evm.window.as_mut().expect("the window is open");
+        let win = app.approval_win.as_mut().expect("the window is open");
         if fixed {
             let layout = layout();
-            ui.panel.set_rect(BOTTOM.panel);
-            ui.panel
+            win.panel.set_rect(BOTTOM.panel);
+            win.panel
                 .set_vscroll(PANEL_THUMB, BOTTOM.panel.h, layout.height);
-            ui.scroll = PANEL_SCROLL_START;
-            ui.bottom = BOTTOM;
-            ui.layout = Some(layout);
-            if let Some(ai) = ui.ai.as_mut() {
+            win.scroll = PANEL_SCROLL_START;
+            win.bottom = BOTTOM;
+            win.layout = Some(layout);
+            if let Some(ai) = win.ai.as_mut() {
                 ai.scroll = AI_SCROLL_START;
             }
         }
-        ui.flow.issued().map(|request| request.id)
+        app.evm
+            .approval
+            .as_ref()
+            .and_then(|flow| flow.issued().map(|request| request.id))
     };
     let _ = fx.rpc_jobs();
     let _ = fx.key_jobs();
@@ -381,16 +384,16 @@ fn forward(fx: &Fixture, target: Target) -> Forward {
 /// is not borrowed (the arms' own window reads go through the oracle).
 fn take_a01(fx: &Fixture) -> Window {
     let mut held = spare_window();
-    if let Some(ui) = fx.app().evm.window.as_mut() {
-        std::mem::swap(&mut ui.window, &mut held);
+    if let Some(win) = fx.app().approval_win.as_mut() {
+        std::mem::swap(&mut win.window, &mut held);
     }
     held
 }
 
 /// Puts A01 back while its window is still open (else dropping it destroys it).
 fn put_back(fx: &Fixture, mut held: Window) {
-    if let Some(ui) = fx.app().evm.window.as_mut() {
-        std::mem::swap(&mut ui.window, &mut held);
+    if let Some(win) = fx.app().approval_win.as_mut() {
+        std::mem::swap(&mut win.window, &mut held);
     }
 }
 
@@ -530,29 +533,27 @@ fn after(opened: &Opened, issued: Option<ApprovalId>) -> String {
     let outlet = opened.outlet.as_ref();
     let now = fx.clock.peek();
     let app = fx.app.borrow();
-    let mut line = match app.evm.window.as_ref() {
-        None => "win closed".to_owned(),
-        Some(ui) => {
-            let gate = ui.flow.gate();
+    let mut line = match (app.evm.approval.as_ref(), app.approval_win.as_ref()) {
+        (Some(flow), Some(win)) => {
+            let gate = flow.gate();
             format!(
                 "win open status={:?} ready={} fg={} ack={} hold={} early={} focus={:?} \
                  pressed={} raw={} sel={} scroll={} ai-scroll={}",
-                ui.flow.session().interaction().status(),
+                flow.session().interaction().status(),
                 rel(gate.ready_at_ms),
                 bit(gate.is_foreground),
                 bit(gate.ack_checked),
-                bit(ui
-                    .flow
+                bit(flow
                     .session()
                     .interaction()
                     .hold_remaining_ms(now)
                     .is_some()),
-                bit(ui.flow.early_release()),
-                ui.focus,
-                ui.pressed
+                bit(flow.early_release()),
+                win.focus,
+                win.pressed
                     .map_or_else(|| "-".to_owned(), |pressed| format!("{pressed:?}")),
-                bit(ui.flow.raw_open()),
-                ui.flow.connect().map_or_else(
+                bit(flow.raw_open()),
+                flow.connect().map_or_else(
                     || "-".to_owned(),
                     |connect| connect
                         .selected
@@ -561,17 +562,18 @@ fn after(opened: &Opened, issued: Option<ApprovalId>) -> String {
                         .collect()
                 ),
                 if opened.fixed {
-                    against(ui.scroll, PANEL_SCROLL_START, &PANEL_NAMED)
+                    against(win.scroll, PANEL_SCROLL_START, &PANEL_NAMED)
                 } else {
-                    against(ui.scroll, 0, &[])
+                    against(win.scroll, 0, &[])
                 },
-                ui.ai.as_ref().map_or("-", |ai| if opened.fixed {
+                win.ai.as_ref().map_or("-", |ai| if opened.fixed {
                     against(ai.scroll, AI_SCROLL_START, &AI_NAMED)
                 } else {
                     against(ai.scroll, 0, &[])
                 }),
             )
         }
+        _ => "win closed".to_owned(),
     };
     let store = issued
         .and_then(|id| app.evm.store.state(id))
@@ -885,9 +887,9 @@ fn run_row(row: &Row, oracle: &Oracle, serial: usize) -> String {
         // The stand-in AI body's scroll bar: what the thumb codes read.
         spare.set_vscroll(AI_THUMB, 100, 10_000);
     }
-    if let Some(ui) = fx.app().evm.window.as_mut() {
-        ui.focus = row.focus;
-        ui.pressed = row.pressed;
+    if let Some(win) = fx.app().approval_win.as_mut() {
+        win.focus = row.focus;
+        win.pressed = row.pressed;
     }
     let replies_seen: Vec<Reply> = row
         .msgs
@@ -962,9 +964,9 @@ impl<'a> Rec<'a> {
             .app
             .borrow()
             .evm
-            .window
+            .approval
             .as_ref()
-            .and_then(|ui| ui.flow.issued().map(|request| request.id))
+            .and_then(|flow| flow.issued().map(|request| request.id))
         {
             self.issued = Some(id);
         }
@@ -980,8 +982,8 @@ impl<'a> Rec<'a> {
 
 /// The center of A01's `승인` button as last painted.
 fn approve_center(fx: &Fixture) -> (i32, i32) {
-    fx.app.borrow().evm.window.as_ref().map_or((0, 0), |ui| {
-        let rect = ui.bottom.approve;
+    fx.app.borrow().approval_win.as_ref().map_or((0, 0), |win| {
+        let rect = win.bottom.approve;
         (rect.x + rect.w / 2, rect.y + rect.h / 2)
     })
 }
@@ -1599,7 +1601,7 @@ fn approve_enter_is_physical_and_not_injected() {
     for read in READS {
         assert!(!code.contains(read), "{read} in app_approval.rs");
     }
-    assert!(code.contains("TrustedSignals::sample_foreground(&ui.window).foreground()"));
+    assert!(code.contains("TrustedSignals::sample_foreground(&win.window).foreground()"));
     let stray = item(&map, "pub const fn stray_press(", 0);
     assert!(stray.contains("Some(InteractionEvent::OtherPress)"));
     for approving in ["ApproveActivated", "PointerPressed", "SpacePressed"] {
@@ -1779,7 +1781,7 @@ fn approving_input_is_built_only_by_the_mapper() {
         "run_step delivers the sampled step"
     );
     assert!(
-        item(&code, "    fn interaction(", 4).contains("ui.flow.on_event(now, foreground, event)"),
+        item(&code, "    fn interaction(", 4).contains("flow.on_event(now, foreground, event)"),
         "interaction() hands the event to the flow"
     );
     let flow = found
@@ -1799,8 +1801,16 @@ fn approving_input_is_built_only_by_the_mapper() {
 /// `can_approve` takes the gate and the time only. 2026-11-19 (S4 B4a, plan §4.4 S3): extended to
 /// the flow module `approval_flow.rs`, which holds the gate: it names no window (`yw_win`,
 /// `Window`, `invalidate`, `create_window`, the timer, the Win32 foreground and flash calls), and
-/// its only `set_foreground(` is the gate's own (`self.session.set_foreground(`).
+/// its only `set_foreground(` is the gate's own (`self.session.set_foreground(`). 2026-11-19 (S4
+/// B4b): `AiUi` split into the flow's `AiFlow` (panel state, serial, host, model, kind) and the
+/// shell's `AiBody` (body child, scroll): neither holds a gate type, `AiFlow` has no methods of its
+/// own, and the flow's AI accessors (`ai`, `ai_mut`, `take_ai`) name no session or gate; the
+/// shell state `ApprovalWin` holds no session, gate, flow or request.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the window's AI functions, then the flow module and the shell state"
+)]
 fn ai_never_touches_the_gate() {
     let code = approval_production();
     // Every `fn ai_*` of any visibility (2026-11-18, A5 review: the scan matched private
@@ -1845,13 +1855,17 @@ fn ai_never_touches_the_gate() {
     for head in [
         "    pub(crate) fn on_llm_done(",
         "    fn llm_busy(",
-        "struct AiUi {",
+        "struct AiBody {",
     ] {
         let indent = if head.starts_with("struct") { 0 } else { 4 };
         let body = item(&code, head, indent);
         for banned in ["session", "gate", "interaction(", "can_approve"] {
             assert!(!body.contains(banned), "{banned} in {head}");
         }
+    }
+    let shell = item(&code, "pub struct ApprovalWin {", 0);
+    for banned in ["Session", "Gate", "Flow", "ApprovalRequest", "Approved"] {
+        assert!(!shell.contains(banned), "{banned} in ApprovalWin");
     }
     let panel = code_only(PANEL_SOURCE);
     assert!(panel.contains("pub struct AiPanel"), "the engine AI panel");
@@ -1891,5 +1905,24 @@ fn ai_never_touches_the_gate() {
         flow.matches("self.session.set_foreground(").count(),
         "only the gate's foreground flag"
     );
+    assert!(!flow.contains("impl AiFlow"), "AiFlow has no methods");
+    for (head, indent) in [
+        ("pub struct AiFlow {", 0),
+        ("    pub(crate) const fn ai(", 4),
+        ("    pub(crate) fn ai_mut(", 4),
+        ("    pub(crate) fn take_ai(", 4),
+    ] {
+        let body = item(&flow, head, indent);
+        for banned in [
+            "session",
+            "gate",
+            "Session",
+            "Gate",
+            "interaction",
+            "can_approve",
+        ] {
+            assert!(!body.contains(banned), "{banned} in {head}");
+        }
+    }
     assert!(flow.contains("self.session.set_foreground("));
 }

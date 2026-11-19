@@ -1679,7 +1679,7 @@ mod tests {
         // The refresh after the unlock (meta loaded) drains the queue: no window opens.
         app.sync_browser();
         assert!(app.evm.queue.is_empty());
-        assert!(app.evm.window.is_none());
+        assert!(app.evm.approval.is_none());
         // The same queued request in a verified session reaches its preflight checks normally.
         app.mode = AppMode::Unlocked {
             alt_passphrase: false,

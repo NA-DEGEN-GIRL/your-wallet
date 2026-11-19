@@ -1725,9 +1725,9 @@ impl App {
     fn on_sol_previewed(&mut self, result: PreviewResult) {
         let matches = self
             .evm
-            .window
+            .approval
             .as_ref()
-            .is_some_and(|window| window.job() == result.job);
+            .is_some_and(|flow| flow.job() == result.job);
         if !matches {
             return;
         }
