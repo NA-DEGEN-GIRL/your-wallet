@@ -258,19 +258,6 @@ fn zec_key_held(
         })
 }
 
-fn now_unix_ms() -> u64 {
-    // S4 A3 review (2026-11-18): tests read the approval test clock here too.
-    #[cfg(test)]
-    if let Some(now) = crate::app_approval::flow_support::clock_now_unix_ms() {
-        return now;
-    }
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-        })
-}
-
 impl App {
     /// The Zcash tab is selected.
     #[must_use]
@@ -810,7 +797,7 @@ impl App {
         self.zec.job = self.zec.job.wrapping_add(1);
         self.zec.refreshing = true;
         self.zec.review_after = review;
-        self.zec.next_refresh_ms = yw_win::time::monotonic_ms().saturating_add(REFRESH_MS);
+        self.zec.next_refresh_ms = self.clock.now_ms().saturating_add(REFRESH_MS);
         let sent = self.rpc(RpcJob::Zec(Box::new(ZecRpcJob::Refresh {
             job: self.zec.job,
             network: account.network,
@@ -1026,7 +1013,7 @@ impl App {
             &item.plan,
             item.first_time,
         ) {
-            Ok(draft) => self.show_ready_draft_at(draft, None, now_unix_ms()),
+            Ok(draft) => self.show_ready_draft_at(draft, None, self.clock.now_unix_ms()),
             Err(_) => self.show_failure(
                 ErrorCode::App009,
                 false,
@@ -1050,7 +1037,7 @@ impl App {
         self.key(KeyJob::Zec(Box::new(ZecKeyJob::Sign {
             approved: Box::new(approved),
             plan: Box::new(item.plan.clone()),
-            now_unix_ms: now_unix_ms(),
+            now_unix_ms: self.clock.now_unix_ms(),
         })));
     }
 

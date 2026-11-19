@@ -576,7 +576,7 @@ yw-app/src/app_chain_sites.rs fn tests::first_round 04306c20a80e94e2 mutable
 yw-app/src/app_chain_sites.rs fn tests::send_answer_text ccb3778853d9de98 mutable
 yw-app/src/app_chain_sites.rs fn tests::texts 11b8816d8c079ba3 mutable
 yw-app/src/app_chain_sites.rs fn tests::recorded 7de0bd9a35da0a15 mutable
-yw-app/src/app_chain_sites.rs fn tests::queued_sol_tx 3ec4244587527f86 mutable
+yw-app/src/app_chain_sites.rs fn tests::queued_sol_tx f6e9014b39192369 mutable
 yw-app/src/app_chain_sites.rs fn tests::answers 9fbce566d9ec14e0 mutable
 yw-app/src/app_chain_sites.rs fn tests::evm_account d2e5c67684eb4e77 mutable
 yw-app/src/app_chain_sites.rs fn tests::evm_grant ea24f4cc0064fab0 mutable
@@ -597,11 +597,7 @@ yw-app/src/app_approval_flow_support.rs enum Fx ffa00c162ebdcd80 mutable
 yw-app/src/app_approval_flow_support.rs impl Fx 5780bb8876d9bef9 mutable
 yw-app/src/app_approval_flow_support.rs enum Call b3313624a833ab14 mutable
 yw-app/src/app_approval_flow_support.rs enum Logged ae6432a5c75d1885 mutable
-yw-app/src/app_approval_flow_support.rs invoke thread_local! a934fad3302d9482 mutable
-yw-app/src/app_approval_flow_support.rs fn set_clock 15d5825088343b8a mutable
-yw-app/src/app_approval_flow_support.rs fn installed_clock 616d3de681d85290 mutable
-yw-app/src/app_approval_flow_support.rs fn clock_now_ms 3c2db355bc49d441 mutable
-yw-app/src/app_approval_flow_support.rs fn clock_now_unix_ms 7ea45ef4b3eb7102 mutable
+yw-app/src/app_approval_flow_support.rs invoke thread_local! 594660e1d318d18c mutable
 yw-app/src/app_approval_flow_support.rs fn set_host 8e0cbcb0c1b76f1b mutable
 yw-app/src/app_approval_flow_support.rs fn host a16eb7d4d7534ff6 mutable
 yw-app/src/app_approval_flow_support.rs fn set_signals e3773672b0b22663 mutable
@@ -615,8 +611,8 @@ yw-app/src/app_approval_flow_support.rs fn foreground_request ad3d4772557fd0fa m
 yw-app/src/app_approval_flow_support.rs fn fail_open 1a69612a6c823361 mutable
 yw-app/src/app_approval_flow_support.rs impl App 16478a54deb5c265 mutable
 yw-app/src/app_approval_flow_support.rs struct Fixture d7ff65971806330f mutable
-yw-app/src/app_approval_flow_support.rs impl Fixture 2f2725a88e0ddb73 mutable
-yw-app/src/app_approval_flow_support.rs impl DropforFixture a0d3a6f1f6d76fcf mutable
+yw-app/src/app_approval_flow_support.rs impl Fixture a0562a84cc573b6a mutable
+yw-app/src/app_approval_flow_support.rs impl DropforFixture 0e42d120bf36b5a3 mutable
 yw-app/src/app_approval_flow_support.rs struct Outlet 947b36a31ad28718 mutable
 yw-app/src/app_approval_flow_support.rs impl Outlet eac19435d4f3f4ca mutable
 yw-app/src/app_approval_flow_support.rs fn assert_no_approval_window 386076c279d350dc mutable

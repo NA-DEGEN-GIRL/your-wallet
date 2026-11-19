@@ -28,7 +28,7 @@ impl App {
     /// edit by id, and its `_ => {}` swallowed every other edit's change; nothing handles those
     /// now either.
     pub(crate) fn on_evm_edit(&mut self, field: EditField, text: &str) -> bool {
-        let now = yw_win::time::monotonic_ms();
+        let now = self.clock.now_ms();
         match field {
             EditField::EvmSendTo | EditField::EvmSendAmount => {
                 let form = &mut self.evm.send;

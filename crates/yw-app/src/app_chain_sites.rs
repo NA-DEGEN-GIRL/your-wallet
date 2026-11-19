@@ -112,17 +112,6 @@ pub const fn default_protocol(script_type: ScriptType) -> BtcMessageProtocol {
     }
 }
 
-fn now_unix_ms() -> u64 {
-    // S4 A3 review (2026-11-18): tests read the approval test clock here too.
-    #[cfg(test)]
-    if let Some(now) = crate::app_approval::flow_support::clock_now_unix_ms() {
-        return now;
-    }
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(0))
-}
-
 /// The answer of a signed chain message (spec/05 §3.6 result shapes).
 #[must_use]
 pub fn chain_answer_value(answer: &ChainAnswer, signature: &ChainSignature) -> Option<Value> {
@@ -516,7 +505,7 @@ impl App {
     /// accounts of now (4100 `Unauthorized` when one is gone, e.g. after a Bitcoin network
     /// change while the window was open) and the 256-grant limit (4100 `TooManySites`).
     pub(crate) fn chain_connect_approved(&mut self, site: &SiteRequest, choices: &[ConnectChoice]) {
-        let now = now_unix_ms();
+        let now = self.clock.now_unix_ms();
         let Some(browser) = self.browser.as_ref() else {
             return;
         };
@@ -767,7 +756,7 @@ impl App {
                         message: message.clone(),
                         sign_in: *sign_in,
                     },
-                    now_unix_ms(),
+                    self.clock.now_unix_ms(),
                 )
                 .ok()
             }
@@ -985,7 +974,7 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    use super::{ChainAnswer, ConnectChoice, chain_answer_value, default_protocol, now_unix_ms};
+    use super::{ChainAnswer, ConnectChoice, chain_answer_value, default_protocol};
     use crate::apikeys::ApiKeys;
     use crate::app::{App, Paths};
     use crate::app_approval::ConnectState;
@@ -2895,7 +2884,7 @@ mod tests {
 
     /// Sends `sol_signTransaction` of [`sol_tx`] on `conn` and returns the queued request.
     fn queued_sol_tx(app: &App, events: &EventQueue, conn: u64, n: u8) -> SiteRequest {
-        let deadline = now_unix_ms() + 600_000;
+        let deadline = app.clock.now_unix_ms() + 600_000;
         let frame = format!(
             concat!(
                 r#"{{"namespace":"your-wallet","version":1,"role":"extension","kind":"request","#,

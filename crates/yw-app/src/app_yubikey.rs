@@ -1887,7 +1887,7 @@ impl App {
                 self.refresh();
             }
             YkOutcome::Removed(Err(error)) => {
-                self.password_failure(error, yw_win::time::monotonic_ms());
+                self.password_failure(error, self.clock.now_ms());
             }
             YkOutcome::RemoveBusy(_) => {
                 // W03 shows why; nothing was removed.
@@ -1966,7 +1966,7 @@ impl App {
             self.set_mode(AppMode::Unlocked {
                 alt_passphrase: false,
             });
-            self.idle.input(yw_win::time::monotonic_ms());
+            self.idle.input(self.clock.now_ms());
             if let Ok((_, enrolled)) = result {
                 let bitcoin = enrolled
                     .record

@@ -3896,28 +3896,6 @@ impl BtcUi {
 
 // ----- App glue ---------------------------------------------------------------------------------
 
-fn now_ms() -> u64 {
-    // S4 A3 review (2026-11-18): tests read the approval test clock here too.
-    #[cfg(test)]
-    if let Some(now) = crate::app_approval::flow_support::clock_now_ms() {
-        return now;
-    }
-    yw_win::time::monotonic_ms()
-}
-
-fn now_unix_ms() -> u64 {
-    // S4 A3 review (2026-11-18): tests read the approval test clock here too.
-    #[cfg(test)]
-    if let Some(now) = crate::app_approval::flow_support::clock_now_unix_ms() {
-        return now;
-    }
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-        })
-}
-
 fn layout_seed() -> Option<[u8; 32]> {
     let mut seed = [0_u8; 32];
     yw_core::entropy::fill_random(&mut seed).ok()?;
@@ -3937,8 +3915,8 @@ impl crate::app::App {
                 journal_closed: self.sidecar.journal_closed,
                 unlocked: matches!(self.mode, crate::app::AppMode::Unlocked { .. }),
                 has_mnemonic: self.keys.has_mnemonic,
-                now_ms: now_ms(),
-                now_unix_ms: now_unix_ms(),
+                now_ms: self.clock.now_ms(),
+                now_unix_ms: self.clock.now_unix_ms(),
             };
             call(&mut self.btc, &ctx)
         };
@@ -4362,7 +4340,7 @@ impl crate::app::App {
             return;
         };
         match BtcUi::draft(self.approval_lang(), item, id) {
-            Ok(draft) => self.show_ready_draft_at(draft, None, now_unix_ms()),
+            Ok(draft) => self.show_ready_draft_at(draft, None, self.clock.now_unix_ms()),
             Err(code) => self.show_failure(code, false, code.text_in(self.approval_lang())),
         }
     }
@@ -4451,8 +4429,8 @@ impl crate::app::App {
             journal_closed: self.sidecar.journal_closed,
             unlocked: matches!(self.mode, crate::app::AppMode::Unlocked { .. }),
             has_mnemonic: self.keys.has_mnemonic,
-            now_ms: now_ms(),
-            now_unix_ms: now_unix_ms(),
+            now_ms: self.clock.now_ms(),
+            now_unix_ms: self.clock.now_unix_ms(),
         }
     }
 }

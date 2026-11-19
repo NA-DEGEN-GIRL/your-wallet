@@ -278,20 +278,6 @@ impl HcUi {
     }
 }
 
-fn now_unix_ms() -> u64 {
-    // S4 A3 review (2026-11-18): tests read the approval test clock here too.
-    #[cfg(test)]
-    if let Some(now) = crate::app_approval::flow_support::clock_now_unix_ms() {
-        return now;
-    }
-    u64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |elapsed| elapsed.as_millis()),
-    )
-    .unwrap_or(0)
-}
-
 impl App {
     /// The S-HC checks of a dApp-requested Hyperliquid transfer (spec/11 §7): the recipient check
     /// of its `destination` (own accounts, address book, look-alikes — the form's
@@ -380,7 +366,7 @@ impl App {
             .is_none_or(|(net, _)| *net != network);
         self.hypercore.job = self.hypercore.job.wrapping_add(1);
         self.hypercore.loading = true;
-        self.hypercore.loaded_ms = Some(yw_win::time::monotonic_ms());
+        self.hypercore.loaded_ms = Some(self.clock.now_ms());
         let job = HcRpcJob::Load {
             job: self.hypercore.job,
             endpoint: self.hc_endpoint(network),
@@ -841,7 +827,7 @@ impl App {
         let Some((account, signer, _)) = self.selected_account() else {
             return;
         };
-        let action = HcAction::new(self.hc_network(), now_unix_ms(), payload);
+        let action = HcAction::new(self.hc_network(), self.clock.now_unix_ms(), payload);
         if action.validate().is_err() {
             self.hypercore.form.error =
                 Some(text::BAD_ACTION.get(self.settings.language).to_owned());
@@ -889,7 +875,7 @@ impl App {
         };
         match yw_core::hypercore::display::build_hypercore_request(self.approval_lang(), id, &input)
         {
-            Ok(draft) => self.show_ready_draft_at(draft, None, now_unix_ms()),
+            Ok(draft) => self.show_ready_draft_at(draft, None, self.clock.now_unix_ms()),
             Err(_) => self.show_failure(
                 crate::errors::ErrorCode::App009,
                 false,

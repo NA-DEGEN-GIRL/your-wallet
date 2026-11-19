@@ -428,8 +428,8 @@ impl App {
         if let Some(mut handle) = self.wc.handle.take() {
             let _ = handle.send(WcCommand::Shutdown);
             if let Some(thread) = handle.thread.take() {
-                let deadline = yw_win::time::monotonic_ms().saturating_add(1_000);
-                while !thread.is_finished() && yw_win::time::monotonic_ms() < deadline {
+                let deadline = self.clock.now_ms().saturating_add(1_000);
+                while !thread.is_finished() && self.clock.now_ms() < deadline {
                     std::thread::sleep(std::time::Duration::from_millis(10));
                 }
                 if thread.is_finished() {

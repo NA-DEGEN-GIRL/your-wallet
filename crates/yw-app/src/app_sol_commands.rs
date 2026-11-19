@@ -30,7 +30,7 @@ impl App {
     /// not one of them. A send-form edit is validated by the send timer (`App::on_send_timer`):
     /// at once when the text is a whole address or amount, after the typing pause otherwise.
     pub(crate) fn on_sol_edit(&mut self, field: EditField, text: &str) -> bool {
-        let now = yw_win::time::monotonic_ms();
+        let now = self.clock.now_ms();
         match field {
             EditField::SolSendTo => {
                 if self.sol.send.moving.is_none() {

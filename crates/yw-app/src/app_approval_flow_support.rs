@@ -1,33 +1,26 @@
 //! Approval flow test seams and fixture (2026-11-18, S4 A3; spec/15 §11.4 S4, spec/09 §2.2).
 //!
 //! `cfg(test)` only: release builds compile none of this, and the production functions that
-//! read it (every `now_ms`/`now_unix_ms` wrapper of the App, a few inline reads, the A01
-//! trusted-signal reads and Win32 side effects, `open_approval`) behave exactly as before while
-//! no seam is installed. Every seam is a thread-local of the test thread, set by [`Fixture`] and
-//! cleared when it drops:
+//! read it (the A01 trusted-signal reads and Win32 side effects, `open_approval`) behave exactly
+//! as before while no seam is installed. Every seam is a thread-local of the test thread, set by
+//! [`Fixture`] and cleared when it drops:
 //!
-//! - `TEST_CLOCK`: one [`TestClock`] (manual, or stepping by a fixed amount at every read)
-//!   shared by the App wrappers, the prepare fixture and the test `BrowserCore`s, so
-//!   `sim_received_ms`, the site deadline and the App's own reads have one base (S4 critique
-//!   A-9/B-19). B1a/B1b replace it with the injected `Clock`. Since S4 B1a (2026-11-19) the
-//!   fixture's App reads the same `TestClock` as its injected clock ([`App::with_clock`]): the
-//!   wrappers of `app`, `app_approval`, `app_card`, `app_browser`, `app_evm` and `app_sol` and
-//!   the two `app_sol_dapp` reads and the EVM connect grant time of `app_browser` became
-//!   `self.clock` reads at the same lines, and the test
-//!   `BrowserCore`s take the App's clock (before, `core_clock()`, which returned the installed
-//!   test clock or `SystemClock`); `TEST_CLOCK` now serves only the B1b wrappers below. The
-//!   wrappers (before B1a):
-//!   `now_ms`/`now_unix_ms` of `app_approval`, `app_card`, `app_browser`, `app_evm`, `app`,
-//!   `app_sol` (plan §4.5), and since the A3 review (2026-11-18) also those of `app_chain_sites`
-//!   (SOL/BTC connect grant time, SIWS check), `app_btc` (its `BtcCtx` times: fee-quote
-//!   freshness), `app_hypercore` (action nonce), `app_zec`, `app_book`, `app_received` and
-//!   `app_reset` (`every_app_time_wrapper_reads_the_test_clock`). Inline reads: the consume
-//!   time of `app_sol_dapp` and its tracking tick after a broadcast, and the EVM connect grant
-//!   time in `app_browser`. Still on the real clock under a fixture (not on an approval path; B1b
-//!   converts them): form-edit times (`app_evm_commands`, `app_sol_commands`), refresh and wait
-//!   timers (`app_hypercore` `loaded_ms`, `app_zec`, `app_received`, `app_reset`,
-//!   `app_rpc_import`, `app_extension`, `ui/screens_*`), `app_sidecar`'s backup time,
-//!   `app_yubikey`'s password and idle times and `app_walletconnect`'s join wait.
+//! - [`TestClock`] (manual, or stepping by a fixed amount at every read) is not a seam since S4
+//!   B1b (2026-11-19): the fixture's App gets it as its injected clock ([`App::with_clock`]), and
+//!   the prepare fixture and the test `BrowserCore`s read the same `Arc`, so `sim_received_ms`,
+//!   the site deadline and the App's own reads have one base (S4 critique A-9/B-19). Before: S4
+//!   A3 (2026-11-18) installed it as the thread-local `TEST_CLOCK`, which every App
+//!   `now_ms`/`now_unix_ms` wrapper (18, `every_app_time_wrapper_reads_the_test_clock`) and a few
+//!   inline reads read first, and the test `BrowserCore`s got it from `core_clock()`; S4 B1a
+//!   (2026-11-19) injected it and turned the wrappers and inline reads of `app`, `app_approval`,
+//!   `app_card`, `app_browser`, `app_evm`, `app_sol` and `app_sol_dapp` into `self.clock` reads;
+//!   S4 B1b turned the rest into `self.clock` reads at their lines (the wrappers of
+//!   `app_chain_sites`, `app_btc`, `app_hypercore`, `app_zec`, `app_book`, `app_received` and
+//!   `app_reset`, and the reads that were still on the real clock under a fixture: form-edit
+//!   times of `app_evm_commands`, `app_sol_commands` and `ui/screens_hypercore`, the refresh and
+//!   wait timers of `app_hypercore`, `app_zec`, `app_received` and `app_reset`, `app_sidecar`'s
+//!   journal-reset time, `app_yubikey`'s password and idle times and `app_walletconnect`'s join
+//!   wait) and removed `TEST_CLOCK` (`app_time_reads_go_through_the_clock`).
 //! - `TEST_APPROVAL_HOST`: [`HostMode::Hidden`] creates A01, its panel and AI body as hidden
 //!   windows and skips every call that could show or activate one (`center_on`, `show`,
 //!   `set_foreground`, `flash`, `set_focus`; capture is still taken and released);
@@ -256,33 +249,9 @@ pub(crate) enum Logged {
 }
 
 thread_local! {
-    static TEST_CLOCK: RefCell<Option<Arc<TestClock>>> = const { RefCell::new(None) };
     static TEST_APPROVAL_HOST: Cell<Option<HostMode>> = const { Cell::new(None) };
     static TEST_SIGNALS: Cell<Option<Signals>> = const { Cell::new(None) };
     static TEST_INPUT_LOG: RefCell<Option<Vec<Logged>>> = const { RefCell::new(None) };
-}
-
-/// Installs (or with `None` removes) this thread's test clock.
-pub(crate) fn set_clock(clock: Option<Arc<TestClock>>) {
-    let _ = TEST_CLOCK.try_with(|slot| *slot.borrow_mut() = clock);
-}
-
-/// The installed test clock, if any.
-pub(crate) fn installed_clock() -> Option<Arc<TestClock>> {
-    TEST_CLOCK
-        .try_with(|slot| slot.borrow().clone())
-        .ok()
-        .flatten()
-}
-
-/// The App wrappers' monotonic read while a test clock is installed.
-pub(crate) fn clock_now_ms() -> Option<u64> {
-    installed_clock().map(|clock| clock.read())
-}
-
-/// The App wrappers' wall-clock read while a test clock is installed.
-pub(crate) fn clock_now_unix_ms() -> Option<u64> {
-    installed_clock().map(|clock| clock.unix_at(clock.read()))
 }
 
 /// Sets this thread's approval host mode (`None`: real windows).
@@ -419,7 +388,6 @@ impl Fixture {
             std::env::temp_dir().join(format!("yw-s4-flow-{tag}-{}-{serial}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let clock = TestClock::manual(START_MS);
-        set_clock(Some(Arc::clone(&clock)));
         set_host(Some(host));
         set_signals(None);
         start_log();
@@ -430,7 +398,7 @@ impl Fixture {
             &HttpsUrl::parse("https://rpc.example.test/").unwrap(),
         );
         // The App reads the same clock (injected since S4 B1a, 2026-11-19; before, through the
-        // `TEST_CLOCK` seam of its wrappers).
+        // `TEST_CLOCK` seam of its wrappers, removed in S4 B1b).
         let app = Rc::new(RefCell::new(App::with_clock(
             Paths {
                 data: dir.clone(),
@@ -603,7 +571,6 @@ impl Drop for Fixture {
         }
         set_signals(None);
         set_host(None);
-        set_clock(None);
         stop_log();
         let _ = std::fs::remove_dir_all(&self.dir);
     }
@@ -686,90 +653,96 @@ impl Outlet {
 /// The seams are inert without a fixture, and the test clock reads as documented.
 #[test]
 fn seams_are_inert_without_a_fixture_and_the_clock_steps() {
-    assert_eq!(clock_now_ms(), None);
-    assert_eq!(clock_now_unix_ms(), None);
     assert_eq!(scripted(Read::Injected), None);
     assert!(!effect(Fx::Show));
     assert!(foreground_request("approval").is_none());
     assert!(!fail_open());
     assert!(take_log().is_empty());
     let clock = TestClock::stepping(10, 5);
-    set_clock(Some(Arc::clone(&clock)));
-    assert_eq!(clock_now_ms(), Some(10));
-    assert_eq!(clock_now_unix_ms(), Some(clock.unix_at(15)));
-    assert_eq!((Arc::clone(&clock) as Arc<dyn Clock>).now_ms(), 20);
+    let shared = Arc::clone(&clock) as Arc<dyn Clock>;
+    assert_eq!(shared.now_ms(), 10);
+    assert_eq!(shared.now_unix_ms(), clock.unix_at(15));
+    assert_eq!(shared.now_ms(), 20);
     clock.set_step(0);
     clock.set(100);
     clock.advance(1);
-    assert_eq!((clock_now_ms(), clock.peek()), (Some(101), 101));
-    set_clock(None);
-    assert_eq!(clock_now_ms(), None);
+    assert_eq!((shared.now_ms(), clock.peek()), (101, 101));
 }
 
-/// Every `now_ms`/`now_unix_ms` wrapper of the App reads the test clock first (S4 A3 review,
-/// 2026-11-18), so a fixture's App, its prepare fixture and its `BrowserCore` share one time base
-/// on every approval path (the inline reads are listed in the module doc). Since S4 B1a
-/// (2026-11-19) the files whose wrappers became `self.clock` reads have none left and no
-/// test-clock read (before, 18 wrappers in 13 files).
+/// No production code of yw-app reads the time except through the App's injected clock (S4
+/// B1b, 2026-11-19; it replaces `every_app_time_wrapper_reads_the_test_clock`, which pinned that
+/// the 18 wrappers read the A3 `TEST_CLOCK` first). Read-only source scan of `src` (the
+/// `card_pcsc` precedent): a direct `monotonic_ms()`, `SystemTime::now()` or `Instant::now()`
+/// is left only in `system_clock.rs` (the clock itself) and `browser/server.rs` (the pipe accept
+/// back-off warnings, shell only, plan critique B-13); test files and inline `#[cfg(test)]`
+/// modules are not production code (temp-folder names, test ticks); `log_file.rs`, `store.rs`
+/// and `store/*` read none outside their tests.
 #[test]
-fn every_app_time_wrapper_reads_the_test_clock() {
-    let injected = [
-        ("app.rs", include_str!("app.rs")),
-        ("app_approval.rs", include_str!("app_approval.rs")),
-        ("app_browser.rs", include_str!("app_browser.rs")),
-        ("app_card.rs", include_str!("app_card.rs")),
-        ("app_evm.rs", include_str!("app_evm.rs")),
-        ("app_sol.rs", include_str!("app_sol.rs")),
-        ("app_sol_dapp.rs", include_str!("app_sol_dapp.rs")),
-    ];
-    for (file, text) in injected {
-        for gone in [
-            "fn now_ms() -> u64 {",
-            "fn now_unix_ms() -> u64 {",
-            "flow_support::clock_now_ms()",
-            "flow_support::clock_now_unix_ms()",
-            "time::monotonic_ms()",
-            "SystemTime::now()",
-        ] {
-            assert!(!text.contains(gone), "{file}: {gone}");
-        }
-    }
-    let sources = [
-        ("app_book.rs", include_str!("app_book.rs")),
-        ("app_btc.rs", include_str!("app_btc.rs")),
-        ("app_chain_sites.rs", include_str!("app_chain_sites.rs")),
-        ("app_hypercore.rs", include_str!("app_hypercore.rs")),
-        ("app_received.rs", include_str!("app_received.rs")),
-        ("app_reset.rs", include_str!("app_reset.rs")),
-        ("app_zec.rs", include_str!("app_zec.rs")),
-    ];
-    let mut wrappers = 0_usize;
-    for (file, text) in sources {
-        for (head, seam) in [
-            ("fn now_ms() -> u64 {", "flow_support::clock_now_ms()"),
-            (
-                "fn now_unix_ms() -> u64 {",
-                "flow_support::clock_now_unix_ms()",
-            ),
-        ] {
-            for (at, _) in text.match_indices(head) {
-                let rest = text.get(at..).unwrap_or_default();
-                let body = rest
-                    .find(
-                        "
-}
-",
-                    )
-                    .and_then(|end| rest.get(..end));
-                assert!(
-                    body.is_some_and(|body| body.contains(seam)),
-                    "{file}: {head} without the test clock"
-                );
-                wrappers += 1;
+fn app_time_reads_go_through_the_clock() {
+    fn sources(dir: &std::path::Path, found: &mut Vec<(String, String)>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            if path.is_dir() {
+                if name != "tests" {
+                    sources(&path, found);
+                }
+            } else if std::path::Path::new(&name)
+                .extension()
+                .is_some_and(|extension| extension == "rs")
+                && name != "tests.rs"
+                && !name.ends_with("_tests.rs")
+                && !name.starts_with("tour")
+                && !matches!(
+                    name.as_str(),
+                    "app_approval_flow_support.rs" | "app_approval_smoke.rs" | "secret_seam.rs"
+                )
+            {
+                found.push((name, std::fs::read_to_string(&path).unwrap()));
             }
         }
     }
-    assert_eq!(wrappers, 8, "the A3-review wrappers that S4 B1b converts");
+    /// The text without its `#[cfg(test)]` `mod … {` blocks (a top-level block ends at the first
+    /// line that is `}`).
+    fn production(text: &str) -> String {
+        let mut kept = String::new();
+        let mut lines = text.lines().peekable();
+        while let Some(line) = lines.next() {
+            if line == "#[cfg(test)]"
+                && lines
+                    .peek()
+                    .is_some_and(|next| next.starts_with("mod ") && next.ends_with('{'))
+            {
+                for skipped in lines.by_ref() {
+                    if skipped == "}" {
+                        break;
+                    }
+                }
+                continue;
+            }
+            kept.push_str(line);
+            kept.push('\n');
+        }
+        kept
+    }
+    let mut found = Vec::new();
+    sources(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut found,
+    );
+    assert!(found.len() > 50, "{}", found.len());
+    let mut readers: Vec<&str> = found
+        .iter()
+        .filter(|(_, text)| {
+            let code = production(text);
+            ["monotonic_ms()", "SystemTime::now()", "Instant::now()"]
+                .iter()
+                .any(|read| code.contains(read))
+        })
+        .map(|(name, _)| name.as_str())
+        .collect();
+    readers.sort_unstable();
+    assert_eq!(readers, ["server.rs", "system_clock.rs"]);
 }
 
 /// No top-level approval or panel window of this process exists (real Win32 lookup).

@@ -828,7 +828,7 @@ impl App {
         if ![EditField::HcTo, EditField::HcAmount, EditField::HcApi].contains(&field) {
             return false;
         }
-        let now = yw_win::time::monotonic_ms();
+        let now = self.clock.now_ms();
         match field {
             EditField::HcTo => {
                 text.clone_into(&mut self.hypercore.form.to_text);

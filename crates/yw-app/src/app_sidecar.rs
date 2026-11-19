@@ -213,12 +213,6 @@ pub enum JournalHold {
     Check,
 }
 
-fn now_unix() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs())
-}
-
 /// `YYYY-MM-DD HH:MM` in local time (spec/04 §2.6); UTC with a suffix if the conversion fails.
 fn local_time(unix_secs: u64) -> String {
     let unix_ms = unix_secs.saturating_mul(1_000);
@@ -369,7 +363,7 @@ impl App {
                 // Saved before the reload below reads the meta again.
                 self.sidecar.reset_ack = false;
                 if let Some(meta) = self.meta.as_mut() {
-                    meta.security.journal_reset_at = now_unix();
+                    meta.security.journal_reset_at = self.clock.now_unix_ms() / 1_000;
                 }
                 self.save_meta();
             }
@@ -429,7 +423,7 @@ impl App {
         if self.sidecar.journal_closed {
             return Some(JournalHold::Closed);
         }
-        let now = now_unix();
+        let now = self.clock.now_unix_ms() / 1_000;
         let wait = |window: u64| {
             self.reset_elapsed(window, now).map(|(_, elapsed)| {
                 JournalHold::Wait(now.saturating_add(window.saturating_sub(elapsed)))
@@ -458,7 +452,9 @@ impl App {
             SendChain::Sol => "Solana",
             SendChain::Zec => "Zcash",
             SendChain::Btc => {
-                if let Some((at, _)) = self.reset_elapsed(RESET_WATCH_SECS, now_unix()) {
+                if let Some((at, _)) =
+                    self.reset_elapsed(RESET_WATCH_SECS, self.clock.now_unix_ms() / 1_000)
+                {
                     items.push(Item::Banner(
                         text::BTC_RESET.fill(lang, [&local_time(at)]),
                         Tone::HighRisk,

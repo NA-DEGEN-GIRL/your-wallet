@@ -82,7 +82,7 @@ ext-test 25 → script-test 26 → privacy 27 → audit-ext 28 → icons 30. On 
 - **s4fl** (temporary, 2026-11-18 S4 A3; S4 B7 removes it) runs the `#[ignore]` approval flow harness serially:
   `cargo test -p yw-app --lib --locked -- --ignored --test-threads=1 app_approval::flow_support app_approval::flow_tests app_approval::input_tests`.
   It creates hidden approval windows that are never shown and never take the foreground (its self-test checks that); the
-  test clock, the scripted trusted-signal oracle and the input log are `cfg(test)` seams in `app_approval_flow_support.rs`
+  test clock (injected with `App::with_clock` since S4 B1a/B1b, 2026-11-19), the scripted trusted-signal oracle and the input log are `cfg(test)` seams in `app_approval_flow_support.rs`
   (spec/09 §2.2). Never put `fuzz_lite` in the path of such a test. A filter that matches nothing passes in libtest, so the
   step first lists the `#[ignore]` tests per filter and fails 31 below the minimum in `$S4flMinimum` (2026-11-18 A3 review);
   the commit that adds or renames such tests (S4 A4, A5, A6) updates it.

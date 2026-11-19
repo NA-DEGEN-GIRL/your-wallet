@@ -241,19 +241,6 @@ pub fn look_alike_note(lang: Lang, known: &Resembles) -> String {
     text::LOOK_ALIKE.fill(lang, [&whom])
 }
 
-fn now_unix_ms() -> u64 {
-    // S4 A3 review (2026-11-18): tests read the approval test clock here too.
-    #[cfg(test)]
-    if let Some(now) = crate::app_approval::flow_support::clock_now_unix_ms() {
-        return now;
-    }
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-        })
-}
-
 impl App {
     /// The note of a new book entry `address` (canonical, of `chain`) that looks like an
     /// address the user knows — the family's whole known set, as the send forms compare it:
@@ -544,7 +531,7 @@ impl App {
             address: prompt.address.clone(),
             label,
             verified: false,
-            added_at_unix_ms: now_unix_ms(),
+            added_at_unix_ms: self.clock.now_unix_ms(),
         };
         let Some(meta) = self.meta.as_mut() else {
             return;
@@ -627,7 +614,7 @@ impl App {
             address: address.clone(),
             label,
             verified: form.verified,
-            added_at_unix_ms: now_unix_ms(),
+            added_at_unix_ms: self.clock.now_unix_ms(),
         };
         let result = if form.editing.is_some() {
             meta.update_contact(&entry);

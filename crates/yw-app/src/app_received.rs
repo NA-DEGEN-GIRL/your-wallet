@@ -225,19 +225,6 @@ pub fn zec_unconfirmed(
 /// When a list that had nothing to ask is looked at again (no request in between).
 const RETRY_MS: u64 = 5_000;
 
-fn now_unix_ms() -> u64 {
-    // S4 A3 review (2026-11-18): tests read the approval test clock here too.
-    #[cfg(test)]
-    if let Some(now) = crate::app_approval::flow_support::clock_now_unix_ms() {
-        return now;
-    }
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-        })
-}
-
 /// The chain whose card a `새로고침` id belongs to (2026-11-18, S3 D3: test-only — the
 /// table test that `Press::refresh_chain` names the same chains; before, the legacy chain's
 /// observer `App::received_observe` read it for ids not converted to a press yet).
@@ -437,7 +424,10 @@ impl App {
                         lang: self.settings.language,
                     },
                     account,
-                    start_ms: now_unix_ms().saturating_sub(crate::received::hc::FIRST_WINDOW_MS),
+                    start_ms: self
+                        .clock
+                        .now_unix_ms()
+                        .saturating_sub(crate::received::hc::FIRST_WINDOW_MS),
                 })
             }
             RecvChain::Zec => {
@@ -596,7 +586,7 @@ impl App {
         let list = self.received.lists.entry(key.clone()).or_default();
         list.unsupported = None;
         if list.busy.is_none() {
-            self.received_start(chain, &key, true, yw_win::time::monotonic_ms());
+            self.received_start(chain, &key, true, self.clock.now_ms());
         }
     }
 

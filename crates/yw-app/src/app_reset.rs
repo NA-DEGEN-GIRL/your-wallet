@@ -132,19 +132,6 @@ pub fn phrase_matches(lang: Lang, text: &str) -> bool {
     text.trim() == RESET_PHRASE.get(lang)
 }
 
-fn now_unix_ms() -> u64 {
-    // S4 A3 review (2026-11-18): tests read the approval test clock here too.
-    #[cfg(test)]
-    if let Some(now) = crate::app_approval::flow_support::clock_now_unix_ms() {
-        return now;
-    }
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-        })
-}
-
 /// T-RESET-DONE.
 #[must_use]
 pub fn reset_done_text(lang: Lang, report: &ResetReport) -> String {
@@ -188,7 +175,7 @@ impl App {
         self.wait.meta_failed = None;
         self.key(KeyJob::LoadMeta);
         if self.wait.meta_since.is_none() {
-            self.wait.meta_since = Some(yw_win::time::monotonic_ms());
+            self.wait.meta_since = Some(self.clock.now_ms());
         }
     }
 
@@ -236,7 +223,7 @@ impl App {
             self.request_meta();
         }
         if matches!(self.screen, Screen::Processing(_)) {
-            self.wait.since = Some(yw_win::time::monotonic_ms());
+            self.wait.since = Some(self.clock.now_ms());
         }
         self.refresh();
     }
@@ -360,7 +347,7 @@ impl App {
         };
         self.set_screen(Screen::Processing(text::MOVING.get(self.settings.language)));
         self.key(KeyJob::ResetWallet {
-            stamp: crate::store::reset::stamp(now_unix_ms()),
+            stamp: crate::store::reset::stamp(self.clock.now_unix_ms()),
             include_settings,
             lang: self.settings.language,
         });
