@@ -506,6 +506,102 @@ mod tests {
         assert_eq!(bar_facts(&source, 0).label, text::APPROVE);
     }
 
+    /// The guards and order of `next_step` (S4 B3 review). The connect sessions below have a
+    /// standard interaction; the `high` view makes the bar read as a high-risk request.
+    #[test]
+    fn bar_next_step_guards_and_order() {
+        let view = ApprovalView::default();
+        let high = ApprovalView {
+            high: true,
+            ..ApprovalView::default()
+        };
+        // An armed high-risk window names the hold; while a submit or re-simulation runs there
+        // is no step, even where one would otherwise show (early release, no account picked).
+        let mut armed = connect_session(1, 1_000);
+        armed.set_foreground(1_000, true);
+        let _ = armed.event(2_000, InteractionEvent::Tick);
+        let source = BarSource {
+            lang: Lang::En,
+            session: &armed,
+            view: &high,
+            connect: false,
+            early_release: false,
+            status: None,
+        };
+        assert_eq!(bar_facts(&source, 2_000).step, Some(text::HOLD_NOW));
+        armed.gate.submitting = true;
+        let source = BarSource {
+            lang: Lang::En,
+            session: &armed,
+            view: &high,
+            connect: false,
+            early_release: false,
+            status: None,
+        };
+        assert_eq!(bar_facts(&source, 2_000).step, None);
+        let early = BarSource {
+            early_release: true,
+            ..source
+        };
+        assert_eq!(bar_facts(&early, 2_000).step, None);
+        let mut empty = connect_session(0, 1_000);
+        empty.gate.submitting = true;
+        let source = BarSource {
+            session: &empty,
+            connect: true,
+            ..source
+        };
+        assert_eq!(bar_facts(&source, 2_000).step, None);
+
+        // While a hold is under way there is no step (it would otherwise be HOLD_NOW).
+        let mut holding = connect_session(1, 1_000);
+        holding.set_foreground(1_000, true);
+        let _ = holding.event(2_000, InteractionEvent::Tick);
+        let _ = holding.event(
+            2_100,
+            InteractionEvent::PointerPressed {
+                inside: true,
+                click_through: false,
+                physical_down: true,
+            },
+        );
+        let source = BarSource {
+            lang: Lang::En,
+            session: &holding,
+            view: &high,
+            connect: false,
+            early_release: false,
+            status: None,
+        };
+        let facts = bar_facts(&source, 2_600);
+        assert_eq!((facts.held_ms, facts.step), (Some(500), None));
+
+        // An early release (no acknowledgement needed on a connect window) names the hold ahead
+        // of the arm wait; picking an account still comes first.
+        let mut waiting = connect_session(1, 1_000);
+        waiting.set_foreground(1_000, true);
+        let source = BarSource {
+            lang: Lang::En,
+            session: &waiting,
+            view: &view,
+            connect: true,
+            early_release: false,
+            status: None,
+        };
+        assert_eq!(bar_facts(&source, 1_500).step, Some(text::ARM_WAIT));
+        let source = BarSource {
+            early_release: true,
+            ..source
+        };
+        assert_eq!(bar_facts(&source, 1_500).step, Some(text::HOLD_EARLY));
+        let unpicked = connect_session(0, 1_000);
+        let source = BarSource {
+            session: &unpicked,
+            ..source
+        };
+        assert_eq!(bar_facts(&source, 1_500).step, Some(text::CONNECT_PICK));
+    }
+
     #[test]
     fn a_submitted_approval_shows_simulating_from_its_status() {
         let view = ApprovalView::default();
