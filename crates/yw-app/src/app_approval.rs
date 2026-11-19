@@ -16,6 +16,7 @@ use yw_core::approval::{ApprovalRequest, RiskLevel};
 use yw_core::evm::chain::SEPOLIA;
 use yw_core::evm::simulate::needs_resimulation;
 use yw_core::lang::{Lang, Text};
+use yw_engine::approval::QueueId;
 use yw_win::input::is_down;
 use yw_win::ui::{
     Color, DrawFlags, Handler, Msg, PaintDc, Rect, Reply, Window, WindowKind, WindowSpec,
@@ -102,6 +103,15 @@ enum Pressed {
     Reject,
     Retry,
     AiRetry,
+}
+
+/// Which approval window is shown (2026-11-19, S4 F1, L-1, spec/04 §3.6): none, or one showing
+/// the queue item with this id (`None`: a window without its queue item, not expected between
+/// messages).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ShownWindow {
+    NoWindow,
+    Showing(Option<QueueId>),
 }
 
 /// The AI explanation panel of one window (spec/06 §6, spec/04 §3.8): reserved when the window
@@ -2218,6 +2228,18 @@ impl App {
         }
     }
 
+    /// Which approval window is shown, by the queue id of its request (2026-11-19, S4 F1, L-1,
+    /// spec/04 §3.6). The later steps of one window message apply only while this is unchanged:
+    /// an earlier step of the same message may have ended the request and opened the next
+    /// request's window (`finish_approval` → `show_next_approval`).
+    fn shown_window(&self) -> ShownWindow {
+        if self.evm.window.is_some() {
+            ShownWindow::Showing(self.evm.queue.shown().map(|item| item.id))
+        } else {
+            ShownWindow::NoWindow
+        }
+    }
+
     fn finish_approval(&mut self, outcome: QueueOutcome) {
         let id = self
             .evm
@@ -3275,9 +3297,16 @@ impl App {
                     .window
                     .as_ref()
                     .is_some_and(|ui| ui.bottom.approve.contains(*x, *y));
+                let shown = self.shown_window();
                 if !on_approve {
                     // Every press counts for the press-gap rule (spec/04 §3.4).
                     self.interaction(InteractionEvent::OtherPress);
+                }
+                // 2026-11-19 (S4 F1, L-1): a press that ended this request (past its deadline)
+                // goes no further, like a click with no window. Before, the rest of this arm
+                // ran on the next request's window that the press had just opened.
+                if self.shown_window() != shown {
+                    return Reply::Default;
                 }
                 let Some(ui) = self.evm.window.as_mut() else {
                     return Reply::Default;
@@ -3411,8 +3440,14 @@ impl App {
                 Reply::Default
             }
             Msg::Close => {
+                // 2026-11-19 (S4 F1, L-1, owner decision O-4): the close box rejects only the
+                // request this window showed. Before, `if self.evm.window.is_some()` also
+                // rejected the next request, whose window `RejectActivated` had just opened.
+                // A window whose `RejectActivated` changes nothing (L-2: already `Approved`)
+                // still shows the same request, so the close box still ends it.
+                let shown = self.shown_window();
                 self.interaction(InteractionEvent::RejectActivated);
-                if self.evm.window.is_some() {
+                if shown != ShownWindow::NoWindow && self.shown_window() == shown {
                     self.finish_approval(QueueOutcome::Rejected);
                 }
                 Reply::Handled(0)
@@ -3449,8 +3484,15 @@ impl App {
                 .window
                 .as_ref()
                 .is_some_and(|ui| ui.focus == Focus::Approve);
+        let shown = self.shown_window();
         if !approve_input {
             self.interaction(InteractionEvent::OtherPress);
+        }
+        // 2026-11-19 (S4 F1, L-1): a key press that ended this request (past its deadline) goes
+        // no further. Before, Esc, Enter, Space and Tab then acted on the next request's window
+        // that the press had just opened (Enter or Space on its `거부` rejected it unseen).
+        if self.shown_window() != shown {
+            return;
         }
         let Some(ui) = self.evm.window.as_mut() else {
             return;

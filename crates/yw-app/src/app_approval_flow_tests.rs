@@ -24,7 +24,9 @@
 //!
 //! The three latent behaviours of plan §0.1 are pinned as the code does them today: L-1
 //! (`l1_close_with_a_second_request_queued`), L-2 (`l2_connect_chain_change_*`) and L-3
-//! (`l3_site_deadline_*`). Run (`#[ignore]`, gate step `s4fl`):
+//! (`l3_site_deadline_*`). 2026-11-19 (S4 F1, owner decision O-4): L-1 is fixed; its lines now
+//! pin one rejection and the queued request shown next (only the `l1_*` lines changed). Run
+//! (`#[ignore]`, gate step `s4fl`):
 //! `cargo test -p yw-app --lib --locked --offline -- --ignored --test-threads=1 app_approval::flow_tests`.
 //! Regenerate for review (PowerShell): `$env:YW_S4_FLOW_OUT='<folder>'; cargo test -p yw-app
 //! --lib --locked --offline -- --ignored --test-threads=1 app_approval::flow_tests::print`.
@@ -1539,6 +1541,8 @@ fn issue_uses_one_instant() -> Vec<String> {
 }
 
 /// L-1 (plan §0.1): the close box of the first request's window, with a second request queued.
+/// 2026-11-19 (S4 F1): one 4001 and the second request's window shown (`Pending`, focus
+/// `Reject`); before F1 both requests got 4001 and no window was left.
 fn l1_close_with_a_second_request_queued() -> Vec<String> {
     let fx = fixture("l1");
     let spare = spare_window();
