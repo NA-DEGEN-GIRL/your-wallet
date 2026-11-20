@@ -1890,16 +1890,17 @@ impl App {
         }
         match outcome {
             OpenOutcome::Shown { .. } => {
-                if let Some(flow) = self.evm.approval.as_mut() {
+                if let Some(flow) = self.wallet.evm.approval.as_mut() {
                     // 2026-11-19 (S4 B4b): the AI panel's state is the flow's `AiFlow`, its body
                     // child and scroll the shell's `AiBody`, made in the open in the same order.
                     // 2026-11-19 (S4 B5 review): attached from the reservation made at the open
                     // (was `explain_kind(item)` and the endpoint read again here).
                     if let Some(reserved) = flow.take_ai_reserved() {
-                        self.llm_ui.next_window = self.llm_ui.next_window.saturating_add(1);
+                        self.wallet.llm_ui.next_window =
+                            self.wallet.llm_ui.next_window.saturating_add(1);
                         flow.attach_ai(AiFlow {
                             panel: AiPanel::new(true, flow.lang()),
-                            serial: self.llm_ui.next_window,
+                            serial: self.wallet.llm_ui.next_window,
                             host: reserved.host,
                             model: reserved.model,
                             kind: reserved.kind,
@@ -1937,11 +1938,11 @@ impl App {
 
     fn start_prepare(&mut self) {
         let job = self.evm.job();
-        let Some(flow) = self.evm.approval.as_mut() else {
+        let Some(flow) = self.wallet.evm.approval.as_mut() else {
             return;
         };
         let item = flow.item().clone();
-        flow.begin_prepare(job, self.clock.now_ms());
+        flow.begin_prepare(job, self.wallet.clock.now_ms());
         match item {
             QueuedItem::App(app) => self.prepare_transaction(job, &app, None),
             QueuedItem::Site(site) => self.prepare_site(job, &site),
@@ -2294,8 +2295,8 @@ impl App {
     }
 
     pub(crate) fn show_failure(&mut self, code: ErrorCode, retryable: bool, text: String) {
-        if let Some(flow) = self.evm.approval.as_mut() {
-            flow.fail(text, code, retryable, self.clock.now_ms());
+        if let Some(flow) = self.wallet.evm.approval.as_mut() {
+            flow.fail(text, code, retryable, self.wallet.clock.now_ms());
         }
         self.ai_ready(AiReady::Skip(SKIP_FAILED.get(self.approval_lang())));
         self.rebuild_view();
@@ -2370,10 +2371,10 @@ impl App {
 
     /// `eth_simulateV1` started.
     pub fn on_simulating(&mut self, job: u64, since_ms: u64) {
-        if let Some(flow) = self.evm.approval.as_mut()
+        if let Some(flow) = self.wallet.evm.approval.as_mut()
             && flow.job() == job
         {
-            flow.simulating(since_ms, self.clock.now_ms());
+            flow.simulating(since_ms, self.wallet.clock.now_ms());
             self.rebuild_view();
         }
     }
@@ -2526,9 +2527,9 @@ impl App {
             return;
         }
         let Some(prepared) = result.prepared else {
-            if let Some(flow) = self.evm.approval.as_mut() {
+            if let Some(flow) = self.wallet.evm.approval.as_mut() {
                 // Same content, but a new approval (checkbox, arm delay, fresh interaction).
-                flow.resim_no_result(self.clock.now_ms());
+                flow.resim_no_result(self.wallet.clock.now_ms());
             }
             self.rebuild_view();
             return;
@@ -2710,13 +2711,13 @@ impl App {
             extra_warnings,
             limits: Limits::PRODUCTION,
         })));
-        if let Some(flow) = self.evm.approval.as_mut() {
+        if let Some(flow) = self.wallet.evm.approval.as_mut() {
             if sent {
                 // C1: the approval that asked for this re-simulation has been acted on; the
                 // terminal `Approved` status must not dispatch it again on the next tick.
-                flow.resim_sent(self.clock.now_ms());
+                flow.resim_sent(self.wallet.clock.now_ms());
             } else {
-                flow.resim_not_sent(self.clock.now_ms());
+                flow.resim_not_sent(self.wallet.clock.now_ms());
             }
         }
         self.rebuild_view();
@@ -3019,8 +3020,8 @@ impl App {
                 self.after_pending_open(AfterOpen::CloseIfShown(shown));
             }
             ApprovalSignal::Activated => {
-                if let Some(flow) = self.evm.approval.as_mut() {
-                    flow.activated(self.clock.now_ms());
+                if let Some(flow) = self.wallet.evm.approval.as_mut() {
+                    flow.activated(self.wallet.clock.now_ms());
                 }
             }
             ApprovalSignal::ToggleAck => {
@@ -3684,7 +3685,7 @@ impl App {
     /// it got the message (2026-11-19, S4 B6).
     #[cfg(test)]
     const fn last_opened(&self) -> ShownId {
-        ShownId(self.evm.next_shown)
+        ShownId(self.wallet.evm.next_shown)
     }
 
     /// An interaction event of the window opened last (the tests' event entry; 2026-11-19, S4
@@ -3933,9 +3934,10 @@ impl App {
                 }
             }
             Step::Tab => {
-                if let (Some(flow), Some(win)) =
-                    (self.evm.approval.as_ref(), self.approval_win.as_mut())
-                {
+                if let (Some(flow), Some(win)) = (
+                    self.wallet.evm.approval.as_ref(),
+                    self.approval_win.as_mut(),
+                ) {
                     let view = flow.view();
                     let order = tab_order(view.blocks.contains(&Block::Ack), view.has_raw);
                     let backwards = TrustedSignals::sample_shift().shift_down();
@@ -4112,7 +4114,7 @@ impl App {
             .is_none_or(crate::explain::ExplainService::busy);
         let lang = self.approval_lang();
         let Self {
-            evm,
+            wallet: crate::app::Wallet { evm, .. },
             fonts,
             approval_win,
             ..
@@ -4685,7 +4687,7 @@ impl App {
         let client = window.client_rect();
         let lang = self.approval_lang();
         let Self {
-            evm,
+            wallet: crate::app::Wallet { evm, .. },
             fonts,
             approval_win,
             ..
@@ -4808,8 +4810,7 @@ impl App {
     ) {
         let now = self.clock.now_ms();
         let Self {
-            evm,
-            llm,
+            wallet: crate::app::Wallet { evm, llm, .. },
             approval_win,
             ..
         } = self;
@@ -5020,7 +5021,7 @@ impl App {
         let client = window.client_rect();
         let lang = self.approval_lang();
         let Self {
-            evm,
+            wallet: crate::app::Wallet { evm, .. },
             fonts,
             approval_win,
             ..

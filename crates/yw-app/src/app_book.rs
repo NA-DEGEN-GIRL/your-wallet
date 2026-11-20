@@ -588,12 +588,13 @@ impl App {
             .is_none()
             .then(|| self.book_look_alike(form.chain, &address))
             .flatten();
-        let Some(meta) = self.meta.as_mut() else {
+        let Some(meta) = self.wallet.meta.as_mut() else {
             return;
         };
         if form.editing.is_none() {
             if meta.contact(form.chain, &address).is_some() {
-                self.book.form.message = Some(ErrorCode::Inp016.text_in(self.settings.language));
+                self.wallet.book.form.message =
+                    Some(ErrorCode::Inp016.text_in(self.wallet.settings.language));
                 self.refresh();
                 return;
             }
@@ -602,9 +603,9 @@ impl App {
             if let Some(note) = note
                 && (!form.ack || form.look_alike.as_deref() != Some(note.as_str()))
             {
-                self.book.form.look_alike = Some(note);
-                self.book.form.ack = false;
-                self.book.form.message = None;
+                self.wallet.book.form.look_alike = Some(note);
+                self.wallet.book.form.ack = false;
+                self.wallet.book.form.message = None;
                 self.refresh();
                 return;
             }
@@ -614,7 +615,7 @@ impl App {
             address: address.clone(),
             label,
             verified: form.verified,
-            added_at_unix_ms: self.clock.now_unix_ms(),
+            added_at_unix_ms: self.wallet.clock.now_unix_ms(),
         };
         let result = if form.editing.is_some() {
             meta.update_contact(&entry);

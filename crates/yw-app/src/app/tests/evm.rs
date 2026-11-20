@@ -222,8 +222,8 @@ fn max_with_a_failing_quote_asks_once() {
         ..Meta::default()
     });
     app.evm.journal = Some(JournalView::default());
-    app.apikeys.set_rpc(
-        NetworkId::Eip155(app.settings.evm_chain_id),
+    app.wallet.apikeys.set_rpc(
+        NetworkId::Eip155(app.wallet.settings.evm_chain_id),
         &yw_platform::http::HttpsUrl::parse("https://rpc.example.test/").unwrap(),
     );
     let (tx, rx) = std::sync::mpsc::channel();

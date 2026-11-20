@@ -474,10 +474,10 @@ impl App {
 
     /// Writes the dispatcher's grants to meta and saves it.
     pub(crate) fn write_grants(&mut self) {
-        let Some(browser) = self.browser.as_mut() else {
+        let Some(browser) = self.wallet.browser.as_mut() else {
             return;
         };
-        browser.grant_write.written(self.clock.now_ms());
+        browser.grant_write.written(self.wallet.clock.now_ms());
         let core = Arc::clone(&browser.core);
         if let Some(meta) = self.meta.as_mut() {
             meta.connected_sites = sites_to_values(&core.grants());

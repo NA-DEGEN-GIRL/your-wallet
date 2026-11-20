@@ -198,7 +198,7 @@ impl App {
     /// The wallet has no recovery words (spec/02 §4.6).
     #[must_use]
     pub const fn key_only(&self) -> bool {
-        !self.keys.has_mnemonic
+        !self.wallet.keys.has_mnemonic
     }
 
     /// Imported keys of every chain (meta lists; Bitcoin: the single-key accounts of both
@@ -386,11 +386,11 @@ impl App {
             }
         };
         self.close_secret();
-        if let Some(meta) = self.meta.as_mut() {
+        if let Some(meta) = self.wallet.meta.as_mut() {
             match &account {
                 ImportedAccount::Evm(id, address) => {
                     let label = crate::meta::next_imported_label(
-                        self.settings.language,
+                        self.wallet.settings.language,
                         crate::meta::EVM_IMPORTED_LABEL,
                         meta.evm_raw_accounts.iter().map(|raw| raw.label.as_str()),
                     );
@@ -402,7 +402,7 @@ impl App {
                 }
                 ImportedAccount::Sol(id, address) => {
                     let label = crate::meta::next_imported_label(
-                        self.settings.language,
+                        self.wallet.settings.language,
                         crate::meta::SOL_IMPORTED_LABEL,
                         meta.sol_raw_accounts.iter().map(|raw| raw.label.as_str()),
                     );

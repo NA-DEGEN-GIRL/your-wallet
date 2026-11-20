@@ -362,8 +362,8 @@ impl App {
             if !use_prev {
                 // Saved before the reload below reads the meta again.
                 self.sidecar.reset_ack = false;
-                if let Some(meta) = self.meta.as_mut() {
-                    meta.security.journal_reset_at = self.clock.now_unix_ms() / 1_000;
+                if let Some(meta) = self.wallet.meta.as_mut() {
+                    meta.security.journal_reset_at = self.wallet.clock.now_unix_ms() / 1_000;
                 }
                 self.save_meta();
             }

@@ -410,9 +410,9 @@ impl App {
 
     /// The meta state, with a relay client key created (and saved) when a project id is set.
     fn wc_store(&mut self) -> Option<WcStore> {
-        let meta = self.meta.as_mut()?;
+        let meta = self.wallet.meta.as_mut()?;
         let mut store = WcStore::from_value(meta.chain_sites.walletconnect.as_ref());
-        if store.client_seed.is_none() && !self.settings.walletconnect_project.is_empty() {
+        if store.client_seed.is_none() && !self.wallet.settings.walletconnect_project.is_empty() {
             let mut seed = yw_core::secret::Zeroizing::new([0_u8; 32]);
             yw_core::entropy::fill_random(seed.as_mut()).ok()?;
             store.client_seed = Some(seed);

@@ -469,6 +469,19 @@ struct SecretWin {
     form: SecretForm,
 }
 
+/// What the shell made for a display window (2026-11-21, S4 W2, plan §3.4): the composition
+/// (`App::display_window_handoff`) moves the secret into a verified window only.
+enum DisplayWindow {
+    /// Made, and its capture exclusion read back as 0x11.
+    Verified(Window),
+    /// Not made, or not verified: no secret goes in. `window` (made, not excluded) is destroyed
+    /// after the secret is dropped; `outcome` is the open's answer.
+    Unverified {
+        outcome: OpenOutcome,
+        window: Option<Window>,
+    },
+}
+
 /// A main-window banner (shown until dismissed; one per code).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Banner {
@@ -645,13 +658,20 @@ struct ImportFlow {
     password_sent: bool,
 }
 
-/// The application state (UI thread).
+/// The wallet state (UI thread; 2026-11-21, S4 W2, spec/15 §11.4 S4, plan §3.3): everything the
+/// app holds except the Windows shell's own state ([`App`]'s other fields). Before W2 these were
+/// fields of `App` itself. The logic still runs as `impl App` (preflight §3.0: the fns become
+/// `impl Wallet` in place later in S4c) and reaches these fields through `App`'s `Deref`/`DerefMut`;
+/// a field that must be borrowed beside another one is named through `App::wallet`.
+///
+/// Declared here, not in a sibling module, so the private fields (the `Zeroizing` import and
+/// backup-challenge buffers, the secret session and its serial, …) stay private to `app` and its
+/// children, as they were on `App` (critique A-15, D-22).
 #[expect(
     clippy::struct_excessive_bools,
     reason = "independent UI flags of one window"
 )]
-pub struct App {
-    pub(crate) paths: Paths,
+pub struct Wallet {
     /// The data-folder store: `settings.json` writes, `apikeys.dpapi`, the `vault.ywv` facts,
     /// `.prev` checks and the reset candidates (2026-11-20, S4 P1: yw-engine `AppStore`, built
     /// from `paths` in [`App::with_clock`]; before, `impl App` made these calls directly).
@@ -668,8 +688,6 @@ pub struct App {
     /// inline). A test that needs other services swaps this field.
     pub(crate) services: Services,
     pub(crate) background: bool,
-    pub(crate) main: Option<Window>,
-    pub(crate) fonts: FontCache,
     pub(crate) events: Option<Arc<crate::events::EventQueue>>,
     /// The time source of every `impl App` time read (2026-11-19, S4 B1a, spec/15 §11.4 S4;
     /// before, per-file `now_ms`/`now_unix_ms` wrappers over yw-win `time::monotonic_ms` and
@@ -681,7 +699,6 @@ pub struct App {
     pub(crate) lock_signal: Arc<LockSignal>,
     pub(crate) rpc_tx: Option<Sender<RpcJob>>,
     pub(crate) workers: Vec<JoinHandle<()>>,
-    pub(crate) self_ref: Weak<RefCell<App>>,
     pub(crate) mode: AppMode,
     pub(crate) lock_epoch: u64,
     pub(crate) settings: Settings,
@@ -750,20 +767,11 @@ pub struct App {
     /// While a `.prev` recovery submitted from W03 is pending or failed: the mode to return to
     /// when it fails or the window is cancelled.
     recover_return: Option<AppMode>,
-    pub(crate) scroll: i32,
-    /// Wheel accumulation and glide of the main window (`app_scroll`).
-    pub(crate) scroll_state: crate::app_scroll::MainScroll,
-    /// Where each S10 tab, settings section, S08, S13 and S14 was left (DIP, this run only) and
-    /// the screen under an overlay: the ways back open there (`app_scroll`, 2026-11-10).
-    pub(crate) scroll_memory: crate::app_scroll::ScrollMemory,
     /// The settings section opened last in this run: `설정` and Ctrl+, open it (first 보안).
     pub(crate) settings_last: SettingsSection,
-    /// The main window's position and size (`window.json`, `window_state`).
-    pub(crate) window_state: crate::window_state::WindowSaver,
     /// `설정 → 브라우저·정보 → 정보`: the commit of the installation record next to the executable
     /// (`build_info`), checked; `None` = a development build.
     pub(crate) install_commit: Option<String>,
-    pub(crate) controls: ControlSet,
     /// The text of each plain edit (2026-11-18 S3 B5, spec/15 §11.4): kept equal to what the
     /// edits show — read again at every press (`Cmd::Form`), on every `EN_CHANGE`
     /// (`Cmd::Edit`) and after every render (Windows-transitional; engine-owned in S5).
@@ -771,28 +779,7 @@ pub struct App {
     pub(crate) form: FormState,
     /// The credential units captured with the press being handled (S3 B5), wiped when it ends.
     pub(crate) input: PressInput,
-    /// Debug builds (S3 B5, plan §3.2a): reads where the form state and the window's edit
-    /// differed, and credential units that differed from the handler's own read. Tests assert 0.
-    #[cfg(debug_assertions)]
-    pub(crate) form_mismatch: core::cell::Cell<u32>,
-    /// Debug builds: credential reads of a field the press did not capture (`creds_for`).
-    #[cfg(debug_assertions)]
-    cred_misses: u32,
-    /// Tests (debug builds): every credential read as (the id of the press being handled,
-    /// field) (2026-11-20, S4 P6: `cmd_table::id_of(last_press)`; before, `self.command`).
-    #[cfg(all(test, debug_assertions))]
-    pub(crate) cred_reads: Vec<(u16, CredField)>,
-    /// The effects the logic emitted and the shell has not applied yet (2026-11-20, S4 P10b,
-    /// spec/15 §11.4 S4, plan §3.4): `App::emit` queues, `App::drain` applies them in order,
-    /// never coalesced, inside the same borrow before the entry that emitted them returns (an
-    /// answer `Cmd` goes back to the logic in the same drain). Empty between entries. Before
-    /// P10 `emit` applied each effect at once.
-    pub(crate) outbox: VecDeque<Effect>,
-    pub(crate) placed: Placed,
     pub(crate) evm: crate::app_evm::EvmUi,
-    /// The approval window's shell state (2026-11-19, S4 B4b, spec/15 §11.4 S4): shown exactly
-    /// while `evm.approval` is (was part of `EvmUi.window`).
-    pub(crate) approval_win: Option<crate::app_approval::ApprovalWin>,
     pub(crate) sol: crate::app_sol::SolUi,
     pub(crate) btc: crate::app_btc::BtcUi,
     /// The Zcash tab (spec/12).
@@ -828,11 +815,77 @@ pub struct App {
     /// Settings → 네트워크(RPC) `rpc.json에서 가져오기` (a plan waiting for confirmation, the
     /// advice to delete the plaintext file after an import).
     pub(crate) rpc_import: crate::app_rpc_import::RpcImportUi,
-    /// S23 `Chrome 확장 설치` (spec/04 §2.21).
-    pub(crate) ext: crate::app_extension::ExtensionUi,
     /// Block explorer links: the S15 card's form (`app_explorer`, 2026-11-11; the launcher was
     /// here too until 2026-11-21, S4 W1: [`Self::launcher`]).
     pub(crate) explorer_ui: crate::app_explorer::ExplorerUi,
+    /// The wallet's open secret session (the purpose of the one secret window; S4 P7a1).
+    secret_session: Option<SecretSession>,
+    /// The last secret session serial handed out (the next session gets the next one).
+    secret_serial: u64,
+    import: ImportFlow,
+    challenge: Option<BackupChallenge>,
+    pub(crate) idle: IdleTracker,
+    startup_load: bool,
+    /// When [`App::reads_due`] last started a balance read ahead of the timer.
+    reads_due_ms: u64,
+}
+
+impl core::fmt::Debug for Wallet {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("Wallet")
+            .field("mode", &self.mode)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The application state (UI thread): the wallet ([`Wallet`]) and the Windows shell's own state
+/// (2026-11-21, S4 W2, spec/15 §11.4 S4, plan §3.3; before, one struct). The shell's fields stay
+/// flat here, not in a nested `Shell` (preflight §0 item 4: the render builders, the effect
+/// executor and the frozen test helpers name them as `App` fields); `App` derefs to the wallet,
+/// so `impl App` code reads and writes wallet fields as before. The effect executor
+/// (`App::apply`, `app_effects.rs`) writes shell fields only; the one value that moves from the
+/// wallet into the shell, a display window's secret, is handed over by the composition in
+/// `App::drain` (plan §3.4, D-4; source check `the_executor_writes_no_wallet_state`).
+pub struct App {
+    /// The wallet (2026-11-21, S4 W2).
+    pub(crate) wallet: Wallet,
+    pub(crate) paths: Paths,
+    pub(crate) main: Option<Window>,
+    pub(crate) fonts: FontCache,
+    pub(crate) self_ref: Weak<RefCell<App>>,
+    pub(crate) scroll: i32,
+    /// Wheel accumulation and glide of the main window (`app_scroll`).
+    pub(crate) scroll_state: crate::app_scroll::MainScroll,
+    /// Where each S10 tab, settings section, S08, S13 and S14 was left (DIP, this run only) and
+    /// the screen under an overlay: the ways back open there (`app_scroll`, 2026-11-10).
+    pub(crate) scroll_memory: crate::app_scroll::ScrollMemory,
+    /// The main window's position and size (`window.json`, `window_state`).
+    pub(crate) window_state: crate::window_state::WindowSaver,
+    pub(crate) controls: ControlSet,
+    /// Debug builds (S3 B5, plan §3.2a): reads where the form state and the window's edit
+    /// differed, and credential units that differed from the handler's own read. Tests assert 0.
+    #[cfg(debug_assertions)]
+    pub(crate) form_mismatch: core::cell::Cell<u32>,
+    /// Debug builds: credential reads of a field the press did not capture (`creds_for`).
+    #[cfg(debug_assertions)]
+    cred_misses: u32,
+    /// Tests (debug builds): every credential read as (the id of the press being handled,
+    /// field) (2026-11-20, S4 P6: `cmd_table::id_of(last_press)`; before, `self.command`).
+    #[cfg(all(test, debug_assertions))]
+    pub(crate) cred_reads: Vec<(u16, CredField)>,
+    /// The effects the logic emitted and the shell has not applied yet (2026-11-20, S4 P10b,
+    /// spec/15 §11.4 S4, plan §3.4): `App::emit` queues, `App::drain` applies them in order,
+    /// never coalesced, inside the same borrow before the entry that emitted them returns (an
+    /// answer `Cmd` goes back to the logic in the same drain). Empty between entries. Before
+    /// P10 `emit` applied each effect at once.
+    pub(crate) outbox: VecDeque<Effect>,
+    pub(crate) placed: Placed,
+    /// The approval window's shell state (2026-11-19, S4 B4b, spec/15 §11.4 S4): shown exactly
+    /// while `evm.approval` is (was part of `EvmUi.window`).
+    pub(crate) approval_win: Option<crate::app_approval::ApprovalWin>,
+    /// S23 `Chrome 확장 설치` (spec/04 §2.21).
+    pub(crate) ext: crate::app_extension::ExtensionUi,
     /// The shell (2026-11-21, S4 W1, plan §3.3: the state cut out of the wallet's parts): how a
     /// link or a folder is opened (`explorer.exe`; unit-test builds record it). Only the effect
     /// executor uses it (`Effect::OpenUrl`, `Effect::OpenFolder`). Before W1,
@@ -850,20 +903,28 @@ pub struct App {
     pub(crate) reset_hold: Option<u16>,
     /// The shell's open secret window (window and form; S4 P7a1).
     secret: Option<SecretWin>,
-    /// The wallet's open secret session (the purpose of the one secret window; S4 P7a1).
-    secret_session: Option<SecretSession>,
-    /// The last secret session serial handed out (the next session gets the next one).
-    secret_serial: u64,
-    import: ImportFlow,
-    challenge: Option<BackupChallenge>,
-    pub(crate) idle: IdleTracker,
     secret_clip: Option<PendingClip>,
-    startup_load: bool,
     session_retries: u32,
     session_next_ms: u64,
     last_flush_ms: u64,
-    /// When [`App::reads_due`] last started a balance read ahead of the timer.
-    reads_due_ms: u64,
+}
+
+/// 2026-11-21 (S4 W2, plan §3.3, D-21): `impl App` code reaches the wallet's fields through
+/// `App`; the render builders keep doing so until S5.
+impl core::ops::Deref for App {
+    type Target = Wallet;
+
+    fn deref(&self) -> &Wallet {
+        &self.wallet
+    }
+}
+
+/// 2026-11-21 (S4 W2, plan §3.3, D-21): until the handlers are `impl Wallet` and enter as
+/// `Cmd`s (S4c W15; preflight §0 item 3: it stays for tests).
+impl core::ops::DerefMut for App {
+    fn deref_mut(&mut self) -> &mut Wallet {
+        &mut self.wallet
+    }
 }
 
 impl core::fmt::Debug for App {
@@ -1211,66 +1272,95 @@ impl App {
     ) -> Self {
         let now = clock.now_ms();
         Self {
-            store: Box::new(WinAppStore::new(&paths)),
-            services: windows_services(),
+            wallet: Wallet {
+                store: Box::new(WinAppStore::new(&paths)),
+                services: windows_services(),
+                background,
+                events: None,
+                clock,
+                key_queue: Arc::new(KeyQueue::default()),
+                lock_signal: Arc::new(LockSignal::default()),
+                rpc_tx: None,
+                workers: Vec::new(),
+                mode: AppMode::Starting,
+                lock_epoch: 0,
+                settings,
+                apikeys,
+                banners: Vec::new(),
+                meta: None,
+                screen: Screen::Starting,
+                previous_screen: Screen::Starting,
+                leftover: false,
+                info: None,
+                copied: None,
+                // No press yet (S3 D3: `Back`, whose id `IDCANCEL` is no control's; before,
+                // `Press::Legacy(0)`). Every copy is made by a press, which sets it first.
+                last_press: Press::Back,
+                mismatch_checked: false,
+                overwrite_checked: false,
+                show_advanced: false,
+                rename: None,
+                pending_remove: None,
+                replace_target: None,
+                rpc_messages: Vec::new(),
+                rpc_tests: RpcTests::default(),
+                rpc_removed: None,
+                passphrase_session: false,
+                payload_damaged: false,
+                unlock_failed: false,
+                quarantined: None,
+                prev_on_disk: false,
+                done_imported: false,
+                done_yubikey: None,
+                done_return: false,
+                done_tested: Vec::new(),
+                done_error: None,
+                yk_words: crate::app_yubikey::YkWords::None,
+                hidden_open: false,
+                account_menu: None,
+                activity_all: false,
+                recover_return: None,
+                settings_last: SettingsSection::Security,
+                install_commit: None,
+                form: FormState::default(),
+                input: PressInput::default(),
+                evm: crate::app_evm::EvmUi::default(),
+                sol: crate::app_sol::SolUi::default(),
+                btc: crate::app_btc::BtcUi::default(),
+                zec: crate::app_zec::ZecUi::default(),
+                hypercore: crate::app_hypercore::HcUi::default(),
+                received: crate::app_received::ReceivedUi::default(),
+                wc: crate::app_walletconnect::WcUi::default(),
+                book: crate::app_book::BookUi::default(),
+                keys: crate::app_keys::KeysUi::default(),
+                card: crate::app_card::CardUi::default(),
+                mn: crate::app_mnemonics::MnUi::default(),
+                browser: None,
+                llm: None,
+                llm_ui: crate::app_llm::LlmUi::default(),
+                guard: SettingsGuard::default(),
+                wait: crate::app_reset::WaitWatch::default(),
+                sidecar: crate::app_sidecar::SidecarUi::default(),
+                reset: crate::app_reset::ResetUi::default(),
+                rpc_import: crate::app_rpc_import::RpcImportUi::default(),
+                explorer_ui: crate::app_explorer::ExplorerUi::default(),
+                secret_session: None,
+                secret_serial: 0,
+                import: ImportFlow::default(),
+                challenge: None,
+                idle: IdleTracker::new(now),
+                startup_load: true,
+                reads_due_ms: 0,
+            },
             paths,
-            background,
             main: None,
             fonts: FontCache::default(),
-            events: None,
-            clock,
-            key_queue: Arc::new(KeyQueue::default()),
-            lock_signal: Arc::new(LockSignal::default()),
-            rpc_tx: None,
-            workers: Vec::new(),
             self_ref: Weak::new(),
-            mode: AppMode::Starting,
-            lock_epoch: 0,
-            settings,
-            apikeys,
-            banners: Vec::new(),
-            meta: None,
-            screen: Screen::Starting,
-            previous_screen: Screen::Starting,
-            leftover: false,
-            info: None,
-            copied: None,
-            // No press yet (S3 D3: `Back`, whose id `IDCANCEL` is no control's; before,
-            // `Press::Legacy(0)`). Every copy is made by a press, which sets it first.
-            last_press: Press::Back,
-            mismatch_checked: false,
-            overwrite_checked: false,
-            show_advanced: false,
-            rename: None,
-            pending_remove: None,
-            replace_target: None,
-            rpc_messages: Vec::new(),
-            rpc_tests: RpcTests::default(),
-            rpc_removed: None,
-            passphrase_session: false,
-            payload_damaged: false,
-            unlock_failed: false,
-            quarantined: None,
-            prev_on_disk: false,
-            done_imported: false,
-            done_yubikey: None,
-            done_return: false,
-            done_tested: Vec::new(),
-            done_error: None,
-            yk_words: crate::app_yubikey::YkWords::None,
-            hidden_open: false,
-            account_menu: None,
-            activity_all: false,
-            recover_return: None,
             scroll: 0,
             scroll_state: crate::app_scroll::MainScroll::default(),
             scroll_memory: crate::app_scroll::ScrollMemory::default(),
-            settings_last: SettingsSection::Security,
             window_state: crate::window_state::WindowSaver::default(),
-            install_commit: None,
             controls: ControlSet::default(),
-            form: FormState::default(),
-            input: PressInput::default(),
             #[cfg(debug_assertions)]
             form_mismatch: core::cell::Cell::new(0),
             #[cfg(debug_assertions)]
@@ -1279,43 +1369,16 @@ impl App {
             cred_reads: Vec::new(),
             outbox: VecDeque::new(),
             placed: Placed::default(),
-            evm: crate::app_evm::EvmUi::default(),
             approval_win: None,
-            sol: crate::app_sol::SolUi::default(),
-            btc: crate::app_btc::BtcUi::default(),
-            zec: crate::app_zec::ZecUi::default(),
-            hypercore: crate::app_hypercore::HcUi::default(),
-            received: crate::app_received::ReceivedUi::default(),
-            wc: crate::app_walletconnect::WcUi::default(),
-            book: crate::app_book::BookUi::default(),
-            keys: crate::app_keys::KeysUi::default(),
-            card: crate::app_card::CardUi::default(),
-            mn: crate::app_mnemonics::MnUi::default(),
-            browser: None,
-            llm: None,
-            llm_ui: crate::app_llm::LlmUi::default(),
-            guard: SettingsGuard::default(),
-            wait: crate::app_reset::WaitWatch::default(),
-            sidecar: crate::app_sidecar::SidecarUi::default(),
-            reset: crate::app_reset::ResetUi::default(),
-            rpc_import: crate::app_rpc_import::RpcImportUi::default(),
             ext: crate::app_extension::ExtensionUi::default(),
-            explorer_ui: crate::app_explorer::ExplorerUi::default(),
             launcher: crate::app_explorer::Launcher::default(),
             pipe: None,
             reset_hold: None,
             secret: None,
-            secret_session: None,
-            secret_serial: 0,
-            import: ImportFlow::default(),
-            challenge: None,
-            idle: IdleTracker::new(now),
             secret_clip: None,
-            startup_load: true,
             session_retries: 0,
             session_next_ms: 0,
             last_flush_ms: now,
-            reads_due_ms: 0,
         }
     }
 
@@ -1523,7 +1586,7 @@ impl App {
     #[must_use]
     pub const fn passphrase_unverified(&self) -> bool {
         matches!(
-            self.mode,
+            self.wallet.mode,
             AppMode::Unlocked {
                 alt_passphrase: true
             }
@@ -1625,8 +1688,9 @@ impl App {
         ) {
             self.llm_ui.key_deleted = false;
         }
-        self.wait
-            .screen_changed(&self.screen, &screen, self.clock.now_ms());
+        self.wallet
+            .wait
+            .screen_changed(&self.wallet.screen, &screen, self.wallet.clock.now_ms());
         if let Screen::Settings(section) = &screen {
             self.settings_last = *section;
         }
@@ -1695,7 +1759,7 @@ impl App {
         self.scroll_memory.layout_dpi = dpi;
         let mut placed = layout(
             &items,
-            self.settings.language,
+            self.wallet.settings.language,
             client.w,
             dpi,
             self.scroll,
@@ -1707,7 +1771,7 @@ impl App {
             self.scroll = max_scroll;
             placed = layout(
                 &items,
-                self.settings.language,
+                self.wallet.settings.language,
                 client.w,
                 dpi,
                 self.scroll,
@@ -2164,7 +2228,7 @@ impl App {
 
     /// Records app input for the idle timer.
     pub fn note_input(&mut self) {
-        self.idle.input(self.clock.now_ms());
+        self.wallet.idle.input(self.wallet.clock.now_ms());
     }
 
     /// `WM_YW_ACTIVATE` (a second start, spec/04 §1.1): the main window comes up, then the unlock
@@ -2595,7 +2659,7 @@ impl App {
         }
         // The shell's pipe server first, then the dispatcher and its read workers (2026-11-21,
         // S4 W1: before, `BrowserUi::stop` did both, in this order).
-        if let Some(browser) = self.browser.as_mut() {
+        if let Some(browser) = self.wallet.browser.as_mut() {
             if let Some(pipe) = self.pipe.as_mut() {
                 pipe.stop();
             }
@@ -3039,9 +3103,9 @@ impl App {
             }
             KeyOutcome::RawKeyImported(Ok((id, address))) => {
                 self.close_secret();
-                if let Some(meta) = self.meta.as_mut() {
+                if let Some(meta) = self.wallet.meta.as_mut() {
                     let label = crate::meta::next_imported_label(
-                        self.settings.language,
+                        self.wallet.settings.language,
                         crate::meta::EVM_IMPORTED_LABEL,
                         meta.evm_raw_accounts.iter().map(|raw| raw.label.as_str()),
                     );
@@ -3149,7 +3213,7 @@ impl App {
                 result,
             } => self.on_sidecar_resolved(kind, use_prev, result),
             KeyOutcome::Addresses(Ok(list)) => {
-                if let Some(meta) = self.meta.as_mut() {
+                if let Some(meta) = self.wallet.meta.as_mut() {
                     for (index, address) in list {
                         if !meta
                             .evm_accounts
@@ -3158,7 +3222,7 @@ impl App {
                         {
                             let number = meta.next_evm_number();
                             meta.evm_accounts.push(new_account(
-                                self.settings.language,
+                                self.wallet.settings.language,
                                 index,
                                 number,
                                 &address,
@@ -3380,7 +3444,10 @@ impl App {
     // `SecretEffect::OpenDisplay`; the session holds the secret until the shell's
     // `open_display_window` has verified the window's capture exclusion and takes it with
     // `take_display_secret`), the form changes are `SecretEffect::Form` (`secret_form`, was
-    // `with_form`) and the lock's clip clear is `SecretEffect::ClearClip`.
+    // `with_form`) and the lock's clip clear is `SecretEffect::ClearClip`. 2026-11-21 (S4 W2):
+    // the take is the composition's (`display_window_handoff`, which `App::drain` reaches through
+    // `open_display_composed`), after the shell's `make_display_window` verified the exclusion;
+    // before, the shell's `open_display_window` took it itself.
 
     /// Starts the secret session of a window (a fresh serial, never reused); the caller closed the
     /// previous one first. 2026-11-20 (S4 P7a1): the serial was counted in `create_secret` before.
@@ -3609,25 +3676,15 @@ impl App {
                 self.close_secret_window(serial);
                 None
             }
-            // S4 P7b: a display window (the same guard as an input window's open).
-            SecretEffect::OpenDisplay {
+            // S4 P7b: a display window. 2026-11-21 (S4 W2, plan §3.4, D-4): never applied here
+            // — `App::drain` hands it to the composition (`open_display_composed`), which moves
+            // the secret into the shell. Were one applied here, the shell makes nothing and
+            // refuses it, as a stale open (fail closed: the answer ends the session, which drops
+            // its secret).
+            SecretEffect::OpenDisplay { serial, .. } => Some(Cmd::SecretOpened {
                 serial,
-                kind,
-                step,
-                timeout_note,
-                lang,
-            } => {
-                let unshown = self
-                    .secret_session
-                    .as_ref()
-                    .is_some_and(|session| session.serial() == serial && !session.shown());
-                let outcome = if unshown {
-                    self.open_display_window(serial, kind, step, timeout_note, lang)
-                } else {
-                    OpenOutcome::Refused(ErrorCode::Sec001)
-                };
-                Some(Cmd::SecretOpened { serial, outcome })
-            }
+                outcome: OpenOutcome::Refused(ErrorCode::Sec001),
+            }),
             SecretEffect::Form { serial, op } => {
                 self.apply_form_op(serial, op);
                 None
@@ -3742,7 +3799,8 @@ impl App {
     /// window, the wipe, the banner and the screen change happened at the same point and in the
     /// same order as before P7b, when this fn made the window and filled it itself — with one
     /// exception (2026-11-20, P7b review): a window that was made but whose exclusion was not
-    /// read back (`Refuse` with a window) is now destroyed inside `open_display_window`, so
+    /// read back (`Refuse` with a window) is now destroyed inside `open_display_window` (2026-11-21,
+    /// S4 W2: `display_window_handoff`, after the wipe as before), so
     /// before the answer's banner and the S04 change; before P7b it was destroyed after them, at
     /// the end of this fn's match. It is still destroyed after the wipe, was never shown and never
     /// held the secret, so nothing reaches the screen either way.
@@ -3793,14 +3851,58 @@ impl App {
         }));
     }
 
-    /// The shell's half of a display window's open (2026-11-20, S4 P7b; the window part of
-    /// `open_display` before): create the window (hidden; yw-win applies and checks the capture
-    /// exclusion before the handler exists, spec/04 §4.5 items 1–2) and decide by it
-    /// (`Required`). Only a window verified as excluded takes the secret from the session
-    /// (`take_display_secret`) into its form and is shown; on every other result no window is
-    /// kept and the session's secret is dropped (wiped) at once (`drop_display_secret`), before
-    /// the answer. Never a secret in a window that is not excluded from capture.
-    fn open_display_window(
+    /// A display window's open, the composition's (2026-11-21, S4 W2, plan §3.4, D-4: called
+    /// only by `App::drain`; before, the executor's `apply_secret_effect` arm, which moved the
+    /// secret in `open_display_window`). Only the open of the open, unshown session goes on (the
+    /// same guard as an input window's open: a stale or second open makes nothing and is refused,
+    /// critique A-3); the window's way is [`Self::display_window_handoff`]. Answered with
+    /// `Cmd::SecretOpened`, as before.
+    pub(crate) fn open_display_composed(
+        &mut self,
+        serial: u64,
+        kind: SecretKind,
+        step: Option<SecretStep>,
+        timeout_note: Option<&'static str>,
+        lang: Lang,
+    ) -> Cmd {
+        // 2026-11-20 (S4 P8): the recording secret host notes every effect's `Debug` (its scan
+        // for secrets); release builds have no such line.
+        #[cfg(test)]
+        tests::s4_secret::host::saw(&SecretEffect::OpenDisplay {
+            serial,
+            kind,
+            step,
+            timeout_note,
+            lang,
+        });
+        let unshown = self
+            .secret_session
+            .as_ref()
+            .is_some_and(|session| session.serial() == serial && !session.shown());
+        let outcome = if unshown {
+            self.display_window_handoff(serial, kind, step, timeout_note, lang)
+        } else {
+            OpenOutcome::Refused(ErrorCode::Sec001)
+        };
+        let answer = Cmd::SecretOpened { serial, outcome };
+        // 2026-11-20 (S4 P8 review): the recording secret host notes the answer's `Debug` too
+        // (its scan for secrets); release builds have no such line.
+        #[cfg(test)]
+        tests::s4_secret::host::saw_cmd(&answer);
+        answer
+    }
+
+    /// The secret's way into a display window (2026-11-21, S4 W2: `open_display_window` before,
+    /// the same steps in the same order, now split between the shell's two fns and this
+    /// composition). The shell makes the window (hidden; yw-win applies and checks the capture
+    /// exclusion before the handler exists, spec/04 §4.5 items 1–2) and decides by it
+    /// (`Required`; [`Self::make_display_window`]). Only a window verified as excluded gets the
+    /// secret: it moves out of the session (`take_display_secret`) into the window's form, which
+    /// the shell then shows ([`Self::show_display`]). On every other result no window is kept and
+    /// the session's secret is dropped (wiped) at once (`drop_display_secret`), before a made
+    /// window is destroyed and before the answer. Never a secret in a window that is not excluded
+    /// from capture.
+    fn display_window_handoff(
         &mut self,
         serial: u64,
         kind: SecretKind,
@@ -3816,6 +3918,32 @@ impl App {
         {
             return outcome;
         }
+        match self.make_display_window(serial, kind, lang) {
+            DisplayWindow::Verified(window) => {
+                let Some(display) = self.take_display_secret(serial) else {
+                    drop(window);
+                    return OpenOutcome::Refused(ErrorCode::Sec001);
+                };
+                self.show_display(serial, window, kind, display, step, timeout_note, lang);
+                OpenOutcome::Shown {
+                    capture_excluded: true,
+                }
+            }
+            // A window made but not excluded is destroyed after the wipe and before the answer
+            // (2026-11-20, P7b review: before P7b, after the banner and the S04 change; it was
+            // never shown and never held the secret).
+            DisplayWindow::Unverified { outcome, window } => {
+                self.drop_display_secret(serial);
+                drop(window);
+                outcome
+            }
+        }
+    }
+
+    /// The shell makes a display window for session `serial` and reads its capture exclusion
+    /// back (2026-11-21, S4 W2: the window part of `open_display_window` before, which also moved
+    /// the secret). Holds no secret.
+    fn make_display_window(&self, serial: u64, kind: SecretKind, lang: Lang) -> DisplayWindow {
         let created = self.create_secret(serial, kind, false, lang);
         let excluded = created
             .as_ref()
@@ -3827,43 +3955,56 @@ impl App {
             // Verified: `Show` without the warning is a window whose exclusion was read back as
             // 0x11 (`capture_decision`, `Required`).
             (CaptureDecision::Show { warning: false }, Ok(window)) => {
-                let Some(display) = self.take_display_secret(serial) else {
-                    drop(window);
-                    return OpenOutcome::Refused(ErrorCode::Sec001);
-                };
-                let mut form = SecretForm::display(kind, lang, self.clock.now_ms(), display);
-                form.set_step(step);
-                form.set_timeout_note(timeout_note);
-                self.show_secret(serial, window, form);
-                OpenOutcome::Shown {
-                    capture_excluded: true,
-                }
+                DisplayWindow::Verified(window)
             }
             // A display kind never shows with the warning (`capture_decision`); were it to, the
-            // window is dropped like a refused one (fail closed).
+            // window is dropped like a refused one (fail closed), before the secret is.
             (CaptureDecision::Show { warning: true }, Ok(window)) => {
                 drop(window);
-                self.drop_display_secret(serial);
-                OpenOutcome::Refused(ErrorCode::Sec001)
+                DisplayWindow::Unverified {
+                    outcome: OpenOutcome::Refused(ErrorCode::Sec001),
+                    window: None,
+                }
             }
-            // A window made but not excluded is destroyed as this fn returns, after the wipe and
-            // before the answer (2026-11-20, P7b review: before P7b, after the banner and
-            // the S04 change; it was never shown and never held the secret).
-            (CaptureDecision::Refuse(code), _) => {
-                self.drop_display_secret(serial);
-                OpenOutcome::Refused(code)
-            }
-            (CaptureDecision::Show { .. }, Err(_)) => {
-                self.drop_display_secret(serial);
-                OpenOutcome::Failed(ErrorCode::App009)
-            }
+            (CaptureDecision::Refuse(code), window) => DisplayWindow::Unverified {
+                outcome: OpenOutcome::Refused(code),
+                window: window.ok(),
+            },
+            (CaptureDecision::Show { .. }, Err(_)) => DisplayWindow::Unverified {
+                outcome: OpenOutcome::Failed(ErrorCode::App009),
+                window: None,
+            },
         }
+    }
+
+    /// The shell fills a verified display window's form with the secret the composition moved
+    /// in, and shows the window (2026-11-21, S4 W2: the verified arm of `open_display_window`
+    /// before).
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the open effect's fields, the window and the secret"
+    )]
+    fn show_display(
+        &mut self,
+        serial: u64,
+        window: Window,
+        kind: SecretKind,
+        display: DisplaySecret,
+        step: Option<SecretStep>,
+        timeout_note: Option<&'static str>,
+        lang: Lang,
+    ) {
+        let mut form = SecretForm::display(kind, lang, self.clock.now_ms(), display);
+        form.set_step(step);
+        form.set_timeout_note(timeout_note);
+        self.show_secret(serial, window, form);
     }
 
     /// The display secret of session `serial`, moved out once, only while `serial` is the open
     /// session and its window is not shown yet (2026-11-20, S4 P7b; plan §3.4 `App::drain`
-    /// handoff, critique A-3). Called by the shell only after it verified the window's capture
-    /// exclusion; `None` for an ended or another session.
+    /// handoff, critique A-3). Called only after the shell verified the window's capture
+    /// exclusion; `None` for an ended or another session. 2026-11-21 (S4 W2): called by the
+    /// composition `display_window_handoff` (before, by the shell's `open_display_window`).
     #[must_use]
     pub(crate) fn take_display_secret(&mut self, serial: u64) -> Option<DisplaySecret> {
         self.secret_session
@@ -3873,7 +4014,8 @@ impl App {
     }
 
     /// Drops (wipes) the display secret of session `serial` now: its window was refused or
-    /// failed (2026-11-20, S4 P7b; `open_display` dropped it itself before).
+    /// failed (2026-11-20, S4 P7b; `open_display` dropped it itself before). 2026-11-21 (S4 W2):
+    /// called by the composition `display_window_handoff`.
     fn drop_display_secret(&mut self, serial: u64) {
         if let Some(display) = self.take_display_secret(serial) {
             #[cfg(test)]
@@ -4155,7 +4297,7 @@ impl App {
             Ok(clip) => {
                 replaced = self
                     .secret_clip
-                    .replace(PendingClip::new(clip, self.clock.now_ms()));
+                    .replace(PendingClip::new(clip, self.wallet.clock.now_ms()));
                 secret
                     .form
                     .set_info(Some(text::COPIED_SECRET.get(lang).to_owned()));
@@ -4397,9 +4539,9 @@ impl App {
         // `vault.ywv` rolled back on its own is noticed at the next unlock.
         if let Some((found, written)) = self.store.vault_file_info() {
             self.guard.vault_file = Some((found, written));
-            if let Some(meta) = self.meta.as_mut()
+            if let Some(meta) = self.wallet.meta.as_mut()
                 && found > meta.security.vault_generation_seen
-                && self.guard.rollback.is_none()
+                && self.wallet.guard.rollback.is_none()
             {
                 meta.security.vault_generation_seen = found;
             }
@@ -4707,6 +4849,9 @@ impl App {
                 drop(used);
             }
             Cmd::Form(snapshot) => self.form.replace(snapshot),
+            // One edit's read-back after a field write (2026-11-21, S4 W2: the executor's
+            // answer; before, the executor set the field itself).
+            Cmd::FieldShown { field, text } => self.form.set(field, text),
             // The field's own handler runs after the state has the text.
             // S3 C2: a converted family's handler takes the field and its text. S3 C11: every
             // handler is converted; a field none claims is ignored, as the legacy chain ignored
@@ -5782,7 +5927,7 @@ impl App {
 
     /// The stored credential of the selected template (`None` for `직접 입력`).
     const fn template_key(&self) -> Option<KeyName> {
-        match self.settings.rpc_template {
+        match self.wallet.settings.rpc_template {
             RpcTemplate::QuickNode => Some(KeyName::TplQuickNode),
             RpcTemplate::Alchemy => Some(KeyName::TplAlchemy),
             RpcTemplate::Manual => None,
@@ -5904,12 +6049,12 @@ impl App {
             return None;
         };
         let (targets, _) = self.generation_plan();
-        let written = self.apikeys.generate_urls(
+        let written = self.wallet.apikeys.generate_urls(
             template,
             &credential,
-            &self.settings,
+            &self.wallet.settings,
             &targets,
-            self.overwrite_checked,
+            self.wallet.overwrite_checked,
         );
         drop(credential);
         if !self.save_apikeys() {
@@ -5937,9 +6082,13 @@ impl App {
             return Vec::new();
         };
         let (targets, _) = self.generation_plan();
-        let written =
-            self.apikeys
-                .generate_urls(template, &credential, &self.settings, &targets, false);
+        let written = self.wallet.apikeys.generate_urls(
+            template,
+            &credential,
+            &self.wallet.settings,
+            &targets,
+            false,
+        );
         drop(credential);
         if written.is_empty() || !self.save_apikeys() {
             return Vec::new();

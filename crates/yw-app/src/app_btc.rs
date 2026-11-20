@@ -3913,18 +3913,18 @@ impl crate::app::App {
     /// context of [`Self::btc_call`]; 2026-11-20, S4 P10a: split out unchanged).
     fn btc_controller<R>(&mut self, call: impl FnOnce(&mut BtcUi, &BtcCtx<'_>) -> R) -> R {
         let ctx = BtcCtx {
-            lang: self.settings.language,
-            settings: &self.settings.bitcoin,
-            apikeys: &self.apikeys,
-            meta: self.meta.as_ref(),
-            journal: self.evm.journal.as_ref(),
-            journal_closed: self.sidecar.journal_closed,
-            unlocked: matches!(self.mode, crate::app::AppMode::Unlocked { .. }),
-            has_mnemonic: self.keys.has_mnemonic,
-            now_ms: self.clock.now_ms(),
-            now_unix_ms: self.clock.now_unix_ms(),
+            lang: self.wallet.settings.language,
+            settings: &self.wallet.settings.bitcoin,
+            apikeys: &self.wallet.apikeys,
+            meta: self.wallet.meta.as_ref(),
+            journal: self.wallet.evm.journal.as_ref(),
+            journal_closed: self.wallet.sidecar.journal_closed,
+            unlocked: matches!(self.wallet.mode, crate::app::AppMode::Unlocked { .. }),
+            has_mnemonic: self.wallet.keys.has_mnemonic,
+            now_ms: self.wallet.clock.now_ms(),
+            now_unix_ms: self.wallet.clock.now_unix_ms(),
         };
-        call(&mut self.btc, &ctx)
+        call(&mut self.wallet.btc, &ctx)
     }
 
     /// [`Self::btc_call`] for a controller change that asks for no action (2026-11-20, S4 P10a,
@@ -4398,8 +4398,9 @@ impl crate::app::App {
 
     /// A BTC approval ended.
     pub(crate) fn btc_approval_finished(&mut self, item: &BtcApprovalItem, outcome: QueueOutcome) {
-        self.btc
-            .approval_finished(self.settings.language, item, outcome);
+        self.wallet
+            .btc
+            .approval_finished(self.wallet.settings.language, item, outcome);
         logging::info(
             "app",
             "approval.finished",

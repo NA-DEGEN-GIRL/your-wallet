@@ -1983,7 +1983,7 @@ impl App {
             self.set_mode(AppMode::Unlocked {
                 alt_passphrase: false,
             });
-            self.idle.input(self.clock.now_ms());
+            self.wallet.idle.input(self.wallet.clock.now_ms());
             if let Ok((_, enrolled)) = result {
                 let bitcoin = enrolled
                     .record

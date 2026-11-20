@@ -1138,7 +1138,7 @@ impl App {
             return;
         }
         let now = self.clock.now_ms();
-        let Some(step) = self.card.step.as_mut().filter(|step| step.id == id) else {
+        let Some(step) = self.wallet.card.step.as_mut().filter(|step| step.id == id) else {
             drop(pin);
             return;
         };
@@ -1151,10 +1151,11 @@ impl App {
             // admin PIN and PUK) is never sent for a signature.
             drop(pin);
             drop(approved);
-            if let Some(step) = self.card.step.take() {
-                self.card.pin_needed = crate::yubikey::holders(&self.card.records, step.role)
-                    .first()
-                    .copied();
+            if let Some(step) = self.wallet.card.step.take() {
+                self.wallet.card.pin_needed =
+                    crate::yubikey::holders(&self.wallet.card.records, step.role)
+                        .first()
+                        .copied();
                 logging::info("app", "card.factory_pin_refused", &[]);
                 // The yellow T-YK-PIN-NEEDED band with `PIN 설정` says it (one band); a key no
                 // enrolled card holds has no such band, so the red text says it.
@@ -1162,7 +1163,7 @@ impl App {
                     .card
                     .pin_needed
                     .is_none()
-                    .then_some(text::FACTORY_PIN.get(self.settings.language));
+                    .then_some(text::FACTORY_PIN.get(self.wallet.settings.language));
                 self.card_resolve_failed(step, text);
             }
             return;
@@ -1170,10 +1171,10 @@ impl App {
         if now >= step.deadline_ms {
             drop(pin);
             drop(approved);
-            if let Some(step) = self.card.step.take() {
+            if let Some(step) = self.wallet.card.step.take() {
                 self.card_resolve_failed(
                     step,
-                    Some(text::STEP_EXPIRED.get(self.settings.language)),
+                    Some(text::STEP_EXPIRED.get(self.wallet.settings.language)),
                 );
             }
             return;
@@ -1182,7 +1183,7 @@ impl App {
         step.presence = None;
         let ticket = step.ticket;
         let kind = step.kind.clone();
-        let touch = touch_text_in(self.settings.language, &kind, step.touches);
+        let touch = touch_text_in(self.wallet.settings.language, &kind, step.touches);
         let form = self.card_form(&kind, ticket);
         match kind {
             CardJobKind::EvmTx { info } => self.key(KeyJob::SignEvmCard {
@@ -1505,7 +1506,7 @@ impl App {
     /// shown as usual.
     fn card_unused(&mut self, approved: Box<Approved>, error: CardJobError) {
         let now = self.clock.now_ms();
-        let Some(step) = self.card.step.as_mut() else {
+        let Some(step) = self.wallet.card.step.as_mut() else {
             return;
         };
         if step.approved.is_some() || step.approval_id != approved.id() {
@@ -1544,18 +1545,19 @@ impl App {
         }
         // A blocked PIN says what is safe for this card's keys (2026-11-10).
         let serial = step.counters.map(|counters| counters.serial).or_else(|| {
-            crate::yubikey::holders(&self.card.records, step.role)
+            crate::yubikey::holders(&self.wallet.card.records, step.role)
                 .first()
                 .copied()
         });
         let names = self
+            .wallet
             .meta
             .as_ref()
             .map_or(&[][..], |meta| meta.hw_card_names.as_slice());
         let context = serial.map_or_else(crate::yubikey::PinContext::default, |serial| {
-            crate::yubikey::PinContext::of(&self.card.records, names, serial, kind)
+            crate::yubikey::PinContext::of(&self.wallet.card.records, names, serial, kind)
         });
-        step.error = Some(error.text_for_in(self.settings.language, kind, &context));
+        step.error = Some(error.text_for_in(self.wallet.settings.language, kind, &context));
         // A site disconnected (or a page gone) while the card checked the PIN: the step ends
         // here instead of asking for the PIN again (2026-11-13).
         if self.card_site_check() {

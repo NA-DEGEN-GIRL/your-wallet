@@ -1298,9 +1298,10 @@ impl App {
                             self.sol.tokens.insert((cluster, row.address), row.tokens);
                         }
                         self.sol.balance_error.remove(&cluster);
-                        self.sol
+                        self.wallet
+                            .sol
                             .balance_at
-                            .insert(cluster, self.clock.now_unix_ms());
+                            .insert(cluster, self.wallet.clock.now_unix_ms());
                     }
                     Err(code) => {
                         self.sol.balance_error.insert(cluster, code);
@@ -2139,7 +2140,7 @@ impl App {
     /// A broadcast round finished (RPC worker).
     fn on_sol_tracked(&mut self, result: &TrackResult) {
         let now = self.clock.now_ms();
-        let Some(state) = self.sol.tracking.get_mut(&result.signature) else {
+        let Some(state) = self.wallet.sol.tracking.get_mut(&result.signature) else {
             return;
         };
         state.busy = false;
@@ -2191,7 +2192,7 @@ impl App {
                 "sol.terminal",
                 &[("kind", Field::Word(transition.name()))],
             );
-            if matches!(self.mode, AppMode::Unlocked { .. }) {
+            if matches!(self.wallet.mode, AppMode::Unlocked { .. }) {
                 state.halt = Some(SolHalt::Saving { since_ms: now });
                 self.key(KeyJob::SolApply {
                     transition,

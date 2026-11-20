@@ -155,6 +155,16 @@ pub enum Cmd {
     },
     /// Windows-transitional (goes in S5): what the plain edits show now.
     Form(FormSnapshot),
+    /// Windows-transitional (goes in S5, with `Form`): what one plain edit shows right after the
+    /// shell applied `Effect::SetField` or `Effect::ClearField` to it (`None`: no such edit); the
+    /// logic puts it into the form state (2026-11-21, S4 W2, plan §3.4, D-4: the shell writes no
+    /// wallet state; before, the effect executor wrote the form state itself, at the same point).
+    FieldShown {
+        /// The field written.
+        field: EditField,
+        /// Its text as the edit holds it now.
+        text: Option<Zeroizing<String>>,
+    },
     /// A one-shot timer asked for by `Effect::StartTimer` fired.
     Timer(TimerId),
     /// Result of `Effect::CopyText`, echoing its mark (it may arrive later on Android).
@@ -226,6 +236,11 @@ impl fmt::Debug for Cmd {
                 .field("len", &text.len())
                 .finish(),
             Self::Form(snapshot) => formatter.debug_tuple("Form").field(snapshot).finish(),
+            Self::FieldShown { field, text } => formatter
+                .debug_struct("FieldShown")
+                .field("field", field)
+                .field("len", &text.as_ref().map(|text| text.len()))
+                .finish(),
             Self::Timer(timer) => formatter.debug_tuple("Timer").field(timer).finish(),
             Self::CopyDone { ok, mark } => formatter
                 .debug_struct("CopyDone")
@@ -494,6 +509,29 @@ mod tests {
             ),
             "CopyDone { ok: true, mark: CopyMark { anchor: Ext(CopyUrl), address: false, \
              band: Some(ExtensionsUrl) } }"
+        );
+    }
+
+    /// 2026-11-21 (S4 W2): one field's read-back after a field write prints the field and the
+    /// length only.
+    #[test]
+    fn field_shown_prints_no_text() {
+        let field = Cmd::FieldShown {
+            field: EditField::WcUri,
+            text: Some(Zeroizing::new("wc:abc@2?symKey=00".to_owned())),
+        };
+        let shown = format!("{field:?}");
+        assert!(!shown.contains("symKey"), "{shown}");
+        assert_eq!(shown, "FieldShown { field: WcUri, len: Some(18) }");
+        assert_eq!(
+            format!(
+                "{:?}",
+                Cmd::FieldShown {
+                    field: EditField::LlmEndpoint,
+                    text: None,
+                }
+            ),
+            "FieldShown { field: LlmEndpoint, len: None }"
         );
     }
 

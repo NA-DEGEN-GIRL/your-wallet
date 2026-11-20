@@ -306,7 +306,7 @@ impl App {
     /// P4: the shell's Esc resolution reads it before closing).
     #[must_use]
     pub(crate) const fn pickers_open(&self) -> bool {
-        self.account_menu.is_some() || self.evm.network_picker
+        self.wallet.account_menu.is_some() || self.wallet.evm.network_picker
     }
 
     /// The drop-down buttons and the activity recipients (2026-11-18, S3 C1: a `LinksPress`;

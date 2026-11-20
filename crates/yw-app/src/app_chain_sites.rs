@@ -184,7 +184,7 @@ pub fn chain_answer_value(answer: &ChainAnswer, signature: &ChainSignature) -> O
 impl App {
     /// The settings Bitcoin network.
     pub(crate) const fn btc_network_now(&self) -> BtcNetwork {
-        crate::btc::core_network(self.settings.bitcoin.network)
+        crate::btc::core_network(self.wallet.settings.bitcoin.network)
     }
 
     /// Visible Solana accounts usable by dApps (standard accounts, then imported keys).

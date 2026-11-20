@@ -287,7 +287,7 @@ impl App {
     /// The settings network.
     #[must_use]
     pub const fn zec_network(&self) -> ZecNetwork {
-        self.settings.zcash.network
+        self.wallet.settings.zcash.network
     }
 
     /// The account of the settings network, if known.

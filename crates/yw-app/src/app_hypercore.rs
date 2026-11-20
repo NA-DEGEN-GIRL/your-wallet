@@ -333,7 +333,7 @@ impl App {
     /// The card's network.
     #[must_use]
     pub const fn hc_network(&self) -> HcNetwork {
-        self.settings.hypercore.network
+        self.wallet.settings.hypercore.network
     }
 
     fn hc_endpoint(&self, network: HcNetwork) -> HcEndpoint {

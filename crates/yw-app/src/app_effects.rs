@@ -71,10 +71,23 @@
 //! `clear_secret_clip_at_exit`, called by `App::lock` before). `AwaitKeyLock` is the lock's
 //! `Suspend` wait for the key worker (was in `App::lock`; critique A-2). None records a
 //! shell-call line (none was recorded before).
+//!
+//! 2026-11-21 (S4 W2, plan §3.3–§3.4 D-4): `App` is the wallet (`app::Wallet`) and the shell's
+//! fields, and this executor writes no wallet state (source check
+//! `the_executor_writes_no_wallet_state`): the form state's read-backs are answers, `Cmd::Form`
+//! after `Render` and `Cmd::FieldShown` after `SetField`/`ClearField` (the drain hands them to
+//! the logic at once; before, the arms wrote the form state themselves at the same point), and
+//! the one exception left is the clip-clear notices of `clear_secret_clip` (spec/04 §4.8). A
+//! display window's open is not applied here: `App::drain` hands it to the composition
+//! (`App::open_display_composed`), the one place a value moves from the wallet into the shell
+//! (the secret, after the shell verified the window's capture exclusion; before, the
+//! `apply_secret_effect` arm's `open_display_window` moved it). The plan's
+//! `Shell::apply(effect, &Wallet)` waits for the render builders to leave `impl App` (S5).
 
 use yw_core::secret::Zeroizing;
 use yw_engine::cmd::Cmd;
 use yw_engine::effect::{Effect, Folder, RevealTarget, TimerId};
+use yw_engine::secret::SecretEffect;
 use yw_win::clipboard;
 
 use crate::app::App;
@@ -217,7 +230,23 @@ impl App {
     /// Debug builds only, never: the loop ends with the queue empty.
     pub fn drain(&mut self) {
         while let Some(effect) = self.outbox.pop_front() {
-            let answer = self.apply(effect);
+            // 2026-11-21 (S4 W2, plan §3.4, D-4): the composition. A display window's open is the
+            // one effect that moves a value from the wallet into the shell (the secret), so it
+            // is not the executor's: `open_display_composed` has the shell make and verify the
+            // window, moves the secret in only then, and answers. Every other effect is the
+            // executor's (`apply`), which writes no wallet state (source check
+            // `the_executor_writes_no_wallet_state`). Before W2 the executor's display arm
+            // moved the secret itself (`open_display_window`), at the same point.
+            let answer = match effect {
+                Effect::Secret(SecretEffect::OpenDisplay {
+                    serial,
+                    kind,
+                    step,
+                    timeout_note,
+                    lang,
+                }) => Some(self.open_display_composed(serial, kind, step, timeout_note, lang)),
+                effect => self.apply(effect),
+            };
             // Tests: the logic's steps logged behind this effect are logged now.
             #[cfg(test)]
             crate::app::secret_seam::applied();
@@ -270,10 +299,12 @@ impl App {
                 // S3 B5 (Windows-transitional): the layout may have created edits again (from
                 // their model text) or kept the one being typed in, so the form state is read
                 // back from the window. Headless (no window) nothing was laid out.
-                if self.main.is_some() {
-                    self.form.replace(self.controls.form_snapshot());
-                }
-                None
+                // 2026-11-21 (S4 W2, plan §3.4, D-4): answered as `Cmd::Form`, which the drain
+                // hands to the logic at once (it replaces the form state, nothing else); before,
+                // this arm replaced the form state itself, at the same point.
+                self.main
+                    .is_some()
+                    .then(|| Cmd::Form(self.controls.form_snapshot()))
             }
             Effect::StartTimer { timer, ms } => {
                 #[cfg(test)]
@@ -320,13 +351,15 @@ impl App {
                 // what a test typed, as `ControlSet::set_text` writes no window there).
                 // 2026-11-20 (S4 P10b, O-10): `emit` already put the text into the form state;
                 // the read-back keeps it equal to what the edit holds, as before.
+                // 2026-11-21 (S4 W2, D-4): the read-back is answered as `Cmd::FieldShown`, which
+                // the drain hands to the logic at once (it sets that one field of the form state,
+                // nothing else); before, this arm set it itself, at the same point.
                 let id = edit_id_of(field);
                 self.controls.set_text(id, &text);
-                self.form.set(
+                Some(Cmd::FieldShown {
                     field,
-                    self.controls.text(id, field.cap()).map(Zeroizing::new),
-                );
-                None
+                    text: self.controls.text(id, field.cap()).map(Zeroizing::new),
+                })
             }
             // A credential edit is emptied after its one read; it is never form state.
             Effect::ClearCred { field } => {
@@ -338,14 +371,14 @@ impl App {
             // (headless: `ControlSet::clear_text` drops what a test typed, so the field is gone
             // there as from the edit). (2026-11-18, S3 C1–C3 review: before C4 debug builds
             // counted a `ClearField` as a form mismatch, as nothing could emit one yet.)
+            // 2026-11-21 (S4 W2, D-4): answered as `Cmd::FieldShown`, as `SetField` is.
             Effect::ClearField { field } => {
                 let id = edit_id_of(field);
                 self.controls.clear_text(id);
-                self.form.set(
+                Some(Cmd::FieldShown {
                     field,
-                    self.controls.text(id, field.cap()).map(Zeroizing::new),
-                );
-                None
+                    text: self.controls.text(id, field.cap()).map(Zeroizing::new),
+                })
             }
             // S4 B5: the approval window; an open is answered (2026-11-20, S4 P10b: by the drain).
             Effect::Approval(effect) => self.apply_approval_effect(effect),

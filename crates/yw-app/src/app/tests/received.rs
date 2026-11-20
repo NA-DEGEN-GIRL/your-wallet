@@ -44,8 +44,9 @@ fn switch_off_queues_nothing_and_on_reads_the_shown_card() {
     let (tx, rx) = std::sync::mpsc::channel();
     app.rpc_tx = Some(tx);
     let url = yw_platform::http::HttpsUrl::parse("https://rpc.example.test/key").unwrap();
-    app.apikeys
-        .set_rpc(NetworkId::Eip155(app.settings.evm_chain_id), &url);
+    app.wallet
+        .apikeys
+        .set_rpc(NetworkId::Eip155(app.wallet.settings.evm_chain_id), &url);
     let now = yw_win::time::monotonic_ms();
 
     // Off (the default): no read is ever queued; the card has only the switch.

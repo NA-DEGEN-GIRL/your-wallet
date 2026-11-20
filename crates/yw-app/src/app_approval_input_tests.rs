@@ -2295,7 +2295,9 @@ fn the_approval_flow_names_no_window() {
     );
     // The executor applies an approval effect and returns the open's answer, which the drain
     // feeds back (2026-11-20, S4 P10b: the outbox; before, `emit` applied it at once and called
-    // `on_cmd` with the answer itself).
+    // `on_cmd` with the answer itself). 2026-11-21 (S4 W2): every effect but a display window's
+    // open goes to the executor (`effect => self.apply(effect)`; before, `let answer =
+    // self.apply(effect);` for all of them).
     let effects = folded(&code_only(include_str!("app_effects.rs")));
     assert!(
         effects.contains("Effect::Approval(effect) => self.apply_approval_effect(effect),"),
@@ -2306,7 +2308,8 @@ fn the_approval_flow_names_no_window() {
         &[
             "pub fn drain(&mut self) {",
             "while let Some(effect) = self.outbox.pop_front() {",
-            "let answer = self.apply(effect);",
+            "let answer = match effect {",
+            "effect => self.apply(effect), };",
             "if let Some(answer) = answer { self.on_cmd(answer); }",
         ],
     );

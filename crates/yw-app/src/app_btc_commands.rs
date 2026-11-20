@@ -93,7 +93,9 @@ impl App {
             &self.btc.send.fee
         };
         if fee.needs_typed.is_none() && !fee.typed_text.is_empty() {
-            self.btc.set_typed_fee(self.settings.language, "", bump);
+            self.wallet
+                .btc
+                .set_typed_fee(self.wallet.settings.language, "", bump);
         }
     }
 

@@ -1919,3 +1919,401 @@ fn answers_and_jobs_are_never_effects() {
     assert!(guarded >= 2, "{guarded} grant-checked answers found");
     assert!(broadcasts >= 2, "{broadcasts} broadcasts found");
 }
+
+// ---- The wallet/shell split's source check (2026-11-21, S4 W2; plan §3.3–§3.4 D-4) ---------
+
+/// The fns a wallet field may be changed through when called on it.
+const MUTATING: [&str; 26] = [
+    "as_mut",
+    "clear",
+    "clone_from",
+    "drain",
+    "entry",
+    "extend",
+    "get_mut",
+    "get_or_insert",
+    "get_or_insert_with",
+    "insert",
+    "iter_mut",
+    "pop",
+    "pop_back",
+    "pop_front",
+    "push",
+    "push_back",
+    "push_front",
+    "remove",
+    "replace",
+    "retain",
+    "set",
+    "sort",
+    "swap",
+    "take",
+    "take_if",
+    "truncate",
+];
+
+/// The calls the executor makes into the wallet, each with its reason (2026-11-21, S4 W2): not
+/// followed, and allowed only from the fn named. Nothing else of the executor writes wallet
+/// state.
+const EXECUTOR_WALLET_CALLS: [(&str, &str, &str); 3] = [
+    (
+        "clear_secret_clip",
+        "drop_clip_notice",
+        "the clip-clear notices (spec/04 §4.8): the fn is shared with the main tick (a shell \
+         entry) and `SecretEffect::ClearClip` (the lock's clear); its band changes are the \
+         wallet's, made where the clear's result is known",
+    ),
+    ("clear_secret_clip", "notice", "the same notices"),
+    (
+        "clear_secret_clip",
+        "refresh",
+        "the repaint of those notices",
+    ),
+];
+
+/// The executor fns [`the_executor_writes_no_wallet_state`] must reach (critique A-20).
+const EXECUTOR_TARGETS: [&str; 21] = [
+    "apply",
+    "apply_approval_effect",
+    "open_approval_window",
+    "close_approval_shell",
+    "apply_secret_effect",
+    "open_input_window",
+    "make_display_window",
+    "show_display",
+    "show_secret",
+    "apply_form_op",
+    "close_secret_window",
+    "clear_secret_clip",
+    "clear_secret_clip_at_exit",
+    "open_folder",
+    "render_main",
+    "raise_main",
+    "reveal_id",
+    "screen_entered",
+    "screen_leaving",
+    "tab_top",
+    "overlay_closed_in_place",
+];
+
+/// The wallet's fields: the names declared in `pub struct Wallet { … }` of `app.rs`.
+fn wallet_fields(app: &Src) -> BTreeSet<String> {
+    let start = app.code.find("pub struct Wallet {");
+    assert!(start.is_some(), "pub struct Wallet found");
+    let open = start.unwrap_or_default() + "pub struct Wallet ".len();
+    let body = &app.code[open + 1..close_of(app.code.as_bytes(), open)];
+    let mut fields = BTreeSet::new();
+    for line in body.lines() {
+        let line = line.trim();
+        let line = line.strip_prefix("pub(crate) ").unwrap_or(line);
+        if let Some((name, _)) = line.split_once(':')
+            && !name.is_empty()
+            && name.bytes().all(is_ident)
+        {
+            fields.insert(name.to_owned());
+        }
+    }
+    fields
+}
+
+/// `body` with its whitespace folded, none around a `.` (a chain over several lines reads as
+/// one), and `self.wallet.` as `self.`.
+fn normalized(body: &str) -> String {
+    body.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace(" .", ".")
+        .replace(". ", ".")
+        .replace("self.wallet.", "self.")
+}
+
+/// What in `body` writes a wallet field (one of `fields`), as the `self.` chain found: an
+/// assignment to the field or to a part of it, a `&mut` borrow of it, or a call of one of
+/// [`MUTATING`] on it (through `self.` or `self.wallet.`).
+fn wallet_writes(body: &str, fields: &BTreeSet<String>) -> Vec<String> {
+    let text = normalized(body);
+    let bytes = text.as_bytes();
+    let mut found = Vec::new();
+    for (at, _) in text.match_indices("self.") {
+        if at > 0 && (is_ident(bytes[at - 1]) || bytes[at - 1] == b'.') {
+            continue;
+        }
+        let mut end = at + "self".len();
+        let mut segments = Vec::new();
+        while bytes.get(end) == Some(&b'.') {
+            let start = end + 1;
+            let mut stop = start;
+            while stop < bytes.len() && is_ident(bytes[stop]) {
+                stop += 1;
+            }
+            if stop == start {
+                break;
+            }
+            segments.push(&text[start..stop]);
+            end = stop;
+        }
+        if !segments
+            .first()
+            .is_some_and(|field| fields.contains(*field))
+        {
+            continue;
+        }
+        let rest = text[end..].trim_start();
+        let assigns = (rest.starts_with('=') && !rest.starts_with("==") && !rest.starts_with("=>"))
+            || ["+=", "-=", "*=", "/=", "|=", "&=", "^="]
+                .iter()
+                .any(|op| rest.starts_with(op));
+        let mutating = rest.starts_with('(')
+            && segments.len() > 1
+            && segments.last().is_some_and(|name| MUTATING.contains(name));
+        if text[..at].trim_end().ends_with("&mut") || assigns || mutating {
+            found.push(text[at..end].to_owned());
+        }
+    }
+    found
+}
+
+/// The fns of `impl App` blocks in `files` (the type named plain or by path), by name: each
+/// body with whether it takes `&mut self`.
+fn app_fns(files: &[Src]) -> BTreeMap<String, Vec<(String, String, bool)>> {
+    let mut fns: BTreeMap<String, Vec<(String, String, bool)>> = BTreeMap::new();
+    for src in files {
+        let impls: Vec<(usize, usize)> = src
+            .blocks
+            .iter()
+            .filter(|block| {
+                let block_head = head(&src.code, block.open)
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                block_head == "impl App" || block_head == "impl crate::app::App"
+            })
+            .map(|block| (block.open, block.close))
+            .collect();
+        for block in &src.blocks {
+            if !impls
+                .iter()
+                .any(|&(open, close)| open < block.open && block.close < close)
+            {
+                continue;
+            }
+            let fn_head = head(&src.code, block.open);
+            let Some((_, after)) = fn_head.rsplit_once("fn ") else {
+                continue;
+            };
+            if !has_word(fn_head, "fn") {
+                continue;
+            }
+            let name: String = after
+                .trim_start()
+                .chars()
+                .take_while(|&c| c.is_ascii_alphanumeric() || c == '_')
+                .collect();
+            let takes_mut = fn_head
+                .split_whitespace()
+                .collect::<String>()
+                .contains("&mutself");
+            fns.entry(name).or_default().push((
+                src.file.clone(),
+                src.code[block.open..=block.close].to_owned(),
+                takes_mut,
+            ));
+        }
+    }
+    fns
+}
+
+/// The names of the `App` fns `body` calls on `self` (`self.<fn>(`, through `self.wallet.` too).
+fn self_calls(body: &str) -> BTreeSet<String> {
+    let text = normalized(body);
+    let bytes = text.as_bytes();
+    let mut calls = BTreeSet::new();
+    for (at, _) in text.match_indices("self.") {
+        if at > 0 && (is_ident(bytes[at - 1]) || bytes[at - 1] == b'.') {
+            continue;
+        }
+        let start = at + "self.".len();
+        let mut stop = start;
+        while stop < bytes.len() && is_ident(bytes[stop]) {
+            stop += 1;
+        }
+        if stop > start && text[stop..].trim_start().starts_with('(') {
+            calls.insert(text[start..stop].to_owned());
+        }
+    }
+    calls
+}
+
+/// D-4 `the_executor_writes_no_wallet_state` (2026-11-21, S4 W2; plan §3.3–§3.4 D-4, preflight
+/// §3 W2, spec/04 §1.3): `App` is the wallet ([`wallet_fields`]: `pub struct Wallet`) plus the
+/// shell's fields, and the effect executor — `App::apply` and every `&mut self` fn of `impl App`
+/// it reaches through `self.` calls, plus the display window's shell halves
+/// `make_display_window` and `show_display` — writes no wallet field ([`wallet_writes`]) and
+/// calls into the wallet only as [`EXECUTOR_WALLET_CALLS`] lists. (`&self` fns, the render
+/// builders `render_main` reads, change nothing.) The plan's `Shell::apply(effect, &Wallet)`
+/// cannot be typed while the render builders are `impl App` (D-21, until S5), so this check
+/// stands in for it. The one value that moves from the wallet into the shell, a display window's
+/// secret, is the composition's: only `display_window_handoff` (called by
+/// `open_display_composed`, which only `App::drain` calls) takes or drops it, and the executor
+/// reaches none of the three. The scanners are tried on made-up code
+/// ([`wallet_writes_and_self_calls_on_made_up_code`]: they can fail) and the
+/// check finds its targets (it cannot pass on nothing, critique A-20).
+#[test]
+fn the_executor_writes_no_wallet_state() {
+    let files: Vec<Src> = production_code()
+        .into_iter()
+        .filter(|src| src.file.starts_with("yw-app/"))
+        .collect();
+    let app = src_of(&files, "yw-app/src/app.rs");
+    let fields = wallet_fields(app);
+    for field in [
+        "mode",
+        "evm",
+        "form",
+        "secret_session",
+        "banners",
+        "settings",
+    ] {
+        assert!(fields.contains(field), "wallet field {field} found");
+    }
+    for shell in [
+        "controls",
+        "main",
+        "approval_win",
+        "secret",
+        "outbox",
+        "launcher",
+    ] {
+        assert!(!fields.contains(shell), "{shell} is the shell's");
+    }
+    let fns = app_fns(&files);
+    let mut reached = BTreeSet::new();
+    let mut todo = vec![
+        "apply".to_owned(),
+        "make_display_window".to_owned(),
+        "show_display".to_owned(),
+    ];
+    while let Some(name) = todo.pop() {
+        if !reached.insert(name.clone()) {
+            continue;
+        }
+        let bodies = fns.get(&name);
+        assert!(bodies.is_some(), "fn {name} of impl App found");
+        for (file, body, _) in bodies.into_iter().flatten() {
+            let writes = wallet_writes(body, &fields);
+            assert!(
+                writes.is_empty(),
+                "{file}: the executor's fn {name} writes wallet state: {writes:?}"
+            );
+            for call in self_calls(body) {
+                if EXECUTOR_WALLET_CALLS
+                    .iter()
+                    .any(|&(from, to, _)| from == name && to == call)
+                {
+                    continue;
+                }
+                if fns
+                    .get(&call)
+                    .is_some_and(|bodies| bodies.iter().any(|(_, _, takes_mut)| *takes_mut))
+                {
+                    todo.push(call);
+                }
+            }
+        }
+    }
+    for composition in [
+        "open_display_composed",
+        "display_window_handoff",
+        "take_display_secret",
+        "drop_display_secret",
+        "on_cmd",
+        "emit",
+    ] {
+        assert!(
+            !reached.contains(composition),
+            "the executor reaches {composition}"
+        );
+    }
+    for target in EXECUTOR_TARGETS {
+        assert!(
+            reached.contains(target),
+            "the executor's fn {target} reached"
+        );
+    }
+    the_display_secret_moves_only_in_the_composition(&files);
+}
+
+/// The scanners of [`the_executor_writes_no_wallet_state`] on made-up code: they can fail.
+#[test]
+fn wallet_writes_and_self_calls_on_made_up_code() {
+    let made_up: BTreeSet<String> = ["form", "evm", "banners"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(
+        wallet_writes(
+            "{ self.form.set(a, b); let n = self.evm.queue.len(); \
+             self.wallet.banners.push(n); if self.form == x {} let m = &mut self.evm; \
+             self.controls.set(1); self.evm.next_shown += 1; self.scroll = 0; \
+             self.banners.retain(|b| b.ok); }",
+            &made_up,
+        ),
+        [
+            "self.form.set",
+            "self.banners.push",
+            "self.evm",
+            "self.evm.next_shown",
+            "self.banners.retain",
+        ]
+    );
+    assert_eq!(
+        self_calls("{ self.render_main(); self.wallet.notice(x); self.evm.job(); }"),
+        ["notice", "render_main"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<BTreeSet<_>>()
+    );
+}
+
+/// The rest of [`the_executor_writes_no_wallet_state`]: only `display_window_handoff` takes or
+/// drops a display secret, and only `App::drain` calls the composition `open_display_composed`.
+fn the_display_secret_moves_only_in_the_composition(files: &[Src]) {
+    // The secret's move: only the composition takes or drops it.
+    let mut handoffs = 0;
+    for src in files {
+        for (name, body) in fn_blocks(src) {
+            for call in ["take_display_secret(", "drop_display_secret("] {
+                if body.contains(&format!("self.{call}")) {
+                    handoffs += 1;
+                    assert!(
+                        name == "display_window_handoff"
+                            || (name == "drop_display_secret" && call == "take_display_secret("),
+                        "{}: fn {name} calls {call}",
+                        src.file
+                    );
+                }
+            }
+        }
+    }
+    assert_eq!(handoffs, 3, "the take, the drop and the drop's take");
+    let effects = src_of(files, "yw-app/src/app_effects.rs");
+    let drain = fn_bodies(effects, "drain");
+    assert_eq!(drain.len(), 1, "one drain");
+    let drain: String = drain[0].split_whitespace().collect();
+    assert!(
+        drain.contains("=>Some(self.open_display_composed(")
+            && drain.contains("effect=>self.apply(effect),"),
+        "the drain hands a display open to the composition: {drain}"
+    );
+    let callers = files
+        .iter()
+        .flat_map(|src| {
+            fn_blocks(src)
+                .into_iter()
+                .map(move |(name, body)| (src, name, body))
+        })
+        .filter(|(_, _, body)| body.contains("self.open_display_composed("))
+        .map(|(src, name, _)| format!("{}:{name}", src.file))
+        .collect::<Vec<_>>();
+    assert_eq!(callers, ["yw-app/src/app_effects.rs:drain"]);
+}

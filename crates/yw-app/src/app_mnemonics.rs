@@ -981,7 +981,7 @@ impl App {
             return;
         };
         let infos = self.mn.infos.clone();
-        if let Some(meta) = self.meta.as_mut() {
+        if let Some(meta) = self.wallet.meta.as_mut() {
             // A wallet whose meta has no entries yet (one mnemonic, default label) gets them
             // here; the next meta load fills in the accounts of added mnemonics.
             for (position, info) in infos.iter().enumerate() {
@@ -993,7 +993,7 @@ impl App {
                     meta.mnemonics.push(crate::meta::MnemonicEntry {
                         record_id: *info.id.as_bytes(),
                         label: crate::workers::key::mnemonics::default_label(
-                            self.settings.language,
+                            self.wallet.settings.language,
                             position.saturating_add(1),
                         ),
                         evm: Vec::new(),
@@ -1338,14 +1338,14 @@ impl App {
                     .meta
                     .as_ref()
                     .map_or(1, crate::meta::Meta::next_evm_number);
-                if let Some(entry) = self.meta.as_mut().and_then(|meta| {
+                if let Some(entry) = self.wallet.meta.as_mut().and_then(|meta| {
                     meta.mnemonics
                         .iter_mut()
                         .find(|entry| entry.record_id == *id.as_bytes())
                 }) && !entry.evm.iter().any(|account| account.index == index)
                 {
                     entry.evm.push(crate::workers::key::new_account(
-                        self.settings.language,
+                        self.wallet.settings.language,
                         index,
                         number,
                         &address,
