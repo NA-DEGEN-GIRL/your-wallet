@@ -3679,6 +3679,56 @@ fn setup_copies_answer_with_the_band_in_their_mark() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// 2026-11-20 (S4 P6 review): a setup step's band result that arrives after another copy's mark
+/// (Android) sets its band and keeps that newer mark (the first P6 version erased it), and a late
+/// `ReownAddress` band lays nothing out — it waits for the next layout, as a late mark or failure
+/// does; S23's bands lay out (spec/15 §11.4 S4, spec/04 §2.6).
+#[test]
+fn a_late_band_result_keeps_a_newer_mark() {
+    use crate::app_effects::TEST_COPY_ANSWER;
+    use crate::app_evm::Copied;
+    use crate::ui::cmd_table::press_of;
+    use crate::ui::screens_evm::ids::COPY_ADDRESS;
+    use yw_engine::cmd::{Cmd, CopyBand, CopyMark, ExtPress, Press, WcPress};
+    let (mut app, dir) = unlocked_app("copy-band-late", false);
+    TEST_COPY_ANSWER.with(|kept| kept.set(Some(true)));
+    app.on_command(COPY_ADDRESS);
+    TEST_COPY_ANSWER.with(|kept| kept.set(None));
+    let live = app.copied;
+    assert!(matches!(
+        live,
+        Some(Copied {
+            anchor,
+            address: true,
+            ..
+        }) if Some(anchor) == press_of(COPY_ADDRESS, &app.controls)
+    ));
+    let url = crate::app_extension::text::URL_COPIED.ko;
+    let reown = crate::ui::screens_walletconnect::text::REOWN_COPIED.ko;
+    let _ = app.controls.take_shell_log();
+    app.on_cmd(Cmd::CopyDone {
+        ok: true,
+        mark: CopyMark {
+            anchor: Press::Ext(ExtPress::CopyUrl),
+            address: false,
+            band: Some(CopyBand::ExtensionsUrl),
+        },
+    });
+    assert_eq!(app.controls.take_shell_log(), ["refresh"]);
+    assert_eq!((app.info.as_deref(), app.copied), (Some(url), live));
+    app.on_cmd(Cmd::CopyDone {
+        ok: true,
+        mark: CopyMark {
+            anchor: Press::Wc(WcPress::ReownCopy),
+            address: false,
+            band: Some(CopyBand::ReownAddress),
+        },
+    });
+    assert_eq!(app.controls.take_shell_log(), Vec::<String>::new());
+    assert_eq!((app.info.as_deref(), app.copied), (Some(reown), live));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// 2026-11-20 (S4 P3): explorer links and the three folders open through `Effect::OpenUrl` and
 /// `Effect::OpenFolder`. The executor starts the launcher (unit-test builds: a record, no process
 /// — for folders too, which started `explorer.exe` in every build before) and answers in the same

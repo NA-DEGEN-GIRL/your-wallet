@@ -2069,6 +2069,12 @@ impl App {
     /// `WalletConnect` panel's press does at its end (as each handler did after reading the
     /// result: the same steps in the same number). Before P6 the mark was made and the handler
     /// took it back right after the copy (`copied.take()`) to set the band.
+    /// 2026-11-20 (S4 P6 review): a band leaves `App::copied` alone. Inside the press it is
+    /// already `None` (`on_press` cleared it), so nothing changes there; a band result that
+    /// arrives after another copy's mark (Android) keeps that newer mark (the first P6 version
+    /// cleared it). Only S23's bands lay out here; a late `ReownAddress` band, a late mark and a
+    /// late failure wait for the next layout, which a shell that answers `Cmd::CopyDone` after
+    /// the press makes (spec/15 §11.4 S4).
     pub(crate) fn copy_done(&mut self, ok: bool, mark: CopyMark) {
         let failed = ErrorCode::Sec002.text_in(self.settings.language);
         if let (true, Some(band)) = (ok, mark.band) {
@@ -2079,7 +2085,6 @@ impl App {
                     (crate::ui::screens_walletconnect::text::REOWN_COPIED, false)
                 }
             };
-            self.copied = None;
             self.info = Some(text.get(self.settings.language).to_owned());
             if refresh {
                 self.refresh();
