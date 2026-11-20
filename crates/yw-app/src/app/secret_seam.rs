@@ -6,7 +6,11 @@
 //! P7a1: the shell's half of `close_secret`, which logged before —, the two secret-clip
 //! clears, the lock's and the shutdown's waits for the key worker, `close_approval_window`)
 //! behave exactly as before while no log runs, no refusal is set and the modifiers are not
-//! scripted. The seams are thread-locals of the test thread:
+//! scripted. 2026-11-20 (S4 P7b): the display windows' drop is logged by `drop_display_secret`
+//! (the shell's half, was `open_display`), the clip clears are called by the shell's
+//! `SecretEffect::ClearClip` arm and the lock's `Suspend` wait by the executor's
+//! `Effect::AwaitKeyLock` arm (were called by `App::lock`), at the same points. The seams are
+//! thread-locals of the test thread:
 //!
 //! - `TEST_SECRET_LOG`: the secret-window operations in call order ([`Op`]): window kinds, unit
 //!   counts and flags only, never a value. A closed window's units are counted after its wipe

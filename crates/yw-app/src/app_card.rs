@@ -32,7 +32,7 @@ use crate::events::{
 };
 use crate::logging::{self, Field};
 use crate::yubikey::CardJobError;
-use yw_engine::secret::SecretKind;
+use yw_engine::secret::{SecretFormOp, SecretKind};
 
 /// The card step's own bound after the approval click (spec/10 §10: PIN entry and touch).
 pub const CARD_STEP_MS: u64 = 120_000;
@@ -1031,7 +1031,7 @@ impl App {
             && let Some(step) = self.card.step.as_ref()
         {
             let details = self.card_details(step);
-            self.with_form(|form| form.set_details(details));
+            self.secret_form(SecretFormOp::Details(details));
         }
     }
 
@@ -1093,11 +1093,9 @@ impl App {
         let id = step.id;
         let card = self.card_step_card(step.role);
         self.open_input(kind, Purpose::CardSign(id), true);
-        self.with_form(|form| {
-            form.set_card(card);
-            form.set_details(details);
-            form.set_error(error);
-        });
+        self.secret_form(SecretFormOp::Card(card));
+        self.secret_form(SecretFormOp::Details(details));
+        self.secret_form(SecretFormOp::Error(error));
     }
 
     /// Whether the card step `id` waits for its PIN (tests, the tour).

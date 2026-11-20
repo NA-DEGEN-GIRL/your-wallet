@@ -26,7 +26,7 @@ use crate::events::KeyJob;
 use crate::logging;
 use crate::workers::key::yubikey::YkJob;
 use crate::yubikey::CardJobError;
-use yw_engine::secret::{CardSecretKind, SecretKind};
+use yw_engine::secret::{CardSecretKind, SecretFormOp, SecretKind};
 
 /// Fixed texts of "`YubiKey` 연결하기 (복구 단어 없이)" (spec/10 §7.6; English spec/14).
 pub mod text {
@@ -339,7 +339,7 @@ impl App {
             false,
         );
         if !lines.is_empty() {
-            self.with_form(|form| form.set_details(lines));
+            self.secret_form(SecretFormOp::Details(lines));
         }
     }
 
@@ -395,12 +395,10 @@ impl App {
         let serial = record.serial;
         if yw_core::yubikey::is_factory_secret(&pin) {
             let error = text::FACTORY_PIN.get(self.settings.language);
-            self.with_form(|form| {
-                form.set_error(Some(error.to_owned()));
-            });
+            self.secret_form(SecretFormOp::Error(Some(error.to_owned())));
             return;
         }
-        self.with_form(|form| form.set_busy(true));
+        self.secret_form(SecretFormOp::Busy(true));
         if let Some(form) = self.yk_connect_form() {
             form.busy = true;
         }
@@ -444,10 +442,8 @@ impl App {
                 );
                 let text = error.text_for(lang, kind);
                 if retry {
-                    self.with_form(|form| {
-                        form.set_busy(false);
-                        form.set_error(Some(text));
-                    });
+                    self.secret_form(SecretFormOp::Busy(false));
+                    self.secret_form(SecretFormOp::Error(Some(text)));
                 } else {
                     self.close_secret();
                     if let Some(form) = self.yk_connect_form() {

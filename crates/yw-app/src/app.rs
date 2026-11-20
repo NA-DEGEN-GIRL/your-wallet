@@ -66,7 +66,7 @@ use yw_engine::effect::{Effect, Folder, RevealTarget, TimerId};
 // `CredField`: debug builds only until S3 C3 (the shadow reads of plan §3.2a; 2026-11-18 B4–B5
 // review); since C3 `App::take_cred` uses it in every build.
 use yw_engine::form::{CredField, EditField, FormState, PressInput};
-use yw_engine::secret::{SecretEffect, SecretKind, SecretStep};
+use yw_engine::secret::{SecretEffect, SecretFormOp, SecretKind, SecretStep};
 use yw_engine::services::Services;
 
 /// Main window class.
@@ -2356,12 +2356,13 @@ impl App {
         self.close_secret();
         self.import = ImportFlow::default();
         self.challenge = None;
-        if self.mode == AppMode::ShuttingDown {
-            self.clear_secret_clip_at_exit();
-        } else {
-            // Due now; a busy clipboard keeps being retried by the tick after the lock.
-            self.clear_secret_clip(self.clock.now_ms());
-        }
+        // Due now; a busy clipboard keeps being retried by the tick after the lock (at exit: for a
+        // short while now). 2026-11-20 (S4 P7b, spec/04 §5.3 step 4): the shell's clear through
+        // `SecretEffect::ClearClip` at this point; before, this fn called `clear_secret_clip`
+        // (with the clock read here) or `clear_secret_clip_at_exit` itself.
+        self.emit(Effect::Secret(SecretEffect::ClearClip {
+            at_exit: self.mode == AppMode::ShuttingDown,
+        }));
         self.evm_lock();
         self.book = crate::app_book::BookUi::default();
         self.sol_lock();
@@ -2395,15 +2396,11 @@ impl App {
         // fn cleared it; the hold's capture above is `Effect::ReleaseHold` inside `hold_cancel`).
         self.emit(Effect::ScrollMemoryClear);
         logging::info("app", "lock", &[("reason", Field::Word(reason.as_str()))]);
+        // 2026-11-20 (S4 P7b, critique A-2): the wait for the key worker's lock is
+        // `Effect::AwaitKeyLock` at this point (the shell waits as this fn did before), so the
+        // secret close, the clip clear and the approval close above stay before it.
         if reason == LockReason::Suspend {
-            #[cfg(test)]
-            secret_seam::log(secret_seam::Op::Wait {
-                what: "lock",
-                ms: 1_500,
-            });
-            let _ = self
-                .lock_signal
-                .wait_beyond(before, Duration::from_millis(1_500));
+            self.emit(Effect::AwaitKeyLock { before, ms: 1_500 });
         }
         if self.mode == AppMode::ShuttingDown {
             return;
@@ -2541,10 +2538,14 @@ impl App {
         self.secret_session.as_ref().map(SecretSession::purpose)
     }
 
-    pub(crate) fn with_form(&mut self, f: impl FnOnce(&mut SecretForm)) {
-        if let Some(secret) = self.secret.as_mut() {
-            f(&mut secret.form);
-            secret.window.invalidate();
+    /// Changes the open secret window's form and repaints it (2026-11-20, S4 P7b, spec/04 §4.5:
+    /// `SecretEffect::Form` for the open session's serial; the shell changes only that session's
+    /// window). Nothing when no session is open. Before, `with_form` changed the window's form and
+    /// invalidated the window here (whatever secret window was open — the same window, since the
+    /// session and its window end together).
+    pub(crate) fn secret_form(&mut self, op: SecretFormOp) {
+        if let Some(serial) = self.secret_session.as_ref().map(SecretSession::serial) {
+            self.emit(Effect::Secret(SecretEffect::Form { serial, op }));
         }
     }
 
@@ -2635,7 +2636,7 @@ impl App {
                 self.import.phrase = None;
                 self.set_screen(Screen::ImportIntro);
                 self.open_input(SecretKind::Mnemonic, Purpose::ImportMnemonic, false);
-                self.with_form(|form| form.set_error(Some(message)));
+                self.secret_form(SecretFormOp::Error(Some(message)));
             }
             KeyOutcome::Imported(Ok(())) => {
                 self.import = ImportFlow::default();
@@ -2744,8 +2745,9 @@ impl App {
                         challenge.positions,
                         true,
                     );
-                    self.with_form(|form| {
-                        form.reset_backup(challenge.positions, Some(retry));
+                    self.secret_form(SecretFormOp::ResetBackup {
+                        positions: challenge.positions,
+                        message: Some(retry),
                     });
                 } else {
                     self.open_input(
@@ -2779,11 +2781,11 @@ impl App {
                 logging::info("app", "backup.mismatch", &[]);
                 self.key(KeyJob::BackupChallenge);
             }
-            KeyOutcome::BackupConfirmed(Err(error)) => {
-                self.with_form(|form| {
-                    form.set_busy(false);
-                    form.set_error(Some(vault_code(error).text_in(lang)));
-                });
+            // 2026-11-20 (S4 P7b): one arm with the raw key import's failure (their two form
+            // closures had the same body; as effects clippy sees one arm twice).
+            KeyOutcome::BackupConfirmed(Err(error)) | KeyOutcome::RawKeyImported(Err(error)) => {
+                self.secret_form(SecretFormOp::Busy(false));
+                self.secret_form(SecretFormOp::Error(Some(vault_code(error).text_in(lang))));
             }
             KeyOutcome::Revealed(Ok((what, secret, address))) => {
                 let then_backup = matches!(
@@ -2871,12 +2873,6 @@ impl App {
                 self.save_meta();
                 self.evm_balances_due();
                 self.refresh();
-            }
-            KeyOutcome::RawKeyImported(Err(error)) => {
-                self.with_form(|form| {
-                    form.set_busy(false);
-                    form.set_error(Some(vault_code(error).text_in(lang)));
-                });
             }
             KeyOutcome::RawKeyRemoved(Ok(id)) => self.on_evm_raw_key_removed(id),
             KeyOutcome::Meta(Ok(MetaLoaded {
@@ -3032,9 +3028,7 @@ impl App {
                                 self.settings.language,
                                 [&count.to_string(), &position.to_string()],
                             );
-                            self.with_form(|form| {
-                                form.set_info(Some(info));
-                            });
+                            self.secret_form(SecretFormOp::Info(Some(info)));
                         }
                     }
                     VaultStatus::PassphraseMismatch => {
@@ -3138,7 +3132,7 @@ impl App {
         let text = match error {
             VaultError::UnlockFailed => {
                 logging::info("app", "recover.failed", &[]);
-                self.with_form(|form| form.fail_password(now));
+                self.secret_form(SecretFormOp::FailPassword { now_ms: now });
                 return;
             }
             VaultError::Storage(yw_core::error::StorageError::NotFound) => {
@@ -3153,10 +3147,8 @@ impl App {
             &[("code", Field::Code(vault_code(error)))],
         );
         if self.secret_open() {
-            self.with_form(|form| {
-                form.set_busy(false);
-                form.set_error(Some(text));
-            });
+            self.secret_form(SecretFormOp::Busy(false));
+            self.secret_form(SecretFormOp::Error(Some(text)));
         } else {
             self.banner(None, text);
             self.refresh();
@@ -3167,14 +3159,12 @@ impl App {
         let lang = self.settings.language;
         if error == VaultError::UnlockFailed {
             logging::info("app", "unlock.failed", &[]);
-            self.with_form(|form| form.fail_password(now));
+            self.secret_form(SecretFormOp::FailPassword { now_ms: now });
         } else {
             let code = vault_code(error);
             logging::warn("app", "key.error", &[("code", Field::Code(code))]);
-            self.with_form(|form| {
-                form.set_busy(false);
-                form.set_error(Some(code.text_in(lang)));
-            });
+            self.secret_form(SecretFormOp::Busy(false));
+            self.secret_form(SecretFormOp::Error(Some(code.text_in(lang))));
             if !self.secret_open() {
                 self.error_banner(code);
             }
@@ -3188,13 +3178,18 @@ impl App {
     // starts one and emits `SecretEffect::OpenInput`, `on_secret_opened` takes the shell's answer
     // (`Cmd::SecretOpened`), `close_secret` ends it and emits `SecretEffect::Close`. The shell's
     // half is `apply_secret_effect` (`open_input_window`, `close_secret_window`), `create_secret`,
-    // `show_secret` and `on_secret`; its window record (`secret`) holds no purpose. Still opened
-    // directly (no effect): the display windows (`open_display`, S4 P7b). Before P7a1
+    // `show_secret` and `on_secret`; its window record (`secret`) holds no purpose. Until S4 P7b
+    // the display windows (`open_display`) still opened directly (no effect). Before P7a1
     // `open_input`, `open_display` and `close_secret` made, showed and closed the windows
     // themselves, and the purpose was in the window record. 2026-11-20 (S4 P7a2): the `YubiKey`
     // and card input windows open through the seam too (from P7a1 to P7a2 they called the shell's
     // half directly, `open_input_direct`); the step W12 takes once shown (its card's PIN
-    // counters) is the session's `AfterShown`, taken by `on_secret_opened`.
+    // counters) is the session's `AfterShown`, taken by `on_secret_opened`. 2026-11-20 (S4 P7b):
+    // the display windows open through the seam too (`open_display` emits
+    // `SecretEffect::OpenDisplay`; the session holds the secret until the shell's
+    // `open_display_window` has verified the window's capture exclusion and takes it with
+    // `take_display_secret`), the form changes are `SecretEffect::Form` (`secret_form`, was
+    // `with_form`) and the lock's clip clear is `SecretEffect::ClearClip`.
 
     /// Starts the secret session of a window (a fresh serial, never reused); the caller closed the
     /// previous one first. 2026-11-20 (S4 P7a1): the serial was counted in `create_secret` before.
@@ -3404,7 +3399,66 @@ impl App {
                 self.close_secret_window(serial);
                 None
             }
+            // S4 P7b: a display window (the same guard as an input window's open).
+            SecretEffect::OpenDisplay {
+                serial,
+                kind,
+                step,
+                timeout_note,
+                lang,
+            } => {
+                let unshown = self
+                    .secret_session
+                    .as_ref()
+                    .is_some_and(|session| session.serial() == serial && !session.shown());
+                let outcome = if unshown {
+                    self.open_display_window(serial, kind, step, timeout_note, lang)
+                } else {
+                    OpenOutcome::Refused(ErrorCode::Sec001)
+                };
+                Some(Cmd::SecretOpened { serial, outcome })
+            }
+            SecretEffect::Form { serial, op } => {
+                self.apply_form_op(serial, op);
+                None
+            }
+            // S4 P7b: the lock's clear of a pending secret copy (spec/04 §5.3 step 4), with the
+            // clock read where the lock read it before.
+            SecretEffect::ClearClip { at_exit } => {
+                if at_exit {
+                    self.clear_secret_clip_at_exit();
+                } else {
+                    self.clear_secret_clip(self.clock.now_ms());
+                }
+                None
+            }
         }
+    }
+
+    /// The shell's half of `SecretEffect::Form` (2026-11-20, S4 P7b; the body of `with_form`
+    /// before): the form of the window of session `serial`, when it is the open one, changes and
+    /// the window repaints.
+    fn apply_form_op(&mut self, serial: u64, op: SecretFormOp) {
+        let Some(secret) = self
+            .secret
+            .as_mut()
+            .filter(|secret| secret.serial == serial)
+        else {
+            return;
+        };
+        let form = &mut secret.form;
+        match op {
+            SecretFormOp::Busy(busy) => form.set_busy(busy),
+            SecretFormOp::Error(message) => form.set_error(message),
+            SecretFormOp::Details(lines) => form.set_details(lines),
+            SecretFormOp::Card(card) => form.set_card(card),
+            SecretFormOp::Info(message) => form.set_info(message),
+            SecretFormOp::FailPassword { now_ms } => form.fail_password(now_ms),
+            SecretFormOp::ResetBackup { positions, message } => {
+                form.reset_backup(positions, message);
+            }
+        }
+        secret.window.invalidate();
     }
 
     /// The answer to a secret window's open (`Cmd::SecretOpened`; S4 P7a1). Only the first
@@ -3413,7 +3467,12 @@ impl App {
     /// (E-SEC-001) and `Failed` (E-APP-009) end it and say so on the main window, as `open_input`
     /// did. 2026-11-20 (S4 P7a2): `Shown` then takes the session's `AfterShown` step (W12: the
     /// card's PIN counters read, `App::yk_card_counters`), at the point the handler took it right
-    /// after the open before.
+    /// after the open before. 2026-11-20 (S4 P7b): it also answers the display windows' open
+    /// (`open_display` called it with the window's result before): `Shown` takes W08's
+    /// `AfterShown::YkWordsShown` (a new `YubiKey` wallet's words count as shown, `yk_words`; the
+    /// handler `on_yk_outcome` read the session right after the open before), and a refused W08
+    /// of a new wallet (`Purpose::ShowForBackup`) leaves the wallet on S04 (`BackupPending`,
+    /// spec/04 §4.5 item 2) after the E-SEC-001 banner, as `open_display` did.
     fn on_secret_opened(&mut self, serial: u64, outcome: OpenOutcome) {
         let Some(session) = self
             .secret_session
@@ -3425,27 +3484,99 @@ impl App {
         match outcome {
             OpenOutcome::Shown { .. } => match session.mark_shown() {
                 Some(AfterShown::CardCounters { card }) => self.yk_card_counters(card),
-                None => {}
+                Some(AfterShown::YkWordsShown)
+                    if self.yk_words == crate::app_yubikey::YkWords::None =>
+                {
+                    self.yk_words = crate::app_yubikey::YkWords::Shown;
+                }
+                Some(AfterShown::YkWordsShown) | None => {}
             },
-            OpenOutcome::Refused(code) | OpenOutcome::Failed(code) => {
+            OpenOutcome::Refused(code) => {
+                let purpose = session.purpose();
+                self.secret_session = None;
+                self.error_banner(code);
+                if purpose == Purpose::ShowForBackup {
+                    self.set_screen(Screen::BackupPending);
+                }
+            }
+            OpenOutcome::Failed(code) => {
                 self.secret_session = None;
                 self.error_banner(code);
             }
         }
     }
 
-    /// Opens a display window (W08/W09); on exclusion failure the secret is wiped (E-SEC-001).
-    /// 2026-11-20 (S4 P7a1): still direct (S4 P7b puts it behind the seam); its session starts
-    /// before the window is made and ends on a refusal or failure (`on_secret_opened`).
+    /// Opens a display window (W08/W09); on exclusion failure the secret is wiped (E-SEC-001)
+    /// and a new wallet's W08 leaves it on S04. 2026-11-20 (S4 P7b, spec/04 §4.5 item 3): through
+    /// the seam — the previous window is closed, a secret session starts and holds the secret,
+    /// and the shell is asked for the window (`SecretEffect::OpenDisplay`, no secret in it); the
+    /// shell takes the secret only after it verified the new window's capture exclusion
+    /// (`open_display_window`), and its answer (`Cmd::SecretOpened`) marks the session shown or
+    /// ends it with the banner (`on_secret_opened`). Applied at once (the inline executor), so the
+    /// window, the wipe, the banner and the screen change happen at the same point and in the
+    /// same order as before, when this fn made the window and filled it itself.
     pub(crate) fn open_display(
         &mut self,
         kind: SecretKind,
         purpose: Purpose,
         display: DisplaySecret,
     ) {
+        self.open_display_with(kind, purpose, display, None);
+    }
+
+    /// [`Self::open_display`] whose session takes `after` once the shell reports the window
+    /// shown (2026-11-20, S4 P7b: W08 of a new `YubiKey` wallet marks its words shown; before,
+    /// the handler read the session right after the open).
+    pub(crate) fn open_display_then(
+        &mut self,
+        kind: SecretKind,
+        purpose: Purpose,
+        display: DisplaySecret,
+        after: AfterShown,
+    ) {
+        self.open_display_with(kind, purpose, display, Some(after));
+    }
+
+    fn open_display_with(
+        &mut self,
+        kind: SecretKind,
+        purpose: Purpose,
+        display: DisplaySecret,
+        after: Option<AfterShown>,
+    ) {
         self.close_secret();
         let lang = self.settings.language;
         let serial = self.begin_secret(kind, purpose, false);
+        if let Some(session) = self.secret_session.as_mut() {
+            session.hold_display(display);
+            if let Some(after) = after {
+                session.then_when_shown(after);
+            }
+        }
+        self.emit(Effect::Secret(SecretEffect::OpenDisplay {
+            serial,
+            kind,
+            step: flow_step(lang, purpose),
+            timeout_note: timeout_note(lang, purpose),
+            lang,
+        }));
+    }
+
+    /// The shell's half of a display window's open (2026-11-20, S4 P7b; the window part of
+    /// `open_display` before): create the window (hidden; yw-win applies and checks the capture
+    /// exclusion before the handler exists, spec/04 §4.5 items 1–2) and decide by it
+    /// (`Required`). Only a window verified as excluded takes the secret from the session
+    /// (`take_display_secret`) into its form and is shown; on every other result no window is
+    /// kept and the session's secret is dropped (wiped) at once (`drop_display_secret`), before
+    /// the answer. Never a secret in a window that is not excluded from capture.
+    fn open_display_window(
+        &mut self,
+        serial: u64,
+        kind: SecretKind,
+        step: Option<SecretStep>,
+        timeout_note: Option<&'static str>,
+        lang: Lang,
+    ) -> OpenOutcome {
         let created = self.create_secret(serial, kind, false, lang);
         let excluded = created
             .as_ref()
@@ -3454,33 +3585,58 @@ impl App {
         Self::log_capture(kind, excluded.unwrap_or(false));
         let decision = capture_decision(kind, excluded);
         match (decision, created) {
-            (CaptureDecision::Show { warning }, Ok(window)) => {
+            // Verified: `Show` without the warning is a window whose exclusion was read back as
+            // 0x11 (`capture_decision`, `Required`).
+            (CaptureDecision::Show { warning: false }, Ok(window)) => {
+                let Some(display) = self.take_display_secret(serial) else {
+                    drop(window);
+                    return OpenOutcome::Refused(ErrorCode::Sec001);
+                };
                 let mut form = SecretForm::display(kind, lang, self.clock.now_ms(), display);
-                form.set_step(flow_step(lang, purpose));
-                form.set_timeout_note(timeout_note(lang, purpose));
+                form.set_step(step);
+                form.set_timeout_note(timeout_note);
                 self.show_secret(serial, window, form);
-                self.on_secret_opened(
-                    serial,
-                    OpenOutcome::Shown {
-                        capture_excluded: !warning,
-                    },
-                );
-            }
-            (CaptureDecision::Refuse(code), _) => {
-                #[cfg(test)]
-                secret_seam::log(secret_seam::Op::DisplayDropped);
-                drop(display);
-                self.on_secret_opened(serial, OpenOutcome::Refused(code));
-                if purpose == Purpose::ShowForBackup {
-                    self.set_screen(Screen::BackupPending);
+                OpenOutcome::Shown {
+                    capture_excluded: true,
                 }
             }
-            (CaptureDecision::Show { .. }, Err(_)) => {
-                #[cfg(test)]
-                secret_seam::log(secret_seam::Op::DisplayDropped);
-                drop(display);
-                self.on_secret_opened(serial, OpenOutcome::Failed(ErrorCode::App009));
+            // A display kind never shows with the warning (`capture_decision`); were it to, the
+            // window is dropped like a refused one (fail closed).
+            (CaptureDecision::Show { warning: true }, Ok(window)) => {
+                drop(window);
+                self.drop_display_secret(serial);
+                OpenOutcome::Refused(ErrorCode::Sec001)
             }
+            (CaptureDecision::Refuse(code), _) => {
+                self.drop_display_secret(serial);
+                OpenOutcome::Refused(code)
+            }
+            (CaptureDecision::Show { .. }, Err(_)) => {
+                self.drop_display_secret(serial);
+                OpenOutcome::Failed(ErrorCode::App009)
+            }
+        }
+    }
+
+    /// The display secret of session `serial`, moved out once, only while `serial` is the open
+    /// session and its window is not shown yet (2026-11-20, S4 P7b; plan §3.4 `App::drain`
+    /// handoff, critique A-3). Called by the shell only after it verified the window's capture
+    /// exclusion; `None` for an ended or another session.
+    #[must_use]
+    pub(crate) fn take_display_secret(&mut self, serial: u64) -> Option<DisplaySecret> {
+        self.secret_session
+            .as_mut()
+            .filter(|session| session.serial() == serial)
+            .and_then(SecretSession::take_display)
+    }
+
+    /// Drops (wipes) the display secret of session `serial` now: its window was refused or
+    /// failed (2026-11-20, S4 P7b; `open_display` dropped it itself before).
+    fn drop_display_secret(&mut self, serial: u64) {
+        if let Some(display) = self.take_display_secret(serial) {
+            #[cfg(test)]
+            secret_seam::log(secret_seam::Op::DisplayDropped);
+            drop(display);
         }
     }
 
@@ -3797,11 +3953,11 @@ impl App {
             }
             Purpose::Unlock => {
                 self.set_mode(AppMode::Unlocking);
-                self.with_form(|form| form.set_busy(true));
+                self.secret_form(SecretFormOp::Busy(true));
                 self.key(KeyJob::Unlock { password: next() });
             }
             Purpose::EnterPassphrase => {
-                self.with_form(|form| form.set_busy(true));
+                self.secret_form(SecretFormOp::Busy(true));
                 self.key(KeyJob::EnterPassphrase { passphrase: next() });
             }
             Purpose::Backup => {
@@ -3810,7 +3966,7 @@ impl App {
                     return;
                 };
                 let words = [next(), next(), next(), next()];
-                self.with_form(|form| form.set_busy(true));
+                self.secret_form(SecretFormOp::Busy(true));
                 self.key(KeyJob::ConfirmBackup {
                     id: challenge.id,
                     words,
@@ -3818,7 +3974,7 @@ impl App {
             }
             Purpose::ConfirmPassword(action) => {
                 let password = next();
-                self.with_form(|form| form.set_busy(true));
+                self.secret_form(SecretFormOp::Busy(true));
                 match action {
                     PasswordAction::RevealMnemonic { .. } => self.key(KeyJob::Reveal {
                         password,
@@ -3862,17 +4018,17 @@ impl App {
             Purpose::ChangePassword => {
                 let old = next();
                 let new = next();
-                self.with_form(|form| form.set_busy(true));
+                self.secret_form(SecretFormOp::Busy(true));
                 self.key(KeyJob::ChangePassword { old, new });
             }
             Purpose::ImportKey => {
-                self.with_form(|form| form.set_busy(true));
+                self.secret_form(SecretFormOp::Busy(true));
                 self.key(KeyJob::ImportPrivateKey { hex: next() });
             }
             Purpose::KeyStartPassword => self.key_start_password(next()),
             Purpose::KeyStartKey => self.key_start_key(next()),
             Purpose::ImportChainKey(spec) => {
-                self.with_form(|form| form.set_busy(true));
+                self.secret_form(SecretFormOp::Busy(true));
                 self.key(KeyJob::ImportKey { spec, key: next() });
             }
             Purpose::CardSign(id) => self.card_submit(id, next()),

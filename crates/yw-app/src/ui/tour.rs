@@ -58,7 +58,7 @@ use crate::network::{BtcNet, NetworkId, SolCluster};
 use crate::settings::Settings;
 use crate::ui::secret::DisplaySecret;
 use crate::workers::rpc::RpcJob;
-use yw_engine::secret::SecretKind;
+use yw_engine::secret::{SecretFormOp, SecretKind};
 
 const TIMER_CLASS: &str = "YourWalletV3TourTimer";
 /// A made-up user token contract (shot 31, hidden like an unwanted airdrop).
@@ -1565,12 +1565,10 @@ fn tour_yubikey(app: &Rc<RefCell<App>>) {
         Purpose::CardSign(0),
         false,
     );
-    app.borrow_mut().with_form(|form| {
-        form.set_details(vec![
-            text::CARD_KEY.get(tour_lang()).to_owned(),
-            text::CARD_SERIAL.get(tour_lang()).to_owned(),
-        ]);
-    });
+    app.borrow_mut().secret_form(SecretFormOp::Details(vec![
+        text::CARD_KEY.get(tour_lang()).to_owned(),
+        text::CARD_SERIAL.get(tour_lang()).to_owned(),
+    ]));
     app.borrow_mut().tour_type("123456");
     save(secret_hwnd(app), "43-yubikey-card-pin");
     app.borrow_mut().close_secret();

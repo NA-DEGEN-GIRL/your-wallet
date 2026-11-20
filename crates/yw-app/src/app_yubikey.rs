@@ -44,7 +44,7 @@ use crate::ui::main_window::Tone;
 use crate::ui::secret::DisplaySecret;
 use crate::workers::key::yubikey::{CounterTarget, YkJob, YkOutcome, YkPreview};
 use crate::yubikey::{CardJobError, PinCounters, PinKind, PinTarget};
-use yw_engine::secret::{CardSecretKind, SecretKind};
+use yw_engine::secret::{CardSecretKind, SecretFormOp, SecretKind};
 
 pub mod connect;
 pub mod manage;
@@ -1163,7 +1163,7 @@ impl App {
             }
             YkPurpose::Backup => {
                 let words = [next(), next(), next(), next()];
-                self.with_form(|form| form.set_busy(true));
+                self.secret_form(SecretFormOp::Busy(true));
                 self.key(KeyJob::YubiKey(YkJob::ConfirmWords { words }));
             }
             YkPurpose::AdminPin => {
@@ -1221,9 +1221,7 @@ impl App {
                 let text = next();
                 let Some(key) = Self::yk_key_bytes(&text) else {
                     let error = text::MANAGEMENT_KEY_FORMAT.get(self.settings.language);
-                    self.with_form(|form| {
-                        form.set_error(Some(error.to_owned()));
-                    });
+                    self.secret_form(SecretFormOp::Error(Some(error.to_owned())));
                     return;
                 };
                 let pin = self
@@ -1246,7 +1244,7 @@ impl App {
                     PinTarget::PivPuk => self.yk_take_puk_last_try(serial),
                     PinTarget::OpenPgpUser | PinTarget::PivPin => false,
                 };
-                self.with_form(|form| form.set_busy(true));
+                self.secret_form(SecretFormOp::Busy(true));
                 self.key(KeyJob::YubiKey(YkJob::ChangePin {
                     serial,
                     target,
@@ -1359,7 +1357,7 @@ impl App {
             self.close_secret();
             return;
         };
-        self.with_form(|form| form.set_busy(true));
+        self.secret_form(SecretFormOp::Busy(true));
         self.key(KeyJob::YubiKey(job(serial)));
     }
 
@@ -1435,7 +1433,7 @@ impl App {
         }
         let lines = counters.lines(self.settings.language, Self::yk_counter_kinds(purpose));
         if !lines.is_empty() {
-            self.with_form(|form| form.set_details(lines));
+            self.secret_form(SecretFormOp::Details(lines));
         }
     }
 
@@ -1659,10 +1657,8 @@ impl App {
                     PinKind::PivPin,
                     &self.pin_context(serial, PinKind::PivPin),
                 );
-                self.with_form(|form| {
-                    form.set_busy(false);
-                    form.set_error(Some(text));
-                });
+                self.secret_form(SecretFormOp::Busy(false));
+                self.secret_form(SecretFormOp::Error(Some(text)));
             }
         }
     }
@@ -1713,17 +1709,13 @@ impl App {
                     })
                     .unwrap_or_default();
                 let error = text::NOTHING_CHANGED.fill(lang, [&reason]);
-                self.with_form(|form| {
-                    form.set_busy(false);
-                    form.set_error(Some(error));
-                });
+                self.secret_form(SecretFormOp::Busy(false));
+                self.secret_form(SecretFormOp::Error(Some(error)));
                 return;
             }
             Err(error) => {
-                self.with_form(|form| {
-                    form.set_busy(false);
-                    form.set_error(Some(error.text_in(lang)));
-                });
+                self.secret_form(SecretFormOp::Busy(false));
+                self.secret_form(SecretFormOp::Error(Some(error.text_in(lang))));
                 return;
             }
         };
@@ -1823,7 +1815,11 @@ impl App {
             YkOutcome::Preview(result) => self.on_yk_preview(result),
             YkOutcome::Words(Ok((phrase, address))) => {
                 self.set_screen(Screen::YubiKeyWalletIntro);
-                self.open_display(
+                // The words count as shown once W08 is (2026-11-20, S4 P7b: the session's
+                // `AfterShown::YkWordsShown`, taken when the shell answers `Shown`; before, this
+                // arm read the session right after the open — the same point while the effects
+                // are applied at once). A refused W08 shows nothing.
+                self.open_display_then(
                     SecretKind::ShowMnemonic { create: true },
                     Purpose::YubiKey(YkPurpose::ShowWords),
                     DisplaySecret {
@@ -1832,12 +1828,8 @@ impl App {
                         passphrase_note: false,
                         copy_allowed: self.settings.allow_secret_copy,
                     },
+                    crate::secret_session::AfterShown::YkWordsShown,
                 );
-                if self.secret_purpose() == Some(Purpose::YubiKey(YkPurpose::ShowWords))
-                    && self.yk_words == YkWords::None
-                {
-                    self.yk_words = YkWords::Shown;
-                }
             }
             YkOutcome::Words(Err(error)) => {
                 self.banner(None, failure_text(self.settings.language, error));
@@ -1850,8 +1842,9 @@ impl App {
                         positions,
                         false,
                     );
-                    self.with_form(|form| {
-                        form.reset_backup(positions, Some(retry));
+                    self.secret_form(SecretFormOp::ResetBackup {
+                        positions,
+                        message: Some(retry),
                     });
                 } else {
                     self.open_input(
@@ -1900,10 +1893,8 @@ impl App {
             YkOutcome::RemoveBusy(_) => {
                 // W03 shows why; nothing was removed.
                 let busy = text::YK_BUSY.get(self.settings.language);
-                self.with_form(|form| {
-                    form.set_busy(false);
-                    form.set_error(Some(busy.to_owned()));
-                });
+                self.secret_form(SecretFormOp::Busy(false));
+                self.secret_form(SecretFormOp::Error(Some(busy.to_owned())));
                 self.refresh();
             }
             YkOutcome::Discarded => {}
@@ -1947,7 +1938,7 @@ impl App {
                     Purpose::YubiKey(YkPurpose::Mnemonic),
                     false,
                 );
-                self.with_form(|form| form.set_error(Some(message)));
+                self.secret_form(SecretFormOp::Error(Some(message)));
                 self.refresh();
             }
             Err(error) => {
@@ -2125,10 +2116,8 @@ impl App {
                     &self.pin_context(serial, target.kind()),
                 );
                 self.yk_note_last_try(serial, error);
-                self.with_form(|form| {
-                    form.set_busy(false);
-                    form.set_error(Some(text));
-                });
+                self.secret_form(SecretFormOp::Busy(false));
+                self.secret_form(SecretFormOp::Error(Some(text)));
             }
         }
     }

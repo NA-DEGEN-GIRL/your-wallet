@@ -22,7 +22,7 @@ use crate::ui::secret::DisplaySecret;
 use crate::workers::key::mnemonics::{MnJob, MnOutcome};
 use yw_engine::cmd::{MnPress, Row};
 use yw_engine::form::EditField;
-use yw_engine::secret::SecretKind;
+use yw_engine::secret::{SecretFormOp, SecretKind};
 
 /// What a secret window of the recovery-phrase flows is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1048,17 +1048,17 @@ impl App {
             }
             MnPurpose::ImportPassword => {
                 let password = next();
-                self.with_form(|form| form.set_busy(true));
+                self.secret_form(SecretFormOp::Busy(true));
                 self.key(KeyJob::Mnemonics(MnJob::CommitImport { password }));
             }
             MnPurpose::CreatePassword => {
                 let password = next();
-                self.with_form(|form| form.set_busy(true));
+                self.secret_form(SecretFormOp::Busy(true));
                 self.key(KeyJob::Mnemonics(MnJob::Generate { password }));
             }
             MnPurpose::RevealPassword(id, then_backup) => {
                 let password = next();
-                self.with_form(|form| form.set_busy(true));
+                self.secret_form(SecretFormOp::Busy(true));
                 self.key(KeyJob::Mnemonics(MnJob::Reveal {
                     password,
                     id,
@@ -1067,7 +1067,7 @@ impl App {
             }
             MnPurpose::RemovePassword(id) => {
                 let password = next();
-                self.with_form(|form| form.set_busy(true));
+                self.secret_form(SecretFormOp::Busy(true));
                 self.key(KeyJob::Mnemonics(MnJob::Remove { password, id }));
             }
             MnPurpose::Backup(id) => {
@@ -1080,7 +1080,7 @@ impl App {
                     return;
                 }
                 let words = [next(), next(), next(), next()];
-                self.with_form(|form| form.set_busy(true));
+                self.secret_form(SecretFormOp::Busy(true));
                 self.key(KeyJob::Mnemonics(MnJob::Confirm {
                     id,
                     challenge: challenge.id,
@@ -1195,7 +1195,7 @@ impl App {
                     _ => code.text_in(lang),
                 };
                 self.open_mn_input(SecretKind::Mnemonic, MnPurpose::ImportWords);
-                self.with_form(|form| form.set_error(Some(message)));
+                self.secret_form(SecretFormOp::Error(Some(message)));
             }
             MnOutcome::Discarded => {}
             MnOutcome::Added(Ok(_)) => {
@@ -1227,15 +1227,13 @@ impl App {
                 self.mn.challenge = Some((id, challenge));
                 if self.secret_purpose() == Some(Purpose::Mnemonics(MnPurpose::Backup(id))) {
                     let lang = self.settings.language;
-                    self.with_form(|form| {
-                        form.reset_backup(
+                    self.secret_form(SecretFormOp::ResetBackup {
+                        positions: challenge.positions,
+                        message: Some(crate::ui::screens::backup_retry_text(
+                            lang,
                             challenge.positions,
-                            Some(crate::ui::screens::backup_retry_text(
-                                lang,
-                                challenge.positions,
-                                true,
-                            )),
-                        );
+                            true,
+                        )),
                     });
                 } else {
                     self.open_mn_input(

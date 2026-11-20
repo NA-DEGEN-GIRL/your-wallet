@@ -44,6 +44,15 @@
 //! (`App::close_secret_window`, the body of `App::close_secret` before), in
 //! `App::apply_secret_effect`. The open is answered at once with `Cmd::SecretOpened`. Neither
 //! records a shell-call line (none was recorded before).
+//!
+//! 2026-11-20 (S4 P7b): `Secret` also opens a display window (`App::open_display_window`, the
+//! window part of `App::open_display` before: the secret moves from the session into the form
+//! only after the window's capture exclusion was verified, here inside `emit` where the window
+//! was made before), changes an open window's form (`App::apply_form_op`, the body of
+//! `App::with_form` before) and clears a pending secret copy (`App::clear_secret_clip`/
+//! `clear_secret_clip_at_exit`, called by `App::lock` before). `AwaitKeyLock` is the lock's
+//! `Suspend` wait for the key worker (was in `App::lock`; critique A-2). None records a
+//! shell-call line (none was recorded before).
 
 use yw_core::secret::Zeroizing;
 use yw_engine::cmd::Cmd;
@@ -98,6 +107,7 @@ impl App {
 
     /// Applies `effect` now (see the module doc). Tests record each effect in the shell-call log
     /// before the window check, so headless tests see it too.
+    #[expect(clippy::too_many_lines, reason = "one arm per effect")]
     pub(crate) fn emit(&mut self, effect: Effect) {
         match effect {
             Effect::Render => {
@@ -217,6 +227,17 @@ impl App {
                 if let Some(answer) = self.apply_secret_effect(effect) {
                     self.on_cmd(answer);
                 }
+            }
+            // S4 P7b (critique A-2): the lock's wait for the key worker, at the emitting point.
+            Effect::AwaitKeyLock { before, ms } => {
+                #[cfg(test)]
+                crate::app::secret_seam::log(crate::app::secret_seam::Op::Wait {
+                    what: "lock",
+                    ms,
+                });
+                let _ = self
+                    .lock_signal
+                    .wait_beyond(before, core::time::Duration::from_millis(ms));
             }
         }
     }

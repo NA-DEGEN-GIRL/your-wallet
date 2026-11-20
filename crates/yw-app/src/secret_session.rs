@@ -12,12 +12,22 @@
 //! 2026-11-20 (S4 P7a2): a session may carry one step the logic takes when the shell reports its
 //! window shown ([`AfterShown`]): W12 reads the card's PIN counters then. Before, the handler
 //! read the session right after the open returned (`App::yk_open_card_secret`).
+//!
+//! 2026-11-20 (S4 P7b): a display window's session holds the secret to display
+//! ([`SecretSession::hold_display`]) from the request until the shell, having verified the new
+//! window's capture exclusion, takes it ([`SecretSession::take_display`]); every other end of the
+//! session drops it with the session (wiped: `DisplaySecret` holds a `SecretString`), so an ended
+//! session can never fill a window (critique A-3). W08 of a new `YubiKey` wallet marks its words
+//! shown once its window is shown ([`AfterShown::YkWordsShown`]); before, the handler read the
+//! session right after the open (`App::on_yk_outcome`). Before P7b `App::open_display` made the
+//! window and moved the secret into its form itself.
 
 use core::fmt;
 
 use yw_engine::secret::SecretKind;
 
 use crate::app::Purpose;
+use crate::ui::secret::DisplaySecret;
 
 /// One secret window as the logic sees it: from the request until its end.
 pub(crate) struct SecretSession {
@@ -28,11 +38,15 @@ pub(crate) struct SecretSession {
     purpose: Purpose,
     /// Above every window (W11 and the dApp's W02).
     topmost: bool,
-    /// The shell reported the window shown (`Cmd::SecretOpened` with `Shown`, or the direct open
-    /// of the display windows; 2026-11-20 S4 P7a2: the card windows open through the seam now).
+    /// The shell reported the window shown (`Cmd::SecretOpened` with `Shown`; 2026-11-20 S4
+    /// P7a2: the card windows open through the seam now; S4 P7b: the display windows too, before
+    /// their direct open marked it).
     shown: bool,
     /// What the logic does once the window is shown (taken then; dropped with the session).
     after_shown: Option<AfterShown>,
+    /// W08/W09: the secret to display, until the shell takes it into its verified window
+    /// (2026-11-20, S4 P7b); dropped (wiped) with the session.
+    display: Option<DisplaySecret>,
 }
 
 /// A step the logic takes when the shell reports the session's window shown: never before, and
@@ -42,6 +56,9 @@ pub(crate) enum AfterShown {
     /// W12: read the PIN counters of card `card` (`YkJob::Counters(CounterTarget::Card)`), which
     /// the window shows before the PIN is entered (spec/10 §9.1).
     CardCounters { card: u32 },
+    /// W08 of a new `YubiKey` wallet: its words count as shown (`App::yk_words`, unless they are
+    /// already further on) — 2026-11-20, S4 P7b.
+    YkWordsShown,
 }
 
 /// The step's name only (D28; the card serial is not printed).
@@ -49,6 +66,7 @@ impl fmt::Debug for AfterShown {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::CardCounters { .. } => "CardCounters",
+            Self::YkWordsShown => "YkWordsShown",
         })
     }
 }
@@ -68,7 +86,24 @@ impl SecretSession {
             topmost,
             shown: false,
             after_shown: None,
+            display: None,
         }
+    }
+
+    /// Holds the secret a display window of this session shows, until the shell takes it
+    /// (replaces one held before, which is dropped and wiped).
+    pub(crate) fn hold_display(&mut self, display: DisplaySecret) {
+        self.display = Some(display);
+    }
+
+    /// The held display secret, moved out once (the shell's verified window takes it; a
+    /// refused or failed window drops it). `None` once the window is shown or when none is held.
+    #[must_use]
+    pub(crate) fn take_display(&mut self) -> Option<DisplaySecret> {
+        if self.shown {
+            return None;
+        }
+        self.display.take()
     }
 
     /// The step to take once the window is shown (replaces one set before).
@@ -103,7 +138,8 @@ impl SecretSession {
     }
 }
 
-/// Serial, window id, purpose name and flags (D28; the purpose holds no secret).
+/// Serial, window id, purpose name and flags (D28; the purpose holds no secret, and a held
+/// display secret prints as a flag only).
 impl fmt::Debug for SecretSession {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -114,6 +150,7 @@ impl fmt::Debug for SecretSession {
             .field("topmost", &self.topmost)
             .field("shown", &self.shown)
             .field("after_shown", &self.after_shown)
+            .field("display", &self.display.is_some())
             .finish()
     }
 }

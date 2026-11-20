@@ -35,7 +35,7 @@ use crate::workers::key::yubikey::YkJob;
 use crate::workers::key::yubikey::manage::{Cleared, ManageJob, ManageOutcome, ReslotPreview};
 use crate::yubikey::PinKind;
 use yw_core::yubikey::enrol::Enrolled;
-use yw_engine::secret::{CardSecretKind, SecretKind};
+use yw_engine::secret::{CardSecretKind, SecretFormOp, SecretKind};
 
 /// Fixed texts of the card list's `슬롯 구성 바꾸기` and `YubiKey의 키 지우기` (spec/10 §15;
 /// English spec/14).
@@ -1077,7 +1077,7 @@ impl App {
                     crate::app::Purpose::YubiKey(YkPurpose::ReslotMnemonic),
                     false,
                 );
-                self.with_form(|form| form.set_error(Some(message)));
+                self.secret_form(SecretFormOp::Error(Some(message)));
             }
             Err(error) => {
                 if let Some(flow) = self.reslot() {

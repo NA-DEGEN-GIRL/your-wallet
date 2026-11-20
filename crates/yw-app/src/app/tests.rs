@@ -7357,3 +7357,223 @@ fn w12_reads_its_card_counters_only_once_shown() {
     app.close_secret();
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// 2026-11-20 (S4 P7b, spec/04 §4.5 items 2–3, §5.3, critique A-2/A-3): the display windows
+/// through the seam. The session holds the secret until the shell, having verified the new
+/// window's capture exclusion, takes it: headless every display window is refused as before —
+/// `create:W08`, `display-dropped`, E-SEC-001 and, for a new wallet's W08, S04 — and no session
+/// is left to hold it. The secret moves out once, only for the open, unshown session; an ended
+/// session (a lock between the request and its effect) or another serial makes no window and
+/// takes nothing. W08 of a new `YubiKey` wallet marks its words shown only when `Shown`. The lock
+/// clears the secret copy (`ClearClip`, at exit `:exit`) before the approval close and waits for
+/// the key worker last (`AwaitKeyLock`, `Suspend` only).
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scenario per seam rule, in order"
+)]
+fn display_secrets_move_only_into_verified_windows() {
+    use std::sync::Arc;
+
+    use yw_core::secret::SecretString;
+    use yw_engine::approval::flow::OpenOutcome;
+    use yw_engine::cmd::Cmd;
+    use yw_engine::secret::{SecretEffect, SecretKind};
+
+    use super::secret_seam;
+    use crate::app_yubikey::{YkPurpose, YkWords};
+    use crate::errors::ErrorCode;
+    use crate::secret_session::AfterShown;
+    use crate::ui::secret::DisplaySecret;
+
+    let dir = temp_dir("secret-display-seam");
+    let mut app = app_at(&dir);
+    let display = || DisplaySecret {
+        text: SecretString::from_zeroizing(Zeroizing::new("abandon about".to_owned())),
+        address: None,
+        passphrase_note: false,
+        copy_allowed: false,
+    };
+    let ops = || -> Vec<String> {
+        secret_seam::take_log()
+            .into_iter()
+            .map(secret_seam::Op::name)
+            .collect()
+    };
+    let codes = |app: &App| -> Vec<Option<ErrorCode>> {
+        app.banners.iter().map(|banner| banner.code).collect()
+    };
+    secret_seam::stop();
+    secret_seam::start_log();
+
+    // Headless: a new wallet's W08 is refused, its secret dropped, the wallet stays on S04.
+    app.open_display(
+        SecretKind::ShowMnemonic { create: true },
+        Purpose::ShowForBackup,
+        display(),
+    );
+    assert_eq!(ops(), ["create:W08", "display-dropped"]);
+    assert!(!app.secret_open());
+    assert_eq!(codes(&app), [Some(ErrorCode::Sec001)]);
+    assert_eq!(app.screen, Screen::BackupPending);
+    // A revealed W09 is refused the same way but leaves the screen.
+    app.banners.clear();
+    app.screen = Screen::Starting;
+    app.open_display(SecretKind::ShowKey, Purpose::ShowRevealed, display());
+    assert_eq!(ops(), ["create:W09", "display-dropped"]);
+    assert_eq!(codes(&app), [Some(ErrorCode::Sec001)]);
+    assert_eq!(app.screen, Screen::Starting);
+    app.banners.clear();
+
+    // The secret moves out once, only for the open session's serial.
+    let serial = app.begin_secret(SecretKind::ShowKey, Purpose::ShowRevealed, false);
+    if let Some(session) = app.secret_session.as_mut() {
+        session.hold_display(display());
+    }
+    assert!(app.take_display_secret(serial + 1).is_none());
+    assert!(app.take_display_secret(serial).is_some());
+    assert!(app.take_display_secret(serial).is_none(), "taken twice");
+    // Once shown, a held secret is never handed out again.
+    if let Some(session) = app.secret_session.as_mut() {
+        session.hold_display(display());
+    }
+    app.on_cmd(Cmd::SecretOpened {
+        serial,
+        outcome: OpenOutcome::Shown {
+            capture_excluded: true,
+        },
+    });
+    assert!(app.take_display_secret(serial).is_none(), "a shown session");
+    app.close_secret();
+    let _ = ops();
+
+    // An open effect of another serial makes no window and takes nothing (A-3).
+    let serial = app.begin_secret(SecretKind::ShowKey, Purpose::ShowRevealed, false);
+    if let Some(session) = app.secret_session.as_mut() {
+        session.hold_display(display());
+    }
+    let lang = app.settings.language;
+    let open = |serial: u64| SecretEffect::OpenDisplay {
+        serial,
+        kind: SecretKind::ShowKey,
+        step: None,
+        timeout_note: None,
+        lang,
+    };
+    let stale = app.apply_secret_effect(open(serial + 7));
+    assert!(matches!(
+        stale,
+        Some(Cmd::SecretOpened {
+            outcome: OpenOutcome::Refused(ErrorCode::Sec001),
+            ..
+        })
+    ));
+    assert!(ops().is_empty(), "a stale display open asked for a window");
+    assert!(
+        app.take_display_secret(serial).is_some(),
+        "the stale open took it"
+    );
+    app.close_secret();
+
+    // A session that ended before its effect (a lock in the same entry) opens nothing; the lock
+    // clears the secret copy before the approval close and does not wait unless suspending.
+    let serial = app.begin_secret(
+        SecretKind::ShowMnemonic { create: false },
+        Purpose::ShowRevealed,
+        false,
+    );
+    if let Some(session) = app.secret_session.as_mut() {
+        session.hold_display(display());
+    }
+    app.lock(LockReason::Manual);
+    assert_eq!(ops(), ["clear-clip", "approval-close:none"]);
+    assert!(
+        app.take_display_secret(serial).is_none(),
+        "the lock left the secret"
+    );
+    let late = app.apply_secret_effect(open(serial));
+    assert!(matches!(
+        late,
+        Some(Cmd::SecretOpened {
+            outcome: OpenOutcome::Refused(_),
+            ..
+        })
+    ));
+    assert!(ops().is_empty(), "an ended session asked for a window");
+
+    // `Suspend` waits for the key worker last (signalled here; no worker runs).
+    let signal = Arc::clone(&app.lock_signal);
+    let signaller = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        signal.signal();
+    });
+    app.lock(LockReason::Suspend);
+    let _ = signaller.join();
+    assert_eq!(
+        ops(),
+        ["clear-clip", "approval-close:none", "wait:lock:1500"]
+    );
+    // At exit the clear retries now (`:exit`).
+    app.mode = AppMode::ShuttingDown;
+    app.lock(LockReason::Shutdown);
+    assert_eq!(ops(), ["clear-clip:exit", "approval-close:none"]);
+    app.mode = AppMode::Locked;
+
+    // W08 of a new YubiKey wallet: its words count as shown only once `Shown` arrives.
+    let words = Purpose::YubiKey(YkPurpose::ShowWords);
+    let kind = SecretKind::ShowMnemonic { create: true };
+    for (outcome, expected) in [
+        (OpenOutcome::Refused(ErrorCode::Sec001), YkWords::None),
+        (OpenOutcome::Failed(ErrorCode::App009), YkWords::None),
+        (
+            OpenOutcome::Shown {
+                capture_excluded: true,
+            },
+            YkWords::Shown,
+        ),
+    ] {
+        app.yk_words = YkWords::None;
+        let serial = app.begin_secret(kind, words, false);
+        if let Some(session) = app.secret_session.as_mut() {
+            session.then_when_shown(AfterShown::YkWordsShown);
+        }
+        app.on_cmd(Cmd::SecretOpened {
+            serial: serial - 1,
+            outcome,
+        });
+        assert_eq!(app.yk_words, YkWords::None, "a stale answer");
+        app.on_cmd(Cmd::SecretOpened { serial, outcome });
+        assert_eq!(app.yk_words, expected, "{outcome:?}");
+        app.close_secret();
+    }
+    // Words already further on stay there.
+    app.yk_words = YkWords::OnCard;
+    let serial = app.begin_secret(kind, words, false);
+    if let Some(session) = app.secret_session.as_mut() {
+        session.then_when_shown(AfterShown::YkWordsShown);
+    }
+    app.on_cmd(Cmd::SecretOpened {
+        serial,
+        outcome: OpenOutcome::Shown {
+            capture_excluded: true,
+        },
+    });
+    assert_eq!(app.yk_words, YkWords::OnCard);
+    app.close_secret();
+    // A refused W08 of a new wallet leaves it on S04 only for `Refused`, not `Failed`.
+    app.screen = Screen::Starting;
+    let serial = app.begin_secret(kind, Purpose::ShowForBackup, false);
+    app.on_cmd(Cmd::SecretOpened {
+        serial,
+        outcome: OpenOutcome::Failed(ErrorCode::App009),
+    });
+    assert_eq!(app.screen, Screen::Starting);
+    let serial = app.begin_secret(kind, Purpose::ShowForBackup, false);
+    app.on_cmd(Cmd::SecretOpened {
+        serial,
+        outcome: OpenOutcome::Refused(ErrorCode::Sec001),
+    });
+    assert_eq!(app.screen, Screen::BackupPending);
+    secret_seam::stop();
+    let _ = std::fs::remove_dir_all(dir);
+}

@@ -70,6 +70,8 @@
 //!
 //! 2026-11-20 (S4 P7a1): [`Cmd::SecretOpened`], the answer to `Effect::Secret(OpenInput)` (the
 //! secret session's serial and the window's [`OpenOutcome`]; never a secret).
+//! 2026-11-20 (S4 P7b): it also answers `Effect::Secret(OpenDisplay)` (a display window's open;
+//! the displayed secret never travels in it).
 
 use core::fmt;
 
@@ -181,8 +183,9 @@ pub enum Cmd {
     /// Answer to `Effect::OpenFolder(Folder::Extension)` (S4 P3): no extension folder was found
     /// and nothing was opened. An open of the data or log folder is never answered.
     FolderMissing,
-    /// Result of `Effect::Secret(SecretEffect::OpenInput)` (S4 P7a1): the secret session the
-    /// window was for and what became of it. Never a secret (a submission reaches the logic
+    /// Result of `Effect::Secret(SecretEffect::OpenInput)` (S4 P7a1) and of
+    /// `SecretEffect::OpenDisplay` (S4 P7b): the secret session the window was for and what
+    /// became of it. Never a secret (a submission reaches the logic
     /// in-process). A result for a session that has ended is dropped.
     SecretOpened {
         /// The secret session of the open effect.

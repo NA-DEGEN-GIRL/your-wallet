@@ -20,7 +20,7 @@ use crate::logging::{self, Field};
 use crate::meta::{EvmAccountPref, MAX_RAW_ACCOUNTS, RawAccount, SolRawAccount, Tab};
 use crate::workers::journal::btc::BtcMetaOp;
 use yw_engine::cmd::KeysPress;
-use yw_engine::secret::SecretKind;
+use yw_engine::secret::{SecretFormOp, SecretKind};
 
 /// "개인키로 시작하기" state (before any vault exists).
 pub struct KeyStartFlow {
@@ -347,7 +347,7 @@ impl App {
                     Purpose::KeyStartKey,
                     false,
                 );
-                self.with_form(|form| form.set_error(Some(message)));
+                self.secret_form(SecretFormOp::Error(Some(message)));
             }
         }
     }
@@ -376,10 +376,8 @@ impl App {
             Ok(account) => account,
             Err(error) => {
                 let message = vault_code(error).text_in(self.settings.language);
-                self.with_form(|form| {
-                    form.set_busy(false);
-                    form.set_error(Some(message));
-                });
+                self.secret_form(SecretFormOp::Busy(false));
+                self.secret_form(SecretFormOp::Error(Some(message)));
                 return;
             }
         };
@@ -518,10 +516,8 @@ impl App {
         } else {
             crate::app_btc::REMOVE_BUSY_IN_FLIGHT.get(self.settings.language)
         };
-        self.with_form(|form| {
-            form.set_busy(false);
-            form.set_error(Some(text.to_owned()));
-        });
+        self.secret_form(SecretFormOp::Busy(false));
+        self.secret_form(SecretFormOp::Error(Some(text.to_owned())));
     }
 
     /// Overlay `계속` of [`Confirm::RevealImported`] / [`Confirm::RemoveImported`]: W03.

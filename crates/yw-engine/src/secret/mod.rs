@@ -13,6 +13,13 @@
 //! `app::Purpose`) and the session that holds it (yw-app `secret_session::SecretSession`) stay in
 //! yw-app until the wallet state moves (S4d); the display windows' open and the form operations
 //! become effects in S4 P7b.
+//!
+//! 2026-11-20 (spec/15 §11.4 S4 P7b): [`SecretEffect::OpenDisplay`] (W08/W09; the secret is not
+//! in it — the shell gets it from the wallet's session only after it verified the new window's
+//! capture exclusion), [`SecretEffect::Form`] with [`SecretFormOp`] (what the handlers wrote into
+//! the open window's form themselves before, yw-app `App::with_form`) and
+//! [`SecretEffect::ClearClip`] (the lock's and the exit's clear of a pending secret copy, at the
+//! lock's step 4, spec/04 §5.3).
 
 use core::fmt;
 
@@ -221,9 +228,11 @@ pub struct SecretStep {
 }
 
 /// What the logic asks the shell to do with a secret window (2026-11-20, S4 P7a1; inside
-/// `Effect::Secret`). Ids, kinds and flags only, never secret text: a window's buffers are filled
-/// by the person typing into the shell's form, and nothing in here is a value.
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// `Effect::Secret`). Ids, kinds, flags and fixed non-secret texts only, never secret text: a
+/// window's buffers are filled by the person typing into the shell's form, a displayed secret
+/// moves from the wallet's session into a verified window (never through an effect), and nothing
+/// in here is a value. 2026-11-20 (S4 P7b): no longer `Copy` ([`SecretFormOp`] carries texts).
+#[derive(Clone, PartialEq, Eq)]
 pub enum SecretEffect {
     /// Open the input window of secret session `serial` (W01–W07, W10–W12; one window at a time:
     /// the logic closed the previous one first). The shell creates it, checks its capture
@@ -250,6 +259,112 @@ pub enum SecretEffect {
         /// The secret session whose window closes.
         serial: u64,
     },
+    /// Open the display window of secret session `serial` (W08/W09, 2026-11-20 S4 P7b; one
+    /// window at a time: the logic closed the previous one first). The shell creates it, checks
+    /// its capture exclusion (spec/04 §4.5: `Required`) and only then takes the secret from the
+    /// session (Windows: `App::take_display_secret`), fills the form and shows it; on any other
+    /// result it keeps no window and the session's secret is wiped. Answered with
+    /// `Cmd::SecretOpened { serial, outcome }`: `Shown { capture_excluded: true }`,
+    /// `Refused(E-SEC-001)` (not excluded, or refused by the platform) or `Failed(E-APP-009)`. A
+    /// `serial` that is no longer the logic's open, unshown session makes nothing (answered
+    /// `Refused`, which the logic ignores).
+    OpenDisplay {
+        /// The secret session the window is for.
+        serial: u64,
+        /// W08 or W09.
+        kind: SecretKind,
+        /// The flow step the window shows (`None`: none).
+        step: Option<SecretStep>,
+        /// W08's note after its countdown (a fixed catalogue text; `None`: none).
+        timeout_note: Option<&'static str>,
+        /// The language the window draws its texts in.
+        lang: Lang,
+    },
+    /// Change the form of the window of secret session `serial` and repaint it (2026-11-20, S4
+    /// P7b; was `App::with_form` in the handlers); nothing when that window is not open. Not
+    /// answered.
+    Form {
+        /// The secret session whose window changes.
+        serial: u64,
+        /// What changes.
+        op: SecretFormOp,
+    },
+    /// Clear a pending secret copy now (2026-11-20, S4 P7b: the lock's step 4, spec/04 §5.3,
+    /// §4.8; `App::lock` called `App::clear_secret_clip`/`clear_secret_clip_at_exit` itself
+    /// before). The clipboard and the pending copy are the shell's; nothing when none is pending.
+    /// Not answered.
+    ClearClip {
+        /// The app is shutting down: a busy clipboard is retried for a short while now, since no
+        /// later tick comes (else the main tick keeps retrying).
+        at_exit: bool,
+    },
+}
+
+/// One change to an open secret window's form (2026-11-20, S4 P7b; inside
+/// [`SecretEffect::Form`]): what the handlers did to the form directly before (yw-app
+/// `App::with_form`). The texts are fixed catalogue texts, error texts and non-secret card lines
+/// (the `YubiKey`'s name and serial, PIN tries), never a secret; `Debug` prints names and lengths
+/// only.
+#[derive(Clone, PartialEq, Eq)]
+pub enum SecretFormOp {
+    /// A worker result is awaited (`true`: input and buttons disabled, `확인 중…`) or arrived.
+    Busy(bool),
+    /// The error line (`None`: none).
+    Error(Option<String>),
+    /// The non-secret lines under the intro (W11/W12: the card, its PIN tries).
+    Details(Vec<String>),
+    /// W11: the card its first step names (`None`: none).
+    Card(Option<String>),
+    /// The information line (`None`: none).
+    Info(Option<String>),
+    /// A wrong password (E-VLT-001): the fields cleared and input disabled for 1 s from `now_ms`
+    /// (the logic's clock, read where the handler read it before).
+    FailPassword {
+        /// When the password was refused.
+        now_ms: u64,
+    },
+    /// W10: a new backup challenge (new positions, empty fields, `message` as the error line).
+    ResetBackup {
+        /// The new word positions (1-based).
+        positions: [u8; 4],
+        /// The line saying why (`None`: none).
+        message: Option<String>,
+    },
+}
+
+/// Names and lengths only (D28): never the text of an error, a card line or an info line, nor
+/// the backup positions.
+impl fmt::Debug for SecretFormOp {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let len = |text: &Option<String>| text.as_ref().map(String::len);
+        match self {
+            Self::Busy(busy) => formatter.debug_tuple("Busy").field(busy).finish(),
+            Self::Error(text) => formatter
+                .debug_struct("Error")
+                .field("len", &len(text))
+                .finish(),
+            Self::Details(lines) => formatter
+                .debug_struct("Details")
+                .field("lines", &lines.len())
+                .finish(),
+            Self::Card(text) => formatter
+                .debug_struct("Card")
+                .field("len", &len(text))
+                .finish(),
+            Self::Info(text) => formatter
+                .debug_struct("Info")
+                .field("len", &len(text))
+                .finish(),
+            Self::FailPassword { now_ms } => formatter
+                .debug_struct("FailPassword")
+                .field("now_ms", now_ms)
+                .finish(),
+            Self::ResetBackup { message, .. } => formatter
+                .debug_struct("ResetBackup")
+                .field("len", &len(message))
+                .finish(),
+        }
+    }
 }
 
 /// Serials, window ids (`W02`), flags and the language only (D28): never a card serial of a W11
@@ -274,6 +389,29 @@ impl fmt::Debug for SecretEffect {
             Self::Close { serial } => formatter
                 .debug_struct("Close")
                 .field("serial", serial)
+                .finish(),
+            Self::OpenDisplay {
+                serial,
+                kind,
+                step,
+                timeout_note,
+                lang,
+            } => formatter
+                .debug_struct("OpenDisplay")
+                .field("serial", serial)
+                .field("kind", &kind.id())
+                .field("step", &step.is_some())
+                .field("timeout_note", &timeout_note.is_some())
+                .field("lang", lang)
+                .finish(),
+            Self::Form { serial, op } => formatter
+                .debug_struct("Form")
+                .field("serial", serial)
+                .field("op", op)
+                .finish(),
+            Self::ClearClip { at_exit } => formatter
+                .debug_struct("ClearClip")
+                .field("at_exit", at_exit)
                 .finish(),
         }
     }
@@ -311,6 +449,65 @@ mod tests {
         assert_eq!(
             format!("{:?}", SecretEffect::Close { serial: 7 }),
             "Close { serial: 7 }"
+        );
+    }
+
+    /// S4 P7b: the display open, the form operations and the clip clear print serials, window
+    /// ids, flags and lengths only — never an error text, a card line or backup positions.
+    #[test]
+    fn display_form_and_clip_effects_debug_without_text() {
+        let open = SecretEffect::OpenDisplay {
+            serial: 4,
+            kind: SecretKind::ShowMnemonic { create: true },
+            step: None,
+            timeout_note: Some("note text"),
+            lang: Lang::Ko,
+        };
+        assert_eq!(
+            format!("{open:?}"),
+            "OpenDisplay { serial: 4, kind: \"W08\", step: false, timeout_note: true, lang: Ko }"
+        );
+        let ops = [
+            (SecretFormOp::Busy(true), "Busy(true)"),
+            (
+                SecretFormOp::Error(Some("error text".to_owned())),
+                "Error { len: Some(10) }",
+            ),
+            (SecretFormOp::Error(None), "Error { len: None }"),
+            (
+                SecretFormOp::Details(vec!["YubiKey 12345678".to_owned(), "PIN 3".to_owned()]),
+                "Details { lines: 2 }",
+            ),
+            (
+                SecretFormOp::Card(Some("card 12345678".to_owned())),
+                "Card { len: Some(13) }",
+            ),
+            (
+                SecretFormOp::Info(Some("info".to_owned())),
+                "Info { len: Some(4) }",
+            ),
+            (
+                SecretFormOp::FailPassword { now_ms: 1_000 },
+                "FailPassword { now_ms: 1000 }",
+            ),
+            (
+                SecretFormOp::ResetBackup {
+                    positions: [3, 9, 17, 22],
+                    message: Some("retry".to_owned()),
+                },
+                "ResetBackup { len: Some(5) }",
+            ),
+        ];
+        for (op, expected) in ops {
+            let shown = format!("{:?}", SecretEffect::Form { serial: 4, op });
+            assert_eq!(shown, format!("Form {{ serial: 4, op: {expected} }}"));
+            for text in ["text", "12345678", "card", "info", "retry", "17"] {
+                assert!(!shown.contains(text), "{shown}");
+            }
+        }
+        assert_eq!(
+            format!("{:?}", SecretEffect::ClearClip { at_exit: true }),
+            "ClearClip { at_exit: true }"
         );
     }
 

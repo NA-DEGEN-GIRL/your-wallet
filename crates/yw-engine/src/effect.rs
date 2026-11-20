@@ -30,6 +30,13 @@
 //! window; answered with `Cmd::SecretOpened`) and close ([`SecretEffect`]): serials, kinds and
 //! flags, never secret text. Before, the handlers created and closed the windows themselves
 //! (`App::open_input`, `App::close_secret`). Still applied at once.
+//!
+//! 2026-11-20 (spec/15 §11.4 S4 P7b): `Effect::Secret` also opens the display windows, changes
+//! an open window's form and clears a pending secret copy at the lock (`SecretEffect::{
+//! OpenDisplay, Form, ClearClip}`); [`Effect::AwaitKeyLock`] is the lock's `Suspend` wait for the
+//! key worker (critique A-2: an effect at the wait's place, so a later outbox keeps the order
+//! secret close < clip clear < approval close < wait). Before, `App::lock` waited itself. Still
+//! applied at once.
 
 use core::fmt;
 
@@ -135,6 +142,15 @@ pub enum Effect {
     /// A secret window (S4 P7a1): serials, kinds and flags only, never secret text.
     /// `SecretEffect::OpenInput` is answered with `Cmd::SecretOpened`.
     Secret(SecretEffect),
+    /// Wait until the key worker has finished a lock queued after count `before` was read, at
+    /// most `ms` milliseconds (S4 P7b, critique A-2: the lock's `Suspend` wait, spec/04 §5.3; was
+    /// in `App::lock`). Blocks the shell's thread as the wait did; not answered.
+    AwaitKeyLock {
+        /// The completed-lock count read before the lock job was queued.
+        before: u64,
+        /// The longest wait in milliseconds (1 500 for `Suspend`).
+        ms: u64,
+    },
 }
 
 /// A control of the main screen [`Effect::Reveal`] names (S4 P4): a button by its press, a
@@ -206,6 +222,11 @@ impl fmt::Debug for Effect {
             Self::ScrollMemoryClear => formatter.write_str("ScrollMemoryClear"),
             Self::ReleaseHold => formatter.write_str("ReleaseHold"),
             Self::Secret(effect) => formatter.debug_tuple("Secret").field(effect).finish(),
+            Self::AwaitKeyLock { before, ms } => formatter
+                .debug_struct("AwaitKeyLock")
+                .field("before", before)
+                .field("ms", ms)
+                .finish(),
         }
     }
 }
@@ -388,6 +409,35 @@ mod tests {
         assert_eq!(
             format!("{:?}", Effect::Secret(SecretEffect::Close { serial: 3 })),
             "Secret(Close { serial: 3 })"
+        );
+        // S4 P7b: the form operation's text is a length; the clip clear and the lock wait are
+        // flags and numbers.
+        let form = Effect::Secret(SecretEffect::Form {
+            serial: 3,
+            op: crate::secret::SecretFormOp::Error(Some("wrong password".to_owned())),
+        });
+        let shown = format!("{form:?}");
+        assert!(!shown.contains("wrong"), "{shown}");
+        assert_eq!(
+            shown,
+            "Secret(Form { serial: 3, op: Error { len: Some(14) } })"
+        );
+        assert_eq!(
+            format!(
+                "{:?}",
+                Effect::Secret(SecretEffect::ClearClip { at_exit: false })
+            ),
+            "Secret(ClearClip { at_exit: false })"
+        );
+        assert_eq!(
+            format!(
+                "{:?}",
+                Effect::AwaitKeyLock {
+                    before: 2,
+                    ms: 1_500
+                }
+            ),
+            "AwaitKeyLock { before: 2, ms: 1500 }"
         );
     }
 }
