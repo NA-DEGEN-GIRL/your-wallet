@@ -223,7 +223,7 @@ impl App {
         items.push(Item::CardEnd);
         items.push(Item::CardStart(Some(t::PIN_OWNERSHIP.get(lang).to_owned())));
         items.push(Item::Text(
-            crate::ui::secret_text::CARD_USER_PIN
+            yw_engine::secret::text::CARD_USER_PIN
                 .get(self.settings.language)
                 .to_owned(),
         ));

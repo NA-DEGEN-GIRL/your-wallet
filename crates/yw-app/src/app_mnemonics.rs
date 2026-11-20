@@ -18,10 +18,11 @@ use crate::meta::{Account, EvmAccountPref};
 use crate::text::is_valid_label;
 use crate::ui::main_window::{Ctl, Item, Tone};
 use crate::ui::screens_mnemonics::ids;
-use crate::ui::secret::{DisplaySecret, SecretKind};
+use crate::ui::secret::DisplaySecret;
 use crate::workers::key::mnemonics::{MnJob, MnOutcome};
 use yw_engine::cmd::{MnPress, Row};
 use yw_engine::form::EditField;
+use yw_engine::secret::SecretKind;
 
 /// What a secret window of the recovery-phrase flows is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

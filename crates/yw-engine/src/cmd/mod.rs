@@ -67,6 +67,9 @@
 //! `WalletConnect` panel's `dashboard.reown.com`) answers with its instruction band rather than
 //! the mark at the control, decided when the result arrives (`Cmd::CopyDone`), not by a read of
 //! the result right after the copy.
+//!
+//! 2026-11-20 (S4 P7a1): [`Cmd::SecretOpened`], the answer to `Effect::Secret(OpenInput)` (the
+//! secret session's serial and the window's [`OpenOutcome`]; never a secret).
 
 use core::fmt;
 
@@ -178,6 +181,15 @@ pub enum Cmd {
     /// Answer to `Effect::OpenFolder(Folder::Extension)` (S4 P3): no extension folder was found
     /// and nothing was opened. An open of the data or log folder is never answered.
     FolderMissing,
+    /// Result of `Effect::Secret(SecretEffect::OpenInput)` (S4 P7a1): the secret session the
+    /// window was for and what became of it. Never a secret (a submission reaches the logic
+    /// in-process). A result for a session that has ended is dropped.
+    SecretOpened {
+        /// The secret session of the open effect.
+        serial: u64,
+        /// What became of the open.
+        outcome: OpenOutcome,
+    },
 }
 
 /// Variant, field names and lengths only (D28): never a field's text or a credential unit.
@@ -218,6 +230,11 @@ impl fmt::Debug for Cmd {
                 .field("which", which)
                 .finish(),
             Self::FolderMissing => formatter.write_str("FolderMissing"),
+            Self::SecretOpened { serial, outcome } => formatter
+                .debug_struct("SecretOpened")
+                .field("serial", serial)
+                .field("outcome", outcome)
+                .finish(),
         }
     }
 }
@@ -540,5 +557,22 @@ mod tests {
             "Opened { ok: true, which: Explorer { net: Evm(1), host_len: Some(12) } }"
         );
         assert_eq!(format!("{:?}", Cmd::FolderMissing), "FolderMissing");
+    }
+
+    /// S4 P7a1: a secret window's open result is its serial and outcome.
+    #[test]
+    fn secret_opened_debug_is_serial_and_outcome() {
+        assert_eq!(
+            format!(
+                "{:?}",
+                Cmd::SecretOpened {
+                    serial: 5,
+                    outcome: OpenOutcome::Shown {
+                        capture_excluded: false
+                    },
+                }
+            ),
+            "SecretOpened { serial: 5, outcome: Shown { capture_excluded: false } }"
+        );
     }
 }

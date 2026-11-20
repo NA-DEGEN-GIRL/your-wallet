@@ -407,9 +407,9 @@ impl App {
         let lang = self.settings.language;
         if ctx.selected_imported().is_some() {
             let help = if self.key_only() {
-                crate::ui::secret_text::KEY_ONLY_BACKUP.get(lang)
+                yw_engine::secret::text::KEY_ONLY_BACKUP.get(lang)
             } else {
-                crate::ui::secret_text::IMPORTED_KEY_BACKUP.get(lang)
+                yw_engine::secret::text::IMPORTED_KEY_BACKUP.get(lang)
             };
             return (
                 vec![

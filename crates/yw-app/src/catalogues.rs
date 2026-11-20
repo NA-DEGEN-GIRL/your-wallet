@@ -5,7 +5,8 @@
 //! (2026-11-17, spec/15 §11.4 S2: the catalogues of modules moved to yw-engine are listed in
 //! `yw_engine::catalogues` under their true path; E1 the approval, error and card texts, E2 the
 //! settings, metadata, explain, RPC pipeline and `WalletConnect` engine texts, E3 the
-//! `WalletConnect` worker and key/journal worker texts.)
+//! `WalletConnect` worker and key/journal worker texts. 2026-11-20, S4 P7a1: the secret windows'
+//! texts, before `yw_app::ui::secret_text`, are `yw_engine::secret::text`.)
 
 use yw_core::lang::Entry;
 
@@ -150,5 +151,4 @@ const CATALOGUES: &[(&str, &[Entry])] = &[
         "yw_app::ui::screens_zec::text",
         crate::ui::screens_zec::text::ALL,
     ),
-    ("yw_app::ui::secret_text", crate::ui::secret_text::ALL),
 ];

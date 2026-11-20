@@ -1,5 +1,8 @@
 //! Fixed texts of the secret windows W01–W12 (spec/04 §4, spec/10 §7, §9; English spec/14).
 //! The windows draw them in the app language (`Settings::language`) held by the form.
+//!
+//! 2026-11-20 (spec/15 §11.4 S4 P7a1): moved from yw-app `ui::secret_text` with the window kinds
+//! (catalogue name `yw_engine::secret::text`, before `yw_app::ui::secret_text`); wording unchanged.
 
 yw_core::texts! {
     // Window titles (spec/04 §4.1).

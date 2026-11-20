@@ -18,9 +18,9 @@ use crate::errors::{key_code, vault_code};
 use crate::events::{ImportedAccount, KeyJob};
 use crate::logging::{self, Field};
 use crate::meta::{EvmAccountPref, MAX_RAW_ACCOUNTS, RawAccount, SolRawAccount, Tab};
-use crate::ui::secret::SecretKind;
 use crate::workers::journal::btc::BtcMetaOp;
 use yw_engine::cmd::KeysPress;
+use yw_engine::secret::SecretKind;
 
 /// "개인키로 시작하기" state (before any vault exists).
 pub struct KeyStartFlow {

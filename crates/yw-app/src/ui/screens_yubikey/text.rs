@@ -262,7 +262,7 @@ yw_core::texts! {
     FACTORY_UNIFIED = "아래 “PIN 설정하기” 한 번으로 모두 바꿉니다." / "One “Set PIN now” below changes them all.";
     LABEL_MODE = "방식" / "Mode";
     MODE_UNIFIED = "8자리 하나로 통일 (권장)" / "One 8-character PIN (recommended)";
-    /// The separate mode (named by `secret_text::CARD_SET_PINS_SAME`).
+    /// The separate mode (named by `yw_engine::secret::text::CARD_SET_PINS_SAME`).
     MODE_SEPARATE = "하나씩 따로" / "One at a time";
     FACTORY_MARK(1) = "{0} (공장값 — 바꿔야 함)" / "{0} (factory value — change it)";
     BTN_PROTECT_MANAGEMENT = "PIV 관리 키 자동 보호" / "Protect PIV management key";

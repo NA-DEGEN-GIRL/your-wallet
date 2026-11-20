@@ -25,12 +25,18 @@
 //! capture ([`Effect::ReleaseHold`]). None is answered. Still applied at once: the scroll ones
 //! read the wallet's screen while they are applied (Windows: inside the handler that emitted
 //! them), so an outbox must carry what they read.
+//!
+//! 2026-11-20 (spec/15 §11.4 S4 P7a1): [`Effect::Secret`], a secret window's open (an input
+//! window; answered with `Cmd::SecretOpened`) and close ([`SecretEffect`]): serials, kinds and
+//! flags, never secret text. Before, the handlers created and closed the windows themselves
+//! (`App::open_input`, `App::close_secret`). Still applied at once.
 
 use core::fmt;
 
 use crate::approval::flow::ApprovalEffect;
 use crate::cmd::{CopyMark, LinkTarget, Press};
 use crate::form::{CredField, EditField};
+use crate::secret::SecretEffect;
 
 /// One request to the shell.
 #[derive(Clone, PartialEq, Eq)]
@@ -126,6 +132,9 @@ pub enum Effect {
     ScrollMemoryClear,
     /// A press-and-hold area's hold ended: release its pointer capture (S4 P4; S22).
     ReleaseHold,
+    /// A secret window (S4 P7a1): serials, kinds and flags only, never secret text.
+    /// `SecretEffect::OpenInput` is answered with `Cmd::SecretOpened`.
+    Secret(SecretEffect),
 }
 
 /// A control of the main screen [`Effect::Reveal`] names (S4 P4): a button by its press, a
@@ -196,6 +205,7 @@ impl fmt::Debug for Effect {
             Self::TabTop => formatter.write_str("TabTop"),
             Self::ScrollMemoryClear => formatter.write_str("ScrollMemoryClear"),
             Self::ReleaseHold => formatter.write_str("ReleaseHold"),
+            Self::Secret(effect) => formatter.debug_tuple("Secret").field(effect).finish(),
         }
     }
 }
@@ -356,5 +366,28 @@ mod tests {
         ] {
             assert_eq!(format!("{effect:?}"), name);
         }
+    }
+
+    /// S4 P7a1: a secret window effect is its serial, window id and flags.
+    #[test]
+    fn secret_window_effects_debug_as_ids_and_flags() {
+        use crate::secret::SecretKind;
+        assert_eq!(
+            format!(
+                "{:?}",
+                Effect::Secret(SecretEffect::OpenInput {
+                    serial: 3,
+                    kind: SecretKind::Unlock,
+                    step: None,
+                    topmost: true,
+                    lang: yw_core::lang::Lang::Ko,
+                })
+            ),
+            "Secret(OpenInput { serial: 3, kind: \"W02\", step: false, topmost: true, lang: Ko })"
+        );
+        assert_eq!(
+            format!("{:?}", Effect::Secret(SecretEffect::Close { serial: 3 })),
+            "Secret(Close { serial: 3 })"
+        );
     }
 }

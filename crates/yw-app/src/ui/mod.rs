@@ -39,7 +39,6 @@ pub mod screens_walletconnect;
 pub mod screens_yubikey;
 pub mod screens_zec;
 pub mod secret;
-pub mod secret_text;
 pub mod theme;
 // DEV ONLY: needs `yw_win::ui::capture`, which exists only with debug assertions, so the tour is
 // left out of `cargo test --release` (and never part of a release binary).

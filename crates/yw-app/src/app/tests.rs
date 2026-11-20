@@ -7072,3 +7072,113 @@ fn shell_resolves_the_keys(body: &dyn Fn(&str, &str) -> String) {
         assert!(squeezed(head).contains(call), "app.rs: {head} lost {call}");
     }
 }
+
+/// 2026-11-20 (S4 P7a1, spec/04 §4.5, spec/15 §11.4 S4): the secret session behind the seam.
+/// Headless (no main window) every input window is refused as before: the session ends with
+/// E-SEC-001 and nothing is open. An open result counts only for the open session and only
+/// once (a stale or second answer is dropped); `Refused`/`Failed` end the session with their
+/// banner; a form action of another window's serial reaches no purpose; an open effect whose
+/// session has ended makes nothing (critique A-3); `close_secret` ends the session.
+#[test]
+fn secret_sessions_follow_their_window_results() {
+    use yw_engine::approval::flow::OpenOutcome;
+    use yw_engine::cmd::Cmd;
+    use yw_engine::secret::{SecretEffect, SecretKind};
+
+    use crate::errors::ErrorCode;
+    use crate::ui::secret::FormAction;
+
+    let dir = temp_dir("secret-session-seam");
+    let mut app = app_at(&dir);
+    let codes = |app: &App| -> Vec<Option<ErrorCode>> {
+        app.banners.iter().map(|banner| banner.code).collect()
+    };
+    // Headless: refused as today (E-SEC-001), the serial counted, no session left.
+    let before = app.secret_serial;
+    app.open_input(SecretKind::Unlock, Purpose::Unlock, false);
+    assert_eq!(app.secret_serial, before + 1);
+    assert!(!app.secret_open());
+    assert_eq!(app.secret_purpose(), None);
+    assert_eq!(codes(&app), [Some(ErrorCode::Sec001)]);
+    // A late answer for that ended session is dropped.
+    app.on_cmd(Cmd::SecretOpened {
+        serial: before + 1,
+        outcome: OpenOutcome::Shown {
+            capture_excluded: true,
+        },
+    });
+    assert!(!app.secret_open());
+    app.banners.clear();
+
+    // A session whose window the shell reports shown.
+    let serial = app.begin_secret(SecretKind::ConfirmPassword, Purpose::ChangePassword, false);
+    assert!(app.secret_open(), "a session is open from its request on");
+    app.on_cmd(Cmd::SecretOpened {
+        serial: serial - 1,
+        outcome: OpenOutcome::Failed(ErrorCode::App009),
+    });
+    assert_eq!(app.secret_purpose(), Some(Purpose::ChangePassword));
+    app.on_cmd(Cmd::SecretOpened {
+        serial,
+        outcome: OpenOutcome::Shown {
+            capture_excluded: false,
+        },
+    });
+    assert!(
+        app.secret_session
+            .as_ref()
+            .is_some_and(crate::secret_session::SecretSession::shown)
+    );
+    // A second answer for a shown window does not end it.
+    app.on_cmd(Cmd::SecretOpened {
+        serial,
+        outcome: OpenOutcome::Refused(ErrorCode::Sec001),
+    });
+    assert_eq!(app.secret_purpose(), Some(Purpose::ChangePassword));
+    assert!(codes(&app).is_empty());
+    // An open effect for another serial makes nothing and its answer is dropped (A-3).
+    let stale = app.apply_secret_effect(SecretEffect::OpenInput {
+        serial: serial + 7,
+        kind: SecretKind::Unlock,
+        step: None,
+        topmost: false,
+        lang: app.settings.language,
+    });
+    assert!(matches!(
+        stale,
+        Some(Cmd::SecretOpened {
+            serial: s,
+            outcome: OpenOutcome::Refused(ErrorCode::Sec001),
+        }) if s == serial + 7
+    ));
+    assert_eq!(app.secret_serial, serial);
+    // A form action of another serial reaches no purpose; the open one's cancel ends it.
+    app.apply_form_action(serial + 1, FormAction::Cancel);
+    assert_eq!(app.secret_purpose(), Some(Purpose::ChangePassword));
+    app.apply_form_action(serial, FormAction::Cancel);
+    assert!(!app.secret_open());
+
+    // `Failed` ends the session with E-APP-009, `Refused` with its code.
+    let serial = app.begin_secret(SecretKind::Unlock, Purpose::Unlock, true);
+    app.on_cmd(Cmd::SecretOpened {
+        serial,
+        outcome: OpenOutcome::Failed(ErrorCode::App009),
+    });
+    assert!(!app.secret_open());
+    assert_eq!(codes(&app), [Some(ErrorCode::App009)]);
+    let serial = app.begin_secret(SecretKind::Unlock, Purpose::Unlock, false);
+    app.on_cmd(Cmd::SecretOpened {
+        serial,
+        outcome: OpenOutcome::Refused(ErrorCode::Sec001),
+    });
+    assert!(!app.secret_open());
+    assert_eq!(
+        codes(&app),
+        [Some(ErrorCode::App009), Some(ErrorCode::Sec001)]
+    );
+    // `close_secret` ends an open session.
+    let _ = app.begin_secret(SecretKind::Unlock, Purpose::Unlock, false);
+    app.close_secret();
+    assert!(!app.secret_open());
+    let _ = std::fs::remove_dir_all(dir);
+}

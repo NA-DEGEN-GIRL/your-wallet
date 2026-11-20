@@ -31,8 +31,8 @@ use crate::events::{
     YubiKeyJobError,
 };
 use crate::logging::{self, Field};
-use crate::ui::secret::SecretKind;
 use crate::yubikey::CardJobError;
+use yw_engine::secret::SecretKind;
 
 /// The card step's own bound after the approval click (spec/10 §10: PIN entry and touch).
 pub const CARD_STEP_MS: u64 = 120_000;
@@ -1092,7 +1092,7 @@ impl App {
         let error = step.error.clone();
         let id = step.id;
         let card = self.card_step_card(step.role);
-        self.open_input(kind, Purpose::CardSign(id), true);
+        self.open_input_direct(kind, Purpose::CardSign(id), true);
         self.with_form(|form| {
             form.set_card(card);
             form.set_details(details);

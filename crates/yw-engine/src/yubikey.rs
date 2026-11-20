@@ -79,7 +79,7 @@ impl CardJobError {
 
 /// Fixed texts of the card glue: PIN names, counters, blocked-PIN advice (spec/10 §9.1;
 /// English spec/14). The W12 windows keep their own copies of the [`PinTarget`] texts
-/// (`ui::secret_text`); a test compares them.
+/// (`secret::text`; 2026-11-20, S4 P7a1: before yw-app `ui::secret_text`); tests compare them.
 pub mod text {
     yw_core::texts! {
         NAME_OPENPGP_ADMIN = "OpenPGP 관리자 PIN" / "OpenPGP admin PIN";

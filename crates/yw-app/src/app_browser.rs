@@ -33,7 +33,7 @@ use crate::logging::{self, Field};
 use crate::meta::EvmAccountPref;
 use crate::network::NetworkId;
 use crate::ui::approval::{QueueOutcome, QueueSource};
-use crate::ui::secret::SecretKind;
+use yw_engine::secret::SecretKind;
 
 /// Chain-switch grant writes are coalesced: at most one meta write per this interval (a page
 /// switching chains in a loop must not turn into a stream of vault writes).
@@ -820,7 +820,7 @@ impl App {
         if let Some(browser) = self.browser.as_mut() {
             browser.dapp_unlock = true;
         }
-        self.open_input(SecretKind::Unlock, crate::app::Purpose::Unlock, true);
+        self.open_input_direct(SecretKind::Unlock, crate::app::Purpose::Unlock, true);
     }
 
     /// The dApp unlock window was dismissed (`나중에`): every waiting site item is rejected.

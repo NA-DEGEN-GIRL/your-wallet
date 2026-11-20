@@ -57,6 +57,8 @@ pub mod catalogues;
 pub mod explain_transport;
 pub mod lock;
 pub mod log_file;
+// 2026-11-20 (S4 P7a1): the open secret session (the purpose of the one secret window).
+pub mod secret_session;
 pub mod shell_msg;
 pub mod store;
 pub mod system_clock;

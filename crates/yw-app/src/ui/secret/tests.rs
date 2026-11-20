@@ -296,7 +296,7 @@ fn w07_warns_that_imported_keys_are_not_in_the_recovery_words() {
             .get(Lang::Ko)
             .contains("복구 단어(24단어)로 복구되지 않습니다")
     );
-    assert_eq!(EVM_KEY.size(), (640, 560));
+    assert_eq!(super::window_size(EVM_KEY), (640, 560));
     // Without recovery words (key-only wallet, "개인키로 시작하기") the warning says the original
     // key is the only backup, for every chain.
     for chain in [ImportChain::Evm, ImportChain::Sol, ImportChain::Btc] {
@@ -668,7 +668,12 @@ fn pin_target_texts_match_the_korean_originals() {
     ] {
         for lang in Lang::ALL {
             assert_eq!(super::target_name(target, lang), target.name(lang));
-            assert_eq!(super::target_title(target, lang), target.change_title(lang));
+            // 2026-11-20 (S4 P7a1): the title helper moved to `yw_engine::secret` with the kind;
+            // compared through the W12 kind (the engine test compares the helper itself).
+            assert_eq!(
+                super::CardSecretKind::ChangePin(target).title(lang),
+                target.change_title(lang)
+            );
             assert_eq!(super::target_rule(target, lang), target.rule(lang));
         }
     }

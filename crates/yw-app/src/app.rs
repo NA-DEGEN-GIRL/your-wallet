@@ -39,6 +39,7 @@ use crate::lock::{IdleTracker, LockReason, SystemAction, system_action};
 use crate::logging::{self, Field};
 use crate::meta::{EvmAccountPref, Meta, RawAccount};
 use crate::network::NetworkId;
+use crate::secret_session::SecretSession;
 use crate::settings::{RpcTemplate, Settings};
 use crate::shell_msg::{
     WM_YW_ACTIVATE, WM_YW_EVENTS, WM_YW_LOCK_SHORTCUT, WM_YW_NAV_KEY, WM_YW_SHORTCUT,
@@ -49,7 +50,7 @@ use crate::text::is_valid_label;
 use crate::ui::main_window::{ControlSet, Placed, Tone, layout, paint};
 use crate::ui::secret::{
     CaptureDecision, DisplaySecret, FormAction, PASTE_MAX_UTF16_UNITS, SECRET_TIMER_ID,
-    SECRET_TIMER_MS, SecretForm, SecretKind, SecretStep, Submission, capture_decision,
+    SECRET_TIMER_MS, SecretForm, Submission, capture_decision, window_size,
 };
 // `IDOK`/`IDCANCEL`: the ids `IsDialogMessageW` sends for Enter and Esc (2026-11-18, S3 B2: they
 // were constants of this file).
@@ -59,11 +60,13 @@ use crate::workers::key::new_account;
 use crate::workers::rpc::RpcJob;
 use yw_core::lang::{Lang, Text};
 use yw_engine::app_store::AppStore;
+use yw_engine::approval::flow::OpenOutcome;
 use yw_engine::cmd::{Cmd, CorePress, Press, Row, RpcImportPress, RpcRowAction};
 use yw_engine::effect::{Effect, Folder, RevealTarget, TimerId};
 // `CredField`: debug builds only until S3 C3 (the shadow reads of plan §3.2a; 2026-11-18 B4–B5
 // review); since C3 `App::take_cred` uses it in every build.
 use yw_engine::form::{CredField, EditField, FormState, PressInput};
+use yw_engine::secret::{SecretEffect, SecretKind, SecretStep};
 use yw_engine::services::Services;
 
 /// Main window class.
@@ -475,11 +478,13 @@ pub enum Purpose {
     Mnemonics(crate::app_mnemonics::MnPurpose),
 }
 
+/// The shell's record of the open secret window: its session's serial, the window and the form
+/// that holds its buffers. 2026-11-20 (S4 P7a1): the purpose moved to the wallet's
+/// [`SecretSession`] (`App::secret_session`); before, it was a field here.
 struct SecretWin {
     serial: u64,
     window: Window,
     form: SecretForm,
-    purpose: Purpose,
 }
 
 /// A main-window banner (shown until dismissed; one per code).
@@ -831,7 +836,11 @@ pub struct App {
     pub(crate) ext: crate::app_extension::ExtensionUi,
     /// Block explorer links: the S15 card's form and the launcher (`app_explorer`, 2026-11-11).
     pub(crate) explorer_ui: crate::app_explorer::ExplorerUi,
+    /// The shell's open secret window (window and form; S4 P7a1).
     secret: Option<SecretWin>,
+    /// The wallet's open secret session (the purpose of the one secret window; S4 P7a1).
+    secret_session: Option<SecretSession>,
+    /// The last secret session serial handed out (the next session gets the next one).
     secret_serial: u64,
     import: ImportFlow,
     challenge: Option<BackupChallenge>,
@@ -1280,6 +1289,7 @@ impl App {
             ext: crate::app_extension::ExtensionUi::default(),
             explorer_ui: crate::app_explorer::ExplorerUi::default(),
             secret: None,
+            secret_session: None,
             secret_serial: 0,
             import: ImportFlow::default(),
             challenge: None,
@@ -1861,7 +1871,7 @@ impl App {
         let &id = tab
             .checked_sub(1)
             .and_then(|index| logic_presses::TABS.get(index))?;
-        if self.screen != Screen::Main || self.secret.is_some() {
+        if self.screen != Screen::Main || self.secret_open() {
             return None;
         }
         let shown = self.items().iter().any(|item| {
@@ -1897,7 +1907,7 @@ impl App {
 
     /// The control F5 or Ctrl+, presses (S4 P4: the read half of [`Self::shortcut`]).
     fn shortcut_target(&self, code: usize) -> Option<u16> {
-        if self.secret.is_some() {
+        if self.secret_open() {
             return None;
         }
         match crate::shell_msg::Shortcut::from_code(code) {
@@ -1936,7 +1946,7 @@ impl App {
     /// overlay whose `취소` is not shown is still nothing; the drop-downs are what
     /// `close_pickers` closes, [`Self::pickers_open`]).
     fn escape_target(&self) -> EscTarget {
-        if self.secret.is_some() {
+        if self.secret_open() {
             return EscTarget::Nothing;
         }
         if matches!(self.screen, Screen::Confirm(_)) {
@@ -2017,7 +2027,7 @@ impl App {
     /// must reach; no caller outside `App` in production.
     pub(crate) fn enter_target(&self, focus: Option<&crate::ui::main_window::Ctl>) -> Option<u16> {
         let ctl = focus?;
-        if self.secret.is_some() || !ctl.enabled {
+        if self.secret_open() || !ctl.enabled {
             return None;
         }
         if ctl.is_button() {
@@ -2040,7 +2050,7 @@ impl App {
         self.background = false;
         self.refresh();
         // Not while a wallet reset moves the files (its vault is gone once it finishes).
-        if self.mode == AppMode::Locked && self.secret.is_none() && !self.reset.running {
+        if self.mode == AppMode::Locked && !self.secret_open() && !self.reset.running {
             self.open_input(SecretKind::Unlock, Purpose::Unlock, false);
         }
     }
@@ -2144,7 +2154,7 @@ impl App {
             || self.import.phrase.is_some()
             || self.import.password_sent
             || self.keys.start.holds_secret()
-            || self.secret.is_some()
+            || self.secret_open()
             || self.card.wizard.is_some()
             // A new YubiKey wallet's words may be held by the key worker (W08 not shown).
             || self.screen == Screen::YubiKeyWalletIntro
@@ -2525,8 +2535,10 @@ impl App {
         self.refresh();
     }
 
+    /// What the open secret window is for (2026-11-20, S4 P7a1: the wallet's session; before,
+    /// the window record's purpose — the session lasts exactly as long as that window).
     pub(crate) fn secret_purpose(&self) -> Option<Purpose> {
-        self.secret.as_ref().map(|secret| secret.purpose)
+        self.secret_session.as_ref().map(SecretSession::purpose)
     }
 
     pub(crate) fn with_form(&mut self, f: impl FnOnce(&mut SecretForm)) {
@@ -3140,7 +3152,7 @@ impl App {
             "recover.failed",
             &[("code", Field::Code(vault_code(error)))],
         );
-        if self.secret.is_some() {
+        if self.secret_open() {
             self.with_form(|form| {
                 form.set_busy(false);
                 form.set_error(Some(text));
@@ -3163,47 +3175,71 @@ impl App {
                 form.set_busy(false);
                 form.set_error(Some(code.text_in(lang)));
             });
-            if self.secret.is_none() {
+            if !self.secret_open() {
                 self.error_banner(code);
             }
         }
     }
 
     // ----- secret windows ----------------------------------------------------------------
+    //
+    // 2026-11-20 (spec/15 §11.4 S4 P7a1, spec/04 §4.5): the logic's half is the secret session
+    // (`secret_session`, a `SecretSession`: serial, kind, purpose, topmost, shown) — `open_input`
+    // starts one and emits `SecretEffect::OpenInput`, `on_secret_opened` takes the shell's answer
+    // (`Cmd::SecretOpened`), `close_secret` ends it and emits `SecretEffect::Close`. The shell's
+    // half is `apply_secret_effect` (`open_input_window`, `close_secret_window`), `create_secret`,
+    // `show_secret` and `on_secret`; its window record (`secret`) holds no purpose. Still opened
+    // directly (no effect): the display windows (`open_display`, S4 P7b) and the `YubiKey` and
+    // card input windows (`open_input_direct`, S4 P7a2). Before P7a1 `open_input`, `open_display`
+    // and `close_secret` made, showed and closed the windows themselves, and the purpose was in
+    // the window record.
 
-    fn create_secret(&mut self, kind: SecretKind, topmost: bool) -> (u64, Result<Window, UiError>) {
+    /// Starts the secret session of a window (a fresh serial, never reused); the caller closed the
+    /// previous one first. 2026-11-20 (S4 P7a1): the serial was counted in `create_secret` before.
+    fn begin_secret(&mut self, kind: SecretKind, purpose: Purpose, topmost: bool) -> u64 {
         self.secret_serial = self.secret_serial.saturating_add(1);
         let serial = self.secret_serial;
+        self.secret_session = Some(SecretSession::new(serial, kind, purpose, topmost));
+        serial
+    }
+
+    /// The shell makes the window of secret session `serial` (hidden; yw-win applies and checks
+    /// the capture exclusion before the handler exists). Without a main window (headless tests,
+    /// the census) it refuses as yw-win refuses a `Required` window whose exclusion failed.
+    fn create_secret(
+        &self,
+        serial: u64,
+        kind: SecretKind,
+        topmost: bool,
+        lang: Lang,
+    ) -> Result<Window, UiError> {
         let Some(owner) = self.main.as_ref().map(Window::hwnd) else {
-            return (serial, Err(UiError::CaptureExclusionFailed));
+            return Err(UiError::CaptureExclusionFailed);
         };
         // 2026-11-18 (S4 A7): the cfg(test) seam logs the request and can refuse it as yw-win
         // would (`TEST_SECRET_REFUSE`, removed in S4 P8); release builds have no such line.
         #[cfg(test)]
         if let Some(refused) = secret_seam::create(serial, kind, topmost) {
-            return (serial, Err(refused));
+            return Err(refused);
         }
-        let (w, h) = kind.size();
+        let (w, h) = window_size(kind);
         let class = if kind.is_display() {
             SECRET_VIEW_CLASS
         } else {
             SECRET_INPUT_CLASS
         };
         let spec = WindowSpec::new(class, WindowKind::Owned { owner })
-            .title(&format!(
-                "Your Wallet — {}",
-                kind.title(self.settings.language)
-            ))
+            .title(&format!("Your Wallet — {}", kind.title(lang)))
             .size(w, h)
             .topmost(topmost);
         let handler = Box::new(Forward {
             app: self.self_ref.clone(),
             target: Target::Secret(serial),
         });
-        (serial, create_window(&spec, handler))
+        create_window(&spec, handler)
     }
 
-    fn show_secret(&mut self, serial: u64, window: Window, form: SecretForm, purpose: Purpose) {
+    fn show_secret(&mut self, serial: u64, window: Window, form: SecretForm) {
         let _ = window.set_timer(SECRET_TIMER_ID, SECRET_TIMER_MS);
         if let Some(main) = self.main.as_ref() {
             main.enable(false);
@@ -3222,7 +3258,6 @@ impl App {
             serial,
             window,
             form,
-            purpose,
         });
     }
 
@@ -3246,40 +3281,127 @@ impl App {
         }
     }
 
-    /// Opens an input window (W01–W07, W10).
+    /// Opens an input window (W01–W07, W10–W12) through the seam (2026-11-20, S4 P7a1): the
+    /// previous window is closed, a secret session starts, and the shell is asked for the window
+    /// (`SecretEffect::OpenInput`); its answer (`Cmd::SecretOpened`) shows it or ends the session
+    /// with E-SEC-001 / E-APP-009 (`on_secret_opened`). Applied at once (the inline executor), so
+    /// the window exists, or the banner is up, when this returns, as before.
     pub(crate) fn open_input(&mut self, kind: SecretKind, purpose: Purpose, topmost: bool) {
         self.close_secret();
-        let (serial, created) = self.create_secret(kind, topmost);
-        match created {
+        let serial = self.begin_secret(kind, purpose, topmost);
+        let lang = self.settings.language;
+        self.emit(Effect::Secret(SecretEffect::OpenInput {
+            serial,
+            kind,
+            step: flow_step(lang, purpose),
+            topmost,
+            lang,
+        }));
+    }
+
+    /// Opens an input window without the seam: the shell's half is called here and its outcome
+    /// handed to `on_secret_opened` directly. Transitional (2026-11-20, S4 P7a1): only the
+    /// `YubiKey` and card sites (`app_yubikey*`, `app_card`, `app_browser`) call it, until S4
+    /// P7a2 moves them to [`Self::open_input`] (one reads the session right after the open).
+    pub(crate) fn open_input_direct(&mut self, kind: SecretKind, purpose: Purpose, topmost: bool) {
+        self.close_secret();
+        let serial = self.begin_secret(kind, purpose, topmost);
+        let lang = self.settings.language;
+        let outcome = self.open_input_window(serial, kind, flow_step(lang, purpose), topmost, lang);
+        self.on_secret_opened(serial, outcome);
+    }
+
+    /// The shell's half of an input window's open (today's `open_input` body before S4 P7a1):
+    /// create, check the capture exclusion (spec/04 §4.5: `Preferred` — not excluded opens with
+    /// T-CAPTURE-WARN and `보기` off), make the form and show it.
+    fn open_input_window(
+        &mut self,
+        serial: u64,
+        kind: SecretKind,
+        step: Option<SecretStep>,
+        topmost: bool,
+        lang: Lang,
+    ) -> OpenOutcome {
+        match self.create_secret(serial, kind, topmost, lang) {
             Ok(window) => {
                 let excluded = window.capture_excluded();
                 Self::log_capture(kind, excluded);
                 match capture_decision(kind, Ok(excluded)) {
                     CaptureDecision::Show { warning } => {
-                        let mut form = SecretForm::new(
-                            kind,
-                            self.settings.language,
-                            self.clock.now_ms(),
-                            !warning,
-                        );
-                        form.set_step(flow_step(self.settings.language, purpose));
-                        self.show_secret(serial, window, form, purpose);
+                        let mut form = SecretForm::new(kind, lang, self.clock.now_ms(), !warning);
+                        form.set_step(step);
+                        self.show_secret(serial, window, form);
+                        OpenOutcome::Shown {
+                            capture_excluded: !warning,
+                        }
                     }
                     CaptureDecision::Refuse(code) => {
                         drop(window);
-                        self.error_banner(code);
+                        OpenOutcome::Refused(code)
                     }
                 }
             }
             Err(UiError::CaptureExclusionFailed) => {
                 Self::log_capture(kind, false);
-                self.error_banner(ErrorCode::Sec001);
+                OpenOutcome::Refused(ErrorCode::Sec001)
             }
-            Err(UiError::Os(_)) => self.error_banner(ErrorCode::App009),
+            Err(UiError::Os(_)) => OpenOutcome::Failed(ErrorCode::App009),
+        }
+    }
+
+    /// Applies one `Effect::Secret` (the shell; S4 P7a1). An open is answered with
+    /// `Cmd::SecretOpened`. An open whose session is no longer the open one (it ended before the
+    /// effect was applied: critique A-3) makes nothing and is answered `Refused`, which
+    /// `on_secret_opened` drops (that session has ended).
+    pub(crate) fn apply_secret_effect(&mut self, effect: SecretEffect) -> Option<Cmd> {
+        match effect {
+            SecretEffect::OpenInput {
+                serial,
+                kind,
+                step,
+                topmost,
+                lang,
+            } => {
+                let current = self.secret_session.as_ref().map(SecretSession::serial);
+                let outcome = if current == Some(serial) {
+                    self.open_input_window(serial, kind, step, topmost, lang)
+                } else {
+                    OpenOutcome::Refused(ErrorCode::Sec001)
+                };
+                Some(Cmd::SecretOpened { serial, outcome })
+            }
+            SecretEffect::Close { serial } => {
+                self.close_secret_window(serial);
+                None
+            }
+        }
+    }
+
+    /// The answer to a secret window's open (`Cmd::SecretOpened`; S4 P7a1). Only the first
+    /// answer for the open session counts: one for another serial (a session that has ended) or
+    /// for a window already shown is dropped. `Shown` marks the session shown; `Refused`
+    /// (E-SEC-001) and `Failed` (E-APP-009) end it and say so on the main window, as `open_input`
+    /// did.
+    fn on_secret_opened(&mut self, serial: u64, outcome: OpenOutcome) {
+        let Some(session) = self
+            .secret_session
+            .as_mut()
+            .filter(|session| session.serial() == serial && !session.shown())
+        else {
+            return;
+        };
+        match outcome {
+            OpenOutcome::Shown { .. } => session.mark_shown(),
+            OpenOutcome::Refused(code) | OpenOutcome::Failed(code) => {
+                self.secret_session = None;
+                self.error_banner(code);
+            }
         }
     }
 
     /// Opens a display window (W08/W09); on exclusion failure the secret is wiped (E-SEC-001).
+    /// 2026-11-20 (S4 P7a1): still direct (S4 P7b puts it behind the seam); its session starts
+    /// before the window is made and ends on a refusal or failure (`on_secret_opened`).
     pub(crate) fn open_display(
         &mut self,
         kind: SecretKind,
@@ -3287,7 +3409,9 @@ impl App {
         display: DisplaySecret,
     ) {
         self.close_secret();
-        let (serial, created) = self.create_secret(kind, false);
+        let lang = self.settings.language;
+        let serial = self.begin_secret(kind, purpose, false);
+        let created = self.create_secret(serial, kind, false, lang);
         let excluded = created
             .as_ref()
             .map(Window::capture_excluded)
@@ -3295,18 +3419,23 @@ impl App {
         Self::log_capture(kind, excluded.unwrap_or(false));
         let decision = capture_decision(kind, excluded);
         match (decision, created) {
-            (CaptureDecision::Show { .. }, Ok(window)) => {
-                let mut form =
-                    SecretForm::display(kind, self.settings.language, self.clock.now_ms(), display);
-                form.set_step(flow_step(self.settings.language, purpose));
-                form.set_timeout_note(timeout_note(self.settings.language, purpose));
-                self.show_secret(serial, window, form, purpose);
+            (CaptureDecision::Show { warning }, Ok(window)) => {
+                let mut form = SecretForm::display(kind, lang, self.clock.now_ms(), display);
+                form.set_step(flow_step(lang, purpose));
+                form.set_timeout_note(timeout_note(lang, purpose));
+                self.show_secret(serial, window, form);
+                self.on_secret_opened(
+                    serial,
+                    OpenOutcome::Shown {
+                        capture_excluded: !warning,
+                    },
+                );
             }
             (CaptureDecision::Refuse(code), _) => {
                 #[cfg(test)]
                 secret_seam::log(secret_seam::Op::DisplayDropped);
                 drop(display);
-                self.error_banner(code);
+                self.on_secret_opened(serial, OpenOutcome::Refused(code));
                 if purpose == Purpose::ShowForBackup {
                     self.set_screen(Screen::BackupPending);
                 }
@@ -3315,20 +3444,35 @@ impl App {
                 #[cfg(test)]
                 secret_seam::log(secret_seam::Op::DisplayDropped);
                 drop(display);
-                self.error_banner(ErrorCode::App009);
+                self.on_secret_opened(serial, OpenOutcome::Failed(ErrorCode::App009));
             }
         }
     }
 
-    /// Whether a secret window (W01–W10) is open.
+    /// Whether a secret window (W01–W12) is open: a secret session, from the request until the
+    /// window's end (2026-11-20, S4 P7a1; before, whether the window record existed — the same
+    /// while the effects are applied at once).
     #[must_use]
     pub fn secret_open(&self) -> bool {
-        self.secret.is_some()
+        self.secret_session.is_some()
     }
 
-    /// Closes the open secret window (buffers wiped).
+    /// Closes the open secret window (buffers wiped): ends the secret session and asks the shell
+    /// to close its window (2026-11-20, S4 P7a1: `SecretEffect::Close`; before, the window was
+    /// closed here). Nothing when no session is open.
     pub fn close_secret(&mut self) {
-        if let Some(mut secret) = self.secret.take() {
+        if let Some(session) = self.secret_session.take() {
+            self.emit(Effect::Secret(SecretEffect::Close {
+                serial: session.serial(),
+            }));
+        }
+    }
+
+    /// The shell's half of `SecretEffect::Close` (the body of `close_secret` before S4 P7a1):
+    /// the window of session `serial`, when it is the open one, is wiped, its timer stopped, the
+    /// main window enabled again, the window destroyed and the main window brought forward.
+    fn close_secret_window(&mut self, serial: u64) {
+        if let Some(mut secret) = self.secret.take_if(|secret| secret.serial == serial) {
             secret.form.wipe();
             #[cfg(test)]
             secret_seam::log(secret_seam::Op::Close {
@@ -3421,17 +3565,25 @@ impl App {
                     form.wipe();
                     FormAction::Cancel
                 };
-                self.apply_form_action(action);
+                self.apply_form_action(serial, action);
                 return Reply::Handled(0);
             }
             _ => return Reply::Default,
         };
-        self.apply_form_action(action);
+        self.apply_form_action(serial, action);
         Reply::Handled(0)
     }
 
-    fn apply_form_action(&mut self, action: FormAction) {
-        let Some(purpose) = self.secret_purpose() else {
+    /// What the form of the window of secret session `serial` asked for. 2026-11-20 (S4 P7a1):
+    /// the purpose is the wallet session's, and an action of a window that is not the open
+    /// session's is dropped (`on_secret` already finds the window by `serial`; the two agree).
+    fn apply_form_action(&mut self, serial: u64, action: FormAction) {
+        let Some(purpose) = self
+            .secret_session
+            .as_ref()
+            .filter(|session| session.serial() == serial)
+            .map(SecretSession::purpose)
+        else {
             return;
         };
         match action {
@@ -4112,6 +4264,8 @@ impl App {
             Cmd::Opened { ok, which } => self.on_opened(ok, which),
             // The extension folder was not found (`Effect::OpenFolder`, S4 P3).
             Cmd::FolderMissing => self.on_folder_missing(),
+            // A secret input window's open (`Effect::Secret(OpenInput)`, S4 P7a1).
+            Cmd::SecretOpened { serial, outcome } => self.on_secret_opened(serial, outcome),
         }
     }
 

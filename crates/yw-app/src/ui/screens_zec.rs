@@ -690,9 +690,9 @@ impl App {
         if imported {
             details.push(Item::Help(
                 if self.key_only() {
-                    crate::ui::secret_text::KEY_ONLY_BACKUP
+                    yw_engine::secret::text::KEY_ONLY_BACKUP
                 } else {
-                    crate::ui::secret_text::IMPORTED_KEY_BACKUP
+                    yw_engine::secret::text::IMPORTED_KEY_BACKUP
                 }
                 .get(lang)
                 .to_owned(),

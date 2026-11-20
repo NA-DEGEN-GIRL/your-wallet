@@ -9,16 +9,21 @@
 //!
 //! [`SecretForm`] is window-independent: `app` forwards decoded messages and acts on the returned
 //! [`FormAction`].
+//!
+//! 2026-11-20 (spec/15 §11.4 S4 P7a1): the window kinds (`SecretKind`, `CardSecretKind`), the
+//! flow step (`SecretStep`) and the fixed texts (`text`, was `ui::secret_text`) moved to
+//! `yw_engine::secret`; the window size in DIP stayed here ([`window_size`], was
+//! `SecretKind::size`).
 
 use yw_core::bip39::{is_word, is_word_prefix};
 use yw_core::keyimport::ImportChain;
 use yw_core::lang::Lang;
 use yw_core::password::VaultPassword;
 use yw_core::secret::{SecretString, Zeroizing};
+use yw_engine::secret::{CardSecretKind, SecretKind, SecretStep, text};
 use yw_win::ui::{DrawFlags, PaintDc, Rect, scale};
 
 use crate::errors::ErrorCode;
-use crate::ui::secret_text as text;
 use crate::ui::secure_field::{
     Charset, PushResult, RejectReason, SecretField, finalize_private_key, has_edge_space,
     mnemonic_words, normalize_paste,
@@ -61,16 +66,6 @@ const fn target_name(target: PinTarget, lang: Lang) -> &'static str {
     }
 }
 
-/// A PIN target's W12 title (`PinTarget::change_title` in `lang`).
-const fn target_title(target: PinTarget, lang: Lang) -> &'static str {
-    match target {
-        PinTarget::OpenPgpUser => text::TITLE_CHANGE_OPENPGP_PIN.get(lang),
-        PinTarget::OpenPgpAdmin => text::TITLE_CHANGE_ADMIN_PIN.get(lang),
-        PinTarget::PivPin => text::TITLE_CHANGE_PIV_PIN.get(lang),
-        PinTarget::PivPuk => text::TITLE_CHANGE_PIV_PUK.get(lang),
-    }
-}
-
 /// A PIN target's length rule and factory value (`PinTarget::rule` in `lang`).
 fn target_rule(target: PinTarget, lang: Lang) -> String {
     let (min, max) = target.bounds();
@@ -86,194 +81,21 @@ const VK_ESCAPE: u16 = 0x1B;
 const VK_INSERT: u16 = 0x2D;
 const VK_PROCESSKEY: u16 = 0xE5;
 
-/// The ten secret windows.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SecretKind {
-    /// W01 비밀번호 설정 (create/import).
-    SetPassword,
-    /// W02 잠금 해제.
-    Unlock,
-    /// W03 비밀번호 확인 (reveal, remove raw key, recover).
-    ConfirmPassword,
-    /// W04 비밀번호 변경.
-    ChangePassword,
-    /// W05 니모닉 입력.
-    Mnemonic,
-    /// W06 passphrase (`confirm` = import with a second field).
-    Passphrase {
-        /// Two fields.
-        confirm: bool,
-    },
-    /// W07 개인키 가져오기 (`no_words`: the wallet has no recovery words — key-only wallet or
-    /// "개인키로 시작하기").
-    PrivateKey {
-        /// Chain of the key (character set, length, help).
-        chain: ImportChain,
-        /// The T-IMPORTED-KEY variant without recovery words.
-        no_words: bool,
-    },
-    /// W08 니모닉 표시 (`create` = first display with the 2 s acknowledgement).
-    ShowMnemonic {
-        /// Creation flow.
-        create: bool,
-    },
-    /// W09 개인키 표시.
-    ShowKey,
-    /// W10 백업 확인 (positions 1-based).
-    Backup {
-        /// Word positions.
-        positions: [u8; 4],
-    },
-    /// W11 `YubiKey` PIN (spec/10 §9.1): one masked ASCII field of `min..=max` characters
-    /// (`OpenPGP` PW1 6–127, PIV 6–8), for one card operation; `touches` > 1 adds the
-    /// "`YubiKey` 터치 N회가 필요합니다" line (one touch per Bitcoin or Zcash input, or per
-    /// transaction of a Solana dApp request when `per_tx`).
-    CardPin {
-        /// Shortest PIN.
-        min: u8,
-        /// Longest PIN.
-        max: u8,
-        /// Card signatures (touches) the operation needs.
-        touches: u8,
-        /// One touch per transaction ("거래마다", a Solana dApp request), not per input.
-        per_tx: bool,
-        /// The card to connect (the first holding the key; 0 when unknown).
-        serial: u32,
-    },
-    /// W12 `YubiKey` credentials of the enrolment wizard and the defaults change (spec/10 §7,
-    /// §9.1, §9.3): the `OpenPGP` admin PIN, a PIV management key (48 hex digits), or a PIN /
-    /// PUK change (current, new, new again). Same rules as W11: capture exclusion preferred,
-    /// owner-drawn masked fields, no copy, ASCII, wiped after the one card operation.
-    CardSecret(CardSecretKind),
-}
-
-/// What a W12 window asks for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CardSecretKind {
-    /// `OpenPGP` admin PIN (PW3, 8–127).
-    AdminPin,
-    /// The current PIV management key (48 hex digits, AES-192 / 3DES).
-    ManagementKey,
-    /// A PIN or PUK change: current, new, new again.
-    ChangePin(crate::yubikey::PinTarget),
-    /// The current PIV PIN (6–8): a PIN-protected management key at enrolment, or
-    /// "PIV 관리 키 자동 보호".
-    PivPin,
-    /// "PIN 하나로 통일" (spec/10 §9.3): the one current value (empty = factory values, else 8
-    /// characters), the new value (exactly 8) twice.
-    SetPins,
-    /// The optional ownership check of "`YubiKey` 연결하기" (spec/10 §7.6): the user PIN of
-    /// `OpenPGP` (6–127) or, with `piv`, of PIV (6–8), verified once (no signature).
-    UserPin {
-        /// The PIV PIN instead of the `OpenPGP` PIN.
-        piv: bool,
-    },
-}
-
-impl CardSecretKind {
-    /// Title.
-    #[must_use]
-    pub const fn title(self, lang: Lang) -> &'static str {
-        match self {
-            Self::AdminPin => text::TITLE_ADMIN_PIN.get(lang),
-            Self::ManagementKey => text::TITLE_MANAGEMENT_KEY.get(lang),
-            Self::ChangePin(target) => target_title(target, lang),
-            Self::PivPin => "YubiKey PIV PIN",
-            Self::SetPins => text::TITLE_SET_PINS.get(lang),
-            Self::UserPin { .. } => text::TITLE_USER_PIN.get(lang),
+/// A secret window's client size in DIP (spec/04 §1.7: 640×480, W08/W09 820×680). 2026-11-20
+/// (S4 P7a1): was `SecretKind::size`; the kind moved to `yw_engine::secret`, its pixels stay here.
+#[must_use]
+pub const fn window_size(kind: SecretKind) -> (i32, i32) {
+    match kind {
+        SecretKind::ShowMnemonic { .. } | SecretKind::ShowKey => (820, 680),
+        SecretKind::Mnemonic => (720, 600),
+        // W07 also carries the T-IMPORTED-KEY backup warning.
+        SecretKind::Backup { .. }
+        | SecretKind::ChangePassword
+        | SecretKind::PrivateKey { .. }
+        | SecretKind::CardSecret(CardSecretKind::ChangePin(_) | CardSecretKind::SetPins) => {
+            (640, 560)
         }
-    }
-}
-
-impl SecretKind {
-    /// `W01`…`W10` (logs).
-    #[must_use]
-    pub const fn id(self) -> &'static str {
-        match self {
-            Self::SetPassword => "W01",
-            Self::Unlock => "W02",
-            Self::ConfirmPassword => "W03",
-            Self::ChangePassword => "W04",
-            Self::Mnemonic => "W05",
-            Self::Passphrase { .. } => "W06",
-            Self::PrivateKey { .. } => "W07",
-            Self::ShowMnemonic { .. } => "W08",
-            Self::ShowKey => "W09",
-            Self::Backup { .. } => "W10",
-            Self::CardPin { .. } => "W11",
-            Self::CardSecret(_) => "W12",
-        }
-    }
-
-    /// Display windows (W08, W09) use `CaptureExclusion::Required`.
-    #[must_use]
-    pub const fn is_display(self) -> bool {
-        matches!(self, Self::ShowMnemonic { .. } | Self::ShowKey)
-    }
-
-    /// Display windows that end with the 2 s `다 적었습니다` hold instead of `닫기` (W08 of a new
-    /// wallet): closing them is a cancel.
-    #[must_use]
-    pub const fn needs_hold(self) -> bool {
-        matches!(self, Self::ShowMnemonic { create: true })
-    }
-
-    /// Plain-text windows mask their content on focus loss (W05, W07–W10).
-    #[must_use]
-    pub const fn plaintext(self) -> bool {
-        matches!(
-            self,
-            Self::Mnemonic
-                | Self::PrivateKey { .. }
-                | Self::ShowMnemonic { .. }
-                | Self::ShowKey
-                | Self::Backup { .. }
-        )
-    }
-
-    /// Paste allowed (W01–W07, W11, W12).
-    #[must_use]
-    pub const fn paste_allowed(self) -> bool {
-        !matches!(
-            self,
-            Self::ShowMnemonic { .. } | Self::ShowKey | Self::Backup { .. }
-        )
-    }
-
-    /// Window title (never secret).
-    #[must_use]
-    pub const fn title(self, lang: Lang) -> &'static str {
-        match self {
-            Self::SetPassword => text::TITLE_SET_PASSWORD.get(lang),
-            Self::Unlock => text::UNLOCK.get(lang),
-            Self::ConfirmPassword => text::TITLE_CONFIRM_PASSWORD.get(lang),
-            Self::ChangePassword => text::TITLE_CHANGE_PASSWORD.get(lang),
-            Self::Mnemonic => text::TITLE_MNEMONIC.get(lang),
-            Self::Passphrase { .. } => text::TITLE_PASSPHRASE.get(lang),
-            Self::PrivateKey { .. } => text::TITLE_PRIVATE_KEY.get(lang),
-            Self::ShowMnemonic { .. } => text::TITLE_SHOW_MNEMONIC.get(lang),
-            Self::ShowKey => text::TITLE_SHOW_KEY.get(lang),
-            Self::Backup { .. } => text::TITLE_BACKUP.get(lang),
-            Self::CardPin { .. } => "YubiKey PIN",
-            Self::CardSecret(what) => what.title(lang),
-        }
-    }
-
-    /// Client size in DIP (spec/04 §1.7: 640×480, W08/W09 820×680).
-    #[must_use]
-    pub const fn size(self) -> (i32, i32) {
-        match self {
-            Self::ShowMnemonic { .. } | Self::ShowKey => (820, 680),
-            Self::Mnemonic => (720, 600),
-            // W07 also carries the T-IMPORTED-KEY backup warning.
-            Self::Backup { .. }
-            | Self::ChangePassword
-            | Self::PrivateKey { .. }
-            | Self::CardSecret(CardSecretKind::ChangePin(_) | CardSecretKind::SetPins) => {
-                (640, 560)
-            }
-            _ => (640, 480),
-        }
+        _ => (640, 480),
     }
 }
 
@@ -500,19 +322,6 @@ impl SecretForm {
             self.disabled_until != 0
         )
     }
-}
-
-/// The flow a secret window belongs to and its step (the main window's step indicator, spec/04
-/// §2.3–§2.4): the flow title, the step labels (three; five for the new `YubiKey` wallet) and
-/// the current step (1-based).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SecretStep {
-    /// 새 지갑 만들기 / 기존 지갑 가져오기.
-    pub flow: &'static str,
-    /// The step labels.
-    pub labels: &'static [&'static str],
-    /// Current step, 1-based.
-    pub current: usize,
 }
 
 /// W10's verdict on one typed word (2026-11-10, the public BIP39 list as W05 uses it): nothing,

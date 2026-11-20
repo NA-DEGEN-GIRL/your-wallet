@@ -2,7 +2,8 @@
 //! spec/09 §2.2).
 //!
 //! `cfg(test)` only: release builds compile none of this, and the production functions that call
-//! it (`create_secret`, `show_secret`, `open_display`, `close_secret`, the two secret-clip
+//! it (`create_secret`, `show_secret`, `open_display`, `close_secret_window` — 2026-11-20, S4
+//! P7a1: the shell's half of `close_secret`, which logged before —, the two secret-clip
 //! clears, the lock's and the shutdown's waits for the key worker, `close_approval_window`)
 //! behave exactly as before while no log runs, no refusal is set and the modifiers are not
 //! scripted. The seams are thread-locals of the test thread:
@@ -31,7 +32,7 @@ use std::cell::{Cell, RefCell};
 
 use yw_win::ui::UiError;
 
-use crate::ui::secret::SecretKind;
+use yw_engine::secret::SecretKind;
 
 /// How `create_secret` refuses a window while a refusal is set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -198,12 +199,14 @@ pub(crate) struct SecretFacts {
 /// Accessors of `ui::tour_secrets` (debug test builds, like it).
 #[cfg(debug_assertions)]
 impl super::App {
-    /// The open secret window, if any.
+    /// The open secret window, if any (2026-11-20, S4 P7a1: its purpose is the wallet's secret
+    /// session's; the window record no longer holds one).
     pub(crate) fn test_secret(&self) -> Option<SecretFacts> {
+        let purpose = self.secret_purpose()?;
         self.secret.as_ref().map(|secret| SecretFacts {
             serial: secret.serial,
             kind: secret.form.kind().id(),
-            purpose: secret.purpose,
+            purpose,
             topmost: topmost_of(secret.serial),
             shown: !secret.window.is_hidden_or_minimized(),
             form: secret.form.test_facts(),

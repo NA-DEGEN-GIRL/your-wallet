@@ -549,7 +549,7 @@ W04(현재, 새, 새 확인) → 새 비밀번호 검사(E-INP-001/002) → `Key
 | T-BTC-SOURCE-STANDARD-HELP | Bitcoin `계정 추가` / `Add account`(키 출처 `BTC 표준 경로` 아래) | m/{44·49·84·86}'/{코인}'/{계정}'/0/0 — 같은 복구 단어를 다른 Bitcoin 지갑에 넣어도 같은 주소가 나옵니다. |
 | T-BTC-EVM-SHARED | Bitcoin `계정 추가` / `Add account`(키 출처 `EVM 계정과 같은 키`, 주의 띠)·확인 오버레이·EVM 키 계정의 받기·계정 카드 | 같은 키를 쓰면 EVM 주소와 BTC 주소의 공개키가 같아져, 누구나 두 주소가 같은 사람 것임을 알 수 있습니다. 다른 BTC 지갑(Electrum·Sparrow)에 복구 단어만 넣으면 이 주소가 보이지 않습니다(복구는 이 지갑이나 개인키 내보내기로). |
 
-YubiKey(§2.19, [10]) 문구 — 정본은 `app_yubikey`·`ui::screens_yubikey`·`ui::secret`의 상수:
+YubiKey(§2.19, [10]) 문구 — 정본은 `app_yubikey`·`ui::screens_yubikey`·`ui::secret`의 상수(2026-11-20 [15] §11.4 S4 P7a1부터 비밀 창 문구는 `yw_engine::secret::text`):
 
 | ID | 위치 | 문구(요지) |
 |---|---|---|
@@ -984,6 +984,7 @@ impl SecretField {
 2. 성공하면 비밀 상태를 붙이고 `show`. 설정 또는 읽기 확인이 실패하면 로그 `secret.capture_exclusion=failed capture=<Required|Preferred>`를 남기고 클래스의 `ClassSpec.capture`(§1.7, [01] §7.7)에 따라:
    - `CaptureExclusion::Required`(`YourWalletV3SecretView`: 니모닉·개인키 **표시** W08·W09): yw-win이 창을 파괴하고 `UiError::CaptureExclusionFailed`를 돌려준다. 비밀은 표시하지 않는다(표시할 버퍼는 창에 옮기지 않고 즉시 소거). 주 창에 E-SEC-001. W08 생성 흐름이면 지갑은 `BackupPending`으로 남고 S04에서 다시 시도한다(§2.3).
    - `CaptureExclusion::Preferred`(`YourWalletV3SecretInput`: 비밀번호·passphrase W01–W04·W06, 니모닉·개인키 **입력** W05·W07, 백업 확인 W10): 창을 유지하고 연다(실패 사실을 yw-app에 알리는 방식은 [01] §7.7). 내용 위 상단에 닫을 수 없는 `DANGER_BG` 경고 배너 T-CAPTURE-WARN을 창이 닫힐 때까지 보인다. 가림 칸의 `보기` 버튼은 끈다.
+3. (2026-11-20, [15] §11.4 S4 P7a1) 입력 창은 셸 효과로 연다(S4 P7a2 전까지는 `YubiKey`·카드 처리기 — `app_yubikey`·`app_yubikey/{connect,manage}`·`app_card`의 W11·`app_browser`의 dApp W02 — 가 `open_input_direct`로 셸의 같은 열기를 바로 부르고 그 결과를 같은 처리기에 넘긴다): 처리기는 앞 창을 닫고 비밀 세션(yw-app `secret_session::SecretSession` — 번호·창 종류·용도·맨 위·보임, 필드 비공개)을 시작한 뒤 `Effect::Secret(SecretEffect::OpenInput { serial, kind, step, topmost, lang })`를 내고, 셸이 위 1–2(창 만들기, 캡처 제외 확인, 양식, 보이기)를 한 결과를 `Cmd::SecretOpened { serial, outcome }`로 돌려준다 — `Shown { capture_excluded }`이면 세션이 보임이 되고, `Refused(E-SEC-001)`·`Failed(E-APP-009)`이면 세션이 끝나고 주 창에 그 오류를 보인다(전과 같은 문구·순서). 효과에는 번호·종류·표지·언어만 있고 비밀은 없다. 닫기도 효과다(`SecretEffect::Close { serial }`: 세션을 끝낸 뒤 셸이 버퍼를 지우고 창을 닫는다, §4.9). 열린 세션이 아닌 번호의 답·양식 동작·열기는 버린다(셸은 끝난 세션의 창을 만들지 않는다). 창의 용도는 지갑 세션에 있고 셸의 창 기록(창·양식)에는 없다. 지금은 실행기가 효과를 곧바로 적용하므로 창이 열리거나 오류 띠가 서는 시점과 순서는 전과 같다. 표시 창(W08·W09)의 열기와 양식 조작(`with_form`)은 S4 P7b까지 그대로 직접 한다. 시험에 주 창이 없으면 전과 같이 E-SEC-001로 거절된다(명령 조사 골든은 바이트가 같다).
 
 ### 4.6 IME·비ASCII
 - `Msg::KeyDown { vk: VK_PROCESSKEY (0xE5) }`(IME가 처리 중인 키) 또는 `Msg::Char(u ≥ 0x80)` → 칸 아래 E-INP-008을 3초 보이고 입력은 버퍼에 넣지 않는다.

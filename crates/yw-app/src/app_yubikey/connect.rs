@@ -24,9 +24,9 @@ use super::{WizardOrigin, WizardStep, YkPurpose, YkWizard};
 use crate::app::{App, AppMode, Purpose, Screen};
 use crate::events::KeyJob;
 use crate::logging;
-use crate::ui::secret::{CardSecretKind, SecretKind};
 use crate::workers::key::yubikey::YkJob;
 use crate::yubikey::CardJobError;
+use yw_engine::secret::{CardSecretKind, SecretKind};
 
 /// Fixed texts of "`YubiKey` 연결하기 (복구 단어 없이)" (spec/10 §7.6; English spec/14).
 pub mod text {
@@ -187,7 +187,7 @@ impl App {
         }
         self.key(KeyJob::YubiKey(YkJob::Discard));
         self.card.wizard = None;
-        self.open_input(
+        self.open_input_direct(
             SecretKind::SetPassword,
             Purpose::YubiKey(YkPurpose::ConnectPassword),
             false,
@@ -333,7 +333,7 @@ impl App {
             .iter()
             .any(|slot| slot.role.curve() == Curve::Secp256k1);
         let lines = self.yk_connect_pin_lines(piv);
-        self.open_input(
+        self.open_input_direct(
             SecretKind::CardSecret(CardSecretKind::UserPin { piv }),
             Purpose::YubiKey(YkPurpose::ConnectPin),
             false,

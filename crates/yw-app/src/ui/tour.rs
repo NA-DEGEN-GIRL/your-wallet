@@ -56,8 +56,9 @@ use crate::flow::evm::{ChainCache, ChainCheck, SharedTransport};
 use crate::meta::{Account, Meta, Tab};
 use crate::network::{BtcNet, NetworkId, SolCluster};
 use crate::settings::Settings;
-use crate::ui::secret::{DisplaySecret, SecretKind};
+use crate::ui::secret::DisplaySecret;
 use crate::workers::rpc::RpcJob;
+use yw_engine::secret::SecretKind;
 
 const TIMER_CLASS: &str = "YourWalletV3TourTimer";
 /// A made-up user token contract (shot 31, hidden like an unwanted airdrop).
@@ -1438,8 +1439,8 @@ fn tour_yubikey(app: &Rc<RefCell<App>>) {
     use yw_core::yubikey::record::{HwKeyRecord, RecordedSlot};
 
     use crate::app_yubikey::{WizardOrigin, WizardStep, YkPurpose, YkWizard};
-    use crate::ui::secret::CardSecretKind;
     use crate::workers::key::yubikey::YkPreview;
+    use yw_engine::secret::CardSecretKind;
 
     let network = app.borrow().yk_network();
     let seed = *yw_core::bip39::Mnemonic::parse(&test_phrase_12())

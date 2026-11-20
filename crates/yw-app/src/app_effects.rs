@@ -38,6 +38,12 @@
 //! `App::hold_cancel`). Each arm is the code that ran at the emitting point, so the order is the
 //! same; none answers or records a shell-call line (none was recorded before). The scroll arms
 //! read the wallet's screen and tab while applied, exactly as that code did.
+//!
+//! 2026-11-20 (S4 P7a1): `Secret`, a secret window's open (an input window:
+//! `App::open_input_window`, the body of `App::open_input` before) and close
+//! (`App::close_secret_window`, the body of `App::close_secret` before), in
+//! `App::apply_secret_effect`. The open is answered at once with `Cmd::SecretOpened`. Neither
+//! records a shell-call line (none was recorded before).
 
 use yw_core::secret::Zeroizing;
 use yw_engine::cmd::Cmd;
@@ -204,6 +210,12 @@ impl App {
             Effect::ReleaseHold => {
                 if let Some(main) = self.main.as_ref() {
                     main.release_capture();
+                }
+            }
+            // S4 P7a1: a secret window; an open is answered before `emit` returns.
+            Effect::Secret(effect) => {
+                if let Some(answer) = self.apply_secret_effect(effect) {
+                    self.on_cmd(answer);
                 }
             }
         }
