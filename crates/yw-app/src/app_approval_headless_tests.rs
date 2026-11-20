@@ -1587,6 +1587,54 @@ fn open_then_lock_same_entry() -> Vec<String> {
     h.lines
 }
 
+/// `open_then_lock_same_entry` with a step its opener left for the answer to the open
+/// (`AfterOpen::SetScreen`, as a confirmation overlay's next screen; 2026-11-20, S4 P10b review).
+/// The lock in the same entry ends the flow, so the queued open is stale when the entry drains
+/// and makes no window (critique A-3, owner decision 2026-11-20). The kept step is not dropped by
+/// the lock (`EvmUi::after_open`: the steps belong to the opener, not to the window) and runs with
+/// the stale open's answer: after the lock. Before P10b the open was applied at once, so the step
+/// ran before the lock. No production entry opens with a kept step and locks in the same call
+/// (the lock's callers lock in their own entry, and every entry drains); this pins the order so
+/// a change of it is a decision (spec/04 §5.3). Headless, no window.
+#[test]
+fn a_step_kept_for_an_open_runs_after_a_lock_in_the_same_entry() {
+    use crate::app::Screen;
+    use crate::app_approval::AfterOpen;
+
+    let fx = fixture("open-lock-kept");
+    let outlet = dapp(&fx, false, true);
+    let core = fx
+        .app
+        .borrow()
+        .browser
+        .as_ref()
+        .map(|browser| Arc::clone(&browser.core))
+        .unwrap();
+    personal_sign_frame_only(&fx, &outlet, &core);
+    {
+        let mut app = fx.app();
+        for event in outlet.events.drain() {
+            if let UiEvent::Dapp(event) = event {
+                app.on_dapp_event(event);
+            }
+        }
+        assert!(app.evm.open_unanswered.is_some(), "the open is queued");
+        app.after_pending_open(AfterOpen::SetScreen(Screen::Sites));
+        assert_eq!(app.evm.after_open.len(), 1, "kept for the open's answer");
+        app.lock(LockReason::Manual);
+        assert_eq!(app.screen, Screen::Locked);
+        assert!(app.evm.approval.is_none(), "the lock ended the flow");
+        assert_eq!(app.evm.after_open.len(), 1, "the lock keeps the step");
+    }
+    let app = fx.app.borrow();
+    assert!(app.outbox.is_empty());
+    assert_eq!(app.evm.open_unanswered, None, "the stale open was answered");
+    assert!(app.evm.after_open.is_empty(), "and its kept step ran");
+    assert_eq!(app.screen, Screen::Sites, "after the lock");
+    assert!(app.approval_win.is_none(), "no window was made");
+    assert!(app.evm.approval.is_none());
+}
+
 /// The store state of request `id` (shown before a revoke or cancel), without the windowed
 /// fact's window count.
 fn store_fact(fx: &Fixture, id: Option<ApprovalId>) -> String {

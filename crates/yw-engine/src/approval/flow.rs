@@ -10,7 +10,8 @@
 //! The window ↔ flow types [`ShownId`], [`ApprovalInput`], [`ApprovalSignal`], [`ApprovalEffect`]
 //! and [`OpenOutcome`] are not used yet; S4 B4–B6 wire them. 2026-11-19 (S4 B5): the window's
 //! operations are [`ApprovalEffect`]s inside `Effect::Approval` (applied at once by the Windows
-//! executor), the open is answered with `Cmd::ApprovalOpened` carrying its [`OpenOutcome`] and the
+//! executor then; 2026-11-20, S4 P10b: queued and applied when the shell entry drains, in
+//! emission order, before it returns), the open is answered with `Cmd::ApprovalOpened` carrying its [`OpenOutcome`] and the
 //! width class, and every flow carries its [`ShownId`]; [`ApprovalInput`] and [`ApprovalSignal`]
 //! wait for B6. 2026-11-19 (S4 B6): the window sends its inputs as `Cmd::Approval`
 //! ([`ApprovalInput`]): the [`ShownId`] of the window that got the message (captured when that

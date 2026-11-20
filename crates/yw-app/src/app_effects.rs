@@ -19,7 +19,9 @@
 //! Until P10b (S3 B3 … S4 P10a) the text above read: an effect is applied at once, inside the `App`
 //! borrow of the handler that emitted it, in emission order, and never coalesced; an outbox, if S4
 //! adds one, must drain inside the same borrow; a result goes back to the logic as a `Cmd` before
-//! `emit` returns.
+//! `emit` returns. 2026-11-20 (S4 P10b review): so in the dated paragraphs below, "at once" and
+//! "inside `emit`" describe the executor at their dates (until P10b); today each arm runs in
+//! `App::apply`, called by `App::drain`, and an answer goes back from the drain.
 //!
 //! 2026-11-18 (S3 B3): created with `Effect::Render` (the body of `App::refresh` after the dApp
 //! state sync). S3 B4: the send forms' one-shot timer (`StartTimer`/`StopTimer`, was
@@ -224,6 +226,11 @@ impl App {
             }
         }
         debug_assert!(self.outbox.is_empty(), "the outbox drained");
+        // Tests (2026-11-20, S4 P10b review): the approval flow and its window are in step again
+        // once the queue is empty, so an open's and a close's pairing is checked here (the checks
+        // where the flow changes skip while its `Approval(Open)`/`Approval(Close)` is queued).
+        #[cfg(test)]
+        self.assert_flow_and_window_in_step();
     }
 
     /// One input from the shell, then the effects it emitted (2026-11-20, S4 P10b, plan §3.4:

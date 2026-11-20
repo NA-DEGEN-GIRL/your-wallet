@@ -1011,3 +1011,99 @@ fn the_headless_secret_host_mirrors_the_shell() {
         );
     }
 }
+
+/// The secret window's entry drains (2026-11-20, S4 P10b review; critique A-14, spec/04 §1.3,
+/// §4.5): `Forward` hands a secret window's message to `App::secret_entry`, which is `on_secret`
+/// and then the drain, and the tests' headless entry `App::test_secret_entry_headless` is the
+/// same with the secret host's copy of `on_secret`'s window-free arms (both bodies pinned here,
+/// whitespace aside). Through that headless entry, with no drain of the test's own, the close box
+/// of an input window (W02, `Cancel`) and Esc in the next one leave the outbox empty, the window
+/// closed and wiped (`close:W02:left=0`) and the session ended when the entry returns. Before
+/// the review the secret arm called `on_secret` (no drain of its own) and only `Forward`'s drain
+/// after it applied `Secret(Close)`; no test pinned that drain. Headless, no window.
+#[cfg(debug_assertions)]
+#[test]
+fn the_secret_entry_drains_and_its_headless_twin_mirrors_it() {
+    use yw_engine::secret::SecretKind;
+    use yw_win::ui::{Msg, Reply};
+
+    use crate::app::{AppMode, Purpose, secret_seam};
+
+    let source = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app.rs"),
+    )
+    .unwrap();
+    // The fn's text from its head to its closing brace, without `//` comments, each run of
+    // whitespace one space.
+    let body = |head: &str| -> String {
+        assert_eq!(source.matches(head).count(), 1, "{head}");
+        let start = source.find(head).unwrap_or(0);
+        let rest = &source[start..];
+        let end = rest.find("\n    }\n").unwrap_or(rest.len());
+        rest[..end]
+            .lines()
+            .map(|line| line.split_once("//").map_or(line, |(code, _)| code))
+            .flat_map(str::split_whitespace)
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    assert_eq!(
+        body("    fn secret_entry(&mut self, serial: u64, window: &Window, msg: &Msg) -> Reply {"),
+        "fn secret_entry(&mut self, serial: u64, window: &Window, msg: &Msg) -> Reply { let \
+         reply = self.on_secret(serial, window, msg); self.drain(); reply"
+    );
+    assert_eq!(
+        body(
+            "    pub(crate) fn test_secret_entry_headless(&mut self, serial: u64, msg: &Msg) -> \
+             Reply {"
+        ),
+        "pub(crate) fn test_secret_entry_headless(&mut self, serial: u64, msg: &Msg) -> Reply { \
+         let reply = tests::s4_secret::host::deliver(self, serial, msg); self.drain(); reply"
+    );
+    assert_eq!(
+        source
+            .matches("Target::Secret(serial) => app.secret_entry(serial, window, msg),")
+            .count(),
+        1,
+        "the main window's Forward hands a secret window's message to secret_entry"
+    );
+
+    let dir = super::temp_dir("p10b-secret-entry");
+    let mut app = super::app_at(&dir);
+    host::install(true);
+    secret_seam::stop();
+    secret_seam::start_log();
+    app.mode = AppMode::Starting;
+    let ops = |log: Vec<secret_seam::Op>| -> Vec<String> {
+        log.into_iter().map(secret_seam::Op::name).collect()
+    };
+    let esc = Msg::KeyDown {
+        vk: 0x1B,
+        repeat: false,
+    };
+    for msg in [Msg::Close, esc] {
+        app.open_input(SecretKind::Unlock, Purpose::Unlock, false);
+        app.drain();
+        assert_eq!(ops(secret_seam::take_log()), ["create:W02", "show:W02"]);
+        let serial = app
+            .secret_session
+            .as_ref()
+            .map(crate::secret_session::SecretSession::serial);
+        let serial = serial.unwrap_or_default();
+        assert!(host::holds_window(), "W02 open");
+        let reply = app.test_secret_entry_headless(serial, &msg);
+        assert!(matches!(reply, Reply::Handled(0)), "{msg:?}");
+        assert!(app.outbox.is_empty(), "{msg:?}: the entry drained");
+        assert_eq!(
+            ops(secret_seam::take_log()),
+            ["close:W02:left=0"],
+            "{msg:?}"
+        );
+        assert!(!host::holds_window(), "{msg:?}: the window closed");
+        assert!(app.secret_session.is_none(), "{msg:?}: the session ended");
+    }
+    secret_seam::stop();
+    host::remove();
+    drop(app);
+    let _ = std::fs::remove_dir_all(&dir);
+}

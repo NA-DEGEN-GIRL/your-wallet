@@ -1321,18 +1321,20 @@ fn bar_layout(
 /// (`Cmd::ApprovalOpened`; P9's `App::after_approval_opened`, since P10a
 /// [`App::approval_open_answered`] and [`App::after_pending_open`]: after the answer's own steps
 /// — the first view and the preparation, or the rejection of a window that could not be made),
-/// or at once when no window was asked for. While the executor applies effects at once that is
-/// the point where the caller went on before; with an outbox (P10) the caller's steps still
-/// follow the answer instead of running before it.
+/// or at once when no window was asked for. While the executor applied effects at once (until
+/// P10b) that was the point where the caller went on before; with the outbox (since P10b) the
+/// caller's steps still follow the answer instead of running before it.
 ///
 /// 2026-11-20 (S4 P10a, plan §4.4 S5, §4.6 rule 2): the steps that ran after a call that may
 /// open an approval window, in the same fn, are these too (except the lines the S5 check lists
 /// with their reasons) and go through [`App::after_pending_open`]: kept for the answer of the
-/// open still waiting for one, else run at once. While the executor applies effects at once no
-/// open waits when logic code runs, so each step runs at the point and in the order it ran
-/// before (byte-equal by construction); with the outbox (P10b) it runs after the open's answer,
-/// as it did. Before, those steps ran right after the call (`PENDING_P10` lines of the S5
-/// check). A step reads the wallet when it runs, as the code it replaced did then.
+/// open still waiting for one, else run at once. While the executor applied effects at once
+/// (until P10b) no open waited when logic code ran, so each step ran at the point and in the
+/// order it ran before (byte-equal by construction); with the outbox (since P10b) it runs after
+/// the open's answer, when the entry drains, as it did. Before, those steps ran right after the
+/// call (`PENDING_P10` lines of the S5 check). A step reads the wallet when it runs, as the code
+/// it replaced did then. 2026-11-20 (S4 P10b review): a lock in the entry that queued the open
+/// keeps the steps, so they run after the lock (accepted and pinned, spec/04 §5.3).
 pub(crate) enum AfterOpen {
     /// `card_site_check` (a revoke of signing requests or of an account: an approved request
     /// waiting for its `YubiKey` PIN ends too, spec/10 §9.2).
@@ -1628,9 +1630,12 @@ impl App {
 
     /// Runs `after` once the newest approval-window open still waiting for its answer
     /// (`EvmUi::open_unanswered`) is answered, after the steps kept for it before; at once when
-    /// none waits (2026-11-20, S4 P10a, plan §4.4 S5, §4.6 rule 2). While the executor applies
-    /// effects at once an open is answered before `emit` returns, so `after` always runs here,
-    /// where the caller ran it before; with the outbox (P10b) it follows the answer, as it did.
+    /// none waits (2026-11-20, S4 P10a, plan §4.4 S5, §4.6 rule 2). 2026-11-20 (S4 P10b): an
+    /// open waits in the outbox until its entry drains, so `after` follows the answer, as it
+    /// followed the open before; a lock in that entry does not drop it (it runs after the lock,
+    /// pinned by `a_step_kept_for_an_open_runs_after_a_lock_in_the_same_entry`, spec/04 §5.3).
+    /// Before P10b the executor applied effects at once, an open was answered before `emit`
+    /// returned, and `after` always ran here, where the caller ran it before.
     pub(crate) fn after_pending_open(&mut self, after: AfterOpen) {
         // No steps (an answer whose opener left none) is nothing to keep.
         if matches!(&after, AfterOpen::Steps(steps) if steps.is_empty()) {
@@ -1844,8 +1849,9 @@ impl App {
             self.evm.after_open.push((shown, after));
         }
         // 2026-11-20 (S4 P10a): waiting for its answer until `Cmd::ApprovalOpened` arrives
-        // (`App::approval_open_answered`); applied at once, the answer clears it before `emit`
-        // returns.
+        // (`App::approval_open_answered`). 2026-11-20 (S4 P10b): the open is queued, so this
+        // waits until the entry drains; before, applied at once, the answer cleared it before
+        // `emit` returned.
         self.evm.open_unanswered = Some(shown);
         self.emit(Effect::Approval(ApprovalEffect::Open {
             shown,
@@ -1862,7 +1868,9 @@ impl App {
     /// nothing, critique A-3) and the item is rejected with E-APP-009, as `show_next_approval` did
     /// on `open_approval`'s `Err`. An answer for a window that is not the flow's is dropped; when
     /// that window was made, it is closed (2026-11-19, S4 B5 review, critique A-3: before, it was
-    /// left without a flow; unreachable while effects are applied at once).
+    /// left without a flow; unreachable while effects were applied at once). 2026-11-20 (S4
+    /// P10b): a stale answer is reachable now (a flow ended in the entry that queued its open);
+    /// the stale open made no window (`open_approval_window`), so its `Failed` answer is dropped.
     pub(crate) fn on_approval_opened(&mut self, shown: ShownId, outcome: OpenOutcome, wide: bool) {
         if self.evm.approval.as_ref().map(ApprovalFlow::shown) != Some(shown) {
             if matches!(outcome, OpenOutcome::Shown { .. }) {
@@ -3332,8 +3340,10 @@ impl App {
 
     // ----- the approval window (shell) ----------------------------------------------------
 
-    /// Applies one `Effect::Approval` (S4 B5; called by the executor `App::emit`, at once and in
-    /// emission order). Returns the open's answer, which the executor feeds back at once.
+    /// Applies one `Effect::Approval` (S4 B5), called by the executor `App::drain` in emission
+    /// order when the entry that emitted it drains. Returns the open's answer, which the drain
+    /// hands to the logic before it applies the next effect. (2026-11-20, S4 P10b: before, called
+    /// by `App::emit` at once, which fed the answer back before `emit` returned.)
     pub(crate) fn apply_approval_effect(&mut self, effect: ApprovalEffect) -> Option<Cmd> {
         // 2026-11-20 (S4 B7): the headless approval host of the tests records the effect and
         // answers an open itself (no window); release builds have no such line.
@@ -3385,9 +3395,10 @@ impl App {
     /// `open_approval`, the same calls in the same order (the flow, made there before B5 between
     /// the AI body and the centring, is now made before the open is asked for). 2026-11-19 (S4 B5
     /// review, critique A-3): an open for a `shown` that is no longer the current flow's makes
-    /// nothing and answers `Failed(E-APP-009)` (the answer is then dropped as stale). While effects
-    /// are applied at once the open always runs right after its flow was stored, so this never
-    /// happens today.
+    /// nothing and answers `Failed(E-APP-009)` (the answer is then dropped as stale). 2026-11-20
+    /// (S4 P10b): this happens when the flow ended in the same entry before it drained (an open,
+    /// then a lock: `open_then_lock_same_entry`, owner decision 2026-11-20); before, effects were
+    /// applied at once, the open ran right after its flow was stored and this never happened.
     fn open_approval_window(
         &mut self,
         shown: ShownId,
@@ -3563,9 +3574,11 @@ impl App {
     /// (`headless_host`), so the check is that none was made.
     /// 2026-11-20 (S4 P10b): only while no effect is queued — with the outbox the flow's open or
     /// close is ahead of the window until the entry drains (the queued `Approval(Open)` or
-    /// `Approval(Close)`).
+    /// `Approval(Close)`). 2026-11-20 (S4 P10b review): so `App::drain` also checks it when the
+    /// queue is empty; before, the checks after an open's answer and after a close (both right
+    /// after an `emit`) were skipped and nothing checked the pairing after those transitions.
     #[cfg(test)]
-    fn assert_flow_and_window_in_step(&self) {
+    pub(crate) fn assert_flow_and_window_in_step(&self) {
         if headless_host::installed() {
             assert!(
                 self.approval_win.is_none(),

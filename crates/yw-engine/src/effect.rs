@@ -2,29 +2,35 @@
 //! data, never wallet-secret text, never a window handle, control id or pixel. Results come back
 //! as [`crate::cmd::Cmd`]s, never as return values (no upcall, spec/15 §3.2).
 //!
-//! The shell applies an effect at once, inside the handler that emitted it (Windows: inside the
-//! `App` borrow, so the `EN_CHANGE` a field write causes stays unseen, spec/01 §7.7). Nothing is
-//! queued or coalesced in S3; an outbox, if S4 adds one, must drain inside the same borrow.
+//! The shell queues each effect when the logic emits it and applies the queue in emission order,
+//! never coalesced, before the shell entry that emitted them returns (Windows: an outbox drained
+//! inside the `App` borrow, so the `EN_CHANGE` a field write causes stays unseen, spec/01 §7.7).
+//! 2026-11-20 (spec/15 §11.4 S4 P10b, critique B-23): rewritten for the outbox. Until P10b (S3 …
+//! S4 P10a) this paragraph read: the shell applies an effect at once, inside the handler that
+//! emitted it; nothing is queued or coalesced in S3; an outbox, if S4 adds one, must drain inside
+//! the same borrow.
 //!
 //! 2026-11-18 (spec/15 §11.4 S3 B1): created. No yw-json codec yet (spec/15 §18 item 8).
 //!
 //! 2026-11-19 (spec/15 §11.4 S4 B5): [`Effect::Approval`], the approval window's open, close,
 //! rebuilt view and bottom-bar repaint ([`ApprovalEffect`]); the open is answered with
-//! `Cmd::ApprovalOpened`. Still applied at once (Windows: inside the `App` borrow).
+//! `Cmd::ApprovalOpened`. Still applied at once then (until P10b; Windows: inside the `App`
+//! borrow).
 //!
 //! 2026-11-20 (spec/15 §11.4 S4 P3): [`Effect::OpenUrl`] (an explorer link; answered with
 //! `Cmd::Opened`) and [`Effect::OpenFolder`] (a [`Folder`]; an extension folder the shell does not
 //! find is answered with `Cmd::FolderMissing`). Before, the handlers started `explorer.exe`
-//! themselves (`App::open_folder`, the launcher in `App::open_explorer`). Still applied at once.
+//! themselves (`App::open_folder`, the launcher in `App::open_explorer`). Still applied at once
+//! then (until P10b).
 //!
 //! 2026-11-20 (spec/15 §11.4 S4 P4): what the logic asked of the main window directly before:
 //! [`Effect::Reveal`] (scroll a control into view and focus it, [`RevealTarget`]),
 //! [`Effect::RaiseMain`] (a second start's activation), the scroll memory of a screen entry
 //! ([`Effect::ScreenLeaving`], [`Effect::ScreenEntered`], [`Effect::OverlayClosedInPlace`],
 //! [`Effect::TabTop`], [`Effect::ScrollMemoryClear`]) and the end of a hold area's pointer
-//! capture ([`Effect::ReleaseHold`]). None is answered. Still applied at once: the scroll ones
-//! read the wallet's screen while they are applied (Windows: inside the handler that emitted
-//! them), so an outbox must carry what they read. 2026-11-20 (spec/15 §11.4 S4 P10a): they do —
+//! capture ([`Effect::ReleaseHold`]). None is answered. Still applied at once then (until
+//! P10b): the scroll ones read the wallet's screen while they are applied (Windows: inside the
+//! handler that emitted them), so an outbox must carry what they read. 2026-11-20 (spec/15 §11.4 S4 P10a): they do —
 //! `ScreenLeaving` carries the place left (`left`), `ScreenEntered` where the entered screen opens
 //! (`at`, a [`crate::screen::EnteredAt`]) and `TabTop` the place of the tab left (`left`), each
 //! worked out by the logic when it emits them ([`crate::screen`]); the shell reads only its own
@@ -34,21 +40,23 @@
 //! 2026-11-20 (spec/15 §11.4 S4 P7a1): [`Effect::Secret`], a secret window's open (an input
 //! window; answered with `Cmd::SecretOpened`) and close ([`SecretEffect`]): serials, kinds and
 //! flags, never secret text. Before, the handlers created and closed the windows themselves
-//! (`App::open_input`, `App::close_secret`). Still applied at once.
+//! (`App::open_input`, `App::close_secret`). Still applied at once then (until P10b).
 //!
 //! 2026-11-20 (spec/15 §11.4 S4 P7b): `Effect::Secret` also opens the display windows, changes
 //! an open window's form and clears a pending secret copy at the lock (`SecretEffect::{
 //! OpenDisplay, Form, ClearClip}`); [`Effect::AwaitKeyLock`] is the lock's `Suspend` wait for the
 //! key worker (critique A-2: an effect at the wait's place, so a later outbox keeps the order
 //! secret close < clip clear < approval close < wait). Before, `App::lock` waited itself. Still
-//! applied at once.
+//! applied at once then (until P10b).
 //!
 //! 2026-11-20 (spec/15 §11.4 S4 P10b): effects go through an outbox — the Windows shell queues
 //! each one when the logic emits it and applies the queue in order, never coalesced, inside the
 //! `App` borrow before the shell entry that emitted them returns; an answer goes back to the logic
 //! in the same drain (yw-app `App::emit`/`App::drain`/`App::dispatch`). A `SetField` is form
-//! state when it is emitted (owner decision O-10). The second paragraph above describes S3 …
-//! P10a (critique B-23).
+//! state when it is emitted (owner decision O-10). The second paragraph above describes the
+//! outbox and keeps the S3 … P10a text in its dated note (critique B-23). 2026-11-20 (S4 P10b
+//! review): each dated paragraph's "still applied at once" is the state at its date (until P10b),
+//! not today's.
 
 use core::fmt;
 

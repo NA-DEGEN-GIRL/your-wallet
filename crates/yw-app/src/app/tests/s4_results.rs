@@ -1715,27 +1715,79 @@ fn effects_are_never_posted() {
     );
 }
 
+/// The fns of the `App` a handler block calls on its borrow (`app.<fn>(`, not `self.app.` or
+/// `x.app.`), without the borrow itself and the outbox's check and drain.
+fn logic_calls(block: &str) -> Vec<String> {
+    let bytes = block.as_bytes();
+    let mut calls = Vec::new();
+    for (at, _) in block.match_indices("app.") {
+        if at > 0 && (is_ident(bytes[at - 1]) || bytes[at - 1] == b'.') {
+            continue;
+        }
+        let rest = &block[at + "app.".len()..];
+        let name: String = rest.chars().take_while(|&c| is_ident_char(c)).collect();
+        if name.is_empty() || !rest[name.len()..].starts_with('(') {
+            continue;
+        }
+        if !matches!(
+            name.as_str(),
+            "try_borrow_mut" | "assert_outbox_empty" | "drain"
+        ) {
+            calls.push(name);
+        }
+    }
+    calls
+}
+
+const fn is_ident_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
+}
+
+/// The entry fns of `files`: their body, whitespace aside, is one call into the logic, then the
+/// drain, then (if any) the reply — `{ let reply = self.<fn>(..); self.drain(); reply }` or
+/// `{ self.<fn>(..); self.drain(); }` (`on_main`, `secret_entry`, `surface_entry`, `dispatch`).
+fn entry_fns(files: &[Src]) -> BTreeSet<String> {
+    let mut entries = BTreeSet::new();
+    for src in files {
+        for (name, block) in fn_blocks(src) {
+            let flat = block.split_whitespace().collect::<Vec<_>>().join(" ");
+            let shaped = (flat.starts_with("{ let reply = self.")
+                && flat.ends_with("); self.drain(); reply }"))
+                || (flat.starts_with("{ self.") && flat.ends_with("); self.drain(); }"));
+            if shaped && flat.matches(';').count() == 2 {
+                entries.insert(name);
+            }
+        }
+    }
+    entries
+}
+
 /// S9 `every_handler_drains` (critique A-14, 2026-11-20 S4 P10b): every window handler of
 /// yw-app (`impl Handler for`) checks that the outbox is empty when its message arrives
-/// (`assert_outbox_empty`) and drains before it returns — itself (`.drain()`, `.dispatch(`) or
-/// through a fn whose own body drains (`surface_entry`) — and so does `main.rs`'s loop observer.
-/// Finds at least the main and the approval windows' `Forward` (A-20).
+/// (`assert_outbox_empty`) and drains before it returns, and so does `main.rs`'s loop observer.
+/// 2026-11-20 (S4 P10b review): every arm — each call a handler makes into the logic on its
+/// borrow (`app.<fn>(`) is a call of an entry fn that drains itself ([`entry_fns`]: the call,
+/// `self.drain();`, the reply). Before, a handler passed when it called any fn whose body
+/// drained somewhere, so the main `Forward`'s secret arm (`on_secret`, which does not drain)
+/// passed through its main arm's `on_main`; a mutation that removed `Forward`'s own drain after
+/// the arms kept every test green. A drain after the calls may stay (a second, empty drain) but
+/// covers no call. Finds at least the main and the approval windows' `Forward` and their three
+/// entry calls (A-20).
 #[test]
 fn every_handler_drains() {
     let files: Vec<Src> = production_code()
         .into_iter()
         .filter(|src| src.file.starts_with("yw-app/"))
         .collect();
-    // The fns whose own body drains (one level).
-    let mut drainers = BTreeSet::new();
-    for src in &files {
-        for (at, _) in src.code.match_indices("self.drain()") {
-            if let Some(func) = fn_at(&src.code, &src.blocks, at) {
-                drainers.insert(func);
-            }
-        }
+    let entries = entry_fns(&files);
+    for entry in ["on_main", "secret_entry", "surface_entry", "dispatch"] {
+        assert!(
+            entries.contains(entry),
+            "{entry} is not an entry that drains"
+        );
     }
     let mut handlers = 0;
+    let mut entry_calls = BTreeSet::new();
     for src in &files {
         for block in handler_impls(src) {
             handlers += 1;
@@ -1744,15 +1796,36 @@ fn every_handler_drains() {
                 "{}: a handler that does not check the outbox when a message arrives",
                 src.file
             );
-            let drains = block.contains(".drain()")
-                || block.contains(".dispatch(")
-                || drainers
-                    .iter()
-                    .any(|func| block.contains(&format!(".{func}(")));
-            assert!(drains, "{}: a handler that does not drain", src.file);
+            let calls = logic_calls(block);
+            assert!(
+                !calls.is_empty(),
+                "{}: a handler that calls no logic",
+                src.file
+            );
+            for call in calls {
+                assert!(
+                    entries.contains(&call),
+                    "{}: a handler calls `app.{call}(`, which is not an entry that drains itself",
+                    src.file
+                );
+                entry_calls.insert(call);
+            }
         }
     }
     assert!(handlers >= 2, "{handlers} handlers found");
+    for entry in ["on_main", "secret_entry", "surface_entry"] {
+        assert!(entry_calls.contains(entry), "no handler calls {entry}");
+    }
+    // The made-up handler of a lost drain fails (the secret arm before the P10b review).
+    let lost = "fn on(&mut self) -> Reply { let Ok(mut app) = app.try_borrow_mut() else { return \
+                Reply::Default; }; app.assert_outbox_empty(); let reply = match self.target { \
+                Target::Main => app.on_main(window, msg), Target::Secret(serial) => \
+                app.on_secret(serial, window, msg), }; app.drain(); reply }";
+    assert_eq!(logic_calls(lost), ["on_main", "on_secret"]);
+    assert!(
+        !entries.contains("on_secret"),
+        "on_secret drains nothing itself"
+    );
     let main = src_of(&files, "yw-app/src/main.rs");
     let observer = main
         .code

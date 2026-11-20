@@ -603,11 +603,14 @@ impl Handler for Forward {
             return Reply::Default;
         };
         // 2026-11-20 (S4 P10b, critique A-14): every entry drained before it returned, and this
-        // one drains before it returns (`on_main` drains itself too, for the tests' entries).
+        // one drains before it returns: each arm calls an entry that drains itself (`on_main`,
+        // `secret_entry`; source check S9 checks every arm), and the drain after them finds the
+        // queue empty. (2026-11-20, P10b review: the secret arm called `on_secret`, which does not
+        // drain, so only this drain applied a secret window's effects and no test pinned it.)
         app.assert_outbox_empty();
         let reply = match self.target {
             Target::Main => app.on_main(window, msg),
-            Target::Secret(serial) => app.on_secret(serial, window, msg),
+            Target::Secret(serial) => app.secret_entry(serial, window, msg),
         };
         app.drain();
         reply
@@ -2491,6 +2494,11 @@ impl App {
         // disk. A `CreateWallet`/`CommitImport` that finished just before the lock had its
         // result dropped (old epoch), but the vault exists: `Loaded { Locked }` moves the UI
         // from S01 to S07 instead of offering creation over an existing vault.
+        // 2026-11-20 (S4 P10b review): a direct send, never an effect (S10), so it leaves now,
+        // before the entry drains the effects above: on `Suspend`, `Load` is queued to the key
+        // worker behind `Lock` before the shell's 1.5 s `AwaitKeyLock` wait (and the mode and
+        // screen above change before it too); before P10b the wait ran inside `emit`, so `Load`
+        // was sent after it. The worker runs `Lock` first either way (spec/04 §5.3 step 2).
         self.key(KeyJob::Load);
     }
 
@@ -3386,8 +3394,10 @@ impl App {
     /// Opens an input window (W01–W07, W10–W12) through the seam (2026-11-20, S4 P7a1): the
     /// previous window is closed, a secret session starts, and the shell is asked for the window
     /// (`SecretEffect::OpenInput`); its answer (`Cmd::SecretOpened`) shows it or ends the session
-    /// with E-SEC-001 / E-APP-009 (`on_secret_opened`). Applied at once (the inline executor), so
-    /// the window exists, or the banner is up, when this returns, as before.
+    /// with E-SEC-001 / E-APP-009 (`on_secret_opened`). 2026-11-20 (S4 P10b): the open is queued
+    /// and applied when the entry drains, so the window exists, or the banner is up, when the
+    /// entry returns; before, applied at once (the inline executor), they were when this
+    /// returned.
     pub(crate) fn open_input(&mut self, kind: SecretKind, purpose: Purpose, topmost: bool) {
         self.open_input_with(kind, purpose, topmost, None);
     }
@@ -3638,9 +3648,12 @@ impl App {
     /// and the shell is asked for the window (`SecretEffect::OpenDisplay`, no secret in it); the
     /// shell takes the secret only after it verified the new window's capture exclusion
     /// (`open_display_window`), and its answer (`Cmd::SecretOpened`) marks the session shown or
-    /// ends it with the banner (`on_secret_opened`). Applied at once (the inline executor), so the
-    /// window, the wipe, the banner and the screen change happen at the same point and in the
-    /// same order as before, when this fn made the window and filled it itself — with one
+    /// ends it with the banner (`on_secret_opened`). 2026-11-20 (S4 P10b): the open is queued and
+    /// applied when the entry drains, in the order of the queue; when the session ended in the
+    /// same entry before that (a lock), the open is stale and makes no window and moves no secret
+    /// (spec/04 §4.5 item 6). Until P10b it was applied at once (the inline executor), so the
+    /// window, the wipe, the banner and the screen change happened at the same point and in the
+    /// same order as before P7b, when this fn made the window and filled it itself — with one
     /// exception (2026-11-20, P7b review): a window that was made but whose exclusion was not
     /// read back (`Refuse` with a window) is now destroyed inside `open_display_window`, so
     /// before the answer's banner and the S04 change; before P7b it was destroyed after them, at
@@ -3784,7 +3797,8 @@ impl App {
 
     /// Whether a secret window (W01–W12) is open: a secret session, from the request until the
     /// window's end (2026-11-20, S4 P7a1; before, whether the window record existed — the same
-    /// while the effects are applied at once).
+    /// while the effects were applied at once). 2026-11-20 (S4 P10b): with the outbox the two
+    /// differ inside an entry (a queued open or close), not between messages (every entry drains).
     #[must_use]
     pub fn secret_open(&self) -> bool {
         self.secret_session.is_some()
@@ -3827,6 +3841,28 @@ impl App {
                 let _ = main.set_foreground();
             }
         }
+    }
+
+    /// A message of the secret window `serial`, then the effects it emitted (2026-11-20, S4 P10b
+    /// review): the secret window's entry, as [`Self::on_main`] is the main window's, so a close
+    /// box's or `취소`'s `Secret(Close)` (the form wiped, the window destroyed), a form operation
+    /// and a repaint are applied before the message returns. Before, `Forward`'s drain after the
+    /// call applied them and nothing pinned it. The tests' headless entry
+    /// [`Self::test_secret_entry_headless`] is this fn with the secret host's arms.
+    fn secret_entry(&mut self, serial: u64, window: &Window, msg: &Msg) -> Reply {
+        let reply = self.on_secret(serial, window, msg);
+        self.drain();
+        reply
+    }
+
+    /// Tests (2026-11-20, S4 P10b review): [`Self::secret_entry`] without a window — the recording
+    /// secret host's copy of `on_secret`'s window-free arms (`tests::s4_secret::host::deliver`),
+    /// then the drain (source check `the_secret_entry_drains_and_its_headless_twin_mirrors_it`).
+    #[cfg(all(test, debug_assertions))]
+    pub(crate) fn test_secret_entry_headless(&mut self, serial: u64, msg: &Msg) -> Reply {
+        let reply = tests::s4_secret::host::deliver(self, serial, msg);
+        self.drain();
+        reply
     }
 
     fn on_secret(&mut self, serial: u64, window: &Window, msg: &Msg) -> Reply {
