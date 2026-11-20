@@ -48,6 +48,8 @@
 
 셀 표기: 줄바꿈은 `\n`, 세로선은 `\|`, 역슬래시는 `\\`. `{0}`…는 자리표시다. 각 표 앞의 주석이 카탈로그 이름(코드 경로)이다.
 
+(2026-11-20, [15] §11.4 S4b 끝 Z-b) S4b에서 이름이 바뀐 카탈로그는 비밀 창(W01–W12) 문구 하나다: `yw_app::ui::secret_text` → `yw_engine::secret::text`(S4 P7a1, 창 종류와 함께 엔진으로 옮겨 엔진 목록 `yw_engine::catalogues`에 등록, 문구 그대로; 표는 엔진 카탈로그 자리로 옮겨졌다). 그 밖의 카탈로그 이름과 문구는 S4b 동안 바뀌지 않았다. 아래 표는 그대로 `print_spec14_tables` 출력이다.
+
 <!-- 아래 표는 print_spec14_tables 출력이다. -->
 
 <!-- catalogue: yw_core::evm::risk (rules) -->
