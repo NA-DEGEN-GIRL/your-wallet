@@ -1473,12 +1473,22 @@ fn relay_ua_names_the_platform() {
 /// S4 F15 (2026-11-21, spec/13 §6, spec/15 §18 item 15): the QR decoder's grayscale copy and
 /// the pairing link handed to the worker are wiped buffers, and `WcCommand`'s `Debug` prints the
 /// link's length only (the link holds the `symKey`); the other variants print as before.
+/// 2026-11-21 (F15 review): the wiped types are pinned by typed bindings (`Gray`'s luma through
+/// the `cfg(test)` accessor `Gray::luma`, `decode_bgra_text`'s return, `WcCommand::Pair`'s
+/// field), so going back to a plain `Vec` or `String` no longer compiles; before, only `Pair`
+/// was pinned.
 #[test]
 fn qr_buffers_are_wiped_and_pair_debug_prints_the_length_only() {
     use super::qr_decode::{Gray, decode, decode_bgra_text};
     use super::worker::WcCommand;
     let link = "wc:7f6e@2?relay-protocol=irn&symKey=0123";
-    let pair = WcCommand::Pair(yw_core::secret::Zeroizing::new(link.to_owned()));
+    let wiped: yw_core::secret::Zeroizing<String> =
+        yw_core::secret::Zeroizing::new(link.to_owned());
+    let pair = WcCommand::Pair(wiped);
+    let WcCommand::Pair(field) = &pair else {
+        panic!("not a Pair")
+    };
+    assert_eq!(field.as_str(), link);
     let printed = format!("{pair:?}");
     assert_eq!(printed, format!("Pair({})", link.len()));
     assert!(!printed.contains("symKey"));
@@ -1497,6 +1507,10 @@ fn qr_buffers_are_wiped_and_pair_debug_prints_the_length_only() {
     assert!(Gray::from_bgra(2, 2, &[255; 15]).is_none());
     let blank = Gray::from_bgra(8, 8, &[255; 8 * 8 * 4]).unwrap();
     assert_eq!(blank, Gray::new(8, 8, vec![255; 64]).unwrap());
+    let luma: &yw_core::secret::Zeroizing<Vec<u8>> = blank.luma();
+    assert_eq!(luma.as_slice(), &[255_u8; 64][..]);
     assert!(decode(&blank).is_none());
-    assert!(decode_bgra_text(8, 8, &[255; 8 * 8 * 4]).is_none());
+    let text: Option<yw_core::secret::Zeroizing<String>> =
+        decode_bgra_text(8, 8, &[255; 8 * 8 * 4]);
+    assert!(text.is_none());
 }

@@ -46,6 +46,14 @@ impl Gray {
         Self::from_wiped(width, height, Zeroizing::new(data))
     }
 
+    /// The luma buffer, for the type pin of the F15 test (2026-11-21, F15 review: nothing
+    /// else would fail if `data` went back to a plain `Vec`).
+    #[cfg(test)]
+    #[must_use]
+    pub(super) fn luma(&self) -> &Zeroizing<Vec<u8>> {
+        &self.data
+    }
+
     fn from_wiped(width: usize, height: usize, data: Zeroizing<Vec<u8>>) -> Option<Self> {
         (width > 0
             && height > 0

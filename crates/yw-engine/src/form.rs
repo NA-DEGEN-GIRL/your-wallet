@@ -450,7 +450,11 @@ pub enum ClipInput {
     /// unwiped, as before P5. The BGRA pixels `dib_to_bgra` makes are wiped on every path.
     /// 2026-11-21 (S4 F15, spec/15 §18 item 15): that item is done: `Gray`'s luma, the decoded
     /// text and `wc_pair`'s trimmed copy are `Zeroizing`. Still plain: the decoder's inner
-    /// buffers (binarised images, sampled grid, codewords, segments; spec/13 §6).
+    /// buffers (binarised images, sampled grid, codewords, segments; spec/13 §6), and (F15
+    /// review, older than F15) yw-core `parse_pairing_uri`'s copies: a plain `String` per
+    /// percent-decoded query value, the `symKey` hex included, made twice per pair (`wc_pair`'s
+    /// check and the worker's `pair`), and the whole link when it starts `wc%3A` (spec/15 §18
+    /// item 17).
     WinDib(Zeroizing<Vec<u8>>),
     /// The clipboard holds no image.
     NoImage,

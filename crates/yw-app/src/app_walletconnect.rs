@@ -584,7 +584,9 @@ impl App {
     ///
     /// 2026-11-21 (S4 F15, spec/13 §6): the trimmed copy sent to the worker is wiped on drop
     /// (`WcCommand::Pair(Zeroizing<String>)`, reserved once at full size). Before, a plain
-    /// `String` (`text.trim().to_owned()`).
+    /// `String` (`text.trim().to_owned()`). `parse_pairing_uri` below (and again in the worker)
+    /// still makes plain copies of the query values, the `symKey` hex included (F15 review;
+    /// spec/13 §6, spec/15 §18 item 17).
     pub(crate) fn wc_pair(&mut self, text: &str) {
         if self.settings.walletconnect_project.is_empty() {
             self.wc_notice(text::PAIR_NO_PROJECT);
@@ -635,7 +637,11 @@ impl App {
     /// it builds them in a wiped buffer; before, this wrapped them only on success). The
     /// decoder's grayscale copy and the decoded link text are not wiped yet (spec/13 §6).
     /// 2026-11-21 (S4 F15): they are now: `qr_decode::Gray`'s luma, `decode_bgra_text`'s text
-    /// and `wc_pair`'s trimmed copy are wiped on drop; the decoder's inner buffers stay plain.
+    /// and `wc_pair`'s trimmed copy are wiped on drop; the decoder's inner buffers stay plain,
+    /// and so (F15 review, older than F15) do yw-core `parse_pairing_uri`'s copies: a plain
+    /// `String` per percent-decoded query value, the `symKey` hex included, made twice per pair
+    /// (`wc_pair`'s check and the worker's `pair`), and the whole link when it starts `wc%3A`
+    /// (spec/13 §6, spec/15 §18 item 17).
     pub(crate) fn wc_clipboard_qr(&mut self, clip: ClipInput) {
         match clip {
             ClipInput::WinDib(dib) => match crate::walletconnect::qr_decode::dib_to_bgra(&dib) {
