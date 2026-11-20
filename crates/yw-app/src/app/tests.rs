@@ -4808,6 +4808,10 @@ pub(crate) mod s3_census;
 /// names and normalized bodies (`s4_flow/frozen-tests.txt`).
 mod s4_frozen;
 
+/// S4 P8 (spec/15 §11.4 S4, 2026-11-20): the recording secret host and the secret sessions
+/// headless in the gate (`s4_secret/{secret,lock}.txt` byte-equal without a window).
+pub(crate) mod s4_secret;
+
 /// spec/10 §9.2 (2026-11-10): once the PIN is in, the touch prompt is the S11 form's line next to
 /// `검토` (a dApp request: the header band), and it is gone once the card answered — signed or
 /// failed.

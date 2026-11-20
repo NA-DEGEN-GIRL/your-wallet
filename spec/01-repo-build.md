@@ -136,7 +136,7 @@ crates/
                   browser/{mod.rs(겉면), server.rs}(named pipe 서버, M5, [05](05-browser.md) §8),
                   explain_transport.rs(LLM `WinHTTP` 전송, 2026-11-17; 2026-11-20 S4 P2부터 `Services::llm`인 `llm_factory`),
                   ui/{main_window, screens/*, approval_input(승인 창의 신뢰 입력 표본 `TrustedSignals`·순수 메시지 지도 `map_msg`/`map_key`·`ApprovalInput`을 만드는 `window_input`, 2026-11-19 S4 B2·B6; 표 시험 approval_input_tests), secret, qr, theme, cmd_table(컨트롤 id → `Cmd` 표, 2026-11-18 S3; 같은 날 B5부터 편집 칸 id ↔ `EditField`/`CredField`와 누름 입력 `capture`), tour_forms(창 있는 폼 시험, 개발 전용 `#[ignore]`, 2026-11-18 S3 B5), tour_secrets(창 있는 비밀 창 특성화, 개발 전용 `#[ignore]`, 2026-11-18 S4 A7)}.rs},
-                  app/{secret_seam.rs, tests/{s3_census.rs, s3_census/*.txt, s4_frozen.rs, s4_flow/{flow, lifecycle, input, reentry, headless, frozen-tests, frozen-helpers}.txt, s4_secret/{secret, lock}.txt}}}
+                  app/{secret_seam.rs, tests/{s3_census.rs, s3_census/*.txt, s4_frozen.rs, s4_flow/{flow, lifecycle, input, reentry, headless, frozen-tests, frozen-helpers}.txt, s4_secret.rs(기록 비밀 호스트와 창 없는 비밀 세션 시험, 2026-11-20 S4 P8), s4_secret/{secret, lock}.txt}}}
                   (S3·S4 특성화 시험과 골든, `cfg(test)`, [09](09-testing.md) §2.1; 2026-11-20 S4a 끝 Z-a에 적음)
                   (배치 [04](04-app-ui.md) §1.8, EVM 모듈 이름 [03](03-evm.md) §0; 2026-11-17 S2: errors·text·network·logging(형식)·
                   yubikey(순수)·wallet_files와 ui의 approval·interaction·approval_text·text_layout·secure_field는 yw-engine으로 옮겼고(E1),

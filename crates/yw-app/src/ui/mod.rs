@@ -54,4 +54,4 @@ mod tour_forms;
 // tour.
 #[cfg(test)]
 #[cfg(debug_assertions)]
-mod tour_secrets;
+pub(crate) mod tour_secrets;

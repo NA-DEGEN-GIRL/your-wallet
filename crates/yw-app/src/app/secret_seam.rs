@@ -19,10 +19,13 @@
 //!   the real clipboard); the lock's `Suspend` wait and the shutdown's wait are logged just
 //!   before they wait (critique A-2: the order secret close < clip clear < approval close < wait
 //!   is pinned by `s4_secret/lock.txt`).
-//! - `TEST_SECRET_REFUSE`: `create_secret` refuses the window ([`Refuse`]) the way yw-win does
+//! - The window refusal ([`Refuse`]): `create_secret` refuses the window the way yw-win does
 //!   when a `Required` window cannot be excluded from capture (`CaptureExclusionFailed`) or
-//!   `CreateWindowExW` fails (`Os`), before a window exists. Removed in S4 P8 (the headless
-//!   secret host).
+//!   `CreateWindowExW` fails (`Os`), before a window exists, while the secret host of the tests
+//!   (`app::tests::s4_secret::host`) says so. 2026-11-20 (S4 P8): the thread-local
+//!   `TEST_SECRET_REFUSE` and its setter `set_refuse` are gone (they were S4 A7's); the refusal
+//!   is the recording host's answer now, the same one the headless run and the windowed
+//!   `ui::tour_secrets` set (`host::refuse`), read here at the same point.
 //! - `TEST_SECRET_KEYS_UP` (2026-11-18, A7 review): while set, the modifier reads of the secret
 //!   handler's `WM_KEYDOWN` arm (`on_secret`: Ctrl, Shift, Alt) answer "up" instead of reading the
 //!   real keyboard (`yw_win::input::is_down`), so a key the person at the desk holds during the
@@ -96,7 +99,6 @@ impl Op {
 
 thread_local! {
     static TEST_SECRET_LOG: RefCell<Option<Vec<Op>>> = const { RefCell::new(None) };
-    static TEST_SECRET_REFUSE: Cell<Option<Refuse>> = const { Cell::new(None) };
     /// The serial and `topmost` of the last window `create_secret` was asked for.
     static TEST_LAST_CREATE: Cell<Option<(u64, bool)>> = const { Cell::new(None) };
     /// Whether the secret handler's modifier reads answer "up" (A7 review).
@@ -117,11 +119,10 @@ pub(crate) fn take_log() -> Vec<Op> {
         .unwrap_or_default()
 }
 
-/// Stops the log and clears the refusal, the last creation and the scripted modifiers of this
-/// thread.
+/// Stops the log and clears the last creation and the scripted modifiers of this thread
+/// (2026-11-20, S4 P8: the refusal is the secret host's, removed with it).
 pub(crate) fn stop() {
     let _ = TEST_SECRET_LOG.try_with(|slot| *slot.borrow_mut() = None);
-    let _ = TEST_SECRET_REFUSE.try_with(|slot| slot.set(None));
     let _ = TEST_LAST_CREATE.try_with(|slot| slot.set(None));
     let _ = TEST_SECRET_KEYS_UP.try_with(|slot| slot.set(false));
 }
@@ -153,19 +154,16 @@ pub(crate) fn log(op: Op) {
     });
 }
 
-/// Sets (or with `None` clears) the refusal of this thread.
-pub(crate) fn set_refuse(refuse: Option<Refuse>) {
-    let _ = TEST_SECRET_REFUSE.try_with(|slot| slot.set(refuse));
-}
-
-/// `create_secret`'s seam: logs the request and, while a refusal is set, answers with it.
+/// `create_secret`'s seam: logs the request and, while the secret host of this thread refuses
+/// windows (`app::tests::s4_secret::host::refuse`), answers with that refusal (2026-11-20, S4 P8:
+/// was `TEST_SECRET_REFUSE`). The headless host's own window-free opens log through here too.
 pub(crate) fn create(serial: u64, kind: SecretKind, topmost: bool) -> Option<UiError> {
     let _ = TEST_LAST_CREATE.try_with(|slot| slot.set(Some((serial, topmost))));
     log(Op::Create {
         kind: kind.id(),
         topmost,
     });
-    let refuse = TEST_SECRET_REFUSE.try_with(Cell::get).ok().flatten()?;
+    let refuse = super::tests::s4_secret::host::refusal()?;
     log(Op::Refused(refuse));
     Some(match refuse {
         Refuse::Exclusion => UiError::CaptureExclusionFailed,
@@ -207,6 +205,10 @@ impl super::App {
     /// session's; the window record no longer holds one).
     pub(crate) fn test_secret(&self) -> Option<SecretFacts> {
         let purpose = self.secret_purpose()?;
+        // 2026-11-20 (S4 P8): the headless secret host's window, when it holds one.
+        if let Some(facts) = super::tests::s4_secret::host::facts(purpose) {
+            return Some(facts);
+        }
         self.secret.as_ref().map(|secret| SecretFacts {
             serial: secret.serial,
             kind: secret.form.kind().id(),
@@ -300,9 +302,11 @@ impl super::App {
     }
 }
 
-/// The seams are inert without a log or a refusal (gate test step; no window).
+/// The seams are inert without a log or a refusal (gate test step; no window). 2026-11-20 (S4
+/// P8): the refusal comes from the secret host (`host::refuse`), not `set_refuse`.
 #[test]
 fn secret_seams_are_inert_without_a_log() {
+    use super::tests::s4_secret::host;
     stop();
     log(Op::DisplayDropped);
     assert!(take_log().is_empty());
@@ -310,16 +314,22 @@ fn secret_seams_are_inert_without_a_log() {
     assert_eq!(topmost_of(1), Some(false));
     assert_eq!(topmost_of(2), None);
     start_log();
-    set_refuse(Some(Refuse::Exclusion));
+    host::install(true);
+    host::refuse(Some(Refuse::Exclusion));
     assert!(matches!(
         create(2, SecretKind::ShowKey, true),
         Some(UiError::CaptureExclusionFailed)
     ));
-    set_refuse(Some(Refuse::Os));
+    host::refuse(Some(Refuse::Os));
     assert!(matches!(
         create(3, SecretKind::Unlock, false),
         Some(UiError::Os(_))
     ));
+    host::refuse(None);
+    assert!(create(4, SecretKind::Unlock, false).is_none());
+    host::refuse(Some(Refuse::Os));
+    host::remove();
+    assert!(create(5, SecretKind::Unlock, false).is_none());
     let names: Vec<String> = take_log().into_iter().map(Op::name).collect();
     assert_eq!(
         names,
@@ -327,11 +337,13 @@ fn secret_seams_are_inert_without_a_log() {
             "create:W09:topmost",
             "refused:exclusion",
             "create:W02",
-            "refused:os"
+            "refused:os",
+            "create:W02",
+            "create:W02"
         ]
     );
     stop();
-    assert!(create(4, SecretKind::Unlock, false).is_none());
+    assert!(create(6, SecretKind::Unlock, false).is_none());
     assert!(take_log().is_empty());
     assert_eq!(scripted_modifier(), None);
     set_keys_up(true);

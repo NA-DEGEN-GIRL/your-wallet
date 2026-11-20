@@ -47,6 +47,14 @@
 //! not change the Esc and Enter lines; the typed text goes in as `WM_CHAR` messages, never through
 //! the real keyboard.
 //!
+//! 2026-11-20 (S4 P8): the same scenarios also run headless in the gate's test step
+//! (`app::tests::s4_secret::secret_sessions_run_headless`, byte-equal to the same goldens): this
+//! module's `Env` switches on the recording secret host of `app::tests::s4_secret` (no main
+//! window, the secret windows' forms held by the host, the approval windows answered by the
+//! headless approval host, the main-window entries through `App::test_on_main_windowless`). In
+//! this windowed run the host is the real shell's pass-through, and the refused steps set its
+//! refusal (`host::refuse`; before P8 the seam's `TEST_SECRET_REFUSE`, `set_refuse`).
+//!
 //! Run: `cargo test -p yw-app --lib ui::tour_secrets --locked --offline -- --ignored
 //! --test-threads=1 --nocapture`. Regenerate for review (PowerShell):
 //! `$env:YW_S4_SECRET_OUT='<folder>'; cargo test -p yw-app --lib ui::tour_secrets --locked
@@ -63,8 +71,10 @@ use yw_win::ui::{Handler, Msg, Reply, Window, WindowKind, WindowSpec, create_win
 
 use crate::app::secret_seam::{self, Op, Refuse};
 use crate::app::tests::s3_census::Census;
+use crate::app::tests::s4_secret::host;
 use crate::app::{App, AppMode, PasswordAction, Purpose};
 use crate::app_approval::flow_support::{Fixture, HostMode, Outlet, START_MS};
+use crate::app_approval::headless_host::{self, OpenAnswer};
 use crate::app_explorer::Launcher;
 use crate::app_mnemonics::MnPurpose;
 use crate::app_yubikey::YkPurpose;
@@ -76,22 +86,22 @@ use crate::workers::key::yubikey::YkOutcome;
 use crate::workers::rpc::RpcJob;
 use yw_engine::secret::{CardSecretKind, SecretKind};
 
-const SECRET_GOLDEN: &str = include_str!("../app/tests/s4_secret/secret.txt");
-const LOCK_GOLDEN: &str = include_str!("../app/tests/s4_secret/lock.txt");
+pub(crate) const SECRET_GOLDEN: &str = include_str!("../app/tests/s4_secret/secret.txt");
+pub(crate) const LOCK_GOLDEN: &str = include_str!("../app/tests/s4_secret/lock.txt");
 
 /// Account 0 of the public `abandon … about` vector.
 const ACCOUNT_A: &str = "0x9858EfFD232B4033E47d90003D41EC34EcaEda94";
 /// Account 1 of the same vector (the mock card wallet's `YubiKey` account).
 const ACCOUNT_B: &str = "0x6Fac4D18c912343BF86fa7049364Dd4E424Ab9C0";
 /// A synthetic vault password (never a real one).
-const PASSWORD: &str = "synthetic-pass-0417";
+pub(crate) const PASSWORD: &str = "synthetic-pass-0417";
 /// A synthetic card PIN (not a factory value).
-const PIN: &str = "135790";
+pub(crate) const PIN: &str = "135790";
 /// The dApp site of the card scenarios.
 const SITE: &str = "https://app.example";
 /// The other texts a scenario types into a window ([`Env::type_text`] accepts only these,
 /// [`PASSWORD`] and [`PIN`]); [`scan`] rejects each as a word of a golden line.
-const TYPED: [&str; 4] = ["zoo", "word", "abc", "ab"];
+pub(crate) const TYPED: [&str; 4] = ["zoo", "word", "abc", "ab"];
 
 // ----- values ---------------------------------------------------------------------------------
 
@@ -204,25 +214,46 @@ struct Env {
     _census: Census,
     outlet: Option<Outlet>,
     lines: Vec<String>,
+    /// 2026-11-20 (S4 P8): the run is headless (no window at all: the secret host of
+    /// `app::tests::s4_secret` holds the secret windows' forms and the approval windows are the
+    /// headless approval host's).
+    headless: bool,
 }
 
 impl Env {
+    /// 2026-11-20 (S4 P8): headless when the headless runner (`app::tests::s4_secret`) installed
+    /// the secret host on this thread as headless: no window class, no main window, the
+    /// approval windows answered by the headless approval host. Else the windowed run as before,
+    /// with the secret host installed as the real shell's pass-through (its refusals replace
+    /// `TEST_SECRET_REFUSE`).
     fn new(name: &'static str, mode: AppMode) -> Self {
-        super::tour::register_classes();
+        let headless = host::headless();
+        if !headless {
+            super::tour::register_classes();
+            host::install(false);
+        }
         let census = Census::new("secrets");
         census.guard();
         let fx = Fixture::new(name, HostMode::Hidden);
-        App::create_main_window(&fx.app).unwrap();
+        if headless {
+            headless_host::install(OpenAnswer::Shown);
+        } else {
+            App::create_main_window(&fx.app).unwrap();
+        }
         {
             let mut app = fx.app();
             app.mode = mode;
             assert!(matches!(app.explorer_ui.launcher, Launcher::Record(_)));
             assert!(!app.settings.allow_secret_copy);
-            assert!(
-                app.main
-                    .as_ref()
-                    .is_some_and(Window::is_hidden_or_minimized)
-            );
+            if headless {
+                assert!(app.main.is_none());
+            } else {
+                assert!(
+                    app.main
+                        .as_ref()
+                        .is_some_and(Window::is_hidden_or_minimized)
+                );
+            }
         }
         secret_seam::start_log();
         secret_seam::set_keys_up(true);
@@ -234,6 +265,7 @@ impl Env {
             _census: census,
             outlet: None,
             lines: Vec::new(),
+            headless,
         }
     }
 
@@ -246,9 +278,15 @@ impl Env {
             .map_or(0, |facts| facts.serial)
     }
 
-    /// `msg` for window `serial`, through the real secret handler.
+    /// `msg` for window `serial`, through the real secret handler (headless: through the secret
+    /// host's copy of its window-free arms, 2026-11-20, S4 P8).
     fn msg(&self, serial: u64, msg: &Msg) -> &'static str {
-        match self.fx.app().test_secret_msg(serial, msg, spare()) {
+        let reply = if self.headless {
+            host::deliver(&mut self.fx.app(), serial, msg)
+        } else {
+            self.fx.app().test_secret_msg(serial, msg, spare())
+        };
+        match reply {
             Reply::Default => "default",
             Reply::Handled(_) => "handled",
         }
@@ -283,16 +321,35 @@ impl Env {
         self.fx.clock.set(START_MS + ms);
     }
 
-    /// One main-window message through its handler (`on_main`).
+    /// One main-window message through its handler (`on_main`; headless: its window-free arms,
+    /// `test_on_main_windowless`, 2026-11-20, S4 P8).
     fn main_msg(&self, msg: &Msg) {
+        if self.headless {
+            let _ = self.fx.app().test_on_main_windowless(msg);
+            return;
+        }
         let window = spare();
         let _ = self.fx.app().test_on_main(&window, msg);
     }
 
     /// The main timer (`App::tick`).
     fn main_tick(&self) {
+        if self.headless {
+            let _ = self.fx.app().test_main_timer_windowless();
+            return;
+        }
         let window = spare();
         let _ = self.fx.app().test_main_timer(&window);
+    }
+
+    /// The shown Standard request approved as a user does (`Fixture::approve_standard`;
+    /// headless: the same inputs without a window, 2026-11-20, S4 P8).
+    fn approve_standard(&self) {
+        if self.headless {
+            self.fx.approve_standard_headless();
+        } else {
+            self.fx.approve_standard();
+        }
     }
 
     fn fact(&mut self, what: &str, text: &str) {
@@ -352,6 +409,10 @@ impl Env {
                 "closed"
             },
         );
+        if self.headless {
+            // 2026-11-20 (S4 P8): the session's and the held form's `Debug`, for the scan.
+            host::note_state(&app);
+        }
         drop(app);
         scan(&line);
         self.lines.push(line);
@@ -361,6 +422,15 @@ impl Env {
 impl Drop for Env {
     fn drop(&mut self) {
         secret_seam::stop();
+        // 2026-11-20 (S4 P8): the hosts go with the scenario (a held form is wiped); a headless
+        // run closes its approval window while the headless approval host still answers.
+        if self.headless {
+            if let Ok(mut app) = self.fx.app.try_borrow_mut() {
+                app.close_approval_window();
+            }
+            headless_host::remove();
+        }
+        host::remove();
     }
 }
 
@@ -515,7 +585,7 @@ fn dapp_answers(outlet: &Outlet) -> String {
 /// words, the synthetic password or PIN, no text a scenario types (as a word: `Password` and
 /// `yk-words` are names), and no run of 32 or more hex digits (a key without `0x`, such as W09's
 /// key 1; 2026-11-18, A7 review).
-fn scan(line: &str) {
+pub(crate) fn scan(line: &str) {
     assert!(line.is_ascii(), "non-ASCII text in {line}");
     for banned in [
         "0x", "://", "@", "\\", "Users", ".example", "rpc.json", "abandon", PASSWORD, PIN,
@@ -623,13 +693,13 @@ fn reveal_key() -> Vec<String> {
 /// W08/W09); a shown one is W08 `ShowForBackup` (create).
 fn created_words_display() -> Vec<String> {
     let mut env = Env::new("created_words_display", AppMode::Starting);
-    secret_seam::set_refuse(Some(Refuse::Exclusion));
+    host::refuse(Some(Refuse::Exclusion));
     env.deliver(KeyOutcome::Created(Ok((about_secret(), address_a()))));
     env.snap("refused-exclusion");
-    secret_seam::set_refuse(Some(Refuse::Os));
+    host::refuse(Some(Refuse::Os));
     env.deliver(KeyOutcome::Created(Ok((about_secret(), address_a()))));
     env.snap("refused-os");
-    secret_seam::set_refuse(None);
+    host::refuse(None);
     env.deliver(KeyOutcome::Created(Ok((about_secret(), address_a()))));
     env.snap("shown");
     std::mem::take(&mut env.lines)
@@ -639,17 +709,17 @@ fn created_words_display() -> Vec<String> {
 /// (E-APP-009); nothing is shown or held.
 fn input_refused() -> Vec<String> {
     let mut env = Env::new("input_refused", AppMode::Locked);
-    secret_seam::set_refuse(Some(Refuse::Exclusion));
+    host::refuse(Some(Refuse::Exclusion));
     env.fx
         .app()
         .open_input(SecretKind::Unlock, Purpose::Unlock, false);
     env.snap("unlock-exclusion");
-    secret_seam::set_refuse(Some(Refuse::Os));
+    host::refuse(Some(Refuse::Os));
     env.fx
         .app()
         .open_input(SecretKind::Unlock, Purpose::Unlock, false);
     env.snap("unlock-os");
-    secret_seam::set_refuse(None);
+    host::refuse(None);
     env.fx
         .app()
         .open_input(SecretKind::Unlock, Purpose::Unlock, false);
@@ -743,7 +813,7 @@ fn yk_card_secret_counters_only_when_shown() -> Vec<String> {
         (Refuse::Exclusion, "refused-exclusion"),
         (Refuse::Os, "refused-os"),
     ] {
-        secret_seam::set_refuse(Some(refuse));
+        host::refuse(Some(refuse));
         env.fx
             .app()
             .yk_open_card_secret(CardSecretKind::AdminPin, YkPurpose::AdminPin, 7_700_011);
@@ -756,13 +826,13 @@ fn yk_card_secret_counters_only_when_shown() -> Vec<String> {
 /// timeout then leaves no T-TIMED-OUT (the words band says it).
 fn yk_words_shown_only_when_w08_shown() -> Vec<String> {
     let mut env = Env::new("yk_words_shown_only_when_w08_shown", AppMode::NoVault);
-    secret_seam::set_refuse(Some(Refuse::Exclusion));
+    host::refuse(Some(Refuse::Exclusion));
     env.deliver(KeyOutcome::YubiKey(YkOutcome::Words(Ok((
         about_secret(),
         address_a(),
     )))));
     env.snap("refused");
-    secret_seam::set_refuse(None);
+    host::refuse(None);
     env.deliver(KeyOutcome::YubiKey(YkOutcome::Words(Ok((
         about_secret(),
         address_a(),
@@ -945,7 +1015,7 @@ fn card_request(env: &mut Env) {
         );
     }
     env.snap("request");
-    env.fx.approve_standard();
+    env.approve_standard();
     env.snap("approved");
 }
 
@@ -1009,9 +1079,9 @@ fn card_pin_window_page_cancelled() -> Vec<String> {
 /// tick finds the window gone and cancels the step (nothing signed).
 fn card_tick_window_gone() -> Vec<String> {
     let mut env = card_env("card_tick_window_gone");
-    secret_seam::set_refuse(Some(Refuse::Os));
+    host::refuse(Some(Refuse::Os));
     card_request(&mut env);
-    secret_seam::set_refuse(None);
+    host::refuse(None);
     let now = env.fx.clock.peek();
     env.fx.app().card_tick(now);
     env.snap("card-tick");
@@ -1112,10 +1182,10 @@ fn lock_idle() -> Vec<String> {
 
 // ----- the tables -----------------------------------------------------------------------------
 
-type Scenario = fn() -> Vec<String>;
+pub(crate) type Scenario = fn() -> Vec<String>;
 
 /// `secret.txt`, in golden order.
-const SECRET_SCENARIOS: [(&str, Scenario); 19] = [
+pub(crate) const SECRET_SCENARIOS: [(&str, Scenario); 19] = [
     ("reveal_words_then_backup", reveal_words_then_backup),
     ("reveal_words_plain", reveal_words_plain),
     ("reveal_key", reveal_key),
@@ -1159,7 +1229,7 @@ const SECRET_SCENARIOS: [(&str, Scenario); 19] = [
 ];
 
 /// `lock.txt`, in golden order (one per `LockReason`).
-const LOCK_SCENARIOS: [(&str, Scenario); 6] = [
+pub(crate) const LOCK_SCENARIOS: [(&str, Scenario); 6] = [
     ("lock_manual", lock_manual),
     ("lock_idle", lock_idle),
     ("lock_session_lock", || {
@@ -1191,7 +1261,7 @@ fn record(table: &[(&str, Scenario)]) -> String {
     out
 }
 
-fn first_difference(name: &str, generated: &str, committed: &str) -> Option<String> {
+pub(crate) fn first_difference(name: &str, generated: &str, committed: &str) -> Option<String> {
     let generated: Vec<&str> = generated.lines().collect();
     let committed: Vec<&str> = committed.lines().collect();
     if generated == committed {

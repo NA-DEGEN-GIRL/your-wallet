@@ -3211,7 +3211,9 @@ impl App {
         lang: Lang,
     ) -> Result<Window, UiError> {
         // 2026-11-18 (S4 A7): the cfg(test) seam logs the request and can refuse it as yw-win
-        // would (`TEST_SECRET_REFUSE`, removed in S4 P8); release builds have no such line.
+        // would; release builds have no such line. 2026-11-20 (S4 P8): the refusal is the
+        // recording secret host's answer (`app::tests::s4_secret::host::refuse`; was the
+        // thread-local `TEST_SECRET_REFUSE`).
         // 2026-11-20 (S4 P7a1 review): it runs before the main-window check (it ran after), so a
         // headless test sees every window the shell was asked for (the A-3 stale-open pin). With
         // a main window (the windowed runs) the order changes nothing.
@@ -3342,6 +3344,15 @@ impl App {
         topmost: bool,
         lang: Lang,
     ) -> OpenOutcome {
+        // 2026-11-20 (S4 P8): the headless secret host of the tests makes the window without
+        // Win32 (the same decision on a window it says was made); release builds have no such
+        // line, and with no host (or the windowed run) this returns `None`.
+        #[cfg(test)]
+        if let Some(outcome) =
+            tests::s4_secret::host::open_input(self, serial, kind, step, topmost, lang)
+        {
+            return outcome;
+        }
         match self.create_secret(serial, kind, topmost, lang) {
             Ok(window) => {
                 let excluded = window.capture_excluded();
@@ -3376,6 +3387,10 @@ impl App {
     /// (that session has ended or is shown). 2026-11-20 (P7a1 review): the guard compared the
     /// serial only, so a second open of a shown session would have made a second window.
     pub(crate) fn apply_secret_effect(&mut self, effect: SecretEffect) -> Option<Cmd> {
+        // 2026-11-20 (S4 P8): the recording secret host notes every effect's `Debug` (its scan
+        // for secrets); release builds have no such line.
+        #[cfg(test)]
+        tests::s4_secret::host::saw(&effect);
         match effect {
             SecretEffect::OpenInput {
                 serial,
@@ -3439,6 +3454,12 @@ impl App {
     /// before): the form of the window of session `serial`, when it is the open one, changes and
     /// the window repaints.
     fn apply_form_op(&mut self, serial: u64, op: SecretFormOp) {
+        // 2026-11-20 (S4 P8): the headless secret host's window takes its form operations;
+        // release builds have no such line.
+        #[cfg(test)]
+        let Some(op) = tests::s4_secret::host::form_op(serial, op) else {
+            return;
+        };
         let Some(secret) = self
             .secret
             .as_mut()
@@ -3582,6 +3603,14 @@ impl App {
         timeout_note: Option<&'static str>,
         lang: Lang,
     ) -> OpenOutcome {
+        // 2026-11-20 (S4 P8): as in `open_input_window`, the headless secret host of the tests;
+        // release builds have no such line.
+        #[cfg(test)]
+        if let Some(outcome) =
+            tests::s4_secret::host::open_display(self, serial, kind, step, timeout_note, lang)
+        {
+            return outcome;
+        }
         let created = self.create_secret(serial, kind, false, lang);
         let excluded = created
             .as_ref()
@@ -3671,6 +3700,12 @@ impl App {
     /// the window of session `serial`, when it is the open one, is wiped, its timer stopped, the
     /// main window enabled again, the window destroyed and the main window brought forward.
     fn close_secret_window(&mut self, serial: u64) {
+        // 2026-11-20 (S4 P8): the headless secret host's window closes (wiped) there; release
+        // builds have no such line.
+        #[cfg(test)]
+        if tests::s4_secret::host::close(serial) {
+            return;
+        }
         if let Some(mut secret) = self.secret.take_if(|secret| secret.serial == serial) {
             secret.form.wipe();
             #[cfg(test)]

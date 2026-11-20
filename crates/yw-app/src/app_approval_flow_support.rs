@@ -583,6 +583,39 @@ impl Fixture {
     }
 }
 
+// 2026-11-20 (S4 P8): a block of its own, so the F-A pinned `impl Fixture` stays as recorded.
+impl Fixture {
+    /// [`Self::approve_standard`] without windows (2026-11-20, S4 P8: the headless secret
+    /// sessions' card step, under `app_approval::headless_host`): the same three events as
+    /// `Cmd::Approval` inputs of the window opened last, each with the foreground sample the
+    /// oracle gives the hidden A01 there (`true`), and the same clock step; as the headless flow
+    /// scenarios deliver them (`window_input`). Debug test builds only, like its user.
+    #[cfg(debug_assertions)]
+    pub(crate) fn approve_standard_headless(&self) {
+        use yw_engine::approval::flow::ApprovalSignal;
+        use yw_engine::cmd::Cmd;
+        let send = |event: InteractionEvent| {
+            let mut app = self.app();
+            let shown = app.last_opened();
+            app.on_cmd(Cmd::Approval(crate::ui::approval_input::window_input(
+                shown,
+                true,
+                ApprovalSignal::Event(event),
+            )));
+        };
+        send(InteractionEvent::Tick);
+        self.clock.advance(1_000);
+        send(InteractionEvent::PointerPressed {
+            inside: true,
+            click_through: false,
+            physical_down: true,
+        });
+        send(InteractionEvent::PointerReleased {
+            physical_down: false,
+        });
+    }
+}
+
 impl Drop for Fixture {
     fn drop(&mut self) {
         if let Ok(mut app) = self.app.try_borrow_mut() {
