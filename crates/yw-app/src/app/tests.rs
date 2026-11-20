@@ -7763,18 +7763,35 @@ fn display_secrets_move_only_into_verified_windows() {
         timeout_note: None,
         lang,
     };
-    let stale = app.apply_secret_effect(open(serial + 7));
+    // 2026-11-21 (S4 W2 review): the guard is the composition's (`open_display_composed`, which
+    // `App::drain` hands every `OpenDisplay`); before W2 it was in the executor's
+    // `apply_secret_effect` arm, which this called.
+    let composed = |app: &mut App, serial: u64| {
+        app.open_display_composed(serial, SecretKind::ShowKey, None, None, lang)
+    };
+    let stale = composed(&mut app, serial + 7);
     assert!(matches!(
         stale,
+        Cmd::SecretOpened {
+            outcome: OpenOutcome::Refused(ErrorCode::Sec001),
+            ..
+        }
+    ));
+    assert!(ops().is_empty(), "a stale display open asked for a window");
+    // The executor's own `OpenDisplay` arm is never reached (`drain` does not hand it one); were
+    // it, it refuses even the open session's open and makes nothing (fail closed).
+    let dead = app.apply_secret_effect(open(serial));
+    assert!(matches!(
+        dead,
         Some(Cmd::SecretOpened {
             outcome: OpenOutcome::Refused(ErrorCode::Sec001),
             ..
         })
     ));
-    assert!(ops().is_empty(), "a stale display open asked for a window");
+    assert!(ops().is_empty(), "the executor's arm asked for a window");
     assert!(
         app.take_display_secret(serial).is_some(),
-        "the stale open took it"
+        "the stale open or the executor's arm took it"
     );
     app.close_secret();
     app.drain();
@@ -7796,13 +7813,13 @@ fn display_secrets_move_only_into_verified_windows() {
         app.take_display_secret(serial).is_none(),
         "the lock left the secret"
     );
-    let late = app.apply_secret_effect(open(serial));
+    let late = composed(&mut app, serial);
     assert!(matches!(
         late,
-        Some(Cmd::SecretOpened {
+        Cmd::SecretOpened {
             outcome: OpenOutcome::Refused(_),
             ..
-        })
+        }
     ));
     assert!(ops().is_empty(), "an ended session asked for a window");
 

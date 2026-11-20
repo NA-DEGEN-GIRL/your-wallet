@@ -1954,7 +1954,7 @@ const MUTATING: [&str; 26] = [
 
 /// The calls the executor makes into the wallet, each with its reason (2026-11-21, S4 W2): not
 /// followed, and allowed only from the fn named. Nothing else of the executor writes wallet
-/// state.
+/// state but the cells of [`EXECUTOR_CELL_WRITES`] (2026-11-21, S4 W2 review).
 const EXECUTOR_WALLET_CALLS: [(&str, &str, &str); 3] = [
     (
         "clear_secret_clip",
@@ -1971,8 +1971,52 @@ const EXECUTOR_WALLET_CALLS: [(&str, &str, &str); 3] = [
     ),
 ];
 
-/// The executor fns [`the_executor_writes_no_wallet_state`] must reach (critique A-20).
-const EXECUTOR_TARGETS: [&str; 21] = [
+/// The methods an executor fn that takes `&mut self` may call on a wallet field, each with why it
+/// only reads (2026-11-21, S4 W2 review: before, the check matched a list of mutating names,
+/// [`MUTATING`], so a `&mut self` method of a wallet part — `idle.input`, `wait.screen_changed`,
+/// a flow method — went unseen). Any other method called on a wallet field there fails. In a
+/// `&self` fn a call through a wallet field can write only through a cell ([`MUTATING`]'s
+/// `set`/`replace`/`take`/`swap`, and [`EXECUTOR_CELL_WRITES`]).
+const READ_ONLY_CALLS: [(&str, &str); 4] = [
+    ("as_ref", "a shared view of an `Option`"),
+    ("len", "a length"),
+    ("now_ms", "the injected clock (`Clock::now_ms`, `&self`)"),
+    (
+        "wait_beyond",
+        "`Effect::AwaitKeyLock`: the shell waits for the key worker's lock signal \
+         (`LockSignal::wait_beyond`, `&self`, a `Mutex`/`Condvar` read)",
+    ),
+];
+
+/// The wallet cells the executor writes, each as (fn, the cell's receiver, reason) (2026-11-21,
+/// S4 W2 review: the check followed only `&mut self` fns, so these `&self` writes of the render
+/// builders went unseen and the docs called the clip notices the only exception). Every
+/// `borrow_mut()`/`try_borrow_mut()` in an executor fn, on any receiver (a local alias of a
+/// wallet field too), must be listed here, and every line here must be found.
+const EXECUTOR_CELL_WRITES: [(&str, &str, &str); 2] = [
+    (
+        "sites_page",
+        "browser.site_rows.keys",
+        "S13's drawn row → grant map (`BrowserUi.site_rows.keys`), cleared and refilled while \
+         `render_main` builds the page; the disconnect presses (`SitesPress`, a `Row`) read it. \
+         Not a W2 change (there before S4); it leaves the wallet — shell state, or an answer \
+         `Cmd` — before the render builders leave `impl App` (S5, D-21)",
+    ),
+    (
+        "wc_session_cards",
+        "self.wc.rows",
+        "the drawn `WalletConnect` session row → topic map (`WcUi.rows`), the same way: \
+         refilled by the render, read by `WcPress::Disconnect`",
+    ),
+];
+
+/// The executor fns [`the_executor_writes_no_wallet_state`] must reach (critique A-20). 2026-11-21
+/// (S4 W2 review): `items` and the two fns of [`EXECUTOR_CELL_WRITES`], the `&self` render
+/// builders, which the check now follows too.
+const EXECUTOR_TARGETS: [&str; 24] = [
+    "items",
+    "sites_page",
+    "wc_session_cards",
     "apply",
     "apply_approval_effect",
     "open_approval_window",
@@ -2073,6 +2117,133 @@ fn wallet_writes(body: &str, fields: &BTreeSet<String>) -> Vec<String> {
     found
 }
 
+/// The method calls in `body` on a wallet field (one of `fields`), as (the `self.` chain, the
+/// method): `self.evm.queue.len(` is (`self.evm.queue`, `len`) (2026-11-21, S4 W2 review).
+fn wallet_calls(body: &str, fields: &BTreeSet<String>) -> Vec<(String, String)> {
+    let text = normalized(body);
+    let bytes = text.as_bytes();
+    let mut found = Vec::new();
+    for (at, _) in text.match_indices("self.") {
+        if at > 0 && (is_ident(bytes[at - 1]) || bytes[at - 1] == b'.') {
+            continue;
+        }
+        let mut end = at + "self".len();
+        let mut chain_end = end;
+        let mut segments = Vec::new();
+        while bytes.get(end) == Some(&b'.') {
+            let start = end + 1;
+            let mut stop = start;
+            while stop < bytes.len() && is_ident(bytes[stop]) {
+                stop += 1;
+            }
+            if stop == start {
+                break;
+            }
+            segments.push(&text[start..stop]);
+            chain_end = end;
+            end = stop;
+        }
+        if segments.len() > 1
+            && fields.contains(segments[0])
+            && text[end..].trim_start().starts_with('(')
+            && let Some(method) = segments.last()
+        {
+            found.push((text[at..chain_end].to_owned(), (*method).to_owned()));
+        }
+    }
+    found
+}
+
+/// Where `body` takes the whole wallet (2026-11-21, S4 W2 review): `self.wallet` itself (a `&mut`
+/// alias, or passed whole), a `Self { … }`/`App { … }` pattern that names `wallet`, `&mut *self`
+/// or `deref_mut(`. Each hands out the wallet beyond what [`wallet_writes`] reads.
+fn whole_wallet(body: &str) -> Vec<String> {
+    let text = normalized(body);
+    let bytes = text.as_bytes();
+    let mut found = Vec::new();
+    for (at, _) in text.match_indices("self.wallet") {
+        let end = at + "self.wallet".len();
+        if (at == 0 || !(is_ident(bytes[at - 1]) || bytes[at - 1] == b'.'))
+            && bytes.get(end).is_none_or(|&b| !is_ident(b) && b != b'.')
+        {
+            found.push("self.wallet".to_owned());
+        }
+    }
+    for pattern in ["Self {", "App {"] {
+        for (at, _) in text.match_indices(pattern) {
+            if at > 0 && is_ident(bytes[at - 1]) {
+                continue;
+            }
+            let open = at + pattern.len() - 1;
+            let close = close_of(bytes, open);
+            if has_word(&text[open..close], "wallet") {
+                found.push(format!("{pattern} wallet"));
+            }
+        }
+    }
+    for pattern in ["&mut *self", "&mut **self", "deref_mut("] {
+        found.extend(text.match_indices(pattern).map(|(_, hit)| hit.to_owned()));
+    }
+    found
+}
+
+/// The receivers of the `borrow_mut()`/`try_borrow_mut()` calls in `body`, as written
+/// (2026-11-21, S4 W2 review): `browser.site_rows.keys` for `browser.site_rows.keys.borrow_mut()`.
+fn cell_writes(body: &str) -> Vec<String> {
+    let text = normalized(body);
+    let bytes = text.as_bytes();
+    let mut found = Vec::new();
+    for call in [".borrow_mut(", ".try_borrow_mut("] {
+        for (at, _) in text.match_indices(call) {
+            let mut start = at;
+            while start > 0 && (is_ident(bytes[start - 1]) || bytes[start - 1] == b'.') {
+                start -= 1;
+            }
+            found.push(text[start..at].to_owned());
+        }
+    }
+    found
+}
+
+/// What the executor fn `name` (its `body`, whether it takes `&mut self`) does to the wallet
+/// against the rules of [`the_executor_writes_no_wallet_state`]: the findings, and how many of
+/// [`EXECUTOR_CELL_WRITES`] it makes (2026-11-21, S4 W2 review).
+fn executor_findings(
+    name: &str,
+    body: &str,
+    takes_mut: bool,
+    fields: &BTreeSet<String>,
+) -> (Vec<String>, usize) {
+    let mut findings: Vec<String> = wallet_writes(body, fields)
+        .into_iter()
+        .map(|chain| format!("writes {chain}"))
+        .collect();
+    findings.extend(
+        whole_wallet(body)
+            .into_iter()
+            .map(|whole| format!("takes {whole}")),
+    );
+    if takes_mut {
+        for (chain, method) in wallet_calls(body, fields) {
+            if !READ_ONLY_CALLS.iter().any(|&(known, _)| known == method) {
+                findings.push(format!("calls {chain}.{method}"));
+            }
+        }
+    }
+    let mut listed = 0;
+    for receiver in cell_writes(body) {
+        if EXECUTOR_CELL_WRITES
+            .iter()
+            .any(|&(from, cell, _)| from == name && cell == receiver)
+        {
+            listed += 1;
+        } else {
+            findings.push(format!("borrows {receiver} mutably"));
+        }
+    }
+    (findings, listed)
+}
+
 /// The fns of `impl App` blocks in `files` (the type named plain or by path), by name: each
 /// body with whether it takes `&mut self`.
 fn app_fns(files: &[Src]) -> BTreeMap<String, Vec<(String, String, bool)>> {
@@ -2146,11 +2317,21 @@ fn self_calls(body: &str) -> BTreeSet<String> {
 
 /// D-4 `the_executor_writes_no_wallet_state` (2026-11-21, S4 W2; plan §3.3–§3.4 D-4, preflight
 /// §3 W2, spec/04 §1.3): `App` is the wallet ([`wallet_fields`]: `pub struct Wallet`) plus the
-/// shell's fields, and the effect executor — `App::apply` and every `&mut self` fn of `impl App`
-/// it reaches through `self.` calls, plus the display window's shell halves
-/// `make_display_window` and `show_display` — writes no wallet field ([`wallet_writes`]) and
-/// calls into the wallet only as [`EXECUTOR_WALLET_CALLS`] lists. (`&self` fns, the render
-/// builders `render_main` reads, change nothing.) The plan's `Shell::apply(effect, &Wallet)`
+/// shell's fields, and the effect executor — `App::apply` and every fn of `impl App` it reaches
+/// through `self.` calls, plus the display window's shell halves `make_display_window` and
+/// `show_display` — writes no wallet field ([`wallet_writes`]), takes no whole wallet
+/// ([`whole_wallet`]), calls only [`READ_ONLY_CALLS`] on a wallet field where it takes
+/// `&mut self` ([`wallet_calls`]), borrows no cell mutably but [`EXECUTOR_CELL_WRITES`]
+/// ([`cell_writes`]) and calls into the wallet's `impl App` fns only as
+/// [`EXECUTOR_WALLET_CALLS`] lists. So the executor's wallet writes are the clip notices of
+/// `clear_secret_clip` and the two drawn-row maps the render builders refill, each listed with
+/// its reason. 2026-11-21 (S4 W2 review): before, only `&mut self` fns were followed (the render
+/// builders `render_main` reaches were taken to change nothing, and those two cell writes went
+/// unseen), and only [`MUTATING`] calls, assignments and `&mut` borrows through `self.` counted
+/// (a `&mut self.wallet` alias, a `Self { wallet: … }` pattern or `self.idle.input(..)` passed).
+/// What the scanners still miss: a write inside a method of a wallet part's own type (only
+/// `impl App` fns are followed) and a cell written through a method other than
+/// `borrow_mut`/`try_borrow_mut`/[`MUTATING`]. The plan's `Shell::apply(effect, &Wallet)`
 /// cannot be typed while the render builders are `impl App` (D-21, until S5), so this check
 /// stands in for it. The one value that moves from the wallet into the shell, a display window's
 /// secret, is the composition's: only `display_window_handoff` (called by
@@ -2188,6 +2369,7 @@ fn the_executor_writes_no_wallet_state() {
     }
     let fns = app_fns(&files);
     let mut reached = BTreeSet::new();
+    let mut cells = 0;
     let mut todo = vec![
         "apply".to_owned(),
         "make_display_window".to_owned(),
@@ -2199,12 +2381,15 @@ fn the_executor_writes_no_wallet_state() {
         }
         let bodies = fns.get(&name);
         assert!(bodies.is_some(), "fn {name} of impl App found");
-        for (file, body, _) in bodies.into_iter().flatten() {
-            let writes = wallet_writes(body, &fields);
+        for (file, body, takes_mut) in bodies.into_iter().flatten() {
+            let (findings, listed) = executor_findings(&name, body, *takes_mut, &fields);
             assert!(
-                writes.is_empty(),
-                "{file}: the executor's fn {name} writes wallet state: {writes:?}"
+                findings.is_empty(),
+                "{file}: the executor's fn {name} changes wallet state: {findings:?}"
             );
+            cells += listed;
+            // 2026-11-21 (S4 W2 review): every `impl App` fn called, `&self` ones too (before,
+            // only `&mut self` ones, so the render builders' cell writes went unseen).
             for call in self_calls(body) {
                 if EXECUTOR_WALLET_CALLS
                     .iter()
@@ -2212,15 +2397,17 @@ fn the_executor_writes_no_wallet_state() {
                 {
                     continue;
                 }
-                if fns
-                    .get(&call)
-                    .is_some_and(|bodies| bodies.iter().any(|(_, _, takes_mut)| *takes_mut))
-                {
+                if fns.contains_key(&call) {
                     todo.push(call);
                 }
             }
         }
     }
+    assert_eq!(
+        cells,
+        EXECUTOR_CELL_WRITES.len(),
+        "every listed cell write found once"
+    );
     for composition in [
         "open_display_composed",
         "display_window_handoff",
@@ -2272,6 +2459,83 @@ fn wallet_writes_and_self_calls_on_made_up_code() {
             .into_iter()
             .map(str::to_owned)
             .collect::<BTreeSet<_>>()
+    );
+    // 2026-11-21 (S4 W2 review): aliases, whole-wallet patterns, any non-read call where the fn
+    // takes `&mut self`, and cell borrows (listed or not).
+    let fields: BTreeSet<String> = ["copied", "idle", "evm", "wc", "browser", "clock"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    let findings =
+        |name: &str, body: &str, takes_mut: bool| executor_findings(name, body, takes_mut, &fields);
+    assert_eq!(
+        findings(
+            "arm",
+            "{ let wallet = &mut self.wallet; wallet.copied = None; self.wallet.idle.input(0); }",
+            true,
+        ),
+        (
+            vec![
+                "takes self.wallet".to_owned(),
+                "calls self.idle.input".to_owned()
+            ],
+            0
+        )
+    );
+    assert_eq!(
+        findings(
+            "arm",
+            "{ let Self { wallet: Wallet { evm, .. }, fonts, .. } = self; evm.queue.clear(); \
+             let w = &mut **self; self.deref_mut(); }",
+            true,
+        ),
+        (
+            vec![
+                "takes Self { wallet".to_owned(),
+                "takes &mut **self".to_owned(),
+                "takes deref_mut(".to_owned()
+            ],
+            0
+        )
+    );
+    assert_eq!(
+        wallet_calls(
+            "{ self.evm.queue.len(); self.wallet.clock.now_ms(); self.controls.set(1); }",
+            &fields
+        ),
+        [
+            ("self.evm.queue".to_owned(), "len".to_owned()),
+            ("self.clock".to_owned(), "now_ms".to_owned())
+        ]
+    );
+    // Read-only calls pass where the fn takes `&mut self`; any call passes in a `&self` fn,
+    // where only a cell can be written.
+    let reads = "{ let n = self.evm.queue.len(); let t = self.clock.now_ms(); \
+                 let shown = self.evm.approval.as_ref(); self.evm.approval.paint(n); }";
+    assert_eq!(
+        findings("arm", reads, true),
+        (vec!["calls self.evm.approval.paint".to_owned()], 0)
+    );
+    assert_eq!(findings("arm", reads, false), (Vec::new(), 0));
+    let cells = "{ let keys = browser.site_rows.keys.borrow_mut(); \
+                 let rows = self.wc.rows.borrow_mut(); }";
+    assert_eq!(
+        findings("sites_page", cells, false),
+        (vec!["borrows self.wc.rows mutably".to_owned()], 1)
+    );
+    assert_eq!(
+        findings("other", cells, false),
+        (
+            vec![
+                "borrows browser.site_rows.keys mutably".to_owned(),
+                "borrows self.wc.rows mutably".to_owned()
+            ],
+            0
+        )
+    );
+    assert_eq!(
+        cell_writes("{ x.try_borrow_mut(); self.wc.rows .borrow_mut(); }"),
+        ["self.wc.rows", "x"]
     );
 }
 

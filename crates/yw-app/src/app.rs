@@ -844,9 +844,18 @@ impl core::fmt::Debug for Wallet {
 /// flat here, not in a nested `Shell` (preflight §0 item 4: the render builders, the effect
 /// executor and the frozen test helpers name them as `App` fields); `App` derefs to the wallet,
 /// so `impl App` code reads and writes wallet fields as before. The effect executor
-/// (`App::apply`, `app_effects.rs`) writes shell fields only; the one value that moves from the
+/// (`App::apply`, `app_effects.rs`) writes shell fields only, but for the exceptions its source
+/// check lists (the clip notices, the two drawn-row maps the render builders refill; 2026-11-21,
+/// S4 W2 review); the one value that moves from the
 /// wallet into the shell, a display window's secret, is handed over by the composition in
 /// `App::drain` (plan §3.4, D-4; source check `the_executor_writes_no_wallet_state`).
+///
+/// Drop order (2026-11-21, S4 W2 review): all of the wallet's fields now drop before the shell's
+/// (before W2, one field order: `main` dropped before `events`, `rpc_tx`, `workers`, `browser` and
+/// `llm`, and `secret` before `secret_session`). Harmless: `App` drops at the end of `main`,
+/// after the message loop and the shutdown lock; the windows' forwards hold a `Weak`, which no
+/// longer upgrades then, so a window that its drop destroys reaches no `App` field; and no `Drop`
+/// of a field reads another field. A later `Drop` that depends on the order pins it.
 pub struct App {
     /// The wallet (2026-11-21, S4 W2).
     pub(crate) wallet: Wallet,
