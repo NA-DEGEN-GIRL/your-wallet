@@ -10,7 +10,7 @@ use yw_core::evm::address::Address;
 use yw_core::secret::Zeroizing;
 use yw_core::vault::{BackupChallenge, EvmKeySource, MnemonicInfo, RecordId};
 
-use crate::app::{App, AppMode, Purpose, Screen, SettingsSection};
+use crate::app::{App, AppMode, Purpose, Screen};
 use crate::errors::{key_code, vault_code};
 use crate::events::KeyJob;
 use crate::logging;
@@ -22,6 +22,7 @@ use crate::ui::secret::DisplaySecret;
 use crate::workers::key::mnemonics::{MnJob, MnOutcome};
 use yw_engine::cmd::{MnPress, Row};
 use yw_engine::form::EditField;
+use yw_engine::screen::SettingsSection;
 use yw_engine::secret::{SecretFormOp, SecretKind};
 
 use crate::secret_session::AfterShown;

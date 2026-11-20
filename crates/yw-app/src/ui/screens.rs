@@ -11,7 +11,7 @@ use yw_core::evm::chain::SEPOLIA;
 use yw_core::evm::display::format_address;
 
 use crate::apikeys::{KeyName, mask_url, template_entry};
-use crate::app::{App, AppMode, Confirm, Screen, SettingsSection, TestState};
+use crate::app::{App, AppMode, Confirm, Screen, TestState};
 use crate::errors::ErrorCode;
 use crate::meta::EvmAccountPref;
 use crate::network::NetworkId;
@@ -20,6 +20,7 @@ use crate::ui::main_window::{Ctl, Item, Tone};
 use crate::ui::screens_accounts::{AccountCard, AccountItem, AccountSource, SelectedLine};
 use crate::ui::theme::AddressKind;
 use yw_core::lang::{Lang, Text};
+use yw_engine::screen::SettingsSection;
 
 pub mod text;
 

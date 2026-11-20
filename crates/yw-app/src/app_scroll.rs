@@ -29,6 +29,11 @@
 //!
 //! [`WM_YW_NAV_KEY`]: crate::shell_msg::WM_YW_NAV_KEY
 
+// `ScrollPlace`: a screen whose scroll offset is remembered for the ways back (2026-11-10):
+// each S10 chain tab, each settings section, S08, S13 and S14. 2026-11-20 (S4 P10a): moved
+// unchanged to `yw_engine::screen` (the scroll effects carry it); 2026-11-21 (S4b final review):
+// no longer re-exported here (AGENTS.md §4), callers name `yw_engine::screen::ScrollPlace`.
+use yw_engine::screen::ScrollPlace;
 use yw_win::ui::{Window, wheel_scroll_lines};
 
 use crate::app::App;
@@ -54,11 +59,6 @@ const SB_PAGEUP: u16 = 2;
 const SB_PAGEDOWN: u16 = 3;
 const SB_TOP: u16 = 6;
 const SB_BOTTOM: u16 = 7;
-
-/// A screen whose scroll offset is remembered for the ways back (2026-11-10): each S10 chain tab,
-/// each settings section, S08, S13 and S14. 2026-11-20 (S4 P10a): moved unchanged to
-/// `yw_engine::screen` (the scroll effects carry it); this path stays.
-pub use yw_engine::screen::ScrollPlace;
 
 /// Where the remembered screens were left (DIP, so a DPI change keeps them; this run only,
 /// emptied by a lock) and the screen under an open overlay.

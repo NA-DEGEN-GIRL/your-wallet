@@ -5,7 +5,8 @@
 //! `app_scroll::ScrollPlace`) moved here unchanged, so the scroll effects of a screen entry and a
 //! tab switch carry the place they read when the logic emits them
 //! ([`crate::effect::Effect::ScreenLeaving`], [`crate::effect::Effect::ScreenEntered`],
-//! [`crate::effect::Effect::TabTop`]). yw-app re-exports both under their old paths.
+//! [`crate::effect::Effect::TabTop`]). P10a had yw-app re-export both under their old paths;
+//! 2026-11-21 (S4b final review, AGENTS.md §4): no longer, yw-app names `yw_engine::screen`.
 
 use crate::meta::Tab;
 

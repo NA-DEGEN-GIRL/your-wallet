@@ -14,7 +14,7 @@ use yw_core::evm::address::Address;
 use yw_core::lang::{Lang, Text};
 
 use crate::apikeys::{ApiKeys, KeyName};
-use crate::app::{App, Confirm, Screen, SettingsSection};
+use crate::app::{App, Confirm, Screen};
 use crate::events::UiEvent;
 use crate::explain::config::{
     KEY_REENTER_TEXT, StoredKey, effectively_enabled, parse_endpoint, valid_api_key, valid_model,
@@ -31,6 +31,7 @@ use crate::ui::screens_llm::{DraftNotes, ids, preset_url};
 use yw_engine::cmd::LlmPress;
 use yw_engine::effect::Effect;
 use yw_engine::form::{CredField, EditField};
+use yw_engine::screen::SettingsSection;
 
 /// How long the UI waits for the old worker when the configuration changes (it is never
 /// blocked on `WinHTTP`; a late result is dropped with its channel).

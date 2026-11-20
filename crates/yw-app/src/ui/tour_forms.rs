@@ -299,7 +299,6 @@ fn scenarios(census: &Census, tally: &mut Tally) {
 /// or a state change (values are made up; nothing is sent).
 #[expect(clippy::too_many_lines, reason = "one scenario per form")]
 fn extra_scenarios() -> Vec<Scenario> {
-    use crate::app::SettingsSection;
     use crate::meta::Tab;
     use crate::ui::{
         screens, screens_btc as btc, screens_evm as evm, screens_explorer as explorer,
@@ -307,6 +306,7 @@ fn extra_scenarios() -> Vec<Scenario> {
         screens_sol as sol, screens_walletconnect as wc, screens_yubikey as yk,
     };
     use Step::{Call, Enter, Press, Type};
+    use yw_engine::screen::SettingsSection;
     fn advanced(app: &mut App) {
         app.show_advanced = true;
     }

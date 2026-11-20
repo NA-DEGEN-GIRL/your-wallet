@@ -477,7 +477,7 @@ fn unverified_passphrase_blocks_receive_and_shows_the_banner_everywhere() {
         assert!(receive.iter().all(|ctl| !ctl.enabled), "{tab:?}");
     }
     for screen in [
-        Screen::Settings(super::SettingsSection::Security),
+        Screen::Settings(yw_engine::screen::SettingsSection::Security),
         Screen::Sites,
         Screen::AddressBook,
     ] {
@@ -549,7 +549,7 @@ fn unconfirmed_added_phrase_receive_banner_and_guarded_removal() {
     app.screen = Screen::SolReceive;
     assert!(has_text(&app.items(), mn_text::RECEIVE_UNCONFIRMED.ko));
 
-    app.screen = Screen::Settings(super::SettingsSection::Mnemonics);
+    app.screen = Screen::Settings(yw_engine::screen::SettingsSection::Mnemonics);
     app.on_command(mn::REMOVE_BASE + 1);
     assert_eq!(app.mn.confirm_remove, Some(id));
     let items = app.items();
@@ -595,7 +595,7 @@ fn two_phrase_app(tag: &str, added_confirmed: bool) -> (App, PathBuf, yw_core::v
         info(RecordId::from_bytes([1; 16]), true, true),
         info(added, false, added_confirmed),
     ];
-    app.screen = Screen::Settings(super::SettingsSection::Mnemonics);
+    app.screen = Screen::Settings(yw_engine::screen::SettingsSection::Mnemonics);
     (app, dir, added)
 }
 
@@ -999,7 +999,9 @@ fn first_setup_connects_quicknode_in_one_step() {
         &app.items(),
         &format!("✓ {}", app.network_name(targets[0]))
     ));
-    app.set_screen(Screen::Settings(super::SettingsSection::Network));
+    app.set_screen(Screen::Settings(
+        yw_engine::screen::SettingsSection::Network,
+    ));
     app.on_command(ids::GENERATE);
     assert_eq!(app.screen, Screen::Confirm(Confirm::Generate));
     let _ = std::fs::remove_dir_all(dir);
@@ -1034,7 +1036,7 @@ fn prune_dormant_entries_after_confirmation() {
         alt_passphrase: false,
     };
     app.meta = Some(Meta::default());
-    app.screen = Screen::Settings(super::SettingsSection::Network);
+    app.screen = Screen::Settings(yw_engine::screen::SettingsSection::Network);
     let items = app.items();
     assert!(has_text(&items, "보관하고 있습니다"));
     assert!(
@@ -1053,7 +1055,7 @@ fn prune_dormant_entries_after_confirmation() {
     app.on_command(core_ids::CONFIRM_YES);
     assert_eq!(
         app.screen,
-        Screen::Settings(super::SettingsSection::Network)
+        Screen::Settings(yw_engine::screen::SettingsSection::Network)
     );
     assert!(app.apikeys.dormant_names().is_empty());
     assert!(dir.join("apikeys.dpapi").is_file());
@@ -1225,8 +1227,9 @@ fn key_start_creates_a_key_only_wallet() {
         &keys_ui::no_accounts_text(yw_core::lang::Lang::Ko, ImportChain::Btc)
     ));
     // Settings: no recovery-word reveal.
-    h.app
-        .set_screen(Screen::Settings(super::SettingsSection::Security));
+    h.app.set_screen(Screen::Settings(
+        yw_engine::screen::SettingsSection::Security,
+    ));
     assert!(!control_ids(&h.app.items()).contains(&ids::REVEAL_MNEMONIC));
     // A Bitcoin WIF as P2WPKH: a single-key account of the Bitcoin list (`AddImported`).
     h.app.set_screen(Screen::Main);
@@ -1724,7 +1727,10 @@ fn llm_key_is_bound_to_the_saved_endpoint_host() {
         alt_passphrase: false,
     };
     app.meta = Some(Meta::default());
-    assert_eq!(app.screen, Screen::Settings(super::SettingsSection::Ai));
+    assert_eq!(
+        app.screen,
+        Screen::Settings(yw_engine::screen::SettingsSection::Ai)
+    );
     assert!(has_text(
         &app.items(),
         "다른 엔드포인트 주소용이라 보내지 않음"
@@ -2411,7 +2417,7 @@ fn vault_generation_going_backwards_is_flagged() {
 /// unlocked wallet, on every chain tab, has unique ids.
 #[test]
 fn every_screen_has_unique_control_ids() {
-    use super::SettingsSection;
+    use yw_engine::screen::SettingsSection;
     let (mut app, dir) = unlocked_app("unique-ids", false);
     app.settings.bitcoin.enabled = true;
     let screens = [
@@ -2553,7 +2559,7 @@ fn a_chain_tab_opens_at_its_top() {
     assert_eq!(app.scroll, 0);
     assert_eq!(
         app.scroll_memory
-            .get(crate::app_scroll::ScrollPlace::Main(Tab::Evm)),
+            .get(yw_engine::screen::ScrollPlace::Main(Tab::Evm)),
         Some(640)
     );
     let _ = std::fs::remove_dir_all(dir);
@@ -2678,7 +2684,7 @@ fn reads_due_starts_a_due_balance_read_without_the_tick() {
     // A period later the early start is back; never while S10 is not the screen.
     let later = now.saturating_add(u64::from(crate::shell_msg::MAIN_TIMER_MS));
     app.on_command(chip(&app, 1));
-    app.screen = Screen::Settings(super::SettingsSection::Network);
+    app.screen = Screen::Settings(yw_engine::screen::SettingsSection::Network);
     app.reads_due(later);
     assert!(sent(&rx).is_empty(), "the tick's guards");
     app.screen = Screen::Main;
@@ -3319,7 +3325,7 @@ fn zcash_review_result_is_drawn_next_to_the_button() {
 /// elsewhere — no list of its own cards.
 #[test]
 fn settings_sections_point_elsewhere_without_listing_their_cards() {
-    use super::SettingsSection;
+    use yw_engine::screen::SettingsSection;
     let (mut app, dir) = unlocked_app("settings-map", false);
     for section in [
         SettingsSection::Security,
@@ -3818,7 +3824,7 @@ fn form_state_follows_the_edits_and_press_input_ends_with_the_press() {
     use crate::ui::screens_llm::ids::{ENDPOINT_EDIT, MODEL_EDIT};
     use yw_engine::form::{CredField, EditField};
     let (mut app, dir) = unlocked_app("form-state", false);
-    app.screen = Screen::Settings(crate::app::SettingsSection::Ai);
+    app.screen = Screen::Settings(yw_engine::screen::SettingsSection::Ai);
     assert_eq!(app.form_text(EditField::LlmModel), None);
     app.controls.type_text(MODEL_EDIT, &"m".repeat(200));
     app.on_edit_notify(MODEL_EDIT);
@@ -3865,7 +3871,7 @@ fn missing_edit_notify_is_counted_and_clear_field_clears() {
     use yw_engine::effect::Effect;
     use yw_engine::form::EditField;
     let (mut app, dir) = unlocked_app("form-missing-edit", false);
-    app.screen = Screen::Settings(crate::app::SettingsSection::Ai);
+    app.screen = Screen::Settings(yw_engine::screen::SettingsSection::Ai);
     "draft-model".clone_into(&mut app.llm_ui.model_text);
     app.on_edit_notify(MODEL_EDIT);
     assert_eq!(app.llm_ui.model_text, "draft-model");
@@ -5014,7 +5020,7 @@ fn yubikey_wizard_enrols_an_existing_wallet() {
     h.pump();
     assert_eq!(
         h.app.screen,
-        Screen::Settings(super::SettingsSection::YubiKey)
+        Screen::Settings(yw_engine::screen::SettingsSection::YubiKey)
     );
     let items = h.app.items();
     unique_ids(&items);
@@ -5198,7 +5204,7 @@ fn yubikey_wizard_enrols_an_existing_wallet() {
     assert!(h.app.card.wizard.is_none());
     assert_eq!(
         h.app.screen,
-        Screen::Settings(super::SettingsSection::YubiKey)
+        Screen::Settings(yw_engine::screen::SettingsSection::YubiKey)
     );
     let outcome = h
         .worker
@@ -6807,14 +6813,17 @@ fn english_core_screens_have_no_korean() {
     };
     for (screen, name) in [
         (
-            Screen::Settings(super::SettingsSection::Security),
+            Screen::Settings(yw_engine::screen::SettingsSection::Security),
             "S15 security",
         ),
         (
-            Screen::Settings(super::SettingsSection::Network),
+            Screen::Settings(yw_engine::screen::SettingsSection::Network),
             "S15 network",
         ),
-        (Screen::Settings(super::SettingsSection::Other), "S15 other"),
+        (
+            Screen::Settings(yw_engine::screen::SettingsSection::Other),
+            "S15 other",
+        ),
         (Screen::Done, "S08"),
         (Screen::Confirm(Confirm::CopyOn), "copy overlay"),
         (Screen::Confirm(Confirm::Generate), "generate overlay"),
@@ -6908,11 +6917,11 @@ fn core_screen_catalogues_keep_their_invariants() {
 /// offset it left, a lock forgets them. The reveal targets name the controls the ids named.
 #[test]
 fn keys_resolve_in_the_shell_and_the_scroll_memory_follows_screen_entries() {
-    use crate::app::SettingsSection;
-    use crate::app_scroll::ScrollPlace;
     use crate::ui::cmd_table::{cred_id_of, id_of, press_of};
     use yw_engine::cmd::{Cmd, CorePress, Press, Row, RpcImportPress, RpcRowAction};
     use yw_engine::form::{CredField, PressInput};
+    use yw_engine::screen::ScrollPlace;
+    use yw_engine::screen::SettingsSection;
     let (mut app, dir) = unlocked_app("shell-keys", false);
     let security = Screen::Settings(SettingsSection::Security);
     // 2026-11-20 (S4 P10b): each direct call into the logic is an entry of its own here: its
@@ -7017,7 +7026,7 @@ fn keys_resolve_in_the_shell_and_the_scroll_memory_follows_screen_entries() {
     reason = "four scenarios, each applied when its entry drains and held (2026-11-20 S4 P10b)"
 )]
 fn scroll_effects_carry_what_they_read() {
-    use crate::app::SettingsSection;
+    use yw_engine::screen::SettingsSection;
     type Steps = fn(&mut App);
     // (setup, the steps whose effects are applied at once or held until they returned, the
     // scroll offset they leave). 2026-11-20 (S4 P10b): a setup's screen change is drained
@@ -7118,12 +7127,12 @@ fn scroll_effects_carry_what_they_read() {
     assert_eq!(app.scroll, 0);
     assert_eq!(
         app.scroll_memory
-            .get(crate::app_scroll::ScrollPlace::Main(Tab::Evm)),
+            .get(yw_engine::screen::ScrollPlace::Main(Tab::Evm)),
         Some(640)
     );
     assert_eq!(
         app.scroll_memory
-            .get(crate::app_scroll::ScrollPlace::Main(Tab::Btc)),
+            .get(yw_engine::screen::ScrollPlace::Main(Tab::Btc)),
         None
     );
     let _ = std::fs::remove_dir_all(dir);
@@ -7791,5 +7800,48 @@ fn display_secrets_move_only_into_verified_windows() {
     });
     assert_eq!(app.screen, Screen::BackupPending);
     secret_seam::stop();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// 2026-11-21 (S4b final review, spec/04 §5.3 steps 2 and 7): a `Suspend` lock sends
+/// `KeyJob::Load` only after its 1.5 s wait for the key worker's `Lock` (`AwaitKeyLock`, drained
+/// inside `lock`), as before P10b: while the shell waits, only `Lock` is queued. From P10b until
+/// this fix `Load` was queued behind `Lock` before the wait. Not a frozen test.
+#[test]
+fn suspend_sends_load_after_the_key_lock_wait() {
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    use crate::events::KeyJob;
+
+    let dir = temp_dir("suspend-load-order");
+    let mut app = app_at(&dir);
+    let queue = Arc::clone(&app.key_queue);
+    let signal = Arc::clone(&app.lock_signal);
+    let base = queue.len();
+    // No worker runs: this thread sees the lock's `Lock` arrive, gives a `Load` sent before the
+    // wait time to arrive too, notes what is queued while the lock waits, then ends the wait.
+    let watcher = std::thread::spawn(move || {
+        let start = Instant::now();
+        while queue.len() <= base && start.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        let during = queue.len();
+        signal.signal();
+        during
+    });
+    app.lock(LockReason::Suspend);
+    app.drain();
+    let during = watcher.join().unwrap();
+    assert_eq!(during, base + 1, "only `Lock` is queued during the wait");
+    assert_eq!(app.key_queue.len(), base + 2, "`Load` follows the wait");
+    let mut jobs = Vec::new();
+    while !app.key_queue.is_empty() {
+        jobs.push(app.key_queue.pop().unwrap().1);
+    }
+    // `KeyJob` has no `Debug` (it carries secrets): the checks name the jobs they want.
+    assert!(matches!(jobs.first(), Some(KeyJob::Lock)), "`Lock` first");
+    assert!(matches!(jobs.last(), Some(KeyJob::Load)), "`Load` last");
     let _ = std::fs::remove_dir_all(dir);
 }

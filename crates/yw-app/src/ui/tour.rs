@@ -45,7 +45,6 @@ use yw_win::ui::{
 use crate::apikeys::ApiKeys;
 use crate::app::{
     App, AppMode, MAIN_CLASS, Paths, Purpose, SECRET_INPUT_CLASS, SECRET_VIEW_CLASS, Screen,
-    SettingsSection,
 };
 use crate::app_approval::smoke::{FixtureClock, FixtureRpc, fixture};
 use crate::app_approval::{APPROVAL_CLASS, PANEL_CLASS};
@@ -58,6 +57,7 @@ use crate::network::{BtcNet, NetworkId, SolCluster};
 use crate::settings::Settings;
 use crate::ui::secret::DisplaySecret;
 use crate::workers::rpc::RpcJob;
+use yw_engine::screen::SettingsSection;
 use yw_engine::secret::{SecretFormOp, SecretKind};
 
 const TIMER_CLASS: &str = "YourWalletV3TourTimer";

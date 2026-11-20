@@ -179,7 +179,7 @@ fn switch_off_queues_nothing_and_on_reads_the_shown_card() {
     assert!(has_text(&app.items(), &dust_line(Lang::Ko, 2)));
 
     // Another screen than the main one: no reads.
-    app.screen = crate::app::Screen::Settings(crate::app::SettingsSection::Security);
+    app.screen = crate::app::Screen::Settings(yw_engine::screen::SettingsSection::Security);
     app.received_tick(yw_win::time::monotonic_ms() + 3_600_000);
     assert!(received(&rx).is_empty());
     app.screen = crate::app::Screen::Main;

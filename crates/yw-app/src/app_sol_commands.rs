@@ -4,10 +4,11 @@ use yw_engine::cmd::{Row, SolPress, SolScanAction};
 use yw_engine::effect::Effect;
 use yw_engine::form::EditField;
 
-use crate::app::{App, Screen, SettingsSection};
+use crate::app::{App, Screen};
 use crate::app_sol::SolSendForm;
 use crate::meta::Tab;
 use crate::network::SolCluster;
+use yw_engine::screen::SettingsSection;
 
 /// Fixed texts of the Solana commands (spec/07, spec/14).
 pub(crate) mod text {

@@ -66,7 +66,11 @@ use yw_engine::effect::{Effect, Folder, RevealTarget, TimerId};
 // `CredField`: debug builds only until S3 C3 (the shadow reads of plan §3.2a; 2026-11-18 B4–B5
 // review); since C3 `App::take_cred` uses it in every build.
 use yw_engine::form::{CredField, EditField, FormState, PressInput};
-use yw_engine::screen::{EnteredAt, ScrollPlace};
+// Settings sections (S15) and the remembered scroll places: 2026-11-20 (S4 P10a) moved unchanged
+// to `yw_engine::screen` (the scroll effects carry them). P10a re-exported them as
+// `crate::app::SettingsSection` and `crate::app_scroll::ScrollPlace`; 2026-11-21 (S4b final
+// review, AGENTS.md §4 "no new re-exports"): the callers name `yw_engine::screen` directly.
+use yw_engine::screen::{EnteredAt, ScrollPlace, SettingsSection};
 use yw_engine::secret::{SecretEffect, SecretFormOp, SecretKind, SecretStep};
 use yw_engine::services::Services;
 
@@ -187,10 +191,6 @@ impl AppMode {
         )
     }
 }
-
-/// Settings sections (S15). 2026-11-20 (S4 P10a): moved unchanged to `yw_engine::screen` (the
-/// scroll effects carry a [`crate::app_scroll::ScrollPlace`] that names one); this path stays.
-pub use yw_engine::screen::SettingsSection;
 
 /// Confirmation overlays.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2471,8 +2471,13 @@ impl App {
         // 2026-11-20 (S4 P7b, critique A-2): the wait for the key worker's lock is
         // `Effect::AwaitKeyLock` at this point (the shell waits as this fn did before), so the
         // secret close, the clip clear and the approval close above stay before it.
+        // 2026-11-21 (S4b final review, spec/04 §5.3): drained here, so the wait ends before the
+        // mode and screen change and before `Load` is sent below, as before P10b (when `emit`
+        // applied each effect at once). From P10b until this fix, `Load` was queued behind
+        // `Lock` and the mode and screen changed before the wait, which the entry's drain ran.
         if reason == LockReason::Suspend {
             self.emit(Effect::AwaitKeyLock { before, ms: 1_500 });
+            self.drain();
         }
         if self.mode == AppMode::ShuttingDown {
             return;
@@ -2494,11 +2499,10 @@ impl App {
         // disk. A `CreateWallet`/`CommitImport` that finished just before the lock had its
         // result dropped (old epoch), but the vault exists: `Loaded { Locked }` moves the UI
         // from S01 to S07 instead of offering creation over an existing vault.
-        // 2026-11-20 (S4 P10b review): a direct send, never an effect (S10), so it leaves now,
-        // before the entry drains the effects above: on `Suspend`, `Load` is queued to the key
-        // worker behind `Lock` before the shell's 1.5 s `AwaitKeyLock` wait (and the mode and
-        // screen above change before it too); before P10b the wait ran inside `emit`, so `Load`
-        // was sent after it. The worker runs `Lock` first either way (spec/04 §5.3 step 2).
+        // 2026-11-20 (S4 P10b review): a direct send, never an effect (S10), so it leaves now.
+        // On `Suspend` that is after the 1.5 s `AwaitKeyLock` wait (drained above, 2026-11-21),
+        // as before P10b; from P10b until 2026-11-21 it left before the wait. The worker runs
+        // `Lock` first either way (spec/04 §5.3 step 2).
         self.key(KeyJob::Load);
     }
 

@@ -8,10 +8,11 @@ use yw_engine::cmd::{BtcActivityAction, BtcPress, Row};
 use yw_engine::effect::Effect;
 use yw_engine::form::EditField;
 
-use crate::app::{App, Screen, SettingsSection};
+use crate::app::{App, Screen};
 use crate::app_btc::{BtcAction, BtcAmountUnit, BtcBumpForm, BtcFeeChoice, BtcSendForm};
 use crate::btc::{app_network, core_network};
 use crate::settings::BtcIndexer;
+use yw_engine::screen::SettingsSection;
 
 /// The form edits whose text the controller keeps (re-created controls show it again).
 /// 2026-11-18 (S3 C9): `EditField`s (before, their control ids).
@@ -448,7 +449,7 @@ mod tests {
     use yw_platform::http::HttpsUrl;
 
     use crate::apikeys::ApiKeys;
-    use crate::app::{App, AppMode, Confirm, Paths, Screen, SettingsSection};
+    use crate::app::{App, AppMode, Confirm, Paths, Screen};
     use crate::app_btc::{BtcAmountUnit, BtcConfirm, BtcFeeChoice, BtcSendForm};
     use crate::btc::work::BtcRpcJob;
     use crate::errors::ErrorCode;
@@ -459,6 +460,7 @@ mod tests {
     use crate::ui::screens_btc::ids;
     use crate::workers::journal::btc::BtcMetaOp;
     use crate::workers::rpc::RpcJob;
+    use yw_engine::screen::SettingsSection;
 
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("yw-app-{name}-{}", std::process::id()));

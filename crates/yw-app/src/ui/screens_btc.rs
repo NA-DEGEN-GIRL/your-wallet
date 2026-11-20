@@ -2286,7 +2286,7 @@ mod tests {
         T_BTC_ESPLORA_NOTE, fee_choice_of, fee_ids, grouped, ids, mismatch_labels, network_tone,
     };
     use crate::apikeys::ApiKeys;
-    use crate::app::{App, AppMode, Paths, Screen, SettingsSection};
+    use crate::app::{App, AppMode, Paths, Screen};
     use crate::app_btc::{BTC_IMPORT_NOTE, BTC_MAX_ACTIVITY_ROWS, BtcFeeChoice};
     use crate::app_sol::ReviewBlocker;
     use crate::errors::ErrorCode;
@@ -2297,6 +2297,7 @@ mod tests {
     use crate::ui::main_window::{Ctl, Item, Tone};
     use crate::ui::theme::address_spans;
     use yw_core::lang::Lang;
+    use yw_engine::screen::SettingsSection;
 
     /// A compressed account public key (the `meta.rs` test value; never derived from here).
     const TESTNET_ACCOUNT: &str =

@@ -29,7 +29,6 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, channel};
 
 use super::{App, AppMode, Screen, app_at, unlocked_at};
-use crate::app::SettingsSection;
 use crate::app_explorer::Launcher;
 use crate::app_extension::TOUR_EXTENSION_DIR;
 use crate::app_rpc_import::{TEST_RPC_JSON, rpc_json_path};
@@ -41,6 +40,7 @@ use crate::ui::{
     screens_walletconnect, screens_yubikey, screens_zec,
 };
 use crate::workers::rpc::RpcJob;
+use yw_engine::screen::SettingsSection;
 
 const COMMANDS: &str = include_str!("s3_census/commands.txt");
 const EDITS: &str = include_str!("s3_census/edits.txt");

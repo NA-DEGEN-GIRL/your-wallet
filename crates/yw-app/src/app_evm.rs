@@ -21,7 +21,7 @@ use yw_engine::cmd::{CopyBand, CopyMark, Press};
 use yw_engine::effect::{Effect, TimerId};
 
 use crate::apikeys::{KeyName, mask_url};
-use crate::app::{App, AppMode, Confirm, Screen, SettingsSection};
+use crate::app::{App, AppMode, Confirm, Screen};
 use crate::app_sol::{ReviewBlocker, ReviewRefusal};
 use crate::errors::ErrorCode;
 use crate::events::{
@@ -45,6 +45,7 @@ use crate::settings::{EvmChainDef, FeeCapsText, Settings, validate_fee_caps};
 use crate::text::{hash32_text, is_valid_label, json_object, json_str};
 use crate::ui::approval::{ApprovalQueue, QueueOutcome, QueueSource};
 use crate::workers::rpc::RpcJob;
+use yw_engine::screen::SettingsSection;
 
 /// Balance refresh while S10 is visible and the window is not hidden or minimized
 /// (spec/04 §2.6; 15 s since 2026-11-11, was 60 s).

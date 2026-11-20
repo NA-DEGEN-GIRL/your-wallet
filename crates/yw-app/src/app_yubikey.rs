@@ -36,7 +36,7 @@ use yw_core::yubikey::record::HwKeyRecord;
 use yw_engine::cmd::{Row, YkPress};
 use yw_engine::form::EditField;
 
-use crate::app::{App, AppMode, Confirm, PasswordAction, Purpose, Screen, SettingsSection};
+use crate::app::{App, AppMode, Confirm, PasswordAction, Purpose, Screen};
 use crate::events::{KeyJob, YubiKeyJobError};
 use crate::logging;
 use crate::secret_session::AfterShown;
@@ -44,6 +44,7 @@ use crate::ui::main_window::Tone;
 use crate::ui::secret::DisplaySecret;
 use crate::workers::key::yubikey::{CounterTarget, YkJob, YkOutcome, YkPreview};
 use crate::yubikey::{CardJobError, PinCounters, PinKind, PinTarget};
+use yw_engine::screen::SettingsSection;
 use yw_engine::secret::{CardSecretKind, SecretFormOp, SecretKind};
 
 pub mod connect;
