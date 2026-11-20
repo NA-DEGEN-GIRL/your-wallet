@@ -3213,15 +3213,18 @@ impl App {
         topmost: bool,
         lang: Lang,
     ) -> Result<Window, UiError> {
-        let Some(owner) = self.main.as_ref().map(Window::hwnd) else {
-            return Err(UiError::CaptureExclusionFailed);
-        };
         // 2026-11-18 (S4 A7): the cfg(test) seam logs the request and can refuse it as yw-win
         // would (`TEST_SECRET_REFUSE`, removed in S4 P8); release builds have no such line.
+        // 2026-11-20 (S4 P7a1 review): it runs before the main-window check (it ran after), so a
+        // headless test sees every window the shell was asked for (the A-3 stale-open pin). With
+        // a main window (the windowed runs) the order changes nothing.
         #[cfg(test)]
         if let Some(refused) = secret_seam::create(serial, kind, topmost) {
             return Err(refused);
         }
+        let Some(owner) = self.main.as_ref().map(Window::hwnd) else {
+            return Err(UiError::CaptureExclusionFailed);
+        };
         let (w, h) = window_size(kind);
         let class = if kind.is_display() {
             SECRET_VIEW_CLASS
@@ -3240,6 +3243,10 @@ impl App {
     }
 
     fn show_secret(&mut self, serial: u64, window: Window, form: SecretForm) {
+        // 2026-11-20 (S4 P7a1 review): every open closes the previous window first, so a second
+        // window record never silently replaces the first (its timer and the main window's
+        // enable would be left unpaired).
+        debug_assert!(self.secret.is_none(), "a secret window is already open");
         let _ = window.set_timer(SECRET_TIMER_ID, SECRET_TIMER_MS);
         if let Some(main) = self.main.as_ref() {
             main.enable(false);
@@ -3351,8 +3358,10 @@ impl App {
 
     /// Applies one `Effect::Secret` (the shell; S4 P7a1). An open is answered with
     /// `Cmd::SecretOpened`. An open whose session is no longer the open one (it ended before the
-    /// effect was applied: critique A-3) makes nothing and is answered `Refused`, which
-    /// `on_secret_opened` drops (that session has ended).
+    /// effect was applied: critique A-3), or whose session is already shown (a second open of the
+    /// same session), makes nothing and is answered `Refused`, which `on_secret_opened` drops
+    /// (that session has ended or is shown). 2026-11-20 (P7a1 review): the guard compared the
+    /// serial only, so a second open of a shown session would have made a second window.
     pub(crate) fn apply_secret_effect(&mut self, effect: SecretEffect) -> Option<Cmd> {
         match effect {
             SecretEffect::OpenInput {
@@ -3362,8 +3371,11 @@ impl App {
                 topmost,
                 lang,
             } => {
-                let current = self.secret_session.as_ref().map(SecretSession::serial);
-                let outcome = if current == Some(serial) {
+                let unshown = self
+                    .secret_session
+                    .as_ref()
+                    .is_some_and(|session| session.serial() == serial && !session.shown());
+                let outcome = if unshown {
                     self.open_input_window(serial, kind, step, topmost, lang)
                 } else {
                     OpenOutcome::Refused(ErrorCode::Sec001)
