@@ -3514,7 +3514,12 @@ impl App {
     /// (`open_display_window`), and its answer (`Cmd::SecretOpened`) marks the session shown or
     /// ends it with the banner (`on_secret_opened`). Applied at once (the inline executor), so the
     /// window, the wipe, the banner and the screen change happen at the same point and in the
-    /// same order as before, when this fn made the window and filled it itself.
+    /// same order as before, when this fn made the window and filled it itself — with one
+    /// exception (2026-11-20, P7b review): a window that was made but whose exclusion was not
+    /// read back (`Refuse` with a window) is now destroyed inside `open_display_window`, so
+    /// before the answer's banner and the S04 change; before P7b it was destroyed after them, at
+    /// the end of this fn's match. It is still destroyed after the wipe, was never shown and never
+    /// held the secret, so nothing reaches the screen either way.
     pub(crate) fn open_display(
         &mut self,
         kind: SecretKind,
@@ -3607,6 +3612,9 @@ impl App {
                 self.drop_display_secret(serial);
                 OpenOutcome::Refused(ErrorCode::Sec001)
             }
+            // A window made but not excluded is destroyed as this fn returns, after the wipe and
+            // before the answer (2026-11-20, P7b review: before P7b, after the banner and
+            // the S04 change; it was never shown and never held the secret).
             (CaptureDecision::Refuse(code), _) => {
                 self.drop_display_secret(serial);
                 OpenOutcome::Refused(code)

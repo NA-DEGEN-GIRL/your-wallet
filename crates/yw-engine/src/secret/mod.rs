@@ -275,7 +275,11 @@ pub enum SecretEffect {
         kind: SecretKind,
         /// The flow step the window shows (`None`: none).
         step: Option<SecretStep>,
-        /// W08's note after its countdown (a fixed catalogue text; `None`: none).
+        /// W08's note after its countdown (a fixed catalogue text; `None`: none). 2026-11-20 (P7b
+        /// review, spec/15 §11.4 S4): the logic picks the text, where plan §3.6 sketched a flag
+        /// the shell resolves; like `step`'s texts (also in `OpenInput`) it becomes a catalogue
+        /// key before an `Effect` has to round-trip through the yw-json codec or the Android
+        /// shell (S4d E2).
         timeout_note: Option<&'static str>,
         /// The language the window draws its texts in.
         lang: Lang,
