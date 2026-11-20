@@ -2403,6 +2403,9 @@ fn stale_open_and_stale_answer_leave_no_orphan_window() {
         },
         true,
     );
+    // 2026-11-20 (S4 P10b, owner decision B): the close it emitted is applied when the entry
+    // drains (the outbox; before, `emit` applied it at once).
+    app.drain();
     assert_eq!(
         window_of(&app),
         None,

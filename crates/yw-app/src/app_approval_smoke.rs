@@ -231,6 +231,9 @@ fn open_dry_run(name: &str) -> (Rc<RefCell<App>>, std::path::PathBuf) {
             },
             replace: None,
         });
+        // 2026-11-20 (S4 P10b): the open is applied (and answered, which starts the preparation)
+        // when the entry drains.
+        state.drain();
     }
     // The job the app sent to the RPC worker, answered like the worker would.
     let Ok(RpcJob::Prepare(job)) = rx.try_recv() else {
@@ -253,10 +256,16 @@ fn open_dry_run(name: &str) -> (Rc<RefCell<App>>, std::path::PathBuf) {
         },
     );
     if let Some(at) = since.into_inner() {
-        app.borrow_mut().on_simulating(job.job, at);
+        entry(&app).on_simulating(job.job, at);
     }
-    app.borrow_mut().on_prepared(result);
+    entry(&app).on_prepared(result);
     (app, dir)
+}
+
+/// One entry into the logic (2026-11-20, S4 P10b): the effects its calls emit are applied (and
+/// answered) when the borrow ends, as a shell entry drains before it returns.
+fn entry(app: &Rc<RefCell<App>>) -> crate::app_effects::Entry<'_> {
+    crate::app_effects::Entry::new(app.borrow_mut())
 }
 
 /// Runs the message loop for `ms` milliseconds (timers, paint).
@@ -301,7 +310,7 @@ fn approval_window_renders_a_fixture_dry_run() {
             paint.view.blocked
         );
     }
-    app.borrow_mut().close_approval_window();
+    entry(&app).close_approval_window();
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -344,7 +353,7 @@ fn approval_hold_repaints_only_the_bottom_bar() {
             .is_some_and(|flow| flow.paint().view.high),
         "S3 is a high-risk approval"
     );
-    app.borrow_mut().toggle_ack();
+    entry(&app).toggle_ack();
     // The arm delay (1 s) passes; the first paints settle.
     pump(1_500);
     let _ = take_stats(&app);
@@ -355,12 +364,11 @@ fn approval_hold_repaints_only_the_bottom_bar() {
     assert!(idle.count == 0 || within(idle.area, bar));
     assert_eq!(idle_panel.count, 0);
 
-    app.borrow_mut()
-        .interaction(super::InteractionEvent::PointerPressed {
-            inside: true,
-            click_through: false,
-            physical_down: true,
-        });
+    entry(&app).interaction(super::InteractionEvent::PointerPressed {
+        inside: true,
+        click_through: false,
+        physical_down: true,
+    });
     let _ = take_stats(&app);
     let mut frames = 0_u32;
     for frame in 0..4_u32 {
@@ -385,10 +393,9 @@ fn approval_hold_repaints_only_the_bottom_bar() {
         }
     }
     // Released before 2 s: the hold is cancelled and nothing is approved.
-    app.borrow_mut()
-        .interaction(super::InteractionEvent::PointerReleased {
-            physical_down: false,
-        });
+    entry(&app).interaction(super::InteractionEvent::PointerReleased {
+        physical_down: false,
+    });
     {
         let state = app.borrow();
         let paint = state.evm.approval.as_ref().expect("window open").paint();
@@ -400,6 +407,6 @@ fn approval_hold_repaints_only_the_bottom_bar() {
     }
     println!("hold 1 s: {frames} bottom-bar paints, 0 panel paints");
     super::TEST_FORCE_FOREGROUND.with(|force| force.set(false));
-    app.borrow_mut().close_approval_window();
+    entry(&app).close_approval_window();
     let _ = std::fs::remove_dir_all(&dir);
 }

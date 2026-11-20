@@ -23,7 +23,9 @@ use yw_win::ui::capture::{
     dev_tour_post_vscroll, dev_tour_post_wheel, dev_tour_redraw,
 };
 
-use super::{UNLOCKED, main_hwnd, pump, register_classes, tour_apikeys, tour_meta, tour_settings};
+use super::{
+    UNLOCKED, entry, main_hwnd, pump, register_classes, tour_apikeys, tour_meta, tour_settings,
+};
 use crate::app::{App, Paths, Screen, SettingsSection};
 use crate::events::{EventQueue, RpcEvent, UiEvent};
 use crate::shell_msg::WM_YW_EVENTS;
@@ -79,7 +81,7 @@ impl Probe {
         dev_tour_redraw(self.hwnd);
         dev_tour_flush();
         let repainted = capture_client(self.hwnd).unwrap();
-        self.app.borrow_mut().refresh();
+        entry(&self.app).refresh();
         dev_tour_redraw(self.hwnd);
         dev_tour_flush();
         let fresh = capture_client(self.hwnd).unwrap();
@@ -134,7 +136,7 @@ fn scenes(env: &'static str) -> Vec<String> {
     )));
     App::create_main_window(&app).unwrap();
     {
-        let mut state = app.borrow_mut();
+        let mut state = entry(&app);
         state.mode = UNLOCKED;
         state.meta = Some(tour_meta());
         // Every network has a (made-up, never contacted) URL: 교체 · 테스트 · 삭제 on each row.
@@ -147,6 +149,7 @@ fn scenes(env: &'static str) -> Vec<String> {
         state.events = Some(std::sync::Arc::new(EventQueue::new(Box::new(move || {
             let _ = poster.post(WM_YW_EVENTS, 0);
         }))));
+        // (2026-11-20, S4 P10b: the borrow is an `entry`, which drains when it ends.)
         state.show_main();
     }
     super::set_screen(&app, UNLOCKED, Screen::Settings(SettingsSection::Network));
@@ -223,7 +226,7 @@ fn scenes(env: &'static str) -> Vec<String> {
 
     let Probe { failures, .. } = probe;
     // Destroyed here, while the environment it was made in is still active.
-    let main = app.borrow_mut().main.take();
+    let main = entry(&app).main.take();
     drop(main);
     drop(app);
     let _ = std::fs::remove_dir_all(&dir);

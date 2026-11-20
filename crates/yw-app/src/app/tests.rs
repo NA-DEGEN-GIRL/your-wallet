@@ -152,6 +152,8 @@ impl Harness {
                 checkbox: false,
             },
         );
+        // 2026-11-20 (S4 P10b): one entry, as the secret window's message that submits.
+        self.app.drain();
     }
 
     fn vault_file(&self) -> PathBuf {
@@ -2807,7 +2809,7 @@ fn walletconnect_clipboard_presses_take_the_press_input() {
     assert_eq!(app.cred_misses(), 0);
     let press = |app: &mut App, press: WcPress, clip: ClipInput| {
         app.wc.notice = None;
-        app.on_cmd(Cmd::Press {
+        app.dispatch(Cmd::Press {
             press: Press::Wc(press),
             input: PressInput::default().with_clip(clip),
         });
@@ -2849,7 +2851,7 @@ fn walletconnect_clipboard_presses_take_the_press_input() {
     #[cfg(debug_assertions)]
     assert_eq!(app.cred_misses(), 0);
     // A press that captured no clipboard input reads nothing; debug builds count the miss.
-    app.on_cmd(Cmd::Press {
+    app.dispatch(Cmd::Press {
         press: Press::Wc(WcPress::ClipboardConnect),
         input: PressInput::default(),
     });
@@ -2912,7 +2914,7 @@ fn walletconnect_file_press_takes_the_shell_image() {
     let press = |app: &mut App, image: Option<ImageInput>| {
         app.wc.notice = None;
         let input = PressInput::default();
-        app.on_cmd(Cmd::Press {
+        app.dispatch(Cmd::Press {
             press: Press::Wc(WcPress::FileQr),
             input: match image {
                 Some(image) => input.with_image(image),
@@ -3565,12 +3567,12 @@ fn a_late_copy_result_marks_the_control_of_its_mark() {
     app.on_command(REFRESH);
     assert_eq!(Some(app.last_press), press_of(REFRESH, &app.controls));
     let failed = ErrorCode::Sec002.text_in(app.settings.language);
-    app.on_cmd(Cmd::CopyDone { ok: false, mark });
+    app.dispatch(Cmd::CopyDone { ok: false, mark });
     assert_eq!(
         (app.copied, app.info.as_deref()),
         (None, Some(failed.as_str()))
     );
-    app.on_cmd(Cmd::CopyDone { ok: true, mark });
+    app.dispatch(Cmd::CopyDone { ok: true, mark });
     assert!(matches!(
         app.copied,
         Some(Copied {
@@ -3666,10 +3668,10 @@ fn setup_copies_answer_with_the_band_in_their_mark() {
     app.on_command(crate::ui::screens_evm::ids::REFRESH);
     app.info = None;
     let _ = app.controls.take_shell_log();
-    app.on_cmd(Cmd::CopyDone { ok: true, mark });
+    app.dispatch(Cmd::CopyDone { ok: true, mark });
     assert_eq!(app.controls.take_shell_log(), ["refresh"]);
     assert_eq!((app.info.as_deref(), app.copied), (Some(url), None));
-    app.on_cmd(Cmd::CopyDone { ok: false, mark });
+    app.dispatch(Cmd::CopyDone { ok: false, mark });
     assert_eq!(app.controls.take_shell_log(), Vec::<String>::new());
     assert_eq!(
         (app.info.as_deref(), app.copied),
@@ -3706,7 +3708,7 @@ fn a_late_band_result_keeps_a_newer_mark() {
     let url = crate::app_extension::text::URL_COPIED.ko;
     let reown = crate::ui::screens_walletconnect::text::REOWN_COPIED.ko;
     let _ = app.controls.take_shell_log();
-    app.on_cmd(Cmd::CopyDone {
+    app.dispatch(Cmd::CopyDone {
         ok: true,
         mark: CopyMark {
             anchor: Press::Ext(ExtPress::CopyUrl),
@@ -3716,7 +3718,7 @@ fn a_late_band_result_keeps_a_newer_mark() {
     });
     assert_eq!(app.controls.take_shell_log(), ["refresh"]);
     assert_eq!((app.info.as_deref(), app.copied), (Some(url), live));
-    app.on_cmd(Cmd::CopyDone {
+    app.dispatch(Cmd::CopyDone {
         ok: true,
         mark: CopyMark {
             anchor: Press::Wc(WcPress::ReownCopy),
@@ -3774,6 +3776,8 @@ fn links_and_folders_open_through_effects_answered_in_the_same_borrow() {
     let url = app.explorer_tx_url(NetworkId::Eip155(1), HASH).unwrap();
     let host = crate::explorer::url_host(&url).unwrap();
     app.open_explorer_tx(NetworkId::Eip155(1), HASH);
+    // (2026-11-20, S4 P10b: the call is one entry; its effects apply when it drains.)
+    app.drain();
     assert_eq!(recorded(&app).len(), 4);
     assert_eq!(recorded(&app).last(), Some(&url));
     let lang = app.settings.language;
@@ -3782,7 +3786,7 @@ fn links_and_folders_open_through_effects_answered_in_the_same_borrow() {
         Some(text::OPENED_HOST.fill(lang, [&host]).as_str())
     );
     // Late results (Android): each answers with what its own target says.
-    app.on_cmd(Cmd::Opened {
+    app.dispatch(Cmd::Opened {
         ok: false,
         which: LinkTarget::Explorer {
             net: ExplorerNet::Evm(1),
@@ -3790,7 +3794,7 @@ fn links_and_folders_open_through_effects_answered_in_the_same_borrow() {
         },
     });
     assert_eq!(app.info.as_deref(), Some(text::EXPLORER_FAILED.get(lang)));
-    app.on_cmd(Cmd::Opened {
+    app.dispatch(Cmd::Opened {
         ok: true,
         which: LinkTarget::Explorer {
             net: ExplorerNet::Evm(1),
@@ -3798,7 +3802,7 @@ fn links_and_folders_open_through_effects_answered_in_the_same_borrow() {
         },
     });
     assert_eq!(app.info.as_deref(), Some(text::OPENED.get(lang)));
-    app.on_cmd(Cmd::FolderMissing);
+    app.dispatch(Cmd::FolderMissing);
     assert_eq!(app.info.as_deref(), Some(T_EXT_MISSING.get(lang)));
     assert_eq!(recorded(&app).len(), 4, "a result opens nothing");
     let _ = std::fs::remove_dir_all(dir);
@@ -3872,17 +3876,68 @@ fn missing_edit_notify_is_counted_and_clear_field_clears() {
         "{log:?}"
     );
     app.controls.type_text(ADDR_EDIT, "draft");
-    app.on_cmd(Cmd::Form(app.controls.form_snapshot()));
+    app.dispatch(Cmd::Form(app.controls.form_snapshot()));
     assert_eq!(app.form.text(EditField::BookAddress), Some("draft"));
     app.emit(Effect::ClearField {
         field: EditField::BookAddress,
     });
+    // 2026-11-20 (S4 P10b): queued until the entry drains.
+    assert_eq!(app.form.text(EditField::BookAddress), Some("draft"));
+    app.drain();
     assert_eq!(app.form.text(EditField::BookAddress), None);
     assert_eq!(app.controls.text(ADDR_EDIT, 512), None);
     assert_eq!(app.form_mismatch.get(), 1);
     assert_eq!(
         app.controls.take_shell_log(),
         vec![format!("clear_text {ADDR_EDIT}")]
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// 2026-11-20 (S4 P10b, owner decision O-10): a field write (`Effect::SetField`) is form state
+/// as soon as it is emitted — cut to the field's cap, as the edit would hold it — so the logic
+/// reads what it wrote before the shell applies the write; the write itself waits in the outbox
+/// until the entry drains, and applying it reads the edit back into the form state as before
+/// (headless, the edit keeps what the test typed). Nothing is coalesced: two writes are two
+/// `set_text` lines, in order.
+#[test]
+fn a_field_write_is_form_state_before_the_shell_applies_it() {
+    use crate::ui::screens_book::ids::ADDR_EDIT;
+    use yw_engine::effect::Effect;
+    use yw_engine::form::EditField;
+    let (mut app, dir) = unlocked_app("form-write-first", false);
+    let field = EditField::BookAddress;
+    app.controls.type_text(ADDR_EDIT, "typed");
+    let _ = app.controls.take_shell_log();
+    let long = "a".repeat(field.cap() + 7);
+    app.emit(Effect::SetField {
+        field,
+        text: "first".to_owned(),
+    });
+    app.emit(Effect::SetField {
+        field,
+        text: long.clone(),
+    });
+    assert_eq!(
+        app.form.text(field),
+        Some(&long[..field.cap()]),
+        "written first, cut"
+    );
+    assert_eq!(app.outbox.len(), 2, "queued, not applied");
+    assert_eq!(app.controls.take_shell_log(), Vec::<String>::new());
+    app.drain();
+    assert!(app.outbox.is_empty());
+    assert_eq!(
+        app.controls.take_shell_log(),
+        vec![
+            format!("set_text {ADDR_EDIT} len=5"),
+            format!("set_text {ADDR_EDIT} len={}", field.cap() + 7),
+        ]
+    );
+    assert_eq!(
+        app.form.text(field),
+        app.controls.text(ADDR_EDIT, field.cap()).as_deref(),
+        "read back from the edit when applied"
     );
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -6860,15 +6915,19 @@ fn keys_resolve_in_the_shell_and_the_scroll_memory_follows_screen_entries() {
     use yw_engine::form::{CredField, PressInput};
     let (mut app, dir) = unlocked_app("shell-keys", false);
     let security = Screen::Settings(SettingsSection::Security);
+    // 2026-11-20 (S4 P10b): each direct call into the logic is an entry of its own here: its
+    // effects are applied when it drains (`app.drain()`), as a shell entry does.
     app.set_screen(security.clone());
+    app.drain();
     app.scroll = 240;
     app.set_screen(Screen::Confirm(Confirm::CopyOn));
+    app.drain();
     assert_eq!(
         (app.scroll, app.scroll_memory.under_overlay),
         (0, Some(240))
     );
     // The logic alone resolves nothing.
-    app.on_cmd(Cmd::Press {
+    app.dispatch(Cmd::Press {
         press: Press::Back,
         input: PressInput::default(),
     });
@@ -6882,6 +6941,7 @@ fn keys_resolve_in_the_shell_and_the_scroll_memory_follows_screen_entries() {
     assert_eq!((app.scroll, app.scroll_memory.under_overlay), (240, None));
     // A way back opens where the screen was left; a new screen opens at its top.
     app.set_screen(Screen::Main);
+    app.drain();
     assert_eq!(app.scroll, 0);
     assert_eq!(
         app.scroll_memory
@@ -6889,13 +6949,16 @@ fn keys_resolve_in_the_shell_and_the_scroll_memory_follows_screen_entries() {
         Some(240)
     );
     app.return_to(security.clone());
+    app.drain();
     assert_eq!(app.scroll, 240);
     app.set_screen(Screen::Main);
     app.set_screen(security);
+    app.drain();
     assert_eq!(app.scroll, 0);
     // Enter: the logic alone does nothing; the shell presses the focused button as a click.
     app.set_screen(Screen::Main);
-    app.on_cmd(Cmd::Press {
+    app.drain();
+    app.dispatch(Cmd::Press {
         press: Press::Enter,
         input: PressInput::default(),
     });
@@ -6908,6 +6971,7 @@ fn keys_resolve_in_the_shell_and_the_scroll_memory_follows_screen_entries() {
     assert!(app.rename.is_some());
     // A lock forgets every remembered offset.
     app.lock(LockReason::Manual);
+    app.drain();
     assert_eq!(
         app.scroll_memory
             .get(ScrollPlace::Settings(SettingsSection::Security)),
@@ -6943,13 +7007,21 @@ fn keys_resolve_in_the_shell_and_the_scroll_memory_follows_screen_entries() {
 /// leaves, and a fourth closes an overlay onto another screen than the one it opened over (that
 /// screen opens at its top and the offset noted under the overlay is dropped; before, only the
 /// overlay closing back onto its own screen was run, so `EnteredAt::UnderOverlay { same }` was
-/// pinned for `same == true` only).
+/// pinned for `same == true` only). 2026-11-20 (S4 P10b): with the outbox, the run that is not
+/// held is applied when the steps' entry drains (before, `emit` applied each effect at once);
+/// the offsets each scenario must leave were recorded with effects applied at once (P10a), so
+/// both runs still meet that order's result.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "four scenarios, each applied when its entry drains and held (2026-11-20 S4 P10b)"
+)]
 fn scroll_effects_carry_what_they_read() {
     use crate::app::SettingsSection;
     type Steps = fn(&mut App);
     // (setup, the steps whose effects are applied at once or held until they returned, the
-    // scroll offset they leave)
+    // scroll offset they leave). 2026-11-20 (S4 P10b): a setup's screen change is drained
+    // before it scrolls (its own entry), so the scroll is set on the screen it entered.
     let scenarios: [(&str, Steps, Steps, i32); 4] = [
         (
             "tab",
@@ -6964,6 +7036,7 @@ fn scroll_effects_carry_what_they_read() {
             "back",
             |app| {
                 app.set_screen(Screen::Settings(SettingsSection::Security));
+                app.drain();
                 app.scroll = 240;
             },
             |app| {
@@ -6976,6 +7049,7 @@ fn scroll_effects_carry_what_they_read() {
             "overlay",
             |app| {
                 app.set_screen(Screen::Settings(SettingsSection::Security));
+                app.drain();
                 app.scroll = 240;
             },
             |app| {
@@ -6988,6 +7062,7 @@ fn scroll_effects_carry_what_they_read() {
             "overlay elsewhere",
             |app| {
                 app.set_screen(Screen::Settings(SettingsSection::Security));
+                app.drain();
                 app.scroll = 240;
             },
             |app| {
@@ -7011,6 +7086,9 @@ fn scroll_effects_carry_what_they_read() {
             } else {
                 steps(&mut app);
             }
+            // 2026-11-20 (S4 P10b): the outbox — the queued effects are applied when the entry
+            // drains (before, `emit` applied each at once, so `false` was "at once").
+            app.drain();
             seen.push(format!(
                 "{name}: scroll {} memory {:?}",
                 app.scroll, app.scroll_memory
@@ -7035,6 +7113,7 @@ fn scroll_effects_carry_what_they_read() {
     for effect in effects {
         app.emit(effect);
     }
+    app.drain();
     assert_eq!(app.meta.as_ref().map(|meta| meta.prefs.tab), Some(Tab::Btc));
     assert_eq!(app.scroll, 0);
     assert_eq!(
@@ -7174,7 +7253,7 @@ fn shell_resolves_the_keys(body: &dyn Fn(&str, &str) -> String) {
     let shell = [
         (
             "    fn on_command(&mut self, id: u16) {",
-            "self.on_cmd(Cmd::Press{press,input});matchpress{Press::Enter=>self.enter_key(),\
+            "self.dispatch(Cmd::Press{press,input});matchpress{Press::Enter=>self.enter_key(),\
              Press::Back=>self.escape_key(),_=>{}}",
         ),
         (
@@ -7222,12 +7301,13 @@ fn secret_sessions_follow_their_window_results() {
     // Headless: refused as today (E-SEC-001), the serial counted, no session left.
     let before = app.secret_serial;
     app.open_input(SecretKind::Unlock, Purpose::Unlock, false);
+    app.drain();
     assert_eq!(app.secret_serial, before + 1);
     assert!(!app.secret_open());
     assert_eq!(app.secret_purpose(), None);
     assert_eq!(codes(&app), [Some(ErrorCode::Sec001)]);
     // A late answer for that ended session is dropped.
-    app.on_cmd(Cmd::SecretOpened {
+    app.dispatch(Cmd::SecretOpened {
         serial: before + 1,
         outcome: OpenOutcome::Shown {
             capture_excluded: true,
@@ -7239,12 +7319,12 @@ fn secret_sessions_follow_their_window_results() {
     // A session whose window the shell reports shown.
     let serial = app.begin_secret(SecretKind::ConfirmPassword, Purpose::ChangePassword, false);
     assert!(app.secret_open(), "a session is open from its request on");
-    app.on_cmd(Cmd::SecretOpened {
+    app.dispatch(Cmd::SecretOpened {
         serial: serial - 1,
         outcome: OpenOutcome::Failed(ErrorCode::App009),
     });
     assert_eq!(app.secret_purpose(), Some(Purpose::ChangePassword));
-    app.on_cmd(Cmd::SecretOpened {
+    app.dispatch(Cmd::SecretOpened {
         serial,
         outcome: OpenOutcome::Shown {
             capture_excluded: false,
@@ -7256,7 +7336,7 @@ fn secret_sessions_follow_their_window_results() {
             .is_some_and(crate::secret_session::SecretSession::shown)
     );
     // A second answer for a shown window does not end it.
-    app.on_cmd(Cmd::SecretOpened {
+    app.dispatch(Cmd::SecretOpened {
         serial,
         outcome: OpenOutcome::Refused(ErrorCode::Sec001),
     });
@@ -7270,14 +7350,14 @@ fn secret_sessions_follow_their_window_results() {
 
     // `Failed` ends the session with E-APP-009, `Refused` with its code.
     let serial = app.begin_secret(SecretKind::Unlock, Purpose::Unlock, true);
-    app.on_cmd(Cmd::SecretOpened {
+    app.dispatch(Cmd::SecretOpened {
         serial,
         outcome: OpenOutcome::Failed(ErrorCode::App009),
     });
     assert!(!app.secret_open());
     assert_eq!(codes(&app), [Some(ErrorCode::App009)]);
     let serial = app.begin_secret(SecretKind::Unlock, Purpose::Unlock, false);
-    app.on_cmd(Cmd::SecretOpened {
+    app.dispatch(Cmd::SecretOpened {
         serial,
         outcome: OpenOutcome::Refused(ErrorCode::Sec001),
     });
@@ -7341,6 +7421,7 @@ fn secret_opens_make_windows_only_for_their_unshown_session() {
     };
     // The open session's open asks for its window (headless: refused as today).
     app.open_input(SecretKind::Unlock, Purpose::Unlock, false);
+    app.drain();
     assert_eq!(
         created(),
         ["create:W02"],
@@ -7350,7 +7431,7 @@ fn secret_opens_make_windows_only_for_their_unshown_session() {
 
     // A shown session.
     let serial = app.begin_secret(SecretKind::ConfirmPassword, Purpose::ChangePassword, false);
-    app.on_cmd(Cmd::SecretOpened {
+    app.dispatch(Cmd::SecretOpened {
         serial,
         outcome: OpenOutcome::Shown {
             capture_excluded: true,
@@ -7366,7 +7447,7 @@ fn secret_opens_make_windows_only_for_their_unshown_session() {
     assert!(refused(again.as_ref(), serial));
     assert!(created().is_empty(), "a second open asked for a window");
     if let Some(answer) = again {
-        app.on_cmd(answer);
+        app.dispatch(answer);
     }
     assert_eq!(app.secret_purpose(), Some(Purpose::ChangePassword));
     assert!(
@@ -7420,6 +7501,7 @@ fn w12_reads_its_card_counters_only_once_shown() {
 
     // Headless: refused as before, no card read.
     app.yk_open_card_secret(CardSecretKind::AdminPin, YkPurpose::AdminPin, CARD);
+    app.drain();
     assert!(!app.secret_open());
     assert_eq!(
         app.banners
@@ -7445,14 +7527,14 @@ fn w12_reads_its_card_counters_only_once_shown() {
             capture_excluded: true,
         },
     };
-    app.on_cmd(shown(serial - 1));
+    app.dispatch(shown(serial - 1));
     assert!(
         counter_reads(&app).is_empty(),
         "a stale answer read the card"
     );
-    app.on_cmd(shown(serial));
+    app.dispatch(shown(serial));
     assert_eq!(counter_reads(&app), [Some(CARD)]);
-    app.on_cmd(shown(serial));
+    app.dispatch(shown(serial));
     assert!(counter_reads(&app).is_empty(), "a second answer read again");
     assert_eq!(app.secret_purpose(), Some(purpose));
     app.close_secret();
@@ -7466,13 +7548,13 @@ fn w12_reads_its_card_counters_only_once_shown() {
         if let Some(session) = app.secret_session.as_mut() {
             session.then_when_shown(AfterShown::CardCounters { card: CARD });
         }
-        app.on_cmd(Cmd::SecretOpened { serial, outcome });
+        app.dispatch(Cmd::SecretOpened { serial, outcome });
         assert!(!app.secret_open());
         assert!(counter_reads(&app).is_empty(), "{outcome:?} read the card");
     }
     // A session without the step reads nothing when shown.
     let serial = app.begin_secret(kind, purpose, false);
-    app.on_cmd(Cmd::SecretOpened {
+    app.dispatch(Cmd::SecretOpened {
         serial,
         outcome: OpenOutcome::Shown {
             capture_excluded: false,
@@ -7537,6 +7619,7 @@ fn display_secrets_move_only_into_verified_windows() {
         Purpose::ShowForBackup,
         display(),
     );
+    app.drain();
     assert_eq!(ops(), ["create:W08", "display-dropped"]);
     assert!(!app.secret_open());
     assert_eq!(codes(&app), [Some(ErrorCode::Sec001)]);
@@ -7545,6 +7628,7 @@ fn display_secrets_move_only_into_verified_windows() {
     app.banners.clear();
     app.screen = Screen::Starting;
     app.open_display(SecretKind::ShowKey, Purpose::ShowRevealed, display());
+    app.drain();
     assert_eq!(ops(), ["create:W09", "display-dropped"]);
     assert_eq!(codes(&app), [Some(ErrorCode::Sec001)]);
     assert_eq!(app.screen, Screen::Starting);
@@ -7562,7 +7646,7 @@ fn display_secrets_move_only_into_verified_windows() {
     if let Some(session) = app.secret_session.as_mut() {
         session.hold_display(display());
     }
-    app.on_cmd(Cmd::SecretOpened {
+    app.dispatch(Cmd::SecretOpened {
         serial,
         outcome: OpenOutcome::Shown {
             capture_excluded: true,
@@ -7570,6 +7654,7 @@ fn display_secrets_move_only_into_verified_windows() {
     });
     assert!(app.take_display_secret(serial).is_none(), "a shown session");
     app.close_secret();
+    app.drain();
     let _ = ops();
 
     // An open effect of another serial makes no window and takes nothing (A-3).
@@ -7599,6 +7684,7 @@ fn display_secrets_move_only_into_verified_windows() {
         "the stale open took it"
     );
     app.close_secret();
+    app.drain();
 
     // A session that ended before its effect (a lock in the same entry) opens nothing; the lock
     // clears the secret copy before the approval close and does not wait unless suspending.
@@ -7611,6 +7697,7 @@ fn display_secrets_move_only_into_verified_windows() {
         session.hold_display(display());
     }
     app.lock(LockReason::Manual);
+    app.drain();
     assert_eq!(ops(), ["clear-clip", "approval-close:none"]);
     assert!(
         app.take_display_secret(serial).is_none(),
@@ -7633,6 +7720,7 @@ fn display_secrets_move_only_into_verified_windows() {
         signal.signal();
     });
     app.lock(LockReason::Suspend);
+    app.drain();
     let _ = signaller.join();
     assert_eq!(
         ops(),
@@ -7641,6 +7729,7 @@ fn display_secrets_move_only_into_verified_windows() {
     // At exit the clear retries now (`:exit`).
     app.mode = AppMode::ShuttingDown;
     app.lock(LockReason::Shutdown);
+    app.drain();
     assert_eq!(ops(), ["clear-clip:exit", "approval-close:none"]);
     app.mode = AppMode::Locked;
 
@@ -7662,14 +7751,15 @@ fn display_secrets_move_only_into_verified_windows() {
         if let Some(session) = app.secret_session.as_mut() {
             session.then_when_shown(AfterShown::YkWordsShown);
         }
-        app.on_cmd(Cmd::SecretOpened {
+        app.dispatch(Cmd::SecretOpened {
             serial: serial - 1,
             outcome,
         });
         assert_eq!(app.yk_words, YkWords::None, "a stale answer");
-        app.on_cmd(Cmd::SecretOpened { serial, outcome });
+        app.dispatch(Cmd::SecretOpened { serial, outcome });
         assert_eq!(app.yk_words, expected, "{outcome:?}");
         app.close_secret();
+        app.drain();
     }
     // Words already further on stay there.
     app.yk_words = YkWords::OnCard;
@@ -7677,7 +7767,7 @@ fn display_secrets_move_only_into_verified_windows() {
     if let Some(session) = app.secret_session.as_mut() {
         session.then_when_shown(AfterShown::YkWordsShown);
     }
-    app.on_cmd(Cmd::SecretOpened {
+    app.dispatch(Cmd::SecretOpened {
         serial,
         outcome: OpenOutcome::Shown {
             capture_excluded: true,
@@ -7685,16 +7775,17 @@ fn display_secrets_move_only_into_verified_windows() {
     });
     assert_eq!(app.yk_words, YkWords::OnCard);
     app.close_secret();
+    app.drain();
     // A refused W08 of a new wallet leaves it on S04 only for `Refused`, not `Failed`.
     app.screen = Screen::Starting;
     let serial = app.begin_secret(kind, Purpose::ShowForBackup, false);
-    app.on_cmd(Cmd::SecretOpened {
+    app.dispatch(Cmd::SecretOpened {
         serial,
         outcome: OpenOutcome::Failed(ErrorCode::App009),
     });
     assert_eq!(app.screen, Screen::Starting);
     let serial = app.begin_secret(kind, Purpose::ShowForBackup, false);
-    app.on_cmd(Cmd::SecretOpened {
+    app.dispatch(Cmd::SecretOpened {
         serial,
         outcome: OpenOutcome::Refused(ErrorCode::Sec001),
     });

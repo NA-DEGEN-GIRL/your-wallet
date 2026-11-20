@@ -81,6 +81,15 @@ impl Handler for QuitOnTimer {
     }
 }
 
+/// One entry into the logic (2026-11-20, S4 P10b): the effects the borrow's calls emit are
+/// applied (and answered) when it ends, as a shell entry drains before it returns. Each direct
+/// call of the tour is such an entry, and in a block of several each call drains after itself
+/// (`state.drain()`), as the shell drains after each call into the logic; before, `emit` applied
+/// every effect at once.
+fn entry(app: &Rc<RefCell<App>>) -> crate::app_effects::Entry<'_> {
+    crate::app_effects::Entry::new(app.borrow_mut())
+}
+
 /// Runs the message loop for `ms` milliseconds (layout, paint, timers).
 fn pump(ms: u32) {
     let timer = ui::create_window(
@@ -333,9 +342,10 @@ pub(super) fn register_classes() {
 }
 
 fn set_screen(app: &Rc<RefCell<App>>, mode: AppMode, screen: Screen) {
-    let mut state = app.borrow_mut();
+    let mut state = entry(app);
     state.mode = mode;
     state.set_screen(screen);
+    state.drain();
 }
 
 const UNLOCKED: AppMode = AppMode::Unlocked {
@@ -998,7 +1008,7 @@ fn sol_dapp_approval(
     rpc: &SolDappTourRpc,
 ) {
     let (tx, rx) = mpsc::channel();
-    app.borrow_mut().rpc_tx = Some(tx);
+    entry(app).rpc_tx = Some(tx);
     dapp_request(
         app,
         "https://app.example.org",
@@ -1023,10 +1033,9 @@ fn sol_dapp_approval(
         now_ms: AtomicU64::new(0),
     };
     let result = crate::sol::flow::dapp_preview(rpc, &job, &clock);
-    app.borrow_mut()
-        .sol_rpc_event(crate::events::RpcEvent::SolDappPreviewed(Box::new((
-            job.job, result,
-        ))));
+    entry(app).sol_rpc_event(crate::events::RpcEvent::SolDappPreviewed(Box::new((
+        job.job, result,
+    ))));
 }
 
 /// `검토` of the prepared Solana send form: the approval window opens and its step-2 preview is
@@ -1034,9 +1043,10 @@ fn sol_dapp_approval(
 fn sol_approval(app: &Rc<RefCell<App>>) {
     let (tx, rx) = mpsc::channel();
     {
-        let mut state = app.borrow_mut();
+        let mut state = entry(app);
         state.rpc_tx = Some(tx);
         state.sol_review();
+        state.drain();
     }
     let job = loop {
         match rx.try_recv() {
@@ -1046,8 +1056,7 @@ fn sol_approval(app: &Rc<RefCell<App>>) {
         }
     };
     let result = crate::sol::flow::preview(&SolTourRpc, &job);
-    app.borrow_mut()
-        .sol_rpc_event(crate::events::RpcEvent::SolPreviewed(Box::new(result)));
+    entry(app).sol_rpc_event(crate::events::RpcEvent::SolPreviewed(Box::new(result)));
 }
 
 /// Opens the approval window for a Sepolia send and prepares it against `fixture_name`
@@ -1055,7 +1064,7 @@ fn sol_approval(app: &Rc<RefCell<App>>) {
 fn approval(app: &Rc<RefCell<App>>, fixture_name: &str) {
     let (tx, rx) = mpsc::channel();
     {
-        let mut state = app.borrow_mut();
+        let mut state = entry(app);
         state.rpc_tx = Some(tx);
         state.enqueue_app(AppApproval {
             chain_id: SEPOLIA,
@@ -1071,6 +1080,7 @@ fn approval(app: &Rc<RefCell<App>>, fixture_name: &str) {
             },
             replace: None,
         });
+        state.drain();
     }
     let job = loop {
         match rx.try_recv() {
@@ -1096,9 +1106,9 @@ fn approval(app: &Rc<RefCell<App>>, fixture_name: &str) {
         },
     );
     if let Some(at) = since.into_inner() {
-        app.borrow_mut().on_simulating(job.job, at);
+        entry(app).on_simulating(job.job, at);
     }
-    app.borrow_mut().on_prepared(result);
+    entry(app).on_prepared(result);
 }
 
 /// The made-up AI answer of the tour: for the S2 send (0.01 `SepoliaETH` from account 0 to the
@@ -1218,7 +1228,7 @@ fn site_approval(app: &Rc<RefCell<App>>) {
     use crate::browser::{DappEvent, Reply, SiteKind, SiteRequest};
     let (tx, rx) = mpsc::channel();
     {
-        let mut state = app.borrow_mut();
+        let mut state = entry(app);
         state.rpc_tx = Some(tx);
         let site = SiteRequest {
             reply: Reply {
@@ -1248,6 +1258,7 @@ fn site_approval(app: &Rc<RefCell<App>>) {
             compat_mode: None,
         };
         state.on_dapp_event(DappEvent::Request(Box::new(site)));
+        state.drain();
     }
     let job = loop {
         match rx.try_recv() {
@@ -1269,7 +1280,7 @@ fn site_approval(app: &Rc<RefCell<App>>) {
         &clock,
         &|_| {},
     );
-    app.borrow_mut().on_prepared(result);
+    entry(app).on_prepared(result);
 }
 
 /// A dApp request from `origin` (no RPC needed: connect windows and message signing).
@@ -1302,8 +1313,7 @@ fn dapp_request(
         kind,
         compat_mode: None,
     };
-    app.borrow_mut()
-        .on_dapp_event(DappEvent::Request(Box::new(site)));
+    entry(app).on_dapp_event(DappEvent::Request(Box::new(site)));
 }
 
 /// Made-up Solana and Bitcoin connections of `https://app.example.org` (the tour's own browser
@@ -1355,7 +1365,7 @@ fn tour_chain_grants(state: &App) {
 fn wait_for_ai(app: &Rc<RefCell<App>>) {
     for _ in 0..50 {
         pump(100);
-        app.borrow_mut().tour_drain_events();
+        entry(app).tour_drain_events();
         let state = app.borrow().tour_ai_state();
         if !matches!(
             state,
@@ -1377,7 +1387,7 @@ fn tour_first_setup(app: &Rc<RefCell<App>>) {
     use crate::errors::ErrorCode;
     use crate::ui::screens::ids;
     {
-        let mut state = app.borrow_mut();
+        let mut state = entry(app);
         let networks = state.generation_plan().0;
         let mut keys = ApiKeys::default();
         for (index, network) in networks.iter().enumerate() {
@@ -1400,15 +1410,16 @@ fn tour_first_setup(app: &Rc<RefCell<App>>) {
                 ),
             };
             state.set_rpc_message(*network, message, test);
+            state.drain();
         }
         state.done_tested = networks;
     }
     set_screen(app, UNLOCKED, Screen::Done);
     save(main_hwnd(app), "51-first-setup-rpc");
-    app.borrow_mut().done_return = true;
+    entry(app).done_return = true;
     set_screen(app, UNLOCKED, Screen::Settings(SettingsSection::Network));
     {
-        let mut state = app.borrow_mut();
+        let mut state = entry(app);
         let top = state
             .placed
             .controls
@@ -1417,9 +1428,10 @@ fn tour_first_setup(app: &Rc<RefCell<App>>) {
             .map_or(0, |(_, rect)| rect.y);
         state.scroll = top.saturating_sub(170).max(0);
         state.refresh();
+        state.drain();
     }
     save(main_hwnd(app), "52-settings-rpc-tests");
-    let mut state = app.borrow_mut();
+    let mut state = entry(app);
     state.scroll = 0;
     state.done_return = false;
     state.done_tested.clear();
@@ -1490,7 +1502,7 @@ fn tour_yubikey(app: &Rc<RefCell<App>>) {
             .collect(),
     };
     {
-        let mut state = app.borrow_mut();
+        let mut state = entry(app);
         let mut wizard = YkWizard::new(WizardOrigin::Vault, network);
         wizard.slots.clone_from(&slots);
         state.card.wizard = Some(wizard);
@@ -1498,12 +1510,13 @@ fn tour_yubikey(app: &Rc<RefCell<App>>) {
     set_screen(app, UNLOCKED, Screen::YubiKey);
     save(main_hwnd(app), "37-yubikey-slots");
     let step = |app: &Rc<RefCell<App>>, change: &dyn Fn(&mut YkWizard)| {
-        let mut state = app.borrow_mut();
+        let mut state = entry(app);
         if let Some(wizard) = state.card.wizard.as_mut() {
             change(wizard);
         }
         state.scroll = 0;
         state.refresh();
+        state.drain();
     };
     step(app, &|wizard| {
         wizard.step = WizardStep::Confirm;
@@ -1518,15 +1531,15 @@ fn tour_yubikey(app: &Rc<RefCell<App>>) {
     save(main_hwnd(app), "38-yubikey-confirm");
     step(app, &|wizard| wizard.step = WizardStep::Credentials);
     save(main_hwnd(app), "39-yubikey-credentials");
-    app.borrow_mut().open_input(
+    entry(app).open_input(
         SecretKind::CardSecret(CardSecretKind::AdminPin),
         Purpose::YubiKey(YkPurpose::AdminPin),
         false,
     );
-    app.borrow_mut().tour_type("12345678");
+    entry(app).tour_type("12345678");
     save(secret_hwnd(app), "40-yubikey-admin-pin");
-    app.borrow_mut().close_secret();
-    app.borrow_mut().card.records = vec![record.clone()];
+    entry(app).close_secret();
+    entry(app).card.records = vec![record.clone()];
     step(app, &|wizard| {
         wizard.step = WizardStep::Result;
         let defaults = DefaultsSeen {
@@ -1549,12 +1562,12 @@ fn tour_yubikey(app: &Rc<RefCell<App>>) {
         );
     });
     save(main_hwnd(app), "41-yubikey-result");
-    app.borrow_mut().card.wizard = None;
+    entry(app).card.wizard = None;
     set_screen(app, UNLOCKED, Screen::Settings(SettingsSection::YubiKey));
     save(main_hwnd(app), "42-settings-yubikey");
     // W11: the card step of an approved EVM send of the YubiKey account (made-up step id).
     set_screen(app, UNLOCKED, Screen::Main);
-    app.borrow_mut().open_input(
+    entry(app).open_input(
         SecretKind::CardPin {
             min: 6,
             max: 127,
@@ -1565,14 +1578,14 @@ fn tour_yubikey(app: &Rc<RefCell<App>>) {
         Purpose::CardSign(0),
         false,
     );
-    app.borrow_mut().secret_form(SecretFormOp::Details(vec![
+    entry(app).secret_form(SecretFormOp::Details(vec![
         text::CARD_KEY.get(tour_lang()).to_owned(),
         text::CARD_SERIAL.get(tour_lang()).to_owned(),
     ]));
-    app.borrow_mut().tour_type("123456");
+    entry(app).tour_type("123456");
     save(secret_hwnd(app), "43-yubikey-card-pin");
-    app.borrow_mut().close_secret();
-    app.borrow_mut().card.records.clear();
+    entry(app).close_secret();
+    entry(app).card.records.clear();
 }
 
 #[test]
@@ -1600,10 +1613,11 @@ fn screenshot_tour() {
     )));
     App::create_main_window(&app).unwrap();
     {
-        let mut state = app.borrow_mut();
+        let mut state = entry(&app);
         state.mode = AppMode::NoVault;
         state.screen = Screen::FirstRun;
         state.show_main();
+        state.drain();
     }
 
     // Onboarding.
@@ -1611,18 +1625,17 @@ fn screenshot_tour() {
     save(main_hwnd(&app), "01-welcome");
     set_screen(&app, AppMode::NoVault, Screen::CreateIntro);
     save(main_hwnd(&app), "02-create-start");
-    app.borrow_mut()
-        .open_input(SecretKind::SetPassword, Purpose::CreatePassword, false);
-    app.borrow_mut().tour_type("correct horse battery");
-    app.borrow_mut().tour_next_field();
-    app.borrow_mut().tour_type("correct horse");
+    entry(&app).open_input(SecretKind::SetPassword, Purpose::CreatePassword, false);
+    entry(&app).tour_type("correct horse battery");
+    entry(&app).tour_next_field();
+    entry(&app).tour_type("correct horse");
     save(secret_hwnd(&app), "03-create-password");
     set_screen(
         &app,
         AppMode::BackupPending,
         Screen::Processing(text::CREATING.get(tour_lang())),
     );
-    app.borrow_mut().tour_open_display(
+    entry(&app).tour_open_display(
         SecretKind::ShowMnemonic { create: true },
         Purpose::ShowForBackup,
         DisplaySecret {
@@ -1635,21 +1648,21 @@ fn screenshot_tour() {
         },
     );
     save(secret_hwnd(&app), "04-create-recovery-words");
-    app.borrow_mut().open_input(
+    entry(&app).open_input(
         SecretKind::Backup {
             positions: [3, 9, 16, 22],
         },
         Purpose::Backup,
         false,
     );
-    app.borrow_mut().tour_type("abandon");
+    entry(&app).tour_type("abandon");
     // A typo in the second word (2026-11-10): marked as not in the BIP39 list, `확인` off.
-    app.borrow_mut().tour_next_field();
-    app.borrow_mut().tour_type("abilty");
+    entry(&app).tour_next_field();
+    entry(&app).tour_type("abilty");
     save(secret_hwnd(&app), "05-create-backup-check");
-    app.borrow_mut().close_secret();
+    entry(&app).close_secret();
     let endpoints = {
-        let mut state = app.borrow_mut();
+        let mut state = entry(&app);
         state.meta = Some(tour_meta());
         // The done screen as on a fresh install: no RPC endpoint yet.
         core::mem::take(&mut state.apikeys)
@@ -1657,39 +1670,38 @@ fn screenshot_tour() {
     set_screen(&app, UNLOCKED, Screen::Done);
     save(main_hwnd(&app), "06-create-done");
     tour_first_setup(&app);
-    app.borrow_mut().apikeys = endpoints;
+    entry(&app).apikeys = endpoints;
     set_screen(&app, AppMode::NoVault, Screen::ImportIntro);
     save(main_hwnd(&app), "07-import-start");
     {
         // "개인키로 시작하기" (S18) with a Bitcoin key: the address-type radios.
-        let mut state = app.borrow_mut();
+        let mut state = entry(&app);
         state.keys.start.chain = yw_core::keyimport::ImportChain::Btc;
         state.keys.start.script = yw_core::btc::ScriptType::P2tr;
     }
     set_screen(&app, AppMode::NoVault, Screen::KeyStartIntro);
     save(main_hwnd(&app), "24-key-start-bitcoin");
-    app.borrow_mut().keys.start = crate::app_keys::KeyStartFlow::default();
+    entry(&app).keys.start = crate::app_keys::KeyStartFlow::default();
     // The YubiKey wallet (spec/10 §7.1-1): S01 shows every way on its first view now
     // (2026-11-08), so scene 35 is where a new YubiKey wallet ends — S08 with the RPC step.
-    app.borrow_mut().done_yubikey = Some(crate::app_yubikey::YkDone::Created(12_345_678));
+    entry(&app).done_yubikey = Some(crate::app_yubikey::YkDone::Created(12_345_678));
     set_screen(&app, AppMode::NoVault, Screen::Done);
     save(main_hwnd(&app), "35-yubikey-done");
-    app.borrow_mut().done_yubikey = None;
+    entry(&app).done_yubikey = None;
     set_screen(&app, AppMode::NoVault, Screen::YubiKeyWalletIntro);
     save(main_hwnd(&app), "36-yubikey-wallet-start");
 
     // Unlock.
     {
-        let mut state = app.borrow_mut();
+        let mut state = entry(&app);
         state.meta = None;
     }
     set_screen(&app, AppMode::Locked, Screen::Locked);
-    app.borrow_mut()
-        .open_input(SecretKind::Unlock, Purpose::Unlock, false);
-    app.borrow_mut().tour_type("correct horse battery");
+    entry(&app).open_input(SecretKind::Unlock, Purpose::Unlock, false);
+    entry(&app).tour_type("correct horse battery");
     save(main_hwnd(&app), "08-locked");
     save(secret_hwnd(&app), "09-unlock-password");
-    app.borrow_mut().close_secret();
+    entry(&app).close_secret();
     let tour_data = {
         // S22 지갑 초기화 from the lock screen: the phrase typed, the hold not started. The file
         // list is made up (the tour's data folder has no wallet files), and the shown folder is
@@ -1697,8 +1709,9 @@ fn screenshot_tour() {
         // shot 44 showed it before). Only the shown text changes: `App::store` keeps the tour's
         // folder, and nothing between the swap and the restore below calls it (the file list
         // was read by `open_reset`, before the swap; 2026-11-20, S4 P1 review).
-        let mut state = app.borrow_mut();
+        let mut state = entry(&app);
         state.open_reset();
+        state.drain();
         let tour_data = std::mem::replace(
             &mut state.paths.data,
             std::path::PathBuf::from(r"%LOCALAPPDATA%\YourWallet"),
@@ -1713,47 +1726,52 @@ fn screenshot_tour() {
         .map(str::to_owned)
         .to_vec();
         state.refresh();
+        state.drain();
         state.controls.set_text(
             crate::ui::screens_reset::ids::RESET_PHRASE,
             crate::app_reset::RESET_PHRASE.get(tour_lang()),
         );
         state.reset.phrase_ok = true;
         state.refresh();
+        state.drain();
         tour_data
     };
     save(main_hwnd(&app), "44-wallet-reset");
-    app.borrow_mut().paths.data = tour_data;
-    app.borrow_mut().cancel_reset();
+    entry(&app).paths.data = tour_data;
+    entry(&app).cancel_reset();
 
     // Main screens.
-    unlocked_state(&mut app.borrow_mut());
+    unlocked_state(&mut entry(&app));
     set_screen(&app, UNLOCKED, Screen::Main);
     save(main_hwnd(&app), "10-main-evm");
     {
         // The two drop-downs, open (2026-11-12): a list panel under its selector.
-        let mut state = app.borrow_mut();
+        let mut state = entry(&app);
         state.evm.network_picker = true;
         state.refresh();
+        state.drain();
     }
     save(main_hwnd(&app), "56-network-menu");
     {
-        let mut state = app.borrow_mut();
+        let mut state = entry(&app);
         state.evm.network_picker = false;
         state.account_menu = Some(yw_engine::cmd::Press::Links(
             yw_engine::cmd::LinksPress::PickerEvm,
         ));
         state.refresh();
+        state.drain();
     }
     save(main_hwnd(&app), "57-account-menu");
     {
-        let mut state = app.borrow_mut();
+        let mut state = entry(&app);
         state.account_menu = None;
         state.refresh();
+        state.drain();
     }
     {
         // A failed balance read (2026-11-10): the network card's band with the code's text and
         // the block of the balance kept below, its two buttons and a test on its way (made up).
-        let mut state = app.borrow_mut();
+        let mut state = entry(&app);
         if let Some(balance) = state.evm.balances.get_mut(&SEPOLIA) {
             balance.error = Some(crate::errors::ErrorCode::Rpc003);
         }
@@ -1762,21 +1780,24 @@ fn screenshot_tour() {
             text::TESTING.get(tour_lang()).to_owned(),
             crate::app::TestState::Testing,
         );
+        state.drain();
         state.refresh();
+        state.drain();
     }
     save(main_hwnd(&app), "53-main-evm-rpc-failed");
     {
-        let mut state = app.borrow_mut();
+        let mut state = entry(&app);
         if let Some(balance) = state.evm.balances.get_mut(&SEPOLIA) {
             balance.error = None;
         }
         state.rpc_messages.clear();
         state.refresh();
+        state.drain();
     }
     {
         // The token card (2026-11-03): a made-up airdrop token hidden with the hidden list open,
         // `잔액 0인 토큰 숨기기` on (WETH 0 is tucked away), made-up USDC balance; scrolled to it.
-        let mut state = app.borrow_mut();
+        let mut state = entry(&app);
         let registry: Vec<Address> = state
             .chain_tokens(SEPOLIA)
             .into_iter()
@@ -1819,10 +1840,11 @@ fn screenshot_tour() {
         state.evm.show_hidden_tokens = true;
         state.scroll = 600;
         state.refresh();
+        state.drain();
     }
     save(main_hwnd(&app), "31-main-evm-tokens");
     {
-        let mut state = app.borrow_mut();
+        let mut state = entry(&app);
         let network = NetworkId::Eip155(SEPOLIA).to_string();
         if let Some(meta) = state.meta.as_mut() {
             meta.remove_token(&network, TOUR_AIRDROP);
@@ -1844,13 +1866,14 @@ fn screenshot_tour() {
         state.hypercore.unfolded = true;
         state.scroll = 1_000;
         state.refresh();
+        state.drain();
     }
     save(main_hwnd(&app), "49-main-evm-hypercore");
     {
         // The EVM activity card (2026-11-11): two made-up sent rows — the recipient whole with
         // its ends emphasized and the hash on lines of their own (a click copies either), the
         // explorer icons ↗ 🔗 and, for a recipient not in the address book, ☆ at the right end.
-        let mut state = app.borrow_mut();
+        let mut state = entry(&app);
         state.hypercore.unfolded = false;
         let network = NetworkId::Eip155(SEPOLIA).to_string();
         let account = evm_address(0).to_lower_hex();
@@ -1880,10 +1903,11 @@ fn screenshot_tour() {
         }
         state.scroll = 1_000;
         state.refresh();
+        state.drain();
     }
     save(main_hwnd(&app), "55-main-evm-activity");
     {
-        let mut state = app.borrow_mut();
+        let mut state = entry(&app);
         let network = NetworkId::Eip155(SEPOLIA).to_string();
         if let Some(meta) = state.meta.as_mut() {
             meta.activity.retain(|(key, _)| *key != network);
@@ -1891,14 +1915,15 @@ fn screenshot_tour() {
         state.hypercore.unfolded = true;
         state.scroll = 0;
         state.refresh();
+        state.drain();
     }
     {
-        let mut state = app.borrow_mut();
+        let mut state = entry(&app);
         state.hypercore.unfolded = false;
         state.scroll = 0;
     }
     {
-        let mut state = app.borrow_mut();
+        let mut state = entry(&app);
         state.evm.send.to_text = recipient().to_checksum();
         state.evm.send.recipient = Some((
             recipient(),
@@ -1924,14 +1949,14 @@ fn screenshot_tour() {
     set_screen(&app, UNLOCKED, Screen::Main);
     approval(&app, "S2");
     save(approval_hwnd(&app), "12-approval-simulated");
-    app.borrow_mut().tour_reject_approval();
+    entry(&app).tour_reject_approval();
     approval(&app, "S4");
     save(approval_hwnd(&app), "13-approval-no-simulation");
-    app.borrow_mut().tour_reject_approval();
+    entry(&app).tour_reject_approval();
     set_screen(&app, UNLOCKED, Screen::Receive);
     save(main_hwnd(&app), "14-receive");
     {
-        let mut state = app.borrow_mut();
+        let mut state = entry(&app);
         if let Some(meta) = state.meta.as_mut() {
             meta.prefs.tab = Tab::Sol;
         }
@@ -1939,7 +1964,7 @@ fn screenshot_tour() {
     set_screen(&app, UNLOCKED, Screen::Main);
     save(main_hwnd(&app), "15-main-solana");
     {
-        let mut state = app.borrow_mut();
+        let mut state = entry(&app);
         state.sol.send = crate::app_sol::SolSendForm {
             token: yw_core::sol::template::spl_entries(yw_core::sol::SolCluster::Devnet).next(),
             to_text: SOL_RECIPIENT.to_owned(),
@@ -1947,18 +1972,19 @@ fn screenshot_tour() {
             ..crate::app_sol::SolSendForm::default()
         };
         state.sol_validate_send();
+        state.drain();
     }
     set_screen(&app, UNLOCKED, Screen::SolSend);
     save(main_hwnd(&app), "20-send-solana-usdc");
     sol_approval(&app);
     save(approval_hwnd(&app), "21-approval-solana-usdc");
-    app.borrow_mut().tour_reject_approval();
+    entry(&app).tour_reject_approval();
     {
-        let mut state = app.borrow_mut();
+        let mut state = entry(&app);
         state.sol.send = crate::app_sol::SolSendForm::default();
     }
     {
-        let mut state = app.borrow_mut();
+        let mut state = entry(&app);
         if let Some(meta) = state.meta.as_mut() {
             meta.prefs.tab = Tab::Btc;
         }
@@ -1969,31 +1995,34 @@ fn screenshot_tour() {
     save(main_hwnd(&app), "16-main-bitcoin");
     {
         // The account card scrolled to the selected account's address mode (fixed by default).
-        let mut state = app.borrow_mut();
+        let mut state = entry(&app);
         state.scroll = 300;
         state.refresh();
+        state.drain();
     }
     save(main_hwnd(&app), "32-bitcoin-address-mode");
     {
         // The account card with `계정 추가`'s chooser open (key source at its default, the
         // standard BTC path), scrolled to it.
-        let mut state = app.borrow_mut();
+        let mut state = entry(&app);
         state.btc.add_account_open = true;
         state.scroll = 520;
         state.refresh();
+        state.drain();
     }
     save(main_hwnd(&app), "25-bitcoin-account-types");
     {
         // The explicit choice "EVM 계정과 같은 키": the warning and the EVM accounts.
-        let mut state = app.borrow_mut();
+        let mut state = entry(&app);
         state.btc.add_source = crate::app_btc::BtcAddSource::EvmShared;
         state.btc.add_evm_index = 0;
         state.scroll = 640;
         state.refresh();
+        state.drain();
     }
     save(main_hwnd(&app), "33-bitcoin-evm-key-choice");
     {
-        let mut state = app.borrow_mut();
+        let mut state = entry(&app);
         state.btc.add_account_open = false;
         state.btc.add_source = crate::app_btc::BtcAddSource::Standard;
         state.scroll = 0;
@@ -2012,7 +2041,7 @@ fn screenshot_tour() {
         // S11 for Bitcoin before `검토` (2026-11-10): the node's preview on the fee radios (made
         // up: 12 / 8 sat/vB and no slow estimate, floor 1 sat/vB), the estimated fee of one input
         // and two outputs, and the plain address type. The recipient is the BIP173 test vector.
-        let mut state = app.borrow_mut();
+        let mut state = entry(&app);
         let to = "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx";
         state.btc.send.to_text = to.to_owned();
         state.btc.send.recipient =
@@ -2034,19 +2063,20 @@ fn screenshot_tour() {
     }
     set_screen(&app, UNLOCKED, Screen::BtcSend);
     {
-        let mut state = app.borrow_mut();
+        let mut state = entry(&app);
         state.scroll = 360;
         state.refresh();
+        state.drain();
     }
     save(main_hwnd(&app), "54-send-bitcoin-fee");
     {
-        let mut state = app.borrow_mut();
+        let mut state = entry(&app);
         state.btc.send = crate::app_btc::BtcSendForm::default();
         state.btc.fee_quote = None;
     }
     set_screen(&app, UNLOCKED, Screen::Main);
     {
-        let mut state = app.borrow_mut();
+        let mut state = entry(&app);
         state.btc.receive = None;
         tour_chain_grants(&state);
     }
@@ -2064,7 +2094,7 @@ fn screenshot_tour() {
         },
     );
     save(approval_hwnd(&app), "27-approval-sol-message");
-    app.borrow_mut().tour_reject_approval();
+    entry(&app).tour_reject_approval();
     // Sign-In-With-Solana from the same site (the app builds the text from the dApp's fields).
     let siws = yw_core::sol::msgsign::SiwsMessage {
         domain: "app.example.org".to_owned(),
@@ -2089,7 +2119,7 @@ fn screenshot_tour() {
         },
     );
     save(approval_hwnd(&app), "28-approval-sol-signin");
-    app.borrow_mut().tour_reject_approval();
+    entry(&app).tour_reject_approval();
     // dApp transactions (spec/07 §20): a v0 send with a lookup table, an unknown program and a
     // Token approval (high risk), then three sign-only transactions whose fee the site pays.
     let (swap, batch) = tour_dapp_txs();
@@ -2102,7 +2132,7 @@ fn screenshot_tour() {
         &dapp_rpc,
     );
     save(approval_hwnd(&app), "58-approval-sol-dapp-tx");
-    app.borrow_mut().tour_reject_approval();
+    entry(&app).tour_reject_approval();
     sol_dapp_approval(
         &app,
         yw_core::policy::Method::SolSignAllTransactions,
@@ -2111,7 +2141,7 @@ fn screenshot_tour() {
         &dapp_rpc,
     );
     save(approval_hwnd(&app), "59-approval-sol-dapp-batch");
-    app.borrow_mut().tour_reject_approval();
+    entry(&app).tour_reject_approval();
     // Bitcoin message signing right after (the payment address of the site's grant).
     let payment = app
         .borrow()
@@ -2131,10 +2161,10 @@ fn screenshot_tour() {
         },
     );
     save(approval_hwnd(&app), "30-approval-btc-message");
-    app.borrow_mut().tour_reject_approval();
+    entry(&app).tour_reject_approval();
     {
         // The Zcash tab while off: what it is and the two `켜기` buttons.
-        let mut state = app.borrow_mut();
+        let mut state = entry(&app);
         if let Some(meta) = state.meta.as_mut() {
             meta.prefs.tab = Tab::Zec;
         }
@@ -2145,7 +2175,7 @@ fn screenshot_tour() {
     {
         // On (testnet) with the test mnemonic's public key at m/44'/1'/0'/0/0 (public BIP44
         // testnet vector) and no `zcash:testnet` URL: the endpoint line with `RPC 설정하기`.
-        let mut state = app.borrow_mut();
+        let mut state = entry(&app);
         state.settings.zcash.enabled = true;
         state.settings.zcash.network = yw_core::zec::ZecNetwork::Testnet;
         if let Some(meta) = state.meta.as_mut() {
@@ -2159,14 +2189,14 @@ fn screenshot_tour() {
     set_screen(&app, UNLOCKED, Screen::Main);
     save(main_hwnd(&app), "48-main-zcash");
     {
-        let mut state = app.borrow_mut();
+        let mut state = entry(&app);
         state.settings.zcash.enabled = false;
         if let Some(meta) = state.meta.as_mut() {
             *meta.zcash = crate::zec::meta::ZcashMeta::default();
         }
     }
     {
-        let mut state = app.borrow_mut();
+        let mut state = entry(&app);
         if let Some(meta) = state.meta.as_mut() {
             meta.prefs.tab = Tab::Evm;
         }
@@ -2177,12 +2207,13 @@ fn screenshot_tour() {
     save(main_hwnd(&app), "18-sites");
     {
         // Scrolled past the EVM cards: the Solana and Bitcoin connections of the same site.
-        let mut state = app.borrow_mut();
+        let mut state = entry(&app);
         state.scroll = 560;
         state.refresh();
+        state.drain();
     }
     save(main_hwnd(&app), "29-sites-solana-bitcoin");
-    app.borrow_mut().scroll = 0;
+    entry(&app).scroll = 0;
     // Settings → 브라우저·정보: the section map line, Chrome 확장, WalletConnect.
     set_screen(&app, UNLOCKED, Screen::Settings(SettingsSection::Other));
     save(main_hwnd(&app), "50-settings-browser");
@@ -2194,7 +2225,7 @@ fn screenshot_tour() {
         ));
     });
     set_screen(&app, UNLOCKED, Screen::Settings(SettingsSection::Other));
-    app.borrow_mut().open_extension_help();
+    entry(&app).open_extension_help();
     save(main_hwnd(&app), "45-chrome-extension");
     crate::app_extension::TOUR_EXTENSION_DIR.with(|dir| *dir.borrow_mut() = None);
     // A new site asks to connect (EVM): the account chooser of the connect window.
@@ -2206,14 +2237,14 @@ fn screenshot_tour() {
         crate::browser::SiteKind::RequestAccounts,
     );
     save(approval_hwnd(&app), "26-approval-connect");
-    app.borrow_mut().tour_reject_approval();
+    entry(&app).tour_reject_approval();
     // YubiKey: the enrolment wizard, settings → YubiKey and the card step (W11).
     tour_yubikey(&app);
 
     // M6: the optional AI explanation, answered by the tour's own loopback mock.
     let endpoint = tour_llm_mock();
     {
-        let mut state = app.borrow_mut();
+        let mut state = entry(&app);
         state.settings.llm_explain = crate::settings::LlmSettings {
             enabled: true,
             endpoint,
@@ -2227,26 +2258,27 @@ fn screenshot_tour() {
         // The tour's wallet is unlocked: the settings snapshot check has run.
         state.guard.verified = true;
         state.llm_reconfigure();
+        state.drain();
     }
     set_screen(&app, UNLOCKED, Screen::Main);
     site_approval(&app);
     wait_for_ai(&app);
     save(approval_hwnd(&app), "22-approval-ai-explain");
-    app.borrow_mut().tour_reject_approval();
-    app.borrow_mut().open_llm_settings();
+    entry(&app).tour_reject_approval();
+    entry(&app).open_llm_settings();
     let _ = app
         .borrow_mut()
         .on_llm_command(crate::ui::screens_llm::ids::TEST);
     for _ in 0..50 {
         pump(100);
-        app.borrow_mut().tour_drain_events();
+        entry(&app).tour_drain_events();
         if !app.borrow().llm_ui.test_running {
             break;
         }
     }
     {
         // From just above the `빠른 입력` row, so the test result under the buttons is in view.
-        let mut state = app.borrow_mut();
+        let mut state = entry(&app);
         let top = state
             .placed
             .controls
@@ -2255,11 +2287,12 @@ fn screenshot_tour() {
             .map_or(0, |(_, rect)| rect.y.saturating_add(state.scroll));
         state.scroll = top.saturating_sub(48).max(0);
         state.refresh();
+        state.drain();
     }
     save(main_hwnd(&app), "23-settings-ai");
-    app.borrow_mut().llm_shutdown();
+    entry(&app).llm_shutdown();
 
-    if let Some(browser) = app.borrow_mut().browser.as_mut() {
+    if let Some(browser) = entry(&app).browser.as_mut() {
         browser.stop();
     }
     drop(app);

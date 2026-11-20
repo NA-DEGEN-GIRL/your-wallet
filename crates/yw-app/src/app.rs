@@ -602,10 +602,15 @@ impl Handler for Forward {
             }
             return Reply::Default;
         };
-        match self.target {
+        // 2026-11-20 (S4 P10b, critique A-14): every entry drained before it returned, and this
+        // one drains before it returns (`on_main` drains itself too, for the tests' entries).
+        app.assert_outbox_empty();
+        let reply = match self.target {
             Target::Main => app.on_main(window, msg),
             Target::Secret(serial) => app.on_secret(serial, window, msg),
-        }
+        };
+        app.drain();
+        reply
     }
 }
 
@@ -774,6 +779,12 @@ pub struct App {
     /// field) (2026-11-20, S4 P6: `cmd_table::id_of(last_press)`; before, `self.command`).
     #[cfg(all(test, debug_assertions))]
     pub(crate) cred_reads: Vec<(u16, CredField)>,
+    /// The effects the logic emitted and the shell has not applied yet (2026-11-20, S4 P10b,
+    /// spec/15 §11.4 S4, plan §3.4): `App::emit` queues, `App::drain` applies them in order,
+    /// never coalesced, inside the same borrow before the entry that emitted them returns (an
+    /// answer `Cmd` goes back to the logic in the same drain). Empty between entries. Before
+    /// P10 `emit` applied each effect at once.
+    pub(crate) outbox: VecDeque<Effect>,
     pub(crate) placed: Placed,
     pub(crate) evm: crate::app_evm::EvmUi,
     /// The approval window's shell state (2026-11-19, S4 B4b, spec/15 §11.4 S4): shown exactly
@@ -1247,6 +1258,7 @@ impl App {
             cred_misses: 0,
             #[cfg(all(test, debug_assertions))]
             cred_reads: Vec::new(),
+            outbox: VecDeque::new(),
             placed: Placed::default(),
             evm: crate::app_evm::EvmUi::default(),
             approval_win: None,
@@ -1694,7 +1706,17 @@ impl App {
 
     // ----- main window -------------------------------------------------------------------
 
+    /// A message of the main window, then the effects it emitted (2026-11-20, S4 P10b: every
+    /// shell entry drains before it returns; the arms in [`Self::on_main_msg`] drain after each
+    /// call into the logic that shell code follows, so that code runs after those effects and
+    /// their answers, as when `emit` applied each effect at once).
     fn on_main(&mut self, window: &Window, msg: &Msg) -> Reply {
+        let reply = self.on_main_msg(window, msg);
+        self.drain();
+        reply
+    }
+
+    fn on_main_msg(&mut self, window: &Window, msg: &Msg) -> Reply {
         if let Some(action) = system_action(msg) {
             return self.on_system(action);
         }
@@ -1705,6 +1727,7 @@ impl App {
             }
             Msg::Size { .. } => {
                 self.refresh();
+                self.drain();
                 self.window_state.changed(self.clock.now_ms());
                 Reply::Default
             }
@@ -1728,6 +1751,7 @@ impl App {
             }
             Msg::Command { id, code } => {
                 if *code == 0 {
+                    // (2026-11-20, S4 P10b: `on_command` drains before it returns.)
                     self.on_command(*id);
                     // What the click made due starts now, not at the next tick (2026-11-12).
                     self.reads_due(self.clock.now_ms());
@@ -1759,7 +1783,7 @@ impl App {
             }
             // The validation a send-form edit waits for (one shot, `Effect::StartTimer`).
             Msg::Timer(crate::app_evm::SEND_TIMER_ID) => {
-                self.on_cmd(Cmd::Timer(TimerId::SendCheck));
+                self.dispatch(Cmd::Timer(TimerId::SendCheck));
                 Reply::Handled(0)
             }
             Msg::Wheel(delta) => {
@@ -1780,6 +1804,9 @@ impl App {
                     WM_YW_NAV_KEY if window.is_foreground() => self.main_nav_key(window, *wparam),
                     _ => {}
                 }
+                // 2026-11-20 (S4 P10b): what that emitted is applied (and answered) before the
+                // reads start, as when `emit` applied each effect at once.
+                self.drain();
                 // A worker's answer, a shortcut or the window shown again may have made a
                 // read due.
                 self.reads_due(self.clock.now_ms());
@@ -1813,8 +1840,18 @@ impl App {
     /// timer, the event drain (`WM_YW_EVENTS`) and the Ctrl+L shortcut (`WM_YW_LOCK_SHORTCUT`),
     /// each the same calls in the same order as in `on_main` (the source check
     /// `the_windowless_main_entry_mirrors_on_main` pins them). Any other message does nothing.
+    /// 2026-11-20 (S4 P10b): it drains before it returns and after the event drain or the lock
+    /// shortcut, as `on_main` does (`windowless_msg` mirrors `on_main_msg`).
     #[cfg(test)]
     pub(crate) fn test_on_main_windowless(&mut self, msg: &Msg) -> Reply {
+        let reply = self.windowless_msg(msg);
+        self.drain();
+        reply
+    }
+
+    /// The arms of [`Self::on_main_msg`] that [`Self::test_on_main_windowless`] runs.
+    #[cfg(test)]
+    fn windowless_msg(&mut self, msg: &Msg) -> Reply {
         if let Some(action) = system_action(msg) {
             return self.on_system(action);
         }
@@ -1829,6 +1866,7 @@ impl App {
                     WM_YW_LOCK_SHORTCUT => self.lock_shortcut(),
                     _ => {}
                 }
+                self.drain();
                 self.reads_due(self.clock.now_ms());
                 Reply::Handled(0)
             }
@@ -2081,6 +2119,9 @@ impl App {
             .is_some_and(Window::is_hidden_or_minimized)
     }
 
+    /// The main timer. 2026-11-20 (S4 P10b): each of its calls into the logic is an entry of its
+    /// own — the effects it emitted are applied (and answered) before the next part runs, as
+    /// when `emit` applied each effect at once; the event drain drains after each event.
     fn tick(&mut self) {
         let now = self.clock.now_ms();
         self.drain_events();
@@ -2088,19 +2129,30 @@ impl App {
             self.register_session();
         }
         self.idle_tick(now);
+        self.drain();
         self.wait_tick(now);
+        self.drain();
         self.reset_hold_tick(now);
+        self.drain();
         if self.secret_clip.is_some_and(|pending| pending.due(now)) {
             self.clear_secret_clip(now);
+            self.drain();
         }
         self.window_state_tick(now);
         self.copied_tick(now);
+        self.drain();
         self.evm_tick(now);
+        self.drain();
         self.hc_tick(now);
+        self.drain();
         self.sol_tick(now);
+        self.drain();
         self.btc_tick(now);
+        self.drain();
         self.zec_tick(now);
+        self.drain();
         self.received_tick(now);
+        self.drain();
         if now.saturating_sub(self.last_flush_ms) >= LOG_FLUSH_MS {
             self.last_flush_ms = now;
             logging::flush();
@@ -2457,6 +2509,10 @@ impl App {
         self.wc_shutdown();
         let before = self.lock_signal.count();
         self.lock(LockReason::Shutdown);
+        // 2026-11-20 (S4 P10b): the lock's secret close, clip clear (at exit) and approval close
+        // are applied now, before the wait and while the main window still exists, as when
+        // `emit` applied each effect at once.
+        self.drain();
         #[cfg(test)]
         secret_seam::log(secret_seam::Op::Wait {
             what: "shutdown",
@@ -2500,7 +2556,11 @@ impl App {
         self.drain_events();
     }
 
+    /// The worker events (`WM_YW_EVENTS`, and first thing in the main timer). 2026-11-20 (S4
+    /// P10): each event is an entry of its own: the effects its handler emitted are applied (and
+    /// answered) before the next event is handled, as when `emit` applied each effect at once.
     fn drain_events(&mut self) {
+        self.assert_outbox_empty();
         let Some(events) = self.events.clone() else {
             return;
         };
@@ -2518,6 +2578,7 @@ impl App {
                 UiEvent::LlmTest(result) => self.on_llm_test(result),
                 UiEvent::WalletConnect(event) => self.on_wc_event(*event),
             }
+            self.drain();
         }
     }
 
@@ -2566,8 +2627,15 @@ impl App {
         }
     }
 
-    #[expect(clippy::too_many_lines, reason = "one arm per key outcome")]
+    /// A key worker's result, then the effects its handler emitted (2026-11-20, S4 P10b: an
+    /// entry; the handler is [`Self::key_result`]).
     pub(crate) fn on_key_result(&mut self, result: KeyResult) {
+        self.key_result(result);
+        self.drain();
+    }
+
+    #[expect(clippy::too_many_lines, reason = "one arm per key outcome")]
+    fn key_result(&mut self, result: KeyResult) {
         let lang = self.settings.language;
         if !accept_result(&result, self.lock_epoch) {
             return;
@@ -4473,14 +4541,19 @@ impl App {
     /// so the logic gets that control's concrete `Press`. Before P4 the logic's `on_press` called
     /// them inside the `Enter`/`Back` press (the inner press nested in it); the steps and their
     /// order are the same.
+    ///
+    /// 2026-11-20 (S4 P10b): the shell's entry for a press — `Cmd::Form` and `Cmd::Press` go in
+    /// through `dispatch` (each drains), and it drains before it returns, so the Enter/Esc
+    /// resolution and the caller's reads run after the press's effects and their answers, as
+    /// when `emit` applied each effect at once.
     fn on_command(&mut self, id: u16) {
         self.note_input();
         let closed =
             !matches!(id, IDOK | IDCANCEL) && !Self::is_picker_button(id) && self.close_pickers();
-        self.on_cmd(Cmd::Form(self.controls.form_snapshot()));
+        self.dispatch(Cmd::Form(self.controls.form_snapshot()));
         let input = cmd_table::capture(id, &self.controls, self.main.as_ref(), &self.wc.file_text);
         if let Some(press) = cmd_table::press_of(id, &self.controls) {
-            self.on_cmd(Cmd::Press { press, input });
+            self.dispatch(Cmd::Press { press, input });
             match press {
                 Press::Enter => self.enter_key(),
                 Press::Back => self.escape_key(),
@@ -4492,6 +4565,7 @@ impl App {
         if closed {
             self.refresh();
         }
+        self.drain();
     }
 
     /// One input from the shell (spec/15 §3.2, §11.4 S3), handled at once in this borrow.
@@ -4638,7 +4712,7 @@ impl App {
         let Some(press) = cmd_table::press_of(id, &self.controls).and_then(pick) else {
             return false;
         };
-        self.on_cmd(Cmd::Form(self.controls.form_snapshot()));
+        self.dispatch(Cmd::Form(self.controls.form_snapshot()));
         let input = cmd_table::capture(id, &self.controls, self.main.as_ref(), &self.wc.file_text);
         let outer = core::mem::replace(&mut self.input, input);
         let claimed = run(self, press);
@@ -4648,6 +4722,8 @@ impl App {
             self.cred_misses = self.cred_misses.saturating_add(used.misses());
         }
         drop(used);
+        // 2026-11-20 (S4 P10b): an entry, as `on_command` (whose `Cmd::Press` drains here).
+        self.drain();
         claimed
     }
 
@@ -4663,7 +4739,8 @@ impl App {
             return;
         };
         if let Some(text) = self.controls.text(id, field.cap()) {
-            self.on_cmd(Cmd::Edit {
+            // (2026-11-20, S4 P10b: through `dispatch`, which drains.)
+            self.dispatch(Cmd::Edit {
                 field,
                 text: Zeroizing::new(text),
             });

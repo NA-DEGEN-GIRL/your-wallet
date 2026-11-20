@@ -1827,12 +1827,13 @@ fn approving_input_is_built_only_by_the_mapper() {
         &[
             ".filter(|win| Some(win.shown) == shown)",
             "TrustedSignals::sample_foreground(&win.window).foreground(),",
-            "self.on_cmd(Cmd::Approval(window_input(shown, foreground, signal)));",
+            // 2026-11-20 (S4 P10b): through `dispatch` (it drains), was `on_cmd`.
+            "self.dispatch(Cmd::Approval(window_input(shown, foreground, signal)));",
         ],
     );
     let signal = folded(item(&code, "    fn window_signal(", 4));
     assert!(
-        signal.contains("self.on_cmd(Cmd::Approval(window_input(shown, false, signal)));"),
+        signal.contains("self.dispatch(Cmd::Approval(window_input(shown, false, signal)));"),
         "{signal}"
     );
     assert_eq!(
@@ -1855,7 +1856,16 @@ fn approving_input_is_built_only_by_the_mapper() {
         &folded(item(&code, "impl Handler for Forward {", 0)),
         &[
             "shown: self.target.shown(),",
-            "app.on_surface_msg(self.target.surface(), &received, msg)",
+            // 2026-11-20 (S4 P10b): `surface_entry` is `on_surface_msg`, then the drain.
+            "app.surface_entry(self.target.surface(), &received, msg)",
+        ],
+    );
+    in_order(
+        &folded(item(&code, "    fn surface_entry(", 4)),
+        &[
+            "let reply = self.on_surface_msg(surface, window, msg);",
+            "self.drain();",
+            "reply",
         ],
     );
     let opens = folded(item(&code, "    fn open_approval_window(", 4));
@@ -2283,12 +2293,21 @@ fn the_approval_flow_names_no_window() {
             "request_foreground(main, \"main\")",
         ],
     );
-    // The executor applies an approval effect at once and feeds the open's answer back.
-    let effects = code_only(include_str!("app_effects.rs"));
+    // The executor applies an approval effect and returns the open's answer, which the drain
+    // feeds back (2026-11-20, S4 P10b: the outbox; before, `emit` applied it at once and called
+    // `on_cmd` with the answer itself).
+    let effects = folded(&code_only(include_str!("app_effects.rs")));
     assert!(
-        folded(&effects).contains(
-            "Effect::Approval(effect) => { if let Some(answer) = self.apply_approval_effect(effect) { self.on_cmd(answer); } }"
-        ),
+        effects.contains("Effect::Approval(effect) => self.apply_approval_effect(effect),"),
         "the executor arm"
+    );
+    in_order(
+        &effects,
+        &[
+            "pub fn drain(&mut self) {",
+            "while let Some(effect) = self.outbox.pop_front() {",
+            "let answer = self.apply(effect);",
+            "if let Some(answer) = answer { self.on_cmd(answer); }",
+        ],
     );
 }

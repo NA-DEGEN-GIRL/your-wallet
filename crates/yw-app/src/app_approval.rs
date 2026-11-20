@@ -427,13 +427,16 @@ impl Handler for Forward {
             }
             return Reply::Default;
         };
+        // 2026-11-20 (S4 P10b, critique A-14): every entry drained before it returned.
+        app.assert_outbox_empty();
         // 2026-11-19 (S4 B6, A-12): with the id the window was made for (before, the three
         // `on_*_msg` entries, whose inputs went to the window shown at the time).
         let received = Received {
             window,
             shown: self.target.shown(),
         };
-        app.on_surface_msg(self.target.surface(), &received, msg)
+        // 2026-11-20 (S4 P10b): `surface_entry` is `on_surface_msg`, then the drain.
+        app.surface_entry(self.target.surface(), &received, msg)
     }
 }
 
@@ -2284,10 +2287,15 @@ impl App {
     /// (it can never be consumed without its window).
     pub fn close_approval_window(&mut self) {
         // 2026-11-18 (S4 A7, critique A-2): the secret characterization's lock order.
+        // 2026-11-20 (S4 P10b): logged after the effects queued before it are applied
+        // (`secret_seam::log_after`), where the shell closes this window too.
         #[cfg(test)]
-        crate::app::secret_seam::log(crate::app::secret_seam::Op::ApprovalClose {
-            shown: self.evm.approval.is_some(),
-        });
+        crate::app::secret_seam::log_after(
+            self.outbox.len(),
+            crate::app::secret_seam::Op::ApprovalClose {
+                shown: self.evm.approval.is_some(),
+            },
+        );
         // 2026-11-19 (S4 B4b): the flow and the shell state are taken together; the steps keep
         // their order (reject, AI close and its log, AI body, timer, panel, window).
         // 2026-11-19 (S4 B5): the flow ends here (reject, AI close and its log) and emits
@@ -3553,6 +3561,9 @@ impl App {
     /// `open_approval`), and kept here because the flow-only functions name no window.
     /// 2026-11-20 (S4 B7): under the headless approval host there is never a window
     /// (`headless_host`), so the check is that none was made.
+    /// 2026-11-20 (S4 P10b): only while no effect is queued — with the outbox the flow's open or
+    /// close is ahead of the window until the entry drains (the queued `Approval(Open)` or
+    /// `Approval(Close)`).
     #[cfg(test)]
     fn assert_flow_and_window_in_step(&self) {
         if headless_host::installed() {
@@ -3560,6 +3571,9 @@ impl App {
                 self.approval_win.is_none(),
                 "the headless approval host made a window"
             );
+            return;
+        }
+        if !self.outbox.is_empty() {
             return;
         }
         assert_eq!(
@@ -3607,15 +3621,18 @@ impl App {
         });
         if let Some(shown) = shown {
             let foreground = sample.is_some_and(|(foreground, _)| foreground);
-            self.on_cmd(Cmd::Approval(window_input(shown, foreground, signal)));
+            // 2026-11-20 (S4 P10b): through `dispatch`, which drains, so the message's next step
+            // runs after this input's effects and their answers, as before.
+            self.dispatch(Cmd::Approval(window_input(shown, foreground, signal)));
         }
     }
 
     /// An input of the window `shown` that is not an interaction event (2026-11-19, S4 B6):
     /// activation, a toggle, a retry, the width class. No foreground sample (`false`, not read).
+    /// (2026-11-20, S4 P10b: through `dispatch`, as `window_event`.)
     fn window_signal(&mut self, shown: Option<ShownId>, signal: ApprovalSignal) {
         if let Some(shown) = shown {
-            self.on_cmd(Cmd::Approval(window_input(shown, false, signal)));
+            self.dispatch(Cmd::Approval(window_input(shown, false, signal)));
         }
     }
 
@@ -3697,17 +3714,28 @@ impl App {
             window,
             shown: self.last_opened(),
         };
-        self.on_surface_msg(Surface::Approval, &received, msg)
+        self.surface_entry(Surface::Approval, &received, msg)
     }
 
     /// One message of `surface`: sample, map, run. `window`: the window that got it and the
     /// approval window it belongs to (2026-11-19, S4 B6, A-12: was the window only).
+    /// 2026-11-20 (S4 P10b): its callers (`Forward`, the tests' entries) drain after it, as an
+    /// entry does (the steps that are not an input of the flow, e.g. the timer's tail, may emit
+    /// too; each flow input drains in `dispatch`).
     fn on_surface_msg(&mut self, surface: Surface, window: &Received<'_>, msg: &Msg) -> Reply {
         let signals = TrustedSignals::sample_on_arrival(surface, msg, window);
         let facts = self.input_facts(window.shown, msg);
         let Mapped { steps, reply } = map_msg(surface, msg, facts, signals);
         self.run_steps(surface, Some(window), &steps)
             .unwrap_or(reply)
+    }
+
+    /// [`Self::on_surface_msg`], then the effects it emitted (2026-11-20, S4 P10b): the entry of
+    /// `Forward` and of the tests' message entries.
+    fn surface_entry(&mut self, surface: Surface, window: &Received<'_>, msg: &Msg) -> Reply {
+        let reply = self.on_surface_msg(surface, window, msg);
+        self.drain();
+        reply
     }
 
     /// What A01 of the window `shown` is when a message arrives (`None`: that window is not open):
@@ -4001,8 +4029,11 @@ impl App {
             // `Tick` that ends the request (`Expire`) and opens the next one's window is followed
             // by this tail on the new flow, as before B6; moving it behind the id check would
             // change that order, so it stays here until P10/S4d (spec/15 §11.4, B6 review).
+            // 2026-11-20 (S4 P10b): each of its two calls into the flow is drained before the
+            // next step, as when `emit` applied each effect at once.
             Step::TimerTail => {
                 self.ai_tick(self.clock.now_ms());
+                self.drain();
                 if let Some(flow) = self.evm.approval.as_ref()
                     && matches!(
                         flow.gate().prepare,
@@ -4011,6 +4042,7 @@ impl App {
                 {
                     self.rebuild_view_with(false);
                 }
+                self.drain();
             }
         }
         None
@@ -4041,7 +4073,7 @@ impl App {
             window,
             shown: self.last_opened(),
         };
-        self.on_surface_msg(Surface::Panel, &received, msg)
+        self.surface_entry(Surface::Panel, &received, msg)
     }
 
     // ----- painting -----------------------------------------------------------------------
@@ -4726,7 +4758,7 @@ impl App {
             window,
             shown: self.last_opened(),
         };
-        self.on_surface_msg(Surface::AiBody, &received, msg)
+        self.surface_entry(Surface::AiBody, &received, msg)
     }
 
     fn ai_scroll_by(&mut self, window: &Window, delta: i32) {

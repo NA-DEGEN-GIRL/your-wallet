@@ -214,6 +214,8 @@ impl Census {
         self.fresh_data();
         self.guard();
         let mut app = base.build(&self.data);
+        // 2026-11-20 (S4 P10b): what the build emitted is applied here, so nothing of it is kept.
+        app.drain();
         let (tx, rx) = channel();
         app.rpc_tx = Some(tx);
         let _ = app.controls.take_shell_log();
@@ -961,11 +963,15 @@ pub(crate) struct Scenario {
 /// Runs `scenario` on `census`: one golden line for the setup and one per step.
 pub(crate) fn run_scenario(out: &mut String, census: &Census, scenario: &Scenario) {
     let (mut app, rx) = census.state(scenario.base);
+    // 2026-11-20 (S4 P10b): the setup and each step are one entry each: what they emitted is
+    // applied (and answered) before the observation, as when `emit` applied each effect at once.
     (scenario.setup)(&mut app);
+    app.drain();
     let seen = census.observe(&app, &rx);
     let _ = writeln!(out, "{} 0 setup | {}", scenario.name, seen.line());
     for (index, step) in scenario.steps.iter().enumerate() {
         let what = step.run(&mut app);
+        app.drain();
         let seen = census.observe(&app, &rx);
         let _ = writeln!(
             out,
@@ -1461,8 +1467,10 @@ fn credential_capture_covers_every_read() {
     for scenario in &scenarios {
         let (mut app, rx) = census.state(scenario.base);
         (scenario.setup)(&mut app);
+        app.drain();
         for step in &scenario.steps {
             step.run(&mut app);
+            app.drain();
             let _ = census.observe(&app, &rx);
         }
         for (id, field) in app.cred_reads.drain(..) {
@@ -1661,11 +1669,14 @@ fn timer_copy_scenarios() -> Vec<Scenario> {
 /// the field `App::command`, which P6 removed (the same id after every press).
 fn anchored(out: &mut String, census: &Census, scenario: &Scenario) {
     let (mut app, rx) = census.state(scenario.base);
+    // (2026-11-20, S4 P10b: one entry each, as in `run_scenario`.)
     (scenario.setup)(&mut app);
+    app.drain();
     let seen = census.observe(&app, &rx);
     let _ = writeln!(out, "{} 0 setup | {}", scenario.name, seen.line());
     for (index, step) in scenario.steps.iter().enumerate() {
         let what = step.run(&mut app);
+        app.drain();
         let seen = census.observe(&app, &rx);
         let _ = writeln!(
             out,
@@ -1730,7 +1741,9 @@ fn lifecycle_golden(census: &Census, out: &mut String) {
     harness_step(out, census, &h, &rx, name, "0 loaded");
     h.create_and_confirm();
     harness_step(out, census, &h, &rx, name, "1 created");
+    // (2026-11-20, S4 P10b: each direct call into the logic is one entry and drains.)
     h.app.lock(LockReason::Manual);
+    h.app.drain();
     h.pump();
     harness_step(out, census, &h, &rx, name, "2 lock");
     let mut bytes = std::fs::read(h.vault_file()).unwrap();
@@ -1758,6 +1771,7 @@ fn lifecycle_golden(census: &Census, out: &mut String) {
     harness_step(out, census, &h, &rx, name, "1 create");
     let running = h.run_one();
     h.app.lock(LockReason::SessionLock);
+    h.app.drain();
     harness_step(out, census, &h, &rx, name, "2 lock");
     h.deliver(running);
     harness_step(out, census, &h, &rx, name, "3 old result");

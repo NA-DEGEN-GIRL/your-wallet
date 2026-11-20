@@ -108,6 +108,7 @@ thread_local! {
 /// Starts (or restarts) the operation log of this thread.
 pub(crate) fn start_log() {
     let _ = TEST_SECRET_LOG.try_with(|slot| *slot.borrow_mut() = Some(Vec::new()));
+    let _ = TEST_AFTER_QUEUED.try_with(|slot| slot.borrow_mut().clear());
 }
 
 /// The operations logged since the last call (the log keeps running).
@@ -125,6 +126,7 @@ pub(crate) fn stop() {
     let _ = TEST_SECRET_LOG.try_with(|slot| *slot.borrow_mut() = None);
     let _ = TEST_LAST_CREATE.try_with(|slot| slot.set(None));
     let _ = TEST_SECRET_KEYS_UP.try_with(|slot| slot.set(false));
+    let _ = TEST_AFTER_QUEUED.try_with(|slot| slot.borrow_mut().clear());
 }
 
 /// Makes the secret handler's modifier reads answer "up" (`true`) or read the real keyboard
@@ -141,6 +143,45 @@ pub(crate) fn scripted_modifier() -> Option<bool> {
         .ok()
         .filter(|up| *up)
         .map(|_| false)
+}
+
+thread_local! {
+    /// The logic's own steps logged while effects it emitted before them were still queued, each
+    /// with the number of those effects not yet applied (2026-11-20, S4 P10b).
+    static TEST_AFTER_QUEUED: RefCell<Vec<(usize, Op)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Logs `op`, a step of the logic itself (`close_approval_window`), where it stands among the
+/// effects the logic emitted: after the `queued` ones emitted before it, once the shell applied
+/// them (2026-11-20, S4 P10b, plan §3.4). With effects applied at once (before P10) `queued` was
+/// always 0 and the step was logged when called; with the outbox the shell applies them when
+/// the entry drains, so a step logged at its call would come before the secret close and clip
+/// clear the lock emitted before it, although the shell still closes the windows in that order
+/// (critique A-2, `s4_secret/lock.txt`).
+pub(crate) fn log_after(queued: usize, op: Op) {
+    if queued == 0 {
+        log(op);
+        return;
+    }
+    let _ = TEST_AFTER_QUEUED.try_with(|slot| slot.borrow_mut().push((queued, op)));
+}
+
+/// The shell applied one queued effect (`App::drain`): the steps waiting for it are logged, in
+/// their order (2026-11-20, S4 P10b).
+pub(crate) fn applied() {
+    let due: Vec<Op> = TEST_AFTER_QUEUED
+        .try_with(|slot| {
+            let mut waiting = slot.borrow_mut();
+            for entry in waiting.iter_mut() {
+                entry.0 = entry.0.saturating_sub(1);
+            }
+            let ready = waiting.iter().take_while(|(left, _)| *left == 0).count();
+            waiting.drain(..ready).map(|(_, op)| op).collect()
+        })
+        .unwrap_or_default();
+    for op in due {
+        log(op);
+    }
 }
 
 /// Appends to the log while it runs.

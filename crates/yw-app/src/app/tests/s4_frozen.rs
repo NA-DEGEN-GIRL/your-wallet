@@ -827,7 +827,10 @@ const HELPERS: &str = include_str!("s4_flow/frozen-helpers.txt");
 /// 2026-11-20 (S4 P8 review): 639 → 640, the `mutable` line of P8's second `impl Fixture` block
 /// of `app_approval_flow_support.rs` (`approve_standard_headless`), which `print_frozen_helpers`
 /// records and P8's file had left out; net for P8: 640 (−1 `fn set_refuse`, +1 this block).
-const HELPER_LINES: usize = 640;
+/// 2026-11-20 (S4 P10b): 640 → 643, the three new `mutable` items of `app/secret_seam.rs`
+/// (`invoke thread_local!` of `TEST_AFTER_QUEUED`, `fn log_after`, `fn applied`: the lock-order
+/// record of the approval close under the outbox).
+const HELPER_LINES: usize = 643;
 
 /// The planned S4 commits (plan §5 with critique round 2), the only words of a commit-list rule.
 const PLANNED: [&str; 54] = [

@@ -847,8 +847,11 @@ mod tests {
         );
         assert_eq!(app.explorer_tx_url(NetworkId::Eip155(77), HASH), None);
         assert_eq!(app.explorer_tx_url(NetworkId::Eip155(1), "0x12/../x"), None);
+        // (2026-11-20, S4 P10b: each call is one entry; its effects apply when it drains.)
         app.open_explorer_tx(NetworkId::Eip155(10), HASH);
+        app.drain();
         app.open_explorer_tx(NetworkId::Eip155(77), HASH);
+        app.drain();
         assert_eq!(
             app.info.as_deref(),
             Some(crate::app_explorer::text::EXPLORER_NONE.ko)
@@ -857,6 +860,7 @@ mod tests {
             ExplorerNet::HyperCore(yw_core::hypercore::HcNetwork::Testnet),
             "0xF9900bb6FF2D2C67858c3468d21c5f103C4Ff646",
         );
+        app.drain();
         assert_eq!(
             app.explorer_ui.launcher,
             Launcher::Record(vec![

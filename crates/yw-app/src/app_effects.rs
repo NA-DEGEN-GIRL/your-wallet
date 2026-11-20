@@ -1,12 +1,25 @@
 //! The Windows shell's effect executor (spec/15 §11.2, §11.4 S3): applies one
 //! [`yw_engine::effect::Effect`] the wallet logic emitted.
 //!
-//! An effect is applied at once, inside the `App` borrow of the handler that emitted it, in
-//! emission order, and never coalesced: the `EN_CHANGE` a field write causes and any activation
-//! stay unseen exactly as before (re-entrancy, spec/01 §7.7), and a screen is laid out as often as
-//! before. Nothing here posts a message or defers work past the borrow; an outbox, if S4 adds one,
-//! must drain inside the same borrow. A result goes back to the logic as a `Cmd` before `emit`
-//! returns (`Cmd::CopyDone`).
+//! 2026-11-20 (S4 P10b, plan §3.4, D-3): effects go through an outbox. `App::emit` queues the
+//! effect (a field write puts its text into the form state first, owner decision O-10) and
+//! `App::drain` applies the queue in emission order, never coalesced, inside the `App` borrow of
+//! the entry that emitted them, before that entry returns: every shell entry into the logic
+//! (`App::dispatch` for a `Cmd`, the main and secret windows' messages, the approval windows'
+//! inputs, each worker event, each part of the main timer, `main.rs`'s start) drains when that
+//! call returns. An answer (`Cmd::CopyDone`, `ApprovalOpened`, `Opened`, `FolderMissing`,
+//! `SecretOpened`) goes back to the logic in the same drain, and what it emits joins the end of
+//! the queue. The `EN_CHANGE` a field write causes and any activation still arrive inside the
+//! borrow and stay unseen (re-entrancy, spec/01 §7.7), and a screen is laid out as often as
+//! before. Nothing here posts a message or defers work past the borrow (source check
+//! `effects_are_never_posted`). Before P10b `emit` applied each effect at once, so a handler's
+//! code after an `emit` ran after the effect and its answer; P9 and P10a moved every such step
+//! that depends on the answer behind it (spec/15 §11.4 S4, P9/P10a notes; source check S5).
+//!
+//! Until P10b (S3 B3 … S4 P10a) the text above read: an effect is applied at once, inside the `App`
+//! borrow of the handler that emitted it, in emission order, and never coalesced; an outbox, if S4
+//! adds one, must drain inside the same borrow; a result goes back to the logic as a `Cmd` before
+//! `emit` returns.
 //!
 //! 2026-11-18 (S3 B3): created with `Effect::Render` (the body of `App::refresh` after the dApp
 //! state sync). S3 B4: the send forms' one-shot timer (`StartTimer`/`StopTimer`, was
@@ -96,6 +109,46 @@ pub(crate) fn hold_effects(steps: impl FnOnce()) -> Vec<Effect> {
         .unwrap_or_default()
 }
 
+/// Tests (2026-11-20, S4 P10b): a borrow of the `App` that is one shell entry — the effects its
+/// calls emitted are applied (and answered) when it drops, as a shell entry drains before it
+/// returns. The approval and secret fixtures hand it out (`Fixture::app`), so a scenario's direct
+/// calls into the logic (`tick_approval`, `on_resimulated`, a revoke, …) end as entries do; with
+/// effects applied at once (before P10) the plain `RefMut` did the same. Not while panicking.
+#[cfg(test)]
+pub(crate) struct Entry<'a>(core::cell::RefMut<'a, App>);
+
+#[cfg(test)]
+impl<'a> Entry<'a> {
+    pub(crate) const fn new(app: core::cell::RefMut<'a, App>) -> Self {
+        Self(app)
+    }
+}
+
+#[cfg(test)]
+impl core::ops::Deref for Entry<'_> {
+    type Target = App;
+
+    fn deref(&self) -> &App {
+        &self.0
+    }
+}
+
+#[cfg(test)]
+impl core::ops::DerefMut for Entry<'_> {
+    fn deref_mut(&mut self) -> &mut App {
+        &mut self.0
+    }
+}
+
+#[cfg(test)]
+impl Drop for Entry<'_> {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            self.0.drain();
+        }
+    }
+}
+
 /// The main window's timer id for `timer`, and its name in the tests' shell-call log.
 const fn timer_of(timer: TimerId) -> (usize, &'static str) {
     match timer {
@@ -128,9 +181,11 @@ impl App {
         None
     }
 
-    /// Applies `effect` now (see the module doc). Tests record each effect in the shell-call log
-    /// before the window check, so headless tests see it too.
-    #[expect(clippy::too_many_lines, reason = "one arm per effect")]
+    /// Queues `effect` for [`Self::drain`] (2026-11-20, S4 P10b; see the module doc). A field
+    /// write (`SetField`) puts its text, cut to the field's cap as the edit holds it, into the
+    /// form state now, so the logic reads what it wrote before the shell applies it (owner
+    /// decision O-10; the shell reads the edit back when it applies the write, as before).
+    /// Before P10 this fn applied the effect at once.
     pub(crate) fn emit(&mut self, effect: Effect) {
         // Tests (2026-11-20, S4 P10a): held for `hold_effects`.
         #[cfg(test)]
@@ -143,6 +198,63 @@ impl App {
         }) else {
             return;
         };
+        if let Effect::SetField { field, text } = &effect {
+            let field = *field;
+            self.form.set(field, Some(field.clamp(text)));
+        }
+        self.outbox.push_back(effect);
+    }
+
+    /// Applies every queued effect in order, each answer going back to the logic at once
+    /// (`on_cmd`; what it emits joins the end of the queue), until the queue is empty
+    /// (2026-11-20, S4 P10b). Called by every shell entry before it returns (module doc), also by
+    /// `main.rs` after each of its start steps.
+    ///
+    /// # Panics
+    ///
+    /// Debug builds only, never: the loop ends with the queue empty.
+    pub fn drain(&mut self) {
+        while let Some(effect) = self.outbox.pop_front() {
+            let answer = self.apply(effect);
+            // Tests: the logic's steps logged behind this effect are logged now.
+            #[cfg(test)]
+            crate::app::secret_seam::applied();
+            if let Some(answer) = answer {
+                self.on_cmd(answer);
+            }
+        }
+        debug_assert!(self.outbox.is_empty(), "the outbox drained");
+    }
+
+    /// One input from the shell, then the effects it emitted (2026-11-20, S4 P10b, plan §3.4:
+    /// `App::dispatch`): the shell's way to send a `Cmd`. An answer is not sent this way: the
+    /// drain that applied its effect hands it to `on_cmd`.
+    pub(crate) fn dispatch(&mut self, cmd: Cmd) {
+        self.on_cmd(cmd);
+        self.drain();
+    }
+
+    /// Debug builds: a shell entry starts with an empty outbox (2026-11-20, S4 P10b, critique
+    /// A-14): an entry that returned without draining is found at the next one (the windows'
+    /// `Forward`s, the event drain and `main.rs`'s loop observer check it).
+    ///
+    /// # Panics
+    ///
+    /// Debug builds: when an effect is queued.
+    pub fn assert_outbox_empty(&self) {
+        debug_assert!(
+            self.outbox.is_empty(),
+            "an entry returned with {} effect(s) queued",
+            self.outbox.len()
+        );
+    }
+
+    /// Applies `effect` now and returns its answer, if it has one (see the module doc; 2026-11-20,
+    /// S4 P10b: the body of `emit` before, which handed the answer to `on_cmd` itself). Tests
+    /// record each effect in the shell-call log before the window check, so headless tests see
+    /// it too.
+    #[expect(clippy::too_many_lines, reason = "one arm per effect")]
+    fn apply(&mut self, effect: Effect) -> Option<Cmd> {
         match effect {
             Effect::Render => {
                 #[cfg(test)]
@@ -154,6 +266,7 @@ impl App {
                 if self.main.is_some() {
                     self.form.replace(self.controls.form_snapshot());
                 }
+                None
             }
             Effect::StartTimer { timer, ms } => {
                 #[cfg(test)]
@@ -163,6 +276,7 @@ impl App {
                     let _ =
                         main.set_timer(timer_of(timer).0, u32::try_from(ms).unwrap_or(u32::MAX));
                 }
+                None
             }
             Effect::StopTimer { timer } => {
                 #[cfg(test)]
@@ -171,6 +285,7 @@ impl App {
                 if let Some(main) = self.main.as_ref() {
                     main.kill_timer(timer_of(timer).0);
                 }
+                None
             }
             Effect::CopyText { text, mark } => {
                 // Tests: the length only, in `char`s (`text.chars().count()`, not UTF-16 units as
@@ -186,27 +301,31 @@ impl App {
                 // Headless (no main window): no clipboard and no result, as before.
                 #[cfg(test)]
                 if let Some(ok) = TEST_COPY_ANSWER.with(core::cell::Cell::get) {
-                    self.on_cmd(Cmd::CopyDone { ok, mark });
-                    return;
+                    return Some(Cmd::CopyDone { ok, mark });
                 }
-                if let Some(main) = self.main.as_ref() {
-                    let ok = clipboard::set_text(main, &text).is_ok();
-                    self.on_cmd(Cmd::CopyDone { ok, mark });
-                }
+                let main = self.main.as_ref()?;
+                let ok = clipboard::set_text(main, &text).is_ok();
+                Some(Cmd::CopyDone { ok, mark })
             }
             Effect::SetField { field, text } => {
                 // The edit's `EN_CHANGE` arrives inside this borrow and is not seen (as before,
                 // spec/01 §7.7); the form state reads the edit back (headless: the edit keeps
                 // what a test typed, as `ControlSet::set_text` writes no window there).
+                // 2026-11-20 (S4 P10b, O-10): `emit` already put the text into the form state;
+                // the read-back keeps it equal to what the edit holds, as before.
                 let id = edit_id_of(field);
                 self.controls.set_text(id, &text);
                 self.form.set(
                     field,
                     self.controls.text(id, field.cap()).map(Zeroizing::new),
                 );
+                None
             }
             // A credential edit is emptied after its one read; it is never form state.
-            Effect::ClearCred { field } => self.controls.clear_text(cred_id_of(field)),
+            Effect::ClearCred { field } => {
+                self.controls.clear_text(cred_id_of(field));
+                None
+            }
             // S3 C4 (the address book's clears): emptied now, before the handler's next
             // `refresh()` (`keeps_edit` reads the edit), and read back into the form state
             // (headless: `ControlSet::clear_text` drops what a test typed, so the field is gone
@@ -219,54 +338,71 @@ impl App {
                     field,
                     self.controls.text(id, field.cap()).map(Zeroizing::new),
                 );
+                None
             }
-            // S4 B5: the approval window; an open is answered before `emit` returns.
-            Effect::Approval(effect) => {
-                if let Some(answer) = self.apply_approval_effect(effect) {
-                    self.on_cmd(answer);
-                }
-            }
-            // S4 P3: the browser is started now and its result answered before `emit` returns.
+            // S4 B5: the approval window; an open is answered (2026-11-20, S4 P10b: by the drain).
+            Effect::Approval(effect) => self.apply_approval_effect(effect),
+            // S4 P3: the browser is started now and its result answered.
             Effect::OpenUrl { url, which } => {
                 let ok = self.explorer_ui.launcher.launch(&url);
-                self.on_cmd(Cmd::Opened { ok, which });
+                Some(Cmd::Opened { ok, which })
             }
-            // S4 P3: the folder is opened now; a missing extension folder is answered at once.
-            Effect::OpenFolder(folder) => {
-                if let Some(answer) = self.open_folder(folder) {
-                    self.on_cmd(answer);
-                }
+            // S4 P3: the folder is opened now; a missing extension folder is answered.
+            Effect::OpenFolder(folder) => self.open_folder(folder),
+            // S4 P4: the main window's own work (module doc).
+            Effect::Reveal(target) => {
+                self.reveal_id(match target {
+                    RevealTarget::Press(press) => cmd_table::id_of(press),
+                    RevealTarget::Cred(field) => cred_id_of(field),
+                });
+                None
             }
-            // S4 P4: the main window's own work, at the emitting point (module doc).
-            Effect::Reveal(target) => self.reveal_id(match target {
-                RevealTarget::Press(press) => cmd_table::id_of(press),
-                RevealTarget::Cred(field) => cred_id_of(field),
-            }),
-            Effect::RaiseMain => self.raise_main(),
+            Effect::RaiseMain => {
+                self.raise_main();
+                None
+            }
             Effect::ScreenLeaving {
                 overlay_opens,
                 left,
-            } => self.screen_leaving(overlay_opens, left),
-            Effect::ScreenEntered { at } => self.screen_entered(at),
-            Effect::OverlayClosedInPlace => self.overlay_closed_in_place(),
-            Effect::TabTop { left } => self.tab_top(left),
-            Effect::ScrollMemoryClear => self.scroll_memory.clear(),
+            } => {
+                self.screen_leaving(overlay_opens, left);
+                None
+            }
+            Effect::ScreenEntered { at } => {
+                self.screen_entered(at);
+                None
+            }
+            Effect::OverlayClosedInPlace => {
+                self.overlay_closed_in_place();
+                None
+            }
+            Effect::TabTop { left } => {
+                self.tab_top(left);
+                None
+            }
+            Effect::ScrollMemoryClear => {
+                self.scroll_memory.clear();
+                None
+            }
             Effect::ReleaseHold => {
                 if let Some(main) = self.main.as_ref() {
                     main.release_capture();
                 }
+                None
             }
-            // S4 P7a1: a secret window; an open is answered before `emit` returns.
+            // S4 P7a1: a secret window; an open is answered.
             Effect::Secret(effect) => {
-                if let Some(answer) = self.apply_secret_effect(effect) {
-                    // 2026-11-20 (S4 P8 review): the recording secret host notes the answer's
-                    // `Debug` too (its scan for secrets); release builds have no such line.
-                    #[cfg(test)]
-                    crate::app::tests::s4_secret::host::saw_cmd(&answer);
-                    self.on_cmd(answer);
+                let answer = self.apply_secret_effect(effect);
+                // 2026-11-20 (S4 P8 review): the recording secret host notes the answer's
+                // `Debug` too (its scan for secrets); release builds have no such line.
+                #[cfg(test)]
+                if let Some(answer) = answer.as_ref() {
+                    crate::app::tests::s4_secret::host::saw_cmd(answer);
                 }
+                answer
             }
-            // S4 P7b (critique A-2): the lock's wait for the key worker, at the emitting point.
+            // S4 P7b (critique A-2): the lock's wait for the key worker, in its place in the
+            // queue (after the lock's secret close, clip clear and approval close).
             Effect::AwaitKeyLock { before, ms } => {
                 #[cfg(test)]
                 crate::app::secret_seam::log(crate::app::secret_seam::Op::Wait {
@@ -276,6 +412,7 @@ impl App {
                 let _ = self
                     .lock_signal
                     .wait_beyond(before, core::time::Duration::from_millis(ms));
+                None
             }
         }
     }

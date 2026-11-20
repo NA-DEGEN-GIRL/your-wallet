@@ -81,14 +81,20 @@ fn open(census: &Census, base: Base, setup: fn(&mut App)) -> (Rc<RefCell<App>>, 
     census.fresh_data();
     census.guard();
     let app = Rc::new(RefCell::new(base.build(census.data())));
+    // 2026-11-20 (S4 P10b): each call into the logic here is one entry and drains (what the build
+    // emitted applies with no window yet, as before).
+    app.borrow_mut().drain();
     let (tx, rx) = channel();
     app.borrow_mut().rpc_tx = Some(tx);
     App::create_main_window(&app).unwrap();
     {
         let mut state = app.borrow_mut();
         state.show_main();
+        state.drain();
         setup(&mut state);
+        state.drain();
         state.refresh();
+        state.drain();
     }
     (app, rx)
 }
@@ -112,6 +118,7 @@ fn type_into(state: &mut App, id: u16, text: &str, tally: &mut Tally) -> bool {
     state.controls.focus_at(index);
     state.controls.set_text(id, text);
     state.on_edit_notify(id);
+    state.drain();
     if let Some(field) = crate::ui::cmd_table::field_of(id) {
         tally.typed.insert(field);
     }
@@ -123,6 +130,7 @@ fn check(state: &mut App, what: &str, tally: &mut Tally) {
     for pass in ["", " after a render"] {
         if !pass.is_empty() {
             state.refresh();
+            state.drain();
         }
         for field in EditField::ALL {
             let window = state.controls.text(edit_id_of(field), field.cap());
@@ -216,7 +224,9 @@ fn run_step(state: &mut App, step: Step, tally: &mut Tally) -> String {
         }
         Step::Call(..) => {
             let what = step.run(state);
+            state.drain();
             state.refresh();
+            state.drain();
             what
         }
     }

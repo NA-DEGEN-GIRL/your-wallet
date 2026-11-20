@@ -285,6 +285,9 @@ fn main() -> ExitCode {
             state.note_wer_unprotected();
         }
         state.set_install_commit(install_commit);
+        // 2026-11-20 (S4 P10b): each start step is an entry: what it emitted is applied before
+        // its borrow ends (here before the main window exists, as before).
+        state.drain();
     }
 
     // 6. Window classes, main window (hidden), session notifications.
@@ -323,7 +326,11 @@ fn main() -> ExitCode {
         return fail(start_text::MAIN_WINDOW_FAILED.get(lang));
     }
     // Where it was last (window.json), also for --background (spec/04 §1.7).
-    app.borrow_mut().place_main_window();
+    {
+        let mut state = app.borrow_mut();
+        state.place_main_window();
+        state.drain();
+    }
     let Some(poster) = app.borrow().main_poster() else {
         return fail(start_text::MAIN_WINDOW_FAILED.get(lang));
     };
@@ -331,7 +338,9 @@ fn main() -> ExitCode {
         let mut state = app.borrow_mut();
         // A secret copy an earlier run left on the clipboard (spec/04 §4.8).
         state.clear_earlier_secret_clip();
+        state.drain();
         state.register_session();
+        state.drain();
     }
 
     // 7. Workers.
@@ -394,6 +403,7 @@ fn main() -> ExitCode {
         }
         // Browser bridge: dispatcher, read workers, pipe server (spec/05 §8.1, within 2 s).
         state.attach_browser(BrowserUi::start(&events, transport, clock));
+        state.drain();
         // 8. Classify the vault. The key worker first learns the language: the default labels of
         // a new or imported wallet are written in it (spec/14 §1).
         state.key(KeyJob::SetLanguage(lang));
@@ -402,6 +412,7 @@ fn main() -> ExitCode {
         if !background {
             state.show_main();
         }
+        state.drain();
     }
 
     // 10. The message loop.
@@ -420,10 +431,13 @@ fn main() -> ExitCode {
             _ => None,
         };
         if let Ok(mut state) = observer.try_borrow_mut() {
+            // 2026-11-20 (S4 P10b, critique A-14): an entry like the windows' messages.
+            state.assert_outbox_empty();
             state.note_input();
             if let Some(key) = nav {
                 state.note_nav_key(key);
             }
+            state.drain();
         }
         if let Some(key) = nav {
             let _ = poster.post(WM_YW_NAV_KEY, key.code());

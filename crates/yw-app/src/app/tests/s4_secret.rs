@@ -649,6 +649,7 @@ fn a_made_but_unexcluded_display_window_drops_its_secret() {
             copy_allowed: false,
         },
     );
+    app.drain();
     let ops: Vec<String> = secret_seam::take_log()
         .into_iter()
         .map(secret_seam::Op::name)
@@ -669,6 +670,7 @@ fn a_made_but_unexcluded_display_window_drops_its_secret() {
     assert_eq!(app.screen, Screen::BackupPending, "a new wallet's S04");
 
     app.open_input(SecretKind::Unlock, Purpose::Unlock, false);
+    app.drain();
     let ops: Vec<String> = secret_seam::take_log()
         .into_iter()
         .map(secret_seam::Op::name)
@@ -683,6 +685,7 @@ fn a_made_but_unexcluded_display_window_drops_its_secret() {
     let facts = app.test_secret().expect("the warned window");
     assert!(facts.form.contains("excluded=false"), "{}", facts.form);
     app.close_secret();
+    app.drain();
     let ops: Vec<String> = secret_seam::take_log()
         .into_iter()
         .map(secret_seam::Op::name)

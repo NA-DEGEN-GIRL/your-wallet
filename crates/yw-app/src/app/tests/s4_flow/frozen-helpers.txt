@@ -179,7 +179,7 @@ yw-app/src/app/tests/s3_census.rs const EDIT_IDS cef47137e1217c41 mutable
 yw-app/src/app/tests/s3_census.rs const MASKED 980e9977cd0e5bff mutable
 yw-app/src/app/tests/s3_census.rs const SKIPPED 1fce95d34b5e9687 mutable
 yw-app/src/app/tests/s3_census.rs struct Census bdec54fb58ac452f mutable
-yw-app/src/app/tests/s3_census.rs impl Census 21bf43f40f18fa51 mutable
+yw-app/src/app/tests/s3_census.rs impl Census a35852598155bf95 mutable
 yw-app/src/app/tests/s3_census.rs struct Seen 1946e68569be6866 mutable
 yw-app/src/app/tests/s3_census.rs impl Seen dc1d586829b57109 mutable
 yw-app/src/app/tests/s3_census.rs impl DropforCensus 692f66a11f09c9dc mutable
@@ -211,7 +211,7 @@ yw-app/src/app/tests/s3_census.rs fn checks_golden a5d5254455af33fb mutable
 yw-app/src/app/tests/s3_census.rs enum Step 5d0c4cb4cea2e546 mutable
 yw-app/src/app/tests/s3_census.rs impl Step 8265589b16d4da40 mutable
 yw-app/src/app/tests/s3_census.rs struct Scenario 6561394f2903cf9e mutable
-yw-app/src/app/tests/s3_census.rs fn run_scenario 51a32eab417cee93 mutable
+yw-app/src/app/tests/s3_census.rs fn run_scenario 8d5b705800831c69 mutable
 yw-app/src/app/tests/s3_census.rs fn no_setup 5d2339d76cb2c4b4 mutable
 yw-app/src/app/tests/s3_census.rs const EVM_TO 7a4a75d5a16cb6b2 mutable
 yw-app/src/app/tests/s3_census.rs const BTC_TO 7304fbed8660a057 mutable
@@ -237,11 +237,11 @@ yw-app/src/app/tests/s3_census.rs fn fire bf44fd8169776fac mutable
 yw-app/src/app/tests/s3_census.rs fn reset_phrase adb1282758c60edd mutable
 yw-app/src/app/tests/s3_census.rs fn two_cards b6110e48e255e819 mutable
 yw-app/src/app/tests/s3_census.rs fn timer_copy_scenarios 3e59146143f32c47 mutable
-yw-app/src/app/tests/s3_census.rs fn anchored 8f6b9075d1616e7e mutable
+yw-app/src/app/tests/s3_census.rs fn anchored 34f49d7df04d3315 mutable
 yw-app/src/app/tests/s3_census.rs fn harness 46fd4c6e80bdd557 mutable
 yw-app/src/app/tests/s3_census.rs fn observe_harness c2847f7cd23faeb4 mutable
 yw-app/src/app/tests/s3_census.rs fn harness_step 9a8e9947968e96a0 mutable
-yw-app/src/app/tests/s3_census.rs fn lifecycle_golden b6641ba92a397f34 mutable
+yw-app/src/app/tests/s3_census.rs fn lifecycle_golden 64482b8703ecaf63 mutable
 yw-app/src/app/tests/s3_census.rs fn scenarios_golden 245f8b5fe928e417 mutable
 yw-app/src/app/tests/s3_census.rs fn headless_browser 42c48fae137439f2 mutable
 yw-app/src/app_approval_flow_tests.rs const GOLDEN c5bf61b0b52c2dc7 fixed
@@ -614,7 +614,7 @@ yw-app/src/app_approval_flow_support.rs fn foreground_request ad3d4772557fd0fa m
 yw-app/src/app_approval_flow_support.rs fn fail_open 1a69612a6c823361 mutable
 yw-app/src/app_approval_flow_support.rs impl App 6e67dfc1e54b92dd mutable
 yw-app/src/app_approval_flow_support.rs struct Fixture d7ff65971806330f mutable
-yw-app/src/app_approval_flow_support.rs impl Fixture a0562a84cc573b6a mutable
+yw-app/src/app_approval_flow_support.rs impl Fixture 78aeba1bdfbfb6a2 mutable
 yw-app/src/app_approval_flow_support.rs impl Fixture c47df6d36212b2e1 mutable
 yw-app/src/app_approval_flow_support.rs impl DropforFixture 0e42d120bf36b5a3 mutable
 yw-app/src/app_approval_flow_support.rs struct Outlet 947b36a31ad28718 mutable
@@ -625,11 +625,14 @@ yw-app/src/app/secret_seam.rs enum Refuse 40befdc2aa44e1d9 mutable
 yw-app/src/app/secret_seam.rs enum Op 29e9f849659c68f6 mutable
 yw-app/src/app/secret_seam.rs impl Op 30c44b878669ef5f mutable
 yw-app/src/app/secret_seam.rs invoke thread_local! 8e06a3ca1a8e4862 mutable
-yw-app/src/app/secret_seam.rs fn start_log f9caaa8cfb249f11 mutable
+yw-app/src/app/secret_seam.rs fn start_log c98d7ae4ec0b02c5 mutable
 yw-app/src/app/secret_seam.rs fn take_log 1cbb02020a1cba4e mutable
-yw-app/src/app/secret_seam.rs fn stop 9622d64fe36a17ea mutable
+yw-app/src/app/secret_seam.rs fn stop f502372e3251b15f mutable
 yw-app/src/app/secret_seam.rs fn set_keys_up 755f8fbbb552c802 mutable
 yw-app/src/app/secret_seam.rs fn scripted_modifier 42e193f57eb826a7 mutable
+yw-app/src/app/secret_seam.rs invoke thread_local! 9e457becb9deb8f8 mutable
+yw-app/src/app/secret_seam.rs fn log_after da6204e5f36deda1 mutable
+yw-app/src/app/secret_seam.rs fn applied 433183824ad951ae mutable
 yw-app/src/app/secret_seam.rs fn log ae1c585aafdaec9e mutable
 yw-app/src/app/secret_seam.rs fn create 3c041e7ebf19b58c mutable
 yw-app/src/app/secret_seam.rs fn topmost_of bcd857a12c776ac9 mutable

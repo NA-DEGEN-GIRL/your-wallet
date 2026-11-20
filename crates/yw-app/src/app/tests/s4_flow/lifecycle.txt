@@ -28,7 +28,7 @@ lock_idle_after_the_window tick-after-close | t=+602000 | win closed | store Exp
 lock_idle_after_the_window tick-past-limit-again | t=+1203000 | win closed | store Expired | queue len=0 shown=- | rpc - | key - | dapp - | banners - | info - | card -
 lock_idle_after_the_window mode | mode=Locked
 open_then_lock_same_entry open-and-lock | t=+0 | win closed | store - | queue len=0 shown=- | rpc BtcReset | key Lock,Load | dapp 4001 User rejected the request. | banners - | info - | card -
-open_then_lock_same_entry windows | approval windows=0 show calls=1 capture calls=0 release calls=0
+open_then_lock_same_entry windows | approval windows=0 show calls=0 capture calls=0 release calls=0
 revoke_disconnect_while_shown shown-2-waiting | t=+1000 | win open status=Pending prep=ready risk=std | gate ready=+0 ack=false sel=- submitting=false fg=true deadline=+120000 | focus=Reject | status-text - | store Pending | queue len=3 shown=personal_sign | rpc - | key - | dapp - | banners - | info - | card -
 revoke_disconnect_while_shown disconnect | t=+1000 | win open status=Pending prep=ready risk=std | gate ready=+1000 ack=false sel=- submitting=false fg=false deadline=+121000 | focus=Reject | status-text - | store Pending | queue len=1 shown=personal_sign | rpc - | key SaveMeta | dapp 4100 Unauthorized.; 4100 Unauthorized. | banners - | info - | card -
 revoke_disconnect_while_shown first | store of the request shown before=Rejected approval windows=1

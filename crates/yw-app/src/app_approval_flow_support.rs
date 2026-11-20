@@ -54,7 +54,7 @@
 //! run; the prepare job is answered by the smoke harness's fixture transport), a card reader, a
 //! process, the clipboard or the registry, and writes only below its own temp folder.
 
-use std::cell::{Cell, RefCell, RefMut};
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -453,8 +453,11 @@ impl Fixture {
     }
 
     /// The App (one borrow at a time; window messages sent meanwhile are dropped by `Forward`).
-    pub(crate) fn app(&self) -> RefMut<'_, App> {
-        self.app.borrow_mut()
+    /// 2026-11-20 (S4 P10b): one entry — the effects the borrow's calls emitted are applied (and
+    /// answered) when it ends (`app_effects::Entry`), as a shell entry drains before it returns;
+    /// before, `emit` applied each at once and this was the plain `RefMut`.
+    pub(crate) fn app(&self) -> crate::app_effects::Entry<'_> {
+        crate::app_effects::Entry::new(self.app.borrow_mut())
     }
 
     /// The fixture's own temp folder (the App's data folder; removed when it drops).

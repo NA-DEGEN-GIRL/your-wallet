@@ -42,6 +42,13 @@
 //! key worker (critique A-2: an effect at the wait's place, so a later outbox keeps the order
 //! secret close < clip clear < approval close < wait). Before, `App::lock` waited itself. Still
 //! applied at once.
+//!
+//! 2026-11-20 (spec/15 §11.4 S4 P10b): effects go through an outbox — the Windows shell queues
+//! each one when the logic emits it and applies the queue in order, never coalesced, inside the
+//! `App` borrow before the shell entry that emitted them returns; an answer goes back to the logic
+//! in the same drain (yw-app `App::emit`/`App::drain`/`App::dispatch`). A `SetField` is form
+//! state when it is emitted (owner decision O-10). The second paragraph above describes S3 …
+//! P10a (critique B-23).
 
 use core::fmt;
 

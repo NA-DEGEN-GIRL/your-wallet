@@ -3037,8 +3037,20 @@ fn the_windowless_main_entry_mirrors_on_main() {
             .collect::<Vec<_>>()
             .join(" ")
     };
-    let on_main = body("    fn on_main(&mut self, window: &Window, msg: &Msg) -> Reply {");
-    let mirror = body("    pub(crate) fn test_on_main_windowless(&mut self, msg: &Msg) -> Reply {");
+    // 2026-11-20 (S4 P10b): both entries are a drain around their message arms
+    // (`on_main_msg`, `windowless_msg`), which are compared as before.
+    assert_eq!(
+        body("    fn on_main(&mut self, window: &Window, msg: &Msg) -> Reply {"),
+        "fn on_main(&mut self, window: &Window, msg: &Msg) -> Reply { \
+         let reply = self.on_main_msg(window, msg); self.drain(); reply"
+    );
+    assert_eq!(
+        body("    pub(crate) fn test_on_main_windowless(&mut self, msg: &Msg) -> Reply {"),
+        "pub(crate) fn test_on_main_windowless(&mut self, msg: &Msg) -> Reply { \
+         let reply = self.windowless_msg(msg); self.drain(); reply"
+    );
+    let on_main = body("    fn on_main_msg(&mut self, window: &Window, msg: &Msg) -> Reply {");
+    let mirror = body("    fn windowless_msg(&mut self, msg: &Msg) -> Reply {");
 
     let system =
         "if let Some(action) = system_action(msg) { return self.on_system(action); } match msg {";
@@ -3052,7 +3064,7 @@ fn the_windowless_main_entry_mirrors_on_main() {
     let app_in_main = format!(
         "Msg::App {{ msg, wparam }} => {{ match *msg {{ WM_YW_EVENTS => self.drain_events(),{} \
          WM_YW_LOCK_SHORTCUT => self.lock_shortcut(),{} _ => {{}} }} \
-         self.reads_due(self.clock.now_ms()); Reply::Handled(0) }}",
+         self.drain(); self.reads_due(self.clock.now_ms()); Reply::Handled(0) }}",
         window_arms[0],
         window_arms[1..].concat()
     );
@@ -3061,7 +3073,7 @@ fn the_windowless_main_entry_mirrors_on_main() {
     // arms whole; one catch-all, last.
     assert!(
         on_main.starts_with(&format!(
-            "fn on_main(&mut self, window: &Window, msg: &Msg) -> Reply {{ {system} "
+            "fn on_main_msg(&mut self, window: &Window, msg: &Msg) -> Reply {{ {system} "
         )),
         "on_main: {on_main}"
     );
@@ -3097,7 +3109,7 @@ fn the_windowless_main_entry_mirrors_on_main() {
     assert_eq!(
         mirror,
         format!(
-            "pub(crate) fn test_on_main_windowless(&mut self, msg: &Msg) -> Reply {{ {system} \
+            "fn windowless_msg(&mut self, msg: &Msg) -> Reply {{ {system} \
              {timer} {app_in_mirror} _ => Reply::Default, }}"
         )
     );

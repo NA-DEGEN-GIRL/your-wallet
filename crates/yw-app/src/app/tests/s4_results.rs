@@ -50,6 +50,14 @@
 //! with its reason. A deferral whose argument is a plain value ([`without_deferrals`]) runs
 //! nothing after the open. A `return` later in a block ends what runs after a call there
 //! ([`return_statement`]); a `;` inside brackets no longer ends a fn's head ([`head`]).
+//!
+//! 2026-11-20 (S4 P10b): the outbox. `emit` only queues; the executor is `App::drain` (was
+//! `emit`, [`EXECUTOR`]), which applies the queue and hands each answer to the logic. A call
+//! that a drain follows (`self.drain()`, or a closure's `app.drain()`, right after it) has
+//! nothing after it ([`after_site`]): its effects and their answers are handled before the next
+//! statement, so its fn is no tail emitter. The shell's entries drain after each call into the
+//! logic, so [`NEXT_CALL_OF_AN_ENTRY`] is empty; `on_key_result` drains after its handler
+//! `key_result`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -706,20 +714,38 @@ fn runs_nothing(rest: &str) -> bool {
     })
 }
 
-/// What runs after `site` inside its fn ([`after_call`]).
-fn after_site(files: &[Src], site: &Site) -> String {
+/// What runs after `site` inside its fn ([`after_call`]); `None` when the next statement is a
+/// drain (`self.drain()`, a closure's or `Forward`'s `app.drain()`), which applies the effects
+/// the call emitted and hands their answers to the logic before anything else runs, so nothing
+/// after it can miss an answer and the fn is no tail emitter (2026-11-20, S4 P10b: the outbox; an
+/// entry ends with a drain).
+fn after_site(files: &[Src], site: &Site) -> Option<String> {
     let file = &files[site.src];
-    after_call(&file.code, &file.blocks, site.start, site.end)
+    let after = after_call(&file.code, &file.blocks, site.start, site.end);
+    (!drains_first(&after)).then_some(after)
 }
 
-/// Whether nothing of `site`'s fn runs after it (its tail call).
+/// Whether `after` (an [`after_call`] text) starts with a drain, closing brackets and
+/// separators aside (2026-11-20, S4 P10b).
+fn drains_first(after: &str) -> bool {
+    let lead =
+        after.trim_start_matches(|c: char| c.is_whitespace() || matches!(c, ';' | ',' | '}' | ')'));
+    ["self.drain()", "app.drain()"]
+        .iter()
+        .any(|drain| lead.starts_with(drain))
+}
+
+/// Whether nothing of `site`'s fn runs after it (its tail call). A drain right after is not a
+/// tail (2026-11-20, S4 P10b).
 fn is_tail(files: &[Src], site: &Site) -> bool {
-    runs_nothing(&rest_of(&after_site(files, site)))
+    after_site(files, site).is_some_and(|after| runs_nothing(&rest_of(&after)))
 }
 
 /// The effect executor: it applies every effect and feeds each answer to `on_cmd`, so it would
 /// make every emitting fn an emitter of everything. Its own order is P10's (plan §3.4).
-const EXECUTOR: [&str; 1] = ["emit"];
+/// 2026-11-20 (S4 P10b): `drain` (before, `emit`, which applied each effect at once and now only
+/// queues it).
+const EXECUTOR: [&str; 1] = ["drain"];
 
 /// The tail emitters, added to `set` until none is new: the fns in which nothing runs after one
 /// of their calls of a fn in `set` (`show_next_approval`, `open_input`, `card_open_pin`,
@@ -872,8 +898,13 @@ fn after_call_reads_what_runs_after() {
         .into_iter()
         .find(|site| site.func == "card_begin")
         .unwrap();
-    assert!(after_site(&files, &site).contains("self.secret_purpose("));
+    assert!(
+        after_site(&files, &site)
+            .unwrap()
+            .contains("self.secret_purpose(")
+    );
     deferrals_and_returns_on_made_up_code();
+    a_drain_ends_what_runs_after();
 }
 
 /// 2026-11-20 (S4 P10a), on made-up code: a `return` later in a block ends what runs after a
@@ -933,11 +964,42 @@ fn deferrals_and_returns_on_made_up_code() {
             .find(|site| site.func == func && site.name == name)
             .unwrap()
     };
-    let in_f = after_site(&files, &site_in("f", "opener"));
+    let in_f = after_site(&files, &site_in("f", "opener")).unwrap();
     assert!(!runs_nothing(&rest_of(&in_f)));
     assert!(runs_nothing(&rest_of(&without_deferrals(&in_f))));
-    let in_g = after_site(&files, &site_in("g", "f"));
+    let in_g = after_site(&files, &site_in("g", "f")).unwrap();
     assert!(!runs_nothing(&rest_of(&without_deferrals(&in_g))));
+}
+
+/// 2026-11-20 (S4 P10b), on made-up code: a drain right after a call (also after its `match` or
+/// block) applies what it emitted first: nothing runs after it, and its fn is no opener; a drain
+/// later on, or only in one branch, does not count.
+fn a_drain_ends_what_runs_after() {
+    let files = [Src::new(
+        "made-up".to_owned(),
+        code_only(
+            "fn open_input_with(&mut self) {} \
+             fn entry(&mut self) { match x { A => self.open_input_with(), _ => {} } \
+             self.drain(); let _ = self.secret_purpose(); } \
+             fn early(&mut self) { self.open_input_with(); let _ = self.secret_purpose(); \
+             self.drain(); } \
+             fn branch(&mut self) { if a { self.open_input_with(); } else { self.drain(); } \
+             let _ = self.secret_purpose(); }",
+        ),
+    )];
+    let mut openers: BTreeSet<String> = ["open_input_with".to_owned()].into();
+    add_wrappers(&files, &mut openers);
+    assert!(!openers.contains("entry"), "{openers:?}");
+    let after_in = |func: &str| {
+        let site = calls(0, &files[0], &openers)
+            .into_iter()
+            .find(|site| site.func == func)
+            .unwrap();
+        after_site(&files, &site)
+    };
+    assert_eq!(after_in("entry"), None);
+    assert!(after_in("early").unwrap().contains("self.secret_purpose("));
+    assert!(after_in("branch").unwrap().contains("self.secret_purpose("));
 }
 
 /// What one kind of answered effect checks: its sites and what may not follow them.
@@ -956,6 +1018,10 @@ struct Kind {
     /// the same day when the tail emitters and the second crate came in: 18 → 294, 69 → 126,
     /// 25 → 50, 15 → 27). 2026-11-20 (S4 P10a): approval 294 → 323, as the fns that hand their
     /// later steps to an open's answer end in `after_pending_open` and so are openers too.
+    /// 2026-11-20 (S4 P10b): approval 323 → 301, as the shell entries that drain right after a
+    /// call into the logic (`on_key_result`, `dispatch`, each event of `drain_events`, each part
+    /// of `tick`, the approval window's inputs and its timer's tail) are no tail emitters any
+    /// more ([`after_site`]).
     min_sites: usize,
     /// The one-level readers (fns whose own body names a token) that must still be found
     /// (2026-11-20, P9 review): one renamed or moved out of the scanned code fails here
@@ -972,7 +1038,7 @@ const KINDS: [Kind; 4] = [
         literals: &["ApprovalEffect::Open {"],
         literal_in_emitters: true,
         tokens: None,
-        min_sites: 323,
+        min_sites: 301,
         readers_floor: &[],
     },
     Kind {
@@ -1053,7 +1119,7 @@ const KINDS: [Kind; 4] = [
             "on_core",
             "on_folder_missing",
             "on_key_imported",
-            "on_key_result",
+            "key_result",
             "on_opened",
             "on_sites",
             "on_status",
@@ -1100,7 +1166,7 @@ const KINDS: [Kind; 4] = [
             "copy_explorer_tx",
             "delete_rpc_json",
             "discard_first_run",
-            "emit",
+            "apply",
             "enter_screen",
             "explorer_reset",
             "explorer_save_edit",
@@ -1110,7 +1176,7 @@ const KINDS: [Kind; 4] = [
             "layout_and_paint",
             "on_folder_missing",
             "on_key_imported",
-            "on_key_result",
+            "key_result",
             "on_opened",
             "on_sites",
             "on_status",
@@ -1148,18 +1214,13 @@ const KINDS: [Kind; 4] = [
 /// (plan §3.4: the answer of an open is handled before the entry's next call), so nothing of a
 /// later call runs before an earlier call's answer: safe under drain-per-call. A site that is in
 /// no list fails, and so does a line no longer found or a count that changed.
-const NEXT_CALL_OF_AN_ENTRY: [&str; 8] = [
-    "approval app.rs drain_events evm_rpc_event 1",
-    "approval app.rs drain_events on_dapp_event 1",
-    "approval app.rs drain_events on_key_result 1",
-    "approval app.rs on_command on_cmd 2",
-    "approval app.rs tick btc_tick 1",
-    // 2026-11-20 (S4 P10a): new — `evm_tick` hands its later parts to the queue tick's open
-    // (`AfterOpen::EvmTickRest`), so `tick`'s next part is the next call after an open.
-    "approval app.rs tick evm_tick 1",
-    "approval app_approval.rs run_step run_step 1",
-    "approval app_approval.rs run_steps run_step 1",
-];
+///
+/// 2026-11-20 (S4 P10b): empty — those entries drain right after each such call now
+/// ([`after_site`]: a call a drain follows has nothing after it), which removed the eight lines
+/// `drain_events evm_rpc_event`, `drain_events on_dapp_event`, `drain_events on_key_result`,
+/// `on_command on_cmd` (2), `tick btc_tick`, `tick evm_tick`, `run_step run_step` and `run_steps
+/// run_step`. A new site of this kind is a missing drain.
+const NEXT_CALL_OF_AN_ENTRY: [&str; 0] = [];
 
 /// Sites whose code after the call reads and changes nothing the open's answer reads or changes
 /// (2026-11-20, S4 P10a; were `PENDING_P10` lines), each with the reason. With the outbox (P10b)
@@ -1206,7 +1267,8 @@ const ENDS_ON_ITS_PATH: [&str; 3] = [
     // `KeyOutcome::CardUnused` path, which returns `None`; `on_key_result` returns at once on
     // `None` (`let Some(outcome) = … else { return; }`), so its later session reads never run
     // after that open.
-    "secret app.rs on_key_result card_filter 1",
+    // 2026-11-20 (S4 P10b): `on_key_result`'s handler is `key_result` (the entry drains).
+    "secret app.rs key_result card_filter 1",
     // 2026-11-20 (S4 P10a; was a `PENDING_P10` line): `browser_lock_begin` sets
     // `browser.locking` before its `sync_browser` (and returns before it without a browser), so
     // `vault_view` is never `Unlocked` or `PassphraseUnverified` there and the unlock arm
@@ -1268,7 +1330,14 @@ fn check_kind(files: &[Src], kind: &Kind) -> Checked {
     }
     let mut findings = Vec::new();
     for site in &sites {
-        let after = after_site(files, site);
+        // 2026-11-20 (S4 P10b): the executor's own calls (`drain` hands each answer to `on_cmd`)
+        // and a call a drain follows are no finding.
+        if EXECUTOR.contains(&site.func.as_str()) {
+            continue;
+        }
+        let Some(after) = after_site(files, site) else {
+            continue;
+        };
         let problem = match kind.tokens {
             None => {
                 // 2026-11-20 (S4 P10a): steps handed to the open's answer do not run after it.
@@ -1415,6 +1484,7 @@ fn an_openers_later_steps_follow_the_answer_to_its_open() {
     // Nothing to show: `show_next_approval`'s own repaint, then the step's.
     let _ = app.controls.take_shell_log();
     app.show_next_approval_then(AfterOpen::CardSiteCheckThenRefresh);
+    app.drain();
     assert_eq!(app.controls.take_shell_log(), ["refresh", "refresh"]);
     assert!(app.evm.after_open.is_empty());
     // A step kept for window `shown`: another window's answer leaves it; its own runs it once
@@ -1423,13 +1493,13 @@ fn an_openers_later_steps_follow_the_answer_to_its_open() {
     app.evm
         .after_open
         .push((shown, AfterOpen::CardSiteCheckThenRefresh));
-    app.on_cmd(answer(ShownId(u64::MAX - 1)));
+    app.dispatch(answer(ShownId(u64::MAX - 1)));
     assert_eq!(app.controls.take_shell_log(), Vec::<String>::new());
     assert_eq!(app.evm.after_open.len(), 1);
-    app.on_cmd(answer(shown));
+    app.dispatch(answer(shown));
     assert_eq!(app.controls.take_shell_log(), ["refresh"]);
     assert!(app.evm.after_open.is_empty());
-    app.on_cmd(answer(shown));
+    app.dispatch(answer(shown));
     assert_eq!(app.controls.take_shell_log(), Vec::<String>::new());
     // The rest of a Bitcoin batch: none left but the batch's repaint.
     app.evm
@@ -1439,7 +1509,7 @@ fn an_openers_later_steps_follow_the_answer_to_its_open() {
         format!("{:?}", app.evm.after_open),
         "[(ShownId(18446744073709551615), BtcRest(0))]"
     );
-    app.on_cmd(answer(shown));
+    app.dispatch(answer(shown));
     assert_eq!(app.controls.take_shell_log(), ["refresh"]);
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -1448,7 +1518,8 @@ fn an_openers_later_steps_follow_the_answer_to_its_open() {
 /// waits for its answer (always, while effects are applied at once) and otherwise keeps it for
 /// the newest open that waits; that open's answer no longer waits and runs the kept steps once,
 /// in order, after its own steps; another window's answer leaves them. The kept steps print
-/// names, counts and lengths only. Headless, no window.
+/// names, counts and lengths only. Headless, no window. 2026-11-20 (S4 P10b): the answers go in
+/// through `dispatch` and the step run at once is drained, as a shell entry does (the outbox).
 #[test]
 fn steps_after_an_open_wait_for_its_answer() {
     use yw_engine::approval::flow::{OpenOutcome, ShownId};
@@ -1464,9 +1535,10 @@ fn steps_after_an_open_wait_for_its_answer() {
         wide: false,
     };
     let _ = app.controls.take_shell_log();
-    // Nothing waits: at once.
+    // Nothing waits: at once (2026-11-20, S4 P10b: its repaint is applied when the entry drains).
     assert_eq!(app.evm.open_unanswered, None);
     app.after_pending_open(AfterOpen::Refresh);
+    app.drain();
     assert_eq!(app.controls.take_shell_log(), ["refresh"]);
     // An open waits (as it will with the outbox): kept for it, in order.
     let shown = ShownId(u64::MAX);
@@ -1481,19 +1553,19 @@ fn steps_after_an_open_wait_for_its_answer() {
          RefreshUnlessActed(true)), (ShownId(18446744073709551615), HiddenNote(4))]"
     );
     // Another window's answer leaves them, and the open still waits.
-    app.on_cmd(answer(ShownId(u64::MAX - 1)));
+    app.dispatch(answer(ShownId(u64::MAX - 1)));
     assert_eq!(app.evm.open_unanswered, Some(shown));
     assert_eq!(app.evm.after_open.len(), 3);
     assert_eq!(app.controls.take_shell_log(), Vec::<String>::new());
     // Its own answer (stale here: no flow, so no steps of its own): no longer waiting, the kept
     // steps once, in order (the note's repaint is the second `refresh`).
     let banners = app.banners.len();
-    app.on_cmd(answer(shown));
+    app.dispatch(answer(shown));
     assert_eq!(app.evm.open_unanswered, None);
     assert!(app.evm.after_open.is_empty());
     assert_eq!(app.controls.take_shell_log(), ["refresh", "refresh"]);
     assert_eq!(app.banners.len(), banners + 1);
-    app.on_cmd(answer(shown));
+    app.dispatch(answer(shown));
     assert_eq!(app.controls.take_shell_log(), Vec::<String>::new());
     assert_eq!(
         format!(
@@ -1534,4 +1606,237 @@ fn form_steps_wait_for_the_shown_window() {
     assert!(!printed.contains("sixteen"), "{printed}");
     assert_eq!(session.mark_shown(), Some(forms));
     assert_eq!(session.mark_shown(), None);
+}
+
+// ---- The outbox's source checks (2026-11-20, S4 P10b; plan §4.4 S4, critique A-14 S9, A-16 S10) --
+
+/// The scanned source `file` (`crate/src/path`); fails when it was not scanned (A-20).
+fn src_of<'a>(files: &'a [Src], file: &str) -> &'a Src {
+    let found = files.iter().find(|src| src.file == file);
+    assert!(found.is_some(), "{file} not scanned");
+    found.unwrap()
+}
+
+/// The bodies (from `fn` to the closing brace) of every fn named `name` in `src`.
+fn fn_bodies<'a>(src: &'a Src, name: &str) -> Vec<&'a str> {
+    let code = &src.code;
+    let mut bodies = Vec::new();
+    for pattern in [format!("fn {name}("), format!("fn {name}<")] {
+        for (at, _) in code.match_indices(&pattern) {
+            if at > 0 && is_ident(code.as_bytes()[at - 1]) {
+                continue;
+            }
+            let Some(open) = code[at..].find('{').map(|n| at + n) else {
+                continue;
+            };
+            bodies.push(&code[at..=close_of(code.as_bytes(), open)]);
+        }
+    }
+    bodies
+}
+
+/// The blocks of `impl Handler for …` in `src` (the trait named plain or by path).
+fn handler_impls(src: &Src) -> Vec<&str> {
+    let code = &src.code;
+    let mut impls = Vec::new();
+    for (at, _) in code.match_indices("impl ") {
+        if at > 0 && is_ident(code.as_bytes()[at - 1]) {
+            continue;
+        }
+        let Some(open) = code[at..].find('{').map(|n| at + n) else {
+            continue;
+        };
+        let head = code[at..open]
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        if head.starts_with("impl Handler for ")
+            || head.starts_with("impl yw_win::ui::Handler for ")
+        {
+            impls.push(&code[at..=close_of(code.as_bytes(), open)]);
+        }
+    }
+    impls
+}
+
+/// The body block of every fn of `src` (the outermost block whose head names `fn`), with the
+/// fn's name.
+fn fn_blocks(src: &Src) -> Vec<(String, &str)> {
+    let mut found = Vec::new();
+    for block in &src.blocks {
+        let block_head = head(&src.code, block.open);
+        let Some((_, after)) = block_head.rsplit_once("fn ") else {
+            continue;
+        };
+        if !has_word(block_head, "fn") {
+            continue;
+        }
+        let name: String = after
+            .trim_start()
+            .chars()
+            .take_while(|&c| c.is_ascii_alphanumeric() || c == '_')
+            .collect();
+        found.push((name, &src.code[block.open..=block.close]));
+    }
+    found
+}
+
+/// S4 `effects_are_never_posted` (plan §4.4, 2026-11-20 S4 P10b): the effect executor
+/// (`app_effects.rs`) posts no message, keeps no poster and starts no thread — every effect is
+/// applied inside the `App` borrow of the entry that emitted it (`App::drain`), never deferred
+/// past it (spec/01 §7.7, spec/15 §11.4 S3 item 4). Also: `emit` only queues, and `drain`
+/// empties the queue in order.
+#[test]
+fn effects_are_never_posted() {
+    let files = production_code();
+    let effects = src_of(&files, "yw-app/src/app_effects.rs");
+    for banned in ["PostMessage", ".post(", "Poster", "poster", "spawn("] {
+        assert!(
+            !effects.code.contains(banned),
+            "app_effects.rs names {banned}"
+        );
+    }
+    let emit = fn_bodies(effects, "emit");
+    assert_eq!(emit.len(), 1, "one emit");
+    assert!(
+        emit[0].contains("self.outbox.push_back(effect);")
+            && !emit[0].contains("self.apply(")
+            && !emit[0].contains(".drain()")
+            && !emit[0].contains("self.on_cmd("),
+        "emit only queues: {}",
+        emit[0]
+    );
+    let drain = fn_bodies(effects, "drain");
+    assert_eq!(drain.len(), 1, "one drain");
+    assert!(
+        drain[0].contains("while let Some(effect) = self.outbox.pop_front()"),
+        "drain empties the queue in order: {}",
+        drain[0]
+    );
+}
+
+/// S9 `every_handler_drains` (critique A-14, 2026-11-20 S4 P10b): every window handler of
+/// yw-app (`impl Handler for`) checks that the outbox is empty when its message arrives
+/// (`assert_outbox_empty`) and drains before it returns — itself (`.drain()`, `.dispatch(`) or
+/// through a fn whose own body drains (`surface_entry`) — and so does `main.rs`'s loop observer.
+/// Finds at least the main and the approval windows' `Forward` (A-20).
+#[test]
+fn every_handler_drains() {
+    let files: Vec<Src> = production_code()
+        .into_iter()
+        .filter(|src| src.file.starts_with("yw-app/"))
+        .collect();
+    // The fns whose own body drains (one level).
+    let mut drainers = BTreeSet::new();
+    for src in &files {
+        for (at, _) in src.code.match_indices("self.drain()") {
+            if let Some(func) = fn_at(&src.code, &src.blocks, at) {
+                drainers.insert(func);
+            }
+        }
+    }
+    let mut handlers = 0;
+    for src in &files {
+        for block in handler_impls(src) {
+            handlers += 1;
+            assert!(
+                block.contains(".assert_outbox_empty()"),
+                "{}: a handler that does not check the outbox when a message arrives",
+                src.file
+            );
+            let drains = block.contains(".drain()")
+                || block.contains(".dispatch(")
+                || drainers
+                    .iter()
+                    .any(|func| block.contains(&format!(".{func}(")));
+            assert!(drains, "{}: a handler that does not drain", src.file);
+        }
+    }
+    assert!(handlers >= 2, "{handlers} handlers found");
+    let main = src_of(&files, "yw-app/src/main.rs");
+    let observer = main
+        .code
+        .find("observer.try_borrow_mut()")
+        .expect("the loop observer");
+    let rest = &main.code[observer..];
+    let check = rest
+        .find("state.assert_outbox_empty();")
+        .expect("its check");
+    let drain = rest.find("state.drain();").expect("its drain");
+    assert!(check < drain, "the observer checks, then drains");
+}
+
+/// S10 (critique A-16, 2026-11-20 S4 P10b): the dApp answer, the RPC and the key jobs stay
+/// direct sends, never effects — no `Effect` variant names one and the executor sends none — so
+/// the outbox cannot reorder them against the logic. A grant check and the answer it guards stay
+/// in one fn with no `emit` between them (spec/05 §4.5), and no `emit` comes before a broadcast
+/// in its fn (the journal result and its `RpcJob::Broadcast`, spec/03 §4.3).
+#[test]
+fn answers_and_jobs_are_never_effects() {
+    let files = production_code();
+    let effect = src_of(&files, "yw-engine/src/effect.rs");
+    let start = effect
+        .code
+        .find("pub enum Effect {")
+        .expect("the Effect enum");
+    let open = start + "pub enum Effect ".len();
+    let variants = &effect.code[open..=close_of(effect.code.as_bytes(), open)];
+    // Whole names (`AwaitKeyLock` is the lock's wait for the key worker, not a key job).
+    for banned in [
+        "Respond",
+        "Reply",
+        "Rpc",
+        "RpcJob",
+        "Key",
+        "KeyJob",
+        "Broadcast",
+        "Sign",
+    ] {
+        assert!(
+            !has_word(variants, banned),
+            "an Effect variant names {banned}"
+        );
+    }
+    let app = src_of(&files, "yw-app/src/app.rs");
+    let approval = src_of(&files, "yw-app/src/app_approval.rs");
+    let secret_arm = fn_bodies(app, "apply_secret_effect");
+    let approval_arm = fn_bodies(approval, "apply_approval_effect");
+    assert_eq!((secret_arm.len(), approval_arm.len()), (1, 1));
+    let executor = [
+        src_of(&files, "yw-app/src/app_effects.rs").code.as_str(),
+        secret_arm[0],
+        approval_arm[0],
+    ];
+    for code in executor {
+        for banned in [".respond(", ".rpc(", ".key(", "rpc_tx", "key_queue"] {
+            assert!(!code.contains(banned), "the executor sends {banned}");
+        }
+    }
+    let mut guarded = 0;
+    let mut broadcasts = 0;
+    for src in &files {
+        for (name, body) in fn_blocks(src) {
+            if let (Some(check), Some(answer)) =
+                (body.find("_grant_holds("), body.rfind(".respond("))
+                && check < answer
+            {
+                guarded += 1;
+                assert!(
+                    !body[check..answer].contains("self.emit("),
+                    "{}: fn {name} emits between its grant check and its answer",
+                    src.file
+                );
+            }
+            if let Some(at) = body.find("RpcJob::Broadcast") {
+                broadcasts += 1;
+                assert!(
+                    !body[..at].contains("self.emit("),
+                    "{}: fn {name} emits before its broadcast",
+                    src.file
+                );
+            }
+        }
+    }
+    assert!(guarded >= 2, "{guarded} grant-checked answers found");
+    assert!(broadcasts >= 2, "{broadcasts} broadcasts found");
 }
