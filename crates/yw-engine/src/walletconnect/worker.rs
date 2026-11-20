@@ -100,14 +100,19 @@ pub fn connect_error(error: yw_platform::http::HttpError) -> ConnectError {
 }
 
 /// UI commands.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// 2026-11-21 (S4 F15): `Debug` is written by hand so that `Pair` prints its length only (the
+/// link holds the `symKey`); the other variants print as the derived `Debug` did. Nothing prints
+/// a `WcCommand` today.
+#[derive(Clone, PartialEq, Eq)]
 pub enum WcCommand {
     /// The Reown project id (`None`: not set — the relay stays off).
     Configure(Option<String>),
     /// The unlocked meta state (first unlock only; later ones keep the live state).
     Load(Box<WcStore>),
-    /// A pasted or decoded pairing URI.
-    Pair(String),
+    /// A pasted or decoded pairing URI. Wiped on drop (2026-11-21, S4 F15, spec/13 §6: the
+    /// link holds the `symKey`; before, a plain `String`, `wc_pair`'s trimmed copy).
+    Pair(Zeroizing<String>),
     /// Disconnect one session.
     Disconnect([u8; 32]),
     /// The dispatcher's grants changed (the UI wrote them: an account hidden or removed, a site
@@ -116,6 +121,19 @@ pub enum WcCommand {
     SyncGrants,
     /// Stop.
     Shutdown,
+}
+
+impl core::fmt::Debug for WcCommand {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Configure(project) => formatter.debug_tuple("Configure").field(project).finish(),
+            Self::Load(store) => formatter.debug_tuple("Load").field(store).finish(),
+            Self::Pair(text) => formatter.debug_tuple("Pair").field(&text.len()).finish(),
+            Self::Disconnect(topic) => formatter.debug_tuple("Disconnect").field(topic).finish(),
+            Self::SyncGrants => formatter.write_str("SyncGrants"),
+            Self::Shutdown => formatter.write_str("Shutdown"),
+        }
+    }
 }
 
 /// The relay state for the UI.

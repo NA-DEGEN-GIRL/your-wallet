@@ -1013,7 +1013,9 @@ fn mocked_end_to_end_session() {
             sessions: Vec::new(),
         },
     ))));
-    worker.handle(Input::Command(WcCommand::Pair(uri)));
+    worker.handle(Input::Command(WcCommand::Pair(
+        yw_core::secret::Zeroizing::new(uri),
+    )));
     worker.tick();
     let url = urls.lock().unwrap()[0].clone();
     assert!(url.starts_with(
@@ -1466,4 +1468,35 @@ fn relay_ua_names_the_platform() {
         super::worker::relay_ua("android"),
         format!("wc-2/rust-yourwallet-{version}/android")
     );
+}
+
+/// S4 F15 (2026-11-21, spec/13 §6, spec/15 §18 item 15): the QR decoder's grayscale copy and
+/// the pairing link handed to the worker are wiped buffers, and `WcCommand`'s `Debug` prints the
+/// link's length only (the link holds the `symKey`); the other variants print as before.
+#[test]
+fn qr_buffers_are_wiped_and_pair_debug_prints_the_length_only() {
+    use super::qr_decode::{Gray, decode, decode_bgra_text};
+    use super::worker::WcCommand;
+    let link = "wc:7f6e@2?relay-protocol=irn&symKey=0123";
+    let pair = WcCommand::Pair(yw_core::secret::Zeroizing::new(link.to_owned()));
+    let printed = format!("{pair:?}");
+    assert_eq!(printed, format!("Pair({})", link.len()));
+    assert!(!printed.contains("symKey"));
+    assert_eq!(format!("{:?}", WcCommand::SyncGrants), "SyncGrants");
+    assert_eq!(format!("{:?}", WcCommand::Shutdown), "Shutdown");
+    assert_eq!(
+        format!("{:?}", WcCommand::Disconnect([0; 32])),
+        format!("Disconnect({:?})", [0_u8; 32])
+    );
+    assert_eq!(
+        format!("{:?}", WcCommand::Configure(Some("p".to_owned()))),
+        "Configure(Some(\"p\"))"
+    );
+    // Sizes are checked as before: a wrong length is refused, a blank image has no code.
+    assert!(Gray::new(4, 4, vec![255; 15]).is_none());
+    assert!(Gray::from_bgra(2, 2, &[255; 15]).is_none());
+    let blank = Gray::from_bgra(8, 8, &[255; 8 * 8 * 4]).unwrap();
+    assert_eq!(blank, Gray::new(8, 8, vec![255; 64]).unwrap());
+    assert!(decode(&blank).is_none());
+    assert!(decode_bgra_text(8, 8, &[255; 8 * 8 * 4]).is_none());
 }

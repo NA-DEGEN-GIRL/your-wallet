@@ -21,11 +21,15 @@ use yw_core::secret::Zeroizing;
 pub const MAX_PIXELS: usize = 64 * 1_024 * 1_024;
 
 /// A grayscale image (0 = black, 255 = white).
+///
+/// 2026-11-21 (S4 F15, owner decision spec/15 §18 item 15): the luma bytes are wiped on drop
+/// (`Zeroizing`), since a screenshot of a pairing QR shows the link and its `symKey`. Before, a
+/// plain `Vec`, left in freed memory after a QR press.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Gray {
     width: usize,
     height: usize,
-    data: Vec<u8>,
+    data: Zeroizing<Vec<u8>>,
 }
 
 impl core::fmt::Debug for Gray {
@@ -35,9 +39,14 @@ impl core::fmt::Debug for Gray {
 }
 
 impl Gray {
-    /// From luminance bytes (`width × height`).
+    /// From luminance bytes (`width × height`). Takes the buffer without a copy and wipes it on
+    /// drop, also when the size is refused (2026-11-21, S4 F15).
     #[must_use]
     pub fn new(width: usize, height: usize, data: Vec<u8>) -> Option<Self> {
+        Self::from_wiped(width, height, Zeroizing::new(data))
+    }
+
+    fn from_wiped(width: usize, height: usize, data: Zeroizing<Vec<u8>>) -> Option<Self> {
         (width > 0
             && height > 0
             && width.checked_mul(height)? == data.len()
@@ -50,23 +59,23 @@ impl Gray {
     }
 
     /// From BGRA pixels (top row first); transparent pixels count as white.
+    ///
+    /// 2026-11-21 (S4 F15): the luma is built in a wiped buffer reserved once at full size (so it
+    /// never reallocates), as `dib_to_bgra` builds its pixels. Before, a plain `collect`.
     #[must_use]
     pub fn from_bgra(width: usize, height: usize, pixels: &[u8]) -> Option<Self> {
         if width.checked_mul(height)?.checked_mul(4)? != pixels.len() {
             return None;
         }
-        let data = pixels
-            .chunks_exact(4)
-            .map(|pixel| {
-                let [b, g, r, a] =
-                    [0, 1, 2, 3].map(|i| u32::from(pixel.get(i).copied().unwrap_or(0)));
-                let luma = (r * 299 + g * 587 + b * 114) / 1_000;
-                // Composite over white.
-                let value = (luma * a + 255 * (255 - a)) / 255;
-                u8::try_from(value.min(255)).unwrap_or(255)
-            })
-            .collect();
-        Self::new(width, height, data)
+        let mut data = Zeroizing::new(Vec::with_capacity(pixels.len() / 4));
+        data.extend(pixels.chunks_exact(4).map(|pixel| {
+            let [b, g, r, a] = [0, 1, 2, 3].map(|i| u32::from(pixel.get(i).copied().unwrap_or(0)));
+            let luma = (r * 299 + g * 587 + b * 114) / 1_000;
+            // Composite over white.
+            let value = (luma * a + 255 * (255 - a)) / 255;
+            u8::try_from(value.min(255)).unwrap_or(255)
+        }));
+        Self::from_wiped(width, height, data)
     }
 
     fn at(&self, x: usize, y: usize) -> u8 {
@@ -220,7 +229,7 @@ impl Bits {
 
 fn otsu(gray: &Gray) -> u8 {
     let mut histogram = [0_u64; 256];
-    for value in &gray.data {
+    for value in &*gray.data {
         if let Some(slot) = histogram.get_mut(usize::from(*value)) {
             *slot += 1;
         }
@@ -1406,8 +1415,17 @@ pub fn decode(gray: &Gray) -> Option<Vec<u8>> {
 }
 
 /// [`decode`] of BGRA pixels, as UTF-8 text.
+///
+/// 2026-11-21 (S4 F15, spec/13 §6): the decoded bytes are wiped on drop, also when they are not
+/// UTF-8, and the text is a wiped copy (reserved once at full size). Before, a plain `String`
+/// made with `String::from_utf8`, whose error dropped the bytes unwiped. The decoder's inner
+/// buffers (binarised images, sampled grid, codewords, segments) are still plain (spec/13 §6).
 #[must_use]
-pub fn decode_bgra_text(width: usize, height: usize, pixels: &[u8]) -> Option<String> {
+pub fn decode_bgra_text(width: usize, height: usize, pixels: &[u8]) -> Option<Zeroizing<String>> {
     let gray = Gray::from_bgra(width, height, pixels)?;
-    String::from_utf8(decode(&gray)?).ok()
+    let bytes = Zeroizing::new(decode(&gray)?);
+    let text = core::str::from_utf8(&bytes).ok()?;
+    let mut owned = Zeroizing::new(String::with_capacity(text.len()));
+    owned.push_str(text);
+    Some(owned)
 }

@@ -581,6 +581,10 @@ impl App {
     // ----- panel actions ---------------------------------------------------------------
 
     /// Pairs with a pasted or decoded URI.
+    ///
+    /// 2026-11-21 (S4 F15, spec/13 §6): the trimmed copy sent to the worker is wiped on drop
+    /// (`WcCommand::Pair(Zeroizing<String>)`, reserved once at full size). Before, a plain
+    /// `String` (`text.trim().to_owned()`).
     pub(crate) fn wc_pair(&mut self, text: &str) {
         if self.settings.walletconnect_project.is_empty() {
             self.wc_notice(text::PAIR_NO_PROJECT);
@@ -595,7 +599,10 @@ impl App {
             return;
         }
         self.wc_after_unlock();
-        self.wc_send(WcCommand::Pair(text.trim().to_owned()));
+        let trimmed = text.trim();
+        let mut link = yw_core::secret::Zeroizing::new(String::with_capacity(trimmed.len()));
+        link.push_str(trimmed);
+        self.wc_send(WcCommand::Pair(link));
         self.wc.uri_text.clear();
         logging::info("walletconnect", "pair", &[]);
     }
@@ -627,6 +634,8 @@ impl App {
     /// drop (the pixels also when `dib_to_bgra` refuses a `CF_DIB` partway, since the P5 review:
     /// it builds them in a wiped buffer; before, this wrapped them only on success). The
     /// decoder's grayscale copy and the decoded link text are not wiped yet (spec/13 §6).
+    /// 2026-11-21 (S4 F15): they are now: `qr_decode::Gray`'s luma, `decode_bgra_text`'s text
+    /// and `wc_pair`'s trimmed copy are wiped on drop; the decoder's inner buffers stay plain.
     pub(crate) fn wc_clipboard_qr(&mut self, clip: ClipInput) {
         match clip {
             ClipInput::WinDib(dib) => match crate::walletconnect::qr_decode::dib_to_bgra(&dib) {

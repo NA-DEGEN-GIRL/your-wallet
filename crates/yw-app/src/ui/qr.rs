@@ -367,7 +367,8 @@ mod decode_round_trip {
     fn decode_scene(qr: &QrCode, scene: &Scene) -> Option<String> {
         let (size, modules) = matrix(qr);
         let pixels = render(size, &modules, scene);
-        decode_bgra_text(scene.width, scene.height, &pixels)
+        // 2026-11-21 (S4 F15): the decoder returns a wiped `Zeroizing<String>`; tests compare a copy.
+        decode_bgra_text(scene.width, scene.height, &pixels).map(|text| text.as_str().to_owned())
     }
 
     /// Codes made by the app's own encoder (`qrcodegen`), several versions and levels, upright.
@@ -439,7 +440,9 @@ mod decode_round_trip {
         let scene = scene(500, 500, 4.0, 0.0);
         let pixels = render(size, &modules, &scene);
         assert_eq!(
-            decode_bgra_text(scene.width, scene.height, &pixels).as_deref(),
+            decode_bgra_text(scene.width, scene.height, &pixels)
+                .as_deref()
+                .map(String::as_str),
             Some(URI)
         );
         // No code at all.
