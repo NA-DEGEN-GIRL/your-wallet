@@ -6939,13 +6939,18 @@ fn keys_resolve_in_the_shell_and_the_scroll_memory_follows_screen_entries() {
 /// outbox will (P10b) — leaves the same scroll offset and memory as applying each at once. Before
 /// P10a the shell read the wallet's screen, previous screen and tab when it applied them: held,
 /// a tab switch filed the old tab's offset under the new tab, and a way back found the offset of
-/// the screen it came from.
+/// the screen it came from. 2026-11-20 (S4 P10a review): each scenario also pins the offset it
+/// leaves, and a fourth closes an overlay onto another screen than the one it opened over (that
+/// screen opens at its top and the offset noted under the overlay is dropped; before, only the
+/// overlay closing back onto its own screen was run, so `EnteredAt::UnderOverlay { same }` was
+/// pinned for `same == true` only).
 #[test]
 fn scroll_effects_carry_what_they_read() {
     use crate::app::SettingsSection;
     type Steps = fn(&mut App);
-    // (setup, the steps whose effects are applied at once or held until they returned)
-    let scenarios: [(&str, Steps, Steps); 3] = [
+    // (setup, the steps whose effects are applied at once or held until they returned, the
+    // scroll offset they leave)
+    let scenarios: [(&str, Steps, Steps, i32); 4] = [
         (
             "tab",
             |app| app.scroll = 640,
@@ -6953,6 +6958,7 @@ fn scroll_effects_carry_what_they_read() {
                 app.tab_shortcut(3);
                 app.tab_shortcut(1);
             },
+            0,
         ),
         (
             "back",
@@ -6964,6 +6970,7 @@ fn scroll_effects_carry_what_they_read() {
                 app.set_screen(Screen::Main);
                 app.return_to(Screen::Settings(SettingsSection::Security));
             },
+            240,
         ),
         (
             "overlay",
@@ -6975,9 +6982,22 @@ fn scroll_effects_carry_what_they_read() {
                 app.set_screen(Screen::Confirm(Confirm::CopyOn));
                 app.set_screen(Screen::Settings(SettingsSection::Security));
             },
+            240,
+        ),
+        (
+            "overlay elsewhere",
+            |app| {
+                app.set_screen(Screen::Settings(SettingsSection::Security));
+                app.scroll = 240;
+            },
+            |app| {
+                app.set_screen(Screen::Confirm(Confirm::CopyOn));
+                app.set_screen(Screen::Main);
+            },
+            0,
         ),
     ];
-    for (name, setup, steps) in scenarios {
+    for (name, setup, steps, scroll) in scenarios {
         let mut seen = Vec::new();
         for held in [false, true] {
             let (mut app, dir) = unlocked_app(&format!("scroll-{name}-{held}"), false);
@@ -6995,6 +7015,12 @@ fn scroll_effects_carry_what_they_read() {
                 "{name}: scroll {} memory {:?}",
                 app.scroll, app.scroll_memory
             ));
+            // The offset left, and the one noted under an overlay is used up when it closes.
+            assert_eq!(
+                (app.scroll, app.scroll_memory.under_overlay),
+                (scroll, None),
+                "{name}, held {held}"
+            );
             let _ = std::fs::remove_dir_all(dir);
         }
         assert_eq!(

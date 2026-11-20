@@ -286,10 +286,13 @@ impl App {
 
     /// `Effect::ScreenLeaving` (2026-11-20, S4 P4; the first scroll steps of `App::enter_screen`
     /// before, in the same order): an overlay opening over the screen shown now notes where that
-    /// screen is scrolled (`overlay_opens`), and leaving it for another screen (`changes`) notes
-    /// screen being left. 2026-11-20 (S4 P10a): `left` is that screen's place when another
-    /// screen follows, worked out by `App::enter_screen` (before, the flag `changes`, and the
-    /// place read here).
+    /// screen is scrolled, for when the overlay closes (`overlay_opens`); when another screen
+    /// follows, the offset is noted under the place of the screen being left (`left`), for a way
+    /// back to it. Emitted while the wallet's screen is still the one being left.
+    ///
+    /// 2026-11-20 (S4 P10a): `left` is worked out by `App::enter_screen` (`None` when the screen
+    /// stays, or has no remembered place). Before, the effect carried the flag `changes` (another
+    /// screen follows) and this arm read the place of the wallet's screen while it applied it.
     pub(crate) fn screen_leaving(&mut self, overlay_opens: bool, left: Option<ScrollPlace>) {
         if overlay_opens {
             self.scroll_memory.under_overlay = Some(self.scroll_dip());
@@ -298,14 +301,17 @@ impl App {
     }
 
     /// `Effect::ScreenEntered` (2026-11-20, S4 P4; the restore steps of `App::enter_screen`
-    /// before): where the screen just entered (the wallet's screen now) opens — under a closing
-    /// overlay (`overlay`) where it was when the overlay opened, if it is that screen; on a way
-    /// back (`back`) where it was left in this run; else at the top. The layout that follows cuts
-    /// the offset to the content height. Any wheel glide ends.
+    /// before): where the screen just entered opens (`at`). Under a closing overlay
+    /// (`EnteredAt::UnderOverlay`) the offset noted when the overlay opened is used up: the
+    /// screen opens there if it is the screen the overlay opened over (`same`), else at its top.
+    /// On a way back (`EnteredAt::LeftAt`) it opens where its place was left in this run, else
+    /// at the top (`EnteredAt::Top`). The layout that follows cuts the offset to the content
+    /// height. Any wheel glide ends.
     ///
-    /// 2026-11-20 (S4 P10a): `at` says which of the three, worked out by `App::enter_screen` from
-    /// the screen entered and the one left (before, the flags `back` and `overlay`, and the
-    /// screens read here).
+    /// 2026-11-20 (S4 P10a): `at` is worked out by `App::enter_screen` from the screen entered
+    /// and the one left. Before, the effect carried the flags `back` (a way back) and `overlay`
+    /// (an overlay closes), and this arm read the wallet's screen and previous screen while it
+    /// applied it.
     pub(crate) fn screen_entered(&mut self, at: yw_engine::screen::EnteredAt) {
         use yw_engine::screen::EnteredAt;
         let restore = match at {
