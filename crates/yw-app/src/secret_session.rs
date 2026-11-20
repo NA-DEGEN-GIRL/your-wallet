@@ -21,10 +21,18 @@
 //! shown once its window is shown ([`AfterShown::YkWordsShown`]); before, the handler read the
 //! session right after the open (`App::on_yk_outcome`). Before P7b `App::open_display` made the
 //! window and moved the secret into its form itself.
+//!
+//! 2026-11-20 (S4 P9, plan §4.4 S5): the form operations a handler made right after an open
+//! (`App::secret_form`, which reads the session to find the window: an error line, W11's card
+//! lines, PIN tries, an information line) travel with the session too ([`AfterShown::Forms`])
+//! and are made when the window is shown, in their order; a refused or failed window makes none,
+//! as before (the session had ended when the handler's `secret_form` ran). Before, the handler
+//! called `secret_form` after the open returned — the same point while the executor applies
+//! effects at once.
 
 use core::fmt;
 
-use yw_engine::secret::SecretKind;
+use yw_engine::secret::{SecretFormOp, SecretKind};
 
 use crate::app::Purpose;
 use crate::ui::secret::DisplaySecret;
@@ -50,8 +58,9 @@ pub(crate) struct SecretSession {
 }
 
 /// A step the logic takes when the shell reports the session's window shown: never before, and
-/// never for a window that was refused or failed (2026-11-20, S4 P7a2).
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// never for a window that was refused or failed (2026-11-20, S4 P7a2). 2026-11-20 (S4 P9): no
+/// longer `Copy` (`Forms` holds texts).
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) enum AfterShown {
     /// W12: read the PIN counters of card `card` (`YkJob::Counters(CounterTarget::Card)`), which
     /// the window shows before the PIN is entered (spec/10 §9.1).
@@ -59,6 +68,11 @@ pub(crate) enum AfterShown {
     /// W08 of a new `YubiKey` wallet: its words count as shown (`App::yk_words`, unless they are
     /// already further on) — 2026-11-20, S4 P7b.
     YkWordsShown,
+    /// The window's form operations, made in this order (`App::secret_form`) — 2026-11-20, S4
+    /// P9: the error line of a window opened again after a refused preview (W05, W07), W11's
+    /// card, details and error lines, the PIN tries of a card secret window and of the connect
+    /// PIN, the passphrase window's information line. Fixed, error and card texts, never a secret.
+    Forms(Vec<SecretFormOp>),
 }
 
 /// The step's name only (D28; the card serial is not printed).
@@ -67,6 +81,8 @@ impl fmt::Debug for AfterShown {
         formatter.write_str(match self {
             Self::CardCounters { .. } => "CardCounters",
             Self::YkWordsShown => "YkWordsShown",
+            // The operations' own `Debug` prints names and lengths only.
+            Self::Forms(ops) => return formatter.debug_tuple("Forms").field(ops).finish(),
         })
     }
 }
@@ -106,8 +122,9 @@ impl SecretSession {
         self.display.take()
     }
 
-    /// The step to take once the window is shown (replaces one set before).
-    pub(crate) const fn then_when_shown(&mut self, after: AfterShown) {
+    /// The step to take once the window is shown (replaces one set before). 2026-11-20 (S4 P9):
+    /// no longer `const` (the step it replaces may hold texts to drop).
+    pub(crate) fn then_when_shown(&mut self, after: AfterShown) {
         self.after_shown = Some(after);
     }
 

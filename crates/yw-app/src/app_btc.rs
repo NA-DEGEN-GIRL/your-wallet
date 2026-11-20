@@ -3945,7 +3945,18 @@ impl crate::app::App {
         if actions.is_empty() {
             return;
         }
-        for action in actions {
+        self.btc_apply_rest(actions);
+    }
+
+    /// The batch from `actions` on, then its repaint (the body of [`Self::btc_apply`]). An
+    /// `Enqueue` that queued its approval hands the actions after it, and the repaint, to the
+    /// open of the approval window (`AfterOpen::BtcRest`: they run once the open is answered).
+    /// 2026-11-20 (S4 P9, plan §4.4 S5): before, they ran after `show_next_approval` returned —
+    /// the same point while the executor applies effects at once. The controller puts `Enqueue`
+    /// last, so the rest is the repaint alone.
+    pub(crate) fn btc_apply_rest(&mut self, actions: Vec<BtcAction>) {
+        let mut actions = actions.into_iter();
+        while let Some(action) = actions.next() {
             match action {
                 BtcAction::Key(job) => self.key(*job),
                 BtcAction::Rpc(job) => {
@@ -3993,12 +4004,12 @@ impl crate::app::App {
                         )
                         .is_ok()
                     {
-                        self.show_next_approval();
-                    } else {
-                        self.btc.slot = false;
-                        self.btc.send.info =
-                            Some(ErrorCode::App005.text_in(self.settings.language));
+                        let rest = actions.collect();
+                        self.show_next_approval_then(crate::app_approval::AfterOpen::BtcRest(rest));
+                        return;
                     }
+                    self.btc.slot = false;
+                    self.btc.send.info = Some(ErrorCode::App005.text_in(self.settings.language));
                 }
                 BtcAction::SaveSettings(bitcoin, key) => {
                     if !self.btc_save_settings(&bitcoin, key) {

@@ -333,14 +333,16 @@ impl App {
             .iter()
             .any(|slot| slot.role.curve() == Curve::Secp256k1);
         let lines = self.yk_connect_pin_lines(piv);
-        self.open_input(
+        // 2026-11-20 (S4 P9): the tries left are made once the window is shown (before,
+        // `secret_form` right after the open; a refused window got none either way).
+        let tries = (!lines.is_empty())
+            .then(|| crate::secret_session::AfterShown::Forms(vec![SecretFormOp::Details(lines)]));
+        self.open_input_with(
             SecretKind::CardSecret(CardSecretKind::UserPin { piv }),
             Purpose::YubiKey(YkPurpose::ConnectPin),
             false,
+            tries,
         );
-        if !lines.is_empty() {
-            self.secret_form(SecretFormOp::Details(lines));
-        }
     }
 
     /// The tries left read by the scan (shown before the PIN is entered, spec/10 §9.1).

@@ -2635,8 +2635,14 @@ impl App {
                 };
                 self.import.phrase = None;
                 self.set_screen(Screen::ImportIntro);
-                self.open_input(SecretKind::Mnemonic, Purpose::ImportMnemonic, false);
-                self.secret_form(SecretFormOp::Error(Some(message)));
+                // 2026-11-20 (S4 P9): the error line is made once the window is shown (before,
+                // `secret_form` right after the open; a refused window got none either way).
+                self.open_input_then(
+                    SecretKind::Mnemonic,
+                    Purpose::ImportMnemonic,
+                    false,
+                    AfterShown::Forms(vec![SecretFormOp::Error(Some(message))]),
+                );
             }
             KeyOutcome::Imported(Ok(())) => {
                 self.import = ImportFlow::default();
@@ -3017,19 +3023,24 @@ impl App {
                     VaultStatus::PassphraseRequired => {
                         self.passphrase_session = true;
                         self.set_screen(Screen::Locked);
-                        self.open_input(
+                        // Several mnemonics use a passphrase: say which one is asked for.
+                        // 2026-11-20 (S4 P9): the line is made once the window is shown; the
+                        // note is taken before the open (was right after it: the open's answer
+                        // does not touch it, and a refused window took it too).
+                        let info = self.mn.passphrase_for.take().map(|(position, count)| {
+                            AfterShown::Forms(vec![SecretFormOp::Info(Some(
+                                text::PASSPHRASE_FOR.fill(
+                                    self.settings.language,
+                                    [&count.to_string(), &position.to_string()],
+                                ),
+                            ))])
+                        });
+                        self.open_input_with(
                             SecretKind::Passphrase { confirm: false },
                             Purpose::EnterPassphrase,
                             false,
+                            info,
                         );
-                        // Several mnemonics use a passphrase: say which one is asked for.
-                        if let Some((position, count)) = self.mn.passphrase_for.take() {
-                            let info = text::PASSPHRASE_FOR.fill(
-                                self.settings.language,
-                                [&count.to_string(), &position.to_string()],
-                            );
-                            self.secret_form(SecretFormOp::Info(Some(info)));
-                        }
                     }
                     VaultStatus::PassphraseMismatch => {
                         self.close_secret();
@@ -3309,7 +3320,9 @@ impl App {
         self.open_input_with(kind, purpose, topmost, Some(after));
     }
 
-    fn open_input_with(
+    /// [`Self::open_input`] or [`Self::open_input_then`], by whether the opener has a step for
+    /// the shown window (2026-11-20, S4 P9: `pub(crate)` for an opener whose step is optional).
+    pub(crate) fn open_input_with(
         &mut self,
         kind: SecretKind,
         purpose: Purpose,
@@ -3511,6 +3524,13 @@ impl App {
                     self.yk_words = crate::app_yubikey::YkWords::Shown;
                 }
                 Some(AfterShown::YkWordsShown) | None => {}
+                // 2026-11-20 (S4 P9): the opener's form operations, now that its window is shown
+                // (before, the opener made them right after the open returned).
+                Some(AfterShown::Forms(ops)) => {
+                    for op in ops {
+                        self.secret_form(op);
+                    }
+                }
             },
             OpenOutcome::Refused(code) => {
                 let purpose = session.purpose();
@@ -4489,11 +4509,16 @@ impl App {
             // One input of an approval window (S4 B6): dropped unless it is the shown window's.
             Cmd::Approval(input) => self.on_approval_input(input),
             // The approval window's open (`Effect::Approval(Open)`, S4 B5).
+            // 2026-11-20 (S4 P9): then the steps its opener left for after the open
+            // (`AfterOpen`; before, the opener ran them after `show_next_approval` returned).
             Cmd::ApprovalOpened {
                 shown,
                 outcome,
                 wide,
-            } => self.on_approval_opened(shown, outcome, wide),
+            } => {
+                self.on_approval_opened(shown, outcome, wide);
+                self.after_approval_opened(shown);
+            }
             // An explorer link's open (`Effect::OpenUrl`, S4 P3).
             Cmd::Opened { ok, which } => self.on_opened(ok, which),
             // The extension folder was not found (`Effect::OpenFolder`, S4 P3).

@@ -24,6 +24,8 @@ use yw_engine::cmd::{MnPress, Row};
 use yw_engine::form::EditField;
 use yw_engine::secret::{SecretFormOp, SecretKind};
 
+use crate::secret_session::AfterShown;
+
 /// What a secret window of the recovery-phrase flows is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MnPurpose {
@@ -1194,8 +1196,15 @@ impl App {
                     }
                     _ => code.text_in(lang),
                 };
-                self.open_mn_input(SecretKind::Mnemonic, MnPurpose::ImportWords);
-                self.secret_form(SecretFormOp::Error(Some(message)));
+                // 2026-11-20 (S4 P9): the error line is made once W05 is shown (before,
+                // `secret_form` right after `open_mn_input`; a refused window got none either
+                // way).
+                self.open_input_then(
+                    SecretKind::Mnemonic,
+                    Purpose::Mnemonics(MnPurpose::ImportWords),
+                    false,
+                    AfterShown::Forms(vec![SecretFormOp::Error(Some(message))]),
+                );
             }
             MnOutcome::Discarded => {}
             MnOutcome::Added(Ok(_)) => {

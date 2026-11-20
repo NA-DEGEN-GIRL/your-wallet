@@ -1072,12 +1072,16 @@ impl App {
                     }
                     _ => code.text_in(self.settings.language),
                 };
-                self.open_input(
+                // 2026-11-20 (S4 P9): the error line is made once W05 is shown (before,
+                // `secret_form` right after the open; a refused window got none either way).
+                self.open_input_then(
                     SecretKind::Mnemonic,
                     crate::app::Purpose::YubiKey(YkPurpose::ReslotMnemonic),
                     false,
+                    crate::secret_session::AfterShown::Forms(vec![SecretFormOp::Error(Some(
+                        message,
+                    ))]),
                 );
-                self.secret_form(SecretFormOp::Error(Some(message)));
             }
             Err(error) => {
                 if let Some(flow) = self.reslot() {

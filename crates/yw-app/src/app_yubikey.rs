@@ -986,14 +986,17 @@ impl App {
         if adopt {
             self.yk_run(Zeroizing::new(Vec::new()), Zeroizing::new(Vec::new()), None);
         } else if pgp {
-            self.open_input(
+            // 2026-11-20 (S4 P9): the tries left are made once the window is shown (before,
+            // `yk_show_counters` right after the open, whose purpose check a refused window
+            // failed).
+            let tries =
+                counters.and_then(|counters| self.yk_counter_forms(YkPurpose::AdminPin, counters));
+            self.open_input_with(
                 SecretKind::CardSecret(CardSecretKind::AdminPin),
                 Purpose::YubiKey(YkPurpose::AdminPin),
                 false,
+                tries,
             );
-            if let Some(counters) = counters {
-                self.yk_show_counters(YkPurpose::AdminPin, counters);
-            }
         } else {
             self.yk_piv_credentials(Zeroizing::new(Vec::new()), protected, custom_key, piv);
         }
@@ -1017,20 +1020,23 @@ impl App {
             } else {
                 (CardSecretKind::ManagementKey, YkPurpose::ManagementKey)
             };
-            self.open_input(
-                SecretKind::CardSecret(kind),
-                Purpose::YubiKey(purpose),
-                false,
-            );
-            if let Some(counters) = self
+            // 2026-11-20 (S4 P9): the tries left are made once the window is shown (before,
+            // `yk_show_counters` right after the open, whose purpose check a refused window
+            // failed; the card is read before the open now, which the open's answer does not
+            // change).
+            let tries = self
                 .card
                 .wizard
                 .as_ref()
                 .and_then(|wizard| wizard.card)
                 .map(|card| card.counters)
-            {
-                self.yk_show_counters(purpose, counters);
-            }
+                .and_then(|counters| self.yk_counter_forms(purpose, counters));
+            self.open_input_with(
+                SecretKind::CardSecret(kind),
+                Purpose::YubiKey(purpose),
+                false,
+                tries,
+            );
         } else {
             self.yk_run(admin_pin, Self::yk_factory_key(piv), None);
         }
@@ -1431,10 +1437,19 @@ impl App {
         if self.secret_purpose() != Some(Purpose::YubiKey(purpose)) {
             return;
         }
-        let lines = counters.lines(self.settings.language, Self::yk_counter_kinds(purpose));
-        if !lines.is_empty() {
-            self.secret_form(SecretFormOp::Details(lines));
+        if let Some(AfterShown::Forms(ops)) = self.yk_counter_forms(purpose, counters) {
+            for op in ops {
+                self.secret_form(op);
+            }
         }
+    }
+
+    /// The tries left of `purpose`'s window as its step once shown (`None`: no line to show).
+    /// 2026-11-20 (S4 P9): split out of `yk_show_counters` for the openers, which now hand the
+    /// lines to the session instead of writing the form right after the open.
+    fn yk_counter_forms(&self, purpose: YkPurpose, counters: PinCounters) -> Option<AfterShown> {
+        let lines = counters.lines(self.settings.language, Self::yk_counter_kinds(purpose));
+        (!lines.is_empty()).then(|| AfterShown::Forms(vec![SecretFormOp::Details(lines)]))
     }
 
     /// `Counters` finished: the open W11 or W12 shows the tries left.
@@ -1933,12 +1948,14 @@ impl App {
                     }
                     _ => code.text_in(self.settings.language),
                 };
-                self.open_input(
+                // 2026-11-20 (S4 P9): the error line is made once W05 is shown (before,
+                // `secret_form` right after the open; a refused window got none either way).
+                self.open_input_then(
                     SecretKind::Mnemonic,
                     Purpose::YubiKey(YkPurpose::Mnemonic),
                     false,
+                    AfterShown::Forms(vec![SecretFormOp::Error(Some(message))]),
                 );
-                self.secret_form(SecretFormOp::Error(Some(message)));
                 self.refresh();
             }
             Err(error) => {

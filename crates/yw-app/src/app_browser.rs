@@ -15,6 +15,7 @@ use yw_json::Value;
 use yw_win::pipe::ServerError;
 
 use crate::app::{App, AppMode};
+use crate::app_approval::AfterOpen;
 use crate::app_evm::QueuedItem;
 use crate::browser::envelope::accounts_value;
 use crate::browser::grants::{sites_from_values, sites_to_values};
@@ -861,13 +862,15 @@ impl App {
         {
             self.approval_finished(&item.payload, outcome);
         }
-        if shown {
-            self.show_next_approval();
-        }
         // An approved request still waiting for its YubiKey PIN ends too (4001, nothing signed;
-        // spec/10 §9.2, 2026-11-13).
-        self.card_site_check();
-        self.refresh();
+        // spec/10 §9.2, 2026-11-13). 2026-11-20 (S4 P9): after the next window's open is answered
+        // when one is asked for (`AfterOpen`; before, right after `show_next_approval` returned).
+        if shown {
+            self.show_next_approval_then(AfterOpen::CardSiteCheckThenRefresh);
+        } else {
+            self.card_site_check();
+            self.refresh();
+        }
     }
 
     /// A finished site item: its dApp answer per spec/04 §3.1 (none for `Approved`: the flow
@@ -1037,6 +1040,8 @@ impl App {
         for (item, outcome) in finished {
             self.approval_finished(&item.payload, outcome);
         }
+        // 2026-11-20 (S4 P9): the card step's check runs after the next window's open is
+        // answered when one is asked for (`AfterOpen`; before, right after `show_next_approval`).
         if self
             .evm
             .queue
@@ -1047,9 +1052,10 @@ impl App {
             if let Some((item, outcome)) = self.evm.queue.finish_shown(QueueOutcome::Revoked) {
                 self.approval_finished(&item.payload, outcome);
             }
-            self.show_next_approval();
+            self.show_next_approval_then(AfterOpen::CardSiteCheck);
+        } else {
+            self.card_site_check();
         }
-        self.card_site_check();
     }
 
     /// Disconnects a site (S13 `연결 해제`, `wallet_revokePermissions` after unlock).
@@ -1103,6 +1109,8 @@ impl App {
         for (item, outcome) in finished {
             self.approval_finished(&item.payload, outcome);
         }
+        // 2026-11-20 (S4 P9): as in `revoke_waiting`, the card step's check follows the next
+        // window's answered open (`AfterOpen`).
         if self
             .evm
             .queue
@@ -1113,9 +1121,10 @@ impl App {
             if let Some((item, outcome)) = self.evm.queue.finish_shown(QueueOutcome::Revoked) {
                 self.approval_finished(&item.payload, outcome);
             }
-            self.show_next_approval();
+            self.show_next_approval_then(AfterOpen::CardSiteCheck);
+        } else {
+            self.card_site_check();
         }
-        self.card_site_check();
     }
 
     /// A removed imported EVM key or recovery phrase took `accounts` with it: each address

@@ -405,6 +405,13 @@ pub struct EvmUi {
     /// The last approval window id handed out (2026-11-19, S4 B5: `ShownId`, a fresh serial at
     /// every open, never reused; not cleared by a lock).
     pub next_shown: u64,
+    /// The steps an opener left for after the answer to the open of its window, by window
+    /// (2026-11-20, S4 P9: `App::show_next_approval_then`, `App::after_approval_opened`; not
+    /// cleared by a lock: a late answer still runs them).
+    pub(crate) after_open: Vec<(
+        yw_engine::approval::flow::ShownId,
+        crate::app_approval::AfterOpen,
+    )>,
     /// What the S12 receive QR encodes (session only, spec/04 §2.8).
     pub receive_qr: crate::ui::qr::EvmQrKind,
     /// The S10 network drop-down is open (2026-11-11; session only, closed by a choice).

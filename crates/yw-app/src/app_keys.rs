@@ -22,6 +22,8 @@ use crate::workers::journal::btc::BtcMetaOp;
 use yw_engine::cmd::KeysPress;
 use yw_engine::secret::{SecretFormOp, SecretKind};
 
+use crate::secret_session::AfterShown;
+
 /// "개인키로 시작하기" state (before any vault exists).
 pub struct KeyStartFlow {
     /// Chosen chain.
@@ -339,15 +341,17 @@ impl App {
             Err(error) => {
                 let message = key_code(error).text_in(self.settings.language);
                 self.set_screen(Screen::KeyStartIntro);
-                self.open_input(
+                // 2026-11-20 (S4 P9): the error line is made once W07 is shown (before,
+                // `secret_form` right after the open; a refused window got none either way).
+                self.open_input_then(
                     SecretKind::PrivateKey {
                         chain: self.keys.start.chain,
                         no_words: true,
                     },
                     Purpose::KeyStartKey,
                     false,
+                    AfterShown::Forms(vec![SecretFormOp::Error(Some(message))]),
                 );
-                self.secret_form(SecretFormOp::Error(Some(message)));
             }
         }
     }

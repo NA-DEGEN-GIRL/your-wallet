@@ -34,6 +34,8 @@ use crate::logging::{self, Field};
 use crate::yubikey::CardJobError;
 use yw_engine::secret::{SecretFormOp, SecretKind};
 
+use crate::secret_session::AfterShown;
+
 /// The card step's own bound after the approval click (spec/10 §10: PIN entry and touch).
 pub const CARD_STEP_MS: u64 = 120_000;
 
@@ -1092,10 +1094,18 @@ impl App {
         let error = step.error.clone();
         let id = step.id;
         let card = self.card_step_card(step.role);
-        self.open_input(kind, Purpose::CardSign(id), true);
-        self.secret_form(SecretFormOp::Card(card));
-        self.secret_form(SecretFormOp::Details(details));
-        self.secret_form(SecretFormOp::Error(error));
+        // 2026-11-20 (S4 P9): the card, details and error lines are made once W11 is shown, in
+        // this order (before, `secret_form` right after the open; a refused W11 got none).
+        self.open_input_then(
+            kind,
+            Purpose::CardSign(id),
+            true,
+            AfterShown::Forms(vec![
+                SecretFormOp::Card(card),
+                SecretFormOp::Details(details),
+                SecretFormOp::Error(error),
+            ]),
+        );
     }
 
     /// Whether the card step `id` waits for its PIN (tests, the tour).

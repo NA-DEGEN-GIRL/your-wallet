@@ -1313,6 +1313,35 @@ fn bar_layout(
     layout
 }
 
+/// What a caller of [`App::show_next_approval_then`] did after the call before 2026-11-20 (S4
+/// P9, plan §4.4 S5, §4.6): it runs once the open of the next window is answered
+/// (`Cmd::ApprovalOpened`, [`App::after_approval_opened`]: after the answer's own steps — the
+/// first view and the preparation, or the rejection of a window that could not be made), or at
+/// once when no window was asked for. While the executor applies effects at once that is the
+/// point where the caller went on before; with an outbox (P10) the caller's steps still follow
+/// the answer instead of running before it.
+pub(crate) enum AfterOpen {
+    /// `card_site_check` (a revoke of signing requests or of an account: an approved request
+    /// waiting for its `YubiKey` PIN ends too, spec/10 §9.2).
+    CardSiteCheck,
+    /// `card_site_check`, then `refresh` (a page's cancel, `cancel_site`).
+    CardSiteCheckThenRefresh,
+    /// The rest of a Bitcoin controller batch after its `Enqueue`, then the batch's `refresh`
+    /// (`App::btc_apply_rest`).
+    BtcRest(Vec<crate::app_btc::BtcAction>),
+}
+
+/// The step's name and the number of the batch's remaining actions only (D28).
+impl core::fmt::Debug for AfterOpen {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::CardSiteCheck => formatter.write_str("CardSiteCheck"),
+            Self::CardSiteCheckThenRefresh => formatter.write_str("CardSiteCheckThenRefresh"),
+            Self::BtcRest(rest) => formatter.debug_tuple("BtcRest").field(&rest.len()).finish(),
+        }
+    }
+}
+
 impl App {
     // ----- queue and window lifecycle -----------------------------------------------------
 
@@ -1320,6 +1349,19 @@ impl App {
     /// window (connected `eth_requestAccounts`, revoke after unlock) or fail their checks are
     /// answered and skipped.
     pub fn show_next_approval(&mut self) {
+        self.show_next_approval_with(None);
+    }
+
+    /// [`Self::show_next_approval`] for a caller with steps after it (2026-11-20, S4 P9): `after`
+    /// runs once the window's open is answered, or at once when none is asked for ([`AfterOpen`]).
+    /// Before, the caller ran them after this call returned.
+    pub(crate) fn show_next_approval_then(&mut self, after: AfterOpen) {
+        self.show_next_approval_with(Some(after));
+    }
+
+    /// The body of [`Self::show_next_approval`]; `after` runs at every return that asked for no
+    /// window (where the caller went on before, 2026-11-20 S4 P9), or goes with the open.
+    fn show_next_approval_with(&mut self, after: Option<AfterOpen>) {
         if self.evm.approval.is_some() || !matches!(self.mode, crate::app::AppMode::Unlocked { .. })
         {
             if self.mode == crate::app::AppMode::BackupPending {
@@ -1332,11 +1374,13 @@ impl App {
                 }
             }
             self.refresh();
+            self.run_after_open(after);
             return;
         }
         if self.sol_connect_waits_for_account() {
             // Moves again when the account arrives (`KeyOutcome::SolKeys`).
             self.refresh();
+            self.run_after_open(after);
             return;
         }
         loop {
@@ -1348,9 +1392,11 @@ impl App {
             }
             if shown.is_none() {
                 self.refresh();
+                self.run_after_open(after);
                 return;
             }
             let Some(item) = self.evm.queue.shown().map(|shown| shown.payload.clone()) else {
+                self.run_after_open(after);
                 return;
             };
             if let QueuedItem::Site(site) = &item
@@ -1363,9 +1409,35 @@ impl App {
             }
             // 2026-11-19 (S4 B5): the open's answer (`on_approval_opened`) starts the
             // preparation or rejects the item with E-APP-009 (was here, on `open_approval`'s
-            // result).
-            self.open_approval(item);
+            // result). 2026-11-20 (S4 P9): `after` goes with the open.
+            self.open_approval(item, after);
             return;
+        }
+    }
+
+    /// Runs a caller's steps after an open ([`AfterOpen`]; 2026-11-20, S4 P9). `None`: nothing.
+    fn run_after_open(&mut self, after: Option<AfterOpen>) {
+        match after {
+            None => {}
+            Some(AfterOpen::CardSiteCheck) => {
+                self.card_site_check();
+            }
+            Some(AfterOpen::CardSiteCheckThenRefresh) => {
+                self.card_site_check();
+                self.refresh();
+            }
+            Some(AfterOpen::BtcRest(rest)) => self.btc_apply_rest(rest),
+        }
+    }
+
+    /// After the answer to the open of window `shown` (`Cmd::ApprovalOpened`, once
+    /// `on_approval_opened` returned; 2026-11-20, S4 P9): the steps its opener left for then, if
+    /// any. An answer for a window whose flow has gone (stale) runs them too: they belong to the
+    /// opener, not to the window.
+    pub(crate) fn after_approval_opened(&mut self, shown: ShownId) {
+        if let Some(at) = self.evm.after_open.iter().position(|(id, _)| *id == shown) {
+            let (_, after) = self.evm.after_open.remove(at);
+            self.run_after_open(Some(after));
         }
     }
 
@@ -1507,7 +1579,10 @@ impl App {
     /// flow is pure: making it before the window changes no message, Win32 call or clock read
     /// (its only error, a clock past `u64::MAX - 120 000` ms, cannot happen; it would reject
     /// before a window was made instead of after the made windows were dropped unshown).
-    fn open_approval(&mut self, item: QueuedItem) {
+    ///
+    /// 2026-11-20 (S4 P9): `after` (the opener's later steps) is kept for the open's answer
+    /// (`after_approval_opened`), or run at once when no window is asked for.
+    fn open_approval(&mut self, item: QueuedItem, after: Option<AfterOpen>) {
         let now = self.clock.now_ms();
         let connect = match &item {
             QueuedItem::Site(site) if site.kind.is_connect() => Some(self.connect_state(site)),
@@ -1535,9 +1610,13 @@ impl App {
         // here: the same gate, the same `now`).
         let Ok(flow) = ApprovalFlow::open(shown, lang, item, connect, ai_reserved, now) else {
             self.approval_open_failed();
+            self.run_after_open(after);
             return;
         };
         self.evm.approval = Some(flow);
+        if let Some(after) = after {
+            self.evm.after_open.push((shown, after));
+        }
         self.emit(Effect::Approval(ApprovalEffect::Open {
             shown,
             lang,

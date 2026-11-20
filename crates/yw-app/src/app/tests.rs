@@ -4812,6 +4812,10 @@ mod s4_frozen;
 /// headless in the gate (`s4_secret/{secret,lock}.txt` byte-equal without a window).
 pub(crate) mod s4_secret;
 
+/// S4 P9 (spec/15 §11.4 S4, 2026-11-20): source check S5 — no handler reads an effect's result
+/// after emitting it (`no_result_read_after_its_emit`).
+mod s4_results;
+
 /// spec/10 §9.2 (2026-11-10): once the PIN is in, the touch prompt is the S11 form's line next to
 /// `검토` (a dApp request: the header band), and it is gone once the card answered — signed or
 /// failed.
