@@ -2238,7 +2238,9 @@ fn the_approval_flow_names_no_window() {
             "if let Some(reserved) = flow.take_ai_reserved() {",
             "flow.attach_ai(AiFlow {",
             "self.rebuild_view();",
-            "self.start_prepare();",
+            // 2026-11-20 (S4 P10a): the preparation follows the answer of an open the view's
+            // failure asked for (was `self.start_prepare();` here).
+            "self.after_pending_open(AfterOpen::StartPrepare);",
             "OpenOutcome::Refused(_) | OpenOutcome::Failed(_) => {",
             "self.evm.approval.take()",
             "ApprovalEffect::Close {",

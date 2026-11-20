@@ -24,7 +24,12 @@
 //! [`Effect::TabTop`], [`Effect::ScrollMemoryClear`]) and the end of a hold area's pointer
 //! capture ([`Effect::ReleaseHold`]). None is answered. Still applied at once: the scroll ones
 //! read the wallet's screen while they are applied (Windows: inside the handler that emitted
-//! them), so an outbox must carry what they read.
+//! them), so an outbox must carry what they read. 2026-11-20 (spec/15 §11.4 S4 P10a): they do —
+//! `ScreenLeaving` carries the place left (`left`), `ScreenEntered` where the entered screen opens
+//! (`at`, a [`crate::screen::EnteredAt`]) and `TabTop` the place of the tab left (`left`), each
+//! worked out by the logic when it emits them ([`crate::screen`]); the shell reads only its own
+//! scroll state and memory. Before, they carried the flags `overlay_opens`/`changes`,
+//! `back`/`overlay` and nothing, and the shell read the wallet's screen, previous screen and tab.
 //!
 //! 2026-11-20 (spec/15 §11.4 S4 P7a1): [`Effect::Secret`], a secret window's open (an input
 //! window; answered with `Cmd::SecretOpened`) and close ([`SecretEffect`]): serials, kinds and
@@ -43,6 +48,7 @@ use core::fmt;
 use crate::approval::flow::ApprovalEffect;
 use crate::cmd::{CopyMark, LinkTarget, Press};
 use crate::form::{CredField, EditField};
+use crate::screen::{EnteredAt, ScrollPlace};
 use crate::secret::SecretEffect;
 
 /// One request to the shell.
@@ -112,29 +118,37 @@ pub enum Effect {
     RaiseMain,
     /// The screen shown now is being left (S4 P4; the first half of a screen entry, emitted
     /// before the logic changes its screen): the shell notes where it was scrolled when an
-    /// overlay opens over it (`overlay_opens`) and, when another screen follows (`changes`), where
-    /// it was left for the ways back (spec/04 §1.7). It reads the screen being left.
+    /// overlay opens over it (`overlay_opens`) and, when another screen follows, where it was
+    /// left for the ways back (spec/04 §1.7), under `left`. 2026-11-20 (S4 P10a): `left` is the
+    /// place of the screen being left, worked out by the logic (`None`: no other screen follows,
+    /// or the screen has no remembered place); before, the flag `changes`, and the shell read the
+    /// screen being left.
     ScreenLeaving {
         /// A confirmation overlay opens over a screen that is not one.
         overlay_opens: bool,
-        /// The next screen is another one.
-        changes: bool,
+        /// Where the offset of the screen being left is noted, when another screen follows.
+        left: Option<ScrollPlace>,
     },
     /// A screen was entered (S4 P4; the second half, emitted after the logic changed its screen
-    /// and before its render): it opens where it was under a closing overlay (`overlay`: the
-    /// screen left was one), where it was left on a way back (`back`), else at its top.
+    /// and before its render): it opens where `at` says. 2026-11-20 (S4 P10a): `at` is worked out
+    /// by the logic from the screen entered and the one left; before, the flags `back` (a way
+    /// back) and `overlay` (the screen left was a confirmation overlay), and the shell read the
+    /// wallet's screen and previous screen.
     ScreenEntered {
-        /// A way back (`App::return_to`).
-        back: bool,
-        /// The screen left was a confirmation overlay.
-        overlay: bool,
+        /// Where the screen opens.
+        at: EnteredAt,
     },
     /// A confirmation overlay closed back onto the screen under it without a screen entry (S4
     /// P4; `App::close_overlay_in_place`): that screen is shown where it was, if that was noted.
     OverlayClosedInPlace,
     /// A chain tab is selected (S4 P4; emitted before the tab changes): the shell notes where the
-    /// tab being left was and the new one opens at its top.
-    TabTop,
+    /// screen being left was, under `left`, and the new tab opens at its top. 2026-11-20 (S4
+    /// P10a): `left` is that screen's place (S10: the tab being left), worked out by the logic;
+    /// before, the shell read the wallet's screen and tab.
+    TabTop {
+        /// The place of the screen shown when the tab changes (`None`: none remembered).
+        left: Option<ScrollPlace>,
+    },
     /// Forget every remembered scroll offset (S4 P4: a lock; the next session opens at the top).
     ScrollMemoryClear,
     /// A press-and-hold area's hold ended: release its pointer capture (S4 P4; S22).
@@ -206,19 +220,21 @@ impl fmt::Debug for Effect {
             Self::RaiseMain => formatter.write_str("RaiseMain"),
             Self::ScreenLeaving {
                 overlay_opens,
-                changes,
+                left,
             } => formatter
                 .debug_struct("ScreenLeaving")
                 .field("overlay_opens", overlay_opens)
-                .field("changes", changes)
+                .field("left", left)
                 .finish(),
-            Self::ScreenEntered { back, overlay } => formatter
+            Self::ScreenEntered { at } => formatter
                 .debug_struct("ScreenEntered")
-                .field("back", back)
-                .field("overlay", overlay)
+                .field("at", at)
                 .finish(),
             Self::OverlayClosedInPlace => formatter.write_str("OverlayClosedInPlace"),
-            Self::TabTop => formatter.write_str("TabTop"),
+            Self::TabTop { left } => formatter
+                .debug_struct("TabTop")
+                .field("left", left)
+                .finish(),
             Self::ScrollMemoryClear => formatter.write_str("ScrollMemoryClear"),
             Self::ReleaseHold => formatter.write_str("ReleaseHold"),
             Self::Secret(effect) => formatter.debug_tuple("Secret").field(effect).finish(),
@@ -358,30 +374,59 @@ mod tests {
             ),
             "Reveal(Cred(QnToken))"
         );
+        // 2026-11-20 (S4 P10a): the scroll effects carry the places they name (plain data).
         assert_eq!(
             format!(
                 "{:?}",
                 Effect::ScreenLeaving {
                     overlay_opens: true,
-                    changes: false
+                    left: None
                 }
             ),
-            "ScreenLeaving { overlay_opens: true, changes: false }"
+            "ScreenLeaving { overlay_opens: true, left: None }"
+        );
+        assert_eq!(
+            format!(
+                "{:?}",
+                Effect::ScreenLeaving {
+                    overlay_opens: false,
+                    left: Some(ScrollPlace::Settings(
+                        crate::screen::SettingsSection::Security
+                    ))
+                }
+            ),
+            "ScreenLeaving { overlay_opens: false, left: Some(Settings(Security)) }"
         );
         assert_eq!(
             format!(
                 "{:?}",
                 Effect::ScreenEntered {
-                    back: true,
-                    overlay: false
+                    at: EnteredAt::LeftAt(Some(ScrollPlace::Sites))
                 }
             ),
-            "ScreenEntered { back: true, overlay: false }"
+            "ScreenEntered { at: LeftAt(Some(Sites)) }"
+        );
+        assert_eq!(
+            format!(
+                "{:?}",
+                Effect::ScreenEntered {
+                    at: EnteredAt::UnderOverlay { same: true }
+                }
+            ),
+            "ScreenEntered { at: UnderOverlay { same: true } }"
+        );
+        assert_eq!(
+            format!(
+                "{:?}",
+                Effect::TabTop {
+                    left: Some(ScrollPlace::Main(crate::meta::Tab::Evm))
+                }
+            ),
+            "TabTop { left: Some(Main(Evm)) }"
         );
         for (effect, name) in [
             (Effect::RaiseMain, "RaiseMain"),
             (Effect::OverlayClosedInPlace, "OverlayClosedInPlace"),
-            (Effect::TabTop, "TabTop"),
             (Effect::ScrollMemoryClear, "ScrollMemoryClear"),
             (Effect::ReleaseHold, "ReleaseHold"),
         ] {

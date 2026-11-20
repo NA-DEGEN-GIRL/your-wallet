@@ -64,17 +64,15 @@ impl App {
     /// Hands a form edit's text to the controller (no repaint). 2026-11-18 (S3 C9): the field
     /// is an `EditField` (before, its control id).
     pub(crate) fn btc_apply_field(&mut self, field: EditField, text: &str) {
-        self.btc_call(|ui, ctx| {
-            match field {
-                EditField::BtcSendTo => ui.set_recipient(ctx, text),
-                EditField::BtcSendAmount => ui.set_amount(ctx, text),
-                EditField::BtcFeeManual => ui.set_manual_rate(ctx.lang, text, false),
-                EditField::BtcTypedFee => ui.set_typed_fee(ctx.lang, text, false),
-                EditField::BtcBumpManual => ui.set_manual_rate(ctx.lang, text, true),
-                EditField::BtcBumpTyped => ui.set_typed_fee(ctx.lang, text, true),
-                _ => {}
-            }
-            Vec::new()
+        // 2026-11-20 (S4 P10a): `btc_update` (was `btc_call` with an empty batch).
+        self.btc_update(|ui, ctx| match field {
+            EditField::BtcSendTo => ui.set_recipient(ctx, text),
+            EditField::BtcSendAmount => ui.set_amount(ctx, text),
+            EditField::BtcFeeManual => ui.set_manual_rate(ctx.lang, text, false),
+            EditField::BtcTypedFee => ui.set_typed_fee(ctx.lang, text, false),
+            EditField::BtcBumpManual => ui.set_manual_rate(ctx.lang, text, true),
+            EditField::BtcBumpTyped => ui.set_typed_fee(ctx.lang, text, true),
+            _ => {}
         });
         match field {
             EditField::BtcSendTo | EditField::BtcSendAmount | EditField::BtcFeeManual => {
@@ -87,7 +85,7 @@ impl App {
 
     /// The typed-fee field is shown only while the cap asks for it (spec/08 §8.3): once an input
     /// change withdraws the request, its text is cleared so no hidden override reaches a plan.
-    fn btc_drop_stale_typed(&mut self, bump: bool) {
+    pub(crate) fn btc_drop_stale_typed(&mut self, bump: bool) {
         let fee = if bump {
             &self.btc.bump.fee
         } else {
@@ -135,10 +133,8 @@ impl App {
     }
 
     fn btc_set_unit(&mut self, unit: BtcAmountUnit) {
-        self.btc_call(|ui, ctx| {
-            ui.set_unit(ctx, unit);
-            Vec::new()
-        });
+        // 2026-11-20 (S4 P10a): `btc_update` (was `btc_call` with an empty batch).
+        self.btc_update(|ui, ctx| ui.set_unit(ctx, unit));
         let text = self.btc.send.amount_text.clone();
         // 2026-11-18 (S3 C9): the writes of the amount and Esplora edits are `Effect::SetField`,
         // applied at once inside this borrow (before, `controls.set_text`), so the edit's
@@ -150,10 +146,8 @@ impl App {
     }
 
     fn btc_toggle_max(&mut self) {
-        self.btc_call(|ui, ctx| {
-            ui.toggle_send_max(ctx);
-            Vec::new()
-        });
+        // 2026-11-20 (S4 P10a): `btc_update` (was `btc_call` with an empty batch).
+        self.btc_update(crate::app_btc::BtcUi::toggle_send_max);
         self.btc_drop_stale_typed(false);
         if self.btc.send.send_max {
             self.emit(Effect::SetField {
@@ -194,7 +188,6 @@ impl App {
     /// Bitcoin presses (2026-11-18, S3 C9: a `BtcPress`; before, the control id, and `false` for
     /// an id that was not one of them). Every press repaints at the end, as every claimed id
     /// did.
-    #[expect(clippy::too_many_lines, reason = "one arm per Bitcoin press")]
     pub(crate) fn on_btc(&mut self, press: BtcPress) {
         match press {
             BtcPress::TabBtc => self.btc_select_tab(),
@@ -206,9 +199,9 @@ impl App {
             BtcPress::SendOpen => self.btc_open_send(),
             BtcPress::ReceiveOpen => {
                 self.btc_open_receive();
-                if !matches!(self.screen, Screen::BtcReceive | Screen::Confirm(_)) {
-                    self.set_screen(Screen::BtcReceive);
-                }
+                // 2026-11-20 (S4 P10a): after the answer of an open the receive batch asked for
+                // (`AfterOpen::BtcReceiveScreen`; before, here directly).
+                self.after_pending_open(crate::app_approval::AfterOpen::BtcReceiveScreen);
             }
             BtcPress::BumpOpen => self.btc_open_bump(),
             BtcPress::DiscoverRetry => self.btc_discover(false),
@@ -226,22 +219,15 @@ impl App {
             }
             BtcPress::RenameCancel => self.btc_rename_cancel(),
             BtcPress::Hide => self.btc_hide_selected(),
-            BtcPress::AccountAdd => self.btc_call(|ui, ctx| {
-                ui.open_add_account(ctx);
-                Vec::new()
-            }),
-            BtcPress::AccountAddCancel => self.btc_call(|ui, _| {
-                ui.close_add_account();
-                Vec::new()
-            }),
-            BtcPress::AccountSourceStandard => self.btc_call(|ui, _| {
-                ui.set_add_source(crate::app_btc::BtcAddSource::Standard);
-                Vec::new()
-            }),
-            BtcPress::AccountSourceEvm => self.btc_call(|ui, _| {
-                ui.set_add_source(crate::app_btc::BtcAddSource::EvmShared);
-                Vec::new()
-            }),
+            // 2026-11-20 (S4 P10a): `btc_update` (was `btc_call` with an empty batch).
+            BtcPress::AccountAdd => self.btc_update(crate::app_btc::BtcUi::open_add_account),
+            BtcPress::AccountAddCancel => self.btc_update(|ui, _| ui.close_add_account()),
+            BtcPress::AccountSourceStandard => {
+                self.btc_update(|ui, _| ui.set_add_source(crate::app_btc::BtcAddSource::Standard));
+            }
+            BtcPress::AccountSourceEvm => {
+                self.btc_update(|ui, _| ui.set_add_source(crate::app_btc::BtcAddSource::EvmShared));
+            }
             BtcPress::AddressModeSingle => self.btc_call(|ui, ctx| ui.set_address_mode(ctx, true)),
             BtcPress::AddressModeHd => self.btc_call(|ui, ctx| ui.set_address_mode(ctx, false)),
             BtcPress::SendAddrAck => self.btc_toggle_address_ack(),
@@ -307,8 +293,9 @@ impl App {
             | BtcPress::Activity(..) => self.on_btc_indexed(press),
         }
         // The wrappers repaint only when the controller acted; radios and checks must show the
-        // controller state again either way.
-        self.refresh();
+        // controller state again either way. 2026-11-20 (S4 P10a): after the answer of an open a
+        // press's batch asked for (`AfterOpen::Refresh`; before, here directly).
+        self.after_pending_open(crate::app_approval::AfterOpen::Refresh);
     }
 
     /// Esplora URL rows: `저장`, `기본값으로`, `테스트` of `net` (2026-11-18, S3 C9: a `BtcPress`
@@ -316,18 +303,24 @@ impl App {
     fn on_btc_esplora(&mut self, press: BtcPress, net: BtcNetwork) {
         let field = esplora_field(net);
         match press {
+            // 2026-11-20 (S4 P10a): the edit shows the stored URL after the answer of an open the
+            // settings batch asked for (`AfterOpen::EsploraField`; before, here directly).
             BtcPress::EsploraSave(_) => {
                 let typed = self.form_text(field).unwrap_or_default();
                 self.btc_save_esplora_url(net, &typed);
-                if self.btc.settings_message.is_none() {
-                    let saved = self.btc_ctx().esplora_text(net).to_owned();
-                    self.emit(Effect::SetField { field, text: saved });
-                }
+                self.after_pending_open(crate::app_approval::AfterOpen::EsploraField {
+                    net,
+                    field,
+                    saved_only: true,
+                });
             }
             BtcPress::EsploraDefault(_) => {
                 self.btc_default_esplora_url(net);
-                let saved = self.btc_ctx().esplora_text(net).to_owned();
-                self.emit(Effect::SetField { field, text: saved });
+                self.after_pending_open(crate::app_approval::AfterOpen::EsploraField {
+                    net,
+                    field,
+                    saved_only: false,
+                });
             }
             BtcPress::EsploraTest(_) => {
                 let typed = self.form_text(field).unwrap_or_default();
@@ -350,7 +343,9 @@ impl App {
                     ui.quote_if_stale(ctx)
                 }
             });
-            self.btc_drop_stale_typed(bump);
+            // 2026-11-20 (S4 P10a): after the answer of an open the batch asked for
+            // (`AfterOpen::BtcDropStaleTyped`; before, here directly).
+            self.after_pending_open(crate::app_approval::AfterOpen::BtcDropStaleTyped(bump));
             return;
         }
         match press {
@@ -360,10 +355,8 @@ impl App {
             BtcPress::EvmAccount(Row(row)) => {
                 let index = self.btc_ctx().evm_indices().get(usize::from(row)).copied();
                 if let Some(index) = index {
-                    self.btc_call(|ui, ctx| {
-                        ui.set_add_evm_index(ctx, index);
-                        Vec::new()
-                    });
+                    // 2026-11-20 (S4 P10a): `btc_update` (was `btc_call` with an empty batch).
+                    self.btc_update(|ui, ctx| ui.set_add_evm_index(ctx, index));
                 }
             }
             BtcPress::Account(Row(row)) => {

@@ -270,7 +270,9 @@ impl App {
     /// Selects the Zcash tab (refresh on open). 2026-11-20 (S4 P4): the scroll memory's part is
     /// `Effect::TabTop`, at the same point (before, `tab_top` was called here).
     pub fn zec_select_tab(&mut self) {
-        self.emit(yw_engine::effect::Effect::TabTop);
+        self.emit(yw_engine::effect::Effect::TabTop {
+            left: self.remembered_place(&self.screen),
+        });
         if let Some(meta) = self.meta.as_mut()
             && meta.prefs.tab != crate::meta::Tab::Zec
         {
@@ -1234,7 +1236,19 @@ impl App {
                         self.zec_track(&snapshot);
                         if review {
                             match self.zec_plan(&snapshot) {
-                                Ok(plan) => self.zec_enqueue(plan),
+                                Ok(plan) => {
+                                    self.zec_enqueue(plan);
+                                    // 2026-11-20 (S4 P10a): the snapshot is kept and the screen
+                                    // repainted after the answer of the open the queued send
+                                    // asked for (`AfterOpen::ZecSnapshot`; before, here and after
+                                    // the `match` directly).
+                                    self.after_pending_open(
+                                        crate::app_approval::AfterOpen::ZecSnapshot(
+                                            network, snapshot,
+                                        ),
+                                    );
+                                    return;
+                                }
                                 Err(text) => self.zec.send_error = Some(text),
                             }
                         }

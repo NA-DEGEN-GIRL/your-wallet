@@ -406,12 +406,19 @@ pub struct EvmUi {
     /// every open, never reused; not cleared by a lock).
     pub next_shown: u64,
     /// The steps an opener left for after the answer to the open of its window, by window
-    /// (2026-11-20, S4 P9: `App::show_next_approval_then`, `App::after_approval_opened`; not
-    /// cleared by a lock: a late answer still runs them).
+    /// (2026-11-20, S4 P9: `App::show_next_approval_then`, `App::after_approval_opened`; since
+    /// P10a also `App::after_pending_open`, and the answer takes them in
+    /// `App::approval_open_answered`; not cleared by a lock: a late answer still runs them).
     pub(crate) after_open: Vec<(
         yw_engine::approval::flow::ShownId,
         crate::app_approval::AfterOpen,
     )>,
+    /// The last approval window whose open was asked for (`Effect::Approval(Open)`) and is not
+    /// answered yet (2026-11-20, S4 P10a: `App::after_pending_open` hands a step to its answer).
+    /// While the executor applies effects at once the answer comes before `emit` returns, so this
+    /// is `None` whenever logic code runs; with an outbox (P10b) it names the open the queue still
+    /// holds. Not cleared by a lock: a late answer still runs the steps kept for it.
+    pub(crate) open_unanswered: Option<yw_engine::approval::flow::ShownId>,
     /// What the S12 receive QR encodes (session only, spec/04 §2.8).
     pub receive_qr: crate::ui::qr::EvmQrKind,
     /// The S10 network drop-down is open (2026-11-11; session only, closed by a choice).
@@ -816,7 +823,9 @@ impl App {
                 self.schedule_tracking(true);
                 self.sol_schedule_tracking();
                 self.btc_journal_changed();
-                self.refresh();
+                // 2026-11-20 (S4 P10a): after the answer of an open Bitcoin's controller asked
+                // for (`AfterOpen::Refresh`; before, here directly).
+                self.after_pending_open(crate::app_approval::AfterOpen::Refresh);
             }
             KeyOutcome::Journal(Err(
                 error @ (yw_core::error::VaultError::SidecarCorrupt(FileKind::Journal)
@@ -1370,9 +1379,17 @@ impl App {
 
     // ----- timer --------------------------------------------------------------------------
 
-    /// EVM part of the main timer.
+    /// EVM part of the main timer. 2026-11-20 (S4 P10a): the parts after the approval queue's
+    /// follow the answer of an open its tick asked for (`AfterOpen::EvmTickRest`, with this
+    /// `now`; before, they ran here directly).
     pub fn evm_tick(&mut self, now: u64) {
         self.tick_approval(now);
+        self.after_pending_open(crate::app_approval::AfterOpen::EvmTickRest(now));
+    }
+
+    /// The EVM timer part after the approval queue's ([`Self::evm_tick`]; 2026-11-20, S4 P10a:
+    /// split out unchanged).
+    pub(crate) fn evm_tick_rest(&mut self, now: u64) {
         self.tick_tracking(now);
         self.browser_tick(now);
         self.evm_balance_tick(now);

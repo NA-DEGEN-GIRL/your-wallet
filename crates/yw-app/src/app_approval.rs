@@ -1315,11 +1315,21 @@ fn bar_layout(
 
 /// What a caller of [`App::show_next_approval_then`] did after the call before 2026-11-20 (S4
 /// P9, plan §4.4 S5, §4.6): it runs once the open of the next window is answered
-/// (`Cmd::ApprovalOpened`, [`App::after_approval_opened`]: after the answer's own steps — the
-/// first view and the preparation, or the rejection of a window that could not be made), or at
-/// once when no window was asked for. While the executor applies effects at once that is the
-/// point where the caller went on before; with an outbox (P10) the caller's steps still follow
-/// the answer instead of running before it.
+/// (`Cmd::ApprovalOpened`; P9's `App::after_approval_opened`, since P10a
+/// [`App::approval_open_answered`] and [`App::after_pending_open`]: after the answer's own steps
+/// — the first view and the preparation, or the rejection of a window that could not be made),
+/// or at once when no window was asked for. While the executor applies effects at once that is
+/// the point where the caller went on before; with an outbox (P10) the caller's steps still
+/// follow the answer instead of running before it.
+///
+/// 2026-11-20 (S4 P10a, plan §4.4 S5, §4.6 rule 2): the steps that ran after a call that may
+/// open an approval window, in the same fn, are these too (except the lines the S5 check lists
+/// with their reasons) and go through [`App::after_pending_open`]: kept for the answer of the
+/// open still waiting for one, else run at once. While the executor applies effects at once no
+/// open waits when logic code runs, so each step runs at the point and in the order it ran
+/// before (byte-equal by construction); with the outbox (P10b) it runs after the open's answer,
+/// as it did. Before, those steps ran right after the call (`PENDING_P10` lines of the S5
+/// check). A step reads the wallet when it runs, as the code it replaced did then.
 pub(crate) enum AfterOpen {
     /// `card_site_check` (a revoke of signing requests or of an account: an approved request
     /// waiting for its `YubiKey` PIN ends too, spec/10 §9.2).
@@ -1329,15 +1339,107 @@ pub(crate) enum AfterOpen {
     /// The rest of a Bitcoin controller batch after its `Enqueue`, then the batch's `refresh`
     /// (`App::btc_apply_rest`).
     BtcRest(Vec<crate::app_btc::BtcAction>),
+    /// The steps kept for a window whose open was just answered, in the order they were kept
+    /// (`App::on_cmd`'s `Cmd::ApprovalOpened` arm; before P10a, `after_approval_opened` ran the
+    /// one kept step there).
+    Steps(Vec<AfterOpen>),
+    /// `refresh` (a Bitcoin press, a journal read, a site grant change).
+    Refresh,
+    /// `refresh` when the Bitcoin controller returned no action (`btc_call_and_repaint`; a batch
+    /// repaints itself).
+    RefreshUnlessActed(bool),
+    /// `set_screen` (a confirmation overlay's next screen after its action).
+    SetScreen(crate::app::Screen),
+    /// The hidden account's note, then `refresh` (`hide_selected`); the label.
+    HiddenNote(String),
+    /// The grants written, then `refresh` (a revoke the dispatcher reported).
+    WriteGrantsThenRefresh,
+    /// `finish_approval` (a consumed Bitcoin approval).
+    Finish(QueueOutcome),
+    /// The close box: `finish_approval(Rejected)` when window `shown` is still the shown one
+    /// (S4 F1, L-1).
+    CloseIfShown(ShownId),
+    /// The opened window's preparation (`on_approval_opened`).
+    StartPrepare,
+    /// The view built again (`start_prepare`).
+    RebuildView,
+    /// The AI explanation of a ready transaction.
+    AiReadyTx,
+    /// The AI explanation of a ready message.
+    AiReadyMessage,
+    /// The AI explanation of ready typed data, with its facts.
+    AiReadyTyped(Box<yw_core::approval::ChainFacts>),
+    /// The meta load's chain hooks (`KeyOutcome::Meta(Ok)`): the journal, then Bitcoin, then
+    /// [`AfterOpen::AfterBtcMeta`].
+    AfterMeta,
+    /// The rest of the meta load's hooks after Bitcoin's: Zcash, then the card.
+    AfterBtcMeta,
+    /// The rest of the EVM timer part after the approval's (`evm_tick`), at its `now`.
+    EvmTickRest(u64),
+    /// The Zcash refresh's snapshot kept, then `refresh` (`zec_rpc_event`).
+    ZecSnapshot(yw_core::zec::ZecNetwork, Box<crate::zec::work::ZecSnapshot>),
+    /// The Bitcoin tab's opening refresh when it is shown and idle (`btc_journal_changed`).
+    BtcOpenTab,
+    /// S12 Bitcoin unless it or an overlay shows (`BtcPress::ReceiveOpen`).
+    BtcReceiveScreen,
+    /// The typed-fee field dropped when no longer asked for (a fee radio; `true`: the bump form).
+    BtcDropStaleTyped(bool),
+    /// The Esplora URL edit of `net` shows the stored URL (`field`); with `saved_only`, only
+    /// when the save left no settings message.
+    EsploraField {
+        /// The network.
+        net: yw_core::btc::BtcNetwork,
+        /// Its edit.
+        field: yw_engine::form::EditField,
+        /// `저장` (`true`) or `기본값으로`.
+        saved_only: bool,
+    },
 }
 
-/// The step's name and the number of the batch's remaining actions only (D28).
+/// The step's name and the number of the batch's remaining actions only (D28); 2026-11-20 (S4
+/// P10a): the new steps print their names, counts and lengths, flags and ids only (no label,
+/// screen, URL, facts or snapshot).
 impl core::fmt::Debug for AfterOpen {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::CardSiteCheck => formatter.write_str("CardSiteCheck"),
             Self::CardSiteCheckThenRefresh => formatter.write_str("CardSiteCheckThenRefresh"),
             Self::BtcRest(rest) => formatter.debug_tuple("BtcRest").field(&rest.len()).finish(),
+            Self::Steps(steps) => formatter.debug_tuple("Steps").field(steps).finish(),
+            Self::Refresh => formatter.write_str("Refresh"),
+            Self::RefreshUnlessActed(acted) => formatter
+                .debug_tuple("RefreshUnlessActed")
+                .field(acted)
+                .finish(),
+            Self::SetScreen(_) => formatter.write_str("SetScreen"),
+            Self::HiddenNote(label) => formatter
+                .debug_tuple("HiddenNote")
+                .field(&label.chars().count())
+                .finish(),
+            Self::WriteGrantsThenRefresh => formatter.write_str("WriteGrantsThenRefresh"),
+            Self::Finish(outcome) => formatter.debug_tuple("Finish").field(outcome).finish(),
+            Self::CloseIfShown(shown) => {
+                formatter.debug_tuple("CloseIfShown").field(shown).finish()
+            }
+            Self::StartPrepare => formatter.write_str("StartPrepare"),
+            Self::RebuildView => formatter.write_str("RebuildView"),
+            Self::AiReadyTx => formatter.write_str("AiReadyTx"),
+            Self::AiReadyMessage => formatter.write_str("AiReadyMessage"),
+            Self::AiReadyTyped(_) => formatter.write_str("AiReadyTyped"),
+            Self::AfterMeta => formatter.write_str("AfterMeta"),
+            Self::AfterBtcMeta => formatter.write_str("AfterBtcMeta"),
+            Self::EvmTickRest(now) => formatter.debug_tuple("EvmTickRest").field(now).finish(),
+            Self::ZecSnapshot(..) => formatter.write_str("ZecSnapshot"),
+            Self::BtcOpenTab => formatter.write_str("BtcOpenTab"),
+            Self::BtcReceiveScreen => formatter.write_str("BtcReceiveScreen"),
+            Self::BtcDropStaleTyped(bump) => formatter
+                .debug_tuple("BtcDropStaleTyped")
+                .field(bump)
+                .finish(),
+            Self::EsploraField { saved_only, .. } => formatter
+                .debug_struct("EsploraField")
+                .field("saved_only", saved_only)
+                .finish_non_exhaustive(),
         }
     }
 }
@@ -1416,9 +1518,12 @@ impl App {
     }
 
     /// Runs a caller's steps after an open ([`AfterOpen`]; 2026-11-20, S4 P9). `None`: nothing.
+    /// 2026-11-20 (S4 P10a): the steps of P10a's [`AfterOpen`] variants are the code that ran
+    /// after the call before, moved here unchanged (with its later steps after a further call that
+    /// may open handed on through [`Self::after_pending_open`] in turn).
     fn run_after_open(&mut self, after: Option<AfterOpen>) {
         match after {
-            None => {}
+            None | Some(AfterOpen::RefreshUnlessActed(true)) => {}
             Some(AfterOpen::CardSiteCheck) => {
                 self.card_site_check();
             }
@@ -1427,18 +1532,135 @@ impl App {
                 self.refresh();
             }
             Some(AfterOpen::BtcRest(rest)) => self.btc_apply_rest(rest),
+            // The first step, then the others after the answer of an open it asked for.
+            Some(AfterOpen::Steps(steps)) => {
+                let mut steps = steps.into_iter();
+                if let Some(first) = steps.next() {
+                    let rest: Vec<AfterOpen> = steps.collect();
+                    self.after_pending_open(first);
+                    self.after_pending_open(AfterOpen::Steps(rest));
+                }
+            }
+            Some(AfterOpen::Refresh | AfterOpen::RefreshUnlessActed(false)) => self.refresh(),
+            Some(AfterOpen::SetScreen(screen)) => self.set_screen(screen),
+            Some(AfterOpen::HiddenNote(label)) => {
+                self.notice(
+                    crate::app_hidden::hidden_note(self.settings.language, &label),
+                    crate::ui::main_window::Tone::Info,
+                );
+                self.refresh();
+            }
+            Some(AfterOpen::WriteGrantsThenRefresh) => {
+                self.write_grants();
+                self.refresh();
+            }
+            Some(AfterOpen::Finish(outcome)) => self.finish_approval(outcome),
+            Some(AfterOpen::CloseIfShown(shown)) => self.close_if_shown(shown),
+            Some(AfterOpen::StartPrepare) => self.start_prepare(),
+            Some(AfterOpen::RebuildView) => self.rebuild_view(),
+            Some(AfterOpen::AiReadyTx) => self.ai_ready_tx(),
+            Some(AfterOpen::AiReadyMessage) => self.ai_ready_message(),
+            Some(AfterOpen::AiReadyTyped(facts)) => self.ai_ready_typed(&facts),
+            Some(AfterOpen::AfterMeta) => {
+                if self.evm.journal.is_none() {
+                    self.evm_after_unlock();
+                }
+                self.btc_after_meta();
+                self.after_pending_open(AfterOpen::AfterBtcMeta);
+            }
+            Some(AfterOpen::AfterBtcMeta) => {
+                self.zec_ensure_account();
+                self.card_after_meta();
+            }
+            Some(AfterOpen::EvmTickRest(now)) => self.evm_tick_rest(now),
+            Some(AfterOpen::ZecSnapshot(network, snapshot)) => {
+                self.zec.snapshot = Some((network, snapshot));
+                self.refresh();
+            }
+            Some(AfterOpen::BtcOpenTab) => self.btc_open_tab_if_idle(),
+            Some(AfterOpen::BtcReceiveScreen) => self.btc_receive_shown(),
+            Some(AfterOpen::BtcDropStaleTyped(bump)) => self.btc_drop_stale_typed(bump),
+            Some(AfterOpen::EsploraField {
+                net,
+                field,
+                saved_only,
+            }) => self.esplora_field_shows(net, field, saved_only),
         }
     }
 
-    /// After the answer to the open of window `shown` (`Cmd::ApprovalOpened`, once
-    /// `on_approval_opened` returned; 2026-11-20, S4 P9): the steps its opener left for then, if
-    /// any. An answer for a window whose flow has gone (stale) runs them too: they belong to the
-    /// opener, not to the window.
-    pub(crate) fn after_approval_opened(&mut self, shown: ShownId) {
-        if let Some(at) = self.evm.after_open.iter().position(|(id, _)| *id == shown) {
-            let (_, after) = self.evm.after_open.remove(at);
-            self.run_after_open(Some(after));
+    /// The close box's end of its own request ([`AfterOpen::CloseIfShown`]; 2026-11-20, S4
+    /// P10a: was inline in `on_approval_input`): `finish_approval(Rejected)` when window `shown`
+    /// is still the shown one (S4 F1, L-1).
+    fn close_if_shown(&mut self, shown: ShownId) {
+        if self.shown_now() == Some(shown) {
+            self.finish_approval(QueueOutcome::Rejected);
         }
+    }
+
+    /// S12 Bitcoin unless it or an overlay shows ([`AfterOpen::BtcReceiveScreen`]; 2026-11-20,
+    /// S4 P10a: was inline in `on_btc`).
+    fn btc_receive_shown(&mut self) {
+        if !matches!(
+            self.screen,
+            crate::app::Screen::BtcReceive | crate::app::Screen::Confirm(_)
+        ) {
+            self.set_screen(crate::app::Screen::BtcReceive);
+        }
+    }
+
+    /// The Esplora URL edit of `net` shows the stored URL; with `saved_only` only when the save
+    /// left no settings message ([`AfterOpen::EsploraField`]; 2026-11-20, S4 P10a: was inline in
+    /// `on_btc_esplora`).
+    fn esplora_field_shows(
+        &mut self,
+        net: yw_core::btc::BtcNetwork,
+        field: yw_engine::form::EditField,
+        saved_only: bool,
+    ) {
+        if !saved_only || self.btc.settings_message.is_none() {
+            let saved = self.btc_ctx().esplora_text(net).to_owned();
+            self.emit(Effect::SetField { field, text: saved });
+        }
+    }
+
+    /// Runs `after` once the newest approval-window open still waiting for its answer
+    /// (`EvmUi::open_unanswered`) is answered, after the steps kept for it before; at once when
+    /// none waits (2026-11-20, S4 P10a, plan §4.4 S5, §4.6 rule 2). While the executor applies
+    /// effects at once an open is answered before `emit` returns, so `after` always runs here,
+    /// where the caller ran it before; with the outbox (P10b) it follows the answer, as it did.
+    pub(crate) fn after_pending_open(&mut self, after: AfterOpen) {
+        // No steps (an answer whose opener left none) is nothing to keep.
+        if matches!(&after, AfterOpen::Steps(steps) if steps.is_empty()) {
+            return;
+        }
+        match self.evm.open_unanswered {
+            Some(shown) => self.evm.after_open.push((shown, after)),
+            None => self.run_after_open(Some(after)),
+        }
+    }
+
+    /// The answer to the open of window `shown` arrived (`Cmd::ApprovalOpened`; 2026-11-20, S4
+    /// P10a): no longer waiting (unless a later open waits), and the steps its opener left for
+    /// then, in the order they were kept. Before P10a, `after_approval_opened` took the one kept
+    /// step after `on_approval_opened` returned (2026-11-20, S4 P9); the steps are taken first now
+    /// so that what runs after the answer's own steps is a single [`App::after_pending_open`]. An
+    /// answer for a window whose flow has gone (stale) runs them too: they belong to the opener,
+    /// not to the window.
+    pub(crate) fn approval_open_answered(&mut self, shown: ShownId) -> AfterOpen {
+        if self.evm.open_unanswered == Some(shown) {
+            self.evm.open_unanswered = None;
+        }
+        let mut steps = Vec::new();
+        let mut kept = Vec::new();
+        for (id, after) in core::mem::take(&mut self.evm.after_open) {
+            if id == shown {
+                steps.push(after);
+            } else {
+                kept.push((id, after));
+            }
+        }
+        self.evm.after_open = kept;
+        AfterOpen::Steps(steps)
     }
 
     pub(crate) fn connect_state(&self, site: &SiteRequest) -> ConnectState {
@@ -1581,7 +1803,8 @@ impl App {
     /// before a window was made instead of after the made windows were dropped unshown).
     ///
     /// 2026-11-20 (S4 P9): `after` (the opener's later steps) is kept for the open's answer
-    /// (`after_approval_opened`), or run at once when no window is asked for.
+    /// (`after_approval_opened`; since P10a `approval_open_answered`), or run at once when no
+    /// window is asked for.
     fn open_approval(&mut self, item: QueuedItem, after: Option<AfterOpen>) {
         let now = self.clock.now_ms();
         let connect = match &item {
@@ -1617,6 +1840,10 @@ impl App {
         if let Some(after) = after {
             self.evm.after_open.push((shown, after));
         }
+        // 2026-11-20 (S4 P10a): waiting for its answer until `Cmd::ApprovalOpened` arrives
+        // (`App::approval_open_answered`); applied at once, the answer clears it before `emit`
+        // returns.
+        self.evm.open_unanswered = Some(shown);
         self.emit(Effect::Approval(ApprovalEffect::Open {
             shown,
             lang,
@@ -1663,7 +1890,9 @@ impl App {
                 self.rebuild_view();
                 #[cfg(test)]
                 self.assert_flow_and_window_in_step();
-                self.start_prepare();
+                // 2026-11-20 (S4 P10a): after the answer of an open the view's failure asked for
+                // (`AfterOpen::StartPrepare`; before, called here directly).
+                self.after_pending_open(AfterOpen::StartPrepare);
             }
             OpenOutcome::Refused(_) | OpenOutcome::Failed(_) => {
                 if let Some(flow) = self.evm.approval.take() {
@@ -1700,7 +1929,9 @@ impl App {
             QueuedItem::Zec(zec) => self.prepare_zec(&zec),
             QueuedItem::HyperCore(item) => self.prepare_hypercore(&item),
         }
-        self.rebuild_view();
+        // 2026-11-20 (S4 P10a): after the answer of an open a failed preparation asked for
+        // (`AfterOpen::RebuildView`; before, called here directly).
+        self.after_pending_open(AfterOpen::RebuildView);
     }
 
     /// Steps 3–10 of spec/03 §3.7 on the RPC worker, for an app send or a dApp transaction.
@@ -1850,7 +2081,9 @@ impl App {
                 match draft {
                     Some(draft) => {
                         self.show_ready_draft(draft, None);
-                        self.ai_ready_message();
+                        // 2026-11-20 (S4 P10a): after the answer of an open a failed issue asked
+                        // for (`AfterOpen::AiReadyMessage`; before, called here directly).
+                        self.after_pending_open(AfterOpen::AiReadyMessage);
                     }
                     None => self.show_failure(
                         ErrorCode::App009,
@@ -2006,7 +2239,6 @@ impl App {
         let mut facts = facts.clone();
         facts.hyperliquid = self.hl_site_facts(&typed, account);
         facts.known = self.known_addresses();
-        let facts = &facts;
         let draft = self.message_chain(site.chain_id).and_then(|chain| {
             let signer = self.account_source(account)?;
             let id = Self::new_approval_id().ok()?;
@@ -2019,15 +2251,18 @@ impl App {
                 yw_core::approval::ApprovalKind::EvmTypedData,
                 &chain,
                 &typed,
-                facts,
+                &facts,
                 self.clock.now_unix_ms(),
             )
             .ok()
         });
         match draft {
             Some(draft) => {
+                let facts = Box::new(facts);
                 self.show_ready_draft(draft, None);
-                self.ai_ready_typed(facts);
+                // 2026-11-20 (S4 P10a): after the answer of an open a failed issue asked for
+                // (`AfterOpen::AiReadyTyped`, with the facts; before, called here directly).
+                self.after_pending_open(AfterOpen::AiReadyTyped(facts));
             }
             None => self.show_failure(
                 ErrorCode::App009,
@@ -2170,7 +2405,9 @@ impl App {
                 }
                 let draft = prepared.draft.clone();
                 self.show_ready_draft(draft, Some(prepared));
-                self.ai_ready_tx();
+                // 2026-11-20 (S4 P10a): after the answer of an open a failed issue asked for
+                // (`AfterOpen::AiReadyTx`; before, called here directly).
+                self.after_pending_open(AfterOpen::AiReadyTx);
             }
         }
     }
@@ -2514,7 +2751,9 @@ impl App {
                     && request.kind.is_btc()
                 {
                     self.btc_consumed(approved, btc);
-                    self.finish_approval(QueueOutcome::Approved);
+                    // 2026-11-20 (S4 P10a): after the answer of an open the controller's batch
+                    // asked for (`AfterOpen::Finish`; before, called here directly).
+                    self.after_pending_open(AfterOpen::Finish(QueueOutcome::Approved));
                     return;
                 }
                 if let QueuedItem::Zec(zec) = &item
@@ -2748,10 +2987,10 @@ impl App {
                 self.approval_event(foreground, InteractionEvent::RejectActivated);
                 // A window whose `RejectActivated` changes nothing (an `Approved` interaction)
                 // still shows the same request, so the close box still ends it; a rejection that
-                // opened the next request's window ends only its own (S4 F1, L-1).
-                if self.shown_now() == Some(shown) {
-                    self.finish_approval(QueueOutcome::Rejected);
-                }
+                // opened the next request's window ends only its own (S4 F1, L-1). 2026-11-20 (S4
+                // P10a): after the answer of that next window's open (`AfterOpen::CloseIfShown`;
+                // before, checked here directly).
+                self.after_pending_open(AfterOpen::CloseIfShown(shown));
             }
             ApprovalSignal::Activated => {
                 if let Some(flow) = self.evm.approval.as_mut() {

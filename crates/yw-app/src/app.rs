@@ -66,6 +66,7 @@ use yw_engine::effect::{Effect, Folder, RevealTarget, TimerId};
 // `CredField`: debug builds only until S3 C3 (the shadow reads of plan §3.2a; 2026-11-18 B4–B5
 // review); since C3 `App::take_cred` uses it in every build.
 use yw_engine::form::{CredField, EditField, FormState, PressInput};
+use yw_engine::screen::{EnteredAt, ScrollPlace};
 use yw_engine::secret::{SecretEffect, SecretFormOp, SecretKind, SecretStep};
 use yw_engine::services::Services;
 
@@ -187,28 +188,9 @@ impl AppMode {
     }
 }
 
-/// Settings sections (S15).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SettingsSection {
-    /// 보안.
-    Security,
-    /// 네트워크 (RPC 공급자, 네트워크 URL).
-    Network,
-    /// 브라우저·정보.
-    Other,
-    /// EVM 체인, 수수료 상한 (M4).
-    Chains,
-    /// Solana: 클러스터, 수수료 상한, 다른 경로 스캔 (M7).
-    Solana,
-    /// Bitcoin: 켜기·네트워크, 인덱서, Esplora URL (M8).
-    Bitcoin,
-    /// AI 설명 (M6, spec/06 §2).
-    Ai,
-    /// `YubiKey`: the enrolled cards, their slots and accounts, `YubiKey 등록`, `삭제` (spec/10).
-    YubiKey,
-    /// 복구 단어: the wallet's recovery phrases, adding, backup, removal (spec/04 §2.24).
-    Mnemonics,
-}
+/// Settings sections (S15). 2026-11-20 (S4 P10a): moved unchanged to `yw_engine::screen` (the
+/// scroll effects carry a [`crate::app_scroll::ScrollPlace`] that names one); this path stays.
+pub use yw_engine::screen::SettingsSection;
 
 /// Confirmation overlays.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1520,6 +1502,24 @@ impl App {
         self.enter_screen(screen, true);
     }
 
+    /// The remembered scroll place of `screen`, if it is one (S10 on the selected chain tab).
+    /// 2026-11-20 (S4 P10a): the logic's, read when a scroll effect is emitted (was
+    /// `app_scroll::scroll_place`, read by the shell while it applied the effect).
+    pub(crate) fn remembered_place(&self, screen: &Screen) -> Option<ScrollPlace> {
+        Some(match screen {
+            Screen::Main => ScrollPlace::Main(
+                self.meta
+                    .as_ref()
+                    .map_or(crate::meta::Tab::Evm, |meta| meta.prefs.tab),
+            ),
+            Screen::Settings(section) => ScrollPlace::Settings(*section),
+            Screen::Done => ScrollPlace::Done,
+            Screen::Sites => ScrollPlace::Sites,
+            Screen::AddressBook => ScrollPlace::AddressBook,
+            _ => return None,
+        })
+    }
+
     fn enter_screen(&mut self, screen: Screen, back: bool) {
         if self.passphrase_unverified()
             && matches!(
@@ -1546,10 +1546,16 @@ impl App {
         // left (still `self.screen`) was — under an opening overlay, and for the ways back —
         // here, where these steps ran before (`App::screen_leaving`); where the new screen opens
         // is `Effect::ScreenEntered` below. Before, this fn noted and restored the offsets
-        // itself.
+        // itself. 2026-11-20 (S4 P10a): the place left is worked out here (`left`; before, the
+        // shell read `self.screen` while it applied the effect).
+        let left = if changes {
+            self.remembered_place(&self.screen)
+        } else {
+            None
+        };
         self.emit(Effect::ScreenLeaving {
             overlay_opens,
-            changes,
+            left,
         });
         if overlay_opens {
             self.previous_screen = self.screen.clone();
@@ -1587,8 +1593,19 @@ impl App {
         self.screen = screen;
         // Where the new screen opens (S4 P4, `App::screen_entered`): under a closing overlay
         // where it was, on a way back where it was left, else at the top. `refresh` cuts a
-        // remembered offset to the content height.
-        self.emit(Effect::ScreenEntered { back, overlay });
+        // remembered offset to the content height. 2026-11-20 (S4 P10a): worked out here from
+        // the screen entered and the one left (`EnteredAt`; before, the flags `back` and
+        // `overlay`, and the shell read the screens while it applied the effect).
+        let at = if overlay && !matches!(self.screen, Screen::Confirm(_)) {
+            EnteredAt::UnderOverlay {
+                same: self.screen == self.previous_screen,
+            }
+        } else if back {
+            EnteredAt::LeftAt(self.remembered_place(&self.screen))
+        } else {
+            EnteredAt::Top
+        };
+        self.emit(Effect::ScreenEntered { at });
         self.refresh();
     }
 
@@ -2935,12 +2952,12 @@ impl App {
                 } else {
                     self.refresh();
                 }
-                if self.evm.journal.is_none() {
-                    self.evm_after_unlock();
-                }
-                self.btc_after_meta();
-                self.zec_ensure_account();
-                self.card_after_meta();
+                // 2026-11-20 (S4 P10a): the chain hooks follow the answer of an open the dApp
+                // view's unlock just asked for (`sync_browser` → `after_browser_unlock`, in the
+                // screen change or repaint above) or Bitcoin's controller asks for
+                // (`AfterOpen::AfterMeta`, then `AfterOpen::AfterBtcMeta`); before, they ran here
+                // directly, in the same order.
+                self.after_pending_open(crate::app_approval::AfterOpen::AfterMeta);
             }
             KeyOutcome::Meta(Err(
                 error @ (VaultError::SidecarCorrupt(_)
@@ -4511,13 +4528,19 @@ impl App {
             // The approval window's open (`Effect::Approval(Open)`, S4 B5).
             // 2026-11-20 (S4 P9): then the steps its opener left for after the open
             // (`AfterOpen`; before, the opener ran them after `show_next_approval` returned).
+            // 2026-11-20 (S4 P10a): the open no longer waits and its kept steps are taken before
+            // the answer's own steps, then run after them through `after_pending_open` (they
+            // wait for the answer of an open those steps asked for; applied at once, none
+            // waits). Before, `after_approval_opened(shown)` took and ran them after
+            // `on_approval_opened`.
             Cmd::ApprovalOpened {
                 shown,
                 outcome,
                 wide,
             } => {
+                let after = self.approval_open_answered(shown);
                 self.on_approval_opened(shown, outcome, wide);
-                self.after_approval_opened(shown);
+                self.after_pending_open(after);
             }
             // An explorer link's open (`Effect::OpenUrl`, S4 P3).
             Cmd::Opened { ok, which } => self.on_opened(ok, which),
@@ -5301,11 +5324,9 @@ impl App {
             if let Some(address) = hidden {
                 self.account_removed_from_sites(&address);
             }
-            self.notice(
-                crate::app_hidden::hidden_note(self.settings.language, &label),
-                crate::ui::main_window::Tone::Info,
-            );
-            self.refresh();
+            // 2026-11-20 (S4 P10a): the note and the repaint follow the answer of an open the
+            // revoke asked for (`AfterOpen::HiddenNote`; before, made here directly).
+            self.after_pending_open(crate::app_approval::AfterOpen::HiddenNote(label));
             return;
         }
         if let Some(EvmAccountPref::Mnemonic(id, index)) =
@@ -5323,11 +5344,9 @@ impl App {
             if let Some(address) = hidden {
                 self.account_removed_from_sites(&address);
             }
-            self.notice(
-                crate::app_hidden::hidden_note(self.settings.language, &label),
-                crate::ui::main_window::Tone::Info,
-            );
-            self.refresh();
+            // 2026-11-20 (S4 P10a): the note and the repaint follow the answer of an open the
+            // revoke asked for (`AfterOpen::HiddenNote`; before, made here directly).
+            self.after_pending_open(crate::app_approval::AfterOpen::HiddenNote(label));
             return;
         }
         if let Some(meta) = self.meta.as_mut()
@@ -5346,10 +5365,10 @@ impl App {
             if let Some(address) = hidden {
                 self.account_removed_from_sites(&address);
             }
-            self.notice(
-                crate::app_hidden::hidden_note(self.settings.language, &label),
-                crate::ui::main_window::Tone::Info,
-            );
+            // 2026-11-20 (S4 P10a): as above (`AfterOpen::HiddenNote`: the note, then the
+            // repaint; before, the note here and the repaint below).
+            self.after_pending_open(crate::app_approval::AfterOpen::HiddenNote(label));
+            return;
         }
         self.refresh();
     }
@@ -6117,7 +6136,11 @@ impl App {
                 if let Some(chain_id) = self.evm.delete_chain.take() {
                     self.delete_chain(chain_id);
                 }
-                self.set_screen(Screen::Settings(SettingsSection::Chains));
+                // 2026-11-20 (S4 P10a): after the answer of an open the chain's removal from the
+                // sites asked for (`AfterOpen::SetScreen`; before, set here directly).
+                self.after_pending_open(crate::app_approval::AfterOpen::SetScreen(
+                    Screen::Settings(SettingsSection::Chains),
+                ));
             }
             Confirm::Discard => {
                 if let Some(key) = self.evm.discard.take() {

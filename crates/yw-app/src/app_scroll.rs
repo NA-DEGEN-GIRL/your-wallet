@@ -56,20 +56,9 @@ const SB_TOP: u16 = 6;
 const SB_BOTTOM: u16 = 7;
 
 /// A screen whose scroll offset is remembered for the ways back (2026-11-10): each S10 chain tab,
-/// each settings section, S08, S13 and S14.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ScrollPlace {
-    /// S10 on a chain tab.
-    Main(crate::meta::Tab),
-    /// A settings section.
-    Settings(crate::app::SettingsSection),
-    /// S08 '처음 설정' (`← 처음 설정으로` returns there).
-    Done,
-    /// S13.
-    Sites,
-    /// S14.
-    AddressBook,
-}
+/// each settings section, S08, S13 and S14. 2026-11-20 (S4 P10a): moved unchanged to
+/// `yw_engine::screen` (the scroll effects carry it); this path stays.
+pub use yw_engine::screen::ScrollPlace;
 
 /// Where the remembered screens were left (DIP, so a DPI change keeps them; this run only,
 /// emptied by a lock) and the screen under an open overlay.
@@ -270,26 +259,11 @@ impl App {
         rescale(dip, 96, self.window_dpi()).max(0)
     }
 
-    /// The remembered place of `screen`, if it is one.
-    pub(crate) fn scroll_place(&self, screen: &crate::app::Screen) -> Option<ScrollPlace> {
-        use crate::app::Screen;
-        Some(match screen {
-            Screen::Main => ScrollPlace::Main(
-                self.meta
-                    .as_ref()
-                    .map_or(crate::meta::Tab::Evm, |meta| meta.prefs.tab),
-            ),
-            Screen::Settings(section) => ScrollPlace::Settings(*section),
-            Screen::Done => ScrollPlace::Done,
-            Screen::Sites => ScrollPlace::Sites,
-            Screen::AddressBook => ScrollPlace::AddressBook,
-            _ => return None,
-        })
-    }
-
-    /// Notes where the current screen was left (before it is left, or its tab switched).
-    pub(crate) fn remember_scroll(&mut self) {
-        if let Some(place) = self.scroll_place(&self.screen) {
+    /// Notes where the screen was left, at `place` (before it is left, or its tab switched).
+    /// 2026-11-20 (S4 P10a): the place comes with the effect (was `remember_scroll`, which read
+    /// the wallet's screen and tab here).
+    fn remember_scroll_at(&mut self, place: Option<ScrollPlace>) {
+        if let Some(place) = place {
             let dip = self.scroll_dip();
             self.scroll_memory.set(place, dip);
         }
@@ -299,9 +273,10 @@ impl App {
     /// opens at its top, its network band first (the previous tab's offset stayed before).
     /// 2026-11-20 (S4 P4): `Effect::TabTop`, which the tab selectors (`btc_select_tab`,
     /// `sol_select_tab`, `zec_select_tab`) emit where they called this before, while the tab
-    /// being left is still the selected one.
-    pub(crate) fn tab_top(&mut self) {
-        self.remember_scroll();
+    /// being left is still the selected one. 2026-11-20 (S4 P10a): `left` is the place of the
+    /// screen shown then, which the selector worked out (before, read here).
+    pub(crate) fn tab_top(&mut self, left: Option<ScrollPlace>) {
+        self.remember_scroll_at(left);
         self.scroll = 0;
         self.stop_scroll();
         if let Some(main) = self.main.as_ref() {
@@ -312,14 +287,14 @@ impl App {
     /// `Effect::ScreenLeaving` (2026-11-20, S4 P4; the first scroll steps of `App::enter_screen`
     /// before, in the same order): an overlay opening over the screen shown now notes where that
     /// screen is scrolled (`overlay_opens`), and leaving it for another screen (`changes`) notes
-    /// where it was left. Emitted while the wallet's screen is still the one being left.
-    pub(crate) fn screen_leaving(&mut self, overlay_opens: bool, changes: bool) {
+    /// screen being left. 2026-11-20 (S4 P10a): `left` is that screen's place when another
+    /// screen follows, worked out by `App::enter_screen` (before, the flag `changes`, and the
+    /// place read here).
+    pub(crate) fn screen_leaving(&mut self, overlay_opens: bool, left: Option<ScrollPlace>) {
         if overlay_opens {
             self.scroll_memory.under_overlay = Some(self.scroll_dip());
         }
-        if changes {
-            self.remember_scroll();
-        }
+        self.remember_scroll_at(left);
     }
 
     /// `Effect::ScreenEntered` (2026-11-20, S4 P4; the restore steps of `App::enter_screen`
@@ -327,20 +302,19 @@ impl App {
     /// overlay (`overlay`) where it was when the overlay opened, if it is that screen; on a way
     /// back (`back`) where it was left in this run; else at the top. The layout that follows cuts
     /// the offset to the content height. Any wheel glide ends.
-    pub(crate) fn screen_entered(&mut self, back: bool, overlay: bool) {
-        use crate::app::Screen;
-        let restore = if overlay && !matches!(self.screen, Screen::Confirm(_)) {
-            let under = self.scroll_memory.under_overlay.take();
-            if self.screen == self.previous_screen {
-                under
-            } else {
-                None
+    ///
+    /// 2026-11-20 (S4 P10a): `at` says which of the three, worked out by `App::enter_screen` from
+    /// the screen entered and the one left (before, the flags `back` and `overlay`, and the
+    /// screens read here).
+    pub(crate) fn screen_entered(&mut self, at: yw_engine::screen::EnteredAt) {
+        use yw_engine::screen::EnteredAt;
+        let restore = match at {
+            EnteredAt::UnderOverlay { same } => {
+                let under = self.scroll_memory.under_overlay.take();
+                if same { under } else { None }
             }
-        } else if back {
-            self.scroll_place(&self.screen)
-                .and_then(|place| self.scroll_memory.get(place))
-        } else {
-            None
+            EnteredAt::LeftAt(place) => place.and_then(|place| self.scroll_memory.get(place)),
+            EnteredAt::Top => None,
         };
         self.scroll = restore.map_or(0, |dip| self.scroll_px(dip));
         self.stop_scroll();

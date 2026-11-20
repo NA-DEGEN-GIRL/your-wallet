@@ -6933,6 +6933,97 @@ fn keys_resolve_in_the_shell_and_the_scroll_memory_follows_screen_entries() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// 2026-11-20 (S4 P10a): the scroll effects of a tab switch and of screen entries carry the
+/// places they name (`TabTop.left`, `ScreenLeaving.left`, `ScreenEntered.at`), so applying them
+/// after the handler that emitted them returned — after it changed the tab or the screen, as the
+/// outbox will (P10b) — leaves the same scroll offset and memory as applying each at once. Before
+/// P10a the shell read the wallet's screen, previous screen and tab when it applied them: held,
+/// a tab switch filed the old tab's offset under the new tab, and a way back found the offset of
+/// the screen it came from.
+#[test]
+fn scroll_effects_carry_what_they_read() {
+    use crate::app::SettingsSection;
+    type Steps = fn(&mut App);
+    // (setup, the steps whose effects are applied at once or held until they returned)
+    let scenarios: [(&str, Steps, Steps); 3] = [
+        (
+            "tab",
+            |app| app.scroll = 640,
+            |app| {
+                app.tab_shortcut(3);
+                app.tab_shortcut(1);
+            },
+        ),
+        (
+            "back",
+            |app| {
+                app.set_screen(Screen::Settings(SettingsSection::Security));
+                app.scroll = 240;
+            },
+            |app| {
+                app.set_screen(Screen::Main);
+                app.return_to(Screen::Settings(SettingsSection::Security));
+            },
+        ),
+        (
+            "overlay",
+            |app| {
+                app.set_screen(Screen::Settings(SettingsSection::Security));
+                app.scroll = 240;
+            },
+            |app| {
+                app.set_screen(Screen::Confirm(Confirm::CopyOn));
+                app.set_screen(Screen::Settings(SettingsSection::Security));
+            },
+        ),
+    ];
+    for (name, setup, steps) in scenarios {
+        let mut seen = Vec::new();
+        for held in [false, true] {
+            let (mut app, dir) = unlocked_app(&format!("scroll-{name}-{held}"), false);
+            setup(&mut app);
+            if held {
+                let effects = crate::app_effects::hold_effects(|| steps(&mut app));
+                assert!(!effects.is_empty(), "{name}: nothing held");
+                for effect in effects {
+                    app.emit(effect);
+                }
+            } else {
+                steps(&mut app);
+            }
+            seen.push(format!(
+                "{name}: scroll {} memory {:?}",
+                app.scroll, app.scroll_memory
+            ));
+            let _ = std::fs::remove_dir_all(dir);
+        }
+        assert_eq!(
+            seen[0], seen[1],
+            "held effects differ from effects applied at once"
+        );
+    }
+    // What the scenarios leave (applied at once, as before P10a).
+    let (mut app, dir) = unlocked_app("scroll-check", false);
+    app.scroll = 640;
+    let effects = crate::app_effects::hold_effects(|| app.tab_shortcut(3));
+    for effect in effects {
+        app.emit(effect);
+    }
+    assert_eq!(app.meta.as_ref().map(|meta| meta.prefs.tab), Some(Tab::Btc));
+    assert_eq!(app.scroll, 0);
+    assert_eq!(
+        app.scroll_memory
+            .get(crate::app_scroll::ScrollPlace::Main(Tab::Evm)),
+        Some(640)
+    );
+    assert_eq!(
+        app.scroll_memory
+            .get(crate::app_scroll::ScrollPlace::Main(Tab::Btc)),
+        None
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// 2026-11-20 (S4 P4): the handlers P4 converted reach the main window only through effects —
 /// no scroll offset or memory, focus, pointer capture, foreground or reveal of their own — and
 /// the logic's press dispatch (`on_press`) resolves no key and reads no focus. Only the effect

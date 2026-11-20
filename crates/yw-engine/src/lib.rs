@@ -23,14 +23,16 @@
 //! settings file, the sealed API keys, the vault facts; the platform implements it). [`services`]
 //! holds the platform factories the optional network workers start from (`Services`: the LLM
 //! transport, the `WalletConnect` relay parts, the relay user agent's platform word). [`secret`]
-//! holds the secret windows' kinds, flow step, effects and texts (never a secret).
+//! holds the secret windows' kinds, flow step, effects and texts (never a secret). [`screen`]
+//! holds plain screen data the logic and the shell share (the settings sections, the remembered
+//! scroll places).
 //!
 //! 2026-11-17 (spec/15 §11.4 S2, E1): created; these modules moved out of yw-app unchanged except
 //! for their `use` paths. E2 added the settings, metadata, explain and pipeline modules, E3 the
 //! dispatcher, the `WalletConnect` worker, the events, the workers and the approval view (before
 //! E3 the relay worker was still in yw-app). 2026-11-18 (spec/15 §11.4 S3 B1): `cmd`, `effect`
 //! and `form` were added. 2026-11-20 (S4 P1): `app_store` was added; (S4 P2) `services`;
-//! (S4 P7a1) `secret`.
+//! (S4 P7a1) `secret`; (S4 P10a) `screen`.
 #![forbid(unsafe_code)]
 
 pub mod apikeys;
@@ -54,6 +56,7 @@ pub mod meta;
 pub mod network;
 pub mod received;
 pub mod rpc;
+pub mod screen;
 pub mod secret;
 pub mod secure_field;
 pub mod services;

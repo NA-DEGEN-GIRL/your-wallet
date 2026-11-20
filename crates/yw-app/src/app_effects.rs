@@ -37,7 +37,10 @@
 //! `close_overlay_in_place`, the tab selectors and `lock`) and `ReleaseHold` (was in
 //! `App::hold_cancel`). Each arm is the code that ran at the emitting point, so the order is the
 //! same; none answers or records a shell-call line (none was recorded before). The scroll arms
-//! read the wallet's screen and tab while applied, exactly as that code did.
+//! read the wallet's screen and tab while applied, exactly as that code did. 2026-11-20 (S4
+//! P10a): they no longer do — the effects carry the places the logic worked out when it emitted
+//! them (`left`, `at`), and the arms read only the shell's scroll offset and memory, so applying
+//! one later (an outbox) gives the same result.
 //!
 //! 2026-11-20 (S4 P7a1): `Secret`, a secret window's open (an input window:
 //! `App::open_input_window`, the body of `App::open_input` before) and close
@@ -71,6 +74,26 @@ thread_local! {
     /// touched.
     pub(crate) static TEST_COPY_ANSWER: core::cell::Cell<Option<bool>> =
         const { core::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Tests (2026-11-20, S4 P10a): while `Some`, `emit` keeps each effect here instead of
+    /// applying it, so a test can apply them after the handler that emitted them returned, as an
+    /// outbox would ([`hold_effects`]).
+    static TEST_HELD_EFFECTS: core::cell::RefCell<Option<Vec<Effect>>> =
+        const { core::cell::RefCell::new(None) };
+}
+
+/// Tests (2026-11-20, S4 P10a): runs `steps` with every effect they emit kept, not applied, and
+/// returns them in emission order.
+#[cfg(test)]
+pub(crate) fn hold_effects(steps: impl FnOnce()) -> Vec<Effect> {
+    TEST_HELD_EFFECTS.with(|held| *held.borrow_mut() = Some(Vec::new()));
+    steps();
+    TEST_HELD_EFFECTS
+        .with(|held| held.borrow_mut().take())
+        .unwrap_or_default()
 }
 
 /// The main window's timer id for `timer`, and its name in the tests' shell-call log.
@@ -109,6 +132,17 @@ impl App {
     /// before the window check, so headless tests see it too.
     #[expect(clippy::too_many_lines, reason = "one arm per effect")]
     pub(crate) fn emit(&mut self, effect: Effect) {
+        // Tests (2026-11-20, S4 P10a): held for `hold_effects`.
+        #[cfg(test)]
+        let Some(effect) = TEST_HELD_EFFECTS.with(|held| match held.borrow_mut().as_mut() {
+            Some(kept) => {
+                kept.push(effect);
+                None
+            }
+            None => Some(effect),
+        }) else {
+            return;
+        };
         match effect {
             Effect::Render => {
                 #[cfg(test)]
@@ -211,11 +245,11 @@ impl App {
             Effect::RaiseMain => self.raise_main(),
             Effect::ScreenLeaving {
                 overlay_opens,
-                changes,
-            } => self.screen_leaving(overlay_opens, changes),
-            Effect::ScreenEntered { back, overlay } => self.screen_entered(back, overlay),
+                left,
+            } => self.screen_leaving(overlay_opens, left),
+            Effect::ScreenEntered { at } => self.screen_entered(at),
             Effect::OverlayClosedInPlace => self.overlay_closed_in_place(),
-            Effect::TabTop => self.tab_top(),
+            Effect::TabTop { left } => self.tab_top(left),
             Effect::ScrollMemoryClear => self.scroll_memory.clear(),
             Effect::ReleaseHold => {
                 if let Some(main) = self.main.as_ref() {

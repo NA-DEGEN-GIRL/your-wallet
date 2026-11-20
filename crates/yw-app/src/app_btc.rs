@@ -3905,26 +3905,41 @@ fn layout_seed() -> Option<[u8; 32]> {
 impl crate::app::App {
     /// Runs `call` on the controller with a fresh context and executes its actions.
     pub fn btc_call(&mut self, call: impl FnOnce(&mut BtcUi, &BtcCtx<'_>) -> Vec<BtcAction>) {
-        let actions = {
-            let ctx = BtcCtx {
-                lang: self.settings.language,
-                settings: &self.settings.bitcoin,
-                apikeys: &self.apikeys,
-                meta: self.meta.as_ref(),
-                journal: self.evm.journal.as_ref(),
-                journal_closed: self.sidecar.journal_closed,
-                unlocked: matches!(self.mode, crate::app::AppMode::Unlocked { .. }),
-                has_mnemonic: self.keys.has_mnemonic,
-                now_ms: self.clock.now_ms(),
-                now_unix_ms: self.clock.now_unix_ms(),
-            };
-            call(&mut self.btc, &ctx)
-        };
+        let actions = self.btc_controller(call);
         self.btc_apply(actions);
     }
 
+    /// Runs `call` on the controller with a fresh context and returns what it returned (the
+    /// context of [`Self::btc_call`]; 2026-11-20, S4 P10a: split out unchanged).
+    fn btc_controller<R>(&mut self, call: impl FnOnce(&mut BtcUi, &BtcCtx<'_>) -> R) -> R {
+        let ctx = BtcCtx {
+            lang: self.settings.language,
+            settings: &self.settings.bitcoin,
+            apikeys: &self.apikeys,
+            meta: self.meta.as_ref(),
+            journal: self.evm.journal.as_ref(),
+            journal_closed: self.sidecar.journal_closed,
+            unlocked: matches!(self.mode, crate::app::AppMode::Unlocked { .. }),
+            has_mnemonic: self.keys.has_mnemonic,
+            now_ms: self.clock.now_ms(),
+            now_unix_ms: self.clock.now_unix_ms(),
+        };
+        call(&mut self.btc, &ctx)
+    }
+
+    /// [`Self::btc_call`] for a controller change that asks for no action (2026-11-20, S4 P10a,
+    /// plan §4.4 S5): the same context, nothing executed. Before, these calls went through
+    /// `btc_call` with a closure returning an empty batch, which `btc_apply` left at once; this
+    /// one cannot queue or open an approval, so what follows it need not wait for an answer.
+    pub fn btc_update(&mut self, call: impl FnOnce(&mut BtcUi, &BtcCtx<'_>)) {
+        self.btc_controller(call);
+    }
+
     /// [`Self::btc_call`] for worker results: the state they change (progress, test messages,
-    /// balances, errors) is repainted even when the controller returns no action.
+    /// balances, errors) is repainted even when the controller returns no action. 2026-11-20 (S4
+    /// P10a): that repaint follows the answer of an open the batch asked for
+    /// (`AfterOpen::RefreshUnlessActed`; before, here directly — a batch that acted repaints
+    /// itself, so it is a no-op then).
     pub fn btc_call_and_repaint(
         &mut self,
         call: impl FnOnce(&mut BtcUi, &BtcCtx<'_>) -> Vec<BtcAction>,
@@ -3935,9 +3950,7 @@ impl crate::app::App {
             acted = !actions.is_empty();
             actions
         });
-        if !acted {
-            self.refresh();
-        }
+        self.after_pending_open(crate::app_approval::AfterOpen::RefreshUnlessActed(acted));
     }
 
     /// Executes controller actions in order; a failed settings write stops the batch.
@@ -4081,7 +4094,9 @@ impl crate::app::App {
     /// Selects the Bitcoin tab (refresh on open, spec/08 §4.7). 2026-11-20 (S4 P4): the scroll
     /// memory's part is `Effect::TabTop`, at the same point (before, `tab_top` was called here).
     pub fn btc_select_tab(&mut self) {
-        self.emit(yw_engine::effect::Effect::TabTop);
+        self.emit(yw_engine::effect::Effect::TabTop {
+            left: self.remembered_place(&self.screen),
+        });
         if let Some(meta) = self.meta.as_mut()
             && meta.prefs.tab != crate::meta::Tab::Btc
         {
@@ -4102,6 +4117,14 @@ impl crate::app::App {
     /// opened once the journal is read (refresh on open, spec/08 §4.7).
     pub fn btc_journal_changed(&mut self) {
         self.btc_call(BtcUi::journal_changed);
+        // 2026-11-20 (S4 P10a): after the answer of an open the journal batch asked for
+        // (`AfterOpen::BtcOpenTab`; before, here directly).
+        self.after_pending_open(crate::app_approval::AfterOpen::BtcOpenTab);
+    }
+
+    /// The Bitcoin tab's opening refresh, when the tab shows and nothing runs
+    /// ([`Self::btc_journal_changed`]; 2026-11-20, S4 P10a: split out unchanged).
+    pub(crate) fn btc_open_tab_if_idle(&mut self) {
         if self.btc_tab_active() && self.btc.refresh.job == 0 && !self.btc.discovery.running {
             self.btc_call(BtcUi::open_tab);
         }
@@ -4259,10 +4282,8 @@ impl crate::app::App {
 
     /// Form edits (recipient, amount, unit, send-max, fee choice, manual rate, typed fee).
     pub fn btc_form(&mut self, edit: impl FnOnce(&mut BtcUi, &BtcCtx<'_>)) {
-        self.btc_call(|ui, ctx| {
-            edit(ui, ctx);
-            Vec::new()
-        });
+        // 2026-11-20 (S4 P10a): `btc_update` (was `btc_call` with an empty batch).
+        self.btc_update(edit);
         self.refresh();
     }
 

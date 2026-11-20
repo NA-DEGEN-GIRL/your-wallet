@@ -995,19 +995,22 @@ impl App {
     /// A reader-thread grant change to persist (spec/05 §4.3, §4.5): a revoke is written at once;
     /// chain switches are coalesced to one write per [`GRANT_WRITE_INTERVAL_MS`] (the dispatcher
     /// already answers from memory; the write follows on the main timer).
+    /// 2026-11-20 (S4 P10a): after a revoke, the grants are written and the screen repainted
+    /// after the answer of an open the revoke asked for (`AfterOpen::WriteGrantsThenRefresh`;
+    /// before, here directly, the repaint after the `match` for every change).
     fn persist_grant_change(&mut self, origin: &BrowserOrigin, change: GrantChange) {
         match change {
             GrantChange::Revoked => {
                 self.revoke_waiting(origin, yw_core::policy::Family::Evm);
-                self.write_grants();
+                self.after_pending_open(AfterOpen::WriteGrantsThenRefresh);
             }
             GrantChange::SolRevoked => {
                 self.revoke_waiting(origin, yw_core::policy::Family::Solana);
-                self.write_grants();
+                self.after_pending_open(AfterOpen::WriteGrantsThenRefresh);
             }
             GrantChange::BtcRevoked => {
                 self.revoke_waiting(origin, yw_core::policy::Family::Bitcoin);
-                self.write_grants();
+                self.after_pending_open(AfterOpen::WriteGrantsThenRefresh);
             }
             GrantChange::Chain(_) => {
                 let now = self.clock.now_ms();
@@ -1018,9 +1021,9 @@ impl App {
                 if write {
                     self.write_grants();
                 }
+                self.refresh();
             }
         }
-        self.refresh();
     }
 
     /// Waiting signing items of `origin` and `family` end `Revoked` (4100, spec/05 §4.5); a shown

@@ -17,8 +17,9 @@
 //! `self.`, a closure's `app.`, `Self::` or `App::`; any other use of such a fn fails. There:
 //!
 //! - after an approval window's open nothing may run: every caller with later steps hands them
-//!   to the open (`App::show_next_approval_then`, `AfterOpen`), or is a line of
-//!   [`PENDING_P10`] that P10 decides;
+//!   to the open (`App::show_next_approval_then`, `AfterOpen`; since P10a also
+//!   `App::after_pending_open`, [`DEFERRALS`]), or is a line of [`NEXT_CALL_OF_AN_ENTRY`] or
+//!   [`READS_NO_ANSWER`] with its reason;
 //! - after a secret window's open, nothing reads the session (`secret_purpose()`,
 //!   `secret_open()`, `secret_session`, `secret_form(..)`), directly or through a fn that does;
 //!   form operations travel with the session (`AfterShown::Forms`);
@@ -37,7 +38,18 @@
 //! body was one emitting call, ended at `break`/`continue` and counted `self.` calls only, so a
 //! caller of a fn that opens as its last step (`card_begin` after `card_open_pin`) and every
 //! entry-level step after an open (`refresh` after `sync_browser`, the grant revocations, the
-//! Bitcoin handlers, …) went unchecked. Those are now [`PENDING_P10`].
+//! Bitcoin handlers, …) went unchecked. Those were `PENDING_P10` (63 lines).
+//!
+//! 2026-11-20 (S4 P10a): `PENDING_P10` is gone (0 lines). Of its 63 lines, 48 are sites that
+//! hand the code that ran after their call to the open's answer (`AfterOpen` through
+//! `App::after_pending_open`, which runs it at once while no open waits — always, while effects
+//! are applied at once) or call the Bitcoin controller through `App::btc_update`, which executes
+//! no action and so opens nothing; the entries' next calls are [`NEXT_CALL_OF_AN_ENTRY`]
+//! (drained between in P10b), two paths that never open are [`ENDS_ON_ITS_PATH`], and six sites
+//! whose later code reads and changes nothing an open's answer does are [`READS_NO_ANSWER`], each
+//! with its reason. A deferral whose argument is a plain value ([`without_deferrals`]) runs
+//! nothing after the open. A `return` later in a block ends what runs after a call there
+//! ([`return_statement`]); a `;` inside brackets no longer ends a fn's head ([`head`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -312,10 +324,23 @@ fn enclosing(blocks: &[Block], at: usize) -> Vec<(usize, usize)> {
 }
 
 /// The text before the block at `open` back to the previous `;`, `{` or `}`: its `fn`, `if`,
-/// `loop`, `match` or arm head.
+/// `loop`, `match` or arm head. 2026-11-20 (S4 P10a): a `;` inside brackets (an array type
+/// `[u8; 32]` in a fn's parameters) is part of the head; before, it ended it, so such a fn was
+/// not found as the fn of its calls (no site's fn, no tail emitter) and its end not seen.
 fn head(code: &str, open: usize) -> &str {
-    let start = code[..open].rfind([';', '{', '}']).map_or(0, |at| at + 1);
-    &code[start..open]
+    let bytes = code.as_bytes();
+    let mut depth = 0_i32;
+    let mut at = open;
+    while at > 0 {
+        at -= 1;
+        match bytes[at] {
+            b')' | b']' => depth += 1,
+            b'(' | b'[' => depth -= 1,
+            b';' | b'{' | b'}' if depth <= 0 => return &code[at + 1..open],
+            _ => {}
+        }
+    }
+    &code[..open]
 }
 
 fn has_word(text: &str, word: &str) -> bool {
@@ -362,6 +387,9 @@ fn in_arm(code: &[u8], open: usize, thing: usize) -> bool {
 /// first takes that loop's whole body (it runs again). Both are named. 2026-11-20 (P9 review):
 /// before, `break` and `continue` ended it like `return`, so code after the loop was missed.
 /// A labelled `break`/`continue` is refused by [`no_result_read_after_its_emit`] (none today).
+/// 2026-11-20 (S4 P10a): a `return` later in a block, as a statement of that block (not inside
+/// a nested block, call or closure), ends it there too, named ([`return_statement`]); before,
+/// only one right after the call did, and the blocks around were read on as if it fell through.
 fn after_call(code: &str, blocks: &[Block], start: usize, end: usize) -> String {
     let bytes = code.as_bytes();
     let mut out = String::new();
@@ -393,6 +421,10 @@ fn after_call(code: &str, blocks: &[Block], start: usize, end: usize) -> String 
                 out.push_str(word);
                 out.push(' ');
                 escaping = Some(word == "continue");
+            } else if let Some(at) = return_statement(seg) {
+                out.push_str(&seg[..at]);
+                out.push_str("return");
+                return out;
             } else {
                 out.push_str(seg);
             }
@@ -425,6 +457,28 @@ fn after_call(code: &str, blocks: &[Block], start: usize, end: usize) -> String 
         thing = open;
     }
     out
+}
+
+/// The offset in `seg` (the rest of one block) of a `return` that is a statement of that block:
+/// outside every bracket of `seg`, after a `;` or `}` (2026-11-20, S4 P10a). `None` if none.
+fn return_statement(seg: &str) -> Option<usize> {
+    let bytes = seg.as_bytes();
+    let mut depth = 0_i32;
+    for (at, &byte) in bytes.iter().enumerate() {
+        match byte {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b'r' if depth == 0
+                && starts_with_word(&seg[at..], "return")
+                && (at == 0 || !is_ident(bytes[at - 1]))
+                && seg[..at].trim_end().ends_with([';', '}']) =>
+            {
+                return Some(at);
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// The name of the fn whose body holds offset `at`.
@@ -591,6 +645,36 @@ fn emits_of(files: &[Src], literal: &str) -> Vec<Site> {
         }
     }
     sites
+}
+
+/// The fns through which a step hands itself to the answer of the open still waiting for one
+/// ([`App::after_pending_open`](crate::app::App::after_pending_open), 2026-11-20, S4 P10a).
+const DEFERRALS: [&str; 1] = ["after_pending_open"];
+
+/// `after` (an [`after_call`] text) without its deferrals: `self.<deferral>(<value>)` whose
+/// argument runs nothing ([`runs_nothing`]: a variant built from names and literals, no call,
+/// method or operator) is dropped, so a site whose later steps all go through a deferral runs
+/// nothing after its open (2026-11-20, S4 P10a). A deferral whose argument computes something
+/// stays (it would run before the answer).
+fn without_deferrals(after: &str) -> String {
+    let mut out = after.to_owned();
+    for name in DEFERRALS {
+        let pattern = format!("self.{name}(");
+        let mut from = 0;
+        while let Some(found) = out[from..].find(&pattern) {
+            let start = from + found;
+            let open = start + pattern.len() - 1;
+            let end = paren_end(out.as_bytes(), open);
+            let argument = &out[open + 1..end.saturating_sub(1).max(open + 1)];
+            if runs_nothing(&rest_of(argument)) {
+                out.replace_range(start..end, "");
+                from = start;
+            } else {
+                from = end;
+            }
+        }
+    }
+    out
 }
 
 /// What is left of `after` (an [`after_call`] text) once separators and closing brackets are
@@ -789,11 +873,76 @@ fn after_call_reads_what_runs_after() {
         .find(|site| site.func == "card_begin")
         .unwrap();
     assert!(after_site(&files, &site).contains("self.secret_purpose("));
+    deferrals_and_returns_on_made_up_code();
+}
+
+/// 2026-11-20 (S4 P10a), on made-up code: a `return` later in a block ends what runs after a
+/// call there (one in a nested block does not); a fn with an array parameter is still the fn of
+/// its calls and its end is still seen; a deferral with a plain argument runs nothing after an
+/// open, one that computes its argument does, and a fn ending in a deferral is an opener for its
+/// callers.
+fn deferrals_and_returns_on_made_up_code() {
+    let after = |code: &str, call: &str| -> String {
+        let code = code_only(code);
+        let start = code.find(call).unwrap();
+        let end = paren_end(code.as_bytes(), start);
+        after_call(&code, &blocks_of(code.as_bytes()), start, end)
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect()
+    };
+    let code = "fn f(&mut self) { if a { self.open(); self.later(); return; } self.z(); }";
+    assert_eq!(after(code, "self.open("), ";self.later();return");
+    let code = "fn f(&mut self) { if a { self.open(); if b { return; } self.later(); } self.z(); }";
+    assert_eq!(
+        after(code, "self.open("),
+        ";ifb{return;}self.later();self.z();"
+    );
+    let code = "fn f(&mut self) { self.open(); let g = |x| { return x; }; self.z(); }";
+    assert!(after(code, "self.open(").ends_with("self.z();"));
+    let code = "fn h(&mut self, k: &[u8; 32]) { self.open(); } fn i(&mut self) { self.z(); }";
+    assert_eq!(after(code, "self.open("), ";");
+    let file = Src::new("made-up".to_owned(), code_only(code));
+    let at = file.code.find("self.open(").unwrap();
+    assert_eq!(fn_at(&file.code, &file.blocks, at).as_deref(), Some("h"));
+    // Deferrals.
+    let plain = "; self.after_pending_open(AfterOpen::Refresh); return";
+    assert!(runs_nothing(&rest_of(&without_deferrals(plain))));
+    let computed = "; self.after_pending_open(AfterOpen::Note(self.label())); ";
+    assert!(!runs_nothing(&rest_of(&without_deferrals(computed))));
+    let then = "; self.after_pending_open(AfterOpen::Steps(rest)); self.z();";
+    assert_eq!(rest_of(&without_deferrals(then)), "self.z(");
+    let files = [Src::new(
+        "made-up".to_owned(),
+        code_only(
+            "fn opener(&mut self) {} \
+             fn after_pending_open(&mut self, after: AfterOpen) { self.opener(); } \
+             fn f(&mut self) { self.opener(); self.after_pending_open(AfterOpen::A); } \
+             fn g(&mut self) { self.f(); self.z(); }",
+        ),
+    )];
+    let mut openers: BTreeSet<String> = ["opener".to_owned()].into();
+    add_wrappers(&files, &mut openers);
+    assert!(
+        openers.contains("f") && !openers.contains("g"),
+        "{openers:?}"
+    );
+    let site_in = |func: &str, name: &str| {
+        calls(0, &files[0], &openers)
+            .into_iter()
+            .find(|site| site.func == func && site.name == name)
+            .unwrap()
+    };
+    let in_f = after_site(&files, &site_in("f", "opener"));
+    assert!(!runs_nothing(&rest_of(&in_f)));
+    assert!(runs_nothing(&rest_of(&without_deferrals(&in_f))));
+    let in_g = after_site(&files, &site_in("g", "f"));
+    assert!(!runs_nothing(&rest_of(&without_deferrals(&in_g))));
 }
 
 /// What one kind of answered effect checks: its sites and what may not follow them.
 struct Kind {
-    /// Its name in [`PENDING_P10`] and [`ENDS_ON_ITS_PATH`].
+    /// Its name in [`NEXT_CALL_OF_AN_ENTRY`], [`READS_NO_ANSWER`] and [`ENDS_ON_ITS_PATH`].
     key: &'static str,
     what: &'static str,
     /// The fns that emit it (by name) and the effect literals emitted elsewhere.
@@ -805,7 +954,8 @@ struct Kind {
     tokens: Option<&'static [&'static str]>,
     /// At least this many sites (A-20; the counts at P9, 2026-11-20, raised by the P9 review
     /// the same day when the tail emitters and the second crate came in: 18 → 294, 69 → 126,
-    /// 25 → 50, 15 → 27).
+    /// 25 → 50, 15 → 27). 2026-11-20 (S4 P10a): approval 294 → 323, as the fns that hand their
+    /// later steps to an open's answer end in `after_pending_open` and so are openers too.
     min_sites: usize,
     /// The one-level readers (fns whose own body names a token) that must still be found
     /// (2026-11-20, P9 review): one renamed or moved out of the scanned code fails here
@@ -822,7 +972,7 @@ const KINDS: [Kind; 4] = [
         literals: &["ApprovalEffect::Open {"],
         literal_in_emitters: true,
         tokens: None,
-        min_sites: 294,
+        min_sites: 323,
         readers_floor: &[],
     },
     Kind {
@@ -989,98 +1139,83 @@ const KINDS: [Kind; 4] = [
     },
 ];
 
-/// The sites where code runs after an open in the same entry and that P10 (the outbox flip,
-/// plan §4.6 rule 2) decides (2026-11-20, P9 review), one per line: `kind file fn called
-/// sites` (the file under `yw-app/src`). Each is the first fn up from an opener in which something runs after it, so
-/// one line covers that fn's callers too. Under the inline executor the open is answered before
-/// the call returns, so the code after it sees the answer as it always did (byte-equal; the
-/// census, `s4_flow`, `s4_secret` and `tour_forms` pin it). P10 converts or orders each one and
-/// removes its line; a site that is not here fails, and so does a line no longer found or a
-/// count that changed. spec/15 §11.4 S4 row (P9 review note) names them.
-const PENDING_P10: [&str; 63] = [
-    // The next step of the same entry: the next event or timer step, the next mapped step of
-    // the same window message, the rest of the press or answer handler.
+/// Sites where a shell entry calls into the logic again after a call that may open (2026-11-20,
+/// S4 P10a; were `PENDING_P10` lines of the P9 review), one per line: `kind file fn called
+/// sites` (the file under `yw-app/src`). They are the entries' own next steps: each worker event
+/// of `drain_events`, each part of the main timer's `tick`, each `Cmd` of `on_command` (the
+/// form, the press, then the shell's Enter/Esc resolution), each mapped step of an approval
+/// window's message (`run_steps`, `run_step`). P10b drains the outbox after each such call
+/// (plan §3.4: the answer of an open is handled before the entry's next call), so nothing of a
+/// later call runs before an earlier call's answer: safe under drain-per-call. A site that is in
+/// no list fails, and so does a line no longer found or a count that changed.
+const NEXT_CALL_OF_AN_ENTRY: [&str; 8] = [
     "approval app.rs drain_events evm_rpc_event 1",
     "approval app.rs drain_events on_dapp_event 1",
     "approval app.rs drain_events on_key_result 1",
-    "approval app.rs lock browser_lock_begin 1",
-    "approval app.rs on_cmd on_approval_opened 1",
-    "approval app.rs on_cmd on_press 1",
     "approval app.rs on_command on_cmd 2",
-    "approval app.rs on_key_result btc_after_meta 1",
     "approval app.rs tick btc_tick 1",
-    "approval app_approval.rs on_approval_input approval_event 1",
+    // 2026-11-20 (S4 P10a): new — `evm_tick` hands its later parts to the queue tick's open
+    // (`AfterOpen::EvmTickRest`), so `tick`'s next part is the next call after an open.
+    "approval app.rs tick evm_tick 1",
     "approval app_approval.rs run_step run_step 1",
     "approval app_approval.rs run_steps run_step 1",
-    "approval app_evm.rs evm_tick tick_approval 1",
-    // The repaint: `refresh` syncs the dApp view (which may show the next request) before its
-    // `Effect::Render`; every caller of `refresh` goes on after it.
+];
+
+/// Sites whose code after the call reads and changes nothing the open's answer reads or changes
+/// (2026-11-20, S4 P10a; were `PENDING_P10` lines), each with the reason. With the outbox (P10b)
+/// that code runs before the answer instead of after it; the answer (`on_approval_opened`: the
+/// AI reservation, the width, the first view, the preparation; the opener's `AfterOpen` steps)
+/// and that code touch different state, so the state after both is the same, and an effect that
+/// code emits queues behind the open and is applied after the answer in the same drain. Not
+/// converted because the fn would become an opener for every caller (each revoke and removal
+/// path, the shell's press entry, every `refresh`).
+const READS_NO_ANSWER: [&str; 6] = [
+    // After the press: the press input is put back (the outer press's) and this press's is
+    // wiped (`used`, debug: its unread credential count). An open's answer reads no press input:
+    // `take_cred` (core, RPC, LLM and EVM settings handlers) and `take_clip`/`take_image` (the
+    // `WalletConnect` pair press) are press handlers, none reached from `on_approval_opened`,
+    // `start_prepare` or an `AfterOpen` step.
+    "approval app.rs on_cmd on_press 1",
+    // `sync_browser` opens only at the first sync of an unlocked dApp view (`browser.unlocked`
+    // false → true: `after_browser_unlock` → `show_next_approval`); after it, `refresh` emits
+    // `Effect::Render`, which reads nothing here: queued behind the open, it is applied after the
+    // answer, laying out the state after it. That first sync is the meta load's screen change or
+    // repaint (`KeyOutcome::Meta(Ok)`, which hands its later chain hooks to the answer:
+    // `AfterOpen::AfterMeta`) or a backup confirmation's last step (`set_screen(Screen::Done)`).
     "approval app.rs refresh sync_browser 1",
-    // A revoked grant or a removed account or chain ends its waiting requests, then the grants
-    // are written, logged and repainted.
-    "approval app.rs confirm_yes delete_chain 1",
-    "approval app.rs hide_selected account_removed_from_sites 3",
+    // `revoke_waiting` opens the next window only when it ends the shown request (a signing
+    // request of that origin and family) and hands its card check to the open; then the grants
+    // are written to meta (the answer reads no grant or site of meta), `site.disconnected` is
+    // logged and `refresh` repaints (as above). Same for the chain families.
     "approval app_browser.rs disconnect_site revoke_waiting 1",
-    "approval app_browser.rs evm_key_removed_from_sites account_removed_from_sites 1",
-    "approval app_browser.rs network_url_changed btc_url_changed 1",
-    "approval app_browser.rs persist_grant_change revoke_waiting 3",
-    "approval app_chain_sites.rs chain_grants_removed revoke_waiting 1",
     "approval app_chain_sites.rs disconnect_chain_site revoke_waiting 1",
-    // A prepare that fails ends its request and shows the next one; the caller goes on with
-    // the view, the AI draft or the signing.
-    "approval app_approval.rs consume_and_sign btc_consumed 1",
-    "approval app_approval.rs on_approval_opened rebuild_view 1",
-    "approval app_approval.rs on_prepared show_ready_draft 1",
-    "approval app_approval.rs on_typed_facts show_ready_draft 1",
-    "approval app_approval.rs prepare_site show_ready_draft 1",
-    "approval app_approval.rs start_prepare prepare_btc 1",
-    "approval app_approval.rs start_prepare prepare_hypercore 1",
-    "approval app_approval.rs start_prepare prepare_site 1",
-    "approval app_approval.rs start_prepare prepare_sol 1",
-    "approval app_approval.rs start_prepare prepare_transaction 1",
-    "approval app_approval.rs start_prepare prepare_zec 1",
-    // A Bitcoin screen action (or a journal or Zcash event) queues a request; the handler then
-    // fills a field or repaints.
-    "approval app_btc.rs btc_call_and_repaint btc_call 1",
-    "approval app_btc.rs btc_form btc_call 1",
-    "approval app_btc.rs btc_journal_changed btc_call 1",
-    "approval app_btc_commands.rs btc_apply_field btc_call 1",
-    "approval app_btc_commands.rs btc_set_unit btc_call 1",
-    "approval app_btc_commands.rs btc_toggle_max btc_call 1",
-    "approval app_btc_commands.rs on_btc btc_call 6",
-    "approval app_btc_commands.rs on_btc btc_continue 1",
-    "approval app_btc_commands.rs on_btc btc_discover 2",
-    "approval app_btc_commands.rs on_btc btc_mismatch_keep_meta 1",
-    "approval app_btc_commands.rs on_btc btc_mismatch_use_settings 1",
-    "approval app_btc_commands.rs on_btc btc_new_receive_address 1",
-    "approval app_btc_commands.rs on_btc btc_open_bump 1",
-    "approval app_btc_commands.rs on_btc btc_open_receive 1",
-    "approval app_btc_commands.rs on_btc btc_open_send 1",
-    "approval app_btc_commands.rs on_btc btc_refresh 1",
-    "approval app_btc_commands.rs on_btc btc_reset_tip 1",
-    "approval app_btc_commands.rs on_btc btc_review 1",
-    "approval app_btc_commands.rs on_btc btc_review_bump 1",
-    "approval app_btc_commands.rs on_btc btc_select_tab 1",
-    "approval app_btc_commands.rs on_btc btc_set_indexer 3",
-    "approval app_btc_commands.rs on_btc btc_settings_network 2",
-    "approval app_btc_commands.rs on_btc btc_toggle_enabled 1",
-    "approval app_btc_commands.rs on_btc on_btc_esplora 1",
-    "approval app_btc_commands.rs on_btc on_btc_indexed 1",
-    "approval app_btc_commands.rs on_btc_esplora btc_default_esplora_url 1",
-    "approval app_btc_commands.rs on_btc_esplora btc_save_esplora_url 1",
-    "approval app_btc_commands.rs on_btc_indexed btc_call 1",
-    "approval app_evm.rs evm_key_outcome btc_journal_changed 1",
-    "approval app_zec.rs zec_rpc_event zec_enqueue 1",
+    // The next account's or origin's removal ends waiting requests (the opened window's request
+    // is shown, not waiting) and writes grants; then the grants are written and the count logged.
+    // If a later account or origin is also the opened window's request's, that window is ended
+    // in the same entry: applied at once it was made, prepared and closed; with the outbox its
+    // open is stale when applied (critique A-3: nothing made, the answer ignored). The dApp's
+    // answer (4100) is the same either way; P10b's `s4_flow`/`s4_secret` decide the A-3 lines.
+    "approval app_browser.rs evm_key_removed_from_sites account_removed_from_sites 1",
+    "approval app_chain_sites.rs chain_grants_removed revoke_waiting 1",
 ];
 
 /// Sites the check reports whose opening path never reaches the code after them (it has no
-/// paths), each with the reason; they stay after P10. Same lines as [`PENDING_P10`].
-const ENDS_ON_ITS_PATH: [&str; 1] = [
+/// paths), each with the reason; they stay after P10.
+const ENDS_ON_ITS_PATH: [&str; 3] = [
     // `card_filter` opens the PIN window again (`card_unused` → `card_open_pin`) only on its
     // `KeyOutcome::CardUnused` path, which returns `None`; `on_key_result` returns at once on
     // `None` (`let Some(outcome) = … else { return; }`), so its later session reads never run
     // after that open.
     "secret app.rs on_key_result card_filter 1",
+    // 2026-11-20 (S4 P10a; was a `PENDING_P10` line): `browser_lock_begin` sets
+    // `browser.locking` before its `sync_browser` (and returns before it without a browser), so
+    // `vault_view` is never `Unlocked` or `PassphraseUnverified` there and the unlock arm
+    // (`after_browser_unlock`, the only open in `sync_browser`) never runs.
+    "approval app.rs lock browser_lock_begin 1",
+    // 2026-11-20 (S4 P10a; was a `PENDING_P10` line): `btc_url_changed`'s controller call
+    // (`BtcUi::url_changed`) returns one `BtcAction::Rpc` (the session reset), which `btc_apply`
+    // sends; only `BtcAction::Enqueue` and `SetMeta`'s grant removal open an approval window.
+    "approval app_browser.rs network_url_changed btc_url_changed 1",
 ];
 
 /// One site with code after it that the rule refuses.
@@ -1136,7 +1271,8 @@ fn check_kind(files: &[Src], kind: &Kind) -> Checked {
         let after = after_site(files, site);
         let problem = match kind.tokens {
             None => {
-                let rest = rest_of(&after);
+                // 2026-11-20 (S4 P10a): steps handed to the open's answer do not run after it.
+                let rest = rest_of(&without_deferrals(&after));
                 (!runs_nothing(&rest)).then(|| rest.chars().take(160).collect())
             }
             Some(tokens) => {
@@ -1219,8 +1355,9 @@ fn no_result_read_after_its_emit() {
             entry.1 = finding.problem;
         }
     }
-    let listed: BTreeMap<_, _> = PENDING_P10
+    let listed: BTreeMap<_, _> = NEXT_CALL_OF_AN_ENTRY
         .iter()
+        .chain(READS_NO_ANSWER.iter())
         .chain(ENDS_ON_ITS_PATH.iter())
         .map(|line| {
             let words: Vec<&str> = line.split_whitespace().collect();
@@ -1236,7 +1373,7 @@ fn no_result_read_after_its_emit() {
         .collect();
     assert_eq!(
         listed.len(),
-        PENDING_P10.len() + ENDS_ON_ITS_PATH.len(),
+        NEXT_CALL_OF_AN_ENTRY.len() + READS_NO_ANSWER.len() + ENDS_ON_ITS_PATH.len(),
         "a line listed twice"
     );
     for (key, (sites, problem)) in &found {
@@ -1304,6 +1441,71 @@ fn an_openers_later_steps_follow_the_answer_to_its_open() {
     );
     app.on_cmd(answer(shown));
     assert_eq!(app.controls.take_shell_log(), ["refresh"]);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// 2026-11-20 (S4 P10a): `after_pending_open` runs a step at once while no approval-window open
+/// waits for its answer (always, while effects are applied at once) and otherwise keeps it for
+/// the newest open that waits; that open's answer no longer waits and runs the kept steps once,
+/// in order, after its own steps; another window's answer leaves them. The kept steps print
+/// names, counts and lengths only. Headless, no window.
+#[test]
+fn steps_after_an_open_wait_for_its_answer() {
+    use yw_engine::approval::flow::{OpenOutcome, ShownId};
+    use yw_engine::cmd::Cmd;
+
+    use crate::app_approval::AfterOpen;
+    use crate::errors::ErrorCode;
+
+    let (mut app, dir) = super::unlocked_app("after-pending", false);
+    let answer = |shown| Cmd::ApprovalOpened {
+        shown,
+        outcome: OpenOutcome::Failed(ErrorCode::App009),
+        wide: false,
+    };
+    let _ = app.controls.take_shell_log();
+    // Nothing waits: at once.
+    assert_eq!(app.evm.open_unanswered, None);
+    app.after_pending_open(AfterOpen::Refresh);
+    assert_eq!(app.controls.take_shell_log(), ["refresh"]);
+    // An open waits (as it will with the outbox): kept for it, in order.
+    let shown = ShownId(u64::MAX);
+    app.evm.open_unanswered = Some(shown);
+    app.after_pending_open(AfterOpen::Refresh);
+    app.after_pending_open(AfterOpen::RefreshUnlessActed(true));
+    app.after_pending_open(AfterOpen::HiddenNote("계정 2".to_owned()));
+    assert_eq!(app.controls.take_shell_log(), Vec::<String>::new());
+    assert_eq!(
+        format!("{:?}", app.evm.after_open),
+        "[(ShownId(18446744073709551615), Refresh), (ShownId(18446744073709551615), \
+         RefreshUnlessActed(true)), (ShownId(18446744073709551615), HiddenNote(4))]"
+    );
+    // Another window's answer leaves them, and the open still waits.
+    app.on_cmd(answer(ShownId(u64::MAX - 1)));
+    assert_eq!(app.evm.open_unanswered, Some(shown));
+    assert_eq!(app.evm.after_open.len(), 3);
+    assert_eq!(app.controls.take_shell_log(), Vec::<String>::new());
+    // Its own answer (stale here: no flow, so no steps of its own): no longer waiting, the kept
+    // steps once, in order (the note's repaint is the second `refresh`).
+    let banners = app.banners.len();
+    app.on_cmd(answer(shown));
+    assert_eq!(app.evm.open_unanswered, None);
+    assert!(app.evm.after_open.is_empty());
+    assert_eq!(app.controls.take_shell_log(), ["refresh", "refresh"]);
+    assert_eq!(app.banners.len(), banners + 1);
+    app.on_cmd(answer(shown));
+    assert_eq!(app.controls.take_shell_log(), Vec::<String>::new());
+    assert_eq!(
+        format!(
+            "{:?}",
+            AfterOpen::Steps(vec![
+                AfterOpen::EvmTickRest(7),
+                AfterOpen::Finish(crate::ui::approval::QueueOutcome::Approved),
+                AfterOpen::SetScreen(crate::app::Screen::Main),
+            ])
+        ),
+        "Steps([EvmTickRest(7), Finish(Approved), SetScreen])"
+    );
     let _ = std::fs::remove_dir_all(dir);
 }
 
